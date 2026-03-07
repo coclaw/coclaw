@@ -1,0 +1,70 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+/* CoClaw 自定义品牌/状态色 — 移除下行可恢复 Nuxt UI 默认色 */
+@import "./brand-palette.css";
+
+:root {
+	font-family: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+/*
+ * CoClaw dark 背景语义色（Nuxt UI）
+ * 说明：此块仅覆盖 dark 模式下的背景层级变量。
+ * 回滚：如效果不佳，删除或整段注释掉本 .dark 块即可恢复 Nuxt UI 默认 dark 配色。
+ */
+.dark {
+	/* 页面基底（bg-default） */
+	--ui-bg: #202122;
+	/* 次级分区（bg-muted）：相对 bg-default 提亮一个层级，保证暗色下层次可辨 */
+	--ui-bg-muted: #2a2c2f;
+	/* 浮层/抬升层（bg-elevated） */
+	--ui-bg-elevated: #1b1b1b;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	min-height: 100vh;
+	overflow-x: hidden;
+	background-color: var(--ui-bg);
+	color: var(--ui-text);
+}
+
+/* 图标按钮 — 次要区域（页面/对话框内，32px 基底） */
+.cc-icon-btn {
+	border-radius: 9999px;
+	padding: 0.25rem;
+	min-width: 32px;
+	min-height: 32px;
+	justify-content: center;
+}
+
+/* 次要区域图标：Lucide 图标偏大，缩至 size-4 */
+.cc-icon-btn > .shrink-0 {
+	width: 1rem;
+	height: 1rem;
+}
+
+/*
+ * 隐藏滚动条但保留滚动能力
+ * 如需恢复滚动条，注释掉本块或移除元素上的 .scrollbar-hide class
+ */
+.scrollbar-hide {
+	scrollbar-width: none;          /* Firefox */
+	-ms-overflow-style: none;       /* IE / Edge */
+}
+.scrollbar-hide::-webkit-scrollbar {
+	display: none;                  /* Chrome / Safari / Opera */
+}
+
+/* 图标按钮 — 主要区域（header，40px 基底） */
+.cc-icon-btn-lg {
+	border-radius: 9999px;
+	padding: 0.25rem;
+	min-width: 40px;
+	min-height: 40px;
+	justify-content: center;
+}

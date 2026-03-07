@@ -1,0 +1,57 @@
+async function requestJson(baseUrl, path, { method = 'GET', headers, body } = {}) {
+	const url = new URL(path, baseUrl).toString();
+	const res = await fetch(url, {
+		method,
+		headers,
+		body: body == null ? undefined : JSON.stringify(body),
+	});
+	let data = null;
+	try {
+		data = await res.json();
+	}
+	/* c8 ignore next 3 */
+	catch {
+		data = null;
+	}
+	if (!res.ok) {
+		const err = new Error(data?.message || `HTTP ${res.status}`);
+		err.response = { status: res.status, data };
+		throw err;
+	}
+	return data;
+}
+
+export async function bindWithServer({ baseUrl, code, name }) {
+	return requestJson(baseUrl, '/api/v1/bots/bind', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: { code, name },
+	});
+}
+
+export async function unbindWithServer({ baseUrl, token }) {
+	return requestJson(baseUrl, '/api/v1/bots/unbind', {
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export async function listBotsWithServer({ baseUrl, cookie }) {
+	return requestJson(baseUrl, '/api/v1/bots', {
+		headers: cookie
+			? {
+				Cookie: cookie,
+			}
+			: undefined,
+	});
+}
+
+export async function getBotSelfWithServer({ baseUrl, token }) {
+	return requestJson(baseUrl, '/api/v1/bots/self', {
+		headers: {
+			Authorization: `Bearer ${token}`,
+		},
+	});
+}

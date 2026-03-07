@@ -1,0 +1,15 @@
+-- CreateTable
+CREATE TABLE `UserSetting` (
+    `userId` BIGINT UNSIGNED NOT NULL,
+    `theme` VARCHAR(32) NULL,
+    `lang` VARCHAR(10) NULL,
+    `perfs` JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    `uiState` JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    `hintCounts` JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    PRIMARY KEY (`userId`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- AddForeignKey
+ALTER TABLE `UserSetting` ADD CONSTRAINT `UserSetting_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;

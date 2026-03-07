@@ -1,0 +1,58 @@
+# CoClaw 业务前端
+
+> 适用范围：`coclaw/ui` 及其子目录。
+> 本文件仅包含“相对 CoClaw 根 AGENTS.md 的增量规则”。
+
+严格遵循移动端优先的设计思路。
+
+## 技术栈
+
+- 构建工具: Vite
+- 核心框架: Vue 3
+- UI 组件库: Nuxt UI 4，但不使用 Nuxt 框架
+- 当需要对 Nuxt UI 组件进行样式定制时，遵循 “由全局到局部” 的优先级策略
+- 样式工具: Tailwind，当 Tailwind 无法表达时，优先以 inline style 进行微调，确有复杂样式需求时才编写 SCSS
+- 状态管理: Pinia
+- 路由管理: Vue Router
+- 单元/组件测试: Vitest + Vue Test Utils
+- 端到端(E2E)测试: Playwright
+- 逻辑语言: 采用 JavaScript + jsdoc，不使用 TypeScript。
+- 样式语言: SCSS（仅作为补充）。
+- 包管理: pnpm（环境已启用 pnpm）
+
+## 编程规范
+
+- 组件风格：采用 Options API 风格，而非 Composition API 风格，不得使用 `<script setup>` 语法糖
+- 允许在 `setup()` 钩子中调用 `UseVue` 等组合式函数
+- 对于适合以函数式方式触发的对话框（如全局入口、跨组件打开），优先采用函数式打开（例如基于 `useOverlay`），避免仅用路由跳转或页面内状态耦合实现
+
+## 操作反馈（Notify）
+
+- 操作反馈统一使用全局 `useNotify()` composable（基于 Nuxt UI `useToast`），除非特别场景，禁止在页面内用 inline 文本显示操作状态
+- 若用户可通过界面变化直接感知操作结果（如切换主题/语言），则不必 notify
+- 错误操作始终需要 notify
+
+## 端到端测试 (E2E Testing)
+
+- 当用户明确要求时才执行 E2E 测试
+- 后端测试账号（本地认证）：loginName=test；password=123456
+- 在 `ui` workspace 内执行 Playwright E2E 时，`webServer.command` 的前端启动命令应使用 `pnpm dev ...`，不要写 `pnpm --filter @coclaw/ui dev ...`，避免 webServer 启动异常或挂起
+- `Vitest` 配置必须排除 `e2e/**`（例如 `test.exclude`），避免 `pnpm test` / `pnpm coverage` 误扫 Playwright 用例导致流程异常等待
+
+## 移动端子页面适配
+
+- 非底部导航直达的子页面（如 AddBotPage、AboutPage、ChatPage），统一使用 `MobilePageHeader` 组件提供移动端 header（含返回按钮）
+- `MobilePageHeader` 仅移动端可见（`md:hidden`），桌面端各页面自行处理标题展示
+- 路由 meta 约定：
+  - `isTopPage: true`：底部导航直达页（topics、bots、user），不显示返回按钮
+  - `hideMobileNav: true`：子页面（chat、bots-add、about），隐藏底部导航
+- 新建子页面时：引入 `MobilePageHeader`，设置路由 `hideMobileNav: true`，桌面端标题用 `hidden md:flex`
+
+## 参考项目
+
+本前端充分参考借鉴一个旧项目（chat），尤其是 layout，及可对照的各组件的组织和交互方式上。实际上这两个项目高度相似，chat 项目是与系统预置或用户自己创建的的机器人对话，而这个项目是与 OpenClaw bot 对话。
+
+chat 项目信息源
+- chat 项目代码组织在仓库根下的 `ref-projects/chat`，需要时也阅读其代码
+- 此 workspace 的 docs 下也存储了几个文档，如：`layout-reference.md`、`ui-refs-from-quasar-project.md`
+- 需要时还可以爬取 chat 项目（如用 playwright 爬取）。app 入口地址为 `https://127.0.0.1:8443/`。其 SSL 证书是自签名；用户名：test；密码：123456

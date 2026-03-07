@@ -1,0 +1,225 @@
+import crypto from 'node:crypto';
+import { createId } from '@paralleldrive/cuid2';
+
+import {
+	createBot,
+	deleteBot,
+	findBotById,
+	findBotByTokenHash,
+} from '../repos/bot.repo.js';
+import {
+	createBindingCode,
+	deleteBindingCode,
+	findBindingCode,
+	updateBindingCode,
+} from '../repos/bot-binding-code.repo.js';
+import { genBotId } from './id.svc.js';
+
+const BINDING_CODE_EXPIRE_MS = 5 * 60 * 1000;
+
+function isNonEmptyString(value) {
+	return typeof value === 'string' && value.trim() !== '';
+}
+
+function genBindingCode() {
+	return String(Math.floor(Math.random() * 100000000)).padStart(8, '0');
+}
+
+function genAccessToken() {
+	return createId();
+}
+
+function getTokenHash(token) {
+	return crypto
+		.createHash('sha256')
+		.update(token, 'utf8')
+		.digest();
+}
+
+export async function createBindingCodeForUser(input, deps = {}) {
+	const {
+		createCode = createBindingCode,
+		findCode = findBindingCode,
+		updateCode = updateBindingCode,
+		now = () => new Date(),
+	} = deps;
+	const { userId } = input;
+
+	if (typeof userId !== 'bigint') {
+		throw new Error('userId is required');
+	}
+
+	for (let i = 0; i < 3; i += 1) {
+		const code = genBindingCode();
+		const current = now();
+		const expiresAt = new Date(current.getTime() + BINDING_CODE_EXPIRE_MS);
+
+		try {
+			await createCode({
+				code,
+				userId,
+				expiresAt,
+			});
+			return {
+				ok: true,
+				code,
+				expiresAt,
+			};
+		}
+		catch (err) {
+			if (err?.code !== 'P2002') {
+				throw err;
+			}
+
+			const existed = await findCode(code);
+			if (!existed) {
+				continue;
+			}
+
+			if (existed.expiresAt.getTime() > current.getTime()) {
+				continue;
+			}
+
+			await updateCode(code, {
+				userId,
+				expiresAt,
+				createdAt: current,
+			});
+			return {
+				ok: true,
+				code,
+				expiresAt,
+			};
+		}
+	}
+
+	return {
+		ok: false,
+		code: 'BINDING_CODE_EXHAUSTED',
+		message: 'Failed to generate binding code',
+	};
+}
+
+export async function bindBot(input, deps = {}) {
+	const {
+		findCode = findBindingCode,
+		deleteCode = deleteBindingCode,
+		createBotImpl = createBot,
+		genId = genBotId,
+		now = () => new Date(),
+	} = deps;
+	const { code, name } = input;
+
+	if (!isNonEmptyString(code)) {
+		return {
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'code is required',
+		};
+	}
+
+	const bindingCode = await findCode(code.trim());
+	if (!bindingCode) {
+		return {
+			ok: false,
+			code: 'BINDING_CODE_INVALID',
+			message: 'Binding code is invalid',
+		};
+	}
+
+	if (bindingCode.expiresAt.getTime() <= now().getTime()) {
+		await deleteCode(bindingCode.code).catch(() => {});
+		return {
+			ok: false,
+			code: 'BINDING_CODE_EXPIRED',
+			message: 'Binding code is expired',
+		};
+	}
+
+	const token = genAccessToken();
+	const tokenHash = getTokenHash(token);
+	const botName = isNonEmptyString(name) ? name.trim() : null;
+
+	const created = await createBotImpl({
+		id: genId(),
+		userId: bindingCode.userId,
+		name: botName,
+		tokenHash,
+	});
+	await deleteCode(bindingCode.code).catch(() => {});
+
+	return {
+		ok: true,
+		botId: created.id,
+		userId: bindingCode.userId,
+		botName,
+		token,
+		rebound: false,
+		bindingCode: bindingCode.code,
+	};
+}
+
+export async function unbindBotByUser(input, deps = {}) {
+	const {
+		findById = findBotById,
+		deleteBotImpl = deleteBot,
+	} = deps;
+	const { userId, botId } = input;
+
+	if (typeof userId !== 'bigint' || typeof botId !== 'bigint') {
+		return {
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'userId and botId are required',
+		};
+	}
+
+	const targetBot = await findById(botId);
+	if (!targetBot || targetBot.userId !== userId) {
+		return {
+			ok: false,
+			code: 'BOT_NOT_FOUND',
+			message: 'Bot not found',
+		};
+	}
+	await deleteBotImpl(targetBot.id);
+
+	return {
+		ok: true,
+		botId: targetBot.id,
+	};
+}
+
+export async function unbindBotByToken(input, deps = {}) {
+	const {
+		findByTokenHash = findBotByTokenHash,
+		deleteBotImpl = deleteBot,
+	} = deps;
+	const { token } = input;
+
+	if (!isNonEmptyString(token)) {
+		return {
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'token is required',
+		};
+	}
+
+	const tokenHash = getTokenHash(token);
+	const targetBot = await findByTokenHash(tokenHash);
+
+	if (!targetBot) {
+		return {
+			ok: false,
+			code: 'UNAUTHORIZED',
+			message: 'Invalid token',
+		};
+	}
+	await deleteBotImpl(targetBot.id);
+
+	return {
+		ok: true,
+		botId: targetBot.id,
+		userId: targetBot.userId,
+	};
+}

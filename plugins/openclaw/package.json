@@ -1,0 +1,70 @@
+{
+  "name": "@coclaw/openclaw-coclaw",
+  "version": "0.1.1",
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "OpenClaw CoClaw channel plugin for remote chat",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coclaw/coclaw.git",
+    "directory": "plugins/openclaw"
+  },
+  "homepage": "https://coclaw.net",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "coclaw",
+    "channel",
+    "chatbot",
+    "bridge",
+    "webchat"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "files": [
+    "index.js",
+    "src/**/*.js",
+    "!src/**/*.test.js",
+    "!src/mock-server.helper.js",
+    "openclaw.plugin.json",
+    "LICENSE"
+  ],
+  "main": "index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "bin": {
+    "coclaw": "src/cli.js"
+  },
+  "scripts": {
+    "dev": "node src/cli.js --help",
+    "build": "echo \"TODO: build coclaw openclaw plugin\"",
+    "lint": "eslint \"**/*.{js,mjs,cjs}\" --no-error-on-unmatched-pattern",
+    "typecheck": "echo \"No typecheck configured yet (coclaw openclaw plugin)\"",
+    "check": "pnpm lint && pnpm typecheck",
+    "test:standalone": "node --test src/standalone-mode.test.js",
+    "test:plugin": "node --test src/plugin-mode.test.js",
+    "test": "node --test",
+    "coverage": "c8 --check-coverage --lines 100 --functions 100 --branches 100 --statements 100 --reporter=text --reporter=lcov node --test",
+    "verify": "pnpm check && pnpm test:standalone && pnpm test:plugin && pnpm test && pnpm coverage",
+    "pub:verify": "pnpm verify",
+    "pub:check": "npm whoami --registry=https://registry.npmjs.org/ && npm ping --registry=https://registry.npmjs.org/ && npm publish --dry-run --access public --registry=https://registry.npmjs.org/",
+    "pub:versions": "npm view @coclaw/openclaw-coclaw versions --json --registry=https://registry.npmjs.org/ && npm view @coclaw/openclaw-coclaw versions --json",
+    "pub:release": "bash ./scripts/publish-npm.sh",
+    "plugin:dev:link": "bash ./scripts/dev-link-install.sh",
+    "plugin:dev:unlink": "bash ./scripts/dev-link-uninstall.sh",
+    "plugin:npm:install": "bash ./scripts/npm-install.sh",
+    "plugin:npm:uninstall": "bash ./scripts/npm-uninstall.sh"
+  },
+  "devDependencies": {
+    "c8": "^10.1.3",
+    "eslint": "^9.39.2"
+  }
+}

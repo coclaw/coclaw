@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+
+# Test & coverage
+coverage/
+test-results/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+!*.env.example
+!.env.*.example
+.npmrc
+.coclaw-tunnel.json
+
+# Logs & temp
+*.log
+tmp/
+
+# Package artifacts
+*.tgz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE & editors
+.vscode/
+.idea/
+
+# AI tool configs — keep skills, ignore personal settings
+# .claude is a symlink to .agents, git won't traverse into it
+**/.agents/settings.json
+**/.agents/settings.local.json
+# .codex — keep (contains MCP configs)
+
+# Local symlinks (developer-specific)
+openclaw-repo
+ref-prejects
+
+# Deploy (deferred to next release)
+deploy/
+
+# admin UI
+/admin/
+
+# Local infra dev env
+infra/docker/.env.mysql.dev
+
+# Prisma generated output (rebuild via `prisma generate`)
+server/src/generated/

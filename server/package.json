@@ -1,0 +1,52 @@
+{
+  "name": "@coclaw/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CoClaw backend service",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "cross-env NODE_ENV=development nodemon --watch src --ext js,mjs,cjs src/index.js",
+    "start": "cross-env NODE_ENV=production node src/index.js",
+    "build": "echo \"TODO: build server\"",
+    "lint": "eslint \"**/*.{js,mjs,cjs}\" --ignore-pattern \"src/generated/**\" --no-error-on-unmatched-pattern",
+    "typecheck": "echo \"No typecheck configured yet (server)\"",
+    "check": "pnpm lint && pnpm typecheck",
+    "prisma:format": "prisma format",
+    "prisma:validate": "prisma validate",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "node scripts/prisma-migrate-dev.js",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "account:create-test-local": "node scripts/create-test-local-account.js",
+    "test": "node --test",
+    "coverage": "c8 --check-coverage --lines 70 --functions 70 --branches 60 --statements 70 --reporter=text --reporter=lcov node --test",
+    "verify": "pnpm check && pnpm test && pnpm coverage"
+  },
+  "dependencies": {
+    "@paralleldrive/cuid2": "^2.3.0",
+    "@prisma/client": "^6.19.0",
+    "axios": "^1.13.5",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "helmet": "^8.1.0",
+    "morgan": "^1.10.1",
+    "passport": "^0.7.0",
+    "passport-local": "^1.0.0",
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "c8": "^10.1.3",
+    "cross-env": "^10.1.0",
+    "eslint": "^9.39.2",
+    "nodemon": "^3.1.11",
+    "prisma": "^6.19.0",
+    "supertest": "^7.2.2"
+  }
+}

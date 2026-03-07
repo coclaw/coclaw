@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+  output = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+  url = env("DB_URL")
+  shadowDatabaseUrl = env("SHADOW_DB_URL")
+}
+
+// --- 各表内部的排版要纵向对其，便于开发者阅读。在修改本文件时不要调整原有的排版对齐布局 ---
+
+model User {
+  id								BigInt @id @db.UnsignedBigInt // Snowflake ID，内外统一的单 id
+
+  name							String? @db.VarChar(128) // 昵称
+  avatar						String? @db.Text // 在我们系统中设置的头像 URI
+  // email					String? @db.VarChar(128) // 仅作为联系方式，不作为登录 ID
+
+  level							Int @default(0) @db.TinyInt // 作为 role 使用：0：普通用户；1：VIP；100：SVIP；-100: admin；-1：开发者
+
+  locked						Boolean @default(false)
+  lockReason				String? @db.Text
+
+  createdAt					DateTime  @default(now())
+  updatedAt					DateTime  @default(now()) @updatedAt
+  lastLoginAt				DateTime?
+
+  localAuth					LocalAuth?
+  externalAuths			ExternalAuth[]
+	userSetting				UserSetting?
+	bots							Bot[]
+
+  @@index([createdAt])
+}
+
+// 本地认证表，每个记录包括多种登录标识
+model LocalAuth {
+  userId							BigInt @id @db.UnsignedBigInt // User:LocalAuth 为 1:1
+  user								User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // 多种本地标识（可选，但一旦填写就要求唯一）
+  loginName						String? @db.VarChar(63)
+  email								String? @db.VarChar(128)
+  phone								String? @db.VarChar(32)
+  workId							String? @db.VarChar(63)
+
+  // 一套本地密码
+  passwordHash				String? @db.VarChar(255) // 用 scrypt 算法生成的 hash string
+  passwordUpdatedAt		DateTime?
+  mustChangePassword	Boolean @default(false)
+
+  // 本地账号级别的锁定状态（可选）
+  locked							Boolean @default(false)
+  lockReason					String? @db.Text
+
+  lastLoginAt					DateTime?
+  createdAt						DateTime @default(now())
+  updatedAt						DateTime @default(now()) @updatedAt
+
+  // 每种标识单独唯一（非 NULL 时强制全局唯一）
+  @@unique([loginName])
+  @@unique([email])
+  @@unique([phone])
+  @@unique([workId])
+}
+
+// 第三方认证表，支持 OAuth，也支持 JWT。JWT 可视为 OAuth
+model ExternalAuth {
+  id						Int @id @default(autoincrement()) @db.UnsignedInt
+
+  userId				BigInt @db.UnsignedBigInt // User.id
+  user					User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  oauthType			String  @db.VarChar(16) // 登录使用的社交账号类型：wechat/qq/weibo 等
+  oauthName			String  @db.VarChar(128) // 在社交账号中的昵称
+  oauthId				String  @db.VarChar(128) // 在社交账号中的ID. 对于wechat等支持unionId的系统，此id存储unionId，否则此id设置为app级的用户Id. 我们只使用该ID即可
+  oauthAppId		String? @db.VarChar(63) // 对于wechat等支持unionId的系统，此id存储app级的用户Id，否则此id置null。暂未实际使用
+  oauthAvatar		String? @db.Text // 用户在社交账号中的头像URL
+  wxAppId				String? @db.VarChar(63) // 特别处理: 对于来自于wxapp的登录，因其实际通过公众号登录, 此id存储wxapp-openid, 用于支付
+
+  locked				Boolean @default(false)
+  lockReason		String? @db.Text
+
+  createdAt			DateTime  @default(now())
+  lastLoginAt		DateTime?
+
+  @@unique([oauthType, oauthId])
+  @@index([createdAt])
+}
+
+// 用户设置（1:1）
+// 约束：对 Json 字段的更新须使用数据库原生 JSON patch 能力做字段级修改/删除/新增，禁止在应用层读取后合并并整体回写，以避免并发覆盖与无效写放大
+model UserSetting {
+  userId				BigInt @id @db.UnsignedBigInt
+	user User			@relation(fields: [userId], references: [id], onDelete: Cascade)
+
+	theme					String? @db.VarChar(32) // UI 主题：light|dark|auto（跟随系统）。未设置时按 auto 处理
+	lang					String? @db.VarChar(10) // BCP-47 语言标识。未设置时跟随系统
+
+	// 约束：仅在不便进行 DB 迁移时临时承载设置项；设置页中的稳定配置应优先定义为该表的独立字段
+	perfs					Json @default("{}") // 临时 KV 配置项
+
+	uiState				Json @default("{}") // 前端静默记录的 UI/App 状态与最近选择（可丢失，不影响核心功能）
+	hintCounts		Json @default("{}") // 各提示项已提示次数的 KV 计数（由前端定义 key）
+
+	updatedAt			DateTime @default(now()) @updatedAt
+}
+
+// 入网的所有 Bot
+model Bot {
+	id						BigInt @id @db.UnsignedBigInt // Snowflake ID
+
+	userId				BigInt @db.UnsignedBigInt // User.id
+	user 					User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+	name					String? @db.VarChar(128) // bot 昵称（可为空）
+	// status			String @default("active") @db.VarChar(16) // active, inactive, blocked（历史字段，暂注释保留语义）
+
+	// 认证字段：目前只用 tokenHash，将来支持密钥对时，再启用 publicKey 字段，并调整 tokenHash 为可选字段
+	tokenHash			Bytes @unique @db.Binary(32) // access token 的 sha256 原始摘要（32 字节）
+	// 将来需要支持密钥对认证时使用
+	// publicKey	String @db.Text // Ed25519 public key (base64url)
+
+	lastSeenAt		DateTime?
+	createdAt			DateTime @default(now())
+	updatedAt			DateTime @default(now()) @updatedAt
+
+	@@index([createdAt])
+}
+
+// 绑定 bot => user 的 code，用完即焚的临时记录，实际也可以只再内存中记录
+model BotBindingCode {
+  code					String @id @db.VarChar(16) // 目前位8位十进制数字的绑定码
+	userId				BigInt @db.UnsignedBigInt // User.id，但这里不作为外键
+
+  createdAt			DateTime @default(now())
+  expiresAt			DateTime
+
+	@@index([userId])
+	@@index([expiresAt])
+}
+
+// express-session 持久化存储
+model ExpressSession {
+	id					Int			@id @default(autoincrement()) @db.UnsignedInt
+	sid					String	@unique @db.VarChar(128)
+	data				String	@db.MediumText
+	expiresAt		DateTime
+
+	@@index([expiresAt])
+}

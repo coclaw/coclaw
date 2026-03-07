@@ -1,0 +1,55 @@
+/*
+ * CoClaw 品牌/状态色阶 — 由 scripts/gen-color-palette.mjs 生成，勿手动编辑
+ * 基准色: primary=#1976d2 success=#198754 error=#961827 warning=#f2c037
+ * 重新生成: pnpm gen:palette
+ * Nuxt UI 映射: primary -> cc-primary, success -> cc-success, ...
+ */
+@theme static {
+	--color-cc-primary-50: oklch(0.970 0.014 253.271);
+	--color-cc-primary-100: oklch(0.930 0.034 253.271);
+	--color-cc-primary-200: oklch(0.870 0.065 253.271);
+	--color-cc-primary-300: oklch(0.790 0.109 253.271);
+	--color-cc-primary-400: oklch(0.700 0.140 253.271);
+	--color-cc-primary-500: oklch(0.600 0.159 253.271);
+	--color-cc-primary-600: oklch(0.500 0.155 253.271);
+	--color-cc-primary-700: oklch(0.420 0.131 253.271);
+	--color-cc-primary-800: oklch(0.340 0.106 253.271);
+	--color-cc-primary-900: oklch(0.270 0.084 253.271);
+	--color-cc-primary-950: oklch(0.200 0.062 253.271);
+
+	--color-cc-success-50: oklch(0.970 0.015 157.012);
+	--color-cc-success-100: oklch(0.930 0.032 157.012);
+	--color-cc-success-200: oklch(0.870 0.056 157.012);
+	--color-cc-success-300: oklch(0.790 0.083 157.012);
+	--color-cc-success-400: oklch(0.700 0.105 157.012);
+	--color-cc-success-500: oklch(0.600 0.120 157.012);
+	--color-cc-success-600: oklch(0.500 0.119 157.012);
+	--color-cc-success-700: oklch(0.420 0.100 157.012);
+	--color-cc-success-800: oklch(0.340 0.081 157.012);
+	--color-cc-success-900: oklch(0.270 0.064 157.012);
+	--color-cc-success-950: oklch(0.200 0.048 157.012);
+
+	--color-cc-error-50: oklch(0.970 0.015 21.590);
+	--color-cc-error-100: oklch(0.930 0.035 21.590);
+	--color-cc-error-200: oklch(0.870 0.069 21.590);
+	--color-cc-error-300: oklch(0.790 0.107 21.590);
+	--color-cc-error-400: oklch(0.700 0.136 21.590);
+	--color-cc-error-500: oklch(0.600 0.155 21.590);
+	--color-cc-error-600: oklch(0.500 0.162 21.590);
+	--color-cc-error-700: oklch(0.420 0.158 21.590);
+	--color-cc-error-800: oklch(0.340 0.137 21.590);
+	--color-cc-error-900: oklch(0.270 0.109 21.590);
+	--color-cc-error-950: oklch(0.200 0.081 21.590);
+
+	--color-cc-warning-50: oklch(0.970 0.032 87.335);
+	--color-cc-warning-100: oklch(0.930 0.071 87.335);
+	--color-cc-warning-200: oklch(0.870 0.124 87.335);
+	--color-cc-warning-300: oklch(0.790 0.162 87.335);
+	--color-cc-warning-400: oklch(0.700 0.143 87.335);
+	--color-cc-warning-500: oklch(0.600 0.123 87.335);
+	--color-cc-warning-600: oklch(0.500 0.102 87.335);
+	--color-cc-warning-700: oklch(0.420 0.086 87.335);
+	--color-cc-warning-800: oklch(0.340 0.070 87.335);
+	--color-cc-warning-900: oklch(0.270 0.055 87.335);
+	--color-cc-warning-950: oklch(0.200 0.041 87.335);
+}
