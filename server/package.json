@@ -5,6 +5,11 @@
   "description": "CoClaw backend service",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coclaw/coclaw.git",
+    "directory": "server"
+  },
   "engines": {
     "node": ">=20.0.0"
   },

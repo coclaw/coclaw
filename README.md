@@ -1,5 +1,7 @@
 # CoClaw
 
+[![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
+
 **CoClaw** enables users to interact with their [OpenClaw](https://github.com/openclaw/openclaw) through the CoClaw platform, even when the two sides are network-isolated.
 
 Functionally similar to OpenClaw WebChat, CoClaw extends the experience with additional platform-level and product-level capabilities.

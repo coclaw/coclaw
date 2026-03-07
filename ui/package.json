@@ -5,6 +5,11 @@
   "description": "CoClaw frontend application",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coclaw/coclaw.git",
+    "directory": "ui"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
