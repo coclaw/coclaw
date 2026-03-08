@@ -184,10 +184,28 @@ export function createSessionManager(options = {}) {
 			}
 		}
 
+		// 补充 sessions.json 中有索引但无 transcript 文件的 session（如 reset 后未对话、新建 session）
+		for (const [sessionKey, entry] of Object.entries(index)) {
+			const sid = entry?.sessionId;
+			if (!sid || grouped.has(sid)) continue;
+			grouped.set(sid, {
+				sessionId: sid,
+				sessionKey,
+				indexed: true,
+				archiveType: 'live',
+				fileName: null,
+				updatedAt: entry.updatedAt ?? 0,
+				size: 0,
+			});
+		}
+
 		const rows = Array.from(grouped.values());
 		rows.sort((a, b) => b.updatedAt - a.updatedAt);
 
 		const items = rows.slice(cursor, cursor + limit).map((row) => {
+			if (!row.fileName) {
+				return { ...row };
+			}
 			const transcriptPath = nodePath.join(dir, row.fileName);
 			const derivedTitle = deriveTitle(transcriptPath, logger);
 			if (!derivedTitle) {
@@ -246,7 +264,9 @@ export function createSessionManager(options = {}) {
 		const limit = clamp(params.limit, 1, 500, 100);
 		const cursor = clamp(params.cursor, 0, Number.MAX_SAFE_INTEGER, 0);
 		const file = resolveTranscriptFile(agentId, sessionId);
-		if (!file) throw new Error(`session transcript not found: ${sessionId}`);
+		if (!file) {
+			return { agentId, sessionId, total: 0, cursor: String(cursor), nextCursor: null, messages: [] };
+		}
 
 		const all = [];
 		for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)) {

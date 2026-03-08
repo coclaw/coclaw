@@ -162,7 +162,10 @@ test('get should prioritize reset transcript and guard missing session', async (
 	assert.equal(warns.length > 0, true);
 
 	assert.throws(() => manager.get({}), /sessionId required/);
-	assert.throws(() => manager.get({ sessionId: 'missing' }), /not found/);
+	const missing = manager.get({ sessionId: 'missing' });
+	assert.equal(missing.total, 0);
+	assert.equal(missing.messages.length, 0);
+	assert.equal(missing.sessionId, 'missing');
 });
 
 test('listAll/get should normalize bad inputs and missing dirs', async () => {
@@ -186,6 +189,42 @@ test('listAll/get should normalize bad inputs and missing dirs', async () => {
 	const get1 = manager.get({ agentId: 'a1', sessionId: 's1', limit: 0, cursor: 9999 });
 	assert.equal(get1.messages.length, 0);
 	assert.equal(get1.nextCursor, null);
+});
+
+test('listAll should include indexed sessions without transcript files', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	// s1 有 transcript 文件且被索引
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 's1.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"hello"}}\n',
+		'utf8',
+	);
+	// s2 仅在 sessions.json 中，无 transcript 文件（如 reset 后未对话）
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({
+			'agent:main:main': { sessionId: 's2', updatedAt: Date.now() },
+			key1: { sessionId: 's1' },
+		}),
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.listAll({});
+
+	assert.equal(res.total, 2);
+	const s1 = res.items.find((it) => it.sessionId === 's1');
+	const s2 = res.items.find((it) => it.sessionId === 's2');
+	assert.ok(s1, 's1 should be in list');
+	assert.equal(s1.indexed, true);
+	assert.ok(s2, 's2 (no transcript) should be in list');
+	assert.equal(s2.indexed, true);
+	assert.equal(s2.sessionKey, 'agent:main:main');
+	assert.equal(s2.fileName, null);
+	assert.equal(s2.size, 0);
 });
 
 test('get should handle CRLF line endings in JSONL files', async () => {

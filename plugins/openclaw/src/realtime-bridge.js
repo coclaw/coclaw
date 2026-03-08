@@ -152,7 +152,6 @@ async function gatewayRpc(method, params = {}, options = {}) {
 	});
 }
 
-// eslint-disable-next-line no-unused-vars -- 功能暂时禁用，保留函数体供后续修复参考
 async function ensureMainSessionKey() {
 	if (mainSessionEnsured) {
 		return { ok: true, state: 'ready' };
@@ -162,25 +161,25 @@ async function ensureMainSessionKey() {
 	}
 	mainSessionEnsurePromise = (async () => {
 		const key = 'agent:main:main';
+		// sessions.resolve 仅返回 { ok, key }，不含 entry
 		const resolved = await gatewayRpc('sessions.resolve', { key }, { timeoutMs: 2000 });
-		const resolvedSessionId = resolved?.response?.result?.entry?.sessionId;
-		if (resolved?.ok === true && typeof resolvedSessionId === 'string' && resolvedSessionId.trim()) {
+		if (resolved?.ok === true) {
 			mainSessionEnsured = true;
-			logBridgeDebug(`main session key ensure: ready key=${key} sessionId=${resolvedSessionId}`);
-			return { ok: true, state: 'ready', sessionId: resolvedSessionId };
+			logBridgeDebug(`main session key ensure: ready key=${key}`);
+			return { ok: true, state: 'ready' };
 		}
+		// 仅当网关真实响应 "不存在" 时才创建；超时/网关未就绪等瞬态错误不触发 reset
+		if (!resolved?.response) {
+			return { ok: false, error: resolved?.error ?? 'resolve_transient_failure' };
+		}
+		// session key 不存在，通过 sessions.reset 创建
 		const reset = await gatewayRpc('sessions.reset', { key, reason: 'new' }, { timeoutMs: 2500 });
 		if (reset?.ok !== true) {
 			return { ok: false, error: reset?.error ?? 'sessions_reset_failed' };
 		}
-		const verify = await gatewayRpc('sessions.resolve', { key }, { timeoutMs: 2000 });
-		const verifySessionId = verify?.response?.result?.entry?.sessionId;
-		if (verify?.ok === true && typeof verifySessionId === 'string' && verifySessionId.trim()) {
-			mainSessionEnsured = true;
-			logBridgeDebug(`main session key ensure: created key=${key} sessionId=${verifySessionId}`);
-			return { ok: true, state: 'created', sessionId: verifySessionId };
-		}
-		return { ok: false, error: verify?.error ?? 'sessions_resolve_after_reset_failed' };
+		mainSessionEnsured = true;
+		logBridgeDebug(`main session key ensure: created key=${key}`);
+		return { ok: true, state: 'created' };
 	})();
 	try {
 		const result = await mainSessionEnsurePromise;
@@ -259,9 +258,7 @@ function ensureGatewayConnection() {
 				gatewayReady = true;
 				logBridgeDebug(`gateway connect ok <- id=${payload.id}`);
 				gatewayConnectReqId = null;
-				// [DISABLED] ensureMainSessionKey 存在 bug，每次重连都会误触 sessions.reset
-				// 导致对话被频繁重置。详见 docs/ensure-main-session-bug-analysis.md
-				// void ensureMainSessionKey();
+				void ensureMainSessionKey();
 			}
 			else {
 				gatewayReady = false;
@@ -528,6 +525,8 @@ export async function refreshRealtimeBridge() {
 
 export async function stopRealtimeBridge() {
 	started = false;
+	mainSessionEnsured = false;
+	mainSessionEnsurePromise = null;
 	clearConnectTimer();
 	if (reconnectTimer) {
 		clearTimeout(reconnectTimer);

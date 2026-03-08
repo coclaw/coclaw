@@ -136,6 +136,15 @@ test('realtime-bridge should handle rpc/unbound/close/send-fail branches', async
 		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
 
+		// 等待 ensureMainSessionKey 发出 sessions.resolve 请求并响应
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
+		if (resolveReqRaw) {
+			const resolveReqMsg = JSON.parse(String(resolveReqRaw));
+			gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReqMsg.id, ok: true, payload: { ok: true, key: 'agent:main:main' } }) });
+			for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+		}
+
 		// rpc.req happy path
 		server.emit('message', { data: JSON.stringify({ type: 'rpc.req', id: '1', method: 'm1', params: { a: 1 } }) });
 		await new Promise((r) => setTimeout(r, 0));
@@ -260,6 +269,167 @@ test('realtime-bridge should schedule reconnect on server error', async () => {
 	}
 });
 
-// [DISABLED] ensureMainSessionKey 功能已禁用，对应测试一并跳过
-// 详见 docs/ensure-main-session-bug-analysis.md
-// test('realtime-bridge should ensure main session key after gateway connect', ...);
+test('realtime-bridge should ensure main session key after gateway connect', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const oldWs = globalThis.WebSocket;
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	globalThis.WebSocket = FakeWebSocket;
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
+
+	try {
+		await startRealtimeBridge({ logger, pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		// 等待 ensureMainSessionKey 发出 sessions.resolve 请求（需多轮微任务刷新）
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
+		assert.ok(resolveReqRaw, 'should send sessions.resolve after gateway connect');
+		const resolveReq = JSON.parse(String(resolveReqRaw));
+		assert.equal(resolveReq.method, 'sessions.resolve');
+		assert.equal(resolveReq.params.key, 'agent:main:main');
+
+		// 模拟 session 已存在
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReq.id, ok: true, payload: { ok: true, key: 'agent:main:main' } }) });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		assert.ok(logs.some((x) => String(x).includes('main session key ensure: ready')), 'should log ready');
+	}
+	finally {
+		await stopRealtimeBridge();
+		globalThis.WebSocket = oldWs;
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('realtime-bridge ensureMainSessionKey should create session when not found', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const oldWs = globalThis.WebSocket;
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	globalThis.WebSocket = FakeWebSocket;
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
+
+	try {
+		await startRealtimeBridge({ logger, pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		// 等待 sessions.resolve 请求（需多轮微任务刷新）
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
+		assert.ok(resolveReqRaw, 'should send sessions.resolve');
+		const resolveReq = JSON.parse(String(resolveReqRaw));
+
+		// 模拟 session 不存在
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resolveReq.id, ok: false, error: { message: 'not found' } }) });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+
+		// 应发出 sessions.reset 请求
+		const resetReqRaw = gateway.sent.find((s) => String(s).includes('sessions.reset'));
+		assert.ok(resetReqRaw, 'should send sessions.reset when session not found');
+		const resetReq = JSON.parse(String(resetReqRaw));
+		assert.equal(resetReq.method, 'sessions.reset');
+		assert.equal(resetReq.params.key, 'agent:main:main');
+		assert.equal(resetReq.params.reason, 'new');
+
+		// 模拟 reset 成功
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: resetReq.id, ok: true, payload: { ok: true, key: 'agent:main:main', entry: { sessionId: 'new-uuid' } } }) });
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		assert.ok(logs.some((x) => String(x).includes('main session key ensure: created')), 'should log created');
+	}
+	finally {
+		await stopRealtimeBridge();
+		globalThis.WebSocket = oldWs;
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('realtime-bridge ensureMainSessionKey should NOT reset on resolve timeout', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const oldWs = globalThis.WebSocket;
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	globalThis.WebSocket = FakeWebSocket;
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
+
+	try {
+		await startRealtimeBridge({ logger, pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		// 等待 sessions.resolve 请求
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		const resolveReqRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve'));
+		assert.ok(resolveReqRaw, 'should send sessions.resolve');
+
+		// 不响应 sessions.resolve，等待超时（gatewayRpc timeoutMs=2000）
+		await new Promise((r) => setTimeout(r, 2200));
+
+		// 超时后不应发出 sessions.reset
+		const resetReqRaw = gateway.sent.find((s) => String(s).includes('sessions.reset'));
+		assert.equal(resetReqRaw, undefined, 'should NOT send sessions.reset on timeout');
+
+		// 应有失败日志
+		assert.ok(logs.some((x) => String(x).includes('ensure main session key failed')), 'should log failure');
+	}
+	finally {
+		await stopRealtimeBridge();
+		globalThis.WebSocket = oldWs;
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});

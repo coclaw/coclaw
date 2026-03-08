@@ -596,9 +596,8 @@ export default {
 			this.resetting = true;
 			try {
 				const rpc = await this.ensureRpcClient();
-				await rpc.request('sessions.reset', { key: 'agent:main:main', reason: 'new' });
-				const resolved = await rpc.request('sessions.resolve', { key: 'agent:main:main' });
-				const newSessionId = resolved?.result?.entry?.sessionId;
+				const resetResult = await rpc.request('sessions.reset', { key: 'agent:main:main', reason: 'new' });
+				const newSessionId = resetResult?.entry?.sessionId;
 				if (!newSessionId) {
 					throw new Error('Failed to resolve new session');
 				}

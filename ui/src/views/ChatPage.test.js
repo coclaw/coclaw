@@ -1129,7 +1129,7 @@ describe('ChatPage 新建对话', () => {
 		expect(wrapper.vm.isMainSession).toBe(false);
 	});
 
-	test('onNewChat 调用 sessions.reset + sessions.resolve 并导航到新 sessionId', async () => {
+	test('onNewChat 调用 sessions.reset 并从其响应获取 sessionId 后导航', async () => {
 		mockRpc.request.mockImplementation((method) => {
 			if (method === 'nativeui.sessions.listAll') {
 				return Promise.resolve({ items: [{ sessionId: 'main-sess', sessionKey: 'agent:main:main', indexed: true }] });
@@ -1138,10 +1138,7 @@ describe('ChatPage 新建对话', () => {
 				return Promise.resolve({ messages: [] });
 			}
 			if (method === 'sessions.reset') {
-				return Promise.resolve({ ok: true });
-			}
-			if (method === 'sessions.resolve') {
-				return Promise.resolve({ result: { entry: { sessionId: 'new-sess-123' } } });
+				return Promise.resolve({ ok: true, entry: { sessionId: 'new-sess-123' } });
 			}
 			return Promise.resolve({});
 		});
@@ -1157,10 +1154,9 @@ describe('ChatPage 新建对话', () => {
 		expect(resetCall).toBeTruthy();
 		expect(resetCall[1]).toEqual({ key: 'agent:main:main', reason: 'new' });
 
-		// 验证 sessions.resolve 调用
+		// 不再调用 sessions.resolve
 		const resolveCall = mockRpc.request.mock.calls.find((c) => c[0] === 'sessions.resolve');
-		expect(resolveCall).toBeTruthy();
-		expect(resolveCall[1]).toEqual({ key: 'agent:main:main' });
+		expect(resolveCall).toBeFalsy();
 
 		// 验证刷新 sessions store
 		expect(mockLoadAllSessions).toHaveBeenCalled();
@@ -1197,7 +1193,7 @@ describe('ChatPage 新建对话', () => {
 		expect(mockRouter.push).not.toHaveBeenCalled();
 	});
 
-	test('sessions.resolve 返回无 sessionId 时 notify.error', async () => {
+	test('sessions.reset 返回无 entry.sessionId 时 notify.error', async () => {
 		mockRpc.request.mockImplementation((method) => {
 			if (method === 'nativeui.sessions.listAll') {
 				return Promise.resolve({ items: [{ sessionId: 'main-sess', sessionKey: 'agent:main:main', indexed: true }] });
@@ -1207,9 +1203,6 @@ describe('ChatPage 新建对话', () => {
 			}
 			if (method === 'sessions.reset') {
 				return Promise.resolve({ ok: true });
-			}
-			if (method === 'sessions.resolve') {
-				return Promise.resolve({ result: {} });
 			}
 			return Promise.resolve({});
 		});
