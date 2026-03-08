@@ -68,4 +68,4 @@ git commit -m "feat(scope): short summary"
 
 - `coclaw`（根目录）、`ui`、`server`、`admin`：**CoClaw 修改版 Apache-2.0**（见 `LICENSE`）。
 - `plugins/openclaw`：标准 **Apache-2.0**（见 `plugins/openclaw/LICENSE`）。
-- Copyright © 2026 成都工言科技有限公司
+- Copyright © 2026 成都共演科技有限公司
