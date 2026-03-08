@@ -1,10 +1,14 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 # CoClaw
 
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
-**CoClaw** enables users to interact with their [OpenClaw](https://github.com/openclaw/openclaw) through the CoClaw platform, even when the two sides are network-isolated.
+> **The world's first native [OpenClaw](https://github.com/openclaw/openclaw) IM application.**
 
-Functionally similar to OpenClaw WebChat, CoClaw extends the experience with additional platform-level and product-level capabilities.
+CoClaw is a full-featured instant-messaging client built from the ground up for the OpenClaw ecosystem. It lets users chat with their OpenClaw even when the two sides sit behind completely separate networks — no VPN, no port forwarding required.
+
+While functionally similar to OpenClaw WebChat, CoClaw goes further with deeper platform integration and a mobile-first product experience.
 
 ## Repository Structure
 
