@@ -56,8 +56,8 @@ function createWrapper() {
 						'bots.bindViaChat': '在 OpenClaw 对话中输入：',
 						'bots.bindViaShell': '或在宿主机终端执行：',
 						'bots.commandCopied': '已复制',
-						'bots.step1': '第1步：',
-						'bots.step2': '第2步：',
+						'bots.step1': '第 1 步：',
+						'bots.step2': '第 2 步：',
 					};
 					return map[key] ?? key;
 				},
@@ -72,8 +72,8 @@ test('should render onboarding steps and generate button', async () => {
 
 	expect(wrapper.text()).toContain('添加机器人');
 	expect(wrapper.text()).toContain('生成绑定码');
-	expect(wrapper.text()).toContain('第1步：安装或升级插件');
-	expect(wrapper.text()).toContain('第2步：绑定');
+	expect(wrapper.text()).toContain('第 1 步：安装或升级插件');
+	expect(wrapper.text()).toContain('第 2 步：绑定');
 });
 
 test('should show install and update commands', async () => {
