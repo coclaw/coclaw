@@ -134,6 +134,14 @@ General Instructions
 - commit message 使用祈使句并包含范围（建议：`feat(server): ...` / `fix(ui): ...` / `refactor(tunnel): ...` / `test(...): ...` / `docs(...): ...`）
 - 禁止提交：临时调试代码、无关格式化噪音、敏感信息、无意义大文件
 
+## 版本管理（Changesets）
+
+- 采用 Changesets + Independent 版本策略，详见 `docs/versioning.md`
+- 代码改动涉及包行为变更时，需执行 `pnpm changeset` 声明变更（选择受影响的包、级别、描述），将生成的 `.changeset/*.md` 随代码一起提交
+- 仅改测试/文档/CI 时不需要 changeset
+- 版本级别默认规则：bug 修复/小调整 → patch；新功能 → minor。检测到破坏性变更时提示用户确认级别（开发阶段通常仍选 minor）。用户明确指定时以用户为准
+- 发布流程使用 `/release` skill。默认"发布"仅指 npm 发布（plugins/openclaw），用户明确说"GitHub 发布"时才额外创建 GitHub Release
+
 ## 命令约定（示例）
 
 ```bash
@@ -142,6 +150,10 @@ pnpm check
 pnpm test
 pnpm coverage
 pnpm verify
+pnpm changeset          # 声明变更
+pnpm changeset:status   # 查看待发布变更
+pnpm changeset:version  # 消费 changeset，bump 版本
+pnpm changeset:publish  # 发布 npm 包
 ```
 
 ## 部署执行约定（内部）
