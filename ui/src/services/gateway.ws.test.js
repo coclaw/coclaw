@@ -51,6 +51,10 @@ describe('createGatewayRpcClient', () => {
 		vi.clearAllMocks();
 	});
 
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	test('request 发送 req 帧并解析 res', async () => {
 		const client = await createGatewayRpcClient({ botId: 'b1' });
 		const p = client.request('echo', { msg: 'hi' });
@@ -251,5 +255,126 @@ describe('createGatewayRpcClient', () => {
 
 		const result = await p;
 		expect(result.status).toBe('ok');
+	});
+
+	// --- 心跳保活 ---
+	// 辅助：fake timers 环境下创建 client（需 advanceTimersByTimeAsync 触发 WS open）
+	async function createClientWithFakeTimers(botId = 'b1') {
+		const p = createGatewayRpcClient({ botId });
+		await vi.advanceTimersByTimeAsync(1);
+		return await p;
+	}
+
+	test('连接后定期发送 ping', async () => {
+		vi.useFakeTimers();
+		const client = await createClientWithFakeTimers();
+		const pingSent = lastWs.sent.filter((m) => m.type === 'ping');
+		expect(pingSent).toHaveLength(0);
+
+		// 推进 25s，应发出第一个 ping
+		await vi.advanceTimersByTimeAsync(25_000);
+		const pings1 = lastWs.sent.filter((m) => m.type === 'ping');
+		expect(pings1).toHaveLength(1);
+
+		// 推进到 50s，应发出第二个 ping
+		await vi.advanceTimersByTimeAsync(25_000);
+		const pings2 = lastWs.sent.filter((m) => m.type === 'ping');
+		expect(pings2).toHaveLength(2);
+
+		client.close();
+	});
+
+	test('收到消息重置心跳超时', async () => {
+		vi.useFakeTimers();
+		const client = await createClientWithFakeTimers();
+		const closeSpy = vi.spyOn(lastWs, 'close');
+
+		// 推进 40s（接近 45s 超时）
+		await vi.advanceTimersByTimeAsync(40_000);
+		expect(closeSpy).not.toHaveBeenCalled();
+
+		// 收到 pong → 重置超时
+		lastWs.__emit('message', { data: JSON.stringify({ type: 'pong' }) });
+
+		// 再推进 40s（从 pong 起算仍在 45s 内）
+		await vi.advanceTimersByTimeAsync(40_000);
+		expect(closeSpy).not.toHaveBeenCalled();
+
+		// 再推进 6s（超过 45s 无消息）
+		await vi.advanceTimersByTimeAsync(6_000);
+		expect(closeSpy).toHaveBeenCalledWith(4000, 'heartbeat_timeout');
+
+		client.close();
+	});
+
+	test('心跳超时后主动关闭并 reject pending', async () => {
+		vi.useFakeTimers();
+		const client = await createClientWithFakeTimers();
+		const p = client.request('slow');
+
+		// mock close 触发 close 事件
+		lastWs.close = (code, reason) => {
+			lastWs.__emit('close', { code, reason });
+		};
+
+		// 先注册 rejection 监听，再推进时间，避免 unhandled rejection
+		const rejectP = expect(p).rejects.toThrow('gateway ws closed');
+		await vi.advanceTimersByTimeAsync(46_000);
+		await rejectP;
+	});
+
+	test('pong 消息不触发 event 或 request 处理', async () => {
+		const client = await createGatewayRpcClient({ botId: 'b1' });
+		const cb = vi.fn();
+		client.on('pong', cb);
+
+		lastWs.__emit('message', { data: JSON.stringify({ type: 'pong' }) });
+
+		// pong 被提前 return，不走 event 分发
+		expect(cb).not.toHaveBeenCalled();
+		client.close();
+	});
+
+	test('close() 清除心跳定时器', async () => {
+		vi.useFakeTimers();
+		const client = await createClientWithFakeTimers();
+		const wsRef = lastWs;
+		client.close();
+
+		// 推进超过心跳超时，不应再尝试关闭（定时器已清理）
+		const closeSpy = vi.spyOn(wsRef, 'close');
+		await vi.advanceTimersByTimeAsync(50_000);
+
+		// close 不应因心跳超时被二次调用
+		expect(closeSpy).not.toHaveBeenCalled();
+	});
+
+	// --- WS 断连场景（覆盖 Bug 1 & 2） ---
+
+	test('accepted 后 WS 关闭：pending 被 reject 且 code 为 WS_CLOSED', async () => {
+		const client = await createGatewayRpcClient({ botId: 'b1' });
+		const onAccepted = vi.fn();
+		const p = client.request('agent', { message: 'hi' }, { onAccepted });
+
+		const sent = lastWs.sent[0];
+
+		// Phase 1: ack
+		lastWs.__emit('message', { data: JSON.stringify({
+			type: 'res', id: sent.id, ok: true,
+			payload: { runId: 'r1', status: 'accepted' },
+		}) });
+		expect(onAccepted).toHaveBeenCalled();
+
+		// WS 断开（无 terminal response）
+		lastWs.__emit('close', { code: 1006, reason: '' });
+
+		try {
+			await p;
+		}
+		catch (err) {
+			expect(err.message).toBe('gateway ws closed');
+			expect(err.code).toBe('WS_CLOSED');
+		}
+		client.close();
 	});
 });

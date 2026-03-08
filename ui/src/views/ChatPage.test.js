@@ -740,16 +740,31 @@ describe('ChatPage 乐观消息与思考指示器', () => {
 		expect(wrapper.vm.errorText).toBe('');
 	});
 
-	test('loadSessionMessages 完成后清除乐观消息', async () => {
+	test('loadSessionMessages 不再自动清除 pendingUserMsg（由调用方负责）', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
 		wrapper.vm.pendingUserMsg = 'temp msg';
-		await wrapper.vm.loadSessionMessages();
+		const ok = await wrapper.vm.loadSessionMessages();
 
-		expect(wrapper.vm.pendingUserMsg).toBe('');
-		const pending = wrapper.vm.chatMessages.find((m) => m.id === '__pending_user__');
-		expect(pending).toBeFalsy();
+		// loadSessionMessages 返回 true 表示成功，但不再清除 pendingUserMsg
+		expect(ok).toBe(true);
+		expect(wrapper.vm.pendingUserMsg).toBe('temp msg');
+	});
+
+	test('loadSessionMessages 失败时返回 false', async () => {
+		mockRpc.request.mockImplementation((method) => {
+			if (method === 'nativeui.sessions.listAll') {
+				return Promise.reject(new Error('network error'));
+			}
+			return Promise.resolve({});
+		});
+
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		const ok = await wrapper.vm.loadSessionMessages();
+		expect(ok).toBe(false);
 	});
 
 	test('sendViaAgent 后 isThinking 置为 true', async () => {

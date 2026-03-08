@@ -34,16 +34,41 @@ export async function createGatewayRpcClient(options = {}) {
 	const eventListeners = new Map();
 	let counter = 1;
 
+	// 心跳保活：每 25s 发 ping，45s 未收到任何消息则判定连接已死
+	const HB_PING_MS = 25_000;
+	const HB_TIMEOUT_MS = 45_000;
+	let hbInterval = null;
+	let hbTimer = null;
+
+	function resetHbTimeout() {
+		if (hbTimer) clearTimeout(hbTimer);
+		hbTimer = setTimeout(() => {
+			console.warn('[gw-ws] heartbeat timeout (%ds), closing', HB_TIMEOUT_MS / 1000);
+			try { ws.close(4000, 'heartbeat_timeout'); } catch {}
+		}, HB_TIMEOUT_MS);
+	}
+
+	function clearHeartbeat() {
+		if (hbInterval) { clearInterval(hbInterval); hbInterval = null; }
+		if (hbTimer) { clearTimeout(hbTimer); hbTimer = null; }
+	}
+
 	// agent 两阶段响应的终态 status 值
 	const TERMINAL_STATUSES = new Set(['ok', 'error']);
 
 	ws.addEventListener('message', (event) => {
+		resetHbTimeout();
 		let payload = null;
 		try {
 			payload = JSON.parse(String(event.data ?? '{}'));
 		}
 		catch (parseErr) {
 			console.warn('[gw-ws] JSON parse failed:', parseErr);
+			return;
+		}
+
+		// 心跳 pong 无需进一步处理
+		if (payload?.type === 'pong') {
 			return;
 		}
 
@@ -106,6 +131,7 @@ export async function createGatewayRpcClient(options = {}) {
 	});
 
 	ws.addEventListener('close', (ev) => {
+		clearHeartbeat();
 		console.debug('[gw-ws] closed code=%d reason=%s pending=%d', ev.code, ev.reason, pending.size);
 		for (const waiter of pending.values()) {
 			const err = new Error('gateway ws closed');
@@ -129,6 +155,14 @@ export async function createGatewayRpcClient(options = {}) {
 		ws.addEventListener('open', onOpen, { once: true });
 		ws.addEventListener('error', onError, { once: true });
 	});
+
+	// 连接建立后启动心跳
+	hbInterval = setInterval(() => {
+		if (ws.readyState === 1) {
+			try { ws.send(JSON.stringify({ type: 'ping' })); } catch {}
+		}
+	}, HB_PING_MS);
+	resetHbTimeout();
 
 	return {
 		/**
@@ -167,6 +201,7 @@ export async function createGatewayRpcClient(options = {}) {
 			eventListeners.get(eventName)?.delete(cb);
 		},
 		close() {
+			clearHeartbeat();
 			ws.close(1000, 'done');
 		},
 	};

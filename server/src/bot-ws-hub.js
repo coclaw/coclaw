@@ -284,6 +284,11 @@ function onUiMessage(botId, ws, raw) {
 	if (!payload || typeof payload !== 'object') {
 		return;
 	}
+	// 应用层心跳：直接回 pong，不转发给 bot
+	if (payload.type === 'ping') {
+		try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+		return;
+	}
 	const normalized = payload.type === 'rpc.req'
 		? { type: 'req', id: payload.id, method: payload.method, params: payload.params ?? {} }
 		: payload;
@@ -345,7 +350,21 @@ export function attachBotWsHub(httpServer) {
 					registerSocket(uiSockets, botId, ws);
 					wsLogInfo(`ui ws connected botId=${botId} userId=${auth.userId ?? 'n/a'}`);
 					ws.on('message', (raw) => onUiMessage(botId, ws, raw));
+					// WS 协议级心跳：检测半开连接
+					ws.__isAlive = true;
+					ws.on('pong', () => { ws.__isAlive = true; });
+					const uiPingInterval = setInterval(() => {
+						if (!ws.__isAlive) {
+							clearInterval(uiPingInterval);
+							wsLogWarn(`ui ws ping timeout, terminating botId=${botId}`);
+							ws.terminate();
+							return;
+						}
+						ws.__isAlive = false;
+						ws.ping();
+					}, 30_000);
 					ws.on('close', () => {
+						clearInterval(uiPingInterval);
 						unregisterSocket(uiSockets, botId, ws);
 						wsLogInfo(`ui ws disconnected botId=${botId}`);
 					});

@@ -270,13 +270,14 @@ export default {
 		/**
 		 * @param {object} [opts]
 		 * @param {boolean} [opts.silent] - true 时不显示 loading 状态，用于流式结束后静默刷新
+		 * @returns {Promise<boolean>} 是否成功加载
 		 */
 		async loadSessionMessages({ silent = false } = {}) {
 			if (!this.currentSessionId) {
 				this.messages = [];
 				this.errorText = '';
 				this.loading = false;
-				return;
+				return false;
 			}
 			if (!silent) {
 				this.loading = true;
@@ -313,12 +314,13 @@ export default {
 					this.messages = [];
 					this.errorText = err?.message || this.$t('chat.loadFailed');
 				}
+				return false;
 			}
 			finally {
 				this.loading = false;
-				this.pendingUserMsg = '';
 				this.scrollToBottom();
 			}
+			return true;
 		},
 		async onSendMessage({ text, files }) {
 			if ((!text && !files?.length) || !this.currentSessionId || this.sending) {
@@ -345,6 +347,7 @@ export default {
 			const savedInputText = this.inputText;
 			this.inputText = '';
 			let accepted = false;
+			this.__agentSettled = false;
 
 			try {
 				const rpc = await this.ensureRpcClient();
@@ -391,6 +394,19 @@ export default {
 				}
 				console.debug('[chat] agent request idempotencyKey=%s params:', idempotencyKey, agentParams);
 
+				// pre-acceptance 超时守卫 30s：防止 WS 静默断连导致无限"思考中"
+				this.streamingTimer = setTimeout(() => {
+					if (!accepted) {
+						console.debug('[chat] agent pre-acceptance timeout (30s)');
+						this.__agentSettled = true;
+						this.notify.error(this.$t('chat.orphanSendFailed'));
+						this.clearStreamingState();
+						this.sending = false;
+						this.rpcClient?.close?.();
+						this.rpcClient = null;
+					}
+				}, 30_000);
+
 				// 两阶段模式：onAccepted 获取 runId 并设置超时守卫，Promise 等待终态
 				const final = await rpc.request('agent', agentParams, {
 					onAccepted: (payload) => {
@@ -398,13 +414,19 @@ export default {
 						this.streamingRunId = payload?.runId ?? null;
 						console.debug('[chat] agent accepted runId=%s', this.streamingRunId, payload);
 
-						// 超时守卫 120s
+						// 清除 pre-acceptance 计时器，启动 post-acceptance 超时守卫 120s
+						if (this.streamingTimer) {
+							clearTimeout(this.streamingTimer);
+						}
 						this.streamingTimer = setTimeout(() => {
 							console.debug('[chat] agent timeout (120s), runId=%s', this.streamingRunId);
+							this.__agentSettled = true;
 							this.notify.error(this.$t('chat.orphanSendTimeout'));
 							this.pendingUserMsg = '';
 							this.clearStreamingState();
 							this.sending = false;
+							this.rpcClient?.close?.();
+							this.rpcClient = null;
 						}, 120_000);
 					},
 					onUnknownStatus: (status, payload) => {
@@ -429,7 +451,10 @@ export default {
 			}
 			catch (err) {
 				console.error('[chat] sendViaAgent error:', err);
-				this.notify.error(err?.message || this.$t('chat.orphanSendFailed'));
+				// 已通过 timeout 或 lifecycle:end 处理时，忽略 WS 关闭产生的尾巴错误
+				if (!(this.__agentSettled && err?.code === 'WS_CLOSED')) {
+					this.notify.error(err?.message || this.$t('chat.orphanSendFailed'));
+				}
 				this.pendingUserMsg = '';
 				this.clearStreamingState();
 				this.sending = false;
@@ -499,6 +524,7 @@ export default {
 			} else if (stream === 'lifecycle') {
 				console.debug('[chat] lifecycle phase=%s', data?.phase);
 				if (data?.phase === 'end') {
+					this.__agentSettled = true;
 					this.sending = false;
 					this.rpcClient?.off?.('agent', this.onAgentEvent);
 					if (this.streamingTimer) {
@@ -506,12 +532,23 @@ export default {
 						this.streamingTimer = null;
 					}
 					this.streamingRunId = null;
-					// 静默刷新：保留现有消息可见，不显示 loading
-					await this.loadSessionMessages({ silent: true });
-					this.streamingText = '';
-					this.streamingSteps = [];
-					this.streamingStartTime = null;
 					this.isThinking = false;
+					// 静默刷新：使用新连接确保可用；失败则保留流式内容和乐观消息
+					this.rpcClient?.close?.();
+					this.rpcClient = null;
+					let refreshOk = await this.loadSessionMessages({ silent: true });
+					if (!refreshOk) {
+						this.rpcClient = null;
+						refreshOk = await this.loadSessionMessages({ silent: true });
+					}
+					if (refreshOk) {
+						// 刷新成功：持久化消息已加载，清除临时 UI 状态
+						this.streamingText = '';
+						this.streamingSteps = [];
+						this.streamingStartTime = null;
+						this.pendingUserMsg = '';
+					}
+					// 刷新失败：保留 streamingText 和 pendingUserMsg 可见
 				} else if (data?.phase === 'error') {
 					this.notify.error(data?.message || this.$t('chat.orphanSendFailed'));
 					this.pendingUserMsg = '';
