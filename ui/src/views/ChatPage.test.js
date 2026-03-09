@@ -112,6 +112,19 @@ vi.mock('../stores/sessions.store.js', () => ({
 
 import ChatPage from './ChatPage.vue';
 
+// 在 messages 中查找 _local 用户条目
+function findLocalUserEntry(messages) {
+	return messages.find((e) => e._local && e.message?.role === 'user');
+}
+
+// 在 messages 中查找 _streaming 的 assistant 条目（从后往前）
+function findStreamingBotEntry(messages) {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i]._streaming && messages[i].message?.role === 'assistant') return messages[i];
+	}
+	return null;
+}
+
 const i18nMap = {
 	'chat.loading': 'Loading...',
 	'chat.empty': 'No messages',
@@ -264,7 +277,7 @@ describe('ChatPage orphan send', () => {
 		expect(mockRpc.on).toHaveBeenCalledWith('agent', expect.any(Function));
 	});
 
-	test('onAgentEvent 更新 streamingText', async () => {
+	test('onAgentEvent 更新 streaming assistant 条目的 content', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
@@ -272,7 +285,11 @@ describe('ChatPage orphan send', () => {
 		await flushPromises();
 
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'assistant', data: { text: 'partial reply' } });
-		expect(wrapper.vm.streamingText).toBe('partial reply');
+		const entry = findStreamingBotEntry(wrapper.vm.messages);
+		expect(entry).toBeTruthy();
+		// content 应为数组，包含 text block
+		const textBlock = entry.message.content.find((b) => b.type === 'text');
+		expect(textBlock.text).toBe('partial reply');
 	});
 
 	test('onAgentEvent 忽略不匹配的 runId', async () => {
@@ -283,29 +300,35 @@ describe('ChatPage orphan send', () => {
 		await flushPromises();
 
 		wrapper.vm.onAgentEvent({ runId: 'other-run', stream: 'assistant', data: { text: 'wrong' } });
-		expect(wrapper.vm.streamingText).toBe('');
+		const entry = findStreamingBotEntry(wrapper.vm.messages);
+		expect(entry).toBeTruthy();
+		// content 应仍为空字符串（未被修改）
+		expect(entry.message.content).toBe('');
 	});
 
-	test('lifecycle end 清理状态并 reload（无闪烁）', async () => {
+	test('lifecycle end 清理 streaming 标记并 reconcile', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		wrapper.vm.streamingText = 'partial';
+		// 模拟收到部分文本
+		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'assistant', data: { text: 'partial' } });
+
 		// onAgentEvent 是 async，需要 await
 		const endPromise = wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-		// streamingText 在 loadSessionMessages 完成前应保留
+		// sending 应立即清除
 		expect(wrapper.vm.sending).toBe(false);
 		expect(wrapper.vm.streamingRunId).toBeNull();
 
 		await endPromise;
 		await flushPromises();
 
-		// loadSessionMessages 完成后才清空
-		expect(wrapper.vm.streamingText).toBe('');
-		expect(wrapper.vm.isThinking).toBe(false);
+		// reconcile 完成后，messages 中不应有 _streaming 条目
+		expect(wrapper.vm.messages.some((e) => e._streaming)).toBe(false);
+		// _local 条目保留（reconcile 不替换 messages，避免 DOM 重建抖动）
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(true);
 	});
 
 	test('lifecycle error 通过 notify 提示而非替换消息区域', async () => {
@@ -318,18 +341,27 @@ describe('ChatPage orphan send', () => {
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error', message: 'boom' } });
 		expect(mockNotify.error).toHaveBeenCalledWith('boom');
 		expect(wrapper.vm.errorText).toBe('');
-		expect(wrapper.vm.pendingUserMsg).toBe('');
+		// _local 条目应被移除
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(false);
 		expect(wrapper.vm.sending).toBe(false);
 	});
 
-	test('streamingText 追加虚拟 botTask 到 chatMessages', async () => {
+	test('streaming assistant 条目出现在 chatMessages 中', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
-		wrapper.vm.streamingText = 'streaming reply';
+		// 手动追加 streaming assistant 条目
+		wrapper.vm.messages = [...wrapper.vm.messages, {
+			type: 'message',
+			id: '__local_bot_1',
+			_local: true,
+			_streaming: true,
+			_startTime: Date.now(),
+			message: { role: 'assistant', content: [{ type: 'text', text: 'streaming reply' }], stopReason: 'stop' },
+		}];
 		await wrapper.vm.$nextTick();
 
-		const streaming = wrapper.vm.chatMessages.find((m) => m.id === '__streaming__');
+		const streaming = wrapper.vm.chatMessages.find((m) => m.isStreaming);
 		expect(streaming).toBeTruthy();
 		expect(streaming.type).toBe('botTask');
 		expect(streaming.resultText).toBe('streaming reply');
@@ -348,7 +380,8 @@ describe('ChatPage orphan send', () => {
 		expect(wrapper.vm.sending).toBe(false);
 		expect(mockNotify.error).toHaveBeenCalledWith('Timeout');
 		expect(wrapper.vm.errorText).toBe('');
-		expect(wrapper.vm.pendingUserMsg).toBe('');
+		// _local 条目应被移除
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(false);
 		expect(wrapper.vm.streamingRunId).toBeNull();
 	});
 
@@ -359,10 +392,10 @@ describe('ChatPage orphan send', () => {
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		wrapper.vm.streamingText = 'partial';
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('cancel');
 
-		expect(wrapper.vm.streamingText).toBe('');
+		// _local 条目应被移除
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(false);
 		expect(wrapper.vm.sending).toBe(false);
 		expect(mockRpc.off).toHaveBeenCalledWith('agent', expect.any(Function));
 	});
@@ -454,8 +487,8 @@ describe('ChatPage orphan send', () => {
 
 		// inputText 应恢复
 		expect(wrapper.vm.inputText).toBe('my important text');
-		// pendingUserMsg 应清除（撤回乐观消息）
-		expect(wrapper.vm.pendingUserMsg).toBe('');
+		// _local 条目应被移除（撤回乐观消息）
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(false);
 		// restoreFiles 应被调用
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 		// sending 应恢复
@@ -549,7 +582,8 @@ describe('ChatPage orphan send', () => {
 		await flushPromises();
 
 		expect(wrapper.vm.inputText).toBe('my text');
-		expect(wrapper.vm.pendingUserMsg).toBe('');
+		// _local 条目应被移除
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(false);
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 });
@@ -695,10 +729,37 @@ describe('ChatPage 乐观消息与思考指示器', () => {
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hello world', files: [] });
 		await flushPromises();
 
-		const pending = wrapper.vm.chatMessages.find((m) => m.id === '__pending_user__');
-		expect(pending).toBeTruthy();
-		expect(pending.type).toBe('user');
-		expect(pending.textContent).toBe('hello world');
+		// messages 中应有 _local user 条目
+		const localUser = findLocalUserEntry(wrapper.vm.messages);
+		expect(localUser).toBeTruthy();
+		expect(localUser.message.content).toBe('hello world');
+		// chatMessages 中应有对应的 user item
+		const userItem = wrapper.vm.chatMessages.find((m) => m.type === 'user' && m.textContent === 'hello world');
+		expect(userItem).toBeTruthy();
+	});
+
+	test('发送带图片时乐观用户消息包含 image blocks', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		const imgFile = new File(['fake-png'], 'photo.png', { type: 'image/png' });
+		const files = [{ id: 'f1', isImg: true, isVoice: false, name: 'photo.png', file: imgFile }];
+		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'look', files });
+		await flushPromises();
+
+		const localUser = findLocalUserEntry(wrapper.vm.messages);
+		expect(localUser).toBeTruthy();
+		// content 应为数组，包含 text 和 image blocks
+		expect(Array.isArray(localUser.message.content)).toBe(true);
+		const textBlock = localUser.message.content.find((b) => b.type === 'text');
+		expect(textBlock.text).toBe('look');
+		const imgBlock = localUser.message.content.find((b) => b.type === 'image');
+		expect(imgBlock).toBeTruthy();
+		expect(imgBlock.mimeType).toBe('image/png');
+		expect(typeof imgBlock.data).toBe('string');
+		// chatMessages 中 user item 应有 images
+		const userItem = wrapper.vm.chatMessages.find((m) => m.type === 'user');
+		expect(userItem.images).toHaveLength(1);
 	});
 
 	test('loadSessionMessages silent 模式不设 loading 状态', async () => {
@@ -742,16 +803,21 @@ describe('ChatPage 乐观消息与思考指示器', () => {
 		expect(wrapper.vm.errorText).toBe('');
 	});
 
-	test('loadSessionMessages 不再自动清除 pendingUserMsg（由调用方负责）', async () => {
+	test('loadSessionMessages 成功后 messages 由 server 数据替换', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
-		wrapper.vm.pendingUserMsg = 'temp msg';
+		// 手动添加一个 _local 条目
+		wrapper.vm.messages = [{
+			type: 'message', id: '__local_user_1', _local: true,
+			message: { role: 'user', content: 'temp msg', timestamp: Date.now() },
+		}];
+
 		const ok = await wrapper.vm.loadSessionMessages();
 
-		// loadSessionMessages 返回 true 表示成功，但不再清除 pendingUserMsg
+		// loadSessionMessages 用 server 数据替换 messages（mock 返回空数组）
 		expect(ok).toBe(true);
-		expect(wrapper.vm.pendingUserMsg).toBe('temp msg');
+		expect(wrapper.vm.messages).toEqual([]);
 	});
 
 	test('loadSessionMessages 失败时返回 false', async () => {
@@ -769,7 +835,7 @@ describe('ChatPage 乐观消息与思考指示器', () => {
 		expect(ok).toBe(false);
 	});
 
-	test('sendViaAgent 后 isThinking 置为 true', async () => {
+	test('sendViaAgent 后 messages 中有 _streaming 空 assistant 条目（思考中）', async () => {
 		// agent 保持挂起，验证 streaming 中间态
 		const { handler: agentHang } = mockAgentTwoPhaseHang();
 		mockRpc.request.mockImplementation((method, params, options) => {
@@ -786,23 +852,34 @@ describe('ChatPage 乐观消息与思考指示器', () => {
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		expect(wrapper.vm.isThinking).toBe(true);
+		// 应有 _streaming assistant 条目且 content 为空
+		const entry = findStreamingBotEntry(wrapper.vm.messages);
+		expect(entry).toBeTruthy();
+		expect(entry.message.content).toBe('');
 	});
 
-	test('isThinking 时 chatMessages 包含 __streaming__ 虚拟消息', async () => {
+	test('streaming 空 assistant 在 chatMessages 中显示为 isStreaming botTask', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
-		wrapper.vm.isThinking = true;
+		// 手动追加 streaming 空 assistant 条目
+		wrapper.vm.messages = [...wrapper.vm.messages, {
+			type: 'message',
+			id: '__local_bot_1',
+			_local: true,
+			_streaming: true,
+			_startTime: Date.now(),
+			message: { role: 'assistant', content: '', stopReason: null },
+		}];
 		await wrapper.vm.$nextTick();
 
-		const streaming = wrapper.vm.chatMessages.find((m) => m.id === '__streaming__');
+		const streaming = wrapper.vm.chatMessages.find((m) => m.isStreaming);
 		expect(streaming).toBeTruthy();
 		expect(streaming.isStreaming).toBe(true);
-		expect(streaming.resultText).toBe('');
+		expect(streaming.resultText).toBeNull();
 	});
 
-	test('收到首条 assistant 文本后 isThinking 变为 false', async () => {
+	test('收到首条 assistant 文本后 streaming 条目 content 不再为空', async () => {
 		const { handler: agentHang } = mockAgentTwoPhaseHang();
 		mockRpc.request.mockImplementation((method, params, options) => {
 			if (method === 'nativeui.sessions.listAll') return Promise.resolve({ items: [] });
@@ -817,21 +894,31 @@ describe('ChatPage 乐观消息与思考指示器', () => {
 
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
-		expect(wrapper.vm.isThinking).toBe(true);
+		// 初始为空 content
+		expect(findStreamingBotEntry(wrapper.vm.messages).message.content).toBe('');
 
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'assistant', data: { text: 'hello' } });
-		expect(wrapper.vm.isThinking).toBe(false);
-		expect(wrapper.vm.streamingText).toBe('hello');
+		const entry = findStreamingBotEntry(wrapper.vm.messages);
+		// content 应为数组，包含 text block
+		const textBlock = entry.message.content.find((b) => b.type === 'text');
+		expect(textBlock.text).toBe('hello');
 	});
 
-	test('clearStreamingState 清除 isThinking', async () => {
+	test('clearStreamingState 移除 _local 条目', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
-		wrapper.vm.isThinking = true;
+		// 手动添加 _local 条目
+		wrapper.vm.messages = [
+			{ type: 'message', id: 'server-1', message: { role: 'user', content: 'hi' } },
+			{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+		];
 		wrapper.vm.clearStreamingState();
 
-		expect(wrapper.vm.isThinking).toBe(false);
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(false);
+		// server 条目应保留
+		expect(wrapper.vm.messages).toHaveLength(1);
+		expect(wrapper.vm.messages[0].id).toBe('server-1');
 	});
 
 	test('indexed session 发送也设置乐观消息', async () => {
@@ -852,9 +939,11 @@ describe('ChatPage 乐观消息与思考指示器', () => {
 		await flushPromises();
 
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'indexed msg', files: [] });
-		// 发送后 pendingUserMsg 应已设置
 		await wrapper.vm.$nextTick();
-		expect(wrapper.vm.pendingUserMsg).toBe('indexed msg');
+		// messages 中应有 _local user 条目
+		const localUser = findLocalUserEntry(wrapper.vm.messages);
+		expect(localUser).toBeTruthy();
+		expect(localUser.message.content).toBe('indexed msg');
 	});
 });
 
@@ -882,7 +971,7 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 		vi.useRealTimers();
 	});
 
-	test('tool start 事件追加 toolCall step', async () => {
+	test('tool start 事件追加 toolCall block 到 streaming 条目', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
@@ -890,11 +979,16 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 		await flushPromises();
 
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'start', name: 'web_search' } });
-		expect(wrapper.vm.streamingSteps).toHaveLength(1);
-		expect(wrapper.vm.streamingSteps[0]).toEqual({ kind: 'toolCall', name: 'web_search' });
+		const entry = findStreamingBotEntry(wrapper.vm.messages);
+		expect(entry).toBeTruthy();
+		const content = entry.message.content;
+		expect(Array.isArray(content)).toBe(true);
+		const toolBlock = content.find((b) => b.type === 'toolCall');
+		expect(toolBlock).toEqual({ type: 'toolCall', name: 'web_search' });
+		expect(entry.message.stopReason).toBe('toolUse');
 	});
 
-	test('tool result 事件追加 toolResult step', async () => {
+	test('tool result 事件追加 toolResult 条目和新 assistant 条目', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
@@ -903,8 +997,14 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'start', name: 'calc' } });
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'result', name: 'calc', result: '42' } });
-		expect(wrapper.vm.streamingSteps).toHaveLength(2);
-		expect(wrapper.vm.streamingSteps[1]).toEqual({ kind: 'toolResult', text: '42' });
+		// 应有 toolResult 条目
+		const trEntry = wrapper.vm.messages.find((e) => e.message?.role === 'toolResult');
+		expect(trEntry).toBeTruthy();
+		expect(trEntry.message.content).toBe('42');
+		// 应有新的 streaming assistant 条目（在 toolResult 后）
+		const lastBot = findStreamingBotEntry(wrapper.vm.messages);
+		expect(lastBot).toBeTruthy();
+		expect(lastBot.message.content).toBe('');
 	});
 
 	test('tool result 为对象时序列化为 JSON', async () => {
@@ -915,10 +1015,11 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 		await flushPromises();
 
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'result', name: 'api', result: { ok: true } } });
-		expect(wrapper.vm.streamingSteps[0].text).toBe('{"ok":true}');
+		const trEntry = wrapper.vm.messages.find((e) => e.message?.role === 'toolResult');
+		expect(trEntry.message.content).toBe('{"ok":true}');
 	});
 
-	test('thinking 事件追加/替换 thinking step', async () => {
+	test('thinking 事件追加/替换 thinking block 到 streaming 条目', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
@@ -927,16 +1028,22 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 
 		// 第一条 thinking
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: 'Let me think...' } });
-		expect(wrapper.vm.streamingSteps).toHaveLength(1);
-		expect(wrapper.vm.streamingSteps[0]).toEqual({ kind: 'thinking', text: 'Let me think...' });
+		let entry = findStreamingBotEntry(wrapper.vm.messages);
+		let content = entry.message.content;
+		expect(Array.isArray(content)).toBe(true);
+		let thinkBlock = content.find((b) => b.type === 'thinking');
+		expect(thinkBlock).toEqual({ type: 'thinking', thinking: 'Let me think...' });
 
 		// 同类 thinking 替换（流式增量）
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: 'Let me think... about this problem' } });
-		expect(wrapper.vm.streamingSteps).toHaveLength(1);
-		expect(wrapper.vm.streamingSteps[0].text).toBe('Let me think... about this problem');
+		entry = findStreamingBotEntry(wrapper.vm.messages);
+		content = entry.message.content;
+		const thinkBlocks = content.filter((b) => b.type === 'thinking');
+		expect(thinkBlocks).toHaveLength(1);
+		expect(thinkBlocks[0].thinking).toBe('Let me think... about this problem');
 	});
 
-	test('thinking 后跟 tool 不会替换 thinking', async () => {
+	test('thinking 后跟 tool，新 thinking 追加而非替换', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
@@ -945,16 +1052,20 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: 'hmm' } });
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'start', name: 'search' } });
-		// 新的 thinking 应追加而非替换（因为上一条不是 thinking）
+		// tool result 后会产生新的 streaming assistant 条目
+		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'result', name: 'search', result: 'found' } });
+		// 在新 assistant 条目上追加 thinking
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: 'ok' } });
 
-		expect(wrapper.vm.streamingSteps).toHaveLength(3);
-		expect(wrapper.vm.streamingSteps[0].kind).toBe('thinking');
-		expect(wrapper.vm.streamingSteps[1].kind).toBe('toolCall');
-		expect(wrapper.vm.streamingSteps[2].kind).toBe('thinking');
+		// 最后一个 streaming assistant 应有 thinking block
+		const lastEntry = findStreamingBotEntry(wrapper.vm.messages);
+		const content = lastEntry.message.content;
+		expect(Array.isArray(content)).toBe(true);
+		const thinkBlock = content.find((b) => b.type === 'thinking');
+		expect(thinkBlock.thinking).toBe('ok');
 	});
 
-	test('streamingSteps 传入 __streaming__ 虚拟消息', async () => {
+	test('tool 事件在 chatMessages 中体现为 steps', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
@@ -964,12 +1075,13 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'start', name: 'grep' } });
 		await wrapper.vm.$nextTick();
 
-		const streaming = wrapper.vm.chatMessages.find((m) => m.id === '__streaming__');
+		const streaming = wrapper.vm.chatMessages.find((m) => m.isStreaming);
+		expect(streaming).toBeTruthy();
 		expect(streaming.steps).toHaveLength(1);
 		expect(streaming.steps[0].name).toBe('grep');
 	});
 
-	test('sendViaAgent 记录 streamingStartTime', async () => {
+	test('sendViaAgent 在 messages 条目中记录 _startTime', async () => {
 		const now = Date.now();
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
@@ -977,22 +1089,204 @@ describe('ChatPage 流式 tool/thinking 事件', () => {
 		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		expect(wrapper.vm.streamingStartTime).toBeGreaterThanOrEqual(now);
+		const entry = findStreamingBotEntry(wrapper.vm.messages);
+		expect(entry._startTime).toBeGreaterThanOrEqual(now);
 
-		const streaming = wrapper.vm.chatMessages.find((m) => m.id === '__streaming__');
-		expect(streaming.startTime).toBe(wrapper.vm.streamingStartTime);
+		// chatMessages 中的 botTask 应有 startTime
+		const streaming = wrapper.vm.chatMessages.find((m) => m.isStreaming);
+		expect(streaming.startTime).toBe(entry._startTime);
 	});
 
-	test('clearStreamingState 清除 steps 和 startTime', async () => {
+	test('clearStreamingState 清除 _local 条目', async () => {
 		const wrapper = createWrapper('orphan-sess');
 		await flushPromises();
 
-		wrapper.vm.streamingSteps = [{ kind: 'toolCall', name: 'x' }];
-		wrapper.vm.streamingStartTime = Date.now();
+		// 模拟有 _local 条目
+		wrapper.vm.messages = [
+			{ type: 'message', id: 'server-1', message: { role: 'user', content: 'hi' } },
+			{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, _startTime: Date.now(), message: { role: 'assistant', content: '' } },
+		];
+		wrapper.vm.streamingRunId = 'run-1';
 		wrapper.vm.clearStreamingState();
 
-		expect(wrapper.vm.streamingSteps).toEqual([]);
-		expect(wrapper.vm.streamingStartTime).toBeNull();
+		expect(wrapper.vm.messages.some((e) => e._local)).toBe(false);
+		expect(wrapper.vm.messages).toHaveLength(1);
+		expect(wrapper.vm.streamingRunId).toBeNull();
+	});
+
+	test('多次 assistant 事件渐进更新文本并保留 thinking blocks', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		// thinking 先到
+		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: 'Let me think...' } });
+		// 第一段文本
+		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'assistant', data: { text: 'partial' } });
+		let entry = findStreamingBotEntry(wrapper.vm.messages);
+		let thinkBlocks = entry.message.content.filter((b) => b.type === 'thinking');
+		let textBlocks = entry.message.content.filter((b) => b.type === 'text');
+		expect(thinkBlocks).toHaveLength(1);
+		expect(thinkBlocks[0].thinking).toBe('Let me think...');
+		expect(textBlocks).toHaveLength(1);
+		expect(textBlocks[0].text).toBe('partial');
+
+		// 文本更新（渐进式），thinking 应保留
+		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'assistant', data: { text: 'partial reply complete' } });
+		entry = findStreamingBotEntry(wrapper.vm.messages);
+		thinkBlocks = entry.message.content.filter((b) => b.type === 'thinking');
+		textBlocks = entry.message.content.filter((b) => b.type === 'text');
+		expect(thinkBlocks).toHaveLength(1);
+		expect(thinkBlocks[0].thinking).toBe('Let me think...');
+		expect(textBlocks).toHaveLength(1);
+		expect(textBlocks[0].text).toBe('partial reply complete');
+	});
+
+	test('__clearStreamingFlags 调用两次是幂等的', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		wrapper.vm.messages = [
+			{ type: 'message', id: 's1', message: { role: 'user', content: 'hi' } },
+			{ type: 'message', id: 'b1', _streaming: true, message: { role: 'assistant', content: 'reply' } },
+		];
+		wrapper.vm.__clearStreamingFlags();
+		expect(wrapper.vm.messages.some((e) => e._streaming)).toBe(false);
+		const msgRef = wrapper.vm.messages;
+		// 第二次调用不应触发数组替换（无 _streaming 需要清除）
+		wrapper.vm.__clearStreamingFlags();
+		expect(wrapper.vm.messages).toBe(msgRef);
+	});
+
+	test('tool result 事件传递 _startTime 到新 assistant 条目', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		wrapper.findComponent({ name: 'ChatInput' }).vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		const origEntry = findStreamingBotEntry(wrapper.vm.messages);
+		const origStartTime = origEntry._startTime;
+		expect(origStartTime).toBeGreaterThan(0);
+
+		// tool result 创建新 assistant 条目
+		wrapper.vm.onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'result', name: 'x', result: 'ok' } });
+		const newEntry = findStreamingBotEntry(wrapper.vm.messages);
+		// 新条目应继承原始 _startTime
+		expect(newEntry._startTime).toBe(origStartTime);
+		expect(newEntry.id).not.toBe(origEntry.id);
+	});
+
+	test('__ensureContentArray 处理空字符串 content', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		const entry = { message: { content: '' } };
+		const result = wrapper.vm.__ensureContentArray(entry);
+		expect(result).toEqual([]);
+		expect(entry.message.content).toEqual([]);
+	});
+
+	test('__ensureContentArray 处理非字符串 falsy content', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		const entry = { message: { content: null } };
+		const result = wrapper.vm.__ensureContentArray(entry);
+		expect(result).toEqual([]);
+		expect(entry.message.content).toEqual([]);
+	});
+
+	test('__ensureContentArray 保留已有数组 content', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		const existing = [{ type: 'text', text: 'hi' }];
+		const entry = { message: { content: existing } };
+		const result = wrapper.vm.__ensureContentArray(entry);
+		expect(result).toBe(existing);
+	});
+});
+
+describe('ChatPage __reconcileMessages', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.useFakeTimers();
+		const { handler: agentHang } = mockAgentTwoPhaseHang();
+		mockRpc.request.mockImplementation((method, params, options) => {
+			if (method === 'nativeui.sessions.listAll') {
+				return Promise.resolve({ items: [] });
+			}
+			if (method === 'nativeui.sessions.get') {
+				return Promise.resolve({ messages: [] });
+			}
+			const agentRes = agentHang(method, params, options);
+			if (agentRes) return agentRes;
+			return Promise.resolve({});
+		});
+		vi.stubGlobal('crypto', { randomUUID: () => 'test-uuid' });
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('reconcile 失败时保留本地 messages 内容', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		// 模拟本地有内容
+		const localMessages = [
+			{ type: 'message', id: 'u1', message: { role: 'user', content: 'hi' } },
+			{ type: 'message', id: 'b1', message: { role: 'assistant', content: 'reply', stopReason: 'stop' } },
+		];
+		wrapper.vm.messages = [...localMessages];
+
+		// 让 reconcile 的 ensureRpcClient 返回的 rpc 在 listAll 时失败
+		mockRpc.request.mockImplementation((method) => {
+			if (method === 'nativeui.sessions.listAll') {
+				return Promise.reject(new Error('network down'));
+			}
+			return Promise.resolve({});
+		});
+
+		const result = await wrapper.vm.__reconcileMessages();
+		expect(result).toBe(false);
+		// messages 应保留原内容
+		expect(wrapper.vm.messages).toHaveLength(2);
+		expect(wrapper.vm.messages[0].id).toBe('u1');
+		expect(wrapper.vm.messages[1].id).toBe('b1');
+	});
+
+	test('reconcile 成功时更新 sessionKeyById 但不替换 messages', async () => {
+		const wrapper = createWrapper('orphan-sess');
+		await flushPromises();
+
+		// 模拟本地有 _local 内容
+		const localMessages = [
+			{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
+			{ type: 'message', id: '__local_bot_1', _local: true, message: { role: 'assistant', content: 'reply' } },
+		];
+		wrapper.vm.messages = [...localMessages];
+
+		mockRpc.request.mockImplementation((method) => {
+			if (method === 'nativeui.sessions.listAll') {
+				return Promise.resolve({ items: [{ sessionId: 'orphan-sess', sessionKey: 'agent:main:main', indexed: true }] });
+			}
+			return Promise.resolve({});
+		});
+
+		const result = await wrapper.vm.__reconcileMessages();
+		expect(result).toBe(true);
+		// messages 不被替换（避免 v-for key 变化导致 DOM 重建）
+		expect(wrapper.vm.messages).toHaveLength(2);
+		expect(wrapper.vm.messages[0].id).toBe('__local_user_1');
+		// sessionKeyById 已更新
+		expect(wrapper.vm.sessionKeyById['orphan-sess']).toBe('agent:main:main');
+		// sessions store 刷新
+		expect(mockLoadAllSessions).toHaveBeenCalled();
 	});
 });
 

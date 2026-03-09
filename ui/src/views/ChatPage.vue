@@ -101,16 +101,9 @@ export default {
 			messages: [],
 			sessionKeyById: {},
 			botsStore: null,
-			// 流式状态（统一走 agent 方法）
-			streamingText: '',
+			// 流式状态
 			streamingRunId: null,
 			streamingTimer: null,
-			streamingSteps: [],
-			streamingStartTime: null,
-			// 乐观用户消息
-			pendingUserMsg: '',
-			// 思考中指示器
-			isThinking: false,
 			// 自动滚动
 			userScrolledUp: false,
 			// 新建对话 loading
@@ -162,33 +155,7 @@ export default {
 		},
 		/** @type {object[]} 分组后的聊天消息 */
 		chatMessages() {
-			const items = groupSessionMessages(this.messages);
-			// 乐观用户消息
-			if (this.pendingUserMsg) {
-				items.push({
-					id: '__pending_user__',
-					type: 'user',
-					textContent: this.pendingUserMsg,
-					images: [],
-					timestamp: null,
-				});
-			}
-			// 流式/思考中 bot 消息
-			if (this.isThinking || this.streamingText) {
-				items.push({
-					id: '__streaming__',
-					type: 'botTask',
-					resultText: this.streamingText,
-					isStreaming: true,
-					startTime: this.streamingStartTime,
-					model: null,
-					timestamp: null,
-					duration: null,
-					steps: this.streamingSteps,
-					images: [],
-				});
-			}
-			return items;
+			return groupSessionMessages(this.messages);
 		},
 	},
 	async mounted() {
@@ -232,10 +199,7 @@ export default {
 				this.$router.replace(this.detailRoutePrefix === '/topics' ? '/topics' : '/');
 			}
 		},
-		streamingText() {
-			this.scrollToBottom();
-		},
-		'streamingSteps.length'() {
+		'messages.length'() {
 			this.scrollToBottom();
 		},
 	},
@@ -333,7 +297,25 @@ export default {
 			if ((!text && !files?.length) || !this.currentSessionId || this.sending) {
 				return;
 			}
-			this.pendingUserMsg = text;
+			// 构建本地消息 content：有图片时用数组格式，否则用纯文本
+			const imgFiles = files?.filter((f) => f.isImg && f.file) ?? [];
+			let content = text;
+			if (imgFiles.length) {
+				const blocks = [];
+				if (text) blocks.push({ type: 'text', text });
+				for (const f of imgFiles) {
+					const base64 = await fileToBase64(f.file);
+					blocks.push({ type: 'image', data: base64, mimeType: f.file.type || 'image/png' });
+				}
+				content = blocks;
+			}
+			// 乐观追加用户消息到 messages
+			this.messages = [...this.messages, {
+				type: 'message',
+				id: `__local_user_${Date.now()}`,
+				_local: true,
+				message: { role: 'user', content, timestamp: Date.now() },
+			}];
 			this.userScrolledUp = false;
 			this.scrollToBottom();
 			// 统一走 agent 方法，indexed 传 sessionKey，orphan 传 sessionId
@@ -344,11 +326,16 @@ export default {
 			let sessionKey = this.sessionKeyById[this.currentSessionId];
 			console.debug('[chat] sendViaAgent sessionId=%s sessionKey=%s text=%s', this.currentSessionId, sessionKey ?? '(none)', text.slice(0, 80));
 			this.sending = true;
-			this.streamingText = '';
 			this.streamingRunId = null;
-			this.streamingSteps = [];
-			this.streamingStartTime = Date.now();
-			this.isThinking = true;
+			// 追加 streaming bot 条目（思考中指示器）
+			this.messages = [...this.messages, {
+				type: 'message',
+				id: `__local_bot_${Date.now()}`,
+				_local: true,
+				_streaming: true,
+				_startTime: Date.now(),
+				message: { role: 'assistant', content: '', stopReason: null },
+			}];
 
 			// 立即清除输入，提升响应感；失败时恢复
 			const savedInputText = this.inputText;
@@ -429,7 +416,6 @@ export default {
 							console.debug('[chat] agent timeout (120s), runId=%s', this.streamingRunId);
 							this.__agentSettled = true;
 							this.notify.error(this.$t('chat.orphanSendTimeout'));
-							this.pendingUserMsg = '';
 							this.clearStreamingState();
 							this.sending = false;
 							this.rpcClient?.close?.();
@@ -443,17 +429,18 @@ export default {
 				});
 				console.debug('[chat] agent final status=%s runId=%s', final?.status, final?.runId, final);
 
-				// 终态到达，确保清理（lifecycle:end 可能已处理，clearStreamingState 是幂等的）
-				this.pendingUserMsg = '';
-				this.clearStreamingState();
+				// 终态到达，确保清理（lifecycle:end 可能已处理，幂等操作）
+				this.__clearStreamingFlags();
+				this.__cleanupTimersAndListeners();
 				this.sending = false;
 
 				// 容错：未 accepted 且终态非 ok → 恢复输入
 				if (!accepted && final?.status !== 'ok') {
 					this.inputText = savedInputText;
 					this.$refs.chatInput?.restoreFiles(files);
+					this.__removeLocalEntries();
 				} else {
-					await this.loadSessionMessages({ silent: true });
+					await this.__reconcileMessages();
 				}
 			}
 			catch (err) {
@@ -462,7 +449,6 @@ export default {
 				if (!(this.__agentSettled && err?.code === 'WS_CLOSED')) {
 					this.notify.error(err?.message || this.$t('chat.orphanSendFailed'));
 				}
-				this.pendingUserMsg = '';
 				this.clearStreamingState();
 				this.sending = false;
 
@@ -509,74 +495,152 @@ export default {
 			}
 			const { stream, data } = payload;
 			if (stream === 'assistant' && data?.text != null) {
-				this.isThinking = false;
-				this.streamingText = data.text;
+				const entry = this.__findStreamingBotEntry();
+				if (entry) {
+					// 保留已有 thinking blocks，替换/追加 text block
+					const content = this.__ensureContentArray(entry);
+					const nonText = content.filter((b) => b.type !== 'text');
+					entry.message.content = [...nonText, { type: 'text', text: data.text }];
+					entry.message.stopReason = 'stop';
+					this.messages = [...this.messages];
+					this.scrollToBottom();
+				}
 			} else if (stream === 'tool') {
 				if (data?.phase === 'start') {
-					this.streamingSteps = [...this.streamingSteps, { kind: 'toolCall', name: data.name ?? 'unknown' }];
+					const entry = this.__findStreamingBotEntry();
+					if (entry) {
+						const content = this.__ensureContentArray(entry);
+						content.push({ type: 'toolCall', name: data.name ?? 'unknown' });
+						entry.message.stopReason = 'toolUse';
+						this.messages = [...this.messages];
+						this.scrollToBottom();
+					}
 				} else if (data?.phase === 'result' && data.result != null) {
 					const text = typeof data.result === 'string' ? data.result : JSON.stringify(data.result);
-					this.streamingSteps = [...this.streamingSteps, { kind: 'toolResult', text }];
+					const startTime = this.__findStreamingBotEntry()?._startTime;
+					this.messages = [...this.messages,
+						{
+							type: 'message',
+							id: `__local_tr_${Date.now()}`,
+							_local: true,
+							_streaming: true,
+							message: { role: 'toolResult', content: text },
+						},
+						{
+							type: 'message',
+							id: `__local_bot_${Date.now() + 1}`,
+							_local: true,
+							_streaming: true,
+							_startTime: startTime,
+							message: { role: 'assistant', content: '', stopReason: null },
+						},
+					];
 				}
 			} else if (stream === 'thinking' && data?.text != null) {
-				// 替换最后一条 thinking step 或新增
-				const steps = [...this.streamingSteps];
-				const lastIdx = steps.length - 1;
-				if (lastIdx >= 0 && steps[lastIdx].kind === 'thinking') {
-					steps[lastIdx] = { kind: 'thinking', text: data.text };
-				} else {
-					steps.push({ kind: 'thinking', text: data.text });
+				const entry = this.__findStreamingBotEntry();
+				if (entry) {
+					const content = this.__ensureContentArray(entry);
+					const lastIdx = content.length - 1;
+					if (lastIdx >= 0 && content[lastIdx].type === 'thinking') {
+						content[lastIdx] = { type: 'thinking', thinking: data.text };
+					} else {
+						content.push({ type: 'thinking', thinking: data.text });
+					}
+					this.messages = [...this.messages];
+					this.scrollToBottom();
 				}
-				this.streamingSteps = steps;
 			} else if (stream === 'lifecycle') {
 				console.debug('[chat] lifecycle phase=%s', data?.phase);
 				if (data?.phase === 'end') {
 					this.__agentSettled = true;
 					this.sending = false;
-					this.rpcClient?.off?.('agent', this.onAgentEvent);
-					if (this.streamingTimer) {
-						clearTimeout(this.streamingTimer);
-						this.streamingTimer = null;
-					}
-					this.streamingRunId = null;
-					this.isThinking = false;
-					// 静默刷新：使用新连接确保可用；失败则保留流式内容和乐观消息
+					this.__cleanupTimersAndListeners();
+					// Phase 1：清除 streaming 标记 → DOM 平滑过渡到完成态
+					this.__clearStreamingFlags();
+					// Phase 2：后台 reconcile
 					this.rpcClient?.close?.();
 					this.rpcClient = null;
-					let refreshOk = await this.loadSessionMessages({ silent: true });
-					if (!refreshOk) {
-						this.rpcClient = null;
-						refreshOk = await this.loadSessionMessages({ silent: true });
-					}
-					if (refreshOk) {
-						// 刷新成功：持久化消息已加载，清除临时 UI 状态
-						this.streamingText = '';
-						this.streamingSteps = [];
-						this.streamingStartTime = null;
-						this.pendingUserMsg = '';
-					}
-					// 刷新失败：保留 streamingText 和 pendingUserMsg 可见
+					await this.__reconcileMessages();
+					// reconcile 失败时保留本地内容可见
 				} else if (data?.phase === 'error') {
 					this.notify.error(data?.message || this.$t('chat.orphanSendFailed'));
-					this.pendingUserMsg = '';
 					this.clearStreamingState();
 					this.sending = false;
 				}
 			}
 		},
-		/** 清理流式状态 + 取消事件监听 */
+		/** 清理流式状态 + 移除本地条目（用于错误/取消路径） */
 		clearStreamingState() {
-			console.debug('[chat] clearStreamingState runId=%s, textLen=%d', this.streamingRunId, this.streamingText.length);
+			console.debug('[chat] clearStreamingState runId=%s', this.streamingRunId);
+			this.__cleanupTimersAndListeners();
+			this.__removeLocalEntries();
+		},
+		/** 清理定时器和事件监听 */
+		__cleanupTimersAndListeners() {
 			if (this.streamingTimer) {
 				clearTimeout(this.streamingTimer);
 				this.streamingTimer = null;
 			}
-			this.streamingText = '';
 			this.streamingRunId = null;
-			this.streamingSteps = [];
-			this.streamingStartTime = null;
-			this.isThinking = false;
 			this.rpcClient?.off?.('agent', this.onAgentEvent);
+		},
+		/** 移除 messages 中所有 _local 条目 */
+		__removeLocalEntries() {
+			if (this.messages.some((e) => e._local)) {
+				this.messages = this.messages.filter((e) => !e._local);
+			}
+		},
+		/** 清除 messages 中所有 _streaming 标记（DOM 平滑过渡到完成态） */
+		__clearStreamingFlags() {
+			let changed = false;
+			for (const entry of this.messages) {
+				if (entry._streaming) {
+					entry._streaming = false;
+					changed = true;
+				}
+			}
+			if (changed) {
+				this.messages = [...this.messages];
+			}
+		},
+		/** 找到最后一个 _streaming 的 assistant 条目 */
+		__findStreamingBotEntry() {
+			for (let i = this.messages.length - 1; i >= 0; i--) {
+				const e = this.messages[i];
+				if (e._streaming && e.message?.role === 'assistant') return e;
+			}
+			return null;
+		},
+		/** 确保条目的 content 为数组格式 */
+		__ensureContentArray(entry) {
+			const c = entry.message.content;
+			if (Array.isArray(c)) return c;
+			entry.message.content = (c && typeof c === 'string') ? [{ type: 'text', text: c }] : [];
+			return entry.message.content;
+		},
+		/**
+		 * 流式结束后刷新 sessionKeyById 映射。
+		 * 不替换 messages：本地流式内容已完整，替换会因 v-for key 变化导致 DOM 重建和视觉抖动。
+		 * 下次路由切换时 loadSessionMessages 会获取最新 server 数据。
+		 */
+		async __reconcileMessages() {
+			try {
+				const rpc = await this.ensureRpcClient();
+				const list = await rpc.request('nativeui.sessions.listAll', {
+					agentId: 'main', limit: 200, cursor: 0,
+				});
+				const items = Array.isArray(list?.items) ? list.items : [];
+				this.sessionKeyById = Object.fromEntries(
+					items.filter((i) => i.sessionKey && i.indexed !== false)
+						.map((i) => [i.sessionId, i.sessionKey]),
+				);
+				// 同步刷新 sessions store（更新标题等元信息）
+				useSessionsStore().loadAllSessions();
+				return true;
+			} catch (err) {
+				console.warn('[chat] reconcile failed:', err);
+				return false;
+			}
 		},
 		scrollToBottom() {
 			const el = this.$refs.scrollContainer;

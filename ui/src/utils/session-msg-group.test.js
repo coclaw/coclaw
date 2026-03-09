@@ -14,7 +14,7 @@ function userEntry(id, text, ts = null) {
 	};
 }
 
-function assistantEntry(id, { text = null, thinking = null, toolCalls = [], stopReason = 'stop', model = 'test-model', ts = null } = {}) {
+function assistantEntry(id, { text = null, thinking = null, toolCalls = [], stopReason = 'stop', model = 'test-model', ts = null, _streaming = false, _startTime = undefined } = {}) {
 	const content = [];
 	if (thinking) {
 		content.push({ type: 'thinking', thinking });
@@ -25,7 +25,7 @@ function assistantEntry(id, { text = null, thinking = null, toolCalls = [], stop
 	if (text) {
 		content.push({ type: 'text', text });
 	}
-	return {
+	const entry = {
 		type: 'message',
 		id,
 		message: {
@@ -36,10 +36,13 @@ function assistantEntry(id, { text = null, thinking = null, toolCalls = [], stop
 			timestamp: ts,
 		},
 	};
+	if (_streaming) entry._streaming = true;
+	if (_startTime !== undefined) entry._startTime = _startTime;
+	return entry;
 }
 
-function toolResultEntry(id, text, ts = null) {
-	return {
+function toolResultEntry(id, text, ts = null, { _streaming = false } = {}) {
+	const entry = {
 		type: 'message',
 		id,
 		message: {
@@ -51,6 +54,8 @@ function toolResultEntry(id, text, ts = null) {
 			timestamp: ts,
 		},
 	};
+	if (_streaming) entry._streaming = true;
+	return entry;
 }
 
 describe('groupSessionMessages', () => {
@@ -78,6 +83,8 @@ describe('groupSessionMessages', () => {
 			duration: 1000,
 			steps: [],
 			images: [],
+			isStreaming: false,
+			startTime: null,
 		});
 	});
 
@@ -422,6 +429,71 @@ describe('groupSessionMessages', () => {
 		const result = groupSessionMessages(entries);
 		const task = result[1];
 		expect(task.steps).toContainEqual({ kind: 'toolCall', name: 'my_tool' });
+	});
+
+	test('_streaming 条目标记传递到 botTask.isStreaming', () => {
+		const entries = [
+			userEntry('u1', '你好'),
+			assistantEntry('a1', { text: '回复中', _streaming: true }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].isStreaming).toBe(true);
+	});
+
+	test('_startTime 条目标记传递到 botTask.startTime', () => {
+		const entries = [
+			userEntry('u1', '你好'),
+			assistantEntry('a1', { text: '回复', _startTime: 12345 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].startTime).toBe(12345);
+	});
+
+	test('多个 _streaming 条目中只取第一个 _startTime', () => {
+		const entries = [
+			userEntry('u1', '问题'),
+			assistantEntry('a1', {
+				toolCalls: [{ name: 'tool1' }],
+				stopReason: 'toolUse',
+				_streaming: true,
+				_startTime: 1000,
+			}),
+			toolResultEntry('tr1', '结果'),
+			assistantEntry('a2', {
+				text: '最终回答',
+				_streaming: true,
+				_startTime: 2000,
+			}),
+		];
+		const result = groupSessionMessages(entries);
+		const task = result[1];
+		expect(task.isStreaming).toBe(true);
+		// startTime 取第一个条目的值
+		expect(task.startTime).toBe(1000);
+	});
+
+	test('toolResult 条目的 _streaming 也传递到 botTask', () => {
+		const entries = [
+			userEntry('u1', '问题'),
+			assistantEntry('a1', {
+				toolCalls: [{ name: 'tool1' }],
+				stopReason: 'toolUse',
+			}),
+			toolResultEntry('tr1', '结果', null, { _streaming: true }),
+			assistantEntry('a2', { text: '完成' }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].isStreaming).toBe(true);
+	});
+
+	test('无 _streaming 标记时 isStreaming 为 false', () => {
+		const entries = [
+			userEntry('u1', '你好'),
+			assistantEntry('a1', { text: '回复' }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].isStreaming).toBe(false);
+		expect(result[1].startTime).toBeNull();
 	});
 });
 

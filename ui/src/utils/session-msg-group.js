@@ -48,11 +48,20 @@ function groupSessionMessages(entries) {
 				currentTask = createBotTask(entry.id);
 			}
 			processAssistant(currentTask, msg);
+			if (entry._streaming) {
+				currentTask.isStreaming = true;
+			}
+			if (entry._startTime != null && currentTask.startTime == null) {
+				currentTask.startTime = entry._startTime;
+			}
 		} else if (role === 'toolResult') {
 			if (!currentTask) {
 				currentTask = createBotTask(entry.id);
 			}
 			processToolResult(currentTask, msg);
+			if (entry._streaming) {
+				currentTask.isStreaming = true;
+			}
 		}
 	}
 
@@ -83,6 +92,8 @@ function createBotTask(id) {
 		duration: null,
 		steps: [],
 		images: [],
+		isStreaming: false,
+		startTime: null,
 	};
 }
 
