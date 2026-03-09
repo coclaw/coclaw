@@ -1,8 +1,7 @@
-# OpenClaw：Session Key 与 Session ID 关系说明
+# OpenClaw RPC 协议与 Session 机制
 
-> 更新时间：2026-03-02
-> 面向对象：coding agent / 开发同学
-> 目标：厘清 OpenClaw 中 sessionKey 与 sessionId 的关系，为 CoClaw 接入"基于 sessionKey 的继续对话"提供设计依据。
+> 合并自 session-key-vs-session-id.md + chat-vs-agent-semantics.md
+> 更新时间：2026-03-09
 
 ---
 
@@ -52,6 +51,12 @@ sessions.json
 - **一个 sessionId** 始终关联**一个 transcript 文件**
 - **Orphan session**：transcript 文件仍在磁盘，但 sessionKey 已从 `sessions.json` 中删除
 
+### 1.4 Cron Key 语义
+
+- `agent:main:cron:<jobId>`：cron job 级锚点 key（当前指针）
+- `agent:main:cron:<jobId>:run:<runId/sessionId>`：单次运行快照 key
+- run key 不是"子会话层级"，而是运行记录别名；下一次 run 时 base key 会前移
+
 ---
 
 ## 2. Session 生命周期
@@ -73,9 +78,23 @@ sessions.json
    → sessionId 仍可在文件系统发现
 ```
 
+### `agent:main:main` 创建时机
+
+- `agent:main:main` 作为 canonical key 总是可解析
+- 但其在 `sessions.json` 的 entry 通常是**按需创建**（首次实际会话流量写入时）
+- 非"安装后/启动后必定预置 entry"
+
+### 自动 Session Reset
+
+- 自动 reset（会话 freshness 失效后换新 sessionId）不会单独推送专门事件
+- `chat.send` ACK 与 `chat` 事件都不直接包含底层 `sessionId`
+- 若要判断是否重置，需主动查询（详见 `detect-sessionid-change.md`）
+
 ---
 
-## 3. 两种发送接口对比
+## 3. 两种 RPC 发送接口
+
+`chat.send` 与 `agent()` 底层都会触发 agent run，差异主要在 **Gateway 对外协议层**。
 
 ### 3.1 `chat.send`
 
@@ -92,7 +111,7 @@ sessions.json
 ```
 
 - **必须传** `sessionKey`（不接受 sessionId）
-- 内部通过 `loadSessionEntry(sessionKey)` 查找 sessions.json，提取 sessionId
+- 内部通过 `loadSessionEntry(sessionKey)` 查找 sessions.json
 - 如果找不到匹配的 sessionKey → 报错 `No session found`
 
 **ACK**：`{ runId, status: "started" }`
@@ -121,29 +140,6 @@ sessions.json
 }
 ```
 
-**Final 载荷示例**：
-```json
-{
-  "event": "chat",
-  "payload": {
-    "runId": "xxx",
-    "sessionKey": "agent:main:main",
-    "seq": 6,
-    "state": "final",
-    "message": {
-      "role": "assistant",
-      "content": [{ "type": "text", "text": "完整回复文本" }],
-      "timestamp": 1771572313696
-    }
-  }
-}
-```
-
-**特点**：
-- 纯文本流，**不包含工具调用信息**
-- **不包含 thinking 流**
-- 适合简单的 WebChat 场景
-
 ### 3.2 `agent`
 
 ```json
@@ -170,11 +166,17 @@ sessions.json
 - `stream: "tool"` — 工具调用与结果
 - `stream: "thinking"` — 思考过程
 
-**特点**：
-- 丰富的执行轨迹（工具、思考、生命周期）
-- 适合需要展示 agent 执行过程的场景
+### 3.3 `agent(sessionKey)` 可行性
 
-### 3.3 关键差异汇总
+可行，且可保持会话桶语义：
+
+- `agent` 方法支持 `sessionKey` 参数
+- 使用 `sessionKey` 时，OpenClaw 会按 key 读取/更新会话 entry（而不是绕开 key）
+- 因此不会像 `agent(sessionId)`（orphan 恢复场景）那样弱化 key 语义
+
+> `agent(sessionKey)` 不是 `chat.send` 的"调用别名"，但在会话维护层面可覆盖大部分 chat 需求。
+
+### 3.4 关键差异汇总
 
 | 对比项 | chat.send | agent |
 |--------|-----------|-------|
@@ -190,29 +192,9 @@ sessions.json
 
 ---
 
-## 4. 对 CoClaw 的设计启示
-
-### 4.1 当前状态
-
-- **Orphan 续聊**（已实现）：通过 `agent(sessionId=...)` 发送，监听 `agent` 事件流，完整展示 assistant 文本 + 工具步骤 + 思考
-- **Indexed session**（待完善）：当前代码调用 `chat.send` 但**未监听 chat 事件流**，仅等 ACK 后立即 reload，用户看不到流式回复
-
-### 4.2 设计选项
-
-详见后续方案讨论。核心决策点：
-
-1. indexed session 是继续用 `chat.send` + 补全 chat 事件监听，还是统一用 `agent(sessionKey=...)`？
-2. 如果用 `chat.send`，如何处理缺失的工具/思考信息？
-3. 两种路径的 UI 体验是否需要完全一致？
-
----
-
-## 5. 参考来源
+## 4. 参考来源
 
 - OpenClaw 源码：`openclaw-repo/src/gateway/server-methods/chat.ts`（chat.send 实现）
 - OpenClaw 源码：`openclaw-repo/src/gateway/server-methods/agent.ts`（agent 实现）
 - OpenClaw 源码：`openclaw-repo/src/config/sessions/types.ts`（SessionEntry 类型）
 - 验证项目：`tunnel-poc/protocol-dumps/`（实际协议抓包）
-- 验证项目：`tunnel-poc/docs/2026-03-01-orphan-session-resume-verification.md`
-- CoClaw 文档：`docs/orphan-session-resume-via-gateway-agent.md`
-- CoClaw 文档：`docs/openclaw-关键概念.md`

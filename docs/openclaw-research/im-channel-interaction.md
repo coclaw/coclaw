@@ -123,26 +123,9 @@ Gateway 将回复发送到 IM 平台（Telegram/WhatsApp/Slack 等）
 - Transcript 是不可变的追加日志，每条消息/事件一行 JSON
 - Session 元数据包含：`totalTokens`、`model`、`lastChannel`、`lastTo`、`updatedAt` 等
 
-## 五、Session 生命周期
+## 五、Gateway 架构概述
 
-| 事件 | 行为 |
-|------|------|
-| 首次消息 | 按 session key 规则创建新 session |
-| 日重置 | 默认每天 4:00 AM 本地时间重置（新 sessionId） |
-| `/new` 或 `/reset` | 手动创建新 session |
-| 空闲超时 | 可配置的 idle reset（分钟） |
-| 维护清理 | 30 天后剪枝，最多 500 条，transcript 10MB 时轮转 |
-
-### Session Key 的 scope 规则
-
-| 场景 | Session Key 格式 |
-|------|-----------------|
-| DM（默认） | `agent:<agentId>:main` |
-| DM（per-peer） | `agent:<agentId>:<channel>:peer:<senderId>` |
-| 群组 | `agent:<agentId>:<channel>:group:<groupId>` |
-| Telegram 话题 | `agent:<agentId>:telegram:group:<id>:topic:<topicId>` |
-
-## 六、Gateway 架构概述
+> Session 生命周期与 Session Key 命名规则详见 [rpc-and-session.md](rpc-and-session.md) 和 [channel-plugin-deep-analysis.md](channel-plugin-deep-analysis.md)。
 
 ### Gateway 的核心角色
 
@@ -177,7 +160,7 @@ Client              Gateway
 - **序列号追踪**：事件携带 `seq` 字段，客户端检测间隙
 - **指数退避重连**：初始 1000ms，自动重连
 
-## 七、消息路由详细流程
+## 六、消息路由详细流程
 
 ```
 入站 IM 消息（如 Telegram Update）
@@ -208,7 +191,7 @@ Client              Gateway
 用户在 IM 中看到回复
 ```
 
-## 八、对 CoClaw 的启示
+## 七、对 CoClaw 的启示
 
 CoClaw 作为 OpenClaw 的远程 Channel 实现，需要注意以下几点：
 
@@ -217,7 +200,7 @@ CoClaw 作为 OpenClaw 的远程 Channel 实现，需要注意以下几点：
 3. **Queue mode 的选择**：CoClaw 可以根据产品需求选择合适的队列模式（建议默认 `collect`，未来可让用户配置）
 4. **流式推送**：CoClaw UI 应实现类似 Telegram preview streaming 的实时反馈体验
 
-## 九、关键配置参考
+## 八、关键配置参考
 
 ### 消息队列配置
 
@@ -266,7 +249,7 @@ CoClaw 作为 OpenClaw 的远程 Channel 实现，需要注意以下几点：
 }
 ```
 
-## 十、关键源码与文档位置
+## 九、关键源码与文档位置
 
 | 类别 | 路径 |
 |------|------|

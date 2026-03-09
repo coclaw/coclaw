@@ -85,26 +85,16 @@
 
 ---
 
-## 4. 事件流与 run 标识（与 chat.send 的关键差异）
+## 4. 事件流与 run 标识
 
-## 4.1 `chat.send` 路径（对照）
+> chat.send 与 agent 的完整协议对比详见 `rpc-and-session.md`。
 
-- ACK：`status: "started"`
-- 主事件：`event = "chat"`
-  - `state: delta|final|error|aborted`
-
-## 4.2 `agent(sessionId)` 路径（本方案）
+本方案使用 `agent(sessionId)` 路径：
 
 - ACK：`status: "accepted"`（含 `runId`）
-- 主事件：`event = "agent"`
-  - `stream: "lifecycle" | "assistant" | "tool"`
+- 主事件：`event = "agent"`，stream 类型：`lifecycle` / `assistant` / `tool`
 - 可选等待：`agent.wait({ runId })`
-
-## 4.3 runId 规则
-
-- `runId` 是一次执行标识，通常等于请求时传的 `idempotencyKey`。
-- `sessionId` 是会话标识（本次要续写到哪个历史 transcript）。
-- 两者不要混用。
+- `runId` 是一次执行标识（通常等于 `idempotencyKey`），与 `sessionId`（会话标识）不要混用
 
 ---
 
