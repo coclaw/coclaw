@@ -223,6 +223,7 @@ test('bindBotHandler: should pass bind result name through and markBindingBound'
 		bindBotImpl: async () => ({
 			ok: true,
 			botId: 42n,
+			userId: 7n,
 			token: 'tok',
 			rebound: false,
 			bindingCode: '12345678',
@@ -250,6 +251,7 @@ test('bindBotHandler: should pass null name through when bind result name is nul
 		bindBotImpl: async () => ({
 			ok: true,
 			botId: 42n,
+			userId: 7n,
 			token: 'tok',
 			rebound: false,
 			bindingCode: '12345678',

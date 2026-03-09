@@ -14,13 +14,14 @@ export function registerSseClient(userId, res) {
 	const set = sseClients.get(key) ?? new Set();
 	set.add(res);
 	sseClients.set(key, set);
-	console.debug('[coclaw/sse] register userId=%s (type=%s) total=%d', key, typeof userId, set.size);
+	console.info('[coclaw/sse] connected userId=%s clients=%d', key, set.size);
 
 	res.on('close', () => {
 		set.delete(res);
 		if (set.size === 0) {
 			sseClients.delete(key);
 		}
+		console.info('[coclaw/sse] disconnected userId=%s clients=%d', key, set.size);
 	});
 }
 

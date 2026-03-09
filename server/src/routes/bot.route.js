@@ -149,6 +149,7 @@ export async function bindBotHandler(req, res, next, deps = {}) {
 			const status = result.code === 'INVALID_INPUT'
 				? 400
 				: 401;
+			console.warn(`[coclaw/api] bind failed code=${result.code} message=${result.message}`);
 			res.status(status).json({
 				code: result.code,
 				message: result.message,
@@ -157,7 +158,7 @@ export async function bindBotHandler(req, res, next, deps = {}) {
 		}
 
 		if (result.rebound) {
-			console.info(`[coclaw/api] bind rebound botId=${result.botId.toString()} -> revoke old connection`);
+			console.info(`[coclaw/api] bind rebound botId=${result.botId.toString()} userId=${result.userId} -> revoke old connection`);
 			notifyAndDisconnectBotImpl(result.botId, 'token_revoked');
 		}
 		const boundBotName = result.botName ?? null;
@@ -167,7 +168,7 @@ export async function bindBotHandler(req, res, next, deps = {}) {
 			botName: boundBotName,
 		});
 
-		console.info(`[coclaw/api] bind success botId=${result.botId.toString()} rebound=${Boolean(result.rebound)}`);
+		console.info(`[coclaw/api] bind success botId=${result.botId.toString()} userId=${result.userId} rebound=${Boolean(result.rebound)}`);
 		sendToUser(String(result.userId), {
 			event: 'bot.bound',
 			bot: {

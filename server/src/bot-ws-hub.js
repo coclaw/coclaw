@@ -345,11 +345,15 @@ export function attachBotWsHub(httpServer) {
 				return;
 			}
 
+			const remoteIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+				|| req.socket?.remoteAddress
+				|| 'unknown';
+
 			wsServer.handleUpgrade(req, socket, head, (ws) => {
 				const botId = auth.botId;
 				if (role === 'ui') {
 					registerSocket(uiSockets, botId, ws);
-					wsLogInfo(`ui ws connected botId=${botId} userId=${auth.userId ?? 'n/a'}`);
+					wsLogInfo(`ui ws connected botId=${botId} userId=${auth.userId ?? 'n/a'} ip=${remoteIp}`);
 					ws.on('message', (raw) => onUiMessage(botId, ws, raw));
 					// WS 协议级心跳：检测半开连接
 					ws.__isAlive = true;
@@ -364,24 +368,29 @@ export function attachBotWsHub(httpServer) {
 						ws.__isAlive = false;
 						ws.ping();
 					}, 30_000);
-					ws.on('close', () => {
+					ws.on('close', (code, reason) => {
 						clearInterval(uiPingInterval);
 						unregisterSocket(uiSockets, botId, ws);
-						wsLogInfo(`ui ws disconnected botId=${botId}`);
+						wsLogInfo(`ui ws disconnected botId=${botId} code=${code} reason=${String(reason || '')}`);
 					});
 					return;
 				}
 
+				const wasOffline = !botSockets.has(botId);
 				registerSocket(botSockets, botId, ws);
-				wsLogInfo(`bot ws connected botId=${botId}`);
+				wsLogInfo(`bot ws connected botId=${botId} ip=${remoteIp}`);
+				if (wasOffline) {
+					wsLogInfo(`bot online botId=${botId}`);
+				}
 				botStatusEmitter.emit('status', { botId, online: true });
 				void refreshBotName(botId).catch(() => {});
 				ws.on('message', (raw) => onBotMessage(botId, ws, raw));
-				ws.on('close', () => {
+				ws.on('close', (code, reason) => {
 					unregisterSocket(botSockets, botId, ws);
 					rejectAllBotRpcPending(botId);
-					wsLogInfo(`bot ws disconnected botId=${botId}`);
+					wsLogInfo(`bot ws disconnected botId=${botId} code=${code} reason=${String(reason || '')}`);
 					if (!botSockets.has(botId)) {
+						wsLogInfo(`bot offline botId=${botId}`);
 						botStatusEmitter.emit('status', { botId, online: false });
 					}
 				});
