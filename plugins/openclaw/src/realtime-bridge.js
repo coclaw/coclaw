@@ -6,7 +6,6 @@ import nodePath from 'node:path';
 import { clearConfig, getBindingsPath, readConfig } from './config.js';
 import { getRuntime } from './runtime.js';
 
-const DEFAULT_SERVER_URL = 'http://127.0.0.1:3000';
 const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:18789';
 const RECONNECT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -410,7 +409,11 @@ async function connectIfNeeded() {
 		return;
 	}
 
-	const baseUrl = currentPluginConfig?.serverUrl ?? cfg.serverUrl ?? process.env.COCLAW_SERVER_URL ?? DEFAULT_SERVER_URL;
+	const baseUrl = cfg.serverUrl;
+	if (!baseUrl) {
+		currentLogger.warn?.(`[coclaw] realtime bridge skip connect: missing serverUrl in ${bindingsPath}`);
+		return;
+	}
 	const target = toServerWsUrl(baseUrl, cfg.token);
 	const WebSocketCtor = globalThis.WebSocket;
 	if (!WebSocketCtor) {

@@ -74,6 +74,20 @@ test('realtime-bridge should no-op for missing token / missing WebSocket and ref
 	}
 });
 
+test('realtime-bridge should log warning when token exists but serverUrl is missing', async () => {
+	// token 存在但 serverUrl 缺失
+	await writeCfg({ token: 't1' });
+	const warns = [];
+	const logger = { warn: (m) => warns.push(String(m)), info() {} };
+	try {
+		await startRealtimeBridge({ logger, pluginConfig: {} });
+		assert.equal(warns.some((x) => x.includes('missing serverUrl')), true);
+	}
+	finally {
+		await stopRealtimeBridge();
+	}
+});
+
 test('realtime-bridge should log warning when token exists but WebSocket is unavailable', async () => {
 	await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	const warns = [];

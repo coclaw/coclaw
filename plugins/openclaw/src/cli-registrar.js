@@ -8,7 +8,7 @@ import {
 
 function resolveServerUrl(opts, config) {
 	return opts?.server
-		?? config?.plugins?.entries?.['coclaw']?.config?.serverUrl
+		?? config?.plugins?.entries?.['openclaw-coclaw']?.config?.serverUrl
 		?? process.env.COCLAW_SERVER_URL;
 }
 
@@ -69,8 +69,7 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 		.option('--server <url>', 'CoClaw server URL')
 		.action(async (opts) => {
 			try {
-				const serverUrl = resolveServerUrl(opts, config);
-				const result = await unbindBot({ serverUrl });
+				const result = await unbindBot({ serverUrl: opts?.server });
 				/* c8 ignore next */
 				console.log(unbindOk(result));
 				await notifyGateway('coclaw.stopBridge');

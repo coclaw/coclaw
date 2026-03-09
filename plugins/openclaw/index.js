@@ -117,8 +117,8 @@ const plugin = {
 				}
 
 				try {
-					const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
 					if (action === 'bind') {
+						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
 						const result = await bindBot({
 							code: positionals[0],
 							serverUrl,
@@ -128,7 +128,7 @@ const plugin = {
 					}
 
 					if (action === 'unbind') {
-						const result = await unbindBot({ serverUrl });
+						const result = await unbindBot({ serverUrl: options.server });
 						await stopRealtimeBridge();
 						return { text: unbindOk(result) };
 					}

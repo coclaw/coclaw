@@ -1,7 +1,7 @@
 import { bindWithServer, unbindWithServer } from '../api.js';
 import { clearConfig, readConfig, writeConfig } from '../config.js';
 
-const DEFAULT_SERVER_URL = 'http://127.0.0.1:3000';
+const DEFAULT_SERVER_URL = 'https://im.coclaw.net';
 
 export async function bindBot({ code, serverUrl }) {
 	if (!code) {
@@ -50,8 +50,10 @@ export async function unbindBot({ serverUrl }) {
 		throw err;
 	}
 
-	/* c8 ignore next */
-	const baseUrl = serverUrl ?? config.serverUrl ?? process.env.COCLAW_SERVER_URL ?? DEFAULT_SERVER_URL;
+	const baseUrl = serverUrl ?? config.serverUrl;
+	if (!baseUrl) {
+		throw new Error('cannot determine server URL for unbind: missing in bindings config');
+	}
 	let data = null;
 	let alreadyServerUnbound = false;
 	try {

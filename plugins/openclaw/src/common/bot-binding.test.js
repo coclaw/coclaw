@@ -226,3 +226,29 @@ test('bind/unbind should support env and config server url fallbacks', async () 
 		await server.close();
 	}
 });
+
+test('unbindBot should throw when bindings config has no serverUrl', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await setupDir('coclaw-unbind-nourl-');
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	// token 存在但 serverUrl 缺失
+	await writeBindings(dir, { botId: 'b1', token: 'tk' });
+
+	try {
+		await assert.rejects(
+			() => unbindBot({}),
+			(err) => {
+				assert.match(err.message, /cannot determine server URL/);
+				return true;
+			},
+		);
+	}
+	finally {
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});

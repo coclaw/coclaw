@@ -295,7 +295,7 @@ test('serverUrl should resolve from config when --server not provided', async ()
 	const config = {
 		plugins: {
 			entries: {
-				'coclaw': {
+				'openclaw-coclaw': {
 					config: { serverUrl: mock.baseUrl },
 				},
 			},
