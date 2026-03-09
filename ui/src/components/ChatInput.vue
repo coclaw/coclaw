@@ -176,11 +176,12 @@ import { isMobileViewport } from '../utils/layout.js';
 import { useUiStore } from '../stores/ui.store.js';
 import { useNotify } from '../composables/use-notify.js';
 import { formatFileSize, formatFileBlob } from '../utils/file-helper.js';
+import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
 
 export default {
 	name: 'ChatInput',
 	components: {
-		TouchSpeakOverlay: () => import(/* webpackChunkName: "touch-speak" */ './TouchSpeakOverlay.vue'),
+		TouchSpeakOverlay,
 	},
 	props: {
 		modelValue: {

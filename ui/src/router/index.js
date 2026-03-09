@@ -4,6 +4,13 @@ import AuthedLayout from '../layouts/AuthedLayout.vue';
 import LoginPage from '../views/LoginPage.vue';
 import RegisterPage from '../views/RegisterPage.vue';
 import NuxtUiDemoPage from '../views/NuxtUiDemoPage.vue';
+import HomePage from '../views/HomePage.vue';
+import ChatPage from '../views/ChatPage.vue';
+import TopicsPage from '../views/TopicsPage.vue';
+import AddBotPage from '../views/AddBotPage.vue';
+import ManageBotsPage from '../views/ManageBotsPage.vue';
+import UserPage from '../views/UserPage.vue';
+import AboutPage from '../views/AboutPage.vue';
 import { useAuthStore } from '../stores/auth.store.js';
 
 const routes = [
@@ -33,49 +40,49 @@ const routes = [
 			{
 				path: 'home',
 				name: 'home',
-				component: () => import('../views/HomePage.vue'),
+				component: HomePage,
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
 				path: 'chat/:sessionId',
 				name: 'chat',
-				component: () => import('../views/ChatPage.vue'),
+				component: ChatPage,
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
 				path: 'topics',
 				name: 'topics',
-				component: () => import('../views/TopicsPage.vue'),
+				component: TopicsPage,
 				meta: { requiresAuth: true, isTopPage: true },
 			},
 			{
 				path: 'topics/:sessionId',
 				name: 'topics-chat',
-				component: () => import('../views/ChatPage.vue'),
+				component: ChatPage,
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
 				path: 'bots/add',
 				name: 'bots-add',
-				component: () => import('../views/AddBotPage.vue'),
+				component: AddBotPage,
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
 				path: 'bots',
 				name: 'bots',
-				component: () => import('../views/ManageBotsPage.vue'),
+				component: ManageBotsPage,
 				meta: { requiresAuth: true, isTopPage: true },
 			},
 			{
 				path: 'user',
 				name: 'user',
-				component: () => import('../views/UserPage.vue'),
+				component: UserPage,
 				meta: { requiresAuth: true, isTopPage: true },
 			},
 			{
 				path: 'about',
 				name: 'about',
-				component: () => import('../views/AboutPage.vue'),
+				component: AboutPage,
 				meta: { requiresAuth: false, hideMobileNav: true },
 			},
 		],
