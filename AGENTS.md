@@ -168,7 +168,7 @@ pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/open
 
 - 涉及部署时，优先使用 `scripts/deploy-*.sh`，避免临时手敲分散命令。
 - 部署说明与参数以 `docs/deploy-ops.md` 为准。
-- 默认内部发布域名为 `coclaw.qidianchat.com`（`coclaw.net/www` 在 ICP 前可跳过）。
+- 默认内部发布域名为 `im.coclaw.net`。
 
 ## 遵循对应最佳实践
 

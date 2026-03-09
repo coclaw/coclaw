@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'CoClaw',
   webDir: 'dist',
   server: {
-    url: 'https://coclaw.qidianchat.com',
+    url: 'https://im.coclaw.net',
     cleartext: false,
   },
 };

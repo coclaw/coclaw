@@ -1,13 +1,13 @@
 # Internal Deploy Ops (CoClaw)
 
-> 当前仅用于内部环境（`coclaw.qidianchat.com`）。
+> 当前仅用于内部环境（`im.coclaw.net`）。
 > 非完整“一键部署”，而是可复用的半自动脚本。
 
 ## 前置约定
 
 - 默认远端主机：`coclaw.net`
 - 默认远端目录：`~/coclaw`
-- 默认域名：`coclaw.qidianchat.com`
+- 默认域名：`im.coclaw.net`
 - 若本地存在 `~/.ssh/agent.sock`，脚本会自动使用
 
 可通过环境变量覆盖：

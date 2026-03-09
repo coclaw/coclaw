@@ -1,6 +1,6 @@
 # Deploy Scripts (Internal)
 
-这些脚本用于 CoClaw 内部部署（当前目标域名：`coclaw.qidianchat.com`）。
+这些脚本用于 CoClaw 内部部署（当前目标域名：`im.coclaw.net`）。
 
 ## 脚本一览
 
@@ -28,12 +28,12 @@
 
 - `DEPLOY_HOST`（默认 `coclaw.net`）
 - `DEPLOY_REMOTE_DIR`（默认 `~/coclaw`）
-- `DEPLOY_DOMAIN`（默认 `coclaw.qidianchat.com`）
+- `DEPLOY_DOMAIN`（默认 `im.coclaw.net`）
 
 示例：
 
 ```bash
-DEPLOY_HOST=coclaw.net DEPLOY_DOMAIN=coclaw.qidianchat.com ./scripts/deploy-check.sh
+DEPLOY_HOST=coclaw.net DEPLOY_DOMAIN=im.coclaw.net ./scripts/deploy-check.sh
 ```
 
 更多说明见：`docs/deploy-ops.md`

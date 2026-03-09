@@ -62,7 +62,7 @@ CoClaw 当前主线目标：
   - `deploy/static/{www,ui}/releases`（含 `current` 约定）
 - server 镜像策略已落地：`server/Dockerfile`（multi-stage，`node:22-slim`，运行时含 `curl`，含 USTC apt mirror 配置）
 - compose 已支持构建代理参数注入（HTTP/HTTPS/SOCKS5 via `i.coclaw.net`）
-- 临时 app 域名策略已入配置：`coclaw.qidianchat.com`（ICP 完成前替代 `app.coclaw.net`）
+- app 域名已迁移至 `im.coclaw.net`
 
 
 ## 3.1 `server`

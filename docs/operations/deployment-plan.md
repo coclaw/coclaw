@@ -98,8 +98,8 @@ Status: Draft (discussion in progress)
     - keepalive timeout baseline: `65s` (balanced for mixed static + API + websocket workload in this project)
     - note: websocket upgrades are handled separately and are not governed by normal HTTP keepalive timeout semantics
 27. Temporary app domain before ICP completion (confirmed):
-    - use `coclaw.qidianchat.com` as temporary app host in place of `app.coclaw.net`
-    - keep website hosts configured as `coclaw.net` / `www.coclaw.net` (access constraints acceptable before ICP completion)
+    - use `im.coclaw.net` as app host
+    - keep website hosts configured as `coclaw.net` / `www.coclaw.net`
 28. Build-time proxy support (confirmed):
     - support HTTP/HTTPS proxy via `i.coclaw.net:8080`
     - support SOCKS5 proxy via `i.coclaw.net:1080`

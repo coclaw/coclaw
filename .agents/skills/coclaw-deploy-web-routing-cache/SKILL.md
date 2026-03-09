@@ -9,7 +9,7 @@ description: Maintain CoClaw deploy web/app Nginx rules for domain routing, HTTP
 
 ## 1) 先确认目标域名角色
 
-- 应用域名：`coclaw.qidianchat.com`（SPA + `/api/`）
+- 应用域名：`im.coclaw.net`（SPA + `/api/`）
 - 官网主站：`gongyanchat.com`
 - 其余官网域名统一 301 到主站（保留 `$request_uri`）：
   - `www.gongyanchat.com`
@@ -35,7 +35,7 @@ description: Maintain CoClaw deploy web/app Nginx rules for domain routing, HTTP
 - 证书按域分开 `cert-name`：
   - `gongyanchat.com` (+ `www.gongyanchat.com`)
   - `gongyanchat.cn` (+ `www.gongyanchat.cn`)
-  - `coclaw.qidianchat.com`
+  - `im.coclaw.net`
 - 在签发前，先确保 80 端口对应域名已放行 `/.well-known/acme-challenge/`。
 
 常用命令（远端 deploy 目录）：
@@ -63,7 +63,7 @@ docker compose restart nginx
 curl -I https://gongyanchat.com/
 curl -I https://www.gongyanchat.com/
 curl -I https://gongyanchat.cn/test?a=1
-curl -I https://coclaw.qidianchat.com/
+curl -I https://im.coclaw.net/
 ```
 
 检查点：
