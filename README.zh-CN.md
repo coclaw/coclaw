@@ -10,6 +10,8 @@ CoClaw 是一款专为 OpenClaw 生态从零打造的即时通讯客户端。即
 
 功能上与 OpenClaw WebChat 类似，但 CoClaw 在平台集成深度和移动端优先的产品体验上做了更多扩展。
 
+秉承 OpenClaw 的设计哲学，**你的 OpenClaw 实例是唯一的数据真相** —— 所有对话记录、Bot 人设、记忆等用户数据仅保存在你自己的设备上。CoClaw Server 不保存任何用户数据，仅维护用户与其 Bot 的绑定关系并充当通信桥梁。未来，你还可以将 OpenClaw 侧的数据（Bot 人设、记忆等）备份到自己的云盘，获得更多安心保障。
+
 ## 仓库结构
 
 本项目采用 **pnpm monorepo** 组织：

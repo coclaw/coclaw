@@ -10,6 +10,8 @@ CoClaw is a full-featured instant-messaging client built from the ground up for 
 
 While functionally similar to OpenClaw WebChat, CoClaw goes further with deeper platform integration and a mobile-first product experience.
 
+True to OpenClaw's design philosophy, **your OpenClaw instance is the single source of truth** — all conversation history, bot personas, memories, and other user data live exclusively on your own device. CoClaw Server stores none of it; it only maintains the binding between users and their bots and acts as a communication bridge. In the future, you will even be able to back up your OpenClaw-side data (bot personas, memories, etc.) to your own cloud drive for added peace of mind.
+
 ## Repository Structure
 
 This is a **pnpm monorepo**:
