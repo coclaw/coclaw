@@ -118,7 +118,7 @@ test('bindBot should show unknown when already bound without botId', async () =>
 	}
 });
 
-test('unbindBot should validate token and support UNAUTHORIZED cleanup', async () => {
+test('unbindBot should throw NOT_BOUND when no token', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-');
@@ -133,27 +133,6 @@ test('unbindBot should validate token and support UNAUTHORIZED cleanup', async (
 			assert.equal(err.code, 'NOT_BOUND');
 			return true;
 		});
-
-		await writeBindings(dir, { botId: 'b1', token: 'bad', serverUrl: 'http://127.0.0.1:1' });
-		const server = await withServer(async (req, res) => {
-			if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
-				res.writeHead(401, { 'content-type': 'application/json' });
-				res.end(JSON.stringify({ code: 'UNAUTHORIZED' }));
-				return;
-			}
-			res.writeHead(404).end();
-		});
-
-		try {
-			const out = await unbindBot({ serverUrl: server.baseUrl });
-			assert.equal(out.alreadyServerUnbound, true);
-			// bindings.json 应被删除
-			const after = await readBindings(dir);
-			assert.equal(after, null);
-		}
-		finally {
-			await server.close();
-		}
 	}
 	finally {
 		process.chdir(prevCwd);
@@ -161,30 +140,105 @@ test('unbindBot should validate token and support UNAUTHORIZED cleanup', async (
 	}
 });
 
-test('unbindBot should throw non-UNAUTHORIZED server errors', async () => {
+test('unbindBot should always clear local bindings on server UNAUTHORIZED', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
-	const dir = await setupDir('coclaw-unbind-err-');
+	const dir = await setupDir('coclaw-unbind-401-');
 	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
-	await writeBindings(dir, { botId: 'b1', token: 'tk' });
+	await writeBindings(dir, { botId: 'b1', token: 'bad', serverUrl: 'http://127.0.0.1:1' });
 	const server = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
-			res.writeHead(500, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ code: 'INTERNAL_SERVER_ERROR' }));
-			return;
-		}
-		res.writeHead(404).end();
+		res.writeHead(401, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ code: 'UNAUTHORIZED' }));
 	});
+
 	try {
-		await assert.rejects(() => unbindBot({ serverUrl: server.baseUrl }));
+		const out = await unbindBot({ serverUrl: server.baseUrl });
+		assert.ok(out.serverError);
+		const after = await readBindings(dir);
+		assert.equal(after, null);
 	}
 	finally {
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 		await server.close();
+	}
+});
+
+test('unbindBot should always clear local bindings on server 500', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await setupDir('coclaw-unbind-500-');
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	await writeBindings(dir, { botId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
+	const server = await withServer(async (req, res) => {
+		res.writeHead(500, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ code: 'INTERNAL_SERVER_ERROR' }));
+	});
+
+	try {
+		const out = await unbindBot({ serverUrl: server.baseUrl });
+		assert.equal(out.botId, 'b1');
+		assert.ok(out.serverError);
+		const after = await readBindings(dir);
+		assert.equal(after, null);
+	}
+	finally {
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+		await server.close();
+	}
+});
+
+test('unbindBot should always clear local bindings when server is unreachable', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await setupDir('coclaw-unbind-net-');
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	await writeBindings(dir, { botId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
+
+	try {
+		const out = await unbindBot({ serverUrl: 'http://127.0.0.1:1' });
+		assert.equal(out.botId, 'b1');
+		assert.ok(out.serverError);
+		const after = await readBindings(dir);
+		assert.equal(after, null);
+	}
+	finally {
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('unbindBot should clear local bindings when serverUrl is missing', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await setupDir('coclaw-unbind-nourl-new-');
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	// token 存在但 serverUrl 缺失 — 跳过 server 通知，直接清理本地
+	await writeBindings(dir, { botId: 'b1', token: 'tk' });
+
+	try {
+		const out = await unbindBot({});
+		assert.equal(out.botId, 'b1');
+		assert.equal(out.serverError, null);
+		const after = await readBindings(dir);
+		assert.equal(after, null);
+	}
+	finally {
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
 	}
 });
 
@@ -227,28 +281,3 @@ test('bind/unbind should support env and config server url fallbacks', async () 
 	}
 });
 
-test('unbindBot should throw when bindings config has no serverUrl', async () => {
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await setupDir('coclaw-unbind-nourl-');
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	// token 存在但 serverUrl 缺失
-	await writeBindings(dir, { botId: 'b1', token: 'tk' });
-
-	try {
-		await assert.rejects(
-			() => unbindBot({}),
-			(err) => {
-				assert.match(err.message, /cannot determine server URL/);
-				return true;
-			},
-		);
-	}
-	finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});

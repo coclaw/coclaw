@@ -5,10 +5,10 @@ export function bindOk({ botId, rebound }) {
 	return `OK. Bot (${botId}) ${action} to CoClaw.`;
 }
 
-export function unbindOk({ botId, alreadyServerUnbound }) {
+export function unbindOk({ botId, serverError }) {
 	const id = botId ?? 'unknown';
-	const tag = alreadyServerUnbound
-		? ' (server side already cleared, local config removed)'
+	const tag = serverError
+		? ' (server notification failed; you can unbind the orphan bot in the CoClaw app)'
 		: '';
 	return `OK. Bot (${id}) unbound from CoClaw.${tag}`;
 }

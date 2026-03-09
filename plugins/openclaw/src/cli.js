@@ -98,8 +98,10 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
 				console.error(notBound());
 				return 1;
 			}
+			/* c8 ignore start -- 防御性兜底，unbindBot 当前仅抛 NOT_BOUND */
 			throw err;
 		}
+		/* c8 ignore stop */
 	}
 
 	throw new Error(`unknown command: ${command}`);

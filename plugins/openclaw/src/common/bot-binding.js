@@ -51,28 +51,26 @@ export async function unbindBot({ serverUrl }) {
 	}
 
 	const baseUrl = serverUrl ?? config.serverUrl;
-	if (!baseUrl) {
-		throw new Error('cannot determine server URL for unbind: missing in bindings config');
-	}
+
+	// 用户主动解绑：无论 server 通知成功与否，都清理本地绑定
 	let data = null;
-	let alreadyServerUnbound = false;
-	try {
-		data = await unbindWithServer({
-			baseUrl,
-			token: config.token,
-		});
-	}
-	catch (err) {
-		if (err?.response?.data?.code !== 'UNAUTHORIZED') {
-			throw err;
+	let serverError = null;
+	if (baseUrl) {
+		try {
+			data = await unbindWithServer({
+				baseUrl,
+				token: config.token,
+			});
 		}
-		alreadyServerUnbound = true;
+		catch (err) {
+			serverError = err;
+		}
 	}
 
 	await clearConfig();
 
 	return {
 		botId: data?.botId ?? config.botId,
-		alreadyServerUnbound,
+		serverError,
 	};
 }

@@ -250,12 +250,10 @@ test('unbind action should handle NOT_BOUND error', async () => {
 	}
 });
 
-test('unbind action should handle generic errors', async () => {
-	const errors = [];
+test('unbind action should succeed with warning when server fails', async () => {
+	const logs = [];
 	const oldLog = console.log;
-	const oldErr = console.error;
-	console.log = () => {};
-	console.error = (...args) => errors.push(args.join(' '));
+	console.log = (...args) => logs.push(args.join(' '));
 
 	const dir = await setupDir('coclaw-cli-reg-unbind-err-');
 	// 有 token 但 server 不可达
@@ -266,16 +264,13 @@ test('unbind action should handle generic errors', async () => {
 	registerCoclawCli({ program, config: {}, logger }, { spawn: noopSpawn });
 
 	const unbind = program.commands.get('coclaw').commands.get('unbind');
-	const prevExitCode = process.exitCode;
 
 	try {
 		await unbind.actionFn({ server: 'http://127.0.0.1:1' });
-		assert.equal(errors.some((l) => l.includes('Error:')), true);
-		assert.equal(process.exitCode, 1);
+		// 应该成功 unbind，日志中包含 server notification failed 提示
+		assert.ok(logs.some((l) => l.includes('unbound') && l.includes('server notification failed')));
 	} finally {
-		process.exitCode = prevExitCode;
 		console.log = oldLog;
-		console.error = oldErr;
 	}
 });
 

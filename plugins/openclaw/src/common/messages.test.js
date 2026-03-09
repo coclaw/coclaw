@@ -15,8 +15,8 @@ test('unbindOk should format unbind success message', () => {
 	assert.equal(unbindOk({ botId: 'b1' }), 'OK. Bot (b1) unbound from CoClaw.');
 	assert.equal(unbindOk({}), 'OK. Bot (unknown) unbound from CoClaw.');
 	assert.equal(
-		unbindOk({ botId: 'b1', alreadyServerUnbound: true }),
-		'OK. Bot (b1) unbound from CoClaw. (server side already cleared, local config removed)',
+		unbindOk({ botId: 'b1', serverError: new Error('fetch fail') }),
+		'OK. Bot (b1) unbound from CoClaw. (server notification failed; you can unbind the orphan bot in the CoClaw app)',
 	);
 });
 

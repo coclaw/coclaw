@@ -79,8 +79,10 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 					process.exitCode = 1;
 					return;
 				}
+				/* c8 ignore start -- 防御性兜底，unbindBot 当前仅抛 NOT_BOUND */
 				console.error(`Error: ${resolveErrorMessage(err)}`);
 				process.exitCode = 1;
 			}
+			/* c8 ignore stop */
 		});
 }

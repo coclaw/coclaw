@@ -264,14 +264,22 @@ test('cli unbind should return 1 when not bound', async () => {
 	}
 });
 
-test('cli unbind should re-throw non-NOT_BOUND errors', async () => {
+test('cli unbind should succeed with warning when server fails', async () => {
+	const logs = [];
+	const oldLog = console.log;
+	console.log = (...args) => logs.push(args.join(' '));
+
 	const dir = await setupDir('coclaw-cli-unbind-rethrow-');
-	// 有 token 但 server 不可达，unbind 尝试连接会抛网络错误
+	// 有 token 但 server 不可达
 	const bp = nodePath.join(dir, 'coclaw', 'bindings.json');
 	await fs.mkdir(nodePath.dirname(bp), { recursive: true });
 	await fs.writeFile(bp, JSON.stringify({ default: { botId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' } }), 'utf8');
 
-	await assert.rejects(
-		() => main(['unbind', '--server', 'http://127.0.0.1:1'], { spawn: noopSpawn }),
-	);
+	try {
+		const code = await main(['unbind', '--server', 'http://127.0.0.1:1'], { spawn: noopSpawn });
+		assert.equal(code, 0);
+		assert.ok(logs.some((l) => l.includes('unbound') && l.includes('server notification failed')));
+	} finally {
+		console.log = oldLog;
+	}
 });
