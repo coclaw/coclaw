@@ -143,6 +143,51 @@ test('deriveTitle should strip OC-injected prefixes and suffixes', async () => {
 	assert.equal(byId('msgid')?.derivedTitle, '正常内容');
 	assert.equal(byId('meta')?.derivedTitle, '实际内容');
 	assert.equal(Object.prototype.hasOwnProperty.call(byId('empty'), 'derivedTitle'), false);
+
+	// operator configured 策略前缀
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'opconf.jsonl'),
+		JSON.stringify({
+			type: 'message',
+			message: {
+				role: 'user',
+				content: 'Skills store policy (operator configured): 1. Rule one.\n2. Rule two.\n\n[Tue 2026-03-10 00:44 UTC] 现在几点',
+			},
+		}) + '\n',
+		'utf8',
+	);
+
+	// 多个连续 inbound metadata 块
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'multi.jsonl'),
+		JSON.stringify({
+			type: 'message',
+			message: {
+				role: 'user',
+				content: 'Conversation info (untrusted metadata):\n```json\n{"id":"x"}\n```\n\nSender (untrusted metadata):\n```json\n{"label":"ui"}\n```\n\n[Wed 2026-02-18 20:12 GMT+8] 多块标题',
+			},
+		}) + '\n',
+		'utf8',
+	);
+
+	// (untrusted, for context) 变体
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'ctx.jsonl'),
+		JSON.stringify({
+			type: 'message',
+			message: {
+				role: 'user',
+				content: 'Thread starter (untrusted, for context):\n```json\n{"body":"hi"}\n```\n\n上下文标题',
+			},
+		}) + '\n',
+		'utf8',
+	);
+
+	const res2 = manager.listAll({});
+	const byId2 = (id) => res2.items.find((it) => it.sessionId === id);
+	assert.equal(byId2('opconf')?.derivedTitle, '现在几点');
+	assert.equal(byId2('multi')?.derivedTitle, '多块标题');
+	assert.equal(byId2('ctx')?.derivedTitle, '上下文标题');
 });
 
 test('get should prioritize reset transcript and guard missing session', async () => {

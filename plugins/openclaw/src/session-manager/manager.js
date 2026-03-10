@@ -5,8 +5,10 @@ import nodePath from 'node:path';
 
 const DERIVED_TITLE_MAX_LEN = 60;
 
-// OC 注入的 untrusted metadata 头部
-const CONV_INFO_RE = /^\w[\w ]* \(untrusted metadata\):\n```json\n[\s\S]*?\n```\n\n/;
+// OC 注入的 inbound metadata 头部（Conversation info / Sender / Thread starter 等）
+const INBOUND_META_RE = /^\w[\w ]* \(untrusted[^)]*\):\n```json\n[\s\S]*?\n```\n\n/;
+// operator 级策略/指令前缀，如 Skills store policy (operator configured): ...
+const OPERATOR_POLICY_RE = /^\w[\w ]* \(operator configured\):[\s\S]*?\n\n/;
 // OC 注入的用户消息时间戳前缀
 const USER_TS_RE = /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+[^\]]+\]\s*/;
 // 尾部 [message_id: xxx]
@@ -14,10 +16,20 @@ const MSG_ID_SUFFIX_RE = /\n\[message_id:\s*[^\]]+\]\s*$/;
 // 定时任务前缀
 const CRON_UUID_RE = /\[cron:[0-9a-f-]+(?:\s+([^\]]*))?\]\s*/;
 
+function stripLeadingPattern(text, re) {
+	let prev;
+	do {
+		prev = text;
+		text = text.replace(re, '');
+	} while (text !== prev);
+	return text;
+}
+
 function cleanTitleText(text) {
 	if (!text) return '';
-	return text
-		.replace(CONV_INFO_RE, '')
+	let s = stripLeadingPattern(text, INBOUND_META_RE);
+	s = stripLeadingPattern(s, OPERATOR_POLICY_RE);
+	return s
 		.replace(USER_TS_RE, '')
 		.replace(CRON_UUID_RE, (_, taskName) => taskName ? `${taskName} ` : '')
 		.replace(MSG_ID_SUFFIX_RE, '')
