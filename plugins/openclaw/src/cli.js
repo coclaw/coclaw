@@ -66,6 +66,8 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
 	}
 
 	if (command === 'bind') {
+		// 先断开 bridge，避免 unbindWithServer 触发的 bot.unbound 竞态
+		await notifyGateway('coclaw.stopBridge', deps);
 		const result = await bindBot({
 			code: positionals[0],
 			serverUrl: options.server,

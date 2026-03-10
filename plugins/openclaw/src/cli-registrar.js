@@ -47,6 +47,8 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 		.option('--server <url>', 'CoClaw server URL')
 		.action(async (code, opts) => {
 			try {
+				// 先断开 bridge，避免 unbindWithServer 触发的 bot.unbound 竞态
+				await notifyGateway('coclaw.stopBridge');
 				const serverUrl = resolveServerUrl(opts, config);
 				const result = await bindBot({ code, serverUrl });
 				/* c8 ignore next */

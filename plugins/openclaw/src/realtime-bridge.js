@@ -574,12 +574,24 @@ export class RealtimeBridge {
 			this.reconnectTimer = null;
 		}
 		this.__closeGatewayWs();
-		if (this.serverWs) {
+		const sock = this.serverWs;
+		if (sock) {
 			this.intentionallyClosed = true;
-			try { this.serverWs.close(1000, 'stopped'); }
-			/* c8 ignore next */
-			catch {}
 			this.serverWs = null;
+			// 等待 WebSocket 真正关闭，避免残留连接收到 bot.unbound 等消息
+			/* c8 ignore next -- readyState === 3 时跳过 */
+			if (sock.readyState === 3) return;
+			await new Promise((resolve) => {
+				const timer = setTimeout(resolve, 3000);
+				timer.unref?.();
+				sock.addEventListener('close', () => {
+					clearTimeout(timer);
+					resolve();
+				}, { once: true });
+				try { sock.close(1000, 'stopped'); }
+				/* c8 ignore next */
+				catch { clearTimeout(timer); resolve(); }
+			});
 		}
 	}
 }
@@ -605,5 +617,4 @@ export async function stopRealtimeBridge() {
 		return;
 	}
 	await singleton.stop();
-	singleton = null;
 }

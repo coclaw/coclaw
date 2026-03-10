@@ -118,6 +118,8 @@ const plugin = {
 
 				try {
 					if (action === 'bind') {
+						// 先断开 bridge，避免 unbindWithServer 触发的 bot.unbound 竞态
+						await stopRealtimeBridge();
 						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
 						const result = await bindBot({
 							code: positionals[0],
