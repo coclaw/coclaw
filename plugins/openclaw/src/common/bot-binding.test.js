@@ -90,31 +90,121 @@ test('bindBot should reject invalid server response', async () => {
 	}
 });
 
-test('bindBot should reject when already bound', async () => {
-	const dir = await setupDir('coclaw-bind-dup-');
-	await writeBindings(dir, { botId: 'b-exist', token: 'tk-exist' });
+test('bindBot should rebind when already bound', async () => {
+	const dir = await setupDir('coclaw-bind-rebind-');
+
+	// 旧 server：接收 unbind 请求
+	const oldUnbindCalls = [];
+	const oldServer = await withServer(async (req, res) => {
+		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
+			oldUnbindCalls.push(req.url);
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ botId: 'b-old' }));
+			return;
+		}
+		res.writeHead(404).end();
+	});
+
+	// 新 server：接收 bind 请求
+	const newServer = await withServer(async (req, res) => {
+		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			return;
+		}
+		res.writeHead(404).end();
+	});
+
+	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
 
 	try {
-		await bindBot({ code: 'newcode', serverUrl: 'http://127.0.0.1:1' });
-		assert.fail('should have thrown');
-	} catch (err) {
-		assert.match(err.message, /already bound/);
-		assert.equal(err.code, 'ALREADY_BOUND');
-		assert.equal(err.botId, 'b-exist');
+		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.botId, 'b-new');
+		assert.equal(out.previousBotId, 'b-old');
+		assert.equal(oldUnbindCalls.length, 1);
+
+		// 验证新绑定已写入
+		const saved = await readBindings(dir);
+		assert.equal(saved.default.botId, 'b-new');
+		assert.equal(saved.default.serverUrl, newServer.baseUrl);
+	}
+	finally {
+		await oldServer.close();
+		await newServer.close();
 	}
 });
 
-test('bindBot should show unknown when already bound without botId', async () => {
-	const dir = await setupDir('coclaw-bind-nobot-');
+test('bindBot should rebind even when old server is unreachable', async () => {
+	const dir = await setupDir('coclaw-bind-rebind-noserver-');
+
+	const newServer = await withServer(async (req, res) => {
+		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			return;
+		}
+		res.writeHead(404).end();
+	});
+
+	// 旧 serverUrl 不可达
+	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: 'http://127.0.0.1:1' });
+
+	try {
+		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.botId, 'b-new');
+		assert.equal(out.previousBotId, 'b-old');
+	}
+	finally {
+		await newServer.close();
+	}
+});
+
+test('bindBot should rebind with previousBotId=unknown when old config has no botId', async () => {
+	const dir = await setupDir('coclaw-bind-rebind-nobot-');
+
+	const newServer = await withServer(async (req, res) => {
+		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			return;
+		}
+		res.writeHead(404).end();
+	});
+
 	await writeBindings(dir, { token: 'tk-orphan' });
 
 	try {
-		await bindBot({ code: 'newcode', serverUrl: 'http://127.0.0.1:1' });
-		assert.fail('should have thrown');
-	} catch (err) {
-		assert.match(err.message, /already bound/);
-		assert.equal(err.code, 'ALREADY_BOUND');
-		assert.equal(err.botId, undefined);
+		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.botId, 'b-new');
+		assert.equal(out.previousBotId, 'unknown');
+	}
+	finally {
+		await newServer.close();
+	}
+});
+
+test('bindBot should rebind without serverUrl in old config (skip server unbind)', async () => {
+	const dir = await setupDir('coclaw-bind-rebind-nourl-');
+
+	const newServer = await withServer(async (req, res) => {
+		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			return;
+		}
+		res.writeHead(404).end();
+	});
+
+	// 旧绑定无 serverUrl — 跳过 server 解绑
+	await writeBindings(dir, { botId: 'b-old', token: 'tk-old' });
+
+	try {
+		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.botId, 'b-new');
+		assert.equal(out.previousBotId, 'b-old');
+	}
+	finally {
+		await newServer.close();
 	}
 });
 

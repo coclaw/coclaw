@@ -129,32 +129,36 @@ test('bind action should call bindBot and notify gateway', async () => {
 	}
 });
 
-test('bind action should handle ALREADY_BOUND error', async () => {
-	const errors = [];
+test('bind action should rebind when already bound', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const logs = [];
 	const oldLog = console.log;
-	const oldErr = console.error;
-	console.log = () => {};
-	console.error = (...args) => errors.push(args.join(' '));
+	console.log = (...args) => logs.push(args.join(' '));
 
-	const dir = await setupDir('coclaw-cli-reg-already-');
-	await writeBindings(dir, { botId: 'b-dup', token: 'tk-dup' });
+	const mock = await createMockServer();
+	const dir = await setupDir('coclaw-cli-reg-rebind-');
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: 'http://127.0.0.1:1' });
 
 	const program = createMockProgram();
 	const logger = { info() {}, warn() {} };
 	registerCoclawCli({ program, config: {}, logger }, { spawn: noopSpawn });
 
 	const bind = program.commands.get('coclaw').commands.get('bind <code>');
-	const prevExitCode = process.exitCode;
 
 	try {
-		await bind.actionFn('newcode', { server: 'http://127.0.0.1:1' });
-		assert.equal(errors.some((l) => l.includes('Already bound to CoClaw')), true);
-		assert.equal(errors.some((l) => l.includes('openclaw coclaw unbind')), true);
-		assert.equal(process.exitCode, 1);
+		await bind.actionFn('newcode', { server: mock.baseUrl });
+		assert.ok(logs.some((l) => l.includes('bound to CoClaw')));
+		assert.ok(logs.some((l) => l.includes('previous binding')));
 	} finally {
-		process.exitCode = prevExitCode;
 		console.log = oldLog;
-		console.error = oldErr;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+		await mock.close();
 	}
 });
 

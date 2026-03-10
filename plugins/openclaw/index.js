@@ -1,7 +1,7 @@
 import { bindBot, unbindBot } from './src/common/bot-binding.js';
 import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
-import { alreadyBound, notBound, bindOk, unbindOk } from './src/common/messages.js';
+import { notBound, bindOk, unbindOk } from './src/common/messages.js';
 import { coclawChannelPlugin } from './src/channel-plugin.js';
 import { refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
 import { setRuntime } from './src/runtime.js';
@@ -136,9 +136,6 @@ const plugin = {
 					return { text: buildHelpText() };
 				}
 				catch (err) {
-					if (err.code === 'ALREADY_BOUND') {
-						return { text: alreadyBound(err) };
-					}
 					if (err.code === 'NOT_BOUND') {
 						return { text: notBound() };
 					}

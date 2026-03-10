@@ -9,11 +9,20 @@ export async function bindBot({ code, serverUrl }) {
 	}
 
 	const config = await readConfig();
+
+	// 已绑定时自动解绑再重绑（解绑尽力而为，不阻塞新绑定）
+	let previousBotId;
 	if (config?.token) {
-		const err = new Error('already bound, please unbind first');
-		err.code = 'ALREADY_BOUND';
-		err.botId = config.botId;
-		throw err;
+		previousBotId = config.botId || 'unknown';
+		const oldBaseUrl = config.serverUrl;
+		if (oldBaseUrl) {
+			try {
+				await unbindWithServer({ baseUrl: oldBaseUrl, token: config.token });
+			} catch {
+				// 尽力而为，忽略解绑错误
+			}
+		}
+		await clearConfig();
 	}
 
 	/* c8 ignore next */
@@ -27,18 +36,17 @@ export async function bindBot({ code, serverUrl }) {
 		throw new Error('invalid bind response');
 	}
 
-	const next = {
-		...config,
+	await writeConfig({
 		serverUrl: baseUrl,
 		botId: data.botId,
 		token: data.token,
 		boundAt: new Date().toISOString(),
-	};
-	await writeConfig(next);
+	});
 
 	return {
 		botId: data.botId,
 		rebound: Boolean(data.rebound),
+		previousBotId,
 	};
 }
 

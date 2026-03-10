@@ -7,7 +7,7 @@ import { bindBot, unbindBot } from './common/bot-binding.js';
 import { resolveErrorMessage } from './common/errors.js';
 import { callGatewayMethod } from './common/gateway-notify.js';
 import {
-	alreadyBound, notBound, bindOk, unbindOk,
+	notBound, bindOk, unbindOk,
 	gatewayNotified, gatewayNotifyFailed,
 } from './common/messages.js';
 
@@ -66,22 +66,14 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
 	}
 
 	if (command === 'bind') {
-		try {
-			const result = await bindBot({
-				code: positionals[0],
-				serverUrl: options.server,
-			});
-			/* c8 ignore next */
-			console.log(bindOk(result));
-			await notifyGateway('coclaw.refreshBridge', deps);
-			return 0;
-		} catch (err) {
-			if (err.code === 'ALREADY_BOUND') {
-				console.error(alreadyBound(err));
-				return 1;
-			}
-			throw err;
-		}
+		const result = await bindBot({
+			code: positionals[0],
+			serverUrl: options.server,
+		});
+		/* c8 ignore next */
+		console.log(bindOk(result));
+		await notifyGateway('coclaw.refreshBridge', deps);
+		return 0;
 	}
 
 	if (command === 'unbind') {

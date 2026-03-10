@@ -92,30 +92,32 @@ test('cli should print help and support bind/unbind flow', async () => {
 	}
 });
 
-test('cli bind should re-throw non-ALREADY_BOUND errors', async () => {
+test('cli bind should re-throw errors from bindBot', async () => {
 	await setupDir('coclaw-cli-rethrow-');
 	await assert.rejects(() => main(['bind'], { spawn: noopSpawn }), /binding code is required/);
 });
 
-test('cli bind should return 1 when already bound', async () => {
-	const errors = [];
+test('cli bind should rebind when already bound', async () => {
+	const logs = [];
 	const oldLog = console.log;
-	const oldErr = console.error;
-	console.log = () => {};
-	console.error = (...args) => errors.push(args.join(' '));
+	const oldWarn = console.warn;
+	console.log = (...args) => logs.push(args.join(' '));
+	console.warn = () => {};
 
-	const dir = await setupDir('coclaw-cli-dup-');
-	await writeBindings(dir, { botId: 'b-dup', token: 'tk-dup' });
+	const mock = await createMockServer();
+	const dir = await setupDir('coclaw-cli-rebind-');
+	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: 'http://127.0.0.1:1' });
 
 	try {
-		const code = await main(['bind', 'newcode', '--server', 'http://127.0.0.1:1'], { spawn: noopSpawn });
-		assert.equal(code, 1);
-		assert.equal(errors.some((line) => line.includes('Already bound to CoClaw')), true);
-		assert.equal(errors.some((line) => line.includes('openclaw coclaw unbind')), true);
+		const code = await main(['bind', 'newcode', '--server', mock.baseUrl], { spawn: noopSpawn });
+		assert.equal(code, 0);
+		assert.ok(logs.some((l) => l.includes('bound to CoClaw')));
+		assert.ok(logs.some((l) => l.includes('previous binding')));
 	}
 	finally {
 		console.log = oldLog;
-		console.error = oldErr;
+		console.warn = oldWarn;
+		await mock.close();
 	}
 });
 

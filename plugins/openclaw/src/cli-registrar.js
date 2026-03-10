@@ -2,7 +2,7 @@ import { bindBot, unbindBot } from './common/bot-binding.js';
 import { resolveErrorMessage } from './common/errors.js';
 import { callGatewayMethod } from './common/gateway-notify.js';
 import {
-	alreadyBound, notBound, bindOk, unbindOk,
+	notBound, bindOk, unbindOk,
 	gatewayNotified, gatewayNotifyFailed,
 } from './common/messages.js';
 
@@ -53,11 +53,6 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 				console.log(bindOk(result));
 				await notifyGateway('coclaw.refreshBridge');
 			} catch (err) {
-				if (err.code === 'ALREADY_BOUND') {
-					console.error(alreadyBound(err));
-					process.exitCode = 1;
-					return;
-				}
 				console.error(`Error: ${resolveErrorMessage(err)}`);
 				process.exitCode = 1;
 			}
