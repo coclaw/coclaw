@@ -98,6 +98,8 @@
 ## TODO
 
 - 优化 `ChatPage` 消息渲染样式（角色分组、时间信息、滚动体验）。
-- 在 MainList 增加“可续聊/只读”显式标记，降低 orphan 会话误操作。
+- 在 MainList 增加”可续聊/只读”显式标记，降低 orphan 会话误操作。
 - Split auth page into reusable components after prototype stage.
 - Add route guards and auth-aware navigation.
+- [Android/iOS] Overscroll 橡皮筋效果：当前 WebView 滚到边界时有浏览器默认的 overscroll 视觉效果，与原生 App 的 stretch 效果不一致。CSS `overscroll-behavior: none` 可去掉效果但会变成硬停；若要模拟原生 stretch 效果需 Android 原生层面处理。待后续决策。
+- [Android/iOS] 文本选择行为：交互元素（按钮、导航等）长按时可能触发浏览器选区，与原生 App 行为不一致。内容区（聊天消息等）的长按复制已与原生一致，暂不处理。

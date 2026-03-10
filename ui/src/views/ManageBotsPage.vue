@@ -1,5 +1,5 @@
 <template>
-	<main class="flex-1 px-4 pt-4 pb-8 lg:px-5">
+	<main class="flex-1 overflow-auto px-4 pt-4 pb-8 lg:px-5">
 		<section class="mx-auto flex w-full max-w-3xl flex-col gap-4">
 			<div class="flex items-center justify-between gap-3">
 				<h1 class="text-lg font-medium">{{ $t('layout.manageBots') }}</h1>

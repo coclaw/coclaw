@@ -35,9 +35,27 @@ export async function initCapacitorApp(router) {
 async function setupStatusBar() {
 	const { StatusBar, Style } = await import('@capacitor/status-bar');
 	await StatusBar.setOverlaysWebView({ overlay: true });
-	await StatusBar.setStyle({ style: Style.Dark });
 	await StatusBar.setBackgroundColor({ color: '#00000000' });
-	console.log('[capacitor] StatusBar configured (overlay + transparent)');
+	// 根据当前主题设置初始样式
+	const isDark = document.documentElement.classList.contains('dark');
+	await StatusBar.setStyle({ style: isDark ? Style.Dark : Style.Light });
+	console.log('[capacitor] StatusBar configured (overlay + transparent, style=%s)', isDark ? 'dark' : 'light');
+}
+
+/**
+ * 根据当前主题同步状态栏文字样式
+ * @param {'dark' | 'light'} appliedTheme - 当前生效的主题
+ */
+export async function syncStatusBarStyle(appliedTheme) {
+	if (!isNative) return;
+	try {
+		const { StatusBar, Style } = await import('@capacitor/status-bar');
+		// Dark 主题 → Style.Dark（浅色图标）；Light 主题 → Style.Light（深色图标）
+		await StatusBar.setStyle({ style: appliedTheme === 'dark' ? Style.Dark : Style.Light });
+	}
+	catch (e) {
+		console.warn('[capacitor] syncStatusBarStyle failed:', e);
+	}
 }
 
 function setupBackButton(router) {

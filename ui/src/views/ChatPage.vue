@@ -1,12 +1,12 @@
 <template>
 	<!--
-		⚠️ 布局关键约束 — 请勿添加 flex-1 ⚠️
-		此根元素用 h-dvh 固定为视口高度，内部 <main> 用 flex-1+min-h-0 实现滚动。
-		若加上 flex-1，当父容器（AuthedLayout section）无固定 height（仅 min-height）时，
-		flex 算法会以 max-content 尺寸替代 h-dvh，导致整个页面被消息内容撑开，
-		header/footer 随之滚出视口。此 bug 已多次复现，切勿重犯。
+		⚠️ 布局关键约束 ⚠️
+		- 原生壳：AuthedLayout 已约束视口高度，此处用 flex-1+min-h-0 填充剩余空间
+		- Web：父容器仅 min-height，需 h-dvh 硬约束以固定 header/footer（临时方案，
+		  后续全面改为浏览器滚动后可移除 h-dvh）
+		- 勿同时加 flex-1 + h-dvh，否则 flex 算法以 max-content 撑开父容器
 	-->
-	<div data-testid="chat-root" class="relative flex h-dvh flex-col overflow-hidden">
+	<div data-testid="chat-root" class="relative flex flex-col overflow-hidden" :class="chatRootClasses">
 		<MobilePageHeader :title="chatTitle">
 			<template v-if="isMainSession" #actions>
 				<UButton
@@ -80,6 +80,7 @@ import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { groupSessionMessages, cleanDerivedTitle } from '../utils/session-msg-group.js';
 import { fileToBase64 } from '../utils/file-helper.js';
+import { isNative } from '../utils/capacitor-app.js';
 
 export default {
 	name: 'ChatPage',
@@ -111,6 +112,10 @@ export default {
 		};
 	},
 	computed: {
+		chatRootClasses() {
+			// 原生壳：flex-1 填充父容器；Web：h-dvh 硬约束视口
+			return isNative ? 'flex-1 min-h-0' : 'h-dvh';
+		},
 		currentSessionId() {
 			return typeof this.$route.params?.sessionId === 'string'
 				? this.$route.params.sessionId.trim()

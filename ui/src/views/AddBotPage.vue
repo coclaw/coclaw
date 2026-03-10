@@ -1,7 +1,7 @@
 <template>
 	<div class="flex flex-1 flex-col">
 		<MobilePageHeader :title="$t('bots.addBot')" />
-	<main class="flex-1 px-4 pt-4 pb-8 lg:px-5">
+	<main class="flex-1 overflow-auto px-4 pt-4 pb-8 lg:px-5">
 		<section class="mx-auto flex w-full max-w-3xl flex-col gap-4">
 			<h1 class="hidden text-lg font-medium md:block">{{ $t('bots.addBot') }}</h1>
 
