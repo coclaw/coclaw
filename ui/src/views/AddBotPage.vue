@@ -1,140 +1,95 @@
 <template>
 	<div class="flex min-h-0 flex-1 flex-col">
-		<MobilePageHeader :title="$t('bots.addBot')" />
+		<MobilePageHeader :title="$t('bots.addBot')">
+			<template v-if="expired" #actions>
+				<UButton size="md" variant="ghost" color="primary" :loading="loading" @click="startBinding">
+					{{ $t('bots.restart') }}
+				</UButton>
+			</template>
+		</MobilePageHeader>
 	<main class="flex-1 overflow-auto px-4 pt-4 pb-8 lg:px-5">
 		<section class="mx-auto flex w-full max-w-3xl flex-col gap-4">
-			<h1 class="hidden text-lg font-medium md:block">{{ $t('bots.addBot') }}</h1>
-
-			<!-- bot name 输入暂时隐藏；将来绑定非 OpenClaw bot 时可启用 -->
-			<div v-if="false">
-				<label class="mb-1 block text-sm text-muted">{{ $t('bots.botNameOptional') }}</label>
-				<UInput v-model="botName" :placeholder="$t('bots.botNamePlaceholder')" />
+			<!-- 桌面端标题 + 倒计时/重新开始 -->
+			<div class="hidden items-center justify-between md:flex">
+				<h1 class="text-base font-medium">{{ $t('bots.addBot') }}</h1>
+				<UButton v-if="expired" size="md" color="primary" :loading="loading" @click="startBinding">
+					{{ $t('bots.restart') }}
+				</UButton>
+				<span v-else-if="bindingCode" class="text-sm text-muted">{{ expiryText }}</span>
 			</div>
 
-			<!-- 步骤一：安装或升级插件 -->
-			<div>
-				<h2 class="text-base font-medium">{{ $t('bots.step1') }}{{ $t('bots.sectionPlugin') }}</h2>
-				<p class="mt-0.5 text-sm text-dimmed">{{ $t('bots.pluginHint') }}</p>
-
-				<!-- 终端安装命令 -->
-				<div class="rounded-lg bg-elevated overflow-hidden mt-2">
-					<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
-						<span>{{ $t('bots.installViaShell') }}</span>
-						<UButton
-							v-if="copiedKey !== 'install'"
-							class="cc-icon-btn"
-							color="primary"
-							variant="ghost"
-							size="md"
-							icon="i-lucide-copy"
-							@click="copyToClipboard('install', installCommand)"
-						/>
-						<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
-							<UIcon name="i-lucide-check" class="size-4" />
-							{{ $t('bots.commandCopied') }}
-						</span>
-					</div>
-					<pre class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ installCommand }}</pre>
-				</div>
-
-				<!-- 终端升级命令 -->
-				<div class="rounded-lg bg-elevated overflow-hidden mt-2">
-					<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
-						<span>{{ $t('bots.updateViaShell') }}</span>
-						<UButton
-							v-if="copiedKey !== 'update'"
-							class="cc-icon-btn"
-							color="primary"
-							variant="ghost"
-							size="md"
-							icon="i-lucide-copy"
-							@click="copyToClipboard('update', updateCommand)"
-						/>
-						<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
-							<UIcon name="i-lucide-check" class="size-4" />
-							{{ $t('bots.commandCopied') }}
-						</span>
-					</div>
-					<pre class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ updateCommand }}</pre>
-				</div>
-
-				<!-- 通过 IM 对话安装/升级 -->
-				<div class="rounded-lg bg-elevated overflow-hidden mt-2">
-					<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
-						<span>{{ $t('bots.installViaChat') }}</span>
-						<UButton
-							v-if="copiedKey !== 'installChat'"
-							class="cc-icon-btn"
-							color="primary"
-							variant="ghost"
-							size="md"
-							icon="i-lucide-copy"
-							@click="copyToClipboard('installChat', $t('bots.installPrompt'))"
-						/>
-						<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
-							<UIcon name="i-lucide-check" class="size-4" />
-							{{ $t('bots.commandCopied') }}
-						</span>
-					</div>
-					<pre class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ $t('bots.installPrompt') }}</pre>
-				</div>
+			<!-- 加载中 -->
+			<div v-if="loading && !bindingCode" class="flex flex-col items-center gap-3 py-12">
+				<UIcon name="i-lucide-loader-2" class="size-8 animate-spin text-muted" />
+				<p class="text-sm text-muted">{{ $t('bots.preparing') }}</p>
 			</div>
 
-			<!-- 步骤二：绑定 -->
-			<div>
-				<div class="flex items-center justify-between">
-					<h2 class="text-base font-medium">{{ $t('bots.step2') }}{{ $t('bots.sectionBind') }}</h2>
-					<UButton size="md" color="primary" :loading="creatingCode" @click="generateCode">
-						{{ bindingCode ? $t('bots.regenCode') : $t('bots.genCode') }}
-					</UButton>
-				</div>
-				<div v-if="bindingCode" class="mt-2 rounded-lg border border-accented bg-default p-3">
-					<p class="text-sm text-dimmed">{{ $t('bots.bindingCode') }}</p>
-					<p class="mt-1 text-2xl font-semibold tracking-widest">{{ bindingCode }}</p>
-					<p class="mt-2 text-sm text-muted">{{ expiryText }}</p>
+			<!-- 加载失败 -->
+			<div v-else-if="loadError" class="flex flex-col items-center gap-3 py-12">
+				<p class="text-sm text-danger">{{ loadError }}</p>
+				<UButton size="md" color="primary" @click="startBinding">{{ $t('bots.retry') }}</UButton>
+			</div>
 
-					<div class="rounded-lg bg-elevated overflow-hidden mt-3">
-						<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
-							<span>{{ $t('bots.bindViaChat') }}</span>
+			<!-- 过期 -->
+			<div v-else-if="expired" class="flex flex-col items-center gap-3 py-12">
+				<p class="text-sm text-muted">{{ $t('bots.expired') }}</p>
+				<UButton size="md" color="primary" :loading="loading" @click="startBinding" class="md:hidden">
+					{{ $t('bots.restart') }}
+				</UButton>
+			</div>
+
+			<!-- 内容 -->
+			<template v-else-if="bindingCode">
+				<!-- 移动端倒计时 -->
+				<div class="flex items-center md:hidden">
+					<span class="text-sm text-muted">{{ expiryText }}</span>
+				</div>
+
+				<!-- 方式一：通过对话 -->
+				<div>
+					<h2 class="text-base font-medium">{{ $t('bots.chatMethodTitle') }}</h2>
+					<p class="mt-1 text-sm text-dimmed">{{ $t('bots.chatMethodDesc') }}</p>
+					<div class="mt-2 rounded-lg bg-elevated overflow-hidden">
+						<pre class="whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ chatPromptText }}</pre>
+						<div class="flex items-center justify-end px-3 py-1.5">
 							<UButton
 								v-if="copiedKey !== 'chat'"
-								class="cc-icon-btn"
-								color="primary"
 								variant="ghost"
+								color="primary"
 								size="md"
-								icon="i-lucide-copy"
-								@click="copyToClipboard('chat')"
-							/>
-							<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
+								@click="copyToClipboard('chat', chatPromptText)"
+							>{{ $t('bots.copy') }}</UButton>
+							<span v-else class="flex items-center gap-1 text-sm text-success">
 								<UIcon name="i-lucide-check" class="size-4" />
 								{{ $t('bots.commandCopied') }}
 							</span>
 						</div>
-						<code class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">/coclaw bind {{ bindingCode }}{{ serverSuffix }}</code>
-					</div>
-
-					<div class="rounded-lg bg-elevated overflow-hidden mt-2">
-						<div class="flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-dimmed">
-							<span>{{ $t('bots.bindViaShell') }}</span>
-							<UButton
-								v-if="copiedKey !== 'shell'"
-								class="cc-icon-btn"
-								color="primary"
-								variant="ghost"
-								size="md"
-								icon="i-lucide-copy"
-								@click="copyToClipboard('shell')"
-							/>
-							<span v-else class="flex shrink-0 items-center gap-1 text-sm text-success">
-								<UIcon name="i-lucide-check" class="size-4" />
-								{{ $t('bots.commandCopied') }}
-							</span>
-						</div>
-						<code class="block whitespace-pre-wrap px-3 py-2 text-sm text-default">openclaw coclaw bind {{ bindingCode }}{{ serverSuffix }}</code>
 					</div>
 				</div>
-				<p v-else class="mt-1 text-sm text-muted">{{ $t('bots.genHint') }}</p>
-			</div>
+
+				<!-- 方式二：通过终端 -->
+				<div>
+					<h2 class="text-base font-medium">{{ $t('bots.shellMethodTitle') }}</h2>
+					<p class="mt-1 text-sm text-dimmed">{{ $t('bots.shellMethodDesc') }}</p>
+					<div class="mt-2 rounded-lg bg-elevated overflow-hidden">
+						<pre class="whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ shellCommandText }}</pre>
+						<div class="flex items-center justify-end px-3 py-1.5">
+							<UButton
+								v-if="copiedKey !== 'shell'"
+								variant="ghost"
+								color="primary"
+								size="md"
+								@click="copyToClipboard('shell', shellCommandText)"
+							>{{ $t('bots.copy') }}</UButton>
+							<span v-else class="flex items-center gap-1 text-sm text-success">
+								<UIcon name="i-lucide-check" class="size-4" />
+								{{ $t('bots.commandCopied') }}
+							</span>
+						</div>
+					</div>
+					<p class="mt-2 text-xs text-dimmed">{{ $t('bots.shellSemicolonHint') }}</p>
+				</div>
+			</template>
 		</section>
 	</main>
 	</div>
@@ -143,13 +98,10 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import { useNotify } from '../composables/use-notify.js';
-import { createBindingCode, waitBindingCode } from '../services/bots.api.js';
+import { cancelBindingCode, createBindingCode, waitBindingCode } from '../services/bots.api.js';
 import { useBotsStore } from '../stores/bots.store.js';
 
-const DEFAULT_SERVER = 'https://app.coclaw.net';
-
-const INSTALL_COMMAND = 'openclaw plugins install @coclaw/openclaw-coclaw';
-const UPDATE_COMMAND = 'openclaw plugins update openclaw-coclaw';
+const DEFAULT_SERVER = 'https://im.coclaw.net';
 
 export default {
 	name: 'AddBotPage',
@@ -161,115 +113,112 @@ export default {
 	},
 	data() {
 		return {
-			creatingCode: false,
+			loading: false,
+			loadError: '',
 			bindingCode: '',
 			bindingExpiresAt: null,
 			countdownMs: 0,
 			countdownTimer: null,
 			waitLoopRunning: false,
 			waitCancelled: false,
-			botName: 'OpenClaw',
 			botsStore: null,
-			installCommand: INSTALL_COMMAND,
-			updateCommand: UPDATE_COMMAND,
-			serverOrigin: window.location.origin,
 			copiedKey: '',
 			copiedTimer: null,
 		};
 	},
 	computed: {
-		serverSuffix() {
-			return this.serverOrigin === DEFAULT_SERVER
-				? ''
-				: ` --server ${this.serverOrigin}`;
+		expired() {
+			return !!this.bindingCode && this.countdownMs <= 0;
 		},
 		expiryText() {
-			if (!this.bindingExpiresAt) {
-				return '';
-			}
-			if (this.countdownMs <= 0) {
-				return this.$t('bots.expired');
-			}
+			if (this.countdownMs <= 0) return '';
 			const seconds = Math.floor(this.countdownMs / 1000);
 			const mins = Math.floor(seconds / 60);
 			const secs = seconds % 60;
 			const time = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 			return this.$t('bots.expiryLeft', { time });
 		},
+		serverSuffix() {
+			return window.location.origin === DEFAULT_SERVER
+				? ''
+				: ` --server ${window.location.origin}`;
+		},
+		chatPromptText() {
+			return this.$t('bots.chatPrompt', { code: this.bindingCode, serverSuffix: this.serverSuffix });
+		},
+		shellCommandText() {
+			return `openclaw plugins install @coclaw/openclaw-coclaw ; openclaw coclaw bind ${this.bindingCode}${this.serverSuffix}`;
+		},
 	},
 	mounted() {
 		this.botsStore = useBotsStore();
+		this.startBinding();
 	},
 	beforeUnmount() {
 		this.stopCountdown();
 		this.waitCancelled = true;
 		this.waitLoopRunning = false;
 		clearTimeout(this.copiedTimer);
+		if (this.bindingCode) {
+			cancelBindingCode(this.bindingCode).catch(() => {});
+		}
 	},
 	methods: {
 		async copyToClipboard(key, text) {
-			if (!text) {
-				if (key === 'chat') {
-					text = `/coclaw bind ${this.bindingCode}${this.serverSuffix}`;
-				} else if (key === 'shell') {
-					text = `openclaw coclaw bind ${this.bindingCode}${this.serverSuffix}`;
-				}
-			}
 			try {
 				await navigator.clipboard.writeText(text);
 				clearTimeout(this.copiedTimer);
 				this.copiedKey = key;
 				this.copiedTimer = setTimeout(() => { this.copiedKey = ''; }, 3000);
-				console.debug('[add-bot] copied key=%s', key);
 			}
 			catch {
 				this.notify.error(this.$t('profile.copyFailed'));
 			}
 		},
-		async generateCode() {
-			this.creatingCode = true;
+		async startBinding() {
+			if (this.bindingCode) {
+				cancelBindingCode(this.bindingCode).catch(() => {});
+			}
+			this.loading = true;
+			this.loadError = '';
+			this.bindingCode = '';
+			this.bindingExpiresAt = null;
+			this.countdownMs = 0;
 			this.waitCancelled = true;
 			this.waitLoopRunning = false;
+			this.stopCountdown();
 			try {
 				const data = await createBindingCode();
 				this.bindingCode = data.code;
 				this.bindingExpiresAt = data.expiresAt;
-				console.log('[add-bot] binding code generated: %s', data.code);
 				this.startCountdown();
 				this.waitCancelled = false;
 				this.waitLoopRunning = true;
 				this.waitBindingLoop(data.code, data.waitToken, data.expiresAt);
 			}
 			catch (err) {
-				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.genFailed'));
+				this.loadError = err?.response?.data?.message ?? err?.message ?? this.$t('bots.genFailed');
+				this.notify.error(this.loadError);
 			}
 			finally {
-				this.creatingCode = false;
+				this.loading = false;
 			}
 		},
 		startCountdown() {
 			this.stopCountdown();
-			if (!this.bindingExpiresAt) {
-				return;
-			}
+			if (!this.bindingExpiresAt) return;
 			const tick = () => {
 				const target = new Date(this.bindingExpiresAt).getTime();
 				this.countdownMs = Math.max(0, target - Date.now());
 				if (this.countdownMs <= 0) {
+					this.stopCountdown();
+					this.waitCancelled = true;
+					this.waitLoopRunning = false;
 					this.notify.warning(this.$t('bots.expired'));
-					this.clearBindingCodeBlock();
 				}
 			};
 			tick();
 			this.countdownTimer = setInterval(tick, 1000);
-		},
-		clearBindingCodeBlock() {
-			this.bindingCode = '';
-			this.bindingExpiresAt = null;
-			this.countdownMs = 0;
-			this.stopCountdown();
-			this.waitCancelled = true;
-			this.waitLoopRunning = false;
 		},
 		stopCountdown() {
 			if (this.countdownTimer) {
@@ -282,35 +231,19 @@ export default {
 			while (!this.waitCancelled && this.waitLoopRunning && Date.now() < deadline) {
 				try {
 					const result = await waitBindingCode(code, waitToken);
-					if (this.waitCancelled || !this.waitLoopRunning) {
-						return;
-					}
+					if (this.waitCancelled || !this.waitLoopRunning) return;
 					if (result.code === 'BINDING_SUCCESS') {
-						console.debug('[add-bot] bind success, bot=%s', result.bot?.id);
 						this.botsStore?.addOrUpdateBot(result.bot);
-						this.clearBindingCodeBlock();
+						this.bindingCode = '';
+						this.stopCountdown();
 						this.$router.push('/bots');
 						return;
 					}
-					if (result.code === 'BINDING_TIMEOUT') {
-						console.debug('[add-bot] bind timeout (server)');
-						this.notify.warning(this.$t('bots.expired'));
-						this.clearBindingCodeBlock();
-						return;
-					}
-					console.debug('[add-bot] bind pending, code=%s', result.code);
+					if (result.code === 'BINDING_TIMEOUT') return;
 				}
 				catch (err) {
-					if (this.waitCancelled || !this.waitLoopRunning) {
-						return;
-					}
-					const apiCode = err?.response?.data?.code;
-					if (apiCode === 'BINDING_TIMEOUT') {
-						console.debug('[add-bot] bind timeout (error)');
-						this.notify.warning(this.$t('bots.expired'));
-						this.clearBindingCodeBlock();
-						return;
-					}
+					if (this.waitCancelled || !this.waitLoopRunning) return;
+					if (err?.response?.data?.code === 'BINDING_TIMEOUT') return;
 					console.debug('[add-bot] bind wait error:', err?.message);
 				}
 			}

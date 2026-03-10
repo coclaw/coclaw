@@ -490,11 +490,41 @@ export function botStatusStreamHandler(req, res) {
 	req.on('close', () => clearInterval(hbTimer));
 }
 
+// 撤销未使用的绑定码（用户离开页面时调用）
+export async function cancelBindingCodeHandler(req, res, next, {
+	findBindingCodeImpl = findBindingCode,
+	deleteBindingCodeImpl = deleteBindingCode,
+} = {}) {
+	if (!requireSession(req, res)) {
+		return;
+	}
+
+	const { code } = req.params;
+	if (!code) {
+		res.status(400).json({ code: 'INVALID_REQUEST', message: 'Missing code' });
+		return;
+	}
+
+	try {
+		const bindingCode = await findBindingCodeImpl(code);
+		if (!bindingCode || bindingCode.userId !== req.user.id) {
+			res.status(204).end();
+			return;
+		}
+		await deleteBindingCodeImpl(code).catch(() => {});
+		res.status(204).end();
+	}
+	catch (err) {
+		next(err);
+	}
+}
+
 botRouter.get('/', listBotsHandler);
 botRouter.get('/self', getBotSelfHandler);
 botRouter.get('/status-stream', botStatusStreamHandler);
 botRouter.post('/binding-codes', createBindingCodeHandler);
 botRouter.post('/binding-codes/wait', waitBindingCodeHandler);
+botRouter.delete('/binding-codes/:code', cancelBindingCodeHandler);
 botRouter.post('/ws-ticket', createUiWsTicketHandler);
 botRouter.post('/bind', bindBotHandler);
 botRouter.post('/unbind', unbindBotHandler);

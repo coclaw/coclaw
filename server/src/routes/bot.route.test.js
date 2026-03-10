@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bindBotHandler, botStatusStreamHandler, createBindingCodeHandler, listBotsHandler, waitBindingCodeHandler } from './bot.route.js';
+import { bindBotHandler, botStatusStreamHandler, cancelBindingCodeHandler, createBindingCodeHandler, listBotsHandler, waitBindingCodeHandler } from './bot.route.js';
 
 function createRes() {
 	return {
 		statusCode: null,
 		body: null,
+		ended: false,
 		status(code) {
 			this.statusCode = code;
 			return this;
 		},
 		json(payload) {
 			this.body = payload;
+			return this;
+		},
+		end() {
+			this.ended = true;
 			return this;
 		},
 	};
@@ -331,4 +336,67 @@ test('waitBindingCodeHandler: should cancel and delete binding code on abort', a
 	assert.equal(calls.find, 1);
 	assert.equal(calls.delete, 1);
 	assert.equal(res.statusCode, null);
+});
+
+test('cancelBindingCodeHandler: should reject unauthenticated request', async () => {
+	const req = { isAuthenticated: () => false, user: null, params: { code: '12345678' } };
+	const res = createRes();
+
+	await cancelBindingCodeHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('cancelBindingCodeHandler: should delete binding code owned by user', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { code: 'AABBCCDD' },
+	};
+	const res = createRes();
+	let deletedCode = null;
+
+	await cancelBindingCodeHandler(req, res, () => {}, {
+		findBindingCodeImpl: async () => ({ code: 'AABBCCDD', userId: 7n }),
+		deleteBindingCodeImpl: async (code) => { deletedCode = code; },
+	});
+
+	assert.equal(res.statusCode, 204);
+	assert.equal(res.ended, true);
+	assert.equal(deletedCode, 'AABBCCDD');
+});
+
+test('cancelBindingCodeHandler: should return 204 when code belongs to another user', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { code: 'AABBCCDD' },
+	};
+	const res = createRes();
+	let deleteCalled = false;
+
+	await cancelBindingCodeHandler(req, res, () => {}, {
+		findBindingCodeImpl: async () => ({ code: 'AABBCCDD', userId: 999n }),
+		deleteBindingCodeImpl: async () => { deleteCalled = true; },
+	});
+
+	assert.equal(res.statusCode, 204);
+	assert.equal(deleteCalled, false);
+});
+
+test('cancelBindingCodeHandler: should return 204 when code not found', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { code: 'NOTEXIST' },
+	};
+	const res = createRes();
+
+	await cancelBindingCodeHandler(req, res, () => {}, {
+		findBindingCodeImpl: async () => null,
+		deleteBindingCodeImpl: async () => {},
+	});
+
+	assert.equal(res.statusCode, 204);
 });

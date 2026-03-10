@@ -25,6 +25,10 @@ export async function waitBindingCode(code, waitToken) {
 	};
 }
 
+export async function cancelBindingCode(code) {
+	await client.delete(`/api/v1/bots/binding-codes/${code}`);
+}
+
 export async function unbindBotByUser(botId) {
 	const res = await client.post('/api/v1/bots/unbind-by-user', { botId });
 	return {
