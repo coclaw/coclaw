@@ -204,8 +204,12 @@ function extractImages(content) {
 		.map((b) => ({ data: b.data, mimeType: b.mimeType }));
 }
 
-// OpenClaw gateway 注入的 untrusted metadata 头部（Conversation info / Sender 等变体）
-const CONV_INFO_RE = /^\w[\w ]* \(untrusted metadata\):\n```json\n[\s\S]*?\n```\n\n/;
+// OpenClaw gateway 注入的 inbound metadata 头部（Conversation info / Sender / Thread starter 等）
+// 格式：<Label> (untrusted...):```json {...} ```\n\n
+const INBOUND_META_RE = /^\w[\w ]* \(untrusted[^)]*\):\n```json\n[\s\S]*?\n```\n\n/;
+
+// operator 级策略/指令前缀，如 Skills store policy (operator configured): ...
+const OPERATOR_POLICY_RE = /^\w[\w ]* \(operator configured\):[\s\S]*?\n\n/;
 
 // OpenClaw gateway 自动注入的用户消息时间戳，如 [Fri 2026-02-20 15:25 GMT+8]
 const USER_TS_RE = /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+[^\]]+\]\s*/;
@@ -216,9 +220,19 @@ const MSG_ID_SUFFIX_RE = /\n\[message_id:\s*[^\]]+\]\s*$/;
 // OpenClaw 回复指令标签，如 [[reply_to_current]]
 const REPLY_TAG_RE = /^\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*/;
 
+/** 循环去除行首匹配的块，直到不再匹配 */
+function stripLeadingPattern(text, re) {
+	let prev;
+	do {
+		prev = text;
+		text = text.replace(re, '');
+	} while (text !== prev);
+	return text;
+}
+
 /**
  * 去除 OpenClaw 注入的前缀/后缀标记。
- * - 用户消息：去除 Conversation info 头部、时间戳前缀、尾部 message_id
+ * - 用户消息：去除 inbound metadata 头部、operator 策略、时间戳前缀、尾部 message_id
  * - 助手消息：去除 [[reply_to_current]] 指令标签
  * @param {string} text
  * @param {'user'|'assistant'} role
@@ -227,8 +241,9 @@ const REPLY_TAG_RE = /^\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\
 function stripOcPrefixes(text, role) {
 	if (!text) return text;
 	if (role === 'user') {
-		return text
-			.replace(CONV_INFO_RE, '')
+		let s = stripLeadingPattern(text, INBOUND_META_RE);
+		s = stripLeadingPattern(s, OPERATOR_POLICY_RE);
+		return s
 			.replace(USER_TS_RE, '')
 			.replace(MSG_ID_SUFFIX_RE, '');
 	}
@@ -246,8 +261,9 @@ const CRON_UUID_RE = /\[cron:[0-9a-f-]+(?:\s+([^\]]*))?\]\s*/;
  */
 function cleanDerivedTitle(text) {
 	if (!text) return '';
-	return text
-		.replace(CONV_INFO_RE, '')
+	let s = stripLeadingPattern(text, INBOUND_META_RE);
+	s = stripLeadingPattern(s, OPERATOR_POLICY_RE);
+	return s
 		.replace(USER_TS_RE, '')
 		.replace(CRON_UUID_RE, (_, taskName) => taskName ? `${taskName} ` : '')
 		.replace(MSG_ID_SUFFIX_RE, '')

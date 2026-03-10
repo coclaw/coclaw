@@ -568,6 +568,31 @@ describe('stripOcPrefixes', () => {
 		const text = '[Wed 2026-02-18 17:49 GMT+8] 日志中出现 [message_id: xxx] 这样的内容';
 		expect(stripOcPrefixes(text, 'user')).toBe('日志中出现 [message_id: xxx] 这样的内容');
 	});
+
+	test('去除 operator configured 策略前缀', () => {
+		const text = 'Skills store policy (operator configured): 1. For skills discovery/install/update, try `skillhub` first (cn-optimized).\n2. Do not claim exclusivity.\n\n[Tue 2026-03-10 00:44 UTC] 现在几点';
+		expect(stripOcPrefixes(text, 'user')).toBe('现在几点');
+	});
+
+	test('去除 operator configured 后无时间戳的纯消息', () => {
+		const text = 'Skills store policy (operator configured): some rules\n\n你好';
+		expect(stripOcPrefixes(text, 'user')).toBe('你好');
+	});
+
+	test('去除多个连续 inbound metadata 块', () => {
+		const text = 'Conversation info (untrusted metadata):\n```json\n{"message_id":"abc"}\n```\n\nSender (untrusted metadata):\n```json\n{"label":"ui"}\n```\n\n[Wed 2026-02-18 20:12 GMT+8] 实际内容';
+		expect(stripOcPrefixes(text, 'user')).toBe('实际内容');
+	});
+
+	test('去除 (untrusted, for context) 变体的 metadata 块', () => {
+		const text = 'Thread starter (untrusted, for context):\n```json\n{"body":"hello"}\n```\n\n[Wed 2026-03-04 10:00 UTC] 回复';
+		expect(stripOcPrefixes(text, 'user')).toBe('回复');
+	});
+
+	test('去除 operator configured + inbound metadata 组合', () => {
+		const text = 'Conversation info (untrusted metadata):\n```json\n{"sender":"ui"}\n```\n\nSkills store policy (operator configured): rule1\nrule2\n\n[Tue 2026-03-10 00:44 UTC] 你好';
+		expect(stripOcPrefixes(text, 'user')).toBe('你好');
+	});
 });
 
 describe('cleanDerivedTitle', () => {
@@ -615,5 +640,15 @@ describe('cleanDerivedTitle', () => {
 	test('去除 Sender (untrusted metadata) 头部', () => {
 		const text = 'Sender (untrusted metadata):\n```json\n{"label":"openclaw-control-ui","id":"openclaw-control-ui"}\n```\n\n[Wed 2026-03-04 01:03 GMT+8] 实际内容';
 		expect(cleanDerivedTitle(text)).toBe('实际内容');
+	});
+
+	test('去除 operator configured 策略前缀', () => {
+		const text = 'Skills store policy (operator configured): rules here\n\n[Tue 2026-03-10 00:44 UTC] 标题内容';
+		expect(cleanDerivedTitle(text)).toBe('标题内容');
+	});
+
+	test('去除多个连续 metadata 块', () => {
+		const text = 'Conversation info (untrusted metadata):\n```json\n{"sender":"ui"}\n```\n\nSender (untrusted metadata):\n```json\n{"label":"ui"}\n```\n\n[Wed 2026-02-18 20:12 GMT+8] 标题';
+		expect(cleanDerivedTitle(text)).toBe('标题');
 	});
 });
