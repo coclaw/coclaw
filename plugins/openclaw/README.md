@@ -5,51 +5,60 @@ CoClaw 的 OpenClaw 插件（npm: `@coclaw/openclaw-coclaw`，plugin id: `opencl
 - **transport bridge** — CoClaw server 与 OpenClaw gateway 之间的实时消息桥接
 - **session-manager** — 会话列表/读取能力（`nativeui.sessions.listAll` / `nativeui.sessions.get`）
 
-## 安装
+## 安装与模式切换
 
-### 从 npm 安装（生产推荐）
+插件支持两种安装模式，可随时切换（脚本会自动处理卸载→重装）：
 
-```bash
-pnpm run plugin:npm:install
-# 或手动：
-openclaw plugins install @coclaw/openclaw-coclaw
-openclaw gateway restart
-```
-
-### 本地开发安装（--link）
+### 本地开发（link 模式，日常开发推荐）
 
 ```bash
-pnpm run plugin:dev:link
-# 或手动：
-openclaw plugins install --link /path/to/plugins/openclaw
-openclaw gateway restart
+pnpm run link
 ```
 
-安装后确认：
+link 后代码更新只需 `openclaw gateway restart`，无需重新安装。
+
+### 从 npm 安装
 
 ```bash
-openclaw plugins doctor
-openclaw gateway status
+pnpm run install:npm
 ```
 
-## 卸载
-
-### npm 安装的卸载
+### 卸载
 
 ```bash
-pnpm run plugin:npm:uninstall
+pnpm run unlink          # 卸载 link 模式
+pnpm run uninstall:npm   # 卸载 npm 模式
 ```
 
-### 本地开发安装的卸载
+卸载仅移除插件元数据和代码，不清理绑定信息（`bindings.json` 独立保留）。
+
+## 预发布验证与发布
+
+### 预发布验证
+
+发布前验证 tarball 能正确安装到 OpenClaw 中：
 
 ```bash
-pnpm run plugin:dev:unlink
+pnpm run prerelease              # 全新安装验证（交互式，含手动功能验证）
+pnpm run prerelease -- --upgrade # 升级验证（先装 npm 旧版，再用本地包覆盖）
 ```
 
-卸载脚本会自动清理：
-- `plugins.entries` / `plugins.installs` 等插件元数据
-- `~/.openclaw/coclaw/bindings.json`（绑定信息）
-- `openclaw.json` 中可能残留的 `channels.coclaw` 节点（旧版兼容）
+### 发布到 npm
+
+```bash
+pnpm run release
+```
+
+发布流程：预发布验证（自动） → npm 凭据检查 → dry-run → 发布 → 轮询确认生效。
+
+### 检查发布状态
+
+```bash
+pnpm run release:check                     # 显示各 registry 最新版本
+pnpm run release:check -- 0.1.7            # 对比指定版本
+WAIT=1 pnpm run release:check -- 0.1.7     # 轮询直到版本生效
+pnpm run release:versions                  # 显示所有已发布版本
+```
 
 ## 绑定 / 解绑
 
@@ -102,7 +111,6 @@ node ~/.openclaw/extensions/coclaw/src/cli.js unbind --server <url>
 说明：
 - 这一设计是为了避免卸载插件后 `channels.coclaw` 节点残留导致 OpenClaw gateway schema 验证失败。
 - `config.js` 是读写绑定信息的唯一入口。
-- 首次读取时会自动从旧位置（`openclaw.json` 的 `channels.coclaw` / `.coclaw-tunnel.json`）迁移。
 - 绑定时不提交 bot `name`；server 通过 gateway WebSocket 获取 OpenClaw 实例名。若未设置实例名，前端回退显示 `OpenClaw`。
 
 ## 运行与排障日志
@@ -150,4 +158,4 @@ pnpm coverage     # 覆盖率检查
 pnpm verify       # 完整验证（check → test:standalone → test:plugin → test → coverage）
 ```
 
-覆盖率阈值：100%（lines/functions/branches/statements），未通过禁止接入 gateway。
+覆盖率阈值：lines/statements/functions 100%，branches ≥ 95%。未通过禁止接入 gateway。

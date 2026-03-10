@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/_lib.sh"
+
+# 检查 npm 官方和 npmmirror 的插件包版本。
+#
+# 用法:
+#   bash scripts/release-check.sh              # 显示当前各 registry 最新版本
+#   bash scripts/release-check.sh 0.1.7        # 显示并对比指定版本
+#   WAIT=1 bash scripts/release-check.sh 0.1.7 # 轮询直到指定版本在所有 registry 生效
+
+NPM_REGISTRY="https://registry.npmjs.org/"
+MIRROR_REGISTRY="https://registry.npmmirror.com"
+TIMEOUT="${POLL_TIMEOUT:-120}"
+INTERVAL=5
+
+EXPECTED_VERSION="${1:-}"
+
+check_latest() {
+	local registry=$1
+	npm view "$PKG_NAME" version --registry="$registry" 2>/dev/null || echo "N/A"
+}
+
+check_versions() {
+	local registry=$1
+	npm view "$PKG_NAME" versions --json --registry="$registry" 2>/dev/null || echo "[]"
+}
+
+# 非等待模式：显示当前状态
+if [[ "${WAIT:-}" != "1" ]]; then
+	echo "=== $PKG_NAME 版本状态 ==="
+	echo ""
+	npm_latest=$(check_latest "$NPM_REGISTRY")
+	mirror_latest=$(check_latest "$MIRROR_REGISTRY")
+	echo "[npm]       latest: $npm_latest"
+	echo "[npmmirror] latest: $mirror_latest"
+
+	if [[ -n "$EXPECTED_VERSION" ]]; then
+		echo ""
+		if [[ "$npm_latest" == "$EXPECTED_VERSION" ]]; then
+			echo "[npm]       $EXPECTED_VERSION -- OK"
+		else
+			echo "[npm]       $EXPECTED_VERSION -- NOT YET (current: $npm_latest)"
+		fi
+		if [[ "$mirror_latest" == "$EXPECTED_VERSION" ]]; then
+			echo "[npmmirror] $EXPECTED_VERSION -- OK"
+		else
+			echo "[npmmirror] $EXPECTED_VERSION -- NOT YET (current: $mirror_latest)"
+		fi
+	fi
+
+	echo ""
+	echo "[HINT] 轮询等待: WAIT=1 pnpm run release:check -- $EXPECTED_VERSION"
+	exit 0
+fi
+
+# 等待模式：轮询直到 expected version 在所有 registry 生效
+if [[ -z "$EXPECTED_VERSION" ]]; then
+	echo "[ERROR] 等待模式需要指定版本号" >&2
+	exit 1
+fi
+
+echo "=== 等待 $PKG_NAME@$EXPECTED_VERSION 发布生效 (timeout: ${TIMEOUT}s) ==="
+
+elapsed=0
+npm_ok=false
+mirror_ok=false
+
+while [[ $elapsed -lt $TIMEOUT ]]; do
+	if [[ "$npm_ok" != "true" ]]; then
+		v=$(check_latest "$NPM_REGISTRY")
+		if [[ "$v" == "$EXPECTED_VERSION" ]]; then
+			npm_ok=true
+			echo "[npm]       $EXPECTED_VERSION -- OK (${elapsed}s)"
+		fi
+	fi
+
+	if [[ "$mirror_ok" != "true" ]]; then
+		v=$(check_latest "$MIRROR_REGISTRY")
+		if [[ "$v" == "$EXPECTED_VERSION" ]]; then
+			mirror_ok=true
+			echo "[npmmirror] $EXPECTED_VERSION -- OK (${elapsed}s)"
+		fi
+	fi
+
+	if [[ "$npm_ok" == "true" && "$mirror_ok" == "true" ]]; then
+		echo ""
+		echo "[DONE] $PKG_NAME@$EXPECTED_VERSION 已在所有 registry 生效"
+		exit 0
+	fi
+
+	sleep $INTERVAL
+	elapsed=$((elapsed + INTERVAL))
+
+	# 每 15 秒打印一次进度
+	if (( elapsed % 15 == 0 )); then
+		status=""
+		[[ "$npm_ok" == "true" ]] && status="npm:OK" || status="npm:waiting"
+		[[ "$mirror_ok" == "true" ]] && status="$status, mirror:OK" || status="$status, mirror:waiting"
+		echo "[WAIT] ${elapsed}s ($status)"
+	fi
+done
+
+echo ""
+echo "[TIMEOUT] ${TIMEOUT}s 超时"
+[[ "$npm_ok" == "true" ]] && echo "[npm]       OK" || echo "[npm]       FAIL (未检测到 $EXPECTED_VERSION)"
+[[ "$mirror_ok" == "true" ]] && echo "[npmmirror] OK" || echo "[npmmirror] FAIL (未检测到 $EXPECTED_VERSION)"
+exit 1

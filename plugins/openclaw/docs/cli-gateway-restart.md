@@ -95,3 +95,14 @@ bridge 通过 `api.registerService()` 注册为 gateway service：
 ## 测试注入
 
 `main()` 和 `registerCoclawCli()` 接受可选的 `deps` 参数，其中 `deps.spawn` 可替换 `callGatewayMethod` 中的 `node:child_process.spawn`，用于单元测试中 mock 通知行为。
+
+## 补充：gateway 自动重启与 RPC 通知的区别
+
+OpenClaw gateway 通过 chokidar 监听 `openclaw.json`，`plugins.*` 路径变更会触发自动全量重启。但 CoClaw 的绑定信息存储在独立的 `bindings.json` 中，**不会触发此机制**。因此 CLI bind/unbind 必须通过 RPC 主动通知插件刷新 bridge。
+
+| 操作 | 配置文件 | 是否触发自动重启 | 通知方式 |
+|------|----------|-----------------|---------|
+| `openclaw plugins install/uninstall` | `openclaw.json` | 是（`plugins.*` 变更） | 无需额外通知 |
+| `coclaw bind/unbind` | `bindings.json` | 否 | Gateway RPC（本文档描述） |
+
+详见 `docs/openclaw-plugin-management.md`。

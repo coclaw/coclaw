@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+
+# 卸载 link 开发模式。
+
+echo "=== 卸载 link 开发模式 ==="
+
+mode=$(get_install_mode)
+
+if [[ "$mode" == "none" ]]; then
+	echo "[INFO] 插件未安装"
+	exit 0
+fi
+
+if [[ "$mode" != "link" ]]; then
+	echo "[ERROR] 当前安装模式为 $mode，非 link 模式" >&2
+	echo "[HINT] 如需卸载 npm 安装: pnpm run uninstall:npm" >&2
+	exit 1
+fi
+
+echo "[STEP] openclaw plugins uninstall $PLUGIN_ID"
+openclaw plugins uninstall "$PLUGIN_ID"
+
+echo "[STEP] openclaw gateway restart"
+openclaw gateway restart
+
+echo ""
+echo "[DONE] link 模式已卸载"
