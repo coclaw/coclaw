@@ -36,6 +36,7 @@ const mockRpc = {
 	on: vi.fn(),
 	off: vi.fn(),
 	close: vi.fn(),
+	isOpen: vi.fn(() => true),
 };
 
 /**
@@ -1580,6 +1581,26 @@ describe('ChatPage ensureRpcClient botId 切换', () => {
 
 		// 恢复
 		Object.defineProperty(wrapper.vm, 'currentBotId', { get: () => origComputed, configurable: true });
+	});
+
+	test('WS 已断开时重建连接', async () => {
+		const { createGatewayRpcClient } = await import('../services/gateway.ws.js');
+		mockSessionsItems.push({ sessionId: 'sess-a', botId: 'bot-1' });
+
+		const wrapper = createWrapper('sess-a');
+		await flushPromises();
+
+		expect(wrapper.vm.rpcClient).toBeTruthy();
+		wrapper.vm.__rpcBotId = 'bot-1';
+		Object.defineProperty(wrapper.vm, 'currentBotId', { get: () => 'bot-1', configurable: true });
+
+		// 模拟 WS 已断开
+		mockRpc.isOpen.mockReturnValueOnce(false);
+		createGatewayRpcClient.mockClear();
+
+		await wrapper.vm.ensureRpcClient();
+
+		expect(createGatewayRpcClient).toHaveBeenCalledWith({ botId: 'bot-1' });
 	});
 
 	test('同一 botId 时复用连接', async () => {

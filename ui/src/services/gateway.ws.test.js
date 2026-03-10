@@ -349,6 +349,24 @@ describe('createGatewayRpcClient', () => {
 		expect(closeSpy).not.toHaveBeenCalled();
 	});
 
+	test('isOpen() 反映 WS 状态', async () => {
+		const client = await createGatewayRpcClient({ botId: 'b1' });
+		expect(client.isOpen()).toBe(true);
+
+		// 模拟 WS 关闭
+		lastWs.readyState = 3; // CLOSED
+		expect(client.isOpen()).toBe(false);
+	});
+
+	test('request() 在 WS 非 OPEN 状态下立即 reject', async () => {
+		const client = await createGatewayRpcClient({ botId: 'b1' });
+		lastWs.readyState = 3; // CLOSED
+		const err = await client.request('chat.history', {}).catch((e) => e);
+		expect(err).toBeInstanceOf(Error);
+		expect(err.code).toBe('WS_CLOSED');
+		expect(err.message).toContain('not open');
+	});
+
 	// --- WS 断连场景（覆盖 Bug 1 & 2） ---
 
 	test('accepted 后 WS 关闭：pending 被 reject 且 code 为 WS_CLOSED', async () => {

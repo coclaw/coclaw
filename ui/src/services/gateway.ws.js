@@ -175,6 +175,12 @@ export async function createGatewayRpcClient(options = {}) {
 		request(method, params = {}, options = {}) {
 			const id = `ui-${Date.now()}-${counter++}`;
 			console.debug('[gw-ws] req id=%s method=%s', id, method, params);
+			// ws.send() 在 CLOSING/CLOSED 状态下静默丢弃，不抛异常；必须主动检测
+			if (ws.readyState !== 1) {
+				const err = new Error('gateway ws not open');
+				err.code = 'WS_CLOSED';
+				return Promise.reject(err);
+			}
 			return new Promise((resolve, reject) => {
 				const waiter = { resolve, reject };
 				if (options.onAccepted) {
@@ -199,6 +205,10 @@ export async function createGatewayRpcClient(options = {}) {
 		},
 		off(eventName, cb) {
 			eventListeners.get(eventName)?.delete(cb);
+		},
+		/** WebSocket 是否仍处于 OPEN 状态 */
+		isOpen() {
+			return ws.readyState === 1;
 		},
 		close() {
 			clearHeartbeat();

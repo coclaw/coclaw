@@ -223,7 +223,12 @@ export default {
 				this.rpcClient = null;
 			}
 			if (this.rpcClient) {
-				return this.rpcClient;
+				if (this.rpcClient.isOpen()) {
+					return this.rpcClient;
+				}
+				// WS 已断开，清理并重建
+				console.debug('[chat] rpcClient WS closed, rebuilding');
+				this.rpcClient = null;
 			}
 			if (!botId) {
 				// 无法从 session 确定 botId 时回退到第一个在线 bot
@@ -390,6 +395,11 @@ export default {
 					agentParams.sessionKey = sessionKey;
 				} else {
 					agentParams.sessionId = this.currentSessionId;
+				}
+				if (attachments.length) {
+					console.debug('[chat] agent attachments: count=%d sizes=%s',
+						attachments.length,
+						attachments.map((a) => `${a.fileName}(${a.mimeType},${Math.round((a.content?.length ?? 0) * 3 / 4 / 1024)}KB)`).join(', '));
 				}
 				console.debug('[chat] agent request idempotencyKey=%s params:', idempotencyKey, agentParams);
 

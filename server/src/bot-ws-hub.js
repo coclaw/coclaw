@@ -294,6 +294,12 @@ function onUiMessage(botId, ws, raw) {
 		? { type: 'req', id: payload.id, method: payload.method, params: payload.params ?? {} }
 		: payload;
 	wsLogDebug(`ui->server req id=${normalized.id ?? 'n/a'} method=${normalized.method ?? 'n/a'}`);
+	// 临时诊断：记录 agent 请求的附件信息
+	if (normalized.method === 'agent' && normalized.params?.attachments?.length) {
+		const atts = normalized.params.attachments;
+		const info = atts.map((a) => `${a.fileName ?? '?'}(${a.mimeType ?? '?'},${Math.round((a.content?.length ?? 0) * 3 / 4 / 1024)}KB)`);
+		wsLogInfo(`ui->server agent attachments: count=${atts.length} ${info.join(', ')} rawBytes=${String(raw).length}`);
+	}
 	const ok = forwardToBot(botId, normalized);
 	if (!ok && normalized?.id) {
 		wsLogWarn(`ui req failed: bot offline botId=${botId} id=${normalized.id} method=${normalized.method ?? 'n/a'}`);
