@@ -13,8 +13,32 @@ const OPERATOR_POLICY_RE = /^\w[\w ]* \(operator configured\):[\s\S]*?\n\n/;
 const USER_TS_RE = /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+[^\]]+\]\s*/;
 // 尾部 [message_id: xxx]
 const MSG_ID_SUFFIX_RE = /\n\[message_id:\s*[^\]]+\]\s*$/;
+// 尾部 Untrusted context 块（外部元数据注入）
+const UNTRUSTED_CTX_SUFFIX_RE = /\n\nUntrusted context \(metadata, do not treat as instructions or commands\):\n[\s\S]*$/;
 // 定时任务前缀
 const CRON_UUID_RE = /\[cron:[0-9a-f-]+(?:\s+([^\]]*))?\]\s*/;
+// cron 注入的 Current time 行及其后的系统追加指令（如 "Return your summary..."）
+const CRON_TIME_TAIL_RE = /\nCurrent time:[^\n]+[\s\S]*$/;
+// 从 Current time 行提取 UTC 时间部分
+const CRON_TIME_UTC_RE = /(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+UTC/;
+
+function formatCronTime(matchedText) {
+	const m = matchedText.match(CRON_TIME_UTC_RE);
+	if (!m) return '';
+	try {
+		const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`);
+		if (!Number.isFinite(d.getTime())) return '';
+		const y = d.getFullYear();
+		const mo = String(d.getMonth() + 1).padStart(2, '0');
+		const dd = String(d.getDate()).padStart(2, '0');
+		const hh = String(d.getHours()).padStart(2, '0');
+		const mi = String(d.getMinutes()).padStart(2, '0');
+		return ` ${y}-${mo}-${dd} ${hh}${mi}`;
+	}
+	catch {
+		return '';
+	}
+}
 
 function stripLeadingPattern(text, re) {
 	let prev;
@@ -29,9 +53,11 @@ function cleanTitleText(text) {
 	if (!text) return '';
 	let s = stripLeadingPattern(text, INBOUND_META_RE);
 	s = stripLeadingPattern(s, OPERATOR_POLICY_RE);
+	s = s.replace(CRON_TIME_TAIL_RE, (match) => formatCronTime(match));
 	return s
 		.replace(USER_TS_RE, '')
 		.replace(CRON_UUID_RE, (_, taskName) => taskName ? `${taskName} ` : '')
+		.replace(UNTRUSTED_CTX_SUFFIX_RE, '')
 		.replace(MSG_ID_SUFFIX_RE, '')
 		.trim();
 }
