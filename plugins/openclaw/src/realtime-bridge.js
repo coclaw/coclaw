@@ -1,4 +1,3 @@
-/* c8 ignore start */
 import fs from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
@@ -9,27 +8,6 @@ import { getRuntime } from './runtime.js';
 const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:18789';
 const RECONNECT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
-
-let serverWs = null;
-let gatewayWs = null;
-let reconnectTimer = null;
-let connectTimer = null;
-let started = false;
-let gatewayReady = false;
-let gatewayConnectReqId = null;
-let gatewayRpcSeq = 0;
-const gatewayPendingRequests = new Map();
-let mainSessionEnsurePromise = null;
-let mainSessionEnsured = false;
-
-function logBridgeDebug(message) {
-	if (typeof currentLogger?.debug === 'function') {
-		currentLogger.debug(`[coclaw] ${message}`);
-	}
-}
-let currentLogger = console;
-let currentPluginConfig = {};
-let intentionallyClosed = false;
 
 function toServerWsUrl(baseUrl, token) {
 	const url = new URL(baseUrl);
@@ -44,48 +22,8 @@ function maskUrlToken(url) {
 	return url.replace(/([?&]token=)[^&]+/, '$1***');
 }
 
-function resolveGatewayWsUrl() {
-	return currentPluginConfig?.gatewayWsUrl
-		?? process.env.COCLAW_GATEWAY_WS_URL
-		?? DEFAULT_GATEWAY_WS_URL;
-}
-
-async function clearTokenLocal() {
-	const cfg = await readConfig();
-	if (!cfg?.token) {
-		return;
-	}
-	await clearConfig();
-}
-
-function closeGatewayWs() {
-	if (!gatewayWs) {
-		return;
-	}
-	try {
-		gatewayWs.close(1000, 'server-disconnect');
-	}
-	catch {}
-	gatewayWs = null;
-	gatewayReady = false;
-	gatewayConnectReqId = null;
-	for (const [, settle] of gatewayPendingRequests) {
-		settle({ ok: false, error: 'gateway_closed' });
-	}
-	gatewayPendingRequests.clear();
-}
-
-function forwardToServer(payload) {
-	if (!serverWs || serverWs.readyState !== 1) {
-		return;
-	}
-	try {
-		serverWs.send(JSON.stringify(payload));
-	}
-	catch {}
-}
-
-function resolveGatewayAuthToken() {
+/* c8 ignore start -- 仅在未注入 resolveGatewayAuthToken 时使用，依赖 runtime/env/文件系统 */
+function defaultResolveGatewayAuthToken() {
 	const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 	if (envToken) {
 		return envToken;
@@ -109,440 +47,563 @@ function resolveGatewayAuthToken() {
 		return '';
 	}
 }
+/* c8 ignore stop */
 
-function nextGatewayReqId(prefix = 'coclaw-rpc') {
-	gatewayRpcSeq += 1;
-	return `${prefix}-${Date.now()}-${gatewayRpcSeq}`;
-}
+/**
+ * WebSocket 桥接器：CoClaw server ↔ OpenClaw gateway
+ *
+ * 所有连接状态封装在实例内部，便于生命周期管理和测试。
+ */
+export class RealtimeBridge {
+	/**
+	 * @param {object} [deps] - 可注入依赖（测试用）
+	 * @param {Function} [deps.WebSocket] - WebSocket 构造函数
+	 * @param {Function} [deps.readConfig] - 读取绑定配置
+	 * @param {Function} [deps.clearConfig] - 清除绑定配置
+	 * @param {Function} [deps.getBindingsPath] - 获取绑定文件路径
+	 * @param {Function} [deps.resolveGatewayAuthToken] - 获取 gateway 认证 token
+	 */
+	constructor(deps = {}) {
+		this.__readConfig = deps.readConfig ?? readConfig;
+		this.__clearConfig = deps.clearConfig ?? clearConfig;
+		this.__getBindingsPath = deps.getBindingsPath ?? getBindingsPath;
+		this.__resolveGatewayAuthToken = deps.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
+		this.__WebSocket = deps.WebSocket ?? null;
 
-async function gatewayRpc(method, params = {}, options = {}) {
-	const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 1500;
-	const ready = await waitGatewayReady(timeoutMs);
-	if (!ready || !gatewayWs || gatewayWs.readyState !== 1 || !gatewayReady) {
-		return { ok: false, error: 'gateway_not_ready' };
+		this.serverWs = null;
+		this.gatewayWs = null;
+		this.reconnectTimer = null;
+		this.connectTimer = null;
+		this.started = false;
+		this.gatewayReady = false;
+		this.gatewayConnectReqId = null;
+		this.gatewayRpcSeq = 0;
+		this.gatewayPendingRequests = new Map();
+		this.mainSessionEnsurePromise = null;
+		this.mainSessionEnsured = false;
+		this.logger = console;
+		this.pluginConfig = {};
+		this.intentionallyClosed = false;
 	}
-	const ws = gatewayWs;
-	const id = nextGatewayReqId('coclaw-gw');
-	return await new Promise((resolve) => {
-		let finished = false;
-		const settle = (result) => {
-			if (finished) {
-				return;
+
+	__resolveWebSocket() {
+		return this.__WebSocket ?? globalThis.WebSocket;
+	}
+
+	__logDebug(message) {
+		if (typeof this.logger?.debug === 'function') {
+			this.logger.debug(`[coclaw] ${message}`);
+		}
+	}
+
+	__resolveGatewayWsUrl() {
+		return this.pluginConfig?.gatewayWsUrl
+			?? process.env.COCLAW_GATEWAY_WS_URL
+			?? DEFAULT_GATEWAY_WS_URL;
+	}
+
+	async __clearTokenLocal() {
+		const cfg = await this.__readConfig();
+		if (!cfg?.token) {
+			return;
+		}
+		await this.__clearConfig();
+	}
+
+	__closeGatewayWs() {
+		if (!this.gatewayWs) {
+			return;
+		}
+		try {
+			this.gatewayWs.close(1000, 'server-disconnect');
+		}
+		/* c8 ignore next */
+		catch {}
+		this.gatewayWs = null;
+		this.gatewayReady = false;
+		this.gatewayConnectReqId = null;
+		/* c8 ignore next 3 -- 仅在有未完成 RPC 请求时 gateway 关闭时触发 */
+		for (const [, settle] of this.gatewayPendingRequests) {
+			settle({ ok: false, error: 'gateway_closed' });
+		}
+		this.gatewayPendingRequests.clear();
+	}
+
+	/* c8 ignore next 7 -- 防御性检查，serverWs 通常在调用时可用 */
+	__forwardToServer(payload) {
+		if (!this.serverWs || this.serverWs.readyState !== 1) {
+			return;
+		}
+		try {
+			this.serverWs.send(JSON.stringify(payload));
+		}
+		/* c8 ignore next */
+		catch {}
+	}
+
+	__nextGatewayReqId(prefix = 'coclaw-rpc') {
+		this.gatewayRpcSeq += 1;
+		return `${prefix}-${Date.now()}-${this.gatewayRpcSeq}`;
+	}
+
+	async __gatewayRpc(method, params = {}, options = {}) {
+		const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 1500;
+		const ready = await this.__waitGatewayReady(timeoutMs);
+		/* c8 ignore next 3 -- waitGatewayReady 返回 false 后的防御检查 */
+		if (!ready || !this.gatewayWs || this.gatewayWs.readyState !== 1 || !this.gatewayReady) {
+			return { ok: false, error: 'gateway_not_ready' };
+		}
+		const ws = this.gatewayWs;
+		const id = this.__nextGatewayReqId('coclaw-gw');
+		return await new Promise((resolve) => {
+			let finished = false;
+			const settle = (result) => {
+				/* c8 ignore next 3 -- 防御并发 settle */
+				if (finished) {
+					return;
+				}
+				finished = true;
+				clearTimeout(timer);
+				this.gatewayPendingRequests.delete(id);
+				resolve(result);
+			};
+			this.gatewayPendingRequests.set(id, settle);
+			const timer = setTimeout(() => settle({ ok: false, error: 'timeout' }), timeoutMs);
+			timer.unref?.();
+			try {
+				ws.send(JSON.stringify({
+					type: 'req',
+					id,
+					method,
+					params,
+				}));
 			}
-			finished = true;
-			clearTimeout(timer);
-			gatewayPendingRequests.delete(id);
-			resolve(result);
+			/* c8 ignore next 3 -- ws.send 极少抛出 */
+			catch {
+				settle({ ok: false, error: 'send_failed' });
+			}
+		});
+	}
+
+	async __ensureMainSessionKey() {
+		if (this.mainSessionEnsured) {
+			return { ok: true, state: 'ready' };
+		}
+		/* c8 ignore next 3 -- 并发调用防御，复用进行中的 promise */
+		if (this.mainSessionEnsurePromise) {
+			return await this.mainSessionEnsurePromise;
+		}
+		this.mainSessionEnsurePromise = (async () => {
+			const key = 'agent:main:main';
+			// sessions.resolve 仅返回 { ok, key }，不含 entry
+			const resolved = await this.__gatewayRpc('sessions.resolve', { key }, { timeoutMs: 2000 });
+			if (resolved?.ok === true) {
+				this.mainSessionEnsured = true;
+				this.__logDebug(`main session key ensure: ready key=${key}`);
+				return { ok: true, state: 'ready' };
+			}
+			// 仅当网关真实响应 "不存在" 时才创建；超时/网关未就绪等瞬态错误不触发 reset
+			if (!resolved?.response) {
+				return { ok: false, error: resolved?.error ?? 'resolve_transient_failure' };
+			}
+			// session key 不存在，通过 sessions.reset 创建
+			const reset = await this.__gatewayRpc('sessions.reset', { key, reason: 'new' }, { timeoutMs: 2500 });
+			if (reset?.ok !== true) {
+				return { ok: false, error: reset?.error ?? 'sessions_reset_failed' };
+			}
+			this.mainSessionEnsured = true;
+			this.__logDebug(`main session key ensure: created key=${key}`);
+			return { ok: true, state: 'created' };
+		})();
+		try {
+			const result = await this.mainSessionEnsurePromise;
+			if (!result?.ok) {
+				this.logger.warn?.(`[coclaw] ensure main session key failed: ${result?.error ?? 'unknown'}`);
+			}
+			return result;
+		}
+		finally {
+			this.mainSessionEnsurePromise = null;
+		}
+	}
+
+	__sendGatewayConnectRequest(ws) {
+		this.gatewayConnectReqId = `coclaw-connect-${Date.now()}`;
+		this.__logDebug(`gateway connect request -> id=${this.gatewayConnectReqId}`);
+		const authToken = this.__resolveGatewayAuthToken();
+		const params = {
+			minProtocol: 3,
+			maxProtocol: 3,
+			client: {
+				id: 'gateway-client',
+				version: 'dev',
+				platform: process.platform,
+				mode: 'backend',
+			},
+			caps: [],
+			role: 'operator',
+			scopes: ['operator.admin'],
+			auth: authToken ? { token: authToken } : undefined,
 		};
-		gatewayPendingRequests.set(id, settle);
-		const timer = setTimeout(() => settle({ ok: false, error: 'timeout' }), timeoutMs);
-		timer.unref?.();
 		try {
 			ws.send(JSON.stringify({
 				type: 'req',
-				id,
-				method,
+				id: this.gatewayConnectReqId,
+				method: 'connect',
 				params,
 			}));
 		}
 		catch {
-			settle({ ok: false, error: 'send_failed' });
+			this.gatewayConnectReqId = null;
 		}
-	});
-}
+	}
 
-async function ensureMainSessionKey() {
-	if (mainSessionEnsured) {
-		return { ok: true, state: 'ready' };
-	}
-	if (mainSessionEnsurePromise) {
-		return await mainSessionEnsurePromise;
-	}
-	mainSessionEnsurePromise = (async () => {
-		const key = 'agent:main:main';
-		// sessions.resolve 仅返回 { ok, key }，不含 entry
-		const resolved = await gatewayRpc('sessions.resolve', { key }, { timeoutMs: 2000 });
-		if (resolved?.ok === true) {
-			mainSessionEnsured = true;
-			logBridgeDebug(`main session key ensure: ready key=${key}`);
-			return { ok: true, state: 'ready' };
+	__ensureGatewayConnection() {
+		if (this.gatewayWs || !this.serverWs || this.serverWs.readyState !== 1) {
+			return;
 		}
-		// 仅当网关真实响应 "不存在" 时才创建；超时/网关未就绪等瞬态错误不触发 reset
-		if (!resolved?.response) {
-			return { ok: false, error: resolved?.error ?? 'resolve_transient_failure' };
+		const WebSocketCtor = this.__resolveWebSocket();
+		/* c8 ignore next 3 -- 已在 __connectIfNeeded 中守卫 */
+		if (!WebSocketCtor) {
+			return;
 		}
-		// session key 不存在，通过 sessions.reset 创建
-		const reset = await gatewayRpc('sessions.reset', { key, reason: 'new' }, { timeoutMs: 2500 });
-		if (reset?.ok !== true) {
-			return { ok: false, error: reset?.error ?? 'sessions_reset_failed' };
-		}
-		mainSessionEnsured = true;
-		logBridgeDebug(`main session key ensure: created key=${key}`);
-		return { ok: true, state: 'created' };
-	})();
-	try {
-		const result = await mainSessionEnsurePromise;
-		if (!result?.ok) {
-			currentLogger.warn?.(`[coclaw] ensure main session key failed: ${result?.error ?? 'unknown'}`);
-		}
-		return result;
-	}
-	finally {
-		mainSessionEnsurePromise = null;
-	}
-}
+		const ws = new WebSocketCtor(this.__resolveGatewayWsUrl());
+		this.gatewayWs = ws;
+		this.gatewayReady = false;
+		this.gatewayConnectReqId = null;
 
-function sendGatewayConnectRequest(ws) {
-	gatewayConnectReqId = `coclaw-connect-${Date.now()}`;
-	logBridgeDebug(`gateway connect request -> id=${gatewayConnectReqId}`);
-	const authToken = resolveGatewayAuthToken();
-	const params = {
-		minProtocol: 3,
-		maxProtocol: 3,
-		client: {
-			id: 'gateway-client',
-			version: 'dev',
-			platform: process.platform,
-			mode: 'backend',
-		},
-		caps: [],
-		role: 'operator',
-		scopes: ['operator.admin'],
-		auth: authToken ? { token: authToken } : undefined,
-	};
-	try {
-		ws.send(JSON.stringify({
-			type: 'req',
-			id: gatewayConnectReqId,
-			method: 'connect',
-			params,
-		}));
-	}
-	catch {
-		gatewayConnectReqId = null;
-	}
-}
+		ws.addEventListener('message', (event) => {
+			let payload = null;
+			try {
+				payload = JSON.parse(String(event.data ?? '{}'));
+			}
+			catch {
+				return;
+			}
+			if (!payload || typeof payload !== 'object') {
+				return;
+			}
+			if (payload.type === 'event' && payload.event === 'connect.challenge') {
+				this.__logDebug('gateway event <- connect.challenge');
+				this.__sendGatewayConnectRequest(ws);
+				return;
+			}
+			if (payload.type === 'res' && this.gatewayConnectReqId && payload.id === this.gatewayConnectReqId) {
+				if (payload.ok === true) {
+					this.gatewayReady = true;
+					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
+					this.gatewayConnectReqId = null;
+					void this.__ensureMainSessionKey();
+				}
+				else {
+					this.gatewayReady = false;
+					this.gatewayConnectReqId = null;
+					this.logger.warn?.(`[coclaw] gateway connect failed: ${payload?.error?.message ?? 'unknown'}`);
+					try { ws.close(1008, 'gateway_connect_failed'); }
+					/* c8 ignore next */
+					catch {}
+				}
+				return;
+			}
+			if (payload.type === 'res' && typeof payload.id === 'string') {
+				const settle = this.gatewayPendingRequests.get(payload.id);
+				if (settle) {
+					settle({
+						ok: payload.ok === true,
+						response: payload,
+						error: payload?.error?.message ?? payload?.error?.code,
+					});
+					return;
+				}
+			}
+			/* c8 ignore next 3 -- connect 完成前的消息过滤 */
+			if (!this.gatewayReady) {
+				return;
+			}
+			if (payload.type === 'res' || payload.type === 'event') {
+				this.__forwardToServer(payload);
+			}
+		});
 
-function ensureGatewayConnection() {
-	if (gatewayWs || !serverWs || serverWs.readyState !== 1) {
-		return;
+		ws.addEventListener('open', () => {
+			// wait for connect.challenge
+		});
+		ws.addEventListener('close', () => {
+			this.gatewayWs = null;
+			this.gatewayReady = false;
+			this.gatewayConnectReqId = null;
+		});
+		ws.addEventListener('error', () => {});
 	}
-	const WebSocketCtor = globalThis.WebSocket;
-	if (!WebSocketCtor) {
-		return;
-	}
-	const ws = new WebSocketCtor(resolveGatewayWsUrl());
-	gatewayWs = ws;
-	gatewayReady = false;
-	gatewayConnectReqId = null;
 
-	ws.addEventListener('message', (event) => {
-		let payload = null;
+	async __waitGatewayReady(timeoutMs = 1500) {
+		this.__ensureGatewayConnection();
+		if (this.gatewayWs && this.gatewayWs.readyState === 1 && this.gatewayReady) {
+			return true;
+		}
+		const ws = this.gatewayWs;
+		/* c8 ignore next 3 -- serverWs 为 null 时 ensureGatewayConnection 不创建 gatewayWs */
+		if (!ws) {
+			return false;
+		}
+		return await new Promise((resolve) => {
+			let done = false;
+			const finish = (ok) => {
+				/* c8 ignore next 3 -- 防御并发 finish */
+				if (done) {
+					return;
+				}
+				done = true;
+				clearTimeout(timer);
+				clearInterval(poller);
+				ws.removeEventListener?.('error', onError);
+				ws.removeEventListener?.('close', onClose);
+				resolve(ok);
+			};
+			/* c8 ignore next */
+			const onError = () => finish(false);
+			const onClose = () => finish(false);
+			/* c8 ignore next 10 -- 轮询检测 gateway ready，时序依赖难以在单测中精确触发 */
+			const poller = setInterval(() => {
+				if (this.gatewayWs !== ws) {
+					finish(false);
+					return;
+				}
+				if (this.gatewayReady && ws.readyState === 1) {
+					finish(true);
+				}
+			}, 25);
+			poller.unref?.();
+			const timer = setTimeout(() => finish(false), timeoutMs);
+			timer.unref?.();
+			ws.addEventListener('error', onError);
+			ws.addEventListener('close', onClose);
+		});
+	}
+
+	async __handleGatewayRequestFromServer(payload) {
+		const ready = await this.__waitGatewayReady();
+		if (!ready || !this.gatewayWs || this.gatewayWs.readyState !== 1) {
+			this.__logDebug(`gateway req drop (offline): id=${payload.id} method=${payload.method}`);
+			this.__forwardToServer({
+				type: 'res',
+				id: payload.id,
+				ok: false,
+				error: {
+					code: 'GATEWAY_OFFLINE',
+					message: 'Gateway is offline',
+				},
+			});
+			return;
+		}
 		try {
-			payload = JSON.parse(String(event.data ?? '{}'));
+			this.__logDebug(`gateway req -> id=${payload.id} method=${payload.method}`);
+			this.gatewayWs.send(JSON.stringify({
+				type: 'req',
+				id: payload.id,
+				method: payload.method,
+				params: payload.params ?? {},
+			}));
 		}
 		catch {
-			return;
+			this.__forwardToServer({
+				type: 'res',
+				id: payload.id,
+				ok: false,
+				error: {
+					code: 'GATEWAY_SEND_FAILED',
+					message: 'Failed to send request to gateway',
+				},
+			});
 		}
-		if (!payload || typeof payload !== 'object') {
-			return;
-		}
-		if (payload.type === 'event' && payload.event === 'connect.challenge') {
-			logBridgeDebug('gateway event <- connect.challenge');
-			sendGatewayConnectRequest(ws);
-			return;
-		}
-		if (payload.type === 'res' && gatewayConnectReqId && payload.id === gatewayConnectReqId) {
-			if (payload.ok === true) {
-				gatewayReady = true;
-				logBridgeDebug(`gateway connect ok <- id=${payload.id}`);
-				gatewayConnectReqId = null;
-				void ensureMainSessionKey();
-			}
-			else {
-				gatewayReady = false;
-				gatewayConnectReqId = null;
-				currentLogger.warn?.(`[coclaw] gateway connect failed: ${payload?.error?.message ?? 'unknown'}`);
-				try {
-					ws.close(1008, 'gateway_connect_failed');
-				}
-				catch {}
-			}
-			return;
-		}
-		if (payload.type === 'res' && typeof payload.id === 'string') {
-			const settle = gatewayPendingRequests.get(payload.id);
-			if (settle) {
-				settle({
-					ok: payload.ok === true,
-					response: payload,
-					error: payload?.error?.message ?? payload?.error?.code,
-				});
-				return;
-			}
-		}
-		if (!gatewayReady) {
-			return;
-		}
-		if (payload.type === 'res' || payload.type === 'event') {
-			forwardToServer(payload);
-		}
-	});
-
-	ws.addEventListener('open', () => {
-		// wait for connect.challenge
-	});
-	ws.addEventListener('close', () => {
-		gatewayWs = null;
-		gatewayReady = false;
-		gatewayConnectReqId = null;
-	});
-	ws.addEventListener('error', () => {});
-}
-
-async function waitGatewayReady(timeoutMs = 1500) {
-	ensureGatewayConnection();
-	if (gatewayWs && gatewayWs.readyState === 1 && gatewayReady) {
-		return true;
 	}
-	const ws = gatewayWs;
-	if (!ws) {
-		return false;
-	}
-	return await new Promise((resolve) => {
-		let done = false;
-		const finish = (ok) => {
-			if (done) {
-				return;
-			}
-			done = true;
-			clearTimeout(timer);
-			clearInterval(poller);
-			ws.removeEventListener?.('error', onError);
-			ws.removeEventListener?.('close', onClose);
-			resolve(ok);
-		};
-		const onError = () => finish(false);
-		const onClose = () => finish(false);
-		const poller = setInterval(() => {
-			if (gatewayWs !== ws) {
-				finish(false);
-				return;
-			}
-			if (gatewayReady && ws.readyState === 1) {
-				finish(true);
-			}
-		}, 25);
-		poller.unref?.();
-		const timer = setTimeout(() => finish(false), timeoutMs);
-		timer.unref?.();
-		ws.addEventListener('error', onError);
-		ws.addEventListener('close', onClose);
-	});
-}
 
-async function handleGatewayRequestFromServer(payload) {
-	const ready = await waitGatewayReady();
-	if (!ready || !gatewayWs || gatewayWs.readyState !== 1) {
-		logBridgeDebug(`gateway req drop (offline): id=${payload.id} method=${payload.method}`);
-		forwardToServer({
-			type: 'res',
-			id: payload.id,
-			ok: false,
-			error: {
-				code: 'GATEWAY_OFFLINE',
-				message: 'Gateway is offline',
-			},
+	__clearConnectTimer() {
+		if (!this.connectTimer) {
+			return;
+		}
+		clearTimeout(this.connectTimer);
+		this.connectTimer = null;
+	}
+
+	__scheduleReconnect() {
+		if (!this.started || this.reconnectTimer) {
+			return;
+		}
+		this.reconnectTimer = setTimeout(async () => {
+			this.reconnectTimer = null;
+			await this.__connectIfNeeded();
+		}, RECONNECT_MS);
+		this.reconnectTimer.unref?.();
+	}
+
+	async __connectIfNeeded() {
+		/* c8 ignore next 3 -- 仅从 start/reconnect 内部调用，条件不满足时的防御 */
+		if (!this.started || this.serverWs) {
+			return;
+		}
+
+		const bindingsPath = this.__getBindingsPath();
+		const cfg = await this.__readConfig();
+		if (!cfg?.token) {
+			this.logger.warn?.(`[coclaw] realtime bridge skip connect: missing token in ${bindingsPath}`);
+			return;
+		}
+
+		const baseUrl = cfg.serverUrl;
+		if (!baseUrl) {
+			this.logger.warn?.(`[coclaw] realtime bridge skip connect: missing serverUrl in ${bindingsPath}`);
+			return;
+		}
+		const target = toServerWsUrl(baseUrl, cfg.token);
+		const WebSocketCtor = this.__resolveWebSocket();
+		if (!WebSocketCtor) {
+			this.logger.warn?.('[coclaw] WebSocket not available, skip realtime bridge');
+			return;
+		}
+
+		const maskedTarget = maskUrlToken(target);
+		this.logger.info?.(`[coclaw] realtime bridge connecting: ${maskedTarget} (cfg: ${bindingsPath})`);
+		this.intentionallyClosed = false;
+		const sock = new WebSocketCtor(target);
+		this.serverWs = sock;
+		this.__clearConnectTimer();
+		this.connectTimer = setTimeout(() => {
+			/* c8 ignore next 3 -- 防御 stale timer 回调 */
+			if (this.serverWs !== sock || this.intentionallyClosed) {
+				return;
+			}
+			this.logger.warn?.(`[coclaw] realtime bridge connect timeout, will retry: ${maskedTarget}`);
+			this.serverWs = null;
+			this.__closeGatewayWs();
+			this.__scheduleReconnect();
+			try { sock.close(4000, 'connect_timeout'); }
+			/* c8 ignore next */
+			catch {}
+		}, CONNECT_TIMEOUT_MS);
+		this.connectTimer.unref?.();
+
+		sock.addEventListener('open', () => {
+			this.__clearConnectTimer();
+			this.logger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
+			this.__ensureGatewayConnection();
 		});
-		return;
-	}
-	try {
-		logBridgeDebug(`gateway req -> id=${payload.id} method=${payload.method}`);
-		gatewayWs.send(JSON.stringify({
-			type: 'req',
-			id: payload.id,
-			method: payload.method,
-			params: payload.params ?? {},
-		}));
-	}
-	catch {
-		forwardToServer({
-			type: 'res',
-			id: payload.id,
-			ok: false,
-			error: {
-				code: 'GATEWAY_SEND_FAILED',
-				message: 'Failed to send request to gateway',
-			},
-		});
-	}
-}
 
-function clearConnectTimer() {
-	if (!connectTimer) {
-		return;
-	}
-	clearTimeout(connectTimer);
-	connectTimer = null;
-}
-
-function scheduleReconnect() {
-	if (!started || reconnectTimer) {
-		return;
-	}
-	reconnectTimer = setTimeout(async () => {
-		reconnectTimer = null;
-		await connectIfNeeded();
-	}, RECONNECT_MS);
-	reconnectTimer.unref?.();
-}
-
-async function connectIfNeeded() {
-	if (!started || serverWs) {
-		return;
-	}
-
-	const bindingsPath = getBindingsPath();
-	const cfg = await readConfig();
-	if (!cfg?.token) {
-		currentLogger.warn?.(`[coclaw] realtime bridge skip connect: missing token in ${bindingsPath}`);
-		return;
-	}
-
-	const baseUrl = cfg.serverUrl;
-	if (!baseUrl) {
-		currentLogger.warn?.(`[coclaw] realtime bridge skip connect: missing serverUrl in ${bindingsPath}`);
-		return;
-	}
-	const target = toServerWsUrl(baseUrl, cfg.token);
-	const WebSocketCtor = globalThis.WebSocket;
-	if (!WebSocketCtor) {
-		currentLogger.warn?.('[coclaw] WebSocket not available, skip realtime bridge');
-		return;
-	}
-
-	const maskedTarget = maskUrlToken(target);
-	currentLogger.info?.(`[coclaw] realtime bridge connecting: ${maskedTarget} (cfg: ${bindingsPath})`);
-	intentionallyClosed = false;
-	const sock = new WebSocketCtor(target);
-	serverWs = sock;
-	clearConnectTimer();
-	connectTimer = setTimeout(() => {
-		if (serverWs !== sock || intentionallyClosed) {
-			return;
-		}
-		currentLogger.warn?.(`[coclaw] realtime bridge connect timeout, will retry: ${maskedTarget}`);
-		serverWs = null;
-		closeGatewayWs();
-		scheduleReconnect();
-		try {
-			sock.close(4000, 'connect_timeout');
-		}
-		catch {}
-	}, CONNECT_TIMEOUT_MS);
-	connectTimer.unref?.();
-
-	sock.addEventListener('open', () => {
-		clearConnectTimer();
-		currentLogger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
-		ensureGatewayConnection();
-	});
-
-	sock.addEventListener('message', async (event) => {
-		try {
-			const payload = JSON.parse(String(event.data ?? '{}'));
-			if (payload?.type === 'bot.unbound') {
-				await clearTokenLocal();
-				try {
-					sock.close(4001, 'bot_unbound');
+		sock.addEventListener('message', async (event) => {
+			try {
+				const payload = JSON.parse(String(event.data ?? '{}'));
+				if (payload?.type === 'bot.unbound') {
+					await this.__clearTokenLocal();
+					try { sock.close(4001, 'bot_unbound'); }
+					/* c8 ignore next */
+					catch {}
+					return;
 				}
-				catch {}
+				if (payload?.type === 'req' || payload?.type === 'rpc.req') {
+					void this.__handleGatewayRequestFromServer({
+						id: payload.id,
+						method: payload.method,
+						params: payload.params ?? {},
+					});
+				}
+			}
+			catch (err) {
+				this.logger.warn?.(`[coclaw] realtime message parse failed: ${String(err?.message ?? err)}`);
+			}
+		});
+
+		sock.addEventListener('close', async (event) => {
+			this.__clearConnectTimer();
+			// 若 serverWs 已指向新实例（如 refresh 后），跳过旧 sock 的清理
+			if (this.serverWs !== null && this.serverWs !== sock) {
 				return;
 			}
-			if (payload?.type === 'req' || payload?.type === 'rpc.req') {
-				void handleGatewayRequestFromServer({
-					id: payload.id,
-					method: payload.method,
-					params: payload.params ?? {},
-				});
+			const wasIntentional = this.intentionallyClosed;
+			this.serverWs = null;
+			this.intentionallyClosed = false;
+			this.__closeGatewayWs();
+
+			if (event?.code === 4001 || event?.code === 4003) {
+				await this.__clearTokenLocal();
+				return;
 			}
-		}
-		catch (err) {
-			currentLogger.warn?.(`[coclaw] realtime message parse failed: ${String(err?.message ?? err)}`);
-		}
-	});
 
-	sock.addEventListener('close', async (event) => {
-		clearConnectTimer();
-		// 若 serverWs 已指向新实例（如 refresh 后），跳过旧 sock 的清理
-		if (serverWs !== null && serverWs !== sock) {
-			return;
-		}
-		const wasIntentional = intentionallyClosed;
-		serverWs = null;
-		intentionallyClosed = false;
-		closeGatewayWs();
+			if (!wasIntentional) {
+				this.logger.warn?.(`[coclaw] realtime bridge closed (${event?.code ?? 'unknown'}: ${event?.reason ?? 'n/a'}), will retry in ${RECONNECT_MS}ms`);
+				this.__scheduleReconnect();
+			}
+		});
 
-		if (event?.code === 4001 || event?.code === 4003) {
-			await clearTokenLocal();
-			return;
-		}
+		sock.addEventListener('error', (err) => {
+			if (this.serverWs !== sock || this.intentionallyClosed) {
+				return;
+			}
+			this.__clearConnectTimer();
+			this.logger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
+			this.serverWs = null;
+			this.__closeGatewayWs();
+			this.__scheduleReconnect();
+			try { sock.close(4000, 'connect_error'); }
+			/* c8 ignore next */
+			catch {}
+		});
+	}
 
-		if (!wasIntentional) {
-			currentLogger.warn?.(`[coclaw] realtime bridge closed (${event?.code ?? 'unknown'}: ${event?.reason ?? 'n/a'}), will retry in ${RECONNECT_MS}ms`);
-			scheduleReconnect();
-		}
-	});
+	async start({ logger, pluginConfig } = {}) {
+		this.logger = logger ?? console;
+		this.pluginConfig = pluginConfig ?? {};
+		this.started = true;
+		await this.__connectIfNeeded();
+	}
 
-	sock.addEventListener('error', (err) => {
-		if (serverWs !== sock || intentionallyClosed) {
-			return;
+	async refresh() {
+		await this.stop();
+		await this.start({
+			logger: this.logger,
+			pluginConfig: this.pluginConfig,
+		});
+	}
+
+	async stop() {
+		this.started = false;
+		this.mainSessionEnsured = false;
+		this.mainSessionEnsurePromise = null;
+		this.__clearConnectTimer();
+		if (this.reconnectTimer) {
+			clearTimeout(this.reconnectTimer);
+			this.reconnectTimer = null;
 		}
-		clearConnectTimer();
-		currentLogger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
-		serverWs = null;
-		closeGatewayWs();
-		scheduleReconnect();
-		try {
-			sock.close(4000, 'connect_error');
+		this.__closeGatewayWs();
+		if (this.serverWs) {
+			this.intentionallyClosed = true;
+			try { this.serverWs.close(1000, 'stopped'); }
+			/* c8 ignore next */
+			catch {}
+			this.serverWs = null;
 		}
-		catch {}
-	});
+	}
 }
 
-export async function startRealtimeBridge({ logger, pluginConfig } = {}) {
-	currentLogger = logger ?? console;
-	currentPluginConfig = pluginConfig ?? {};
-	started = true;
-	await connectIfNeeded();
+// --- 单例便捷 API（供 index.js 使用）---
+
+let singleton = null;
+
+export async function startRealtimeBridge(opts) {
+	singleton = new RealtimeBridge();
+	await singleton.start(opts);
 }
 
 export async function refreshRealtimeBridge() {
-	// 停止再启动，确保用新 token 重连
-	await stopRealtimeBridge();
-	await startRealtimeBridge({
-		logger: currentLogger,
-		pluginConfig: currentPluginConfig,
-	});
+	if (!singleton) {
+		return;
+	}
+	await singleton.refresh();
 }
 
 export async function stopRealtimeBridge() {
-	started = false;
-	mainSessionEnsured = false;
-	mainSessionEnsurePromise = null;
-	clearConnectTimer();
-	if (reconnectTimer) {
-		clearTimeout(reconnectTimer);
-		reconnectTimer = null;
+	if (!singleton) {
+		return;
 	}
-	closeGatewayWs();
-	if (serverWs) {
-		intentionallyClosed = true;
-		try {
-			serverWs.close(1000, 'stopped');
-		}
-		catch {}
-		serverWs = null;
-	}
+	await singleton.stop();
+	singleton = null;
 }
-/* c8 ignore stop */

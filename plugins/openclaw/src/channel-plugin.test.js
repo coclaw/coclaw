@@ -30,13 +30,9 @@ test('coclawChannelPlugin config should resolve account with defaults', () => {
 	assert.equal(coclawChannelPlugin.config.defaultAccountId(), 'default');
 });
 
-test('coclawChannelPlugin outbound sendText should return accepted and fallback message id', async () => {
+test('coclawChannelPlugin outbound sendText should return channel result', async () => {
 	const out = await coclawChannelPlugin.outbound.sendText({ to: 'chat-1', text: 'hello' });
 	assert.equal(out.channel, 'coclaw');
-	assert.equal(out.accepted, true);
 	assert.equal(typeof out.messageId, 'string');
-
-	const out2 = await coclawChannelPlugin.outbound.sendText({ to: '', text: 'bad' });
-	assert.equal(out2.accepted, false);
-	assert.equal(out2.to, '');
+	assert.equal(out.to, 'chat-1');
 });

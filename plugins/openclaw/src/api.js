@@ -38,20 +38,3 @@ export async function unbindWithServer({ baseUrl, token }) {
 	});
 }
 
-export async function listBotsWithServer({ baseUrl, cookie }) {
-	return requestJson(baseUrl, '/api/v1/bots', {
-		headers: cookie
-			? {
-				Cookie: cookie,
-			}
-			: undefined,
-	});
-}
-
-export async function getBotSelfWithServer({ baseUrl, token }) {
-	return requestJson(baseUrl, '/api/v1/bots/self', {
-		headers: {
-			Authorization: `Bearer ${token}`,
-		},
-	});
-}

@@ -1,5 +1,4 @@
 import { DEFAULT_ACCOUNT_ID } from './config.js';
-import { createTransportAdapter } from './transport-adapter.js';
 
 function resolveAccount(_cfg, accountId) {
 	const resolvedAccountId = accountId ?? DEFAULT_ACCOUNT_ID;
@@ -10,8 +9,6 @@ function resolveAccount(_cfg, accountId) {
 		name: 'CoClaw',
 	};
 }
-
-const transport = createTransportAdapter();
 
 export const coclawChannelPlugin = {
 	id: 'coclaw',
@@ -44,21 +41,15 @@ export const coclawChannelPlugin = {
 	},
 	outbound: {
 		deliveryMode: 'direct',
-		sendText: async ({ to, text }) => {
-			const result = await transport.safeDispatchOutbound({
-				channel: 'coclaw',
-				to,
-				text,
-			});
-			return {
-				channel: 'coclaw',
-				messageId: result.messageId ?? `coclaw-local-${Date.now()}`,
-				to,
-				text,
-				accepted: Boolean(result.accepted),
-			};
-		},
+		// placeholder: CoClaw 消息实际通过 realtime-bridge WebSocket 桥接发送，
+		// 此 sendText 仅满足 OpenClaw channel 注册要求。
+		sendText: async ({ to }) => ({
+			channel: 'coclaw',
+			messageId: `coclaw-${Date.now()}`,
+			to,
+		}),
 	},
+	// TODO: status.defaultRuntime.running 应反映 realtime-bridge 实际连接状态
 	status: {
 		defaultRuntime: {
 			accountId: DEFAULT_ACCOUNT_ID,

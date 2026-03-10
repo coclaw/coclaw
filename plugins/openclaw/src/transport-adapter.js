@@ -1,7 +1,10 @@
+// placeholder: 当前 CoClaw 消息通过 realtime-bridge WebSocket 桥接收发，
+// 此适配层预留用于未来通过 OpenClaw channel outbound 接口发送消息。
 import { buildOutboundEnvelope, normalizeInboundEnvelope } from './message-model.js';
 
 export function createTransportAdapter(deps = {}) {
 	const {
+		/* c8 ignore next */
 		sendOutbound = async () => ({ accepted: true }),
 		onInbound = async () => undefined,
 		logger = console,

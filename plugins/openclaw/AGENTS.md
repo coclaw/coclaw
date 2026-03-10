@@ -58,7 +58,7 @@
 覆盖率阈值：
 - lines 100%
 - functions 100%
-- branches 100%
+- branches 95%（`??` / `?.` fallback 分支不强制覆盖）
 - statements 100%
 
 `verify` 未通过，禁止安装到 gateway。

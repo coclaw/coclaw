@@ -48,112 +48,12 @@ async function writeJson(filePath, value) {
 	await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-// --- 旧位置迁移 ---
-
-function getOpenclawConfigPath() {
-	return process.env.OPENCLAW_CONFIG_PATH
-		? nodePath.resolve(process.env.OPENCLAW_CONFIG_PATH)
-		: nodePath.join(os.homedir(), '.openclaw', 'openclaw.json');
-}
-
-function pickFromOldConfig(rootCfg) {
-	const channels = toRecord(rootCfg.channels);
-	const coclaw = toRecord(channels.coclaw);
-	const accounts = toRecord(coclaw.accounts);
-	const account = toRecord(accounts.default);
-	return {
-		serverUrl: account.serverUrl ?? coclaw.serverUrl,
-		botId: account.botId ?? coclaw.botId,
-		token: account.token ?? coclaw.token,
-		boundAt: account.boundAt ?? coclaw.boundAt,
-	};
-}
-
-async function tryMigrateFromOldLocations() {
-	// 1. 尝试从 openclaw.json channels.coclaw 迁移
-	const rt = getRuntime();
-	let oldData;
-	if (rt?.config?.loadConfig) {
-		oldData = pickFromOldConfig(rt.config.loadConfig());
-	} else {
-		const rootCfg = await readJson(getOpenclawConfigPath());
-		oldData = pickFromOldConfig(rootCfg);
-	}
-	if (oldData.token) {
-		return oldData;
-	}
-
-	// 2. 尝试从 legacy 文件迁移
-	const legacyPaths = [
-		nodePath.resolve(process.cwd(), '.coclaw-tunnel.json'),
-		nodePath.join(os.homedir(), '.coclaw-tunnel.json'),
-	];
-	for (const p of legacyPaths) {
-		const legacy = await readJson(p);
-		if (legacy?.token) {
-			return legacy;
-		}
-	}
-
-	return null;
-}
-
-async function cleanOldLocations() {
-	// 清理 openclaw.json 中的 channels.coclaw
-	const rt = getRuntime();
-	if (rt?.config?.loadConfig && rt?.config?.writeConfigFile) {
-		const rootCfg = structuredClone(rt.config.loadConfig());
-		const channels = toRecord(rootCfg.channels);
-		if (channels.coclaw) {
-			delete channels.coclaw;
-			rootCfg.channels = channels;
-			await rt.config.writeConfigFile(rootCfg);
-		}
-	} else {
-		const filePath = getOpenclawConfigPath();
-		const rootCfg = toRecord(await readJson(filePath));
-		const channels = toRecord(rootCfg.channels);
-		if (channels.coclaw) {
-			delete channels.coclaw;
-			rootCfg.channels = channels;
-			await writeJson(filePath, rootCfg);
-		}
-	}
-
-	// 清理 legacy 文件
-	const legacyPaths = [
-		nodePath.resolve(process.cwd(), '.coclaw-tunnel.json'),
-		nodePath.join(os.homedir(), '.coclaw-tunnel.json'),
-	];
-	for (const p of legacyPaths) {
-		const legacy = await readJson(p);
-		if (legacy?.token) {
-			await writeJson(p, {});
-		}
-	}
-}
-
 // --- 公共 API ---
 
 export async function readConfig(accountId = DEFAULT_ACCOUNT_ID) {
 	const bindingsPath = getBindingsPath();
 	const bindings = await readJson(bindingsPath);
-	const entry = toRecord(bindings[accountId]);
-
-	if (entry.token) {
-		return entry;
-	}
-
-	// 首次运行：尝试从旧位置迁移
-	const migrated = await tryMigrateFromOldLocations();
-	if (migrated?.token) {
-		const newBindings = { ...bindings, [accountId]: migrated };
-		await writeJson(bindingsPath, newBindings);
-		await cleanOldLocations();
-		return migrated;
-	}
-
-	return entry;
+	return toRecord(bindings[accountId]);
 }
 
 export async function writeConfig(nextConfig, accountId = DEFAULT_ACCOUNT_ID) {
@@ -188,7 +88,4 @@ export async function clearConfig(accountId = DEFAULT_ACCOUNT_ID) {
 	} else {
 		await writeJson(bindingsPath, bindings);
 	}
-
-	// 确保清理旧位置残留
-	await cleanOldLocations();
 }

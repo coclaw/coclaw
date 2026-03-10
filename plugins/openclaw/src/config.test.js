@@ -5,7 +5,6 @@ import os from 'node:os';
 import test from 'node:test';
 
 import { clearConfig, getBindingsPath, readConfig, writeConfig } from './config.js';
-import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
 
 function resetEnv() {
@@ -109,352 +108,37 @@ test('readConfig should treat empty file as empty object', async () => {
 	assert.equal(loaded.token, undefined);
 });
 
-test('readConfig should migrate from openclaw.json channels.coclaw (file)', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	// 不存在的 home 和 cwd，避免 legacy 文件干扰
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	// 在旧位置写入配置
-	const openclawPath = nodePath.join(dir, 'openclaw.json');
-	process.env.OPENCLAW_CONFIG_PATH = openclawPath;
-	await fs.writeFile(openclawPath, JSON.stringify({
-		channels: {
-			coclaw: {
-				accounts: {
-					default: { serverUrl: 'http://old', botId: 'old-b', token: 'old-t', boundAt: '2026-01-01T00:00:00.000Z' },
-				},
-			},
-		},
-	}), 'utf8');
-
-	try {
-		const loaded = await readConfig();
-		assert.equal(loaded.token, 'old-t');
-		assert.equal(loaded.botId, 'old-b');
-		assert.equal(loaded.serverUrl, 'http://old');
-
-		// 应迁移到新位置
-		const raw = JSON.parse(await fs.readFile(getBindingsPath(), 'utf8'));
-		assert.equal(raw.default.token, 'old-t');
-
-		// 旧位置应被清理
-		const openclawAfter = JSON.parse(await fs.readFile(openclawPath, 'utf8'));
-		assert.equal(openclawAfter.channels.coclaw, undefined);
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
-test('readConfig should migrate from openclaw.json channels.coclaw (runtime)', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	const mockCfg = {
-		channels: {
-			coclaw: {
-				accounts: {
-					default: { serverUrl: 'http://rt', botId: 'rt-b', token: 'rt-t' },
-				},
-			},
-		},
-	};
-	let writtenCfg = null;
-	setRuntime({
-		config: {
-			loadConfig: () => structuredClone(mockCfg),
-			writeConfigFile: async (cfg) => { writtenCfg = cfg; },
-		},
-	});
-
-	try {
-		const loaded = await readConfig();
-		assert.equal(loaded.token, 'rt-t');
-
-		// 迁移到新文件
-		const raw = JSON.parse(await fs.readFile(getBindingsPath(), 'utf8'));
-		assert.equal(raw.default.token, 'rt-t');
-
-		// runtime 应被调用清理 channels.coclaw
-		assert.equal(writtenCfg.channels.coclaw, undefined);
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
-test('readConfig should migrate from legacy .coclaw-tunnel.json', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	// openclaw.json 无 token
-	const openclawPath = nodePath.join(dir, 'openclaw.json');
-	process.env.OPENCLAW_CONFIG_PATH = openclawPath;
-	await fs.writeFile(openclawPath, JSON.stringify({}), 'utf8');
-
-	// cwd 下的 legacy 文件
-	await fs.writeFile(nodePath.join(dir, '.coclaw-tunnel.json'), JSON.stringify({
-		botId: 'legacy-b', token: 'legacy-t', serverUrl: 'http://legacy',
-	}), 'utf8');
-
-	try {
-		const loaded = await readConfig();
-		assert.equal(loaded.token, 'legacy-t');
-		assert.equal(loaded.botId, 'legacy-b');
-
-		// 迁移到新位置
-		const raw = JSON.parse(await fs.readFile(getBindingsPath(), 'utf8'));
-		assert.equal(raw.default.token, 'legacy-t');
-
-		// legacy 文件应被清理
-		const legacyAfter = JSON.parse(await fs.readFile(nodePath.join(dir, '.coclaw-tunnel.json'), 'utf8'));
-		assert.deepEqual(legacyAfter, {});
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
 test('clearConfig should remove account and delete file when empty', async () => {
 	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	// openclaw.json 不含 coclaw（避免 cleanOldLocations 写文件）
-	const openclawPath = nodePath.join(dir, 'openclaw.json');
-	process.env.OPENCLAW_CONFIG_PATH = openclawPath;
-	await fs.writeFile(openclawPath, JSON.stringify({}), 'utf8');
 
 	await writeConfig({ botId: 'b1', token: 't1', serverUrl: 'http://s1' });
 	const bindingsPath = getBindingsPath();
 
-	try {
-		// 确认写入
-		const before = JSON.parse(await fs.readFile(bindingsPath, 'utf8'));
-		assert.equal(before.default.token, 't1');
+	// 确认写入
+	const before = JSON.parse(await fs.readFile(bindingsPath, 'utf8'));
+	assert.equal(before.default.token, 't1');
 
-		await clearConfig();
+	await clearConfig();
 
-		// 文件应被删除
-		await assert.rejects(() => fs.access(bindingsPath), { code: 'ENOENT' });
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
-test('clearConfig should also clean old openclaw.json channels.coclaw', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	// 旧位置有残留
-	const openclawPath = nodePath.join(dir, 'openclaw.json');
-	process.env.OPENCLAW_CONFIG_PATH = openclawPath;
-	await fs.writeFile(openclawPath, JSON.stringify({
-		channels: { coclaw: { accounts: { default: { token: 'old' } } } },
-	}), 'utf8');
-
-	// 新位置也有
-	await writeConfig({ botId: 'b1', token: 't1' });
-
-	try {
-		await clearConfig();
-
-		// 旧位置清理
-		const openclawAfter = JSON.parse(await fs.readFile(openclawPath, 'utf8'));
-		assert.equal(openclawAfter.channels.coclaw, undefined);
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
-test('clearConfig via runtime should clean channels.coclaw and legacy files', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(dir);
-	process.chdir(dir);
-
-	const mockCfg = {
-		channels: {
-			telegram: { accounts: { default: { token: 'tg' } } },
-			coclaw: { accounts: { default: { token: 'old' } } },
-		},
-	};
-	let writtenCfg = null;
-	setRuntime({
-		config: {
-			loadConfig: () => structuredClone(mockCfg),
-			writeConfigFile: async (cfg) => { writtenCfg = cfg; },
-		},
-	});
-
-	// legacy 残留
-	const legacyPath = nodePath.join(dir, '.coclaw-tunnel.json');
-	await fs.writeFile(legacyPath, JSON.stringify({ token: 'legacy' }), 'utf8');
-
-	await writeConfig({ botId: 'b1', token: 't1' });
-
-	try {
-		await clearConfig();
-
-		assert.equal(writtenCfg.channels.coclaw, undefined);
-		assert.deepEqual(writtenCfg.channels.telegram, { accounts: { default: { token: 'tg' } } });
-
-		const legacyAfter = JSON.parse(await fs.readFile(legacyPath, 'utf8'));
-		assert.deepEqual(legacyAfter, {});
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
-test('readConfig should not migrate when old location has no token', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	const openclawPath = nodePath.join(dir, 'openclaw.json');
-	process.env.OPENCLAW_CONFIG_PATH = openclawPath;
-	await fs.writeFile(openclawPath, JSON.stringify({ channels: { coclaw: {} } }), 'utf8');
-
-	try {
-		const loaded = await readConfig();
-		assert.equal(loaded.token, undefined);
-
-		// bindings.json 不应被创建
-		const bindingsPath = getBindingsPath();
-		await assert.rejects(() => fs.access(bindingsPath), { code: 'ENOENT' });
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
-test('cleanOldLocations should skip when openclaw.json has no channels.coclaw (no runtime)', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	const openclawPath = nodePath.join(dir, 'openclaw.json');
-	process.env.OPENCLAW_CONFIG_PATH = openclawPath;
-	await fs.writeFile(openclawPath, JSON.stringify({ meta: { v: 1 } }), 'utf8');
-
-	await writeConfig({ botId: 'b1', token: 't1' });
-
-	try {
-		await clearConfig();
-
-		// openclaw.json 不应被修改（无 channels.coclaw 可清理）
-		const openclawAfter = JSON.parse(await fs.readFile(openclawPath, 'utf8'));
-		assert.deepEqual(openclawAfter, { meta: { v: 1 } });
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
-});
-
-test('cleanOldLocations via runtime should skip when no channels.coclaw', async () => {
-	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
-	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	const mockCfg = { channels: { telegram: { token: 'tg' } } };
-	let writeCount = 0;
-	setRuntime({
-		config: {
-			loadConfig: () => structuredClone(mockCfg),
-			writeConfigFile: async () => { writeCount++; },
-		},
-	});
-
-	await writeConfig({ botId: 'b1', token: 't1' });
-
-	try {
-		writeCount = 0;
-		await clearConfig();
-		// 不应调用 writeConfigFile（无 channels.coclaw 可清理）
-		assert.equal(writeCount, 0);
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
+	// 文件应被删除
+	await assert.rejects(() => fs.access(bindingsPath), { code: 'ENOENT' });
 });
 
 test('clearConfig should keep other accounts when clearing one', async () => {
 	resetEnv();
-	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
-	setHomedir(nodePath.join(dir, 'home-empty'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-	process.chdir(dir);
-
-	const openclawPath = nodePath.join(dir, 'openclaw.json');
-	process.env.OPENCLAW_CONFIG_PATH = openclawPath;
-	await fs.writeFile(openclawPath, JSON.stringify({}), 'utf8');
 
 	// 写入两个 account
 	await writeConfig({ botId: 'b1', token: 't1' }, 'default');
 	await writeConfig({ botId: 'b2', token: 't2' }, 'secondary');
 
-	try {
-		// 删除 default，secondary 应保留
-		await clearConfig('default');
-		const bindingsPath = getBindingsPath();
-		const raw = JSON.parse(await fs.readFile(bindingsPath, 'utf8'));
-		assert.equal(raw.default, undefined);
-		assert.equal(raw.secondary.token, 't2');
-	} finally {
-		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
-	}
+	// 删除 default，secondary 应保留
+	await clearConfig('default');
+	const bindingsPath = getBindingsPath();
+	const raw = JSON.parse(await fs.readFile(bindingsPath, 'utf8'));
+	assert.equal(raw.default, undefined);
+	assert.equal(raw.secondary.token, 't2');
 });

@@ -1,3 +1,5 @@
+// placeholder: 当前仅被 transport-adapter 使用，预留用于未来 channel outbound 消息规范化。
+
 function isNonEmptyString(value) {
 	return typeof value === 'string' && value.trim() !== '';
 }
