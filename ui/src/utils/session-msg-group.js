@@ -253,9 +253,14 @@ function stripOcPrefixes(text, role) {
 // 定时任务前缀，如 [cron:d59196ed-27ee-42fc-ad60-8ad19aafd4ba workspace-backup-1300-1900]
 const CRON_UUID_RE = /\[cron:[0-9a-f-]+(?:\s+([^\]]*))?\]\s*/;
 
+// 单行 fallback：derivedTitle 被截断导致原始多行正则无法匹配时使用
+const OPERATOR_POLICY_LINE_RE = /^\w[\w ]* \(operator configured\):[\s\S]*/;
+const INBOUND_META_LINE_RE = /^\w[\w ]* \(untrusted[^)]*\):[\s\S]*/;
+
 /**
  * 清洗插件侧返回的 derivedTitle。
  * 复用 stripOcPrefixes 中的正则，额外去除 cron:uuid。
+ * derivedTitle 是截取的单行字符串，可能不含 \n\n，需单行 fallback。
  * @param {string} text
  * @returns {string} 清洗后文本，空值返回 ''
  */
@@ -263,6 +268,9 @@ function cleanDerivedTitle(text) {
 	if (!text) return '';
 	let s = stripLeadingPattern(text, INBOUND_META_RE);
 	s = stripLeadingPattern(s, OPERATOR_POLICY_RE);
+	// 单行 fallback：原始正则未匹配（无 \n\n）时，整段为系统噪音，全部去除
+	s = s.replace(OPERATOR_POLICY_LINE_RE, '');
+	s = s.replace(INBOUND_META_LINE_RE, '');
 	return s
 		.replace(USER_TS_RE, '')
 		.replace(CRON_UUID_RE, (_, taskName) => taskName ? `${taskName} ` : '')

@@ -1,5 +1,5 @@
 <template>
-	<div class="flex flex-1 flex-col">
+	<div class="flex min-h-0 flex-1 flex-col">
 		<MobilePageHeader :title="$t('about.title')" />
 	<main class="flex-1 overflow-auto px-4 pt-5 pb-[max(2rem,env(safe-area-inset-bottom))] lg:px-5">
 		<div class="mx-auto w-full max-w-3xl">

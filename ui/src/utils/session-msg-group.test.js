@@ -651,4 +651,12 @@ describe('cleanDerivedTitle', () => {
 		const text = 'Conversation info (untrusted metadata):\n```json\n{"sender":"ui"}\n```\n\nSender (untrusted metadata):\n```json\n{"label":"ui"}\n```\n\n[Wed 2026-02-18 20:12 GMT+8] 标题';
 		expect(cleanDerivedTitle(text)).toBe('标题');
 	});
+
+	test('单行 operator configured（derivedTitle 截断无 \\n\\n）返回空', () => {
+		expect(cleanDerivedTitle('Skills store policy (operator configured): Do not discuss pricing or competitor')).toBe('');
+	});
+
+	test('单行 untrusted metadata（derivedTitle 截断无 \\n\\n）返回空', () => {
+		expect(cleanDerivedTitle('Conversation info (untrusted metadata):\n```json\n{"sender":"ui"')).toBe('');
+	});
 });

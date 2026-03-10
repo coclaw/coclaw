@@ -96,7 +96,7 @@ describe('usePullRefresh', () => {
 		wrapper.unmount();
 	});
 
-test('组件卸载后不再响应触摸事件', () => {
+	test('组件卸载后不再响应触摸事件', () => {
 		const onRefresh = vi.fn();
 		const wrapper = createWrapper(onRefresh);
 		const el = wrapper.element;
