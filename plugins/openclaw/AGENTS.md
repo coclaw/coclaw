@@ -19,6 +19,8 @@
 - `src/common/` — 共享逻辑
   - `bot-binding.js` — bind/unbind 核心逻辑
   - `errors.js` — 错误码与消息映射
+  - `gateway-notify.js` — gateway RPC 通知（spawn `openclaw gateway call`）
+  - `messages.js` — 用户提示文本
 
 ## 绑定信息存储
 

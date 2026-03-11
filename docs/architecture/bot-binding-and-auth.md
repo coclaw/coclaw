@@ -118,7 +118,7 @@
 ### 5.1 插件形态：Channel Plugin
 
 我们将 CoClaw 隧道插件注册为 **Channel（渠道）** 类型。
-*   **npm 包名**: `@coclaw/openclaw-coclaw`；**插件 ID**: `coclaw`。
+*   **npm 包名**: `@coclaw/openclaw-coclaw`；**插件 ID**: `openclaw-coclaw`。
 *   **优势**: 
     *   **生命周期管理**：复用 OpenClaw 的启动、停止、崩溃重启机制。
     *   **配置管理**：利用标准 Config Schema 进行验证和热重载。

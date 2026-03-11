@@ -8,7 +8,7 @@
 2. 合并后对外仍是一个插件；插件内部保持模块化。
 3. 插件内部共享目录命名采用 `common`（不使用 `core`）。
 4. 保留 `session-manager` 命名语义。
-5. OpenClaw `plugin id` 使用 `coclaw`。
+5. OpenClaw `plugin id` 使用 `openclaw-coclaw`。
 6. CLI 命令名使用 `coclaw`。
 7. npm 包名使用 `@coclaw/openclaw-coclaw`（scoped）。
 8. monorepo 目录结构采用 `plugins/openclaw`。
@@ -23,5 +23,5 @@
 ## 命名定稿（2026-03-07）
 
 - npm 包名：`@coclaw/openclaw-coclaw`（scoped to `@coclaw` org）。
-- plugin id：`coclaw`（= `openclaw.plugin.json` 中的 `id`，优先于从包名派生的 `idHint` `openclaw-coclaw`）。
-- channel 名：`coclaw`（与 plugin ID 一致）。
+- plugin id：`openclaw-coclaw`（= `openclaw.plugin.json` 中的 `id`，与 npm 包名去 scope 后一致）。
+- channel 名：`coclaw`。

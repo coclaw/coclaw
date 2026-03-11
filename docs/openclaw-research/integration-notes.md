@@ -16,28 +16,31 @@ OpenClaw 启动时**不保证**在 `sessions.json` 中预创建 `agent:main:main
 在插件连接 Gateway WebSocket 后，执行一次 ensure 流程：
 
 1. **探测**：`sessions.resolve({ key: "agent:main:main" })`
-2. **创建**（若不存在）：`sessions.reset({ key: "agent:main:main", reason: "new" })`
-3. **复核**：再次 `sessions.resolve` 确认
+2. **创建**（仅当网关真实响应"不存在"时）：`sessions.reset({ key: "agent:main:main", reason: "new" })`
 
-设计原则：仅用公开网关 API、幂等、单进程生命周期内执行一次。
+设计原则：仅用公开网关 API、幂等、单进程生命周期内执行一次。超时/网关未就绪等瞬态错误**不触发** reset，避免每次重连都重置会话。
 
 ```js
-async function ensureMainSessionKey(wsClient) {
-  const key = "agent:main:main";
-  const resolved = await wsClient.call("sessions.resolve", { key }).catch(() => null);
-  if (resolved?.ok && resolved?.result?.entry?.sessionId) {
-    return { state: "ready", sessionId: resolved.result.entry.sessionId };
+// 简化示意（实际实现见 realtime-bridge.js __ensureMainSessionKey）
+async function ensureMainSessionKey() {
+  const key = 'agent:main:main';
+  const resolved = await gatewayRpc('sessions.resolve', { key });
+  if (resolved?.ok === true) {
+    return { ok: true, state: 'ready' };
   }
-  await wsClient.call("sessions.reset", { key, reason: "new" });
-  const verify = await wsClient.call("sessions.resolve", { key });
-  if (verify?.ok && verify?.result?.entry?.sessionId) {
-    return { state: "created", sessionId: verify.result.entry.sessionId };
+  // 仅当网关真实响应 "不存在" 时才创建；超时等瞬态错误不触发 reset
+  if (!resolved?.response) {
+    return { ok: false, error: resolved?.error ?? 'resolve_transient_failure' };
   }
-  throw new Error("ensure main session key failed");
+  const reset = await gatewayRpc('sessions.reset', { key, reason: 'new' });
+  if (reset?.ok !== true) {
+    return { ok: false, error: reset?.error ?? 'sessions_reset_failed' };
+  }
+  return { ok: true, state: 'created' };
 }
 ```
 
-落地位置：`plugins/openclaw` 的 gateway ws client 初始化流程，在"连接成功回调"中执行。
+落地位置：`plugins/openclaw` 的 `RealtimeBridge.__ensureMainSessionKey()`，在 gateway WS connect 成功回调中执行。含并发调用防御和 `mainSessionEnsured` 标志位，确保生命周期内仅执行一次。详见 `docs/ensure-main-session-bug-analysis.md`。
 
 ---
 
