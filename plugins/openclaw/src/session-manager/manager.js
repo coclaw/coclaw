@@ -103,7 +103,7 @@ function parseSessionFileName(fileName) {
 }
 
 function archiveTypePriority(archiveType) {
-	return archiveType === 'reset' ? 2 : 1;
+	return archiveType === 'live' ? 2 : 1;
 }
 
 function shouldReplaceByPriority(current, next) {
@@ -266,6 +266,12 @@ export function createSessionManager(options = {}) {
 
 	function resolveTranscriptFile(agentId, sessionId) {
 		const dir = sessionsDir(agentId);
+		// live 文件优先：同一 sessionId 可能同时存在 live 和 reset 文件
+		// （OpenClaw reset 后复用 sessionId），live 代表当前活跃 transcript
+		const livePath = nodePath.join(dir, `${sessionId}.jsonl`);
+		if (fs.existsSync(livePath)) {
+			return livePath;
+		}
 		const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
 		const resetPrefix = `${sessionId}.jsonl.reset.`;
 		const resetCandidates = files
@@ -287,10 +293,6 @@ export function createSessionManager(options = {}) {
 			});
 		if (resetCandidates.length > 0) {
 			return resetCandidates[0].path;
-		}
-		const livePath = nodePath.join(dir, `${sessionId}.jsonl`);
-		if (fs.existsSync(livePath)) {
-			return livePath;
 		}
 		return null;
 	}

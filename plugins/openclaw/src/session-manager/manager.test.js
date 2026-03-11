@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createSessionManager } from './manager.js';
 
-test('listAll should dedup by sessionId and prioritize reset over live', async () => {
+test('listAll should dedup by sessionId and prioritize live over reset', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
 	const sessionsDir = nodePath.join(root, 'main', 'sessions');
 	await fs.mkdir(sessionsDir, { recursive: true });
@@ -31,13 +31,13 @@ test('listAll should dedup by sessionId and prioritize reset over live', async (
 	const res = manager.listAll({});
 	assert.equal(res.total, 3);
 	assert.equal(res.items.length > 0, true);
-	assert.equal(res.items.some((it) => it.sessionId === 's1' && it.indexed === true && it.archiveType === 'reset'), true);
+	assert.equal(res.items.some((it) => it.sessionId === 's1' && it.indexed === true && it.archiveType === 'live'), true);
 	assert.equal(res.items.some((it) => it.sessionId === 's2' && it.indexed === false && it.archiveType === 'live'), true);
 	assert.equal(res.items.some((it) => it.sessionId === 's3' && it.indexed === false && it.archiveType === 'reset'), true);
 	assert.equal(res.items.some((it) => it.sessionId === 's4'), false);
 	assert.equal(res.items.some((it) => it.sessionId === 's5'), false);
 	assert.equal(
-		res.items.some((it) => it.sessionId === 's1' && it.derivedTitle === 'reset session first user message for title'),
+		res.items.some((it) => it.sessionId === 's1' && it.derivedTitle === 'hello from live'),
 		true,
 	);
 	assert.equal(
@@ -306,7 +306,7 @@ test('deriveTitle should strip trailing Untrusted context block', async () => {
 	assert.equal(byId('uctx-combo')?.derivedTitle, '组合场景');
 });
 
-test('get should prioritize reset transcript and guard missing session', async () => {
+test('get should prioritize live transcript over reset and guard missing session', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
 	const sessionsDir = nodePath.join(root, 'main', 'sessions');
 	await fs.mkdir(sessionsDir, { recursive: true });
@@ -319,7 +319,12 @@ test('get should prioritize reset transcript and guard missing session', async (
 	const res = manager.get({ sessionId: 'x1', limit: 10, cursor: 0 });
 	assert.equal(res.total, 1);
 	assert.equal(res.messages.length, 1);
-	assert.equal(res.messages[0].from, 'reset-new');
+	assert.equal(res.messages[0].from, 'live');
+
+	// 仅有 reset 文件时应回退到 reset（含 bad json 行警告）
+	await fs.unlink(nodePath.join(sessionsDir, 'x1.jsonl'));
+	const res2 = manager.get({ sessionId: 'x1', limit: 10, cursor: 0 });
+	assert.equal(res2.messages[0].from, 'reset-new');
 	assert.equal(warns.length > 0, true);
 
 	assert.throws(() => manager.get({}), /sessionId required/);
