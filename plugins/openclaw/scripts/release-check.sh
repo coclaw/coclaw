@@ -11,21 +11,21 @@ source "$SCRIPT_DIR/_lib.sh"
 #   bash scripts/release-check.sh 0.1.7        # 显示并对比指定版本
 #   WAIT=1 bash scripts/release-check.sh 0.1.7 # 轮询直到指定版本在所有 registry 生效
 
-NPM_REGISTRY="https://registry.npmjs.org/"
+NPM_REGISTRY="https://registry.npmjs.org"
 MIRROR_REGISTRY="https://registry.npmmirror.com"
 TIMEOUT="${POLL_TIMEOUT:-120}"
 INTERVAL=5
+INITIAL_DELAY="${INITIAL_DELAY:-5}"
 
 EXPECTED_VERSION="${1:-}"
 
+# 通过 curl 直接查询 registry API（比 npm view 更可靠，避免镜像源超时问题）
 check_latest() {
 	local registry=$1
-	npm view "$PKG_NAME" version --registry="$registry" 2>/dev/null || echo "N/A"
-}
-
-check_versions() {
-	local registry=$1
-	npm view "$PKG_NAME" versions --json --registry="$registry" 2>/dev/null || echo "[]"
+	local version
+	version=$(curl -sS --max-time 10 "${registry}/${PKG_NAME}/latest" 2>/dev/null \
+		| node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).version)}catch{console.log('N/A')}})" 2>/dev/null) || true
+	echo "${version:-N/A}"
 }
 
 # 非等待模式：显示当前状态
@@ -63,6 +63,10 @@ if [[ -z "$EXPECTED_VERSION" ]]; then
 fi
 
 echo "=== 等待 $PKG_NAME@$EXPECTED_VERSION 发布生效 (timeout: ${TIMEOUT}s) ==="
+
+# 初始等待：发布和镜像同步通常几秒内完成，先等一下再查询
+echo "[INFO] 等待 ${INITIAL_DELAY}s 后开始检查..."
+sleep "$INITIAL_DELAY"
 
 elapsed=0
 npm_ok=false

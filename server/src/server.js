@@ -9,7 +9,7 @@ export function startServer() {
 		console.log(`[coclaw/server] listening on :${port}`);
 	});
 
-	attachBotWsHub(server);
+	attachBotWsHub(server, { sessionMiddleware: app.sessionMiddleware });
 
 	return server;
 }

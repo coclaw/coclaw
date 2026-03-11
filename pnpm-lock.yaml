@@ -180,6 +180,9 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(jiti@2.6.1)(jsdom@27.4.0(@noble/hashes@1.8.0))(lightningcss@1.31.1)(sass-embedded@1.97.3)(sass@1.97.3)
+      ws:
+        specifier: ^8.19.0
+        version: 8.19.0
 
 packages:
 

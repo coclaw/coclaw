@@ -18,6 +18,12 @@
 
 ## 关键里程碑
 
+### v0.2 整改 Stage 5（Plugin 心跳）（2026-03-11）
+- `realtime-bridge.js` 新增应用层心跳：plugin→server WS 连接每 25s 发送 `{ type: "ping" }`，45s 无任何消息则判定超时并关闭连接。
+- 新增方法：`__startServerHeartbeat(sock)` / `__resetServerHbTimeout(sock)` / `__clearServerHeartbeat()`。
+- 心跳集成到 WS 生命周期：`open` → 启动，每条 `message` → 重置超时，`close`/`error`/`stop` → 清理。
+- 覆盖率恢复达标：lines/statements/functions 100%，branches 97.02%（阈值 95%）。
+
 ### 脚本体系重建（2026-03-10）
 - **重写 `scripts/` 目录**：删除全部旧脚本（不可靠），基于 OpenClaw 源码分析重新设计。
 - **共享库 `_lib.sh`**：`get_install_mode()` 通过读取 `openclaw.json` 中 `plugins.installs` 的 `source` 字段检测安装模式（link/npm/archive/none），`ensure_uninstalled()` 安全卸载不清理 bindings。

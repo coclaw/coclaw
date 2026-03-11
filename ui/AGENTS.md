@@ -38,6 +38,9 @@
 - 后端测试账号（本地认证）：loginName=test；password=123456
 - 在 `ui` workspace 内执行 Playwright E2E 时，`webServer.command` 的前端启动命令应使用 `pnpm dev ...`，不要写 `pnpm --filter @coclaw/ui dev ...`，避免 webServer 启动异常或挂起
 - `Vitest` 配置必须排除 `e2e/**`（例如 `test.exclude`），避免 `pnpm test` / `pnpm coverage` 误扫 Playwright 用例导致流程异常等待
+- 公共 helper（登录、导航、安全输入等）统一放在 `e2e/helpers.js`，测试文件应优先从该模块导入
+- **禁止对 Nuxt UI 复合输入组件（`UTextarea` 等）使用 Playwright 的 `fill()`**，必须使用 `e2e/helpers.js` 中的 `typeText()` 或 `pressSequentially()`。`fill()` 通过 CDP 直接设置 value，会绕过 Vue 响应式链导致 v-model 不更新（详见 `docs/e2e-troubleshooting.md` 卡点 3）
+- 踩坑记录见 `docs/e2e-troubleshooting.md`
 
 ## 移动端子页面适配
 

@@ -52,7 +52,7 @@ export function createApp() {
 		});
 	}
 
-	app.use(session({
+	const sessionMw = session({
 		name: 'coclaw.sid',
 		secret: sessionSecret,
 		resave: false,
@@ -64,9 +64,13 @@ export function createApp() {
 			maxAge: 1000 * 60 * 60 * 24 * 30, // 30天
 		},
 		store: new PrismaSessionStore(prisma),
-	}));
+	});
+	app.use(sessionMw);
 	app.use(passport.initialize());
 	app.use(passport.session());
+
+	// 供 WS upgrade 认证使用
+	app.sessionMiddleware = sessionMw;
 
 	app.get('/healthz', (req, res) => {
 		res.status(200).json({ ok: true });

@@ -51,8 +51,7 @@ if [[ "$MODE" == "upgrade" ]]; then
 
 	echo "[SUB] openclaw plugins install $PKG_NAME"
 	openclaw plugins install "$PKG_NAME"
-	echo "[SUB] openclaw gateway restart"
-	openclaw gateway restart
+	wait_gateway_restart
 	echo "[INFO] 旧版已安装，准备用本地打包版本覆盖..."
 
 	echo ""
@@ -67,9 +66,7 @@ fi
 echo "[SUB] openclaw plugins install $TARBALL_PATH"
 openclaw plugins install "$TARBALL_PATH"
 
-echo "[SUB] openclaw gateway restart"
-openclaw gateway restart
-
+wait_gateway_restart
 verify_install
 
 # Step 5: 交互确认 or 自动继续
@@ -92,19 +89,17 @@ case "$ORIGINAL_MODE" in
 	link)
 		echo "[SUB] 恢复 link 模式"
 		openclaw plugins install --link "$PLUGIN_DIR"
-		openclaw gateway restart
 		;;
 	npm)
 		echo "[SUB] 恢复 npm 模式"
 		openclaw plugins install "$PKG_NAME"
-		openclaw gateway restart
 		;;
 	*)
 		echo "[INFO] 原始状态为 $ORIGINAL_MODE，不恢复安装"
-		openclaw gateway restart
 		;;
 esac
 
+wait_gateway_restart
 verify_install
 
 echo ""

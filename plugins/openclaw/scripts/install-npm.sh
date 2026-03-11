@@ -23,9 +23,7 @@ fi
 echo "[STEP] openclaw plugins install $PKG_NAME"
 openclaw plugins install "$PKG_NAME"
 
-echo "[STEP] openclaw gateway restart"
-openclaw gateway restart
-
+wait_gateway_restart
 verify_install
 
 echo ""

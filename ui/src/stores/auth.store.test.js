@@ -22,8 +22,16 @@ vi.mock('../i18n/index.js', () => ({
 	setLocale: vi.fn(),
 }));
 
-vi.mock('../services/gateway.ws.js', () => ({
-	createGatewayRpcClient: vi.fn(),
+const mockConnManager = {
+	get: vi.fn(),
+	connect: vi.fn(),
+	disconnect: vi.fn(),
+	syncConnections: vi.fn(),
+	disconnectAll: vi.fn(),
+};
+vi.mock('../services/bot-connection-manager.js', () => ({
+	useBotConnections: () => mockConnManager,
+	__resetBotConnections: vi.fn(),
 }));
 
 vi.mock('../services/bots.api.js', () => ({
@@ -228,6 +236,16 @@ describe('auth store', () => {
 
 		expect(sessionsStore.items).toEqual([]);
 		expect(botsStore.items).toEqual([]);
+	});
+
+	test('logout should disconnect all bot connections', async () => {
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '3' };
+
+		await store.logout();
+
+		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
 	});
 
 	test('logout should expose error message on failure', async () => {

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 
-import { createGatewayRpcClient } from '../services/gateway.ws.js';
+import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useBotsStore } from './bots.store.js';
 
 // 模块级变量，避免被 Pinia reactive 代理包裹
@@ -30,13 +30,18 @@ export const useSessionsStore = defineStore('sessions', {
 				this.items = [];
 				return;
 			}
-			const onlineBots = bots.filter((b) => b.online);
-			if (!onlineBots.length) {
+			// 筛选有已连接 WS 的 bot
+			const manager = useBotConnections();
+			const connectedBots = bots.filter((b) => {
+				const conn = manager.get(b.id);
+				return conn && conn.state === 'connected';
+			});
+			if (!connectedBots.length) {
 				this.items = [];
 				return;
 			}
 			this.loading = true;
-			_loadingPromise = this.__doLoadAll(onlineBots, bots.length);
+			_loadingPromise = this.__doLoadAll(connectedBots, bots.length);
 			try {
 				await _loadingPromise;
 			}
@@ -45,9 +50,9 @@ export const useSessionsStore = defineStore('sessions', {
 				this.loading = false;
 			}
 		},
-		async __doLoadAll(onlineBots, totalCount) {
+		async __doLoadAll(connectedBots, totalCount) {
 			const results = await Promise.allSettled(
-				onlineBots.map((bot) => this.__fetchSessionsForBot(bot.id)),
+				connectedBots.map((bot) => this.__fetchSessionsForBot(bot.id)),
 			);
 			// 合并去重（以 sessionId 为 key，后者不覆盖先者）
 			const seen = new Set();
@@ -68,28 +73,22 @@ export const useSessionsStore = defineStore('sessions', {
 			console.debug('[sessions] loadAll: %d bot(s), merged %d session(s)', totalCount, merged.length);
 		},
 		async __fetchSessionsForBot(botId) {
-			let client;
-			try {
-				client = await createGatewayRpcClient({ botId });
-				const result = await client.request('nativeui.sessions.listAll', {
-					agentId: 'main',
-					limit: 200,
-					cursor: 0,
-				});
-				console.log('[sessions] listAll raw response (botId=%s):', botId, result);
-				const items = Array.isArray(result?.items) ? result.items : [];
-				return items.map((item) => ({
-					sessionId: item.sessionId,
-					sessionKey: item.sessionKey ?? null,
-					title: item.title ?? null,
-					derivedTitle: item.derivedTitle ?? null,
-					indexed: Boolean(item.indexed),
-					botId,
-				}));
-			}
-			finally {
-				client?.close?.();
-			}
+			const conn = useBotConnections().get(String(botId));
+			if (!conn || conn.state !== 'connected') return [];
+			const result = await conn.request('nativeui.sessions.listAll', {
+				agentId: 'main',
+				limit: 200,
+				cursor: 0,
+			});
+			const items = Array.isArray(result?.items) ? result.items : [];
+			return items.map((item) => ({
+				sessionId: item.sessionId,
+				sessionKey: item.sessionKey ?? null,
+				title: item.title ?? null,
+				derivedTitle: item.derivedTitle ?? null,
+				indexed: Boolean(item.indexed),
+				botId,
+			}));
 		},
 	},
 });

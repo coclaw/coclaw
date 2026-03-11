@@ -37,11 +37,3 @@ export async function unbindBotByUser(botId) {
 	};
 }
 
-export async function createBotWsTicket(botId) {
-	const payload = botId ? { botId } : {};
-	const res = await client.post('/api/v1/bots/ws-ticket', payload);
-	return {
-		ticket: res.data?.ticket ?? '',
-		botId: res.data?.botId ?? null,
-	};
-}

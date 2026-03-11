@@ -22,8 +22,5 @@ fi
 echo "[STEP] openclaw plugins uninstall $PLUGIN_ID"
 openclaw plugins uninstall "$PLUGIN_ID"
 
-echo "[STEP] openclaw gateway restart"
-openclaw gateway restart
-
 echo ""
-echo "[DONE] 插件已卸载"
+echo "[DONE] 插件已卸载（gateway 将自动重启）"
