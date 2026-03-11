@@ -9,6 +9,7 @@ const uiSockets = new Map();
 const uiTickets = new Map();
 const botRpcPending = new Map();
 let wsServer = null;
+let wsSessionMiddleware = null;
 let botRpcSeq = 1;
 
 export const botStatusEmitter = new EventEmitter();
@@ -201,6 +202,45 @@ function authenticateUiTicket(req) {
 	return { ok: true, botId: info.botId, userId: info.userId };
 }
 
+async function authenticateUiSession(req) {
+	if (!wsSessionMiddleware) {
+		return null;
+	}
+	const url = new URL(req.url ?? '', 'http://localhost');
+	const botId = url.searchParams.get('botId');
+	if (!botId) {
+		return null;
+	}
+	try {
+		// session 中间件需要最小 res stub；WS upgrade 时不会触发 res.end/writeHead
+		const stubRes = { on() { return this; }, end() {}, write() {}, writeHead() {}, setHeader() {}, getHeader() {} };
+		await new Promise((resolve, reject) => {
+			wsSessionMiddleware(req, stubRes, (err) => {
+				if (err) reject(err);
+				else resolve();
+			});
+		});
+	}
+	catch {
+		return null;
+	}
+	const userId = req.session?.passport?.user;
+	if (!userId) {
+		return null;
+	}
+	let bot = null;
+	try {
+		bot = await findBotById(BigInt(botId));
+	}
+	catch {
+		return null;
+	}
+	if (!bot || String(bot.userId) !== String(userId)) {
+		return null;
+	}
+	return { ok: true, botId: String(bot.id), userId: String(userId) };
+}
+
 function broadcastToUi(botId, payload) {
 	const set = uiSockets.get(botId);
 	if (!set || set.size === 0) {
@@ -239,6 +279,12 @@ function onBotMessage(botId, ws, raw) {
 		return;
 	}
 	if (!payload || typeof payload !== 'object') {
+		return;
+	}
+
+	// 应用层心跳：直接回 pong，不转发给 UI
+	if (payload.type === 'ping') {
+		try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
 		return;
 	}
 
@@ -330,7 +376,8 @@ export function createUiWsTicket({ botId, userId, ttlMs = 60_000 }) {
 	return ticket;
 }
 
-export function attachBotWsHub(httpServer) {
+export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
+	wsSessionMiddleware = sessionMiddleware ?? null;
 	wsServer = new WebSocketServer({ noServer: true });
 
 	httpServer.on('upgrade', async (req, socket, head) => {
@@ -341,9 +388,17 @@ export function attachBotWsHub(httpServer) {
 			}
 
 			const role = url.searchParams.get('role') ?? 'bot';
-			const auth = role === 'ui'
-				? authenticateUiTicket(req)
-				: await authenticateBotRequest(req);
+			let auth;
+			if (role === 'ui') {
+				// session cookie 优先，ticket 兜底
+				auth = await authenticateUiSession(req);
+				if (!auth?.ok) {
+					auth = authenticateUiTicket(req);
+				}
+			}
+			else {
+				auth = await authenticateBotRequest(req);
+			}
 			if (!auth.ok) {
 				wsLogWarn(`ws auth failed role=${role} code=${auth.code} message=${auth.message}`);
 				socket.write(`HTTP/1.1 ${auth.code} Unauthorized\r\n\r\n`);
@@ -391,7 +446,21 @@ export function attachBotWsHub(httpServer) {
 				botStatusEmitter.emit('status', { botId, online: true });
 				void refreshBotName(botId).catch(() => {});
 				ws.on('message', (raw) => onBotMessage(botId, ws, raw));
+				// WS 协议级心跳：检测半开连接（与 UI 侧对称）
+				ws.__isAlive = true;
+				ws.on('pong', () => { ws.__isAlive = true; });
+				const botPingInterval = setInterval(() => {
+					if (!ws.__isAlive) {
+						clearInterval(botPingInterval);
+						wsLogWarn(`bot ws ping timeout, terminating botId=${botId}`);
+						ws.terminate();
+						return;
+					}
+					ws.__isAlive = false;
+					ws.ping();
+				}, 30_000);
 				ws.on('close', (code, reason) => {
+					clearInterval(botPingInterval);
 					unregisterSocket(botSockets, botId, ws);
 					rejectAllBotRpcPending(botId);
 					wsLogInfo(`bot ws disconnected botId=${botId} code=${code} reason=${String(reason || '')}`);

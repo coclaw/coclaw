@@ -57,6 +57,12 @@ ensure_uninstalled() {
 	fi
 }
 
+# 等待 gateway 自动重启（openclaw.json 变更触发 chokidar file-watch → restart）
+wait_gateway_restart() {
+	echo "[INFO] 等待 gateway 自动重启..."
+	sleep 3
+}
+
 # 验证安装状态
 verify_install() {
 	echo ""

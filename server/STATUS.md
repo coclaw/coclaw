@@ -1,5 +1,15 @@
 # Server STATUS
 
+## 2026-03-11
+- **v0.2 整改 Stage 1（Server 适配）**：
+  - WS 升级认证新增 session cookie 方式（UI 侧优先 cookie，ticket 兜底）
+  - `app.js` 导出 `sessionMiddleware` 供 WS upgrade 使用
+  - `bot-ws-hub.js` 新增 `authenticateUiSession(req)` — 在 WS upgrade 时运行 express-session 中间件解析 cookie
+  - `bot-ws-hub.js` 新增 bot 侧 WS 协议级心跳（30s ping/pong，与 UI 侧对称）
+  - `bot-ws-hub.js` 新增应用层 ping/pong：bot 发送 `{ type: "ping" }` 时直接回 `{ type: "pong" }`，不转发给 UI
+  - UI 侧应用层 ping/pong 同理（已有）
+  - check + test 通过（93 tests）；coverage 未通过（pre-existing，`bot-ws-hub.js` 无专用单测）
+
 ## 2026-02-28
 - 绑定阶段命名语义收敛：
   - `POST /api/v1/bots/bind` 不再在路由层阻塞等待 `refreshBotName(..., timeout=9000)`。

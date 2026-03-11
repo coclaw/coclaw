@@ -114,6 +114,7 @@
 				<UTextarea
 					v-else
 					ref="textareaRef"
+					data-testid="chat-textarea"
 					:model-value="modelValue"
 					:placeholder="$t('chat.inputPlaceholder')"
 					:disabled="disabled"
@@ -141,6 +142,7 @@
 				/>
 				<UButton
 					v-else
+					data-testid="btn-send"
 					class="cc-icon-btn"
 					icon="i-lucide-send"
 					color="primary"

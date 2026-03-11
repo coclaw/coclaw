@@ -40,6 +40,9 @@ class FakeWebSocket {
 		this.sent.push(payload);
 	}
 	close(code, reason) {
+		if (this.throwOnClose) {
+			throw new Error('close failed');
+		}
 		this.readyState = 3;
 		this.emit('close', { code, reason });
 	}
@@ -741,5 +744,192 @@ test('RealtimeBridge should skip mainSessionKey if already ensured', async () =>
 		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge server heartbeat interval should send ping when socket is open', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+
+	const oldSetInterval = global.setInterval;
+	const oldClearInterval = global.clearInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldClearTimeout = global.clearTimeout;
+	const intervals = [];
+	const timeouts = [];
+	global.setInterval = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		intervals.push(obj);
+		return obj;
+	});
+	global.clearInterval = (() => {});
+	global.setTimeout = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		timeouts.push(obj);
+		return obj;
+	});
+	global.clearTimeout = (() => {});
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		// 找到 heartbeat interval 回调（25s）
+		const hbInterval = intervals.find((t) => t.__ms === 25_000);
+		assert.ok(hbInterval, 'should have heartbeat interval at 25s');
+
+		// socket OPEN → 发送 ping
+		hbInterval.__fn();
+		assert.ok(server.sent.some((x) => String(x).includes('"type":"ping"')), 'should send ping when open');
+
+		// socket 非 OPEN → 不发送
+		const sentBefore = server.sent.length;
+		server.readyState = 0;
+		hbInterval.__fn();
+		assert.equal(server.sent.length, sentBefore, 'should NOT send ping when not open');
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.clearInterval = oldClearInterval;
+		global.setTimeout = oldSetTimeout;
+		global.clearTimeout = oldClearTimeout;
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge server heartbeat timeout should close socket', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+
+	const oldSetInterval = global.setInterval;
+	const oldClearInterval = global.clearInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldClearTimeout = global.clearTimeout;
+	const intervals = [];
+	const timeouts = [];
+	global.setInterval = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		intervals.push(obj);
+		return obj;
+	});
+	global.clearInterval = (() => {});
+	global.setTimeout = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		timeouts.push(obj);
+		return obj;
+	});
+	global.clearTimeout = (() => {});
+
+	const warns = [];
+	const logger = { warn: (m) => warns.push(String(m)), info() {}, debug() {} };
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger, pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		// 找到 heartbeat timeout 回调（45s）
+		const hbTimeout = timeouts.find((t) => t.__ms === 45_000);
+		assert.ok(hbTimeout, 'should have heartbeat timeout at 45s');
+
+		// 触发超时 → 应关闭 socket
+		hbTimeout.__fn();
+		assert.ok(warns.some((x) => x.includes('heartbeat timeout')), 'should log heartbeat timeout');
+		assert.equal(server.readyState, 3, 'socket should be closed after heartbeat timeout');
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.clearInterval = oldClearInterval;
+		global.setTimeout = oldSetTimeout;
+		global.clearTimeout = oldClearTimeout;
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge heartbeat ping should not crash when send throws', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+
+	const oldSetInterval = global.setInterval;
+	const oldClearInterval = global.clearInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldClearTimeout = global.clearTimeout;
+	const intervals = [];
+	global.setInterval = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		intervals.push(obj);
+		return obj;
+	});
+	global.clearInterval = (() => {});
+	global.setTimeout = ((fn, ms) => ({ __fn: fn, __ms: ms, unref() {} }));
+	global.clearTimeout = (() => {});
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const hbInterval = intervals.find((t) => t.__ms === 25_000);
+		assert.ok(hbInterval);
+
+		// send 抛异常时不应 crash
+		server.throwOnSend = true;
+		assert.doesNotThrow(() => hbInterval.__fn());
+		server.throwOnSend = false;
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.clearInterval = oldClearInterval;
+		global.setTimeout = oldSetTimeout;
+		global.clearTimeout = oldClearTimeout;
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge heartbeat timeout should not crash when close throws', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+
+	const oldSetInterval = global.setInterval;
+	const oldClearInterval = global.clearInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldClearTimeout = global.clearTimeout;
+	const timeouts = [];
+	global.setInterval = ((fn, ms) => ({ __fn: fn, __ms: ms, unref() {} }));
+	global.clearInterval = (() => {});
+	global.setTimeout = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, unref() {} };
+		timeouts.push(obj);
+		return obj;
+	});
+	global.clearTimeout = (() => {});
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const hbTimeout = timeouts.find((t) => t.__ms === 45_000);
+		assert.ok(hbTimeout);
+
+		// close 抛异常时不应 crash
+		server.throwOnClose = true;
+		assert.doesNotThrow(() => hbTimeout.__fn());
+		server.throwOnClose = false;
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.clearInterval = oldClearInterval;
+		global.setTimeout = oldSetTimeout;
+		global.clearTimeout = oldClearTimeout;
+		await bridge.stop();
 	}
 });

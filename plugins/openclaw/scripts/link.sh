@@ -23,9 +23,7 @@ fi
 echo "[STEP] openclaw plugins install --link $PLUGIN_DIR"
 openclaw plugins install --link "$PLUGIN_DIR"
 
-echo "[STEP] openclaw gateway restart"
-openclaw gateway restart
-
+wait_gateway_restart
 verify_install
 
 echo ""

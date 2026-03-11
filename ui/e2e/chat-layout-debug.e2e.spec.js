@@ -22,8 +22,9 @@ async function loginAndNavigateToChat(page) {
 
 	// 尝试从 topics 页面找到可用 session 链接
 	await page.goto('/topics');
-	await page.waitForTimeout(1500);
-	const chatLink = page.locator('a[href*="/chat/"]').first();
+	// v0.2: sessions 通过 WS 异步加载，需等待链接出现
+	await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+	const chatLink = page.locator('main a[href*="/chat/"]').first();
 	if (await chatLink.count()) {
 		await chatLink.click();
 		await page.waitForTimeout(1000);

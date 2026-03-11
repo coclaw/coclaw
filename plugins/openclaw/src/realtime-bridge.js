@@ -8,6 +8,8 @@ import { getRuntime } from './runtime.js';
 const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:18789';
 const RECONNECT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
+const SERVER_HB_PING_MS = 25_000;
+const SERVER_HB_TIMEOUT_MS = 45_000;
 
 function toServerWsUrl(baseUrl, token) {
 	const url = new URL(baseUrl);
@@ -84,6 +86,8 @@ export class RealtimeBridge {
 		this.logger = console;
 		this.pluginConfig = {};
 		this.intentionallyClosed = false;
+		this.serverHbInterval = null;
+		this.serverHbTimer = null;
 	}
 
 	__resolveWebSocket() {
@@ -94,6 +98,31 @@ export class RealtimeBridge {
 		if (typeof this.logger?.debug === 'function') {
 			this.logger.debug(`[coclaw] ${message}`);
 		}
+	}
+
+	__startServerHeartbeat(sock) {
+		this.__clearServerHeartbeat();
+		this.serverHbInterval = setInterval(() => {
+			if (sock.readyState === 1) {
+				try { sock.send(JSON.stringify({ type: 'ping' })); } catch {}
+			}
+		}, SERVER_HB_PING_MS);
+		this.serverHbInterval.unref?.();
+		this.__resetServerHbTimeout(sock);
+	}
+
+	__resetServerHbTimeout(sock) {
+		if (this.serverHbTimer) clearTimeout(this.serverHbTimer);
+		this.serverHbTimer = setTimeout(() => {
+			this.logger.warn?.(`[coclaw] server ws heartbeat timeout (${SERVER_HB_TIMEOUT_MS / 1000}s), closing`);
+			try { sock.close(4000, 'heartbeat_timeout'); } catch {}
+		}, SERVER_HB_TIMEOUT_MS);
+		this.serverHbTimer.unref?.();
+	}
+
+	__clearServerHeartbeat() {
+		if (this.serverHbInterval) { clearInterval(this.serverHbInterval); this.serverHbInterval = null; }
+		if (this.serverHbTimer) { clearTimeout(this.serverHbTimer); this.serverHbTimer = null; }
 	}
 
 	__resolveGatewayWsUrl() {
@@ -486,10 +515,12 @@ export class RealtimeBridge {
 		sock.addEventListener('open', () => {
 			this.__clearConnectTimer();
 			this.logger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
+			this.__startServerHeartbeat(sock);
 			this.__ensureGatewayConnection();
 		});
 
 		sock.addEventListener('message', async (event) => {
+			this.__resetServerHbTimeout(sock);
 			try {
 				const payload = JSON.parse(String(event.data ?? '{}'));
 				if (payload?.type === 'bot.unbound') {
@@ -513,6 +544,7 @@ export class RealtimeBridge {
 		});
 
 		sock.addEventListener('close', async (event) => {
+			this.__clearServerHeartbeat();
 			this.__clearConnectTimer();
 			// 若 serverWs 已指向新实例（如 refresh 后），跳过旧 sock 的清理
 			if (this.serverWs !== null && this.serverWs !== sock) {
@@ -538,6 +570,7 @@ export class RealtimeBridge {
 			if (this.serverWs !== sock || this.intentionallyClosed) {
 				return;
 			}
+			this.__clearServerHeartbeat();
 			this.__clearConnectTimer();
 			this.logger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
 			this.serverWs = null;
@@ -568,6 +601,7 @@ export class RealtimeBridge {
 		this.started = false;
 		this.mainSessionEnsured = false;
 		this.mainSessionEnsurePromise = null;
+		this.__clearServerHeartbeat();
 		this.__clearConnectTimer();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);

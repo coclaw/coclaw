@@ -1,0 +1,241 @@
+import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { setActivePinia, createPinia } from 'pinia';
+
+const mockManager = {
+	connect: vi.fn(),
+	disconnect: vi.fn(),
+	syncConnections: vi.fn(),
+	disconnectAll: vi.fn(),
+	get: vi.fn(),
+};
+
+vi.mock('../services/bot-connection-manager.js', () => ({
+	useBotConnections: () => mockManager,
+	__resetBotConnections: vi.fn(),
+}));
+
+vi.mock('../services/bots.api.js', () => ({
+	listBots: vi.fn(),
+}));
+
+import { listBots } from '../services/bots.api.js';
+import { useBotsStore } from './bots.store.js';
+import { useSessionsStore } from './sessions.store.js';
+
+beforeEach(() => {
+	setActivePinia(createPinia());
+	vi.clearAllMocks();
+});
+
+describe('setBots', () => {
+	test('sets items to provided array', () => {
+		const store = useBotsStore();
+		const bots = [{ id: '1', name: 'Bot A' }, { id: '2', name: 'Bot B' }];
+		store.setBots(bots);
+		expect(store.items).toEqual(bots);
+	});
+
+	test('guards against non-array input by setting items to []', () => {
+		const store = useBotsStore();
+		store.setBots('not-an-array');
+		expect(store.items).toEqual([]);
+	});
+
+	test('guards against null input by setting items to []', () => {
+		const store = useBotsStore();
+		store.setBots(null);
+		expect(store.items).toEqual([]);
+	});
+});
+
+describe('addOrUpdateBot', () => {
+	test('inserts new bot with normalized fields and calls connect', () => {
+		const store = useBotsStore();
+		const bot = {
+			id: 42,
+			name: 'NewBot',
+			online: true,
+			lastSeenAt: '2024-01-01',
+			createdAt: '2024-01-01',
+			updatedAt: '2024-01-02',
+		};
+		store.addOrUpdateBot(bot);
+
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0]).toEqual({
+			id: '42',
+			name: 'NewBot',
+			online: true,
+			lastSeenAt: '2024-01-01',
+			createdAt: '2024-01-01',
+			updatedAt: '2024-01-02',
+		});
+		expect(mockManager.connect).toHaveBeenCalledOnce();
+		expect(mockManager.connect).toHaveBeenCalledWith('42');
+	});
+
+	test('normalizes missing optional fields to null and online to false', () => {
+		const store = useBotsStore();
+		store.addOrUpdateBot({ id: '7' });
+
+		expect(store.items[0]).toEqual({
+			id: '7',
+			name: null,
+			online: false,
+			lastSeenAt: null,
+			createdAt: null,
+			updatedAt: null,
+		});
+	});
+
+	test('inserts new bot at the front of items', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', name: 'Existing' }]);
+		store.addOrUpdateBot({ id: '2', name: 'NewBot' });
+
+		expect(store.items[0].id).toBe('2');
+		expect(store.items[1].id).toBe('1');
+	});
+
+	test('updates existing bot in place and calls connect', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', name: 'OldName', online: false }]);
+		store.addOrUpdateBot({ id: '1', name: 'NewName', online: true });
+
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].name).toBe('NewName');
+		expect(store.items[0].online).toBe(true);
+		expect(mockManager.connect).toHaveBeenCalledWith('1');
+	});
+
+	test('does nothing when bot id is falsy', () => {
+		const store = useBotsStore();
+		store.addOrUpdateBot({ name: 'No ID' });
+		expect(store.items).toHaveLength(0);
+		expect(mockManager.connect).not.toHaveBeenCalled();
+	});
+
+	test('does nothing when bot is null', () => {
+		const store = useBotsStore();
+		store.addOrUpdateBot(null);
+		expect(store.items).toHaveLength(0);
+		expect(mockManager.connect).not.toHaveBeenCalled();
+	});
+});
+
+describe('removeBotById', () => {
+	test('removes bot from items and calls disconnect', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', name: 'A' }, { id: '2', name: 'B' }]);
+		store.removeBotById('1');
+
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].id).toBe('2');
+		expect(mockManager.disconnect).toHaveBeenCalledWith('1');
+	});
+
+	test('calls removeSessionsByBotId on sessions store', () => {
+		const store = useBotsStore();
+		const sessionsStore = useSessionsStore();
+		store.setBots([{ id: '5', name: 'Bot' }]);
+		sessionsStore.setSessions([
+			{ sessionId: 'sa', botId: '5' },
+			{ sessionId: 'sb', botId: '99' },
+		]);
+
+		store.removeBotById('5');
+
+		expect(sessionsStore.items).toHaveLength(1);
+		expect(sessionsStore.items[0].sessionId).toBe('sb');
+	});
+
+	test('is a no-op when bot is not found', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', name: 'A' }]);
+
+		expect(() => store.removeBotById('999')).not.toThrow();
+		expect(store.items).toHaveLength(1);
+		// disconnect still called but items unchanged
+		expect(mockManager.disconnect).toHaveBeenCalledWith('999');
+	});
+});
+
+describe('updateBotOnline', () => {
+	test('flips online flag for matching bot', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', name: 'A', online: false }]);
+		store.updateBotOnline('1', true);
+
+		expect(store.items[0].online).toBe(true);
+	});
+
+	test('coerces truthy value to boolean true', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', online: false }]);
+		store.updateBotOnline('1', 1);
+
+		expect(store.items[0].online).toBe(true);
+	});
+
+	test('is a no-op when bot is not found', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', online: true }]);
+
+		expect(() => store.updateBotOnline('999', false)).not.toThrow();
+		expect(store.items[0].online).toBe(true);
+	});
+});
+
+describe('loadBots', () => {
+	test('fetches bots, sets items, and calls syncConnections with all bot IDs', async () => {
+		const store = useBotsStore();
+		const bots = [{ id: '1', name: 'A' }, { id: '2', name: 'B' }];
+		listBots.mockResolvedValue(bots);
+
+		await store.loadBots();
+
+		expect(store.items).toEqual(bots);
+		expect(mockManager.syncConnections).toHaveBeenCalledOnce();
+		expect(mockManager.syncConnections).toHaveBeenCalledWith(['1', '2']);
+	});
+
+	test('returns the fetched bots array', async () => {
+		const store = useBotsStore();
+		const bots = [{ id: '3', name: 'C' }];
+		listBots.mockResolvedValue(bots);
+
+		const result = await store.loadBots();
+
+		expect(result).toEqual(bots);
+	});
+
+	test('sets loading to true during fetch', async () => {
+		const store = useBotsStore();
+		let loadingDuringFetch = null;
+		listBots.mockImplementation(() => {
+			loadingDuringFetch = store.loading;
+			return Promise.resolve([]);
+		});
+
+		await store.loadBots();
+
+		expect(loadingDuringFetch).toBe(true);
+	});
+
+	test('resets loading to false after successful fetch', async () => {
+		const store = useBotsStore();
+		listBots.mockResolvedValue([]);
+
+		await store.loadBots();
+
+		expect(store.loading).toBe(false);
+	});
+
+	test('resets loading to false even on error', async () => {
+		const store = useBotsStore();
+		listBots.mockRejectedValue(new Error('network error'));
+
+		await expect(store.loadBots()).rejects.toThrow('network error');
+		expect(store.loading).toBe(false);
+	});
+});

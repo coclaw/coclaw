@@ -10,11 +10,15 @@ vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../services/gateway.ws.js', () => ({
-	createGatewayRpcClient: vi.fn().mockResolvedValue({
-		request: vi.fn().mockResolvedValue({ items: [] }),
-		close: vi.fn(),
+vi.mock('../services/bot-connection-manager.js', () => ({
+	useBotConnections: () => ({
+		get: vi.fn(),
+		connect: vi.fn(),
+		disconnect: vi.fn(),
+		syncConnections: vi.fn(),
+		disconnectAll: vi.fn(),
 	}),
+	__resetBotConnections: vi.fn(),
 }));
 
 const RouterLinkStub = {
@@ -174,6 +178,8 @@ test('should show bot name initial in session icon', async () => {
 		{ id: 'b1', name: 'AlphaBot', online: true },
 		{ id: 'b2', name: 'BetaBot', online: true },
 	]);
+	// 让 watcher 触发的 loadAllSessions 完成，避免后续覆盖手动设置的 sessions
+	await wrapper.vm.$nextTick();
 
 	const sessionsStore = useSessionsStore();
 	sessionsStore.setSessions([
@@ -195,6 +201,7 @@ test('bot item should navigate to agent:main:main session when available', async
 
 	const botsStore = useBotsStore();
 	botsStore.setBots([{ id: 'b1', name: 'MyBot', online: true }]);
+	await wrapper.vm.$nextTick();
 
 	const sessionsStore = useSessionsStore();
 	sessionsStore.setSessions([
@@ -212,6 +219,7 @@ test('bot item should fallback to /chat when no agent:main:main session', async 
 
 	const botsStore = useBotsStore();
 	botsStore.setBots([{ id: 'b1', name: 'MyBot', online: true }]);
+	await wrapper.vm.$nextTick();
 
 	const sessionsStore = useSessionsStore();
 	sessionsStore.setSessions([

@@ -159,8 +159,9 @@ test.describe('下拉刷新', () => {
 		await page.waitForTimeout(1000);
 		if (!/\/chat\//.test(page.url())) {
 			await page.goto('/topics');
-			await page.waitForTimeout(1500);
-			const chatLink = page.locator('a[href*="/chat/"]').first();
+			// v0.2: sessions 通过 WS 异步加载，需等待链接出现
+			await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+			const chatLink = page.locator('main a[href*="/chat/"]').first();
 			if (!(await chatLink.count())) {
 				test.skip(true, 'No chat session available');
 				return;

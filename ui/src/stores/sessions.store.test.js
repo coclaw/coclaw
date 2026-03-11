@@ -3,27 +3,38 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { useSessionsStore } from './sessions.store.js';
 
-vi.mock('../services/gateway.ws.js', () => ({
-	createGatewayRpcClient: vi.fn(),
+const mockConnections = new Map();
+
+vi.mock('../services/bot-connection-manager.js', () => ({
+	useBotConnections: () => ({
+		get: (botId) => mockConnections.get(String(botId)),
+		connect: vi.fn(),
+		disconnect: vi.fn(),
+		syncConnections: vi.fn(),
+		disconnectAll: vi.fn(),
+	}),
+	__resetBotConnections: vi.fn(),
 }));
 
 vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn().mockResolvedValue([]),
 }));
 
-import { createGatewayRpcClient } from '../services/gateway.ws.js';
 import { useBotsStore } from './bots.store.js';
 
-function mockRpcClient(items) {
+function mockConn(items = [], state = 'connected') {
 	return {
+		state,
 		request: vi.fn().mockResolvedValue({ items }),
-		close: vi.fn(),
+		on: vi.fn(),
+		off: vi.fn(),
 	};
 }
 
 describe('sessions store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
+		mockConnections.clear();
 		vi.clearAllMocks();
 	});
 
@@ -31,19 +42,18 @@ describe('sessions store', () => {
 		const store = useSessionsStore();
 		await store.loadAllSessions();
 		expect(store.items).toEqual([]);
-		expect(createGatewayRpcClient).not.toHaveBeenCalled();
 	});
 
-	test('loadAllSessions should return empty when all bots offline', async () => {
+	test('loadAllSessions should return empty when all bots have no connected WS', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([
 			{ id: 'bot-1', name: 'Bot 1', online: false },
 		]);
+		// 没有 mockConnections 条目 → get() 返回 undefined
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
 		expect(store.items).toEqual([]);
-		expect(createGatewayRpcClient).not.toHaveBeenCalled();
 	});
 
 	test('loadAllSessions should load sessions from multiple bots', async () => {
@@ -53,15 +63,14 @@ describe('sessions store', () => {
 			{ id: 'bot-2', name: 'Bot 2', online: true },
 		]);
 
-		const client1 = mockRpcClient([
+		const conn1 = mockConn([
 			{ sessionId: 's1', title: 'Session 1', indexed: true },
 		]);
-		const client2 = mockRpcClient([
+		const conn2 = mockConn([
 			{ sessionId: 's2', title: 'Session 2', indexed: false },
 		]);
-		createGatewayRpcClient
-			.mockResolvedValueOnce(client1)
-			.mockResolvedValueOnce(client2);
+		mockConnections.set('bot-1', conn1);
+		mockConnections.set('bot-2', conn2);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -70,19 +79,17 @@ describe('sessions store', () => {
 			{ sessionId: 's1', sessionKey: null, title: 'Session 1', derivedTitle: null, indexed: true, botId: 'bot-1' },
 			{ sessionId: 's2', sessionKey: null, title: 'Session 2', derivedTitle: null, indexed: false, botId: 'bot-2' },
 		]);
-		expect(client1.close).toHaveBeenCalled();
-		expect(client2.close).toHaveBeenCalled();
 	});
 
 	test('loadAllSessions should preserve sessionKey from server response', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot 1', online: true }]);
 
-		const client = mockRpcClient([
+		const conn = mockConn([
 			{ sessionId: 's1', sessionKey: 'agent:main:main', title: 'Main', indexed: true },
 			{ sessionId: 's2', title: 'No Key', indexed: true },
 		]);
-		createGatewayRpcClient.mockResolvedValueOnce(client);
+		mockConnections.set('bot-1', conn);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -98,15 +105,14 @@ describe('sessions store', () => {
 			{ id: 'bot-2', name: 'Bot 2', online: true },
 		]);
 
-		const client1 = mockRpcClient([
+		const conn1 = mockConn([
 			{ sessionId: 'dup', title: 'From Bot 1', indexed: true },
 		]);
-		const client2 = mockRpcClient([
+		const conn2 = mockConn([
 			{ sessionId: 'dup', title: 'From Bot 2', indexed: false },
 		]);
-		createGatewayRpcClient
-			.mockResolvedValueOnce(client1)
-			.mockResolvedValueOnce(client2);
+		mockConnections.set('bot-1', conn1);
+		mockConnections.set('bot-2', conn2);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -116,23 +122,23 @@ describe('sessions store', () => {
 		expect(store.items[0].botId).toBe('bot-1');
 	});
 
-	test('loadAllSessions should skip offline bots', async () => {
+	test('loadAllSessions should skip bots without connected WS', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([
 			{ id: 'bot-on', name: 'Online', online: true },
 			{ id: 'bot-off', name: 'Offline', online: false },
 		]);
 
-		const clientOn = mockRpcClient([
+		const connOn = mockConn([
 			{ sessionId: 's-on', title: 'Online Session', indexed: true },
 		]);
-		createGatewayRpcClient.mockResolvedValueOnce(clientOn);
+		mockConnections.set('bot-on', connOn);
+		// bot-off 没有连接
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
 
-		// 仅拉取在线 bot，离线 bot 不创建 rpcClient
-		expect(createGatewayRpcClient).toHaveBeenCalledTimes(1);
+		expect(connOn.request).toHaveBeenCalledTimes(1);
 		expect(store.items).toEqual([
 			{ sessionId: 's-on', sessionKey: null, title: 'Online Session', derivedTitle: null, indexed: true, botId: 'bot-on' },
 		]);
@@ -145,12 +151,17 @@ describe('sessions store', () => {
 			{ id: 'bot-fail', name: 'Fail', online: true },
 		]);
 
-		const clientOk = mockRpcClient([
+		const connOk = mockConn([
 			{ sessionId: 's-ok', title: 'OK Session', indexed: true },
 		]);
-		createGatewayRpcClient
-			.mockResolvedValueOnce(clientOk)
-			.mockRejectedValueOnce(new Error('connection failed'));
+		const connFail = {
+			state: 'connected',
+			request: vi.fn().mockRejectedValue(new Error('connection failed')),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		mockConnections.set('bot-ok', connOk);
+		mockConnections.set('bot-fail', connFail);
 
 		const store = useSessionsStore();
 		await store.loadAllSessions();
@@ -173,10 +184,10 @@ describe('sessions store', () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
 
-		const client = mockRpcClient([
+		const conn = mockConn([
 			{ sessionId: 's1', sessionKey: 'agent:main:main', title: 'Main', indexed: true },
 		]);
-		createGatewayRpcClient.mockResolvedValue(client);
+		mockConnections.set('bot-1', conn);
 
 		const store = useSessionsStore();
 		// 并发发起两次
@@ -185,8 +196,8 @@ describe('sessions store', () => {
 			store.loadAllSessions(),
 		]);
 
-		// 只应建立一次 RPC 连接
-		expect(createGatewayRpcClient).toHaveBeenCalledTimes(1);
+		// 只应调用一次 request（合流）
+		expect(conn.request).toHaveBeenCalledTimes(1);
 		expect(store.items).toHaveLength(1);
 		expect(store.loading).toBe(false);
 	});
@@ -195,8 +206,8 @@ describe('sessions store', () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
 
-		const client = mockRpcClient([]);
-		createGatewayRpcClient.mockResolvedValue(client);
+		const conn = mockConn([]);
+		mockConnections.set('bot-1', conn);
 
 		const store = useSessionsStore();
 		expect(store.loading).toBe(false);
@@ -206,5 +217,43 @@ describe('sessions store', () => {
 
 		await promise;
 		expect(store.loading).toBe(false);
+	});
+
+	test('removeSessionsByBotId should remove all sessions for the given botId', () => {
+		const store = useSessionsStore();
+		store.setSessions([
+			{ sessionId: 's1', botId: 'bot-1' },
+			{ sessionId: 's2', botId: 'bot-2' },
+			{ sessionId: 's3', botId: 'bot-1' },
+		]);
+
+		store.removeSessionsByBotId('bot-1');
+
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].sessionId).toBe('s2');
+	});
+
+	test('removeSessionsByBotId should coerce numeric botId to string', () => {
+		const store = useSessionsStore();
+		store.setSessions([
+			{ sessionId: 's1', botId: '42' },
+			{ sessionId: 's2', botId: '99' },
+		]);
+
+		store.removeSessionsByBotId(42);
+
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].sessionId).toBe('s2');
+	});
+
+	test('removeSessionsByBotId should be a no-op when no sessions match', () => {
+		const store = useSessionsStore();
+		store.setSessions([
+			{ sessionId: 's1', botId: 'bot-1' },
+		]);
+
+		store.removeSessionsByBotId('bot-999');
+
+		expect(store.items).toHaveLength(1);
 	});
 });

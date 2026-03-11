@@ -1,5 +1,19 @@
 # UI Workspace Status
 
+## 2026-03-11
+- **v0.2 实时通信架构整改（UI 侧，Stages 2/3/4）已完成**：
+  - 新增 `BotConnection` 类（`services/bot-connection.js`）：per-bot 持久 WS 连接，含 RPC 两阶段协议、心跳（25s ping/45s timeout）、指数退避重连
+  - 新增 `BotConnectionManager` 单例（`services/bot-connection-manager.js`）：管理所有 BotConnection 实例的生命周期
+  - 新增 `chatStore`（`stores/chat.store.js`）：从 ChatPage 抽取的通信/消息/streaming 逻辑
+  - 重构 `sessionsStore`：改用持久连接（`useBotConnections().get()`）替代临时 WS
+  - 重构 `botsStore`：loadBots 后自动同步连接（`syncConnections`）
+  - 重构 `authStore`：logout 时断开所有连接（`disconnectAll`）
+  - 重写 `ChatPage.vue`：从 ~700 行精简到 ~230 行，纯 UI 层委托 chatStore
+  - 移除 `gateway.ws.js` 及其测试（ticket 机制已废弃，改用 session cookie 认证）
+  - 移除 `bots.api.js` 中的 `createBotWsTicket()`
+  - 全部测试通过（30 文件，448 测试），覆盖率达标（statements 89.5%, branches 81.7%）
+  - 详见 `docs/architecture/v0.2-realtime-refactor.md`
+
 ## 2026-02-28
 - 完成一次多 bot 绑定回归测试（在 UI workspace 发起，使用测试账号 `test / 123456`）：
   - 连续执行 2 次绑定流程，成功新增 2 个 bot（列表计数从 1 -> 3）。

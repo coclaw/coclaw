@@ -14,6 +14,7 @@ import {
 	setLocale,
 } from '../i18n/index.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
+import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
 
@@ -88,6 +89,7 @@ export const useAuthStore = defineStore('auth', {
 				await logout();
 				this.user = null;
 				syncThemeModeFromSettings(null);
+				useBotConnections().disconnectAll();
 				useSessionsStore().$reset();
 				useBotsStore().$reset();
 				console.log('[auth] logged out');
