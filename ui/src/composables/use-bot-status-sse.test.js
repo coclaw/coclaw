@@ -93,7 +93,7 @@ describe('useBotStatusSse', () => {
 		expect(store.addOrUpdateBot).toHaveBeenCalledWith({ id: '42', name: 'test' });
 	});
 
-	test('should handle bot.unbound event by removing bot and sessions', () => {
+	test('should handle bot.unbound event by removing bot', () => {
 		useBotStatusSse(store);
 
 		esInstance.onmessage({
@@ -101,7 +101,7 @@ describe('useBotStatusSse', () => {
 		});
 
 		expect(store.removeBotById).toHaveBeenCalledWith('42');
-		expect(useSessionsStore().removeSessionsByBotId).toHaveBeenCalledWith('42');
+		// removeSessionsByBotId 由 removeBotById 内部调用，不再重复调用
 	});
 
 	test('should ignore messages with unknown event', () => {

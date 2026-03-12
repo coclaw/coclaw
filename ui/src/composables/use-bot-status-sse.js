@@ -1,7 +1,5 @@
 import { onBeforeUnmount, ref } from 'vue';
 
-import { useSessionsStore } from '../stores/sessions.store.js';
-
 /**
  * 通过 SSE 实时接收 bot 在线状态变更及解绑通知
  * @param {import('pinia').Store} botsStore - bots store 实例
@@ -39,8 +37,8 @@ export function useBotStatusSse(botsStore) {
 					botsStore.addOrUpdateBot(data.bot);
 				}
 				else if (data.event === 'bot.unbound') {
+					// removeBotById 内部已清理关联 session，无需重复调用
 					botsStore.removeBotById(data.botId);
-					useSessionsStore().removeSessionsByBotId(data.botId);
 				}
 			}
 			catch {}

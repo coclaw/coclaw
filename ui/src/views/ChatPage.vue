@@ -102,6 +102,7 @@ export default {
 		return {
 			inputText: '',
 			userScrolledUp: false,
+			__exiting: false,
 		};
 	},
 	computed: {
@@ -255,6 +256,8 @@ export default {
 			}
 		},
 		__exitChat(message) {
+			if (this.__exiting) return;
+			this.__exiting = true;
 			this.chatStore.cleanup();
 			this.notify.warning(message);
 			this.$router.replace('/');
