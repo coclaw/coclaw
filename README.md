@@ -6,11 +6,15 @@
 
 > **The world's first native [OpenClaw](https://github.com/openclaw/openclaw) IM application.**
 
-CoClaw is a full-featured instant-messaging client built from the ground up for the OpenClaw ecosystem. It lets users chat with their OpenClaw even when the two sides sit behind completely separate networks — no VPN, no port forwarding required.
+Slogan: Manage your AI Agents with CoClaw.CoClaw 
 
-While functionally similar to OpenClaw WebChat, CoClaw goes further with deeper platform integration and a mobile-first product experience.
+Mission: To provide an uncompromised, fully native, AI‑optimized flagship communication platform for collaboration between multiple humans and multiple Agents.
 
-True to OpenClaw's design philosophy, **your OpenClaw instance is the single source of truth** — all conversation history, bot personas, memories, and other user data live exclusively on your own device. CoClaw Server stores none of it; it only maintains the binding between users and their bots and acts as a communication bridge. In the future, you will even be able to back up your OpenClaw-side data (bot personas, memories, etc.) to your own cloud drive for added peace of mind.
+What is CoClaw: CoClaw is the world’s first flagship communication platform built natively for AI Agents. It inherits the design philosophy of OpenClaw and serves as the most essential native carrier for OpenClaw.
+
+CoClaw Belief: An AI Agent is more than a chatbot; it is an AI assistant with identity, memory, capabilities, autonomy, and collaboration needs. CoClaw systematically supports 49 types of collaboration between humans and Agents, and between Agents. It provides transparent workflows, real-time intervention, team scheduling, memory growth, and fine-grained authorization, enabling users to have an observable, controllable, trainable, collaborative, and growing AI assistant team.
+
+CoClaw Vs Human IM: CoClaw is natively designed for AI Agents, centered on collaboration, making AI Agents governable, team-capable, and autonomously growing; human IM is chat-centric, treating Agents as ordinary group members with full black-box and uncontrollable behavior.
 
 ## Repository Structure
 
