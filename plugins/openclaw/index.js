@@ -6,6 +6,8 @@ import { coclawChannelPlugin } from './src/channel-plugin.js';
 import { refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
+import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
+import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
 
 
 function parseCommandArgs(args) {
@@ -102,6 +104,23 @@ const plugin = {
 			catch (err) {
 				respondError(respond, err);
 			}
+		});
+
+		api.registerGatewayMethod('coclaw.upgradeHealth', async ({ respond }) => {
+			try {
+				const { version } = await getPackageInfo();
+				respond(true, { version });
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		const scheduler = new AutoUpgradeScheduler({ pluginId: api.id, logger });
+		api.registerService({
+			id: 'coclaw-auto-upgrade',
+			start() { scheduler.start(); },
+			stop() { scheduler.stop(); },
 		});
 
 		api.registerCli(registerCoclawCli, { commands: ['coclaw'] });

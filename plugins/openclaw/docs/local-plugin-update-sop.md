@@ -55,10 +55,10 @@ pnpm run uninstall:npm  # 卸载 npm
 
 ```bash
 # 全新安装验证
-pnpm run prerelease
+pnpm run release:pre
 
 # 升级验证（先装 npm 旧版，再用本地包覆盖）
-pnpm run prerelease -- --upgrade
+pnpm run release:pre -- --upgrade
 ```
 
 流程：`pnpm verify` → `npm pack` → 卸载 → 安装 tarball → 验证 → 手动确认 → 恢复原模式。

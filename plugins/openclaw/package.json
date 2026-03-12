@@ -1,6 +1,6 @@
 {
   "name": "@coclaw/openclaw-coclaw",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "type": "module",
   "license": "Apache-2.0",
   "description": "OpenClaw CoClaw channel plugin for remote chat",
@@ -58,7 +58,7 @@
     "unlink": "bash ./scripts/unlink.sh",
     "install:npm": "bash ./scripts/install-npm.sh",
     "uninstall:npm": "bash ./scripts/uninstall-npm.sh",
-    "prerelease": "bash ./scripts/prerelease.sh",
+    "release:pre": "bash ./scripts/prerelease.sh",
     "release": "bash ./scripts/release.sh",
     "release:check": "bash ./scripts/release-check.sh",
     "release:versions": "npm view @coclaw/openclaw-coclaw versions --json --registry=https://registry.npmjs.org/ && npm view @coclaw/openclaw-coclaw versions --json"

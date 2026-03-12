@@ -17,10 +17,10 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	const handlers = new Map();
 	let cliOpts = null;
 
-	let serviceSpec = null;
+	const serviceSpecs = [];
 	plugin.register({
 		pluginConfig: {},
-		logger: { warn() {}, error() {} },
+		logger: { warn() {}, error() {}, log() {} },
 		registerChannel() {
 			calls.channel += 1;
 		},
@@ -33,7 +33,7 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 			cliOpts = opts;
 		},
 		registerService(spec) {
-			serviceSpec = spec;
+			serviceSpecs.push(spec);
 		},
 		registerGatewayMethod(name, handler) {
 			handlers.set(name, handler);
@@ -46,19 +46,25 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	assert.deepEqual(cliOpts, { commands: ['coclaw'] });
 	assert.equal(handlers.has('coclaw.refreshBridge'), true);
 	assert.equal(handlers.has('coclaw.stopBridge'), true);
+	assert.equal(handlers.has('coclaw.upgradeHealth'), true);
 	assert.equal(handlers.has('nativeui.sessions.listAll'), true);
 	assert.equal(handlers.has('nativeui.sessions.get'), true);
 	assert.equal(typeof handlers.get('command'), 'function');
-	assert.equal(serviceSpec.id, 'coclaw-realtime-bridge');
-	assert.equal(typeof serviceSpec.start, 'function');
-	assert.equal(typeof serviceSpec.stop, 'function');
+	const bridgeService = serviceSpecs.find(s => s.id === 'coclaw-realtime-bridge');
+	const upgradeService = serviceSpecs.find(s => s.id === 'coclaw-auto-upgrade');
+	assert.ok(bridgeService);
+	assert.equal(typeof bridgeService.start, 'function');
+	assert.equal(typeof bridgeService.stop, 'function');
+	assert.ok(upgradeService);
+	assert.equal(typeof upgradeService.start, 'function');
+	assert.equal(typeof upgradeService.stop, 'function');
 });
 
 test('gateway methods respond and catch errors', () => {
 	const handlers = new Map();
 	plugin.register({
 		pluginConfig: {},
-		logger: { warn() {}, error() {} },
+		logger: { warn() {}, error() {}, log() {} },
 		registerChannel() {},
 		registerCommand() {},
 		registerCli() {},
@@ -147,17 +153,18 @@ test('command handler should cover help/unknown/error/success paths', async () =
 		const bindingsDir = nodePath.join(dir, 'coclaw');
 		await fs.mkdir(bindingsDir, { recursive: true });
 		await fs.writeFile(nodePath.join(bindingsDir, 'bindings.json'), '{bad', 'utf8');
-		let svc = null;
+		const svcs = [];
 		plugin.register({
 			pluginConfig: { serverUrl: mock.baseUrl },
-			logger: { warn() {}, error() {} },
+			logger: { warn() {}, error() {}, log() {} },
 			registerChannel() {},
 			registerCli() {},
-			registerService(spec) { svc = spec; },
+			registerService(spec) { svcs.push(spec); },
 			registerGatewayMethod() {},
 			registerCommand() {},
 		});
-		await assert.rejects(() => svc.start(), { name: 'SyntaxError' });
+		const bridgeSvc = svcs.find(s => s.id === 'coclaw-realtime-bridge');
+		await assert.rejects(() => bridgeSvc.start(), { name: 'SyntaxError' });
 	}
 	finally {
 		process.chdir(prevCwd);
