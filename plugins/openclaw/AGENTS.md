@@ -15,6 +15,14 @@
   - `cli.js` — 独立 CLI（`coclaw bind/unbind`）
   - `cli-registrar.js` — OpenClaw `registerCli` 注册（`openclaw coclaw bind/unbind`）
   - `runtime.js` — OpenClaw runtime 引用管理
+- `src/auto-upgrade/` — 自动升级模块（仅 npm 安装模式生效）
+  - `updater.js` — 调度入口（延迟首次 + 周期轮询 + 升级锁）
+  - `updater-check.js` — 版本检查（npm view）+ `getPackageInfo()`
+  - `updater-spawn.js` — spawn detached worker 进程
+  - `worker.js` — 独立进程：备份 → `openclaw plugins update` → 验证 → 回滚
+  - `worker-backup.js` — 备份与恢复
+  - `worker-verify.js` — 升级后验证（gateway + 插件 + health）
+  - `state.js` — upgrade-state.json / upgrade-log.jsonl 读写
 - `src/session-manager/` — 会话读取能力（`nativeui.sessions.listAll/get`）
 - `src/common/` — 共享逻辑
   - `bot-binding.js` — bind/unbind 核心逻辑
@@ -44,8 +52,8 @@
 ## 约束
 
 - 所有 bind/unbind 核心逻辑必须集中在共享层，CLI 与插件命令层只做参数解析和错误映射。
-- gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `nativeui.sessions.listAll/get`）仅由本插件提供，禁止重复注册同名方法。
-- realtime bridge 必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接导致进程无法退出。
+- gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll/get`）仅由本插件提供，禁止重复注册同名方法。
+- realtime bridge（`coclaw-realtime-bridge`）和 auto-upgrade scheduler（`coclaw-auto-upgrade`）必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接或定时器导致进程无法退出。
 - CLI bind/unbind 成功后通过 `openclaw gateway call coclaw.refreshBridge/stopBridge` 通知 gateway，**禁止使用 `openclaw gateway restart`**（代价过大）。
 - 插件运行在 gateway 进程中，严禁引入全局异常兜底（如 `process.on('uncaughtException'/'unhandledRejection')`）。
 
