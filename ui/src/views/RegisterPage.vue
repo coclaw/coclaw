@@ -70,6 +70,7 @@
 <script>
 import { useAuthStore } from '../stores/auth.store.js';
 import { getAuthedHomeRoute } from '../utils/layout.js';
+import { validateLoginName } from '../validators/login-name.js';
 
 export default {
 	name: 'RegisterPage',
@@ -102,6 +103,13 @@ export default {
 			if (!this.form.loginName || !this.form.password || !this.form.confirmPassword) {
 				return;
 			}
+
+			const nameCheck = validateLoginName(this.form.loginName);
+			if (!nameCheck.valid) {
+				this.clientError = this.$t(`register.${nameCheck.code}`);
+				return;
+			}
+
 			if (this.form.password !== this.form.confirmPassword) {
 				this.clientError = this.$t('register.passwordMismatch');
 				return;

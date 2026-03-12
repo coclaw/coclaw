@@ -8,6 +8,7 @@ import {
 import { genUserId } from './id.svc.js';
 import { scrypt } from '../utils/scrypt-password.js';
 import { buildSessionUser } from './user-view.svc.js';
+import { validateLoginName } from '../validators/login-name.js';
 
 function buildAuthPayload(localAuth, overrides = {}) {
 	return buildSessionUser({
@@ -122,12 +123,17 @@ export async function createLocalAccount(input, deps = {}) {
 	} = deps;
 	const { loginName, password } = input;
 
-	if (!isNonEmptyString(loginName) || !isNonEmptyString(password)) {
+	if (!isNonEmptyString(password)) {
 		return {
 			ok: false,
 			code: 'INVALID_INPUT',
-			message: 'loginName and password are required',
+			message: 'password is required',
 		};
+	}
+
+	const nameCheck = validateLoginName(loginName);
+	if (!nameCheck.valid) {
+		return { ok: false, code: nameCheck.code, message: nameCheck.message };
 	}
 
 	const userId = genId();

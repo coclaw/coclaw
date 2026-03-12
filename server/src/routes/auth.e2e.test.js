@@ -63,6 +63,46 @@ test('e2e: GET /api/v1/auth/session should return null when user is not logged i
 	});
 });
 
+// ---- loginName 校验 ----
+
+test('e2e: register with too-short loginName should return 400 LOGIN_NAME_LENGTH', async () => {
+	const res = await request(app)
+		.post('/api/v1/auth/local/register')
+		.send({ loginName: 'ab', password: 'somePassword1' });
+
+	assert.equal(res.status, 400);
+	assert.equal(res.body.code, 'LOGIN_NAME_LENGTH');
+});
+
+test('e2e: register with invalid-format loginName should return 400 LOGIN_NAME_FORMAT', async () => {
+	const res = await request(app)
+		.post('/api/v1/auth/local/register')
+		.send({ loginName: '_bad_start', password: 'somePassword1' });
+
+	assert.equal(res.status, 400);
+	assert.equal(res.body.code, 'LOGIN_NAME_FORMAT');
+});
+
+test('e2e: register with consecutive special chars should return 400 LOGIN_NAME_FORMAT', async () => {
+	const res = await request(app)
+		.post('/api/v1/auth/local/register')
+		.send({ loginName: 'bad..name', password: 'somePassword1' });
+
+	assert.equal(res.status, 400);
+	assert.equal(res.body.code, 'LOGIN_NAME_FORMAT');
+});
+
+test('e2e: register with reserved loginName should return 400 LOGIN_NAME_RESERVED', async () => {
+	const res = await request(app)
+		.post('/api/v1/auth/local/register')
+		.send({ loginName: 'admin', password: 'somePassword1' });
+
+	assert.equal(res.status, 400);
+	assert.equal(res.body.code, 'LOGIN_NAME_RESERVED');
+});
+
+// ---- 完整注册流程 ----
+
 test('e2e: register → login → session → logout should work end-to-end', async () => {
 	const agent = request.agent(app);
 	const loginName = genLoginName();

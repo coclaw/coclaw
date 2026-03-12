@@ -158,14 +158,34 @@ test('changePassword: should hash new password and update', async () => {
 	});
 });
 
-test('createLocalAccount: should reject invalid input', async () => {
+test('createLocalAccount: should reject empty password', async () => {
 	const result = await createLocalAccount({
-		loginName: '',
+		loginName: 'alice',
 		password: '',
 	});
 
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
+});
+
+test('createLocalAccount: should reject invalid loginName format', async () => {
+	const result = await createLocalAccount({
+		loginName: '_a',
+		password: 'secret',
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'LOGIN_NAME_LENGTH');
+});
+
+test('createLocalAccount: should reject reserved loginName', async () => {
+	const result = await createLocalAccount({
+		loginName: 'admin',
+		password: 'secret',
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'LOGIN_NAME_RESERVED');
 });
 
 test('createLocalAccount: should return LOGIN_NAME_TAKEN on P2002', async () => {

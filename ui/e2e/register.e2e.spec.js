@@ -29,7 +29,64 @@ test('注册：密码不匹配显示客户端错误', async ({ page }) => {
 });
 
 // ================================================================
-// Test 2: 空字段提交不触发请求
+// Test 2: loginName 太短 → 客户端校验错误
+// ================================================================
+
+test('注册：loginName 太短显示长度错误', async ({ page }) => {
+	test.setTimeout(30_000);
+	await page.goto('/register');
+	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
+
+	await page.getByTestId('register-name').fill('ab');
+	await page.getByTestId('register-password').fill('password123');
+	await page.getByTestId('register-confirm-password').fill('password123');
+	await page.getByTestId('btn-register').click();
+
+	const errEl = page.getByTestId('client-error');
+	await expect(errEl).toBeVisible({ timeout: 3000 });
+	await expect(errEl).toContainText('3');
+	expect(page.url()).toMatch(/\/register/);
+});
+
+// ================================================================
+// Test 3: loginName 格式不合法 → 客户端校验错误
+// ================================================================
+
+test('注册：loginName 格式不合法显示格式错误', async ({ page }) => {
+	test.setTimeout(30_000);
+	await page.goto('/register');
+	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
+
+	await page.getByTestId('register-name').fill('_badname');
+	await page.getByTestId('register-password').fill('password123');
+	await page.getByTestId('register-confirm-password').fill('password123');
+	await page.getByTestId('btn-register').click();
+
+	await expect(page.getByTestId('client-error')).toBeVisible({ timeout: 3000 });
+	expect(page.url()).toMatch(/\/register/);
+});
+
+// ================================================================
+// Test 4: loginName 为保留名 → 客户端校验错误
+// ================================================================
+
+test('注册：loginName 为保留名显示保留错误', async ({ page }) => {
+	test.setTimeout(30_000);
+	await page.goto('/register');
+	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
+
+	await page.getByTestId('register-name').fill('admin');
+	await page.getByTestId('register-password').fill('password123');
+	await page.getByTestId('register-confirm-password').fill('password123');
+	await page.getByTestId('btn-register').click();
+
+	const errEl = page.getByTestId('client-error');
+	await expect(errEl).toBeVisible({ timeout: 3000 });
+	expect(page.url()).toMatch(/\/register/);
+});
+
+// ================================================================
+// Test 5: 空字段提交不触发请求
 // ================================================================
 
 test('注册：空字段提交不触发请求', async ({ page }) => {
@@ -50,7 +107,7 @@ test('注册：空字段提交不触发请求', async ({ page }) => {
 });
 
 // ================================================================
-// Test 3: 成功注册 → 跳转到认证区域
+// Test 6: 成功注册 → 跳转到认证区域
 // ================================================================
 
 test('注册：成功注册后跳转', async ({ page }) => {
@@ -69,7 +126,7 @@ test('注册：成功注册后跳转', async ({ page }) => {
 });
 
 // ================================================================
-// Test 4: 已登录用户访问注册页 → 自动跳转
+// Test 7: 已登录用户访问注册页 → 自动跳转
 // ================================================================
 
 test('注册：已登录用户自动跳转', async ({ page }) => {
@@ -83,7 +140,7 @@ test('注册：已登录用户自动跳转', async ({ page }) => {
 });
 
 // ================================================================
-// Test 5: 注册页跳转到登录页
+// Test 8: 注册页跳转到登录页
 // ================================================================
 
 test('注册：点击"已有账号"跳转到登录页', async ({ page }) => {
