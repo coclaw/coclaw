@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.2.1
+
+### Patch Changes
+
+- fix: auto-upgrade logger 兼容 gateway pino 风格，修复 "log is not a function" 导致升级流程中断的问题
+
 ## 0.1.7
 
 ### Patch Changes
