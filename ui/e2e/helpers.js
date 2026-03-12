@@ -76,3 +76,30 @@ export function evalStore(page, storeId, fnBody) {
 		return fn(store);
 	}, [storeId, fnBody]);
 }
+
+// --- WebSocket 连接状态 ---
+
+/**
+ * 获取当前 chat 对应的 WS 连接状态
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<'connected'|'connecting'|'disconnected'|'no-connection'>}
+ */
+export function getWsState(page) {
+	return evalStore(page, 'chat', `
+		const conn = store.__getConnection?.();
+		return conn ? conn.state : 'no-connection';
+	`);
+}
+
+/**
+ * 等待 WS 连接进入指定状态
+ * @param {import('@playwright/test').Page} page
+ * @param {string} expectedState - 'connected' | 'disconnected' | 'connecting'
+ * @param {number} [timeout=15000]
+ */
+export async function waitForWsState(page, expectedState, timeout = 15_000) {
+	await expect(async () => {
+		const state = await getWsState(page);
+		expect(state).toBe(expectedState);
+	}).toPass({ timeout });
+}
