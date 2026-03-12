@@ -26,15 +26,18 @@
     "prisma:migrate": "node scripts/prisma-migrate-dev.js",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
+    "admin": "node src/cli/admin.js",
     "account:create-test-local": "node scripts/create-test-local-account.js",
     "test": "node --test",
     "coverage": "c8 --check-coverage --lines 70 --functions 70 --branches 60 --statements 70 --reporter=text --reporter=lcov node --test",
     "verify": "pnpm check && pnpm test && pnpm coverage"
   },
   "dependencies": {
+    "@inquirer/confirm": "^6.0.8",
     "@paralleldrive/cuid2": "^2.3.0",
     "@prisma/client": "^6.19.0",
     "axios": "^1.13.5",
+    "commander": "^14.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
