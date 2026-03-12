@@ -9,7 +9,7 @@
 | Keystore | `android/app/keystore/coclaw-release.jks`（已被 .gitignore 排除） |
 | 签名配置 | `build.gradle` 从 `local.properties` 读取密码（不入库） |
 | 签名格式 | PKCS12（keytool 默认），keystore 和 key 共用同一密码 |
-| versionName | `0.2.0` |
+| versionName | `1.0.0` |
 | versionCode | `1` |
 | applicationId | `net.coclaw.im` |
 | allowBackup | `false` |
@@ -40,6 +40,55 @@ cd ui/android && ./gradlew assembleRelease
 ```
 
 产出路径：`android/app/build/outputs/apk/release/app-release.apk`
+
+## 壳子能力预埋（2026-03-12）
+
+目标：一次性将 APK 壳子所需的所有原生能力（权限、插件、Manifest 配置、原生代码）预埋完毕，后续仅通过 Web 端更新即可启用功能，无需重新发布 APK。
+
+### 追加权限
+
+| 权限 | 用途 |
+|------|------|
+| `POST_NOTIFICATIONS` | Android 13+ 通知权限 |
+| `FOREGROUND_SERVICE` | 后台保活（切后台不被杀） |
+| `FOREGROUND_SERVICE_DATA_SYNC` | Android 14+ 前台服务类型声明 |
+| `WAKE_LOCK` | 防止 CPU 休眠断连 |
+| `VIBRATE` | 通知震动 |
+| `ACCESS_NETWORK_STATE` | 网络状态检测，驱动重连 |
+| `READ_MEDIA_VIDEO` | Android 13+ 细粒度媒体权限 |
+| `READ_MEDIA_AUDIO` | Android 13+ 细粒度媒体权限 |
+
+### 安装 Capacitor 插件
+
+| 插件 | 用途 |
+|------|------|
+| `@capacitor/local-notifications` | 本地通知 |
+| `@capacitor/clipboard` | 剪贴板读写（代码复制等） |
+| `@capacitor/share` | 分享内容到其他 App |
+| `@capacitor/filesystem` | 文件读写（Artifacts 下载等） |
+| `@capacitor/camera` | 拍照（权限已有，补插件桥接） |
+| `@capacitor/network` | 网络状态监听 |
+| `@capacitor/keyboard` | 键盘事件处理（聊天输入） |
+| `@capacitor/splash-screen` | 启动屏控制 |
+| `@capacitor/haptics` | 触觉反馈 |
+| `@capacitor/browser` | 应用内打开外部链接 |
+
+### Manifest 配置
+
+- **Share Target**：intent-filter 接收外部 App 分享的文本、图片、文件
+- **Deep Link**：自定义 URL Scheme `coclaw://`
+- **前台服务声明**：`KeepAliveService`（dataSync 类型）
+
+### 原生代码
+
+- `KeepAliveService.java`：前台服务，App 切后台时保持进程存活
+- `MainActivity.java`：注册 KeepAliveService 插件
+
+### 暂缓项（TODO）
+
+- [ ] Firebase 项目 + `google-services.json` + `@capacitor/push-notifications`（FCM 推送）
+- [ ] `im.coclaw.net/.well-known/assetlinks.json`（HTTPS App Links 验证）
+- [ ] `RECEIVE_BOOT_COMPLETED` + BootReceiver（开机自启服务，随 FCM 一起做）
 
 ## TODO（上架应用商店前）
 
