@@ -44,14 +44,14 @@ function makeRuntime(installInfo = {}, pluginId = TEST_PLUGIN_ID) {
 	};
 }
 
-/** 静默 logger，记录所有日志 */
+/** 静默 logger，记录所有日志（使用 .info 对齐 pino/gateway logger） */
 function silentLogger() {
-	const logs = [];
+	const infos = [];
 	const warns = [];
 	return {
-		log: (...args) => logs.push(args.join(' ')),
+		info: (...args) => infos.push(args.join(' ')),
 		warn: (...args) => warns.push(args.join(' ')),
-		logs,
+		infos,
 		warns,
 	};
 }
@@ -244,7 +244,7 @@ test('start - 非 npm 安装时跳过调度', () => {
 	s.start();
 
 	assert.equal(s.__running, false);
-	assert.ok(logger.logs.some(m => m.includes('not an npm-installed plugin')));
+	assert.ok(logger.infos.some(m => m.includes('not an npm-installed plugin')));
 	assert.equal(s.__initialTimer, null);
 });
 
@@ -270,7 +270,7 @@ test('start - 正常启动后设置 __running 和 timer', async () => {
 		s.start();
 		assert.equal(s.__running, true);
 		assert.ok(s.__initialTimer !== null);
-		assert.ok(logger.logs.some(m => m.includes('Scheduler started')));
+		assert.ok(logger.infos.some(m => m.includes('Scheduler started')));
 
 		// 等 initial delay 触发 __check
 		await new Promise(r => setTimeout(r, 80));
@@ -326,7 +326,7 @@ test('stop - 清除 timer 并设置 __running = false', () => {
 	assert.equal(s.__running, false);
 	assert.equal(s.__initialTimer, null);
 	assert.equal(s.__intervalTimer, null);
-	assert.ok(logger.logs.some(m => m.includes('Scheduler stopped')));
+	assert.ok(logger.infos.some(m => m.includes('Scheduler stopped')));
 });
 
 test('stop - 未启动时调用是 no-op', () => {
@@ -335,7 +335,7 @@ test('stop - 未启动时调用是 no-op', () => {
 	const s = new AutoUpgradeScheduler({ logger });
 
 	s.stop();
-	assert.equal(logger.logs.length, 0);
+	assert.equal(logger.infos.length, 0);
 });
 
 test('stop - 清除 intervalTimer', async () => {
@@ -389,8 +389,8 @@ test('__check - 无更新时记录日志', async () => {
 
 		await s.__check();
 
-		assert.ok(logger.logs.some(m => m.includes('Checking for updates')));
-		assert.ok(logger.logs.some(m => m.includes('No update available')));
+		assert.ok(logger.infos.some(m => m.includes('Checking for updates')));
+		assert.ok(logger.infos.some(m => m.includes('No update available')));
 	} finally {
 		resetEnv();
 	}
@@ -417,8 +417,8 @@ test('__check - skippedVersions 命中时记录跳过日志', async () => {
 
 		await s.__check();
 
-		assert.ok(logger.logs.some(m => m.includes('99.0.0 skipped')));
-		assert.ok(logger.logs.some(m => m.includes('previously failed')));
+		assert.ok(logger.infos.some(m => m.includes('99.0.0 skipped')));
+		assert.ok(logger.infos.some(m => m.includes('previously failed')));
 	} finally {
 		resetEnv();
 	}
@@ -439,13 +439,10 @@ test('__check - 有更新时调用 spawnUpgradeWorker 并写入锁', async () =>
 
 		const lockPids = [];
 		const msgs = [];
-		const logger = Object.assign(
-			function (...args) { msgs.push(args.join(' ')); },
-			{
-				log: (...args) => msgs.push(args.join(' ')),
-				warn: (...args) => msgs.push(args.join(' ')),
-			},
-		);
+		const logger = {
+			info: (...args) => msgs.push(args.join(' ')),
+			warn: (...args) => msgs.push(args.join(' ')),
+		};
 
 		const s = new AutoUpgradeScheduler({
 			pluginId: TEST_PLUGIN_ID,
@@ -498,7 +495,7 @@ test('__check - isUpgradeLockedFn 返回 true 时跳过检查', async () => {
 		// 不应调用 checkForUpdate
 		assert.equal(checkForUpdateCalled, false);
 		// 应记录 "still running" 日志
-		assert.ok(logger.logs.some(m => m.includes('still running')));
+		assert.ok(logger.infos.some(m => m.includes('still running')));
 	} finally {
 		resetEnv();
 	}
@@ -591,7 +588,7 @@ test('start - 不提供 shouldSkipFn 时使用默认 shouldSkipAutoUpgrade', () 
 
 	s.start();
 	assert.equal(s.__running, false);
-	assert.ok(logger.logs.some(m => m.includes('not an npm-installed plugin')));
+	assert.ok(logger.infos.some(m => m.includes('not an npm-installed plugin')));
 
 	s.stop();
 });
@@ -659,6 +656,84 @@ test('start - initialDelay 后触发 __check 并设置 interval', async () => {
 		s.stop();
 	} finally {
 		resetEnv();
+	}
+});
+
+// --- pino 风格 logger 兼容性（gateway 真实场景） ---
+
+test('__check - 使用 pino 风格 logger（无 .log）完整走通 check + spawn 流程', async () => {
+	resetEnv();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const spawnCalls = [];
+		const infos = [];
+		const warns = [];
+		// 模拟 gateway 的 pino logger：有 info/warn/error，无 log
+		const pinoLikeLogger = {
+			info: (...args) => infos.push(args.join(' ')),
+			warn: (...args) => warns.push(args.join(' ')),
+			error: () => {},
+		};
+		assert.equal(pinoLikeLogger.log, undefined);
+
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger: pinoLikeLogger,
+			opts: {
+				shouldSkipFn: () => false,
+				initialDelayMs: 10,
+				checkIntervalMs: 100000,
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				getPluginInstallPathFn: () => '/opt/test-plugin',
+				spawnFn: (cmd, args, opts) => {
+					spawnCalls.push({ cmd, args, opts });
+					return { pid: 8888, unref: () => {} };
+				},
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		s.start();
+		assert.ok(infos.some(m => m.includes('Scheduler started')));
+
+		await s.__check();
+
+		assert.ok(infos.some(m => m.includes('Checking for updates')));
+		assert.ok(infos.some(m => m.includes('Update available')));
+		// spawnUpgradeWorker 内部也通过同一 logger 输出
+		assert.ok(infos.some(m => m.includes('[spawner]')));
+		assert.equal(spawnCalls.length, 1);
+		assert.equal(warns.length, 0);
+
+		s.stop();
+		assert.ok(infos.some(m => m.includes('Scheduler stopped')));
+	} finally {
+		resetEnv();
+	}
+});
+
+test('isUpgradeLocked 使用 pino 风格 logger（无 .log）清理过期锁时不抛异常', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		const infos = [];
+		const pinoLikeLogger = {
+			info: (...args) => infos.push(args.join(' ')),
+			warn: () => {},
+			error: () => {},
+		};
+		assert.equal(pinoLikeLogger.log, undefined);
+
+		await writeUpgradeLock(999999999);
+		const locked = await isUpgradeLocked({ logger: pinoLikeLogger });
+		assert.equal(locked, false);
+		assert.ok(infos.some(m => m.includes('Stale lock removed')));
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
@@ -742,7 +817,7 @@ test('isUpgradeLocked PID 已死时返回 false 并清理过期锁', async () =>
 		const locked = await isUpgradeLocked({ logger });
 		assert.equal(locked, false);
 		await assert.rejects(fs.access(getLockPath()));
-		assert.ok(logger.logs.some(m => m.includes('Stale lock removed')));
+		assert.ok(logger.infos.some(m => m.includes('Stale lock removed')));
 	}
 	finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -762,7 +837,7 @@ test('isUpgradeLocked 锁文件内容无效时返回 false 并清理', async () 
 		const locked = await isUpgradeLocked({ logger });
 		assert.equal(locked, false);
 		await assert.rejects(fs.access(lockPath));
-		assert.ok(logger.logs.some(m => m.includes('Stale lock removed')));
+		assert.ok(logger.infos.some(m => m.includes('Stale lock removed')));
 	}
 	finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -782,7 +857,7 @@ test('isUpgradeLocked 锁文件无 pid 字段时返回 false 并清理', async (
 		const locked = await isUpgradeLocked({ logger });
 		assert.equal(locked, false);
 		await assert.rejects(fs.access(lockPath));
-		assert.ok(logger.logs.some(m => m.includes('missing pid')));
+		assert.ok(logger.infos.some(m => m.includes('missing pid')));
 	}
 	finally {
 		await fs.rm(dir, { recursive: true, force: true });

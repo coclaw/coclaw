@@ -27,15 +27,14 @@ export function getWorkerPath() {
  * @param {string} params.pkgName - npm 包名
  * @param {object} [params.opts]
  * @param {Function} [params.opts.spawnFn] - 可注入的 spawn（测试用）
- * @param {Function} [params.logger]
+ * @param {object} [params.logger] - 需提供 .info() 方法（如 pino/gateway logger）
  * @returns {{ child: object }}
  */
 export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, pluginId, pkgName, opts, logger }) {
-	const log = typeof logger?.log === 'function' ? logger.log.bind(logger) : (logger ?? console.log);
 	const doSpawn = opts?.spawnFn ?? nodeSpawn;
 	const workerPath = getWorkerPath();
 
-	log(`[spawner] Spawning upgrade worker: ${fromVersion} → ${toVersion}`);
+	logger?.info?.(`[spawner] Spawning upgrade worker: ${fromVersion} → ${toVersion}`);
 
 	// 将 state dir 传递给 worker，确保 worker 写入正确的路径
 	const stateDir = resolveStateDir();
@@ -57,7 +56,7 @@ export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, pluginId
 
 	child.unref();
 
-	log(`[spawner] Worker spawned (pid: ${child.pid})`);
+	logger?.info?.(`[spawner] Worker spawned (pid: ${child.pid})`);
 	return { child };
 }
 

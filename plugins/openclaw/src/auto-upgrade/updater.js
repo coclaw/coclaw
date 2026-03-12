@@ -38,7 +38,7 @@ export async function isUpgradeLocked(opts) {
 	try {
 		const lock = JSON.parse(raw);
 		if (!lock.pid) {
-			logger?.log?.('[auto-upgrade] Stale lock removed (missing pid)');
+			logger?.info?.('[auto-upgrade] Stale lock removed (missing pid)');
 			await fs.rm(lockPath, { force: true }).catch(() => {});
 			return false;
 		}
@@ -48,7 +48,7 @@ export async function isUpgradeLocked(opts) {
 	}
 	catch {
 		// JSON 无效 / PID 已死 → 清理过期锁
-		logger?.log?.('[auto-upgrade] Stale lock removed (worker pid no longer alive)');
+		logger?.info?.('[auto-upgrade] Stale lock removed (worker pid no longer alive)');
 		await fs.rm(lockPath, { force: true }).catch(() => {});
 		return false;
 	}
@@ -157,7 +157,7 @@ export class AutoUpgradeScheduler {
 
 		const shouldSkip = this.__opts.shouldSkipFn ?? shouldSkipAutoUpgrade;
 		if (shouldSkip(this.__pluginId)) {
-			this.__logger.log?.('[auto-upgrade] Skipping: not an npm-installed plugin');
+			this.__logger.info?.('[auto-upgrade] Skipping: not an npm-installed plugin');
 			this.__running = false;
 			return;
 		}
@@ -165,7 +165,7 @@ export class AutoUpgradeScheduler {
 		// 默认 5~10 分钟随机延迟，避免多实例同时发起检查
 		const initialDelay = this.__opts.initialDelayMs
 			?? (INITIAL_DELAY_MS + Math.floor(Math.random() * INITIAL_DELAY_MS));
-		this.__logger.log?.(`[auto-upgrade] Scheduler started. First check in ${Math.round(initialDelay / 1000)}s`);
+		this.__logger.info?.(`[auto-upgrade] Scheduler started. First check in ${Math.round(initialDelay / 1000)}s`);
 
 		this.__initialTimer = setTimeout(() => {
 			this.__initialTimer = null;
@@ -190,7 +190,7 @@ export class AutoUpgradeScheduler {
 			clearInterval(this.__intervalTimer);
 			this.__intervalTimer = null;
 		}
-		this.__logger.log?.('[auto-upgrade] Scheduler stopped');
+		this.__logger.info?.('[auto-upgrade] Scheduler stopped');
 	}
 
 	/**
@@ -203,25 +203,25 @@ export class AutoUpgradeScheduler {
 			// 若上一次 spawn 的 worker 仍在运行，跳过本次检查
 			const isLocked = this.__opts.isUpgradeLockedFn ?? isUpgradeLocked;
 			if (await isLocked({ logger: this.__logger })) {
-				this.__logger.log?.('[auto-upgrade] Upgrade worker still running, skipping check');
+				this.__logger.info?.('[auto-upgrade] Upgrade worker still running, skipping check');
 				return;
 			}
 
-			this.__logger.log?.('[auto-upgrade] Checking for updates...');
+			this.__logger.info?.('[auto-upgrade] Checking for updates...');
 			const result = await checkForUpdate({
 				execFileFn: this.__opts.execFileFn,
 			});
 
 			if (!result.available) {
 				if (result.skipped) {
-					this.__logger.log?.(`[auto-upgrade] Version ${result.latestVersion} skipped (previously failed)`);
+					this.__logger.info?.(`[auto-upgrade] Version ${result.latestVersion} skipped (previously failed)`);
 				} else {
-					this.__logger.log?.(`[auto-upgrade] No update available (current: ${result.currentVersion})`);
+					this.__logger.info?.(`[auto-upgrade] No update available (current: ${result.currentVersion})`);
 				}
 				return;
 			}
 
-			this.__logger.log?.(`[auto-upgrade] Update available: ${result.currentVersion} → ${result.latestVersion}`);
+			this.__logger.info?.(`[auto-upgrade] Update available: ${result.currentVersion} → ${result.latestVersion}`);
 
 			const getInstallPath = this.__opts.getPluginInstallPathFn ?? getPluginInstallPath;
 			const pluginDir = getInstallPath(this.__pluginId);

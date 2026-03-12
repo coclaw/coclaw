@@ -49,6 +49,12 @@
 - `config.js` 是读写绑定信息的唯一入口，禁止在其他模块中直接操作 bindings 文件。
 - 环境变量 `COCLAW_SERVER_URL` 可覆盖 serverUrl（运行时覆盖，不影响存储）。
 
+## Logger 规范
+
+- OpenClaw gateway 提供的 logger 是 pino 风格，有 `.info()` / `.warn()` / `.error()`，**没有 `.log()` 方法**。
+- 插件代码中所有日志调用必须使用 `.info?.()` / `.warn?.()` / `.error?.()` 等带可选链的调用，**禁止使用 `.log()`**，也禁止将 logger 当函数直接调用（如 `logger('msg')`）。
+- 可选链 `?.()` 确保即使 logger 缺少某方法或 logger 本身为 undefined，也不会抛异常中断正常流程。
+
 ## 约束
 
 - 所有 bind/unbind 核心逻辑必须集中在共享层，CLI 与插件命令层只做参数解析和错误映射。
