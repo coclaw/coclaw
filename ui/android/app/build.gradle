@@ -32,10 +32,19 @@ android {
         }
     }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            def suffix = variant.buildType.name == 'release' ? '' : "-${variant.buildType.name}"
+            outputFileName = "coclaw-${variant.versionName}${suffix}.apk"
         }
     }
 }

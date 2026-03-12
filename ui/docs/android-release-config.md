@@ -39,7 +39,7 @@ Keystore 密码：`xxx`（keystore 和 key 共用）
 cd ui/android && ./gradlew assembleRelease
 ```
 
-产出路径：`android/app/build/outputs/apk/release/app-release.apk`
+产出路径：`android/app/build/outputs/apk/release/coclaw-<version>.apk`（如 `coclaw-1.0.0.apk`）
 
 ## 壳子能力预埋（2026-03-12）
 
