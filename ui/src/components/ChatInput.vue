@@ -58,6 +58,7 @@
 				<!-- 文件上传按钮 -->
 				<UButton
 					v-if="inputMode === 'keyboard'"
+					data-testid="btn-attach"
 					class="cc-icon-btn"
 					icon="i-lucide-plus"
 					variant="ghost"
@@ -157,6 +158,7 @@
 		<!-- 隐藏文件选择器 -->
 		<input
 			ref="fileInput"
+			data-testid="file-input"
 			type="file"
 			multiple
 			class="hidden"

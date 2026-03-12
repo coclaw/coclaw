@@ -4,7 +4,7 @@
 			<span class="text-muted">{{ $t('profile.nickname') }}</span>
 			<div class="flex items-center gap-2">
 				<span>{{ displayName }}</span>
-				<UButton v-if="editable" class="cc-icon-btn" variant="ghost" color="primary" size="md" icon="i-lucide-pencil" @click="$emit('edit-name')" />
+				<UButton v-if="editable" data-testid="btn-edit-name" class="cc-icon-btn" variant="ghost" color="primary" size="md" icon="i-lucide-pencil" @click="$emit('edit-name')" />
 			</div>
 		</div>
 		<div v-if="isLocalAuth" class="flex items-center justify-between gap-3 min-h-11">

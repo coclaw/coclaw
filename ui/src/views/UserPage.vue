@@ -16,6 +16,7 @@
 				<template v-for="item in menuItems" :key="item.id">
 					<div v-if="item.separator" class="my-1 border-t border-default" />
 					<button
+						:data-testid="'menu-' + item.id"
 						type="button"
 						class="flex h-11 w-full items-center gap-3 px-4 py-1 text-left text-sm text-highlighted hover:bg-accented/80"
 						@click="onMenuClick(item.id)"

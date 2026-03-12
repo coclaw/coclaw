@@ -1,11 +1,11 @@
 <template>
 	<div class="grid gap-0">
-		<div class="flex items-center justify-between gap-3 py-3">
+		<div data-testid="setting-theme" class="flex items-center justify-between gap-3 py-3">
 			<span class="text-sm">{{ $t('settings.appearance') }}</span>
 			<USelect v-model="form.theme" :items="themeOptions" value-key="value" class="w-40" @update:model-value="onSaveSettings" />
 		</div>
 
-		<div class="flex items-center justify-between gap-3 py-3">
+		<div data-testid="setting-lang" class="flex items-center justify-between gap-3 py-3">
 			<span class="text-sm">{{ $t('settings.language') }}</span>
 			<USelect v-model="form.lang" :items="langOptions" value-key="value" class="w-40" @update:model-value="onSaveSettings" />
 		</div>

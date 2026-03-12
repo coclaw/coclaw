@@ -4,8 +4,8 @@
 			<div class="flex items-center justify-between gap-3">
 				<h1 class="text-base font-medium">{{ $t('layout.manageBots') }}</h1>
 				<div class="flex items-center gap-2">
-					<UButton class="cc-icon-btn" color="primary" variant="ghost" size="md" icon="i-lucide-refresh-cw" :loading="loading" @click="loadBots" />
-					<UButton color="primary" variant="soft" @click="$router.push('/bots/add')">
+					<UButton data-testid="btn-refresh-bots" class="cc-icon-btn" color="primary" variant="ghost" size="md" icon="i-lucide-refresh-cw" :loading="loading" @click="loadBots" />
+					<UButton data-testid="btn-add-bot" color="primary" variant="soft" @click="$router.push('/bots/add')">
 						{{ $t('bots.addBot') }}
 					</UButton>
 				</div>

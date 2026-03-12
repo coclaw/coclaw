@@ -32,6 +32,7 @@
 			<div class="mt-8">
 				<UButton
 					v-if="isLoggedIn"
+					data-testid="btn-about-logout"
 					block
 					size="lg"
 					color="neutral"
@@ -42,6 +43,7 @@
 				</UButton>
 				<UButton
 					v-else
+					data-testid="btn-about-login"
 					block
 					size="lg"
 					@click="$router.push('/login')"
