@@ -16,6 +16,7 @@
 			<div
 				v-for="bot in bots"
 				:key="bot.id"
+				:data-testid="'bot-' + bot.id"
 				class="flex items-center justify-between gap-3 rounded-xl border border-default --bg-elevated bg-muted p-4"
 			>
 				<div class="min-w-0 space-y-1 text-sm">
