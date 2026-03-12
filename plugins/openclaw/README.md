@@ -4,6 +4,7 @@ CoClaw 的 OpenClaw 插件（npm: `@coclaw/openclaw-coclaw`，plugin id: `opencl
 
 - **transport bridge** — CoClaw server 与 OpenClaw gateway 之间的实时消息桥接
 - **session-manager** — 会话列表/读取能力（`nativeui.sessions.listAll` / `nativeui.sessions.get`）
+- **auto-upgrade** — 从 npm 安装的插件自动检查并升级到最新版本
 
 ## 安装与模式切换
 
@@ -39,15 +40,15 @@ pnpm run uninstall:npm   # 卸载 npm 模式
 发布前验证 tarball 能正确安装到 OpenClaw 中：
 
 ```bash
-pnpm run prerelease              # 全新安装验证（交互式，含手动功能验证）
-pnpm run prerelease -- --upgrade # 升级验证（先装 npm 旧版，再用本地包覆盖）
+pnpm run release:pre              # 全新安装验证（交互式，含手动功能验证）
+pnpm run release:pre -- --upgrade # 升级验证（先装 npm 旧版，再用本地包覆盖）
 ```
 
 ### 发布到 npm
 
 ```bash
 pnpm run release                 # 默认：verify → 发布 → 轮询确认
-pnpm run release -- --prerelease # 含预发布验证（pack + 安装测试 + 发布）
+pnpm run release -- --prerelease # 含预发布验证（pack + 安装测试 + 发布，等同于先手动 release:pre 再 release）
 ```
 
 ### 检查发布状态
@@ -111,6 +112,24 @@ node ~/.openclaw/extensions/coclaw/src/cli.js unbind --server <url>
 - 这一设计是为了避免卸载插件后 `channels.coclaw` 节点残留导致 OpenClaw gateway schema 验证失败。
 - `config.js` 是读写绑定信息的唯一入口。
 - 绑定时不提交 bot `name`；server 通过 gateway WebSocket 获取 OpenClaw 实例名。若未设置实例名，前端回退显示 `OpenClaw`。
+
+## 自动升级
+
+从 npm 安装的插件（`source: "npm"`）会自动检查并升级。link 模式和 tarball 安装不触发自动升级。
+
+- **检查频率**：gateway 启动后延迟 5~10 分钟首次检查，之后每 1 小时
+- **升级方式**：独立 detached 进程执行，不阻塞 gateway
+- **安全机制**：升级前物理备份；升级后验证 gateway + 插件状态；验证失败自动回滚
+- **状态文件**：`~/.openclaw/coclaw/upgrade-state.json`（运行时状态）、`upgrade-log.jsonl`（升级历史）
+
+可通过 gateway RPC 检查升级模块状态：
+
+```bash
+openclaw gateway call coclaw.upgradeHealth --json
+# → {"version":"0.1.7"}
+```
+
+详见设计文档 `docs/auto-upgrade.md`。
 
 ## 运行与排障日志
 

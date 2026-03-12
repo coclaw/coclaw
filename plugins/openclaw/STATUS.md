@@ -1,6 +1,6 @@
 # OpenClaw Plugin STATUS
 
-## 当前状态（2026-03-10）
+## 当前状态（2026-03-12）
 
 - 插件工作区：`plugins/openclaw`，已稳定运行。
 - 对外标识：
@@ -9,14 +9,25 @@
   - CLI 子命令：`coclaw`（`openclaw coclaw bind/unbind`）
 - 单一入口 `index.js` 同时注册：
   - channel（coclaw）
-  - service（`coclaw-realtime-bridge`，通过 `registerService` 注册，仅在 gateway daemon 启动时运行）
+  - services：`coclaw-realtime-bridge`（WebSocket 桥接）、`coclaw-auto-upgrade`（自动升级调度）
   - command（`/coclaw bind/unbind`）
-  - gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `nativeui.sessions.listAll` / `nativeui.sessions.get`）
+  - gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll` / `nativeui.sessions.get`）
   - CLI（`openclaw coclaw bind/unbind`）
 - 绑定信息存储在 `~/.openclaw/coclaw/bindings.json`（独立于 `openclaw.json`）。
+- 升级状态存储在 `~/.openclaw/coclaw/upgrade-state.json`，升级日志在 `upgrade-log.jsonl`。
 - 测试门禁：`pnpm verify` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
 
 ## 关键里程碑
+
+### 自动升级功能（2026-03-12）
+- 新增 `src/auto-upgrade/` 模块（7 个文件）：`state.js`、`updater.js`、`updater-check.js`、`updater-spawn.js`、`worker.js`、`worker-backup.js`、`worker-verify.js`。
+- **调度**：gateway 启动后延迟 5~10 分钟首次检查，之后每 1 小时检查一次（通过 `npm view` 查询 registry）。
+- **升级流程**：spawn detached node 进程执行 backup → `openclaw plugins update` → 验证 → 成功清理/失败回滚。
+- **安全机制**：仅对 `source === "npm"` 的安装生效；link/archive 模式跳过。失败版本记入 `skippedVersions`，后续自动跳过。备份采用原子 rename。
+- **验证标准**：gateway running + 插件已加载 + `coclaw.upgradeHealth` 可响应。
+- **新增 gateway method**：`coclaw.upgradeHealth` — 返回当前插件版本号。
+- **新增 service**：`coclaw-auto-upgrade` — 自动升级调度器生命周期管理。
+- 详见设计文档 `docs/auto-upgrade.md`。
 
 ### v0.2 整改 Stage 5（Plugin 心跳）（2026-03-11）
 - `realtime-bridge.js` 新增应用层心跳：plugin→server WS 连接每 25s 发送 `{ type: "ping" }`，45s 无任何消息则判定超时并关闭连接。

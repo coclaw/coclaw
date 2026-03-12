@@ -10,32 +10,34 @@ source "$SCRIPT_DIR/_lib.sh"
 #   bash scripts/release-check.sh              # 显示当前各 registry 最新版本
 #   bash scripts/release-check.sh 0.1.7        # 显示并对比指定版本
 #   WAIT=1 bash scripts/release-check.sh 0.1.7 # 轮询直到指定版本在所有 registry 生效
+#   DIST_TAG=beta bash scripts/release-check.sh 0.1.8-beta.0  # 检查 beta tag
 
 NPM_REGISTRY="https://registry.npmjs.org"
 MIRROR_REGISTRY="https://registry.npmmirror.com"
 TIMEOUT="${POLL_TIMEOUT:-120}"
 INTERVAL=5
 INITIAL_DELAY="${INITIAL_DELAY:-5}"
+DIST_TAG="${DIST_TAG:-latest}"
 
 EXPECTED_VERSION="${1:-}"
 
 # 通过 curl 直接查询 registry API（比 npm view 更可靠，避免镜像源超时问题）
-check_latest() {
+check_tag_version() {
 	local registry=$1
 	local version
-	version=$(curl -sS --max-time 10 "${registry}/${PKG_NAME}/latest" 2>/dev/null \
+	version=$(curl -sS --max-time 10 "${registry}/${PKG_NAME}/${DIST_TAG}" 2>/dev/null \
 		| node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).version)}catch{console.log('N/A')}})" 2>/dev/null) || true
 	echo "${version:-N/A}"
 }
 
 # 非等待模式：显示当前状态
 if [[ "${WAIT:-}" != "1" ]]; then
-	echo "=== $PKG_NAME 版本状态 ==="
+	echo "=== $PKG_NAME 版本状态 (tag: $DIST_TAG) ==="
 	echo ""
-	npm_latest=$(check_latest "$NPM_REGISTRY")
-	mirror_latest=$(check_latest "$MIRROR_REGISTRY")
-	echo "[npm]       latest: $npm_latest"
-	echo "[npmmirror] latest: $mirror_latest"
+	npm_latest=$(check_tag_version "$NPM_REGISTRY")
+	mirror_latest=$(check_tag_version "$MIRROR_REGISTRY")
+	echo "[npm]       $DIST_TAG: $npm_latest"
+	echo "[npmmirror] $DIST_TAG: $mirror_latest"
 
 	if [[ -n "$EXPECTED_VERSION" ]]; then
 		echo ""
@@ -53,6 +55,7 @@ if [[ "${WAIT:-}" != "1" ]]; then
 
 	echo ""
 	echo "[HINT] 轮询等待: WAIT=1 pnpm run release:check -- $EXPECTED_VERSION"
+	[[ "$DIST_TAG" != "latest" ]] && echo "[HINT] 指定 tag: DIST_TAG=$DIST_TAG WAIT=1 pnpm run release:check -- $EXPECTED_VERSION"
 	exit 0
 fi
 
@@ -74,7 +77,7 @@ mirror_ok=false
 
 while [[ $elapsed -lt $TIMEOUT ]]; do
 	if [[ "$npm_ok" != "true" ]]; then
-		v=$(check_latest "$NPM_REGISTRY")
+		v=$(check_tag_version "$NPM_REGISTRY")
 		if [[ "$v" == "$EXPECTED_VERSION" ]]; then
 			npm_ok=true
 			echo "[npm]       $EXPECTED_VERSION -- OK (${elapsed}s)"
@@ -82,7 +85,7 @@ while [[ $elapsed -lt $TIMEOUT ]]; do
 	fi
 
 	if [[ "$mirror_ok" != "true" ]]; then
-		v=$(check_latest "$MIRROR_REGISTRY")
+		v=$(check_tag_version "$MIRROR_REGISTRY")
 		if [[ "$v" == "$EXPECTED_VERSION" ]]; then
 			mirror_ok=true
 			echo "[npmmirror] $EXPECTED_VERSION -- OK (${elapsed}s)"
