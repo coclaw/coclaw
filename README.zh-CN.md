@@ -6,11 +6,15 @@
 
 > **全球首个 [OpenClaw](https://github.com/openclaw/openclaw) 原生 IM 应用。**
 
-CoClaw 是一款专为 OpenClaw 生态从零打造的即时通讯客户端。即使用户与其 OpenClaw 处于完全隔离的网络环境中，也无需 VPN 或端口转发即可正常对话。
+Slogan：养虾就用 CoClaw。
 
-功能上与 OpenClaw WebChat 类似，但 CoClaw 在平台集成深度和移动端优先的产品体验上做了更多扩展。
+CoClaw 的使命： 为多人类与多 Agent 之间的各类协同，提供不妥协、不阉割、原生适配的通讯旗舰平台。
 
-秉承 OpenClaw 的设计哲学，**你的 OpenClaw 实例是唯一的数据真相** —— 所有对话记录、Bot 人设、记忆等用户数据仅保存在你自己的设备上。CoClaw Server 不保存任何用户数据，仅维护用户与其 Bot 的绑定关系并充当通信桥梁。未来，你还可以将 OpenClaw 侧的数据（Bot 人设、记忆等）备份到自己的云盘，获得更多安心保障。
+CoClaw 是什么： 全球首个为 AI Agent 原生打造的通讯旗舰平台，与 OpenClaw 设计哲学一脉相承，是 OpenClaw 最急需的原生载体。
+
+CoClaw 坚信： AI Agent 不只是聊天机器人，而是有身份、有记忆、有能力、可自主行动、可协作的 AI 助手。平台系统梳理并支持人与 Agent、Agent 与 Agent 之间的 49 种协同类型，提供全透明工作流、实时干预、团队调度、记忆成长、精细授权等核心能力，让用户拥有可观测、可控制、可训练、可协作、可成长的 AI 助手团队。
+
+CoClaw Vs 人类 IM： CoClaw 为 AI Agent 原生设计、以协同为核心，让 AI Agent 行为可管控、可团队协作、可自主成长；人类 IM 以聊天为核心、将 Agent 视为普通群成员，全程黑盒不可控。
 
 ## 仓库结构
 
