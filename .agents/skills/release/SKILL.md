@@ -20,13 +20,29 @@ CoClaw 有两种**独立**的发布类型，通常不会同时执行：
 - `.changeset/` 目录下存在包含 `@coclaw/openclaw-coclaw` 的 changeset 文件
 - 工作区干净（无未提交改动）
 
-### 1. 检查待发布变更
+### 1. 确保 changeset 文件存在，检查待发布变更
+
+先检查 `.changeset/` 目录下是否存在 changeset `.md` 文件（不含 README.md）。
+若不存在，需要先创建 changeset 文件（包含变更描述和 bump 级别），随代码一起提交。
+
+changeset 文件格式示例（`.changeset/<name>.md`）：
+```markdown
+---
+"@coclaw/openclaw-coclaw": patch
+---
+
+变更描述
+```
+
+changeset 文件就绪后，检查状态：
 
 ```bash
 pnpm changeset:status
 ```
 
 确认 `@coclaw/openclaw-coclaw` 将 bump、级别是否合理。向用户确认后再继续。
+
+> **注意**：`pnpm changeset:status` 在没有 changeset 文件时会报错退出，这不是异常——说明需要先创建 changeset 文件。
 
 ### 2. 隔离非插件 changeset
 

@@ -13,7 +13,6 @@ source "$SCRIPT_DIR/_lib.sh"
 #   DIST_TAG=beta bash scripts/release-check.sh 0.1.8-beta.0  # 检查 beta tag
 
 NPM_REGISTRY="https://registry.npmjs.org"
-MIRROR_REGISTRY="https://registry.npmmirror.com"
 TIMEOUT="${POLL_TIMEOUT:-120}"
 INTERVAL=5
 INITIAL_DELAY="${INITIAL_DELAY:-5}"
@@ -21,12 +20,17 @@ DIST_TAG="${DIST_TAG:-latest}"
 
 EXPECTED_VERSION="${1:-}"
 
-# 通过 curl 直接查询 registry API（比 npm view 更可靠，避免镜像源超时问题）
-check_tag_version() {
-	local registry=$1
+# npm view 查询指定 registry 的 dist-tag 版本
+# 带 --registry 查官方源，不带则查本机配置的源（通常为 npmmirror）
+check_npm_version() {
 	local version
-	version=$(curl -sS --max-time 10 "${registry}/${PKG_NAME}/${DIST_TAG}" 2>/dev/null \
-		| node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).version)}catch{console.log('N/A')}})" 2>/dev/null) || true
+	version=$(npm view "$PKG_NAME" dist-tags."$DIST_TAG" --registry="$NPM_REGISTRY" 2>/dev/null) || true
+	echo "${version:-N/A}"
+}
+
+check_mirror_version() {
+	local version
+	version=$(npm view "$PKG_NAME" dist-tags."$DIST_TAG" 2>/dev/null) || true
 	echo "${version:-N/A}"
 }
 
@@ -34,8 +38,8 @@ check_tag_version() {
 if [[ "${WAIT:-}" != "1" ]]; then
 	echo "=== $PKG_NAME 版本状态 (tag: $DIST_TAG) ==="
 	echo ""
-	npm_latest=$(check_tag_version "$NPM_REGISTRY")
-	mirror_latest=$(check_tag_version "$MIRROR_REGISTRY")
+	npm_latest=$(check_npm_version)
+	mirror_latest=$(check_mirror_version)
 	echo "[npm]       $DIST_TAG: $npm_latest"
 	echo "[npmmirror] $DIST_TAG: $mirror_latest"
 
@@ -77,7 +81,7 @@ mirror_ok=false
 
 while [[ $elapsed -lt $TIMEOUT ]]; do
 	if [[ "$npm_ok" != "true" ]]; then
-		v=$(check_tag_version "$NPM_REGISTRY")
+		v=$(check_npm_version)
 		if [[ "$v" == "$EXPECTED_VERSION" ]]; then
 			npm_ok=true
 			echo "[npm]       $EXPECTED_VERSION -- OK (${elapsed}s)"
@@ -85,7 +89,7 @@ while [[ $elapsed -lt $TIMEOUT ]]; do
 	fi
 
 	if [[ "$mirror_ok" != "true" ]]; then
-		v=$(check_tag_version "$MIRROR_REGISTRY")
+		v=$(check_mirror_version)
 		if [[ "$v" == "$EXPECTED_VERSION" ]]; then
 			mirror_ok=true
 			echo "[npmmirror] $EXPECTED_VERSION -- OK (${elapsed}s)"
