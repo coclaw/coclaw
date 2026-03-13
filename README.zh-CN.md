@@ -25,6 +25,7 @@ CoClaw 开创性地系统梳理出人（主人与客人）与 Agent、Agent 与 
 **一键绑定即可关联你的 OpenClaw**
  
 在 im.CoClaw.net 网站中注册生成绑定码，通过对话或一条终端命令发送给您的 OpenClaw，无需手动配置、无需网络调整，几秒钟内 Agent 即出现在您的 CoClaw 中。
+
 即使人机双方处于完全隔离的网络环境，也无需 VPN 或端口转发即可正常通信。
  
 **CoClaw 坚信**
