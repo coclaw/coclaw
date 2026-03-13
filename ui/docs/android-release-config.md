@@ -14,7 +14,7 @@
 | applicationId | `net.coclaw.im` |
 | allowBackup | `false` |
 | minifyEnabled | `false`（Capacitor 壳层代码极少，无需混淆） |
-| 权限 | INTERNET, CAMERA, RECORD_AUDIO, READ_MEDIA_IMAGES, READ/WRITE_EXTERNAL_STORAGE（≤Android 12） |
+| 权限 | INTERNET, CAMERA, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS, READ_MEDIA_IMAGES, READ/WRITE_EXTERNAL_STORAGE（≤Android 12） |
 | Release APK | 构建成功，约 6.1MB |
 
 ## 签名指纹（备案用）
@@ -57,6 +57,7 @@ cd ui/android && ./gradlew assembleRelease
 | `ACCESS_NETWORK_STATE` | 网络状态检测，驱动重连 |
 | `READ_MEDIA_VIDEO` | Android 13+ 细粒度媒体权限 |
 | `READ_MEDIA_AUDIO` | Android 13+ 细粒度媒体权限 |
+| `MODIFY_AUDIO_SETTINGS` | Capacitor WebView 麦克风权限流程所需（详见踩坑记录） |
 
 ### 安装 Capacitor 插件
 
@@ -98,3 +99,17 @@ cd ui/android && ./gradlew assembleRelease
 - [ ] App 首次启动隐私政策弹窗同意（前端开发）
 - [ ] 应用商店素材：应用截图、简介、分类、目标用户年龄段
 - [ ] 第三方 SDK 清单（国内商店合规要求）
+
+## 踩坑记录
+
+### Capacitor WebView 权限声明必须覆盖其内部请求的所有权限（2026-03-13）
+
+**现象**：用户在原生弹窗中授权了麦克风权限，但 Web 端 `getUserMedia()` 仍报 `NotAllowedError`（"麦克风权限被拒绝"）。
+
+**根因**：Capacitor 的 `BridgeWebChromeClient.onPermissionRequest()` 在处理 `AUDIO_CAPTURE` 时，会同时请求 `RECORD_AUDIO`（dangerous）和 `MODIFY_AUDIO_SETTINGS`（normal）两个权限，并以**全部通过**作为判定条件。如果 `MODIFY_AUDIO_SETTINGS` 未在 AndroidManifest.xml 中声明，系统直接返回 denied，导致整体判定失败，WebView 调用 `request.deny()`。
+
+**修复**：在 AndroidManifest.xml 中补充 `MODIFY_AUDIO_SETTINGS` 声明。该权限为 normal 级别，安装时自动授予，不需要运行时弹窗。
+
+**教训**：AndroidManifest.xml 中的权限声明不仅要覆盖业务直接使用的权限，还必须覆盖 Capacitor 框架内部隐式请求的权限。新增涉及原生能力的 Web API 调用时，应检查 Capacitor 对应的 `onPermissionRequest` / `onGeolocationPermissionsShowPrompt` 等回调中请求了哪些权限，确保 Manifest 全部声明。
+
+**参考源码**：`node_modules/@capacitor/android/.../BridgeWebChromeClient.java` → `onPermissionRequest()` 方法。
