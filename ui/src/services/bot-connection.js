@@ -7,6 +7,9 @@ import { resolveApiBaseUrl } from './http.js';
 
 const HB_PING_MS = 25_000;
 const HB_TIMEOUT_MS = 45_000;
+const HB_MAX_MISS = 2; // 常规容忍：2 次 miss（~90s）再判定
+const HB_SUPPRESS_LIMIT = 4; // 有 pending RPC 时额外容忍 4 轮（~180s）
+const DEFAULT_RPC_TIMEOUT_MS = 30 * 60_000; // 30 分钟兜底
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
 const RECONNECT_JITTER = 0.3;
@@ -53,6 +56,7 @@ export class BotConnection {
 		// 心跳
 		this.__hbInterval = null;
 		this.__hbTimer = null;
+		this.__hbMissCount = 0;
 
 		// RPC pending
 		this.__pending = new Map();
@@ -105,14 +109,13 @@ export class BotConnection {
 			const waiter = { resolve, reject };
 			if (options.onAccepted) waiter.onAccepted = options.onAccepted;
 			if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
-			if (options.timeout) {
-				waiter.timer = setTimeout(() => {
-					this.__pending.delete(id);
-					const err = new Error('rpc timeout');
-					err.code = 'RPC_TIMEOUT';
-					reject(err);
-				}, options.timeout);
-			}
+			const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
+			waiter.timer = setTimeout(() => {
+				this.__pending.delete(id);
+				const err = new Error('rpc timeout');
+				err.code = 'RPC_TIMEOUT';
+				reject(err);
+			}, timeoutMs);
 			this.__pending.set(id, waiter);
 			try {
 				this.__ws.send(JSON.stringify({ type: 'req', id, method, params }));
@@ -245,7 +248,10 @@ export class BotConnection {
 
 	__handleRpcResponse(payload) {
 		const waiter = this.__pending.get(payload.id);
-		if (!waiter) return;
+		if (!waiter) {
+			console.warn('[BotConn] unmatched rpc response id=%s ok=%s botId=%s', payload.id, payload.ok, this.botId);
+			return;
+		}
 
 		// 失败：立即 reject
 		if (payload.ok === false) {
@@ -292,6 +298,7 @@ export class BotConnection {
 
 	__startHeartbeat() {
 		this.__clearHeartbeat();
+		this.__hbMissCount = 0;
 		this.__hbInterval = setInterval(() => {
 			if (this.__ws?.readyState === 1) {
 				try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
@@ -302,23 +309,51 @@ export class BotConnection {
 	}
 
 	__resetHbTimeout() {
+		this.__hbMissCount = 0;
 		if (this.__hbTimer) clearTimeout(this.__hbTimer);
 		this.__hbTimer = setTimeout(() => {
-			// 有 pending RPC 时跳过心跳超时判定（大消息传输可能阻塞心跳）
-			if (this.__pending.size > 0) {
-				console.debug('[BotConn] heartbeat timeout suppressed (pending=%d) botId=%s', this.__pending.size, this.botId);
-				this.__resetHbTimeout();
-				return;
-			}
-			console.warn('[BotConn] heartbeat timeout botId=%s', this.botId);
-			try { this.__ws?.close(4000, 'heartbeat_timeout'); }
-			catch {}
+			this.__onHbMiss();
 		}, HB_TIMEOUT_MS);
+	}
+
+	__onHbMiss() {
+		this.__hbMissCount++;
+		// 阶段1：常规容忍；阶段2：有 pending 时抑制（带绝对上限）
+		const canRetry =
+			this.__hbMissCount < HB_MAX_MISS ||
+			(this.__pending.size > 0 && this.__hbMissCount < HB_MAX_MISS + HB_SUPPRESS_LIMIT);
+		if (canRetry) {
+			const suppressed = this.__hbMissCount >= HB_MAX_MISS;
+			console.debug(
+				'[BotConn] heartbeat %s (%d/%d, pending=%d) botId=%s',
+				suppressed ? 'suppressed' : 'miss',
+				this.__hbMissCount,
+				suppressed ? HB_MAX_MISS + HB_SUPPRESS_LIMIT : HB_MAX_MISS,
+				this.__pending.size,
+				this.botId,
+			);
+			if (this.__ws?.readyState === 1) {
+				try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
+				catch {}
+			}
+			this.__hbTimer = setTimeout(() => {
+				this.__onHbMiss();
+			}, HB_TIMEOUT_MS);
+			return;
+		}
+		console.warn(
+			'[BotConn] heartbeat timeout (%d misses, ~%ds, pending=%d) botId=%s',
+			this.__hbMissCount, this.__hbMissCount * HB_TIMEOUT_MS / 1000,
+			this.__pending.size, this.botId,
+		);
+		try { this.__ws?.close(4000, 'heartbeat_timeout'); }
+		catch {}
 	}
 
 	__clearHeartbeat() {
 		if (this.__hbInterval) { clearInterval(this.__hbInterval); this.__hbInterval = null; }
 		if (this.__hbTimer) { clearTimeout(this.__hbTimer); this.__hbTimer = null; }
+		this.__hbMissCount = 0;
 	}
 
 	// --- 重连 ---

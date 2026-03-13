@@ -40,7 +40,8 @@ test.describe('网络断开与恢复', () => {
 		// 先输入文本
 		await typeText(textarea, testMsg);
 
-		// 断网
+		// 强制关闭 WS + 断网阻止重连（setOffline 不会立即关闭 WS）
+		await forceCloseWs(page);
 		await context.setOffline(true);
 
 		// 等待 WS 连接断开
@@ -63,7 +64,8 @@ test.describe('网络断开与恢复', () => {
 	// ================================================================
 
 	test('断网恢复后 WS 自动重连，textarea 恢复可用', async ({ page, context }) => {
-		// 断网
+		// 强制关闭 WS + 断网阻止重连
+		await forceCloseWs(page);
 		await context.setOffline(true);
 		await waitForWsState(page, 'disconnected');
 
@@ -83,15 +85,15 @@ test.describe('网络断开与恢复', () => {
 
 	test('断网期间：bot.online 保持 true，无 offline banner', async ({ page, context }) => {
 		// 确认 bot 当前在线
-		const botOnlineBefore = await evalStore(page, 'chat', `
-			const botId = store.botId;
-			const botsStore = store.__pinia._s.get('bots');
-			const bot = botsStore?.items?.find(b => String(b.id) === String(botId));
+		const botId = await evalStore(page, 'chat', 'return store.botId');
+		const botOnlineBefore = await evalStore(page, 'bots', `
+			const bot = store.items?.find(b => String(b.id) === String('${botId}'));
 			return bot?.online ?? false;
 		`);
 		expect(botOnlineBefore).toBe(true);
 
-		// 断网
+		// 强制关闭 WS + 断网阻止重连
+		await forceCloseWs(page);
 		await context.setOffline(true);
 		await waitForWsState(page, 'disconnected');
 
@@ -99,10 +101,8 @@ test.describe('网络断开与恢复', () => {
 		await page.waitForTimeout(3000);
 
 		// bot.online 应仍为 true（SSE 断开不改变 bot.online，只有 SSE 消息才改变）
-		const botOnlineAfter = await evalStore(page, 'chat', `
-			const botId = store.botId;
-			const botsStore = store.__pinia._s.get('bots');
-			const bot = botsStore?.items?.find(b => String(b.id) === String(botId));
+		const botOnlineAfter = await evalStore(page, 'bots', `
+			const bot = store.items?.find(b => String(b.id) === String('${botId}'));
 			return bot?.online ?? false;
 		`);
 		expect(botOnlineAfter).toBe(true);
