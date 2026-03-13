@@ -5,6 +5,11 @@
 
 :root {
 	font-family: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+
+	/* 代码块暗色 token（跨主题不变） */
+	--cc-code-bg: #1d1e1f;
+	--cc-code-header-bg: #28292a;
+	--cc-code-text: rgba(255, 255, 255, 0.8);
 }
 
 /*
