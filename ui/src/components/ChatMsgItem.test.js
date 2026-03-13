@@ -1,6 +1,11 @@
 import { mount } from '@vue/test-utils';
 import { test, expect, describe, vi } from 'vitest';
 
+const mockNotify = { success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn() };
+vi.mock('../composables/use-notify.js', () => ({
+	useNotify: () => mockNotify,
+}));
+
 import ChatMsgItem from './ChatMsgItem.vue';
 
 const MarkdownBodyStub = {

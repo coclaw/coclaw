@@ -5,6 +5,7 @@ export const enMessages = {
 		confirm: 'Confirm',
 		refresh: 'Refresh',
 		notLoggedIn: 'Not logged in',
+		copyFailed: 'Copy failed',
 	},
 	layout: {
 		productName: 'CoClaw',

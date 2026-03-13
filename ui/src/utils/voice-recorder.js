@@ -139,8 +139,10 @@ export class VoiceRecorder {
 			}
 			else {
 				// 回退检查是否有麦克风
+				// Capacitor WebView 未授权前 enumerateDevices 可能返回空列表，不可靠
+				const isNative = window.Capacitor?.isNativePlatform();
 				const hasMic = await hasMicDev();
-				if (hasMic === false) {
+				if (!isNative && hasMic === false) {
 					this.__fail('NotFoundError');
 				}
 				else {

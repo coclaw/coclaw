@@ -140,6 +140,7 @@
 <script>
 import MarkdownBody from './MarkdownBody.vue';
 import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
+import { useNotify } from '../composables/use-notify.js';
 
 export default {
 	name: 'ChatMsgItem',
@@ -149,6 +150,9 @@ export default {
 			type: Object,
 			required: true,
 		},
+	},
+	setup() {
+		return { notify: useNotify() };
 	},
 	data() {
 		return {
@@ -224,6 +228,8 @@ export default {
 				setTimeout(() => {
 					this.copied = false;
 				}, 2000);
+			}).catch(() => {
+				this.notify.error(this.$t('common.copyFailed'));
 			});
 		},
 		formatDuration(ms) {

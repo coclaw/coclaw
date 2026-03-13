@@ -4,6 +4,7 @@
 
 <script>
 import { renderMarkdown, reviseMdText } from '../utils/markdown-engine.js';
+import { useNotify } from '../composables/use-notify.js';
 
 export default {
 	name: 'MarkdownBody',
@@ -12,6 +13,9 @@ export default {
 			type: String,
 			required: true,
 		},
+	},
+	setup() {
+		return { notify: useNotify() };
 	},
 	computed: {
 		revisedText() {
@@ -63,6 +67,8 @@ export default {
 							btn.style.padding = '0';
 							btn.dataset.copied = 'false';
 						}, 3000);
+					}).catch(() => {
+						this.notify.error(this.$t('common.copyFailed'));
 					});
 				};
 			});

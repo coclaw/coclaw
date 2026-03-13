@@ -5,6 +5,7 @@ export const zhCNMessages = {
 		confirm: '确认',
 		refresh: '刷新',
 		notLoggedIn: '未登录',
+		copyFailed: '复制失败',
 	},
 	layout: {
 		productName: 'CoClaw',

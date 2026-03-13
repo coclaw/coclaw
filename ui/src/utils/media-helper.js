@@ -3,6 +3,8 @@
  * @returns {Promise<'granted'|'denied'|'prompt'|null>}
  */
 export async function queryMicPerm() {
+	// Capacitor WebView 中 permissions.query 不可靠，跳过
+	if (window.Capacitor?.isNativePlatform()) return null;
 	if (!navigator.permissions) return null;
 	try {
 		const perm = await navigator.permissions.query({ name: 'microphone' });
@@ -28,7 +30,15 @@ export async function hasMicDev() {
 }
 
 // 按优先顺序排列的 MIME types
-const PREF_AUDIO_TYPES = [
+// iOS WKWebView 对 webm 支持不稳定，优先 mp4
+const PREF_AUDIO_TYPES_IOS = [
+	'audio/mp4',
+	'audio/m4a',
+	'audio/webm',
+	'audio/mpeg',
+	'audio/wav',
+];
+const PREF_AUDIO_TYPES_DEFAULT = [
 	'audio/webm',
 	'audio/m4a',
 	'audio/mp4',
@@ -36,13 +46,19 @@ const PREF_AUDIO_TYPES = [
 	'audio/wav',
 ];
 
+function isIOS() {
+	return /iPad|iPhone|iPod/.test(navigator.userAgent)
+		|| (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
 /**
  * 获取浏览器支持的最优音频 MIME type
  * @returns {string|null}
  */
 export function getPrefAudioType() {
 	if (typeof MediaRecorder === 'undefined') return null;
-	for (const type of PREF_AUDIO_TYPES) {
+	const types = isIOS() ? PREF_AUDIO_TYPES_IOS : PREF_AUDIO_TYPES_DEFAULT;
+	for (const type of types) {
 		if (MediaRecorder.isTypeSupported(type)) {
 			return type;
 		}
