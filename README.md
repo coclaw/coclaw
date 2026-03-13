@@ -6,7 +6,7 @@
 
 Slogan
  
-**Raise Openclaw with CoClaw.**
+**Raise OpenClaw with CoClaw.**
  
 CoClaw's Mission
  
