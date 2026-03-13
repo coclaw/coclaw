@@ -68,7 +68,7 @@ git commit -m "chore: version @coclaw/openclaw-coclaw@<version>"
 在插件目录下执行验证：
 
 ```bash
-cd plugins/openclaw && pnpm pub:verify
+cd plugins/openclaw && pnpm verify
 ```
 
 ### 6. 发布 npm 包
@@ -76,14 +76,16 @@ cd plugins/openclaw && pnpm pub:verify
 在插件目录下执行：
 
 ```bash
-cd plugins/openclaw && pnpm pub:release
+cd plugins/openclaw && pnpm release
 ```
 
-此脚本（`scripts/publish-npm.sh`）会：
+此脚本（`scripts/release.sh`）会：
+- 执行 `pnpm verify`（质量门禁）
 - 检查工作目录与 npm 凭据
 - dry-run 确认发布内容无敏感文件
 - 执行 `npm publish --access public`
 - 触发 npmmirror 镜像同步
+- 轮询确认发布生效
 
 ### 7. 推送（可选）
 

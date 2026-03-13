@@ -165,7 +165,7 @@ pnpm verify
 pnpm changeset          # 声明变更
 pnpm changeset:status   # 查看待发布变更
 pnpm changeset:version  # 消费 changeset，bump 版本
-pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/openclaw 下的 pnpm pub:release）
+pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/openclaw 下的 pnpm release）
 ```
 
 ## 移动端与桌面端
