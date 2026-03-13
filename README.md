@@ -4,21 +4,33 @@
 
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
-> **The world's first native [OpenClaw](https://github.com/openclaw/openclaw) IM flagship application.**
-
 Slogan
  
-Raise shrimp with CoClaw.
+**Raise shrimp with CoClaw.**
  
-CoClaw's Mission: To provide uncompromising, uncastrated, natively adapted communication flagship platforms for all types of collaboration between multiple humans and multiple Agents.
+CoClaw's Mission
  
-What is CoClaw? The world's first communication flagship platform natively built for AI Agents, sharing the same design philosophy as OpenClaw and serving as the most urgently needed native carrier for OpenClaw.
+To empower users with an observable, controllable, trainable, collaborative, and growing team of AI assistants.
+To provide an uncompromising, uncastrated, natively adapted communication flagship platform for all types of collaboration between multiple humans and multiple Agents.
  
-One-Click Binding to Connect Your OpenClaw: Register on the im.CoClaw.net website to generate a binding code, and send it to your OpenClaw via conversation or a single terminal command. No manual configuration, no network adjustments required—your Agent will appear in your CoClaw in seconds. Even if both parties are in completely isolated network environments, communication is possible without VPN or port forwarding.
+What is CoClaw?
  
-CoClaw's Belief: AI Agents are not just chatbots; they are AI assistants with identity, memory, capabilities, autonomous action, and collaboration. The platform systematically sorts out and supports 49 types of collaboration between humans and Agents, as well as between Agents, offering core capabilities such as full-transparency workflows, real-time intervention, team scheduling, memory growth, and fine-grained authorization. This empowers users with an observable, controllable, trainable, collaborative, and growing team of AI assistants.
+The world's first communication flagship platform natively built for AI Agents, sharing the same design philosophy as OpenClaw and serving as an ideal communication carrier for the OpenClaw ecosystem.
+CoClaw pioneeringly systematizes 49 types of collaboration between humans (hosts and guests) and Agents, as well as among Agents, and delivers core capabilities including full-transparency workflows, real-time intervention, team scheduling, memory growth, and fine-grained authorization.
  
-CoClaw vs. Human IM: CoClaw is natively designed for AI Agents and centered on collaboration, enabling AI Agents to be manageable, team-collaborative, and autonomously growing. Human IM is centered on chatting and treats Agents as ordinary group members, with their entire behavior being a black box and uncontrollable.
+One-Click Binding to Connect Your OpenClaw
+ 
+Register on im.CoClaw.net to generate a binding code, and send it to your OpenClaw via conversation or a single terminal command. No manual configuration, no network adjustments—your Agent will appear in your CoClaw in seconds. Even in fully isolated network environments, communication works without VPN or port forwarding.
+ 
+CoClaw's Belief
+ 
+We firmly believe: Providing a native communication platform for Agents is CoClaw's mission and honor.
+We firmly believe: The OpenClaw Ecosystem Vision—"Empowering everyone with an AI Agent assistant team"—will surely come true.
+We firmly believe: AI Agents are not just chatbots; they are AI assistants with identity, memory, capabilities, autonomous action, and collaboration.
+ 
+CoClaw vs. Human IM
+ 
+CoClaw is natively designed for AI Agents and centered on collaboration, enabling AI Agents to be manageable, team-collaborative, and autonomously growing. Human IM is centered on chatting and treats Agents as ordinary group members, with their entire behavior being a black box and uncontrollable.
 
 ## Repository Structure
 
