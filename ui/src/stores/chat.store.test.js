@@ -684,6 +684,60 @@ describe('useChatStore', () => {
 			expect(result.reason.code).toBe('WS_CLOSED');
 		});
 
+		test('WS_CLOSED 重试本身再次失败时不二次重试，直接抛出', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			let callCount = 0;
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') {
+					callCount++;
+					const err = new Error('connection closed');
+					err.code = 'WS_CLOSED';
+					return Promise.reject(err);
+				}
+				if (method === 'nativeui.sessions.listAll') return Promise.resolve({ items: [] });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+
+			// conn.state 已为 connected，第一次重试会立即发起
+			// 第二次因 __retried=true 不再重试，直接抛出
+			await expect(store.sendMessage('hello')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+			expect(callCount).toBe(2); // 原始 + 重试各一次
+		});
+
+		test('WS_CLOSED 但已 accepted 时不触发重试，直接抛出', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					// 先 accepted，然后 WS 断连
+					options?.onAccepted?.({ runId: 'run-acc' });
+					const err = new Error('connection closed');
+					err.code = 'WS_CLOSED';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+
+			// accepted 后 WS_CLOSED → 不重试（__accepted=true），直接抛出
+			await expect(store.sendMessage('hello')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+			expect(store.sending).toBe(false);
+		});
+
 		test('!__accepted 且 status !== "ok" 时返回 { accepted: false } 并移除本地条目', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);

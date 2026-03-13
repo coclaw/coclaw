@@ -367,6 +367,32 @@ describe('BotConnection – request() timeout', () => {
 		await expect(p).rejects.toBeDefined();
 		expect(conn.__pending.size).toBe(0);
 	});
+
+	test('applies default 30-minute timeout when no explicit timeout given', async () => {
+		const { conn } = makeConnected();
+		const p = conn.request('longRunning');
+		expect(conn.__pending.size).toBe(1);
+		// 29 分钟后仍 pending
+		vi.advanceTimersByTime(29 * 60_000);
+		expect(conn.__pending.size).toBe(1);
+		// 30 分钟后超时
+		vi.advanceTimersByTime(1 * 60_000 + 1);
+		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
+		expect(conn.__pending.size).toBe(0);
+	});
+
+	test('late response after timeout is silently ignored', async () => {
+		const { conn, ws } = makeConnected();
+		const p = conn.request('slow', {}, { timeout: 1000 });
+		const msg = JSON.parse(ws.sent[0]);
+		vi.advanceTimersByTime(1001);
+		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
+		// 迟到的响应不应抛错
+		expect(() => {
+			ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { late: true } });
+		}).not.toThrow();
+		expect(conn.__pending.size).toBe(0);
+	});
 });
 
 describe('BotConnection – event system (on/off/__emit)', () => {
@@ -510,7 +536,7 @@ describe('BotConnection – server push events', () => {
 	});
 });
 
-describe('BotConnection – heartbeat', () => {
+describe('BotConnection – heartbeat (two-layer: miss + pending suppression)', () => {
 	beforeEach(() => {
 		MockWebSocket.reset();
 		vi.useFakeTimers();
@@ -524,37 +550,133 @@ describe('BotConnection – heartbeat', () => {
 		expect(pings.length).toBeGreaterThanOrEqual(1);
 	});
 
-	test('heartbeat timeout closes WS after 45s without message', () => {
-		const { ws } = makeConnected();
+	test('first miss does not close WS (base tolerance = 2)', () => {
+		const { conn, ws } = makeConnected();
 		vi.advanceTimersByTime(45_001);
+		expect(ws.closed).toBe(false);
+		expect(conn.__hbMissCount).toBe(1);
+	});
+
+	test('closes WS after 2 misses without pending RPC (~90s)', () => {
+		const { ws } = makeConnected();
+		vi.advanceTimersByTime(45_000 * 2 + 1);
 		expect(ws.closed).toBe(true);
 		expect(ws.closeCode).toBe(4000);
 	});
 
-	test('heartbeat timeout is suppressed when there are pending RPCs', () => {
+	test('miss sends extra ping as probe', () => {
+		const { ws } = makeConnected();
+		const sentBefore = ws.sent.length;
+		vi.advanceTimersByTime(45_001);
+		const newPings = ws.sent.slice(sentBefore).filter(s => JSON.parse(s).type === 'ping');
+		expect(newPings.length).toBeGreaterThanOrEqual(1);
+	});
+
+	test('receiving a message resets miss count and timeout', () => {
 		const { conn, ws } = makeConnected();
-		// 发起一个不会 resolve 的 RPC，使 pending 非空
-		conn.request('slowMethod', {}, { timeout: 60_000 });
-		// 推进 45s+，正常情况下会触发心跳超时
-		vi.advanceTimersByTime(46_000);
-		// 因为有 pending RPC，心跳超时被抑制，连接不应关闭
+		vi.advanceTimersByTime(30_000);
+		ws.simulateMessage({ type: 'pong' });
+		expect(conn.__hbMissCount).toBe(0);
+		vi.advanceTimersByTime(30_000);
 		expect(ws.closed).toBe(false);
 	});
 
-	test('receiving a message resets heartbeat timeout', () => {
-		const { ws } = makeConnected();
-		// advance 30s, receive a message, advance another 30s — still open
-		vi.advanceTimersByTime(30_000);
+	test('message after miss resets count, extends tolerance', () => {
+		const { conn, ws } = makeConnected();
+		vi.advanceTimersByTime(45_001);
+		expect(conn.__hbMissCount).toBe(1);
 		ws.simulateMessage({ type: 'pong' });
-		vi.advanceTimersByTime(30_000);
+		expect(conn.__hbMissCount).toBe(0);
+		// 从重置点需 2 次 miss 才断连
+		vi.advanceTimersByTime(45_000 + 1);
 		expect(ws.closed).toBe(false);
+		vi.advanceTimersByTime(45_000);
+		expect(ws.closed).toBe(true);
 	});
+
+	// --- pending 抑制 ---
+
+	test('with pending RPC, suppresses close beyond base miss limit', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod');
+		expect(conn.__pending.size).toBe(1);
+		// 2 次 miss（基础上限）→ 有 pending，不关闭
+		vi.advanceTimersByTime(45_000 * 2 + 1);
+		expect(ws.closed).toBe(false);
+		expect(conn.__hbMissCount).toBe(2);
+		// 继续第 3 次 miss → 仍不关闭
+		vi.advanceTimersByTime(45_000);
+		expect(ws.closed).toBe(false);
+		expect(conn.__hbMissCount).toBe(3);
+	});
+
+	test('with pending RPC, closes after suppress limit (2+4=6 misses, ~270s)', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod');
+		// 6 × 45s = 270s → 抑制上限
+		vi.advanceTimersByTime(45_000 * 6 + 1);
+		expect(ws.closed).toBe(true);
+		expect(ws.closeCode).toBe(4000);
+	});
+
+	test('with pending RPC, does not close at 5 misses (just under suppress limit)', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod');
+		vi.advanceTimersByTime(45_000 * 5 + 1);
+		expect(ws.closed).toBe(false);
+		expect(conn.__hbMissCount).toBe(5);
+	});
+
+	test('message during suppression resets everything', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod');
+		// 进入抑制模式（miss=3，超过基础上限）
+		vi.advanceTimersByTime(45_000 * 3 + 1);
+		expect(conn.__hbMissCount).toBe(3);
+		expect(ws.closed).toBe(false);
+		// 收到消息 → 全部重置
+		ws.simulateMessage({ type: 'pong' });
+		expect(conn.__hbMissCount).toBe(0);
+		// 需重新积累 6 次 miss 才断连（pending 仍在）
+		vi.advanceTimersByTime(45_000 * 5 + 1);
+		expect(ws.closed).toBe(false);
+		vi.advanceTimersByTime(45_000);
+		expect(ws.closed).toBe(true);
+	});
+
+	test('pending cleared during suppression → closes at next miss', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod').catch(() => {}); // 忽略 reject（连接关闭时触发）
+		// 进入抑制模式
+		vi.advanceTimersByTime(45_000 * 3 + 1);
+		expect(ws.closed).toBe(false);
+		// 模拟 RPC 完成 → pending 清空
+		const reqMsg = JSON.parse(ws.sent[0]);
+		ws.simulateMessage({ type: 'res', id: reqMsg.id, ok: true, payload: {} });
+		// 收到消息会重置 missCount
+		expect(conn.__hbMissCount).toBe(0);
+		expect(conn.__pending.size).toBe(0);
+		// 无 pending → 2 次 miss 后断连
+		vi.advanceTimersByTime(45_000 * 2 + 1);
+		expect(ws.closed).toBe(true);
+	});
+
+	// --- 基础 ---
 
 	test('heartbeat is cleared after disconnect()', () => {
 		const { conn } = makeConnected();
 		conn.disconnect();
 		expect(conn.__hbInterval).toBeNull();
 		expect(conn.__hbTimer).toBeNull();
+		expect(conn.__hbMissCount).toBe(0);
+	});
+
+	test('missCount resets on startHeartbeat (reconnect scenario)', () => {
+		const { conn } = makeConnected();
+		vi.advanceTimersByTime(45_001);
+		expect(conn.__hbMissCount).toBe(1);
+		conn.__startHeartbeat();
+		expect(conn.__hbMissCount).toBe(0);
 	});
 });
 

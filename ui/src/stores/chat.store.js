@@ -26,6 +26,7 @@ export const useChatStore = defineStore('chat', {
 		__streamingTimer: null,
 		__accepted: false,
 		__cancelReject: null,
+		__retried: false,
 	}),
 	getters: {
 		currentSessionKey() {
