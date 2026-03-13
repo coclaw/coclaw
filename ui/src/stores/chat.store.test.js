@@ -815,6 +815,71 @@ describe('useChatStore', () => {
 			expect(store.streamingRunId).toBeNull();
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
+
+		test('accepted 之前取消：sendMessage 立即返回 { accepted: false }', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			// agent 请求永不 resolve，也不调用 onAccepted
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+
+			// 启动发送，不 await
+			const sendPromise = store.sendMessage('hello');
+			// 等一个 microtask，让 sendMessage 进入 await Promise.race
+			await Promise.resolve();
+
+			expect(store.sending).toBe(true);
+			expect(store.__accepted).toBe(false);
+
+			// 用户取消
+			store.cancelSend();
+
+			// sendMessage 应立即 resolve 为 { accepted: false }
+			const result = await sendPromise;
+			expect(result).toEqual({ accepted: false });
+			expect(store.sending).toBe(false);
+			expect(store.messages.some((m) => m._local)).toBe(false);
+		});
+
+		test('accepted 之后取消：sendMessage 返回 { accepted: true }，不恢复输入', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			// 调用 onAccepted 但永不 resolve 终态
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-cancel' });
+					return new Promise(() => {});
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+
+			const sendPromise = store.sendMessage('hello');
+			await Promise.resolve();
+
+			expect(store.__accepted).toBe(true);
+
+			store.cancelSend();
+
+			const result = await sendPromise;
+			// accepted 后取消视为 OpenClaw 已持久化，不应恢复输入
+			expect(result).toEqual({ accepted: true });
+		});
 	});
 
 	// =====================================================================

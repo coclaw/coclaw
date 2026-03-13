@@ -25,6 +25,7 @@ export const useChatStore = defineStore('chat', {
 		__agentSettled: false,
 		__streamingTimer: null,
 		__accepted: false,
+		__cancelReject: null,
 	}),
 	getters: {
 		currentSessionKey() {
@@ -220,9 +221,10 @@ export const useChatStore = defineStore('chat', {
 					agentParams.sessionId = this.sessionId;
 				}
 
-				// 超时 reject 句柄：setTimeout 中通过此函数 reject 等待中的 promise
+				// 超时 / 取消 reject 句柄
 				let timeoutReject;
 				const timeoutPromise = new Promise((_, reject) => { timeoutReject = reject; });
+				const cancelPromise = new Promise((_, reject) => { this.__cancelReject = reject; });
 
 				// pre-acceptance 30s 超时
 				this.__streamingTimer = setTimeout(() => {
@@ -258,9 +260,11 @@ export const useChatStore = defineStore('chat', {
 						},
 					}),
 					timeoutPromise,
+					cancelPromise,
 				]);
 
 				// 终态到达
+				this.__cancelReject = null;
 				this.__clearStreamingFlags();
 				this.__cleanupTimersAndListeners();
 				this.sending = false;
@@ -275,6 +279,10 @@ export const useChatStore = defineStore('chat', {
 			catch (err) {
 				// lifecycle:end 已完成清理，WS 关闭尾巴错误忽略
 				if (this.__agentSettled && err?.code === 'WS_CLOSED') {
+					return { accepted: this.__accepted };
+				}
+				// 用户主动取消：不抛错；根据是否已 accepted 决定是否让调用方恢复输入
+				if (err?.code === 'USER_CANCELLED') {
 					return { accepted: this.__accepted };
 				}
 				this.__cleanupStreaming();
@@ -310,12 +318,26 @@ export const useChatStore = defineStore('chat', {
 
 		/** 取消发送 */
 		cancelSend() {
+			// 通过 reject cancel promise 让 sendMessage 立即 settle
+			if (this.__cancelReject) {
+				const err = new Error('user cancelled');
+				err.code = 'USER_CANCELLED';
+				this.__cancelReject(err);
+				this.__cancelReject = null;
+			}
 			this.__cleanupStreaming();
 			this.sending = false;
 		},
 
 		/** 清理全部状态（离开页面/bot 解绑时） */
 		cleanup() {
+			// 同 cancelSend：让挂起的 sendMessage 立即 settle
+			if (this.__cancelReject) {
+				const err = new Error('user cancelled');
+				err.code = 'USER_CANCELLED';
+				this.__cancelReject(err);
+				this.__cancelReject = null;
+			}
 			this.__cleanupStreaming();
 			this.sessionId = '';
 			this.botId = '';

@@ -34,6 +34,7 @@
 
 ## 端到端测试 (E2E Testing)
 
+- Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例（遵循根 CLAUDE.md「Bug 修复流程」）
 - 当用户明确要求时才执行 E2E 测试
 - 后端测试账号（本地认证）：loginName=test；password=123456
 - 在 `ui` workspace 内执行 Playwright E2E 时，`webServer.command` 的前端启动命令应使用 `pnpm dev ...`，不要写 `pnpm --filter @coclaw/ui dev ...`，避免 webServer 启动异常或挂起
