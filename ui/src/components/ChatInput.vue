@@ -133,6 +133,7 @@
 			<div class="flex shrink-0 items-end pb-1">
 				<UButton
 					v-if="sending"
+					data-testid="btn-stop"
 					class="cc-icon-btn"
 					icon="i-lucide-square"
 					color="error"
