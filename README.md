@@ -6,7 +6,7 @@
 
 Slogan
  
-**Raise shrimp with CoClaw.**
+**Raise Openclaw with CoClaw.**
  
 CoClaw's Mission
  
