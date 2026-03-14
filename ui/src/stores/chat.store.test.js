@@ -1352,6 +1352,49 @@ describe('useChatStore', () => {
 			expect(store.isMainSession).toBe(false);
 		});
 
+		test('loadMessages 对非 main agent 传递正确的 agentId', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			const sessionsStore = useSessionsStore();
+			sessionsStore.setSessions([{ sessionId: 'sess-ops', sessionKey: 'agent:ops:main', botId: '1' }]);
+
+			const conn = mockConn();
+			setupConnForLoad(conn, {
+				sessions: [{ sessionId: 'sess-ops', sessionKey: 'agent:ops:main', indexed: true }],
+				messages: [{ id: 'msg1', type: 'message' }],
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-ops';
+			store.botId = '1';
+
+			await store.loadMessages();
+			// 验证 listAll 和 get 都传了 agentId: 'ops'
+			expect(conn.request).toHaveBeenCalledWith('nativeui.sessions.listAll', expect.objectContaining({ agentId: 'ops' }));
+			expect(conn.request).toHaveBeenCalledWith('nativeui.sessions.get', expect.objectContaining({ agentId: 'ops' }));
+		});
+
+		test('__reconcileMessages 对非 main agent 传递正确的 agentId', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			const sessionsStore = useSessionsStore();
+			sessionsStore.setSessions([{ sessionId: 'sess-research', sessionKey: 'agent:research:main', botId: '1' }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({ items: [] });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-research';
+			store.botId = '1';
+			store.sessionKeyById = {};
+
+			const result = await store.__reconcileMessages();
+			expect(result).toBe(true);
+			expect(conn.request).toHaveBeenCalledWith('nativeui.sessions.listAll', expect.objectContaining({ agentId: 'research' }));
+		});
+
 		test('isMainSession 对非 main agent 的 main session 也返回 true', () => {
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
@@ -1423,6 +1466,23 @@ describe('useChatStore', () => {
 
 			expect(store.__resolveAgentId()).toBe('main');
 		});
+
+		test('传入 sessionId 参数时使用指定值而非 this.sessionId', () => {
+			const sessionsStore = useSessionsStore();
+			sessionsStore.setSessions([
+				{ sessionId: 'sess-a', sessionKey: 'agent:alpha:main', botId: '1' },
+				{ sessionId: 'sess-b', sessionKey: 'agent:beta:main', botId: '1' },
+			]);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-a';
+			store.sessionKeyById = {};
+
+			// 不传参时用 this.sessionId
+			expect(store.__resolveAgentId()).toBe('alpha');
+			// 传参时用指定值
+			expect(store.__resolveAgentId('sess-b')).toBe('beta');
+		});
 	});
 
 	// =====================================================================
@@ -1430,6 +1490,32 @@ describe('useChatStore', () => {
 	// =====================================================================
 
 	describe('resetChat with dynamic agentId', () => {
+		test('resetChat 在 sessionKeyById 为空时从 sessionsStore 解析 agentId', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			const sessionsStore = useSessionsStore();
+			sessionsStore.setSessions([
+				{ sessionId: 'sess-ops', sessionKey: 'agent:ops:main', botId: '1' },
+			]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({ entry: { sessionId: 'new-sess' } });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-ops';
+			store.botId = '1';
+			store.sessionKeyById = {}; // 模拟 activateSession 清空后
+
+			const newId = await store.resetChat();
+			expect(newId).toBe('new-sess');
+			// 应正确解析为 ops 而非 fallback 到 main
+			expect(conn.request).toHaveBeenCalledWith('sessions.reset', {
+				key: 'agent:ops:main',
+				reason: 'new',
+			});
+		});
+
 		test('resetChat 使用当前 session 的 agentId 构建 key', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);

@@ -324,6 +324,24 @@ describe('sessions store', () => {
 		});
 	});
 
+	test('__fetchSessionsForBot 应将 botId 归一化为 string', async () => {
+		const botsStore = useBotsStore();
+		// 使用 numeric ID 模拟 server 返回
+		botsStore.setBots([{ id: 42, name: 'B1', online: true }]);
+
+		const conn = mockConn([
+			{ sessionId: 's1', sessionKey: 'agent:main:main', indexed: true },
+		]);
+		mockConnections.set('42', conn);
+
+		const store = useSessionsStore();
+		await store.loadAllSessions();
+
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].botId).toBe('42');
+		expect(typeof store.items[0].botId).toBe('string');
+	});
+
 	test('多 agent 拉取部分失败时应保留成功部分', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);

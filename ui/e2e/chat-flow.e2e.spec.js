@@ -54,8 +54,14 @@ test('Session 切换：不同 session 显示各自的消息', async ({ page }) =
 	await login(page);
 	await page.goto('/topics');
 
-	// 需要至少 2 个 session
-	await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 10_000 });
+	// 需要至少 2 个 chat link（agent 或 session）
+	const chatLink = page.locator('main a[href*="/chat/"]').first();
+	try {
+		await chatLink.waitFor({ state: 'visible', timeout: 10_000 });
+	}
+	catch {
+		test.skip(true, 'No chat sessions available (bot offline?)');
+	}
 	const links = page.locator('main a[href*="/chat/"]');
 	const linkCount = await links.count();
 	test.skip(linkCount < 2, 'Need at least 2 sessions to test switching');

@@ -188,26 +188,27 @@ describe('updateBotOnline', () => {
 });
 
 describe('loadBots', () => {
-	test('fetches bots, sets items, and calls syncConnections with all bot IDs', async () => {
+	test('fetches bots, normalizes id to string, and calls syncConnections', async () => {
 		const store = useBotsStore();
-		const bots = [{ id: '1', name: 'A' }, { id: '2', name: 'B' }];
+		const bots = [{ id: 1, name: 'A' }, { id: '2', name: 'B' }];
 		listBots.mockResolvedValue(bots);
 
 		await store.loadBots();
 
-		expect(store.items).toEqual(bots);
+		// bot.id 应被归一化为 string
+		expect(store.items[0].id).toBe('1');
+		expect(store.items[1].id).toBe('2');
 		expect(mockManager.syncConnections).toHaveBeenCalledOnce();
 		expect(mockManager.syncConnections).toHaveBeenCalledWith(['1', '2']);
 	});
 
-	test('returns the fetched bots array', async () => {
+	test('returns the normalized bots array', async () => {
 		const store = useBotsStore();
-		const bots = [{ id: '3', name: 'C' }];
-		listBots.mockResolvedValue(bots);
+		listBots.mockResolvedValue([{ id: 3, name: 'C' }]);
 
 		const result = await store.loadBots();
 
-		expect(result).toEqual(bots);
+		expect(result).toEqual([{ id: '3', name: 'C' }]);
 	});
 
 	test('sets loading to true during fetch', async () => {
@@ -272,15 +273,24 @@ describe('loadBots', () => {
 		});
 	});
 
-	test('skips listener for already-connected connections', async () => {
+	test('immediately triggers loadAgents+loadAllSessions for already-connected bots', async () => {
 		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
 
+		// 不注册 state 监听，直接调用 loadAgents
 		expect(fakeConn.on).not.toHaveBeenCalled();
+		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		await vi.waitFor(() => {
+			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+		});
 	});
 
 	test('does not register duplicate listeners for the same botId', async () => {

@@ -358,6 +358,42 @@ describe('agents store', () => {
 		});
 	});
 
+	test('loadAgents 应将 botId 归一化为 string 作为 byBot key', async () => {
+		const conn = mockConn([{ id: 'main' }]);
+		mockConnections.set('42', conn);
+
+		const store = useAgentsStore();
+		// 传入 numeric botId
+		await store.loadAgents(42);
+		expect(store.byBot['42']).toBeDefined();
+		expect(store.byBot['42'].agents).toHaveLength(1);
+	});
+
+	test('identity.get 失败时应输出 debug 日志', async () => {
+		const agents = [{ id: 'fail-agent', name: 'fail' }];
+		const conn = {
+			state: 'connected',
+			request: vi.fn().mockImplementation((method) => {
+				if (method === 'agents.list') return Promise.resolve({ defaultId: 'main', agents });
+				return Promise.reject(new Error('identity rpc error'));
+			}),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		mockConnections.set('bot-1', conn);
+
+		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+		const store = useAgentsStore();
+		await store.loadAgents('bot-1');
+
+		expect(debugSpy).toHaveBeenCalledWith(
+			expect.stringContaining('agent.identity.get failed'),
+			'fail-agent',
+			'identity rpc error',
+		);
+		debugSpy.mockRestore();
+	});
+
 	test('loadAgents 应处理 defaultId 非 main 的情况', async () => {
 		const conn = {
 			state: 'connected',
