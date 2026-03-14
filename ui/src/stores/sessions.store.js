@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 
 import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useAgentsStore } from './agents.store.js';
 import { useBotsStore } from './bots.store.js';
 
 // 模块级变量，避免被 Pinia reactive 代理包裹
@@ -78,20 +79,38 @@ export const useSessionsStore = defineStore('sessions', {
 		async __fetchSessionsForBot(botId) {
 			const conn = useBotConnections().get(String(botId));
 			if (!conn || conn.state !== 'connected') return [];
-			const result = await conn.request('nativeui.sessions.listAll', {
-				agentId: 'main',
-				limit: 200,
-				cursor: 0,
-			});
-			const items = Array.isArray(result?.items) ? result.items : [];
-			return items.map((item) => ({
-				sessionId: item.sessionId,
-				sessionKey: item.sessionKey ?? null,
-				title: item.title ?? null,
-				derivedTitle: item.derivedTitle ?? null,
-				indexed: Boolean(item.indexed),
-				botId,
-			}));
+
+			const agentsStore = useAgentsStore();
+			const agents = agentsStore.getAgentsByBot(botId);
+			// 若 agentsStore 未加载完成，fallback 到 ['main']
+			const agentIds = agents.length ? agents.map((a) => a.id) : ['main'];
+
+			const results = await Promise.allSettled(
+				agentIds.map((agentId) =>
+					conn.request('nativeui.sessions.listAll', {
+						agentId,
+						limit: 200,
+						cursor: 0,
+					}),
+				),
+			);
+			const allItems = [];
+			for (const r of results) {
+				if (r.status !== 'fulfilled') continue;
+				const items = Array.isArray(r.value?.items) ? r.value.items : [];
+				for (const item of items) {
+					allItems.push({
+						sessionId: item.sessionId,
+						sessionKey: item.sessionKey ?? null,
+						title: item.title ?? null,
+						derivedTitle: item.derivedTitle ?? null,
+						indexed: Boolean(item.indexed),
+						updatedAt: item.updatedAt ?? 0,
+						botId,
+					});
+				}
+			}
+			return allItems;
 		},
 	},
 });

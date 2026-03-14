@@ -5,6 +5,7 @@
 </template>
 
 <script>
+import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { isMobileViewport } from '../utils/layout.js';
@@ -59,11 +60,14 @@ export default {
 				return;
 			}
 
-			// 有在线 bot → 加载 sessions，跳到第一个在线 bot 的 main session
+			// 有在线 bot → 加载 agents + sessions，跳到默认 agent 的 main session
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents(onlineBot.id);
 			const sessionsStore = useSessionsStore();
 			await sessionsStore.loadAllSessions();
+			const defaultId = agentsStore.byBot[onlineBot.id]?.defaultId || 'main';
 			const mainSession = sessionsStore.items.find(
-				(s) => s.botId === onlineBot.id && s.sessionKey === 'agent:main:main',
+				(s) => s.botId === onlineBot.id && s.sessionKey === `agent:${defaultId}:main`,
 			);
 			if (mainSession?.sessionId) {
 				this.go({ name: 'chat', params: { sessionId: mainSession.sessionId } });

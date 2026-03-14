@@ -209,8 +209,8 @@ test('bot item should navigate to agent:main:main session when available', async
 	]);
 	await wrapper.vm.$nextTick();
 
-	const botItem = wrapper.vm.botItems[0];
-	expect(botItem.to).toEqual({ name: 'chat', params: { sessionId: 'sess-main' } });
+	const agentItem = wrapper.vm.agentItems[0];
+	expect(agentItem.to).toEqual({ name: 'chat', params: { sessionId: 'sess-main' } });
 });
 
 test('bot item should fallback to /chat when no agent:main:main session', async () => {
@@ -227,8 +227,8 @@ test('bot item should fallback to /chat when no agent:main:main session', async 
 	]);
 	await wrapper.vm.$nextTick();
 
-	const botItem = wrapper.vm.botItems[0];
-	expect(botItem.to).toBe('/home');
+	const agentItem = wrapper.vm.agentItems[0];
+	expect(agentItem.to).toBe('/home');
 });
 
 test('should display cleaned derivedTitle when title is empty', async () => {

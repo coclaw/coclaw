@@ -21,6 +21,25 @@
 			</template>
 		</MobilePageHeader>
 		<header class="z-10 hidden shrink-0 min-h-12 items-center border-b border-default bg-elevated pl-4 py-1 md:flex">
+			<!-- TODO: 桌面 header agent avatar 暂不显示，侧边栏和消息区已有 avatar -->
+			<template v-if="false">
+				<img
+					v-if="agentDisplay.avatarUrl"
+					:src="agentDisplay.avatarUrl"
+					:alt="agentDisplay.name"
+					class="size-6 shrink-0 rounded-full object-cover mr-2"
+				/>
+				<span
+					v-else-if="agentDisplay.emoji"
+					class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-sm leading-none mr-2"
+				>{{ agentDisplay.emoji }}</span>
+				<img
+					v-else
+					:src="defaultBotAvatar"
+					:alt="agentDisplay.name"
+					class="size-6 shrink-0 rounded-full object-cover mr-2"
+				/>
+			</template>
 			<h1 class="text-base --font-medium">{{ chatTitle }}</h1>
 			<div class="ml-auto pr-2">
 				<UButton
@@ -53,6 +72,7 @@
 						v-for="item in chatMessages"
 						:key="item.id"
 						:item="item"
+						:agent-display="agentDisplay"
 					/>
 				</div>
 				<div v-else class="px-4 py-8 text-center text-sm text-toned">
@@ -75,8 +95,10 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import ChatMsgItem from '../components/ChatMsgItem.vue';
+import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
 import ChatInput from '../components/ChatInput.vue';
 import { useNotify } from '../composables/use-notify.js';
+import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useChatStore } from '../stores/chat.store.js';
@@ -93,6 +115,7 @@ export default {
 	setup() {
 		return {
 			notify: useNotify(),
+			agentsStore: useAgentsStore(),
 			chatStore: useChatStore(),
 			botsStore: useBotsStore(),
 			sessionsStore: useSessionsStore(),
@@ -100,6 +123,7 @@ export default {
 	},
 	data() {
 		return {
+			defaultBotAvatar,
 			inputText: '',
 			userScrolledUp: false,
 			__exiting: false,
@@ -132,6 +156,13 @@ export default {
 				if (label) return label;
 			}
 			return this.$t('chat.sessionTitle', { id: this.currentSessionId });
+		},
+		agentDisplay() {
+			const botId = this.chatStore.botId;
+			const sessionKey = this.chatStore.currentSessionKey;
+			const agentId = this.agentsStore.parseAgentId(sessionKey);
+			if (!botId || !agentId) return { name: 'Agent', avatarUrl: null, emoji: null };
+			return this.agentsStore.getAgentDisplay(botId, agentId);
 		},
 		chatMessages() {
 			return groupSessionMessages(this.chatStore.messages);

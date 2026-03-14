@@ -1,5 +1,19 @@
 # UI Workspace Status
 
+## 2026-03-14
+- **多 Agent 支持（UI 侧，Phase 2 + Phase 3）已完成**：
+  - 新增 `agents.store.js`：管理 per-bot agent 列表，通过 `agents.list` + `agent.identity.get` RPC 获取完整 identity
+  - 修改 `sessions.store.js`：按 agent 分别拉取 sessions，保留 `updatedAt` 字段
+  - 修改 `chat.store.js`：动态解析 agentId（`__resolveAgentId`），`isMainSession` 改正则匹配，`resetChat`/`loadMessages`/`__reconcileMessages` 支持非 main agent
+  - 修改 `bots.store.js`：连接就绪后先加载 agents 再加载 sessions
+  - 修改 `MainList.vue`：agent 列表替代 bot 列表，session 列表按 `updatedAt` 降序排序，session item 根据 agentId 显示对应 agent 的 emoji/avatar
+  - 修改 `ManageBotsPage.vue`：Claw 卡片内展示 agent 列表 + 对话按钮
+  - 修改 `HomePage.vue`：默认 agent 导航
+  - i18n 术语更新（机器人→Claw，新增 agents 命名空间）
+  - avatar 渲染含 `isRenderableUrl` 校验（仅 `data:` 或 `http(s):` URL 用于 img）
+  - 全部测试通过（33 文件，583 测试），覆盖率达标
+  - 详见 `docs/architecture/multi-agent-support.md`
+
 ## 2026-03-11
 - **v0.2 实时通信架构整改（UI 侧，Stages 2/3/4）已完成**：
   - 新增 `BotConnection` 类（`services/bot-connection.js`）：per-bot 持久 WS 连接，含 RPC 两阶段协议、心跳（25s ping/45s timeout）、指数退避重连

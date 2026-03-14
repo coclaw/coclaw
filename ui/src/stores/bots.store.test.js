@@ -19,6 +19,7 @@ vi.mock('../services/bots.api.js', () => ({
 }));
 
 import { listBots } from '../services/bots.api.js';
+import { useAgentsStore } from './agents.store.js';
 import { useBotsStore } from './bots.store.js';
 import { useSessionsStore } from './sessions.store.js';
 
@@ -239,9 +240,11 @@ describe('loadBots', () => {
 		expect(store.loading).toBe(false);
 	});
 
-	test('registers state listener on non-connected connections and triggers loadAllSessions on connected', async () => {
+	test('registers state listener on non-connected connections and triggers loadAgents+loadAllSessions on connected', async () => {
 		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 
 		// 模拟一个处于 connecting 状态的连接
@@ -262,7 +265,11 @@ describe('loadBots', () => {
 		stateCallback('connected');
 
 		expect(fakeConn.off).toHaveBeenCalledWith('state', stateCallback);
-		expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		// loadAllSessions 在 loadAgents 完成后异步调用
+		await vi.waitFor(() => {
+			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+		});
 	});
 
 	test('skips listener for already-connected connections', async () => {

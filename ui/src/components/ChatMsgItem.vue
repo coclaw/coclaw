@@ -30,8 +30,13 @@
 		<template v-else>
 			<!-- 头像 + 思考/折叠行 -->
 			<div class="mb-2 flex items-center gap-2">
+				<span
+					v-if="botEmoji && !agentDisplay?.avatarUrl"
+					class="size-6 shrink-0 rounded-sm bg-accented flex items-center justify-center text-sm leading-none"
+				>{{ botEmoji }}</span>
 				<img
-					:src="botAvatar"
+					v-else
+					:src="botAvatarUrl"
 					alt="bot"
 					class="size-6 rounded-sm object-cover"
 				/>
@@ -150,6 +155,10 @@ export default {
 			type: Object,
 			required: true,
 		},
+		agentDisplay: {
+			type: Object,
+			default: () => ({ name: 'Agent', avatarUrl: null, emoji: null }),
+		},
 	},
 	setup() {
 		return { notify: useNotify() };
@@ -166,8 +175,11 @@ export default {
 		isUser() {
 			return this.item.type === 'user';
 		},
-		botAvatar() {
-			return botAvatarSvg;
+		botAvatarUrl() {
+			return this.agentDisplay?.avatarUrl || botAvatarSvg;
+		},
+		botEmoji() {
+			return this.agentDisplay?.emoji || null;
 		},
 		formattedTime() {
 			const ts = this.item.timestamp;

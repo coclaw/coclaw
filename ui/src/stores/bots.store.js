@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 
 import { listBots } from '../services/bots.api.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
 
 // 跟踪已注册 state 监听的 botId，避免重复注册
@@ -100,8 +101,10 @@ export const useBotsStore = defineStore('bots', {
 					if (state === 'connected') {
 						conn.off('state', onState);
 						_awaitingConnIds.delete(id);
-						console.debug('[bots] conn ready botId=%s → loadAllSessions', id);
-						useSessionsStore().loadAllSessions();
+						console.debug('[bots] conn ready botId=%s → loadAgents+loadAllSessions', id);
+						useAgentsStore().loadAgents(id).then(() => {
+							useSessionsStore().loadAllSessions();
+						});
 					}
 				};
 				conn.on('state', onState);

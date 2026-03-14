@@ -33,7 +33,7 @@ export const useChatStore = defineStore('chat', {
 			return this.sessionKeyById[this.sessionId] ?? '';
 		},
 		isMainSession() {
-			return this.currentSessionKey === 'agent:main:main';
+			return /^agent:[^:]+:main$/.test(this.currentSessionKey);
 		},
 	},
 	actions: {
@@ -98,8 +98,9 @@ export const useChatStore = defineStore('chat', {
 			}
 			try {
 				// 获取 session 列表以构建 sessionKeyById
+				const agentId = this.__resolveAgentId();
 				const list = await conn.request('nativeui.sessions.listAll', {
-					agentId: 'main', limit: 200, cursor: 0,
+					agentId, limit: 200, cursor: 0,
 				});
 				const items = Array.isArray(list?.items) ? list.items : [];
 				this.sessionKeyById = Object.fromEntries(
@@ -110,7 +111,7 @@ export const useChatStore = defineStore('chat', {
 
 				// 获取消息
 				const result = await conn.request('nativeui.sessions.get', {
-					agentId: 'main',
+					agentId,
 					sessionId: this.sessionId,
 					limit: 500,
 					cursor: 0,
@@ -334,8 +335,9 @@ export const useChatStore = defineStore('chat', {
 			}
 			this.resetting = true;
 			try {
+				const agentId = this.__resolveAgentId();
 				const result = await conn.request('sessions.reset', {
-					key: 'agent:main:main',
+					key: `agent:${agentId}:main`,
 					reason: 'new',
 				});
 				const newId = result?.entry?.sessionId;
@@ -471,6 +473,20 @@ export const useChatStore = defineStore('chat', {
 
 		// --- 内部辅助 ---
 
+		/** 从 sessionKey 解析 agentId：'agent:<agentId>:<rest>' → 取第二段 */
+		__resolveAgentId() {
+			if (!this.sessionId) return 'main';
+			// 优先从本地缓存查，fallback 到 sessionsStore（activateSession 后 sessionKeyById 可能为空）
+			let key = this.sessionKeyById[this.sessionId];
+			if (!key) {
+				const session = useSessionsStore().items.find((s) => s.sessionId === this.sessionId);
+				key = session?.sessionKey;
+			}
+			if (!key) return 'main';
+			const parts = key.split(':');
+			return parts.length >= 2 ? parts[1] : 'main';
+		},
+
 		__resolveBotId(sessionId) {
 			if (!sessionId) return '';
 			const session = useSessionsStore().items.find((s) => s.sessionId === sessionId);
@@ -506,8 +522,9 @@ export const useChatStore = defineStore('chat', {
 			const conn = this.__getConnection();
 			if (!conn || conn.state !== 'connected') return false;
 			try {
+				const agentId = this.__resolveAgentId();
 				const list = await conn.request('nativeui.sessions.listAll', {
-					agentId: 'main', limit: 200, cursor: 0,
+					agentId, limit: 200, cursor: 0,
 				});
 				const items = Array.isArray(list?.items) ? list.items : [];
 				this.sessionKeyById = Object.fromEntries(

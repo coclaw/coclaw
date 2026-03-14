@@ -20,6 +20,7 @@ vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn().mockResolvedValue([]),
 }));
 
+import { useAgentsStore } from './agents.store.js';
 import { useBotsStore } from './bots.store.js';
 
 function mockConn(items = [], state = 'connected') {
@@ -76,8 +77,8 @@ describe('sessions store', () => {
 		await store.loadAllSessions();
 
 		expect(store.items).toEqual([
-			{ sessionId: 's1', sessionKey: null, title: 'Session 1', derivedTitle: null, indexed: true, botId: 'bot-1' },
-			{ sessionId: 's2', sessionKey: null, title: 'Session 2', derivedTitle: null, indexed: false, botId: 'bot-2' },
+			{ sessionId: 's1', sessionKey: null, title: 'Session 1', derivedTitle: null, indexed: true, updatedAt: 0, botId: 'bot-1' },
+			{ sessionId: 's2', sessionKey: null, title: 'Session 2', derivedTitle: null, indexed: false, updatedAt: 0, botId: 'bot-2' },
 		]);
 	});
 
@@ -140,7 +141,7 @@ describe('sessions store', () => {
 
 		expect(connOn.request).toHaveBeenCalledTimes(1);
 		expect(store.items).toEqual([
-			{ sessionId: 's-on', sessionKey: null, title: 'Online Session', derivedTitle: null, indexed: true, botId: 'bot-on' },
+			{ sessionId: 's-on', sessionKey: null, title: 'Online Session', derivedTitle: null, indexed: true, updatedAt: 0, botId: 'bot-on' },
 		]);
 	});
 
@@ -167,7 +168,7 @@ describe('sessions store', () => {
 		await store.loadAllSessions();
 
 		expect(store.items).toEqual([
-			{ sessionId: 's-ok', sessionKey: null, title: 'OK Session', derivedTitle: null, indexed: true, botId: 'bot-ok' },
+			{ sessionId: 's-ok', sessionKey: null, title: 'OK Session', derivedTitle: null, indexed: true, updatedAt: 0, botId: 'bot-ok' },
 		]);
 	});
 
@@ -255,5 +256,105 @@ describe('sessions store', () => {
 		store.removeSessionsByBotId('bot-999');
 
 		expect(store.items).toHaveLength(1);
+	});
+
+	test('__fetchSessionsForBot 应按多个 agent 分别拉取并合并', async () => {
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+
+		const agentsStore = useAgentsStore();
+		// 手动设置 agents 数据
+		agentsStore.byBot['bot-1'] = {
+			agents: [{ id: 'main' }, { id: 'ops' }],
+			defaultId: 'main',
+			loading: false,
+			fetched: true,
+		};
+
+		const conn = {
+			state: 'connected',
+			request: vi.fn().mockImplementation((_method, params) => {
+				if (params.agentId === 'main') {
+					return Promise.resolve({
+						items: [{ sessionId: 's-main', sessionKey: 'agent:main:main', indexed: true }],
+					});
+				}
+				if (params.agentId === 'ops') {
+					return Promise.resolve({
+						items: [{ sessionId: 's-ops', sessionKey: 'agent:ops:main', indexed: true }],
+					});
+				}
+				return Promise.resolve({ items: [] });
+			}),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		mockConnections.set('bot-1', conn);
+
+		const store = useSessionsStore();
+		await store.loadAllSessions();
+
+		expect(store.items).toHaveLength(2);
+		expect(store.items.find((s) => s.sessionKey === 'agent:main:main')).toBeDefined();
+		expect(store.items.find((s) => s.sessionKey === 'agent:ops:main')).toBeDefined();
+		// 应发起 2 次 request（每个 agent 一次）
+		expect(conn.request).toHaveBeenCalledTimes(2);
+	});
+
+	test('agentsStore 未加载时应 fallback 到 main', async () => {
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+
+		// 不设置 agentsStore 数据 → getAgentsByBot 返回 []
+
+		const conn = mockConn([
+			{ sessionId: 's1', sessionKey: 'agent:main:main', indexed: true },
+		]);
+		mockConnections.set('bot-1', conn);
+
+		const store = useSessionsStore();
+		await store.loadAllSessions();
+
+		expect(store.items).toHaveLength(1);
+		// 应只请求 main
+		expect(conn.request).toHaveBeenCalledWith('nativeui.sessions.listAll', {
+			agentId: 'main',
+			limit: 200,
+			cursor: 0,
+		});
+	});
+
+	test('多 agent 拉取部分失败时应保留成功部分', async () => {
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+
+		const agentsStore = useAgentsStore();
+		agentsStore.byBot['bot-1'] = {
+			agents: [{ id: 'main' }, { id: 'bad' }],
+			defaultId: 'main',
+			loading: false,
+			fetched: true,
+		};
+
+		const conn = {
+			state: 'connected',
+			request: vi.fn().mockImplementation((_method, params) => {
+				if (params.agentId === 'main') {
+					return Promise.resolve({
+						items: [{ sessionId: 's-main', sessionKey: 'agent:main:main', indexed: true }],
+					});
+				}
+				return Promise.reject(new Error('agent not found'));
+			}),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		mockConnections.set('bot-1', conn);
+
+		const store = useSessionsStore();
+		await store.loadAllSessions();
+
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].sessionKey).toBe('agent:main:main');
 	});
 });

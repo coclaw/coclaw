@@ -1351,5 +1351,108 @@ describe('useChatStore', () => {
 
 			expect(store.isMainSession).toBe(false);
 		});
+
+		test('isMainSession 对非 main agent 的 main session 也返回 true', () => {
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.sessionKeyById = { 'sess-1': 'agent:ops:main' };
+
+			expect(store.isMainSession).toBe(true);
+		});
+	});
+
+	// =====================================================================
+	// __resolveAgentId
+	// =====================================================================
+
+	describe('__resolveAgentId', () => {
+		test('从 sessionKey 解析 agentId', () => {
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.sessionKeyById = { 'sess-1': 'agent:ops:main' };
+
+			expect(store.__resolveAgentId()).toBe('ops');
+		});
+
+		test('sessionKey 为 agent:main:main 时返回 main', () => {
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.sessionKeyById = { 'sess-1': 'agent:main:main' };
+
+			expect(store.__resolveAgentId()).toBe('main');
+		});
+
+		test('无 sessionId 时返回 main', () => {
+			const store = useChatStore();
+			expect(store.__resolveAgentId()).toBe('main');
+		});
+
+		test('无 sessionKey 时返回 main', () => {
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.sessionKeyById = {};
+
+			expect(store.__resolveAgentId()).toBe('main');
+		});
+
+		test('复杂 sessionKey 格式正确解析', () => {
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.sessionKeyById = { 'sess-1': 'agent:research:session-research-abc' };
+
+			expect(store.__resolveAgentId()).toBe('research');
+		});
+
+		test('sessionKeyById 为空时从 sessionsStore 查找 sessionKey', () => {
+			const sessionsStore = useSessionsStore();
+			sessionsStore.setSessions([
+				{ sessionId: 'sess-tester', sessionKey: 'agent:tester:main', botId: '1' },
+			]);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-tester';
+			store.sessionKeyById = {}; // 模拟 activateSession 清空后的状态
+
+			expect(store.__resolveAgentId()).toBe('tester');
+		});
+
+		test('sessionKeyById 和 sessionsStore 都无匹配时 fallback 到 main', () => {
+			const store = useChatStore();
+			store.sessionId = 'unknown-sess';
+			store.sessionKeyById = {};
+
+			expect(store.__resolveAgentId()).toBe('main');
+		});
+	});
+
+	// =====================================================================
+	// resetChat 动态 agentId
+	// =====================================================================
+
+	describe('resetChat with dynamic agentId', () => {
+		test('resetChat 使用当前 session 的 agentId 构建 key', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			const sessionsStore = useSessionsStore();
+			sessionsStore.setSessions([{ sessionId: 'sess-1', botId: '1' }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({
+				entry: { sessionId: 'new-sess' },
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.sessionKeyById = { 'sess-1': 'agent:ops:main' };
+
+			const newId = await store.resetChat();
+			expect(newId).toBe('new-sess');
+			expect(conn.request).toHaveBeenCalledWith('sessions.reset', {
+				key: 'agent:ops:main',
+				reason: 'new',
+			});
+		});
 	});
 });

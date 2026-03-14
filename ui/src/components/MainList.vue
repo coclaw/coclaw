@@ -20,10 +20,10 @@
 			</nav>
 		</template>
 
-		<!-- Group 2: 常用机器人 -->
+		<!-- Group 2: Agent 列表 -->
 		<nav class="mt-3 space-y-0 px-2">
 			<RouterLink
-				v-for="item in botItems"
+				v-for="item in agentItems"
 				:key="item.id"
 				:to="item.to"
 				class="group flex h-11 items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
@@ -31,7 +31,18 @@
 			>
 				<span class="relative shrink-0">
 					<img
-						:src="item.avatar || defaultBotAvatar"
+						v-if="item.avatarUrl"
+						:src="item.avatarUrl"
+						:alt="item.label"
+						class="size-6 rounded-full object-cover"
+					/>
+					<span
+						v-else-if="item.emoji"
+						class="size-6 rounded-full bg-accented flex items-center justify-center text-sm leading-none"
+					>{{ item.emoji }}</span>
+					<img
+						v-else
+						:src="defaultBotAvatar"
 						:alt="item.label"
 						class="size-6 rounded-full object-cover"
 					/>
@@ -42,7 +53,7 @@
 				</span>
 				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
 			</RouterLink>
-			<!-- 移动端：末尾追加"添加机器人"入口 -->
+			<!-- 移动端：末尾追加"添加 Claw"入口 -->
 			<RouterLink
 				v-if="!showBotActions"
 				to="/bots/add"
@@ -64,7 +75,20 @@
 				:class="resolvePath(item.to) === currentPath ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
-				<span class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-xs font-medium text-dimmed">{{ item.botInitial }}</span>
+				<img
+					v-if="item.agentAvatarUrl"
+					:src="item.agentAvatarUrl"
+					:alt="item.label"
+					class="size-6 shrink-0 rounded-full object-cover"
+				/>
+				<span
+					v-else-if="item.agentEmoji"
+					class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-sm leading-none"
+				>{{ item.agentEmoji }}</span>
+				<span
+					v-else
+					class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-xs font-medium text-dimmed"
+				>{{ item.botInitial }}</span>
 				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
 				<UIcon v-if="item.badge" :name="item.badge.icon" class="size-4 shrink-0" :class="item.badge.color" />
 			</RouterLink>
@@ -73,6 +97,7 @@
 </template>
 
 <script>
+import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { cleanDerivedTitle } from '../utils/session-msg-group.js';
@@ -85,7 +110,7 @@ function toSessionBadge(item) {
 	}
 	const key = item.sessionKey;
 	if (!key) return null;
-	if (key === 'agent:main:main') {
+	if (/^agent:[^:]+:main$/.test(key)) {
 		return { icon: 'i-lucide-star', color: 'text-primary' };
 	}
 	if (/^agent:[^:]+:cron:/.test(key)) {
@@ -129,6 +154,7 @@ export default {
 	data() {
 		return {
 			defaultBotAvatar,
+			agentsStore: null,
 			botsStore: null,
 			sessionsStore: null,
 		};
@@ -148,42 +174,74 @@ export default {
 				{ id: 'manage-bots', label: this.$t('layout.manageBots'), icon: 'i-lucide-settings', to: '/bots' },
 			];
 		},
-		botItems() {
-			const bots = this.botsStore?.items ?? [];
+		agentItems() {
+			const allAgents = this.agentsStore?.allAgentItems ?? [];
 			const sessions = this.sessionsStore?.items ?? [];
-			return bots.map((b) => {
-				// 查找 agent:main:main 对应的 session
-				const mainSession = sessions.find(
-					(s) => s.botId === b.id && s.sessionKey === 'agent:main:main',
+			const display = this.agentsStore?.getAgentDisplay;
+			if (!allAgents.length) {
+				// agents 未加载时 fallback 到 bot 列表
+				const bots = this.botsStore?.items ?? [];
+				return bots.map((b) => {
+					const mainSession = sessions.find(
+						(s) => s.botId === b.id && /^agent:[^:]+:main$/.test(s.sessionKey),
+					);
+					return {
+						id: b.id,
+						label: b.name || 'OpenClaw',
+						avatarUrl: null,
+						emoji: null,
+						online: Boolean(b.online),
+						to: mainSession
+							? { name: 'chat', params: { sessionId: mainSession.sessionId } }
+							: '/home',
+					};
+				});
+			}
+			return allAgents.map((agent) => {
+				const mainSessionKey = `agent:${agent.id}:main`;
+				const session = sessions.find(
+					(s) => s.botId === agent.botId && s.sessionKey === mainSessionKey,
 				);
-				const to = mainSession
-					? { name: 'chat', params: { sessionId: mainSession.sessionId } }
-					: '/home';
+				const d = display?.(agent.botId, agent.id) ?? {};
 				return {
-					id: b.id,
-					label: b.name || 'OpenClaw',
-					avatar: defaultBotAvatar,
-					online: Boolean(b.online),
-					to,
+					id: `${agent.botId}:${agent.id}`,
+					label: d.name || agent.id,
+					avatarUrl: d.avatarUrl,
+					emoji: d.emoji,
+					online: agent.botOnline,
+					to: session
+						? { name: 'chat', params: { sessionId: session.sessionId } }
+						: '/home',
 				};
 			});
 		},
 		sessionItems() {
 			const items = this.sessionsStore?.items ?? [];
 			const detailRouteName = this.currentPath.startsWith('/topics') ? 'topics-chat' : 'chat';
-			return items.map((item) => ({
-				id: item.sessionId,
-				label: toSessionLabel(item, this.$t),
-				badge: toSessionBadge(item),
-				botInitial: (this.botNameMap[item.botId] ?? 'O').charAt(0).toUpperCase(),
-				to: {
-					name: detailRouteName,
-					params: { sessionId: item.sessionId },
-				},
-			}));
+			const display = this.agentsStore?.getAgentDisplay;
+			const parseId = this.agentsStore?.parseAgentId;
+			return [...items]
+				.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+				.map((item) => {
+					const agentId = parseId?.(item.sessionKey);
+					const d = agentId ? display?.(item.botId, agentId) ?? {} : {};
+					return {
+						id: item.sessionId,
+						label: toSessionLabel(item, this.$t),
+						badge: toSessionBadge(item),
+						botInitial: (this.botNameMap[item.botId] ?? 'O').charAt(0).toUpperCase(),
+						agentAvatarUrl: d.avatarUrl || null,
+						agentEmoji: d.emoji || null,
+						to: {
+							name: detailRouteName,
+							params: { sessionId: item.sessionId },
+						},
+					};
+				});
 		},
 	},
 	mounted() {
+		this.agentsStore = useAgentsStore();
 		this.botsStore = useBotsStore();
 		this.sessionsStore = useSessionsStore();
 		this.loadAllData();
@@ -204,6 +262,7 @@ export default {
 			catch {
 				this.botsStore?.setBots([]);
 			}
+			await this.agentsStore?.loadAllAgents();
 			await this.sessionsStore.loadAllSessions();
 		},
 		resolvePath(to) {
