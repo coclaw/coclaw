@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.3.0
+
+### Minor Changes
+
+- feat: add multi-agent session ensure support for OpenClaw nativeui.sessions.ensure gateway method
+
 ## 0.2.4
 
 ### Patch Changes
