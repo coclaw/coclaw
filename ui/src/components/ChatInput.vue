@@ -1,9 +1,9 @@
 <template>
-	<footer class="sticky bottom-0 z-10 border-t border-default bg-default px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:px-8 md:py-3">
+	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
 		<!-- 文件预览区 -->
 		<div
 			v-if="inputFiles.length"
-			class="mx-auto mb-2 flex w-full max-w-3xl flex-wrap gap-2"
+			class="mx-auto mb-2 flex w-full max-w-3xl flex-wrap gap-2 px-3"
 		>
 			<div
 				v-for="(f, idx) in inputFiles"
@@ -40,15 +40,15 @@
 		</div>
 
 		<form
-			class="mx-auto flex w-full max-w-3xl items-end gap-2"
+			class="mx-auto flex w-full max-w-3xl items-end gap-2 pl-1.5 pr-3"
 			@submit.prevent="onSubmit"
 		>
 			<!-- 左侧按钮区 -->
-			<div class="flex shrink-0 items-end gap-1 pb-1">
+			<div class="flex shrink-0 items-end gap-1">
 				<!-- 移动端：键盘/语音切换 -->
 				<UButton
 					v-if="isMobile"
-					class="cc-icon-btn md:hidden"
+					class="cc-icon-btn-lg md:hidden"
 					:icon="inputMode === 'keyboard' ? 'i-lucide-mic' : 'i-lucide-keyboard'"
 					variant="ghost"
 					color="primary"
@@ -59,7 +59,7 @@
 				<UButton
 					v-if="inputMode === 'keyboard'"
 					data-testid="btn-attach"
-					class="cc-icon-btn"
+					class="cc-icon-btn-lg"
 					icon="i-lucide-plus"
 					variant="ghost"
 					color="primary"
@@ -69,7 +69,7 @@
 				<!-- 桌面端麦克风按钮 -->
 				<UButton
 					v-if="!isMobile && inputMode === 'keyboard' && !isDesktopRecording"
-					class="cc-icon-btn hidden md:flex"
+					class="cc-icon-btn-lg hidden md:flex"
 					icon="i-lucide-mic"
 					variant="ghost"
 					color="primary"
@@ -87,7 +87,7 @@
 				>
 					<div ref="deskWaveContainer" class="h-10 min-w-0 flex-1 rounded-md bg-elevated" />
 					<UButton
-						class="cc-icon-btn"
+						class="cc-icon-btn-lg"
 						icon="i-lucide-x"
 						variant="ghost"
 						color="error"
@@ -95,7 +95,7 @@
 						@click="onCancelDesktopRecording"
 					/>
 					<UButton
-						class="cc-icon-btn"
+						class="cc-icon-btn-lg"
 						icon="i-lucide-check"
 						variant="soft"
 						color="success"
@@ -130,11 +130,11 @@
 			</div>
 
 			<!-- 右侧按钮区 -->
-			<div class="flex shrink-0 items-end pb-1">
+			<div class="flex shrink-0 items-end">
 				<UButton
 					v-if="sending"
 					data-testid="btn-stop"
-					class="cc-icon-btn"
+					class="cc-icon-btn-lg"
 					icon="i-lucide-square"
 					color="error"
 					variant="soft"
@@ -145,7 +145,7 @@
 				<UButton
 					v-else
 					data-testid="btn-send"
-					class="cc-icon-btn"
+					class="cc-icon-btn-lg"
 					icon="i-lucide-send"
 					color="primary"
 					variant="soft"

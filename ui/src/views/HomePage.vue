@@ -17,6 +17,7 @@ export default {
 	data() {
 		return {
 			timer: null,
+			__resolved: false,
 		};
 	},
 	async mounted() {
@@ -77,6 +78,8 @@ export default {
 			}
 		},
 		go(to) {
+			if (this.__resolved) return;
+			this.__resolved = true;
 			if (this.timer) {
 				clearTimeout(this.timer);
 				this.timer = null;
@@ -85,7 +88,7 @@ export default {
 		},
 		fallback() {
 			this.timer = null;
-			this.$router.replace('/bots');
+			this.go('/bots');
 		},
 	},
 };

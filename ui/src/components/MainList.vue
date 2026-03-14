@@ -34,17 +34,17 @@
 						v-if="item.avatarUrl"
 						:src="item.avatarUrl"
 						:alt="item.label"
-						class="size-6 rounded-full object-cover"
+						class="size-6 rounded-md object-cover"
 					/>
 					<span
 						v-else-if="item.emoji"
-						class="size-6 rounded-full bg-accented flex items-center justify-center text-sm leading-none"
+						class="size-6 rounded-md bg-accented flex items-center justify-center text-sm leading-none"
 					>{{ item.emoji }}</span>
 					<img
 						v-else
 						:src="defaultBotAvatar"
 						:alt="item.label"
-						class="size-6 rounded-full object-cover"
+						class="size-6 rounded-md object-cover"
 					/>
 					<span
 						class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-default"
@@ -249,7 +249,8 @@ export default {
 	watch: {
 		'botsStore.items': {
 			deep: true,
-			handler() {
+			async handler() {
+				await this.agentsStore?.loadAllAgents();
 				this.sessionsStore.loadAllSessions();
 			},
 		},

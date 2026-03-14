@@ -129,6 +129,7 @@ export const zhCNMessages = {
 	agents: {
 		addAgent: '添加 Agent',
 		chat: '对话',
+		sessionNotReady: '会话尚未就绪，请稍后重试',
 	},
 	bots: {
 		unbind: '解绑',

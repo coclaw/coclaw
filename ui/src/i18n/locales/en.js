@@ -129,6 +129,7 @@ export const enMessages = {
 	agents: {
 		addAgent: 'Add Agent',
 		chat: 'Chat',
+		sessionNotReady: 'Session not ready, please try again later',
 	},
 	bots: {
 		unbind: 'Unbind',

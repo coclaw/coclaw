@@ -106,7 +106,7 @@ export const useSessionsStore = defineStore('sessions', {
 						derivedTitle: item.derivedTitle ?? null,
 						indexed: Boolean(item.indexed),
 						updatedAt: item.updatedAt ?? 0,
-						botId,
+						botId: String(botId),
 					});
 				}
 			}

@@ -72,7 +72,8 @@ export const useBotsStore = defineStore('bots', {
 			this.loading = true;
 			try {
 				const bots = await listBots();
-				this.items = bots;
+				// 归一化 bot.id 为 string，确保全局 === 比较一致
+				this.items = bots.map((b) => ({ ...b, id: String(b.id) }));
 				this.fetched = true;
 				console.debug('[bots] loaded %d bot(s)', bots.length);
 				// 同步连接：为所有已绑定 bot 建立 WS
@@ -81,7 +82,7 @@ export const useBotsStore = defineStore('bots', {
 				manager.syncConnections(botIds);
 				// WS 连接就绪后自动触发 session 加载
 				this.__listenForReady(botIds, manager);
-				return bots;
+				return this.items;
 			}
 			finally {
 				this.loading = false;
@@ -93,9 +94,17 @@ export const useBotsStore = defineStore('bots', {
 		 */
 		__listenForReady(botIds, manager) {
 			for (const id of botIds) {
-				if (_awaitingConnIds.has(id)) continue;
 				const conn = manager.get(id);
-				if (!conn || conn.state === 'connected') continue;
+				if (!conn) continue;
+				// 已连接的 bot 立即加载 agents + sessions
+				if (conn.state === 'connected') {
+					console.debug('[bots] conn already ready botId=%s → loadAgents+loadAllSessions', id);
+					useAgentsStore().loadAgents(id).then(() => {
+						useSessionsStore().loadAllSessions();
+					});
+					continue;
+				}
+				if (_awaitingConnIds.has(id)) continue;
 				_awaitingConnIds.add(id);
 				const onState = (state) => {
 					if (state === 'connected') {

@@ -4,8 +4,8 @@
 		:style="{ width: uiStore.drawerWidth + 'px' }"
 	>
 		<div class="flex min-h-0 flex-1 flex-col">
-			<div class="flex min-h-12 items-center gap-2 pl-3 pr-2 py-1">
-				<img :src="logoSrc" alt="CoClaw" class="size-8 rounded" />
+			<div class="flex min-h-12 items-center gap-2 pl-3.5 pr-2 py-1">
+				<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 				<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
 				<!-- TODO: 收起/展开 drawer 功能完成后恢复
 				<UButton

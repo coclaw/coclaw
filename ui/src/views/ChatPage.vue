@@ -67,7 +67,7 @@
 				<div v-else-if="chatStore.errorText && !isBotOffline" class="px-4 py-8 text-center text-sm text-error">
 					{{ chatStore.errorText }}
 				</div>
-				<div v-else-if="chatMessages.length > 0" class="pb-2">
+				<div v-else-if="chatMessages.length > 0" class="pb-12">
 					<ChatMsgItem
 						v-for="item in chatMessages"
 						:key="item.id"
@@ -193,7 +193,7 @@ export default {
 				this.chatStore.loadMessages();
 			}
 		},
-		'chatStore.messages.length'() {
+		'chatStore.messages'() {
 			this.scrollToBottom();
 		},
 	},
@@ -297,7 +297,7 @@ export default {
 			const el = this.$refs.scrollContainer;
 			if (el?.scrollTo && !this.userScrolledUp) {
 				this.$nextTick(() => {
-					el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+					el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 				});
 			}
 		},

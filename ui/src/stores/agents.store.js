@@ -97,17 +97,18 @@ export const useAgentsStore = defineStore('agents', {
 		 * @param {string} botId
 		 */
 		async loadAgents(botId) {
-			const conn = useBotConnections().get(String(botId));
+			const id = String(botId);
+			const conn = useBotConnections().get(id);
 			if (!conn || conn.state !== 'connected') {
-				console.debug('[agents] loadAgents skipped: no connected WS for botId=%s', botId);
+				console.debug('[agents] loadAgents skipped: no connected WS for botId=%s', id);
 				return;
 			}
 
-			// 初始化 entry
-			if (!this.byBot[botId]) {
-				this.byBot[botId] = { agents: [], defaultId: 'main', loading: false, fetched: false };
+			// 初始化 entry（key 统一为 string）
+			if (!this.byBot[id]) {
+				this.byBot[id] = { agents: [], defaultId: 'main', loading: false, fetched: false };
 			}
-			const entry = this.byBot[botId];
+			const entry = this.byBot[id];
 			entry.loading = true;
 
 			try {
@@ -122,17 +123,18 @@ export const useAgentsStore = defineStore('agents', {
 							const ident = await conn.request('agent.identity.get', { agentId: agent.id });
 							return { ...agent, resolvedIdentity: ident ?? null };
 						}
-						catch {
+						catch (err) {
+							console.debug('[agents] agent.identity.get failed agentId=%s: %s', agent.id, err?.message);
 							return { ...agent, resolvedIdentity: null };
 						}
 					}),
 				);
 				entry.agents = enriched;
 				entry.fetched = true;
-				console.debug('[agents] loaded %d agent(s) for botId=%s defaultId=%s', agents.length, botId, entry.defaultId);
+				console.debug('[agents] loaded %d agent(s) for botId=%s defaultId=%s', agents.length, id, entry.defaultId);
 			}
 			catch (err) {
-				console.warn('[agents] loadAgents failed for botId=%s:', botId, err?.message);
+				console.warn('[agents] loadAgents failed for botId=%s:', id, err?.message);
 			}
 			finally {
 				entry.loading = false;
@@ -147,9 +149,9 @@ export const useAgentsStore = defineStore('agents', {
 			const manager = useBotConnections();
 			const promises = [];
 			for (const bot of botsStore.items) {
-				const conn = manager.get(bot.id);
+				const conn = manager.get(String(bot.id));
 				if (conn && conn.state === 'connected') {
-					promises.push(this.loadAgents(bot.id));
+					promises.push(this.loadAgents(String(bot.id)));
 				}
 			}
 			await Promise.allSettled(promises);

@@ -1,5 +1,5 @@
 <template>
-	<main class="flex-1 overflow-auto px-4 pt-4 pb-8 lg:px-5">
+	<main class="flex-1 overflow-auto px-3 pt-4 pb-8 sm:px-4 lg:px-5">
 		<section class="mx-auto flex w-full max-w-3xl flex-col gap-4">
 			<div class="flex items-center justify-between gap-3">
 				<h1 class="text-base font-medium">{{ $t('layout.manageBots') }}</h1>
@@ -17,10 +17,10 @@
 				v-for="bot in bots"
 				:key="bot.id"
 				:data-testid="'bot-' + bot.id"
-				class="rounded-xl border border-default bg-muted p-4 space-y-3"
+				class="rounded-xl border border-default bg-muted px-3 py-3 sm:px-4 sm:py-3.5"
 			>
 				<div class="flex items-center justify-between gap-3">
-					<div class="min-w-0 space-y-1 text-sm">
+					<div class="min-w-0 space-y-0.5 text-sm">
 						<p class="flex items-center gap-2 truncate font-medium">
 							<span class="truncate">{{ bot.name || 'OpenClaw' }}</span>
 							<UBadge
@@ -45,27 +45,27 @@
 				</div>
 
 				<!-- Agent 列表 -->
-				<div v-if="getAgents(bot.id).length" class="space-y-1.5">
+				<div v-if="getAgents(bot.id).length" class="mt-2.5 space-y-0.5">
 					<div
 						v-for="agent in getAgents(bot.id)"
 						:key="agent.id"
-						class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm"
-						:class="bot.online ? 'bg-default/50' : 'opacity-50'"
+						class="flex items-center gap-2.5 py-1.5 text-sm"
+						:class="bot.online ? '' : 'opacity-50'"
 					>
-						<span class="size-7 shrink-0 rounded-full bg-accented flex items-center justify-center overflow-hidden">
+						<span class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center overflow-hidden">
 							<img
 								v-if="agentDisplay(bot.id, agent.id).avatarUrl"
 								:src="agentDisplay(bot.id, agent.id).avatarUrl"
 								:alt="agentDisplay(bot.id, agent.id).name"
 								class="size-full object-cover"
 							/>
-							<span v-else-if="agentDisplay(bot.id, agent.id).emoji" class="text-sm leading-none">{{ agentDisplay(bot.id, agent.id).emoji }}</span>
-							<span v-else class="text-xs font-medium text-dimmed">{{ agentDisplay(bot.id, agent.id).name.charAt(0).toUpperCase() }}</span>
+							<span v-else-if="agentDisplay(bot.id, agent.id).emoji" class="text-xs leading-none">{{ agentDisplay(bot.id, agent.id).emoji }}</span>
+							<span v-else class="text-[10px] font-medium text-dimmed">{{ agentDisplay(bot.id, agent.id).name.charAt(0).toUpperCase() }}</span>
 						</span>
 						<span class="min-w-0 flex-1 truncate">{{ agentDisplay(bot.id, agent.id).name }}</span>
 						<UButton
-							variant="ghost"
-							size="xs"
+							variant="soft"
+							size="sm"
 							:disabled="!bot.online"
 							@click="goToAgent(bot.id, agent.id)"
 						>
@@ -112,6 +112,7 @@ export default {
 		await this.loadBots();
 	},
 	methods: {
+		// TODO: agentDisplay() 在模板中对同一 agent 被调用多次，应预计算或 memoize 以优化渲染性能
 		agentDisplay(botId, agentId) {
 			return this.agentsStore?.getAgentDisplay?.(botId, agentId) ?? { name: agentId || 'Agent', avatarUrl: null, emoji: null };
 		},
@@ -132,10 +133,13 @@ export default {
 			const mainSessionKey = `agent:${agentId}:main`;
 			const sessions = this.sessionsStore?.items ?? [];
 			const session = sessions.find(
-				(s) => s.botId === botId && s.sessionKey === mainSessionKey,
+				(s) => String(s.botId) === String(botId) && s.sessionKey === mainSessionKey,
 			);
 			if (session?.sessionId) {
 				this.$router.push({ name: 'chat', params: { sessionId: session.sessionId } });
+			}
+			else {
+				this.notify.warning(this.$t('agents.sessionNotReady'));
 			}
 		},
 		async loadBots() {

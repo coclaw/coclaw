@@ -335,7 +335,9 @@ export const useChatStore = defineStore('chat', {
 			}
 			this.resetting = true;
 			try {
+				// 从当前 sessionKey 解析 agentId；若 sessionKey 未就绪则 fallback 到 main
 				const agentId = this.__resolveAgentId();
+				console.debug('[chat] resetChat agentId=%s sessionId=%s', agentId, this.sessionId);
 				const result = await conn.request('sessions.reset', {
 					key: `agent:${agentId}:main`,
 					reason: 'new',
@@ -473,13 +475,17 @@ export const useChatStore = defineStore('chat', {
 
 		// --- 内部辅助 ---
 
-		/** 从 sessionKey 解析 agentId：'agent:<agentId>:<rest>' → 取第二段 */
-		__resolveAgentId() {
-			if (!this.sessionId) return 'main';
+		/**
+		 * 从 sessionKey 解析 agentId：'agent:<agentId>:<rest>' → 取第二段
+		 * @param {string} [sessionId] - 指定 sessionId，默认使用 this.sessionId
+		 */
+		__resolveAgentId(sessionId) {
+			const sid = sessionId || this.sessionId;
+			if (!sid) return 'main';
 			// 优先从本地缓存查，fallback 到 sessionsStore（activateSession 后 sessionKeyById 可能为空）
-			let key = this.sessionKeyById[this.sessionId];
+			let key = this.sessionKeyById[sid];
 			if (!key) {
-				const session = useSessionsStore().items.find((s) => s.sessionId === this.sessionId);
+				const session = useSessionsStore().items.find((s) => s.sessionId === sid);
 				key = session?.sessionKey;
 			}
 			if (!key) return 'main';
