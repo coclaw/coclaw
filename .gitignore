@@ -42,7 +42,7 @@ Thumbs.db
 
 # Local symlinks (developer-specific)
 openclaw-repo
-ref-prejects
+ref-projects
 
 # Deploy (deferred to next release)
 deploy/
