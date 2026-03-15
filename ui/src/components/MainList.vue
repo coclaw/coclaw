@@ -4,7 +4,7 @@
 		:class="scrollable ? 'overflow-auto overscroll-contain scrollbar-hide' : 'overflow-hidden'"
 	>
 		<!-- Group 1: 机器人操作入口 -->
-		<nav class="space-y-0 px-2 --pt-2">
+		<nav class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
 				<RouterLink
 					v-for="item in botActionItems"
 					:key="item.id"
@@ -153,10 +153,14 @@ export default {
 			return map;
 		},
 		botActionItems() {
-			return [
+			const items = [
 				{ id: 'add-bot', label: this.$t('layout.addBot'), icon: 'i-lucide-plus', to: '/bots/add' },
-				{ id: 'manage-bots', label: this.$t('layout.manageBots'), icon: 'i-lucide-settings', to: '/bots' },
 			];
+			// 侧边栏显示"我的 Claw"；窄屏下底部导航已提供入口，不重复
+			if (this.scrollable) {
+				items.push({ id: 'manage-bots', label: this.$t('layout.manageBots'), icon: 'i-lucide-settings', to: '/bots' });
+			}
+			return items;
 		},
 		agentItems() {
 			const allAgents = this.agentsStore?.allAgentItems ?? [];

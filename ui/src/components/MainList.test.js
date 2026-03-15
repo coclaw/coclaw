@@ -86,16 +86,26 @@ test('should apply scroll classes when scrollable prop is true', () => {
 	expect(root.classes()).toContain('overscroll-contain');
 });
 
-test('should always show bot action items (add + manage) in Group 1', async () => {
+test('should show only add-bot in Group 1 on narrow screen (default)', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
 	expect(wrapper.text()).toContain('添加机器人');
+	expect(wrapper.text()).not.toContain('我的机器人');
+	// Group 1 nav 在窄屏下有 mt-3
+	const group1Nav = wrapper.findAll('nav').at(0);
+	expect(group1Nav.classes()).toContain('mt-3');
+});
+
+test('should show add-bot and manage-bots in Group 1 when scrollable (sidebar)', async () => {
+	const wrapper = createWrapper({ scrollable: true });
+	await vi.dynamicImportSettled();
+
+	expect(wrapper.text()).toContain('添加机器人');
 	expect(wrapper.text()).toContain('我的机器人');
-	// "添加机器人"只在 Group 1 中出现一次
-	const links = wrapper.findAll('a');
-	const addBotLinks = links.filter((l) => l.text().includes('添加机器人'));
-	expect(addBotLinks.length).toBe(1);
+	// Group 1 nav 在侧边栏下无 mt-3
+	const group1Nav = wrapper.findAll('nav').at(0);
+	expect(group1Nav.classes()).not.toContain('mt-3');
 });
 
 test('should not show label text or empty state text when lists are empty', async () => {
