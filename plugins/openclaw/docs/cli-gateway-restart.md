@@ -14,7 +14,7 @@ CLI (`coclaw bind/unbind`) 和 OpenClaw Gateway 是两个独立进程：
 ### 插件命令路径（`/coclaw bind`）
 
 用户在聊天界面执行 `/coclaw bind <code>`，由 `index.js` 中的命令处理器处理。
-因为运行在 Gateway 进程内，可以直接调用 `refreshRealtimeBridge()` / `stopRealtimeBridge()` 触发连接状态变更。
+因为运行在 Gateway 进程内，可以直接调用 `restartRealtimeBridge()` / `stopRealtimeBridge()` 触发连接状态变更。
 
 ### CLI 路径（`coclaw bind`）
 

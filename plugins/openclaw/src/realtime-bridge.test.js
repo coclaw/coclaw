@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { RealtimeBridge, ensureAgentSession, refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
+import { RealtimeBridge, ensureAgentSession, restartRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -99,14 +99,14 @@ async function drainEnsureAllAgentSessions(gateway) {
 
 // --- 单例便捷 API 测试 ---
 
-test('singleton API should no-op for missing token / missing WebSocket and refresh/stop should be safe', async () => {
+test('singleton API should no-op for missing token / missing WebSocket and restart/stop should be safe', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
 	const old = globalThis.WebSocket;
 	delete globalThis.WebSocket;
 	try {
-		await startRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
-		await refreshRealtimeBridge();
+		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
+		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
 		await stopRealtimeBridge();
 		const cfg = await readConfig();
 		assert.equal(cfg.token, '');
@@ -117,18 +117,18 @@ test('singleton API should no-op for missing token / missing WebSocket and refre
 	}
 });
 
-test('refreshRealtimeBridge should re-create singleton after stop when opts provided (bind regression)', async () => {
+test('restartRealtimeBridge should re-create singleton after stop (bind regression)', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
 	const old = globalThis.WebSocket;
 	delete globalThis.WebSocket;
 	try {
-		// 模拟 bind 流程：start → stop → refresh(opts)
-		await startRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
+		// 模拟 bind 流程：restart → stop → restart
+		const opts = { logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } };
+		await restartRealtimeBridge(opts);
 		await stopRealtimeBridge();
-		// stop 后 singleton 为 null，带 opts 的 refresh 应重新创建
-		await refreshRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
-		// 验证 singleton 已重建（ensureAgentSession 不再返回 bridge_not_started）
+		// stop 后 singleton 为 null，restart 应重新创建
+		await restartRealtimeBridge(opts);
 		const result = await ensureAgentSession('main');
 		assert.notEqual(result.error, 'bridge_not_started');
 	}
@@ -138,18 +138,18 @@ test('refreshRealtimeBridge should re-create singleton after stop when opts prov
 	}
 });
 
-test('refreshRealtimeBridge should no-op after stop when no opts provided', async () => {
+test('restartRealtimeBridge should replace existing singleton when already running', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
 	const old = globalThis.WebSocket;
 	delete globalThis.WebSocket;
 	try {
-		await startRealtimeBridge({ logger, pluginConfig: {} });
-		await stopRealtimeBridge();
-		// 不带 opts 的 refresh（旧行为）不应崩溃，但 singleton 仍为 null
-		await refreshRealtimeBridge();
+		const opts = { logger, pluginConfig: {} };
+		await restartRealtimeBridge(opts);
+		// 再次 restart 不应报错，应正常替换
+		await restartRealtimeBridge(opts);
 		const result = await ensureAgentSession('main');
-		assert.equal(result.error, 'bridge_not_started');
+		assert.notEqual(result.error, 'bridge_not_started');
 	}
 	finally {
 		globalThis.WebSocket = old;
@@ -162,7 +162,7 @@ test('singleton API should log warning when token exists but serverUrl is missin
 	const warns = [];
 	const logger = { warn: (m) => warns.push(String(m)), info() {} };
 	try {
-		await startRealtimeBridge({ logger, pluginConfig: {} });
+		await restartRealtimeBridge({ logger, pluginConfig: {} });
 		assert.equal(warns.some((x) => x.includes('missing serverUrl')), true);
 	}
 	finally {
@@ -177,7 +177,7 @@ test('singleton API should log warning when token exists but WebSocket is unavai
 	const old = globalThis.WebSocket;
 	delete globalThis.WebSocket;
 	try {
-		await startRealtimeBridge({ logger, pluginConfig: {} });
+		await restartRealtimeBridge({ logger, pluginConfig: {} });
 		assert.equal(warns.some((x) => x.includes('WebSocket not available')), true);
 	}
 	finally {
@@ -926,7 +926,7 @@ test('singleton ensureAgentSession should return error when bridge not started',
 test('singleton ensureAgentSession should delegate to bridge instance', async () => {
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
 	try {
-		await startRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
+		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
 		// bridge 已启动但 gateway 未就绪，ensure 应返回 gateway_not_ready
 		const result = await ensureAgentSession('main');
 		assert.equal(result.ok, false);

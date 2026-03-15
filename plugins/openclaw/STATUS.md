@@ -52,7 +52,7 @@
 - **OpenClaw 插件管理机制文档**：新增 `docs/openclaw-plugin-management.md`，记录三种安装模式、config 结构、install/uninstall/update 行为细节、gateway 自动重启机制。
 
 ### 架构梳理与代码清理（2026-03-10）
-- **realtime-bridge 重构为 `RealtimeBridge` 类**：所有连接状态从模块级变量封装为实例属性，便于生命周期管理、测试和未来自动升级支持。对外模块 API（`startRealtimeBridge` 等）保持不变。
+- **realtime-bridge 重构为 `RealtimeBridge` 类**：所有连接状态从模块级变量封装为实例属性，便于生命周期管理、测试和未来自动升级支持。对外模块 API（`restartRealtimeBridge` / `stopRealtimeBridge`）仅暴露两个操作。
 - **移除 c8 ignore 整文件包裹**：realtime-bridge.js 不再整文件排除覆盖率统计，改为对具体防御性代码块使用精确 c8 ignore 注释。session-manager 保持现有方式。
 - **移除旧配置迁移代码**：删除 `tryMigrateFromOldLocations()` / `cleanOldLocations()`（从 `openclaw.json channels.coclaw` / `.coclaw-tunnel.json` 迁移的逻辑），内测阶段已无旧格式残留。
 - **移除 api.js 未使用导出**：删除 `listBotsWithServer` / `getBotSelfWithServer`（POC 残留，无生产代码调用）。
@@ -72,7 +72,7 @@
 
 ### CLI 通知改为 Gateway RPC & bridge 生命周期优化（2026-03-05）
 - **问题 1**：`openclaw plugins install/uninstall` 进程不退出——因 `register()` 中直接启动 realtime bridge 创建了 WebSocket 连接。
-- **修复**：将 `startRealtimeBridge` 改为通过 `api.registerService()` 注册，bridge 仅在 gateway daemon 启动时运行，CLI 上下文不启动。
+- **修复**：将 bridge 启动改为通过 `api.registerService()` 注册，bridge 仅在 gateway daemon 启动时运行，CLI 上下文不启动。
 - **问题 2**：bind/unbind 后 `openclaw gateway restart` 重启整个 gateway，耗时 ~20 秒。
 - **修复**：注册 `coclaw.refreshBridge` / `coclaw.stopBridge` gateway methods，CLI 改为 `openclaw gateway call` 发送轻量 RPC 通知，耗时 <1 秒。
 - **问题 3**：`openclaw gateway call` 完成 RPC 后进程不退出（WebSocket handle 未清理），`execSync` 10 秒超时 100% 误报失败。

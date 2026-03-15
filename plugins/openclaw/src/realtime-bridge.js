@@ -713,23 +713,24 @@ export class RealtimeBridge {
 }
 
 // --- 单例便捷 API（供 index.js 使用）---
+// 仅暴露 restartRealtimeBridge / stopRealtimeBridge 两个操作：
+//   restart(opts) — 无论当前状态，确保 bridge 以给定 opts 运行（幂等）
+//   stop()        — 停止并销毁 singleton
+// 调用方无需感知 singleton 是否为 null，选"要运行"或"要停止"即可。
 
 let singleton = null;
 
-export async function startRealtimeBridge(opts) {
+/**
+ * 确保 bridge 运行：已有实例则 stop 后重建，无则直接创建。opts 必传。
+ * @param {{ logger, pluginConfig }} opts
+ */
+export async function restartRealtimeBridge(opts) {
+	if (singleton) {
+		await singleton.stop();
+		singleton = null;
+	}
 	singleton = new RealtimeBridge();
 	await singleton.start(opts);
-}
-
-export async function refreshRealtimeBridge(opts) {
-	if (!singleton) {
-		// stop 后 singleton 被清除，需重新创建（如 bind 后重连）
-		if (opts) {
-			await startRealtimeBridge(opts);
-		}
-		return;
-	}
-	await singleton.refresh();
 }
 
 export async function stopRealtimeBridge() {
@@ -737,7 +738,7 @@ export async function stopRealtimeBridge() {
 		return;
 	}
 	await singleton.stop();
-	singleton = null;
+	singleton = null; // 置 null 后须通过 restartRealtimeBridge 重建
 }
 
 export async function ensureAgentSession(agentId) {

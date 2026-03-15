@@ -3,7 +3,7 @@ import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
 import { notBound, bindOk, unbindOk } from './src/common/messages.js';
 import { coclawChannelPlugin } from './src/channel-plugin.js';
-import { ensureAgentSession, refreshRealtimeBridge, startRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
+import { ensureAgentSession, restartRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
 import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
@@ -61,7 +61,7 @@ const plugin = {
 		api.registerService({
 			id: 'coclaw-realtime-bridge',
 			async start() {
-				await startRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+				await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
 			},
 			async stop() {
 				await stopRealtimeBridge();
@@ -70,7 +70,7 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.refreshBridge', async ({ respond }) => {
 			try {
-				await refreshRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+				await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
 				respond(true, { status: 'refreshed' });
 			}
 			catch (err) {
@@ -141,14 +141,13 @@ const plugin = {
 
 				try {
 					if (action === 'bind') {
-						// 先断开 bridge，避免 unbindWithServer 触发的 bot.unbound 竞态
-						await stopRealtimeBridge();
+						await stopRealtimeBridge(); // 先断开，避免 bindBot 内 unbind 触发 bot.unbound 竞态
 						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
 						const result = await bindBot({
 							code: positionals[0],
 							serverUrl,
 						});
-						await refreshRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+						await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
 						return { text: bindOk(result) };
 					}
 
