@@ -1,0 +1,70 @@
+appId: net.coclaw.im
+productName: CoClaw
+# 壳子版本独立于 @coclaw/ui 的 npm 版本
+# 仅在壳子自身需要更新时（新增权限/插件/原生能力）才递增
+extraMetadata:
+  version: "1.0.0"
+copyright: "Copyright 2026 Chengdu Gongyan Technology Co., Ltd."
+
+directories:
+  output: dist-electron
+  buildResources: build-resources
+
+# 远程加载模式：仅打包 electron/ 目录和必要资源
+files:
+  - electron/**/*
+  - build-resources/tray-icon*.png
+  - package.json
+
+asar: true
+
+publish:
+  provider: github
+  owner: AYuaner
+  repo: coclaw
+  releaseType: release
+
+# ---- Windows ----
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build-resources/icon.ico
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  createDesktopShortcut: true
+  shortcutName: CoClaw
+  artifactName: coclaw-setup-${version}.${ext}
+  installerLanguages:
+    - zh_CN
+    - en_US
+
+portable:
+  artifactName: coclaw-${version}.${ext}
+
+# ---- macOS ----
+mac:
+  target:
+    - target: dmg
+      arch: [universal]
+  icon: build-resources/icon.icns
+  category: public.app-category.social-networking
+  darkModeSupport: true
+  minimumSystemVersion: "12.0"
+  hardenedRuntime: true
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.inherit.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: "CoClaw 需要使用麦克风来录制语音消息"
+    NSCameraUsageDescription: "CoClaw 需要使用摄像头来拍摄照片和视频"
+    NSScreenCaptureUsageDescription: "CoClaw 需要屏幕录制权限来支持截图功能"
+
+dmg:
+  window:
+    width: 540
+    height: 380
