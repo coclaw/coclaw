@@ -54,7 +54,7 @@ function createWrapper(props = {}) {
 				$t: (key) => {
 					const map = {
 						'layout.addBot': '添加机器人',
-						'layout.manageBots': '管理机器人',
+						'layout.manageBots': '我的机器人',
 						'layout.unnamedSession': '未命名会话',
 						'layout.notIndexed': '未索引',
 					};
@@ -86,24 +86,13 @@ test('should apply scroll classes when scrollable prop is true', () => {
 	expect(root.classes()).toContain('overscroll-contain');
 });
 
-test('should not show bot action nav items by default, but show trailing add-bot link', async () => {
+test('should always show bot action items (add + manage) in Group 1', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
-	expect(wrapper.text()).not.toContain('管理机器人');
-	// 移动端末尾的"添加机器人"入口
-	const links = wrapper.findAll('a');
-	const addBotLink = links.find((l) => l.text().includes('添加机器人'));
-	expect(addBotLink).toBeTruthy();
-});
-
-test('should show bot action items and hide trailing add-bot when showBotActions is true', async () => {
-	const wrapper = createWrapper({ showBotActions: true });
-	await vi.dynamicImportSettled();
-
 	expect(wrapper.text()).toContain('添加机器人');
-	expect(wrapper.text()).toContain('管理机器人');
-	// 桌面端不应出现末尾的额外"添加机器人"链接（只在 Group 1 中出现）
+	expect(wrapper.text()).toContain('我的机器人');
+	// "添加机器人"只在 Group 1 中出现一次
 	const links = wrapper.findAll('a');
 	const addBotLinks = links.filter((l) => l.text().includes('添加机器人'));
 	expect(addBotLinks.length).toBe(1);
@@ -189,7 +178,7 @@ test('should show bot name initial in session icon', async () => {
 	await wrapper.vm.$nextTick();
 
 	// 会话列表区域的 icon 应展示 bot name 首字符
-	const sessionNav = wrapper.findAll('nav').at(1); // Group 3
+	const sessionNav = wrapper.findAll('nav').at(2); // Group 3
 	const icons = sessionNav.findAll('.rounded-full');
 	expect(icons[0].text()).toBe('A');
 	expect(icons[1].text()).toBe('B');
@@ -305,7 +294,7 @@ test('should fallback to O when bot not found for session icon', async () => {
 	]);
 	await wrapper.vm.$nextTick();
 
-	const sessionNav = wrapper.findAll('nav').at(1);
+	const sessionNav = wrapper.findAll('nav').at(2);
 	const icon = sessionNav.find('.rounded-full');
 	expect(icon.text()).toBe('O');
 });

@@ -3,9 +3,8 @@
 		class="min-h-0 flex-1"
 		:class="scrollable ? 'overflow-auto overscroll-contain scrollbar-hide' : 'overflow-hidden'"
 	>
-		<!-- Group 1: 机器人操作入口（仅桌面 drawer） -->
-		<template v-if="showBotActions">
-			<nav class="space-y-0 px-2 --pt-2">
+		<!-- Group 1: 机器人操作入口 -->
+		<nav class="space-y-0 px-2 --pt-2">
 				<RouterLink
 					v-for="item in botActionItems"
 					:key="item.id"
@@ -17,8 +16,7 @@
 					<UIcon :name="item.icon" class="size-6 text-dimmed" />
 					<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
 				</RouterLink>
-			</nav>
-		</template>
+		</nav>
 
 		<!-- Group 2: Agent 列表 -->
 		<nav class="mt-3 space-y-0 px-2">
@@ -52,16 +50,6 @@
 					/>
 				</span>
 				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
-			</RouterLink>
-			<!-- 移动端：末尾追加"添加 Claw"入口 -->
-			<RouterLink
-				v-if="!showBotActions"
-				to="/bots/add"
-				class="group flex h-11 items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
-				role="listitem"
-			>
-				<UIcon name="i-lucide-plus" class="size-6 text-dimmed" />
-				<span class="min-w-0 flex-1 truncate">{{ $t('layout.addBot') }}</span>
 			</RouterLink>
 		</nav>
 
@@ -140,10 +128,6 @@ export default {
 		currentPath: {
 			type: String,
 			default: '',
-		},
-		showBotActions: {
-			type: Boolean,
-			default: false,
 		},
 		/** 是否作为独立滚动容器（桌面侧边栏场景） */
 		scrollable: {

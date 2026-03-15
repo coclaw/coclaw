@@ -16,7 +16,7 @@
 				/>
 				-->
 			</div>
-			<MainList :current-path="currentPath" :show-bot-actions="true" scrollable />
+			<MainList :current-path="currentPath" scrollable />
 		</div>
 
 		<div class="border-t border-default px-2 py-1">

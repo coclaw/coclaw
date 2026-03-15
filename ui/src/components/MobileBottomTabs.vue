@@ -8,7 +8,20 @@
 			variant="link"
 			class="w-full"
 			:ui="ui"
-		/>
+		>
+			<template #leading="{ item, ui: tabUi }">
+				<UAvatar
+					v-if="item.avatar"
+					v-bind="item.avatar"
+					:class="tabUi.leadingIcon()"
+				/>
+				<UIcon
+					v-else-if="item.icon"
+					:name="item.icon"
+					:class="tabUi.leadingIcon()"
+				/>
+			</template>
+		</UTabs>
 	</div>
 </template>
 

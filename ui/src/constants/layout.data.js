@@ -1,3 +1,5 @@
+import openclawIcon from '../assets/bot-avatars/openclaw.svg';
+
 export function getUserMenuItems(t) {
 	return [
 		{ id: 'about', label: t('layout.menu.about'), icon: 'i-lucide-home' },
@@ -10,7 +12,7 @@ export function getUserMenuItems(t) {
 export function getMobileTabs(t) {
 	return [
 		{ value: 'chat', label: t('layout.tabs.chat'), icon: 'i-lucide-message-square', to: '/topics' },
-		{ value: 'bots', label: t('layout.tabs.bots'), icon: 'i-lucide-bot', to: '/bots' },
+		{ value: 'bots', label: t('layout.tabs.bots'), avatar: { src: openclawIcon }, to: '/bots' },
 		{ value: 'me', label: t('layout.tabs.me'), icon: 'i-lucide-user', to: '/user' },
 	];
 }

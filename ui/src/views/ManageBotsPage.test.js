@@ -34,7 +34,7 @@ function createWrapper() {
 			mocks: {
 				$t: (key) => {
 					const map = {
-						'layout.manageBots': '管理机器人',
+						'layout.manageBots': '我的机器人',
 						'bots.addBot': '添加机器人',
 						'bots.noBot': '未绑定机器人。',
 					};
@@ -50,7 +50,7 @@ test('should render page title and empty state when no bots', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
-	expect(wrapper.text()).toContain('管理机器人');
+	expect(wrapper.text()).toContain('我的机器人');
 	expect(wrapper.text()).toContain('未绑定机器人。');
 });
 
