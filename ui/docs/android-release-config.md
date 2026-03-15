@@ -73,6 +73,7 @@ cd ui/android && ./gradlew assembleRelease
 | `@capacitor/splash-screen` | 启动屏控制 |
 | `@capacitor/haptics` | 触觉反馈 |
 | `@capacitor/browser` | 应用内打开外部链接 |
+| `@capawesome/capacitor-badge` | 启动器图标未读数字徽章（基于 ShortcutBadger，支持 30+ 启动器） |
 
 ### Manifest 配置
 

@@ -146,6 +146,9 @@ importers:
       '@capacitor/status-bar':
         specifier: ^8.0.1
         version: 8.0.1(@capacitor/core@8.2.0)
+      '@capawesome/capacitor-badge':
+        specifier: ^8.0.1
+        version: 8.0.1(@capacitor/core@8.2.0)
       '@iktakahiro/markdown-it-katex':
         specifier: ^4.0.1
         version: 4.0.1
@@ -351,6 +354,11 @@ packages:
 
   '@capacitor/synapse@1.0.4':
     resolution: {integrity: sha512-/C1FUo8/OkKuAT4nCIu/34ny9siNHr9qtFezu4kxm6GY1wNFxrCFWjfYx5C1tUhVGz3fxBABegupkpjXvjCHrw==}
+
+  '@capawesome/capacitor-badge@8.0.1':
+    resolution: {integrity: sha512-gfci9Ugwh1+2/2JNeQdRKCVtTNRZRDwx9vj994P7OMel6kPg0zzKVobYW6/Tkj65qwaKeMEKT5HADbNL8HN2gQ==}
+    peerDependencies:
+      '@capacitor/core': '>=8.0.0'
 
   '@capsizecss/unpack@4.0.0':
     resolution: {integrity: sha512-VERIM64vtTP1C4mxQ5thVT9fK0apjPFobqybMtA1UdUujWka24ERHbRHFGmpbbhp73MhV+KSsHQH9C6uOTdEQA==}
@@ -4877,6 +4885,10 @@ snapshots:
       '@capacitor/core': 8.2.0
 
   '@capacitor/synapse@1.0.4': {}
+
+  '@capawesome/capacitor-badge@8.0.1(@capacitor/core@8.2.0)':
+    dependencies:
+      '@capacitor/core': 8.2.0
 
   '@capsizecss/unpack@4.0.0':
     dependencies:
