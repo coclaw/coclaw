@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.3.1
+
+### Patch Changes
+
+- fix: bind 后 OpenClaw 始终离线的回归问题（需重启 gateway 才能上线）
+
 ## 0.3.0
 
 ### Minor Changes
