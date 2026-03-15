@@ -44,11 +44,13 @@ export const useAgentsStore = defineStore('agents', {
 				const bot = botsStore.items.find((b) => String(b.id) === String(botId));
 				const botName = bot?.name || null;
 
-				// name fallback: resolvedIdentity.name → identity.name → botName(仅默认agent) → agent.name → agentId
-				const name = ri?.name
-					|| id?.name
-					|| (isDefault ? botName : null)
-					|| agent?.name
+				// 排除无信息量的名称（gateway 默认 "Assistant" 或与 agentId 相同的占位值）
+				const pick = (v) => (v && v !== 'Assistant' && v !== agentId) ? v : null;
+				// 按权威性 fallback：identity.get > identity(config) > name(config) > botName(仅默认) > agentId
+				const name = pick(ri?.name)
+					|| pick(id?.name)
+					|| pick(agent?.name)
+					|| (isDefault ? pick(botName) : null)
 					|| agentId
 					|| 'Agent';
 

@@ -291,6 +291,91 @@ describe('agents store', () => {
 			expect(d.name).toBe('tester');
 		});
 
+		test('resolvedIdentity.name 为 Assistant 时应 fallback 到 agent.name', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: 'bot-1', name: 'Assistant', online: true }]);
+
+			const agents = [{ id: 'main', name: '小易' }];
+			const identityMap = {
+				main: { agentId: 'main', name: 'Assistant' },
+			};
+			const conn = mockConn(agents, 'connected', identityMap);
+			mockConnections.set('bot-1', conn);
+
+			const store = useAgentsStore();
+			await store.loadAgents('bot-1');
+
+			const d = store.getAgentDisplay('bot-1', 'main');
+			expect(d.name).toBe('小易');
+		});
+
+		test('多个 agent 无 IDENTITY.md 时应各自显示 agents.list 中的顶层 name', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: 'bot-1', name: 'Assistant', online: true }]);
+
+			const agents = [
+				{ id: 'main', name: '小易' },
+				{ id: 'stock-assistant', name: '股小龙' },
+				{ id: 'writing-assistant', name: '文笔仙' },
+			];
+			// identity.get 对所有 agent 均返回 gateway 默认值
+			const identityMap = {
+				main: { agentId: 'main', name: 'Assistant' },
+				'stock-assistant': { agentId: 'stock-assistant', name: 'Assistant' },
+				'writing-assistant': { agentId: 'writing-assistant', name: 'Assistant' },
+			};
+			const conn = mockConn(agents, 'connected', identityMap);
+			mockConnections.set('bot-1', conn);
+
+			const store = useAgentsStore();
+			await store.loadAgents('bot-1');
+
+			expect(store.getAgentDisplay('bot-1', 'main').name).toBe('小易');
+			expect(store.getAgentDisplay('bot-1', 'stock-assistant').name).toBe('股小龙');
+			expect(store.getAgentDisplay('bot-1', 'writing-assistant').name).toBe('文笔仙');
+		});
+
+		test('agent.name 等于 agentId 时视为占位名跳过', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: 'bot-1', name: '我的Bot', online: true }]);
+
+			const agents = [{ id: 'main', name: 'main' }];
+			const identityMap = {
+				main: { agentId: 'main', name: 'Assistant' },
+			};
+			const conn = mockConn(agents, 'connected', identityMap);
+			mockConnections.set('bot-1', conn);
+
+			const store = useAgentsStore();
+			await store.loadAgents('bot-1');
+
+			// agent.name = 'main' = agentId → 被 pick 过滤 → fallback 到 botName
+			// botName = '我的Bot'（非 Assistant 且非 agentId）→ 使用
+			const d = store.getAgentDisplay('bot-1', 'main');
+			expect(d.name).toBe('我的Bot');
+		});
+
+		test('所有 name 均为默认值时兜底到 agentId（含 botName 过滤）', async () => {
+			const botsStore = useBotsStore();
+			// botName 也是 'Assistant'（server 侧 refreshBotName 同源问题）
+			botsStore.setBots([{ id: 'bot-1', name: 'Assistant', online: true }]);
+
+			const agents = [{ id: 'main', name: 'main' }];
+			const identityMap = {
+				main: { agentId: 'main', name: 'Assistant' },
+			};
+			const conn = mockConn(agents, 'connected', identityMap);
+			mockConnections.set('bot-1', conn);
+
+			const store = useAgentsStore();
+			await store.loadAgents('bot-1');
+
+			// ri.name = 'Assistant' → 过滤; agent.name = 'main' = agentId → 过滤;
+			// 默认 agent → botName = 'Assistant' → 过滤; 最终兜底到 agentId
+			const d = store.getAgentDisplay('bot-1', 'main');
+			expect(d.name).toBe('main');
+		});
+
 		test('agent 不存在时 fallback 到 agentId', () => {
 			const store = useAgentsStore();
 			const d = store.getAgentDisplay('no-bot', 'unknown');
