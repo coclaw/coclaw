@@ -2,6 +2,7 @@ import { Tray, Menu, nativeImage, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Store from 'electron-store';
+import { getAppTitle, t } from './locale.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const store = new Store();
@@ -25,16 +26,16 @@ export function initTray(app, win) {
 	}
 
 	tray = new Tray(normalIcon);
-	tray.setToolTip('CoClaw');
+	tray.setToolTip(getAppTitle());
 
 	const contextMenu = Menu.buildFromTemplate([
 		{
-			label: '显示窗口',
+			label: t('显示窗口', 'Show Window'),
 			click: () => { win.show(); win.focus(); },
 		},
 		{ type: 'separator' },
 		{
-			label: '退出',
+			label: t('退出', 'Quit'),
 			click: () => {
 				app.isQuitting = true;
 				app.quit();

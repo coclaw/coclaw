@@ -33,6 +33,7 @@
     "electron:build": "electron-builder",
     "electron:build:win": "electron-builder --win nsis",
     "electron:build:win:portable": "electron-builder --win portable",
+    "electron:build:win:dir": "electron-builder --win dir",
     "electron:build:mac": "electron-builder --mac dmg"
   },
   "dependencies": {

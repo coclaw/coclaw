@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, shell, globalShortcut } from 'electron';
+import { app, BrowserWindow, Menu, session, shell, globalShortcut } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import windowStateKeeper from 'electron-window-state';
@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
 import { setupSingleInstance, registerProtocol } from './deep-link.js';
 import { initUpdater } from './updater.js';
+import { getAppTitle } from './locale.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -25,6 +26,38 @@ if (!gotLock) {
 			app.setAppUserModelId('net.coclaw.im');
 		}
 
+		// 移除默认菜单栏（Windows/Linux）；macOS 保留最小菜单以支持 Cmd+C/V/X/A
+		if (process.platform === 'darwin') {
+			Menu.setApplicationMenu(Menu.buildFromTemplate([
+				{
+					label: app.name,
+					submenu: [
+						{ role: 'about' },
+						{ type: 'separator' },
+						{ role: 'hide' },
+						{ role: 'hideOthers' },
+						{ role: 'unhide' },
+						{ type: 'separator' },
+						{ role: 'quit' },
+					],
+				},
+				{
+					label: 'Edit',
+					submenu: [
+						{ role: 'undo' },
+						{ role: 'redo' },
+						{ type: 'separator' },
+						{ role: 'cut' },
+						{ role: 'copy' },
+						{ role: 'paste' },
+						{ role: 'selectAll' },
+					],
+				},
+			]));
+		} else {
+			Menu.setApplicationMenu(null);
+		}
+
 		// 权限处理
 		setupPermissions(session.defaultSession);
 
@@ -37,6 +70,7 @@ if (!gotLock) {
 			defaultHeight: 780,
 		});
 
+		const appTitle = getAppTitle();
 		const win = new BrowserWindow({
 			x: mainWindowState.x,
 			y: mainWindowState.y,
@@ -44,8 +78,9 @@ if (!gotLock) {
 			height: mainWindowState.height,
 			minWidth: 360,
 			minHeight: 640,
-			title: 'CoClaw',
+			title: appTitle,
 			icon: path.join(__dirname, '../build-resources/icon.png'),
+			autoHideMenuBar: true,
 			webPreferences: {
 				preload: path.join(__dirname, 'preload.cjs'),
 				contextIsolation: true,
