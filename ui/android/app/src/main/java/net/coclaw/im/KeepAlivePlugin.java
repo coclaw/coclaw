@@ -22,19 +22,27 @@ public class KeepAlivePlugin extends Plugin {
 
 	@PluginMethod
 	public void start(PluginCall call) {
-		Intent intent = new Intent(getContext(), KeepAliveService.class);
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			getContext().startForegroundService(intent);
-		} else {
-			getContext().startService(intent);
+		try {
+			Intent intent = new Intent(getContext(), KeepAliveService.class);
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+				getContext().startForegroundService(intent);
+			} else {
+				getContext().startService(intent);
+			}
+			call.resolve();
+		} catch (Exception e) {
+			call.reject("Failed to start KeepAliveService: " + e.getMessage(), e);
 		}
-		call.resolve();
 	}
 
 	@PluginMethod
 	public void stop(PluginCall call) {
-		Intent intent = new Intent(getContext(), KeepAliveService.class);
-		getContext().stopService(intent);
-		call.resolve();
+		try {
+			Intent intent = new Intent(getContext(), KeepAliveService.class);
+			getContext().stopService(intent);
+			call.resolve();
+		} catch (Exception e) {
+			call.reject("Failed to stop KeepAliveService: " + e.getMessage(), e);
+		}
 	}
 }
