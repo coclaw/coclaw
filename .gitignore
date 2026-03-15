@@ -55,4 +55,4 @@ infra/docker/.env.mysql.dev
 
 # Prisma generated output (rebuild via `prisma generate`)
 server/src/generated/
-docs/openclaw-research/
+docs/product/
