@@ -92,6 +92,44 @@ cd ui/android && ./gradlew assembleRelease
 - [ ] `im.coclaw.net/.well-known/assetlinks.json`（HTTPS App Links 验证）
 - [ ] `RECEIVE_BOOT_COMPLETED` + BootReceiver（开机自启服务，随 FCM 一起做）
 
+## 壳子版本升级检测方案
+
+APK 采用远程加载架构（`https://im.coclaw.net`），壳子极少需要更新（仅新增权限/插件/原生代码时）。升级检测由 **Web 端主导**，壳子不内置更新检测逻辑。
+
+### 检测流程
+
+```
+App 启动 → 加载 im.coclaw.net
+  → Web 端调用 @capacitor/app 的 App.getInfo() 获取当前 versionCode
+  → 与服务端接口下发的 minRequiredVersion 对比
+  → 若 versionCode < minRequiredVersion → 显示阻断式更新引导
+  → 引导用户到对应商店更新（或提供直接下载链接）
+```
+
+### 依赖的已预埋能力
+
+`@capacitor/app`（已安装，用于返回键处理）提供 `App.getInfo()` → `{ version, build }`，其中 `build` 即 Android `versionCode`。无需额外插件。
+
+### 服务端接口（TODO）
+
+需要在 server 端提供版本检查接口，例如：
+
+```
+GET /api/v1/app/version-check?platform=android&build=1
+→ { "minRequired": 1, "latest": 2, "updateUrl": "https://..." }
+```
+
+### 适用范围
+
+此方案适用于所有分发渠道（Google Play、国内商店、直接下载），无平台依赖。
+
+### 备选：Google Play In-App Updates
+
+若后续需要 Play 商店内无缝更新体验（后台下载 + 无跳转安装），可追加 `@capawesome/capacitor-app-update` 插件。当前不需要，因为：
+1. 壳子更新频率极低
+2. Web 端引导方案已覆盖所有渠道
+3. 该插件仅适用于 Google Play，不覆盖国内商店
+
 ## TODO（上架应用商店前）
 
 - [ ] 工信部 App 备案（签名指纹见上方）

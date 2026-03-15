@@ -1103,9 +1103,32 @@ xcrun altool --upload-app -f CoClaw.pkg --type macos
 | macOS | Mac App Store | Apple Distribution 证书 |
 | macOS | 官网直接下载 (DMG) | Developer ID Application + 公证 (Notarization) |
 
-### 12.6 自动更新
+### 12.6 壳子版本升级策略
 
-仅针对壳子本身的更新（因 Web 内容远程加载，无需通过壳子更新）。
+桌面壳子与 Android APK 采用统一的升级策略：**Web 端主导检测，壳子不内置更新逻辑**。
+
+#### 两层更新机制
+
+| 层级 | 更新方式 | 频率 |
+|---|---|---|
+| Web 内容 | 远程加载 `im.coclaw.net`，自动生效 | 每次部署即生效 |
+| 壳子本身 | Tauri updater（自动更新） + Web 端版本检测（兜底） | 极少（仅权限/插件变更时） |
+
+#### Web 端版本检测（与 Android 一致）
+
+```
+App 启动 → 加载 im.coclaw.net
+  → Web 端通过 Tauri API 获取当前壳子版本
+  → 与服务端下发的 minRequiredVersion 对比
+  → 若低于最低版本 → 显示阻断式更新引导
+  → 引导用户到 Microsoft Store / Mac App Store 更新（或提供直接下载链接）
+```
+
+此方案适用于所有分发渠道（商店 + 官网直接下载），不依赖特定平台 API。
+
+#### Tauri updater（壳子自动更新，仅直接下载版）
+
+通过 Microsoft Store / Mac App Store 分发的版本由商店自动管理更新。Tauri updater 仅用于**官网直接下载版**的自动更新：
 
 ```
 用户端                                    GitHub Releases
