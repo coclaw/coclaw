@@ -2,7 +2,7 @@
 	<main class="flex-1 overflow-auto px-3 pt-4 pb-8 sm:px-4 lg:px-5">
 		<section class="mx-auto flex w-full max-w-3xl flex-col gap-4">
 			<div class="flex items-center justify-between gap-3">
-				<h1 class="text-base font-medium">{{ $t('layout.manageBots') }}</h1>
+				<h1 class="text-base font-medium">{{ $t('bots.pageTitle') }}</h1>
 				<div class="flex items-center gap-2">
 					<UButton data-testid="btn-refresh-bots" class="cc-icon-btn" color="primary" variant="ghost" size="md" icon="i-lucide-refresh-cw" :loading="loading" @click="loadBots" />
 					<UButton data-testid="btn-add-bot" color="primary" variant="soft" @click="$router.push('/bots/add')">

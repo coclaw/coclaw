@@ -54,7 +54,7 @@ function createWrapper(props = {}) {
 				$t: (key) => {
 					const map = {
 						'layout.addBot': '添加机器人',
-						'layout.manageBots': '我的机器人',
+						'layout.manageBots': '管理机器人',
 						'layout.unnamedSession': '未命名会话',
 						'layout.notIndexed': '未索引',
 					};
@@ -91,7 +91,7 @@ test('should show only add-bot in Group 1 on narrow screen (default)', async () 
 	await vi.dynamicImportSettled();
 
 	expect(wrapper.text()).toContain('添加机器人');
-	expect(wrapper.text()).not.toContain('我的机器人');
+	expect(wrapper.text()).not.toContain('管理机器人');
 	// Group 1 nav 在窄屏下有 mt-3
 	const group1Nav = wrapper.findAll('nav').at(0);
 	expect(group1Nav.classes()).toContain('mt-3');
@@ -102,7 +102,7 @@ test('should show add-bot and manage-bots in Group 1 when scrollable (sidebar)',
 	await vi.dynamicImportSettled();
 
 	expect(wrapper.text()).toContain('添加机器人');
-	expect(wrapper.text()).toContain('我的机器人');
+	expect(wrapper.text()).toContain('管理机器人');
 	// Group 1 nav 在侧边栏下无 mt-3
 	const group1Nav = wrapper.findAll('nav').at(0);
 	expect(group1Nav.classes()).not.toContain('mt-3');

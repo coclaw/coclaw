@@ -11,7 +11,7 @@ export const enMessages = {
 		productName: 'CoClaw',
 		newChat: 'New chat',
 		addBot: 'Add Claw',
-		manageBots: 'My Claws',
+		manageBots: 'Manage Claws',
 		sessions: 'Sessions',
 		noBots: 'No Claws bound',
 		commonBots: 'Common bots',
@@ -132,6 +132,7 @@ export const enMessages = {
 		sessionNotReady: 'Session not ready, please try again later',
 	},
 	bots: {
+		pageTitle: 'My Claws',
 		unbind: 'Unbind',
 		noBot: 'No Claw bound.',
 		name: 'Name: ',
