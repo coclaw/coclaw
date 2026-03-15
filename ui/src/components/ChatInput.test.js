@@ -134,11 +134,18 @@ describe('ChatInput', () => {
 		expect(stopBtn).toBeTruthy();
 	});
 
-	test('sending=false shows send button', () => {
+	test('sending=false shows send button when has input', () => {
 		const wrapper = createWrapper({ sending: false, modelValue: 'hello' });
 		const buttons = wrapper.findAll('button');
 		const sendBtn = buttons.find((b) => b.attributes('type') === 'submit');
 		expect(sendBtn).toBeTruthy();
+	});
+
+	test('send button hidden when no input and not sending', () => {
+		const wrapper = createWrapper({ sending: false, modelValue: '' });
+		const buttons = wrapper.findAll('button');
+		const sendBtn = buttons.find((b) => b.attributes('type') === 'submit');
+		expect(sendBtn).toBeFalsy();
 	});
 
 	test('clicking stop button emits cancel', async () => {

@@ -28,6 +28,9 @@
 				<div v-else-if="!withinTouchZone" class="text-white/85 font-medium">
 					{{ $t('chat.voiceCancel') }}
 				</div>
+				<div v-else-if="withinTouchPadding" class="text-white/85">
+					{{ $t('chat.voiceReleaseEnd') }}
+				</div>
 				<div v-else class="text-white/85">
 					{{ $t('chat.voiceRelease') }}
 				</div>
@@ -242,7 +245,8 @@ export default {
 				}
 
 				const cleanBlob = new Blob([blob], { type: this.mimeType || blob.type });
-				this.$emit('close', { blob: cleanBlob, durationMs });
+				const autoSend = !this.withinTouchPadding;
+				this.$emit('close', { blob: cleanBlob, durationMs, autoSend });
 				this.$emit('update:open', false);
 			});
 			this.record.stopRecording();

@@ -45,31 +45,20 @@
 		>
 			<!-- 左侧按钮区 -->
 			<div class="flex shrink-0 items-end gap-1">
-				<!-- 移动端：键盘/语音切换 -->
+				<!-- 触屏设备：键盘/语音切换 -->
 				<UButton
-					v-if="isMobile"
-					class="cc-icon-btn-lg md:hidden"
+					v-if="isTouchDevice"
+					class="cc-icon-btn-lg"
 					:icon="inputMode === 'keyboard' ? 'i-lucide-mic' : 'i-lucide-keyboard'"
 					variant="ghost"
 					color="primary"
 					size="md"
 					@click="toggleInputMode"
 				/>
-				<!-- 文件上传按钮 -->
+				<!-- 桌面端：麦克风 -->
 				<UButton
-					v-if="inputMode === 'keyboard'"
-					data-testid="btn-attach"
+					v-if="!isTouchDevice && !isDesktopRecording"
 					class="cc-icon-btn-lg"
-					icon="i-lucide-plus"
-					variant="ghost"
-					color="primary"
-					size="md"
-					@click="onClickAddFiles"
-				/>
-				<!-- 桌面端麦克风按钮 -->
-				<UButton
-					v-if="!isMobile && inputMode === 'keyboard' && !isDesktopRecording"
-					class="cc-icon-btn-lg hidden md:flex"
 					icon="i-lucide-mic"
 					variant="ghost"
 					color="primary"
@@ -103,10 +92,11 @@
 						@click="onStopDesktopRecording"
 					/>
 				</div>
-				<!-- 移动端语音模式：按住说话 -->
+				<!-- 触屏语音模式：按住说话 -->
 				<button
-					v-else-if="isMobile && inputMode === 'voice'"
-					class="flex h-10 w-full items-center justify-center rounded-lg bg-elevated text-sm text-muted md:hidden"
+					v-else-if="isTouchDevice && inputMode === 'voice'"
+					class="flex h-10 w-full items-center justify-center rounded-lg bg-elevated text-sm text-muted active:bg-accented"
+					:disabled="sending || disabled"
 					@touchstart.prevent="onTouchSpeakStart"
 				>
 					{{ $t('chat.voiceHoldToSpeak') }}
@@ -130,7 +120,19 @@
 			</div>
 
 			<!-- 右侧按钮区 -->
-			<div class="flex shrink-0 items-end">
+			<div class="flex shrink-0 items-end gap-1">
+				<!-- 文件上传 -->
+				<UButton
+					v-if="!isDesktopRecording"
+					data-testid="btn-attach"
+					class="cc-icon-btn-lg"
+					icon="i-lucide-plus"
+					variant="ghost"
+					color="primary"
+					size="md"
+					@click="onClickAddFiles"
+				/>
+				<!-- 终止 -->
 				<UButton
 					v-if="sending"
 					data-testid="btn-stop"
@@ -142,15 +144,15 @@
 					:title="$t('chat.stopSending')"
 					@click="$emit('cancel')"
 				/>
+				<!-- 发送 -->
 				<UButton
-					v-else
+					v-else-if="canSend"
 					data-testid="btn-send"
 					class="cc-icon-btn-lg"
 					icon="i-lucide-send"
 					color="primary"
 					variant="soft"
 					size="md"
-					:disabled="!canSend"
 					type="submit"
 				/>
 			</div>
@@ -177,7 +179,7 @@
 </template>
 
 <script>
-import { isMobileViewport } from '../utils/layout.js';
+import { isMobileViewport, isTouchDevice as detectTouchDevice } from '../utils/layout.js';
 import { useUiStore } from '../stores/ui.store.js';
 import { useNotify } from '../composables/use-notify.js';
 import { formatFileSize, formatFileBlob } from '../utils/file-helper.js';
@@ -223,12 +225,15 @@ export default {
 		isMobile() {
 			return isMobileViewport(useUiStore().screenWidth);
 		},
+		isTouchDevice() {
+			return detectTouchDevice();
+		},
 		canSend() {
 			const hasText = !!(this.modelValue && this.modelValue.trim());
 			return hasText || this.inputFiles.length > 0;
 		},
 		isDesktopRecording() {
-			return !this.isMobile && (
+			return !this.isTouchDevice && (
 				this.recorderStatus === 'RECORDING'
 				|| this.recorderStatus === 'STARTING'
 				|| this.recorderStatus === 'STOPPING'
@@ -359,6 +364,7 @@ export default {
 			this.inputMode = this.inputMode === 'keyboard' ? 'voice' : 'keyboard';
 		},
 		onTouchSpeakStart(evt) {
+			if (this.sending || this.disabled) return;
 			const touch = evt.changedTouches?.[0];
 			this.touchSpeakTouchId = touch?.identifier ?? null;
 			this.touchSpeakOpen = true;
@@ -367,6 +373,9 @@ export default {
 			this.touchSpeakOpen = false;
 			if (result?.blob) {
 				this.procRecordedVoice(result.blob, result.durationMs);
+				if (result.autoSend) {
+					this.$nextTick(() => this.onSubmit());
+				}
 			}
 		},
 	},
