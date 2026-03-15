@@ -3,3 +3,11 @@ packages:
   - ui
   - admin
   - plugins/*
+
+ignoredBuiltDependencies:
+  - electron-winstaller
+  - vue-demi
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild

@@ -4,6 +4,7 @@
   "private": true,
   "description": "CoClaw frontend application",
   "type": "module",
+  "main": "electron/main.js",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
@@ -27,7 +28,12 @@
     "tauri:build:win": "tauri build --bundles nsis",
     "tauri:build:mac": "tauri build --target universal-apple-darwin --bundles dmg",
     "tauri:build:mac-app": "tauri build --target universal-apple-darwin --bundles app",
-    "tauri:icon": "tauri icon"
+    "tauri:icon": "tauri icon",
+    "electron:dev": "electron .",
+    "electron:build": "electron-builder",
+    "electron:build:win": "electron-builder --win nsis",
+    "electron:build:win:portable": "electron-builder --win portable",
+    "electron:build:mac": "electron-builder --mac dmg"
   },
   "dependencies": {
     "@capacitor/android": "^8.2.0",
@@ -49,6 +55,10 @@
     "@iktakahiro/markdown-it-katex": "^4.0.1",
     "@nuxt/ui": "^4.5.1",
     "axios": "^1.13.6",
+    "electron-log": "^5.4.3",
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.8.3",
+    "electron-window-state": "^5.0.3",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.1",
     "markdown-it-link-attributes": "^4.0.1",
@@ -66,6 +76,8 @@
     "@vitest/coverage-v8": "^3.2.4",
     "@vue/test-utils": "^2.4.6",
     "autoprefixer": "^10.4.27",
+    "electron": "^41.0.2",
+    "electron-builder": "^26.8.1",
     "jsdom": "^27.0.1",
     "postcss": "^8.5.8",
     "sass-embedded": "^1.98.0",
