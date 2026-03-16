@@ -352,7 +352,7 @@ export class RealtimeBridge {
 					platform: process.platform,
 					mode: 'backend',
 				},
-				caps: [],
+				caps: ['tool-events'],
 				role: 'operator',
 				scopes: ['operator.admin'],
 				auth: authToken ? { token: authToken } : undefined,

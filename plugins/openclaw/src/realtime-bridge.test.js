@@ -1317,9 +1317,10 @@ test('connect request should include device field with nonce from challenge', as
 		assert.ok(typeof device.signature === 'string' && device.signature.length > 0);
 		assert.ok(typeof device.signedAt === 'number' && device.signedAt > 0);
 
-		// auth 和 scopes 也存在
+		// auth、scopes、caps 也存在
 		assert.equal(connectReq.params.role, 'operator');
 		assert.deepEqual(connectReq.params.scopes, ['operator.admin']);
+		assert.deepEqual(connectReq.params.caps, ['tool-events']);
 		assert.deepEqual(connectReq.params.auth, { token: 'test-token' });
 	}
 	finally {
