@@ -291,6 +291,32 @@ export const useChatStore = defineStore('chat', {
 				if (err?.code === 'USER_CANCELLED') {
 					return { accepted: this.__accepted };
 				}
+				// 已 accepted 但 agent 尚未完成时 WS 断连：保留乐观消息，等重连后 reconcile
+				if (err?.code === 'WS_CLOSED' && this.__accepted && !this.__agentSettled) {
+					console.debug('[chat] ws closed after accepted, waiting for reconnect to reconcile');
+					this.__cleanupTimersAndListeners();
+					this.sending = false;
+					const conn = this.__getConnection();
+					if (conn) {
+						const reconnected = await new Promise((resolve) => {
+							const timeout = setTimeout(() => { conn.off('state', onState); resolve(false); }, 15_000);
+							const onState = (state) => {
+								if (state === 'connected') {
+									clearTimeout(timeout);
+									conn.off('state', onState);
+									resolve(true);
+								}
+							};
+							if (conn.state === 'connected') { clearTimeout(timeout); resolve(true); }
+							else conn.on('state', onState);
+						});
+						if (reconnected) {
+							console.debug('[chat] reconnected after accepted, reconciling messages');
+							await this.__reconcileMessages();
+						}
+					}
+					return { accepted: true };
+				}
 				// 断连且尚未 accepted：等待重连后自动重试一次
 				if (err?.code === 'WS_CLOSED' && !this.__accepted && !this.__retried) {
 					console.debug('[chat] ws closed before accepted, waiting for reconnect to retry');

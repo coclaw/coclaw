@@ -712,11 +712,12 @@ describe('useChatStore', () => {
 			expect(callCount).toBe(2); // 原始 + 重试各一次
 		});
 
-		test('WS_CLOSED 但已 accepted 时不触发重试，直接抛出', async () => {
+		test('WS_CLOSED 且已 accepted 时不抛出，等重连后 reconcile', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
 			const conn = mockConn();
+			// conn.state 已为 connected，等待重连时会立即 resolve
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					// 先 accepted，然后 WS 断连
@@ -725,6 +726,9 @@ describe('useChatStore', () => {
 					err.code = 'WS_CLOSED';
 					return Promise.reject(err);
 				}
+				// reconcile 请求
+				if (method === 'nativeui.sessions.listAll') return Promise.resolve({ items: [] });
+				if (method === 'nativeui.sessions.get') return Promise.resolve({ messages: [] });
 				return Promise.resolve(null);
 			});
 			mockConnections.set('1', conn);
@@ -733,8 +737,9 @@ describe('useChatStore', () => {
 			store.sessionId = 'sess-1';
 			store.botId = '1';
 
-			// accepted 后 WS_CLOSED → 不重试（__accepted=true），直接抛出
-			await expect(store.sendMessage('hello')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+			// accepted 后 WS_CLOSED → 不抛出，优雅返回
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
 			expect(store.sending).toBe(false);
 		});
 

@@ -1,5 +1,13 @@
 # UI Workspace Status
 
+## 2026-03-16
+- **Android 切换 App 后 WS 断连导致"connection closed"错误修复**：
+  - **根因**：`chat.store.js` sendMessage 的 catch 块缺少"已 accepted 但 agent 未完成时 WS 断连"分支，导致乐观消息被清除、错误直接抛给用户
+  - **修复 1**（`chat.store.js`）：新增 `WS_CLOSED && __accepted && !__agentSettled` catch 分支——不报错、不清除乐观消息，等待 WS 重连后调 `__reconcileMessages()` 用服务端持久化数据替换本地条目
+  - **修复 2**（`capacitor-app.js`）：在原生初始化流程中启动 `KeepAliveService` 前台服务（调用 `KeepAlive.start()`），减少 Android 后台杀进程概率。原生侧 `KeepAliveService.java`、`KeepAlivePlugin.java`、`MainActivity.java` 注册均已就绪，此前仅 JS 端未调用
+  - 更新对应单元测试
+  - 全部测试通过（33 文件，606 测试），覆盖率达标
+
 ## 2026-03-14
 - **多 Agent 支持（UI 侧，Phase 2 + Phase 3）已完成**：
   - 新增 `agents.store.js`：管理 per-bot agent 列表，通过 `agents.list` + `agent.identity.get` RPC 获取完整 identity
@@ -125,6 +133,9 @@
 
 ## TODO
 
+- [Android/WS] **Capacitor `appStateChange` 监听**：当 App 从后台回到前台时，主动检测 WS 连接状态，若已断连则立即触发重连 + reconcile，而非被动等待心跳超时。Capacitor `@capacitor/app` 的 `appStateChange` 事件已可用，需在 `capacitor-app.js` 中监听并通知 `BotConnectionManager`。
+- [Android/WS] **WS 断连期间的 agent RPC 恢复**：当前修复仅处理了"已 accepted"场景的优雅降级（不报错、重连后 reconcile）。完整的 RPC 恢复（断连期间丢失的 streaming 事件补偿、断点续传）是更大的架构变动，需后续专项设计。
+- [Android/WS] **WebSocket 下沉到原生层**：当前 WS 运行在 WebView JS 层，即使前台服务保活了进程，WebView 后台化后 JS 执行仍会被暂停/限制。若需要后台持续收消息（如推送通知），需将 WS 连接下沉到原生层（Java/Kotlin），或接入 FCM/厂商推送通道作为兜底。这是长期架构优化方向。
 - 优化 `ChatPage` 消息渲染样式（角色分组、时间信息、滚动体验）。
 - 在 MainList 增加”可续聊/只读”显式标记，降低 orphan 会话误操作。
 - Split auth page into reusable components after prototype stage.

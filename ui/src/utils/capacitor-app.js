@@ -2,8 +2,9 @@
  * Capacitor 原生壳初始化
  * - Edge-to-Edge 状态栏配置
  * - Android 返回键处理
+ * - 后台保活前台服务
  */
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
 
 /** 是否运行在 Capacitor 原生壳中 */
@@ -29,6 +30,13 @@ export async function initCapacitorApp(router) {
 	}
 	catch (e) {
 		console.warn('[capacitor] BackButton init failed:', e);
+	}
+
+	try {
+		startKeepAlive();
+	}
+	catch (e) {
+		console.warn('[capacitor] KeepAlive init failed:', e);
 	}
 }
 
@@ -56,6 +64,13 @@ export async function syncStatusBarStyle(appliedTheme) {
 	catch (e) {
 		console.warn('[capacitor] syncStatusBarStyle failed:', e);
 	}
+}
+
+function startKeepAlive() {
+	const KeepAlive = registerPlugin('KeepAlive');
+	KeepAlive.start()
+		.then(() => console.log('[capacitor] KeepAliveService started'))
+		.catch((e) => console.warn('[capacitor] KeepAliveService start failed:', e));
 }
 
 function setupBackButton(router) {
