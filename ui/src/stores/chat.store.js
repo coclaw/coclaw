@@ -117,7 +117,11 @@ export const useChatStore = defineStore('chat', {
 					cursor: 0,
 				});
 				this.messages = Array.isArray(result?.messages) ? result.messages : [];
-				console.debug('[chat] loadMessages ok count=%d', this.messages.length);
+				console.debug('[chat] loadMessages ok count=%d toolResults=%d thinkingMsgs=%d',
+					this.messages.length,
+					this.messages.filter((e) => e.message?.role === 'toolResult').length,
+					this.messages.filter((e) => Array.isArray(e.message?.content) && e.message.content.some((b) => b.type === 'thinking')).length,
+				);
 				return true;
 			}
 			catch (err) {
@@ -418,8 +422,12 @@ export const useChatStore = defineStore('chat', {
 						this.messages = [...this.messages];
 					}
 				}
-				else if (data?.phase === 'result' && data.result != null) {
-					const text = typeof data.result === 'string' ? data.result : JSON.stringify(data.result);
+				else if (data?.phase === 'result') {
+					// 网关可能剥离 data.result（verbose !== full），兜底空字符串
+					const raw = data.result;
+					const text = raw != null
+						? (typeof raw === 'string' ? raw : JSON.stringify(raw))
+						: '';
 					const startTime = this.__findStreamingBotEntry()?._startTime;
 					this.messages = [...this.messages,
 						{
@@ -538,6 +546,9 @@ export const useChatStore = defineStore('chat', {
 						.map((i) => [i.sessionId, i.sessionKey]),
 				);
 				useSessionsStore().loadAllSessions();
+				// 静默重载消息，用持久化的完整数据替换流式本地条目
+				// （网关 tool 事件可能被剥离 result，重载可补全）
+				await this.loadMessages({ silent: true });
 				return true;
 			}
 			catch (err) {

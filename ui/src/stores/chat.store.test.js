@@ -1141,6 +1141,24 @@ describe('useChatStore', () => {
 			expect(toolResultEntry.message.content).toBe('{"key":"val"}');
 		});
 
+		test('tool stream result：data.result 被网关剥离时兜底为空字符串', () => {
+			const store = setupStreamingStore();
+
+			store.__onAgentEvent({
+				runId: 'run-1',
+				stream: 'tool',
+				data: { phase: 'result' }, // 无 result 字段（verbose !== full）
+			});
+
+			const toolResultEntry = store.messages.find((m) => m.message?.role === 'toolResult');
+			expect(toolResultEntry).toBeTruthy();
+			expect(toolResultEntry.message.content).toBe('');
+
+			const newBotEntry = store.messages[store.messages.length - 1];
+			expect(newBotEntry._streaming).toBe(true);
+			expect(newBotEntry.message.role).toBe('assistant');
+		});
+
 		test('thinking stream：追加 thinking block', () => {
 			const store = setupStreamingStore();
 
