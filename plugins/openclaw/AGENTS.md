@@ -24,6 +24,9 @@
   - `worker-verify.js` — 升级后验证（gateway + 插件 + health）
   - `state.js` — upgrade-state.json / upgrade-log.jsonl 读写
 - `src/session-manager/` — 会话读取能力（`nativeui.sessions.listAll/get`）
+- `src/utils/` — 通用工具（零外部依赖）
+  - `atomic-write.js` — 原子文件写入（tmp+rename）
+  - `mutex.js` — 进程内异步互斥锁（Promise 链 FIFO）
 - `src/common/` — 共享逻辑
   - `bot-binding.js` — bind/unbind 核心逻辑
   - `errors.js` — 错误码与消息映射
@@ -54,6 +57,31 @@
 - OpenClaw gateway 提供的 logger 是 pino 风格，有 `.info()` / `.warn()` / `.error()`，**没有 `.log()` 方法**。
 - 插件代码中所有日志调用必须使用 `.info?.()` / `.warn?.()` / `.error?.()` 等带可选链的调用，**禁止使用 `.log()`**，也禁止将 logger 当函数直接调用（如 `logger('msg')`）。
 - 可选链 `?.()` 确保即使 logger 缺少某方法或 logger 本身为 undefined，也不会抛异常中断正常流程。
+
+## 文件 I/O 安全规范
+
+- **禁止裸 `fs.writeFile`**：写入插件自管文件时，必须使用 `atomicWriteFile` 或 `atomicWriteJsonFile`（`src/utils/atomic-write.js`），防止写入过程中崩溃导致文件损坏。
+- **read-modify-write 必须加锁**：对同一文件的读取→修改→写回操作必须在同一个 `mutex.withLock()` 内完成（`src/utils/mutex.js`）。每个需要保护的文件应有独立的 mutex 实例，由使用侧创建和管理。
+- **纯只读可不加锁**：仅读取、不基于结果做写入决策时，可以不加锁（最多读到略旧快照）。
+- **fire-and-forget 必须 `.catch()`**：对 `withLock()` 返回的 Promise 若不 await，必须 `.catch()` 防止 unhandled rejection 导致 gateway 崩溃。
+- **禁止嵌套同一把锁**：在 `withLock(fn)` 的 fn 内再调同一个 mutex 的 `withLock` 会死锁。
+- **fn 应尽量短**：长时间持锁会阻塞后续操作。
+
+## Gateway RPC 方法命名
+
+- OpenClaw 将方法名视为**扁平字符串 key**（无命名空间路由），"." 仅为约定分隔符，无特殊语义。唯一硬约束：不能为空、不能与已注册方法重名。
+- 新注册的方法统一使用 **`coclaw.`** 前缀（符合 OpenClaw 官方约定 `pluginId.action`）。
+- 历史方法 `nativeui.sessions.listAll` / `nativeui.sessions.get` 暂保留以兼容。
+
+### Scope 与权限
+
+- OpenClaw 对每个 gateway method 有 scope 分类（`method-scopes.ts`）。**未被分类的方法（包括所有插件注册的方法）默认要求 `operator.admin` scope**。
+- 当前所有调用路径均持有 `operator.admin`：
+  - bridge 自身的 gateway WS 连接（`realtime-bridge.js` 中显式声明 `scopes: ['operator.admin']`）
+  - CLI `openclaw gateway call`（默认使用 `CLI_DEFAULT_OPERATOR_SCOPES`，含 `operator.admin`）
+  - gateway 内部 synthetic client（含 `operator.admin`）
+- 因此当前无 scope 问题。但若未来需要支持非 admin scope 的调用者直接调用插件方法，需向 OpenClaw 的 `METHOD_SCOPE_GROUPS` 表注册所需 scope，否则会被 fallback 到 admin 拦截。
+- **已知设计特征**：bridge 以自身 `operator.admin` 身份转发 CoClaw server 发来的所有请求，server 实质拥有 admin 级 gateway 权限（设计预期，server 是受信方）。
 
 ## 约束
 
