@@ -25,7 +25,7 @@
 
 ## 发布主体
 
-成都公演科技有限公司（Chengdu Gongyan Technology Co., Ltd.）
+成都共演科技有限公司（Chengdu Gongyan Technology Co., Ltd.）
 
 ## 密码
 

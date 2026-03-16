@@ -10,7 +10,7 @@
 
 ### D1. 开发者账号类型
 
-**决策**：两个平台均使用公司/组织账号，与 APK 发布主体一致（成都公演科技有限公司）。
+**决策**：两个平台均使用公司/组织账号，与 APK 发布主体一致（成都共演科技有限公司）。
 
 | 平台 | 账号类型 | 费用 | 备注 |
 |---|---|---|---|
@@ -1070,7 +1070,7 @@ winapp store publish ./coclaw.msix --appId <app-id>
 ```
 
 **商店账号信息**：
-- 发布主体：成都公演科技有限公司（Chengdu Gongyan Technology Co., Ltd.）
+- 发布主体：成都共演科技有限公司（Chengdu Gongyan Technology Co., Ltd.）
 - 账号类型：公司（$99 一次性）
 
 ### 12.4 Mac App Store 发布流程
@@ -1091,7 +1091,7 @@ xcrun altool --upload-app -f CoClaw.pkg --type macos
 ```
 
 **Apple Developer 账号信息**：
-- 发布主体：成都公演科技有限公司
+- 发布主体：成都共演科技有限公司
 - 账号类型：组织（$99/年，需 D-U-N-S 编号）
 
 ### 12.5 代码签名策略
