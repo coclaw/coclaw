@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.3.2
+
+### Patch Changes
+
+- fix: declare tool-events capability for gateway connection, enabling tool call streaming events
+
 ## 0.3.1
 
 ### Patch Changes
