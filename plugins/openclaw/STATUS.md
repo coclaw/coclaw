@@ -19,6 +19,14 @@
 
 ## 关键里程碑
 
+### 原子文件操作基础设施（2026-03-16）
+- 新增 `src/utils/` 目录，包含两个零依赖工具模块：
+  - `atomic-write.js` — `atomicWriteFile(filePath, content, opts?)` / `atomicWriteJsonFile(filePath, value, opts?)`，基于 tmp+rename 模式防崩溃写损。
+  - `mutex.js` — `createMutex()` 返回 `{ withLock(fn) }`，基于 Promise 链的进程内 FIFO 互斥锁，防 async 并发交错导致 lost update。
+- 参照 OpenClaw `writeTextAtomic` / `createAsyncLock` 实现，为后续 topic 等功能的状态文件读写提供安全保障。
+- 设计文档：`docs/atomic-file-ops.md`。
+- CLAUDE.md 新增"文件 I/O 安全规范"章节。
+
 ### 自动升级功能（2026-03-12）
 - 新增 `src/auto-upgrade/` 模块（7 个文件）：`state.js`、`updater.js`、`updater-check.js`、`updater-spawn.js`、`worker.js`、`worker-backup.js`、`worker-verify.js`。
 - **调度**：gateway 启动后延迟 5~10 分钟首次检查，之后每 1 小时检查一次（通过 `npm view` 查询 registry）。
