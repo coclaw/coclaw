@@ -108,6 +108,21 @@ cd plugins/openclaw && pnpm release
 询问用户是否需要推送到 GitHub：
 
 ```bash
+git push
+```
+
+## 推送到 GitHub
+
+每次推送到 GitHub 时，须确保当前根版本号对应的 git tag 存在：
+
+```bash
+# 检查标签是否已存在
+git tag -l "v<version>"
+
+# 若不存在，创建轻量标签
+git tag v<version>
+
+# 推送代码和标签
 git push --follow-tags
 ```
 
@@ -117,7 +132,7 @@ git push --follow-tags
 
 ### 前置条件
 
-- 代码已推送到 GitHub
+- 代码已推送到 GitHub（含对应版本的 git tag）
 - 确定发布版本号
 
 ### 1. Bump workspace 版本并同步根版本
