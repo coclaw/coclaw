@@ -51,7 +51,7 @@
 
 <script>
 import { useAuthStore } from '../stores/auth.store.js';
-import { getAuthedHomeRoute } from '../utils/layout.js';
+import { useEnvStore } from '../stores/env.store.js';
 
 export default {
 	name: 'LoginPage',
@@ -71,7 +71,7 @@ export default {
 	async mounted() {
 		await this.authStore.refreshSession();
 		if (this.authStore.user) {
-			this.$router.replace(getAuthedHomeRoute(window.innerWidth));
+			this.$router.replace(useEnvStore().screen.ltMd ? '/topics' : '/home');
 		}
 	},
 	methods: {
@@ -81,7 +81,7 @@ export default {
 				password: this.form.password,
 			});
 			if (this.authStore.user) {
-				this.$router.replace(getAuthedHomeRoute(window.innerWidth));
+				this.$router.replace(useEnvStore().screen.ltMd ? '/topics' : '/home');
 			}
 		},
 	},

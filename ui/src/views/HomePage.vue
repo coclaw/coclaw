@@ -8,7 +8,7 @@
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
-import { isMobileViewport } from '../utils/layout.js';
+import { useEnvStore } from '../stores/env.store.js';
 
 const TIMEOUT_MS = 5000;
 
@@ -22,7 +22,7 @@ export default {
 	},
 	async mounted() {
 		// 移动端直接跳转
-		if (isMobileViewport(window.innerWidth)) {
+		if (useEnvStore().screen.ltMd) {
 			this.$router.replace('/topics');
 			return;
 		}

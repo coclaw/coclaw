@@ -16,6 +16,7 @@
 <script>
 import UserSettingsPanel from './UserSettingsPanel.vue';
 import { popDialogState } from '../../utils/dialog-history.js';
+import { useEnvStore } from '../../stores/env.store.js';
 
 export default {
 	name: 'UserSettingsDialog',
@@ -29,10 +30,11 @@ export default {
 		},
 	},
 	emits: ['update:open', 'after:leave'],
+	setup() {
+		return { envStore: useEnvStore() };
+	},
 	data() {
 		return {
-			isMobile: false,
-			mediaQuery: null,
 			safeAreaUi: {
 				header: 'pt-[max(0.25rem,var(--safe-area-inset-top))]',
 				body: 'pb-[var(--safe-area-inset-bottom)]',
@@ -40,6 +42,9 @@ export default {
 		};
 	},
 	computed: {
+		isMobile() {
+			return this.envStore.screen.ltMd;
+		},
 		openProxy: {
 			get() {
 				return this.open;
@@ -52,19 +57,6 @@ export default {
 	watch: {
 		open(val) {
 			if (!val) popDialogState();
-		},
-	},
-	mounted() {
-		this.mediaQuery = window.matchMedia('(max-width: 767px)');
-		this.isMobile = this.mediaQuery.matches;
-		this.mediaQuery.addEventListener('change', this.onMediaQueryChange);
-	},
-	beforeUnmount() {
-		this.mediaQuery?.removeEventListener('change', this.onMediaQueryChange);
-	},
-	methods: {
-		onMediaQueryChange(evt) {
-			this.isMobile = evt.matches;
 		},
 	},
 };

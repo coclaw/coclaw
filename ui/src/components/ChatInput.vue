@@ -30,7 +30,7 @@
 					:class="[
 						'absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full',
 						'bg-error text-white text-xs',
-						isMobile ? '' : 'opacity-0 group-hover:opacity-100',
+						this.envStore.canHover ? 'opacity-0 group-hover:opacity-100' : '',
 					]"
 					@click="removeInputFile(idx)"
 				>
@@ -179,8 +179,7 @@
 </template>
 
 <script>
-import { isMobileViewport, isTouchDevice as detectTouchDevice } from '../utils/layout.js';
-import { useUiStore } from '../stores/ui.store.js';
+import { useEnvStore } from '../stores/env.store.js';
 import { useNotify } from '../composables/use-notify.js';
 import { formatFileSize, formatFileBlob } from '../utils/file-helper.js';
 import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
@@ -207,7 +206,8 @@ export default {
 	emits: ['update:modelValue', 'send', 'cancel'],
 	setup() {
 		const notify = useNotify();
-		return { notify };
+		const envStore = useEnvStore();
+		return { notify, envStore };
 	},
 	data() {
 		return {
@@ -222,11 +222,8 @@ export default {
 		};
 	},
 	computed: {
-		isMobile() {
-			return isMobileViewport(useUiStore().screenWidth);
-		},
 		isTouchDevice() {
-			return detectTouchDevice();
+			return this.envStore.isTouch;
 		},
 		canSend() {
 			const hasText = !!(this.modelValue && this.modelValue.trim());
@@ -250,8 +247,8 @@ export default {
 	methods: {
 		onKeydown(evt) {
 			if (evt.key !== 'Enter') return;
-			// 移动端 Enter 默认换行
-			if (this.isMobile) return;
+			// 触屏设备 Enter 默认换行
+			if (this.isTouchDevice) return;
 			// 桌面端 Shift+Enter 换行
 			if (evt.shiftKey) return;
 			// 桌面端 Enter 发送（阻止换行 + IME 组合）

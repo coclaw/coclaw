@@ -100,9 +100,19 @@ describe('ChatInput', () => {
 		expect(wrapper.emitted('send')).toBeFalsy();
 	});
 
-	test('Enter on mobile does not trigger send', async () => {
-		// 设置移动端宽度
-		Object.defineProperty(window, 'innerWidth', { value: 375, writable: true });
+	test('Enter on touch device does not trigger send', async () => {
+		// 模拟触屏设备：(pointer: coarse) → true
+		const origMM = window.matchMedia;
+		window.matchMedia = vi.fn((query) => ({
+			matches: query === '(pointer: coarse)' || query === '(any-pointer: coarse)',
+			media: query,
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			addListener: vi.fn(),
+			removeListener: vi.fn(),
+			dispatchEvent: vi.fn(),
+		}));
+
 		const pinia = createPinia();
 		setActivePinia(pinia);
 
@@ -125,6 +135,8 @@ describe('ChatInput', () => {
 			await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
 			expect(wrapper.emitted('send')).toBeFalsy();
 		}
+
+		window.matchMedia = origMM;
 	});
 
 	test('sending=true shows stop button', () => {

@@ -55,6 +55,7 @@
     "@capawesome/capacitor-badge": "^8.0.1",
     "@iktakahiro/markdown-it-katex": "^4.0.1",
     "@nuxt/ui": "^4.5.1",
+    "@vueuse/core": "^14.2.1",
     "axios": "^1.13.6",
     "electron-log": "^5.4.3",
     "electron-store": "^11.0.2",

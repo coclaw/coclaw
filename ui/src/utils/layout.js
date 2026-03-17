@@ -13,7 +13,3 @@ export function isTouchDevice() {
 	if (typeof window === 'undefined') return false;
 	return window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
 }
-
-export function getAuthedHomeRoute(width) {
-	return isMobileViewport(width) ? '/topics' : '/home';
-}
