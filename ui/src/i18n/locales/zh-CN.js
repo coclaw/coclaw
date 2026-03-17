@@ -158,6 +158,23 @@ export const zhCNMessages = {
 		online: '在线',
 		offline: '离线',
 	},
+	pluginUpgrade: {
+		title: '插件需要升级',
+		desc: '当前 OpenClaw 上安装的 CoClaw 插件版本过低，无法支持最新功能。请升级插件后重试。',
+		chatMethodTitle: '方式一：通过对话',
+		chatMethodDesc: '如果你已经能和你的 OpenClaw 聊天，把下面的内容复制发送给它',
+		chatPrompt: '请帮我运行以下命令：\n`{command}`',
+		shellMethodTitle: '方式二：通过终端',
+		shellMethodDesc: '如果你能打开 OpenClaw 所在电脑的终端，复制下面的命令执行即可',
+		retry: '我已升级，重试',
+		versionOk: '插件版本已满足要求',
+		stillOutdated: '插件版本仍低于最低要求 ({version})',
+		checkFailed: '版本检查失败',
+	},
+	topic: {
+		newTopic: '新话题',
+		createFailed: '创建话题失败',
+	},
 	chat: {
 		loading: '正在加载会话...',
 		empty: '暂无消息',

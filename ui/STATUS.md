@@ -1,5 +1,17 @@
 # UI Workspace Status
 
+## 2026-03-17
+- **Topic 管理功能（UI 侧）**：
+  - 新增 `topics.store.js`：管理用户主动创建的独立话题（Topic），通过 `coclaw.topics.*` RPC 与插件交互
+  - 修改 `chat.store.js`：新增 `topicMode` 双模式支持——topic 模式下使用 `coclaw.topics.getHistory` 加载消息、agent 请求只传 `sessionId`（不传 `sessionKey`）
+  - 修改 `ChatPage.vue`：支持 topic 路由（`/topics/new`、`/topics/:topicId`）；"新建对话"按钮改为"新话题"（所有 ChatPage 均显示）；首轮完成后自动触发标题生成
+  - 修改 `MainList.vue`：会话列表区（Group 3）从 sessions 改为 topics；agent 列表支持"活跃高亮"
+  - 修改 `bots.store.js`：WS 连接就绪后同时加载 topics
+  - 新增 i18n `topic.*` 命名空间
+  - 新增 `topics.store.test.js`（20 测试），更新 `ChatPage.test.js`、`MainList.test.js`、`bots.store.test.js`
+  - 全部测试通过（34 文件，620 测试），覆盖率达标
+  - 插件侧 `coclaw.topics.*` RPC 尚在开发中，UI 侧已就绪待联调
+
 ## 2026-03-16
 - **Android 切换 App 后 WS 断连导致"connection closed"错误修复**：
   - **根因**：`chat.store.js` sendMessage 的 catch 块缺少"已 accepted 但 agent 未完成时 WS 断连"分支，导致乐观消息被清除、错误直接抛给用户

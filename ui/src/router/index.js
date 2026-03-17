@@ -11,6 +11,7 @@ import AddBotPage from '../views/AddBotPage.vue';
 import ManageBotsPage from '../views/ManageBotsPage.vue';
 import UserPage from '../views/UserPage.vue';
 import AboutPage from '../views/AboutPage.vue';
+import PluginUpgradePage from '../views/PluginUpgradePage.vue';
 import { useAuthStore } from '../stores/auth.store.js';
 
 const routes = [
@@ -78,6 +79,12 @@ const routes = [
 				name: 'user',
 				component: UserPage,
 				meta: { requiresAuth: true, isTopPage: true },
+			},
+			{
+				path: 'plugin-upgrade',
+				name: 'plugin-upgrade',
+				component: PluginUpgradePage,
+				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
 				path: 'about',

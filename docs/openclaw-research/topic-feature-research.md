@@ -83,6 +83,51 @@ OpenClaw 对 sessionKey 有严格的结构要求：
 
 当 `sessionKey` 指向的 session 仍处于"fresh"状态（未过期）时，每次调用都会复用同一个 `sessionId`，LLM 能看到所有历史消息。**上下文会持续累积**，直到 session 过期或被显式 reset。
 
+### 5. agentId 参数与多 Agent 路由约束
+
+> 补充时间：2026-03-17。基于 gateway handler 源码逐行追踪验证。
+
+#### agentId 参数的行为
+
+`agent()` RPC 接受可选的 `agentId` 参数（`src/gateway/protocol/schema/agent.ts:74-103`）。但传入 `agentId` 时会**自动派生 sessionKey**，覆盖调用方的 sessionId。
+
+完整路径（`src/gateway/server-methods/agent.ts`）：
+
+1. **line 289-294**：若未显式传 `sessionKey`，调用 `resolveExplicitAgentSessionKey({ cfg, agentId })`
+2. 该函数（`src/config/sessions/main-session.ts:40-49`）在 `agentId` 非空时**必定返回** `agent:<agentId>:main`
+3. **line 350**：进入 `if (requestedSessionKey)` 分支，按 sessionKey 解析 session store
+4. **line 420**：`resolvedSessionId = sessionId`——调用方传入的 `request.sessionId` 被 store 中的 sessionId **无条件覆盖**
+5. **line 425-437**：向 `sessions.json` 写入/更新该 sessionKey 条目
+
+#### 各传参组合的实际行为
+
+| 传参 | sessionId 是否被尊重 | agent 路由 | 写 sessions.json | .jsonl 位置 |
+|------|:---:|:---:|:---:|---|
+| 只传 `sessionId` | ✓ | 默认 main | ✗ | `main/sessions/` |
+| 传 `agentId`（无 key） | ✗（被覆盖） | ✓ | ✓ | `<agentId>/sessions/` |
+| 传 `sessionKey` | ✗（被覆盖） | ✓ | ✓ | 由 key 解析 |
+| 传 `agentId` + `sessionId` | ✗（sessionId 被覆盖） | ✓ | ✓ | `<agentId>/sessions/` |
+| 传 `sessionKey` + `sessionId` | ✗（sessionId 被覆盖） | ✓ | ✓ | 由 key 解析 |
+
+#### 核心约束
+
+**不存在"指定 agent + 使用自定义 sessionId + 不写 sessions.json"的方式。** `sessionKey` 为 `""`、`null`、`undefined` 均会触发 agentId → sessionKey 自动派生。
+
+#### 对 Topic 功能的影响
+
+当前设计（`agent(sessionId=<uuid>)` 不传 sessionKey）只能路由到 main agent。多 agent topic 需要通过 sessionKey（如 `agent:<agentId>:coclaw-<topicId>`）实现，但会：
+- 在 sessions.json 中创建条目（每个 topic 一条）
+- sessionId 由 gateway 分配（非调用方控制）
+- topic .jsonl 纳入 OpenClaw 维护剪裁范围
+
+#### 备选方案：sessionKey-per-topic
+
+若未来需要多 agent topic 支持，可使用 `agent:<agentId>:coclaw-<topicId>` 格式的 sessionKey：
+- 每个 topic 对应独立 sessionKey → 独立 sessionId → 独立 .jsonl → 独立上下文
+- 正确路由到目标 agent
+- **代价**：sessions.json 中出现 topic 条目；sessionId 由 gateway 生成（topic 元信息需增加 sessionId 字段）；.jsonl 受 OpenClaw 维护剪裁影响（`mode=enforce` 时可能被清理）
+- 需评估 sessions.json 膨胀风险及 .jsonl 保护策略
+
 ---
 
 ## 三、Session 生命周期钩子

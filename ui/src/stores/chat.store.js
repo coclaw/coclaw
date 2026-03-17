@@ -1,6 +1,7 @@
 /**
  * 聊天 Store — 从 ChatPage 中剥离的通信/消息管理逻辑
  * 职责：当前 session 的消息列表、发送、streaming、agent 事件处理
+ * 支持两种模式：session 模式（main session）和 topic 模式（独立话题）
  */
 import { defineStore } from 'pinia';
 
@@ -21,6 +22,9 @@ export const useChatStore = defineStore('chat', {
 		errorText: '',
 		streamingRunId: null,
 		resetting: false,
+		// topic 模式标志
+		topicMode: false,
+		topicAgentId: '',
 		// 内部标志，不暴露到模板
 		__agentSettled: false,
 		__streamingTimer: null,
@@ -45,7 +49,7 @@ export const useChatStore = defineStore('chat', {
 		 */
 		async activateSession(sessionId, { force = false } = {}) {
 			const id = typeof sessionId === 'string' ? sessionId.trim() : '';
-			if (!force && id === this.sessionId) return;
+			if (!force && id === this.sessionId && !this.topicMode) return;
 			console.debug('[chat] activateSession id=%s force=%s', id, force);
 			// 切换前清理上一个 session 的 streaming
 			this.__cleanupStreaming();
@@ -53,6 +57,8 @@ export const useChatStore = defineStore('chat', {
 			this.messages = [];
 			this.errorText = '';
 			this.sending = false;
+			this.topicMode = false;
+			this.topicAgentId = '';
 			// 解析 botId
 			this.botId = this.__resolveBotId(id);
 			console.debug('[chat] resolved botId=%s for session=%s', this.botId, id);
@@ -67,11 +73,48 @@ export const useChatStore = defineStore('chat', {
 		},
 
 		/**
+		 * 激活（切换到）指定 topic
+		 * @param {string} topicId
+		 * @param {object} opts
+		 * @param {string} opts.botId
+		 * @param {string} opts.agentId
+		 * @param {boolean} [opts.skipLoad] - 跳过消息加载（新建 topic 时使用）
+		 */
+		async activateTopic(topicId, { botId, agentId, skipLoad = false } = {}) {
+			if (topicId === this.sessionId && this.topicMode) {
+				console.debug('[chat] activateTopic: skip (same id=%s)', topicId);
+				return;
+			}
+			console.debug('[chat] activateTopic id=%s botId=%s agentId=%s', topicId, botId, agentId);
+			this.__cleanupStreaming();
+			this.sessionId = topicId;
+			this.messages = [];
+			this.errorText = '';
+			this.sending = false;
+			this.topicMode = true;
+			this.topicAgentId = agentId || 'main';
+			this.botId = String(botId || '');
+			this.sessionKeyById = {};
+			if (skipLoad) {
+				this.loading = false;
+				return;
+			}
+			if (!this.botId) {
+				this.loading = true;
+				return;
+			}
+			await this.loadMessages();
+		},
+
+		/**
 		 * 加载当前 session 的消息
 		 * @param {object} [opts]
 		 * @param {boolean} [opts.silent] - 静默刷新，不设 loading 状态
 		 */
 		async loadMessages({ silent = false } = {}) {
+			if (this.topicMode) {
+				return this.__loadTopicMessages({ silent });
+			}
 			if (!this.sessionId) {
 				this.messages = [];
 				this.errorText = '';
@@ -138,6 +181,57 @@ export const useChatStore = defineStore('chat', {
 		},
 
 		/**
+		 * topic 模式下加载消息
+		 * @param {object} opts
+		 * @param {boolean} opts.silent
+		 */
+		async __loadTopicMessages({ silent = false } = {}) {
+			if (!this.sessionId) {
+				this.messages = [];
+				this.errorText = '';
+				this.loading = false;
+				return false;
+			}
+			const conn = this.__getConnection();
+			if (!conn) {
+				if (!silent) this.errorText = 'Bot not connected';
+				this.loading = false;
+				return false;
+			}
+			if (conn.state !== 'connected') {
+				if (!silent) this.loading = true;
+				return false;
+			}
+			const prevCount = this.messages.length;
+			console.debug('[chat] loadTopicMessages topicId=%s botId=%s prevMsgCount=%d silent=%s', this.sessionId, this.botId, prevCount, silent);
+			if (!silent) {
+				this.loading = true;
+				this.errorText = '';
+			}
+			try {
+				const result = await conn.request('coclaw.topics.getHistory', {
+					topicId: this.sessionId,
+				});
+				// 插件复用 session-manager.get()，返回 { messages } 而非 { history }
+				const msgs = Array.isArray(result?.messages) ? result.messages : [];
+				console.debug('[chat] loadTopicMessages ok count=%d (was %d) error=%s', msgs.length, prevCount, result?.error ?? 'none');
+				this.messages = msgs;
+				return true;
+			}
+			catch (err) {
+				console.debug('[chat] loadTopicMessages failed: %s', err?.message);
+				if (!silent) {
+					this.messages = [];
+					this.errorText = err?.message || 'Failed to load messages';
+				}
+				return false;
+			}
+			finally {
+				this.loading = false;
+			}
+		},
+
+		/**
 		 * 发送消息
 		 * @param {string} text
 		 * @param {object[]} files - 来自 ChatInput 的文件对象
@@ -152,7 +246,7 @@ export const useChatStore = defineStore('chat', {
 				throw new Error('Bot not connected');
 			}
 
-			console.debug('[chat] sendMessage sessionId=%s files=%d', this.sessionId, files?.length ?? 0);
+			console.debug('[chat] sendMessage sessionId=%s topicMode=%s files=%d', this.sessionId, this.topicMode, files?.length ?? 0);
 			this.sending = true;
 			this.streamingRunId = null;
 			this.__agentSettled = false;
@@ -187,10 +281,11 @@ export const useChatStore = defineStore('chat', {
 				message: { role: 'assistant', content: '', stopReason: null },
 			}];
 
-			let sessionKey = this.sessionKeyById[this.sessionId];
+			// topic 模式下不使用 sessionKey
+			let sessionKey = this.topicMode ? null : this.sessionKeyById[this.sessionId];
 
 			try {
-				// 轮转检测
+				// 轮转检测（仅 session 模式）
 				if (sessionKey) {
 					const rotated = await this.__detectRotation(conn, sessionKey);
 					if (rotated) sessionKey = null;
@@ -412,6 +507,8 @@ export const useChatStore = defineStore('chat', {
 			this.errorText = '';
 			this.sending = false;
 			this.resetting = false;
+			this.topicMode = false;
+			this.topicAgentId = '';
 		},
 
 		// --- agent 事件处理（内部方法，通过箭头函数绑定 this） ---
@@ -514,6 +611,8 @@ export const useChatStore = defineStore('chat', {
 		 * @param {string} [sessionId] - 指定 sessionId，默认使用 this.sessionId
 		 */
 		__resolveAgentId(sessionId) {
+			// topic 模式直接返回存储的 agentId
+			if (this.topicMode) return this.topicAgentId || 'main';
 			const sid = sessionId || this.sessionId;
 			if (!sid) return 'main';
 			// 优先从本地缓存查，fallback 到 sessionsStore（activateSession 后 sessionKeyById 可能为空）
@@ -561,6 +660,19 @@ export const useChatStore = defineStore('chat', {
 		async __reconcileMessages() {
 			const conn = this.__getConnection();
 			if (!conn || conn.state !== 'connected') return false;
+
+			// topic 模式：直接重载消息
+			if (this.topicMode) {
+				try {
+					await this.loadMessages({ silent: true });
+					return true;
+				}
+				catch (err) {
+					console.warn('[chat] topic reconcile failed:', err);
+					return false;
+				}
+			}
+
 			try {
 				const agentId = this.__resolveAgentId();
 				const list = await conn.request('nativeui.sessions.listAll', {

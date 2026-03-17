@@ -18,10 +18,20 @@ vi.mock('../services/bots.api.js', () => ({
 	listBots: vi.fn(),
 }));
 
+vi.mock('../utils/plugin-version.js', () => ({
+	checkPluginVersion: vi.fn().mockResolvedValue(true),
+	MIN_PLUGIN_VERSION: '0.4.0',
+}));
+
+vi.mock('../router/index.js', () => ({
+	router: { push: vi.fn(), currentRoute: { value: { path: '/' } } },
+}));
+
 import { listBots } from '../services/bots.api.js';
 import { useAgentsStore } from './agents.store.js';
 import { useBotsStore } from './bots.store.js';
 import { useSessionsStore } from './sessions.store.js';
+import { useTopicsStore } from './topics.store.js';
 
 beforeEach(() => {
 	setActivePinia(createPinia());
@@ -245,8 +255,10 @@ describe('loadBots', () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 
 		// 模拟一个处于 connecting 状态的连接
 		let stateCallback;
@@ -266,8 +278,10 @@ describe('loadBots', () => {
 		stateCallback('connected');
 
 		expect(fakeConn.off).toHaveBeenCalledWith('state', stateCallback);
-		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
-		// loadAllSessions 在 loadAgents 完成后异步调用
+		// fire 是 async（含 checkPluginVersion），需等待
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		});
 		await vi.waitFor(() => {
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 		});
@@ -277,8 +291,10 @@ describe('loadBots', () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
@@ -295,6 +311,7 @@ describe('loadBots', () => {
 
 	test('does not register duplicate listeners for the same botId', async () => {
 		const store = useBotsStore();
+		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
 		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);

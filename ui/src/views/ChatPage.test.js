@@ -80,13 +80,16 @@ const i18nMap = {
 	'chat.botOffline': 'Bot is offline',
 	'chat.botUnbound': 'Bot has been unbound',
 	'chat.sessionNotFound': 'Session no longer exists',
+	'topic.newTopic': 'New topic',
+	'topic.createFailed': 'Failed to create topic',
 };
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
 
-function createWrapper(sessionId = 'sess-1') {
+function createWrapper(sessionId = 'sess-1', routeName = 'chat') {
 	const pinia = createPinia();
 	setActivePinia(pinia);
+	const prefix = routeName === 'topics-chat' ? '/topics' : '/chat';
 	return mount(ChatPage, {
 		global: {
 			plugins: [pinia],
@@ -96,8 +99,10 @@ function createWrapper(sessionId = 'sess-1') {
 					return i18nMap[key] ?? key;
 				},
 				$route: {
+					name: routeName,
 					params: { sessionId },
-					path: `/chat/${sessionId}`,
+					path: `${prefix}/${sessionId}`,
+					query: {},
 				},
 				$router: mockRouter,
 			},
@@ -323,45 +328,62 @@ describe('ChatPage send message', () => {
 	});
 });
 
-describe('ChatPage new chat', () => {
+describe('ChatPage new topic', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
 
-	test('onNewChat 调用 chatStore.resetChat 并导航', async () => {
+	test('onNewTopic 导航到 topics/new 并携带 agent/bot query', async () => {
 		const wrapper = createWrapper('sess-1');
 		const chatStore = useChatStore();
 		chatStore.sessionId = 'sess-1';
+		chatStore.botId = 'bot-1';
 		chatStore.sessionKeyById = { 'sess-1': 'agent:main:main' };
-		const resetSpy = vi.spyOn(chatStore, 'resetChat').mockResolvedValue('new-sess');
 		await flushPromises();
 
-		await wrapper.vm.onNewChat();
+		wrapper.vm.onNewTopic();
 
-		expect(resetSpy).toHaveBeenCalled();
-		expect(mockRouter.push).toHaveBeenCalledWith({ name: 'chat', params: { sessionId: 'new-sess' } });
+		expect(mockRouter.push).toHaveBeenCalledWith({
+			name: 'topics-chat',
+			params: { sessionId: 'new' },
+			query: { agent: 'main', bot: 'bot-1' },
+		});
 	});
 
-	test('resetChat 返回 null 时不导航', async () => {
-		const wrapper = createWrapper('sess-1');
+	test('onNewTopic 从 topic 页面也可导航', async () => {
+		const wrapper = createWrapper('sess-1', 'topics-chat');
 		const chatStore = useChatStore();
-		vi.spyOn(chatStore, 'resetChat').mockResolvedValue(null);
+		chatStore.sessionId = 'sess-1';
+		chatStore.botId = 'bot-2';
+		chatStore.topicMode = true;
+		chatStore.topicAgentId = 'main';
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const topicsStore = useTopicsStore();
+		topicsStore.items = [{ topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-2' }];
 		await flushPromises();
 
-		await wrapper.vm.onNewChat();
+		wrapper.vm.onNewTopic();
 
-		expect(mockRouter.push).not.toHaveBeenCalled();
+		expect(mockRouter.push).toHaveBeenCalledWith({
+			name: 'topics-chat',
+			params: { sessionId: 'new' },
+			query: { agent: 'main', bot: 'bot-2' },
+		});
 	});
 
-	test('resetChat 异常时显示通知', async () => {
+	test('showNewTopicBtn 在 topic 路由下始终为 true', async () => {
+		const wrapper = createWrapper('sess-1', 'topics-chat');
+		await flushPromises();
+		expect(wrapper.vm.showNewTopicBtn).toBe(true);
+	});
+
+	test('showNewTopicBtn 在非 main agent 的 session 页面为 false', async () => {
 		const wrapper = createWrapper('sess-1');
 		const chatStore = useChatStore();
-		vi.spyOn(chatStore, 'resetChat').mockRejectedValue(new Error('reset failed'));
+		chatStore.sessionId = 'sess-1';
+		chatStore.sessionKeyById = { 'sess-1': 'agent:tester:main' };
 		await flushPromises();
-
-		await wrapper.vm.onNewChat();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('New chat failed');
+		expect(wrapper.vm.showNewTopicBtn).toBe(false);
 	});
 });
 

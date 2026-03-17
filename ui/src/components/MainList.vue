@@ -25,6 +25,7 @@
 				:key="item.id"
 				:to="item.to"
 				class="group flex h-11 items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
+				:class="item.active ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
 				<span class="relative shrink-0">
@@ -53,10 +54,10 @@
 			</RouterLink>
 		</nav>
 
-		<!-- Group 3: 会话列表 -->
+		<!-- Group 3: Topic 列表 -->
 		<nav class="mt-3 space-y-0 px-2 pb-2">
 			<RouterLink
-				v-for="item in sessionItems"
+				v-for="item in topicItems"
 				:key="item.id"
 				:to="item.to"
 				class="group flex h-11 items-center gap-3 rounded-lg px-2 py-1 text-sm text-default transition-colors hover:bg-accented/80"
@@ -76,9 +77,8 @@
 				<span
 					v-else
 					class="size-6 shrink-0 rounded-full bg-accented flex items-center justify-center text-xs font-medium text-dimmed"
-				>{{ item.botInitial }}</span>
+				>{{ item.agentInitial }}</span>
 				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
-				<UIcon v-if="item.badge" :name="item.badge.icon" class="size-4 shrink-0" :class="item.badge.color" />
 			</RouterLink>
 		</nav>
 	</div>
@@ -88,38 +88,14 @@
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
-import { cleanDerivedTitle } from '../utils/session-msg-group.js';
+import { useTopicsStore } from '../stores/topics.store.js';
 import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
 
-/** 根据 sessionKey / indexed 状态返回图标标记 */
-function toSessionBadge(item) {
-	if (!item.indexed) {
-		return { icon: 'i-lucide-unlink', color: 'text-dimmed' };
+function toTopicLabel(topic, t) {
+	if (typeof topic?.title === 'string' && topic.title.trim()) {
+		return topic.title.trim();
 	}
-	const key = item.sessionKey;
-	if (!key) return null;
-	if (/^agent:[^:]+:main$/.test(key)) {
-		return { icon: 'i-lucide-star', color: 'text-primary' };
-	}
-	if (/^agent:[^:]+:cron:/.test(key)) {
-		return { icon: 'i-lucide-clock', color: 'text-warning' };
-	}
-	if (/^agent:[^:]+:session-research-/.test(key)) {
-		return { icon: 'i-lucide-flask-conical', color: 'text-dimmed' };
-	}
-	return null;
-}
-
-function toSessionLabel(item, t) {
-	if (typeof item?.title === 'string' && item.title.trim()) {
-		return cleanDerivedTitle(item.title) || item.title.trim();
-	}
-	const cleaned = cleanDerivedTitle(item?.derivedTitle);
-	if (cleaned) {
-		return cleaned;
-	}
-	const id = String(item?.sessionId ?? '');
-	return id || t('layout.unnamedSession');
+	return t('topic.newTopic');
 }
 
 export default {
@@ -141,22 +117,30 @@ export default {
 			agentsStore: null,
 			botsStore: null,
 			sessionsStore: null,
+			topicsStore: null,
 		};
 	},
 	computed: {
-		botNameMap() {
-			const bots = this.botsStore?.items ?? [];
-			const map = {};
-			for (const b of bots) {
-				map[b.id] = b.name || 'OpenClaw';
+		/** 当前路由上下文解析出的活跃 agentId（仅 main session 路由时高亮 agent） */
+		activeAgentKey() {
+			const route = this.$route;
+			if (!route) return '';
+			// 仅在 session 路由（用户点击 agent 进入 main session）时高亮 agent
+			// topic 路由下不高亮 agent，由 topic 列表的 currentPath 匹配负责高亮
+			if (route.name === 'chat') {
+				const sid = route.params?.sessionId;
+				const session = this.sessionsStore?.items?.find((s) => s.sessionId === sid);
+				if (session?.sessionKey) {
+					const agentId = this.agentsStore?.parseAgentId(session.sessionKey);
+					if (agentId) return `${session.botId}:${agentId}`;
+				}
 			}
-			return map;
+			return '';
 		},
 		botActionItems() {
 			const items = [
 				{ id: 'add-bot', label: this.$t('layout.addBot'), icon: 'i-lucide-plus', to: '/bots/add' },
 			];
-			// 侧边栏显示"我的 Claw"；窄屏下底部导航已提供入口，不重复
 			if (this.scrollable) {
 				items.push({ id: 'manage-bots', label: this.$t('layout.manageBots'), icon: 'i-lucide-settings', to: '/bots' });
 			}
@@ -179,6 +163,7 @@ export default {
 						avatarUrl: null,
 						emoji: null,
 						online: Boolean(b.online),
+						active: this.activeAgentKey === `${b.id}:main`,
 						to: mainSession
 							? { name: 'chat', params: { sessionId: mainSession.sessionId } }
 							: '/home',
@@ -197,32 +182,31 @@ export default {
 					avatarUrl: d.avatarUrl,
 					emoji: d.emoji,
 					online: agent.botOnline,
+					active: this.activeAgentKey === `${agent.botId}:${agent.id}`,
 					to: session
 						? { name: 'chat', params: { sessionId: session.sessionId } }
 						: '/home',
 				};
 			});
 		},
-		sessionItems() {
-			const items = this.sessionsStore?.items ?? [];
-			const detailRouteName = this.currentPath.startsWith('/topics') ? 'topics-chat' : 'chat';
+		topicItems() {
+			const items = this.topicsStore?.items ?? [];
 			const display = this.agentsStore?.getAgentDisplay;
-			const parseId = this.agentsStore?.parseAgentId;
+			const detailRouteName = 'topics-chat';
 			return [...items]
-				.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-				.map((item) => {
-					const agentId = parseId?.(item.sessionKey);
-					const d = agentId ? display?.(item.botId, agentId) ?? {} : {};
+				.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+				.map((topic) => {
+					const d = display?.(topic.botId, topic.agentId) ?? {};
+					const agentName = d.name || topic.agentId || 'Agent';
 					return {
-						id: item.sessionId,
-						label: toSessionLabel(item, this.$t),
-						badge: toSessionBadge(item),
-						botInitial: (this.botNameMap[item.botId] ?? 'O').charAt(0).toUpperCase(),
+						id: topic.topicId,
+						label: toTopicLabel(topic, this.$t),
 						agentAvatarUrl: d.avatarUrl || null,
 						agentEmoji: d.emoji || null,
+						agentInitial: agentName.charAt(0).toUpperCase(),
 						to: {
 							name: detailRouteName,
-							params: { sessionId: item.sessionId },
+							params: { sessionId: topic.topicId },
 						},
 					};
 				});
@@ -232,6 +216,7 @@ export default {
 		this.agentsStore = useAgentsStore();
 		this.botsStore = useBotsStore();
 		this.sessionsStore = useSessionsStore();
+		this.topicsStore = useTopicsStore();
 		this.loadAllData();
 	},
 	watch: {
@@ -240,6 +225,7 @@ export default {
 			async handler() {
 				await this.agentsStore?.loadAllAgents();
 				this.sessionsStore.loadAllSessions();
+				this.topicsStore.loadAllTopics();
 			},
 		},
 	},
@@ -252,7 +238,10 @@ export default {
 				this.botsStore?.setBots([]);
 			}
 			await this.agentsStore?.loadAllAgents();
-			await this.sessionsStore.loadAllSessions();
+			await Promise.all([
+				this.sessionsStore.loadAllSessions(),
+				this.topicsStore.loadAllTopics(),
+			]);
 		},
 		resolvePath(to) {
 			if (typeof to === 'string') {

@@ -18,6 +18,21 @@
 - Topic 元信息由插件侧 `coclaw-topics.json` 管理，OpenClaw 的 `sessions.json` 中不会出现 Topic 的条目
 - 对话内容（`.jsonl` transcript）由 OpenClaw 自然生成和管理，CoClaw 只负责元信息层
 
+### 当前版本约束：仅限 main agent
+
+> 补充时间：2026-03-17
+
+**当前版本 Topic 仅支持 main agent。** 虽然接口层面保留了 `agentId` 参数，但 UI 侧仅允许在 main agent 上下文中创建 Topic。
+
+**原因**：OpenClaw gateway 的 `agent()` RPC 在只传 `sessionId`（不传 `sessionKey`）时，始终路由到默认的 main agent。传 `agentId` 参数会触发 sessionKey 自动派生（`agent:<agentId>:main`），导致调用方的 `sessionId` 被覆盖且写入 `sessions.json`——与本方案"脱离 sessionKey 体系"的核心原则冲突。详见 `docs/openclaw-research/topic-feature-research.md` 第二章第 5 节。
+
+**UI 限制措施**：
+- "新话题"按钮仅在 main agent 的 session 页面和 topic 页面中显示
+- `loadAllTopics` 仅查询 main agent 的 topic 列表
+- 非 main agent 的 session 页面不提供新建 topic 入口
+
+**未来扩展**：若需多 agent topic 支持，可采用 sessionKey-per-topic 方案（`agent:<agentId>:coclaw-<topicId>`），但需评估 sessions.json 膨胀及 .jsonl 生命周期管理问题。
+
 ### 术语
 
 | 术语 | 含义 |

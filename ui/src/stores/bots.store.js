@@ -4,6 +4,8 @@ import { listBots } from '../services/bots.api.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
+import { useTopicsStore } from './topics.store.js';
+import { checkPluginVersion } from '../utils/plugin-version.js';
 
 // 跟踪已注册 state 监听的 botId，避免重复注册
 const _awaitingConnIds = new Set();
@@ -93,15 +95,33 @@ export const useBotsStore = defineStore('bots', {
 		 * 连接变为 connected 时触发 loadAllSessions
 		 */
 		__listenForReady(botIds, manager) {
+			const fire = async (id, conn) => {
+				// 先检查插件版本
+				const versionOk = await checkPluginVersion(conn);
+				if (!versionOk) {
+					console.warn('[bots] plugin version check failed for botId=%s → redirect to upgrade', id);
+					const { router } = await import('../router/index.js');
+					const current = router.currentRoute?.value?.path ?? '/';
+					if (current !== '/plugin-upgrade') {
+						router.push({ path: '/plugin-upgrade', query: { redirect: current } });
+					}
+					return;
+				}
+				await useAgentsStore().loadAgents(id);
+				useSessionsStore().loadAllSessions();
+				useTopicsStore().loadAllTopics();
+			};
+			const catchFire = (id, conn) => {
+				fire(id, conn).catch((err) => {
+					console.warn('[bots] fire failed for botId=%s: %s', id, err?.message);
+				});
+			};
 			for (const id of botIds) {
 				const conn = manager.get(id);
 				if (!conn) continue;
-				// 已连接的 bot 立即加载 agents + sessions
 				if (conn.state === 'connected') {
-					console.debug('[bots] conn already ready botId=%s → loadAgents+loadAllSessions', id);
-					useAgentsStore().loadAgents(id).then(() => {
-						useSessionsStore().loadAllSessions();
-					});
+					console.debug('[bots] conn already ready botId=%s → checkVersion+loadAgents', id);
+					catchFire(id, conn);
 					continue;
 				}
 				if (_awaitingConnIds.has(id)) continue;
@@ -110,10 +130,8 @@ export const useBotsStore = defineStore('bots', {
 					if (state === 'connected') {
 						conn.off('state', onState);
 						_awaitingConnIds.delete(id);
-						console.debug('[bots] conn ready botId=%s → loadAgents+loadAllSessions', id);
-						useAgentsStore().loadAgents(id).then(() => {
-							useSessionsStore().loadAllSessions();
-						});
+						console.debug('[bots] conn ready botId=%s → checkVersion+loadAgents', id);
+						catchFire(id, conn);
 					}
 				};
 				conn.on('state', onState);
