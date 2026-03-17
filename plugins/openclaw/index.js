@@ -205,6 +205,36 @@ const plugin = {
 			}
 		});
 
+		api.registerGatewayMethod('coclaw.topics.update', async ({ params, respond }) => {
+			try {
+				const topicId = params?.topicId?.trim?.();
+				if (!topicId) {
+					respond(false, { error: 'topicId required' });
+					return;
+				}
+				const changes = params?.changes;
+				if (!changes || typeof changes !== 'object') {
+					respond(false, { error: 'changes required' });
+					return;
+				}
+				// 当前版本仅处理 title
+				if (typeof changes.title !== 'string') {
+					respond(false, { error: 'No valid change field provided (supported: title)' });
+					return;
+				}
+				await topicManager.updateTitle({ topicId, title: changes.title });
+				const { topic } = topicManager.get({ topicId });
+				if (!topic) {
+					respond(false, { error: `Topic not found: ${topicId}` });
+					return;
+				}
+				respond(true, { topic });
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
 		api.registerGatewayMethod('coclaw.topics.generateTitle', async ({ params, respond }) => {
 			try {
 				const topicId = params?.topicId?.trim?.();

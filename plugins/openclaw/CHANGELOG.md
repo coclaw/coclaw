@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.4.1
+
+### Patch Changes
+
+- 新增 coclaw.topics.update gateway 方法，支持通过 RPC 更新 topic 标题；修复 changes 不含有效字段时静默成功的问题
+
 ## 0.4.0
 
 ### Minor Changes
