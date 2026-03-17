@@ -1,6 +1,7 @@
 /**
  * Capacitor 原生壳初始化
  * - Edge-to-Edge 状态栏配置
+ * - 软键盘适配（scrollIntoView）
  * - Android 返回键处理
  * - 后台保活前台服务
  */
@@ -26,6 +27,13 @@ export async function initCapacitorApp(router) {
 	}
 
 	try {
+		setupKeyboard();
+	}
+	catch (e) {
+		console.warn('[capacitor] Keyboard init failed:', e);
+	}
+
+	try {
 		setupBackButton(router);
 	}
 	catch (e) {
@@ -47,6 +55,21 @@ async function setupStatusBar() {
 	// 根据当前主题设置初始样式
 	const isDark = document.documentElement.classList.contains('dark');
 	await StatusBar.setStyle({ style: isDark ? Style.Dark : Style.Light });
+
+	// Android 14 及以下，env(safe-area-inset-top) 不可靠（Capacitor SystemBars 仅 Android 15+ 注入）
+	// 通过 StatusBar.getInfo() 获取实际高度，注入 CSS 变量作为可靠兜底
+	try {
+		const info = await StatusBar.getInfo();
+		if (info?.height > 0) {
+			const root = document.documentElement.style;
+			root.setProperty('--safe-area-inset-top', `${info.height}px`);
+			console.log('[capacitor] safe-area-inset-top injected: %dpx', info.height);
+		}
+	}
+	catch (e) {
+		console.warn('[capacitor] StatusBar.getInfo failed:', e);
+	}
+
 	console.log('[capacitor] StatusBar configured (overlay + transparent, style=%s)', isDark ? 'dark' : 'light');
 }
 
@@ -64,6 +87,19 @@ export async function syncStatusBarStyle(appliedTheme) {
 	catch (e) {
 		console.warn('[capacitor] syncStatusBarStyle failed:', e);
 	}
+}
+
+function setupKeyboard() {
+	import('@capacitor/keyboard').then(({ Keyboard }) => {
+		// 键盘弹出后确保输入框可见
+		Keyboard.addListener('keyboardDidShow', () => {
+			const el = document.activeElement;
+			if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')) {
+				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}
+		});
+		console.log('[capacitor] Keyboard listener registered');
+	}).catch((e) => console.warn('[capacitor] Keyboard setup failed:', e));
 }
 
 function startKeepAlive() {

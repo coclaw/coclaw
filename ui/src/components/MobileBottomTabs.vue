@@ -1,5 +1,5 @@
 <template>
-	<div class="fixed bottom-0 left-0 right-0 z-20 border-t border-default bg-elevated pb-[env(safe-area-inset-bottom)] md:hidden">
+	<div class="fixed bottom-0 left-0 right-0 z-20 border-t border-default bg-elevated pb-[var(--safe-area-inset-bottom)] md:hidden">
 		<UTabs
 			v-model="activeTab"
 			:items="mobileTabs"

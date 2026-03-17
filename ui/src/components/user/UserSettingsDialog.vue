@@ -34,8 +34,8 @@ export default {
 			isMobile: false,
 			mediaQuery: null,
 			safeAreaUi: {
-				header: 'pt-[max(0.25rem,env(safe-area-inset-top))]',
-				body: 'pb-[env(safe-area-inset-bottom)]',
+				header: 'pt-[max(0.25rem,var(--safe-area-inset-top))]',
+				body: 'pb-[var(--safe-area-inset-bottom)]',
 			},
 		};
 	},

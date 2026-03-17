@@ -8,6 +8,11 @@ const config: CapacitorConfig = {
     url: 'https://im.coclaw.net',
     cleartext: false,
   },
+  plugins: {
+    Keyboard: {
+      resizeOnFullScreen: true,
+    },
+  },
 };
 
 export default config;

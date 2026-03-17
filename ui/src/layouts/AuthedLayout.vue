@@ -86,15 +86,19 @@ export default {
 			// 原生壳下 section 需 min-h-0 以允许 flex 子项内部滚动
 			if (isCapacitorApp) cls.push('min-h-0');
 			if (!isCapacitorApp) cls.push('min-h-screen');
-			// 顶级页面无 MobilePageHeader，需要为状态栏留出安全距离
-			if (this.isTopPage) cls.push('pt-[env(safe-area-inset-top)] md:pt-0');
-			// 底部导航可见时为其留出空间
-			if (this.showMobileNav) cls.push('pb-[calc(3.25rem+env(safe-area-inset-bottom))] md:pb-0');
+			// 顶部安全区域（状态栏），始终生效
+			cls.push('pt-[var(--safe-area-inset-top)] md:pt-0');
+			// 底部安全区域：有底部导航时额外加 tab 高度
+			if (this.showMobileNav) {
+				cls.push('pb-[calc(3.25rem+var(--safe-area-inset-bottom))] md:pb-0');
+			} else {
+				cls.push('pb-[var(--safe-area-inset-bottom)] md:pb-0');
+			}
 			return cls.join(' ');
 		},
 		pullIndicatorStyle() {
 			return {
-				top: `calc(env(safe-area-inset-top, 0px) + ${this.pullDistance - 8}px)`,
+				top: `calc(var(--safe-area-inset-top) + ${this.pullDistance - 8}px)`,
 				opacity: Math.min(this.pullDistance / 60, 1),
 				transition: this.pulling ? 'none' : 'all 0.2s ease-out',
 			};

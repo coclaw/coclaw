@@ -1,5 +1,5 @@
 <template>
-	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-2 pb-2">
 		<!-- 文件预览区 -->
 		<div
 			v-if="inputFiles.length"

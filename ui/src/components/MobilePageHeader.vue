@@ -1,5 +1,5 @@
 <template>
-	<header class="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-default bg-default px-1 py-[3px] pt-[max(3px,env(safe-area-inset-top))] md:hidden">
+	<header class="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-default bg-default px-1 py-[3px] pt-[3px] md:hidden">
 		<div class="flex shrink-0 items-center">
 			<UButton
 				size="xl"
