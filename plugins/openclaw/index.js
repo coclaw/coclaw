@@ -6,7 +6,7 @@ import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
 import { notBound, bindOk, unbindOk } from './src/common/messages.js';
 import { coclawChannelPlugin } from './src/channel-plugin.js';
-import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge } from './src/realtime-bridge.js';
+import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './src/realtime-bridge.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
 import { TopicManager } from './src/topic-manager/manager.js';
@@ -167,6 +167,7 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.info', async ({ respond }) => {
 			try {
+				await waitForSessionsReady();
 				const version = await getPluginVersion();
 				respond(true, { version, capabilities: ['topics', 'chatHistory'] });
 			}
