@@ -1,4 +1,3 @@
-/* c8 ignore start */
 import fs from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
@@ -25,6 +24,7 @@ const CRON_TIME_UTC_RE = /(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+UTC/;
 function formatCronTime(matchedText) {
 	const m = matchedText.match(CRON_TIME_UTC_RE);
 	if (!m) return '';
+	/* c8 ignore start -- Date 构造在正则已校验的输入下不会抛出 */
 	try {
 		const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`);
 		if (!Number.isFinite(d.getTime())) return '';
@@ -38,6 +38,7 @@ function formatCronTime(matchedText) {
 	catch {
 		return '';
 	}
+	/* c8 ignore stop */
 }
 
 function stripLeadingPattern(text, re) {
@@ -50,6 +51,7 @@ function stripLeadingPattern(text, re) {
 }
 
 function cleanTitleText(text) {
+	/* c8 ignore next */
 	if (!text) return '';
 	let s = stripLeadingPattern(text, INBOUND_META_RE);
 	s = stripLeadingPattern(s, OPERATOR_POLICY_RE);
@@ -127,10 +129,12 @@ function truncateTitle(text, maxLen = DERIVED_TITLE_MAX_LEN) {
 
 function extractRawTextFromContent(content) {
 	if (typeof content === 'string') return content;
+	/* c8 ignore next */
 	if (!Array.isArray(content)) return undefined;
 	for (const part of content) {
 		if (!part || typeof part !== 'object') continue;
 		if (part.type !== 'text') continue;
+		/* c8 ignore next */
 		if (typeof part.text !== 'string') continue;
 		if (part.text.trim()) return part.text;
 	}
@@ -149,6 +153,7 @@ function findFirstUserRawText(filePath, logger) {
 			if (raw && raw.trim()) return raw;
 		}
 		catch (err) {
+			/* c8 ignore next -- ?./?? fallback */
 			logger.warn?.(`[session-manager] bad json line skipped when deriving title: ${String(err?.message ?? err)}`);
 		}
 	}
@@ -161,15 +166,18 @@ function deriveTitle(filePath, logger) {
 	const cleaned = cleanTitleText(rawText);
 	if (!cleaned) return undefined;
 	const normalized = cleaned.replace(/\s+/g, ' ').trim();
+	/* c8 ignore next */
 	if (!normalized) return undefined;
 	return truncateTitle(normalized, DERIVED_TITLE_MAX_LEN);
 }
 
 export function createSessionManager(options = {}) {
 	const rootDir = options.rootDir ?? nodePath.join(os.homedir(), '.openclaw', 'agents');
+	/* c8 ignore next */
 	const logger = options.logger ?? console;
 
 	function sessionsDir(agentId = 'main') {
+		/* c8 ignore next */
 		const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'main';
 		return nodePath.join(rootDir, aid, 'sessions');
 	}
@@ -177,6 +185,7 @@ export function createSessionManager(options = {}) {
 	function readIndex(agentId = 'main') {
 		const file = nodePath.join(sessionsDir(agentId), 'sessions.json');
 		const data = readJsonSafe(file, {});
+		/* c8 ignore next */
 		if (!data || typeof data !== 'object') return {};
 		return data;
 	}
@@ -225,6 +234,7 @@ export function createSessionManager(options = {}) {
 		// 补充 sessions.json 中有索引但无 transcript 文件的 session（如 reset 后未对话、新建 session）
 		for (const [sessionKey, entry] of Object.entries(index)) {
 			const sid = entry?.sessionId;
+			/* c8 ignore next -- !sid 防御性检查 */
 			if (!sid || grouped.has(sid)) continue;
 			grouped.set(sid, {
 				sessionId: sid,
@@ -289,6 +299,7 @@ export function createSessionManager(options = {}) {
 				if (a.archiveStamp !== b.archiveStamp) {
 					return b.archiveStamp.localeCompare(a.archiveStamp);
 				}
+				/* c8 ignore next -- 同一 sessionId 的 reset 文件不会有相同 archiveStamp */
 				return b.updatedAt - a.updatedAt;
 			});
 		if (resetCandidates.length > 0) {
@@ -314,10 +325,12 @@ export function createSessionManager(options = {}) {
 				all.push(JSON.parse(line));
 			}
 			catch (err) {
+				/* c8 ignore next -- ?./?? fallback */
 				logger.warn?.(`[session-manager] bad json line skipped: ${String(err?.message ?? err)}`);
 			}
 		}
 		const messages = all.slice(cursor, cursor + limit);
+		/* c8 ignore next */
 		const nextCursor = cursor + limit < all.length ? String(cursor + limit) : null;
 		return {
 			agentId,
@@ -329,6 +342,40 @@ export function createSessionManager(options = {}) {
 		};
 	}
 
-	return { listAll, get };
+	/**
+	 * 按 sessionId 获取消息，返回完整 JSONL 行级结构。
+	 * 只返回 type==="message" 且有合法 message.role 的行。
+	 * @param {{ sessionId: string, agentId?: string, limit?: number }} params
+	 * @returns {{ messages: object[] }}
+	 */
+	function getById(params = {}) {
+		const agentId = typeof params.agentId === 'string' && params.agentId.trim() ? params.agentId.trim() : 'main';
+		const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
+		if (!sessionId) throw new Error('sessionId required');
+		const limit = clamp(params.limit, 1, 500, 500);
+		const file = resolveTranscriptFile(agentId, sessionId);
+		if (!file) {
+			return { messages: [] };
+		}
+
+		const messages = [];
+		for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)) {
+			try {
+				const row = JSON.parse(line);
+				if (row?.type !== 'message') continue;
+				const msg = row?.message;
+				if (!msg || typeof msg !== 'object' || !msg.role) continue;
+				messages.push(row);
+			}
+			catch (err) {
+				/* c8 ignore next -- ?./?? fallback */
+				logger.warn?.(`[session-manager] bad json line skipped: ${String(err?.message ?? err)}`);
+			}
+		}
+		// 取最后 limit 条
+		const sliced = messages.length > limit ? messages.slice(-limit) : messages;
+		return { messages: sliced };
+	}
+
+	return { listAll, get, getById };
 }
-/* c8 ignore stop */

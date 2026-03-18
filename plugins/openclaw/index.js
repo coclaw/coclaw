@@ -10,6 +10,7 @@ import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtim
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
 import { TopicManager } from './src/topic-manager/manager.js';
+import { ChatHistoryManager } from './src/chat-history-manager/manager.js';
 import { generateTitle } from './src/topic-manager/title-gen.js';
 import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
@@ -78,13 +79,40 @@ const plugin = {
 		const logger = api?.logger ?? console;
 		const manager = createSessionManager({ logger });
 		const topicManager = new TopicManager({ logger });
+		const chatHistoryManager = new ChatHistoryManager({ logger });
 
-		// 懒加载 topic 数据（best-effort，不阻断注册）
+		// 懒加载 topic / chat history 数据（best-effort，不阻断注册）
 		topicManager.load('main').catch((err) => {
 			logger.warn?.(`[coclaw] topic manager load failed: ${String(err?.message ?? err)}`);
 		});
+		chatHistoryManager.load('main').catch((err) => {
+			logger.warn?.(`[coclaw] chat history manager load failed: ${String(err?.message ?? err)}`);
+		});
 
 		api.registerChannel({ plugin: coclawChannelPlugin });
+
+		// 追踪 chat 因 reset 产生的孤儿 session
+		if (typeof api.on === 'function') {
+			api.on('session_start', async (event, ctx) => {
+				if (!event.resumedFrom) return; // 首次创建，无前任
+				const agentId = ctx?.agentId ?? 'main';
+				const sessionKey = event.sessionKey;
+				if (!sessionKey) return;
+				try {
+					if (!chatHistoryManager.__cache.has(agentId)) {
+						await chatHistoryManager.load(agentId);
+					}
+					await chatHistoryManager.recordArchived({
+						agentId,
+						sessionKey,
+						sessionId: event.resumedFrom,
+					});
+				} catch (err) {
+					logger.warn?.(`[coclaw] chat history record failed: ${String(err?.message ?? err)}`);
+				}
+			});
+		}
+
 		api.registerService({
 			id: 'coclaw-realtime-bridge',
 			async start() {
@@ -140,7 +168,7 @@ const plugin = {
 		api.registerGatewayMethod('coclaw.info', async ({ respond }) => {
 			try {
 				const version = await getPluginVersion();
-				respond(true, { version, capabilities: ['topics'] });
+				respond(true, { version, capabilities: ['topics', 'chatHistory'] });
 			}
 			catch (err) {
 				respondError(respond, err);
@@ -264,6 +292,42 @@ const plugin = {
 				}
 				const result = await topicManager.delete({ topicId });
 				respond(true, result);
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.chatHistory.list', async ({ params, respond }) => {
+			try {
+				const agentId = params?.agentId?.trim?.() || 'main';
+				const sessionKey = params?.sessionKey?.trim?.();
+				if (!sessionKey) {
+					respond(false, { error: 'sessionKey required' });
+					return;
+				}
+				if (!chatHistoryManager.__cache.has(agentId)) {
+					await chatHistoryManager.load(agentId);
+				}
+				const result = await chatHistoryManager.list({ agentId, sessionKey });
+				respond(true, result);
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		// TODO: coclaw.topics.getHistory 未来可废弃，UI 改用 coclaw.sessions.getById
+		api.registerGatewayMethod('coclaw.sessions.getById', ({ params, respond }) => {
+			try {
+				const sessionId = params?.sessionId?.trim?.();
+				if (!sessionId) {
+					respond(false, { error: 'sessionId required' });
+					return;
+				}
+				const agentId = params?.agentId?.trim?.() || 'main';
+				const limit = params?.limit;
+				respond(true, manager.getById({ agentId, sessionId, limit }));
 			}
 			catch (err) {
 				respondError(respond, err);

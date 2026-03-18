@@ -23,7 +23,8 @@
   - `worker-backup.js` — 备份与恢复
   - `worker-verify.js` — 升级后验证（gateway + 插件 + health）
   - `state.js` — upgrade-state.json / upgrade-log.jsonl 读写
-- `src/session-manager/` — 会话读取能力（`nativeui.sessions.listAll/get`）
+- `src/chat-history-manager/` — chat 历史追踪（session reset 产生的孤儿 session 链）
+- `src/session-manager/` — 会话读取能力（`nativeui.sessions.listAll/get`、`coclaw.sessions.getById`）
 - `src/utils/` — 通用工具（零外部依赖）
   - `atomic-write.js` — 原子文件写入（tmp+rename）
   - `mutex.js` — 进程内异步互斥锁（Promise 链 FIFO）
@@ -82,6 +83,13 @@
   - gateway 内部 synthetic client（含 `operator.admin`）
 - 因此当前无 scope 问题。但若未来需要支持非 admin scope 的调用者直接调用插件方法，需向 OpenClaw 的 `METHOD_SCOPE_GROUPS` 表注册所需 scope，否则会被 fallback 到 admin 拦截。
 - **已知设计特征**：bridge 以自身 `operator.admin` 身份转发 CoClaw server 发来的所有请求，server 实质拥有 admin 级 gateway 权限（设计预期，server 是受信方）。
+
+## Hook 与 Gateway Method 的模块实例隔离
+
+- OpenClaw 在 `--link` 安装模式下，`api.on()` 注册的 hook 回调和 `api.registerGatewayMethod()` 注册的 RPC handler **可能运行在不同的 ESM 模块实例中**（即使同一进程、同一 `register()` 调用）。原因是 symlink 导致 ESM 模块缓存命中不同 URL。
+- **后果**：hook 和 RPC handler 闭包捕获的对象（如 Manager 实例）看似同一个，实际是两份独立的内存拷贝。hook 修改的内存状态对 RPC handler 不可见。
+- **应对**：需要跨 hook/RPC 共享的状态，不能依赖纯内存缓存，必须通过磁盘文件中转。读取侧（如 RPC handler）每次调用前从磁盘重载。
+- `api.on()` 在某些调用上下文（如 CLI 模式的 mock API）中可能不存在，注册时须加 `typeof api.on === 'function'` 防御。
 
 ## 约束
 

@@ -429,3 +429,294 @@ test('listAll should derive title from CRLF line ending files', async () => {
 	const item = res.items.find((it) => it.sessionId === 'crlf2');
 	assert.equal(item?.derivedTitle, 'CRLF title test');
 });
+
+// --- getById ---
+
+test('getById - 返回完整 JSONL 行级结构', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'g1.jsonl'),
+		[
+			'{"type":"header","version":"1","id":"g1"}',
+			'{"type":"message","id":"msg1","message":{"role":"user","content":"hello"}}',
+			'{"type":"message","id":"msg2","message":{"role":"assistant","content":"hi there"}}',
+			'{"type":"summary","data":"ignored"}',
+		].join('\n') + '\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.getById({ sessionId: 'g1' });
+	assert.equal(res.messages.length, 2);
+	// 返回完整行，含 type、id、message
+	assert.equal(res.messages[0].type, 'message');
+	assert.equal(res.messages[0].id, 'msg1');
+	assert.equal(res.messages[0].message.role, 'user');
+	assert.equal(res.messages[0].message.content, 'hello');
+	assert.equal(res.messages[1].type, 'message');
+	assert.equal(res.messages[1].message.role, 'assistant');
+	assert.equal(res.messages[1].message.content, 'hi there');
+});
+
+test('getById - 文件不存在返回空消息', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	await fs.mkdir(nodePath.join(root, 'main', 'sessions'), { recursive: true });
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.getById({ sessionId: 'nonexistent' });
+	assert.deepStrictEqual(res, { messages: [] });
+});
+
+test('getById - 缺少 sessionId 抛出错误', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	assert.throws(() => manager.getById({}), /sessionId required/);
+});
+
+test('getById - limit 限制返回最后 N 条', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	const lines = [];
+	for (let i = 0; i < 10; i++) {
+		lines.push(`{"type":"message","message":{"role":"user","content":"msg-${i}"}}`);
+	}
+	await fs.writeFile(nodePath.join(sessionsDir, 'g2.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.getById({ sessionId: 'g2', limit: 3 });
+	assert.equal(res.messages.length, 3);
+	// 取最后 3 条，返回完整行
+	assert.equal(res.messages[0].message.content, 'msg-7');
+	assert.equal(res.messages[2].message.content, 'msg-9');
+});
+
+test('getById - 跳过无效 message 行', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'g3.jsonl'),
+		[
+			'{"type":"message","message":{"role":"user","content":"ok"}}',
+			'not-json',
+			'{"type":"message","message":{}}', // 无 role
+			'{"type":"message","message":"not-object"}', // message 非对象
+			'{"type":"message","message":{"role":"assistant","content":"fine"}}',
+		].join('\n') + '\n',
+		'utf8',
+	);
+
+	const warns = [];
+	const manager = createSessionManager({ rootDir: root, logger: { warn: (msg) => warns.push(msg) } });
+	const res = manager.getById({ sessionId: 'g3' });
+	assert.equal(res.messages.length, 2);
+	assert.equal(res.messages[0].message.content, 'ok');
+	assert.equal(res.messages[1].message.content, 'fine');
+	assert.ok(warns.length > 0, 'should have warned about bad json');
+});
+
+test('getById - fallback 到 reset 文件', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'g4.jsonl.reset.2026-03-01T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"from reset"}}\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.getById({ sessionId: 'g4' });
+	assert.equal(res.messages.length, 1);
+	assert.equal(res.messages[0].message.content, 'from reset');
+});
+
+test('getById - CRLF 换行正确解析', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'g5.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"crlf"}}\r\n{"type":"message","message":{"role":"assistant","content":"ok"}}\r\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.getById({ sessionId: 'g5' });
+	assert.equal(res.messages.length, 2);
+	assert.equal(res.messages[0].message.content, 'crlf');
+});
+
+test('getById - agentId 参数正确路由', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'tester', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'g6.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"from tester"}}\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	// 默认 agentId=main，找不到
+	const empty = manager.getById({ sessionId: 'g6' });
+	assert.deepStrictEqual(empty, { messages: [] });
+	// 指定 agentId=tester
+	const res = manager.getById({ sessionId: 'g6', agentId: 'tester' });
+	assert.equal(res.messages.length, 1);
+	assert.equal(res.messages[0].message.content, 'from tester');
+});
+
+// --- 补充覆盖率：shouldReplaceByPriority 同优先级 updatedAt 比较 ---
+
+test('listAll - 同一 sessionId 多个 reset 文件按 mtime 选最新', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	// 两个 reset 文件，通过 utimes 设置不同 mtime
+	const oldFile = nodePath.join(sessionsDir, 'dup.jsonl.reset.2026-01-01T00-00-00.000Z');
+	const newFile = nodePath.join(sessionsDir, 'dup.jsonl.reset.2026-03-01T00-00-00.000Z');
+	await fs.writeFile(oldFile, '{"type":"message","message":{"role":"user","content":"old"}}\n', 'utf8');
+	await fs.writeFile(newFile, '{"type":"message","message":{"role":"user","content":"new"}}\n', 'utf8');
+	// 显式设置 mtime 确保 newFile 更新
+	const oldTime = new Date('2026-01-01T00:00:00Z');
+	const newTime = new Date('2026-03-01T00:00:00Z');
+	await fs.utimes(oldFile, oldTime, oldTime);
+	await fs.utimes(newFile, newTime, newTime);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.listAll({});
+	const item = res.items.find((it) => it.sessionId === 'dup');
+	assert.ok(item);
+	assert.equal(item.archiveType, 'reset');
+	assert.ok(item.fileName.includes('2026-03-01'), 'should pick the file with newer mtime');
+});
+
+// --- 补充覆盖率：extractRawTextFromContent 混合内容类型 ---
+
+test('listAll - 超长无空格文本截断', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	// 超过 60 字符的无空格文本
+	const longNoSpace = 'あ'.repeat(70);
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'nospace.jsonl'),
+		`{"type":"message","message":{"role":"user","content":"${longNoSpace}"}}\n`,
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.listAll({});
+	const item = res.items.find((it) => it.sessionId === 'nospace');
+	assert.ok(item?.derivedTitle);
+	assert.ok(item.derivedTitle.endsWith('…'));
+	assert.ok(item.derivedTitle.length <= 60);
+});
+
+test('listAll - content 数组全为非 text 类型时无标题', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'notext.jsonl'),
+		JSON.stringify({
+			type: 'message',
+			message: {
+				role: 'user',
+				content: [
+					{ type: 'image', url: 'http://example.com/img.png' },
+					{ type: 'audio', data: 'base64...' },
+				],
+			},
+		}) + '\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.listAll({});
+	const item = res.items.find((it) => it.sessionId === 'notext');
+	assert.ok(item);
+	assert.equal(Object.prototype.hasOwnProperty.call(item, 'derivedTitle'), false);
+});
+
+test('listAll - title 解析遇 bad json 行时发出警告', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'badjson.jsonl'),
+		'not-valid-json\n{"type":"message","message":{"role":"user","content":"ok"}}\n',
+		'utf8',
+	);
+
+	const warns = [];
+	const manager = createSessionManager({ rootDir: root, logger: { warn: (msg) => warns.push(msg) } });
+	const res = manager.listAll({});
+	const item = res.items.find((it) => it.sessionId === 'badjson');
+	assert.equal(item?.derivedTitle, 'ok');
+	assert.ok(warns.some((w) => w.includes('bad json line skipped when deriving title')));
+});
+
+test('listAll - .jsonl.bak 文件被跳过', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	// .bak 文件不匹配 live 或 reset 模式
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'bak1.jsonl.bak.2026-01-01T00-00-00.000Z'),
+		'{"type":"message"}\n',
+		'utf8',
+	);
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'ok1.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"visible"}}\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.listAll({});
+	assert.equal(res.total, 1);
+	assert.equal(res.items[0].sessionId, 'ok1');
+});
+
+test('listAll - 混合 content 类型数组取首个 text', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'mix.jsonl'),
+		JSON.stringify({
+			type: 'message',
+			message: {
+				role: 'user',
+				content: [
+					{ type: 'image', url: 'http://example.com/img.png' },
+					null,
+					{ type: 'text', text: '' }, // 空文本应跳过
+					{ type: 'text', text: 'actual title' },
+				],
+			},
+		}) + '\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const res = manager.listAll({});
+	const item = res.items.find((it) => it.sessionId === 'mix');
+	assert.equal(item?.derivedTitle, 'actual title');
+});
