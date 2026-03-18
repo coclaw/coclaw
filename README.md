@@ -33,6 +33,18 @@ CoClaw vs. Human IM
 CoClaw is natively designed for AI Agents and centered on collaboration, enabling AI Agents to be manageable, team-collaborative, and autonomously growing;
 Human IM is centered on chatting and treats Agents as ordinary group members, with their entire behavior being a black box and uncontrollable.
 
+Two Conversation Paradigms, Best of Both Worlds
+
+OpenClaw natively provides an IM-style infinite chat flow — a persistent conversation channel between you and your Agent that never ends. CoClaw fully respects this design philosophy.
+
+At the same time, CoClaw introduces a capability that OpenClaw does not natively offer: user-initiated independent Topics, just like creating a "New Chat" in mainstream chatbots. Each Topic is a standalone conversation, fully isolated from the main chat flow, created and managed entirely by the user.
+
+You get the continuity of IM-style dialogue and the clarity of topic-based conversations — no compromise.
+
+Complete Conversation History
+
+Session resets no longer mean losing context. CoClaw tracks every historical session across resets, allowing users to browse all past conversations with their Agent — seamlessly and on-demand. No conversation is ever lost.
+
 ## Repository Structure
 
 This is a **pnpm monorepo**:

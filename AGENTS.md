@@ -21,6 +21,18 @@ General Instructions
 
 **对项目开发的一句话原则**：pnpm 统一管理、优先成熟依赖、严格测试闭环、文档持续同步、按模块分层收敛复杂度。
 
+## 核心术语
+
+| CoClaw 术语 | OpenClaw 对应 | 含义 |
+|-------------|--------------|------|
+| **chat** | sessionKey | 无限对话流（长期身份），如 `agent:main:main` |
+| **session** | sessionId | chat 中的一个片段；reset 时产生新 session，旧 session 成为孤儿 |
+| **topic** | 无对应 | 用户主动发起的独立对话，脱离 OpenClaw sessionKey 体系 |
+
+- chat 与 sessionKey 一一对应：一条 chat 即一个 sessionKey，代表持续的对话流
+- session 与 sessionId 一一对应：是 chat 内的一段对话，每次 reset 产生新的 session
+- topic 由 CoClaw 自管理，使用 `agent(sessionId=<uuid>)` 发起，不关联 sessionKey
+
 ## 仓库结构（monorepo，扁平组织）
 
 - `server`：后端服务
@@ -48,7 +60,7 @@ General Instructions
 - 采用 JavaScript，而非 TypeScript
 - 用 TAB 缩进；开发者阅读代码时会按 1TAB=2空格 设置阅读器
 - 语句末尾原则上应添加分号
-- 标识符命名应简洁清晰，优选社区通用缩写
+- 标识符命名应简洁清晰，优选社区通用缩写（如 `prev`、`cur`/`curr`、`msg`、`cfg`、`ctx`、`conn`、`btn`、`idx`、`fn`、`cb`、`req`/`res`、`err`、`args`、`params`、`opts`、`info`、`init` 等）
 - 函数风格
   - 顶层/具名函数优先 `function` 声明
   - 内联回调优先箭头函数以保持简洁
