@@ -11,7 +11,7 @@ import {
 } from './device-identity.js';
 import { getRuntime } from './runtime.js';
 
-const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:18789';
+const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 const SERVER_HB_PING_MS = 25_000;

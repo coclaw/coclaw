@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.5.2
+
+### Patch Changes
+
+- fix(bridge): 从环境变量 OPENCLAW_GATEWAY_PORT 自动检测 gateway 端口，不再硬编码 18789。修复非默认端口的 OpenClaw 实例绑定后所有 RPC 失败（"Gateway is offline"）的问题。
+
 ## 0.5.1
 
 ### Patch Changes
