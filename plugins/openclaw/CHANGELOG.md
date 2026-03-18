@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.5.1
+
+### Patch Changes
+
+- fix(plugin): coclaw.info 等待 ensureAllAgentSessions 完成后再响应，修复新 OC 实例首次连接时空 session 导致无法进入对话页面的问题
+
 ## 0.5.0
 
 ### Minor Changes
