@@ -2,7 +2,7 @@
 	<div class="flex min-h-0 flex-1 flex-col">
 		<MobilePageHeader :title="$t('about.title')" />
 	<main class="flex-1 overflow-auto px-4 pt-5 lg:px-5">
-		<div class="mx-auto w-full max-w-3xl">
+		<div class="mx-auto w-full max-w-xl">
 			<img :src="logoSrc" alt="CoClaw" class="mx-auto mb-5 size-20 rounded-xl" />
 			<h1 v-if="false" class="hidden text-center text-xl font-semibold md:block">{{ $t('about.title') }}</h1>
 			<p class="text-center text-base text-toned md:mt-4">{{ $t('about.intro') }}</p>
@@ -31,7 +31,7 @@
 		</div>
 	</main>
 	<footer class="sticky bottom-0 bg-default px-4 pt-4 pb-2 lg:px-5">
-		<div class="mx-auto w-full max-w-3xl">
+		<div class="mx-auto w-full max-w-xl">
 			<UButton
 				v-if="isLoggedIn"
 				data-testid="btn-about-logout"
