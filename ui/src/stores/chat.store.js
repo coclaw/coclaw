@@ -569,6 +569,8 @@ export const useChatStore = defineStore('chat', {
 				this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
 				this.historyExhausted = this.historySessionIds.length === 0;
 				this.__historyLoadedCount = 0;
+				console.debug('[chat] loadChatHistory: %d orphan sessions, exhausted=%s',
+					this.historySessionIds.length, this.historyExhausted);
 			}
 			catch (err) {
 				console.warn('[chat] loadChatHistory failed:', err?.message);
@@ -591,6 +593,8 @@ export const useChatStore = defineStore('chat', {
 			this.historyLoading = true;
 			try {
 				const entry = this.historySessionIds[this.__historyLoadedCount];
+				console.debug('[chat] loadNextHistory: loading session %d/%d id=%s',
+					this.__historyLoadedCount + 1, this.historySessionIds.length, entry.sessionId);
 				const conn = this.__getConnection();
 				if (!conn || conn.state !== 'connected') return false;
 
@@ -600,6 +604,7 @@ export const useChatStore = defineStore('chat', {
 					agentId,
 				});
 				const msgs = Array.isArray(result?.messages) ? result.messages : [];
+				console.debug('[chat] loadNextHistory: loaded %d messages for session %s', msgs.length, entry.sessionId);
 
 				// Prepend（新加载的更旧的 session 放到数组前面）
 				this.historySegments = [

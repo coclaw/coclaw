@@ -218,6 +218,7 @@ export const enMessages = {
 		botUnbound: 'Claw has been unbound',
 		sessionNotFound: 'Session no longer exists',
 		newChatFailed: 'Failed to start new chat',
+		noMoreHistory: 'No earlier messages',
 		botThinking: 'Thinking',
 		thinkingFor: 'Thinking {time}',
 	},

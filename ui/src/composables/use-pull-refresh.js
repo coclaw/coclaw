@@ -4,7 +4,7 @@
  * - 自动检测最近的可滚动祖先是否在顶部
  * - 带阻尼效果的视觉距离
  */
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, shallowRef, onMounted, onBeforeUnmount } from 'vue';
 
 /** 触发刷新的视觉距离阈值（px） */
 const THRESHOLD = 60;
@@ -31,6 +31,23 @@ function isScrolledToTop(el) {
 }
 
 /**
+ * 全局 suppress 标志——活跃时下拉手势不触发刷新
+ * 用于 ChatPage 等需要接管顶部下拉行为的页面
+ */
+const suppressRef = shallowRef(false);
+
+/**
+ * 注册/注销 pull-to-refresh 抑制
+ * @returns {{ suppress: () => void, unsuppress: () => void }}
+ */
+export function usePullRefreshSuppress() {
+	return {
+		suppress() { suppressRef.value = true; },
+		unsuppress() { suppressRef.value = false; },
+	};
+}
+
+/**
  * @param {import('vue').Ref<HTMLElement>} containerRef - 挂载触摸事件的容器
  * @param {object} [opts]
  * @param {() => void} [opts.onRefresh] - 触发刷新回调，默认 window.location.reload()
@@ -45,6 +62,7 @@ export function usePullRefresh(containerRef, opts = {}) {
 	let tracking = false;
 
 	function onTouchStart(e) {
+		if (suppressRef.value) return;
 		if (isScrolledToTop(e.target)) {
 			tracking = true;
 			startY = e.touches[0].clientY;

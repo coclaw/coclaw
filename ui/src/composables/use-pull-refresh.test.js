@@ -1,7 +1,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { defineComponent, ref } from 'vue';
-import { usePullRefresh } from './use-pull-refresh.js';
+import { usePullRefresh, usePullRefreshSuppress } from './use-pull-refresh.js';
 
 /**
  * 在 el 上触发 touchstart → touchmove → touchend
@@ -105,5 +105,22 @@ describe('usePullRefresh', () => {
 
 		simulatePull(el, 100, 300);
 		expect(onRefresh).not.toHaveBeenCalled();
+	});
+
+	test('suppress 激活时下拉不触发刷新', () => {
+		const onRefresh = vi.fn();
+		const wrapper = createWrapper(onRefresh);
+		const { suppress, unsuppress } = usePullRefreshSuppress();
+
+		suppress();
+		simulatePull(wrapper.element, 100, 300);
+		expect(onRefresh).not.toHaveBeenCalled();
+
+		// 解除后恢复
+		unsuppress();
+		simulatePull(wrapper.element, 100, 300);
+		expect(onRefresh).toHaveBeenCalledOnce();
+
+		wrapper.unmount();
 	});
 });

@@ -36,14 +36,17 @@
 		</header>
 
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
-		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll">
+		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel">
 			<div class="mx-auto w-full max-w-3xl">
 				<div v-if="isBotOffline" class="mx-4 mt-4 rounded-lg bg-warning/10 px-4 py-2 text-center text-sm text-warning">
 					{{ $t('chat.botOffline') }}
 				</div>
-				<!-- 历史加载中提示 -->
+				<!-- 历史加载状态提示 -->
 				<div v-if="chatStore.historyLoading" class="px-4 py-3 text-center text-xs text-muted">
 					{{ $t('chat.loading') }}
+				</div>
+				<div v-else-if="chatStore.historyExhausted && chatStore.historySegments.length > 0" class="px-4 py-3 text-center text-xs text-muted">
+					{{ $t('chat.noMoreHistory') }}
 				</div>
 				<div v-if="chatStore.loading" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('chat.loading') }}
@@ -97,6 +100,7 @@ import { useChatStore } from '../stores/chat.store.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { groupSessionMessages } from '../utils/session-msg-group.js';
 import { isCapacitorApp } from '../utils/platform.js';
+import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
 
 export default {
 	name: 'ChatPage',
@@ -106,6 +110,7 @@ export default {
 		ChatInput,
 	},
 	setup() {
+		const { suppress, unsuppress } = usePullRefreshSuppress();
 		return {
 			notify: useNotify(),
 			agentsStore: useAgentsStore(),
@@ -113,6 +118,8 @@ export default {
 			botsStore: useBotsStore(),
 			sessionsStore: useSessionsStore(),
 			topicsStore: useTopicsStore(),
+			suppressPullRefresh: suppress,
+			unsuppressPullRefresh: unsuppress,
 		};
 	},
 	data() {
@@ -216,13 +223,16 @@ export default {
 			// 当前 session 消息
 			const current = groupSessionMessages(this.chatStore.messages);
 			if (current.length > 0 && items.length > 0) {
-				items.push({ type: 'separator', id: 'sep-current', archivedAt: null });
+				// 最近一条孤儿的归档时间 = 当前 session 开始的时间点
+				const latest = this.chatStore.historySessionIds[0];
+				items.push({ type: 'separator', id: 'sep-current', archivedAt: latest?.archivedAt ?? null });
 			}
 			items.push(...current);
 			return items;
 		},
 	},
 	async mounted() {
+		this.suppressPullRefresh();
 		await this.__activate();
 	},
 	watch: {
@@ -255,6 +265,7 @@ export default {
 		},
 	},
 	beforeUnmount() {
+		this.unsuppressPullRefresh();
 		this.chatStore.cleanup();
 	},
 	methods: {
@@ -529,6 +540,14 @@ export default {
 
 			// 历史懒加载：滚动到顶部时触发
 			if (el.scrollTop < 50 && !this.isTopicRoute) {
+				this.__loadMoreHistory();
+			}
+		},
+		/** 桌面端：已在顶部时继续上滚（wheel 事件仍触发，scroll 事件不触发） */
+		onWheel(e) {
+			if (e.deltaY >= 0 || this.isTopicRoute) return;
+			const el = this.$refs.scrollContainer;
+			if (el && el.scrollTop <= 0) {
 				this.__loadMoreHistory();
 			}
 		},
