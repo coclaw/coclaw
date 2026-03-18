@@ -219,6 +219,7 @@ export const enMessages = {
 		sessionNotFound: 'Session no longer exists',
 		newChatFailed: 'Failed to start new chat',
 		noMoreHistory: 'No earlier messages',
+		upgradeOpenClawHint: 'You may need to upgrade OpenClaw. Ask OpenClaw to upgrade itself, or run: npm install -g openclaw',
 		botThinking: 'Thinking',
 		thinkingFor: 'Thinking {time}',
 	},

@@ -51,8 +51,11 @@
 				<div v-if="chatStore.loading" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('chat.loading') }}
 				</div>
-				<div v-else-if="chatStore.errorText && !isBotOffline" class="px-4 py-8 text-center text-sm text-error">
-					{{ chatStore.errorText }}
+				<div v-else-if="chatStore.errorText && !isBotOffline" class="px-4 py-8 text-center text-sm">
+					<p class="text-error">{{ chatStore.errorText }}</p>
+					<p v-if="chatStore.errorText.includes('unknown method')" class="mt-3 text-muted">
+						{{ $t('chat.upgradeOpenClawHint') }}
+					</p>
 				</div>
 				<div v-else-if="chatMessages.length > 0" class="pb-12">
 					<template v-for="item in chatMessages" :key="item.id">

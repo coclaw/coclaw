@@ -219,6 +219,7 @@ export const zhCNMessages = {
 		sessionNotFound: '会话已不存在',
 		newChatFailed: '新建对话失败',
 		noMoreHistory: '没有更多聊天记录了',
+		upgradeOpenClawHint: '可能需要升级 OpenClaw，请让 OpenClaw 自行升级或执行：npm install -g openclaw',
 		botThinking: '思考中',
 		thinkingFor: '思考中 {time}',
 	},
