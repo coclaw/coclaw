@@ -96,6 +96,12 @@ export const useChatStore = defineStore('chat', {
 				this.loading = true;
 				return;
 			}
+			// chatSessionKey 尚未就绪（sessions 未加载）→ 保持 loading，等待 retry
+			if (!this.chatSessionKey) {
+				console.debug('[chat] activateSession: awaiting sessionKey, stay loading');
+				this.loading = true;
+				return;
+			}
 			await this.loadMessages();
 			// fire-and-forget：加载孤儿 session 链
 			this.__loadChatHistory();
