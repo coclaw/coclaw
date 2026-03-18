@@ -125,6 +125,7 @@ export const zhCNMessages = {
 		conceptOnlineDesc: '机器人的状态取决于你的 OpenClaw 是否正在运行并连接到 CoClaw。在线时可以正常对话；离线时无法发送新消息，但仍可查看历史记录。',
 		conceptSession: '会话：',
 		conceptSessionDesc: '每次与机器人的对话都是一个独立的会话。AI 只能看到当前会话中的内容，不同会话之间互相隔离。',
+		version: '版本',
 	},
 	agents: {
 		addAgent: '添加 Agent',

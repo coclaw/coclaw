@@ -1,8 +1,14 @@
+import { readFileSync } from 'fs';
 import vue from '@vitejs/plugin-vue';
 import ui from '@nuxt/ui/vite';
 import { defineConfig } from 'vite';
 
+const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
+
 export default defineConfig({
+	define: {
+		__APP_VERSION__: JSON.stringify(pkg.version),
+	},
 	plugins: [
 		vue(),
 		/* CoClaw 自定义品牌/状态色 — 移除 ui.colors 配置可恢复 Nuxt UI 默认色 */

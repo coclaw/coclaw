@@ -125,6 +125,7 @@ export const enMessages = {
 		conceptOnlineDesc: 'A bot\'s status depends on whether your OpenClaw is running and connected to CoClaw. When online, you can chat normally; when offline, you can still view history but cannot send new messages.',
 		conceptSession: 'Sessions: ',
 		conceptSessionDesc: 'Each conversation with a bot is an independent session. The AI can only see the content within the current session — different sessions are isolated from each other.',
+		version: 'Version',
 	},
 	agents: {
 		addAgent: 'Add Agent',

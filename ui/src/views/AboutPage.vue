@@ -1,7 +1,7 @@
 <template>
 	<div class="flex min-h-0 flex-1 flex-col">
 		<MobilePageHeader :title="$t('about.title')" />
-	<main class="flex-1 overflow-auto px-4 pt-5 pb-8 lg:px-5">
+	<main class="flex-1 overflow-auto px-4 pt-5 lg:px-5">
 		<div class="mx-auto w-full max-w-3xl">
 			<img :src="logoSrc" alt="CoClaw" class="mx-auto mb-5 size-20 rounded-xl" />
 			<h1 v-if="false" class="hidden text-center text-xl font-semibold md:block">{{ $t('about.title') }}</h1>
@@ -28,31 +28,35 @@
 					</template>
 				</UAccordion>
 			</div>
-
-			<div class="mt-8">
-				<UButton
-					v-if="isLoggedIn"
-					data-testid="btn-about-logout"
-					block
-					size="lg"
-					color="neutral"
-					variant="outline"
-					@click="onLogout"
-				>
-					{{ $t('layout.menu.logout') }}
-				</UButton>
-				<UButton
-					v-else
-					data-testid="btn-about-login"
-					block
-					size="lg"
-					@click="$router.push('/login')"
-				>
-					{{ $t('about.goLogin') }}
-				</UButton>
-			</div>
 		</div>
 	</main>
+	<footer class="sticky bottom-0 bg-default px-4 pt-4 pb-2 lg:px-5">
+		<div class="mx-auto w-full max-w-3xl">
+			<UButton
+				v-if="isLoggedIn"
+				data-testid="btn-about-logout"
+				block
+				size="lg"
+				color="neutral"
+				variant="outline"
+				@click="onLogout"
+			>
+				{{ $t('layout.menu.logout') }}
+			</UButton>
+			<UButton
+				v-else
+				data-testid="btn-about-login"
+				block
+				size="lg"
+				@click="$router.push('/login')"
+			>
+				{{ $t('about.goLogin') }}
+			</UButton>
+			<p class="mt-1 text-center text-xs text-dimmed">
+				{{ $t('about.version') }} {{ appVersion }}
+			</p>
+		</div>
+	</footer>
 	</div>
 </template>
 
@@ -74,7 +78,10 @@ export default {
 		};
 	},
 	data() {
-		return { logoSrc };
+		return {
+			logoSrc,
+			appVersion: __APP_VERSION__,
+		};
 	},
 	computed: {
 		isLoggedIn() {
