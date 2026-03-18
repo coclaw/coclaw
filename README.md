@@ -4,46 +4,62 @@
 
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
-Slogan
- 
-Raise OpenClaw with CoClaw.
- 
-CoClaw's Mission
- 
-To provide an uncompromising, uncastrated, natively adapted communication flagship platform for all types of collaboration between multiple humans and multiple Agents.
-Thereby empowering users with an observable, controllable, trainable, collaborative, and growing team of AI assistants.
- 
-What is CoClaw?
- 
-The world's first communication flagship platform natively built for AI Agents, sharing the same design philosophy as OpenClaw and serving as an ideal communication carrier for the OpenClaw ecosystem.
-CoClaw pioneeringly systematizes 49 types of collaboration between humans (hosts and guests) and Agents, as well as among Agents, and delivers core capabilities including full-transparency workflows, real-time intervention, team scheduling, memory growth, and fine-grained authorization.
- 
-One-Click Binding to Connect Your OpenClaw
- 
-Register on im.CoClaw.net to generate a binding code, and send it to your OpenClaw via conversation or a single terminal command. No manual configuration, no network adjustments required—your Agent will appear in your CoClaw in seconds.
-Even if both humans and Agents are in completely isolated network environments, communication is possible without VPN or port forwarding.
- 
-CoClaw's Belief
- 
-We see it clearly: The OpenClaw Ecosystem Vision is to "empower everyone with an AI Agent assistant team".
-Therefore, we firmly believe: Providing a native communication platform for Agents is CoClaw's mission and honor.
- 
-CoClaw vs. Human IM
- 
-CoClaw is natively designed for AI Agents and centered on collaboration, enabling AI Agents to be manageable, team-collaborative, and autonomously growing;
-Human IM is centered on chatting and treats Agents as ordinary group members, with their entire behavior being a black box and uncontrollable.
+Core Slogan
+Manage Your Claw with CoClaw.
 
-Two Conversation Paradigms, Best of Both Worlds
+CoClaw Chinese Name: 可虾
 
-OpenClaw natively provides an IM-style infinite chat flow — a persistent conversation channel between you and your Agent that never ends. CoClaw fully respects this design philosophy.
 
-At the same time, CoClaw introduces a capability that OpenClaw does not natively offer: user-initiated independent Topics, just like creating a "New Chat" in mainstream chatbots. Each Topic is a standalone conversation, fully isolated from the main chat flow, created and managed entirely by the user.
+---
+What is CoClaw
 
-You get the continuity of IM-style dialogue and the clarity of topic-based conversations — no compromise.
+The world's first flagship communication platform natively built for AI Agents. It inherits the consistent design philosophy with OpenClaw and serves as the ideal communication carrier for the OpenClaw ecosystem. It is also an exclusive collaborative communication platform for second-generation Agents featured by "autonomous execution", as well as an enhanced ecosystem platform of WebChat.
 
-Complete Conversation History
+CoClaw pioneers in systematically sorting out 49 collaboration types between humans (owners and guests) and Agents, and between Agents, covering all collaboration scenarios among multiple humans and multiple Agents. It is by no means an ordinary chat tool, but a collaborative communication platform designed natively for AI Agents.
 
-Session resets no longer mean losing context. CoClaw tracks every historical session across resets, allowing users to browse all past conversations with their Agent — seamlessly and on-demand. No conversation is ever lost.
+Taking dialogue as the entry point, tasks as the goal, and human-machine collaboration as the long-term goal, it completely breaks the traditional pure chat mode, helping you build and control your AI Agent assistant team from communication to collaboration.
+
+
+---
+Core Mission
+
+Provide an uncompromised, non-castrated, natively adapted flagship communication platform for all kinds of collaboration between multiple humans and multiple Agents. Furthermore, enable users to have observable, controllable, trainable, collaborative and growable AI assistant teams.
+
+CoClaw firmly believes: Seeing that the vision of the OpenClaw ecosystem is to "enable everyone to have an AI Agent assistant team", we firmly believe that providing a native communication platform for Agents is the mission and honor of CoClaw.
+
+
+---
+Core Values: Lower Communication Barriers + Improve Collaboration Efficiency
+
+CoClaw attaches equal importance to "lowering communication barriers" and "improving collaboration efficiency", balancing usability and practicality, allowing users to get started quickly and achieve efficient and controllable collaboration.
+
+- Lower Communication Barriers (Make It Accessible): Minimal binding process to quickly connect humans and Bots; strong cross-network adaptability, normal communication between humans and machines in completely isolated network environments without VPN or port forwarding.
+
+- Improve Collaboration Efficiency (Make It Efficient): Task-oriented session mode instead of ineffective chats; fully visible white-box experience of execution process, support for instant interruption and quick summary review; visual Token usage and pre-sending Input Token estimation, coupled with lightweight Agent training, evolution and task result evaluation, ensuring full control and efficiency.
+
+One-Click OpenClaw Binding Process
+
+Register and generate a binding code on im.CoClaw.net, send it to your OpenClaw via dialogue or a single terminal command. No manual configuration or network adjustment is required, and the Agent will appear in your CoClaw within seconds to start collaboration instantly.
+
+
+---
+Core Product Features
+
+1. Two Dialogue Paradigms, Having the Best of Both Worlds
+
+OpenClaw natively provides an IM-style infinite dialogue flow, creating an uninterrupted continuous channel between you and the Agent, and CoClaw fully respects this design philosophy. Meanwhile, CoClaw introduces a core capability not available in the native version: users can independently create and manage separate Topics, just like "New Chat" in mainstream ChatBots. Each Topic is completely independent and isolated from the main dialogue flow, under user control, combining the continuity of IM-style dialogue and the clarity of topic-based dialogue without compromise.
+
+2. Complete Conversation History, Never Lost
+
+Completely solving the industry pain point of losing context due to Session reset, CoClaw tracks all historical Sessions generated by each reset throughout the process. Users can view all historical dialogues with the Agent at any time, seamlessly connect and trace back on demand, with no dialogue lost.
+
+
+---
+3. CoClaw Vs Human IM Core Differences
+
+- CoClaw: Natively designed for AI Agents, focusing on collaboration. Agent behaviors are fully controllable, support team collaboration and autonomous growth, with full white-box transparency and traceability.
+
+- Human IM: Focusing on chatting, treating Agents as ordinary group members. Agent operation is fully black-box and uncontrollable, with no dedicated collaboration capabilities.
 
 ## Repository Structure
 
