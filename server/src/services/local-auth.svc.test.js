@@ -208,8 +208,9 @@ test('createLocalAccount: should return LOGIN_NAME_TAKEN on P2002', async () => 
 	assert.equal(result.code, 'LOGIN_NAME_TAKEN');
 });
 
-test('createLocalAccount: should return ok with session user on success', async () => {
+test('createLocalAccount: should return ok with session user and touch login time on success', async () => {
 	let createdPayload = null;
+	let touchedUserId = null;
 
 	const result = await createLocalAccount({
 		loginName: 'alice',
@@ -224,12 +225,17 @@ test('createLocalAccount: should return ok with session user on success', async 
 			return { id: payload.userId };
 		},
 		findByLoginName: async () => makeLocalAuth({ userId: 778899n, loginName: 'alice' }),
+		touchLoginSuccess: async (userId) => {
+			touchedUserId = userId;
+		},
 	});
 
 	assert.equal(result.ok, true);
 	assert.equal(result.user.id, 778899n);
 	assert.equal(result.user.authType, 'local');
 	assert.equal(result.user.auth.local.loginName, 'alice');
+	assert.equal(touchedUserId, 778899n);
+	assert.ok(result.user.lastLoginAt instanceof Date);
 	assert.deepEqual(createdPayload, {
 		userId: 778899n,
 		loginName: 'alice',

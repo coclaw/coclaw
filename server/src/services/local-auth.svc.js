@@ -119,6 +119,7 @@ export async function createLocalAccount(input, deps = {}) {
 		scryptImpl = scrypt,
 		createLocalUser = createLocalUserByLoginName,
 		findByLoginName = findLocalAuthByLoginName,
+		touchLoginSuccess = touchLocalLoginSuccess,
 		genId = genUserId,
 	} = deps;
 	const { loginName, password } = input;
@@ -157,8 +158,10 @@ export async function createLocalAccount(input, deps = {}) {
 	}
 
 	const localAuth = await findByLoginName(loginName);
+	await touchLoginSuccess(localAuth.userId);
+
 	return {
 		ok: true,
-		user: buildAuthPayload(localAuth),
+		user: buildAuthPayload(localAuth, { lastLoginAt: new Date() }),
 	};
 }
