@@ -41,6 +41,10 @@
 				<div v-if="isBotOffline" class="mx-4 mt-4 rounded-lg bg-warning/10 px-4 py-2 text-center text-sm text-warning">
 					{{ $t('chat.botOffline') }}
 				</div>
+				<!-- 历史加载中提示 -->
+				<div v-if="chatStore.historyLoading" class="px-4 py-3 text-center text-xs text-muted">
+					{{ $t('chat.loading') }}
+				</div>
 				<div v-if="chatStore.loading" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('chat.loading') }}
 				</div>
@@ -48,12 +52,19 @@
 					{{ chatStore.errorText }}
 				</div>
 				<div v-else-if="chatMessages.length > 0" class="pb-12">
-					<ChatMsgItem
-						v-for="item in chatMessages"
-						:key="item.id"
-						:item="item"
-						:agent-display="agentDisplay"
-					/>
+					<template v-for="item in chatMessages" :key="item.id">
+						<!-- 历史 session 分隔线 -->
+						<div v-if="item.type === 'separator'" class="flex items-center gap-3 px-4 py-3">
+							<div class="flex-1 border-t border-dashed border-muted" />
+							<span v-if="formatSeparatorLabel(item)" class="text-xs text-muted whitespace-nowrap">{{ formatSeparatorLabel(item) }}</span>
+							<div class="flex-1 border-t border-dashed border-muted" />
+						</div>
+						<ChatMsgItem
+							v-else
+							:item="item"
+							:agent-display="agentDisplay"
+						/>
+					</template>
 				</div>
 				<div v-else class="px-4 py-8 text-center text-sm text-toned">
 					{{ $t('chat.empty') }}
@@ -65,7 +76,7 @@
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore.sending"
-			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (!currentSessionId || isBotOffline)"
+			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (!currentSessionId || isBotOffline || chatStore.loading)"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		/>
@@ -84,7 +95,7 @@ import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import { useChatStore } from '../stores/chat.store.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
-import { groupSessionMessages, cleanDerivedTitle } from '../utils/session-msg-group.js';
+import { groupSessionMessages } from '../utils/session-msg-group.js';
 import { isCapacitorApp } from '../utils/platform.js';
 
 export default {
@@ -175,23 +186,14 @@ export default {
 		chatTitle() {
 			if (this.isNewTopic) return this.$t('topic.newTopic');
 			if (!this.currentSessionId) return '';
-			// topic 模式：从 topicsStore 获取标题
+			// topic 模式
 			if (this.isTopicRoute) {
 				const topic = this.topicsStore.findTopic(this.currentSessionId);
 				if (topic?.title) return topic.title;
 				return this.$t('topic.newTopic');
 			}
-			// session 模式：从 sessionsStore 获取标题
-			const session = this.sessionsStore.items.find(
-				(s) => s.sessionId === this.currentSessionId,
-			);
-			if (session) {
-				const label = (typeof session.title === 'string' && session.title.trim())
-					? cleanDerivedTitle(session.title) || session.title.trim()
-					: cleanDerivedTitle(session.derivedTitle);
-				if (label) return label;
-			}
-			return this.$t('chat.sessionTitle', { id: this.currentSessionId });
+			// session 模式：显示 agent 名称
+			return this.agentDisplay?.name || 'Agent';
 		},
 		agentDisplay() {
 			const botId = this.currentBotId;
@@ -200,7 +202,24 @@ export default {
 			return this.agentsStore.getAgentDisplay(botId, agentId);
 		},
 		chatMessages() {
-			return groupSessionMessages(this.chatStore.messages);
+			const items = [];
+			// 历史 segments（从最旧到最近）
+			for (const seg of this.chatStore.historySegments) {
+				const grouped = groupSessionMessages(seg.messages);
+				if (grouped.length) {
+					if (items.length > 0) {
+						items.push({ type: 'separator', id: `sep-${seg.sessionId}`, archivedAt: seg.archivedAt });
+					}
+					items.push(...grouped);
+				}
+			}
+			// 当前 session 消息
+			const current = groupSessionMessages(this.chatStore.messages);
+			if (current.length > 0 && items.length > 0) {
+				items.push({ type: 'separator', id: 'sep-current', archivedAt: null });
+			}
+			items.push(...current);
+			return items;
 		},
 	},
 	async mounted() {
@@ -266,10 +285,14 @@ export default {
 				}
 				return;
 			}
-			// session 模式
+			// session 模式：从 sessionsStore 反查 sessionKey 和 botId
 			this.__isFirstRound = false;
 			const id = this.currentSessionId;
-			await this.chatStore.activateSession(typeof id === 'string' ? id.trim() : '');
+			const session = this.sessionsStore.items.find((s) => s.sessionId === id);
+			await this.chatStore.activateSession(typeof id === 'string' ? id.trim() : '', {
+				botId: session?.botId,
+				sessionKey: session?.sessionKey,
+			});
 		},
 
 		async onSendMessage({ text, files }) {
@@ -429,9 +452,13 @@ export default {
 				return this.__exitChat(this.$t('chat.sessionNotFound'));
 			}
 
-			// 仍需要重试
+			// 仍需要重试——传入 sessionKey 和 botId
 			if (!this.chatStore.botId || this.chatStore.errorText || this.chatStore.loading) {
-				this.chatStore.activateSession(this.currentSessionId, { force: true });
+				this.chatStore.activateSession(this.currentSessionId, {
+					botId: session?.botId,
+					sessionKey: session?.sessionKey,
+					force: true,
+				});
 			}
 		},
 
@@ -466,6 +493,26 @@ export default {
 			return useBotConnections().get(String(botId)) ?? null;
 		},
 
+		/** 分隔线标签：历史 session 显示归档日期，当前 session 分隔线无标签 */
+		formatSeparatorLabel(item) {
+			if (!item.archivedAt) return '';
+			return this.__formatDateTime(item.archivedAt);
+		},
+		__formatDateTime(ts) {
+			try {
+				const d = new Date(ts);
+				const y = d.getFullYear();
+				const mo = String(d.getMonth() + 1).padStart(2, '0');
+				const dd = String(d.getDate()).padStart(2, '0');
+				const hh = String(d.getHours()).padStart(2, '0');
+				const mi = String(d.getMinutes()).padStart(2, '0');
+				return `${y}-${mo}-${dd} ${hh}:${mi}`;
+			}
+			catch {
+				return '';
+			}
+		},
+
 		scrollToBottom() {
 			const el = this.$refs.scrollContainer;
 			if (el?.scrollTo && !this.userScrolledUp) {
@@ -479,6 +526,25 @@ export default {
 			if (!el) return;
 			const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
 			this.userScrolledUp = !atBottom;
+
+			// 历史懒加载：滚动到顶部时触发
+			if (el.scrollTop < 50 && !this.isTopicRoute) {
+				this.__loadMoreHistory();
+			}
+		},
+
+		async __loadMoreHistory() {
+			if (this.chatStore.historyExhausted || this.chatStore.historyLoading) return;
+			const el = this.$refs.scrollContainer;
+			const prevHeight = el?.scrollHeight ?? 0;
+			const loaded = await this.chatStore.loadNextHistorySession();
+			if (loaded && el) {
+				// 保持滚动位置（新内容 prepend 后 scrollHeight 增加）
+				this.$nextTick(() => {
+					const newHeight = el.scrollHeight;
+					el.scrollTop += (newHeight - prevHeight);
+				});
+			}
 		},
 	},
 };

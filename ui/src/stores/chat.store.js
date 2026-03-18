@@ -7,6 +7,7 @@ import { defineStore } from 'pinia';
 
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { fileToBase64 } from '../utils/file-helper.js';
+import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
 
@@ -15,8 +16,10 @@ export const useChatStore = defineStore('chat', {
 		sessionId: '',
 		botId: '',
 		messages: [],
-		/** @type {Object<string, string>} sessionId → sessionKey */
-		sessionKeyById: {},
+		/** chat 模式下的 sessionKey（如 agent:main:main） */
+		chatSessionKey: '',
+		/** chat 当前 session 的 sessionId（从 chat.history 获取，用于历史上翻） */
+		currentSessionId: null,
 		loading: false,
 		sending: false,
 		errorText: '',
@@ -25,7 +28,15 @@ export const useChatStore = defineStore('chat', {
 		// topic 模式标志
 		topicMode: false,
 		topicAgentId: '',
+		// 历史懒加载
+		/** @type {{ sessionId: string, archivedAt: number }[]} */
+		historySessionIds: [],
+		/** @type {{ sessionId: string, archivedAt: number, messages: object[] }[]} */
+		historySegments: [],
+		historyLoading: false,
+		historyExhausted: false,
 		// 内部标志，不暴露到模板
+		__historyLoadedCount: 0,
 		__agentSettled: false,
 		__streamingTimer: null,
 		__accepted: false,
@@ -34,10 +45,11 @@ export const useChatStore = defineStore('chat', {
 	}),
 	getters: {
 		currentSessionKey() {
-			return this.sessionKeyById[this.sessionId] ?? '';
+			if (this.topicMode) return '';
+			return this.chatSessionKey;
 		},
 		isMainSession() {
-			return /^agent:[^:]+:main$/.test(this.currentSessionKey);
+			return /^agent:[^:]+:main$/.test(this.chatSessionKey);
 		},
 	},
 	actions: {
@@ -46,11 +58,13 @@ export const useChatStore = defineStore('chat', {
 		 * @param {string} sessionId
 		 * @param {object} [opts]
 		 * @param {boolean} [opts.force] - 强制重新激活（跳过 id 去重）
+		 * @param {string} [opts.botId] - 明确指定 botId
+		 * @param {string} [opts.sessionKey] - 明确指定 sessionKey
 		 */
-		async activateSession(sessionId, { force = false } = {}) {
+		async activateSession(sessionId, { force = false, botId, sessionKey } = {}) {
 			const id = typeof sessionId === 'string' ? sessionId.trim() : '';
 			if (!force && id === this.sessionId && !this.topicMode) return;
-			console.debug('[chat] activateSession id=%s force=%s', id, force);
+			console.debug('[chat] activateSession id=%s force=%s sessionKey=%s', id, force, sessionKey);
 			// 切换前清理上一个 session 的 streaming
 			this.__cleanupStreaming();
 			this.sessionId = id;
@@ -59,8 +73,21 @@ export const useChatStore = defineStore('chat', {
 			this.sending = false;
 			this.topicMode = false;
 			this.topicAgentId = '';
+			this.chatSessionKey = sessionKey ?? '';
+			this.currentSessionId = null;
+			// 重置历史状态
+			this.historySessionIds = [];
+			this.historySegments = [];
+			this.historyLoading = false;
+			this.historyExhausted = false;
+			this.__historyLoadedCount = 0;
 			// 解析 botId
-			this.botId = this.__resolveBotId(id);
+			if (botId) {
+				this.botId = String(botId);
+			}
+			else {
+				this.botId = this.__resolveBotId(id);
+			}
 			console.debug('[chat] resolved botId=%s for session=%s', this.botId, id);
 			if (!id) return;
 			// botId 尚未解析（bots 未就绪）→ 保持 loading，等待 retry
@@ -70,6 +97,8 @@ export const useChatStore = defineStore('chat', {
 				return;
 			}
 			await this.loadMessages();
+			// fire-and-forget：加载孤儿 session 链
+			this.__loadChatHistory();
 		},
 
 		/**
@@ -94,7 +123,14 @@ export const useChatStore = defineStore('chat', {
 			this.topicMode = true;
 			this.topicAgentId = agentId || 'main';
 			this.botId = String(botId || '');
-			this.sessionKeyById = {};
+			this.chatSessionKey = '';
+			this.currentSessionId = null;
+			// topic 无历史上翻
+			this.historySessionIds = [];
+			this.historySegments = [];
+			this.historyLoading = false;
+			this.historyExhausted = true;
+			this.__historyLoadedCount = 0;
 			if (skipLoad) {
 				this.loading = false;
 				return;
@@ -115,7 +151,7 @@ export const useChatStore = defineStore('chat', {
 			if (this.topicMode) {
 				return this.__loadTopicMessages({ silent });
 			}
-			if (!this.sessionId) {
+			if (!this.sessionId || !this.chatSessionKey) {
 				this.messages = [];
 				this.errorText = '';
 				this.loading = false;
@@ -134,37 +170,29 @@ export const useChatStore = defineStore('chat', {
 				if (!silent) this.loading = true;
 				return false;
 			}
-			console.debug('[chat] loadMessages sessionId=%s botId=%s', this.sessionId, this.botId);
+			console.debug('[chat] loadMessages sessionKey=%s botId=%s', this.chatSessionKey, this.botId);
 			if (!silent) {
 				this.loading = true;
 				this.errorText = '';
 			}
 			try {
-				// 获取 session 列表以构建 sessionKeyById
-				const agentId = this.__resolveAgentId();
-				const list = await conn.request('nativeui.sessions.listAll', {
-					agentId, limit: 200, cursor: 0,
-				});
-				const items = Array.isArray(list?.items) ? list.items : [];
-				this.sessionKeyById = Object.fromEntries(
-					items
-						.filter((i) => i.sessionKey && i.indexed !== false)
-						.map((i) => [i.sessionId, i.sessionKey]),
-				);
-
-				// 获取消息
-				const result = await conn.request('nativeui.sessions.get', {
-					agentId,
-					sessionId: this.sessionId,
+				// 通过 OC 原生 sessions.get 加载当前 session 消息
+				const result = await conn.request('sessions.get', {
+					key: this.chatSessionKey,
 					limit: 500,
-					cursor: 0,
 				});
-				this.messages = Array.isArray(result?.messages) ? result.messages : [];
-				console.debug('[chat] loadMessages ok count=%d toolResults=%d thinkingMsgs=%d',
-					this.messages.length,
-					this.messages.filter((e) => e.message?.role === 'toolResult').length,
-					this.messages.filter((e) => Array.isArray(e.message?.content) && e.message.content.some((b) => b.type === 'thinking')).length,
-				);
+				const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
+				// 薄包装为 JSONL 行级结构（补 type + id）
+				this.messages = wrapOcMessages(flatMsgs);
+				console.debug('[chat] loadMessages ok count=%d', this.messages.length);
+
+				// 获取当前 sessionId（用于历史上翻）
+				const hist = await conn.request('chat.history', {
+					sessionKey: this.chatSessionKey,
+					limit: 1,
+				});
+				this.currentSessionId = hist?.sessionId ?? null;
+
 				return true;
 			}
 			catch (err) {
@@ -181,7 +209,7 @@ export const useChatStore = defineStore('chat', {
 		},
 
 		/**
-		 * topic 模式下加载消息
+		 * topic 模式下加载消息（使用 coclaw.sessions.getById）
 		 * @param {object} opts
 		 * @param {boolean} opts.silent
 		 */
@@ -209,12 +237,12 @@ export const useChatStore = defineStore('chat', {
 				this.errorText = '';
 			}
 			try {
-				const result = await conn.request('coclaw.topics.getHistory', {
-					topicId: this.sessionId,
+				const result = await conn.request('coclaw.sessions.getById', {
+					sessionId: this.sessionId,
+					agentId: this.topicAgentId || 'main',
 				});
-				// 插件复用 session-manager.get()，返回 { messages } 而非 { history }
 				const msgs = Array.isArray(result?.messages) ? result.messages : [];
-				console.debug('[chat] loadTopicMessages ok count=%d (was %d) error=%s', msgs.length, prevCount, result?.error ?? 'none');
+				console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
 				this.messages = msgs;
 				return true;
 			}
@@ -281,16 +309,7 @@ export const useChatStore = defineStore('chat', {
 				message: { role: 'assistant', content: '', stopReason: null },
 			}];
 
-			// topic 模式下不使用 sessionKey
-			let sessionKey = this.topicMode ? null : this.sessionKeyById[this.sessionId];
-
 			try {
-				// 轮转检测（仅 session 模式）
-				if (sessionKey) {
-					const rotated = await this.__detectRotation(conn, sessionKey);
-					if (rotated) sessionKey = null;
-				}
-
 				// 注册 agent 事件
 				conn.on('event:agent', this.__onAgentEvent);
 
@@ -315,10 +334,16 @@ export const useChatStore = defineStore('chat', {
 					idempotencyKey,
 				};
 				if (attachments.length) agentParams.attachments = attachments;
-				if (sessionKey) {
-					agentParams.sessionKey = sessionKey;
+
+				// chat 模式用 sessionKey，topic 模式用 sessionId
+				if (this.topicMode) {
+					agentParams.sessionId = this.sessionId;
+				}
+				else if (this.chatSessionKey) {
+					agentParams.sessionKey = this.chatSessionKey;
 				}
 				else {
+					// chatSessionKey 尚未就绪时 fallback 到 sessionId
 					agentParams.sessionId = this.sessionId;
 				}
 
@@ -391,19 +416,19 @@ export const useChatStore = defineStore('chat', {
 					console.debug('[chat] ws closed after accepted, waiting for reconnect to reconcile');
 					this.__cleanupTimersAndListeners();
 					this.sending = false;
-					const conn = this.__getConnection();
-					if (conn) {
+					const reconn = this.__getConnection();
+					if (reconn) {
 						const reconnected = await new Promise((resolve) => {
-							const timeout = setTimeout(() => { conn.off('state', onState); resolve(false); }, 15_000);
+							const timeout = setTimeout(() => { reconn.off('state', onState); resolve(false); }, 15_000);
 							const onState = (state) => {
 								if (state === 'connected') {
 									clearTimeout(timeout);
-									conn.off('state', onState);
+									reconn.off('state', onState);
 									resolve(true);
 								}
 							};
-							if (conn.state === 'connected') { clearTimeout(timeout); resolve(true); }
-							else conn.on('state', onState);
+							if (reconn.state === 'connected') { clearTimeout(timeout); resolve(true); }
+							else reconn.on('state', onState);
 						});
 						if (reconnected) {
 							console.debug('[chat] reconnected after accepted, reconciling messages');
@@ -417,19 +442,19 @@ export const useChatStore = defineStore('chat', {
 					console.debug('[chat] ws closed before accepted, waiting for reconnect to retry');
 					this.__cleanupStreaming();
 					this.sending = false;
-					const conn = this.__getConnection();
-					if (conn) {
+					const reconn = this.__getConnection();
+					if (reconn) {
 						const reconnected = await new Promise((resolve) => {
-							const timeout = setTimeout(() => { conn.off('state', onState); resolve(false); }, 15_000);
+							const timeout = setTimeout(() => { reconn.off('state', onState); resolve(false); }, 15_000);
 							const onState = (state) => {
 								if (state === 'connected') {
 									clearTimeout(timeout);
-									conn.off('state', onState);
+									reconn.off('state', onState);
 									resolve(true);
 								}
 							};
-							if (conn.state === 'connected') { clearTimeout(timeout); resolve(true); }
-							else conn.on('state', onState);
+							if (reconn.state === 'connected') { clearTimeout(timeout); resolve(true); }
+							else reconn.on('state', onState);
 						});
 						if (reconnected) {
 							console.debug('[chat] reconnected, retrying sendMessage');
@@ -460,7 +485,7 @@ export const useChatStore = defineStore('chat', {
 			}
 			this.resetting = true;
 			try {
-				// 从当前 sessionKey 解析 agentId；若 sessionKey 未就绪则 fallback 到 main
+				// 从 chatSessionKey 解析 agentId
 				const agentId = this.__resolveAgentId();
 				console.debug('[chat] resetChat agentId=%s sessionId=%s', agentId, this.sessionId);
 				const result = await conn.request('sessions.reset', {
@@ -503,12 +528,94 @@ export const useChatStore = defineStore('chat', {
 			this.sessionId = '';
 			this.botId = '';
 			this.messages = [];
-			this.sessionKeyById = {};
+			this.chatSessionKey = '';
+			this.currentSessionId = null;
 			this.errorText = '';
 			this.sending = false;
 			this.resetting = false;
 			this.topicMode = false;
 			this.topicAgentId = '';
+			this.historySessionIds = [];
+			this.historySegments = [];
+			this.historyLoading = false;
+			this.historyExhausted = false;
+			this.__historyLoadedCount = 0;
+		},
+
+		// --- 历史懒加载 ---
+
+		/**
+		 * 加载 chat 的孤儿 session 列表（进入 chat 时调用，fire-and-forget）
+		 */
+		async __loadChatHistory() {
+			if (this.topicMode || !this.chatSessionKey) return;
+			const conn = this.__getConnection();
+			if (!conn || conn.state !== 'connected') return;
+			try {
+				const agentId = this.__resolveAgentId();
+				const result = await conn.request('coclaw.chatHistory.list', {
+					agentId,
+					sessionKey: this.chatSessionKey,
+				});
+				this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
+				this.historyExhausted = this.historySessionIds.length === 0;
+				this.__historyLoadedCount = 0;
+			}
+			catch (err) {
+				console.warn('[chat] loadChatHistory failed:', err?.message);
+				this.historySessionIds = [];
+				this.historyExhausted = true;
+			}
+		},
+
+		/**
+		 * 加载下一个历史 session 的消息（滚动到顶时触发）
+		 * @returns {Promise<boolean>} 是否成功加载
+		 */
+		async loadNextHistorySession() {
+			if (this.topicMode || this.historyExhausted || this.historyLoading) return false;
+			if (this.__historyLoadedCount >= this.historySessionIds.length) {
+				this.historyExhausted = true;
+				return false;
+			}
+
+			this.historyLoading = true;
+			try {
+				const entry = this.historySessionIds[this.__historyLoadedCount];
+				const conn = this.__getConnection();
+				if (!conn || conn.state !== 'connected') return false;
+
+				const agentId = this.__resolveAgentId();
+				const result = await conn.request('coclaw.sessions.getById', {
+					sessionId: entry.sessionId,
+					agentId,
+				});
+				const msgs = Array.isArray(result?.messages) ? result.messages : [];
+
+				// Prepend（新加载的更旧的 session 放到数组前面）
+				this.historySegments = [
+					{ sessionId: entry.sessionId, archivedAt: entry.archivedAt, messages: msgs },
+					...this.historySegments,
+				];
+				this.__historyLoadedCount++;
+
+				if (this.__historyLoadedCount >= this.historySessionIds.length) {
+					this.historyExhausted = true;
+				}
+				return true;
+			}
+			catch (err) {
+				console.warn('[chat] loadNextHistorySession failed:', err?.message);
+				// 跳过失败的 session，避免反复重试
+				this.__historyLoadedCount++;
+				if (this.__historyLoadedCount >= this.historySessionIds.length) {
+					this.historyExhausted = true;
+				}
+				return false;
+			}
+			finally {
+				this.historyLoading = false;
+			}
 		},
 
 		// --- agent 事件处理（内部方法，通过箭头函数绑定 this） ---
@@ -607,22 +714,12 @@ export const useChatStore = defineStore('chat', {
 		// --- 内部辅助 ---
 
 		/**
-		 * 从 sessionKey 解析 agentId：'agent:<agentId>:<rest>' → 取第二段
-		 * @param {string} [sessionId] - 指定 sessionId，默认使用 this.sessionId
+		 * 从 chatSessionKey 解析 agentId
 		 */
-		__resolveAgentId(sessionId) {
-			// topic 模式直接返回存储的 agentId
+		__resolveAgentId() {
 			if (this.topicMode) return this.topicAgentId || 'main';
-			const sid = sessionId || this.sessionId;
-			if (!sid) return 'main';
-			// 优先从本地缓存查，fallback 到 sessionsStore（activateSession 后 sessionKeyById 可能为空）
-			let key = this.sessionKeyById[sid];
-			if (!key) {
-				const session = useSessionsStore().items.find((s) => s.sessionId === sid);
-				key = session?.sessionKey;
-			}
-			if (!key) return 'main';
-			const parts = key.split(':');
+			if (!this.chatSessionKey) return 'main';
+			const parts = this.chatSessionKey.split(':');
 			return parts.length >= 2 ? parts[1] : 'main';
 		},
 
@@ -639,22 +736,6 @@ export const useChatStore = defineStore('chat', {
 		__getConnection() {
 			if (!this.botId) return null;
 			return useBotConnections().get(this.botId) ?? null;
-		},
-
-		async __detectRotation(conn, sessionKey) {
-			try {
-				const hist = await conn.request('chat.history', { sessionKey, limit: 1 });
-				const remoteId = hist?.sessionId ?? null;
-				if (remoteId && remoteId !== this.sessionId) {
-					delete this.sessionKeyById[this.sessionId];
-					useSessionsStore().loadAllSessions();
-					return true;
-				}
-			}
-			catch (err) {
-				console.warn('[chat] rotation check failed:', err);
-			}
-			return false;
 		},
 
 		async __reconcileMessages() {
@@ -674,19 +755,17 @@ export const useChatStore = defineStore('chat', {
 			}
 
 			try {
-				const agentId = this.__resolveAgentId();
-				const list = await conn.request('nativeui.sessions.listAll', {
-					agentId, limit: 200, cursor: 0,
-				});
-				const items = Array.isArray(list?.items) ? list.items : [];
-				this.sessionKeyById = Object.fromEntries(
-					items.filter((i) => i.sessionKey && i.indexed !== false)
-						.map((i) => [i.sessionId, i.sessionKey]),
-				);
-				useSessionsStore().loadAllSessions();
+				// chatSessionKey 可能尚未就绪（首次加载时 sessionsStore 未同步），尝试补全
+				if (!this.chatSessionKey && this.sessionId) {
+					const session = useSessionsStore().items.find((s) => s.sessionId === this.sessionId);
+					if (session?.sessionKey) {
+						this.chatSessionKey = session.sessionKey;
+					}
+				}
 				// 静默重载消息，用持久化的完整数据替换流式本地条目
-				// （网关 tool 事件可能被剥离 result，重载可补全）
 				await this.loadMessages({ silent: true });
+				// 刷新 sessionsStore（session 可能已轮转）
+				useSessionsStore().loadAllSessions();
 				return true;
 			}
 			catch (err) {

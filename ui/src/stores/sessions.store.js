@@ -9,6 +9,7 @@ let _loadingPromise = null;
 
 export const useSessionsStore = defineStore('sessions', {
 	state: () => ({
+		/** @type {{ sessionId: string, sessionKey: string, botId: string, agentId: string }[]} */
 		items: [],
 		loading: false,
 	}),
@@ -45,7 +46,7 @@ export const useSessionsStore = defineStore('sessions', {
 				return;
 			}
 			this.loading = true;
-			_loadingPromise = this.__doLoadAll(connectedBots, bots.length);
+			_loadingPromise = this.__doLoadAll(connectedBots);
 			try {
 				await _loadingPromise;
 			}
@@ -54,11 +55,11 @@ export const useSessionsStore = defineStore('sessions', {
 				this.loading = false;
 			}
 		},
-		async __doLoadAll(connectedBots, totalCount) {
+		async __doLoadAll(connectedBots) {
 			const results = await Promise.allSettled(
 				connectedBots.map((bot) => this.__fetchSessionsForBot(bot.id)),
 			);
-			// 合并去重（以 sessionId 为 key，后者不覆盖先者）
+			// 合并去重（以 botId:sessionKey 为 key）
 			const seen = new Set();
 			const merged = [];
 			for (const r of results) {
@@ -67,14 +68,15 @@ export const useSessionsStore = defineStore('sessions', {
 					continue;
 				}
 				for (const item of r.value) {
-					if (!seen.has(item.sessionId)) {
-						seen.add(item.sessionId);
+					const key = `${item.botId}:${item.sessionKey}`;
+					if (!seen.has(key)) {
+						seen.add(key);
 						merged.push(item);
 					}
 				}
 			}
 			this.items = merged;
-			console.debug('[sessions] loadAll: %d bot(s), merged %d session(s)', totalCount, merged.length);
+			console.debug('[sessions] loadAll: merged %d session(s)', merged.length);
 		},
 		async __fetchSessionsForBot(botId) {
 			const conn = useBotConnections().get(String(botId));
@@ -86,31 +88,27 @@ export const useSessionsStore = defineStore('sessions', {
 			const agentIds = agents.length ? agents.map((a) => a.id) : ['main'];
 
 			const results = await Promise.allSettled(
-				agentIds.map((agentId) =>
-					conn.request('nativeui.sessions.listAll', {
-						agentId,
-						limit: 200,
-						cursor: 0,
-					}),
-				),
-			);
-			const allItems = [];
-			for (const r of results) {
-				if (r.status !== 'fulfilled') continue;
-				const items = Array.isArray(r.value?.items) ? r.value.items : [];
-				for (const item of items) {
-					allItems.push({
-						sessionId: item.sessionId,
-						sessionKey: item.sessionKey ?? null,
-						title: item.title ?? null,
-						derivedTitle: item.derivedTitle ?? null,
-						indexed: Boolean(item.indexed),
-						updatedAt: item.updatedAt ?? 0,
-						botId: String(botId),
+				agentIds.map(async (agentId) => {
+					const sessionKey = `agent:${agentId}:main`;
+					const hist = await conn.request('chat.history', {
+						sessionKey,
+						limit: 1,
 					});
-				}
+					return {
+						sessionId: hist?.sessionId ?? '',
+						sessionKey,
+						botId: String(botId),
+						agentId,
+					};
+				}),
+			);
+
+			const items = [];
+			for (const r of results) {
+				if (r.status !== 'fulfilled' || !r.value.sessionId) continue;
+				items.push(r.value);
 			}
-			return allItems;
+			return items;
 		},
 	},
 });

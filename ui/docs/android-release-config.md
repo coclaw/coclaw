@@ -152,3 +152,33 @@ GET /api/v1/app/version-check?platform=android&build=1
 **教训**：AndroidManifest.xml 中的权限声明不仅要覆盖业务直接使用的权限，还必须覆盖 Capacitor 框架内部隐式请求的权限。新增涉及原生能力的 Web API 调用时，应检查 Capacitor 对应的 `onPermissionRequest` / `onGeolocationPermissionsShowPrompt` 等回调中请求了哪些权限，确保 Manifest 全部声明。
 
 **参考源码**：`node_modules/@capacitor/android/.../BridgeWebChromeClient.java` → `onPermissionRequest()` 方法。
+
+### Edge-to-Edge 模式下 `env(safe-area-inset-top)` 在 Android 14 及以下为 0（2026-03-18）
+
+**现象**：Redmi Note 12 5G（Android 14）上，ChatPage 内容覆盖到状态栏下方，顶部安全区域完全失效。开发者自用设备（K80-pro）无法复现。
+
+**根因**：Capacitor 8 内置的 `SystemBars` 插件仅在 Android 15+（API 35）才向 WebView 注入 `--safe-area-inset-*` CSS 变量（`initSafeAreaInsets()` 和 `initWindowInsetsListener()` 有硬性 `>= VANILLA_ICE_CREAM` 门槛）。同时 `@capacitor/status-bar` 的 `setOverlaysWebView(true)` 使用的是已废弃的 `SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN` flag，Android 14 的 WebView 无法从该 flag 推断出正确的 safe area insets，导致 CSS `env(safe-area-inset-top)` 返回 0。
+
+**修复**（三部分）：
+
+1. **CSS 层**（`main.css`）：在 `:root` 中定义 `--safe-area-inset-top: env(safe-area-inset-top, 0px)` 和 `--safe-area-inset-bottom`，所有组件统一使用 `var(--safe-area-inset-top)` 而非直接裸用 `env()`
+2. **JS 层**（`capacitor-app.js`）：`setupStatusBar()` 中调用 `StatusBar.getInfo()` 获取实际状态栏高度（dp），通过 `document.documentElement.style.setProperty()` 覆盖 CSS 变量
+3. **Layout 层**（`AuthedLayout.vue`）：section 始终应用 `pt-[var(--safe-area-inset-top)]` 和 `pb-[var(--safe-area-inset-bottom)]`，统一管理安全区域，各子页面/组件不再各自处理
+
+**教训**：不要假设 CSS `env(safe-area-inset-*)` 在所有 Android 版本上可靠工作。Edge-to-Edge 模式下，Capacitor 的 safe area 注入机制存在 API level 门槛。应始终通过 `StatusBar.getInfo()` 主动获取并注入 CSS 变量作为兜底。
+
+**参考源码**：`node_modules/@capacitor/android/.../plugin/SystemBars.java` → `initSafeAreaInsets()`（第 160-172 行，`VANILLA_ICE_CREAM` 门控）。
+
+### 软键盘遮挡输入区域（2026-03-18）
+
+**现象**：部分设备上软键盘弹出后覆盖 ChatInput 输入框，用户无法看到输入内容。
+
+**根因**：AndroidManifest.xml 未显式设置 `windowSoftInputMode`，系统默认 `adjustUnspecified` 在不同设备/ROM 上行为不一致。同时 `@capacitor/keyboard` 插件的 `resizeOnFullScreen` 默认为 `false`，在 Edge-to-Edge（fullscreen）模式下不执行任何 resize。
+
+**修复**：
+
+1. `AndroidManifest.xml`：Activity 添加 `android:windowSoftInputMode="adjustResize"`
+2. `capacitor.config.ts`：添加 `plugins.Keyboard.resizeOnFullScreen: true`
+3. `capacitor-app.js`：监听 `keyboardDidShow` 事件，对聚焦的 input/textarea 执行 `scrollIntoView` 作为兜底
+
+**教训**：Edge-to-Edge 模式（`StatusBar.setOverlaysWebView({ overlay: true })`）下，必须显式配置键盘行为。`adjustResize` 不是所有设备的默认值，而 `resizeOnFullScreen` 在 fullscreen 模式下默认不生效。

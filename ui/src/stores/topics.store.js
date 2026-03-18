@@ -114,20 +114,6 @@ export const useTopicsStore = defineStore('topics', {
 		},
 
 		/**
-		 * 获取 topic 对话历史
-		 * @param {string} botId
-		 * @param {string} topicId
-		 * @returns {Promise<object[]>}
-		 */
-		async getHistory(botId, topicId) {
-			const conn = useBotConnections().get(String(botId));
-			if (!conn || conn.state !== 'connected') throw new Error('Bot not connected');
-			const result = await conn.request('coclaw.topics.getHistory', { topicId });
-			// 插件复用 session-manager.get()，返回 { messages } 而非 { history }
-			return Array.isArray(result?.messages) ? result.messages : [];
-		},
-
-		/**
 		 * 删除 topic
 		 * @param {string} botId
 		 * @param {string} topicId

@@ -70,7 +70,6 @@ vi.mock('../utils/platform.js', () => ({
 import ChatPage from './ChatPage.vue';
 import { useChatStore } from '../stores/chat.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
-import { useSessionsStore } from '../stores/sessions.store.js';
 
 const i18nMap = {
 	'chat.loading': 'Loading...',
@@ -171,23 +170,20 @@ describe('ChatPage', () => {
 		expect(msgStubs[1].text()).toContain('msg-2');
 	});
 
-	test('chatTitle 从 sessions store 中解析', async () => {
+	test('chatTitle 在 session 模式下显示 agent 名称', async () => {
 		const wrapper = createWrapper('sess-1');
-		const sessionsStore = useSessionsStore();
-		sessionsStore.setSessions([
-			{ sessionId: 'sess-1', title: 'My Chat', indexed: true, botId: 'b1' },
-		]);
 		await wrapper.vm.$nextTick();
 
-		expect(wrapper.text()).toContain('My Chat');
+		// session 模式下 chatTitle 返回 agentDisplay.name || 'Agent'
+		expect(wrapper.text()).toContain('Agent');
 	});
 
-	test('chatTitle 回退到 sessionTitle 模板', async () => {
+	test('chatTitle 无 session 匹配时显示 Agent', async () => {
 		const wrapper = createWrapper('sess-1');
 		await flushPromises();
 
-		// 无 session 匹配时使用 sessionTitle 模板
-		expect(wrapper.text()).toContain('Session sess-1');
+		// session 模式下显示 agent 名称，默认回退为 'Agent'
+		expect(wrapper.text()).toContain('Agent');
 	});
 
 	test('显示 bot 离线提示', async () => {
@@ -338,7 +334,7 @@ describe('ChatPage new topic', () => {
 		const chatStore = useChatStore();
 		chatStore.sessionId = 'sess-1';
 		chatStore.botId = 'bot-1';
-		chatStore.sessionKeyById = { 'sess-1': 'agent:main:main' };
+		chatStore.chatSessionKey = 'agent:main:main';
 		await flushPromises();
 
 		wrapper.vm.onNewTopic();
@@ -382,7 +378,7 @@ describe('ChatPage new topic', () => {
 		const wrapper = createWrapper('sess-1');
 		const chatStore = useChatStore();
 		chatStore.sessionId = 'sess-1';
-		chatStore.sessionKeyById = { 'sess-1': 'agent:tester:main' };
+		chatStore.chatSessionKey = 'agent:tester:main';
 		await flushPromises();
 		expect(wrapper.vm.showNewTopicBtn).toBe(false);
 	});

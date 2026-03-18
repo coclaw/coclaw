@@ -189,36 +189,6 @@ describe('topics store', () => {
 		await expect(store.createTopic('bot-1', 'main')).rejects.toThrow('Bot not connected');
 	});
 
-	// --- getHistory ---
-
-	test('getHistory 返回对话历史', async () => {
-		const messages = [{ type: 'message', message: { role: 'user', content: 'hello' } }];
-		const conn = {
-			state: 'connected',
-			request: vi.fn().mockResolvedValue({ messages }),
-			on: vi.fn(), off: vi.fn(),
-		};
-		mockConnections.set('bot-1', conn);
-
-		const store = useTopicsStore();
-		const result = await store.getHistory('bot-1', 't1');
-		expect(result).toEqual(messages);
-		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.getHistory', { topicId: 't1' });
-	});
-
-	test('getHistory 返回空数组当 messages 不存在', async () => {
-		const conn = {
-			state: 'connected',
-			request: vi.fn().mockResolvedValue({ messages: null }),
-			on: vi.fn(), off: vi.fn(),
-		};
-		mockConnections.set('bot-1', conn);
-
-		const store = useTopicsStore();
-		const result = await store.getHistory('bot-1', 't1');
-		expect(result).toEqual([]);
-	});
-
 	// --- generateTitle ---
 
 	test('generateTitle 成功时更新本地 title', async () => {
