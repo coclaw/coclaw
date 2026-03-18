@@ -479,7 +479,7 @@ export class RealtimeBridge {
 					this.gatewayReady = true;
 					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
 					this.gatewayConnectReqId = null;
-					void this.__ensureAllAgentSessions();
+					this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
 				}
 				else {
 					this.gatewayReady = false;
@@ -812,6 +812,11 @@ export async function stopRealtimeBridge() {
 	}
 	await singleton.stop();
 	singleton = null; // 置 null 后须通过 restartRealtimeBridge 重建
+}
+
+export async function waitForSessionsReady() {
+	if (!singleton?.__ensureSessionsPromise) return;
+	await singleton.__ensureSessionsPromise;
 }
 
 export async function ensureAgentSession(agentId) {

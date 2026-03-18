@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge } from './realtime-bridge.js';
+import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -933,6 +933,40 @@ test('singleton ensureAgentSession should delegate to bridge instance', async ()
 		assert.equal(result.error, 'gateway_not_ready');
 	}
 	finally {
+		await stopRealtimeBridge();
+	}
+});
+
+test('waitForSessionsReady should resolve immediately when bridge not started', async () => {
+	await stopRealtimeBridge();
+	// 不抛异常，直接 return
+	await waitForSessionsReady();
+});
+
+test('waitForSessionsReady should await __ensureSessionsPromise after gateway connect', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const oldWs = globalThis.WebSocket;
+	globalThis.WebSocket = FakeWebSocket;
+	try {
+		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		// 触发 connect.challenge → connect → gatewayReady
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1]));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+		// 消化 __ensureAllAgentSessions 的后台流量
+		await drainEnsureAllAgentSessions(gateway);
+		// 此时 promise 已 settled，waitForSessionsReady 应立即 resolve
+		await waitForSessionsReady();
+	}
+	finally {
+		globalThis.WebSocket = oldWs;
 		await stopRealtimeBridge();
 	}
 });
