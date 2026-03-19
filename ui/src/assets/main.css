@@ -30,6 +30,19 @@
 	--ui-bg-elevated: #1b1b1b;
 }
 
+/*
+ * dvh 安全回退：不支持 dvh 的浏览器回退到 vh
+ * Capacitor 壳内无地址栏，vh === dvh，不受影响
+ */
+.h-dvh-safe {
+	height: 100vh;
+}
+@supports (height: 100dvh) {
+	.h-dvh-safe {
+		height: 100dvh;
+	}
+}
+
 * {
 	box-sizing: border-box;
 }
