@@ -332,7 +332,17 @@ test('unbindBot should clear local bindings when serverUrl is missing', async ()
 	}
 });
 
+test('enrollBot should reject when already bound', async () => {
+	const mockReadCfg = async () => ({ token: 'existing-token', botId: 'b1' });
+
+	await assert.rejects(
+		() => enrollBot({ serverUrl: 'http://127.0.0.1:9999' }, { readCfg: mockReadCfg }),
+		(err) => err.code === 'ALREADY_BOUND' && /unbind first/.test(err.message),
+	);
+});
+
 test('enrollBot should call createClaimCode and return claim info', async () => {
+	const mockReadCfg = async () => null;
 	const mockCreate = async () => ({
 		code: '12345678',
 		expiresAt: '2099-01-01T00:00:00.000Z',
@@ -340,6 +350,7 @@ test('enrollBot should call createClaimCode and return claim info', async () => 
 	});
 
 	const result = await enrollBot({ serverUrl: 'http://127.0.0.1:9999' }, {
+		readCfg: mockReadCfg,
 		createClaimCode: mockCreate,
 	});
 
@@ -351,10 +362,11 @@ test('enrollBot should call createClaimCode and return claim info', async () => 
 });
 
 test('enrollBot should throw on invalid server response', async () => {
+	const mockReadCfg = async () => null;
 	const mockCreate = async () => ({});
 
 	await assert.rejects(
-		() => enrollBot({ serverUrl: 'http://x' }, { createClaimCode: mockCreate }),
+		() => enrollBot({ serverUrl: 'http://x' }, { readCfg: mockReadCfg, createClaimCode: mockCreate }),
 		/invalid enroll response/,
 	);
 });

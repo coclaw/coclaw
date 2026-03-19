@@ -92,21 +92,35 @@ test('gateway methods respond and catch errors', async () => {
 	let getOut = null;
 	handlers.get('nativeui.sessions.get')({
 		params: {},
-		respond(ok, payload) {
-			getOut = { ok, payload };
+		respond(ok, payload, error) {
+			getOut = { ok, payload, error };
 		},
 	});
 	assert.equal(getOut.ok, false);
-	assert.equal(typeof getOut.payload.error, 'string');
+	assert.equal(getOut.payload, undefined);
+	assert.equal(typeof getOut.error?.message, 'string');
 
 	let getOut2 = null;
 	handlers.get('nativeui.sessions.get')({
 		params: { sessionId: 1 },
-		respond(ok, payload) {
-			getOut2 = { ok, payload };
+		respond(ok, payload, error) {
+			getOut2 = { ok, payload, error };
 		},
 	});
 	assert.equal(getOut2.ok, false);
+
+	// respondInvalid 覆盖：参数校验分支
+	let invalidOut = null;
+	handlers.get('coclaw.topics.get')({
+		params: {},
+		respond(ok, payload, error) {
+			invalidOut = { ok, payload, error };
+		},
+	});
+	assert.equal(invalidOut.ok, false);
+	assert.equal(invalidOut.payload, undefined);
+	assert.equal(invalidOut.error?.code, 'INVALID_INPUT');
+	assert.equal(invalidOut.error?.message, 'topicId required');
 });
 
 test('command handler should cover help/unknown/error/success paths', async () => {

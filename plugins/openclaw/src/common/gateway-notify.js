@@ -53,6 +53,7 @@ export function callGatewayMethod(method, spawnFn, opts) {
 		}
 
 		let stdout = '';
+		let stderr = '';
 		let settled = false;
 		let graceTimer = null;
 		const killDelayMs = opts?.killDelayMs ?? KILL_DELAY_MS;
@@ -95,7 +96,7 @@ export function callGatewayMethod(method, spawnFn, opts) {
 			}
 		});
 
-		child.stderr?.on('data', () => {});
+		child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
 
 		child.on('error', () => finish({ ok: false, error: 'spawn_error' }));
 
@@ -104,7 +105,8 @@ export function callGatewayMethod(method, spawnFn, opts) {
 			if (code === 0 || stdout.trim()) {
 				finish(parseResult());
 			} else {
-				finish({ ok: false, error: `exit_code_${code}` });
+				const stderrMsg = stderr.trim();
+				finish({ ok: false, error: `exit_code_${code}`, message: stderrMsg || undefined });
 			}
 		});
 

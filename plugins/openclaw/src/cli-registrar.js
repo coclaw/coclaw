@@ -7,13 +7,23 @@ import {
 	claimCodeCreated,
 } from './common/messages.js';
 
+/**
+ * 从 `openclaw gateway call` stderr 中提取核心错误信息
+ * stderr 格式：`Gateway call failed: GatewayClientRequestError: <message>`
+ */
+function extractRpcErrorMessage(raw) {
+	if (!raw) return '';
+	const match = raw.match(/GatewayClientRequestError:\s*(.+)/);
+	return match ? match[1].trim() : raw;
+}
+
 const GATEWAY_UNAVAILABLE_ERRORS = new Set([
 	'spawn_error', 'spawn_failed', 'timeout', 'empty_output',
 ]);
 
 function isGatewayUnavailable(result) {
-	return !result.ok
-		&& (GATEWAY_UNAVAILABLE_ERRORS.has(result.error) || result.error?.startsWith?.('exit_code_'));
+	// exit_code_* 不视为 gateway 不可用：进程已启动成功，非零退出通常是业务错误
+	return !result.ok && GATEWAY_UNAVAILABLE_ERRORS.has(result.error);
 }
 
 /* c8 ignore start -- 集成级函数，测试通过 deps.restartGateway 注入替代 */
@@ -111,8 +121,13 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 				}
 
 				if (!result.ok) {
-					console.error('Error: Could not reach gateway. Ensure OpenClaw gateway is running.');
-					console.error('  Try: openclaw gateway start');
+					if (isGatewayUnavailable(result)) {
+						console.error('Error: Could not reach gateway. Ensure OpenClaw gateway is running.');
+						console.error('  Try: openclaw gateway start');
+					} else {
+						// 业务错误（如已绑定）：输出 gateway 返回的错误信息
+						console.error(`Error: ${extractRpcErrorMessage(result.message) || 'enroll failed'}`);
+					}
 					process.exitCode = 1;
 					return;
 				}

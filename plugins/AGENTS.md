@@ -52,7 +52,10 @@
 - 若必须手动删除目录，先同步移除 `plugins.load.paths` 与对应 `plugins.entries`，再重启 gateway。
 ## 稳定性与异常处理
 
-- 所有 `registerGatewayMethod` handler 必须 `try/catch` 并统一 `respond(false, { error })`。
+- 所有 `registerGatewayMethod` handler 必须 `try/catch`，错误响应须遵循 OpenClaw gateway 协议：
+  - 异常：`respond(false, undefined, { code, message })`
+  - 参数校验失败：同上格式
+  - **禁止**使用旧格式 `respond(false, { error })`（error 放在 payload 中会导致下游无法解析）。
 - **禁止**在插件中注册全局异常兜底（如 `process.on('uncaughtException'/'unhandledRejection')`），以免污染 gateway 全局异常语义。
 
 ## 测试与接入门禁

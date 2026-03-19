@@ -94,7 +94,8 @@
 ## 约束
 
 - 所有 bind/unbind 核心逻辑必须集中在共享层，CLI 与插件命令层只做参数解析和错误映射。
-- gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll/get`）仅由本插件提供，禁止重复注册同名方法。
+- gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.enroll` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById`）仅由本插件提供，禁止重复注册同名方法。
+- gateway method 错误响应格式：`respond(false, undefined, { code, message })`。使用 `respondError(respond, err)` 处理异常，`respondInvalid(respond, message)` 处理参数校验失败。禁止使用旧格式 `respond(false, { error })`。
 - realtime bridge（`coclaw-realtime-bridge`）和 auto-upgrade scheduler（`coclaw-auto-upgrade`）必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接或定时器导致进程无法退出。
 - CLI bind/unbind 成功后通过 `openclaw gateway call coclaw.refreshBridge/stopBridge` 通知 gateway，**禁止使用 `openclaw gateway restart`**（代价过大）。
 - 插件运行在 gateway 进程中，严禁引入全局异常兜底（如 `process.on('uncaughtException'/'unhandledRejection')`）。

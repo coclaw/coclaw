@@ -64,10 +64,15 @@ function buildHelpText() {
 }
 
 function respondError(respond, err) {
-	respond(false, {
+	respond(false, undefined, {
+		code: err?.code ?? 'INTERNAL_ERROR',
 		/* c8 ignore next */
-		error: String(err?.message ?? err),
+		message: String(err?.message ?? err),
 	});
+}
+
+function respondInvalid(respond, message) {
+	respond(false, undefined, { code: 'INVALID_INPUT', message });
 }
 
 /* c8 ignore start */
@@ -263,7 +268,7 @@ const plugin = {
 			try {
 				const topicId = params?.topicId?.trim?.();
 				if (!topicId) {
-					respond(false, { error: 'topicId required' });
+					respondInvalid(respond, 'topicId required');
 					return;
 				}
 				respond(true, topicManager.get({ topicId }));
@@ -277,7 +282,7 @@ const plugin = {
 			try {
 				const topicId = params?.topicId?.trim?.();
 				if (!topicId) {
-					respond(false, { error: 'topicId required' });
+					respondInvalid(respond, 'topicId required');
 					return;
 				}
 				const agentId = params?.agentId?.trim?.() || 'main';
@@ -293,23 +298,23 @@ const plugin = {
 			try {
 				const topicId = params?.topicId?.trim?.();
 				if (!topicId) {
-					respond(false, { error: 'topicId required' });
+					respondInvalid(respond, 'topicId required');
 					return;
 				}
 				const changes = params?.changes;
 				if (!changes || typeof changes !== 'object') {
-					respond(false, { error: 'changes required' });
+					respondInvalid(respond, 'changes required');
 					return;
 				}
 				// 当前版本仅处理 title
 				if (typeof changes.title !== 'string') {
-					respond(false, { error: 'No valid change field provided (supported: title)' });
+					respondInvalid(respond, 'No valid change field provided (supported: title)');
 					return;
 				}
 				await topicManager.updateTitle({ topicId, title: changes.title });
 				const { topic } = topicManager.get({ topicId });
 				if (!topic) {
-					respond(false, { error: `Topic not found: ${topicId}` });
+					respondInvalid(respond, `Topic not found: ${topicId}`);
 					return;
 				}
 				respond(true, { topic });
@@ -323,7 +328,7 @@ const plugin = {
 			try {
 				const topicId = params?.topicId?.trim?.();
 				if (!topicId) {
-					respond(false, { error: 'topicId required' });
+					respondInvalid(respond, 'topicId required');
 					return;
 				}
 				const result = await generateTitle({
@@ -343,7 +348,7 @@ const plugin = {
 			try {
 				const topicId = params?.topicId?.trim?.();
 				if (!topicId) {
-					respond(false, { error: 'topicId required' });
+					respondInvalid(respond, 'topicId required');
 					return;
 				}
 				const result = await topicManager.delete({ topicId });
@@ -359,7 +364,7 @@ const plugin = {
 				const agentId = params?.agentId?.trim?.() || 'main';
 				const sessionKey = params?.sessionKey?.trim?.();
 				if (!sessionKey) {
-					respond(false, { error: 'sessionKey required' });
+					respondInvalid(respond, 'sessionKey required');
 					return;
 				}
 				if (!chatHistoryManager.__cache.has(agentId)) {
@@ -378,7 +383,7 @@ const plugin = {
 			try {
 				const sessionId = params?.sessionId?.trim?.();
 				if (!sessionId) {
-					respond(false, { error: 'sessionId required' });
+					respondInvalid(respond, 'sessionId required');
 					return;
 				}
 				const agentId = params?.agentId?.trim?.() || 'main';

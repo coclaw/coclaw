@@ -137,7 +137,7 @@ model ClawClaimCode {
 
 #### 3.2 核心逻辑（`bot-binding.js`）
 
-- **`enrollBot({ serverUrl })`** — 解析 serverUrl（复用现有默认策略），调用 `createClaimCodeOnServer`，返回 `{ code, expiresAt, waitToken, appUrl, serverUrl }`
+- **`enrollBot({ serverUrl })`** — 检查是否已绑定（已绑定时抛出 `ALREADY_BOUND`，提示先执行 `openclaw coclaw unbind`），解析 serverUrl（复用现有默认策略），调用 `createClaimCodeOnServer`，返回 `{ code, expiresAt, waitToken, appUrl, serverUrl }`
   - `appUrl` = `{serverUrl}/claim?code={code}`
 - **`waitForClaimAndSave({ serverUrl, code, waitToken, signal })`** — 循环长轮询，成功后 `writeConfig` 保存绑定信息，返回 `{ botId }`。重试策略：仅 404（认领码已失效）退出循环，其余所有错误（网络超时、HTTP 408/500、TimeoutError 等）延迟后重试，确保后台等待不会因瞬时故障终止
 
@@ -161,7 +161,7 @@ model ClawClaimCode {
 - 支持 `--server <url>` 选项（开源用户可指定自部署的 server URL），通过 RPC `--params` 传递给 gateway 方法
 - 通过 RPC 调用 `coclaw.enroll` 获取认领码
 - 输出认领信息（码、链接、有效期）后立即退出
-- 仅在判断为 gateway 不可用时（`spawn_error`/`spawn_failed`/`timeout`/`empty_output`/`exit_code_*`）自动重启一次再重试；业务错误不触发重启（见上方重试逻辑）
+- 仅在判断为 gateway 不可用时（`spawn_error`/`spawn_failed`/`timeout`/`empty_output`）自动重启一次再重试；`exit_code_*` 不视为 gateway 不可用（进程已成功启动，非零退出通常是业务错误如 ALREADY_BOUND），业务错误直接输出错误信息不触发重启
 
 #### 3.5 斜杠命令（`index.js`）
 

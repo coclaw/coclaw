@@ -592,6 +592,56 @@ test('enroll action should show error when RPC fails after retry', async () => {
 	}
 });
 
+test('enroll action should show business error without gateway restart', async () => {
+	const errors = [];
+	const oldLog = console.log;
+	const oldErr = console.error;
+	console.log = () => {};
+	console.error = (...args) => errors.push(args.join(' '));
+
+	// 模拟 RPC 返回业务错误（exit_code_1 + stderr 信息）
+	const spawn = () => {
+		const child = new EventEmitter();
+		child.stdout = new EventEmitter();
+		child.stderr = new EventEmitter();
+		child.kill = () => {};
+		process.nextTick(() => {
+			child.stderr.emit('data', 'Gateway call failed: GatewayClientRequestError: Already bound. Run `openclaw coclaw unbind` to unbind first, then retry.');
+			child.emit('close', 1);
+		});
+		return child;
+	};
+
+	const restartCalls = [];
+	const mockRestart = async () => { restartCalls.push(1); };
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, config: {}, logger }, {
+		spawn,
+		restartGateway: mockRestart,
+	});
+
+	const enroll = program.commands.get('coclaw').commands.get('enroll');
+	const prevExitCode = process.exitCode;
+
+	try {
+		await enroll.actionFn();
+		// 不应触发 gateway 重启
+		assert.equal(restartCalls.length, 0);
+		// 应显示业务错误而非 "Could not reach gateway"
+		assert.ok(errors.some((l) => l.includes('Already bound')));
+		// extractRpcErrorMessage 应剥离 OpenClaw 包装前缀
+		assert.ok(!errors.some((l) => l.includes('GatewayClientRequestError')));
+		assert.ok(!errors.some((l) => l.includes('Could not reach gateway')));
+		assert.equal(process.exitCode, 1);
+	} finally {
+		process.exitCode = prevExitCode;
+		console.log = oldLog;
+		console.error = oldErr;
+	}
+});
+
 test('gateway notify failure should warn', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();

@@ -11,13 +11,19 @@
   - channel（coclaw）
   - services：`coclaw-realtime-bridge`（WebSocket 桥接）、`coclaw-auto-upgrade`（自动升级调度）
   - command（`/coclaw bind/unbind`）
-  - gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll` / `nativeui.sessions.get` / `coclaw.topics.*`）
-  - CLI（`openclaw coclaw bind/unbind`）
+  - gateway methods（`coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.enroll` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll` / `nativeui.sessions.get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById`）
+  - CLI（`openclaw coclaw bind/unbind/enroll`）
 - 绑定信息存储在 `~/.openclaw/coclaw/bindings.json`（独立于 `openclaw.json`）。
 - 升级状态存储在 `~/.openclaw/coclaw/upgrade-state.json`，升级日志在 `upgrade-log.jsonl`。
 - 测试门禁：`pnpm verify` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
 
 ## 关键里程碑
+
+### Enroll 流程修复与 gateway method 响应格式对齐（2026-03-20）
+- `gateway-notify.js`：`shell` 改为仅 Windows 启用（修复 JSON 参数被 shell 破坏的 bug）；新增 `escapeJsonForCmd()` 处理 Windows cmd.exe 转义；捕获 stderr 在 `exit_code_*` 时传递错误信息。
+- `index.js`：`respondError` 格式从 `respond(false, { error })` 改为 `respond(false, undefined, { code, message })` 以符合 OpenClaw gateway 协议；新增 `respondInvalid` 统一参数校验路径；10 处旧格式调用全部迁移。
+- `bot-binding.js`：`enrollBot` 新增已绑定前置检查，已绑定时抛出 `ALREADY_BOUND` 并提示 `openclaw coclaw unbind`。
+- `cli-registrar.js`：`isGatewayUnavailable` 不再将 `exit_code_*` 视为 gateway 不可用；新增 `extractRpcErrorMessage()` 剥离 OpenClaw CLI 包装前缀；业务错误与 gateway 不可用分别输出不同提示。
 
 ### Topic 管理功能（2026-03-17）
 - 新增 `src/topic-manager/` 目录，包含：

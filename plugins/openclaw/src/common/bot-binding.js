@@ -56,7 +56,15 @@ export async function bindBot({ code, serverUrl }) {
 }
 
 export async function enrollBot({ serverUrl }, deps = {}) {
-	const { createClaimCode = createClaimCodeOnServer } = deps;
+	const { createClaimCode = createClaimCodeOnServer, readCfg = readConfig } = deps;
+
+	const config = await readCfg();
+	if (config?.token) {
+		const err = new Error('Already bound. Run `openclaw coclaw unbind` to unbind first, then retry.');
+		err.code = 'ALREADY_BOUND';
+		throw err;
+	}
+
 	const baseUrl = resolveServerUrl(serverUrl);
 	const data = await createClaimCode({ baseUrl });
 

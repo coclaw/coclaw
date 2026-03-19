@@ -186,6 +186,26 @@ test('callGatewayMethod should resolve ok:false on non-zero exit without stdout'
 	assert.equal(result.error, 'exit_code_1');
 });
 
+test('callGatewayMethod should capture stderr as message on non-zero exit', async () => {
+	const mockSpawn = () => {
+		const child = new EventEmitter();
+		child.stdout = new EventEmitter();
+		child.stderr = new EventEmitter();
+		child.kill = () => {};
+		process.nextTick(() => {
+			child.stderr.emit('data', 'Gateway call failed: already bound');
+			child.emit('close', 1);
+		});
+		return child;
+	};
+
+	const result = await callGatewayMethod('coclaw.enroll', mockSpawn);
+
+	assert.equal(result.ok, false);
+	assert.equal(result.error, 'exit_code_1');
+	assert.equal(result.message, 'Gateway call failed: already bound');
+});
+
 test('callGatewayMethod should treat non-JSON stdout as success', async () => {
 	const { spawn } = createMockSpawn({
 		stdout: 'some non-json output',
