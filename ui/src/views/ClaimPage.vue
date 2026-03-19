@@ -4,26 +4,26 @@
 		<main class="flex flex-1 items-center justify-center px-4">
 			<section class="w-full max-w-sm text-center">
 				<!-- 加载中 -->
-				<div v-if="loading" class="space-y-3">
+				<div v-if="loading" class="flex flex-col items-center gap-3">
 					<UIcon name="i-heroicons-arrow-path" class="size-8 animate-spin text-muted" />
 					<p class="text-sm text-muted">{{ $t('claim.claiming') }}</p>
 				</div>
 
 				<!-- 成功 -->
-				<div v-else-if="success" class="space-y-3">
+				<div v-else-if="success" class="flex flex-col items-center gap-3">
 					<UIcon name="i-heroicons-check-circle" class="size-12 text-success" />
 					<p class="text-sm">{{ $t('claim.success') }}</p>
 				</div>
 
 				<!-- 失败 -->
-				<div v-else-if="errorCode" class="space-y-3">
+				<div v-else-if="errorCode" class="flex flex-col items-center gap-3">
 					<UIcon name="i-heroicons-x-circle" class="size-12 text-error" />
 					<p class="text-sm text-error">{{ errorMessage }}</p>
 					<p v-if="errorCode !== 'ALREADY_BOUND'" class="text-xs text-muted">{{ $t('claim.retryHint') }}</p>
 				</div>
 
 				<!-- 无认领码 -->
-				<div v-else class="space-y-3">
+				<div v-else class="flex flex-col items-center gap-3">
 					<UIcon name="i-heroicons-exclamation-triangle" class="size-12 text-warning" />
 					<p class="text-sm text-muted">{{ $t('claim.noCode') }}</p>
 				</div>
@@ -34,16 +34,12 @@
 
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
-import { useNotify } from '../composables/use-notify.js';
 import { claimBot } from '../services/bots.api.js';
 
 export default {
 	name: 'ClaimPage',
 	components: {
 		MobilePageHeader,
-	},
-	setup() {
-		return { notify: useNotify() };
 	},
 	data() {
 		return {
@@ -91,7 +87,6 @@ export default {
 				}, 1500);
 			} catch (err) {
 				this.errorCode = err?.response?.data?.code || 'UNKNOWN';
-				this.notify.error(this.errorMessage);
 			} finally {
 				this.loading = false;
 			}

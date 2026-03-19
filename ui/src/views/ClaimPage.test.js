@@ -10,16 +10,6 @@ vi.mock('../services/bots.api.js', () => ({
 	claimBot: (...args) => mockClaimBot(...args),
 }));
 
-const mockNotify = {
-	success: vi.fn(),
-	info: vi.fn(),
-	warning: vi.fn(),
-	error: vi.fn(),
-};
-vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => mockNotify,
-}));
-
 const i18nMap = {
 	'claim.title': 'Claim Bot',
 	'claim.claiming': 'Claiming...',
@@ -51,8 +41,6 @@ function createWrapper({ query = {} } = {}) {
 
 beforeEach(() => {
 	mockClaimBot.mockReset();
-	mockNotify.success.mockReset();
-	mockNotify.error.mockReset();
 	vi.useFakeTimers();
 });
 
@@ -75,8 +63,6 @@ test('should call claimBot and show success on valid code', async () => {
 
 	expect(mockClaimBot).toHaveBeenCalledWith('12345678');
 	expect(wrapper.text()).toContain('Success!');
-	// 成功时仅 inline 展示，不再弹 notify
-	expect(mockNotify.success).not.toHaveBeenCalled();
 });
 
 test('should navigate to /bots after success with delay', async () => {
@@ -97,7 +83,6 @@ test('should show expired error on CLAIM_CODE_EXPIRED with retryHint', async () 
 
 	expect(wrapper.text()).toContain('Code expired');
 	expect(wrapper.text()).toContain('Please retry');
-	expect(mockNotify.error).toHaveBeenCalledWith('Code expired');
 });
 
 test('should show invalid error on CLAIM_CODE_INVALID', async () => {
@@ -108,7 +93,6 @@ test('should show invalid error on CLAIM_CODE_INVALID', async () => {
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('Code invalid');
-	expect(mockNotify.error).toHaveBeenCalledWith('Code invalid');
 });
 
 test('should show alreadyBound error on ALREADY_BOUND without retryHint', async () => {
@@ -120,7 +104,6 @@ test('should show alreadyBound error on ALREADY_BOUND without retryHint', async 
 
 	expect(wrapper.text()).toContain('Already bound');
 	expect(wrapper.text()).not.toContain('Please retry');
-	expect(mockNotify.error).toHaveBeenCalledWith('Already bound');
 });
 
 test('should show generic error on unknown error', async () => {
@@ -129,7 +112,6 @@ test('should show generic error on unknown error', async () => {
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('Failed');
-	expect(mockNotify.error).toHaveBeenCalledWith('Failed');
 });
 
 test('should clear navigation timer on unmount', async () => {
