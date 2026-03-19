@@ -318,7 +318,9 @@ export async function waitBindingCodeHandler(req, res, next, deps = {}) {
 		await deleteBindingCodeImpl(code).catch(() => {});
 	};
 
-	req.on('aborted', onAbort);
+	res.on('close', () => {
+		if (!res.writableFinished) onAbort();
+	});
 
 	try {
 		const result = await waitBindingResultImpl({
@@ -360,9 +362,6 @@ export async function waitBindingCodeHandler(req, res, next, deps = {}) {
 	}
 	catch (err) {
 		next(err);
-	}
-	finally {
-		req.off('aborted', onAbort);
 	}
 }
 

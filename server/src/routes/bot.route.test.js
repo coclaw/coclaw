@@ -4,10 +4,20 @@ import test from 'node:test';
 import { bindBotHandler, botStatusStreamHandler, cancelBindingCodeHandler, createBindingCodeHandler, listBotsHandler, waitBindingCodeHandler } from './bot.route.js';
 
 function createRes() {
+	const handlers = new Map();
 	return {
 		statusCode: null,
 		body: null,
 		ended: false,
+		writableFinished: false,
+		on(event, handler) {
+			handlers.set(event, handler);
+		},
+		__emit(event) {
+			const handler = handlers.get(event);
+			if (handler) return handler();
+			return null;
+		},
 		status(code) {
 			this.statusCode = code;
 			return this;
@@ -141,27 +151,10 @@ test('botStatusStreamHandler: should set SSE headers for authenticated request',
 });
 
 function createWaitReq(body) {
-	const handlers = new Map();
 	return {
 		body,
 		user: { id: 7n },
 		isAuthenticated: () => true,
-		on(event, handler) {
-			handlers.set(event, handler);
-		},
-		off(event, handler) {
-			const current = handlers.get(event);
-			if (current === handler) {
-				handlers.delete(event);
-			}
-		},
-		__emit(event) {
-			const handler = handlers.get(event);
-			if (handler) {
-				return handler();
-			}
-			return null;
-		},
 	};
 }
 
@@ -328,7 +321,8 @@ test('waitBindingCodeHandler: should cancel and delete binding code on abort', a
 		waitBindingResultImpl: async () => pending,
 	});
 
-	await req.__emit('aborted');
+	// 模拟客户端断连（res 未完成写入时 close）
+	await res.__emit('close');
 	release({ status: 'PENDING' });
 	await running;
 
