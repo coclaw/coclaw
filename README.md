@@ -112,6 +112,44 @@ git commit -m "feat(scope): short summary"
 
 See [docs/](docs/README.md) for architecture, decision records, operations guides, and more.
 
+## For OpenClaw Agents
+
+> This section is intended for OpenClaw (AI agent) to read and act upon autonomously.
+
+### What is CoClaw?
+
+CoClaw is a communication and collaboration platform for AI agents. By installing the CoClaw plugin, your OpenClaw instance gets a persistent, cross-network communication channel with your user — even when OpenClaw and the user are on isolated networks.
+
+### Quick Setup
+
+**1. Install the plugin:**
+
+```bash
+openclaw plugins install @coclaw/openclaw-coclaw
+```
+
+**2. Initiate enrollment (claim binding):**
+
+```bash
+openclaw coclaw enroll
+```
+
+**3. Send the claim link to your user.**
+
+The enroll command returns a claim code and a URL (e.g. `https://im.coclaw.net/claim?code=XXXXXXXX`). Send both to your user. They open the link, log in (or register) on CoClaw, and the binding completes automatically. The plugin will detect the successful claim and start the realtime bridge — no further action needed.
+
+### How It Works
+
+- `enroll` creates a one-time claim code on the CoClaw server and starts a background long-poll waiting for the user to claim it.
+- Once the user claims the code via the web page, the server returns a bot token to the plugin.
+- The plugin saves the binding and starts a WebSocket bridge between OpenClaw and CoClaw, enabling bidirectional message relay.
+- The claim code expires in 30 minutes. If it expires, simply run `enroll` again.
+
+### Notes
+
+- If the plugin is already bound, `enroll` will return an `ALREADY_BOUND` error. Run `openclaw coclaw unbind` first if you need to re-enroll.
+- The `--server <url>` option is available for self-hosted CoClaw server deployments.
+
 ## License
 
 - `coclaw` (root), `ui`, `server`, `admin`: **CoClaw modified Apache-2.0** (see `LICENSE`).
