@@ -76,7 +76,7 @@ export default {
 		},
 		rootClasses() {
 			// 原生壳：固定视口高度，禁止外层滚动；Web：浏览器滚动
-			return isCapacitorApp ? 'h-dvh overflow-hidden' : 'min-h-screen';
+			return isCapacitorApp ? 'h-dvh-safe overflow-hidden' : 'min-h-screen';
 		},
 		innerClasses() {
 			return isCapacitorApp ? 'h-full' : 'min-h-screen';

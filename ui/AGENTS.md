@@ -20,6 +20,20 @@
 - 样式语言: SCSS（仅作为补充）。
 - 包管理: pnpm（环境已启用 pnpm）
 
+## 浏览器兼容性基线
+
+最低支持版本（已配置于 `vite.config.js` 的 `build.target`）：
+
+| 浏览器 | 最低版本 | 发布时间 |
+|--------|---------|---------|
+| Chrome | 90 | 2021.04 |
+| Edge | 90 | 2021.04 |
+| Safari | 14 | 2020.09 |
+| Firefox | 90 | 2021.08 |
+
+- 使用较新的 CSS 特性（如 `dvh`/`svh`/`lvh`、Container Queries 等）时，必须提供 fallback，确保在基线浏览器中功能可用
+- `main.css` 中提供了 `.h-dvh-safe` 工具类（`@supports` 回退到 `vh`），需要动态视口高度时应使用该类而非 Tailwind 的 `h-dvh`
+
 ## 编程规范
 
 - 组件风格：采用 Options API 风格，而非 Composition API 风格，不得使用 `<script setup>` 语法糖

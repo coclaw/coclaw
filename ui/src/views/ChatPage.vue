@@ -2,9 +2,9 @@
 	<!--
 		⚠️ 布局关键约束 ⚠️
 		- 原生壳：AuthedLayout 已约束视口高度，此处用 flex-1+min-h-0 填充剩余空间
-		- Web：父容器仅 min-height，需 h-dvh 硬约束以固定 header/footer（临时方案，
-		  后续全面改为浏览器滚动后可移除 h-dvh）
-		- 勿同时加 flex-1 + h-dvh，否则 flex 算法以 max-content 撑开父容器
+		- Web：父容器仅 min-height，需 h-dvh-safe 硬约束以固定 header/footer（临时方案，
+		  后续全面改为浏览器滚动后可移除）
+		- 勿同时加 flex-1 + h-dvh-safe，否则 flex 算法以 max-content 撑开父容器
 	-->
 	<div data-testid="chat-root" class="relative flex flex-col overflow-hidden" :class="chatRootClasses">
 		<MobilePageHeader :title="chatTitle">
@@ -154,7 +154,7 @@ export default {
 	},
 	computed: {
 		chatRootClasses() {
-			return isCapacitorApp ? 'flex-1 min-h-0' : 'h-dvh';
+			return isCapacitorApp ? 'flex-1 min-h-0' : 'h-dvh-safe';
 		},
 		currentSessionId() {
 			return typeof this.$route.params?.sessionId === 'string'
