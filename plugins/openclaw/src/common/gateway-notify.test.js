@@ -74,6 +74,31 @@ test('callGatewayMethod should resolve ok with status field from result payload'
 	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.refreshBridge', '--json']);
 });
 
+test('callGatewayMethod should pass --params flag when params provided', async () => {
+	const { spawn, calls } = createMockSpawn({
+		stdout: '{"status":"ok"}',
+	});
+
+	const params = { serverUrl: 'https://example.com' };
+	await callGatewayMethod('coclaw.enroll', spawn, { params });
+
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0], [
+		'openclaw', 'gateway', 'call', 'coclaw.enroll', '--json',
+		'--params', JSON.stringify(params),
+	]);
+});
+
+test('callGatewayMethod should not pass --params when params not provided', async () => {
+	const { spawn, calls } = createMockSpawn({
+		stdout: '{"status":"ok"}',
+	});
+
+	await callGatewayMethod('coclaw.enroll', spawn);
+
+	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.enroll', '--json']);
+});
+
 test('callGatewayMethod should resolve ok for any valid JSON output', async () => {
 	// 即使 JSON 中没有 status 字段，有合法输出即视为成功
 	const { spawn } = createMockSpawn({

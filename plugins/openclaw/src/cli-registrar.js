@@ -4,7 +4,34 @@ import { callGatewayMethod } from './common/gateway-notify.js';
 import {
 	notBound, bindOk, unbindOk,
 	gatewayNotified, gatewayNotifyFailed,
+	claimCodeCreated,
 } from './common/messages.js';
+
+const GATEWAY_UNAVAILABLE_ERRORS = new Set([
+	'spawn_error', 'spawn_failed', 'timeout', 'empty_output',
+]);
+
+function isGatewayUnavailable(result) {
+	return !result.ok
+		&& (GATEWAY_UNAVAILABLE_ERRORS.has(result.error) || result.error?.startsWith?.('exit_code_'));
+}
+
+/* c8 ignore start -- 集成级函数，测试通过 deps.restartGateway 注入替代 */
+async function restartGatewayProcess(spawnFn) {
+	const { spawn: nodeSpawn } = await import('node:child_process');
+	const doSpawn = spawnFn ?? nodeSpawn;
+	await new Promise((resolve, reject) => {
+		const child = doSpawn('openclaw', ['gateway', 'restart'], {
+			stdio: 'ignore',
+			shell: true,
+		});
+		child.on('close', (exitCode) => exitCode === 0 ? resolve() : reject(new Error(`exit ${exitCode}`)));
+		child.on('error', reject);
+	});
+	// 等待 gateway 就绪
+	await new Promise((r) => setTimeout(r, 3000));
+}
+/* c8 ignore stop */
 
 function resolveServerUrl(opts, config) {
 	return opts?.server
@@ -55,6 +82,56 @@ export function registerCoclawCli({ program, config, logger }, deps = {}) {
 				console.log(bindOk(result));
 				await notifyGateway('coclaw.refreshBridge');
 			} catch (err) {
+				console.error(`Error: ${resolveErrorMessage(err)}`);
+				process.exitCode = 1;
+			}
+		});
+
+	coclaw
+		.command('enroll')
+		.description('Enroll this OpenClaw instance with CoClaw (generate a claim code for the user)')
+		.option('--server <url>', 'CoClaw server URL')
+		.action(async (opts) => {
+			try {
+				const rpcOpts = opts?.server ? { params: { serverUrl: opts.server } } : undefined;
+				const callRpc = () => callGatewayMethod('coclaw.enroll', deps.spawn, rpcOpts);
+
+				let result = await callRpc();
+
+				// 仅在 gateway 不可用时重启重试，业务错误不重启
+				if (isGatewayUnavailable(result)) {
+					logger.info?.('[coclaw] enroll RPC failed, attempting gateway restart...');
+					const restartFn = deps.restartGateway ?? restartGatewayProcess;
+					try {
+						await restartFn(deps.spawn);
+					} catch {
+						// 重启失败，仍然尝试再次 RPC
+					}
+					result = await callRpc();
+				}
+
+				if (!result.ok) {
+					console.error('Error: Could not reach gateway. Ensure OpenClaw gateway is running.');
+					console.error('  Try: openclaw gateway start');
+					process.exitCode = 1;
+					return;
+				}
+
+				// RPC 成功：输出认领码信息
+				// gateway method 的 respond 数据包含 status 字段
+				const data = result.status;
+				if (data?.code && data?.appUrl) {
+					console.log(claimCodeCreated({
+						code: data.code,
+						appUrl: data.appUrl,
+						expiresMinutes: data.expiresMinutes ?? 30,
+					}));
+				} else {
+					console.log('Enroll request sent to gateway.');
+				}
+			}
+			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
+			catch (err) {
 				console.error(`Error: ${resolveErrorMessage(err)}`);
 				process.exitCode = 1;
 			}

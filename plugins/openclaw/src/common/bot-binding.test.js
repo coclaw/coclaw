@@ -5,7 +5,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { bindBot, unbindBot } from './bot-binding.js';
+import { bindBot, unbindBot, enrollBot, waitForClaimAndSave } from './bot-binding.js';
 import { saveHomedir, setHomedir, restoreHomedir } from '../homedir-mock.helper.js';
 import { setRuntime } from '../runtime.js';
 
@@ -330,6 +330,198 @@ test('unbindBot should clear local bindings when serverUrl is missing', async ()
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
+});
+
+test('enrollBot should call createClaimCode and return claim info', async () => {
+	const mockCreate = async () => ({
+		code: '12345678',
+		expiresAt: '2099-01-01T00:00:00.000Z',
+		waitToken: 'wt-123',
+	});
+
+	const result = await enrollBot({ serverUrl: 'http://127.0.0.1:9999' }, {
+		createClaimCode: mockCreate,
+	});
+
+	assert.equal(result.code, '12345678');
+	assert.equal(result.waitToken, 'wt-123');
+	assert.equal(result.serverUrl, 'http://127.0.0.1:9999');
+	assert.equal(result.appUrl, 'http://127.0.0.1:9999/claim?code=12345678');
+	assert.ok(result.expiresAt);
+});
+
+test('enrollBot should throw on invalid server response', async () => {
+	const mockCreate = async () => ({});
+
+	await assert.rejects(
+		() => enrollBot({ serverUrl: 'http://x' }, { createClaimCode: mockCreate }),
+		/invalid enroll response/,
+	);
+});
+
+test('waitForClaimAndSave should save config on BOUND response', async () => {
+	let savedCfg = null;
+	const mockWait = async () => ({ botId: 'b99', token: 'tk-99' });
+	const mockWrite = async (cfg) => { savedCfg = cfg; };
+
+	const result = await waitForClaimAndSave(
+		{ serverUrl: 'http://127.0.0.1:8000', code: 'c1', waitToken: 'wt' },
+		{ waitClaimCode: mockWait, writeCfg: mockWrite },
+	);
+
+	assert.equal(result.botId, 'b99');
+	assert.equal(savedCfg.serverUrl, 'http://127.0.0.1:8000');
+	assert.equal(savedCfg.botId, 'b99');
+	assert.equal(savedCfg.token, 'tk-99');
+	assert.ok(savedCfg.boundAt);
+});
+
+test('waitForClaimAndSave should retry on PENDING then resolve on BOUND', async () => {
+	let callCount = 0;
+	const mockWait = async () => {
+		callCount += 1;
+		if (callCount === 1) return { code: 'CLAIM_PENDING' };
+		return { botId: 'b100', token: 'tk-100' };
+	};
+	const mockWrite = async () => {};
+
+	const result = await waitForClaimAndSave(
+		{ serverUrl: 'http://127.0.0.1:8000', code: 'c2', waitToken: 'wt' },
+		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
+	);
+
+	assert.equal(result.botId, 'b100');
+	assert.equal(callCount, 2);
+});
+
+test('waitForClaimAndSave should retry on 408 timeout error', async () => {
+	let callCount = 0;
+	const mockWait = async () => {
+		callCount += 1;
+		if (callCount === 1) {
+			const err = new Error('timeout');
+			err.response = { status: 408 };
+			throw err;
+		}
+		return { botId: 'b101', token: 'tk-101' };
+	};
+	const mockWrite = async () => {};
+
+	const result = await waitForClaimAndSave(
+		{ serverUrl: 'http://127.0.0.1:8000', code: 'c3', waitToken: 'wt' },
+		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
+	);
+
+	assert.equal(result.botId, 'b101');
+	assert.equal(callCount, 2);
+});
+
+test('waitForClaimAndSave should retry on network error (no response)', async () => {
+	let callCount = 0;
+	const mockWait = async () => {
+		callCount += 1;
+		if (callCount === 1) {
+			throw new Error('fetch failed');
+		}
+		return { botId: 'b102', token: 'tk-102' };
+	};
+	const mockWrite = async () => {};
+
+	const result = await waitForClaimAndSave(
+		{ serverUrl: 'http://127.0.0.1:8000', code: 'c-net', waitToken: 'wt' },
+		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
+	);
+
+	assert.equal(result.botId, 'b102');
+	assert.equal(callCount, 2);
+});
+
+test('waitForClaimAndSave should retry on TimeoutError', async () => {
+	let callCount = 0;
+	const mockWait = async () => {
+		callCount += 1;
+		if (callCount === 1) {
+			const err = new DOMException('signal timed out', 'TimeoutError');
+			throw err;
+		}
+		return { botId: 'b103', token: 'tk-103' };
+	};
+	const mockWrite = async () => {};
+
+	const result = await waitForClaimAndSave(
+		{ serverUrl: 'http://127.0.0.1:8000', code: 'c-timeout', waitToken: 'wt' },
+		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
+	);
+
+	assert.equal(result.botId, 'b103');
+	assert.equal(callCount, 2);
+});
+
+test('waitForClaimAndSave should retry on server 500 error', async () => {
+	let callCount = 0;
+	const mockWait = async () => {
+		callCount += 1;
+		if (callCount === 1) {
+			const err = new Error('Internal Server Error');
+			err.response = { status: 500 };
+			throw err;
+		}
+		return { botId: 'b104', token: 'tk-104' };
+	};
+	const mockWrite = async () => {};
+
+	const result = await waitForClaimAndSave(
+		{ serverUrl: 'http://127.0.0.1:8000', code: 'c-500', waitToken: 'wt' },
+		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
+	);
+
+	assert.equal(result.botId, 'b104');
+	assert.equal(callCount, 2);
+});
+
+test('waitForClaimAndSave should throw on aborted signal', async () => {
+	const ac = new AbortController();
+	ac.abort();
+	const mockWait = async () => ({ botId: 'b1', token: 't1' });
+	const mockWrite = async () => {};
+
+	await assert.rejects(
+		() => waitForClaimAndSave(
+			{ serverUrl: 'http://127.0.0.1:8000', code: 'c6', waitToken: 'wt', signal: ac.signal },
+			{ waitClaimCode: mockWait, writeCfg: mockWrite },
+		),
+		/enroll cancelled/,
+	);
+});
+
+test('waitForClaimAndSave should throw on 404 error', async () => {
+	const mockWait = async () => {
+		const err = new Error('not found');
+		err.response = { status: 404 };
+		throw err;
+	};
+	const mockWrite = async () => {};
+
+	await assert.rejects(
+		() => waitForClaimAndSave(
+			{ serverUrl: 'http://127.0.0.1:8000', code: 'c4', waitToken: 'wt' },
+			{ waitClaimCode: mockWait, writeCfg: mockWrite },
+		),
+		/claim code not found or expired/,
+	);
+});
+
+test('waitForClaimAndSave should throw on unexpected response', async () => {
+	const mockWait = async () => ({ weird: true });
+	const mockWrite = async () => {};
+
+	await assert.rejects(
+		() => waitForClaimAndSave(
+			{ serverUrl: 'http://127.0.0.1:8000', code: 'c5', waitToken: 'wt' },
+			{ waitClaimCode: mockWait, writeCfg: mockWrite },
+		),
+		/unexpected claim wait response/,
+	);
 });
 
 test('bind/unbind should support env and config server url fallbacks', async () => {

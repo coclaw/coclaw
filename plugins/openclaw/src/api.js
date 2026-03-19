@@ -27,6 +27,8 @@ async function requestJson(baseUrl, path, { method = 'GET', headers, body, timeo
 
 const BIND_TIMEOUT = 30_000;
 const UNBIND_TIMEOUT = 15_000;
+const CLAIM_CODE_TIMEOUT = 15_000;
+const CLAIM_WAIT_TIMEOUT = 30_000;
 
 export async function bindWithServer({ baseUrl, code, name }) {
 	return requestJson(baseUrl, '/api/v1/bots/bind', {
@@ -43,6 +45,23 @@ export async function unbindWithServer({ baseUrl, token, timeout = UNBIND_TIMEOU
 		headers: {
 			Authorization: `Bearer ${token}`,
 		},
+		timeout,
+	});
+}
+
+export async function createClaimCodeOnServer({ baseUrl, timeout = CLAIM_CODE_TIMEOUT }) {
+	return requestJson(baseUrl, '/api/v1/claws/claim-codes', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		timeout,
+	});
+}
+
+export async function waitClaimCodeOnServer({ baseUrl, code, waitToken, timeout = CLAIM_WAIT_TIMEOUT }) {
+	return requestJson(baseUrl, '/api/v1/claws/claim-codes/wait', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: { code, waitToken },
 		timeout,
 	});
 }

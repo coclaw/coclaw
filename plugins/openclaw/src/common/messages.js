@@ -29,3 +29,13 @@ export function gatewayNotified(action) {
 export function gatewayNotifyFailed() {
 	return 'Note: could not notify the running gateway. If it is running, restart it manually.';
 }
+
+export function claimCodeCreated({ code, appUrl, expiresMinutes }) {
+	return [
+		`Claim code: ${code}`,
+		`Open this URL to complete binding: ${appUrl}`,
+		`The code expires in ${expiresMinutes} minutes.`,
+		'',
+		"If you don't have a CoClaw account yet, you can register on that page.",
+	].join('\n');
+}

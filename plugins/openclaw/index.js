@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
 import nodePath from 'node:path';
 
-import { bindBot, unbindBot } from './src/common/bot-binding.js';
+import { bindBot, unbindBot, enrollBot, waitForClaimAndSave } from './src/common/bot-binding.js';
 import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
-import { notBound, bindOk, unbindOk } from './src/common/messages.js';
+import { notBound, bindOk, unbindOk, claimCodeCreated } from './src/common/messages.js';
 import { coclawChannelPlugin } from './src/channel-plugin.js';
 import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './src/realtime-bridge.js';
 import { setRuntime } from './src/runtime.js';
@@ -59,6 +59,7 @@ function buildHelpText() {
 		'',
 		'/coclaw bind <binding-code> [--server <url>]',
 		'/coclaw unbind [--server <url>]',
+		'/coclaw enroll [--server <url>]',
 	].join('\n');
 }
 
@@ -137,6 +138,60 @@ const plugin = {
 			try {
 				await stopRealtimeBridge();
 				respond(true, { status: 'stopped' });
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		// enroll 并发控制：同一时刻只允许一个活跃 enroll
+		let activeEnrollAbort = null;
+
+		api.registerGatewayMethod('coclaw.enroll', async ({ params, respond }) => {
+			try {
+				// 取消前一个 enroll
+				if (activeEnrollAbort) {
+					activeEnrollAbort.abort();
+				}
+				const abortController = new AbortController();
+				activeEnrollAbort = abortController;
+
+				const serverUrl = params?.serverUrl ?? api.pluginConfig?.serverUrl;
+				const result = await enrollBot({ serverUrl });
+
+				const rawMinutes = Math.round(
+					(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
+				);
+				const expiresMinutes = Number.isFinite(rawMinutes) ? rawMinutes : 30;
+
+				// 立即返回认领码给 CLI
+				respond(true, {
+					status: {
+						code: result.code,
+						appUrl: result.appUrl,
+						expiresAt: result.expiresAt,
+						expiresMinutes,
+					},
+				});
+
+				// 后台 fire-and-forget：等待认领并保存 config + 启 bridge
+				waitForClaimAndSave({
+					serverUrl: result.serverUrl,
+					code: result.code,
+					waitToken: result.waitToken,
+					signal: abortController.signal,
+				}).then(async () => {
+					if (abortController.signal.aborted) return;
+					await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+					logger.info?.('[coclaw] enroll completed, bridge restarted');
+				}).catch((err) => {
+					if (abortController.signal.aborted) return;
+					logger.warn?.(`[coclaw] enroll wait failed: ${String(err?.message ?? err)}`);
+				}).finally(() => {
+					if (activeEnrollAbort === abortController) {
+						activeEnrollAbort = null;
+					}
+				});
 			}
 			catch (err) {
 				respondError(respond, err);
@@ -374,6 +429,49 @@ const plugin = {
 						});
 						await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
 						return { text: bindOk(result) };
+					}
+
+					if (action === 'enroll') {
+						// 并发控制：取消前一个 enroll（与 RPC 路径共享）
+						if (activeEnrollAbort) {
+							activeEnrollAbort.abort();
+						}
+						const abortController = new AbortController();
+						activeEnrollAbort = abortController;
+
+						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
+						const result = await enrollBot({ serverUrl });
+						const rawMinutes = Math.round(
+							(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
+						);
+						const expiresMinutes = Number.isFinite(rawMinutes) ? rawMinutes : 30;
+
+						// 后台 fire-and-forget：等待认领完成后写 config + 启 bridge
+						waitForClaimAndSave({
+							serverUrl: result.serverUrl,
+							code: result.code,
+							waitToken: result.waitToken,
+							signal: abortController.signal,
+						}).then(async () => {
+							if (abortController.signal.aborted) return;
+							await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+							logger.info?.('[coclaw] enroll completed via slash command, bridge restarted');
+						}).catch((err) => {
+							if (abortController.signal.aborted) return;
+							logger.warn?.(`[coclaw] enroll wait failed: ${String(err?.message ?? err)}`);
+						}).finally(() => {
+							if (activeEnrollAbort === abortController) {
+								activeEnrollAbort = null;
+							}
+						});
+
+						return {
+							text: claimCodeCreated({
+								code: result.code,
+								appUrl: result.appUrl,
+								expiresMinutes,
+							}),
+						};
 					}
 
 					if (action === 'unbind') {

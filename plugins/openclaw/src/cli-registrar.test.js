@@ -83,11 +83,15 @@ test('registerCoclawCli should register coclaw command with bind/unbind subcomma
 	assert.equal(program.commands.has('coclaw'), true);
 	const coclaw = program.commands.get('coclaw');
 	assert.equal(coclaw.desc, 'CoClaw bind/unbind commands');
-	assert.equal(coclaw.commands.size, 2);
+	assert.equal(coclaw.commands.size, 3);
 
 	const bind = coclaw.commands.get('bind <code>');
 	assert.ok(bind);
 	assert.equal(typeof bind.actionFn, 'function');
+
+	const enroll = coclaw.commands.get('enroll');
+	assert.ok(enroll);
+	assert.equal(typeof enroll.actionFn, 'function');
 
 	const unbind = coclaw.commands.get('unbind');
 	assert.ok(unbind);
@@ -315,6 +319,276 @@ test('serverUrl should resolve from config when --server not provided', async ()
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 		await mock.close();
+	}
+});
+
+test('enroll action should output claim code on RPC success', async () => {
+	const logs = [];
+	const oldLog = console.log;
+	console.log = (...args) => logs.push(args.join(' '));
+
+	// 模拟 RPC 返回成功的 enroll 数据
+	function createEnrollSpawn() {
+		return () => {
+			const child = new EventEmitter();
+			child.stdout = new EventEmitter();
+			child.stderr = new EventEmitter();
+			child.kill = () => {};
+			process.nextTick(() => {
+				child.stdout.emit('data', JSON.stringify({
+					status: {
+						code: '12345678',
+						appUrl: 'https://im.coclaw.net/claim?code=12345678',
+						expiresMinutes: 30,
+					},
+				}));
+				child.emit('close', 0);
+			});
+			return child;
+		};
+	}
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, config: {}, logger }, { spawn: createEnrollSpawn() });
+
+	const enroll = program.commands.get('coclaw').commands.get('enroll');
+
+	try {
+		await enroll.actionFn();
+		assert.ok(logs.some((l) => l.includes('Claim code: 12345678')));
+		assert.ok(logs.some((l) => l.includes('im.coclaw.net/claim?code=12345678')));
+	} finally {
+		console.log = oldLog;
+	}
+});
+
+test('enroll action should pass --server as RPC params', async () => {
+	const logs = [];
+	const oldLog = console.log;
+	console.log = (...args) => logs.push(args.join(' '));
+
+	const spawnCalls = [];
+	function createEnrollSpawnWithCapture() {
+		return (cmd, args) => {
+			spawnCalls.push([cmd, ...args]);
+			const child = new EventEmitter();
+			child.stdout = new EventEmitter();
+			child.stderr = new EventEmitter();
+			child.kill = () => {};
+			process.nextTick(() => {
+				child.stdout.emit('data', JSON.stringify({
+					status: {
+						code: '55556666',
+						appUrl: 'https://my.server.com/claim?code=55556666',
+						expiresMinutes: 30,
+					},
+				}));
+				child.emit('close', 0);
+			});
+			return child;
+		};
+	}
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, config: {}, logger }, { spawn: createEnrollSpawnWithCapture() });
+
+	const enroll = program.commands.get('coclaw').commands.get('enroll');
+
+	try {
+		await enroll.actionFn({ server: 'https://my.server.com' });
+		// 验证 --params 包含 serverUrl
+		const rpcCall = spawnCalls.find((c) => c.includes('coclaw.enroll'));
+		assert.ok(rpcCall, 'should have called coclaw.enroll RPC');
+		const paramsIdx = rpcCall.indexOf('--params');
+		assert.ok(paramsIdx !== -1, 'should include --params flag');
+		const parsedParams = JSON.parse(rpcCall[paramsIdx + 1]);
+		assert.equal(parsedParams.serverUrl, 'https://my.server.com');
+		// 验证输出了认领码
+		assert.ok(logs.some((l) => l.includes('55556666')));
+	} finally {
+		console.log = oldLog;
+	}
+});
+
+test('enroll action should retry after gateway restart on RPC failure', async () => {
+	const errors = [];
+	const logs = [];
+	const oldLog = console.log;
+	const oldErr = console.error;
+	console.log = (...args) => logs.push(args.join(' '));
+	console.error = (...args) => errors.push(args.join(' '));
+
+	let callCount = 0;
+	function createRetrySpawn() {
+		return (cmd, args) => {
+			const child = new EventEmitter();
+			child.stdout = new EventEmitter();
+			child.stderr = new EventEmitter();
+			child.kill = () => {};
+			process.nextTick(() => {
+				callCount += 1;
+				if (args?.includes?.('coclaw.enroll')) {
+					if (callCount <= 1) {
+						child.emit('error', new Error('spawn failed'));
+					} else {
+						child.stdout.emit('data', JSON.stringify({
+							status: {
+								code: '99998888',
+								appUrl: 'https://im.coclaw.net/claim?code=99998888',
+								expiresMinutes: 30,
+							},
+						}));
+						child.emit('close', 0);
+					}
+				} else {
+					// gateway restart
+					child.emit('close', 0);
+				}
+			});
+			return child;
+		};
+	}
+
+	const restartCalls = [];
+	const mockRestart = async () => { restartCalls.push(1); };
+
+	const program = createMockProgram();
+	const infos = [];
+	const logger = { info: (m) => infos.push(m), warn() {} };
+	registerCoclawCli({ program, config: {}, logger }, {
+		spawn: createRetrySpawn(),
+		restartGateway: mockRestart,
+	});
+
+	const enroll = program.commands.get('coclaw').commands.get('enroll');
+
+	try {
+		await enroll.actionFn();
+		assert.equal(restartCalls.length, 1);
+		assert.ok(logs.some((l) => l.includes('99998888')));
+	} finally {
+		console.log = oldLog;
+		console.error = oldErr;
+	}
+});
+
+test('enroll action should retry even when restart throws', async () => {
+	const logs = [];
+	const oldLog = console.log;
+	console.log = (...args) => logs.push(args.join(' '));
+
+	let callCount = 0;
+	function createRetrySpawn() {
+		return (cmd, args) => {
+			const child = new EventEmitter();
+			child.stdout = new EventEmitter();
+			child.stderr = new EventEmitter();
+			child.kill = () => {};
+			process.nextTick(() => {
+				callCount += 1;
+				if (args?.includes?.('coclaw.enroll')) {
+					if (callCount <= 1) {
+						child.emit('error', new Error('spawn failed'));
+					} else {
+						child.stdout.emit('data', JSON.stringify({
+							status: {
+								code: '11112222',
+								appUrl: 'https://im.coclaw.net/claim?code=11112222',
+								expiresMinutes: 30,
+							},
+						}));
+						child.emit('close', 0);
+					}
+				}
+			});
+			return child;
+		};
+	}
+
+	// restart 抛异常，但仍然会再次尝试 RPC
+	const mockRestart = async () => { throw new Error('restart failed'); };
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, config: {}, logger }, {
+		spawn: createRetrySpawn(),
+		restartGateway: mockRestart,
+	});
+
+	const enroll = program.commands.get('coclaw').commands.get('enroll');
+
+	try {
+		await enroll.actionFn();
+		assert.ok(logs.some((l) => l.includes('11112222')));
+	} finally {
+		console.log = oldLog;
+	}
+});
+
+test('enroll action should show fallback message when status lacks code/appUrl', async () => {
+	const logs = [];
+	const oldLog = console.log;
+	console.log = (...args) => logs.push(args.join(' '));
+
+	function createIncompleteSpawn() {
+		return () => {
+			const child = new EventEmitter();
+			child.stdout = new EventEmitter();
+			child.stderr = new EventEmitter();
+			child.kill = () => {};
+			process.nextTick(() => {
+				// RPC 成功但 status 不含 code/appUrl
+				child.stdout.emit('data', JSON.stringify({ status: { partial: true } }));
+				child.emit('close', 0);
+			});
+			return child;
+		};
+	}
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, config: {}, logger }, { spawn: createIncompleteSpawn() });
+
+	const enroll = program.commands.get('coclaw').commands.get('enroll');
+
+	try {
+		await enroll.actionFn();
+		assert.ok(logs.some((l) => l.includes('Enroll request sent to gateway')));
+	} finally {
+		console.log = oldLog;
+	}
+});
+
+test('enroll action should show error when RPC fails after retry', async () => {
+	const errors = [];
+	const oldLog = console.log;
+	const oldErr = console.error;
+	console.log = () => {};
+	console.error = (...args) => errors.push(args.join(' '));
+
+	const { spawn: failSpawn } = createMockSpawn({ fail: true });
+	const mockRestart = async () => {};
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, config: {}, logger }, {
+		spawn: failSpawn,
+		restartGateway: mockRestart,
+	});
+
+	const enroll = program.commands.get('coclaw').commands.get('enroll');
+	const prevExitCode = process.exitCode;
+
+	try {
+		await enroll.actionFn();
+		assert.ok(errors.some((l) => l.includes('Could not reach gateway')));
+		assert.equal(process.exitCode, 1);
+	} finally {
+		process.exitCode = prevExitCode;
+		console.log = oldLog;
+		console.error = oldErr;
 	}
 });
 

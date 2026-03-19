@@ -55,6 +55,19 @@ test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 
 		const cfg = await readConfig();
 		assert.equal(cfg.token, undefined);
+
+		// enroll 斜杠命令
+		const enrollRes = await handler({ args: 'enroll' });
+		assert.ok(String(enrollRes.text).includes('Claim code:'));
+		assert.ok(String(enrollRes.text).includes('/claim?code='));
+
+		// 等待 fire-and-forget waitForClaimAndSave 完成（mock server 立即返回 BOUND）
+		await new Promise((r) => setTimeout(r, 100));
+
+		// 验证 enroll 写入了 config
+		const cfgAfterEnroll = await readConfig();
+		assert.ok(cfgAfterEnroll.token);
+		assert.ok(cfgAfterEnroll.botId);
 	}
 	finally {
 		process.chdir(prevCwd);

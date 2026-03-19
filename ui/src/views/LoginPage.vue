@@ -43,7 +43,7 @@
 
 			<p class="mt-3 text-sm text-muted">
 				{{ $t('login.noAccount') }}
-				<RouterLink to="/register" class="text-primary">{{ $t('login.goRegister') }}</RouterLink>
+				<RouterLink :to="{ path: '/register', query: safeRedirect ? { redirect: safeRedirect } : {} }" class="text-primary">{{ $t('login.goRegister') }}</RouterLink>
 			</p>
 		</section>
 	</main>
@@ -68,10 +68,22 @@ export default {
 			},
 		};
 	},
+	computed: {
+		safeRedirect() {
+			const val = this.$route.query.redirect;
+			if (typeof val !== 'string' || !val.startsWith('/') || val.startsWith('//')) {
+				return null;
+			}
+			return val;
+		},
+		defaultRoute() {
+			return useEnvStore().screen.ltMd ? '/topics' : '/home';
+		},
+	},
 	async mounted() {
 		await this.authStore.refreshSession();
 		if (this.authStore.user) {
-			this.$router.replace(useEnvStore().screen.ltMd ? '/topics' : '/home');
+			this.$router.replace(this.safeRedirect ?? this.defaultRoute);
 		}
 	},
 	methods: {
@@ -81,7 +93,7 @@ export default {
 				password: this.form.password,
 			});
 			if (this.authStore.user) {
-				this.$router.replace(useEnvStore().screen.ltMd ? '/topics' : '/home');
+				this.$router.replace(this.safeRedirect ?? this.defaultRoute);
 			}
 		},
 	},

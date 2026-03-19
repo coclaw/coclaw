@@ -27,7 +27,11 @@ export function callGatewayMethod(method, spawnFn, opts) {
 	return new Promise((resolve) => {
 		let child;
 		try {
-			child = doSpawn('openclaw', ['gateway', 'call', method, '--json'], {
+			const args = ['gateway', 'call', method, '--json'];
+			if (opts?.params) {
+				args.push('--params', JSON.stringify(opts.params));
+			}
+			child = doSpawn('openclaw', args, {
 				stdio: ['ignore', 'pipe', 'pipe'],
 				shell: true, // Windows 上 npm 全局安装生成 .cmd，需经 shell 解析
 			});

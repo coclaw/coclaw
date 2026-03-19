@@ -127,6 +127,17 @@ export const zhCNMessages = {
 		conceptSessionDesc: '每次与机器人的对话都是一个独立的会话。AI 只能看到当前会话中的内容，不同会话之间互相隔离。',
 		version: '版本',
 	},
+	claim: {
+		title: '认领 Claw',
+		claiming: '认领中...',
+		success: '绑定成功！正在跳转...',
+		expired: '认领码已过期，请在 OpenClaw 侧重新生成。',
+		invalid: '认领码无效，请检查后重试。',
+		alreadyBound: '您已绑定了 Claw。请先在 OpenClaw 侧执行 `openclaw coclaw unbind` 解绑。',
+		failed: '认领失败，请重试。',
+		retryHint: '您可以在 OpenClaw 侧重新生成认领码后再试。',
+		noCode: '未提供认领码。请使用 OpenClaw 提供的链接。',
+	},
 	agents: {
 		addAgent: '添加 Agent',
 		chat: '对话',

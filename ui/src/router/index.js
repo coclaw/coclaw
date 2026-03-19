@@ -11,6 +11,7 @@ import AddBotPage from '../views/AddBotPage.vue';
 import ManageBotsPage from '../views/ManageBotsPage.vue';
 import UserPage from '../views/UserPage.vue';
 import AboutPage from '../views/AboutPage.vue';
+import ClaimPage from '../views/ClaimPage.vue';
 import { useAuthStore } from '../stores/auth.store.js';
 
 const routes = [
@@ -80,6 +81,12 @@ const routes = [
 				meta: { requiresAuth: true, isTopPage: true },
 			},
 			{
+				path: 'claim',
+				name: 'claim',
+				component: ClaimPage,
+				meta: { requiresAuth: true, hideMobileNav: true },
+			},
+			{
 				path: 'about',
 				name: 'about',
 				component: AboutPage,
@@ -108,7 +115,7 @@ router.beforeEach(async (to) => {
 	await authStore.refreshSession();
 	if (!authStore.user) {
 		console.log('[router] auth redirect → /login');
-		return { path: '/login', replace: true };
+		return { path: '/login', query: { redirect: to.fullPath }, replace: true };
 	}
 	console.debug('[router] auth passed, user=%s', authStore.user?.id);
 });

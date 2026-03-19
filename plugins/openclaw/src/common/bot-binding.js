@@ -1,7 +1,12 @@
-import { bindWithServer, unbindWithServer } from '../api.js';
+import { bindWithServer, unbindWithServer, createClaimCodeOnServer, waitClaimCodeOnServer } from '../api.js';
 import { clearConfig, readConfig, writeConfig } from '../config.js';
 
 const DEFAULT_SERVER_URL = 'https://im.coclaw.net';
+
+function resolveServerUrl(serverUrl) {
+	/* c8 ignore next */
+	return serverUrl ?? process.env.COCLAW_SERVER_URL ?? DEFAULT_SERVER_URL;
+}
 
 export async function bindBot({ code, serverUrl }) {
 	if (!code) {
@@ -48,6 +53,71 @@ export async function bindBot({ code, serverUrl }) {
 		rebound: Boolean(data.rebound),
 		previousBotId,
 	};
+}
+
+export async function enrollBot({ serverUrl }, deps = {}) {
+	const { createClaimCode = createClaimCodeOnServer } = deps;
+	const baseUrl = resolveServerUrl(serverUrl);
+	const data = await createClaimCode({ baseUrl });
+
+	if (!data?.code || !data?.waitToken) {
+		throw new Error('invalid enroll response');
+	}
+
+	const appUrl = `${baseUrl}/claim?code=${data.code}`;
+	return {
+		code: data.code,
+		expiresAt: data.expiresAt,
+		waitToken: data.waitToken,
+		appUrl,
+		serverUrl: baseUrl,
+	};
+}
+
+export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }, deps = {}) {
+	const { waitClaimCode = waitClaimCodeOnServer, writeCfg = writeConfig, retryDelayMs = 2000 } = deps;
+	const baseUrl = resolveServerUrl(serverUrl);
+
+	// 循环长轮询，直到成功或超时
+	for (;;) {
+		if (signal?.aborted) {
+			throw new Error('enroll cancelled');
+		}
+
+		let data;
+		try {
+			data = await waitClaimCode({ baseUrl, code, waitToken });
+		} catch (err) {
+			// 认领码已失效 — 不可恢复，退出循环
+			if (err?.response?.status === 404) {
+				throw new Error('claim code not found or expired');
+			}
+			// 其他所有错误（HTTP 408/500、网络超时、TimeoutError 等）延迟后重试，
+			// 确保后台等待不会因瞬时故障而终止
+			await new Promise((r) => setTimeout(r, retryDelayMs));
+			continue;
+		}
+
+		// 已认领
+		if (data?.botId && data?.token) {
+			await writeCfg({
+				serverUrl: baseUrl,
+				botId: data.botId,
+				token: data.token,
+				boundAt: new Date().toISOString(),
+			});
+			return { botId: data.botId };
+		}
+
+		// PENDING — 延迟后继续轮询
+		if (data?.code === 'CLAIM_PENDING') {
+			await new Promise((r) => setTimeout(r, retryDelayMs));
+			continue;
+		}
+
+		// 其他未知状态
+		throw new Error(`unexpected claim wait response: ${JSON.stringify(data)}`);
+	}
 }
 
 export async function unbindBot({ serverUrl }) {

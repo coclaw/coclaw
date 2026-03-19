@@ -29,6 +29,14 @@ export async function cancelBindingCode(code) {
 	await client.delete(`/api/v1/bots/binding-codes/${code}`);
 }
 
+export async function claimBot(code) {
+	const res = await client.post('/api/v1/claws/claim', { code });
+	return {
+		botId: res.data?.botId ?? null,
+		botName: res.data?.botName ?? null,
+	};
+}
+
 export async function unbindBotByUser(botId) {
 	const res = await client.post('/api/v1/bots/unbind-by-user', { botId });
 	return {

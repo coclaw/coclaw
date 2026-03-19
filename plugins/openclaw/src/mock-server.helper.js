@@ -26,6 +26,26 @@ export async function createMockServer() {
 			return;
 		}
 
+		if (req.method === 'POST' && req.url === '/api/v1/claws/claim-codes') {
+			res.writeHead(201, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({
+				code: '88887777',
+				expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+				waitToken: 'mock-wait-token',
+			}));
+			return;
+		}
+
+		if (req.method === 'POST' && req.url === '/api/v1/claws/claim-codes/wait') {
+			// 模拟立即返回 BOUND
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({
+				botId: state.botId,
+				token: state.token,
+			}));
+			return;
+		}
+
 		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
 			const auth = req.headers.authorization;
 			if (auth !== `Bearer ${state.token}`) {

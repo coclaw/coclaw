@@ -13,6 +13,12 @@ import {
 	findBindingCode,
 	updateBindingCode,
 } from '../repos/bot-binding-code.repo.js';
+import {
+	createClaimCode as createClaimCodeRecord,
+	deleteClaimCode as deleteClaimCodeRecord,
+	findClaimCode as findClaimCodeRecord,
+} from '../repos/claw-claim-code.repo.js';
+import { listBotsByUserId } from '../repos/bot.repo.js';
 import { genBotId } from './id.svc.js';
 
 const BINDING_CODE_EXPIRE_MS =
@@ -188,6 +194,123 @@ export async function unbindBotByUser(input, deps = {}) {
 	return {
 		ok: true,
 		botId: targetBot.id,
+	};
+}
+
+export async function createClaimCode(deps = {}) {
+	const {
+		createCode = createClaimCodeRecord,
+		findCode = findClaimCodeRecord,
+		deleteCode = deleteClaimCodeRecord,
+		now = () => new Date(),
+	} = deps;
+
+	for (let i = 0; i < 3; i += 1) {
+		const code = genBindingCode();
+		const current = now();
+		const expiresAt = new Date(current.getTime() + BINDING_CODE_EXPIRE_MS);
+
+		try {
+			await createCode({ code, expiresAt });
+			return { ok: true, code, expiresAt };
+		}
+		catch (err) {
+			if (err?.code !== 'P2002') {
+				throw err;
+			}
+			// 码冲突：检查已存在记录
+			const existed = await findCode(code);
+			if (!existed) {
+				continue;
+			}
+			// 未过期的有效码，跳过
+			if (existed.expiresAt.getTime() > current.getTime()) {
+				continue;
+			}
+			// 过期记录：删除后重试
+			await deleteCode(code).catch(() => {});
+			continue;
+		}
+	}
+
+	return {
+		ok: false,
+		code: 'CLAIM_CODE_EXHAUSTED',
+		message: 'Failed to generate claim code',
+	};
+}
+
+export async function claimBot(input, deps = {}) {
+	const {
+		findCode = findClaimCodeRecord,
+		deleteCode = deleteClaimCodeRecord,
+		listBots = listBotsByUserId,
+		createBotImpl = createBot,
+		genId = genBotId,
+		now = () => new Date(),
+	} = deps;
+	const { code, userId } = input;
+
+	if (!code || typeof code !== 'string') {
+		return {
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'code is required',
+		};
+	}
+
+	if (typeof userId !== 'bigint') {
+		return {
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'userId is required',
+		};
+	}
+
+	const claimCode = await findCode(code.trim());
+	if (!claimCode) {
+		return {
+			ok: false,
+			code: 'CLAIM_CODE_INVALID',
+			message: 'Claim code is invalid',
+		};
+	}
+
+	if (claimCode.expiresAt.getTime() <= now().getTime()) {
+		await deleteCode(claimCode.code).catch(() => {});
+		return {
+			ok: false,
+			code: 'CLAIM_CODE_EXPIRED',
+			message: 'Claim code has expired',
+		};
+	}
+
+	// 已绑定用户不能认领，需先在 OpenClaw 侧解绑
+	const existingBots = await listBots(userId);
+	if (existingBots.length > 0) {
+		return {
+			ok: false,
+			code: 'ALREADY_BOUND',
+			message: 'You already have a bound bot. Run `openclaw coclaw unbind` to unbind first.',
+		};
+	}
+
+	const token = genAccessToken();
+	const tokenHash = getTokenHash(token);
+
+	const created = await createBotImpl({
+		id: genId(),
+		userId,
+		name: null,
+		tokenHash,
+	});
+	await deleteCode(claimCode.code).catch(() => {});
+
+	return {
+		ok: true,
+		botId: created.id,
+		botName: null,
+		token,
 	};
 }
 

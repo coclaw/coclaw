@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
 	notBound, bindOk, unbindOk,
 	gatewayNotified, gatewayNotifyFailed,
+	claimCodeCreated,
 } from './messages.js';
 
 test('bindOk should format bind success message', () => {
@@ -35,4 +36,16 @@ test('gatewayNotified should return action-specific message', () => {
 
 test('gatewayNotifyFailed should return warning message', () => {
 	assert.ok(gatewayNotifyFailed().includes('could not notify'));
+});
+
+test('claimCodeCreated should format claim code message', () => {
+	const msg = claimCodeCreated({
+		code: '12345678',
+		appUrl: 'https://im.coclaw.net/claim?code=12345678',
+		expiresMinutes: 30,
+	});
+	assert.ok(msg.includes('Claim code: 12345678'));
+	assert.ok(msg.includes('https://im.coclaw.net/claim?code=12345678'));
+	assert.ok(msg.includes('30 minutes'));
+	assert.ok(msg.includes("don't have a CoClaw account"));
 });

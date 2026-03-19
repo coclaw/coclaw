@@ -142,6 +142,15 @@ model BotBindingCode {
 	@@index([expiresAt])
 }
 
+// 认领码（OpenClaw 侧发起绑定），用完即焚
+model ClawClaimCode {
+	code					String @id @db.VarChar(16) // 8位十进制数字的认领码
+	createdAt			DateTime @default(now())
+	expiresAt			DateTime
+
+	@@index([expiresAt])
+}
+
 // express-session 持久化存储
 model ExpressSession {
 	id					Int			@id @default(autoincrement()) @db.UnsignedInt
