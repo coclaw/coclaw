@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
-import { callGatewayMethod } from './gateway-notify.js';
+import { callGatewayMethod, escapeJsonForCmd } from './gateway-notify.js';
 
 /**
  * 创建 mock spawn 函数
@@ -42,7 +42,7 @@ function createMockSpawn(opts = {}) {
 	return { spawn, calls };
 }
 
-test('callGatewayMethod should pass shell:true to spawn for Windows .cmd compatibility', async () => {
+test('callGatewayMethod should pass shell:false on non-Windows', async () => {
 	let capturedOpts;
 	const spawn = (cmd, args, opts) => {
 		capturedOpts = opts;
@@ -57,7 +57,26 @@ test('callGatewayMethod should pass shell:true to spawn for Windows .cmd compati
 		return child;
 	};
 
-	await callGatewayMethod('coclaw.refreshBridge', spawn);
+	await callGatewayMethod('coclaw.refreshBridge', spawn, { isWin: false });
+	assert.equal(capturedOpts.shell, false);
+});
+
+test('callGatewayMethod should pass shell:true on Windows', async () => {
+	let capturedOpts;
+	const spawn = (cmd, args, opts) => {
+		capturedOpts = opts;
+		const child = new EventEmitter();
+		child.stdout = new EventEmitter();
+		child.stderr = new EventEmitter();
+		child.kill = () => {};
+		process.nextTick(() => {
+			child.stdout.emit('data', '{"status":"ok"}');
+			child.emit('close', 0);
+		});
+		return child;
+	};
+
+	await callGatewayMethod('coclaw.refreshBridge', spawn, { isWin: true });
 	assert.equal(capturedOpts.shell, true);
 });
 
@@ -74,18 +93,34 @@ test('callGatewayMethod should resolve ok with status field from result payload'
 	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.refreshBridge', '--json']);
 });
 
-test('callGatewayMethod should pass --params flag when params provided', async () => {
+test('callGatewayMethod should pass --params as raw JSON on non-Windows', async () => {
 	const { spawn, calls } = createMockSpawn({
 		stdout: '{"status":"ok"}',
 	});
 
 	const params = { serverUrl: 'https://example.com' };
-	await callGatewayMethod('coclaw.enroll', spawn, { params });
+	await callGatewayMethod('coclaw.enroll', spawn, { params, isWin: false });
 
 	assert.equal(calls.length, 1);
 	assert.deepEqual(calls[0], [
 		'openclaw', 'gateway', 'call', 'coclaw.enroll', '--json',
 		'--params', JSON.stringify(params),
+	]);
+});
+
+test('callGatewayMethod should escape --params JSON for cmd.exe on Windows', async () => {
+	const { spawn, calls } = createMockSpawn({
+		stdout: '{"status":"ok"}',
+	});
+
+	const params = { serverUrl: 'https://example.com' };
+	await callGatewayMethod('coclaw.enroll', spawn, { params, isWin: true });
+
+	assert.equal(calls.length, 1);
+	const json = JSON.stringify(params);
+	assert.deepEqual(calls[0], [
+		'openclaw', 'gateway', 'call', 'coclaw.enroll', '--json',
+		'--params', escapeJsonForCmd(json),
 	]);
 });
 
@@ -288,4 +323,15 @@ test('callGatewayMethod should parse stdout on timeout when output is not comple
 	const result = await callGatewayMethod('coclaw.refreshBridge', mockSpawn, { timeoutMs: 50 });
 
 	assert.equal(result.ok, true);
+});
+
+test('escapeJsonForCmd should wrap in double quotes and escape inner double quotes', () => {
+	assert.equal(
+		escapeJsonForCmd('{"serverUrl":"http://localhost:5173"}'),
+		'"{\\\"serverUrl\\\":\\\"http://localhost:5173\\\"}"',
+	);
+});
+
+test('escapeJsonForCmd should handle JSON without special chars', () => {
+	assert.equal(escapeJsonForCmd('{}'), '"{}"');
 });

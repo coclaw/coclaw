@@ -2,6 +2,15 @@ import { spawn as nodeSpawn } from 'node:child_process';
 
 const NOTIFY_TIMEOUT_MS = 10_000;
 const KILL_DELAY_MS = 2000;
+const IS_WIN = process.platform === 'win32';
+
+/**
+ * Windows cmd.exe 下转义 JSON 字符串，使其作为单个参数传递
+ * 双引号用 \" 转义，外层包裹双引号（与 cross-spawn 策略一致）
+ */
+export function escapeJsonForCmd(json) {
+	return `"${json.replace(/"/g, '\\"')}"`;
+}
 
 /**
  * 通过 spawn 调用 `openclaw gateway call <method> --json`
@@ -27,13 +36,16 @@ export function callGatewayMethod(method, spawnFn, opts) {
 	return new Promise((resolve) => {
 		let child;
 		try {
+			const isWin = opts?.isWin ?? IS_WIN;
 			const args = ['gateway', 'call', method, '--json'];
 			if (opts?.params) {
-				args.push('--params', JSON.stringify(opts.params));
+				const json = JSON.stringify(opts.params);
+				// Windows 需 shell 解析 .cmd → 必须转义 JSON；非 Windows 不经 shell，直传
+				args.push('--params', isWin ? escapeJsonForCmd(json) : json);
 			}
 			child = doSpawn('openclaw', args, {
 				stdio: ['ignore', 'pipe', 'pipe'],
-				shell: true, // Windows 上 npm 全局安装生成 .cmd，需经 shell 解析
+				shell: isWin, // 仅 Windows 需 shell 以解析 npm 全局安装的 .cmd
 			});
 		} catch {
 			resolve({ ok: false, error: 'spawn_failed' });

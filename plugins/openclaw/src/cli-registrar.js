@@ -23,7 +23,7 @@ async function restartGatewayProcess(spawnFn) {
 	await new Promise((resolve, reject) => {
 		const child = doSpawn('openclaw', ['gateway', 'restart'], {
 			stdio: 'ignore',
-			shell: true,
+			shell: process.platform === 'win32',
 		});
 		child.on('close', (exitCode) => exitCode === 0 ? resolve() : reject(new Error(`exit ${exitCode}`)));
 		child.on('error', reject);
