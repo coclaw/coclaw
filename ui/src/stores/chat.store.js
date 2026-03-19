@@ -541,6 +541,15 @@ export const useChatStore = defineStore('chat', {
 			if (!conn || conn.state !== 'connected' || this.sending) return;
 
 			this.sending = true;
+
+			// 乐观追加 user message（命令完成后 loadMessages 会整体替换）
+			this.messages = [...this.messages, {
+				type: 'message',
+				id: `__local_user_${Date.now()}`,
+				_local: true,
+				message: { role: 'user', content: command, timestamp: Date.now() },
+			}];
+
 			const idempotencyKey = crypto.randomUUID();
 			this.__slashCommandRunId = idempotencyKey;
 			this.__slashCommandType = command;
@@ -598,9 +607,10 @@ export const useChatStore = defineStore('chat', {
 			if (evt.state === 'final') {
 				this.__cleanupSlashCommand(conn);
 				if (/^\/(new|reset)\b/i.test(cmd)) {
-					this.loadMessages({ silent: true });
-					useSessionsStore().loadAllSessions();
-					this.__loadChatHistory();
+					// await loadMessages 以确保 currentSessionId 已更新，
+					// 调用方据此先同步路由参数，再刷新 sessions（避免 watcher 竞态）
+					this.loadMessages({ silent: true }).then(() => resolve?.());
+					return;
 				}
 				else if (/^\/compact\b/i.test(cmd)) {
 					this.loadMessages({ silent: true });

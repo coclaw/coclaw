@@ -78,22 +78,23 @@
 			</div>
 		</main>
 
-		<div class="relative">
-			<SlashCommandMenu
-				v-if="showSlashMenu"
-				class="absolute bottom-full left-0 z-10 pb-1"
-				:disabled="chatStore.sending || isBotOffline || chatStore.loading"
-				@command="onSlashCommand"
-			/>
-			<ChatInput
-				ref="chatInput"
-				v-model="inputText"
-				:sending="chatStore.sending"
-				:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (!currentSessionId || isBotOffline || chatStore.loading)"
-				@send="onSendMessage"
-				@cancel="onCancelSend"
-			/>
-		</div>
+		<ChatInput
+			ref="chatInput"
+			v-model="inputText"
+			:sending="chatStore.sending"
+			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (!currentSessionId || isBotOffline || chatStore.loading)"
+			@send="onSendMessage"
+			@cancel="onCancelSend"
+		>
+			<template #prepend>
+				<SlashCommandMenu
+					v-if="showSlashMenu"
+					class="absolute bottom-full left-0 z-10 pb-1"
+					:disabled="chatStore.sending || isBotOffline || chatStore.loading"
+					@command="onSlashCommand"
+				/>
+			</template>
+		</ChatInput>
 	</div>
 </template>
 
@@ -290,8 +291,8 @@ export default {
 	methods: {
 		/** 根据路由上下文激活对应模式 */
 		async __activate() {
-			// 新建 topic 流程进行中（create→activate→replace→send），抑制 watcher 触发的重复激活
-			if (this.__creatingTopic) return;
+			// 新建 topic / session reset 流程进行中，抑制 watcher 触发的重复激活
+			if (this.__creatingTopic || this.__resetTransition) return;
 			this.showNoMoreHint = false;
 			if (this.isNewTopic) {
 				// 新建 topic：清空状态，不加载消息
@@ -436,10 +437,27 @@ export default {
 
 		async onSlashCommand(cmd) {
 			try {
+				const isReset = /^\/(new|reset)\b/i.test(cmd);
+				// 抑制 __retryActivation，避免 route/sessions 更新竞态导致误判 sessionNotFound
+				if (isReset) this.__resetTransition = true;
+
 				await this.chatStore.sendSlashCommand(cmd);
+
+				if (isReset && this.chatStore.currentSessionId) {
+					const newId = this.chatStore.currentSessionId;
+					if (newId !== this.currentSessionId) {
+						await this.$router.replace({ params: { sessionId: newId } });
+					}
+					this.__resetTransition = false;
+					this.sessionsStore.loadAllSessions();
+					this.chatStore.__loadChatHistory();
+				}
 			}
 			catch (err) {
 				this.notify.error(err?.message || this.$t('slashCmd.error'));
+			}
+			finally {
+				this.__resetTransition = false;
 			}
 		},
 
@@ -453,7 +471,7 @@ export default {
 		 * 2) 数据已就绪 → 终态判定：不可恢复则 notify + 跳转，否则重试
 		 */
 		__retryActivation() {
-			if (!this.currentSessionId || this.isNewTopic || this.__creatingTopic) return;
+			if (!this.currentSessionId || this.isNewTopic || this.__creatingTopic || this.__resetTransition) return;
 
 			// 阶段 1：数据未就绪，继续等待
 			if (!this.botsStore.fetched) return;

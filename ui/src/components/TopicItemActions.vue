@@ -11,20 +11,20 @@
 				aria-label="More"
 			/>
 			<template #content>
-				<div class="flex min-w-40 flex-col py-1">
+				<div class="flex max-w-60 flex-col py-1">
 					<button
 						class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 						@click="onRename"
 					>
-						<UIcon name="i-lucide-pencil" class="size-[18px]" />
-						<span>{{ $t('topic.rename') }}</span>
+						<UIcon name="i-lucide-pencil" class="size-[18px] shrink-0" />
+						<span class="truncate">{{ $t('topic.rename') }}</span>
 					</button>
 					<button
 						class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-error transition-colors hover:bg-accented active:bg-accented"
 						@click="onDelete"
 					>
-						<UIcon name="i-lucide-trash-2" class="size-[18px]" />
-						<span>{{ $t('topic.delete') }}</span>
+						<UIcon name="i-lucide-trash-2" class="size-[18px] shrink-0" />
+						<span class="truncate">{{ $t('topic.delete') }}</span>
 					</button>
 				</div>
 			</template>

@@ -33,7 +33,7 @@ OpenClaw 的完整命令管线仅在 `chat.send()` 路径中生效（通过 `dis
 
 ### 实现范围
 
-初期实现 3 个命令：`/compact`、`/new`、`/help`。通过 UI 菜单按钮触发，暂不检测输入框中的斜杠前缀。
+当前实现 2 个命令：`/compact`、`/new`。通过 UI 菜单按钮触发，暂不检测输入框中的斜杠前缀。`/help` 暂未启用。
 
 ---
 
@@ -130,7 +130,9 @@ UI 生成 idempotencyKey (UUID)
 
 对于 `/new` 触发的 agent run（greeting），不做流式渲染，而是在 `event:chat final` 后调用 `loadMessages({ silent: true })` 一次性加载完整结果。
 
-**取舍**：`/new` 的 greeting 不流式显示，用户感知上是"重置 → 短暂等待 → 消息刷新"。这是合理的，因为 reset 后的 greeting 通常很短。
+**取舍**：`/new` 的 greeting 不流式显示，用户感知上是"重置 → 短暂等待 → 消息刷新"。
+
+> **⚠️ 已知限制**：`/new` 触发的 agent run 实际耗时可能较长——agent 会分析当前对话并形成持久记忆（session summary），而非仅生成简短 greeting。在此期间用户仅看到 sending 状态，无"思考中"等 agent 处理进度展示。需后续迭代解决 `event:agent` / `event:chat` 生命周期协调问题（见 TODO）。
 
 ---
 
@@ -320,9 +322,12 @@ __onChatEvent(evt) {
 
 - 检测用户输入 `/` 前缀时自动弹出命令菜单
 - 输入框内容作为斜杠命令参数（如 `/new hello`）
-- `/new` greeting 流式渲染（需解决 event:agent / event:chat 生命周期协调）
+- `/new` agent run 流式渲染（需解决 event:agent / event:chat 生命周期协调；当前 agent 会执行 session summary 等耗时操作，用户无进度反馈）
 - 斜杠命令的取消支持（stop 按钮）
 - 更多命令扩展（`/status`、`/subagents` 等）
+- **斜杠命令结果消息分组**：`/compact` 等命令的 server 返回消息（assistant role）因无前置 user message 分隔，被 `groupSessionMessages` 归入上一个 botTask。需在分组逻辑中识别命令结果消息并独立展示
+- **宽屏展开按钮位置优化**：窄屏下按钮在 input row 左侧（当前位置）；宽屏下可考虑将按钮绝对定位到 footer 最左侧，不干扰 input row 布局
+- **chat 路由重构**：将 `/chat/:sessionId` 改为 `/chat/:botId/:agentId`（对应 `agent:<agentId>:main` sessionKey），消除对 sessionId 的路由依赖。当前 `/new` 后需 `router.replace` 同步新 sessionId 作为缓解方案，根本方案是路由不再依赖会变的 sessionId
 
 ---
 

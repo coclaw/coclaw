@@ -30,29 +30,11 @@ test.describe('斜杠命令', () => {
 		// 点击打开菜单
 		await btn.click();
 
-		// 菜单项可见
-		await expect(page.getByRole('menuitem').first()).toBeVisible({ timeout: 3000 });
-		// 应有三个菜单项
-		const items = page.getByRole('menuitem');
-		await expect(items).toHaveCount(3);
-	});
-
-	test('/help 命令返回帮助信息', async ({ page }) => {
-		test.setTimeout(60_000);
-		test.skip(!sessionId, 'No chat session available');
-		await waitChatReady(page);
-
-		// 打开菜单并点击帮助
-		await page.getByTestId('btn-slash-menu').click();
-		const helpItem = page.getByRole('menuitem').filter({ hasText: /help|帮助/i });
-		await expect(helpItem).toBeVisible({ timeout: 3000 });
-		await helpItem.click();
-
-		// 等待 sending 结束
-		await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 30_000 });
-
-		// 验证页面正常（未崩溃）
-		await expect(page.getByTestId('chat-root')).toBeVisible();
+		// 菜单弹出层可见，应有两个菜单项
+		const popover = page.locator('[data-testid="btn-slash-menu"] + div, [role="dialog"]').or(page.locator('.min-w-40'));
+		const items = popover.locator('button');
+		await expect(items.first()).toBeVisible({ timeout: 3000 });
+		await expect(items).toHaveCount(2);
 	});
 
 	test('/compact 命令执行成功', async ({ page }) => {
@@ -62,7 +44,7 @@ test.describe('斜杠命令', () => {
 
 		// 打开菜单并点击压缩上下文
 		await page.getByTestId('btn-slash-menu').click();
-		const compactItem = page.getByRole('menuitem').filter({ hasText: /compact|压缩/i });
+		const compactItem = page.locator('.min-w-40 button').filter({ hasText: /compact|压缩/i });
 		await expect(compactItem).toBeVisible({ timeout: 3000 });
 		await compactItem.click();
 
@@ -80,7 +62,7 @@ test.describe('斜杠命令', () => {
 
 		// 打开菜单并点击重置会话
 		await page.getByTestId('btn-slash-menu').click();
-		const resetItem = page.getByRole('menuitem').filter({ hasText: /reset|重置/i });
+		const resetItem = page.locator('.min-w-40 button').filter({ hasText: /reset|重置/i });
 		await expect(resetItem).toBeVisible({ timeout: 3000 });
 		await resetItem.click();
 

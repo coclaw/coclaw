@@ -176,8 +176,7 @@ export const enMessages = {
 	},
 	slashCmd: {
 		compact: 'Compact context',
-		reset: 'Reset session',
-		help: 'Help',
+		reset: 'Reset context',
 		timeout: 'Command timed out',
 		error: 'Command failed',
 	},

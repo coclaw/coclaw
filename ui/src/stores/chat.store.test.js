@@ -2042,6 +2042,11 @@ describe('useChatStore', () => {
 			expect(store.__slashCommandRunId).toBeTruthy();
 			expect(store.__slashCommandType).toBe('/help');
 
+			// 乐观追加 user message
+			expect(store.messages.length).toBe(1);
+			expect(store.messages[0].message.role).toBe('user');
+			expect(store.messages[0].message.content).toBe('/help');
+
 			// 验证注册了 event:chat 监听
 			expect(conn.on).toHaveBeenCalledWith('event:chat', expect.any(Function));
 
@@ -2062,9 +2067,9 @@ describe('useChatStore', () => {
 
 			await p;
 			expect(store.sending).toBe(false);
-			// /help 应追加结果消息
-			expect(store.messages.length).toBe(1);
-			expect(store.messages[0].message.content[0].text).toBe('help text');
+			// user message + 追加的 assistant message
+			expect(store.messages.length).toBe(2);
+			expect(store.messages[1].message.content[0].text).toBe('help text');
 		});
 
 		test('sending 为 true 时不发送', async () => {
@@ -2097,9 +2102,7 @@ describe('useChatStore', () => {
 			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object));
 		});
 
-		test('/new 完成后调用 loadMessages 和 loadAllSessions', async () => {
-			const sessStore = useSessionsStore();
-			sessStore.loadAllSessions = vi.fn().mockResolvedValue();
+		test('/new 完成后调用 loadMessages 并更新 currentSessionId', async () => {
 			setupConnForLoad(conn, { flatMessages: [], currentSessionId: 'new-sess' });
 			const origImpl = conn.request.getMockImplementation();
 			conn.request.mockImplementation((method, ...args) => {
@@ -2113,7 +2116,8 @@ describe('useChatStore', () => {
 			await p;
 
 			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object));
-			expect(sessStore.loadAllSessions).toHaveBeenCalled();
+			// loadMessages 通过 chat.history 获取新 sessionId
+			expect(store.currentSessionId).toBe('new-sess');
 		});
 
 		test('event:chat error reject 并清理状态', async () => {

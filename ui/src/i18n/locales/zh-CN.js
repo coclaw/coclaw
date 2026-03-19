@@ -176,8 +176,7 @@ export const zhCNMessages = {
 	},
 	slashCmd: {
 		compact: '压缩上下文',
-		reset: '重置会话',
-		help: '帮助',
+		reset: '重置上下文',
 		timeout: '命令执行超时',
 		error: '命令执行失败',
 	},

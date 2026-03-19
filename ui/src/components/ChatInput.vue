@@ -1,5 +1,6 @@
 <template>
 	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-2 pb-2">
+		<slot name="prepend" />
 		<!-- 文件预览区 -->
 		<div
 			v-if="inputFiles.length"
