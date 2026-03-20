@@ -95,17 +95,6 @@ test('should show invalid error on CLAIM_CODE_INVALID', async () => {
 	expect(wrapper.text()).toContain('Code invalid');
 });
 
-test('should show alreadyBound error on ALREADY_BOUND without retryHint', async () => {
-	mockClaimBot.mockRejectedValueOnce({
-		response: { data: { code: 'ALREADY_BOUND' } },
-	});
-	const wrapper = createWrapper({ query: { code: 'BOUND123' } });
-	await flushPromises();
-
-	expect(wrapper.text()).toContain('Already bound');
-	expect(wrapper.text()).not.toContain('Please retry');
-});
-
 test('should show generic error on unknown error', async () => {
 	mockClaimBot.mockRejectedValueOnce(new Error('network error'));
 	const wrapper = createWrapper({ query: { code: '12345678' } });

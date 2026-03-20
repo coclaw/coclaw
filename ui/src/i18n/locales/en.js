@@ -133,7 +133,6 @@ export const enMessages = {
 		success: 'Binding successful! Redirecting...',
 		expired: 'The claim code has expired. Please generate a new one from OpenClaw.',
 		invalid: 'The claim code is invalid. Please check and try again.',
-		alreadyBound: 'You already have a bound Claw. Run `openclaw coclaw unbind` on the OpenClaw side to unbind first.',
 		failed: 'Claim failed. Please try again.',
 		retryHint: 'You can generate a new claim code from OpenClaw and try again.',
 		noCode: 'No claim code provided. Please use the link from OpenClaw.',

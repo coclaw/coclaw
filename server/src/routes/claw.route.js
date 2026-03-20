@@ -130,7 +130,6 @@ export async function claimHandler(req, res, next, deps = {}) {
 			const statusMap = {
 				INVALID_INPUT: 400,
 				CLAIM_CODE_INVALID: 404,
-				ALREADY_BOUND: 409,
 				CLAIM_CODE_EXPIRED: 410,
 			};
 			const status = statusMap[result.code] ?? 400;

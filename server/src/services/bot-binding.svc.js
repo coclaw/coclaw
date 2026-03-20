@@ -18,7 +18,6 @@ import {
 	deleteClaimCode as deleteClaimCodeRecord,
 	findClaimCode as findClaimCodeRecord,
 } from '../repos/claw-claim-code.repo.js';
-import { listBotsByUserId } from '../repos/bot.repo.js';
 import { genBotId } from './id.svc.js';
 
 const BINDING_CODE_EXPIRE_MS =
@@ -244,7 +243,6 @@ export async function claimBot(input, deps = {}) {
 	const {
 		findCode = findClaimCodeRecord,
 		deleteCode = deleteClaimCodeRecord,
-		listBots = listBotsByUserId,
 		createBotImpl = createBot,
 		genId = genBotId,
 		now = () => new Date(),
@@ -282,16 +280,6 @@ export async function claimBot(input, deps = {}) {
 			ok: false,
 			code: 'CLAIM_CODE_EXPIRED',
 			message: 'Claim code has expired',
-		};
-	}
-
-	// 已绑定用户不能认领，需先在 OpenClaw 侧解绑
-	const existingBots = await listBots(userId);
-	if (existingBots.length > 0) {
-		return {
-			ok: false,
-			code: 'ALREADY_BOUND',
-			message: 'You already have a bound bot. Run `openclaw coclaw unbind` to unbind first.',
 		};
 	}
 

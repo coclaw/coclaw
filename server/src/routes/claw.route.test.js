@@ -277,27 +277,6 @@ test('claimHandler: should return 200 on successful claim and notify wait hub', 
 	});
 });
 
-test('claimHandler: should return 409 when ALREADY_BOUND', async () => {
-	const req = {
-		isAuthenticated: () => true,
-		user: { id: 7n },
-		body: { code: '12345678' },
-	};
-	const res = createRes();
-
-	await claimHandler(req, res, () => {}, {
-		claimBotImpl: async () => ({
-			ok: false,
-			code: 'ALREADY_BOUND',
-			message: 'You already have a bound bot.',
-		}),
-		markClaimBoundImpl: () => {},
-	});
-
-	assert.equal(res.statusCode, 409);
-	assert.equal(res.body.code, 'ALREADY_BOUND');
-});
-
 test('claimHandler: should return 410 when CLAIM_CODE_EXPIRED', async () => {
 	const req = {
 		isAuthenticated: () => true,

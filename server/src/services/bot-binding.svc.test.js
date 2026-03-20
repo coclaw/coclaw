@@ -272,32 +272,6 @@ test('claimBot: should return CLAIM_CODE_EXPIRED for expired code and delete it'
 	assert.equal(deletedCode, '12345678');
 });
 
-test('claimBot: should return ALREADY_BOUND when user has existing bots', async () => {
-	const result = await claimBot({ code: '12345678', userId: 7n }, {
-		findCode: async () => ({
-			code: '12345678',
-			expiresAt: new Date('2099-01-01T00:00:00.000Z'),
-		}),
-		listBots: async () => [{ id: 1n }],
-		now: () => new Date('2026-03-19T00:00:00.000Z'),
-	});
-
-	assert.equal(result.ok, false);
-	assert.equal(result.code, 'ALREADY_BOUND');
-});
-
-test('claimBot: ALREADY_BOUND message should mention openclaw coclaw unbind', async () => {
-	const result = await claimBot({ code: '12345678', userId: 7n }, {
-		findCode: async () => ({
-			code: '12345678',
-			expiresAt: new Date('2099-01-01T00:00:00.000Z'),
-		}),
-		listBots: async () => [{ id: 1n }],
-		now: () => new Date('2026-03-19T00:00:00.000Z'),
-	});
-
-	assert.match(result.message, /openclaw coclaw unbind/);
-});
 
 test('claimBot: should create bot and return success on valid claim', async () => {
 	const createdInputs = [];

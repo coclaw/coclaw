@@ -19,7 +19,7 @@
 				<div v-else-if="errorCode" class="flex flex-col items-center gap-3">
 					<UIcon name="i-heroicons-x-circle" class="size-12 text-error" />
 					<p class="text-sm text-error">{{ errorMessage }}</p>
-					<p v-if="errorCode !== 'ALREADY_BOUND'" class="text-xs text-muted">{{ $t('claim.retryHint') }}</p>
+					<p class="text-xs text-muted">{{ $t('claim.retryHint') }}</p>
 				</div>
 
 				<!-- 无认领码 -->
@@ -61,9 +61,6 @@ export default {
 			}
 			if (this.errorCode === 'CLAIM_CODE_EXPIRED') {
 				return this.$t('claim.expired');
-			}
-			if (this.errorCode === 'ALREADY_BOUND') {
-				return this.$t('claim.alreadyBound');
 			}
 			return this.$t('claim.failed');
 		},
