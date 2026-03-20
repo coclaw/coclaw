@@ -159,9 +159,7 @@ export default {
 		this.waitCancelled = true;
 		this.waitLoopRunning = false;
 		clearTimeout(this.copiedTimer);
-		if (this.bindingCode) {
-			cancelBindingCode(this.bindingCode).catch(() => {});
-		}
+		// 不主动删码，让其自然过期；用户离开后码仍可被 CLI 使用
 	},
 	methods: {
 		async copyToClipboard(key, text) {

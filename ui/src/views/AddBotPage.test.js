@@ -156,14 +156,14 @@ test('should hide content and show expired message when countdown reaches zero',
 	expect(wrapper.text()).not.toContain('方式二：通过终端');
 });
 
-test('should cancel binding code on unmount', async () => {
+test('should NOT cancel binding code on unmount (let it expire naturally)', async () => {
 	const wrapper = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.vm.bindingCode).toBe('12345678');
 	wrapper.unmount();
 
-	expect(mockCancelBindingCode).toHaveBeenCalledWith('12345678');
+	expect(mockCancelBindingCode).not.toHaveBeenCalled();
 });
 
 test('should cancel old binding code when restarting', async () => {
