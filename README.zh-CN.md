@@ -79,16 +79,17 @@ OpenClaw 原生提供 IM 式的无限对话流，打造你与 Agent 之间永不
 
 - Node.js >= 20
 - pnpm
-- MySQL
+- Docker（用于 MySQL 容器）
 
 ### 安装与运行
 
 ```bash
 pnpm install
+cp server/.env.example server/.env
 pnpm dev
 ```
 
-`pnpm dev` 会同时启动 `server` 和 `ui`，按 `Ctrl+C` 停止。
+`pnpm dev` 会自动启动 MySQL 容器（通过 `deploy/compose.dev.yaml`），等待其就绪后同时启动 `server` 和 `ui`。按 `Ctrl+C` 停止。
 
 单独运行：`pnpm dev:server` 或 `pnpm dev:ui`。
 

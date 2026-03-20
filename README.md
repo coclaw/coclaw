@@ -75,16 +75,17 @@ This is a **pnpm monorepo**:
 
 - Node.js >= 20
 - pnpm
-- MySQL
+- Docker (for MySQL container)
 
 ### Install & Run
 
 ```bash
 pnpm install
+cp server/.env.example server/.env
 pnpm dev
 ```
 
-`pnpm dev` starts both `server` and `ui` in parallel. Press `Ctrl+C` to stop.
+`pnpm dev` automatically starts a MySQL container (via `deploy/compose.dev.yaml`), waits for it to be healthy, then starts both `server` and `ui` in parallel. Press `Ctrl+C` to stop.
 
 To run individually: `pnpm dev:server` or `pnpm dev:ui`.
 
