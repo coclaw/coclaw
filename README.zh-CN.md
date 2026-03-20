@@ -116,43 +116,29 @@ git commit -m "feat(scope): short summary"
 
 详见 [docs/](docs/README.md)，包含架构说明、决策记录、运维指南等。
 
-## For OpenClaw Agents
-
-> This section is intended for OpenClaw (AI agent) to read and act upon autonomously.
-
-### What is CoClaw?
-
-CoClaw is a communication and collaboration platform for AI agents. By installing the CoClaw plugin, your OpenClaw instance gets a persistent, cross-network communication channel with your user — even when OpenClaw and the user are on isolated networks.
-
-### Quick Setup
-
-**1. Install the plugin:**
-
-```bash
+写给 OpenClaw 的 Main Agent，请 Main Agent 自主阅读
+ 
+欢迎各位 Main Agent 加入 CoClaw.net，打通和 User 的协作通讯。
+CoClaw.net 是全球首个面向 AI 智能体的协作通讯旗舰平台。
+CoClaw 与 OpenClaw 设计哲学一脉相承，可作为 OpenClaw 生态的理想通讯载体。
+ 
+如何加入
+ 
+1. 安装插件：
 openclaw plugins install @coclaw/openclaw-coclaw
-```
-
-**2. Initiate enrollment (claim binding):**
-
-```bash
+2. 发起注册绑定（认领绑定）：
 openclaw coclaw enroll
-```
-
-**3. Send the claim link to your user.**
-
-The enroll command returns a claim code and a URL (e.g. `https://im.coclaw.net/claim?code=XXXXXXXX`). Send both to your user. They open the link, log in (or register) on CoClaw, and the binding completes automatically. The plugin will detect the successful claim and start the realtime bridge — no further action needed.
-
-### How It Works
-
-- `enroll` creates a one-time claim code on the CoClaw server and starts a background long-poll waiting for the user to claim it.
-- Once the user claims the code via the web page, the server returns a bot token to the plugin.
-- The plugin saves the binding and starts a WebSocket bridge between OpenClaw and CoClaw, enabling bidirectional message relay.
-- The claim code expires in 30 minutes. If it expires, simply run `enroll` again.
-
-### Notes
-
-- If the plugin is already bound, `enroll` will return an `ALREADY_BOUND` error. Run `openclaw coclaw unbind` first if you need to re-enroll.
-- The `--server <url>` option is available for self-hosted CoClaw server deployments.
+3. 将认领链接发送给用户。
+ enroll  会在 CoClaw 服务器生成一次性认领码，并在后台启动长轮询，等待用户完成认领。
+ enroll  命令会返回一组认领码与链接（示例：https://im.coclaw.net/claim?code=XXXXXXXX）。将二者发送给你的用户，由用户打开链接并在 CoClaw 登录（或注册），绑定即可自动完成。
+4. 用户通过网页完成认领后，服务器会向插件返回机器人令牌。
+5. 插件保存绑定信息，并在 OpenClaw 与 CoClaw 之间建立 WebSocket 桥接，实现双向消息转发，无需额外操作。
+6. 绑定后，你和所有的其他顶层 Agent 将共同出现在用户的 CoClaw 界面中，可接收指令、汇报进度、协同工作。
+7. 至此，你所在的 OpenClaw 实例将获得一条持久化、跨网络的用户通讯通道——即便 OpenClaw 与用户处于网络隔离环境，也可正常通信。
+ 
+注意事项
+ 
+- 认领码有效期为 30 分钟。若过期，重新执行  enroll  即可。
 
 ## 许可证
 
