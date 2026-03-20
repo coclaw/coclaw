@@ -10,6 +10,9 @@ import { checkPluginVersion } from '../utils/plugin-version.js';
 // 跟踪已注册 state 监听的 botId，避免重复注册
 const _awaitingConnIds = new Set();
 
+/** @internal 仅供测试重置 */
+export function __resetAwaitingConnIds() { _awaitingConnIds.clear(); }
+
 export const useBotsStore = defineStore('bots', {
 	state: () => ({
 		items: [],
@@ -49,8 +52,10 @@ export const useBotsStore = defineStore('bots', {
 					...this.items,
 				];
 			}
-			// 确保新 bot 有连接
-			useBotConnections().connect(id);
+			// 确保新 bot 有连接，并注册就绪回调加载 agents/sessions/topics
+			const manager = useBotConnections();
+			manager.connect(id);
+			this.__listenForReady([id], manager);
 		},
 		updateBotOnline(botId, online) {
 			const id = String(botId);

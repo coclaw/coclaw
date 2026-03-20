@@ -25,13 +25,15 @@ vi.mock('../utils/plugin-version.js', () => ({
 
 import { listBots } from '../services/bots.api.js';
 import { useAgentsStore } from './agents.store.js';
-import { useBotsStore } from './bots.store.js';
+import { useBotsStore, __resetAwaitingConnIds } from './bots.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
 
 beforeEach(() => {
 	setActivePinia(createPinia());
 	vi.clearAllMocks();
+	mockManager.get.mockReset();
+	__resetAwaitingConnIds();
 });
 
 describe('setBots', () => {
@@ -58,6 +60,8 @@ describe('setBots', () => {
 describe('addOrUpdateBot', () => {
 	test('inserts new bot with normalized fields and calls connect', () => {
 		const store = useBotsStore();
+		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
 		const bot = {
 			id: 42,
 			name: 'NewBot',
@@ -113,6 +117,60 @@ describe('addOrUpdateBot', () => {
 		expect(store.items[0].name).toBe('NewName');
 		expect(store.items[0].online).toBe(true);
 		expect(mockManager.connect).toHaveBeenCalledWith('1');
+	});
+
+	test('registers __listenForReady so agents/sessions/topics load when connection becomes ready', async () => {
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		let stateCallback;
+		const fakeConn = {
+			state: 'connecting',
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '10', name: 'Fresh' });
+
+		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
+
+		// 模拟连接就绪
+		stateCallback('connected');
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('10');
+			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+		});
+	});
+
+	test('immediately fires ready callback if connection is already connected on addOrUpdateBot', async () => {
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), request: vi.fn().mockResolvedValue({}) };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '11', name: 'AlreadyReady' });
+
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('11');
+			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+		});
+		// 已连接时不注册 state 监听
+		expect(fakeConn.on).not.toHaveBeenCalled();
 	});
 
 	test('does nothing when bot id is falsy', () => {
