@@ -1,0 +1,25 @@
+# 拦截非法访问
+server {
+	listen 80 default_server;
+	server_name _;
+
+	# 容器健康检查（仅 localhost 可访问）
+	location = /nginx-health {
+		access_log off;
+		allow 127.0.0.1;
+		deny all;
+		return 200 "ok";
+	}
+
+	location / {
+		return 444;
+	}
+}
+
+server {
+	listen 443 ssl default_server;
+	server_name _;
+	ssl_certificate /etc/nginx/ssl/offline444.net.crt;
+	ssl_certificate_key /etc/nginx/ssl/offline444.net.key;
+	return 444;
+}

@@ -2,14 +2,24 @@
 .git
 
 # Sensitive / non-build files
-.env
-.env.*
-deploy/nginx/ssl/
-deploy/env/
-deploy/certbot/conf
-deploy/data
+**/.env
+**/.env.*
+!**/.env.example
+
+# Deploy (not needed in server image)
+deploy/
+docs/
+
+# External repos (symlinks)
+openclaw-repo
+ref-projects
 
 # Dev & test artifacts
-coverage/
-test-results/
+**/coverage/
+**/test-results/
+**/.vscode/
+**/.idea/
 *.log
+
+# admin (not built as image)
+admin/

@@ -10,6 +10,7 @@
 - `deploy-db.sh`：数据库迁移（可选 `--db-push` / `--create-test-account`）
 - `deploy-check.sh`：部署后健康检查
 - `deploy-run.sh`：组合执行入口
+- `deploy-clean.sh`：清理远端 Docker 未使用资源（镜像、构建缓存等）
 
 ## 常用命令
 

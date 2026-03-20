@@ -21,8 +21,8 @@ for arg in "$@"; do
 		--server) DO_SERVER="true" ;;
 		--db) DO_DB="true" ;;
 		--check) DO_CHECK="true" ;;
-		--db-push) DB_PUSH="true" ;;
-		--create-test-account) CREATE_TEST="true" ;;
+		--db-push) DB_PUSH="true"; DO_DB="true" ;;
+		--create-test-account) CREATE_TEST="true"; DO_DB="true" ;;
 		*) echo "unknown arg: $arg" >&2; exit 1 ;;
 	esac
 done

@@ -44,14 +44,8 @@ Thumbs.db
 openclaw-repo
 ref-projects
 
-# Deploy (deferred to next release)
-deploy/
-
 # admin UI
 /admin/
-
-# Local infra dev env
-infra/docker/.env.mysql.dev
 
 # Prisma generated output (rebuild via `prisma generate`)
 server/src/generated/

@@ -2,25 +2,22 @@ services:
   mysql:
     container_name: coclaw-mysql
     image: mysql:8.0.36-bookworm
-    restart: always
+    restart: unless-stopped
     command:
-      # 无需为兼容旧系统而指定旧版认证插件，保持默认 caching_sha2_password
-      # - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       - --lower_case_table_names=1
       - --default-time-zone=+08:00
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: coclaw_root_2026
+      MYSQL_DATABASE: coclaw
+      MYSQL_USER: coclaw
+      MYSQL_PASSWORD: coclaw_db_2026
       TZ: Asia/Shanghai
     ports:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - coclaw_mysql_data:/var/lib/mysql
-      - ./mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
       interval: 10s
@@ -30,3 +27,4 @@ services:
 
 volumes:
   coclaw_mysql_data:
+    name: coclaw_mysql_data

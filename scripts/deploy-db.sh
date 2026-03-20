@@ -13,17 +13,14 @@ for arg in "$@"; do
 	esac
 done
 
-log "run prisma migrate deploy"
-ssh_remote "cd $DEPLOY_REMOTE_DIR/deploy && docker compose exec -T server /app/server/node_modules/.bin/prisma migrate deploy"
-
 if [[ "$DO_DB_PUSH" == "true" ]]; then
 	log "run prisma db push (internal only)"
-	ssh_remote "cd $DEPLOY_REMOTE_DIR/deploy && docker compose exec -T server /app/server/node_modules/.bin/prisma db push"
+	ssh_remote "cd $DEPLOY_REMOTE_DIR && docker compose exec -T server npx prisma db push"
 fi
 
 if [[ "$DO_CREATE_TEST" == "true" ]]; then
 	log "create test account"
-	ssh_remote "cd $DEPLOY_REMOTE_DIR/deploy && docker compose exec -T server node scripts/create-test-local-account.js"
+	ssh_remote "cd $DEPLOY_REMOTE_DIR && docker compose exec -T server node scripts/create-test-local-account.js"
 fi
 
-log "done: db sync"
+log "done: db ops"

@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/deploy-common.sh"
 
 log "docker compose status"
-ssh_remote "cd $DEPLOY_REMOTE_DIR/deploy && docker compose ps"
+ssh_remote "cd $DEPLOY_REMOTE_DIR && docker compose ps"
 
 log "check https home"
 curl -k -sS -o /tmp/coclaw_home.out -w "HTTP %{http_code}\n" "https://$DEPLOY_DOMAIN/"

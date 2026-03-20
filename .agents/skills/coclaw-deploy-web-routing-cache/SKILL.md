@@ -1,6 +1,6 @@
 ---
 name: coclaw-deploy-web-routing-cache
-description: Maintain CoClaw deploy web/app Nginx rules for domain routing, HTTPS redirects, certbot certificate issuance, and SPA cache headers. Use when changing deploy/nginx/conf.d/{coclaw.conf,www.conf}, deploy/static/{ui,www}, or diagnosing browser stale-cache issues after frontend release (especially WeChat Android WebView).
+description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redirects, certbot certificate issuance, and SPA cache headers. Use when changing deploy/nginx/templates/app.conf.template, deploy/static/ui, or diagnosing browser stale-cache issues after frontend release (especially WeChat Android WebView).
 ---
 
 # CoClaw Deploy: 域名路由与缓存策略
@@ -9,18 +9,11 @@ description: Maintain CoClaw deploy web/app Nginx rules for domain routing, HTTP
 
 ## 1) 先确认目标域名角色
 
-- 应用域名：`im.coclaw.net`（SPA + `/api/`）
-- 官网主站：`gongyanchat.com`
-- 其余官网域名统一 301 到主站（保留 `$request_uri`）：
-  - `www.gongyanchat.com`
-  - `gongyanchat.cn`
-  - `www.gongyanchat.cn`
-
-不要把官网规则写进 `coclaw.conf`；官网放 `www.conf`。
+- 应用域名通过 `.env` 的 `APP_DOMAIN` 配置（默认 `im.coclaw.net`）
+- Nginx 配置使用 envsubst 模板机制，模板位于 `deploy/nginx/templates/app.conf.template`
+- 模板中只使用 `${APP_DOMAIN}` 变量，不要引入其他变量以免与 nginx 内置变量冲突
 
 ## 2) 缓存策略（当前标准）
-
-### 应用站与官网统一规则
 
 - `index.html` / SPA 入口回落页：
   - `Cache-Control: no-cache, max-age=0, must-revalidate`
@@ -31,22 +24,9 @@ description: Maintain CoClaw deploy web/app Nginx rules for domain routing, HTTP
 
 ## 3) 证书策略
 
-- 使用 certbot webroot（`/var/www/certbot`）。
-- 证书按域分开 `cert-name`：
-  - `gongyanchat.com` (+ `www.gongyanchat.com`)
-  - `gongyanchat.cn` (+ `www.gongyanchat.cn`)
-  - `im.coclaw.net`
-- 在签发前，先确保 80 端口对应域名已放行 `/.well-known/acme-challenge/`。
-
-常用命令（远端 deploy 目录）：
-
-```bash
-docker compose run --rm --entrypoint certbot certbot-init \
-  certonly --webroot -w /var/www/certbot \
-  --email "ops@coclaw.net" --agree-tos --no-eff-email \
-  --cert-name gongyanchat.com \
-  -d gongyanchat.com -d www.gongyanchat.com
-```
+- 使用 certbot webroot（`/var/www/certbot`）
+- certbot 容器使用 compose profiles 控制启停（`auto-https`、`init-cert`）
+- 首次签发：`docker compose --profile init-cert run --rm certbot-init`
 
 ## 4) 发布与验证
 
@@ -54,24 +34,21 @@ docker compose run --rm --entrypoint certbot certbot-init \
 
 ```bash
 docker compose exec -T nginx nginx -t
-docker compose restart nginx
+docker compose exec nginx nginx -s reload
 ```
 
 最少验证：
 
 ```bash
-curl -I https://gongyanchat.com/
-curl -I https://www.gongyanchat.com/
-curl -I https://gongyanchat.cn/test?a=1
-curl -I https://im.coclaw.net/
+curl -I https://${APP_DOMAIN}/
+curl -I https://${APP_DOMAIN}/api/v1/auth/session
 ```
 
 检查点：
-- 主站 200；别名域名 301 到 `https://gongyanchat.com...`
 - HTML 返回 `no-cache, max-age=0, must-revalidate`
 - `/assets/` 返回 `max-age=3600`
-- 应用域名 `/api/` 仍可用
+- `/api/` 仍可用
 
 ## 5) 当前明确不做
 
-- 不启用 HSTS（除非用户明确要求）。
+- 不启用 HSTS（除非用户明确要求）

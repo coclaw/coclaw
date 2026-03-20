@@ -1,0 +1,137 @@
+name: coclaw
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "10"
+
+services:
+  # UI 静态文件初始化（自部署用户使用，从镜像复制到 static 目录）
+  # 我们自己的部署通过 deploy-ui.sh rsync，不依赖此服务
+  ui-init:
+    image: ghcr.io/coclaw/ui:latest
+    volumes:
+      - ./static:/html
+    entrypoint: ["sh", "-c", "mkdir -p /html/ui/current && cp -r /dist/* /html/ui/current/"]
+    restart: "no"
+
+  nginx:
+    image: m.daocloud.io/docker.io/library/nginx:1.27-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      # 正则过滤器：仅替换匹配的环境变量，保护 nginx 内置变量（$host, $uri 等）
+      NGINX_ENVSUBST_FILTER: "APP_DOMAIN"
+    depends_on:
+      server:
+        condition: service_healthy
+      ui-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/includes:/etc/nginx/includes:ro
+      - ./static:/usr/share/nginx/html
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  server:
+    image: ghcr.io/coclaw/server:latest
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      SESSION_SECRET: ${SESSION_SECRET}
+      ENFORCE_HTTPS: ${ENFORCE_HTTPS:-true}
+      DB_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      COCLAW_WS_DEBUG: ${COCLAW_WS_DEBUG:-}
+    expose:
+      - "3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  mysql:
+    image: m.daocloud.io/docker.io/library/mysql:8.0.36-bookworm
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --lower_case_table_names=1
+      - --default-time-zone=+08:00
+    expose:
+      - "3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  certbot-renew:
+    image: m.daocloud.io/docker.io/certbot/certbot:latest
+    profiles: ["auto-https"]
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/scripts/certbot-renew.sh:/scripts/certbot-renew.sh:ro
+      - ./certbot/scripts/reload-nginx.sh:/scripts/reload-nginx.sh:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    entrypoint: ["/bin/sh", "/scripts/certbot-renew.sh"]
+
+  certbot-init:
+    image: m.daocloud.io/docker.io/certbot/certbot:latest
+    profiles: ["init-cert"]
+    environment:
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        certbot certonly --webroot -w /var/www/certbot
+        --email "$$CERTBOT_EMAIL" --agree-tos --no-eff-email
+        -d "$$APP_DOMAIN"
+
+volumes:
+  mysql_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MYSQL_DATA_PATH:-./data/mysql}

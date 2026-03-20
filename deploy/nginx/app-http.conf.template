@@ -1,0 +1,51 @@
+# ── HTTP-only 模式（内网部署）──
+# 使用方法：将此文件重命名为 app.conf.template，替换默认的 HTTPS 版本
+server {
+	listen 80;
+	listen [::]:80;
+	server_name ${APP_DOMAIN};
+
+	add_header X-Content-Type-Options nosniff always;
+	add_header X-Frame-Options SAMEORIGIN always;
+	add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+	root /usr/share/nginx/html/ui/current;
+	index index.html;
+
+	# SPA 入口页
+	location = /index.html {
+		add_header X-Content-Type-Options nosniff always;
+		add_header X-Frame-Options SAMEORIGIN always;
+		add_header Referrer-Policy strict-origin-when-cross-origin always;
+		add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;
+		try_files $uri =404;
+	}
+
+	location ^~ /assets/ {
+		expires 1h;
+		try_files $uri =404;
+	}
+
+	location / {
+		add_header X-Content-Type-Options nosniff always;
+		add_header X-Frame-Options SAMEORIGIN always;
+		add_header Referrer-Policy strict-origin-when-cross-origin always;
+		add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;
+		try_files $uri $uri/ /index.html;
+	}
+
+	location ~* ^/api/.*/stream$ {
+		include /etc/nginx/includes/proxy-ws.conf;
+		proxy_pass http://server:3000;
+	}
+
+	location = /api/v1/bots/status-stream {
+		include /etc/nginx/includes/proxy-sse.conf;
+		proxy_pass http://server:3000;
+	}
+
+	location /api/ {
+		include /etc/nginx/includes/proxy-common.conf;
+		proxy_pass http://server:3000;
+	}
+}

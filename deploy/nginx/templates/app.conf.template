@@ -1,0 +1,73 @@
+# ── HTTP: ACME challenge + redirect ──
+server {
+	listen 80;
+	listen [::]:80;
+	server_name ${APP_DOMAIN};
+
+	location ^~ /.well-known/acme-challenge/ {
+		root /var/www/certbot;
+		allow all;
+	}
+
+	location / {
+		return 301 https://$host$request_uri;
+	}
+}
+
+# ── App: HTTPS ──
+server {
+	listen 443 ssl;
+	listen [::]:443 ssl;
+	http2 on;
+	server_name ${APP_DOMAIN};
+
+	ssl_certificate /etc/letsencrypt/live/${APP_DOMAIN}/fullchain.pem;
+	ssl_certificate_key /etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem;
+
+	add_header X-Content-Type-Options nosniff always;
+	add_header X-Frame-Options SAMEORIGIN always;
+	add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+	root /usr/share/nginx/html/ui/current;
+	index index.html;
+
+	# SPA 入口页：每次回源校验，避免微信内置浏览器长期滞留旧 index.html
+	location = /index.html {
+		add_header X-Content-Type-Options nosniff always;
+		add_header X-Frame-Options SAMEORIGIN always;
+		add_header Referrer-Policy strict-origin-when-cross-origin always;
+		add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;
+		try_files $uri =404;
+	}
+
+	# 哈希静态资源：短期缓存（当前 1h）
+	location ^~ /assets/ {
+		expires 1h;
+		try_files $uri =404;
+	}
+
+	# SPA 路由回落到 /index.html
+	location / {
+		add_header X-Content-Type-Options nosniff always;
+		add_header X-Frame-Options SAMEORIGIN always;
+		add_header Referrer-Policy strict-origin-when-cross-origin always;
+		add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;
+		try_files $uri $uri/ /index.html;
+	}
+
+	location ~* ^/api/.*/stream$ {
+		include /etc/nginx/includes/proxy-ws.conf;
+		proxy_pass http://server:3000;
+	}
+
+	# SSE: bot 在线状态
+	location = /api/v1/bots/status-stream {
+		include /etc/nginx/includes/proxy-sse.conf;
+		proxy_pass http://server:3000;
+	}
+
+	location /api/ {
+		include /etc/nginx/includes/proxy-common.conf;
+		proxy_pass http://server:3000;
+	}
+}

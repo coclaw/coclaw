@@ -1,0 +1,16 @@
+# 环境变量（仅跟踪 .env.example）
+.env
+!.env.example
+
+# 数据
+data/
+
+# 证书与 ACME 挑战
+certbot/conf/
+certbot/www/
+
+# UI 发布产物
+static/
+
+# REVIEW 分析文档（非项目文件）
+REVIEW.md
