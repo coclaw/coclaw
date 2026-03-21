@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.6.2
+
+### Patch Changes
+
+- Delegate bind/unbind to gateway RPC, harden config I/O with atomic writes and mutex, improve error handling in realtime bridge
+
 ## 0.6.1
 
 ### Patch Changes
