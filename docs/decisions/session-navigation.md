@@ -58,21 +58,32 @@
 
 ---
 
-## 当前采用方案：B/C 融合（务实渐进）
+## 历史采用方案：B/C 融合（已废弃）
 
-取 B 的轮转检测 + C 的 bot 入口导航，保留现有 sessionId 列表：
+~~取 B 的轮转检测 + C 的 bot 入口导航，保留现有 sessionId 列表。~~
 
-1. **点击 bot** → 导航到 `agent:main:main` 对应的当前 sessionId
-2. **发送前检测** → 发现轮转时，回退到 `agent(sessionId)` 保持当前上下文
-3. **轮转通知** → toast 告知用户，刷新列表使新 session 可见
-4. **后续** → 提供 `/new` `/reset` 等效按钮，让用户主动控制上下文
+已被下方"当前采用方案"替代。
 
-详见实施文档。
+---
+
+## 当前采用方案：稳定路由参数（2026-03-21 实施）
+
+路由从 `/chat/:sessionId` 迁移到 `/chat/:botId/:agentId`，使用稳定的 bot + agent 标识：
+
+1. **点击 agent** → 导航到 `/chat/{botId}/{agentId}`，sessionKey 由 `agent:${agentId}:main` 直接构造
+2. **sessionId 退居幕后** → 仅作为 `chat.history` RPC 返回值用于历史上翻，不再出现在路由中
+3. **`/new`、`/reset` 后路由不变** → botId/agentId 稳定，无需 `$router.replace`
+4. **sessionsStore 不再是 chat 路由的关键依赖** → 导航入口无需等待 sessions 加载
+
+**优势**：
+- 消除了 sessionsStore 反查、`__resetTransition` 标志、竞态路由替换等复杂度
+- 收藏的 URL 不会因 reset/daily-rotate 而过期
+- 与 OpenClaw sessionKey 语义自然对齐
 
 ---
 
 ## 演进路线
 
-1. **当前阶段**：B/C 融合（本文档）
-2. **中期**：方案 C（双入口导航，活跃 + 归档分离）
-3. **长期**：方案 A（全面 sessionKey 导航，sessionId 对用户透明）
+1. ~~**当前阶段**：B/C 融合~~ → 已替换
+2. **当前阶段**：稳定路由参数 `/chat/:botId/:agentId`（本文档）
+3. **后续**：评估是否整体移除 sessionsStore

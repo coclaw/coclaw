@@ -64,12 +64,12 @@ test('不存在的 session：重定向到首页', async ({ page }) => {
 	}
 
 	// 导航到一个不存在的 session
-	await page.goto('/chat/nonexistent-session-e2e-' + Date.now());
+	await page.goto('/chat/nonexistent-bot-' + Date.now() + '/main');
 
 	// 应被重定向离开 chat 页面（到 /home 或其后续调度目标）
 	await expect(async () => {
 		const url = page.url();
-		expect(url).not.toContain('/chat/nonexistent-session');
+		expect(url).not.toContain('/chat/nonexistent-bot');
 	}).toPass({ timeout: 15_000 });
 
 	// 不应停留在错误状态

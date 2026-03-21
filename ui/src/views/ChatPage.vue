@@ -41,6 +41,9 @@
 				<div v-if="isBotOffline" class="mx-4 mt-4 rounded-lg bg-warning/10 px-4 py-2 text-center text-sm text-warning">
 					{{ $t('chat.botOffline') }}
 				</div>
+				<div v-else-if="awaitingAgent" class="px-4 py-8 text-center text-sm text-muted">
+					{{ $t('chat.connecting') }}
+				</div>
 				<!-- 历史加载状态提示 -->
 				<div v-if="chatStore.historyLoading" class="px-4 py-3 text-center text-xs text-muted">
 					{{ $t('chat.loading') }}
@@ -48,7 +51,10 @@
 				<div v-else-if="showNoMoreHint" class="px-4 pt-3 pb-2 text-center text-xs text-muted">
 					{{ $t('chat.noMoreHistory') }}
 				</div>
-				<div v-if="chatStore.loading" class="px-4 py-8 text-center text-sm text-muted">
+				<div v-else-if="hasMoreHistory" class="px-4 pt-3 pb-2 text-center text-xs text-muted">
+					{{ $t('chat.scrollUpForMore') }}
+				</div>
+				<div v-if="chatStore.loading && !awaitingAgent" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('chat.loading') }}
 				</div>
 				<div v-else-if="chatStore.errorText && !isBotOffline" class="px-4 py-8 text-center text-sm">
@@ -79,10 +85,11 @@
 		</main>
 
 		<ChatInput
+			v-if="isTopicRoute || isNewTopic || agentVerified"
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore.sending"
-			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (!currentSessionId || isBotOffline || chatStore.loading)"
+			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || chatStore.loading) : (!routeBotId || isBotOffline || chatStore.loading))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
@@ -107,7 +114,6 @@ import SlashCommandMenu from '../components/chat/SlashCommandMenu.vue';
 import { useNotify } from '../composables/use-notify.js';
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
-import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import { useChatStore } from '../stores/chat.store.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
@@ -131,7 +137,6 @@ export default {
 			agentsStore: useAgentsStore(),
 			chatStore: useChatStore(),
 			botsStore: useBotsStore(),
-			sessionsStore: useSessionsStore(),
 			topicsStore: useTopicsStore(),
 			suppressPullRefresh: suppress,
 			unsuppressPullRefresh: unsuppress,
@@ -148,8 +153,6 @@ export default {
 			__isFirstRound: false,
 			// 新建 topic 流程进行中，抑制 watcher 的重复激活
 			__creatingTopic: false,
-			// /new|/reset 过渡期间，抑制 __activate/__retryActivation 竞态
-			__resetTransition: false,
 		};
 	},
 	computed: {
@@ -157,9 +160,23 @@ export default {
 			return isCapacitorApp ? 'flex-1 min-h-0' : 'h-dvh-safe';
 		},
 		currentSessionId() {
-			return typeof this.$route.params?.sessionId === 'string'
-				? this.$route.params.sessionId.trim()
-				: '';
+			if (this.isTopicRoute) {
+				const sid = this.$route.params?.sessionId;
+				return typeof sid === 'string' ? sid.trim() : '';
+			}
+			return this.chatStore.currentSessionId || '';
+		},
+		/** chat 路由的 botId 参数 */
+		routeBotId() {
+			return this.$route.params?.botId || '';
+		},
+		/** chat 路由的 agentId 参数 */
+		routeAgentId() {
+			return this.$route.params?.agentId || 'main';
+		},
+		/** 合并 botId+agentId，用于 watch 去重（避免同一导航触发两次 __activate） */
+		__routeKey() {
+			return `${this.routeBotId}:${this.routeAgentId}`;
 		},
 		/** 是否为 topic 路由（包括 new 和已有 topic） */
 		isTopicRoute() {
@@ -167,7 +184,7 @@ export default {
 		},
 		/** 是否为新建 topic 模式 */
 		isNewTopic() {
-			return this.isTopicRoute && this.currentSessionId === 'new';
+			return this.isTopicRoute && this.$route.params?.sessionId === 'new';
 		},
 		/** 新 topic 路由的 query 参数 */
 		newTopicAgentId() {
@@ -190,7 +207,7 @@ export default {
 				const topic = this.topicsStore.findTopic(this.currentSessionId);
 				return topic?.agentId || 'main';
 			}
-			return this.agentsStore.parseAgentId(this.chatStore.currentSessionKey) || 'main';
+			return this.routeAgentId || 'main';
 		},
 		/** 是否显示"新话题"按钮：topic 页面始终显示；session 页面仅 main agent 显示 */
 		showNewTopicBtn() {
@@ -200,7 +217,8 @@ export default {
 		/** 当前上下文的 botId */
 		currentBotId() {
 			if (this.isNewTopic) return this.newTopicBotId;
-			return this.chatStore.botId;
+			if (this.isTopicRoute) return this.chatStore.botId;
+			return this.routeBotId;
 		},
 		isBotOffline() {
 			const botId = this.currentBotId;
@@ -210,14 +228,13 @@ export default {
 		},
 		chatTitle() {
 			if (this.isNewTopic) return this.$t('topic.newTopic');
-			if (!this.currentSessionId) return '';
-			// topic 模式
 			if (this.isTopicRoute) {
+				if (!this.currentSessionId) return '';
 				const topic = this.topicsStore.findTopic(this.currentSessionId);
 				if (topic?.title) return topic.title;
 				return this.$t('topic.newTopic');
 			}
-			// session 模式：显示 agent 名称
+			if (!this.routeBotId) return '';
 			return this.agentDisplay?.name || 'Agent';
 		},
 		agentDisplay() {
@@ -229,6 +246,33 @@ export default {
 		/** 斜杠命令菜单仅在 chat 模式（非 topic）且有 sessionKey 时显示 */
 		showSlashMenu() {
 			return !this.isTopicRoute && !this.isNewTopic && !!this.chatStore.chatSessionKey;
+		},
+		/** 是否还有未加载的更早历史 session */
+		hasMoreHistory() {
+			if (this.isTopicRoute) return false;
+			return !this.chatStore.historyExhausted
+				&& this.chatStore.historySessionIds.length > 0
+				&& !this.chatStore.loading;
+		},
+		/**
+		 * session 模式下 agent 是否已验证存在
+		 * - topic 模式 / new topic 不检查（由各自逻辑管理）
+		 * - agents 未加载 → false（阻断输入）
+		 * - agents 已加载且 agent 在列表中 → true
+		 */
+		agentVerified() {
+			if (this.isTopicRoute || this.isNewTopic) return true;
+			if (!this.routeBotId) return false;
+			const entry = this.agentsStore.byBot[this.routeBotId];
+			if (!entry?.fetched) return false;
+			return entry.agents.some((a) => a.id === this.routeAgentId);
+		},
+		/** bot 在线但 agents 尚未加载（WS 连接中） */
+		awaitingAgent() {
+			if (this.isTopicRoute || this.isNewTopic) return false;
+			if (!this.routeBotId || this.isBotOffline) return false;
+			const entry = this.agentsStore.byBot[this.routeBotId];
+			return !entry?.fetched;
 		},
 		chatMessages() {
 			const items = [];
@@ -258,9 +302,12 @@ export default {
 		await this.__activate();
 	},
 	watch: {
+		__routeKey() {
+			if (!this.isTopicRoute) this.__activate();
+		},
 		'$route.params.sessionId': {
 			handler() {
-				this.__activate();
+				if (this.isTopicRoute) this.__activate();
 			},
 		},
 		// 数据异步就绪 → 重试或做终态判定
@@ -268,8 +315,15 @@ export default {
 			deep: true,
 			handler() { this.__retryActivation(); },
 		},
-		'sessionsStore.items'() {
-			if (!this.isTopicRoute) this.__retryActivation();
+		// WS 连接就绪信号：__listenForReady 在 connected 后更新 pluginVersionOk
+		'botsStore.pluginVersionOk': {
+			deep: true,
+			handler() { this.__retryActivation(); },
+		},
+		// agents 加载完成后做 agent 存在性终态判定
+		'agentsStore.byBot': {
+			deep: true,
+			handler() { if (!this.isTopicRoute) this.__retryActivation(); },
 		},
 		'topicsStore.items'() {
 			if (this.isTopicRoute && !this.isNewTopic) this.__retryActivation();
@@ -293,40 +347,41 @@ export default {
 	methods: {
 		/** 根据路由上下文激活对应模式 */
 		async __activate() {
-			// 新建 topic / session reset 流程进行中，抑制 watcher 触发的重复激活
-			if (this.__creatingTopic || this.__resetTransition) return;
+			if (this.__creatingTopic) return;
 			this.showNoMoreHint = false;
+
 			if (this.isNewTopic) {
-				// 新建 topic：清空状态，不加载消息
 				this.chatStore.cleanup();
 				this.__isFirstRound = true;
 				return;
 			}
 			if (this.isTopicRoute) {
-				// 已有 topic：从 topicsStore 获取元信息并激活
-				const topic = this.topicsStore.findTopic(this.currentSessionId);
+				const topicSessionId = this.currentSessionId;
+				const topic = this.topicsStore.findTopic(topicSessionId);
 				if (topic) {
 					this.__isFirstRound = topic.title === null;
-					await this.chatStore.activateTopic(this.currentSessionId, {
+					await this.chatStore.activateTopic(topicSessionId, {
 						botId: topic.botId,
 						agentId: topic.agentId,
 					});
 				}
 				else {
-					// topic 未加载到 store（可能 topics 尚未加载），保持 loading 等待 retry
 					this.__isFirstRound = false;
 					this.chatStore.loading = true;
 				}
 				return;
 			}
-			// session 模式：从 sessionsStore 反查 sessionKey 和 botId
+			// session 模式：直接从路由参数获取 botId/agentId
 			this.__isFirstRound = false;
-			const id = this.currentSessionId;
-			const session = this.sessionsStore.items.find((s) => s.sessionId === id);
-			await this.chatStore.activateSession(typeof id === 'string' ? id.trim() : '', {
-				botId: session?.botId,
-				sessionKey: session?.sessionKey,
-			});
+			const botId = this.routeBotId;
+			const agentId = this.routeAgentId;
+			if (!botId) return;
+			// agents 已加载时做前置检查，防止向不存在的 agent 发起 RPC
+			const agentEntry = this.agentsStore.byBot[botId];
+			if (agentEntry?.fetched && !agentEntry.agents.some((a) => a.id === agentId)) {
+				return this.__exitChat(this.$t('chat.agentNotFound'));
+			}
+			await this.chatStore.activateSession(botId, agentId);
 		},
 
 		async onSendMessage({ text, files }) {
@@ -337,7 +392,8 @@ export default {
 				return this.__handleNewTopicSend(text, files);
 			}
 
-			if (!this.currentSessionId) return;
+			if (!this.isTopicRoute && !this.routeBotId) return;
+			if (this.isTopicRoute && !this.currentSessionId) return;
 
 			const savedText = this.inputText;
 			this.inputText = '';
@@ -439,27 +495,17 @@ export default {
 
 		async onSlashCommand(cmd) {
 			try {
-				const isReset = /^\/(new|reset)\b/i.test(cmd);
-				// 抑制 __retryActivation，避免 route/sessions 更新竞态导致误判 sessionNotFound
-				if (isReset) this.__resetTransition = true;
-
 				await this.chatStore.sendSlashCommand(cmd);
 
-				if (isReset && this.chatStore.currentSessionId) {
-					const newId = this.chatStore.currentSessionId;
-					if (newId !== this.currentSessionId) {
-						await this.$router.replace({ params: { sessionId: newId } });
-					}
-					this.__resetTransition = false;
-					this.sessionsStore.loadAllSessions();
+				if (/^\/(new|reset)\b/i.test(cmd)) {
+					this.showNoMoreHint = false;
+					// 旧 session 已在 __onChatEvent 中本地追加为 segment，
+					// 异步刷新孤儿列表供后续上翻使用（不阻塞渲染）
 					this.chatStore.__loadChatHistory();
 				}
 			}
 			catch (err) {
 				this.notify.error(err?.message || this.$t('slashCmd.error'));
-			}
-			finally {
-				this.__resetTransition = false;
 			}
 		},
 
@@ -473,15 +519,11 @@ export default {
 		 * 2) 数据已就绪 → 终态判定：不可恢复则 notify + 跳转，否则重试
 		 */
 		__retryActivation() {
-			if (!this.currentSessionId || this.isNewTopic || this.__creatingTopic || this.__resetTransition) return;
+			if (this.isNewTopic || this.__creatingTopic) return;
 
-			// 阶段 1：数据未就绪，继续等待
 			if (!this.botsStore.fetched) return;
 
-			// 阶段 2：数据已就绪，做终态判定
 			const bots = this.botsStore.items;
-
-			// 无任何 bot
 			if (!bots.length) {
 				return this.__exitChat(this.$t('chat.botUnbound'));
 			}
@@ -490,35 +532,25 @@ export default {
 				return this.__retryTopicActivation(bots);
 			}
 
-			// --- session 模式 ---
-			// 运行时 bot 被解绑
-			const currentBotId = this.chatStore.botId;
-			if (currentBotId && !bots.some((b) => String(b.id) === currentBotId)) {
-				return this.__exitChat(this.$t('chat.botUnbound'));
+			// session 模式：检查路由中的 bot 是否仍存在
+			if (!this.routeBotId) return;
+			const botExists = bots.some((b) => String(b.id) === this.routeBotId);
+			if (!botExists) {
+				return this.__exitChat(this.$t('chat.botNotFound'));
 			}
 
-			// 当前 session 对应的 bot 检查
-			const session = this.sessionsStore.items.find(
-				(s) => s.sessionId === this.currentSessionId,
-			);
-			if (session) {
-				const ownerBot = bots.find((b) => String(b.id) === String(session.botId));
-				if (!ownerBot) {
-					return this.__exitChat(this.$t('chat.botUnbound'));
+			// agents 已加载时，检查路由中的 agent 是否存在
+			const agentEntry = this.agentsStore.byBot[this.routeBotId];
+			if (agentEntry?.fetched) {
+				const agentExists = agentEntry.agents.some((a) => a.id === this.routeAgentId);
+				if (!agentExists) {
+					return this.__exitChat(this.$t('chat.agentNotFound'));
 				}
 			}
-			else if (this.sessionsStore.items.length > 0) {
-				// sessions 已加载但找不到当前 session
-				return this.__exitChat(this.$t('chat.sessionNotFound'));
-			}
 
-			// 仍需要重试——传入 sessionKey 和 botId
+			// 需要重试（连接未就绪、加载中、有错误）
 			if (!this.chatStore.botId || this.chatStore.errorText || this.chatStore.loading) {
-				this.chatStore.activateSession(this.currentSessionId, {
-					botId: session?.botId,
-					sessionKey: session?.sessionKey,
-					force: true,
-				});
+				this.chatStore.activateSession(this.routeBotId, this.routeAgentId, { force: true });
 			}
 		},
 
@@ -603,7 +635,7 @@ export default {
 
 		async __loadMoreHistory() {
 			if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
-				if (this.chatStore.historyExhausted && !this.isTopicRoute) {
+				if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
 					this.showNoMoreHint = true;
 				}
 				return;
@@ -619,7 +651,7 @@ export default {
 				});
 			}
 			// 刚加载完最后一段历史后也显示提示
-			if (this.chatStore.historyExhausted && !this.isTopicRoute) {
+			if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
 				this.showNoMoreHint = true;
 			}
 		},

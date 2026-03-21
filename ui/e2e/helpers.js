@@ -17,7 +17,7 @@ export async function login(page) {
 
 // --- 导航 ---
 
-/** 从 topics 页导航到一个可用的 chat session，返回 sessionId（无可用 session 返回 null） */
+/** 从 topics 页导航到一个可用的 chat session，返回 { botId, agentId }（无可用 session 返回 null） */
 export async function navigateToChat(page) {
 	await page.goto('/topics');
 	const chatLink = page.locator('main a[href*="/chat/"]').first();
@@ -30,8 +30,9 @@ export async function navigateToChat(page) {
 	const href = await chatLink.getAttribute('href');
 	await chatLink.click();
 	await page.waitForURL(/\/chat\//, { timeout: 5000 });
-	const match = href?.match(/\/chat\/([^/?]+)/);
-	return match?.[1] ?? null;
+	const match = href?.match(/\/chat\/([^/?]+)\/([^/?]+)/);
+	if (!match) return null;
+	return { botId: match[1], agentId: match[2] };
 }
 
 /** 等待 chat 页面完全就绪（chat-root 可见 + textarea 可用） */

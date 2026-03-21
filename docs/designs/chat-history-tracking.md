@@ -388,17 +388,19 @@ activateSession(sessionId, { botId, sessionKey }) {
 
 ### 4.5 Agent 导航
 
+> 更新于 2026-03-21：路由已迁移到 `/chat/:botId/:agentId`，详见 `docs/decisions/session-navigation.md`。
+
 用户点击 agent 列表项时：
 
 ```
-1. 通过 chat.history({ sessionKey: "agent:<agentId>:main", limit: 1 })
-   获取 { sessionId }（当前 session 的 UUID）
-2. 导航到 /chat/<sessionId>
-3. ChatPage 从 sessionsStore 反查 sessionKey 和 botId
-4. 调用 chatStore.activateSession(sessionId, { botId, sessionKey })
+1. 导航到 /chat/<botId>/<agentId>
+2. ChatPage 从路由参数直接获取 botId 和 agentId
+3. sessionKey 由 agent:${agentId}:main 构造
+4. 调用 chatStore.activateSession(botId, agentId)
+5. activateSession 内部通过 loadMessages → chat.history 获取 currentSessionId（用于历史上翻）
 ```
 
-**路由保持不变**：`/chat/:sessionId`，sessionId 仍为 UUID。路由中不出现 sessionKey。
+**路由格式**：`/chat/:botId/:agentId`，使用稳定的 bot + agent 标识。sessionId 不出现在路由中。
 
 ### 4.6 历史懒加载
 
@@ -440,7 +442,13 @@ async __loadChatHistory() {
 
 ### 4.7 Session 被 Reset 后的处理
 
-如果用户正在对话时 session 被 OpenClaw 自动 reset（如 daily reset）：
+#### 用户主动 `/new` 或 `/reset`
+
+`__onChatEvent` 在 `loadMessages` 替换消息**之前**快照旧 session 状态（`prevSessionId` + `prevMessages`，过滤 `_local` 乐观消息）。`loadMessages` 完成后，若 `currentSessionId` 确实变化且旧消息非空，将旧消息作为 historySegment 直接追加到 `historySegments` 末尾（含去重）。
+
+这完全绕过了对服务端孤儿索引（`coclaw-chat-history.json`）即时可用的依赖，避免了 `session_start` 钩子异步磁盘写入与 UI 请求之间的竞态条件。ChatPage 侧仅异步 fire-and-forget 调用 `__loadChatHistory()` 刷新孤儿列表供后续上翻使用。
+
+#### OpenClaw 自动 reset（如 daily reset）
 
 - **发送消息不受影响**：`agent({ sessionKey })` 由 OpenClaw 自行解析到新 sessionId
 - **消息列表可能不连贯**：新消息出现在新 session 中，旧消息属于上一个 session
@@ -544,9 +552,9 @@ async __loadChatHistory() {
    - 调用 `coclaw.sessions.getById` 加载并 prepend
    - 插入分隔标记
 
-10. **Agent 导航调整**
-    - 点击 agent 时通过 `chat.history({ sessionKey, limit: 1 })` 获取 sessionId
-    - 导航到 `/chat/<sessionId>` 并传入 sessionKey
+10. **Agent 导航调整**（已实施，2026-03-21）
+    - 路由迁移到 `/chat/:botId/:agentId`
+    - 点击 agent 直接导航，sessionKey 由 agentId 构造
 
 ### Phase 3：清理
 

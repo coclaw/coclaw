@@ -45,7 +45,7 @@ const routes = [
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
-				path: 'chat/:sessionId',
+				path: 'chat/:botId/:agentId',
 				name: 'chat',
 				component: ChatPage,
 				meta: { requiresAuth: true, hideMobileNav: true },

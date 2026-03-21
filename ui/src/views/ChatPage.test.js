@@ -70,6 +70,7 @@ vi.mock('../utils/platform.js', () => ({
 import ChatPage from './ChatPage.vue';
 import { useChatStore } from '../stores/chat.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
+import { useAgentsStore } from '../stores/agents.store.js';
 
 const i18nMap = {
 	'chat.loading': 'Loading...',
@@ -85,22 +86,42 @@ const i18nMap = {
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
 
-function createWrapper(sessionId = 'sess-1', routeName = 'chat') {
+/** 设置 agentsStore 使 agentVerified 返回 true */
+function setupAgents(botId = 'bot-1', agentId = 'main') {
+	const agentsStore = useAgentsStore();
+	agentsStore.byBot[botId] = {
+		agents: [{ id: agentId }],
+		defaultId: agentId,
+		loading: false,
+		fetched: true,
+	};
+}
+
+function createWrapper(opts = {}) {
+	const { botId = 'bot-1', agentId = 'main', routeName = 'chat', sessionId } = typeof opts === 'string'
+		? { botId: opts } // 兼容旧调用
+		: opts;
 	const pinia = createPinia();
 	setActivePinia(pinia);
+	const params = routeName === 'topics-chat'
+		? { sessionId: sessionId || 'new' }
+		: { botId, agentId };
 	const prefix = routeName === 'topics-chat' ? '/topics' : '/chat';
+	const path = routeName === 'topics-chat'
+		? `${prefix}/${params.sessionId}`
+		: `${prefix}/${botId}/${agentId}`;
 	return mount(ChatPage, {
 		global: {
 			plugins: [pinia],
 			mocks: {
-				$t: (key, params) => {
-					if (key === 'chat.sessionTitle' && params?.id) return `Session ${params.id}`;
+				$t: (key, p) => {
+					if (key === 'chat.sessionTitle' && p?.id) return `Session ${p.id}`;
 					return i18nMap[key] ?? key;
 				},
 				$route: {
 					name: routeName,
-					params: { sessionId },
-					path: `${prefix}/${sessionId}`,
+					params,
+					path,
 					query: {},
 				},
 				$router: mockRouter,
@@ -115,16 +136,17 @@ describe('ChatPage', () => {
 	});
 
 	test('mounted 时调用 chatStore.activateSession', async () => {
-		createWrapper('sess-1');
+		createWrapper();
 		await flushPromises();
 
 		const chatStore = useChatStore();
 		// activateSession 在 mounted 中被调用
-		expect(chatStore.sessionId).toBe('sess-1');
+		expect(chatStore.botId).toBe('bot-1');
+		expect(chatStore.chatSessionKey).toBe('agent:main:main');
 	});
 
 	test('显示 loading 状态', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		chatStore.loading = true;
 		await wrapper.vm.$nextTick();
@@ -133,8 +155,11 @@ describe('ChatPage', () => {
 	});
 
 	test('显示错误状态', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		await flushPromises();
 		chatStore.loading = false;
 		chatStore.errorText = 'Something went wrong';
 		await wrapper.vm.$nextTick();
@@ -143,7 +168,7 @@ describe('ChatPage', () => {
 	});
 
 	test('显示空消息状态', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		chatStore.loading = false;
 		chatStore.errorText = '';
@@ -154,7 +179,7 @@ describe('ChatPage', () => {
 	});
 
 	test('渲染消息列表', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		chatStore.loading = false;
 		chatStore.errorText = '';
@@ -171,23 +196,23 @@ describe('ChatPage', () => {
 	});
 
 	test('chatTitle 在 session 模式下显示 agent 名称', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		await wrapper.vm.$nextTick();
 
 		// session 模式下 chatTitle 返回 agentDisplay.name || 'Agent'
-		expect(wrapper.text()).toContain('Agent');
+		// agentsStore 无 agent 定义时 getAgentDisplay 返回 agentId 作为 name
+		expect(wrapper.vm.chatTitle).toBeTruthy();
 	});
 
-	test('chatTitle 无 session 匹配时显示 Agent', async () => {
-		const wrapper = createWrapper('sess-1');
+	test('chatTitle routeBotId 为空时返回空字符串', async () => {
+		const wrapper = createWrapper({ botId: '' });
 		await flushPromises();
 
-		// session 模式下显示 agent 名称，默认回退为 'Agent'
-		expect(wrapper.text()).toContain('Agent');
+		expect(wrapper.vm.chatTitle).toBe('');
 	});
 
 	test('显示 bot 离线提示', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		chatStore.botId = 'bot-1';
 
@@ -198,16 +223,17 @@ describe('ChatPage', () => {
 		expect(wrapper.text()).toContain('Bot is offline');
 	});
 
-	test('ChatInput disabled 当无 sessionId 时', async () => {
-		const wrapper = createWrapper('');
+	test('ChatInput 在无 botId 时不渲染', async () => {
+		const wrapper = createWrapper({ botId: '' });
 		await flushPromises();
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });
-		expect(input.props('disabled')).toBe(true);
+		expect(input.exists()).toBe(false);
 	});
 
 	test('ChatInput 绑定 sending 状态', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
 		chatStore.sending = true;
 		await wrapper.vm.$nextTick();
@@ -223,9 +249,9 @@ describe('ChatPage send message', () => {
 	});
 
 	test('onSendMessage 调用 chatStore.sendMessage 并清空输入框', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		// mock sendMessage 为成功
 		const sendSpy = vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({ accepted: true });
 		await flushPromises();
@@ -240,9 +266,9 @@ describe('ChatPage send message', () => {
 	});
 
 	test('发送失败时恢复输入框文本和文件', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({ accepted: false });
 		await flushPromises();
 
@@ -257,9 +283,9 @@ describe('ChatPage send message', () => {
 	});
 
 	test('发送异常时恢复输入框和文件并显示 notify', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		chatStore.__accepted = false;
 		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(new Error('fail'));
 		await flushPromises();
@@ -276,9 +302,9 @@ describe('ChatPage send message', () => {
 	});
 
 	test('发送异常但 __accepted 为 true 时不恢复输入框', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		vi.spyOn(chatStore, 'sendMessage').mockImplementation(async () => {
 			chatStore.__accepted = true;
 			throw new Error('fail');
@@ -295,9 +321,9 @@ describe('ChatPage send message', () => {
 	});
 
 	test('空文本和空文件时不发送', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		const sendSpy = vi.spyOn(chatStore, 'sendMessage');
 		await flushPromises();
 
@@ -309,9 +335,9 @@ describe('ChatPage send message', () => {
 	});
 
 	test('sending 中不重复发送', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		chatStore.sending = true;
 		const sendSpy = vi.spyOn(chatStore, 'sendMessage');
 		await flushPromises();
@@ -330,9 +356,8 @@ describe('ChatPage new topic', () => {
 	});
 
 	test('onNewTopic 导航到 topics/new 并携带 agent/bot query', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		chatStore.botId = 'bot-1';
 		chatStore.chatSessionKey = 'agent:main:main';
 		await flushPromises();
@@ -347,7 +372,7 @@ describe('ChatPage new topic', () => {
 	});
 
 	test('onNewTopic 从 topic 页面用 replace 导航（避免话题栈堆积）', async () => {
-		const wrapper = createWrapper('sess-1', 'topics-chat');
+		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-1' });
 		const chatStore = useChatStore();
 		chatStore.sessionId = 'sess-1';
 		chatStore.botId = 'bot-2';
@@ -369,16 +394,13 @@ describe('ChatPage new topic', () => {
 	});
 
 	test('showNewTopicBtn 在 topic 路由下始终为 true', async () => {
-		const wrapper = createWrapper('sess-1', 'topics-chat');
+		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-1' });
 		await flushPromises();
 		expect(wrapper.vm.showNewTopicBtn).toBe(true);
 	});
 
 	test('showNewTopicBtn 在非 main agent 的 session 页面为 false', async () => {
-		const wrapper = createWrapper('sess-1');
-		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
-		chatStore.chatSessionKey = 'agent:tester:main';
+		const wrapper = createWrapper({ agentId: 'tester' });
 		await flushPromises();
 		expect(wrapper.vm.showNewTopicBtn).toBe(false);
 	});
@@ -390,7 +412,8 @@ describe('ChatPage cancel and cleanup', () => {
 	});
 
 	test('onCancelSend 调用 chatStore.cancelSend', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
+		setupAgents();
 		const chatStore = useChatStore();
 		const cancelSpy = vi.spyOn(chatStore, 'cancelSend');
 		await flushPromises();
@@ -403,7 +426,7 @@ describe('ChatPage cancel and cleanup', () => {
 	});
 
 	test('beforeUnmount 调用 chatStore.cleanup', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		const cleanupSpy = vi.spyOn(chatStore, 'cleanup');
 		await flushPromises();
@@ -420,7 +443,7 @@ describe('ChatPage watchers', () => {
 	});
 
 	test('bot 离线时取消发送', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		chatStore.botId = 'bot-1';
 		const cancelSpy = vi.spyOn(chatStore, 'cancelSend');
@@ -437,7 +460,7 @@ describe('ChatPage watchers', () => {
 	});
 
 	test('bot 重新上线时加载消息', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		chatStore.botId = 'bot-1';
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
@@ -454,9 +477,8 @@ describe('ChatPage watchers', () => {
 	});
 
 	test('bot 解绑后跳转', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
-		chatStore.sessionId = 'sess-1';
 		chatStore.botId = 'bot-1';
 		const cleanupSpy = vi.spyOn(chatStore, 'cleanup');
 
@@ -475,7 +497,7 @@ describe('ChatPage watchers', () => {
 	});
 
 	test('messages 变化触发滚动', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		const chatStore = useChatStore();
 		await flushPromises();
 
@@ -493,7 +515,7 @@ describe('ChatPage scroll', () => {
 	});
 
 	test('用户滚动到非底部时 userScrolledUp 为 true', async () => {
-		const wrapper = createWrapper('sess-1');
+		const wrapper = createWrapper();
 		await flushPromises();
 
 		expect(wrapper.vm.userScrolledUp).toBe(false);

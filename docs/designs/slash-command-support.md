@@ -245,7 +245,9 @@ __onChatEvent(evt) {
   // 仅处理匹配 __slashCommandRunId 的事件
   if (evt.state === 'final') {
     cleanup → resolve
-    // /new|/reset → loadMessages({ silent: true }) + loadAllSessions() + __loadChatHistory()
+    // /new|/reset → 先快照旧 session（prevSessionId + prevMessages），
+    //               再 loadMessages({ silent: true })；
+    //               若 session 确实轮换，将旧消息追加为 historySegment
     // /compact    → loadMessages({ silent: true })
     // /help 等   → 本地追加 evt.message 为 assistant 消息
   }
@@ -259,7 +261,7 @@ __onChatEvent(evt) {
 
 | 命令 | event:agent | event:chat final | 后处理 |
 |------|:-----------:|:----------------:|--------|
-| `/new` | 有（greeting agent run），但不监听 | 有 | `loadMessages({ silent: true })` + `loadAllSessions()` + `__loadChatHistory()` |
+| `/new` | 有（greeting agent run），但不监听 | 有 | 快照旧 session → `loadMessages({ silent: true })` → 本地追加旧消息为 `historySegment`；ChatPage 异步 fire-and-forget `__loadChatHistory()` |
 | `/compact` | 无 | 有（结果消息） | `loadMessages({ silent: true })` |
 | `/help` | 无 | 有（帮助文本） | 本地追加 `evt.message`，无需 reload |
 
@@ -276,12 +278,16 @@ __onChatEvent(evt) {
 2. ACK: { runId, status: "started" }
 3. OpenClaw: reset session（新 sessionId 生成）+ greeting agent run
 4. event:chat: state: "final"
-5. __onChatEvent → loadMessages({ silent: true })
-   → sessions.get 返回新 session 的消息
-   → chat.history 返回新 sessionId → currentSessionId 更新
-6. loadAllSessions() 刷新侧边栏
-7. __loadChatHistory() 刷新孤儿 session 列表
+5. __onChatEvent：
+   a. 快照旧 session（prevSessionId + prevMessages，过滤 _local 乐观消息）
+   b. loadMessages({ silent: true })
+      → sessions.get 返回新 session 的消息
+      → chat.history 返回新 sessionId → currentSessionId 更新
+   c. 若 currentSessionId 确实变化且旧消息非空 → 追加为 historySegment（含去重）
+6. ChatPage.onSlashCommand：异步 fire-and-forget __loadChatHistory() 刷新孤儿列表
 ```
+
+> **设计要点**：旧 session 消息由客户端本地保存为 historySegment，不依赖服务端 `session_start` 钩子的异步磁盘写入（`coclaw-chat-history.json`）即时可见性。这避免了 WSL2 / 高延迟磁盘环境下的竞态条件。
 
 ### 6.7 清理与安全
 

@@ -249,6 +249,31 @@ describe('updateBotOnline', () => {
 		expect(() => store.updateBotOnline('999', false)).not.toThrow();
 		expect(store.items[0].online).toBe(true);
 	});
+
+	test('bot 离线时清理 agents 缓存', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', online: true }]);
+
+		const agentsStore = useAgentsStore();
+		agentsStore.byBot['1'] = { agents: [{ id: 'main' }], defaultId: 'main', loading: false, fetched: true };
+
+		store.updateBotOnline('1', false);
+
+		expect(store.items[0].online).toBe(false);
+		expect(agentsStore.byBot['1']).toBeUndefined();
+	});
+
+	test('bot 上线时不清理 agents 缓存', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', online: false }]);
+
+		const agentsStore = useAgentsStore();
+		agentsStore.byBot['1'] = { agents: [{ id: 'main' }], defaultId: 'main', loading: false, fetched: true };
+
+		store.updateBotOnline('1', true);
+
+		expect(agentsStore.byBot['1']).toBeDefined();
+	});
 });
 
 describe('loadBots', () => {

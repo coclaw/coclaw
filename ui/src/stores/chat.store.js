@@ -8,8 +8,6 @@ import { defineStore } from 'pinia';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { fileToBase64 } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
-import { useSessionsStore } from './sessions.store.js';
-import { useBotsStore } from './bots.store.js';
 
 export const useChatStore = defineStore('chat', {
 	state: () => ({
@@ -61,56 +59,47 @@ export const useChatStore = defineStore('chat', {
 	},
 	actions: {
 		/**
-		 * 激活（切换到）指定 session，加载消息
-		 * @param {string} sessionId
+		 * 激活指定 bot 的指定 agent 的 main session
+		 * @param {string} botId
+		 * @param {string} agentId
 		 * @param {object} [opts]
-		 * @param {boolean} [opts.force] - 强制重新激活（跳过 id 去重）
-		 * @param {string} [opts.botId] - 明确指定 botId
-		 * @param {string} [opts.sessionKey] - 明确指定 sessionKey
+		 * @param {boolean} [opts.force] - 强制重新激活
 		 */
-		async activateSession(sessionId, { force = false, botId, sessionKey } = {}) {
-			const id = typeof sessionId === 'string' ? sessionId.trim() : '';
-			if (!force && id === this.sessionId && !this.topicMode) return;
-			console.debug('[chat] activateSession id=%s force=%s sessionKey=%s', id, force, sessionKey);
-			// 切换前清理上一个 session 的 streaming
+		async activateSession(botId, agentId, { force = false } = {}) {
+			const bid = String(botId || '').trim();
+			const aid = String(agentId || 'main').trim();
+			const sessionKey = `agent:${aid}:main`;
+
+			if (!force && bid === this.botId && sessionKey === this.chatSessionKey && !this.topicMode) return;
+
+			console.debug('[chat] activateSession botId=%s agentId=%s force=%s', bid, aid, force);
 			this.__cleanupStreaming();
-			this.sessionId = id;
+			this.botId = bid;
+			this.chatSessionKey = sessionKey;
+			this.sessionId = '';
 			this.messages = [];
 			this.errorText = '';
 			this.sending = false;
 			this.topicMode = false;
 			this.topicAgentId = '';
-			this.chatSessionKey = sessionKey ?? '';
 			this.currentSessionId = null;
-			// 重置历史状态
 			this.historySessionIds = [];
 			this.historySegments = [];
 			this.historyLoading = false;
 			this.historyExhausted = false;
 			this.__historyLoadedCount = 0;
-			// 解析 botId
-			if (botId) {
-				this.botId = String(botId);
-			}
-			else {
-				this.botId = this.__resolveBotId(id);
-			}
-			console.debug('[chat] resolved botId=%s for session=%s', this.botId, id);
-			if (!id) return;
-			// botId 尚未解析（bots 未就绪）→ 保持 loading，等待 retry
-			if (!this.botId) {
-				console.debug('[chat] activateSession: awaiting bots, stay loading');
+
+			if (!bid) return;
+
+			// botId 对应的连接尚未就绪 → 保持 loading，等待 retry
+			const conn = this.__getConnection();
+			if (!conn || conn.state !== 'connected') {
+				console.debug('[chat] activateSession: connection not ready, stay loading');
 				this.loading = true;
 				return;
 			}
-			// chatSessionKey 尚未就绪（sessions 未加载）→ 保持 loading，等待 retry
-			if (!this.chatSessionKey) {
-				console.debug('[chat] activateSession: awaiting sessionKey, stay loading');
-				this.loading = true;
-				return;
-			}
+
 			await this.loadMessages();
-			// fire-and-forget：加载孤儿 session 链
 			this.__loadChatHistory();
 		},
 
@@ -164,7 +153,7 @@ export const useChatStore = defineStore('chat', {
 			if (this.topicMode) {
 				return this.__loadTopicMessages({ silent });
 			}
-			if (!this.sessionId || !this.chatSessionKey) {
+			if (!this.chatSessionKey) {
 				this.messages = [];
 				this.errorText = '';
 				this.loading = false;
@@ -283,7 +272,9 @@ export const useChatStore = defineStore('chat', {
 		 * @throws {Error} 发送失败时抛出
 		 */
 		async sendMessage(text, files = []) {
-			if (!this.sessionId || this.sending) return { accepted: false };
+			if (this.sending) return { accepted: false };
+			if (!this.topicMode && !this.chatSessionKey) return { accepted: false };
+			if (this.topicMode && !this.sessionId) return { accepted: false };
 
 			const conn = this.__getConnection();
 			if (!conn || conn.state !== 'connected') {
@@ -354,13 +345,8 @@ export const useChatStore = defineStore('chat', {
 				// chat 模式用 sessionKey，topic 模式用 sessionId
 				if (this.topicMode) {
 					agentParams.sessionId = this.sessionId;
-				}
-				else if (this.chatSessionKey) {
+				} else {
 					agentParams.sessionKey = this.chatSessionKey;
-				}
-				else {
-					// chatSessionKey 尚未就绪时 fallback 到 sessionId
-					agentParams.sessionId = this.sessionId;
 				}
 
 				// 超时 / 取消 reject 句柄
@@ -510,7 +496,6 @@ export const useChatStore = defineStore('chat', {
 				});
 				const newId = result?.entry?.sessionId;
 				if (!newId) throw new Error('Failed to resolve new session');
-				await useSessionsStore().loadAllSessions();
 				return newId;
 			}
 			finally {
@@ -609,9 +594,23 @@ export const useChatStore = defineStore('chat', {
 			if (evt.state === 'final') {
 				this.__cleanupSlashCommand(conn);
 				if (/^\/(new|reset)\b/i.test(cmd)) {
-					// await loadMessages 以确保 currentSessionId 已更新，
-					// 调用方据此先同步路由参数，再刷新 sessions（避免 watcher 竞态）
-					this.loadMessages({ silent: true }).then(() => resolve?.());
+					// 保存旧 session 状态（loadMessages 会替换 messages 和 currentSessionId）
+					const prevSessionId = this.currentSessionId;
+					const prevMessages = this.messages.filter(m => !m._local);
+
+					this.loadMessages({ silent: true }).then(() => {
+						// currentSessionId 变化 = 确实发生了 session 轮换
+						if (prevSessionId && this.currentSessionId !== prevSessionId && prevMessages.length > 0) {
+							if (!this.historySegments.some(s => s.sessionId === prevSessionId)) {
+								// 追加到末尾（最近的孤儿紧邻当前 session）
+								this.historySegments = [
+									...this.historySegments,
+									{ sessionId: prevSessionId, archivedAt: Date.now(), messages: prevMessages },
+								];
+							}
+						}
+						resolve?.();
+					});
 					return;
 				}
 				else if (/^\/compact\b/i.test(cmd)) {
@@ -721,6 +720,17 @@ export const useChatStore = defineStore('chat', {
 		 */
 		async loadNextHistorySession() {
 			if (this.topicMode || this.historyExhausted || this.historyLoading) return false;
+
+			// 跳过已在 segments 中的 session（/new 后 historySessionIds 刷新，旧 segments 可能仍在）
+			while (this.__historyLoadedCount < this.historySessionIds.length) {
+				const candidate = this.historySessionIds[this.__historyLoadedCount];
+				if (this.historySegments.some((s) => s.sessionId === candidate.sessionId)) {
+					this.__historyLoadedCount++;
+				} else {
+					break;
+				}
+			}
+
 			if (this.__historyLoadedCount >= this.historySessionIds.length) {
 				this.historyExhausted = true;
 				return false;
@@ -873,16 +883,6 @@ export const useChatStore = defineStore('chat', {
 			return parts.length >= 2 ? parts[1] : 'main';
 		},
 
-		__resolveBotId(sessionId) {
-			if (!sessionId) return '';
-			const session = useSessionsStore().items.find((s) => s.sessionId === sessionId);
-			if (session?.botId) return String(session.botId);
-			// 回退到第一个在线 bot
-			const bots = useBotsStore().items;
-			const online = bots.find((b) => b.online);
-			return online ? String(online.id) : (bots[0] ? String(bots[0].id) : '');
-		},
-
 		__getConnection() {
 			if (!this.botId) return null;
 			return useBotConnections().get(this.botId) ?? null;
@@ -892,30 +892,8 @@ export const useChatStore = defineStore('chat', {
 			const conn = this.__getConnection();
 			if (!conn || conn.state !== 'connected') return false;
 
-			// topic 模式：直接重载消息
-			if (this.topicMode) {
-				try {
-					await this.loadMessages({ silent: true });
-					return true;
-				}
-				catch (err) {
-					console.warn('[chat] topic reconcile failed:', err);
-					return false;
-				}
-			}
-
 			try {
-				// chatSessionKey 可能尚未就绪（首次加载时 sessionsStore 未同步），尝试补全
-				if (!this.chatSessionKey && this.sessionId) {
-					const session = useSessionsStore().items.find((s) => s.sessionId === this.sessionId);
-					if (session?.sessionKey) {
-						this.chatSessionKey = session.sessionKey;
-					}
-				}
-				// 静默重载消息，用持久化的完整数据替换流式本地条目
 				await this.loadMessages({ silent: true });
-				// 刷新 sessionsStore（session 可能已轮转）
-				useSessionsStore().loadAllSessions();
 				return true;
 			}
 			catch (err) {

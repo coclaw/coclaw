@@ -69,6 +69,10 @@ export const useBotsStore = defineStore('bots', {
 					console.debug('[bots] online %s→%s id=%s', prev, next, id);
 				}
 				this.items[index] = { ...this.items[index], online: next };
+				// bot 离线时清理 agents 缓存（agents 来自 WS RPC，离线后不可靠）
+				if (!next) {
+					useAgentsStore().removeByBot(id);
+				}
 			}
 		},
 		removeBotById(botId) {

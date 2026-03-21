@@ -98,7 +98,6 @@
 <script>
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
-import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import TopicItemActions from './TopicItemActions.vue';
 import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
@@ -129,7 +128,6 @@ export default {
 			defaultBotAvatar,
 			agentsStore: null,
 			botsStore: null,
-			sessionsStore: null,
 			topicsStore: null,
 		};
 	},
@@ -138,15 +136,10 @@ export default {
 		activeAgentKey() {
 			const route = this.$route;
 			if (!route) return '';
-			// 仅在 session 路由（用户点击 agent 进入 main session）时高亮 agent
-			// topic 路由下不高亮 agent，由 topic 列表的 currentPath 匹配负责高亮
 			if (route.name === 'chat') {
-				const sid = route.params?.sessionId;
-				const session = this.sessionsStore?.items?.find((s) => s.sessionId === sid);
-				if (session?.sessionKey) {
-					const agentId = this.agentsStore?.parseAgentId(session.sessionKey);
-					if (agentId) return `${session.botId}:${agentId}`;
-				}
+				const botId = route.params?.botId;
+				const agentId = route.params?.agentId;
+				if (botId && agentId) return `${botId}:${agentId}`;
 			}
 			return '';
 		},
@@ -160,47 +153,39 @@ export default {
 			return items;
 		},
 		agentItems() {
-			const allAgents = this.agentsStore?.allAgentItems ?? [];
-			const sessions = this.sessionsStore?.items ?? [];
+			const bots = this.botsStore?.items ?? [];
 			const display = this.agentsStore?.getAgentDisplay;
-			if (!allAgents.length) {
-				// agents 未加载时 fallback 到 bot 列表
-				const bots = this.botsStore?.items ?? [];
-				return bots.map((b) => {
-					const mainSession = sessions.find(
-						(s) => s.botId === b.id && /^agent:[^:]+:main$/.test(s.sessionKey),
-					);
-					return {
+			const result = [];
+			for (const b of bots) {
+				const agents = this.agentsStore?.getAgentsByBot(b.id) ?? [];
+				if (agents.length) {
+					// agents 已加载：展开为详细列表
+					for (const agent of agents) {
+						const d = display?.(b.id, agent.id) ?? {};
+						result.push({
+							id: `${b.id}:${agent.id}`,
+							label: d.name || agent.id,
+							avatarUrl: d.avatarUrl,
+							emoji: d.emoji,
+							online: Boolean(b.online),
+							active: this.activeAgentKey === `${b.id}:${agent.id}`,
+							to: { name: 'chat', params: { botId: String(b.id), agentId: agent.id } },
+						});
+					}
+				} else {
+					// agents 未加载（离线/连接中）：以 bot 身份兜底
+					result.push({
 						id: b.id,
 						label: b.name || 'OpenClaw',
 						avatarUrl: null,
 						emoji: null,
 						online: Boolean(b.online),
 						active: this.activeAgentKey === `${b.id}:main`,
-						to: mainSession
-							? { name: 'chat', params: { sessionId: mainSession.sessionId } }
-							: '/home',
-					};
-				});
+						to: { name: 'chat', params: { botId: String(b.id), agentId: 'main' } },
+					});
+				}
 			}
-			return allAgents.map((agent) => {
-				const mainSessionKey = `agent:${agent.id}:main`;
-				const session = sessions.find(
-					(s) => s.botId === agent.botId && s.sessionKey === mainSessionKey,
-				);
-				const d = display?.(agent.botId, agent.id) ?? {};
-				return {
-					id: `${agent.botId}:${agent.id}`,
-					label: d.name || agent.id,
-					avatarUrl: d.avatarUrl,
-					emoji: d.emoji,
-					online: agent.botOnline,
-					active: this.activeAgentKey === `${agent.botId}:${agent.id}`,
-					to: session
-						? { name: 'chat', params: { sessionId: session.sessionId } }
-						: '/home',
-				};
-			});
+			return result;
 		},
 		topicItems() {
 			const items = this.topicsStore?.items ?? [];
@@ -230,7 +215,6 @@ export default {
 	mounted() {
 		this.agentsStore = useAgentsStore();
 		this.botsStore = useBotsStore();
-		this.sessionsStore = useSessionsStore();
 		this.topicsStore = useTopicsStore();
 		this.loadAllData();
 	},
@@ -239,7 +223,6 @@ export default {
 			deep: true,
 			async handler() {
 				await this.agentsStore?.loadAllAgents();
-				this.sessionsStore.loadAllSessions();
 				this.topicsStore.loadAllTopics();
 			},
 		},
@@ -253,10 +236,7 @@ export default {
 				this.botsStore?.setBots([]);
 			}
 			await this.agentsStore?.loadAllAgents();
-			await Promise.all([
-				this.sessionsStore.loadAllSessions(),
-				this.topicsStore.loadAllTopics(),
-			]);
+			await this.topicsStore.loadAllTopics();
 		},
 		onTopicDeleted(topicId) {
 			// 如果当前正在查看被删除的 topic，导航回 topic 列表

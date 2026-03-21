@@ -4,7 +4,6 @@ import { vi } from 'vitest';
 
 import MainList from './MainList.vue';
 import { useBotsStore } from '../stores/bots.store.js';
-import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 
 vi.mock('../services/bots.api.js', () => ({
@@ -72,7 +71,9 @@ function createWrapper(props = {}) {
 					resolve: (to) => ({
 						path: typeof to === 'string'
 							? to
-							: `/${to.name === 'topics-chat' ? 'topics' : 'chat'}/${to.params?.sessionId ?? ''}`,
+							: to.name === 'topics-chat'
+								? `/topics/${to.params?.sessionId ?? ''}`
+								: `/chat/${to.params?.botId ?? ''}/${to.params?.agentId ?? ''}`,
 					}),
 				},
 			},
@@ -173,7 +174,7 @@ test('topic items should navigate to topics-chat route', async () => {
 	expect(items[0].to).toEqual({ name: 'topics-chat', params: { sessionId: 't1' } });
 });
 
-test('bot item should navigate to agent:main:main session when available', async () => {
+test('bot item should navigate to chat with botId/agentId params', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
@@ -181,17 +182,11 @@ test('bot item should navigate to agent:main:main session when available', async
 	botsStore.setBots([{ id: 'b1', name: 'MyBot', online: true }]);
 	await wrapper.vm.$nextTick();
 
-	const sessionsStore = useSessionsStore();
-	sessionsStore.setSessions([
-		{ sessionId: 'sess-main', sessionKey: 'agent:main:main', title: 'Main', indexed: true, botId: 'b1' },
-	]);
-	await wrapper.vm.$nextTick();
-
 	const agentItem = wrapper.vm.agentItems[0];
-	expect(agentItem.to).toEqual({ name: 'chat', params: { sessionId: 'sess-main' } });
+	expect(agentItem.to).toEqual({ name: 'chat', params: { botId: 'b1', agentId: 'main' } });
 });
 
-test('bot item should fallback to /chat when no agent:main:main session', async () => {
+test('bot item always navigates to chat route (no fallback needed)', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
@@ -199,14 +194,8 @@ test('bot item should fallback to /chat when no agent:main:main session', async 
 	botsStore.setBots([{ id: 'b1', name: 'MyBot', online: true }]);
 	await wrapper.vm.$nextTick();
 
-	const sessionsStore = useSessionsStore();
-	sessionsStore.setSessions([
-		{ sessionId: 'sess-other', sessionKey: 'agent:main:side', title: 'Side', indexed: true, botId: 'b1' },
-	]);
-	await wrapper.vm.$nextTick();
-
 	const agentItem = wrapper.vm.agentItems[0];
-	expect(agentItem.to).toBe('/home');
+	expect(agentItem.to).toEqual({ name: 'chat', params: { botId: 'b1', agentId: 'main' } });
 });
 
 test('topic with title should display the title', async () => {
@@ -256,12 +245,6 @@ test('agent item should NOT be active on topic route', async () => {
 	botsStore.setBots([{ id: 'b1', name: 'Bot', online: true }]);
 	await wrapper.vm.$nextTick();
 
-	const sessionsStore = useSessionsStore();
-	sessionsStore.setSessions([
-		{ sessionId: 'sess-main', sessionKey: 'agent:main:main', title: 'Main', indexed: true, botId: 'b1' },
-	]);
-	await wrapper.vm.$nextTick();
-
 	// 在 topic 路由下，agent item 不应被高亮
 	const agentItem = wrapper.vm.agentItems[0];
 	expect(agentItem.active).toBe(false);
@@ -271,14 +254,14 @@ test('agent item should be active on main session route', async () => {
 	const pinia = createPinia();
 	setActivePinia(pinia);
 	const wrapper = mount(MainList, {
-		props: { currentPath: '/chat/sess-main' },
+		props: { currentPath: '/chat/b1/main' },
 		global: {
 			plugins: [pinia],
 			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, TopicItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addBot': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
-				$route: { name: 'chat', params: { sessionId: 'sess-main' }, query: {} },
-				$router: { resolve: (to) => ({ path: typeof to === 'string' ? to : `/chat/${to.params?.sessionId ?? ''}` }) },
+				$route: { name: 'chat', params: { botId: 'b1', agentId: 'main' }, query: {} },
+				$router: { resolve: (to) => ({ path: typeof to === 'string' ? to : `/chat/${to.params?.botId ?? ''}/${to.params?.agentId ?? ''}` }) },
 			},
 		},
 	});
@@ -286,12 +269,6 @@ test('agent item should be active on main session route', async () => {
 
 	const botsStore = useBotsStore();
 	botsStore.setBots([{ id: 'b1', name: 'Bot', online: true }]);
-	await wrapper.vm.$nextTick();
-
-	const sessionsStore = useSessionsStore();
-	sessionsStore.setSessions([
-		{ sessionId: 'sess-main', sessionKey: 'agent:main:main', title: 'Main', indexed: true, botId: 'b1' },
-	]);
 	await wrapper.vm.$nextTick();
 
 	// 在 main session 路由下，agent item 应被高亮

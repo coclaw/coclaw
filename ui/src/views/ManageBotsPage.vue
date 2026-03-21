@@ -88,7 +88,6 @@ import { useNotify } from '../composables/use-notify.js';
 import { unbindBotByUser } from '../services/bots.api.js';
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
-import { useSessionsStore } from '../stores/sessions.store.js';
 
 export default {
 	name: 'ManageBotsPage',
@@ -101,7 +100,6 @@ export default {
 			unbindingId: '',
 			agentsStore: null,
 			botsStore: null,
-			sessionsStore: null,
 		};
 	},
 	computed: {
@@ -112,7 +110,6 @@ export default {
 	async mounted() {
 		this.agentsStore = useAgentsStore();
 		this.botsStore = useBotsStore();
-		this.sessionsStore = useSessionsStore();
 		await this.loadBots();
 	},
 	methods: {
@@ -140,24 +137,16 @@ export default {
 			if (this.botsStore?.pluginVersionOk[String(botId)] === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 			}
-			const mainSessionKey = `agent:${agentId}:main`;
-			const sessions = this.sessionsStore?.items ?? [];
-			const session = sessions.find(
-				(s) => String(s.botId) === String(botId) && s.sessionKey === mainSessionKey,
-			);
-			if (session?.sessionId) {
-				this.$router.push({ name: 'chat', params: { sessionId: session.sessionId } });
-			}
-			else {
-				this.notify.warning(this.$t('agents.sessionNotReady'));
-			}
+			this.$router.push({
+				name: 'chat',
+				params: { botId: String(botId), agentId },
+			});
 		},
 		async loadBots() {
 			this.loading = true;
 			try {
 				await this.botsStore?.loadBots();
 				await this.agentsStore?.loadAllAgents();
-				await this.sessionsStore?.loadAllSessions();
 			}
 			catch (err) {
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.loadFailed'));

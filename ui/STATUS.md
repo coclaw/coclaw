@@ -1,5 +1,13 @@
 # UI Workspace Status
 
+## 2026-03-21
+- **修复 `/new` 斜杠命令后旧 session 内容丢失**：
+  - **根因**：`/new` 触发 session 轮换后，`loadMessages` 用新 session 消息替换 `this.messages`，旧消息丢失。依赖服务端 `session_start` 钩子异步写入 `coclaw-chat-history.json` 的即时可见性不可靠（竞态条件）
+  - **修复**（`chat.store.js`）：`__onChatEvent` 在 `loadMessages` 之前快照旧 session 状态，完成后若 sessionId 确实变化则将旧消息本地追加为 `historySegment`，绕过服务端异步写入依赖
+  - **修复**（`ChatPage.vue`）：`onSlashCommand` 移除 `await loadNextHistorySession()`，改为 fire-and-forget `__loadChatHistory()` 异步刷新孤儿列表
+  - 新增 5 个单元测试覆盖各边界情况（session 未变化、消息为空、连续 `/new` 去重、`_local` 过滤）
+  - 同步更新 `docs/designs/slash-command-support.md`、`docs/designs/chat-history-tracking.md`
+
 ## 2026-03-17
 - **Topic 管理功能（UI 侧）**：
   - 新增 `topics.store.js`：管理用户主动创建的独立话题（Topic），通过 `coclaw.topics.*` RPC 与插件交互
