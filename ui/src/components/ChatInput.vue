@@ -224,7 +224,7 @@ export default {
 	},
 	computed: {
 		isTouchDevice() {
-			return this.envStore.isTouch;
+			return this.envStore.isTouch && !this.envStore.canHover;
 		},
 		canSend() {
 			const hasText = !!(this.modelValue && this.modelValue.trim());
