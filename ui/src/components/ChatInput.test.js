@@ -101,10 +101,11 @@ describe('ChatInput', () => {
 	});
 
 	test('Enter on touch device does not trigger send', async () => {
-		// 模拟触屏设备：(pointer: coarse) → true
+		// 模拟纯触屏设备：pointer:coarse + hover:none → isTouchDevice=true
 		const origMM = window.matchMedia;
 		window.matchMedia = vi.fn((query) => ({
 			matches: query === '(pointer: coarse)' || query === '(any-pointer: coarse)',
+			// (hover: hover) 返回 false → canHover=false → 纯触屏
 			media: query,
 			addEventListener: vi.fn(),
 			removeEventListener: vi.fn(),
@@ -135,6 +136,48 @@ describe('ChatInput', () => {
 			await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
 			expect(wrapper.emitted('send')).toBeFalsy();
 		}
+
+		window.matchMedia = origMM;
+	});
+
+	test('Enter on touch laptop triggers send (isTouch=true, canHover=true)', async () => {
+		// 模拟触控笔记本：pointer:coarse + hover:hover → isTouchDevice=false
+		const origMM = window.matchMedia;
+		window.matchMedia = vi.fn((query) => ({
+			matches: query === '(pointer: coarse)'
+				|| query === '(any-pointer: coarse)'
+				|| query === '(hover: hover)',
+			media: query,
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			addListener: vi.fn(),
+			removeListener: vi.fn(),
+			dispatchEvent: vi.fn(),
+		}));
+
+		const pinia = createPinia();
+		setActivePinia(pinia);
+
+		const wrapper = mount(ChatInput, {
+			props: { modelValue: 'hello', sending: false, disabled: false },
+			global: {
+				plugins: [pinia],
+				stubs: {
+					UTextarea: UTextareaStub,
+					UButton: UButtonStub,
+					UIcon: UIconStub,
+					TouchSpeakOverlay: true,
+				},
+				mocks: { $t: (key) => key },
+			},
+		});
+
+		// isTouchDevice 应为 false（触控笔记本走桌面分支）
+		expect(wrapper.vm.isTouchDevice).toBe(false);
+
+		const textarea = wrapper.find('textarea');
+		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false, isComposing: false });
+		expect(wrapper.emitted('send')).toBeTruthy();
 
 		window.matchMedia = origMM;
 	});
