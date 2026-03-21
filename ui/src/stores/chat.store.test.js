@@ -1369,10 +1369,15 @@ describe('useChatStore', () => {
 			expect(store.streamingRunId).toBeNull();
 		});
 
-		test('lifecycle error：结算 agent，清理 streaming，sending 置 false', () => {
+		test('lifecycle error：结算 agent，clearing streaming flags，sending 置 false', () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
+				return Promise.resolve(null);
+			});
 			mockConnections.set('1', conn);
 
 			const store = useChatStore();
@@ -1389,8 +1394,61 @@ describe('useChatStore', () => {
 
 			expect(store.__agentSettled).toBe(true);
 			expect(store.sending).toBe(false);
-			// 本地 streaming 条目被清理
-			expect(store.messages.some((m) => m._local)).toBe(false);
+			expect(store.streamingRunId).toBeNull();
+		});
+
+		test('lifecycle error：不删除本地消息', () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.streamingRunId = 'run-1';
+			store.sending = true;
+			store.chatSessionKey = 'agent:main:main';
+			store.messages = [
+				{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
+				{ id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+
+			store.__onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
+
+			// 本地消息不应被删除（由 __reconcileMessages 从服务端拉取后合并）
+			expect(store.messages).toHaveLength(2);
+		});
+
+		test('lifecycle error：调用 __reconcileMessages', () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.streamingRunId = 'run-1';
+			store.sending = true;
+			store.chatSessionKey = 'agent:main:main';
+			store.messages = [];
+
+			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
+
+			store.__onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
+
+			expect(reconcileSpy).toHaveBeenCalledOnce();
 		});
 
 		test('__reconcileMessages 连接不存在时返回 false', async () => {
