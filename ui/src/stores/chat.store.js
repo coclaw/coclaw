@@ -864,9 +864,10 @@ export const useChatStore = defineStore('chat', {
 				else if (data?.phase === 'error') {
 					console.debug('[chat] agent lifecycle:error runId=%s', this.streamingRunId);
 					this.__agentSettled = true;
-					this.__cleanupStreaming();
+					this.__cleanupTimersAndListeners();
+					this.__clearStreamingFlags();
 					this.sending = false;
-					// 错误信息由调用方通过 catch 或 store state 处理
+					this.__reconcileMessages();
 				}
 			}
 		},
