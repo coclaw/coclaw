@@ -101,6 +101,15 @@ Android Adaptive Icon 会对前景层施加遮罩（圆形/圆角方形等），
 | `src-tauri/icons/Square284x284Logo.png` | 284x284 |
 | `src-tauri/icons/Square310x310Logo.png` | 310x310 |
 
+### 6. iOS (Capacitor) — ios/App/App/Assets.xcassets/AppIcon.appiconset/
+
+| 文件 | 尺寸 | 说明 |
+|---|---|---|
+| `AppIcon-512@2x.png` | 1024x1024 | 唯一必需尺寸（Xcode 15+ 自动生成其余尺寸） |
+
+- iOS 图标**不需要**安全区域 padding，直接缩放填满画布
+- 系统自动应用圆角遮罩
+
 ## 生成命令模板
 
 ```bash
@@ -108,6 +117,7 @@ SRC="<源图片路径>"
 PUB="ui/public"
 ASSETS="ui/src/assets"
 RES="ui/android/app/src/main/res"
+IOS_ICON="ui/ios/App/App/Assets.xcassets/AppIcon.appiconset"
 BUILD="ui/build-resources"
 TAURI="ui/src-tauri/icons"
 
@@ -140,6 +150,9 @@ for density_spec in "mdpi 48 72 18" "hdpi 72 108 27" "xhdpi 96 144 36" "xxhdpi 1
   npx sharp-cli -i "$TMP" -o "$DIR/ic_launcher_foreground.png" extend $pad $pad $pad $pad --background "$BG"
 done
 rm -f "$TMP"
+
+# === 6. iOS (Capacitor) ===
+npx sharp-cli -i "$SRC" -o "$IOS_ICON/AppIcon-512@2x.png" resize 1024 1024
 
 # === 4. Electron ===
 npx sharp-cli -i "$SRC" -o "$BUILD/icon.png" resize 512 512

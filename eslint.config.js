@@ -6,7 +6,8 @@ export default [
 			'**/build/**',
 			'**/coverage/**',
 			'**/.run/**',
-			'**/android/**'
+			'**/android/**',
+			'**/ios/**'
 		]
 	},
 	{
