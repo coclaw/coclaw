@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bindBotHandler, botStatusStreamHandler, cancelBindingCodeHandler, createBindingCodeHandler, listBotsHandler, waitBindingCodeHandler } from './bot.route.js';
+import { bindBotHandler, botStatusStreamHandler, cancelBindingCodeHandler, createBindingCodeHandler, listBotsHandler, renameBotHandler, waitBindingCodeHandler } from './bot.route.js';
 
 function createRes() {
 	const handlers = new Map();
@@ -393,4 +393,115 @@ test('cancelBindingCodeHandler: should return 204 when code not found', async ()
 	});
 
 	assert.equal(res.statusCode, 204);
+});
+
+test('renameBotHandler: should reject unauthenticated request', async () => {
+	const req = { isAuthenticated: () => false, user: null, body: { botId: '1', name: 'new' } };
+	const res = createRes();
+
+	await renameBotHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('renameBotHandler: should reject missing botId', async () => {
+	const req = { isAuthenticated: () => true, user: { id: 7n }, body: { name: 'new' } };
+	const res = createRes();
+
+	await renameBotHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('renameBotHandler: should reject invalid botId', async () => {
+	const req = { isAuthenticated: () => true, user: { id: 7n }, body: { botId: 'notanumber', name: 'x' } };
+	const res = createRes();
+
+	await renameBotHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('renameBotHandler: should reject name longer than 128 chars', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42', name: 'a'.repeat(129) },
+	};
+	const res = createRes();
+
+	await renameBotHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('renameBotHandler: should return 404 when bot not found or not owned', async () => {
+	const req = { isAuthenticated: () => true, user: { id: 7n }, body: { botId: '42', name: 'new' } };
+	const res = createRes();
+
+	await renameBotHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => null,
+		updateBotNameImpl: async () => {},
+		sendToUserImpl: () => {},
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+});
+
+test('renameBotHandler: should return 404 when bot belongs to another user', async () => {
+	const req = { isAuthenticated: () => true, user: { id: 7n }, body: { botId: '42', name: 'new' } };
+	const res = createRes();
+
+	await renameBotHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 42n, userId: 99n }),
+		updateBotNameImpl: async () => {},
+		sendToUserImpl: () => {},
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+});
+
+test('renameBotHandler: should rename and send SSE event', async () => {
+	const req = { isAuthenticated: () => true, user: { id: 7n }, body: { botId: '42', name: 'my claw' } };
+	const res = createRes();
+	let updatedArgs = null;
+	let sseArgs = null;
+
+	await renameBotHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 42n, userId: 7n }),
+		updateBotNameImpl: async (id, name) => { updatedArgs = { id, name }; },
+		sendToUserImpl: (uid, payload) => { sseArgs = { uid, payload }; },
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.ok, true);
+	assert.equal(updatedArgs.id, 42n);
+	assert.equal(updatedArgs.name, 'my claw');
+	assert.equal(sseArgs.uid, '7');
+	assert.equal(sseArgs.payload.event, 'bot.nameUpdated');
+	assert.equal(sseArgs.payload.botId, '42');
+	assert.equal(sseArgs.payload.name, 'my claw');
+});
+
+test('renameBotHandler: should save null when name is empty string (clear)', async () => {
+	const req = { isAuthenticated: () => true, user: { id: 7n }, body: { botId: '42', name: '' } };
+	const res = createRes();
+	let updatedName;
+	let ssePayload;
+
+	await renameBotHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 42n, userId: 7n }),
+		updateBotNameImpl: async (id, name) => { updatedName = name; },
+		sendToUserImpl: (uid, payload) => { ssePayload = payload; },
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(updatedName, null);
+	assert.equal(ssePayload.name, null);
 });

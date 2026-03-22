@@ -8,7 +8,7 @@ import {
 	unbindBotByUser,
 } from '../services/bot-binding.svc.js';
 import { deleteBindingCode, findBindingCode } from '../repos/bot-binding-code.repo.js';
-import { findBotById, findBotByTokenHash, findLatestBotByUserId, listBotsByUserId } from '../repos/bot.repo.js';
+import { findBotById, findBotByTokenHash, findLatestBotByUserId, listBotsByUserId, updateBotName } from '../repos/bot.repo.js';
 import {
 	cancelBindingWait,
 	markBindingBound,
@@ -518,6 +518,65 @@ export async function cancelBindingCodeHandler(req, res, next, {
 	}
 }
 
+export async function renameBotHandler(req, res, next, deps = {}) {
+	if (!requireSession(req, res)) {
+		return;
+	}
+
+	const {
+		findBotByIdImpl = findBotById,
+		updateBotNameImpl = updateBotName,
+		sendToUserImpl = sendToUser,
+	} = deps;
+
+	const rawBotId = req.body?.botId;
+	if (rawBotId === undefined || rawBotId === null || String(rawBotId).trim() === '') {
+		res.status(400).json({ code: 'INVALID_INPUT', message: 'botId is required' });
+		return;
+	}
+
+	let botId;
+	try {
+		botId = BigInt(String(rawBotId));
+	}
+	catch {
+		res.status(400).json({ code: 'INVALID_INPUT', message: 'botId is invalid' });
+		return;
+	}
+
+	const rawName = req.body?.name;
+	if (rawName !== undefined && rawName !== null && typeof rawName !== 'string') {
+		res.status(400).json({ code: 'INVALID_INPUT', message: 'name must be a string' });
+		return;
+	}
+	if (typeof rawName === 'string' && rawName.length > 128) {
+		res.status(400).json({ code: 'INVALID_INPUT', message: 'name is too long (max 128)' });
+		return;
+	}
+
+	try {
+		const bot = await findBotByIdImpl(botId);
+		if (!bot || bot.userId !== req.user.id) {
+			res.status(404).json({ code: 'BOT_NOT_FOUND', message: 'Bot not found' });
+			return;
+		}
+
+		const name = (typeof rawName === 'string' && rawName.length > 0) ? rawName : null;
+		await updateBotNameImpl(botId, name);
+
+		sendToUserImpl(String(req.user.id), {
+			event: 'bot.nameUpdated',
+			botId: botId.toString(),
+			name,
+		});
+
+		res.status(200).json({ ok: true });
+	}
+	catch (err) {
+		next(err);
+	}
+}
+
 botRouter.get('/', listBotsHandler);
 botRouter.get('/self', getBotSelfHandler);
 botRouter.get('/status-stream', botStatusStreamHandler);
@@ -528,3 +587,4 @@ botRouter.post('/ws-ticket', createUiWsTicketHandler);
 botRouter.post('/bind', bindBotHandler);
 botRouter.post('/unbind', unbindBotHandler);
 botRouter.post('/unbind-by-user', unbindBotByUserHandler);
+botRouter.post('/rename', renameBotHandler);
