@@ -22,7 +22,7 @@ export const coclawChannelPlugin = {
 	capabilities: {
 		chatTypes: ['direct'],
 		nativeCommands: true,
-		media: false,
+		media: true,
 		reactions: false,
 		threads: false,
 		polls: false,
