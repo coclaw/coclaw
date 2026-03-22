@@ -22,10 +22,12 @@ coclaw/                              # 部署根目录（远端为 ~/coclaw）
   .env                               # 实际配置（不入库）
   nginx/
     nginx.conf                       # nginx 主配置
+    scripts/init.sh                  # 启动前按 HTTPS_MODE 选模板
+    modes/                           # app 配置模板（由 init.sh 选择）
+      app-https.conf.template        # HTTPS 版（auto / custom）
+      app-http.conf.template         # HTTP-only 版（off）
     templates/                       # envsubst 模板（启动时自动渲染）
-      app.conf.template              # HTTPS 版（默认）
       default.conf.template          # 拦截非法访问
-    app-http.conf.template           # HTTP-only 备选（不在 templates/ 中）
     includes/                        # 代理配置片段
   certbot/
     scripts/                         # 证书签发与续期脚本

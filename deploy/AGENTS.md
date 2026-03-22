@@ -16,9 +16,12 @@ deploy/
   .env.example                # 统一环境变量模板
   nginx/
     nginx.conf
-    app-http.conf.template     # HTTP-only 备选模板（不放在 templates/ 中，避免被自动渲染）
+    scripts/
+      init.sh                  # 启动前根据 HTTPS_MODE 选模板 + 生成自签名证书
+    modes/                     # app 配置模板（init.sh 按 HTTPS_MODE 选择）
+      app-https.conf.template  # HTTPS 版（auto / custom）
+      app-http.conf.template   # HTTP-only 版（off）
     templates/                 # envsubst 模板，启动时自动渲染到 /etc/nginx/conf.d/
-      app.conf.template        # HTTPS 版（默认）
       default.conf.template    # 拦截非法访问
     includes/
       proxy-common.conf
@@ -58,9 +61,11 @@ deploy/
 
 ## HTTPS 模式
 
-- `HTTPS_MODE=auto`：Let's Encrypt 自动签发（公网部署，默认）
-- `HTTPS_MODE=custom`：自备证书，放置于 `certbot/conf/live/${APP_DOMAIN}/`
-- `HTTPS_MODE=off`：仅 HTTP（内网小团队），使用 `app-http.conf.template`
+通过 `.env` 中的 `HTTPS_MODE` 控制，nginx 启动时 `init.sh` 自动选择对应模板：
+
+- `auto`（默认）：Let's Encrypt 自动签发（公网部署）
+- `custom`：自备证书放到 `certbot/conf/live/${APP_DOMAIN}/`；未提供时自动生成自签名证书
+- `off`：仅 HTTP（内网小团队）
 
 ## 证书策略
 
