@@ -232,6 +232,28 @@ describe('useChatStore', () => {
 
 			expect(store.botId).toBe('2');
 		});
+
+		test('连接就绪时注册 event:agent 监听', async () => {
+			const conn = mockConn();
+			setupConnForLoad(conn);
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			const onCalls = conn.on.mock.calls.filter((c) => c[0] === 'event:agent');
+			const offCalls = conn.off.mock.calls.filter((c) => c[0] === 'event:agent');
+			expect(onCalls).toHaveLength(1);
+			expect(offCalls).toHaveLength(1);
+			expect(onCalls[0][1]).toBe(offCalls[0][1]);
+		});
+
+		test('连接未就绪时不注册 event:agent 监听', async () => {
+			const store = useChatStore();
+			await store.activateSession('1', 'main'); // 无连接
+
+			expect(store.loading).toBe(true);
+		});
 	});
 
 	// =====================================================================
@@ -288,6 +310,21 @@ describe('useChatStore', () => {
 			expect(store.topicMode).toBe(true);
 			expect(store.loading).toBe(false);
 			expect(conn.request).not.toHaveBeenCalled();
+		});
+
+		test('连接就绪时注册 event:agent 监听', async () => {
+			const conn = mockConn();
+			conn.request.mockResolvedValue({ messages: [] });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateTopic('topic-1', { botId: '1', agentId: 'main' });
+
+			const onCalls = conn.on.mock.calls.filter((c) => c[0] === 'event:agent');
+			const offCalls = conn.off.mock.calls.filter((c) => c[0] === 'event:agent');
+			expect(onCalls).toHaveLength(1);
+			expect(offCalls).toHaveLength(1);
+			expect(onCalls[0][1]).toBe(offCalls[0][1]);
 		});
 	});
 
