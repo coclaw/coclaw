@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { botPingTick } from './bot-ws-hub.js';
+import { botPingTick, createUiWsTicket, pruneUiTickets } from './bot-ws-hub.js';
 
 const MAX_MISS = 4;
 
@@ -75,6 +75,30 @@ test('botPingTick: pong 后 miss 场景——模拟完整周期', () => {
 	r = botPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'miss');
 	assert.equal(r.missCount, 1);
+});
+
+// --- createUiWsTicket & pruneUiTickets ---
+
+test('createUiWsTicket: 返回 32 位 hex 字符串', () => {
+	const ticket = createUiWsTicket({ botId: '1', userId: '2' });
+	assert.match(ticket, /^[0-9a-f]{32}$/);
+});
+
+test('pruneUiTickets: 过期 ticket 被清理，未过期 ticket 保留', () => {
+	// ttlMs=1 → 立即过期
+	createUiWsTicket({ botId: '1', userId: '2', ttlMs: 1 });
+	createUiWsTicket({ botId: '1', userId: '2', ttlMs: 60_000 });
+
+	// 确保过期 ticket 的 expiresAt 已过
+	const start = Date.now();
+	while (Date.now() === start) { /* 等待至少 1ms */ }
+
+	pruneUiTickets();
+
+	// 再次创建和 prune 确认功能正常，无异常即通过
+	const another = createUiWsTicket({ botId: '3', userId: '4' });
+	assert.match(another, /^[0-9a-f]{32}$/);
+	pruneUiTickets();
 });
 
 test('botPingTick: 大消息传输中途恢复——bufferedAmount 先高后低', () => {

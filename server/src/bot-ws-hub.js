@@ -376,9 +376,23 @@ export function createUiWsTicket({ botId, userId, ttlMs = 60_000 }) {
 	return ticket;
 }
 
+/**
+ * 清理过期的 UI WS ticket，防止未消费 ticket 累积泄漏。
+ * 提取为独立函数便于单元测试。
+ */
+export function pruneUiTickets() {
+	const now = Date.now();
+	for (const [key, info] of uiTickets) {
+		if (info.expiresAt < now) uiTickets.delete(key);
+	}
+}
+
 export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 	wsSessionMiddleware = sessionMiddleware ?? null;
 	wsServer = new WebSocketServer({ noServer: true });
+
+	const ticketPruneInterval = setInterval(pruneUiTickets, 5 * 60_000);
+	ticketPruneInterval.unref();
 
 	httpServer.on('upgrade', async (req, socket, head) => {
 		try {

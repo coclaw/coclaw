@@ -34,8 +34,18 @@ export function createApp() {
 	app.use(helmet({
 		hsts: false,
 	}));
+	const allowedOrigins = new Set(
+		(process.env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean),
+	);
+	allowedOrigins.add('capacitor://localhost');
 	app.use(cors({
-		origin: true,
+		origin: (origin, cb) => {
+			if (!origin) return cb(null, true);
+			if (allowedOrigins.has(origin)) return cb(null, true);
+			if (!isProduction && /^https?:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
+			// 不抛 Error：cors 包收到 false 时不设置 CORS 头，浏览器自动拦截
+			cb(null, false);
+		},
 		credentials: true,
 	}));
 	app.use(morgan('dev'));

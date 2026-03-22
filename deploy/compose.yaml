@@ -57,6 +57,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
       ENFORCE_HTTPS: ${ENFORCE_HTTPS:-true}
       DB_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       COCLAW_WS_DEBUG: ${COCLAW_WS_DEBUG:-}
     expose:
       - "3000"
