@@ -343,7 +343,7 @@ test('changePasswordHandler: should return 401 when not authenticated', async ()
 	const req = {
 		isAuthenticated: () => false,
 		user: null,
-		body: { oldPassword: 'a', newPassword: 'b' },
+		body: { oldPassword: 'oldpasswd', newPassword: 'newpasswd' },
 	};
 	const res = createRes();
 
@@ -353,11 +353,31 @@ test('changePasswordHandler: should return 401 when not authenticated', async ()
 	assert.equal(res.body.code, 'UNAUTHORIZED');
 });
 
+test('changePasswordHandler: should return 400 when service returns PASSWORD_TOO_SHORT', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { oldPassword: 'oldpassword', newPassword: 'short' },
+	};
+	const res = createRes();
+
+	await changePasswordHandler(req, res, () => {}, {
+		changePwd: async () => ({
+			ok: false,
+			code: 'PASSWORD_TOO_SHORT',
+			message: 'password must be at least 8 characters',
+		}),
+	});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'PASSWORD_TOO_SHORT');
+});
+
 test('changePasswordHandler: should return 401 when service returns INVALID_CREDENTIALS', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 123n },
-		body: { oldPassword: 'wrong', newPassword: 'new' },
+		body: { oldPassword: 'wrongpassword', newPassword: 'newpasswd' },
 	};
 	const res = createRes();
 
@@ -377,7 +397,7 @@ test('changePasswordHandler: should return 400 when service returns NO_LOCAL_AUT
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 123n },
-		body: { oldPassword: 'a', newPassword: 'b' },
+		body: { oldPassword: 'oldpasswd', newPassword: 'newpasswd' },
 	};
 	const res = createRes();
 
@@ -397,7 +417,7 @@ test('changePasswordHandler: should return 200 on success', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 123n },
-		body: { oldPassword: 'old', newPassword: 'new' },
+		body: { oldPassword: 'oldpasswd', newPassword: 'newpasswd' },
 	};
 	const res = createRes();
 

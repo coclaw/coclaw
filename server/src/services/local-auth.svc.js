@@ -9,6 +9,7 @@ import { genUserId } from './id.svc.js';
 import { scrypt } from '../utils/scrypt-password.js';
 import { buildSessionUser } from './user-view.svc.js';
 import { validateLoginName } from '../validators/login-name.js';
+import { validatePassword } from '../validators/password.js';
 
 function buildAuthPayload(localAuth, overrides = {}) {
 	return buildSessionUser({
@@ -90,6 +91,11 @@ export async function changePassword(userId, { oldPassword, newPassword }, deps 
 		updatePassword = updatePasswordByUserId,
 	} = deps;
 
+	const pwdCheck = validatePassword(newPassword);
+	if (!pwdCheck.valid) {
+		return { ok: false, code: pwdCheck.code, message: pwdCheck.message };
+	}
+
 	const localAuth = await findByUserId(userId);
 	if (!localAuth || !localAuth.passwordHash) {
 		return {
@@ -124,12 +130,9 @@ export async function createLocalAccount(input, deps = {}) {
 	} = deps;
 	const { loginName, password } = input;
 
-	if (!isNonEmptyString(password)) {
-		return {
-			ok: false,
-			code: 'INVALID_INPUT',
-			message: 'password is required',
-		};
+	const pwdCheck = validatePassword(password);
+	if (!pwdCheck.valid) {
+		return { ok: false, code: pwdCheck.code, message: pwdCheck.message };
 	}
 
 	const nameCheck = validateLoginName(loginName);
