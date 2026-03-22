@@ -99,6 +99,10 @@ export const useChatStore = defineStore('chat', {
 				return;
 			}
 
+			// 注册 agent 事件监听，捕获进入会话时 agent 正在处理的 streaming 事件
+			conn.off('event:agent', this.__onAgentEvent);
+			conn.on('event:agent', this.__onAgentEvent);
+
 			await this.loadMessages();
 			this.__loadChatHistory();
 		},
@@ -140,6 +144,12 @@ export const useChatStore = defineStore('chat', {
 			if (!this.botId) {
 				this.loading = true;
 				return;
+			}
+			const conn = this.__getConnection();
+			if (conn && conn.state === 'connected') {
+				// 注册 agent 事件监听，捕获进入会话时 agent 正在处理的 streaming 事件
+				conn.off('event:agent', this.__onAgentEvent);
+				conn.on('event:agent', this.__onAgentEvent);
 			}
 			await this.loadMessages();
 		},
