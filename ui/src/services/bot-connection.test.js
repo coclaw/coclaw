@@ -795,3 +795,119 @@ describe('BotConnection – stale WS guard', () => {
 		expect(conn.state).toBe('connected');
 	});
 });
+
+describe('BotConnection – visibility change reconnect', () => {
+	let savedDoc;
+	let mockDoc;
+
+	beforeEach(() => {
+		MockWebSocket.reset();
+		vi.useFakeTimers();
+		// 模拟 document
+		savedDoc = globalThis.document;
+		mockDoc = {
+			visibilityState: 'visible',
+			__listeners: {},
+			addEventListener(evt, cb) {
+				if (!this.__listeners[evt]) this.__listeners[evt] = [];
+				this.__listeners[evt].push(cb);
+			},
+			removeEventListener(evt, cb) {
+				if (!this.__listeners[evt]) return;
+				this.__listeners[evt] = this.__listeners[evt].filter(fn => fn !== cb);
+			},
+			simulateVisibility(state) {
+				this.visibilityState = state;
+				(this.__listeners['visibilitychange'] ?? []).forEach(cb => cb());
+			},
+		};
+		globalThis.document = mockDoc;
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		globalThis.document = savedDoc;
+	});
+
+	test('connect() registers visibilitychange listener on document', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(mockDoc.__listeners['visibilitychange']?.length).toBe(1);
+	});
+
+	test('listener is registered only once even if connect() called multiple times', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		conn.__ws = null; // 模拟 ws 已关闭
+		conn.connect();
+		expect(mockDoc.__listeners['visibilitychange']?.length).toBe(1);
+	});
+
+	test('visibility→visible while disconnected triggers immediate reconnect', () => {
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006, 'abnormal'); // 非主动断连
+		expect(conn.state).toBe('disconnected');
+		expect(conn.__reconnectTimer).not.toBeNull();
+
+		mockDoc.simulateVisibility('visible');
+
+		// 应立即发起新连接，不等待 backoff 计时器
+		expect(MockWebSocket.instances.length).toBe(2);
+		expect(conn.state).toBe('connecting');
+	});
+
+	test('visibility→visible resets reconnect delay to INITIAL_RECONNECT_MS', () => {
+		const { conn, ws } = makeConnected();
+		conn.__reconnectDelay = 16000; // 模拟已累积的 backoff
+		ws.simulateClose(1006);
+		mockDoc.simulateVisibility('visible');
+		expect(conn.__reconnectDelay).toBe(1000);
+	});
+
+	test('visibility→visible cancels pending backoff timer', () => {
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006);
+		const oldTimer = conn.__reconnectTimer;
+		expect(oldTimer).not.toBeNull();
+		mockDoc.simulateVisibility('visible');
+		expect(conn.__reconnectTimer).toBeNull(); // timer 已清除（doConnect 中会再建新 WS，不需要 timer）
+	});
+
+	test('visibility→hidden does not trigger reconnect', () => {
+		const { ws } = makeConnected();
+		ws.simulateClose(1006);
+		mockDoc.simulateVisibility('hidden');
+		// 不应产生新 WS
+		expect(MockWebSocket.instances.length).toBe(1);
+	});
+
+	test('visibility→visible while connected does nothing', () => {
+		const { conn } = makeConnected();
+		expect(conn.state).toBe('connected');
+		mockDoc.simulateVisibility('visible');
+		expect(MockWebSocket.instances.length).toBe(1);
+		expect(conn.state).toBe('connected');
+	});
+
+	test('visibility→visible after intentional disconnect does not reconnect', () => {
+		const { conn } = makeConnected();
+		conn.disconnect();
+		mockDoc.simulateVisibility('visible');
+		expect(MockWebSocket.instances.length).toBe(1);
+		expect(conn.state).toBe('disconnected');
+	});
+
+	test('disconnect() removes visibilitychange listener', () => {
+		const { conn } = makeConnected();
+		expect(mockDoc.__listeners['visibilitychange']?.length).toBe(1);
+		conn.disconnect();
+		expect((mockDoc.__listeners['visibilitychange'] ?? []).length).toBe(0);
+	});
+
+	test('bot.unbound removes visibilitychange listener', () => {
+		const { conn, ws } = makeConnected();
+		expect(mockDoc.__listeners['visibilitychange']?.length).toBe(1);
+		ws.simulateMessage({ type: 'bot.unbound' });
+		expect((mockDoc.__listeners['visibilitychange'] ?? []).length).toBe(0);
+	});
+});

@@ -64,6 +64,9 @@ export class BotConnection {
 
 		// 事件监听
 		this.__listeners = new Map();
+
+		// visibility 恢复重连
+		this.__boundVisibilityHandler = null;
 	}
 
 	/** @returns {'disconnected' | 'connecting' | 'connected'} */
@@ -76,6 +79,10 @@ export class BotConnection {
 		if (this.__ws) return;
 		console.debug('[BotConn] connect botId=%s', this.botId);
 		this.__intentionalClose = false;
+		if (typeof document !== 'undefined' && !this.__boundVisibilityHandler) {
+			this.__boundVisibilityHandler = () => this.__onVisibilityChange();
+			document.addEventListener('visibilitychange', this.__boundVisibilityHandler);
+		}
 		this.__doConnect();
 	}
 
@@ -379,10 +386,26 @@ export class BotConnection {
 		}
 	}
 
+	// --- Visibility 恢复重连 ---
+
+	__onVisibilityChange() {
+		if (typeof document === 'undefined') return;
+		if (document.visibilityState !== 'visible') return;
+		if (this.__intentionalClose || this.__state !== 'disconnected') return;
+		console.debug('[BotConn] visibility visible → immediate reconnect botId=%s', this.botId);
+		this.__clearReconnect();
+		this.__reconnectDelay = INITIAL_RECONNECT_MS;
+		this.__doConnect();
+	}
+
 	// --- 清理 ---
 
 	__cleanup() {
 		this.__clearHeartbeat();
+		if (this.__boundVisibilityHandler && typeof document !== 'undefined') {
+			document.removeEventListener('visibilitychange', this.__boundVisibilityHandler);
+			this.__boundVisibilityHandler = null;
+		}
 		const ws = this.__ws;
 		this.__ws = null;
 		if (ws) {
