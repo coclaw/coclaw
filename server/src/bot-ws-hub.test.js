@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-
 // rtc:offer 测试需要 TURN_SECRET
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { botPingTick, createUiWsTicket, pruneUiTickets, __test } from './bot-ws-hub.js';
+import { botCloseEffect, botPingTick, createUiWsTicket, pruneUiTickets, __test } from './bot-ws-hub.js';
 
 const { uiSockets, botSockets, onUiMessage, onBotMessage, findUiSocketByConnId } = __test;
 
@@ -396,4 +395,16 @@ test('多 bot 场景：rtc:offer 精确转发到各自 bot', () => {
 
 	cleanupSockets('bot1');
 	cleanupSockets('bot2');
+});
+
+// --- botCloseEffect ---
+
+test('botCloseEffect: code 4001 → unbound=true（远程解绑）', () => {
+	const result = botCloseEffect(4001);
+	assert.equal(result.unbound, true);
+});
+
+test('botCloseEffect: code 1000 → unbound=false（正常关闭）', () => {
+	const result = botCloseEffect(1000);
+	assert.equal(result.unbound, false);
 });

@@ -547,6 +547,14 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 					if (!botSockets.has(botId)) {
 						wsLogInfo(`bot offline botId=${botId}`);
 						botStatusEmitter.emit('status', { botId, online: false });
+						if (botCloseEffect(code).unbound) {
+							broadcastToUi(botId, {
+								type: 'bot.unbound',
+								botId,
+								reason: 'remote_unbind',
+								at: new Date().toISOString(),
+							});
+						}
 					}
 				});
 			});
@@ -577,6 +585,16 @@ export function botPingTick(state, maxMiss) {
 		return { action: 'miss', missCount: next };
 	}
 	return { action: 'terminate', missCount: next };
+}
+
+/**
+ * 判断 bot WS 关闭时是否需要广播 bot.unbound。
+ * code 4001 = 远程解绑（plugin 侧主动关闭）。
+ * @param {number} code - WebSocket close code
+ * @returns {{ unbound: boolean }}
+ */
+export function botCloseEffect(code) {
+	return { unbound: code === 4001 };
 }
 
 export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
