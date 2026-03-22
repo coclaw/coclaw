@@ -7,9 +7,12 @@ import { findBotById, findBotByTokenHash, updateBotName } from './repos/bot.repo
 const botSockets = new Map();
 const uiSockets = new Map();
 const uiTickets = new Map();
+const TICKET_GC_INTERVAL_MS = 5 * 60_000; // 每 5 分钟清理过期 ticket
+
 const botRpcPending = new Map();
 let wsServer = null;
 let wsSessionMiddleware = null;
+let ticketGcTimer = null;
 let botRpcSeq = 1;
 
 export const botStatusEmitter = new EventEmitter();
@@ -365,6 +368,23 @@ export function listOnlineBotIds() {
 	return new Set(botSockets.keys());
 }
 
+/**
+ * 清理 Map 中 expiresAt 已过期的条目
+ * @param {Map<string, { expiresAt: number }>} map
+ * @returns {number} 清理的条目数
+ */
+export function pruneExpiredTickets(map) {
+	const now = Date.now();
+	let pruned = 0;
+	for (const [key, info] of map) {
+		if (info.expiresAt < now) {
+			map.delete(key);
+			pruned++;
+		}
+	}
+	return pruned;
+}
+
 export function createUiWsTicket({ botId, userId, ttlMs = 60_000 }) {
 	const ticket = crypto.randomBytes(16).toString('hex');
 	uiTickets.set(ticket, {
@@ -379,6 +399,11 @@ export function createUiWsTicket({ botId, userId, ttlMs = 60_000 }) {
 export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 	wsSessionMiddleware = sessionMiddleware ?? null;
 	wsServer = new WebSocketServer({ noServer: true });
+
+	// 定期清理过期的 UI WS ticket，防止未消费的 ticket 内存泄漏
+	if (ticketGcTimer) clearInterval(ticketGcTimer);
+	ticketGcTimer = setInterval(() => pruneExpiredTickets(uiTickets), TICKET_GC_INTERVAL_MS);
+	ticketGcTimer.unref();
 
 	httpServer.on('upgrade', async (req, socket, head) => {
 		try {

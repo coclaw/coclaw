@@ -92,3 +92,45 @@ test('botPingTick: 大消息传输中途恢复——bufferedAmount 先高后低'
 	assert.equal(r.action, 'ok');
 	assert.equal(r.missCount, 0);
 });
+
+// --- pruneExpiredTickets tests ---
+
+import { pruneExpiredTickets } from './bot-ws-hub.js';
+
+test('pruneExpiredTickets: removes expired entries', () => {
+	const map = new Map([
+		['a', { expiresAt: Date.now() - 1000 }],
+		['b', { expiresAt: Date.now() - 5000 }],
+	]);
+	const pruned = pruneExpiredTickets(map);
+	assert.equal(pruned, 2);
+	assert.equal(map.size, 0);
+});
+
+test('pruneExpiredTickets: keeps unexpired entries', () => {
+	const map = new Map([
+		['alive', { expiresAt: Date.now() + 60_000 }],
+		['dead', { expiresAt: Date.now() - 1000 }],
+	]);
+	const pruned = pruneExpiredTickets(map);
+	assert.equal(pruned, 1);
+	assert.equal(map.size, 1);
+	assert.ok(map.has('alive'));
+	assert.ok(!map.has('dead'));
+});
+
+test('pruneExpiredTickets: returns 0 on empty map', () => {
+	const map = new Map();
+	const pruned = pruneExpiredTickets(map);
+	assert.equal(pruned, 0);
+});
+
+test('pruneExpiredTickets: returns 0 when all entries are fresh', () => {
+	const map = new Map([
+		['x', { expiresAt: Date.now() + 10_000 }],
+		['y', { expiresAt: Date.now() + 20_000 }],
+	]);
+	const pruned = pruneExpiredTickets(map);
+	assert.equal(pruned, 0);
+	assert.equal(map.size, 2);
+});
