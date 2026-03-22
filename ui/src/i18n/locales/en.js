@@ -143,6 +143,17 @@ export const enMessages = {
 		chat: 'Chat',
 		sessionNotReady: 'Session not ready, please try again later',
 	},
+	dashboard: {
+		monthlyCost: 'Monthly cost',
+		agents: 'Agents',
+		tokens: 'Tokens',
+		sessions: 'Sessions',
+		lastActive: 'Last active',
+		justNow: 'Just now',
+		minutesAgo: '{n}m ago',
+		hoursAgo: '{n}h ago',
+		daysAgo: '{n}d ago',
+	},
 	bots: {
 		pageTitle: 'My Claws',
 		unbind: 'Unbind',

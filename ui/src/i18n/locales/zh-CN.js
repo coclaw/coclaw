@@ -143,6 +143,17 @@ export const zhCNMessages = {
 		chat: '对话',
 		sessionNotReady: '会话尚未就绪，请稍后重试',
 	},
+	dashboard: {
+		monthlyCost: '本月花费',
+		agents: '个 Agent',
+		tokens: 'Tokens',
+		sessions: '会话',
+		lastActive: '最近活跃',
+		justNow: '刚刚',
+		minutesAgo: '{n} 分钟前',
+		hoursAgo: '{n} 小时前',
+		daysAgo: '{n} 天前',
+	},
 	bots: {
 		pageTitle: '我的 Claw',
 		unbind: '解绑',
