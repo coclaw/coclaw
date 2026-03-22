@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 
-const DEFAULT_EPOCH = Date.parse('2000-01-01T00:00:00.000Z');
+const DEFAULT_EPOCH = Date.parse('2020-01-01T00:00:00.000Z');
 const DEFAULT_WORKER_BITS = 10;
 const DEFAULT_SEQ_BITS = 12;
 const DEFAULT_TIME_SLICE_MS = 1;
 const MAX_TIME_SLICE_MS = 1000;
+const DEFAULT_MAX_DRIFT_MS = 5000;
 
 /**
  * 校验是否为非负整数。
@@ -13,7 +14,7 @@ const MAX_TIME_SLICE_MS = 1000;
  */
 function assertNonNegativeInt(value, name) {
 	if (!Number.isInteger(value) || value < 0) {
-		throw new TypeError(`${name} 必须是非负整数`);
+		throw new TypeError(`${name} must be a non-negative integer`);
 	}
 }
 
@@ -54,6 +55,7 @@ export class Snowflake {
 	 * @param {number} [options.workerId] - worker 编号
 	 * @param {number} [options.timeSliceMs] - 时间片时长（毫秒）
 	 * @param {number} [options.seqRandomBits] - 随机 seq 起始值位数
+	 * @param {number} [options.maxDriftMs] - 允许的最大时间漂移（毫秒）
 	 * @param {() => number} [options.nowFn] - 当前时间函数（毫秒）
 	 * @param {(max: bigint) => bigint|number} [options.randSeqFn] - 自定义随机 seq 函数
 	 */
@@ -65,6 +67,7 @@ export class Snowflake {
 			workerId = 0,
 			timeSliceMs = DEFAULT_TIME_SLICE_MS,
 			seqRandomBits = 0,
+			maxDriftMs = DEFAULT_MAX_DRIFT_MS,
 			nowFn = Date.now,
 			randSeqFn = null,
 		} = options;
@@ -75,21 +78,22 @@ export class Snowflake {
 		assertNonNegativeInt(workerId, 'workerId');
 		assertNonNegativeInt(timeSliceMs, 'timeSliceMs');
 		assertNonNegativeInt(seqRandomBits, 'seqRandomBits');
+		assertNonNegativeInt(maxDriftMs, 'maxDriftMs');
 
 		if (timeSliceMs === 0 || timeSliceMs > MAX_TIME_SLICE_MS) {
-			throw new RangeError(`timeSliceMs 必须在 1 到 ${MAX_TIME_SLICE_MS} 之间`);
+			throw new RangeError(`timeSliceMs must be between 1 and ${MAX_TIME_SLICE_MS}`);
 		}
 
 		if (seqRandomBits > seqBits) {
-			throw new RangeError('seqRandomBits 不可超过 seqBits');
+			throw new RangeError('seqRandomBits must not exceed seqBits');
 		}
 
 		if (typeof nowFn !== 'function') {
-			throw new TypeError('nowFn 必须是函数');
+			throw new TypeError('nowFn must be a function');
 		}
 
 		if (randSeqFn !== null && typeof randSeqFn !== 'function') {
-			throw new TypeError('randSeqFn 必须是函数');
+			throw new TypeError('randSeqFn must be a function');
 		}
 
 		const workerBitsBig = BigInt(workerBits);
@@ -98,11 +102,11 @@ export class Snowflake {
 		const workerIdBig = BigInt(workerId);
 
 		if (workerBits === 0 && workerId !== 0) {
-			throw new RangeError('workerBits 为 0 时，workerId 必须为 0');
+			throw new RangeError('workerId must be 0 when workerBits is 0');
 		}
 
 		if (workerIdBig > maxWorkerId) {
-			throw new RangeError(`workerId 超出范围，最大值为 ${maxWorkerId.toString()}`);
+			throw new RangeError(`workerId out of range, max is ${maxWorkerId.toString()}`);
 		}
 
 		this.epoch = epoch;
@@ -112,6 +116,7 @@ export class Snowflake {
 		this.workerIdBig = workerIdBig;
 		this.timeSliceMs = timeSliceMs;
 		this.seqRandomBits = seqRandomBits;
+		this.maxDriftTicks = BigInt(Math.ceil(maxDriftMs / timeSliceMs));
 		this.nowFn = nowFn;
 		this.randSeqFn = randSeqFn;
 
@@ -130,28 +135,37 @@ export class Snowflake {
 	 * @returns {bigint}
 	 */
 	nextId() {
-		let tick = this.#nowTick();
+		const tick = this.#nowTick();
 
-		if (this.lastTick !== null && tick < this.lastTick) {
-			const diff = this.lastTick - tick;
-			throw new Error(`检测到时钟回拨: ${diff.toString()} 个时间片`);
+		// 前置校验：物理时间异常
+		if (tick < 0n) {
+			throw new RangeError('Current time is before epoch');
 		}
 
 		if (this.lastTick === null || tick > this.lastTick) {
+			// 物理时间正常推进，重置逻辑时钟
 			this.#resetTickState(tick);
-		} else if (this.nextSeq > this.seqMax) {
-			tick = this.#waitNextTick(this.lastTick);
-			this.#resetTickState(tick);
+		} else {
+			// 物理时间落后于逻辑时钟（同一时间片 / 时钟回拨 / 预借未追平）
+			if (this.nextSeq > this.seqMax) {
+				// seq 耗尽 → 预借下一个时间片，seq 从 0 开始
+				this.lastTick += 1n;
+				this.nextSeq = 0n;
+			}
+
+			// 统一校验：NTP 回拨或预借累积，偏差超出阈值则立即熔断
+			const drift = this.lastTick - tick;
+			if (drift > this.maxDriftTicks) {
+				throw new Error(
+					`Time slice drift exceeded limit: drift=${drift.toString()} ticks, max=${this.maxDriftTicks.toString()} ticks`
+				);
+			}
 		}
 
 		const seq = this.nextSeq;
 		this.nextSeq += 1n;
 
-		if (tick < 0n) {
-			throw new RangeError('当前时间早于 epoch');
-		}
-
-		return (tick << this.timeShift) | (this.workerIdBig << this.workerShift) | seq;
+		return (this.lastTick << this.timeShift) | (this.workerIdBig << this.workerShift) | seq;
 	}
 
 	#resetTickState(tick) {
@@ -159,35 +173,28 @@ export class Snowflake {
 		this.nextSeq = this.#nextRandSeqStart();
 	}
 
-	#waitNextTick(lastTick) {
-		let tick = this.#nowTick();
-		while (tick <= lastTick) {
-			tick = this.#nowTick();
-		}
-		return tick;
-	}
-
 	#nowTick() {
 		const nowMs = this.nowFn();
 		if (!Number.isFinite(nowMs)) {
-			throw new TypeError('nowFn 返回值必须是有限数字');
+			throw new TypeError('nowFn must return a finite number');
 		}
 		return BigInt(Math.floor((nowMs - this.epoch) / this.timeSliceMs));
 	}
 
 	#nextRandSeqStart() {
-		if (this.randSeqFn === null) {
-			return randomBits(this.seqRandomBits);
-		}
-
+		// 提前短路，避免后续多余的 null 判断
 		if (this.seqRandomBits === 0) {
 			return 0n;
+		}
+
+		if (this.randSeqFn === null) {
+			return randomBits(this.seqRandomBits);
 		}
 
 		const raw = this.randSeqFn(this.seqRandomSize);
 		const value = BigInt(raw);
 		if (value < 0n || value >= this.seqRandomSize) {
-			throw new RangeError('randSeqFn 返回值超出 seqRandomBits 范围');
+			throw new RangeError('randSeqFn return value out of seqRandomBits range');
 		}
 		return value;
 	}
