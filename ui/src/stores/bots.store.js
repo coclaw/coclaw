@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 
-import { listBots } from '../services/bots.api.js';
+import { listBots, renameBotApi } from '../services/bots.api.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
@@ -82,6 +82,14 @@ export const useBotsStore = defineStore('bots', {
 			// 断开对应连接并清理关联 session
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
+		},
+		async renameBot(botId, name) {
+			await renameBotApi(botId, name);
+			const id = String(botId);
+			const index = this.items.findIndex((item) => String(item.id) === id);
+			if (index >= 0) {
+				this.items[index] = { ...this.items[index], name: name || null };
+			}
 		},
 		async loadBots() {
 			this.loading = true;

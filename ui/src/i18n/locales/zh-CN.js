@@ -171,6 +171,10 @@ export const zhCNMessages = {
 		offline: '离线',
 		pluginVersion: '插件：',
 		clawVersion: 'OpenClaw：',
+		rename: '重命名',
+		renamePlaceholder: '输入新名称',
+		renamed: '重命名成功',
+		renameFailed: '重命名失败',
 	},
 	pluginUpgrade: {
 		outdated: '该 Claw 的插件版本过低，部分功能不可用。请执行：openclaw plugins update openclaw-coclaw',

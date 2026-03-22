@@ -21,8 +21,31 @@
 			>
 				<div class="flex items-center justify-between gap-3">
 					<div class="min-w-0 space-y-0.5 text-sm">
-						<p class="flex items-center gap-2 truncate font-medium">
-							<span class="truncate">{{ bot.name || 'OpenClaw' }}</span>
+						<!-- 行内编辑名称 -->
+						<div v-if="editingBotId === bot.id" class="flex items-center gap-2">
+							<UInput
+								v-model="editingName"
+								:placeholder="$t('bots.renamePlaceholder')"
+								size="sm"
+								class="w-40 sm:w-56"
+								maxlength="128"
+								autofocus
+								@keydown.enter="onSaveRename(bot.id)"
+								@keydown.esc="cancelRename"
+							/>
+							<UButton size="xs" color="primary" variant="soft" :loading="renamingId === bot.id" @click="onSaveRename(bot.id)">
+								{{ $t('common.save') }}
+							</UButton>
+							<UButton size="xs" color="neutral" variant="ghost" @click="cancelRename">
+								{{ $t('common.cancel') }}
+							</UButton>
+						</div>
+						<p v-else class="flex items-center gap-2 truncate font-medium">
+							<span
+								class="truncate cursor-pointer hover:underline"
+								:title="$t('bots.rename')"
+								@click="startRename(bot.id, bot.name)"
+							>{{ bot.name || 'OpenClaw' }}</span>
 							<UBadge
 								:color="bot.online ? 'success' : 'neutral'"
 								variant="soft"
@@ -100,6 +123,9 @@ export default {
 		return {
 			loading: false,
 			unbindingId: '',
+			renamingId: '',
+			editingBotId: '',
+			editingName: '',
 			agentsStore: null,
 			botsStore: null,
 		};
@@ -173,6 +199,30 @@ export default {
 			}
 			finally {
 				this.unbindingId = '';
+			}
+		},
+		startRename(botId, currentName) {
+			this.editingBotId = String(botId);
+			this.editingName = currentName || '';
+		},
+		cancelRename() {
+			this.editingBotId = '';
+			this.editingName = '';
+		},
+		async onSaveRename(botId) {
+			if (this.renamingId) return;
+			this.renamingId = String(botId);
+			try {
+				await this.botsStore.renameBot(botId, this.editingName);
+				this.notify.success(this.$t('bots.renamed'));
+				this.cancelRename();
+			}
+			catch (err) {
+				console.warn('[bots-manage] rename failed id=%s:', botId, err?.message);
+				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.renameFailed'));
+			}
+			finally {
+				this.renamingId = '';
 			}
 		},
 	},

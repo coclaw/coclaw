@@ -45,3 +45,8 @@ export async function unbindBotByUser(botId) {
 	};
 }
 
+export async function renameBotApi(botId, name) {
+	const res = await client.post('/api/v1/bots/rename', { botId, name });
+	return res.data;
+}
+

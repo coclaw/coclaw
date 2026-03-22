@@ -171,6 +171,10 @@ export const enMessages = {
 		offline: 'Offline',
 		pluginVersion: 'Plugin: ',
 		clawVersion: 'OpenClaw: ',
+		rename: 'Rename',
+		renamePlaceholder: 'Enter new name',
+		renamed: 'Renamed successfully',
+		renameFailed: 'Failed to rename',
 	},
 	pluginUpgrade: {
 		outdated: 'This Claw\'s plugin is outdated and some features may not work. Please run: openclaw plugins update openclaw-coclaw',
