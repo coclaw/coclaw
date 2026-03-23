@@ -1,4 +1,7 @@
 {
+  "context": {
+    "fileName": ["AGENTS.md"]
+  },
   "mcpServers": {
     "nuxt-ui": {
       "url": "https://ui.nuxt.com/mcp"
