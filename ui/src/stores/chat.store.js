@@ -9,6 +9,8 @@ import { useBotConnections } from '../services/bot-connection-manager.js';
 import { fileToBase64 } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 
+const MSG_PAGE_SIZE = 50;
+
 export const useChatStore = defineStore('chat', {
 	state: () => ({
 		sessionId: '',
@@ -26,6 +28,10 @@ export const useChatStore = defineStore('chat', {
 		// topic 模式标志
 		topicMode: false,
 		topicAgentId: '',
+		// 消息分页加载
+		hasMoreMessages: false,
+		messagesLoading: false,
+		__loadedMsgLimit: MSG_PAGE_SIZE,
 		// 历史懒加载
 		/** @type {{ sessionId: string, archivedAt: number }[]} */
 		historySessionIds: [],
@@ -83,6 +89,9 @@ export const useChatStore = defineStore('chat', {
 			this.topicMode = false;
 			this.topicAgentId = '';
 			this.currentSessionId = null;
+			this.hasMoreMessages = false;
+			this.messagesLoading = false;
+			this.__loadedMsgLimit = MSG_PAGE_SIZE;
 			this.historySessionIds = [];
 			this.historySegments = [];
 			this.historyLoading = false;
@@ -127,7 +136,10 @@ export const useChatStore = defineStore('chat', {
 			this.botId = String(botId || '');
 			this.chatSessionKey = '';
 			this.currentSessionId = null;
-			// topic 无历史上翻
+			// topic 无历史上翻、无分页
+			this.hasMoreMessages = false;
+			this.messagesLoading = false;
+			this.__loadedMsgLimit = MSG_PAGE_SIZE;
 			this.historySessionIds = [];
 			this.historySegments = [];
 			this.historyLoading = false;
@@ -178,18 +190,22 @@ export const useChatStore = defineStore('chat', {
 				this.errorText = '';
 			}
 			try {
-				// 通过 OC 原生 sessions.get 加载当前 session 消息
+				// 通过 OC 原生 sessions.get 加载当前 session 最近 N 条消息
+				const limit = MSG_PAGE_SIZE;
 				const result = await conn.request('sessions.get', {
 					key: this.chatSessionKey,
-					limit: 500,
+					limit,
 				});
 				const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
 				// 薄包装为 JSONL 行级结构（补 type + id）
 				this.messages = wrapOcMessages(flatMsgs);
+				this.__loadedMsgLimit = limit;
+				// sessions.get 返回 .slice(-limit)，若返回数 == limit 说明可能还有更多
+				this.hasMoreMessages = flatMsgs.length >= limit;
 				// 先解除 loading，使消息 DOM 在同一微任务内渲染，
 				// 确保 chatStore.messages watcher 触发的 scrollToBottom $nextTick 能看到可见的消息区域
 				this.loading = false;
-				console.debug('[chat] loadMessages ok count=%d', this.messages.length);
+				console.debug('[chat] loadMessages ok count=%d hasMore=%s', this.messages.length, this.hasMoreMessages);
 
 				// 获取当前 sessionId（用于历史上翻）
 				const hist = await conn.request('chat.history', {
@@ -210,6 +226,50 @@ export const useChatStore = defineStore('chat', {
 			}
 			finally {
 				this.loading = false; // 错误/异常时兜底
+			}
+		},
+
+		/**
+		 * 加载更早的消息（向上滚动时触发）
+		 * 利用 sessions.get 的 .slice(-limit) 语义，增大 limit 获取更多历史消息
+		 * @returns {Promise<boolean>} 是否成功加载了新消息
+		 */
+		async loadOlderMessages() {
+			if (!this.hasMoreMessages || this.messagesLoading) return false;
+			if (this.topicMode || !this.chatSessionKey) return false;
+
+			const conn = this.__getConnection();
+			if (!conn || conn.state !== 'connected') return false;
+
+			this.messagesLoading = true;
+			try {
+				const newLimit = this.__loadedMsgLimit + MSG_PAGE_SIZE;
+				const result = await conn.request('sessions.get', {
+					key: this.chatSessionKey,
+					limit: newLimit,
+				});
+				const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
+				const wrapped = wrapOcMessages(flatMsgs);
+
+				// 保留本地消息（streaming/乐观消息）
+				const localMsgs = this.messages.filter((m) => m._local);
+				const prevNonLocalCount = this.messages.length - localMsgs.length;
+
+				this.messages = [...wrapped, ...localMsgs];
+				this.__loadedMsgLimit = newLimit;
+				this.hasMoreMessages = flatMsgs.length >= newLimit;
+
+				const loaded = wrapped.length > prevNonLocalCount;
+				console.debug('[chat] loadOlderMessages limit=%d count=%d new=%d hasMore=%s',
+					newLimit, wrapped.length, wrapped.length - prevNonLocalCount, this.hasMoreMessages);
+				return loaded;
+			}
+			catch (err) {
+				console.warn('[chat] loadOlderMessages failed:', err?.message);
+				return false;
+			}
+			finally {
+				this.messagesLoading = false;
 			}
 		},
 
@@ -699,6 +759,9 @@ export const useChatStore = defineStore('chat', {
 			this.resetting = false;
 			this.topicMode = false;
 			this.topicAgentId = '';
+			this.hasMoreMessages = false;
+			this.messagesLoading = false;
+			this.__loadedMsgLimit = MSG_PAGE_SIZE;
 			this.historySessionIds = [];
 			this.historySegments = [];
 			this.historyLoading = false;

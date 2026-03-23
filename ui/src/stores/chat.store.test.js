@@ -2267,4 +2267,209 @@ describe('useChatStore', () => {
 			expect(store.sending).toBe(false);
 		});
 	});
+
+	// =====================================================================
+	// 渐进式消息加载（loadMessages limit + loadOlderMessages）
+	// =====================================================================
+
+	describe('progressive message loading', () => {
+		test('loadMessages 默认 limit 为 50', async () => {
+			const conn = mockConn();
+			setupConnForLoad(conn, { flatMessages: [] });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			// sessions.get 调用应使用 limit=50
+			const sessCall = conn.request.mock.calls.find((c) => c[0] === 'sessions.get');
+			expect(sessCall).toBeTruthy();
+			expect(sessCall[1]).toMatchObject({ limit: 50 });
+		});
+
+		test('loadMessages: 返回数 < limit 时 hasMoreMessages=false', async () => {
+			const conn = mockConn();
+			const msgs = Array.from({ length: 10 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: msgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			expect(store.messages).toHaveLength(10);
+			expect(store.hasMoreMessages).toBe(false);
+		});
+
+		test('loadMessages: 返回数 >= limit 时 hasMoreMessages=true', async () => {
+			const conn = mockConn();
+			const msgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: msgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			expect(store.messages).toHaveLength(50);
+			expect(store.hasMoreMessages).toBe(true);
+		});
+
+		test('loadOlderMessages 增大 limit 向前加载并 prepend 到列表', async () => {
+			const conn = mockConn();
+			// 初始加载返回 50 条
+			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i + 50}` }));
+			setupConnForLoad(conn, { flatMessages: initialMsgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+			expect(store.hasMoreMessages).toBe(true);
+			expect(store.messages).toHaveLength(50);
+
+			// loadOlderMessages: 服务端返回更大范围（100 条 = 50 旧 + 50 原有）
+			const olderMsgs = Array.from({ length: 100 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
+				return Promise.resolve(null);
+			});
+
+			const loaded = await store.loadOlderMessages();
+			expect(loaded).toBe(true);
+			expect(store.messages).toHaveLength(100);
+			// 请求应使用 limit=100（50 + 50）
+			const lastSessCall = conn.request.mock.calls.filter((c) => c[0] === 'sessions.get').pop();
+			expect(lastSessCall[1]).toMatchObject({ limit: 100 });
+		});
+
+		test('loadOlderMessages: 返回不足 limit 时 hasMoreMessages 设为 false', async () => {
+			const conn = mockConn();
+			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: initialMsgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+			expect(store.hasMoreMessages).toBe(true);
+
+			// 再次加载时只返回 70 条（< 100），说明到头了
+			const allMsgs = Array.from({ length: 70 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: allMsgs });
+				return Promise.resolve(null);
+			});
+
+			await store.loadOlderMessages();
+			expect(store.hasMoreMessages).toBe(false);
+			expect(store.messages).toHaveLength(70);
+		});
+
+		test('loadOlderMessages: hasMoreMessages=false 时不触发', async () => {
+			const conn = mockConn();
+			const msgs = [{ role: 'user', content: 'hi' }];
+			setupConnForLoad(conn, { flatMessages: msgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+			expect(store.hasMoreMessages).toBe(false);
+
+			const result = await store.loadOlderMessages();
+			expect(result).toBe(false);
+		});
+
+		test('loadOlderMessages: 保留本地 streaming 消息', async () => {
+			const conn = mockConn();
+			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: initialMsgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			// 模拟 streaming 中的本地消息
+			store.messages = [
+				...store.messages,
+				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: 'thinking...' } },
+			];
+
+			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
+				return Promise.resolve(null);
+			});
+
+			await store.loadOlderMessages();
+			// 80 条服务端消息 + 1 条本地消息
+			expect(store.messages).toHaveLength(81);
+			const localMsg = store.messages.find((m) => m._local);
+			expect(localMsg).toBeTruthy();
+			expect(localMsg.id).toBe('__local_bot_1');
+		});
+
+		test('loadOlderMessages: topic 模式下不触发', async () => {
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.sessions.getById') return Promise.resolve({ messages: [{ role: 'user', content: 'hi' }] });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateTopic('topic-1', { botId: '1', agentId: 'main' });
+
+			const result = await store.loadOlderMessages();
+			expect(result).toBe(false);
+		});
+
+		test('loadOlderMessages: 并发防护', async () => {
+			const conn = mockConn();
+			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: initialMsgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			let resolveRequest;
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') {
+					return new Promise((resolve) => { resolveRequest = resolve; });
+				}
+				return Promise.resolve(null);
+			});
+
+			// 同时触发两次
+			const p1 = store.loadOlderMessages();
+			const p2 = store.loadOlderMessages();
+
+			expect(store.messagesLoading).toBe(true);
+
+			// 第二次应立即返回 false（被 messagesLoading 拦截）
+			expect(await p2).toBe(false);
+
+			// 完成第一次
+			const allMsgs = Array.from({ length: 100 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			resolveRequest({ messages: allMsgs });
+			expect(await p1).toBe(true);
+			expect(store.messagesLoading).toBe(false);
+		});
+
+		test('activateSession 重置分页状态', async () => {
+			const conn = mockConn();
+			const msgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: msgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+			expect(store.hasMoreMessages).toBe(true);
+
+			// 切换到新 session（无消息）
+			setupConnForLoad(conn, { flatMessages: [] });
+			await store.activateSession('2', 'main', { force: true });
+			mockConnections.set('2', conn);
+
+			expect(store.hasMoreMessages).toBe(false);
+			expect(store.messagesLoading).toBe(false);
+		});
+	});
 });
