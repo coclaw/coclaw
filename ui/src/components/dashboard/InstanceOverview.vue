@@ -9,7 +9,7 @@
 				></span>
 				<h2 class="text-lg font-semibold">{{ instance.name }}</h2>
 			</div>
-			<div v-if="instance.monthlyCost" class="text-right">
+			<div v-if="instance.monthlyCost && typeof instance.monthlyCost.total === 'number'" class="text-right">
 				<p class="text-2xl font-bold tracking-tight">{{ formatCost(instance.monthlyCost) }}</p>
 				<p class="text-xs text-muted">{{ $t('dashboard.monthlyCost') }}</p>
 			</div>
@@ -18,9 +18,10 @@
 		<div class="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted">
 			<span v-if="instance.pluginVersion">{{ $t('bots.pluginVersion') }}{{ instance.pluginVersion }}</span>
 			<span v-if="instance.clawVersion">{{ $t('bots.clawVersion') }}{{ instance.clawVersion }}</span>
-			<span v-if="instance.channels?.length" class="flex items-center gap-1">
-				<span v-for="ch in instance.channels" :key="ch.id" :title="ch.id">
-					{{ ch.connected ? '✅' : '❌' }}
+			<span v-if="instance.channels?.length" class="flex items-center gap-1.5">
+				<span v-for="ch in instance.channels" :key="ch.id" class="inline-flex items-center gap-0.5" :title="ch.id">
+					<span class="text-[10px]">{{ ch.connected ? '✅' : '❌' }}</span>
+					<span>{{ ch.id }}</span>
 				</span>
 			</span>
 			<UBadge color="primary" variant="subtle" size="xs">{{ agentCount }} {{ $t('dashboard.agents') }}</UBadge>

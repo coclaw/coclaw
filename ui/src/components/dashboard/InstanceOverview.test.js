@@ -45,11 +45,20 @@ describe('InstanceOverview', () => {
 		expect(wrapper.text()).toMatch(/12\.50/);
 	});
 
-	test('formatCost without total shows —', () => {
+	test('cost section hidden when monthlyCost has no total', () => {
 		const wrapper = mountOverview({
 			instance: { name: 'Bot', online: true, monthlyCost: {}, channels: [] },
 		});
-		expect(wrapper.text()).toContain('—');
+		expect(wrapper.text()).not.toContain('dashboard.monthlyCost');
+		expect(wrapper.text()).not.toContain('—');
+	});
+
+	test('cost section shown when total is 0', () => {
+		const wrapper = mountOverview({
+			instance: { name: 'Bot', online: true, monthlyCost: { total: 0, currency: 'USD' }, channels: [] },
+		});
+		expect(wrapper.text()).toMatch(/0\.00/);
+		expect(wrapper.text()).toContain('dashboard.monthlyCost');
 	});
 
 	test('displays plugin and claw version', () => {
@@ -60,12 +69,14 @@ describe('InstanceOverview', () => {
 		expect(wrapper.text()).toContain('2.0');
 	});
 
-	test('displays channel status icons', () => {
+	test('displays channel status icons with channel names', () => {
 		const wrapper = mountOverview({
 			instance: { name: 'Bot', online: true, channels: [{ id: 'discord', connected: true }, { id: 'slack', connected: false }] },
 		});
 		expect(wrapper.text()).toContain('✅');
 		expect(wrapper.text()).toContain('❌');
+		expect(wrapper.text()).toContain('discord');
+		expect(wrapper.text()).toContain('slack');
 	});
 
 	test('displays agent count', () => {
