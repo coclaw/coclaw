@@ -219,11 +219,10 @@ describe('BotConnection – request()', () => {
 		expect(res).toEqual({ result: 42 });
 	});
 
-	test('rejects with NOT_CONNECTED when transportMode is null', async () => {
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'NOT_CONNECTED' });
+	test('rejects with WS_CLOSED when transportMode is null but WS is not connected', async () => {
+	        const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+	        await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
 	});
-
 	test('rejects with RPC_FAILED when server responds ok=false', async () => {
 		const { conn, ws } = makeConnected();
 		const p = conn.request('bad.method');
@@ -264,12 +263,11 @@ describe('BotConnection – request()', () => {
 		await expect(conn.request('some.method')).rejects.toMatchObject({ code: 'WS_SEND_FAILED' });
 	});
 
-	test('rejects with NOT_CONNECTED when readyState is CONNECTING (transportMode=null)', async () => {
-		MockWebSocket.reset();
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.connect(); // WS created but open not simulated, transportMode stays null
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'NOT_CONNECTED' });
-	});
+	test('rejects with WS_CLOSED when readyState is CONNECTING (transportMode=null)', async () => {
+	        MockWebSocket.reset();
+	        const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+	        conn.connect(); // WS created but open not simulated, transportMode stays null
+	        await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });	});
 });
 
 describe('BotConnection – request() two-phase (onAccepted)', () => {
@@ -1112,14 +1110,36 @@ describe('BotConnection – request() via RTC', () => {
 		conn.disconnect();
 	});
 
-	test('transportMode=null 时 reject NOT_CONNECTED', async () => {
-		const { conn } = makeConnected();
+	test('transportMode=null 时使用 WS 发送请求 (Phase 2 双通道过渡)', async () => {
+		const { conn, ws } = makeConnected();
 		conn.setTransportMode(null);
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'NOT_CONNECTED' });
+		const p = conn.request('foo');
+		expect(ws.sent.length).toBe(1);
+		const msg = JSON.parse(ws.sent[0]);
+		expect(msg.method).toBe('foo');
+
+		// 模拟 WS 响应
+		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { result: 'ok' } });
+		await expect(p).resolves.toMatchObject({ result: 'ok' });
+		conn.disconnect();
+	});
+
+	test('transportMode=null 期间发送的请求在 transportMode 变为 rtc 后，依然能处理来自 WS 的响应 (Phase 2)', async () => {
+		const { conn, ws } = makeConnected();
+		conn.setTransportMode(null);
+		const p = conn.request('foo');
+		expect(ws.sent.length).toBe(1);
+		const msg = JSON.parse(ws.sent[0]);
+
+		// 模拟通道切换
+		conn.setTransportMode('rtc');
+
+		// 模拟 WS 响应
+		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { result: 'ok' } });
+		await expect(p).resolves.toMatchObject({ result: 'ok' });
 		conn.disconnect();
 	});
 });
-
 describe('BotConnection – __onRtcMessage()', () => {
 	beforeEach(() => MockWebSocket.reset());
 

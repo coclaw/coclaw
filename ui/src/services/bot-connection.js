@@ -178,45 +178,37 @@ export class BotConnection {
 			});
 		}
 
-		if (this.__transportMode === 'ws') {
-			if (!this.__ws || this.__ws.readyState !== 1) {
-				const err = new Error('not connected');
-				err.code = 'WS_CLOSED';
-				return Promise.reject(err);
-			}
-			const id = `ui-${Date.now()}-${this.__counter++}`;
-			return new Promise((resolve, reject) => {
-				const waiter = { resolve, reject, viaRtc: false };
-				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
-				if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
-				const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
-				waiter.timer = setTimeout(() => {
-					this.__pending.delete(id);
-					const err = new Error('rpc timeout');
-					err.code = 'RPC_TIMEOUT';
-					reject(err);
-				}, timeoutMs);
-				this.__pending.set(id, waiter);
-				try {
-					this.__ws.send(JSON.stringify({ type: 'req', id, method, params }));
-				}
-				catch {
-					this.__pending.delete(id);
-					if (waiter.timer) clearTimeout(waiter.timer);
-					const err = new Error('ws send failed');
-					err.code = 'WS_SEND_FAILED';
-					reject(err);
-				}
-			});
+		// transportMode === 'ws' 或 transportMode === null (协商中) 均走 WS 兜底
+		if (!this.__ws || this.__ws.readyState !== 1) {
+			const err = new Error('not connected');
+			err.code = 'WS_CLOSED';
+			return Promise.reject(err);
 		}
-
-		// transportMode === null: 连接中
-		const err = new Error('Not connected');
-		err.code = 'NOT_CONNECTED';
-		return Promise.reject(err);
-	}
-
-	/**
+		const id = `ui-${Date.now()}-${this.__counter++}`;
+		return new Promise((resolve, reject) => {
+			const waiter = { resolve, reject, viaRtc: false };
+			if (options.onAccepted) waiter.onAccepted = options.onAccepted;
+			if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
+			const timeoutMs = options.timeout ?? DEFAULT_RPC_TIMEOUT_MS;
+			waiter.timer = setTimeout(() => {
+				this.__pending.delete(id);
+				const err = new Error('rpc timeout');
+				err.code = 'RPC_TIMEOUT';
+				reject(err);
+			}, timeoutMs);
+			this.__pending.set(id, waiter);
+			try {
+				this.__ws.send(JSON.stringify({ type: 'req', id, method, params }));
+			}
+			catch {
+				this.__pending.delete(id);
+				if (waiter.timer) clearTimeout(waiter.timer);
+				const err = new Error('ws send failed');
+				err.code = 'WS_SEND_FAILED';
+				reject(err);
+			}
+		});
+	}	/**
 	 * 发送非 RPC 原始消息（用于 WebRTC 信令等）
 	 * @param {object} payload - 完整消息对象，直接 JSON 序列化发送
 	 * @returns {boolean} 是否发送成功
@@ -355,7 +347,15 @@ export class BotConnection {
 		}
 
 		// 业务消息（res / event）：RTC 模式下忽略 WS 业务消息
+		// 但需放行属于 WS 发出请求的响应（null→rtc 过渡期间的遗留请求）
 		if (this.__transportMode === 'rtc') {
+			if (payload?.type === 'res' && payload.id) {
+				const waiter = this.__pending.get(payload.id);
+				if (waiter && !waiter.viaRtc) {
+					this.__handleRpcResponse(payload);
+					return;
+				}
+			}
 			console.debug('[BotConn] WS 业务消息忽略(RTC active):',
 				payload.type, payload.id ?? payload.event ?? '');
 			return;
