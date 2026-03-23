@@ -11,11 +11,13 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AgentCard: typeof import('./src/components/dashboard/AgentCard.vue')['default']
     ChatImg: typeof import('./src/components/ChatImg.vue')['default']
     ChatInput: typeof import('./src/components/ChatInput.vue')['default']
     ChatMsgItem: typeof import('./src/components/ChatMsgItem.vue')['default']
     DesktopSidebar: typeof import('./src/components/DesktopSidebar.vue')['default']
     ImgViewDialog: typeof import('./src/components/ImgViewDialog.vue')['default']
+    InstanceOverview: typeof import('./src/components/dashboard/InstanceOverview.vue')['default']
     MainList: typeof import('./src/components/MainList.vue')['default']
     MarkdownBody: typeof import('./src/components/MarkdownBody.vue')['default']
     MobileBottomTabs: typeof import('./src/components/MobileBottomTabs.vue')['default']
