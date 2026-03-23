@@ -4,29 +4,29 @@
  */
 
 /**
- * @typedef {{ id: string, label: string, icon: string, matchTools?: string[], matchSpecial?: string }} CapabilityDef
+ * @typedef {{ id: string, labelKey: string, icon: string, matchTools?: string[], matchSpecial?: string }} CapabilityDef
  */
 
 /** @type {CapabilityDef[]} */
 export const CAPABILITY_MAP = [
-	{ id: 'web_search', label: '联网搜索', icon: '🔍', matchTools: ['web_search', 'web_fetch'] },
-	{ id: 'code_exec', label: '执行代码', icon: '💻', matchTools: ['exec', 'process'] },
-	{ id: 'file_ops', label: '文件读写', icon: '📁', matchTools: ['read', 'write', 'edit', 'apply_patch'] },
-	{ id: 'image_understanding', label: '图片理解', icon: '👁️', matchTools: ['image'] },
-	{ id: 'image_generation', label: '图片生成', icon: '🎨', matchTools: ['image_generate'] },
-	{ id: 'memory', label: '长期记忆', icon: '📝', matchTools: ['memory_search', 'memory_get'] },
-	{ id: 'team', label: '团队协作', icon: '👥', matchTools: ['sessions_spawn', 'subagents'] },
-	{ id: 'scheduler', label: '定时任务', icon: '⏰', matchTools: ['cron'] },
-	{ id: 'browser', label: '浏览器控制', icon: '🌐', matchTools: ['browser'] },
-	{ id: 'messaging', label: '消息通知', icon: '💬', matchTools: ['message'] },
-	{ id: 'tts', label: '语音对话', icon: '🗣️', matchSpecial: 'tts.enabled' },
+	{ id: 'web_search', labelKey: 'dashboard.cap.webSearch', icon: '🔍', matchTools: ['web_search', 'web_fetch'] },
+	{ id: 'code_exec', labelKey: 'dashboard.cap.codeExec', icon: '💻', matchTools: ['exec', 'process'] },
+	{ id: 'file_ops', labelKey: 'dashboard.cap.fileOps', icon: '📁', matchTools: ['read', 'write', 'edit', 'apply_patch'] },
+	{ id: 'image_understanding', labelKey: 'dashboard.cap.imageUnderstanding', icon: '👁️', matchTools: ['image'] },
+	{ id: 'image_generation', labelKey: 'dashboard.cap.imageGeneration', icon: '🎨', matchTools: ['image_generate'] },
+	{ id: 'memory', labelKey: 'dashboard.cap.memory', icon: '📝', matchTools: ['memory_search', 'memory_get'] },
+	{ id: 'team', labelKey: 'dashboard.cap.team', icon: '👥', matchTools: ['sessions_spawn', 'subagents'] },
+	{ id: 'scheduler', labelKey: 'dashboard.cap.scheduler', icon: '⏰', matchTools: ['cron'] },
+	{ id: 'browser', labelKey: 'dashboard.cap.browser', icon: '🌐', matchTools: ['browser'] },
+	{ id: 'messaging', labelKey: 'dashboard.cap.messaging', icon: '💬', matchTools: ['message'] },
+	{ id: 'tts', labelKey: 'dashboard.cap.tts', icon: '🗣️', matchSpecial: 'tts.enabled' },
 ];
 
 /**
  * 将工具 ID 列表 + TTS 状态映射为能力标签数组
  * @param {string[]} toolIds - gateway 返回的工具 ID 列表
  * @param {boolean} [ttsEnabled=false] - TTS 是否启用
- * @returns {{ id: string, label: string, icon: string }[]}
+ * @returns {{ id: string, labelKey: string, icon: string }[]}
  */
 export function mapToolsToCapabilities(toolIds, ttsEnabled = false) {
 	const ids = Array.isArray(toolIds) ? toolIds : [];
@@ -40,5 +40,5 @@ export function mapToolsToCapabilities(toolIds, ttsEnabled = false) {
 			}
 			return false;
 		})
-		.map(({ id, label, icon }) => ({ id, label, icon }));
+		.map(({ id, labelKey, icon }) => ({ id, labelKey, icon }));
 }

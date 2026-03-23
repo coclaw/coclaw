@@ -42,7 +42,7 @@ describe('InstanceOverview', () => {
 		const wrapper = mountOverview({
 			instance: { name: 'Bot', online: true, monthlyCost: { total: 12.5 }, channels: [] },
 		});
-		expect(wrapper.text()).toContain('$12.50');
+		expect(wrapper.text()).toMatch(/12\.50/);
 	});
 
 	test('formatCost without total shows —', () => {

@@ -13,12 +13,20 @@
 
 			<p v-if="!loading && !bots.length" class="text-sm text-muted">{{ $t('bots.noBot') }}</p>
 
-			<div v-for="bot in bots" :key="bot.id" class="space-y-4">
+			<div v-for="bot in bots" :key="bot.id" :data-testid="`bot-${bot.id}`" class="space-y-4">
 				<InstanceOverview
 					v-if="getDashboardData(bot.id)?.instance"
 					:instance="getDashboardData(bot.id).instance"
 					:agent-count="getDashboardData(bot.id).agents?.length ?? 0"
 				/>
+				<!-- 离线 / 数据未加载时的 fallback header -->
+				<div v-else class="rounded-xl bg-elevated p-4 sm:p-5">
+					<div class="flex items-center gap-2">
+						<span class="inline-block size-2.5 rounded-full bg-gray-500"></span>
+						<h2 class="text-lg font-semibold">{{ bot.name }}</h2>
+						<UBadge color="neutral" variant="subtle" size="xs">{{ $t('dashboard.offline') }}</UBadge>
+					</div>
+				</div>
 
 				<div class="flex justify-end">
 					<UButton

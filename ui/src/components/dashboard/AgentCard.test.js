@@ -27,7 +27,7 @@ const baseAgent = {
 	emoji: '🤖',
 	theme: '#3b82f6',
 	modelTags: [{ label: 'Claude 3', type: 'name' }],
-	capabilities: [{ id: 'web_search', label: '联网搜索', icon: '🔍' }],
+	capabilities: [{ id: 'web_search', labelKey: 'dashboard.cap.webSearch', icon: '🔍' }],
 	totalTokens: 1500,
 	activeSessions: 2,
 	lastActivity: new Date(Date.now() - 3600000).toISOString(),
@@ -77,7 +77,7 @@ describe('AgentCard', () => {
 	test('capability badges rendered', () => {
 		const wrapper = mountCard({ agent: baseAgent, online: true });
 		expect(wrapper.text()).toContain('🔍');
-		expect(wrapper.text()).toContain('联网搜索');
+		expect(wrapper.text()).toContain('dashboard.cap.webSearch');
 	});
 
 	test('formatTokens 1500 → 1.5K', () => {

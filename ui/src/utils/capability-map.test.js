@@ -25,7 +25,7 @@ describe('mapToolsToCapabilities', () => {
 		const result = mapToolsToCapabilities([], true);
 		expect(result).toHaveLength(1);
 		expect(result[0].id).toBe('tts');
-		expect(result[0].label).toBe('语音对话');
+		expect(result[0].labelKey).toBe('dashboard.cap.tts');
 	});
 
 	test('ttsEnabled=false 时不包含语音标签', () => {
@@ -49,7 +49,7 @@ describe('mapToolsToCapabilities', () => {
 
 	test('返回对象只包含 id, label, icon 字段', () => {
 		const result = mapToolsToCapabilities(['web_search']);
-		expect(Object.keys(result[0]).sort()).toEqual(['icon', 'id', 'label']);
+		expect(Object.keys(result[0]).sort()).toEqual(['icon', 'id', 'labelKey']);
 	});
 
 	test('null 输入 → 返回空数组', () => {

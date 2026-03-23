@@ -32,7 +32,7 @@ import { generateModelTags } from '../utils/model-tags.js';
  *   emoji: string|null,
  *   theme: string|null,
  *   modelTags: import('../utils/model-tags.js').ModelTag[],
- *   capabilities: { id: string, label: string, icon: string }[],
+ *   capabilities: { id: string, labelKey: string, icon: string }[],
  *   totalTokens: number,
  *   activeSessions: number,
  *   lastActivity: string|null,
@@ -222,6 +222,9 @@ export const useDashboardStore = defineStore('dashboard', {
 						: null;
 
 					const toolIds = extractToolIds(toolsCatalog);
+					// TODO(phase2): 当前使用实例级 status.model 给所有 agent 生成 model tag。
+					// 多 agent 不同模型场景下会显示错误。Phase 2 改为通过
+					// agent.identity.get 获取 per-agent 模型配置。
 					const currentModel = findCurrentModel(status?.model, modelCatalog);
 					const agentSessions = filterSessionsByAgent(sessionList, agent.id);
 					const sessionStats = computeSessionStats(agentSessions);

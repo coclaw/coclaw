@@ -25,15 +25,15 @@
 
 			<!-- 模型标签 -->
 			<div v-if="agent.modelTags?.length" class="flex flex-wrap gap-1.5">
-				<UBadge v-for="tag in agent.modelTags" :key="tag.label" color="primary" variant="subtle" size="xs">
-					<span v-if="tag.icon" class="mr-0.5">{{ tag.icon }}</span>{{ tag.label }}
+				<UBadge v-for="tag in agent.modelTags" :key="tag.labelKey || tag.label" color="primary" variant="subtle" size="xs">
+					<span v-if="tag.icon" class="mr-0.5">{{ tag.icon }}</span>{{ tag.label || $t(tag.labelKey, tag.labelParams || {}) }}
 				</UBadge>
 			</div>
 
 			<!-- 能力标签 -->
 			<div v-if="agent.capabilities?.length" class="flex flex-wrap gap-1.5">
 				<UBadge v-for="cap in agent.capabilities" :key="cap.id" color="neutral" variant="soft" size="xs">
-					<span class="mr-0.5">{{ cap.icon }}</span>{{ cap.label }}
+					<span class="mr-0.5">{{ cap.icon }}</span>{{ $t(cap.labelKey) }}
 				</UBadge>
 			</div>
 
@@ -76,6 +76,7 @@ export default {
 			if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
 			return String(n);
 		},
+		// 使用 i18n key 格式化相对时间，避免引入 dayjs 等外部依赖
 		formatTimeAgo(iso) {
 			if (!iso) return '—';
 			const diff = (Date.now() - new Date(iso).getTime()) / 1000;
