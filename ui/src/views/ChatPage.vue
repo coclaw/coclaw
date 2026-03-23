@@ -44,8 +44,12 @@
 				<div v-else-if="awaitingAgent" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('chat.connecting') }}
 				</div>
+				<!-- 消息分页加载状态提示 -->
+				<div v-if="chatStore.messagesLoading" class="px-4 py-3 text-center text-xs text-muted">
+					{{ $t('chat.loading') }}
+				</div>
 				<!-- 历史加载状态提示 -->
-				<div v-if="chatStore.historyLoading" class="px-4 py-3 text-center text-xs text-muted">
+				<div v-else-if="chatStore.historyLoading" class="px-4 py-3 text-center text-xs text-muted">
 					{{ $t('chat.loading') }}
 				</div>
 				<div v-else-if="showNoMoreHint" class="px-4 pt-3 pb-2 text-center text-xs text-muted">
@@ -250,6 +254,8 @@ export default {
 		/** 是否还有未加载的更早历史 session */
 		hasMoreHistory() {
 			if (this.isTopicRoute) return false;
+			// 当前 session 还有更早消息，或有历史 session 可加载
+			if (this.chatStore.hasMoreMessages) return true;
 			return !this.chatStore.historyExhausted
 				&& this.chatStore.historySessionIds.length > 0
 				&& !this.chatStore.loading;
@@ -634,6 +640,21 @@ export default {
 		},
 
 		async __loadMoreHistory() {
+			// 优先加载当前 session 内的更早消息
+			if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
+				const el = this.$refs.scrollContainer;
+				const prevHeight = el?.scrollHeight ?? 0;
+				const loaded = await this.chatStore.loadOlderMessages();
+				if (loaded && el) {
+					// 保持滚动位置（新内容 prepend 后 scrollHeight 增加）
+					this.$nextTick(() => {
+						const newHeight = el.scrollHeight;
+						el.scrollTop += (newHeight - prevHeight);
+					});
+				}
+				return;
+			}
+
 			if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
 				if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
 					this.showNoMoreHint = true;
