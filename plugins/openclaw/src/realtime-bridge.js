@@ -10,7 +10,6 @@ import {
 	buildDeviceAuthPayloadV3,
 } from './device-identity.js';
 import { getRuntime } from './runtime.js';
-import { WebRtcPeer } from './webrtc-peer.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -699,16 +698,17 @@ export class RealtimeBridge {
 					return;
 				}
 				if (payload?.type?.startsWith('rtc:')) {
-					if (!this.webrtcPeer) {
-						this.webrtcPeer = new WebRtcPeer({
-							onSend: (msg) => this.__forwardToServer(msg),
-							logger: this.logger,
-						});
-					}
 					try {
+						if (!this.webrtcPeer) {
+							const { WebRtcPeer } = await import('./webrtc-peer.js');
+							this.webrtcPeer = new WebRtcPeer({
+								onSend: (msg) => this.__forwardToServer(msg),
+								logger: this.logger,
+							});
+						}
 						await this.webrtcPeer.handleSignaling(payload);
 					} catch (err) {
-						this.logger.warn?.(`[coclaw/rtc] signaling error: ${err?.message}`);
+						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found): ${err?.message}`);
 					}
 					return;
 				}
