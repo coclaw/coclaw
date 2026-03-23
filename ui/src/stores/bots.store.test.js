@@ -23,6 +23,13 @@ vi.mock('../utils/plugin-version.js', () => ({
 	MIN_PLUGIN_VERSION: '0.4.0',
 }));
 
+const mockInitRtcForBot = vi.fn().mockResolvedValue(undefined);
+const mockCloseRtcForBot = vi.fn();
+vi.mock('../services/webrtc-connection.js', () => ({
+	initRtcForBot: (...args) => mockInitRtcForBot(...args),
+	closeRtcForBot: (...args) => mockCloseRtcForBot(...args),
+}));
+
 import { listBots } from '../services/bots.api.js';
 import { useAgentsStore } from './agents.store.js';
 import { useBotsStore, __resetAwaitingConnIds } from './bots.store.js';
@@ -33,6 +40,8 @@ beforeEach(() => {
 	setActivePinia(createPinia());
 	vi.clearAllMocks();
 	mockManager.get.mockReset();
+	mockInitRtcForBot.mockReset().mockResolvedValue(undefined);
+	mockCloseRtcForBot.mockReset();
 	__resetAwaitingConnIds();
 });
 
@@ -446,5 +455,69 @@ describe('loadBots', () => {
 
 		// on should be called only once for the same botId
 		expect(fakeConn.on).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('WebRTC 集成', () => {
+	test('__listenForReady 中为已 connected 的 bot 调用 initRtcForBot', async () => {
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+
+		await store.loadBots();
+
+		await vi.waitFor(() => {
+			expect(mockInitRtcForBot).toHaveBeenCalledWith('1', fakeConn);
+		});
+	});
+
+	test('__listenForReady 中为 connecting 的 bot 在就绪后调用 initRtcForBot', async () => {
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		let stateCallback;
+		const fakeConn = {
+			state: 'connecting',
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			off: vi.fn(),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
+
+		await store.loadBots();
+		expect(mockInitRtcForBot).not.toHaveBeenCalled();
+
+		stateCallback('connected');
+
+		await vi.waitFor(() => {
+			expect(mockInitRtcForBot).toHaveBeenCalledWith('2', fakeConn);
+		});
+	});
+
+	test('removeBotById 调用 closeRtcForBot', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '5', name: 'Bot' }]);
+		store.removeBotById('5');
+
+		expect(mockCloseRtcForBot).toHaveBeenCalledWith('5');
+	});
+
+	test('state 初始包含 rtcStates 和 rtcCandidateTypes', () => {
+		const store = useBotsStore();
+		expect(store.rtcStates).toEqual({});
+		expect(store.rtcCandidateTypes).toEqual({});
 	});
 });

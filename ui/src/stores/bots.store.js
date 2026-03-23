@@ -6,6 +6,7 @@ import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
+import { initRtcForBot, closeRtcForBot } from '../services/webrtc-connection.js';
 
 // 跟踪已注册 state 监听的 botId，避免重复注册
 const _awaitingConnIds = new Set();
@@ -23,6 +24,10 @@ export const useBotsStore = defineStore('bots', {
 		pluginVersionOk: {},
 		/** 各 bot 的插件与 OpenClaw 版本 (botId → { version, clawVersion }) */
 		pluginInfo: {},
+		/** WebRTC 连接状态 (botId → 'idle' | 'connecting' | 'connected' | 'failed' | 'closed') */
+		rtcStates: {},
+		/** WebRTC ICE candidate 类型 (botId → 'host' | 'srflx' | 'relay' | null) */
+		rtcCandidateTypes: {},
 	}),
 	actions: {
 		setBots(items) {
@@ -80,6 +85,7 @@ export const useBotsStore = defineStore('bots', {
 			const id = String(botId ?? '');
 			this.items = this.items.filter((item) => String(item.id) !== id);
 			// 断开对应连接并清理关联 session
+			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
 		},
@@ -117,6 +123,8 @@ export const useBotsStore = defineStore('bots', {
 				if (!versionOk) {
 					console.warn('[bots] plugin version outdated for botId=%s', id);
 				}
+				// WebRTC 连接（非阻塞，不影响后续 agent/session 加载）
+				initRtcForBot(id, conn).catch(() => {});
 				await useAgentsStore().loadAgents(id);
 				useSessionsStore().loadAllSessions();
 				useTopicsStore().loadAllTopics();

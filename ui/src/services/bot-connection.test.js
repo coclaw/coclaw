@@ -911,3 +911,79 @@ describe('BotConnection – visibility change reconnect', () => {
 		expect((mockDoc.__listeners['visibilitychange'] ?? []).length).toBe(0);
 	});
 });
+
+describe('BotConnection – sendRaw()', () => {
+	beforeEach(() => MockWebSocket.reset());
+
+	test('发送成功返回 true', () => {
+		const { conn, ws } = makeConnected();
+		const payload = { type: 'rtc:offer', payload: { sdp: 'test' } };
+		const result = conn.sendRaw(payload);
+		expect(result).toBe(true);
+		expect(ws.sent).toContain(JSON.stringify(payload));
+		conn.disconnect();
+	});
+
+	test('未连接时返回 false', () => {
+		const conn = new BotConnection('bot1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		expect(conn.sendRaw({ type: 'test' })).toBe(false);
+	});
+
+	test('ws.send 抛异常时返回 false', () => {
+		const { conn, ws } = makeConnected();
+		ws.failOnSend = true;
+		expect(conn.sendRaw({ type: 'test' })).toBe(false);
+		conn.disconnect();
+	});
+});
+
+describe('BotConnection – rtc: 事件分发', () => {
+	beforeEach(() => MockWebSocket.reset());
+
+	test('rtc: 前缀消息 emit 到 rtc 事件', () => {
+		const { conn, ws } = makeConnected();
+		const handler = vi.fn();
+		conn.on('rtc', handler);
+		const msg = { type: 'rtc:answer', payload: { sdp: 'answer-sdp' } };
+		ws.simulateMessage(msg);
+		expect(handler).toHaveBeenCalledWith(msg);
+		conn.disconnect();
+	});
+
+	test('rtc:ice 消息也被分发', () => {
+		const { conn, ws } = makeConnected();
+		const handler = vi.fn();
+		conn.on('rtc', handler);
+		const msg = { type: 'rtc:ice', payload: { candidate: 'c1' } };
+		ws.simulateMessage(msg);
+		expect(handler).toHaveBeenCalledWith(msg);
+		conn.disconnect();
+	});
+
+	test('非 rtc: 消息不触发 rtc 事件', () => {
+		const { conn, ws } = makeConnected();
+		const handler = vi.fn();
+		conn.on('rtc', handler);
+		ws.simulateMessage({ type: 'event', event: 'agent', payload: {} });
+		expect(handler).not.toHaveBeenCalled();
+		conn.disconnect();
+	});
+
+	test('pong 消息不触发 rtc 事件', () => {
+		const { conn, ws } = makeConnected();
+		const handler = vi.fn();
+		conn.on('rtc', handler);
+		ws.simulateMessage({ type: 'pong' });
+		expect(handler).not.toHaveBeenCalled();
+		conn.disconnect();
+	});
+
+	test('rtc: 消息不会继续到 event 或 res 处理', () => {
+		const { conn, ws } = makeConnected();
+		const eventHandler = vi.fn();
+		conn.on('event:answer', eventHandler);
+		ws.simulateMessage({ type: 'rtc:answer', payload: { sdp: 'x' } });
+		expect(eventHandler).not.toHaveBeenCalled();
+		conn.disconnect();
+	});
+});

@@ -137,6 +137,20 @@ export class BotConnection {
 		});
 	}
 
+	/**
+	 * 发送非 RPC 原始消息（用于 WebRTC 信令等）
+	 * @param {object} payload - 完整消息对象，直接 JSON 序列化发送
+	 * @returns {boolean} 是否发送成功
+	 */
+	sendRaw(payload) {
+		if (!this.__ws || this.__ws.readyState !== 1) return false;
+		try {
+			this.__ws.send(JSON.stringify(payload));
+			return true;
+		}
+		catch { return false; }
+	}
+
 	/** @param {string} event @param {Function} cb */
 	on(event, cb) {
 		const set = this.__listeners.get(event) ?? new Set();
@@ -221,6 +235,12 @@ export class BotConnection {
 		catch { return; }
 
 		if (payload?.type === 'pong') return;
+
+		// rtc 信令消息 → 转发给 WebRtcConnection
+		if (payload?.type?.startsWith('rtc:')) {
+			this.__emit('rtc', payload);
+			return;
+		}
 
 		// session 过期（server 侧主动通知，预留）
 		if (payload?.type === 'session.expired') {

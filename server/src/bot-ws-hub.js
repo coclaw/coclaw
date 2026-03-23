@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { WebSocketServer } from 'ws';
 
 import { findBotById, findBotByTokenHash, updateBotName } from './repos/bot.repo.js';
+import { genTurnCreds } from './routes/turn.route.js';
 
 const botSockets = new Map();
 const uiSockets = new Map();
@@ -29,6 +30,10 @@ function wsLogDebug(message) {
 		console.debug(`[coclaw/ws] ${message}`);
 	}
 }
+
+function rtcLogInfo(msg) { console.info(`[coclaw/rtc] ${msg}`); }
+function rtcLogWarn(msg) { console.warn(`[coclaw/rtc] ${msg}`); }
+function rtcLogDebug(msg) { if (WS_VERBOSE) console.debug(`[coclaw/rtc] ${msg}`); }
 
 function getWebSocketCloseCode(reason) {
 	if (reason === 'token_revoked' || reason === 'bot_unbound') {
@@ -270,6 +275,15 @@ function forwardToBot(botId, payload) {
 	return true;
 }
 
+function findUiSocketByConnId(botId, connId) {
+	const set = uiSockets.get(botId);
+	if (!set) return null;
+	for (const ws of set) {
+		if (ws.connId === connId && ws.readyState === 1) return ws;
+	}
+	return null;
+}
+
 function onBotMessage(botId, ws, raw) {
 	let payload = null;
 	try {
@@ -285,6 +299,19 @@ function onBotMessage(botId, ws, raw) {
 	// 应用层心跳：直接回 pong，不转发给 UI
 	if (payload.type === 'ping') {
 		try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+		return;
+	}
+
+	// WebRTC 信令：Plugin → 定向投递到指定 UI socket
+	if (payload.type === 'rtc:answer' || payload.type === 'rtc:ice' || payload.type === 'rtc:closed') {
+		const target = findUiSocketByConnId(botId, payload.toConnId);
+		if (target) {
+			try { target.send(JSON.stringify(payload)); } catch {}
+			if (payload.type === 'rtc:answer') rtcLogInfo(`rtc:answer routed to connId=${payload.toConnId}`);
+			else rtcLogDebug(`${payload.type} routed to connId=${payload.toConnId}`);
+		} else {
+			rtcLogWarn(`rtc target not found botId=${botId} connId=${payload.toConnId}`);
+		}
 		return;
 	}
 
@@ -336,6 +363,23 @@ function onUiMessage(botId, ws, raw) {
 		try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
 		return;
 	}
+
+	// WebRTC 信令：UI → 转发到 bot，附上 fromConnId
+	if (payload.type === 'rtc:offer' || payload.type === 'rtc:ice' || payload.type === 'rtc:ready' || payload.type === 'rtc:closed') {
+		payload.fromConnId = ws.connId;
+		if (payload.type === 'rtc:offer' && process.env.TURN_SECRET) {
+			payload.turnCreds = genTurnCreds(String(botId), process.env.TURN_SECRET);
+		}
+		const sent = forwardToBot(botId, payload);
+		if (!sent) {
+			rtcLogDebug(`rtc message dropped, bot offline botId=${botId} type=${payload.type}`);
+		} else {
+			if (payload.type === 'rtc:offer') rtcLogInfo(`rtc:offer forwarded bot=${botId} connId=${ws.connId}`);
+			else rtcLogDebug(`${payload.type} forwarded bot=${botId} connId=${ws.connId}`);
+		}
+		return;
+	}
+
 	const normalized = payload.type === 'rpc.req'
 		? { type: 'req', id: payload.id, method: payload.method, params: payload.params ?? {} }
 		: payload;
@@ -428,7 +472,8 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				const botId = auth.botId;
 				if (role === 'ui') {
 					registerSocket(uiSockets, botId, ws);
-					wsLogInfo(`ui ws connected botId=${botId} userId=${auth.userId ?? 'n/a'} ip=${remoteIp}`);
+					ws.connId = 'c_' + crypto.randomBytes(4).toString('hex');
+					wsLogInfo(`ui ws connected botId=${botId} userId=${auth.userId ?? 'n/a'} ip=${remoteIp} connId=${ws.connId}`);
 					ws.on('message', (raw) => onUiMessage(botId, ws, raw));
 					// UI 侧不做协议级心跳：由 UI 客户端自行维护应用层心跳，
 					// 避免大消息传输时 server 误 terminate UI 连接
@@ -564,3 +609,6 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 		catch {}
 	}
 }
+
+// 测试辅助导出（仅用于单元测试访问内部状态）
+export const __test = { uiSockets, botSockets, onUiMessage, onBotMessage, findUiSocketByConnId };
