@@ -30,6 +30,7 @@ class MockRTCPeerConnection {
 	}
 
 	createDataChannel(label, opts) {
+		const dcListeners = {};
 		const dc = {
 			label,
 			ordered: opts?.ordered,
@@ -37,6 +38,17 @@ class MockRTCPeerConnection {
 			onclose: null,
 			onmessage: null,
 			readyState: 'connecting',
+			bufferedAmount: 0,
+			bufferedAmountLowThreshold: 0,
+			sent: [],
+			send(data) { this.sent.push(data); },
+			addEventListener(event, cb) { (dcListeners[event] ??= []).push(cb); },
+			removeEventListener(event, cb) {
+				if (dcListeners[event]) dcListeners[event] = dcListeners[event].filter((c) => c !== cb);
+			},
+			__fireDcEvent(event) {
+				for (const cb of dcListeners[event] ?? []) cb();
+			},
 		};
 		this.__channels.push(dc);
 		return dc;
@@ -708,18 +720,26 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 		MockRTCPeerConnection.lastInstance = null;
 	});
 
-	test('send() 通过 DataChannel 发送 JSON', async () => {
+	test('send() 通过 DataChannel 发送 JSON（快路径）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
-		dc.sent = [];
-		dc.send = vi.fn((data) => dc.sent.push(data));
 		dc.readyState = 'open';
+		dc.bufferedAmount = 0;
 
-		rtc.send({ type: 'req', id: '1', method: 'test' });
-		expect(dc.send).toHaveBeenCalledWith(JSON.stringify({ type: 'req', id: '1', method: 'test' }));
+		await rtc.send({ type: 'req', id: '1', method: 'test' });
+		expect(dc.sent).toContainEqual(JSON.stringify({ type: 'req', id: '1', method: 'test' }));
+	});
+
+	test('send() DC 未 open 时 reject', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		// readyState 默认 'connecting'
+		await expect(rtc.send({ type: 'req' })).rejects.toThrow('DataChannel not open');
 	});
 
 	test('isReady 返回 DataChannel 状态', async () => {
@@ -769,6 +789,188 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
 		expect(() => dc.onmessage({ data: 'invalid json{' })).not.toThrow();
 		expect(botConn.__onRtcMessage).not.toHaveBeenCalled();
+	});
+});
+
+describe('WebRtcConnection — send 流控', () => {
+	/** 高/低水位与源码一致 */
+	const HIGH = 1024 * 1024;
+
+	/** 创建已连接的 rtc + open 的 DC */
+	async function makeReady() {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		dc.readyState = 'open';
+		dc.bufferedAmount = 0;
+		return { rtc, dc, botConn };
+	}
+
+	beforeEach(() => {
+		pcInstances.length = 0;
+		MockRTCPeerConnection.lastInstance = null;
+	});
+
+	test('bufferedAmount 低于高水位时直接发送（快路径）', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH - 1;
+
+		await rtc.send({ msg: 'hello' });
+		expect(dc.sent).toHaveLength(1);
+		expect(JSON.parse(dc.sent[0])).toEqual({ msg: 'hello' });
+		rtc.close();
+	});
+
+	test('bufferedAmount 达到高水位时排队，bufferedamountlow 后排出', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH; // 达到高水位
+
+		let resolved = false;
+		const p = rtc.send({ msg: 'queued' }).then(() => { resolved = true; });
+		// 还未排出
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+		expect(dc.sent).toHaveLength(0);
+
+		// 模拟缓冲区释放
+		dc.bufferedAmount = 0;
+		dc.__fireDcEvent('bufferedamountlow');
+
+		await p;
+		expect(resolved).toBe(true);
+		expect(dc.sent).toHaveLength(1);
+		expect(JSON.parse(dc.sent[0])).toEqual({ msg: 'queued' });
+		rtc.close();
+	});
+
+	test('多条排队消息按顺序排出', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH;
+
+		const results = [];
+		const p1 = rtc.send({ seq: 1 }).then(() => results.push(1));
+		const p2 = rtc.send({ seq: 2 }).then(() => results.push(2));
+		const p3 = rtc.send({ seq: 3 }).then(() => results.push(3));
+
+		expect(dc.sent).toHaveLength(0);
+
+		dc.bufferedAmount = 0;
+		dc.__fireDcEvent('bufferedamountlow');
+
+		await Promise.all([p1, p2, p3]);
+		expect(results).toEqual([1, 2, 3]);
+		expect(dc.sent).toHaveLength(3);
+		rtc.close();
+	});
+
+	test('排出过程中缓冲区再次达到高水位时暂停，下次事件继续', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH;
+
+		const results = [];
+		const p1 = rtc.send({ seq: 1 }).then(() => results.push(1));
+		const p2 = rtc.send({ seq: 2 }).then(() => results.push(2));
+
+		// 第一次排出：dc.send 后 bufferedAmount 又升高
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			dc.bufferedAmount = HIGH; // 发完一条就满了
+		};
+
+		dc.bufferedAmount = 0;
+		dc.__fireDcEvent('bufferedamountlow');
+
+		await Promise.resolve(); // 让微任务执行
+		expect(results).toEqual([1]); // 只排出 1 条
+		expect(dc.sent).toHaveLength(1);
+
+		// 第二次排出
+		dc.bufferedAmount = 0;
+		dc.__fireDcEvent('bufferedamountlow');
+
+		await Promise.all([p1, p2]);
+		expect(results).toEqual([1, 2]);
+		expect(dc.sent).toHaveLength(2);
+		rtc.close();
+	});
+
+	test('队列非空时新消息追加到队尾（不绕过队列）', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH;
+
+		const results = [];
+		const p1 = rtc.send({ seq: 1 }).then(() => results.push(1));
+
+		// 即使 bufferedAmount 降低了，只要队列非空新消息也应排队
+		dc.bufferedAmount = 0;
+		const p2 = rtc.send({ seq: 2 }).then(() => results.push(2));
+
+		// 触发排出
+		dc.__fireDcEvent('bufferedamountlow');
+
+		await Promise.all([p1, p2]);
+		expect(results).toEqual([1, 2]);
+		rtc.close();
+	});
+
+	test('DC close 时 reject 队列中所有消息', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH;
+
+		const p1 = rtc.send({ seq: 1 });
+		const p2 = rtc.send({ seq: 2 });
+
+		dc.readyState = 'closed';
+		dc.onclose();
+
+		await expect(p1).rejects.toThrow('DataChannel closed');
+		await expect(p2).rejects.toThrow('DataChannel closed');
+	});
+
+	test('close() 时 reject 队列中所有消息', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH;
+
+		const p1 = rtc.send({ seq: 1 });
+		const p2 = rtc.send({ seq: 2 });
+
+		rtc.close();
+
+		await expect(p1).rejects.toThrow('connection closed');
+		await expect(p2).rejects.toThrow('connection closed');
+	});
+
+	test('快路径 dc.send() 抛异常时 reject 而非未捕获异常', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = 0;
+		dc.send = () => { throw new Error('mock send error'); };
+
+		await expect(rtc.send({ msg: 'boom' })).rejects.toThrow('mock send error');
+	});
+
+	test('排出时 dc.send() 抛异常：当前消息 reject 且剩余队列全部 reject', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = HIGH;
+
+		const p1 = rtc.send({ seq: 1 });
+		const p2 = rtc.send({ seq: 2 });
+		const p3 = rtc.send({ seq: 3 });
+
+		// 排出时第一条 send 就抛异常
+		dc.send = () => { throw new Error('send exploded'); };
+		dc.bufferedAmount = 0;
+		dc.__fireDcEvent('bufferedamountlow');
+
+		await expect(p1).rejects.toThrow('send exploded');
+		await expect(p2).rejects.toThrow('DataChannel send failed');
+		await expect(p3).rejects.toThrow('DataChannel send failed');
+	});
+
+	test('setupDataChannelEvents 设置 bufferedAmountLowThreshold', async () => {
+		const { dc } = await makeReady();
+		expect(dc.bufferedAmountLowThreshold).toBe(256 * 1024); // DC_LOW_WATER_MARK
 	});
 });
 

@@ -1079,7 +1079,7 @@ describe('BotConnection – request() via RTC', () => {
 
 	test('transportMode=rtc 时通过 DataChannel 发送', () => {
 		const { conn } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn() };
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
 		conn.setRtc(mockRtc);
 		conn.setTransportMode('rtc');
 
@@ -1101,9 +1101,9 @@ describe('BotConnection – request() via RTC', () => {
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 且 send 抛异常时 reject RTC_SEND_FAILED', async () => {
+	test('transportMode=rtc 且 send 返回 rejected Promise 时 reject RTC_SEND_FAILED', async () => {
 		const { conn } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn(() => { throw new Error('dc error'); }) };
+		const mockRtc = { isReady: true, send: vi.fn().mockRejectedValue(new Error('dc error')) };
 		conn.setRtc(mockRtc);
 		conn.setTransportMode('rtc');
 
@@ -1147,7 +1147,7 @@ describe('BotConnection – __onRtcMessage()', () => {
 
 	test('transportMode=rtc 时处理 RTC res 消息', async () => {
 		const { conn } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn() };
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
 		conn.setRtc(mockRtc);
 		conn.setTransportMode('rtc');
 
@@ -1199,7 +1199,7 @@ describe('BotConnection – WS 消息在 RTC 模式下被忽略', () => {
 
 	test('transportMode=rtc 时忽略 WS 业务消息(res)', () => {
 		const { conn, ws } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn() };
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
 		conn.setRtc(mockRtc);
 		conn.setTransportMode('rtc');
 

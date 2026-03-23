@@ -12,6 +12,11 @@ import { httpClient } from './http.js';
 const MAX_ICE_RESTARTS = 2;
 const MAX_FULL_REBUILDS = 3;
 
+/** 发送流控：高水位（暂停发送），远低于浏览器 16MB 上限 */
+const DC_HIGH_WATER_MARK = 1024 * 1024;
+/** 发送流控：低水位（恢复发送），对应 bufferedAmountLowThreshold */
+const DC_LOW_WATER_MARK = 256 * 1024;
+
 /** @type {Map<string, WebRtcConnection>} botId → WebRtcConnection */
 const rtcInstances = new Map();
 
@@ -146,6 +151,8 @@ export class WebRtcConnection {
 		this.__turnCreds = null;
 		this.__iceRestartCount = 0;
 		this.__rebuildCount = 0;
+		/** @type {{ data: string, resolve: Function, reject: Function }[]} */
+		this.__sendQueue = [];
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -168,6 +175,7 @@ export class WebRtcConnection {
 	/** 关闭连接（主动关闭，不再自动恢复） */
 	close() {
 		this.__removeRtcListener();
+		this.__rejectSendQueue('connection closed');
 		if (this.__pc) {
 			this.__botConn.sendRaw({ type: 'rtc:closed' });
 			this.__pc.close();
@@ -177,9 +185,31 @@ export class WebRtcConnection {
 		this.__setState('closed');
 	}
 
-	/** 通过 DataChannel 发送 JSON */
+	/**
+	 * 通过 DataChannel 发送 JSON（带流控）
+	 * @param {object} payload
+	 * @returns {Promise<void>} resolve 表示数据已提交到 DC 发送缓冲区
+	 */
 	send(payload) {
-		this.__rpcChannel.send(JSON.stringify(payload));
+		const dc = this.__rpcChannel;
+		if (!dc || dc.readyState !== 'open') {
+			return Promise.reject(new Error('DataChannel not open'));
+		}
+		const data = JSON.stringify(payload);
+		// 快路径：队列为空且缓冲区未满 → 直接发送
+		if (this.__sendQueue.length === 0 && dc.bufferedAmount < DC_HIGH_WATER_MARK) {
+			try {
+				dc.send(data);
+				return Promise.resolve();
+			}
+			catch (err) {
+				return Promise.reject(err);
+			}
+		}
+		// 慢路径：排队等待缓冲区释放
+		return new Promise((resolve, reject) => {
+			this.__sendQueue.push({ data, resolve, reject });
+		});
 	}
 
 	/** DataChannel 是否可用 */
@@ -274,6 +304,10 @@ export class WebRtcConnection {
 
 	/** @private */
 	__setupDataChannelEvents(dc) {
+		dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
+		dc.addEventListener('bufferedamountlow', () => {
+			this.__drainSendQueue();
+		});
 		dc.onopen = () => {
 			this.__log('info', 'DataChannel "rpc" opened');
 			this.__botConn.sendRaw({ type: 'rtc:ready' });
@@ -281,7 +315,10 @@ export class WebRtcConnection {
 		};
 		dc.onclose = () => {
 			this.__log('info', 'DataChannel "rpc" closed');
-			if (this.__rpcChannel === dc) this.__rpcChannel = null;
+			if (this.__rpcChannel === dc) {
+				this.__rpcChannel = null;
+				this.__rejectSendQueue('DataChannel closed');
+			}
 		};
 		dc.onmessage = (event) => {
 			try {
@@ -292,6 +329,37 @@ export class WebRtcConnection {
 				console.warn('[rtc] DataChannel 消息解析失败:', err);
 			}
 		};
+	}
+
+	/** @private 缓冲区降到低水位时排出队列 */
+	__drainSendQueue() {
+		const dc = this.__rpcChannel;
+		while (this.__sendQueue.length > 0) {
+			if (!dc || dc.readyState !== 'open') {
+				this.__rejectSendQueue('DataChannel closed');
+				return;
+			}
+			if (dc.bufferedAmount >= DC_HIGH_WATER_MARK) return;
+			const item = this.__sendQueue.shift();
+			try {
+				dc.send(item.data);
+				item.resolve();
+			}
+			catch (err) {
+				item.reject(err);
+				// send 异常通常意味着通道不可用，reject 剩余队列
+				this.__rejectSendQueue('DataChannel send failed');
+				return;
+			}
+		}
+	}
+
+	/** @private reject 队列中所有待发送消息 */
+	__rejectSendQueue(msg) {
+		const queue = this.__sendQueue.splice(0);
+		for (const { reject } of queue) {
+			reject(new Error(msg));
+		}
 	}
 
 	/** @private 获取并记录实际 ICE candidate 类型 */

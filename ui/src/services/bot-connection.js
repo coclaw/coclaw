@@ -165,16 +165,15 @@ export class BotConnection {
 					reject(err);
 				}, timeoutMs);
 				this.__pending.set(id, waiter);
-				try {
-					this.__rtc.send({ type: 'req', id, method, params });
-				}
-				catch {
-					this.__pending.delete(id);
-					clearTimeout(waiter.timer);
-					const err = new Error('rtc send failed');
-					err.code = 'RTC_SEND_FAILED';
-					reject(err);
-				}
+				this.__rtc.send({ type: 'req', id, method, params })
+					.catch(() => {
+						if (!this.__pending.has(id)) return;
+						this.__pending.delete(id);
+						clearTimeout(waiter.timer);
+						const err = new Error('rtc send failed');
+						err.code = 'RTC_SEND_FAILED';
+						reject(err);
+					});
 			});
 		}
 
