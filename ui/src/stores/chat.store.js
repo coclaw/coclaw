@@ -53,6 +53,7 @@ export const useChatStore = defineStore('chat', {
 		__slashCommandTimer: null,
 		__slashCommandResolve: null,
 		__slashCommandReject: null,
+		__connStateHandler: null,
 	}),
 	getters: {
 		currentSessionKey() {
@@ -105,10 +106,12 @@ export const useChatStore = defineStore('chat', {
 			if (!conn || conn.state !== 'connected') {
 				console.debug('[chat] activateSession: connection not ready, stay loading');
 				this.loading = true;
+				this.__registerConnStateListener();
 				return;
 			}
 
 			await this.loadMessages();
+			this.__registerConnStateListener();
 			this.__loadChatHistory();
 		},
 
@@ -154,6 +157,7 @@ export const useChatStore = defineStore('chat', {
 				return;
 			}
 			await this.loadMessages();
+			this.__registerConnStateListener();
 		},
 
 		/**
@@ -161,7 +165,7 @@ export const useChatStore = defineStore('chat', {
 		 * @param {object} [opts]
 		 * @param {boolean} [opts.silent] - 静默刷新，不设 loading 状态
 		 */
-		async loadMessages({ silent = false } = {}) {
+		async loadMessages({ silent = false, limit: limitOverride } = {}) {
 			if (this.topicMode) {
 				return this.__loadTopicMessages({ silent });
 			}
@@ -191,7 +195,7 @@ export const useChatStore = defineStore('chat', {
 			}
 			try {
 				// 通过 OC 原生 sessions.get 加载当前 session 最近 N 条消息
-				const limit = MSG_PAGE_SIZE;
+				const limit = limitOverride || MSG_PAGE_SIZE;
 				const result = await conn.request('sessions.get', {
 					key: this.chatSessionKey,
 					limit,
@@ -747,6 +751,7 @@ export const useChatStore = defineStore('chat', {
 				this.__cancelReject = null;
 			}
 			this.__cleanupStreaming();
+			this.__unregisterConnStateListener();
 			// 清理斜杠命令状态
 			this.__cleanupSlashCommand(this.__getConnection());
 			this.sessionId = '';
@@ -859,6 +864,36 @@ export const useChatStore = defineStore('chat', {
 			finally {
 				this.historyLoading = false;
 			}
+		},
+
+		// --- WS 重连监听 ---
+
+		/**
+		 * 注册连接状态监听，WS 重连后自动 reload 消息
+		 * 在 activateSession / activateTopic 中调用
+		 */
+		__registerConnStateListener() {
+			this.__unregisterConnStateListener();
+			const conn = this.__getConnection();
+			if (!conn) return;
+			const handler = (newState) => {
+				if (newState === 'connected') {
+					// sending 时 sendMessage 内部已有重连恢复逻辑，不重复 load
+					if (this.sending) return;
+					console.debug('[chat] ws reconnected, reloading messages');
+					this.loadMessages({ silent: true, limit: this.__loadedMsgLimit });
+				}
+			};
+			this.__connStateHandler = handler;
+			conn.on('state', handler);
+		},
+
+		/** 移除连接状态监听 */
+		__unregisterConnStateListener() {
+			if (!this.__connStateHandler) return;
+			const conn = this.__getConnection();
+			if (conn) conn.off('state', this.__connStateHandler);
+			this.__connStateHandler = null;
 		},
 
 		// --- agent 事件处理（内部方法，通过箭头函数绑定 this） ---
