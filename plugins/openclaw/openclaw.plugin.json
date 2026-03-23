@@ -2,7 +2,6 @@
   "id": "openclaw-coclaw",
   "name": "CoClaw",
   "description": "OpenClaw CoClaw channel plugin for remote chat",
-  "channels": ["coclaw"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
