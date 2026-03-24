@@ -5,9 +5,9 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { botPingTick, createUiWsTicket, pruneUiTickets, __test } from './bot-ws-hub.js';
+import { botPingTick, createUiWsTicket, listOnlineBotIds, pruneUiTickets, botStatusEmitter, __test } from './bot-ws-hub.js';
 
-const { uiSockets, botSockets, onUiMessage, onBotMessage, findUiSocketByConnId } = __test;
+const { uiSockets, botSockets, pendingOffline, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId } = __test;
 
 const MAX_MISS = 4;
 
@@ -396,4 +396,132 @@ test('多 bot 场景：rtc:offer 精确转发到各自 bot', () => {
 
 	cleanupSockets('bot1');
 	cleanupSockets('bot2');
+});
+
+// --- Bot offline grace period ---
+
+function cleanupGrace(botId) {
+	cleanupSockets(botId);
+	if (pendingOffline.has(botId)) {
+		clearTimeout(pendingOffline.get(botId));
+		pendingOffline.delete(botId);
+	}
+}
+
+test('listOnlineBotIds 包含 grace period 中的 bot', () => {
+	// 模拟 grace period：pendingOffline 有 timer，botSockets 无 socket
+	const timer = setTimeout(() => {}, 60_000);
+	pendingOffline.set('grace-bot', timer);
+
+	const ids = listOnlineBotIds();
+	assert.ok(ids.has('grace-bot'), 'grace period bot 应出现在 online 列表中');
+
+	clearTimeout(timer);
+	pendingOffline.delete('grace-bot');
+});
+
+test('listOnlineBotIds 同时包含 connected 和 grace period 的 bot', () => {
+	const ws = createMockWs();
+	setupSockets('real-bot', { bot: [ws] });
+	const timer = setTimeout(() => {}, 60_000);
+	pendingOffline.set('grace-bot', timer);
+
+	const ids = listOnlineBotIds();
+	assert.ok(ids.has('real-bot'));
+	assert.ok(ids.has('grace-bot'));
+
+	cleanupGrace('real-bot');
+	cleanupGrace('grace-bot');
+});
+
+test('grace period 过期后 botStatusEmitter 发出 offline 事件', async () => {
+	const events = [];
+	const listener = (evt) => events.push(evt);
+	botStatusEmitter.on('status', listener);
+
+	// 用极短的 timeout 模拟 grace 过期
+	const timer = setTimeout(() => {
+		pendingOffline.delete('expire-bot');
+		if (!botSockets.has('expire-bot')) {
+			botStatusEmitter.emit('status', { botId: 'expire-bot', online: false });
+		}
+	}, 10);
+	pendingOffline.set('expire-bot', timer);
+
+	// 等 grace 过期
+	await new Promise((r) => setTimeout(r, 50));
+
+	assert.equal(events.length, 1);
+	assert.equal(events[0].botId, 'expire-bot');
+	assert.equal(events[0].online, false);
+	assert.ok(!pendingOffline.has('expire-bot'));
+
+	botStatusEmitter.removeListener('status', listener);
+});
+
+test('grace period 内 bot 重连：取消 pending offline，不发 offline 事件', async () => {
+	const events = [];
+	const listener = (evt) => events.push(evt);
+	botStatusEmitter.on('status', listener);
+
+	// 设一个较长的 grace timer
+	const timer = setTimeout(() => {
+		pendingOffline.delete('reconn-bot');
+		if (!botSockets.has('reconn-bot')) {
+			botStatusEmitter.emit('status', { botId: 'reconn-bot', online: false });
+		}
+	}, 200);
+	pendingOffline.set('reconn-bot', timer);
+
+	// 模拟重连：清除 pending + 注册新 socket
+	clearTimeout(pendingOffline.get('reconn-bot'));
+	pendingOffline.delete('reconn-bot');
+	const ws = createMockWs();
+	setupSockets('reconn-bot', { bot: [ws] });
+
+	// 等超过原 grace 时间
+	await new Promise((r) => setTimeout(r, 250));
+
+	// 不应有 offline 事件
+	const offlineEvents = events.filter((e) => e.botId === 'reconn-bot' && !e.online);
+	assert.equal(offlineEvents.length, 0, '重连后不应发出 offline 事件');
+
+	botStatusEmitter.removeListener('status', listener);
+	cleanupGrace('reconn-bot');
+});
+
+test('grace period 过期但 bot 已重连：不发 offline 事件', async () => {
+	const events = [];
+	const listener = (evt) => events.push(evt);
+	botStatusEmitter.on('status', listener);
+
+	// 先注册 socket（bot 已在线）
+	const ws = createMockWs();
+	setupSockets('online-bot', { bot: [ws] });
+
+	// 模拟 grace timer 到期（但 botSockets 中仍有 socket）
+	const timer = setTimeout(() => {
+		pendingOffline.delete('online-bot');
+		if (!botSockets.has('online-bot')) {
+			botStatusEmitter.emit('status', { botId: 'online-bot', online: false });
+		}
+	}, 10);
+	pendingOffline.set('online-bot', timer);
+
+	await new Promise((r) => setTimeout(r, 50));
+
+	const offlineEvents = events.filter((e) => e.botId === 'online-bot' && !e.online);
+	assert.equal(offlineEvents.length, 0, 'bot 在线时 grace 过期不应发 offline');
+
+	botStatusEmitter.removeListener('status', listener);
+	cleanupGrace('online-bot');
+});
+
+// --- 管理性断连 close code 跳过 grace period ---
+
+test('getWebSocketCloseCode: token_revoked/bot_unbound → 4001, bot_blocked → 4003', () => {
+	assert.equal(getWebSocketCloseCode('token_revoked'), 4001);
+	assert.equal(getWebSocketCloseCode('bot_unbound'), 4001);
+	assert.equal(getWebSocketCloseCode('bot_blocked'), 4003);
+	assert.equal(getWebSocketCloseCode('other'), 4000);
 });
