@@ -9,7 +9,7 @@ import { useBotConnections } from '../services/bot-connection-manager.js';
 import { fileToBase64 } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 
-const MSG_PAGE_SIZE = 50;
+const MSG_PAGE_SIZE = 20;
 
 export const useChatStore = defineStore('chat', {
 	state: () => ({
