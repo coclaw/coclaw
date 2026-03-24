@@ -62,6 +62,7 @@ services:
       DB_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       TURN_SECRET: ${TURN_SECRET}
+      TURN_PORT: ${TURN_PORT:-3478}
       APP_DOMAIN: ${APP_DOMAIN}
       COCLAW_WS_DEBUG: ${COCLAW_WS_DEBUG:-}
     expose:
@@ -121,8 +122,6 @@ services:
       --max-port=${TURN_MAX_PORT:-51000}
       --fingerprint
       --no-cli
-      --no-stdout-log
-      --syslog
 
   certbot-renew:
     image: m.daocloud.io/docker.io/certbot/certbot:latest

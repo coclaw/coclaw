@@ -23,14 +23,15 @@ export function genTurnCreds(identity, secret, ttl = 86400) {
 	const hmac = crypto.createHmac('sha1', secret);
 	hmac.update(username);
 	const domain = process.env.APP_DOMAIN;
+	const port = process.env.TURN_PORT || '3478';
 	return {
 		username,
 		credential: hmac.digest('base64'),
 		ttl,
 		urls: [
-			`stun:${domain}:3478`,
-			`turn:${domain}:3478?transport=udp`,
-			`turn:${domain}:3478?transport=tcp`,
+			`stun:${domain}:${port}`,
+			`turn:${domain}:${port}?transport=udp`,
+			`turn:${domain}:${port}?transport=tcp`,
 		],
 	};
 }

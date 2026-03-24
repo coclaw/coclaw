@@ -41,6 +41,26 @@ test('genTurnCreds: urls 使用 APP_DOMAIN', () => {
 	}
 });
 
+test('genTurnCreds: urls 默认使用 3478 端口', () => {
+	delete process.env.TURN_PORT;
+	const creds = genTurnCreds('u', 'secret');
+	for (const url of creds.urls) {
+		assert.ok(url.includes(':3478'), `url should contain :3478: ${url}`);
+	}
+});
+
+test('genTurnCreds: urls 使用自定义 TURN_PORT', () => {
+	process.env.TURN_PORT = '5349';
+	try {
+		const creds = genTurnCreds('u', 'secret');
+		for (const url of creds.urls) {
+			assert.ok(url.includes(':5349'), `url should contain :5349: ${url}`);
+		}
+	} finally {
+		delete process.env.TURN_PORT;
+	}
+});
+
 test('genTurnCreds: 自定义 ttl', () => {
 	const creds = genTurnCreds('u', 'secret', 7200);
 	assert.equal(creds.ttl, 7200);
