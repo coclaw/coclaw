@@ -48,6 +48,7 @@ deploy/
 | `server` | 后端 API | 默认 |
 | `mysql` | 数据库 | 默认 |
 | `ui-init` | 从 UI 镜像复制静态文件到 static 目录 | 默认 |
+| `coturn` | TURN/STUN 中继（WebRTC），`network_mode: host` | 默认 |
 | `certbot-renew` | 证书自动续期 | `auto-https` |
 | `certbot-init` | 首次证书签发 | `init-cert` |
 
