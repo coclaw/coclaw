@@ -333,17 +333,49 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		rtc.close();
 	});
 
-	test('rtc:ice 信令添加 ICE candidate', async () => {
+	test('rtc:ice 在 answer 之后直接添加 ICE candidate', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
+		// 先设置 answer，等 setRemoteDescription 完成
+		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		await vi.waitFor(() => {
+			expect(MockRTCPeerConnection.lastInstance.__remoteDesc).toBeTruthy();
+		});
 
 		const icePayload = { candidate: 'candidate:456', sdpMid: '0', sdpMLineIndex: 0 };
 		botConn.__fire('rtc', { type: 'rtc:ice', payload: icePayload });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__candidates).toContainEqual(icePayload);
+
+		rtc.close();
+	});
+
+	test('rtc:ice 在 answer 之前暂存，answer 后批量添加', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		// answer 到达前先发 ICE candidates
+		const ice1 = { candidate: 'candidate:111', sdpMid: '0', sdpMLineIndex: 0 };
+		const ice2 = { candidate: 'candidate:222', sdpMid: '0', sdpMLineIndex: 0 };
+		botConn.__fire('rtc', { type: 'rtc:ice', payload: ice1 });
+		botConn.__fire('rtc', { type: 'rtc:ice', payload: ice2 });
+
+		const pc = MockRTCPeerConnection.lastInstance;
+		// answer 前不应添加
+		expect(pc.__candidates).toHaveLength(0);
+
+		// answer 到达后触发排空
+		botConn.__fire('rtc', { type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		await vi.waitFor(() => {
+			expect(pc.__candidates).toHaveLength(2);
+		});
+		expect(pc.__candidates).toContainEqual(ice1);
+		expect(pc.__candidates).toContainEqual(ice2);
 
 		rtc.close();
 	});

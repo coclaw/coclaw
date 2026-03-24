@@ -113,7 +113,9 @@ services:
     command: >-
       turnserver
       --listening-port=${TURN_PORT:-3478}
-      --external-ip=${TURN_EXTERNAL_IP}
+      --listening-ip=${TURN_INTERNAL_IP}
+      --relay-ip=${TURN_INTERNAL_IP}
+      --external-ip=${TURN_EXTERNAL_IP}/${TURN_INTERNAL_IP}
       --realm=${APP_DOMAIN}
       --lt-cred-mech
       --use-auth-secret
@@ -122,6 +124,7 @@ services:
       --max-port=${TURN_MAX_PORT:-51000}
       --fingerprint
       --no-cli
+      --log-file=stdout
 
   certbot-renew:
     image: m.daocloud.io/docker.io/certbot/certbot:latest

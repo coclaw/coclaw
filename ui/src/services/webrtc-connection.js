@@ -153,6 +153,9 @@ export class WebRtcConnection {
 		this.__rebuildCount = 0;
 		/** @type {{ data: string, resolve: Function, reject: Function }[]} */
 		this.__sendQueue = [];
+		/** @type {object[]} answer 到达前暂存的远端 ICE candidates */
+		this.__pendingCandidates = [];
+		this.__remoteDescSet = false;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -230,6 +233,8 @@ export class WebRtcConnection {
 			this.__rpcChannel = null;
 		}
 
+		this.__remoteDescSet = false;
+		this.__pendingCandidates = [];
 		this.__setState('connecting');
 
 		const iceServers = this.__buildIceServers(turnCreds);
@@ -442,9 +447,24 @@ export class WebRtcConnection {
 	__onSignaling(msg) {
 		if (msg.type === 'rtc:answer') {
 			this.__log('info', 'answer received, setting remote description');
-			this.__pc?.setRemoteDescription({ type: 'answer', sdp: msg.payload.sdp });
+			this.__pc?.setRemoteDescription({ type: 'answer', sdp: msg.payload.sdp })
+				.then(() => {
+					this.__remoteDescSet = true;
+					// 排空 answer 到达前暂存的 ICE candidates
+					const pending = this.__pendingCandidates.splice(0);
+					for (const c of pending) {
+						this.__pc?.addIceCandidate(c).catch(() => {});
+					}
+				})
+				.catch((err) => {
+					this.__log('warn', `setRemoteDescription failed: ${err?.message}`);
+				});
 		} else if (msg.type === 'rtc:ice') {
-			this.__pc?.addIceCandidate(msg.payload).catch(() => {});
+			if (!this.__remoteDescSet) {
+				this.__pendingCandidates.push(msg.payload);
+			} else {
+				this.__pc?.addIceCandidate(msg.payload).catch(() => {});
+			}
 		}
 	}
 
