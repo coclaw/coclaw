@@ -87,6 +87,12 @@ const routes = [
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
+				path: 'admin/dashboard',
+				name: 'admin-dashboard',
+				component: () => import('../views/AdminDashboardPage.vue'),
+				meta: { requiresAuth: true, hideMobileNav: true },
+			},
+			{
 				path: 'about',
 				name: 'about',
 				component: AboutPage,

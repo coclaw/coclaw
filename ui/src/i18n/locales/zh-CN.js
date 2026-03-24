@@ -76,6 +76,7 @@ export const zhCNMessages = {
 	},
 	user: {
 		role: '维护者',
+		adminDashboard: '管理员仪表盘',
 	},
 	settings: {
 		title: '设置',
@@ -142,6 +143,16 @@ export const zhCNMessages = {
 		addAgent: '添加 Agent',
 		chat: '对话',
 		sessionNotReady: '会话尚未就绪，请稍后重试',
+	},
+	adminDashboard: {
+		title: '管理员仪表盘',
+		totalUsers: '注册用户',
+		todayNew: '今日新增',
+		todayActive: '今日活跃',
+		totalBots: '已注册 Claw',
+		serverVersion: '服务端版本',
+		topActiveUsers: '最近活跃用户',
+		noData: '暂无数据',
 	},
 	dashboard: {
 		monthlyCost: '本月花费',

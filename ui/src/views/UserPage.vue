@@ -55,11 +55,15 @@ export default {
 			return this.authStore.user?.id || '-';
 		},
 		menuItems() {
-			return getUserMenuItems(this.$t);
+			return getUserMenuItems(this.$t, { isAdmin: this.authStore.user?.level === -100 });
 		},
 	},
 	methods: {
 		onMenuClick(itemId) {
+			if (itemId === 'admin-dashboard') {
+				this.$router.push('/admin/dashboard');
+				return;
+			}
 			if (itemId === 'logout') {
 				this.authStore.logout().then(() => {
 					this.$router.replace('/about');

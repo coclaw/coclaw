@@ -76,6 +76,7 @@ export const enMessages = {
 	},
 	user: {
 		role: 'Maintainer',
+		adminDashboard: 'Admin Dashboard',
 	},
 	settings: {
 		title: 'Settings',
@@ -142,6 +143,16 @@ export const enMessages = {
 		addAgent: 'Add Agent',
 		chat: 'Chat',
 		sessionNotReady: 'Session not ready, please try again later',
+	},
+	adminDashboard: {
+		title: 'Admin Dashboard',
+		totalUsers: 'Total Users',
+		todayNew: 'New Today',
+		todayActive: 'Active Today',
+		totalBots: 'Registered Claws',
+		serverVersion: 'Server Version',
+		topActiveUsers: 'Recently Active Users',
+		noData: 'No data',
 	},
 	dashboard: {
 		monthlyCost: 'Monthly cost',

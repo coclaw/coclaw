@@ -91,7 +91,7 @@ export default {
 	},
 	computed: {
 		userMenuItems() {
-			return getUserMenuItems(this.$t);
+			return getUserMenuItems(this.$t, { isAdmin: this.user?.level === -100 });
 		},
 		userDisplayName() {
 			return getUserDisplayName(this.user);
@@ -100,6 +100,10 @@ export default {
 	methods: {
 		onMenuItemClick(itemId) {
 			this.menuOpen = false;
+			if (itemId === 'admin-dashboard') {
+				this.$router.push('/admin/dashboard');
+				return;
+			}
 			if (itemId === 'logout') {
 				this.$emit('logout');
 				return;

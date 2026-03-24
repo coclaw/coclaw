@@ -8,6 +8,7 @@ import passport from 'passport';
 import { setupPassport } from './config/passport.js';
 import { prisma } from './db/prisma.js';
 import { PrismaSessionStore } from './db/prisma-session-store.js';
+import { adminRouter } from './routes/admin.route.js';
 import { authRouter } from './routes/auth.route.js';
 import { botRouter } from './routes/bot.route.js';
 import { clawRouter } from './routes/claw.route.js';
@@ -88,6 +89,7 @@ export function createApp() {
 		res.status(200).json({ ok: true });
 	});
 
+	app.use('/api/v1/admin', adminRouter);
 	app.use('/api/v1/info', infoRouter);
 	app.use('/api/v1/auth', authRouter);
 	app.use('/api/v1/user', userRouter);
