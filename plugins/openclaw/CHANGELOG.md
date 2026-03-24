@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.8.0
+
+### Minor Changes
+
+- feat: implement file management via WebRTC DataChannel (list/delete/read/write with path security, backpressure flow control, and temp file cleanup)
+
 ## 0.7.1
 
 ### Patch Changes
