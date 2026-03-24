@@ -224,6 +224,11 @@ export default {
 	},
 	computed: {
 		isTouchDevice() {
+			// Capacitor 原生壳：直接判定为触屏设备
+			if (this.envStore.isNative) return true;
+			// 手机浏览器访问：基于平台判断
+			if (this.envStore.isAndroid || this.envStore.isIos) return true;
+			// 桌面端回退到 media query（处理触屏笔记本等边界情况）
 			return this.envStore.isTouch && !this.envStore.canHover;
 		},
 		canSend() {

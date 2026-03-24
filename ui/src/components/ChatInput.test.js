@@ -12,6 +12,21 @@ vi.mock('../composables/use-notify.js', () => ({
 	}),
 }));
 
+// 默认 env store 值（桌面浏览器）
+const defaultEnv = {
+	isNative: false,
+	isAndroid: false,
+	isIos: false,
+	isTouch: false,
+	canHover: true,
+	screen: { geMd: false, ltMd: true },
+};
+let mockEnv = { ...defaultEnv };
+
+vi.mock('../stores/env.store.js', () => ({
+	useEnvStore: () => mockEnv,
+}));
+
 // stub UTextarea / UButton / UIcon
 const UTextareaStub = {
 	props: ['modelValue', 'placeholder', 'disabled', 'autoresize', 'rows', 'maxrows', 'size'],
@@ -57,6 +72,7 @@ describe('ChatInput', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		vi.clearAllMocks();
+		mockEnv = { ...defaultEnv };
 		// 模拟桌面宽度
 		Object.defineProperty(window, 'innerWidth', { value: 1024, writable: true });
 	});
@@ -100,86 +116,59 @@ describe('ChatInput', () => {
 		expect(wrapper.emitted('send')).toBeFalsy();
 	});
 
-	test('Enter on touch device does not trigger send', async () => {
-		// 模拟纯触屏设备：pointer:coarse + hover:none → isTouchDevice=true
-		const origMM = window.matchMedia;
-		window.matchMedia = vi.fn((query) => ({
-			matches: query === '(pointer: coarse)' || query === '(any-pointer: coarse)',
-			// (hover: hover) 返回 false → canHover=false → 纯触屏
-			media: query,
-			addEventListener: vi.fn(),
-			removeEventListener: vi.fn(),
-			addListener: vi.fn(),
-			removeListener: vi.fn(),
-			dispatchEvent: vi.fn(),
-		}));
-
-		const pinia = createPinia();
-		setActivePinia(pinia);
-
-		const wrapper = mount(ChatInput, {
-			props: { modelValue: 'hello', sending: false, disabled: false },
-			global: {
-				plugins: [pinia],
-				stubs: {
-					UTextarea: UTextareaStub,
-					UButton: UButtonStub,
-					UIcon: UIconStub,
-					TouchSpeakOverlay: true,
-				},
-				mocks: { $t: (key) => key },
-			},
-		});
-
+	test('Enter on Capacitor native app does not trigger send (isTouchDevice=true)', async () => {
+		mockEnv = { ...defaultEnv, isNative: true };
+		const wrapper = createWrapper({ modelValue: 'hello' });
+		expect(wrapper.vm.isTouchDevice).toBe(true);
 		const textarea = wrapper.find('textarea');
-		if (textarea.exists()) {
-			await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
-			expect(wrapper.emitted('send')).toBeFalsy();
-		}
-
-		window.matchMedia = origMM;
+		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
+		expect(wrapper.emitted('send')).toBeFalsy();
 	});
 
-	test('Enter on touch laptop triggers send (isTouch=true, canHover=true)', async () => {
-		// 模拟触控笔记本：pointer:coarse + hover:hover → isTouchDevice=false
-		const origMM = window.matchMedia;
-		window.matchMedia = vi.fn((query) => ({
-			matches: query === '(pointer: coarse)'
-				|| query === '(any-pointer: coarse)'
-				|| query === '(hover: hover)',
-			media: query,
-			addEventListener: vi.fn(),
-			removeEventListener: vi.fn(),
-			addListener: vi.fn(),
-			removeListener: vi.fn(),
-			dispatchEvent: vi.fn(),
-		}));
+	test('Enter on mobile browser does not trigger send (isAndroid=true)', async () => {
+		mockEnv = { ...defaultEnv, isAndroid: true };
+		const wrapper = createWrapper({ modelValue: 'hello' });
+		expect(wrapper.vm.isTouchDevice).toBe(true);
+		const textarea = wrapper.find('textarea');
+		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
+		expect(wrapper.emitted('send')).toBeFalsy();
+	});
 
-		const pinia = createPinia();
-		setActivePinia(pinia);
+	test('Enter on iOS browser does not trigger send (isIos=true)', async () => {
+		mockEnv = { ...defaultEnv, isIos: true };
+		const wrapper = createWrapper({ modelValue: 'hello' });
+		expect(wrapper.vm.isTouchDevice).toBe(true);
+		const textarea = wrapper.find('textarea');
+		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
+		expect(wrapper.emitted('send')).toBeFalsy();
+	});
 
-		const wrapper = mount(ChatInput, {
-			props: { modelValue: 'hello', sending: false, disabled: false },
-			global: {
-				plugins: [pinia],
-				stubs: {
-					UTextarea: UTextareaStub,
-					UButton: UButtonStub,
-					UIcon: UIconStub,
-					TouchSpeakOverlay: true,
-				},
-				mocks: { $t: (key) => key },
-			},
-		});
-
-		// isTouchDevice 应为 false（触控笔记本走桌面分支）
+	test('Enter on desktop browser triggers send', async () => {
+		mockEnv = { ...defaultEnv, isNative: false, isAndroid: false, isIos: false, isTouch: false };
+		const wrapper = createWrapper({ modelValue: 'hello' });
 		expect(wrapper.vm.isTouchDevice).toBe(false);
-
 		const textarea = wrapper.find('textarea');
 		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false, isComposing: false });
 		expect(wrapper.emitted('send')).toBeTruthy();
+	});
 
-		window.matchMedia = origMM;
+	test('Enter on touch laptop triggers send (isTouch=true, canHover=true)', async () => {
+		mockEnv = { ...defaultEnv, isNative: false, isAndroid: false, isIos: false, isTouch: true, canHover: true };
+		const wrapper = createWrapper({ modelValue: 'hello' });
+		// 触控笔记本：有 hover 能力，走桌面分支
+		expect(wrapper.vm.isTouchDevice).toBe(false);
+		const textarea = wrapper.find('textarea');
+		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false, isComposing: false });
+		expect(wrapper.emitted('send')).toBeTruthy();
+	});
+
+	test('Enter on pure touch desktop (isTouch=true, canHover=false) does not send', async () => {
+		mockEnv = { ...defaultEnv, isNative: false, isAndroid: false, isIos: false, isTouch: true, canHover: false };
+		const wrapper = createWrapper({ modelValue: 'hello' });
+		expect(wrapper.vm.isTouchDevice).toBe(true);
+		const textarea = wrapper.find('textarea');
+		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
+		expect(wrapper.emitted('send')).toBeFalsy();
 	});
 
 	test('sending=true shows stop button', () => {
