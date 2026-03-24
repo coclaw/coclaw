@@ -5,7 +5,9 @@ import { listOnlineBotIds } from '../bot-ws-hub.js';
 
 const require = createRequire(import.meta.url);
 const { version: serverVersion } = require('../../package.json');
-const { version: pluginVersion } = require('../../../plugins/openclaw/package.json');
+// 容器环境中 plugins 目录不可用，graceful fallback
+let pluginVersion = null;
+try { pluginVersion = require('../../../plugins/openclaw/package.json').version; } catch {}
 
 /**
  * @param {object} [deps] - 依赖注入
