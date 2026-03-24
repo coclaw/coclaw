@@ -28,34 +28,35 @@
 					</div>
 				</div>
 
-				<!-- 连接方式（在线 bot 才显示） -->
-				<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-muted">
-					<span>{{ connLabel(bot.id) }}</span>
-					<button
-						v-if="hasConnDetail(bot.id)"
-						class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
-						@click="toggleDetail(bot.id)"
-					>
-						{{ $t('bots.conn.detailTitle') }}
-						<UIcon :name="expandedDetails[bot.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
-					</button>
+				<!-- 连接信息 + 解绑 -->
+				<div class="flex items-center gap-x-3 gap-y-1 px-1">
+					<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+						<span>{{ connLabel(bot.id) }}</span>
+						<button
+							v-if="hasConnDetail(bot.id)"
+							class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
+							@click="toggleDetail(bot.id)"
+						>
+							{{ $t('bots.conn.detailTitle') }}
+							<UIcon :name="expandedDetails[bot.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
+						</button>
+					</div>
+					<div class="ml-auto">
+						<UButton
+							color="error"
+							variant="soft"
+							size="sm"
+							:loading="unbindingId === bot.id"
+							@click="onUnbindByUser(bot.id)"
+						>
+							{{ $t('bots.unbind') }}
+						</UButton>
+					</div>
 				</div>
 				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted">
 					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol.toUpperCase() }}</p>
 					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol.toUpperCase() }}</p>
 					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
-				</div>
-
-				<div class="flex justify-end">
-					<UButton
-						color="error"
-						variant="soft"
-						size="sm"
-						:loading="unbindingId === bot.id"
-						@click="onUnbindByUser(bot.id)"
-					>
-						{{ $t('bots.unbind') }}
-					</UButton>
 				</div>
 
 				<div class="columns-1 gap-4 sm:columns-2 lg:columns-3 [&>*]:mb-4 [&>*]:break-inside-avoid">
@@ -123,9 +124,18 @@ export default {
 				const info = this.botsStore?.rtcTransportInfo[id];
 				if (!info) return this.$t('bots.conn.rtcConnecting');
 				if (info.localType === 'relay') {
-					return this.$t('bots.conn.rtcRelay', { protocol: (info.relayProtocol ?? 'udp').toUpperCase() });
+					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
+					return rp === 'udp'
+						? this.$t('bots.conn.rtcRelay')
+						: this.$t('bots.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
 				}
-				return this.$t('bots.conn.rtcP2P', { protocol: (info.localProtocol ?? 'udp').toUpperCase() });
+				const isLan = info.localType === 'host';
+				const proto = (info.localProtocol ?? 'udp').toLowerCase();
+				if (proto === 'udp') {
+					return this.$t(isLan ? 'bots.conn.rtcLan' : 'bots.conn.rtcP2P');
+				}
+				const key = isLan ? 'bots.conn.rtcLanProto' : 'bots.conn.rtcP2PProto';
+				return this.$t(key, { protocol: proto.toUpperCase() });
 			}
 			return this.$t('bots.conn.ws');
 		},
