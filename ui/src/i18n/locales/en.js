@@ -155,6 +155,7 @@ export const enMessages = {
 		uiVersion: 'UI Version',
 		pluginVersion: 'Plugin Version',
 		topActiveUsers: 'Recently Active Users',
+		latestRegisteredUsers: 'Latest Registered Users',
 		noData: 'No data',
 	},
 	dashboard: {

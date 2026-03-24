@@ -63,6 +63,25 @@
 							</li>
 						</ul>
 					</div>
+
+					<!-- 最新注册用户 -->
+					<div class="rounded-xl bg-elevated p-4">
+						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.latestRegisteredUsers') }}</h2>
+						<p v-if="!data.latestRegisteredUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
+						<ul v-else class="space-y-2">
+							<li
+								v-for="(user, idx) in data.latestRegisteredUsers"
+								:key="user.id"
+								class="flex items-center justify-between text-sm"
+							>
+								<span>
+									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
+									<span>{{ user.name || user.loginName || user.id }}</span>
+								</span>
+								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.createdAt) }}</span>
+							</li>
+						</ul>
+					</div>
 				</template>
 			</section>
 		</main>

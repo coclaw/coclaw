@@ -155,6 +155,7 @@ export const zhCNMessages = {
 		uiVersion: '客户端版本',
 		pluginVersion: '插件版本',
 		topActiveUsers: '最近活跃用户',
+		latestRegisteredUsers: '最新注册用户',
 		noData: '暂无数据',
 	},
 	dashboard: {

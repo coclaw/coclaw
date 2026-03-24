@@ -32,6 +32,20 @@ export async function topActiveUsers(limit, db = prisma) {
 	}));
 }
 
+export async function latestRegisteredUsers(limit, db = prisma) {
+	const rows = await db.user.findMany({
+		orderBy: { createdAt: 'desc' },
+		take: limit,
+		select: { id: true, name: true, createdAt: true, localAuth: { select: { loginName: true } } },
+	});
+	return rows.map(u => ({
+		id: u.id.toString(),
+		name: u.name,
+		loginName: u.localAuth?.loginName ?? null,
+		createdAt: u.createdAt,
+	}));
+}
+
 export async function countBots(db = prisma) {
 	return db.bot.count();
 }

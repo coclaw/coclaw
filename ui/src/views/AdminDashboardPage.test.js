@@ -27,6 +27,10 @@ const fakeDashboard = {
 		{ id: '1', name: '张三', lastLoginAt: new Date(Date.now() - 180000).toISOString() },
 		{ id: '2', name: '李四', lastLoginAt: new Date(Date.now() - 7200000).toISOString() },
 	],
+	latestRegisteredUsers: [
+		{ id: '10', name: '王五', loginName: 'wangwu', createdAt: new Date(Date.now() - 600000).toISOString() },
+		{ id: '11', name: null, loginName: 'noname_user', createdAt: new Date(Date.now() - 3600000).toISOString() },
+	],
 	bots: { total: 10, online: 4 },
 	version: { server: '0.4.2', plugin: '0.3.1' },
 };
@@ -42,6 +46,7 @@ const i18nMap = {
 	'adminDashboard.uiVersion': 'UI Version',
 	'adminDashboard.pluginVersion': 'Plugin Version',
 	'adminDashboard.topActiveUsers': 'Recently Active Users',
+	'adminDashboard.latestRegisteredUsers': 'Latest Registered Users',
 	'adminDashboard.noData': 'No data',
 	'chat.loading': 'Loading...',
 	'dashboard.justNow': 'Just now',
@@ -148,4 +153,17 @@ test('should fallback to loginName when name is empty', async () => {
 
 	expect(wrapper.text()).toContain('alice');
 	expect(wrapper.text()).toContain('2');
+});
+
+test('should render latest registered users with name fallback to loginName', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	expect(wrapper.text()).toContain('Latest Registered Users');
+	expect(wrapper.text()).toContain('王五');
+	// name 为 null 时应显示 loginName
+	expect(wrapper.text()).toContain('noname_user');
+	// 注册时间 600s = 10min -> "10m ago"
+	expect(wrapper.text()).toContain('10m ago');
 });
