@@ -357,8 +357,6 @@ export class BotConnection {
 					return;
 				}
 			}
-			console.debug('[BotConn] WS 业务消息忽略(RTC active):',
-				payload.type, payload.id ?? payload.event ?? '');
 			return;
 		}
 
