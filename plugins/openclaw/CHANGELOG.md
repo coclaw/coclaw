@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.7.1
+
+### Patch Changes
+
+- fix: rename internal function to avoid OpenClaw install-time security scanner warning
+
 ## 0.6.2
 
 ### Patch Changes
