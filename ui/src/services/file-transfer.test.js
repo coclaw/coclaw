@@ -1,0 +1,694 @@
+import { describe, test, expect, vi, beforeEach } from 'vitest';
+import {
+	listFiles,
+	deleteFile,
+	downloadFile,
+	uploadFile,
+	FileTransferError,
+	CHUNK_SIZE,
+	HIGH_WATER_MARK,
+	MAX_UPLOAD_SIZE,
+} from './file-transfer.js';
+
+// --- Mock helpers ---
+
+/** 模拟 BotConnection */
+function createMockBotConn() {
+	return {
+		request: vi.fn().mockResolvedValue({}),
+	};
+}
+
+/**
+ * 模拟 WebRtcConnection + DataChannel
+ * 返回 { rtcConn, lastDC() } — lastDC() 获取最近创建的 DC
+ */
+function createMockRtcConn() {
+	const channels = [];
+
+	const rtcConn = {
+		createDataChannel(label, opts) {
+			const listeners = {};
+			const dc = {
+				label,
+				ordered: opts?.ordered,
+				readyState: 'connecting',
+				bufferedAmount: 0,
+				bufferedAmountLowThreshold: 0,
+				onopen: null,
+				onmessage: null,
+				onclose: null,
+				onerror: null,
+				sent: [],
+				send(data) { dc.sent.push(data); },
+				close() { dc.readyState = 'closed'; },
+				addEventListener(event, cb) { (listeners[event] ??= []).push(cb); },
+				removeEventListener(event, cb) {
+					if (listeners[event]) listeners[event] = listeners[event].filter((c) => c !== cb);
+				},
+				// 测试工具方法
+				__fireEvent(event) {
+					for (const cb of listeners[event] ?? []) cb();
+				},
+				__listeners: listeners,
+				// 模拟 DC open
+				__open() {
+					dc.readyState = 'open';
+					dc.onopen?.();
+				},
+				// 模拟收到消息
+				__receiveString(json) {
+					dc.onmessage?.({ data: JSON.stringify(json) });
+				},
+				__receiveBinary(buf) {
+					dc.onmessage?.({ data: buf });
+				},
+				__fireClose() {
+					dc.readyState = 'closed';
+					dc.onclose?.();
+					// 也触发 addEventListener 注册的 close 回调
+					dc.__fireEvent('close');
+				},
+				__fireError() {
+					dc.onerror?.();
+				},
+			};
+			channels.push(dc);
+			return dc;
+		},
+	};
+
+	return { rtcConn, channels, lastDC: () => channels[channels.length - 1] };
+}
+
+/**
+ * 从 Uint8Array 创建可 stream 的 mock File
+ * jsdom 的 Blob 可能不支持 .stream()，需手动实现
+ */
+function createStreamableFile(bytes, name = 'test.txt') {
+	const size = bytes.byteLength;
+	return {
+		name,
+		size,
+		stream() {
+			let offset = 0;
+			return new ReadableStream({
+				pull(controller) {
+					if (offset >= size) {
+						controller.close();
+						return;
+					}
+					const end = Math.min(offset + CHUNK_SIZE, size);
+					controller.enqueue(new Uint8Array(bytes.buffer, bytes.byteOffset + offset, end - offset));
+					offset = end;
+				},
+			});
+		},
+	};
+}
+
+/** 创建一个简单的 mock File（字符串内容） */
+function createMockFile(content, name = 'test.txt') {
+	const bytes = new Uint8Array(content.length);
+	for (let i = 0; i < content.length; i++) bytes[i] = content.charCodeAt(i);
+	return createStreamableFile(bytes, name);
+}
+
+/** 创建指定大小的 mock File */
+function createMockFileOfSize(size, name = 'big.bin') {
+	return createStreamableFile(new Uint8Array(size), name);
+}
+
+// --- RPC 操作测试 ---
+
+describe('listFiles', () => {
+	test('调用 botConn.request 并传递正确参数', async () => {
+		const botConn = createMockBotConn();
+		const mockResult = {
+			files: [
+				{ name: 'main.js', type: 'file', size: 2048, mtime: 1711234567000 },
+				{ name: 'utils', type: 'dir', size: 0, mtime: 1711234000000 },
+			],
+		};
+		botConn.request.mockResolvedValue(mockResult);
+
+		const result = await listFiles(botConn, 'main', 'src/');
+
+		expect(botConn.request).toHaveBeenCalledWith('coclaw.file.list', {
+			agentId: 'main',
+			path: 'src/',
+		});
+		expect(result).toEqual(mockResult);
+	});
+
+	test('RPC 失败时 reject', async () => {
+		const botConn = createMockBotConn();
+		const err = new Error('not found');
+		err.code = 'NOT_FOUND';
+		botConn.request.mockRejectedValue(err);
+
+		await expect(listFiles(botConn, 'main', 'nope/')).rejects.toThrow('not found');
+	});
+});
+
+describe('deleteFile', () => {
+	test('调用 botConn.request 并传递正确参数', async () => {
+		const botConn = createMockBotConn();
+		botConn.request.mockResolvedValue({});
+
+		await deleteFile(botConn, 'main', 'tmp/old.log');
+
+		expect(botConn.request).toHaveBeenCalledWith('coclaw.file.delete', {
+			agentId: 'main',
+			path: 'tmp/old.log',
+		});
+	});
+});
+
+// --- 下载测试 ---
+
+describe('downloadFile', () => {
+	test('完整下载流程', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'src/app.js');
+
+		const dc = lastDC();
+		expect(dc.label).toMatch(/^file:/);
+		expect(dc.ordered).toBe(true);
+
+		// DC open → 发送请求
+		dc.__open();
+		expect(dc.sent.length).toBe(1);
+		const req = JSON.parse(dc.sent[0]);
+		expect(req).toEqual({ method: 'read', agentId: 'main', path: 'src/app.js' });
+
+		// Plugin 响应头
+		dc.__receiveString({ ok: true, size: 5, name: 'app.js' });
+
+		// Plugin 发送 binary chunks
+		const chunk = new Uint8Array([104, 101, 108, 108, 111]); // "hello"
+		dc.__receiveBinary(chunk);
+
+		// Plugin 完成确认
+		dc.__receiveString({ ok: true, bytes: 5 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(5);
+		expect(result.name).toBe('app.js');
+		expect(result.blob).toBeInstanceOf(Blob);
+		expect(result.blob.size).toBe(5);
+	});
+
+	test('下载多个 chunk', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const progressCalls = [];
+		const handle = downloadFile(rtcConn, 'main', 'data.bin');
+		handle.onProgress = (recv, total) => progressCalls.push({ recv, total });
+
+		const dc = lastDC();
+		dc.__open();
+
+		// 响应头
+		dc.__receiveString({ ok: true, size: 10, name: 'data.bin' });
+
+		// 两个 chunk
+		dc.__receiveBinary(new Uint8Array(6));
+		dc.__receiveBinary(new Uint8Array(4));
+
+		// 完成
+		dc.__receiveString({ ok: true, bytes: 10 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(10);
+		expect(progressCalls).toEqual([
+			{ recv: 6, total: 10 },
+			{ recv: 10, total: 10 },
+		]);
+	});
+
+	test('Plugin 返回错误（校验阶段）', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', '../etc/passwd');
+
+		const dc = lastDC();
+		dc.__open();
+
+		dc.__receiveString({
+			ok: false,
+			error: { code: 'PATH_DENIED', message: 'Path traversal denied' },
+		});
+
+		await expect(handle.promise).rejects.toThrow('Path traversal denied');
+		try { await handle.promise; } catch (e) {
+			expect(e).toBeInstanceOf(FileTransferError);
+			expect(e.code).toBe('PATH_DENIED');
+		}
+	});
+
+	test('Plugin 返回错误（传输中途）', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'broken.bin');
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 100, name: 'broken.bin' });
+		dc.__receiveBinary(new Uint8Array(50));
+		dc.__receiveString({
+			ok: false,
+			error: { code: 'READ_FAILED', message: 'Disk error' },
+		});
+
+		await expect(handle.promise).rejects.toThrow('Disk error');
+	});
+
+	test('DC 意外关闭导致中断', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'file.txt');
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 100, name: 'file.txt' });
+		dc.__receiveBinary(new Uint8Array(30));
+		dc.__fireClose();
+
+		await expect(handle.promise).rejects.toThrow('Download interrupted');
+	});
+
+	test('取消下载', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'big.bin');
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 1000, name: 'big.bin' });
+		dc.__receiveBinary(new Uint8Array(100));
+
+		handle.cancel();
+
+		await expect(handle.promise).rejects.toThrow('Download cancelled');
+		expect(dc.readyState).toBe('closed');
+	});
+
+	test('RTC 不可用时立即失败', () => {
+		const rtcConn = { createDataChannel: () => null };
+		const handle = downloadFile(rtcConn, 'main', 'file.txt');
+
+		return expect(handle.promise).rejects.toThrow('WebRTC connection not available');
+	});
+
+	test('DC error 事件', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'file.txt');
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__fireError();
+
+		await expect(handle.promise).rejects.toThrow('DataChannel error');
+	});
+
+	test('空文件下载（size=0）— 正常完成', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'empty.txt');
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 0, name: 'empty.txt' });
+		dc.__receiveString({ ok: true, bytes: 0 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(0);
+		expect(result.name).toBe('empty.txt');
+		expect(result.blob.size).toBe(0);
+	});
+
+	test('空文件下载 — close/message 竞态兜底', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'empty.txt');
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 0, name: 'empty.txt' });
+		// 完成确认丢失，直接 close
+		dc.__fireClose();
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(0);
+		expect(result.name).toBe('empty.txt');
+	});
+
+	test('所有字节已收齐时 close 兜底 resolve', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const handle = downloadFile(rtcConn, 'main', 'data.bin');
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 5, name: 'data.bin' });
+		dc.__receiveBinary(new Uint8Array(5));
+		// 完成确认丢失，直接 close
+		dc.__fireClose();
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(5);
+	});
+});
+
+// --- 上传测试 ---
+
+describe('uploadFile', () => {
+	test('完整上传流程', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('hello world', 'test.txt');
+		const handle = uploadFile(rtcConn, 'main', 'docs/test.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+
+		// 检查请求
+		const req = JSON.parse(dc.sent[0]);
+		expect(req).toEqual({
+			method: 'write',
+			agentId: 'main',
+			path: 'docs/test.txt',
+			size: file.size,
+		});
+
+		// Plugin 就绪
+		dc.__receiveString({ ok: true });
+
+		// 等待 chunk 发送完成（微任务）
+		await vi.waitFor(() => {
+			// 至少有 binary chunk + done 信号
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		// 最后一条应为 done 信号
+		const doneMsg = JSON.parse(dc.sent[dc.sent.length - 1]);
+		expect(doneMsg).toEqual({ done: true, bytes: file.size });
+
+		// Plugin 写入结果
+		dc.__receiveString({ ok: true, bytes: file.size });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+
+	test('上传进度回调', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('abcdefghij', 'data.txt'); // 10 bytes
+		const progressCalls = [];
+		const handle = uploadFile(rtcConn, 'main', 'data.txt', file);
+		handle.onProgress = (sent, total) => progressCalls.push({ sent, total });
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true });
+
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		dc.__receiveString({ ok: true, bytes: 10 });
+
+		await handle.promise;
+		expect(progressCalls.length).toBeGreaterThan(0);
+		const last = progressCalls[progressCalls.length - 1];
+		expect(last.sent).toBe(10);
+		expect(last.total).toBe(10);
+	});
+
+	test('文件超过 1GB 限制', () => {
+		const { rtcConn } = createMockRtcConn();
+		// 模拟超大文件：只设 size，不实际分配内存
+		const bigFile = { size: MAX_UPLOAD_SIZE + 1, stream: () => {} };
+		const handle = uploadFile(rtcConn, 'main', 'huge.bin', bigFile);
+
+		return expect(handle.promise).rejects.toThrow('exceeds limit');
+	});
+
+	test('Plugin 写入错误', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		// Plugin 返回写入失败
+		dc.__receiveString({
+			ok: false,
+			error: { code: 'DISK_FULL', message: 'No space left' },
+		});
+
+		await expect(handle.promise).rejects.toThrow('No space left');
+	});
+
+	test('Plugin 校验阶段错误（ready 前）', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(rtcConn, 'main', '../../../etc/passwd', file);
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({
+			ok: false,
+			error: { code: 'PATH_DENIED', message: 'Path traversal' },
+		});
+
+		await expect(handle.promise).rejects.toThrow('Path traversal');
+	});
+
+	test('取消上传', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('some data', 'file.txt');
+		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+
+		handle.cancel();
+
+		await expect(handle.promise).rejects.toThrow('Upload cancelled');
+		expect(dc.readyState).toBe('closed');
+	});
+
+	test('RTC 不可用时立即失败', () => {
+		const rtcConn = { createDataChannel: () => null };
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+
+		return expect(handle.promise).rejects.toThrow('WebRTC connection not available');
+	});
+
+	test('上传中 DC 意外关闭', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+		// 不发 ready，直接关闭
+		dc.__fireClose();
+
+		await expect(handle.promise).rejects.toThrow('Upload interrupted');
+	});
+
+	test('DC error 事件', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__fireError();
+
+		await expect(handle.promise).rejects.toThrow('DataChannel error');
+	});
+
+	test('上传完成后 close/message 竞态兜底', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		// 模拟竞态：Plugin 发写入结果同时关闭 DC，close 先到达
+		dc.__fireClose();
+		// 写入结果紧随其后（在 setTimeout(0) 之前）
+		dc.__receiveString({ ok: true, bytes: file.size });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+
+	test('超限检测后 cancel 为 no-op', () => {
+		const { rtcConn } = createMockRtcConn();
+		const bigFile = { size: MAX_UPLOAD_SIZE + 1, stream: () => {} };
+		const handle = uploadFile(rtcConn, 'main', 'huge.bin', bigFile);
+
+		// cancel 应该不报错
+		handle.cancel();
+
+		return expect(handle.promise).rejects.toThrow('exceeds limit');
+	});
+});
+
+// --- 上传 backpressure 流控测试 ---
+
+describe('uploadFile — backpressure', () => {
+	test('bufferedAmount 超过 HIGH_WATER_MARK 时暂停发送', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'bp.bin');
+		const handle = uploadFile(rtcConn, 'main', 'bp.bin', file);
+
+		const dc = lastDC();
+		// 拦截 send：第一个 binary chunk 后设 bufferedAmount 超阈值
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				if (binarySendCount === 1) {
+					dc.bufferedAmount = HIGH_WATER_MARK + 1;
+				}
+			}
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// 等待第一个 binary chunk 发出且被暂停
+		await vi.waitFor(() => {
+			expect(binarySendCount).toBeGreaterThanOrEqual(1);
+		});
+
+		const pausedBinaryCount = binarySendCount;
+		await new Promise((r) => setTimeout(r, 50));
+		// 应仍然只发了 1 个 binary chunk（被 backpressure 暂停）
+		expect(binarySendCount).toBe(pausedBinaryCount);
+
+		// 模拟缓冲区排空
+		dc.bufferedAmount = 0;
+		dc.__fireEvent('bufferedamountlow');
+
+		// 等待全部发完：请求(1) + 3 chunks + done(1) = 5
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(5);
+		});
+
+		dc.__receiveString({ ok: true, bytes: file.size });
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+});
+
+// --- FileTransferError ---
+
+describe('FileTransferError', () => {
+	test('包含 code 和 message', () => {
+		const err = new FileTransferError('NOT_FOUND', 'File not found');
+		expect(err).toBeInstanceOf(Error);
+		expect(err.name).toBe('FileTransferError');
+		expect(err.code).toBe('NOT_FOUND');
+		expect(err.message).toBe('File not found');
+	});
+});
+
+// --- WebRtcConnection.createDataChannel 测试（补充） ---
+
+describe('WebRtcConnection.createDataChannel', () => {
+	// 直接 import 并使用已有的 mock PC
+	let WebRtcConnection;
+	let MockPC;
+
+	beforeEach(async () => {
+		const mod = await import('./webrtc-connection.js');
+		WebRtcConnection = mod.WebRtcConnection;
+
+		// 简化的 Mock PC
+		MockPC = class {
+			constructor() {
+				this.onicecandidate = null;
+				this.onconnectionstatechange = null;
+				this.connectionState = 'new';
+				this.localDescription = null;
+				this.__channels = [];
+			}
+			createDataChannel(label, opts) {
+				const dc = {
+					label,
+					ordered: opts?.ordered,
+					readyState: 'connecting',
+					bufferedAmount: 0,
+					bufferedAmountLowThreshold: 0,
+					onopen: null,
+					onclose: null,
+					onmessage: null,
+					send() {},
+					addEventListener() {},
+					removeEventListener() {},
+				};
+				this.__channels.push(dc);
+				return dc;
+			}
+			async createOffer() { return { type: 'offer', sdp: 'sdp' }; }
+			async setLocalDescription() {}
+			async setRemoteDescription() {}
+			async addIceCandidate() {}
+			async getStats() { return new Map(); }
+			close() { this.connectionState = 'closed'; }
+		};
+	});
+
+	test('PC 可用时创建 DataChannel', async () => {
+		const botConn = {
+			sendRaw: vi.fn().mockReturnValue(true),
+			on() {}, off() {},
+		};
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockPC });
+		await rtc.connect(null);
+
+		const dc = rtc.createDataChannel('file:abc-123', { ordered: true });
+		expect(dc).not.toBeNull();
+		expect(dc.label).toBe('file:abc-123');
+		expect(dc.ordered).toBe(true);
+
+		rtc.close();
+	});
+
+	test('PC 不可用时返回 null', () => {
+		const botConn = {
+			sendRaw: vi.fn().mockReturnValue(true),
+			on() {}, off() {},
+		};
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockPC });
+		// 未 connect，__pc 为 null
+		const dc = rtc.createDataChannel('file:test', { ordered: true });
+		expect(dc).toBeNull();
+	});
+
+	test('closed 状态时返回 null', async () => {
+		const botConn = {
+			sendRaw: vi.fn().mockReturnValue(true),
+			on() {}, off() {},
+		};
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockPC });
+		await rtc.connect(null);
+		rtc.close();
+
+		const dc = rtc.createDataChannel('file:test', { ordered: true });
+		expect(dc).toBeNull();
+	});
+});

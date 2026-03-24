@@ -220,6 +220,17 @@ export class WebRtcConnection {
 		return this.__rpcChannel?.readyState === 'open';
 	}
 
+	/**
+	 * 创建自定义 DataChannel（供文件传输等场景使用）
+	 * @param {string} label - 通道名称（如 'file:<transferId>'）
+	 * @param {RTCDataChannelInit} [opts] - DataChannel 配置
+	 * @returns {RTCDataChannel|null} 创建的 DC，PC 不可用时返回 null
+	 */
+	createDataChannel(label, opts) {
+		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return null;
+		return this.__pc.createDataChannel(label, opts);
+	}
+
 	// --- 内部：建连 ---
 
 	/** @private */
