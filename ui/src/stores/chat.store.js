@@ -144,7 +144,10 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 
 				// 重新进入：有活跃 run → allMessages 自动合并；无活跃 run → 静默刷新
-				if (!this.isSending) {
+				if (this.isSending) {
+					console.debug('[chat] activate re-entry: skip reload (sending/running)');
+				} else {
+					console.debug('[chat] activate re-entry: silent reload');
 					this.loadMessages({ silent: true });
 				}
 			},
@@ -156,7 +159,10 @@ export function createChatStore(storeKey, opts = {}) {
 			 */
 			async loadMessages({ silent = false, limit: limitOverride } = {}) {
 				// 飞行中守卫：silent 模式下复用已有请求
-				if (silent && this.__silentLoadPromise) return this.__silentLoadPromise;
+				if (silent && this.__silentLoadPromise) {
+					console.debug('[chat] loadMessages: in-flight guard hit, reusing promise');
+					return this.__silentLoadPromise;
+				}
 
 				if (this.topicMode) {
 					const p = this.__loadTopicMessages({ silent });
@@ -504,7 +510,8 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 					// 用户主动取消：不抛错；根据是否已 accepted 决定是否让调用方恢复输入
 					if (err?.code === 'USER_CANCELLED') {
-						// 不 settle agentRunsStore 中的 run——让它继续后台执行
+						// 注：cleanup() 触发的取消不 settle run（让后台继续执行）；
+						// cancelSend() 触发的取消已在 cancelSend 内主动 settle
 						this.sending = false;
 						if (this.__streamingTimer) {
 							clearTimeout(this.__streamingTimer);
@@ -806,6 +813,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * 实例被淘汰时的完整清理（由 chatStoreManager.dispose 调用）
 			 */
 			dispose() {
+				console.debug('[chat] dispose topicMode=%s runKey=%s', this.topicMode, this.runKey);
 				this.cleanup();
 				this.__unregisterConnStateListener();
 			},
@@ -908,7 +916,10 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!conn) return;
 				const handler = (newState) => {
 					if (newState === 'connected') {
-						if (this.sending) return;
+						if (this.sending) {
+							console.debug('[chat] ws reconnected but sending, skip reload');
+							return;
+						}
 						// debounce：短时间内多次重连只触发一次刷新
 						if (this.__reconnectDebounceTimer) clearTimeout(this.__reconnectDebounceTimer);
 						this.__reconnectDebounceTimer = setTimeout(() => {

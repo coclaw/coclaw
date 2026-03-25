@@ -29,6 +29,7 @@ export const chatStoreManager = {
 		}
 		store = createChatStore(storeKey, opts);
 		instances.set(storeKey, store);
+		console.debug('[chatStoreMgr] created key=%s total=%d', storeKey, instances.size);
 		if (storeKey.startsWith('topic:')) {
 			topicLru.push(storeKey);
 			this.__evictTopics();
@@ -40,6 +41,7 @@ export const chatStoreManager = {
 	dispose(storeKey) {
 		const store = instances.get(storeKey);
 		if (!store) return;
+		console.debug('[chatStoreMgr] dispose key=%s remaining=%d', storeKey, instances.size - 1);
 		store.dispose();
 		store.$dispose();
 		instances.delete(storeKey);
@@ -68,12 +70,19 @@ export const chatStoreManager = {
 			for (let i = 0; i < topicLru.length; i++) {
 				const key = topicLru[i];
 				const store = instances.get(key);
-				if (store && runsStore.isRunning(store.runKey)) continue;
+				if (store && runsStore.isRunning(store.runKey)) {
+					console.debug('[chatStoreMgr] skip evict key=%s (active run)', key);
+					continue;
+				}
+				console.debug('[chatStoreMgr] evict topic key=%s (lru=%d/%d)', key, topicLru.length, MAX_TOPIC_INSTANCES);
 				this.dispose(key);
 				evicted = true;
 				break;
 			}
-			if (!evicted) break; // 全部有活跃 run，暂不淘汰
+			if (!evicted) {
+				console.debug('[chatStoreMgr] eviction blocked: all topics have active runs (count=%d)', topicLru.length);
+				break;
+			}
 		}
 	},
 

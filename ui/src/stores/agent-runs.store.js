@@ -164,6 +164,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			if (!runId) return;
 			const run = this.runs[runId];
 			if (!run || !run.settling) return;
+			console.debug('[agentRuns] completeSettle runKey=%s runId=%s', runKey, runId);
 			if (run.__settleTimer) {
 				clearTimeout(run.__settleTimer);
 				run.__settleTimer = null;
@@ -183,10 +184,17 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			if (!run || run.settled || run.settling) return;
 
 			// 条件1：事件流已静默
-			if (run.lastEventAt > 0 && Date.now() - run.lastEventAt < STALE_RUN_MS) return;
+			if (run.lastEventAt > 0 && Date.now() - run.lastEventAt < STALE_RUN_MS) {
+				console.debug('[agentRuns] reconcile skip: events still active runKey=%s (age=%dms)',
+					runKey, Date.now() - run.lastEventAt);
+				return;
+			}
 
 			// 条件2：服务端消息已包含 run 的最终结果
-			if (!this.__serverMessagesIndicateRunDone(run, serverMessages)) return;
+			if (!this.__serverMessagesIndicateRunDone(run, serverMessages)) {
+				console.debug('[agentRuns] reconcile skip: server msgs indicate run not done runKey=%s', runKey);
+				return;
+			}
 
 			console.debug('[agentRuns] reconcile settle runKey=%s runId=%s', runKey, runId);
 			this.__cleanupRun(runId);
