@@ -153,41 +153,49 @@ describe('ChatPage', () => {
 
 	test('显示 loading 状态', async () => {
 		const wrapper = createWrapper();
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		setupAgents();
 		const chatStore = getChatStore();
-		chatStore.loading = true;
+		// __initialized=true（activate 已设置）, __messagesLoaded=false, messages=[]
+		expect(chatStore.__initialized).toBe(true);
 		await wrapper.vm.$nextTick();
 
+		expect(wrapper.vm.isLoadingChat).toBe(true);
 		expect(wrapper.text()).toContain('Loading...');
 	});
 
 	test('显示错误状态', async () => {
 		const wrapper = createWrapper();
-		const chatStore = getChatStore();
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		await flushPromises();
-		chatStore.loading = false;
+		setupAgents();
+		const chatStore = getChatStore();
 		chatStore.errorText = 'Something went wrong';
 		await wrapper.vm.$nextTick();
 
+		expect(wrapper.vm.isLoadingChat).toBe(false);
 		expect(wrapper.text()).toContain('Something went wrong');
 	});
 
 	test('显示空消息状态', async () => {
 		const wrapper = createWrapper();
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		setupAgents();
 		const chatStore = getChatStore();
-		chatStore.loading = false;
 		chatStore.errorText = '';
 		chatStore.messages = [];
+		chatStore.__messagesLoaded = true;
 		await wrapper.vm.$nextTick();
 
+		expect(wrapper.vm.isLoadingChat).toBe(false);
 		expect(wrapper.text()).toContain('No messages');
 	});
 
 	test('渲染消息列表', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.loading = false;
 		chatStore.errorText = '';
 		chatStore.messages = [
 			{ type: 'message', id: 'msg-1', message: { role: 'user', content: 'hi' } },
@@ -199,6 +207,26 @@ describe('ChatPage', () => {
 		expect(msgStubs).toHaveLength(2);
 		expect(msgStubs[0].text()).toContain('msg-1');
 		expect(msgStubs[1].text()).toContain('msg-2');
+	});
+
+	test('isLoadingChat 在 messagesLoaded 后变为 false（即使 loading 标志卡住）', async () => {
+		const wrapper = createWrapper();
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		setupAgents();
+		const chatStore = getChatStore();
+		// 模拟 loading 标志卡住的场景
+		chatStore.loading = true;
+		chatStore.__messagesLoaded = false;
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.isLoadingChat).toBe(true);
+
+		// 消息加载成功后 __messagesLoaded = true
+		chatStore.__messagesLoaded = true;
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.isLoadingChat).toBe(false);
+		expect(wrapper.text()).toContain('No messages');
 	});
 
 	test('chatTitle 在 session 模式下显示 agent 名称', async () => {

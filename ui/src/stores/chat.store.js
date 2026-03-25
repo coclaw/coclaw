@@ -69,6 +69,7 @@ export function createChatStore(storeKey, opts = {}) {
 
 			// 内部状态
 			__initialized: false,
+			__messagesLoaded: false,
 			__agentSettled: false,
 			__streamingTimer: null,
 			__accepted: false,
@@ -83,6 +84,7 @@ export function createChatStore(storeKey, opts = {}) {
 			__slashCommandResolve: null,
 			__slashCommandReject: null,
 			__connStateHandler: null,
+			__connRetryTimer: null,
 			__reconnectDebounceTimer: null,
 			__silentLoadPromise: null,
 		}),
@@ -176,6 +178,7 @@ export function createChatStore(storeKey, opts = {}) {
 					this.messages = [];
 					this.errorText = '';
 					this.loading = false;
+					this.__messagesLoaded = true;
 					return false;
 				}
 				const conn = this.__getConnection();
@@ -211,6 +214,7 @@ export function createChatStore(storeKey, opts = {}) {
 						// sessions.get 返回 .slice(-limit)，若返回数 == limit 说明可能还有更多
 						this.hasMoreMessages = flatMsgs.length >= limit;
 						this.loading = false;
+						this.__messagesLoaded = true;
 						console.debug('[chat] loadMessages ok count=%d hasMore=%s', this.messages.length, this.hasMoreMessages);
 
 						// 重连后 reconcile：检查并 settle 僵尸 run / 完成 settling 过渡
@@ -298,6 +302,7 @@ export function createChatStore(storeKey, opts = {}) {
 					this.messages = [];
 					this.errorText = '';
 					this.loading = false;
+					this.__messagesLoaded = true;
 					return false;
 				}
 				const conn = this.__getConnection();
@@ -324,6 +329,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
 					this.messages = msgs;
+					this.__messagesLoaded = true;
 
 					// 重连后 reconcile
 					this.__reconcileRunAfterLoad(this.messages);
@@ -913,7 +919,15 @@ export function createChatStore(storeKey, opts = {}) {
 			__registerConnStateListener() {
 				this.__unregisterConnStateListener();
 				const conn = this.__getConnection();
-				if (!conn) return;
+				if (!conn) {
+					// 连接尚未创建（页面刷新时 botsStore 未就绪），延迟重试
+					console.debug('[chat] conn not available, retry in 500ms');
+					this.__connRetryTimer = setTimeout(() => {
+						this.__connRetryTimer = null;
+						this.__registerConnStateListener();
+					}, 500);
+					return;
+				}
 				const handler = (newState) => {
 					if (newState === 'connected') {
 						if (this.sending) {
@@ -941,6 +955,10 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			__unregisterConnStateListener() {
+				if (this.__connRetryTimer) {
+					clearTimeout(this.__connRetryTimer);
+					this.__connRetryTimer = null;
+				}
 				if (!this.__connStateHandler) return;
 				const conn = this.__getConnection();
 				if (conn) conn.off('state', this.__connStateHandler);

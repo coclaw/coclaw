@@ -58,7 +58,7 @@
 				<div v-else-if="hasMoreHistory" class="px-4 pt-3 pb-2 text-center text-xs text-muted">
 					{{ $t('chat.scrollUpForMore') }}
 				</div>
-				<div v-if="chatStore?.loading && !awaitingAgent" class="px-4 py-8 text-center text-sm text-muted">
+				<div v-if="isLoadingChat" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('chat.loading') }}
 				</div>
 				<div v-else-if="chatStore?.errorText && !isBotOffline" class="px-4 py-8 text-center text-sm">
@@ -93,7 +93,7 @@
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore?.isSending ?? false"
-			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || chatStore?.loading) : (!routeBotId || isBotOffline || chatStore?.loading))"
+			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || isLoadingChat) : (!routeBotId || isBotOffline || isLoadingChat))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
@@ -101,7 +101,7 @@
 				<SlashCommandMenu
 					v-if="showSlashMenu"
 					class="absolute bottom-full left-0 z-10 pb-1"
-					:disabled="chatStore?.isSending || isBotOffline || chatStore?.loading"
+					:disabled="chatStore?.isSending || isBotOffline || isLoadingChat"
 					@command="onSlashCommand"
 				/>
 			</template>
@@ -267,7 +267,7 @@ export default {
 			if (this.chatStore.hasMoreMessages) return true;
 			return !this.chatStore.historyExhausted
 				&& this.chatStore.historySessionIds.length > 0
-				&& !this.chatStore.loading;
+				&& !this.isLoadingChat;
 		},
 		/**
 		 * session 模式下 agent 是否已验证存在
@@ -285,6 +285,16 @@ export default {
 			if (!this.routeBotId || this.isBotOffline) return false;
 			const entry = this.agentsStore.byBot[this.routeBotId];
 			return !entry?.fetched;
+		},
+		/**
+		 * 消息加载中（计算属性，替代 chatStore.loading 避免命令式标志卡住）
+		 * 已初始化 + 消息未成功加载 + 无错误 + 无内容 = 加载中
+		 */
+		isLoadingChat() {
+			const s = this.chatStore;
+			if (!s || this.isBotOffline || this.awaitingAgent) return false;
+			if (s.allMessages.length > 0 || s.errorText) return false;
+			return s.__initialized && !s.__messagesLoaded;
 		},
 
 		/**

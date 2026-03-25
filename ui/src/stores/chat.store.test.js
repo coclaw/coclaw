@@ -2393,6 +2393,43 @@ describe('useChatStore', () => {
 			expect(reqCount).toBe(2);
 		});
 
+		test('conn 不存在时 __registerConnStateListener 延迟重试', async () => {
+			// 初始无连接
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
+
+			// activate 设置了 loading 但未注册 listener
+			expect(store.loading).toBe(true);
+			expect(store.__connStateHandler).toBeNull();
+			expect(store.__connRetryTimer).not.toBeNull();
+
+			// 500ms 后连接出现并已就绪
+			const conn = mockConn();
+			setupConnForLoad(conn, {
+				flatMessages: [{ role: 'user', content: 'delayed' }],
+			});
+			mockConnections.set('1', conn);
+
+			vi.advanceTimersByTime(500);
+			// 重试后应注册 listener
+			expect(store.__connStateHandler).not.toBeNull();
+			// re-check 触发 loadMessages（conn 已 connected 且 loading=true）
+			await vi.waitFor(() => {
+				expect(store.messages).toHaveLength(1);
+				expect(store.loading).toBe(false);
+				expect(store.__messagesLoaded).toBe(true);
+			});
+		});
+
+		test('dispose 清理 connRetryTimer', async () => {
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
+
+			expect(store.__connRetryTimer).not.toBeNull();
+			store.dispose();
+			expect(store.__connRetryTimer).toBeNull();
+		});
+
 		test('loadMessages 成功后调用 reconcileRunAfterLoad', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn, {
