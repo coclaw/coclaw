@@ -2407,6 +2407,67 @@ describe('useChatStore', () => {
 			expect(localMsg.id).toBe('__local_bot_1');
 		});
 
+		test('loadOlderMessages: 用户乐观消息（_local && !_streaming）不重复', async () => {
+			const conn = mockConn();
+			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: initialMsgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			// 模拟用户乐观消息（已发送但尚未被新一轮 sessions.get 覆盖前）
+			store.messages = [
+				...store.messages,
+				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
+			];
+			expect(store.messages).toHaveLength(51);
+
+			// 服务端返回 80 条，其中已包含用户消息
+			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
+				return Promise.resolve(null);
+			});
+
+			await store.loadOlderMessages();
+			// 用户乐观消息不应保留，仅有服务端的 80 条
+			expect(store.messages).toHaveLength(80);
+			expect(store.messages.find((m) => m._local)).toBeUndefined();
+		});
+
+		test('loadOlderMessages: _local && _streaming 的 bot 占位保留，_local && !_streaming 的丢弃', async () => {
+			const conn = mockConn();
+			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: initialMsgs });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			await store.activateSession('1', 'main');
+
+			// 同时存在 streaming bot 占位和用户乐观消息
+			store.messages = [
+				...store.messages,
+				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
+				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '...' } },
+			];
+			expect(store.messages).toHaveLength(52);
+
+			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
+				return Promise.resolve(null);
+			});
+
+			await store.loadOlderMessages();
+			// 80 条服务端 + 1 条 streaming bot 占位 = 81，用户乐观消息被丢弃
+			expect(store.messages).toHaveLength(81);
+			const locals = store.messages.filter((m) => m._local);
+			expect(locals).toHaveLength(1);
+			expect(locals[0].id).toBe('__local_bot_1');
+			expect(locals[0]._streaming).toBe(true);
+		});
+
 		test('loadOlderMessages: topic 模式下不触发', async () => {
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
