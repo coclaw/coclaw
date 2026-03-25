@@ -158,6 +158,8 @@ export default {
 			__isFirstRound: false,
 			// 新建 topic 流程进行中，抑制 watcher 的重复激活
 			__creatingTopic: false,
+			// 历史加载中，抑制 messages watcher 的 scrollToBottom
+			__loadingHistory: false,
 		};
 	},
 	computed: {
@@ -358,7 +360,9 @@ export default {
 			}
 		},
 		'chatStore.messages'() {
-			this.scrollToBottom();
+			if (!this.__loadingHistory) {
+				this.scrollToBottom();
+			}
 		},
 	},
 	beforeUnmount() {
@@ -661,13 +665,17 @@ export default {
 			if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
 				const el = this.$refs.scrollContainer;
 				const prevHeight = el?.scrollHeight ?? 0;
+				this.__loadingHistory = true;
 				const loaded = await this.chatStore.loadOlderMessages();
 				if (loaded && el) {
 					// 保持滚动位置（新内容 prepend 后 scrollHeight 增加）
 					this.$nextTick(() => {
 						const newHeight = el.scrollHeight;
 						el.scrollTop += (newHeight - prevHeight);
+						this.__loadingHistory = false;
 					});
+				} else {
+					this.__loadingHistory = false;
 				}
 				return;
 			}
@@ -680,13 +688,17 @@ export default {
 			}
 			const el = this.$refs.scrollContainer;
 			const prevHeight = el?.scrollHeight ?? 0;
+			this.__loadingHistory = true;
 			const loaded = await this.chatStore.loadNextHistorySession();
 			if (loaded && el) {
 				// 保持滚动位置（新内容 prepend 后 scrollHeight 增加）
 				this.$nextTick(() => {
 					const newHeight = el.scrollHeight;
 					el.scrollTop += (newHeight - prevHeight);
+					this.__loadingHistory = false;
 				});
+			} else {
+				this.__loadingHistory = false;
 			}
 			// 刚加载完最后一段历史后也显示提示
 			if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
