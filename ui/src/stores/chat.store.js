@@ -2,12 +2,15 @@
  * 聊天 Store — 从 ChatPage 中剥离的通信/消息管理逻辑
  * 职责：当前 session 的消息列表、发送、streaming、agent 事件处理
  * 支持两种模式：session 模式（main session）和 topic 模式（独立话题）
+ *
+ * agent run 的后台生命周期由 agentRunsStore 管理，本 store 仅负责 UI 视图状态。
  */
 import { defineStore } from 'pinia';
 
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { fileToBase64 } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
+import { useAgentRunsStore } from './agent-runs.store.js';
 
 const MSG_PAGE_SIZE = 50;
 
@@ -62,6 +65,24 @@ export const useChatStore = defineStore('chat', {
 		},
 		isMainSession() {
 			return /^agent:[^:]+:main$/.test(this.chatSessionKey);
+		},
+		/** 当前对话的 runKey（用于在 agentRunsStore 中查询活跃 run） */
+		runKey() {
+			return this.topicMode ? this.sessionId : this.chatSessionKey;
+		},
+		/** 合并服务端消息 + 活跃 run 的流式消息 */
+		allMessages() {
+			const runsStore = useAgentRunsStore();
+			const run = runsStore.getActiveRun(this.runKey);
+			if (run && run.streamingMsgs.length) {
+				return [...this.messages, ...run.streamingMsgs];
+			}
+			return this.messages;
+		},
+		/** 是否正在发送（含后台 run 仍在执行的情况） */
+		isSending() {
+			if (this.sending) return true;
+			return useAgentRunsStore().isRunning(this.runKey);
 		},
 	},
 	actions: {
@@ -351,7 +372,7 @@ export const useChatStore = defineStore('chat', {
 			this.__agentSettled = false;
 			this.__accepted = false;
 
-			// 追加乐观 user 消息
+			// 构建乐观消息条目（后续移入 agentRunsStore）
 			const imgFiles = files?.filter((f) => f.isImg && f.file) ?? [];
 			let content = text;
 			if (imgFiles.length) {
@@ -363,27 +384,24 @@ export const useChatStore = defineStore('chat', {
 				}
 				content = blocks;
 			}
-			this.messages = [...this.messages, {
+			const optimisticUser = {
 				type: 'message',
 				id: `__local_user_${Date.now()}`,
 				_local: true,
 				message: { role: 'user', content, timestamp: Date.now() },
-			}];
-
-			// 追加 streaming bot 条目
-			this.messages = [...this.messages, {
+			};
+			const optimisticBot = {
 				type: 'message',
 				id: `__local_bot_${Date.now()}`,
 				_local: true,
 				_streaming: true,
 				_startTime: Date.now(),
 				message: { role: 'assistant', content: '', stopReason: null },
-			}];
+			};
+			// 临时追加到 messages 以便 UI 立即展示（accepted 后移入 runsStore）
+			this.messages = [...this.messages, optimisticUser, optimisticBot];
 
 			try {
-				// 注册 agent 事件
-				conn.on('event:agent', this.__onAgentEvent);
-
 				// 构建附件
 				const attachments = [];
 				for (const f of files) {
@@ -430,24 +448,38 @@ export const useChatStore = defineStore('chat', {
 					}
 				}, 30_000);
 
+				const runsStore = useAgentRunsStore();
+				const runKey = this.runKey;
+
 				const final = await Promise.race([
 					conn.request('agent', agentParams, {
 						onAccepted: (payload) => {
-							console.debug('[chat] agent accepted runId=%s', payload?.runId);
+							const runId = payload?.runId ?? null;
+							console.debug('[chat] agent accepted runId=%s', runId);
 							this.__accepted = true;
-							this.streamingRunId = payload?.runId ?? null;
-							// 切换到 post-acceptance 30min 超时（agent 处理可能较久）
+							this.streamingRunId = runId;
+							// 切换到 post-acceptance 30min 超时
+							// 既保护 sendMessage promise 不永远挂起，也与 runsStore 的 run 超时协同
 							if (this.__streamingTimer) clearTimeout(this.__streamingTimer);
 							this.__streamingTimer = setTimeout(() => {
 								this.__agentSettled = true;
-								this.__cleanupTimersAndListeners();
-								this.__clearStreamingFlags();
 								this.sending = false;
+								runsStore.settle(runKey);
 								this.__reconcileMessages();
 								const err = new Error('post-acceptance timeout');
 								err.code = 'POST_ACCEPTANCE_TIMEOUT';
 								timeoutReject(err);
 							}, 30 * 60_000);
+							// 将乐观消息移入 agentRunsStore
+							const localMsgs = this.messages.filter((m) => m._local);
+							this.messages = this.messages.filter((m) => !m._local);
+							runsStore.register(runId, {
+								botId: this.botId,
+								runKey,
+								topicMode: this.topicMode,
+								conn,
+								streamingMsgs: localMsgs,
+							});
 						},
 						onUnknownStatus: (status, payload) => {
 							console.error('[chat] unknown agent rpc status=%s', status, payload);
@@ -457,32 +489,52 @@ export const useChatStore = defineStore('chat', {
 					cancelPromise,
 				]);
 
-				// 终态到达
+				// 终态到达（RPC resolved）
 				this.__cancelReject = null;
-				this.__clearStreamingFlags();
-				this.__cleanupTimersAndListeners();
+				if (this.__streamingTimer) {
+					clearTimeout(this.__streamingTimer);
+					this.__streamingTimer = null;
+				}
 				this.sending = false;
 
 				if (!this.__accepted && final?.status !== 'ok') {
 					this.__removeLocalEntries();
 					return { accepted: false };
 				}
+				// run 可能已被 agentRunsStore 的 lifecycle 事件 settle 了
+				if (runsStore.isRunning(runKey)) {
+					runsStore.settle(runKey);
+				}
 				await this.__reconcileMessages();
 				return { accepted: true };
 			}
 			catch (err) {
+				const runsStore = useAgentRunsStore();
+				const runKey = this.runKey;
 				// lifecycle:end 已完成清理，WS 关闭尾巴错误忽略
 				if (this.__agentSettled && err?.code === 'WS_CLOSED') {
 					return { accepted: this.__accepted };
 				}
 				// 用户主动取消：不抛错；根据是否已 accepted 决定是否让调用方恢复输入
 				if (err?.code === 'USER_CANCELLED') {
+					// 不 settle agentRunsStore 中的 run——让它继续后台执行
+					this.sending = false;
+					if (this.__streamingTimer) {
+						clearTimeout(this.__streamingTimer);
+						this.__streamingTimer = null;
+					}
+					if (!this.__accepted) {
+						this.__removeLocalEntries();
+					}
 					return { accepted: this.__accepted };
 				}
-				// 已 accepted 但 agent 尚未完成时 WS 断连：保留乐观消息，等重连后 reconcile
+				// 已 accepted 但 agent 尚未完成时 WS 断连：等重连后 reconcile
 				if (err?.code === 'WS_CLOSED' && this.__accepted && !this.__agentSettled) {
 					console.debug('[chat] ws closed after accepted, waiting for reconnect to reconcile');
-					this.__cleanupTimersAndListeners();
+					if (this.__streamingTimer) {
+						clearTimeout(this.__streamingTimer);
+						this.__streamingTimer = null;
+					}
 					this.sending = false;
 					const reconn = this.__getConnection();
 					if (reconn) {
@@ -500,6 +552,7 @@ export const useChatStore = defineStore('chat', {
 						});
 						if (reconnected) {
 							console.debug('[chat] reconnected after accepted, reconciling messages');
+							if (runsStore.isRunning(runKey)) runsStore.settle(runKey);
 							await this.__reconcileMessages();
 						}
 					}
@@ -538,9 +591,12 @@ export const useChatStore = defineStore('chat', {
 				}
 				if (this.__accepted) {
 					// 已被服务端接受，保留消息并从服务端拉取真实状态
-					this.__cleanupTimersAndListeners();
-					this.__clearStreamingFlags();
+					if (this.__streamingTimer) {
+						clearTimeout(this.__streamingTimer);
+						this.__streamingTimer = null;
+					}
 					this.sending = false;
+					if (runsStore.isRunning(runKey)) runsStore.settle(runKey);
 					this.__reconcileMessages();
 				}
 				else {
@@ -578,7 +634,7 @@ export const useChatStore = defineStore('chat', {
 			}
 		},
 
-		/** 取消发送 */
+		/** 取消发送（用户主动取消，同时 settle run） */
 		cancelSend() {
 			// 通过 reject cancel promise 让 sendMessage 立即 settle
 			if (this.__cancelReject) {
@@ -588,9 +644,12 @@ export const useChatStore = defineStore('chat', {
 				this.__cancelReject = null;
 			}
 			if (this.__accepted) {
-				// 已被服务端接受，保留消息并从服务端拉取真实状态
-				this.__cleanupTimersAndListeners();
-				this.__clearStreamingFlags();
+				// 已被服务端接受，settle run 并从服务端拉取真实状态
+				useAgentRunsStore().settle(this.runKey);
+				if (this.__streamingTimer) {
+					clearTimeout(this.__streamingTimer);
+					this.__streamingTimer = null;
+				}
 				this.sending = false;
 				this.__reconcileMessages();
 			}
@@ -741,16 +800,25 @@ export const useChatStore = defineStore('chat', {
 			this.__slashCommandReject = null;
 		},
 
-		/** 清理全部状态（离开页面/bot 解绑时） */
+		/**
+		 * 清理 UI 视图状态（离开页面/bot 解绑时）
+		 * 不影响 agentRunsStore 中的活跃 run——它们继续在后台接收事件
+		 */
 		cleanup() {
-			// 同 cancelSend：让挂起的 sendMessage 立即 settle
+			// 让挂起的 sendMessage promise 立即 settle（run 本身继续后台执行）
 			if (this.__cancelReject) {
 				const err = new Error('user cancelled');
 				err.code = 'USER_CANCELLED';
 				this.__cancelReject(err);
 				this.__cancelReject = null;
 			}
-			this.__cleanupStreaming();
+			// 清理 pre-acceptance 超时（post-acceptance 由 runsStore 管理）
+			if (this.__streamingTimer) {
+				clearTimeout(this.__streamingTimer);
+				this.__streamingTimer = null;
+			}
+			// 清理本地乐观消息（仅未被 runsStore 接管的）
+			this.__removeLocalEntries();
 			this.__unregisterConnStateListener();
 			// 清理斜杠命令状态
 			this.__cleanupSlashCommand(this.__getConnection());
@@ -905,100 +973,6 @@ export const useChatStore = defineStore('chat', {
 			this.__connStateHandler = null;
 		},
 
-		// --- agent 事件处理（内部方法，通过箭头函数绑定 this） ---
-
-		/**
-		 * 处理 agent 流式事件
-		 * 注意：此方法作为事件回调使用，需绑定 this
-		 * @param {object} payload
-		 */
-		__onAgentEvent(payload) {
-			const match = this.streamingRunId && payload?.runId === this.streamingRunId;
-			if (!match) return;
-
-			const { stream, data } = payload;
-			console.debug('[chat] agent event stream=%s phase=%s', stream, data?.phase ?? '-');
-
-			if (stream === 'assistant' && data?.text != null) {
-				const entry = this.__findStreamingBotEntry();
-				if (entry) {
-					const content = this.__ensureContentArray(entry);
-					const nonText = content.filter((b) => b.type !== 'text');
-					entry.message.content = [...nonText, { type: 'text', text: data.text }];
-					entry.message.stopReason = 'stop';
-					this.messages = [...this.messages];
-				}
-			}
-			else if (stream === 'tool') {
-				if (data?.phase === 'start') {
-					const entry = this.__findStreamingBotEntry();
-					if (entry) {
-						const content = this.__ensureContentArray(entry);
-						content.push({ type: 'toolCall', name: data.name ?? 'unknown' });
-						entry.message.stopReason = 'toolUse';
-						this.messages = [...this.messages];
-					}
-				}
-				else if (data?.phase === 'result') {
-					// 网关可能剥离 data.result（verbose !== full），兜底空字符串
-					const raw = data.result;
-					const text = raw != null
-						? (typeof raw === 'string' ? raw : JSON.stringify(raw))
-						: '';
-					const startTime = this.__findStreamingBotEntry()?._startTime;
-					this.messages = [...this.messages,
-						{
-							type: 'message',
-							id: `__local_tr_${Date.now()}`,
-							_local: true,
-							_streaming: true,
-							message: { role: 'toolResult', content: text },
-						},
-						{
-							type: 'message',
-							id: `__local_bot_${Date.now() + 1}`,
-							_local: true,
-							_streaming: true,
-							_startTime: startTime,
-							message: { role: 'assistant', content: '', stopReason: null },
-						},
-					];
-				}
-			}
-			else if (stream === 'thinking' && data?.text != null) {
-				const entry = this.__findStreamingBotEntry();
-				if (entry) {
-					const content = this.__ensureContentArray(entry);
-					const lastIdx = content.length - 1;
-					if (lastIdx >= 0 && content[lastIdx].type === 'thinking') {
-						content[lastIdx] = { type: 'thinking', thinking: data.text };
-					}
-					else {
-						content.push({ type: 'thinking', thinking: data.text });
-					}
-					this.messages = [...this.messages];
-				}
-			}
-			else if (stream === 'lifecycle') {
-				if (data?.phase === 'end') {
-					console.debug('[chat] agent lifecycle:end runId=%s', this.streamingRunId);
-					this.__agentSettled = true;
-					this.sending = false;
-					this.__cleanupTimersAndListeners();
-					this.__clearStreamingFlags();
-					this.__reconcileMessages();
-				}
-				else if (data?.phase === 'error') {
-					console.debug('[chat] agent lifecycle:error runId=%s', this.streamingRunId);
-					this.__agentSettled = true;
-					this.__cleanupTimersAndListeners();
-					this.__clearStreamingFlags();
-					this.sending = false;
-					this.__reconcileMessages();
-				}
-			}
-		},
-
 		// --- 内部辅助 ---
 
 		/**
@@ -1031,21 +1005,12 @@ export const useChatStore = defineStore('chat', {
 		},
 
 		__cleanupStreaming() {
-			this.__cleanupTimersAndListeners();
-			this.__removeLocalEntries();
-		},
-
-		__cleanupTimersAndListeners() {
 			if (this.__streamingTimer) {
 				clearTimeout(this.__streamingTimer);
 				this.__streamingTimer = null;
 			}
 			this.streamingRunId = null;
-			// 从连接中移除事件监听
-			const conn = this.__getConnection();
-			if (conn) {
-				conn.off('event:agent', this.__onAgentEvent);
-			}
+			this.__removeLocalEntries();
 		},
 
 		__removeLocalEntries() {
@@ -1054,30 +1019,5 @@ export const useChatStore = defineStore('chat', {
 			}
 		},
 
-		__clearStreamingFlags() {
-			let changed = false;
-			for (const entry of this.messages) {
-				if (entry._streaming) {
-					entry._streaming = false;
-					changed = true;
-				}
-			}
-			if (changed) this.messages = [...this.messages];
-		},
-
-		__findStreamingBotEntry() {
-			for (let i = this.messages.length - 1; i >= 0; i--) {
-				const e = this.messages[i];
-				if (e._streaming && e.message?.role === 'assistant') return e;
-			}
-			return null;
-		},
-
-		__ensureContentArray(entry) {
-			const c = entry.message.content;
-			if (Array.isArray(c)) return c;
-			entry.message.content = (c && typeof c === 'string') ? [{ type: 'text', text: c }] : [];
-			return entry.message.content;
-		},
 	},
 });

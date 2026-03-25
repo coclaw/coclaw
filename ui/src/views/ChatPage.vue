@@ -92,7 +92,7 @@
 			v-if="isTopicRoute || isNewTopic || agentVerified"
 			ref="chatInput"
 			v-model="inputText"
-			:sending="chatStore.sending"
+			:sending="chatStore.isSending"
 			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || chatStore.loading) : (!routeBotId || isBotOffline || chatStore.loading))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
@@ -101,7 +101,7 @@
 				<SlashCommandMenu
 					v-if="showSlashMenu"
 					class="absolute bottom-full left-0 z-10 pb-1"
-					:disabled="chatStore.sending || isBotOffline || chatStore.loading"
+					:disabled="chatStore.isSending || isBotOffline || chatStore.loading"
 					@command="onSlashCommand"
 				/>
 			</template>
@@ -307,8 +307,8 @@ export default {
 					items.push(...grouped);
 				}
 			}
-			// 当前 session 消息
-			const current = groupSessionMessages(this.chatStore.messages);
+			// 当前 session 消息（含 agentRunsStore 的流式消息）
+			const current = groupSessionMessages(this.chatStore.allMessages);
 			if (current.length > 0 && items.length > 0) {
 				// 最近一条孤儿的归档时间 = 当前 session 开始的时间点
 				const latest = this.chatStore.historySessionIds[0];
@@ -357,7 +357,7 @@ export default {
 				this.chatStore.loadMessages();
 			}
 		},
-		'chatStore.messages'() {
+		'chatStore.allMessages'() {
 			this.scrollToBottom();
 		},
 	},
@@ -406,7 +406,7 @@ export default {
 		},
 
 		async onSendMessage({ text, files }) {
-			if ((!text && !files?.length) || this.chatStore.sending) return;
+			if ((!text && !files?.length) || this.chatStore.isSending) return;
 
 			// 新建 topic 流程
 			if (this.isNewTopic) {
