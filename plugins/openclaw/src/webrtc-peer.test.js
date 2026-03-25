@@ -853,3 +853,214 @@ test('WebRtcPeer: coclaw.file.* 无 onFileRpc 时走 onRequest', async () => {
 
 	await peer.closeAll();
 });
+
+// --- ICE restart 测试 ---
+
+test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	// 先建立正常连接
+	await peer.handleSignaling(makeOffer('c_ir01'));
+	assert.equal(PC.instances.length, 1);
+	const firstPc = PC.instances[0];
+	sent.length = 0;
+
+	// 发送 ICE restart offer
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ir01',
+		payload: { sdp: 'ice-restart-sdp', iceRestart: true },
+	});
+
+	// 不应创建新 PC
+	assert.equal(PC.instances.length, 1);
+	// 应在现有 PC 上设置新的 remote description
+	assert.equal(firstPc.setRemoteDescription.__called, undefined);
+	// 应发送 answer
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:answer');
+	assert.equal(sent[0].toConnId, 'c_ir01');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 无现有 session 时回退到 full rebuild', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	// 直接发送 ICE restart offer（无现有 session）
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ir02',
+		payload: { sdp: 'ice-restart-sdp', iceRestart: true },
+	});
+
+	// 应创建新 PC（full rebuild 回退）
+	assert.equal(PC.instances.length, 1);
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:answer');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 协商失败时回退到 full rebuild', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	// 先建立正常连接
+	await peer.handleSignaling(makeOffer('c_ir03'));
+	const firstPc = PC.instances[0];
+	// 让现有 PC 的 setRemoteDescription 失败
+	firstPc.setRemoteDescription = async () => { throw new Error('ICE restart SDP failed'); };
+	sent.length = 0;
+
+	// 发送 ICE restart offer
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ir03',
+		payload: { sdp: 'bad-sdp', iceRestart: true },
+	});
+
+	// 应回退创建新 PC
+	assert.equal(PC.instances.length, 2);
+	// 旧 PC 应已关闭
+	assert.equal(firstPc.connectionState, 'closed');
+	// 新 PC 应发送 answer
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:answer');
+
+	await peer.closeAll();
+});
+
+// --- 竞态保护测试 ---
+
+test('WebRtcPeer: closeByConnId detach 事件防止旧 PC 回调影响新 session', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_race01'));
+	const oldPc = PC.instances[0];
+
+	// 重复 offer 同一 connId → 关闭旧 PC，创建新 PC
+	await peer.handleSignaling(makeOffer('c_race01'));
+	assert.equal(PC.instances.length, 2);
+
+	// 旧 PC 的 onconnectionstatechange 应已被 detach
+	assert.equal(oldPc.onconnectionstatechange, null);
+	assert.equal(oldPc.onicecandidate, null);
+
+	// 新 session 应存在
+	assert.ok(peer.__sessions.has('c_race01'));
+	assert.equal(peer.__sessions.get('c_race01').pc, PC.instances[1]);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: closeByConnId detach 后旧 PC handler 为 null', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_race02'));
+	const oldPc = PC.instances[0];
+	// handler 初始不为 null
+	assert.ok(oldPc.onconnectionstatechange !== null);
+	assert.ok(oldPc.onicecandidate !== null);
+
+	// 重复 offer → closeByConnId detach 旧 PC
+	await peer.handleSignaling(makeOffer('c_race02'));
+	const newPc = PC.instances[1];
+
+	// 旧 PC 的 handler 应被 detach
+	assert.equal(oldPc.onconnectionstatechange, null);
+	assert.equal(oldPc.onicecandidate, null);
+
+	// 新 session 仍正常
+	assert.ok(peer.__sessions.has('c_race02'));
+	assert.equal(peer.__sessions.get('c_race02').pc, newPc);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_race03'));
+	const pc = PC.instances[0];
+	const handler = pc.onconnectionstatechange;
+
+	// 手动替换 session 中的 pc（模拟竞态后的状态）
+	const fakePc = createMockPC();
+	peer.__sessions.set('c_race03', { pc: fakePc, rpcChannel: null });
+
+	// 旧 pc 的 handler 触发 failed
+	pc.connectionState = 'failed';
+	handler();
+
+	// session 不应被删除（因为 pc !== cur.pc）
+	assert.ok(peer.__sessions.has('c_race03'));
+	assert.equal(peer.__sessions.get('c_race03').pc, fakePc);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
+	const PC = MockPCFactory();
+	let callCount = 0;
+	function ConditionalFailPC(opts) {
+		callCount++;
+		const pc = createMockPC();
+		pc.__constructorArgs = opts;
+		if (callCount === 2) {
+			pc.setRemoteDescription = async () => { throw new Error('SDP fail'); };
+		}
+		PC.instances.push(pc);
+		return pc;
+	}
+
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: ConditionalFailPC,
+	});
+
+	// 第一次正常
+	await peer.handleSignaling(makeOffer('c_race04'));
+	assert.ok(peer.__sessions.has('c_race04'));
+
+	// 第二次同一 connId 但 SDP 失败
+	await assert.rejects(
+		() => peer.handleSignaling(makeOffer('c_race04')),
+		{ message: 'SDP fail' },
+	);
+	// session 应被清理（第二个 PC 失败）
+	assert.equal(peer.__sessions.has('c_race04'), false);
+});

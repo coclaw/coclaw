@@ -45,6 +45,9 @@ export class WebRtcPeer {
 		const session = this.__sessions.get(connId);
 		if (!session) return;
 		this.__sessions.delete(connId);
+		// 先 detach 事件，防止 pc.close() 异步触发 onconnectionstatechange 删除新 session
+		session.pc.onconnectionstatechange = null;
+		session.pc.onicecandidate = null;
 		await session.pc.close();
 		this.logger.info?.(`[coclaw/rtc] [${connId}] closed`);
 	}
@@ -69,6 +72,33 @@ export class WebRtcPeer {
 
 	async __handleOffer(msg) {
 		const connId = msg.fromConnId;
+		const isIceRestart = !!msg.payload?.iceRestart;
+
+		// ICE restart：在现有 PC 上重新协商，保持 DTLS session
+		if (isIceRestart) {
+			const existing = this.__sessions.get(connId);
+			if (existing) {
+				this.logger.info?.(`[coclaw/rtc] ICE restart offer from ${connId}, renegotiating`);
+				try {
+					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
+					const answer = await existing.pc.createAnswer();
+					await existing.pc.setLocalDescription(answer);
+					this.__onSend({
+						type: 'rtc:answer',
+						toConnId: connId,
+						payload: { sdp: answer.sdp },
+					});
+					this.logger.info?.(`[coclaw/rtc] ICE restart answer sent to ${connId}`);
+					return;
+				} catch (err) {
+					// ICE restart 协商失败 → 回退到 full rebuild
+					this.logger.warn?.(`[coclaw/rtc] ICE restart failed for ${connId}, falling back to rebuild: ${err?.message}`);
+					await this.closeByConnId(connId);
+				}
+			}
+			// 无现有 session 或 ICE restart 失败 → 按 full rebuild 继续
+		}
+
 		this.logger.info?.(`[coclaw/rtc] offer received from ${connId}, creating answer`);
 
 		// 同一 connId 重复 offer → 先关闭旧连接
@@ -109,7 +139,7 @@ export class WebRtcPeer {
 			});
 		};
 
-		// 连接状态变更
+		// 连接状态变更（校验 pc 归属，防止旧 PC 异步回调删除新 session）
 		pc.onconnectionstatechange = () => {
 			const state = pc.connectionState;
 			this.logger.info?.(`[coclaw/rtc] [${connId}] connectionState: ${state}`);
@@ -120,7 +150,10 @@ export class WebRtcPeer {
 					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE connected via ${type}`);
 				}
 			} else if (state === 'failed' || state === 'closed') {
-				this.__sessions.delete(connId);
+				const cur = this.__sessions.get(connId);
+				if (cur && cur.pc === pc) {
+					this.__sessions.delete(connId);
+				}
 			}
 		};
 
@@ -149,7 +182,10 @@ export class WebRtcPeer {
 			this.logger.info?.(`[coclaw/rtc] answer sent to ${connId}`);
 		} catch (err) {
 			// SDP 协商失败 → 清理已入 Map 的 session，避免泄漏
-			this.__sessions.delete(connId);
+			const cur = this.__sessions.get(connId);
+			if (cur && cur.pc === pc) {
+				this.__sessions.delete(connId);
+			}
 			await pc.close().catch(() => {});
 			throw err;
 		}

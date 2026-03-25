@@ -459,7 +459,7 @@ export class WebRtcConnection {
 			await pc.setLocalDescription(offer);
 			this.__botConn.sendRaw({
 				type: 'rtc:offer',
-				payload: { sdp: offer.sdp },
+				payload: { sdp: offer.sdp, iceRestart: true },
 			});
 			this.__log('info', 'ICE restart offer sent');
 		}

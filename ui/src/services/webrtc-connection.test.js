@@ -560,7 +560,7 @@ describe('WebRtcConnection — ICE restart 恢复', () => {
 		await vi.waitFor(() => {
 			expect(botConn.sendRaw).toHaveBeenCalledWith({
 				type: 'rtc:offer',
-				payload: { sdp: 'mock-sdp-ice-restart' },
+				payload: { sdp: 'mock-sdp-ice-restart', iceRestart: true },
 			});
 		});
 
