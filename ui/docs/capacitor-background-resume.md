@@ -288,3 +288,154 @@ Android 各厂商（小米 MIUI、华为 EMUI/HarmonyOS、OPPO ColorOS 等）的
 | 进程被杀（冷启动） | 内存状态全部丢失 | 全量初始化，从持久化存储恢复路由和草稿 |
 
 这种分级策略避免了"一刀切"——短暂切出无需任何开销，长时间后台也能快速恢复，进程被杀时有兜底。
+
+---
+
+## 5. 当前架构的前台恢复就绪度评估
+
+> 基于 2026-03-26 完成的阶段一响应式整改后的架构状态。
+
+### 5.1 已经正常工作的恢复链
+
+#### BotConnection 前台恢复（连接层）
+
+`BotConnection.__handleForegroundResume()` 是当前唯一消费 `app:foreground` 事件的模块，实现了三级恢复策略：
+
+| 场景 | 条件 | 行为 |
+|------|------|------|
+| WS 已断连 | `state === 'disconnected'` | 重置退避到 1s，立即重连 |
+| WS 可能死亡 | `elapsed > ASSUME_DEAD_MS`（45s） | `forceReconnect()` |
+| WS 存疑 | `elapsed > PROBE_TIMEOUT_MS`（2.5s） | 发 ping 探测，2.5s 无响应则 `forceReconnect()` |
+| WS 健康 | `elapsed <= PROBE_TIMEOUT_MS` | 无需操作 |
+
+此设计正确且完善。
+
+#### ChatPage 消息恢复（数据层）
+
+WS 重连后的恢复链：
+
+```
+app:foreground
+  → BotConnection.__handleForegroundResume()  — 探测/重连 WS
+    → conn.on('state', 'connected')
+      → botsStore.__bridgeConn → byId[botId].connState = 'connected'
+        → botsStore.__onBotConnected(id)
+          → if gap >= BRIEF_DISCONNECT_MS: 刷新 agents/sessions/topics stores
+        → ChatPage.connReady computed 变为 true
+          → connReady watcher
+            → chatStore.__reconcileSlashCommand()  — 清理挂起的 slash cmd
+            → chatStore.loadMessages({ silent: true })  — 刷新消息
+              → agentRunsStore.reconcileAfterLoad()  — 清理 zombie runs
+```
+
+这条链路在 WS **确实断连并重连** 的场景下完整且正确。
+
+#### Agent runs reconcile（流式状态恢复）
+
+`reconcileAfterLoad()` 在 `loadMessages` 成功后被调用，通过两个条件检测 zombie runs：
+1. 事件流已静默（`lastEventAt` 距今超过 3s）
+2. 服务端消息已包含 run 的最终结果（有 terminal `stopReason`）
+
+两个条件同时满足时 settle 该 run。设计正确。
+
+### 5.2 存在的缺陷
+
+#### 缺陷 1：`app:foreground` 事件仅被 BotConnection 消费
+
+**严重度：高**
+
+`setupAppStateChange()`（`utils/capacitor-app.js`）正确桥接了 Capacitor 原生 `appStateChange` 到 `app:foreground` 自定义事件，但**只有 BotConnection 在监听**。以下模块均未监听：
+
+| 模块 | 依赖的恢复信号 | 缺陷 |
+|------|-------------|------|
+| `use-bot-status-sse.js` | `EventSource` 原生自动重连 | Capacitor 上 `EventSource` 在后台可能被 OS 断开，前台后不一定自动重连 |
+| `use-bot-status-poll.js` | `visibilitychange` | Capacitor 上 `visibilitychange` 不一定可靠触发 |
+
+**影响**：前台恢复后 bot 上下线状态可能过期。用户看到离线 bot 显示在线（或反之），直到 SSE/polling 碰巧恢复。
+
+**修复方向**：
+- SSE composable：监听 `app:foreground`，强制关闭旧 `EventSource` 并重建。`onopen` 中已有 `botsStore.loadBots()` 全量刷新
+- Polling composable：监听 `app:foreground`，触发时立即 `resume()`
+
+#### 缺陷 2：WS 未断连时无恢复路径（短时间后台）
+
+**严重度：高**
+
+如果后台时间较短（几秒~几十秒），WS 可能保持连接（或 probe 判定为健康）。此时：
+- `connState` 始终为 `'connected'`，`connReady` 无状态转换
+- `connReady` watcher 不触发
+- `loadMessages` 不被调用
+- `reconcileAfterLoad` 不被调用
+
+**影响**：
+- 后台期间若有 agent run 的 `event:agent` 事件丢失（WS 存活但事件在传输链某处丢失，或 WS buffer 被清理），对应 run 会永久卡在 streaming 状态，直到 30min 超时（该超时在后台还可能被冻结）
+- 后台期间若有新消息到达（其他设备发送），用户不会看到，直到下次主动刷新
+
+**修复方向**：
+- ChatPage 监听 `app:foreground`（或 `visibilitychange`），执行 `loadMessages({ silent: true })`，触发 `reconcileAfterLoad`
+- 可复用 `__handleForegroundResume` 的节流逻辑，与 `connReady` watcher 的首次恢复去重
+
+#### 缺陷 3：Draft 使用 `sessionStorage`，不耐进程死亡
+
+**严重度：中**
+
+`draft.store.js` 使用 `sessionStorage` 持久化草稿。`visibilitychange:hidden` 时触发 `persist()`，数据写入 `sessionStorage`。
+
+在 Capacitor 上，OS 杀死 WebView 进程后 `sessionStorage` 随之丢失。用户切走后若 OS 回收内存，返回时正在编辑的消息丢失。
+
+**修复方向**：改用 `localStorage`。改动仅需修改 `sessionStorage` → `localStorage` 和 storage key。`localStorage` 在 Capacitor WebView 中跨进程生命周期持久。
+
+#### 缺陷 4：无 `app:background` 事件
+
+**严重度：中**
+
+`setupAppStateChange()` 在 `isActive === false` 时不发送任何事件。组件无法在进入后台前主动保存状态或记录时间戳。
+
+**修复方向**：补充 `window.dispatchEvent(new CustomEvent('app:background'))`，与 `app:foreground` 对称。可用于：
+- Draft store 在后台前主动 persist
+- 记录进入后台的时间戳，前台恢复时判断离开时长
+- 暂停不必要的定时器
+
+#### 缺陷 5：SSE 无心跳机制
+
+**严重度：低**
+
+`EventSource` 没有应用层心跳。服务端如果不主动发送事件，TCP 半开连接可能长时间不被发现。在 SSE 连接看似存活但实际已断开时，bot 状态事件会被静默丢失。
+
+**影响**：长时间后台后即使 `EventSource` 对象仍存在，实际连接可能已死，但不会触发 `onerror` 重连。
+
+**修复方向**：
+- 服务端定期发送 SSE 心跳注释（`:heartbeat\n\n`），客户端无需处理但 `EventSource` 会检测到连接存活
+- 或客户端记录最后收到 SSE 事件的时间，前台恢复时若超过阈值则强制重建 `EventSource`
+- 此问题优先级低，因为缺陷 1 的修复（`app:foreground` 强制重建 `EventSource`）已经覆盖了主要场景
+
+#### 缺陷 6：WebRTC `disconnected` 状态未在前台恢复时探测
+
+**严重度：低**
+
+`initRtcAndSelectTransport` 在 RTC 为 `disconnected`（ICE 自动恢复中）时不替换它。前台恢复后可能有短暂窗口 RTC 不可用但未降级到 WS。
+
+**影响**：极低。`BotConnection.request()` 已有 DataChannel 可用性检查，不可用时自动降级到 WS。ICE 自动恢复通常在数秒内完成。
+
+### 5.3 修复实施计划
+
+#### 第一优先级（展开前台恢复工作前必须解决）
+
+| 项 | 缺陷 | 改动范围 |
+|----|------|---------|
+| 1 | SSE + Polling 增加 `app:foreground` 监听 | `use-bot-status-sse.js`、`use-bot-status-poll.js` |
+| 2 | ChatPage 增加前台恢复路径（独立于 connReady） | `ChatPage.vue`，可能需提取共享的节流逻辑 |
+
+#### 第二优先级（提升健壮性）
+
+| 项 | 缺陷 | 改动范围 |
+|----|------|---------|
+| 3 | Draft 改用 `localStorage` | `draft.store.js`（一行改动） |
+| 4 | 补充 `app:background` 事件 | `utils/capacitor-app.js` |
+
+#### 后续考虑（可观察后决定）
+
+| 项 | 缺陷 | 备注 |
+|----|------|------|
+| 5 | SSE 心跳 | 缺陷 1 修复后主要场景已覆盖；可在服务端加 SSE 心跳注释进一步加固 |
+| 6 | WebRTC disconnected 探测 | 影响极低，WS fallback 已兜底 |
