@@ -57,14 +57,20 @@ export function useBotStatusPoll(botsStore, opts = {}) {
 		}
 	}
 
+	function onForeground() {
+		resume();
+	}
+
 	function stop() {
 		stopped = true;
 		pause();
 		document.removeEventListener('visibilitychange', onVisibilityChange);
+		window.removeEventListener('app:foreground', onForeground);
 	}
 
 	// 启动
 	document.addEventListener('visibilitychange', onVisibilityChange);
+	window.addEventListener('app:foreground', onForeground);
 	schedule();
 
 	onBeforeUnmount(stop);

@@ -48,6 +48,7 @@ import {
 	registerByLoginName,
 } from '../services/auth.api.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
+import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
 
@@ -246,6 +247,31 @@ describe('auth store', () => {
 		await store.logout();
 
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+	});
+
+	test('login 成功后调用 draftStore.onUserChanged', async () => {
+		loginByLoginName.mockResolvedValue({ user: { id: '5' } });
+		const store = useAuthStore();
+		const draftStore = useDraftStore();
+		const spy = vi.spyOn(draftStore, 'onUserChanged');
+
+		await store.login({ loginName: 'a', password: 'b' });
+
+		expect(spy).toHaveBeenCalled();
+	});
+
+	test('logout 时先 persist 草稿再调用 onUserChanged', async () => {
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '3' };
+		const draftStore = useDraftStore();
+		const callOrder = [];
+		vi.spyOn(draftStore, 'persist').mockImplementation(() => callOrder.push('persist'));
+		vi.spyOn(draftStore, 'onUserChanged').mockImplementation(() => callOrder.push('onUserChanged'));
+
+		await store.logout();
+
+		expect(callOrder).toEqual(['persist', 'onUserChanged']);
 	});
 
 	test('logout should expose error message on failure', async () => {

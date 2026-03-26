@@ -308,6 +308,20 @@ export class WebRtcConnection {
 		return this.__pc.createDataChannel(label, opts);
 	}
 
+	/**
+	 * 前台恢复时主动 ICE restart（仅在 PC 处于 disconnected 时触发）
+	 * ICE restart 是安全的：旧连接保持可用直到新路径建立
+	 * @returns {boolean} 是否触发了 restart
+	 */
+	tryIceRestart() {
+		const pc = this.__pc;
+		if (!pc || pc.connectionState !== 'disconnected') return false;
+		this.__log('info', 'proactive ICE restart on foreground resume');
+		this.__iceRestartCount++;
+		this.__doIceRestart();
+		return true;
+	}
+
 	// --- 内部：建连 ---
 
 	/** @private */

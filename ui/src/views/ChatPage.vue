@@ -381,6 +381,8 @@ export default {
 		/** connReady 驱动消息加载：首次加载或重连刷新 */
 		connReady(ready) {
 			if (!ready || !this.chatStore) return;
+			// 与 __handleForegroundResume 去重
+			this.__lastResumeAt = Date.now();
 			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
 			this.chatStore.__reconcileSlashCommand();
 			if (!this.chatStore.__messagesLoaded) {
@@ -397,10 +399,25 @@ export default {
 	mounted() {
 		this.suppressPullRefresh();
 		// chatStore watcher (immediate: true) 已处理激活
+
+		// 前台恢复监听：覆盖 WS 未断连时的数据刷新
+		this.__lastResumeAt = 0;
+		this.__onForeground = () => this.__handleForegroundResume();
+		this.__onVisibility = () => {
+			if (document.visibilityState === 'visible') this.__handleForegroundResume();
+		};
+		window.addEventListener('app:foreground', this.__onForeground);
+		document.addEventListener('visibilitychange', this.__onVisibility);
 	},
 	beforeUnmount() {
 		this.unsuppressPullRefresh();
 		this.chatStore?.cleanup();
+		if (this.__onForeground) {
+			window.removeEventListener('app:foreground', this.__onForeground);
+		}
+		if (this.__onVisibility) {
+			document.removeEventListener('visibilitychange', this.__onVisibility);
+		}
 	},
 	methods: {
 		async onSendMessage({ text, files }) {
@@ -416,7 +433,13 @@ export default {
 			if (this.isTopicRoute && !this.currentSessionId) return;
 
 			const savedText = this.inputText;
+			const draftKey = this.draftKey;
+			// 清空输入框显示，但在 draftStore 中保留文本（作为 pending draft）
+			// 若发送期间进程被 kill，恢复后 draft 仍可读取
 			this.inputText = '';
+			if (draftKey && savedText) {
+				this.draftStore.setDraft(draftKey, savedText);
+			}
 			this.userScrolledUp = false;
 			this.scrollToBottom();
 
@@ -427,6 +450,8 @@ export default {
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
+					// 发送成功，清除 pending draft
+					if (draftKey) this.draftStore.clearDraft(draftKey);
 					this.__tryGenerateTitle();
 				}
 			}
@@ -435,6 +460,10 @@ export default {
 				if (!this.chatStore?.__accepted) {
 					this.inputText = savedText;
 					this.$refs.chatInput?.restoreFiles(files);
+				}
+				else {
+					// 已 accepted，发送已被服务端接受，清除 draft
+					if (draftKey) this.draftStore.clearDraft(draftKey);
 				}
 			}
 		},
@@ -531,6 +560,21 @@ export default {
 
 		onCancelSend() {
 			this.chatStore?.cancelSend();
+		},
+
+		/**
+		 * 前台恢复：WS 未断连时 connReady 不会转换，需独立刷新数据
+		 * 与 connReady watcher 去重：2s 内不重复执行
+		 */
+		__handleForegroundResume() {
+			const now = Date.now();
+			if (now - this.__lastResumeAt < 2000) return;
+			this.__lastResumeAt = now;
+
+			if (!this.chatStore || !this.connReady) return;
+			console.debug('[ChatPage] foreground resume → silent reload');
+			this.chatStore.__reconcileSlashCommand();
+			this.chatStore.loadMessages({ silent: true });
 		},
 
 		/**

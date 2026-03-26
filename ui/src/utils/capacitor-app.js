@@ -136,8 +136,11 @@ function setupAppStateChange() {
 		App.addListener('appStateChange', ({ isActive }) => {
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
 			if (isActive) {
-				// 通知 BotConnection 进行前台恢复（分级：即时重连/探测/假定死亡）
+				// 通知各模块进行前台恢复（BotConnection/SSE/Polling/ChatPage）
 				window.dispatchEvent(new CustomEvent('app:foreground'));
+			} else {
+				// 通知各模块进入后台（可用于保存状态、记录时间戳等）
+				window.dispatchEvent(new CustomEvent('app:background'));
 			}
 		});
 		console.log('[capacitor] appStateChange listener registered');

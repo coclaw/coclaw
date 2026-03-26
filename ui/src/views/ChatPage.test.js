@@ -546,6 +546,112 @@ describe('ChatPage watchers', () => {
 	});
 });
 
+describe('ChatPage foreground resume', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		chatStoreManager.__reset();
+	});
+
+	test('app:foreground 触发静默刷新（connReady 为 true 时）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.botId = 'bot-1';
+		chatStore.__messagesLoaded = true;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		botsStore.byId['bot-1'].connState = 'connected';
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// 清除 connReady watcher 触发的调用
+		loadSpy.mockClear();
+
+		// 重置去重时间戳
+		wrapper.vm.__lastResumeAt = 0;
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await wrapper.vm.$nextTick();
+
+		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+	});
+
+	test('connReady 为 false 时 app:foreground 不触发刷新', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.botId = 'bot-1';
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: false }]);
+		await wrapper.vm.$nextTick();
+		loadSpy.mockClear();
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await wrapper.vm.$nextTick();
+
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
+	test('2s 内不重复触发前台恢复', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.botId = 'bot-1';
+		chatStore.__messagesLoaded = true;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		botsStore.byId['bot-1'].connState = 'connected';
+		setupAgents();
+		await wrapper.vm.$nextTick();
+		loadSpy.mockClear();
+		wrapper.vm.__lastResumeAt = 0;
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await wrapper.vm.$nextTick();
+
+		// 只触发一次
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+	});
+
+	test('connReady watcher 与 foreground 去重', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.botId = 'bot-1';
+		chatStore.__messagesLoaded = true;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		botsStore.byId['bot-1'].connState = 'connected';
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// connReady watcher 已触发 loadMessages
+		expect(loadSpy).toHaveBeenCalled();
+		loadSpy.mockClear();
+
+		// 紧接着触发 app:foreground，应被去重跳过
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await wrapper.vm.$nextTick();
+
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
+	test('unmount 后移除 app:foreground 监听器', async () => {
+		const removeSpy = vi.spyOn(window, 'removeEventListener');
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.unmount();
+
+		expect(removeSpy).toHaveBeenCalledWith('app:foreground', expect.any(Function));
+	});
+});
+
 describe('ChatPage scroll', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();

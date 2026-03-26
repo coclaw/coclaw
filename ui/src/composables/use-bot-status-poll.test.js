@@ -149,4 +149,41 @@ describe('useBotStatusPoll', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(store.loadBots).not.toHaveBeenCalled();
 	});
+
+	test('app:foreground 事件触发 resume 并立即刷新', async () => {
+		useBotStatusPoll(store);
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.loadBots).toHaveBeenCalledTimes(1);
+	});
+
+	test('app:foreground SSE 连通时不调用 loadBots', async () => {
+		const sseConnected = { value: true };
+		useBotStatusPoll(store, { sseConnected });
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.loadBots).not.toHaveBeenCalled();
+	});
+
+	test('stop() 移除 app:foreground 监听器', () => {
+		const removeSpy = vi.spyOn(window, 'removeEventListener');
+		const { stop } = useBotStatusPoll(store);
+		stop();
+
+		expect(removeSpy).toHaveBeenCalledWith('app:foreground', expect.any(Function));
+	});
+
+	test('stop() 后 app:foreground 不再触发 loadBots', async () => {
+		const { stop } = useBotStatusPoll(store);
+		stop();
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.loadBots).not.toHaveBeenCalled();
+	});
 });

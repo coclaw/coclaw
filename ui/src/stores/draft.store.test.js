@@ -1,23 +1,34 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
+
+vi.mock('../utils/platform.js', () => ({
+	isCapacitorApp: false,
+	isTauriApp: false,
+	isNativeShell: false,
+	isDesktop: true,
+}));
+
+import { useAuthStore } from './auth.store.js';
 import { useDraftStore } from './draft.store.js';
 
 describe('draft.store', () => {
 	let store;
-	let sessionStorageMock;
+	let storageMock;
 
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		store = useDraftStore();
 
-		sessionStorageMock = {
+		storageMock = {
 			store: {},
-			getItem: vi.fn((key) => sessionStorageMock.store[key] ?? null),
-			setItem: vi.fn((key, val) => { sessionStorageMock.store[key] = val; }),
-			removeItem: vi.fn((key) => { delete sessionStorageMock.store[key]; }),
-			clear: vi.fn(() => { sessionStorageMock.store = {}; }),
+			getItem: vi.fn((key) => storageMock.store[key] ?? null),
+			setItem: vi.fn((key, val) => { storageMock.store[key] = val; }),
+			removeItem: vi.fn((key) => { delete storageMock.store[key]; }),
+			clear: vi.fn(() => { storageMock.store = {}; }),
 		};
-		vi.stubGlobal('sessionStorage', sessionStorageMock);
+		// 浏览器环境默认使用 sessionStorage
+		vi.stubGlobal('sessionStorage', storageMock);
+		vi.stubGlobal('localStorage', storageMock);
 	});
 
 	afterEach(() => {
@@ -62,27 +73,46 @@ describe('draft.store', () => {
 		});
 	});
 
-	describe('persist / restore', () => {
-		test('persist 将草稿写入 sessionStorage', () => {
+	describe('persist / restore（userId 隔离）', () => {
+		test('未登录时使用基础 key', () => {
+			store.setDraft('chat:1:main', '你好');
+			store.persist();
+
+			expect(storageMock.setItem).toHaveBeenCalledWith(
+				'coclaw:drafts',
+				expect.any(String),
+			);
+		});
+
+		test('登录后使用 userId 隔离的 key', () => {
+			const authStore = useAuthStore();
+			authStore.user = { id: 'user-42' };
+
+			store.setDraft('chat:1:main', '你好');
+			store.persist();
+
+			expect(storageMock.setItem).toHaveBeenCalledWith(
+				'coclaw:drafts:user-42',
+				expect.any(String),
+			);
+		});
+
+		test('persist 将草稿写入存储', () => {
 			store.setDraft('chat:1:main', '你好');
 			store.setDraft('topic:t1', '世界');
 			store.persist();
 
-			expect(sessionStorageMock.setItem).toHaveBeenCalledWith(
-				'coclaw:drafts',
-				expect.any(String),
-			);
-			const saved = JSON.parse(sessionStorageMock.store['coclaw:drafts']);
+			const saved = JSON.parse(storageMock.store['coclaw:drafts']);
 			expect(saved).toEqual({ 'chat:1:main': '你好', 'topic:t1': '世界' });
 		});
 
-		test('persist 无草稿时移除 sessionStorage 条目', () => {
+		test('persist 无草稿时移除存储条目', () => {
 			store.persist();
-			expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('coclaw:drafts');
+			expect(storageMock.removeItem).toHaveBeenCalledWith('coclaw:drafts');
 		});
 
-		test('restore 从 sessionStorage 恢复草稿', () => {
-			sessionStorageMock.store['coclaw:drafts'] = JSON.stringify({
+		test('restore 从存储恢复草稿', () => {
+			storageMock.store['coclaw:drafts'] = JSON.stringify({
 				'chat:1:main': '恢复的文本',
 				'topic:t2': '另一条',
 			});
@@ -93,7 +123,7 @@ describe('draft.store', () => {
 		});
 
 		test('restore 跳过非字符串和空值', () => {
-			sessionStorageMock.store['coclaw:drafts'] = JSON.stringify({
+			storageMock.store['coclaw:drafts'] = JSON.stringify({
 				'ok': '有效',
 				'bad1': 123,
 				'bad2': null,
@@ -113,20 +143,49 @@ describe('draft.store', () => {
 		});
 
 		test('restore 在 JSON 解析失败时静默', () => {
-			sessionStorageMock.store['coclaw:drafts'] = 'not-json';
+			storageMock.store['coclaw:drafts'] = 'not-json';
 			store.restore();
 			expect(Object.keys(store.drafts)).toHaveLength(0);
 		});
 
-		test('persist 在 sessionStorage 异常时静默', () => {
+		test('persist 在存储异常时静默', () => {
 			store.setDraft('k', 'v');
-			sessionStorageMock.setItem.mockImplementation(() => { throw new Error('quota'); });
+			storageMock.setItem.mockImplementation(() => { throw new Error('quota'); });
 			expect(() => store.persist()).not.toThrow();
 		});
 	});
 
+	describe('onUserChanged', () => {
+		test('清空内存态并从新 userId 的存储恢复', () => {
+			store.setDraft('chat:1:main', '旧用户的草稿');
+
+			const authStore = useAuthStore();
+			authStore.user = { id: 'user-99' };
+
+			storageMock.store['coclaw:drafts:user-99'] = JSON.stringify({
+				'topic:t1': '新用户的草稿',
+			});
+
+			store.onUserChanged();
+
+			expect(store.getDraft('chat:1:main')).toBe('');
+			expect(store.getDraft('topic:t1')).toBe('新用户的草稿');
+		});
+
+		test('切换到无存储数据的用户时清空', () => {
+			store.setDraft('chat:1:main', '数据');
+
+			const authStore = useAuthStore();
+			authStore.user = { id: 'user-new' };
+
+			store.onUserChanged();
+
+			expect(Object.keys(store.drafts)).toHaveLength(0);
+		});
+	});
+
 	describe('initPersist', () => {
-		test('注册 beforeunload 和 visibilitychange 事件并调用 restore', () => {
+		test('注册 beforeunload、visibilitychange 和 app:background 事件并调用 restore', () => {
 			const winSpy = vi.spyOn(window, 'addEventListener');
 			const docSpy = vi.spyOn(document, 'addEventListener');
 			const restoreSpy = vi.spyOn(store, 'restore');
@@ -135,6 +194,7 @@ describe('draft.store', () => {
 
 			expect(winSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
 			expect(docSpy).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+			expect(winSpy).toHaveBeenCalledWith('app:background', expect.any(Function));
 			expect(restoreSpy).toHaveBeenCalled();
 		});
 
@@ -155,7 +215,7 @@ describe('draft.store', () => {
 			const handler = winSpy.mock.calls.find(([evt]) => evt === 'beforeunload')[1];
 			handler();
 
-			expect(sessionStorageMock.setItem).toHaveBeenCalled();
+			expect(storageMock.setItem).toHaveBeenCalled();
 		});
 
 		test('visibilitychange hidden 触发 persist', () => {
@@ -169,7 +229,7 @@ describe('draft.store', () => {
 			Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
 			handler();
 
-			expect(sessionStorageMock.setItem).toHaveBeenCalled();
+			expect(storageMock.setItem).toHaveBeenCalled();
 
 			// 恢复
 			Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
@@ -185,7 +245,18 @@ describe('draft.store', () => {
 			Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
 			handler();
 
-			expect(sessionStorageMock.setItem).not.toHaveBeenCalled();
+			expect(storageMock.setItem).not.toHaveBeenCalled();
+		});
+
+		test('app:background 触发 persist', () => {
+			const winSpy = vi.spyOn(window, 'addEventListener');
+			store.initPersist();
+
+			store.setDraft('k', 'v');
+			const handler = winSpy.mock.calls.find(([evt]) => evt === 'app:background')[1];
+			handler();
+
+			expect(storageMock.setItem).toHaveBeenCalled();
 		});
 	});
 });

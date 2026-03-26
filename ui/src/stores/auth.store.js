@@ -15,6 +15,7 @@ import {
 } from '../i18n/index.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
 
@@ -42,6 +43,7 @@ export const useAuthStore = defineStore('auth', {
 			try {
 				this.user = await fetchSessionUser();
 				applyUserPreferences(this.user);
+				useDraftStore().onUserChanged();
 				console.debug('[auth] session refreshed, user=%s', this.user?.id ?? null);
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Failed to load session';
@@ -57,6 +59,7 @@ export const useAuthStore = defineStore('auth', {
 				const data = await loginByLoginName(credentials);
 				this.user = data.user;
 				applyUserPreferences(this.user);
+				useDraftStore().onUserChanged();
 				console.log('[auth] login ok, user=%s', this.user?.id);
 			} catch (err) {
 				this.user = null;
@@ -73,6 +76,7 @@ export const useAuthStore = defineStore('auth', {
 				const data = await registerByLoginName(credentials);
 				this.user = data.user;
 				applyUserPreferences(this.user);
+				useDraftStore().onUserChanged();
 				console.log('[auth] register ok, user=%s', this.user?.id);
 			} catch (err) {
 				this.user = null;
@@ -87,7 +91,11 @@ export const useAuthStore = defineStore('auth', {
 			this.clearError();
 			try {
 				await logout();
+				// 登出前先保存当前用户的草稿
+				const draftStore = useDraftStore();
+				draftStore.persist();
 				this.user = null;
+				draftStore.onUserChanged();
 				syncThemeModeFromSettings(null);
 				useBotConnections().disconnectAll();
 				useSessionsStore().$reset();
