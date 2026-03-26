@@ -3,6 +3,9 @@
  * 将 event:agent 事件应用到消息数组，与 store 解耦
  */
 
+// Agent 静默回复标记（Agent 判断无需回复时输出，不应展示给用户）
+const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
+
 /**
  * 从消息数组末尾查找 streaming bot 条目
  * @param {object[]} msgs
@@ -41,10 +44,18 @@ export function applyAgentEvent(msgs, payload) {
 	if (stream === 'assistant' && data?.text != null) {
 		const entry = findStreamingBotEntry(msgs);
 		if (entry) {
-			const content = ensureContentArray(entry);
-			const nonText = content.filter((b) => b.type !== 'text');
-			entry.message.content = [...nonText, { type: 'text', text: data.text }];
-			entry.message.stopReason = 'stop';
+			// 静默回复过滤：匹配 NO_REPLY 时不写入文本
+			if (SILENT_REPLY_PATTERN.test(data.text)) {
+				const content = ensureContentArray(entry);
+				const nonText = content.filter((b) => b.type !== 'text');
+				entry.message.content = nonText;
+				entry.message.stopReason = 'stop';
+			} else {
+				const content = ensureContentArray(entry);
+				const nonText = content.filter((b) => b.type !== 'text');
+				entry.message.content = [...nonText, { type: 'text', text: data.text }];
+				entry.message.stopReason = 'stop';
+			}
 			result.changed = true;
 		}
 	}

@@ -32,6 +32,39 @@ describe('applyAgentEvent', () => {
 		expect(result.settled).toBe(false);
 	});
 
+	test('assistant stream：过滤 NO_REPLY 静默回复', () => {
+		const msgs = makeStreamingMsgs();
+		const result = applyAgentEvent(msgs, { stream: 'assistant', data: { text: 'NO_REPLY' } });
+
+		const entry = msgs.find((m) => m._streaming && m.message.role === 'assistant');
+		const textBlocks = Array.isArray(entry.message.content)
+			? entry.message.content.filter((b) => b.type === 'text')
+			: [];
+		expect(textBlocks).toHaveLength(0);
+		expect(entry.message.stopReason).toBe('stop');
+		expect(result.changed).toBe(true);
+	});
+
+	test('assistant stream：过滤带空白的 NO_REPLY', () => {
+		const msgs = makeStreamingMsgs();
+		applyAgentEvent(msgs, { stream: 'assistant', data: { text: '  NO_REPLY  ' } });
+
+		const entry = msgs.find((m) => m._streaming && m.message.role === 'assistant');
+		const textBlocks = Array.isArray(entry.message.content)
+			? entry.message.content.filter((b) => b.type === 'text')
+			: [];
+		expect(textBlocks).toHaveLength(0);
+	});
+
+	test('assistant stream：不过滤包含 NO_REPLY 的正常文本', () => {
+		const msgs = makeStreamingMsgs();
+		applyAgentEvent(msgs, { stream: 'assistant', data: { text: 'The agent said NO_REPLY here' } });
+
+		const entry = msgs.find((m) => m._streaming && m.message.role === 'assistant');
+		const textBlock = entry.message.content.find((b) => b.type === 'text');
+		expect(textBlock?.text).toBe('The agent said NO_REPLY here');
+	});
+
 	test('assistant stream：无 streaming 条目时不报错', () => {
 		const msgs = [];
 		const result = applyAgentEvent(msgs, { stream: 'assistant', data: { text: 'hello' } });

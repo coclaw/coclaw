@@ -289,6 +289,34 @@ describe('groupSessionMessages', () => {
 		expect(result[0].textContent).toBe('测试');
 	});
 
+	test('过滤 assistant 的 NO_REPLY 静默回复', () => {
+		const entries = [
+			userEntry('u1', '你好', 1000),
+			assistantEntry('a1', { text: 'NO_REPLY', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result).toHaveLength(2);
+		expect(result[1].resultText).toBeNull();
+	});
+
+	test('过滤带空白的 NO_REPLY 静默回复', () => {
+		const entries = [
+			userEntry('u1', '你好', 1000),
+			assistantEntry('a1', { text: '  NO_REPLY  ', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].resultText).toBeNull();
+	});
+
+	test('不过滤包含 NO_REPLY 的正常文本', () => {
+		const entries = [
+			userEntry('u1', '你好', 1000),
+			assistantEntry('a1', { text: 'The agent said NO_REPLY to indicate silence', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].resultText).toBe('The agent said NO_REPLY to indicate silence');
+	});
+
 	test('去除 assistant 的 [[reply_to_current]] 标签', () => {
 		const entries = [
 			userEntry('u1', '问题'),
