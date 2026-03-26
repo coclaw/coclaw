@@ -271,6 +271,36 @@
 - **行为**：触发 `session-expired` 事件，主动 `disconnect()`，标记 `__intentionalClose = true` 不再自动重连
 - **场景**：Web + Capacitor
 
+### 6.3 HTTP 401 统一拦截
+
+- **文件**：`services/http.js`
+- **触发**：任何非 `fetchSessionUser` 的 HTTP 请求返回 401
+- **行为**：派发 `auth:session-expired` DOM 自定义事件（3s 节流去重）
+- **设计**：使用 DOM 事件避免 http.js 与 router/store 的循环依赖
+- **场景**：Web + Capacitor
+
+### 6.4 WS session-expired → auth:session-expired 桥接
+
+- **文件**：`stores/bots.store.js`（`__bridgeConn`）
+- **触发**：BotConnection 触发 `session-expired` 内部事件
+- **行为**：桥接为 `auth:session-expired` DOM 自定义事件
+- **场景**：Web + Capacitor
+
+### 6.5 auth:session-expired 统一监听
+
+- **文件**：`layouts/AuthedLayout.vue`
+- **触发**：`auth:session-expired` DOM 事件（来源：6.3 HTTP 401 或 6.4 WS session-expired）
+- **行为**：清空 `authStore.user`（不调 `logout()` 避免二次 401），跳转 `/login`（保留 `?redirect=`）
+- **场景**：Web + Capacitor
+
+### 6.6 前台恢复刷新 session
+
+- **文件**：`layouts/AuthedLayout.vue`
+- **触发**：`visibilitychange`（visible）或 `app:foreground`
+- **行为**：调用 `authStore.refreshSession()`，若 session 已过期则 401 → 6.3 → 6.5 自动跳转登录页
+- **与路由守卫互补**：路由守卫覆盖"导航时验证"，此处覆盖"停留在页面不导航时的后台恢复验证"
+- **场景**：Web + Capacitor
+
 ---
 
 ## 7. Capacitor 特有
@@ -279,8 +309,18 @@
 
 - **文件**：`utils/capacitor-app.js`（`setupAppStateChange`）
 - **行为**：将 Capacitor 原生 `appStateChange({ isActive })` 转义为标准 DOM 自定义事件 `app:foreground` / `app:background`
-- **消费者**：BotConnection、SSE、Polling、ChatPage、DraftStore、Router
+- **消费者**：BotConnection、SSE、Polling、ChatPage、DraftStore、Router、AuthedLayout
 - 消费者无需依赖 Capacitor SDK，只需监听标准 DOM 事件
+
+### 7.x 网络变化桥接（network:online）
+
+- **文件**：`utils/capacitor-app.js`（`setupNetworkListener` + 模块级 Web online 桥接）
+- **机制**：
+  - **Capacitor**：`@capacitor/network` 的 `networkStatusChange` → 当 `connected === true` 时派发 `network:online` DOM 事件
+  - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件
+- **消费者**：BotConnection（即时 probe/重连）、SSE（restart）、Polling（resume）
+- **效果**：WiFi↔蜂窝切换或断网恢复后，无需等待心跳超时（~90s），可立即检测并恢复连接
+- **去重**：BotConnection 的 `__handleForegroundResume` 已有 500ms 节流，`network:online` + `app:foreground` 同时到达时自动去重
 
 ### 7.2 冷启动路由恢复
 

@@ -61,16 +61,22 @@ export function useBotStatusPoll(botsStore, opts = {}) {
 		resume();
 	}
 
+	function onNetworkOnline() {
+		resume();
+	}
+
 	function stop() {
 		stopped = true;
 		pause();
 		document.removeEventListener('visibilitychange', onVisibilityChange);
 		window.removeEventListener('app:foreground', onForeground);
+		window.removeEventListener('network:online', onNetworkOnline);
 	}
 
 	// 启动
 	document.addEventListener('visibilitychange', onVisibilityChange);
 	window.addEventListener('app:foreground', onForeground);
+	window.addEventListener('network:online', onNetworkOnline);
 	schedule();
 
 	onBeforeUnmount(stop);

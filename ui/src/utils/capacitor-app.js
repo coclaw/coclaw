@@ -11,6 +11,14 @@ import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
 /** 是否运行在 Capacitor 原生壳中 */
 export const isNative = Capacitor.isNativePlatform();
 
+// Web 端：桥接浏览器原生 online 事件为统一的 network:online
+if (!isNative && typeof window !== 'undefined') {
+	window.addEventListener('online', () => {
+		console.log('[network] browser online → dispatch network:online');
+		window.dispatchEvent(new CustomEvent('network:online'));
+	});
+}
+
 /**
  * 初始化 Capacitor 原生能力
  * @param {import('vue-router').Router} router - Vue Router 实例
@@ -55,6 +63,13 @@ export async function initCapacitorApp(router) {
 	}
 	catch (e) {
 		console.warn('[capacitor] SplashScreen.hide failed:', e);
+	}
+
+	try {
+		setupNetworkListener();
+	}
+	catch (e) {
+		console.warn('[capacitor] Network init failed:', e);
 	}
 
 	// KeepAlive 是 Android 自定义原生插件，iOS 无对应实现
@@ -145,6 +160,18 @@ function setupAppStateChange() {
 		});
 		console.log('[capacitor] appStateChange listener registered');
 	});
+}
+
+function setupNetworkListener() {
+	import('@capacitor/network').then(({ Network }) => {
+		Network.addListener('networkStatusChange', ({ connected }) => {
+			console.log('[capacitor] networkStatusChange: connected=%s', connected);
+			if (connected) {
+				window.dispatchEvent(new CustomEvent('network:online'));
+			}
+		});
+		console.log('[capacitor] Network listener registered');
+	}).catch((e) => console.warn('[capacitor] Network setup failed:', e));
 }
 
 function setupBackButton(router) {

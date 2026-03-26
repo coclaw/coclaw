@@ -1610,3 +1610,91 @@ describe('BotConnection – foreground resume (app:foreground)', () => {
 		expect(MockWebSocket.instances.length).toBe(3);
 	});
 });
+
+describe('BotConnection – network:online', () => {
+	let savedDoc;
+	let savedWin;
+	let mockDoc;
+	let mockWin;
+
+	beforeEach(() => {
+		MockWebSocket.reset();
+		vi.useFakeTimers();
+		savedDoc = globalThis.document;
+		savedWin = globalThis.window;
+		mockDoc = {
+			visibilityState: 'visible',
+			__listeners: {},
+			addEventListener(evt, cb) {
+				if (!this.__listeners[evt]) this.__listeners[evt] = [];
+				this.__listeners[evt].push(cb);
+			},
+			removeEventListener(evt, cb) {
+				if (!this.__listeners[evt]) return;
+				this.__listeners[evt] = this.__listeners[evt].filter(fn => fn !== cb);
+			},
+		};
+		mockWin = {
+			__listeners: {},
+			addEventListener(evt, cb) {
+				if (!this.__listeners[evt]) this.__listeners[evt] = [];
+				this.__listeners[evt].push(cb);
+			},
+			removeEventListener(evt, cb) {
+				if (!this.__listeners[evt]) return;
+				this.__listeners[evt] = this.__listeners[evt].filter(fn => fn !== cb);
+			},
+			dispatchEvent(event) {
+				(this.__listeners[event.type] ?? []).forEach(cb => cb(event));
+			},
+		};
+		globalThis.document = mockDoc;
+		globalThis.window = mockWin;
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		globalThis.document = savedDoc;
+		globalThis.window = savedWin;
+	});
+
+	test('connect() 注册 network:online 监听器', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(mockWin.__listeners['network:online']?.length).toBe(1);
+	});
+
+	test('disconnect() 注销 network:online 监听器', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		conn.disconnect();
+		expect((mockWin.__listeners['network:online'] ?? []).length).toBe(0);
+	});
+
+	test('disconnected 状态下收到 network:online → 即时重连', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		const ws = MockWebSocket.lastInstance;
+		ws.simulateOpen();
+		ws.simulateClose(1006);
+		expect(conn.state).toBe('disconnected');
+
+		mockWin.dispatchEvent(new Event('network:online'));
+
+		expect(MockWebSocket.instances.length).toBe(2);
+		expect(conn.state).toBe('connecting');
+	});
+
+	test('connected + 长时间静默 → forceReconnect', () => {
+		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+
+		vi.advanceTimersByTime(50_000);
+
+		mockWin.dispatchEvent(new Event('network:online'));
+
+		expect(MockWebSocket.instances.length).toBe(2);
+	});
+});

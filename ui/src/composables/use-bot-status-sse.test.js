@@ -185,4 +185,34 @@ describe('useBotStatusSse', () => {
 
 		expect(removeSpy).toHaveBeenCalledWith('app:foreground', expect.any(Function));
 	});
+
+	test('network:online 事件触发 SSE 重建', () => {
+		createSse();
+		expect(MockEventSource).toHaveBeenCalledTimes(1);
+
+		window.dispatchEvent(new CustomEvent('network:online'));
+
+		expect(esInstance.close).toHaveBeenCalled();
+		expect(MockEventSource).toHaveBeenCalledTimes(2);
+	});
+
+	test('stop() 后 network:online 不再重建 SSE', () => {
+		const { stop } = createSse();
+		stop();
+		currentStop = null;
+
+		MockEventSource.mockClear();
+		window.dispatchEvent(new CustomEvent('network:online'));
+
+		expect(MockEventSource).not.toHaveBeenCalled();
+	});
+
+	test('stop() 移除 network:online 监听器', () => {
+		const removeSpy = vi.spyOn(window, 'removeEventListener');
+		const { stop } = createSse();
+		stop();
+		currentStop = null;
+
+		expect(removeSpy).toHaveBeenCalledWith('network:online', expect.any(Function));
+	});
 });

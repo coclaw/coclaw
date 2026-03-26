@@ -157,6 +157,11 @@ export const useBotsStore = defineStore('bots', {
 			if (_bridgedConns.get(botId) === conn) return;
 			_bridgedConns.set(botId, conn);
 
+			conn.on('session-expired', () => {
+				console.warn('[bots] session-expired from botId=%s', botId);
+				window.dispatchEvent(new CustomEvent('auth:session-expired'));
+			});
+
 			conn.on('state', (s) => {
 				const bot = this.byId[botId];
 				if (!bot) return;

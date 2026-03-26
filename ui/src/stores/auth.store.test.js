@@ -287,6 +287,21 @@ describe('auth store', () => {
 		await store.logout();
 
 		expect(store.errorMessage).toBe('failed-logout');
+		// 即使 API 失败，本地状态也应被清理
+		expect(store.user).toBeNull();
+	});
+
+	test('logout API 返回 401 时视为成功登出，不设 errorMessage', async () => {
+		logout.mockRejectedValue({
+			response: { status: 401, data: { message: 'unauthorized' } },
+		});
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		await store.logout();
+
+		expect(store.user).toBeNull();
+		expect(store.errorMessage).toBe('');
 	});
 
 	test('updateProfile should merge patched profile', async () => {

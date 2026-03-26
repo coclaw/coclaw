@@ -492,6 +492,29 @@ describe('loadBots', () => {
 		const stateCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'state');
 		expect(stateCalls).toHaveLength(1);
 	});
+
+	test('bridge 注册 session-expired 监听并派发 auth:session-expired', async () => {
+		const store = useBotsStore();
+		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+
+		await store.loadBots();
+
+		// 应注册 session-expired 监听
+		const sessionExpiredCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'session-expired');
+		expect(sessionExpiredCalls).toHaveLength(1);
+
+		// 触发后应派发 window 事件
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		sessionExpiredCalls[0][1]();
+		const event = dispatchSpy.mock.calls.find(
+			([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+		);
+		expect(event).toBeTruthy();
+		dispatchSpy.mockRestore();
+	});
 });
 
 describe('WebRTC 集成', () => {

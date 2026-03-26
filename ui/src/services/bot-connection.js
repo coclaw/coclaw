@@ -81,9 +81,10 @@ export class BotConnection {
 		/** @type {import('./webrtc-connection.js').WebRtcConnection | null} */
 		this.__rtc = null;
 
-		// visibility / foreground 恢复重连
+		// visibility / foreground / network 恢复重连
 		this.__boundVisibilityHandler = null;
 		this.__boundForegroundHandler = null;
+		this.__boundNetworkHandler = null;
 		this.__lastForegroundAt = 0; // 防重入节流
 
 		// 连接感知时间戳
@@ -164,6 +165,10 @@ export class BotConnection {
 		if (typeof window !== 'undefined' && !this.__boundForegroundHandler) {
 			this.__boundForegroundHandler = () => this.__onAppForeground();
 			window.addEventListener('app:foreground', this.__boundForegroundHandler);
+		}
+		if (typeof window !== 'undefined' && !this.__boundNetworkHandler) {
+			this.__boundNetworkHandler = () => this.__handleForegroundResume('network:online');
+			window.addEventListener('network:online', this.__boundNetworkHandler);
 		}
 		this.__doConnect();
 	}
@@ -690,6 +695,10 @@ export class BotConnection {
 		if (this.__boundForegroundHandler && typeof window !== 'undefined') {
 			window.removeEventListener('app:foreground', this.__boundForegroundHandler);
 			this.__boundForegroundHandler = null;
+		}
+		if (this.__boundNetworkHandler && typeof window !== 'undefined') {
+			window.removeEventListener('network:online', this.__boundNetworkHandler);
+			this.__boundNetworkHandler = null;
 		}
 		const ws = this.__ws;
 		this.__ws = null;

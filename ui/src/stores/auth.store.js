@@ -91,22 +91,24 @@ export const useAuthStore = defineStore('auth', {
 			this.clearError();
 			try {
 				await logout();
-				// 登出前先保存当前用户的草稿
-				const draftStore = useDraftStore();
-				draftStore.persist();
-				this.user = null;
-				draftStore.onUserChanged();
-				syncThemeModeFromSettings(null);
-				useBotConnections().disconnectAll();
-				useSessionsStore().$reset();
-				useBotsStore().$reset();
-				console.log('[auth] logged out');
 			} catch (err) {
-				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Logout failed';
-				console.warn('[auth] logout failed:', this.errorMessage);
-			} finally {
-				this.loading = false;
+				// 401 = session 已过期，视为登出成功；其他错误仍继续清理
+				if (err?.response?.status !== 401) {
+					this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Logout failed';
+					console.warn('[auth] logout failed:', this.errorMessage);
+				}
 			}
+			// 无论 API 成功/401/其他错误，均执行本地清理
+			const draftStore = useDraftStore();
+			draftStore.persist();
+			this.user = null;
+			draftStore.onUserChanged();
+			syncThemeModeFromSettings(null);
+			useBotConnections().disconnectAll();
+			useSessionsStore().$reset();
+			useBotsStore().$reset();
+			console.log('[auth] logged out');
+			this.loading = false;
 		},
 		async updateProfile(payload) {
 			this.loading = true;

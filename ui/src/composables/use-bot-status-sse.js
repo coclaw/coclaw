@@ -66,6 +66,10 @@ export function useBotStatusSse(botsStore) {
 		restart();
 	}
 
+	function onNetworkOnline() {
+		restart();
+	}
+
 	function stop() {
 		stopped = true;
 		if (es) {
@@ -74,10 +78,12 @@ export function useBotStatusSse(botsStore) {
 		}
 		connected.value = false;
 		window.removeEventListener('app:foreground', onForeground);
+		window.removeEventListener('network:online', onNetworkOnline);
 	}
 
 	start();
 	window.addEventListener('app:foreground', onForeground);
+	window.addEventListener('network:online', onNetworkOnline);
 	onBeforeUnmount(stop);
 
 	return { connected, stop };

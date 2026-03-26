@@ -186,4 +186,41 @@ describe('useBotStatusPoll', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(store.loadBots).not.toHaveBeenCalled();
 	});
+
+	test('network:online 事件触发 resume 并立即刷新', async () => {
+		useBotStatusPoll(store);
+
+		window.dispatchEvent(new CustomEvent('network:online'));
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.loadBots).toHaveBeenCalledTimes(1);
+	});
+
+	test('network:online SSE 连通时不调用 loadBots', async () => {
+		const sseConnected = { value: true };
+		useBotStatusPoll(store, { sseConnected });
+
+		window.dispatchEvent(new CustomEvent('network:online'));
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.loadBots).not.toHaveBeenCalled();
+	});
+
+	test('stop() 移除 network:online 监听器', () => {
+		const removeSpy = vi.spyOn(window, 'removeEventListener');
+		const { stop } = useBotStatusPoll(store);
+		stop();
+
+		expect(removeSpy).toHaveBeenCalledWith('network:online', expect.any(Function));
+	});
+
+	test('stop() 后 network:online 不再触发 loadBots', async () => {
+		const { stop } = useBotStatusPoll(store);
+		stop();
+
+		window.dispatchEvent(new CustomEvent('network:online'));
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.loadBots).not.toHaveBeenCalled();
+	});
 });

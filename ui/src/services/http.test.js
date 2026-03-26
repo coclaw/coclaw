@@ -81,5 +81,83 @@ describe('http client', () => {
 			expect(spy).toHaveBeenCalledWith('[http] %s %s → %d %s', 'GET', '/api/bad', 404, 'not found');
 			spy.mockRestore();
 		});
+
+		test('should dispatch auth:session-expired on 401', async () => {
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+			const err = {
+				config: { method: 'get', url: '/api/v1/bots' },
+				response: { status: 401, data: { message: 'unauthorized' } },
+			};
+			await expect(onRejected(err)).rejects.toBe(err);
+			const event = dispatchSpy.mock.calls.find(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			);
+			expect(event).toBeTruthy();
+			dispatchSpy.mockRestore();
+		});
+
+		test('should dispatch auth:session-expired for /user endpoint too', async () => {
+			vi.useFakeTimers();
+			vi.advanceTimersByTime(3001); // 跳过节流窗口
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+			const err = {
+				config: { method: 'get', url: '/api/v1/user' },
+				response: { status: 401, data: { message: 'unauthorized' } },
+			};
+			await expect(onRejected(err)).rejects.toBe(err);
+			const event = dispatchSpy.mock.calls.find(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			);
+			expect(event).toBeTruthy();
+			dispatchSpy.mockRestore();
+			vi.useRealTimers();
+		});
+
+		test('should NOT dispatch auth:session-expired for non-401 errors', async () => {
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+			const err = {
+				config: { method: 'get', url: '/api/v1/bots' },
+				response: { status: 403, data: { message: 'forbidden' } },
+			};
+			await expect(onRejected(err)).rejects.toBe(err);
+			const event = dispatchSpy.mock.calls.find(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			);
+			expect(event).toBeFalsy();
+			dispatchSpy.mockRestore();
+		});
+
+		test('should throttle auth:session-expired within 3s', async () => {
+			vi.useFakeTimers();
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+			const makeErr = (url) => ({
+				config: { method: 'get', url },
+				response: { status: 401, data: {} },
+			});
+
+			// 第一次：跳过节流（距上次超过 3s）
+			vi.advanceTimersByTime(3001);
+			try { await onRejected(makeErr('/api/v1/bots')); } catch {}
+			const count1 = dispatchSpy.mock.calls.filter(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			).length;
+
+			// 第二次：500ms 内应被节流
+			vi.advanceTimersByTime(500);
+			try { await onRejected(makeErr('/api/v1/sessions')); } catch {}
+			const count2 = dispatchSpy.mock.calls.filter(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			).length;
+
+			expect(count2).toBe(count1); // 未增长
+
+			dispatchSpy.mockRestore();
+			vi.useRealTimers();
+		});
 	});
 });
