@@ -39,6 +39,7 @@
 - 组件风格：采用 Options API 风格，而非 Composition API 风格，不得使用 `<script setup>` 语法糖
 - 允许在 `setup()` 钩子中调用 `UseVue` 等组合式函数
 - 对于适合以函数式方式触发的对话框（如全局入口、跨组件打开），优先采用函数式打开（例如基于 `useOverlay`），避免仅用路由跳转或页面内状态耦合实现
+- 禁止对大对象使用 Vue deep watch 来监听少量字段变化——应先用 computed 将关心的字段收窄为简单值，再 watch 该 computed
 
 ## 操作反馈（Notify）
 

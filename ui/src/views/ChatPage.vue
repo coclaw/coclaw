@@ -369,9 +369,8 @@ export default {
 		},
 		/** bot 列表变化（增删）时验证路由 — 避免 deep watch 被高频 lastAliveAt 更新触发 */
 		botIds() { this.__validateRoute(); },
-		'agentsStore.byBot': {
-			deep: true,
-			handler() { if (!this.isTopicRoute) this.__validateRoute(); },
+		agentVerified(verified) {
+			if (!this.isTopicRoute && verified === false) this.__validateRoute();
 		},
 		isBotOffline(offline) {
 			if (offline) {
