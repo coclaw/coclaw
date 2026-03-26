@@ -10,7 +10,7 @@ import ChatMsgItem from './ChatMsgItem.vue';
 
 const MarkdownBodyStub = {
 	props: ['text'],
-	template: '<div class="md-stub">{{ text }}</div>',
+	template: '<div class="cc-markdown md-stub">{{ text }}</div>',
 };
 
 const UIconStub = {
@@ -207,6 +207,60 @@ describe('ChatMsgItem', () => {
 
 		expect(writeTextMock).toHaveBeenCalledWith('复制测试');
 		expect(wrapper.text()).toContain('i-lucide-check');
+	});
+
+	test('botTask 复制按钮取 DOM innerText 而非原始 Markdown (#127)', async () => {
+		const writeTextMock = vi.fn(() => Promise.resolve());
+		Object.assign(navigator, {
+			clipboard: { writeText: writeTextMock },
+		});
+
+		const wrapper = createWrapper({
+			type: 'botTask',
+			resultText: '> 这是引用\n\n正文',
+		});
+
+		// 模拟真实 MarkdownBody 渲染后的 DOM：blockquote 不含 > 前缀
+		const mdEl = wrapper.find('.cc-markdown');
+		expect(mdEl.exists()).toBe(true);
+		// jsdom 不支持 innerText，手动定义以模拟真实浏览器行为
+		Object.defineProperty(mdEl.element, 'innerText', {
+			get: () => '这是引用\n正文',
+			configurable: true,
+		});
+
+		const copyBtn = wrapper.findAll('.u-btn-stub').find(b => b.text().includes('i-lucide-copy'));
+		await copyBtn.trigger('click');
+		await wrapper.vm.$nextTick();
+
+		// 应该复制 DOM innerText，而非原始 Markdown
+		const copiedText = writeTextMock.mock.calls[0][0];
+		expect(copiedText).not.toContain('> ');
+		expect(copiedText).toContain('这是引用');
+		expect(copiedText).toContain('正文');
+	});
+
+	test('botTask 复制 fallback 到 resultText 当 DOM 不存在时', async () => {
+		const writeTextMock = vi.fn(() => Promise.resolve());
+		Object.assign(navigator, {
+			clipboard: { writeText: writeTextMock },
+		});
+
+		const wrapper = createWrapper({
+			type: 'botTask',
+			resultText: '> fallback 内容',
+		});
+
+		// 移除 .cc-markdown 元素模拟 DOM 不可用
+		const mdEl = wrapper.find('.cc-markdown');
+		mdEl.element.classList.remove('cc-markdown');
+
+		const copyBtn = wrapper.findAll('.u-btn-stub').find(b => b.text().includes('i-lucide-copy'));
+		await copyBtn.trigger('click');
+		await wrapper.vm.$nextTick();
+
+		// fallback 到原始文本
+		expect(writeTextMock).toHaveBeenCalledWith('> fallback 内容');
 	});
 
 	test('有 duration 时显示"已思考 X秒"', () => {

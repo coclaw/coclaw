@@ -138,7 +138,7 @@
 					variant="ghost"
 					color="neutral"
 					size="md"
-					@click="copyText(item.resultText)"
+					@click="copyBotResult"
 				/>
 			</div>
 		</template>
@@ -251,6 +251,12 @@ export default {
 			}).catch(() => {
 				this.notify.error(this.$t('common.copyFailed'));
 			});
+		},
+		// 从渲染后的 DOM 取纯文本，避免复制原始 Markdown 符号（如 blockquote 的 >）
+		copyBotResult() {
+			const mdEl = this.$el?.querySelector('.cc-markdown');
+			const text = mdEl?.innerText || this.item.resultText;
+			this.copyText(text);
 		},
 		formatDuration(ms) {
 			const totalSec = Math.floor(ms / 1000);
