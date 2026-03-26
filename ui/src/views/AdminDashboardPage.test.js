@@ -167,3 +167,60 @@ test('should render latest registered users with name fallback to loginName', as
 	// 注册时间 600s = 10min -> "10m ago"
 	expect(wrapper.text()).toContain('10m ago');
 });
+
+test('should reload data on app:foreground', async () => {
+	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	mockFetchAdminDashboard.mockClear();
+	window.dispatchEvent(new CustomEvent('app:foreground'));
+	await flushPromises();
+
+	expect(mockFetchAdminDashboard).toHaveBeenCalled();
+	wrapper.unmount();
+});
+
+test('should reload data on visibilitychange to visible', async () => {
+	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	mockFetchAdminDashboard.mockClear();
+	Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+	document.dispatchEvent(new Event('visibilitychange'));
+	await flushPromises();
+
+	expect(mockFetchAdminDashboard).toHaveBeenCalled();
+	wrapper.unmount();
+});
+
+test('should throttle foreground resume within 2s', async () => {
+	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	mockFetchAdminDashboard.mockClear();
+	// 连续触发两次，第二次应被节流
+	window.dispatchEvent(new CustomEvent('app:foreground'));
+	window.dispatchEvent(new CustomEvent('app:foreground'));
+	await flushPromises();
+
+	// 节流：仅执行一次
+	expect(mockFetchAdminDashboard).toHaveBeenCalledTimes(1);
+	wrapper.unmount();
+});
+
+test('should remove listeners on unmount', async () => {
+	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	wrapper.unmount();
+
+	mockFetchAdminDashboard.mockClear();
+	window.dispatchEvent(new CustomEvent('app:foreground'));
+	await flushPromises();
+
+	expect(mockFetchAdminDashboard).not.toHaveBeenCalled();
+});

@@ -55,6 +55,13 @@ export async function initCapacitorApp(router) {
 		console.warn('[capacitor] appStateChange init failed:', e);
 	}
 
+	try {
+		setupDeepLink(router);
+	}
+	catch (e) {
+		console.warn('[capacitor] deepLink init failed:', e);
+	}
+
 	// 所有初始化完成后隐藏启动屏（配合 SplashScreen.launchAutoHide: false）
 	try {
 		const { SplashScreen } = await import('@capacitor/splash-screen');
@@ -172,6 +179,27 @@ function setupNetworkListener() {
 		});
 		console.log('[capacitor] Network listener registered');
 	}).catch((e) => console.warn('[capacitor] Network setup failed:', e));
+}
+
+function setupDeepLink(router) {
+	import('@capacitor/app').then(({ App }) => {
+		App.addListener('appUrlOpen', ({ url }) => {
+			if (!url) return;
+			try {
+				const parsed = new URL(url);
+				// coclaw://chat/123 → host="chat", pathname="/123" → routePath="/chat/123"
+				const routePath = '/' + [parsed.host, parsed.pathname].filter(Boolean).join('').replace(/^\/+/, '');
+				if (routePath !== '/') {
+					console.log('[capacitor] deep-link → %s', routePath);
+					router.push(routePath);
+				}
+			}
+			catch (e) {
+				console.warn('[capacitor] invalid deep-link URL:', url, e);
+			}
+		});
+		console.log('[capacitor] deep-link listener registered');
+	});
 }
 
 function setupBackButton(router) {

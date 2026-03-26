@@ -175,4 +175,59 @@ describe('ManageBotsPage', () => {
 
 		expect(wrapper.text()).toContain('Preparing...');
 	});
+
+	test('app:foreground 时重新加载数据', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		mockLoadBots.mockClear();
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await flushPromises();
+
+		expect(mockLoadBots).toHaveBeenCalled();
+		wrapper.unmount();
+	});
+
+	test('visibilitychange → visible 时重新加载数据', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		mockLoadBots.mockClear();
+		Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+		document.dispatchEvent(new Event('visibilitychange'));
+		await flushPromises();
+
+		expect(mockLoadBots).toHaveBeenCalled();
+		wrapper.unmount();
+	});
+
+	test('2s 内重复前台恢复应节流', async () => {
+		mockBots = [];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		mockLoadBots.mockClear();
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await flushPromises();
+
+		expect(mockLoadBots).toHaveBeenCalledTimes(1);
+		wrapper.unmount();
+	});
+
+	test('unmount 后前台恢复不再触发加载', async () => {
+		mockBots = [];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.unmount();
+		mockLoadBots.mockClear();
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await flushPromises();
+
+		expect(mockLoadBots).not.toHaveBeenCalled();
+	});
 });

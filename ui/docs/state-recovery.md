@@ -165,14 +165,30 @@
 - **行为**：`botsStore.loadBots()` 全量同步 bot 列表（在线状态、名称等）
 - **场景**：Web + Capacitor
 
-### 3.6 MainList botListKey watcher
+### 3.6 Dashboard / ManageBots 前台恢复
+
+- **文件**：`views/AdminDashboardPage.vue`、`views/ManageBotsPage.vue`
+- **触发**：`visibilitychange`（visible）或 `app:foreground`，2s 节流去重
+- **行为**：重新调用 `loadData()`，刷新 dashboard 统计数据和 bot 管理页面
+- **意义**：Dashboard 数据不像 ChatPage 那样有 connReady watcher 驱动，需要显式前台恢复
+- **场景**：Web + Capacitor
+
+### 3.7 loadAllSessions 增量合并
+
+- **文件**：`stores/sessions.store.js`（`__doLoadAll`）
+- **设计**：加载时仅替换本次查询到的 bot 的 sessions，保留未查询 bot 的已有 sessions
+- **背景**：多 bot 分时重连时，先重连的 bot 触发 `loadAllSessions`，若整体替换会覆盖尚在重连中的 bot 的 sessions
+- **附加**：无已连接 bot 时 skip 而非清空，避免短暂全断期间丢失数据
+- **场景**：Web + Capacitor
+
+### 3.8 MainList botListKey watcher
 
 - **文件**：`components/MainList.vue`
 - **触发**：bot 列表变化（增删/上线状态变化）
 - **行为**：`loadAllAgents()` + `loadAllTopics()`
 - **场景**：Web + Capacitor
 
-### 3.7 chatStore 激活与重入
+### 3.9 chatStore 激活与重入
 
 - **文件**：`views/ChatPage.vue`（chatStore watcher）
 - **触发**：chatStore 计算属性变化（首次进入或路由切换导致 store 变更）
@@ -309,7 +325,7 @@
 
 - **文件**：`utils/capacitor-app.js`（`setupAppStateChange`）
 - **行为**：将 Capacitor 原生 `appStateChange({ isActive })` 转义为标准 DOM 自定义事件 `app:foreground` / `app:background`
-- **消费者**：BotConnection、SSE、Polling、ChatPage、DraftStore、Router、AuthedLayout
+- **消费者**：BotConnection、SSE、Polling、ChatPage、AdminDashboardPage、ManageBotsPage、DraftStore、Router、AuthedLayout
 - 消费者无需依赖 Capacitor SDK，只需监听标准 DOM 事件
 
 ### 7.x 网络变化桥接（network:online）
@@ -322,7 +338,14 @@
 - **效果**：WiFi↔蜂窝切换或断网恢复后，无需等待心跳超时（~90s），可立即检测并恢复连接
 - **去重**：BotConnection 的 `__handleForegroundResume` 已有 500ms 节流，`network:online` + `app:foreground` 同时到达时自动去重
 
-### 7.2 冷启动路由恢复
+### 7.2 Deep Link 路由导航
+
+- **文件**：`utils/capacitor-app.js`（`setupDeepLink`）、`utils/tauri-app.js`（`initDeepLink`）
+- **触发**：`coclaw://` URL scheme 打开（通过 `App.addListener('appUrlOpen', ...)` 或 Tauri `onOpenUrl`）
+- **行为**：解析 URL 路径后调用 `router.push()`，如 `coclaw://chat/bot1/main` → `/chat/bot1/main`
+- **场景**：Capacitor (Android) + Tauri (Desktop)
+
+### 7.3 冷启动路由恢复
 
 - **文件**：`router/index.js`
 - **机制**：
@@ -332,7 +355,7 @@
 - **auth 兼容**：恢复的路由若需要认证，由后续 beforeEach auth guard 正常处理
 - **不恢复滚动位置**：消息列表始终 scroll-to-bottom，其他页面滚动位置不关键
 
-### 7.3 KeepAlive 前台服务（Android）
+### 7.4 KeepAlive 前台服务（Android）
 
 - **文件**：`utils/capacitor-app.js`
 - **行为**：通过 `registerPlugin('KeepAlive')` 启动 Android 前台服务（`FOREGROUND_SERVICE_DATA_SYNC`），降低进程被系统杀死的概率
