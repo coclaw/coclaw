@@ -12,7 +12,7 @@ export async function login(page) {
 	await page.getByTestId('login-name').fill(TEST_LOGIN_NAME);
 	await page.getByTestId('login-password').fill(TEST_PASSWORD);
 	await page.getByTestId('btn-login').click();
-	await expect(page).not.toHaveURL(/\/login$/, { timeout: 10_000 });
+	await expect(page).not.toHaveURL(/\/login(\?|$)/, { timeout: 10_000 });
 }
 
 // --- 导航 ---
