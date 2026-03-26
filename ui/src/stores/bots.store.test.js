@@ -688,6 +688,93 @@ describe('重连后批量状态刷新', () => {
 	});
 });
 
+describe('__fullInit 失败重试', () => {
+	test('fullInit 失败后 initialized 重置为 false，下次重连可重试', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockRejectedValue(new Error('version check failed'));
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+
+		let stateCallback;
+		const fakeConn = {
+			state: 'connecting',
+			disconnectedAt: 0,
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+			__onAlive: null,
+			lastAliveAt: 0,
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '30', name: 'Bot' });
+		stateCallback('connected');
+
+		// 等 fullInit 失败
+		await vi.waitFor(() => {
+			expect(store.byId['30'].initialized).toBe(false);
+		});
+
+		// 修复 checkPluginVersion，模拟重连
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
+		stateCallback('disconnected');
+		stateCallback('connected');
+
+		await vi.waitFor(() => {
+			expect(store.byId['30'].initialized).toBe(true);
+			expect(store.byId['30'].pluginVersionOk).toBe(true);
+		});
+	});
+
+	test('fullInit 失败不覆盖后续成功的重连（generation guard）', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+
+		// 第一次 fullInit 用一个永远 pending 的 promise，稍后手动 reject
+		let rejectFirst;
+		checkPluginVersion.mockReturnValueOnce(new Promise((_, rej) => { rejectFirst = rej; }));
+		// 第二次 fullInit 正常成功
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
+
+		let stateCallback;
+		const fakeConn = {
+			state: 'connecting',
+			disconnectedAt: Date.now() - 10_000,
+			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+			__onAlive: null,
+			lastAliveAt: 0,
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '31', name: 'Bot' });
+
+		// 首次连接，触发 fullInit（pending）
+		stateCallback('connected');
+		await Promise.resolve();
+		expect(store.byId['31'].initialized).toBe(true);
+
+		// 模拟快速断连重连，触发第二次 __onBotConnected（走 reconnect 分支，因为 initialized=true）
+		stateCallback('disconnected');
+		stateCallback('connected');
+		await Promise.resolve();
+
+		// 此时第一次 fullInit 迟到地失败
+		rejectFirst(new Error('late failure'));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// generation guard 应保护 initialized 不被迟到的失败覆盖
+		expect(store.byId['31'].initialized).toBe(true);
+	});
+});
+
 describe('bridge connState 同步', () => {
 	test('bridge 将 conn.on(state) 实时写入 byId[id].connState', async () => {
 		const store = useBotsStore();

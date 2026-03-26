@@ -206,9 +206,12 @@ export const useBotsStore = defineStore('bots', {
 			if (!conn) return;
 
 			if (!bot.initialized) {
-				bot.initialized = true;
 				console.debug('[bots] conn ready botId=%s → full init', id);
+				bot.initialized = true;
+				const attempt = bot.__initAttempt = (bot.__initAttempt || 0) + 1;
 				this.__fullInit(id, conn).catch((err) => {
+					// 仅当没有更新的尝试覆盖时才重置，防止迟到的失败覆盖后续成功的重连
+					if (bot.__initAttempt === attempt) bot.initialized = false;
 					console.warn('[bots] fullInit failed for botId=%s: %s', id, err?.message);
 				});
 			} else {

@@ -41,9 +41,11 @@ export const useAuthStore = defineStore('auth', {
 			this.loading = true;
 			this.clearError();
 			try {
+				const prevUserId = this.user?.id;
 				this.user = await fetchSessionUser();
 				applyUserPreferences(this.user);
-				useDraftStore().onUserChanged();
+				// 仅在用户实际切换时才重置 draft 存储空间，避免每次导航清空未持久化的内存态草稿
+				if (this.user?.id !== prevUserId) useDraftStore().onUserChanged();
 				console.debug('[auth] session refreshed, user=%s', this.user?.id ?? null);
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Failed to load session';

@@ -223,4 +223,23 @@ describe('useBotStatusPoll', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(store.loadBots).not.toHaveBeenCalled();
 	});
+
+	test('多事件源快速触发只产生一条轮询链（不产生并行定时器）', async () => {
+		useBotStatusPoll(store);
+
+		// 模拟 Capacitor 前台恢复：visibilitychange + app:foreground + network:online 同时到达
+		vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+		document.dispatchEvent(new Event('visibilitychange'));
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		window.dispatchEvent(new CustomEvent('network:online'));
+
+		await vi.advanceTimersByTimeAsync(0);
+		// 三次 resume 各调一次 loadBots（即时刷新），共 3 次
+		expect(store.loadBots).toHaveBeenCalledTimes(3);
+		store.loadBots.mockClear();
+
+		// 等一个完整轮询周期：如果产生了并行定时器链，30s 后会有 >1 次 loadBots
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(store.loadBots).toHaveBeenCalledTimes(1);
+	});
 });

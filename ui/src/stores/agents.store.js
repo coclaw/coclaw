@@ -3,6 +3,9 @@ import { defineStore } from 'pinia';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useBotsStore } from './bots.store.js';
 
+/** per-bot 飞行中请求合并，防止重连路径 + MainList watcher 同时触发时重复请求 */
+const _loadingByBot = new Map();
+
 /** 校验 URL 是否可直接用于 <img src>（data URI 或 http(s) URL） */
 function isRenderableUrl(url) {
 	if (!url || typeof url !== 'string') return false;
@@ -100,6 +103,13 @@ export const useAgentsStore = defineStore('agents', {
 		 */
 		async loadAgents(botId) {
 			const id = String(botId);
+
+			// 飞行中守卫：同一 bot 的并发调用复用已有 promise
+			if (_loadingByBot.has(id)) {
+				console.debug('[agents] loadAgents in-flight guard hit for botId=%s', id);
+				return _loadingByBot.get(id);
+			}
+
 			const conn = useBotConnections().get(id);
 			if (!conn || conn.state !== 'connected') {
 				console.debug('[agents] loadAgents skipped: no connected WS for botId=%s', id);
@@ -113,34 +123,39 @@ export const useAgentsStore = defineStore('agents', {
 			const entry = this.byBot[id];
 			entry.loading = true;
 
-			try {
-				const result = await conn.request('agents.list', {});
-				const agents = Array.isArray(result?.agents) ? result.agents : [];
-				entry.defaultId = result?.defaultId || 'main';
+			const p = (async () => {
+				try {
+					const result = await conn.request('agents.list', {});
+					const agents = Array.isArray(result?.agents) ? result.agents : [];
+					entry.defaultId = result?.defaultId || 'main';
 
-				// 对每个 agent 调 agent.identity.get 补充完整 identity
-				const enriched = await Promise.all(
-					agents.map(async (agent) => {
-						try {
-							const ident = await conn.request('agent.identity.get', { agentId: agent.id });
-							return { ...agent, resolvedIdentity: ident ?? null };
-						}
-						catch (err) {
-							console.debug('[agents] agent.identity.get failed agentId=%s: %s', agent.id, err?.message);
-							return { ...agent, resolvedIdentity: null };
-						}
-					}),
-				);
-				entry.agents = enriched;
-				entry.fetched = true;
-				console.debug('[agents] loaded %d agent(s) for botId=%s defaultId=%s', agents.length, id, entry.defaultId);
-			}
-			catch (err) {
-				console.warn('[agents] loadAgents failed for botId=%s:', id, err?.message);
-			}
-			finally {
-				entry.loading = false;
-			}
+					// 对每个 agent 调 agent.identity.get 补充完整 identity
+					const enriched = await Promise.all(
+						agents.map(async (agent) => {
+							try {
+								const ident = await conn.request('agent.identity.get', { agentId: agent.id });
+								return { ...agent, resolvedIdentity: ident ?? null };
+							}
+							catch (err) {
+								console.debug('[agents] agent.identity.get failed agentId=%s: %s', agent.id, err?.message);
+								return { ...agent, resolvedIdentity: null };
+							}
+						}),
+					);
+					entry.agents = enriched;
+					entry.fetched = true;
+					console.debug('[agents] loaded %d agent(s) for botId=%s defaultId=%s', agents.length, id, entry.defaultId);
+				}
+				catch (err) {
+					console.warn('[agents] loadAgents failed for botId=%s:', id, err?.message);
+				}
+				finally {
+					entry.loading = false;
+					_loadingByBot.delete(id);
+				}
+			})();
+			_loadingByBot.set(id, p);
+			return p;
 		},
 
 		/**

@@ -107,6 +107,50 @@ describe('auth store', () => {
 		expect(store.errorMessage).toBe('refresh-message');
 	});
 
+	test('refreshSession 同一用户不调用 draftStore.onUserChanged', async () => {
+		fetchSessionUser.mockResolvedValue({ id: '1' });
+		const store = useAuthStore();
+		store.user = { id: '1' }; // 已有同一用户
+		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
+
+		await store.refreshSession();
+
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	test('refreshSession 用户变更时调用 draftStore.onUserChanged', async () => {
+		fetchSessionUser.mockResolvedValue({ id: '2' });
+		const store = useAuthStore();
+		store.user = { id: '1' }; // 旧用户
+		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
+
+		await store.refreshSession();
+
+		expect(spy).toHaveBeenCalledOnce();
+	});
+
+	test('refreshSession 首次加载（user 从 null 到有值）调用 draftStore.onUserChanged', async () => {
+		fetchSessionUser.mockResolvedValue({ id: '1' });
+		const store = useAuthStore();
+		// store.user 初始为 null
+		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
+
+		await store.refreshSession();
+
+		expect(spy).toHaveBeenCalledOnce();
+	});
+
+	test('refreshSession 失败时不调用 draftStore.onUserChanged', async () => {
+		fetchSessionUser.mockRejectedValue(new Error('network'));
+		const store = useAuthStore();
+		store.user = { id: '1' };
+		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
+
+		await store.refreshSession();
+
+		expect(spy).not.toHaveBeenCalled();
+	});
+
 	test('login should save user after success', async () => {
 		loginByLoginName.mockResolvedValue({
 			user: {

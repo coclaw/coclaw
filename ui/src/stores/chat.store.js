@@ -84,6 +84,7 @@ export function createChatStore(storeKey, opts = {}) {
 			__slashCommandResolve: null,
 			__slashCommandReject: null,
 			__silentLoadPromise: null,
+			__loadPromise: null,
 		}),
 		getters: {
 			currentSessionKey() {
@@ -150,10 +151,14 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {boolean} [opts.silent] - 静默刷新，不设 loading 状态
 			 */
 			async loadMessages({ silent = false, limit: limitOverride } = {}) {
-				// 飞行中守卫：silent 模式下复用已有请求
+				// 飞行中守卫：复用已有请求，防止 activate() + connReady watcher 同时触发
 				if (silent && this.__silentLoadPromise) {
-					console.debug('[chat] loadMessages: in-flight guard hit, reusing promise');
+					console.debug('[chat] loadMessages: silent in-flight guard hit, reusing promise');
 					return this.__silentLoadPromise;
+				}
+				if (!silent && this.__loadPromise) {
+					console.debug('[chat] loadMessages: in-flight guard hit, reusing promise');
+					return this.__loadPromise;
 				}
 
 				if (this.topicMode) {
@@ -161,6 +166,9 @@ export function createChatStore(storeKey, opts = {}) {
 					if (silent) {
 						this.__silentLoadPromise = p;
 						p.finally(() => { this.__silentLoadPromise = null; });
+					} else {
+						this.__loadPromise = p;
+						p.finally(() => { this.__loadPromise = null; });
 					}
 					return p;
 				}
@@ -235,6 +243,9 @@ export function createChatStore(storeKey, opts = {}) {
 				if (silent) {
 					this.__silentLoadPromise = p;
 					p.finally(() => { this.__silentLoadPromise = null; });
+				} else {
+					this.__loadPromise = p;
+					p.finally(() => { this.__loadPromise = null; });
 				}
 				return p;
 			},
@@ -498,8 +509,6 @@ export function createChatStore(storeKey, opts = {}) {
 					return { accepted: true };
 				}
 				catch (err) {
-					const runsStore = useAgentRunsStore();
-					const runKey = this.runKey;
 					// lifecycle:end 已完成清理，WS 关闭尾巴错误忽略
 					if (this.__agentSettled && err?.code === 'WS_CLOSED') {
 						return { accepted: this.__accepted };
@@ -529,7 +538,7 @@ export function createChatStore(storeKey, opts = {}) {
 						try {
 							await waitForConnected(useBotsStore(), this.botId, 15_000);
 							console.debug('[chat] reconnected after accepted, reconciling messages');
-							if (runsStore.isRunning(runKey)) runsStore.settle(runKey);
+							// settle 交给 reconcileAfterLoad 的双条件判定，避免 agent 仍在执行时过早清除 streaming 消息
 							await this.__reconcileMessages();
 						} catch {}
 						return { accepted: true };
@@ -557,7 +566,7 @@ export function createChatStore(storeKey, opts = {}) {
 							this.__streamingTimer = null;
 						}
 						this.sending = false;
-						if (runsStore.isRunning(runKey)) runsStore.settle(runKey);
+						// settle 交给 reconcileAfterLoad 的双条件判定
 						this.__reconcileMessages();
 					}
 					else {

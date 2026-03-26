@@ -86,11 +86,12 @@
   - 全部用尽 → `state = 'failed'`，永久降级到 WS
 - **场景**：Web + Capacitor
 
-### 2.5 RTC → WS 大 payload fallback
+### 2.5 RTC 大 payload 处理（DataChannel 分片）
 
-- **文件**：`services/bot-connection.js`（`request()`）
-- **触发**：`transportMode === 'rtc'` 且 payload JSON > 64KB（`RTC_MSG_SIZE_LIMIT`）
-- **行为**：该请求走 WS 发送（`viaRtc: false`），不改变全局 `__transportMode`。后续小 payload 继续走 RTC
+- **文件**：`services/webrtc-connection.js`、`services/dc-chunking.js`
+- **机制**：DataChannel 通过分片（chunking）传输大 payload，无需 fallback 到 WS
+- **流控**：发送端 high water mark 1MB / low water mark 256KB，超限时暂停发送，`bufferedamountlow` 恢复
+- **降级**：当 `transportMode === 'rtc'` 但 DataChannel 不可用（`isReady=false`）时，`request()` 整体降级到 WS（永久切换 `__transportMode`）
 - **场景**：Web + Capacitor
 
 ### 2.6 SSE 恢复
@@ -383,7 +384,7 @@
 
 当前架构下已不需要：
 - 业务 RPC 主要走 RTC DataChannel，WS 主要承载信令和 event
-- 大 payload（>64KB）fallback 到 WS 但仅限 JSON RPC，体积远小于图片
+- 大 payload 通过 DataChannel 分片传输，不再 fallback 到 WS
 - 不再通过 WS 传输 inline image 数据
 
 简化后统一用 `HB_MAX_MISS = 2`（~90s）判定超时。90s 对于任何非图片 RPC 绰绰有余。

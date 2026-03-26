@@ -2198,6 +2198,40 @@ describe('useChatStore', () => {
 			expect(reqCount).toBe(2);
 		});
 
+		test('飞行中守卫：非 silent 模式下并发 loadMessages 不会发起多次请求', async () => {
+			const conn = mockConn();
+			let reqCount = 0;
+			let resolveReq;
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') {
+					reqCount++;
+					return new Promise((r) => { resolveReq = r; });
+				}
+				if (method === 'chat.history') {
+					return Promise.resolve({ sessionId: 'cur' });
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			store.__initialized = true;
+
+			// 模拟 activate() + connReady watcher 同时触发非 silent loadMessages
+			store.loadMessages();
+			store.loadMessages();
+			store.loadMessages();
+
+			expect(reqCount).toBe(1);
+
+			resolveReq({ messages: [] });
+			await vi.advanceTimersByTimeAsync(0);
+
+			// 首次 resolve 后 guard 清除，新调用应发起新请求
+			store.loadMessages();
+			expect(reqCount).toBe(2);
+		});
+
 		test('loadMessages 成功后调用 reconcileRunAfterLoad', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn, {
