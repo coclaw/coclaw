@@ -1,8 +1,15 @@
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 
-import { useChatStore } from './chat.store.js';
-import { useBotsStore } from './bots.store.js';
+import { createChatStore } from './chat.store.js';
+import { useAgentRunsStore } from './agent-runs.store.js';
+import { useBotsStore, __resetAwaitingConnIds as __resetBotStoreInternals } from './bots.store.js';
+
+// 兼容旧测试：创建默认空 session store，可手动设置状态字段
+// 同一 Pinia 实例中多次调用返回同一 store（与原 useChatStore 行为一致）
+function useChatStore() {
+	return createChatStore('session::main', { botId: '', agentId: 'main' });
+}
 
 // --- Mocks ---
 
@@ -65,6 +72,7 @@ describe('useChatStore', () => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
 		vi.clearAllMocks();
+		__resetBotStoreInternals();
 	});
 
 	afterEach(() => {
@@ -72,177 +80,107 @@ describe('useChatStore', () => {
 	});
 
 	// =====================================================================
-	// activateSession
+	// createChatStore（工厂）
 	// =====================================================================
 
-	describe('activateSession', () => {
-		test('设置 botId/agentId 并加载消息', async () => {
+	describe('createChatStore', () => {
+		test('session 模式：根据 opts 初始化 identity 字段', () => {
+			const store = createChatStore('session:1:ops', { botId: '1', agentId: 'ops' });
+			expect(store.botId).toBe('1');
+			expect(store.chatSessionKey).toBe('agent:ops:main');
+			expect(store.topicMode).toBe(false);
+			expect(store.sessionId).toBe('');
+		});
+
+		test('topic 模式：根据 storeKey 初始化 identity 字段', () => {
+			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'research' });
+			expect(store.topicMode).toBe(true);
+			expect(store.sessionId).toBe('topic-1');
+			expect(store.topicAgentId).toBe('research');
+			expect(store.chatSessionKey).toBe('');
+			expect(store.historyExhausted).toBe(true);
+		});
+
+		test('agentId 默认为 main', () => {
+			const store = createChatStore('session:1:main', { botId: '1' });
+			expect(store.chatSessionKey).toBe('agent:main:main');
+		});
+	});
+
+	// =====================================================================
+	// activate
+	// =====================================================================
+
+	describe('activate', () => {
+		test('首次激活：加载消息并调用 __loadChatHistory', async () => {
 			const conn = mockConn();
+			const historyItems = [
+				{ sessionId: 'hist-1', archivedAt: 100 },
+				{ sessionId: 'hist-2', archivedAt: 200 },
+			];
 			setupConnForLoad(conn, {
 				flatMessages: [{ role: 'user', content: 'hi' }],
+				history: historyItems,
 			});
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
-			expect(store.botId).toBe('1');
-			expect(store.chatSessionKey).toBe('agent:main:main');
 			expect(store.messages).toHaveLength(1);
 			expect(store.messages[0]).toMatchObject({
 				type: 'message',
 				id: 'oc-0',
 				message: { role: 'user', content: 'hi' },
 			});
+			await vi.waitFor(() => {
+				expect(store.historySessionIds).toHaveLength(2);
+			});
 		});
 
-		test('同一 botId+agentId 重复调用时跳过（不重新加载）', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
+		test('连接未就绪时保持 loading 并注册 WS 监听', async () => {
+			// 无连接 → WS 未就绪
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-			const callCount = conn.request.mock.calls.length;
-
-			await store.activateSession('1', 'main');
-			expect(conn.request.mock.calls.length).toBe(callCount);
-		});
-
-		test('切换 agent 时清理前一 session 的 streaming 本地消息', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-			store.messages = [{ id: '__local_bot_123', _local: true, _streaming: true, message: { role: 'assistant', content: '' } }];
-
-			await store.activateSession('1', 'ops');
-			expect(store.messages.some((m) => m._local)).toBe(false);
-		});
-
-		test('连接未就绪时保持 loading 状态，不设 errorText', async () => {
-			// 无连接 → 模拟页面刷新时 WS 未就绪
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-
-			expect(store.botId).toBe('1');
-			expect(store.chatSessionKey).toBe('agent:main:main');
 			expect(store.loading).toBe(true);
 			expect(store.errorText).toBe('');
 		});
 
-		test('botId 为空时清空消息但不加载', async () => {
+		test('重复调用 activate 时做静默刷新（不重复 init）', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn);
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-			store.messages = [{ id: 'm1' }];
-
-			await store.activateSession('', 'main');
-			expect(store.botId).toBe('');
-			expect(store.messages).toHaveLength(0);
-		});
-
-		test('activateSession 根据 agentId 构造 chatSessionKey', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'ops');
-
-			expect(store.chatSessionKey).toBe('agent:ops:main');
-		});
-
-		test('agentId 默认为 main', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1');
-
-			expect(store.chatSessionKey).toBe('agent:main:main');
-		});
-
-		test('activateSession 重置历史状态', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn, { history: [{ sessionId: 'new-hist', archivedAt: 999 }] });
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			store.historySessionIds = [{ sessionId: 'old', archivedAt: 1 }];
-			store.historySegments = [{ sessionId: 'old', archivedAt: 1, messages: [] }];
-			store.historyExhausted = true;
-			store.__historyLoadedCount = 3;
-
-			await store.activateSession('1', 'main');
-
-			await vi.waitFor(() => {
-				expect(store.historySessionIds).toHaveLength(1);
-			});
-			expect(store.historySessionIds[0].sessionId).toBe('new-hist');
-			expect(store.historySegments).toEqual([]);
-			expect(store.historyExhausted).toBe(false);
-			expect(store.__historyLoadedCount).toBe(0);
-		});
-
-		test('activateSession 完成后 fire-and-forget 调用 __loadChatHistory', async () => {
-			const conn = mockConn();
-			const historyItems = [
-				{ sessionId: 'hist-1', archivedAt: 100 },
-				{ sessionId: 'hist-2', archivedAt: 200 },
-			];
-			setupConnForLoad(conn, { history: historyItems });
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-
-			await vi.waitFor(() => {
-				expect(store.historySessionIds).toHaveLength(2);
-			});
-			expect(store.historyExhausted).toBe(false);
-		});
-
-		test('force 参数强制重新激活同一 session', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 			const callCount = conn.request.mock.calls.length;
 
-			await store.activateSession('1', 'main', { force: true });
+			await store.activate();
+			// 静默刷新会再调一次 sessions.get + chat.history
 			expect(conn.request.mock.calls.length).toBeGreaterThan(callCount);
 		});
 
-		test('botId 直接从参数传入', async () => {
+		test('skipLoad 跳过消息加载但注册 WS 监听', async () => {
 			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('2', conn);
+			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('2', 'main');
+			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
+			await store.activate({ skipLoad: true });
 
-			expect(store.botId).toBe('2');
+			expect(store.__initialized).toBe(true);
+			expect(store.loading).toBe(false);
+			expect(conn.request).not.toHaveBeenCalled();
 		});
-	});
 
-	// =====================================================================
-	// activateTopic
-	// =====================================================================
+		test('botId 为空时不加载', async () => {
+			const store = createChatStore('session::main', { botId: '', agentId: 'main' });
+			await store.activate();
+			expect(store.__initialized).toBe(true);
+			expect(store.loading).toBe(false);
+		});
 
-	describe('activateTopic', () => {
-		test('设置 topicMode 和相关状态', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-
+		test('topic 模式首次激活：加载消息', async () => {
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
 				if (method === 'coclaw.sessions.getById') {
@@ -252,42 +190,10 @@ describe('useChatStore', () => {
 			});
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateTopic('topic-1', { botId: '1', agentId: 'research' });
+			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
+			await store.activate();
 
-			expect(store.topicMode).toBe(true);
-			expect(store.topicAgentId).toBe('research');
-			expect(store.sessionId).toBe('topic-1');
-			expect(store.chatSessionKey).toBe('');
-			expect(store.historyExhausted).toBe(true);
-		});
-
-		test('同一 topic 重复调用时跳过', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-
-			const conn = mockConn();
-			conn.request.mockResolvedValue({ messages: [] });
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateTopic('topic-1', { botId: '1', agentId: 'main' });
-			const callCount = conn.request.mock.calls.length;
-
-			await store.activateTopic('topic-1', { botId: '1', agentId: 'main' });
-			expect(conn.request.mock.calls.length).toBe(callCount);
-		});
-
-		test('skipLoad 为 true 时不加载消息', async () => {
-			const conn = mockConn();
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateTopic('topic-1', { botId: '1', agentId: 'main', skipLoad: true });
-
-			expect(store.topicMode).toBe(true);
-			expect(store.loading).toBe(false);
-			expect(conn.request).not.toHaveBeenCalled();
+			expect(store.messages).toHaveLength(1);
 		});
 	});
 
@@ -322,21 +228,11 @@ describe('useChatStore', () => {
 			expect(store.currentSessionId).toBe('cur-123');
 		});
 
-		test('sessionId 为空时返回 false 且清空消息', async () => {
-			const store = useChatStore();
-			store.messages = [{ id: 'old' }];
-
-			const ok = await store.loadMessages();
-			expect(ok).toBe(false);
-			expect(store.messages).toHaveLength(0);
-			expect(store.loading).toBe(false);
-		});
-
 		test('chatSessionKey 为空时返回 false 且清空消息', async () => {
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.chatSessionKey = '';
+			// topic store 的 chatSessionKey 为空
+			const store = createChatStore('topic:t1', { botId: '1', agentId: 'main' });
+			store.sessionId = ''; // 清空 sessionId 使 __loadTopicMessages 短路
+			store.messages = [{ id: 'old' }];
 
 			const ok = await store.loadMessages();
 			expect(ok).toBe(false);
@@ -523,9 +419,9 @@ describe('useChatStore', () => {
 			await expect(store.sendMessage('hello')).rejects.toThrow('Bot not connected');
 		});
 
-		test('chat 模式下 chatSessionKey 为空时返回 { accepted: false }', async () => {
-			const store = useChatStore();
-			// chatSessionKey 默认为空
+		test('topic 模式下 sessionId 为空时返回 { accepted: false }', async () => {
+			const store = createChatStore('topic:t1', { botId: '1', agentId: 'main' });
+			store.sessionId = ''; // 清空使 guard 生效
 			const result = await store.sendMessage('hello');
 			expect(result).toEqual({ accepted: false });
 		});
@@ -760,10 +656,9 @@ describe('useChatStore', () => {
 
 			const sendPromise = store.sendMessage('hello');
 			await vi.advanceTimersByTimeAsync(0);
-			// 确认已 accepted，本地消息已创建
+			// 确认已 accepted，乐观消息已移入 agentRunsStore（allMessages 可见）
 			expect(store.__accepted).toBe(true);
-			const msgCountBefore = store.messages.length;
-			expect(msgCountBefore).toBeGreaterThan(0);
+			expect(store.allMessages.length).toBeGreaterThan(0);
 
 			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
 
@@ -810,6 +705,8 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 且未 accepted 时等待重连后自动重试一次', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
+			// waitForConnected 读取 byId.connState
+			botsStore.byId['1'].connState = 'connected';
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -886,6 +783,9 @@ describe('useChatStore', () => {
 				store.sendMessage('hello'),
 			]);
 
+			// 恢复被覆盖的 get 方法，避免污染后续测试
+			mockConnections.get = origGet;
+
 			expect(result.status).toBe('rejected');
 			expect(result.reason.code).toBe('WS_CLOSED');
 		});
@@ -893,6 +793,7 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 重试本身再次失败时不二次重试，直接抛出', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].connState = 'connected';
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -921,6 +822,7 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 且已 accepted 时不抛出，等重连后 reconcile', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].connState = 'connected';
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1190,290 +1092,33 @@ describe('useChatStore', () => {
 	// =====================================================================
 
 	describe('cleanup', () => {
-		test('重置全部状态', () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			mockConnections.set('1', mockConn());
+		test('清理发送状态但保留数据（store 持续存活）', () => {
+			const conn = mockConn();
+			mockConnections.set('1', conn);
 
 			const store = useChatStore();
-			store.sessionId = 'sess-1';
 			store.botId = '1';
 			store.messages = [{ id: 'm1' }];
 			store.chatSessionKey = 'agent:main:main';
-			store.currentSessionId = 'cur-1';
-			store.loading = true;
-			store.errorText = 'some error';
 			store.sending = true;
-			store.resetting = true;
-			store.historySessionIds = [{ sessionId: 'h1', archivedAt: 1 }];
-			store.historySegments = [{ sessionId: 'h1', archivedAt: 1, messages: [] }];
-			store.historyLoading = true;
-			store.historyExhausted = true;
-			store.__historyLoadedCount = 5;
+			store.__streamingTimer = setTimeout(() => {}, 99999);
 
 			store.cleanup();
 
-			expect(store.sessionId).toBe('');
-			expect(store.botId).toBe('');
-			expect(store.messages).toHaveLength(0);
-			expect(store.chatSessionKey).toBe('');
-			expect(store.currentSessionId).toBeNull();
-			expect(store.loading).toBe(false);
-			expect(store.errorText).toBe('');
+			// 发送状态已清理
 			expect(store.sending).toBe(false);
-			expect(store.resetting).toBe(false);
-			expect(store.topicMode).toBe(false);
-			expect(store.topicAgentId).toBe('');
-			expect(store.historySessionIds).toEqual([]);
-			expect(store.historySegments).toEqual([]);
-			expect(store.historyLoading).toBe(false);
-			expect(store.historyExhausted).toBe(false);
-			expect(store.__historyLoadedCount).toBe(0);
+			expect(store.__streamingTimer).toBeNull();
+			// 数据保留
+			expect(store.messages).toHaveLength(1);
+			expect(store.botId).toBe('1');
+			expect(store.chatSessionKey).toBe('agent:main:main');
 		});
 	});
 
-	// =====================================================================
-	// __onAgentEvent
-	// =====================================================================
+	// __onAgentEvent 相关测试已迁移到 agent-stream.test.js 和 agent-runs.store.test.js
 
-	describe('__onAgentEvent', () => {
-		function setupStreamingStore() {
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.streamingRunId = 'run-1';
-			store.sending = true;
-			store.chatSessionKey = 'agent:main:main';
-			// 注入一条 streaming bot 条目
-			store.messages = [
-				{
-					id: '__local_bot_1',
-					_local: true,
-					_streaming: true,
-					_startTime: Date.now(),
-					message: { role: 'assistant', content: '', stopReason: null },
-				},
-			];
-			return store;
-		}
-
-		test('runId 不匹配时忽略事件', () => {
-			const store = setupStreamingStore();
-
-			store.__onAgentEvent({ runId: 'other-run', stream: 'assistant', data: { text: 'hello' } });
-			expect(store.messages[0].message.content).toBe('');
-		});
-
-		test('assistant stream：更新 streaming bot 条目的文本内容', () => {
-			const store = setupStreamingStore();
-
-			store.__onAgentEvent({ runId: 'run-1', stream: 'assistant', data: { text: 'hello world' } });
-
-			const entry = store.messages.find((m) => m._streaming && m.message.role === 'assistant');
-			const textBlock = Array.isArray(entry.message.content)
-				? entry.message.content.find((b) => b.type === 'text')
-				: null;
-			expect(textBlock?.text).toBe('hello world');
-			expect(entry.message.stopReason).toBe('stop');
-		});
-
-		test('tool stream start：向 streaming bot 条目追加 toolCall', () => {
-			const store = setupStreamingStore();
-
-			store.__onAgentEvent({ runId: 'run-1', stream: 'tool', data: { phase: 'start', name: 'search' } });
-
-			const entry = store.messages.find((m) => m._streaming && m.message.role === 'assistant');
-			const content = entry.message.content;
-			expect(Array.isArray(content)).toBe(true);
-			expect(content.some((b) => b.type === 'toolCall' && b.name === 'search')).toBe(true);
-			expect(entry.message.stopReason).toBe('toolUse');
-		});
-
-		test('tool stream result：追加 toolResult 和新 streaming bot 条目', () => {
-			const store = setupStreamingStore();
-
-			store.__onAgentEvent({
-				runId: 'run-1',
-				stream: 'tool',
-				data: { phase: 'result', result: 'search result text' },
-			});
-
-			const toolResultEntry = store.messages.find((m) => m.message?.role === 'toolResult');
-			expect(toolResultEntry).toBeTruthy();
-			expect(toolResultEntry.message.content).toBe('search result text');
-
-			// 新的 assistant streaming 条目
-			const newBotEntry = store.messages[store.messages.length - 1];
-			expect(newBotEntry._streaming).toBe(true);
-			expect(newBotEntry.message.role).toBe('assistant');
-		});
-
-		test('tool stream result：result 为对象时序列化为 JSON', () => {
-			const store = setupStreamingStore();
-
-			store.__onAgentEvent({
-				runId: 'run-1',
-				stream: 'tool',
-				data: { phase: 'result', result: { key: 'val' } },
-			});
-
-			const toolResultEntry = store.messages.find((m) => m.message?.role === 'toolResult');
-			expect(toolResultEntry.message.content).toBe('{"key":"val"}');
-		});
-
-		test('tool stream result：data.result 被网关剥离时兜底为空字符串', () => {
-			const store = setupStreamingStore();
-
-			store.__onAgentEvent({
-				runId: 'run-1',
-				stream: 'tool',
-				data: { phase: 'result' }, // 无 result 字段（verbose !== full）
-			});
-
-			const toolResultEntry = store.messages.find((m) => m.message?.role === 'toolResult');
-			expect(toolResultEntry).toBeTruthy();
-			expect(toolResultEntry.message.content).toBe('');
-
-			const newBotEntry = store.messages[store.messages.length - 1];
-			expect(newBotEntry._streaming).toBe(true);
-			expect(newBotEntry.message.role).toBe('assistant');
-		});
-
-		test('thinking stream：追加 thinking block', () => {
-			const store = setupStreamingStore();
-
-			store.__onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: '思考中...' } });
-
-			const entry = store.messages.find((m) => m._streaming && m.message.role === 'assistant');
-			const content = entry.message.content;
-			expect(Array.isArray(content)).toBe(true);
-			expect(content.some((b) => b.type === 'thinking' && b.thinking === '思考中...')).toBe(true);
-		});
-
-		test('thinking stream：更新已有 thinking block（不重复追加）', () => {
-			const store = setupStreamingStore();
-			// 先触发一次 thinking
-			store.__onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: '初始思考' } });
-			// 再触发一次 thinking，应覆盖而非追加
-			store.__onAgentEvent({ runId: 'run-1', stream: 'thinking', data: { text: '更新思考' } });
-
-			const entry = store.messages.find((m) => m._streaming && m.message.role === 'assistant');
-			const thinkingBlocks = entry.message.content.filter((b) => b.type === 'thinking');
-			expect(thinkingBlocks).toHaveLength(1);
-			expect(thinkingBlocks[0].thinking).toBe('更新思考');
-		});
-
-		test('lifecycle end：结算 agent，清理 streaming，sending 置 false', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			const conn = mockConn();
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.streamingRunId = 'run-1';
-			store.sending = true;
-			store.chatSessionKey = 'agent:main:main';
-			store.messages = [
-				{ id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: 'hi' } },
-			];
-
-			store.__onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-
-			expect(store.__agentSettled).toBe(true);
-			expect(store.sending).toBe(false);
-			expect(store.streamingRunId).toBeNull();
-		});
-
-		test('lifecycle error：结算 agent，clearing streaming flags，sending 置 false', () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			const conn = mockConn();
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.streamingRunId = 'run-1';
-			store.sending = true;
-			store.chatSessionKey = 'agent:main:main';
-			store.messages = [
-				{ id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
-			];
-
-			store.__onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
-
-			expect(store.__agentSettled).toBe(true);
-			expect(store.sending).toBe(false);
-			expect(store.streamingRunId).toBeNull();
-		});
-
-		test('lifecycle error：不删除本地消息', () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			const conn = mockConn();
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.streamingRunId = 'run-1';
-			store.sending = true;
-			store.chatSessionKey = 'agent:main:main';
-			store.messages = [
-				{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
-				{ id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
-			];
-
-			store.__onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
-
-			// 本地消息不应被删除（由 __reconcileMessages 从服务端拉取后合并）
-			expect(store.messages).toHaveLength(2);
-		});
-
-		test('lifecycle error：调用 __reconcileMessages', () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			const conn = mockConn();
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.streamingRunId = 'run-1';
-			store.sending = true;
-			store.chatSessionKey = 'agent:main:main';
-			store.messages = [];
-
-			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
-
-			store.__onAgentEvent({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
-
-			expect(reconcileSpy).toHaveBeenCalledOnce();
-		});
-
-		test('__reconcileMessages 连接不存在时返回 false', async () => {
+	describe('__reconcileMessages', () => {
+		test('连接不存在时返回 false', async () => {
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
 			store.botId = '999'; // 无连接
@@ -1482,37 +1127,6 @@ describe('useChatStore', () => {
 
 			const result = await store.__reconcileMessages();
 			expect(result).toBe(false);
-		});
-
-		test('__ensureContentArray：非空字符串 content 被转换为 text block 数组', () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			mockConnections.set('1', mockConn());
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.streamingRunId = 'run-1';
-			store.sending = true;
-			store.chatSessionKey = 'agent:main:main';
-			// content 设为非空字符串
-			store.messages = [
-				{
-					id: '__local_bot_1',
-					_local: true,
-					_streaming: true,
-					_startTime: Date.now(),
-					message: { role: 'assistant', content: 'initial', stopReason: null },
-				},
-			];
-
-			// 触发 assistant stream 事件，__ensureContentArray 应把字符串转为数组
-			store.__onAgentEvent({ runId: 'run-1', stream: 'assistant', data: { text: 'new text' } });
-
-			const entry = store.messages.find((m) => m._streaming && m.message.role === 'assistant');
-			expect(Array.isArray(entry.message.content)).toBe(true);
-			const textBlock = entry.message.content.find((b) => b.type === 'text');
-			expect(textBlock?.text).toBe('new text');
 		});
 	});
 
@@ -2268,6 +1882,27 @@ describe('useChatStore', () => {
 			await p;
 			expect(store.sending).toBe(false);
 		});
+
+		test('__reconcileSlashCommand 清理挂起的 slash command 并 resolve', async () => {
+			const p = store.sendSlashCommand('/compact');
+			expect(store.sending).toBe(true);
+			expect(store.__slashCommandRunId).toBeTruthy();
+			expect(store.messages.length).toBe(1); // 乐观 user message
+
+			// 模拟 WS 重连：reconcile 应 settle 挂起的 command
+			store.__reconcileSlashCommand();
+
+			await p; // 应 resolve，不 reject
+			expect(store.sending).toBe(false);
+			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.messages.length).toBe(0); // 乐观消息已移除
+		});
+
+		test('__reconcileSlashCommand 无挂起命令时为 no-op', () => {
+			expect(store.__slashCommandRunId).toBeNull();
+			store.__reconcileSlashCommand(); // 不应抛错
+			expect(store.sending).toBe(false);
+		});
 	});
 
 	// =====================================================================
@@ -2280,10 +1915,9 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: [] });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
-			// sessions.get 调用应使用 limit=50
 			const sessCall = conn.request.mock.calls.find((c) => c[0] === 'sessions.get');
 			expect(sessCall).toBeTruthy();
 			expect(sessCall[1]).toMatchObject({ limit: 50 });
@@ -2295,8 +1929,8 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: msgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
 			expect(store.messages).toHaveLength(10);
 			expect(store.hasMoreMessages).toBe(false);
@@ -2308,8 +1942,8 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: msgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
 			expect(store.messages).toHaveLength(50);
 			expect(store.hasMoreMessages).toBe(true);
@@ -2317,17 +1951,15 @@ describe('useChatStore', () => {
 
 		test('loadOlderMessages 增大 limit 向前加载并 prepend 到列表', async () => {
 			const conn = mockConn();
-			// 初始加载返回 50 条
 			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i + 50}` }));
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 			expect(store.hasMoreMessages).toBe(true);
 			expect(store.messages).toHaveLength(50);
 
-			// loadOlderMessages: 服务端返回更大范围（100 条 = 50 旧 + 50 原有）
 			const olderMsgs = Array.from({ length: 100 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			conn.request.mockImplementation((method) => {
 				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
@@ -2337,7 +1969,6 @@ describe('useChatStore', () => {
 			const loaded = await store.loadOlderMessages();
 			expect(loaded).toBe(true);
 			expect(store.messages).toHaveLength(100);
-			// 请求应使用 limit=100（50 + 50）
 			const lastSessCall = conn.request.mock.calls.filter((c) => c[0] === 'sessions.get').pop();
 			expect(lastSessCall[1]).toMatchObject({ limit: 100 });
 		});
@@ -2348,11 +1979,10 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 			expect(store.hasMoreMessages).toBe(true);
 
-			// 再次加载时只返回 70 条（< 100），说明到头了
 			const allMsgs = Array.from({ length: 70 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			conn.request.mockImplementation((method) => {
 				if (method === 'sessions.get') return Promise.resolve({ messages: allMsgs });
@@ -2370,8 +2000,8 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: msgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 			expect(store.hasMoreMessages).toBe(false);
 
 			const result = await store.loadOlderMessages();
@@ -2384,10 +2014,9 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
-			// 模拟 streaming 中的本地消息
 			store.messages = [
 				...store.messages,
 				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: 'thinking...' } },
@@ -2400,7 +2029,6 @@ describe('useChatStore', () => {
 			});
 
 			await store.loadOlderMessages();
-			// 80 条服务端消息 + 1 条本地消息
 			expect(store.messages).toHaveLength(81);
 			const localMsg = store.messages.find((m) => m._local);
 			expect(localMsg).toBeTruthy();
@@ -2413,17 +2041,16 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
-			// 模拟用户乐观消息（已发送但尚未被新一轮 sessions.get 覆盖前）
+			// 模拟用户发送后的乐观消息（_local=true, _streaming 未设置）
 			store.messages = [
 				...store.messages,
 				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
 			];
-			expect(store.messages).toHaveLength(51);
 
-			// 服务端返回 80 条，其中已包含用户消息
+			// 服务端返回更多消息，其中已包含用户消息
 			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			conn.request.mockImplementation((method) => {
 				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
@@ -2431,41 +2058,10 @@ describe('useChatStore', () => {
 			});
 
 			await store.loadOlderMessages();
-			// 用户乐观消息不应保留，仅有服务端的 80 条
+			// 用户乐观消息不应被保留，只有服务端返回的 80 条
 			expect(store.messages).toHaveLength(80);
-			expect(store.messages.find((m) => m._local)).toBeUndefined();
-		});
-
-		test('loadOlderMessages: _local && _streaming 的 bot 占位保留，_local && !_streaming 的丢弃', async () => {
-			const conn = mockConn();
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
-			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-
-			// 同时存在 streaming bot 占位和用户乐观消息
-			store.messages = [
-				...store.messages,
-				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
-				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '...' } },
-			];
-			expect(store.messages).toHaveLength(52);
-
-			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
-				return Promise.resolve(null);
-			});
-
-			await store.loadOlderMessages();
-			// 80 条服务端 + 1 条 streaming bot 占位 = 81，用户乐观消息被丢弃
-			expect(store.messages).toHaveLength(81);
-			const locals = store.messages.filter((m) => m._local);
-			expect(locals).toHaveLength(1);
-			expect(locals[0].id).toBe('__local_bot_1');
-			expect(locals[0]._streaming).toBe(true);
+			const localMsg = store.messages.find((m) => m._local);
+			expect(localMsg).toBeFalsy();
 		});
 
 		test('loadOlderMessages: topic 模式下不触发', async () => {
@@ -2476,8 +2072,8 @@ describe('useChatStore', () => {
 			});
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateTopic('topic-1', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
+			await store.activate();
 
 			const result = await store.loadOlderMessages();
 			expect(result).toBe(false);
@@ -2489,8 +2085,8 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
 			let resolveRequest;
 			conn.request.mockImplementation((method) => {
@@ -2500,334 +2096,197 @@ describe('useChatStore', () => {
 				return Promise.resolve(null);
 			});
 
-			// 同时触发两次
 			const p1 = store.loadOlderMessages();
 			const p2 = store.loadOlderMessages();
 
 			expect(store.messagesLoading).toBe(true);
-
-			// 第二次应立即返回 false（被 messagesLoading 拦截）
 			expect(await p2).toBe(false);
 
-			// 完成第一次
 			const allMsgs = Array.from({ length: 100 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			resolveRequest({ messages: allMsgs });
 			expect(await p1).toBe(true);
 			expect(store.messagesLoading).toBe(false);
 		});
 
-		test('activateSession 重置分页状态', async () => {
+		test('不同 store 实例有独立的分页状态', async () => {
 			const conn = mockConn();
 			const msgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
 			setupConnForLoad(conn, { flatMessages: msgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-			expect(store.hasMoreMessages).toBe(true);
+			const store1 = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store1.activate();
+			expect(store1.hasMoreMessages).toBe(true);
 
-			// 切换到新 session（无消息）
+			// 另一个 store（空消息）
 			setupConnForLoad(conn, { flatMessages: [] });
-			await store.activateSession('2', 'main', { force: true });
-			mockConnections.set('2', conn);
+			const store2 = createChatStore('session:1:ops', { botId: '1', agentId: 'ops' });
+			await store2.activate();
 
-			expect(store.hasMoreMessages).toBe(false);
-			expect(store.messagesLoading).toBe(false);
+			expect(store2.hasMoreMessages).toBe(false);
+			// store1 不受影响
+			expect(store1.hasMoreMessages).toBe(true);
 		});
 	});
 
 	// =====================================================================
-	// WS 重连监听（__connStateHandler）
+	// activate 简化（连接监听已移至 botsStore 响应式桥接）
 	// =====================================================================
 
-	describe('WS 重连监听', () => {
-		test('WS 重连后自动 reload messages（session 模式）', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn, {
-				flatMessages: [{ role: 'user', content: 'hello' }],
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-
-			// 找到注册的 state 监听器
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			expect(stateCall).toBeTruthy();
-			const stateHandler = stateCall[1];
-
-			// 更新 mock 返回新消息
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({
-						messages: [
-							{ role: 'user', content: 'hello' },
-							{ role: 'assistant', content: 'world' },
-						],
-					});
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'cur-sess' });
-				}
-				return Promise.resolve(null);
-			});
-
-			// 模拟 WS 重连
-			stateHandler('connected');
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(2);
-			});
-		});
-
-		test('WS 重连后自动 reload messages（topic 模式）', async () => {
-			const conn = mockConn();
-			conn.request.mockImplementation((method) => {
-				if (method === 'coclaw.sessions.getById') {
-					return Promise.resolve({
-						messages: [{ type: 'message', id: 'm1', message: { role: 'user', content: 'topic msg' } }],
-					});
-				}
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateTopic('topic-1', { botId: '1', agentId: 'main' });
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			expect(stateCall).toBeTruthy();
-			const stateHandler = stateCall[1];
-
-			// 更新 mock
-			conn.request.mockImplementation((method) => {
-				if (method === 'coclaw.sessions.getById') {
-					return Promise.resolve({
-						messages: [
-							{ type: 'message', id: 'm1', message: { role: 'user', content: 'topic msg' } },
-							{ type: 'message', id: 'm2', message: { role: 'assistant', content: 'reply' } },
-						],
-					});
-				}
-				return Promise.resolve(null);
-			});
-
-			stateHandler('connected');
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(2);
-			});
-		});
-
-		test('disconnected 状态不触发 reload', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn, {
-				flatMessages: [{ role: 'user', content: 'hi' }],
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-			const callCountBefore = conn.request.mock.calls.length;
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const stateHandler = stateCall[1];
-
-			// 模拟断连 → 不应触发 reload
-			stateHandler('disconnected');
-			// 等一个 tick 确认没有额外调用
-			await Promise.resolve();
-			expect(conn.request.mock.calls.length).toBe(callCountBefore);
-		});
-
-		test('切换会话后旧 state 监听被清理', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-
-			// 找到第一次注册的 state 监听
-			const firstStateCalls = conn.on.mock.calls.filter((c) => c[0] === 'state');
-			expect(firstStateCalls.length).toBeGreaterThanOrEqual(1);
-			const firstHandler = firstStateCalls[0][1];
-
-			// 切换到另一个 agent → 应先 off 旧监听
-			await store.activateSession('1', 'ops');
-
-			// 验证旧 handler 被 off 了
-			const offStateCalls = conn.off.mock.calls.filter((c) => c[0] === 'state');
-			expect(offStateCalls.some((c) => c[1] === firstHandler)).toBe(true);
-		});
-
-		test('cleanup() 后 state 监听被清理', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const handler = stateCall[1];
-
-			store.cleanup();
-
-			const offStateCalls = conn.off.mock.calls.filter((c) => c[0] === 'state');
-			expect(offStateCalls.some((c) => c[1] === handler)).toBe(true);
-			expect(store.__connStateHandler).toBeNull();
-		});
-
-		test('连接未就绪时也注册 state 监听（首次 connect 时自动加载）', async () => {
+	describe('activate 简化', () => {
+		test('连接未就绪时 activate 标记 loading 并等待 connReady 驱动', async () => {
 			const conn = mockConn({ state: 'connecting' });
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: [{ role: 'user', content: 'delayed' }] });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'sess-1' });
-				}
-				return Promise.resolve(null);
-			});
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
+			expect(store.__initialized).toBe(true);
 			expect(store.loading).toBe(true);
 			expect(store.messages).toHaveLength(0);
-
-			// 验证 state 监听已注册
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			expect(stateCall).toBeTruthy();
-			const stateHandler = stateCall[1];
-
-			// 模拟连接就绪
-			conn.state = 'connected';
-			stateHandler('connected');
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(1);
-				expect(store.loading).toBe(false);
-			});
+			// chatStore 不再注册 conn.on('state')
+			const stateCalls = conn.on.mock.calls.filter((c) => c[0] === 'state');
+			expect(stateCalls).toHaveLength(0);
 		});
 
-		test('注册 listener 后 re-check：连接已就绪时立即触发 loadMessages 和 loadChatHistory', async () => {
-			// 模拟 conn 在 activateSession 判定时为 connecting，但注册 listener 后已变为 connected
-			const conn = mockConn({ state: 'connecting' });
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: [{ role: 'user', content: 're-check' }] });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'sess-1' });
-				}
-				if (method === 'coclaw.chatHistory.list') {
-					return Promise.resolve({ history: [{ sessionId: 'h1', archivedAt: 100 }] });
-				}
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			// activateSession 内部会检测 state !== 'connected' → loading = true
-			// 然后调用 __registerConnStateListener
-			// 在 on() 调用时模拟连接已就绪
-			const origOn = conn.on;
-			conn.on = vi.fn((...args) => {
-				origOn(...args);
-				// 模拟连接在注册后已就绪
-				conn.state = 'connected';
-			});
-
-			await store.activateSession('1', 'main');
-
-			// re-check 应该已触发 loadMessages + __loadChatHistory
-			await vi.waitFor(() => {
-				expect(store.messages).toHaveLength(1);
-				expect(store.loading).toBe(false);
-			});
-			// 验证 chatHistory 也被加载
-			await vi.waitFor(() => {
-				expect(store.historySessionIds).toHaveLength(1);
-			});
-		});
-
-		test('sending 状态下重连不触发 loadMessages', async () => {
+		test('连接就绪时 activate 直接加载消息', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn, {
 				flatMessages: [{ role: 'user', content: 'hello' }],
 			});
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
 
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const stateHandler = stateCall[1];
-
-			const callCountBefore = conn.request.mock.calls.length;
-
-			// 模拟 sending 状态
-			store.sending = true;
-			stateHandler('connected');
-			await Promise.resolve();
-
-			// 不应有新的 request 调用
-			expect(conn.request.mock.calls.length).toBe(callCountBefore);
+			expect(store.__initialized).toBe(true);
+			expect(store.__messagesLoaded).toBe(true);
+			expect(store.messages).toHaveLength(1);
 		});
 
-		test('重连时使用已加载的 limit（保留翻页进度）', async () => {
-			// 构造 >= 50 条消息使 hasMoreMessages 为 true
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({
-				role: 'user', content: `msg-${i}`,
-			}));
+		test('skipLoad 时 activate 不加载消息', async () => {
 			const conn = mockConn();
-			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			mockConnections.set('1', conn);
 
-			const store = useChatStore();
-			await store.activateSession('1', 'main');
-			expect(store.hasMoreMessages).toBe(true);
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate({ skipLoad: true });
 
-			// 模拟 loadOlderMessages 扩大 limit
-			const expandedMsgs = Array.from({ length: 100 }, (_, i) => ({
-				role: 'user', content: `msg-${i}`,
-			}));
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: expandedMsgs });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'cur-sess' });
-				}
-				return Promise.resolve(null);
-			});
-			await store.loadOlderMessages();
-			expect(store.__loadedMsgLimit).toBe(100);
-
-			// 记录重连前状态
-			conn.request.mockClear();
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') {
-					return Promise.resolve({ messages: expandedMsgs });
-				}
-				if (method === 'chat.history') {
-					return Promise.resolve({ sessionId: 'cur-sess' });
-				}
-				return Promise.resolve(null);
-			});
-
-			// 触发重连
-			const stateCall = conn.on.mock.calls.find((c) => c[0] === 'state');
-			const stateHandler = stateCall[1];
-			stateHandler('connected');
-
-			await vi.waitFor(() => {
-				const sessGetCall = conn.request.mock.calls.find((c) => c[0] === 'sessions.get');
-				expect(sessGetCall).toBeTruthy();
-				// limit 应为 100 而非默认的 50
-				expect(sessGetCall[1].limit).toBe(100);
-			});
+			expect(store.__initialized).toBe(true);
+			expect(store.messages).toHaveLength(0);
+			expect(conn.request).not.toHaveBeenCalled();
 		});
 
+		test('dispose 不再涉及 conn 监听清理', async () => {
+			const conn = mockConn();
+			setupConnForLoad(conn);
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
+			store.dispose();
+
+			// chatStore 不再管理 conn.on/off('state')
+			const offStateCalls = conn.off.mock.calls.filter((c) => c[0] === 'state');
+			expect(offStateCalls).toHaveLength(0);
+		});
+	});
+
+	describe('飞行中守卫与 reconcile', () => {
+		beforeEach(() => { vi.useFakeTimers(); });
+		afterEach(() => { vi.useRealTimers(); });
+
+		test('飞行中守卫：silent 模式下并发 loadMessages 不会发起多次请求', async () => {
+			const conn = mockConn();
+			let reqCount = 0;
+			let resolveReq;
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') {
+					reqCount++;
+					return new Promise((r) => { resolveReq = r; });
+				}
+				if (method === 'chat.history') {
+					return Promise.resolve({ sessionId: 'cur' });
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			store.__initialized = true;
+
+			store.loadMessages({ silent: true });
+			store.loadMessages({ silent: true });
+			store.loadMessages({ silent: true });
+
+			expect(reqCount).toBe(1);
+
+			resolveReq({ messages: [] });
+			await vi.advanceTimersByTimeAsync(0);
+
+			store.loadMessages({ silent: true });
+			expect(reqCount).toBe(2);
+		});
+
+		test('飞行中守卫：非 silent 模式下并发 loadMessages 不会发起多次请求', async () => {
+			const conn = mockConn();
+			let reqCount = 0;
+			let resolveReq;
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') {
+					reqCount++;
+					return new Promise((r) => { resolveReq = r; });
+				}
+				if (method === 'chat.history') {
+					return Promise.resolve({ sessionId: 'cur' });
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			store.__initialized = true;
+
+			// 模拟 activate() + connReady watcher 同时触发非 silent loadMessages
+			store.loadMessages();
+			store.loadMessages();
+			store.loadMessages();
+
+			expect(reqCount).toBe(1);
+
+			resolveReq({ messages: [] });
+			await vi.advanceTimersByTimeAsync(0);
+
+			// 首次 resolve 后 guard 清除，新调用应发起新请求
+			store.loadMessages();
+			expect(reqCount).toBe(2);
+		});
+
+		test('loadMessages 成功后调用 reconcileRunAfterLoad', async () => {
+			const conn = mockConn();
+			setupConnForLoad(conn, {
+				flatMessages: [
+					{ role: 'user', content: 'hi' },
+					{ role: 'assistant', content: 'hello', stopReason: 'stop' },
+				],
+			});
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
+
+			const runsStore = useAgentRunsStore();
+			runsStore.register('run-zombie', {
+				botId: '1',
+				runKey: store.runKey,
+				topicMode: false,
+				conn,
+				streamingMsgs: [],
+			});
+			expect(runsStore.isRunning(store.runKey)).toBe(true);
+
+			await store.loadMessages({ silent: true });
+
+			expect(runsStore.isRunning(store.runKey)).toBe(false);
+		});
 	});
 });
