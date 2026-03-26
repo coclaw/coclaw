@@ -1882,6 +1882,27 @@ describe('useChatStore', () => {
 			await p;
 			expect(store.sending).toBe(false);
 		});
+
+		test('__reconcileSlashCommand 清理挂起的 slash command 并 resolve', async () => {
+			const p = store.sendSlashCommand('/compact');
+			expect(store.sending).toBe(true);
+			expect(store.__slashCommandRunId).toBeTruthy();
+			expect(store.messages.length).toBe(1); // 乐观 user message
+
+			// 模拟 WS 重连：reconcile 应 settle 挂起的 command
+			store.__reconcileSlashCommand();
+
+			await p; // 应 resolve，不 reject
+			expect(store.sending).toBe(false);
+			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.messages.length).toBe(0); // 乐观消息已移除
+		});
+
+		test('__reconcileSlashCommand 无挂起命令时为 no-op', () => {
+			expect(store.__slashCommandRunId).toBeNull();
+			store.__reconcileSlashCommand(); // 不应抛错
+			expect(store.sending).toBe(false);
+		});
 	});
 
 	// =====================================================================

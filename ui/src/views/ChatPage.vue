@@ -381,6 +381,8 @@ export default {
 		/** connReady 驱动消息加载：首次加载或重连刷新 */
 		connReady(ready) {
 			if (!ready || !this.chatStore) return;
+			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
+			this.chatStore.__reconcileSlashCommand();
 			if (!this.chatStore.__messagesLoaded) {
 				this.chatStore.loadMessages();
 				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();

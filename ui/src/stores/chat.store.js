@@ -736,6 +736,19 @@ export function createChatStore(storeKey, opts = {}) {
 				this.messages = this.messages.filter((m) => !m._local);
 			},
 
+			/**
+			 * WS 重连时 reconcile 挂起的 slash command
+			 * event:chat 可能在断连期间丢失，此时 resolve（非 reject），由 loadMessages 恢复正确状态
+			 */
+			__reconcileSlashCommand() {
+				if (!this.__slashCommandRunId) return;
+				console.debug('[chat] reconnected with pending slash cmd → settle');
+				const resolve = this.__slashCommandResolve;
+				this.__cleanupSlashCommand(this.__getConnection());
+				this.__removeLocalMessages();
+				if (resolve) resolve();
+			},
+
 			/** 清理斜杠命令状态 */
 			__cleanupSlashCommand(conn) {
 				this.sending = false;
