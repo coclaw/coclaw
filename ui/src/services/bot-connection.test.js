@@ -575,7 +575,7 @@ describe('BotConnection – server push events', () => {
 	});
 });
 
-describe('BotConnection – heartbeat (two-layer: miss + pending suppression)', () => {
+describe('BotConnection – heartbeat', () => {
 	beforeEach(() => {
 		MockWebSocket.reset();
 		vi.useFakeTimers();
@@ -633,71 +633,14 @@ describe('BotConnection – heartbeat (two-layer: miss + pending suppression)', 
 		expect(ws.closed).toBe(true);
 	});
 
-	// --- pending 抑制 ---
-
-	test('with pending RPC, suppresses close beyond base miss limit', () => {
+	test('pending RPC does not extend heartbeat tolerance', () => {
 		const { conn, ws } = makeConnected();
 		conn.request('slowMethod');
 		expect(conn.__pending.size).toBe(1);
-		// 2 次 miss（基础上限）→ 有 pending，不关闭
+		// 即使有 pending RPC，2 次 miss 后仍断连
 		vi.advanceTimersByTime(45_000 * 2 + 1);
-		expect(ws.closed).toBe(false);
-		expect(conn.__hbMissCount).toBe(2);
-		// 继续第 3 次 miss → 仍不关闭
-		vi.advanceTimersByTime(45_000);
-		expect(ws.closed).toBe(false);
-		expect(conn.__hbMissCount).toBe(3);
-	});
-
-	test('with pending RPC, closes after suppress limit (2+4=6 misses, ~270s)', () => {
-		const { conn, ws } = makeConnected();
-		conn.request('slowMethod');
-		// 6 × 45s = 270s → 抑制上限
-		vi.advanceTimersByTime(45_000 * 6 + 1);
 		expect(ws.closed).toBe(true);
 		expect(ws.closeCode).toBe(4000);
-	});
-
-	test('with pending RPC, does not close at 5 misses (just under suppress limit)', () => {
-		const { conn, ws } = makeConnected();
-		conn.request('slowMethod');
-		vi.advanceTimersByTime(45_000 * 5 + 1);
-		expect(ws.closed).toBe(false);
-		expect(conn.__hbMissCount).toBe(5);
-	});
-
-	test('message during suppression resets everything', () => {
-		const { conn, ws } = makeConnected();
-		conn.request('slowMethod');
-		// 进入抑制模式（miss=3，超过基础上限）
-		vi.advanceTimersByTime(45_000 * 3 + 1);
-		expect(conn.__hbMissCount).toBe(3);
-		expect(ws.closed).toBe(false);
-		// 收到消息 → 全部重置
-		ws.simulateMessage({ type: 'pong' });
-		expect(conn.__hbMissCount).toBe(0);
-		// 需重新积累 6 次 miss 才断连（pending 仍在）
-		vi.advanceTimersByTime(45_000 * 5 + 1);
-		expect(ws.closed).toBe(false);
-		vi.advanceTimersByTime(45_000);
-		expect(ws.closed).toBe(true);
-	});
-
-	test('pending cleared during suppression → closes at next miss', () => {
-		const { conn, ws } = makeConnected();
-		conn.request('slowMethod').catch(() => {}); // 忽略 reject（连接关闭时触发）
-		// 进入抑制模式
-		vi.advanceTimersByTime(45_000 * 3 + 1);
-		expect(ws.closed).toBe(false);
-		// 模拟 RPC 完成 → pending 清空
-		const reqMsg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: reqMsg.id, ok: true, payload: {} });
-		// 收到消息会重置 missCount
-		expect(conn.__hbMissCount).toBe(0);
-		expect(conn.__pending.size).toBe(0);
-		// 无 pending → 2 次 miss 后断连
-		vi.advanceTimersByTime(45_000 * 2 + 1);
-		expect(ws.closed).toBe(true);
 	});
 
 	// --- 基础 ---

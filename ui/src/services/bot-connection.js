@@ -7,8 +7,7 @@ import { resolveApiBaseUrl } from './http.js';
 
 const HB_PING_MS = 25_000;
 const HB_TIMEOUT_MS = 45_000;
-const HB_MAX_MISS = 2; // 常规容忍：2 次 miss（~90s）再判定
-const HB_SUPPRESS_LIMIT = 4; // 有 pending RPC 时额外容忍 4 轮（~180s）
+const HB_MAX_MISS = 2; // 2 次 miss（~90s）再判定断连
 const DEFAULT_RPC_TIMEOUT_MS = 30 * 60_000; // 30 分钟兜底
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
@@ -508,19 +507,10 @@ export class BotConnection {
 
 	__onHbMiss() {
 		this.__hbMissCount++;
-		// 阶段1：常规容忍；阶段2：有 pending 时抑制（带绝对上限）
-		const canRetry =
-			this.__hbMissCount < HB_MAX_MISS ||
-			(this.__pending.size > 0 && this.__hbMissCount < HB_MAX_MISS + HB_SUPPRESS_LIMIT);
-		if (canRetry) {
-			const suppressed = this.__hbMissCount >= HB_MAX_MISS;
+		if (this.__hbMissCount < HB_MAX_MISS) {
 			console.debug(
-				'[BotConn] heartbeat %s (%d/%d, pending=%d) botId=%s',
-				suppressed ? 'suppressed' : 'miss',
-				this.__hbMissCount,
-				suppressed ? HB_MAX_MISS + HB_SUPPRESS_LIMIT : HB_MAX_MISS,
-				this.__pending.size,
-				this.botId,
+				'[BotConn] heartbeat miss (%d/%d) botId=%s',
+				this.__hbMissCount, HB_MAX_MISS, this.botId,
 			);
 			if (this.__ws?.readyState === 1) {
 				try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
@@ -532,9 +522,9 @@ export class BotConnection {
 			return;
 		}
 		console.warn(
-			'[BotConn] heartbeat timeout (%d misses, ~%ds, pending=%d) botId=%s',
+			'[BotConn] heartbeat timeout (%d misses, ~%ds) botId=%s',
 			this.__hbMissCount, this.__hbMissCount * HB_TIMEOUT_MS / 1000,
-			this.__pending.size, this.botId,
+			this.botId,
 		);
 		try { this.__ws?.close(4000, 'heartbeat_timeout'); }
 		catch {}
@@ -614,6 +604,11 @@ export class BotConnection {
 			this.probe();
 		}
 		// elapsed <= PROBE_TIMEOUT_MS → 刚刚还收到过消息，无需探测
+
+		// RTC 恢复：若 PC 处于 disconnected（NAT 映射可能已失效），主动 ICE restart
+		if (this.__rtc?.tryIceRestart()) {
+			console.debug('[BotConn] %s → proactive RTC ICE restart botId=%s', source, this.botId);
+		}
 	}
 
 	/**
