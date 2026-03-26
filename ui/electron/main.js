@@ -54,6 +54,8 @@ if (!gotLock) {
 				contextIsolation: true,
 				nodeIntegration: false,
 				sandbox: true,
+				// 禁止后台节流，确保 WebSocket 心跳和定时器在窗口不可见时仍按正常精度运行
+				backgroundThrottling: false,
 			},
 			// macOS 标题栏
 			...(process.platform === 'darwin' && {
