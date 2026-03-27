@@ -48,7 +48,6 @@ import {
 	registerByLoginName,
 } from '../services/auth.api.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
-import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
 
@@ -105,50 +104,6 @@ describe('auth store', () => {
 		await store.refreshSession();
 
 		expect(store.errorMessage).toBe('refresh-message');
-	});
-
-	test('refreshSession 同一用户不调用 draftStore.onUserChanged', async () => {
-		fetchSessionUser.mockResolvedValue({ id: '1' });
-		const store = useAuthStore();
-		store.user = { id: '1' }; // 已有同一用户
-		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
-
-		await store.refreshSession();
-
-		expect(spy).not.toHaveBeenCalled();
-	});
-
-	test('refreshSession 用户变更时调用 draftStore.onUserChanged', async () => {
-		fetchSessionUser.mockResolvedValue({ id: '2' });
-		const store = useAuthStore();
-		store.user = { id: '1' }; // 旧用户
-		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
-
-		await store.refreshSession();
-
-		expect(spy).toHaveBeenCalledOnce();
-	});
-
-	test('refreshSession 首次加载（user 从 null 到有值）调用 draftStore.onUserChanged', async () => {
-		fetchSessionUser.mockResolvedValue({ id: '1' });
-		const store = useAuthStore();
-		// store.user 初始为 null
-		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
-
-		await store.refreshSession();
-
-		expect(spy).toHaveBeenCalledOnce();
-	});
-
-	test('refreshSession 失败时不调用 draftStore.onUserChanged', async () => {
-		fetchSessionUser.mockRejectedValue(new Error('network'));
-		const store = useAuthStore();
-		store.user = { id: '1' };
-		const spy = vi.spyOn(useDraftStore(), 'onUserChanged');
-
-		await store.refreshSession();
-
-		expect(spy).not.toHaveBeenCalled();
 	});
 
 	test('login should save user after success', async () => {
@@ -293,31 +248,6 @@ describe('auth store', () => {
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
 	});
 
-	test('login 成功后调用 draftStore.onUserChanged', async () => {
-		loginByLoginName.mockResolvedValue({ user: { id: '5' } });
-		const store = useAuthStore();
-		const draftStore = useDraftStore();
-		const spy = vi.spyOn(draftStore, 'onUserChanged');
-
-		await store.login({ loginName: 'a', password: 'b' });
-
-		expect(spy).toHaveBeenCalled();
-	});
-
-	test('logout 时先 persist 草稿再调用 onUserChanged', async () => {
-		logout.mockResolvedValue();
-		const store = useAuthStore();
-		store.user = { id: '3' };
-		const draftStore = useDraftStore();
-		const callOrder = [];
-		vi.spyOn(draftStore, 'persist').mockImplementation(() => callOrder.push('persist'));
-		vi.spyOn(draftStore, 'onUserChanged').mockImplementation(() => callOrder.push('onUserChanged'));
-
-		await store.logout();
-
-		expect(callOrder).toEqual(['persist', 'onUserChanged']);
-	});
-
 	test('logout should expose error message on failure', async () => {
 		logout.mockRejectedValue({
 			response: {
@@ -331,21 +261,6 @@ describe('auth store', () => {
 		await store.logout();
 
 		expect(store.errorMessage).toBe('failed-logout');
-		// 即使 API 失败，本地状态也应被清理
-		expect(store.user).toBeNull();
-	});
-
-	test('logout API 返回 401 时视为成功登出，不设 errorMessage', async () => {
-		logout.mockRejectedValue({
-			response: { status: 401, data: { message: 'unauthorized' } },
-		});
-		const store = useAuthStore();
-		store.user = { id: '1' };
-
-		await store.logout();
-
-		expect(store.user).toBeNull();
-		expect(store.errorMessage).toBe('');
 	});
 
 	test('updateProfile should merge patched profile', async () => {

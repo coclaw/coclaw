@@ -120,6 +120,7 @@ import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import { chatStoreManager } from '../stores/chat-store-manager.js';
+import { useBotConnections } from '../services/bot-connection-manager.js';
 import { groupSessionMessages } from '../utils/session-msg-group.js';
 import { isCapacitorApp } from '../utils/platform.js';
 import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
@@ -156,8 +157,6 @@ export default {
 			__isFirstRound: false,
 			// 新建 topic 流程进行中，抑制 watcher 的重复激活
 			__creatingTopic: false,
-			// 历史加载进行中，阻止 scrollToBottom 干扰位置恢复
-			__loadingHistory: false,
 		};
 	},
 	computed: {
@@ -212,8 +211,8 @@ export default {
 		newTopicReady() {
 			if (!this.isNewTopic) return false;
 			if (!this.newTopicBotId) return false;
-			const bot = this.botsStore.byId[this.newTopicBotId];
-			return bot?.connState === 'connected';
+			const conn = this.__getBotConnection(this.newTopicBotId);
+			return conn?.state === 'connected';
 		},
 		/** 当前上下文的 agentId */
 		currentAgentId() {
@@ -235,14 +234,10 @@ export default {
 			if (this.isTopicRoute) return this.chatStore?.botId || '';
 			return this.routeBotId;
 		},
-		/** bot ID 列表快照（仅用于检测 bot 增删，避免 deep watch） */
-		botIds() {
-			return Object.keys(this.botsStore.byId).join(',');
-		},
 		isBotOffline() {
 			const botId = this.currentBotId;
 			if (!botId) return false;
-			const bot = this.botsStore.byId[botId];
+			const bot = this.botsStore.items.find((b) => String(b.id) === String(botId));
 			return bot ? !bot.online : true;
 		},
 		chatTitle() {
@@ -290,18 +285,6 @@ export default {
 			if (!this.routeBotId || this.isBotOffline) return false;
 			const entry = this.agentsStore.byBot[this.routeBotId];
 			return !entry?.fetched;
-		},
-		/**
-		 * 连接就绪：bot 在线 + connState === 'connected' + (topic 或 agent 已验证)
-		 * 驱动首次/重连消息加载，消除时序依赖
-		 */
-		connReady() {
-			if (this.isNewTopic || !this.chatStore) return false;
-			const bot = this.botsStore.byId[this.currentBotId];
-			if (!bot || !bot.online) return false;
-			if (bot.connState !== 'connected') return false;
-			if (this.isTopicRoute) return true;
-			return this.agentVerified;
 		},
 		/**
 		 * 消息加载中（计算属性，替代 chatStore.loading 避免命令式标志卡住）
@@ -369,71 +352,34 @@ export default {
 				}
 			},
 		},
-		/** bot 列表变化（增删）时验证路由 — 避免 deep watch 被高频 lastAliveAt 更新触发 */
-		botIds() { this.__validateRoute(); },
-		agentVerified(verified) {
-			if (!this.isTopicRoute && verified === false) this.__validateRoute();
+		/** bot/agent 存在性验证 */
+		'botsStore.items': {
+			deep: true,
+			handler() { this.__validateRoute(); },
+		},
+		'agentsStore.byBot': {
+			deep: true,
+			handler() { if (!this.isTopicRoute) this.__validateRoute(); },
 		},
 		isBotOffline(offline) {
 			if (offline) {
 				this.chatStore?.cancelSend();
 			}
-			// 上线后由 connReady watcher 驱动消息加载
-		},
-		/** connReady 驱动消息加载：首次加载或重连刷新 */
-		async connReady(ready) {
-			if (!ready || !this.chatStore) return;
-			// 与 __handleForegroundResume 去重
-			this.__lastResumeAt = Date.now();
-			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
-			this.chatStore.__reconcileSlashCommand();
-			const isFirstLoad = !this.chatStore.__messagesLoaded;
-			if (isFirstLoad) {
-				await this.chatStore.loadMessages();
-				if (this.__unmounted || !this.chatStore) return;
-				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-			} else {
+			else if (!this.isNewTopic && this.chatStore) {
 				this.chatStore.loadMessages({ silent: true });
 			}
-			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
-			if (isFirstLoad) {
-				this.$nextTick(() => {
-					this.scrollToBottom(true);
-					this.__autoFillHistory();
-				});
-			}
 		},
-		chatMessages(msgs, oldMsgs) {
+		chatMessages() {
 			this.scrollToBottom();
-			// 从空到非空：首次消息渲染完成，检测是否需要自动填充历史
-			if (msgs.length > 0 && (!oldMsgs || oldMsgs.length === 0)) {
-				this.$nextTick(() => this.__autoFillHistory());
-			}
 		},
 	},
 	mounted() {
 		this.suppressPullRefresh();
 		// chatStore watcher (immediate: true) 已处理激活
-
-		// 前台恢复监听：覆盖 WS 未断连时的数据刷新
-		this.__lastResumeAt = 0;
-		this.__onForeground = () => this.__handleForegroundResume();
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__handleForegroundResume();
-		};
-		window.addEventListener('app:foreground', this.__onForeground);
-		document.addEventListener('visibilitychange', this.__onVisibility);
 	},
 	beforeUnmount() {
-		this.__unmounted = true;
 		this.unsuppressPullRefresh();
 		this.chatStore?.cleanup();
-		if (this.__onForeground) {
-			window.removeEventListener('app:foreground', this.__onForeground);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 	},
 	methods: {
 		async onSendMessage({ text, files }) {
@@ -449,7 +395,6 @@ export default {
 			if (this.isTopicRoute && !this.currentSessionId) return;
 
 			const savedText = this.inputText;
-			const draftKey = this.draftKey;
 			this.inputText = '';
 			this.userScrolledUp = false;
 			this.scrollToBottom();
@@ -461,8 +406,6 @@ export default {
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
-					// 发送成功，清除 pending draft
-					if (draftKey) this.draftStore.clearDraft(draftKey);
 					this.__tryGenerateTitle();
 				}
 			}
@@ -471,10 +414,6 @@ export default {
 				if (!this.chatStore?.__accepted) {
 					this.inputText = savedText;
 					this.$refs.chatInput?.restoreFiles(files);
-				}
-				else {
-					// 已 accepted，发送已被服务端接受，清除 draft
-					if (draftKey) this.draftStore.clearDraft(draftKey);
 				}
 			}
 		},
@@ -487,7 +426,7 @@ export default {
 				return;
 			}
 			// 插件版本过低时话题功能不可用
-			if (this.botsStore.byId[String(botId)]?.pluginVersionOk === false) {
+			if (this.botsStore.pluginVersionOk[String(botId)] === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 				return;
 			}
@@ -574,21 +513,6 @@ export default {
 		},
 
 		/**
-		 * 前台恢复：WS 未断连时 connReady 不会转换，需独立刷新数据
-		 * 与 connReady watcher 去重：2s 内不重复执行
-		 */
-		__handleForegroundResume() {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-
-			if (!this.chatStore || !this.connReady) return;
-			console.debug('[ChatPage] foreground resume → silent reload');
-			this.chatStore.__reconcileSlashCommand();
-			this.chatStore.loadMessages({ silent: true });
-		},
-
-		/**
 		 * 路由级验证：bot/agent 存在性检查
 		 * store 自身通过 WS 重连监听处理数据加载，此处仅做路由合法性判定
 		 */
@@ -630,6 +554,11 @@ export default {
 			this.$router.replace('/');
 		},
 
+		__getBotConnection(botId) {
+			if (!botId) return null;
+			return useBotConnections().get(String(botId)) ?? null;
+		},
+
 		/** 分隔线标签 */
 		formatSeparatorLabel(item) {
 			if (!item.archivedAt) return '';
@@ -650,21 +579,13 @@ export default {
 			}
 		},
 
-		scrollToBottom(force = false) {
+		scrollToBottom() {
 			const el = this.$refs.scrollContainer;
-			if (!el?.scrollTo) return;
-			if (!force && this.userScrolledUp) return;
-			if (this.__loadingHistory) return;
-
-			this.$nextTick(() => {
-				el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-				// 兜底：DOM 高度可能在 $nextTick 后仍未稳定，下一帧再校验一次
-				requestAnimationFrame(() => {
-					if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
-						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-					}
+			if (el?.scrollTo && !this.userScrolledUp) {
+				this.$nextTick(() => {
+					el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 				});
-			});
+			}
 		},
 		onScroll() {
 			const el = this.$refs.scrollContainer;
@@ -684,56 +605,39 @@ export default {
 			}
 		},
 
-		/** 消息加载后若内容不足以填满容器，主动加载历史 */
-		__autoFillHistory() {
-			if (this.isTopicRoute) return;
-			const el = this.$refs.scrollContainer;
-			if (el && el.scrollHeight <= el.clientHeight) {
-				this.__loadMoreHistory();
-			}
-		},
-
 		async __loadMoreHistory() {
-			if (!this.chatStore || this.__loadingHistory) return;
-			this.__loadingHistory = true;
-			try {
-				// 优先加载当前 session 内的更早消息
-				if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
-					const el = this.$refs.scrollContainer;
-					const prevHeight = el?.scrollHeight ?? 0;
-					const loaded = await this.chatStore.loadOlderMessages();
-					if (loaded && el) {
-						this.$nextTick(() => {
-							const newHeight = el.scrollHeight;
-							el.scrollTop += (newHeight - prevHeight);
-						});
-					}
-					return;
-				}
-
-				if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
-					if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
-						this.showNoMoreHint = true;
-					}
-					return;
-				}
+			if (!this.chatStore) return;
+			// 优先加载当前 session 内的更早消息
+			if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
 				const el = this.$refs.scrollContainer;
 				const prevHeight = el?.scrollHeight ?? 0;
-				const loaded = await this.chatStore.loadNextHistorySession();
+				const loaded = await this.chatStore.loadOlderMessages();
 				if (loaded && el) {
 					this.$nextTick(() => {
 						const newHeight = el.scrollHeight;
 						el.scrollTop += (newHeight - prevHeight);
 					});
 				}
+				return;
+			}
+
+			if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
 				if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
 					this.showNoMoreHint = true;
 				}
-			} finally {
-				this.__loadingHistory = false;
-				// 历史加载期间若有实时消息到达，其 scrollToBottom 被阻止了，
-				// 此处补偿：若用户本就在底部附近则滚到底部
-				this.$nextTick(() => this.scrollToBottom());
+				return;
+			}
+			const el = this.$refs.scrollContainer;
+			const prevHeight = el?.scrollHeight ?? 0;
+			const loaded = await this.chatStore.loadNextHistorySession();
+			if (loaded && el) {
+				this.$nextTick(() => {
+					const newHeight = el.scrollHeight;
+					el.scrollTop += (newHeight - prevHeight);
+				});
+			}
+			if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
+				this.showNoMoreHint = true;
 			}
 		},
 	},

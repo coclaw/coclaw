@@ -8,7 +8,7 @@ import {
 	unbindBotByUser,
 } from '../services/bot-binding.svc.js';
 import { deleteBindingCode, findBindingCode } from '../repos/bot-binding-code.repo.js';
-import { findBotById, findBotByTokenHash, findLatestBotByUserId, listBotsByUserId } from '../repos/bot.repo.js';
+import { findBotById, findBotByTokenHash, findLatestBotByUserId, listBotsByUserId, updateBotAlias } from '../repos/bot.repo.js';
 import {
 	cancelBindingWait,
 	markBindingBound,
@@ -90,6 +90,7 @@ export async function listBotsHandler(req, res, next, deps = {}) {
 					lastSeenAt: bot.lastSeenAt,
 					createdAt: bot.createdAt,
 					updatedAt: bot.updatedAt,
+					alias: bot.alias ?? null,
 				};
 			}),
 		});
@@ -518,7 +519,44 @@ export async function cancelBindingCodeHandler(req, res, next, {
 	}
 }
 
+export async function updateBotAliasHandler(req, res, next, deps = {}) {
+	if (!requireSession(req, res)) return;
+
+	const {
+		findBotByIdImpl = findBotById,
+		updateBotAliasImpl = updateBotAlias,
+	} = deps;
+
+	const botId = BigInt(req.params.id);
+	const { alias } = req.body;
+
+	// 校验 alias
+	if (alias !== null && alias !== undefined) {
+		if (typeof alias !== 'string') {
+			return res.status(400).json({ code: 'INVALID_ALIAS', message: 'alias must be a string or null' });
+		}
+		if (alias.trim().length === 0) {
+			return res.status(400).json({ code: 'INVALID_ALIAS', message: 'alias must not be blank' });
+		}
+		if (alias.length > 128) {
+			return res.status(400).json({ code: 'INVALID_ALIAS', message: 'alias must be 128 characters or less' });
+		}
+	}
+
+	try {
+		const bot = await findBotByIdImpl(botId);
+		if (!bot) return res.status(404).json({ code: 'NOT_FOUND', message: 'Bot not found' });
+		if (bot.userId !== BigInt(req.user.id)) return res.status(403).json({ code: 'FORBIDDEN', message: 'Access denied' });
+
+		await updateBotAliasImpl(botId, alias ?? null);
+		res.status(200).json({ ok: true });
+	} catch (err) {
+		next(err);
+	}
+}
+
 botRouter.get('/', listBotsHandler);
+botRouter.patch('/:id/alias', updateBotAliasHandler);
 botRouter.get('/self', getBotSelfHandler);
 botRouter.get('/status-stream', botStatusStreamHandler);
 botRouter.post('/binding-codes', createBindingCodeHandler);

@@ -11,14 +11,6 @@ import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
 /** 是否运行在 Capacitor 原生壳中 */
 export const isNative = Capacitor.isNativePlatform();
 
-// Web 端：桥接浏览器原生 online 事件为统一的 network:online
-if (!isNative && typeof window !== 'undefined') {
-	window.addEventListener('online', () => {
-		console.log('[network] browser online → dispatch network:online');
-		window.dispatchEvent(new CustomEvent('network:online'));
-	});
-}
-
 /**
  * 初始化 Capacitor 原生能力
  * @param {import('vue-router').Router} router - Vue Router 实例
@@ -55,13 +47,6 @@ export async function initCapacitorApp(router) {
 		console.warn('[capacitor] appStateChange init failed:', e);
 	}
 
-	try {
-		setupDeepLink(router);
-	}
-	catch (e) {
-		console.warn('[capacitor] deepLink init failed:', e);
-	}
-
 	// 所有初始化完成后隐藏启动屏（配合 SplashScreen.launchAutoHide: false）
 	try {
 		const { SplashScreen } = await import('@capacitor/splash-screen');
@@ -70,13 +55,6 @@ export async function initCapacitorApp(router) {
 	}
 	catch (e) {
 		console.warn('[capacitor] SplashScreen.hide failed:', e);
-	}
-
-	try {
-		setupNetworkListener();
-	}
-	catch (e) {
-		console.warn('[capacitor] Network init failed:', e);
 	}
 
 	// KeepAlive 是 Android 自定义原生插件，iOS 无对应实现
@@ -158,47 +136,11 @@ function setupAppStateChange() {
 		App.addListener('appStateChange', ({ isActive }) => {
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
 			if (isActive) {
-				// 通知各模块进行前台恢复（BotConnection/SSE/Polling/ChatPage）
+				// 通知 BotConnection 进行前台恢复（分级：即时重连/探测/假定死亡）
 				window.dispatchEvent(new CustomEvent('app:foreground'));
-			} else {
-				// 通知各模块进入后台（可用于保存状态、记录时间戳等）
-				window.dispatchEvent(new CustomEvent('app:background'));
 			}
 		});
 		console.log('[capacitor] appStateChange listener registered');
-	});
-}
-
-function setupNetworkListener() {
-	import('@capacitor/network').then(({ Network }) => {
-		Network.addListener('networkStatusChange', ({ connected }) => {
-			console.log('[capacitor] networkStatusChange: connected=%s', connected);
-			if (connected) {
-				window.dispatchEvent(new CustomEvent('network:online'));
-			}
-		});
-		console.log('[capacitor] Network listener registered');
-	}).catch((e) => console.warn('[capacitor] Network setup failed:', e));
-}
-
-function setupDeepLink(router) {
-	import('@capacitor/app').then(({ App }) => {
-		App.addListener('appUrlOpen', ({ url }) => {
-			if (!url) return;
-			try {
-				const parsed = new URL(url);
-				// coclaw://chat/123 → host="chat", pathname="/123" → routePath="/chat/123"
-				const routePath = '/' + [parsed.host, parsed.pathname].filter(Boolean).join('').replace(/^\/+/, '');
-				if (routePath !== '/') {
-					console.log('[capacitor] deep-link → %s', routePath);
-					router.push(routePath);
-				}
-			}
-			catch (e) {
-				console.warn('[capacitor] invalid deep-link URL:', url, e);
-			}
-		});
-		console.log('[capacitor] deep-link listener registered');
 	});
 }
 

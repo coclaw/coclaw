@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bindBotHandler, botStatusStreamHandler, cancelBindingCodeHandler, createBindingCodeHandler, listBotsHandler, waitBindingCodeHandler } from './bot.route.js';
+import { bindBotHandler, botStatusStreamHandler, cancelBindingCodeHandler, createBindingCodeHandler, listBotsHandler, updateBotAliasHandler, waitBindingCodeHandler } from './bot.route.js';
 
 function createRes() {
 	const handlers = new Map();
@@ -393,4 +393,189 @@ test('cancelBindingCodeHandler: should return 204 when code not found', async ()
 	});
 
 	assert.equal(res.statusCode, 204);
+});
+
+// --- updateBotAliasHandler ---
+
+test('updateBotAliasHandler: should reject unauthenticated request', async () => {
+	const req = {
+		isAuthenticated: () => false,
+		user: null,
+		params: { id: '1' },
+		body: { alias: 'test' },
+	};
+	const res = createRes();
+
+	await updateBotAliasHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('updateBotAliasHandler: should return 404 when bot not found', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { id: '999' },
+		body: { alias: 'test' },
+	};
+	const res = createRes();
+
+	await updateBotAliasHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => null,
+		updateBotAliasImpl: async () => {},
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'NOT_FOUND');
+});
+
+test('updateBotAliasHandler: should return 403 when user is not bot owner', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { id: '1' },
+		body: { alias: 'test' },
+	};
+	const res = createRes();
+
+	await updateBotAliasHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 1n, userId: 999n }),
+		updateBotAliasImpl: async () => {},
+	});
+
+	assert.equal(res.statusCode, 403);
+	assert.equal(res.body.code, 'FORBIDDEN');
+});
+
+test('updateBotAliasHandler: should return 400 when alias is not a string', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { id: '1' },
+		body: { alias: 123 },
+	};
+	const res = createRes();
+
+	await updateBotAliasHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 1n, userId: 7n }),
+		updateBotAliasImpl: async () => {},
+	});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_ALIAS');
+});
+
+test('updateBotAliasHandler: should return 400 when alias is blank', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { id: '1' },
+		body: { alias: '   ' },
+	};
+	const res = createRes();
+
+	await updateBotAliasHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 1n, userId: 7n }),
+		updateBotAliasImpl: async () => {},
+	});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_ALIAS');
+	assert.match(res.body.message, /blank/);
+});
+
+test('updateBotAliasHandler: should return 400 when alias exceeds 128 characters', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { id: '1' },
+		body: { alias: 'a'.repeat(129) },
+	};
+	const res = createRes();
+
+	await updateBotAliasHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 1n, userId: 7n }),
+		updateBotAliasImpl: async () => {},
+	});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_ALIAS');
+	assert.match(res.body.message, /128/);
+});
+
+test('updateBotAliasHandler: should update alias and return ok', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { id: '1' },
+		body: { alias: '我的机器人' },
+	};
+	const res = createRes();
+	let updatedArgs = null;
+
+	await updateBotAliasHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 1n, userId: 7n }),
+		updateBotAliasImpl: async (id, alias) => { updatedArgs = { id, alias }; },
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.deepEqual(res.body, { ok: true });
+	assert.equal(updatedArgs.id, 1n);
+	assert.equal(updatedArgs.alias, '我的机器人');
+});
+
+test('updateBotAliasHandler: should clear alias when null is passed', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { id: '1' },
+		body: { alias: null },
+	};
+	const res = createRes();
+	let updatedArgs = null;
+
+	await updateBotAliasHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 1n, userId: 7n }),
+		updateBotAliasImpl: async (id, alias) => { updatedArgs = { id, alias }; },
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.deepEqual(res.body, { ok: true });
+	assert.equal(updatedArgs.alias, null);
+});
+
+test('listBotsHandler: should include alias field in response items', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+	};
+	const res = createRes();
+
+	await listBotsHandler(req, res, () => {}, {
+		listBotsByUserIdImpl: async () => ([
+			{
+				id: 1n,
+				name: 'bot-a',
+				alias: '备注名',
+				lastSeenAt: null,
+				createdAt: new Date('2026-01-01T00:00:00.000Z'),
+				updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+			},
+			{
+				id: 2n,
+				name: 'bot-b',
+				alias: null,
+				lastSeenAt: null,
+				createdAt: new Date('2026-01-01T00:00:00.000Z'),
+				updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+			},
+		]),
+		listOnlineBotIdsImpl: () => new Set(),
+		refreshBotNameImpl: async () => undefined,
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.items[0].alias, '备注名');
+	assert.equal(res.body.items[1].alias, null);
 });

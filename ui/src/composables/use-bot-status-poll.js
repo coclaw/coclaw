@@ -15,7 +15,6 @@ export function useBotStatusPoll(botsStore, opts = {}) {
 
 	function schedule() {
 		if (stopped) return;
-		pause(); // 确保只有一条活跃定时器链
 		timerId = setTimeout(async () => {
 			if (!sseConnected?.value) {
 				try {
@@ -38,7 +37,6 @@ export function useBotStatusPoll(botsStore, opts = {}) {
 
 	async function resume() {
 		if (stopped) return;
-		pause(); // 清除已有定时器，防止多事件源（visibility + foreground + network）产生并行轮询链
 		if (!sseConnected?.value) {
 			try {
 				await botsStore.loadBots();
@@ -59,26 +57,14 @@ export function useBotStatusPoll(botsStore, opts = {}) {
 		}
 	}
 
-	function onForeground() {
-		resume();
-	}
-
-	function onNetworkOnline() {
-		resume();
-	}
-
 	function stop() {
 		stopped = true;
 		pause();
 		document.removeEventListener('visibilitychange', onVisibilityChange);
-		window.removeEventListener('app:foreground', onForeground);
-		window.removeEventListener('network:online', onNetworkOnline);
 	}
 
 	// 启动
 	document.addEventListener('visibilitychange', onVisibilityChange);
-	window.addEventListener('app:foreground', onForeground);
-	window.addEventListener('network:online', onNetworkOnline);
 	schedule();
 
 	onBeforeUnmount(stop);

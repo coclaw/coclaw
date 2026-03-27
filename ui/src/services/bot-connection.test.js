@@ -575,7 +575,7 @@ describe('BotConnection – server push events', () => {
 	});
 });
 
-describe('BotConnection – heartbeat', () => {
+describe('BotConnection – heartbeat (two-layer: miss + pending suppression)', () => {
 	beforeEach(() => {
 		MockWebSocket.reset();
 		vi.useFakeTimers();
@@ -633,14 +633,71 @@ describe('BotConnection – heartbeat', () => {
 		expect(ws.closed).toBe(true);
 	});
 
-	test('pending RPC does not extend heartbeat tolerance', () => {
+	// --- pending 抑制 ---
+
+	test('with pending RPC, suppresses close beyond base miss limit', () => {
 		const { conn, ws } = makeConnected();
 		conn.request('slowMethod');
 		expect(conn.__pending.size).toBe(1);
-		// 即使有 pending RPC，2 次 miss 后仍断连
+		// 2 次 miss（基础上限）→ 有 pending，不关闭
 		vi.advanceTimersByTime(45_000 * 2 + 1);
+		expect(ws.closed).toBe(false);
+		expect(conn.__hbMissCount).toBe(2);
+		// 继续第 3 次 miss → 仍不关闭
+		vi.advanceTimersByTime(45_000);
+		expect(ws.closed).toBe(false);
+		expect(conn.__hbMissCount).toBe(3);
+	});
+
+	test('with pending RPC, closes after suppress limit (2+4=6 misses, ~270s)', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod');
+		// 6 × 45s = 270s → 抑制上限
+		vi.advanceTimersByTime(45_000 * 6 + 1);
 		expect(ws.closed).toBe(true);
 		expect(ws.closeCode).toBe(4000);
+	});
+
+	test('with pending RPC, does not close at 5 misses (just under suppress limit)', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod');
+		vi.advanceTimersByTime(45_000 * 5 + 1);
+		expect(ws.closed).toBe(false);
+		expect(conn.__hbMissCount).toBe(5);
+	});
+
+	test('message during suppression resets everything', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod');
+		// 进入抑制模式（miss=3，超过基础上限）
+		vi.advanceTimersByTime(45_000 * 3 + 1);
+		expect(conn.__hbMissCount).toBe(3);
+		expect(ws.closed).toBe(false);
+		// 收到消息 → 全部重置
+		ws.simulateMessage({ type: 'pong' });
+		expect(conn.__hbMissCount).toBe(0);
+		// 需重新积累 6 次 miss 才断连（pending 仍在）
+		vi.advanceTimersByTime(45_000 * 5 + 1);
+		expect(ws.closed).toBe(false);
+		vi.advanceTimersByTime(45_000);
+		expect(ws.closed).toBe(true);
+	});
+
+	test('pending cleared during suppression → closes at next miss', () => {
+		const { conn, ws } = makeConnected();
+		conn.request('slowMethod').catch(() => {}); // 忽略 reject（连接关闭时触发）
+		// 进入抑制模式
+		vi.advanceTimersByTime(45_000 * 3 + 1);
+		expect(ws.closed).toBe(false);
+		// 模拟 RPC 完成 → pending 清空
+		const reqMsg = JSON.parse(ws.sent[0]);
+		ws.simulateMessage({ type: 'res', id: reqMsg.id, ok: true, payload: {} });
+		// 收到消息会重置 missCount
+		expect(conn.__hbMissCount).toBe(0);
+		expect(conn.__pending.size).toBe(0);
+		// 无 pending → 2 次 miss 后断连
+		vi.advanceTimersByTime(45_000 * 2 + 1);
+		expect(ws.closed).toBe(true);
 	});
 
 	// --- 基础 ---
@@ -1608,93 +1665,5 @@ describe('BotConnection – foreground resume (app:foreground)', () => {
 		MockWebSocket.instances[1].simulateClose(1006);
 		mockWin.dispatchEvent(new Event('app:foreground'));
 		expect(MockWebSocket.instances.length).toBe(3);
-	});
-});
-
-describe('BotConnection – network:online', () => {
-	let savedDoc;
-	let savedWin;
-	let mockDoc;
-	let mockWin;
-
-	beforeEach(() => {
-		MockWebSocket.reset();
-		vi.useFakeTimers();
-		savedDoc = globalThis.document;
-		savedWin = globalThis.window;
-		mockDoc = {
-			visibilityState: 'visible',
-			__listeners: {},
-			addEventListener(evt, cb) {
-				if (!this.__listeners[evt]) this.__listeners[evt] = [];
-				this.__listeners[evt].push(cb);
-			},
-			removeEventListener(evt, cb) {
-				if (!this.__listeners[evt]) return;
-				this.__listeners[evt] = this.__listeners[evt].filter(fn => fn !== cb);
-			},
-		};
-		mockWin = {
-			__listeners: {},
-			addEventListener(evt, cb) {
-				if (!this.__listeners[evt]) this.__listeners[evt] = [];
-				this.__listeners[evt].push(cb);
-			},
-			removeEventListener(evt, cb) {
-				if (!this.__listeners[evt]) return;
-				this.__listeners[evt] = this.__listeners[evt].filter(fn => fn !== cb);
-			},
-			dispatchEvent(event) {
-				(this.__listeners[event.type] ?? []).forEach(cb => cb(event));
-			},
-		};
-		globalThis.document = mockDoc;
-		globalThis.window = mockWin;
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
-		globalThis.document = savedDoc;
-		globalThis.window = savedWin;
-	});
-
-	test('connect() 注册 network:online 监听器', () => {
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.connect();
-		expect(mockWin.__listeners['network:online']?.length).toBe(1);
-	});
-
-	test('disconnect() 注销 network:online 监听器', () => {
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.connect();
-		MockWebSocket.lastInstance.simulateOpen();
-		conn.disconnect();
-		expect((mockWin.__listeners['network:online'] ?? []).length).toBe(0);
-	});
-
-	test('disconnected 状态下收到 network:online → 即时重连', () => {
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.connect();
-		const ws = MockWebSocket.lastInstance;
-		ws.simulateOpen();
-		ws.simulateClose(1006);
-		expect(conn.state).toBe('disconnected');
-
-		mockWin.dispatchEvent(new Event('network:online'));
-
-		expect(MockWebSocket.instances.length).toBe(2);
-		expect(conn.state).toBe('connecting');
-	});
-
-	test('connected + 长时间静默 → forceReconnect', () => {
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.connect();
-		MockWebSocket.lastInstance.simulateOpen();
-
-		vi.advanceTimersByTime(50_000);
-
-		mockWin.dispatchEvent(new Event('network:online'));
-
-		expect(MockWebSocket.instances.length).toBe(2);
 	});
 });

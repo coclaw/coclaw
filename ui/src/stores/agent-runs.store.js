@@ -4,7 +4,6 @@
  * 生命周期独立于 ChatPage / chatStore，run 在页面切换后继续接收事件
  */
 import { defineStore } from 'pinia';
-import { toRaw } from 'vue';
 import { applyAgentEvent } from '../utils/agent-stream.js';
 
 /** post-acceptance 超时（30 分钟） */
@@ -255,36 +254,14 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		// --- per-connection 事件监听器管理 ---
 
 		/**
-		 * bot 移除时清理该 bot 的所有 runs 和监听器
-		 * @param {string} botId
-		 */
-		removeByBot(botId) {
-			// 强制 settle 该 bot 的所有活跃 runs
-			const runIds = Object.keys(this.runs).filter((id) => this.runs[id].botId === botId);
-			for (const runId of runIds) {
-				this.__cleanupRun(runId);
-			}
-			// 确保监听器也被清理（__cleanupRun 内的 __removeListenerIfIdle 应已处理，此为防御性清理）
-			if (this.__listeners?.[botId]) {
-				const { handler, conn } = this.__listeners[botId];
-				try { conn.off('event:agent', handler); } catch { /* conn 可能已销毁 */ }
-				delete this.__listeners[botId];
-			}
-		},
-
-		/**
 		 * 确保指定 botId 的 connection 上注册了事件路由
 		 * @param {string} botId
 		 * @param {object} conn
 		 */
 		__ensureListener(botId, conn) {
 			if (!this.__listeners) this.__listeners = {};
-			const existing = this.__listeners[botId];
-			if (existing) {
-				if (toRaw(existing.conn) === toRaw(conn)) return; // 同实例，无需重复
-				// conn 实例已替换，先移除旧 listener
-				try { existing.conn.off('event:agent', existing.handler); } catch { /* 旧 conn 可能已销毁 */ }
-			}
+			if (this.__listeners[botId]) return;
+
 			const handler = (payload) => this.__dispatch(payload);
 			conn.on('event:agent', handler);
 			this.__listeners[botId] = { handler, conn };

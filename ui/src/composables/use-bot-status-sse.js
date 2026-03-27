@@ -50,26 +50,6 @@ export function useBotStatusSse(botsStore) {
 		};
 	}
 
-	/** 强制重建 SSE 连接（前台恢复时调用） */
-	function restart() {
-		if (stopped) return;
-		console.debug('[SSE] restart (foreground resume)');
-		if (es) {
-			es.close();
-			es = null;
-		}
-		connected.value = false;
-		start();
-	}
-
-	function onForeground() {
-		restart();
-	}
-
-	function onNetworkOnline() {
-		restart();
-	}
-
 	function stop() {
 		stopped = true;
 		if (es) {
@@ -77,13 +57,9 @@ export function useBotStatusSse(botsStore) {
 			es = null;
 		}
 		connected.value = false;
-		window.removeEventListener('app:foreground', onForeground);
-		window.removeEventListener('network:online', onNetworkOnline);
 	}
 
 	start();
-	window.addEventListener('app:foreground', onForeground);
-	window.addEventListener('network:online', onNetworkOnline);
 	onBeforeUnmount(stop);
 
 	return { connected, stop };
