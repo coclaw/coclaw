@@ -2,9 +2,7 @@ import {
 	ipcMain, dialog, clipboard, shell, nativeImage, session,
 	Notification, desktopCapturer, systemPreferences, app,
 } from 'electron';
-import Store from 'electron-store';
-
-const store = new Store();
+import { store } from './store.js';
 
 /**
  * 注册所有 IPC 处理器（仅调用一次）

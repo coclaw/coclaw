@@ -1,11 +1,10 @@
 import { Tray, Menu, nativeImage, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Store from 'electron-store';
 import { getAppTitle, t } from './locale.js';
+import { store } from './store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const store = new Store();
 
 let tray = null;
 let flashTimer = null;

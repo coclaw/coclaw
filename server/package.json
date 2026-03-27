@@ -1,6 +1,6 @@
 {
 	"name": "@coclaw/server",
-	"version": "0.5.3",
+	"version": "0.5.1",
 	"private": true,
 	"description": "CoClaw backend service",
 	"type": "module",

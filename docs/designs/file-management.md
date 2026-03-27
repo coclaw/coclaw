@@ -85,9 +85,7 @@ const resolved = path.resolve(workspaceDir, userPath);
 if (!resolved.startsWith(workspaceDir + path.sep) && resolved !== workspaceDir) {
     // 路径穿越，拒绝
 }
-// 额外校验：
-// 1. fs.lstat 检测符号链接，拒绝指向 workspace 外的 symlink
-// 2. 仅允许普通文件（isFile）和目录（isDirectory），拒绝 FIFO、设备文件等特殊类型
+// 额外：fs.lstat 检测符号链接，拒绝指向 workspace 外的 symlink
 ```
 
 ---
@@ -329,9 +327,8 @@ rpc DataChannel onmessage
 { type: "res", id: "r1", ok: true,
   payload: {
     files: [
-      { name: "main.js", type: "file",    size: 2048, mtime: 1711234567000 },
-      { name: "link.js", type: "symlink", size: 0,    mtime: 1711234500000 },
-      { name: "utils",   type: "dir",     size: 0,    mtime: 1711234000000 }
+      { name: "main.js", type: "file", size: 2048, mtime: 1711234567000 },
+      { name: "utils",   type: "dir",  size: 0,    mtime: 1711234000000 }
     ]
   }
 }
@@ -504,7 +501,7 @@ dc.onclose = () => {
 };
 ```
 
-> 写入先到临时文件（`<target>.tmp.<transferId>`），完成后 rename，避免半写文件。临时文件与目标文件在同一目录下，确保 rename 不跨挂载点（避免 EXDEV）。
+> 写入先到临时文件（`<target>.tmp.<transferId>`），完成后 rename，避免半写文件。
 
 ### 6.4 临时文件清理
 

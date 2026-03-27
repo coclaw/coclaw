@@ -166,12 +166,6 @@ export default {
 			}
 			return '';
 		},
-		/** 仅跟踪 bot 增删/上线状态变化，避免 lastAliveAt 等高频更新触发 watcher */
-		botListKey() {
-			return (this.botsStore?.items ?? [])
-				.map((b) => `${b.id}:${b.online}`)
-				.join(',');
-		},
 		botActionItems() {
 			// Capacitor 无侧边栏模式：header 已有"+"按钮，仅用户无 bot 时显示引导项
 			if (this.showCapHeader) {
@@ -258,10 +252,10 @@ export default {
 		this.loadAllData();
 	},
 	watch: {
-		/** bot 列表变化（增删/上线状态）时刷新 agents 和 topics */
-		botListKey: {
-			handler() {
-				this.agentsStore?.loadAllAgents();
+		'botsStore.items': {
+			deep: true,
+			async handler() {
+				await this.agentsStore?.loadAllAgents();
 				this.topicsStore.loadAllTopics();
 			},
 		},
