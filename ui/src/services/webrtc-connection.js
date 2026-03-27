@@ -8,7 +8,6 @@
  * - ICE restart 也失败 → 关闭 PeerConnection，全新重建
  */
 import { httpClient } from './http.js';
-import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 
 const MAX_ICE_RESTARTS = 2;
 const MAX_FULL_REBUILDS = 3;
@@ -55,8 +54,7 @@ export function initRtcAndSelectTransport(botId, botConn) {
 	function syncTransportMode(mode) {
 		botConn.setTransportMode(mode);
 		getBotsStore().then((store) => {
-			const bot = store.byId[botId];
-			if (bot) bot.transportMode = mode;
+			store.transportModes = { ...store.transportModes, [botId]: mode };
 		}).catch(() => {});
 	}
 
@@ -89,11 +87,9 @@ export function initRtcAndSelectTransport(botId, botConn) {
 		// 状态变更 → 同步到 botsStore + 不可恢复时降级
 		rtc.onStateChange = () => {
 			getBotsStore().then((store) => {
-				const bot = store.byId[botId];
-				if (!bot) return;
-				bot.rtcState = rtc.state;
+				store.rtcStates = { ...store.rtcStates, [botId]: rtc.state };
 				if (rtc.transportInfo) {
-					bot.rtcTransportInfo = rtc.transportInfo;
+					store.rtcTransportInfo = { ...store.rtcTransportInfo, [botId]: rtc.transportInfo };
 				}
 			}).catch(() => {});
 
@@ -170,10 +166,6 @@ export class WebRtcConnection {
 		/** @type {object[]} answer 到达前暂存的远端 ICE candidates */
 		this.__pendingCandidates = [];
 		this.__remoteDescSet = false;
-		/** 分片 msgId 自增计数器 */
-		this.__nextMsgId = 1;
-		/** @type {{ feed: Function, reset: Function }|null} */
-		this.__reassembler = null;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -208,7 +200,7 @@ export class WebRtcConnection {
 	}
 
 	/**
-	 * 通过 DataChannel 发送 JSON（带流控 + 自动分片）
+	 * 通过 DataChannel 发送 JSON（带流控）
 	 * @param {object} payload
 	 * @returns {Promise<void>} resolve 表示数据已提交到 DC 发送缓冲区
 	 */
@@ -217,78 +209,20 @@ export class WebRtcConnection {
 		if (!dc || dc.readyState !== 'open') {
 			return Promise.reject(new Error('DataChannel not open'));
 		}
-		const jsonStr = JSON.stringify(payload);
-
-		// pre-check：是否需要分片
-		const maxSize = this.__pc?.sctp?.maxMessageSize ?? 65536;
-		const chunks = buildChunks(jsonStr, maxSize, () => this.__nextMsgId++);
-
-		if (!chunks) {
-			return this.__enqueueSend(jsonStr);
-		}
-
-		console.debug('[WebRTC] send: chunking %d bytes → %d chunks (maxMsgSize=%d)', new TextEncoder().encode(jsonStr).byteLength, chunks.length, maxSize);
-		return this.__enqueueSendMulti(chunks);
-	}
-
-	/**
-	 * @private 入队单条消息（string 或 ArrayBuffer）
-	 * @param {string|ArrayBuffer} data
-	 * @returns {Promise<void>}
-	 */
-	__enqueueSend(data) {
-		const dc = this.__rpcChannel;
+		const data = JSON.stringify(payload);
 		// 快路径：队列为空且缓冲区未满 → 直接发送
 		if (this.__sendQueue.length === 0 && dc.bufferedAmount < DC_HIGH_WATER_MARK) {
 			try {
 				dc.send(data);
 				return Promise.resolve();
-			} catch (err) {
-				// try-catch 安全网：DC 仍存活则尝试分片（未来扩大 maxMessageSize 时兜底）
-				if (typeof data === 'string' && dc.readyState === 'open') {
-					console.warn('[WebRTC] dc.send threw but DC still open, retrying with chunking:', err?.message);
-					const chunks = buildChunks(data, Math.floor((this.__pc?.sctp?.maxMessageSize ?? 65536) / 2), () => this.__nextMsgId++);
-					if (chunks) return this.__enqueueSendMulti(chunks);
-				}
+			}
+			catch (err) {
 				return Promise.reject(err);
 			}
 		}
+		// 慢路径：排队等待缓冲区释放
 		return new Promise((resolve, reject) => {
 			this.__sendQueue.push({ data, resolve, reject });
-		});
-	}
-
-	/**
-	 * @private 将多个 chunk 同步入队（保证连续性）
-	 * @param {ArrayBuffer[]} chunks
-	 * @returns {Promise<void>}
-	 */
-	__enqueueSendMulti(chunks) {
-		const dc = this.__rpcChannel;
-		// 尝试快路径发送尽可能多的 chunk
-		let i = 0;
-		if (this.__sendQueue.length === 0) {
-			while (i < chunks.length && dc.bufferedAmount < DC_HIGH_WATER_MARK) {
-				try {
-					dc.send(chunks[i]);
-					i++;
-				} catch (err) {
-					return Promise.reject(err);
-				}
-			}
-		}
-		if (i >= chunks.length) return Promise.resolve();
-
-		// 剩余 chunk 入队，最后一个 chunk 的 promise 作为整体 resolve
-		return new Promise((resolve, reject) => {
-			for (; i < chunks.length; i++) {
-				const isLast = i === chunks.length - 1;
-				this.__sendQueue.push({
-					data: chunks[i],
-					resolve: isLast ? resolve : () => {},
-					reject,
-				});
-			}
 		});
 	}
 
@@ -306,20 +240,6 @@ export class WebRtcConnection {
 	createDataChannel(label, opts) {
 		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return null;
 		return this.__pc.createDataChannel(label, opts);
-	}
-
-	/**
-	 * 前台恢复时主动 ICE restart（仅在 PC 处于 disconnected 时触发）
-	 * ICE restart 是安全的：旧连接保持可用直到新路径建立
-	 * @returns {boolean} 是否触发了 restart
-	 */
-	tryIceRestart() {
-		const pc = this.__pc;
-		if (!pc || pc.connectionState !== 'disconnected') return false;
-		this.__log('info', 'proactive ICE restart on foreground resume');
-		this.__iceRestartCount++;
-		this.__doIceRestart();
-		return true;
 	}
 
 	// --- 内部：建连 ---
@@ -414,20 +334,9 @@ export class WebRtcConnection {
 	/** @private */
 	__setupDataChannelEvents(dc) {
 		dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
-		dc.binaryType = 'arraybuffer'; // 确保二进制消息以 ArrayBuffer 形式到达
 		dc.addEventListener('bufferedamountlow', () => {
 			this.__drainSendQueue();
 		});
-
-		this.__reassembler = createReassembler((jsonStr) => {
-			try {
-				const payload = JSON.parse(jsonStr);
-				this.__botConn.__onRtcMessage(payload);
-			} catch (err) {
-				console.warn('[rtc] DataChannel 消息解析失败:', err);
-			}
-		});
-
 		dc.onopen = () => {
 			this.__log('info', 'DataChannel "rpc" opened');
 			this.__botConn.sendRaw({ type: 'rtc:ready' });
@@ -435,7 +344,6 @@ export class WebRtcConnection {
 		};
 		dc.onclose = () => {
 			this.__log('info', 'DataChannel "rpc" closed');
-			this.__reassembler?.reset();
 			if (this.__rpcChannel === dc) {
 				this.__rpcChannel = null;
 				this.__rejectSendQueue('DataChannel closed');
@@ -443,9 +351,11 @@ export class WebRtcConnection {
 		};
 		dc.onmessage = (event) => {
 			try {
-				this.__reassembler?.feed(event.data);
-			} catch (err) {
-				console.warn('[rtc] DataChannel 消息错误:', err);
+				const payload = JSON.parse(event.data);
+				this.__botConn.__onRtcMessage(payload);
+			}
+			catch (err) {
+				console.warn('[rtc] DataChannel 消息解析失败:', err);
 			}
 		};
 	}
@@ -549,7 +459,7 @@ export class WebRtcConnection {
 			await pc.setLocalDescription(offer);
 			this.__botConn.sendRaw({
 				type: 'rtc:offer',
-				payload: { sdp: offer.sdp, iceRestart: true },
+				payload: { sdp: offer.sdp },
 			});
 			this.__log('info', 'ICE restart offer sent');
 		}

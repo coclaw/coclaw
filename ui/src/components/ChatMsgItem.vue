@@ -173,6 +173,7 @@ export default {
 			copied: false,
 			streamingElapsed: 0,
 			__elapsedTimer: null,
+			__imgUrls: [], // 缓存 Blob URL 列表，与 item.images 索引对应
 		};
 	},
 	computed: {
@@ -209,6 +210,9 @@ export default {
 		},
 	},
 	watch: {
+		'item.images': {
+			handler() { this.__buildImgUrls(); },
+		},
 		'item.isStreaming': {
 			immediate: true,
 			handler(val) {
@@ -224,8 +228,12 @@ export default {
 			},
 		},
 	},
+	mounted() {
+		this.__buildImgUrls();
+	},
 	beforeUnmount() {
 		this.__stopElapsedTimer();
+		this.__imgUrls.forEach((url) => { if (url) URL.revokeObjectURL(url); });
 	},
 	methods: {
 		__stopElapsedTimer() {
@@ -234,8 +242,29 @@ export default {
 				this.__elapsedTimer = null;
 			}
 		},
+		__buildImgUrls() {
+			this.__imgUrls.forEach((url) => { if (url) URL.revokeObjectURL(url); });
+			if (!this.item?.images?.length) {
+				this.__imgUrls = [];
+				return;
+			}
+			this.__imgUrls = this.item.images.map((img) => {
+				if (!img?.data || !img?.mimeType) return '';
+				try {
+					const bytes = atob(img.data);
+					const arr = new Uint8Array(bytes.length);
+					for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+					return URL.createObjectURL(new Blob([arr], { type: img.mimeType }));
+				} catch {
+					return '';
+				}
+			});
+		},
 		imgSrc(img) {
-			return `data:${img.mimeType};base64,${img.data}`;
+			const idx = this.item?.images?.indexOf(img);
+			if (idx >= 0 && this.__imgUrls[idx]) return this.__imgUrls[idx];
+			// fallback：step 中的图片不在 item.images 里，仍用 base64
+			return img?.data ? `data:${img.mimeType};base64,${img.data}` : '';
 		},
 		imgFilename(img, idx) {
 			const ext = img.mimeType?.split('/')[1] || 'png';
