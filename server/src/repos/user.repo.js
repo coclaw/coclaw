@@ -34,6 +34,13 @@ export async function findUserProfileByIdWithOptions(id, options = {}) {
 	});
 }
 
+export async function touchUserLogout(userId, db = prisma) {
+	await db.user.update({
+		where: { id: userId },
+		data: { lastLogoutAt: new Date() },
+	});
+}
+
 export async function updateUserProfileById(id, input) {
 	const data = {};
 	if (Object.hasOwn(input, 'name')) {

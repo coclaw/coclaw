@@ -45,11 +45,13 @@ test('countUsersActiveSince: 传递 lastLoginAt gte 条件', async () => {
 });
 
 test('topActiveUsers: 返回结果并将 BigInt id 转为 string', async () => {
+	const loginAt = new Date('2026-03-20T00:00:00Z');
+	const logoutAt = new Date('2026-03-20T01:00:00Z');
 	const db = {
 		user: {
 			findMany: async () => [
-				{ id: 123456789n, name: 'Alice', lastLoginAt: new Date('2026-03-20') },
-				{ id: 987654321n, name: 'Bob', lastLoginAt: new Date('2026-03-19') },
+				{ id: 123456789n, name: 'Alice', lastLoginAt: loginAt, lastLogoutAt: logoutAt },
+				{ id: 987654321n, name: 'Bob', lastLoginAt: new Date('2026-03-19'), lastLogoutAt: null },
 			],
 		},
 	};
@@ -59,7 +61,11 @@ test('topActiveUsers: 返回结果并将 BigInt id 转为 string', async () => {
 	assert.equal(result.length, 2);
 	assert.equal(result[0].id, '123456789');
 	assert.equal(typeof result[0].id, 'string');
+	assert.equal(result[0].lastLogoutAt, logoutAt);
+	assert.equal(result[0].onlineDurationSec, 3600);
 	assert.equal(result[1].name, 'Bob');
+	assert.equal(result[1].lastLogoutAt, null);
+	assert.equal(result[1].onlineDurationSec, null);
 });
 
 test('topActiveUsers: 传递正确的查询参数', async () => {
@@ -76,11 +82,30 @@ test('topActiveUsers: 传递正确的查询参数', async () => {
 		where: { lastLoginAt: { not: null } },
 		orderBy: { lastLoginAt: 'desc' },
 		take: 3,
-		select: { id: true, name: true, lastLoginAt: true, localAuth: { select: { loginName: true } } },
+		select: { id: true, name: true, lastLoginAt: true, lastLogoutAt: true, localAuth: { select: { loginName: true } } },
 	});
 });
 
 test('countBots: 调用 prisma.bot.count()', async () => {
 	const db = { bot: { count: async () => 7 } };
 	assert.equal(await countBots(db), 7);
+});
+
+test('topActiveUsers: lastLogoutAt < lastLoginAt 时 onlineDurationSec 为 null', async () => {
+	const db = {
+		user: {
+			findMany: async () => [
+				{
+					id: 111n, name: 'Charlie',
+					lastLoginAt: new Date('2026-03-20T10:00:00'),
+					lastLogoutAt: new Date('2026-03-20T09:00:00'), // 早于登录时间
+				},
+			],
+		},
+	};
+
+	const result = await topActiveUsers(5, db);
+
+	assert.equal(result[0].onlineDurationSec, null);
+	assert.deepEqual(result[0].lastLogoutAt, new Date('2026-03-20T09:00:00'));
 });

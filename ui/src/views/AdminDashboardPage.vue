@@ -49,17 +49,25 @@
 					<div class="rounded-xl bg-elevated p-4">
 						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.topActiveUsers') }}</h2>
 						<p v-if="!data.topActiveUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
-						<ul v-else class="space-y-2">
+						<ul v-else class="space-y-3">
 							<li
 								v-for="(user, idx) in data.topActiveUsers"
 								:key="user.id"
-								class="flex items-center justify-between text-sm"
+								class="text-sm"
 							>
-								<span>
-									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name || user.loginName || user.id }}</span>
-								</span>
-								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.lastLoginAt) }}</span>
+								<!-- 第一行：序号 + 用户名 + 登录时间 -->
+								<div class="flex items-center justify-between">
+									<span>
+										<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
+										<span>{{ user.name || user.loginName || user.id }}</span>
+									</span>
+									<span class="text-xs text-dimmed">{{ formatTimeAgo(user.lastLoginAt) }}</span>
+								</div>
+								<!-- 第二行：下线时间 + 在线时长 -->
+								<div class="mt-0.5 flex items-center justify-between pl-5 text-xs text-dimmed">
+									<span>{{ $t('adminDashboard.logoutAt') }}：{{ formatLogoutTime(user) }}</span>
+									<span>{{ formatDuration(user.onlineDurationSec) }}</span>
+								</div>
 							</li>
 						</ul>
 					</div>
@@ -107,28 +115,7 @@ export default {
 		};
 	},
 	async mounted() {
-		this.__lastResumeAt = 0;
-		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-			this.loadData();
-		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
-		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
-
 		await this.loadData();
-	},
-	beforeUnmount() {
-		if (this.__onResume) {
-			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 	},
 	methods: {
 		async loadData() {
@@ -151,6 +138,25 @@ export default {
 			if (diff < 3600) return this.$t('dashboard.minutesAgo', { n: Math.floor(diff / 60) });
 			if (diff < 86400) return this.$t('dashboard.hoursAgo', { n: Math.floor(diff / 3600) });
 			return this.$t('dashboard.daysAgo', { n: Math.floor(diff / 86400) });
+		},
+		formatLogoutTime(user) {
+			if (!user.lastLogoutAt || new Date(user.lastLogoutAt) < new Date(user.lastLoginAt)) {
+				const sec = user.lastLoginAt
+					? Math.floor((Date.now() - new Date(user.lastLoginAt).getTime()) / 1000)
+					: 0;
+				return this.$t('adminDashboard.onlineActive', { duration: this.formatDuration(sec) });
+			}
+			return this.formatTimeAgo(user.lastLogoutAt);
+		},
+		formatDuration(sec) {
+			if (sec === null || sec === undefined) return '—';
+			if (sec < 60) return `${sec}${this.$t('adminDashboard.durationSec')}`;
+			if (sec < 3600) return `${Math.floor(sec / 60)}${this.$t('adminDashboard.durationMin')}`;
+			const h = Math.floor(sec / 3600);
+			const m = Math.floor((sec % 3600) / 60);
+			return m > 0
+				? `${h}${this.$t('adminDashboard.durationHour')}${m}${this.$t('adminDashboard.durationMin')}`
+				: `${h}${this.$t('adminDashboard.durationHour')}`;
 		},
 	},
 };

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import passport from 'passport';
 import { createLocalAccount } from '../services/local-auth.svc.js';
+import { touchUserLogout } from '../repos/user.repo.js';
 import { toAuthResponseUser } from '../services/user-view.svc.js';
 
 export const authRouter = Router();
@@ -50,11 +51,22 @@ export function getCurrentSessionHandler(req, res) {
 	});
 }
 
-export function logoutHandler(req, res, next) {
-	req.logout((err) => {
+export function logoutHandler(req, res, next, deps = {}) {
+	const { touchLogout = touchUserLogout } = deps;
+	const userId = req.user?.id ?? null;
+	req.logout(async (err) => {
 		if (err) {
 			next(err);
 			return;
+		}
+
+		// 写入 lastLogoutAt
+		if (userId) {
+			try {
+				await touchLogout(userId);
+			} catch {
+				// 写入失败不影响退出流程
+			}
 		}
 
 		req.session.destroy((destroyErr) => {

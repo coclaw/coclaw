@@ -105,7 +105,7 @@ function createBotTask(id) {
 function processAssistant(task, msg) {
 	const content = msg.content;
 	const blocks = normalizeBlocks(content);
-	const isFinal = !!msg.stopReason && msg.stopReason !== 'toolUse';
+	const isFinal = msg.stopReason === 'stop' || msg.stopReason === 'end_turn';
 
 	for (const block of blocks) {
 		if (block.type === 'thinking' && block.thinking) {
