@@ -40,7 +40,7 @@ export async function getAdminDashboard(deps = {}) {
 		users: { total, todayNew, todayActive },
 		topActiveUsers: topActive.map(u => ({
 			...u,
-			onlineBotCount: u.onlineBotIds.filter(id => onlineIds.has(BigInt(id))).length,
+			onlineBotCount: u.onlineBotIds.filter(id => onlineIds.has(String(id))).length,
 		})),
 		latestRegisteredUsers: latestRegistered,
 		bots: {
@@ -49,7 +49,7 @@ export async function getAdminDashboard(deps = {}) {
 			online: getOnlineBotCount(),
 			list: botList.map(b => ({
 				...b,
-				isOnline: onlineIds.has(BigInt(b.id)),
+				isOnline: onlineIds.has(String(b.id)),
 			})),
 		},
 		version: {

@@ -23,7 +23,7 @@ function mockRepo(overrides = {}) {
 }
 
 test('getAdminDashboard: 返回正确的汇总结构', async () => {
-	const onlineIds = new Set([10n]);
+	const onlineIds = new Set(['10']);
 	const result = await getAdminDashboard({
 		repo: mockRepo(),
 		getOnlineBotIds: () => onlineIds,
