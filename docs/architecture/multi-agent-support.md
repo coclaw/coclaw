@@ -308,7 +308,7 @@ agentItems() {
 - 表单字段：名称、emoji、workspace 路径等
 - 提交后调用 `agents.create` RPC
 
-界面设计充分借鉴 `ref-projects/qidianchat` 参考项目中的 bot 信息展示对话框。
+界面设计充分借鉴 `ref-projects/chat` 参考项目中的 bot 信息展示对话框。
 
 > **TODO**：编辑已有 Agent 的信息（调用 `agents.update` RPC）。入口待定，可考虑在 Claw 卡片的 agent 列表中增加编辑按钮。
 
@@ -423,7 +423,7 @@ ensure 内聚在 `nativeui.sessions.listAll` 的 handler 中，UI 无需感知 e
 
 ### Phase 4：创建 Agent 功能（待实施）
 
-1. 创建 Agent 对话框组件（借鉴 `ref-projects/qidianchat` 的 bot 信息对话框）
+1. 创建 Agent 对话框组件（借鉴 `ref-projects/chat` 的 bot 信息对话框）
 2. 对接 `agents.create` RPC
 
 ### TODO

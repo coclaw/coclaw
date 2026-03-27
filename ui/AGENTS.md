@@ -39,7 +39,6 @@
 - 组件风格：采用 Options API 风格，而非 Composition API 风格，不得使用 `<script setup>` 语法糖
 - 允许在 `setup()` 钩子中调用 `UseVue` 等组合式函数
 - 对于适合以函数式方式触发的对话框（如全局入口、跨组件打开），优先采用函数式打开（例如基于 `useOverlay`），避免仅用路由跳转或页面内状态耦合实现
-- 禁止对大对象使用 Vue deep watch 来监听少量字段变化——应先用 computed 将关心的字段收窄为简单值，再 watch 该 computed
 
 ## 操作反馈（Notify）
 
@@ -49,9 +48,14 @@
 
 ## 端到端测试 (E2E Testing)
 
-- Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例
+- Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例（遵循根 CLAUDE.md「Bug 修复流程」）
 - 当用户明确要求时才执行 E2E 测试
-- 执行规范、编写约束、踩坑记录等详见 `e2e-test` skill
+- 后端测试账号（本地认证）：loginName=test；password=123456
+- 在 `ui` workspace 内执行 Playwright E2E 时，`webServer.command` 的前端启动命令应使用 `pnpm dev ...`，不要写 `pnpm --filter @coclaw/ui dev ...`，避免 webServer 启动异常或挂起
+- `Vitest` 配置必须排除 `e2e/**`（例如 `test.exclude`），避免 `pnpm test` / `pnpm coverage` 误扫 Playwright 用例导致流程异常等待
+- 公共 helper（登录、导航、安全输入等）统一放在 `e2e/helpers.js`，测试文件应优先从该模块导入
+- **禁止对 Nuxt UI 复合输入组件（`UTextarea` 等）使用 Playwright 的 `fill()`**，必须使用 `e2e/helpers.js` 中的 `typeText()` 或 `pressSequentially()`。`fill()` 通过 CDP 直接设置 value，会绕过 Vue 响应式链导致 v-model 不更新（详见 `docs/e2e-troubleshooting.md` 卡点 3）
+- 踩坑记录见 `docs/e2e-troubleshooting.md`
 
 ## 移动端子页面适配
 
@@ -64,9 +68,9 @@
 
 ## 参考项目
 
-本前端充分参考借鉴一个项目（用 qidianchat 或奇点慧语指代），尤其是 layout，及可对照的各组件的组织和交互方式上。实际上这两个项目高度相似，qidianchat 是与系统预置或用户自己创建的的机器人对话，而这个项目是与 OpenClaw agent 对话。
+本前端充分参考借鉴一个旧项目（chat），尤其是 layout，及可对照的各组件的组织和交互方式上。实际上这两个项目高度相似，chat 项目是与系统预置或用户自己创建的的机器人对话，而这个项目是与 OpenClaw bot 对话。
 
-qidianchat 信息源
-- qidianchat 代码组织在仓库根下的 `ref-projects/qidianchat`，需要时也阅读其代码
+chat 项目信息源
+- chat 项目代码组织在仓库根下的 `ref-projects/chat`，需要时也阅读其代码
 - 此 workspace 的 docs 下也存储了几个文档，如：`layout-reference.md`、`ui-refs-from-quasar-project.md`
-- 需要时还可以爬取 qidianchat 项目（如用 playwright 爬取）。app 入口地址为 `https://127.0.0.1:8443/`。其 SSL 证书是自签名；用户名：test；密码：123456
+- 需要时还可以爬取 chat 项目（如用 playwright 爬取）。app 入口地址为 `https://127.0.0.1:8443/`。其 SSL 证书是自签名；用户名：test；密码：123456

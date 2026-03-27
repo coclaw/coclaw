@@ -21,6 +21,6 @@ test('local account auth flow should work with new layout', async ({ page }) => 
 
 	// 验证已登出：访问认证页面应被拦截到 /login
 	await page.goto('/home');
-	await expect(page).toHaveURL(/\/login(\?|$)/);
+	await expect(page).toHaveURL(/\/login$/);
 	await expect(page.getByTestId('login-page')).toBeVisible();
 });

@@ -31,7 +31,6 @@ vi.mock('../services/webrtc-connection.js', () => ({
 }));
 
 import { listBots } from '../services/bots.api.js';
-import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useBotsStore, __resetAwaitingConnIds } from './bots.store.js';
 import { useSessionsStore } from './sessions.store.js';
@@ -47,47 +46,30 @@ beforeEach(() => {
 });
 
 describe('setBots', () => {
-	test('populates byId from array', () => {
+	test('sets items to provided array', () => {
 		const store = useBotsStore();
-		store.setBots([{ id: '1', name: 'Bot A' }, { id: '2', name: 'Bot B' }]);
-		expect(Object.keys(store.byId)).toEqual(['1', '2']);
-		expect(store.byId['1'].name).toBe('Bot A');
-		expect(store.byId['2'].name).toBe('Bot B');
+		const bots = [{ id: '1', name: 'Bot A' }, { id: '2', name: 'Bot B' }];
+		store.setBots(bots);
+		expect(store.items).toEqual(bots);
 	});
 
-	test('items getter returns array of all bots', () => {
-		const store = useBotsStore();
-		store.setBots([{ id: '1', name: 'Bot A' }, { id: '2', name: 'Bot B' }]);
-		expect(store.items).toHaveLength(2);
-		expect(store.items.map(b => b.id)).toEqual(['1', '2']);
-	});
-
-	test('guards against non-array input by setting byId to empty', () => {
+	test('guards against non-array input by setting items to []', () => {
 		const store = useBotsStore();
 		store.setBots('not-an-array');
 		expect(store.items).toEqual([]);
 	});
 
-	test('guards against null input by setting byId to empty', () => {
+	test('guards against null input by setting items to []', () => {
 		const store = useBotsStore();
 		store.setBots(null);
 		expect(store.items).toEqual([]);
-	});
-
-	test('preserves runtime state for existing bots', () => {
-		const store = useBotsStore();
-		store.byId['1'] = { id: '1', name: 'OldName', online: true, connState: 'connected', initialized: true, transportMode: 'rtc', pluginVersionOk: null, pluginInfo: null, rtcState: null, rtcTransportInfo: null, lastAliveAt: 0, disconnectedAt: 0, lastSeenAt: null, createdAt: null, updatedAt: null };
-		store.setBots([{ id: '1', name: 'NewName' }]);
-		expect(store.byId['1'].name).toBe('NewName');
-		expect(store.byId['1'].connState).toBe('connected');
-		expect(store.byId['1'].initialized).toBe(true);
 	});
 });
 
 describe('addOrUpdateBot', () => {
 	test('inserts new bot with normalized fields and calls connect', () => {
 		const store = useBotsStore();
-		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn(), __onAlive: null };
+		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		const bot = {
 			id: 42,
@@ -99,40 +81,54 @@ describe('addOrUpdateBot', () => {
 		};
 		store.addOrUpdateBot(bot);
 
-		expect(store.byId['42']).toBeDefined();
-		expect(store.byId['42'].id).toBe('42');
-		expect(store.byId['42'].name).toBe('NewBot');
-		expect(store.byId['42'].online).toBe(true);
-		expect(store.byId['42'].connState).toBe('connecting'); // bridge syncs
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0]).toEqual({
+			id: '42',
+			name: 'NewBot',
+			online: true,
+			lastSeenAt: '2024-01-01',
+			createdAt: '2024-01-01',
+			updatedAt: '2024-01-02',
+		});
 		expect(mockManager.connect).toHaveBeenCalledOnce();
 		expect(mockManager.connect).toHaveBeenCalledWith('42');
 	});
 
 	test('normalizes missing optional fields to null and online to false', () => {
 		const store = useBotsStore();
-		const fakeConn = { state: 'disconnected', on: vi.fn(), __onAlive: null };
-		mockManager.get.mockReturnValue(fakeConn);
 		store.addOrUpdateBot({ id: '7' });
 
-		expect(store.byId['7'].name).toBeNull();
-		expect(store.byId['7'].online).toBe(false);
-		expect(store.byId['7'].lastSeenAt).toBeNull();
+		expect(store.items[0]).toEqual({
+			id: '7',
+			name: null,
+			online: false,
+			lastSeenAt: null,
+			createdAt: null,
+			updatedAt: null,
+		});
+	});
+
+	test('inserts new bot at the front of items', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', name: 'Existing' }]);
+		store.addOrUpdateBot({ id: '2', name: 'NewBot' });
+
+		expect(store.items[0].id).toBe('2');
+		expect(store.items[1].id).toBe('1');
 	});
 
 	test('updates existing bot in place and calls connect', () => {
 		const store = useBotsStore();
-		const fakeConn = { state: 'disconnected', on: vi.fn(), __onAlive: null };
-		mockManager.get.mockReturnValue(fakeConn);
 		store.setBots([{ id: '1', name: 'OldName', online: false }]);
 		store.addOrUpdateBot({ id: '1', name: 'NewName', online: true });
 
-		expect(Object.keys(store.byId)).toHaveLength(1);
-		expect(store.byId['1'].name).toBe('NewName');
-		expect(store.byId['1'].online).toBe(true);
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].name).toBe('NewName');
+		expect(store.items[0].online).toBe(true);
 		expect(mockManager.connect).toHaveBeenCalledWith('1');
 	});
 
-	test('watcher triggers agents/sessions/topics load when connection becomes ready', async () => {
+	test('registers __listenForReady so agents/sessions/topics load when connection becomes ready', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -147,16 +143,14 @@ describe('addOrUpdateBot', () => {
 			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
 			off: vi.fn(),
 			request: vi.fn().mockResolvedValue({}),
-			__onAlive: null,
-			disconnectedAt: 0,
-			lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.addOrUpdateBot({ id: '10', name: 'Fresh' });
+
 		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 
-		// 模拟连接就绪 → bridge 写入 connState → watcher 触发 __onBotConnected
+		// 模拟连接就绪
 		stateCallback('connected');
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('10');
@@ -174,17 +168,18 @@ describe('addOrUpdateBot', () => {
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), request: vi.fn().mockResolvedValue({}), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.addOrUpdateBot({ id: '11', name: 'AlreadyReady' });
 
-		// bridge syncs connState='connected' → watcher fires → __onBotConnected
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('11');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
 		});
+		// 注册持久 state 监听器（用于 WS 重连时重新触发传输选择）
+		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 	});
 
 	test('does nothing when bot id is falsy', () => {
@@ -203,13 +198,13 @@ describe('addOrUpdateBot', () => {
 });
 
 describe('removeBotById', () => {
-	test('removes bot from byId and calls disconnect', () => {
+	test('removes bot from items and calls disconnect', () => {
 		const store = useBotsStore();
 		store.setBots([{ id: '1', name: 'A' }, { id: '2', name: 'B' }]);
 		store.removeBotById('1');
 
-		expect(store.byId['1']).toBeUndefined();
-		expect(store.byId['2']).toBeDefined();
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].id).toBe('2');
 		expect(mockManager.disconnect).toHaveBeenCalledWith('1');
 	});
 
@@ -228,38 +223,14 @@ describe('removeBotById', () => {
 		expect(sessionsStore.items[0].sessionId).toBe('sb');
 	});
 
-	test('calls removeByBot on agentRuns store', () => {
-		const store = useBotsStore();
-		const agentRunsStore = useAgentRunsStore();
-		const spy = vi.spyOn(agentRunsStore, 'removeByBot');
-		store.setBots([{ id: '3', name: 'Bot' }]);
-
-		store.removeBotById('3');
-
-		expect(spy).toHaveBeenCalledWith('3');
-	});
-
 	test('is a no-op when bot is not found', () => {
 		const store = useBotsStore();
 		store.setBots([{ id: '1', name: 'A' }]);
 
 		expect(() => store.removeBotById('999')).not.toThrow();
 		expect(store.items).toHaveLength(1);
+		// disconnect still called but items unchanged
 		expect(mockManager.disconnect).toHaveBeenCalledWith('999');
-	});
-
-	test('cleans up all per-bot state in one operation', () => {
-		const store = useBotsStore();
-		store.setBots([{ id: '5', name: 'Bot' }, { id: '6', name: 'Bot2' }]);
-		store.byId['5'].transportMode = 'rtc';
-		store.byId['5'].rtcState = 'connected';
-		store.byId['5'].rtcTransportInfo = { localType: 'host' };
-		store.byId['6'].transportMode = 'ws';
-
-		store.removeBotById('5');
-
-		expect(store.byId['5']).toBeUndefined();
-		expect(store.byId['6'].transportMode).toBe('ws');
 	});
 });
 
@@ -269,7 +240,7 @@ describe('updateBotOnline', () => {
 		store.setBots([{ id: '1', name: 'A', online: false }]);
 		store.updateBotOnline('1', true);
 
-		expect(store.byId['1'].online).toBe(true);
+		expect(store.items[0].online).toBe(true);
 	});
 
 	test('coerces truthy value to boolean true', () => {
@@ -277,7 +248,7 @@ describe('updateBotOnline', () => {
 		store.setBots([{ id: '1', online: false }]);
 		store.updateBotOnline('1', 1);
 
-		expect(store.byId['1'].online).toBe(true);
+		expect(store.items[0].online).toBe(true);
 	});
 
 	test('is a no-op when bot is not found', () => {
@@ -285,7 +256,7 @@ describe('updateBotOnline', () => {
 		store.setBots([{ id: '1', online: true }]);
 
 		expect(() => store.updateBotOnline('999', false)).not.toThrow();
-		expect(store.byId['1'].online).toBe(true);
+		expect(store.items[0].online).toBe(true);
 	});
 
 	test('bot 离线时清理 agents 缓存', () => {
@@ -297,7 +268,7 @@ describe('updateBotOnline', () => {
 
 		store.updateBotOnline('1', false);
 
-		expect(store.byId['1'].online).toBe(false);
+		expect(store.items[0].online).toBe(false);
 		expect(agentsStore.byBot['1']).toBeUndefined();
 	});
 
@@ -319,26 +290,23 @@ describe('loadBots', () => {
 		const store = useBotsStore();
 		const bots = [{ id: 1, name: 'A' }, { id: '2', name: 'B' }];
 		listBots.mockResolvedValue(bots);
-		mockManager.get.mockReturnValue(null);
 
 		await store.loadBots();
 
-		expect(store.byId['1']).toBeDefined();
-		expect(store.byId['2']).toBeDefined();
-		expect(store.byId['1'].id).toBe('1');
+		// bot.id 应被归一化为 string
+		expect(store.items[0].id).toBe('1');
+		expect(store.items[1].id).toBe('2');
 		expect(mockManager.syncConnections).toHaveBeenCalledOnce();
 		expect(mockManager.syncConnections).toHaveBeenCalledWith(['1', '2']);
 	});
 
-	test('returns the items array', async () => {
+	test('returns the normalized bots array', async () => {
 		const store = useBotsStore();
 		listBots.mockResolvedValue([{ id: 3, name: 'C' }]);
-		mockManager.get.mockReturnValue(null);
 
 		const result = await store.loadBots();
 
-		expect(result).toHaveLength(1);
-		expect(result[0].id).toBe('3');
+		expect(result).toEqual([{ id: '3', name: 'C' }]);
 	});
 
 	test('sets loading to true during fetch', async () => {
@@ -371,7 +339,7 @@ describe('loadBots', () => {
 		expect(store.loading).toBe(false);
 	});
 
-	test('bridges conn state and triggers full init when connection becomes ready', async () => {
+	test('registers persistent state listener on non-connected connections and triggers full init on connected', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -380,25 +348,27 @@ describe('loadBots', () => {
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 
+		// 模拟一个处于 connecting 状态的连接
 		let stateCallback;
 		const fakeConn = {
 			state: 'connecting',
 			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
 			off: vi.fn(),
-			__onAlive: null,
-			disconnectedAt: 0,
-			lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
+
+		// 注册持久 state 监听器（不移除）
 		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 
 		// 模拟 WS 连接就绪
 		stateCallback('connected');
 
-
+		// 持久监听器不调用 off
+		expect(fakeConn.off).not.toHaveBeenCalled();
+		// fire 是 async（含 checkPluginVersion），需等待
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 		});
@@ -407,7 +377,7 @@ describe('loadBots', () => {
 		});
 	});
 
-	test('immediately triggers full init for already-connected bots', async () => {
+	test('immediately triggers full init for already-connected bots and registers persistent listener', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -415,16 +385,15 @@ describe('loadBots', () => {
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
 
-		// bridge syncs connState='connected', watcher triggers __onBotConnected
-		await vi.waitFor(() => {
-			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
-		});
+		// 注册持久 state 监听器（用于 WS 重连时重新触发传输选择）
+		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
+		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 		await vi.waitFor(() => {
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 		});
@@ -440,16 +409,15 @@ describe('loadBots', () => {
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
 
-
 		await vi.waitFor(() => {
-			expect(store.byId['1'].pluginVersionOk).toBe(true);
-			expect(store.byId['1'].pluginInfo).toEqual({ version: '0.6.0', clawVersion: '2026.3.14' });
+			expect(store.pluginVersionOk['1']).toBe(true);
+			expect(store.pluginInfo['1']).toEqual({ version: '0.6.0', clawVersion: '2026.3.14' });
 		});
 	});
 
@@ -463,62 +431,37 @@ describe('loadBots', () => {
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
 
 		await store.loadBots();
 
-
 		await vi.waitFor(() => {
-			expect(store.byId['2'].pluginVersionOk).toBe(false);
+			expect(store.pluginVersionOk['2']).toBe(false);
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('2');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
 		});
 	});
 
-	test('does not register duplicate bridge for the same conn instance', async () => {
+	test('does not register duplicate listeners for the same botId', async () => {
 		const store = useBotsStore();
 		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
 		await store.loadBots();
 
-		// on('state') should be called only once for the same conn instance
-		const stateCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'state');
-		expect(stateCalls).toHaveLength(1);
-	});
-
-	test('bridge 注册 session-expired 监听并派发 auth:session-expired', async () => {
-		const store = useBotsStore();
-		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
-		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
-
-		await store.loadBots();
-
-		// 应注册 session-expired 监听
-		const sessionExpiredCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'session-expired');
-		expect(sessionExpiredCalls).toHaveLength(1);
-
-		// 触发后应派发 window 事件
-		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
-		sessionExpiredCalls[0][1]();
-		const event = dispatchSpy.mock.calls.find(
-			([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
-		);
-		expect(event).toBeTruthy();
-		dispatchSpy.mockRestore();
+		// on should be called only once for the same botId
+		expect(fakeConn.on).toHaveBeenCalledTimes(1);
 	});
 });
 
 describe('WebRTC 集成', () => {
-	test('__bridgeConn + watcher 为已 connected 的 bot 调用 initRtcAndSelectTransport', async () => {
+	test('__listenForReady 中为已 connected 的 bot 调用 initRtcAndSelectTransport', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -527,19 +470,18 @@ describe('WebRTC 集成', () => {
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
 
 		await store.loadBots();
-
 
 		await vi.waitFor(() => {
 			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('1', fakeConn);
 		});
 	});
 
-	test('为 connecting 的 bot 在就绪后调用 initRtcAndSelectTransport', async () => {
+	test('__listenForReady 中为 connecting 的 bot 在就绪后调用 initRtcAndSelectTransport', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -553,9 +495,6 @@ describe('WebRTC 集成', () => {
 			state: 'connecting',
 			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
 			off: vi.fn(),
-			__onAlive: null,
-			disconnectedAt: 0,
-			lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
@@ -564,7 +503,6 @@ describe('WebRTC 集成', () => {
 		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
 
 		stateCallback('connected');
-
 
 		await vi.waitFor(() => {
 			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('2', fakeConn);
@@ -579,250 +517,9 @@ describe('WebRTC 集成', () => {
 		expect(mockCloseRtcForBot).toHaveBeenCalledWith('5');
 	});
 
-	test('byId 初始包含 connState、transportMode、rtcState 等字段', () => {
+	test('state 初始包含 rtcStates 和 rtcCandidateTypes', () => {
 		const store = useBotsStore();
-		store.setBots([{ id: '1', name: 'Bot' }]);
-		const bot = store.byId['1'];
-		expect(bot.connState).toBe('disconnected');
-		expect(bot.transportMode).toBeNull();
-		expect(bot.rtcState).toBeNull();
-		expect(bot.rtcTransportInfo).toBeNull();
-		expect(bot.pluginVersionOk).toBeNull();
-		expect(bot.pluginInfo).toBeNull();
-	});
-});
-
-describe('重连后批量状态刷新', () => {
-	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 agents/sessions/topics', async () => {
-		const store = useBotsStore();
-		const agentsStore = useAgentsStore();
-		const sessionsStore = useSessionsStore();
-		const topicsStore = useTopicsStore();
-		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-
-		let stateCallback;
-		const fakeConn = {
-			state: 'connecting',
-			disconnectedAt: Date.now() - 10_000,
-			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
-			off: vi.fn(),
-			request: vi.fn().mockResolvedValue({}),
-			__onAlive: null,
-			lastAliveAt: 0,
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateBot({ id: '20', name: 'Bot' });
-		// 首次 connected：全量初始化
-		stateCallback('connected');
-		await vi.waitFor(() => {
-			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
-		});
-
-		agentsStore.loadAgents.mockClear();
-		sessionsStore.loadAllSessions.mockClear();
-		topicsStore.loadAllTopics.mockClear();
-
-		// 模拟断连
-		stateCallback('disconnected');
-
-
-		// 模拟断连 10s 后重连
-		fakeConn.disconnectedAt = Date.now() - 10_000;
-		stateCallback('connected');
-
-
-		await vi.waitFor(() => {
-			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
-			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
-			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
-		});
-	});
-
-	test('断连时长 < BRIEF_DISCONNECT_MS 时不刷新 agents/sessions/topics', async () => {
-		const store = useBotsStore();
-		const agentsStore = useAgentsStore();
-		const sessionsStore = useSessionsStore();
-		const topicsStore = useTopicsStore();
-		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-
-		let stateCallback;
-		const fakeConn = {
-			state: 'connecting',
-			disconnectedAt: 0,
-			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
-			off: vi.fn(),
-			request: vi.fn().mockResolvedValue({}),
-			__onAlive: null,
-			lastAliveAt: 0,
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateBot({ id: '21', name: 'Bot' });
-		stateCallback('connected');
-		await vi.waitFor(() => {
-			expect(agentsStore.loadAgents).toHaveBeenCalledWith('21');
-		});
-
-		agentsStore.loadAgents.mockClear();
-		sessionsStore.loadAllSessions.mockClear();
-		topicsStore.loadAllTopics.mockClear();
-
-		// 模拟断连
-		stateCallback('disconnected');
-
-
-		// 模拟短暂抖动（2s）
-		fakeConn.disconnectedAt = Date.now() - 2000;
-		stateCallback('connected');
-
-		await Promise.resolve();
-
-		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
-		expect(sessionsStore.loadAllSessions).not.toHaveBeenCalled();
-		expect(topicsStore.loadAllTopics).not.toHaveBeenCalled();
-	});
-});
-
-describe('__fullInit 失败重试', () => {
-	test('fullInit 失败后 initialized 重置为 false，下次重连可重试', async () => {
-		const { checkPluginVersion } = await import('../utils/plugin-version.js');
-		checkPluginVersion.mockRejectedValue(new Error('version check failed'));
-		const store = useBotsStore();
-		const agentsStore = useAgentsStore();
-		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-
-		let stateCallback;
-		const fakeConn = {
-			state: 'connecting',
-			disconnectedAt: 0,
-			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
-			off: vi.fn(),
-			request: vi.fn().mockResolvedValue({}),
-			__onAlive: null,
-			lastAliveAt: 0,
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateBot({ id: '30', name: 'Bot' });
-		stateCallback('connected');
-
-		// 等 fullInit 失败
-		await vi.waitFor(() => {
-			expect(store.byId['30'].initialized).toBe(false);
-		});
-
-		// 修复 checkPluginVersion，模拟重连
-		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
-		stateCallback('disconnected');
-		stateCallback('connected');
-
-		await vi.waitFor(() => {
-			expect(store.byId['30'].initialized).toBe(true);
-			expect(store.byId['30'].pluginVersionOk).toBe(true);
-		});
-	});
-
-	test('fullInit 失败不覆盖后续成功的重连（generation guard）', async () => {
-		const { checkPluginVersion } = await import('../utils/plugin-version.js');
-		const store = useBotsStore();
-		const agentsStore = useAgentsStore();
-		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
-
-		// 第一次 fullInit 用一个永远 pending 的 promise，稍后手动 reject
-		let rejectFirst;
-		checkPluginVersion.mockReturnValueOnce(new Promise((_, rej) => { rejectFirst = rej; }));
-		// 第二次 fullInit 正常成功
-		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
-
-		let stateCallback;
-		const fakeConn = {
-			state: 'connecting',
-			disconnectedAt: Date.now() - 10_000,
-			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
-			off: vi.fn(),
-			request: vi.fn().mockResolvedValue({}),
-			__onAlive: null,
-			lastAliveAt: 0,
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateBot({ id: '31', name: 'Bot' });
-
-		// 首次连接，触发 fullInit（pending）
-		stateCallback('connected');
-		await Promise.resolve();
-		expect(store.byId['31'].initialized).toBe(true);
-
-		// 模拟快速断连重连，触发第二次 __onBotConnected（走 reconnect 分支，因为 initialized=true）
-		stateCallback('disconnected');
-		stateCallback('connected');
-		await Promise.resolve();
-
-		// 此时第一次 fullInit 迟到地失败
-		rejectFirst(new Error('late failure'));
-		await Promise.resolve();
-		await Promise.resolve();
-
-		// generation guard 应保护 initialized 不被迟到的失败覆盖
-		expect(store.byId['31'].initialized).toBe(true);
-	});
-});
-
-describe('bridge connState 同步', () => {
-	test('bridge 将 conn.on(state) 实时写入 byId[id].connState', async () => {
-		const store = useBotsStore();
-		let stateCallback;
-		const fakeConn = {
-			state: 'disconnected',
-			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
-			__onAlive: null,
-			disconnectedAt: 0,
-			lastAliveAt: 0,
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
-
-		await store.loadBots();
-		expect(store.byId['1'].connState).toBe('disconnected');
-
-		stateCallback('connecting');
-		expect(store.byId['1'].connState).toBe('connecting');
-
-		stateCallback('connected');
-		expect(store.byId['1'].connState).toBe('connected');
-
-		fakeConn.disconnectedAt = Date.now();
-		stateCallback('disconnected');
-		expect(store.byId['1'].connState).toBe('disconnected');
-		expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
-	});
-
-	test('__onAlive 回调实时同步 lastAliveAt', async () => {
-		const store = useBotsStore();
-		const fakeConn = {
-			state: 'disconnected',
-			on: vi.fn(),
-			__onAlive: null,
-			disconnectedAt: 0,
-			lastAliveAt: 0,
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
-
-		await store.loadBots();
-
-		// bridge 应注册 __onAlive 回调
-		expect(fakeConn.__onAlive).toBeInstanceOf(Function);
-
-		const ts = Date.now();
-		fakeConn.__onAlive(ts);
-		expect(store.byId['1'].lastAliveAt).toBe(ts);
+		expect(store.rtcStates).toEqual({});
+		expect(store.rtcCandidateTypes).toEqual({});
 	});
 });

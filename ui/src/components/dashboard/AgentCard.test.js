@@ -1,5 +1,18 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
+
+// mock useBotsStore，返回可控的 rtcStates / rtcCandidateTypes
+const mockRtcStates = {};
+const mockRtcCandidateTypes = {};
+
+vi.mock('../../stores/bots.store.js', () => ({
+	useBotsStore: () => ({
+		rtcStates: mockRtcStates,
+		rtcCandidateTypes: mockRtcCandidateTypes,
+	}),
+}));
+
 import AgentCard from './AgentCard.vue';
 
 const mockT = (key, params) => {
@@ -8,6 +21,7 @@ const mockT = (key, params) => {
 };
 
 function mountCard(props) {
+	setActivePinia(createPinia());
 	return mount(AgentCard, {
 		props,
 		global: {
@@ -32,6 +46,11 @@ const baseAgent = {
 	activeSessions: 2,
 	lastActivity: new Date(Date.now() - 3600000).toISOString(),
 };
+
+function resetMockStates() {
+	Object.keys(mockRtcStates).forEach(k => delete mockRtcStates[k]);
+	Object.keys(mockRtcCandidateTypes).forEach(k => delete mockRtcCandidateTypes[k]);
+}
 
 describe('AgentCard', () => {
 	test('renders agent name and emoji', () => {
@@ -118,5 +137,74 @@ describe('AgentCard', () => {
 		const agent = { ...baseAgent, lastActivity: null };
 		const wrapper = mountCard({ agent, online: true });
 		expect(wrapper.text()).toContain('—');
+	});
+});
+
+describe('AgentCard RTC status', () => {
+	test('rtcState=connected + host → shows RTC Direct with green dot', () => {
+		resetMockStates();
+		mockRtcStates['bot1'] = 'connected';
+		mockRtcCandidateTypes['bot1'] = 'host';
+		const wrapper = mountCard({ agent: baseAgent, online: true, botId: 'bot1' });
+		expect(wrapper.text()).toContain('dashboard.rtcDirect');
+		expect(wrapper.find('.bg-green-400').exists()).toBe(true);
+	});
+
+	test('rtcState=connected + relay → shows RTC Relay with yellow dot', () => {
+		resetMockStates();
+		mockRtcStates['bot2'] = 'connected';
+		mockRtcCandidateTypes['bot2'] = 'relay';
+		const wrapper = mountCard({ agent: baseAgent, online: true, botId: 'bot2' });
+		expect(wrapper.text()).toContain('dashboard.rtcRelay');
+		expect(wrapper.find('.bg-yellow-400').exists()).toBe(true);
+	});
+
+	test('rtcState=connecting → shows RTC Connecting with blue dot', () => {
+		resetMockStates();
+		mockRtcStates['bot3'] = 'connecting';
+		const wrapper = mountCard({ agent: baseAgent, online: true, botId: 'bot3' });
+		expect(wrapper.text()).toContain('dashboard.rtcConnecting');
+		expect(wrapper.find('.bg-blue-400').exists()).toBe(true);
+	});
+
+	test('no rtcState + online → shows WebSocket with gray dot', () => {
+		resetMockStates();
+		const wrapper = mountCard({ agent: baseAgent, online: true, botId: 'bot4' });
+		expect(wrapper.text()).toContain('dashboard.wsTransport');
+		expect(wrapper.find('.bg-gray-400').exists()).toBe(true);
+	});
+
+	test('online=false → no RTC status row', () => {
+		resetMockStates();
+		mockRtcStates['bot5'] = 'connected';
+		mockRtcCandidateTypes['bot5'] = 'host';
+		const wrapper = mountCard({ agent: baseAgent, online: false, botId: 'bot5' });
+		expect(wrapper.text()).not.toContain('dashboard.rtcDirect');
+		expect(wrapper.text()).not.toContain('dashboard.wsTransport');
+	});
+
+	test('no botId → no RTC status row (shows WebSocket fallback)', () => {
+		resetMockStates();
+		const wrapper = mountCard({ agent: baseAgent, online: true });
+		// transportLabel 为 'dashboard.wsTransport' 因为 rtcState 为 null
+		expect(wrapper.text()).toContain('dashboard.wsTransport');
+	});
+
+	test('rtcState=failed → shows RTC Failed with red dot', () => {
+		resetMockStates();
+		mockRtcStates['bot6'] = 'failed';
+		const wrapper = mountCard({ agent: baseAgent, online: true, botId: 'bot6' });
+		expect(wrapper.text()).toContain('dashboard.rtcFailed');
+		expect(wrapper.text()).not.toContain('dashboard.wsTransport');
+		expect(wrapper.find('.bg-red-400').exists()).toBe(true);
+	});
+
+	test('rtcState=closed → shows RTC Closed with red dot', () => {
+		resetMockStates();
+		mockRtcStates['bot7'] = 'closed';
+		const wrapper = mountCard({ agent: baseAgent, online: true, botId: 'bot7' });
+		expect(wrapper.text()).toContain('dashboard.rtcClosed');
+		expect(wrapper.text()).not.toContain('dashboard.wsTransport');
+		expect(wrapper.find('.bg-red-400').exists()).toBe(true);
 	});
 });

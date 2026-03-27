@@ -5,9 +5,6 @@ import { listOnlineBotIds } from '../bot-ws-hub.js';
 
 const require = createRequire(import.meta.url);
 const { version: serverVersion } = require('../../package.json');
-// 容器环境中 plugins 目录不可用，graceful fallback
-let pluginVersion = null;
-try { pluginVersion = require('../../../plugins/openclaw/package.json').version; } catch {}
 
 /**
  * @param {object} [deps] - 依赖注入
@@ -21,26 +18,23 @@ export async function getAdminDashboard(deps = {}) {
 	const todayStart = new Date();
 	todayStart.setHours(0, 0, 0, 0);
 
-	const [total, todayNew, todayActive, topActive, latestRegistered, botsTotal] = await Promise.all([
+	const [total, todayNew, todayActive, topActive, botsTotal] = await Promise.all([
 		repo.countUsers(),
 		repo.countUsersCreatedSince(todayStart),
 		repo.countUsersActiveSince(todayStart),
 		repo.topActiveUsers(10),
-		repo.latestRegisteredUsers(30),
 		repo.countBots(),
 	]);
 
 	return {
 		users: { total, todayNew, todayActive },
 		topActiveUsers: topActive,
-		latestRegisteredUsers: latestRegistered,
 		bots: {
 			total: botsTotal,
 			online: getOnlineBotCount(),
 		},
 		version: {
 			server: serverVersion,
-			plugin: pluginVersion,
 		},
 	};
 }

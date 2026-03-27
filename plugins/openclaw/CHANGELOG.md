@@ -1,23 +1,5 @@
 # @coclaw/openclaw-coclaw
 
-## 0.8.2
-
-### Patch Changes
-
-- feat(rtc): DataChannel 应用层分片/重组，消除 SCTP maxMessageSize 限制，所有 RPC 消息统一走 DataChannel
-
-## 0.8.1
-
-### Patch Changes
-
-- fix(webrtc): correct ICE restart handling and fix session cleanup race
-
-## 0.8.0
-
-### Minor Changes
-
-- feat: implement file management via WebRTC DataChannel (list/delete/read/write with path security, backpressure flow control, and temp file cleanup)
-
 ## 0.7.1
 
 ### Patch Changes

@@ -27,13 +27,9 @@ const mockClearDashboard = vi.fn();
 
 vi.mock('../stores/bots.store.js', () => ({
 	useBotsStore: () => ({
-		get items() { return mockBots; },
-		get byId() {
-			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, transportMode: null, rtcState: null, rtcTransportInfo: null, connState: 'disconnected' };
-			return map;
-		},
+		items: mockBots,
 		loadBots: mockLoadBots,
+		pluginVersionOk: {},
 	}),
 }));
 
@@ -80,12 +76,11 @@ function createWrapper() {
 			stubs: {
 				UButton: UButtonStub,
 				UBadge: UBadgeStub,
-				UIcon: { props: ['name'], template: '<i />' },
 				InstanceOverview: InstanceOverviewStub,
 				AgentCard: AgentCardStub,
 			},
 			mocks: {
-				$t: (key, _params) => {
+				$t: (key, params) => {
 					const map = {
 						'bots.pageTitle': 'My Claws',
 						'bots.addBot': 'Add Bot',
@@ -93,9 +88,6 @@ function createWrapper() {
 						'bots.unbind': 'Unbind',
 						'bots.preparing': 'Preparing...',
 						'dashboard.offline': 'Offline',
-						'bots.conn.ws': 'WebSocket',
-						'bots.conn.rtcConnecting': 'WebRTC connecting…',
-						'bots.conn.rtcFailed': 'Degraded to WebSocket',
 					};
 					return map[key] ?? key;
 				},
@@ -174,60 +166,5 @@ describe('ManageBotsPage', () => {
 		await flushPromises();
 
 		expect(wrapper.text()).toContain('Preparing...');
-	});
-
-	test('app:foreground 时重新加载数据', async () => {
-		mockBots = [{ id: '1', name: 'Bot1', online: true }];
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		mockLoadBots.mockClear();
-		window.dispatchEvent(new CustomEvent('app:foreground'));
-		await flushPromises();
-
-		expect(mockLoadBots).toHaveBeenCalled();
-		wrapper.unmount();
-	});
-
-	test('visibilitychange → visible 时重新加载数据', async () => {
-		mockBots = [{ id: '1', name: 'Bot1', online: true }];
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		mockLoadBots.mockClear();
-		Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-		document.dispatchEvent(new Event('visibilitychange'));
-		await flushPromises();
-
-		expect(mockLoadBots).toHaveBeenCalled();
-		wrapper.unmount();
-	});
-
-	test('2s 内重复前台恢复应节流', async () => {
-		mockBots = [];
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		mockLoadBots.mockClear();
-		window.dispatchEvent(new CustomEvent('app:foreground'));
-		window.dispatchEvent(new CustomEvent('app:foreground'));
-		await flushPromises();
-
-		expect(mockLoadBots).toHaveBeenCalledTimes(1);
-		wrapper.unmount();
-	});
-
-	test('unmount 后前台恢复不再触发加载', async () => {
-		mockBots = [];
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		wrapper.unmount();
-		mockLoadBots.mockClear();
-
-		window.dispatchEvent(new CustomEvent('app:foreground'));
-		await flushPromises();
-
-		expect(mockLoadBots).not.toHaveBeenCalled();
 	});
 });

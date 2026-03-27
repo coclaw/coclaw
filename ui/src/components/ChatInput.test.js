@@ -162,14 +162,13 @@ describe('ChatInput', () => {
 		expect(wrapper.emitted('send')).toBeTruthy();
 	});
 
-	test('触屏笔记本（isTouch=true, canHover=false）Enter 仍发送（桌面系统有物理键盘）', async () => {
+	test('Enter on pure touch desktop (isTouch=true, canHover=false) does not send', async () => {
 		mockEnv = { ...defaultEnv, isNative: false, isAndroid: false, isIos: false, isTouch: true, canHover: false };
 		const wrapper = createWrapper({ modelValue: 'hello' });
-		// 非 native、非 Android/iOS → 桌面系统 → isTouchDevice=false
-		expect(wrapper.vm.isTouchDevice).toBe(false);
+		expect(wrapper.vm.isTouchDevice).toBe(true);
 		const textarea = wrapper.find('textarea');
-		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false, isComposing: false });
-		expect(wrapper.emitted('send')).toBeTruthy();
+		await textarea.trigger('keydown', { key: 'Enter', shiftKey: false });
+		expect(wrapper.emitted('send')).toBeFalsy();
 	});
 
 	test('sending=true shows stop button', () => {
