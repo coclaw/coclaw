@@ -1,6 +1,6 @@
 {
 	"name": "@coclaw/ui",
-	"version": "0.9.15",
+	"version": "0.9.16",
 	"private": true,
 	"description": "CoClaw frontend application",
 	"type": "module",
