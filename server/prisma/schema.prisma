@@ -26,6 +26,7 @@ model User {
   createdAt					DateTime  @default(now())
   updatedAt					DateTime  @default(now()) @updatedAt
   lastLoginAt				DateTime?
+  lastLogoutAt			DateTime?
 
   localAuth					LocalAuth?
   externalAuths			ExternalAuth[]

@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getCurrentSessionHandler, registerLocalHandler } from './auth.route.js';
+import { getCurrentSessionHandler, registerLocalHandler, logoutHandler } from './auth.route.js';
 
 function createRes() {
 	return {
 		statusCode: null,
 		body: null,
 		headers: {},
+		ended: false,
 		set(name, value) {
 			this.headers[name] = value;
 			return this;
@@ -18,6 +19,10 @@ function createRes() {
 		},
 		json(payload) {
 			this.body = payload;
+			return this;
+		},
+		end() {
+			this.ended = true;
 			return this;
 		},
 	};
@@ -166,4 +171,72 @@ test('registerLocalHandler: should return 201 and call logIn on success', async 
 	assert.equal(res.statusCode, 201);
 	assert.equal(res.body.user.id, '778899');
 	assert.equal(loggedInUser, user);
+});
+
+// --- logoutHandler ---
+
+test('logoutHandler: 成功 logout 时写入 lastLogoutAt 并返回 204', async () => {
+	let touchCalled = false;
+	let touchedUserId = null;
+	const touchLogout = async (userId) => {
+		touchCalled = true;
+		touchedUserId = userId;
+	};
+
+	const req = {
+		user: { id: 42n },
+		logout(cb) { cb(null); },
+		session: { destroy(cb) { cb(null); } },
+	};
+	const res = createRes();
+
+	await new Promise((resolve) => {
+		logoutHandler(req, res, () => {}, { touchLogout });
+		// logoutHandler 是回调驱动，需等 event loop
+		setTimeout(resolve, 50);
+	});
+
+	assert.equal(res.statusCode, 204);
+	assert.equal(res.ended, true);
+	assert.equal(touchCalled, true);
+	assert.equal(touchedUserId, 42n);
+});
+
+test('logoutHandler: touchLogout 失败不影响 logout 流程', async () => {
+	const touchLogout = async () => { throw new Error('DB error'); };
+
+	const req = {
+		user: { id: 1n },
+		logout(cb) { cb(null); },
+		session: { destroy(cb) { cb(null); } },
+	};
+	const res = createRes();
+
+	await new Promise((resolve) => {
+		logoutHandler(req, res, () => {}, { touchLogout });
+		setTimeout(resolve, 50);
+	});
+
+	assert.equal(res.statusCode, 204);
+	assert.equal(res.ended, true);
+});
+
+test('logoutHandler: req.user 为 null 时不调用 touchLogout', async () => {
+	let touchCalled = false;
+	const touchLogout = async () => { touchCalled = true; };
+
+	const req = {
+		user: null,
+		logout(cb) { cb(null); },
+		session: { destroy(cb) { cb(null); } },
+	};
+	const res = createRes();
+
+	await new Promise((resolve) => {
+		logoutHandler(req, res, () => {}, { touchLogout });
+		setTimeout(resolve, 50);
+	});
+
+	assert.equal(res.statusCode, 204);
+	assert.equal(touchCalled, false);
 });

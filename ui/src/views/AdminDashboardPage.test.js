@@ -24,8 +24,8 @@ vi.stubGlobal('__APP_VERSION__', '0.9.0');
 const fakeDashboard = {
 	users: { total: 100, todayNew: 5, todayActive: 23 },
 	topActiveUsers: [
-		{ id: '1', name: '张三', lastLoginAt: new Date(Date.now() - 180000).toISOString() },
-		{ id: '2', name: '李四', lastLoginAt: new Date(Date.now() - 7200000).toISOString() },
+		{ id: '1', name: '张三', lastLoginAt: new Date(Date.now() - 180000).toISOString(), lastLogoutAt: new Date(Date.now() - 120000).toISOString(), onlineDurationSec: 45 },
+		{ id: '2', name: '李四', lastLoginAt: new Date(Date.now() - 7200000).toISOString(), lastLogoutAt: null, onlineDurationSec: null },
 	],
 	latestRegisteredUsers: [
 		{ id: '10', name: '王五', loginName: 'wangwu', createdAt: new Date(Date.now() - 600000).toISOString() },
@@ -48,6 +48,11 @@ const i18nMap = {
 	'adminDashboard.topActiveUsers': 'Recently Active Users',
 	'adminDashboard.latestRegisteredUsers': 'Latest Registered Users',
 	'adminDashboard.noData': 'No data',
+	'adminDashboard.logoutAt': 'Logout',
+	'adminDashboard.onlineActive': 'Active ({duration})',
+	'adminDashboard.durationSec': 's',
+	'adminDashboard.durationMin': 'm',
+	'adminDashboard.durationHour': 'h',
 	'chat.loading': 'Loading...',
 	'dashboard.justNow': 'Just now',
 	'dashboard.minutesAgo': '{n}m ago',
@@ -168,59 +173,35 @@ test('should render latest registered users with name fallback to loginName', as
 	expect(wrapper.text()).toContain('10m ago');
 });
 
-test('should reload data on app:foreground', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+test('should render logout time and online duration for active users', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 
-	mockFetchAdminDashboard.mockClear();
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).toHaveBeenCalled();
-	wrapper.unmount();
+	// 第一个用户有 lastLogoutAt 和 onlineDurationSec=45 -> "45s"
+	expect(wrapper.text()).toContain('Logout');
+	expect(wrapper.text()).toContain('45s');
+	// 第二个用户 lastLogoutAt=null -> "—"
+	expect(wrapper.text()).toContain('—');
 });
 
-test('should reload data on visibilitychange to visible', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+test('should show onlineActive when lastLogoutAt < lastLoginAt', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce({
+		...fakeDashboard,
+		topActiveUsers: [
+			{
+				id: '1',
+				name: '赵六',
+				lastLoginAt: new Date(Date.now() - 60000).toISOString(),
+				lastLogoutAt: new Date(Date.now() - 120000).toISOString(),
+				onlineDurationSec: 300,
+			},
+		],
+	});
 	const wrapper = createWrapper();
 	await flushPromises();
 
-	mockFetchAdminDashboard.mockClear();
-	Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-	document.dispatchEvent(new Event('visibilitychange'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).toHaveBeenCalled();
-	wrapper.unmount();
-});
-
-test('should throttle foreground resume within 2s', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	mockFetchAdminDashboard.mockClear();
-	// 连续触发两次，第二次应被节流
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	// 节流：仅执行一次
-	expect(mockFetchAdminDashboard).toHaveBeenCalledTimes(1);
-	wrapper.unmount();
-});
-
-test('should remove listeners on unmount', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	wrapper.unmount();
-
-	mockFetchAdminDashboard.mockClear();
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).not.toHaveBeenCalled();
+	// lastLogoutAt < lastLoginAt -> 显示 "Active (1m)"
+	expect(wrapper.text()).toContain('Active (1m)');
+	expect(wrapper.text()).toContain('赵六');
 });

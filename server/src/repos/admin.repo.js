@@ -21,15 +21,25 @@ export async function topActiveUsers(limit, db = prisma) {
 			id: true,
 			name: true,
 			lastLoginAt: true,
+			lastLogoutAt: true,
 			localAuth: { select: { loginName: true } },
 		},
 	});
-	return rows.map(u => ({
-		id: u.id.toString(),
-		name: u.name,
-		loginName: u.localAuth?.loginName ?? null,
-		lastLoginAt: u.lastLoginAt,
-	}));
+	return rows.map(u => {
+		// duration 计算：lastLogoutAt >= lastLoginAt 时才有效
+		let onlineDurationSec = null;
+		if (u.lastLogoutAt && u.lastLoginAt && u.lastLogoutAt >= u.lastLoginAt) {
+			onlineDurationSec = Math.round((u.lastLogoutAt - u.lastLoginAt) / 1000);
+		}
+		return {
+			id: u.id.toString(),
+			name: u.name,
+			loginName: u.localAuth?.loginName ?? null,
+			lastLoginAt: u.lastLoginAt,
+			lastLogoutAt: u.lastLogoutAt ?? null,
+			onlineDurationSec,
+		};
+	});
 }
 
 export async function latestRegisteredUsers(limit, db = prisma) {
