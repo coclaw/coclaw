@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-// 认领码等待状态（与 binding-wait-hub 对称，但无 userId/cancel 语义）
+// 认领码等待状态（与 binding-wait-hub 对称，无 userId 语义）
 const claimStates = new Map();
 
 function nowMs() {
@@ -73,6 +73,23 @@ export function markClaimBound({ code, botId, token }) {
 	// 已完成的条目延迟清理（60s 缓冲，让迟到的 waiter 仍能获取结果）
 	clearTimeout(state.cleanupTimer);
 	state.cleanupTimer = setTimeout(() => claimStates.delete(code), 60_000);
+}
+
+// 仅提前 settle 当前 waiters，不改 status，不影响后续 markClaimBound。
+// 与 binding-wait-hub.cancelBindingWait 不同：后者会设 status='cancelled'，
+// 因为 binding 的 cancel(UI 端) 和 markBound(plugin 端) 由不同发起方调用，互不干扰。
+// 而 claim 的 cancel(plugin 断连) 和 markBound(用户 claim) 共享同一 state，
+// 改 status 会阻断 markClaimBound → 导致 enroll 流程卡死。
+export function cancelClaimWait({ code, waitToken }) {
+	const state = claimStates.get(code);
+	if (!state || state.waitToken !== waitToken) {
+		return false;
+	}
+	if (state.status !== 'pending') {
+		return false;
+	}
+	settleState(code, { status: 'CANCELLED' });
+	return true;
 }
 
 export function waitClaimResult({ code, waitToken }) {

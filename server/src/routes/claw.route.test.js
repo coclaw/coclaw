@@ -168,17 +168,17 @@ test('waitClaimCodeHandler: should return 200 CLAIM_PENDING for other statuses',
 	assert.equal(res.body.code, 'CLAIM_PENDING');
 });
 
-test('waitClaimCodeHandler: should not send response when client disconnects', async () => {
+test('waitClaimCodeHandler: should cancel wait and not send response when client disconnects', async () => {
 	const req = createReqWithBody({ code: '12345678', waitToken: 'tok' });
-	// 模拟客户端断连：res.on('close') 回调在 wait 期间触发
 	const res = createRes();
-	const originalOn = res.on;
 	let closeCallback;
+	let cancelCount = 0;
 	res.on = (event, cb) => {
 		if (event === 'close') closeCallback = cb;
 	};
 
 	await waitClaimCodeHandler(req, res, () => {}, {
+		cancelClaimWaitImpl: () => { cancelCount += 1; },
 		waitClaimResultImpl: async () => {
 			// 模拟等待期间客户端断连
 			closeCallback?.();
@@ -186,7 +186,7 @@ test('waitClaimCodeHandler: should not send response when client disconnects', a
 		},
 	});
 
-	// 客户端已断连，不应发送响应
+	assert.equal(cancelCount, 1);
 	assert.equal(res.statusCode, null);
 });
 

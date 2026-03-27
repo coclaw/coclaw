@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+	cancelClaimWait,
 	markClaimBound,
 	registerClaimWait,
 	waitClaimResult,
@@ -110,4 +111,62 @@ test('markClaimBound: should reschedule cleanup timer', async () => {
 	const result = await waitClaimResult({ code, waitToken });
 	assert.equal(result.status, 'BOUND');
 	assert.equal(result.botId, '77');
+});
+
+test('cancelClaimWait: should settle waiters without changing status', async () => {
+	const code = 'CW_CANCEL_01';
+	const waitToken = registerClaimWait({
+		code,
+		expiresAt: new Date(Date.now() + 60_000),
+	});
+
+	const promise = waitClaimResult({ code, waitToken });
+	const cancelled = cancelClaimWait({ code, waitToken });
+
+	assert.equal(cancelled, true);
+	const result = await promise;
+	assert.equal(result.status, 'CANCELLED');
+});
+
+test('cancelClaimWait: markClaimBound should still work after cancel', async () => {
+	const code = 'CW_CANCEL_THEN_BOUND';
+	const waitToken = registerClaimWait({
+		code,
+		expiresAt: new Date(Date.now() + 60_000),
+	});
+
+	// cancel 提前 settle 当前 waiter
+	cancelClaimWait({ code, waitToken });
+
+	// claim 完成后 markClaimBound 仍应生效（status 仍为 pending）
+	markClaimBound({ code, botId: 55n, token: 'tok-55' });
+
+	// 下一轮 wait 应立即拿到 BOUND
+	const result = await waitClaimResult({ code, waitToken });
+	assert.equal(result.status, 'BOUND');
+	assert.equal(result.botId, '55');
+	assert.equal(result.token, 'tok-55');
+});
+
+test('cancelClaimWait: should reject wrong waitToken', () => {
+	const code = 'CW_CANCEL_02';
+	registerClaimWait({
+		code,
+		expiresAt: new Date(Date.now() + 60_000),
+	});
+	assert.equal(cancelClaimWait({ code, waitToken: 'wrong' }), false);
+});
+
+test('cancelClaimWait: should reject already-bound state', () => {
+	const code = 'CW_CANCEL_03';
+	const waitToken = registerClaimWait({
+		code,
+		expiresAt: new Date(Date.now() + 60_000),
+	});
+	markClaimBound({ code, botId: 1n, token: 'tok' });
+	assert.equal(cancelClaimWait({ code, waitToken }), false);
+});
+
+test('cancelClaimWait: should reject unknown code', () => {
+	assert.equal(cancelClaimWait({ code: 'NOPE', waitToken: 'x' }), false);
 });
