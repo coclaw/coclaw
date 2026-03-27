@@ -125,11 +125,6 @@ export default {
 				const store = useTopicsStore();
 				await store.deleteTopic(this.botId, this.topicId);
 				this.deleteOpen = false;
-				// 若当前正在查看被删除的 topic，跳转到默认路由
-				const route = this.$route;
-				if (route?.name === 'topics-chat' && route.params?.sessionId === this.topicId) {
-					this.$router.replace('/');
-				}
 				this.$emit('deleted', this.topicId);
 			} catch (err) {
 				this.notify.error(this.$t('topic.deleteFailed'));

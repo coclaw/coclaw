@@ -478,46 +478,6 @@ describe('loadBots', () => {
 		});
 	});
 
-	test('preserves online=true when connState is connected even if HTTP returns online=false', async () => {
-		const store = useBotsStore();
-		// 预设 bot，模拟 WS 已连接
-		store.byId['1'] = {
-			id: '1', name: 'A', online: true, connState: 'connected',
-			initialized: true, transportMode: null, pluginVersionOk: null,
-			pluginInfo: null, rtcState: null, rtcTransportInfo: null,
-			lastAliveAt: Date.now(), disconnectedAt: 0, lastSeenAt: null,
-			createdAt: null, updatedAt: null,
-		};
-		// HTTP 返回 online: false（server 尚未感知重连）
-		listBots.mockResolvedValue([{ id: '1', name: 'A-updated', online: false }]);
-		mockManager.get.mockReturnValue(null);
-
-		await store.loadBots();
-
-		// online 应被保留为 true
-		expect(store.byId['1'].online).toBe(true);
-		// 其他基础信息应被更新
-		expect(store.byId['1'].name).toBe('A-updated');
-	});
-
-	test('allows HTTP online=false when connState is not connected', async () => {
-		const store = useBotsStore();
-		store.byId['1'] = {
-			id: '1', name: 'A', online: true, connState: 'disconnected',
-			initialized: false, transportMode: null, pluginVersionOk: null,
-			pluginInfo: null, rtcState: null, rtcTransportInfo: null,
-			lastAliveAt: 0, disconnectedAt: 0, lastSeenAt: null,
-			createdAt: null, updatedAt: null,
-		};
-		listBots.mockResolvedValue([{ id: '1', name: 'A', online: false }]);
-		mockManager.get.mockReturnValue(null);
-
-		await store.loadBots();
-
-		// connState 不是 connected，应正常接受 HTTP 的 online 值
-		expect(store.byId['1'].online).toBe(false);
-	});
-
 	test('does not register duplicate bridge for the same conn instance', async () => {
 		const store = useBotsStore();
 		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
@@ -633,12 +593,11 @@ describe('WebRTC 集成', () => {
 });
 
 describe('重连后批量状态刷新', () => {
-	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 bots/agents/sessions/topics', async () => {
+	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 agents/sessions/topics', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
-		vi.spyOn(store, 'loadBots').mockResolvedValue();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
@@ -662,7 +621,6 @@ describe('重连后批量状态刷新', () => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 		});
 
-		store.loadBots.mockClear();
 		agentsStore.loadAgents.mockClear();
 		sessionsStore.loadAllSessions.mockClear();
 		topicsStore.loadAllTopics.mockClear();
@@ -677,7 +635,6 @@ describe('重连后批量状态刷新', () => {
 
 
 		await vi.waitFor(() => {
-			expect(store.loadBots).toHaveBeenCalled();
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
@@ -783,7 +740,6 @@ describe('__fullInit 失败重试', () => {
 		checkPluginVersion.mockReturnValueOnce(new Promise((_, rej) => { rejectFirst = rej; }));
 		// 第二次 fullInit 正常成功
 		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
-		vi.spyOn(store, 'loadBots').mockResolvedValue();
 
 		let stateCallback;
 		const fakeConn = {

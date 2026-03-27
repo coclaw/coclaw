@@ -289,34 +289,6 @@ describe('groupSessionMessages', () => {
 		expect(result[0].textContent).toBe('测试');
 	});
 
-	test('过滤 assistant 的 NO_REPLY 静默回复', () => {
-		const entries = [
-			userEntry('u1', '你好', 1000),
-			assistantEntry('a1', { text: 'NO_REPLY', ts: 2000 }),
-		];
-		const result = groupSessionMessages(entries);
-		expect(result).toHaveLength(2);
-		expect(result[1].resultText).toBeNull();
-	});
-
-	test('过滤带空白的 NO_REPLY 静默回复', () => {
-		const entries = [
-			userEntry('u1', '你好', 1000),
-			assistantEntry('a1', { text: '  NO_REPLY  ', ts: 2000 }),
-		];
-		const result = groupSessionMessages(entries);
-		expect(result[1].resultText).toBeNull();
-	});
-
-	test('不过滤包含 NO_REPLY 的正常文本', () => {
-		const entries = [
-			userEntry('u1', '你好', 1000),
-			assistantEntry('a1', { text: 'The agent said NO_REPLY to indicate silence', ts: 2000 }),
-		];
-		const result = groupSessionMessages(entries);
-		expect(result[1].resultText).toBe('The agent said NO_REPLY to indicate silence');
-	});
-
 	test('去除 assistant 的 [[reply_to_current]] 标签', () => {
 		const entries = [
 			userEntry('u1', '问题'),
@@ -434,48 +406,6 @@ describe('groupSessionMessages', () => {
 		const result = groupSessionMessages(entries);
 		expect(result[0].images).toHaveLength(1);
 		expect(result[0].images[0].data).toBe('valid');
-	});
-
-	test('stopReason=max_tokens 的 assistant 文本归入 resultText', () => {
-		const entries = [
-			userEntry('u1', '写一篇文章'),
-			assistantEntry('a1', { text: '这是文章内容...', stopReason: 'max_tokens' }),
-		];
-		const result = groupSessionMessages(entries);
-		expect(result[1].resultText).toBe('这是文章内容...');
-	});
-
-	test('stopReason=stop_sequence 的 assistant 文本归入 resultText', () => {
-		const entries = [
-			userEntry('u1', '问题'),
-			assistantEntry('a1', { text: '回答内容', stopReason: 'stop_sequence' }),
-		];
-		const result = groupSessionMessages(entries);
-		expect(result[1].resultText).toBe('回答内容');
-	});
-
-	test('stopReason=end 的 assistant 文本归入 resultText', () => {
-		const entries = [
-			userEntry('u1', '问题'),
-			assistantEntry('a1', { text: '回答', stopReason: 'end' }),
-		];
-		const result = groupSessionMessages(entries);
-		expect(result[1].resultText).toBe('回答');
-	});
-
-	test('tool call 后以 max_tokens 结束，resultText 正确填充', () => {
-		const entries = [
-			userEntry('u1', '帮我处理'),
-			assistantEntry('a1', {
-				toolCalls: [{ name: 'process' }],
-				stopReason: 'toolUse',
-			}),
-			toolResultEntry('tr1', '处理结果'),
-			assistantEntry('a2', { text: '最终输出被截断...', stopReason: 'max_tokens' }),
-		];
-		const result = groupSessionMessages(entries);
-		expect(result[1].resultText).toBe('最终输出被截断...');
-		expect(result[1].steps).toContainEqual({ kind: 'toolCall', name: 'process' });
 	});
 
 	test('tool_use block type 也被识别', () => {

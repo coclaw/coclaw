@@ -6,7 +6,11 @@ import { useAgentRunsStore } from './agent-runs.store.js';
 // --- Helper ---
 
 function mockConn() {
-	return { state: 'connected' };
+	return {
+		state: 'connected',
+		on: vi.fn(),
+		off: vi.fn(),
+	};
 }
 
 function registerRun(store, overrides = {}) {
@@ -50,6 +54,23 @@ describe('useAgentRunsStore', () => {
 			expect(store.runKeyIndex['agent:main:main']).toBe('run-1');
 		});
 
+		test('注册时在 connection 上注册 event:agent 监听器', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+			registerRun(store, { conn });
+
+			expect(conn.on).toHaveBeenCalledWith('event:agent', expect.any(Function));
+		});
+
+		test('同一 botId 多个 run 只注册一次监听器', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+			registerRun(store, { runId: 'run-1', runKey: 'key1', conn });
+			registerRun(store, { runId: 'run-2', runKey: 'key2', conn });
+
+			expect(conn.on).toHaveBeenCalledTimes(1);
+		});
+
 		test('同一 runKey 重复注册时清理旧 run', () => {
 			const store = useAgentRunsStore();
 			registerRun(store, { runId: 'run-1', runKey: 'agent:main:main' });
@@ -58,15 +79,6 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runs['run-2']).toBeTruthy();
 			expect(store.runKeyIndex['agent:main:main']).toBe('run-2');
-		});
-
-		test('不再自行注册 event:agent 监听器（由 botsStore 集中桥接）', () => {
-			const store = useAgentRunsStore();
-			const conn = { state: 'connected', on: vi.fn(), off: vi.fn() };
-			registerRun(store, { conn });
-
-			// conn.on 不应被调用（事件由 botsStore.__bridgeConn 统一注册）
-			expect(conn.on).not.toHaveBeenCalled();
 		});
 	});
 
@@ -190,6 +202,28 @@ describe('useAgentRunsStore', () => {
 		test('settle 不存在的 runKey 不报错', () => {
 			const store = useAgentRunsStore();
 			store.settle('nonexistent');
+		});
+
+		test('settle 后移除空闲 connection 的监听器', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+			registerRun(store, { conn });
+
+			store.settle('agent:main:main');
+
+			expect(conn.off).toHaveBeenCalledWith('event:agent', expect.any(Function));
+		});
+
+		test('同一 botId 有其他活跃 run 时不移除监听器', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+			registerRun(store, { runId: 'run-1', runKey: 'key1', conn });
+			registerRun(store, { runId: 'run-2', runKey: 'key2', conn });
+
+			store.settle('key1');
+
+			// 不应移除监听器（run-2 仍活跃）
+			expect(conn.off).not.toHaveBeenCalled();
 		});
 	});
 
@@ -363,9 +397,10 @@ describe('useAgentRunsStore', () => {
 	describe('removeByBot', () => {
 		test('清理指定 bot 的所有活跃 runs', () => {
 			const store = useAgentRunsStore();
-			registerRun(store, { runId: 'run-1', runKey: 'key1', botId: '1' });
-			registerRun(store, { runId: 'run-2', runKey: 'key2', botId: '1' });
-			registerRun(store, { runId: 'run-3', runKey: 'key3', botId: '2' });
+			const conn = mockConn();
+			registerRun(store, { runId: 'run-1', runKey: 'key1', botId: '1', conn });
+			registerRun(store, { runId: 'run-2', runKey: 'key2', botId: '1', conn });
+			registerRun(store, { runId: 'run-3', runKey: 'key3', botId: '2', conn });
 
 			store.removeByBot('1');
 
@@ -375,9 +410,71 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-3']).toBeTruthy();
 		});
 
+		test('清理指定 bot 的监听器', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+			registerRun(store, { botId: '1', conn });
+
+			store.removeByBot('1');
+
+			expect(conn.off).toHaveBeenCalledWith('event:agent', expect.any(Function));
+		});
+
 		test('无活跃 runs 时不报错', () => {
 			const store = useAgentRunsStore();
 			store.removeByBot('nonexistent');
+		});
+	});
+
+	// =====================================================================
+	// conn 实例替换
+	// =====================================================================
+
+	describe('conn 实例替换', () => {
+		test('新 conn 实例应重新注册监听器', () => {
+			const store = useAgentRunsStore();
+			const connOld = mockConn();
+			const connNew = mockConn();
+
+			registerRun(store, { runId: 'run-1', runKey: 'key1', botId: '1', conn: connOld });
+			expect(connOld.on).toHaveBeenCalledTimes(1);
+
+			// 模拟 bot 移除后重新添加（conn 实例被替换）
+			store.removeByBot('1');
+
+			// 用新 conn 注册新 run
+			registerRun(store, { runId: 'run-2', runKey: 'key2', botId: '1', conn: connNew });
+
+			// 新 conn 应注册了监听器
+			expect(connNew.on).toHaveBeenCalledWith('event:agent', expect.any(Function));
+		});
+
+		test('同一 conn 实例不重复注册', () => {
+			const store = useAgentRunsStore();
+			const conn = mockConn();
+
+			registerRun(store, { runId: 'run-1', runKey: 'key1', botId: '1', conn });
+			registerRun(store, { runId: 'run-2', runKey: 'key2', botId: '1', conn });
+
+			// 同实例只注册一次
+			expect(conn.on).toHaveBeenCalledTimes(1);
+		});
+
+		test('未经 removeByBot 时 conn 替换也能正确处理', () => {
+			const store = useAgentRunsStore();
+			const connOld = mockConn();
+			const connNew = mockConn();
+
+			// 注册 run-1 用旧 conn
+			registerRun(store, { runId: 'run-1', runKey: 'key1', botId: '1', conn: connOld });
+
+			// settle run-1（清理 listener）
+			store.settle('key1');
+			expect(connOld.off).toHaveBeenCalled();
+
+			// 注册 run-2 用新 conn
+			registerRun(store, { runId: 'run-2', runKey: 'key2', botId: '1', conn: connNew });
+			expect(connNew.on).toHaveBeenCalledWith('event:agent', expect.any(Function));
 		});
 	});
 });

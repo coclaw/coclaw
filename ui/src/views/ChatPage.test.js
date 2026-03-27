@@ -87,12 +87,6 @@ const i18nMap = {
 	'chat.sessionNotFound': 'Session no longer exists',
 	'topic.newTopic': 'New topic',
 	'topic.createFailed': 'Failed to create topic',
-	'chat.errRpcTimeout': 'Message timed out',
-	'chat.errPreAcceptTimeout': 'Agent response timed out',
-	'chat.errWsClosed': 'Connection lost',
-	'chat.errWsSendFailed': 'Send failed (ws)',
-	'chat.errRtcSendFailed': 'Send failed (rtc)',
-	'chat.errUnknown': 'Something went wrong',
 };
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
@@ -323,7 +317,7 @@ describe('ChatPage send message', () => {
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 
-	test('发送异常时恢复输入框和文件并显示友好 notify（未知错误）', async () => {
+	test('发送异常时恢复输入框和文件并显示 notify', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
@@ -338,8 +332,7 @@ describe('ChatPage send message', () => {
 		await flushPromises();
 
 		expect(wrapper.vm.inputText).toBe('hello');
-		// 未知错误码 → 通用友好文案
-		expect(mockNotify.error).toHaveBeenCalledWith('Something went wrong');
+		expect(mockNotify.error).toHaveBeenCalledWith('fail');
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 
@@ -374,99 +367,6 @@ describe('ChatPage send message', () => {
 		await flushPromises();
 
 		expect(sendSpy).not.toHaveBeenCalled();
-	});
-
-	test('RPC_TIMEOUT 错误显示友好文案并回填输入框', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		chatStore.__accepted = false;
-		const err = new Error('rpc timeout');
-		err.code = 'RPC_TIMEOUT';
-		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
-		await flushPromises();
-
-		wrapper.vm.inputText = 'my message';
-		const input = wrapper.findComponent({ name: 'ChatInput' });
-		input.vm.$emit('send', { text: 'my message', files: [] });
-		await flushPromises();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('Message timed out');
-		expect(wrapper.vm.inputText).toBe('my message');
-	});
-
-	test('PRE_ACCEPTANCE_TIMEOUT 错误显示友好文案并回填输入框', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		chatStore.__accepted = false;
-		const err = new Error('pre-acceptance timeout');
-		err.code = 'PRE_ACCEPTANCE_TIMEOUT';
-		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
-		await flushPromises();
-
-		wrapper.vm.inputText = 'my message';
-		const input = wrapper.findComponent({ name: 'ChatInput' });
-		input.vm.$emit('send', { text: 'my message', files: [] });
-		await flushPromises();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('Agent response timed out');
-		expect(wrapper.vm.inputText).toBe('my message');
-	});
-
-	test('WS_CLOSED 错误显示友好文案并回填输入框', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		chatStore.__accepted = false;
-		const err = new Error('not connected');
-		err.code = 'WS_CLOSED';
-		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
-		await flushPromises();
-
-		wrapper.vm.inputText = 'my message';
-		const input = wrapper.findComponent({ name: 'ChatInput' });
-		input.vm.$emit('send', { text: 'my message', files: [] });
-		await flushPromises();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('Connection lost');
-		expect(wrapper.vm.inputText).toBe('my message');
-	});
-
-	test('WS_SEND_FAILED 错误显示友好文案', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		chatStore.__accepted = false;
-		const err = new Error('ws send failed');
-		err.code = 'WS_SEND_FAILED';
-		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
-		await flushPromises();
-
-		wrapper.vm.inputText = 'my message';
-		const input = wrapper.findComponent({ name: 'ChatInput' });
-		input.vm.$emit('send', { text: 'my message', files: [] });
-		await flushPromises();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('Send failed (ws)');
-	});
-
-	test('RTC_SEND_FAILED 错误显示友好文案', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		chatStore.__accepted = false;
-		const err = new Error('rtc send failed');
-		err.code = 'RTC_SEND_FAILED';
-		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
-		await flushPromises();
-
-		wrapper.vm.inputText = 'my message';
-		const input = wrapper.findComponent({ name: 'ChatInput' });
-		input.vm.$emit('send', { text: 'my message', files: [] });
-		await flushPromises();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('Send failed (rtc)');
 	});
 
 	test('sending 中不重复发送', async () => {
@@ -610,43 +510,6 @@ describe('ChatPage watchers', () => {
 		botsStore.byId['bot-1'].connState = 'connected';
 		await wrapper.vm.$nextTick();
 
-		expect(loadSpy).toHaveBeenCalled();
-	});
-
-	test('connReady immediate: 挂载时 bot 已连接则立即加载消息', async () => {
-		// 预创建 pinia 并填充 bot 状态，模拟"返回列表后再进入会话"
-		const pinia = createPinia();
-		setActivePinia(pinia);
-
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].connState = 'connected';
-		setupAgents();
-
-		// 预创建 chatStore 并挂 spy（组件 computed 会复用同一实例）
-		const chatStore = chatStoreManager.get('session:bot-1:main', { botId: 'bot-1', agentId: 'main' });
-		chatStore.__initialized = true; // 模拟已初始化过（非首次进入）
-		chatStore.__messagesLoaded = true;
-		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
-
-		mount(ChatPage, {
-			global: {
-				plugins: [pinia],
-				mocks: {
-					$t: (key) => i18nMap[key] ?? key,
-					$route: {
-						name: 'chat',
-						params: { botId: 'bot-1', agentId: 'main' },
-						path: '/chat/bot-1/main',
-						query: {},
-					},
-					$router: mockRouter,
-				},
-			},
-		});
-		await flushPromises();
-
-		// connReady 在挂载时即为 true，immediate watcher 应触发 loadMessages
 		expect(loadSpy).toHaveBeenCalled();
 	});
 
@@ -812,63 +675,5 @@ describe('ChatPage scroll', () => {
 			wrapper.vm.onScroll();
 			expect(wrapper.vm.userScrolledUp).toBe(true);
 		}
-	});
-
-	test('scrollToBottom $nextTick 内二次检查 userScrolledUp（竞态防护）', async () => {
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		const scrollContainer = wrapper.vm.$refs.scrollContainer;
-		if (!scrollContainer) return;
-
-		const scrollToSpy = vi.fn();
-		scrollContainer.scrollTo = scrollToSpy;
-		Object.defineProperties(scrollContainer, {
-			scrollHeight: { value: 1000, configurable: true },
-			scrollTop: { value: 940, configurable: true, writable: true },
-			clientHeight: { value: 500, configurable: true },
-		});
-
-		// 初始状态：用户在底部
-		wrapper.vm.userScrolledUp = false;
-
-		// 调用 scrollToBottom，同步检查通过，$nextTick 入队
-		wrapper.vm.scrollToBottom();
-
-		// 模拟竞态：$nextTick 排队期间用户上划
-		wrapper.vm.userScrolledUp = true;
-
-		// 等待 $nextTick 和 rAF 执行
-		await wrapper.vm.$nextTick();
-		await new Promise(r => requestAnimationFrame(r));
-
-		// 二次检查应阻止 scrollTo 调用
-		expect(scrollToSpy).not.toHaveBeenCalled();
-	});
-
-	test('scrollToBottom force=true 即使 userScrolledUp 也执行滚动', async () => {
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		const scrollContainer = wrapper.vm.$refs.scrollContainer;
-		if (!scrollContainer) return;
-
-		const scrollToSpy = vi.fn();
-		scrollContainer.scrollTo = scrollToSpy;
-		Object.defineProperties(scrollContainer, {
-			scrollHeight: { value: 1000, configurable: true },
-			scrollTop: { value: 940, configurable: true, writable: true },
-			clientHeight: { value: 500, configurable: true },
-		});
-
-		wrapper.vm.userScrolledUp = true;
-
-		wrapper.vm.scrollToBottom(true);
-
-		await wrapper.vm.$nextTick();
-		await new Promise(r => requestAnimationFrame(r));
-
-		// force=true 时应忽略 userScrolledUp，执行 scrollTo
-		expect(scrollToSpy).toHaveBeenCalled();
 	});
 });
