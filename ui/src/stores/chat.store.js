@@ -865,6 +865,11 @@ export function createChatStore(storeKey, opts = {}) {
 			async loadNextHistorySession() {
 				if (this.topicMode || this.historyExhausted || this.historyLoading) return false;
 
+				// historySessionIds 尚未初始化时不能判定 exhausted
+				if (this.historySessionIds.length === 0 && !this.__messagesLoaded) {
+					return false;
+				}
+
 				// 跳过已在 segments 中的 session
 				while (this.__historyLoadedCount < this.historySessionIds.length) {
 					const candidate = this.historySessionIds[this.__historyLoadedCount];

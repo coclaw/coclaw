@@ -877,36 +877,8 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		test('conn.on 和 conn.off 以相同函数引用调用 "event:agent"', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-
-			const conn = mockConn();
-			conn.request.mockImplementation((method, params, options) => {
-				if (method === 'agent') {
-					options?.onAccepted?.({ runId: 'run-ref' });
-					return Promise.resolve({ status: 'ok' });
-				}
-				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
-				return Promise.resolve(null);
-			});
-			mockConnections.set('1', conn);
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.botId = '1';
-			store.chatSessionKey = 'agent:main:main';
-
-			await store.sendMessage('hello');
-
-			const onCalls = conn.on.mock.calls.filter((c) => c[0] === 'event:agent');
-			const offCalls = conn.off.mock.calls.filter((c) => c[0] === 'event:agent');
-			expect(onCalls).toHaveLength(1);
-			expect(offCalls).toHaveLength(1);
-			// 验证传入的函数引用相同
-			expect(onCalls[0][1]).toBe(offCalls[0][1]);
-		});
+		// event:agent 监听器已由 botsStore.__bridgeConn 集中管理
+		// register 不再自行注册/注销 conn.on('event:agent')，相关测试已移至 agent-runs.store.test.js
 	});
 
 	// =====================================================================
@@ -1538,9 +1510,10 @@ describe('useChatStore', () => {
 			expect(ok).toBe(false);
 		});
 
-		test('无更多 session 时设置 historyExhausted', async () => {
+		test('无更多 session 时设置 historyExhausted（消息已加载）', async () => {
 			const store = useChatStore();
 			store.historySessionIds = [];
+			store.__messagesLoaded = true;
 
 			const ok = await store.loadNextHistorySession();
 			expect(ok).toBe(false);
@@ -1620,6 +1593,31 @@ describe('useChatStore', () => {
 			const ok = await store.loadNextHistorySession();
 			expect(ok).toBe(false);
 			expect(store.__historyLoadedCount).toBe(1);
+			expect(store.historyExhausted).toBe(true);
+		});
+
+		test('消息未加载完成时空 historySessionIds 不设 exhausted', async () => {
+			const store = useChatStore();
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			// __messagesLoaded 默认 false，historySessionIds 默认 []
+			expect(store.__messagesLoaded).toBe(false);
+			expect(store.historySessionIds).toEqual([]);
+
+			const ok = await store.loadNextHistorySession();
+			expect(ok).toBe(false);
+			expect(store.historyExhausted).toBe(false); // 不应被置 true
+		});
+
+		test('消息已加载后空 historySessionIds 正常设 exhausted', async () => {
+			const store = useChatStore();
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.__messagesLoaded = true;
+			store.historySessionIds = [];
+
+			const ok = await store.loadNextHistorySession();
+			expect(ok).toBe(false);
 			expect(store.historyExhausted).toBe(true);
 		});
 	});
