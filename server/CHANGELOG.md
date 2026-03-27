@@ -1,11 +1,5 @@
 # @coclaw/server
 
-## 0.5.3
-
-### Patch Changes
-
-- feat: 管理员仪表盘新增最新注册用户列表；服务端新增插件版本号返回及 loginName 查询
-
 ## 0.5.1
 
 ### Patch Changes

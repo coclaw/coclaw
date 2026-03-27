@@ -1,5 +1,4 @@
 import { RTCPeerConnection as WeriftRTCPeerConnection } from 'werift';
-import { chunkAndSend, createReassembler } from './utils/dc-chunking.js';
 
 /**
  * 管理多个 WebRTC PeerConnection（以 connId 为粒度）。
@@ -10,19 +9,15 @@ export class WebRtcPeer {
 	 * @param {object} opts
 	 * @param {function} opts.onSend - 将信令消息交给 RealtimeBridge 发送
 	 * @param {function} [opts.onRequest] - DataChannel 收到 req 消息时的回调 (payload, connId) => void
-	 * @param {function} [opts.onFileRpc] - rpc DC 上 coclaw.file.* 请求的回调 (payload, sendFn, connId) => void
-	 * @param {function} [opts.onFileChannel] - file:<transferId> DataChannel 的回调 (dc, connId) => void
 	 * @param {object} [opts.logger] - pino 风格 logger
 	 * @param {function} [opts.PeerConnection] - 可替换的构造函数（测试用）
 	 */
-	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection }) {
+	constructor({ onSend, onRequest, logger, PeerConnection }) {
 		this.__onSend = onSend;
 		this.__onRequest = onRequest;
-		this.__onFileRpc = onFileRpc;
-		this.__onFileChannel = onFileChannel;
 		this.logger = logger ?? console;
 		this.__PeerConnection = PeerConnection ?? WeriftRTCPeerConnection;
-		/** @type {Map<string, { pc: object, rpcChannel: object|null, remoteMaxMessageSize: number, nextMsgId: number }>} */
+		/** @type {Map<string, { pc: object, rpcChannel: object|null }>} */
 		this.__sessions = new Map();
 	}
 
@@ -46,9 +41,6 @@ export class WebRtcPeer {
 		const session = this.__sessions.get(connId);
 		if (!session) return;
 		this.__sessions.delete(connId);
-		// 先 detach 事件，防止 pc.close() 异步触发 onconnectionstatechange 删除新 session
-		session.pc.onconnectionstatechange = null;
-		session.pc.onicecandidate = null;
 		await session.pc.close();
 		this.logger.info?.(`[coclaw/rtc] [${connId}] closed`);
 	}
@@ -59,50 +51,20 @@ export class WebRtcPeer {
 		await Promise.all(closing);
 	}
 
-	/** 向所有已打开的 rpcChannel 广播（大消息自动分片） */
+	/** 向所有已打开的 rpcChannel 广播 */
 	broadcast(payload) {
-		const jsonStr = JSON.stringify(payload);
+		const data = JSON.stringify(payload);
 		for (const [connId, session] of this.__sessions) {
 			const dc = session.rpcChannel;
 			if (dc?.readyState === 'open') {
-				try {
-					chunkAndSend(dc, jsonStr, session.remoteMaxMessageSize, () => session.nextMsgId++, this.logger);
-				} catch (err) {
-					this.__logDebug(`[${connId}] broadcast send failed: ${err.message}`);
-				}
+				try { dc.send(data); }
+				catch (err) { this.__logDebug(`[${connId}] broadcast send failed: ${err.message}`); }
 			}
 		}
 	}
 
 	async __handleOffer(msg) {
 		const connId = msg.fromConnId;
-		const isIceRestart = !!msg.payload?.iceRestart;
-
-		// ICE restart：在现有 PC 上重新协商，保持 DTLS session
-		if (isIceRestart) {
-			const existing = this.__sessions.get(connId);
-			if (existing) {
-				this.logger.info?.(`[coclaw/rtc] ICE restart offer from ${connId}, renegotiating`);
-				try {
-					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
-					const answer = await existing.pc.createAnswer();
-					await existing.pc.setLocalDescription(answer);
-					this.__onSend({
-						type: 'rtc:answer',
-						toConnId: connId,
-						payload: { sdp: answer.sdp },
-					});
-					this.logger.info?.(`[coclaw/rtc] ICE restart answer sent to ${connId}`);
-					return;
-				} catch (err) {
-					// ICE restart 协商失败 → 回退到 full rebuild
-					this.logger.warn?.(`[coclaw/rtc] ICE restart failed for ${connId}, falling back to rebuild: ${err?.message}`);
-					await this.closeByConnId(connId);
-				}
-			}
-			// 无现有 session 或 ICE restart 失败 → 按 full rebuild 继续
-		}
-
 		this.logger.info?.(`[coclaw/rtc] offer received from ${connId}, creating answer`);
 
 		// 同一 connId 重复 offer → 先关闭旧连接
@@ -126,12 +88,7 @@ export class WebRtcPeer {
 		}
 
 		const pc = new this.__PeerConnection({ iceServers });
-
-		// 从 SDP 解析对端 maxMessageSize（用于分片决策）
-		const mmsMatch = msg.payload.sdp?.match(/a=max-message-size:(\d+)/);
-		const remoteMaxMessageSize = mmsMatch ? parseInt(mmsMatch[1], 10) : 65536;
-
-		const session = { pc, rpcChannel: null, remoteMaxMessageSize, nextMsgId: 1 };
+		const session = { pc, rpcChannel: null };
 		this.__sessions.set(connId, session);
 
 		// ICE candidate → 发给 UI
@@ -148,24 +105,18 @@ export class WebRtcPeer {
 			});
 		};
 
-		// 连接状态变更（校验 pc 归属，防止旧 PC 异步回调删除新 session）
+		// 连接状态变更
 		pc.onconnectionstatechange = () => {
 			const state = pc.connectionState;
 			this.logger.info?.(`[coclaw/rtc] [${connId}] connectionState: ${state}`);
 			if (state === 'connected') {
 				const nominated = pc.iceTransports?.[0]?.connection?.nominated;
 				if (nominated) {
-					const localC = nominated.localCandidate;
-					const remoteC = nominated.remoteCandidate;
-					const localInfo = `${localC?.type ?? '?'} ${localC?.host ?? '?'}:${localC?.port ?? '?'}`;
-					const remoteInfo = `${remoteC?.type ?? '?'} ${remoteC?.host ?? '?'}:${remoteC?.port ?? '?'}`;
-					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
+					const type = nominated.localCandidate?.type ?? 'unknown';
+					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE connected via ${type}`);
 				}
 			} else if (state === 'failed' || state === 'closed') {
-				const cur = this.__sessions.get(connId);
-				if (cur && cur.pc === pc) {
-					this.__sessions.delete(connId);
-				}
+				this.__sessions.delete(connId);
 			}
 		};
 
@@ -175,8 +126,6 @@ export class WebRtcPeer {
 			if (channel.label === 'rpc') {
 				session.rpcChannel = channel;
 				this.__setupDataChannel(connId, channel);
-			} else if (channel.label.startsWith('file:')) {
-				this.__onFileChannel?.(channel, connId);
 			}
 		};
 
@@ -194,10 +143,7 @@ export class WebRtcPeer {
 			this.logger.info?.(`[coclaw/rtc] answer sent to ${connId}`);
 		} catch (err) {
 			// SDP 协商失败 → 清理已入 Map 的 session，避免泄漏
-			const cur = this.__sessions.get(connId);
-			if (cur && cur.pc === pc) {
-				this.__sessions.delete(connId);
-			}
+			this.__sessions.delete(connId);
 			await pc.close().catch(() => {});
 			throw err;
 		}
@@ -215,47 +161,25 @@ export class WebRtcPeer {
 	}
 
 	__setupDataChannel(connId, dc) {
-		const reassembler = createReassembler((jsonStr) => {
-			const payload = JSON.parse(jsonStr);
-			if (payload.type === 'req') {
-				// coclaw.file.* 方法本地处理，不转发 gateway
-				if (payload.method?.startsWith('coclaw.file.') && this.__onFileRpc) {
-					const session = this.__sessions.get(connId);
-					const sendFn = (response) => {
-						try {
-							chunkAndSend(
-								dc, JSON.stringify(response),
-								session?.remoteMaxMessageSize ?? 65536,
-								() => session.nextMsgId++,
-								this.logger,
-							);
-						} catch (err) {
-							this.__logDebug(`[${connId}] sendFn failed: ${err.message}`);
-						}
-					};
-					this.__onFileRpc(payload, sendFn, connId);
-				} else {
-					this.__onRequest?.(payload, connId);
-				}
-			} else {
-				this.__logDebug(`[${connId}] unknown DC message type: ${payload.type}`);
-			}
-		}, { logger: this.logger });
-
 		dc.onopen = () => {
 			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" opened`);
 		};
 		dc.onclose = () => {
 			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" closed`);
-			reassembler.reset();
 			const session = this.__sessions.get(connId);
 			if (session && dc.label === 'rpc') session.rpcChannel = null;
 		};
 		dc.onmessage = (event) => {
 			try {
-				reassembler.feed(event.data);
+				const raw = typeof event.data === 'string' ? event.data : event.data.toString();
+				const payload = JSON.parse(raw);
+				if (payload.type === 'req') {
+					this.__onRequest?.(payload, connId);
+				} else {
+					this.__logDebug(`[${connId}] unknown DC message type: ${payload.type}`);
+				}
 			} catch (err) {
-				this.logger.warn?.(`[coclaw/rtc] [${connId}] DC message error: ${err.message}`);
+				this.logger.warn?.(`[coclaw/rtc] [${connId}] DC message parse failed: ${err.message}`);
 			}
 		};
 	}

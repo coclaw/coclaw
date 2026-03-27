@@ -1,12 +1,5 @@
 # @coclaw/ui
 
-## 0.9.4
-
-### Patch Changes
-
-- feat: 管理员仪表盘新增最新注册用户列表；服务端新增插件版本号返回及 loginName 查询
-- fix: 管理员仪表盘修复版本号显示、用户名为空、在线数未展示、文案优化；Dashboard 频道名称显示及花费隐藏；统一 **APP_VERSION** 变量
-
 ## 0.9.0
 
 ### Minor Changes

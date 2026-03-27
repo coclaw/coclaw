@@ -28,35 +28,16 @@
 					</div>
 				</div>
 
-				<!-- 连接信息 + 解绑 -->
-				<div class="flex items-center gap-x-3 gap-y-1 px-1">
-					<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-						<span>{{ connLabel(bot.id) }}</span>
-						<button
-							v-if="hasConnDetail(bot.id)"
-							class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
-							@click="toggleDetail(bot.id)"
-						>
-							{{ $t('bots.conn.detailTitle') }}
-							<UIcon :name="expandedDetails[bot.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
-						</button>
-					</div>
-					<div class="ml-auto">
-						<UButton
-							color="error"
-							variant="soft"
-							size="sm"
-							:loading="unbindingId === bot.id"
-							@click="onUnbindByUser(bot.id)"
-						>
-							{{ $t('bots.unbind') }}
-						</UButton>
-					</div>
-				</div>
-				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted">
-					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol.toUpperCase() }}</p>
-					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol.toUpperCase() }}</p>
-					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
+				<div class="flex justify-end">
+					<UButton
+						color="error"
+						variant="soft"
+						size="sm"
+						:loading="unbindingId === bot.id"
+						@click="onUnbindByUser(bot.id)"
+					>
+						{{ $t('bots.unbind') }}
+					</UButton>
 				</div>
 
 				<div class="columns-1 gap-4 sm:columns-2 lg:columns-3 [&>*]:mb-4 [&>*]:break-inside-avoid">
@@ -97,7 +78,6 @@ export default {
 			unbindingId: '',
 			botsStore: null,
 			dashboardStore: null,
-			expandedDetails: {},
 		};
 	},
 	computed: {
@@ -108,72 +88,14 @@ export default {
 	async mounted() {
 		this.botsStore = useBotsStore();
 		this.dashboardStore = useDashboardStore();
-
-		this.__lastResumeAt = 0;
-		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-			this.loadData();
-		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
-		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
-
 		await this.loadData();
-	},
-	beforeUnmount() {
-		if (this.__onResume) {
-			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 	},
 	methods: {
 		getDashboardData(botId) {
 			return this.dashboardStore?.getDashboard(String(botId)) ?? null;
 		},
-		connLabel(botId) {
-			const id = String(botId);
-			const bot = this.botsStore?.byId[id];
-			if (!bot) return this.$t('bots.conn.ws');
-			const mode = bot.transportMode;
-			if (mode === 'rtc') {
-				if (bot.rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
-				if (bot.rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
-				const info = bot.rtcTransportInfo;
-				if (!info) return this.$t('bots.conn.rtcConnecting');
-				if (info.localType === 'relay') {
-					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
-					return rp === 'udp'
-						? this.$t('bots.conn.rtcRelay')
-						: this.$t('bots.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
-				}
-				const isLan = info.localType === 'host';
-				const proto = (info.localProtocol ?? 'udp').toLowerCase();
-				if (proto === 'udp') {
-					return this.$t(isLan ? 'bots.conn.rtcLan' : 'bots.conn.rtcP2P');
-				}
-				const key = isLan ? 'bots.conn.rtcLanProto' : 'bots.conn.rtcP2PProto';
-				return this.$t(key, { protocol: proto.toUpperCase() });
-			}
-			return this.$t('bots.conn.ws');
-		},
-		hasConnDetail(botId) {
-			return !!this.botsStore?.byId[String(botId)]?.rtcTransportInfo;
-		},
-		getConnDetail(botId) {
-			return this.botsStore?.byId[String(botId)]?.rtcTransportInfo ?? null;
-		},
-		toggleDetail(botId) {
-			const id = String(botId);
-			this.expandedDetails = { ...this.expandedDetails, [id]: !this.expandedDetails[id] };
-		},
 		goToAgent(botId, agentId) {
-			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
+			if (this.botsStore?.pluginVersionOk[String(botId)] === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 			}
 			this.$router.push({

@@ -55,4 +55,3 @@ ref-projects
 # Prisma generated output (rebuild via `prisma generate`)
 server/src/generated/
 docs/product/
-docs/study/

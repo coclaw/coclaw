@@ -29,19 +29,11 @@
 					<div class="rounded-xl bg-elevated p-4">
 						<div class="flex items-center justify-between text-sm">
 							<span class="text-dimmed">{{ $t('adminDashboard.totalBots') }}</span>
-							<span class="font-medium">{{ data.bots.total }} / {{ $t('adminDashboard.onlineBots') }} {{ data.bots.online }}</span>
+							<span class="font-medium">{{ data.bots.total }}</span>
 						</div>
 						<div class="mt-2 flex items-center justify-between text-sm">
 							<span class="text-dimmed">{{ $t('adminDashboard.serverVersion') }}</span>
 							<span class="font-medium">v{{ data.version.server }}</span>
-						</div>
-						<div class="mt-2 flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.uiVersion') }}</span>
-							<span class="font-medium">v{{ uiVersion }}</span>
-						</div>
-						<div class="mt-2 flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.pluginVersion') }}</span>
-							<span class="font-medium">v{{ data.version.plugin }}</span>
 						</div>
 					</div>
 
@@ -57,28 +49,9 @@
 							>
 								<span>
 									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name || user.loginName || user.id }}</span>
+									<span>{{ user.name }}</span>
 								</span>
 								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.lastLoginAt) }}</span>
-							</li>
-						</ul>
-					</div>
-
-					<!-- 最新注册用户 -->
-					<div class="rounded-xl bg-elevated p-4">
-						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.latestRegisteredUsers') }}</h2>
-						<p v-if="!data.latestRegisteredUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
-						<ul v-else class="space-y-2">
-							<li
-								v-for="(user, idx) in data.latestRegisteredUsers"
-								:key="user.id"
-								class="flex items-center justify-between text-sm"
-							>
-								<span>
-									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name || user.loginName || user.id }}</span>
-								</span>
-								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.createdAt) }}</span>
 							</li>
 						</ul>
 					</div>
@@ -103,32 +76,10 @@ export default {
 		return {
 			loading: false,
 			data: null,
-			uiVersion: __APP_VERSION__,
 		};
 	},
 	async mounted() {
-		this.__lastResumeAt = 0;
-		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-			this.loadData();
-		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
-		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
-
 		await this.loadData();
-	},
-	beforeUnmount() {
-		if (this.__onResume) {
-			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 	},
 	methods: {
 		async loadData() {

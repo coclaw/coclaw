@@ -196,8 +196,8 @@ export const useDashboardStore = defineStore('dashboard', {
 
 				// 构建实例总览
 				const botsStore = useBotsStore();
-				const bot = botsStore.byId[id];
-				const pluginInfo = bot?.pluginInfo ?? {};
+				const bot = botsStore.items.find(b => String(b.id) === id);
+				const pluginInfo = botsStore.pluginInfo[id] ?? {};
 
 				entry.instance = {
 					name: bot?.name || 'OpenClaw',
