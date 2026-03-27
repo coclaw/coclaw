@@ -271,8 +271,8 @@ export function createChatStore(storeKey, opts = {}) {
 					const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
 					const wrapped = wrapOcMessages(flatMsgs);
 
-					// 保留本地消息（streaming/乐观消息）
-					const localMsgs = this.messages.filter((m) => m._local);
+					// 仅保留 streaming 中的 bot 占位；用户乐观消息已被服务端持久化
+					const localMsgs = this.messages.filter((m) => m._local && m._streaming);
 					const prevNonLocalCount = this.messages.length - localMsgs.length;
 
 					this.messages = [...wrapped, ...localMsgs];

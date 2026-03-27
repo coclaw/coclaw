@@ -2035,6 +2035,35 @@ describe('useChatStore', () => {
 			expect(localMsg.id).toBe('__local_bot_1');
 		});
 
+		test('loadOlderMessages: 用户乐观消息（_local && !_streaming）不重复', async () => {
+			const conn = mockConn();
+			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			setupConnForLoad(conn, { flatMessages: initialMsgs });
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			await store.activate();
+
+			// 模拟用户发送后的乐观消息（_local=true, _streaming 未设置）
+			store.messages = [
+				...store.messages,
+				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
+			];
+
+			// 服务端返回更多消息，其中已包含用户消息
+			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
+				return Promise.resolve(null);
+			});
+
+			await store.loadOlderMessages();
+			// 用户乐观消息不应被保留，只有服务端返回的 80 条
+			expect(store.messages).toHaveLength(80);
+			const localMsg = store.messages.find((m) => m._local);
+			expect(localMsg).toBeFalsy();
+		});
+
 		test('loadOlderMessages: topic 模式下不触发', async () => {
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
