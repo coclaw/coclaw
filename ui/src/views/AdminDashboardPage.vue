@@ -107,28 +107,7 @@ export default {
 		};
 	},
 	async mounted() {
-		this.__lastResumeAt = 0;
-		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-			this.loadData();
-		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
-		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
-
 		await this.loadData();
-	},
-	beforeUnmount() {
-		if (this.__onResume) {
-			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 	},
 	methods: {
 		async loadData() {

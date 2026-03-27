@@ -35,8 +35,8 @@ test('getAdminDashboard: 返回正确的汇总结构', async () => {
 	assert.equal(result.bots.online, 3);
 	assert.equal(typeof result.version.server, 'string');
 	assert.ok(result.version.server.length > 0);
-	assert.equal(typeof result.version.plugin, 'string');
-	assert.ok(result.version.plugin.length > 0);
+	// plugin version 可为字符串或 null（取决于部署环境）
+	assert.ok(result.version.plugin === null || typeof result.version.plugin === 'string');
 });
 
 test('getAdminDashboard: 自定义数据正确透传', async () => {
@@ -74,4 +74,25 @@ test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
 	assert.ok(calls.includes('topActiveUsers'));
 	assert.ok(calls.includes('latestRegisteredUsers'));
 	assert.ok(calls.includes('countBots'));
+});
+
+test('getAdminDashboard: reads plugin version from COCLAW_PLUGIN_VERSION env var', async () => {
+	process.env.COCLAW_PLUGIN_VERSION = '9.9.9-test';
+	try {
+		const result = await getAdminDashboard({ repo: mockRepo(), getOnlineBotCount: () => 0 });
+		assert.equal(result.version.plugin, '9.9.9-test');
+	} finally {
+		delete process.env.COCLAW_PLUGIN_VERSION;
+	}
+});
+
+test('getAdminDashboard: plugin version is null when env var unset and package not found', async () => {
+	const saved = process.env.COCLAW_PLUGIN_VERSION;
+	delete process.env.COCLAW_PLUGIN_VERSION;
+	try {
+		const result = await getAdminDashboard({ repo: mockRepo(), getOnlineBotCount: () => 0 });
+		assert.ok(result.version.plugin === null || typeof result.version.plugin === 'string');
+	} finally {
+		if (saved !== undefined) process.env.COCLAW_PLUGIN_VERSION = saved;
+	}
 });

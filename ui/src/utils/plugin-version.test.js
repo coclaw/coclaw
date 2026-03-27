@@ -18,7 +18,7 @@ describe('checkPluginVersion', () => {
 		const conn = mockConn({ version: '0.4.0', clawVersion: '2026.3.14' });
 		const result = await checkPluginVersion(conn);
 		expect(result).toEqual({ ok: true, version: '0.4.0', clawVersion: '2026.3.14' });
-		expect(conn.request).toHaveBeenCalledWith('coclaw.info', {}, { timeout: 10_000 });
+		expect(conn.request).toHaveBeenCalledWith('coclaw.info', {});
 	});
 
 	test('版本高于最低要求时返回 ok=true', async () => {

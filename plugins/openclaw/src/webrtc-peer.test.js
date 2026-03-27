@@ -276,12 +276,12 @@ test('WebRtcPeer: DataChannel onmessage 无效 JSON → warn', async () => {
 	pc.ondatachannel({ channel: fakeChannel });
 
 	fakeChannel.onmessage({ data: 'not-json' });
-	assert.ok(warns.some((l) => l.includes('DC message error')));
+	assert.ok(warns.some((l) => l.includes('DC message parse failed')));
 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DataChannel onmessage string data → reassembler 正常解析', async () => {
+test('WebRtcPeer: DataChannel onmessage Buffer data → 正常解析', async () => {
 	const PC = MockPCFactory();
 	const requests = [];
 	const peer = new WebRtcPeer({
@@ -296,9 +296,10 @@ test('WebRtcPeer: DataChannel onmessage string data → reassembler 正常解析
 	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
 	pc.ondatachannel({ channel: fakeChannel });
 
-	// werift DataChannel 对 string PPID 传递 string 类型
+	// 模拟 Buffer data
 	const reqPayload = { type: 'req', id: 'ui-2', method: 'test', params: {} };
-	fakeChannel.onmessage({ data: JSON.stringify(reqPayload) });
+	const buf = Buffer.from(JSON.stringify(reqPayload));
+	fakeChannel.onmessage({ data: buf });
 
 	assert.equal(requests.length, 1);
 	assert.deepEqual(requests[0].payload, reqPayload);
@@ -399,15 +400,12 @@ test('WebRtcPeer: connectionState connected 记录 candidate 类型', async () =
 	await peer.handleSignaling(makeOffer('c_040'));
 	const pc = PC.instances[0];
 
-	// 设置 nominated（含 local + remote 候选信息）
-	pc.iceTransports[0].connection.nominated = {
-		localCandidate: { type: 'srflx', host: '1.2.3.4', port: 12345 },
-		remoteCandidate: { type: 'host', host: '192.168.0.1', port: 54321 },
-	};
+	// 设置 nominated
+	pc.iceTransports[0].connection.nominated = { localCandidate: { type: 'srflx' } };
 	pc.connectionState = 'connected';
 	pc.onconnectionstatechange();
 
-	assert.ok(logs.some((l) => l.includes('ICE nominated: local=srflx 1.2.3.4:12345 remote=host 192.168.0.1:54321')));
+	assert.ok(logs.some((l) => l.includes('ICE connected via srflx')));
 });
 
 test('WebRtcPeer: connectionState connected 无 nominated 不崩溃', async () => {
@@ -437,11 +435,11 @@ test('WebRtcPeer: connectionState connected 有 nominated 但无 localCandidate.
 	await peer.handleSignaling(makeOffer('c_042'));
 	const pc = PC.instances[0];
 
-	pc.iceTransports[0].connection.nominated = { localCandidate: {}, remoteCandidate: {} };
+	pc.iceTransports[0].connection.nominated = { localCandidate: {} };
 	pc.connectionState = 'connected';
 	pc.onconnectionstatechange();
 
-	assert.ok(logs.some((l) => l.includes('ICE nominated: local=? ?:? remote=? ?:?')));
+	assert.ok(logs.some((l) => l.includes('ICE connected via unknown')));
 });
 
 test('WebRtcPeer: connectionState failed/closed 清理 session', async () => {
@@ -853,449 +851,5 @@ test('WebRtcPeer: coclaw.file.* 无 onFileRpc 时走 onRequest', async () => {
 	// 无 onFileRpc 时走 onRequest
 	assert.equal(requests.length, 1);
 
-	await peer.closeAll();
-});
-
-// --- ICE restart 测试 ---
-
-test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
-	const sent = [];
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
-		onSend: (msg) => sent.push(msg),
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-
-	// 先建立正常连接
-	await peer.handleSignaling(makeOffer('c_ir01'));
-	assert.equal(PC.instances.length, 1);
-	const firstPc = PC.instances[0];
-	sent.length = 0;
-
-	// 发送 ICE restart offer
-	await peer.handleSignaling({
-		type: 'rtc:offer',
-		fromConnId: 'c_ir01',
-		payload: { sdp: 'ice-restart-sdp', iceRestart: true },
-	});
-
-	// 不应创建新 PC
-	assert.equal(PC.instances.length, 1);
-	// 应在现有 PC 上设置新的 remote description
-	assert.equal(firstPc.setRemoteDescription.__called, undefined);
-	// 应发送 answer
-	assert.equal(sent.length, 1);
-	assert.equal(sent[0].type, 'rtc:answer');
-	assert.equal(sent[0].toConnId, 'c_ir01');
-
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: ICE restart 无现有 session 时回退到 full rebuild', async () => {
-	const sent = [];
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
-		onSend: (msg) => sent.push(msg),
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-
-	// 直接发送 ICE restart offer（无现有 session）
-	await peer.handleSignaling({
-		type: 'rtc:offer',
-		fromConnId: 'c_ir02',
-		payload: { sdp: 'ice-restart-sdp', iceRestart: true },
-	});
-
-	// 应创建新 PC（full rebuild 回退）
-	assert.equal(PC.instances.length, 1);
-	assert.equal(sent.length, 1);
-	assert.equal(sent[0].type, 'rtc:answer');
-
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: ICE restart 协商失败时回退到 full rebuild', async () => {
-	const sent = [];
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
-		onSend: (msg) => sent.push(msg),
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-
-	// 先建立正常连接
-	await peer.handleSignaling(makeOffer('c_ir03'));
-	const firstPc = PC.instances[0];
-	// 让现有 PC 的 setRemoteDescription 失败
-	firstPc.setRemoteDescription = async () => { throw new Error('ICE restart SDP failed'); };
-	sent.length = 0;
-
-	// 发送 ICE restart offer
-	await peer.handleSignaling({
-		type: 'rtc:offer',
-		fromConnId: 'c_ir03',
-		payload: { sdp: 'bad-sdp', iceRestart: true },
-	});
-
-	// 应回退创建新 PC
-	assert.equal(PC.instances.length, 2);
-	// 旧 PC 应已关闭
-	assert.equal(firstPc.connectionState, 'closed');
-	// 新 PC 应发送 answer
-	assert.equal(sent.length, 1);
-	assert.equal(sent[0].type, 'rtc:answer');
-
-	await peer.closeAll();
-});
-
-// --- 竞态保护测试 ---
-
-test('WebRtcPeer: closeByConnId detach 事件防止旧 PC 回调影响新 session', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-
-	await peer.handleSignaling(makeOffer('c_race01'));
-	const oldPc = PC.instances[0];
-
-	// 重复 offer 同一 connId → 关闭旧 PC，创建新 PC
-	await peer.handleSignaling(makeOffer('c_race01'));
-	assert.equal(PC.instances.length, 2);
-
-	// 旧 PC 的 onconnectionstatechange 应已被 detach
-	assert.equal(oldPc.onconnectionstatechange, null);
-	assert.equal(oldPc.onicecandidate, null);
-
-	// 新 session 应存在
-	assert.ok(peer.__sessions.has('c_race01'));
-	assert.equal(peer.__sessions.get('c_race01').pc, PC.instances[1]);
-
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: closeByConnId detach 后旧 PC handler 为 null', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-
-	await peer.handleSignaling(makeOffer('c_race02'));
-	const oldPc = PC.instances[0];
-	// handler 初始不为 null
-	assert.ok(oldPc.onconnectionstatechange !== null);
-	assert.ok(oldPc.onicecandidate !== null);
-
-	// 重复 offer → closeByConnId detach 旧 PC
-	await peer.handleSignaling(makeOffer('c_race02'));
-	const newPc = PC.instances[1];
-
-	// 旧 PC 的 handler 应被 detach
-	assert.equal(oldPc.onconnectionstatechange, null);
-	assert.equal(oldPc.onicecandidate, null);
-
-	// 新 session 仍正常
-	assert.ok(peer.__sessions.has('c_race02'));
-	assert.equal(peer.__sessions.get('c_race02').pc, newPc);
-
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-
-	await peer.handleSignaling(makeOffer('c_race03'));
-	const pc = PC.instances[0];
-	const handler = pc.onconnectionstatechange;
-
-	// 手动替换 session 中的 pc（模拟竞态后的状态）
-	const fakePc = createMockPC();
-	peer.__sessions.set('c_race03', { pc: fakePc, rpcChannel: null });
-
-	// 旧 pc 的 handler 触发 failed
-	pc.connectionState = 'failed';
-	handler();
-
-	// session 不应被删除（因为 pc !== cur.pc）
-	assert.ok(peer.__sessions.has('c_race03'));
-	assert.equal(peer.__sessions.get('c_race03').pc, fakePc);
-
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
-	const PC = MockPCFactory();
-	let callCount = 0;
-	function ConditionalFailPC(opts) {
-		callCount++;
-		const pc = createMockPC();
-		pc.__constructorArgs = opts;
-		if (callCount === 2) {
-			pc.setRemoteDescription = async () => { throw new Error('SDP fail'); };
-		}
-		PC.instances.push(pc);
-		return pc;
-	}
-
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		logger: silentLogger(),
-		PeerConnection: ConditionalFailPC,
-	});
-
-	// 第一次正常
-	await peer.handleSignaling(makeOffer('c_race04'));
-	assert.ok(peer.__sessions.has('c_race04'));
-
-	// 第二次同一 connId 但 SDP 失败
-	await assert.rejects(
-		() => peer.handleSignaling(makeOffer('c_race04')),
-		{ message: 'SDP fail' },
-	);
-	// session 应被清理（第二个 PC 失败）
-	assert.equal(peer.__sessions.has('c_race04'), false);
-});
-
-// --- DataChannel 分片/重组测试 ---
-
-import { HEADER_SIZE, FLAG_BEGIN, FLAG_END, FLAG_MIDDLE } from './utils/dc-chunking.js';
-
-test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
-	await peer.handleSignaling(makeOffer('c_chunk01', 'v=0\r\na=max-message-size:262144\r\n'));
-	const pc = PC.instances[0];
-	const sent = [];
-	const dc = { label: 'rpc', readyState: 'open', send: (d) => sent.push(d), onopen: null, onclose: null, onmessage: null };
-	pc.ondatachannel({ channel: dc });
-
-	peer.broadcast({ type: 'event', event: 'ping' });
-	assert.equal(sent.length, 1);
-	assert.equal(typeof sent[0], 'string');
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: broadcast 大消息自动分片', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
-	// 设置很小的 maxMessageSize 以触发分片
-	await peer.handleSignaling(makeOffer('c_chunk02', 'v=0\r\na=max-message-size:50\r\n'));
-	const pc = PC.instances[0];
-	const sent = [];
-	const dc = { label: 'rpc', readyState: 'open', send: (d) => sent.push(d), onopen: null, onclose: null, onmessage: null };
-	pc.ondatachannel({ channel: dc });
-
-	const largePayload = { type: 'res', data: 'X'.repeat(200) };
-	peer.broadcast(largePayload);
-
-	// 应该分片（多个 Buffer）
-	assert.ok(sent.length > 1);
-	assert.ok(Buffer.isBuffer(sent[0]));
-	assert.equal(sent[0][0], FLAG_BEGIN);
-	assert.equal(sent[sent.length - 1][0], FLAG_END);
-
-	// 每个 chunk ≤ maxMessageSize
-	for (const chunk of sent) {
-		assert.ok(chunk.length <= 50);
-	}
-
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: broadcast 多连接不同 maxMessageSize，各自分片', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
-
-	// 连接 1：maxMessageSize=50（小，需要更多 chunk）
-	await peer.handleSignaling(makeOffer('c_chunk03a', 'v=0\r\na=max-message-size:50\r\n'));
-	const sent1 = [];
-	const dc1 = { label: 'rpc', readyState: 'open', send: (d) => sent1.push(d), onopen: null, onclose: null, onmessage: null };
-	PC.instances[0].ondatachannel({ channel: dc1 });
-
-	// 连接 2：maxMessageSize=200（大，需要更少 chunk）
-	await peer.handleSignaling(makeOffer('c_chunk03b', 'v=0\r\na=max-message-size:200\r\n'));
-	const sent2 = [];
-	const dc2 = { label: 'rpc', readyState: 'open', send: (d) => sent2.push(d), onopen: null, onclose: null, onmessage: null };
-	PC.instances[1].ondatachannel({ channel: dc2 });
-
-	peer.broadcast({ type: 'res', data: 'Y'.repeat(150) });
-
-	assert.ok(sent1.length > sent2.length, `conn1 should have more chunks: ${sent1.length} vs ${sent2.length}`);
-
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: SDP 无 max-message-size 时默认 65536', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
-	await peer.handleSignaling(makeOffer('c_chunk04', 'v=0\r\n')); // 无 max-message-size
-	const session = peer.__sessions.get('c_chunk04');
-	assert.equal(session.remoteMaxMessageSize, 65536);
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: SDP 中正确提取 max-message-size 值', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
-	await peer.handleSignaling(makeOffer('c_chunk05', 'v=0\r\na=max-message-size:131072\r\n'));
-	const session = peer.__sessions.get('c_chunk05');
-	assert.equal(session.remoteMaxMessageSize, 131072);
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: 接收端重组分片消息 → onRequest 收到完整 payload', async () => {
-	const PC = MockPCFactory();
-	const requests = [];
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		onRequest: (payload, connId) => requests.push({ payload, connId }),
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-	await peer.handleSignaling(makeOffer('c_chunk06'));
-	const pc = PC.instances[0];
-	const dc = { label: 'rpc', readyState: 'open', send: () => {}, onopen: null, onclose: null, onmessage: null };
-	pc.ondatachannel({ channel: dc });
-
-	// 构造分片 chunk 序列
-	const original = JSON.stringify({ type: 'req', id: 'ui-99', method: 'test.large', params: { data: 'Z'.repeat(200) } });
-	const bytes = Buffer.from(original, 'utf8');
-	const chunkSize = 50;
-	const total = Math.ceil(bytes.length / chunkSize);
-
-	for (let i = 0; i < total; i++) {
-		const start = i * chunkSize;
-		const end = Math.min(start + chunkSize, bytes.length);
-		const flag = i === 0 ? FLAG_BEGIN : (i === total - 1 ? FLAG_END : FLAG_MIDDLE);
-		const chunk = Buffer.allocUnsafe(HEADER_SIZE + (end - start));
-		chunk[0] = flag;
-		chunk.writeUInt32BE(1, 1); // msgId=1
-		bytes.copy(chunk, HEADER_SIZE, start, end);
-		dc.onmessage({ data: chunk });
-	}
-
-	assert.equal(requests.length, 1);
-	assert.deepEqual(requests[0].payload, JSON.parse(original));
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: 分片 chunk 中夹杂普通 string 消息，各自正确处理', async () => {
-	const PC = MockPCFactory();
-	const requests = [];
-	const debugMsgs = [];
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		onRequest: (payload) => requests.push(payload),
-		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
-		PeerConnection: PC,
-	});
-	await peer.handleSignaling(makeOffer('c_chunk07'));
-	const pc = PC.instances[0];
-	const dc = { label: 'rpc', readyState: 'open', send: () => {}, onopen: null, onclose: null, onmessage: null };
-	pc.ondatachannel({ channel: dc });
-
-	// 大消息分 2 个 chunk
-	const largeMsg = JSON.stringify({ type: 'req', id: 'ui-big', method: 'big', params: { d: 'A'.repeat(100) } });
-	const bytes = Buffer.from(largeMsg, 'utf8');
-	const mid = Math.floor(bytes.length / 2);
-
-	// 小消息（普通 string）
-	const smallMsg = JSON.stringify({ type: 'req', id: 'ui-small', method: 'small', params: {} });
-
-	// BEGIN chunk
-	const begin = Buffer.allocUnsafe(HEADER_SIZE + mid);
-	begin[0] = FLAG_BEGIN;
-	begin.writeUInt32BE(1, 1);
-	bytes.copy(begin, HEADER_SIZE, 0, mid);
-	dc.onmessage({ data: begin });
-
-	// 中间插入普通消息
-	dc.onmessage({ data: smallMsg });
-
-	// END chunk
-	const end = Buffer.allocUnsafe(HEADER_SIZE + (bytes.length - mid));
-	end[0] = FLAG_END;
-	end.writeUInt32BE(1, 1);
-	bytes.copy(end, HEADER_SIZE, mid);
-	dc.onmessage({ data: end });
-
-	// 应收到 2 条请求：先是小消息（string 立即交付），再是大消息（END 时交付）
-	assert.equal(requests.length, 2);
-	assert.equal(requests[0].method, 'small');
-	assert.equal(requests[1].method, 'big');
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: sendFn 大响应也会分片', async () => {
-	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		onFileRpc: (payload, sendFn) => {
-			// 模拟回复大响应
-			sendFn({ type: 'res', id: payload.id, data: 'R'.repeat(200) });
-		},
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-	await peer.handleSignaling(makeOffer('c_chunk08', 'v=0\r\na=max-message-size:80\r\n'));
-	const pc = PC.instances[0];
-	const sent = [];
-	const dc = { label: 'rpc', readyState: 'open', send: (d) => sent.push(d), onopen: null, onclose: null, onmessage: null };
-	pc.ondatachannel({ channel: dc });
-
-	// 发送 file RPC 请求
-	dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'ui-f1', method: 'coclaw.file.read', params: {} }) });
-
-	// sendFn 回复的大响应应该被分片
-	assert.ok(sent.length > 1, `should be chunked, got ${sent.length} sends`);
-	assert.ok(Buffer.isBuffer(sent[0]));
-	assert.equal(sent[0][0], FLAG_BEGIN);
-	assert.equal(sent[sent.length - 1][0], FLAG_END);
-	await peer.closeAll();
-});
-
-test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
-	const PC = MockPCFactory();
-	const requests = [];
-	const peer = new WebRtcPeer({
-		onSend: () => {},
-		onRequest: (payload) => requests.push(payload),
-		logger: silentLogger(),
-		PeerConnection: PC,
-	});
-	await peer.handleSignaling(makeOffer('c_chunk09'));
-	const pc = PC.instances[0];
-	const dc = { label: 'rpc', readyState: 'open', send: () => {}, onopen: null, onclose: null, onmessage: null };
-	pc.ondatachannel({ channel: dc });
-
-	// 发 BEGIN 不发 END
-	const begin = Buffer.allocUnsafe(HEADER_SIZE + 5);
-	begin[0] = FLAG_BEGIN;
-	begin.writeUInt32BE(1, 1);
-	begin.write('hello', HEADER_SIZE);
-	dc.onmessage({ data: begin });
-
-	// 触发 onclose → reassembler 应被 reset
-	dc.onclose();
-
-	// 后续 END 不应重组（reassembler 已清空）
-	const end = Buffer.allocUnsafe(HEADER_SIZE + 5);
-	end[0] = FLAG_END;
-	end.writeUInt32BE(1, 1);
-	end.write('world', HEADER_SIZE);
-	dc.onmessage({ data: end });
-
-	assert.equal(requests.length, 0);
 	await peer.closeAll();
 });

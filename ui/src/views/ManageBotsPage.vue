@@ -108,29 +108,7 @@ export default {
 	async mounted() {
 		this.botsStore = useBotsStore();
 		this.dashboardStore = useDashboardStore();
-
-		this.__lastResumeAt = 0;
-		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-			this.loadData();
-		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
-		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
-
 		await this.loadData();
-	},
-	beforeUnmount() {
-		if (this.__onResume) {
-			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 	},
 	methods: {
 		getDashboardData(botId) {
@@ -138,13 +116,12 @@ export default {
 		},
 		connLabel(botId) {
 			const id = String(botId);
-			const bot = this.botsStore?.byId[id];
-			if (!bot) return this.$t('bots.conn.ws');
-			const mode = bot.transportMode;
+			const mode = this.botsStore?.transportModes[id];
 			if (mode === 'rtc') {
-				if (bot.rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
-				if (bot.rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
-				const info = bot.rtcTransportInfo;
+				const rtcState = this.botsStore?.rtcStates[id];
+				if (rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
+				if (rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
+				const info = this.botsStore?.rtcTransportInfo[id];
 				if (!info) return this.$t('bots.conn.rtcConnecting');
 				if (info.localType === 'relay') {
 					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
@@ -163,17 +140,17 @@ export default {
 			return this.$t('bots.conn.ws');
 		},
 		hasConnDetail(botId) {
-			return !!this.botsStore?.byId[String(botId)]?.rtcTransportInfo;
+			return !!this.botsStore?.rtcTransportInfo[String(botId)];
 		},
 		getConnDetail(botId) {
-			return this.botsStore?.byId[String(botId)]?.rtcTransportInfo ?? null;
+			return this.botsStore?.rtcTransportInfo[String(botId)] ?? null;
 		},
 		toggleDetail(botId) {
 			const id = String(botId);
 			this.expandedDetails = { ...this.expandedDetails, [id]: !this.expandedDetails[id] };
 		},
 		goToAgent(botId, agentId) {
-			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
+			if (this.botsStore?.pluginVersionOk[String(botId)] === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 			}
 			this.$router.push({

@@ -42,6 +42,7 @@ export const useSessionsStore = defineStore('sessions', {
 			});
 			if (!connectedBots.length) {
 				console.debug('[sessions] loadAll: skipped (no connected bots, total=%d)', bots.length);
+				this.items = [];
 				return;
 			}
 			this.loading = true;
@@ -55,24 +56,12 @@ export const useSessionsStore = defineStore('sessions', {
 			}
 		},
 		async __doLoadAll(connectedBots) {
-			const queriedBotIds = new Set(connectedBots.map((b) => String(b.id)));
-			const botsStore = useBotsStore();
 			const results = await Promise.allSettled(
 				connectedBots.map((bot) => this.__fetchSessionsForBot(bot.id)),
 			);
-			// 增量合并：保留未查询 bot 的已有 sessions，替换已查询 bot 的
+			// 合并去重（以 botId:sessionKey 为 key）
 			const seen = new Set();
 			const merged = [];
-			for (const item of this.items) {
-				const bid = String(item.botId);
-				// 跳过本次查询范围内的（用新结果替换）和已不存在的 bot
-				if (queriedBotIds.has(bid) || !botsStore.byId[bid]) continue;
-				const key = `${bid}:${item.sessionKey}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(item);
-				}
-			}
 			for (const r of results) {
 				if (r.status !== 'fulfilled') {
 					console.warn('[sessions] bot sessions fetch failed:', r.reason);
@@ -87,7 +76,7 @@ export const useSessionsStore = defineStore('sessions', {
 				}
 			}
 			this.items = merged;
-			console.debug('[sessions] loadAll: merged %d session(s) (queried %d bot(s))', merged.length, queriedBotIds.size);
+			console.debug('[sessions] loadAll: merged %d session(s)', merged.length);
 		},
 		async __fetchSessionsForBot(botId) {
 			const conn = useBotConnections().get(String(botId));
