@@ -17,33 +17,9 @@ export async function topActiveUsers(limit, db = prisma) {
 		where: { lastLoginAt: { not: null } },
 		orderBy: { lastLoginAt: 'desc' },
 		take: limit,
-		select: {
-			id: true,
-			name: true,
-			lastLoginAt: true,
-			localAuth: { select: { loginName: true } },
-		},
+		select: { id: true, name: true, lastLoginAt: true },
 	});
-	return rows.map(u => ({
-		id: u.id.toString(),
-		name: u.name,
-		loginName: u.localAuth?.loginName ?? null,
-		lastLoginAt: u.lastLoginAt,
-	}));
-}
-
-export async function latestRegisteredUsers(limit, db = prisma) {
-	const rows = await db.user.findMany({
-		orderBy: { createdAt: 'desc' },
-		take: limit,
-		select: { id: true, name: true, createdAt: true, localAuth: { select: { loginName: true } } },
-	});
-	return rows.map(u => ({
-		id: u.id.toString(),
-		name: u.name,
-		loginName: u.localAuth?.loginName ?? null,
-		createdAt: u.createdAt,
-	}));
+	return rows.map(u => ({ ...u, id: u.id.toString() }));
 }
 
 export async function countBots(db = prisma) {

@@ -3,18 +3,10 @@
 		class="min-h-0 flex-1"
 		:class="scrollable ? 'overflow-auto overscroll-contain scrollbar-hide' : 'overflow-hidden'"
 	>
-		<!-- Capacitor header：logo + 名称 + 添加按钮 -->
-		<header v-if="showCapHeader" class="sticky top-0 z-10 flex items-center gap-2 border-b border-default bg-default pl-3.5 pr-1 py-[3px] md:hidden">
+		<!-- Capacitor header：logo + 名称 -->
+		<header v-if="showCapHeader" class="sticky top-0 z-10 flex items-center gap-2 border-b border-default bg-default px-3.5 py-[3px] md:hidden">
 			<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 			<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
-			<UButton
-				icon="i-lucide-plus"
-				color="primary"
-				variant="ghost"
-				size="xl"
-				class="cc-icon-btn-lg"
-				@click="$router.push('/bots/add')"
-			/>
 		</header>
 
 		<!-- Group 1: 机器人操作入口 -->
@@ -166,14 +158,8 @@ export default {
 			}
 			return '';
 		},
-		/** 仅跟踪 bot 增删/上线状态变化，避免 lastAliveAt 等高频更新触发 watcher */
-		botListKey() {
-			return (this.botsStore?.items ?? [])
-				.map((b) => `${b.id}:${b.online}`)
-				.join(',');
-		},
 		botActionItems() {
-			// Capacitor 无侧边栏模式：header 已有"+"按钮，仅用户无 bot 时显示引导项
+			// Capacitor 无侧边栏模式：底部 Tab 已有 Claw 管理入口，仅用户无 bot 时显示引导项
 			if (this.showCapHeader) {
 				if (!this.botsStore?.fetched || this.botsStore.items.length > 0) {
 					return [];
@@ -258,10 +244,10 @@ export default {
 		this.loadAllData();
 	},
 	watch: {
-		/** bot 列表变化（增删/上线状态）时刷新 agents 和 topics */
-		botListKey: {
-			handler() {
-				this.agentsStore?.loadAllAgents();
+		'botsStore.items': {
+			deep: true,
+			async handler() {
+				await this.agentsStore?.loadAllAgents();
 				this.topicsStore.loadAllTopics();
 			},
 		},

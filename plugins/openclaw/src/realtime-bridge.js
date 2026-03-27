@@ -98,7 +98,6 @@ export class RealtimeBridge {
 		this.__serverHbMissCount = 0;
 		this.__deviceIdentity = null;
 		this.webrtcPeer = null;
-		this.__fileHandler = null;
 	}
 
 	__resolveWebSocket() {
@@ -379,55 +378,6 @@ export class RealtimeBridge {
 			this.logger.warn?.(`[coclaw] ensureAllAgentSessions unexpected error: ${String(err?.message ?? err)}`);
 		}
 	}
-
-	/* c8 ignore start -- 仅通过 WebRTC 路径调用，依赖 gateway 连接，集成测试覆盖 */
-	/**
-	 * 通过 gateway RPC 获取指定 agent 的 workspace 绝对路径
-	 * @param {string} agentId
-	 * @returns {Promise<string>}
-	 */
-	async __resolveWorkspace(agentId) {
-		const result = await this.__gatewayRpc('agents.files.list', { agentId }, { timeoutMs: 5000 });
-		if (!result?.ok) {
-			const err = new Error(result?.error ?? 'Failed to resolve workspace');
-			err.code = 'AGENT_DENIED';
-			throw err;
-		}
-		const workspace = result?.response?.payload?.workspace;
-		if (!workspace) {
-			const err = new Error(`No workspace for agent: ${agentId}`);
-			err.code = 'AGENT_DENIED';
-			throw err;
-		}
-		return workspace;
-	}
-
-	/**
-	 * 列出所有 agent 的 workspace 路径（供临时文件清理使用）
-	 * @returns {Promise<string[]>}
-	 */
-	async __listAgentWorkspaces() {
-		const listResult = await this.__gatewayRpc('agents.list', {}, { timeoutMs: 3000 });
-		let agentIds = ['main'];
-		if (listResult?.ok === true && Array.isArray(listResult?.response?.payload?.agents)) {
-			const ids = listResult.response.payload.agents
-				.map((a) => a?.id)
-				.filter((id) => typeof id === 'string' && id.trim());
-			if (ids.length > 0) agentIds = ids;
-		}
-		const workspaces = [];
-		for (const id of agentIds) {
-			try {
-				const ws = await this.__resolveWorkspace(id);
-				workspaces.push(ws);
-			} catch {
-				// 个别 agent 解析失败不阻断
-			}
-		}
-		return workspaces;
-	}
-
-	/* c8 ignore stop */
 
 	__ensureDeviceIdentity() {
 		if (!this.__deviceIdentity) {
@@ -756,28 +706,11 @@ export class RealtimeBridge {
 					try {
 						if (!this.webrtcPeer) {
 							const { WebRtcPeer } = await import('./webrtc-peer.js');
-							const { createFileHandler } = await import('./file-manager/handler.js');
-							/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
-							this.__fileHandler = createFileHandler({
-								resolveWorkspace: (agentId) => this.__resolveWorkspace(agentId),
-								logger: this.logger,
-							});
-							this.__fileHandler.scheduleTmpCleanup(() => this.__listAgentWorkspaces());
-							/* c8 ignore stop */
 							this.webrtcPeer = new WebRtcPeer({
 								onSend: (msg) => this.__forwardToServer(msg),
 								onRequest: (dcPayload) => {
 									void this.__handleGatewayRequestFromServer(dcPayload);
 								},
-								/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
-								onFileRpc: (payload, sendFn) => {
-									this.__fileHandler.handleRpcRequest(payload, sendFn)
-										.catch((err) => this.logger.warn?.(`[coclaw/file] rpc error: ${err.message}`));
-								},
-								onFileChannel: (dc) => {
-									this.__fileHandler.handleFileChannel(dc);
-								},
-								/* c8 ignore stop */
 								logger: this.logger,
 							});
 						}
@@ -816,10 +749,6 @@ export class RealtimeBridge {
 				/* c8 ignore next 3 -- 防御性兜底，werift close 异常时不可崩溃 gateway */
 				catch (e) { this.logger.warn?.(`[coclaw/rtc] closeAll failed: ${e?.message}`); }
 				this.webrtcPeer = null;
-			}
-			if (this.__fileHandler) {
-				this.__fileHandler.cancelCleanup();
-				this.__fileHandler = null;
 			}
 
 			if (event?.code === 4001 || event?.code === 4003) {
@@ -882,10 +811,6 @@ export class RealtimeBridge {
 		if (this.webrtcPeer) {
 			await this.webrtcPeer.closeAll().catch(() => {});
 			this.webrtcPeer = null;
-		}
-		if (this.__fileHandler) {
-			this.__fileHandler.cancelCleanup();
-			this.__fileHandler = null;
 		}
 		const sock = this.serverWs;
 		if (sock) {

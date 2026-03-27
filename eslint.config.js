@@ -19,7 +19,7 @@ export default [
 		rules: {
 			semi: ['error', 'always'],
 			indent: ['error', 'tab', { SwitchCase: 1 }],
-			'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }]
+			'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }]
 		}
 	}
 ];

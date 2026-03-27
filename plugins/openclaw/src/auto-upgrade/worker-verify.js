@@ -23,7 +23,7 @@ const CMD_TIMEOUT_MS = 30_000;
  * @param {Function} [opts.execFileFn]
  * @returns {Promise<string>}
  */
-function runCmd(cmd, args, opts) {
+function exec(cmd, args, opts) {
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	return new Promise((resolve, reject) => {
 		doExecFile(cmd, args, { timeout: CMD_TIMEOUT_MS, shell: true }, (err, stdout) => {
@@ -44,7 +44,7 @@ function runCmd(cmd, args, opts) {
 export async function waitForGateway(opts) {
 	// 主动触发重启，不依赖 OpenClaw 的文件变更自动重启策略
 	try {
-		await runCmd('openclaw', ['gateway', 'restart'], opts);
+		await exec('openclaw', ['gateway', 'restart'], opts);
 	}
 	catch {
 		// restart 命令失败不阻断流程，仍尝试等待
@@ -56,7 +56,7 @@ export async function waitForGateway(opts) {
 
 	while (Date.now() - start < timeout) {
 		try {
-			const output = await runCmd('openclaw', ['gateway', 'status'], opts);
+			const output = await exec('openclaw', ['gateway', 'status'], opts);
 			if (output.includes('running')) return;
 		}
 		catch {
@@ -76,7 +76,7 @@ export async function waitForGateway(opts) {
  * @returns {Promise<void>}
  */
 export async function verifyPluginLoaded(pluginId, opts) {
-	const output = await runCmd('openclaw', ['plugins', 'list'], opts);
+	const output = await exec('openclaw', ['plugins', 'list'], opts);
 	if (!output.includes(pluginId)) {
 		throw new Error(`Plugin ${pluginId} not found in plugins list`);
 	}
@@ -89,7 +89,7 @@ export async function verifyPluginLoaded(pluginId, opts) {
  * @returns {Promise<string>} 返回版本号
  */
 export async function verifyUpgradeHealth(opts) {
-	const output = await runCmd(
+	const output = await exec(
 		'openclaw',
 		['gateway', 'call', 'coclaw.upgradeHealth', '--json'],
 		opts,

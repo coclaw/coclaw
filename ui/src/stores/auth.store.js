@@ -15,7 +15,6 @@ import {
 } from '../i18n/index.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
-import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
 
@@ -41,11 +40,8 @@ export const useAuthStore = defineStore('auth', {
 			this.loading = true;
 			this.clearError();
 			try {
-				const prevUserId = this.user?.id;
 				this.user = await fetchSessionUser();
 				applyUserPreferences(this.user);
-				// 仅在用户实际切换时才重置 draft 存储空间，避免每次导航清空未持久化的内存态草稿
-				if (this.user?.id !== prevUserId) useDraftStore().onUserChanged();
 				console.debug('[auth] session refreshed, user=%s', this.user?.id ?? null);
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Failed to load session';
@@ -61,7 +57,6 @@ export const useAuthStore = defineStore('auth', {
 				const data = await loginByLoginName(credentials);
 				this.user = data.user;
 				applyUserPreferences(this.user);
-				useDraftStore().onUserChanged();
 				console.log('[auth] login ok, user=%s', this.user?.id);
 			} catch (err) {
 				this.user = null;
@@ -78,7 +73,6 @@ export const useAuthStore = defineStore('auth', {
 				const data = await registerByLoginName(credentials);
 				this.user = data.user;
 				applyUserPreferences(this.user);
-				useDraftStore().onUserChanged();
 				console.log('[auth] register ok, user=%s', this.user?.id);
 			} catch (err) {
 				this.user = null;
@@ -93,24 +87,18 @@ export const useAuthStore = defineStore('auth', {
 			this.clearError();
 			try {
 				await logout();
+				this.user = null;
+				syncThemeModeFromSettings(null);
+				useBotConnections().disconnectAll();
+				useSessionsStore().$reset();
+				useBotsStore().$reset();
+				console.log('[auth] logged out');
 			} catch (err) {
-				// 401 = session 已过期，视为登出成功；其他错误仍继续清理
-				if (err?.response?.status !== 401) {
-					this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Logout failed';
-					console.warn('[auth] logout failed:', this.errorMessage);
-				}
+				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Logout failed';
+				console.warn('[auth] logout failed:', this.errorMessage);
+			} finally {
+				this.loading = false;
 			}
-			// 无论 API 成功/401/其他错误，均执行本地清理
-			const draftStore = useDraftStore();
-			draftStore.persist();
-			this.user = null;
-			draftStore.onUserChanged();
-			syncThemeModeFromSettings(null);
-			useBotConnections().disconnectAll();
-			useSessionsStore().$reset();
-			useBotsStore().$reset();
-			console.log('[auth] logged out');
-			this.loading = false;
 		},
 		async updateProfile(payload) {
 			this.loading = true;

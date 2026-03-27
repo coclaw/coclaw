@@ -76,7 +76,7 @@ test('topActiveUsers: 传递正确的查询参数', async () => {
 		where: { lastLoginAt: { not: null } },
 		orderBy: { lastLoginAt: 'desc' },
 		take: 3,
-		select: { id: true, name: true, lastLoginAt: true, localAuth: { select: { loginName: true } } },
+		select: { id: true, name: true, lastLoginAt: true },
 	});
 });
 
