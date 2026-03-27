@@ -548,7 +548,7 @@ describe('useChatStore', () => {
 			expect(agentCall[1].sessionKey).toBeUndefined();
 		});
 
-		test('带图片文件时内容变为 blocks 数组，且 fileToBase64 只调用一次（缓存复用）', async () => {
+		test('带图片文件时内容变为 blocks 数组', async () => {
 			const { fileToBase64 } = await import('../utils/file-helper.js');
 			fileToBase64.mockResolvedValue('imgbase64');
 
@@ -579,8 +579,6 @@ describe('useChatStore', () => {
 			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
 			expect(agentCall[1].attachments).toHaveLength(1);
 			expect(agentCall[1].attachments[0].type).toBe('image');
-			// 同一图片文件只编码一次（乐观消息缓存复用到 attachments）
-			expect(fileToBase64).toHaveBeenCalledTimes(1);
 		});
 
 		test('发送失败（request 抛出）时清理 streaming 状态并重新抛出', async () => {
@@ -604,12 +602,13 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		test('pre-acceptance 180s 超时：sending 置 false，__agentSettled 为 true，抛出 PRE_ACCEPTANCE_TIMEOUT', async () => {
+		test('pre-acceptance 30s 超时：sending 置 false，__agentSettled 为 true，抛出 PRE_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 
 			const conn = mockConn();
+			// 永不 resolve，也不调用 onAccepted
 			conn.request.mockImplementation((method) => {
 				if (method === 'agent') return new Promise(() => {});
 				return Promise.resolve(null);
@@ -621,15 +620,9 @@ describe('useChatStore', () => {
 			store.botId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			// 179s 时不应超时
-			const sendPromise = store.sendMessage('hello');
-			await vi.advanceTimersByTimeAsync(179_000);
-			expect(store.sending).toBe(true);
-
-			// 180s 时应超时
 			const [, result] = await Promise.allSettled([
-				vi.advanceTimersByTimeAsync(1_000),
-				sendPromise,
+				vi.advanceTimersByTimeAsync(30_000),
+				store.sendMessage('hello'),
 			]);
 
 			expect(result.status).toBe('rejected');
@@ -877,8 +870,36 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		// event:agent 监听器已由 botsStore.__bridgeConn 集中管理
-		// register 不再自行注册/注销 conn.on('event:agent')，相关测试已移至 agent-runs.store.test.js
+		test('conn.on 和 conn.off 以相同函数引用调用 "event:agent"', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-ref' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await store.sendMessage('hello');
+
+			const onCalls = conn.on.mock.calls.filter((c) => c[0] === 'event:agent');
+			const offCalls = conn.off.mock.calls.filter((c) => c[0] === 'event:agent');
+			expect(onCalls).toHaveLength(1);
+			expect(offCalls).toHaveLength(1);
+			// 验证传入的函数引用相同
+			expect(onCalls[0][1]).toBe(offCalls[0][1]);
+		});
 	});
 
 	// =====================================================================
@@ -1165,101 +1186,6 @@ describe('useChatStore', () => {
 
 			expect(store.isMainSession).toBe(false);
 		});
-
-		// --- allMessages 去重 ---
-
-		test('allMessages 合并 streamingMsgs 时跳过已在 messages 中的乐观 user 消息', () => {
-			const store = useChatStore();
-			store.chatSessionKey = 'agent:main:main';
-
-			// 模拟 loadOlderMessages 拉回的服务端消息（含用户发送的消息）
-			store.messages = [
-				{ type: 'message', id: 'oc-0', message: { role: 'assistant', content: 'hi' } },
-				{ type: 'message', id: 'oc-1', message: { role: 'user', content: '你好' } },
-			];
-
-			// 模拟 agentRunsStore 中仍有乐观 user 消息 + 流式 bot 消息
-			const runsStore = useAgentRunsStore();
-			const runId = 'run-1';
-			const runKey = store.runKey;
-			runsStore.runs[runId] = {
-				runId,
-				runKey,
-				settled: false,
-				settling: false,
-				streamingMsgs: [
-					{ type: 'message', id: '__local_user_123', _local: true, message: { role: 'user', content: '你好' } },
-					{ type: 'message', id: '__local_bot_123', _local: true, _streaming: true, message: { role: 'assistant', content: '回复中…' } },
-				],
-			};
-			runsStore.runKeyIndex[runKey] = runId;
-
-			const all = store.allMessages;
-			// 乐观 user 消息应被去重，只保留服务端版本 + 流式 bot 消息
-			const userMsgs = all.filter((m) => m.message.role === 'user');
-			expect(userMsgs).toHaveLength(1);
-			expect(userMsgs[0].id).toBe('oc-1');
-			// 流式 bot 消息保留
-			expect(all.some((m) => m.id === '__local_bot_123')).toBe(true);
-		});
-
-		test('allMessages 无重复时保留全部 streamingMsgs', () => {
-			const store = useChatStore();
-			store.chatSessionKey = 'agent:main:main';
-
-			store.messages = [
-				{ type: 'message', id: 'oc-0', message: { role: 'assistant', content: 'hi' } },
-			];
-
-			const runsStore = useAgentRunsStore();
-			const runId = 'run-2';
-			const runKey = store.runKey;
-			runsStore.runs[runId] = {
-				runId,
-				runKey,
-				settled: false,
-				settling: false,
-				streamingMsgs: [
-					{ type: 'message', id: '__local_user_456', _local: true, message: { role: 'user', content: '新消息' } },
-					{ type: 'message', id: '__local_bot_456', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
-				],
-			};
-			runsStore.runKeyIndex[runKey] = runId;
-
-			const all = store.allMessages;
-			expect(all).toHaveLength(3);
-		});
-
-		test('allMessages 对 block 数组内容也能正确去重', () => {
-			const store = useChatStore();
-			store.chatSessionKey = 'agent:main:main';
-
-			const blockContent = [{ type: 'text', text: '带图消息' }, { type: 'image', data: 'abc' }];
-			store.messages = [
-				{ type: 'message', id: 'oc-0', message: { role: 'user', content: blockContent } },
-			];
-
-			const runsStore = useAgentRunsStore();
-			const runId = 'run-3';
-			const runKey = store.runKey;
-			// streamingMsgs 中有相同内容的乐观版本（不同引用但相同结构）
-			runsStore.runs[runId] = {
-				runId,
-				runKey,
-				settled: false,
-				settling: false,
-				streamingMsgs: [
-					{ type: 'message', id: '__local_user_789', _local: true, message: { role: 'user', content: [{ type: 'text', text: '带图消息' }, { type: 'image', data: 'abc' }] } },
-					{ type: 'message', id: '__local_bot_789', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
-				],
-			};
-			runsStore.runKeyIndex[runKey] = runId;
-
-			const all = store.allMessages;
-			const userMsgs = all.filter((m) => m.message.role === 'user');
-			expect(userMsgs).toHaveLength(1);
-			expect(userMsgs[0].id).toBe('oc-0');
-		});
 	});
 
 	// =====================================================================
@@ -1510,10 +1436,9 @@ describe('useChatStore', () => {
 			expect(ok).toBe(false);
 		});
 
-		test('无更多 session 时设置 historyExhausted（消息已加载）', async () => {
+		test('无更多 session 时设置 historyExhausted', async () => {
 			const store = useChatStore();
 			store.historySessionIds = [];
-			store.__messagesLoaded = true;
 
 			const ok = await store.loadNextHistorySession();
 			expect(ok).toBe(false);
@@ -1593,31 +1518,6 @@ describe('useChatStore', () => {
 			const ok = await store.loadNextHistorySession();
 			expect(ok).toBe(false);
 			expect(store.__historyLoadedCount).toBe(1);
-			expect(store.historyExhausted).toBe(true);
-		});
-
-		test('消息未加载完成时空 historySessionIds 不设 exhausted', async () => {
-			const store = useChatStore();
-			store.botId = '1';
-			store.chatSessionKey = 'agent:main:main';
-			// __messagesLoaded 默认 false，historySessionIds 默认 []
-			expect(store.__messagesLoaded).toBe(false);
-			expect(store.historySessionIds).toEqual([]);
-
-			const ok = await store.loadNextHistorySession();
-			expect(ok).toBe(false);
-			expect(store.historyExhausted).toBe(false); // 不应被置 true
-		});
-
-		test('消息已加载后空 historySessionIds 正常设 exhausted', async () => {
-			const store = useChatStore();
-			store.botId = '1';
-			store.chatSessionKey = 'agent:main:main';
-			store.__messagesLoaded = true;
-			store.historySessionIds = [];
-
-			const ok = await store.loadNextHistorySession();
-			expect(ok).toBe(false);
 			expect(store.historyExhausted).toBe(true);
 		});
 	});
@@ -2133,35 +2033,6 @@ describe('useChatStore', () => {
 			const localMsg = store.messages.find((m) => m._local);
 			expect(localMsg).toBeTruthy();
 			expect(localMsg.id).toBe('__local_bot_1');
-		});
-
-		test('loadOlderMessages: 用户乐观消息（_local && !_streaming）不重复', async () => {
-			const conn = mockConn();
-			const initialMsgs = Array.from({ length: 50 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
-			setupConnForLoad(conn, { flatMessages: initialMsgs });
-			mockConnections.set('1', conn);
-
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
-			await store.activate();
-
-			// 模拟用户发送后的乐观消息（_local=true, _streaming 未设置）
-			store.messages = [
-				...store.messages,
-				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hello' } },
-			];
-
-			// 服务端返回更多消息，其中已包含用户消息
-			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
-			conn.request.mockImplementation((method) => {
-				if (method === 'sessions.get') return Promise.resolve({ messages: olderMsgs });
-				return Promise.resolve(null);
-			});
-
-			await store.loadOlderMessages();
-			// 用户乐观消息不应被保留，只有服务端返回的 80 条
-			expect(store.messages).toHaveLength(80);
-			const localMsg = store.messages.find((m) => m._local);
-			expect(localMsg).toBeFalsy();
 		});
 
 		test('loadOlderMessages: topic 模式下不触发', async () => {

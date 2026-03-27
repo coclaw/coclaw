@@ -3,6 +3,7 @@ import {
 	Notification, desktopCapturer, systemPreferences, app,
 } from 'electron';
 import Store from 'electron-store';
+import { isSafeExternalUrl } from './url-safety.js';
 
 const store = new Store();
 
@@ -46,8 +47,12 @@ export function registerIpcHandlers(getWin) {
 		notif.show();
 	});
 
-	// ---- 外部链接 ----
+	// ---- 外部链接（仅允许 http/https 协议） ----
 	ipcMain.handle('shell:openExternal', (_, url) => {
+		if (!isSafeExternalUrl(url)) {
+			console.warn('[ipc] blocked openExternal for unsafe URL: %s', url);
+			return { blocked: true };
+		}
 		return shell.openExternal(url);
 	});
 

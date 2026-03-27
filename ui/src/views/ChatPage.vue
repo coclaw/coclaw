@@ -37,7 +37,7 @@
 
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
 		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel">
-			<div class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
+			<div class="mx-auto w-full max-w-3xl">
 				<div v-if="isBotOffline" class="mx-4 mt-4 rounded-lg bg-warning/10 px-4 py-2 text-center text-sm text-warning">
 					{{ $t('chat.botOffline') }}
 				</div>
@@ -93,7 +93,7 @@
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore?.isSending ?? false"
-			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || isLoadingChat) : (!routeBotId || isBotOffline || isLoadingChat)))"
+			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || isLoadingChat) : (!routeBotId || isBotOffline || isLoadingChat))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
@@ -158,8 +158,6 @@ export default {
 			__creatingTopic: false,
 			// 历史加载进行中，阻止 scrollToBottom 干扰位置恢复
 			__loadingHistory: false,
-			// 首次消息加载 + scrollToBottom 完成前隐藏消息列表，防止闪顶
-			__scrollReady: false,
 		};
 	},
 	computed: {
@@ -176,10 +174,6 @@ export default {
 		inputText: {
 			get() { return this.draftKey ? this.draftStore.getDraft(this.draftKey) : ''; },
 			set(val) { if (this.draftKey) this.draftStore.setDraft(this.draftKey, val); },
-		},
-		/** 发送已开始但尚未 accepted 期间锁定输入 */
-		inputLocked() {
-			return !!(this.chatStore?.sending && !this.chatStore?.__accepted);
 		},
 		chatRootClasses() {
 			return isCapacitorApp ? 'flex-1 min-h-0' : 'h-dvh-safe';
@@ -371,7 +365,6 @@ export default {
 				if (this.__creatingTopic) return;
 				if (store && store !== prevStore) {
 					this.showNoMoreHint = false;
-					this.__scrollReady = false;
 					store.activate();
 				}
 			},
@@ -387,34 +380,28 @@ export default {
 			}
 			// 上线后由 connReady watcher 驱动消息加载
 		},
-		/** connReady 驱动消息加载：首次加载或重连刷新
-		 * immediate: 确保组件挂载时 connReady 已为 true 的场景也能触发加载
-		 * （如返回列表后重新进入会话，bot 已连接但 watcher 不会为初始值触发）
-		 */
-		connReady: {
-			immediate: true,
-			async handler(ready) {
-				if (!ready || !this.chatStore) return;
-				// 与 __handleForegroundResume 去重
-				this.__lastResumeAt = Date.now();
-				// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
-				this.chatStore.__reconcileSlashCommand();
-				const isFirstLoad = !this.chatStore.__messagesLoaded;
-				if (isFirstLoad) {
-					await this.chatStore.loadMessages();
-					if (this.__unmounted || !this.chatStore) return;
-					if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-				} else {
-					this.chatStore.loadMessages({ silent: true });
-				}
-				// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
-				if (isFirstLoad) {
-					this.$nextTick(() => {
-						this.scrollToBottom(true);
-						this.__autoFillHistory();
-					});
-				}
-			},
+		/** connReady 驱动消息加载：首次加载或重连刷新 */
+		async connReady(ready) {
+			if (!ready || !this.chatStore) return;
+			// 与 __handleForegroundResume 去重
+			this.__lastResumeAt = Date.now();
+			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
+			this.chatStore.__reconcileSlashCommand();
+			const isFirstLoad = !this.chatStore.__messagesLoaded;
+			if (isFirstLoad) {
+				await this.chatStore.loadMessages();
+				if (this.__unmounted || !this.chatStore) return;
+				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
+			} else {
+				this.chatStore.loadMessages({ silent: true });
+			}
+			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
+			if (isFirstLoad) {
+				this.$nextTick(() => {
+					this.scrollToBottom(true);
+					this.__autoFillHistory();
+				});
+			}
 		},
 		chatMessages(msgs, oldMsgs) {
 			this.scrollToBottom();
@@ -463,44 +450,38 @@ export default {
 
 			const savedText = this.inputText;
 			const draftKey = this.draftKey;
+			// 清空输入框显示，但在 draftStore 中保留文本（作为 pending draft）
+			// 若发送期间进程被 kill，恢复后 draft 仍可读取
 			this.inputText = '';
+			if (draftKey && savedText) {
+				this.draftStore.setDraft(draftKey, savedText);
+			}
 			this.userScrolledUp = false;
 			this.scrollToBottom();
 
 			try {
 				const result = await this.chatStore.sendMessage(text, files);
 				if (!result.accepted) {
-					// 用闭包 draftKey 恢复，组件可能已 unmount
-					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
+					this.inputText = savedText;
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
+					// 发送成功，清除 pending draft
+					if (draftKey) this.draftStore.clearDraft(draftKey);
 					this.__tryGenerateTitle();
 				}
 			}
 			catch (err) {
-				// 根据 err.code 映射友好文案
-				const errMsg = this.__sendErrorMessage(err);
-				this.notify.error(errMsg);
+				this.notify.error(err?.message || this.$t('chat.orphanSendFailed'));
 				if (!this.chatStore?.__accepted) {
-					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
+					this.inputText = savedText;
 					this.$refs.chatInput?.restoreFiles(files);
 				}
+				else {
+					// 已 accepted，发送已被服务端接受，清除 draft
+					if (draftKey) this.draftStore.clearDraft(draftKey);
+				}
 			}
-		},
-
-		/** 根据 err.code 返回用户友好的错误消息 */
-		__sendErrorMessage(err) {
-			const codeMap = {
-				RPC_TIMEOUT: 'chat.errRpcTimeout',
-				PRE_ACCEPTANCE_TIMEOUT: 'chat.errPreAcceptTimeout',
-				WS_CLOSED: 'chat.errWsClosed',
-				WS_SEND_FAILED: 'chat.errWsSendFailed',
-				RTC_SEND_FAILED: 'chat.errRtcSendFailed',
-			};
-			const key = codeMap[err?.code];
-			if (key) return this.$t(key);
-			return this.$t('chat.errUnknown');
 		},
 
 		async __handleNewTopicSend(text, files) {
@@ -518,7 +499,6 @@ export default {
 
 			this.__creatingTopic = true;
 			const oldDraftKey = this.draftKey;
-			let newDraftKey = '';
 			try {
 				// 1. 创建 topic
 				const topicId = await this.topicsStore.createTopic(botId, agentId);
@@ -533,13 +513,11 @@ export default {
 				// 5. 清空旧草稿并发送消息
 				if (oldDraftKey) this.draftStore.clearDraft(oldDraftKey);
 				this.inputText = '';
-				newDraftKey = this.draftKey;
 				this.userScrolledUp = false;
 				this.scrollToBottom();
-				if (!this.chatStore) return;
 				const result = await this.chatStore.sendMessage(text, files);
 				if (!result.accepted) {
-					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
+					this.inputText = text;
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
@@ -548,10 +526,9 @@ export default {
 			}
 			catch (err) {
 				this.__creatingTopic = false;
-				const errMsg = this.__sendErrorMessage(err);
-				this.notify.error(errMsg);
+				this.notify.error(err?.message || this.$t('topic.createFailed'));
 				if (!this.chatStore?.__accepted) {
-					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
+					this.inputText = text;
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 			}
@@ -586,7 +563,6 @@ export default {
 			if (!this.chatStore) return;
 			try {
 				await this.chatStore.sendSlashCommand(cmd);
-				if (!this.chatStore) return;
 
 				if (/^\/(new|reset)\b/i.test(cmd)) {
 					this.showNoMoreHint = false;
@@ -686,17 +662,12 @@ export default {
 			if (this.__loadingHistory) return;
 
 			this.$nextTick(() => {
-				// 二次检查：$nextTick 排队期间用户可能已上划
-				if (!force && this.userScrolledUp) return;
 				el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 				// 兜底：DOM 高度可能在 $nextTick 后仍未稳定，下一帧再校验一次
 				requestAnimationFrame(() => {
-					if (!force && this.userScrolledUp) return;
 					if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
 						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 					}
-					// 首次滚动定位完成，解除 visibility hidden
-					if (!this.__scrollReady) this.__scrollReady = true;
 				});
 			});
 		},
@@ -736,8 +707,6 @@ export default {
 					const el = this.$refs.scrollContainer;
 					const prevHeight = el?.scrollHeight ?? 0;
 					const loaded = await this.chatStore.loadOlderMessages();
-					// await 后 chatStore 可能因路由变化变为 null
-					if (!this.chatStore) return;
 					if (loaded && el) {
 						this.$nextTick(() => {
 							const newHeight = el.scrollHeight;
@@ -756,8 +725,6 @@ export default {
 				const el = this.$refs.scrollContainer;
 				const prevHeight = el?.scrollHeight ?? 0;
 				const loaded = await this.chatStore.loadNextHistorySession();
-				// await 后 chatStore 可能因路由变化变为 null
-				if (!this.chatStore) return;
 				if (loaded && el) {
 					this.$nextTick(() => {
 						const newHeight = el.scrollHeight;

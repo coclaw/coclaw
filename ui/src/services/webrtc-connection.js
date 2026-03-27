@@ -10,7 +10,7 @@
 import { httpClient } from './http.js';
 import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 
-const MAX_ICE_RESTARTS = 5;
+const MAX_ICE_RESTARTS = 2;
 const MAX_FULL_REBUILDS = 3;
 
 /** 发送流控：高水位（暂停发送），远低于浏览器 16MB 上限 */
@@ -317,7 +317,7 @@ export class WebRtcConnection {
 		const pc = this.__pc;
 		if (!pc || pc.connectionState !== 'disconnected') return false;
 		this.__log('info', 'proactive ICE restart on foreground resume');
-		// 不递增 __iceRestartCount：前台恢复是外部触发，不消耗自动恢复预算
+		this.__iceRestartCount++;
 		this.__doIceRestart();
 		return true;
 	}

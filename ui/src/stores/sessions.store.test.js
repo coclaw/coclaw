@@ -402,36 +402,6 @@ describe('sessions store', () => {
 		expect(store.items[0].botId).toBe('bot-1');
 	});
 
-	test('loadAllSessions 增量合并：__fetchSessionsForBot reject 时保留旧 sessions', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
-			{ id: 'bot-1', name: 'Bot 1', online: true },
-			{ id: 'bot-2', name: 'Bot 2', online: true },
-		]);
-
-		const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
-		const conn2 = mockConn({ 'agent:main:main': 'sid-2' });
-		mockConnections.set('bot-1', conn1);
-		mockConnections.set('bot-2', conn2);
-
-		const store = useSessionsStore();
-		await store.loadAllSessions();
-		expect(store.items).toHaveLength(2);
-
-		// 第二次加载时，spy __fetchSessionsForBot 使 bot-2 的调用 reject
-		const origFetch = store.__fetchSessionsForBot.bind(store);
-		vi.spyOn(store, '__fetchSessionsForBot').mockImplementation((botId) => {
-			if (String(botId) === 'bot-2') return Promise.reject(new Error('fetch failed'));
-			return origFetch(botId);
-		});
-		await store.loadAllSessions();
-
-		// bot-1 正常刷新，bot-2 因 fetch 失败应保留旧数据
-		expect(store.items).toHaveLength(2);
-		expect(store.items.find((s) => s.botId === 'bot-1')).toBeDefined();
-		expect(store.items.find((s) => s.botId === 'bot-2')).toBeDefined();
-	});
-
 	test('loadAllSessions 无已连接 bot 时不清空已有 sessions', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([

@@ -263,7 +263,7 @@ export default {
 			this.onSubmit();
 		},
 		onSubmit() {
-			if (!this.canSend || this.sending || this.disabled) return;
+			if (!this.canSend || this.sending) return;
 			this.$emit('send', {
 				text: this.modelValue?.trim() || '',
 				files: [...this.inputFiles],
