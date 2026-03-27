@@ -93,7 +93,7 @@
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore?.isSending ?? false"
-			:disabled="isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || isLoadingChat) : (!routeBotId || isBotOffline || isLoadingChat))"
+			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isBotOffline || isLoadingChat) : (!routeBotId || isBotOffline || isLoadingChat)))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
@@ -174,6 +174,10 @@ export default {
 		inputText: {
 			get() { return this.draftKey ? this.draftStore.getDraft(this.draftKey) : ''; },
 			set(val) { if (this.draftKey) this.draftStore.setDraft(this.draftKey, val); },
+		},
+		/** 发送已开始但尚未 accepted 期间锁定输入 */
+		inputLocked() {
+			return !!(this.chatStore?.sending && !this.chatStore?.__accepted);
 		},
 		chatRootClasses() {
 			return isCapacitorApp ? 'flex-1 min-h-0' : 'h-dvh-safe';
@@ -457,12 +461,11 @@ export default {
 			try {
 				const result = await this.chatStore.sendMessage(text, files);
 				if (!result.accepted) {
-					this.inputText = savedText;
+					// 用闭包 draftKey 恢复，组件可能已 unmount
+					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
-					// 发送成功，清除 pending draft
-					if (draftKey) this.draftStore.clearDraft(draftKey);
 					this.__tryGenerateTitle();
 				}
 			}
@@ -471,12 +474,8 @@ export default {
 				const errMsg = this.__sendErrorMessage(err);
 				this.notify.error(errMsg);
 				if (!this.chatStore?.__accepted) {
-					this.inputText = savedText;
+					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
 					this.$refs.chatInput?.restoreFiles(files);
-				}
-				else {
-					// 已 accepted，发送已被服务端接受，清除 draft
-					if (draftKey) this.draftStore.clearDraft(draftKey);
 				}
 			}
 		},
@@ -510,6 +509,7 @@ export default {
 
 			this.__creatingTopic = true;
 			const oldDraftKey = this.draftKey;
+			let newDraftKey = '';
 			try {
 				// 1. 创建 topic
 				const topicId = await this.topicsStore.createTopic(botId, agentId);
@@ -524,12 +524,13 @@ export default {
 				// 5. 清空旧草稿并发送消息
 				if (oldDraftKey) this.draftStore.clearDraft(oldDraftKey);
 				this.inputText = '';
+				newDraftKey = this.draftKey;
 				this.userScrolledUp = false;
 				this.scrollToBottom();
 				if (!this.chatStore) return;
 				const result = await this.chatStore.sendMessage(text, files);
 				if (!result.accepted) {
-					this.inputText = text;
+					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
@@ -541,7 +542,7 @@ export default {
 				const errMsg = this.__sendErrorMessage(err);
 				this.notify.error(errMsg);
 				if (!this.chatStore?.__accepted) {
-					this.inputText = text;
+					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 			}
