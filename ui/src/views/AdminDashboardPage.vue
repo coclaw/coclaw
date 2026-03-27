@@ -9,29 +9,76 @@
 				<p v-if="loading" class="text-sm text-muted">{{ $t('chat.loading') }}</p>
 
 				<template v-if="!loading && data">
-					<!-- 用户统计卡片 -->
+					<!-- 顶部：实例维度三卡片 -->
 					<div class="grid grid-cols-3 gap-3">
 						<div class="rounded-xl bg-elevated p-4 text-center">
-							<p class="text-2xl font-semibold">{{ data.users.total }}</p>
-							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.totalUsers') }}</p>
+							<p class="text-2xl font-semibold">{{ data.bots.total }}</p>
+							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.totalBots') }}</p>
 						</div>
 						<div class="rounded-xl bg-elevated p-4 text-center">
-							<p class="text-2xl font-semibold">{{ data.users.todayNew }}</p>
-							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.todayNew') }}</p>
+							<p class="text-2xl font-semibold">{{ data.bots.todayNew }}</p>
+							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.todayNewBots') }}</p>
 						</div>
 						<div class="rounded-xl bg-elevated p-4 text-center">
-							<p class="text-2xl font-semibold">{{ data.users.todayActive }}</p>
-							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.todayActive') }}</p>
+							<p class="text-2xl font-semibold">{{ data.bots.online }}</p>
+							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.onlineBots') }}</p>
 						</div>
 					</div>
 
-					<!-- Claw 统计 + 版本 -->
+					<!-- 中部：实例情况表 -->
+					<div class="rounded-xl bg-elevated p-4">
+						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.instanceList') }}</h2>
+						<p v-if="!sortedBots.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
+						<ul v-else class="space-y-2">
+							<li
+								v-for="bot in sortedBots"
+								:key="bot.id"
+								class="text-sm"
+							>
+								<!-- 移动端：两行折叠 -->
+								<div class="flex items-center justify-between">
+									<span class="flex items-center gap-1.5">
+										<span
+											class="inline-block h-2 w-2 shrink-0 rounded-full"
+											:class="bot.isOnline ? 'bg-green-500' : 'bg-gray-400'"
+										/>
+										<span>{{ bot.name || bot.id }}</span>
+									</span>
+									<span class="text-xs text-dimmed">{{ formatBindDuration(bot.createdAt) }}</span>
+								</div>
+								<div class="mt-0.5 flex items-center justify-between pl-3.5 text-xs text-dimmed">
+									<span>{{ bot.userName || bot.userLoginName || bot.userId }}</span>
+									<span>{{ formatTimeAgo(bot.lastSeenAt) }}</span>
+								</div>
+							</li>
+						</ul>
+					</div>
+
+					<!-- 下部：用户情况表 -->
+					<div class="rounded-xl bg-elevated p-4">
+						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.userList') }}</h2>
+						<p v-if="!data.topActiveUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
+						<ul v-else class="space-y-2">
+							<li
+								v-for="(user, idx) in data.topActiveUsers"
+								:key="user.id"
+								class="flex items-center justify-between text-sm"
+							>
+								<span class="flex items-center gap-2">
+									<span class="w-5 text-right text-dimmed">{{ idx + 1 }}.</span>
+									<span>{{ user.name || user.loginName || user.id }}</span>
+								</span>
+								<span class="flex items-center gap-3 text-xs text-dimmed">
+									<span class="font-medium" :class="user.onlineBotCount > 0 ? 'text-green-600 dark:text-green-400' : ''">{{ user.onlineBotCount }}/{{ user.botCount }}</span>
+									<span class="w-16 text-right">{{ formatTimeAgo(user.lastLoginAt) }}</span>
+								</span>
+							</li>
+						</ul>
+					</div>
+
+					<!-- 版本信息 -->
 					<div class="rounded-xl bg-elevated p-4">
 						<div class="flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.totalBots') }}</span>
-							<span class="font-medium">{{ data.bots.total }} / {{ $t('adminDashboard.onlineBots') }} {{ data.bots.online }}</span>
-						</div>
-						<div class="mt-2 flex items-center justify-between text-sm">
 							<span class="text-dimmed">{{ $t('adminDashboard.serverVersion') }}</span>
 							<span class="font-medium">v{{ data.version.server }}</span>
 						</div>
@@ -43,44 +90,6 @@
 							<span class="text-dimmed">{{ $t('adminDashboard.pluginVersion') }}</span>
 							<span class="font-medium">v{{ data.version.plugin }}</span>
 						</div>
-					</div>
-
-					<!-- 最近活跃用户 -->
-					<div class="rounded-xl bg-elevated p-4">
-						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.topActiveUsers') }}</h2>
-						<p v-if="!data.topActiveUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
-						<ul v-else class="space-y-2">
-							<li
-								v-for="(user, idx) in data.topActiveUsers"
-								:key="user.id"
-								class="flex items-center justify-between text-sm"
-							>
-								<span>
-									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name || user.loginName || user.id }}</span>
-								</span>
-								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.lastLoginAt) }}</span>
-							</li>
-						</ul>
-					</div>
-
-					<!-- 最新注册用户 -->
-					<div class="rounded-xl bg-elevated p-4">
-						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.latestRegisteredUsers') }}</h2>
-						<p v-if="!data.latestRegisteredUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
-						<ul v-else class="space-y-2">
-							<li
-								v-for="(user, idx) in data.latestRegisteredUsers"
-								:key="user.id"
-								class="flex items-center justify-between text-sm"
-							>
-								<span>
-									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name || user.loginName || user.id }}</span>
-								</span>
-								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.createdAt) }}</span>
-							</li>
-						</ul>
 					</div>
 				</template>
 			</section>
@@ -106,29 +115,19 @@ export default {
 			uiVersion: __APP_VERSION__,
 		};
 	},
-	async mounted() {
-		this.__lastResumeAt = 0;
-		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-			this.loadData();
-		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
-		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
-
-		await this.loadData();
+	computed: {
+		sortedBots() {
+			if (!this.data?.bots?.list) return [];
+			return [...this.data.bots.list].sort((a, b) => {
+				if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
+				const aTime = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
+				const bTime = b.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0;
+				return bTime - aTime;
+			});
+		},
 	},
-	beforeUnmount() {
-		if (this.__onResume) {
-			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
+	async mounted() {
+		await this.loadData();
 	},
 	methods: {
 		async loadData() {
@@ -151,6 +150,14 @@ export default {
 			if (diff < 3600) return this.$t('dashboard.minutesAgo', { n: Math.floor(diff / 60) });
 			if (diff < 86400) return this.$t('dashboard.hoursAgo', { n: Math.floor(diff / 3600) });
 			return this.$t('dashboard.daysAgo', { n: Math.floor(diff / 86400) });
+		},
+		formatBindDuration(iso) {
+			if (!iso) return '—';
+			const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+			if (diff < 0 || Number.isNaN(diff)) return '—';
+			const days = Math.floor(diff / 86400);
+			if (days < 1) return '< 1d';
+			return `${days}d`;
 		},
 	},
 };

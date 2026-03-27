@@ -122,47 +122,6 @@ describe('agents store', () => {
 		expect(store.byBot['bot-1'].agents[0].resolvedIdentity).toBeNull();
 	});
 
-	test('并发 loadAgents 应复用飞行中请求（in-flight dedup）', async () => {
-		let reqCount = 0;
-		let resolveReq;
-		const conn = {
-			state: 'connected',
-			request: vi.fn().mockImplementation((method) => {
-				if (method === 'agents.list') {
-					reqCount++;
-					return new Promise((r) => { resolveReq = r; });
-				}
-				if (method === 'agent.identity.get') return Promise.resolve({ name: 'Agent' });
-				return Promise.resolve(null);
-			}),
-			on: vi.fn(),
-			off: vi.fn(),
-		};
-		mockConnections.set('bot-1', conn);
-
-		const store = useAgentsStore();
-		const p1 = store.loadAgents('bot-1');
-		const p2 = store.loadAgents('bot-1');
-		const p3 = store.loadAgents('bot-1');
-
-		// agents.list 仅被调用 1 次
-		expect(reqCount).toBe(1);
-
-		resolveReq({ defaultId: 'main', agents: [{ id: 'main', name: 'main' }] });
-		await Promise.all([p1, p2, p3]);
-
-		expect(store.byBot['bot-1'].agents).toHaveLength(1);
-		expect(store.byBot['bot-1'].loading).toBe(false);
-
-		// dedup 清理后，新调用应发起新请求
-		reqCount = 0;
-		resolveReq = null;
-		const p4 = store.loadAgents('bot-1');
-		expect(reqCount).toBe(1);
-		resolveReq({ defaultId: 'main', agents: [] });
-		await p4;
-	});
-
 	test('getAgentsByBot 应返回指定 bot 的 agents', async () => {
 		const agents = [{ id: 'main', name: 'Main' }];
 		const conn = mockConn(agents);

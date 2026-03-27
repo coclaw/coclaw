@@ -7,7 +7,8 @@ import { resolveApiBaseUrl } from './http.js';
 
 const HB_PING_MS = 25_000;
 const HB_TIMEOUT_MS = 45_000;
-const HB_MAX_MISS = 2; // 2 次 miss（~90s）再判定断连
+const HB_MAX_MISS = 2; // 常规容忍：2 次 miss（~90s）再判定
+const HB_SUPPRESS_LIMIT = 4; // 有 pending RPC 时额外容忍 4 轮（~180s）
 const DEFAULT_RPC_TIMEOUT_MS = 30 * 60_000; // 30 分钟兜底
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
@@ -81,17 +82,14 @@ export class BotConnection {
 		/** @type {import('./webrtc-connection.js').WebRtcConnection | null} */
 		this.__rtc = null;
 
-		// visibility / foreground / network 恢复重连
+		// visibility / foreground 恢复重连
 		this.__boundVisibilityHandler = null;
 		this.__boundForegroundHandler = null;
-		this.__boundNetworkHandler = null;
 		this.__lastForegroundAt = 0; // 防重入节流
 
 		// 连接感知时间戳
 		/** @type {number} 最后一次确认连接活着的时间（收到任何 WS 消息时更新） */
 		this.__lastAliveAt = 0;
-		/** @type {((ts: number) => void) | null} 外部回调：每次确认连接存活时调用 */
-		this.__onAlive = null;
 		/** @type {number} 断连时间戳（state → disconnected 时记录） */
 		this.__disconnectedAt = 0;
 		/** @type {number | null} probe 定时器 */
@@ -165,10 +163,6 @@ export class BotConnection {
 		if (typeof window !== 'undefined' && !this.__boundForegroundHandler) {
 			this.__boundForegroundHandler = () => this.__onAppForeground();
 			window.addEventListener('app:foreground', this.__boundForegroundHandler);
-		}
-		if (typeof window !== 'undefined' && !this.__boundNetworkHandler) {
-			this.__boundNetworkHandler = () => this.__handleForegroundResume('network:online');
-			window.addEventListener('network:online', this.__boundNetworkHandler);
 		}
 		this.__doConnect();
 	}
@@ -503,7 +497,6 @@ export class BotConnection {
 	__resetHbTimeout() {
 		this.__hbMissCount = 0;
 		this.__lastAliveAt = Date.now();
-		if (this.__onAlive) this.__onAlive(this.__lastAliveAt);
 		if (this.__hbTimer) clearTimeout(this.__hbTimer);
 		this.__hbTimer = setTimeout(() => {
 			this.__onHbMiss();
@@ -512,10 +505,19 @@ export class BotConnection {
 
 	__onHbMiss() {
 		this.__hbMissCount++;
-		if (this.__hbMissCount < HB_MAX_MISS) {
+		// 阶段1：常规容忍；阶段2：有 pending 时抑制（带绝对上限）
+		const canRetry =
+			this.__hbMissCount < HB_MAX_MISS ||
+			(this.__pending.size > 0 && this.__hbMissCount < HB_MAX_MISS + HB_SUPPRESS_LIMIT);
+		if (canRetry) {
+			const suppressed = this.__hbMissCount >= HB_MAX_MISS;
 			console.debug(
-				'[BotConn] heartbeat miss (%d/%d) botId=%s',
-				this.__hbMissCount, HB_MAX_MISS, this.botId,
+				'[BotConn] heartbeat %s (%d/%d, pending=%d) botId=%s',
+				suppressed ? 'suppressed' : 'miss',
+				this.__hbMissCount,
+				suppressed ? HB_MAX_MISS + HB_SUPPRESS_LIMIT : HB_MAX_MISS,
+				this.__pending.size,
+				this.botId,
 			);
 			if (this.__ws?.readyState === 1) {
 				try { this.__ws.send(JSON.stringify({ type: 'ping' })); }
@@ -527,9 +529,9 @@ export class BotConnection {
 			return;
 		}
 		console.warn(
-			'[BotConn] heartbeat timeout (%d misses, ~%ds) botId=%s',
+			'[BotConn] heartbeat timeout (%d misses, ~%ds, pending=%d) botId=%s',
 			this.__hbMissCount, this.__hbMissCount * HB_TIMEOUT_MS / 1000,
-			this.botId,
+			this.__pending.size, this.botId,
 		);
 		try { this.__ws?.close(4000, 'heartbeat_timeout'); }
 		catch {}
@@ -609,11 +611,6 @@ export class BotConnection {
 			this.probe();
 		}
 		// elapsed <= PROBE_TIMEOUT_MS → 刚刚还收到过消息，无需探测
-
-		// RTC 恢复：若 PC 处于 disconnected（NAT 映射可能已失效），主动 ICE restart
-		if (this.__rtc?.tryIceRestart()) {
-			console.debug('[BotConn] %s → proactive RTC ICE restart botId=%s', source, this.botId);
-		}
 	}
 
 	/**
@@ -695,10 +692,6 @@ export class BotConnection {
 		if (this.__boundForegroundHandler && typeof window !== 'undefined') {
 			window.removeEventListener('app:foreground', this.__boundForegroundHandler);
 			this.__boundForegroundHandler = null;
-		}
-		if (this.__boundNetworkHandler && typeof window !== 'undefined') {
-			window.removeEventListener('network:online', this.__boundNetworkHandler);
-			this.__boundNetworkHandler = null;
 		}
 		const ws = this.__ws;
 		this.__ws = null;

@@ -2,7 +2,6 @@ import { defineStore } from 'pinia';
 
 import { listBots } from '../services/bots.api.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
-import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
@@ -10,242 +9,195 @@ import { BRIEF_DISCONNECT_MS } from '../services/bot-connection.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
 import { initRtcAndSelectTransport, closeRtcForBot } from '../services/webrtc-connection.js';
 
-// 跟踪已桥接的 conn 实例（botId → BotConnection），避免重复注册
-const _bridgedConns = new Map();
+// 跟踪已注册持久 state 监听的 botId，避免重复注册
+const _listeningConnIds = new Set();
+// 跟踪已完成首次初始化的 botId
+const _initializedBots = new Set();
 
 /** @internal 仅供测试重置 */
-export function __resetBotStoreInternals() {
-	_bridgedConns.clear();
-}
-// 保留旧名兼容测试导入
-export { __resetBotStoreInternals as __resetAwaitingConnIds };
-
-/**
- * 创建 per-bot 聚合状态对象
- * @param {object} bot - 基础 bot 信息
- * @returns {object}
- */
-function createBotState(bot) {
-	return {
-		// 基础信息（HTTP 源）
-		id: String(bot.id),
-		name: bot.name ?? null,
-		online: Boolean(bot.online),
-		lastSeenAt: bot.lastSeenAt ?? null,
-		createdAt: bot.createdAt ?? null,
-		updatedAt: bot.updatedAt ?? null,
-		// 连接状态（桥接写入）
-		connState: 'disconnected',
-		lastAliveAt: 0,
-		disconnectedAt: 0,
-		// 初始化标记（首次 vs 重连）
-		initialized: false,
-		// 传输与插件（运行时写入）
-		transportMode: null,
-		pluginVersionOk: null,
-		pluginInfo: null,
-		rtcState: null,
-		rtcTransportInfo: null,
-	};
+export function __resetAwaitingConnIds() {
+	_listeningConnIds.clear();
+	_initializedBots.clear();
 }
 
 export const useBotsStore = defineStore('bots', {
 	state: () => ({
-		byId: {},
+		items: [],
 		loading: false,
 		/** loadBots 至少成功完成过一次 */
 		fetched: false,
+		/** 各 bot 插件版本是否满足最低要求 (botId → boolean) */
+		pluginVersionOk: {},
+		/** 各 bot 的插件与 OpenClaw 版本 (botId → { version, clawVersion }) */
+		pluginInfo: {},
+		/** 传输模式 (botId → 'ws' | 'rtc') */
+		transportModes: {},
+		/** WebRTC 连接状态 (botId → 'idle' | 'connecting' | 'connected' | 'failed' | 'closed') */
+		rtcStates: {},
+		/** WebRTC ICE 传输详情 (botId → { localType, localProtocol, remoteType, remoteProtocol, relayProtocol }) */
+		rtcTransportInfo: {},
 	}),
-	getters: {
-		/** 列表视图（供列表渲染和遍历用） */
-		items: (state) => Object.values(state.byId),
-	},
 	actions: {
 		setBots(items) {
-			const arr = Array.isArray(items) ? items : [];
-			const newById = {};
-			for (const bot of arr) {
-				const id = String(bot.id ?? '');
-				if (!id) continue;
-				newById[id] = this.byId[id]
-					? { ...this.byId[id], ...bot, id }
-					: createBotState(bot);
-			}
-			this.byId = newById;
+			this.items = Array.isArray(items) ? items : [];
 		},
 		addOrUpdateBot(bot) {
-			if (!bot?.id) return;
-			const id = String(bot.id);
-			console.debug('[bots] upsert id=%s', id);
-			if (this.byId[id]) {
-				// 更新已有 bot（保留运行时状态）
-				const existing = this.byId[id];
-				for (const [k, v] of Object.entries(bot)) {
-					if (k === 'id') continue;
-					existing[k] = v;
-				}
-			} else {
-				this.byId[id] = createBotState(bot);
+			if (!bot?.id) {
+				return;
 			}
+			console.debug('[bots] upsert id=%s', bot.id);
+			const id = String(bot.id);
+			const index = this.items.findIndex((item) => String(item.id) === id);
+			if (index >= 0) {
+				this.items[index] = {
+					...this.items[index],
+					...bot,
+				};
+			}
+			else {
+				this.items = [
+					{
+						id,
+						name: bot.name ?? null,
+						online: Boolean(bot.online),
+						lastSeenAt: bot.lastSeenAt ?? null,
+						createdAt: bot.createdAt ?? null,
+						updatedAt: bot.updatedAt ?? null,
+					},
+					...this.items,
+				];
+			}
+			// 确保新 bot 有连接，并注册就绪回调加载 agents/sessions/topics
 			const manager = useBotConnections();
 			manager.connect(id);
-			this.__bridgeConn(id);
+			this.__listenForReady([id], manager);
 		},
 		updateBotOnline(botId, online) {
 			const id = String(botId);
-			const bot = this.byId[id];
-			if (!bot) return;
-			const prev = bot.online;
-			const next = Boolean(online);
-			if (prev !== next) {
-				console.debug('[bots] online %s→%s id=%s', prev, next, id);
-			}
-			bot.online = next;
-			if (!next) {
-				useAgentsStore().removeByBot(id);
+			const index = this.items.findIndex((item) => String(item.id) === id);
+			if (index >= 0) {
+				const prev = this.items[index].online;
+				const next = Boolean(online);
+				if (prev !== next) {
+					console.debug('[bots] online %s→%s id=%s', prev, next, id);
+				}
+				this.items[index] = { ...this.items[index], online: next };
+				// bot 离线时清理 agents 缓存（agents 来自 WS RPC，离线后不可靠）
+				if (!next) {
+					useAgentsStore().removeByBot(id);
+				}
 			}
 		},
 		removeBotById(botId) {
 			console.debug('[bots] remove id=%s', botId);
 			const id = String(botId ?? '');
+			this.items = this.items.filter((item) => String(item.id) !== id);
+			// 断开对应连接并清理关联 session
 			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
-			useAgentRunsStore().removeByBot(id);
-			_bridgedConns.delete(id);
-			delete this.byId[id];
+			// 清理传输相关状态
+			const { [id]: _tm, ...restTm } = this.transportModes;
+			this.transportModes = restTm;
+			const { [id]: _rs, ...restRs } = this.rtcStates;
+			this.rtcStates = restRs;
+			const { [id]: _rt, ...restRt } = this.rtcTransportInfo;
+			this.rtcTransportInfo = restRt;
+			_initializedBots.delete(id);
+			_listeningConnIds.delete(id);
 		},
 		async loadBots() {
 			this.loading = true;
 			try {
 				const bots = await listBots();
-				const newById = {};
-				for (const b of bots) {
-					const id = String(b.id);
-					const existing = this.byId[id];
-					if (existing) {
-						// 保留运行时状态（connState、initialized 等），更新基础信息
-						Object.assign(existing, b, { id });
-						newById[id] = existing;
-					} else {
-						newById[id] = createBotState({ ...b, id });
-					}
-				}
-				this.byId = newById;
+				// 归一化 bot.id 为 string，确保全局 === 比较一致
+				this.items = bots.map((b) => ({ ...b, id: String(b.id) }));
 				this.fetched = true;
 				console.debug('[bots] loaded %d bot(s)', bots.length);
-
+				// 同步连接：为所有已绑定 bot 建立 WS
 				const botIds = bots.map((b) => String(b.id));
 				const manager = useBotConnections();
 				manager.syncConnections(botIds);
-
-				for (const id of botIds) {
-					this.__bridgeConn(id);
-				}
+				// WS 连接就绪后自动触发 session 加载
+				this.__listenForReady(botIds, manager);
 				return this.items;
-			} finally {
+			}
+			finally {
 				this.loading = false;
 			}
 		},
-
 		/**
-		 * 桥接 conn state → byId[botId]（每个 conn 实例只注册一次）
+		 * 为 WS 连接注册持久 state 监听：
+		 * - 首次 connected：完整初始化（版本检查 + 传输选择 + agent/session/topic 加载）
+		 * - 后续 connected（WS 重连）：仅重新触发传输选择
 		 */
-		__bridgeConn(botId) {
-			const conn = useBotConnections().get(botId);
-			if (!conn) return;
-			if (_bridgedConns.get(botId) === conn) return;
-			_bridgedConns.set(botId, conn);
-
-			conn.on('session-expired', () => {
-				console.warn('[bots] session-expired from botId=%s', botId);
-				window.dispatchEvent(new CustomEvent('auth:session-expired'));
-			});
-
-			conn.on('state', (s) => {
-				const bot = this.byId[botId];
-				if (!bot) return;
-				const prev = bot.connState;
-				bot.connState = s;
-				if (s === 'disconnected') {
-					bot.disconnectedAt = conn.disconnectedAt;
-				}
-				// connected 转换 → 触发初始化/重连
-				if (s === 'connected' && prev !== 'connected') {
-					this.__onBotConnected(botId);
-				}
-			});
-
-			// lastAliveAt 实时同步（每收到 WS 消息时更新）
-			conn.__onAlive = (ts) => {
-				const bot = this.byId[botId];
-				if (bot) bot.lastAliveAt = ts;
-			};
-
-			// 同步当前状态（conn 可能已经 connected）
-			const bot = this.byId[botId];
-			if (bot && conn.state !== bot.connState) {
-				const prev = bot.connState;
-				bot.connState = conn.state;
-				if (conn.state === 'connected') {
-					bot.lastAliveAt = conn.lastAliveAt || Date.now();
-					if (prev !== 'connected') {
-						this.__onBotConnected(botId);
-					}
-				}
-			}
-		},
-
-		/**
-		 * bot 连接就绪：首次 → 完整初始化；重连 → 传输选择 + 按断连时长刷新
-		 */
-		__onBotConnected(id) {
-			const bot = this.byId[id];
-			if (!bot) return;
-			const conn = useBotConnections().get(id);
-			if (!conn) return;
-
-			if (!bot.initialized) {
-				console.debug('[bots] conn ready botId=%s → full init', id);
-				bot.initialized = true;
-				const attempt = bot.__initAttempt = (bot.__initAttempt || 0) + 1;
-				this.__fullInit(id, conn).catch((err) => {
-					// 仅当没有更新的尝试覆盖时才重置，防止迟到的失败覆盖后续成功的重连
-					if (bot.__initAttempt === attempt) bot.initialized = false;
-					console.warn('[bots] fullInit failed for botId=%s: %s', id, err?.message);
-				});
-			} else {
-				console.debug('[bots] ws reconnected botId=%s → re-select transport', id);
+		__listenForReady(botIds, manager) {
+			const fire = async (id, conn) => {
+				// 传输选择（含 RTC 建连 + 15s 超时降级），后台执行，不阻塞业务初始化
 				initRtcAndSelectTransport(id, conn).catch(() => {});
-				if (conn.disconnectedAt > 0) {
-					const gap = Date.now() - conn.disconnectedAt;
-					if (gap >= BRIEF_DISCONNECT_MS) {
-						console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
-						useAgentsStore().loadAgents(id).catch(() => {});
-						useSessionsStore().loadAllSessions().catch(() => {});
-						useTopicsStore().loadAllTopics().catch(() => {});
+				// 静默检查插件版本，记录结果但不阻断
+				const info = await checkPluginVersion(conn);
+				const versionOk = info.ok;
+				this.pluginVersionOk = { ...this.pluginVersionOk, [id]: versionOk };
+				this.pluginInfo = { ...this.pluginInfo, [id]: { version: info.version, clawVersion: info.clawVersion } };
+				if (!versionOk) {
+					console.warn('[bots] plugin version outdated for botId=%s', id);
+				}
+				await useAgentsStore().loadAgents(id);
+				useSessionsStore().loadAllSessions();
+				useTopicsStore().loadAllTopics();
+			};
+			const catchFire = (id, conn) => {
+				fire(id, conn).catch((err) => {
+					console.warn('[bots] fire failed for botId=%s: %s', id, err?.message);
+				});
+			};
+			for (const id of botIds) {
+				const conn = manager.get(id);
+				if (!conn) continue;
+				if (conn.state === 'connected') {
+					if (!_initializedBots.has(id)) {
+						_initializedBots.add(id);
+						console.debug('[bots] conn already ready botId=%s → full init', id);
+						catchFire(id, conn);
+					} else {
+						// WS 重连后已就绪：传输选择 + 按断连时长决定是否刷新
+						initRtcAndSelectTransport(id, conn).catch(() => {});
+						if (conn.disconnectedAt > 0) {
+							const gap = Date.now() - conn.disconnectedAt;
+							if (gap >= BRIEF_DISCONNECT_MS) {
+								useAgentsStore().loadAgents(id).catch(() => {});
+								useSessionsStore().loadAllSessions().catch(() => {});
+								useTopicsStore().loadAllTopics().catch(() => {});
+							}
+						}
 					}
 				}
+				// 注册持久监听器（不移除，随连接生命周期存在）
+				if (_listeningConnIds.has(id)) continue;
+				_listeningConnIds.add(id);
+				conn.on('state', (state) => {
+					if (state !== 'connected') return;
+					if (!_initializedBots.has(id)) {
+						_initializedBots.add(id);
+						console.debug('[bots] conn ready botId=%s → full init', id);
+						catchFire(id, conn);
+					} else {
+						// WS 重连：传输选择 + 按断连时长决定是否刷新业务数据
+						console.debug('[bots] ws reconnected botId=%s → re-select transport', id);
+						initRtcAndSelectTransport(id, conn).catch(() => {});
+						if (conn.disconnectedAt > 0) {
+							const gap = Date.now() - conn.disconnectedAt;
+							if (gap >= BRIEF_DISCONNECT_MS) {
+								console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
+								useAgentsStore().loadAgents(id).catch(() => {});
+								useSessionsStore().loadAllSessions().catch(() => {});
+								useTopicsStore().loadAllTopics().catch(() => {});
+							}
+						}
+					}
+				});
 			}
-		},
-
-		/**
-		 * 首次连接初始化：版本检查 + 传输选择 + 数据加载
-		 */
-		async __fullInit(id, conn) {
-			initRtcAndSelectTransport(id, conn).catch(() => {});
-			const info = await checkPluginVersion(conn);
-			const bot = this.byId[id];
-			if (bot) {
-				bot.pluginVersionOk = info.ok;
-				bot.pluginInfo = { version: info.version, clawVersion: info.clawVersion };
-			}
-			if (!info.ok) {
-				console.warn('[bots] plugin version outdated for botId=%s', id);
-			}
-			await useAgentsStore().loadAgents(id);
-			useSessionsStore().loadAllSessions();
-			useTopicsStore().loadAllTopics();
 		},
 	},
 });

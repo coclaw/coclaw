@@ -24,24 +24,40 @@ vi.stubGlobal('__APP_VERSION__', '0.9.0');
 const fakeDashboard = {
 	users: { total: 100, todayNew: 5, todayActive: 23 },
 	topActiveUsers: [
-		{ id: '1', name: '张三', lastLoginAt: new Date(Date.now() - 180000).toISOString() },
-		{ id: '2', name: '李四', lastLoginAt: new Date(Date.now() - 7200000).toISOString() },
+		{ id: '1', name: '张三', loginName: 'zhangsan', lastLoginAt: new Date(Date.now() - 180000).toISOString(), botCount: 3, onlineBotCount: 2 },
+		{ id: '2', name: '李四', loginName: 'lisi', lastLoginAt: new Date(Date.now() - 7200000).toISOString(), botCount: 1, onlineBotCount: 0 },
 	],
 	latestRegisteredUsers: [
 		{ id: '10', name: '王五', loginName: 'wangwu', createdAt: new Date(Date.now() - 600000).toISOString() },
-		{ id: '11', name: null, loginName: 'noname_user', createdAt: new Date(Date.now() - 3600000).toISOString() },
 	],
-	bots: { total: 10, online: 4 },
+	bots: {
+		total: 10,
+		todayNew: 2,
+		online: 4,
+		list: [
+			{ id: '100', name: 'Bot-A', isOnline: true, lastSeenAt: new Date(Date.now() - 60000).toISOString(), createdAt: new Date(Date.now() - 86400000 * 5).toISOString(), userId: '1', userName: '张三', userLoginName: 'zhangsan' },
+			{ id: '101', name: null, isOnline: false, lastSeenAt: new Date(Date.now() - 3600000).toISOString(), createdAt: new Date(Date.now() - 86400000 * 30).toISOString(), userId: '2', userName: '李四', userLoginName: 'lisi' },
+		],
+	},
 	version: { server: '0.4.2', plugin: '0.3.1' },
 };
 
 const i18nMap = {
 	'adminDashboard.title': 'Admin Dashboard',
+	'adminDashboard.totalBots': 'Total Instances',
+	'adminDashboard.todayNewBots': 'New Today',
+	'adminDashboard.onlineBots': 'Online Instances',
+	'adminDashboard.instanceList': 'Instances',
+	'adminDashboard.instanceName': 'Name',
+	'adminDashboard.instanceOwner': 'Owner',
+	'adminDashboard.lastSeen': 'Last Seen',
+	'adminDashboard.bindDuration': 'Bound For',
+	'adminDashboard.userList': 'Users',
+	'adminDashboard.instanceCount': 'Instances',
+	'adminDashboard.lastLogin': 'Last Login',
 	'adminDashboard.totalUsers': 'Total Users',
 	'adminDashboard.todayNew': 'New Today',
 	'adminDashboard.todayActive': 'Active Today',
-	'adminDashboard.totalBots': 'Bound Instances',
-	'adminDashboard.onlineBots': 'Online',
 	'adminDashboard.serverVersion': 'Server Version',
 	'adminDashboard.uiVersion': 'UI Version',
 	'adminDashboard.pluginVersion': 'Plugin Version',
@@ -92,22 +108,65 @@ test('should show loading state initially', async () => {
 	await flushPromises();
 });
 
-test('should render dashboard data after successful load', async () => {
+test('should render bot metric cards after successful load', async () => {
 	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 
-	expect(wrapper.text()).toContain('100');
-	expect(wrapper.text()).toContain('5');
-	expect(wrapper.text()).toContain('23');
 	expect(wrapper.text()).toContain('10');
+	expect(wrapper.text()).toContain('Total Instances');
+	expect(wrapper.text()).toContain('2');
+	expect(wrapper.text()).toContain('4');
+	expect(wrapper.text()).toContain('Online Instances');
+});
+
+test('should render instance list with online status', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	expect(wrapper.text()).toContain('Instances');
+	expect(wrapper.text()).toContain('Bot-A');
+	expect(wrapper.text()).toContain('张三');
+	// 在线实例有绿色指示点
+	const greenDots = wrapper.findAll('.bg-green-500');
+	expect(greenDots.length).toBeGreaterThanOrEqual(1);
+	const grayDots = wrapper.findAll('.bg-gray-400');
+	expect(grayDots.length).toBeGreaterThanOrEqual(1);
+});
+
+test('should sort bots: online first, then by lastSeenAt desc', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	const listItems = wrapper.findAll('ul')[0].findAll('li');
+	// Bot-A (online) 应排在前面
+	expect(listItems[0].text()).toContain('Bot-A');
+});
+
+test('should render user list with instance counts', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	expect(wrapper.text()).toContain('Users');
+	expect(wrapper.text()).toContain('张三');
+	expect(wrapper.text()).toContain('2/3');
+	expect(wrapper.text()).toContain('0/1');
+	// 3m ago / 2h ago
+	expect(wrapper.text()).toContain('3m ago');
+	expect(wrapper.text()).toContain('2h ago');
+});
+
+test('should render version info', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+
 	expect(wrapper.text()).toContain('v0.4.2');
 	expect(wrapper.text()).toContain('v0.9.0');
 	expect(wrapper.text()).toContain('v0.3.1');
-	expect(wrapper.text()).toContain('Online');
-	expect(wrapper.text()).toContain('4');
-	expect(wrapper.text()).toContain('张三');
-	expect(wrapper.text()).toContain('李四');
 });
 
 test('should call notify.error on fetch failure', async () => {
@@ -118,20 +177,10 @@ test('should call notify.error on fetch failure', async () => {
 	expect(mockNotifyError).toHaveBeenCalledWith('Network error');
 });
 
-test('should format time ago correctly', async () => {
-	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	// 180s = 3min -> "3m ago"
-	expect(wrapper.text()).toContain('3m ago');
-	// 7200s = 2h -> "2h ago"
-	expect(wrapper.text()).toContain('2h ago');
-});
-
-test('should show noData when topActiveUsers is empty', async () => {
+test('should show noData when bots list is empty', async () => {
 	mockFetchAdminDashboard.mockResolvedValueOnce({
 		...fakeDashboard,
+		bots: { ...fakeDashboard.bots, list: [] },
 		topActiveUsers: [],
 	});
 	const wrapper = createWrapper();
@@ -140,12 +189,12 @@ test('should show noData when topActiveUsers is empty', async () => {
 	expect(wrapper.text()).toContain('No data');
 });
 
-test('should fallback to loginName when name is empty', async () => {
+test('should fallback to loginName when user name is empty', async () => {
 	mockFetchAdminDashboard.mockResolvedValueOnce({
 		...fakeDashboard,
 		topActiveUsers: [
-			{ id: '1', name: '', loginName: 'alice', lastLoginAt: new Date().toISOString() },
-			{ id: '2', name: null, loginName: null, lastLoginAt: new Date().toISOString() },
+			{ id: '1', name: '', loginName: 'alice', lastLoginAt: new Date().toISOString(), botCount: 0, onlineBotCount: 0 },
+			{ id: '2', name: null, loginName: null, lastLoginAt: new Date().toISOString(), botCount: 0, onlineBotCount: 0 },
 		],
 	});
 	const wrapper = createWrapper();
@@ -155,72 +204,13 @@ test('should fallback to loginName when name is empty', async () => {
 	expect(wrapper.text()).toContain('2');
 });
 
-test('should render latest registered users with name fallback to loginName', async () => {
+test('should format bind duration correctly', async () => {
 	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 
-	expect(wrapper.text()).toContain('Latest Registered Users');
-	expect(wrapper.text()).toContain('王五');
-	// name 为 null 时应显示 loginName
-	expect(wrapper.text()).toContain('noname_user');
-	// 注册时间 600s = 10min -> "10m ago"
-	expect(wrapper.text()).toContain('10m ago');
-});
-
-test('should reload data on app:foreground', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	mockFetchAdminDashboard.mockClear();
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).toHaveBeenCalled();
-	wrapper.unmount();
-});
-
-test('should reload data on visibilitychange to visible', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	mockFetchAdminDashboard.mockClear();
-	Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-	document.dispatchEvent(new Event('visibilitychange'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).toHaveBeenCalled();
-	wrapper.unmount();
-});
-
-test('should throttle foreground resume within 2s', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	mockFetchAdminDashboard.mockClear();
-	// 连续触发两次，第二次应被节流
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	// 节流：仅执行一次
-	expect(mockFetchAdminDashboard).toHaveBeenCalledTimes(1);
-	wrapper.unmount();
-});
-
-test('should remove listeners on unmount', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	wrapper.unmount();
-
-	mockFetchAdminDashboard.mockClear();
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).not.toHaveBeenCalled();
+	// Bot-A: 5 days old -> "5d"
+	expect(wrapper.text()).toContain('5d');
+	// Bot with 30 days -> "30d"
+	expect(wrapper.text()).toContain('30d');
 });

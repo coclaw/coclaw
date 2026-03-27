@@ -31,13 +31,6 @@ function mockConn(topicsResponse, state = 'connected') {
 	};
 }
 
-/** 辅助：将 topic 数组转为 byId 格式 */
-function toById(items) {
-	const byId = {};
-	for (const t of items) byId[t.topicId] = t;
-	return byId;
-}
-
 describe('topics store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
@@ -56,7 +49,7 @@ describe('topics store', () => {
 		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: false }]);
 
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 'old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);
+		store.items = [{ topicId: 'old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
 		await store.loadAllTopics();
 		expect(store.items).toEqual([]);
 	});
@@ -77,10 +70,10 @@ describe('topics store', () => {
 		await store.loadAllTopics();
 
 		expect(store.items).toHaveLength(2);
-		expect(store.byId['t1']).toEqual({
+		expect(store.items[0]).toEqual({
 			topicId: 't1', agentId: 'main', title: '话题一', createdAt: 1000, botId: 'bot-1',
 		});
-		expect(store.byId['t2']).toEqual({
+		expect(store.items[1]).toEqual({
 			topicId: 't2', agentId: 'main', title: null, createdAt: 2000, botId: 'bot-1',
 		});
 	});
@@ -101,8 +94,7 @@ describe('topics store', () => {
 		await store.loadAllTopics();
 
 		expect(store.items).toHaveLength(2);
-		expect(store.byId['t-main']).toBeTruthy();
-		expect(store.byId['t-b2']).toBeTruthy();
+		expect(store.items.map((t) => t.topicId).sort()).toEqual(['t-b2', 't-main']);
 		// 每个 bot 只请求一次（main agent）
 		expect(conn1.request).toHaveBeenCalledWith('coclaw.topics.list', { agentId: 'main' });
 		expect(conn2.request).toHaveBeenCalledWith('coclaw.topics.list', { agentId: 'main' });
@@ -128,7 +120,7 @@ describe('topics store', () => {
 		await store.loadAllTopics();
 
 		expect(store.items).toHaveLength(1);
-		expect(store.byId['t1'].topicId).toBe('t1');
+		expect(store.items[0].topicId).toBe('t1');
 	});
 
 	test('并发 loadAllTopics 应合流', async () => {
@@ -164,7 +156,7 @@ describe('topics store', () => {
 
 	// --- createTopic ---
 
-	test('createTopic 成功创建并插入 byId', async () => {
+	test('createTopic 成功创建并插入本地缓存头部', async () => {
 		const conn = {
 			state: 'connected',
 			request: vi.fn().mockResolvedValue({ topicId: 'new-uuid' }),
@@ -173,15 +165,15 @@ describe('topics store', () => {
 		mockConnections.set('bot-1', conn);
 
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 'old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);
+		store.items = [{ topicId: 'old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
 
 		const id = await store.createTopic('bot-1', 'main');
 		expect(id).toBe('new-uuid');
 		expect(store.items).toHaveLength(2);
-		expect(store.byId['new-uuid'].topicId).toBe('new-uuid');
-		expect(store.byId['new-uuid'].title).toBeNull();
-		expect(store.byId['new-uuid'].agentId).toBe('main');
-		expect(store.byId['new-uuid'].botId).toBe('bot-1');
+		expect(store.items[0].topicId).toBe('new-uuid');
+		expect(store.items[0].title).toBeNull();
+		expect(store.items[0].agentId).toBe('main');
+		expect(store.items[0].botId).toBe('bot-1');
 		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.create', { agentId: 'main' });
 	});
 
@@ -208,12 +200,12 @@ describe('topics store', () => {
 		mockConnections.set('bot-1', conn);
 
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }]);
+		store.items = [{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }];
 
 		store.generateTitle('bot-1', 't1');
 		// generateTitle 是 fire-and-forget，需等待微任务完成
 		await vi.waitFor(() => {
-			expect(store.byId['t1'].title).toBe('新标题');
+			expect(store.items[0].title).toBe('新标题');
 		});
 		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.generateTitle', { topicId: 't1' });
 	});
@@ -227,14 +219,14 @@ describe('topics store', () => {
 		mockConnections.set('bot-1', conn);
 
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }]);
+		store.items = [{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }];
 
 		store.generateTitle('bot-1', 't1');
 		await vi.waitFor(() => {
 			expect(conn.request).toHaveBeenCalled();
 		});
 		// title 保持 null
-		expect(store.byId['t1'].title).toBeNull();
+		expect(store.items[0].title).toBeNull();
 	});
 
 	test('generateTitle bot 未连接时静默返回', () => {
@@ -245,7 +237,7 @@ describe('topics store', () => {
 
 	// --- deleteTopic ---
 
-	test('deleteTopic 成功删除并移除 byId 条目', async () => {
+	test('deleteTopic 成功删除并移除本地缓存', async () => {
 		const conn = {
 			state: 'connected',
 			request: vi.fn().mockResolvedValue({ ok: true }),
@@ -254,15 +246,14 @@ describe('topics store', () => {
 		mockConnections.set('bot-1', conn);
 
 		const store = useTopicsStore();
-		store.byId = toById([
+		store.items = [
 			{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: 'bot-1' },
 			{ topicId: 't2', agentId: 'main', title: 'B', createdAt: 200, botId: 'bot-1' },
-		]);
+		];
 
 		await store.deleteTopic('bot-1', 't1');
 		expect(store.items).toHaveLength(1);
-		expect(store.byId['t1']).toBeUndefined();
-		expect(store.byId['t2']).toBeTruthy();
+		expect(store.items[0].topicId).toBe('t2');
 		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.delete', { topicId: 't1' });
 	});
 
@@ -294,11 +285,11 @@ describe('topics store', () => {
 		mockConnections.set('bot-1', conn);
 
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);
+		store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
 
 		await store.updateTopic('bot-1', 't1', { title: '新标题' });
-		expect(store.byId['t1'].title).toBe('新标题');
-		expect(store.byId['t1'].botId).toBe('bot-1'); // botId 保留
+		expect(store.items[0].title).toBe('新标题');
+		expect(store.items[0].botId).toBe('bot-1'); // botId 保留
 		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.update', { topicId: 't1', changes: { title: '新标题' } });
 	});
 
@@ -311,7 +302,7 @@ describe('topics store', () => {
 		mockConnections.set('bot-1', conn);
 
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);
+		store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
 		await expect(store.updateTopic('bot-1', 't1', { title: 'x' })).rejects.toThrow('Update failed');
 	});
 
@@ -324,10 +315,10 @@ describe('topics store', () => {
 
 	test('findTopic 返回匹配的 topic', () => {
 		const store = useTopicsStore();
-		store.byId = toById([
+		store.items = [
 			{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: 'b1' },
 			{ topicId: 't2', agentId: 'ops', title: 'B', createdAt: 200, botId: 'b2' },
-		]);
+		];
 		const found = store.findTopic('t2');
 		expect(found.topicId).toBe('t2');
 		expect(found.agentId).toBe('ops');
@@ -335,7 +326,7 @@ describe('topics store', () => {
 
 	test('findTopic 未找到时返回 null', () => {
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: 'b1' }]);
+		store.items = [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: 'b1' }];
 		expect(store.findTopic('nonexistent')).toBeNull();
 	});
 });
