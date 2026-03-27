@@ -633,12 +633,11 @@ describe('WebRTC 集成', () => {
 });
 
 describe('重连后批量状态刷新', () => {
-	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 bots/agents/sessions/topics', async () => {
+	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 agents/sessions/topics', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
-		vi.spyOn(store, 'loadBots').mockResolvedValue();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
@@ -662,7 +661,6 @@ describe('重连后批量状态刷新', () => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 		});
 
-		store.loadBots.mockClear();
 		agentsStore.loadAgents.mockClear();
 		sessionsStore.loadAllSessions.mockClear();
 		topicsStore.loadAllTopics.mockClear();
@@ -677,7 +675,6 @@ describe('重连后批量状态刷新', () => {
 
 
 		await vi.waitFor(() => {
-			expect(store.loadBots).toHaveBeenCalled();
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
@@ -783,7 +780,6 @@ describe('__fullInit 失败重试', () => {
 		checkPluginVersion.mockReturnValueOnce(new Promise((_, rej) => { rejectFirst = rej; }));
 		// 第二次 fullInit 正常成功
 		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
-		vi.spyOn(store, 'loadBots').mockResolvedValue();
 
 		let stateCallback;
 		const fakeConn = {

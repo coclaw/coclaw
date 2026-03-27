@@ -333,6 +333,9 @@ export const enMessages = {
 		refreshSession: 'Refresh Session',
 		currentSession: 'Current Session',
 	},
+	electron: {
+		screenshotKeyFailed: 'Shortcut {key} registration failed, may be occupied by another app',
+	},
 	demo: {
 		title: 'Nuxt UI 4 Demo',
 		desc: 'Nuxt UI component library baseline integration is ready.',
