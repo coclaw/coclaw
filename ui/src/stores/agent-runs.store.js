@@ -1,12 +1,10 @@
 /**
  * Agent Run 全局注册表
- * 职责：跟踪所有活跃的 agent run，缓冲流式消息
+ * 职责：跟踪所有活跃的 agent run，管理 per-connection 事件路由，缓冲流式消息
  * 生命周期独立于 ChatPage / chatStore，run 在页面切换后继续接收事件
- *
- * event:agent 事件由 botsStore.__bridgeConn 集中桥接，所有事件统一通过 __dispatch 到达本 store。
- * 本 store 不再自行管理 per-connection 监听器。
  */
 import { defineStore } from 'pinia';
+import { toRaw } from 'vue';
 import { applyAgentEvent } from '../utils/agent-stream.js';
 
 /** post-acceptance 超时（30 分钟） */
@@ -62,7 +60,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 * @param {string} opts.botId
 		 * @param {string} opts.runKey
 		 * @param {boolean} opts.topicMode
-		 * @param {object} opts.conn - BotConnection 实例（仅保留引用，不注册监听器）
+		 * @param {object} opts.conn - BotConnection 实例
 		 * @param {object[]} opts.streamingMsgs - 初始流式消息（乐观 user + bot 条目）
 		 */
 		register(runId, { botId, runKey, topicMode, conn, streamingMsgs = [] }) {
@@ -84,10 +82,14 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				settling: false,
 				lastEventAt: 0,
 				streamingMsgs: [...streamingMsgs],
+				// 非响应式内部引用
 				__conn: conn,
 				__timer: null,
 			};
 			this.runKeyIndex[runKey] = runId;
+
+			// 确保 connection 上有事件路由
+			this.__ensureListener(botId, conn);
 
 			// post-acceptance 超时
 			this.runs[runId].__timer = setTimeout(() => {
@@ -110,7 +112,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
-		 * 内部：处理 event:agent 事件路由（由 botsStore.__bridgeConn 集中调用）
+		 * 内部：处理 event:agent 事件路由
 		 * @param {object} payload
 		 */
 		__dispatch(payload) {
@@ -207,6 +209,9 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 */
 		__serverMessagesIndicateRunDone(run, messages) {
 			if (!messages?.length) return false;
+			// 检查服务端消息数是否多于 run 开始前的消息数
+			// streamingMsgs 初始包含 [user, blank_bot]，若 run 正常，服务端应有比初始更多的消息
+			// 但 streamingMsgs 可能为空（如断连后 run 已被部分清理），此时 fallback 到简单检查
 			// 从后向前找最后一条 assistant 消息
 			for (let i = messages.length - 1; i >= 0; i--) {
 				const msg = messages[i]?.message;
@@ -242,17 +247,64 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				delete this.runKeyIndex[run.runKey];
 			}
 			delete this.runs[runId];
+
+			// 若该 botId 下无活跃 run，移除监听器
+			this.__removeListenerIfIdle(run.botId);
 		},
 
+		// --- per-connection 事件监听器管理 ---
+
 		/**
-		 * bot 移除时清理该 bot 的所有 runs
+		 * bot 移除时清理该 bot 的所有 runs 和监听器
 		 * @param {string} botId
 		 */
 		removeByBot(botId) {
+			// 强制 settle 该 bot 的所有活跃 runs
 			const runIds = Object.keys(this.runs).filter((id) => this.runs[id].botId === botId);
 			for (const runId of runIds) {
 				this.__cleanupRun(runId);
 			}
+			// 确保监听器也被清理（__cleanupRun 内的 __removeListenerIfIdle 应已处理，此为防御性清理）
+			if (this.__listeners?.[botId]) {
+				const { handler, conn } = this.__listeners[botId];
+				try { conn.off('event:agent', handler); } catch { /* conn 可能已销毁 */ }
+				delete this.__listeners[botId];
+			}
+		},
+
+		/**
+		 * 确保指定 botId 的 connection 上注册了事件路由
+		 * @param {string} botId
+		 * @param {object} conn
+		 */
+		__ensureListener(botId, conn) {
+			if (!this.__listeners) this.__listeners = {};
+			const existing = this.__listeners[botId];
+			if (existing) {
+				if (toRaw(existing.conn) === toRaw(conn)) return; // 同实例，无需重复
+				// conn 实例已替换，先移除旧 listener
+				try { existing.conn.off('event:agent', existing.handler); } catch { /* 旧 conn 可能已销毁 */ }
+			}
+			const handler = (payload) => this.__dispatch(payload);
+			conn.on('event:agent', handler);
+			this.__listeners[botId] = { handler, conn };
+			console.debug('[agentRuns] listener registered botId=%s', botId);
+		},
+
+		/**
+		 * 若指定 botId 下无活跃 run，移除监听器
+		 * @param {string} botId
+		 */
+		__removeListenerIfIdle(botId) {
+			if (!this.__listeners?.[botId]) return;
+			// 检查是否还有该 botId 的活跃 run
+			const hasActive = Object.values(this.runs).some((r) => r.botId === botId && !r.settled);
+			if (hasActive) return;
+
+			const { handler, conn } = this.__listeners[botId];
+			conn.off('event:agent', handler);
+			delete this.__listeners[botId];
+			console.debug('[agentRuns] listener removed botId=%s', botId);
 		},
 	},
 });

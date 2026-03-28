@@ -9,9 +9,6 @@ const botSockets = new Map();
 const uiSockets = new Map();
 const uiTickets = new Map();
 const botRpcPending = new Map();
-/** @type {Map<string, NodeJS.Timeout>} botId → 延迟 offline timer */
-const pendingOffline = new Map();
-const BOT_OFFLINE_GRACE_MS = 5_000;
 let wsServer = null;
 let wsSessionMiddleware = null;
 let botRpcSeq = 1;
@@ -39,8 +36,11 @@ function rtcLogWarn(msg) { console.warn(`[coclaw/rtc] ${msg}`); }
 function rtcLogDebug(msg) { if (WS_VERBOSE) console.debug(`[coclaw/rtc] ${msg}`); }
 
 function getWebSocketCloseCode(reason) {
-	if (reason === 'token_revoked' || reason === 'bot_unbound') {
+	if (reason === 'bot_unbound') {
 		return 4001;
+	}
+	if (reason === 'token_revoked') {
+		return 4002;
 	}
 	if (reason === 'bot_blocked') {
 		return 4003;
@@ -409,12 +409,7 @@ function onUiMessage(botId, ws, raw) {
 }
 
 export function listOnlineBotIds() {
-	const ids = new Set(botSockets.keys());
-	// grace period 内的 bot 仍视为在线
-	for (const botId of pendingOffline.keys()) {
-		ids.add(botId);
-	}
-	return ids;
+	return new Set(botSockets.keys());
 }
 
 export function createUiWsTicket({ botId, userId, ttlMs = 60_000 }) {
@@ -493,12 +488,6 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				}
 
 				const wasOffline = !botSockets.has(botId);
-				// 取消 grace period 的延迟 offline（bot 重连了）
-				if (pendingOffline.has(botId)) {
-					clearTimeout(pendingOffline.get(botId));
-					pendingOffline.delete(botId);
-					wsLogInfo(`bot reconnected within grace period botId=${botId}`);
-				}
 				// 淘汰同 botId 的旧连接（避免半开连接残留）
 				const staleSet = botSockets.get(botId);
 				if (staleSet && staleSet.size > 0) {
@@ -559,24 +548,15 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 					rejectAllBotRpcPending(botId);
 					wsLogInfo(`bot ws disconnected botId=${botId} code=${code} reason=${String(reason || '')}`);
 					if (!botSockets.has(botId)) {
-						// 管理性断连（解绑/封禁）立即 offline，不走 grace period
-						if (code === 4001 || code === 4003) {
-							wsLogInfo(`bot offline botId=${botId} (admin close code=${code})`);
-							botStatusEmitter.emit('status', { botId, online: false });
-						}
-						else {
-							// 延迟发 offline，给 bot 重连留窗口
-							if (pendingOffline.has(botId)) clearTimeout(pendingOffline.get(botId));
-							const timer = setTimeout(() => {
-								pendingOffline.delete(botId);
-								// grace 期间可能已重连，再次确认
-								if (!botSockets.has(botId)) {
-									wsLogInfo(`bot offline botId=${botId} (after grace)`);
-									botStatusEmitter.emit('status', { botId, online: false });
-								}
-							}, BOT_OFFLINE_GRACE_MS);
-							timer.unref();
-							pendingOffline.set(botId, timer);
+						wsLogInfo(`bot offline botId=${botId}`);
+						botStatusEmitter.emit('status', { botId, online: false });
+						if (botCloseEffect(code).unbound) {
+							broadcastToUi(botId, {
+								type: 'bot.unbound',
+								botId,
+								reason: 'remote_unbind',
+								at: new Date().toISOString(),
+							});
 						}
 					}
 				});
@@ -610,16 +590,25 @@ export function botPingTick(state, maxMiss) {
 	return { action: 'terminate', missCount: next };
 }
 
+/**
+ * 判断 bot WS 关闭时的语义效果。
+ * code 4001 = 远程解绑（plugin 侧主动关闭）。
+ * code 4002 = token 被撤销（管理员操作）。
+ * @param {number} code - WebSocket close code
+ * @returns {{ unbound: boolean, tokenRevoked: boolean }}
+ */
+export function botCloseEffect(code) {
+	return {
+		unbound: code === 4001,
+		tokenRevoked: code === 4002,
+	};
+}
+
 export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 	if (!botId) {
 		return;
 	}
 	const key = String(botId);
-	// 清理可能残留的 grace period timer（网络断开后管理员解绑的场景）
-	if (pendingOffline.has(key)) {
-		clearTimeout(pendingOffline.get(key));
-		pendingOffline.delete(key);
-	}
 	const set = botSockets.get(key);
 	if (!set || set.size === 0) {
 		return;
@@ -647,4 +636,4 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 }
 
 // 测试辅助导出（仅用于单元测试访问内部状态）
-export const __test = { uiSockets, botSockets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId };
+export const __test = { uiSockets, botSockets, onUiMessage, onBotMessage, findUiSocketByConnId };
