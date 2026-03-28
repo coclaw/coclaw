@@ -21,7 +21,9 @@ function createMockSpawn(pid = 12345) {
 	const mockChild = {
 		pid,
 		unref: () => { mockChild._unrefCalled = true; },
+		on: (evt, fn) => { mockChild._listeners[evt] = fn; },
 		_unrefCalled: false,
+		_listeners: {},
 	};
 	const spawnFn = (cmd, args, options) => {
 		calls.push({ cmd, args, options });
@@ -87,6 +89,42 @@ test('spawnUpgradeWorker 返回包含 child 的对象', () => {
 
 	assert.equal(result.child, mockChild);
 	assert.equal(result.child.pid, 999);
+});
+
+test('spawnUpgradeWorker 注册 error 事件监听器防止 gateway 崩溃', () => {
+	const { spawnFn, mockChild } = createMockSpawn();
+	const warns = [];
+	spawnUpgradeWorker({
+		pluginDir: '/tmp/plugin',
+		fromVersion: '1.0.0',
+		toVersion: '2.0.0',
+		pluginId: 'test-plugin',
+		pkgName: '@test/pkg',
+		opts: { spawnFn },
+		logger: { info: () => {}, warn: (m) => warns.push(m) },
+	});
+
+	assert.ok(mockChild._listeners.error, 'should register error listener on child');
+	// 模拟 spawn 失败触发 error 事件
+	mockChild._listeners.error(new Error('spawn EMFILE'));
+	assert.ok(warns.some(m => m.includes('spawn EMFILE')), 'error should be logged via logger.warn');
+});
+
+test('spawnUpgradeWorker error 监听器在无 logger 时不抛异常', () => {
+	const { spawnFn, mockChild } = createMockSpawn();
+	spawnUpgradeWorker({
+		pluginDir: '/tmp/plugin',
+		fromVersion: '1.0.0',
+		toVersion: '2.0.0',
+		pluginId: 'test-plugin',
+		pkgName: '@test/pkg',
+		opts: { spawnFn },
+	});
+
+	// 无 logger 时触发 error 也不应抛异常
+	assert.doesNotThrow(() => {
+		mockChild._listeners.error(new Error('spawn ENOMEM'));
+	});
 });
 
 test('spawnUpgradeWorker 未提供 logger 时静默跳过日志，不抛异常', () => {

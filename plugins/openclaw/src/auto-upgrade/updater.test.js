@@ -434,7 +434,7 @@ test('__check - 有更新时调用 spawnUpgradeWorker 并写入锁', async () =>
 		const spawnCalls = [];
 		const mockSpawnFn = (cmd, args, opts) => {
 			spawnCalls.push({ cmd, args, opts });
-			return { pid: 9999, unref: () => {} };
+			return { pid: 9999, unref: () => {}, on: () => {} };
 		};
 
 		const lockPids = [];
@@ -688,7 +688,7 @@ test('__check - 使用 pino 风格 logger（无 .log）完整走通 check + spaw
 				getPluginInstallPathFn: () => '/opt/test-plugin',
 				spawnFn: (cmd, args, opts) => {
 					spawnCalls.push({ cmd, args, opts });
-					return { pid: 8888, unref: () => {} };
+					return { pid: 8888, unref: () => {}, on: () => {} };
 				},
 				isUpgradeLockedFn: async () => false,
 				writeUpgradeLockFn: async () => {},

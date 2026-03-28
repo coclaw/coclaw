@@ -54,6 +54,10 @@ export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, pluginId
 		env,
 	});
 
+	// spawn 失败时 Node.js 会异步 emit 'error'；若无监听器则变为未捕获异常导致 gateway 崩溃
+	child.on('error', (err) => {
+		logger?.warn?.(`[spawner] Worker spawn error: ${err.message}`);
+	});
 	child.unref();
 
 	logger?.info?.(`[spawner] Worker spawned (pid: ${child.pid})`);
