@@ -14,7 +14,7 @@ export const zhCNMessages = {
 		productName: 'CoClaw',
 		newChat: '新的对话',
 		addBot: '添加 Claw',
-		manageBots: '管理 Claw',
+		manageBots: '我的 Claw',
 		sessions: '会话',
 		noBots: '暂无绑定 Claw',
 		commonBots: '常用机器人',

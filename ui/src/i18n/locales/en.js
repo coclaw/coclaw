@@ -14,7 +14,7 @@ export const enMessages = {
 		productName: 'CoClaw',
 		newChat: 'New chat',
 		addBot: 'Add Claw',
-		manageBots: 'Manage Claws',
+		manageBots: 'My Claws',
 		sessions: 'Sessions',
 		noBots: 'No Claws bound',
 		commonBots: 'Common bots',
