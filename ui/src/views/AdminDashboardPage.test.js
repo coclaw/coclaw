@@ -19,6 +19,17 @@ vi.mock('../composables/use-notify.js', () => ({
 	}),
 }));
 
+const mockBotsStore = { items: [], pluginInfo: {} };
+const mockDashboardStore = { getDashboard: () => null };
+
+vi.mock('../stores/bots.store.js', () => ({
+	useBotsStore: () => mockBotsStore,
+}));
+
+vi.mock('../stores/dashboard.store.js', () => ({
+	useDashboardStore: () => mockDashboardStore,
+}));
+
 vi.stubGlobal('__APP_VERSION__', '0.9.0');
 
 const fakeDashboard = {
@@ -48,6 +59,9 @@ const i18nMap = {
 	'adminDashboard.topActiveUsers': 'Recently Active Users',
 	'adminDashboard.latestRegisteredUsers': 'Latest Registered Users',
 	'adminDashboard.noData': 'No data',
+	'adminDashboard.instanceList': 'OpenClaw Instances',
+	'adminDashboard.unnamed': '(Unnamed)',
+	'adminDashboard.boundFor': 'Bound {days}d',
 	'chat.loading': 'Loading...',
 	'dashboard.justNow': 'Just now',
 	'dashboard.minutesAgo': '{n}m ago',
@@ -79,6 +93,9 @@ function createWrapper() {
 beforeEach(() => {
 	mockFetchAdminDashboard.mockReset();
 	mockNotifyError.mockReset();
+	mockBotsStore.items = [];
+	mockBotsStore.pluginInfo = {};
+	mockDashboardStore.getDashboard = () => null;
 });
 
 test('should show loading state initially', async () => {
@@ -168,59 +185,50 @@ test('should render latest registered users with name fallback to loginName', as
 	expect(wrapper.text()).toContain('10m ago');
 });
 
-test('should reload data on app:foreground', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+test('instanceList returns empty array when botsStore.items is empty', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 
-	mockFetchAdminDashboard.mockClear();
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).toHaveBeenCalled();
-	wrapper.unmount();
+	expect(wrapper.vm.instanceList).toEqual([]);
+	expect(wrapper.text()).toContain('OpenClaw Instances');
+	expect(wrapper.text()).toContain('No data');
 });
 
-test('should reload data on visibilitychange to visible', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
+test('instanceList maps pluginInfo and dashboard model correctly', async () => {
+	mockBotsStore.items = [
+		{ id: 1, name: 'My-Bot', online: true },
+		{ id: 2, name: '', online: false },
+	];
+	mockBotsStore.pluginInfo = {
+		'1': { version: '0.3.1', clawVersion: '0.8.0' },
+	};
+	mockDashboardStore.getDashboard = (id) => {
+		if (id === '1') return { instance: { model: 'gpt-4o' } };
+		return null;
+	};
+
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 
-	mockFetchAdminDashboard.mockClear();
-	Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-	document.dispatchEvent(new Event('visibilitychange'));
-	await flushPromises();
+	const list = wrapper.vm.instanceList;
+	expect(list).toHaveLength(2);
 
-	expect(mockFetchAdminDashboard).toHaveBeenCalled();
-	wrapper.unmount();
-});
+	expect(list[0]).toEqual({
+		id: '1', name: 'My-Bot', online: true,
+		pluginVersion: '0.3.1', clawVersion: '0.8.0', model: 'gpt-4o',
+	});
+	expect(list[1]).toEqual({
+		id: '2', name: null, online: false,
+		pluginVersion: null, clawVersion: null, model: null,
+	});
 
-test('should throttle foreground resume within 2s', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	mockFetchAdminDashboard.mockClear();
-	// 连续触发两次，第二次应被节流
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	// 节流：仅执行一次
-	expect(mockFetchAdminDashboard).toHaveBeenCalledTimes(1);
-	wrapper.unmount();
-});
-
-test('should remove listeners on unmount', async () => {
-	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
-	const wrapper = createWrapper();
-	await flushPromises();
-
-	wrapper.unmount();
-
-	mockFetchAdminDashboard.mockClear();
-	window.dispatchEvent(new CustomEvent('app:foreground'));
-	await flushPromises();
-
-	expect(mockFetchAdminDashboard).not.toHaveBeenCalled();
+	// 渲染检查
+	const text = wrapper.text();
+	expect(text).toContain('My-Bot');
+	expect(text).toContain('(Unnamed)');
+	expect(text).toContain('0.3.1');
+	expect(text).toContain('0.8.0');
+	expect(text).toContain('gpt-4o');
 });

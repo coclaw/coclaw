@@ -45,6 +45,32 @@
 						</div>
 					</div>
 
+					<!-- OpenClaw 实例列表 -->
+					<div class="mb-6">
+						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.instanceList') }}</h2>
+						<p v-if="!instanceList.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
+						<ul v-else class="space-y-2">
+							<li
+								v-for="bot in instanceList"
+								:key="bot.id"
+								class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg bg-elevated px-3 py-2 text-sm"
+							>
+								<div class="flex items-center gap-2 min-w-0">
+									<span
+										class="inline-block size-2 shrink-0 rounded-full"
+										:class="bot.online ? 'bg-green-400' : 'bg-gray-400'"
+									></span>
+									<span class="font-medium truncate">{{ bot.name || $t('adminDashboard.unnamed') }}</span>
+								</div>
+								<div class="flex items-center gap-3 text-xs text-dimmed shrink-0">
+									<span><span class="text-dimmed">{{ $t('adminDashboard.labelPlugin') }}</span> {{ bot.pluginVersion || '—' }}</span>
+									<span><span class="text-dimmed">{{ $t('adminDashboard.labelApp') }}</span> {{ bot.clawVersion || '—' }}</span>
+									<span class="truncate max-w-32"><span class="text-dimmed">{{ $t('adminDashboard.labelModel') }}</span> {{ bot.model || '—' }}</span>
+								</div>
+							</li>
+						</ul>
+					</div>
+
 					<!-- 最近活跃用户 -->
 					<div class="rounded-xl bg-elevated p-4">
 						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.topActiveUsers') }}</h2>
@@ -91,13 +117,19 @@
 <script>
 import { useNotify } from '../composables/use-notify.js';
 import { fetchAdminDashboard } from '../services/admin.api.js';
+import { useBotsStore } from '../stores/bots.store.js';
+import { useDashboardStore } from '../stores/dashboard.store.js';
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 
 export default {
 	name: 'AdminDashboardPage',
 	components: { MobilePageHeader },
 	setup() {
-		return { notify: useNotify() };
+		return {
+			notify: useNotify(),
+			botsStore: useBotsStore(),
+			dashboardStore: useDashboardStore(),
+		};
 	},
 	data() {
 		return {
@@ -106,29 +138,25 @@ export default {
 			uiVersion: __APP_VERSION__,
 		};
 	},
-	async mounted() {
-		this.__lastResumeAt = 0;
-		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-			this.loadData();
-		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
-		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
-
-		await this.loadData();
+	computed: {
+		instanceList() {
+			return (this.botsStore?.items ?? []).map(bot => {
+				const id = String(bot.id);
+				const pluginInfo = this.botsStore.pluginInfo?.[id] ?? {};
+				const dashboard = this.dashboardStore?.getDashboard(id);
+				return {
+					id,
+					name: bot.name || null,
+					online: bot.online ?? false,
+					pluginVersion: pluginInfo.version ?? null,
+					clawVersion: pluginInfo.clawVersion ?? null,
+					model: dashboard?.instance?.model ?? null,
+				};
+			}).sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+		},
 	},
-	beforeUnmount() {
-		if (this.__onResume) {
-			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
+	async mounted() {
+		await this.loadData();
 	},
 	methods: {
 		async loadData() {
