@@ -8,6 +8,24 @@ import plugin, { getPluginVersion, __resetPluginVersion } from './index.js';
 import { createMockServer } from './src/mock-server.helper.js';
 import { setRuntime } from './src/runtime.js';
 
+/** 构造包含 runtime mock 的最小 api 对象 */
+function createMockApi(handlers, extras = {}) {
+	return {
+		pluginConfig: {},
+		runtime: {
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
+		},
+		logger: { warn() {}, error() {}, log() {} },
+		registerChannel() {},
+		registerCommand(spec) { handlers.set('command', spec.handler); },
+		registerCli() {},
+		registerService() {},
+		registerGatewayMethod(name, handler) { handlers.set(name, handler); },
+		...extras,
+	};
+}
+
 test('plugin register should register channel/command/cli/gateway methods', () => {
 	const calls = {
 		channel: 0,
@@ -20,6 +38,10 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	const serviceSpecs = [];
 	plugin.register({
 		pluginConfig: {},
+		runtime: {
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
+		},
 		logger: { warn() {}, error() {}, log() {} },
 		registerChannel() {
 			calls.channel += 1;
@@ -49,6 +71,10 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	assert.equal(handlers.has('coclaw.upgradeHealth'), true);
 	assert.equal(handlers.has('nativeui.sessions.listAll'), true);
 	assert.equal(handlers.has('nativeui.sessions.get'), true);
+	assert.equal(handlers.has('coclaw.files.list'), true);
+	assert.equal(handlers.has('coclaw.files.delete'), true);
+	assert.equal(handlers.has('coclaw.files.mkdir'), true);
+	assert.equal(handlers.has('coclaw.files.create'), true);
 	assert.equal(typeof handlers.get('command'), 'function');
 	const bridgeService = serviceSpecs.find(s => s.id === 'coclaw-realtime-bridge');
 	const upgradeService = serviceSpecs.find(s => s.id === 'coclaw-auto-upgrade');
@@ -64,18 +90,13 @@ test('coclaw.info should return version and clawVersion', async () => {
 	__resetPluginVersion();
 	const handlers = new Map();
 	const MOCK_CLAW_VERSION = '2026.3.14';
-	plugin.register({
-		pluginConfig: {},
-		runtime: { version: MOCK_CLAW_VERSION },
-		logger: { warn() {}, error() {}, log() {} },
-		registerChannel() {},
-		registerCommand() {},
-		registerCli() {},
-		registerService() {},
-		registerGatewayMethod(name, handler) {
-			handlers.set(name, handler);
+	plugin.register(createMockApi(handlers, {
+		runtime: {
+			version: MOCK_CLAW_VERSION,
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
 		},
-	});
+	}));
 
 	let infoOut = null;
 	await handlers.get('coclaw.info')({
@@ -92,17 +113,7 @@ test('coclaw.info should return version and clawVersion', async () => {
 test('coclaw.info should omit clawVersion when runtime.version is absent', async () => {
 	__resetPluginVersion();
 	const handlers = new Map();
-	plugin.register({
-		pluginConfig: {},
-		logger: { warn() {}, error() {}, log() {} },
-		registerChannel() {},
-		registerCommand() {},
-		registerCli() {},
-		registerService() {},
-		registerGatewayMethod(name, handler) {
-			handlers.set(name, handler);
-		},
-	});
+	plugin.register(createMockApi(handlers));
 
 	let infoOut = null;
 	await handlers.get('coclaw.info')({
@@ -117,18 +128,13 @@ test('coclaw.info should omit clawVersion when runtime.version is absent', async
 test('coclaw.info should omit clawVersion when runtime.version is unknown', async () => {
 	__resetPluginVersion();
 	const handlers = new Map();
-	plugin.register({
-		pluginConfig: {},
-		runtime: { version: 'unknown' },
-		logger: { warn() {}, error() {}, log() {} },
-		registerChannel() {},
-		registerCommand() {},
-		registerCli() {},
-		registerService() {},
-		registerGatewayMethod(name, handler) {
-			handlers.set(name, handler);
+	plugin.register(createMockApi(handlers, {
+		runtime: {
+			version: 'unknown',
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
 		},
-	});
+	}));
 
 	let infoOut = null;
 	await handlers.get('coclaw.info')({
@@ -142,17 +148,7 @@ test('coclaw.info should omit clawVersion when runtime.version is unknown', asyn
 
 test('gateway methods respond and catch errors', async () => {
 	const handlers = new Map();
-	plugin.register({
-		pluginConfig: {},
-		logger: { warn() {}, error() {}, log() {} },
-		registerChannel() {},
-		registerCommand() {},
-		registerCli() {},
-		registerService() {},
-		registerGatewayMethod(name, handler) {
-			handlers.set(name, handler);
-		},
-	});
+	plugin.register(createMockApi(handlers));
 
 	let listOut = null;
 	await handlers.get('nativeui.sessions.listAll')({
@@ -300,4 +296,144 @@ test('getPluginVersion should return unknown when package.json is unreadable', a
 		nodeFs.default.readFile = orig;
 		__resetPluginVersion();
 	}
+});
+
+// --- coclaw.files.* gateway methods ---
+
+test('coclaw.files.list via gateway method', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-files-'));
+	try {
+		await fs.writeFile(nodePath.join(dir, 'hello.txt'), 'hi', 'utf8');
+		await fs.mkdir(nodePath.join(dir, 'sub'));
+
+		const handlers = new Map();
+		plugin.register(createMockApi(handlers, {
+			runtime: {
+				config: { loadConfig: () => ({}) },
+				agent: { resolveAgentWorkspaceDir: () => dir },
+			},
+		}));
+
+		let out = null;
+		await handlers.get('coclaw.files.list')({
+			params: { path: '.' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		assert.ok(Array.isArray(out.payload.files));
+		const names = out.payload.files.map(f => f.name).sort();
+		assert.ok(names.includes('hello.txt'));
+		assert.ok(names.includes('sub'));
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.files.mkdir via gateway method', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-files-'));
+	try {
+		const handlers = new Map();
+		plugin.register(createMockApi(handlers, {
+			runtime: {
+				config: { loadConfig: () => ({}) },
+				agent: { resolveAgentWorkspaceDir: () => dir },
+			},
+		}));
+
+		let out = null;
+		await handlers.get('coclaw.files.mkdir')({
+			params: { path: 'a/b/c' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		const stat = await fs.stat(nodePath.join(dir, 'a', 'b', 'c'));
+		assert.ok(stat.isDirectory());
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.files.create via gateway method', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-files-'));
+	try {
+		const handlers = new Map();
+		plugin.register(createMockApi(handlers, {
+			runtime: {
+				config: { loadConfig: () => ({}) },
+				agent: { resolveAgentWorkspaceDir: () => dir },
+			},
+		}));
+
+		let out = null;
+		await handlers.get('coclaw.files.create')({
+			params: { path: 'new.txt' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		const stat = await fs.stat(nodePath.join(dir, 'new.txt'));
+		assert.ok(stat.isFile());
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.files.delete via gateway method', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-files-'));
+	try {
+		await fs.writeFile(nodePath.join(dir, 'del.txt'), 'bye', 'utf8');
+
+		const handlers = new Map();
+		plugin.register(createMockApi(handlers, {
+			runtime: {
+				config: { loadConfig: () => ({}) },
+				agent: { resolveAgentWorkspaceDir: () => dir },
+			},
+		}));
+
+		let out = null;
+		await handlers.get('coclaw.files.delete')({
+			params: { path: 'del.txt' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		await assert.rejects(() => fs.access(nodePath.join(dir, 'del.txt')), { code: 'ENOENT' });
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.files.* gateway methods handle errors', async () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers, {
+		runtime: {
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/nonexistent/workspace' },
+		},
+	}));
+
+	// list 不存在的目录
+	let out = null;
+	await handlers.get('coclaw.files.list')({
+		params: { path: 'nope' },
+		respond(ok, payload, error) { out = { ok, payload, error }; },
+	});
+	assert.equal(out.ok, false);
+	assert.ok(out.error?.code);
+
+	// delete 不存在的文件
+	let delOut = null;
+	await handlers.get('coclaw.files.delete')({
+		params: { path: 'nope.txt' },
+		respond(ok, payload, error) { delOut = { ok, payload, error }; },
+	});
+	assert.equal(delOut.ok, false);
+
+	// create 路径穿越
+	let createOut = null;
+	await handlers.get('coclaw.files.create')({
+		params: { path: '../../../etc/evil' },
+		respond(ok, payload, error) { createOut = { ok, payload, error }; },
+	});
+	assert.equal(createOut.ok, false);
+	assert.equal(createOut.error?.code, 'PATH_DENIED');
 });

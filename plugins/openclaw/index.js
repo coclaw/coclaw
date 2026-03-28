@@ -14,6 +14,7 @@ import { ChatHistoryManager } from './src/chat-history-manager/manager.js';
 import { generateTitle } from './src/topic-manager/title-gen.js';
 import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
+import { createFileHandler } from './src/file-manager/handler.js';
 
 // 延迟读取 + 缓存：避免模块加载时 package.json 损坏导致插件整体无法注册
 let __pluginVersion = null;
@@ -468,6 +469,54 @@ const plugin = {
 				respond(true, { version });
 			}
 			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		// --- 文件管理 RPC（WS fallback，RTC 路径由 webrtc-peer 本地拦截） ---
+
+		const fileHandler = createFileHandler({
+			resolveWorkspace: (agentId) => {
+				const cfg = api.runtime?.config?.loadConfig();
+				const dir = api.runtime?.agent?.resolveAgentWorkspaceDir(cfg, agentId);
+				if (!dir) {
+					const err = new Error('Cannot resolve workspace: runtime not available');
+					err.code = 'AGENT_DENIED';
+					throw err;
+				}
+				return dir;
+			},
+			logger,
+		});
+
+		api.registerGatewayMethod('coclaw.files.list', async ({ params, respond }) => {
+			try {
+				respond(true, await fileHandler.listFiles(params ?? {}));
+			} catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.files.delete', async ({ params, respond }) => {
+			try {
+				respond(true, await fileHandler.deleteFile(params ?? {}));
+			} catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.files.mkdir', async ({ params, respond }) => {
+			try {
+				respond(true, await fileHandler.mkdirOp(params ?? {}));
+			} catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		api.registerGatewayMethod('coclaw.files.create', async ({ params, respond }) => {
+			try {
+				respond(true, await fileHandler.createFile(params ?? {}));
+			} catch (err) {
 				respondError(respond, err);
 			}
 		});

@@ -720,7 +720,11 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		handleFileChannel,
 		scheduleTmpCleanup,
 		cancelCleanup,
-		// 暴露内部方法便于测试
+		listFiles,
+		deleteFile,
+		mkdirOp,
+		createFile,
+		// 向后兼容（测试中已使用 __ 前缀）
 		__listFiles: listFiles,
 		__deleteFile: deleteFile,
 		__mkdirOp: mkdirOp,
