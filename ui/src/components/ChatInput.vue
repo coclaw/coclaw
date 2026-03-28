@@ -210,6 +210,7 @@
 import { useEnvStore } from '../stores/env.store.js';
 import { useNotify } from '../composables/use-notify.js';
 import { formatFileSize, formatFileBlob } from '../utils/file-helper.js';
+import { VoiceRecorder } from '../utils/voice-recorder.js';
 import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
 
 export default {
@@ -347,7 +348,6 @@ export default {
 				this.recorderStatus = 'STARTING';
 				await this.$nextTick();
 
-				const { VoiceRecorder } = await import('../utils/voice-recorder.js');
 				const recorder = new VoiceRecorder({
 					container: this.$refs.deskWaveContainer,
 					maxDuration: 60000,

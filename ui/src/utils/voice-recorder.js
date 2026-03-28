@@ -1,4 +1,8 @@
+import WaveSurfer from 'wavesurfer.js';
+import RecordMod from 'wavesurfer.js/dist/plugins/record.esm.js';
 import { queryMicPerm, hasMicDev, getPrefAudioType } from './media-helper.js';
+
+const RecordPlugin = RecordMod.default || RecordMod;
 
 const AUTH_HINT_DELAY = 2000;
 
@@ -90,13 +94,6 @@ export class VoiceRecorder {
 			hintTimer = setTimeout(() => {
 				this.__opts.onStatusChange?.('AUTH_HINT');
 			}, AUTH_HINT_DELAY);
-
-			// 动态导入 wavesurfer
-			const [{ default: WaveSurfer }, RecordMod] = await Promise.all([
-				import('wavesurfer.js'),
-				import('wavesurfer.js/dist/plugins/record.esm.js'),
-			]);
-			const RecordPlugin = RecordMod.default || RecordMod;
 
 			this.__mimeType = getPrefAudioType();
 			this.__wavesurfer = WaveSurfer.create({

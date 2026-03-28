@@ -59,8 +59,12 @@
 </template>
 
 <script>
+import WaveSurfer from 'wavesurfer.js';
+import RecordMod from 'wavesurfer.js/dist/plugins/record.esm.js';
 import { queryMicPerm, getPrefAudioType } from '../utils/media-helper.js';
 import { useNotify } from '../composables/use-notify.js';
+
+const RecordPlugin = RecordMod.default || RecordMod;
 
 const AUTH_HINT_DELAY = 2000;
 const MIN_DURATION = 300;
@@ -154,12 +158,6 @@ export default {
 				}, AUTH_HINT_DELAY);
 
 				this.mimeType = getPrefAudioType();
-
-				const [{ default: WaveSurfer }, RecordMod] = await Promise.all([
-					import('wavesurfer.js'),
-					import('wavesurfer.js/dist/plugins/record.esm.js'),
-				]);
-				const RecordPlugin = RecordMod.default || RecordMod;
 
 				this.wavesurfer = WaveSurfer.create({
 					container: this.$refs.waveContainer,
