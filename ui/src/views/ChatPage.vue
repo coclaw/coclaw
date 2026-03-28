@@ -37,7 +37,7 @@
 
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
 		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel">
-			<div class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
+			<div class="mx-auto w-full max-w-3xl">
 				<div v-if="isBotOffline" class="mx-4 mt-4 rounded-lg bg-warning/10 px-4 py-2 text-center text-sm text-warning">
 					{{ $t('chat.botOffline') }}
 				</div>
@@ -158,8 +158,6 @@ export default {
 			__creatingTopic: false,
 			// 历史加载进行中，阻止 scrollToBottom 干扰位置恢复
 			__loadingHistory: false,
-			// 首次消息加载 + scrollToBottom 完成前隐藏消息列表，防止闪顶
-			__scrollReady: false,
 		};
 	},
 	computed: {
@@ -371,7 +369,6 @@ export default {
 				if (this.__creatingTopic) return;
 				if (store && store !== prevStore) {
 					this.showNoMoreHint = false;
-					this.__scrollReady = false;
 					store.activate();
 				}
 			},
@@ -387,34 +384,28 @@ export default {
 			}
 			// 上线后由 connReady watcher 驱动消息加载
 		},
-		/** connReady 驱动消息加载：首次加载或重连刷新
-		 * immediate: 确保组件挂载时 connReady 已为 true 的场景也能触发加载
-		 * （如返回列表后重新进入会话，bot 已连接但 watcher 不会为初始值触发）
-		 */
-		connReady: {
-			immediate: true,
-			async handler(ready) {
-				if (!ready || !this.chatStore) return;
-				// 与 __handleForegroundResume 去重
-				this.__lastResumeAt = Date.now();
-				// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
-				this.chatStore.__reconcileSlashCommand();
-				const isFirstLoad = !this.chatStore.__messagesLoaded;
-				if (isFirstLoad) {
-					await this.chatStore.loadMessages();
-					if (this.__unmounted || !this.chatStore) return;
-					if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-				} else {
-					this.chatStore.loadMessages({ silent: true });
-				}
-				// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
-				if (isFirstLoad) {
-					this.$nextTick(() => {
-						this.scrollToBottom(true);
-						this.__autoFillHistory();
-					});
-				}
-			},
+		/** connReady 驱动消息加载：首次加载或重连刷新 */
+		async connReady(ready) {
+			if (!ready || !this.chatStore) return;
+			// 与 __handleForegroundResume 去重
+			this.__lastResumeAt = Date.now();
+			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
+			this.chatStore.__reconcileSlashCommand();
+			const isFirstLoad = !this.chatStore.__messagesLoaded;
+			if (isFirstLoad) {
+				await this.chatStore.loadMessages();
+				if (this.__unmounted || !this.chatStore) return;
+				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
+			} else {
+				this.chatStore.loadMessages({ silent: true });
+			}
+			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
+			if (isFirstLoad) {
+				this.$nextTick(() => {
+					this.scrollToBottom(true);
+					this.__autoFillHistory();
+				});
+			}
 		},
 		chatMessages(msgs, oldMsgs) {
 			this.scrollToBottom();
@@ -695,8 +686,6 @@ export default {
 					if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
 						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 					}
-					// 首次滚动定位完成，解除 visibility hidden
-					if (!this.__scrollReady) this.__scrollReady = true;
 				});
 			});
 		},

@@ -17,6 +17,7 @@ export default {
 		const notify = useNotify();
 		setGlobalErrorNotify((msg) => notify.error({ title: msg }));
 		return {
+			notify,
 			envStore: useEnvStore(),
 			uiStore: useUiStore(),
 		};
@@ -32,6 +33,15 @@ export default {
 
 	mounted() {
 		this.uiStore.initResize();
+		this.__listenScreenshotKeyFailed();
+	},
+
+	methods: {
+		__listenScreenshotKeyFailed() {
+			window.electronAPI?.onScreenshotKeyFailed?.(({ key }) => {
+				this.notify.warning(this.$t('electron.screenshotKeyFailed', { key }));
+			});
+		},
 	},
 
 	beforeUnmount() {

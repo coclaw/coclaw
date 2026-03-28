@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 	onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, info) => cb(info)),
 	onWindowFocus: (cb) => ipcRenderer.on('window-focus', () => cb()),
 	onScreenshotTrigger: (cb) => ipcRenderer.on('screenshot-trigger', () => cb()),
+	onScreenshotKeyFailed: (cb) => ipcRenderer.on('screenshot-key-failed', (_e, info) => cb(info)),
 	onDownloadProgress: (cb) => ipcRenderer.on('download:progress', (_e, info) => cb(info)),
 	onDownloadDone: (cb) => ipcRenderer.on('download:done', (_e, info) => cb(info)),
 });
