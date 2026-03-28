@@ -107,6 +107,9 @@ export const useBotsStore = defineStore('bots', {
 			} else if (!bot.initialized && bot.connState === 'connected') {
 				// bot 上线但初始化未成功（隧道建立前 __fullInit 失败）→ 重试
 				this.__onBotConnected(id);
+			} else if (prev === false && bot.connState === 'connected') {
+				// bot 从离线恢复在线 → 刷新 dashboard（agents/topics 由 botListKey watcher 处理）
+				useDashboardStore().loadDashboard(id).catch(() => {});
 			}
 		},
 		removeBotById(botId) {
