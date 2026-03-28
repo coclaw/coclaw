@@ -1,7 +1,7 @@
 # 文件管理设计
 
 > 创建时间：2026-03-24
-> 最近修订：2026-03-28（协议升级：采用 HTTP 动词、新增 POST 附件上传、扩展 rpc 方法集）
+> 最近修订：2026-03-28（协议升级：采用 HTTP 动词、新增 POST 附件上传、扩展 rpc 方法集、delete 支持 force 递归删除）
 > 状态：草案
 > 范围：UI 通过 WebRTC DataChannel 对 OpenClaw Agent Workspace 的文件操作
 > 前置依赖：`webrtc-p2p-channel.md`（WebRTC P2P DataChannel 基础设施）
@@ -411,20 +411,33 @@ rpc DataChannel onmessage
 
 ### 5.2 coclaw.files.delete
 
-删除文件或空目录。
+删除文件或目录。
 
 ```js
-// Request
+// Request — 删除文件或空目录
 { type: "req", id: "r2", method: "coclaw.files.delete",
   params: { agentId: "main", path: "tmp/old.log" } }
+
+// Request — 强制删除非空目录（递归）
+{ type: "req", id: "r2", method: "coclaw.files.delete",
+  params: { agentId: "main", path: "old-docs", force: true } }
 
 // Response
 { type: "res", id: "r2", ok: true, payload: {} }
 
-// Response — 非空目录
+// Response — 非空目录（未传 force）
 { type: "res", id: "r2", ok: false,
   error: { code: "NOT_EMPTY", message: "Directory not empty: tmp/" } }
 ```
+
+#### force 参数
+
+| `force` | 对文件 | 对空目录 | 对非空目录 |
+|---------|--------|---------|-----------|
+| 未传 / `false` | 删除 | 删除 | 返回 `NOT_EMPTY` 错误 |
+| `true` | 删除 | 删除 | 递归删除（`fs.rm(path, { recursive: true, force: true })`） |
+
+UI 侧在删除非空目录时需先经 checkbox confirm 对话框确认，再传递 `force: true`。
 
 ### 5.3 coclaw.files.mkdir
 
@@ -463,7 +476,7 @@ rpc DataChannel onmessage
 | `AGENT_DENIED` | agentId 未绑定到当前 bot | file DC |
 | `SIZE_EXCEEDED` | 文件超过 1GB 上传限制（含接收端实际字节数超限） | file DC |
 | `IS_DIRECTORY` | 对目录执行了文件操作（如 GET） | rpc / file DC |
-| `NOT_EMPTY` | 删除非空目录 | rpc |
+| `NOT_EMPTY` | 删除非空目录（未传 `force`） | rpc |
 | `ALREADY_EXISTS` | 创建空文件时文件已存在 | rpc |
 | `READ_FAILED` | 读取中途磁盘错误 | file DC |
 | `WRITE_FAILED` | 写入中途磁盘错误（含字节数不匹配） | file DC |

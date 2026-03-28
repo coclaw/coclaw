@@ -54,9 +54,16 @@
 			</div>
 
 			<!-- 动作区 -->
-			<UButton class="w-full" color="primary" :disabled="!online" @click="$emit('chat', agent.id)">
-				{{ $t('agents.chat') }}
-			</UButton>
+			<div class="flex gap-2">
+				<UButton class="flex-1" color="primary" :disabled="!online" @click="$emit('chat', agent.id)">
+					{{ $t('agents.chat') }}
+				</UButton>
+				<UButton
+					color="neutral" variant="soft" :disabled="!online"
+					icon="i-lucide-folder"
+					@click="$emit('files', agent.id)"
+				/>
+			</div>
 		</div>
 	</div>
 </template>
@@ -68,7 +75,7 @@ export default {
 		agent: { type: Object, required: true },
 		online: { type: Boolean, default: false },
 	},
-	emits: ['chat'],
+	emits: ['chat', 'files'],
 	methods: {
 		formatTokens(n) {
 			if (typeof n !== 'number' || n <= 0) return '0';

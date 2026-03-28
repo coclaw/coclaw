@@ -166,6 +166,29 @@ describe('deleteFile', () => {
 			path: 'tmp/old.log',
 		});
 	});
+
+	test('传递 force 参数用于递归删除目录', async () => {
+		const botConn = createMockBotConn();
+		botConn.request.mockResolvedValue({});
+
+		await deleteFile(botConn, 'main', 'old-docs', { force: true });
+
+		expect(botConn.request).toHaveBeenCalledWith('coclaw.files.delete', {
+			agentId: 'main',
+			path: 'old-docs',
+			force: true,
+		});
+	});
+
+	test('不传 force 时不含 force 字段', async () => {
+		const botConn = createMockBotConn();
+		botConn.request.mockResolvedValue({});
+
+		await deleteFile(botConn, 'main', 'file.txt');
+
+		const params = botConn.request.mock.calls[0][1];
+		expect(params).not.toHaveProperty('force');
+	});
 });
 
 describe('mkdirFiles', () => {

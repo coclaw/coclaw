@@ -10,6 +10,15 @@
 		<MobilePageHeader :title="chatTitle">
 			<template #actions>
 				<UButton
+					v-if="canOpenFiles"
+					data-testid="btn-files"
+					class="cc-icon-btn-lg"
+					variant="ghost"
+					color="neutral"
+					icon="i-lucide-folder"
+					@click="openFiles"
+				/>
+				<UButton
 					v-if="showNewTopicBtn"
 					data-testid="btn-new-topic"
 					class="cc-icon-btn-lg"
@@ -22,7 +31,16 @@
 		</MobilePageHeader>
 		<header class="z-10 hidden shrink-0 min-h-12 items-center border-b border-default bg-elevated pl-4 py-1 md:flex">
 			<h1 class="text-base">{{ chatTitle }}</h1>
-			<div class="ml-auto pr-2">
+			<div class="ml-auto flex items-center gap-1 pr-2">
+				<UButton
+					v-if="canOpenFiles"
+					data-testid="btn-files"
+					class="cc-icon-btn"
+					variant="ghost"
+					color="neutral"
+					icon="i-lucide-folder"
+					@click="openFiles"
+				/>
 				<UButton
 					v-if="showNewTopicBtn"
 					data-testid="btn-new-topic"
@@ -230,6 +248,11 @@ export default {
 				return topic?.agentId || 'main';
 			}
 			return this.routeAgentId || 'main';
+		},
+		/** 是否可打开文件管理（新建 topic 时不显示） */
+		canOpenFiles() {
+			if (this.isNewTopic) return false;
+			return !!this.currentBotId && !!this.currentAgentId;
 		},
 		/** 是否显示"新话题"按钮 */
 		showNewTopicBtn() {
@@ -556,6 +579,17 @@ export default {
 				console.debug('[chat] triggering generateTitle topicId=%s', topicId);
 				this.topicsStore.generateTitle(botId, topicId);
 			}
+		},
+
+		openFiles() {
+			if (this.botsStore.byId[String(this.currentBotId)]?.pluginVersionOk === false) {
+				this.notify.warning(this.$t('pluginUpgrade.outdated'));
+				return;
+			}
+			this.$router.push({
+				name: 'files',
+				params: { botId: this.currentBotId, agentId: this.currentAgentId },
+			});
 		},
 
 		/** 新建话题 */

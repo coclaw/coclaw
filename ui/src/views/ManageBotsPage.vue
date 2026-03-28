@@ -66,6 +66,7 @@
 						:agent="agent"
 						:online="bot.online"
 						@chat="goToAgent(bot.id, $event)"
+					@files="goToFiles(bot.id, $event)"
 					/>
 				</div>
 
@@ -175,6 +176,16 @@ export default {
 		toggleDetail(botId) {
 			const id = String(botId);
 			this.expandedDetails = { ...this.expandedDetails, [id]: !this.expandedDetails[id] };
+		},
+		goToFiles(botId, agentId) {
+			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
+				this.notify.warning(this.$t('pluginUpgrade.outdated'));
+				return;
+			}
+			this.$router.push({
+				name: 'files',
+				params: { botId: String(botId), agentId: String(agentId) },
+			});
 		},
 		goToAgent(botId, agentId) {
 			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {

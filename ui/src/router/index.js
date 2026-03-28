@@ -12,6 +12,7 @@ import ManageBotsPage from '../views/ManageBotsPage.vue';
 import UserPage from '../views/UserPage.vue';
 import AboutPage from '../views/AboutPage.vue';
 import ClaimPage from '../views/ClaimPage.vue';
+import FileManagerPage from '../views/FileManagerPage.vue';
 import { useAuthStore } from '../stores/auth.store.js';
 import { isNative } from '../utils/capacitor-app.js';
 
@@ -82,6 +83,12 @@ const routes = [
 				name: 'user',
 				component: UserPage,
 				meta: { requiresAuth: true, isTopPage: true },
+			},
+			{
+				path: 'files/:botId/:agentId',
+				name: 'files',
+				component: FileManagerPage,
+				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
 				path: 'claim',

@@ -31,14 +31,17 @@ export function listFiles(botConn, agentId, path) {
 }
 
 /**
- * 删除文件或空目录
+ * 删除文件或目录
  * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {string} agentId
  * @param {string} path
+ * @param {{ force?: boolean }} [opts]
  * @returns {Promise<object>}
  */
-export function deleteFile(botConn, agentId, path) {
-	return botConn.request('coclaw.files.delete', { agentId, path });
+export function deleteFile(botConn, agentId, path, opts) {
+	const params = { agentId, path };
+	if (opts?.force) params.force = true;
+	return botConn.request('coclaw.files.delete', params);
 }
 
 /**
