@@ -169,6 +169,12 @@ export const enMessages = {
 		hoursAgo: '{n}h ago',
 		daysAgo: '{n}d ago',
 		offline: 'Offline',
+		rtcDirect: 'RTC Direct (P2P)',
+		rtcRelay: 'RTC Relay (TURN)',
+		rtcConnecting: 'RTC Connecting...',
+		rtcFailed: 'RTC Failed',
+		rtcClosed: 'RTC Closed',
+		wsTransport: 'WebSocket',
 		cap: {
 			webSearch: 'Web Search',
 			codeExec: 'Run Code',

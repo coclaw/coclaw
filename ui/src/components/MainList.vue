@@ -278,10 +278,10 @@ export default {
 			await this.topicsStore.loadAllTopics();
 		},
 		onTopicDeleted(topicId) {
-			// 兜底：桌面端侧边栏始终挂载，若正在查看被删除的 topic 则跳转默认路由
+			// 如果当前正在查看被删除的 topic，导航回 topic 列表
 			const route = this.$route;
 			if (route?.name === 'topics-chat' && route.params?.sessionId === topicId) {
-				this.$router.replace('/');
+				this.$router.push({ name: 'topics' });
 			}
 		},
 		resolvePath(to) {

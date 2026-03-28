@@ -37,6 +37,12 @@
 				</UBadge>
 			</div>
 
+			<!-- RTC 状态 -->
+			<div v-if="online && transportLabel" class="flex items-center gap-1.5 text-xs text-dimmed">
+				<span class="size-2 rounded-full" :class="transportColor" />
+				<span>{{ transportLabel }}</span>
+			</div>
+
 			<!-- 数据区 -->
 			<div class="grid grid-cols-3 gap-2 text-center text-xs text-dimmed">
 				<div>
@@ -62,13 +68,48 @@
 </template>
 
 <script>
+import { useBotsStore } from '../../stores/bots.store.js';
+
 export default {
 	name: 'AgentCard',
 	props: {
 		agent: { type: Object, required: true },
 		online: { type: Boolean, default: false },
+		botId: { type: String, default: '' },
 	},
 	emits: ['chat'],
+	setup() {
+		return { botsStore: useBotsStore() };
+	},
+	computed: {
+		rtcState() {
+			if (!this.botId) return null;
+			return this.botsStore.byId[this.botId]?.rtcState ?? null;
+		},
+		rtcCandidateType() {
+			if (!this.botId) return null;
+			return this.botsStore.byId[this.botId]?.rtcTransportInfo?.localType ?? null;
+		},
+		transportLabel() {
+			if (!this.online) return '';
+			if (this.rtcState === 'connected') {
+				if (this.rtcCandidateType === 'relay') return this.$t('dashboard.rtcRelay');
+				return this.$t('dashboard.rtcDirect');
+			}
+			if (this.rtcState === 'connecting') return this.$t('dashboard.rtcConnecting');
+			if (this.rtcState === 'failed') return this.$t('dashboard.rtcFailed');
+			if (this.rtcState === 'closed') return this.$t('dashboard.rtcClosed');
+			return this.$t('dashboard.wsTransport');
+		},
+		transportColor() {
+			if (this.rtcState === 'connected') {
+				return this.rtcCandidateType === 'relay' ? 'bg-yellow-400' : 'bg-green-400';
+			}
+			if (this.rtcState === 'connecting') return 'bg-blue-400';
+			if (this.rtcState === 'failed' || this.rtcState === 'closed') return 'bg-red-400';
+			return 'bg-gray-400';
+		},
+	},
 	methods: {
 		formatTokens(n) {
 			if (typeof n !== 'number' || n <= 0) return '0';

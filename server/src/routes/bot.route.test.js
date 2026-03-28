@@ -293,10 +293,14 @@ test('waitBindingCodeHandler: should return timeout when expired', async () => {
 	assert.equal(res.body.code, 'BINDING_TIMEOUT');
 });
 
-test('waitBindingCodeHandler: should cancel wait but not delete binding code on abort', async () => {
+test('waitBindingCodeHandler: should cancel and delete binding code on abort', async () => {
 	const req = createWaitReq({ code: '12345678', waitToken: 'token' });
 	const res = createRes();
-	let cancelCount = 0;
+	const calls = {
+		cancel: 0,
+		find: 0,
+		delete: 0,
+	};
 	let release;
 	const pending = new Promise((resolve) => {
 		release = resolve;
@@ -304,8 +308,15 @@ test('waitBindingCodeHandler: should cancel wait but not delete binding code on 
 
 	const running = waitBindingCodeHandler(req, res, () => {}, {
 		cancelBindingWaitImpl: () => {
-			cancelCount += 1;
+			calls.cancel += 1;
 			return true;
+		},
+		findBindingCodeImpl: async () => {
+			calls.find += 1;
+			return { code: '12345678', userId: 7n };
+		},
+		deleteBindingCodeImpl: async () => {
+			calls.delete += 1;
 		},
 		waitBindingResultImpl: async () => pending,
 	});
@@ -315,8 +326,10 @@ test('waitBindingCodeHandler: should cancel wait but not delete binding code on 
 	release({ status: 'PENDING' });
 	await running;
 
-	assert.equal(cancelCount, 1);
-	assert.equal(res.statusCode, null); // 未发送响应
+	assert.equal(calls.cancel, 1);
+	assert.equal(calls.find, 1);
+	assert.equal(calls.delete, 1);
+	assert.equal(res.statusCode, null);
 });
 
 test('cancelBindingCodeHandler: should reject unauthenticated request', async () => {

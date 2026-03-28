@@ -169,6 +169,12 @@ export const zhCNMessages = {
 		hoursAgo: '{n} 小时前',
 		daysAgo: '{n} 天前',
 		offline: '离线',
+		rtcDirect: 'RTC 直连 (P2P)',
+		rtcRelay: 'RTC 中继 (TURN)',
+		rtcConnecting: 'RTC 连接中...',
+		rtcFailed: 'RTC 失败',
+		rtcClosed: 'RTC 已关闭',
+		wsTransport: 'WebSocket',
 		cap: {
 			webSearch: '联网搜索',
 			codeExec: '执行代码',

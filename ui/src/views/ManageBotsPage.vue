@@ -65,6 +65,7 @@
 						:key="agent.id"
 						:agent="agent"
 						:online="bot.online"
+						:bot-id="String(bot.id)"
 						@chat="goToAgent(bot.id, $event)"
 					/>
 				</div>

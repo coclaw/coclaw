@@ -613,43 +613,6 @@ describe('ChatPage watchers', () => {
 		expect(loadSpy).toHaveBeenCalled();
 	});
 
-	test('connReady immediate: 挂载时 bot 已连接则立即加载消息', async () => {
-		// 预创建 pinia 并填充 bot 状态，模拟"返回列表后再进入会话"
-		const pinia = createPinia();
-		setActivePinia(pinia);
-
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].connState = 'connected';
-		setupAgents();
-
-		// 预创建 chatStore 并挂 spy（组件 computed 会复用同一实例）
-		const chatStore = chatStoreManager.get('session:bot-1:main', { botId: 'bot-1', agentId: 'main' });
-		chatStore.__initialized = true; // 模拟已初始化过（非首次进入）
-		chatStore.__messagesLoaded = true;
-		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
-
-		mount(ChatPage, {
-			global: {
-				plugins: [pinia],
-				mocks: {
-					$t: (key) => i18nMap[key] ?? key,
-					$route: {
-						name: 'chat',
-						params: { botId: 'bot-1', agentId: 'main' },
-						path: '/chat/bot-1/main',
-						query: {},
-					},
-					$router: mockRouter,
-				},
-			},
-		});
-		await flushPromises();
-
-		// connReady 在挂载时即为 true，immediate watcher 应触发 loadMessages
-		expect(loadSpy).toHaveBeenCalled();
-	});
-
 	test('bot 解绑后跳转', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();

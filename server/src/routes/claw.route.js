@@ -3,7 +3,6 @@ import { Router } from 'express';
 import { createClaimCode, claimBot } from '../services/bot-binding.svc.js';
 import {
 	registerClaimWait,
-	cancelClaimWait,
 	waitClaimResult,
 	markClaimBound,
 } from '../claim-wait-hub.js';
@@ -52,10 +51,7 @@ export async function createClaimCodeHandler(req, res, next, deps = {}) {
 
 // POST /api/v1/claws/claim-codes/wait — 公开，Plugin(gateway) 长轮询
 export async function waitClaimCodeHandler(req, res, next, deps = {}) {
-	const {
-		cancelClaimWaitImpl = cancelClaimWait,
-		waitClaimResultImpl = waitClaimResult,
-	} = deps;
+	const { waitClaimResultImpl = waitClaimResult } = deps;
 
 	const code = String(req.body?.code ?? '').trim();
 	const waitToken = String(req.body?.waitToken ?? '').trim();
@@ -70,10 +66,7 @@ export async function waitClaimCodeHandler(req, res, next, deps = {}) {
 	try {
 		let aborted = false;
 		res.on('close', () => {
-			if (!res.writableFinished) {
-				aborted = true;
-				cancelClaimWaitImpl({ code, waitToken });
-			}
+			if (!res.writableFinished) aborted = true;
 		});
 
 		const result = await waitClaimResultImpl({ code, waitToken });
