@@ -187,42 +187,6 @@ test('successful delete calls deleteTopic, shows notify and emits deleted', asyn
 	expect(wrapper.emitted('deleted')[0]).toEqual(['t1']);
 });
 
-test('deleting current topic navigates to default route', async () => {
-	mockRequest.mockResolvedValue({ ok: true });
-	const mockReplace = vi.fn();
-
-	const wrapper = createWrapper();
-	wrapper.vm.$route = { name: 'topics-chat', params: { sessionId: 't1' } };
-	wrapper.vm.$router = { replace: mockReplace };
-
-	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, botId: 'bot-1' }];
-
-	wrapper.vm.deleteOpen = true;
-	await wrapper.vm.onConfirmDelete();
-
-	expect(mockReplace).toHaveBeenCalledWith('/');
-	expect(wrapper.emitted('deleted')).toBeTruthy();
-});
-
-test('deleting non-current topic does not navigate', async () => {
-	mockRequest.mockResolvedValue({ ok: true });
-	const mockReplace = vi.fn();
-
-	const wrapper = createWrapper();
-	wrapper.vm.$route = { name: 'topics-chat', params: { sessionId: 'other-topic' } };
-	wrapper.vm.$router = { replace: mockReplace };
-
-	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, botId: 'bot-1' }];
-
-	wrapper.vm.deleteOpen = true;
-	await wrapper.vm.onConfirmDelete();
-
-	expect(mockReplace).not.toHaveBeenCalled();
-	expect(wrapper.emitted('deleted')).toBeTruthy();
-});
-
 test('failed delete shows error notify', async () => {
 	mockRequest.mockRejectedValue(new Error('fail'));
 

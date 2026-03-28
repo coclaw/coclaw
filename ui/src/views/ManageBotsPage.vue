@@ -79,7 +79,6 @@
 
 <script>
 import { useNotify } from '../composables/use-notify.js';
-import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
 import { unbindBotByUser } from '../services/bots.api.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
@@ -90,8 +89,7 @@ export default {
 	name: 'ManageBotsPage',
 	components: { InstanceOverview, AgentCard },
 	setup() {
-		const { suppress, unsuppress } = usePullRefreshSuppress();
-		return { notify: useNotify(), suppressPullRefresh: suppress, unsuppressPullRefresh: unsuppress };
+		return { notify: useNotify() };
 	},
 	data() {
 		return {
@@ -108,7 +106,6 @@ export default {
 		},
 	},
 	async mounted() {
-		this.suppressPullRefresh();
 		this.botsStore = useBotsStore();
 		this.dashboardStore = useDashboardStore();
 
@@ -128,7 +125,6 @@ export default {
 		await this.loadData();
 	},
 	beforeUnmount() {
-		this.unsuppressPullRefresh();
 		if (this.__onResume) {
 			window.removeEventListener('app:foreground', this.__onResume);
 		}

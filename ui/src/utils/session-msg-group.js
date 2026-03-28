@@ -105,7 +105,7 @@ function createBotTask(id) {
 function processAssistant(task, msg) {
 	const content = msg.content;
 	const blocks = normalizeBlocks(content);
-	const isFinal = !!msg.stopReason && msg.stopReason !== 'toolUse';
+	const isFinal = msg.stopReason === 'stop' || msg.stopReason === 'end_turn';
 
 	for (const block of blocks) {
 		if (block.type === 'thinking' && block.thinking) {
@@ -128,11 +128,6 @@ function processAssistant(task, msg) {
 				task.steps.push({ kind: 'thinking', text: block.text });
 			}
 		}
-	}
-
-	// 静默回复过滤：resultText 匹配 NO_REPLY 时清除
-	if (task.resultText && SILENT_REPLY_PATTERN.test(task.resultText)) {
-		task.resultText = null;
 	}
 
 	// 更新 model/timestamp（以最后一个 assistant 为准）
@@ -208,9 +203,6 @@ function extractImages(content) {
 		.filter((b) => b.type === 'image' && b.data)
 		.map((b) => ({ data: b.data, mimeType: b.mimeType }));
 }
-
-// Agent 静默回复标记（Agent 判断无需回复时输出，不应展示给用户）
-const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 
 // OpenClaw gateway 注入的 inbound metadata 头部（Conversation info / Sender / Thread starter 等）
 // 格式：<Label> (untrusted...):```json {...} ```\n\n
