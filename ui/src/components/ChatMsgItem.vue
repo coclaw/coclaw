@@ -138,7 +138,7 @@
 					variant="ghost"
 					color="neutral"
 					size="md"
-					@click="copyBotResult"
+					@click="copyText(item.resultText)"
 				/>
 			</div>
 		</template>
@@ -173,11 +173,15 @@ export default {
 			copied: false,
 			streamingElapsed: 0,
 			__elapsedTimer: null,
+			__imgUrls: [], // 缓存 Blob URL 列表，与 item.images 索引对应
 		};
 	},
 	computed: {
 		isUser() {
 			return this.item.type === 'user';
+		},
+		imageCount() {
+			return this.item?.images?.length ?? 0;
 		},
 		botAvatarUrl() {
 			return this.agentDisplay?.avatarUrl || botAvatarSvg;
@@ -209,6 +213,9 @@ export default {
 		},
 	},
 	watch: {
+		imageCount(newVal, oldVal) {
+			if (newVal !== oldVal) this.__rebuildImgUrls();
+		},
 		'item.isStreaming': {
 			immediate: true,
 			handler(val) {
@@ -224,8 +231,12 @@ export default {
 			},
 		},
 	},
+	mounted() {
+		this.__rebuildImgUrls();
+	},
 	beforeUnmount() {
 		this.__stopElapsedTimer();
+		this.__imgUrls.forEach((url) => { if (url) URL.revokeObjectURL(url); });
 	},
 	methods: {
 		__stopElapsedTimer() {
@@ -234,8 +245,29 @@ export default {
 				this.__elapsedTimer = null;
 			}
 		},
+		__rebuildImgUrls() {
+			this.__imgUrls.forEach((url) => { if (url) URL.revokeObjectURL(url); });
+			if (!this.item?.images?.length) {
+				this.__imgUrls = [];
+				return;
+			}
+			this.__imgUrls = this.item.images.map((img) => {
+				if (!img?.data || !img?.mimeType) return '';
+				try {
+					const bytes = atob(img.data);
+					const arr = new Uint8Array(bytes.length);
+					for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+					return URL.createObjectURL(new Blob([arr], { type: img.mimeType }));
+				} catch {
+					return '';
+				}
+			});
+		},
 		imgSrc(img) {
-			return `data:${img.mimeType};base64,${img.data}`;
+			const idx = this.item?.images?.indexOf(img);
+			if (idx >= 0 && this.__imgUrls[idx]) return this.__imgUrls[idx];
+			// fallback：step 中的图片不在 item.images 里，仍用 base64
+			return img?.data ? `data:${img.mimeType};base64,${img.data}` : '';
 		},
 		imgFilename(img, idx) {
 			const ext = img.mimeType?.split('/')[1] || 'png';
@@ -251,12 +283,6 @@ export default {
 			}).catch(() => {
 				this.notify.error(this.$t('common.copyFailed'));
 			});
-		},
-		// 从渲染后的 DOM 取纯文本，避免复制原始 Markdown 符号（如 blockquote 的 >）
-		copyBotResult() {
-			const mdEl = this.$el?.querySelector('.cc-markdown');
-			const text = mdEl?.innerText || this.item.resultText;
-			this.copyText(text);
 		},
 		formatDuration(ms) {
 			const totalSec = Math.floor(ms / 1000);

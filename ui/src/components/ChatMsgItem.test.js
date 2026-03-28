@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils';
-import { test, expect, describe, vi } from 'vitest';
+import { test, expect, describe, vi, beforeEach, afterEach } from 'vitest';
 
 const mockNotify = { success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn() };
 vi.mock('../composables/use-notify.js', () => ({
@@ -10,7 +10,7 @@ import ChatMsgItem from './ChatMsgItem.vue';
 
 const MarkdownBodyStub = {
 	props: ['text'],
-	template: '<div class="cc-markdown md-stub">{{ text }}</div>',
+	template: '<div class="md-stub">{{ text }}</div>',
 };
 
 const UIconStub = {
@@ -209,60 +209,6 @@ describe('ChatMsgItem', () => {
 		expect(wrapper.text()).toContain('i-lucide-check');
 	});
 
-	test('botTask 复制按钮取 DOM innerText 而非原始 Markdown (#127)', async () => {
-		const writeTextMock = vi.fn(() => Promise.resolve());
-		Object.assign(navigator, {
-			clipboard: { writeText: writeTextMock },
-		});
-
-		const wrapper = createWrapper({
-			type: 'botTask',
-			resultText: '> 这是引用\n\n正文',
-		});
-
-		// 模拟真实 MarkdownBody 渲染后的 DOM：blockquote 不含 > 前缀
-		const mdEl = wrapper.find('.cc-markdown');
-		expect(mdEl.exists()).toBe(true);
-		// jsdom 不支持 innerText，手动定义以模拟真实浏览器行为
-		Object.defineProperty(mdEl.element, 'innerText', {
-			get: () => '这是引用\n正文',
-			configurable: true,
-		});
-
-		const copyBtn = wrapper.findAll('.u-btn-stub').find(b => b.text().includes('i-lucide-copy'));
-		await copyBtn.trigger('click');
-		await wrapper.vm.$nextTick();
-
-		// 应该复制 DOM innerText，而非原始 Markdown
-		const copiedText = writeTextMock.mock.calls[0][0];
-		expect(copiedText).not.toContain('> ');
-		expect(copiedText).toContain('这是引用');
-		expect(copiedText).toContain('正文');
-	});
-
-	test('botTask 复制 fallback 到 resultText 当 DOM 不存在时', async () => {
-		const writeTextMock = vi.fn(() => Promise.resolve());
-		Object.assign(navigator, {
-			clipboard: { writeText: writeTextMock },
-		});
-
-		const wrapper = createWrapper({
-			type: 'botTask',
-			resultText: '> fallback 内容',
-		});
-
-		// 移除 .cc-markdown 元素模拟 DOM 不可用
-		const mdEl = wrapper.find('.cc-markdown');
-		mdEl.element.classList.remove('cc-markdown');
-
-		const copyBtn = wrapper.findAll('.u-btn-stub').find(b => b.text().includes('i-lucide-copy'));
-		await copyBtn.trigger('click');
-		await wrapper.vm.$nextTick();
-
-		// fallback 到原始文本
-		expect(writeTextMock).toHaveBeenCalledWith('> fallback 内容');
-	});
-
 	test('有 duration 时显示"已思考 X秒"', () => {
 		const wrapper = createWrapper({ type: 'botTask', duration: 5000 });
 		expect(wrapper.text()).toContain('已思考 5秒');
@@ -333,5 +279,112 @@ describe('ChatMsgItem', () => {
 		expect(stepImgs.length).toBe(1);
 		expect(stepImgs[0].attributes('src')).toBe('data:image/png;base64,stepimg');
 		expect(stepImgs[0].classes()).toContain('max-h-32');
+	});
+
+	describe('Blob URL 缓存与回收', () => {
+		// btoa('hello') = 'aGVsbG8='，合法 base64
+		const validImg = { data: 'aGVsbG8=', mimeType: 'image/png' };
+		let createSpy;
+		let revokeSpy;
+		const origCreate = URL.createObjectURL;
+		const origRevoke = URL.revokeObjectURL;
+
+		beforeEach(() => {
+			createSpy = vi.fn().mockReturnValue('blob:mock-url');
+			revokeSpy = vi.fn();
+			URL.createObjectURL = createSpy;
+			URL.revokeObjectURL = revokeSpy;
+		});
+
+		afterEach(() => {
+			URL.createObjectURL = origCreate;
+			URL.revokeObjectURL = origRevoke;
+		});
+
+		test('__rebuildImgUrls 为有效图片创建 Blob URL', () => {
+			const wrapper = createWrapper({
+				type: 'user',
+				textContent: '看图',
+				images: [validImg],
+			});
+			expect(createSpy).toHaveBeenCalledTimes(1);
+			expect(wrapper.vm.$data.__imgUrls).toEqual(['blob:mock-url']);
+		});
+
+		test('__rebuildImgUrls 对缺失 data/mimeType 的图片返回空字符串', () => {
+			const wrapper = createWrapper({
+				type: 'user',
+				textContent: '看图',
+				images: [{ data: null, mimeType: 'image/png' }, { data: 'aGVsbG8=', mimeType: null }],
+			});
+			expect(createSpy).not.toHaveBeenCalled();
+			expect(wrapper.vm.$data.__imgUrls).toEqual(['', '']);
+		});
+
+		test('beforeUnmount 回收所有 Blob URL', () => {
+			createSpy.mockReturnValueOnce('blob:url-1').mockReturnValueOnce('blob:url-2');
+			const wrapper = createWrapper({
+				type: 'botTask',
+				resultText: '结果',
+				images: [validImg, validImg],
+			});
+			revokeSpy.mockClear();
+			wrapper.unmount();
+			expect(revokeSpy).toHaveBeenCalledWith('blob:url-1');
+			expect(revokeSpy).toHaveBeenCalledWith('blob:url-2');
+		});
+
+		test('imageCount 变化时触发缓存重建', async () => {
+			const images = [validImg];
+			const wrapper = createWrapper({
+				type: 'user',
+				textContent: '看图',
+				images,
+			});
+			createSpy.mockClear();
+			revokeSpy.mockClear();
+			// 模拟 streaming push：改变数组长度
+			images.push({ ...validImg });
+			await wrapper.setProps({ item: { ...wrapper.props().item, images: [...images] } });
+			await wrapper.vm.$nextTick();
+			// 旧 URL 被回收，新 URL 被创建
+			expect(revokeSpy).toHaveBeenCalled();
+			expect(createSpy).toHaveBeenCalled();
+		});
+
+		test('images 为 null 时 __imgUrls 为空数组', () => {
+			const wrapper = createWrapper({
+				type: 'user',
+				textContent: '纯文本',
+				images: null,
+			});
+			expect(createSpy).not.toHaveBeenCalled();
+			expect(wrapper.vm.$data.__imgUrls).toEqual([]);
+		});
+
+		test('images 为空数组时 __imgUrls 为空数组', () => {
+			const wrapper = createWrapper({
+				type: 'user',
+				textContent: '纯文本',
+				images: [],
+			});
+			expect(createSpy).not.toHaveBeenCalled();
+			expect(wrapper.vm.$data.__imgUrls).toEqual([]);
+		});
+
+		test('imgSrc 有 Blob URL 时返回缓存 URL，无缓存时 fallback base64', () => {
+			createSpy.mockReturnValueOnce('blob:cached');
+			const img = { ...validImg };
+			const wrapper = createWrapper({
+				type: 'user',
+				textContent: '看图',
+				images: [img],
+			});
+			// 缓存命中
+			expect(wrapper.vm.imgSrc(img)).toBe('blob:cached');
+			// step 图片不在 images 里，fallback
+			const stepImg = { data: 'c3RlcA==', mimeType: 'image/jpeg' };
+			expect(wrapper.vm.imgSrc(stepImg)).toBe('data:image/jpeg;base64,c3RlcA==');
+		});
 	});
 });
