@@ -21,7 +21,7 @@ Taking dialogue as the entry point, tasks as the goal, and human-machine collabo
 
 
 ---
-Highlights
+🌍 World-First Features
 
 - **Native App Client**: The first native client application in the OpenClaw ecosystem, covering mobile and desktop platforms, enabling users to collaborate with Agents anytime, anywhere — even when OpenClaw runs on a cloud VM or remote device.
 - **Agent Workspace File Management**: The industry's first Agent file browser. Users can browse, upload, download, and delete files in Agent workspaces directly from the App, eliminating the limitation of only being able to share files through temporary chat attachments.
