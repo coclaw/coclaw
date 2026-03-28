@@ -13,30 +13,42 @@ try { pluginVersion = require('../../../plugins/openclaw/package.json').version;
  * @param {object} [deps] - 依赖注入
  * @param {object} [deps.repo] - admin repo
  * @param {Function} [deps.getOnlineBotCount] - 获取在线 bot 数
+ * @param {Function} [deps.getOnlineBotIds] - 获取在线 bot id 集合
  */
 export async function getAdminDashboard(deps = {}) {
 	const repo = deps.repo ?? adminRepo;
-	const getOnlineBotCount = deps.getOnlineBotCount ?? (() => listOnlineBotIds().size);
+	const getOnlineBotIds = deps.getOnlineBotIds ?? listOnlineBotIds;
+	const getOnlineBotCount = deps.getOnlineBotCount ?? (() => getOnlineBotIds().size);
 
 	const todayStart = new Date();
 	todayStart.setHours(0, 0, 0, 0);
 
-	const [total, todayNew, todayActive, topActive, latestRegistered, botsTotal] = await Promise.all([
+	const [total, todayNew, todayActive, topActive, botsTotal, todayNewBots, botList] = await Promise.all([
 		repo.countUsers(),
 		repo.countUsersCreatedSince(todayStart),
 		repo.countUsersActiveSince(todayStart),
 		repo.topActiveUsers(10),
-		repo.latestRegisteredUsers(30),
 		repo.countBots(),
+		repo.countBotsCreatedSince(todayStart),
+		repo.listBots(50),
 	]);
+
+	const onlineIds = getOnlineBotIds();
 
 	return {
 		users: { total, todayNew, todayActive },
-		topActiveUsers: topActive,
-		latestRegisteredUsers: latestRegistered,
+		topActiveUsers: topActive.map(u => ({
+			...u,
+			onlineBotCount: u.botIds.filter(id => onlineIds.has(String(id))).length,
+		})),
 		bots: {
 			total: botsTotal,
+			todayNew: todayNewBots,
 			online: getOnlineBotCount(),
+			list: botList.map(b => ({
+				...b,
+				isOnline: onlineIds.has(String(b.id)),
+			})),
 		},
 		version: {
 			server: serverVersion,

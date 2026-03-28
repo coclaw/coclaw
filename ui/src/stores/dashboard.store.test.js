@@ -263,7 +263,7 @@ describe('dashboard store', () => {
 	test('loadDashboard 成功加载完整数据', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'MyBot', online: true }]);
-		botsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0' };
+		botsStore.pluginInfo['bot-1'] = { version: '0.3.0', clawVersion: '0.7.0' };
 
 		// 先注册 agents mock conn
 		const agentConn = mockAgentConn(
