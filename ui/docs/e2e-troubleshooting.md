@@ -103,6 +103,67 @@ await page.setContent('<button id="t">Test</button>');
 await page.locator('#t').click({ timeout: 3000 });
 ```
 
+## 卡点 5：用 btn-send 可见判断发送完成，永远超时
+
+### 现象
+
+- `await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 180_000 })` 始终超时。
+- bot 已正常回复，页面状态正常，但 btn-send 就是不出现。
+
+### 原因
+
+- 发送消息后，`ChatInput` 的 `inputText` 被清空、`inputFiles` 被清除，`canSend` 计算属性为 `false`。
+- `btn-send` 的渲染条件是 `v-else-if="canSend"`，在 `canSend=false` 时不在 DOM 中。
+- 发送完成后既无 `btn-stop`（sending=false）也无 `btn-send`（canSend=false），按钮区为空。
+
+### 处理方式
+
+- 用 `btn-stop` 消失作为发送完成判据：
+	```js
+	await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
+	```
+
+## 卡点 6：evalStore 检查消息内容只匹配 string，遗漏 block 数组
+
+### 现象
+
+- 通过 `evalStore` 在 store 消息中搜索特定文本（如 `coclaw-attachments`），返回 false。
+- 实际消息确实包含该文本，在页面 DOM 中可见。
+
+### 原因
+
+- 乐观消息（发送时本地构建）的 `content` 可能是 string 或 block 数组。
+- 服务端返回的消息（`sessions.get`）content 始终为 block 数组 `[{type:'text', text:'...'}]`。
+- 发送完成后 `loadMessages` 从服务端刷新，本地乐观消息被替换为服务端格式。
+
+### 处理方式
+
+- 检查消息内容时同时处理 string 和 block 数组：
+	```js
+	const c = m.message.content;
+	const texts = typeof c === 'string' ? [c]
+	    : Array.isArray(c) ? c.filter(b => b.type === 'text').map(b => b.text)
+	    : [];
+	for (const t of texts) { /* 在 t 中搜索 */ }
+	```
+
+## 卡点 7：固定文件名/文本导致匹配到历史消息
+
+### 现象
+
+- E2E 测试中用固定文件名（如 `e2e-verify.txt`）发送附件后，从 store 中提取路径时匹配到了前次运行遗留的消息，导致下载到的内容与预期不符。
+
+### 原因
+
+- Chat session 是长期存在的，历史消息不会自动清除。
+- 同一 session 中多次运行同一测试，历史消息中包含相同文件名的旧记录。
+- 正则匹配默认取第一个命中项，可能命中陈旧数据。
+
+### 处理方式
+
+- 文件名和断言文本中包含 `Date.now()` 时间戳确保跨 run 唯一。
+- 匹配时用唯一标识过滤，避免命中历史消息。
+
 ## 快速检查清单
 
 - `ui/playwright.config.js` 中前端命令是否为 `pnpm dev ...`
@@ -110,3 +171,6 @@ await page.locator('#t').click({ timeout: 3000 });
 - `pnpm e2e` 是否能稳定得到 `1 passed`（或对应用例数）
 - WSL2 下是否通过 `pnpm e2e`（自动 xvfb-run）而非直接 `npx playwright test`
 - Nuxt UI 复合输入组件是否使用 `pressSequentially()` 而非 `fill()`
+- 判断发送完成是否用 `btn-stop` 消失而非 `btn-send` 出现
+- `evalStore` 检查消息内容是否同时处理 string 和 block 数组格式
+- 测试数据（文件名、消息文本）是否包含唯一标识避免跨 run 碰撞

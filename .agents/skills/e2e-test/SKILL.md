@@ -75,4 +75,40 @@ WSL2 下 Chrome（headless 和 headed + WSLg）的动画帧渲染异常，导致
 
 ## 踩坑记录
 
-完整踩坑记录见 `ui/docs/e2e-troubleshooting.md`。
+完整踩坑记录见 `ui/docs/e2e-troubleshooting.md`。以下为编写测试时常见的逻辑陷阱：
+
+### 判断发送完成：用 btn-stop 消失，不要用 btn-send 出现
+
+发送消息后输入框被清空、文件被清除，`canSend` 为 false，`btn-send` 不会渲染（`v-else-if="canSend"`）。因此 `await expect(page.getByTestId('btn-send')).toBeVisible()` 永远超时。正确做法：
+
+```js
+// ✅ 等待 stop 按钮消失 = sending 结束
+await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
+
+// ❌ btn-send 在输入框为空时不渲染，会永远等待
+await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 180_000 });
+```
+
+### Store 中消息 content 可能是 block 数组
+
+通过 `evalStore` 检查用户消息内容时，`m.message.content` 可能是 string（乐观消息），也可能是 block 数组 `[{type:'text', text:'...'}]`（OpenClaw sessions.get 返回的服务端消息）。必须处理两种格式：
+
+```js
+const c = m.message.content;
+const texts = typeof c === 'string' ? [c]
+    : Array.isArray(c) ? c.filter(b => b.type === 'text').map(b => b.text)
+    : [];
+```
+
+### 测试数据必须跨 run 唯一
+
+Chat session 会积累历史消息，同一 session 中前次 E2E 运行残留的消息仍然存在。如果用通用文件名或固定文本做 regex 匹配，会匹配到陈旧数据。文件名和断言文本必须包含唯一标识（如 `Date.now()` 时间戳）：
+
+```js
+// ✅ 时间戳确保唯一
+const ts = Date.now();
+const fileName = `e2e-test-${ts}.txt`;
+
+// ❌ 固定名称会与历史数据碰撞
+const fileName = 'e2e-test.txt';
+```
