@@ -11,7 +11,7 @@ import { login } from './helpers.js';
 // Test 1: 未登录 → 显示登录按钮
 // ================================================================
 
-test('关于页：未登录显示登录按钮', async ({ page }) => {
+test('关于页：未登录显示登录按钮 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/about');
 
@@ -29,7 +29,7 @@ test('关于页：未登录显示登录按钮', async ({ page }) => {
 // Test 2: 未登录 → 点击登录按钮跳转
 // ================================================================
 
-test('关于页：点击登录按钮跳转到登录页', async ({ page }) => {
+test('关于页：点击登录按钮跳转到登录页 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/about');
 	await expect(page.getByTestId('btn-about-login')).toBeVisible({ timeout: 10_000 });
@@ -43,7 +43,7 @@ test('关于页：点击登录按钮跳转到登录页', async ({ page }) => {
 // Test 3: 已登录 → 显示退出按钮 + 用户信息折叠面板
 // ================================================================
 
-test('关于页：已登录显示退出按钮和用户信息', async ({ page }) => {
+test('关于页：已登录显示退出按钮和用户信息 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -63,7 +63,7 @@ test('关于页：已登录显示退出按钮和用户信息', async ({ page }) 
 // Test 4: 已登录 → 点击退出按钮 → 跳转到登录页
 // ================================================================
 
-test('关于页：点击退出按钮跳转到登录页', async ({ page }) => {
+test('关于页：点击退出按钮跳转到登录页 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -79,7 +79,7 @@ test('关于页：点击退出按钮跳转到登录页', async ({ page }) => {
 // Test 5: 折叠面板展开/折叠
 // ================================================================
 
-test('关于页：折叠面板可展开收起', async ({ page }) => {
+test('关于页：折叠面板可展开收起 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/about');
 	await expect(page.locator('main img[alt="CoClaw"]')).toBeVisible({ timeout: 10_000 });

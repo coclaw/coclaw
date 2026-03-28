@@ -69,7 +69,7 @@ async function verifyReloadHappened(page) {
 
 // --- 各页面测试 ---
 
-test.describe('下拉刷新', () => {
+test.describe('下拉刷新 @ui', () => {
 	test.use({ hasTouch: true });
 
 	test.beforeEach(async ({ page }) => {

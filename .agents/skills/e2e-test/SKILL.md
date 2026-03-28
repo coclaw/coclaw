@@ -1,6 +1,6 @@
 ---
 name: e2e-test
-description: E2E 测试执行规范与踩坑约束。当用户要求执行、编写或调试 E2E 测试时加载。
+description: E2E 测试执行规范与踩坑约束。TRIGGER when：用户要求执行、编写、调试 E2E 测试，或涉及 Playwright、e2e 目录下文件的改动。
 ---
 
 # E2E 测试（Playwright）
@@ -13,6 +13,9 @@ description: E2E 测试执行规范与踩坑约束。当用户要求执行、编
 pnpm e2e:ci              # 推荐：自动处理 WSL2/CI 环境兼容性
 pnpm e2e:ci -- e2e/auth.e2e.spec.js   # 指定单个测试文件
 pnpm e2e                  # 有 GUI 的环境下可看到浏览器
+pnpm e2e:ci -- --grep @auth           # 按标签运行一类
+pnpm e2e:ci -- --grep "@auth|@bind"   # 组合多个标签
+pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 ```
 
 - `e2e/run.js` 会自动检测环境（macOS / Linux / WSL2）决定是否用 xvfb-run
@@ -23,6 +26,22 @@ pnpm e2e                  # 有 GUI 的环境下可看到浏览器
 
 - 后端测试账号（本地认证）：loginName=`test`；password=`123456`
 - `globalSetup` 会自动创建该账号
+
+## 标签分类
+
+每个测试用例通过 title 中的 `@tag` 标注分类，配合 Playwright `--grep` 过滤使用。
+
+| 标签 | 含义 | 涉及文件 |
+|------|------|---------|
+| `@auth` | 登录/注册/认证故障 | `auth`, `register`, `api-failure-auth` |
+| `@bind` | 绑定/解绑/Claim | `bot-bind-unbind`, `claim` |
+| `@chat` | 核心聊天业务 | `chat-flow`, `chat-input`, `chat-cancel-restore`, `slash-command`, `topic-integration`, `multi-agent` |
+| `@resilience` | 异常/网络/容错 | `chat-resilience`, `network-offline`, `network-slow`, `api-failure-data` |
+| `@ui` | 导航/布局/设置/交互 | `navigation`, `about`, `user-profile-settings`, `chat-layout-debug`, `pull-refresh` |
+| `@rtc` | WebRTC 传输 | `rtc-transport` |
+| `@file` | 文件传输 | `file-transfer` |
+
+新增测试时须在 test title（或所属 describe title）中包含对应标签。
 
 ## 编写规范
 

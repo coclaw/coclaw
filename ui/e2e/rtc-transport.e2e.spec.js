@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
 
-test.describe('WebRTC DataChannel 传输选择（Phase 2）', () => {
+test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 	test.beforeEach(async ({ page }) => {
 		await login(page);
 	});

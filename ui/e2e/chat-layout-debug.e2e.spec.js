@@ -73,7 +73,7 @@ function getLayoutMetrics(page) {
 	});
 }
 
-test('Desktop: ChatPage layout with many messages', async ({ page }) => {
+test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 720 });
 	const ok = await loginAndNavigateToChat(page);
 	test.skip(!ok, 'No chat session available (no bot connected)');
@@ -95,7 +95,7 @@ test('Desktop: ChatPage layout with many messages', async ({ page }) => {
 	expect(m.main.scrollH).toBeGreaterThan(m.main.clientH);
 });
 
-test('Mobile: ChatPage layout with many messages', async ({ page }) => {
+test('Mobile: ChatPage layout with many messages @ui', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	const ok = await loginAndNavigateToChat(page);
 	test.skip(!ok, 'No chat session available (no bot connected)');

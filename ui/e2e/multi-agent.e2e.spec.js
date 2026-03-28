@@ -65,7 +65,7 @@ async function setupWithAgents(page, test, route = '/topics') {
 // Test 1: Topics 页 Agent 列表展示
 // ================================================================
 
-test('Topics 页：Agent 列表展示多个 agent', async ({ page }) => {
+test('Topics 页：Agent 列表展示多个 agent @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
@@ -82,7 +82,7 @@ test('Topics 页：Agent 列表展示多个 agent', async ({ page }) => {
 // Test 2: Agent emoji/avatar 渲染
 // ================================================================
 
-test('Topics 页：Agent emoji 正确渲染', async ({ page }) => {
+test('Topics 页：Agent emoji 正确渲染 @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
@@ -94,7 +94,7 @@ test('Topics 页：Agent emoji 正确渲染', async ({ page }) => {
 // Test 3: 点击 Agent 导航到对应 session
 // ================================================================
 
-test('Topics 页：点击 Agent 进入对应 chat session', async ({ page }) => {
+test('Topics 页：点击 Agent 进入对应 chat session @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
@@ -110,7 +110,7 @@ test('Topics 页：点击 Agent 进入对应 chat session', async ({ page }) => 
 // Test 4: 非 main agent 的 session 可正常加载
 // ================================================================
 
-test('非 main agent (tester) 的 session 可正常加载消息', async ({ page }) => {
+test('非 main agent (tester) 的 session 可正常加载消息 @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
@@ -136,7 +136,7 @@ test('非 main agent (tester) 的 session 可正常加载消息', async ({ page 
 // Test 5: ManageBots 页展示 Agent 列表
 // ================================================================
 
-test('ManageBots 页：Claw 卡片内显示 Agent 列表', async ({ page }) => {
+test('ManageBots 页：Claw 卡片内显示 Agent 列表 @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test, '/bots');
 	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
@@ -154,7 +154,7 @@ test('ManageBots 页：Claw 卡片内显示 Agent 列表', async ({ page }) => {
 // Test 6: ManageBots 页 Agent "对话"按钮导航
 // ================================================================
 
-test('ManageBots 页：点击 Agent 对话按钮进入 chat', async ({ page }) => {
+test('ManageBots 页：点击 Agent 对话按钮进入 chat @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test, '/bots');
 	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
@@ -173,7 +173,7 @@ test('ManageBots 页：点击 Agent 对话按钮进入 chat', async ({ page }) =
 // Test 7: Session 列表中 agent emoji 展示
 // ================================================================
 
-test('Topics 页：Session 列表中显示对应 agent 的 emoji', async ({ page }) => {
+test('Topics 页：Session 列表中显示对应 agent 的 emoji @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
@@ -190,7 +190,7 @@ test('Topics 页：Session 列表中显示对应 agent 的 emoji', async ({ page
 // Test 8: 新建聊天按钮在非 main agent 的 main session 上也可用
 // ================================================================
 
-test('非 main agent 的 main session 也显示新建聊天按钮', async ({ page }) => {
+test('非 main agent 的 main session 也显示新建聊天按钮 @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
@@ -217,7 +217,7 @@ test('非 main agent 的 main session 也显示新建聊天按钮', async ({ pag
 // Test 9: HomePage 智能跳转到默认 agent
 // ================================================================
 
-test('HomePage：桌面端自动跳转到默认 agent 的 main session', async ({ page }) => {
+test('HomePage：桌面端自动跳转到默认 agent 的 main session @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);

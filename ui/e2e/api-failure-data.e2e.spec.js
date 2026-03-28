@@ -15,7 +15,7 @@ import { login, navigateToChat, waitChatReady } from './helpers.js';
 // 1. Bot 列表 API 故障
 // ================================================================
 
-test.describe('Bot 列表 API 故障', () => {
+test.describe('Bot 列表 API 故障 @resilience', () => {
 	test('GET /api/v1/bots 返回 500 → 页面不崩溃，降级为空列表', async ({ page }) => {
 		test.setTimeout(30_000);
 		await page.setViewportSize({ width: 1280, height: 720 });
@@ -51,7 +51,7 @@ test.describe('Bot 列表 API 故障', () => {
 // 2. SSE 状态流故障
 // ================================================================
 
-test.describe('SSE 状态流故障', () => {
+test.describe('SSE 状态流故障 @resilience', () => {
 	test('SSE 连接被拒 → 应用仍可正常加载和导航', async ({ page }) => {
 		test.setTimeout(45_000);
 		await page.setViewportSize({ width: 1280, height: 720 });
@@ -74,7 +74,7 @@ test.describe('SSE 状态流故障', () => {
 // 3. WebSocket 连接故障
 // ================================================================
 
-test.describe('WebSocket 连接故障', () => {
+test.describe('WebSocket 连接故障 @resilience', () => {
 	test('WS 升级被拒 → chat 页显示连接错误状态', async ({ page }) => {
 		test.setTimeout(60_000);
 		await page.setViewportSize({ width: 1280, height: 720 });

@@ -30,7 +30,7 @@ async function ensureBotBound() {
  * 前提：server、OpenClaw gateway、plugin 均运行中
  * 测试策略：通过 page.evaluate 直接调用 file-transfer service，不依赖 UI 组件
  */
-test.describe('文件传输（file-transfer infrastructure）', () => {
+test.describe('文件传输（file-transfer infrastructure） @file', () => {
 	test.setTimeout(60_000);
 
 	test.beforeAll(async () => {

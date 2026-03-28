@@ -11,7 +11,7 @@ import { login } from './helpers.js';
 // Test 1: 密码不匹配 → 客户端验证错误
 // ================================================================
 
-test('注册：密码不匹配显示客户端错误', async ({ page }) => {
+test('注册：密码不匹配显示客户端错误 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/register');
 	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
@@ -32,7 +32,7 @@ test('注册：密码不匹配显示客户端错误', async ({ page }) => {
 // Test 2: loginName 太短 → 客户端校验错误
 // ================================================================
 
-test('注册：loginName 太短显示长度错误', async ({ page }) => {
+test('注册：loginName 太短显示长度错误 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/register');
 	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
@@ -52,7 +52,7 @@ test('注册：loginName 太短显示长度错误', async ({ page }) => {
 // Test 3: loginName 格式不合法 → 客户端校验错误
 // ================================================================
 
-test('注册：loginName 格式不合法显示格式错误', async ({ page }) => {
+test('注册：loginName 格式不合法显示格式错误 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/register');
 	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
@@ -70,7 +70,7 @@ test('注册：loginName 格式不合法显示格式错误', async ({ page }) =>
 // Test 4: loginName 为保留名 → 客户端校验错误
 // ================================================================
 
-test('注册：loginName 为保留名显示保留错误', async ({ page }) => {
+test('注册：loginName 为保留名显示保留错误 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/register');
 	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
@@ -89,7 +89,7 @@ test('注册：loginName 为保留名显示保留错误', async ({ page }) => {
 // Test 5: 空字段提交不触发请求
 // ================================================================
 
-test('注册：空字段提交不触发请求', async ({ page }) => {
+test('注册：空字段提交不触发请求 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/register');
 	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });
@@ -110,7 +110,7 @@ test('注册：空字段提交不触发请求', async ({ page }) => {
 // Test 6: 成功注册 → 跳转到认证区域
 // ================================================================
 
-test('注册：成功注册后跳转', async ({ page }) => {
+test('注册：成功注册后跳转 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	const uniqueName = 'e2e_reg_' + Date.now();
 	await page.goto('/register');
@@ -129,7 +129,7 @@ test('注册：成功注册后跳转', async ({ page }) => {
 // Test 7: 已登录用户访问注册页 → 自动跳转
 // ================================================================
 
-test('注册：已登录用户自动跳转', async ({ page }) => {
+test('注册：已登录用户自动跳转 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -143,7 +143,7 @@ test('注册：已登录用户自动跳转', async ({ page }) => {
 // Test 8: 注册页跳转到登录页
 // ================================================================
 
-test('注册：点击"已有账号"跳转到登录页', async ({ page }) => {
+test('注册：点击"已有账号"跳转到登录页 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.goto('/register');
 	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });

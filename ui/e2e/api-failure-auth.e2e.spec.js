@@ -9,7 +9,7 @@ import { expect, test } from '@playwright/test';
  * 前置条件：server 运行中（但 login API 被拦截，不会真正到达）
  */
 
-test.describe('认证 API 故障', () => {
+test.describe('认证 API 故障 @auth', () => {
 	test.beforeEach(async ({ page }) => {
 		test.setTimeout(30_000);
 		await page.setViewportSize({ width: 1280, height: 720 });

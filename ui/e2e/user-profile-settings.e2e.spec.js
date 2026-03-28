@@ -13,7 +13,7 @@ import { login } from './helpers.js';
 // Test 1: 用户页面渲染
 // ================================================================
 
-test('用户页：显示用户信息和菜单', async ({ page }) => {
+test('用户页：显示用户信息和菜单 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -31,7 +31,7 @@ test('用户页：显示用户信息和菜单', async ({ page }) => {
 // Test 2: 从用户页打开关于页
 // ================================================================
 
-test('用户页：点击关于菜单跳转到关于页', async ({ page }) => {
+test('用户页：点击关于菜单跳转到关于页 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -47,7 +47,7 @@ test('用户页：点击关于菜单跳转到关于页', async ({ page }) => {
 // Test 3: 从用户页退出登录
 // ================================================================
 
-test('用户页：点击退出菜单退出登录', async ({ page }) => {
+test('用户页：点击退出菜单退出登录 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -63,7 +63,7 @@ test('用户页：点击退出菜单退出登录', async ({ page }) => {
 // Test 4: 打开个人信息对话框
 // ================================================================
 
-test('用户页：打开个人信息对话框', async ({ page }) => {
+test('用户页：打开个人信息对话框 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -85,7 +85,7 @@ test('用户页：打开个人信息对话框', async ({ page }) => {
 // Test 5: 个人信息对话框 → 修改昵称（Modify-Revert）
 // ================================================================
 
-test('用户页：修改昵称后恢复', async ({ page }) => {
+test('用户页：修改昵称后恢复 @ui', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -149,7 +149,7 @@ test('用户页：修改昵称后恢复', async ({ page }) => {
 // Test 6: 打开设置对话框
 // ================================================================
 
-test('用户页：打开设置对话框', async ({ page }) => {
+test('用户页：打开设置对话框 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -172,7 +172,7 @@ test('用户页：打开设置对话框', async ({ page }) => {
 // Test 7: 设置 → 切换主题
 // ================================================================
 
-test('用户页：切换主题生效', async ({ page }) => {
+test('用户页：切换主题生效 @ui', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);

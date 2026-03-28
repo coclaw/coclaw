@@ -5,7 +5,7 @@
 import { test, expect } from '@playwright/test';
 import { login, waitChatReady, typeText } from './helpers.js';
 
-test.describe('Topic management', () => {
+test.describe('Topic management @chat', () => {
 	test.setTimeout(120_000);
 
 	test.beforeEach(async ({ page }) => {

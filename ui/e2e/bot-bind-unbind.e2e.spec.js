@@ -21,7 +21,7 @@ import { login, evalStore } from './helpers.js';
  * - 通过 IM 对话发送绑定指令（当前无条件）
  */
 
-test('Bot 绑定与解绑：完整流程', async ({ page }) => {
+test('Bot 绑定与解绑：完整流程 @bind', async ({ page }) => {
 	test.setTimeout(180_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);

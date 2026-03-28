@@ -40,7 +40,7 @@ async function createClaimCode() {
 	return res.data;
 }
 
-test.describe('Claim Page', () => {
+test.describe('Claim Page @bind', () => {
 	test('should show noCode state when no code in query', async ({ page }) => {
 		await login(page);
 		await page.goto('/claim');

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('local account auth flow should work with new layout', async ({ page }) => {
+test('local account auth flow should work with new layout @auth', async ({ page }) => {
 	await page.goto('/login');
 
 	await expect(page.getByTestId('login-page')).toBeVisible();

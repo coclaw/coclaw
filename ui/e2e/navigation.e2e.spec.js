@@ -13,7 +13,7 @@ import { login } from './helpers.js';
 // Test 1: Topics 页面渲染
 // ================================================================
 
-test('Topics 页：页面正常渲染', async ({ page }) => {
+test('Topics 页：页面正常渲染 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -31,7 +31,7 @@ test('Topics 页：页面正常渲染', async ({ page }) => {
 // Test 2: Topics 页面 → 点击 session 进入 chat
 // ================================================================
 
-test('Topics 页：点击 session 进入聊天页', async ({ page }) => {
+test('Topics 页：点击 session 进入聊天页 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -54,7 +54,7 @@ test('Topics 页：点击 session 进入聊天页', async ({ page }) => {
 // Test 3: ManageBots 页面渲染
 // ================================================================
 
-test('ManageBots 页：页面正常渲染', async ({ page }) => {
+test('ManageBots 页：页面正常渲染 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -69,7 +69,7 @@ test('ManageBots 页：页面正常渲染', async ({ page }) => {
 // Test 4: ManageBots → 导航到 AddBot 页面
 // ================================================================
 
-test('ManageBots 页：点击添加机器人跳转', async ({ page }) => {
+test('ManageBots 页：点击添加机器人跳转 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -85,7 +85,7 @@ test('ManageBots 页：点击添加机器人跳转', async ({ page }) => {
 // Test 5: ManageBots → 刷新按钮可点击
 // ================================================================
 
-test('ManageBots 页：刷新按钮可点击', async ({ page }) => {
+test('ManageBots 页：刷新按钮可点击 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -103,7 +103,7 @@ test('ManageBots 页：刷新按钮可点击', async ({ page }) => {
 // Test 6: HomePage 智能跳转
 // ================================================================
 
-test('HomePage：自动跳转到合适的页面', async ({ page }) => {
+test('HomePage：自动跳转到合适的页面 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
@@ -124,7 +124,7 @@ test('HomePage：自动跳转到合适的页面', async ({ page }) => {
 // Test 7: 未登录访问受保护页面 → 跳转到登录
 // ================================================================
 
-test('路由守卫：未登录访问受保护页面跳转到登录', async ({ page }) => {
+test('路由守卫：未登录访问受保护页面跳转到登录 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 
 	await page.goto('/topics');
@@ -137,7 +137,7 @@ test('路由守卫：未登录访问受保护页面跳转到登录', async ({ pa
 // Test 8: 底部导航栏（移动端）
 // ================================================================
 
-test('移动端：底部导航栏可切换页面', async ({ page }) => {
+test('移动端：底部导航栏可切换页面 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);

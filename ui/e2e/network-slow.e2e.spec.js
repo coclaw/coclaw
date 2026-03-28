@@ -36,7 +36,7 @@ const NO_THROTTLE = {
 	uploadThroughput: -1,
 };
 
-test.describe('弱网环境', () => {
+test.describe('弱网环境 @resilience', () => {
 	/** @type {import('playwright-core').CDPSession | null} */
 	let cdp = null;
 

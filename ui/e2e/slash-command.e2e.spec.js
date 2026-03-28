@@ -10,7 +10,7 @@ import { login, navigateToChat, waitChatReady } from './helpers.js';
  * - 存在 agent:main:main session
  */
 
-test.describe('斜杠命令', () => {
+test.describe('斜杠命令 @chat', () => {
 	let sessionId;
 
 	test.beforeEach(async ({ page }) => {

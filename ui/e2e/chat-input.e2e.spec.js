@@ -14,7 +14,7 @@ import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
 // Test 1: 文件附件 → 预览 → 移除
 // ================================================================
 
-test('ChatInput：文件附件预览与移除', async ({ page }) => {
+test('ChatInput：文件附件预览与移除 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -53,7 +53,7 @@ test('ChatInput：文件附件预览与移除', async ({ page }) => {
 // Test 2: 图片附件 → 缩略图预览
 // ================================================================
 
-test('ChatInput：图片附件显示缩略图', async ({ page }) => {
+test('ChatInput：图片附件显示缩略图 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -90,7 +90,7 @@ test('ChatInput：图片附件显示缩略图', async ({ page }) => {
 // Test 3: 多文件附件
 // ================================================================
 
-test('ChatInput：支持多文件附件', async ({ page }) => {
+test('ChatInput：支持多文件附件 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -133,7 +133,7 @@ test('ChatInput：支持多文件附件', async ({ page }) => {
 // Test 4: 桌面端 Enter 发送消息
 // ================================================================
 
-test('ChatInput：桌面端 Enter 键发送消息', async ({ page }) => {
+test('ChatInput：桌面端 Enter 键发送消息 @chat', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -162,7 +162,7 @@ test('ChatInput：桌面端 Enter 键发送消息', async ({ page }) => {
 // Test 5: 桌面端 Shift+Enter 不发送，插入换行
 // ================================================================
 
-test('ChatInput：桌面端 Shift+Enter 不发送', async ({ page }) => {
+test('ChatInput：桌面端 Shift+Enter 不发送 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -194,7 +194,7 @@ test('ChatInput：桌面端 Shift+Enter 不发送', async ({ page }) => {
 // Test 6: 空输入时发送按钮禁用
 // ================================================================
 
-test('ChatInput：空输入时发送按钮禁用', async ({ page }) => {
+test('ChatInput：空输入时发送按钮禁用 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);

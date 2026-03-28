@@ -15,7 +15,7 @@ import {
  * 技术手段：context.setOffline(true/false) 模拟浏览器断网/恢复
  */
 
-test.describe('网络断开与恢复', () => {
+test.describe('网络断开与恢复 @resilience', () => {
 	test.beforeEach(async ({ page }) => {
 		test.setTimeout(90_000);
 		await page.setViewportSize({ width: 1280, height: 720 });

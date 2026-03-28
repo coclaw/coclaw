@@ -14,7 +14,7 @@ import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
 // Test 1: 基础聊天流程
 // ================================================================
 
-test('基础聊天：发送消息并收到 bot 回复', async ({ page }) => {
+test('基础聊天：发送消息并收到 bot 回复 @chat', async ({ page }) => {
 	test.setTimeout(240_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -49,7 +49,7 @@ test('基础聊天：发送消息并收到 bot 回复', async ({ page }) => {
 // Test 2: Session 切换
 // ================================================================
 
-test('Session 切换：不同 session 显示各自的消息', async ({ page }) => {
+test('Session 切换：不同 session 显示各自的消息 @chat', async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 	await page.goto('/topics');
@@ -103,7 +103,7 @@ test('Session 切换：不同 session 显示各自的消息', async ({ page }) =
 // Test 3: 新建聊天
 // ================================================================
 
-test('新建聊天：点击后跳转到新 session', async ({ page }) => {
+test('新建聊天：点击后跳转到新 session @chat', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);
 
@@ -139,7 +139,7 @@ test('新建聊天：点击后跳转到新 session', async ({ page }) => {
 // Test 4: 发送后立即离开再返回
 // ================================================================
 
-test('发送后离开再返回：页面状态正常', async ({ page }) => {
+test('发送后离开再返回：页面状态正常 @chat', async ({ page }) => {
 	test.setTimeout(90_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);

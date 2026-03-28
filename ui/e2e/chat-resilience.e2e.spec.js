@@ -14,7 +14,7 @@ import { login, navigateToChat, waitChatReady, evalStore } from './helpers.js';
 // Test 1: ChatPage 刷新后正常恢复
 // ================================================================
 
-test('ChatPage 刷新：页面恢复正常，无错误提示', async ({ page }) => {
+test('ChatPage 刷新：页面恢复正常，无错误提示 @resilience', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -48,7 +48,7 @@ test('ChatPage 刷新：页面恢复正常，无错误提示', async ({ page }) 
 // Test 2: 不存在的 session → 跳转
 // ================================================================
 
-test('不存在的 session：重定向到首页', async ({ page }) => {
+test('不存在的 session：重定向到首页 @resilience', async ({ page }) => {
 	test.setTimeout(30_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -80,7 +80,7 @@ test('不存在的 session：重定向到首页', async ({ page }) => {
 // Test 3: Bot 离线 → 显示离线 banner + 输入禁用
 // ================================================================
 
-test('Bot 离线：显示离线提示且输入禁用', async ({ page }) => {
+test('Bot 离线：显示离线提示且输入禁用 @resilience', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);

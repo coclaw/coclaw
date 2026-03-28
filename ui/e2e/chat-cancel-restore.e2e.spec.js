@@ -17,7 +17,7 @@ import { login, navigateToChat, waitChatReady, typeText, evalStore } from './hel
 // Test 1: 文本在 accepted 前取消后恢复
 // ================================================================
 
-test('取消发送（accepted 前）：文本恢复到输入框', async ({ page }) => {
+test('取消发送（accepted 前）：文本恢复到输入框 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);
@@ -108,7 +108,7 @@ test('取消发送（accepted 前）：文本恢复到输入框', async ({ page 
 // Test 2: 文本 + 图片在 accepted 前取消后恢复
 // ================================================================
 
-test('取消发送（accepted 前）：文本和图片都恢复', async ({ page }) => {
+test('取消发送（accepted 前）：文本和图片都恢复 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);
