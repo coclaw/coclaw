@@ -722,9 +722,9 @@ test('WebRtcPeer: 默认 logger 为 console', () => {
 	assert.equal(peer.logger, console);
 });
 
-// --- coclaw.file.* RPC 拦截 ---
+// --- coclaw.files.* RPC 拦截 ---
 
-test('WebRtcPeer: coclaw.file.* req → onFileRpc 回调（不转发 onRequest）', async () => {
+test('WebRtcPeer: coclaw.files.* req → onFileRpc 回调（不转发 onRequest）', async () => {
 	const PC = MockPCFactory();
 	const requests = [];
 	const fileRpcs = [];
@@ -741,7 +741,7 @@ test('WebRtcPeer: coclaw.file.* req → onFileRpc 回调（不转发 onRequest�
 	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: () => {} };
 	pc.ondatachannel({ channel: fakeChannel });
 
-	const fileReq = { type: 'req', id: 'f1', method: 'coclaw.file.list', params: { path: '.' } };
+	const fileReq = { type: 'req', id: 'f1', method: 'coclaw.files.list', params: { path: '.' } };
 	fakeChannel.onmessage({ data: JSON.stringify(fileReq) });
 
 	assert.equal(fileRpcs.length, 1);
@@ -755,7 +755,7 @@ test('WebRtcPeer: coclaw.file.* req → onFileRpc 回调（不转发 onRequest�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: coclaw.file.* sendFn 发送响应到 DC', async () => {
+test('WebRtcPeer: coclaw.files.* sendFn 发送响应到 DC', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -772,7 +772,7 @@ test('WebRtcPeer: coclaw.file.* sendFn 发送响应到 DC', async () => {
 	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: (d) => sent.push(d) };
 	pc.ondatachannel({ channel: fakeChannel });
 
-	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'f2', method: 'coclaw.file.list', params: {} }) });
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'f2', method: 'coclaw.files.list', params: {} }) });
 
 	assert.equal(sent.length, 1);
 	const res = JSON.parse(sent[0]);
@@ -782,7 +782,7 @@ test('WebRtcPeer: coclaw.file.* sendFn 发送响应到 DC', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: coclaw.file.* sendFn DC 关闭时不崩溃', async () => {
+test('WebRtcPeer: coclaw.files.* sendFn DC 关闭时不崩溃', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -802,12 +802,12 @@ test('WebRtcPeer: coclaw.file.* sendFn DC 关闭时不崩溃', async () => {
 	pc.ondatachannel({ channel: fakeChannel });
 
 	// 不应抛异常
-	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'f3', method: 'coclaw.file.delete', params: {} }) });
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'f3', method: 'coclaw.files.delete', params: {} }) });
 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 非 coclaw.file.* req 仍走 onRequest', async () => {
+test('WebRtcPeer: 非 coclaw.files.* req 仍走 onRequest', async () => {
 	const PC = MockPCFactory();
 	const requests = [];
 	const fileRpcs = [];
@@ -832,7 +832,7 @@ test('WebRtcPeer: 非 coclaw.file.* req 仍走 onRequest', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: coclaw.file.* 无 onFileRpc 时走 onRequest', async () => {
+test('WebRtcPeer: coclaw.files.* 无 onFileRpc 时走 onRequest', async () => {
 	const PC = MockPCFactory();
 	const requests = [];
 	const peer = new WebRtcPeer({
@@ -848,7 +848,7 @@ test('WebRtcPeer: coclaw.file.* 无 onFileRpc 时走 onRequest', async () => {
 	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: () => {} };
 	pc.ondatachannel({ channel: fakeChannel });
 
-	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'x2', method: 'coclaw.file.list', params: {} }) });
+	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'x2', method: 'coclaw.files.list', params: {} }) });
 
 	// 无 onFileRpc 时走 onRequest
 	assert.equal(requests.length, 1);
@@ -1255,7 +1255,7 @@ test('WebRtcPeer: sendFn 大响应也会分片', async () => {
 	pc.ondatachannel({ channel: dc });
 
 	// 发送 file RPC 请求
-	dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'ui-f1', method: 'coclaw.file.read', params: {} }) });
+	dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'ui-f1', method: 'coclaw.files.read', params: {} }) });
 
 	// sendFn 回复的大响应应该被分片
 	assert.ok(sent.length > 1, `should be chunked, got ${sent.length} sends`);

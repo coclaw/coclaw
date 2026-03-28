@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import nodePath from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 
 // --- 常量 ---
 
@@ -102,21 +102,27 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 
 	const pathDeps = { lstat: _lstat, realpath: _realpath };
 
-	// --- RPC 处理（rpc DC 上的 coclaw.file.list / coclaw.file.delete） ---
+	// --- RPC 处理（rpc DC 上的 coclaw.files.* 方法） ---
 
 	/**
-	 * 处理 rpc DC 上的 coclaw.file.* 请求
+	 * 处理 rpc DC 上的 coclaw.files.* 请求
 	 * @param {object} payload - { id, method, params }
 	 * @param {function} sendFn - (responseObj) => void
 	 */
 	async function handleRpcRequest(payload, sendFn) {
 		const { id, method, params } = payload;
 		try {
-			if (method === 'coclaw.file.list') {
+			if (method === 'coclaw.files.list') {
 				const result = await listFiles(params);
 				sendFn({ type: 'res', id, ok: true, payload: result });
-			} else if (method === 'coclaw.file.delete') {
+			} else if (method === 'coclaw.files.delete') {
 				const result = await deleteFile(params);
+				sendFn({ type: 'res', id, ok: true, payload: result });
+			} else if (method === 'coclaw.files.mkdir') {
+				const result = await mkdirOp(params);
+				sendFn({ type: 'res', id, ok: true, payload: result });
+			} else if (method === 'coclaw.files.create') {
+				const result = await createFile(params);
 				sendFn({ type: 'res', id, ok: true, payload: result });
 			} else {
 				sendFn({
@@ -223,6 +229,79 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		return {};
 	}
 
+	async function mkdirOp(params) {
+		const agentId = params?.agentId?.trim?.() || 'main';
+		const userPath = params?.path;
+		if (!userPath) {
+			const err = new Error('path is required');
+			err.code = 'PATH_DENIED';
+			throw err;
+		}
+		const workspaceDir = await resolveWorkspace(agentId);
+		const resolved = await validatePath(workspaceDir, userPath, pathDeps);
+		await _mkdir(resolved, { recursive: true });
+		return {};
+	}
+
+	async function createFile(params) {
+		const agentId = params?.agentId?.trim?.() || 'main';
+		const userPath = params?.path;
+		if (!userPath) {
+			const err = new Error('path is required');
+			err.code = 'PATH_DENIED';
+			throw err;
+		}
+		const workspaceDir = await resolveWorkspace(agentId);
+		const resolved = await validatePath(workspaceDir, userPath, pathDeps);
+
+		// 检查文件是否已存在
+		try {
+			await _lstat(resolved);
+			// 没抛异常说明存在
+			const err = new Error(`File already exists: ${userPath}`);
+			err.code = 'ALREADY_EXISTS';
+			throw err;
+		} catch (e) {
+			if (e.code === 'ALREADY_EXISTS') throw e;
+			if (e.code !== 'ENOENT') throw e;
+			// ENOENT — 不存在，继续创建
+		}
+
+		// 确保父目录存在
+		await _mkdir(nodePath.dirname(resolved), { recursive: true });
+		await (deps.writeFile ?? fsp.writeFile)(resolved, '');
+		return {};
+	}
+
+	/**
+	 * 生成唯一文件名：<name>-<4hex>.<ext>，碰撞时重试
+	 * @param {string} dir - 目标目录绝对路径
+	 * @param {string} fileName - 原始文件名
+	 * @returns {Promise<string>} 唯一文件名（仅文件名，非完整路径）
+	 */
+	async function generateUniqueName(dir, fileName) {
+		const ext = nodePath.extname(fileName);
+		const base = nodePath.basename(fileName, ext);
+		const maxAttempts = 20;
+		for (let i = 0; i < maxAttempts; i++) {
+			const hex = randomBytes(2).toString('hex');
+			const candidate = `${base}-${hex}${ext}`;
+			try {
+				await _lstat(nodePath.join(dir, candidate));
+				// 存在 → 碰撞，重试
+			} catch (e) {
+				if (e.code === 'ENOENT') return candidate;
+				/* c8 ignore next -- lstat 非 ENOENT 属罕见 IO 异常 */
+				throw e;
+			} /* c8 ignore next */
+		}
+		/* c8 ignore start -- 20 次均碰撞几乎不可能 */
+		const err = new Error(`Cannot generate unique name for: ${fileName}`);
+		err.code = 'WRITE_FAILED';
+		throw err;
+		/* c8 ignore stop */
+	}
+
 	// --- File DataChannel 处理 ---
 
 	/**
@@ -262,15 +341,20 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 				return;
 			}
 
-			if (req.method === 'read') {
-				/* c8 ignore next 3 -- handleRead 内部已完整处理异常，此 catch 纯防御 */
-				handleRead(dc, req).catch((err) => {
-					log.warn?.(`[coclaw/file] read error: ${err.message}`);
+			if (req.method === 'GET') {
+				/* c8 ignore next 3 -- handleGet 内部已完整处理异常，此 catch 纯防御 */
+				handleGet(dc, req).catch((err) => {
+					log.warn?.(`[coclaw/file] GET error: ${err.message}`);
 				});
-			} else if (req.method === 'write') {
-				/* c8 ignore next 3 -- handleWrite 内部已完整处理异常，此 catch 纯防御 */
-				handleWrite(dc, req).catch((err) => {
-					log.warn?.(`[coclaw/file] write error: ${err.message}`);
+			} else if (req.method === 'PUT') {
+				/* c8 ignore next 3 -- handlePut 内部已完整处理异常，此 catch 纯防御 */
+				handlePut(dc, req).catch((err) => {
+					log.warn?.(`[coclaw/file] PUT error: ${err.message}`);
+				});
+			} else if (req.method === 'POST') {
+				/* c8 ignore next 3 -- handlePost 内部已完整处理异常，此 catch 纯防御 */
+				handlePost(dc, req).catch((err) => {
+					log.warn?.(`[coclaw/file] POST error: ${err.message}`);
 				});
 			} else {
 				sendError(dc, 'UNKNOWN_METHOD', `Unknown method: ${req.method}`);
@@ -278,7 +362,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		};
 	}
 
-	async function handleRead(dc, req) {
+	async function handleGet(dc, req) {
 		let workspaceDir, resolved;
 		try {
 			const agentId = req.agentId?.trim?.() || 'main'; /* c8 ignore next -- ?./?? fallback */
@@ -367,7 +451,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		});
 	}
 
-	async function handleWrite(dc, req) {
+	async function handlePut(dc, req) {
 		let workspaceDir, resolved;
 		try {
 			const agentId = req.agentId?.trim?.() || 'main';
@@ -377,7 +461,59 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			sendError(dc, err.code ?? 'INTERNAL_ERROR', err.message);
 			return;
 		}
+		await receiveUpload(dc, req, resolved);
+	}
 
+	async function handlePost(dc, req) {
+		let workspaceDir, dirResolved;
+		try {
+			const agentId = req.agentId?.trim?.() || 'main';
+			workspaceDir = await resolveWorkspace(agentId);
+			dirResolved = await validatePath(workspaceDir, req.path || '.', pathDeps);
+		} catch (err) {
+			sendError(dc, err.code ?? 'INTERNAL_ERROR', err.message);
+			return;
+		}
+
+		const fileName = req.fileName;
+		if (!fileName || typeof fileName !== 'string') {
+			sendError(dc, 'INVALID_INPUT', 'fileName is required for POST');
+			return;
+		}
+
+		// 确保集合目录存在
+		try {
+			await _mkdir(dirResolved, { recursive: true });
+		} catch (err) {
+			sendError(dc, 'WRITE_FAILED', `Cannot create directory: ${err.message}`);
+			return;
+		}
+
+		// 生成唯一文件名
+		let uniqueName;
+		try {
+			uniqueName = await generateUniqueName(dirResolved, fileName);
+		/* c8 ignore start -- generateUniqueName 内部已处理，此为防御 */
+		} catch (err) {
+			sendError(dc, err.code ?? 'WRITE_FAILED', err.message);
+			return;
+		}
+		/* c8 ignore stop */
+
+		const resolved = nodePath.join(dirResolved, uniqueName);
+		// 计算相对于 workspace 的路径，作为响应中的 path
+		const relativePath = nodePath.relative(workspaceDir, resolved);
+		await receiveUpload(dc, req, resolved, relativePath);
+	}
+
+	/**
+	 * 共享上传接收逻辑（PUT/POST 复用）
+	 * @param {object} dc - DataChannel
+	 * @param {object} req - 请求对象（含 size）
+	 * @param {string} resolved - 目标文件绝对路径
+	 * @param {string} [relativePath] - POST 时附带的相对路径（响应中返回）
+	 */
+	async function receiveUpload(dc, req, resolved, relativePath) {
 		const declaredSize = req.size;
 		if (!Number.isFinite(declaredSize) || declaredSize < 0) {
 			sendError(dc, 'INVALID_INPUT', 'size must be a non-negative number');
@@ -388,7 +524,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			return;
 		}
 
-		// 确保目标目录存在
+		// 确保目标目录存在（PUT 场景需要；POST 已在上层创建，幂等无害）
 		const targetDir = nodePath.dirname(resolved);
 		try {
 			await _mkdir(targetDir, { recursive: true });
@@ -460,8 +596,10 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 							try { dc.close(); } catch { /* ignore */ }
 							return;
 						}
+						const result = { ok: true, bytes: receivedBytes };
+						if (relativePath) result.path = relativePath;
 						try {
-							dc.send(JSON.stringify({ ok: true, bytes: receivedBytes }));
+							dc.send(JSON.stringify(result));
 						/* c8 ignore next */
 						} catch { /* ignore */ }
 						/* c8 ignore next */
@@ -580,8 +718,12 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		// 暴露内部方法便于测试
 		__listFiles: listFiles,
 		__deleteFile: deleteFile,
-		__handleRead: handleRead,
-		__handleWrite: handleWrite,
+		__mkdirOp: mkdirOp,
+		__createFile: createFile,
+		__handleGet: handleGet,
+		__handlePut: handlePut,
+		__handlePost: handlePost,
+		__generateUniqueName: generateUniqueName,
 		__cleanupTmpFilesInDir: cleanupTmpFilesInDir,
 	};
 }

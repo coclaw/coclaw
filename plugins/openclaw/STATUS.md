@@ -1,6 +1,6 @@
 # OpenClaw Plugin STATUS
 
-## 当前状态（2026-03-17）
+## 当前状态（2026-03-28）
 
 - 插件工作区：`plugins/openclaw`，已稳定运行。
 - 对外标识：
@@ -18,6 +18,16 @@
 - 测试门禁：`pnpm verify` 通过，覆盖率 lines/statements/functions 100%，branches ≥ 95%。
 
 ## 关键里程碑
+
+### 文件管理协议升级（2026-03-28）
+- **RPC 方法重命名**：`coclaw.file.*` → `coclaw.files.*`（复数形式，与设计文档对齐）。
+- **File DC method 重命名**：`read`/`write` → HTTP 动词 `GET`/`PUT`，新增 `POST`。
+- **新增 POST 附件上传**：`handlePost` 支持集合目录上传（`path` 为目录，`fileName` 为原始文件名）。Plugin 生成唯一文件名（`<name>-<4hex>.<ext>`，碰撞检测 + 重试），成功响应返回 `path`（相对 workspace 的实际路径）。支持 `.coclaw/chat-files/` 和 `.coclaw/topic-files/` 场景。
+- **新增 RPC `coclaw.files.mkdir`**：递归创建目录（`mkdir -p` 语义），已存在视为成功。
+- **新增 RPC `coclaw.files.create`**：创建空文件，已存在返回 `ALREADY_EXISTS`，自动创建父目录。
+- **重构**：PUT/POST 共享逻辑提取为 `receiveUpload()` 内部函数，消除代码重复。
+- **Breaking change**：方法名变更对 UI 侧为不兼容变更，但文件管理功能尚在开发中（UI 未上线），无兼容性影响。
+- 参见设计文档：`docs/designs/file-management.md`、`docs/designs/multimodal-attachments.md`。
 
 ### bind/unbind 瘦 CLI 化 & 强制 unbind（2026-03-21）
 - **架构变更**：`openclaw coclaw bind/unbind` CLI 命令改为瘦 CLI，通过 `coclaw.bind`/`coclaw.unbind` gateway RPC 在 gateway 进程内执行。CLI 不再直接操作 `bindings.json`。

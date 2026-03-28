@@ -445,7 +445,7 @@ test('deleteFile: rmdir 非 ENOTEMPTY 错误透传', async () => {
 
 // --- handleRpcRequest ---
 
-test('handleRpcRequest: coclaw.file.list 成功', async () => {
+test('handleRpcRequest: coclaw.files.list 成功', async () => {
 	const dir = await makeTmpDir();
 	try {
 		await fs.writeFile(nodePath.join(dir, 'hi.txt'), 'hi');
@@ -455,7 +455,7 @@ test('handleRpcRequest: coclaw.file.list 成功', async () => {
 		});
 		const responses = [];
 		await handler.handleRpcRequest(
-			{ id: 'r1', method: 'coclaw.file.list', params: { path: '.' } },
+			{ id: 'r1', method: 'coclaw.files.list', params: { path: '.' } },
 			(res) => responses.push(res),
 		);
 		assert.equal(responses.length, 1);
@@ -468,7 +468,7 @@ test('handleRpcRequest: coclaw.file.list 成功', async () => {
 	}
 });
 
-test('handleRpcRequest: coclaw.file.delete 成功', async () => {
+test('handleRpcRequest: coclaw.files.delete 成功', async () => {
 	const dir = await makeTmpDir();
 	try {
 		await fs.writeFile(nodePath.join(dir, 'del.txt'), 'bye');
@@ -478,7 +478,7 @@ test('handleRpcRequest: coclaw.file.delete 成功', async () => {
 		});
 		const responses = [];
 		await handler.handleRpcRequest(
-			{ id: 'r2', method: 'coclaw.file.delete', params: { path: 'del.txt' } },
+			{ id: 'r2', method: 'coclaw.files.delete', params: { path: 'del.txt' } },
 			(res) => responses.push(res),
 		);
 		assert.equal(responses[0].ok, true);
@@ -495,7 +495,7 @@ test('handleRpcRequest: 未知方法返回错误', async () => {
 	});
 	const responses = [];
 	await handler.handleRpcRequest(
-		{ id: 'r3', method: 'coclaw.file.unknown', params: {} },
+		{ id: 'r3', method: 'coclaw.files.unknown', params: {} },
 		(res) => responses.push(res),
 	);
 	assert.equal(responses[0].ok, false);
@@ -509,16 +509,16 @@ test('handleRpcRequest: 错误场景返回错误响应', async () => {
 	});
 	const responses = [];
 	await handler.handleRpcRequest(
-		{ id: 'r4', method: 'coclaw.file.list', params: { path: '.' } },
+		{ id: 'r4', method: 'coclaw.files.list', params: { path: '.' } },
 		(res) => responses.push(res),
 	);
 	assert.equal(responses[0].ok, false);
 	assert.equal(responses[0].error.code, 'INTERNAL_ERROR');
 });
 
-// --- handleFileChannel: read (下载) ---
+// --- handleFileChannel: GET (下载) ---
 
-test('handleFileChannel read: 成功下载文件', async () => {
+test('handleFileChannel GET: 成功下载文件', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const content = 'hello world test content';
@@ -532,7 +532,7 @@ test('handleFileChannel read: 成功下载文件', async () => {
 		handler.handleFileChannel(dc);
 
 		// 发送 read 请求
-		dc.onmessage({ data: JSON.stringify({ method: 'read', agentId: 'main', path: 'download.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'main', path: 'download.txt' }) });
 
 		// 等待处理完成
 		await new Promise((r) => setTimeout(r, 200));
@@ -559,7 +559,7 @@ test('handleFileChannel read: 成功下载文件', async () => {
 	}
 });
 
-test('handleFileChannel read: 文件不存在', async () => {
+test('handleFileChannel GET: 文件不存在', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -569,7 +569,7 @@ test('handleFileChannel read: 文件不存在', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'read', agentId: 'main', path: 'nope.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'main', path: 'nope.txt' }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -580,7 +580,7 @@ test('handleFileChannel read: 文件不存在', async () => {
 	}
 });
 
-test('handleFileChannel read: 目录不能 read', async () => {
+test('handleFileChannel GET: 目录不能 read', async () => {
 	const dir = await makeTmpDir();
 	try {
 		await fs.mkdir(nodePath.join(dir, 'adir'));
@@ -591,7 +591,7 @@ test('handleFileChannel read: 目录不能 read', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'adir' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'adir' }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -602,7 +602,7 @@ test('handleFileChannel read: 目录不能 read', async () => {
 	}
 });
 
-test('handleFileChannel read: 路径穿越被拒绝', async () => {
+test('handleFileChannel GET: 路径穿越被拒绝', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -612,7 +612,7 @@ test('handleFileChannel read: 路径穿越被拒绝', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: '../../../etc/passwd' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: '../../../etc/passwd' }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -623,7 +623,7 @@ test('handleFileChannel read: 路径穿越被拒绝', async () => {
 	}
 });
 
-test('handleFileChannel read: workspace 解析失败', async () => {
+test('handleFileChannel GET: workspace 解析失败', async () => {
 	const handler = createFileHandler({
 		resolveWorkspace: async () => { const e = new Error('no agent'); e.code = 'AGENT_DENIED'; throw e; },
 		logger: silentLogger(),
@@ -631,7 +631,7 @@ test('handleFileChannel read: workspace 解析失败', async () => {
 	const dc = createMockDC();
 	handler.handleFileChannel(dc);
 
-	dc.onmessage({ data: JSON.stringify({ method: 'read', agentId: 'bad', path: 'x' }) });
+	dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'bad', path: 'x' }) });
 	await new Promise((r) => setTimeout(r, 100));
 
 	const msg = JSON.parse(dc.__sent[0]);
@@ -639,7 +639,7 @@ test('handleFileChannel read: workspace 解析失败', async () => {
 	assert.equal(msg.error.code, 'AGENT_DENIED');
 });
 
-test('handleFileChannel read: stat 非 ENOENT 错误', async () => {
+test('handleFileChannel GET: stat 非 ENOENT 错误', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -652,7 +652,7 @@ test('handleFileChannel read: stat 非 ENOENT 错误', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'x.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'x.txt' }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -663,7 +663,7 @@ test('handleFileChannel read: stat 非 ENOENT 错误', async () => {
 	}
 });
 
-test('handleFileChannel read: 非普通文件被拒绝', async () => {
+test('handleFileChannel GET: 非普通文件被拒绝', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -680,7 +680,7 @@ test('handleFileChannel read: 非普通文件被拒绝', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'device' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'device' }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -691,7 +691,7 @@ test('handleFileChannel read: 非普通文件被拒绝', async () => {
 	}
 });
 
-test('handleFileChannel read: 读取流错误', async () => {
+test('handleFileChannel GET: 读取流错误', async () => {
 	const dir = await makeTmpDir();
 	try {
 		await fs.writeFile(nodePath.join(dir, 'err.txt'), 'data');
@@ -713,7 +713,7 @@ test('handleFileChannel read: 读取流错误', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'err.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'err.txt' }) });
 		await new Promise((r) => setTimeout(r, 200));
 
 		const errors = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s)).filter((m) => m.ok === false);
@@ -724,7 +724,7 @@ test('handleFileChannel read: 读取流错误', async () => {
 	}
 });
 
-test('handleFileChannel read: bufferedAmount 触发流控暂停', async () => {
+test('handleFileChannel GET: bufferedAmount 触发流控暂停', async () => {
 	const dir = await makeTmpDir();
 	try {
 		// 创建足够大的文件触发多个 chunk
@@ -752,7 +752,7 @@ test('handleFileChannel read: bufferedAmount 触发流控暂停', async () => {
 		};
 
 		handler.handleFileChannel(dc);
-		dc.onmessage({ data: JSON.stringify({ method: 'read', agentId: 'main', path: 'flow.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'main', path: 'flow.txt' }) });
 		await new Promise((r) => setTimeout(r, 500));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
@@ -764,7 +764,7 @@ test('handleFileChannel read: bufferedAmount 触发流控暂停', async () => {
 	}
 });
 
-test('handleFileChannel read: DC 关闭中止流', async () => {
+test('handleFileChannel GET: DC 关闭中止流', async () => {
 	const dir = await makeTmpDir();
 	try {
 		// 创建一个较大文件来触发多个 chunk
@@ -788,7 +788,7 @@ test('handleFileChannel read: DC 关闭中止流', async () => {
 		};
 
 		handler.handleFileChannel(dc);
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'big.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'big.txt' }) });
 		await new Promise((r) => setTimeout(r, 200));
 
 		// 不应崩溃
@@ -798,7 +798,7 @@ test('handleFileChannel read: DC 关闭中止流', async () => {
 	}
 });
 
-test('handleFileChannel read: 响应头发送失败时安静退出', async () => {
+test('handleFileChannel GET: 响应头发送失败时安静退出', async () => {
 	const dir = await makeTmpDir();
 	try {
 		await fs.writeFile(nodePath.join(dir, 'f.txt'), 'data');
@@ -810,7 +810,7 @@ test('handleFileChannel read: 响应头发送失败时安静退出', async () =>
 		dc.send = () => { throw new Error('DC closed'); };
 
 		handler.handleFileChannel(dc);
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'f.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'f.txt' }) });
 		await new Promise((r) => setTimeout(r, 100));
 		// 不应崩溃
 	} finally {
@@ -818,9 +818,9 @@ test('handleFileChannel read: 响应头发送失败时安静退出', async () =>
 	}
 });
 
-// --- handleFileChannel: write (上传) ---
+// --- handleFileChannel: PUT (上传) ---
 
-test('handleFileChannel write: 成功上传文件', async () => {
+test('handleFileChannel PUT: 成功上传文件', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const content = Buffer.from('uploaded content');
@@ -832,7 +832,7 @@ test('handleFileChannel write: 成功上传文件', async () => {
 		handler.handleFileChannel(dc);
 
 		// 发送 write 请求
-		dc.onmessage({ data: JSON.stringify({ method: 'write', agentId: 'main', path: 'upload.txt', size: content.length }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', agentId: 'main', path: 'upload.txt', size: content.length }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		// 检查就绪信号
@@ -860,7 +860,7 @@ test('handleFileChannel write: 成功上传文件', async () => {
 	}
 });
 
-test('handleFileChannel write: 自动创建中间目录', async () => {
+test('handleFileChannel PUT: 自动创建中间目录', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const content = Buffer.from('deep');
@@ -871,7 +871,7 @@ test('handleFileChannel write: 自动创建中间目录', async () => {
 		const dc = createMockDC('file:mkdir-test');
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'a/b/c.txt', size: content.length }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'a/b/c.txt', size: content.length }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: content });
@@ -885,7 +885,7 @@ test('handleFileChannel write: 自动创建中间目录', async () => {
 	}
 });
 
-test('handleFileChannel write: 大小超限被拒绝', async () => {
+test('handleFileChannel PUT: 大小超限被拒绝', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -895,7 +895,7 @@ test('handleFileChannel write: 大小超限被拒绝', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'big.bin', size: 2_000_000_000 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'big.bin', size: 2_000_000_000 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -906,7 +906,7 @@ test('handleFileChannel write: 大小超限被拒绝', async () => {
 	}
 });
 
-test('handleFileChannel write: size 不合法被拒绝', async () => {
+test('handleFileChannel PUT: size 不合法被拒绝', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -916,7 +916,7 @@ test('handleFileChannel write: size 不合法被拒绝', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'x.txt', size: -1 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'x.txt', size: -1 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -927,7 +927,7 @@ test('handleFileChannel write: size 不合法被拒绝', async () => {
 	}
 });
 
-test('handleFileChannel write: size mismatch 被拒绝', async () => {
+test('handleFileChannel PUT: size mismatch 被拒绝', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -937,7 +937,7 @@ test('handleFileChannel write: size mismatch 被拒绝', async () => {
 		const dc = createMockDC('file:mismatch-test');
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'mis.txt', size: 100 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'mis.txt', size: 100 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		// 发送 5 字节，但声明 100
@@ -958,7 +958,7 @@ test('handleFileChannel write: size mismatch 被拒绝', async () => {
 	}
 });
 
-test('handleFileChannel write: 接收字节数超限 → SIZE_EXCEEDED', async () => {
+test('handleFileChannel PUT: 接收字节数超限 → SIZE_EXCEEDED', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -969,7 +969,7 @@ test('handleFileChannel write: 接收字节数超限 → SIZE_EXCEEDED', async (
 		handler.handleFileChannel(dc);
 
 		// 声明 10 字节，实际发送超出
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'over.txt', size: 10 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'over.txt', size: 10 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: Buffer.alloc(20, 'x') });
@@ -984,7 +984,7 @@ test('handleFileChannel write: 接收字节数超限 → SIZE_EXCEEDED', async (
 	}
 });
 
-test('handleFileChannel write: DC 取消（未收到 done）→ 清理临时文件', async () => {
+test('handleFileChannel PUT: DC 取消（未收到 done）→ 清理临时文件', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -994,7 +994,7 @@ test('handleFileChannel write: DC 取消（未收到 done）→ 清理临时文�
 		const dc = createMockDC('file:cancel-test');
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'cancel.txt', size: 100 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'cancel.txt', size: 100 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: Buffer.from('partial') });
@@ -1010,7 +1010,7 @@ test('handleFileChannel write: DC 取消（未收到 done）→ 清理临时文�
 	}
 });
 
-test('handleFileChannel write: workspace 解析失败', async () => {
+test('handleFileChannel PUT: workspace 解析失败', async () => {
 	const handler = createFileHandler({
 		resolveWorkspace: async () => { const e = new Error('no'); e.code = 'AGENT_DENIED'; throw e; },
 		logger: silentLogger(),
@@ -1018,7 +1018,7 @@ test('handleFileChannel write: workspace 解析失败', async () => {
 	const dc = createMockDC();
 	handler.handleFileChannel(dc);
 
-	dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'x', size: 5 }) });
+	dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'x', size: 5 }) });
 	await new Promise((r) => setTimeout(r, 100));
 
 	const msg = JSON.parse(dc.__sent[0]);
@@ -1026,7 +1026,7 @@ test('handleFileChannel write: workspace 解析失败', async () => {
 	assert.equal(msg.error.code, 'AGENT_DENIED');
 });
 
-test('handleFileChannel write: mkdir 失败', async () => {
+test('handleFileChannel PUT: mkdir 失败', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -1039,7 +1039,7 @@ test('handleFileChannel write: mkdir 失败', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'fail/x.txt', size: 5 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'fail/x.txt', size: 5 }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -1050,7 +1050,7 @@ test('handleFileChannel write: mkdir 失败', async () => {
 	}
 });
 
-test('handleFileChannel write: createWriteStream 失败', async () => {
+test('handleFileChannel PUT: createWriteStream 失败', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -1063,7 +1063,7 @@ test('handleFileChannel write: createWriteStream 失败', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'x.txt', size: 5 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'x.txt', size: 5 }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		const msg = JSON.parse(dc.__sent[0]);
@@ -1074,7 +1074,7 @@ test('handleFileChannel write: createWriteStream 失败', async () => {
 	}
 });
 
-test('handleFileChannel write: 就绪信号发送失败时清理', async () => {
+test('handleFileChannel PUT: 就绪信号发送失败时清理', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -1089,7 +1089,7 @@ test('handleFileChannel write: 就绪信号发送失败时清理', async () => {
 		};
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'y.txt', size: 5 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'y.txt', size: 5 }) });
 		await new Promise((r) => setTimeout(r, 100));
 
 		// 确认临时文件被清理
@@ -1100,7 +1100,7 @@ test('handleFileChannel write: 就绪信号发送失败时清理', async () => {
 	}
 });
 
-test('handleFileChannel write: WriteStream 错误触发 WRITE_FAILED', async () => {
+test('handleFileChannel PUT: WriteStream 错误触发 WRITE_FAILED', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const { Writable } = await import('node:stream');
@@ -1123,7 +1123,7 @@ test('handleFileChannel write: WriteStream 错误触发 WRITE_FAILED', async () 
 		const dc = createMockDC('file:ws-err');
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'ws-err.txt', size: 10 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'ws-err.txt', size: 10 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: Buffer.from('1234567890') });
@@ -1138,7 +1138,7 @@ test('handleFileChannel write: WriteStream 错误触发 WRITE_FAILED', async () 
 	}
 });
 
-test('handleFileChannel write: WriteStream ENOSPC 错误触发 DISK_FULL', async () => {
+test('handleFileChannel PUT: WriteStream ENOSPC 错误触发 DISK_FULL', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const { Writable } = await import('node:stream');
@@ -1161,7 +1161,7 @@ test('handleFileChannel write: WriteStream ENOSPC 错误触发 DISK_FULL', async
 		const dc = createMockDC('file:nospc');
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'nospc.txt', size: 10 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'nospc.txt', size: 10 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: Buffer.from('1234567890') });
@@ -1176,7 +1176,7 @@ test('handleFileChannel write: WriteStream ENOSPC 错误触发 DISK_FULL', async
 	}
 });
 
-test('handleFileChannel write: DC 在 ws.end 回调期间已关闭', async () => {
+test('handleFileChannel PUT: DC 在 ws.end 回调期间已关闭', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -1186,7 +1186,7 @@ test('handleFileChannel write: DC 在 ws.end 回调期间已关闭', async () =>
 		const dc = createMockDC('file:close-race');
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'race.txt', size: 5 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'race.txt', size: 5 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: Buffer.from('hello') });
@@ -1230,7 +1230,7 @@ test('handleFileChannel: 未知方法', async () => {
 	const dc = createMockDC();
 	handler.handleFileChannel(dc);
 
-	dc.onmessage({ data: JSON.stringify({ method: 'patch' }) });
+	dc.onmessage({ data: JSON.stringify({ method: 'PATCH' }) });
 	await new Promise((r) => setTimeout(r, 50));
 
 	const msg = JSON.parse(dc.__sent[0]);
@@ -1280,9 +1280,9 @@ test('handleFileChannel: 第二条 string 消息被忽略', async () => {
 		const dc = createMockDC();
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'x.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'x.txt' }) });
 		// 第二条请求应被忽略
-		dc.onmessage({ data: JSON.stringify({ method: 'read', path: 'x.txt' }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'x.txt' }) });
 		await new Promise((r) => setTimeout(r, 200));
 
 		// 只应有一组 read 响应
@@ -1433,7 +1433,7 @@ test('scheduleTmpCleanup: 正常执行清理', async () => {
 	}
 });
 
-test('handleFileChannel write: done 消息中无效 JSON 被忽略', async () => {
+test('handleFileChannel PUT: done 消息中无效 JSON 被忽略', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -1443,7 +1443,7 @@ test('handleFileChannel write: done 消息中无效 JSON 被忽略', async () =>
 		const dc = createMockDC('file:bad-done');
 		handler.handleFileChannel(dc);
 
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'z.txt', size: 5 }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'z.txt', size: 5 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		// 发 binary
@@ -1464,7 +1464,7 @@ test('handleFileChannel write: done 消息中无效 JSON 被忽略', async () =>
 	}
 });
 
-test('handleFileChannel write: rename 失败时记录警告并清理临时文件', async () => {
+test('handleFileChannel PUT: rename 失败时记录警告并清理临时文件', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const warns = [];
@@ -1479,7 +1479,7 @@ test('handleFileChannel write: rename 失败时记录警告并清理临时文件
 		handler.handleFileChannel(dc);
 
 		const content = Buffer.from('renametest');
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'ren.txt', size: content.length }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'ren.txt', size: content.length }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: content });
@@ -1492,7 +1492,7 @@ test('handleFileChannel write: rename 失败时记录警告并清理临时文件
 	}
 });
 
-test('handleFileChannel write: 结果发送失败不崩溃', async () => {
+test('handleFileChannel PUT: 结果发送失败不崩溃', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -1513,7 +1513,7 @@ test('handleFileChannel write: 结果发送失败不崩溃', async () => {
 		handler.handleFileChannel(dc);
 
 		const content = Buffer.from('abc');
-		dc.onmessage({ data: JSON.stringify({ method: 'write', path: 'sf.txt', size: content.length }) });
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'sf.txt', size: content.length }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: content });
@@ -1526,7 +1526,7 @@ test('handleFileChannel write: 结果发送失败不崩溃', async () => {
 	}
 });
 
-test('handleFileChannel write: 超限发送后 DC close 不崩溃', async () => {
+test('handleFileChannel PUT: 超限发送后 DC close 不崩溃', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const handler = createFileHandler({
@@ -1541,7 +1541,7 @@ test('handleFileChannel write: 超限发送后 DC close 不崩溃', async () => 
 
 		// 用注入的请求处理方式
 		const origOnMessage = dc.onmessage;
-		origOnMessage({ data: JSON.stringify({ method: 'write', path: 'x.txt', size: 5 }) });
+		origOnMessage({ data: JSON.stringify({ method: 'PUT', path: 'x.txt', size: 5 }) });
 		await new Promise((r) => setTimeout(r, 50));
 
 		// 发送超出声明的字节数
@@ -1549,6 +1549,415 @@ test('handleFileChannel write: 超限发送后 DC close 不崩溃', async () => 
 		await new Promise((r) => setTimeout(r, 100));
 
 		// 不应崩溃
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// --- mkdirOp ---
+
+test('mkdirOp: 递归创建目录', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		await handler.__mkdirOp({ path: 'a/b/c' });
+		const stat = await fs.stat(nodePath.join(dir, 'a', 'b', 'c'));
+		assert.ok(stat.isDirectory());
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('mkdirOp: 目录已存在不报错', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.mkdir(nodePath.join(dir, 'existing'), { recursive: true });
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const result = await handler.__mkdirOp({ path: 'existing' });
+		assert.deepEqual(result, {});
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('mkdirOp: 空 path 返回 PATH_DENIED', async () => {
+	const handler = createFileHandler({
+		resolveWorkspace: async () => '/tmp',
+		logger: silentLogger(),
+	});
+	await assert.rejects(
+		() => handler.__mkdirOp({}),
+		(err) => err.code === 'PATH_DENIED',
+	);
+});
+
+test('handleRpcRequest: coclaw.files.mkdir 成功', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const responses = [];
+		await handler.handleRpcRequest(
+			{ id: 'r5', method: 'coclaw.files.mkdir', params: { path: 'new/dir' } },
+			(res) => responses.push(res),
+		);
+		assert.equal(responses[0].ok, true);
+		const stat = await fs.stat(nodePath.join(dir, 'new', 'dir'));
+		assert.ok(stat.isDirectory());
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// --- createFile ---
+
+test('createFile: 创建空文件', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		await handler.__createFile({ path: 'new.txt' });
+		const content = await fs.readFile(nodePath.join(dir, 'new.txt'), 'utf8');
+		assert.equal(content, '');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('createFile: 自动创建父目录', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		await handler.__createFile({ path: 'deep/path/new.txt' });
+		const content = await fs.readFile(nodePath.join(dir, 'deep', 'path', 'new.txt'), 'utf8');
+		assert.equal(content, '');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('createFile: 文件已存在返回 ALREADY_EXISTS', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'exist.txt'), 'data');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		await assert.rejects(
+			() => handler.__createFile({ path: 'exist.txt' }),
+			(err) => err.code === 'ALREADY_EXISTS',
+		);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('createFile: 空 path 返回 PATH_DENIED', async () => {
+	const handler = createFileHandler({
+		resolveWorkspace: async () => '/tmp',
+		logger: silentLogger(),
+	});
+	await assert.rejects(
+		() => handler.__createFile({}),
+		(err) => err.code === 'PATH_DENIED',
+	);
+});
+
+test('createFile: lstat 非 ENOENT 错误透传', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				lstat: async () => { const e = new Error('io'); e.code = 'EIO'; throw e; },
+			},
+		});
+		await assert.rejects(
+			() => handler.__createFile({ path: 'x.txt' }),
+			(err) => err.code === 'EIO',
+		);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleRpcRequest: coclaw.files.create 成功', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const responses = [];
+		await handler.handleRpcRequest(
+			{ id: 'r6', method: 'coclaw.files.create', params: { path: 'c.txt' } },
+			(res) => responses.push(res),
+		);
+		assert.equal(responses[0].ok, true);
+		const content = await fs.readFile(nodePath.join(dir, 'c.txt'), 'utf8');
+		assert.equal(content, '');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleRpcRequest: coclaw.files.create 文件已存在', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'dup.txt'), 'x');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const responses = [];
+		await handler.handleRpcRequest(
+			{ id: 'r7', method: 'coclaw.files.create', params: { path: 'dup.txt' } },
+			(res) => responses.push(res),
+		);
+		assert.equal(responses[0].ok, false);
+		assert.equal(responses[0].error.code, 'ALREADY_EXISTS');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// --- generateUniqueName ---
+
+test('generateUniqueName: 生成 <name>-<4hex>.<ext> 格式', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const name = await handler.__generateUniqueName(dir, 'photo.jpg');
+		assert.match(name, /^photo-[0-9a-f]{4}\.jpg$/);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('generateUniqueName: 无扩展名的文件', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const name = await handler.__generateUniqueName(dir, 'Makefile');
+		assert.match(name, /^Makefile-[0-9a-f]{4}$/);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('generateUniqueName: 碰撞时重试', async () => {
+	const dir = await makeTmpDir();
+	try {
+		let callCount = 0;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				lstat: async (p) => {
+					// generateUniqueName 内部用 lstat 检测碰撞
+					// 只在检测候选文件名时拦截（路径在 dir 内且不是 validatePath 调用）
+					if (p.startsWith(dir + nodePath.sep) && !p.endsWith('.txt')) {
+						callCount++;
+						if (callCount <= 3) {
+							return { isFile: () => true };
+						}
+						const e = new Error('not found');
+						e.code = 'ENOENT';
+						throw e;
+					}
+					return fs.lstat(p);
+				},
+			},
+		});
+		const name = await handler.__generateUniqueName(dir, 'doc.pdf');
+		assert.match(name, /^doc-[0-9a-f]{4}\.pdf$/);
+		assert.equal(callCount, 4);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// --- handleFileChannel: POST (附件上传) ---
+
+test('handleFileChannel POST: 成功上传附件', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const content = Buffer.from('attachment data');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:post-test-id');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({
+			method: 'POST',
+			agentId: 'main',
+			path: '.coclaw/chat-files/main/2026-03',
+			fileName: 'photo.jpg',
+			size: content.length,
+		}) });
+		await new Promise((r) => setTimeout(r, 100));
+
+		// 检查就绪信号
+		const ready = JSON.parse(dc.__sent[0]);
+		assert.equal(ready.ok, true);
+
+		// 发送 binary 数据
+		dc.onmessage({ data: content });
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
+		await new Promise((r) => setTimeout(r, 300));
+
+		// 检查写入结果
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
+		assert.ok(result);
+		assert.equal(result.bytes, content.length);
+		assert.ok(result.path);
+		assert.match(result.path, /\.coclaw\/chat-files\/main\/2026-03\/photo-[0-9a-f]{4}\.jpg$/);
+
+		// 文件实际存在
+		const written = await fs.readFile(nodePath.join(dir, result.path));
+		assert.equal(written.toString(), 'attachment data');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel POST: 缺少 fileName 返回错误', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:no-filename');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({
+			method: 'POST',
+			path: '.coclaw/chat-files/main',
+			size: 100,
+		}) });
+		await new Promise((r) => setTimeout(r, 100));
+
+		const msg = JSON.parse(dc.__sent[0]);
+		assert.equal(msg.ok, false);
+		assert.equal(msg.error.code, 'INVALID_INPUT');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel POST: workspace 解析失败', async () => {
+	const handler = createFileHandler({
+		resolveWorkspace: async () => { const e = new Error('no'); e.code = 'AGENT_DENIED'; throw e; },
+		logger: silentLogger(),
+	});
+	const dc = createMockDC();
+	handler.handleFileChannel(dc);
+
+	dc.onmessage({ data: JSON.stringify({ method: 'POST', path: 'dir', fileName: 'x.txt', size: 5 }) });
+	await new Promise((r) => setTimeout(r, 100));
+
+	const msg = JSON.parse(dc.__sent[0]);
+	assert.equal(msg.ok, false);
+	assert.equal(msg.error.code, 'AGENT_DENIED');
+});
+
+test('handleFileChannel POST: 集合目录 mkdir 失败', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				mkdir: async () => { throw new Error('perm denied'); },
+			},
+		});
+		const dc = createMockDC();
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({ method: 'POST', path: 'fail-dir', fileName: 'x.txt', size: 5 }) });
+		await new Promise((r) => setTimeout(r, 100));
+
+		const msg = JSON.parse(dc.__sent[0]);
+		assert.equal(msg.ok, false);
+		assert.equal(msg.error.code, 'WRITE_FAILED');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel POST: size 超限被拒绝', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC();
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({ method: 'POST', path: 'dir', fileName: 'big.bin', size: 2_000_000_000 }) });
+		await new Promise((r) => setTimeout(r, 100));
+
+		const msg = JSON.parse(dc.__sent[0]);
+		assert.equal(msg.ok, false);
+		assert.equal(msg.error.code, 'SIZE_EXCEEDED');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel POST: topic-files 路径', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const content = Buffer.from('topic attachment');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:topic-post');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({
+			method: 'POST',
+			path: '.coclaw/topic-files/a1b2c3d4-uuid',
+			fileName: 'report.pdf',
+			size: content.length,
+		}) });
+		await new Promise((r) => setTimeout(r, 100));
+
+		dc.onmessage({ data: content });
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
+		await new Promise((r) => setTimeout(r, 300));
+
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
+		assert.ok(result);
+		assert.match(result.path, /\.coclaw\/topic-files\/a1b2c3d4-uuid\/report-[0-9a-f]{4}\.pdf$/);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}

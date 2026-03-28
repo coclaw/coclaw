@@ -10,7 +10,7 @@ export class WebRtcPeer {
 	 * @param {object} opts
 	 * @param {function} opts.onSend - 将信令消息交给 RealtimeBridge 发送
 	 * @param {function} [opts.onRequest] - DataChannel 收到 req 消息时的回调 (payload, connId) => void
-	 * @param {function} [opts.onFileRpc] - rpc DC 上 coclaw.file.* 请求的回调 (payload, sendFn, connId) => void
+	 * @param {function} [opts.onFileRpc] - rpc DC 上 coclaw.files.* 请求的回调 (payload, sendFn, connId) => void
 	 * @param {function} [opts.onFileChannel] - file:<transferId> DataChannel 的回调 (dc, connId) => void
 	 * @param {object} [opts.logger] - pino 风格 logger
 	 * @param {function} [opts.PeerConnection] - 可替换的构造函数（测试用）
@@ -218,8 +218,8 @@ export class WebRtcPeer {
 		const reassembler = createReassembler((jsonStr) => {
 			const payload = JSON.parse(jsonStr);
 			if (payload.type === 'req') {
-				// coclaw.file.* 方法本地处理，不转发 gateway
-				if (payload.method?.startsWith('coclaw.file.') && this.__onFileRpc) {
+				// coclaw.files.* 方法本地处理，不转发 gateway
+				if (payload.method?.startsWith('coclaw.files.') && this.__onFileRpc) {
 					const session = this.__sessions.get(connId);
 					const sendFn = (response) => {
 						try {
