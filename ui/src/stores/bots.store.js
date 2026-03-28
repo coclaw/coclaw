@@ -264,6 +264,7 @@ export const useBotsStore = defineStore('bots', {
 			await useAgentsStore().loadAgents(id);
 			useSessionsStore().loadAllSessions();
 			useTopicsStore().loadAllTopics();
+			useDashboardStore().loadDashboard(id).catch(() => {});
 		},
 	},
 });
