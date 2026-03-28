@@ -16,10 +16,11 @@
 				</span>
 				<div class="min-w-0 flex-1">
 					<p class="font-medium truncate">{{ agent.name }}</p>
-					<span
-						class="inline-block size-2 rounded-full"
-						:class="online ? 'bg-green-400' : 'bg-gray-400'"
-					></span>
+					<div class="flex items-center gap-1.5 mt-0.5">
+						<span class="inline-block size-2 rounded-full" :class="online ? 'bg-green-400' : 'bg-gray-400'"></span>
+						<span v-if="agent.hasError" class="inline-block size-2 rounded-full bg-red-500" :title="$t('dashboard.hasError')"></span>
+						<span v-if="agent.cronCount > 0" class="text-xs text-dimmed">⏰ {{ agent.cronCount }}</span>
+					</div>
 				</div>
 			</div>
 
@@ -53,6 +54,48 @@
 				</div>
 			</div>
 
+			<!-- context 压力条 -->
+			<div v-if="agent.contextPressure >= 0" class="space-y-1">
+				<div class="flex items-center justify-between text-xs text-dimmed">
+					<span>Context</span>
+					<span :class="contextPressureColor">{{ agent.contextPressure }}%</span>
+				</div>
+				<div class="h-1 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+					<div
+						class="h-full rounded-full transition-all"
+						:class="contextPressureBarColor"
+						:style="`width:${agent.contextPressure}%`"
+					></div>
+				</div>
+			</div>
+
+			<!-- 7 天 token 趋势 -->
+			<div v-if="hasSparklineData" class="flex items-end gap-px h-8">
+				<div
+					v-for="(val, i) in agent.sparkline"
+					:key="i"
+					class="flex-1 rounded-sm bg-primary/40 transition-all"
+					:style="`height:${sparklineBarHeight(val)}%`"
+					:title="`Day ${i + 1}: ${val} tokens`"
+				></div>
+			</div>
+
+			<!-- 最近对话 -->
+			<div v-if="agent.recentSessions?.length" class="space-y-1">
+				<p class="text-xs text-dimmed">{{ $t('dashboard.recentChats') }}</p>
+				<ul class="space-y-0.5">
+					<li
+						v-for="s in agent.recentSessions"
+						:key="s.key"
+						class="flex items-center justify-between text-xs truncate cursor-pointer hover:text-primary transition-colors"
+						@click="$emit('open-session', s.key)"
+					>
+						<span class="truncate">{{ s.label || s.key }}</span>
+						<span class="ml-2 shrink-0 text-dimmed">{{ formatTimeAgo(s.updatedAt) }}</span>
+					</li>
+				</ul>
+			</div>
+
 			<!-- 动作区 -->
 			<UButton class="w-full" color="primary" :disabled="!online" @click="$emit('chat', agent.id)">
 				{{ $t('agents.chat') }}
@@ -68,7 +111,25 @@ export default {
 		agent: { type: Object, required: true },
 		online: { type: Boolean, default: false },
 	},
-	emits: ['chat'],
+	emits: ['chat', 'open-session'],
+	computed: {
+		contextPressureColor() {
+			if (this.agent.contextPressure >= 90) return 'text-red-500';
+			if (this.agent.contextPressure >= 70) return 'text-yellow-500';
+			return 'text-green-500';
+		},
+		contextPressureBarColor() {
+			if (this.agent.contextPressure >= 90) return 'bg-red-500';
+			if (this.agent.contextPressure >= 70) return 'bg-yellow-400';
+			return 'bg-green-400';
+		},
+		hasSparklineData() {
+			return this.agent.sparkline?.length > 0 && this.agent.sparkline.some(v => v > 0);
+		},
+		sparklineMax() {
+			return Math.max(...(this.agent.sparkline ?? []), 1);
+		},
+	},
 	methods: {
 		formatTokens(n) {
 			if (typeof n !== 'number' || n <= 0) return '0';
@@ -76,7 +137,6 @@ export default {
 			if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
 			return String(n);
 		},
-		// 使用 i18n key 格式化相对时间，避免引入 dayjs 等外部依赖
 		formatTimeAgo(iso) {
 			if (!iso) return '—';
 			const diff = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -85,6 +145,9 @@ export default {
 			if (diff < 3600) return this.$t('dashboard.minutesAgo', { n: Math.floor(diff / 60) });
 			if (diff < 86400) return this.$t('dashboard.hoursAgo', { n: Math.floor(diff / 3600) });
 			return this.$t('dashboard.daysAgo', { n: Math.floor(diff / 86400) });
+		},
+		sparklineBarHeight(val) {
+			return Math.max(8, Math.round((val / this.sparklineMax) * 100));
 		},
 	},
 };

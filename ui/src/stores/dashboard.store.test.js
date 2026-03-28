@@ -9,6 +9,8 @@ const {
 	findCurrentModel,
 	filterSessionsByAgent,
 	computeSessionStats,
+	extractSparkline,
+	computeContextPressure,
 } = __test__;
 
 // =====================================================================
@@ -202,6 +204,95 @@ describe('dashboard store helpers', () => {
 			expect(result.lastActivity).toBeNull();
 		});
 	});
+
+	// -----------------------------------------------------------------
+	// extractSparkline
+	// -----------------------------------------------------------------
+	describe('extractSparkline', () => {
+		test('无数据时返回全 0 数组（长度 7）', () => {
+			const result = extractSparkline(null, 'main');
+			expect(result).toEqual([0, 0, 0, 0, 0, 0, 0]);
+			expect(result).toHaveLength(7);
+		});
+
+		test('sessions 为空数组时返回全 0', () => {
+			const result = extractSparkline({ sessions: [] }, 'main');
+			expect(result).toEqual([0, 0, 0, 0, 0, 0, 0]);
+		});
+
+		test('按日聚合指定 agentId 的 tokens', () => {
+			const today = new Date();
+			const yesterday = new Date(today);
+			yesterday.setDate(yesterday.getDate() - 1);
+			const usageResult = {
+				sessions: [
+					{ key: 'agent:main:s1', totalTokens: 100, updatedAt: today.toISOString() },
+					{ key: 'agent:main:s2', totalTokens: 200, updatedAt: today.toISOString() },
+					{ key: 'agent:main:s3', totalTokens: 50, updatedAt: yesterday.toISOString() },
+					{ key: 'agent:ops:s4', totalTokens: 999, updatedAt: today.toISOString() },
+				],
+			};
+			const result = extractSparkline(usageResult, 'main');
+			expect(result).toHaveLength(7);
+			// 今天（索引 6）= 300，昨天（索引 5）= 50
+			expect(result[6]).toBe(300);
+			expect(result[5]).toBe(50);
+			// 其余为 0
+			expect(result.slice(0, 5)).toEqual([0, 0, 0, 0, 0]);
+		});
+
+		test('忽略非匹配 agentId 的 sessions', () => {
+			const today = new Date();
+			const usageResult = {
+				sessions: [
+					{ key: 'agent:ops:s1', totalTokens: 500, updatedAt: today.toISOString() },
+				],
+			};
+			const result = extractSparkline(usageResult, 'main');
+			expect(result).toEqual([0, 0, 0, 0, 0, 0, 0]);
+		});
+	});
+
+	// -----------------------------------------------------------------
+	// computeContextPressure
+	// -----------------------------------------------------------------
+	describe('computeContextPressure', () => {
+		test('无数据返回 -1', () => {
+			expect(computeContextPressure([], 200000)).toBe(-1);
+		});
+
+		test('无 contextTokens 上限返回 -1', () => {
+			const sessions = [{ contextTokens: 100000, updatedAt: '2026-03-20T10:00:00Z' }];
+			expect(computeContextPressure(sessions, null)).toBe(-1);
+		});
+
+		test('session 无 contextTokens 字段返回 -1', () => {
+			const sessions = [{ totalTokens: 500, updatedAt: '2026-03-20T10:00:00Z' }];
+			expect(computeContextPressure(sessions, 200000)).toBe(-1);
+		});
+
+		test('正确计算百分比', () => {
+			const sessions = [
+				{ contextTokens: 150000, updatedAt: '2026-03-20T10:00:00Z' },
+			];
+			expect(computeContextPressure(sessions, 200000)).toBe(75);
+		});
+
+		test('选取最近活跃 session 计算', () => {
+			const sessions = [
+				{ contextTokens: 50000, updatedAt: '2026-03-18T10:00:00Z' },
+				{ contextTokens: 180000, updatedAt: '2026-03-20T10:00:00Z' },
+			];
+			expect(computeContextPressure(sessions, 200000)).toBe(90);
+		});
+
+		test('超过 100% 时截断为 100', () => {
+			const sessions = [
+				{ contextTokens: 250000, updatedAt: '2026-03-20T10:00:00Z' },
+			];
+			expect(computeContextPressure(sessions, 200000)).toBe(100);
+		});
+	});
 });
 
 // =====================================================================
@@ -263,7 +354,7 @@ describe('dashboard store', () => {
 	test('loadDashboard 成功加载完整数据', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'MyBot', online: true }]);
-		botsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0' };
+		botsStore.pluginInfo['bot-1'] = { version: '0.3.0', clawVersion: '0.7.0' };
 
 		// 先注册 agents mock conn
 		const agentConn = mockAgentConn(
@@ -293,6 +384,18 @@ describe('dashboard store', () => {
 			'channels.status': {
 				defaultAccountId: 'acc-1',
 				discord: { accounts: [{ enabled: true }] },
+			},
+			'sessions.usage': {
+				sessions: [
+					{ key: 'agent:main:main', totalTokens: 500, updatedAt: '2026-03-20T10:00:00Z' },
+					{ key: 'agent:main:sess-2', totalTokens: 300, updatedAt: '2026-03-21T08:00:00Z' },
+				],
+			},
+			'cron.list': {
+				jobs: [
+					{ sessionTarget: 'agent:main:main', schedule: '0 9 * * *' },
+					{ payload: { sessionTarget: 'agent:deploy:deploy' }, schedule: '0 12 * * *' },
+				],
 			},
 			'tools.catalog': {
 				groups: [{ tools: [{ id: 'web_search' }, { id: 'read' }] }],
@@ -334,6 +437,14 @@ describe('dashboard store', () => {
 		expect(agent.capabilities.some(c => c.id === 'tts')).toBe(true);
 		// file_ops（read 匹配）
 		expect(agent.capabilities.some(c => c.id === 'file_ops')).toBe(true);
+
+		// 新增字段
+		expect(agent.recentSessions).toHaveLength(2);
+		expect(agent.recentSessions[0].key).toBe('agent:main:sess-2'); // 最近的排前面
+		expect(agent.contextPressure).toBe(-1); // 无 defaults.contextTokens
+		expect(agent.sparkline).toHaveLength(7);
+		expect(agent.cronCount).toBe(1); // 只有一个 job 匹配 main
+		expect(agent.hasError).toBe(false);
 	});
 
 	test('loadDashboard 部分 RPC 失败时优雅降级', async () => {
@@ -354,6 +465,8 @@ describe('dashboard store', () => {
 			'sessions.list': new Error('not available'),
 			'tts.status': new Error('not supported'),
 			'channels.status': new Error('failed'),
+			'sessions.usage': new Error('not available'),
+			'cron.list': new Error('not available'),
 			'tools.catalog': new Error('catalog error'),
 		});
 		mockConnections.set('bot-1', dashConn);

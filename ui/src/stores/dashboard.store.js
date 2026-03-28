@@ -36,6 +36,11 @@ import { generateModelTags } from '../utils/model-tags.js';
  *   totalTokens: number,
  *   activeSessions: number,
  *   lastActivity: string|null,
+ *   recentSessions: { key: string, label: string, updatedAt: string|null }[],
+ *   contextPressure: number,
+ *   sparkline: number[],
+ *   cronCount: number,
+ *   hasError: boolean,
  * }} DashboardAgent
  */
 
@@ -94,6 +99,48 @@ function filterSessionsByAgent(sessions, agentId) {
 		const key = s.key || '';
 		return key.startsWith(`agent:${agentId}:`);
 	});
+}
+
+/**
+ * 从 sessions.usage 响应中提取指定 agentId 的最近 7 天每日 token 数组
+ * @param {object|null} usageResult
+ * @param {string} agentId
+ * @returns {number[]} 长度 7，索引 0=最早，6=今天
+ */
+function extractSparkline(usageResult, agentId) {
+	if (!usageResult?.sessions) return new Array(7).fill(0);
+	const today = new Date();
+	const days = Array.from({ length: 7 }, (_, i) => {
+		const d = new Date(today);
+		d.setDate(d.getDate() - (6 - i));
+		return d.toISOString().slice(0, 10);
+	});
+	const byDay = {};
+	for (const s of usageResult.sessions) {
+		if (!(s.key || '').startsWith(`agent:${agentId}:`)) continue;
+		const date = s.updatedAt ? new Date(s.updatedAt).toISOString().slice(0, 10) : null;
+		if (date && days.includes(date)) {
+			byDay[date] = (byDay[date] || 0) + (s.totalTokens || 0);
+		}
+	}
+	return days.map(d => byDay[d] || 0);
+}
+
+/**
+ * 计算 context 压力（0-100，-1 表示无数据）
+ * @param {object[]} agentSessions - 该 agent 的 sessions
+ * @param {number|null} defaultContextTokens - 模型 context 上限
+ * @returns {number}
+ */
+function computeContextPressure(agentSessions, defaultContextTokens) {
+	if (!defaultContextTokens || agentSessions.length === 0) return -1;
+	const sorted = [...agentSessions].sort((a, b) => {
+		return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+	});
+	const latest = sorted[0];
+	const used = latest?.contextTokens;
+	if (typeof used !== 'number' || used <= 0) return -1;
+	return Math.min(100, Math.round((used / defaultContextTokens) * 100));
 }
 
 /**
@@ -173,6 +220,8 @@ export const useDashboardStore = defineStore('dashboard', {
 					sessionsResult,
 					ttsResult,
 					channelsResult,
+					sessionsUsageResultRaw,
+					cronListRaw,
 					...toolResults
 				] = await Promise.allSettled([
 					conn.request('status', {}),
@@ -181,6 +230,11 @@ export const useDashboardStore = defineStore('dashboard', {
 					conn.request('sessions.list', {}),
 					conn.request('tts.status', {}),
 					conn.request('channels.status', { probe: false }),
+					conn.request('sessions.usage', {
+						startDate: (() => { const d = new Date(); d.setDate(d.getDate() - 6); return d.toISOString().slice(0, 10); })(),
+						endDate: new Date().toISOString().slice(0, 10),
+					}),
+					conn.request('cron.list', {}),
 					...agentList.map(agent =>
 						conn.request('tools.catalog', { agentId: agent.id })
 					),
@@ -193,11 +247,13 @@ export const useDashboardStore = defineStore('dashboard', {
 				const sessions = sessionsResult.status === 'fulfilled' ? sessionsResult.value : null;
 				const tts = ttsResult.status === 'fulfilled' ? ttsResult.value : null;
 				const channels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
+				const usageResult = sessionsUsageResultRaw.status === 'fulfilled' ? sessionsUsageResultRaw.value : null;
+				const cronList = cronListRaw.status === 'fulfilled' ? cronListRaw.value : null;
 
 				// 构建实例总览
 				const botsStore = useBotsStore();
-				const bot = botsStore.byId[id];
-				const pluginInfo = bot?.pluginInfo ?? {};
+				const bot = botsStore.items.find(b => String(b.id) === id);
+				const pluginInfo = botsStore.pluginInfo[id] ?? {};
 
 				entry.instance = {
 					name: bot?.name || 'OpenClaw',
@@ -241,6 +297,24 @@ export const useDashboardStore = defineStore('dashboard', {
 						totalTokens: sessionStats.totalTokens,
 						activeSessions: sessionStats.activeSessions,
 						lastActivity: sessionStats.lastActivity,
+						recentSessions: agentSessions
+							.slice()
+							.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
+							.slice(0, 3)
+							.map(s => ({
+								key: s.key,
+								label: s.displayName || s.label || s.key?.split(':').slice(-1)[0] || '',
+								updatedAt: s.updatedAt,
+							})),
+						contextPressure: computeContextPressure(agentSessions, sessions?.defaults?.contextTokens ?? null),
+						sparkline: extractSparkline(usageResult, agent.id),
+						cronCount: Array.isArray(cronList?.jobs)
+							? cronList.jobs.filter(j => {
+								const target = j.sessionTarget || j.payload?.sessionTarget || '';
+								return target === agent.id || target.startsWith(`agent:${agent.id}:`);
+							}).length
+							: 0,
+						hasError: agentSessions.some(s => s.abortedLastRun === true || s.status === 'error'),
 					};
 				});
 			}
@@ -270,4 +344,6 @@ export const __test__ = {
 	findCurrentModel,
 	filterSessionsByAgent,
 	computeSessionStats,
+	extractSparkline,
+	computeContextPressure,
 };

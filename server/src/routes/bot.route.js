@@ -285,6 +285,8 @@ export async function waitBindingCodeHandler(req, res, next, deps = {}) {
 
 	const {
 		cancelBindingWaitImpl = cancelBindingWait,
+		findBindingCodeImpl = findBindingCode,
+		deleteBindingCodeImpl = deleteBindingCode,
 		waitBindingResultImpl = waitBindingResult,
 	} = deps;
 
@@ -299,13 +301,21 @@ export async function waitBindingCodeHandler(req, res, next, deps = {}) {
 	}
 
 	let aborted = false;
-	const onAbort = () => {
+	const onAbort = async () => {
 		aborted = true;
-		cancelBindingWaitImpl({
+		const cancelled = cancelBindingWaitImpl({
 			code,
 			waitToken,
 			userId: req.user.id,
 		});
+		if (!cancelled) {
+			return;
+		}
+		const bindingCode = await findBindingCodeImpl(code).catch(() => null);
+		if (!bindingCode || bindingCode.userId !== req.user.id) {
+			return;
+		}
+		await deleteBindingCodeImpl(code).catch(() => {});
 	};
 
 	res.on('close', () => {
