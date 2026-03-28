@@ -672,11 +672,6 @@ export class BotConnection {
 			catch {}
 		}
 		this.__setState('disconnected');
-		// forceReconnect 场景：连接表面仍在但实际已死，
-		// 用 lastAliveAt 修正断连时间戳以反映真实断连时长
-		if (this.__lastAliveAt > 0) {
-			this.__disconnectedAt = this.__lastAliveAt;
-		}
 		this.__reconnectDelay = INITIAL_RECONNECT_MS;
 		this.__doConnect();
 	}
