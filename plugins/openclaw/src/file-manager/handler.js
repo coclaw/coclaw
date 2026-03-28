@@ -93,6 +93,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	const _readdir = deps.readdir ?? fsp.readdir;
 	const _unlink = deps.unlink ?? fsp.unlink;
 	const _rmdir = deps.rmdir ?? fsp.rmdir;
+	const _rm = deps.rm ?? fsp.rm;
 	const _stat = deps.stat ?? fsp.stat;
 	const _mkdir = deps.mkdir ?? fsp.mkdir;
 	const _rename = deps.rename ?? fsp.rename;
@@ -213,15 +214,19 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			throw e;
 		}
 		if (stat.isDirectory()) {
-			try {
-				await _rmdir(resolved);
-			} catch (e) {
-				if (e.code === 'ENOTEMPTY') {
-					const err = new Error(`Directory not empty: ${userPath}`);
-					err.code = 'NOT_EMPTY';
-					throw err;
+			if (params?.force) {
+				await _rm(resolved, { recursive: true, force: true });
+			} else {
+				try {
+					await _rmdir(resolved);
+				} catch (e) {
+					if (e.code === 'ENOTEMPTY') {
+						const err = new Error(`Directory not empty: ${userPath}`);
+						err.code = 'NOT_EMPTY';
+						throw err;
+					}
+					throw e;
 				}
-				throw e;
 			}
 		} else {
 			await _unlink(resolved);

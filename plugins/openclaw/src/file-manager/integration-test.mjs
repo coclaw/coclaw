@@ -173,6 +173,33 @@ try {
 		ok('RPC delete 文件');
 	} catch (err) { fail('RPC delete 文件', err); }
 
+	// 3d2. RPC delete 非空目录（无 force）返回 NOT_EMPTY
+	try {
+		await fs.mkdir(nodePath.join(testDirPath, 'notempty'));
+		await fs.writeFile(nodePath.join(testDirPath, 'notempty', 'child.txt'), 'x');
+		const responses = [];
+		await handler.handleRpcRequest(
+			{ id: 'i4b', method: 'coclaw.files.delete', params: { path: `${testDir}/notempty` } },
+			(r) => responses.push(r),
+		);
+		assertEqual(responses[0].ok, false);
+		assertEqual(responses[0].error.code, 'NOT_EMPTY');
+		ok('RPC delete 非空目录无 force 返回 NOT_EMPTY');
+	} catch (err) { fail('RPC delete 非空目录无 force', err); }
+
+	// 3d3. RPC delete 非空目录（force: true）递归删除
+	try {
+		const responses = [];
+		await handler.handleRpcRequest(
+			{ id: 'i4c', method: 'coclaw.files.delete', params: { path: `${testDir}/notempty`, force: true } },
+			(r) => responses.push(r),
+		);
+		assertEqual(responses[0].ok, true);
+		try { await fs.access(nodePath.join(testDirPath, 'notempty')); assert(false, 'dir should be gone'); }
+		catch { /* expected */ }
+		ok('RPC delete force 递归删除非空目录');
+	} catch (err) { fail('RPC delete force', err); }
+
 	// 3e. File DC read（下载）
 	try {
 		const dc = createMockDC('file:b0000000-0000-0000-0000-000000000001');

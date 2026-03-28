@@ -348,6 +348,60 @@ test('deleteFile: 删除非空目录返回 NOT_EMPTY', async () => {
 	}
 });
 
+test('deleteFile: force 递归删除非空目录', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.mkdir(nodePath.join(dir, 'deep', 'nested'), { recursive: true });
+		await fs.writeFile(nodePath.join(dir, 'deep', 'nested', 'file.txt'), 'x');
+		await fs.writeFile(nodePath.join(dir, 'deep', 'top.txt'), 'y');
+
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		await handler.__deleteFile({ path: 'deep', force: true });
+
+		await assert.rejects(() => fs.access(nodePath.join(dir, 'deep')));
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('deleteFile: force 对文件也正常删除', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'f.txt'), 'data');
+
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		// force 只影响目录，对文件走正常 unlink
+		await handler.__deleteFile({ path: 'f.txt', force: true });
+
+		await assert.rejects(() => fs.access(nodePath.join(dir, 'f.txt')));
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('deleteFile: force 对空目录也正常删除', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.mkdir(nodePath.join(dir, 'empty'));
+
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		await handler.__deleteFile({ path: 'empty', force: true });
+
+		await assert.rejects(() => fs.access(nodePath.join(dir, 'empty')));
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('deleteFile: 不存在的文件返回 NOT_FOUND', async () => {
 	const dir = await makeTmpDir();
 	try {
