@@ -2212,3 +2212,101 @@ test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer', 
 		restoreHomedir(prevHome);
 	}
 });
+
+test('RealtimeBridge concurrent rtc: messages should share single WebRtcPeer init', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		assert.equal(bridge.webrtcPeer, null);
+
+		// 同时触发 offer + ice，模拟并发 rtc 消息
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_race',
+				payload: { sdp: 'race-offer-sdp' },
+			}),
+		});
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:ice',
+				fromConnId: 'c_race',
+				payload: { candidate: 'candidate-1', sdpMid: '0', sdpMLineIndex: 0 },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 100));
+
+		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created');
+		// ice 应被同一个 webrtcPeer 实例处理（session 存在）
+		const session = bridge.webrtcPeer.__sessions?.get('c_race');
+		assert.ok(session, 'session for c_race should exist on the single webrtcPeer instance');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge __webrtcPeerReady should reset on init failure for retry', async () => {
+	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	try {
+		const originalInit = bridge.__initWebrtcPeer.bind(bridge);
+		let failCount = 0;
+		bridge.__initWebrtcPeer = async () => {
+			failCount++;
+			throw new Error('mock import failure');
+		};
+
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_fail',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		assert.equal(failCount, 1);
+		assert.equal(bridge.webrtcPeer, null);
+		assert.equal(bridge.__webrtcPeerReady, null, 'promise lock should be cleared after failure');
+		assert.ok(logs.some((l) => String(l).includes('mock import failure')));
+
+		// 恢复 init，再次触发应能成功
+		bridge.__initWebrtcPeer = originalInit;
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_retry',
+				payload: { sdp: 'retry-sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created on retry');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge cleanup should reset __webrtcPeerReady', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_cleanup2',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+		assert.notEqual(bridge.__webrtcPeerReady, null);
+
+		server.emit('close', { code: 1000, reason: 'normal' });
+		await new Promise((r) => setTimeout(r, 50));
+
+		assert.equal(bridge.webrtcPeer, null);
+		assert.equal(bridge.__webrtcPeerReady, null, 'promise lock should be cleared on ws close');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});

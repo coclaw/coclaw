@@ -98,6 +98,7 @@ export class RealtimeBridge {
 		this.__serverHbMissCount = 0;
 		this.__deviceIdentity = null;
 		this.webrtcPeer = null;
+		this.__webrtcPeerReady = null;
 		this.__fileHandler = null;
 	}
 
@@ -194,6 +195,35 @@ export class RealtimeBridge {
 			settle({ ok: false, error: 'gateway_closed' });
 		}
 		this.gatewayPendingRequests.clear();
+	}
+
+	/** 懒加载 WebRtcPeer（promise 锁防并发重复创建） */
+	async __initWebrtcPeer() {
+		const { WebRtcPeer } = await import('./webrtc-peer.js');
+		const { createFileHandler } = await import('./file-manager/handler.js');
+		/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
+		this.__fileHandler = createFileHandler({
+			resolveWorkspace: (agentId) => this.__resolveWorkspace(agentId),
+			logger: this.logger,
+		});
+		this.__fileHandler.scheduleTmpCleanup(() => this.__listAgentWorkspaces());
+		/* c8 ignore stop */
+		this.webrtcPeer = new WebRtcPeer({
+			onSend: (msg) => this.__forwardToServer(msg),
+			onRequest: (dcPayload) => {
+				void this.__handleGatewayRequestFromServer(dcPayload);
+			},
+			/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
+			onFileRpc: (payload, sendFn) => {
+				this.__fileHandler.handleRpcRequest(payload, sendFn)
+					.catch((err) => this.logger.warn?.(`[coclaw/file] rpc error: ${err.message}`));
+			},
+			onFileChannel: (dc) => {
+				this.__fileHandler.handleFileChannel(dc);
+			},
+			/* c8 ignore stop */
+			logger: this.logger,
+		});
 	}
 
 	/* c8 ignore next 7 -- 防御性检查，serverWs 通常在调用时可用 */
@@ -681,9 +711,11 @@ export class RealtimeBridge {
 		if (!this.started || this.reconnectTimer) {
 			return;
 		}
-		this.reconnectTimer = setTimeout(async () => {
+		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
-			await this.__connectIfNeeded();
+			this.__connectIfNeeded().catch((err) => {
+				this.logger.warn?.(`[coclaw] reconnect failed: ${err?.message}`);
+			});
 		}, RECONNECT_MS);
 		this.reconnectTimer.unref?.();
 	}
@@ -754,33 +786,13 @@ export class RealtimeBridge {
 				}
 				if (payload?.type?.startsWith('rtc:')) {
 					try {
-						if (!this.webrtcPeer) {
-							const { WebRtcPeer } = await import('./webrtc-peer.js');
-							const { createFileHandler } = await import('./file-manager/handler.js');
-							/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
-							this.__fileHandler = createFileHandler({
-								resolveWorkspace: (agentId) => this.__resolveWorkspace(agentId),
-								logger: this.logger,
-							});
-							this.__fileHandler.scheduleTmpCleanup(() => this.__listAgentWorkspaces());
-							/* c8 ignore stop */
-							this.webrtcPeer = new WebRtcPeer({
-								onSend: (msg) => this.__forwardToServer(msg),
-								onRequest: (dcPayload) => {
-									void this.__handleGatewayRequestFromServer(dcPayload);
-								},
-								/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
-								onFileRpc: (payload, sendFn) => {
-									this.__fileHandler.handleRpcRequest(payload, sendFn)
-										.catch((err) => this.logger.warn?.(`[coclaw/file] rpc error: ${err.message}`));
-								},
-								onFileChannel: (dc) => {
-									this.__fileHandler.handleFileChannel(dc);
-								},
-								/* c8 ignore stop */
-								logger: this.logger,
+						if (!this.__webrtcPeerReady) {
+							this.__webrtcPeerReady = this.__initWebrtcPeer().catch((err) => {
+								this.__webrtcPeerReady = null;
+								throw err;
 							});
 						}
+						await this.__webrtcPeerReady;
 						await this.webrtcPeer.handleSignaling(payload);
 					} catch (err) {
 						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found): ${err?.message}`);
@@ -816,6 +828,7 @@ export class RealtimeBridge {
 				/* c8 ignore next 3 -- 防御性兜底，werift close 异常时不可崩溃 gateway */
 				catch (e) { this.logger.warn?.(`[coclaw/rtc] closeAll failed: ${e?.message}`); }
 				this.webrtcPeer = null;
+				this.__webrtcPeerReady = null;
 			}
 			if (this.__fileHandler) {
 				this.__fileHandler.cancelCleanup();
@@ -882,6 +895,7 @@ export class RealtimeBridge {
 		if (this.webrtcPeer) {
 			await this.webrtcPeer.closeAll().catch(() => {});
 			this.webrtcPeer = null;
+			this.__webrtcPeerReady = null;
 		}
 		if (this.__fileHandler) {
 			this.__fileHandler.cancelCleanup();
