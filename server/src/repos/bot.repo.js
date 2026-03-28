@@ -45,6 +45,13 @@ export async function updateBotName(id, name) {
 	});
 }
 
+export async function updateBotAlias(id, alias) {
+	return prisma.bot.update({
+		where: { id },
+		data: { alias },
+	});
+}
+
 export async function deleteBot(id) {
 	return prisma.bot.delete({
 		where: { id },
