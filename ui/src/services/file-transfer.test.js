@@ -2,8 +2,11 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import {
 	listFiles,
 	deleteFile,
+	mkdirFiles,
+	createFile,
 	downloadFile,
 	uploadFile,
+	postFile,
 	FileTransferError,
 	CHUNK_SIZE,
 	HIGH_WATER_MARK,
@@ -134,7 +137,7 @@ describe('listFiles', () => {
 
 		const result = await listFiles(botConn, 'main', 'src/');
 
-		expect(botConn.request).toHaveBeenCalledWith('coclaw.file.list', {
+		expect(botConn.request).toHaveBeenCalledWith('coclaw.files.list', {
 			agentId: 'main',
 			path: 'src/',
 		});
@@ -158,10 +161,54 @@ describe('deleteFile', () => {
 
 		await deleteFile(botConn, 'main', 'tmp/old.log');
 
-		expect(botConn.request).toHaveBeenCalledWith('coclaw.file.delete', {
+		expect(botConn.request).toHaveBeenCalledWith('coclaw.files.delete', {
 			agentId: 'main',
 			path: 'tmp/old.log',
 		});
+	});
+});
+
+describe('mkdirFiles', () => {
+	test('调用 botConn.request 并传递正确参数', async () => {
+		const botConn = createMockBotConn();
+		botConn.request.mockResolvedValue({});
+
+		await mkdirFiles(botConn, 'main', 'data/exports');
+
+		expect(botConn.request).toHaveBeenCalledWith('coclaw.files.mkdir', {
+			agentId: 'main',
+			path: 'data/exports',
+		});
+	});
+
+	test('RPC 失败时 reject', async () => {
+		const botConn = createMockBotConn();
+		botConn.request.mockRejectedValue(new Error('path denied'));
+
+		await expect(mkdirFiles(botConn, 'main', '../bad')).rejects.toThrow('path denied');
+	});
+});
+
+describe('createFile', () => {
+	test('调用 botConn.request 并传递正确参数', async () => {
+		const botConn = createMockBotConn();
+		botConn.request.mockResolvedValue({});
+
+		await createFile(botConn, 'main', 'notes.txt');
+
+		expect(botConn.request).toHaveBeenCalledWith('coclaw.files.create', {
+			agentId: 'main',
+			path: 'notes.txt',
+		});
+	});
+
+	test('文件已存在时 reject', async () => {
+		const botConn = createMockBotConn();
+		const err = new Error('already exists');
+		err.code = 'ALREADY_EXISTS';
+		botConn.request.mockRejectedValue(err);
+
+		await expect(createFile(botConn, 'main', 'notes.txt')).rejects.toThrow('already exists');
 	});
 });
 
@@ -180,7 +227,7 @@ describe('downloadFile', () => {
 		dc.__open();
 		expect(dc.sent.length).toBe(1);
 		const req = JSON.parse(dc.sent[0]);
-		expect(req).toEqual({ method: 'read', agentId: 'main', path: 'src/app.js' });
+		expect(req).toEqual({ method: 'GET', agentId: 'main', path: 'src/app.js' });
 
 		// Plugin 响应头
 		dc.__receiveString({ ok: true, size: 5, name: 'app.js' });
@@ -367,7 +414,7 @@ describe('uploadFile', () => {
 		// 检查请求
 		const req = JSON.parse(dc.sent[0]);
 		expect(req).toEqual({
-			method: 'write',
+			method: 'PUT',
 			agentId: 'main',
 			path: 'docs/test.txt',
 			size: file.size,
@@ -591,6 +638,103 @@ describe('uploadFile — backpressure', () => {
 		dc.__receiveString({ ok: true, bytes: file.size });
 		const result = await handle.promise;
 		expect(result.bytes).toBe(file.size);
+	});
+});
+
+// --- POST 上传测试 ---
+
+describe('postFile', () => {
+	test('完整 POST 上传流程（含 fileName 和返回 path）', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('photo data', 'photo.jpg');
+		const handle = postFile(rtcConn, 'main', '.coclaw/chat-files/main', 'photo.jpg', file);
+
+		const dc = lastDC();
+		dc.__open();
+
+		// 检查请求——应包含 method: POST、fileName
+		const req = JSON.parse(dc.sent[0]);
+		expect(req).toEqual({
+			method: 'POST',
+			agentId: 'main',
+			path: '.coclaw/chat-files/main',
+			fileName: 'photo.jpg',
+			size: file.size,
+		});
+
+		// Plugin 就绪
+		dc.__receiveString({ ok: true });
+
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		// Plugin 写入结果（含实际路径）
+		dc.__receiveString({
+			ok: true,
+			bytes: file.size,
+			path: '.coclaw/chat-files/main/photo-a3f1.jpg',
+		});
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+		expect(result.path).toBe('.coclaw/chat-files/main/photo-a3f1.jpg');
+	});
+
+	test('文件超过 1GB 限制', () => {
+		const { rtcConn } = createMockRtcConn();
+		const bigFile = { size: MAX_UPLOAD_SIZE + 1, stream: () => {} };
+		const handle = postFile(rtcConn, 'main', '.coclaw/files', 'huge.bin', bigFile);
+
+		return expect(handle.promise).rejects.toThrow('exceeds limit');
+	});
+
+	test('Plugin 校验阶段错误', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('data', 'file.txt');
+		const handle = postFile(rtcConn, 'main', '../bad', 'file.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({
+			ok: false,
+			error: { code: 'PATH_DENIED', message: 'Path traversal' },
+		});
+
+		await expect(handle.promise).rejects.toThrow('Path traversal');
+	});
+
+	test('取消 POST 上传', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('data', 'file.txt');
+		const handle = postFile(rtcConn, 'main', '.coclaw/files', 'file.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+		handle.cancel();
+
+		await expect(handle.promise).rejects.toThrow('Upload cancelled');
+		expect(dc.readyState).toBe('closed');
+	});
+
+	test('PUT 上传结果不含 path 字段', async () => {
+		const { rtcConn, lastDC } = createMockRtcConn();
+		const file = createMockFile('hello', 'test.txt');
+		const handle = uploadFile(rtcConn, 'main', 'docs/test.txt', file);
+
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true });
+
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		dc.__receiveString({ ok: true, bytes: file.size });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+		expect(result.path).toBeUndefined();
 	});
 });
 

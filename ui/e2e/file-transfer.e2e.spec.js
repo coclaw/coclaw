@@ -171,6 +171,135 @@ test.describe('文件传输（file-transfer infrastructure）', () => {
 		expect(afterDelete).toBeUndefined();
 	});
 
+	test('mkdir → create → delete 完整流程', async ({ page }) => {
+		const bot = await getConnectedBot(page);
+		if (!bot) { test.skip('无已连接的 bot'); return; }
+
+		const testDir = `__e2e_mkdir_${Date.now()}`;
+		const testFile = `${testDir}/test.txt`;
+
+		// mkdir
+		const mkdirResult = await page.evaluate(async ({ botId, dir }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { mkdirFiles } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			return mkdirFiles(conn, 'main', dir);
+		}, { botId: bot.botId, dir: testDir });
+
+		console.log('mkdir result:', JSON.stringify(mkdirResult));
+
+		// list 验证目录存在
+		const listResult = await page.evaluate(async ({ botId, dir }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { listFiles } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			const res = await listFiles(conn, 'main', '');
+			return res.files.find((f) => f.name === dir);
+		}, { botId: bot.botId, dir: testDir });
+
+		expect(listResult).toBeTruthy();
+		expect(listResult.type).toBe('dir');
+
+		// create 空文件
+		const createResult = await page.evaluate(async ({ botId, filePath }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { createFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			return createFile(conn, 'main', filePath);
+		}, { botId: bot.botId, filePath: testFile });
+
+		console.log('create result:', JSON.stringify(createResult));
+
+		// list 验证空文件存在
+		const fileInDir = await page.evaluate(async ({ botId, dir }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { listFiles } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			const res = await listFiles(conn, 'main', dir);
+			return res.files.find((f) => f.name === 'test.txt');
+		}, { botId: bot.botId, dir: testDir });
+
+		expect(fileInDir).toBeTruthy();
+		expect(fileInDir.type).toBe('file');
+		expect(fileInDir.size).toBe(0);
+
+		// create 已存在的文件应报错
+		const dupErr = await page.evaluate(async ({ botId, filePath }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { createFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			try {
+				await createFile(conn, 'main', filePath);
+				return null;
+			} catch (e) {
+				return { code: e.code, message: e.message };
+			}
+		}, { botId: bot.botId, filePath: testFile });
+
+		expect(dupErr).not.toBeNull();
+		expect(dupErr.code).toBe('ALREADY_EXISTS');
+
+		// 清理：删除文件再删除目录
+		await page.evaluate(async ({ botId, filePath, dir }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { deleteFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			await deleteFile(conn, 'main', filePath);
+			await deleteFile(conn, 'main', dir);
+		}, { botId: bot.botId, filePath: testFile, dir: testDir });
+	});
+
+	test('postFile — POST 上传到集合目录', async ({ page }) => {
+		const bot = await getConnectedBot(page);
+		if (!bot) { test.skip('无已连接的 bot'); return; }
+		if (bot.transportMode !== 'rtc') { test.skip('非 RTC 模式，跳过文件传输'); return; }
+
+		const collectionDir = `.coclaw/e2e-test-${Date.now()}`;
+		const originalName = 'hello.txt';
+		const content = `POST test at ${new Date().toISOString()}`;
+
+		const postResult = await page.evaluate(async ({ botId, dir, fileName, content }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { postFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+
+			const bytes = new TextEncoder().encode(content);
+			const file = new File([bytes], fileName, { type: 'text/plain' });
+
+			const handle = postFile(conn.__rtc, 'main', dir, fileName, file);
+			return handle.promise;
+		}, { botId: bot.botId, dir: collectionDir, fileName: originalName, content });
+
+		console.log('POST result:', JSON.stringify(postResult));
+		expect(postResult).toHaveProperty('bytes');
+		expect(postResult).toHaveProperty('path');
+		// 返回路径应在集合目录下，且包含原始文件名的 stem
+		expect(postResult.path).toContain(collectionDir);
+		expect(postResult.path).toContain('hello');
+
+		// 下载验证内容
+		const downloadResult = await page.evaluate(async ({ botId, filePath }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { downloadFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+
+			const handle = downloadFile(conn.__rtc, 'main', filePath);
+			const result = await handle.promise;
+			return await result.blob.text();
+		}, { botId: bot.botId, filePath: postResult.path });
+
+		expect(downloadResult).toBe(content);
+
+		// 清理
+		await page.evaluate(async ({ botId, filePath, dir }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { deleteFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			await deleteFile(conn, 'main', filePath);
+			await deleteFile(conn, 'main', dir);
+		}, { botId: bot.botId, filePath: postResult.path, dir: collectionDir });
+	});
+
 	test('upload 路径穿越被拒', async ({ page }) => {
 		const bot = await getConnectedBot(page);
 		if (!bot) { test.skip('无已连接的 bot'); return; }

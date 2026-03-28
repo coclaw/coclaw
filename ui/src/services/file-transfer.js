@@ -2,8 +2,8 @@
  * 文件传输服务（UI 侧）
  *
  * 基于 WebRTC DataChannel 实现 UI ↔ Plugin 的文件操作：
- * - list / delete：走 rpc DataChannel（JSON-RPC）
- * - read / write：走独立 file:<transferId> DataChannel（自包含传输）
+ * - list / delete / mkdir / create：走 rpc DataChannel（JSON-RPC）
+ * - GET / PUT / POST：走独立 file:<transferId> DataChannel（自包含传输，HTTP 动词语义）
  *
  * 设计文档：docs/designs/file-management.md
  */
@@ -27,7 +27,7 @@ const MAX_UPLOAD_SIZE = 1024 * 1024 * 1024;
  * @returns {Promise<{ files: { name: string, type: string, size: number, mtime: number }[] }>}
  */
 export function listFiles(botConn, agentId, path) {
-	return botConn.request('coclaw.file.list', { agentId, path });
+	return botConn.request('coclaw.files.list', { agentId, path });
 }
 
 /**
@@ -38,7 +38,29 @@ export function listFiles(botConn, agentId, path) {
  * @returns {Promise<object>}
  */
 export function deleteFile(botConn, agentId, path) {
-	return botConn.request('coclaw.file.delete', { agentId, path });
+	return botConn.request('coclaw.files.delete', { agentId, path });
+}
+
+/**
+ * 创建目录（递归，类似 mkdir -p）。目录已存在时视为成功。
+ * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {string} agentId
+ * @param {string} path
+ * @returns {Promise<object>}
+ */
+export function mkdirFiles(botConn, agentId, path) {
+	return botConn.request('coclaw.files.mkdir', { agentId, path });
+}
+
+/**
+ * 创建空文件。文件已存在时返回 ALREADY_EXISTS 错误。
+ * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {string} agentId
+ * @param {string} path
+ * @returns {Promise<object>}
+ */
+export function createFile(botConn, agentId, path) {
+	return botConn.request('coclaw.files.create', { agentId, path });
 }
 
 // --- 文件传输（走 file:<transferId> DataChannel） ---
@@ -113,7 +135,7 @@ export function downloadFile(rtcConn, agentId, path) {
 
 		dcRef.onopen = () => {
 			try {
-				dcRef.send(JSON.stringify({ method: 'read', agentId, path }));
+				dcRef.send(JSON.stringify({ method: 'GET', agentId, path }));
 			} catch {
 				cleanupRef();
 				settle(reject, new FileTransferError('DC_ERROR', 'Failed to send download request'));
@@ -192,14 +214,42 @@ export function downloadFile(rtcConn, agentId, path) {
 }
 
 /**
- * 上传文件
+ * 上传文件到指定路径（PUT 语义，客户端决定存储路径）
  * @param {import('./webrtc-connection.js').WebRtcConnection} rtcConn
  * @param {string} agentId
- * @param {string} path
+ * @param {string} path - 具体文件路径
  * @param {File|Blob} file
  * @returns {FileTransferHandle}
  */
 export function uploadFile(rtcConn, agentId, path, file) {
+	return __doUpload(rtcConn, file, {
+		method: 'PUT', agentId, path, size: file.size,
+	});
+}
+
+/**
+ * 上传文件到集合路径（POST 语义，Plugin 决定最终路径）
+ * @param {import('./webrtc-connection.js').WebRtcConnection} rtcConn
+ * @param {string} agentId
+ * @param {string} path - 集合目录路径
+ * @param {string} fileName - 原始文件名
+ * @param {File|Blob} file
+ * @returns {FileTransferHandle} resolve 时额外包含 path 字段（实际存储路径）
+ */
+export function postFile(rtcConn, agentId, path, fileName, file) {
+	return __doUpload(rtcConn, file, {
+		method: 'POST', agentId, path, fileName, size: file.size,
+	});
+}
+
+/**
+ * 上传内部实现（PUT / POST 共用）
+ * @param {import('./webrtc-connection.js').WebRtcConnection} rtcConn
+ * @param {File|Blob} file
+ * @param {object} reqMsg - 发送到 DC 的请求 JSON（含 method/agentId/path/size 等）
+ * @returns {FileTransferHandle}
+ */
+function __doUpload(rtcConn, file, reqMsg) {
 	if (file.size > MAX_UPLOAD_SIZE) {
 		const err = new FileTransferError(
 			'SIZE_EXCEEDED',
@@ -242,9 +292,7 @@ export function uploadFile(rtcConn, agentId, path, file) {
 
 		dcRef.onopen = () => {
 			try {
-				dcRef.send(JSON.stringify({
-					method: 'write', agentId, path, size: file.size,
-				}));
+				dcRef.send(JSON.stringify(reqMsg));
 			} catch {
 				cleanupRef();
 				settle(reject, new FileTransferError('DC_ERROR', 'Failed to send upload request'));
@@ -288,10 +336,12 @@ export function uploadFile(rtcConn, agentId, path, file) {
 				return;
 			}
 
-			// 写入结果：{ ok: true, bytes }
+			// 写入结果：{ ok: true, bytes, path? }
 			if (msg.ok === true) {
 				cleanupRef();
-				settle(resolve, { bytes: msg.bytes ?? file.size });
+				const result = { bytes: msg.bytes ?? file.size };
+				if (msg.path) result.path = msg.path;
+				settle(resolve, result);
 			}
 		};
 
