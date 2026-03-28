@@ -118,10 +118,6 @@ export function waitBindingResult({ code, waitToken, userId }) {
 	});
 }
 
-// cancel 会设 status='cancelled'，这对 binding 流程安全：
-// cancel 由 UI 端 wait 轮询断连触发，markBound 由 plugin 端 bindBotHandler 触发，
-// 两者为不同发起方的独立请求，cancel 不会阻断 markBound。
-// 注意 claim-wait-hub.cancelClaimWait 采用不同策略（不改 status），见其注释。
 export function cancelBindingWait({ code, waitToken, userId }) {
 	const state = bindingStates.get(code);
 	if (!state || state.waitToken !== waitToken || state.userId !== String(userId)) {
