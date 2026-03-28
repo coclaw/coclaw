@@ -51,12 +51,10 @@ import { generateModelTags } from '../utils/model-tags.js';
 function buildChannelList(channelsData) {
 	if (!channelsData || typeof channelsData !== 'object') return [];
 	return Object.entries(channelsData)
-		.filter(([key]) => key !== 'defaultAccountId')
+		.filter(([, data]) => data && typeof data === 'object' && Array.isArray(data.accounts))
 		.map(([id, data]) => ({
 			id,
-			connected: Array.isArray(data?.accounts)
-				? data.accounts.some(a => a.enabled !== false)
-				: false,
+			connected: data.accounts.some(a => a.enabled !== false),
 		}));
 }
 

@@ -491,6 +491,35 @@ describe('useChatStore', () => {
 			expect(store.__accepted).toBe(true);
 		});
 
+		test('RPC resolve 后不立即 settle run，由 reconcile 流程处理', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-no-settle' });
+					// 模拟 lifecycle:end 尚未到达
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await store.sendMessage('test');
+			// RPC resolve 后 run 应通过 reconcileAfterLoad 而非 settle 清理
+			// 由于 loadMessages 成功且 reconcileAfterLoad 的双条件判定，
+			// run 的最终清理取决于事件流静默和服务端消息状态
+			expect(store.sending).toBe(false);
+		});
+
 		test('chat 模式下 agentParams 使用 sessionKey', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
@@ -744,6 +773,43 @@ describe('useChatStore', () => {
 			const result = await store.sendMessage('hello');
 			expect(result).toEqual({ accepted: true });
 			expect(callCount).toBe(2);
+		});
+
+		test('WS_CLOSED 重试时复用同一个 idempotencyKey', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].connState = 'connected';
+
+			const capturedKeys = [];
+			const conn = mockConn();
+			let callCount = 0;
+
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					callCount++;
+					capturedKeys.push(params.idempotencyKey);
+					if (callCount === 1) {
+						const err = new Error('connection closed');
+						err.code = 'WS_CLOSED';
+						return Promise.reject(err);
+					}
+					options?.onAccepted?.({ runId: 'run-retry' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await store.sendMessage('hello');
+			expect(capturedKeys).toHaveLength(2);
+			expect(capturedKeys[0]).toBe(capturedKeys[1]);
 		});
 
 		test('WS_CLOSED 且未 accepted 时重连超时后仍抛出错误', async () => {

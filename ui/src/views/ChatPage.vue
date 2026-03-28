@@ -371,8 +371,14 @@ export default {
 				if (this.__creatingTopic) return;
 				if (store && store !== prevStore) {
 					this.showNoMoreHint = false;
+					this.userScrolledUp = false;
 					this.__scrollReady = false;
 					store.activate();
+					// connReady 可能已经为 true 但 watcher 不会触发（值未变）
+					// 显式调用确保消息加载和 scrollToBottom 正确执行
+					if (this.connReady) {
+						this.__onConnReady();
+					}
 				}
 			},
 		},
@@ -393,27 +399,9 @@ export default {
 		 */
 		connReady: {
 			immediate: true,
-			async handler(ready) {
+			handler(ready) {
 				if (!ready || !this.chatStore) return;
-				// 与 __handleForegroundResume 去重
-				this.__lastResumeAt = Date.now();
-				// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
-				this.chatStore.__reconcileSlashCommand();
-				const isFirstLoad = !this.chatStore.__messagesLoaded;
-				if (isFirstLoad) {
-					await this.chatStore.loadMessages();
-					if (this.__unmounted || !this.chatStore) return;
-					if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-				} else {
-					this.chatStore.loadMessages({ silent: true });
-				}
-				// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
-				if (isFirstLoad) {
-					this.$nextTick(() => {
-						this.scrollToBottom(true);
-						this.__autoFillHistory();
-					});
-				}
+				this.__onConnReady();
 			},
 		},
 		chatMessages(msgs, oldMsgs) {
@@ -600,6 +588,33 @@ export default {
 
 		onCancelSend() {
 			this.chatStore?.cancelSend();
+		},
+
+		/**
+		 * connReady 触发时的消息加载逻辑
+		 * 由 connReady watcher 和 chatStore watcher 共用，确保 connReady 值未变时也能正确加载
+		 */
+		async __onConnReady() {
+			if (!this.chatStore) return;
+			// 与 __handleForegroundResume 去重
+			this.__lastResumeAt = Date.now();
+			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
+			this.chatStore.__reconcileSlashCommand();
+			const isFirstLoad = !this.chatStore.__messagesLoaded;
+			if (isFirstLoad) {
+				await this.chatStore.loadMessages();
+				if (this.__unmounted || !this.chatStore) return;
+				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
+			} else {
+				this.chatStore.loadMessages({ silent: true });
+			}
+			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
+			if (isFirstLoad) {
+				this.$nextTick(() => {
+					this.scrollToBottom(true);
+					this.__autoFillHistory();
+				});
+			}
 		},
 
 		/**

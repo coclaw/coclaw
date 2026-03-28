@@ -71,10 +71,28 @@ describe('dashboard store helpers', () => {
 			expect(buildChannelList(null)).toEqual([]);
 		});
 
-		test('accounts 非数组时 connected 为 false', () => {
+		test('accounts 非数组时该条目被过滤', () => {
 			const data = { web: { accounts: 'invalid' } };
 			const result = buildChannelList(data);
-			expect(result).toEqual([{ id: 'web', connected: false }]);
+			expect(result).toEqual([]);
+		});
+
+		test('元数据属性（ts、channelOrder 等）被正确过滤', () => {
+			const data = {
+				ts: 1234567890,
+				channelOrder: ['discord', 'slack'],
+				channelLabels: { discord: 'Discord' },
+				channelDetailLabels: {},
+				channelSystemImageUrl: 'https://example.com/img.png',
+				defaultAccountId: 'acc-1',
+				discord: { accounts: [{ enabled: true }] },
+				slack: { accounts: [{ enabled: false }] },
+			};
+			const result = buildChannelList(data);
+			expect(result).toEqual([
+				{ id: 'discord', connected: true },
+				{ id: 'slack', connected: false },
+			]);
 		});
 	});
 

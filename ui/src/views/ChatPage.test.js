@@ -650,6 +650,46 @@ describe('ChatPage watchers', () => {
 		expect(loadSpy).toHaveBeenCalled();
 	});
 
+	test('chatStore watcher 重置 userScrolledUp 和 __scrollReady', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.botId = 'bot-1';
+
+		// 模拟用户已滚动和 scroll 就绪
+		wrapper.vm.userScrolledUp = true;
+		wrapper.vm.__scrollReady = true;
+
+		// 直接调用 chatStore watcher handler 测试重置行为
+		const newStore = chatStoreManager.get('session:bot-1:alt', { botId: 'bot-1', agentId: 'alt' });
+		vi.spyOn(newStore, 'activate').mockImplementation(() => {});
+		wrapper.vm.$options.watch.chatStore.handler.call(wrapper.vm, newStore, chatStore);
+
+		expect(wrapper.vm.userScrolledUp).toBe(false);
+	});
+
+	test('chatStore watcher 在 connReady 为 true 时调用 __onConnReady', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.botId = 'bot-1';
+
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		botsStore.byId['bot-1'].connState = 'connected';
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// spy __onConnReady
+		const onConnReadySpy = vi.spyOn(wrapper.vm, '__onConnReady').mockImplementation(() => {});
+		const newStore = chatStoreManager.get('session:bot-1:alt2', { botId: 'bot-1', agentId: 'main' });
+		vi.spyOn(newStore, 'activate').mockImplementation(() => {});
+
+		// 直接触发 watcher（绕过路由）
+		wrapper.vm.$options.watch.chatStore.handler.call(wrapper.vm, newStore, chatStore);
+
+		// connReady 为 true → __onConnReady 应被调用
+		expect(onConnReadySpy).toHaveBeenCalled();
+	});
+
 	test('bot 解绑后跳转', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();

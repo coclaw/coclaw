@@ -382,7 +382,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @returns {Promise<{ accepted: boolean }>}
 			 * @throws {Error} 发送失败时抛出
 			 */
-			async sendMessage(text, files = []) {
+			async sendMessage(text, files = [], { __idempotencyKey } = {}) {
 				if (this.sending) return { accepted: false };
 				if (!this.topicMode && !this.chatSessionKey) return { accepted: false };
 				if (this.topicMode && !this.sessionId) return { accepted: false };
@@ -430,6 +430,8 @@ export function createChatStore(storeKey, opts = {}) {
 				// 临时追加到 messages 以便 UI 立即展示（accepted 后移入 runsStore）
 				this.messages = [...this.messages, optimisticUser, optimisticBot];
 
+				const idempotencyKey = __idempotencyKey || crypto.randomUUID();
+
 				try {
 					// 构建附件（复用已缓存的 base64）
 					const attachments = [];
@@ -443,8 +445,6 @@ export function createChatStore(storeKey, opts = {}) {
 							content: base64,
 						});
 					}
-
-					const idempotencyKey = crypto.randomUUID();
 					const safeText = (!text && attachments.length) ? '\u{1F449}' : text;
 					const agentParams = {
 						message: safeText,
@@ -529,10 +529,9 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__removeLocalEntries();
 						return { accepted: false };
 					}
-					// run 可能已被 agentRunsStore 的 lifecycle 事件 settle 了
-					if (runsStore.isRunning(runKey)) {
-						runsStore.settle(runKey);
-					}
+					// run 的清理交给 __settleWithTransition + completeSettle 流程：
+					// lifecycle:end → settling 状态 → loadMessages 成功后 completeSettle 清理
+					// 此处不主动 settle，避免在 loadMessages 完成前清除 streamingMsgs 导致消息闪烁
 					await this.__reconcileMessages();
 					return { accepted: true };
 				}
@@ -581,7 +580,7 @@ export function createChatStore(storeKey, opts = {}) {
 							console.debug('[chat] reconnected, retrying sendMessage');
 							this.__retried = true;
 							try {
-								return await this.sendMessage(text, files);
+								return await this.sendMessage(text, files, { __idempotencyKey: idempotencyKey });
 							} finally {
 								this.__retried = false;
 							}
