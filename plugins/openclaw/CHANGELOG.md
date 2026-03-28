@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.9.1
+
+### Patch Changes
+
+- fix: add error listener on spawned upgrade worker to prevent gateway crash
+
 ## 0.9.0
 
 ### Minor Changes
