@@ -337,7 +337,7 @@ export const enMessages = {
 		currentSession: 'Current Session',
 	},
 	files: {
-		title: 'Agent Files',
+		titleSuffix: 'Files',
 		upload: 'Upload',
 		newFolder: 'New Folder',
 		dropHint: 'Drop files to upload',

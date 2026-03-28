@@ -1,7 +1,7 @@
 <template>
 	<div class="relative flex h-full flex-col overflow-hidden">
 		<!-- 移动端 header -->
-		<MobilePageHeader :title="$t('files.title')">
+		<MobilePageHeader :title="pageTitle">
 			<template #actions>
 				<UButton
 					class="cc-icon-btn-lg" variant="ghost" color="primary"
@@ -12,7 +12,7 @@
 
 		<!-- 桌面端 header -->
 		<header class="z-10 hidden shrink-0 min-h-12 items-center border-b border-default bg-elevated pl-4 py-1 md:flex">
-			<h1 class="text-base">{{ $t('files.title') }}</h1>
+			<h1 class="text-base">{{ pageTitle }}</h1>
 			<div class="ml-auto flex items-center gap-1 pr-2">
 				<UButton
 					class="cc-icon-btn" variant="ghost" color="primary"
@@ -26,11 +26,13 @@
 			<FileBreadcrumb :path="currentDir" class="flex-1" @navigate="navigateTo" />
 			<div class="flex shrink-0 items-center gap-1 pr-2">
 				<UButton
+					data-testid="btn-mkdir"
 					variant="ghost" color="neutral" size="xs"
 					icon="i-lucide-folder-plus" class="cc-icon-btn"
 					@click="onMkdir"
 				/>
 				<UButton
+					data-testid="btn-refresh"
 					variant="ghost" color="neutral" size="xs"
 					icon="i-lucide-refresh-cw" class="cc-icon-btn"
 					:loading="loading"
@@ -46,13 +48,22 @@
 				{{ $t('chat.loading') }}
 			</div>
 
-			<!-- 空目录 -->
-			<div v-else-if="!entries.length && !uploadTasks.length" class="px-4 py-8 text-center text-sm text-muted">
+			<!-- 空目录（根目录且无内容时） -->
+			<div v-else-if="!currentDir && !entries.length && !uploadTasks.length" class="px-4 py-8 text-center text-sm text-muted">
 				{{ $t('files.emptyDir') }}
 			</div>
 
 			<!-- 列表 -->
 			<template v-else>
+				<!-- 返回上层（非根目录时显示） -->
+				<div
+					v-if="currentDir"
+					class="flex min-h-12 items-center gap-3 border-b border-default px-3 py-2 cursor-pointer active:bg-accented"
+					@click="goParent"
+				>
+					<UIcon name="i-lucide-corner-left-up" class="size-5 shrink-0 text-muted" />
+					<p class="text-sm text-muted">..</p>
+				</div>
 				<FileListItem
 					v-for="entry in sortedEntries"
 					:key="entry.name"
@@ -185,6 +196,7 @@ import FileBreadcrumb from '../components/files/FileBreadcrumb.vue';
 import FileListItem from '../components/files/FileListItem.vue';
 import FileUploadItem from '../components/files/FileUploadItem.vue';
 import { useFilesStore } from '../stores/files.store.js';
+import { useAgentsStore } from '../stores/agents.store.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { listFiles, deleteFile, mkdirFiles } from '../services/file-transfer.js';
 import { useNotify } from '../composables/use-notify.js';
@@ -196,6 +208,7 @@ export default {
 	setup() {
 		return {
 			filesStore: useFilesStore(),
+			agentsStore: useAgentsStore(),
 			notify: useNotify(),
 			promptUi: promptModalUi,
 		};
@@ -227,6 +240,10 @@ export default {
 	computed: {
 		botId() { return this.$route.params.botId; },
 		agentId() { return this.$route.params.agentId; },
+		pageTitle() {
+			const display = this.agentsStore.getAgentDisplay(this.botId, this.agentId);
+			return `${display.name} ${this.$t('files.titleSuffix')}`;
+		},
 		sortedEntries() {
 			// 目录在前，文件在后
 			return [...this.entries].sort((a, b) => {
@@ -298,6 +315,13 @@ export default {
 
 		navigateTo(path) {
 			this.currentDir = path;
+			this.loadDir();
+		},
+
+		goParent() {
+			const parts = this.currentDir.split('/');
+			parts.pop();
+			this.currentDir = parts.join('/');
 			this.loadDir();
 		},
 

@@ -337,7 +337,7 @@ export const zhCNMessages = {
 		currentSession: '当前会话',
 	},
 	files: {
-		title: 'Agent 文件',
+		titleSuffix: '文件',
 		upload: '上传',
 		newFolder: '新建目录',
 		dropHint: '松开以上传文件',

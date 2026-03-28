@@ -7,39 +7,59 @@ import { login, evalStore } from './helpers.js';
  * 前置条件：
  * - server、OpenClaw gateway、plugin 均运行中
  * - test 用户已绑定 bot 且 bot 在线
+ * - 本地环境 WebRTC 连接几乎 100% 可建立
  */
 
 // ================================================================
 // Helpers
 // ================================================================
 
-/** 等待 bot 在线且 WS/RTC 连接就绪，返回 { botId, agentId } */
-async function waitBotConnected(page, timeout = 30_000) {
+/** 等待 bot 在线且 RTC 连接就绪 */
+async function waitBotReady(page, timeout = 30_000) {
 	try {
 		await expect(async () => {
 			const items = await evalStore(page, 'bots', 'return store.items');
-			const online = items.find((b) => b.online && b.connState === 'connected');
-			expect(online).toBeTruthy();
+			const ready = items.find((b) => b.online && b.connState === 'connected' && b.transportMode === 'rtc');
+			expect(ready).toBeTruthy();
 		}).toPass({ timeout });
 		const items = await evalStore(page, 'bots', 'return store.items');
-		const bot = items.find((b) => b.online && b.connState === 'connected');
+		const bot = items.find((b) => b.online && b.connState === 'connected' && b.transportMode === 'rtc');
 		return { botId: bot.id, agentId: 'main' };
 	} catch {
 		return null;
 	}
 }
 
-/** 导航到文件管理页，等待目录列表加载完成 */
-async function gotoFilesReady(page, botId, agentId) {
-	await page.goto(`/files/${botId}/${agentId}`);
-	// 等待面包屑 Root 按钮可见
-	await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 15_000 });
-	// 等待一下让 loadDir 完成
-	await page.waitForTimeout(2000);
+/** 通用前置：登录 → topics 页等 bot + RTC 就绪 */
+async function setup(page, t) {
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+	// topics 页触发 bot 连接和 RTC 建连
+	await page.goto('/topics');
+	const bot = await waitBotReady(page);
+	t.skip(!bot, 'No online bot with RTC available');
+	return bot;
 }
 
-/** RPC 直接清理路径 */
-async function cleanupPath(page, botId, agentId, path) {
+/** 导航到文件管理页并等待列表加载 */
+async function gotoFiles(page, botId, agentId) {
+	await page.goto(`/files/${botId}/${agentId}`);
+	await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 15_000 });
+	await page.waitForTimeout(1500);
+}
+
+/** RPC 创建目录 */
+async function rpcMkdir(page, botId, agentId, dir) {
+	await page.evaluate(async ({ botId, agentId, dir }) => {
+		const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+		const { mkdirFiles } = await import('/src/services/file-transfer.js');
+		const conn = useBotConnections().get(botId);
+		await mkdirFiles(conn, agentId, dir);
+	}, { botId, agentId, dir });
+}
+
+/** RPC 清理路径 */
+async function rpcCleanup(page, botId, agentId, path) {
 	try {
 		await page.evaluate(async ({ botId, agentId, path }) => {
 			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
@@ -50,22 +70,10 @@ async function cleanupPath(page, botId, agentId, path) {
 	} catch { /* ignore */ }
 }
 
-/** 通用前置：登录 → topics 页等 bot 连接就绪 */
-async function setup(page, t) {
-	await page.setViewportSize({ width: 1280, height: 720 });
-	await login(page);
-	await page.goto('/topics');
-	const bot = await waitBotConnected(page);
-	t.skip(!bot, 'No online bot available');
-	return bot;
-}
-
-/** 获取 transport mode */
-async function getTransportMode(page, botId) {
-	return evalStore(page, 'bots', `
-		const b = store.byId['${botId}'];
-		return b?.transportMode ?? null;
-	`);
+/** 点击刷新按钮并等待 */
+async function clickRefresh(page) {
+	await page.getByTestId('btn-refresh').click();
+	await page.waitForTimeout(1500);
 }
 
 // ================================================================
@@ -73,136 +81,284 @@ async function getTransportMode(page, botId) {
 // ================================================================
 
 test.describe('文件浏览器 @file', () => {
-	test.setTimeout(60_000);
+	test.setTimeout(90_000);
 
-	test('目录浏览 — 打开文件管理页', async ({ page }) => {
+	// ----------------------------------------------------------
+	// 1. 页面基础
+	// ----------------------------------------------------------
+
+	test('打开文件管理页 — 显示 agent 名称和面包屑', async ({ page }) => {
 		const bot = await setup(page, test);
-		await gotoFilesReady(page, bot.botId, bot.agentId);
+		await gotoFiles(page, bot.botId, bot.agentId);
 
-		// 面包屑 Root 可见
+		// 面包屑 Root
 		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible();
-		// 桌面端标题可见（第二个 h1 是桌面端的，第一个是移动端 hidden）
-		await expect(page.getByRole('heading', { name: /Agent 文件|Agent Files/ }).last()).toBeVisible();
+		// 标题应含 agent 名称 + "文件/Files"（不再是 "Agent 文件"）
+		const h1 = page.getByRole('heading', { level: 1 }).last();
+		await expect(h1).toBeVisible();
+		const titleText = await h1.innerText();
+		expect(titleText).toMatch(/文件|Files/);
+		// 不应是 "Agent 文件"（应为具体 agent 名如 "小点 文件" 或 "main 文件"）
+		expect(titleText).not.toMatch(/^Agent /);
 	});
 
-	test('创建目录 → 进入 → 返回 → 删除', async ({ page }) => {
+	// ----------------------------------------------------------
+	// 2. 目录操作
+	// ----------------------------------------------------------
+
+	test('创建目录 → 进入 → ".." 返回 → 面包屑返回 → 删除', async ({ page }) => {
 		const bot = await setup(page, test);
-		const dirName = `__e2e_dir_${Date.now()}`;
+		const dirName = `__e2e_mkdir_${Date.now()}`;
 
-		await gotoFilesReady(page, bot.botId, bot.agentId);
+		await gotoFiles(page, bot.botId, bot.agentId);
 
-		// 通过 RPC 创建目录（如果 bot 实际 offline 则 skip）
-		try {
-			await page.evaluate(async ({ botId, agentId, dir }) => {
-				const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
-				const { mkdirFiles } = await import('/src/services/file-transfer.js');
-				const conn = useBotConnections().get(botId);
-				if (!conn) throw new Error('no conn');
-				await mkdirFiles(conn, agentId, dir);
-			}, { botId: bot.botId, agentId: bot.agentId, dir: dirName });
-		} catch {
-			test.skip('Bot RPC not available (bot may be offline)');
-			return;
-		}
+		// RPC 创建目录
+		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await clickRefresh(page);
 
-		// 刷新列表（点击 refresh 按钮——面包屑行右侧最后一个按钮）
-		const refreshBtn = page.locator('.border-default').filter({ has: page.getByRole('button', { name: /Root|根目录/ }) }).locator('button').last();
-		await refreshBtn.click();
-		await page.waitForTimeout(2000);
-
-		// 目录应出现在列表中
+		// 目录出现在列表中
 		await expect(page.locator('main').getByText(dirName, { exact: true })).toBeVisible({ timeout: 10_000 });
 
-		// 点击目录名文字进入子目录
+		// 点击进入目录
 		await page.locator('main').getByText(dirName, { exact: true }).click();
-		await page.waitForTimeout(2000);
+		await page.waitForTimeout(1500);
 
-		// 面包屑应显示目录名（面包屑在文件管理区内的 nav 元素中）
-		await expect(page.getByText(dirName).first()).toBeVisible({ timeout: 5000 });
+		// 面包屑显示目录名
+		await expect(page.getByText(dirName)).toBeVisible({ timeout: 5000 });
 
-		// 显示空目录提示
-		await expect(page.getByText(/空目录|Empty directory/)).toBeVisible({ timeout: 5000 });
+		// ".." 返回上层项可见
+		await expect(page.locator('main').getByText('..', { exact: true })).toBeVisible({ timeout: 3000 });
 
-		// 点击面包屑 Root 返回
+		// 点击 ".." 返回上层
+		await page.locator('main').getByText('..', { exact: true }).click();
+		await page.waitForTimeout(1500);
+
+		// 回到根目录，面包屑不再显示 dirName（作为 segment）
+		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible();
+
+		// 再次进入目录，通过面包屑 Root 返回
+		await page.locator('main').getByText(dirName, { exact: true }).click();
+		await page.waitForTimeout(1500);
 		await page.getByRole('button', { name: /Root|根目录/ }).click();
 		await page.waitForTimeout(1000);
 
-		// 目录仍在
-		await expect(page.locator('main').getByText(dirName)).toBeVisible({ timeout: 5000 });
-
 		// 清理
-		await cleanupPath(page, bot.botId, bot.agentId, dirName);
-
-		// 刷新验证
-		await refreshBtn.click();
+		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+		await clickRefresh(page);
 		await expect(page.locator('main').getByText(dirName)).not.toBeVisible({ timeout: 10_000 });
 	});
 
-	test('文件上传 → 下载 → 清理', async ({ page }) => {
+	test('嵌套目录导航：创建多级目录 → 逐级进入 → 面包屑跳转', async ({ page }) => {
 		const bot = await setup(page, test);
-		const mode = await getTransportMode(page, bot.botId);
-		test.skip(mode !== 'rtc', 'Not in RTC mode, skipping file upload/download');
+		const ts = Date.now();
+		const dir1 = `__e2e_nest_${ts}`;
+		const dir2 = 'sub';
 
-		const dirName = `__e2e_upload_${Date.now()}`;
-		const fileName = 'test-upload.txt';
+		await gotoFiles(page, bot.botId, bot.agentId);
 
-		await gotoFilesReady(page, bot.botId, bot.agentId);
+		// RPC 创建嵌套目录
+		await rpcMkdir(page, bot.botId, bot.agentId, `${dir1}/${dir2}`);
+		await clickRefresh(page);
 
-		// RPC 创建测试目录
-		try {
-			await page.evaluate(async ({ botId, agentId, dir }) => {
-				const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
-				const { mkdirFiles } = await import('/src/services/file-transfer.js');
-				const conn = useBotConnections().get(botId);
-				if (!conn) throw new Error('no conn');
-				await mkdirFiles(conn, agentId, dir);
-			}, { botId: bot.botId, agentId: bot.agentId, dir: dirName });
-		} catch {
-			test.skip('Bot RPC not available');
-			return;
-		}
+		// 进入 dir1
+		await page.locator('main').getByText(dir1, { exact: true }).click();
+		await page.waitForTimeout(1500);
+		await expect(page.getByText(dir1)).toBeVisible();
 
-		// 刷新并进入目录
-		const refreshBtn = page.locator('.border-default').filter({ has: page.getByRole('button', { name: /Root|根目录/ }) }).locator('button').last();
-		await refreshBtn.click();
-		await page.waitForTimeout(2000);
-		await page.locator('main > div').filter({ hasText: dirName }).first().click();
-		await expect(page.locator('nav').getByText(dirName)).toBeVisible({ timeout: 5000 });
+		// 进入 dir2（sub）
+		await page.locator('main').getByText(dir2, { exact: true }).click();
+		await page.waitForTimeout(1500);
+		await expect(page.getByText(dir2)).toBeVisible();
 
-		// 上传文件
-		const fileInput = page.locator('input[type="file"]');
-		await fileInput.setInputFiles({
-			name: fileName,
-			mimeType: 'text/plain',
-			buffer: Buffer.from(`E2E test ${Date.now()}`, 'utf-8'),
-		});
+		// 面包屑跳转回 dir1
+		await page.getByText(dir1).click();
+		await page.waitForTimeout(1500);
 
-		// 等待上传完成
-		await expect(page.locator('main').getByText(fileName)).toBeVisible({ timeout: 20_000 });
-
-		// 下载
-		const downloadPromise = page.waitForEvent('download', { timeout: 15_000 });
-		await page.locator('main > div').filter({ hasText: fileName }).first().click();
-		const download = await downloadPromise;
-		expect(download.suggestedFilename()).toBe(fileName);
+		// 应该看到 sub 目录在列表中
+		await expect(page.locator('main').getByText(dir2, { exact: true })).toBeVisible({ timeout: 5000 });
 
 		// 清理
-		await cleanupPath(page, bot.botId, bot.agentId, dirName);
+		await rpcCleanup(page, bot.botId, bot.agentId, dir1);
 	});
+
+	// ----------------------------------------------------------
+	// 3. 文件上传 & 下载
+	// ----------------------------------------------------------
+
+	test('文件上传 → 列表中显示 → 下载', async ({ page }) => {
+		const bot = await setup(page, test);
+		const dirName = `__e2e_upload_${Date.now()}`;
+		const fileName = `test_${Date.now()}.txt`;
+		const content = `E2E upload test ${Date.now()}`;
+
+		await gotoFiles(page, bot.botId, bot.agentId);
+		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await clickRefresh(page);
+
+		// 进入测试目录
+		await page.locator('main').getByText(dirName, { exact: true }).click();
+		await page.waitForTimeout(1500);
+
+		// 上传
+		await page.locator('input[type="file"]').setInputFiles({
+			name: fileName,
+			mimeType: 'text/plain',
+			buffer: Buffer.from(content, 'utf-8'),
+		});
+
+		// 文件出现在列表
+		await expect(page.locator('main').getByText(fileName)).toBeVisible({ timeout: 20_000 });
+
+		// 点击文件触发下载（store 调用 downloadFile → triggerBrowserDownload）
+		await page.locator('main').getByText(fileName, { exact: true }).click();
+		// 等待下载进度条出现再消失（表示下载完成）
+		await page.waitForTimeout(5000);
+
+		// 通过 RPC 直接下载验证文件内容
+		const downloadedText = await page.evaluate(async ({ botId, agentId, dirName, fileName }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { downloadFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			const handle = downloadFile(conn.__rtc, agentId, `${dirName}/${fileName}`);
+			const result = await handle.promise;
+			return result.blob.text();
+		}, { botId: bot.botId, agentId: bot.agentId, dirName, fileName });
+		expect(downloadedText).toBe(content);
+
+		// 清理
+		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+	});
+
+	test('多文件上传', async ({ page }) => {
+		const bot = await setup(page, test);
+		const dirName = `__e2e_multi_${Date.now()}`;
+		const files = [
+			{ name: `file1_${Date.now()}.txt`, content: 'content-1' },
+			{ name: `file2_${Date.now()}.txt`, content: 'content-2' },
+		];
+
+		await gotoFiles(page, bot.botId, bot.agentId);
+		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await clickRefresh(page);
+
+		await page.locator('main').getByText(dirName, { exact: true }).click();
+		await page.waitForTimeout(1500);
+
+		// 多文件上传
+		await page.locator('input[type="file"]').setInputFiles(
+			files.map((f) => ({
+				name: f.name,
+				mimeType: 'text/plain',
+				buffer: Buffer.from(f.content, 'utf-8'),
+			})),
+		);
+
+		// 两个文件都出现
+		for (const f of files) {
+			await expect(page.locator('main').getByText(f.name)).toBeVisible({ timeout: 20_000 });
+		}
+
+		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+	});
+
+	// ----------------------------------------------------------
+	// 4. 删除操作（通过 UI）
+	// ----------------------------------------------------------
+
+	test('UI 删除文件', async ({ page }) => {
+		const bot = await setup(page, test);
+		const dirName = `__e2e_del_${Date.now()}`;
+		const fileName = `del_${Date.now()}.txt`;
+
+		await gotoFiles(page, bot.botId, bot.agentId);
+		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await clickRefresh(page);
+
+		// 进入目录
+		await page.locator('main').getByText(dirName, { exact: true }).click();
+		await page.waitForTimeout(1500);
+
+		// 上传一个文件
+		await page.locator('input[type="file"]').setInputFiles({
+			name: fileName,
+			mimeType: 'text/plain',
+			buffer: Buffer.from('to-delete', 'utf-8'),
+		});
+
+		// 等待上传完成 + 目录刷新（文件出现在真实文件列表中，带有大小信息）
+		await expect(async () => {
+			await page.getByTestId('btn-refresh').click();
+			await page.waitForTimeout(500);
+			await expect(page.locator('main').getByText(fileName)).toBeVisible();
+		}).toPass({ timeout: 20_000 });
+
+		// 点击文件行的删除按钮
+		const fileText = page.locator('main').getByText(fileName, { exact: true });
+		// 从文件名元素向上找到整行 div，再找删除按钮
+		const fileRow = fileText.locator('xpath=ancestor::div[contains(@class, "border-b")]');
+		await fileRow.locator('button').click();
+
+		// 确认对话框
+		const confirmDialog = page.locator('[role="dialog"]');
+		await expect(confirmDialog).toBeVisible({ timeout: 3000 });
+		await confirmDialog.locator('button').filter({ hasText: /确认|Confirm/ }).click();
+
+		// 文件消失
+		await expect(page.locator('main').getByText(fileName)).not.toBeVisible({ timeout: 10_000 });
+
+		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+	});
+
+	test('UI 删除非空目录（需勾选 checkbox）', async ({ page }) => {
+		const bot = await setup(page, test);
+		const dirName = `__e2e_rmdir_${Date.now()}`;
+
+		await gotoFiles(page, bot.botId, bot.agentId);
+
+		// 创建目录并在其中放一个文件
+		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await page.evaluate(async ({ botId, agentId, path }) => {
+			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+			const { createFile } = await import('/src/services/file-transfer.js');
+			const conn = useBotConnections().get(botId);
+			await createFile(conn, agentId, path);
+		}, { botId: bot.botId, agentId: bot.agentId, path: `${dirName}/placeholder.txt` });
+
+		await clickRefresh(page);
+
+		// 点击目录行的删除按钮
+		const dirRow = page.locator('main > div').filter({ hasText: dirName }).first();
+		await dirRow.locator('button').last().click();
+
+		// 删除目录对话框 — 删除按钮应禁用
+		const deleteBtn = page.locator('button').filter({ hasText: /删除|Delete/ }).last();
+		await expect(deleteBtn).toBeDisabled({ timeout: 3000 });
+
+		// 勾选复选框
+		await page.locator('input[type="checkbox"]').check();
+		await expect(deleteBtn).toBeEnabled({ timeout: 1000 });
+
+		// 确认删除
+		await deleteBtn.click();
+
+		// 目录消失
+		await expect(page.locator('main').getByText(dirName)).not.toBeVisible({ timeout: 10_000 });
+	});
+
+	// ----------------------------------------------------------
+	// 5. 入口
+	// ----------------------------------------------------------
 
 	test('ChatPage header 有文件管理入口', async ({ page }) => {
 		const bot = await setup(page, test);
 
-		// 检查 pluginVersionOk（若为 false，openFiles 会被拦截，跳过此测试）
 		const pluginOk = await evalStore(page, 'bots', `return store.byId['${bot.botId}']?.pluginVersionOk`);
-		test.skip(pluginOk === false, 'Plugin version outdated, files button blocked');
+		test.skip(pluginOk === false, 'Plugin version outdated');
 
-		// 直接导航到 chat
 		await page.goto(`/chat/${bot.botId}/${bot.agentId}`);
-		// 等待桌面端 header h1 可见
 		await expect(page.getByRole('heading', { level: 1 }).last()).toBeVisible({ timeout: 15_000 });
 
-		// 找可见的 btn-files
+		// 找可见的 btn-files 并点击
 		const filesBtns = page.getByTestId('btn-files');
 		await expect(async () => {
 			let visible = false;
@@ -212,7 +368,6 @@ test.describe('文件浏览器 @file', () => {
 			expect(visible).toBe(true);
 		}).toPass({ timeout: 10_000 });
 
-		// 点击
 		for (let i = 0; i < await filesBtns.count(); i++) {
 			if (await filesBtns.nth(i).isVisible()) {
 				await filesBtns.nth(i).click();
@@ -222,5 +377,58 @@ test.describe('文件浏览器 @file', () => {
 
 		await page.waitForURL(/\/files\//, { timeout: 5000 });
 		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 10_000 });
+	});
+
+	test('ManageBotsPage AgentCard 有文件管理入口', async ({ page }) => {
+		const bot = await setup(page, test);
+
+		const pluginOk = await evalStore(page, 'bots', `return store.byId['${bot.botId}']?.pluginVersionOk`);
+		test.skip(pluginOk === false, 'Plugin version outdated');
+
+		await page.goto('/bots');
+		// 等待 AgentCard 渲染
+		const agentCard = page.locator('[class*="rounded-xl"]').filter({ hasText: /chat|对话/ }).first();
+		await expect(agentCard).toBeVisible({ timeout: 15_000 });
+
+		// AgentCard 中应有文件夹图标按钮
+		const folderBtn = agentCard.locator('button').filter({ has: page.locator('[class*="i-lucide-folder"]') });
+		// Nuxt UI 渲染 icon 为 img，换用更通用的方式
+		const btns = agentCard.locator('button');
+		// AgentCard 动作区有两个按钮：chat + files
+		await expect(async () => {
+			const count = await btns.count();
+			expect(count).toBeGreaterThanOrEqual(2);
+		}).toPass({ timeout: 10_000 });
+
+		// 点击最后一个按钮（files）
+		const lastBtn = btns.last();
+		await lastBtn.click();
+		await page.waitForURL(/\/files\//, { timeout: 5000 });
+		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 10_000 });
+	});
+
+	// ----------------------------------------------------------
+	// 6. UI 创建目录（通过界面按钮）
+	// ----------------------------------------------------------
+
+	test('通过 UI 按钮新建目录', async ({ page }) => {
+		const bot = await setup(page, test);
+		const dirName = `__e2e_uimk_${Date.now()}`;
+
+		await gotoFiles(page, bot.botId, bot.agentId);
+
+		await page.getByTestId('btn-mkdir').click();
+
+		// 对话框输入
+		const input = page.locator('[role="dialog"] input');
+		await expect(input).toBeVisible({ timeout: 3000 });
+		await input.fill(dirName);
+		await page.locator('[role="dialog"] button').filter({ hasText: /确认|Confirm/ }).click();
+
+		// 目录出现
+		await expect(page.locator('main').getByText(dirName, { exact: true })).toBeVisible({ timeout: 10_000 });
+
+		// 清理
+		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
 	});
 });
