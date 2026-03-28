@@ -29,23 +29,18 @@ function toRecord(value) {
 }
 
 async function readJson(filePath) {
-	let raw;
 	try {
-		raw = await fs.readFile(filePath, 'utf8');
-	}
-	catch (err) {
-		if (err?.code === 'ENOENT') return {};
-		/* c8 ignore next 2 */
-		throw err;
-	}
-	if (!String(raw).trim()) return {};
-	try {
+		const raw = await fs.readFile(filePath, 'utf8');
+		if (!String(raw).trim()) {
+			return {};
+		}
 		return JSON.parse(raw);
 	}
-	catch {
-		// 文件损坏，删除后当空文件处理
-		await fs.unlink(filePath).catch(() => {});
-		return {};
+	catch (err) {
+		if (err?.code === 'ENOENT') {
+			return {};
+		}
+		throw err;
 	}
 }
 
