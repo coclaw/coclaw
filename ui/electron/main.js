@@ -210,6 +210,10 @@ if (!gotLock) {
 		});
 		if (!registered) {
 			console.warn(`截图快捷键 ${screenshotKey} 注册失败，可能已被其他应用占用`);
+			const win = getMainWindow();
+			if (win) {
+				win.webContents.send('screenshot-key-failed', { key: screenshotKey });
+			}
 		}
 	});
 

@@ -333,6 +333,9 @@ export const zhCNMessages = {
 		refreshSession: '刷新会话',
 		currentSession: '当前会话',
 	},
+	electron: {
+		screenshotKeyFailed: '快捷键 {key} 注册失败，可能被其他应用占用',
+	},
 	demo: {
 		title: 'Nuxt UI 4 示例',
 		desc: '已完成 Nuxt UI 组件库基础接入。',
