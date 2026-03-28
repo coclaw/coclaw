@@ -116,6 +116,7 @@ model Bot {
 	user 					User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
 	name					String? @db.VarChar(128) // bot 昵称（可为空）
+	alias					String? @db.VarChar(128) // 用户自定义备注名
 	// status			String @default("active") @db.VarChar(16) // active, inactive, blocked（历史字段，暂注释保留语义）
 
 	// 认证字段：目前只用 tokenHash，将来支持密钥对时，再启用 publicKey 字段，并调整 tokenHash 为可选字段

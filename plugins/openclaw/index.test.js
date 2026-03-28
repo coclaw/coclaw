@@ -243,11 +243,10 @@ test('command handler should cover help/unknown/error/success paths', async () =
 		const unbound = await handler({ args: 'unbind --server ' + mock.baseUrl });
 		assert.equal(String(unbound.text).includes('unbound from CoClaw'), true);
 
-		// 破坏 bindings 文件测试 service.start 容错（坏 JSON 应被容错删除，bridge 正常启动）
+		// 破坏 bindings 文件测试 service.start 容错（坏 JSON 应抛异常）
 		const bindingsDir = nodePath.join(dir, 'coclaw');
 		await fs.mkdir(bindingsDir, { recursive: true });
-		const corruptPath = nodePath.join(bindingsDir, 'bindings.json');
-		await fs.writeFile(corruptPath, '{bad', 'utf8');
+		await fs.writeFile(nodePath.join(bindingsDir, 'bindings.json'), '{bad', 'utf8');
 		const svcs = [];
 		plugin.register({
 			pluginConfig: { serverUrl: mock.baseUrl },
@@ -259,10 +258,7 @@ test('command handler should cover help/unknown/error/success paths', async () =
 			registerCommand() {},
 		});
 		const bridgeSvc = svcs.find(s => s.id === 'coclaw-realtime-bridge');
-		await bridgeSvc.start(); // 不应抛异常
-		// 损坏文件应已被删除
-		await assert.rejects(() => fs.access(corruptPath), { code: 'ENOENT' });
-		await bridgeSvc.stop();
+		await assert.rejects(() => bridgeSvc.start(), { name: 'SyntaxError' });
 	}
 	finally {
 		process.chdir(prevCwd);
