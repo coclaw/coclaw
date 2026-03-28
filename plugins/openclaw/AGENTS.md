@@ -95,7 +95,7 @@
 
 - bind/unbind/enroll 的 CLI 命令均为瘦 CLI：仅做参数解析 → `callGatewayMethod` RPC → 结果展示。核心逻辑在 gateway 内的 RPC handler 中执行。
 - 所有 bind/unbind 核心逻辑必须集中在共享层（`common/bot-binding.js`），RPC handler 与斜杠命令 handler 共享同一内部函数（`doBind`/`doUnbind`）。
-- gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.enroll` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById`）仅由本插件提供，禁止重复注册同名方法。
+- gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.enroll` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById` / `coclaw.files.list` / `coclaw.files.delete` / `coclaw.files.mkdir` / `coclaw.files.create`）仅由本插件提供，禁止重复注册同名方法。
 - gateway method 错误响应格式：`respond(false, undefined, { code, message })`。使用 `respondError(respond, err)` 处理异常，`respondInvalid(respond, message)` 处理参数校验失败。禁止使用旧格式 `respond(false, { error })`。
 - realtime bridge（`coclaw-realtime-bridge`）和 auto-upgrade scheduler（`coclaw-auto-upgrade`）必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接或定时器导致进程无法退出。
 - CLI bind/unbind 通过 gateway RPC（`coclaw.bind`/`coclaw.unbind`）执行，gateway 内部管理 bridge 生命周期，**禁止在 CLI 进程中直接操作 `bindings.json`**。
@@ -117,6 +117,12 @@
 - statements 100%
 
 `verify` 未通过，禁止安装到 gateway。
+
+### 执行约束
+
+- `pnpm test` / `pnpm coverage` / `pnpm verify` **禁止以后台模式执行**，必须前台运行并设置充足超时（test ≥ 300s，coverage ≥ 360s）
+- 发起新一轮测试前，必须确认上一轮已结束；若超时，先 `ps aux | grep -E 'node.*test|vitest'` 检查并 kill 残留进程，再重试
+- 禁止并发启动多个 test runner——并发执行会因资源竞争导致进程堆积、主机卡顿
 
 ## 文档同步
 
