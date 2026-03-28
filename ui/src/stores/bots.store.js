@@ -103,6 +103,9 @@ export const useBotsStore = defineStore('bots', {
 			bot.online = next;
 			if (!next) {
 				useAgentsStore().removeByBot(id);
+			} else if (!bot.initialized && bot.connState === 'connected') {
+				// bot 上线但初始化未成功（隧道建立前 __fullInit 失败）→ 重试
+				this.__onBotConnected(id);
 			}
 		},
 		removeBotById(botId) {
@@ -250,6 +253,10 @@ export const useBotsStore = defineStore('bots', {
 				bot.pluginInfo = { version: info.version, clawVersion: info.clawVersion };
 			}
 			if (!info.ok) {
+				if (!info.version) {
+					// RPC 失败（bot 隧道未就绪），抛出以触发 initialized 重置和后续重试
+					throw new Error('Plugin check failed: bot may be offline');
+				}
 				console.warn('[bots] plugin version outdated for botId=%s', id);
 			}
 			await useAgentsStore().loadAgents(id);

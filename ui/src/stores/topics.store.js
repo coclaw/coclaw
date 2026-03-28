@@ -44,8 +44,7 @@ export const useTopicsStore = defineStore('topics', {
 				return conn && conn.state === 'connected';
 			});
 			if (!connectedBots.length) {
-				console.debug('[topics] loadAll: no connected bots, clearing items');
-				this.byId = {};
+				console.debug('[topics] loadAll: no connected bots, skipping reload');
 				return;
 			}
 			this.loading = true;

@@ -312,6 +312,45 @@ describe('updateBotOnline', () => {
 
 		expect(agentsStore.byBot['1']).toBeDefined();
 	});
+
+	test('bot 上线且 connState=connected 但 initialized=false 时重试初始化', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setBots([{ id: '1', online: false }]);
+		// 模拟 __fullInit 失败后的状态
+		store.byId['1'].connState = 'connected';
+		store.byId['1'].initialized = false;
+
+		store.updateBotOnline('1', true);
+
+		await vi.waitFor(() => {
+			expect(store.byId['1'].initialized).toBe(true);
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		});
+	});
+
+	test('bot 上线但 initialized=true 时不重试', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', online: false }]);
+		store.byId['1'].connState = 'connected';
+		store.byId['1'].initialized = true;
+
+		const spy = vi.spyOn(store, '__onBotConnected');
+		store.updateBotOnline('1', true);
+
+		expect(spy).not.toHaveBeenCalled();
+	});
 });
 
 describe('loadBots', () => {
@@ -453,9 +492,29 @@ describe('loadBots', () => {
 		});
 	});
 
-	test('proceeds to loadAgents even when plugin version check fails', async () => {
+	test('plugin version check RPC 失败（version: null）时 __fullInit 抛出，initialized 重置', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
 		checkPluginVersion.mockResolvedValue({ ok: false, version: null, clawVersion: null });
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
+
+		await store.loadBots();
+
+		// __fullInit 因 version: null 抛出 → initialized 重置为 false
+		await vi.waitFor(() => {
+			expect(store.byId['2'].initialized).toBe(false);
+		});
+		// loadAgents 不应被调用（throw 在 loadAgents 之前）
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+	});
+
+	test('plugin version 真正过旧（version 有值）时继续 loadAgents', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue({ ok: false, version: '0.3.0', clawVersion: '2025.1.1' });
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -469,9 +528,9 @@ describe('loadBots', () => {
 
 		await store.loadBots();
 
-
 		await vi.waitFor(() => {
 			expect(store.byId['2'].pluginVersionOk).toBe(false);
+			expect(store.byId['2'].pluginInfo).toEqual({ version: '0.3.0', clawVersion: '2025.1.1' });
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('2');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();

@@ -51,14 +51,17 @@ describe('topics store', () => {
 		expect(store.items).toEqual([]);
 	});
 
-	test('loadAllTopics 无已连接 bot 时清空 items', async () => {
+	test('loadAllTopics 无已连接 bot 时保留现有 items（不清空）', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: false }]);
 
 		const store = useTopicsStore();
-		store.byId = toById([{ topicId: 'old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }]);
+		const existing = [{ topicId: 'old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
+		store.byId = toById(existing);
 		await store.loadAllTopics();
-		expect(store.items).toEqual([]);
+		// 重连过渡期间保留缓存数据，不清空
+		expect(store.items).toHaveLength(1);
+		expect(store.byId['old'].title).toBe('Old');
 	});
 
 	test('loadAllTopics 从已连接 bot 加载 topics', async () => {

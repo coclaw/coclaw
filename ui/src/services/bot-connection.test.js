@@ -1471,6 +1471,20 @@ describe('BotConnection – forceReconnect()', () => {
 		conn.forceReconnect();
 		expect(conn.__reconnectDelay).toBe(1000);
 	});
+
+	test('disconnectedAt 修正为 lastAliveAt 以反映真实断连时长', () => {
+		const { conn } = makeConnected();
+		const aliveAt = conn.lastAliveAt;
+		expect(aliveAt).toBeGreaterThan(0);
+
+		// 模拟长时间后台：推进时间但不发送消息
+		vi.advanceTimersByTime(60_000);
+
+		conn.forceReconnect();
+
+		// disconnectedAt 应被修正为 lastAliveAt（而非 forceReconnect 的调用时间）
+		expect(conn.disconnectedAt).toBe(aliveAt);
+	});
 });
 
 describe('BotConnection – foreground resume (app:foreground)', () => {
