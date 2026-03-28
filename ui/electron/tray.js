@@ -18,14 +18,11 @@ let isUnread = false;
  */
 export function initTray(app, getWin) {
 	const iconPath = path.join(__dirname, '../build-resources/tray-icon.png');
-	const unreadIconPath = path.join(__dirname, '../build-resources/tray-icon-unread.png');
 	const normalIcon = nativeImage.createFromPath(iconPath);
-	const unreadIcon = nativeImage.createFromPath(unreadIconPath);
 
 	// macOS template image（自动适配深/浅色模式）
 	if (process.platform === 'darwin') {
 		normalIcon.setTemplateImage(true);
-		// unreadIcon 不设置 template，保留红点彩色
 	}
 
 	tray = new Tray(normalIcon);
@@ -99,7 +96,7 @@ export function initTray(app, getWin) {
 	ipcMain.on('tray:setUnread', (_, hasUnread) => {
 		if (hasUnread && !isUnread) {
 			isUnread = true;
-			startFlash(normalIcon, unreadIcon);
+			startFlash(normalIcon);
 		} else if (!hasUnread && isUnread) {
 			isUnread = false;
 			stopFlash(normalIcon);
@@ -107,11 +104,19 @@ export function initTray(app, getWin) {
 	});
 }
 
-function startFlash(normalIcon, unreadIcon) {
-	let showUnread = true;
+function startFlash(normalIcon) {
+	// TODO: 未读图标资源就绪后替换为实际的 unread icon
+	// 目前用同一图标闪烁（可见/隐藏交替）
+	let visible = true;
 	flashTimer = setInterval(() => {
-		tray.setImage(showUnread ? unreadIcon : normalIcon);
-		showUnread = !showUnread;
+		if (visible) {
+			tray.setImage(nativeImage.createEmpty());
+		} else {
+			const img = normalIcon;
+			tray.setImage(img);
+			if (process.platform === 'darwin') img.setTemplateImage(true);
+		}
+		visible = !visible;
 	}, 500);
 }
 

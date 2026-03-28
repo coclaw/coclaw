@@ -5,9 +5,12 @@ import { listOnlineBotIds } from '../bot-ws-hub.js';
 
 const require = createRequire(import.meta.url);
 const { version: serverVersion } = require('../../package.json');
-// 容器环境中 plugins 目录不可用，graceful fallback
-let pluginVersion = null;
-try { pluginVersion = require('../../../plugins/openclaw/package.json').version; } catch {}
+// 插件版本：优先从构建时注入的环境变量读取，其次尝试 node_modules，最后 fallback null
+function getPluginVersion() {
+	if (process.env.COCLAW_PLUGIN_VERSION) return process.env.COCLAW_PLUGIN_VERSION;
+	try { return require('@coclaw/openclaw-coclaw/package.json').version; } catch {}
+	return null;
+}
 
 /**
  * @param {object} [deps] - 依赖注入
@@ -40,7 +43,7 @@ export async function getAdminDashboard(deps = {}) {
 		},
 		version: {
 			server: serverVersion,
-			plugin: pluginVersion,
+			plugin: getPluginVersion(),
 		},
 	};
 }
