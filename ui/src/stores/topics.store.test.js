@@ -111,6 +111,55 @@ describe('topics store', () => {
 		expect(conn2.request).toHaveBeenCalledWith('coclaw.topics.list', { agentId: 'main' });
 	});
 
+	test('loadAllTopics 增量合并：保留未查询 bot 的已有 topics', async () => {
+		const botsStore = useBotsStore();
+		botsStore.setBots([
+			{ id: 'bot-1', name: 'B1', online: true },
+			{ id: 'bot-2', name: 'B2', online: true },
+		]);
+
+		// bot-1 已连接，bot-2 未连接
+		const conn1 = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'New', createdAt: 200 }] });
+		mockConnections.set('bot-1', conn1);
+		// bot-2 无连接
+
+		const store = useTopicsStore();
+		// 预存 bot-2 的旧 topics
+		store.byId = toById([
+			{ topicId: 't2', agentId: 'main', title: 'Old B2', createdAt: 100, botId: 'bot-2' },
+		]);
+
+		await store.loadAllTopics();
+
+		// bot-1 的 topics 应被加载，bot-2 的旧 topics 应保留
+		expect(store.items).toHaveLength(2);
+		expect(store.byId['t1'].title).toBe('New');
+		expect(store.byId['t1'].botId).toBe('bot-1');
+		expect(store.byId['t2'].title).toBe('Old B2');
+		expect(store.byId['t2'].botId).toBe('bot-2');
+	});
+
+	test('loadAllTopics 增量合并：清理已删除 bot 的残留 topics', async () => {
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+
+		const conn1 = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
+		mockConnections.set('bot-1', conn1);
+
+		const store = useTopicsStore();
+		// 预存已删除 bot 的 topics
+		store.byId = toById([
+			{ topicId: 't-old', agentId: 'main', title: 'Deleted bot', createdAt: 50, botId: 'bot-removed' },
+		]);
+
+		await store.loadAllTopics();
+
+		// 已删除 bot 的 topics 应被清理
+		expect(store.byId['t-old']).toBeUndefined();
+		expect(store.byId['t1']).toBeDefined();
+		expect(store.items).toHaveLength(1);
+	});
+
 	test('loadAllTopics 部分失败时保留成功结果', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([

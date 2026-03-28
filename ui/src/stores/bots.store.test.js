@@ -34,6 +34,7 @@ import { listBots } from '../services/bots.api.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useBotsStore, __resetAwaitingConnIds } from './bots.store.js';
+import { useDashboardStore } from './dashboard.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
 
@@ -692,15 +693,17 @@ describe('WebRTC 集成', () => {
 });
 
 describe('重连后批量状态刷新', () => {
-	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 bots/agents/sessions/topics', async () => {
+	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 bots/agents/sessions/topics/dashboard', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
+		const dashboardStore = useDashboardStore();
 		vi.spyOn(store, 'loadBots').mockResolvedValue();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
 
 		let stateCallback;
 		const fakeConn = {
@@ -725,6 +728,7 @@ describe('重连后批量状态刷新', () => {
 		agentsStore.loadAgents.mockClear();
 		sessionsStore.loadAllSessions.mockClear();
 		topicsStore.loadAllTopics.mockClear();
+		dashboardStore.loadDashboard.mockClear();
 
 		// 模拟断连
 		stateCallback('disconnected');
@@ -740,6 +744,7 @@ describe('重连后批量状态刷新', () => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
 			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+			expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('20');
 		});
 	});
 

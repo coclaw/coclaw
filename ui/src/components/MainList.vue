@@ -166,10 +166,10 @@ export default {
 			}
 			return '';
 		},
-		/** 仅跟踪 bot 增删/上线状态变化，避免 lastAliveAt 等高频更新触发 watcher */
+		/** 跟踪 bot 增删/上线/连接就绪变化，触发 agents 和 topics 重新加载 */
 		botListKey() {
 			return (this.botsStore?.items ?? [])
-				.map((b) => `${b.id}:${b.online}`)
+				.map((b) => `${b.id}:${b.online}:${b.connState === 'connected'}`)
 				.join(',');
 		},
 		botActionItems() {

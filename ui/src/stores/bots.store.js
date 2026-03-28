@@ -5,6 +5,7 @@ import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
+import { useDashboardStore } from './dashboard.store.js';
 import { useTopicsStore } from './topics.store.js';
 import { BRIEF_DISCONNECT_MS } from '../services/bot-connection.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
@@ -236,6 +237,7 @@ export const useBotsStore = defineStore('bots', {
 						useAgentsStore().loadAgents(id).catch(() => {});
 						useSessionsStore().loadAllSessions().catch(() => {});
 						useTopicsStore().loadAllTopics().catch(() => {});
+						useDashboardStore().loadDashboard(id).catch(() => {});
 					}
 				}
 			}

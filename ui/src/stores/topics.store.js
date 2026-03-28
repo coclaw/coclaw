@@ -60,6 +60,8 @@ export const useTopicsStore = defineStore('topics', {
 
 		async __doLoadAll(connectedBots) {
 			const manager = useBotConnections();
+			const botsStore = useBotsStore();
+			const queriedBotIds = new Set(connectedBots.map((b) => String(b.id)));
 			const tasks = [];
 			for (const bot of connectedBots) {
 				const conn = manager.get(String(bot.id));
@@ -74,12 +76,24 @@ export const useTopicsStore = defineStore('topics', {
 				);
 			}
 			const results = await Promise.allSettled(tasks);
-			const newById = {};
-			for (const r of results) {
-				if (r.status !== 'fulfilled') {
-					console.warn('[topics] load failed for one agent:', r.reason);
-					continue;
+			// fetch 失败的 bot：从 queriedBotIds 移除，保留其旧 topics
+			for (let i = 0; i < results.length; i++) {
+				if (results[i].status !== 'fulfilled') {
+					const failedId = String(connectedBots[i].id);
+					queriedBotIds.delete(failedId);
+					console.warn('[topics] load failed for one agent:', results[i].reason);
 				}
+			}
+			// 增量合并：保留未查询 bot 的已有 topics，替换已查询 bot 的
+			const newById = {};
+			for (const [tid, topic] of Object.entries(this.byId)) {
+				const bid = String(topic.botId);
+				// 跳过本次查询范围内的（用新结果替换）和已不存在的 bot
+				if (queriedBotIds.has(bid) || !botsStore.byId[bid]) continue;
+				newById[tid] = topic;
+			}
+			for (const r of results) {
+				if (r.status !== 'fulfilled') continue;
 				for (const topic of r.value.topics) {
 					newById[topic.topicId] = {
 						topicId: topic.topicId,
@@ -91,7 +105,7 @@ export const useTopicsStore = defineStore('topics', {
 				}
 			}
 			this.byId = newById;
-			console.debug('[topics] loadAll: merged %d topic(s)', Object.keys(newById).length);
+			console.debug('[topics] loadAll: merged %d topic(s) (queried %d bot(s))', Object.keys(newById).length, queriedBotIds.size);
 		},
 
 		/**
