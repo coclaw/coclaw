@@ -284,7 +284,7 @@ export default {
 			},
 		},
 	},
-	created() {
+	beforeCreate() {
 		this.__loadGen = 0;
 	},
 	mounted() {
