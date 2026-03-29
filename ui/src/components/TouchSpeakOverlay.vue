@@ -62,6 +62,7 @@
 import WaveSurfer from 'wavesurfer.js';
 import RecordMod from 'wavesurfer.js/dist/plugins/record.esm.js';
 import { queryMicPerm, getPrefAudioType } from '../utils/media-helper.js';
+import { MAX_RECORD_DURATION } from '../utils/voice-recorder.js';
 import { useNotify } from '../composables/use-notify.js';
 
 const RecordPlugin = RecordMod.default || RecordMod;
@@ -77,7 +78,7 @@ export default {
 	props: {
 		open: { type: Boolean, default: false },
 		initTouchId: { type: Number, default: null },
-		maxDuration: { type: Number, default: 60000 },
+		maxDuration: { type: Number, default: MAX_RECORD_DURATION },
 	},
 	emits: ['update:open', 'close'],
 	setup() {

@@ -43,11 +43,14 @@ const S = RecorderStatus;
  * });
  * await recorder.start();
  */
+/** 最大录音时长 (ms)：10 分钟 */
+export const MAX_RECORD_DURATION = 10 * 60 * 1000;
+
 export class VoiceRecorder {
 	/**
 	 * @param {object} opts
 	 * @param {HTMLElement} opts.container - 波形容器
-	 * @param {number} [opts.maxDuration=60000] - 最大录音时长(ms)
+	 * @param {number} [opts.maxDuration=MAX_RECORD_DURATION] - 最大录音时长(ms)
 	 * @param {string} [opts.waveColor] - 波形颜色
 	 * @param {function} opts.onStatusChange - 状态回调 (status, data?)
 	 */
@@ -59,7 +62,7 @@ export class VoiceRecorder {
 		this.__startTime = null;
 		this.__mimeType = null;
 		this.__abortPending = false;
-		this.__maxDuration = opts.maxDuration || 60000;
+		this.__maxDuration = opts.maxDuration || MAX_RECORD_DURATION;
 		this.__maxTimer = null;
 	}
 

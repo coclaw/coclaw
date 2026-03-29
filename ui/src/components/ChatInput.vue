@@ -210,7 +210,7 @@
 import { useEnvStore } from '../stores/env.store.js';
 import { useNotify } from '../composables/use-notify.js';
 import { formatFileSize, formatFileBlob } from '../utils/file-helper.js';
-import { VoiceRecorder } from '../utils/voice-recorder.js';
+import { VoiceRecorder, MAX_RECORD_DURATION } from '../utils/voice-recorder.js';
 import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
 
 export default {
@@ -350,7 +350,7 @@ export default {
 
 				const recorder = new VoiceRecorder({
 					container: this.$refs.deskWaveContainer,
-					maxDuration: 60000,
+					maxDuration: MAX_RECORD_DURATION,
 					onStatusChange: (status, data) => {
 						this.recorderStatus = status;
 						if (status === 'STOPPED' && data?.blob) {
