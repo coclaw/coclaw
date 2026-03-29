@@ -1,5 +1,5 @@
 <template>
-	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-2 pb-2">
+	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-3">
 		<slot name="prepend" />
 		<!-- 上传进度区（上传中替代文件预览） -->
 		<div

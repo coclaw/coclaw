@@ -16,7 +16,7 @@
 			<h1 class="text-base">{{ pageTitle }}</h1>
 			<div class="ml-auto flex items-center gap-1 pr-2">
 				<UButton
-					class="cc-icon-btn" variant="ghost" color="primary"
+					class="cc-icon-btn-lg" variant="ghost" color="primary"
 					icon="i-lucide-upload" :disabled="!connReady"
 					@click="triggerUpload"
 				/>

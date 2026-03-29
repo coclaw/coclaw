@@ -29,13 +29,13 @@
 				/>
 			</template>
 		</MobilePageHeader>
-		<header class="z-10 hidden shrink-0 min-h-12 items-center border-b border-default bg-elevated pl-4 py-1 md:flex">
+		<header class="z-10 hidden shrink-0 min-h-12 items-center justify-between border-b border-default bg-elevated pl-4 pr-1 lg:pl-5 lg:pr-2 py-1 md:flex">
 			<h1 class="text-base">{{ chatTitle }}</h1>
-			<div class="ml-auto flex items-center gap-1 pr-2">
+			<div class="flex items-center">
 				<UButton
 					v-if="canOpenFiles"
 					data-testid="btn-files"
-					class="cc-icon-btn"
+					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="neutral"
 					icon="i-lucide-folder"
@@ -44,7 +44,7 @@
 				<UButton
 					v-if="showNewTopicBtn"
 					data-testid="btn-new-topic"
-					class="cc-icon-btn"
+					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="primary"
 					icon="i-lucide-square-pen"
