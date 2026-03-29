@@ -84,10 +84,10 @@ test('should render actions slot content', () => {
 	expect(wrapper.find('.test-action').text()).toBe('操作');
 });
 
-test('should show placeholder when no actions slot', () => {
+test('should have empty actions area when no actions slot', () => {
 	const wrapper = createWrapper();
-	// 无 actions 插槽时应有占位 span 保持标题居中
-	const rightDiv = wrapper.findAll('header > div').at(1);
-	const placeholder = rightDiv.find('span');
-	expect(placeholder.exists()).toBe(true);
+	// 无 actions 插槽时右侧区域为空
+	const actionsDiv = wrapper.findAll('header > div').at(0);
+	expect(actionsDiv.exists()).toBe(true);
+	expect(actionsDiv.text()).toBe('');
 });
