@@ -537,6 +537,9 @@ export default {
 				// 2. 获取（创建）store 并跳过消息加载
 				const store = chatStoreManager.get(`topic:${topicId}`, { botId, agentId });
 				store.activate({ skipLoad: true });
+				// 新 topic 无历史消息，直接标记已加载，
+				// 避免 connReady watcher 触发 first-load 路径与 sendMessage 竞态
+				store.__messagesLoaded = true;
 				this.__isFirstRound = true;
 				// 3. 切换路由
 				await this.$router.replace({ name: 'topics-chat', params: { sessionId: topicId } });

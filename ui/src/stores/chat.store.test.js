@@ -330,6 +330,32 @@ describe('useChatStore', () => {
 			expect(store.errorText).toBe('');
 		});
 
+		test('session 模式 loadMessages 与 sendMessage 并发时保留乐观消息', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			setupConnForLoad(conn, { flatMessages: [{ role: 'user', content: 'old' }] });
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// 模拟 sendMessage 添加的乐观消息
+			store.messages = [
+				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'new' } },
+				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+
+			await store.loadMessages();
+			// 服务端 1 条 + 乐观 2 条
+			expect(store.messages).toHaveLength(3);
+			expect(store.messages[0]).toMatchObject({ id: 'oc-0' }); // 服务端
+			expect(store.messages[1]._local).toBe(true); // 乐观 user
+			expect(store.messages[2]._local).toBe(true); // 乐观 bot
+		});
+
 		test('sessions.get 传递 chatSessionKey', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
@@ -399,6 +425,91 @@ describe('useChatStore', () => {
 			const ok = await store.loadMessages();
 			expect(ok).toBe(false);
 			expect(store.messages).toHaveLength(0);
+		});
+
+		test('loadMessages 与 sendMessage 并发时保留乐观消息', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({ messages: [] });
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('topic:t1', { botId: '1', agentId: 'main' });
+			store.sessionId = 't1';
+
+			// 模拟 sendMessage 添加的乐观消息
+			const optimisticUser = {
+				type: 'message', id: '__local_user_1', _local: true,
+				message: { role: 'user', content: 'hello' },
+			};
+			const optimisticBot = {
+				type: 'message', id: '__local_bot_1', _local: true, _streaming: true,
+				message: { role: 'assistant', content: '' },
+			};
+			store.messages = [optimisticUser, optimisticBot];
+
+			// loadMessages 并发执行 → 不应覆盖乐观消息
+			await store.loadMessages();
+			expect(store.messages).toHaveLength(2);
+			expect(store.messages.some((m) => m._local)).toBe(true);
+		});
+
+		test('loadMessages 合并服务端消息与乐观消息', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			const serverMsg = { id: 's1', type: 'message', message: { role: 'user', content: 'old' } };
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({ messages: [serverMsg] });
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('topic:t2', { botId: '1', agentId: 'main' });
+			store.sessionId = 't2';
+
+			const optimistic = {
+				type: 'message', id: '__local_user_2', _local: true,
+				message: { role: 'user', content: 'new' },
+			};
+			store.messages = [optimistic];
+
+			await store.loadMessages();
+			// 服务端消息在前，乐观消息在后
+			expect(store.messages).toHaveLength(2);
+			expect(store.messages[0].id).toBe('s1');
+			expect(store.messages[1].id).toBe('__local_user_2');
+		});
+
+		test('无乐观消息时 loadMessages 正常覆盖', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			const serverMsg = { id: 's1', type: 'message', message: { role: 'user', content: 'hi' } };
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({ messages: [serverMsg] });
+				}
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = createChatStore('topic:t3', { botId: '1', agentId: 'main' });
+			store.sessionId = 't3';
+			store.messages = [];
+
+			await store.loadMessages();
+			expect(store.messages).toEqual([serverMsg]);
 		});
 	});
 

@@ -239,7 +239,10 @@ export function createChatStore(storeKey, opts = {}) {
 						});
 						const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
 						// 薄包装为 JSONL 行级结构（补 type + id）
-						this.messages = wrapOcMessages(flatMsgs);
+						const serverMsgs = wrapOcMessages(flatMsgs);
+						// 保留乐观消息（sendMessage 与 loadMessages 可能并发执行）
+						const localMsgs = this.messages.filter((m) => m._local);
+						this.messages = localMsgs.length ? [...serverMsgs, ...localMsgs] : serverMsgs;
 						this.__loadedMsgLimit = limit;
 						// sessions.get 返回 .slice(-limit)，若返回数 == limit 说明可能还有更多
 						this.hasMoreMessages = flatMsgs.length >= limit;
@@ -361,7 +364,9 @@ export function createChatStore(storeKey, opts = {}) {
 					});
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
-					this.messages = msgs;
+					// 保留乐观消息（sendMessage 与 loadMessages 可能并发执行）
+					const localMsgs = this.messages.filter((m) => m._local);
+					this.messages = localMsgs.length ? [...msgs, ...localMsgs] : msgs;
 					this.__messagesLoaded = true;
 
 					// 重连后 reconcile
