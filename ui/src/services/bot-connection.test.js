@@ -67,15 +67,22 @@ class MockWebSocket {
 MockWebSocket.instances = [];
 MockWebSocket.lastInstance = null;
 
-// 工厂：创建一个连接并推进到 'connected' 状态（默认 WS 传输模式）
+// 工厂：创建一个 WS 已连接的 BotConnection（WS 仅用于信令）
 function makeConnected(botId = 'bot1', extra = {}) {
 	MockWebSocket.reset();
 	const conn = new BotConnection(botId, { baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket, ...extra });
 	conn.connect();
 	const ws = MockWebSocket.lastInstance;
 	ws.simulateOpen();
-	conn.setTransportMode('ws');
 	return { conn, ws };
+}
+
+// 工厂：创建 WS + RTC(DC) 均就绪的连接
+function makeRtcReady(botId = 'bot1', extra = {}) {
+	const { conn, ws } = makeConnected(botId, extra);
+	const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue(), close: vi.fn() };
+	conn.setRtc(mockRtc);
+	return { conn, ws, mockRtc };
 }
 
 // --- 测试套件 ---
@@ -163,12 +170,11 @@ describe('BotConnection – disconnect()', () => {
 		expect(ws.closed).toBe(true);
 	});
 
-	test('rejects all pending RPCs with WS_CLOSED', async () => {
-		const { conn } = makeConnected();
-		// 手动添加一个 pending 不走 send（保持 readyState=1 再 disconnect）
+	test('rejects all pending RPCs with DC_CLOSED', async () => {
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('some.method');
 		conn.disconnect();
-		await expect(p).rejects.toMatchObject({ code: 'WS_CLOSED' });
+		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
 	});
 
 	test('emits state=disconnected event', () => {
@@ -186,13 +192,13 @@ describe('BotConnection – disconnect()', () => {
 		expect(conn.state).toBe('disconnected');
 	});
 
-	test('disconnect() rejects pending RPC with WS_CLOSED not RPC_TIMEOUT when timeout is active', async () => {
+	test('disconnect() rejects pending RPC with DC_CLOSED not RPC_TIMEOUT when timeout is active', async () => {
 		vi.useFakeTimers();
 		try {
-			const { conn } = makeConnected();
+			const { conn } = makeRtcReady();
 			const p = conn.request('x', {}, { timeout: 5000 });
 			conn.disconnect();
-			await expect(p).rejects.toMatchObject({ code: 'WS_CLOSED' });
+			await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
 		} finally {
 			vi.useRealTimers();
 		}
@@ -202,72 +208,69 @@ describe('BotConnection – disconnect()', () => {
 describe('BotConnection – request()', () => {
 	beforeEach(() => MockWebSocket.reset());
 
-	test('sends JSON message via WS', async () => {
-		const { conn, ws } = makeConnected();
-		// respond immediately in next microtask
-		const responsePromise = conn.request('ping.me', { x: 1 });
-		// extract sent message
-		expect(ws.sent.length).toBe(1);
-		const msg = JSON.parse(ws.sent[0]);
-		expect(msg.type).toBe('req');
-		expect(msg.method).toBe('ping.me');
-		expect(msg.params).toEqual({ x: 1 });
-		expect(msg.id).toMatch(/^ui-/);
-		// resolve it
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { result: 42 } });
-		const res = await responsePromise;
+	test('sends JSON message via DataChannel', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('ping.me', { x: 1 });
+		expect(mockRtc.send).toHaveBeenCalledTimes(1);
+		const sent = mockRtc.send.mock.calls[0][0];
+		expect(sent.type).toBe('req');
+		expect(sent.method).toBe('ping.me');
+		expect(sent.params).toEqual({ x: 1 });
+		expect(sent.id).toMatch(/^ui-/);
+		// resolve via DC message
+		conn.__onRtcMessage({ type: 'res', id: sent.id, ok: true, payload: { result: 42 } });
+		const res = await p;
 		expect(res).toEqual({ result: 42 });
 	});
 
-	test('rejects with WS_CLOSED when transportMode is null but WS is not connected', async () => {
+	test('rejects with DC_NOT_READY when DataChannel is not available', async () => {
 		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-	        await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'DC_NOT_READY' });
 	});
-	test('rejects with RPC_FAILED when server responds ok=false', async () => {
-		const { conn, ws } = makeConnected();
+
+	test('rejects with DC_NOT_READY when WS connected but no RTC', async () => {
+		const { conn } = makeConnected();
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'DC_NOT_READY' });
+	});
+
+	test('rejects with RPC_FAILED when plugin responds ok=false', async () => {
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('bad.method');
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: false, error: { code: 'NOT_FOUND', message: 'not found' } });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: false, error: { code: 'NOT_FOUND', message: 'not found' } });
 		await expect(p).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'not found' });
 	});
 
 	test('uses default error code RPC_FAILED when error.code missing', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('bad.method');
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: false, error: { message: 'oops' } });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: false, error: { message: 'oops' } });
 		await expect(p).rejects.toMatchObject({ code: 'RPC_FAILED' });
 	});
 
 	test('resolves immediately (no onAccepted) on any ok=true response', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('simple');
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { status: 'accepted' } });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted' } });
 		const res = await p;
 		expect(res).toEqual({ status: 'accepted' });
 	});
 
 	test('increments counter for unique IDs', () => {
-		const { conn, ws } = makeConnected();
-		conn.request('a');
-		conn.request('b');
-		const id1 = JSON.parse(ws.sent[0]).id;
-		const id2 = JSON.parse(ws.sent[1]).id;
+		const { conn, mockRtc } = makeRtcReady();
+		conn.request('a').catch(() => {});
+		conn.request('b').catch(() => {});
+		const id1 = mockRtc.send.mock.calls[0][0].id;
+		const id2 = mockRtc.send.mock.calls[1][0].id;
 		expect(id1).not.toBe(id2);
 	});
 
-	test('rejects with WS_SEND_FAILED when ws.send() throws', async () => {
-		const { conn, ws } = makeConnected();
-		ws.failOnSend = true;
-		await expect(conn.request('some.method')).rejects.toMatchObject({ code: 'WS_SEND_FAILED' });
-	});
-
-	test('rejects with WS_CLOSED when readyState is CONNECTING (transportMode=null)', async () => {
-		MockWebSocket.reset();
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.connect(); // WS created but open not simulated, transportMode stays null
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
+	test('rejects with RTC_SEND_FAILED when rtc.send() rejects', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		mockRtc.send.mockRejectedValue(new Error('dc error'));
+		await expect(conn.request('some.method')).rejects.toMatchObject({ code: 'RTC_SEND_FAILED' });
 	});
 });
 
@@ -275,59 +278,57 @@ describe('BotConnection – request() two-phase (onAccepted)', () => {
 	beforeEach(() => MockWebSocket.reset());
 
 	test('calls onAccepted when status=accepted and does not resolve yet', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const accepted = vi.fn();
 		const p = conn.request('slow.op', {}, { onAccepted: accepted });
-		const msg = JSON.parse(ws.sent[0]);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
 
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { status: 'accepted', token: 'tok' } });
-		await Promise.resolve(); // flush microtasks
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted', token: 'tok' } });
+		await Promise.resolve();
 		expect(accepted).toHaveBeenCalledWith({ status: 'accepted', token: 'tok' });
-		// promise should still be pending — check via race
 		let settled = false;
 		p.then(() => { settled = true; }).catch(() => { settled = true; });
 		await Promise.resolve();
 		expect(settled).toBe(false);
 
-		// now send terminal status
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { status: 'ok', data: 123 } });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok', data: 123 } });
 		const res = await p;
 		expect(res).toEqual({ status: 'ok', data: 123 });
 	});
 
 	test('resolves on terminal status=error (ok=true, two-phase)', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('slow.op', {}, { onAccepted: vi.fn() });
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { status: 'accepted' } });
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { status: 'error', reason: 'fail' } });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted' } });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'error', reason: 'fail' } });
 		const res = await p;
 		expect(res.status).toBe('error');
 	});
 
 	test('calls onUnknownStatus for unrecognised intermediate status', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const onUnknown = vi.fn();
 		conn.request('slow.op', {}, { onAccepted: vi.fn(), onUnknownStatus: onUnknown });
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { status: 'processing' } });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'processing' } });
 		await Promise.resolve();
 		expect(onUnknown).toHaveBeenCalledWith('processing', { status: 'processing' });
 	});
 
 	test('ok=false with no error field rejects with message "rpc failed" and code RPC_FAILED', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('some.method');
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: false }); // no error field
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: false });
 		await expect(p).rejects.toMatchObject({ message: 'rpc failed', code: 'RPC_FAILED' });
 	});
 
 	test('unknown intermediate status without onUnknownStatus keeps promise pending', async () => {
-		const { conn, ws } = makeConnected();
-		const p = conn.request('slow.op', {}, { onAccepted: vi.fn() }); // no onUnknownStatus
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { status: 'processing' } });
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('slow.op', {}, { onAccepted: vi.fn() });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'processing' } });
 		await Promise.resolve();
 		let settled = false;
 		p.then(() => { settled = true; }).catch(() => { settled = true; });
@@ -344,24 +345,24 @@ describe('BotConnection – request() timeout', () => {
 	afterEach(() => vi.useRealTimers());
 
 	test('rejects with RPC_TIMEOUT after timeout ms', async () => {
-		const { conn } = makeConnected();
+		const { conn } = makeRtcReady();
 		const p = conn.request('slow', {}, { timeout: 5000 });
 		vi.advanceTimersByTime(5001);
 		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
 	});
 
 	test('does not reject before timeout elapses', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('slow', {}, { timeout: 5000 });
 		vi.advanceTimersByTime(3000);
-		const msg = JSON.parse(ws.sent[0]);
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: {} });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: {} });
 		const res = await p;
 		expect(res).toEqual({});
 	});
 
 	test('cleans up pending entry after timeout', async () => {
-		const { conn } = makeConnected();
+		const { conn } = makeRtcReady();
 		const p = conn.request('slow', {}, { timeout: 1000 });
 		vi.advanceTimersByTime(1001);
 		await expect(p).rejects.toBeDefined();
@@ -369,27 +370,24 @@ describe('BotConnection – request() timeout', () => {
 	});
 
 	test('applies default 30-minute timeout when no explicit timeout given', async () => {
-		const { conn } = makeConnected();
+		const { conn } = makeRtcReady();
 		const p = conn.request('longRunning');
 		expect(conn.__pending.size).toBe(1);
-		// 29 分钟后仍 pending
 		vi.advanceTimersByTime(29 * 60_000);
 		expect(conn.__pending.size).toBe(1);
-		// 30 分钟后超时
 		vi.advanceTimersByTime(1 * 60_000 + 1);
 		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
 		expect(conn.__pending.size).toBe(0);
 	});
 
 	test('late response after timeout is silently ignored', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('slow', {}, { timeout: 1000 });
-		const msg = JSON.parse(ws.sent[0]);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
 		vi.advanceTimersByTime(1001);
 		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
-		// 迟到的响应不应抛错
 		expect(() => {
-			ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { late: true } });
+			conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { late: true } });
 		}).not.toThrow();
 		expect(conn.__pending.size).toBe(0);
 	});
@@ -473,42 +471,30 @@ describe('BotConnection – special messages', () => {
 	});
 
 	test('session.expired 清理 RTC 状态', () => {
-		const { conn, ws } = makeConnected();
-		const mockRtc = { close: vi.fn() };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
+		const { conn, ws, mockRtc } = makeRtcReady();
 
 		ws.simulateMessage({ type: 'session.expired' });
 
 		expect(mockRtc.close).toHaveBeenCalled();
 		expect(conn.__rtc).toBeNull();
-		expect(conn.transportMode).toBeNull();
 	});
 
 	test('bot.unbound 清理 RTC 状态', () => {
-		const { conn, ws } = makeConnected();
-		const mockRtc = { close: vi.fn() };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
+		const { conn, ws, mockRtc } = makeRtcReady();
 
 		ws.simulateMessage({ type: 'bot.unbound' });
 
 		expect(mockRtc.close).toHaveBeenCalled();
 		expect(conn.__rtc).toBeNull();
-		expect(conn.transportMode).toBeNull();
 	});
 
 	test('disconnect() 清理 RTC 状态', () => {
-		const { conn } = makeConnected();
-		const mockRtc = { close: vi.fn() };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
+		const { conn, mockRtc } = makeRtcReady();
 
 		conn.disconnect();
 
 		expect(mockRtc.close).toHaveBeenCalled();
 		expect(conn.__rtc).toBeNull();
-		expect(conn.transportMode).toBeNull();
 	});
 
 	test('bot.unbound emits bot-unbound and disconnects without reconnect', async () => {
@@ -524,10 +510,10 @@ describe('BotConnection – special messages', () => {
 	});
 
 	test('bot.unbound rejects pending RPCs', async () => {
-		const { conn, ws } = makeConnected();
+		const { conn, ws } = makeRtcReady();
 		const p = conn.request('something');
 		ws.simulateMessage({ type: 'bot.unbound' });
-		await expect(p).rejects.toMatchObject({ code: 'WS_CLOSED' });
+		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
 	});
 
 	test('invalid JSON message is silently ignored', () => {
@@ -535,43 +521,47 @@ describe('BotConnection – special messages', () => {
 		expect(() => ws.simulateMessage('not json {')).not.toThrow();
 	});
 
-	test('res message without id does not throw and does not affect pending', async () => {
-		const { conn, ws } = makeConnected();
+	test('DC res message without id does not throw and does not affect pending', async () => {
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('some.method');
-		const msg = JSON.parse(ws.sent[0]);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
 		// 发送一条无 id 的 res 消息
-		expect(() => ws.simulateMessage({ type: 'res', ok: true })).not.toThrow();
+		expect(() => conn.__onRtcMessage({ type: 'res', ok: true })).not.toThrow();
 		// 原 pending 未受影响，仍可正常 resolve
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { done: true } });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { done: true } });
 		const res = await p;
 		expect(res).toEqual({ done: true });
 	});
 });
 
-describe('BotConnection – server push events', () => {
+describe('BotConnection – DC push events', () => {
 	beforeEach(() => MockWebSocket.reset());
 
-	test('type=event dispatches to event:<name> listener', () => {
+	test('DC event dispatches to event:<name> listener', () => {
+		const { conn } = makeConnected();
+		const cb = vi.fn();
+		conn.on('event:message.new', cb);
+		conn.__onRtcMessage({ type: 'event', event: 'message.new', payload: { text: 'hi' } });
+		expect(cb).toHaveBeenCalledWith({ text: 'hi' });
+	});
+
+	test('WS event messages are always ignored', () => {
 		const { conn, ws } = makeConnected();
 		const cb = vi.fn();
 		conn.on('event:message.new', cb);
 		ws.simulateMessage({ type: 'event', event: 'message.new', payload: { text: 'hi' } });
-		expect(cb).toHaveBeenCalledWith({ text: 'hi' });
-	});
-
-	test('type=event with no matching listener does not throw', () => {
-		const { ws } = makeConnected();
-		expect(() => {
-			ws.simulateMessage({ type: 'event', event: 'some.unheard.event', payload: {} });
-		}).not.toThrow();
-	});
-
-	test('type=event without event field is ignored', () => {
-		const { conn, ws } = makeConnected();
-		const cb = vi.fn();
-		conn.on('event:', cb);
-		ws.simulateMessage({ type: 'event' }); // no event field
 		expect(cb).not.toHaveBeenCalled();
+	});
+
+	test('WS res messages are always ignored', () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('test').catch(() => {});
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		// WS res for same ID should be ignored
+		MockWebSocket.lastInstance.simulateMessage({ type: 'res', id: reqId, ok: true, payload: {} });
+		// 请求应仍在 pending 中
+		expect(conn.__pending.has(reqId)).toBe(true);
+		conn.disconnect();
 	});
 });
 
@@ -634,10 +624,10 @@ describe('BotConnection – heartbeat', () => {
 	});
 
 	test('pending RPC does not extend heartbeat tolerance', () => {
-		const { conn, ws } = makeConnected();
-		conn.request('slowMethod');
+		const { conn, ws, mockRtc } = makeRtcReady();
+		conn.request('slowMethod').catch(() => {});
 		expect(conn.__pending.size).toBe(1);
-		// 即使有 pending RPC，2 次 miss 后仍断连
+		// 即使有 pending RPC，2 次 miss 后仍断连 WS
 		vi.advanceTimersByTime(45_000 * 2 + 1);
 		expect(ws.closed).toBe(true);
 		expect(ws.closeCode).toBe(4000);
@@ -971,23 +961,8 @@ describe('BotConnection – rtc: 事件分发', () => {
 	});
 });
 
-// --- Phase 2: 传输模式 ---
-
-describe('BotConnection – transportMode (Phase 2)', () => {
+describe('BotConnection – RTC 管理', () => {
 	beforeEach(() => MockWebSocket.reset());
-
-	test('初始 transportMode 为 null', () => {
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		expect(conn.transportMode).toBeNull();
-	});
-
-	test('setTransportMode 设置模式', () => {
-		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.setTransportMode('rtc');
-		expect(conn.transportMode).toBe('rtc');
-		conn.setTransportMode('ws');
-		expect(conn.transportMode).toBe('ws');
-	});
 
 	test('setRtc/clearRtc 管理 RTC 引用', () => {
 		const conn = new BotConnection('b1', { baseUrl: 'http://localhost', WebSocket: MockWebSocket });
@@ -998,200 +973,39 @@ describe('BotConnection – transportMode (Phase 2)', () => {
 		expect(conn.__rtc).toBeNull();
 	});
 
-	test('RTC→WS 降级时 reject viaRtc 的挂起请求', () => {
-		const { conn } = makeConnected();
-		// 模拟 RTC 模式下有挂起请求
-		const waiter = { reject: vi.fn(), timer: null, viaRtc: true };
-		conn.__pending.set('test-1', waiter);
-		const wsWaiter = { reject: vi.fn(), timer: null, viaRtc: false };
-		conn.__pending.set('test-2', wsWaiter);
-
-		conn.setTransportMode('rtc');
-		conn.setTransportMode('ws'); // RTC→WS 降级
-
-		expect(waiter.reject).toHaveBeenCalled();
-		expect(waiter.reject.mock.calls[0][0].code).toBe('RTC_LOST');
-		expect(wsWaiter.reject).not.toHaveBeenCalled();
-		expect(conn.__pending.has('test-1')).toBe(false);
-		expect(conn.__pending.has('test-2')).toBe(true);
-		conn.disconnect();
-	});
-});
-
-describe('BotConnection – request() via RTC', () => {
-	beforeEach(() => MockWebSocket.reset());
-
-	test('transportMode=rtc 时通过 DataChannel 发送', () => {
-		const { conn } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
-
-		conn.request('test.method', { key: 'val' }).catch(() => {});
-
-		expect(mockRtc.send).toHaveBeenCalledTimes(1);
-		const sent = mockRtc.send.mock.calls[0][0];
-		expect(sent.type).toBe('req');
-		expect(sent.method).toBe('test.method');
-		expect(sent.params).toEqual({ key: 'val' });
-		conn.disconnect();
-	});
-
-	test('transportMode=rtc 且 rpc DC 不可用时走 WS 但不永久降级', async () => {
-		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
-		// 未设置 rtc 引用 → rpc DC 不可用，本次请求走 WS
-		const p = conn.request('foo');
-		// transportMode 保持 rtc，不永久降级
-		expect(conn.transportMode).toBe('rtc');
-		expect(ws.sent.length).toBe(1);
-		const msg = JSON.parse(ws.sent[0]);
-		expect(msg.method).toBe('foo');
-
-		// WS 响应通过 viaRtc 标记正确放行
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { bar: 1 } });
-		await expect(p).resolves.toMatchObject({ bar: 1 });
-		conn.disconnect();
-	});
-
-	test('transportMode=rtc 且 rpc DC 不可用时 WS event 仍被过滤', () => {
-		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
-		// rpc DC 不可用，请求走 WS，但 transportMode 保持 rtc
-		conn.request('foo').catch(() => {});
-		expect(conn.transportMode).toBe('rtc');
-
-		// RTC 模式下 WS event 应被过滤（event 应通过 RTC DC 接收）
-		const handler = vi.fn();
-		conn.on('event:agent', handler);
-		ws.simulateMessage({ type: 'event', event: 'agent', payload: { text: 'hello' } });
-		expect(handler).not.toHaveBeenCalled();
-		conn.disconnect();
-	});
-
-	test('transportMode=rtc 且 rpc DC 不可用且 WS 也不可用时 reject WS_CLOSED', async () => {
-		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
-		// 模拟 WS 已断开
-		ws.readyState = 3;
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'WS_CLOSED' });
-		// transportMode 保持 rtc，不永久降级
-		expect(conn.transportMode).toBe('rtc');
-		conn.disconnect();
-	});
-
-	test('RTC 降级到 WS 时 reject 所有 pending RTC 请求', async () => {
-		const { conn } = makeConnected();
-		const mockRtc = {
-			isReady: true,
-			send: vi.fn().mockResolvedValue(undefined),
-		};
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
-
-		// 发起一个 RTC 请求使其 pending
-		const p = conn.request('slow.method');
-
-		// 触发降级
-		conn.setTransportMode('ws');
-
-		// pending RTC 请求应被 reject
-		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
-		conn.disconnect();
-	});
-
-	test('rpc DC 恢复后请求自动回到 RTC', async () => {
-		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
-		// rpc DC 不可用 → 本次走 WS，transportMode 保持 rtc
-		conn.request('fallback.method').catch(() => {});
-		expect(conn.transportMode).toBe('rtc');
-		expect(ws.sent.length).toBe(1);
-
-		// 模拟 rpc DC 恢复
-		const mockRtc = {
-			isReady: true,
-			send: vi.fn().mockResolvedValue(undefined),
-		};
-		conn.setRtc(mockRtc);
-
-		// 后续请求应走 RTC（无需重新 setTransportMode）
-		conn.request('restored.method').catch(() => {});
-		expect(mockRtc.send).toHaveBeenCalled();
-		const sent = mockRtc.send.mock.calls[0][0];
-		expect(sent.method).toBe('restored.method');
-		// WS 不应收到这个请求
-		const wsMethodsSent = ws.sent.map((s) => JSON.parse(s).method);
-		expect(wsMethodsSent).not.toContain('restored.method');
-		conn.disconnect();
-	});
-
-	test('transportMode=rtc 大 payload 也走 RTC（WebRtcConnection 内部自动分片）', async () => {
-		const { conn } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
-
-		// 构造超过 64KB 的 params — 现在应走 RTC 而非 WS
+	test('大 payload 走 DC（WebRtcConnection 内部自动分片）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
 		const largeParams = { data: 'x'.repeat(70_000) };
 		conn.request('agent', largeParams).catch(() => {});
-
 		expect(mockRtc.send).toHaveBeenCalledTimes(1);
 		expect(mockRtc.send.mock.calls[0][0].method).toBe('agent');
-		expect(conn.transportMode).toBe('rtc');
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 且 send 返回 rejected Promise 时 reject RTC_SEND_FAILED', async () => {
-		const { conn } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn().mockRejectedValue(new Error('dc error')) };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
+	test('clearRtc reject 所有挂起请求（RTC_LOST）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('slow.method');
+		expect(conn.__pending.size).toBe(1);
 
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'RTC_SEND_FAILED' });
-		conn.disconnect();
+		conn.clearRtc();
+
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+		expect(conn.__pending.size).toBe(0);
+		expect(conn.rtc).toBeNull();
 	});
 
-	test('transportMode=null 时使用 WS 发送请求 (Phase 2 双通道过渡)', async () => {
-		const { conn, ws } = makeConnected();
-		conn.setTransportMode(null);
-		const p = conn.request('foo');
-		expect(ws.sent.length).toBe(1);
-		const msg = JSON.parse(ws.sent[0]);
-		expect(msg.method).toBe('foo');
-
-		// 模拟 WS 响应
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { result: 'ok' } });
-		await expect(p).resolves.toMatchObject({ result: 'ok' });
-		conn.disconnect();
-	});
-
-	test('transportMode=null 期间发送的请求在 transportMode 变为 rtc 后，依然能处理来自 WS 的响应 (Phase 2)', async () => {
-		const { conn, ws } = makeConnected();
-		conn.setTransportMode(null);
-		const p = conn.request('foo');
-		expect(ws.sent.length).toBe(1);
-		const msg = JSON.parse(ws.sent[0]);
-
-		// 模拟通道切换
-		conn.setTransportMode('rtc');
-
-		// 模拟 WS 响应
-		ws.simulateMessage({ type: 'res', id: msg.id, ok: true, payload: { result: 'ok' } });
-		await expect(p).resolves.toMatchObject({ result: 'ok' });
-		conn.disconnect();
+	test('clearRtc 后新请求 reject DC_NOT_READY', async () => {
+		const { conn } = makeRtcReady();
+		conn.clearRtc();
+		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'DC_NOT_READY' });
 	});
 });
 
 describe('BotConnection – __onRtcMessage()', () => {
 	beforeEach(() => MockWebSocket.reset());
 
-	test('transportMode=rtc 时处理 RTC res 消息', async () => {
-		const { conn } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
-
+	test('处理 DC res 消息', async () => {
+		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('test');
 		const reqId = mockRtc.send.mock.calls[0][0].id;
 
@@ -1201,9 +1015,8 @@ describe('BotConnection – __onRtcMessage()', () => {
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 时处理 RTC event 消息', () => {
+	test('处理 DC event 消息', () => {
 		const { conn } = makeConnected();
-		conn.setTransportMode('rtc');
 		const handler = vi.fn();
 		conn.on('event:agent', handler);
 
@@ -1211,93 +1024,59 @@ describe('BotConnection – __onRtcMessage()', () => {
 		expect(handler).toHaveBeenCalledWith({ data: 'test' });
 		conn.disconnect();
 	});
-
-	test('transportMode=ws 时忽略 RTC 消息', () => {
-		const { conn } = makeConnected();
-		// transportMode 已被 makeConnected 设为 'ws'
-		const handler = vi.fn();
-		conn.on('event:agent', handler);
-
-		conn.__onRtcMessage({ type: 'event', event: 'agent', payload: { data: 'test' } });
-		expect(handler).not.toHaveBeenCalled();
-		conn.disconnect();
-	});
 });
 
-describe('BotConnection – WS 消息在 RTC 模式下被忽略', () => {
+describe('BotConnection – WS 始终忽略业务消息', () => {
 	beforeEach(() => MockWebSocket.reset());
 
-	test('transportMode=rtc 时忽略 WS 业务消息(event)', () => {
+	test('WS event 消息被忽略', () => {
 		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
 		const handler = vi.fn();
 		conn.on('event:agent', handler);
-
 		ws.simulateMessage({ type: 'event', event: 'agent', payload: { x: 1 } });
 		expect(handler).not.toHaveBeenCalled();
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 时忽略 WS 业务消息(res)', () => {
-		const { conn, ws } = makeConnected();
-		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue() };
-		conn.setRtc(mockRtc);
-		conn.setTransportMode('rtc');
-
-		// 通过 RTC 发请求
-		conn.request('test').catch(() => {}); // disconnect 时会 reject
+	test('WS res 消息被忽略', () => {
+		const { conn, ws, mockRtc } = makeRtcReady();
+		conn.request('test').catch(() => {});
 		const reqId = mockRtc.send.mock.calls[0][0].id;
-
-		// WS 收到同 ID 的 res → 应被忽略
 		ws.simulateMessage({ type: 'res', id: reqId, ok: true, payload: {} });
-		// 请求应仍在 pending 中
 		expect(conn.__pending.has(reqId)).toBe(true);
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 时仍处理 rtc: 信令消息', () => {
+	test('WS 仍处理 rtc: 信令消息', () => {
 		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
 		const handler = vi.fn();
 		conn.on('rtc', handler);
-
 		ws.simulateMessage({ type: 'rtc:answer', payload: { sdp: 'x' } });
 		expect(handler).toHaveBeenCalled();
 		conn.disconnect();
 	});
 
-	test('transportMode=rtc 时仍处理 session.expired', () => {
+	test('WS 仍处理 session.expired', () => {
 		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
 		const handler = vi.fn();
 		conn.on('session-expired', handler);
-
 		ws.simulateMessage({ type: 'session.expired' });
 		expect(handler).toHaveBeenCalled();
 	});
 });
 
-describe('BotConnection – WS close 时 RTC 模式保留 RTC pending', () => {
+describe('BotConnection – WS close 不影响 DC pending', () => {
 	beforeEach(() => MockWebSocket.reset());
 
-	test('transportMode=rtc 时 WS close 仅 reject viaRtc=false 的请求', () => {
-		const { conn, ws } = makeConnected();
-		conn.setTransportMode('rtc');
-
-		const rtcWaiter = { reject: vi.fn(), timer: null, viaRtc: true };
-		const wsWaiter = { reject: vi.fn(), timer: null, viaRtc: false };
-		conn.__pending.set('rtc-1', rtcWaiter);
-		conn.__pending.set('ws-1', wsWaiter);
+	test('WS close 不 reject 任何 pending 请求', () => {
+		const { conn, ws, mockRtc } = makeRtcReady();
+		conn.request('slow').catch(() => {});
+		expect(conn.__pending.size).toBe(1);
 
 		ws.simulateClose(1006, 'abnormal');
 
-		expect(wsWaiter.reject).toHaveBeenCalled();
-		expect(rtcWaiter.reject).not.toHaveBeenCalled();
-		expect(conn.__pending.has('rtc-1')).toBe(true);
-		expect(conn.__pending.has('ws-1')).toBe(false);
-
-		// 清理以避免 unhandled rejection
-		conn.__pending.clear();
+		// pending 不受影响
+		expect(conn.__pending.size).toBe(1);
 		conn.disconnect();
 	});
 });
@@ -1428,33 +1207,16 @@ describe('BotConnection – forceReconnect()', () => {
 		expect(conn.state).toBe('connecting');
 	});
 
-	test('reject 所有非 RTC 的 pending 请求', () => {
-		const { conn } = makeConnected();
-		const waiter = { reject: vi.fn(), timer: null, viaRtc: false };
-		conn.__pending.set('req-1', waiter);
+	test('不影响 DC pending 请求', () => {
+		const { conn } = makeRtcReady();
+		conn.request('slow').catch(() => {});
+		expect(conn.__pending.size).toBe(1);
 
 		conn.forceReconnect();
 
-		expect(waiter.reject).toHaveBeenCalled();
-		expect(conn.__pending.size).toBe(0);
-	});
-
-	test('RTC 模式下保留 viaRtc=true 的 pending', () => {
-		const { conn } = makeConnected();
-		conn.setTransportMode('rtc');
-
-		const rtcWaiter = { reject: vi.fn(), timer: null, viaRtc: true };
-		const wsWaiter = { reject: vi.fn(), timer: null, viaRtc: false };
-		conn.__pending.set('rtc-1', rtcWaiter);
-		conn.__pending.set('ws-1', wsWaiter);
-
-		conn.forceReconnect();
-
-		expect(wsWaiter.reject).toHaveBeenCalled();
-		expect(rtcWaiter.reject).not.toHaveBeenCalled();
-		expect(conn.__pending.has('rtc-1')).toBe(true);
-
-		conn.__pending.clear();
+		// pending 不受影响（在 DC 上）
+		expect(conn.__pending.size).toBe(1);
+		conn.disconnect();
 	});
 
 	test('intentionalClose 时不 forceReconnect', () => {

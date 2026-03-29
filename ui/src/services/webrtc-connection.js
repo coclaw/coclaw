@@ -1,6 +1,6 @@
 /**
  * WebRTC DataChannel 连接管理（UI 侧）
- * Phase 2：业务 RPC 通信切换到 DataChannel，WS 作为兜底
+ * DataChannel 是唯一的业务 RPC 通道，WS 仅用于信令和保活哨兵。
  *
  * 连接恢复策略（§7.2）：
  * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈）
@@ -24,40 +24,23 @@ const rtcInstances = new Map();
 const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
 
 /**
- * 为指定 bot 初始化 RTC 并执行传输选择
+ * 为指定 bot 初始化 RTC 连接
  * WS 每次连通时调用；内含防重入守卫
- * 返回的 Promise 在传输模式确定后（'rtc' 或 'ws'）resolve
  * @param {string} botId
  * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {object} [callbacks]
- * @param {(mode: 'rtc'|'ws') => void} [callbacks.onTransportMode] - 传输模式变更
  * @param {(state: string, transportInfo: object|null) => void} [callbacks.onRtcStateChange] - RTC 状态变更
- * @returns {Promise<void>}
+ * @returns {Promise<'rtc'|'failed'>}
  */
-/**
- * @param {string} botId
- * @param {import('./bot-connection.js').BotConnection} botConn
- * @param {object} [callbacks]
- * @param {(mode: 'rtc'|'ws') => void} [callbacks.onTransportMode]
- * @param {(state: string, transportInfo: object|null) => void} [callbacks.onRtcStateChange]
- * @param {object} [opts]
- * @param {boolean} [opts.skipWsFallback] - 超时时不设置 transportMode='ws'，由调用方控制
- * @returns {Promise<'rtc'|'ws'>} 本次尝试的结果
- */
-export function initRtcAndSelectTransport(botId, botConn, callbacks = {}, opts = {}) {
+export function initRtc(botId, botConn, callbacks = {}) {
 	const existing = rtcInstances.get(botId);
 	if (existing && existing.state !== 'closed' && existing.state !== 'failed') {
-		return Promise.resolve(botConn.transportMode === 'rtc' ? 'rtc' : 'ws');
+		return Promise.resolve(existing.isReady ? 'rtc' : 'pending');
 	}
 	if (existing) existing.close();
 
 	const rtc = new WebRtcConnection(botId, botConn);
 	rtcInstances.set(botId, rtc);
-
-	function setTransportMode(mode) {
-		botConn.setTransportMode(mode);
-		callbacks.onTransportMode?.(mode);
-	}
 
 	return new Promise((resolveTransport) => {
 		let settled = false;
@@ -68,52 +51,50 @@ export function initRtcAndSelectTransport(botId, botConn, callbacks = {}, opts =
 			return true;
 		}
 
-		// 传输选择：15 秒内 DataChannel open → RTC，否则 → WS
+		// 15 秒内 DataChannel open → 'rtc'，否则 → 'failed'
 		const fallbackTimer = setTimeout(() => {
-			if (!settle('ws')) return;
+			if (!settle('failed')) return;
 			console.warn('[rtc] RTC 建连超时 botId=%s', botId);
 			rtc.close();
 			rtcInstances.delete(botId);
 			botConn.clearRtc();
-			if (!opts.skipWsFallback) setTransportMode('ws');
 		}, RTC_TRANSPORT_TIMEOUT_MS);
 
 		rtc.onReady = () => {
 			if (!settle('rtc')) return;
 			clearTimeout(fallbackTimer);
 			botConn.setRtc(rtc);
-			setTransportMode('rtc');
 		};
 
-		// 状态变更 → 通知调用方 + 不可恢复时降级
+		// 状态变更 → 通知调用方
 		rtc.onStateChange = () => {
 			callbacks.onRtcStateChange?.(rtc.state, rtc.transportInfo);
 
 			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置
 			if (rtc.state === 'failed') {
+				clearTimeout(fallbackTimer);
 				botConn.clearRtc();
-				setTransportMode('ws');
+				settle('failed');
 			}
 		};
 
 		httpClient.get('/api/v1/turn/creds')
 			.then((resp) => rtc.connect(resp.data))
 			.catch((err) => {
-				if (!settle('ws')) return;
+				if (!settle('failed')) return;
 				clearTimeout(fallbackTimer);
 				console.warn('[rtc] init failed botId=%s: %s', botId, err?.message);
 				rtc.close();
 				rtcInstances.delete(botId);
 				botConn.clearRtc();
-				if (!opts.skipWsFallback) setTransportMode('ws');
 			});
 	});
 }
 
-/**
- * @deprecated 使用 initRtcAndSelectTransport 代替
- */
-export const initRtcForBot = initRtcAndSelectTransport;
+/** @deprecated 使用 initRtc 代替 */
+export const initRtcAndSelectTransport = initRtc;
+/** @deprecated 使用 initRtc 代替 */
+export const initRtcForBot = initRtc;
 
 /** 关闭指定 bot 的 WebRTC 连接 */
 export function closeRtcForBot(botId) {

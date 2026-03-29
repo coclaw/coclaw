@@ -82,7 +82,7 @@
 - **行为**：
   - ICE restart（最多 2 次）→ `createOffer({ iceRestart: true })`
   - Full rebuild（最多 3 次）→ 销毁旧 PeerConnection，重新协商
-  - 全部用尽 → `state = 'failed'`，永久降级到 WS
+  - 全部用尽 → `state = 'failed'`，`clearRtc()` reject 所有挂起请求（`RTC_LOST`），等下次 WS 重连重试
 - **场景**：Web + Capacitor
 
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）
@@ -90,7 +90,7 @@
 - **文件**：`services/webrtc-connection.js`、`services/dc-chunking.js`
 - **机制**：DataChannel 通过分片（chunking）传输大 payload，无需 fallback 到 WS
 - **流控**：发送端 high water mark 1MB / low water mark 256KB，超限时暂停发送，`bufferedamountlow` 恢复
-- **降级**：当 `transportMode === 'rtc'` 但 DataChannel 不可用（`isReady=false`）时，`request()` 整体降级到 WS（永久切换 `__transportMode`）
+- **DC 不可用**：`request()` 直接 reject `DC_NOT_READY`，无 WS fallback
 - **场景**：Web + Capacitor
 
 ### 2.6 SSE 恢复

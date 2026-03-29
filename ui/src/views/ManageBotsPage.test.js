@@ -30,7 +30,7 @@ vi.mock('../stores/bots.store.js', () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, transportMode: null, rtcState: null, rtcTransportInfo: null, connState: 'disconnected' };
+			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcState: null, rtcTransportInfo: null, connState: 'disconnected' };
 			return map;
 		},
 		fetched: true, // SSE 快照已到达

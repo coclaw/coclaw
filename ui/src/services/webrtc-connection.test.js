@@ -1,6 +1,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
 	WebRtcConnection,
+	initRtc,
 	initRtcForBot,
 	initRtcAndSelectTransport,
 	closeRtcForBot,
@@ -95,10 +96,8 @@ function createMockBotConn() {
 			for (const cb of listeners[event] ?? []) cb(data);
 		},
 		__listeners: listeners,
-		// Phase 2 传输模式相关
 		setRtc: vi.fn(),
 		clearRtc: vi.fn(),
-		setTransportMode: vi.fn(),
 		__onRtcMessage: vi.fn(),
 	};
 }
@@ -896,7 +895,6 @@ describe('initRtcForBot / closeRtcForBot', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			await p;
 			expect(__getRtcInstance('bot1')).toBeUndefined();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('ws');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -1197,7 +1195,7 @@ describe('WebRtcConnection — send 流控', () => {
 	});
 });
 
-describe('initRtcAndSelectTransport — 传输选择', () => {
+describe('initRtc — RTC 建连', () => {
 	beforeEach(() => {
 		pcInstances.length = 0;
 		MockRTCPeerConnection.lastInstance = null;
@@ -1209,7 +1207,7 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		vi.useRealTimers();
 	});
 
-	test('DataChannel 在超时内 open → 设置 transportMode=rtc', async () => {
+	test('DataChannel 在超时内 open → resolve rtc', async () => {
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 		const { httpClient } = await import('./http.js');
@@ -1218,17 +1216,16 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		const botConn = createMockBotConn();
 
 		try {
-			const p = initRtcAndSelectTransport('bot1', botConn);
-			await vi.advanceTimersByTimeAsync(0); // flush connect promise
+			const p = initRtc('bot1', botConn);
+			await vi.advanceTimersByTimeAsync(0);
 
-			// 模拟 DataChannel open → onReady → Promise resolve
 			const dc = MockRTCPeerConnection.lastInstance.__channels[0];
 			dc.readyState = 'open';
 			dc.onopen();
-			await p;
+			const result = await p;
 
+			expect(result).toBe('rtc');
 			expect(botConn.setRtc).toHaveBeenCalled();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('rtc');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -1236,7 +1233,7 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		}
 	});
 
-	test('超时后降级到 WS', async () => {
+	test('超时后 resolve failed', async () => {
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 		const { httpClient } = await import('./http.js');
@@ -1245,15 +1242,14 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		const botConn = createMockBotConn();
 
 		try {
-			const p = initRtcAndSelectTransport('bot2', botConn);
-			await vi.advanceTimersByTimeAsync(0); // flush connect promise
+			const p = initRtc('bot2', botConn);
+			await vi.advanceTimersByTimeAsync(0);
 
-			// 不模拟 DataChannel open，推进到 15s 超时
 			await vi.advanceTimersByTimeAsync(15_000);
-			await p;
+			const result = await p;
 
+			expect(result).toBe('failed');
 			expect(botConn.clearRtc).toHaveBeenCalled();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('ws');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -1261,7 +1257,7 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		}
 	});
 
-	test('TURN 请求失败时降级到 WS', async () => {
+	test('TURN 请求失败时 resolve failed', async () => {
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 		const { httpClient } = await import('./http.js');
@@ -1270,12 +1266,12 @@ describe('initRtcAndSelectTransport — 传输选择', () => {
 		const botConn = createMockBotConn();
 
 		try {
-			const p = initRtcAndSelectTransport('bot3', botConn);
-			await vi.advanceTimersByTimeAsync(0); // flush rejected promise
-			await p;
+			const p = initRtc('bot3', botConn);
+			await vi.advanceTimersByTimeAsync(0);
+			const result = await p;
 
+			expect(result).toBe('failed');
 			expect(botConn.clearRtc).toHaveBeenCalled();
-			expect(botConn.setTransportMode).toHaveBeenCalledWith('ws');
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;

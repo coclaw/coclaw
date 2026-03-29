@@ -411,12 +411,10 @@ export function createChatStore(storeKey, opts = {}) {
 				this.__accepted = false;
 
 				const hasFiles = files?.length > 0;
-				// 用 transportMode 判断 RTC 可用性：transportMode='rtc' 表示 RTC 已建连，
-				// 比 isReady（仅检查 rpc DC 状态）更可靠——文件传输使用独立 DC
-				const rtcAvailable = hasFiles && conn.transportMode === 'rtc' && !!conn.rtc;
+				const rtcAvailable = hasFiles && !!conn.rtc?.isReady;
 				if (hasFiles) {
-					console.debug('[chat] rtcAvailable=%s transportMode=%s rtc=%s isReady=%s',
-						rtcAvailable, conn.transportMode, !!conn.rtc, conn.rtc?.isReady);
+					console.debug('[chat] rtcAvailable=%s rtc=%s isReady=%s',
+						rtcAvailable, !!conn.rtc, conn.rtc?.isReady);
 				}
 
 				// 构建乐观消息：图片仍生成 base64 用于即时预览

@@ -23,10 +23,13 @@ vi.mock('../utils/plugin-version.js', () => ({
 	MIN_PLUGIN_VERSION: '0.4.0',
 }));
 
-const mockInitRtcAndSelectTransport = vi.fn().mockResolvedValue('rtc');
+const __fakeRtc = { isReady: true, state: 'connected' };
+// 默认 mock：initRtc 成功时设置 conn.rtc，模拟 DC 就绪
+const mockInitRtc = vi.fn().mockImplementation(async (_botId, conn) => { conn.rtc = __fakeRtc; return 'rtc'; });
 const mockCloseRtcForBot = vi.fn();
 vi.mock('../services/webrtc-connection.js', () => ({
-	initRtcAndSelectTransport: (...args) => mockInitRtcAndSelectTransport(...args),
+	initRtc: (...args) => mockInitRtc(...args),
+	initRtc: (...args) => mockInitRtc(...args),
 	closeRtcForBot: (...args) => mockCloseRtcForBot(...args),
 }));
 
@@ -42,7 +45,7 @@ beforeEach(() => {
 	setActivePinia(createPinia());
 	vi.clearAllMocks();
 	mockManager.get.mockReset();
-	mockInitRtcAndSelectTransport.mockReset().mockResolvedValue(undefined);
+	mockInitRtc.mockReset().mockImplementation(async (_botId, conn) => { conn.rtc = __fakeRtc; return 'rtc'; });
 	mockCloseRtcForBot.mockReset();
 	__resetAwaitingConnIds();
 });
@@ -77,7 +80,7 @@ describe('setBots', () => {
 
 	test('preserves runtime state for existing bots', () => {
 		const store = useBotsStore();
-		store.byId['1'] = { id: '1', name: 'OldName', online: true, connState: 'connected', initialized: true, transportMode: 'rtc', pluginVersionOk: null, pluginInfo: null, rtcState: null, rtcTransportInfo: null, lastAliveAt: 0, disconnectedAt: 0, lastSeenAt: null, createdAt: null, updatedAt: null };
+		store.byId['1'] = { id: '1', name: 'OldName', online: true, connState: 'connected', initialized: true, pluginVersionOk: null, pluginInfo: null, rtcState: null, rtcTransportInfo: null, lastAliveAt: 0, disconnectedAt: 0, lastSeenAt: null, createdAt: null, updatedAt: null };
 		store.setBots([{ id: '1', name: 'NewName' }]);
 		expect(store.byId['1'].name).toBe('NewName');
 		expect(store.byId['1'].connState).toBe('connected');
@@ -151,13 +154,15 @@ describe('addOrUpdateBot', () => {
 			__onAlive: null,
 			disconnectedAt: 0,
 			lastAliveAt: 0,
+			rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
-		store.addOrUpdateBot({ id: '10', name: 'Fresh' });
+		store.addOrUpdateBot({ id: '10', name: 'Fresh', online: true });
 		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 
 		// 模拟连接就绪 → bridge 写入 connState → watcher 触发 __onBotConnected
+		fakeConn.state = 'connected';
 		stateCallback('connected');
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('10');
@@ -175,10 +180,10 @@ describe('addOrUpdateBot', () => {
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), request: vi.fn().mockResolvedValue({}), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), request: vi.fn().mockResolvedValue({}), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0, rtc: null, clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 
-		store.addOrUpdateBot({ id: '11', name: 'AlreadyReady' });
+		store.addOrUpdateBot({ id: '11', name: 'AlreadyReady', online: true });
 
 		// bridge syncs connState='connected' → watcher fires → __onBotConnected
 		await vi.waitFor(() => {
@@ -252,15 +257,13 @@ describe('removeBotById', () => {
 	test('cleans up all per-bot state in one operation', () => {
 		const store = useBotsStore();
 		store.setBots([{ id: '5', name: 'Bot' }, { id: '6', name: 'Bot2' }]);
-		store.byId['5'].transportMode = 'rtc';
 		store.byId['5'].rtcState = 'connected';
 		store.byId['5'].rtcTransportInfo = { localType: 'host' };
-		store.byId['6'].transportMode = 'ws';
 
 		store.removeBotById('5');
 
 		expect(store.byId['5']).toBeUndefined();
-		expect(store.byId['6'].transportMode).toBe('ws');
+		expect(store.byId['6']).toBeDefined();
 	});
 });
 
@@ -327,7 +330,7 @@ describe('updateBotOnline', () => {
 
 		const fakeConn = {
 			state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null,
-			disconnectedAt: 0, lastAliveAt: 0, rtc: null, transportMode: null, clearRtc: vi.fn(),
+			disconnectedAt: 0, lastAliveAt: 0, rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -348,7 +351,7 @@ describe('updateBotOnline', () => {
 		const store = useBotsStore();
 		const fakeConn = {
 			state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null,
-			disconnectedAt: 0, lastAliveAt: 0, rtc: null, transportMode: null, clearRtc: vi.fn(),
+			disconnectedAt: 0, lastAliveAt: 0, rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -390,7 +393,7 @@ describe('applySnapshot', () => {
 		store.byId['1'] = {
 			id: '1', name: 'old', online: false,
 			connState: 'connected', initialized: true,
-			transportMode: 'rtc', pluginVersionOk: true,
+			pluginVersionOk: true,
 		};
 
 		store.applySnapshot([{ id: '1', name: 'new', online: false }]);
@@ -400,7 +403,6 @@ describe('applySnapshot', () => {
 		// 运行时状态保留
 		expect(store.byId['1'].connState).toBe('connected');
 		expect(store.byId['1'].initialized).toBe(true);
-		expect(store.byId['1'].transportMode).toBe('rtc');
 	});
 
 	test('preserves online=true when connState is connected (same as loadBots)', () => {
@@ -537,14 +539,16 @@ describe('loadBots', () => {
 			__onAlive: null,
 			disconnectedAt: 0,
 			lastAliveAt: 0,
+			rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+		listBots.mockResolvedValue([{ id: '1', name: 'A', online: true }]);
 
 		await store.loadBots();
 		expect(fakeConn.on).toHaveBeenCalledWith('state', expect.any(Function));
 
 		// 模拟 WS 连接就绪
+		fakeConn.state = 'connected';
 		stateCallback('connected');
 
 
@@ -564,9 +568,9 @@ describe('loadBots', () => {
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0, rtc: null, clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+		listBots.mockResolvedValue([{ id: '1', name: 'A', online: true }]);
 
 		await store.loadBots();
 
@@ -589,9 +593,9 @@ describe('loadBots', () => {
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0, rtc: null, clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+		listBots.mockResolvedValue([{ id: '1', name: 'A', online: true }]);
 
 		await store.loadBots();
 
@@ -610,10 +614,10 @@ describe('loadBots', () => {
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		const fakeConn = {
 			state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null,
-			disconnectedAt: 0, lastAliveAt: 0, rtc: null, transportMode: null, clearRtc: vi.fn(),
+			disconnectedAt: 0, lastAliveAt: 0, rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '2', name: 'B', online: false }]);
+		listBots.mockResolvedValue([{ id: '2', name: 'B', online: true }]);
 
 		await store.loadBots();
 
@@ -636,9 +640,9 @@ describe('loadBots', () => {
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
 		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
-		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		const fakeConn = { state: 'connected', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0, rtc: null, clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
-		listBots.mockResolvedValue([{ id: '2', name: 'B' }]);
+		listBots.mockResolvedValue([{ id: '2', name: 'B', online: true }]);
 
 		await store.loadBots();
 
@@ -656,7 +660,7 @@ describe('loadBots', () => {
 		// 预设 bot，模拟 WS 已连接
 		store.byId['1'] = {
 			id: '1', name: 'A', online: true, connState: 'connected',
-			initialized: true, transportMode: null, pluginVersionOk: null,
+			initialized: true, pluginVersionOk: null,
 			pluginInfo: null, rtcState: null, rtcTransportInfo: null,
 			lastAliveAt: Date.now(), disconnectedAt: 0, lastSeenAt: null,
 			createdAt: null, updatedAt: null,
@@ -677,7 +681,7 @@ describe('loadBots', () => {
 		const store = useBotsStore();
 		store.byId['1'] = {
 			id: '1', name: 'A', online: true, connState: 'disconnected',
-			initialized: false, transportMode: null, pluginVersionOk: null,
+			initialized: false, pluginVersionOk: null,
 			pluginInfo: null, rtcState: null, rtcTransportInfo: null,
 			lastAliveAt: 0, disconnectedAt: 0, lastSeenAt: null,
 			createdAt: null, updatedAt: null,
@@ -731,7 +735,7 @@ describe('loadBots', () => {
 });
 
 describe('WebRTC 集成', () => {
-	test('__fullInit: bot online 时通过 __ensureRtc 调用 initRtcAndSelectTransport', async () => {
+	test('__fullInit: bot online 时通过 __ensureRtc 调用 initRtc', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -741,8 +745,7 @@ describe('WebRTC 集成', () => {
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 
 		const fakeConn = {
-			state: 'connected', rtc: null, transportMode: null,
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A', online: true }]);
@@ -750,14 +753,13 @@ describe('WebRTC 集成', () => {
 		await store.loadBots();
 
 		await vi.waitFor(() => {
-			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('1', fakeConn, expect.objectContaining({
-				onTransportMode: expect.any(Function),
+			expect(mockInitRtc).toHaveBeenCalledWith('1', fakeConn, expect.objectContaining({
 				onRtcStateChange: expect.any(Function),
-			}), expect.any(Object));
+			}));
 		});
 	});
 
-	test('__fullInit: bot offline 时不调用 initRtcAndSelectTransport', async () => {
+	test('__fullInit: bot offline 时不调用 initRtc', async () => {
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -767,8 +769,7 @@ describe('WebRTC 集成', () => {
 		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
 
 		const fakeConn = {
-			state: 'connected', rtc: null, transportMode: null,
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: null,			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '1', name: 'A', online: false }]);
@@ -776,7 +777,7 @@ describe('WebRTC 集成', () => {
 		await store.loadBots();
 		// 等一个 tick 确保异步不会触发
 		await new Promise((r) => setTimeout(r, 50));
-		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
 	test('WS 重连 + bot 在线 → __ensureRtc 触发 build', async () => {
@@ -790,32 +791,31 @@ describe('WebRTC 集成', () => {
 
 		let stateCallback;
 		const fakeConn = {
-			state: 'connecting', rtc: null, transportMode: null,
-			on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
+			state: 'connecting', rtc: null, on: vi.fn((event, cb) => { if (event === 'state') stateCallback = cb; }),
 			off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 		listBots.mockResolvedValue([{ id: '2', name: 'B', online: true }]);
 
 		await store.loadBots();
-		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 
 		// 首次 connected → __fullInit → __ensureRtc
 		fakeConn.state = 'connected';
 		stateCallback('connected');
 		await vi.waitFor(() => {
-			expect(mockInitRtcAndSelectTransport).toHaveBeenCalled();
+			expect(mockInitRtc).toHaveBeenCalled();
 		});
-		mockInitRtcAndSelectTransport.mockClear();
+		mockInitRtc.mockClear();
 
-		// 模拟断连 → 重连（已 initialized）→ 单次 initRtcAndSelectTransport（非 __ensureRtc）
+		// 模拟断连 → 重连（已 initialized）→ 单次 initRtc（非 __ensureRtc）
 		fakeConn.state = 'disconnected';
 		stateCallback('disconnected');
 		fakeConn.state = 'connected';
 		stateCallback('connected');
 		await vi.waitFor(() => {
-			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('2', fakeConn, expect.objectContaining({
-				onTransportMode: expect.any(Function),
+			expect(mockInitRtc).toHaveBeenCalledWith('2', fakeConn, expect.objectContaining({
+				onRtcStateChange: expect.any(Function),
 			}));
 		});
 	});
@@ -828,12 +828,11 @@ describe('WebRTC 集成', () => {
 		expect(mockCloseRtcForBot).toHaveBeenCalledWith('5');
 	});
 
-	test('byId 初始包含 connState、transportMode、rtcState 等字段', () => {
+	test('byId 初始包含 connState、rtcState 等字段', () => {
 		const store = useBotsStore();
 		store.setBots([{ id: '1', name: 'Bot' }]);
 		const bot = store.byId['1'];
 		expect(bot.connState).toBe('disconnected');
-		expect(bot.transportMode).toBeNull();
 		expect(bot.rtcState).toBeNull();
 		expect(bot.rtcTransportInfo).toBeNull();
 		expect(bot.pluginVersionOk).toBeNull();
@@ -843,23 +842,22 @@ describe('WebRTC 集成', () => {
 	test('bot offline→online → __ensureRtc 触发 close + build', async () => {
 		const store = useBotsStore();
 		const fakeConn = {
-			state: 'connected', rtc: null, transportMode: 'ws',
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: null,			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.setBots([{ id: '50', name: 'Bot', online: false }]);
 		store.byId['50'].connState = 'connected';
 		store.byId['50'].initialized = true;
-		mockInitRtcAndSelectTransport.mockClear();
+		mockInitRtc.mockClear();
 		mockCloseRtcForBot.mockClear();
 
 		store.updateBotOnline('50', true);
 		await vi.waitFor(() => {
 			expect(mockCloseRtcForBot).toHaveBeenCalledWith('50');
-			expect(mockInitRtcAndSelectTransport).toHaveBeenCalledWith('50', fakeConn, expect.objectContaining({
-				onTransportMode: expect.any(Function),
-			}), expect.any(Object));
+			expect(mockInitRtc).toHaveBeenCalledWith('50', fakeConn, expect.objectContaining({
+				onRtcStateChange: expect.any(Function),
+			}));
 		});
 	});
 
@@ -867,15 +865,14 @@ describe('WebRTC 集成', () => {
 		const store = useBotsStore();
 		const fakeRtc = { state: 'connected', attemptIceRestart: vi.fn() };
 		const fakeConn = {
-			state: 'connected', rtc: fakeRtc, transportMode: 'rtc',
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: fakeRtc,			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.setBots([{ id: '55', name: 'Bot', online: false }]);
 		store.byId['55'].connState = 'connected';
 		store.byId['55'].initialized = true;
-		mockInitRtcAndSelectTransport.mockClear();
+		mockInitRtc.mockClear();
 		mockCloseRtcForBot.mockClear();
 
 		store.updateBotOnline('55', true);
@@ -883,70 +880,67 @@ describe('WebRTC 集成', () => {
 		// RTC 已 connected → 无需 ICE restart、无需 rebuild
 		expect(fakeRtc.attemptIceRestart).not.toHaveBeenCalled();
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
 	test('bot offline→online + 已有 RTC → ICE restart 优先', async () => {
 		const store = useBotsStore();
 		const fakeRtc = { state: 'disconnected', attemptIceRestart: vi.fn().mockResolvedValue(true) };
 		const fakeConn = {
-			state: 'connected', rtc: fakeRtc, transportMode: 'rtc',
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: fakeRtc,			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.setBots([{ id: '60', name: 'Bot', online: false }]);
 		store.byId['60'].connState = 'connected';
 		store.byId['60'].initialized = true;
-		mockInitRtcAndSelectTransport.mockClear();
+		mockInitRtc.mockClear();
 		mockCloseRtcForBot.mockClear();
 
 		store.updateBotOnline('60', true);
 		await vi.waitFor(() => {
 			expect(fakeRtc.attemptIceRestart).toHaveBeenCalledWith(5000);
 		});
-		// ICE restart 成功 → 不调 closeRtcForBot 和 initRtcAndSelectTransport
+		// ICE restart 成功 → 不调 closeRtcForBot 和 initRtc
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-		expect(mockInitRtcAndSelectTransport).not.toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
 	test('bot offline→online + ICE restart 失败 → close + build', async () => {
 		const store = useBotsStore();
 		const fakeRtc = { state: 'disconnected', attemptIceRestart: vi.fn().mockResolvedValue(false) };
 		const fakeConn = {
-			state: 'connected', rtc: fakeRtc, transportMode: 'rtc',
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: fakeRtc,			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.setBots([{ id: '61', name: 'Bot', online: false }]);
 		store.byId['61'].connState = 'connected';
 		store.byId['61'].initialized = true;
-		mockInitRtcAndSelectTransport.mockClear();
+		mockInitRtc.mockClear();
 		mockCloseRtcForBot.mockClear();
 
 		store.updateBotOnline('61', true);
 		await vi.waitFor(() => {
 			expect(mockCloseRtcForBot).toHaveBeenCalledWith('61');
-			expect(mockInitRtcAndSelectTransport).toHaveBeenCalled();
+			expect(mockInitRtc).toHaveBeenCalled();
 		});
 	});
 
 	test('__ensureRtc 并发防护：同时触发只执行一次', async () => {
 		const store = useBotsStore();
 		let resolveInit;
-		mockInitRtcAndSelectTransport.mockImplementation(() => new Promise((r) => { resolveInit = r; }));
+		mockInitRtc.mockImplementation(() => new Promise((r) => { resolveInit = r; }));
 
 		const fakeConn = {
-			state: 'connected', rtc: null, transportMode: null,
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: null,			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.setBots([{ id: '70', name: 'Bot', online: false }]);
 		store.byId['70'].connState = 'connected';
 		store.byId['70'].initialized = true;
-		mockInitRtcAndSelectTransport.mockClear();
+		mockInitRtc.mockClear();
 		mockCloseRtcForBot.mockClear();
 
 		// 同时触发两次
@@ -956,21 +950,20 @@ describe('WebRTC 集成', () => {
 
 		await new Promise((r) => setTimeout(r, 50));
 		// 只应发起一次 initRtc（第二次被 _rtcInitInProgress 阻挡）
-		expect(mockInitRtcAndSelectTransport).toHaveBeenCalledTimes(1);
+		expect(mockInitRtc).toHaveBeenCalledTimes(1);
 		resolveInit('rtc');
 	});
 
 	test('__ensureRtc build 重试：首次超时后重试成功', async () => {
 		const store = useBotsStore();
 		let callCount = 0;
-		mockInitRtcAndSelectTransport.mockImplementation(() => {
+		mockInitRtc.mockImplementation(() => {
 			callCount++;
 			return Promise.resolve(callCount >= 2 ? 'rtc' : 'ws');
 		});
 
 		const fakeConn = {
-			state: 'connected', rtc: null, transportMode: null,
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
+			state: 'connected', rtc: null,			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0,
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -1007,7 +1000,7 @@ describe('重连后批量状态刷新', () => {
 			request: vi.fn().mockResolvedValue({}),
 			__onAlive: null,
 			lastAliveAt: 0,
-			rtc: null, transportMode: null, clearRtc: vi.fn(),
+			rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -1064,7 +1057,7 @@ describe('重连后批量状态刷新', () => {
 			request: vi.fn().mockResolvedValue({}),
 			__onAlive: null,
 			lastAliveAt: 0,
-			rtc: null, transportMode: null, clearRtc: vi.fn(),
+			rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -1114,7 +1107,7 @@ describe('__fullInit 失败重试', () => {
 			request: vi.fn().mockResolvedValue({}),
 			__onAlive: null,
 			lastAliveAt: 0,
-			rtc: null, transportMode: null, clearRtc: vi.fn(),
+			rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -1142,9 +1135,8 @@ describe('__fullInit 失败重试', () => {
 
 	test('bot 离线时 fullInit 因 pluginVersion 不可达而失败，bot 上线后通过 updateBotOnline 重试', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
-		// 首次：bot 离线，checkPluginVersion 返回 ok=false 且无 version
-		checkPluginVersion.mockResolvedValueOnce({ ok: false, version: undefined, clawVersion: undefined });
-		// 重试：bot 上线后成功
+		// 首次 __fullInit 因 bot 离线直接抛出 "Bot is offline"，不会到达 checkPluginVersion
+		// 重试：bot 上线后 checkPluginVersion 成功
 		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
 
 		const store = useBotsStore();
@@ -1164,7 +1156,7 @@ describe('__fullInit 失败重试', () => {
 			request: vi.fn().mockResolvedValue({}),
 			__onAlive: null,
 			lastAliveAt: 0,
-			rtc: null, transportMode: null, clearRtc: vi.fn(),
+			rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -1210,7 +1202,7 @@ describe('__fullInit 失败重试', () => {
 			request: vi.fn().mockResolvedValue({}),
 			__onAlive: null,
 			lastAliveAt: 0,
-			rtc: null, transportMode: null, clearRtc: vi.fn(),
+			rtc: null, clearRtc: vi.fn(),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 

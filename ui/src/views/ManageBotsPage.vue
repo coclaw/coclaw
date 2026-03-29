@@ -140,28 +140,24 @@ export default {
 		connLabel(botId) {
 			const id = String(botId);
 			const bot = this.botsStore?.byId[id];
-			if (!bot) return this.$t('bots.conn.ws');
-			const mode = bot.transportMode;
-			if (mode === 'rtc') {
-				if (bot.rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
-				if (bot.rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
-				const info = bot.rtcTransportInfo;
-				if (!info) return this.$t('bots.conn.rtcConnecting');
-				if (info.localType === 'relay') {
-					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
-					return rp === 'udp'
-						? this.$t('bots.conn.rtcRelay')
-						: this.$t('bots.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
-				}
-				const isLan = info.localType === 'host';
-				const proto = (info.localProtocol ?? 'udp').toLowerCase();
-				if (proto === 'udp') {
-					return this.$t(isLan ? 'bots.conn.rtcLan' : 'bots.conn.rtcP2P');
-				}
-				const key = isLan ? 'bots.conn.rtcLanProto' : 'bots.conn.rtcP2PProto';
-				return this.$t(key, { protocol: proto.toUpperCase() });
+			if (!bot) return this.$t('bots.conn.disconnected');
+			if (bot.rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
+			if (bot.rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
+			const info = bot.rtcTransportInfo;
+			if (!info) return this.$t('bots.conn.rtcConnecting');
+			if (info.localType === 'relay') {
+				const rp = (info.relayProtocol ?? 'udp').toLowerCase();
+				return rp === 'udp'
+					? this.$t('bots.conn.rtcRelay')
+					: this.$t('bots.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
 			}
-			return this.$t('bots.conn.ws');
+			const isLan = info.localType === 'host';
+			const proto = (info.localProtocol ?? 'udp').toLowerCase();
+			if (proto === 'udp') {
+				return this.$t(isLan ? 'bots.conn.rtcLan' : 'bots.conn.rtcP2P');
+			}
+			const key = isLan ? 'bots.conn.rtcLanProto' : 'bots.conn.rtcP2PProto';
+			return this.$t(key, { protocol: proto.toUpperCase() });
 		},
 		hasConnDetail(botId) {
 			return !!this.botsStore?.byId[String(botId)]?.rtcTransportInfo;
