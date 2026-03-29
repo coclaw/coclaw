@@ -1,5 +1,5 @@
 <template>
-	<div class="flex min-h-12 items-center gap-3 border-b border-default px-3 py-2">
+	<div class="flex min-h-12 items-center gap-3 border-b border-default pl-3 pr-2 md:pr-3 py-2">
 		<!-- 上传图标 -->
 		<UIcon name="i-lucide-upload" class="size-5 shrink-0 text-muted" />
 

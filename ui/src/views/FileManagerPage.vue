@@ -24,9 +24,9 @@
 		</header>
 
 		<!-- 面包屑 + 操作栏 -->
-		<div class="flex items-center border-b border-default">
+		<div class="mx-auto flex w-full max-w-4xl items-center border-b border-default">
 			<FileBreadcrumb :path="currentDir" class="flex-1" @navigate="navigateTo" />
-			<div class="flex shrink-0 items-center gap-1 pr-2">
+			<div class="flex shrink-0 items-center gap-1 pr-2 md:pr-3">
 				<UButton
 					data-testid="btn-mkdir"
 					variant="ghost" color="neutral" size="xs"
@@ -45,53 +45,55 @@
 
 		<!-- 文件列表 -->
 		<main class="flex-1 min-h-0 overflow-y-auto">
-			<!-- 连接中 -->
-			<div v-if="!connReady" class="px-4 py-8 text-center text-sm text-muted">
-				{{ $t('files.connecting') }}
-			</div>
-
-			<!-- 加载中 -->
-			<div v-else-if="loading && !entries.length" class="px-4 py-8 text-center text-sm text-muted">
-				{{ $t('files.loading') }}
-			</div>
-
-			<!-- 空目录（根目录且无内容时） -->
-			<div v-else-if="!currentDir && !entries.length && !uploadTasks.length" class="px-4 py-8 text-center text-sm text-muted">
-				{{ $t('files.emptyDir') }}
-			</div>
-
-			<!-- 列表 -->
-			<template v-else>
-				<!-- 返回上层（非根目录时显示） -->
-				<div
-					v-if="currentDir"
-					class="flex min-h-12 items-center gap-3 border-b border-default px-4 py-2 cursor-pointer transition-colors hover:bg-accented/80 active:bg-accented"
-					@click="goParent"
-				>
-					<UIcon name="i-lucide-corner-left-up" class="size-5 shrink-0 text-muted" />
-					<p class="text-sm text-muted">..</p>
+			<div class="mx-auto w-full max-w-4xl">
+				<!-- 连接中 -->
+				<div v-if="!connReady" class="px-4 py-8 text-center text-sm text-muted">
+					{{ $t('files.connecting') }}
 				</div>
-				<FileListItem
-					v-for="entry in sortedEntries"
-					:key="entry.name"
-					:entry="entry"
-					:download-task="getDownloadTask(entry)"
-					@open-dir="onOpenDir"
-					@download="onDownload"
-					@delete="onDelete"
-					@cancel-download="onCancelDownload"
-					@retry-download="onRetryDownload"
-				/>
-			</template>
 
-			<!-- 上传任务（虚拟条目） -->
-			<FileUploadItem
-				v-for="task in uploadTasks"
-				:key="task.id"
-				:task="task"
-				@cancel="onCancelUpload"
-				@retry="onRetryUpload"
-			/>
+				<!-- 加载中 -->
+				<div v-else-if="loading && !entries.length" class="px-4 py-8 text-center text-sm text-muted">
+					{{ $t('files.loading') }}
+				</div>
+
+				<!-- 空目录（根目录且无内容时） -->
+				<div v-else-if="!currentDir && !entries.length && !uploadTasks.length" class="px-4 py-8 text-center text-sm text-muted">
+					{{ $t('files.emptyDir') }}
+				</div>
+
+				<!-- 列表 -->
+				<template v-else>
+					<!-- 返回上层（非根目录时显示） -->
+					<div
+						v-if="currentDir"
+						class="flex min-h-12 items-center gap-3 border-b border-default px-4 py-2 cursor-pointer transition-colors hover:bg-accented/80 active:bg-accented"
+						@click="goParent"
+					>
+						<UIcon name="i-lucide-corner-left-up" class="size-5 shrink-0 text-muted" />
+						<p class="text-sm text-muted">..</p>
+					</div>
+					<FileListItem
+						v-for="entry in sortedEntries"
+						:key="entry.name"
+						:entry="entry"
+						:download-task="getDownloadTask(entry)"
+						@open-dir="onOpenDir"
+						@download="onDownload"
+						@delete="onDelete"
+						@cancel-download="onCancelDownload"
+						@retry-download="onRetryDownload"
+					/>
+				</template>
+
+				<!-- 上传任务（虚拟条目） -->
+				<FileUploadItem
+					v-for="task in uploadTasks"
+					:key="task.id"
+					:task="task"
+					@cancel="onCancelUpload"
+					@retry="onRetryUpload"
+				/>
+			</div>
 		</main>
 
 		<!-- 拖拽蒙层（事件由 root listener 统一处理，蒙层仅展示 + 保持 dragover） -->

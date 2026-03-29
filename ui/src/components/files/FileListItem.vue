@@ -1,6 +1,6 @@
 <template>
 	<div
-		class="flex min-h-12 items-center gap-3 border-b border-default pl-4 pr-2 py-2 cursor-pointer transition-colors hover:bg-accented/80 active:bg-accented"
+		class="flex min-h-12 items-center gap-3 border-b border-default pl-4 pr-2 md:pr-3 py-2 cursor-pointer transition-colors hover:bg-accented/80 active:bg-accented"
 		@click="onClick"
 	>
 		<!-- 图标 -->
