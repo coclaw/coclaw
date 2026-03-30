@@ -4,6 +4,7 @@ import { WebSocketServer } from 'ws';
 
 import { findBotById, findBotByTokenHash, updateBotName } from './repos/bot.repo.js';
 import { genTurnCreds } from './routes/turn.route.js';
+import { routeToUi, removeByBotId } from './rtc-signal-router.js';
 
 const botSockets = new Map();
 const uiSockets = new Map();
@@ -307,6 +308,12 @@ function onBotMessage(botId, ws, raw) {
 
 	// WebRTC 信令：Plugin → 定向投递到指定 UI socket
 	if (payload.type === 'rtc:answer' || payload.type === 'rtc:ice' || payload.type === 'rtc:closed') {
+		// 优先通过新信令路由表投递
+		if (routeToUi(payload.toConnId, payload)) {
+			rtcLogDebug(`${payload.type} routed via signal-router connId=${payload.toConnId}`);
+			return;
+		}
+		// 旧 per-bot WS fallback
 		const target = findUiSocketByConnId(botId, payload.toConnId);
 		if (target) {
 			try { target.send(JSON.stringify(payload)); } catch {}
@@ -615,6 +622,8 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 		return;
 	}
 	const key = String(botId);
+	// 清理信令路由表中该 bot 的所有 connId
+	removeByBotId(key);
 	// 清理可能残留的 grace period timer（网络断开后管理员解绑的场景）
 	if (pendingOffline.has(key)) {
 		clearTimeout(pendingOffline.get(key));
@@ -645,6 +654,8 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 		catch {}
 	}
 }
+
+export { forwardToBot };
 
 // 测试辅助导出（仅用于单元测试访问内部状态）
 export const __test = { uiSockets, botSockets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId };

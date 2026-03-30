@@ -1,5 +1,6 @@
 import { createApp } from './app.js';
 import { attachBotWsHub } from './bot-ws-hub.js';
+import { attachRtcSignalHub } from './rtc-signal-hub.js';
 
 export function startServer() {
 	const app = createApp();
@@ -10,6 +11,7 @@ export function startServer() {
 	});
 
 	attachBotWsHub(server, { sessionMiddleware: app.sessionMiddleware });
+	attachRtcSignalHub(server, { sessionMiddleware: app.sessionMiddleware });
 
 	return server;
 }
