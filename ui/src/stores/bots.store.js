@@ -221,6 +221,11 @@ export const useBotsStore = defineStore('bots', {
 				window.dispatchEvent(new CustomEvent('auth:session-expired'));
 			});
 
+			conn.on('bot-unbound', () => {
+				console.debug('[bots] bot-unbound via WS botId=%s', botId);
+				this.removeBotById(botId);
+			});
+
 			// event:agent 集中桥接（阶段三）
 			conn.on('event:agent', (payload) => {
 				useAgentRunsStore().__dispatch(payload);

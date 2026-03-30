@@ -732,6 +732,25 @@ describe('loadBots', () => {
 		expect(event).toBeTruthy();
 		dispatchSpy.mockRestore();
 	});
+
+	test('bridge 注册 bot-unbound 监听并调用 removeBotById', async () => {
+		const store = useBotsStore();
+		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+		const fakeConn = { state: 'connecting', on: vi.fn(), off: vi.fn(), __onAlive: null, disconnectedAt: 0, lastAliveAt: 0 };
+		mockManager.get.mockReturnValue(fakeConn);
+		listBots.mockResolvedValue([{ id: '1', name: 'A' }]);
+
+		await store.loadBots();
+
+		const unboundCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'bot-unbound');
+		expect(unboundCalls).toHaveLength(1);
+
+		// 触发后应调用 removeBotById 清理 store 状态
+		unboundCalls[0][1]();
+		expect(store.byId['1']).toBeUndefined();
+		expect(mockManager.disconnect).toHaveBeenCalledWith('1');
+		expect(mockCloseRtcForBot).toHaveBeenCalledWith('1');
+	});
 });
 
 describe('WebRTC 集成', () => {
