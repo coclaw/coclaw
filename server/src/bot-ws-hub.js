@@ -21,6 +21,17 @@ export const botStatusEmitter = new EventEmitter();
 
 const WS_VERBOSE = process.env.COCLAW_WS_DEBUG === '1';
 
+/** 毫秒时间戳 → 本地时区 HH:mm:ss.SSS */
+function fmtLocalTime(ts) {
+	const d = new Date(ts);
+	if (Number.isNaN(d.getTime())) return '??:??:??.???';
+	const hh = String(d.getHours()).padStart(2, '0');
+	const mm = String(d.getMinutes()).padStart(2, '0');
+	const ss = String(d.getSeconds()).padStart(2, '0');
+	const ms = String(d.getMilliseconds()).padStart(3, '0');
+	return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function wsLogInfo(message) {
 	console.info(`[coclaw/ws] ${message}`);
 }
@@ -311,6 +322,20 @@ function onBotMessage(botId, ws, raw) {
 	// 应用层心跳：直接回 pong，不转发给 UI
 	if (payload.type === 'ping') {
 		try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+		return;
+	}
+
+	// 远程日志：plugin 推送诊断信息，透传输出
+	if (payload.type === 'log') {
+		const logs = payload.logs;
+		if (Array.isArray(logs)) {
+			for (const entry of logs) {
+				if (entry && typeof entry === 'object' && typeof entry.text === 'string') {
+					const time = typeof entry.ts === 'number' ? fmtLocalTime(entry.ts) : '??:??:??.???';
+					console.info(`[remote][plugin][bot:${botId}] ${time} | ${entry.text}`);
+				}
+			}
+		}
 		return;
 	}
 
@@ -672,7 +697,7 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 	}
 }
 
-export { forwardToBot };
+export { forwardToBot, fmtLocalTime };
 
 // 测试辅助导出（仅用于单元测试访问内部状态）
 export const __test = { uiSockets, botSockets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId };

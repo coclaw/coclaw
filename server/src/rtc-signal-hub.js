@@ -9,7 +9,7 @@
 import { WebSocketServer } from 'ws';
 
 import { register, remove, removeByWs, lookup } from './rtc-signal-router.js';
-import { forwardToBot } from './bot-ws-hub.js';
+import { forwardToBot, fmtLocalTime } from './bot-ws-hub.js';
 import { genTurnCreds } from './routes/turn.route.js';
 import { findBotById } from './repos/bot.repo.js';
 
@@ -61,6 +61,20 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 	// 心跳
 	if (type === 'ping') {
 		try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+		return;
+	}
+
+	// 远程日志：UI 推送诊断信息，透传输出
+	if (type === 'log') {
+		const logs = payload.logs;
+		if (Array.isArray(logs)) {
+			for (const entry of logs) {
+				if (entry && typeof entry === 'object' && typeof entry.text === 'string') {
+					const time = typeof entry.ts === 'number' ? fmtLocalTime(entry.ts) : '??:??:??.???';
+					console.info(`[remote][ui][user:${userId}] ${time} | ${entry.text}`);
+				}
+			}
+		}
 		return;
 	}
 

@@ -63,6 +63,85 @@ test('handleMessage: ping → 回复 pong', async () => {
 	assert.equal(ws.sent[0].type, 'pong');
 });
 
+// --- type=log 远程日志 ---
+
+test('handleMessage: type=log 逐条输出到 console.info', async () => {
+	const ws = createMockWs();
+	const now = Date.now();
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		await handleMessage(ws, 'u1', JSON.stringify({
+			type: 'log',
+			logs: [
+				{ ts: now, text: 'sse.connected' },
+				{ ts: now + 1500, text: 'rtc.state connected' },
+			],
+		}), makeDeps());
+		assert.equal(logged.length, 2);
+		assert.match(logged[0], /\[remote\]\[ui\]\[user:u1\]/);
+		assert.match(logged[0], /\d{2}:\d{2}:\d{2}\.\d{3}/);
+		assert.match(logged[0], /sse\.connected/);
+		assert.match(logged[1], /rtc\.state/);
+	} finally {
+		console.info = origInfo;
+	}
+});
+
+test('handleMessage: type=log 忽略非 {ts,text} 条目', async () => {
+	const ws = createMockWs();
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		await handleMessage(ws, 'u1', JSON.stringify({
+			type: 'log',
+			logs: [
+				{ ts: Date.now(), text: 'valid' },
+				'bare string',
+				42,
+				null,
+				{ ts: Date.now(), text: 'also valid' },
+			],
+		}), makeDeps());
+		assert.equal(logged.length, 2);
+	} finally {
+		console.info = origInfo;
+	}
+});
+
+test('handleMessage: type=log logs 不是数组时静默忽略', async () => {
+	const ws = createMockWs();
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		await handleMessage(ws, 'u1', JSON.stringify({
+			type: 'log',
+			logs: 'not-array',
+		}), makeDeps());
+		assert.equal(logged.length, 0);
+	} finally {
+		console.info = origInfo;
+	}
+});
+
+test('handleMessage: type=log 不回复任何消息', async () => {
+	const ws = createMockWs();
+	const origInfo = console.info;
+	console.info = () => {};
+	try {
+		await handleMessage(ws, 'u1', JSON.stringify({
+			type: 'log',
+			logs: [{ ts: Date.now(), text: 'some line' }],
+		}), makeDeps());
+		assert.equal(ws.sent.length, 0);
+	} finally {
+		console.info = origInfo;
+	}
+});
+
 // --- 无效 JSON ---
 
 test('handleMessage: 无效 JSON 静默忽略', async () => {
