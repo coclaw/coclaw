@@ -271,10 +271,11 @@ export default {
 			// 等待 SSE 快照到达（bot 数据由 SSE 维护，无需主动 loadBots）
 			if (!this.botsStore?.fetched) {
 				await new Promise((resolve) => {
+					const timer = setTimeout(() => { unwatch(); resolve(); }, 10_000);
 					const unwatch = this.$watch(
 						() => this.botsStore?.fetched,
 						(val) => {
-							if (val) { unwatch(); resolve(); }
+							if (val) { clearTimeout(timer); unwatch(); resolve(); }
 						},
 						{ immediate: true },
 					);

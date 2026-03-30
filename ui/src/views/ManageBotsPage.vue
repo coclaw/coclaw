@@ -194,10 +194,11 @@ export default {
 				// bot 列表由 SSE 快照维护；等待 fetched 后只加载 dashboard
 				if (!this.botsStore?.fetched) {
 					await new Promise((resolve) => {
+						const timer = setTimeout(() => { unwatch(); resolve(); }, 10_000);
 						const unwatch = this.$watch(
 							() => this.botsStore?.fetched,
 							(val) => {
-								if (val) { unwatch(); resolve(); }
+								if (val) { clearTimeout(timer); unwatch(); resolve(); }
 							},
 							{ immediate: true },
 						);

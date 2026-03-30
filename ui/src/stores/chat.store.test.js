@@ -1093,6 +1093,40 @@ describe('useChatStore', () => {
 			expect(callCount).toBe(2);
 		});
 
+		test('DC_NOT_READY 错误码也触发断连重试', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].connState = 'connected';
+
+			let callCount = 0;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					callCount++;
+					if (callCount === 1) {
+						const err = new Error('DataChannel not ready');
+						err.code = 'DC_NOT_READY';
+						return Promise.reject(err);
+					}
+					options?.onAccepted?.({ runId: 'run-dc' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			mockConnections.set('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+			expect(callCount).toBe(2);
+		});
+
 		test('WS_CLOSED 重试时复用同一个 idempotencyKey', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);

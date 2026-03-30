@@ -17,6 +17,10 @@ import { useBotsStore } from './bots.store.js';
 
 const MSG_PAGE_SIZE = 50;
 
+/** DC/WS 断连相关的错误码 */
+const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED']);
+function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
+
 /**
  * 比较两条消息的 content 是否相同（兼容字符串和 block 数组）
  * @param {string|object[]} a
@@ -581,7 +585,7 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				catch (err) {
 					// lifecycle:end 已完成清理，WS 关闭尾巴错误忽略
-					if (this.__agentSettled && err?.code === 'WS_CLOSED') {
+					if (this.__agentSettled && isDisconnectError(err)) {
 						return { accepted: this.__accepted };
 					}
 					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
@@ -606,7 +610,7 @@ export function createChatStore(storeKey, opts = {}) {
 						return { accepted: this.__accepted };
 					}
 					// 已 accepted 但 agent 尚未完成时 WS 断连：等重连后 reconcile
-					if (err?.code === 'WS_CLOSED' && this.__accepted && !this.__agentSettled) {
+					if (isDisconnectError(err) && this.__accepted && !this.__agentSettled) {
 						console.debug('[chat] ws closed after accepted, waiting for reconnect to reconcile');
 						if (this.__streamingTimer) {
 							clearTimeout(this.__streamingTimer);
@@ -622,7 +626,7 @@ export function createChatStore(storeKey, opts = {}) {
 						return { accepted: true };
 					}
 					// 断连且尚未 accepted：等待重连后自动重试一次
-					if (err?.code === 'WS_CLOSED' && !this.__accepted && !this.__retried) {
+					if (isDisconnectError(err) && !this.__accepted && !this.__retried) {
 						console.debug('[chat] ws closed before accepted, waiting for reconnect to retry');
 						this.__cleanupStreaming();
 						this.sending = false;

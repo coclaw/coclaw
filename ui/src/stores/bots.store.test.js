@@ -422,7 +422,9 @@ describe('applySnapshot', () => {
 	test('removes bots not in snapshot and cleans up RTC/sessions/agentRuns', () => {
 		const store = useBotsStore();
 		const sessionsStore = useSessionsStore();
+		const agentsStore = useAgentsStore();
 		const agentRunsStore = useAgentRunsStore();
+		const removeAgentsSpy = vi.spyOn(agentsStore, 'removeByBot');
 		const removeSessionsSpy = vi.spyOn(sessionsStore, 'removeSessionsByBotId');
 		const removeAgentRunsSpy = vi.spyOn(agentRunsStore, 'removeByBot');
 		mockManager.get.mockReturnValue(null);
@@ -436,6 +438,7 @@ describe('applySnapshot', () => {
 		expect(store.byId['2']).toBeUndefined();
 		// 被移除的 bot 应清理关联资源
 		expect(mockCloseRtcForBot).toHaveBeenCalledWith('2');
+		expect(removeAgentsSpy).toHaveBeenCalledWith('2');
 		expect(removeSessionsSpy).toHaveBeenCalledWith('2');
 		expect(removeAgentRunsSpy).toHaveBeenCalledWith('2');
 	});
@@ -466,6 +469,17 @@ describe('applySnapshot', () => {
 });
 
 describe('loadBots', () => {
+	test('skips HTTP fetch when fetched is already true (SSE snapshot arrived first)', async () => {
+		const store = useBotsStore();
+		store.fetched = true;
+		store.byId = { '1': { id: '1', name: 'A' } };
+
+		await store.loadBots();
+
+		expect(listBots).not.toHaveBeenCalled();
+		expect(store.byId['1'].name).toBe('A');
+	});
+
 	test('fetches bots, normalizes id to string, and calls syncConnections', async () => {
 		const store = useBotsStore();
 		const bots = [{ id: 1, name: 'A' }, { id: '2', name: 'B' }];

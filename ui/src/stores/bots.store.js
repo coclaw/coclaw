@@ -151,6 +151,7 @@ export const useBotsStore = defineStore('bots', {
 			for (const oldId of Object.keys(this.byId)) {
 				if (!newById[oldId]) {
 					closeRtcForBot(oldId);
+					useAgentsStore().removeByBot(oldId);
 					useSessionsStore().removeSessionsByBotId(oldId);
 					useAgentRunsStore().removeByBot(oldId);
 					_bridgedConns.delete(oldId);
@@ -172,6 +173,7 @@ export const useBotsStore = defineStore('bots', {
 		 * 注：UI 主流程已通过 SSE bot.snapshot 获取 bot 列表，此方法作为后备保留。
 		 */
 		async loadBots() {
+			if (this.fetched) return;
 			this.loading = true;
 			try {
 				const bots = await listBots();
