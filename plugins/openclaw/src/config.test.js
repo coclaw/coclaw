@@ -85,7 +85,7 @@ test('readConfig should return empty entry when no bindings exist', async () => 
 	assert.equal(loaded.botId, undefined);
 });
 
-test('readConfig should delete corrupt file and return empty', async () => {
+test('readConfig should delete corrupt file, log warning, and return empty', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
@@ -93,10 +93,20 @@ test('readConfig should delete corrupt file and return empty', async () => {
 	await fs.mkdir(nodePath.dirname(bindingsPath), { recursive: true });
 	await fs.writeFile(bindingsPath, '{bad', 'utf8');
 
-	const loaded = await readConfig();
-	assert.deepEqual(loaded, {});
-	// 损坏文件应被删除
-	await assert.rejects(() => fs.access(bindingsPath), { code: 'ENOENT' });
+	const warns = [];
+	const origWarn = console.warn;
+	console.warn = (...args) => warns.push(args.join(' '));
+	try {
+		const loaded = await readConfig();
+		assert.deepEqual(loaded, {});
+		// 损坏文件应被删除
+		await assert.rejects(() => fs.access(bindingsPath), { code: 'ENOENT' });
+		// 应输出 warn 日志
+		assert.ok(warns.some((w) => w.includes('corrupt bindings file deleted') && w.includes(bindingsPath)), 'should warn about corrupt file');
+	}
+	finally {
+		console.warn = origWarn;
+	}
 });
 
 test('readConfig should treat empty file as empty object', async () => {

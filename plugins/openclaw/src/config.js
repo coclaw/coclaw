@@ -42,8 +42,10 @@ async function readJson(filePath) {
 	try {
 		return JSON.parse(raw);
 	}
-	catch {
+	catch (err) {
 		// 文件损坏，删除后当空文件处理
+		/* c8 ignore next -- ?./?? fallback */
+		console.warn?.(`[coclaw] corrupt bindings file deleted: ${filePath} (${String(err?.message ?? err)})`);
 		await fs.unlink(filePath).catch(() => {});
 		return {};
 	}

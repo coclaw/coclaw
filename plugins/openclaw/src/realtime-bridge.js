@@ -52,7 +52,8 @@ function defaultResolveGatewayAuthToken() {
 		const token = cfg?.gateway?.auth?.token;
 		return typeof token === 'string' && token.trim() ? token.trim() : '';
 	}
-	catch {
+	catch (err) {
+		console.warn?.(`[coclaw] resolve gateway auth token failed: ${String(err?.message ?? err)}`);
 		return '';
 	}
 }
@@ -450,8 +451,8 @@ export class RealtimeBridge {
 			try {
 				const ws = await this.__resolveWorkspace(id);
 				workspaces.push(ws);
-			} catch {
-				// 个别 agent 解析失败不阻断
+			} catch (err) {
+				this.__logDebug(`workspace resolve failed for agent=${id}: ${err?.message}`);
 			}
 		}
 		return workspaces;
@@ -523,7 +524,8 @@ export class RealtimeBridge {
 				params,
 			}));
 		}
-		catch {
+		catch (err) {
+			this.logger.warn?.(`[coclaw] gateway connect request failed: ${String(err?.message ?? err)}`);
 			this.gatewayConnectReqId = null;
 		}
 	}
@@ -592,15 +594,17 @@ export class RealtimeBridge {
 				return;
 			}
 			if (payload.type === 'res' || payload.type === 'event') {
+				// TODO: UI 已通过 DataChannel 接收业务消息，待旧版 UI 全部更新后移除此转发
 				this.__forwardToServer(payload);
 				this.webrtcPeer?.broadcast(payload);
 			}
 		});
 
 		ws.addEventListener('open', () => {
-			// wait for connect.challenge
+			this.__logDebug('gateway ws open, waiting for connect.challenge');
 		});
-		ws.addEventListener('close', () => {
+		ws.addEventListener('close', (ev) => {
+			this.logger.info?.(`[coclaw] gateway ws closed (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
 			this.gatewayWs = null;
 			this.gatewayReady = false;
 			this.gatewayConnectReqId = null;
@@ -610,7 +614,10 @@ export class RealtimeBridge {
 			}
 			this.gatewayPendingRequests.clear();
 		});
-		ws.addEventListener('error', () => {});
+		ws.addEventListener('error', (err) => {
+			/* c8 ignore next -- ?./?? fallback */
+			this.logger.warn?.(`[coclaw] gateway ws error: ${String(err?.message ?? err)}`);
+		});
 	}
 
 	async __waitGatewayReady(timeoutMs = 1500) {
@@ -837,6 +844,7 @@ export class RealtimeBridge {
 			}
 
 			if (event?.code === 4001 || event?.code === 4003) {
+				this.logger.warn?.(`[coclaw] server ws auth-close (code=${event.code}), clearing local token`);
 				try {
 					await this.__clearTokenLocal();
 				}

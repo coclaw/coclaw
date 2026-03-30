@@ -98,16 +98,21 @@ test('loadOrCreateDeviceIdentity 文件内容无效时重新生成', () => {
 	}
 });
 
-test('loadOrCreateDeviceIdentity 文件不可读时重新生成', () => {
+test('loadOrCreateDeviceIdentity 文件不可读时重新生成并输出 warn', () => {
 	const dir = makeTmpDir();
+	const warns = [];
+	const origWarn = console.warn;
+	console.warn = (...args) => warns.push(args.join(' '));
 	try {
 		const fp = nodePath.join(dir, 'device-identity.json');
 		fs.writeFileSync(fp, 'not-json!!!');
 		const id = loadOrCreateDeviceIdentity(fp);
 		assert.ok(id.deviceId);
 		assert.ok(id.publicKeyPem.includes('BEGIN PUBLIC KEY'));
+		assert.ok(warns.some((w) => w.includes('device identity read failed') && w.includes('regenerating')), 'should warn about regeneration');
 	}
 	finally {
+		console.warn = origWarn;
 		cleanup(dir);
 	}
 });

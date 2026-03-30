@@ -285,7 +285,7 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		const afterUnbound = await readConfig();
 		assert.equal(afterUnbound.token, undefined);
 
-		// close with 4003 should clear token
+		// close with 4003 should clear token and log auth-close
 		await writeConfig({ token: 't2' });
 		server.emit('close', { code: 4003, reason: 'revoked' });
 		for (let i = 0; i < 10; i += 1) {
@@ -293,10 +293,13 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		}
 		const afterClose = await readConfig();
 		assert.equal(afterClose.token, undefined);
+		assert.ok(logs.some((x) => String(x).includes('auth-close') && String(x).includes('4003')), 'should log auth-close event');
 
-		// gateway close/error handlers
-		gateway.emit('error', {});
-		gateway.emit('close', {});
+		// gateway close/error handlers — 应输出日志
+		gateway.emit('error', { message: 'gw-err' });
+		assert.ok(logs.some((x) => String(x).includes('gateway ws error')), 'should log gateway ws error');
+		gateway.emit('close', { code: 1006, reason: 'abnormal' });
+		assert.ok(logs.some((x) => String(x).includes('gateway ws closed')), 'should log gateway ws close');
 	}
 	finally {
 		await bridge.stop();
@@ -622,7 +625,7 @@ test('RealtimeBridge should handle gateway connect failure', async () => {
 	}
 });
 
-test('RealtimeBridge should handle gateway connect send failure', async () => {
+test('RealtimeBridge should handle gateway connect send failure and log warning', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -633,10 +636,12 @@ test('RealtimeBridge should handle gateway connect send failure', async () => {
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
 	const bridge = createBridge();
 
 	try {
-		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		await bridge.start({ logger, pluginConfig: {} });
 		const server = FakeWebSocket.instances[0];
 		server.readyState = 1;
 		server.emit('open', {});
@@ -648,6 +653,8 @@ test('RealtimeBridge should handle gateway connect send failure', async () => {
 		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge' }) });
 		// gatewayConnectReqId 应被清空
 		assert.equal(bridge.gatewayConnectReqId, null);
+		// 应输出 warn 日志
+		assert.ok(logs.some((x) => String(x).includes('gateway connect request failed')), 'should log connect request failure');
 		gateway.throwOnSend = false;
 	}
 	finally {
@@ -1410,12 +1417,14 @@ test('connect should gracefully handle device identity load failure', async () =
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
+	const logs = [];
+	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
 	const bridge = createBridge({
 		loadDeviceIdentity: () => { throw new Error('identity load boom'); },
 	});
 
 	try {
-		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		await bridge.start({ logger, pluginConfig: {} });
 		const server = FakeWebSocket.instances[0];
 		server.readyState = 1;
 		server.emit('open', {});
@@ -1428,6 +1437,8 @@ test('connect should gracefully handle device identity load failure', async () =
 		assert.equal(gateway.sent.length, 0, 'no connect request should be sent');
 		// gatewayConnectReqId 被清空
 		assert.equal(bridge.gatewayConnectReqId, null, 'gatewayConnectReqId should be null after failure');
+		// 应输出 warn 日志
+		assert.ok(logs.some((x) => String(x).includes('gateway connect request failed') && String(x).includes('identity load boom')), 'should log connect request failure with cause');
 		// bridge 不崩溃，仍可正常 stop
 	}
 	finally {

@@ -115,8 +115,10 @@ export function loadOrCreateDeviceIdentity(filePath) {
 			}
 		}
 	}
-	catch {
-		// 读取/解析失败时重新生成
+	catch (err) {
+		// 读取/解析失败时重新生成（将产生新 deviceId，需重新 enroll）
+		/* c8 ignore next -- ?./?? fallback */
+		console.warn?.(`[coclaw] device identity read failed, regenerating: ${String(err?.message ?? err)}`);
 	}
 
 	const identity = generateIdentity();

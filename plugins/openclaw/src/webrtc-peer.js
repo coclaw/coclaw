@@ -251,6 +251,10 @@ export class WebRtcPeer {
 			const session = this.__sessions.get(connId);
 			if (session && dc.label === 'rpc') session.rpcChannel = null;
 		};
+		dc.onerror = (err) => {
+			/* c8 ignore next -- ?./?? fallback */
+			this.logger.warn?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" error: ${String(err?.message ?? err)}`);
+		};
 		dc.onmessage = (event) => {
 			try {
 				reassembler.feed(event.data);

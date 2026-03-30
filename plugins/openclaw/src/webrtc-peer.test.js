@@ -182,12 +182,12 @@ test('WebRtcPeer: handleIce 无 session 时忽略', async () => {
 	});
 });
 
-test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close)', async () => {
+test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close/error)', async () => {
 	const PC = MockPCFactory();
 	const logs = [];
 	const logger = {
 		info: (msg) => logs.push(msg),
-		warn: () => {},
+		warn: (msg) => logs.push(msg),
 		error: () => {},
 		debug: (msg) => logs.push(msg),
 	};
@@ -200,7 +200,7 @@ test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close)', 
 	await peer.handleSignaling(makeOffer('c_030'));
 	const pc = PC.instances[0];
 
-	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
+	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, onerror: null };
 	pc.ondatachannel({ channel: fakeChannel });
 
 	assert.ok(logs.some((l) => l.includes('DataChannel "rpc" received')));
@@ -208,6 +208,10 @@ test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close)', 
 	// 触发 onopen
 	fakeChannel.onopen();
 	assert.ok(logs.some((l) => l.includes('DataChannel "rpc" opened')));
+
+	// 触发 onerror
+	fakeChannel.onerror({ message: 'dc-test-err' });
+	assert.ok(logs.some((l) => l.includes('DataChannel "rpc" error') && l.includes('dc-test-err')), 'should log DC error');
 
 	// 触发 onclose
 	fakeChannel.onclose();
