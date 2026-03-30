@@ -10,7 +10,7 @@ import {
 	buildDeviceAuthPayloadV3,
 } from './device-identity.js';
 import { getRuntime } from './runtime.js';
-import { setSender as setRemoteLogSender } from './remote-log.js';
+import { setSender as setRemoteLogSender, remoteLog } from './remote-log.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -151,6 +151,7 @@ export class RealtimeBridge {
 			this.serverHbTimer.unref?.();
 			return;
 		}
+		remoteLog(`ws.hb-timeout peer=server misses=${this.__serverHbMissCount}`);
 		this.logger.warn?.(
 			`[coclaw] server ws heartbeat timeout after ${this.__serverHbMissCount} consecutive misses (~${this.__serverHbMissCount * SERVER_HB_TIMEOUT_MS / 1000}s), closing`
 		);
@@ -565,6 +566,7 @@ export class RealtimeBridge {
 			if (payload.type === 'res' && this.gatewayConnectReqId && payload.id === this.gatewayConnectReqId) {
 				if (payload.ok === true) {
 					this.gatewayReady = true;
+					remoteLog('ws.connected peer=gateway');
 					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
 					this.gatewayConnectReqId = null;
 					this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
@@ -572,6 +574,7 @@ export class RealtimeBridge {
 				else {
 					this.gatewayReady = false;
 					this.gatewayConnectReqId = null;
+					remoteLog(`ws.connect-failed peer=gateway msg=${payload?.error?.message ?? 'unknown'}`);
 					this.logger.warn?.(`[coclaw] gateway connect failed: ${payload?.error?.message ?? 'unknown'}`);
 					try { ws.close(1008, 'gateway_connect_failed'); }
 					/* c8 ignore next */
@@ -605,6 +608,7 @@ export class RealtimeBridge {
 			this.__logDebug('gateway ws open, waiting for connect.challenge');
 		});
 		ws.addEventListener('close', (ev) => {
+			remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'}`);
 			this.logger.info?.(`[coclaw] gateway ws closed (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
 			this.gatewayWs = null;
 			this.gatewayReady = false;
@@ -617,6 +621,7 @@ export class RealtimeBridge {
 		});
 		ws.addEventListener('error', (err) => {
 			/* c8 ignore next -- ?./?? fallback */
+			remoteLog(`ws.error peer=gateway msg=${String(err?.message ?? err)}`);
 			this.logger.warn?.(`[coclaw] gateway ws error: ${String(err?.message ?? err)}`);
 		});
 	}
@@ -719,6 +724,7 @@ export class RealtimeBridge {
 		if (!this.started || this.reconnectTimer) {
 			return;
 		}
+		remoteLog(`ws.reconnecting peer=server delay=${RECONNECT_MS}ms`);
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.__connectIfNeeded().catch((err) => {
@@ -766,6 +772,7 @@ export class RealtimeBridge {
 				return;
 			}
 			this.logger.warn?.(`[coclaw] realtime bridge connect timeout, will retry: ${maskedTarget}`);
+			remoteLog('ws.connect-timeout peer=server');
 			this.serverWs = null;
 			this.__closeGatewayWs();
 			this.__scheduleReconnect();
@@ -778,6 +785,7 @@ export class RealtimeBridge {
 		sock.addEventListener('open', () => {
 			this.__clearConnectTimer();
 			this.logger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
+			remoteLog('ws.connected peer=server');
 			setRemoteLogSender((msg) => {
 				if (sock.readyState === 1) sock.send(JSON.stringify(msg));
 			});
@@ -790,6 +798,7 @@ export class RealtimeBridge {
 			try {
 				const payload = JSON.parse(String(event.data ?? '{}'));
 				if (payload?.type === 'bot.unbound') {
+					remoteLog('ws.bot-unbound');
 					await this.__clearTokenLocal(payload.botId);
 					try { sock.close(4001, 'bot_unbound'); }
 					/* c8 ignore next */
@@ -808,6 +817,7 @@ export class RealtimeBridge {
 						await this.webrtcPeer.handleSignaling(payload);
 					} catch (err) {
 						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found): ${err?.message}`);
+						remoteLog(`rtc.signaling-error msg=${err?.message}`);
 					}
 					return;
 				}
@@ -849,6 +859,7 @@ export class RealtimeBridge {
 			}
 
 			if (event?.code === 4001 || event?.code === 4003) {
+				remoteLog(`ws.auth-close peer=server code=${event.code}`);
 				this.logger.warn?.(`[coclaw] server ws auth-close (code=${event.code}), clearing local token`);
 				try {
 					await this.__clearTokenLocal();
@@ -861,6 +872,7 @@ export class RealtimeBridge {
 			}
 
 			if (!wasIntentional) {
+				remoteLog(`ws.disconnected peer=server code=${event?.code ?? 'unknown'} reason=${event?.reason ?? 'n/a'}`);
 				this.logger.warn?.(`[coclaw] realtime bridge closed (${event?.code ?? 'unknown'}: ${event?.reason ?? 'n/a'}), will retry in ${RECONNECT_MS}ms`);
 				this.__scheduleReconnect();
 			}
@@ -873,6 +885,7 @@ export class RealtimeBridge {
 			this.__clearServerHeartbeat();
 			this.__clearConnectTimer();
 			setRemoteLogSender(null);
+			remoteLog(`ws.error peer=server msg=${String(err?.message ?? err)}`);
 			this.logger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
 			this.serverWs = null;
 			this.__closeGatewayWs();

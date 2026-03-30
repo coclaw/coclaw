@@ -2375,11 +2375,13 @@ test('RealtimeBridge should clear remote-log sender on close', async () => {
 		await new Promise((r) => setTimeout(r, 10));
 
 		// 断开后缓冲的日志不应被发送
+		// close 事件触发 ws.disconnected + ws.reconnecting 两条 remoteLog（sender 已清除，留在 buffer）
+		const bufferedBeforeManual = remoteLogBuffer.length;
 		const sentBefore = server.sent.length;
 		remoteLog('after-close');
 		await new Promise((r) => setTimeout(r, 10));
 		assert.equal(server.sent.length, sentBefore, 'should not send after close');
-		assert.equal(remoteLogBuffer.length, 1, 'log should remain in buffer');
+		assert.equal(remoteLogBuffer.length, bufferedBeforeManual + 1, 'manual log should remain in buffer');
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
@@ -2402,11 +2404,13 @@ test('RealtimeBridge should clear remote-log sender on stop', async () => {
 
 		await bridge.stop();
 
+		// stop 触发 gateway ws close 等事件，产生的 remoteLog 留在 buffer（sender 已清除）
+		const bufferedBeforeManual = remoteLogBuffer.length;
 		const sentBefore = server.sent.length;
 		remoteLog('after-stop');
 		await new Promise((r) => setTimeout(r, 10));
 		assert.equal(server.sent.length, sentBefore, 'should not send after stop');
-		assert.equal(remoteLogBuffer.length, 1, 'log should remain in buffer');
+		assert.equal(remoteLogBuffer.length, bufferedBeforeManual + 1, 'manual log should remain in buffer');
 	} finally {
 		resetRemoteLog();
 		restoreHomedir(prevHome);

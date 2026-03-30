@@ -1,5 +1,6 @@
 import { RTCPeerConnection as WeriftRTCPeerConnection } from 'werift';
 import { chunkAndSend, createReassembler } from './utils/dc-chunking.js';
+import { remoteLog } from './remote-log.js';
 
 /**
  * 管理多个 WebRTC PeerConnection（以 connId 为粒度）。
@@ -50,6 +51,7 @@ export class WebRtcPeer {
 		session.pc.onconnectionstatechange = null;
 		session.pc.onicecandidate = null;
 		await session.pc.close();
+		remoteLog(`rtc.closed conn=${connId}`);
 		this.logger.info?.(`[coclaw/rtc] [${connId}] closed`);
 	}
 
@@ -82,6 +84,7 @@ export class WebRtcPeer {
 		if (isIceRestart) {
 			const existing = this.__sessions.get(connId);
 			if (existing) {
+				remoteLog(`rtc.ice-restart conn=${connId}`);
 				this.logger.info?.(`[coclaw/rtc] ICE restart offer from ${connId}, renegotiating`);
 				try {
 					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
@@ -96,6 +99,7 @@ export class WebRtcPeer {
 					return;
 				} catch (err) {
 					// ICE restart 协商失败 → 回退到 full rebuild
+					remoteLog(`rtc.ice-restart-failed conn=${connId}`);
 					this.logger.warn?.(`[coclaw/rtc] ICE restart failed for ${connId}, falling back to rebuild: ${err?.message}`);
 					await this.closeByConnId(connId);
 				}
@@ -103,6 +107,7 @@ export class WebRtcPeer {
 			// 无现有 session 或 ICE restart 失败 → 按 full rebuild 继续
 		}
 
+		remoteLog(`rtc.offer conn=${connId}`);
 		this.logger.info?.(`[coclaw/rtc] offer received from ${connId}, creating answer`);
 
 		// 同一 connId 重复 offer → 先关闭旧连接
@@ -151,6 +156,7 @@ export class WebRtcPeer {
 		// 连接状态变更（校验 pc 归属，防止旧 PC 异步回调删除新 session）
 		pc.onconnectionstatechange = () => {
 			const state = pc.connectionState;
+			remoteLog(`rtc.state conn=${connId} ${state}`);
 			this.logger.info?.(`[coclaw/rtc] [${connId}] connectionState: ${state}`);
 			if (state === 'connected') {
 				const nominated = pc.iceTransports?.[0]?.connection?.nominated;
@@ -159,6 +165,7 @@ export class WebRtcPeer {
 					const remoteC = nominated.remoteCandidate;
 					const localInfo = `${localC?.type ?? '?'} ${localC?.host ?? '?'}:${localC?.port ?? '?'}`;
 					const remoteInfo = `${remoteC?.type ?? '?'} ${remoteC?.host ?? '?'}:${remoteC?.port ?? '?'}`;
+					remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
 					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
 				}
 			} else if (state === 'failed' || state === 'closed') {
@@ -171,6 +178,7 @@ export class WebRtcPeer {
 
 		// 监听 UI 创建的 DataChannel
 		pc.ondatachannel = ({ channel }) => {
+			remoteLog(`dc.received conn=${connId} label=${channel.label}`);
 			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${channel.label}" received`);
 			if (channel.label === 'rpc') {
 				session.rpcChannel = channel;
@@ -191,6 +199,7 @@ export class WebRtcPeer {
 				toConnId: connId,
 				payload: { sdp: answer.sdp },
 			});
+			remoteLog(`rtc.answer conn=${connId}`);
 			this.logger.info?.(`[coclaw/rtc] answer sent to ${connId}`);
 		} catch (err) {
 			// SDP 协商失败 → 清理已入 Map 的 session，避免泄漏
@@ -243,15 +252,18 @@ export class WebRtcPeer {
 		}, { logger: this.logger });
 
 		dc.onopen = () => {
+			remoteLog(`dc.open conn=${connId} label=${dc.label}`);
 			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" opened`);
 		};
 		dc.onclose = () => {
+			remoteLog(`dc.closed conn=${connId} label=${dc.label}`);
 			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" closed`);
 			reassembler.reset();
 			const session = this.__sessions.get(connId);
 			if (session && dc.label === 'rpc') session.rpcChannel = null;
 		};
 		dc.onerror = (err) => {
+			remoteLog(`dc.error conn=${connId} label=${dc.label}`);
 			/* c8 ignore next -- ?./?? fallback */
 			this.logger.warn?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" error: ${String(err?.message ?? err)}`);
 		};

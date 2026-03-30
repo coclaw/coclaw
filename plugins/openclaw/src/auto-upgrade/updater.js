@@ -5,6 +5,7 @@ import { checkForUpdate } from './updater-check.js';
 import { spawnUpgradeWorker } from './updater-spawn.js';
 import { resolveStateDir } from './state.js';
 import { getRuntime } from '../runtime.js';
+import { remoteLog } from '../remote-log.js';
 
 const INITIAL_DELAY_MS = 5 * 60 * 1000; // 5 分钟
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时
@@ -203,6 +204,7 @@ export class AutoUpgradeScheduler {
 			// 若上一次 spawn 的 worker 仍在运行，跳过本次检查
 			const isLocked = this.__opts.isUpgradeLockedFn ?? isUpgradeLocked;
 			if (await isLocked({ logger: this.__logger })) {
+				remoteLog('upgrade.worker-locked');
 				this.__logger.info?.('[auto-upgrade] Upgrade worker still running, skipping check');
 				return;
 			}
@@ -221,11 +223,13 @@ export class AutoUpgradeScheduler {
 				return;
 			}
 
+			remoteLog(`upgrade.available from=${result.currentVersion} to=${result.latestVersion}`);
 			this.__logger.info?.(`[auto-upgrade] Update available: ${result.currentVersion} → ${result.latestVersion}`);
 
 			const getInstallPath = this.__opts.getPluginInstallPathFn ?? getPluginInstallPath;
 			const pluginDir = getInstallPath(this.__pluginId);
 			if (!pluginDir) {
+				remoteLog('upgrade.no-install-path');
 				this.__logger.warn?.('[auto-upgrade] Cannot determine plugin install path');
 				return;
 			}
@@ -245,6 +249,7 @@ export class AutoUpgradeScheduler {
 			await writeLock(child.pid);
 		}
 		catch (err) {
+			remoteLog(`upgrade.check-failed msg=${err.message}`);
 			this.__logger.warn?.(`[auto-upgrade] Check failed: ${err.message}`);
 		}
 		finally {

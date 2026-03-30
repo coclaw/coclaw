@@ -14,6 +14,7 @@ import {
 } from './updater.js';
 import { setRuntime } from '../runtime.js';
 import { addSkippedVersion } from './state.js';
+import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 
 // updater-check.js 的 getPackageInfo 默认读取 import.meta.dirname/../.. 即插件根目录的 package.json
 // 无需在 src/ 创建临时文件，直接使用真实 package.json
@@ -428,6 +429,7 @@ test('__check - skippedVersions 命中时记录跳过日志', async () => {
 
 test('__check - 有更新时调用 spawnUpgradeWorker 并写入锁', async () => {
 	resetEnv();
+	resetRemoteLog();
 	const tmpDir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = tmpDir;
 	try {
@@ -464,8 +466,11 @@ test('__check - 有更新时调用 spawnUpgradeWorker 并写入锁', async () =>
 		assert.ok(spawnCalls[0].args.includes('/opt/test-plugin'));
 		// writeUpgradeLockFn 应被调用，且传入 child.pid
 		assert.deepEqual(lockPids, [9999]);
+		// remoteLog 应推送 upgrade.available
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.available')));
 	} finally {
 		resetEnv();
+		resetRemoteLog();
 	}
 });
 
@@ -473,6 +478,7 @@ test('__check - 有更新时调用 spawnUpgradeWorker 并写入锁', async () =>
 
 test('__check - isUpgradeLockedFn 返回 true 时跳过检查', async () => {
 	resetEnv();
+	resetRemoteLog();
 	const tmpDir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = tmpDir;
 	try {
@@ -496,8 +502,11 @@ test('__check - isUpgradeLockedFn 返回 true 时跳过检查', async () => {
 		assert.equal(checkForUpdateCalled, false);
 		// 应记录 "still running" 日志
 		assert.ok(logger.infos.some(m => m.includes('still running')));
+		// remoteLog 应推送 upgrade.worker-locked
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.worker-locked'));
 	} finally {
 		resetEnv();
+		resetRemoteLog();
 	}
 });
 
@@ -505,6 +514,7 @@ test('__check - isUpgradeLockedFn 返回 true 时跳过检查', async () => {
 
 test('__check - 有更新但 pluginDir 为 null 时记录警告', async () => {
 	resetEnv();
+	resetRemoteLog();
 	const tmpDir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = tmpDir;
 	try {
@@ -521,8 +531,11 @@ test('__check - 有更新但 pluginDir 为 null 时记录警告', async () => {
 		await s.__check();
 
 		assert.ok(logger.warns.some(m => m.includes('Cannot determine plugin install path')));
+		// remoteLog 应推送 upgrade.no-install-path
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.no-install-path'));
 	} finally {
 		resetEnv();
+		resetRemoteLog();
 	}
 });
 
@@ -530,6 +543,7 @@ test('__check - 有更新但 pluginDir 为 null 时记录警告', async () => {
 
 test('__check - checkForUpdate 异常时记录警告（npm 错误）', async () => {
 	resetEnv();
+	resetRemoteLog();
 	const tmpDir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = tmpDir;
 	try {
@@ -546,13 +560,17 @@ test('__check - checkForUpdate 异常时记录警告（npm 错误）', async () 
 
 		assert.ok(logger.warns.some(m => m.includes('Check failed')));
 		assert.ok(logger.warns.some(m => m.includes('npm view failed')));
+		// remoteLog 应推送 upgrade.check-failed
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.check-failed')));
 	} finally {
 		resetEnv();
+		resetRemoteLog();
 	}
 });
 
 test('__check - checkForUpdate 异常时记录警告（execFileFn 同步抛异常）', async () => {
 	resetEnv();
+	resetRemoteLog();
 	const tmpDir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = tmpDir;
 
@@ -568,7 +586,10 @@ test('__check - checkForUpdate 异常时记录警告（execFileFn 同步抛异�
 	await s.__check();
 
 	assert.ok(logger.warns.some(m => m.includes('Check failed')));
+	// remoteLog 应推送 upgrade.check-failed
+	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.check-failed')));
 	resetEnv();
+	resetRemoteLog();
 });
 
 // --- 使用默认 shouldSkipFn（覆盖 ?? 回退分支） ---
