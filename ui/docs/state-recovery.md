@@ -100,6 +100,7 @@
   - **浏览器原生重连**：`EventSource` 断开后自动重连
   - **前台恢复强制重建**：`app:foreground` / `network:online` → `restart()`，销毁旧 EventSource 并新建
   - 两种路径的 `onopen` 后 server 推送 `bot.snapshot` 全量快照，UI 通过 `applySnapshot()` 同步
+- **SSE 重建不重置 botsStore**：`restart()` 仅销毁/重建 EventSource，不清空 `botsStore.byId`。旧数据保留直到新快照到达后被 `applySnapshot()` 全量替换。这避免了列表闪烁（清空→重填），也不影响正确性——新快照会修复所有不一致
 - **场景**：Web + Capacitor
 
 ### 2.7 SSE 心跳与超时检测
@@ -153,6 +154,9 @@
 - **文件**：`composables/use-bot-status-sse.js`、`stores/bots.store.js`（`applySnapshot`）
 - **触发**：SSE 连接/重连成功后，server 主动推送 `bot.snapshot` 事件
 - **行为**：`botsStore.applySnapshot(items)` 全量更新 bot 列表（同步连接、清理已移除 bot 的 RTC/sessions/agentRuns）
+- **SSE 是 bot 列表的唯一数据源**：无 HTTP 回退路径。SSE 与 HTTP 端点请求同一台 server、同一数据库，独立 HTTP 回退无额外容错价值
+- **`fetched` 状态语义**：`applySnapshot` 设置 `fetched = true`，标记"bot 列表数据就绪"。在单次登录会话内 `fetched` 一旦为 `true` 不会再变回 `false`（SSE 重建只会触发新的 `applySnapshot` 覆盖数据，不会重置 `fetched`）。仅 logout 时 `botsStore.$reset()` 恢复初始状态
+- **竞态保护**：server 端先 `await sendSnapshot()` 再 `registerSseClient()`，确保增量事件不会在快照之前到达客户端
 - **场景**：Web + Capacitor
 
 ### 3.6 Dashboard / ManageBots 前台恢复
