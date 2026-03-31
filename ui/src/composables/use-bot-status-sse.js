@@ -1,4 +1,5 @@
 import { onBeforeUnmount, ref } from 'vue';
+import { remoteLog } from '../services/remote-log.js';
 
 const HB_TIMEOUT_MS = 65_000; // server 30s 间隔，留 ~2x 余量
 const RESTART_THROTTLE_MS = 500; // restart 节流，防 app:foreground + network:online 同时触发
@@ -21,6 +22,7 @@ export function useBotStatusSse(botsStore) {
 		clearTimeout(hbTimer);
 		hbTimer = setTimeout(() => {
 			console.warn('[SSE] heartbeat timeout, restarting');
+			remoteLog('sse.hbTimeout');
 			connected.value = false;
 			restart();
 		}, HB_TIMEOUT_MS);
@@ -37,6 +39,7 @@ export function useBotStatusSse(botsStore) {
 
 		es.onopen = () => {
 			console.debug('[SSE] connected');
+			remoteLog('sse.connected');
 			connected.value = true;
 			resetHbTimer();
 		};
@@ -73,6 +76,7 @@ export function useBotStatusSse(botsStore) {
 
 		es.onerror = () => {
 			console.debug('[SSE] error/disconnected');
+			remoteLog('sse.error');
 			connected.value = false;
 			clearHbTimer();
 		};

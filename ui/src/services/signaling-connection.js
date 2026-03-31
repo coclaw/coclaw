@@ -37,6 +37,7 @@ function resolveSignalingWsUrl(httpBaseUrl) {
  * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
  * - `rtc`               — 入站 RTC 信令 (data: { botId, type, payload })
  * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source, elapsed })，仅移动端或 network:online
+ * - `log`               — 诊断日志 (data: string)，由 remote-log 桥接推送
  */
 export class SignalingConnection {
 	/**
@@ -240,6 +241,7 @@ export class SignalingConnection {
 		const prev = this.__state;
 		this.__state = newState;
 		console.debug('[SigConn] state %s→%s', prev, newState);
+		this.__emit('log', `sig.state ${prev}→${newState}`);
 		this.__emit('state', newState);
 	}
 
@@ -292,6 +294,7 @@ export class SignalingConnection {
 		ws.addEventListener('close', (ev) => {
 			if (this.__ws !== ws) return;
 			console.debug('[SigConn] ws close code=%d reason=%s', ev.code, ev.reason);
+			this.__emit('log', `sig.close code=${ev.code} reason=${ev.reason || 'none'}`);
 			this.__clearHeartbeat();
 			this.__clearProbe();
 			this.__ws = null;
@@ -370,6 +373,7 @@ export class SignalingConnection {
 		console.debug('[SigConn] hb miss %d/%d', this.__hbMissCount, HB_MAX_MISS);
 		if (this.__hbMissCount >= HB_MAX_MISS) {
 			console.warn('[SigConn] hb max miss → closing WS');
+			this.__emit('log', `sig.hbTimeout miss=${this.__hbMissCount}`);
 			const ws = this.__ws;
 			this.__ws = null;
 			this.__clearHeartbeat();
@@ -402,6 +406,7 @@ export class SignalingConnection {
 		const jitter = 1 + (Math.random() * 2 - 1) * RECONNECT_JITTER;
 		const delay = Math.min(this.__reconnectDelay * jitter, MAX_RECONNECT_MS);
 		console.debug('[SigConn] reconnect in %dms', Math.round(delay));
+		this.__emit('log', `sig.reconnect delay=${Math.round(delay)}ms`);
 		this.__reconnectTimer = setTimeout(() => {
 			this.__reconnectTimer = null;
 			if (!this.__intentionalClose) {
@@ -448,6 +453,7 @@ export class SignalingConnection {
 
 		if (this.__state === 'disconnected') {
 			console.debug('[SigConn] %s → immediate reconnect', source);
+			this.__emit('log', `sig.resume source=${source} state=disconnected action=reconnect`);
 			this.__clearReconnect();
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__doConnect();
@@ -463,9 +469,11 @@ export class SignalingConnection {
 		const elapsed = now - this.__lastAliveAt;
 		if (elapsed > ASSUME_DEAD_MS) {
 			console.debug('[SigConn] %s → assume dead (elapsed=%dms)', source, elapsed);
+			this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=forceReconnect`);
 			this.forceReconnect();
 		} else if (this.__lastAliveAt > 0 && elapsed > PROBE_TIMEOUT_MS) {
 			console.debug('[SigConn] %s → probe (elapsed=%dms)', source, elapsed);
+			this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=probe`);
 			this.probe();
 		}
 

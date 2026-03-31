@@ -84,6 +84,8 @@ export function useRemoteLog() {
 			instance.setSender(null);
 		}
 	});
+	// 桥接 SignalingConnection 的 log 事件（避免 sig→remote-log 循环引用）
+	sigConn.on('log', (text) => instance.log(text));
 	if (sigConn.state === 'connected') {
 		instance.setSender((msg) => sigConn.__sendRaw(msg));
 	}

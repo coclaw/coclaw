@@ -10,6 +10,10 @@ vi.mock('../stores/sessions.store.js', () => {
 	return { useSessionsStore: () => mockStore };
 });
 
+// mock remote-log（use-bot-status-sse 内部 import）
+const mockRemoteLog = vi.fn();
+vi.mock('../services/remote-log.js', () => ({ remoteLog: (...args) => mockRemoteLog(...args) }));
+
 import { onBeforeUnmount } from 'vue';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useBotStatusSse } from './use-bot-status-sse.js';
@@ -28,6 +32,7 @@ describe('useBotStatusSse', () => {
 			removeBotById: vi.fn(),
 		};
 		useSessionsStore().removeSessionsByBotId.mockReset();
+		mockRemoteLog.mockClear();
 
 		esInstance = {
 			onopen: null,
@@ -65,13 +70,13 @@ describe('useBotStatusSse', () => {
 		expect(onBeforeUnmount).toHaveBeenCalledWith(expect.any(Function));
 	});
 
-	test('should set connected=true on open', () => {
+	test('should set connected=true on open and emit remoteLog', () => {
 		const { connected } = createSse();
 
 		esInstance.onopen();
 
 		expect(connected.value).toBe(true);
-		expect(store.applySnapshot).not.toHaveBeenCalled();
+		expect(mockRemoteLog).toHaveBeenCalledWith('sse.connected');
 	});
 
 	test('should handle bot.snapshot event via applySnapshot', () => {
@@ -154,7 +159,7 @@ describe('useBotStatusSse', () => {
 		expect(store.updateBotOnline).not.toHaveBeenCalled();
 	});
 
-	test('should set connected=false on error and clear heartbeat timer', () => {
+	test('should set connected=false on error and emit remoteLog', () => {
 		const { connected } = createSse();
 
 		esInstance.onopen();
@@ -162,6 +167,7 @@ describe('useBotStatusSse', () => {
 
 		esInstance.onerror();
 		expect(connected.value).toBe(false);
+		expect(mockRemoteLog).toHaveBeenCalledWith('sse.error');
 	});
 
 	test('stop() should close EventSource and clear heartbeat timer', () => {
@@ -180,9 +186,10 @@ describe('useBotStatusSse', () => {
 		expect(MockEventSource).toHaveBeenCalledTimes(1);
 	});
 
-	test('heartbeat timeout should restart SSE after 65s of silence', () => {
+	test('heartbeat timeout should restart SSE after 65s of silence and emit remoteLog', () => {
 		createSse();
 		esInstance.onopen();
+		mockRemoteLog.mockClear();
 
 		expect(MockEventSource).toHaveBeenCalledTimes(1);
 
@@ -191,6 +198,7 @@ describe('useBotStatusSse', () => {
 
 		expect(esInstance.close).toHaveBeenCalled();
 		expect(MockEventSource).toHaveBeenCalledTimes(2);
+		expect(mockRemoteLog).toHaveBeenCalledWith('sse.hbTimeout');
 	});
 
 	test('heartbeat timeout should be reset by any incoming message', () => {

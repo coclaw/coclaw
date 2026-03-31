@@ -29,6 +29,10 @@ vi.mock('../services/signaling-connection.js', () => ({
 	useSignalingConnection: () => mockSigConn,
 }));
 
+// mock remote-log（bots.store 内部 import）
+const mockRemoteLog = vi.fn();
+vi.mock('../services/remote-log.js', () => ({ remoteLog: (...args) => mockRemoteLog(...args) }));
+
 vi.mock('../utils/plugin-version.js', () => ({
 	checkPluginVersion: vi.fn().mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' }),
 	MIN_PLUGIN_VERSION: '0.4.0',
@@ -60,6 +64,7 @@ beforeEach(() => {
 	mockSigConn.state = 'disconnected';
 	mockSigConn.ensureConnected.mockReset().mockResolvedValue(undefined);
 	for (const key of Object.keys(sigListeners)) delete sigListeners[key];
+	mockRemoteLog.mockClear();
 	__resetAwaitingConnIds();
 });
 
@@ -1827,5 +1832,79 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		mockInitRtc.mockClear();
 		vi.advanceTimersByTime(10_000);
 		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+});
+
+describe('remoteLog 诊断日志', () => {
+	test('bot online→offline 记录 remoteLog', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', online: true }]);
+		mockRemoteLog.mockClear();
+
+		store.updateBotOnline('1', false);
+		expect(mockRemoteLog).toHaveBeenCalledWith('bot.online true→false bot=1');
+	});
+
+	test('applySnapshot 记录 remoteLog', () => {
+		const store = useBotsStore();
+		mockRemoteLog.mockClear();
+
+		store.applySnapshot([{ id: '1', online: false }]);
+		expect(mockRemoteLog).toHaveBeenCalledWith('bot.snapshot count=1');
+	});
+
+	test('__ensureRtc 成功记录 bot.rtcReady', async () => {
+		const store = useBotsStore();
+		const conn = { on: vi.fn(), rtc: null, clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(conn);
+		store.setBots([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		mockRemoteLog.mockClear();
+
+		mockInitRtc.mockImplementation(async (_id, c) => { c.rtc = __fakeRtc; return 'rtc'; });
+		await store.__ensureRtc('1');
+		expect(mockRemoteLog).toHaveBeenCalledWith('bot.rtcReady bot=1');
+	});
+
+	test('__ensureRtc 失败记录 bot.rtcFailed', async () => {
+		const store = useBotsStore();
+		const conn = { on: vi.fn(), rtc: null, clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(conn);
+		store.setBots([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		mockRemoteLog.mockClear();
+
+		mockInitRtc.mockResolvedValue('failed');
+		await store.__ensureRtc('1');
+		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('bot.rtcFailed bot=1'));
+	});
+
+	test('removeBotById 记录 bot.removed', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1' }]);
+		mockRemoteLog.mockClear();
+
+		store.removeBotById('1');
+		expect(mockRemoteLog).toHaveBeenCalledWith('bot.removed bot=1');
+	});
+
+	test('addOrUpdateBot 记录 bot.upsert', () => {
+		const store = useBotsStore();
+		const conn = { on: vi.fn(), rtc: null, clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(conn);
+		mockRemoteLog.mockClear();
+
+		store.addOrUpdateBot({ id: '5', name: 'New' });
+		expect(mockRemoteLog).toHaveBeenCalledWith('bot.upsert bot=5');
+	});
+
+	test('__scheduleRetry 记录 bot.retryScheduled', () => {
+		const store = useBotsStore();
+		store.setBots([{ id: '1', online: true }]);
+		store.byId['1'].rtcPhase = 'failed';
+		mockRemoteLog.mockClear();
+
+		store.__scheduleRetry('1');
+		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('bot.retryScheduled bot=1'));
 	});
 });

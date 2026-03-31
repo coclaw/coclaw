@@ -118,6 +118,38 @@ describe('SignalingConnection – connect()', () => {
 	});
 });
 
+describe('SignalingConnection – log 事件', () => {
+	test('状态变更时发射 log 事件', () => {
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (text) => logs.push(text));
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		expect(logs).toEqual([
+			'sig.state disconnected→connecting',
+			'sig.state connecting→connected',
+		]);
+	});
+
+	test('WS 关闭时发射 log 事件', () => {
+		const logs = [];
+		const { conn, ws } = makeConnected();
+		conn.on('log', (text) => logs.push(text));
+		ws.simulateClose(1006, '');
+		expect(logs.some((l) => l.startsWith('sig.close'))).toBe(true);
+	});
+
+	test('心跳超时时发射 log 事件', () => {
+		const logs = [];
+		const { conn } = makeConnected();
+		conn.on('log', (text) => logs.push(text));
+		// 两次心跳超时 → max miss
+		vi.advanceTimersByTime(45_000);
+		vi.advanceTimersByTime(45_000);
+		expect(logs.some((l) => l.startsWith('sig.hbTimeout'))).toBe(true);
+	});
+});
+
 describe('SignalingConnection – disconnect()', () => {
 	test('主动断开后不自动重连', () => {
 		const { conn, ws } = makeConnected();

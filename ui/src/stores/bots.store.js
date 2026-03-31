@@ -10,6 +10,7 @@ import { useTopicsStore } from './topics.store.js';
 import { BRIEF_DISCONNECT_MS } from '../services/bot-connection.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
 import { initRtc, closeRtcForBot } from '../services/webrtc-connection.js';
+import { remoteLog } from '../services/remote-log.js';
 
 // 跟踪已桥接的 conn 实例（botId → BotConnection），避免重复注册
 const _bridgedConns = new Map();
@@ -100,6 +101,7 @@ export const useBotsStore = defineStore('bots', {
 			if (!bot?.id) return;
 			const id = String(bot.id);
 			console.debug('[bots] upsert id=%s', id);
+			remoteLog(`bot.upsert bot=${id}`);
 			if (this.byId[id]) {
 				// 更新已有 bot（保留运行时状态，跳过 server 不应覆盖的字段）
 				const existing = this.byId[id];
@@ -122,6 +124,7 @@ export const useBotsStore = defineStore('bots', {
 			const next = Boolean(online);
 			if (prev !== next) {
 				console.debug('[bots] online %s→%s id=%s', prev, next, id);
+				remoteLog(`bot.online ${prev}→${next} bot=${id}`);
 			}
 			bot.online = next;
 			if (!next) {
@@ -153,6 +156,7 @@ export const useBotsStore = defineStore('bots', {
 		},
 		removeBotById(botId) {
 			console.debug('[bots] remove id=%s', botId);
+			remoteLog(`bot.removed bot=${botId}`);
 			const id = String(botId ?? '');
 			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
@@ -201,6 +205,7 @@ export const useBotsStore = defineStore('bots', {
 			this.byId = newById;
 			this.fetched = true;
 			console.debug('[bots] snapshot applied %d bot(s)', arr.length);
+			remoteLog(`bot.snapshot count=${arr.length}`);
 
 			const botIds = arr.map((b) => String(b.id));
 			const manager = useBotConnections();
@@ -366,13 +371,16 @@ export const useBotsStore = defineStore('bots', {
 					}
 					this.__clearRetry(id);
 					this.__refreshIfStale(id);
+					remoteLog(`bot.rtcReady bot=${id}`);
 				} else if (bailedOut) {
 					const bot = this.byId[id];
 					if (bot) bot.rtcPhase = 'idle';
+					remoteLog(`bot.rtcBailOut bot=${id}`);
 				} else {
 					const bot = this.byId[id];
 					if (bot) bot.rtcPhase = 'failed';
 					console.warn('[bots] ensureRtc: all attempts exhausted, bot unreachable botId=%s', id);
+					remoteLog(`bot.rtcFailed bot=${id} retries=${RTC_BUILD_MAX_RETRIES}`);
 					this.__scheduleRetry(id);
 				}
 			} finally {
@@ -385,6 +393,7 @@ export const useBotsStore = defineStore('bots', {
 		 * 所有业务 RPC 通过 DC 发送，因此必须先等 RTC 就绪
 		 */
 		async __fullInit(id, conn) {
+			remoteLog(`bot.fullInit bot=${id}`);
 			const bot = this.byId[id];
 			if (!bot?.online) throw new Error('Bot is offline');
 
@@ -399,6 +408,7 @@ export const useBotsStore = defineStore('bots', {
 				bot.pluginVersionOk = info.ok;
 				bot.pluginInfo = { version: info.version, clawVersion: info.clawVersion };
 			}
+			remoteLog(`bot.pluginVersion bot=${id} ok=${info.ok} v=${info.version || '?'}`);
 			if (!info.ok) {
 				console.warn('[bots] plugin version %s for botId=%s', info.version ? 'outdated' : 'check failed (bot may be offline)', id);
 				if (!info.version) throw new Error('Bot is offline');
@@ -421,6 +431,7 @@ export const useBotsStore = defineStore('bots', {
 			state.count++;
 			if (state.count > MAX_BACKOFF_RETRIES) {
 				console.warn('[bots] backoff retries exhausted (%d) botId=%s', MAX_BACKOFF_RETRIES, id);
+				remoteLog(`bot.retryExhausted bot=${id} max=${MAX_BACKOFF_RETRIES}`);
 				_rtcRetryState.delete(id);
 				return;
 			}
@@ -431,6 +442,7 @@ export const useBotsStore = defineStore('bots', {
 			clearTimeout(state.timer);
 			console.debug('[bots] scheduling backoff retry %d/%d in %dms botId=%s',
 				state.count, MAX_BACKOFF_RETRIES, delay, id);
+			remoteLog(`bot.retryScheduled bot=${id} attempt=${state.count}/${MAX_BACKOFF_RETRIES} delay=${delay}ms`);
 			state.timer = setTimeout(() => {
 				state.timer = null;
 				if (!this.byId[id]?.online || this.byId[id]?.rtcPhase !== 'failed') {
@@ -465,6 +477,7 @@ export const useBotsStore = defineStore('bots', {
 
 				// PC 已 failed/closed → 直接 rebuild（外部事件，重置退避）
 				if (rtc.state === 'failed' || rtc.state === 'closed') {
+					remoteLog(`bot.recover bot=${id} reason=rtc_${rtc.state}`);
 					bot.rtcPhase = 'recovering';
 					this.__clearRetry(id);
 					this.__ensureRtc(id).catch(() => {});
@@ -472,6 +485,7 @@ export const useBotsStore = defineStore('bots', {
 				}
 				// elapsed > 30s → werift consent 已过期，直接 rebuild
 				if (elapsed > CONSENT_EXPIRY_MS) {
+					remoteLog(`bot.recover bot=${id} reason=consent_expired elapsed=${elapsed}ms`);
 					bot.rtcPhase = 'recovering';
 					this.__clearRetry(id);
 					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
@@ -480,6 +494,7 @@ export const useBotsStore = defineStore('bots', {
 				// probe DC 探测存活性
 				const alive = await rtc.probe(DC_PROBE_TIMEOUT_MS);
 				if (!alive && this.byId[id]) {
+					remoteLog(`bot.recover bot=${id} reason=probe_failed`);
 					this.byId[id].rtcPhase = 'recovering';
 					this.__clearRetry(id);
 					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});

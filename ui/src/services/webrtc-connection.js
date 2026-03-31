@@ -13,6 +13,7 @@
 import { httpClient } from './http.js';
 import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 import { useSignalingConnection } from './signaling-connection.js';
+import { remoteLog } from './remote-log.js';
 
 /** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链 */
 const DISCONNECTED_TIMEOUT_MS = 10_000;
@@ -611,5 +612,9 @@ export class WebRtcConnection {
 	/** @private */
 	__log(level, msg) {
 		console[level]?.(`[WebRTC] ${msg}`);
+		// 仅推送 warn + 关键 info（连接状态变更、DC 开关、offer）
+		if (level === 'warn' || level === 'info') {
+			remoteLog(`rtc.${level} bot=${this.botId} ${msg}`);
+		}
 	}
 }

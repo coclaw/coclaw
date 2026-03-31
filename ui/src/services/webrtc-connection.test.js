@@ -1,5 +1,8 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// mock remote-log（webrtc-connection 内部 import）
+vi.mock('./remote-log.js', () => ({ remoteLog: vi.fn() }));
+
 // mock signaling-connection 单例
 const mockSendSignaling = vi.fn().mockReturnValue(true);
 const mockEnsureConnected = vi.fn().mockResolvedValue(undefined);
