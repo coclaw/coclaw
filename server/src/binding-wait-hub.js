@@ -51,6 +51,7 @@ export function registerBindingWait({ code, userId, expiresAt }) {
 	// 过期后自动清理，防止内存泄漏（+60s 缓冲，确保末尾轮询已完成）
 	const ttlMs = state.expiresAt - Date.now() + 60_000;
 	state.cleanupTimer = setTimeout(() => bindingStates.delete(code), Math.max(ttlMs, 0));
+	state.cleanupTimer.unref();
 
 	return state.waitToken;
 }
@@ -73,6 +74,7 @@ export function markBindingBound({ code, botId, botName }) {
 	// 已完成的条目延迟清理（60s 缓冲，让迟到的 waiter 仍能获取结果）
 	clearTimeout(state.cleanupTimer);
 	state.cleanupTimer = setTimeout(() => bindingStates.delete(code), 60_000);
+	state.cleanupTimer.unref();
 }
 
 export function waitBindingResult({ code, waitToken, userId }) {
@@ -136,6 +138,7 @@ export function cancelBindingWait({ code, waitToken, userId }) {
 	// 已取消的条目延迟清理
 	clearTimeout(state.cleanupTimer);
 	state.cleanupTimer = setTimeout(() => bindingStates.delete(code), 60_000);
+	state.cleanupTimer.unref();
 
 	return true;
 }

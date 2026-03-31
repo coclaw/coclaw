@@ -50,6 +50,7 @@ export function registerClaimWait({ code, expiresAt }) {
 	// 过期后自动清理，防止内存泄漏（+60s 缓冲，确保末尾轮询已完成）
 	const ttlMs = state.expiresAt - Date.now() + 60_000;
 	state.cleanupTimer = setTimeout(() => claimStates.delete(code), Math.max(ttlMs, 0));
+	state.cleanupTimer.unref();
 
 	return state.waitToken;
 }
@@ -73,6 +74,7 @@ export function markClaimBound({ code, botId, token }) {
 	// 已完成的条目延迟清理（60s 缓冲，让迟到的 waiter 仍能获取结果）
 	clearTimeout(state.cleanupTimer);
 	state.cleanupTimer = setTimeout(() => claimStates.delete(code), 60_000);
+	state.cleanupTimer.unref();
 }
 
 // 仅提前 settle 当前 waiters，不改 status，不影响后续 markClaimBound。
