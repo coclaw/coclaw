@@ -1,5 +1,11 @@
 # @coclaw/server
 
+## 0.6.0
+
+### Minor Changes
+
+- feat(server): add RTC signaling hub, remote log channel, and SSE bot snapshot
+
 ## 0.5.3
 
 ### Patch Changes
