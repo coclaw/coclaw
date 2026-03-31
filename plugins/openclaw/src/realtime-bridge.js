@@ -81,6 +81,7 @@ export class RealtimeBridge {
 		this.__getBindingsPath = deps.getBindingsPath ?? getBindingsPath;
 		this.__resolveGatewayAuthToken = deps.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
 		this.__loadDeviceIdentity = deps.loadDeviceIdentity ?? loadOrCreateDeviceIdentity;
+		this.__preloadNdc = deps.preloadNdc ?? null;
 		this.__WebSocket = deps.WebSocket ?? null;
 
 		this.serverWs = null;
@@ -102,6 +103,8 @@ export class RealtimeBridge {
 		this.webrtcPeer = null;
 		this.__webrtcPeerReady = null;
 		this.__fileHandler = null;
+		this.__ndcPreloadPromise = null;
+		this.__ndcCleanup = null;
 	}
 
 	__resolveWebSocket() {
@@ -201,22 +204,30 @@ export class RealtimeBridge {
 	}
 
 	/** 懒加载 WebRtcPeer（promise 锁防并发重复创建） */
+	/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
 	async __initWebrtcPeer() {
+		// 等待 ndc 预加载结果，决定使用哪个 RTCPeerConnection 实现
+		let PeerConnection;
+		if (this.__ndcPreloadPromise) {
+			const result = await this.__ndcPreloadPromise;
+			if (result) {
+				PeerConnection = result.PeerConnection;
+				this.__ndcCleanup = result.cleanup;
+			}
+		}
+
 		const { WebRtcPeer } = await import('./webrtc-peer.js');
 		const { createFileHandler } = await import('./file-manager/handler.js');
-		/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
 		this.__fileHandler = createFileHandler({
 			resolveWorkspace: (agentId) => this.__resolveWorkspace(agentId),
 			logger: this.logger,
 		});
 		this.__fileHandler.scheduleTmpCleanup(() => this.__listAgentWorkspaces());
-		/* c8 ignore stop */
 		this.webrtcPeer = new WebRtcPeer({
 			onSend: (msg) => this.__forwardToServer(msg),
 			onRequest: (dcPayload) => {
 				void this.__handleGatewayRequestFromServer(dcPayload);
 			},
-			/* c8 ignore start -- 仅通过 WebRTC 路径触发，集成测试覆盖 */
 			onFileRpc: (payload, sendFn) => {
 				this.__fileHandler.handleRpcRequest(payload, sendFn)
 					.catch((err) => this.logger.warn?.(`[coclaw/file] rpc error: ${err.message}`));
@@ -224,10 +235,11 @@ export class RealtimeBridge {
 			onFileChannel: (dc) => {
 				this.__fileHandler.handleFileChannel(dc);
 			},
-			/* c8 ignore stop */
+			PeerConnection,
 			logger: this.logger,
 		});
 	}
+	/* c8 ignore stop */
 
 	/* c8 ignore next 7 -- 防御性检查，serverWs 通常在调用时可用 */
 	__forwardToServer(payload) {
@@ -900,6 +912,13 @@ export class RealtimeBridge {
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
 		this.started = true;
+		const preloadFn = this.__preloadNdc
+			?? (await import('./ndc-preloader.js')).preloadNdc;
+		this.__ndcPreloadPromise = preloadFn()
+			.catch((err) => {
+				this.logger.warn?.(`[coclaw] ndc preload failed: ${err?.message}`);
+				return null;
+			});
 		await this.__connectIfNeeded();
 	}
 
@@ -926,6 +945,22 @@ export class RealtimeBridge {
 			this.webrtcPeer = null;
 			this.__webrtcPeerReady = null;
 		}
+		// ndc cleanup：node-datachannel 的 native threads 必须通过 cleanup() 释放，
+		// 否则会阻止进程退出（issue #366）。优先使用已缓存的引用；
+		// 若 __initWebrtcPeer 未调用（无 WebRTC offer），从 preload 结果取。
+		// 注意：若进程被 SIGKILL 强杀，此处不会执行，OS 会回收资源。
+		// TODO: 若 OpenClaw 未来提供 graceful shutdown 钩子，应在钩子中也调用 cleanup。
+		let cleanupFn = this.__ndcCleanup;
+		if (!cleanupFn && this.__ndcPreloadPromise) {
+			const result = await this.__ndcPreloadPromise.catch(() => null);
+			cleanupFn = result?.cleanup;
+		}
+		if (cleanupFn) {
+			try { cleanupFn(); }
+			catch (err) { remoteLog(`ndc.cleanup-failed error=${err?.message}`); }
+		}
+		this.__ndcCleanup = null;
+		this.__ndcPreloadPromise = null;
 		if (this.__fileHandler) {
 			this.__fileHandler.cancelCleanup();
 			this.__fileHandler = null;

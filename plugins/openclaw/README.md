@@ -137,6 +137,25 @@ openclaw gateway call coclaw.upgradeHealth --json
 
 详见设计文档 `docs/auto-upgrade.md`。
 
+## WebRTC 实现
+
+插件支持两个 WebRTC 实现，运行时自动选择：
+
+1. **node-datachannel**（首选）— 基于 libdatachannel 的工业级实现，通过 vendor 预编译 native binary 部署。
+2. **werift**（回退）— 纯 JavaScript 实现，作为 node-datachannel 加载失败时的兜底。
+
+选择结果通过 remoteLog 上报（`ndc.loaded` 或 `ndc.using-werift`）。
+
+### vendor 预编译包
+
+由于 OpenClaw 使用 `--ignore-scripts` 安装插件，node-datachannel 的 native binary 需通过 vendor 预编译包提供：
+
+```bash
+bash scripts/download-ndc-prebuilds.sh   # 下载 5 平台预编译包到 vendor/ndc-prebuilds/
+```
+
+支持的平台：linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64。vendor 目录不入 git，通过 npm publish 的 `files` 字段包含在发布包中。
+
 ## 运行与排障日志
 
 ### 日志级别建议

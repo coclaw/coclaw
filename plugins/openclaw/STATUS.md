@@ -19,6 +19,14 @@
 
 ## 关键里程碑
 
+### node-datachannel 集成（2026-03-31）
+- **WebRTC 双实现**：新增 node-datachannel（基于 libdatachannel）作为首选 WebRTC 实现，加载失败时回退到 werift。
+- **预加载机制**：`ndc-preloader.js` 在 bridge `start()` 时后台预加载 node-datachannel，`__initWebrtcPeer()` 等待结果并注入 `PeerConnection`。
+- **vendor 预编译包**：因 OpenClaw 的 `--ignore-scripts` 策略，node-datachannel 的 native binary 通过 vendor 预编译包部署（5 平台：linux-x64/arm64、darwin-x64/arm64、win32-x64）。
+- **remoteLog 诊断**：预加载全程通过 remoteLog 上报（`ndc.preload` / `ndc.loaded` / `ndc.fallback` / `ndc.using-werift`），用于远程判断用户环境的 WebRTC 实际使用情况。
+- **cleanup 生命周期**：node-datachannel 的 `cleanup()` 在 bridge `stop()` 中调用，防止 native threads 阻止进程退出。
+- 详见方案文档：`plugins/openclaw/docs/node-datachannel-integration-plan.md`。
+
 ### 文件管理协议升级（2026-03-28）
 - **RPC 方法重命名**：`coclaw.file.*` → `coclaw.files.*`（复数形式，与设计文档对齐）。
 - **File DC method 重命名**：`read`/`write` → HTTP 动词 `GET`/`PUT`，新增 `POST`。
