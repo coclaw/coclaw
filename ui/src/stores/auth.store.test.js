@@ -56,6 +56,8 @@ import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
+import { useAgentsStore } from './agents.store.js';
+import { useTopicsStore } from './topics.store.js';
 
 describe('auth store', () => {
 	beforeEach(() => {
@@ -271,7 +273,7 @@ describe('auth store', () => {
 		expect(syncThemeModeFromSettings).toHaveBeenCalledWith(null);
 	});
 
-	test('logout should reset sessions and bots stores', async () => {
+	test('logout should reset all business stores', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -279,13 +281,19 @@ describe('auth store', () => {
 		// 预填充业务 store
 		const sessionsStore = useSessionsStore();
 		const botsStore = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const topicsStore = useTopicsStore();
 		sessionsStore.items = [{ sessionId: 's1' }];
 		botsStore.items = [{ id: 'b1' }];
+		agentsStore.byBot = { b1: { agents: [{ id: 'a1' }], defaultId: 'main', loading: false, fetched: true } };
+		topicsStore.byId = { t1: { topicId: 't1', agentId: 'main', title: 'test', createdAt: 1, botId: 'b1' } };
 
 		await store.logout();
 
 		expect(sessionsStore.items).toEqual([]);
 		expect(botsStore.items).toEqual([]);
+		expect(agentsStore.byBot).toEqual({});
+		expect(topicsStore.byId).toEqual({});
 	});
 
 	test('logout should disconnect all bot connections and signaling WS', async () => {

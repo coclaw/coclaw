@@ -19,6 +19,8 @@ import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useBotsStore } from './bots.store.js';
+import { useAgentsStore } from './agents.store.js';
+import { useTopicsStore } from './topics.store.js';
 
 function applyUserPreferences(user) {
 	syncThemeModeFromSettings(user?.settings);
@@ -110,6 +112,8 @@ export const useAuthStore = defineStore('auth', {
 			useBotConnections().disconnectAll();
 			useSignalingConnection().disconnect();
 			useSessionsStore().$reset();
+			useAgentsStore().$reset();
+			useTopicsStore().$reset();
 			useBotsStore().$reset();
 			console.log('[auth] logged out');
 			this.loading = false;
