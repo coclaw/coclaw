@@ -147,7 +147,6 @@ Server 的 connId 路由表仅记录 **当前可达** 的映射：
 | 事件 | 操作 |
 |------|------|
 | 收到含 connId 的 rtc:\* 消息 | 注册/更新 `connId → { ws, botId, userId }` |
-| 收到 `signal:resume` | 批量注册所有 connId |
 | WS 断开 | 移除该 WS 下所有 connId 条目 |
 | 收到 `rtc:closed` | 移除该 connId 条目 |
 | bot 解绑（来自 bot-ws-hub 事件） | 移除该 botId 下所有 connId 条目 |
@@ -177,8 +176,6 @@ GET /api/v1/rtc/signal
 
 | 消息类型 | 方向 | 用途 |
 |----------|------|------|
-| `signal:resume` | UI → Server | WS 重连后重新注册 connId 路由 |
-| `signal:resumed` | Server → UI | 确认注册完成 |
 | `rtc:offer` | UI → Server → Plugin | SDP offer |
 | `rtc:answer` | Plugin → Server → UI | SDP answer |
 | `rtc:ice` | 双向 | ICE Candidate 交换 |
@@ -191,16 +188,7 @@ GET /api/v1/rtc/signal
 **UI → Server**：
 
 ```js
-// WS 重连后重新注册 connId（首条消息）
-{
-  type: 'signal:resume',
-  connIds: {
-    '<botId>': '<connId>',
-    // ...可包含多个 bot
-  }
-}
-
-// RTC 信令（每条携带 botId + connId）
+// RTC 信令（每条携带 botId + connId，隐式注册路由）
 { type: 'rtc:offer', botId: '123', connId: 'c_xxx', payload: { sdp, iceRestart } }
 { type: 'rtc:ice',   botId: '123', connId: 'c_xxx', payload: { candidate, sdpMid, sdpMLineIndex } }
 { type: 'rtc:ready', botId: '123', connId: 'c_xxx' }
@@ -213,10 +201,7 @@ GET /api/v1/rtc/signal
 **Server → UI**：
 
 ```js
-// resume 确认
-{ type: 'signal:resumed' }
-
-// Plugin 回复的信令（透传，保持现有格式）
+// Plugin 回复的信令（透传）
 { type: 'rtc:answer', toConnId: 'c_xxx', payload: { sdp } }
 { type: 'rtc:ice',    toConnId: 'c_xxx', payload: { candidate, sdpMid, sdpMLineIndex } }
 { type: 'rtc:closed', toConnId: 'c_xxx' }
@@ -237,28 +222,11 @@ GET /api/v1/rtc/signal
 { type: 'rtc:closed', fromConnId: 'c_xxx' }
 ```
 
-### 4.4 `signal:resume` 协议
+### 4.4 connId 路由注册（隐式注册）
 
-**触发时机**：信令 WS 重连成功后，UI 发送的第一条消息。
+~~原设计包含 `signal:resume`/`signal:resumed` 协议用于 WS 重连后批量预注册 connId 路由。后分析发现此协议冗余：每条 `rtc:*` 消息已携带 connId 并触发隐式注册，且 Plugin 不会主动发信令（仅响应 offer），预注册窗口无实际价值。已移除。~~
 
-**Server 处理**：
-
-```
-对 connIds 中的每个 { botId, connId }：
-  验证 botId 归属 userId → 注册 connId → ws 路由条目
-回复 { type: 'signal:resumed' }
-```
-
-**UI 处理 `signal:resumed`**：
-
-信令通道已恢复，对每个 bot 检查 RTC 状态并触发恢复：
-- RTC connected + DC ready → 无操作
-- RTC disconnected → 触发 ICE restart（信令通道已恢复，可发出）
-- RTC failed/closed → full rebuild（复用同一 connId）
-
-### 4.5 首次信令与隐式注册
-
-UI 首次对某 bot 发起 RTC 建连时，直接发送 `rtc:offer`。Server 处理：
+Server 处理 `rtc:*` 消息时的路由注册：
 
 ```
 收到 rtc:*（含 botId + connId）：
@@ -267,9 +235,9 @@ UI 首次对某 bot 发起 RTC 建连时，直接发送 `rtc:offer`。Server 处
   if connId 已被其他 WS 占用 → 拒绝
 ```
 
-**隐式注册**：任何携带 connId 的 `rtc:*` 消息都会隐式注册/恢复路由条目。这意味着 WS 重连后即使不发 `signal:resume`，直接发 `rtc:offer` 也能正确工作。`signal:resume` 的价值在于**批量预注册**——确保 resume 到 rtc:offer 之间的窗口内 Plugin 回复（如 ICE candidate）能被正确投递。
+WS 重连后，`__onBotConnected` 触发 `__ensureRtc` → 发送 `rtc:offer` → Server 隐式注册 connId 路由。
 
-### 4.6 Bot 离线时的快速通知（可选优化）
+### 4.5 Bot 离线时的快速通知（可选优化）
 
 `forwardToBot` 返回 false（bot 离线）时，Server 可立即回复：
 
@@ -353,7 +321,6 @@ onUpgrade(/api/v1/rtc/signal)
 | UI 消息类型 | Server 动作 |
 |------------|------------|
 | `ping` | 回复 `pong` |
-| `signal:resume` | 批量 `register` connIds（逐个验证 botId 归属）→ 回复 `signal:resumed` |
 | `rtc:offer` | `register` connId → 注入 TURN 凭证（`genTurnCreds`）→ 附 `fromConnId` → `forwardToBot(botId, payload)` |
 | `rtc:ice` / `rtc:ready` | `lookup` connId → 附 `fromConnId` → `forwardToBot(botId, payload)` |
 | `rtc:closed` | `lookup` connId → 附 `fromConnId` → `forwardToBot` → `remove` connId |
@@ -414,7 +381,6 @@ Per-tab 单例，管理单一信令 WS，替代原来分散在各 BotConnection 
 - 信令 WS 连接管理（connect、reconnect、heartbeat）
 - connId 管理（`Map<botId, connId>`，生成、持有）
 - 信令消息收发（`sendSignaling(botId, type, payload)`）
-- 重连后自动 resume（发送 `signal:resume`，处理 `signal:resumed`）
 - 前台恢复（visibilitychange/app:foreground/network:online → WS probe + 通知 RTC 检查）
 
 **对外接口**：
@@ -505,9 +471,9 @@ signalingConn.sendSignaling(this.botId, 'rtc:offer', { sdp });
 ```
 信令 WS 断开
   → SignalingConnection 自动重连（指数退避）
-  → 重连成功 → 发送 signal:resume（批量注册所有 connId）
-  → 收到 signal:resumed
-  → 对每个 bot 按 RTC 状态触发恢复
+  → 重连成功 → state=connected → __onBotConnected
+  → 对每个在线 bot 调用 __ensureRtc（ICE restart → rebuild）
+  → rtc:offer 隐式注册 connId 路由
 ```
 
 ### 7.2 RTC 恢复（依赖信令通道）
@@ -678,17 +644,17 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 
 | 场景 | 处理 |
 |------|------|
-| WS 断开期间 Plugin 发来 `rtc:answer` | `routeRtcToUi` 找不到 connId 路由条目（已在 WS 断开时移除）→ 投递失败，丢弃。UI 重连后 resumed 触发 RTC 恢复 |
-| WS 重连后 resume 之前 Plugin 发来信令 | connId 路由尚未注册 → 投递失败。resume 到达后注册完成。窗口极短（ms 级） |
+| WS 断开期间 Plugin 发来 `rtc:answer` | `routeRtcToUi` 找不到 connId 路由条目（已在 WS 断开时移除）→ 投递失败，丢弃。UI 重连后 `__onBotConnected` → `__ensureRtc` → `rtc:offer` 隐式注册路由 |
+| WS 重连后首条 rtc:offer 之前 Plugin 发来信令 | connId 路由尚未注册 → 投递失败。Plugin 不会主动发信令（仅响应 offer），实际中此窗口无流量 |
 | 多 tab 同 bot | 各 tab 有独立 connId，互不冲突。Server 按 connId 精确投递 |
 | 单 tab 刷新 | 旧 WS close → 路由条目移除 → Plugin PC 最终 ICE failed 自清理。新页面生成新 connId，full rebuild |
-| bot 在 WS 断开期间解绑 | SSE 推送 bot.unbound → UI 清理。Server 移除该 bot 相关 connId 路由。WS 重连时 resume 中该 bot 的 connId 被忽略（botId 校验失败） |
-| Server 重启 | 所有 connId 路由丢失。UI resume 重新注册，无需区分"恢复"和"首次注册"。Plugin 侧旧 session 通过 ICE failure 自清理 |
+| bot 在 WS 断开期间解绑 | SSE 推送 bot.unbound → UI 清理。Server 移除该 bot 相关 connId 路由。WS 重连后 `__onBotConnected` 不会为已移除的 bot 触发恢复 |
+| Server 重启 | 所有 connId 路由丢失。UI `__ensureRtc` → `rtc:offer` 隐式重新注册。Plugin 侧旧 session 通过 ICE failure 自清理 |
 | connId 冲突 | Server 注册时检查 connId 是否已被其他 WS 占用，冲突则拒绝 |
 | ICE restart 时信令不可用 | `ensureConnected` 阻塞等待 WS 恢复或超时；超时则 `__onIceFailed` catch 不消耗配额，PC 停留在 failed 等 `__ensureRtc` 接管 |
 | Full rebuild 复用 connId | Plugin 收到同 connId 新 offer → `closeByConnId` 清理旧 session → 创建新 session。已有逻辑支持 |
 | ICE restart 时 Plugin 已无 session（极端：WS+RTC 同时断开 >30s） | Plugin 对未知 connId 的 ICE restart offer 会 fall through 创建新 PC → DTLS 不匹配 → ICE failed → UI 恢复级联 → full rebuild。多耗 ~2-5s，可接受 |
-| WS 重连后直接发 rtc:offer（跳过 resume） | 隐式注册 connId，正常工作。resume 的价值是批量预注册，避免此窗口内 Plugin 回复丢失 |
+| WS 重连后发 rtc:offer | 隐式注册 connId，正常工作。`signal:resume` 已移除，隐式注册是唯一路由恢复方式 |
 | Bot 离线时发送 rtc:offer | `forwardToBot` 返回 false。可选回复 `rtc:error`（`BOT_OFFLINE`）让 UI 快速感知，否则等 15s 超时 |
 | 用户 session 过期 / logout | SignalingConnection 断开信令 WS 并停止重连；所有 connId 释放；Server 侧路由条目随 WS 关闭自动清理 |
 
@@ -749,7 +715,7 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 
 | 风险 | 缓解 |
 |------|------|
-| Server 重启丢失所有 connId 路由 | UI resume 重新注册即可。Plugin 侧旧 session 通过 ICE failure 自清理（~30s），UI 的 RTC 恢复级联正常触发 full rebuild |
+| Server 重启丢失所有 connId 路由 | UI `__ensureRtc` → `rtc:offer` 隐式重新注册。Plugin 侧旧 session 通过 ICE failure 自清理（~30s），UI 的 RTC 恢复级联正常触发 full rebuild |
 | 单一 WS 成为单点 | 与原来 per-bot WS 相比，单一 WS 断开影响所有 bot 的信令。但 RTC DataChannel 独立于 WS，业务 RPC 不受影响 |
 | WS 断开期间信令丢失 | 不可避免，但 RTC 通常仍存活（ICE 层保活），WS 恢复后 ICE restart 可恢复 |
 | connId client 生成的唯一性 | UUID v4 碰撞概率可忽略；Server 注册时做冲突检查兜底 |

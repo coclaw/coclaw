@@ -2,7 +2,7 @@
  * RTC 信令 WS 连接（per-tab 单例）
  *
  * 职责：管理唯一的信令 WS（/api/v1/rtc/signal）、connId 管理、
- * 心跳、自动重连、resume 协议、前台恢复事件。
+ * 心跳、自动重连、前台恢复事件。
  * 无 Vue 依赖，纯 JS。
  */
 import { resolveApiBaseUrl } from './http.js';
@@ -35,7 +35,6 @@ function resolveSignalingWsUrl(httpBaseUrl) {
  * 事件:
  * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
  * - `rtc`               — 入站 RTC 信令 (data: { botId, type, payload })
- * - `resumed`           — WS 重连 + resume 完成
  * - `foreground-resume`  — 前台恢复，通知 RTC 层检查 PC 状态
  */
 export class SignalingConnection {
@@ -81,9 +80,6 @@ export class SignalingConnection {
 		this.__probeTimer = null;
 		/** @type {number} 上次 verify 成功的时间戳 */
 		this.__lastVerifiedAt = 0;
-
-		// 重连后是否需要 resume
-		this.__hasConnectedBefore = false;
 	}
 
 	/** @returns {'disconnected' | 'connecting' | 'connected'} */
@@ -138,9 +134,9 @@ export class SignalingConnection {
 		if (this.__state === 'connected') {
 			if (!verify) return;
 			// verify=true + connected → force-reconnect 检测假活
+			this.__lastVerifiedAt = Date.now();
 			this.forceReconnect();
 			await this.__waitForConnected(timeoutMs);
-			this.__lastVerifiedAt = Date.now();
 			return;
 		}
 
@@ -162,7 +158,6 @@ export class SignalingConnection {
 	disconnect() {
 		console.debug('[SigConn] disconnect');
 		this.__intentionalClose = true;
-		this.__hasConnectedBefore = false;
 		this.__clearReconnect();
 		this.__cleanup();
 		this.__setState('disconnected');
@@ -279,14 +274,9 @@ export class SignalingConnection {
 			if (this.__ws !== ws) return;
 			console.debug('[SigConn] ws open');
 			this.__setState('connected');
+			this.__lastVerifiedAt = Date.now();
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__startHeartbeat();
-
-			// 重连且有活跃 connId → 发送 resume
-			if (this.__hasConnectedBefore && this.__connIds.size > 0) {
-				this.__sendResume();
-			}
-			this.__hasConnectedBefore = true;
 		});
 
 		ws.addEventListener('message', (event) => {
@@ -324,13 +314,6 @@ export class SignalingConnection {
 
 		if (payload?.type === 'pong') return;
 
-		// resume 确认
-		if (payload?.type === 'signal:resumed') {
-			console.debug('[SigConn] signal:resumed');
-			this.__emit('resumed');
-			return;
-		}
-
 		// 入站 RTC 信令：rtc:answer / rtc:ice / rtc:closed
 		if (payload?.type?.startsWith('rtc:')) {
 			const connId = payload.toConnId;
@@ -355,12 +338,6 @@ export class SignalingConnection {
 
 		// 未识别消息
 		console.debug('[SigConn] unknown msg type=%s', payload?.type);
-	}
-
-	__sendResume() {
-		const connIds = Object.fromEntries(this.__connIds);
-		console.debug('[SigConn] sending signal:resume (%d connId(s))', this.__connIds.size);
-		this.__sendRaw({ type: 'signal:resume', connIds });
 	}
 
 	// --- 心跳 ---

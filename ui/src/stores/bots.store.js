@@ -192,15 +192,6 @@ export const useBotsStore = defineStore('bots', {
 				}
 			});
 
-			// WS 重连 + resume 完成 → 对在线 bot 恢复 RTC
-			sigConn.on('resumed', () => {
-				console.debug('[bots] signal:resumed → checking RTC for online bots');
-				for (const id of Object.keys(this.byId)) {
-					if (!this.byId[id]?.online) continue;
-					this.__ensureRtc(id).catch(() => {});
-				}
-			});
-
 			// 前台恢复 → 触发 ICE restart 检查
 			sigConn.on('foreground-resume', () => {
 				for (const id of Object.keys(this.byId)) {
@@ -272,22 +263,18 @@ export const useBotsStore = defineStore('bots', {
 					console.warn('[bots] fullInit failed for botId=%s: %s', id, err?.message);
 				});
 			} else {
-				console.debug('[bots] signaling reconnected botId=%s → re-establish RTC', id);
-				// 单次 RTC 尝试：initRtc 内部有幂等守卫（RTC 仍健康则 no-op）
-				// 不使用 __ensureRtc（3 轮重试过重，会在 tab 切换等场景造成长时间阻塞）
-				initRtc(id, conn, this.__rtcCallbacks(id)).then((result) => {
+				console.debug('[bots] signaling reconnected botId=%s → ensureRtc', id);
+				const disconnectedAt = bot.disconnectedAt;
+				this.__ensureRtc(id).then(() => {
 					const bot = this.byId[id];
-					if (result === 'rtc' && bot) bot.dcReady = true;
-					if (result !== 'rtc') return;
-					if (bot?.disconnectedAt > 0) {
-						const gap = Date.now() - bot.disconnectedAt;
-						if (gap >= BRIEF_DISCONNECT_MS) {
-							console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
-							useAgentsStore().loadAgents(id).catch(() => {});
-							useSessionsStore().loadAllSessions().catch(() => {});
-							useTopicsStore().loadAllTopics().catch(() => {});
-							useDashboardStore().loadDashboard(id).catch(() => {});
-						}
+					if (!bot || disconnectedAt <= 0) return;
+					const gap = Date.now() - disconnectedAt;
+					if (gap >= BRIEF_DISCONNECT_MS) {
+						console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
+						useAgentsStore().loadAgents(id).catch(() => {});
+						useSessionsStore().loadAllSessions().catch(() => {});
+						useTopicsStore().loadAllTopics().catch(() => {});
+						useDashboardStore().loadDashboard(id).catch(() => {});
 					}
 				}).catch(() => {});
 			}
@@ -331,9 +318,11 @@ export const useBotsStore = defineStore('bots', {
 				conn.clearRtc();
 
 				let result = 'failed';
+				let bailedOut = false;
 				for (let i = 0; i < RTC_BUILD_MAX_RETRIES; i++) {
-					if (!this.byId[id]) {
-						console.debug('[bots] ensureRtc: bail-out (bot removed) botId=%s', id);
+					if (!this.byId[id] || !this.byId[id].online) {
+						console.debug('[bots] ensureRtc: bail-out (bot removed or offline) botId=%s', id);
+						bailedOut = true;
 						break;
 					}
 					result = await initRtc(id, conn, this.__rtcCallbacks(id));
@@ -344,7 +333,7 @@ export const useBotsStore = defineStore('bots', {
 				if (result === 'rtc') {
 					const bot = this.byId[id];
 					if (bot) bot.dcReady = true;
-				} else {
+				} else if (!bailedOut) {
 					console.warn('[bots] ensureRtc: all attempts exhausted, bot unreachable botId=%s', id);
 				}
 			} finally {

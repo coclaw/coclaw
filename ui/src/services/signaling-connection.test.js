@@ -230,46 +230,34 @@ describe('SignalingConnection – 入站 RTC 信令', () => {
 	});
 });
 
-describe('SignalingConnection – resume 协议', () => {
-	test('首次连接不发送 signal:resume', () => {
-		const { ws } = makeConnected();
-		const msgs = ws.sent.map(s => JSON.parse(s));
-		expect(msgs.find(m => m.type === 'signal:resume')).toBeUndefined();
-	});
-
-	test('重连后发送 signal:resume', () => {
+describe('SignalingConnection – resume 协议已移除', () => {
+	test('重连后不发送 signal:resume', () => {
 		const { conn, ws } = makeConnected();
-		// 注册 connId
 		conn.getOrCreateConnId('bot1');
-		conn.getOrCreateConnId('bot2');
 		// 模拟 WS 断开 + 重连
 		ws.simulateClose(1006);
 		vi.advanceTimersByTime(2000);
 		const ws2 = MockWebSocket.lastInstance;
 		ws2.simulateOpen();
 		const msgs = ws2.sent.map(s => JSON.parse(s));
-		const resume = msgs.find(m => m.type === 'signal:resume');
-		expect(resume).toBeTruthy();
-		expect(Object.keys(resume.connIds).length).toBe(2);
-		expect(resume.connIds).toHaveProperty('bot1');
-		expect(resume.connIds).toHaveProperty('bot2');
+		expect(msgs.find(m => m.type === 'signal:resume')).toBeUndefined();
 	});
 
-	test('重连但无 connId 时不发送 resume', () => {
+	test('WS open 后 5s 内 ensureConnected verify 不触发 forceReconnect', async () => {
 		const { conn, ws } = makeConnected();
-		ws.simulateClose(1006);
-		vi.advanceTimersByTime(2000);
-		const ws2 = MockWebSocket.lastInstance;
-		ws2.simulateOpen();
-		expect(ws2.sent.length).toBe(0);
+		// WS 刚打开，__lastVerifiedAt 已被标记
+		const p = conn.ensureConnected({ verify: true });
+		// 不应创建新 WS（verify 被冷却降级）
+		expect(MockWebSocket.lastInstance).toBe(ws);
+		await p;
 	});
 
-	test('收到 signal:resumed 发出 resumed 事件', () => {
+	test('入站 signal:resumed 消息被忽略（不触发事件）', () => {
 		const { conn, ws } = makeConnected();
 		const events = [];
 		conn.on('resumed', () => events.push(true));
 		ws.simulateMessage({ type: 'signal:resumed' });
-		expect(events.length).toBe(1);
+		expect(events.length).toBe(0);
 	});
 });
 
@@ -428,6 +416,8 @@ describe('SignalingConnection – ensureConnected', () => {
 
 	test('connected + verify=true → forceReconnect → 等新 WS → resolve', async () => {
 		const { conn } = makeConnected();
+		// 等冷却过期（WS open 时标记了 __lastVerifiedAt）
+		vi.advanceTimersByTime(5001);
 		const p = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
 		// forceReconnect 创建了新 WS
 		expect(MockWebSocket.instances.length).toBe(2);
@@ -441,7 +431,8 @@ describe('SignalingConnection – ensureConnected', () => {
 
 	test('connected + verify=true 冷却期内 → 立即 resolve（不 reconnect）', async () => {
 		const { conn } = makeConnected();
-		// 第一次 verify
+		// 等冷却过期后做第一次 verify
+		vi.advanceTimersByTime(5001);
 		const p1 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
 		MockWebSocket.lastInstance.simulateOpen();
 		await p1;
@@ -454,12 +445,13 @@ describe('SignalingConnection – ensureConnected', () => {
 
 	test('connected + verify=true 冷却期后 → 再次 forceReconnect', async () => {
 		const { conn } = makeConnected();
-		// 第一次 verify
+		// 等冷却过期后做第一次 verify
+		vi.advanceTimersByTime(5001);
 		const p1 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
 		MockWebSocket.lastInstance.simulateOpen();
 		await p1;
 		const countAfterFirst = MockWebSocket.instances.length;
-		// 超过冷却期（6s > VERIFY_COOLDOWN_MS 5s；心跳 25s/45s 不受影响）
+		// 超过冷却期（6s > VERIFY_COOLDOWN_MS 5s）
 		vi.advanceTimersByTime(6000);
 		// 第二次 verify：冷却已过，应触发 forceReconnect
 		const p2 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });

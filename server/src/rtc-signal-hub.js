@@ -78,29 +78,6 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		return;
 	}
 
-	// WS 重连后批量恢复 connId 注册
-	if (type === 'signal:resume') {
-		const connIds = payload.connIds;
-		let count = 0;
-		if (connIds && typeof connIds === 'object' && !Array.isArray(connIds)) {
-			for (const [botId, connId] of Object.entries(connIds)) {
-				const owned = await validateBotOwnership(botId, userId, findBotByIdFn);
-				if (!owned) {
-					sigLogWarn(`resume: botId=${botId} not owned by userId=${userId}, skipped`);
-					continue;
-				}
-				if (!register(connId, ws, botId, userId)) {
-					sigLogWarn(`resume: connId=${connId} occupied by another WS, skipped`);
-					continue;
-				}
-				count++;
-			}
-		}
-		try { ws.send(JSON.stringify({ type: 'signal:resumed' })); } catch {}
-		sigLogInfo(`signal:resumed userId=${userId} registered=${count}/${Object.keys(connIds ?? {}).length}`);
-		return;
-	}
-
 	// RTC 信令：需要 botId + connId
 	const { botId, connId } = payload;
 	if (!botId || !connId) {

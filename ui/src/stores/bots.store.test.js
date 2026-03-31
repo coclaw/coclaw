@@ -29,10 +29,6 @@ function fireSigState(s) {
 	mockSigConn.state = s;
 	for (const cb of sigListeners['state'] ?? []) cb(s);
 }
-/** 触发 resumed 事件 */
-function fireSigResumed() {
-	for (const cb of sigListeners['resumed'] ?? []) cb();
-}
 
 vi.mock('../services/signaling-connection.js', () => ({
 	useSignalingConnection: () => mockSigConn,
@@ -556,8 +552,9 @@ describe('WebRTC 集成', () => {
 		});
 		mockInitRtc.mockClear();
 
-		// 模拟断连 → 重连（已 initialized）→ 单次 initRtc（非 __ensureRtc）
+		// 模拟断连 → 重连（已 initialized）→ __ensureRtc → initRtc
 		fireSigState('disconnected');
+		fakeConn.rtc = null; // RTC 在断连期间丢失
 		fireSigState('connected');
 		await vi.waitFor(() => {
 			expect(mockInitRtc).toHaveBeenCalledWith('2', fakeConn, expect.objectContaining({
@@ -757,51 +754,6 @@ describe('__bridgeConn 事件注册', () => {
 });
 
 describe('__bridgeSignaling 事件处理', () => {
-	test('signal:resumed → 对在线 bot 调用 __ensureRtc', async () => {
-		const store = useBotsStore();
-		const fakeConn = {
-			on: vi.fn(), off: vi.fn(),
-			request: vi.fn().mockResolvedValue({}),
-			rtc: __fakeRtc, clearRtc: vi.fn(),
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateBot({ id: '60', name: 'Bot', online: true });
-		// 先让 bot 初始化完成
-		mockSigConn.state = 'connected';
-		fireSigState('connected');
-		await vi.waitFor(() => expect(store.byId['60'].initialized).toBe(true));
-		mockInitRtc.mockClear();
-
-		// 模拟 RTC 失败状态（resumed 后需要 rebuild）
-		fakeConn.rtc = { isReady: false, state: 'failed' };
-
-		// 触发 resumed
-		fireSigResumed();
-		await Promise.resolve();
-		await Promise.resolve();
-
-		// 应对 online bot 调用 initRtc（__ensureRtc 关闭旧 RTC 后 rebuild）
-		expect(mockInitRtc).toHaveBeenCalledWith('60', expect.anything(), expect.anything());
-	});
-
-	test('signal:resumed → 不对 offline bot 调用 __ensureRtc', async () => {
-		const store = useBotsStore();
-		const fakeConn = { on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn() };
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateBot({ id: '61', name: 'Bot', online: false });
-		mockSigConn.state = 'connected';
-		// 注册 __bridgeSignaling
-		store.__bridgeConn('61');
-		mockInitRtc.mockClear();
-
-		fireSigResumed();
-		await Promise.resolve();
-
-		expect(mockInitRtc).not.toHaveBeenCalled();
-	});
-
 	test('foreground-resume → 对有 RTC 的 bot 调用 tryIceRestart', () => {
 		const store = useBotsStore();
 		const mockTryRestart = vi.fn().mockReturnValue(true);

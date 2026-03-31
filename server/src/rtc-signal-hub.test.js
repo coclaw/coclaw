@@ -150,37 +150,20 @@ test('handleMessage: 无效 JSON 静默忽略', async () => {
 	assert.equal(ws.sent.length, 0);
 });
 
-// --- signal:resume ---
+// --- signal:resume 已移除（回归守卫） ---
 
-test('handleMessage: signal:resume 批量注册 + 回复 signal:resumed', async () => {
+test('handleMessage: signal:resume 被视为 unknown type，不注册路由', async () => {
 	const ws = createMockWs();
+	const fwd = createForwardMock();
 	await handleMessage(ws, 'u1', JSON.stringify({
 		type: 'signal:resume',
 		connIds: { 1: 'c_a', 2: 'c_b' },
-	}), makeDeps());
+	}), makeDeps(fwd));
 
-	// 路由表中应有 2 个条目
-	assert.equal(routes.size, 2);
-	assert.equal(lookup('c_a')?.botId, '1');
-	assert.equal(lookup('c_b')?.botId, '2');
-	// 回复 signal:resumed
-	assert.equal(ws.sent.length, 1);
-	assert.equal(ws.sent[0].type, 'signal:resumed');
-	cleanup();
-});
-
-test('handleMessage: signal:resume 归属验证失败的 botId 被跳过', async () => {
-	const ws = createMockWs();
-	await handleMessage(ws, 'u1', JSON.stringify({
-		type: 'signal:resume',
-		connIds: { 1: 'c_a', '999': 'c_bad' },
-	}), makeDeps());
-
-	assert.equal(routes.size, 1);
-	assert.equal(lookup('c_a')?.botId, '1');
-	assert.equal(lookup('c_bad'), null);
-	// 仍回复 signal:resumed
-	assert.equal(ws.sent[0].type, 'signal:resumed');
+	assert.equal(ws.sent.length, 0, 'should not reply signal:resumed');
+	assert.equal(lookup('c_a'), null, 'should not register connId');
+	assert.equal(lookup('c_b'), null);
+	assert.equal(fwd.calls.length, 0);
 	cleanup();
 });
 
@@ -395,45 +378,6 @@ test('handleMessage: rtc:offer 缺少 botId 时忽略', async () => {
 	cleanup();
 });
 
-// --- signal:resume 边界情况 ---
-
-test('handleMessage: signal:resume connIds 为 null 时仍回复 signal:resumed', async () => {
-	const ws = createMockWs();
-	await handleMessage(ws, 'u1', JSON.stringify({
-		type: 'signal:resume',
-		connIds: null,
-	}), makeDeps());
-
-	assert.equal(routes.size, 0);
-	assert.equal(ws.sent.length, 1);
-	assert.equal(ws.sent[0].type, 'signal:resumed');
-	cleanup();
-});
-
-test('handleMessage: signal:resume connIds 为空对象时回复 signal:resumed', async () => {
-	const ws = createMockWs();
-	await handleMessage(ws, 'u1', JSON.stringify({
-		type: 'signal:resume',
-		connIds: {},
-	}), makeDeps());
-
-	assert.equal(routes.size, 0);
-	assert.equal(ws.sent[0].type, 'signal:resumed');
-	cleanup();
-});
-
-test('handleMessage: signal:resume connIds 为数组时忽略', async () => {
-	const ws = createMockWs();
-	await handleMessage(ws, 'u1', JSON.stringify({
-		type: 'signal:resume',
-		connIds: ['c_a', 'c_b'],
-	}), makeDeps());
-
-	assert.equal(routes.size, 0);
-	assert.equal(ws.sent[0].type, 'signal:resumed');
-	cleanup();
-});
-
 // --- rtc:ice / rtc:ready 隐式注册失败路径 ---
 
 test('handleMessage: rtc:ice 未注册 + botId 归属验证失败时拒绝', async () => {
@@ -515,21 +459,4 @@ test('handleMessage: findBotById 抛异常时视为归属验证失败', async ()
 	cleanup();
 });
 
-test('handleMessage: findBotById 抛异常时 signal:resume 跳过该条目', async () => {
-	const ws = createMockWs();
-	let callCount = 0;
-	const sometimesThrowFindBot = (id) => {
-		callCount++;
-		if (String(id) === '1') return Promise.resolve({ id, userId: 'u1' });
-		return Promise.reject(new Error('db timeout'));
-	};
-	await handleMessage(ws, 'u1', JSON.stringify({
-		type: 'signal:resume',
-		connIds: { 1: 'c_ok', 2: 'c_fail' },
-	}), { findBotByIdFn: sometimesThrowFindBot, forwardToBotFn: createForwardMock() });
 
-	assert.equal(lookup('c_ok')?.botId, '1');
-	assert.equal(lookup('c_fail'), null);
-	assert.equal(ws.sent[0].type, 'signal:resumed');
-	cleanup();
-});
