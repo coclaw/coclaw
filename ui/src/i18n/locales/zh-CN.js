@@ -200,6 +200,11 @@ export const zhCNMessages = {
 		pageTitle: '我的 Claw',
 		unbind: '解绑',
 		noBot: '未绑定 Claw。',
+		summary: {
+			agents: '{n} 个 Agent',
+			running: '{n} 工作中',
+			failed: '{n} 异常',
+		},
 		name: '名称：',
 		updatedAt: '更新时间：',
 		addBot: '添加 Claw',

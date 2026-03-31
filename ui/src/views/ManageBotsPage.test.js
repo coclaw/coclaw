@@ -32,7 +32,7 @@ vi.mock('../stores/bots.store.js', () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: 'idle', rtcTransportInfo: null };
+			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: null };
 			return map;
 		},
 		fetched: true, // SSE 快照已到达
@@ -44,6 +44,14 @@ vi.mock('../stores/dashboard.store.js', () => ({
 		loadDashboard: mockLoadDashboard,
 		getDashboard: mockGetDashboard,
 		clearDashboard: mockClearDashboard,
+	}),
+}));
+
+// agentRunsStore mock：isRunning 可由测试控制
+let mockIsRunning = vi.fn().mockReturnValue(false);
+vi.mock('../stores/agent-runs.store.js', () => ({
+	useAgentRunsStore: () => ({
+		isRunning: (runKey) => mockIsRunning(runKey),
 	}),
 }));
 
@@ -87,7 +95,7 @@ function createWrapper() {
 				AgentCard: AgentCardStub,
 			},
 			mocks: {
-				$t: (key, _params) => {
+				$t: (key, params) => {
 					const map = {
 						'bots.pageTitle': 'My Claws',
 						'bots.addBot': 'Add Bot',
@@ -98,6 +106,9 @@ function createWrapper() {
 						'bots.conn.ws': 'WebSocket',
 						'bots.conn.rtcConnecting': 'WebRTC connecting…',
 						'bots.conn.rtcFailed': 'Degraded to WebSocket',
+						'bots.summary.agents': `${params?.n} agents`,
+						'bots.summary.running': `${params?.n} 工作中`,
+						'bots.summary.failed': `${params?.n} 异常`,
 					};
 					return map[key] ?? key;
 				},
@@ -112,6 +123,7 @@ describe('ManageBotsPage', () => {
 		mockBots = [];
 		mockGetDashboard.mockReturnValue(null);
 		mockLoadDashboard.mockResolvedValue(undefined);
+		mockIsRunning = vi.fn().mockReturnValue(false);
 		vi.clearAllMocks();
 	});
 
@@ -260,4 +272,86 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.vm.unbindingId).toBe('');
 		warnSpy.mockRestore();
 	});
+
+	// ---- 状态摘要栏 ----
+
+	test('全部正常（无 running / failed）→ 摘要栏仅显示 N agents', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'ready' },
+			{ id: '2', name: 'Bot2', online: true, rtcPhase: 'ready' },
+		];
+		mockIsRunning = vi.fn().mockReturnValue(false);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-summary"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('2 agents');
+		expect(bar.text()).not.toContain('工作中');
+		expect(bar.text()).not.toContain('异常');
+	});
+
+	test('有 running bot → 摘要栏包含工作中文字', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'ready' },
+		];
+		mockIsRunning = vi.fn().mockReturnValue(true);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-summary"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('工作中');
+	});
+
+	test('有 failed bot → 摘要栏包含异常文字', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'failed' },
+		];
+		mockIsRunning = vi.fn().mockReturnValue(false);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-summary"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('异常');
+	});
+
+	test('无 bot 时不显示摘要栏', async () => {
+		mockBots = [];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="status-summary"]').exists()).toBe(false);
+	});
+
+	// ---- sortedBots 排序 ----
+
+	test('sortedBots：failed bot 排在最前', async () => {
+		mockBots = [
+			{ id: '1', name: 'IdleBot', online: true, rtcPhase: 'ready', lastAliveAt: 1000 },
+			{ id: '2', name: 'FailedBot', online: true, rtcPhase: 'failed', lastAliveAt: 500 },
+			{ id: '3', name: 'OfflineBot', online: false, lastAliveAt: 800 },
+		];
+		mockIsRunning = vi.fn().mockReturnValue(false);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const sorted = wrapper.vm.sortedBots;
+		expect(sorted[0].name).toBe('FailedBot');
+	});
+
+	test('sortedBots：offline bot 排在最后', async () => {
+		mockBots = [
+			{ id: '1', name: 'OfflineBot', online: false, lastAliveAt: 9999 },
+			{ id: '2', name: 'IdleBot', online: true, rtcPhase: 'ready', lastAliveAt: 100 },
+		];
+		mockIsRunning = vi.fn().mockReturnValue(false);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const sorted = wrapper.vm.sortedBots;
+		expect(sorted[sorted.length - 1].name).toBe('OfflineBot');
+	});
 });
+

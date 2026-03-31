@@ -200,6 +200,11 @@ export const enMessages = {
 		pageTitle: 'My Claws',
 		unbind: 'Unbind',
 		noBot: 'No Claw bound.',
+		summary: {
+			agents: '{n} agents',
+			running: '{n} working',
+			failed: '{n} failed',
+		},
 		name: 'Name: ',
 		updatedAt: 'Updated at: ',
 		addBot: 'Add Claw',

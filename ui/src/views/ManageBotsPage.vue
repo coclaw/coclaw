@@ -11,9 +11,24 @@
 				</div>
 			</div>
 
+			<!-- 状态摘要栏：有 bot 时显示 -->
+			<p
+				v-if="bots.length"
+				data-testid="status-summary"
+				class="text-xs text-muted -mt-2"
+			>
+				{{ $t('bots.summary.agents', { n: bots.length }) }}
+				<template v-if="statusSummary.running > 0 || statusSummary.failed > 0">
+					<span class="mx-1">·</span>
+					<span v-if="statusSummary.running > 0" class="text-blue-500">{{ $t('bots.summary.running', { n: statusSummary.running }) }}</span>
+					<template v-if="statusSummary.running > 0 && statusSummary.failed > 0"><span class="mx-1">·</span></template>
+					<span v-if="statusSummary.failed > 0" class="text-red-500">{{ $t('bots.summary.failed', { n: statusSummary.failed }) }}</span>
+				</template>
+			</p>
+
 			<p v-if="!loading && !bots.length" class="text-sm text-muted">{{ $t('bots.noBot') }}</p>
 
-			<div v-for="bot in bots" :key="bot.id" :data-testid="`bot-${bot.id}`" class="space-y-4">
+			<div v-for="bot in sortedBots" :key="bot.id" :data-testid="`bot-${bot.id}`" class="space-y-4">
 				<InstanceOverview
 					v-if="getDashboardData(bot.id)?.instance"
 					:instance="getDashboardData(bot.id).instance"
@@ -82,9 +97,10 @@
 import { useNotify } from '../composables/use-notify.js';
 import { unbindBotByUser } from '../services/bots.api.js';
 import { useBotsStore } from '../stores/bots.store.js';
+import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import InstanceOverview from '../components/dashboard/InstanceOverview.vue';
-import AgentCard from '../components/dashboard/AgentCard.vue';
+import AgentCard from '../components/AgentCard.vue';
 
 export default {
 	name: 'ManageBotsPage',
@@ -97,6 +113,7 @@ export default {
 			loading: false,
 			unbindingId: '',
 			botsStore: null,
+			agentRunsStore: null,
 			dashboardStore: null,
 			expandedDetails: {},
 		};
@@ -105,9 +122,58 @@ export default {
 		bots() {
 			return this.botsStore?.items ?? [];
 		},
+		/** 按状态排序的 bot 列表：failed > running > connecting > idle > offline */
+		sortedBots() {
+			const runs = this.agentRunsStore;
+			// 获取 bot 状态优先级（数字越小越靠前）
+			const statusPriority = (bot) => {
+				if (!bot.online) return 4; // offline
+				if (bot.rtcPhase === 'failed') return 0; // failed
+				const runKey = `agent:${bot.agentId ?? 'main'}:main`;
+				if (runs?.isRunning(runKey)) return 1; // running
+				if (bot.rtcPhase === 'building' || bot.rtcPhase === 'recovering') return 2; // connecting
+				return 3; // idle
+			};
+			return [...this.bots].sort((a, b) => {
+				const pa = statusPriority(a);
+				const pb = statusPriority(b);
+				if (pa !== pb) return pa - pb;
+				// 同优先级内按时间倒序
+				if (pa === 1) {
+					// running：按 lastAliveAt 降序（越新越靠前）
+					return (b.lastAliveAt ?? 0) - (a.lastAliveAt ?? 0);
+				}
+				if (pa === 3) {
+					// idle：按 lastActivity 降序（若无则用 lastAliveAt）
+					return (b.lastAliveAt ?? 0) - (a.lastAliveAt ?? 0);
+				}
+				if (pa === 4) {
+					// offline：按 lastAliveAt 降序
+					return (b.lastAliveAt ?? 0) - (a.lastAliveAt ?? 0);
+				}
+				return 0;
+			});
+		},
+		/** 状态摘要：运行中数量、异常数量 */
+		statusSummary() {
+			const runs = this.agentRunsStore;
+			let running = 0;
+			let failed = 0;
+			for (const bot of this.bots) {
+				if (!bot.online) continue;
+				if (bot.rtcPhase === 'failed') {
+					failed++;
+				} else {
+					const runKey = `agent:${bot.agentId ?? 'main'}:main`;
+					if (runs?.isRunning(runKey)) running++;
+				}
+			}
+			return { running, failed };
+		},
 	},
 	async mounted() {
 		this.botsStore = useBotsStore();
+		this.agentRunsStore = useAgentRunsStore();
 		this.dashboardStore = useDashboardStore();
 
 		this.__lastResumeAt = 0;
