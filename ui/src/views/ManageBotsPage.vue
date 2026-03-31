@@ -28,6 +28,22 @@
 					</div>
 				</div>
 
+				<!-- 实例状态条汇总 -->
+				<div v-if="bot.online" class="flex items-center gap-1.5 px-1 text-sm text-muted" data-testid="status-bar">
+					<template v-if="instanceRunningCount(bot.id) === 0 && instanceFailedCount(bot.id) === 0">
+						<span>{{ $t('bots.statusNormal', { n: instanceAgentCount(bot.id) }) }}</span>
+					</template>
+					<template v-else>
+						<span>{{ $t('bots.statusAgents', { n: instanceAgentCount(bot.id) }) }}</span>
+						<span v-if="instanceRunningCount(bot.id) > 0" class="text-blue-500">
+							· {{ $t('bots.statusRunning', { n: instanceRunningCount(bot.id) }) }}
+						</span>
+						<span v-if="instanceFailedCount(bot.id) > 0" class="text-red-500">
+							· {{ $t('bots.statusFailed', { n: instanceFailedCount(bot.id) }) }}
+						</span>
+					</template>
+				</div>
+
 				<!-- 连接信息 + 解绑 -->
 				<div class="flex items-center gap-x-3 gap-y-1 px-1">
 					<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
@@ -59,14 +75,14 @@
 					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
 				</div>
 
-				<div class="columns-1 gap-4 sm:columns-2 lg:columns-3 [&>*]:mb-4 [&>*]:break-inside-avoid">
+				<!-- Agent 列表（状态驱动排序） -->
+				<div class="flex flex-col gap-2">
 					<AgentCard
-						v-for="agent in getDashboardData(bot.id)?.agents ?? []"
-						:key="agent.id"
-						:agent="agent"
-						:online="bot.online"
+						v-for="agentBot in sortedAgentBots(bot.id)"
+						:key="agentBot.id"
+						:bot="agentBot"
 						@chat="goToAgent(bot.id, $event)"
-					@files="goToFiles(bot.id, $event)"
+						@files="goToFiles(bot.id, $event)"
 					/>
 				</div>
 
@@ -83,8 +99,27 @@ import { useNotify } from '../composables/use-notify.js';
 import { unbindBotByUser } from '../services/bots.api.js';
 import { useBotsStore } from '../stores/bots.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
+import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import InstanceOverview from '../components/dashboard/InstanceOverview.vue';
-import AgentCard from '../components/dashboard/AgentCard.vue';
+import AgentCard from '../components/AgentCard.vue';
+
+/** 状态权重：数值越小越靠前 */
+const STATUS_ORDER = { failed: 0, running: 1, connecting: 2, idle: 3, offline: 4 };
+
+/**
+ * 从 bot 对象判断 AgentCard 对应的状态 key
+ * @param {object} bot - botsStore 中的 bot 对象
+ * @param {object} agentRunsStore
+ * @param {string} runKey
+ * @returns {'failed'|'running'|'connecting'|'idle'|'offline'}
+ */
+function getBotStatus(bot, agentRunsStore, runKey) {
+	if (!bot.online) return 'offline';
+	if (bot.rtcPhase === 'failed') return 'failed';
+	if (bot.rtcPhase === 'building' || bot.rtcPhase === 'recovering') return 'connecting';
+	if (agentRunsStore?.isRunning(runKey)) return 'running';
+	return 'idle';
+}
 
 export default {
 	name: 'ManageBotsPage',
@@ -98,6 +133,7 @@ export default {
 			unbindingId: '',
 			botsStore: null,
 			dashboardStore: null,
+			agentRunsStore: null,
 			expandedDetails: {},
 		};
 	},
@@ -109,6 +145,7 @@ export default {
 	async mounted() {
 		this.botsStore = useBotsStore();
 		this.dashboardStore = useDashboardStore();
+		this.agentRunsStore = useAgentRunsStore();
 
 		this.__lastResumeAt = 0;
 		this.__onResume = () => {
@@ -137,6 +174,55 @@ export default {
 		getDashboardData(botId) {
 			return this.dashboardStore?.getDashboard(String(botId)) ?? null;
 		},
+
+		/**
+		 * 对当前 bot 下的"agent 代理 bot 对象"按状态排序
+		 * 当前版本每个 bot 只有 main agent，直接返回该 bot 自身的包装
+		 * 多 agent 场景预留：按 dashboard agents 扩展
+		 * @param {string} botId
+		 * @returns {object[]}
+		 */
+		sortedAgentBots(botId) {
+			const id = String(botId);
+			const bot = this.botsStore?.byId[id];
+			if (!bot) return [];
+			// 当前版本：每个 bot 实例对应一个 AgentCard（main agent）
+			return [bot];
+		},
+
+		/**
+		 * 返回该实例 agent 数量
+		 * @param {string} botId
+		 */
+		instanceAgentCount(botId) {
+			const dash = this.getDashboardData(botId);
+			return dash?.agents?.length ?? 1;
+		},
+
+		/**
+		 * 返回该实例 running 状态数量
+		 * @param {string} botId
+		 */
+		instanceRunningCount(botId) {
+			const id = String(botId);
+			const bot = this.botsStore?.byId[id];
+			if (!bot) return 0;
+			const runKey = `agent:main:main`;
+			const status = getBotStatus(bot, this.agentRunsStore, runKey);
+			return status === 'running' ? 1 : 0;
+		},
+
+		/**
+		 * 返回该实例 failed 状态数量
+		 * @param {string} botId
+		 */
+		instanceFailedCount(botId) {
+			const id = String(botId);
+			const bot = this.botsStore?.byId[id];
+			if (!bot) return 0;
+			return bot.rtcPhase === 'failed' ? 1 : 0;
+		},
+
 		connLabel(botId) {
 			const id = String(botId);
 			const bot = this.botsStore?.byId[id];
@@ -169,23 +255,26 @@ export default {
 			const id = String(botId);
 			this.expandedDetails = { ...this.expandedDetails, [id]: !this.expandedDetails[id] };
 		},
-		goToFiles(botId, agentId) {
-			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
+		goToFiles(botId, _agentBotId) {
+			// AgentCard emit files 传来的是 bot.id（当前版本 agentBotId === botId）
+			const id = String(botId);
+			if (this.botsStore?.byId[id]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 				return;
 			}
 			this.$router.push({
 				name: 'files',
-				params: { botId: String(botId), agentId: String(agentId) },
+				params: { botId: id, agentId: 'main' },
 			});
 		},
-		goToAgent(botId, agentId) {
-			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
+		goToAgent(botId, _agentBotId) {
+			const id = String(botId);
+			if (this.botsStore?.byId[id]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 			}
 			this.$router.push({
 				name: 'chat',
-				params: { botId: String(botId), agentId },
+				params: { botId: id, agentId: 'main' },
 			});
 		},
 		async loadData() {

@@ -1,4 +1,4 @@
-import { createPinia, setActivePinia } from 'pinia';
+import { createPinia } from 'pinia';
 import { mount, flushPromises } from '@vue/test-utils';
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
@@ -27,15 +27,22 @@ const mockLoadDashboard = vi.fn().mockResolvedValue(undefined);
 const mockGetDashboard = vi.fn().mockReturnValue(null);
 const mockClearDashboard = vi.fn();
 
+let mockBots = [];
+
 vi.mock('../stores/bots.store.js', () => ({
 	useBotsStore: () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: 'idle', rtcTransportInfo: null };
+			for (const b of mockBots) map[String(b.id)] = {
+				...b,
+				pluginVersionOk: null,
+				rtcPhase: b.rtcPhase ?? 'idle',
+				rtcTransportInfo: null,
+			};
 			return map;
 		},
-		fetched: true, // SSE 快照已到达
+		fetched: true,
 	}),
 }));
 
@@ -44,6 +51,16 @@ vi.mock('../stores/dashboard.store.js', () => ({
 		loadDashboard: mockLoadDashboard,
 		getDashboard: mockGetDashboard,
 		clearDashboard: mockClearDashboard,
+	}),
+}));
+
+let mockIsRunning = vi.fn().mockReturnValue(false);
+
+vi.mock('../stores/agent-runs.store.js', () => ({
+	useAgentRunsStore: () => ({
+		get isRunning() { return mockIsRunning; },
+		runKeyIndex: {},
+		runs: {},
 	}),
 }));
 
@@ -68,12 +85,10 @@ const InstanceOverviewStub = {
 
 const AgentCardStub = {
 	name: 'AgentCard',
-	props: ['agent', 'online'],
-	emits: ['chat'],
-	template: '<div data-testid="agent-card">{{ agent.name }}</div>',
+	props: ['bot'],
+	emits: ['chat', 'files'],
+	template: '<div data-testid="agent-card">{{ bot.name }}</div>',
 };
-
-let mockBots = [];
 
 function createWrapper() {
 	return mount(ManageBotsPage, {
@@ -87,7 +102,7 @@ function createWrapper() {
 				AgentCard: AgentCardStub,
 			},
 			mocks: {
-				$t: (key, _params) => {
+				$t: (key, params) => {
 					const map = {
 						'bots.pageTitle': 'My Claws',
 						'bots.addBot': 'Add Bot',
@@ -98,6 +113,10 @@ function createWrapper() {
 						'bots.conn.ws': 'WebSocket',
 						'bots.conn.rtcConnecting': 'WebRTC connecting…',
 						'bots.conn.rtcFailed': 'Degraded to WebSocket',
+						'bots.statusNormal': `${params?.n ?? ''} agents`,
+						'bots.statusAgents': `${params?.n ?? ''} agents`,
+						'bots.statusRunning': `${params?.n ?? ''} working`,
+						'bots.statusFailed': `${params?.n ?? ''} error`,
 					};
 					return map[key] ?? key;
 				},
@@ -112,6 +131,7 @@ describe('ManageBotsPage', () => {
 		mockBots = [];
 		mockGetDashboard.mockReturnValue(null);
 		mockLoadDashboard.mockResolvedValue(undefined);
+		mockIsRunning = vi.fn().mockReturnValue(false);
 		vi.clearAllMocks();
 	});
 
@@ -136,7 +156,6 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.find('[data-testid="instance-overview"]').exists()).toBe(true);
 		expect(wrapper.find('[data-testid="instance-overview"]').text()).toContain('Bot1');
 		expect(wrapper.find('[data-testid="agent-card"]').exists()).toBe(true);
-		expect(wrapper.find('[data-testid="agent-card"]').text()).toContain('Agent1');
 	});
 
 	test('离线 bot → 渲染 fallback header + Offline badge', async () => {
@@ -236,7 +255,7 @@ describe('ManageBotsPage', () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const err = new Error('dashboard boom');
 		mockLoadDashboard.mockImplementation(() => { throw err; });
-		const wrapper = createWrapper();
+		createWrapper();
 		await flushPromises();
 
 		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] loadData failed:', err);
@@ -259,5 +278,79 @@ describe('ManageBotsPage', () => {
 		expect(mockNotify.error).toHaveBeenCalled();
 		expect(wrapper.vm.unbindingId).toBe('');
 		warnSpy.mockRestore();
+	});
+
+	// ---- 新增：状态条汇总 ----
+
+	test('在线 bot 全部正常 → 状态条显示 N agents', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true, rtcPhase: 'ready' }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [] },
+			agents: [{ id: 'a1', name: 'Agent1', modelTags: [], capabilities: [], totalTokens: 0, activeSessions: 0, lastActivity: null }],
+			loading: false,
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-bar"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('agents');
+	});
+
+	test('有 running agent → 状态条包含 working', async () => {
+		mockIsRunning = vi.fn().mockReturnValue(true);
+		mockBots = [{ id: '1', name: 'Bot1', online: true, rtcPhase: 'ready' }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [] },
+			agents: [{ id: 'main', name: 'Main', modelTags: [], capabilities: [], totalTokens: 0, activeSessions: 0, lastActivity: null }],
+			loading: false,
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-bar"]');
+		expect(bar.text()).toContain('working');
+	});
+
+	test('rtcPhase failed → 状态条包含 error', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true, rtcPhase: 'failed' }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [] },
+			agents: [],
+			loading: false,
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-bar"]');
+		expect(bar.text()).toContain('error');
+	});
+
+	test('离线 bot → 无状态条', async () => {
+		mockBots = [{ id: '2', name: 'OfflineBot', online: false }];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="status-bar"]').exists()).toBe(false);
+	});
+
+	// ---- sortedAgentBots ----
+
+	test('sortedAgentBots 返回 bot 自身', async () => {
+		mockBots = [{ id: '3', name: 'Bot3', online: true, rtcPhase: 'ready' }];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const sorted = wrapper.vm.sortedAgentBots('3');
+		expect(sorted).toHaveLength(1);
+		expect(sorted[0].id).toBe('3');
+	});
+
+	test('sortedAgentBots 不存在 bot 返回空数组', async () => {
+		mockBots = [];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.vm.sortedAgentBots('non-exist')).toEqual([]);
 	});
 });
