@@ -47,6 +47,17 @@
 - 若用户可通过界面变化直接感知操作结果（如切换主题/语言），则不必 notify
 - 错误操作始终需要 notify
 
+## remoteLog 远程诊断日志
+
+- `remoteLog(text)` 函数（`src/services/remote-log.js`）用于将**重要诊断信息**推送到 CoClaw server，供开发者远程排查问题。
+- 仅用于输出对远程诊断有价值的关键事件，**禁止用于高频/冗余日志**（如逐条消息收发、心跳计数等）
+- 工作原理：写入内存环形缓冲区，后台微任务负责通过 SignalingConnection 发送到 server
+- 日志格式约定：`<模块>.<事件> key=value key=value`，如 `sig.connected`、`rtc.state conn=abc123 connected`
+- 应推送的典型事件：
+  - **连接生命周期**：SignalingConnection / WebRTC 连接的建立、断开、重连、错误
+  - **系统状态恢复**：App 前后台切换（`capacitor-app` 的 resume/pause）、网络状态变化等触发重连的时机
+  - **关键业务状态变更**：bot 绑定/解绑等影响连接可用性的操作
+
 ## 端到端测试 (E2E Testing)
 
 - Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例
