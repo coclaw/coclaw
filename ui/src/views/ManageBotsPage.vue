@@ -141,8 +141,8 @@ export default {
 			const id = String(botId);
 			const bot = this.botsStore?.byId[id];
 			if (!bot) return this.$t('bots.conn.disconnected');
-			if (bot.rtcState === 'failed') return this.$t('bots.conn.rtcFailed');
-			if (bot.rtcState !== 'connected') return this.$t('bots.conn.rtcConnecting');
+			if (bot.rtcPhase === 'failed') return this.$t('bots.conn.rtcFailed');
+			if (bot.rtcPhase !== 'ready') return this.$t('bots.conn.rtcConnecting');
 			const info = bot.rtcTransportInfo;
 			if (!info) return this.$t('bots.conn.rtcConnecting');
 			if (info.localType === 'relay') {

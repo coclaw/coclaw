@@ -627,7 +627,6 @@ describe('ChatPage watchers', () => {
 
 		// bot 上线 + 连接就绪 → connReady 变为 true
 		botsStore.byId['bot-1'].online = true;
-		botsStore.byId['bot-1'].connState = 'connected';
 		botsStore.byId['bot-1'].dcReady = true;
 		await wrapper.vm.$nextTick();
 
@@ -641,7 +640,6 @@ describe('ChatPage watchers', () => {
 
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].connState = 'connected';
 		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 
@@ -696,7 +694,6 @@ describe('ChatPage watchers', () => {
 
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].connState = 'connected';
 		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
@@ -761,7 +758,6 @@ describe('ChatPage foreground resume', () => {
 
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].connState = 'connected';
 		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
@@ -804,7 +800,6 @@ describe('ChatPage foreground resume', () => {
 
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].connState = 'connected';
 		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
@@ -828,7 +823,6 @@ describe('ChatPage foreground resume', () => {
 
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].connState = 'connected';
 		botsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();

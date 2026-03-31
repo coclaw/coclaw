@@ -235,7 +235,7 @@ Server 处理 `rtc:*` 消息时的路由注册：
   if connId 已被其他 WS 占用 → 拒绝
 ```
 
-WS 重连后，`__onBotConnected` 触发 `__ensureRtc` → 发送 `rtc:offer` → Server 隐式注册 connId 路由。
+WS 重连后，`__bridgeConn`/`__ensureRtc` 触发 `__ensureRtc` → 发送 `rtc:offer` → Server 隐式注册 connId 路由。
 
 ### 4.5 Bot 离线时的快速通知（可选优化）
 
@@ -440,15 +440,19 @@ signalingConn.sendSignaling(this.botId, 'rtc:offer', { sdp });
 
 ### 6.4 bots store 适配
 
-**connState 语义调整**：
+**WS 与 DC 状态解耦**：
 
-对用户而言，真正关心的状态是 `dcReady`（能否发消息）。原 `connState`（per-bot WS 状态）退化为信令通道的全局状态，不再直接驱动 per-bot 的 UI 呈现。
+WS 仅是信令通道，其断连不影响 DataChannel 可用性。bots.store 不消费 WS `state` 事件：
+- `bot.connState` 已移除，不再镜像 WS 状态
+- `bot.rtcPhase` 替代 `connState` + `rtcState`，表示 RTC 生命周期：`'idle' | 'building' | 'ready' | 'recovering' | 'failed'`
+- `bot.dcReady` 是 DC 可用的权威标记，仅由 RTC 事件控制（不受 WS 断连影响）
+- `remote-log.js` 保留 WS `state` 监听（控制日志发送通道，合法用途）
 
-**`waitForConnected` 及消息重试逻辑**已适配：改为监听 `dcReady`。涉及文件：`src/utils/wait-connected.js`、`src/stores/chat.store.js`。
+**RTC 初始化触发**：
 
-**WS 重连后 RTC 状态检查**：
+`__bridgeConn` 直接触发 `__fullInit`（对 online + 未初始化的 bot）。`__fullInit` 内部通过 `ensureConnected()` 透明等待 WS 就绪，无需依赖 WS 状态事件。
 
-`__onBotConnected` 重连分支调用 `__ensureRtc` → close + rebuild。
+**`waitForConnected` 及消息重试逻辑**已适配：监听 `dcReady`。涉及文件：`src/utils/wait-connected.js`、`src/stores/chat.store.js`。
 
 **前台恢复 / 网络切换**：
 
@@ -458,6 +462,8 @@ signalingConn.sendSignaling(this.botId, 'rtc:offer', { sdp });
 - elapsed ≤ 30s → DC probe（3s 超时）→ ack: 连接正常 / timeout: rebuild
 
 仅在移动端（Capacitor）的 visibility/app:foreground 或全平台 network:online 时触发。桌面 visibilitychange 不触发（WebRTC 在桌面后台持续运行）。
+
+**数据刷新**：RTC 恢复后通过 `__refreshIfStale` 按断连间隔判断是否刷新 agents/sessions/topics/dashboard。
 
 > **注**：ICE restart 已移除 — werift 的实现不完整且可能产生僵尸连接。详见 `docs/study/webrtc-connection-research.md`。
 
@@ -505,7 +511,7 @@ network:online（全平台，仅实际 offline→online 状态变迁时触发）
 ```
 
 桌面 visibilitychange 不触发 RTC 恢复（WebRTC 在桌面后台持续运行）。
-主机休眠/待机 → TODO（现由 WS 重连 → `__onBotConnected` 间接覆盖）。
+主机休眠/待机 → TODO（现由被动恢复路径覆盖：PC disconnected 10s → full rebuild）。
 
 ### 7.4 sendSignaling 返回值处理
 
@@ -523,9 +529,9 @@ sendSignaling(botId, type, payload) → boolean
 |---|------|------|
 | 1 | RTC disconnected | 等待 ICE 自动恢复（10s 后升级 → full rebuild） |
 | 2 | RTC failed | full rebuild（复用 connId，新 PC，最多 3 次） |
-| 3 | full rebuild 耗尽 | reject 挂起请求（`RTC_LOST`），等下次 WS 重连 |
-| 4 | 信令 WS 断开 | 自动重连 |
-| 5 | 信令 WS 恢复 | `__onBotConnected` → `__ensureRtc` → rebuild |
+| 3 | full rebuild 耗尽 | reject 挂起请求（`RTC_LOST`），等外部触发恢复 |
+| 4 | 信令 WS 断开 | 自动重连；不影响 DC 可用性（dcReady 不变） |
+| 5 | 信令 WS 恢复 | 不触发 RTC 恢复（WS 与 DC 解耦） |
 | 6 | WS 断开但 RTC 仍 connected | RTC 不动，业务 RPC 通过 DC 继续工作 |
 | 7 | 前台恢复 / 网络切换 | DC probe → 存活则不动 / 超时则 rebuild |
 | 8 | bot 解绑 | 释放 connId + 关闭 RTC |
@@ -534,18 +540,17 @@ sendSignaling(botId, type, payload) → boolean
 
 ## 八、ensureConnected：信令通道可用性保障
 
-> 状态：已实施（阶段一：force-reconnect）
+> 状态：已实施（阶段二：lastAliveAt 判断优化）
 
 ### 8.1 动机
 
-当前实现中，WS 不可用时的应对逻辑散布在多处（`__ensureRtc` bail-out guard、`__onBotConnected` 触发恢复、`foreground-resume` 事件），形成了多个状态之间的复杂关联。
+将"确保信令通道可用"收敛为 SignalingConnection 上的阻塞原语，避免应对逻辑散布在多处。
 
 核心问题：
 
 1. **offer 静默丢弃**：`__buildPeerConnection` 中 `sendSignaling` 返回值未检查，offer 写入死连接的 socket buffer → 15s 空等
-2. **ICE restart 跳过无后续**：`__onIceFailed` 中 `sendSignaling` 返回 false 后直接 return，PC 停留在 failed 状态，无重试安排
-3. **WS 假活未检测**：WS 表面 connected 但 TCP 已死（NAT 映射过期等），心跳检测最慢需 ~90s
-4. **WS 短暂闪断导致 full rebuild**：ICE restart 被跳过 → WS 恢复后走 `__onBotConnected` → full rebuild（~3-5s），而非 ICE restart（~1-2s）
+2. **WS 假活未检测**：WS 表面 connected 但 TCP 已死（NAT 映射过期等），心跳检测最慢需 ~90s
+3. **verify 路径优化**：`verify: true` 现基于 `lastAliveAt` 判断 WS 存活性，WS 最近有活动（< PROBE_TIMEOUT_MS）则信任，避免不必要的 forceReconnect
 
 ### 8.2 设计：阻塞式 ensureConnected 原语
 
@@ -652,7 +657,7 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 | `__onIceFailed` 的恢复决策 | 简化 — ICE restart 已移除，直接 full rebuild（配额内） |
 | `__ensureRtc` 循环的 `sigConn.state !== 'connected'` bail-out | 移除 — `initRtc` 内部 await ensureConnected 自然阻塞或超时 |
 | sendSignaling 返回值处理 | 简化 — 由 ensureConnected 在上游保障 WS 可用，sendSignaling 返回值退化为防御性检查 |
-| `__onBotConnected` 作为 WS 恢复后的唯一 RTC 恢复入口 | 保持 — `__ensureRtc` 直接 close + rebuild |
+| WS 恢复后 RTC 恢复入口 | WS 状态不再触发 RTC 恢复；恢复由外部事件（foreground-resume、bot online）和被动检测驱动 |
 
 ---
 
@@ -660,11 +665,11 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 
 | 场景 | 处理 |
 |------|------|
-| WS 断开期间 Plugin 发来 `rtc:answer` | `routeRtcToUi` 找不到 connId 路由条目（已在 WS 断开时移除）→ 投递失败，丢弃。UI 重连后 `__onBotConnected` → `__ensureRtc` → `rtc:offer` 隐式注册路由 |
+| WS 断开期间 Plugin 发来 `rtc:answer` | `routeRtcToUi` 找不到 connId 路由条目（已在 WS 断开时移除）→ 投递失败，丢弃。DC 被动恢复或前台恢复触发 `__ensureRtc` → `rtc:offer` 隐式注册路由 |
 | WS 重连后首条 rtc:offer 之前 Plugin 发来信令 | connId 路由尚未注册 → 投递失败。Plugin 不会主动发信令（仅响应 offer），实际中此窗口无流量 |
 | 多 tab 同 bot | 各 tab 有独立 connId，互不冲突。Server 按 connId 精确投递 |
 | 单 tab 刷新 | 旧 WS close → 路由条目移除 → Plugin PC 最终 ICE failed 自清理。新页面生成新 connId，full rebuild |
-| bot 在 WS 断开期间解绑 | SSE 推送 bot.unbound → UI 清理。Server 移除该 bot 相关 connId 路由。WS 重连后 `__onBotConnected` 不会为已移除的 bot 触发恢复 |
+| bot 在 WS 断开期间解绑 | SSE 推送 bot.unbound → UI 清理。Server 移除该 bot 相关 connId 路由。已移除的 bot 不会触发恢复 |
 | Server 重启 | 所有 connId 路由丢失。UI `__ensureRtc` → `rtc:offer` 隐式重新注册。Plugin 侧旧 session 通过 ICE failure 自清理 |
 | connId 冲突 | Server 注册时检查 connId 是否已被其他 WS 占用，冲突则拒绝 |
 | Full rebuild 复用 connId | Plugin 收到同 connId 新 offer → `closeByConnId` 清理旧 session → 创建新 session。已有逻辑支持 |
@@ -676,15 +681,15 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 
 ## 十、TODO（待后续讨论确认）
 
-### 初始化触发链路重建
+### ~~初始化触发链路重建~~ ✅ 已完成
 
-当前 `__onBotConnected` 的触发依赖 per-bot WS 的 `state` 事件。迁移到单一信令 WS 后，此链路断裂。需要设计新的触发机制，确保以下场景正确工作：
+WS 与 DC 状态已解耦。初始化/恢复触发机制：
 
-- **首次初始化**：信令 WS 首次 connected + bot online（SSE）→ 触发 `__fullInit`
-- **重连恢复**：信令 WS 重连 → `__onBotConnected` → 对每个 online bot 检查 RTC 状态 → 触发恢复
-- **bot 上线**：SSE 报告 bot online + 信令 WS 已 connected → 触发初始化/恢复
-
-涉及 `bots.store.__onBotConnected`、`__fullInit`、`__ensureRtc`、`__bridgeConn` 等逻辑的重构。
+- **首次初始化**：`__bridgeConn` 直接触发 `__fullInit`（对 online + 未初始化的 bot），`ensureConnected()` 内部透明等待 WS 就绪
+- **前台/网络恢复**：`foreground-resume` 事件 → `__checkAndRecover` → DC probe / rebuild
+- **被动恢复**：WebRtcConnection 内部 disconnected 10s → full rebuild
+- **bot 上线**：`updateBotOnline` → `__fullInit`（未初始化）或 `__ensureRtc`（已初始化）
+- **数据刷新**：`__refreshIfStale` 在 RTC 恢复后按断连间隔自动触发
 
 ### 用户 session 过期的处理
 
@@ -715,8 +720,8 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 | `src/services/bot-connection.js` | 重构 | 移除 WS 管理，保留 DC RPC |
 | `src/services/bot-connection-manager.js` | 重构 | 简化（不再管理 WS 连接） |
 | `src/services/webrtc-connection.js` | 适配 | 信令收发改用 SignalingConnection |
-| `src/stores/bots.store.js` | 适配 | connState 语义、foreground-resume 事件处理（DC probe）、前台恢复 |
-| `src/utils/wait-connected.js` | 适配 | 从监听 connState 改为监听 dcReady |
+| `src/stores/bots.store.js` | 重构 | WS/DC 状态解耦：移除 connState（改用 rtcPhase）、移除 WS state 消费、DC probe 恢复 |
+| `src/utils/wait-connected.js` | 适配 | 监听 dcReady（已完成） |
 | `src/stores/chat.store.js` | 适配 | 消息重试逻辑适配新的连接状态 |
 
 ### Plugin 侧

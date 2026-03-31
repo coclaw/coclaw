@@ -322,14 +322,13 @@ export default {
 			return !entry?.fetched;
 		},
 		/**
-		 * 连接就绪：bot 在线 + connState === 'connected' + (topic 或 agent 已验证)
+		 * 连接就绪：bot 在线 + DC 可用 + (topic 或 agent 已验证)
 		 * 驱动首次/重连消息加载，消除时序依赖
 		 */
 		connReady() {
 			if (this.isNewTopic || !this.chatStore) return false;
 			const bot = this.botsStore.byId[this.currentBotId];
 			if (!bot || !bot.online) return false;
-			if (bot.connState !== 'connected') return false;
 			if (!bot.dcReady) return false;
 			if (this.isTopicRoute) return true;
 			return this.agentVerified;

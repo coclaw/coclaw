@@ -505,6 +505,33 @@ describe('SignalingConnection – ensureConnected', () => {
 		conn.disconnect();
 	});
 
+	test('connected + verify=true + WS 最近有活动（< PROBE_TIMEOUT）→ 不 forceReconnect', async () => {
+		const { conn, ws } = makeConnected();
+		// 等冷却过期
+		vi.advanceTimersByTime(5001);
+		// 模拟收到心跳 pong → 刷新 lastAliveAt
+		ws.simulateMessage({ type: 'pong' });
+		const countBefore = MockWebSocket.instances.length;
+		await conn.ensureConnected({ verify: true, timeoutMs: 5000 });
+		// WS 最近有活动 → 不 forceReconnect
+		expect(MockWebSocket.instances.length).toBe(countBefore);
+		expect(conn.state).toBe('connected');
+		conn.disconnect();
+	});
+
+	test('connected + verify=true + WS 长时间无活动（> PROBE_TIMEOUT）→ forceReconnect', async () => {
+		const { conn } = makeConnected();
+		// 等冷却过期 + lastAliveAt 过期（5001ms > PROBE_TIMEOUT_MS 2500ms）
+		vi.advanceTimersByTime(5001);
+		const countBefore = MockWebSocket.instances.length;
+		const p = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
+		// lastAliveAt 已过期 → forceReconnect → 新 WS
+		expect(MockWebSocket.instances.length).toBeGreaterThan(countBefore);
+		MockWebSocket.lastInstance.simulateOpen();
+		await p;
+		conn.disconnect();
+	});
+
 	test('connecting → 等待 WS open → resolve', async () => {
 		MockWebSocket.reset();
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });

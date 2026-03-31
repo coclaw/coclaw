@@ -134,8 +134,11 @@ export class SignalingConnection {
 
 		if (this.__state === 'connected') {
 			if (!verify) return;
-			// verify=true + connected → force-reconnect 检测假活
 			this.__lastVerifiedAt = Date.now();
+			// WS 最近有活动 → 信任其存活性，不 forceReconnect
+			const elapsed = Date.now() - this.__lastAliveAt;
+			if (elapsed <= PROBE_TIMEOUT_MS) return;
+			// WS 疑似僵死 → forceReconnect
 			this.forceReconnect();
 			await this.__waitForConnected(timeoutMs);
 			return;

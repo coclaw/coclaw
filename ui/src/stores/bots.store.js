@@ -44,8 +44,8 @@ function createBotState(bot) {
 		lastSeenAt: bot.lastSeenAt ?? null,
 		createdAt: bot.createdAt ?? null,
 		updatedAt: bot.updatedAt ?? null,
-		// 连接状态（桥接写入）
-		connState: 'disconnected',
+		// RTC 生命周期
+		rtcPhase: 'idle', // 'idle' | 'building' | 'ready' | 'recovering' | 'failed'
 		lastAliveAt: 0,
 		disconnectedAt: 0,
 		// 初始化标记（首次 vs 重连）
@@ -53,7 +53,6 @@ function createBotState(bot) {
 		// 插件状态（运行时写入）
 		pluginVersionOk: null,
 		pluginInfo: null,
-		rtcState: null,
 		rtcTransportInfo: null,
 		dcReady: false,
 	};
@@ -112,11 +111,22 @@ export const useBotsStore = defineStore('bots', {
 			bot.online = next;
 			if (!next) {
 				useAgentsStore().removeByBot(id);
-			} else if (!bot.initialized && bot.connState === 'connected') {
-				// bot 上线但初始化未成功（隧道建立前 __fullInit 失败）→ 重试
-				this.__onBotConnected(id);
-			} else if (prev === false && bot.connState === 'connected') {
-				// bot 从离线恢复在线 → 刷新 dashboard + 建立/恢复 RTC
+				// bot 离线 → 立即清除 DC 状态，避免 applySnapshot preserveOnline 误判
+				bot.dcReady = false;
+				bot.rtcPhase = 'idle';
+			} else if (!bot.initialized) {
+				// bot 上线且未初始化 → fullInit（ensureConnected 内部处理 WS）
+				bot.initialized = true;
+				const conn = useBotConnections().get(id);
+				if (conn) {
+					const attempt = bot.__initAttempt = (bot.__initAttempt || 0) + 1;
+					this.__fullInit(id, conn).catch((err) => {
+						if (bot.__initAttempt === attempt) bot.initialized = false;
+						console.warn('[bots] fullInit failed for botId=%s: %s', id, err?.message);
+					});
+				}
+			} else if (prev === false) {
+				// bot offline→online → 恢复 RTC + 刷新
 				useDashboardStore().loadDashboard(id).catch(() => {});
 				this.__ensureRtc(id).catch(() => {});
 			}
@@ -143,7 +153,7 @@ export const useBotsStore = defineStore('bots', {
 				if (!id) continue;
 				const existing = this.byId[id];
 				if (existing) {
-					const preserveOnline = existing.connState === 'connected';
+					const preserveOnline = existing.dcReady;
 					Object.assign(existing, b, { id });
 					if (preserveOnline) existing.online = true;
 					newById[id] = existing;
@@ -171,30 +181,24 @@ export const useBotsStore = defineStore('bots', {
 			for (const id of botIds) {
 				this.__bridgeConn(id);
 			}
+			// server 重启后 RTC 内部重建可能已耗尽 → rtcPhase='failed'
+			// 新快照到达时为这些 bot 重新尝试
+			for (const id of botIds) {
+				const bot = this.byId[id];
+				if (bot?.online && bot.initialized && bot.rtcPhase === 'failed') {
+					this.__ensureRtc(id).catch(() => {});
+				}
+			}
 		},
 
 		/**
-		 * 注册全局信令 WS 事件桥接（仅注册一次）
+		 * 注册全局信令事件桥接（仅注册一次）
+		 * WS state 事件不消费——WS 仅是信令通道，其断连不影响 DC 可用性
 		 */
 		__bridgeSignaling() {
 			if (this.__signalingBridged) return;
 			this.__signalingBridged = true;
 			const sigConn = useSignalingConnection();
-
-			// 信令 WS 状态 → 同步到所有 bot 的 connState
-			sigConn.on('state', (s) => {
-				for (const [id, bot] of Object.entries(this.byId)) {
-					const prev = bot.connState;
-					bot.connState = s;
-					if (s === 'disconnected') {
-						bot.disconnectedAt = Date.now();
-						bot.dcReady = false;
-					}
-					if (s === 'connected' && prev !== 'connected') {
-						this.__onBotConnected(id);
-					}
-				}
-			});
 
 			// 前台恢复 / 网络切换 → DC probe 探测存活性
 			sigConn.on('foreground-resume', ({ elapsed }) => {
@@ -221,15 +225,16 @@ export const useBotsStore = defineStore('bots', {
 			// 确保全局信令桥接已注册
 			this.__bridgeSignaling();
 
-			// 同步当前信令 WS 状态到新 bot
+			// 新 bot + online + 未初始化 → 启动 fullInit
+			// ensureConnected() 内部透明处理 WS 可用性（等待 WS 就绪）
 			const bot = this.byId[botId];
-			const sigState = useSignalingConnection().state;
-			if (bot && sigState !== bot.connState) {
-				const prev = bot.connState;
-				bot.connState = sigState;
-				if (sigState === 'connected' && prev !== 'connected') {
-					this.__onBotConnected(botId);
-				}
+			if (bot && bot.online && !bot.initialized) {
+				bot.initialized = true;
+				const attempt = bot.__initAttempt = (bot.__initAttempt || 0) + 1;
+				this.__fullInit(botId, conn).catch((err) => {
+					if (bot.__initAttempt === attempt) bot.initialized = false;
+					console.warn('[bots] fullInit failed for botId=%s: %s', botId, err?.message);
+				});
 			}
 		},
 
@@ -239,51 +244,41 @@ export const useBotsStore = defineStore('bots', {
 				onRtcStateChange: (state, transportInfo) => {
 					const bot = this.byId[botId];
 					if (!bot) return;
-					bot.rtcState = state;
 					if (transportInfo) bot.rtcTransportInfo = transportInfo;
-					if (state === 'failed' || state === 'closed') bot.dcReady = false;
+					if (state === 'connected') {
+						// 被动恢复成功：DC 已就绪但 store 未主动发起
+						const conn = useBotConnections().get(botId);
+						if (conn?.rtc?.isReady && !bot.dcReady) {
+							bot.dcReady = true;
+							bot.rtcPhase = 'ready';
+							this.__refreshIfStale(botId);
+						}
+					} else if (state === 'failed' || state === 'closed') {
+						bot.dcReady = false;
+						bot.disconnectedAt = Date.now();
+						bot.rtcPhase = 'failed';
+					}
 				},
 			};
 		},
 
-		/**
-		 * bot 连接就绪：首次 → 完整初始化；重连 → 传输选择 + 按断连时长刷新
-		 */
-		__onBotConnected(id) {
+		/** 数据刷新（RTC 恢复后，断连间隔较长时触发） */
+		__refreshIfStale(id) {
 			const bot = this.byId[id];
-			if (!bot) return;
-			const conn = useBotConnections().get(id);
-			if (!conn) return;
-
-			if (!bot.initialized) {
-				console.debug('[bots] conn ready botId=%s → full init', id);
-				bot.initialized = true;
-				const attempt = bot.__initAttempt = (bot.__initAttempt || 0) + 1;
-				this.__fullInit(id, conn).catch((err) => {
-					if (bot.__initAttempt === attempt) bot.initialized = false;
-					console.warn('[bots] fullInit failed for botId=%s: %s', id, err?.message);
-				});
-			} else {
-				console.debug('[bots] signaling reconnected botId=%s → ensureRtc', id);
-				const disconnectedAt = bot.disconnectedAt;
-				this.__ensureRtc(id).then(() => {
-					const bot = this.byId[id];
-					if (!bot || disconnectedAt <= 0) return;
-					const gap = Date.now() - disconnectedAt;
-					if (gap >= BRIEF_DISCONNECT_MS) {
-						console.debug('[bots] reconnect gap=%dms ≥ %dms → refresh stores botId=%s', gap, BRIEF_DISCONNECT_MS, id);
-						useAgentsStore().loadAgents(id).catch(() => {});
-						useSessionsStore().loadAllSessions().catch(() => {});
-						useTopicsStore().loadAllTopics().catch(() => {});
-						useDashboardStore().loadDashboard(id).catch(() => {});
-					}
-				}).catch(() => {});
-			}
+			if (!bot?.initialized || bot.disconnectedAt <= 0) return;
+			const gap = Date.now() - bot.disconnectedAt;
+			bot.disconnectedAt = 0;
+			if (gap < BRIEF_DISCONNECT_MS) return;
+			console.debug('[bots] reconnect gap=%dms → refresh stores botId=%s', gap, id);
+			useAgentsStore().loadAgents(id).catch(() => {});
+			useSessionsStore().loadAllSessions().catch(() => {});
+			useTopicsStore().loadAllTopics().catch(() => {});
+			useDashboardStore().loadDashboard(id).catch(() => {});
 		},
 
 		/**
 		 * 统一 RTC 建立/恢复入口。
-		 * 触发点：bot offline→online、WS 重连且 bot 在线、probe 失败。
+		 * 触发点：bot offline→online、__bridgeConn 首次初始化、probe 失败。
 		 * @param {string} id - botId
 		 * @param {object} [opts]
 		 * @param {boolean} [opts.forceRebuild] - 跳过 connected 检查，强制 rebuild
@@ -300,8 +295,18 @@ export const useBotsStore = defineStore('bots', {
 				// RTC 已连接且健康（非强制 rebuild）→ 确保 dcReady
 				if (!forceRebuild && rtc && rtc.state === 'connected') {
 					const bot = this.byId[id];
-					if (bot && rtc.isReady) bot.dcReady = true;
+					if (bot && rtc.isReady) {
+						bot.dcReady = true;
+						bot.rtcPhase = 'ready';
+					}
 					return;
+				}
+
+				// 设置阶段：已就绪/强制重建 → recovering；否则 → building
+				const bot = this.byId[id];
+				if (bot) {
+					bot.rtcPhase = (bot.rtcPhase === 'ready' || forceRebuild)
+						? 'recovering' : 'building';
 				}
 
 				// 释放旧 RTC → rebuild
@@ -323,8 +328,17 @@ export const useBotsStore = defineStore('bots', {
 
 				if (result === 'rtc') {
 					const bot = this.byId[id];
-					if (bot) bot.dcReady = true;
-				} else if (!bailedOut) {
+					if (bot) {
+						bot.dcReady = true;
+						bot.rtcPhase = 'ready';
+					}
+					this.__refreshIfStale(id);
+				} else if (bailedOut) {
+					const bot = this.byId[id];
+					if (bot) bot.rtcPhase = 'idle';
+				} else {
+					const bot = this.byId[id];
+					if (bot) bot.rtcPhase = 'failed';
 					console.warn('[bots] ensureRtc: all attempts exhausted, bot unreachable botId=%s', id);
 				}
 			} finally {
@@ -368,6 +382,7 @@ export const useBotsStore = defineStore('bots', {
 		 */
 		async __checkAndRecover(id, elapsed) {
 			try {
+				if (_rtcInitInProgress.get(id)) return; // rebuild 进行中，跳过
 				const bot = this.byId[id];
 				if (!bot?.dcReady) return; // 无活跃 DC，由其它路径处理
 				const conn = useBotConnections().get(id);
@@ -376,17 +391,20 @@ export const useBotsStore = defineStore('bots', {
 
 				// PC 已 failed/closed → 直接 rebuild
 				if (rtc.state === 'failed' || rtc.state === 'closed') {
+					bot.rtcPhase = 'recovering';
 					this.__ensureRtc(id).catch(() => {});
 					return;
 				}
 				// elapsed > 30s → werift consent 已过期，直接 rebuild
 				if (elapsed > CONSENT_EXPIRY_MS) {
+					bot.rtcPhase = 'recovering';
 					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
 					return;
 				}
 				// probe DC 探测存活性
 				const alive = await rtc.probe(DC_PROBE_TIMEOUT_MS);
 				if (!alive && this.byId[id]) {
+					this.byId[id].rtcPhase = 'recovering';
 					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
 				}
 			} catch (err) {

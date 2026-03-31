@@ -1068,8 +1068,6 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 且未 accepted 时等待重连后自动重试一次', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
-			// waitForConnected 读取 byId.connState
-			botsStore.byId['1'].connState = 'connected';
 			botsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
@@ -1106,7 +1104,6 @@ describe('useChatStore', () => {
 		test('DC_NOT_READY 错误码也触发断连重试', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].connState = 'connected';
 			botsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
@@ -1141,7 +1138,6 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 重试时复用同一个 idempotencyKey', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].connState = 'connected';
 			botsStore.byId['1'].dcReady = true;
 
 			const capturedKeys = [];
@@ -1230,7 +1226,6 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 重试本身再次失败时不二次重试，直接抛出', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].connState = 'connected';
 			botsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
@@ -1260,7 +1255,6 @@ describe('useChatStore', () => {
 		test('WS_CLOSED 且已 accepted 时不抛出，等重连后 reconcile', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].connState = 'connected';
 			botsStore.byId['1'].dcReady = true;
 
 			const conn = mockConn();
