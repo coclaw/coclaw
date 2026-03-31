@@ -116,7 +116,7 @@
 
 	// 表格
 	.table-box {
-		overflow: hidden;
+		overflow-x: auto;
 		border: 1px solid var(--ui-border);
 		border-radius: 0.5em;
 	}
@@ -129,6 +129,7 @@
 	table td {
 		padding: 0.5em 1em;
 		border: 1px solid var(--ui-border);
+		overflow-wrap: break-word;
 	}
 
 	// 分隔线

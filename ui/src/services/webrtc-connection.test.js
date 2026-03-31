@@ -223,13 +223,12 @@ describe('WebRtcConnection — 基础建连', () => {
 		rtc.close();
 	});
 
-	test('connect 缓存 turnCreds 供后续 rebuild 使用', async () => {
+	test('connect 不缓存 turnCreds（内部不做 rebuild，由外层退避重试）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		// 内部应缓存 turnCreds
-		expect(rtc.__turnCreds).toBe(MOCK_TURN_CREDS);
+		expect(rtc.__turnCreds).toBeUndefined();
 
 		rtc.close();
 	});
@@ -613,49 +612,13 @@ describe('WebRtcConnection — close', () => {
 	});
 });
 
-describe('WebRtcConnection — __onIceFailed full rebuild', () => {
+describe('WebRtcConnection — __onIceFailed', () => {
 	beforeEach(() => {
 		MockRTCPeerConnection.lastInstance = null;
 		pcInstances.length = 0;
 	});
 
-	test('failed 时直接执行 full rebuild', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const firstPc = MockRTCPeerConnection.lastInstance;
-
-		firstPc.connectionState = 'failed';
-		firstPc.onconnectionstatechange();
-
-		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
-		expect(MockRTCPeerConnection.lastInstance).not.toBe(firstPc);
-		expect(firstPc.__closed).toBe(true);
-
-		rtc.close();
-	});
-
-	test('full rebuild 使用缓存的 turnCreds', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const firstPc = MockRTCPeerConnection.lastInstance;
-
-		firstPc.connectionState = 'failed';
-		firstPc.onconnectionstatechange();
-
-		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
-
-		const newPc = MockRTCPeerConnection.lastInstance;
-		expect(newPc.config.iceServers).toHaveLength(3);
-		expect(newPc.config.iceServers[0]).toEqual({ urls: 'stun:coclaw.net:3478' });
-
-		rtc.close();
-	});
-
-	test('所有 rebuild 耗尽后状态变为 failed', async () => {
+	test('ICE failed 直接上报 failed 状态（不做内部 rebuild）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 		const stateChanges = [];
@@ -663,54 +626,16 @@ describe('WebRtcConnection — __onIceFailed full rebuild', () => {
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
-		// 耗尽 full rebuild (3次)
-		for (let i = 0; i < 10; i++) {
-			const pc = MockRTCPeerConnection.lastInstance;
-			if (pc.__closed) break;
-			pc.connectionState = 'failed';
-			pc.onconnectionstatechange();
-			await new Promise((r) => setTimeout(r, 0));
-		}
-
-		expect(rtc.state).toBe('failed');
-		expect(stateChanges).toContain('failed');
-
-		rtc.close();
-	});
-
-	test('旧 PeerConnection 的回调不影响新 PC', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
-		const oldPc = MockRTCPeerConnection.lastInstance;
-
-		oldPc.connectionState = 'failed';
-		oldPc.onconnectionstatechange();
-
-		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
-
-		expect(oldPc.onconnectionstatechange).toBeNull();
-
-		rtc.close();
-	});
-
-	test('rebuild 后 rtc listener 保持（不重复注册）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
-
-		await rtc.connect(MOCK_TURN_CREDS);
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
 
-		await vi.waitFor(() => expect(pcInstances.length).toBe(2));
+		await new Promise((r) => setTimeout(r, 0));
 
-		expect(sigListeners['rtc']?.length).toBe(1);
-
-		const newPc = MockRTCPeerConnection.lastInstance;
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'new-answer' } });
-		expect(newPc.__remoteDesc).toEqual({ type: 'answer', sdp: 'new-answer' });
+		// 不创建新 PeerConnection（无内部 rebuild）
+		expect(pcInstances.length).toBe(1);
+		expect(rtc.state).toBe('failed');
+		expect(stateChanges).toContain('failed');
 
 		rtc.close();
 	});

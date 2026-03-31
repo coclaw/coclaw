@@ -16,6 +16,8 @@ const HIGH_WATER_MARK = 262144;
 const LOW_WATER_MARK = 65536;
 /** 上传大小限制 1GB */
 const MAX_UPLOAD_SIZE = 1024 * 1024 * 1024;
+/** 等待 Plugin ready 信号的超时（DC open + Plugin 回复 { ok: true }） */
+const UPLOAD_READY_TIMEOUT_MS = 15_000;
 
 // --- RPC 操作（走 rpc DataChannel） ---
 
@@ -269,9 +271,11 @@ function __doUpload(rtcConn, file, reqMsg) {
 
 	const promise = new Promise((resolve, reject) => {
 		let settled = false;
+		let readyTimer = null;
 		const settle = (fn, val) => {
 			if (settled) return;
 			settled = true;
+			clearTimeout(readyTimer);
 			fn(val);
 		};
 
@@ -285,13 +289,21 @@ function __doUpload(rtcConn, file, reqMsg) {
 			return;
 		}
 
+		let readyReceived = false;
+
 		cancelFn = () => {
 			cancelled = true;
+			clearTimeout(readyTimer);
 			cleanupRef();
 			settle(reject, new FileTransferError('CANCELLED', 'Upload cancelled'));
 		};
 
-		let readyReceived = false;
+		// 超时守卫：DC open + Plugin ready 信号必须在限时内到达
+		readyTimer = setTimeout(() => {
+			if (readyReceived || cancelled || settled) return;
+			cleanupRef();
+			settle(reject, new FileTransferError('READY_TIMEOUT', 'Plugin did not respond in time'));
+		}, UPLOAD_READY_TIMEOUT_MS);
 
 		dcRef.onopen = () => {
 			try {
@@ -322,6 +334,7 @@ function __doUpload(rtcConn, file, reqMsg) {
 			if (!readyReceived) {
 				// Plugin 准备就绪：{ ok: true }
 				readyReceived = true;
+				clearTimeout(readyTimer);
 				sendChunks(dcRef, file, () => progressCb, () => cancelled || settled).then(() => {
 					if (cancelled || settled) return;
 					// 发送完成信号

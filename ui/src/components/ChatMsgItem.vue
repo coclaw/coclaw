@@ -6,7 +6,7 @@
 				<!-- 文本气泡 + inline 图片 -->
 				<div
 					v-if="item.textContent || item.images?.length"
-					class="max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-base leading-relaxed text-white whitespace-pre-wrap"
+					class="max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-base leading-relaxed text-white whitespace-pre-wrap break-words"
 				>
 					<template v-if="item.textContent">{{ item.textContent }}</template>
 					<ChatImg

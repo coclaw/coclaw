@@ -311,11 +311,11 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeTruthy();
 		});
 
-		test('lastEventAt=0 时视为事件流已静默', () => {
+		test('lastEventAt=0 时视为非 stale（尚未收到事件），不 settle', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			// lastEventAt 从未更新（断连后从未收到事件）
+			// lastEventAt 从未更新（刚注册，尚未收到任何事件）
 			expect(store.runs['run-1'].lastEventAt).toBe(0);
 
 			const serverMessages = [
@@ -324,7 +324,59 @@ describe('useAgentRunsStore', () => {
 
 			store.reconcileAfterLoad('agent:main:main', serverMessages);
 
-			expect(store.runs['run-1']).toBeUndefined();
+			// 不应被 settle——run 刚注册，事件尚未到达
+			expect(store.runs['run-1']).toBeTruthy();
+		});
+	});
+
+	// =====================================================================
+	// stripLocalUserMsgs
+	// =====================================================================
+
+	describe('stripLocalUserMsgs', () => {
+		test('从 streamingMsgs 移除 _local user 消息，保留 bot 消息', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main');
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
+		});
+
+		test('无 _local user 消息时 streamingMsgs 不变', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main');
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
+		});
+
+		test('settled run 不操作', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].settled = true;
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main');
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+		});
+
+		test('不存在的 runKey 不报错', () => {
+			const store = useAgentRunsStore();
+			expect(() => store.stripLocalUserMsgs('nonexistent')).not.toThrow();
 		});
 	});
 

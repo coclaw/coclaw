@@ -21,19 +21,6 @@ const MSG_PAGE_SIZE = 50;
 const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED']);
 function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
 
-/**
- * 比较两条消息的 content 是否相同（兼容字符串和 block 数组）
- * @param {string|object[]} a
- * @param {string|object[]} b
- * @returns {boolean}
- */
-function __contentEqual(a, b) {
-	if (a === b) return true;
-	if (typeof a === 'string' || typeof b === 'string') return false;
-	// block 数组：序列化比较
-	try { return JSON.stringify(a) === JSON.stringify(b); }
-	catch { return false; }
-}
 
 /**
  * 创建 ChatStore 实例
@@ -124,23 +111,12 @@ export function createChatStore(storeKey, opts = {}) {
 			runKey() {
 				return this.topicMode ? this.sessionId : this.chatSessionKey;
 			},
-			/** 合并服务端消息 + 活跃 run 的流式消息（去重乐观消息） */
+			/** 合并服务端消息 + 活跃 run 的流式消息 */
 			allMessages() {
 				const runsStore = useAgentRunsStore();
 				const run = runsStore.getActiveRun(this.runKey);
 				if (run && run.streamingMsgs.length) {
-					// 去重：loadOlderMessages 可能拉回服务端已收录的 user 消息，
-					// 而 streamingMsgs 中仍持有同一条的乐观版本，需跳过以防重复
-					const deduped = run.streamingMsgs.filter((sm) => {
-						if (!sm._local || sm.message?.role !== 'user') return true;
-						// 检查 this.messages 中是否已有服务端版本（非 _local、同 role 且内容相同）
-						return !this.messages.some((m) =>
-							!m._local
-							&& m.message?.role === 'user'
-							&& __contentEqual(m.message.content, sm.message.content),
-						);
-					});
-					if (deduped.length) return [...this.messages, ...deduped];
+					return [...this.messages, ...run.streamingMsgs];
 				}
 				return this.messages;
 			},
@@ -1097,6 +1073,10 @@ export function createChatStore(storeKey, opts = {}) {
 				const runsStore = useAgentRunsStore();
 				// 完成 settling 过渡（lifecycle:end 已到达，等待 loadMessages 替换数据）
 				runsStore.completeSettle(this.runKey);
+				// 去除乐观 user 消息——run 已 accepted，loadMessages 后服务端版本已在 this.messages 中
+				runsStore.stripLocalUserMsgs(this.runKey);
+				// 正在发送中时跳过僵尸检测——避免过早 settle 活跃 run
+				if (this.sending) return;
 				// 检查僵尸 run（断连期间完成，lifecycle:end 丢失）
 				runsStore.reconcileAfterLoad(this.runKey, serverMessages);
 			},

@@ -172,6 +172,24 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
+		 * loadMessages 成功后：从 streamingMsgs 中移除乐观 user 消息
+		 * run 已 accepted → 服务端已持久化 → loadMessages 返回的数据必包含该消息
+		 * @param {string} runKey
+		 */
+		stripLocalUserMsgs(runKey) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
+			const run = this.runs[runId];
+			if (!run || run.settled || run.settling) return;
+			const filtered = run.streamingMsgs.filter(
+				(m) => !(m._local && m.message?.role === 'user'),
+			);
+			if (filtered.length !== run.streamingMsgs.length) {
+				this.runs[runId] = { ...run, streamingMsgs: filtered };
+			}
+		},
+
+		/**
 		 * 重连后 reconcile：loadMessages 成功后检查是否应 settle 僵尸 run
 		 * @param {string} runKey
 		 * @param {object[]} serverMessages - loadMessages 返回的服务端消息
@@ -182,10 +200,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const run = this.runs[runId];
 			if (!run || run.settled || run.settling) return;
 
-			// 条件1：事件流已静默
-			if (run.lastEventAt > 0 && Date.now() - run.lastEventAt < STALE_RUN_MS) {
-				console.debug('[agentRuns] reconcile skip: events still active runKey=%s (age=%dms)',
-					runKey, Date.now() - run.lastEventAt);
+			// 条件1：事件流已静默（尚未收到任何事件时视为非 stale）
+			if (!run.lastEventAt || Date.now() - run.lastEventAt < STALE_RUN_MS) {
+				console.debug('[agentRuns] reconcile skip: events still active runKey=%s (lastEventAt=%d, age=%dms)',
+					runKey, run.lastEventAt || 0, run.lastEventAt ? Date.now() - run.lastEventAt : -1);
 				return;
 			}
 

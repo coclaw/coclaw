@@ -4,7 +4,7 @@
  *
  * 连接恢复策略：
  * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈），10s 超时后升级
- * - failed → 全新重建 PeerConnection（最多 3 次）
+ * - failed → 上报 failed 状态，由外层 bots.store 退避重试（每次重新获取 TURN 凭证）
  * - 前台恢复 / 网络切换 → DC probe 探测存活性，超时则 rebuild
  *
  * 注：ICE restart 已移除 — werift 的实现不完整且可能产生僵尸连接
@@ -14,7 +14,6 @@ import { httpClient } from './http.js';
 import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 import { useSignalingConnection } from './signaling-connection.js';
 
-const MAX_FULL_REBUILDS = 3;
 /** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链 */
 const DISCONNECTED_TIMEOUT_MS = 10_000;
 
@@ -139,8 +138,6 @@ export class WebRtcConnection {
 		/** @type {{ localType: string, localProtocol: string, remoteType: string, remoteProtocol: string, relayProtocol: string|null }|null} */
 		this.__transportInfo = null;
 		this.__onRtcMsg = null;
-		this.__turnCreds = null;
-		this.__rebuildCount = 0;
 		/** @type {{ data: string, resolve: Function, reject: Function }[]} */
 		this.__sendQueue = [];
 		/** @type {object[]} answer 到达前暂存的远端 ICE candidates */
@@ -170,9 +167,7 @@ export class WebRtcConnection {
 	/** 发起 WebRTC 连接 */
 	async connect(turnCreds) {
 		if (this.__state !== 'idle' && this.__state !== 'closed' && this.__state !== 'failed') return;
-		this.__turnCreds = turnCreds;
-		this.__rebuildCount = 0;
-		await this.__buildPeerConnection(turnCreds, false);
+		await this.__buildPeerConnection(turnCreds);
 	}
 
 	/** 关闭连接（主动关闭，不再自动恢复） */
@@ -328,7 +323,7 @@ export class WebRtcConnection {
 	// --- 内部：建连 ---
 
 	/** @private */
-	async __buildPeerConnection(turnCreds, isRebuild) {
+	async __buildPeerConnection(turnCreds) {
 		// 清理旧 PC（rebuild 场景）
 		if (this.__pc) {
 			this.__pc.onicecandidate = null;
@@ -363,7 +358,7 @@ export class WebRtcConnection {
 		const offer = await pc.createOffer();
 		await pc.setLocalDescription(offer);
 		useSignalingConnection().sendSignaling(this.botId, 'rtc:offer', { sdp: offer.sdp });
-		this.__log('info', `offer sent for bot ${this.botId}${isRebuild ? ' (rebuild)' : ''}`);
+		this.__log('info', `offer sent for bot ${this.botId}`);
 	}
 
 	/** @private */
@@ -553,27 +548,10 @@ export class WebRtcConnection {
 
 	// --- 内部：恢复 ---
 
-	/** @private ICE failed → 直接 full rebuild（配额内） */
-	async __onIceFailed() {
-		if (this.__rebuildCount < MAX_FULL_REBUILDS) {
-			this.__rebuildCount++;
-			this.__log('info', `ICE failed, full rebuild (${this.__rebuildCount}/${MAX_FULL_REBUILDS})`);
-			this.__doFullRebuild();
-		} else {
-			this.__log('warn', 'all recovery attempts exhausted, giving up');
-			this.__setState('failed');
-		}
-	}
-
-	/** @private 全新重建 PeerConnection */
-	async __doFullRebuild() {
-		try {
-			await this.__buildPeerConnection(this.__turnCreds, true);
-		}
-		catch (err) {
-			this.__log('warn', `full rebuild failed: ${err?.message}`);
-			this.__setState('failed');
-		}
+	/** @private ICE failed → 上报 failed，由外层退避重试（每次获取 fresh TURN 凭证） */
+	__onIceFailed() {
+		this.__log('warn', 'ICE failed, delegating recovery to outer backoff');
+		this.__setState('failed');
 	}
 
 	// --- 内部：信令 ---
