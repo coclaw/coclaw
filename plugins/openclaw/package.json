@@ -50,7 +50,6 @@
     "lint": "eslint \"**/*.{js,mjs,cjs}\" --no-error-on-unmatched-pattern",
     "typecheck": "echo \"No typecheck configured yet (coclaw openclaw plugin)\"",
     "check": "pnpm lint && pnpm typecheck",
-    "test:standalone": "node --test src/standalone-mode.test.js",
     "test:plugin": "node --test src/plugin-mode.test.js",
     "test": "c8 --check-coverage --lines 100 --functions 100 --branches 95 --statements 100 --reporter=text --reporter=lcov bash -c 'for f in src/**/*.test.js src/*.test.js index.test.js; do node --test \"$f\" || exit 1; done'",
     "verify": "pnpm check && pnpm test",
