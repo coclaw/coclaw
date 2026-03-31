@@ -110,10 +110,8 @@ pnpm dev
 ### 质量门禁
 
 ```bash
-pnpm check      # 静态检查
-pnpm test       # 单元测试
-pnpm coverage   # 覆盖率检查（lines/functions/statements >= 70%，branches >= 60%）
-pnpm verify     # check -> test -> coverage（一键执行）
+pnpm check      # 静态检查（lint + typecheck）
+pnpm coverage   # 测试 + 覆盖率检查（lines/functions/statements >= 70%，branches >= 60%）
 ```
 
 ### 开发流程

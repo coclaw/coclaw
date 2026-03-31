@@ -60,7 +60,7 @@
 
 ## 测试与接入门禁
 
-- 进入 gateway 前，必须先通过插件自身 `pnpm verify`。
+- 进入 gateway 前，必须先通过插件自身 `pnpm check` + `pnpm coverage`。
 - 高风险插件建议（当前 `plugins/openclaw` 已执行）达到 100% coverage 门禁后再接入。
 - 接入顺序建议：
   1. 离线/mocks 验证
