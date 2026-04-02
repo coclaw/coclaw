@@ -55,7 +55,7 @@ CoClaw 让用户即使与 OpenClaw 处于网络隔离状态，也能通过 CoCla
 | SSE | `GET /bots/status-stream`，per-user | bot 状态推送（上下线、绑定/解绑、名称更新） |
 | Signaling WS | `WS /rtc/signal`，per-tab 单一 WS | SDP/ICE 信令交换、connId 管理、应用层心跳 |
 | Bot WS（Plugin 侧） | `WS /bots/stream`，per-bot（Plugin ↔ Server） | Plugin 上行链路、控制消息、RTC 信令转发 |
-| Bot WS（UI 侧） | `WS /bots/stream?role=ui`，per-tab（UI ↔ Server） | Server 中继 RPC（WebRTC 不可用时的备选路径）、RTC 信令转发 |
+| Bot WS（UI 侧） | `WS /bots/stream?role=ui`，per-tab（UI ↔ Server） | Server 中继 RPC（WebRTC 不可用时的备选路径）、RTC 信令转发。**当前 UI 未使用，作为保留能力存在** |
 | RPC DataChannel | per-bot 持久 DC `"rpc"` | 所有业务 JSON-RPC（agent 交互、session 管理、文件元操作） |
 | File DataChannel | per-transfer 临时 DC `"file:<id>"` | 二进制文件传输（独立于 RPC，互不阻塞） |
 

@@ -318,5 +318,5 @@ CoClaw 侧无心跳机制，不存在误判问题。Gateway 的 `tick` 事件可
 |---|---|
 | `server/src/bot-ws-hub.js` | 协议级 ping（45s）+ `bufferedAmount` 容错 + 连续 miss 计数（4 次，~180s）；移除 UI 侧心跳；重连淘汰旧连接 |
 | `plugins/openclaw/src/realtime-bridge.js` | 心跳改为连续 miss 计数策略（~3 分钟容忍） |
-| `ui/src/services/bot-connection.js` | 两层心跳（miss + pending 抑制 + 绝对上限）；RPC 默认 30 分钟兜底超时 |
+| `ui/src/services/signaling-connection.js` | 两层心跳（miss + pending 抑制 + 绝对上限）；RPC 默认 30 分钟兜底超时 |
 | 各处测试文件 | 配套更新 |

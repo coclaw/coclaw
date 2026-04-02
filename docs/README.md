@@ -45,7 +45,6 @@
 - [Topic 管理](designs/topic-management.md) — 独立 Topic 功能（已实施）
 - [认领绑定](designs/claim-bind.md) — OpenClaw 侧发起绑定（已实施）
 - [TURN over TLS](designs/turn-over-tls.md) — 端口 443 穿透方案（待实施）
-- [v0.2 实时通信重构](designs/v0.2-realtime-refactor.md) — per-bot WS → 分层架构（已过时，见 communication-model.md）
 - [Electron 桌面壳](designs/electron-desktop-shell.md) — 桌面端方案（草案）
 - [Tauri 桌面壳](designs/tauri-desktop-shell.md) — Tauri 方案（已放弃，保留备用）
 - [OpenClaw 实例身份](designs/openclaw-instance-identity.md) — 跨重绑持久身份（研究阶段）
