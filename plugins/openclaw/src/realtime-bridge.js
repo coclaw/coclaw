@@ -215,7 +215,7 @@ export class RealtimeBridge {
 			throw new Error('No WebRTC implementation available');
 		}
 
-		const { WebRtcPeer } = await import('./webrtc-peer.js');
+		const { WebRtcPeer } = await import('./webrtc/webrtc-peer.js');
 		const { createFileHandler } = await import('./file-manager/handler.js');
 		this.__fileHandler = createFileHandler({
 			resolveWorkspace: (agentId) => this.__resolveWorkspace(agentId),
@@ -913,7 +913,7 @@ export class RealtimeBridge {
 		this.started = true;
 		// 先完成 WebRTC 实现加载，再建立连接，避免 UI 发来 offer 时 RTC 包未就绪
 		const preloadFn = this.__preloadNdc
-			?? (await import('./ndc-preloader.js')).preloadNdc;
+			?? (await import('./webrtc/ndc-preloader.js')).preloadNdc;
 		// 版本预热与 preload 并行，供 gateway connect 请求同步使用
 		const [preloadResult] = await Promise.all([
 			preloadFn().catch((err) => {

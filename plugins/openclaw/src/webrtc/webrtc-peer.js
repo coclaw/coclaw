@@ -1,5 +1,5 @@
-import { chunkAndSend, createReassembler } from './utils/dc-chunking.js';
-import { remoteLog } from './remote-log.js';
+import { chunkAndSend, createReassembler } from './dc-chunking.js';
+import { remoteLog } from '../remote-log.js';
 
 /**
  * 管理多个 WebRTC PeerConnection（以 connId 为粒度）。

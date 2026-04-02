@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { WebRtcPeer } from './webrtc-peer.js';
-import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
+import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 
 // --- mock helpers ---
 
@@ -1132,7 +1132,7 @@ test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
 
 // --- DataChannel 分片/重组测试 ---
 
-import { HEADER_SIZE, FLAG_BEGIN, FLAG_END, FLAG_MIDDLE } from './utils/dc-chunking.js';
+import { HEADER_SIZE, FLAG_BEGIN, FLAG_END, FLAG_MIDDLE } from './dc-chunking.js';
 
 test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async () => {
 	const PC = MockPCFactory();

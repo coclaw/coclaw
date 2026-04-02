@@ -2,7 +2,7 @@ import { createRequire } from 'module';
 import nodePath from 'path';
 import fsSync from 'fs';
 import fsPromises from 'fs/promises';
-import { remoteLog as defaultRemoteLog } from './remote-log.js';
+import { remoteLog as defaultRemoteLog } from '../remote-log.js';
 
 const SUPPORTED_PLATFORMS = new Set([
 	'linux-x64',
