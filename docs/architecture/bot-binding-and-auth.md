@@ -1,5 +1,8 @@
 # CoClaw Bot 绑定与鉴权方案 (Bot Binding & Authentication Scheme)
 
+> 状态：已实施
+> 最后更新：2026-03-06
+
 本文档详细阐述了将用户本地 OpenClaw 实例（即 "Bot" 或 "Agent"）绑定到 CoClaw 云端账号的架构设计，以及随后的鉴权机制与体系融合方案。
 
 ## 1. 核心概念

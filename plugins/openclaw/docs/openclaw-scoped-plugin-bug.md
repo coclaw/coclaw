@@ -2,6 +2,7 @@
 
 > 日期：2026-03-07
 > 影响版本：OpenClaw 2026.3.2 (85377a2)
+> 状态：已知上游 bug，CoClaw 侧已适配（使用 scoped name 安装正常，update/uninstall 需注意）
 
 ## 问题描述
 

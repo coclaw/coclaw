@@ -17,6 +17,9 @@
 - [绑定与认证](architecture/bot-binding-and-auth.md) — 绑定流程、token 认证、数据模型
 - [Agent RPC 协议](architecture/gateway-agent-rpc-protocol.md) — 两阶段响应协议规范
 - [多 Agent 支持](architecture/multi-agent-support.md) — Claw/Agent 层级、多 Agent 架构
+- [WebSocket 心跳](architecture/websocket-heartbeat.md) — 各链路心跳机制分析（信令 WS / Plugin WS / Gateway WS）
+- [Electron 桌面壳](architecture/electron-desktop-shell.md) — 桌面端方案（草案）
+- [OpenClaw 实例身份](architecture/openclaw-instance-identity.md) — 跨重绑持久身份（研究阶段）
 
 ## Decisions — 架构决策记录 (ADR)
 
@@ -44,6 +47,7 @@
 - [Topic 管理](designs/topic-management.md) — 独立 Topic 功能（草案）
 - [认领绑定](designs/claim-bind.md) — OpenClaw 侧发起绑定（草案）
 - [TURN over TLS](designs/turn-over-tls.md) — 端口 443 穿透方案（待实施）
+- [v0.2 实时通信重构](designs/v0.2-realtime-refactor.md) — per-bot WS → 分层架构（已过时，见 communication-model.md）
 
 ## OpenClaw Research — 上游研究
 

@@ -1,5 +1,7 @@
 # 2026-02-20 orphan session 续聊能力缺口记录
 
+> 状态：历史记录 — 后续 session 管理演进（Topic 功能、chat history 追踪）已部分覆盖此缺口
+
 ## 背景
 在 `session-manager` 插件接入测试中，已成功验证：
 - `nativeui.sessions.listAll`

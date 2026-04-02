@@ -1,24 +1,25 @@
 # WebSocket 心跳机制分析与设计
 
-> 最后更新：2026-03-13
+> 最后更新：2026-04-02
+> 注意：UI ↔ Server 链路已从 per-bot WS 迁移为 per-tab 信令 WS（`signaling-connection.js`），业务 RPC 走 WebRTC DataChannel。本文档 Section 1 的心跳机制仍然适用，但作用对象是信令通道而非业务 RPC 通道。Section 2-4 不受影响。
 
 ## 背景
 
-CoClaw 的消息通道包含 3 段 WebSocket 链路：
+CoClaw 的 WebSocket 链路包含 3 段：
 
 ```
-UI ←ws→ Server ←ws→ Plugin(openclaw) ←ws→ OpenClaw Gateway
+UI ←ws(信令)→ Server ←ws→ Plugin(openclaw) ←ws→ OpenClaw Gateway
 ```
 
-在传输大消息（如包含 base64 图片的 agent 请求）时，应用层心跳超时可能误判断连。本文档记录各链路的心跳机制、已知问题、ws 库行为分析，以及 OpenClaw Gateway 的相关机制。
+本文档记录各链路的心跳机制、已知问题、ws 库行为分析，以及 OpenClaw Gateway 的相关机制。
 
 ## 各链路心跳机制现状
 
-### 1. UI → Server（客户端检测 server 连接存活）
+### 1. UI → Server（信令 WS 客户端心跳）
 
 | 项 | 说明 |
 |---|---|
-| 文件 | `ui/src/services/bot-connection.js` |
+| 文件 | `ui/src/services/signaling-connection.js` |
 | 类型 | 应用层（`{ type: 'ping' }` / `{ type: 'pong' }`） |
 | Ping 间隔 | 25s |
 | 超时策略 | 两层机制：常规 miss 计数（2 次 ≈ 90s）+ pending RPC 抑制（额外 4 轮 ≈ 180s，绝对上限 ~270s） |

@@ -1,6 +1,6 @@
 # Tauri v2 桌面壳子应用设计方案
 
-> 状态：定稿
+> 状态：已放弃 — Electron 方案替代，见 [electron-desktop-shell.md](electron-desktop-shell.md)
 > 创建时间：2026-03-14
 > 适用范围：Windows + macOS 桌面端
 

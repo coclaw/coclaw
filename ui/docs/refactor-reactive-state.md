@@ -1,5 +1,7 @@
 # 响应式状态架构整改
 
+> 状态：已实施（bots.store 暴露 dcReady/connState 响应式状态，各 store 通过 computed/watch 消费）
+
 ## 背景与动机
 
 ### 问题现象
