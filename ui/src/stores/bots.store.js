@@ -170,6 +170,7 @@ export const useBotsStore = defineStore('bots', {
 			useAgentsStore().removeByBot(id);
 			useAgentRunsStore().removeByBot(id);
 			useDashboardStore().clearDashboard(id);
+			useTopicsStore().removeByBot(id);
 			this.__clearRetry(id);
 			_bridgedConns.delete(id);
 			delete this.byId[id];
@@ -205,6 +206,7 @@ export const useBotsStore = defineStore('bots', {
 					useSessionsStore().removeSessionsByBotId(oldId);
 					useAgentRunsStore().removeByBot(oldId);
 					useDashboardStore().clearDashboard(oldId);
+					useTopicsStore().removeByBot(oldId);
 					this.__clearRetry(oldId);
 					_bridgedConns.delete(oldId);
 				}

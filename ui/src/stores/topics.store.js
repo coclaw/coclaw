@@ -151,6 +151,14 @@ export const useTopicsStore = defineStore('topics', {
 			}
 		},
 
+		/** 移除指定 bot 的所有 topics */
+		removeByBot(botId) {
+			const id = String(botId);
+			for (const [tid, topic] of Object.entries(this.byId)) {
+				if (String(topic.botId) === id) delete this.byId[tid];
+			}
+		},
+
 		/**
 		 * 异步生成 topic 标题（fire-and-forget，不阻塞调用方）
 		 * @param {string} botId

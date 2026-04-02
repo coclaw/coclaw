@@ -429,6 +429,35 @@ describe('topics store', () => {
 		await expect(store.updateTopic('no-bot', 't1', { title: 'x' })).rejects.toThrow('Bot not connected');
 	});
 
+	// --- removeByBot ---
+
+	test('removeByBot 移除指定 bot 的所有 topics', () => {
+		const store = useTopicsStore();
+		store.byId = toById([
+			{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: 'bot-1' },
+			{ topicId: 't2', agentId: 'main', title: 'B', createdAt: 200, botId: 'bot-1' },
+			{ topicId: 't3', agentId: 'main', title: 'C', createdAt: 300, botId: 'bot-2' },
+		]);
+
+		store.removeByBot('bot-1');
+
+		expect(store.items).toHaveLength(1);
+		expect(store.byId['t1']).toBeUndefined();
+		expect(store.byId['t2']).toBeUndefined();
+		expect(store.byId['t3']).toBeDefined();
+	});
+
+	test('removeByBot 目标 bot 无 topics 时无副作用', () => {
+		const store = useTopicsStore();
+		store.byId = toById([
+			{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: 'bot-1' },
+		]);
+
+		store.removeByBot('nonexistent');
+
+		expect(store.items).toHaveLength(1);
+	});
+
 	// --- findTopic getter ---
 
 	test('findTopic 返回匹配的 topic', () => {

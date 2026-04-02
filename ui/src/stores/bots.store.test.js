@@ -264,6 +264,21 @@ describe('removeBotById', () => {
 		expect(agentsStore.byBot['3']).toBeUndefined();
 	});
 
+	test('calls removeByBot on topics store', () => {
+		const store = useBotsStore();
+		const topicsStore = useTopicsStore();
+		store.setBots([{ id: '7', name: 'Bot' }]);
+		topicsStore.byId = {
+			't1': { topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, botId: '7' },
+			't2': { topicId: 't2', agentId: 'main', title: 'B', createdAt: 200, botId: '99' },
+		};
+
+		store.removeBotById('7');
+
+		expect(topicsStore.byId['t1']).toBeUndefined();
+		expect(topicsStore.byId['t2']).toBeDefined();
+	});
+
 	test('is a no-op when bot is not found', () => {
 		const store = useBotsStore();
 		store.setBots([{ id: '1', name: 'A' }]);
@@ -487,16 +502,18 @@ describe('applySnapshot', () => {
 		expect(store.byId['1'].online).toBe(true);
 	});
 
-	test('removes bots not in snapshot and cleans up RTC/sessions/agentRuns', () => {
+	test('removes bots not in snapshot and cleans up RTC/sessions/agentRuns/topics', () => {
 		const store = useBotsStore();
 		const sessionsStore = useSessionsStore();
 		const agentsStore = useAgentsStore();
 		const agentRunsStore = useAgentRunsStore();
 		const dashboardStore = useDashboardStore();
+		const topicsStore = useTopicsStore();
 		const removeAgentsSpy = vi.spyOn(agentsStore, 'removeByBot');
 		const removeSessionsSpy = vi.spyOn(sessionsStore, 'removeSessionsByBotId');
 		const removeAgentRunsSpy = vi.spyOn(agentRunsStore, 'removeByBot');
 		const clearDashboardSpy = vi.spyOn(dashboardStore, 'clearDashboard');
+		const removeTopicsSpy = vi.spyOn(topicsStore, 'removeByBot');
 		mockManager.get.mockReturnValue(null);
 
 		store.byId['1'] = { id: '1', name: 'old' };
@@ -512,6 +529,7 @@ describe('applySnapshot', () => {
 		expect(removeSessionsSpy).toHaveBeenCalledWith('2');
 		expect(removeAgentRunsSpy).toHaveBeenCalledWith('2');
 		expect(clearDashboardSpy).toHaveBeenCalledWith('2');
+		expect(removeTopicsSpy).toHaveBeenCalledWith('2');
 	});
 
 	test('skips items with null/undefined id', () => {
