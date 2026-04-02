@@ -301,6 +301,61 @@ describe('topics store', () => {
 		store.generateTitle('no-bot', 't1');
 	});
 
+	test('generateTitle 并发调用同一 topicId 时只发一次请求，完成后可再次调用', async () => {
+		let resolveReq;
+		const conn = {
+			request: vi.fn().mockImplementation(() => new Promise((resolve) => { resolveReq = resolve; })),
+			on: vi.fn(), off: vi.fn(),
+		};
+		setConn('bot-1', conn);
+
+		const store = useTopicsStore();
+		store.byId = toById([{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }]);
+
+		store.generateTitle('bot-1', 't1');
+		store.generateTitle('bot-1', 't1');
+		expect(conn.request).toHaveBeenCalledTimes(1);
+
+		resolveReq({ title: '标题' });
+		await vi.waitFor(() => {
+			expect(store.byId['t1'].title).toBe('标题');
+		});
+		// 等 .finally() 清理防重入锁
+		await new Promise((r) => setTimeout(r, 0));
+
+		// 完成后可再次调用
+		conn.request.mockResolvedValue({ title: '新标题' });
+		store.generateTitle('bot-1', 't1');
+		expect(conn.request).toHaveBeenCalledTimes(2);
+	});
+
+	test('generateTitle 失败后允许重新调用', async () => {
+		let rejectReq;
+		const conn = {
+			request: vi.fn().mockImplementation(() => new Promise((_, reject) => { rejectReq = reject; })),
+			on: vi.fn(), off: vi.fn(),
+		};
+		setConn('bot-1', conn);
+
+		const store = useTopicsStore();
+		store.byId = toById([{ topicId: 't2', agentId: 'main', title: null, createdAt: 100, botId: 'bot-1' }]);
+
+		store.generateTitle('bot-1', 't2');
+		expect(conn.request).toHaveBeenCalledTimes(1);
+
+		rejectReq(new Error('fail'));
+		// 等 .catch() + .finally() 完成
+		await new Promise((r) => setTimeout(r, 0));
+
+		// 失败后应可重新调用
+		conn.request.mockResolvedValue({ title: '重试标题' });
+		store.generateTitle('bot-1', 't2');
+		await vi.waitFor(() => {
+			expect(store.byId['t2'].title).toBe('重试标题');
+		});
+		expect(conn.request).toHaveBeenCalledTimes(2);
+	});
+
 	// --- deleteTopic ---
 
 	test('deleteTopic 成功删除并移除 byId 条目', async () => {

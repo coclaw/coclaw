@@ -1671,6 +1671,28 @@ describe('useChatStore', () => {
 				reason: 'new',
 			}, { timeout: 600_000 });
 		});
+
+		test('并发调用时第二次返回 null（resetting guard）', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let resolveFirst;
+			conn.request.mockImplementation(() => new Promise((resolve) => { resolveFirst = resolve; }));
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const p1 = store.resetChat();
+			const p2 = store.resetChat();
+			expect(await p2).toBe(null);
+
+			resolveFirst({ entry: { sessionId: 'sess-new' } });
+			expect(await p1).toBe('sess-new');
+			expect(store.resetting).toBe(false);
+		});
 	});
 
 	// =====================================================================

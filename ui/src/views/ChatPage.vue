@@ -142,6 +142,9 @@ import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
 import { isMobileViewport } from '../utils/layout.js';
 import { useDraftStore } from '../stores/draft.store.js';
 
+/** 自动生成标题的 user message 数量上限 */
+const MAX_AUTO_TITLE_MSGS = 5;
+
 export default {
 	name: 'ChatPage',
 	components: {
@@ -168,8 +171,6 @@ export default {
 			userScrolledUp: false,
 			showNoMoreHint: false,
 			__exiting: false,
-			// 标记当前 topic 是否为首轮（用于 generateTitle）
-			__isFirstRound: false,
 			// 新建 topic 流程进行中，抑制 watcher 的重复激活
 			__creatingTopic: false,
 			// 历史加载进行中，阻止 scrollToBottom 干扰位置恢复
@@ -570,7 +571,6 @@ export default {
 				// 新 topic 无历史消息，直接标记已加载，
 				// 避免 connReady watcher 触发 first-load 路径与 sendMessage 竞态
 				store.__messagesLoaded = true;
-				this.__isFirstRound = true;
 				// 3. 切换路由
 				await this.$router.replace({ name: 'topics-chat', params: { sessionId: topicId } });
 				// 4. 解除抑制
@@ -602,16 +602,20 @@ export default {
 			}
 		},
 
-		/** 首轮完成后触发标题生成 */
+		/** 前 N 条 user message 内，若 topic 尚无标题则尝试自动生成 */
 		__tryGenerateTitle() {
-			if (!this.__isFirstRound || !this.isTopicRoute) return;
-			this.__isFirstRound = false;
-			const topicId = this.chatStore?.sessionId;
-			const botId = this.chatStore?.botId;
-			if (topicId && botId) {
-				console.debug('[chat] triggering generateTitle topicId=%s', topicId);
-				this.topicsStore.generateTitle(botId, topicId);
-			}
+			if (!this.isTopicRoute || !this.chatStore?.topicMode) return;
+			const topicId = this.chatStore.sessionId;
+			const botId = this.chatStore.botId;
+			if (!topicId || !botId) return;
+			const topic = this.topicsStore.findTopic(topicId);
+			if (topic?.title) return;
+			const userMsgCount = this.chatStore.messages.filter(
+				m => m.message?.role === 'user' && !m._local
+			).length;
+			if (userMsgCount > MAX_AUTO_TITLE_MSGS) return;
+			console.debug('[chat] triggering generateTitle topicId=%s userMsgs=%d', topicId, userMsgCount);
+			this.topicsStore.generateTitle(botId, topicId);
 		},
 
 		openFiles() {

@@ -8,6 +8,9 @@ import { useBotsStore, getReadyConn } from './bots.store.js';
 
 let _loadingPromise = null;
 
+/** 正在生成标题的 topicId 集合，防止并发请求 */
+const _generatingTopics = new Set();
+
 export const useTopicsStore = defineStore('topics', {
 	state: () => ({
 		/** @type {Record<string, { topicId: string, agentId: string, title: string | null, createdAt: number, botId: string }>} */
@@ -154,8 +157,10 @@ export const useTopicsStore = defineStore('topics', {
 		 * @param {string} topicId
 		 */
 		generateTitle(botId, topicId) {
+			if (_generatingTopics.has(topicId)) return;
 			const conn = getReadyConn(botId);
 			if (!conn) return;
+			_generatingTopics.add(topicId);
 			conn.request('coclaw.topics.generateTitle', { topicId }, { timeout: 300_000 })
 				.then((res) => {
 					const title = res?.title;
@@ -166,6 +171,9 @@ export const useTopicsStore = defineStore('topics', {
 				})
 				.catch((err) => {
 					console.warn('[topics] generateTitle failed:', err);
+				})
+				.finally(() => {
+					_generatingTopics.delete(topicId);
 				});
 		},
 	},

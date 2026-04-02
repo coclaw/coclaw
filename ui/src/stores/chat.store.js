@@ -632,6 +632,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @returns {Promise<string | null>} 新 sessionId，失败返回 null
 			 */
 			async resetChat() {
+				if (this.resetting) return null;
 				const conn = useBotConnections().get(this.botId);
 				if (!conn) {
 					throw new Error('Bot not connected');
