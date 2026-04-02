@@ -211,7 +211,7 @@ export function createChatStore(storeKey, opts = {}) {
 						const result = await conn.request('sessions.get', {
 							key: this.chatSessionKey,
 							limit,
-						});
+						}, { timeout: 120_000 });
 						const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
 						// 薄包装为 JSONL 行级结构（补 type + id）
 						const serverMsgs = wrapOcMessages(flatMsgs);
@@ -278,7 +278,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const result = await conn.request('sessions.get', {
 						key: this.chatSessionKey,
 						limit: newLimit,
-					});
+					}, { timeout: 120_000 });
 					const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
 					const wrapped = wrapOcMessages(flatMsgs);
 
@@ -334,7 +334,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const result = await conn.request('coclaw.sessions.getById', {
 						sessionId: this.sessionId,
 						agentId: this.topicAgentId || 'main',
-					});
+					}, { timeout: 120_000 });
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
 					// 保留乐观消息（sendMessage 与 loadMessages 可能并发执行）
@@ -643,7 +643,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const result = await conn.request('sessions.reset', {
 						key: `agent:${agentId}:main`,
 						reason: 'new',
-					});
+					}, { timeout: 600_000 });
 					const newId = result?.entry?.sessionId;
 					if (!newId) throw new Error('Failed to resolve new session');
 					return newId;
@@ -882,7 +882,7 @@ export function createChatStore(storeKey, opts = {}) {
 						const result = await conn.request('coclaw.chatHistory.list', {
 							agentId,
 							sessionKey: this.chatSessionKey,
-						});
+						}, { timeout: 60_000 });
 						this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
 						this.historyExhausted = this.historySessionIds.length === 0;
 						this.__historyLoadedCount = 0;
@@ -941,7 +941,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const result = await conn.request('coclaw.sessions.getById', {
 						sessionId: entry.sessionId,
 						agentId,
-					});
+					}, { timeout: 120_000 });
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadNextHistory: loaded %d messages for session %s', msgs.length, entry.sessionId);
 

@@ -382,7 +382,7 @@ describe('useChatStore', () => {
 
 			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.objectContaining({
 				key: 'agent:ops:main',
-			}));
+			}), { timeout: 120_000 });
 			expect(conn.request).toHaveBeenCalledWith('chat.history', expect.objectContaining({
 				sessionKey: 'agent:ops:main',
 			}));
@@ -423,7 +423,7 @@ describe('useChatStore', () => {
 			expect(conn.request).toHaveBeenCalledWith('coclaw.sessions.getById', {
 				sessionId: 'topic-1',
 				agentId: 'main',
-			});
+			}, { timeout: 120_000 });
 		});
 
 		test('topic 模式下 sessionId 为空时返回 false', async () => {
@@ -1669,7 +1669,7 @@ describe('useChatStore', () => {
 			expect(conn.request).toHaveBeenCalledWith('sessions.reset', {
 				key: 'agent:ops:main',
 				reason: 'new',
-			});
+			}, { timeout: 600_000 });
 		});
 	});
 
@@ -2107,7 +2107,7 @@ describe('useChatStore', () => {
 			expect(conn.request).toHaveBeenCalledWith('coclaw.chatHistory.list', {
 				agentId: 'ops',
 				sessionKey: 'agent:ops:main',
-			});
+			}, { timeout: 60_000 });
 		});
 
 		test('并发调用复用同一 promise，仅发起一次 RPC', async () => {
@@ -2471,7 +2471,7 @@ describe('useChatStore', () => {
 			await p;
 
 			// loadMessages 被调用（通过 sessions.get 请求判断）
-			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object));
+			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object), { timeout: 120_000 });
 		});
 
 		test('/new 完成后调用 loadMessages 并更新 currentSessionId', async () => {
@@ -2487,7 +2487,7 @@ describe('useChatStore', () => {
 			handler({ runId: store.__slashCommandRunId, state: 'final' });
 			await p;
 
-			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object));
+			expect(conn.request).toHaveBeenCalledWith('sessions.get', expect.any(Object), { timeout: 120_000 });
 			// loadMessages 通过 chat.history 获取新 sessionId
 			expect(store.currentSessionId).toBe('new-sess');
 		});

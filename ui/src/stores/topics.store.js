@@ -62,7 +62,7 @@ export const useTopicsStore = defineStore('topics', {
 				if (!conn) continue;
 				// 当前版本只支持 main agent 的 topic（受限于 OpenClaw agent 路由机制）
 				tasks.push(
-					conn.request('coclaw.topics.list', { agentId: 'main' })
+					conn.request('coclaw.topics.list', { agentId: 'main' }, { timeout: 60_000 })
 						.then((res) => ({
 							topics: Array.isArray(res?.topics) ? res.topics : [],
 							botId: String(bot.id),
@@ -156,7 +156,7 @@ export const useTopicsStore = defineStore('topics', {
 		generateTitle(botId, topicId) {
 			const conn = getReadyConn(botId);
 			if (!conn) return;
-			conn.request('coclaw.topics.generateTitle', { topicId })
+			conn.request('coclaw.topics.generateTitle', { topicId }, { timeout: 300_000 })
 				.then((res) => {
 					const title = res?.title;
 					if (!title) return;

@@ -117,8 +117,8 @@ describe('topics store', () => {
 		expect(store.byId['t-main']).toBeTruthy();
 		expect(store.byId['t-b2']).toBeTruthy();
 		// 每个 bot 只请求一次（main agent）
-		expect(conn1.request).toHaveBeenCalledWith('coclaw.topics.list', { agentId: 'main' });
-		expect(conn2.request).toHaveBeenCalledWith('coclaw.topics.list', { agentId: 'main' });
+		expect(conn1.request).toHaveBeenCalledWith('coclaw.topics.list', { agentId: 'main' }, { timeout: 60_000 });
+		expect(conn2.request).toHaveBeenCalledWith('coclaw.topics.list', { agentId: 'main' }, { timeout: 60_000 });
 	});
 
 	test('loadAllTopics 增量合并：保留未查询 bot 的已有 topics', async () => {
@@ -274,7 +274,7 @@ describe('topics store', () => {
 		await vi.waitFor(() => {
 			expect(store.byId['t1'].title).toBe('新标题');
 		});
-		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.generateTitle', { topicId: 't1' });
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.generateTitle', { topicId: 't1' }, { timeout: 300_000 });
 	});
 
 	test('generateTitle 失败时不影响本地数据', async () => {

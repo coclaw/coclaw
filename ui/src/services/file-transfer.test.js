@@ -152,7 +152,7 @@ describe('listFiles', () => {
 		expect(botConn.request).toHaveBeenCalledWith('coclaw.files.list', {
 			agentId: 'main',
 			path: 'src/',
-		});
+		}, { timeout: 60_000 });
 		expect(result).toEqual(mockResult);
 	});
 
@@ -176,7 +176,7 @@ describe('deleteFile', () => {
 		expect(botConn.request).toHaveBeenCalledWith('coclaw.files.delete', {
 			agentId: 'main',
 			path: 'tmp/old.log',
-		});
+		}, { timeout: 60_000 });
 	});
 
 	test('传递 force 参数用于递归删除目录', async () => {
@@ -189,7 +189,7 @@ describe('deleteFile', () => {
 			agentId: 'main',
 			path: 'old-docs',
 			force: true,
-		});
+		}, { timeout: 60_000 });
 	});
 
 	test('不传 force 时不含 force 字段', async () => {

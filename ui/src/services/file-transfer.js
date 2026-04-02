@@ -30,7 +30,7 @@ const UPLOAD_READY_TIMEOUT_MS = 15_000;
  * @returns {Promise<{ files: { name: string, type: string, size: number, mtime: number }[] }>}
  */
 export function listFiles(botConn, agentId, path) {
-	return botConn.request('coclaw.files.list', { agentId, path });
+	return botConn.request('coclaw.files.list', { agentId, path }, { timeout: 60_000 });
 }
 
 /**
@@ -44,7 +44,7 @@ export function listFiles(botConn, agentId, path) {
 export function deleteFile(botConn, agentId, path, opts) {
 	const params = { agentId, path };
 	if (opts?.force) params.force = true;
-	return botConn.request('coclaw.files.delete', params);
+	return botConn.request('coclaw.files.delete', params, { timeout: 60_000 });
 }
 
 /**
