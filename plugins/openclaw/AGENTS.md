@@ -15,6 +15,10 @@
   - `cli-registrar.js` — OpenClaw `registerCli` 注册（`openclaw coclaw bind/unbind/enroll`）
   - `plugin-version.js` — 插件版本号读取（缓存）
   - `runtime.js` — OpenClaw runtime 引用管理
+- `src/webrtc/` — WebRTC 传输层
+  - `webrtc-peer.js` — 多 PeerConnection 管理（以 connId 为粒度，插件作为被叫方）
+  - `ndc-preloader.js` — node-datachannel 预加载 + werift 回退
+  - `dc-chunking.js` — DataChannel 应用层分片/重组协议
 - `src/auto-upgrade/` — 自动升级模块（仅 npm 安装模式生效）
   - `updater.js` — 调度入口（延迟首次 + 周期轮询 + 升级锁）
   - `updater-check.js` — 版本检查（npm view）+ `getPackageInfo()`
@@ -25,6 +29,7 @@
   - `state.js` — upgrade-state.json / upgrade-log.jsonl 读写
 - `src/chat-history-manager/` — chat 历史追踪（session reset 产生的孤儿 session 链）
 - `src/session-manager/` — 会话读取能力（`nativeui.sessions.listAll/get`、`coclaw.sessions.getById`）
+- `src/file-manager/` — 文件操作（沙箱化，支持 WebRTC DC 和 WS 双路径）
 - `src/utils/` — 通用工具（零外部依赖）
   - `atomic-write.js` — 原子文件写入（tmp+rename）
   - `mutex.js` — 进程内异步互斥锁（Promise 链 FIFO）
@@ -75,6 +80,26 @@
 - **fire-and-forget 必须 `.catch()`**：对 `withLock()` 返回的 Promise 若不 await，必须 `.catch()` 防止 unhandled rejection 导致 gateway 崩溃。
 - **禁止嵌套同一把锁**：在 `withLock(fn)` 的 fn 内再调同一个 mutex 的 `withLock` 会死锁。
 - **fn 应尽量短**：长时间持锁会阻塞后续操作。
+
+## DataChannel 应用层分片/重组
+
+插件通过 WebRTC DataChannel 传输 JSON-RPC 消息和文件数据。DataChannel 底层基于 SCTP，但**两个 WebRTC 库均不提供透明的应用层大消息分片**，因此插件自建了分片/重组协议（`src/webrtc/dc-chunking.js`）。
+
+### 为什么不能依赖库的 SCTP 分片
+
+- **node-datachannel**（主力）：`send()` 直通 libdatachannel 原生层。消息超过远端 SDP 声明的 `a=max-message-size` 时，libdatachannel 直接抛异常。SCTP 传输层的分片（将一条 SCTP 消息拆成多个 IP 包）是透明的，但 `max-message-size` 是应用层硬上限——超过即拒绝，不会自动切分。
+- **werift**（回退）：SCTP 层确实按 1200 字节自动分片并透明重组，`send()` 可传任意大小消息。但它在 SDP 中声明 `max-message-size: 65536`，远端（浏览器或 node-datachannel）会按此限制拒收超大消息。即使 werift 侧不报错，远端仍会丢弃。
+
+### 两条 DataChannel 路径的分片策略
+
+- **rpc DC**（`label="rpc"`）：使用 `dc-chunking.js` 的 `chunkAndSend` / `createReassembler` 做应用层分片和重组。分片阈值取自远端 SDP 的 `a=max-message-size`（`webrtc-peer.js` 解析）。
+- **file DC**（`label="file:<transferId>"`）：不经过 `dc-chunking`。每个文件传输使用独立的专用 DataChannel，由 `file-manager/handler.js` 实现流式传输 + 背压控制，不需要 JSON 消息的分片/重组。
+
+### 维护约束
+
+- `dc-chunking.js` 是必要组件，不可删除或替换为库内置能力——当前两个库均无此能力。
+- 若未来升级 WebRTC 库版本，需重新验证其 `send()` 对超限消息的行为是否变更。
+- 分片协议格式（5 字节头：1 flag + 4 msgId BE）需与 UI 端保持一致，变更须双端同步。
 
 ## Gateway RPC 方法命名
 
