@@ -7,7 +7,7 @@
 
 		<UserInfoRows :user="authStore.user" editable @edit-name="openNameModal = true" @copy-login-name="onCopyLoginName" />
 
-		<UModal v-model:open="openNameModal" :title="$t('profile.editName')" :ui="promptUi">
+		<UModal v-model:open="openNameModal" :title="$t('profile.editName')" description=" " :ui="promptUi">
 			<template #body>
 				<UInput v-model="nameForm" autofocus class="w-full" :placeholder="$t('profile.nicknamePlaceholder')" @keydown.enter="onSaveName" />
 			</template>

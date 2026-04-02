@@ -40,7 +40,18 @@
 										class="inline-block size-2.5 rounded-full"
 										:class="bot.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
 									></span>
-									<h2 class="text-lg font-semibold">{{ dashboard.instance.name }}</h2>
+									<div class="flex items-center gap-1">
+										<h2 class="text-base font-semibold">{{ getClawName(bot) }}</h2>
+										<UButton
+											class="cc-icon-btn"
+											variant="ghost"
+											color="primary"
+											size="md"
+											icon="i-lucide-pencil"
+											:disabled="renaming"
+											@click="openRename(bot)"
+										/>
+									</div>
 									<UBadge color="primary" variant="subtle" size="xs">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
 								</div>
 								<div class="mt-3 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
@@ -57,7 +68,7 @@
 							<template v-else>
 								<div class="flex items-center gap-2">
 									<span class="inline-block size-2.5 rounded-full bg-gray-500"></span>
-									<h2 class="text-lg font-semibold">{{ bot.name }}</h2>
+									<h2 class="text-base font-semibold">{{ getClawName(bot) }}</h2>
 									<UBadge color="neutral" variant="subtle" size="xs">{{ $t('dashboard.offline') }}</UBadge>
 								</div>
 							</template>
@@ -111,8 +122,21 @@
 			</div>
 		</section>
 
+		<!-- 重命名对话框 -->
+		<UModal v-model:open="renameOpen" :title="$t('bots.renameClaw')" description=" " :ui="promptUi">
+			<template #body>
+				<UInput v-model="renameValue" autofocus class="w-full" @keydown.enter="onConfirmRename" />
+			</template>
+			<template #footer>
+				<div class="flex w-full justify-end gap-2">
+					<UButton variant="ghost" color="neutral" @click="renameOpen = false">{{ $t('common.cancel') }}</UButton>
+					<UButton :disabled="!renameValue.trim()" :loading="renaming" @click="onConfirmRename">{{ $t('common.confirm') }}</UButton>
+				</div>
+			</template>
+		</UModal>
+
 		<!-- 移除确认对话框 -->
-		<UModal v-model:open="removeConfirmOpen" :title="$t('bots.removeConfirmTitle')" :ui="promptUi">
+		<UModal v-model:open="removeConfirmOpen" :title="$t('bots.removeConfirmTitle')" description=" " :ui="promptUi">
 			<template #body>
 				<p class="text-sm text-muted">{{ $t('bots.removeConfirmDesc') }}</p>
 			</template>
@@ -130,7 +154,7 @@
 import { useNotify } from '../composables/use-notify.js';
 import { unbindBotByUser } from '../services/bots.api.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useBotsStore, getReadyConn } from '../stores/bots.store.js';
 import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import AgentCard from '../components/AgentCard.vue';
@@ -156,6 +180,10 @@ export default {
 			unbindingId: '',
 			removeConfirmOpen: false,
 			removeTargetId: '',
+			renameOpen: false,
+			renameValue: '',
+			renaming: false,
+			renameBotId: '',
 			expandedDetails: {},
 		};
 	},
@@ -308,6 +336,42 @@ export default {
 			}
 			finally {
 				this.loading = false;
+			}
+		},
+		getClawName(bot) {
+			const pi = bot.pluginInfo;
+			return pi?.name || pi?.hostName || bot.name || 'OpenClaw';
+		},
+		openRename(bot) {
+			this.renameBotId = String(bot.id);
+			this.renameValue = this.getClawName(bot);
+			this.renameOpen = true;
+		},
+		async onConfirmRename() {
+			const name = this.renameValue.trim();
+			if (!name || this.renaming) return;
+			this.renaming = true;
+			const botId = this.renameBotId;
+			const conn = getReadyConn(botId);
+			if (!conn) {
+				this.renaming = false;
+				this.notify.error(this.$t('bots.renameFailed'));
+				return;
+			}
+			try {
+				await conn.request('coclaw.info.patch', { name });
+				// 乐观更新，不依赖 event:coclaw.info.updated 广播
+				const bot = this.botsStore.byId[botId];
+				if (bot) {
+					if (!bot.pluginInfo) bot.pluginInfo = {};
+					bot.pluginInfo.name = name;
+				}
+				this.renameOpen = false;
+			} catch (err) {
+				console.warn('[ManageBotsPage] rename failed:', err);
+				this.notify.error(err?.message ?? this.$t('bots.renameFailed'));
+			} finally {
+				this.renaming = false;
 			}
 		},
 		confirmRemove(botId) {

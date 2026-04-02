@@ -1,6 +1,7 @@
 <template>
 	<UModal
 		v-model:open="openProxy"
+		description=" "
 		:ui="modalUi"
 		@after:leave="$emit('after:leave')"
 	>

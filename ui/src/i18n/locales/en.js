@@ -227,6 +227,8 @@ export const enMessages = {
 		commandCopied: 'Copied',
 		removeSuccess: 'Claw removed',
 		removeFailed: 'Failed to remove Claw',
+		renameClaw: 'Rename Claw',
+		renameFailed: 'Failed to rename',
 		online: 'Online',
 		offline: 'Offline',
 		pluginVersion: 'Plugin: ',

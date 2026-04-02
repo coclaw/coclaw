@@ -227,6 +227,8 @@ export const zhCNMessages = {
 		commandCopied: '已复制',
 		removeSuccess: '已移除 Claw',
 		removeFailed: '移除失败',
+		renameClaw: '重命名 Claw',
+		renameFailed: '重命名失败',
 		online: '在线',
 		offline: '离线',
 		pluginVersion: '插件：',

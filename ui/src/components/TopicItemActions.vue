@@ -31,7 +31,7 @@
 		</UPopover>
 
 		<!-- 重命名对话框 -->
-		<UModal v-model:open="renameOpen" :title="$t('topic.rename')" :ui="promptUi">
+		<UModal v-model:open="renameOpen" :title="$t('topic.rename')" description=" " :ui="promptUi">
 			<template #body>
 				<UInput
 					ref="renameInput"
@@ -51,7 +51,7 @@
 		</UModal>
 
 		<!-- 删除确认对话框 -->
-		<UModal v-model:open="deleteOpen" :title="$t('topic.deleteConfirmTitle')" :ui="promptUi">
+		<UModal v-model:open="deleteOpen" :title="$t('topic.deleteConfirmTitle')" description=" " :ui="promptUi">
 			<template #body>
 				<p class="text-sm text-muted">{{ $t('topic.deleteConfirmDesc') }}</p>
 			</template>

@@ -108,7 +108,7 @@
 		<input ref="fileInput" type="file" multiple class="hidden" @change="onFileInputChange" />
 
 		<!-- 重名处理对话框 -->
-		<UModal v-model:open="duplicateOpen" :title="$t('files.duplicateTitle')" :ui="promptUi">
+		<UModal v-model:open="duplicateOpen" :title="$t('files.duplicateTitle')" description=" " :ui="promptUi">
 			<template #body>
 				<p class="mb-3 text-sm text-muted">{{ $t('files.duplicateDesc') }}</p>
 				<div class="space-y-2">
@@ -145,7 +145,7 @@
 		</UModal>
 
 		<!-- 删除目录确认对话框 -->
-		<UModal v-model:open="deleteDirOpen" :title="$t('files.deleteDirTitle')" :ui="promptUi">
+		<UModal v-model:open="deleteDirOpen" :title="$t('files.deleteDirTitle')" description=" " :ui="promptUi">
 			<template #body>
 				<p class="text-sm text-muted">{{ $t('files.deleteDirDesc', { name: deleteDirName }) }}</p>
 				<UCheckbox v-model="deleteDirChecked" :label="$t('files.deleteDirCheck')" class="mt-3" />
@@ -159,7 +159,7 @@
 		</UModal>
 
 		<!-- 删除文件确认对话框 -->
-		<UModal v-model:open="deleteFileOpen" :title="$t('files.delete')" :ui="promptUi">
+		<UModal v-model:open="deleteFileOpen" :title="$t('files.delete')" description=" " :ui="promptUi">
 			<template #body>
 				<p class="text-sm text-muted">{{ $t('files.deleteFileConfirm', { name: deleteFileName }) }}</p>
 			</template>
@@ -172,7 +172,7 @@
 		</UModal>
 
 		<!-- 新建目录对话框 -->
-		<UModal v-model:open="mkdirOpen" :title="$t('files.mkdirTitle')" :ui="promptUi">
+		<UModal v-model:open="mkdirOpen" :title="$t('files.mkdirTitle')" description=" " :ui="promptUi">
 			<template #body>
 				<UInput
 					ref="mkdirInput"

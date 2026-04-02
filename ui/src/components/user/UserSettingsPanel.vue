@@ -22,7 +22,7 @@
 			<UButton color="error" variant="soft" @click="clearConfirmOpen = true">{{ $t('settings.clear') }}</UButton>
 		</div>
 
-		<UModal v-model:open="passwordModalOpen" :title="$t('settings.passwordTitle')">
+		<UModal v-model:open="passwordModalOpen" :title="$t('settings.passwordTitle')" description=" ">
 			<template #body>
 				<div class="grid gap-3">
 					<UInput v-model="pwdForm.currentPassword" type="password" :placeholder="$t('settings.currentPassword')" />
