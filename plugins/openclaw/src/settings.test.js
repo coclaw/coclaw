@@ -179,6 +179,36 @@ test('readSettings should return empty object when file contains array', async (
 	assert.deepEqual(settings, {});
 });
 
+test('writeName should handle settings.json containing array', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+
+	const sp = settingsPath(dir);
+	await fs.mkdir(nodePath.dirname(sp), { recursive: true });
+	await fs.writeFile(sp, '[1,2,3]', 'utf8');
+
+	await writeName('Test');
+	const raw = JSON.parse(await fs.readFile(sp, 'utf8'));
+	assert.equal(raw.name, 'Test');
+	// 数组内容应被替换为对象
+	assert.ok(!Array.isArray(raw));
+});
+
+test('writeName should handle settings.json containing null', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+
+	const sp = settingsPath(dir);
+	await fs.mkdir(nodePath.dirname(sp), { recursive: true });
+	await fs.writeFile(sp, 'null', 'utf8');
+
+	await writeName('Test');
+	const raw = JSON.parse(await fs.readFile(sp, 'utf8'));
+	assert.equal(raw.name, 'Test');
+});
+
 test('getHostName should return hostname without .local suffix', () => {
 	const name = getHostName();
 	assert.equal(typeof name, 'string');

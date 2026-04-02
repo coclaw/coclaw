@@ -34,8 +34,10 @@ async function atomicWriteFile(filePath, content, opts) {
 	try {
 		await fs.writeFile(tmp, content, { encoding, mode });
 		// best-effort chmod（部分平台 writeFile 的 mode 可能不生效）
+		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
 		try { await fs.chmod(tmp, mode); } catch { /* ignore */ }
 		await fs.rename(tmp, filePath);
+		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
 		try { await fs.chmod(filePath, mode); } catch { /* ignore */ }
 	} finally {
 		// 确保临时文件不残留
