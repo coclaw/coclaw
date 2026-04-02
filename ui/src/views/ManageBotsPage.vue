@@ -28,26 +28,26 @@
 
 			<p v-if="!loading && !bots.length" class="text-sm text-muted">{{ $t('bots.noBot') }}</p>
 
-			<div v-for="bot in sortedBots" :key="bot.id" :data-testid="`bot-${bot.id}`">
+			<div v-for="{ bot, dashboard, connDetail } in botEntries" :key="bot.id" :data-testid="`bot-${bot.id}`">
 				<!-- Claw card：左侧信息 + 右侧解绑 -->
 				<div class="rounded-xl bg-elevated p-3 mb-3">
 					<div class="flex">
 						<!-- 左侧：claw 信息 -->
 						<div class="flex-1 min-w-0">
-							<template v-if="getDashboardData(bot.id)?.instance">
+							<template v-if="dashboard?.instance">
 								<div class="flex items-center gap-2">
 									<span
 										class="inline-block size-2.5 rounded-full"
-										:class="getDashboardData(bot.id).instance.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
+										:class="dashboard.instance.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
 									></span>
-									<h2 class="text-lg font-semibold">{{ getDashboardData(bot.id).instance.name }}</h2>
-									<UBadge color="primary" variant="subtle" size="xs">{{ getDashboardData(bot.id).agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
+									<h2 class="text-lg font-semibold">{{ dashboard.instance.name }}</h2>
+									<UBadge color="primary" variant="subtle" size="xs">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
 								</div>
 								<div class="mt-3 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-									<span v-if="getDashboardData(bot.id).instance.pluginVersion">{{ $t('bots.pluginVersion') }}{{ getDashboardData(bot.id).instance.pluginVersion }}</span>
-									<span v-if="getDashboardData(bot.id).instance.clawVersion">{{ $t('bots.clawVersion') }}{{ getDashboardData(bot.id).instance.clawVersion }}</span>
-									<span v-if="getDashboardData(bot.id).instance.channels?.length" class="flex items-center gap-1.5">
-										<span v-for="ch in getDashboardData(bot.id).instance.channels" :key="ch.id" class="inline-flex items-center gap-0.5" :title="ch.id">
+									<span v-if="dashboard.instance.pluginVersion">{{ $t('bots.pluginVersion') }}{{ dashboard.instance.pluginVersion }}</span>
+									<span v-if="dashboard.instance.clawVersion">{{ $t('bots.clawVersion') }}{{ dashboard.instance.clawVersion }}</span>
+									<span v-if="dashboard.instance.channels?.length" class="flex items-center gap-1.5">
+										<span v-for="ch in dashboard.instance.channels" :key="ch.id" class="inline-flex items-center gap-0.5" :title="ch.id">
 											<span class="text-[10px]">{{ ch.connected ? '✅' : '❌' }}</span>
 											<span>{{ ch.id }}</span>
 										</span>
@@ -80,7 +80,7 @@
 				<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 mb-3 text-xs text-muted">
 					<span>{{ connLabel(bot.id) }}</span>
 					<button
-						v-if="hasConnDetail(bot.id)"
+						v-if="connDetail"
 						class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
 						@click="toggleDetail(bot.id)"
 					>
@@ -88,15 +88,15 @@
 						<UIcon :name="expandedDetails[bot.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
 					</button>
 				</div>
-				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted mb-3">
-					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol?.toUpperCase() }}</p>
-					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol?.toUpperCase() }}</p>
-					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
+				<div v-if="bot.online && expandedDetails[bot.id] && connDetail" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted mb-3">
+					<p>{{ $t('bots.conn.localCandidate') }}：{{ connDetail.localType }} · {{ connDetail.localProtocol?.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ connDetail.remoteType }} · {{ connDetail.remoteProtocol?.toUpperCase() }}</p>
+					<p>{{ $t('bots.conn.relayProtocol') }}：{{ connDetail.relayProtocol?.toUpperCase() ?? '—' }}</p>
 				</div>
 
 				<div class="flex flex-col gap-3">
 					<AgentCard
-						v-for="agent in getDashboardData(bot.id)?.agents ?? []"
+						v-for="agent in dashboard?.agents ?? []"
 						:key="agent.id"
 						:agent="agent"
 						:bot="bot"
@@ -105,7 +105,7 @@
 					/>
 				</div>
 
-				<div v-if="getDashboardData(bot.id)?.loading" class="flex items-center justify-center py-8">
+				<div v-if="dashboard?.loading" class="flex items-center justify-center py-8">
 					<UButton loading variant="ghost" disabled>{{ $t('bots.preparing') }}</UButton>
 				</div>
 			</div>
@@ -135,11 +135,20 @@ import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import AgentCard from '../components/AgentCard.vue';
 
+const RESUME_THROTTLE_MS = 2000;
+const FETCHED_WAIT_MS = 10_000;
+
 export default {
 	name: 'ManageBotsPage',
 	components: { AgentCard },
 	setup() {
-		return { notify: useNotify(), promptUi: promptModalUi };
+		return {
+			notify: useNotify(),
+			promptUi: promptModalUi,
+			botsStore: useBotsStore(),
+			agentRunsStore: useAgentRunsStore(),
+			dashboardStore: useDashboardStore(),
+		};
 	},
 	data() {
 		return {
@@ -147,15 +156,12 @@ export default {
 			unbindingId: '',
 			removeConfirmOpen: false,
 			removeTargetId: '',
-			botsStore: null,
-			agentRunsStore: null,
-			dashboardStore: null,
 			expandedDetails: {},
 		};
 	},
 	computed: {
 		bots() {
-			return this.botsStore?.items ?? [];
+			return this.botsStore.items;
 		},
 		/** 按状态排序的 bot 列表：failed > running > connecting > idle > offline */
 		sortedBots() {
@@ -188,16 +194,23 @@ export default {
 			}
 			return { running, failed };
 		},
+		/** 排序后的 bot 列表，附带预查 dashboard 和连接详情，避免模板重复调用 */
+		botEntries() {
+			return this.sortedBots.map(bot => {
+				const id = String(bot.id);
+				return {
+					bot,
+					dashboard: this.dashboardStore.getDashboard(id),
+					connDetail: this.botsStore.byId[id]?.rtcTransportInfo ?? null,
+				};
+			});
+		},
 	},
 	async mounted() {
-		this.botsStore = useBotsStore();
-		this.agentRunsStore = useAgentRunsStore();
-		this.dashboardStore = useDashboardStore();
-
 		this.__lastResumeAt = 0;
 		this.__onResume = () => {
 			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
+			if (now - this.__lastResumeAt < RESUME_THROTTLE_MS) return;
 			this.__lastResumeAt = now;
 			this.loadData();
 		};
@@ -220,15 +233,12 @@ export default {
 	methods: {
 		/** 检查 bot 是否有任一 agent 在工作中 */
 		__hasRunningAgent(botId) {
-			const agents = this.dashboardStore?.getDashboard(String(botId))?.agents ?? [];
-			return agents.some(a => this.agentRunsStore?.isRunning(`agent:${a.id}:main`));
-		},
-		getDashboardData(botId) {
-			return this.dashboardStore?.getDashboard(String(botId)) ?? null;
+			const agents = this.dashboardStore.getDashboard(String(botId))?.agents ?? [];
+			return agents.some(a => this.agentRunsStore.isRunning(`agent:${a.id}:main`));
 		},
 		connLabel(botId) {
 			const id = String(botId);
-			const bot = this.botsStore?.byId[id];
+			const bot = this.botsStore.byId[id];
 			if (!bot) return this.$t('bots.conn.disconnected');
 			if (bot.rtcPhase === 'failed') return this.$t('bots.conn.rtcFailed');
 			if (bot.rtcPhase !== 'ready') return this.$t('bots.conn.rtcConnecting');
@@ -248,18 +258,12 @@ export default {
 			const key = isLan ? 'bots.conn.rtcLanProto' : 'bots.conn.rtcP2PProto';
 			return this.$t(key, { protocol: proto.toUpperCase() });
 		},
-		hasConnDetail(botId) {
-			return !!this.botsStore?.byId[String(botId)]?.rtcTransportInfo;
-		},
-		getConnDetail(botId) {
-			return this.botsStore?.byId[String(botId)]?.rtcTransportInfo ?? null;
-		},
 		toggleDetail(botId) {
 			const id = String(botId);
-			this.expandedDetails = { ...this.expandedDetails, [id]: !this.expandedDetails[id] };
+			this.expandedDetails[id] = !this.expandedDetails[id];
 		},
 		goToFiles(botId, agentId) {
-			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
+			if (this.botsStore.byId[String(botId)]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 				return;
 			}
@@ -269,7 +273,7 @@ export default {
 			});
 		},
 		goToAgent(botId, agentId) {
-			if (this.botsStore?.byId[String(botId)]?.pluginVersionOk === false) {
+			if (this.botsStore.byId[String(botId)]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 			}
 			this.$router.push({
@@ -282,11 +286,11 @@ export default {
 			this.loading = true;
 			try {
 				// bot 列表由 SSE 快照维护；等待 fetched 后只加载 dashboard
-				if (!this.botsStore?.fetched) {
+				if (!this.botsStore.fetched) {
 					await new Promise((resolve) => {
-						const timer = setTimeout(() => { unwatch(); resolve(); }, 10_000);
+						const timer = setTimeout(() => { unwatch(); resolve(); }, FETCHED_WAIT_MS);
 						const unwatch = this.$watch(
-							() => this.botsStore?.fetched,
+							() => this.botsStore.fetched,
 							(val) => {
 								if (val) { clearTimeout(timer); unwatch(); resolve(); }
 							},

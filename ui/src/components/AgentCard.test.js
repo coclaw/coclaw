@@ -482,51 +482,43 @@ describe('AgentCard', () => {
 		expect(w.findAll('.badge')).toHaveLength(0);
 	});
 
-	// ---- formatLastAlive 边界 ----
+	// ---- formatRelativeTime 边界 ----
 
-	test('formatLastAlive ts=0 → —', async () => {
+	test('formatRelativeTime ts=0 → —', async () => {
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
-		expect(w.vm.formatLastAlive(0)).toBe('—');
+		expect(w.vm.formatRelativeTime(0)).toBe('—');
 	});
 
-	test('formatLastAlive ts=null → —', async () => {
+	test('formatRelativeTime ts=null → —', async () => {
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
-		expect(w.vm.formatLastAlive(null)).toBe('—');
+		expect(w.vm.formatRelativeTime(null)).toBe('—');
 	});
 
-	test('formatLastAlive <60s → Just now', async () => {
+	test('formatRelativeTime <60s → Just now', async () => {
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
-		expect(w.vm.formatLastAlive(Date.now() - 30_000)).toBe('Just now');
+		expect(w.vm.formatRelativeTime(Date.now() - 30_000)).toBe('Just now');
 	});
 
-	test('formatLastAlive 2天 → days', async () => {
+	test('formatRelativeTime 2天（number） → days', async () => {
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
-		expect(w.vm.formatLastAlive(Date.now() - 172800_000)).toBe('2 days ago');
+		expect(w.vm.formatRelativeTime(Date.now() - 172800_000)).toBe('2 days ago');
 	});
 
-	// ---- formatTimeAgo 边界 ----
-
-	test('formatTimeAgo null → —', async () => {
-		const w = createWrapper(makeAgent(), makeBot());
-		await flushPromises();
-		expect(w.vm.formatTimeAgo(null)).toBe('—');
-	});
-
-	test('formatTimeAgo 有效 ISO → 相对时间', async () => {
+	test('formatRelativeTime 有效 ISO → 相对时间', async () => {
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
 		const iso = new Date(Date.now() - 7200_000).toISOString();
-		expect(w.vm.formatTimeAgo(iso)).toBe('2 hrs ago');
+		expect(w.vm.formatRelativeTime(iso)).toBe('2 hrs ago');
 	});
 
-	test('formatTimeAgo 无效字符串 → —', async () => {
+	test('formatRelativeTime 无效字符串 → —', async () => {
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
-		expect(w.vm.formatTimeAgo('not-a-date')).toBe('—');
+		expect(w.vm.formatRelativeTime('not-a-date')).toBe('—');
 	});
 
 	// ---- formatTokens 边界 ----

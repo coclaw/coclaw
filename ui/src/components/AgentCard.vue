@@ -21,13 +21,13 @@
 				<!-- 状态文字（failed / connecting / offline） -->
 				<div v-if="statusKey === 'failed'" class="mt-3 pl-4 space-y-0.5">
 					<p class="text-xs text-danger">{{ $t('agentCard.rtcPhase') }}：{{ bot.rtcPhase }}</p>
-					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatLastAlive(bot.lastAliveAt) }}</p>
+					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatRelativeTime(bot.lastAliveAt) }}</p>
 				</div>
 				<div v-else-if="statusKey === 'connecting'" class="mt-3 pl-4">
 					<p class="text-xs text-muted">{{ connectingLabel }}</p>
 				</div>
 				<div v-else-if="statusKey === 'offline'" class="mt-3 pl-4">
-					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatLastAlive(bot.lastAliveAt) }}</p>
+					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatRelativeTime(bot.lastAliveAt) }}</p>
 				</div>
 
 				<!-- 数据区：tokens / 会话 / 最近活跃（running 或 idle 时显示） -->
@@ -41,7 +41,7 @@
 						<p>{{ $t('dashboard.sessions') }}</p>
 					</div>
 					<div>
-						<p class="text-sm font-medium text-default">{{ formatTimeAgo(agent.lastActivity) }}</p>
+						<p class="text-sm font-medium text-default">{{ formatRelativeTime(agent.lastActivity) }}</p>
 						<p>{{ $t('dashboard.lastActive') }}</p>
 					</div>
 				</div>
@@ -243,25 +243,14 @@ export default {
 		},
 
 		/**
-		 * @param {number} ts - Unix timestamp (ms)
+		 * 统一的相对时间格式化，自动识别输入类型
+		 * @param {number|string|null} value - Unix timestamp (ms) 或 ISO 时间字符串
 		 * @returns {string}
 		 */
-		formatLastAlive(ts) {
-			if (!ts) return '—';
-			const diff = (Date.now() - ts) / 1000;
-			if (diff < 60) return this.$t('dashboard.justNow');
-			if (diff < 3600) return this.$t('dashboard.minutesAgo', { n: Math.floor(diff / 60) });
-			if (diff < 86400) return this.$t('dashboard.hoursAgo', { n: Math.floor(diff / 3600) });
-			return this.$t('dashboard.daysAgo', { n: Math.floor(diff / 86400) });
-		},
-
-		/**
-		 * @param {string|null} iso - ISO 时间字符串
-		 * @returns {string}
-		 */
-		formatTimeAgo(iso) {
-			if (!iso) return '—';
-			const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+		formatRelativeTime(value) {
+			if (!value) return '—';
+			const ms = typeof value === 'number' ? value : new Date(value).getTime();
+			const diff = (Date.now() - ms) / 1000;
 			if (diff < 0 || Number.isNaN(diff)) return '—';
 			if (diff < 60) return this.$t('dashboard.justNow');
 			if (diff < 3600) return this.$t('dashboard.minutesAgo', { n: Math.floor(diff / 60) });
