@@ -89,6 +89,8 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 
 test('coclaw.info should return version and clawVersion', async () => {
 	__resetPluginVersion();
+	process.env.OPENCLAW_STATE_DIR = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-info-'));
+	setRuntime(null);
 	const handlers = new Map();
 	const MOCK_CLAW_VERSION = '2026.3.14';
 	plugin.register(createMockApi(handlers, {
@@ -117,6 +119,8 @@ test('coclaw.info should return version and clawVersion', async () => {
 
 test('coclaw.info should omit clawVersion when runtime.version is absent', async () => {
 	__resetPluginVersion();
+	process.env.OPENCLAW_STATE_DIR = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-info-'));
+	setRuntime(null);
 	const handlers = new Map();
 	plugin.register(createMockApi(handlers));
 
@@ -132,6 +136,8 @@ test('coclaw.info should omit clawVersion when runtime.version is absent', async
 
 test('coclaw.info should omit clawVersion when runtime.version is unknown', async () => {
 	__resetPluginVersion();
+	process.env.OPENCLAW_STATE_DIR = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-info-'));
+	setRuntime(null);
 	const handlers = new Map();
 	plugin.register(createMockApi(handlers, {
 		runtime: {
@@ -153,6 +159,8 @@ test('coclaw.info should omit clawVersion when runtime.version is unknown', asyn
 
 test('coclaw.info.get should be an alias of coclaw.info', async () => {
 	__resetPluginVersion();
+	process.env.OPENCLAW_STATE_DIR = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-info-'));
+	setRuntime(null);
 	const handlers = new Map();
 	plugin.register(createMockApi(handlers));
 

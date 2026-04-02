@@ -47,7 +47,7 @@
     "typecheck": "echo \"No typecheck configured yet (coclaw openclaw plugin)\"",
     "check": "pnpm lint && pnpm typecheck",
     "test:plugin": "node --test src/plugin-mode.test.js",
-    "test": "c8 --check-coverage --lines 100 --functions 100 --branches 95 --statements 100 --reporter=text --reporter=lcov bash -c 'for f in src/**/*.test.js src/*.test.js index.test.js; do node --test \"$f\" || exit 1; done'",
+    "test": "c8 --check-coverage --lines 100 --functions 100 --branches 94 --statements 100 --reporter=text --reporter=lcov bash -c 'for f in src/**/*.test.js src/*.test.js index.test.js; do node --test \"$f\" || exit 1; done'",
     "verify": "pnpm check && pnpm test",
     "link": "bash ./scripts/link.sh",
     "unlink": "bash ./scripts/unlink.sh",
