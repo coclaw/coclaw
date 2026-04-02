@@ -21,20 +21,30 @@ General Instructions
 
 **对项目开发的一句话原则**：pnpm 统一管理、优先成熟依赖、严格测试闭环、文档持续同步、按模块分层收敛复杂度。
 
-## 文档导航
+## 文档体系
 
-项目文档组织在 `docs/` 目录下，按以下路径阅读可快速建立全貌：
+项目文档的**第一阅读者是 Agent（你自己），第二阅读者是开发者**。文档由 Agent 在开发过程中自动维护——架构变更、协议演进、关键设计决策等应及时反映到文档中。
 
-1. **[docs/architecture/overview.md](docs/architecture/overview.md)**：系统架构总览——组件视图、分层、绑定流程、核心不变式
-2. **[docs/architecture/communication-model.md](docs/architecture/communication-model.md)**：通信模型——三层通道（Signaling WS / RPC DC / File DC）、两层超时、连接生命周期、BotConnection 抽象
-3. **[docs/README.md](docs/README.md)**：完整文档索引，按需深入具体设计
+### 阅读路径
 
-文档分类说明：
-- `docs/architecture/` — 系统架构（当前真相，持续更新）
-- `docs/decisions/` — 架构决策记录（ADR，一旦决定较少变动）
-- `docs/designs/` — 功能设计稿（过程文档，每篇头部标注状态，已实施的以代码为准）
-- `docs/openclaw-research/` — OpenClaw 上游机制研究
-- 各工作区 `docs/` — 仅保留该工作区特有的操作性文档
+1. [docs/architecture/overview.md](docs/architecture/overview.md) — 系统全景
+2. [docs/architecture/communication-model.md](docs/architecture/communication-model.md) — 通信模型
+3. [docs/README.md](docs/README.md) — 完整索引，按需深入
+
+### 文档分类
+
+| 目录 | 内容 | 更新频率 |
+|------|------|---------|
+| `docs/architecture/` | 系统架构（当前真相） | 随架构演进持续更新 |
+| `docs/decisions/` | 架构决策记录 (ADR) | 决定后较少变动 |
+| `docs/designs/` | 功能设计稿（过程文档，头部标注状态） | 已实施的以代码为准 |
+| `docs/openclaw-research/` | OpenClaw 上游机制研究 | 按需 |
+| 工作区 `docs/` | 该工作区特有文档 | 按需 |
+
+### 组织原则：按关注范围归属
+
+- 理解文档需要**多个工作区**的上下文 → 放 `docs/`（如通信模型、绑定流程、RPC 协议）
+- 仅需**单个工作区**的上下文 → 放该工作区 `docs/`（如 UI 文件浏览器、chat 状态架构、Android 签名配置）
 
 ## 核心术语
 
@@ -153,12 +163,11 @@ General Instructions
 
 涉及 E2E 测试的执行、编写或调试时，**必须先加载 `e2e-test` skill**，其中包含执行命令、标签分类、编写规范和关键约束。
 
-## 文档与决策沉淀
+## 文档维护
 
-- 架构/协议/关键流程变更必须在 `docs/` 留痕
-- 重要权衡建议采用 ADR（`docs/decisions/`）
-- 与 tunnel 相关的协议约束、边界条件、失败语义需明确记录，避免实现漂移
-- 必须维护各子工作区状态文件：每个 workspace（如 `server` / `ui` / `plugins/openclaw`）在其目录下维护 `STATUS.md`，用于沉淀当前进度、关键决定、待办与阻塞项，确保新会话可快速接手
+- 架构/协议/关键流程变更须同步更新 `docs/`（参见"文档体系"章节的分类和组织原则）
+- 重要权衡采用 ADR（`docs/decisions/`）
+- 协议约束、边界条件、失败语义需明确记录，避免实现漂移
 
 ## 安全与敏感信息
 
