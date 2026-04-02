@@ -21,6 +21,21 @@ General Instructions
 
 **对项目开发的一句话原则**：pnpm 统一管理、优先成熟依赖、严格测试闭环、文档持续同步、按模块分层收敛复杂度。
 
+## 文档导航
+
+项目文档组织在 `docs/` 目录下，按以下路径阅读可快速建立全貌：
+
+1. **[docs/architecture/overview.md](docs/architecture/overview.md)**：系统架构总览——组件视图、分层、绑定流程、核心不变式
+2. **[docs/architecture/communication-model.md](docs/architecture/communication-model.md)**：通信模型——三层通道（Signaling WS / RPC DC / File DC）、两层超时、连接生命周期、BotConnection 抽象
+3. **[docs/README.md](docs/README.md)**：完整文档索引，按需深入具体设计
+
+文档分类说明：
+- `docs/architecture/` — 系统架构（当前真相，持续更新）
+- `docs/decisions/` — 架构决策记录（ADR，一旦决定较少变动）
+- `docs/designs/` — 功能设计稿（过程文档，每篇头部标注状态，已实施的以代码为准）
+- `docs/openclaw-research/` — OpenClaw 上游机制研究
+- 各工作区 `docs/` — 仅保留该工作区特有的操作性文档
+
 ## 核心术语
 
 | CoClaw 术语 | OpenClaw 对应 | 含义 |
@@ -184,7 +199,7 @@ pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/open
 ## 移动端与桌面端
 
 - **移动端（Android / iOS）**：Capacitor —— 将 `ui` 的 Vite 构建产物打包为原生 App
-- **桌面端（Windows / macOS）**：Tauri v2（待后续启动）
+- **桌面端（Windows / macOS）**：Electron（待后续启动）
 - 决策详情见 `docs/decisions/adr-mobile-desktop-framework.md`
 - Android 开发规范与命令见 `capacitor-android` skill
 - 前端代码与 Web 端完全共用，不维护多套 UI
