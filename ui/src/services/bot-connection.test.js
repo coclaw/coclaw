@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { BotConnection, BRIEF_DISCONNECT_MS } from './bot-connection.js';
+import { BotConnection, BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS } from './bot-connection.js';
 
 // mock signaling-connection 单例
 vi.mock('./signaling-connection.js', () => {
@@ -32,6 +32,17 @@ describe('BotConnection – constructor', () => {
 		const conn = new BotConnection('bot1');
 		expect(conn.rtc).toBeNull();
 	});
+
+	test('初始 readyWaiters 为空', () => {
+		const conn = new BotConnection('bot1');
+		expect(conn.__readyWaiters).toEqual([]);
+	});
+
+	test('初始回调为 null', () => {
+		const conn = new BotConnection('bot1');
+		expect(conn.__onTriggerReconnect).toBeNull();
+		expect(conn.__onGetRtcPhase).toBeNull();
+	});
 });
 
 describe('BotConnection – disconnect()', () => {
@@ -57,6 +68,13 @@ describe('BotConnection – disconnect()', () => {
 		conn.disconnect();
 		await expect(p).rejects.toMatchObject({ message: 'connection closed' });
 	});
+
+	test('reject 所有 readyWaiters (DC_CLOSED)', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady(5000);
+		conn.disconnect();
+		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
+	});
 });
 
 describe('BotConnection – RTC 管理', () => {
@@ -74,9 +92,330 @@ describe('BotConnection – RTC 管理', () => {
 		expect(conn.rtc).toBeNull();
 		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
 	});
+
+	test('clearRtc rejects readyWaiters with RTC_LOST', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady(5000);
+		conn.clearRtc();
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+	});
+
+	test('setRtc resolves all readyWaiters', async () => {
+		const conn = new BotConnection('bot1');
+		const p1 = conn.waitReady(5000);
+		const p2 = conn.waitReady(5000);
+		const mockRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		await expect(p1).resolves.toBeUndefined();
+		await expect(p2).resolves.toBeUndefined();
+		expect(conn.__readyWaiters).toHaveLength(0);
+	});
 });
 
-describe('BotConnection – request()', () => {
+describe('BotConnection – waitReady()', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	test('rtc.isReady 为 true 时立即 resolve', async () => {
+		const { conn } = makeRtcReady();
+		await expect(conn.waitReady()).resolves.toBeUndefined();
+	});
+
+	test('setRtc 后 resolve', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady(5000);
+		const mockRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		await expect(p).resolves.toBeUndefined();
+	});
+
+	test('超时 reject CONNECT_TIMEOUT', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady(3000);
+		vi.advanceTimersByTime(3001);
+		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+	});
+
+	test('clearRtc 时 reject RTC_LOST', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady(5000);
+		conn.clearRtc();
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+	});
+
+	test('disconnect 时 reject DC_CLOSED', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady(5000);
+		conn.disconnect();
+		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
+	});
+
+	test('多个并发 waitReady 在 setRtc 时全部 resolve', async () => {
+		const conn = new BotConnection('bot1');
+		const promises = [
+			conn.waitReady(5000),
+			conn.waitReady(5000),
+			conn.waitReady(5000),
+		];
+		const mockRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		const results = await Promise.allSettled(promises);
+		expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+		expect(conn.__readyWaiters).toHaveLength(0);
+	});
+
+	test('超时后 setRtc 不再 resolve 已超时的 waiter', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady(2000);
+		vi.advanceTimersByTime(2001);
+		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+
+		// waiter 已移除
+		expect(conn.__readyWaiters).toHaveLength(0);
+
+		// 之后 setRtc 不应有副作用
+		const mockRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		expect(conn.rtc).toBe(mockRtc);
+	});
+
+	test('rtcPhase=failed 时调用 __onTriggerReconnect', async () => {
+		const conn = new BotConnection('bot1');
+		conn.__onGetRtcPhase = vi.fn().mockReturnValue('failed');
+		conn.__onTriggerReconnect = vi.fn();
+
+		const p = conn.waitReady(3000);
+		expect(conn.__onGetRtcPhase).toHaveBeenCalled();
+		expect(conn.__onTriggerReconnect).toHaveBeenCalled();
+
+		// 清理
+		vi.advanceTimersByTime(3001);
+		await p.catch(() => {});
+	});
+
+	test('rtcPhase=building 时不调用 __onTriggerReconnect', async () => {
+		const conn = new BotConnection('bot1');
+		conn.__onGetRtcPhase = vi.fn().mockReturnValue('building');
+		conn.__onTriggerReconnect = vi.fn();
+
+		const p = conn.waitReady(3000);
+		expect(conn.__onTriggerReconnect).not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(3001);
+		await p.catch(() => {});
+	});
+
+	test('rtcPhase=recovering 时不调用 __onTriggerReconnect', async () => {
+		const conn = new BotConnection('bot1');
+		conn.__onGetRtcPhase = vi.fn().mockReturnValue('recovering');
+		conn.__onTriggerReconnect = vi.fn();
+
+		const p = conn.waitReady(3000);
+		expect(conn.__onTriggerReconnect).not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(3001);
+		await p.catch(() => {});
+	});
+
+	test('回调未注入时不报错', async () => {
+		const conn = new BotConnection('bot1');
+		expect(conn.__onGetRtcPhase).toBeNull();
+		expect(conn.__onTriggerReconnect).toBeNull();
+
+		const p = conn.waitReady(1000);
+		vi.advanceTimersByTime(1001);
+		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+	});
+
+	test('默认 connectTimeout 为 30s', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.waitReady();
+		vi.advanceTimersByTime(29_999);
+		expect(conn.__readyWaiters).toHaveLength(1);
+		vi.advanceTimersByTime(2);
+		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+	});
+});
+
+describe('BotConnection – request() 连接等待', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	test('DC 未就绪时等待，setRtc 后发送请求并收到响应', async () => {
+		const conn = new BotConnection('bot1');
+
+		const p = conn.request('ping', { x: 1 });
+
+		// 此时 pending 应为空（尚未发送），但有 waiter
+		expect(conn.__pending.size).toBe(0);
+		expect(conn.__readyWaiters).toHaveLength(1);
+
+		// 模拟 RTC 就绪
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		await vi.advanceTimersByTimeAsync(0); // 让 promise 链执行
+
+		// 请求应已发送
+		expect(mockRtc.send).toHaveBeenCalledTimes(1);
+		const sent = mockRtc.send.mock.calls[0][0];
+		expect(sent.method).toBe('ping');
+
+		// 模拟响应
+		conn.__onRtcMessage({ type: 'res', id: sent.id, ok: true, payload: { pong: true } });
+		const res = await p;
+		expect(res).toEqual({ pong: true });
+	});
+
+	test('waitReady 成功后 send 失败 → reject RTC_SEND_FAILED', async () => {
+		vi.useRealTimers(); // 此测试需要真实定时器让 promise chain 自然执行
+		const conn = new BotConnection('bot1');
+		const p = conn.request('test', {}, { connectTimeout: 5000 });
+
+		// 模拟连接就绪但 send 失败
+		const mockRtc = { isReady: true, send: vi.fn().mockRejectedValue(new Error('dc error')), close: vi.fn() };
+		conn.setRtc(mockRtc);
+
+		await expect(p).rejects.toMatchObject({ code: 'RTC_SEND_FAILED' });
+		vi.useFakeTimers(); // 恢复
+	});
+
+	test('connectTimeout 到期 → reject CONNECT_TIMEOUT', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.request('test', {}, { connectTimeout: 5000 });
+		vi.advanceTimersByTime(5001);
+		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+	});
+
+	test('clearRtc 在等待期间 → reject RTC_LOST', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.request('test');
+		conn.clearRtc();
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+	});
+
+	test('disconnect 在等待期间 → reject DC_CLOSED', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.request('test');
+		conn.disconnect();
+		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
+	});
+
+	test('等待期间触发重连（rtcPhase=failed）', async () => {
+		const conn = new BotConnection('bot1');
+		conn.__onGetRtcPhase = vi.fn().mockReturnValue('failed');
+		conn.__onTriggerReconnect = vi.fn();
+
+		const p = conn.request('test', {}, { connectTimeout: 5000 });
+		expect(conn.__onTriggerReconnect).toHaveBeenCalled();
+
+		vi.advanceTimersByTime(5001);
+		await p.catch(() => {});
+	});
+});
+
+describe('BotConnection – request() 超时语义', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	test('默认 requestTimeout 为 30s', async () => {
+		const { conn } = makeRtcReady();
+		const p = conn.request('slow');
+		vi.advanceTimersByTime(29_999);
+		expect(conn.__pending.size).toBe(1); // 尚未超时
+		vi.advanceTimersByTime(2);
+		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
+	});
+
+	test('timeout: 0 → 不设置 requestTimeout（永不超时）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('long', {}, { timeout: 0 });
+		// 推进大量时间
+		vi.advanceTimersByTime(60 * 60_000);
+		// pending 仍存在
+		expect(conn.__pending.size).toBe(1);
+
+		// 手动响应
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { done: true } });
+		const res = await p;
+		expect(res).toEqual({ done: true });
+	});
+
+	test('timeout: 0 + DC 断开 → 仍被 __rejectAllPending 拒绝', async () => {
+		const { conn } = makeRtcReady();
+		const p = conn.request('long', {}, { timeout: 0 });
+		conn.clearRtc();
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+	});
+
+	test('connectTimeout 和 requestTimeout 独立计时', async () => {
+		const conn = new BotConnection('bot1');
+		// connectTimeout=2s, requestTimeout=3s
+		const p = conn.request('test', {}, { connectTimeout: 2000, timeout: 3000 });
+
+		// 1.5s: 还在等待连接
+		vi.advanceTimersByTime(1500);
+		expect(conn.__readyWaiters).toHaveLength(1);
+
+		// 1.8s: 连接就绪（总计 1.8s < 2s connectTimeout）
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 请求已发送
+		expect(mockRtc.send).toHaveBeenCalledTimes(1);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+
+		// 再过 2.5s（总计 4.3s，但 requestTimeout 从发送时开始计 3s）
+		vi.advanceTimersByTime(2999);
+		expect(conn.__pending.size).toBe(1); // 尚未超时
+		vi.advanceTimersByTime(2);
+		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
+	});
+
+	test('超时前收到响应正常 resolve', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('slow', {}, { timeout: 5000 });
+		vi.advanceTimersByTime(3000);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: {} });
+		const res = await p;
+		expect(res).toEqual({});
+	});
+});
+
+describe('BotConnection – request() 前台恢复场景', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	test('等待中 setRtc（模拟恢复）→ 请求正常完成', async () => {
+		const conn = new BotConnection('bot1');
+		const p = conn.request('ping');
+
+		// 模拟 5s 后 RTC 恢复
+		vi.advanceTimersByTime(5000);
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		await vi.advanceTimersByTimeAsync(0);
+
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { ok: 1 } });
+		const res = await p;
+		expect(res).toEqual({ ok: 1 });
+	});
+
+	test('请求进行中 clearRtc（模拟前台恢复重建）→ reject RTC_LOST', async () => {
+		const { conn } = makeRtcReady();
+		const p = conn.request('long.op', {}, { timeout: 0 });
+		await vi.advanceTimersByTimeAsync(0); // 确保 send 完成
+
+		// 模拟前台恢复触发 rebuild → clearRtc
+		conn.clearRtc();
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+	});
+});
+
+describe('BotConnection – request() 通过 DataChannel 发送', () => {
 	test('通过 DataChannel 发送请求', async () => {
 		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('ping.me', { x: 1 });
@@ -89,11 +428,6 @@ describe('BotConnection – request()', () => {
 		conn.__onRtcMessage({ type: 'res', id: sent.id, ok: true, payload: { result: 42 } });
 		const res = await p;
 		expect(res).toEqual({ result: 42 });
-	});
-
-	test('DC 不可用时 reject DC_NOT_READY', async () => {
-		const conn = new BotConnection('b1');
-		await expect(conn.request('foo')).rejects.toMatchObject({ code: 'DC_NOT_READY' });
 	});
 
 	test('插件返回 ok=false 时 reject', async () => {
@@ -166,37 +500,6 @@ describe('BotConnection – request() 两阶段 (onAccepted)', () => {
 		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'processing' } });
 		await Promise.resolve();
 		expect(onUnknown).toHaveBeenCalledWith('processing', { status: 'processing' });
-	});
-});
-
-describe('BotConnection – request() 超时', () => {
-	beforeEach(() => vi.useFakeTimers());
-	afterEach(() => vi.useRealTimers());
-
-	test('超时后 reject RPC_TIMEOUT', async () => {
-		const { conn } = makeRtcReady();
-		const p = conn.request('slow', {}, { timeout: 5000 });
-		vi.advanceTimersByTime(5001);
-		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
-	});
-
-	test('超时前收到响应正常 resolve', async () => {
-		const { conn, mockRtc } = makeRtcReady();
-		const p = conn.request('slow', {}, { timeout: 5000 });
-		vi.advanceTimersByTime(3000);
-		const reqId = mockRtc.send.mock.calls[0][0].id;
-		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: {} });
-		const res = await p;
-		expect(res).toEqual({});
-	});
-
-	test('默认 30 分钟超时', async () => {
-		const { conn } = makeRtcReady();
-		const p = conn.request('longRunning');
-		vi.advanceTimersByTime(29 * 60_000);
-		expect(conn.__pending.size).toBe(1);
-		vi.advanceTimersByTime(1 * 60_000 + 1);
-		await expect(p).rejects.toMatchObject({ code: 'RPC_TIMEOUT' });
 	});
 });
 
@@ -275,9 +578,13 @@ describe('BotConnection – __rejectAllPending', () => {
 	});
 });
 
-describe('BotConnection – BRIEF_DISCONNECT_MS 导出', () => {
+describe('BotConnection – 常量导出', () => {
 	test('BRIEF_DISCONNECT_MS 是合理的正整数', () => {
 		expect(BRIEF_DISCONNECT_MS).toBeGreaterThan(0);
 		expect(Number.isInteger(BRIEF_DISCONNECT_MS)).toBe(true);
+	});
+
+	test('DEFAULT_CONNECT_TIMEOUT_MS 为 30s', () => {
+		expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(30_000);
 	});
 });

@@ -250,6 +250,15 @@ export const useBotsStore = defineStore('bots', {
 			if (_bridgedConns.get(botId) === conn) return;
 			_bridgedConns.set(botId, conn);
 
+			const id = String(botId);
+
+			// 注入连接就绪等待所需的回调
+			conn.__onGetRtcPhase = () => this.byId[id]?.rtcPhase ?? 'idle';
+			conn.__onTriggerReconnect = () => {
+				this.__clearRetry(id);
+				this.__ensureRtc(id).catch(() => {});
+			};
+
 			// event:agent DC 事件桥接
 			conn.on('event:agent', (payload) => {
 				useAgentRunsStore().__dispatch(payload);

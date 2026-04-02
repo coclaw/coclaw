@@ -7,6 +7,7 @@
  *
  * 设计文档：docs/designs/file-management.md
  */
+import { DEFAULT_CONNECT_TIMEOUT_MS } from './bot-connection.js';
 
 /** 分片大小 16KB */
 const CHUNK_SIZE = 16384;
@@ -58,7 +59,7 @@ export function mkdirFiles(botConn, agentId, path) {
 }
 
 /**
- * 创建空文件。文件已存在时返回 ALREADY_EXISTS 错误。
+ * 创建空文件。文件���存在时返回 ALREADY_EXISTS 错误。
  * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {string} agentId
  * @param {string} path
@@ -97,18 +98,27 @@ function createFileDC(rtcConn) {
 }
 
 /**
- * 下载文件
- * @param {import('./webrtc-connection.js').WebRtcConnection} rtcConn
+ * 下载文件（自动等待连接就绪）
+ * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {string} agentId
  * @param {string} path
  * @returns {FileTransferHandle}
  */
-export function downloadFile(rtcConn, agentId, path) {
+export function downloadFile(botConn, agentId, path) {
 	let progressCb = null;
 	let cancelled = false;
 	let cancelFn = null;
 
-	const promise = new Promise((resolve, reject) => {
+	// 等待连接就绪（已就绪时同步返回 resolved promise）
+	const readyPromise = botConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
+
+	const promise = readyPromise.then(() => new Promise((resolve, reject) => {
+		// 等待就绪期间若已被取消，直接 reject
+		if (cancelled) {
+			reject(new FileTransferError('CANCELLED', 'Download cancelled'));
+			return;
+		}
+
 		let settled = false;
 		const settle = (fn, val) => {
 			if (settled) return;
@@ -118,7 +128,7 @@ export function downloadFile(rtcConn, agentId, path) {
 
 		let dcRef, cleanupRef;
 		try {
-			const { dc, cleanup } = createFileDC(rtcConn);
+			const { dc, cleanup } = createFileDC(botConn.rtc);
 			dcRef = dc;
 			cleanupRef = cleanup;
 		} catch (err) {
@@ -209,52 +219,52 @@ export function downloadFile(rtcConn, agentId, path) {
 			cleanupRef();
 			settle(reject, new FileTransferError('DC_ERROR', 'DataChannel error during download'));
 		};
-	});
+	}));
 
 	return {
 		promise,
-		cancel() { cancelFn?.(); },
+		cancel() { cancelled = true; cancelFn?.(); },
 		set onProgress(cb) { progressCb = cb; },
 	};
 }
 
 /**
- * 上传文件到指定路径（PUT 语义，客户端决定存储路径）
- * @param {import('./webrtc-connection.js').WebRtcConnection} rtcConn
+ * 上传文件到指定路径（PUT 语义，客户端决定存储路径，自动等待连接就绪）
+ * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {string} agentId
  * @param {string} path - 具体文件路径
  * @param {File|Blob} file
  * @returns {FileTransferHandle}
  */
-export function uploadFile(rtcConn, agentId, path, file) {
-	return __doUpload(rtcConn, file, {
+export function uploadFile(botConn, agentId, path, file) {
+	return __doUpload(botConn, file, {
 		method: 'PUT', agentId, path, size: file.size,
 	});
 }
 
 /**
- * 上传文件到集合路径（POST 语义，Plugin 决定最终路径）
- * @param {import('./webrtc-connection.js').WebRtcConnection} rtcConn
+ * 上传文件到集合路径（POST 语义，Plugin 决定最终路径，自动等待连接就绪）
+ * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {string} agentId
  * @param {string} path - 集合目录路径
  * @param {string} fileName - 原始文件名
  * @param {File|Blob} file
  * @returns {FileTransferHandle} resolve 时额外包含 path 字段（实际存储路径）
  */
-export function postFile(rtcConn, agentId, path, fileName, file) {
-	return __doUpload(rtcConn, file, {
+export function postFile(botConn, agentId, path, fileName, file) {
+	return __doUpload(botConn, file, {
 		method: 'POST', agentId, path, fileName, size: file.size,
 	});
 }
 
 /**
  * 上传内部实现（PUT / POST 共用）
- * @param {import('./webrtc-connection.js').WebRtcConnection} rtcConn
+ * @param {import('./bot-connection.js').BotConnection} botConn
  * @param {File|Blob} file
  * @param {object} reqMsg - 发送到 DC 的请求 JSON（含 method/agentId/path/size 等）
  * @returns {FileTransferHandle}
  */
-function __doUpload(rtcConn, file, reqMsg) {
+function __doUpload(botConn, file, reqMsg) {
 	if (file.size > MAX_UPLOAD_SIZE) {
 		const err = new FileTransferError(
 			'SIZE_EXCEEDED',
@@ -269,7 +279,16 @@ function __doUpload(rtcConn, file, reqMsg) {
 	let cancelled = false;
 	let cancelFn = null;
 
-	const promise = new Promise((resolve, reject) => {
+	// 等待连接就绪（已就绪时同步返回 resolved promise）
+	const readyPromise = botConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
+
+	const promise = readyPromise.then(() => new Promise((resolve, reject) => {
+		// 等待就绪期间若已被取消，直接 reject
+		if (cancelled) {
+			reject(new FileTransferError('CANCELLED', 'Upload cancelled'));
+			return;
+		}
+
 		let settled = false;
 		let readyTimer = null;
 		const settle = (fn, val) => {
@@ -281,7 +300,7 @@ function __doUpload(rtcConn, file, reqMsg) {
 
 		let dcRef, cleanupRef;
 		try {
-			const { dc, cleanup } = createFileDC(rtcConn);
+			const { dc, cleanup } = createFileDC(botConn.rtc);
 			dcRef = dc;
 			cleanupRef = cleanup;
 		} catch (err) {
@@ -373,11 +392,11 @@ function __doUpload(rtcConn, file, reqMsg) {
 			cleanupRef();
 			settle(reject, new FileTransferError('DC_ERROR', 'DataChannel error during upload'));
 		};
-	});
+	}));
 
 	return {
 		promise,
-		cancel() { cancelFn?.(); },
+		cancel() { cancelled = true; cancelFn?.(); },
 		set onProgress(cb) { progressCb = cb; },
 	};
 }
@@ -429,7 +448,7 @@ async function sendChunks(dc, file, getProgressCb, isCancelled) {
 			const cb = getProgressCb();
 			if (cb) cb(sentBytes, file.size);
 
-			// backpressure 流控
+			// backpressure ���控
 			if (dc.bufferedAmount > HIGH_WATER_MARK) {
 				await waitForBufferDrain(dc, isCancelled);
 			}

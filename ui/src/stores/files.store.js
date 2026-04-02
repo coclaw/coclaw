@@ -173,10 +173,10 @@ export const useFilesStore = defineStore('files', {
 		 * @param {FileTask} task
 		 */
 		async __executeUpload(task) {
-			const rtcConn = this.__getRtcConn(task.botId);
-			if (!rtcConn) {
+			const botConn = useBotConnections().get(task.botId);
+			if (!botConn) {
 				task.status = 'failed';
-				task.error = 'WebRTC connection not available';
+				task.error = 'Bot connection not available';
 				return;
 			}
 
@@ -184,7 +184,7 @@ export const useFilesStore = defineStore('files', {
 			const path = task.dir ? `${task.dir}/${task.fileName}` : task.fileName;
 
 			try {
-				const handle = uploadFile(rtcConn, task.agentId, path, task.file);
+				const handle = uploadFile(botConn, task.agentId, path, task.file);
 				task.transferHandle = handle;
 				// 防御：handle 赋值前若被 cancelTask 取消，此处补偿
 				if (task.status === 'cancelled') { handle.cancel(); return; }
@@ -209,10 +209,10 @@ export const useFilesStore = defineStore('files', {
 		 * @param {FileTask} task
 		 */
 		async __executeDownload(task) {
-			const rtcConn = this.__getRtcConn(task.botId);
-			if (!rtcConn) {
+			const botConn = useBotConnections().get(task.botId);
+			if (!botConn) {
 				task.status = 'failed';
-				task.error = 'WebRTC connection not available';
+				task.error = 'Bot connection not available';
 				return;
 			}
 
@@ -220,7 +220,7 @@ export const useFilesStore = defineStore('files', {
 			const path = task.dir ? `${task.dir}/${task.fileName}` : task.fileName;
 
 			try {
-				const handle = downloadFile(rtcConn, task.agentId, path);
+				const handle = downloadFile(botConn, task.agentId, path);
 				task.transferHandle = handle;
 				if (task.status === 'cancelled') { handle.cancel(); return; }
 				handle.onProgress = (received, total) => {
@@ -240,15 +240,6 @@ export const useFilesStore = defineStore('files', {
 			}
 		},
 
-		/**
-		 * 获取 bot 的 WebRTC 连接
-		 * @param {string} botId
-		 * @returns {import('../services/webrtc-connection.js').WebRtcConnection | null}
-		 */
-		__getRtcConn(botId) {
-			const botConn = useBotConnections().get(botId);
-			return botConn?.rtc ?? null;
-		},
 	},
 });
 

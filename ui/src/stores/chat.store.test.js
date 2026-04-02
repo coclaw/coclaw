@@ -535,15 +535,26 @@ describe('useChatStore', () => {
 			await expect(store.sendMessage('hello')).rejects.toThrow('Bot not connected');
 		});
 
-		test('连接未就绪（非 connected 状态）时抛出错误', async () => {
+		test('连接存在但 DC 未就绪时 request 会等待（不再立即抛错）', async () => {
+			// 新设计：sendMessage 通过 useBotConnections().get() 获取 conn，
+			// 不再检查 dcReady，而是由 request() 内部 waitReady 等待连接就绪
 			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'r1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				return Promise.resolve(null);
+			});
 			setConn('1', conn, { dcReady: false });
 
 			const store = useChatStore();
 			store.botId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			await expect(store.sendMessage('hello')).rejects.toThrow('Bot not connected');
+			// request 仍然被调用（等待逻辑在 BotConnection 层处理，这里是 mock）
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
 		});
 
 		test('topic 模式下 sessionId 为空时返回 { accepted: false }', async () => {
@@ -777,7 +788,7 @@ describe('useChatStore', () => {
 
 			// postFile 被调用
 			expect(postFile).toHaveBeenCalledWith(
-				conn.rtc, 'main', '.coclaw/chat-files/main/2026-03', 'photo.jpg', fakeFile,
+				conn, 'main', '.coclaw/chat-files/main/2026-03', 'photo.jpg', fakeFile,
 			);
 			// buildAttachmentBlock 被调用
 			expect(buildAttachmentBlock).toHaveBeenCalled();
@@ -1401,8 +1412,7 @@ describe('useChatStore', () => {
 			expect(result).toEqual({ accepted: true });
 		});
 
-		test('RTC_LOST + accepted + 重连超时后优雅返回 { accepted: true }', async () => {
-			vi.useFakeTimers();
+		test('RTC_LOST + accepted 时立即优雅返回 { accepted: true }', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
 			botsStore.byId['1'].dcReady = true;
@@ -1411,8 +1421,6 @@ describe('useChatStore', () => {
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-rtc-timeout' });
-					// 模拟 DC 丢失：accepted 后 dcReady 变为 false
-					botsStore.byId['1'].dcReady = false;
 					const err = new Error('RTC connection lost');
 					err.code = 'RTC_LOST';
 					return Promise.reject(err);
@@ -1426,15 +1434,9 @@ describe('useChatStore', () => {
 			store.botId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			// waitForConnected 会等 15s 后超时（dcReady 不会恢复）
-			const [, result] = await Promise.allSettled([
-				vi.advanceTimersByTimeAsync(15_000),
-				store.sendMessage('hello'),
-			]);
-
-			// 即使超时也应优雅返回，不抛错
-			expect(result.status).toBe('fulfilled');
-			expect(result.value).toEqual({ accepted: true });
+			// 不再等待重连，立即返回
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
 		});
 
 		test('RTC_LOST + 未 accepted + 重试再次 RTC_LOST 不无限循环', async () => {
@@ -1464,6 +1466,64 @@ describe('useChatStore', () => {
 
 			await expect(store.sendMessage('hello')).rejects.toMatchObject({ code: 'RTC_LOST' });
 			expect(callCount).toBe(2); // 原始 + 重试各一次，不会第三次
+		});
+
+		test('CONNECT_TIMEOUT 且未 accepted 时走断连重试路径', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			let callCount = 0;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					callCount++;
+					if (callCount === 1) {
+						const err = new Error('connect timeout');
+						err.code = 'CONNECT_TIMEOUT';
+						return Promise.reject(err);
+					}
+					options?.onAccepted?.({ runId: 'run-ct' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+			expect(callCount).toBe(2);
+		});
+
+		test('CONNECT_TIMEOUT 且已 accepted 时优雅返回', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-ct-acc' });
+					const err = new Error('connect timeout');
+					err.code = 'CONNECT_TIMEOUT';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
 		});
 
 		test('cleanup 在 reconnect-wait 期间不会触发二次 rejection', async () => {

@@ -805,6 +805,48 @@ describe('__bridgeConn 事件注册', () => {
 		await new Promise((r) => setTimeout(r, 50));
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
+
+	test('注入 __onGetRtcPhase 回调', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '1', name: 'A', online: false }]);
+		expect(typeof fakeConn.__onGetRtcPhase).toBe('function');
+		// 默认 rtcPhase 为 'idle'
+		expect(fakeConn.__onGetRtcPhase()).toBe('idle');
+
+		// 修改 rtcPhase 后回调应反映最新值
+		store.byId['1'].rtcPhase = 'failed';
+		expect(fakeConn.__onGetRtcPhase()).toBe('failed');
+	});
+
+	test('注入 __onTriggerReconnect 回调', async () => {
+		const store = useBotsStore();
+		vi.spyOn(store, '__clearRetry');
+		vi.spyOn(store, '__ensureRtc').mockResolvedValue();
+
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '1', name: 'A', online: false }]);
+		expect(typeof fakeConn.__onTriggerReconnect).toBe('function');
+
+		fakeConn.__onTriggerReconnect();
+		expect(store.__clearRetry).toHaveBeenCalledWith('1');
+		expect(store.__ensureRtc).toHaveBeenCalledWith('1');
+	});
+
+	test('bot 不存在时 __onGetRtcPhase 返回 idle', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '1', name: 'A', online: false }]);
+		// 删除 bot
+		delete store.byId['1'];
+		expect(fakeConn.__onGetRtcPhase()).toBe('idle');
+	});
 });
 
 describe('__bridgeSignaling 事件处理 — foreground-resume', () => {

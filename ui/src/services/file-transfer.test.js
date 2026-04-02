@@ -15,18 +15,24 @@ import {
 
 // --- Mock helpers ---
 
-/** 模拟 BotConnection */
+/** 让 waitReady 的 .then() 链执行（一个微任务 tick） */
+const tick = () => new Promise((r) => queueMicrotask(r));
+
+/** 模拟 BotConnection（仅 RPC） */
 function createMockBotConn() {
 	return {
 		request: vi.fn().mockResolvedValue({}),
+		waitReady: vi.fn().mockResolvedValue(),
+		rtc: null,
 	};
 }
 
 /**
- * 模拟 WebRtcConnection + DataChannel
- * 返回 { rtcConn, lastDC() } — lastDC() 获取最近创建的 DC
+ * 模拟 BotConnection + WebRtcConnection + DataChannel（用于二进制传输）
+ * 返回 { botConn, lastDC() } — lastDC() 获取最近创建的 DC
+ * botConn.rtc 为模拟 WebRtcConnection，botConn.waitReady 立即 resolve
  */
-function createMockRtcConn() {
+function createMockBotConnWithRtc() {
 	const channels = [];
 
 	const rtcConn = {
@@ -81,7 +87,13 @@ function createMockRtcConn() {
 		},
 	};
 
-	return { rtcConn, channels, lastDC: () => channels[channels.length - 1] };
+	const botConn = {
+		request: vi.fn().mockResolvedValue({}),
+		waitReady: vi.fn().mockResolvedValue(),
+		rtc: rtcConn,
+	};
+
+	return { botConn, rtcConn, channels, lastDC: () => channels[channels.length - 1] };
 }
 
 /**
@@ -239,9 +251,10 @@ describe('createFile', () => {
 
 describe('downloadFile', () => {
 	test('完整下载流程', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'src/app.js');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'src/app.js');
 
+		await tick();
 		const dc = lastDC();
 		expect(dc.label).toMatch(/^file:/);
 		expect(dc.ordered).toBe(true);
@@ -270,11 +283,12 @@ describe('downloadFile', () => {
 	});
 
 	test('下载多个 chunk', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const progressCalls = [];
-		const handle = downloadFile(rtcConn, 'main', 'data.bin');
+		const handle = downloadFile(botConn, 'main', 'data.bin');
 		handle.onProgress = (recv, total) => progressCalls.push({ recv, total });
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 
@@ -297,9 +311,10 @@ describe('downloadFile', () => {
 	});
 
 	test('Plugin 返回错误（校验阶段）', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', '../etc/passwd');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', '../etc/passwd');
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 
@@ -316,9 +331,10 @@ describe('downloadFile', () => {
 	});
 
 	test('Plugin 返回错误（传输中途）', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'broken.bin');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'broken.bin');
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true, size: 100, name: 'broken.bin' });
@@ -332,9 +348,10 @@ describe('downloadFile', () => {
 	});
 
 	test('DC 意外关闭导致中断', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'file.txt');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true, size: 100, name: 'file.txt' });
@@ -345,9 +362,10 @@ describe('downloadFile', () => {
 	});
 
 	test('取消下载', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'big.bin');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'big.bin');
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true, size: 1000, name: 'big.bin' });
@@ -359,17 +377,52 @@ describe('downloadFile', () => {
 		expect(dc.readyState).toBe('closed');
 	});
 
-	test('RTC 不可用时立即失败', () => {
-		const rtcConn = { createDataChannel: () => null };
-		const handle = downloadFile(rtcConn, 'main', 'file.txt');
+	test('RTC 不可用（createDataChannel 返回 null）时失败', () => {
+		const botConn = {
+			waitReady: vi.fn().mockResolvedValue(),
+			rtc: { createDataChannel: () => null },
+		};
+		const handle = downloadFile(botConn, 'main', 'file.txt');
 
 		return expect(handle.promise).rejects.toThrow('WebRTC connection not available');
 	});
 
-	test('DC error 事件', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'file.txt');
+	test('waitReady 超时时 reject', () => {
+		const err = new Error('connect timeout');
+		err.code = 'CONNECT_TIMEOUT';
+		const botConn = {
+			waitReady: vi.fn().mockRejectedValue(err),
+			rtc: null,
+		};
+		const handle = downloadFile(botConn, 'main', 'file.txt');
 
+		return expect(handle.promise).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+	});
+
+	test('waitReady 完成前取消下载', async () => {
+		let resolveReady;
+		const botConn = {
+			waitReady: vi.fn().mockImplementation(() => new Promise((r) => { resolveReady = r; })),
+			rtc: null,
+		};
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		// waitReady 尚未 resolve，cancel
+		handle.cancel();
+
+		// 触发 waitReady resolve
+		resolveReady();
+		await tick();
+
+		// 应拒绝（cancelled 检查在 .then 回调开头）
+		await expect(handle.promise).rejects.toThrow('Download cancelled');
+	});
+
+	test('DC error 事件', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__fireError();
@@ -378,9 +431,10 @@ describe('downloadFile', () => {
 	});
 
 	test('空文件下载（size=0）— 正常完成', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'empty.txt');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'empty.txt');
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true, size: 0, name: 'empty.txt' });
@@ -393,9 +447,10 @@ describe('downloadFile', () => {
 	});
 
 	test('空文件下载 — close/message 竞态兜底', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'empty.txt');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'empty.txt');
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true, size: 0, name: 'empty.txt' });
@@ -408,9 +463,10 @@ describe('downloadFile', () => {
 	});
 
 	test('所有字节已收齐时 close 兜底 resolve', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
-		const handle = downloadFile(rtcConn, 'main', 'data.bin');
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'data.bin');
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true, size: 5, name: 'data.bin' });
@@ -427,10 +483,11 @@ describe('downloadFile', () => {
 
 describe('uploadFile', () => {
 	test('完整上传流程', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('hello world', 'test.txt');
-		const handle = uploadFile(rtcConn, 'main', 'docs/test.txt', file);
+		const handle = uploadFile(botConn, 'main', 'docs/test.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 
@@ -464,12 +521,13 @@ describe('uploadFile', () => {
 	});
 
 	test('上传进度回调', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('abcdefghij', 'data.txt'); // 10 bytes
 		const progressCalls = [];
-		const handle = uploadFile(rtcConn, 'main', 'data.txt', file);
+		const handle = uploadFile(botConn, 'main', 'data.txt', file);
 		handle.onProgress = (sent, total) => progressCalls.push({ sent, total });
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true });
@@ -488,19 +546,20 @@ describe('uploadFile', () => {
 	});
 
 	test('文件超过 1GB 限制', () => {
-		const { rtcConn } = createMockRtcConn();
+		const { botConn } = createMockBotConnWithRtc();
 		// 模拟超大文件：只设 size，不实际分配内存
 		const bigFile = { size: MAX_UPLOAD_SIZE + 1, stream: () => {} };
-		const handle = uploadFile(rtcConn, 'main', 'huge.bin', bigFile);
+		const handle = uploadFile(botConn, 'main', 'huge.bin', bigFile);
 
 		return expect(handle.promise).rejects.toThrow('exceeds limit');
 	});
 
 	test('Plugin 写入错误', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('data', 'file.txt');
-		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true }); // ready
@@ -519,10 +578,11 @@ describe('uploadFile', () => {
 	});
 
 	test('Plugin 校验阶段错误（ready 前）', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('data', 'file.txt');
-		const handle = uploadFile(rtcConn, 'main', '../../../etc/passwd', file);
+		const handle = uploadFile(botConn, 'main', '../../../etc/passwd', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({
@@ -534,10 +594,11 @@ describe('uploadFile', () => {
 	});
 
 	test('取消上传', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('some data', 'file.txt');
-		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 
@@ -547,19 +608,52 @@ describe('uploadFile', () => {
 		expect(dc.readyState).toBe('closed');
 	});
 
-	test('RTC 不可用时立即失败', () => {
-		const rtcConn = { createDataChannel: () => null };
+	test('waitReady 完成前取消上传', async () => {
+		let resolveReady;
+		const botConn = {
+			waitReady: vi.fn().mockImplementation(() => new Promise((r) => { resolveReady = r; })),
+			rtc: null,
+		};
 		const file = createMockFile('data', 'file.txt');
-		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		handle.cancel();
+		resolveReady();
+		await tick();
+
+		await expect(handle.promise).rejects.toThrow('Upload cancelled');
+	});
+
+	test('RTC 不可用（createDataChannel 返回 null）时失败', () => {
+		const botConn = {
+			waitReady: vi.fn().mockResolvedValue(),
+			rtc: { createDataChannel: () => null },
+		};
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
 
 		return expect(handle.promise).rejects.toThrow('WebRTC connection not available');
 	});
 
-	test('上传中 DC 意外关闭', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+	test('waitReady 超时时 reject', () => {
+		const err = new Error('connect timeout');
+		err.code = 'CONNECT_TIMEOUT';
+		const botConn = {
+			waitReady: vi.fn().mockRejectedValue(err),
+			rtc: null,
+		};
 		const file = createMockFile('data', 'file.txt');
-		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
 
+		return expect(handle.promise).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+	});
+
+	test('上传中 DC 意外关闭', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		// 不发 ready，直接关闭
@@ -569,10 +663,11 @@ describe('uploadFile', () => {
 	});
 
 	test('DC error 事件', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('data', 'file.txt');
-		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__fireError();
@@ -581,10 +676,11 @@ describe('uploadFile', () => {
 	});
 
 	test('上传完成后 close/message 竞态兜底', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('data', 'file.txt');
-		const handle = uploadFile(rtcConn, 'main', 'file.txt', file);
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true }); // ready
@@ -603,9 +699,9 @@ describe('uploadFile', () => {
 	});
 
 	test('超限检测后 cancel 为 no-op', () => {
-		const { rtcConn } = createMockRtcConn();
+		const { botConn } = createMockBotConnWithRtc();
 		const bigFile = { size: MAX_UPLOAD_SIZE + 1, stream: () => {} };
-		const handle = uploadFile(rtcConn, 'main', 'huge.bin', bigFile);
+		const handle = uploadFile(botConn, 'main', 'huge.bin', bigFile);
 
 		// cancel 应该不报错
 		handle.cancel();
@@ -618,10 +714,11 @@ describe('uploadFile', () => {
 
 describe('uploadFile — backpressure', () => {
 	test('bufferedAmount 超过 HIGH_WATER_MARK 时暂停发送', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'bp.bin');
-		const handle = uploadFile(rtcConn, 'main', 'bp.bin', file);
+		const handle = uploadFile(botConn, 'main', 'bp.bin', file);
 
+		await tick();
 		const dc = lastDC();
 		// 拦截 send：第一个 binary chunk 后设 bufferedAmount 超阈值
 		let binarySendCount = 0;
@@ -668,10 +765,11 @@ describe('uploadFile — backpressure', () => {
 
 describe('postFile', () => {
 	test('完整 POST 上传流程（含 fileName 和返回 path）', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('photo data', 'photo.jpg');
-		const handle = postFile(rtcConn, 'main', '.coclaw/chat-files/main', 'photo.jpg', file);
+		const handle = postFile(botConn, 'main', '.coclaw/chat-files/main', 'photo.jpg', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 
@@ -705,18 +803,19 @@ describe('postFile', () => {
 	});
 
 	test('文件超过 1GB 限制', () => {
-		const { rtcConn } = createMockRtcConn();
+		const { botConn } = createMockBotConnWithRtc();
 		const bigFile = { size: MAX_UPLOAD_SIZE + 1, stream: () => {} };
-		const handle = postFile(rtcConn, 'main', '.coclaw/files', 'huge.bin', bigFile);
+		const handle = postFile(botConn, 'main', '.coclaw/files', 'huge.bin', bigFile);
 
 		return expect(handle.promise).rejects.toThrow('exceeds limit');
 	});
 
 	test('Plugin 校验阶段错误', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('data', 'file.txt');
-		const handle = postFile(rtcConn, 'main', '../bad', 'file.txt', file);
+		const handle = postFile(botConn, 'main', '../bad', 'file.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({
@@ -728,10 +827,11 @@ describe('postFile', () => {
 	});
 
 	test('取消 POST 上传', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('data', 'file.txt');
-		const handle = postFile(rtcConn, 'main', '.coclaw/files', 'file.txt', file);
+		const handle = postFile(botConn, 'main', '.coclaw/files', 'file.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		handle.cancel();
@@ -741,10 +841,11 @@ describe('postFile', () => {
 	});
 
 	test('PUT 上传结果不含 path 字段', async () => {
-		const { rtcConn, lastDC } = createMockRtcConn();
+		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('hello', 'test.txt');
-		const handle = uploadFile(rtcConn, 'main', 'docs/test.txt', file);
+		const handle = uploadFile(botConn, 'main', 'docs/test.txt', file);
 
+		await tick();
 		const dc = lastDC();
 		dc.__open();
 		dc.__receiveString({ ok: true });

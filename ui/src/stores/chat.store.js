@@ -12,13 +12,12 @@ import { postFile } from '../services/file-transfer.js';
 import { fileToBase64, chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
-import { waitForConnected } from '../utils/wait-connected.js';
-import { useBotsStore, getReadyConn } from './bots.store.js';
+import { getReadyConn } from './bots.store.js';
 
 const MSG_PAGE_SIZE = 50;
 
 /** DC/WS 断连相关的错误码 */
-const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED', 'RTC_LOST']);
+const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED', 'RTC_LOST', 'CONNECT_TIMEOUT']);
 function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
 
 
@@ -374,7 +373,7 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!this.topicMode && !this.chatSessionKey) return { accepted: false };
 				if (this.topicMode && !this.sessionId) return { accepted: false };
 
-				const conn = getReadyConn(this.botId);
+				const conn = useBotConnections().get(this.botId);
 				if (!conn) {
 					throw new Error('Bot not connected');
 				}
@@ -501,6 +500,7 @@ export function createChatStore(storeKey, opts = {}) {
 
 					const final = await Promise.race([
 						conn.request('agent', agentParams, {
+							timeout: 0, // agent 长任务，不设请求超时，由外层 pre/post-acceptance timer 管理
 							onAccepted: (payload) => {
 								const runId = payload?.runId ?? null;
 								console.debug('[chat] agent accepted runId=%s', runId);
@@ -582,37 +582,31 @@ export function createChatStore(storeKey, opts = {}) {
 						}
 						return { accepted: this.__accepted };
 					}
-					// 已 accepted 但 agent 尚未完成时 WS 断连：等重连后 reconcile
+					// 已 accepted 但 agent 尚未完成时断连：reconcile 会在连接恢复后由 __refreshIfStale 触发
 					if (isDisconnectError(err) && this.__accepted && !this.__agentSettled) {
-						console.debug('[chat] ws closed after accepted, waiting for reconnect to reconcile');
+						console.debug('[chat] dc closed after accepted, will reconcile on reconnect');
 						if (this.__streamingTimer) {
 							clearTimeout(this.__streamingTimer);
 							this.__streamingTimer = null;
 						}
 						this.sending = false;
-						try {
-							await waitForConnected(useBotsStore(), this.botId, 15_000);
-							console.debug('[chat] reconnected after accepted, reconciling messages');
-							// settle 交给 reconcileAfterLoad 的双条件判定，避免 agent 仍在执行时过早清除 streaming 消息
-							await this.__reconcileMessages();
-						} catch (e) { console.debug('[chat] reconnect-after-accepted failed:', e?.message); }
+						this.__reconcileMessages().catch(() => {});
 						return { accepted: true };
 					}
-					// 断连且尚未 accepted：等待重连后自动重试一次
+					// 断连且尚未 accepted：自动重试一次（内层 request() 会等待连接恢复）
 					if (isDisconnectError(err) && !this.__accepted && !this.__retried) {
-						console.debug('[chat] ws closed before accepted, waiting for reconnect to retry');
+						console.debug('[chat] dc closed before accepted, retrying sendMessage');
 						this.__cleanupStreaming();
 						this.sending = false;
+						this.__retried = true;
 						try {
-							await waitForConnected(useBotsStore(), this.botId, 15_000);
-							console.debug('[chat] reconnected, retrying sendMessage');
-							this.__retried = true;
-							try {
-								return await this.sendMessage(text, files, { __idempotencyKey: idempotencyKey });
-							} finally {
-								this.__retried = false;
-							}
-						} catch (e) { console.debug('[chat] retry-after-reconnect failed:', e?.message); }
+							return await this.sendMessage(text, files, { __idempotencyKey: idempotencyKey });
+						} catch (e) {
+							console.debug('[chat] retry sendMessage failed:', e?.message);
+							throw e;
+						} finally {
+							this.__retried = false;
+						}
 					}
 					if (this.__accepted) {
 						// 已被服务端接受，保留消息并从服务端拉取真实状态
@@ -638,7 +632,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @returns {Promise<string | null>} 新 sessionId，失败返回 null
 			 */
 			async resetChat() {
-				const conn = getReadyConn(this.botId);
+				const conn = useBotConnections().get(this.botId);
 				if (!conn) {
 					throw new Error('Bot not connected');
 				}
@@ -1008,7 +1002,7 @@ export function createChatStore(storeKey, opts = {}) {
 						this.uploadProgress.currentIdx = i;
 						this.uploadProgress.files[i].status = 'uploading';
 
-						const handle = postFile(conn.rtc, agentId, dir, f.name, f.file);
+						const handle = postFile(conn, agentId, dir, f.name, f.file);
 						this.__uploadHandle = handle;
 
 						// 注册进度回调

@@ -16,13 +16,12 @@ import { useFilesStore, __createTask } from './files.store.js';
 import { uploadFile, downloadFile } from '../services/file-transfer.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 
-function mockRtcConn() {
-	const rtc = {};
-	const botConn = { rtc };
+function mockBotConn() {
+	const botConn = { rtc: {}, waitReady: vi.fn().mockResolvedValue() };
 	useBotConnections.mockReturnValue({
 		get: (id) => (id === 'bot1' ? botConn : undefined),
 	});
-	return rtc;
+	return botConn;
 }
 
 function createMockFile(name, size = 100) {
@@ -52,7 +51,7 @@ describe('files.store', () => {
 
 	describe('enqueueUploads', () => {
 		test('创建 pending 任务并触发上传', async () => {
-			const rtc = mockRtcConn();
+			const botConn = mockBotConn();
 			let resolveUpload;
 			uploadFile.mockReturnValue({
 				promise: new Promise((r) => { resolveUpload = r; }),
@@ -77,7 +76,7 @@ describe('files.store', () => {
 			expect(tasks[1].status).toBe('pending');
 
 			expect(uploadFile).toHaveBeenCalledTimes(1);
-			expect(uploadFile).toHaveBeenCalledWith(rtc, 'main', 'src/a.txt', files[0]);
+			expect(uploadFile).toHaveBeenCalledWith(botConn, 'main', 'src/a.txt', files[0]);
 
 			// 完成第一个
 			resolveUpload({ bytes: 50 });
@@ -92,7 +91,7 @@ describe('files.store', () => {
 		});
 
 		test('根目录上传路径不含前缀斜杠', async () => {
-			mockRtcConn();
+			mockBotConn();
 			uploadFile.mockReturnValue({
 				promise: Promise.resolve({ bytes: 10 }),
 				cancel: vi.fn(),
@@ -122,7 +121,7 @@ describe('files.store', () => {
 		}
 
 		test('立即开始下载', async () => {
-			mockRtcConn();
+			mockBotConn();
 			const blob = new Blob(['data']);
 			blob.name = 'test.bin';
 			downloadFile.mockReturnValue({
@@ -144,7 +143,7 @@ describe('files.store', () => {
 		});
 
 		test('下载失败标记为 failed', async () => {
-			mockRtcConn();
+			mockBotConn();
 			downloadFile.mockReturnValue({
 				promise: Promise.reject(new Error('DC error')),
 				cancel: vi.fn(),
@@ -161,7 +160,7 @@ describe('files.store', () => {
 		});
 
 		test('取消运行中的下载', async () => {
-			mockRtcConn();
+			mockBotConn();
 			const cancelFn = vi.fn();
 			downloadFile.mockReturnValue({
 				promise: new Promise(() => {}),
@@ -182,7 +181,7 @@ describe('files.store', () => {
 		});
 
 		test('同一文件不重复入队', () => {
-			mockRtcConn();
+			mockBotConn();
 			downloadFile.mockReturnValue({
 				promise: new Promise(() => {}),
 				cancel: vi.fn(),
@@ -201,7 +200,7 @@ describe('files.store', () => {
 
 	describe('cancelTask', () => {
 		test('取消 running 任务调用 handle.cancel', () => {
-			mockRtcConn();
+			mockBotConn();
 			const cancelFn = vi.fn();
 			uploadFile.mockReturnValue({
 				promise: new Promise(() => {}), // never resolves
@@ -224,7 +223,7 @@ describe('files.store', () => {
 		});
 
 		test('取消 pending 任务', () => {
-			mockRtcConn();
+			mockBotConn();
 			uploadFile.mockReturnValue({
 				promise: new Promise(() => {}),
 				cancel: vi.fn(),
@@ -244,7 +243,7 @@ describe('files.store', () => {
 		});
 
 		test('不可取消已完成的任务', async () => {
-			mockRtcConn();
+			mockBotConn();
 			uploadFile.mockReturnValue({
 				promise: Promise.resolve({ bytes: 10 }),
 				cancel: vi.fn(),
@@ -265,7 +264,7 @@ describe('files.store', () => {
 
 	describe('retryTask', () => {
 		test('重试失败的上传任务', async () => {
-			mockRtcConn();
+			mockBotConn();
 			let callCount = 0;
 			uploadFile.mockImplementation(() => {
 				callCount++;
@@ -302,7 +301,7 @@ describe('files.store', () => {
 		});
 
 		test('重试失败的下载任务', async () => {
-			mockRtcConn();
+			mockBotConn();
 			let callCount = 0;
 			downloadFile.mockImplementation(() => {
 				callCount++;
@@ -349,7 +348,7 @@ describe('files.store', () => {
 
 	describe('progress', () => {
 		test('上传进度回调更新 task.progress', async () => {
-			mockRtcConn();
+			mockBotConn();
 			let progressCb = null;
 			let resolveUpload;
 			uploadFile.mockReturnValue({
@@ -377,7 +376,7 @@ describe('files.store', () => {
 
 	describe('getActiveTasks', () => {
 		test('仅返回指定目录下的 pending/running/failed 任务', () => {
-			mockRtcConn();
+			mockBotConn();
 			uploadFile.mockReturnValue({
 				promise: new Promise(() => {}),
 				cancel: vi.fn(),
@@ -397,7 +396,7 @@ describe('files.store', () => {
 		});
 
 		test('包含 failed 任务，排除 done/cancelled 任务', async () => {
-			mockRtcConn();
+			mockBotConn();
 			let callCount = 0;
 			uploadFile.mockImplementation(() => {
 				callCount++;
@@ -430,7 +429,7 @@ describe('files.store', () => {
 
 	describe('clearFinished', () => {
 		test('清除已完成/失败/取消的任务', async () => {
-			mockRtcConn();
+			mockBotConn();
 			uploadFile.mockReturnValue({
 				promise: Promise.resolve({ bytes: 10 }),
 				cancel: vi.fn(),
@@ -461,7 +460,7 @@ describe('files.store', () => {
 			await vi.waitFor(() => {
 				const t = store.getAgentTasks('bot1', 'main')[0];
 				expect(t.status).toBe('failed');
-				expect(t.error).toContain('WebRTC');
+				expect(t.error).toContain('Bot connection');
 			});
 		});
 	});
