@@ -1,7 +1,7 @@
 # 文件浏览器（初版）
 
 > 创建时间：2026-03-28
-> 状态：草案
+> 状态：已实施
 > 范围：UI 侧文件浏览器功能设计（FTP）
 > 前置依赖：`docs/designs/file-management.md`（文件管理协议）
 
@@ -74,7 +74,7 @@ files/:botId/:agentId
 
 ```
 file-transfer.js           ← 纯传输函数（已有，无 Vue 依赖）
-files.store.js             ← Pinia store：任务状态 + 目录状态 + 协调逻辑
+files.store.js             ← Pinia store：传输任务状态 + 协调逻辑
 Vue 组件                    ← 展示层
 ```
 
@@ -128,14 +128,17 @@ state: () => ({
 // 入队上传（传入已解决重名冲突的文件列表）
 enqueueUploads(botId, agentId, dir, files)
 
-// 入队下载
-enqueueDownload(botId, agentId, dir, fileName)
+// 入队下载（重复入队同一文件自动跳过）
+enqueueDownload(botId, agentId, dir, fileName, size)
 
 // 取消任务
 cancelTask(taskId)
 
 // 重试失败任务
 retryTask(taskId)
+
+// 清理指定 agent 已完成/取消/失败的任务
+clearFinished(botId, agentId)
 ```
 
 ### 关键 Getters

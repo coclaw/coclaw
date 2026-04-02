@@ -89,7 +89,7 @@
 
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）
 
-- **文件**：`services/webrtc-connection.js`、`services/dc-chunking.js`
+- **文件**：`services/webrtc-connection.js`、`utils/dc-chunking.js`
 - **机制**：DataChannel 通过分片（chunking）传输大 payload
 - **流控**：发送端 high water mark 1MB / low water mark 256KB，超限时暂停发送，`bufferedamountlow` 恢复
 - **DC 不可用**：`request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 30s），不再直接 reject
