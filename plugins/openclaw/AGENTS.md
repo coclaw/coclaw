@@ -12,8 +12,8 @@
   - `message-model.js` — 消息格式转换
   - `config.js` — 绑定信息读写（唯一入口）
   - `api.js` — CoClaw server HTTP API 封装
-  - `cli.js` — 独立 CLI（`coclaw bind/unbind`）
-  - `cli-registrar.js` — OpenClaw `registerCli` 注册（`openclaw coclaw bind/unbind`）
+  - `cli-registrar.js` — OpenClaw `registerCli` 注册（`openclaw coclaw bind/unbind/enroll`）
+  - `plugin-version.js` — 插件版本号读取（缓存）
   - `runtime.js` — OpenClaw runtime 引用管理
 - `src/auto-upgrade/` — 自动升级模块（仅 npm 安装模式生效）
   - `updater.js` — 调度入口（延迟首次 + 周期轮询 + 升级锁）
@@ -103,7 +103,7 @@
 
 - bind/unbind/enroll 的 CLI 命令均为瘦 CLI：仅做参数解析 → `callGatewayMethod` RPC → 结果展示。核心逻辑在 gateway 内的 RPC handler 中执行。
 - 所有 bind/unbind 核心逻辑必须集中在共享层（`common/bot-binding.js`），RPC handler 与斜杠命令 handler 共享同一内部函数（`doBind`/`doUnbind`）。
-- gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.refreshBridge` / `coclaw.stopBridge` / `coclaw.enroll` / `coclaw.upgradeHealth` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById` / `coclaw.files.list` / `coclaw.files.delete` / `coclaw.files.mkdir` / `coclaw.files.create`）仅由本插件提供，禁止重复注册同名方法。
+- gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.enroll` / `coclaw.upgradeHealth` / `coclaw.info` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById` / `coclaw.files.list` / `coclaw.files.delete` / `coclaw.files.mkdir` / `coclaw.files.create`）仅由本插件提供，禁止重复注册同名方法。
 - gateway method 错误响应格式：`respond(false, undefined, { code, message })`。使用 `respondError(respond, err)` 处理异常，`respondInvalid(respond, message)` 处理参数校验失败。禁止使用旧格式 `respond(false, { error })`。
 - realtime bridge（`coclaw-realtime-bridge`）和 auto-upgrade scheduler（`coclaw-auto-upgrade`）必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接或定时器导致进程无法退出。
 - CLI bind/unbind 通过 gateway RPC（`coclaw.bind`/`coclaw.unbind`）执行，gateway 内部管理 bridge 生命周期，**禁止在 CLI 进程中直接操作 `bindings.json`**。

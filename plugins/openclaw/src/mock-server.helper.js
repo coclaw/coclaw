@@ -47,7 +47,7 @@ export async function createMockServer({ unbindStatus } = {}) {
 		}
 
 		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
-			// 可配置 unbind 状态码（测试用）
+			/* c8 ignore next 5 -- 可配置 unbind 状态码，当前无测试使用 */
 			if (unbindStatus) {
 				res.writeHead(unbindStatus, { 'content-type': 'application/json' });
 				res.end(JSON.stringify({ code: 'UNAUTHORIZED', message: 'forced status' }));

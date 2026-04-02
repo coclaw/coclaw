@@ -41,11 +41,7 @@
       "./index.js"
     ]
   },
-  "bin": {
-    "coclaw": "src/cli.js"
-  },
   "scripts": {
-    "dev": "node src/cli.js --help",
     "build": "echo 'No build step needed (pure ES modules)'",
     "lint": "eslint \"**/*.{js,mjs,cjs}\" --no-error-on-unmatched-pattern",
     "typecheck": "echo \"No typecheck configured yet (coclaw openclaw plugin)\"",

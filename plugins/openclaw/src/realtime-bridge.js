@@ -11,6 +11,7 @@ import {
 } from './device-identity.js';
 import { getRuntime } from './runtime.js';
 import { setSender as setRemoteLogSender, remoteLog } from './remote-log.js';
+import { getPluginVersion } from './plugin-version.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -519,7 +520,7 @@ export class RealtimeBridge {
 				maxProtocol: 3,
 				client: {
 					id: 'gateway-client',
-					version: 'dev',
+					version: this.__pluginVersion ?? 'unknown',
 					platform: process.platform,
 					mode: 'backend',
 				},
@@ -913,12 +914,17 @@ export class RealtimeBridge {
 		// 先完成 WebRTC 实现加载，再建立连接，避免 UI 发来 offer 时 RTC 包未就绪
 		const preloadFn = this.__preloadNdc
 			?? (await import('./ndc-preloader.js')).preloadNdc;
-		const preloadResult = await preloadFn()
-			.catch((err) => {
+		// 版本预热与 preload 并行，供 gateway connect 请求同步使用
+		const [preloadResult] = await Promise.all([
+			preloadFn().catch((err) => {
 				// preloadNdc 设计上永不 throw，此 catch 为纯防御性兜底
 				this.logger.warn?.(`[coclaw] ndc preload unexpected failure: ${err?.message}`);
 				return { PeerConnection: null, cleanup: null, impl: 'none' };
-			});
+			}),
+			getPluginVersion()
+				.then((v) => { this.__pluginVersion = v; })
+				.catch(() => { this.__pluginVersion = 'unknown'; }),
+		]);
 		// 竞态保护：若 preload 期间 stop() 已执行，不再赋值，立即释放 cleanup
 		if (!this.started) {
 			if (preloadResult.cleanup) {

@@ -3,7 +3,6 @@ import test from 'node:test';
 
 import {
 	notBound, bindOk, unbindOk,
-	gatewayNotified, gatewayNotifyFailed,
 	claimCodeCreated,
 } from './messages.js';
 
@@ -23,15 +22,6 @@ test('unbindOk should format unbind success message', () => {
 
 test('notBound should return not-bound message', () => {
 	assert.equal(notBound(), 'Not bound. Nothing to unbind.');
-});
-
-test('gatewayNotified should return action-specific message', () => {
-	assert.equal(gatewayNotified('refresh'), 'Bridge connection refreshed.');
-	assert.equal(gatewayNotified('stop'), 'Bridge connection stopped.');
-});
-
-test('gatewayNotifyFailed should return warning message', () => {
-	assert.ok(gatewayNotifyFailed().includes('could not notify'));
 });
 
 test('claimCodeCreated should format claim code message', () => {

@@ -57,7 +57,7 @@ test('callGatewayMethod should pass shell:false on non-Windows', async () => {
 		return child;
 	};
 
-	await callGatewayMethod('coclaw.refreshBridge', spawn, { isWin: false });
+	await callGatewayMethod('coclaw.bind', spawn, { isWin: false });
 	assert.equal(capturedOpts.shell, false);
 });
 
@@ -76,7 +76,7 @@ test('callGatewayMethod should pass shell:true on Windows', async () => {
 		return child;
 	};
 
-	await callGatewayMethod('coclaw.refreshBridge', spawn, { isWin: true });
+	await callGatewayMethod('coclaw.bind', spawn, { isWin: true });
 	assert.equal(capturedOpts.shell, true);
 });
 
@@ -86,11 +86,11 @@ test('callGatewayMethod should resolve ok with status field from result payload'
 		stdout: '{"status":"refreshed"}',
 	});
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn);
+	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.deepEqual(result, { ok: true, status: 'refreshed' });
 	assert.equal(calls.length, 1);
-	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.refreshBridge', '--json']);
+	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.bind', '--json']);
 });
 
 test('callGatewayMethod should pass --params as raw JSON on non-Windows', async () => {
@@ -140,7 +140,7 @@ test('callGatewayMethod should resolve ok for any valid JSON output', async () =
 		stdout: '{"ok":true,"ts":12345}',
 	});
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn);
+	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, true);
 	assert.equal(result.status, undefined);
@@ -153,7 +153,7 @@ test('callGatewayMethod should resolve immediately on stdout without waiting for
 		delayClose: true,
 	});
 
-	const result = await callGatewayMethod('coclaw.stopBridge', spawn, { killDelayMs: 10 });
+	const result = await callGatewayMethod('coclaw.unbind', spawn, { killDelayMs: 10 });
 
 	assert.equal(result.ok, true);
 	assert.equal(result.status, 'stopped');
@@ -162,7 +162,7 @@ test('callGatewayMethod should resolve immediately on stdout without waiting for
 test('callGatewayMethod should resolve ok:false on spawn error event', async () => {
 	const { spawn } = createMockSpawn({ emitError: true });
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn);
+	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, false);
 	assert.equal(result.error, 'spawn_error');
@@ -171,7 +171,7 @@ test('callGatewayMethod should resolve ok:false on spawn error event', async () 
 test('callGatewayMethod should resolve ok:false when spawn throws', async () => {
 	const throwSpawn = () => { throw new Error('not found'); };
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', throwSpawn);
+	const result = await callGatewayMethod('coclaw.bind', throwSpawn);
 
 	assert.equal(result.ok, false);
 	assert.equal(result.error, 'spawn_failed');
@@ -180,7 +180,7 @@ test('callGatewayMethod should resolve ok:false when spawn throws', async () => 
 test('callGatewayMethod should resolve ok:false on non-zero exit without stdout', async () => {
 	const { spawn } = createMockSpawn({ exitCode: 1 });
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn);
+	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, false);
 	assert.equal(result.error, 'exit_code_1');
@@ -211,7 +211,7 @@ test('callGatewayMethod should treat non-JSON stdout as success', async () => {
 		stdout: 'some non-json output',
 	});
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn);
+	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, true);
 });
@@ -219,7 +219,7 @@ test('callGatewayMethod should treat non-JSON stdout as success', async () => {
 test('callGatewayMethod should timeout and resolve ok:false when no events', async () => {
 	const { spawn } = createMockSpawn({ noEvents: true });
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn, { timeoutMs: 50 });
+	const result = await callGatewayMethod('coclaw.bind', spawn, { timeoutMs: 50 });
 
 	assert.equal(result.ok, false);
 	assert.equal(result.error, 'timeout');
@@ -240,7 +240,7 @@ test('callGatewayMethod should ignore duplicate finish calls', async () => {
 		return child;
 	};
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', mockSpawn, { timeoutMs: 50 });
+	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { timeoutMs: 50 });
 	assert.equal(result.ok, true);
 	assert.equal(result.status, 'refreshed');
 });
@@ -248,7 +248,7 @@ test('callGatewayMethod should ignore duplicate finish calls', async () => {
 test('callGatewayMethod should return empty_output on exit 0 without stdout', async () => {
 	const { spawn } = createMockSpawn({ exitCode: 0 });
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn);
+	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, false);
 	assert.equal(result.error, 'empty_output');
@@ -260,7 +260,7 @@ test('callGatewayMethod should parse result on non-zero exit with stdout', async
 		exitCode: 1,
 	});
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', spawn);
+	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, true);
 	assert.equal(result.status, 'refreshed');
@@ -282,7 +282,7 @@ test('callGatewayMethod should wait for complete JSON before resolving', async (
 		return child;
 	};
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', mockSpawn, { timeoutMs: 100 });
+	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { timeoutMs: 100 });
 
 	assert.equal(result.ok, true);
 	assert.equal(result.status, 'refreshed');
@@ -303,7 +303,7 @@ test('callGatewayMethod should not start grace period twice on multiple data chu
 		return child;
 	};
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', mockSpawn, { killDelayMs: 10 });
+	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { killDelayMs: 10 });
 	assert.equal(result.ok, true);
 	assert.equal(result.status, 'refreshed');
 });
@@ -322,7 +322,7 @@ test('callGatewayMethod should handle child.kill() throwing', async () => {
 		return child;
 	};
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', mockSpawn, { killDelayMs: 10 });
+	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { killDelayMs: 10 });
 	assert.equal(result.ok, true);
 	assert.equal(result.status, 'refreshed');
 });
@@ -340,7 +340,7 @@ test('callGatewayMethod should parse stdout on timeout when output is not comple
 		return child;
 	};
 
-	const result = await callGatewayMethod('coclaw.refreshBridge', mockSpawn, { timeoutMs: 50 });
+	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { timeoutMs: 50 });
 
 	assert.equal(result.ok, true);
 });

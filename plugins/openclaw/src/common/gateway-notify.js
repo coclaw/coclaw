@@ -15,16 +15,33 @@ export function escapeJsonForCmd(json) {
 /**
  * 通过 spawn 调用 `openclaw gateway call <method> --json`
  *
- * 背景：openclaw CLI 在完成 gateway RPC 后，因 WebSocket handle 未清理，
- * 进程不会自然退出。execSync 会一直阻塞直到超时，导致误报失败。
+ * ## 设计背景
  *
- * 策略：
- * 1. spawn 子进程，监听 stdout
- * 2. 解析 JSON 输出判断 RPC 是否成功
- * 3. 检测到输出后延迟 KILL_DELAY_MS 再 kill（给进程自然退出的机会）
- * 4. 无论成功失败，最终都主动 kill 子进程
+ * openclaw CLI 完成 gateway RPC 后，因 GatewayClient（WebSocket）handle 未完全销毁，
+ * 事件循环仍活跃，进程不会自然退出。早期使用 execSync 会阻塞等待进程退出而非输出完成，
+ * 导致 RPC 实际在 ~2s 内成功，但 10s 超时后误报 100% 失败。
  *
- * @param {string} method - gateway method 名（如 coclaw.refreshBridge）
+ * ## 策略
+ *
+ * 1. spawn 子进程执行 `openclaw gateway call <method> --json`
+ * 2. 监听 stdout，解析 JSON 输出判断 RPC 成功/失败
+ * 3. 检测到完整 JSON 后启动 KILL_DELAY_MS grace period 等待自然退出
+ * 4. 总超时默认 NOTIFY_TIMEOUT_MS（注册 CLI 路径覆盖为 30s）
+ * 5. 无论成功失败，最终都主动 kill 子进程
+ *
+ * grace period 设计：openclaw 进程因 WS handle 滞留可能 10s+ 才退出，
+ * 延迟 kill 是为兼容未来 OpenClaw 修复 WS 清理后进程能优雅退出的场景。
+ *
+ * ## stdout 判断策略
+ *
+ * `openclaw gateway call --json` 直接输出 method 的 result payload（respond 第二参数），
+ * 而非 gateway 协议层 { ok, result, error } 包装：
+ * - 有 stdout + 可解析 JSON → RPC 成功
+ * - 有 stdout + 非 JSON → 也视为成功（兜底）
+ * - 无 stdout + 非零退出码 → RPC 失败
+ * - 无 stdout + 超时 → RPC 失败
+ *
+ * @param {string} method - gateway method 名（如 coclaw.bind）
  * @param {Function} [spawnFn] - 可注入的 spawn 函数（测试用）
  * @param {object} [opts] - 可选配置（测试用）
  * @param {number} [opts.timeoutMs] - 总超时毫秒数

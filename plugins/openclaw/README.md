@@ -88,15 +88,6 @@ openclaw coclaw enroll [--server <url>]
 
 需要 gateway 运行中。
 
-### 方式三：独立 CLI（遗留）
-
-```bash
-node ~/.openclaw/extensions/coclaw/src/cli.js bind <binding-code> --server <url>
-node ~/.openclaw/extensions/coclaw/src/cli.js unbind --server <url>
-```
-
-> 注意：独立 CLI 不走 gateway RPC，直接在 CLI 进程中执行 bind/unbind 并通过 `coclaw.refreshBridge`/`coclaw.stopBridge` 通知 gateway。此路径不具备瘦 CLI 的架构保证（所有 config 操作在同一进程内）。推荐使用方式一。
-
 ## 配置存储
 
 绑定信息存储在 `~/.openclaw/coclaw/bindings.json`（通过 `resolveStateDir()` + channel ID 组合路径），**不存储在 `openclaw.json` 中**。

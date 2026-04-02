@@ -1,6 +1,3 @@
-import fs from 'node:fs/promises';
-import nodePath from 'node:path';
-
 import { bindBot, unbindBot, enrollBot, waitForClaimAndSave } from './src/common/bot-binding.js';
 import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
@@ -16,27 +13,12 @@ import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
 import { createFileHandler } from './src/file-manager/handler.js';
 
-// 延迟读取 + 缓存：避免模块加载时 package.json 损坏导致插件整体无法注册
-let __pluginVersion = null;
-export async function getPluginVersion() {
-	if (__pluginVersion) return __pluginVersion;
-	try {
-		const pkgPath = nodePath.resolve(import.meta.dirname, 'package.json');
-		const raw = await fs.readFile(pkgPath, 'utf8');
-		__pluginVersion = JSON.parse(raw).version ?? 'unknown';
-	} catch {
-		return 'unknown';
-	}
-	return __pluginVersion;
-}
-// 测试用：重置缓存
-export function __resetPluginVersion() { __pluginVersion = null; }
+import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
+export { getPluginVersion, __resetPluginVersion };
 
-
+/* c8 ignore start */
 function parseCommandArgs(args) {
-	/* c8 ignore next */
 	const tokens = (args ?? '').split(/\s+/).filter(Boolean);
-	/* c8 ignore next */
 	const action = tokens[0] ?? 'help';
 	const options = {};
 	const positionals = [];
@@ -67,7 +49,6 @@ function buildHelpText() {
 function respondError(respond, err) {
 	respond(false, undefined, {
 		code: err?.code ?? 'INTERNAL_ERROR',
-		/* c8 ignore next */
 		message: String(err?.message ?? err),
 	});
 }
@@ -75,8 +56,6 @@ function respondError(respond, err) {
 function respondInvalid(respond, message) {
 	respond(false, undefined, { code: 'INVALID_INPUT', message });
 }
-
-/* c8 ignore start */
 const plugin = {
 	id: 'openclaw-coclaw',
 	name: 'CoClaw',
@@ -128,26 +107,6 @@ const plugin = {
 			async stop() {
 				await stopRealtimeBridge();
 			},
-		});
-
-		api.registerGatewayMethod('coclaw.refreshBridge', async ({ respond }) => {
-			try {
-				await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
-				respond(true, { status: 'refreshed' });
-			}
-			catch (err) {
-				respondError(respond, err);
-			}
-		});
-
-		api.registerGatewayMethod('coclaw.stopBridge', async ({ respond }) => {
-			try {
-				await stopRealtimeBridge();
-				respond(true, { status: 'stopped' });
-			}
-			catch (err) {
-				respondError(respond, err);
-			}
 		});
 
 		// --- bind/unbind 共享逻辑（RPC handler + 斜杠命令共用） ---

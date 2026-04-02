@@ -2,7 +2,6 @@
 
 > 适用范围：对整个 `coclaw` 仓库生效。
 > coclaw 旗下各 Workspace 可补充规则。
-> POC（概念证明）项目位于 `../tunnel-poc` 中，包含了打通 OpenClaw <-> server <-> ui 的相关验证代码。
 
 General Instructions
 - 收到用户的任务请求后，首先应理解并向用户澄清需求，待用户确认后再实际执行任务

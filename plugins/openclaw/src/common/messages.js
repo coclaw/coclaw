@@ -17,16 +17,6 @@ export function notBound() {
 	return 'Not bound. Nothing to unbind.';
 }
 
-export function gatewayNotified(action) {
-	return action === 'refresh'
-		? 'Bridge connection refreshed.'
-		: 'Bridge connection stopped.';
-}
-
-export function gatewayNotifyFailed() {
-	return 'Note: could not notify the running gateway. If it is running, restart it manually.';
-}
-
 export function claimCodeCreated({ code, appUrl, expiresMinutes }) {
 	return [
 		`Claim code: ${code}`,

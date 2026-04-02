@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import plugin, { getPluginVersion, __resetPluginVersion } from './index.js';
+import plugin, { __resetPluginVersion } from './index.js';
 import { createMockServer } from './src/mock-server.helper.js';
 import { setRuntime } from './src/runtime.js';
 
@@ -66,8 +66,6 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	assert.equal(calls.command, 1);
 	assert.equal(calls.cli, 1);
 	assert.deepEqual(cliOpts, { commands: ['coclaw'] });
-	assert.equal(handlers.has('coclaw.refreshBridge'), true);
-	assert.equal(handlers.has('coclaw.stopBridge'), true);
 	assert.equal(handlers.has('coclaw.upgradeHealth'), true);
 	assert.equal(handlers.has('nativeui.sessions.listAll'), true);
 	assert.equal(handlers.has('nativeui.sessions.get'), true);
@@ -265,36 +263,6 @@ test('command handler should cover help/unknown/error/success paths', async () =
 		if (prevHome === undefined) delete process.env.HOME;
 		else process.env.HOME = prevHome;
 		await mock.close();
-	}
-});
-
-// --- getPluginVersion ---
-
-test('getPluginVersion should return version from package.json', async () => {
-	__resetPluginVersion();
-	const version = await getPluginVersion();
-	assert.ok(typeof version === 'string');
-	assert.ok(/^\d+\.\d+\.\d+/.test(version), `expected semver, got: ${version}`);
-});
-
-test('getPluginVersion should cache result on second call', async () => {
-	__resetPluginVersion();
-	const v1 = await getPluginVersion();
-	const v2 = await getPluginVersion();
-	assert.equal(v1, v2);
-});
-
-test('getPluginVersion should return unknown when package.json is unreadable', async () => {
-	__resetPluginVersion();
-	const nodeFs = await import('node:fs/promises');
-	const orig = nodeFs.default.readFile;
-	nodeFs.default.readFile = async () => { throw new Error('ENOENT'); };
-	try {
-		const v = await getPluginVersion();
-		assert.equal(v, 'unknown');
-	} finally {
-		nodeFs.default.readFile = orig;
-		__resetPluginVersion();
 	}
 });
 

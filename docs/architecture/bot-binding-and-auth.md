@@ -1,7 +1,7 @@
 # CoClaw Bot 绑定与鉴权方案 (Bot Binding & Authentication Scheme)
 
 > 状态：已实施
-> 最后更新：2026-03-06
+> 最后更新：2026-04-02
 
 本文档详细阐述了将用户本地 OpenClaw 实例（即 "Bot" 或 "Agent"）绑定到 CoClaw 云端账号的架构设计，以及随后的鉴权机制与体系融合方案。
 
@@ -11,45 +11,57 @@
 *   **反向认领 (Reverse Claiming)**: 不同于传统的 IoT 设备自动发现，CoClaw 采用 **用户主动发起绑定** 的流程。用户从 Web 控制台获取认领码，并在本地 CLI 输入。这确保了用户对连接行为的显式授权和隐私控制。
 *   **Token 鉴权 (Token-Based Auth)**: 系统采用标准的 Bearer Token 机制进行鉴权，由服务端在绑定成功时统一颁发。
 
-## 2. 绑定流程 (The "Claim" Process)
+## 2. 绑定流程
 
-绑定流程将一个匿名的本地实例转化为 CoClaw 平台上身份明确的 "Bot"。
+系统支持两种对称的绑定流程，将匿名的本地 OpenClaw 实例转化为 CoClaw 平台上身份明确的 "Bot"。
 
-### 第一阶段：获取认领码 (Web 端)
+### 流程 A：用户主导（Binding）
 
-1.  用户登录 **CoClaw Web 控制台**。
-2.  进入 **"Bots" -> "添加新 Bot"** 页面。
-3.  服务端生成一个短时效的 **绑定码 (Binding Code)**（例如 `88889999`，有效期 5 分钟），并与当前用户会话关联。
-4.  Web 界面显示该绑定码，以及需在终端执行的绑定命令。
+用户在 UI 获取绑定码，在 OpenClaw CLI 执行绑定。
 
-### 第二阶段：执行绑定 (CLI 端)
+**第一阶段：获取绑定码（UI 端）**
 
-1.  用户打开运行 OpenClaw 的本地终端。
-2.  输入绑定命令：
-    ```bash
-    openclaw coclaw bind "88889999"
-    ```
-3.  **CLI 动作**：
-    *   CLI 通过 `coclaw.bind` gateway RPC 将请求发送到 gateway 进程。
-    *   Gateway 内的 RPC handler 停止 bridge → 执行绑定 → 写入 config → 重启 bridge。
-    *   如果已有绑定，handler 会先强制解绑旧 bot（非 best-effort），失败时中止操作并返回错误。server 返回 401/404/410 视为旧 bot 已不存在，允许继续。
-    *   Gateway handler 向 `POST /api/v1/bots/bind` 发送请求，Payload: `{ code: "88889999" }`。
+1.  用户登录 CoClaw App，进入"添加 Claw"页面。
+2.  `POST /api/v1/bots/binding-codes` 生成 8 位绑定码（默认有效期 30 分钟，`BINDING_CODE_EXPIRE_MINUTES` 可配），关联当前用户。
+3.  UI 进入长轮询等待（`POST /api/v1/bots/binding-codes/wait`，25s 超时轮询）。
 
-### 第三阶段：服务端验证与颁发 (Server)
+**第二阶段：执行绑定（CLI 端）**
 
-1.  **验证**：服务端检查绑定码是否存在且未过期。
-2.  **创建与颁发**：
-    *   创建新的 `Bot` 记录，关联至生成绑定码的用户。
-    *   分配全局唯一的 **Bot ID** (Snowflake ID)。
-    *   生成 **Access Token**（基于 CUID2）。
-    *   计算 Token 的 **SHA-256** 哈希并 **仅存储哈希值 (tokenHash)**，以 `BINARY(32)` 存储。
-3.  **响应**：服务端将 `{ botId: "...", token: "..." }` 返回给 CLI。
+1.  用户在 OpenClaw 终端执行：`openclaw coclaw bind "88889999"`
+2.  CLI 通过 `coclaw.bind` gateway RPC 将请求发送到 gateway 进程。
+3.  Gateway 内的 RPC handler：停止 bridge → 若已有绑定则先强制解绑旧 bot → 向 `POST /api/v1/bots/bind` 提交绑定码。
 
-### 第四阶段：配置写入与连接建立
+**第三阶段：服务端验证与颁发**
 
-1.  **写入**：Gateway handler 将 `botId` 与明文 `token` 通过 `writeConfig`（原子写入 + mutex 保护）写入本地绑定配置（`~/.openclaw/coclaw/bindings.json`）。
-2.  **连接条件**：仅当本地存在有效 token 时，插件才会连接 server 的实时控制通道。
-3.  **连接**：Gateway handler 调用 `restartRealtimeBridge()` 建立 `WS /api/v1/bots/stream?token=...`，用于接收解绑/凭证失效控制消息。
+1.  验证绑定码存在且未过期，删除已用绑定码（用完即焚）。
+2.  创建 `Bot` 记录（Snowflake ID），生成 Access Token（CUID2），仅存储 `SHA-256(token)` 到 `tokenHash BINARY(32)`。
+3.  唤醒长轮询等待者 + SSE 推送 `bot.bound` 事件。
+4.  返回 `{ botId, token }` 给 Plugin。
+
+**第四阶段：配置写入与连接建立**
+
+1.  Gateway handler 将 `botId` + `token` 通过 `writeConfig`（原子写入 + mutex）写入 `~/.openclaw/coclaw/bindings.json`。
+2.  调用 `restartRealtimeBridge()` 建立 Server WS + Gateway WS 连接。
+
+### 流程 B：Plugin 主导（Claim / Enroll）
+
+Plugin 在 CLI 生成认领码，用户在 App 端认领。
+
+**第一阶段：生成认领码（CLI 端）**
+
+1.  用户在 OpenClaw 终端执行：`openclaw coclaw enroll [--server <url>]`
+2.  CLI 通过 `coclaw.enroll` gateway RPC → handler 调用 `POST /api/v1/claws/claim-codes` 生成 8 位认领码（30 分钟有效）。
+3.  终端显示认领码和 App URL，handler 进入长轮询等待（`POST /api/v1/claws/claim-codes/wait`）。
+
+**第二阶段：用户认领（App 端）**
+
+1.  用户在 CoClaw App 输入认领码，调用 `POST /api/v1/claws/claim`（需 session 鉴权）。
+2.  Server 验证认领码 → 创建 Bot 记录 → 签发 token → 删除认领码。
+3.  唤醒 Plugin 的长轮询，将 `{ botId, token }` 返回给 Plugin。
+
+**第三阶段：配置写入与连接建立**
+
+与流程 A 第四阶段相同。
 
 ## 3. 鉴权机制
 
@@ -98,11 +110,18 @@
 
 > 备注：`status` 为历史字段，当前实现不再作为在线与鉴权依据。
 
-#### BotBindingCode 表
+#### BotBindingCode 表（用户主导绑定）
 *   **code** (PK): 8位数字绑定码（如 `88889999`）。作为主键以利用数据库唯一性约束防止重复。
-*   **userId** (FK): 关联用户。
+*   **userId**: 发起绑定的用户（非外键）。
 *   **expiresAt**: 过期时间。
 *   **createdAt**: 创建时间。
+
+#### ClawClaimCode 表（Plugin 主导认领）
+*   **code** (PK): 8位数字认领码，与 BotBindingCode 同格式。
+*   **expiresAt**: 过期时间。
+*   **createdAt**: 创建时间。
+
+> 两种码使用独立的表，互不冲突。
 
 ### 绑定码防碰撞与复用策略
 
@@ -160,19 +179,14 @@
 - session-manager：负责会话业务方法定义（`nativeui.sessions.listAll/get` 等）。
 - UI：只通过 CoClaw server 的 ws 通道发 rpc，不直连 OpenClaw gateway。
 
-### 5.5 开发与生产的适配 (Dev vs Prod)
+### 5.5 运行环境
 
-为了便于开发调试，插件采用 **适配器模式 (Adapter Pattern)** 兼容两种运行环境：
+插件始终作为 OpenClaw In-Process Plugin 运行，代码运行在 OpenClaw gateway 主进程中。CLI 命令（`openclaw coclaw bind/unbind/enroll`）为瘦壳，通过 gateway RPC 委托执行。
 
-*   **生产环境 (In-Process Plugin)**:
-    *   代码运行在 OpenClaw 主进程中。
-    *   主要关注绑定/解绑与实时控制通道（`/api/v1/bots/stream`）的稳定性。
-*   **开发环境 (Standalone Process)**:
-    *   代码作为独立 Node.js 进程运行（CLI 模式）。
-    *   与插件模式共享同一 bind/unbind 核心逻辑。
+> 注：当前阶段优先完成”绑定体系 + 自动解绑收敛”，Gateway 全量隧道能力按后续里程碑推进。
 
-> 注：当前阶段优先完成“绑定体系 + 自动解绑收敛”，Gateway 全量隧道能力按后续里程碑推进。
+## 6. Ed25519 设备身份
 
-## 6. 未来演进：密钥对鉴权
+Plugin 侧已实现 Ed25519 密钥对（`device-identity.js`），当前**仅用于 Plugin → 本地 Gateway WS 的连接认证**（challenge-response 签名）。Plugin → Server 的认证仍使用 Bearer Token。
 
-若未来安全需求升级，可在 CLI 绑定阶段增加密钥生成步骤，将鉴权方式从 Token 升级为 Ed25519 签名，且无需更改整体架构。
+若未来安全需求升级，可将 Plugin → Server 的鉴权也升级为 Ed25519 签名，无需更改整体架构。
