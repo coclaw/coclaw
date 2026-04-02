@@ -7,10 +7,10 @@ import { atomicWriteJsonFile } from './utils/atomic-write.js';
 import { createMutex } from './utils/mutex.js';
 
 export const DEFAULT_ACCOUNT_ID = 'default';
-const CHANNEL_ID = 'coclaw';
+export const CHANNEL_ID = 'coclaw';
 const BINDINGS_FILENAME = 'bindings.json';
 
-function resolveStateDir() {
+export function resolveStateDir() {
 	const rt = getRuntime();
 	if (rt?.state?.resolveStateDir) {
 		return rt.state.resolveStateDir();

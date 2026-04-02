@@ -66,6 +66,9 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	assert.equal(calls.command, 1);
 	assert.equal(calls.cli, 1);
 	assert.deepEqual(cliOpts, { commands: ['coclaw'] });
+	assert.equal(handlers.has('coclaw.info'), true);
+	assert.equal(handlers.has('coclaw.info.get'), true);
+	assert.equal(handlers.has('coclaw.info.patch'), true);
 	assert.equal(handlers.has('coclaw.upgradeHealth'), true);
 	assert.equal(handlers.has('nativeui.sessions.listAll'), true);
 	assert.equal(handlers.has('nativeui.sessions.get'), true);
@@ -106,6 +109,10 @@ test('coclaw.info should return version and clawVersion', async () => {
 	assert.equal(typeof infoOut.payload.version, 'string');
 	assert.equal(infoOut.payload.clawVersion, MOCK_CLAW_VERSION);
 	assert.ok(Array.isArray(infoOut.payload.capabilities));
+	assert.equal(typeof infoOut.payload.hostName, 'string');
+	assert.ok(infoOut.payload.hostName.length > 0);
+	// name 未设置时为 null
+	assert.equal(infoOut.payload.name, null);
 });
 
 test('coclaw.info should omit clawVersion when runtime.version is absent', async () => {
@@ -142,6 +149,162 @@ test('coclaw.info should omit clawVersion when runtime.version is unknown', asyn
 	});
 	assert.equal(infoOut.ok, true);
 	assert.equal(infoOut.payload.clawVersion, undefined);
+});
+
+test('coclaw.info.get should be an alias of coclaw.info', async () => {
+	__resetPluginVersion();
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	let infoOut = null;
+	await handlers.get('coclaw.info.get')({
+		respond(ok, payload) {
+			infoOut = { ok, payload };
+		},
+	});
+	assert.equal(infoOut.ok, true);
+	assert.equal(typeof infoOut.payload.version, 'string');
+	assert.equal(typeof infoOut.payload.hostName, 'string');
+});
+
+test('coclaw.info.patch should set and return name', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-info-patch-'));
+	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime(null);
+
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	let out = null;
+	await handlers.get('coclaw.info.patch')({
+		params: { name: '  My Claw  ' },
+		respond(ok, payload, error) {
+			out = { ok, payload, error };
+		},
+	});
+	assert.equal(out.ok, true);
+	assert.equal(out.payload.name, 'My Claw');
+	assert.equal(typeof out.payload.hostName, 'string');
+
+	// 验证持久化：coclaw.info 应返回设置的名称
+	__resetPluginVersion();
+	let infoOut = null;
+	await handlers.get('coclaw.info')({
+		respond(ok, payload) {
+			infoOut = { ok, payload };
+		},
+	});
+	assert.equal(infoOut.payload.name, 'My Claw');
+});
+
+test('coclaw.info.patch should clear name when given empty string', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-info-patch-'));
+	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime(null);
+
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	// 先设置
+	await handlers.get('coclaw.info.patch')({
+		params: { name: 'Test' },
+		respond() {},
+	});
+
+	// 再清除
+	let out = null;
+	await handlers.get('coclaw.info.patch')({
+		params: { name: '' },
+		respond(ok, payload) {
+			out = { ok, payload };
+		},
+	});
+	assert.equal(out.ok, true);
+	assert.equal(out.payload.name, null);
+});
+
+test('coclaw.info.patch should clear name when given null', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-info-patch-'));
+	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime(null);
+
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	await handlers.get('coclaw.info.patch')({
+		params: { name: 'Test' },
+		respond() {},
+	});
+
+	let out = null;
+	await handlers.get('coclaw.info.patch')({
+		params: { name: null },
+		respond(ok, payload) {
+			out = { ok, payload };
+		},
+	});
+	assert.equal(out.ok, true);
+	assert.equal(out.payload.name, null);
+});
+
+test('coclaw.info.patch should reject missing name field', async () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	let out = null;
+	await handlers.get('coclaw.info.patch')({
+		params: {},
+		respond(ok, payload, error) {
+			out = { ok, payload, error };
+		},
+	});
+	assert.equal(out.ok, false);
+	assert.ok(out.error.message.includes('required'));
+});
+
+test('coclaw.info.patch should reject undefined params', async () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	let out = null;
+	await handlers.get('coclaw.info.patch')({
+		params: undefined,
+		respond(ok, payload, error) {
+			out = { ok, payload, error };
+		},
+	});
+	assert.equal(out.ok, false);
+	assert.ok(out.error.message.includes('required'));
+});
+
+test('coclaw.info.patch should reject name exceeding 63 chars', async () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	let out = null;
+	await handlers.get('coclaw.info.patch')({
+		params: { name: 'a'.repeat(64) },
+		respond(ok, payload, error) {
+			out = { ok, payload, error };
+		},
+	});
+	assert.equal(out.ok, false);
+	assert.ok(out.error.message.includes('63'));
+});
+
+test('coclaw.info.patch should reject non-string name', async () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	let out = null;
+	await handlers.get('coclaw.info.patch')({
+		params: { name: 123 },
+		respond(ok, payload, error) {
+			out = { ok, payload, error };
+		},
+	});
+	assert.equal(out.ok, false);
+	assert.ok(out.error.message.includes('string'));
 });
 
 test('gateway methods respond and catch errors', async () => {

@@ -3,7 +3,8 @@ import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
 import { notBound, bindOk, unbindOk, claimCodeCreated } from './src/common/messages.js';
 import { coclawChannelPlugin } from './src/channel-plugin.js';
-import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './src/realtime-bridge.js';
+import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady, broadcastPluginEvent } from './src/realtime-bridge.js';
+import { getHostName, readSettings, writeName, MAX_NAME_LENGTH } from './src/settings.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
 import { TopicManager } from './src/topic-manager/manager.js';
@@ -249,14 +250,48 @@ const plugin = {
 			}
 		});
 
-		api.registerGatewayMethod('coclaw.info', async ({ respond }) => {
+		async function handleInfoGet({ respond }) {
 			try {
 				await waitForSessionsReady();
 				const version = await getPluginVersion();
 				const rawClawVersion = api.runtime?.version;
 				// OpenClaw 打包后 resolveVersion() 路径失配导致返回 'unknown'，此时不传该字段
 				const clawVersion = (rawClawVersion && rawClawVersion !== 'unknown') ? rawClawVersion : undefined;
-				respond(true, { version, clawVersion, capabilities: ['topics', 'chatHistory'] });
+				const settings = await readSettings();
+				const name = settings.name ?? null;
+				const hostName = getHostName();
+				respond(true, { version, clawVersion, capabilities: ['topics', 'chatHistory'], name, hostName });
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		}
+
+		api.registerGatewayMethod('coclaw.info', handleInfoGet);
+		api.registerGatewayMethod('coclaw.info.get', handleInfoGet);
+
+		api.registerGatewayMethod('coclaw.info.patch', async ({ params, respond }) => {
+			try {
+				const rawName = params?.name;
+				if (rawName === undefined) {
+					respondInvalid(respond, 'name field is required');
+					return;
+				}
+				if (rawName !== null && typeof rawName !== 'string') {
+					respondInvalid(respond, 'name must be a string or null');
+					return;
+				}
+				const trimmed = typeof rawName === 'string' ? rawName.trim() : '';
+				if (trimmed.length > MAX_NAME_LENGTH) {
+					respondInvalid(respond, `name exceeds maximum length of ${MAX_NAME_LENGTH} characters`);
+					return;
+				}
+				const nameToSave = trimmed || null;
+				await writeName(nameToSave);
+				const hostName = getHostName();
+				respond(true, { name: nameToSave, hostName });
+				// 异步广播变更事件到 server 和其他 UI 实例
+				broadcastPluginEvent('coclaw.info.updated', { name: nameToSave, hostName });
 			}
 			catch (err) {
 				respondError(respond, err);

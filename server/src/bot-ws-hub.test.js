@@ -699,3 +699,37 @@ test('onBotMessage: bot.unbound 中 ws.close 抛异常时不崩溃', () => {
 	assert.equal(uiWs.sent[0].type, 'bot.unbound');
 	cleanupSockets('bot1');
 });
+
+// --- onBotMessage: coclaw.info.updated 事件持久化 bot.name，不转发给 UI ---
+
+test('onBotMessage: coclaw.info.updated 不转发给 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_ui' });
+	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot1', botWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		payload: { name: 'My Claw', hostName: 'test-host' },
+	}));
+
+	// UI 不应收到该事件（UI 通过 DC 直接从 plugin 获取）
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot1');
+});
+
+test('onBotMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_ui' });
+	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot1', botWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		payload: { name: null, hostName: 'fallback-host' },
+	}));
+
+	// 不转发给 UI
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot1');
+});

@@ -3,6 +3,7 @@ import os from 'node:os';
 import nodePath from 'node:path';
 
 import { clearConfig, getBindingsPath, readConfig } from './config.js';
+import { getHostName, readSettings } from './settings.js';
 import {
 	loadOrCreateDeviceIdentity,
 	signDevicePayload,
@@ -424,6 +425,20 @@ export class RealtimeBridge {
 		}
 	}
 
+	/** 推送实例名到 server 和已连接的 UI */
+	async __pushInstanceName() {
+		try {
+			const settings = await readSettings();
+			const name = settings.name ?? null;
+			const hostName = getHostName();
+			broadcastPluginEvent('coclaw.info.updated', { name, hostName });
+		}
+		catch (err) {
+			/* c8 ignore next 2 -- 防御性兜底 */
+			this.logger.warn?.(`[coclaw] pushInstanceName failed: ${String(err?.message ?? err)}`);
+		}
+	}
+
 	/* c8 ignore start -- 仅通过 WebRTC 路径调用，依赖 gateway 连接，集成测试覆盖 */
 	/**
 	 * 通过 gateway RPC 获取指定 agent 的 workspace 绝对路径
@@ -581,6 +596,7 @@ export class RealtimeBridge {
 					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
 					this.gatewayConnectReqId = null;
 					this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
+					this.__pushInstanceName();
 				}
 				else {
 					this.gatewayReady = false;
@@ -1053,4 +1069,16 @@ export async function gatewayAgentRpc(method, params, options) {
 		return { ok: false, error: 'bridge_not_started' };
 	}
 	return singleton.__gatewayAgentRpc(method, params, options);
+}
+
+/**
+ * 广播插件自发事件（推送到 server + 广播到所有 UI DC）
+ * @param {string} event - 事件名（如 'coclaw.info.updated'）
+ * @param {object} [payload]
+ */
+export function broadcastPluginEvent(event, payload) {
+	if (!singleton) return;
+	const frame = { type: 'event', event, payload };
+	singleton.__forwardToServer(frame);
+	singleton.webrtcPeer?.broadcast(frame);
 }

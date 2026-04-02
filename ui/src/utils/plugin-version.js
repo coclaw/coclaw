@@ -26,24 +26,26 @@ function compareSemver(a, b) {
 /**
  * 检查插件版本并获取插件信息
  * @param {object} conn - BotConnection 实例
- * @returns {Promise<{ ok: boolean, version: string|null, clawVersion: string|null }>}
+ * @returns {Promise<{ ok: boolean, version: string|null, clawVersion: string|null, name: string|null, hostName: string|null }>}
  */
 export async function checkPluginVersion(conn) {
 	try {
 		const result = await conn.request('coclaw.info', {}, { timeout: 10_000 });
 		const version = result?.version;
 		const clawVersion = result?.clawVersion ?? null;
+		const name = result?.name ?? null;
+		const hostName = result?.hostName ?? null;
 		if (!version || typeof version !== 'string') {
 			console.debug('[plugin-version] coclaw.info returned no version');
-			return { ok: false, version: null, clawVersion };
+			return { ok: false, version: null, clawVersion, name, hostName };
 		}
 		const ok = compareSemver(version, MIN_PLUGIN_VERSION) >= 0;
 		console.debug('[plugin-version] version=%s clawVersion=%s min=%s ok=%s', version, clawVersion, MIN_PLUGIN_VERSION, ok);
-		return { ok, version, clawVersion };
+		return { ok, version, clawVersion, name, hostName };
 	}
 	catch (err) {
 		// RPC 方法不存在（旧版插件）或其他错误
 		console.debug('[plugin-version] coclaw.info failed: %s', err?.message);
-		return { ok: false, version: null, clawVersion: null };
+		return { ok: false, version: null, clawVersion: null, name: null, hostName: null };
 	}
 }

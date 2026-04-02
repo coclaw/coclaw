@@ -267,6 +267,15 @@ export const useBotsStore = defineStore('bots', {
 				useAgentRunsStore().__dispatch(payload);
 			});
 
+			// event:coclaw.info.updated — claw 实例名变更（来自 plugin 广播）
+			conn.on('event:coclaw.info.updated', (payload) => {
+				const bot = this.byId[id];
+				if (!bot) return;
+				if (!bot.pluginInfo) bot.pluginInfo = {};
+				if (payload?.name !== undefined) bot.pluginInfo.name = payload.name;
+				if (payload?.hostName !== undefined) bot.pluginInfo.hostName = payload.hostName;
+			});
+
 			// 确保全局信令桥接已注册
 			this.__bridgeSignaling();
 
@@ -319,6 +328,17 @@ export const useBotsStore = defineStore('bots', {
 			bot.disconnectedAt = 0;
 			if (gap < BRIEF_DISCONNECT_MS) return;
 			console.debug('[bots] reconnect gap=%dms → refresh stores botId=%s', gap, id);
+			// 刷新 pluginInfo（含 claw name）
+			const conn = useBotConnections().get(id);
+			if (conn) {
+				checkPluginVersion(conn).then((info) => {
+					const b = this.byId[id];
+					if (b) {
+						b.pluginVersionOk = info.ok;
+						b.pluginInfo = { version: info.version, clawVersion: info.clawVersion, name: info.name, hostName: info.hostName };
+					}
+				}).catch(() => {});
+			}
 			useAgentsStore().loadAgents(id).catch(() => {});
 			useSessionsStore().loadAllSessions().catch(() => {});
 			useTopicsStore().loadAllTopics().catch(() => {});
@@ -418,7 +438,7 @@ export const useBotsStore = defineStore('bots', {
 			const info = await checkPluginVersion(conn);
 			if (bot) {
 				bot.pluginVersionOk = info.ok;
-				bot.pluginInfo = { version: info.version, clawVersion: info.clawVersion };
+				bot.pluginInfo = { version: info.version, clawVersion: info.clawVersion, name: info.name, hostName: info.hostName };
 			}
 			remoteLog(`bot.pluginVersion bot=${id} ok=${info.ok} v=${info.version || '?'}`);
 			if (!info.ok) {

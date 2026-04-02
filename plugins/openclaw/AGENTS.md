@@ -11,6 +11,7 @@
   - `transport-adapter.js` — 消息收发适配层
   - `message-model.js` — 消息格式转换
   - `config.js` — 绑定信息读写（唯一入口）
+  - `settings.js` — 插件设置读写（claw name 等，存储于 `~/.openclaw/coclaw/settings.json`）
   - `api.js` — CoClaw server HTTP API 封装
   - `cli-registrar.js` — OpenClaw `registerCli` 注册（`openclaw coclaw bind/unbind/enroll`）
   - `plugin-version.js` — 插件版本号读取（缓存）
@@ -56,6 +57,7 @@
   ```
 - 禁止将绑定信息写入 `openclaw.json` 的 `channels.coclaw` 或 `plugins.entries.openclaw-coclaw.config`。
 - `config.js` 是读写绑定信息的唯一入口，禁止在其他模块中直接操作 bindings 文件。
+- `settings.js` 是读写插件设置（claw name 等）的唯一入口，存储于同目录的 `settings.json`。设置独立于绑定信息，解绑后重新绑定不会丢失。
 - 环境变量 `COCLAW_SERVER_URL` 可覆盖 serverUrl（运行时覆盖，不影响存储）。
 
 ## Logger 规范
@@ -128,12 +130,25 @@
 
 - bind/unbind/enroll 的 CLI 命令均为瘦 CLI：仅做参数解析 → `callGatewayMethod` RPC → 结果展示。核心逻辑在 gateway 内的 RPC handler 中执行。
 - 所有 bind/unbind 核心逻辑必须集中在共享层（`common/bot-binding.js`），RPC handler 与斜杠命令 handler 共享同一内部函数（`doBind`/`doUnbind`）。
-- gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.enroll` / `coclaw.upgradeHealth` / `coclaw.info` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById` / `coclaw.files.list` / `coclaw.files.delete` / `coclaw.files.mkdir` / `coclaw.files.create`）仅由本插件提供，禁止重复注册同名方法。
+- gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.enroll` / `coclaw.upgradeHealth` / `coclaw.info` / `coclaw.info.get` / `coclaw.info.patch` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById` / `coclaw.files.list` / `coclaw.files.delete` / `coclaw.files.mkdir` / `coclaw.files.create`）仅由本插件提供，禁止重复注册同名方法。
 - gateway method 错误响应格式：`respond(false, undefined, { code, message })`。使用 `respondError(respond, err)` 处理异常，`respondInvalid(respond, message)` 处理参数校验失败。禁止使用旧格式 `respond(false, { error })`。
 - realtime bridge（`coclaw-realtime-bridge`）和 auto-upgrade scheduler（`coclaw-auto-upgrade`）必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接或定时器导致进程无法退出。
 - CLI bind/unbind 通过 gateway RPC（`coclaw.bind`/`coclaw.unbind`）执行，gateway 内部管理 bridge 生命周期，**禁止在 CLI 进程中直接操作 `bindings.json`**。
 - unbind 是强制操作（非 best-effort）：server 不可达时 unbind 失败，不清理本地 config，避免产生孤儿 bot。server 返回 401/404/410 视为 bot 已不存在，允许继续。
 - 插件运行在 gateway 进程中，严禁引入全局异常兜底（如 `process.on('uncaughtException'/'unhandledRejection')`）。
+
+## Plugin 自发事件
+
+插件可通过 `broadcastPluginEvent(event, payload)`（`realtime-bridge.js` 导出）向 server 和所有已连接的 UI DC 广播事件。事件帧格式与 gateway 事件一致：`{ type: 'event', event, payload }`。
+
+当前注册的事件：
+
+| 事件名 | 触发时机 | payload |
+|--------|---------|---------|
+| `coclaw.info.updated` | gateway connect 成功后 / `coclaw.info.patch` 修改 name 后 | `{ name: string\|null, hostName: string }` |
+
+- Server 收到 `coclaw.info.updated` 后持久化 `bot.name`，不转发给 UI WS
+- UI 通过 DC 直接收到事件，更新 `pluginInfo.name` / `pluginInfo.hostName`
 
 ## 测试门禁（强制）
 

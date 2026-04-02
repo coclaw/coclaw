@@ -339,6 +339,20 @@ function onBotMessage(botId, ws, raw) {
 		return;
 	}
 
+	// Plugin 事件：coclaw.info.updated → 持久化 bot.name，不转发给 UI
+	if (payload.type === 'event' && payload.event === 'coclaw.info.updated') {
+		const name = payload.payload?.name || payload.payload?.hostName || null;
+		try {
+			updateBotName(BigInt(botId), name).catch((err) => {
+				wsLogWarn(`updateBotName from plugin event failed botId=${botId}: ${err.message}`);
+			});
+		}
+		catch (err) {
+			wsLogWarn(`updateBotName from plugin event failed botId=${botId}: ${err.message}`);
+		}
+		return;
+	}
+
 	// WebRTC 信令：Plugin → 定向投递到指定 UI socket
 	if (payload.type === 'rtc:answer' || payload.type === 'rtc:ice' || payload.type === 'rtc:closed') {
 		// 优先通过新信令路由表投递
@@ -557,6 +571,7 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 					wsLogInfo(`bot online botId=${botId}`);
 				}
 				botStatusEmitter.emit('status', { botId, online: true });
+				// TODO: plugin 已通过 coclaw.info.updated 事件主动推送 name，此处拉取待移除
 				void refreshBotName(botId).catch(() => {});
 				ws.on('message', (raw) => onBotMessage(botId, ws, raw));
 				// WS 协议级心跳：检测半开连接（仅 bot 侧）

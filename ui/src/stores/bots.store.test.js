@@ -34,7 +34,7 @@ const mockRemoteLog = vi.fn();
 vi.mock('../services/remote-log.js', () => ({ remoteLog: (...args) => mockRemoteLog(...args) }));
 
 vi.mock('../utils/plugin-version.js', () => ({
-	checkPluginVersion: vi.fn().mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' }),
+	checkPluginVersion: vi.fn().mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' }),
 	MIN_PLUGIN_VERSION: '0.4.0',
 }));
 
@@ -172,6 +172,7 @@ describe('addOrUpdateBot', () => {
 		// __bridgeConn 对 online + !initialized 的 bot 直接触发 __fullInit
 		store.addOrUpdateBot({ id: '10', name: 'Fresh', online: true });
 		expect(fakeConn.on).toHaveBeenCalledWith('event:agent', expect.any(Function));
+		expect(fakeConn.on).toHaveBeenCalledWith('event:coclaw.info.updated', expect.any(Function));
 
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('10');
@@ -360,7 +361,7 @@ describe('updateBotOnline', () => {
 
 	test('bot 上线且 initialized=false 时重试初始化', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
-		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -762,6 +763,63 @@ describe('__bridgeConn 事件注册', () => {
 
 		const agentCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'event:agent');
 		expect(agentCalls).toHaveLength(1);
+	});
+
+	test('注册 event:coclaw.info.updated 监听', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+
+		const infoCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'event:coclaw.info.updated');
+		expect(infoCalls).toHaveLength(1);
+	});
+
+	test('event:coclaw.info.updated 更新 pluginInfo', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+		store.byId['1'].pluginInfo = { version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'old-host' };
+
+		// 获取注册的 handler 并调用
+		const infoHandler = fakeConn.on.mock.calls.find(([ev]) => ev === 'event:coclaw.info.updated')[1];
+		infoHandler({ name: 'My Claw', hostName: 'new-host' });
+
+		expect(store.byId['1'].pluginInfo.name).toBe('My Claw');
+		expect(store.byId['1'].pluginInfo.hostName).toBe('new-host');
+		// 其他字段保持不变
+		expect(store.byId['1'].pluginInfo.version).toBe('0.6.0');
+	});
+
+	test('event:coclaw.info.updated 对不存在的 bot 不报错', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+		delete store.byId['1'];
+
+		const infoHandler = fakeConn.on.mock.calls.find(([ev]) => ev === 'event:coclaw.info.updated')[1];
+		// 不应抛异常
+		infoHandler({ name: 'Test' });
+	});
+
+	test('event:coclaw.info.updated 在 pluginInfo 为 null 时初始化', () => {
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+		store.byId['1'].pluginInfo = null;
+
+		const infoHandler = fakeConn.on.mock.calls.find(([ev]) => ev === 'event:coclaw.info.updated')[1];
+		infoHandler({ name: 'Test', hostName: 'h1' });
+
+		expect(store.byId['1'].pluginInfo.name).toBe('Test');
+		expect(store.byId['1'].pluginInfo.hostName).toBe('h1');
 	});
 
 	test('同一 conn 实例不重复注册监听器', () => {
@@ -1202,7 +1260,7 @@ describe('__fullInit 失败重试', () => {
 		});
 
 		// 修复 checkPluginVersion，通过 updateBotOnline 触发重试
-		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
 		store.byId['30'].online = false;
 		store.updateBotOnline('30', true);
 
@@ -1214,7 +1272,7 @@ describe('__fullInit 失败重试', () => {
 
 	test('bot 离线时 fullInit 失败，bot 上线后通过 updateBotOnline 重试', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
-		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
 
 		const store = useBotsStore();
 		const agentsStore = useAgentsStore();
@@ -1256,7 +1314,7 @@ describe('__fullInit 失败重试', () => {
 		let rejectFirst;
 		checkPluginVersion.mockReturnValueOnce(new Promise((_, rej) => { rejectFirst = rej; }));
 		// 第二次 fullInit 正常成功
-		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14' });
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
 
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(),

@@ -365,6 +365,51 @@ describe('dashboard store', () => {
 		expect(agent.capabilities.some(c => c.id === 'file_ops')).toBe(true);
 	});
 
+	test('instance.name 优先使用 pluginInfo.name，其次 hostName，再 bot.name', async () => {
+		const botsStore = useBotsStore();
+
+		// 有 pluginInfo.name 时使用 pluginInfo.name
+		botsStore.setBots([{ id: 'bot-1', name: 'ServerName', online: true }]);
+		botsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0', name: 'My Claw', hostName: 'host1' };
+
+		const agentConn = mockAgentConn([{ id: 'main', name: 'Main' }]);
+		setConn('bot-1', agentConn);
+		const agentsStore = useAgentsStore();
+		await agentsStore.loadAgents('bot-1');
+
+		const dashConn = mockConn({
+			'agents.list': { defaultId: 'main', agents: [{ id: 'main' }] },
+			'status': { model: 'claude-3', provider: 'anthropic' },
+			'models.list': { models: [] },
+			'usage.cost': { total: 0, currency: 'USD' },
+			'sessions.list': { sessions: [] },
+			'tts.status': { enabled: false },
+			'channels.status': {},
+			'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', dashConn);
+
+		const store = useDashboardStore();
+		await store.loadDashboard('bot-1');
+		expect(store.byBot['bot-1'].instance.name).toBe('My Claw');
+
+		// 无 pluginInfo.name 时回退到 hostName
+		botsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0', name: null, hostName: 'host1' };
+		await store.loadDashboard('bot-1');
+		expect(store.byBot['bot-1'].instance.name).toBe('host1');
+
+		// 无 pluginInfo 时回退到 bot.name
+		botsStore.byId['bot-1'].pluginInfo = null;
+		await store.loadDashboard('bot-1');
+		expect(store.byBot['bot-1'].instance.name).toBe('ServerName');
+
+		// 无 bot.name 时回退到 OpenClaw
+		botsStore.byId['bot-1'].name = null;
+		botsStore.byId['bot-1'].pluginInfo = null;
+		await store.loadDashboard('bot-1');
+		expect(store.byBot['bot-1'].instance.name).toBe('OpenClaw');
+	});
+
 	test('loadDashboard 部分 RPC 失败时优雅降级', async () => {
 		const botsStore = useBotsStore();
 		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);

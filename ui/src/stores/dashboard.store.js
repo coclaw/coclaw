@@ -205,7 +205,7 @@ export const useDashboardStore = defineStore('dashboard', {
 					const pluginInfo = bot?.pluginInfo ?? {};
 
 					entry.instance = {
-						name: bot?.name || 'OpenClaw',
+						name: pluginInfo.name || pluginInfo.hostName || bot?.name || 'OpenClaw',
 						online: bot?.online ?? false,
 						pluginVersion: pluginInfo.version ?? null,
 						clawVersion: pluginInfo.clawVersion ?? null,
