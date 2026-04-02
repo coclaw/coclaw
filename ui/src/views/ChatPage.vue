@@ -538,6 +538,7 @@ export default {
 				WS_CLOSED: 'chat.errWsClosed',
 				WS_SEND_FAILED: 'chat.errWsSendFailed',
 				RTC_SEND_FAILED: 'chat.errRtcSendFailed',
+				RTC_LOST: 'chat.errWsClosed',
 			};
 			const key = codeMap[err?.code];
 			if (key) return this.$t(key);

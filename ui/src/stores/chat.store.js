@@ -18,7 +18,7 @@ import { useBotsStore, getReadyConn } from './bots.store.js';
 const MSG_PAGE_SIZE = 50;
 
 /** DC/WS 断连相关的错误码 */
-const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED']);
+const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED', 'RTC_LOST']);
 function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
 
 
@@ -204,6 +204,8 @@ export function createChatStore(storeKey, opts = {}) {
 					this.errorText = '';
 				}
 				const doLoad = async () => {
+					// 标记加载中，防止 settling fallback 过早清理 streaming 消息（#193）
+					useAgentRunsStore().markLoadInFlight(this.runKey);
 					try {
 						// 通过 OC 原生 sessions.get 加载当前 session 最近 N 条消息
 						const limit = limitOverride || MSG_PAGE_SIZE;
@@ -246,6 +248,7 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 					finally {
 						this.loading = false;
+						useAgentRunsStore().clearLoadInFlight(this.runKey);
 					}
 				};
 				const p = doLoad();
@@ -326,6 +329,8 @@ export function createChatStore(storeKey, opts = {}) {
 					this.loading = true;
 					this.errorText = '';
 				}
+				// 标记加载中，防止 settling fallback 过早清理 streaming 消息（#193）
+				useAgentRunsStore().markLoadInFlight(this.runKey);
 				try {
 					const result = await conn.request('coclaw.sessions.getById', {
 						sessionId: this.sessionId,
@@ -353,6 +358,7 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				finally {
 					this.loading = false;
+					useAgentRunsStore().clearLoadInFlight(this.runKey);
 				}
 			},
 
@@ -549,6 +555,8 @@ export function createChatStore(storeKey, opts = {}) {
 					return { accepted: true };
 				}
 				catch (err) {
+					// Promise.race 已 settle，cancelPromise 不再需要；立即清理防止孤儿 rejection
+					this.__cancelReject = null;
 					// lifecycle:end 已完成清理，WS 关闭尾巴错误忽略
 					if (this.__agentSettled && isDisconnectError(err)) {
 						return { accepted: this.__accepted };

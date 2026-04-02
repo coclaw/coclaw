@@ -1282,6 +1282,222 @@ describe('useChatStore', () => {
 			expect(store.sending).toBe(false);
 		});
 
+		// --- #217: RTC_LOST（后台返回 DC 重建）应走断连重连路径 ---
+
+		test('RTC_LOST 且未 accepted 时等待重连后自动重试一次', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].dcReady = true;
+
+			let callCount = 0;
+			const conn = mockConn();
+
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					callCount++;
+					if (callCount === 1) {
+						const err = new Error('RTC connection lost');
+						err.code = 'RTC_LOST';
+						return Promise.reject(err);
+					}
+					options?.onAccepted?.({ runId: 'run-retry' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+			expect(callCount).toBe(2);
+		});
+
+		test('RTC_LOST 且已 accepted 时不抛出，等重连后 reconcile', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].dcReady = true;
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-acc' });
+					const err = new Error('RTC connection lost');
+					err.code = 'RTC_LOST';
+					return Promise.reject(err);
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+			expect(store.sending).toBe(false);
+		});
+
+		test('catch 块中 __cancelReject 被清理，避免孤儿 rejection（#217 双重通知）', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].dcReady = true;
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') {
+					const err = new Error('some error');
+					err.code = 'UNKNOWN_ERR';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await expect(store.sendMessage('hello')).rejects.toThrow();
+			// catch 块已清理 __cancelReject，后续 cleanup 不应触发孤儿 rejection
+			expect(store.__cancelReject).toBeNull();
+		});
+
+		test('RTC_LOST + __agentSettled 为 true 时被抑制，返回 { accepted }', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-rtc-settled' });
+					const store2 = useChatStore();
+					store2.__agentSettled = true;
+					const err = new Error('RTC connection lost');
+					err.code = 'RTC_LOST';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+		});
+
+		test('RTC_LOST + accepted + 重连超时后优雅返回 { accepted: true }', async () => {
+			vi.useFakeTimers();
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].dcReady = true;
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-rtc-timeout' });
+					// 模拟 DC 丢失：accepted 后 dcReady 变为 false
+					botsStore.byId['1'].dcReady = false;
+					const err = new Error('RTC connection lost');
+					err.code = 'RTC_LOST';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// waitForConnected 会等 15s 后超时（dcReady 不会恢复）
+			const [, result] = await Promise.allSettled([
+				vi.advanceTimersByTimeAsync(15_000),
+				store.sendMessage('hello'),
+			]);
+
+			// 即使超时也应优雅返回，不抛错
+			expect(result.status).toBe('fulfilled');
+			expect(result.value).toEqual({ accepted: true });
+		});
+
+		test('RTC_LOST + 未 accepted + 重试再次 RTC_LOST 不无限循环', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].dcReady = true;
+
+			let callCount = 0;
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') {
+					callCount++;
+					const err = new Error('RTC connection lost');
+					err.code = 'RTC_LOST';
+					return Promise.reject(err);
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await expect(store.sendMessage('hello')).rejects.toMatchObject({ code: 'RTC_LOST' });
+			expect(callCount).toBe(2); // 原始 + 重试各一次，不会第三次
+		});
+
+		test('cleanup 在 reconnect-wait 期间不会触发二次 rejection', async () => {
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+			botsStore.byId['1'].dcReady = true;
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-cleanup' });
+					const err = new Error('RTC connection lost');
+					err.code = 'RTC_LOST';
+					return Promise.reject(err);
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+
+			// sendMessage 返回后 cleanup 不应触发任何 rejection
+			expect(store.__cancelReject).toBeNull();
+			store.cleanup(); // 应安全执行，无 unhandled rejection
+		});
+
 		test('!__accepted 且 status !== "ok" 时返回 { accepted: false } 并移除本地条目', async () => {
 			const botsStore = useBotsStore();
 			botsStore.setBots([{ id: '1', online: true }]);
