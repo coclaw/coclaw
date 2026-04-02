@@ -2,6 +2,7 @@
 
 > 适用范围：CoClaw UI
 > 创建时间：2026-03-26
+> 最后更新：2026-04-02
 
 本文档记录 CoClaw UI 中所有状态恢复机制的设计与实现。大部分恢复逻辑是 Web 应用本身就需要的（网络异常、页面切换等），Capacitor 移动端只是放大了问题频率并引入少量特有处理。
 
@@ -18,7 +19,8 @@
   ▼
 ┌─────────────────────────────────────────────────┐
 │ 连接层                                            │
-│  BotConnection (WS + RTC)                        │
+│  SignalingConnection (信令 WS, per-tab 单例)      │
+│  BotConnection (RPC over DataChannel, per-bot)   │
 │  SSE (bot 快照 + 状态推送 + 心跳超时检测)           │
 └──────────┬──────────────────────────────────────┘
            │ 连接状态变化 → 触发数据恢复
@@ -44,25 +46,25 @@
 
 ## 2. 连接层恢复
 
-### 2.1 WS 自动重连（指数退避）
+### 2.1 信令 WS 自动重连（指数退避）
 
-- **文件**：`services/bot-connection.js`
+- **文件**：`services/signaling-connection.js`
 - **触发**：WS `close` 事件且非主动断连
 - **行为**：`__scheduleReconnect()` — 延迟从 1s 开始，每次翻倍，上限 30s，±30% 随机抖动
 - **场景**：Web + Capacitor
 
-### 2.2 WS 心跳（ping/pong）
+### 2.2 信令 WS 心跳（ping/pong）
 
-- **文件**：`services/bot-connection.js`
+- **文件**：`services/signaling-connection.js`
 - **参数**：每 25s 发送 `{ type: "ping" }`；任何入站消息重置 45s 超时计时器并更新 `__lastAliveAt`
 - **判定**：连续 2 次 miss（~90s）→ `ws.close(4000, 'heartbeat_timeout')` → 触发自动重连
-- **设计决策**：心跳判定不与 RPC 状态耦合。慢 RPC（如 agent run）的超时由 `DEFAULT_RPC_TIMEOUT_MS`（30min）独立控制，ping/pong 仍正常往返
+- **说明**：信令 WS 仅承载 SDP/ICE 信令和心跳，不承载业务 RPC。业务 RPC 走 DataChannel，其超时由 `BotConnection.request()` 独立控制
 - **场景**：Web + Capacitor
 
 ### 2.3 前台恢复重连
 
-- **文件**：`services/bot-connection.js`（`__handleForegroundResume`）
-- **触发**：`visibilitychange`（visible）或 `app:foreground`，500ms 节流去重
+- **文件**：`services/signaling-connection.js`（`__handleForegroundResume`）
+- **触发**：`visibilitychange`（visible）、`app:foreground` 或 `network:online`，500ms 节流去重
 - **分级策略**：
 
 | 条件 | 行为 |
@@ -72,7 +74,7 @@
 | 已连接 + 静默超过 2.5s（`PROBE_TIMEOUT_MS`） | 发 probe ping，2.5s 无响应则 `forceReconnect()` |
 | 已连接 + 静默 ≤ 2.5s | 无需操作 |
 
-- 同时检测 RTC PeerConnection 状态，`disconnected` 时主动 `tryIceRestart()`
+- 恢复后发出 `foreground-resume` 事件，由 `bots.store` 对每个 bot 执行 `__checkAndRecover()`（含 RTC 状态检测和重建）
 - **场景**：Web + Capacitor
 
 ### 2.4 RTC ICE restart 与 full rebuild
@@ -88,9 +90,9 @@
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）
 
 - **文件**：`services/webrtc-connection.js`、`services/dc-chunking.js`
-- **机制**：DataChannel 通过分片（chunking）传输大 payload，无需 fallback 到 WS
+- **机制**：DataChannel 通过分片（chunking）传输大 payload
 - **流控**：发送端 high water mark 1MB / low water mark 256KB，超限时暂停发送，`bufferedamountlow` 恢复
-- **DC 不可用**：`request()` 直接 reject `DC_NOT_READY`，无 WS fallback
+- **DC 不可用**：`request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 30s），不再直接 reject
 - **场景**：Web + Capacitor
 
 ### 2.6 SSE 恢复
@@ -116,23 +118,23 @@
 
 ### 3.1 重连后按断连时长刷新
 
-- **文件**：`stores/bots.store.js`（`__onBotConnected`）
-- **触发**：bot WS 重连成功且已初始化过（非首次），且断连时长 ≥ 5s（`BRIEF_DISCONNECT_MS`）
-- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`（bot 列表由 SSE 快照维护）
+- **文件**：`stores/bots.store.js`（`__refreshIfStale`）
+- **触发**：RTC DataChannel 重建成功（`__ensureRtc` 或 `onRtcStateChange` 回调），且已初始化过（非首次），且断连时长 ≥ 5s（`BRIEF_DISCONNECT_MS`）
+- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`、`loadDashboard()`（bot 列表由 SSE 快照维护）
 - **短暂抖动（< 5s）**：跳过刷新，避免无意义开销
 - **场景**：Web + Capacitor
 
 ### 3.2 首次连接完整初始化
 
 - **文件**：`stores/bots.store.js`（`__fullInit`）
-- **触发**：bot WS 首次连接成功（`bot.initialized === false`）
-- **行为**：插件版本检查 → RTC 传输选择 → `loadAgents()` + `loadAllSessions()` + `loadAllTopics()`
+- **触发**：bot 首次 DC 就绪（`bot.initialized === false`）
+- **行为**：插件版本检查 → `loadAgents()` + `loadAllSessions()` + `loadAllTopics()`
 - **场景**：Web + Capacitor
 
 ### 3.3 connReady watcher 驱动消息加载
 
 - **文件**：`views/ChatPage.vue`
-- **计算属性**：`connReady` = bot 在线 + `connState === 'connected'` + agent 验证通过（或 topic 模式）
+- **计算属性**：`connReady` = `bot.online` + `bot.dcReady` + `agentVerified`（topic 模式跳过 agent 验证）
 - **触发**：`connReady` 从 false 变为 true
 - **行为**：
   - 调用 `chatStore.__reconcileSlashCommand()`
@@ -196,15 +198,15 @@
 ### 4.1 sendMessage 断连自动重试
 
 - **文件**：`stores/chat.store.js`
-- **触发**：发送过程中 WS 断连（`err.code === 'WS_CLOSED'`），且消息尚未被服务端 accepted，且未重试过
-- **行为**：等待 `waitForConnected(15s)` 重连成功后，自动重试一次发送
+- **触发**：发送过程中 DC 断连（`isDisconnectError(err)`），且消息尚未被服务端 accepted，且未重试过
+- **行为**：递归调用 `sendMessage`（携带相同 idempotencyKey），内层 `request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 30s）
 - **场景**：Web + Capacitor
 
 ### 4.2 accepted 消息 reconcile
 
 - **文件**：`stores/chat.store.js`
-- **触发**：消息已被 accepted 但 agent 尚未完成时 WS 断连
-- **行为**：等待 15s 内重连成功，settle run 并 `__reconcileMessages()`（从服务端拉取真实状态替换乐观消息）
+- **触发**：消息已被 accepted 但 agent 尚未完成时 DC 断连
+- **行为**：settle run 并调用 `__reconcileMessages()`。`__reconcileMessages` 通过 `getReadyConn()` 检查连接——若 DC 未就绪则跳过，由后续 `__refreshIfStale` 在连接恢复时自动触发刷新
 - **场景**：Web + Capacitor
 
 ### 4.3 Agent Run reconcile（僵尸 run 检测）
@@ -274,12 +276,9 @@
 - **行为**：`authStore.refreshSession()` → HTTP 请求验证 session → 未认证则重定向 `/login`（保留 `?redirect=` 原路径）
 - **场景**：Web + Capacitor
 
-### 6.2 session.expired 事件
+### 6.2 ~~session.expired 事件~~（已移除）
 
-- **文件**：`services/bot-connection.js`
-- **触发**：Server 通过 WS 推送 `{ type: "session.expired" }`
-- **行为**：触发 `session-expired` 事件，主动 `disconnect()`，标记 `__intentionalClose = true` 不再自动重连
-- **场景**：Web + Capacitor
+> 历史上 Server 通过 per-bot WS 推送 `session.expired`，由 BotConnection 处理。当前架构中此路径不存在——session 过期统一由 HTTP 401 拦截（6.3）覆盖。
 
 ### 6.3 HTTP 401 统一拦截
 
@@ -289,12 +288,9 @@
 - **设计**：使用 DOM 事件避免 http.js 与 router/store 的循环依赖
 - **场景**：Web + Capacitor
 
-### 6.4 WS session-expired → auth:session-expired 桥接
+### 6.4 ~~WS session-expired 桥接~~（已移除）
 
-- **文件**：`stores/bots.store.js`（`__bridgeConn`）
-- **触发**：BotConnection 触发 `session-expired` 内部事件
-- **行为**：桥接为 `auth:session-expired` DOM 自定义事件
-- **场景**：Web + Capacitor
+> 历史上 `bots.store.__bridgeConn` 将 BotConnection 的 `session-expired` 事件桥接为 DOM 事件。当前 `__bridgeConn` 仅处理 RTC 回调注入和 agent 事件分发，session 过期由 HTTP 401（6.3）统一处理。
 
 ### 6.5 auth:session-expired 统一监听
 
@@ -319,7 +315,7 @@
 
 - **文件**：`utils/capacitor-app.js`（`setupAppStateChange`）
 - **行为**：将 Capacitor 原生 `appStateChange({ isActive })` 转义为标准 DOM 自定义事件 `app:foreground` / `app:background`
-- **消费者**：BotConnection、SSE、ChatPage、AdminDashboardPage、ManageBotsPage、DraftStore、Router、AuthedLayout
+- **消费者**：SignalingConnection、SSE、ChatPage、AdminDashboardPage、ManageBotsPage、DraftStore、Router、AuthedLayout
 - 消费者无需依赖 Capacitor SDK，只需监听标准 DOM 事件
 
 ### 7.x 网络变化桥接（network:online）
@@ -328,7 +324,7 @@
 - **机制**：
   - **Capacitor**：`@capacitor/network` 的 `networkStatusChange` → 当 `connected === true` 时派发 `network:online` DOM 事件
   - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件
-- **消费者**：BotConnection（即时 probe/重连）、SSE（restart）
+- **消费者**：SignalingConnection（即时 probe/重连）、SSE（restart）
 - **效果**：WiFi↔蜂窝切换或断网恢复后，无需等待心跳超时（~90s），可立即检测并恢复连接
 - **去重**：BotConnection 的 `__handleForegroundResume` 已有 500ms 节流，`network:online` + `app:foreground` 同时到达时自动去重
 
@@ -361,8 +357,8 @@
 
 | 层 | 机制 | 间隔 | 超时判定 | 文件 |
 |----|------|------|---------|------|
-| UI → Server WS | `{ type: "ping" }` | 25s | 2 × 45s miss → close | `bot-connection.js` |
-| UI → Server WS | 前台 probe | 即时 | 2.5s 无响应 → forceReconnect | `bot-connection.js` |
+| UI → Server 信令 WS | `{ type: "ping" }` | 25s | 2 × 45s miss → close | `signaling-connection.js` |
+| UI → Server 信令 WS | 前台 probe | 即时 | 2.5s 无响应 → forceReconnect | `signaling-connection.js` |
 | Server → UI SSE | `data: {"event":"heartbeat"}` | 30s | UI 65s 无数据 → restart | `bot.route.js` / `use-bot-status-sse.js` |
 | Plugin → Server WS | `{ type: "ping" }` | 25s | 4 × 45s miss → close | `realtime-bridge.js` |
 | Server → Bot WS | `ws.ping()` 协议级 | 45s | 4 miss → terminate | `bot-ws-hub.js` |
@@ -371,21 +367,14 @@
 
 ## 9. 设计决策记录
 
-### 心跳不与 RPC 状态耦合
+### 信令心跳独立于业务 RPC
 
-早期设计中，心跳超时判定与 pending RPC 关联（有 pending 时额外容忍 4 轮，总计 ~270s）。这是为了应对大图片通过 WS 单条消息传输时阻塞 ping/pong 的问题。
+信令 WS 仅承载 SDP/ICE 信令和心跳，不承载业务 RPC。心跳超时判定简单明确：`HB_MAX_MISS = 2`（~90s）。业务 RPC 走 DataChannel，由 `BotConnection.request()` 的两层超时（connectTimeout + requestTimeout）独立控制。
 
-当前架构下已不需要：
-- 业务 RPC 主要走 RTC DataChannel，WS 主要承载信令和 event
-- 大 payload 通过 DataChannel 分片传输，不再 fallback 到 WS
-- 不再通过 WS 传输 inline image 数据
+### visibilitychange + app:foreground + network:online 多信号去重
 
-简化后统一用 `HB_MAX_MISS = 2`（~90s）判定超时。90s 对于任何非图片 RPC 绰绰有余。
-
-### visibilitychange + app:foreground 双监听去重
-
-两个信号同时监听、取并集，通过时间戳节流去重：
-- BotConnection：`__lastForegroundAt` + 500ms
+三个信号取并集，通过时间戳节流去重：
+- SignalingConnection：`__lastForegroundAt` + 500ms
 - ChatPage：`__lastResumeAt` + 2s（connReady watcher 触发时也更新此时间戳）
 
 ### 冷启动 vs 暖恢复的区分
@@ -394,4 +383,4 @@
 
 ### RTC 前台恢复策略
 
-UDP NAT 超时（30s~2min）远短于 TCP（5~30min），中等后台后 RTC DTLS 通道大概率失效而 WS 仍存活。`request()` 检测 `isReady=false` 时自动走 WS，零用户感知。前台恢复时对 `disconnected` 状态主动 ICE restart（而非等 `failed`），节省 2-5s。
+UDP NAT 超时（30s~2min）远短于 TCP（5~30min），中等后台后 RTC DTLS 通道大概率失效而信令 WS 仍存活。`request()` 检测 DC 未就绪时通过 `waitReady()` 自动排队等待连接恢复（同时触发重连），对调用方透明。前台恢复时 `bots.store.__checkAndRecover()` 对 `disconnected` 状态主动触发 RTC 重建（而非等 `failed`），节省 2-5s。
