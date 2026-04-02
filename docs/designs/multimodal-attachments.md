@@ -2,7 +2,7 @@
 
 > 创建时间：2026-03-28
 > 最近修订：2026-03-28（附件信息从 extraSystemPrompt 改为嵌入 user message）
-> 状态：草案
+> 状态：已实施
 > 范围：Chat / Topic 对话中基于附件的多模态信息发送
 > 前置依赖：`file-management.md`（文件管理协议）、`webrtc-p2p-channel.md`（WebRTC P2P 基础设施）
 

@@ -1,7 +1,7 @@
 # Chat 历史 Session 追踪与消息加载重构
 
 > 创建时间：2026-03-17
-> 状态：草案
+> 状态：已实施（Phase 3 清理待做）
 > 前置依赖：`docs/designs/topic-management.md`（Topic 管理功能已实施）
 > 研究基础：`docs/openclaw-research/topic-feature-research.md`
 

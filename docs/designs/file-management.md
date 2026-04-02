@@ -2,7 +2,7 @@
 
 > 创建时间：2026-03-24
 > 最近修订：2026-03-28（协议升级：采用 HTTP 动词、新增 POST 附件上传、扩展 rpc 方法集、delete 支持 force 递归删除）
-> 状态：草案
+> 状态：已实施
 > 范围：UI 通过 WebRTC DataChannel 对 OpenClaw Agent Workspace 的文件操作
 > 前置依赖：`webrtc-p2p-channel.md`（WebRTC P2P DataChannel 基础设施）
 

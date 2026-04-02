@@ -578,9 +578,10 @@ async ensureConnected({ verify = false, timeoutMs = 15000 } = {})
 
 当 `verify=true` 时，ensureConnected 会主动验证 WS 连接活性：
 
-**阶段一（当前实施）**：直接 force-reconnect（简单粗暴，适用于用户量少的阶段）
+**阶段一（已废弃）**：~~直接 force-reconnect（简单粗暴，适用于用户量少的阶段）~~
 
 ```js
+// 已被阶段二取代
 if (this.__state === 'connected' && verify) {
     if (Date.now() - this.__lastVerifiedAt < VERIFY_COOLDOWN_MS) return; // 冷却
     this.forceReconnect();
@@ -588,7 +589,7 @@ if (this.__state === 'connected' && verify) {
 }
 ```
 
-**阶段二（后续调优）**：先探测，探测失败再 force-reconnect
+**阶段二（当前实施）**：先探测，探测失败再 force-reconnect
 
 ```js
 if (this.__state === 'connected' && verify) {

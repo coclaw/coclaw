@@ -35,15 +35,15 @@
 
 各功能的设计方案。每篇头部标注状态（`已实施` / `草案` / `待实施`），已实施的设计可能与当前代码有细微偏差——以代码为准。
 
-- [WebRTC P2P 数据通道](designs/webrtc-p2p-channel.md) — P2P DataChannel 设计（Phase 1-2 已实施）
+- [WebRTC P2P 数据通道](designs/webrtc-p2p-channel.md) — P2P DataChannel 设计（Phase 1-3 已实施，部分内容已过时）
 - [RTC 信令通道](designs/rtc-signaling-channel.md) — per-tab 信令 WS 重构（已实施）
-- [文件管理](designs/file-management.md) — WebRTC DC 文件操作协议（草案）
-- [多模态附件](designs/multimodal-attachments.md) — 附件上传与嵌入（草案）
-- [远程日志通道](designs/remote-log-channel.md) — 诊断日志推送（基础设施已实施）
+- [文件管理](designs/file-management.md) — WebRTC DC 文件操作协议（已实施）
+- [多模态附件](designs/multimodal-attachments.md) — 附件上传与嵌入（已实施）
+- [远程日志通道](designs/remote-log-channel.md) — 诊断日志推送（已实施，含基础埋点）
 - [斜杠命令](designs/slash-command-support.md) — 斜杠命令路由（已实施）
-- [Chat 历史追踪](designs/chat-history-tracking.md) — 历史 session 追踪（草案）
-- [Topic 管理](designs/topic-management.md) — 独立 Topic 功能（草案）
-- [认领绑定](designs/claim-bind.md) — OpenClaw 侧发起绑定（草案）
+- [Chat 历史追踪](designs/chat-history-tracking.md) — 历史 session 追踪（已实施，Phase 3 清理待做）
+- [Topic 管理](designs/topic-management.md) — 独立 Topic 功能（已实施）
+- [认领绑定](designs/claim-bind.md) — OpenClaw 侧发起绑定（已实施）
 - [TURN over TLS](designs/turn-over-tls.md) — 端口 443 穿透方案（待实施）
 - [v0.2 实时通信重构](designs/v0.2-realtime-refactor.md) — per-bot WS → 分层架构（已过时，见 communication-model.md）
 - [Electron 桌面壳](designs/electron-desktop-shell.md) — 桌面端方案（草案）
