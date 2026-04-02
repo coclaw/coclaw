@@ -1,5 +1,16 @@
 # @coclaw/openclaw-coclaw
 
+## 0.11.0
+
+### Minor Changes
+
+- feat: add claw instance naming support
+
+  - New `coclaw.info.get` / `coclaw.info.patch` gateway methods for reading/setting claw name
+  - Claw name stored in `~/.openclaw/coclaw/settings.json`, independent of bindings
+  - `coclaw.info.updated` event broadcast to server (persists bot.name) and UI instances (DC)
+  - `coclaw.info` response now includes `name` and `hostName` fields
+
 ## 0.10.0
 
 ### Minor Changes
