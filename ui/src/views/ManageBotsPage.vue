@@ -1,8 +1,8 @@
 <template>
 	<main class="flex-1 overflow-auto px-3 pt-4 pb-8 sm:px-4 lg:px-5">
-		<section class="mx-auto flex w-full max-w-5xl flex-col gap-5">
+		<section class="mx-auto flex w-full max-w-2xl flex-col gap-5">
 			<div class="flex items-center justify-between gap-3">
-				<h1 class="text-base font-medium">{{ $t('bots.pageTitle') }}</h1>
+				<h1 class="text-base font-medium ps-1">{{ $t('bots.pageTitle') }}</h1>
 				<div class="flex items-center gap-2">
 					<UButton data-testid="btn-refresh-bots" class="cc-icon-btn" color="primary" variant="ghost" size="md" icon="i-lucide-refresh-cw" :loading="loading" @click="loadData" />
 					<UButton data-testid="btn-add-bot" color="primary" variant="soft" @click="$router.push('/bots/add')">
@@ -11,62 +11,97 @@
 				</div>
 			</div>
 
+			<!-- 状态摘要栏：有 bot 时显示 -->
+			<p
+				v-if="bots.length"
+				data-testid="status-summary"
+				class="text-xs text-muted -mt-2 ps-1"
+			>
+				{{ $t('bots.summary.claws', { n: bots.length }) }}
+				<template v-if="statusSummary.running > 0 || statusSummary.failed > 0">
+					<span class="mx-1">·</span>
+					<span v-if="statusSummary.running > 0" class="text-blue-500">{{ $t('bots.summary.running', { n: statusSummary.running }) }}</span>
+					<template v-if="statusSummary.running > 0 && statusSummary.failed > 0"><span class="mx-1">·</span></template>
+					<span v-if="statusSummary.failed > 0" class="text-red-500">{{ $t('bots.summary.failed', { n: statusSummary.failed }) }}</span>
+				</template>
+			</p>
+
 			<p v-if="!loading && !bots.length" class="text-sm text-muted">{{ $t('bots.noBot') }}</p>
 
-			<div v-for="bot in bots" :key="bot.id" :data-testid="`bot-${bot.id}`" class="space-y-4">
-				<InstanceOverview
-					v-if="getDashboardData(bot.id)?.instance"
-					:instance="getDashboardData(bot.id).instance"
-					:agent-count="getDashboardData(bot.id).agents?.length ?? 0"
-				/>
-				<!-- 离线 / 数据未加载时的 fallback header -->
-				<div v-else class="rounded-xl bg-elevated p-4 sm:p-5">
-					<div class="flex items-center gap-2">
-						<span class="inline-block size-2.5 rounded-full bg-gray-500"></span>
-						<h2 class="text-lg font-semibold">{{ bot.name }}</h2>
-						<UBadge color="neutral" variant="subtle" size="xs">{{ $t('dashboard.offline') }}</UBadge>
+			<div v-for="bot in sortedBots" :key="bot.id" :data-testid="`bot-${bot.id}`">
+				<!-- Claw card：左侧信息 + 右侧解绑 -->
+				<div class="rounded-xl bg-elevated p-3 mb-3">
+					<div class="flex">
+						<!-- 左侧：claw 信息 -->
+						<div class="flex-1 min-w-0">
+							<template v-if="getDashboardData(bot.id)?.instance">
+								<div class="flex items-center gap-2">
+									<span
+										class="inline-block size-2.5 rounded-full"
+										:class="getDashboardData(bot.id).instance.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
+									></span>
+									<h2 class="text-lg font-semibold">{{ getDashboardData(bot.id).instance.name }}</h2>
+									<UBadge color="primary" variant="subtle" size="xs">{{ getDashboardData(bot.id).agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
+								</div>
+								<div class="mt-3 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+									<span v-if="getDashboardData(bot.id).instance.pluginVersion">{{ $t('bots.pluginVersion') }}{{ getDashboardData(bot.id).instance.pluginVersion }}</span>
+									<span v-if="getDashboardData(bot.id).instance.clawVersion">{{ $t('bots.clawVersion') }}{{ getDashboardData(bot.id).instance.clawVersion }}</span>
+									<span v-if="getDashboardData(bot.id).instance.channels?.length" class="flex items-center gap-1.5">
+										<span v-for="ch in getDashboardData(bot.id).instance.channels" :key="ch.id" class="inline-flex items-center gap-0.5" :title="ch.id">
+											<span class="text-[10px]">{{ ch.connected ? '✅' : '❌' }}</span>
+											<span>{{ ch.id }}</span>
+										</span>
+									</span>
+								</div>
+							</template>
+							<template v-else>
+								<div class="flex items-center gap-2">
+									<span class="inline-block size-2.5 rounded-full bg-gray-500"></span>
+									<h2 class="text-lg font-semibold">{{ bot.name }}</h2>
+									<UBadge color="neutral" variant="subtle" size="xs">{{ $t('dashboard.offline') }}</UBadge>
+								</div>
+							</template>
+						</div>
+						<!-- 右侧：解绑按钮 -->
+						<div class="pl-3 shrink-0">
+							<UButton
+								color="error"
+								variant="soft"
+								:loading="unbindingId === bot.id"
+								@click="confirmRemove(bot.id)"
+							>
+								{{ $t('bots.remove') }}
+							</UButton>
+						</div>
 					</div>
 				</div>
 
-				<!-- 连接信息 + 解绑 -->
-				<div class="flex items-center gap-x-3 gap-y-1 px-1">
-					<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-						<span>{{ connLabel(bot.id) }}</span>
-						<button
-							v-if="hasConnDetail(bot.id)"
-							class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
-							@click="toggleDetail(bot.id)"
-						>
-							{{ $t('bots.conn.detailTitle') }}
-							<UIcon :name="expandedDetails[bot.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
-						</button>
-					</div>
-					<div class="ml-auto">
-						<UButton
-							color="error"
-							variant="soft"
-							size="sm"
-							:loading="unbindingId === bot.id"
-							@click="onUnbindByUser(bot.id)"
-						>
-							{{ $t('bots.unbind') }}
-						</UButton>
-					</div>
+				<!-- 连接信息 -->
+				<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 mb-3 text-xs text-muted">
+					<span>{{ connLabel(bot.id) }}</span>
+					<button
+						v-if="hasConnDetail(bot.id)"
+						class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
+						@click="toggleDetail(bot.id)"
+					>
+						{{ $t('bots.conn.detailTitle') }}
+						<UIcon :name="expandedDetails[bot.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
+					</button>
 				</div>
-				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted">
+				<div v-if="bot.online && expandedDetails[bot.id] && getConnDetail(bot.id)" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted mb-3">
 					<p>{{ $t('bots.conn.localCandidate') }}：{{ getConnDetail(bot.id).localType }} · {{ getConnDetail(bot.id).localProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('bots.conn.remoteCandidate') }}：{{ getConnDetail(bot.id).remoteType }} · {{ getConnDetail(bot.id).remoteProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('bots.conn.relayProtocol') }}：{{ getConnDetail(bot.id).relayProtocol?.toUpperCase() ?? '—' }}</p>
 				</div>
 
-				<div class="columns-1 gap-4 sm:columns-2 lg:columns-3 [&>*]:mb-4 [&>*]:break-inside-avoid">
+				<div class="flex flex-col gap-3">
 					<AgentCard
 						v-for="agent in getDashboardData(bot.id)?.agents ?? []"
 						:key="agent.id"
 						:agent="agent"
-						:online="bot.online"
+						:bot="bot"
 						@chat="goToAgent(bot.id, $event)"
-					@files="goToFiles(bot.id, $event)"
+						@files="goToFiles(bot.id, $event)"
 					/>
 				</div>
 
@@ -75,28 +110,45 @@
 				</div>
 			</div>
 		</section>
+
+		<!-- 移除确认对话框 -->
+		<UModal v-model:open="removeConfirmOpen" :title="$t('bots.removeConfirmTitle')" :ui="promptUi">
+			<template #body>
+				<p class="text-sm text-muted">{{ $t('bots.removeConfirmDesc') }}</p>
+			</template>
+			<template #footer>
+				<div class="flex w-full justify-end gap-2">
+					<UButton variant="ghost" color="neutral" @click="removeConfirmOpen = false">{{ $t('common.cancel') }}</UButton>
+					<UButton color="error" :loading="!!unbindingId" @click="onConfirmRemove">{{ $t('common.confirm') }}</UButton>
+				</div>
+			</template>
+		</UModal>
 	</main>
 </template>
 
 <script>
 import { useNotify } from '../composables/use-notify.js';
 import { unbindBotByUser } from '../services/bots.api.js';
+import { promptModalUi } from '../constants/prompt-modal-ui.js';
 import { useBotsStore } from '../stores/bots.store.js';
+import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
-import InstanceOverview from '../components/dashboard/InstanceOverview.vue';
-import AgentCard from '../components/dashboard/AgentCard.vue';
+import AgentCard from '../components/AgentCard.vue';
 
 export default {
 	name: 'ManageBotsPage',
-	components: { InstanceOverview, AgentCard },
+	components: { AgentCard },
 	setup() {
-		return { notify: useNotify() };
+		return { notify: useNotify(), promptUi: promptModalUi };
 	},
 	data() {
 		return {
 			loading: false,
 			unbindingId: '',
+			removeConfirmOpen: false,
+			removeTargetId: '',
 			botsStore: null,
+			agentRunsStore: null,
 			dashboardStore: null,
 			expandedDetails: {},
 		};
@@ -105,9 +157,41 @@ export default {
 		bots() {
 			return this.botsStore?.items ?? [];
 		},
+		/** 按状态排序的 bot 列表：failed > running > connecting > idle > offline */
+		sortedBots() {
+			const statusPriority = (bot) => {
+				if (!bot.online) return 4; // offline
+				if (bot.rtcPhase === 'failed') return 0; // failed
+				if (this.__hasRunningAgent(bot.id)) return 1; // running
+				if (bot.rtcPhase === 'building' || bot.rtcPhase === 'recovering') return 2; // connecting
+				return 3; // idle
+			};
+			return [...this.bots].sort((a, b) => {
+				const pa = statusPriority(a);
+				const pb = statusPriority(b);
+				if (pa !== pb) return pa - pb;
+				// 同优先级按 lastAliveAt 降序
+				return (b.lastAliveAt ?? 0) - (a.lastAliveAt ?? 0);
+			});
+		},
+		/** 状态摘要：running = 有 agent 在工作的 bot 数；failed = 连接异常的 bot 数 */
+		statusSummary() {
+			let running = 0;
+			let failed = 0;
+			for (const bot of this.bots) {
+				if (!bot.online) continue;
+				if (bot.rtcPhase === 'failed') {
+					failed++;
+				} else if (this.__hasRunningAgent(bot.id)) {
+					running++;
+				}
+			}
+			return { running, failed };
+		},
 	},
 	async mounted() {
 		this.botsStore = useBotsStore();
+		this.agentRunsStore = useAgentRunsStore();
 		this.dashboardStore = useDashboardStore();
 
 		this.__lastResumeAt = 0;
@@ -134,6 +218,11 @@ export default {
 		}
 	},
 	methods: {
+		/** 检查 bot 是否有任一 agent 在工作中 */
+		__hasRunningAgent(botId) {
+			const agents = this.dashboardStore?.getDashboard(String(botId))?.agents ?? [];
+			return agents.some(a => this.agentRunsStore?.isRunning(`agent:${a.id}:main`));
+		},
 		getDashboardData(botId) {
 			return this.dashboardStore?.getDashboard(String(botId)) ?? null;
 		},
@@ -217,18 +306,23 @@ export default {
 				this.loading = false;
 			}
 		},
-		async onUnbindByUser(botId) {
-			if (this.unbindingId) return;
-			this.unbindingId = String(botId);
+		confirmRemove(botId) {
+			this.removeTargetId = String(botId);
+			this.removeConfirmOpen = true;
+		},
+		async onConfirmRemove() {
+			const botId = this.removeTargetId;
+			if (!botId || this.unbindingId) return;
+			this.unbindingId = botId;
 			try {
 				await unbindBotByUser(botId);
+				this.removeConfirmOpen = false;
 				this.dashboardStore.clearDashboard(botId);
 				await this.loadData();
-				this.notify.success(this.$t('bots.unbindSuccess'));
 			}
 			catch (err) {
-				console.warn('[ManageBotsPage] onUnbindByUser failed:', err);
-				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.unbindFailed'));
+				console.warn('[ManageBotsPage] onConfirmRemove failed:', err);
+				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('bots.removeFailed'));
 			}
 			finally {
 				this.unbindingId = '';

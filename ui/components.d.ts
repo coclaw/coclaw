@@ -11,7 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
-    AgentCard: typeof import('./src/components/dashboard/AgentCard.vue')['default']
+    AgentCard: typeof import('./src/components/AgentCard.vue')['default']
     ChatImg: typeof import('./src/components/ChatImg.vue')['default']
     ChatInput: typeof import('./src/components/ChatInput.vue')['default']
     ChatMsgItem: typeof import('./src/components/ChatMsgItem.vue')['default']

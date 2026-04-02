@@ -1,4 +1,4 @@
-import { createPinia, setActivePinia } from 'pinia';
+import { createPinia } from 'pinia';
 import { mount, flushPromises } from '@vue/test-utils';
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
@@ -32,7 +32,7 @@ vi.mock('../stores/bots.store.js', () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: 'idle', rtcTransportInfo: null };
+			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: null };
 			return map;
 		},
 		fetched: true, // SSE 快照已到达
@@ -44,6 +44,16 @@ vi.mock('../stores/dashboard.store.js', () => ({
 		loadDashboard: mockLoadDashboard,
 		getDashboard: mockGetDashboard,
 		clearDashboard: mockClearDashboard,
+	}),
+}));
+
+// agentRunsStore mock：isRunning / getActiveRun 可由测试控制
+let mockIsRunning = vi.fn().mockReturnValue(false);
+let mockGetActiveRun = vi.fn().mockReturnValue(null);
+vi.mock('../stores/agent-runs.store.js', () => ({
+	useAgentRunsStore: () => ({
+		isRunning: (runKey) => mockIsRunning(runKey),
+		getActiveRun: (runKey) => mockGetActiveRun(runKey),
 	}),
 }));
 
@@ -60,16 +70,10 @@ const UBadgeStub = {
 	template: '<span><slot /></span>',
 };
 
-const InstanceOverviewStub = {
-	name: 'InstanceOverview',
-	props: ['instance', 'agentCount'],
-	template: '<div data-testid="instance-overview">{{ instance.name }}</div>',
-};
-
 const AgentCardStub = {
 	name: 'AgentCard',
-	props: ['agent', 'online'],
-	emits: ['chat'],
+	props: ['agent', 'bot'],
+	emits: ['chat', 'files'],
 	template: '<div data-testid="agent-card">{{ agent.name }}</div>',
 };
 
@@ -83,21 +87,23 @@ function createWrapper() {
 				UButton: UButtonStub,
 				UBadge: UBadgeStub,
 				UIcon: { props: ['name'], template: '<i />' },
-				InstanceOverview: InstanceOverviewStub,
 				AgentCard: AgentCardStub,
 			},
 			mocks: {
-				$t: (key, _params) => {
+				$t: (key, params) => {
 					const map = {
 						'bots.pageTitle': 'My Claws',
 						'bots.addBot': 'Add Bot',
 						'bots.noBot': 'No Claw bound.',
-						'bots.unbind': 'Unbind',
+						'bots.remove': 'Remove',
 						'bots.preparing': 'Preparing...',
 						'dashboard.offline': 'Offline',
 						'bots.conn.ws': 'WebSocket',
 						'bots.conn.rtcConnecting': 'WebRTC connecting…',
 						'bots.conn.rtcFailed': 'Degraded to WebSocket',
+						'bots.summary.claws': `${params?.n} Claws`,
+						'bots.summary.running': `${params?.n} 工作中`,
+						'bots.summary.failed': `${params?.n} 异常`,
 					};
 					return map[key] ?? key;
 				},
@@ -112,6 +118,8 @@ describe('ManageBotsPage', () => {
 		mockBots = [];
 		mockGetDashboard.mockReturnValue(null);
 		mockLoadDashboard.mockResolvedValue(undefined);
+		mockIsRunning = vi.fn().mockReturnValue(false);
+		mockGetActiveRun = vi.fn().mockReturnValue(null);
 		vi.clearAllMocks();
 	});
 
@@ -123,7 +131,7 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).toContain('No Claw bound.');
 	});
 
-	test('在线 bot → 渲染 InstanceOverview + AgentCard', async () => {
+	test('在线 bot → 渲染 Claw card（含名称）+ AgentCard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue({
 			instance: { name: 'Bot1', online: true, channels: [] },
@@ -133,21 +141,20 @@ describe('ManageBotsPage', () => {
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		expect(wrapper.find('[data-testid="instance-overview"]').exists()).toBe(true);
-		expect(wrapper.find('[data-testid="instance-overview"]').text()).toContain('Bot1');
+		expect(wrapper.text()).toContain('Bot1');
 		expect(wrapper.find('[data-testid="agent-card"]').exists()).toBe(true);
 		expect(wrapper.find('[data-testid="agent-card"]').text()).toContain('Agent1');
 	});
 
-	test('离线 bot → 渲染 fallback header + Offline badge', async () => {
+	test('离线 bot → 渲染 fallback header + Offline badge + 解绑按钮', async () => {
 		mockBots = [{ id: '2', name: 'OfflineBot', online: false }];
 		mockGetDashboard.mockReturnValue(null);
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		expect(wrapper.find('[data-testid="instance-overview"]').exists()).toBe(false);
 		expect(wrapper.text()).toContain('OfflineBot');
 		expect(wrapper.text()).toContain('Offline');
+		expect(wrapper.text()).toContain('Remove');
 	});
 
 	test('bot 容器包含 data-testid', async () => {
@@ -236,7 +243,7 @@ describe('ManageBotsPage', () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const err = new Error('dashboard boom');
 		mockLoadDashboard.mockImplementation(() => { throw err; });
-		const wrapper = createWrapper();
+		createWrapper();
 		await flushPromises();
 
 		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] loadData failed:', err);
@@ -244,20 +251,162 @@ describe('ManageBotsPage', () => {
 		warnSpy.mockRestore();
 	});
 
-	test('onUnbindByUser 异常时 log warning 并 notify error', async () => {
+	test('onConfirmRemove 异常时 log warning 并 notify error', async () => {
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue(null);
-		const err = new Error('unbind boom');
+		const err = new Error('remove boom');
 		unbindBotByUser.mockRejectedValueOnce(err);
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		await wrapper.vm.onUnbindByUser('1');
+		wrapper.vm.removeTargetId = '1';
+		await wrapper.vm.onConfirmRemove();
 
-		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] onUnbindByUser failed:', err);
+		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] onConfirmRemove failed:', err);
 		expect(mockNotify.error).toHaveBeenCalled();
 		expect(wrapper.vm.unbindingId).toBe('');
 		warnSpy.mockRestore();
 	});
+
+	// ---- 状态摘要栏 ----
+
+	test('全部正常（无 running / failed）→ 摘要栏仅显示 N Claws', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'ready' },
+			{ id: '2', name: 'Bot2', online: true, rtcPhase: 'ready' },
+		];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-summary"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('2 Claws');
+		expect(bar.text()).not.toContain('工作中');
+		expect(bar.text()).not.toContain('异常');
+	});
+
+	test('有 running agent → 摘要栏包含工作中文字', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'ready' },
+		];
+		// __hasRunningAgent 通过 dashboardStore 获取 agents
+		mockGetDashboard.mockImplementation((botId) => {
+			if (botId === '1') return { agents: [{ id: 'main' }], instance: null, loading: false };
+			return null;
+		});
+		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-summary"]');
+		expect(bar.text()).toContain('工作中');
+	});
+
+	test('有 failed bot → 摘要栏包含异常文字', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'failed' },
+		];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="status-summary"]');
+		expect(bar.text()).toContain('异常');
+	});
+
+	test('无 bot 时不显示摘要栏', async () => {
+		mockBots = [];
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="status-summary"]').exists()).toBe(false);
+	});
+
+	// ---- sortedBots 排序 ----
+
+	test('sortedBots：failed bot 排在最前', async () => {
+		mockBots = [
+			{ id: '1', name: 'IdleBot', online: true, rtcPhase: 'ready', lastAliveAt: 1000 },
+			{ id: '2', name: 'FailedBot', online: true, rtcPhase: 'failed', lastAliveAt: 500 },
+			{ id: '3', name: 'OfflineBot', online: false, lastAliveAt: 800 },
+		];
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.sortedBots[0].name).toBe('FailedBot');
+	});
+
+	test('sortedBots：offline bot 排在最后', async () => {
+		mockBots = [
+			{ id: '1', name: 'OfflineBot', online: false, lastAliveAt: 9999 },
+			{ id: '2', name: 'IdleBot', online: true, rtcPhase: 'ready', lastAliveAt: 100 },
+		];
+		const wrapper = createWrapper();
+		await flushPromises();
+		const sorted = wrapper.vm.sortedBots;
+		expect(sorted[sorted.length - 1].name).toBe('OfflineBot');
+	});
+
+	test('sortedBots：running bot（有 agent 在工作）排在 connecting 前', async () => {
+		mockBots = [
+			{ id: '1', name: 'ConnBot', online: true, rtcPhase: 'building', lastAliveAt: 300 },
+			{ id: '2', name: 'RunBot', online: true, rtcPhase: 'ready', lastAliveAt: 200 },
+		];
+		mockGetDashboard.mockImplementation((botId) => {
+			if (botId === '2') return { agents: [{ id: 'main' }], instance: null, loading: false };
+			return null;
+		});
+		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.sortedBots[0].name).toBe('RunBot');
+	});
+
+	test('sortedBots：idle 同级按 lastAliveAt 降序', async () => {
+		mockBots = [
+			{ id: '1', name: 'OldIdle', online: true, rtcPhase: 'ready', lastAliveAt: 1000 },
+			{ id: '2', name: 'NewIdle', online: true, rtcPhase: 'ready', lastAliveAt: 5000 },
+		];
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.sortedBots[0].name).toBe('NewIdle');
+	});
+
+	test('sortedBots：空列表 → 空数组', async () => {
+		mockBots = [];
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.sortedBots).toEqual([]);
+	});
+
+	// ---- statusSummary 边界 ----
+
+	test('statusSummary：全部 offline → running=0 failed=0', async () => {
+		mockBots = [
+			{ id: '1', name: 'Off1', online: false },
+			{ id: '2', name: 'Off2', online: false },
+		];
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.statusSummary).toEqual({ running: 0, failed: 0 });
+	});
+
+	test('statusSummary：mixed 状态统计正确', async () => {
+		mockBots = [
+			{ id: '1', name: 'Running1', online: true, rtcPhase: 'ready' },
+			{ id: '2', name: 'Failed1', online: true, rtcPhase: 'failed' },
+			{ id: '3', name: 'Idle1', online: true, rtcPhase: 'ready' },
+			{ id: '4', name: 'Offline1', online: false },
+		];
+		mockGetDashboard.mockImplementation((botId) => {
+			if (botId === '1') return { agents: [{ id: 'main' }, { id: 'ops' }], instance: null, loading: false };
+			if (botId === '3') return { agents: [{ id: 'main' }], instance: null, loading: false };
+			return null;
+		});
+		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
+		const wrapper = createWrapper();
+		await flushPromises();
+		// bot1 has running agent, bot2 failed, bot3 main is running too
+		expect(wrapper.vm.statusSummary).toEqual({ running: 2, failed: 1 });
+	});
 });
+

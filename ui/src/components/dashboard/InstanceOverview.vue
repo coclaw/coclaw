@@ -1,6 +1,6 @@
 <template>
-	<div class="rounded-xl bg-elevated p-4 sm:p-5">
-		<!-- 名称 + 状态灯 + 花费 -->
+	<div class="rounded-xl bg-elevated p-3">
+		<!-- 名称 + 状态灯 + agent 数 + 花费 -->
 		<div class="flex items-center justify-between">
 			<div class="flex items-center gap-2">
 				<span
@@ -8,6 +8,7 @@
 					:class="instance.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
 				></span>
 				<h2 class="text-lg font-semibold">{{ instance.name }}</h2>
+				<UBadge color="primary" variant="subtle" size="xs">{{ agentCount }} {{ $t('dashboard.agents') }}</UBadge>
 			</div>
 			<div v-if="instance.monthlyCost && typeof instance.monthlyCost.total === 'number'" class="text-right">
 				<p class="text-2xl font-bold tracking-tight">{{ formatCost(instance.monthlyCost) }}</p>
@@ -24,7 +25,6 @@
 					<span>{{ ch.id }}</span>
 				</span>
 			</span>
-			<UBadge color="primary" variant="subtle" size="xs">{{ agentCount }} {{ $t('dashboard.agents') }}</UBadge>
 		</div>
 	</div>
 </template>
