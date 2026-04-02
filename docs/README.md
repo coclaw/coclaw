@@ -12,14 +12,11 @@
 
 描述系统的稳定架构，持续更新以反映现状。
 
-- [架构总览](architecture/overview.md) — 组件视图、分层、绑定流程、核心不变式
-- [通信模型](architecture/communication-model.md) — 三层通道、两层超时、连接生命周期、BotConnection 抽象
-- [绑定与认证](architecture/bot-binding-and-auth.md) — 绑定流程、token 认证、数据模型
+- [架构总览](architecture/overview.md) — 组件视图、通道一览、分层、绑定/认领流程、核心不变式
+- [通信模型](architecture/communication-model.md) — 三层通道（含 server-relayed RPC）、两层超时、连接生命周期、BotConnection 抽象
+- [绑定与认证](architecture/bot-binding-and-auth.md) — Binding + Claim 双流程、token 认证、数据模型
 - [Agent RPC 协议](architecture/gateway-agent-rpc-protocol.md) — 两阶段响应协议规范
-- [多 Agent 支持](architecture/multi-agent-support.md) — Claw/Agent 层级、多 Agent 架构
-- [WebSocket 心跳](architecture/websocket-heartbeat.md) — 各链路心跳机制分析（信令 WS / Plugin WS / Gateway WS）
-- [Electron 桌面壳](architecture/electron-desktop-shell.md) — 桌面端方案（草案）
-- [OpenClaw 实例身份](architecture/openclaw-instance-identity.md) — 跨重绑持久身份（研究阶段）
+- [多 Agent 支持](architecture/multi-agent-support.md) — Claw/Agent 层级、身份解析链、数据流
 
 ## Decisions — 架构决策记录 (ADR)
 
@@ -32,6 +29,7 @@
 - [插件合并](decisions/plugin-consolidation.md) — tunnel + session-manager 合并为单插件
 - [Session 导航](decisions/session-navigation.md) — sessionKey vs sessionId 导航模型
 - [Topic 限制 main agent](decisions/topic-main-agent-constraint.md) — Topic 仅限 main agent 的原因
+- [WebSocket 心跳](decisions/websocket-heartbeat.md) — 各链路心跳机制分析与方案选择
 
 ## Designs — 功能设计稿（过程文档）
 
@@ -48,6 +46,9 @@
 - [认领绑定](designs/claim-bind.md) — OpenClaw 侧发起绑定（草案）
 - [TURN over TLS](designs/turn-over-tls.md) — 端口 443 穿透方案（待实施）
 - [v0.2 实时通信重构](designs/v0.2-realtime-refactor.md) — per-bot WS → 分层架构（已过时，见 communication-model.md）
+- [Electron 桌面壳](designs/electron-desktop-shell.md) — 桌面端方案（草案）
+- [Tauri 桌面壳](designs/tauri-desktop-shell.md) — Tauri 方案（已放弃，保留备用）
+- [OpenClaw 实例身份](designs/openclaw-instance-identity.md) — 跨重绑持久身份（研究阶段）
 
 ## OpenClaw Research — 上游研究
 

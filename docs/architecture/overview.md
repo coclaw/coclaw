@@ -25,12 +25,15 @@ CoClaw 让用户即使与 OpenClaw 处于网络隔离状态，也能通过 CoCla
 ```
 ┌──────────────────┐                           ┌──────────────────┐
 │    CoClaw UI     │                           │  CoClaw Server   │
-│    (Vue 3)       │──── HTTPS (REST/SSE) ────▶│  (Express)       │
+│    (Vue 3)       │──── HTTPS (REST) ────────▶│  (Express)       │
+│                  │◀─── SSE /bots/status-stream│                  │
 │                  │                           │                  │
 │  SignalingConn ──│── WS /rtc/signal ────────▶│  rtc-signal-hub  │
 │  (per-tab)       │                           │                  │
-│                  │                           │  bot-ws-hub ◄────│───── WS /bots/stream ──── Plugin
-│  BotConnection ══│══ WebRTC DataChannel ═════│═══════════════════════════════════════════ Plugin
+│                  │── WS /bots/stream?role=ui─▶│  bot-ws-hub ◄───│── WS /bots/stream ── Plugin
+│                  │   (ticket 认证, RPC 中继)   │  (双角色)        │   (token 认证)
+│                  │                           │                  │
+│  BotConnection ══│══ WebRTC DataChannel ═════│══════════════════════════════════════ Plugin
 │  (per-bot)       │   (P2P 或 TURN 中继)       │                  │
 └──────────────────┘                           └────────┬─────────┘
                                                         │
@@ -38,8 +41,8 @@ CoClaw 让用户即使与 OpenClaw 处于网络隔离状态，也能通过 CoCla
                                                         │
 ┌───────────────────────────────────────────────────────────────────┐
 │  OpenClaw + @coclaw/openclaw-coclaw 插件                           │
-│  - 绑定/解绑 CLI                                                   │
-│  - Realtime bridge（WS → Server，WebRTC → UI）                    │
+│  - 绑定/解绑/认领 CLI                                              │
+│  - Realtime bridge（WS → Server + Gateway，WebRTC → UI）          │
 │  - Gateway RPC 透传（agent/session/file 等）                       │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -48,11 +51,13 @@ CoClaw 让用户即使与 OpenClaw 处于网络隔离状态，也能通过 CoCla
 
 | 通道 | 形态 | 职责 |
 |------|------|------|
-| REST/SSE | HTTPS | 认证、bot 管理、状态推送 |
-| Signaling WS | per-tab 单一 WS | SDP/ICE 信令交换、connId 管理、心跳 |
-| Bot WS | per-bot（Plugin ↔ Server） | Plugin 上行链路、管理控制消息 |
-| RPC DataChannel | per-bot 持久 DC | 所有业务 JSON-RPC（agent 交互、session 管理、文件元操作） |
-| File DataChannel | per-transfer 临时 DC | 二进制文件传输（独立于 RPC，互不阻塞） |
+| REST | HTTPS | 认证、bot 管理、绑定/认领 |
+| SSE | `GET /bots/status-stream`，per-user | bot 状态推送（上下线、绑定/解绑、名称更新） |
+| Signaling WS | `WS /rtc/signal`，per-tab 单一 WS | SDP/ICE 信令交换、connId 管理、应用层心跳 |
+| Bot WS（Plugin 侧） | `WS /bots/stream`，per-bot（Plugin ↔ Server） | Plugin 上行链路、控制消息、RTC 信令转发 |
+| Bot WS（UI 侧） | `WS /bots/stream?role=ui`，per-tab（UI ↔ Server） | Server 中继 RPC（WebRTC 不可用时的备选路径）、RTC 信令转发 |
+| RPC DataChannel | per-bot 持久 DC `"rpc"` | 所有业务 JSON-RPC（agent 交互、session 管理、文件元操作） |
+| File DataChannel | per-transfer 临时 DC `"file:<id>"` | 二进制文件传输（独立于 RPC，互不阻塞） |
 
 详细通信模型见 [communication-model.md](communication-model.md)。
 
@@ -76,32 +81,24 @@ Service 层无 Vue 依赖，可独立测试。Store 层通过回调注入与 Ser
 
 ## 四、绑定与认证
 
-### 绑定流程
+系统支持两种对称的绑定流程。详见 [bot-binding-and-auth.md](bot-binding-and-auth.md)。
 
-```
-User(UI)         UI              Server                Plugin(OpenClaw)
-   │              │                │                         │
-   │ 添加 Claw    │                │                         │
-   │─────────────▶│ POST /binding-codes                      │
-   │              │───────────────▶│ 生成 8 位绑定码          │
-   │              │◀───────────────│ code + expiresAt        │
-   │ 看到绑定码    │                │                         │
-   │ 在 OpenClaw 执行 /coclaw bind <code>                    │
-   │              │                │◀─────── POST /bind ─────│
-   │              │                │ 验证码，签发 token        │
-   │              │                │──── botId+token ────────▶│ 写入本地配置
-   │              │                │                         │ 启动 WS + RTC
-```
+### 流程 A：用户主导（Binding）
+
+用户在 UI 生成绑定码 → 在 OpenClaw CLI 执行 `openclaw coclaw bind <code>` → Plugin 提交绑定码到 Server → Server 签发 botId + token。
+
+### 流程 B：Plugin 主导（Claim / Enroll）
+
+Plugin 在 OpenClaw CLI 执行 `openclaw coclaw enroll` → 生成认领码并显示 → 用户在 App 输入认领码 → Server 签发 botId + token 返回给 Plugin。
 
 ### 认证模型
 
 - **Server 不存明文 token**：仅存 SHA-256 hash（`BINARY(32)`）
-- **解绑/重绑 rotate token**：旧 token 立即失效
 - **无 token 不连接**：Plugin 本地无 token 时不主动建立任何连接
 
 ### 解绑自动收敛
 
-1. Server 标记 bot inactive + rotate token
+1. Server **直接删除 Bot 记录**（tokenHash 随之消失）
 2. 向在线 Plugin 发送 `bot.unbound` 控制消息 + close WS（4001）
 3. Plugin 收到后自动清理本地 token
 4. Plugin 离线时：下次重连认证失败 → 自动清理
@@ -112,9 +109,9 @@ User(UI)         UI              Server                Plugin(OpenClaw)
 
 1. **Multi-bot per user**：同一用户可绑定多个 Claw，每个 Claw 可有多个 Agent
 2. **Token 安全**：Server 端只存 hash，传输全程 TLS
-3. **解绑即失效**：token rotate 确保旧凭证不可复用
+3. **解绑即删除**：Bot 记录直接删除，tokenHash 随之消失，旧凭证不可复用
 4. **通信层透明**：P2P / TURN 中继对业务层完全透明
-5. **连接自恢复**：断连后自动重建，业务层 `request()` 自动排队等待
+5. **连接自恢复**：断连后自动重建，业务层 `request()` 通过 `waitReady()` 等待连接就绪后发送
 
 ---
 

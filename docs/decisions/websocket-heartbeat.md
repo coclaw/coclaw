@@ -55,7 +55,7 @@ Server 同时被动响应 plugin 发来的应用层心跳：收到 `{ type: 'pin
 | Ping 间隔 | 25s |
 | 超时 | 45s |
 | 超时重置 | 收到任意 message 时 |
-| 状态 | **未修复**：缺少 pending 请求抑制（与 UI 侧已修复的问题同构） |
+| 状态 | **已修复**：连续 miss 计数策略（`SERVER_HB_MAX_MISS = 4`，~3 分钟容忍） |
 
 ### 4. Plugin ↔ Gateway
 
@@ -285,7 +285,7 @@ __onServerHbMiss(sock) {
 
 ### 方案 3：UI 侧——两层心跳（miss + pending 抑制）
 
-文件：`ui/src/services/bot-connection.js`
+文件：`ui/src/services/signaling-connection.js`
 
 UI 侧环境特殊（移动端弱网），且能通过 `__pending` 感知 RPC 是否在进行中，因此采用两层机制：
 
