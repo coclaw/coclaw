@@ -150,10 +150,10 @@ export const useAgentsStore = defineStore('agents', {
 				}
 				finally {
 					entry.loading = false;
-					_loadingByBot.delete(id);
 				}
 			})();
 			_loadingByBot.set(id, p);
+			p.finally(() => _loadingByBot.delete(id));
 			return p;
 		},
 

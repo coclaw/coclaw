@@ -252,6 +252,17 @@ describe('removeBotById', () => {
 		expect(spy).toHaveBeenCalledWith('3');
 	});
 
+	test('calls removeByBot on agents store', () => {
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		agentsStore.byBot['3'] = { agents: [{ id: 'main' }], defaultId: 'main', loading: false, fetched: true };
+		store.setBots([{ id: '3', name: 'Bot' }]);
+
+		store.removeBotById('3');
+
+		expect(agentsStore.byBot['3']).toBeUndefined();
+	});
+
 	test('is a no-op when bot is not found', () => {
 		const store = useBotsStore();
 		store.setBots([{ id: '1', name: 'A' }]);
@@ -302,7 +313,7 @@ describe('updateBotOnline', () => {
 		expect(store.byId['1'].online).toBe(true);
 	});
 
-	test('bot 离线时清理 agents 和 dashboard 缓存', () => {
+	test('bot 离线时保留 agents 和 dashboard 缓存', () => {
 		const store = useBotsStore();
 		const dashboardStore = useDashboardStore();
 		store.setBots([{ id: '1', online: true }]);
@@ -314,8 +325,13 @@ describe('updateBotOnline', () => {
 		store.updateBotOnline('1', false);
 
 		expect(store.byId['1'].online).toBe(false);
-		expect(agentsStore.byBot['1']).toBeUndefined();
-		expect(dashboardStore.byBot['1']).toBeUndefined();
+		// agents / dashboard 缓存保留，供离线时 UI 展示
+		expect(agentsStore.byBot['1']).toBeDefined();
+		expect(agentsStore.byBot['1'].agents).toHaveLength(1);
+		expect(dashboardStore.byBot['1']).toBeDefined();
+		expect(dashboardStore.byBot['1'].instance.name).toBe('Bot');
+		// dashboard 缓存中的 online 状态同步更新为 false
+		expect(dashboardStore.byBot['1'].instance.online).toBe(false);
 	});
 
 	test('bot 离线时重置 dcReady 和 rtcPhase', () => {

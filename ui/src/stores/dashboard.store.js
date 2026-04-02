@@ -119,6 +119,9 @@ function computeSessionStats(sessions) {
 // Store
 // =====================================================================
 
+/** per-bot 飞行中请求合并，防止并发调用重复发 RPC */
+const _loadingByBot = new Map();
+
 export const useDashboardStore = defineStore('dashboard', {
 	state: () => ({
 		/** @type {Object<string, DashboardData>} botId → dashboard 数据 */
@@ -143,6 +146,10 @@ export const useDashboardStore = defineStore('dashboard', {
 		 */
 		async loadDashboard(botId) {
 			const id = String(botId);
+
+			// 飞行中守卫：同一 bot 的并发调用复用已有 promise
+			if (_loadingByBot.has(id)) return _loadingByBot.get(id);
+
 			const conn = getReadyConn(id);
 			if (!conn) return;
 
@@ -154,100 +161,106 @@ export const useDashboardStore = defineStore('dashboard', {
 			entry.loading = true;
 			entry.error = null;
 
-			try {
-				// 先确保 agent 列表已加载
-				const agentsStore = useAgentsStore();
-				if (!agentsStore.byBot[id]?.fetched) {
-					await agentsStore.loadAgents(id);
-				}
-				const agentList = agentsStore.getAgentsByBot(id);
+			const p = (async () => {
+				try {
+					// 先确保 agent 列表已加载
+					const agentsStore = useAgentsStore();
+					if (!agentsStore.byBot[id]?.fetched) {
+						await agentsStore.loadAgents(id);
+					}
+					const agentList = agentsStore.getAgentsByBot(id);
 
-				// 并行调用所有 RPC（allSettled 部分失败不影响整体）
-				const [
-					statusResult,
-					modelsResult,
-					usageCostResult,
-					sessionsResult,
-					ttsResult,
-					channelsResult,
-					...toolResults
-				] = await Promise.allSettled([
-					conn.request('status', {}),
-					conn.request('models.list', {}),
-					conn.request('usage.cost', { mode: 'month' }),
-					conn.request('sessions.list', {}),
-					conn.request('tts.status', {}),
-					conn.request('channels.status', { probe: false }),
-					...agentList.map(agent =>
-						conn.request('tools.catalog', { agentId: agent.id })
-					),
-				]);
+					// 并行调用所有 RPC（allSettled 部分失败不影响整体）
+					const [
+						statusResult,
+						modelsResult,
+						usageCostResult,
+						sessionsResult,
+						ttsResult,
+						channelsResult,
+						...toolResults
+					] = await Promise.allSettled([
+						conn.request('status', {}),
+						conn.request('models.list', {}),
+						conn.request('usage.cost', { mode: 'month' }),
+						conn.request('sessions.list', {}),
+						conn.request('tts.status', {}),
+						conn.request('channels.status', { probe: false }),
+						...agentList.map(agent =>
+							conn.request('tools.catalog', { agentId: agent.id })
+						),
+					]);
 
-				// 解包结果（失败的返回 null）
-				const status = statusResult.status === 'fulfilled' ? statusResult.value : null;
-				const models = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
-				const usageCost = usageCostResult.status === 'fulfilled' ? usageCostResult.value : null;
-				const sessions = sessionsResult.status === 'fulfilled' ? sessionsResult.value : null;
-				const tts = ttsResult.status === 'fulfilled' ? ttsResult.value : null;
-				const channels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
+					// 解包结果（失败的返回 null）
+					const status = statusResult.status === 'fulfilled' ? statusResult.value : null;
+					const models = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
+					const usageCost = usageCostResult.status === 'fulfilled' ? usageCostResult.value : null;
+					const sessions = sessionsResult.status === 'fulfilled' ? sessionsResult.value : null;
+					const tts = ttsResult.status === 'fulfilled' ? ttsResult.value : null;
+					const channels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
 
-				// 构建实例总览
-				const botsStore = useBotsStore();
-				const bot = botsStore.byId[id];
-				const pluginInfo = bot?.pluginInfo ?? {};
+					// 构建实例总览
+					const botsStore = useBotsStore();
+					const bot = botsStore.byId[id];
+					const pluginInfo = bot?.pluginInfo ?? {};
 
-				entry.instance = {
-					name: bot?.name || 'OpenClaw',
-					online: bot?.online ?? false,
-					pluginVersion: pluginInfo.version ?? null,
-					clawVersion: pluginInfo.clawVersion ?? null,
-					monthlyCost: usageCost,
-					channels: buildChannelList(channels),
-					model: status?.model ?? null,
-					provider: status?.provider ?? null,
-				};
-
-				// 构建 agent 卡片数据
-				const modelCatalog = Array.isArray(models?.models) ? models.models : [];
-				const sessionList = Array.isArray(sessions?.sessions) ? sessions.sessions : [];
-				const ttsEnabled = tts?.enabled === true;
-
-				entry.agents = agentList.map((agent, index) => {
-					const toolsCatalogResult = toolResults[index];
-					const toolsCatalog = toolsCatalogResult?.status === 'fulfilled'
-						? toolsCatalogResult.value
-						: null;
-
-					const toolIds = extractToolIds(toolsCatalog);
-					// TODO(phase2): 当前使用实例级 status.model 给所有 agent 生成 model tag。
-					// 多 agent 不同模型场景下会显示错误。Phase 2 改为通过
-					// agent.identity.get 获取 per-agent 模型配置。
-					const currentModel = findCurrentModel(status?.model, modelCatalog);
-					const agentSessions = filterSessionsByAgent(sessionList, agent.id);
-					const sessionStats = computeSessionStats(agentSessions);
-					const display = agentsStore.getAgentDisplay(id, agent.id);
-
-					return {
-						id: agent.id,
-						name: display.name,
-						avatarUrl: display.avatarUrl,
-						emoji: display.emoji,
-						theme: agent.identity?.theme ?? null,
-						modelTags: generateModelTags(currentModel),
-						capabilities: mapToolsToCapabilities(toolIds, ttsEnabled),
-						totalTokens: sessionStats.totalTokens,
-						activeSessions: sessionStats.activeSessions,
-						lastActivity: sessionStats.lastActivity,
+					entry.instance = {
+						name: bot?.name || 'OpenClaw',
+						online: bot?.online ?? false,
+						pluginVersion: pluginInfo.version ?? null,
+						clawVersion: pluginInfo.clawVersion ?? null,
+						monthlyCost: usageCost,
+						channels: buildChannelList(channels),
+						model: status?.model ?? null,
+						provider: status?.provider ?? null,
 					};
-				});
-			}
-			catch (err) {
-				console.warn('[dashboard] loadDashboard failed for botId=%s:', id, err?.message);
-				entry.error = err?.message ?? 'load failed';
-			}
-			finally {
-				entry.loading = false;
-			}
+
+					// 构建 agent 卡片数据
+					const modelCatalog = Array.isArray(models?.models) ? models.models : [];
+					const sessionList = Array.isArray(sessions?.sessions) ? sessions.sessions : [];
+					const ttsEnabled = tts?.enabled === true;
+
+					entry.agents = agentList.map((agent, index) => {
+						const toolsCatalogResult = toolResults[index];
+						const toolsCatalog = toolsCatalogResult?.status === 'fulfilled'
+							? toolsCatalogResult.value
+							: null;
+
+						const toolIds = extractToolIds(toolsCatalog);
+						// TODO(phase2): 当前使用实例级 status.model 给所有 agent 生成 model tag。
+						// 多 agent 不同模型场景下会显示错误。Phase 2 改为通过
+						// agent.identity.get 获取 per-agent 模型配置。
+						const currentModel = findCurrentModel(status?.model, modelCatalog);
+						const agentSessions = filterSessionsByAgent(sessionList, agent.id);
+						const sessionStats = computeSessionStats(agentSessions);
+						const display = agentsStore.getAgentDisplay(id, agent.id);
+
+						return {
+							id: agent.id,
+							name: display.name,
+							avatarUrl: display.avatarUrl,
+							emoji: display.emoji,
+							theme: agent.identity?.theme ?? null,
+							modelTags: generateModelTags(currentModel),
+							capabilities: mapToolsToCapabilities(toolIds, ttsEnabled),
+							totalTokens: sessionStats.totalTokens,
+							activeSessions: sessionStats.activeSessions,
+							lastActivity: sessionStats.lastActivity,
+						};
+					});
+				}
+				catch (err) {
+					console.warn('[dashboard] loadDashboard failed for botId=%s:', id, err?.message);
+					entry.error = err?.message ?? 'load failed';
+				}
+				finally {
+					entry.loading = false;
+				}
+			})();
+			_loadingByBot.set(id, p);
+			// 确保飞行中守卫在 promise 结束后清理（即使 IIFE 同步完成也不遗漏）
+			p.finally(() => _loadingByBot.delete(id));
+			return p;
 		},
 
 		/**
@@ -267,4 +280,5 @@ export const __test__ = {
 	findCurrentModel,
 	filterSessionsByAgent,
 	computeSessionStats,
+	_loadingByBot,
 };

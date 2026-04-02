@@ -128,8 +128,10 @@ export const useBotsStore = defineStore('bots', {
 			}
 			bot.online = next;
 			if (!next) {
-				useAgentsStore().removeByBot(id);
-				useDashboardStore().clearDashboard(id);
+				// agents / dashboard 缓存保留：离线时不清除，重连后由对应 load 替换
+				// 同步 dashboard 缓存中的 online 状态，避免状态灯显示陈旧
+				const dashEntry = useDashboardStore().byBot[id];
+				if (dashEntry?.instance) dashEntry.instance.online = false;
 				// bot 离线 → 立即清除 DC 状态，避免 applySnapshot preserveOnline 误判
 				bot.dcReady = false;
 				bot.rtcPhase = 'idle';
@@ -161,6 +163,7 @@ export const useBotsStore = defineStore('bots', {
 			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
 			useSessionsStore().removeSessionsByBotId(id);
+			useAgentsStore().removeByBot(id);
 			useAgentRunsStore().removeByBot(id);
 			useDashboardStore().clearDashboard(id);
 			this.__clearRetry(id);

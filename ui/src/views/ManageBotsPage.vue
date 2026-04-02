@@ -38,7 +38,7 @@
 								<div class="flex items-center gap-2">
 									<span
 										class="inline-block size-2.5 rounded-full"
-										:class="dashboard.instance.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
+										:class="bot.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
 									></span>
 									<h2 class="text-lg font-semibold">{{ dashboard.instance.name }}</h2>
 									<UBadge color="primary" variant="subtle" size="xs">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>

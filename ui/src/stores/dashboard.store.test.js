@@ -9,6 +9,7 @@ const {
 	findCurrentModel,
 	filterSessionsByAgent,
 	computeSessionStats,
+	_loadingByBot,
 } = __test__;
 
 // =====================================================================
@@ -279,6 +280,7 @@ describe('dashboard store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
+		_loadingByBot.clear();
 		vi.clearAllMocks();
 	});
 
@@ -409,7 +411,7 @@ describe('dashboard store', () => {
 		expect(store.byBot['no-conn']).toBeUndefined();
 	});
 
-	test('loadDashboard conn 状态非 connected 时直接返回', async () => {
+	test('loadDashboard conn 状态非 connected 时直接返回且不污染飞行中守卫', async () => {
 		const conn = mockConn({});
 		setConn('bot-1', conn, { dcReady: false });
 
@@ -417,6 +419,8 @@ describe('dashboard store', () => {
 		await store.loadDashboard('bot-1');
 		expect(store.byBot['bot-1']).toBeUndefined();
 		expect(conn.request).not.toHaveBeenCalled();
+		// 提前返回不应留下飞行中守卫
+		expect(_loadingByBot.has('bot-1')).toBe(false);
 	});
 
 	test('loadDashboard 异常时记录 error', async () => {
@@ -444,6 +448,8 @@ describe('dashboard store', () => {
 		const entry = store.byBot['bot-1'];
 		expect(entry.loading).toBe(false);
 		expect(entry.error).toBe('total failure');
+		// 失败后飞行中守卫应已清理
+		expect(_loadingByBot.has('bot-1')).toBe(false);
 		warnSpy.mockRestore();
 	});
 
@@ -485,6 +491,40 @@ describe('dashboard store', () => {
 		await store.loadDashboard(42);
 		expect(store.byBot['42']).toBeDefined();
 		expect(store.byBot['42'].loading).toBe(false);
+	});
+
+	test('loadDashboard 并发调用复用飞行中 promise', async () => {
+		const botsStore = useBotsStore();
+		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+		const agentConn = mockAgentConn([{ id: 'main' }]);
+		setConn('bot-1', agentConn);
+		const agentsStore = useAgentsStore();
+		await agentsStore.loadAgents('bot-1');
+
+		const dashConn = mockConn({
+			'status': {},
+			'models.list': { models: [] },
+			'usage.cost': null,
+			'sessions.list': { sessions: [] },
+			'tts.status': {},
+			'channels.status': {},
+			'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', dashConn);
+
+		const store = useDashboardStore();
+		const p1 = store.loadDashboard('bot-1');
+		const p2 = store.loadDashboard('bot-1');
+
+		await Promise.all([p1, p2]);
+
+		// 飞行中 map 已清理
+		expect(_loadingByBot.has('bot-1')).toBe(false);
+
+		// RPC 仅调用一批（status 只调用一次）
+		const statusCalls = dashConn.request.mock.calls.filter(([m]) => m === 'status');
+		expect(statusCalls).toHaveLength(1);
 	});
 
 	test('loadDashboard agents 已加载时不重复调用 loadAgents', async () => {
