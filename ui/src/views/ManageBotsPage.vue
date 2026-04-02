@@ -87,11 +87,11 @@
 					</div>
 				</div>
 
-				<!-- 连接信息 -->
-				<div v-if="bot.online" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 mb-3 text-xs text-muted">
+				<!-- 连接信息（在线 或 有缓存连接信息时显示） -->
+				<div v-if="bot.online || connDetail" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 mb-3 text-xs text-muted">
 					<span>{{ connLabel(bot.id) }}</span>
 					<button
-						v-if="connDetail"
+						v-if="bot.online && connDetail"
 						class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
 						@click="toggleDetail(bot.id)"
 					>
@@ -154,7 +154,7 @@
 import { useNotify } from '../composables/use-notify.js';
 import { unbindBotByUser } from '../services/bots.api.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
-import { useBotsStore, getReadyConn } from '../stores/bots.store.js';
+import { useBotsStore, getReadyConn, MAX_BACKOFF_RETRIES } from '../stores/bots.store.js';
 import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import AgentCard from '../components/AgentCard.vue';
@@ -268,7 +268,13 @@ export default {
 			const id = String(botId);
 			const bot = this.botsStore.byId[id];
 			if (!bot) return this.$t('bots.conn.disconnected');
-			if (bot.rtcPhase === 'failed') return this.$t('bots.conn.rtcFailed');
+			if (!bot.online) return this.$t('bots.conn.disconnected');
+			if (bot.rtcPhase === 'failed') {
+				if (bot.retryCount > 0) {
+					return this.$t('bots.conn.rtcRetrying', { n: bot.retryCount, max: MAX_BACKOFF_RETRIES });
+				}
+				return this.$t('bots.conn.rtcRetryExhausted');
+			}
 			if (bot.rtcPhase !== 'ready') return this.$t('bots.conn.rtcConnecting');
 			const info = bot.rtcTransportInfo;
 			if (!info) return this.$t('bots.conn.rtcConnecting');

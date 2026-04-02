@@ -289,7 +289,11 @@ export default {
 			const phase = bot.rtcPhase;
 			if (phase === 'building') return this.$t('chat.connBuilding');
 			if (phase === 'recovering') return this.$t('chat.connRecovering');
-			if (phase === 'failed') return this.$t('chat.connFailed');
+			if (phase === 'failed') {
+				return bot.retryCount > 0
+					? this.$t('chat.connFailed')
+					: this.$t('chat.connRetryExhausted');
+			}
 			// idle 或其它 → 通用连接中
 			return this.$t('chat.connecting');
 		},

@@ -27,13 +27,14 @@ const RETRY_BACKOFF_BASE_MS = 10_000;
 /** 退避重试：最大间隔 */
 const RETRY_BACKOFF_MAX_MS = 120_000;
 /** 退避重试：最大次数 */
-const MAX_BACKOFF_RETRIES = 8;
+export const MAX_BACKOFF_RETRIES = 8;
 /** 退避重试状态（botId → { count: number, timer: number|null }） */
 const _rtcRetryState = new Map();
 /** 运行时字段（server snapshot / SSE 事件不应覆盖） */
 const RUNTIME_FIELDS = new Set([
 	'dcReady', 'rtcPhase', 'lastAliveAt', 'disconnectedAt',
 	'initialized', 'pluginVersionOk', 'pluginInfo', 'rtcTransportInfo',
+	'retryCount', 'retryNextAt',
 ]);
 
 /** @internal 仅供测试重置 */
@@ -71,6 +72,9 @@ function createBotState(bot) {
 		pluginInfo: null,
 		rtcTransportInfo: null,
 		dcReady: false,
+		// 退避重试（UI 可读）
+		retryCount: 0,
+		retryNextAt: 0, // timestamp (ms)，0 = 无计划
 	};
 }
 
@@ -465,6 +469,7 @@ export const useBotsStore = defineStore('bots', {
 				console.warn('[bots] backoff retries exhausted (%d) botId=%s', MAX_BACKOFF_RETRIES, id);
 				remoteLog(`bot.retryExhausted bot=${id} max=${MAX_BACKOFF_RETRIES}`);
 				_rtcRetryState.delete(id);
+				if (bot) { bot.retryCount = 0; bot.retryNextAt = 0; }
 				return;
 			}
 			const delay = Math.min(
@@ -472,13 +477,14 @@ export const useBotsStore = defineStore('bots', {
 				RETRY_BACKOFF_MAX_MS,
 			);
 			clearTimeout(state.timer);
+			if (bot) { bot.retryCount = state.count; bot.retryNextAt = Date.now() + delay; }
 			console.debug('[bots] scheduling backoff retry %d/%d in %dms botId=%s',
 				state.count, MAX_BACKOFF_RETRIES, delay, id);
 			remoteLog(`bot.retryScheduled bot=${id} attempt=${state.count}/${MAX_BACKOFF_RETRIES} delay=${delay}ms`);
 			state.timer = setTimeout(() => {
 				state.timer = null;
 				if (!this.byId[id]?.online || this.byId[id]?.rtcPhase !== 'failed') {
-					_rtcRetryState.delete(id);
+					this.__clearRetry(id);
 					return;
 				}
 				this.__ensureRtc(id).catch(() => {});
@@ -491,6 +497,8 @@ export const useBotsStore = defineStore('bots', {
 			if (!state) return;
 			clearTimeout(state.timer);
 			_rtcRetryState.delete(id);
+			const bot = this.byId[id];
+			if (bot) { bot.retryCount = 0; bot.retryNextAt = 0; }
 		},
 
 		/**

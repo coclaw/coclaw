@@ -28,11 +28,12 @@ const mockGetDashboard = vi.fn().mockReturnValue(null);
 const mockClearDashboard = vi.fn();
 
 vi.mock('../stores/bots.store.js', () => ({
+	MAX_BACKOFF_RETRIES: 8,
 	useBotsStore: () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: null };
+			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: b.rtcTransportInfo ?? null, retryCount: b.retryCount ?? 0, retryNextAt: b.retryNextAt ?? 0 };
 			return map;
 		},
 		fetched: true, // SSE 快照已到达
@@ -98,9 +99,16 @@ function createWrapper() {
 						'bots.remove': 'Remove',
 						'bots.preparing': 'Preparing...',
 						'dashboard.offline': 'Offline',
-						'bots.conn.ws': 'WebSocket',
+						'bots.conn.disconnected': 'Disconnected',
 						'bots.conn.rtcConnecting': 'WebRTC connecting…',
-						'bots.conn.rtcFailed': 'Degraded to WebSocket',
+						'bots.conn.rtcRetrying': `Connection failed, retry ${params?.n}/${params?.max}…`,
+						'bots.conn.rtcRetryExhausted': 'Connection failed, retries exhausted',
+						'bots.conn.rtcLan': 'WebRTC · LAN',
+						'bots.conn.rtcLanProto': `WebRTC · LAN · ${params?.protocol}`,
+						'bots.conn.rtcP2P': 'WebRTC · P2P',
+						'bots.conn.rtcP2PProto': `WebRTC · P2P · ${params?.protocol}`,
+						'bots.conn.rtcRelay': 'WebRTC · Relay',
+						'bots.conn.rtcRelayProto': `WebRTC · Relay · ${params?.protocol}`,
 						'bots.summary.claws': `${params?.n} Claws`,
 						'bots.summary.running': `${params?.n} 工作中`,
 						'bots.summary.failed': `${params?.n} 异常`,
@@ -155,6 +163,23 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).toContain('OfflineBot');
 		expect(wrapper.text()).toContain('Offline');
 		expect(wrapper.text()).toContain('Remove');
+	});
+
+	test('离线 bot 有缓存 rtcTransportInfo → 连接信息行显示 Disconnected，无 detail 按钮', async () => {
+		mockBots = [{ id: '1', name: 'A', online: false, rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.text()).toContain('Disconnected');
+		expect(wrapper.text()).not.toContain('bots.conn.detailTitle');
+	});
+
+	test('离线 bot 无缓存 rtcTransportInfo → 连接信息行不显示', async () => {
+		mockBots = [{ id: '1', name: 'A', online: false }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.text()).not.toContain('Disconnected');
 	});
 
 	test('bot 容器包含 data-testid', async () => {
@@ -407,6 +432,105 @@ describe('ManageBotsPage', () => {
 		await flushPromises();
 		// bot1 has running agent, bot2 failed, bot3 main is running too
 		expect(wrapper.vm.statusSummary).toEqual({ running: 2, failed: 1 });
+	});
+});
+
+describe('connLabel', () => {
+	test('bot 不存在时返回 disconnected', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('999')).toBe('Disconnected');
+	});
+
+	test('bot 离线时返回 disconnected', async () => {
+		mockBots = [{ id: '1', name: 'A', online: false, rtcPhase: 'idle' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('Disconnected');
+	});
+
+	test('rtcPhase=failed + retryCount>0 显示重试进度', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'failed', retryCount: 3 }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toContain('retry');
+		expect(wrapper.vm.connLabel('1')).toContain('3');
+	});
+
+	test('rtcPhase=failed + retryCount=0 显示重试耗尽', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'failed', retryCount: 0 }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('Connection failed, retries exhausted');
+	});
+
+	test('rtcPhase=building 显示 connecting', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'building' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC connecting…');
+	});
+
+	test('rtcPhase=ready 无 transportInfo 显示 connecting', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC connecting…');
+	});
+
+	test('rtcPhase=ready + relay UDP → Relay', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready', rtcTransportInfo: { localType: 'relay', relayProtocol: 'udp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · Relay');
+	});
+
+	test('rtcPhase=ready + relay TCP → Relay + protocol', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready', rtcTransportInfo: { localType: 'relay', relayProtocol: 'tcp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · Relay · TCP');
+	});
+
+	test('rtcPhase=ready + host UDP → LAN', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready', rtcTransportInfo: { localType: 'host', localProtocol: 'udp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · LAN');
+	});
+
+	test('rtcPhase=ready + srflx UDP → P2P', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready', rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · P2P');
+	});
+
+	test('rtcPhase=ready + host TCP → LAN + protocol', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready', rtcTransportInfo: { localType: 'host', localProtocol: 'tcp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · LAN · TCP');
+	});
+
+	test('rtcPhase=ready + srflx TCP → P2P + protocol', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready', rtcTransportInfo: { localType: 'srflx', localProtocol: 'tcp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · P2P · TCP');
 	});
 });
 

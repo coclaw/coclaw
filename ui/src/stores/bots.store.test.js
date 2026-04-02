@@ -1462,6 +1462,13 @@ describe('dcReady 响应式标记', () => {
 		expect(store.byId['1'].dcReady).toBe(false);
 	});
 
+	test('createBotState 初始 retryCount / retryNextAt 为 0', () => {
+		const store = useBotsStore();
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		expect(store.byId['1'].retryCount).toBe(0);
+		expect(store.byId['1'].retryNextAt).toBe(0);
+	});
+
 	test('__rtcCallbacks: failed/closed 时 dcReady 置为 false，设置 disconnectedAt 和 rtcPhase', () => {
 		const store = useBotsStore();
 		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
@@ -1707,6 +1714,9 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		await store.__ensureRtc('50');
 
 		expect(store.byId['50'].rtcPhase).toBe('failed');
+		// retryCount / retryNextAt 应被写入
+		expect(store.byId['50'].retryCount).toBe(1);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThan(0);
 		// scheduleRetry 被调用 → timer 触发后 __ensureRtc 应被调用
 		mockInitRtc.mockClear();
 		// 阻止后续退避级联
@@ -1794,6 +1804,9 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 
 		store.updateBotOnline('50', false);
 
+		// retryCount / retryNextAt 应被清零
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
 		// timer 不应再触发
 		mockInitRtc.mockClear();
 		vi.advanceTimersByTime(300_000);
@@ -1936,6 +1949,43 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		vi.advanceTimersByTime(10_000);
 		// __ensureRtc 不应被调用
 		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+
+	test('__scheduleRetry 写入 retryCount / retryNextAt', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+
+		const before = Date.now();
+		store.__scheduleRetry('50');
+		expect(store.byId['50'].retryCount).toBe(1);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 10_000);
+
+		store.__scheduleRetry('50');
+		expect(store.byId['50'].retryCount).toBe(2);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 20_000);
+	});
+
+	test('__clearRetry 重置 retryCount / retryNextAt', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+		store.__scheduleRetry('50');
+		expect(store.byId['50'].retryCount).toBe(1);
+
+		store.__clearRetry('50');
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
+	});
+
+	test('重试耗尽后 retryCount 归零', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+
+		for (let i = 0; i < 9; i++) {
+			store.__scheduleRetry('50');
+		}
+		// 第 9 次超出 MAX_BACKOFF_RETRIES(8)，应归零
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
 	});
 
 	test('timer 触发时 bot 已 offline → 清理退出', () => {

@@ -64,6 +64,8 @@ function makeBot(overrides = {}) {
 		online: true,
 		rtcPhase: 'ready',
 		lastAliveAt: 0,
+		retryCount: 0,
+		retryNextAt: 0,
 		...overrides,
 	};
 }
@@ -78,6 +80,7 @@ const $tMap = {
 	'agentCard.cached': 'Cached',
 	'chat.connBuilding': 'Building connection…',
 	'chat.connRecovering': 'Recovering connection…',
+	'bots.conn.rtcRetryExhausted': 'Connection failed, retries exhausted',
 	'agents.chat': 'Chat',
 	'agents.files': 'Files',
 	'dashboard.justNow': 'Just now',
@@ -91,6 +94,7 @@ function $t(key, params) {
 	if (key === 'dashboard.minutesAgo') return `${params?.n ?? ''} mins ago`;
 	if (key === 'dashboard.hoursAgo') return `${params?.n ?? ''} hrs ago`;
 	if (key === 'dashboard.daysAgo') return `${params?.n ?? ''} days ago`;
+	if (key === 'bots.conn.rtcRetrying') return `Connection failed, retry ${params?.n}/${params?.max}…`;
 	return $tMap[key] ?? key;
 }
 
@@ -302,15 +306,23 @@ describe('AgentCard', () => {
 		expect(w.text()).not.toContain('Tokens');
 	});
 
-	test('failed 显示 rtcPhase + lastAlive', async () => {
+	test('failed + retryCount=0 显示重试耗尽', async () => {
 		const w = createWrapper(
 			makeAgent(),
-			makeBot({ rtcPhase: 'failed', lastAliveAt: Date.now() - 120_000 }),
+			makeBot({ rtcPhase: 'failed', retryCount: 0, lastAliveAt: Date.now() - 120_000 }),
 		);
 		await flushPromises();
-		expect(w.text()).toContain('RTC Phase');
-		expect(w.text()).toContain('failed');
+		expect(w.text()).toContain('retries exhausted');
 		expect(w.text()).toContain('2 mins ago');
+	});
+
+	test('failed + retryCount>0 显示重试进度', async () => {
+		const w = createWrapper(
+			makeAgent(),
+			makeBot({ rtcPhase: 'failed', retryCount: 3, lastAliveAt: Date.now() - 60_000 }),
+		);
+		await flushPromises();
+		expect(w.text()).toContain('retry 3/8');
 	});
 
 	test('connecting building 文字', async () => {
