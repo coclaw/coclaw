@@ -215,7 +215,7 @@ export const enMessages = {
 		restart: 'Start over',
 		chatMethodTitle: 'Option 1: Send via chat',
 		chatMethodDesc: 'If you can already chat with your OpenClaw (e.g. via QQ, Lark, etc.), copy the message below and send it',
-		chatPrompt: 'Please run the following two commands in order. Even if the first one says the plugin is already installed or fails, please continue with the second:\n1. `openclaw plugins install {\'@\'}coclaw/openclaw-coclaw`\n2. `openclaw coclaw bind {code}{serverSuffix}`',
+		chatPrompt: 'Please run the following two commands in order. Even if the first one says the plugin is already installed or fails, please continue with the second:\n1. `openclaw plugins install {\'@\'}coclaw/openclaw-coclaw`\n2. `openclaw coclaw bind {code}{serverSuffix}`\nIMPORTANT: You must use `openclaw plugins install` to install the plugin. Do NOT use `npm install -g` — OpenClaw will not recognize plugins installed that way.',
 		shellMethodTitle: 'Option 2: Run in terminal',
 		shellMethodDesc: 'If you can access the terminal on the machine running OpenClaw, copy and run the command below',
 		shellSemicolonHint: 'If typing manually, note the semicolon (;) between the two commands',

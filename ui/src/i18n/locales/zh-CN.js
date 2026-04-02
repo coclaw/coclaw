@@ -215,7 +215,7 @@ export const zhCNMessages = {
 		restart: '重新开始',
 		chatMethodTitle: '方式一：通过对话',
 		chatMethodDesc: '如果你已经能和你的 OpenClaw 聊天（比如通过 QQ、飞书等），把下面的内容复制发送给它',
-		chatPrompt: '请帮我依次运行以下两条命令。即使第一条提示已安装或执行失败，也请继续执行第二条：\n1. `openclaw plugins install {\'@\'}coclaw/openclaw-coclaw`\n2. `openclaw coclaw bind {code}{serverSuffix}`',
+		chatPrompt: '请帮我依次运行以下两条命令。即使第一条提示已安装或执行失败，也请继续执行第二条：\n1. `openclaw plugins install {\'@\'}coclaw/openclaw-coclaw`\n2. `openclaw coclaw bind {code}{serverSuffix}`\n注意：必须使用 openclaw plugins install 安装插件，不要用 npm install -g，否则 OpenClaw 无法识别。',
 		shellMethodTitle: '方式二：通过终端',
 		shellMethodDesc: '如果你能打开 OpenClaw 所在电脑的终端（命令行），复制下面的命令执行即可',
 		shellSemicolonHint: '如果手动输入，请注意两条命令之间用分号（;）分隔',

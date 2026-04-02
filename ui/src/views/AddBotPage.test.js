@@ -61,7 +61,7 @@ function createWrapper(overrides = {}) {
 			mocks: {
 				$t: (key, params) => {
 					if (key === 'bots.chatPrompt') {
-						return `请帮我依次运行以下两条命令。即使第一条提示已安装或执行失败，也请继续执行第二条：\n1. openclaw plugins install @coclaw/openclaw-coclaw\n2. openclaw coclaw bind ${params?.code ?? ''}${params?.serverSuffix ?? ''}`;
+						return `请帮我依次运行以下两条命令。即使第一条提示已安装或执行失败，也请继续执行第二条：\n1. openclaw plugins install @coclaw/openclaw-coclaw\n2. openclaw coclaw bind ${params?.code ?? ''}${params?.serverSuffix ?? ''}\n注意：必须使用 openclaw plugins install 安装插件，不要用 npm install -g，否则 OpenClaw 无法识别。`;
 					}
 					if (key === 'bots.expiryLeft') {
 						return `有效期剩余 ${params?.time ?? ''}`;
