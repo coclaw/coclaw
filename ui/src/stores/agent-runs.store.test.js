@@ -432,4 +432,126 @@ describe('useAgentRunsStore', () => {
 			store.removeByBot('nonexistent');
 		});
 	});
+
+	// =====================================================================
+	// markLoadInFlight / clearLoadInFlight + settle fallback 推迟（#193）
+	// =====================================================================
+
+	describe('settle fallback 与 loadInFlight（#193）', () => {
+		test('loadInFlight 为 true 时 settle fallback 推迟清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			// lifecycle:end → settling
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			expect(store.runs['run-1']?.settling).toBe(true);
+
+			// 标记 loadMessages 正在进行
+			store.markLoadInFlight('agent:main:main');
+
+			// 500ms 后 fallback 不应清理
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeTruthy();
+			expect(store.getActiveRun('agent:main:main')).toBeTruthy();
+		});
+
+		test('loadInFlight 清除后下一次 fallback 正常清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.markLoadInFlight('agent:main:main');
+
+			// 第一次 fallback 推迟
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeTruthy();
+
+			// 模拟 loadMessages 失败，清除标记
+			store.clearLoadInFlight('agent:main:main');
+
+			// 第二次 fallback 应正常清理
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+
+		test('completeSettle 在 loadInFlight 期间仍可正常清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.markLoadInFlight('agent:main:main');
+
+			// loadMessages 成功 → completeSettle
+			store.completeSettle('agent:main:main');
+
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+
+		test('markLoadInFlight 对不存在的 runKey 不报错', () => {
+			const store = useAgentRunsStore();
+			store.markLoadInFlight('nonexistent');
+		});
+
+		test('clearLoadInFlight 对不存在的 runKey 不报错', () => {
+			const store = useAgentRunsStore();
+			store.clearLoadInFlight('nonexistent');
+		});
+
+		test('markLoadInFlight 对已 settled 的 run 不设置标记', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settle('agent:main:main');
+
+			// run 已被清理，markLoadInFlight 应为 no-op
+			store.markLoadInFlight('agent:main:main');
+		});
+
+		test('多次推迟后 clearLoadInFlight 使下一次 fallback 清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.markLoadInFlight('agent:main:main');
+
+			// 推迟 3 次
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeTruthy();
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeTruthy();
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeTruthy();
+
+			// 清除标记后下一次 fallback 正常清理
+			store.clearLoadInFlight('agent:main:main');
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+
+		test('removeByBot 清理 settling + loadInFlight 的 run 无悬挂 timer', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.markLoadInFlight('agent:main:main');
+
+			// removeByBot 应直接清理，含 __settleTimer
+			store.removeByBot('1');
+			expect(store.runs['run-1']).toBeUndefined();
+
+			// 后续 timer 触发不应报错
+			vi.advanceTimersByTime(1000);
+		});
+
+		test('settle() 在 loadInFlight 为 true 时仍立即清理（用户取消优先）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.markLoadInFlight('agent:main:main');
+
+			// 用户主动 settle 应立即生效，不受 loadInFlight 阻挡
+			store.settle('agent:main:main');
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+	});
 });

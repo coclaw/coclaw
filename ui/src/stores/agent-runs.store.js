@@ -144,14 +144,55 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				run.__timer = null;
 			}
 			run.settling = true;
-			// 延迟清理：给 loadMessages 留出时间完成
-			// 若 500ms 内 chatStore 未调用 completeSettle，兜底清理
+			this.__scheduleSettleFallback(runId);
+			// settling 状态下 allMessages 仍能看到 streamingMsgs（由 getActiveRun getter 判断）
+			// 注意：spread 必须在调度 fallback 之后，确保新对象持有正确的 timer 引用
+			this.runs[runId] = { ...run };
+		},
+
+		/**
+		 * 调度 settle 兜底定时器
+		 * loadMessages 飞行中时推迟清理，避免 streamingMsgs 闪烁（#193）
+		 * @param {string} runId
+		 */
+		__scheduleSettleFallback(runId) {
+			const run = this.runs[runId];
+			if (!run || run.settled) return;
+			if (run.__settleTimer) {
+				clearTimeout(run.__settleTimer);
+			}
 			run.__settleTimer = setTimeout(() => {
+				const r = this.runs[runId];
+				if (!r || r.settled) return;
+				if (r.__loadInFlight) {
+					console.debug('[agentRuns] settle fallback deferred: load in-flight runId=%s', runId);
+					this.__scheduleSettleFallback(runId);
+					return;
+				}
 				this.__cleanupRun(runId);
 			}, 500);
-			// settling 状态下 allMessages 仍能看到 streamingMsgs（由 getActiveRun getter 判断）
-			// 注意：spread 必须在设置 __settleTimer 之后，确保新对象持有正确的 timer 引用
-			this.runs[runId] = { ...run };
+		},
+
+		/**
+		 * 标记指定 run 有 loadMessages 正在进行
+		 * @param {string} runKey
+		 */
+		markLoadInFlight(runKey) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
+			const run = this.runs[runId];
+			if (run && !run.settled) run.__loadInFlight = true;
+		},
+
+		/**
+		 * 清除 loadInFlight 标记
+		 * @param {string} runKey
+		 */
+		clearLoadInFlight(runKey) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
+			const run = this.runs[runId];
+			if (run) run.__loadInFlight = false;
 		},
 
 		/**
