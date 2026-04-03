@@ -412,7 +412,8 @@ export function createChatStore(storeKey, opts = {}) {
 					message: { role: 'user', content, timestamp: Date.now() },
 				};
 				if (hasFiles) {
-					optimisticUser._attachments = files.map((f) => ({
+					// 图片已 base64 内联到 content，不重复放入 _attachments
+					optimisticUser._attachments = files.filter((f) => !f.isImg).map((f) => ({
 						name: f.name, size: f.bytes, type: f.file?.type,
 						isVoice: f.isVoice || false,
 						durationMs: f.durationMs || null,

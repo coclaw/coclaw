@@ -70,6 +70,7 @@ export default {
 		},
 	},
 	beforeUnmount() {
+		this.__unmounted = true;
 		this.__revokeResolved();
 	},
 	methods: {
@@ -84,7 +85,6 @@ export default {
 			}
 
 			if (!isCoclawUrl(this.src)) {
-				// data URI / blob URL / http URL → 直接使用
 				this.resolvedSrc = this.src;
 				return;
 			}
@@ -94,11 +94,11 @@ export default {
 			this.loading = true;
 			try {
 				const blob = await fetchCoclawFile(srcAtStart);
-				if (this.src !== srcAtStart) return;
+				if (this.src !== srcAtStart || this.__unmounted) return;
 				this.resolvedSrc = URL.createObjectURL(blob);
 			} catch (err) {
 				console.warn('[ChatImg] fetch failed:', err);
-				if (this.src === srcAtStart) this.error = true;
+				if (this.src === srcAtStart && !this.__unmounted) this.error = true;
 			} finally {
 				this.loading = false;
 			}

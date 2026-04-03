@@ -113,6 +113,7 @@ export default {
 		},
 	},
 	beforeUnmount() {
+		this.__unmounted = true;
 		this.__cleanup();
 		this.__revokeResolved();
 	},
@@ -134,8 +135,7 @@ export default {
 			this.loading = true;
 			this.__downloadPromise = fetchCoclawFile(srcAtStart)
 				.then((blob) => {
-					// src 在下载期间已变更，丢弃结果
-					if (this.src !== srcAtStart) return null;
+					if (this.src !== srcAtStart || this.__unmounted) return null;
 					this.resolvedUrl = URL.createObjectURL(blob);
 					return this.resolvedUrl;
 				})

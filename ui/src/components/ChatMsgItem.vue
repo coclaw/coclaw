@@ -25,7 +25,7 @@
 					<template v-for="(att, idx) in userAttachments" :key="'att-' + idx">
 						<!-- 图片附件 -->
 						<ChatImg
-							v-if="att.isImg"
+							v-if="att.isImg && att.url"
 							:src="att.url"
 							:filename="attDisplayName(att)"
 							custom-class="max-w-full"
