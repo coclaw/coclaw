@@ -26,8 +26,8 @@ CoClaw 是什么
 - **原生 App 客户端**（2026-03-07，[`2c56414`](../../commit/2c56414)）：OpenClaw 生态首个原生客户端应用，覆盖移动端与桌面端，让用户随时随地与 Agent 协作——即使 OpenClaw 运行在云端或远程设备上。
 - **独立话题管理**（2026-03-17，[`eb0df21`](../../commit/eb0df21)）：在 OpenClaw 原生 IM 对话流之外，首创独立话题（Topic）管理能力，用户可自主创建、切换、管理独立对话，兼得 IM 连续性与 ChatBot 式话题清晰度。
 - **P2P 通信架构**（2026-03-23，[`8b924b6`](../../commit/8b924b6)）：AI Agent 远程控制领域首个采用 WebRTC P2P DataChannel 作为数据通道的产品。信令交换完成后，所有数据在客户端与 Agent 之间直连传输，服务器完全不接触数据载荷。相比 Claude Code、OpenDevin、MCP 服务器等所有现有方案均依赖服务器中转，CoClaw 从根本上消除了服务器中转的带宽瓶颈，并在架构层面保护了用户隐私。
-- **Agent 工作区文件管理**（2026-03-28，[`5aef1a3`](../../commit/5aef1a3)）：OpenClaw 生态首个功能完备的 Agent 工作区文件浏览器，用户可直接在 App 中浏览、上传、下载、删除 Agent 工作区中的文件，彻底告别"只能通过对话临时传文件"的局限。
-- **Main 通道多模态 I/O**（2026-03-28，[`5eddc96`](../../commit/5eddc96)）：OpenClaw 生态中首个为 main 通道实现完整多模态输入输出的方案。OpenClaw 原生 main 通道仅支持图片输入（≤ 5 MB），且历史记录检索时会剥离图片数据。CoClaw 通过 WebRTC DataChannel 独立传输附件，不受 WebSocket 队头阻塞和 25 MB 上限的约束，支持任意类型、任意大小的文件双向传输（包括 GB 级视频），覆盖从用户到 Agent 及从 Agent 到用户的完整链路。
+- **Agent 工作区文件管理**（2026-03-28，[`5aef1a3`](../../commit/5aef1a3)）：OpenClaw 生态首个功能完备的 Agent 工作区文件浏览器。OpenClaw 等 AI Agent 基于用户的代码库、文档库等资料展开工作，而它通常运行在远程设备（云主机、Mini PC 等）上。CoClaw 让用户直接在 App 中浏览、上传、下载、删除 Agent 工作区的文件。
+- **增强的多模态 I/O**（2026-03-28，[`5eddc96`](../../commit/5eddc96)）：OpenClaw 生态中首个实现完整多模态输入输出的方案——当前已在 main 通道启用，同样的能力适用于话题及其他通道。OpenClaw 原生 main 通道仅支持图片输入（≤ 5 MB），且历史记录检索时会剥离图片数据。CoClaw 通过 WebRTC DataChannel 独立传输附件，不受 WebSocket 队头阻塞和 25 MB 上限的约束，支持任意类型、任意大小的文件双向传输（包括 GB 级视频），覆盖从用户到 Agent 及从 Agent 到用户的完整链路。
 
 
 ---
