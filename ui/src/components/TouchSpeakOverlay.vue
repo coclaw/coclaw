@@ -1,7 +1,7 @@
 <template>
 	<div
 		v-if="open"
-		class="fixed inset-0 z-50 flex select-none flex-col"
+		class="fixed inset-0 z-50 flex select-none flex-col pt-[var(--safe-area-inset-top)] pb-[var(--safe-area-inset-bottom)]"
 		@contextmenu.prevent
 		@touchmove.prevent
 	>

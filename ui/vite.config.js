@@ -28,6 +28,11 @@ export default defineConfig({
 						base: 'cursor-pointer active:scale-[0.98] active:opacity-80',
 					},
 				},
+				toaster: {
+					slots: {
+						viewport: 'mt-[var(--safe-area-inset-top)] mb-[var(--safe-area-inset-bottom)]',
+					},
+				},
 				modal: {
 					slots: {
 						header: 'flex items-center justify-between gap-1.5 px-4 py-1 sm:px-6 min-h-16',
