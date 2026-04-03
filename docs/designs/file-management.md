@@ -1,7 +1,7 @@
 # 文件管理设计
 
 > 创建时间：2026-03-24
-> 最近修订：2026-03-28（协议升级：采用 HTTP 动词、新增 POST 附件上传、扩展 rpc 方法集、delete 支持 force 递归删除）
+> 最近修订：2026-04-03（新增第七章 coclaw-file:// URL 协议）
 > 状态：已实施
 > 范围：UI 通过 WebRTC DataChannel 对 OpenClaw Agent Workspace 的文件操作
 > 前置依赖：`webrtc-p2p-channel.md`（WebRTC P2P DataChannel 基础设施）
@@ -656,7 +656,59 @@ UI 在每次 binary 消息发送/接收后更新进度。由于 chunk 固定 16K
 
 ---
 
-## 七、约束与限制
+## 七、coclaw-file:// URL 协议（UI 层文件资源抽象）
+
+### 7.1 背景
+
+底层文件操作（`downloadFile`、`uploadFile` 等）需要调用方持有 `botConn`、`agentId`、`path` 三个参数。这在 UI 渲染层（如消息列表中的语音附件、历史文件引用）不便使用——组件不应关心连接管理细节。
+
+需要一个**连接无关的、可序列化的文件标识符**，使 UI 组件只需持有一个字符串即可定位并获取 agent 侧文件。
+
+### 7.2 URL 格式
+
+```
+coclaw-file://botId:agentId/path/to/file
+```
+
+| 部分 | 说明 |
+|------|------|
+| `coclaw-file://` | 协议前缀 |
+| `botId:agentId` | authority 部分，`:` 分隔。botId 和 agentId 均不得包含 `:` 或 `/` |
+| `/path/to/file` | Agent workspace 相对路径（同本文"三、路径约定"） |
+
+示例：`coclaw-file://42:main/.coclaw/chat-files/main/voice_1234.webm`
+
+### 7.3 API（`ui/src/services/coclaw-file.js`）
+
+| 函数 | 说明 |
+|------|------|
+| `buildCoclawUrl(botId, agentId, path)` | 构建 URL |
+| `parseCoclawUrl(url)` | 解析 → `{ botId, agentId, path }` 或 `null` |
+| `isCoclawUrl(url)` | 判断是否为 `coclaw-file://` URL |
+| `fetchCoclawFile(url)` | 解析 URL → 获取 botConn → `downloadFile` → 返回 `Blob` |
+
+`fetchCoclawFile` 内部通过 `useBotConnections().get(botId)` 获取连接，再调用本文档所述的 `downloadFile` 下载文件。调用方无需接触连接层。
+
+### 7.4 典型用法：消息中的语音附件
+
+```
+历史消息 attachment block 中含文件路径
+  → parseAttachments() 识别 isVoice（按扩展名）
+  → ChatMsgItem 用 buildCoclawUrl() 构建 URL
+  → <ChatAudio src="coclaw-file://42:main/.coclaw/.../voice.webm" />
+  → 用户点击播放 → fetchCoclawFile() → Blob → URL.createObjectURL() → <audio> 播放
+```
+
+乐观消息（当前会话录音）直接持有 `blob:` URL，`ChatAudio` 透明处理两种 URL 格式。
+
+### 7.5 后续扩展
+
+- **本地缓存**：URL 天然为 cache key，可在 `fetchCoclawFile` 层实现 IndexedDB / Cache API 缓存，对上层透明
+- **其他文件类型**：同一 URL 协议可用于 chat 附件预览、文件浏览器内联查看等场景
+
+---
+
+## 八、约束与限制
 
 | 约束 | 值 |
 |------|-----|
@@ -671,7 +723,7 @@ UI 在每次 binary 消息发送/接收后更新进度。由于 chunk 固定 16K
 
 ---
 
-## 八、依赖评估
+## 九、依赖评估
 
 | 需求 | 方案 | 新依赖 |
 |------|------|--------|
