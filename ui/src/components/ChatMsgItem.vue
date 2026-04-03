@@ -17,22 +17,30 @@
 						custom-class="mt-1 max-w-full"
 					/>
 				</div>
-				<!-- 附件卡片（非图片 + 未 inline 的图片） -->
+				<!-- 附件（非图片 + 未 inline 的图片） -->
 				<div
 					v-if="userAttachments.length"
 					class="mt-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5"
 				>
-					<div
-						v-for="(att, idx) in userAttachments"
-						:key="'att-' + idx"
-						class="flex items-center gap-2 rounded-lg border border-default bg-elevated px-3 py-2 text-xs"
-					>
-						<UIcon :name="att.isImg ? 'i-lucide-image' : 'i-lucide-file'" class="text-base text-muted shrink-0" />
-						<div class="min-w-0">
-							<div class="truncate font-medium text-default max-w-32">{{ attDisplayName(att) }}</div>
-							<div class="text-muted">{{ att.size }}</div>
+					<template v-for="(att, idx) in userAttachments" :key="'att-' + idx">
+						<!-- 语音附件 -->
+						<ChatAudio
+							v-if="att.isVoice"
+							:src="att.url"
+							:duration-ms="att.durationMs"
+						/>
+						<!-- 普通文件附件卡片 -->
+						<div
+							v-else
+							class="flex items-center gap-2 rounded-lg border border-default bg-elevated px-3 py-2 text-xs"
+						>
+							<UIcon :name="att.isImg ? 'i-lucide-image' : 'i-lucide-file'" class="text-base text-muted shrink-0" />
+							<div class="min-w-0">
+								<div class="truncate font-medium text-default max-w-32">{{ attDisplayName(att) }}</div>
+								<div class="text-muted">{{ att.size }}</div>
+							</div>
 						</div>
-					</div>
+					</template>
 				</div>
 				<div class="mt-1.5 flex items-center gap-1 text-xs text-dimmed">
 					<span v-if="formattedTime">{{ formattedTime }}</span>
@@ -169,13 +177,14 @@
 <script>
 import MarkdownBody from './MarkdownBody.vue';
 import ChatImg from './ChatImg.vue';
+import ChatAudio from './ChatAudio.vue';
 import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
 import { formatFileSize } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
 
 export default {
 	name: 'ChatMsgItem',
-	components: { MarkdownBody, ChatImg },
+	components: { MarkdownBody, ChatImg, ChatAudio },
 	props: {
 		item: {
 			type: Object,

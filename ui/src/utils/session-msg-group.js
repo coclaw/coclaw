@@ -1,4 +1,4 @@
-import { parseAttachmentBlock, isImageByExt } from './file-helper.js';
+import { parseAttachmentBlock, isImageByExt, isVoiceByExt } from './file-helper.js';
 
 /**
  * 将原始 JSONL 条目分组为渲染用 chat items。
@@ -341,6 +341,7 @@ function parseAttachments(text) {
 		attachments: attachments.map((a) => ({
 			...a,
 			isImg: isImageByExt(a.path),
+			isVoice: isVoiceByExt(a.path),
 		})),
 	};
 }

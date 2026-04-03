@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AgentCard: typeof import('./src/components/AgentCard.vue')['default']
+    ChatAudio: typeof import('./src/components/ChatAudio.vue')['default']
     ChatImg: typeof import('./src/components/ChatImg.vue')['default']
     ChatInput: typeof import('./src/components/ChatInput.vue')['default']
     ChatMsgItem: typeof import('./src/components/ChatMsgItem.vue')['default']
@@ -28,6 +29,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SlashCommandMenu: typeof import('./src/components/chat/SlashCommandMenu.vue')['default']
+    SoundWave: typeof import('./src/components/SoundWave.vue')['default']
     TopicItemActions: typeof import('./src/components/TopicItemActions.vue')['default']
     TouchSpeakOverlay: typeof import('./src/components/TouchSpeakOverlay.vue')['default']
     UAccordion: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Accordion.vue')['default']

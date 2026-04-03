@@ -45,6 +45,14 @@
 					:alt="f.name"
 					class="h-16 w-16 rounded-md border border-default object-cover"
 				/>
+				<!-- 语音文件卡片 -->
+				<div v-else-if="f.isVoice" class="flex h-16 items-center gap-2 rounded-md border border-default bg-elevated px-3">
+					<UIcon name="i-lucide-mic" class="text-lg text-muted" />
+					<div class="max-w-24 text-xs">
+						<div class="truncate font-medium">{{ voiceDisplayName(f) }}</div>
+						<div class="text-muted">{{ f.label }}</div>
+					</div>
+				</div>
 				<!-- 非图片文件卡片 -->
 				<div v-else class="flex h-16 items-center gap-2 rounded-md border border-default bg-elevated px-3">
 					<UIcon name="i-lucide-file" class="text-lg text-muted" />
@@ -121,14 +129,17 @@
 					/>
 				</div>
 				<!-- 触屏语音模式：按住说话 -->
-				<button
+				<UButton
 					v-else-if="isTouchDevice && inputMode === 'voice'"
-					class="flex h-10 w-full items-center justify-center rounded-lg bg-elevated text-sm text-muted active:bg-accented"
+					variant="outline"
+					color="neutral"
+					block
+					class="rounded-full"
 					:disabled="sending || disabled"
 					@touchstart.prevent="onTouchSpeakStart"
 				>
 					{{ $t('chat.voiceHoldToSpeak') }}
-				</button>
+				</UButton>
 				<!-- 文本输入 -->
 				<UTextarea
 					v-else
@@ -389,11 +400,19 @@ export default {
 			const file = new File([blob], name, { type: blob.type });
 			const item = formatFileBlob(file);
 			item.isVoice = true;
+			item.durationMs = durationMs || null;
 			this.inputFiles.push(item);
 			this.recorderStatus = 'IDLE';
 		},
 
 		// --- 移动端语音 (Phase 4 实现) ---
+		voiceDisplayName(f) {
+			if (f.durationMs) {
+				const sec = Math.round(f.durationMs / 1000);
+				return this.$t('chat.voiceLabelDuration', { duration: `${sec}″` });
+			}
+			return this.$t('chat.voiceLabel');
+		},
 		toggleInputMode() {
 			this.inputMode = this.inputMode === 'keyboard' ? 'voice' : 'keyboard';
 		},

@@ -414,6 +414,10 @@ export function createChatStore(storeKey, opts = {}) {
 				if (hasFiles) {
 					optimisticUser._attachments = files.map((f) => ({
 						name: f.name, size: f.bytes, type: f.file?.type,
+						isVoice: f.isVoice || false,
+						durationMs: f.durationMs || null,
+						// 语音附件需要 blob URL 用于乐观消息播放
+						url: f.isVoice && f.file ? URL.createObjectURL(f.file) : null,
 					}));
 				}
 				const optimisticBot = {
@@ -800,6 +804,12 @@ export function createChatStore(storeKey, opts = {}) {
 
 			/** 移除本地乐观消息（错误/超时回退） */
 			__removeLocalMessages() {
+				for (const m of this.messages) {
+					if (!m._local || !m._attachments) continue;
+					for (const att of m._attachments) {
+						if (att.url) URL.revokeObjectURL(att.url);
+					}
+				}
 				this.messages = this.messages.filter((m) => !m._local);
 			},
 
@@ -1095,6 +1105,13 @@ export function createChatStore(storeKey, opts = {}) {
 
 			__removeLocalEntries() {
 				if (this.messages.some((e) => e._local)) {
+					// 释放乐观消息中的 blob URL（语音附件播放地址）
+					for (const e of this.messages) {
+						if (!e._local || !e._attachments) continue;
+						for (const att of e._attachments) {
+							if (att.url) URL.revokeObjectURL(att.url);
+						}
+					}
 					this.messages = this.messages.filter((e) => !e._local);
 				}
 			},

@@ -66,6 +66,19 @@ export function isImageByExt(path) {
 	return IMG_EXTS.has(ext);
 }
 
+// 语音扩展名集
+const VOICE_EXTS = new Set(['webm', 'm4a', 'mp3', 'ogg', 'wav', 'aac']);
+
+/**
+ * 根据文件扩展名判断是否为语音
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function isVoiceByExt(path) {
+	const ext = path.includes('.') ? path.split('.').pop().toLowerCase() : '';
+	return VOICE_EXTS.has(ext);
+}
+
 /**
  * 构造 chat 附件目录路径
  * @param {string} chatSessionKey - 如 'agent:main:main' 或 'agent:main:telegram:direct:123'
