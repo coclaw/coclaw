@@ -337,6 +337,7 @@ export const enMessages = {
 		audioPlay: 'Play',
 		audioPause: 'Pause',
 		audioStop: 'Stop',
+		audioPlayFailed: 'Playback failed',
 		maxRecordCountdown: '{s}s left',
 		fileUpload: 'Upload file',
 		fileRemove: 'Remove file',

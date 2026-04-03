@@ -337,6 +337,7 @@ export const zhCNMessages = {
 		audioPlay: '播放',
 		audioPause: '暂停',
 		audioStop: '停止',
+		audioPlayFailed: '播放失败',
 		maxRecordCountdown: '还剩 {s} 秒',
 		fileUpload: '上传文件',
 		fileRemove: '移除文件',

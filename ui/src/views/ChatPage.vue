@@ -94,6 +94,8 @@
 							v-else
 							:item="item"
 							:agent-display="agentDisplay"
+							:bot-id="currentBotId"
+							:agent-id="currentAgentId"
 						/>
 					</template>
 				</div>

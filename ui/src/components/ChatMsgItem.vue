@@ -180,6 +180,7 @@ import ChatImg from './ChatImg.vue';
 import ChatAudio from './ChatAudio.vue';
 import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
 import { formatFileSize } from '../utils/file-helper.js';
+import { buildCoclawUrl } from '../services/coclaw-file.js';
 import { useNotify } from '../composables/use-notify.js';
 
 export default {
@@ -193,6 +194,14 @@ export default {
 		agentDisplay: {
 			type: Object,
 			default: () => ({ name: 'Agent', avatarUrl: null, emoji: null }),
+		},
+		botId: {
+			type: String,
+			default: '',
+		},
+		agentId: {
+			type: String,
+			default: '',
 		},
 	},
 	setup() {
@@ -214,13 +223,19 @@ export default {
 		userAttachments() {
 			const atts = this.item.attachments;
 			if (!atts?.length) return [];
-			// 附件信息来源于 parseAttachmentBlock（有 path/size/name/isImg）
-			// 或乐观消息的 _attachments（有 name/size/type）
-			return atts.map((a) => ({
-				...a,
-				// 乐观消息的 size 是数字，需格式化；历史消息已是字符串
-				size: typeof a.size === 'number' ? formatFileSize(a.size) : (a.size || ''),
-			}));
+			// 附件信息来源于 parseAttachmentBlock（有 path/size/name/isImg/isVoice）
+			// 或乐观消息的 _attachments（有 name/size/type/isVoice/durationMs/url）
+			return atts.map((a) => {
+				const result = {
+					...a,
+					size: typeof a.size === 'number' ? formatFileSize(a.size) : (a.size || ''),
+				};
+				// 语音附件：乐观消息已有 blob URL；历史消息需构建 coclaw-file URL
+				if (a.isVoice && !a.url && a.path && this.botId && this.agentId) {
+					result.url = buildCoclawUrl(this.botId, this.agentId, a.path);
+				}
+				return result;
+			});
 		},
 		botAvatarUrl() {
 			return this.agentDisplay?.avatarUrl || botAvatarSvg;
