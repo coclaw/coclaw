@@ -148,6 +148,7 @@
 		<UModal v-model:open="deleteDirOpen" :title="$t('files.deleteDirTitle')" description=" " :ui="promptUi">
 			<template #body>
 				<p class="text-sm text-muted">{{ $t('files.deleteDirDesc', { name: deleteDirName }) }}</p>
+				<p v-if="deleteDirProtectedDesc" class="mt-2 text-sm text-warning">{{ deleteDirProtectedDesc }}</p>
 				<UCheckbox v-model="deleteDirChecked" :label="$t('files.deleteDirCheck')" class="mt-3" />
 			</template>
 			<template #footer>
@@ -162,11 +163,15 @@
 		<UModal v-model:open="deleteFileOpen" :title="$t('files.delete')" description=" " :ui="promptUi">
 			<template #body>
 				<p class="text-sm text-muted">{{ $t('files.deleteFileConfirm', { name: deleteFileName }) }}</p>
+				<template v-if="deleteFileProtectedDesc">
+					<p class="mt-2 text-sm text-warning">{{ deleteFileProtectedDesc }}</p>
+					<UCheckbox v-model="deleteFileChecked" :label="$t('files.deleteProtectedCheck')" class="mt-3" />
+				</template>
 			</template>
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
 					<UButton variant="ghost" color="neutral" @click="deleteFileOpen = false">{{ $t('common.cancel') }}</UButton>
-					<UButton color="error" :loading="deleting" @click="onConfirmDeleteFile">{{ $t('common.confirm') }}</UButton>
+					<UButton color="error" :disabled="deleteFileProtectedDesc && !deleteFileChecked" :loading="deleting" @click="onConfirmDeleteFile">{{ $t('common.confirm') }}</UButton>
 				</div>
 			</template>
 		</UModal>
@@ -206,6 +211,14 @@ import { listFiles, deleteFile, mkdirFiles } from '../services/file-transfer.js'
 import { useNotify } from '../composables/use-notify.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
 
+// workspace 根目录下受保护的文件/目录 → i18n key 映射
+const PROTECTED_FILE_KEYS = {
+	'MEMORY.md': 'MEMORY', 'SOUL.md': 'SOUL', 'IDENTITY.md': 'IDENTITY',
+	'USER.md': 'USER', 'AGENTS.md': 'AGENTS', 'TOOLS.md': 'TOOLS',
+	'HEARTBEAT.md': 'HEARTBEAT',
+};
+const PROTECTED_DIR_KEYS = { '.coclaw': 'coclaw' };
+
 export default {
 	name: 'FileManagerPage',
 	components: { MobilePageHeader, FileBreadcrumb, FileListItem, FileUploadItem },
@@ -236,6 +249,7 @@ export default {
 			// 删除文件
 			deleteFileOpen: false,
 			deleteFileName: '',
+			deleteFileChecked: false,
 			// 新建目录
 			mkdirOpen: false,
 			mkdirName: '',
@@ -268,6 +282,16 @@ export default {
 		downloadTasks() {
 			return this.filesStore.getActiveTasks(this.botId, this.agentId, this.currentDir)
 				.filter((t) => t.type === 'download');
+		},
+		deleteFileProtectedDesc() {
+			if (this.currentDir) return '';
+			const key = PROTECTED_FILE_KEYS[this.deleteFileName];
+			return key ? this.$t(`files.protectedFileDesc.${key}`) : '';
+		},
+		deleteDirProtectedDesc() {
+			if (this.currentDir) return '';
+			const key = PROTECTED_DIR_KEYS[this.deleteDirName];
+			return key ? this.$t(`files.protectedDirDesc.${key}`) : '';
 		},
 	},
 	watch: {
@@ -458,6 +482,7 @@ export default {
 			} else {
 				this.deleteFileName = entry.name;
 				this.__deleteFilePath = this.currentDir ? `${this.currentDir}/${entry.name}` : entry.name;
+				this.deleteFileChecked = false;
 				this.deleteFileOpen = true;
 			}
 		},
