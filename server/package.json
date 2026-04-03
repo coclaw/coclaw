@@ -28,9 +28,8 @@
 		"prisma:studio": "prisma studio",
 		"admin": "node src/cli/admin.js",
 		"account:create-test-local": "node scripts/create-test-local-account.js",
-		"test": "node --test",
-		"coverage": "c8 --check-coverage --lines 90 --functions 90 --branches 90 --statements 90 --reporter=text --reporter=lcov node --test",
-		"verify": "pnpm check && pnpm test && pnpm coverage"
+		"test": "c8 --check-coverage --lines 90 --functions 90 --branches 90 --statements 90 --reporter=text --reporter=lcov node --test",
+		"verify": "pnpm check && pnpm test"
 	},
 	"dependencies": {
 		"@inquirer/confirm": "^6.0.8",

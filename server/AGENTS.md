@@ -53,9 +53,4 @@ server/
 
 ## 单元测试覆盖率要求
 
-server 工作区采用高于根 CLAUDE.md 基线的覆盖率门槛：
-
-- `lines >= 90%`
-- `functions >= 90%`
-- `branches >= 90%`
-- `statements >= 90%`
+server 工作区覆盖率门槛（90%）高于根 CLAUDE.md 基线，已固化在 `pnpm test` 命令中。
