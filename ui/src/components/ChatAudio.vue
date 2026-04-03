@@ -183,7 +183,7 @@ export default {
 			if (this.loading) return;
 			try {
 				const url = await this.__resolveUrl();
-				if (!url) return;
+				if (!url || this.__unmounted) return;
 				const el = this.__ensureAudio(url);
 				if (!el) return;
 				await el.play();
