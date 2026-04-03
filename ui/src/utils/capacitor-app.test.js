@@ -11,6 +11,7 @@ vi.mock('@capacitor/core', () => ({
 	Capacitor: {
 		isNativePlatform: () => true,
 		getPlatform: () => 'android',
+		isPluginAvailable: () => true,
 	},
 	registerPlugin: vi.fn((name) => {
 		if (name === 'ShareIntent') {

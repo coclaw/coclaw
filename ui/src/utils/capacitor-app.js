@@ -174,6 +174,8 @@ const ShareIntent = Capacitor.isNativePlatform()
 	: null;
 
 function initShareIntent() {
+	if (!Capacitor.isPluginAvailable('ShareIntent')) return;
+
 	// 冷启动：检查是否有待消费的分享数据
 	ShareIntent.checkPending().then((data) => {
 		if (data?.type) {
