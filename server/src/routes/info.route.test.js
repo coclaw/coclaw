@@ -24,3 +24,13 @@ test('handleGetInfo: should return { version }', () => {
 	handleGetInfo({}, res, () => {});
 	assert.deepEqual(res.body, { version });
 });
+
+test('handleGetInfo: res.json 抛异常时调用 next(err)', () => {
+	const err = new Error('json failed');
+	const res = {
+		json() { throw err; },
+	};
+	let nextErr = null;
+	handleGetInfo({}, res, (e) => { nextErr = e; });
+	assert.equal(nextErr, err);
+});

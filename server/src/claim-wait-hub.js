@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 
 // 认领码等待状态（与 binding-wait-hub 对称，无 userId 语义）
 const claimStates = new Map();
+let POLL_TIMEOUT_MS = 25_000;
 
 function nowMs() {
 	return Date.now();
@@ -130,7 +131,7 @@ export function waitClaimResult({ code, waitToken }) {
 				return;
 			}
 			resolve({ status: 'PENDING' });
-		}, 25_000);
+		}, POLL_TIMEOUT_MS);
 
 		const onDone = (payload) => {
 			clearTimeout(timeout);
@@ -140,3 +141,10 @@ export function waitClaimResult({ code, waitToken }) {
 		state.waiters.add(onDone);
 	});
 }
+
+// 测试辅助
+export const __test = {
+	claimStates,
+	get POLL_TIMEOUT_MS() { return POLL_TIMEOUT_MS; },
+	set POLL_TIMEOUT_MS(v) { POLL_TIMEOUT_MS = v; },
+};

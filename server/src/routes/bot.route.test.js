@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bindBotHandler, botStatusStreamHandler, cancelBindingCodeHandler, createBindingCodeHandler, listBotsHandler, waitBindingCodeHandler } from './bot.route.js';
+import {
+	bindBotHandler,
+	botStatusStreamHandler,
+	cancelBindingCodeHandler,
+	createBindingCodeHandler,
+	createUiWsTicketHandler,
+	getBotSelfHandler,
+	listBotsHandler,
+	unbindBotByUserHandler,
+	unbindBotHandler,
+	waitBindingCodeHandler,
+} from './bot.route.js';
 
 function createRes() {
 	const handlers = new Map();
@@ -383,4 +394,835 @@ test('cancelBindingCodeHandler: should return 204 when code not found', async ()
 	});
 
 	assert.equal(res.statusCode, 204);
+});
+
+// --- createBindingCodeHandler ---
+
+test('createBindingCodeHandler: should return 500 when service returns not ok', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+	};
+	const res = createRes();
+
+	await createBindingCodeHandler(req, res, () => {}, {
+		createBindingCodeForUserImpl: async () => ({
+			ok: false,
+			code: 'RATE_LIMIT',
+			message: 'Too many codes',
+		}),
+	});
+
+	assert.equal(res.statusCode, 500);
+	assert.equal(res.body.code, 'RATE_LIMIT');
+	assert.equal(res.body.message, 'Too many codes');
+});
+
+test('createBindingCodeHandler: should return 201 with code and waitToken on success', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+	};
+	const res = createRes();
+	const expiresAt = new Date('2026-12-31T00:00:00Z');
+
+	await createBindingCodeHandler(req, res, () => {}, {
+		createBindingCodeForUserImpl: async () => ({
+			ok: true,
+			code: 'ABCD1234',
+			expiresAt,
+		}),
+		registerBindingWaitImpl: () => 'wait-token-123',
+	});
+
+	assert.equal(res.statusCode, 201);
+	assert.equal(res.body.code, 'ABCD1234');
+	assert.equal(res.body.expiresAt, expiresAt);
+	assert.equal(res.body.waitToken, 'wait-token-123');
+});
+
+test('createBindingCodeHandler: should forward error to next', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+	};
+	const res = createRes();
+	const testErr = new Error('db error');
+	let nextErr = null;
+
+	await createBindingCodeHandler(req, res, (err) => { nextErr = err; }, {
+		createBindingCodeForUserImpl: async () => { throw testErr; },
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+// --- bindBotHandler 补充 ---
+
+test('bindBotHandler: should return 400 for INVALID_INPUT failure', async () => {
+	const req = { body: { code: '' } };
+	const res = createRes();
+
+	await bindBotHandler(req, res, () => {}, {
+		bindBotImpl: async () => ({
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'code is required',
+		}),
+	});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('bindBotHandler: should return 401 for non-INVALID_INPUT failure', async () => {
+	const req = { body: { code: 'EXPIRED1' } };
+	const res = createRes();
+
+	await bindBotHandler(req, res, () => {}, {
+		bindBotImpl: async () => ({
+			ok: false,
+			code: 'CODE_EXPIRED',
+			message: 'Code has expired',
+		}),
+	});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'CODE_EXPIRED');
+});
+
+test('bindBotHandler: should notify and disconnect on rebound', async () => {
+	const req = { body: { code: '12345678', name: 'bot-x' } };
+	const res = createRes();
+	let disconnectedBotId = null;
+	let disconnectReason = null;
+
+	await bindBotHandler(req, res, () => {}, {
+		bindBotImpl: async () => ({
+			ok: true,
+			botId: 42n,
+			userId: 7n,
+			token: 'new-tok',
+			rebound: true,
+			bindingCode: '12345678',
+			botName: 'bot-x',
+		}),
+		markBindingBoundImpl: () => {},
+		notifyAndDisconnectBotImpl: (botId, reason) => {
+			disconnectedBotId = botId;
+			disconnectReason = reason;
+		},
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.rebound, true);
+	assert.equal(disconnectedBotId, 42n);
+	assert.equal(disconnectReason, 'token_revoked');
+});
+
+test('bindBotHandler: should forward error to next', async () => {
+	const req = { body: { code: '12345678' } };
+	const res = createRes();
+	const testErr = new Error('bind error');
+	let nextErr = null;
+
+	await bindBotHandler(req, res, (err) => { nextErr = err; }, {
+		bindBotImpl: async () => { throw testErr; },
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+// --- getBotSelfHandler ---
+
+test('getBotSelfHandler: should reject request without bearer token', async () => {
+	const req = { headers: {} };
+	const res = createRes();
+
+	await getBotSelfHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('getBotSelfHandler: should reject non-Bearer auth scheme', async () => {
+	const req = { headers: { authorization: 'Basic abc123' } };
+	const res = createRes();
+
+	await getBotSelfHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('getBotSelfHandler: should reject Bearer with empty token', async () => {
+	const req = { headers: { authorization: 'Bearer ' } };
+	const res = createRes();
+
+	await getBotSelfHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+});
+
+test('getBotSelfHandler: should return 401 when token not found in db', async () => {
+	const req = { headers: { authorization: 'Bearer some-token' } };
+	const res = createRes();
+
+	await getBotSelfHandler(req, res, () => {}, {
+		findBotByTokenHashImpl: async () => null,
+	});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.message, 'Invalid token');
+});
+
+test('getBotSelfHandler: should return botId when token is valid', async () => {
+	const req = { headers: { authorization: 'Bearer valid-token' } };
+	const res = createRes();
+
+	await getBotSelfHandler(req, res, () => {}, {
+		findBotByTokenHashImpl: async () => ({ id: 99n }),
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.botId, '99');
+});
+
+test('getBotSelfHandler: should forward error to next', async () => {
+	const req = { headers: { authorization: 'Bearer valid-token' } };
+	const res = createRes();
+	const testErr = new Error('db error');
+	let nextErr = null;
+
+	await getBotSelfHandler(req, res, (err) => { nextErr = err; }, {
+		findBotByTokenHashImpl: async () => { throw testErr; },
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+// --- createUiWsTicketHandler ---
+
+test('createUiWsTicketHandler: should reject unauthenticated request', async () => {
+	const req = { isAuthenticated: () => false, user: null };
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+});
+
+test('createUiWsTicketHandler: should create ticket with explicit botId', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42' },
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 42n, userId: 7n }),
+		createUiWsTicketImpl: ({ botId, userId }) => `ticket-${botId}-${userId}`,
+	});
+
+	assert.equal(res.statusCode, 201);
+	assert.equal(res.body.ticket, 'ticket-42-7');
+	assert.equal(res.body.botId, '42');
+});
+
+test('createUiWsTicketHandler: should return 400 for invalid botId format', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: 'not-a-number' },
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => { throw new Error('invalid'); },
+	});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('createUiWsTicketHandler: should return 404 when bot not found', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '999' },
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => null,
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+});
+
+test('createUiWsTicketHandler: should return 404 when bot belongs to another user', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42' },
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findBotByIdImpl: async () => ({ id: 42n, userId: 999n }),
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+});
+
+test('createUiWsTicketHandler: should fallback to latest bot when botId not provided', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: {},
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findLatestBotByUserIdImpl: async () => ({ id: 10n, userId: 7n }),
+		createUiWsTicketImpl: () => 'auto-ticket',
+	});
+
+	assert.equal(res.statusCode, 201);
+	assert.equal(res.body.ticket, 'auto-ticket');
+	assert.equal(res.body.botId, '10');
+});
+
+test('createUiWsTicketHandler: should return 404 when no latest bot found', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: {},
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findLatestBotByUserIdImpl: async () => null,
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+});
+
+test('createUiWsTicketHandler: should forward error to next', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: {},
+	};
+	const res = createRes();
+	const testErr = new Error('unexpected');
+	let nextErr = null;
+
+	await createUiWsTicketHandler(req, res, (err) => { nextErr = err; }, {
+		findLatestBotByUserIdImpl: async () => { throw testErr; },
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+// --- waitBindingCodeHandler 补充 ---
+
+test('waitBindingCodeHandler: should reject unauthenticated request', async () => {
+	const req = { isAuthenticated: () => false, user: null, body: {} };
+	const res = createRes();
+
+	await waitBindingCodeHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+});
+
+test('waitBindingCodeHandler: should return 400 when code is missing', async () => {
+	const req = createWaitReq({ code: '', waitToken: 'token' });
+	const res = createRes();
+
+	await waitBindingCodeHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('waitBindingCodeHandler: should return 400 when waitToken is missing', async () => {
+	const req = createWaitReq({ code: '12345678', waitToken: '' });
+	const res = createRes();
+
+	await waitBindingCodeHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('waitBindingCodeHandler: should return 404 when result is INVALID', async () => {
+	const req = createWaitReq({ code: '12345678', waitToken: 'token' });
+	const res = createRes();
+
+	await waitBindingCodeHandler(req, res, () => {}, {
+		waitBindingResultImpl: async () => ({ status: 'INVALID' }),
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'BINDING_NOT_FOUND');
+});
+
+test('waitBindingCodeHandler: should return PENDING when status is unknown', async () => {
+	const req = createWaitReq({ code: '12345678', waitToken: 'token' });
+	const res = createRes();
+
+	await waitBindingCodeHandler(req, res, () => {}, {
+		waitBindingResultImpl: async () => ({ status: 'PENDING' }),
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.code, 'BINDING_PENDING');
+});
+
+test('waitBindingCodeHandler: should forward error to next', async () => {
+	const req = createWaitReq({ code: '12345678', waitToken: 'token' });
+	const res = createRes();
+	const testErr = new Error('wait error');
+	let nextErr = null;
+
+	await waitBindingCodeHandler(req, res, (err) => { nextErr = err; }, {
+		waitBindingResultImpl: async () => { throw testErr; },
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+// --- unbindBotByUserHandler ---
+
+test('unbindBotByUserHandler: should reject unauthenticated request', async () => {
+	const req = { isAuthenticated: () => false, user: null, body: {} };
+	const res = createRes();
+
+	await unbindBotByUserHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+});
+
+test('unbindBotByUserHandler: should return 400 when botId is missing', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: {},
+	};
+	const res = createRes();
+
+	await unbindBotByUserHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+	assert.equal(res.body.message, 'botId is required');
+});
+
+test('unbindBotByUserHandler: should return 400 when botId is empty string', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '  ' },
+	};
+	const res = createRes();
+
+	await unbindBotByUserHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'botId is required');
+});
+
+test('unbindBotByUserHandler: should return 400 when botId is not a valid BigInt', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: 'not-a-number' },
+	};
+	const res = createRes();
+
+	await unbindBotByUserHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'botId is invalid');
+});
+
+test('unbindBotByUserHandler: should return 404 when unbind service returns BOT_NOT_FOUND', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42' },
+	};
+	const res = createRes();
+
+	await unbindBotByUserHandler(req, res, () => {}, {
+		unbindBotByUserImpl: async () => ({
+			ok: false,
+			code: 'BOT_NOT_FOUND',
+			message: 'Bot not found',
+		}),
+	});
+
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+});
+
+test('unbindBotByUserHandler: should return 400 when unbind service returns INVALID_INPUT', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42' },
+	};
+	const res = createRes();
+
+	await unbindBotByUserHandler(req, res, () => {}, {
+		unbindBotByUserImpl: async () => ({
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'Invalid input',
+		}),
+	});
+
+	assert.equal(res.statusCode, 400);
+});
+
+test('unbindBotByUserHandler: should return 401 for other error codes', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42' },
+	};
+	const res = createRes();
+
+	await unbindBotByUserHandler(req, res, () => {}, {
+		unbindBotByUserImpl: async () => ({
+			ok: false,
+			code: 'FORBIDDEN',
+			message: 'Not allowed',
+		}),
+	});
+
+	assert.equal(res.statusCode, 401);
+});
+
+test('unbindBotByUserHandler: should unbind, notify, and return success', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42' },
+	};
+	const res = createRes();
+	let notifiedBotId = null;
+	let sseEvent = null;
+
+	await unbindBotByUserHandler(req, res, () => {}, {
+		unbindBotByUserImpl: async () => ({
+			ok: true,
+			botId: 42n,
+		}),
+		notifyAndDisconnectBotImpl: (botId) => { notifiedBotId = botId; },
+		sendToUserImpl: (_userId, evt) => { sseEvent = evt; },
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.botId, '42');
+	assert.equal(res.body.unbound, true);
+	assert.equal(notifiedBotId, 42n);
+	assert.equal(sseEvent.event, 'bot.unbound');
+	assert.equal(sseEvent.botId, '42');
+});
+
+test('unbindBotByUserHandler: should forward error to next', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { botId: '42' },
+	};
+	const res = createRes();
+	const testErr = new Error('unbind error');
+	let nextErr = null;
+
+	await unbindBotByUserHandler(req, res, (err) => { nextErr = err; }, {
+		unbindBotByUserImpl: async () => { throw testErr; },
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+// --- unbindBotHandler ---
+
+test('unbindBotHandler: should reject request without bearer token', async () => {
+	const req = { headers: {} };
+	const res = createRes();
+
+	await unbindBotHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('unbindBotHandler: should return 401 when unbind service returns non-ok', async () => {
+	const req = { headers: { authorization: 'Bearer some-token' } };
+	const res = createRes();
+
+	await unbindBotHandler(req, res, () => {}, {
+		unbindBotByTokenImpl: async () => ({
+			ok: false,
+			code: 'INVALID_TOKEN',
+			message: 'Token invalid',
+		}),
+	});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'INVALID_TOKEN');
+});
+
+test('unbindBotHandler: should return 400 for INVALID_INPUT failure', async () => {
+	const req = { headers: { authorization: 'Bearer some-token' } };
+	const res = createRes();
+
+	await unbindBotHandler(req, res, () => {}, {
+		unbindBotByTokenImpl: async () => ({
+			ok: false,
+			code: 'INVALID_INPUT',
+			message: 'Bad input',
+		}),
+	});
+
+	assert.equal(res.statusCode, 400);
+});
+
+test('unbindBotHandler: should unbind, notify, and return success', async () => {
+	const req = { headers: { authorization: 'Bearer valid-token' } };
+	const res = createRes();
+	let notifiedBotId = null;
+	let sseEvent = null;
+
+	await unbindBotHandler(req, res, () => {}, {
+		unbindBotByTokenImpl: async () => ({
+			ok: true,
+			botId: 55n,
+			userId: 7n,
+		}),
+		notifyAndDisconnectBotImpl: (botId) => { notifiedBotId = botId; },
+		sendToUserImpl: (_userId, evt) => { sseEvent = evt; },
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.botId, '55');
+	assert.equal(res.body.unbound, true);
+	assert.equal(notifiedBotId, 55n);
+	assert.equal(sseEvent.event, 'bot.unbound');
+});
+
+test('unbindBotHandler: should forward error to next', async () => {
+	const req = { headers: { authorization: 'Bearer valid-token' } };
+	const res = createRes();
+	const testErr = new Error('unbind error');
+	let nextErr = null;
+
+	await unbindBotHandler(req, res, (err) => { nextErr = err; }, {
+		unbindBotByTokenImpl: async () => { throw testErr; },
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+// --- cancelBindingCodeHandler 补充 ---
+
+test('cancelBindingCodeHandler: should return 400 when code param is missing', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: {},
+	};
+	const res = createRes();
+
+	await cancelBindingCodeHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_REQUEST');
+});
+
+test('cancelBindingCodeHandler: should forward error to next', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { code: 'AABBCCDD' },
+	};
+	const res = createRes();
+	const testErr = new Error('find error');
+	let nextErr = null;
+
+	await cancelBindingCodeHandler(req, res, (err) => { nextErr = err; }, {
+		findBindingCodeImpl: async () => { throw testErr; },
+		deleteBindingCodeImpl: async () => {},
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+test('cancelBindingCodeHandler: should silently handle delete failure', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		params: { code: 'AABBCCDD' },
+	};
+	const res = createRes();
+
+	await cancelBindingCodeHandler(req, res, () => {}, {
+		findBindingCodeImpl: async () => ({ code: 'AABBCCDD', userId: 7n }),
+		deleteBindingCodeImpl: async () => { throw new Error('delete failed'); },
+	});
+
+	assert.equal(res.statusCode, 204);
+	assert.equal(res.ended, true);
+});
+
+// --- botStatusStreamHandler 补充 ---
+
+test('botStatusStreamHandler: should write heartbeat on interval tick', async (t) => {
+	t.mock.timers.enable({ apis: ['setInterval'] });
+
+	const reqCloseHandlers = [];
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		on(event, handler) { reqCloseHandlers.push({ event, handler }); },
+	};
+	const written = [];
+	const res = {
+		writeHead() {},
+		write(data) { written.push(data); },
+		on() {},
+	};
+
+	await botStatusStreamHandler(req, res, undefined, {
+		sendSnapshotImpl: async () => {},
+	});
+
+	// 触发心跳定时器
+	t.mock.timers.tick(30_000);
+	assert.ok(written.includes('data: {"event":"heartbeat"}\n\n'));
+
+	// 清理
+	for (const { event, handler } of reqCloseHandlers) {
+		if (event === 'close') handler();
+	}
+});
+
+test('botStatusStreamHandler: should clear heartbeat timer when write fails', async (t) => {
+	t.mock.timers.enable({ apis: ['setInterval'] });
+
+	const reqCloseHandlers = [];
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		on(event, handler) { reqCloseHandlers.push({ event, handler }); },
+	};
+	let writeCount = 0;
+	const res = {
+		writeHead() {},
+		write(data) {
+			writeCount++;
+			// 第一次 write 是初始的 '\n'，之后的心跳 write 抛异常
+			if (writeCount > 1) {
+				throw new Error('connection closed');
+			}
+		},
+		on() {},
+	};
+
+	await botStatusStreamHandler(req, res, undefined, {
+		sendSnapshotImpl: async () => {},
+	});
+
+	// 第一次心跳触发 → 写失败 → 清理定时器
+	t.mock.timers.tick(30_000);
+	const countAfterFirst = writeCount;
+
+	// 再 tick 一次，不应再有 write 调用（定时器已被清理）
+	t.mock.timers.tick(30_000);
+	assert.equal(writeCount, countAfterFirst);
+
+	// 清理
+	for (const { event, handler } of reqCloseHandlers) {
+		if (event === 'close') handler();
+	}
+});
+
+test('botStatusStreamHandler: should handle snapshot failure gracefully', async () => {
+	const reqCloseHandlers = [];
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		on(event, handler) { reqCloseHandlers.push({ event, handler }); },
+	};
+	const written = [];
+	const res = {
+		writeHead() {},
+		write(data) { written.push(data); },
+		on() {},
+	};
+
+	await botStatusStreamHandler(req, res, undefined, {
+		sendSnapshotImpl: async () => { throw new Error('snapshot error'); },
+	});
+
+	// 不应抛出异常，应正常返回
+	assert.ok(written.includes('\n'));
+
+	// 清理定时器
+	for (const { event, handler } of reqCloseHandlers) {
+		if (event === 'close') handler();
+	}
+});
+
+// --- listBotsHandler 补充 ---
+
+test('listBotsHandler: should forward error to next', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+	};
+	const res = createRes();
+	const testErr = new Error('list error');
+	let nextErr = null;
+
+	await listBotsHandler(req, res, (err) => { nextErr = err; }, {
+		listBotsByUserIdImpl: async () => { throw testErr; },
+		listOnlineBotIdsImpl: () => new Set(),
+	});
+
+	assert.equal(nextErr, testErr);
+});
+
+test('listBotsHandler: should use db name for offline bots', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+	};
+	const res = createRes();
+
+	await listBotsHandler(req, res, () => {}, {
+		listBotsByUserIdImpl: async () => ([
+			{
+				id: 1n,
+				name: 'offline-bot',
+				lastSeenAt: null,
+				createdAt: new Date('2026-01-01T00:00:00.000Z'),
+				updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+			},
+		]),
+		listOnlineBotIdsImpl: () => new Set(),
+		refreshBotNameImpl: async () => undefined,
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.items[0].name, 'offline-bot');
+	assert.equal(res.body.items[0].online, false);
 });

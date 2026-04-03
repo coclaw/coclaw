@@ -6,6 +6,7 @@ import {
 	countUsersCreatedSince,
 	countUsersActiveSince,
 	topActiveUsers,
+	latestRegisteredUsers,
 	countBots,
 } from './admin.repo.js';
 
@@ -83,4 +84,41 @@ test('topActiveUsers: 传递正确的查询参数', async () => {
 test('countBots: 调用 prisma.bot.count()', async () => {
 	const db = { bot: { count: async () => 7 } };
 	assert.equal(await countBots(db), 7);
+});
+
+test('latestRegisteredUsers: 返回结果并将 BigInt id 转为 string', async () => {
+	const db = {
+		user: {
+			findMany: async () => [
+				{ id: 111n, name: 'Carol', createdAt: new Date('2026-03-24'), localAuth: { loginName: 'carol' } },
+				{ id: 222n, name: 'Dave', createdAt: new Date('2026-03-23'), localAuth: null },
+			],
+		},
+	};
+
+	const result = await latestRegisteredUsers(5, db);
+
+	assert.equal(result.length, 2);
+	assert.equal(result[0].id, '111');
+	assert.equal(result[0].name, 'Carol');
+	assert.equal(result[0].loginName, 'carol');
+	assert.equal(result[1].id, '222');
+	assert.equal(result[1].loginName, null);
+});
+
+test('latestRegisteredUsers: 传递正确的查询参数', async () => {
+	let captured = null;
+	const db = {
+		user: {
+			findMany: async (args) => { captured = args; return []; },
+		},
+	};
+
+	await latestRegisteredUsers(10, db);
+
+	assert.deepEqual(captured, {
+		orderBy: { createdAt: 'desc' },
+		take: 10,
+		select: { id: true, name: true, createdAt: true, localAuth: { select: { loginName: true } } },
+	});
 });

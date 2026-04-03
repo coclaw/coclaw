@@ -98,13 +98,16 @@ export function createApp() {
 	app.use('/api/v1/claws', clawRouter);
 	app.use('/api/v1/turn', turnRouter);
 
-	app.use((err, req, res, _next) => {
-		console.error(err);
-		res.status(500).json({
-			code: 'INTERNAL_SERVER_ERROR',
-			message: 'Internal server error',
-		});
-	});
+	app.use(globalErrorHandler);
 
 	return app;
+}
+
+/** @type {import('express').ErrorRequestHandler} */
+export function globalErrorHandler(err, _req, res, _next) {
+	console.error(err);
+	res.status(500).json({
+		code: 'INTERNAL_SERVER_ERROR',
+		message: 'Internal server error',
+	});
 }

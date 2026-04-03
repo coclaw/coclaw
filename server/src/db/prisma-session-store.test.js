@@ -84,6 +84,21 @@ describe('PrismaSessionStore', () => {
 		assert.equal(mockPrisma.expressSession.delete.mock.callCount(), 1);
 	});
 
+	test('get: JSON 解析失败时回调 err', async () => {
+		mockPrisma.expressSession.findUnique.mock.mockImplementation(() =>
+			Promise.resolve({
+				sid: 'corrupt',
+				data: '{invalid-json',
+				expiresAt: new Date(Date.now() + 86400000),
+			})
+		);
+
+		await assert.rejects(
+			() => cb2promise((cb) => store.get('corrupt', cb)),
+			(err) => err instanceof SyntaxError
+		);
+	});
+
 	test('get: DB 错误时回调 err', async () => {
 		const dbErr = new Error('db error');
 		mockPrisma.expressSession.findUnique.mock.mockImplementation(() =>
@@ -187,6 +202,18 @@ describe('PrismaSessionStore', () => {
 		assert.deepEqual(args.where, { sid: 'sid6' });
 		const expiresAt = args.data.expiresAt.getTime();
 		assert.ok(expiresAt >= before + 7200000);
+	});
+
+	test('touch: 其他错误正常抛出', async () => {
+		const dbErr = new Error('db error');
+		mockPrisma.expressSession.update.mock.mockImplementation(() =>
+			Promise.reject(dbErr)
+		);
+
+		await assert.rejects(
+			() => cb2promise((cb) => store.touch('sid-err', {}, cb)),
+			(err) => err === dbErr
+		);
 	});
 
 	test('touch: 记录不存在（P2025）视为成功', async () => {

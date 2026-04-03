@@ -87,12 +87,20 @@ export function hasSseClients() {
 	return sseClients.size > 0;
 }
 
-botStatusEmitter.on('status', async ({ botId, online }) => {
+/**
+ * 处理 bot status 变更事件
+ * @param {object} param0
+ * @param {string} param0.botId
+ * @param {boolean} param0.online
+ * @param {{ findBotByIdFn?: Function }} [deps]
+ */
+async function handleStatusEvent({ botId, online }, deps = {}) {
+	const { findBotByIdFn = findBotById } = deps;
 	if (!hasSseClients()) {
 		return;
 	}
 	try {
-		const bot = await findBotById(BigInt(botId));
+		const bot = await findBotByIdFn(BigInt(botId));
 		if (!bot) {
 			console.debug('[coclaw/sse] status event: bot not found botId=%s (may be deleted)', botId);
 			return;
@@ -106,14 +114,22 @@ botStatusEmitter.on('status', async ({ botId, online }) => {
 	catch (err) {
 		console.warn('[coclaw/sse] status event push failed botId=%s: %s', botId, err?.message);
 	}
-});
+}
 
-botStatusEmitter.on('nameUpdated', async ({ botId, name }) => {
+/**
+ * 处理 bot 名称变更事件
+ * @param {object} param0
+ * @param {string} param0.botId
+ * @param {string} param0.name
+ * @param {{ findBotByIdFn?: Function }} [deps]
+ */
+async function handleNameUpdatedEvent({ botId, name }, deps = {}) {
+	const { findBotByIdFn = findBotById } = deps;
 	if (!hasSseClients()) {
 		return;
 	}
 	try {
-		const bot = await findBotById(BigInt(botId));
+		const bot = await findBotByIdFn(BigInt(botId));
 		if (!bot) {
 			console.debug('[coclaw/sse] nameUpdated event: bot not found botId=%s (may be deleted)', botId);
 			return;
@@ -127,4 +143,10 @@ botStatusEmitter.on('nameUpdated', async ({ botId, name }) => {
 	catch (err) {
 		console.warn('[coclaw/sse] nameUpdated event push failed botId=%s: %s', botId, err?.message);
 	}
-});
+}
+
+botStatusEmitter.on('status', (data) => handleStatusEvent(data));
+botStatusEmitter.on('nameUpdated', (data) => handleNameUpdatedEvent(data));
+
+// 测试辅助
+export const __test = { handleStatusEvent, handleNameUpdatedEvent };

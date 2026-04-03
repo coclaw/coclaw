@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getCurrentSessionHandler, registerLocalHandler } from './auth.route.js';
+import { getCurrentSessionHandler, loginByLoginNameHandler, logoutHandler, registerLocalHandler } from './auth.route.js';
 
 function createRes() {
 	return {
@@ -166,4 +166,199 @@ test('registerLocalHandler: should return 201 and call logIn on success', async 
 	assert.equal(res.statusCode, 201);
 	assert.equal(res.body.user.id, '778899');
 	assert.equal(loggedInUser, user);
+});
+
+// --- loginByLoginNameHandler ---
+
+// 构造 mock authenticate，模拟 passport.authenticate 返回中间件
+function mockAuthenticate(err, user, info) {
+	return (_strategy, cb) => {
+		return (_req, _res, _next) => {
+			cb(err, user, info);
+		};
+	};
+}
+
+test('loginByLoginNameHandler: should call next on passport error', () => {
+	const passportErr = new Error('passport boom');
+	let nextErr = null;
+	const req = {};
+	const res = createRes();
+
+	loginByLoginNameHandler(req, res, (err) => { nextErr = err; }, {
+		authenticate: mockAuthenticate(passportErr, null, null),
+	});
+
+	assert.equal(nextErr, passportErr);
+});
+
+test('loginByLoginNameHandler: should return 401 when user is false with info', () => {
+	const req = {};
+	const res = createRes();
+
+	loginByLoginNameHandler(req, res, () => {}, {
+		authenticate: mockAuthenticate(null, false, {
+			code: 'INVALID_CREDENTIALS',
+			message: 'Wrong password',
+		}),
+	});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'INVALID_CREDENTIALS');
+	assert.equal(res.body.message, 'Wrong password');
+});
+
+test('loginByLoginNameHandler: should return 401 with defaults when info is null', () => {
+	const req = {};
+	const res = createRes();
+
+	loginByLoginNameHandler(req, res, () => {}, {
+		authenticate: mockAuthenticate(null, false, null),
+	});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+	assert.equal(res.body.message, 'Unauthorized');
+});
+
+test('loginByLoginNameHandler: should call next when logIn fails', () => {
+	const loginErr = new Error('logIn failed');
+	let nextErr = null;
+	const user = makeSessionUser();
+	const req = {
+		logIn(u, cb) {
+			cb(loginErr);
+		},
+	};
+	const res = createRes();
+
+	loginByLoginNameHandler(req, res, (err) => { nextErr = err; }, {
+		authenticate: mockAuthenticate(null, user, null),
+	});
+
+	assert.equal(nextErr, loginErr);
+});
+
+test('loginByLoginNameHandler: should return 200 with user on success', () => {
+	const user = makeSessionUser();
+	let loggedInUser = null;
+	const req = {
+		logIn(u, cb) {
+			loggedInUser = u;
+			cb(null);
+		},
+	};
+	const res = createRes();
+
+	loginByLoginNameHandler(req, res, () => {}, {
+		authenticate: mockAuthenticate(null, user, null),
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(loggedInUser, user);
+	assert.equal(res.body.user.id, '778899');
+});
+
+// --- logoutHandler ---
+
+test('logoutHandler: should call next when logout fails', (t, done) => {
+	const logoutErr = new Error('logout failed');
+	const req = {
+		logout(cb) {
+			cb(logoutErr);
+		},
+	};
+	const res = createRes();
+
+	logoutHandler(req, res, (err) => {
+		assert.equal(err, logoutErr);
+		done();
+	});
+});
+
+test('logoutHandler: should call next when session.destroy fails', (t, done) => {
+	const destroyErr = new Error('destroy failed');
+	const req = {
+		logout(cb) {
+			cb(null);
+		},
+		session: {
+			destroy(cb) {
+				cb(destroyErr);
+			},
+		},
+	};
+	const res = createRes();
+
+	logoutHandler(req, res, (err) => {
+		assert.equal(err, destroyErr);
+		done();
+	});
+});
+
+test('logoutHandler: should return 204 on success', (t, done) => {
+	const req = {
+		logout(cb) {
+			cb(null);
+		},
+		session: {
+			destroy(cb) {
+				cb(null);
+			},
+		},
+	};
+	const res = {
+		statusCode: null,
+		status(code) {
+			this.statusCode = code;
+			return this;
+		},
+		end() {
+			assert.equal(this.statusCode, 204);
+			done();
+		},
+	};
+
+	logoutHandler(req, res, () => {});
+});
+
+test('registerLocalHandler: should call next when logIn fails', async () => {
+	const loginErr = new Error('login failed');
+	let nextErr = null;
+	const user = makeSessionUser();
+
+	const req = {
+		body: { loginName: 'alice', password: 'secret' },
+		logIn(u, cb) {
+			cb(loginErr);
+		},
+	};
+	const res = createRes();
+
+	await registerLocalHandler(req, res, (err) => {
+		nextErr = err;
+	}, {
+		createAccount: async () => ({ ok: true, user }),
+	});
+
+	assert.equal(nextErr, loginErr);
+});
+
+test('registerLocalHandler: should call next on createAccount rejection', async () => {
+	const boom = new Error('db down');
+
+	const req = {
+		body: { loginName: 'alice', password: 'secret' },
+	};
+	const res = createRes();
+
+	const nextErr = await new Promise((resolve) => {
+		registerLocalHandler(req, res, (err) => {
+			resolve(err);
+		}, {
+			createAccount: async () => { throw boom; },
+		});
+	});
+
+	assert.equal(nextErr, boom);
 });

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 const bindingStates = new Map();
+let POLL_TIMEOUT_MS = 25_000;
 
 function nowMs() {
 	return Date.now();
@@ -109,7 +110,7 @@ export function waitBindingResult({ code, waitToken, userId }) {
 				return;
 			}
 			resolve({ status: 'PENDING' });
-		}, 25_000);
+		}, POLL_TIMEOUT_MS);
 
 		const onDone = (payload) => {
 			clearTimeout(timeout);
@@ -142,3 +143,10 @@ export function cancelBindingWait({ code, waitToken, userId }) {
 
 	return true;
 }
+
+// 测试辅助
+export const __test = {
+	bindingStates,
+	get POLL_TIMEOUT_MS() { return POLL_TIMEOUT_MS; },
+	set POLL_TIMEOUT_MS(v) { POLL_TIMEOUT_MS = v; },
+};

@@ -1,20 +1,20 @@
 import { prisma } from '../db/prisma.js';
 
-export async function findUserById(id) {
-	return prisma.user.findUnique({
+export async function findUserById(id, db = prisma) {
+	return db.user.findUnique({
 		where: { id },
 	});
 }
 
-export async function findUserProfileById(id) {
+export async function findUserProfileById(id, db = prisma) {
 	return findUserProfileByIdWithOptions(id, {
 		includeSettings: true,
-	});
+	}, db);
 }
 
-export async function findUserProfileByIdWithOptions(id, options = {}) {
+export async function findUserProfileByIdWithOptions(id, options = {}, db = prisma) {
 	const { includeSettings = false } = options;
-	return prisma.user.findUnique({
+	return db.user.findUnique({
 		where: { id },
 		include: {
 			localAuth: {
@@ -34,7 +34,7 @@ export async function findUserProfileByIdWithOptions(id, options = {}) {
 	});
 }
 
-export async function updateUserProfileById(id, input) {
+export async function updateUserProfileById(id, input, db = prisma) {
 	const data = {};
 	if (Object.hasOwn(input, 'name')) {
 		data.name = input.name;
@@ -43,7 +43,7 @@ export async function updateUserProfileById(id, input) {
 		data.avatar = input.avatar;
 	}
 
-	return prisma.user.update({
+	return db.user.update({
 		where: { id },
 		data,
 	});

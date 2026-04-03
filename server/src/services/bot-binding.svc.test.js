@@ -273,6 +273,171 @@ test('claimBot: should return CLAIM_CODE_EXPIRED for expired code and delete it'
 });
 
 
+// ---- createBindingCodeForUser: P2002 碰撞路径 ----
+
+test('createBindingCodeForUser: should reuse expired code on P2002 collision', async () => {
+	const updated = [];
+	const result = await createBindingCodeForUser({ userId: 1n }, {
+		createCode: async () => {
+			const err = new Error('Unique constraint');
+			err.code = 'P2002';
+			throw err;
+		},
+		findCode: async () => ({
+			expiresAt: new Date('2020-01-01T00:00:00.000Z'),
+		}),
+		updateCode: async (code, data) => {
+			updated.push({ code, data });
+		},
+		now: () => new Date('2026-03-19T00:00:00.000Z'),
+	});
+
+	// 第一次碰撞后发现已过期记录，走 updateCode 路径
+	assert.equal(result.ok, true);
+	assert.equal(updated.length, 1);
+});
+
+test('createBindingCodeForUser: should continue when P2002 and existing code not found', async () => {
+	let attempts = 0;
+	const result = await createBindingCodeForUser({ userId: 1n }, {
+		createCode: async () => {
+			attempts += 1;
+			const err = new Error('Unique constraint');
+			err.code = 'P2002';
+			throw err;
+		},
+		findCode: async () => null,
+		updateCode: async () => {},
+		now: () => new Date('2026-03-19T00:00:00.000Z'),
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'BINDING_CODE_EXHAUSTED');
+	assert.equal(attempts, 3);
+});
+
+test('createBindingCodeForUser: should continue when P2002 and existing code not expired', async () => {
+	let attempts = 0;
+	const result = await createBindingCodeForUser({ userId: 1n }, {
+		createCode: async () => {
+			attempts += 1;
+			const err = new Error('Unique constraint');
+			err.code = 'P2002';
+			throw err;
+		},
+		findCode: async () => ({
+			expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+		}),
+		updateCode: async () => {},
+		now: () => new Date('2026-03-19T00:00:00.000Z'),
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'BINDING_CODE_EXHAUSTED');
+	assert.equal(attempts, 3);
+});
+
+test('createBindingCodeForUser: should throw non-P2002 errors', async () => {
+	await assert.rejects(
+		() => createBindingCodeForUser({ userId: 1n }, {
+			createCode: async () => {
+				throw new Error('DB connection lost');
+			},
+			findCode: async () => null,
+			updateCode: async () => {},
+			now: () => new Date('2026-03-19T00:00:00.000Z'),
+		}),
+		(err) => {
+			assert.equal(err.message, 'DB connection lost');
+			return true;
+		},
+	);
+});
+
+// ---- unbindBotByUser: 分支覆盖 ----
+
+test('unbindBotByUser: should reject invalid input types', async () => {
+	const r1 = await unbindBotByUser({ userId: 1, botId: 2n });
+	assert.equal(r1.ok, false);
+	assert.equal(r1.code, 'INVALID_INPUT');
+
+	const r2 = await unbindBotByUser({ userId: 1n, botId: 2 });
+	assert.equal(r2.ok, false);
+	assert.equal(r2.code, 'INVALID_INPUT');
+});
+
+test('unbindBotByUser: should return BOT_NOT_FOUND when bot does not exist', async () => {
+	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
+		findById: async () => null,
+		deleteBotImpl: async () => {},
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'BOT_NOT_FOUND');
+});
+
+test('unbindBotByUser: should return BOT_NOT_FOUND when userId does not match', async () => {
+	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
+		findById: async () => ({ id: 2n, userId: 999n }),
+		deleteBotImpl: async () => {},
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'BOT_NOT_FOUND');
+});
+
+// ---- unbindBotByToken: 分支覆盖 ----
+
+test('unbindBotByToken: should reject empty token', async () => {
+	const result = await unbindBotByToken({ token: '' });
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'INVALID_INPUT');
+});
+
+test('unbindBotByToken: should reject non-string token', async () => {
+	const result = await unbindBotByToken({ token: 123 });
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'INVALID_INPUT');
+});
+
+test('unbindBotByToken: should return UNAUTHORIZED when bot not found', async () => {
+	const result = await unbindBotByToken({ token: 'nonexistent-token' }, {
+		findByTokenHash: async () => null,
+		deleteBotImpl: async () => {},
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'UNAUTHORIZED');
+});
+
+// ---- bindBot: 分支覆盖 ----
+
+test('bindBot: should return BINDING_CODE_INVALID for unknown code', async () => {
+	const result = await bindBot({ code: '99999999' }, {
+		findCode: async () => null,
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'BINDING_CODE_INVALID');
+});
+
+test('bindBot: should return BINDING_CODE_EXPIRED for expired code', async () => {
+	let deleted = null;
+	const result = await bindBot({ code: '12345678' }, {
+		findCode: async () => ({
+			code: '12345678',
+			userId: 9n,
+			expiresAt: new Date('2020-01-01T00:00:00.000Z'),
+		}),
+		deleteCode: async (c) => { deleted = c; },
+		now: () => new Date('2026-03-19T00:00:00.000Z'),
+	});
+
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 'BINDING_CODE_EXPIRED');
+	assert.equal(deleted, '12345678');
+});
+
 test('claimBot: should create bot and return success on valid claim', async () => {
 	const createdInputs = [];
 	let deletedCode = null;

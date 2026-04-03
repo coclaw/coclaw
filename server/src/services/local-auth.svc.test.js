@@ -208,6 +208,25 @@ test('createLocalAccount: should reject reserved loginName', async () => {
 	assert.equal(result.code, 'LOGIN_NAME_RESERVED');
 });
 
+test('createLocalAccount: should rethrow non-P2002 error', async () => {
+	const err = new Error('Connection lost');
+	err.code = 'P1001';
+
+	await assert.rejects(
+		() => createLocalAccount({
+			loginName: 'alice',
+			password: 'secret88',
+		}, {
+			genId: () => 778899n,
+			scryptImpl: {
+				hashPassword: async (pwd) => `hashed:${pwd}`,
+			},
+			createLocalUser: async () => { throw err; },
+		}),
+		(thrown) => thrown === err
+	);
+});
+
 test('createLocalAccount: should return LOGIN_NAME_TAKEN on P2002', async () => {
 	const result = await createLocalAccount({
 		loginName: 'alice',

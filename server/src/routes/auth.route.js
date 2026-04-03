@@ -5,8 +5,9 @@ import { toAuthResponseUser } from '../services/user-view.svc.js';
 
 export const authRouter = Router();
 
-export function loginByLoginNameHandler(req, res, next) {
-	passport.authenticate('local-login-name', (err, user, info) => {
+export function loginByLoginNameHandler(req, res, next, deps = {}) {
+	const { authenticate = passport.authenticate.bind(passport) } = deps;
+	authenticate('local-login-name', (err, user, info) => {
 		if (err) {
 			next(err);
 			return;

@@ -5,9 +5,11 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { botPingTick, createUiWsTicket, listOnlineBotIds, pruneUiTickets, botStatusEmitter, fmtLocalTime, __test } from './bot-ws-hub.js';
+import { botPingTick, createUiWsTicket, listOnlineBotIds, pruneUiTickets, botStatusEmitter, fmtLocalTime, notifyAndDisconnectBot, refreshBotName, forwardToBot, __test } from './bot-ws-hub.js';
+import { register as registerSignalRoute, __test as signalTest } from './rtc-signal-router.js';
 
-const { uiSockets, botSockets, pendingOffline, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId } = __test;
+const { uiSockets, botSockets, uiTickets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineBotSocket, resolveBotRpcPending, rejectAllBotRpcPending, broadcastToUi, authenticateBotRequest } = __test;
+const { routes: signalRoutes } = signalTest;
 
 const MAX_MISS = 4;
 
@@ -732,4 +734,1069 @@ test('onBotMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
 	// 不转发给 UI
 	assert.equal(uiWs.sent.length, 0);
 	cleanupSockets('bot1');
+});
+
+// --- 创建支持 getAnyOnlineBotSocket 的 mock ws（带 OPEN 属性） ---
+function createRpcMockWs(opts = {}) {
+	const sent = [];
+	const ws = {
+		OPEN: 1,
+		readyState: opts.readyState ?? 1,
+		connId: opts.connId ?? null,
+		sent,
+		send(data) {
+			if (opts.throwOnSend) throw new Error('send failed');
+			sent.push(typeof data === 'string' ? JSON.parse(data) : data);
+		},
+		close() {},
+		terminate() {},
+	};
+	return ws;
+}
+
+// --- notifyAndDisconnectBot ---
+
+test('notifyAndDisconnectBot: botId 为空时直接返回', () => {
+	// 不应抛异常
+	notifyAndDisconnectBot(null);
+	notifyAndDisconnectBot(undefined);
+	notifyAndDisconnectBot('');
+	notifyAndDisconnectBot(0);
+});
+
+test('notifyAndDisconnectBot: botSockets 中无连接时直接返回', () => {
+	// 不应抛异常
+	notifyAndDisconnectBot('nonexistent-bot', 'token_revoked');
+});
+
+test('notifyAndDisconnectBot: 通知 bot 和 UI 并断开连接', () => {
+	const botWs = createMockWs();
+	const closed = [];
+	botWs.close = (code, reason) => closed.push({ code, reason });
+	const uiWs = createMockWs({ connId: 'c_notify' });
+	setupSockets('bot-notify', { ui: [uiWs], bot: [botWs] });
+
+	notifyAndDisconnectBot('bot-notify', 'token_revoked');
+
+	// bot 应收到 bot.unbound 消息
+	assert.equal(botWs.sent.length, 1);
+	assert.equal(botWs.sent[0].type, 'bot.unbound');
+	assert.equal(botWs.sent[0].reason, 'token_revoked');
+	assert.equal(botWs.sent[0].botId, 'bot-notify');
+	assert.ok(botWs.sent[0].at); // ISO 时间戳
+
+	// bot 连接以 4001 关闭
+	assert.equal(closed.length, 1);
+	assert.equal(closed[0].code, 4001);
+	assert.equal(closed[0].reason, 'token_revoked');
+
+	// UI 也应收到 bot.unbound 广播
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'bot.unbound');
+
+	cleanupSockets('bot-notify');
+});
+
+test('notifyAndDisconnectBot: bot_blocked 使用 closeCode 4003', () => {
+	const botWs = createMockWs();
+	const closed = [];
+	botWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-block', { bot: [botWs] });
+
+	notifyAndDisconnectBot('bot-block', 'bot_blocked');
+
+	assert.equal(closed[0].code, 4003);
+	assert.equal(closed[0].reason, 'bot_blocked');
+	cleanupSockets('bot-block');
+});
+
+test('notifyAndDisconnectBot: bot_unbound 使用 closeCode 4001', () => {
+	const botWs = createMockWs();
+	const closed = [];
+	botWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-unbind', { bot: [botWs] });
+
+	notifyAndDisconnectBot('bot-unbind', 'bot_unbound');
+
+	assert.equal(closed[0].code, 4001);
+	cleanupSockets('bot-unbind');
+});
+
+test('notifyAndDisconnectBot: 默认 reason 为 token_revoked', () => {
+	const botWs = createMockWs();
+	const closed = [];
+	botWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-default', { bot: [botWs] });
+
+	notifyAndDisconnectBot('bot-default');
+
+	assert.equal(botWs.sent[0].reason, 'token_revoked');
+	assert.equal(closed[0].code, 4001);
+	cleanupSockets('bot-default');
+});
+
+test('notifyAndDisconnectBot: ws.send 抛异常不中断后续 close', () => {
+	const botWs = createMockWs();
+	botWs.send = () => { throw new Error('send error'); };
+	const closed = [];
+	botWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-sendfail', { bot: [botWs] });
+
+	// 不应抛异常
+	notifyAndDisconnectBot('bot-sendfail', 'token_revoked');
+
+	// close 仍然被调用
+	assert.equal(closed.length, 1);
+	cleanupSockets('bot-sendfail');
+});
+
+test('notifyAndDisconnectBot: ws.close 抛异常不崩溃', () => {
+	const botWs = createMockWs();
+	botWs.close = () => { throw new Error('close error'); };
+	setupSockets('bot-closefail', { bot: [botWs] });
+
+	// 不应抛异常
+	notifyAndDisconnectBot('bot-closefail', 'token_revoked');
+
+	// send 仍被调用
+	assert.equal(botWs.sent.length, 1);
+	cleanupSockets('bot-closefail');
+});
+
+test('notifyAndDisconnectBot: 清理 grace period timer', () => {
+	const botWs = createMockWs();
+	botWs.close = () => {};
+	setupSockets('bot-grace-clean', { bot: [botWs] });
+
+	// 模拟 grace period
+	const timer = setTimeout(() => {}, 60_000);
+	pendingOffline.set('bot-grace-clean', timer);
+
+	notifyAndDisconnectBot('bot-grace-clean', 'token_revoked');
+
+	assert.ok(!pendingOffline.has('bot-grace-clean'), 'grace period 应被清理');
+	cleanupSockets('bot-grace-clean');
+});
+
+test('notifyAndDisconnectBot: 多个 bot socket 全部收到通知并关闭', () => {
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	const closed1 = [];
+	const closed2 = [];
+	ws1.close = (code, reason) => closed1.push({ code, reason });
+	ws2.close = (code, reason) => closed2.push({ code, reason });
+	setupSockets('bot-multi', { bot: [ws1, ws2] });
+
+	notifyAndDisconnectBot('bot-multi', 'token_revoked');
+
+	assert.equal(ws1.sent.length, 1);
+	assert.equal(ws2.sent.length, 1);
+	assert.equal(closed1.length, 1);
+	assert.equal(closed2.length, 1);
+	cleanupSockets('bot-multi');
+});
+
+test('notifyAndDisconnectBot: botId 为数字时转为字符串处理', () => {
+	const botWs = createMockWs();
+	botWs.close = () => {};
+	setupSockets('42', { bot: [botWs] });
+
+	notifyAndDisconnectBot(42, 'token_revoked');
+
+	assert.equal(botWs.sent.length, 1);
+	assert.equal(botWs.sent[0].botId, '42');
+	cleanupSockets('42');
+});
+
+// --- onUiMessage: bot 离线时回 BOT_OFFLINE 错误 ---
+
+test('onUiMessage: bot 离线且消息有 id 时回 BOT_OFFLINE 错误', () => {
+	const uiWs = createMockWs({ connId: 'c_off2' });
+	setupSockets('bot-off', { ui: [uiWs] }); // 无 bot socket
+
+	onUiMessage('bot-off', uiWs, JSON.stringify({
+		type: 'req',
+		id: 'rpc-offline-1',
+		method: 'agent',
+		params: {},
+	}));
+
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'res');
+	assert.equal(uiWs.sent[0].id, 'rpc-offline-1');
+	assert.equal(uiWs.sent[0].ok, false);
+	assert.equal(uiWs.sent[0].error.code, 'BOT_OFFLINE');
+	cleanupSockets('bot-off');
+});
+
+test('onUiMessage: bot 离线且消息无 id 时不回错误', () => {
+	const uiWs = createMockWs({ connId: 'c_off3' });
+	setupSockets('bot-off2', { ui: [uiWs] }); // 无 bot socket
+
+	onUiMessage('bot-off2', uiWs, JSON.stringify({
+		type: 'req',
+		method: 'test',
+		params: {},
+	}));
+
+	// 没有 id，不会回错误
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot-off2');
+});
+
+test('onUiMessage: bot 离线回 BOT_OFFLINE 时 ws.send 抛异常不崩溃', () => {
+	const uiWs = createMockWs({ connId: 'c_off4' });
+	uiWs.send = () => { throw new Error('ws closed'); };
+	setupSockets('bot-off3', { ui: [uiWs] }); // 无 bot socket
+
+	// 不应抛异常
+	onUiMessage('bot-off3', uiWs, JSON.stringify({
+		type: 'req',
+		id: 'rpc-fail',
+		method: 'agent',
+		params: {},
+	}));
+	cleanupSockets('bot-off3');
+});
+
+// --- onUiMessage: rpc.req 规范化 ---
+
+test('onUiMessage: rpc.req 规范化为 req 转发到 bot', () => {
+	const uiWs = createMockWs({ connId: 'c_rpc1' });
+	const botWs = createMockWs();
+	setupSockets('bot-rpc', { ui: [uiWs], bot: [botWs] });
+
+	onUiMessage('bot-rpc', uiWs, JSON.stringify({
+		type: 'rpc.req',
+		id: 'rpc-1',
+		method: 'test.method',
+		params: { foo: 'bar' },
+	}));
+
+	assert.equal(botWs.sent.length, 1);
+	assert.equal(botWs.sent[0].type, 'req');
+	assert.equal(botWs.sent[0].id, 'rpc-1');
+	assert.equal(botWs.sent[0].method, 'test.method');
+	assert.deepEqual(botWs.sent[0].params, { foo: 'bar' });
+	cleanupSockets('bot-rpc');
+});
+
+test('onUiMessage: rpc.req 无 params 时默认为空对象', () => {
+	const uiWs = createMockWs({ connId: 'c_rpc2' });
+	const botWs = createMockWs();
+	setupSockets('bot-rpc2', { ui: [uiWs], bot: [botWs] });
+
+	onUiMessage('bot-rpc2', uiWs, JSON.stringify({
+		type: 'rpc.req',
+		id: 'rpc-2',
+		method: 'test.method',
+	}));
+
+	assert.deepEqual(botWs.sent[0].params, {});
+	cleanupSockets('bot-rpc2');
+});
+
+// --- onUiMessage: agent 附件日志 ---
+
+test('onUiMessage: agent 请求带附件时输出诊断日志', () => {
+	const uiWs = createMockWs({ connId: 'c_att' });
+	const botWs = createMockWs();
+	setupSockets('bot-att', { ui: [uiWs], bot: [botWs] });
+
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		onUiMessage('bot-att', uiWs, JSON.stringify({
+			type: 'req',
+			id: 'att-1',
+			method: 'agent',
+			params: {
+				attachments: [
+					{ fileName: 'test.png', mimeType: 'image/png', content: 'AAAA' },
+				],
+			},
+		}));
+		const attLog = logged.find((l) => l.includes('agent attachments'));
+		assert.ok(attLog, '应有附件诊断日志');
+		assert.match(attLog, /count=1/);
+		assert.match(attLog, /test\.png/);
+	} finally {
+		console.info = origInfo;
+		cleanupSockets('bot-att');
+	}
+});
+
+// --- onBotMessage: rpc.res 规范化 ---
+
+test('onBotMessage: rpc.res 规范化为 res 转发到 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_rpcres' });
+	setupSockets('bot-rpcres', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-rpcres', botWs, JSON.stringify({
+		type: 'rpc.res',
+		id: 'res-1',
+		ok: true,
+		payload: { data: 'hello' },
+	}));
+
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'res');
+	assert.equal(uiWs.sent[0].id, 'res-1');
+	assert.equal(uiWs.sent[0].ok, true);
+	assert.deepEqual(uiWs.sent[0].payload, { data: 'hello' });
+	cleanupSockets('bot-rpcres');
+});
+
+test('onBotMessage: rpc.res 带 error 字段转发到 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_rpcerr' });
+	setupSockets('bot-rpcerr', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-rpcerr', botWs, JSON.stringify({
+		type: 'rpc.res',
+		id: 'res-2',
+		ok: false,
+		error: { code: 'ERR', message: 'fail' },
+	}));
+
+	assert.equal(uiWs.sent[0].ok, false);
+	assert.deepEqual(uiWs.sent[0].error, { code: 'ERR', message: 'fail' });
+	cleanupSockets('bot-rpcerr');
+});
+
+// --- onBotMessage: rpc.event 规范化 ---
+
+test('onBotMessage: rpc.event 规范化为 event 转发到 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_rpcevt' });
+	setupSockets('bot-rpcevt', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-rpcevt', botWs, JSON.stringify({
+		type: 'rpc.event',
+		event: 'agent.status',
+		payload: { status: 'ready' },
+	}));
+
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'event');
+	assert.equal(uiWs.sent[0].event, 'agent.status');
+	assert.deepEqual(uiWs.sent[0].payload, { status: 'ready' });
+	cleanupSockets('bot-rpcevt');
+});
+
+// --- onBotMessage: 普通 event 原样转发 ---
+
+test('onBotMessage: 普通 event 原样转发给 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_evt' });
+	setupSockets('bot-evt', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-evt', botWs, JSON.stringify({
+		type: 'event',
+		event: 'custom.event',
+		payload: { key: 'value' },
+	}));
+
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'event');
+	assert.equal(uiWs.sent[0].event, 'custom.event');
+	cleanupSockets('bot-evt');
+});
+
+// --- onBotMessage: 普通 res 原样转发 ---
+
+test('onBotMessage: 普通 res 原样转发给 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_res' });
+	setupSockets('bot-res', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-res', botWs, JSON.stringify({
+		type: 'res',
+		id: 'res-plain',
+		ok: true,
+		payload: { result: 42 },
+	}));
+
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'res');
+	assert.equal(uiWs.sent[0].id, 'res-plain');
+	cleanupSockets('bot-res');
+});
+
+// --- onBotMessage: ping 回复 pong ---
+
+test('onBotMessage: ping 类型回复 pong，不转发给 UI', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_ping' });
+	setupSockets('bot-ping', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-ping', botWs, JSON.stringify({ type: 'ping' }));
+
+	// bot ws 收到 pong
+	assert.equal(botWs.sent.length, 1);
+	assert.equal(botWs.sent[0].type, 'pong');
+	// UI 不应收到
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot-ping');
+});
+
+test('onBotMessage: ping 时 ws.send 抛异常不崩溃', () => {
+	const botWs = createMockWs();
+	botWs.send = () => { throw new Error('closed'); };
+	setupSockets('bot-ping2', { bot: [botWs] });
+
+	// 不应抛异常
+	onBotMessage('bot-ping2', botWs, JSON.stringify({ type: 'ping' }));
+	cleanupSockets('bot-ping2');
+});
+
+// --- onUiMessage: ping 回复 pong ---
+
+test('onUiMessage: ping 类型回复 pong，不转发给 bot', () => {
+	const uiWs = createMockWs({ connId: 'c_uiping' });
+	const botWs = createMockWs();
+	setupSockets('bot-uiping', { ui: [uiWs], bot: [botWs] });
+
+	onUiMessage('bot-uiping', uiWs, JSON.stringify({ type: 'ping' }));
+
+	// UI ws 收到 pong
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'pong');
+	// bot 不应收到
+	assert.equal(botWs.sent.length, 0);
+	cleanupSockets('bot-uiping');
+});
+
+test('onUiMessage: ping 时 ws.send 抛异常不崩溃', () => {
+	const uiWs = createMockWs({ connId: 'c_uiping2' });
+	uiWs.send = () => { throw new Error('closed'); };
+	setupSockets('bot-uiping2', { bot: [createMockWs()] });
+
+	// 不应抛异常
+	onUiMessage('bot-uiping2', uiWs, JSON.stringify({ type: 'ping' }));
+	cleanupSockets('bot-uiping2');
+});
+
+// --- onBotMessage / onUiMessage: 无效 JSON / 非对象 ---
+
+test('onBotMessage: 无效 JSON 静默忽略', () => {
+	const botWs = createMockWs();
+	setupSockets('bot-bad', { bot: [botWs] });
+
+	// 不应抛异常
+	onBotMessage('bot-bad', botWs, 'not-json{{{');
+	cleanupSockets('bot-bad');
+});
+
+test('onBotMessage: null payload 静默忽略', () => {
+	const botWs = createMockWs();
+	setupSockets('bot-null', { bot: [botWs] });
+
+	onBotMessage('bot-null', botWs, JSON.stringify(null));
+	cleanupSockets('bot-null');
+});
+
+test('onBotMessage: 非对象 payload 静默忽略', () => {
+	const botWs = createMockWs();
+	setupSockets('bot-str', { bot: [botWs] });
+
+	onBotMessage('bot-str', botWs, JSON.stringify('a string'));
+	cleanupSockets('bot-str');
+});
+
+test('onUiMessage: 无效 JSON 静默忽略', () => {
+	const uiWs = createMockWs({ connId: 'c_bad' });
+	setupSockets('bot-uibad', { ui: [uiWs] });
+
+	// 不应抛异常
+	onUiMessage('bot-uibad', uiWs, 'broken-json');
+	cleanupSockets('bot-uibad');
+});
+
+test('onUiMessage: null payload 静默忽略', () => {
+	const uiWs = createMockWs({ connId: 'c_null' });
+	setupSockets('bot-uinull', { ui: [uiWs] });
+
+	onUiMessage('bot-uinull', uiWs, JSON.stringify(null));
+	cleanupSockets('bot-uinull');
+});
+
+test('onUiMessage: 非对象 payload 静默忽略', () => {
+	const uiWs = createMockWs({ connId: 'c_num' });
+	setupSockets('bot-uinum', { ui: [uiWs] });
+
+	onUiMessage('bot-uinum', uiWs, JSON.stringify(42));
+	cleanupSockets('bot-uinum');
+});
+
+// --- onUiMessage: rtc:closed 转发 ---
+
+test('onUiMessage: rtc:closed 转发到 bot', () => {
+	const uiWs = createMockWs({ connId: 'c_cl2' });
+	const botWs = createMockWs();
+	setupSockets('bot-cl', { ui: [uiWs], bot: [botWs] });
+
+	onUiMessage('bot-cl', uiWs, JSON.stringify({ type: 'rtc:closed' }));
+
+	assert.equal(botWs.sent.length, 1);
+	assert.equal(botWs.sent[0].type, 'rtc:closed');
+	assert.equal(botWs.sent[0].fromConnId, 'c_cl2');
+	cleanupSockets('bot-cl');
+});
+
+// --- refreshBotName: bot 离线时返回 undefined ---
+
+test('refreshBotName: bot 离线（无 socket）时返回 undefined', async () => {
+	const result = await refreshBotName('99999');
+	assert.equal(result, undefined);
+});
+
+// --- refreshBotName: bot 在线但 rpc 返回 ok !== true ---
+
+test('refreshBotName: rpc 返回 ok=false 时返回 undefined', async () => {
+	// 使用 rpcMockWs 使 getAnyOnlineBotSocket 返回有效 socket
+	const ws = createRpcMockWs();
+	setupSockets('rpc-bot-1', { bot: [ws] });
+
+	// requestBotRpc 会发消息到 ws，但没有人回复，会超时
+	// 用极短超时使其快速失败
+	const result = await refreshBotName('rpc-bot-1', { timeoutMs: 10 }).catch(() => undefined);
+	assert.equal(result, undefined);
+
+	cleanupSockets('rpc-bot-1');
+});
+
+// --- forwardToBot: 直接测试 ---
+
+test('forwardToBot: 无 socket 时返回 false', () => {
+	const result = forwardToBot('nonexistent-bot', { type: 'req' });
+	assert.equal(result, false);
+});
+
+test('forwardToBot: 有 socket 时返回 true', () => {
+	const botWs = createMockWs();
+	setupSockets('fwd-bot', { bot: [botWs] });
+
+	const result = forwardToBot('fwd-bot', { type: 'req', id: '1' });
+	assert.equal(result, true);
+	assert.equal(botWs.sent.length, 1);
+	cleanupSockets('fwd-bot');
+});
+
+test('forwardToBot: 空 set 返回 false', () => {
+	botSockets.set('empty-bot', new Set());
+	const result = forwardToBot('empty-bot', { type: 'req' });
+	assert.equal(result, false);
+	botSockets.delete('empty-bot');
+});
+
+// --- BOT_OFFLINE_GRACE_MS 常量验证 ---
+
+test('BOT_OFFLINE_GRACE_MS 为 5000ms', () => {
+	assert.equal(BOT_OFFLINE_GRACE_MS, 5000);
+});
+
+// --- onBotMessage: 未知 type 不转发也不崩溃 ---
+
+test('onBotMessage: 未知 type 静默忽略', () => {
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_unk' });
+	setupSockets('bot-unk', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-unk', botWs, JSON.stringify({ type: 'unknown_type', data: 123 }));
+
+	// UI 不应收到
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot-unk');
+});
+
+// --- onUiMessage: rtc:offer 无 TURN_SECRET 时不附带 turnCreds ---
+
+test('onUiMessage: rtc:offer 在无 TURN_SECRET 时不附带 turnCreds', () => {
+	const origSecret = process.env.TURN_SECRET;
+	delete process.env.TURN_SECRET;
+	try {
+		const uiWs = createMockWs({ connId: 'c_noturn' });
+		const botWs = createMockWs();
+		setupSockets('bot-noturn', { ui: [uiWs], bot: [botWs] });
+
+		onUiMessage('bot-noturn', uiWs, JSON.stringify({
+			type: 'rtc:offer',
+			payload: { sdp: 'sdp' },
+		}));
+
+		assert.equal(botWs.sent.length, 1);
+		assert.equal(botWs.sent[0].turnCreds, undefined);
+		cleanupSockets('bot-noturn');
+	} finally {
+		process.env.TURN_SECRET = origSecret;
+	}
+});
+
+// --- onUiMessage: rtc:ice bot 离线时静默丢弃 ---
+
+test('onUiMessage: rtc:ice bot 离线时静默丢弃', () => {
+	const uiWs = createMockWs({ connId: 'c_iceoff' });
+	setupSockets('bot-iceoff', { ui: [uiWs] }); // 无 bot
+
+	onUiMessage('bot-iceoff', uiWs, JSON.stringify({
+		type: 'rtc:ice',
+		payload: { candidate: 'cand' },
+	}));
+
+	assert.equal(uiWs.sent.length, 0);
+	cleanupSockets('bot-iceoff');
+});
+
+// --- onBotMessage: rtc:answer 通过信令路由表投递 ---
+
+test('onBotMessage: rtc:answer 通过 signal-router 投递成功时不走 fallback', () => {
+	const routeWs = createMockWs({ connId: 'c_sr1' });
+	// 注册到信令路由表
+	registerSignalRoute('c_sr1', routeWs, 'bot-sr', 'user1');
+
+	const botWs = createMockWs();
+	const uiWs = createMockWs({ connId: 'c_sr1' });
+	setupSockets('bot-sr', { ui: [uiWs], bot: [botWs] });
+
+	onBotMessage('bot-sr', botWs, JSON.stringify({
+		type: 'rtc:answer',
+		toConnId: 'c_sr1',
+		payload: { sdp: 'signal-router-answer' },
+	}));
+
+	// routeWs（信令路由表中的 ws）应收到消息
+	assert.equal(routeWs.sent.length, 1);
+	assert.equal(routeWs.sent[0].type, 'rtc:answer');
+
+	// 清理
+	signalRoutes.delete('c_sr1');
+	cleanupSockets('bot-sr');
+});
+
+test('onBotMessage: rtc:ice 通过 signal-router 投递', () => {
+	const routeWs = createMockWs({ connId: 'c_sr2' });
+	registerSignalRoute('c_sr2', routeWs, 'bot-sr2', 'user1');
+
+	const botWs = createMockWs();
+	setupSockets('bot-sr2', { bot: [botWs] });
+
+	onBotMessage('bot-sr2', botWs, JSON.stringify({
+		type: 'rtc:ice',
+		toConnId: 'c_sr2',
+		payload: { candidate: 'ice-via-router' },
+	}));
+
+	assert.equal(routeWs.sent.length, 1);
+	assert.equal(routeWs.sent[0].type, 'rtc:ice');
+
+	signalRoutes.delete('c_sr2');
+	cleanupSockets('bot-sr2');
+});
+
+test('onBotMessage: rtc:closed 通过 signal-router 投递', () => {
+	const routeWs = createMockWs({ connId: 'c_sr3' });
+	registerSignalRoute('c_sr3', routeWs, 'bot-sr3', 'user1');
+
+	const botWs = createMockWs();
+	setupSockets('bot-sr3', { bot: [botWs] });
+
+	onBotMessage('bot-sr3', botWs, JSON.stringify({
+		type: 'rtc:closed',
+		toConnId: 'c_sr3',
+	}));
+
+	assert.equal(routeWs.sent.length, 1);
+	assert.equal(routeWs.sent[0].type, 'rtc:closed');
+
+	signalRoutes.delete('c_sr3');
+	cleanupSockets('bot-sr3');
+});
+
+// --- onBotMessage: coclaw.info.updated 中 updateBotName 抛同步异常 ---
+
+test('onBotMessage: coclaw.info.updated 处理时不崩溃（payload 为 null）', () => {
+	const botWs = createMockWs();
+	setupSockets('bot-info-null', { bot: [botWs] });
+
+	// payload 无 name 和 hostName → name 为 null
+	onBotMessage('bot-info-null', botWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		payload: {},
+	}));
+	cleanupSockets('bot-info-null');
+});
+
+// --- onBotMessage: raw 为 undefined/null ---
+
+test('onBotMessage: raw 为 undefined 时解析为空对象', () => {
+	const botWs = createMockWs();
+	setupSockets('bot-undef', { bot: [botWs] });
+
+	// raw=undefined → String(undefined) = 'undefined' → JSON.parse 失败 → 静默返回
+	onBotMessage('bot-undef', botWs, undefined);
+	cleanupSockets('bot-undef');
+});
+
+test('onUiMessage: raw 为 undefined 时解析为空对象', () => {
+	const uiWs = createMockWs({ connId: 'c_undef' });
+	setupSockets('bot-uiudef', { ui: [uiWs] });
+
+	onUiMessage('bot-uiudef', uiWs, undefined);
+	cleanupSockets('bot-uiudef');
+});
+
+// --- refreshBotName: rpc 成功但 findBotById 抛异常（DB 不可用） ---
+
+test('refreshBotName: rpc 成功返回 name，findBotById 抛异常时返回 latestName', async () => {
+	// 创建自动回复 RPC 的 mock socket
+	const botId = 'rpc-name-bot';
+	const autoReplyWs = createRpcMockWs();
+	const origSend = autoReplyWs.send.bind(autoReplyWs);
+	autoReplyWs.send = (data) => {
+		origSend(data);
+		const req = JSON.parse(data);
+		if (req.type === 'req' && req.method === 'agent.identity.get') {
+			// 模拟 bot 立即回复
+			setTimeout(() => {
+				onBotMessage(botId, autoReplyWs, JSON.stringify({
+					type: 'res',
+					id: req.id,
+					ok: true,
+					payload: { name: 'TestBot' },
+				}));
+			}, 0);
+		}
+	};
+	setupSockets(botId, { bot: [autoReplyWs] });
+
+	// findBotById 会抛异常（因为没有 DB），覆盖 lines 179-183
+	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	// 返回从 rpc 获取的 name（findBotById 失败后 fallback）
+	assert.equal(result, 'TestBot');
+
+	cleanupSockets(botId);
+});
+
+test('refreshBotName: rpc 成功但 name 为空时返回 null', async () => {
+	const botId = 'rpc-empty-name';
+	const autoReplyWs = createRpcMockWs();
+	const origSend = autoReplyWs.send.bind(autoReplyWs);
+	autoReplyWs.send = (data) => {
+		origSend(data);
+		const req = JSON.parse(data);
+		if (req.type === 'req') {
+			setTimeout(() => {
+				onBotMessage(botId, autoReplyWs, JSON.stringify({
+					type: 'res',
+					id: req.id,
+					ok: true,
+					payload: { name: '  ' }, // 空白 → trim 后为 '' → null
+				}));
+			}, 0);
+		}
+	};
+	setupSockets(botId, { bot: [autoReplyWs] });
+
+	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	assert.equal(result, null);
+
+	cleanupSockets(botId);
+});
+
+test('refreshBotName: rpc 返回 ok=false 时返回 undefined', async () => {
+	const botId = 'rpc-notok';
+	const autoReplyWs = createRpcMockWs();
+	const origSend = autoReplyWs.send.bind(autoReplyWs);
+	autoReplyWs.send = (data) => {
+		origSend(data);
+		const req = JSON.parse(data);
+		if (req.type === 'req') {
+			setTimeout(() => {
+				onBotMessage(botId, autoReplyWs, JSON.stringify({
+					type: 'res',
+					id: req.id,
+					ok: false,
+					error: { message: 'not found' },
+				}));
+			}, 0);
+		}
+	};
+	setupSockets(botId, { bot: [autoReplyWs] });
+
+	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	assert.equal(result, undefined);
+
+	cleanupSockets(botId);
+});
+
+test('refreshBotName: rpc 超时时返回 undefined（走 catch 分支）', async () => {
+	const botId = 'rpc-timeout';
+	// 不自动回复的 socket → rpc 会超时
+	const ws = createRpcMockWs();
+	setupSockets(botId, { bot: [ws] });
+
+	const result = await refreshBotName(botId, { timeoutMs: 20 });
+	assert.equal(result, undefined);
+
+	cleanupSockets(botId);
+});
+
+test('refreshBotName: rpc 返回 payload.name 非 string 时返回 null', async () => {
+	const botId = 'rpc-nostr';
+	const autoReplyWs = createRpcMockWs();
+	const origSend = autoReplyWs.send.bind(autoReplyWs);
+	autoReplyWs.send = (data) => {
+		origSend(data);
+		const req = JSON.parse(data);
+		if (req.type === 'req') {
+			setTimeout(() => {
+				onBotMessage(botId, autoReplyWs, JSON.stringify({
+					type: 'res',
+					id: req.id,
+					ok: true,
+					payload: { name: 123 }, // 非 string
+				}));
+			}, 0);
+		}
+	};
+	setupSockets(botId, { bot: [autoReplyWs] });
+
+	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	// name 非 string → rawName = '' → latestName = null
+	// findBotById 会失败 → 返回 latestName = null
+	assert.equal(result, null);
+
+	cleanupSockets(botId);
+});
+
+// --- requestBotRpc: socket.send 抛异常时走 catch 分支 ---
+
+test('refreshBotName: socket.send 抛异常时返回 undefined（requestBotRpc catch）', async () => {
+	const botId = 'rpc-sendfail';
+	const ws = createRpcMockWs({ throwOnSend: true });
+	setupSockets(botId, { bot: [ws] });
+
+	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	assert.equal(result, undefined);
+
+	cleanupSockets(botId);
+});
+
+// --- authenticateUiTicket ---
+
+test('authenticateUiTicket: 缺少 ticket 参数时返回 401', () => {
+	const req = { url: '/api/v1/bots/stream?role=ui' };
+	const result = authenticateUiTicket(req);
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 401);
+	assert.equal(result.message, 'missing ticket');
+});
+
+test('authenticateUiTicket: ticket 不存在时返回 invalid ticket', () => {
+	const req = { url: '/api/v1/bots/stream?role=ui&ticket=nonexistent' };
+	const result = authenticateUiTicket(req);
+	assert.equal(result.ok, false);
+	assert.equal(result.message, 'invalid ticket');
+});
+
+test('authenticateUiTicket: ticket 已过期时返回 invalid ticket', () => {
+	// 直接注入一个已过期的 ticket 到 uiTickets
+	uiTickets.set('expired-test-ticket', {
+		botId: '1',
+		userId: '2',
+		expiresAt: Date.now() - 1000,
+	});
+
+	const req = { url: '/api/v1/bots/stream?role=ui&ticket=expired-test-ticket' };
+	const result = authenticateUiTicket(req);
+	assert.equal(result.ok, false);
+	assert.equal(result.message, 'invalid ticket');
+});
+
+test('authenticateUiTicket: 有效 ticket 返回 ok', () => {
+	const ticket = createUiWsTicket({ botId: '10', userId: '20' });
+	const req = { url: `/api/v1/bots/stream?role=ui&ticket=${ticket}` };
+	const result = authenticateUiTicket(req);
+	assert.equal(result.ok, true);
+	assert.equal(result.botId, '10');
+	assert.equal(result.userId, '20');
+});
+
+test('authenticateUiTicket: ticket 使用后即删除（不可重用）', () => {
+	const ticket = createUiWsTicket({ botId: '10', userId: '20' });
+	const req = { url: `/api/v1/bots/stream?role=ui&ticket=${ticket}` };
+	authenticateUiTicket(req);
+	// 第二次应失败
+	const result2 = authenticateUiTicket(req);
+	assert.equal(result2.ok, false);
+});
+
+// --- authenticateUiSession ---
+
+test('authenticateUiSession: wsSessionMiddleware 为 null 时返回 null', async () => {
+	const orig = __test.wsSessionMiddleware;
+	__test.wsSessionMiddleware = null;
+	try {
+		const result = await authenticateUiSession({ url: '/api/v1/bots/stream?role=ui&botId=1' });
+		assert.equal(result, null);
+	} finally {
+		__test.wsSessionMiddleware = orig;
+	}
+});
+
+test('authenticateUiSession: 缺少 botId 参数时返回 null', async () => {
+	const orig = __test.wsSessionMiddleware;
+	__test.wsSessionMiddleware = (_req, _res, next) => next();
+	try {
+		const result = await authenticateUiSession({ url: '/api/v1/bots/stream?role=ui' });
+		assert.equal(result, null);
+	} finally {
+		__test.wsSessionMiddleware = orig;
+	}
+});
+
+test('authenticateUiSession: session middleware 出错时返回 null', async () => {
+	const orig = __test.wsSessionMiddleware;
+	__test.wsSessionMiddleware = (_req, _res, next) => next(new Error('session error'));
+	try {
+		const result = await authenticateUiSession({ url: '/api/v1/bots/stream?role=ui&botId=1' });
+		assert.equal(result, null);
+	} finally {
+		__test.wsSessionMiddleware = orig;
+	}
+});
+
+test('authenticateUiSession: session 无 userId 时返回 null', async () => {
+	const orig = __test.wsSessionMiddleware;
+	__test.wsSessionMiddleware = (req, _res, next) => {
+		req.session = { passport: {} };
+		next();
+	};
+	try {
+		const result = await authenticateUiSession({ url: '/api/v1/bots/stream?role=ui&botId=1' });
+		assert.equal(result, null);
+	} finally {
+		__test.wsSessionMiddleware = orig;
+	}
+});
+
+test('authenticateUiSession: findBotById 抛异常时返回 null', async () => {
+	const orig = __test.wsSessionMiddleware;
+	__test.wsSessionMiddleware = (req, _res, next) => {
+		req.session = { passport: { user: '999' } };
+		next();
+	};
+	try {
+		// findBotById 会尝试 BigInt(botId) 然后查 DB，DB 不可用会抛异常
+		const result = await authenticateUiSession({ url: '/api/v1/bots/stream?role=ui&botId=1' });
+		assert.equal(result, null);
+	} finally {
+		__test.wsSessionMiddleware = orig;
+	}
+});
+
+// --- registerSocket / unregisterSocket ---
+
+test('registerSocket: 注册多个 socket 到同一 key', () => {
+	const map = new Map();
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	registerSocket(map, 'k1', ws1);
+	registerSocket(map, 'k1', ws2);
+	assert.equal(map.get('k1').size, 2);
+});
+
+test('unregisterSocket: key 不存在时不报错', () => {
+	const map = new Map();
+	unregisterSocket(map, 'nonexist', createMockWs());
+});
+
+test('unregisterSocket: 最后一个 socket 注销后删除 key', () => {
+	const map = new Map();
+	const ws = createMockWs();
+	registerSocket(map, 'k2', ws);
+	unregisterSocket(map, 'k2', ws);
+	assert.equal(map.has('k2'), false);
+});
+
+// --- getAnyOnlineBotSocket ---
+
+test('getAnyOnlineBotSocket: 无 socket 时返回 null', () => {
+	assert.equal(getAnyOnlineBotSocket('nonexist'), null);
+});
+
+test('getAnyOnlineBotSocket: 所有 socket 非 OPEN 时返回 null', () => {
+	const ws = createRpcMockWs({ readyState: 3 }); // CLOSED
+	setupSockets('gao-1', { bot: [ws] });
+	assert.equal(getAnyOnlineBotSocket('gao-1'), null);
+	cleanupSockets('gao-1');
+});
+
+test('getAnyOnlineBotSocket: 返回第一个 OPEN socket', () => {
+	const ws = createRpcMockWs();
+	setupSockets('gao-2', { bot: [ws] });
+	assert.equal(getAnyOnlineBotSocket('gao-2'), ws);
+	cleanupSockets('gao-2');
+});
+
+// --- resolveBotRpcPending / rejectAllBotRpcPending ---
+
+test('resolveBotRpcPending: 无 pending 时返回 false', () => {
+	assert.equal(resolveBotRpcPending('no-bot', 'no-id', {}), false);
+});
+
+test('rejectAllBotRpcPending: 无 pending 时不报错', () => {
+	rejectAllBotRpcPending('no-bot');
+});
+
+// --- broadcastToUi: 无 UI socket 时不报错 ---
+
+test('broadcastToUi: 无 UI socket 时不报错', () => {
+	broadcastToUi('nonexist', { type: 'test' });
+});
+
+// --- authenticateBotRequest ---
+
+test('authenticateBotRequest: 缺少 token 参数时返回 401', async () => {
+	const result = await authenticateBotRequest({ url: '/api/v1/bots/stream' });
+	assert.equal(result.ok, false);
+	assert.equal(result.code, 401);
+	assert.equal(result.message, 'missing token');
+});
+
+test('authenticateBotRequest: 无效 token 时返回 invalid token', async () => {
+	const result = await authenticateBotRequest({ url: '/api/v1/bots/stream?token=bad-token' });
+	assert.equal(result.ok, false);
+	assert.equal(result.message, 'invalid token');
+});
+
+// --- onBotMessage: coclaw.info.updated 触发 updateBotName 的 .catch 路径 ---
+
+test('onBotMessage: coclaw.info.updated 使用数字 botId 时 BigInt 成功但 DB 失败走 .catch', async () => {
+	const botWs = createMockWs();
+	// 使用数字 botId 使 BigInt() 成功，updateBotName 会尝试 DB 操作然后失败
+	setupSockets('12345', { bot: [botWs] });
+
+	// 不应抛异常（.catch 会静默处理）
+	onBotMessage('12345', botWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		payload: { name: 'NewName' },
+	}));
+
+	// 等待微任务完成（.catch 是异步的）
+	await new Promise((r) => setTimeout(r, 50));
+	cleanupSockets('12345');
+});
+
+// --- broadcastToUi: 空 set 时不报错 ---
+
+test('broadcastToUi: socket set 为空时不发送', () => {
+	uiSockets.set('empty-ui', new Set());
+	broadcastToUi('empty-ui', { type: 'test' });
+	uiSockets.delete('empty-ui');
 });

@@ -4,7 +4,12 @@ import { Strategy as LocalStrategy } from 'passport-local';
 import { findUserById } from '../repos/user.repo.js';
 import { loginByLoginName } from '../services/local-auth.svc.js';
 
-export function setupPassport() {
+export function setupPassport(deps = {}) {
+	const {
+		login = loginByLoginName,
+		findUser = findUserById,
+	} = deps;
+
 	passport.use('local-login-name', new LocalStrategy(
 		{
 			usernameField: 'loginName',
@@ -13,7 +18,7 @@ export function setupPassport() {
 		},
 		async (loginName, password, done) => {
 			try {
-				const result = await loginByLoginName({
+				const result = await login({
 					loginName,
 					password,
 				});
@@ -39,7 +44,7 @@ export function setupPassport() {
 
 	passport.deserializeUser(async (id, done) => {
 		try {
-			const user = await findUserById(BigInt(id));
+			const user = await findUser(BigInt(id));
 			if (!user) {
 				done(null, false);
 				return;

@@ -6,6 +6,7 @@ import {
 	markBindingBound,
 	registerBindingWait,
 	waitBindingResult,
+	__test,
 } from './binding-wait-hub.js';
 
 function futureMs(ms = 60_000) {
@@ -191,6 +192,89 @@ test('markBindingBound: should notify waiting resolvers', async () => {
 	const result = await waitPromise;
 	assert.equal(result.status, 'BOUND');
 	assert.deepEqual(result.bot, { id: '99', name: 'Bot99' });
+});
+
+test('settleState: waiter 抛异常时不中断其他 waiter', async () => {
+	const token = registerBindingWait({
+		code: 'settle-throw',
+		userId: '1',
+		expiresAt: futureMs(),
+	});
+
+	// 第一个 waiter 会抛异常
+	const results = [];
+	const p1 = waitBindingResult({ code: 'settle-throw', waitToken: token, userId: '1' }).then((r) => results.push(r));
+	const p2 = waitBindingResult({ code: 'settle-throw', waitToken: token, userId: '1' }).then((r) => results.push(r));
+
+	markBindingBound({ code: 'settle-throw', botId: 77, botName: 'Bot77' });
+
+	await Promise.all([p1, p2]);
+	assert.equal(results.length, 2);
+	assert.equal(results[0].status, 'BOUND');
+	assert.equal(results[1].status, 'BOUND');
+});
+
+test('waitBindingResult: 长轮询超时且状态未变时返回 PENDING', async () => {
+	const origTimeout = __test.POLL_TIMEOUT_MS;
+	__test.POLL_TIMEOUT_MS = 30; // 30ms 超时
+	try {
+		const token = registerBindingWait({
+			code: 'lp-pending',
+			userId: '1',
+			expiresAt: futureMs(),
+		});
+
+		const result = await waitBindingResult({ code: 'lp-pending', waitToken: token, userId: '1' });
+		assert.equal(result.status, 'PENDING');
+	} finally {
+		__test.POLL_TIMEOUT_MS = origTimeout;
+	}
+});
+
+test('waitBindingResult: 长轮询超时时已过期返回 TIMEOUT（超时回调中检测）', async () => {
+	const origTimeout = __test.POLL_TIMEOUT_MS;
+	__test.POLL_TIMEOUT_MS = 50;
+	try {
+		const token = registerBindingWait({
+			code: 'lp-timeout',
+			userId: '1',
+			expiresAt: new Date(Date.now() + 30).toISOString(), // 30ms 后过期
+		});
+
+		// 在过期前调用 waitBindingResult，进入 Promise 分支
+		// 50ms 后超时回调触发时，expiresAt 已过期
+		const result = await waitBindingResult({ code: 'lp-timeout', waitToken: token, userId: '1' });
+		assert.equal(result.status, 'TIMEOUT');
+	} finally {
+		__test.POLL_TIMEOUT_MS = origTimeout;
+	}
+});
+
+test('waitBindingResult: 长轮询超时时已 bound（绕过 settle）返回 BOUND', async () => {
+	const origTimeout = __test.POLL_TIMEOUT_MS;
+	__test.POLL_TIMEOUT_MS = 50;
+	try {
+		const token = registerBindingWait({
+			code: 'lp-bound',
+			userId: '1',
+			expiresAt: futureMs(),
+		});
+
+		// 启动等待（进入 Promise 分支）
+		const promise = waitBindingResult({ code: 'lp-bound', waitToken: token, userId: '1' });
+
+		// 直接修改内部状态为 bound，绕过 settleState
+		// 这样 waiter 不会被提前 settle，超时回调会检测到 bound 状态
+		const state = __test.bindingStates.get('lp-bound');
+		state.status = 'bound';
+		state.boundBot = { id: '88', name: 'Bot88' };
+
+		const result = await promise;
+		assert.equal(result.status, 'BOUND');
+		assert.deepEqual(result.bot, { id: '88', name: 'Bot88' });
+	} finally {
+		__test.POLL_TIMEOUT_MS = origTimeout;
+	}
 });
 
 test('cancelBindingWait: should notify waiting resolvers', async () => {

@@ -54,6 +54,21 @@ test('getAdminDashboard: 自定义数据正确透传', async () => {
 	assert.equal(result.bots.online, 0);
 });
 
+test('getAdminDashboard: 使用默认 deps 时不抛异常', async () => {
+	// 覆盖 line 10（pluginVersion try/catch）和 line 18-19（默认 repo/getOnlineBotCount）
+	// 直接调用不传 deps，验证默认依赖路径可达
+	// 由于默认 repo 依赖真实 DB，这里只传 repo 不传 getOnlineBotCount
+	const result = await getAdminDashboard({
+		repo: mockRepo(),
+		// 不传 getOnlineBotCount，走默认的 listOnlineBotIds().size
+	});
+
+	assert.equal(result.users.total, 100);
+	assert.equal(typeof result.bots.online, 'number');
+	// pluginVersion 分支（line 10）：在测试环境下可能成功也可能 catch，验证不崩溃即可
+	assert.ok('plugin' in result.version);
+});
+
 test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
 	const calls = [];
 	const repo = {

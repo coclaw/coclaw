@@ -715,4 +715,4 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 export { forwardToBot, fmtLocalTime };
 
 // 测试辅助导出（仅用于单元测试访问内部状态）
-export const __test = { uiSockets, botSockets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId };
+export const __test = { uiSockets, botSockets, uiTickets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineBotSocket, resolveBotRpcPending, rejectAllBotRpcPending, requestBotRpc, authenticateBotRequest, broadcastToUi, set wsSessionMiddleware(v) { wsSessionMiddleware = v; }, get wsSessionMiddleware() { return wsSessionMiddleware; } };

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { hasSseClients, registerSseClient, sendSnapshot, sendToUser } from './bot-status-sse.js';
+import { hasSseClients, registerSseClient, sendSnapshot, sendToUser, __test } from './bot-status-sse.js';
+
+const { handleStatusEvent, handleNameUpdatedEvent } = __test;
 
 function createMockRes() {
 	const written = [];
@@ -124,4 +126,141 @@ test('registerSseClient: multiple clients for same user should all receive data'
 	assert.equal(res2.written.length, 2);
 
 	res2.__triggerClose();
+});
+
+// --- sendToUser: write 抛异常时不中断 ---
+
+test('sendToUser: res.write 抛异常时静默捕获，不影响其他客户端', () => {
+	const badRes = createMockRes();
+	badRes.write = () => { throw new Error('broken pipe'); };
+	const goodRes = createMockRes();
+	registerSseClient('50', badRes);
+	registerSseClient('50', goodRes);
+
+	// 不应抛异常
+	sendToUser('50', { event: 'bot.status', botId: '300', online: true });
+
+	// goodRes 仍应收到数据
+	assert.equal(goodRes.written.length, 1);
+
+	// 清理
+	badRes.__triggerClose();
+	goodRes.__triggerClose();
+});
+
+// --- handleStatusEvent ---
+
+test('handleStatusEvent: 无 SSE 客户端时直接返回', async () => {
+	// 确保无客户端
+	assert.equal(hasSseClients(), false);
+	// 不应抛异常
+	await handleStatusEvent({ botId: '1', online: true }, {
+		findBotByIdFn: () => { throw new Error('should not be called'); },
+	});
+});
+
+test('handleStatusEvent: bot 存在时推送 bot.status 事件', async () => {
+	const res = createMockRes();
+	registerSseClient('100', res);
+
+	const mockFindBot = async (id) => ({
+		id,
+		userId: 100n,
+	});
+
+	await handleStatusEvent({ botId: '5', online: true }, {
+		findBotByIdFn: mockFindBot,
+	});
+
+	assert.equal(res.written.length, 1);
+	const parsed = JSON.parse(res.written[0].replace('data: ', '').trim());
+	assert.equal(parsed.event, 'bot.status');
+	assert.equal(parsed.botId, '5');
+	assert.equal(parsed.online, true);
+
+	res.__triggerClose();
+});
+
+test('handleStatusEvent: bot 不存在时不推送', async () => {
+	const res = createMockRes();
+	registerSseClient('101', res);
+
+	await handleStatusEvent({ botId: '999', online: false }, {
+		findBotByIdFn: async () => null,
+	});
+
+	assert.equal(res.written.length, 0);
+
+	res.__triggerClose();
+});
+
+test('handleStatusEvent: findBotById 抛异常时静默捕获', async () => {
+	const res = createMockRes();
+	registerSseClient('102', res);
+
+	// 不应抛异常
+	await handleStatusEvent({ botId: '1', online: true }, {
+		findBotByIdFn: async () => { throw new Error('db error'); },
+	});
+
+	assert.equal(res.written.length, 0);
+
+	res.__triggerClose();
+});
+
+// --- handleNameUpdatedEvent ---
+
+test('handleNameUpdatedEvent: 无 SSE 客户端时直接返回', async () => {
+	assert.equal(hasSseClients(), false);
+	await handleNameUpdatedEvent({ botId: '1', name: 'new-name' }, {
+		findBotByIdFn: () => { throw new Error('should not be called'); },
+	});
+});
+
+test('handleNameUpdatedEvent: bot 存在时推送 bot.nameUpdated 事件', async () => {
+	const res = createMockRes();
+	registerSseClient('200', res);
+
+	const mockFindBot = async (id) => ({
+		id,
+		userId: 200n,
+	});
+
+	await handleNameUpdatedEvent({ botId: '10', name: 'my-bot' }, {
+		findBotByIdFn: mockFindBot,
+	});
+
+	assert.equal(res.written.length, 1);
+	const parsed = JSON.parse(res.written[0].replace('data: ', '').trim());
+	assert.equal(parsed.event, 'bot.nameUpdated');
+	assert.equal(parsed.botId, '10');
+	assert.equal(parsed.name, 'my-bot');
+
+	res.__triggerClose();
+});
+
+test('handleNameUpdatedEvent: bot 不存在时不推送', async () => {
+	const res = createMockRes();
+	registerSseClient('201', res);
+
+	await handleNameUpdatedEvent({ botId: '999', name: 'x' }, {
+		findBotByIdFn: async () => null,
+	});
+
+	assert.equal(res.written.length, 0);
+
+	res.__triggerClose();
+});
+
+test('handleNameUpdatedEvent: findBotById 抛异常时静默捕获', async () => {
+	const res = createMockRes();
+	registerSseClient('202', res);
+
+	await handleNameUpdatedEvent({ botId: '1', name: 'x' }, {
+		findBotByIdFn: async () => { throw new Error('db error'); },
+	});
+
+	assert.equal(res.written.length, 0);
+
+	res.__triggerClose();
 });

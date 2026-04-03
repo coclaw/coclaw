@@ -103,13 +103,18 @@ export async function listBotsHandler(req, res, next, deps = {}) {
 	}
 }
 
-export async function createBindingCodeHandler(req, res, next) {
+export async function createBindingCodeHandler(req, res, next, deps = {}) {
 	if (!requireSession(req, res)) {
 		return;
 	}
 
+	const {
+		createBindingCodeForUserImpl = createBindingCodeForUser,
+		registerBindingWaitImpl = registerBindingWait,
+	} = deps;
+
 	try {
-		const result = await createBindingCodeForUser({
+		const result = await createBindingCodeForUserImpl({
 			userId: req.user.id,
 		});
 
@@ -121,7 +126,7 @@ export async function createBindingCodeHandler(req, res, next) {
 			return;
 		}
 
-		const waitToken = registerBindingWait({
+		const waitToken = registerBindingWaitImpl({
 			code: result.code,
 			userId: req.user.id,
 			expiresAt: result.expiresAt,
@@ -195,7 +200,9 @@ export async function bindBotHandler(req, res, next, deps = {}) {
 	}
 }
 
-export async function getBotSelfHandler(req, res, next) {
+export async function getBotSelfHandler(req, res, next, deps = {}) {
+	const { findBotByTokenHashImpl = findBotByTokenHash } = deps;
+
 	const token = parseBearerToken(req);
 	if (!token) {
 		res.status(401).json({
@@ -210,7 +217,7 @@ export async function getBotSelfHandler(req, res, next) {
 			.createHash('sha256')
 			.update(token, 'utf8')
 			.digest();
-		const bot = await findBotByTokenHash(tokenHash);
+		const bot = await findBotByTokenHashImpl(tokenHash);
 		if (!bot) {
 			res.status(401).json({
 				code: 'UNAUTHORIZED',
@@ -228,10 +235,16 @@ export async function getBotSelfHandler(req, res, next) {
 	}
 }
 
-export async function createUiWsTicketHandler(req, res, next) {
+export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 	if (!requireSession(req, res)) {
 		return;
 	}
+
+	const {
+		findBotByIdImpl = findBotById,
+		findLatestBotByUserIdImpl = findLatestBotByUserId,
+		createUiWsTicketImpl = createUiWsTicket,
+	} = deps;
 
 	try {
 		const rawBotId = req.body?.botId;
@@ -239,7 +252,7 @@ export async function createUiWsTicketHandler(req, res, next) {
 
 		if (rawBotId !== undefined && rawBotId !== null && String(rawBotId).trim() !== '') {
 			try {
-				bot = await findBotById(BigInt(String(rawBotId)));
+				bot = await findBotByIdImpl(BigInt(String(rawBotId)));
 			}
 			catch {
 				res.status(400).json({
@@ -258,7 +271,7 @@ export async function createUiWsTicketHandler(req, res, next) {
 			}
 		}
 		else {
-			bot = await findLatestBotByUserId(req.user.id);
+			bot = await findLatestBotByUserIdImpl(req.user.id);
 			if (!bot) {
 				res.status(404).json({
 					code: 'BOT_NOT_FOUND',
@@ -268,7 +281,7 @@ export async function createUiWsTicketHandler(req, res, next) {
 			}
 		}
 
-		const ticket = createUiWsTicket({
+		const ticket = createUiWsTicketImpl({
 			botId: bot.id,
 			userId: req.user.id,
 		});
@@ -359,10 +372,16 @@ export async function waitBindingCodeHandler(req, res, next, deps = {}) {
 	}
 }
 
-export async function unbindBotByUserHandler(req, res, next) {
+export async function unbindBotByUserHandler(req, res, next, deps = {}) {
 	if (!requireSession(req, res)) {
 		return;
 	}
+
+	const {
+		unbindBotByUserImpl = unbindBotByUser,
+		notifyAndDisconnectBotImpl = notifyAndDisconnectBot,
+		sendToUserImpl = sendToUser,
+	} = deps;
 
 	try {
 		const rawBotId = req.body?.botId;
@@ -386,7 +405,7 @@ export async function unbindBotByUserHandler(req, res, next) {
 			return;
 		}
 
-		const result = await unbindBotByUser({ userId: req.user.id, botId });
+		const result = await unbindBotByUserImpl({ userId: req.user.id, botId });
 		if (!result.ok) {
 			const status = result.code === 'INVALID_INPUT'
 				? 400
@@ -401,8 +420,8 @@ export async function unbindBotByUserHandler(req, res, next) {
 		}
 
 		console.info(`[coclaw/api] unbind-by-user success botId=${result.botId.toString()} userId=${req.user.id}`);
-		notifyAndDisconnectBot(result.botId, 'bot_unbound');
-		sendToUser(String(req.user.id), {
+		notifyAndDisconnectBotImpl(result.botId, 'bot_unbound');
+		sendToUserImpl(String(req.user.id), {
 			event: 'bot.unbound',
 			botId: result.botId.toString(),
 		});
@@ -417,7 +436,13 @@ export async function unbindBotByUserHandler(req, res, next) {
 	}
 }
 
-export async function unbindBotHandler(req, res, next) {
+export async function unbindBotHandler(req, res, next, deps = {}) {
+	const {
+		unbindBotByTokenImpl = unbindBotByToken,
+		notifyAndDisconnectBotImpl = notifyAndDisconnectBot,
+		sendToUserImpl = sendToUser,
+	} = deps;
+
 	const token = parseBearerToken(req);
 	if (!token) {
 		res.status(401).json({
@@ -428,7 +453,7 @@ export async function unbindBotHandler(req, res, next) {
 	}
 
 	try {
-		const result = await unbindBotByToken({ token });
+		const result = await unbindBotByTokenImpl({ token });
 		if (!result.ok) {
 			const status = result.code === 'INVALID_INPUT'
 				? 400
@@ -441,8 +466,8 @@ export async function unbindBotHandler(req, res, next) {
 		}
 
 		console.info('[coclaw/api] unbind success botId=%s userId=%s (type=%s)', result.botId, result.userId, typeof result.userId);
-		notifyAndDisconnectBot(result.botId, 'bot_unbound');
-		sendToUser(String(result.userId), {
+		notifyAndDisconnectBotImpl(result.botId, 'bot_unbound');
+		sendToUserImpl(String(result.userId), {
 			event: 'bot.unbound',
 			botId: result.botId.toString(),
 		});

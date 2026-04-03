@@ -92,6 +92,41 @@ test.describe('scrypt utility', function () {
 			}
 		});
 
+		test('should return false when ln/r/p are non-finite', async function () {
+			// 参数中包含非数值（如 NaN）
+			const hash = '$scrypt$ln=NaN,r=8,p=1$c2FsdA==$wN+S0sgP5gq5tziGPCmfmO5C3nNVIb1t1mJv5yWz+j4=';
+			const isValid = await scrypt.verifyPassword('any', hash);
+			assert.strictEqual(isValid, false);
+		});
+
+		test('should return false when storedKey length differs from derivedKey length', async function () {
+			// 使用有效参数但手动构造不匹配长度的哈希
+			// 先生成一个正常哈希，然后篡改 keyLength
+			const realHash = await scrypt.hashPassword('test');
+			const parts = realHash.split('$');
+			// 用一个超长的 base64 哈希替换（48 字节而非 32 字节）
+			const longKey = Buffer.alloc(48, 0xff).toString('base64').replace(/=+$/, '');
+			const tampered = `$scrypt$${parts[2]}$${parts[3]}$${longKey}`;
+			const isValid = await scrypt.verifyPassword('test', tampered);
+			assert.strictEqual(isValid, false);
+		});
+
+		test('should return false and log error when scrypt throws', async function () {
+			// 使用一个会导致 scrypt 内部异常的参数组合
+			// ln=30 → N=2^30 → 需要大量内存，会超过 maxmem
+			const hugeN = '$scrypt$ln=30,r=8,p=1$c2FsdA==$wN+S0sgP5gq5tziGPCmfmO5C3nNVIb1t1mJv5yWz+j4=';
+			const origError = console.error;
+			const logged = [];
+			console.error = (...args) => logged.push(args);
+			try {
+				const isValid = await scrypt.verifyPassword('any', hugeN);
+				assert.strictEqual(isValid, false);
+				assert.ok(logged.length > 0, '应有错误日志输出');
+			} finally {
+				console.error = origError;
+			}
+		});
+
 		test('should return false for a hash truncated (but valid base64)', async function () {
 			const hash = await scrypt.hashPassword(testPassword);
 			const parts = hash.split('$');

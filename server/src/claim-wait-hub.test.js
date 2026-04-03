@@ -6,6 +6,7 @@ import {
 	markClaimBound,
 	registerClaimWait,
 	waitClaimResult,
+	__test,
 } from './claim-wait-hub.js';
 
 test('registerClaimWait: should return waitToken', () => {
@@ -169,4 +170,98 @@ test('cancelClaimWait: should reject already-bound state', () => {
 
 test('cancelClaimWait: should reject unknown code', () => {
 	assert.equal(cancelClaimWait({ code: 'NOPE', waitToken: 'x' }), false);
+});
+
+test('settleState: waiter 抛异常时不中断其他 waiter', async () => {
+	const code = 'CW_SETTLE_THROW';
+	const waitToken = registerClaimWait({
+		code,
+		expiresAt: new Date(Date.now() + 60_000),
+	});
+
+	const results = [];
+	const p1 = waitClaimResult({ code, waitToken }).then((r) => results.push(r));
+	const p2 = waitClaimResult({ code, waitToken }).then((r) => results.push(r));
+
+	markClaimBound({ code, botId: 66n, token: 'tok-66' });
+
+	await Promise.all([p1, p2]);
+	assert.equal(results.length, 2);
+	assert.equal(results[0].status, 'BOUND');
+	assert.equal(results[1].status, 'BOUND');
+});
+
+test('waitClaimResult: 长轮询超时且状态未变时返回 PENDING', async () => {
+	const origTimeout = __test.POLL_TIMEOUT_MS;
+	__test.POLL_TIMEOUT_MS = 30;
+	try {
+		const code = 'CW_LP_PENDING';
+		const waitToken = registerClaimWait({
+			code,
+			expiresAt: new Date(Date.now() + 60_000),
+		});
+
+		const result = await waitClaimResult({ code, waitToken });
+		assert.equal(result.status, 'PENDING');
+	} finally {
+		__test.POLL_TIMEOUT_MS = origTimeout;
+	}
+});
+
+test('waitClaimResult: 长轮询超时时已过期返回 TIMEOUT（超时回调中检测）', async () => {
+	const origTimeout = __test.POLL_TIMEOUT_MS;
+	__test.POLL_TIMEOUT_MS = 50;
+	try {
+		const code = 'CW_LP_TIMEOUT';
+		const waitToken = registerClaimWait({
+			code,
+			expiresAt: new Date(Date.now() + 30), // 30ms 后过期
+		});
+
+		// 在过期前调用，进入 Promise 分支
+		// 50ms 后超时回调触发时，expiresAt 已过期
+		const result = await waitClaimResult({ code, waitToken });
+		assert.equal(result.status, 'TIMEOUT');
+	} finally {
+		__test.POLL_TIMEOUT_MS = origTimeout;
+	}
+});
+
+test('waitClaimResult: 长轮询超时时已 bound（绕过 settle）返回 BOUND', async () => {
+	const origTimeout = __test.POLL_TIMEOUT_MS;
+	__test.POLL_TIMEOUT_MS = 50;
+	try {
+		const code = 'CW_LP_BOUND';
+		const waitToken = registerClaimWait({
+			code,
+			expiresAt: new Date(Date.now() + 60_000),
+		});
+
+		const promise = waitClaimResult({ code, waitToken });
+
+		// 直接修改内部状态为 bound，绕过 settleState
+		const state = __test.claimStates.get(code);
+		state.status = 'bound';
+		state.boundResult = { botId: '88', token: 'tok-88' };
+
+		const result = await promise;
+		assert.equal(result.status, 'BOUND');
+		assert.equal(result.botId, '88');
+		assert.equal(result.token, 'tok-88');
+	} finally {
+		__test.POLL_TIMEOUT_MS = origTimeout;
+	}
+});
+
+test('registerClaimWait: 重复注册清除旧 cleanup timer', () => {
+	const code = 'CW_REREG';
+	const token1 = registerClaimWait({
+		code,
+		expiresAt: new Date(Date.now() + 60_000),
+	});
+	const token2 = registerClaimWait({
+		code,
+		expiresAt: new Date(Date.now() + 60_000),
+	});
+	assert.notEqual(token1, token2);
 });

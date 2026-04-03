@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import request from 'supertest';
 
-import { createApp } from './app.js';
+import { createApp, globalErrorHandler } from './app.js';
 
 function withEnv(patch, fn) {
 	const keys = Object.keys(patch);
@@ -92,5 +92,81 @@ test('development should not enforce HTTPS by default', async () => {
 		const res = await request(app).get('/api/v1/auth/session');
 		assert.equal(res.status, 200);
 		assert.equal(res.body?.user, null);
+	});
+});
+
+test('development CORS allows localhost origins', async () => {
+	await withEnv({
+		NODE_ENV: 'development',
+		SESSION_SECRET: 'coclaw-dev-session-secret',
+	}, async () => {
+		const app = createApp();
+		const res = await request(app)
+			.get('/api/v1/auth/session')
+			.set('Origin', 'http://localhost:5173');
+		assert.equal(res.status, 200);
+		assert.equal(res.headers['access-control-allow-origin'], 'http://localhost:5173');
+	});
+});
+
+test('CORS rejects unknown origin in production', async () => {
+	await withEnv({
+		NODE_ENV: 'production',
+		SESSION_SECRET: 'strong-production-secret',
+		ENFORCE_HTTPS: 'false',
+		ALLOWED_ORIGINS: 'https://app.coclaw.net',
+	}, async () => {
+		const app = createApp();
+		const res = await request(app)
+			.get('/healthz')
+			.set('Origin', 'https://evil.example.com');
+		// CORS 头不设置，但请求仍然被处理（CORS 由浏览器拦截）
+		assert.equal(res.headers['access-control-allow-origin'], undefined);
+	});
+});
+
+test('CORS allows capacitor://localhost origin', async () => {
+	await withEnv({
+		NODE_ENV: 'production',
+		SESSION_SECRET: 'strong-production-secret',
+		ENFORCE_HTTPS: 'false',
+	}, async () => {
+		const app = createApp();
+		const res = await request(app)
+			.get('/healthz')
+			.set('Origin', 'capacitor://localhost');
+		assert.equal(res.headers['access-control-allow-origin'], 'capacitor://localhost');
+	});
+});
+
+
+test('globalErrorHandler: 返回 500 + INTERNAL_SERVER_ERROR', () => {
+	const origError = console.error;
+	console.error = () => {};
+	try {
+		const res = {
+			statusCode: null,
+			body: null,
+			status(code) { this.statusCode = code; return this; },
+			json(payload) { this.body = payload; return this; },
+		};
+		globalErrorHandler(new Error('boom'), {}, res, () => {});
+		assert.equal(res.statusCode, 500);
+		assert.equal(res.body.code, 'INTERNAL_SERVER_ERROR');
+		assert.equal(res.body.message, 'Internal server error');
+	} finally {
+		console.error = origError;
+	}
+});
+
+test('production ENFORCE_HTTPS=false should not enforce HTTPS', async () => {
+	await withEnv({
+		NODE_ENV: 'production',
+		SESSION_SECRET: 'strong-production-secret',
+		ENFORCE_HTTPS: 'false',
+	}, async () => {
+		const app = createApp();
+		const res = await request(app).get('/api/v1/auth/session');
+		assert.equal(res.status, 200);
 	});
 });

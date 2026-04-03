@@ -50,3 +50,12 @@ server/
 
 - REST API path 统一前缀：/api/v1
 - 修订 prisma.schema 后，须用户确认后才能进行 migrate
+
+## 单元测试覆盖率要求
+
+server 工作区采用高于根 CLAUDE.md 基线的覆盖率门槛：
+
+- `lines >= 90%`
+- `functions >= 90%`
+- `branches >= 90%`
+- `statements >= 90%`

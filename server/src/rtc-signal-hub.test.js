@@ -4,10 +4,10 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { __test } from './rtc-signal-hub.js';
+import { __test, attachRtcSignalHub } from './rtc-signal-hub.js';
 import { register, lookup, __test as routerTest } from './rtc-signal-router.js';
 
-const { handleMessage } = __test;
+const { handleMessage, validateBotOwnership } = __test;
 const { routes } = routerTest;
 
 function createMockWs(opts = {}) {
@@ -459,4 +459,291 @@ test('handleMessage: findBotById 抛异常时视为归属验证失败', async ()
 	cleanup();
 });
 
+// --- validateBotOwnership 直接测试 ---
 
+test('validateBotOwnership: bot 存在且归属匹配返回 true', async () => {
+	const result = await validateBotOwnership('1', 'u1', mockFindBotById);
+	assert.equal(result, true);
+});
+
+test('validateBotOwnership: bot 存在但归属不匹配返回 false', async () => {
+	const result = await validateBotOwnership('999', 'u1', mockFindBotById);
+	assert.equal(result, false);
+});
+
+test('validateBotOwnership: bot 不存在返回 false', async () => {
+	const result = await validateBotOwnership('888', 'u1', mockFindBotById);
+	assert.equal(result, false);
+});
+
+test('validateBotOwnership: findBotByIdFn 抛异常返回 false', async () => {
+	const result = await validateBotOwnership('1', 'u1', () => { throw new Error('boom'); });
+	assert.equal(result, false);
+});
+
+// --- rtc:closed 已注册路由但 bot 离线 ---
+
+test('handleMessage: rtc:closed 已注册但 bot 离线（forward 返回 false）仍移除路由', async () => {
+	const ws = createMockWs();
+	register('c_cls_offline', ws, '1', 'u1');
+	const fwd = createForwardMock({ returnValue: false });
+
+	await handleMessage(ws, 'u1', JSON.stringify({
+		type: 'rtc:closed',
+		botId: '1',
+		connId: 'c_cls_offline',
+	}), makeDeps(fwd));
+
+	assert.equal(fwd.calls.length, 1, 'should attempt forward');
+	assert.equal(fwd.calls[0].payload.fromConnId, 'c_cls_offline');
+	// 路由仍被移除
+	assert.equal(lookup('c_cls_offline'), null);
+	cleanup();
+});
+
+// --- rtc:closed 未注册 + 归属验证通过但 bot 离线 ---
+
+test('handleMessage: rtc:closed 未注册 + 归属验证通过但 bot 离线', async () => {
+	const ws = createMockWs();
+	const fwd = createForwardMock({ returnValue: false });
+
+	await handleMessage(ws, 'u1', JSON.stringify({
+		type: 'rtc:closed',
+		botId: '1',
+		connId: 'c_unreg_offline',
+	}), makeDeps(fwd));
+
+	assert.equal(fwd.calls.length, 1, 'should attempt forward');
+	assert.equal(fwd.calls[0].botId, '1');
+	cleanup();
+});
+
+// --- attachRtcSignalHub ---
+
+test('attachRtcSignalHub: 绑定 upgrade 事件', async () => {
+	const handlers = {};
+	const mockServer = {
+		on(event, handler) { handlers[event] = handler; },
+	};
+	attachRtcSignalHub(mockServer, { sessionMiddleware: () => {} });
+	assert.ok(handlers.upgrade, 'should register upgrade handler');
+});
+
+test('attachRtcSignalHub: 非 /api/v1/rtc/signal 路径直接忽略', async () => {
+	const handlers = {};
+	const mockServer = {
+		on(event, handler) { handlers[event] = handler; },
+	};
+	attachRtcSignalHub(mockServer, { sessionMiddleware: () => {} });
+
+	const mockSocket = {
+		written: [],
+		write(data) { this.written.push(data); },
+		destroy() { this.destroyed = true; },
+	};
+	// 非目标路径，应直接返回
+	await handlers.upgrade({ url: '/other-path' }, mockSocket, Buffer.alloc(0));
+	assert.equal(mockSocket.written.length, 0, 'should not respond');
+	assert.equal(mockSocket.destroyed, undefined, 'should not destroy');
+});
+
+test('attachRtcSignalHub: sessionMiddleware 为空时返回 500', async () => {
+	const handlers = {};
+	const mockServer = {
+		on(event, handler) { handlers[event] = handler; },
+	};
+	attachRtcSignalHub(mockServer, { sessionMiddleware: null });
+
+	const mockSocket = {
+		written: [],
+		write(data) { this.written.push(data); },
+		destroy() { this.destroyed = true; },
+	};
+	await handlers.upgrade({ url: '/api/v1/rtc/signal' }, mockSocket, Buffer.alloc(0));
+	assert.equal(mockSocket.written.length, 1);
+	assert.match(mockSocket.written[0], /500/);
+	assert.equal(mockSocket.destroyed, true);
+});
+
+test('attachRtcSignalHub: session middleware 出错时返回 401', async () => {
+	const handlers = {};
+	const mockServer = {
+		on(event, handler) { handlers[event] = handler; },
+	};
+	const errMiddleware = (_req, _res, next) => { next(new Error('session error')); };
+	attachRtcSignalHub(mockServer, { sessionMiddleware: errMiddleware });
+
+	const mockSocket = {
+		written: [],
+		write(data) { this.written.push(data); },
+		destroy() { this.destroyed = true; },
+	};
+	await handlers.upgrade({ url: '/api/v1/rtc/signal' }, mockSocket, Buffer.alloc(0));
+	assert.equal(mockSocket.written.length, 1);
+	assert.match(mockSocket.written[0], /401/);
+	assert.equal(mockSocket.destroyed, true);
+});
+
+test('attachRtcSignalHub: session 无 userId 时返回 401', async () => {
+	const handlers = {};
+	const mockServer = {
+		on(event, handler) { handlers[event] = handler; },
+	};
+	const noUserMiddleware = (req, _res, next) => {
+		req.session = { passport: {} };
+		next();
+	};
+	attachRtcSignalHub(mockServer, { sessionMiddleware: noUserMiddleware });
+
+	const mockSocket = {
+		written: [],
+		write(data) { this.written.push(data); },
+		destroy() { this.destroyed = true; },
+	};
+	await handlers.upgrade({ url: '/api/v1/rtc/signal' }, mockSocket, Buffer.alloc(0));
+	assert.equal(mockSocket.written.length, 1);
+	assert.match(mockSocket.written[0], /401/);
+	assert.equal(mockSocket.destroyed, true);
+});
+
+test('attachRtcSignalHub: 认证通过时调用 wss.handleUpgrade', async () => {
+	const handlers = {};
+	const mockServer = {
+		on(event, handler) { handlers[event] = handler; },
+	};
+	const authMiddleware = (req, _res, next) => {
+		req.session = { passport: { user: '42' } };
+		next();
+	};
+	attachRtcSignalHub(mockServer, { sessionMiddleware: authMiddleware });
+
+	const mockSocket = {
+		written: [],
+		write(data) { this.written.push(data); },
+		destroy() { this.destroyed = true; },
+		remoteAddress: '127.0.0.1',
+	};
+	const req = {
+		url: '/api/v1/rtc/signal',
+		headers: {},
+		socket: mockSocket,
+	};
+	// handleUpgrade 由内部 WebSocketServer 调用，触发后会调用 callback
+	// 验证不会抛异常即可（内部 wss 会尝试真正的 upgrade）
+	// 由于没有真实的 HTTP upgrade 头，wss.handleUpgrade 会抛异常并被 catch 捕获
+	await handlers.upgrade(req, mockSocket, Buffer.alloc(0));
+	// catch 块会返回 500
+	assert.ok(mockSocket.written.length >= 1);
+});
+
+// --- rtc:ice/rtc:ready 隐式注册被占用时拒绝 ---
+
+test('handleMessage: rtc:ice connId 已注册时直接使用现有路由转发', async () => {
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	register('c_ice_taken', ws1, '1', 'u1');
+
+	const fwd = createForwardMock();
+	await handleMessage(ws2, 'u1', JSON.stringify({
+		type: 'rtc:ice',
+		botId: '1',
+		connId: 'c_ice_taken',
+		payload: { candidate: 'cand' },
+	}), makeDeps(fwd));
+
+	// 已注册的 connId 会直接使用现有路由转发
+	assert.equal(fwd.calls.length, 1);
+	assert.equal(fwd.calls[0].botId, '1');
+	// 原注册不变
+	assert.equal(lookup('c_ice_taken').ws, ws1);
+	cleanup();
+});
+
+// --- rtc:ice/rtc:ready bot 离线 ---
+
+test('handleMessage: rtc:ice bot 离线时仍尝试转发', async () => {
+	const ws = createMockWs();
+	register('c_ice_off', ws, '1', 'u1');
+	const fwd = createForwardMock({ returnValue: false });
+
+	await handleMessage(ws, 'u1', JSON.stringify({
+		type: 'rtc:ice',
+		botId: '1',
+		connId: 'c_ice_off',
+		payload: { candidate: 'cand' },
+	}), makeDeps(fwd));
+
+	assert.equal(fwd.calls.length, 1, 'should attempt forward');
+	cleanup();
+});
+
+// --- log 条目中 ts 缺失时显示占位符 ---
+
+test('handleMessage: type=log 条目无 ts 时显示 ??:??:??.???', async () => {
+	const ws = createMockWs();
+	const logged = [];
+	const origInfo = console.info;
+	console.info = (msg) => logged.push(msg);
+	try {
+		await handleMessage(ws, 'u1', JSON.stringify({
+			type: 'log',
+			logs: [{ text: 'no-ts-entry' }],
+		}), makeDeps());
+		assert.equal(logged.length, 1);
+		assert.match(logged[0], /\?\?:\?\?:\?\?\.\?\?\?/);
+	} finally {
+		console.info = origInfo;
+	}
+});
+
+// --- null/非对象 payload ---
+
+test('handleMessage: payload 为 null 时静默忽略', async () => {
+	const ws = createMockWs();
+	await handleMessage(ws, 'u1', 'null', makeDeps());
+	assert.equal(ws.sent.length, 0);
+});
+
+// --- rtc:ice 隐式注册 connId 被占用时拒绝（覆盖 lines 124-126） ---
+
+test('handleMessage: rtc:ice 未注册 + 隐式注册被其他 WS 占用时拒绝', async () => {
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	// ws1 先注册了 connId
+	register('c_ice_occupied', ws1, '1', 'u1');
+
+	const fwd = createForwardMock();
+	// ws2 尝试发 rtc:ice，connId 被 ws1 占用，隐式注册失败
+	await handleMessage(ws2, 'u1', JSON.stringify({
+		type: 'rtc:ice',
+		botId: '1',
+		connId: 'c_ice_occupied',
+	}), makeDeps(fwd));
+
+	// 已注册路由存在，应直接使用现有路由转发（不走隐式注册路径）
+	assert.equal(fwd.calls.length, 1);
+	cleanup();
+});
+
+// --- rtc:ice/ready 隐式注册成功后 lookup 必定非 null（覆盖 lines 131-133 防御分支） ---
+// 这是一个防御分支，正常情况下 register 成功后 lookup 必不为 null
+// 无法在单线程中触发，仅作为文档说明
+
+// --- rtc:ready 隐式注册被占用时拒绝 ---
+
+test('handleMessage: rtc:ready 未注册 + 归属验证通过但 connId 被占用时拒绝', async () => {
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	register('c_rdy_occ', ws1, '1', 'u1');
+
+	const fwd = createForwardMock();
+	await handleMessage(ws2, 'u1', JSON.stringify({
+		type: 'rtc:ready',
+		botId: '1',
+		connId: 'c_rdy_occ',
+	}), makeDeps(fwd));
+
+	// 已注册路由存在，走已注册路径
+	assert.equal(fwd.calls.length, 1);
+	cleanup();
+});

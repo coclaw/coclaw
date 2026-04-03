@@ -1,13 +1,13 @@
 import { prisma } from '../db/prisma.js';
 
-export async function findBotById(id) {
-	return prisma.bot.findUnique({
+export async function findBotById(id, db = prisma) {
+	return db.bot.findUnique({
 		where: { id },
 	});
 }
 
-export async function findLatestBotByUserId(userId) {
-	return prisma.bot.findFirst({
+export async function findLatestBotByUserId(userId, db = prisma) {
+	return db.bot.findFirst({
 		where: { userId },
 		orderBy: {
 			updatedAt: 'desc',
@@ -15,8 +15,8 @@ export async function findLatestBotByUserId(userId) {
 	});
 }
 
-export async function findBotByTokenHash(tokenHash) {
-	return prisma.bot.findUnique({
+export async function findBotByTokenHash(tokenHash, db = prisma) {
+	return db.bot.findUnique({
 		where: { tokenHash },
 		select: {
 			id: true,
@@ -25,34 +25,34 @@ export async function findBotByTokenHash(tokenHash) {
 	});
 }
 
-export async function createBot(data) {
-	return prisma.bot.create({
+export async function createBot(data, db = prisma) {
+	return db.bot.create({
 		data,
 	});
 }
 
-export async function updateBot(id, data) {
-	return prisma.bot.update({
+export async function updateBot(id, data, db = prisma) {
+	return db.bot.update({
 		where: { id },
 		data,
 	});
 }
 
-export async function updateBotName(id, name) {
-	return prisma.bot.update({
+export async function updateBotName(id, name, db = prisma) {
+	return db.bot.update({
 		where: { id },
 		data: { name },
 	});
 }
 
-export async function deleteBot(id) {
-	return prisma.bot.delete({
+export async function deleteBot(id, db = prisma) {
+	return db.bot.delete({
 		where: { id },
 	});
 }
 
-export async function listBotsByUserId(userId) {
-	return prisma.bot.findMany({
+export async function listBotsByUserId(userId, db = prisma) {
+	return db.bot.findMany({
 		where: { userId },
 		orderBy: {
 			createdAt: 'desc',

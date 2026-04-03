@@ -429,6 +429,370 @@ test('changePasswordHandler: should return 200 on success', async () => {
 	assert.deepEqual(res.body, { message: 'Password changed' });
 });
 
+// --- validateSettingsPatchPayload 分支覆盖 ---
+
+test('patchCurrentUserSettingsHandler: should reject non-object body (null)', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: null,
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+	assert.equal(res.body.message, 'Request body must be an object');
+});
+
+test('patchCurrentUserSettingsHandler: should reject array body', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: [1, 2],
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'Request body must be an object');
+});
+
+test('patchCurrentUserSettingsHandler: should reject body with no known fields', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { unknown: 'field' },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'At least one patch field is required');
+});
+
+test('patchCurrentUserSettingsHandler: should reject non-string theme', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { theme: 123 },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'theme must be a string or null');
+});
+
+test('patchCurrentUserSettingsHandler: should reject non-string lang', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { lang: 42 },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'lang must be a string or null');
+});
+
+test('patchCurrentUserSettingsHandler: should reject non-object perfsPatch', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { perfsPatch: 'not-an-object' },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'perfsPatch must be an object');
+});
+
+test('patchCurrentUserSettingsHandler: should reject array perfsPatch', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { perfsPatch: [1] },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'perfsPatch must be an object');
+});
+
+test('patchCurrentUserSettingsHandler: should reject non-object uiStatePatch', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { uiStatePatch: 'bad' },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'uiStatePatch must be an object');
+});
+
+test('patchCurrentUserSettingsHandler: should reject non-object hintCountsPatch', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { hintCountsPatch: 42 },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'hintCountsPatch must be an object');
+});
+
+// --- getCurrentUserHandler 分支覆盖 ---
+
+test('getCurrentUserHandler: should return 401 when profile not found', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 999n },
+		query: {},
+	};
+	const res = createRes();
+
+	await getCurrentUserHandler(req, res, () => {}, {
+		findUserProfile: async () => null,
+	});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('getCurrentUserHandler: should return 401 when not authenticated', async () => {
+	const req = {
+		isAuthenticated: () => false,
+		user: null,
+		query: {},
+	};
+	const res = createRes();
+
+	await getCurrentUserHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('getCurrentUserHandler: should call next on error', async () => {
+	const boom = new Error('db error');
+	let nextErr = null;
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		query: {},
+	};
+	const res = createRes();
+
+	await getCurrentUserHandler(req, res, (err) => { nextErr = err; }, {
+		findUserProfile: async () => { throw boom; },
+	});
+
+	assert.equal(nextErr, boom);
+});
+
+// --- validateChangePasswordPayload 分支覆盖 ---
+
+test('changePasswordHandler: should reject non-object body (null)', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: null,
+	};
+	const res = createRes();
+
+	await changePasswordHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'Request body must be an object');
+});
+
+test('changePasswordHandler: should reject array body', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: [],
+	};
+	const res = createRes();
+
+	await changePasswordHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'Request body must be an object');
+});
+
+test('changePasswordHandler: should reject missing oldPassword', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { newPassword: 'newpasswd' },
+	};
+	const res = createRes();
+
+	await changePasswordHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'oldPassword is required');
+});
+
+test('changePasswordHandler: should reject empty oldPassword', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { oldPassword: '   ', newPassword: 'newpasswd' },
+	};
+	const res = createRes();
+
+	await changePasswordHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'oldPassword is required');
+});
+
+test('changePasswordHandler: should reject empty newPassword', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { oldPassword: 'oldpasswd', newPassword: '  ' },
+	};
+	const res = createRes();
+
+	await changePasswordHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.message, 'newPassword is required');
+});
+
+test('changePasswordHandler: should call next on service error', async () => {
+	const boom = new Error('service down');
+	let nextErr = null;
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { oldPassword: 'oldpasswd', newPassword: 'newpasswd' },
+	};
+	const res = createRes();
+
+	await changePasswordHandler(req, res, (err) => { nextErr = err; }, {
+		changePwd: async () => { throw boom; },
+	});
+
+	assert.equal(nextErr, boom);
+});
+
+// --- patchCurrentUserHandler 分支覆盖 ---
+
+test('patchCurrentUserHandler: should return 401 when not authenticated', async () => {
+	const req = {
+		isAuthenticated: () => false,
+		user: null,
+		body: { name: 'Bob' },
+	};
+	const res = createRes();
+
+	await patchCurrentUserHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('patchCurrentUserHandler: should call next on error', async () => {
+	const boom = new Error('update failed');
+	let nextErr = null;
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { name: 'Bob' },
+	};
+	const res = createRes();
+
+	await patchCurrentUserHandler(req, res, (err) => { nextErr = err; }, {
+		updateUserProfile: async () => { throw boom; },
+	});
+
+	assert.equal(nextErr, boom);
+});
+
+// --- getCurrentUserSettingsHandler 分支覆盖 ---
+
+test('getCurrentUserSettingsHandler: should return 401 when not authenticated', async () => {
+	const req = {
+		isAuthenticated: () => false,
+		user: null,
+	};
+	const res = createRes();
+
+	await getCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('getCurrentUserSettingsHandler: should call next when setting is null', async () => {
+	let nextErr = null;
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+	};
+	const res = createRes();
+
+	await getCurrentUserSettingsHandler(req, res, (err) => { nextErr = err; }, {
+		findUserSetting: async () => null,
+	});
+
+	assert.ok(nextErr instanceof Error);
+	assert.equal(nextErr.message, 'User settings not found');
+});
+
+// --- patchCurrentUserSettingsHandler 分支覆盖 ---
+
+test('patchCurrentUserSettingsHandler: should return 401 when not authenticated', async () => {
+	const req = {
+		isAuthenticated: () => false,
+		user: null,
+		body: { theme: 'dark' },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, () => {});
+
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('patchCurrentUserSettingsHandler: should call next on service error', async () => {
+	const boom = new Error('patch failed');
+	let nextErr = null;
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 123n },
+		body: { theme: 'dark' },
+	};
+	const res = createRes();
+
+	await patchCurrentUserSettingsHandler(req, res, (err) => { nextErr = err; }, {
+		patchUserSetting: async () => { throw boom; },
+	});
+
+	assert.equal(nextErr, boom);
+});
+
 test('userRouter: should register routes without /me', () => {
 	const routes = userRouter.stack
 		.filter((layer) => layer.route)
