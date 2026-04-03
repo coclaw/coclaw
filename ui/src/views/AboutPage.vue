@@ -35,8 +35,11 @@
 					</template>
 					<template #concepts-body>
 						<div class="space-y-3 text-sm text-muted leading-relaxed">
-							<p><strong class="text-default">{{ $t('about.conceptBot') }}</strong>{{ $t('about.conceptBotDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.conceptAgent') }}</strong>{{ $t('about.conceptAgentDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.conceptClaw') }}</strong>{{ $t('about.conceptClawDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.conceptOnline') }}</strong>{{ $t('about.conceptOnlineDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.conceptFlow') }}</strong>{{ $t('about.conceptFlowDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.conceptMemory') }}</strong>{{ $t('about.conceptMemoryDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.conceptSession') }}</strong>{{ $t('about.conceptSessionDesc') }}</p>
 						</div>
 					</template>
