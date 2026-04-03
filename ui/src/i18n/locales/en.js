@@ -9,6 +9,7 @@ export const enMessages = {
 		done: 'Done',
 		failed: 'Failed',
 		pending: 'Pending',
+		featureComingSoon: 'This feature is coming soon, stay tuned',
 	},
 	layout: {
 		productName: 'CoClaw',

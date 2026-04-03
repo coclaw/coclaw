@@ -9,6 +9,7 @@ export const zhCNMessages = {
 		done: '完成',
 		failed: '失败',
 		pending: '等待中',
+		featureComingSoon: '功能建设中，敬请关注',
 	},
 	layout: {
 		productName: 'CoClaw',

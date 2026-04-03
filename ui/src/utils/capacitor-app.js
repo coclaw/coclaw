@@ -86,13 +86,20 @@ export async function initCapacitorApp(router) {
 		console.warn('[capacitor] Network init failed:', e);
 	}
 
-	// KeepAlive 是 Android 自定义原生插件，iOS 无对应实现
+	// 以下为 Android 自定义原生插件，iOS 无对应实现
 	if (Capacitor.getPlatform() === 'android') {
 		try {
 			startKeepAlive();
 		}
 		catch (e) {
 			console.warn('[capacitor] KeepAlive init failed:', e);
+		}
+
+		try {
+			initShareIntent();
+		}
+		catch (e) {
+			console.warn('[capacitor] ShareIntent init failed:', e);
 		}
 	}
 }
@@ -158,6 +165,55 @@ function startKeepAlive() {
 	KeepAlive.start()
 		.then(() => console.log('[capacitor] KeepAliveService started'))
 		.catch((e) => console.warn('[capacitor] KeepAliveService start failed:', e));
+}
+
+// --- Share Intent（外部 App 分享内容到 CoClaw） ---
+
+const ShareIntent = Capacitor.isNativePlatform()
+	? registerPlugin('ShareIntent')
+	: null;
+
+function initShareIntent() {
+	// 冷启动：检查是否有待消费的分享数据
+	ShareIntent.checkPending().then((data) => {
+		if (data?.type) {
+			handleShareReceived(data).catch((e) => console.warn('[capacitor] handleShareReceived failed:', e));
+		}
+	}).catch((e) => console.warn('[capacitor] ShareIntent.checkPending failed:', e));
+
+	// 热启动：监听后续分享事件
+	ShareIntent.addListener('shareReceived', (data) => {
+		handleShareReceived(data).catch((e) => console.warn('[capacitor] handleShareReceived failed:', e));
+	});
+
+	console.log('[capacitor] ShareIntent listener registered');
+}
+
+/**
+ * 处理从外部 App 接收到的分享数据。
+ *
+ * TODO (#159): 将来实现完整流程：
+ * - 弹出 Agent 选择器，让用户选择发送目标
+ * - 导航到对应的聊天页面
+ * - 文本：填入输入框
+ * - 文件：通过 path 读取为 Blob，作为附件添加
+ *
+ * @param {{ type: 'text' | 'file', text?: string, files?: Array<{ path: string, name: string, mimeType: string, size?: number }> }} data
+ */
+async function handleShareReceived(data) {
+	console.log('[capacitor] share received: type=%s', data.type, data);
+
+	// TODO (#159): 替换为实际的 Agent 选择 → 路由跳转 → 内容填充
+	const { i18n } = await import('../i18n/index.js');
+	const { useNotify } = await import('../composables/use-notify.js');
+	const notify = useNotify();
+	notify.info({ title: i18n.global.t('common.featureComingSoon'), duration: 4000 });
+
+	// 清理原生层临时文件
+	if (data.type === 'file') {
+		ShareIntent.clearFiles()
+			.catch((e) => console.warn('[capacitor] clearFiles failed:', e));
+	}
 }
 
 function setupAppStateChange() {
