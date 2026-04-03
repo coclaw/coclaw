@@ -23,7 +23,7 @@ const CONSENT_EXPIRY_MS = 30_000;
 /** DC probe 超时 */
 const DC_PROBE_TIMEOUT_MS = 3_000;
 /** 退避重试：初始间隔 */
-const RETRY_BACKOFF_BASE_MS = 10_000;
+const RETRY_BACKOFF_BASE_MS = 3_000;
 /** 退避重试：最大间隔 */
 const RETRY_BACKOFF_MAX_MS = 120_000;
 /** 退避重试：最大次数 */
@@ -243,9 +243,9 @@ export const useBotsStore = defineStore('bots', {
 			const sigConn = useSignalingConnection();
 
 			// 前台恢复 / 网络切换 → DC probe 探测存活性
-			sigConn.on('foreground-resume', ({ elapsed }) => {
+			sigConn.on('foreground-resume', ({ source, elapsed }) => {
 				for (const id of Object.keys(this.byId)) {
-					this.__checkAndRecover(id, elapsed);
+					this.__checkAndRecover(id, elapsed, source);
 				}
 			});
 		},
@@ -507,8 +507,9 @@ export const useBotsStore = defineStore('bots', {
 		 * DC 健康检查 + 恢复（前台恢复 / 网络切换时调用）
 		 * @param {string} id - botId
 		 * @param {number} elapsed - 距上次 WS 存活消息的时长
+		 * @param {string} [source] - 触发来源（'network:online' | 'app:foreground' | 'visibility'）
 		 */
-		async __checkAndRecover(id, elapsed) {
+		async __checkAndRecover(id, elapsed, source) {
 			try {
 				if (_rtcInitInProgress.get(id)) return; // rebuild 进行中，跳过
 				const bot = this.byId[id];
@@ -517,17 +518,23 @@ export const useBotsStore = defineStore('bots', {
 				const rtc = conn?.rtc;
 				if (!rtc) return;
 
-				// PC 已 failed/closed → 直接 rebuild（外部事件，重置退避）
-				if (rtc.state === 'failed' || rtc.state === 'closed') {
-					remoteLog(`bot.recover bot=${id} reason=rtc_${rtc.state}`);
+				const isNetworkChange = source === 'network:online';
+
+				// PC 已 failed/closed/disconnected → 直接 rebuild（外部事件，重置退避）
+				// disconnected 在 network:online 时也直接 rebuild（网络切换后旧接口不可恢复）
+				if (rtc.state === 'failed' || rtc.state === 'closed'
+					|| (rtc.state === 'disconnected' && isNetworkChange)) {
+					remoteLog(`bot.recover bot=${id} reason=rtc_${rtc.state} source=${source}`);
 					bot.rtcPhase = 'recovering';
 					this.__clearRetry(id);
 					this.__ensureRtc(id).catch(() => {});
 					return;
 				}
+				// 网络切换后 DC 必死（IP 变化），跳过 probe 直接 rebuild
 				// elapsed > 30s → werift consent 已过期，直接 rebuild
-				if (elapsed > CONSENT_EXPIRY_MS) {
-					remoteLog(`bot.recover bot=${id} reason=consent_expired elapsed=${elapsed}ms`);
+				if (isNetworkChange || elapsed > CONSENT_EXPIRY_MS) {
+					const reason = isNetworkChange ? 'network_change' : 'consent_expired';
+					remoteLog(`bot.recover bot=${id} reason=${reason} elapsed=${elapsed}ms`);
 					bot.rtcPhase = 'recovering';
 					this.__clearRetry(id);
 					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});

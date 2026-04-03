@@ -18,7 +18,7 @@ const RECONNECT_JITTER = 0.3;
 const PROBE_TIMEOUT_MS = 2500;
 /** 前台恢复：超过此时长无消息则假定连接已死 */
 const ASSUME_DEAD_MS = 45_000;
-/** 防重入节流（visibilitychange + app:foreground） */
+/** 防重入节流（visibilitychange + app:foreground；network:online 豁免） */
 const FOREGROUND_THROTTLE_MS = 500;
 /** ensureConnected verify 冷却期 */
 const VERIFY_COOLDOWN_MS = 5000;
@@ -442,14 +442,16 @@ export class SignalingConnection {
 	 */
 	__handleForegroundResume(source) {
 		if (this.__intentionalClose) return;
-		// 防重入节流
+		const isNetworkOnline = source === 'network:online';
+		// 防重入节流：network:online 豁免（它是明确的网络变更信号，不应被前序事件抑制）
+		// 连续 network:online 由 connecting 状态分支 + RTC _rtcInitInProgress 守卫自然防护
 		const now = Date.now();
-		if (now - this.__lastForegroundAt < FOREGROUND_THROTTLE_MS) return;
+		if (!isNetworkOnline && now - this.__lastForegroundAt < FOREGROUND_THROTTLE_MS) return;
 		this.__lastForegroundAt = now;
 
 		// RTC 恢复事件仅对移动端 visibility/app:foreground 或全平台 network:online 有意义
 		// 桌面 visibilitychange 不触发（WebRTC 在桌面后台持续运行）
-		const shouldEmitForRtc = source === 'network:online' || isCapacitorApp;
+		const shouldEmitForRtc = isNetworkOnline || isCapacitorApp;
 
 		if (this.__state === 'disconnected') {
 			console.debug('[SigConn] %s → immediate reconnect', source);
@@ -463,11 +465,23 @@ export class SignalingConnection {
 			return;
 		}
 
-		if (this.__state === 'connecting') return;
+		if (this.__state === 'connecting') {
+			// network:online 时仍需发射 RTC 恢复事件（WS 正在重连，但 DC 可能需要独立恢复）
+			if (isNetworkOnline) {
+				this.__emit('foreground-resume', { source, elapsed: Infinity });
+			}
+			return;
+		}
 
-		// state === 'connected'：根据 lastAliveAt 判断连接是否可能已死
+		// state === 'connected'
 		const elapsed = now - this.__lastAliveAt;
-		if (elapsed > ASSUME_DEAD_MS) {
+
+		if (isNetworkOnline) {
+			// 网络切换后 IP 变化，旧 TCP 连接必死，无论 elapsed 多少都应重建
+			console.debug('[SigConn] %s → forceReconnect (network change)', source);
+			this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=forceReconnect(network)`);
+			this.forceReconnect();
+		} else if (elapsed > ASSUME_DEAD_MS) {
 			console.debug('[SigConn] %s → assume dead (elapsed=%dms)', source, elapsed);
 			this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=forceReconnect`);
 			this.forceReconnect();

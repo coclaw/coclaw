@@ -15,8 +15,8 @@ import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 import { useSignalingConnection } from './signaling-connection.js';
 import { remoteLog } from './remote-log.js';
 
-/** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链 */
-const DISCONNECTED_TIMEOUT_MS = 10_000;
+/** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链（ICE 自愈通常 1-3s） */
+const DISCONNECTED_TIMEOUT_MS = 5_000;
 
 /** 发送流控：高水位（暂停发送），远低于浏览器 16MB 上限 */
 const DC_HIGH_WATER_MARK = 1024 * 1024;

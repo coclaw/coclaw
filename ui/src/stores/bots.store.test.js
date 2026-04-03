@@ -1009,6 +1009,80 @@ describe('__bridgeSignaling 事件处理 — foreground-resume', () => {
 		});
 	});
 
+	test('source=network:online + rtc.state=connected → 跳过 probe 直接 rebuild', async () => {
+		const store = useBotsStore();
+		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn() };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '71', name: 'Bot', online: true });
+		store.byId['71'].dcReady = true;
+		store.__bridgeConn('71');
+		mockCloseRtcForBot.mockClear();
+		mockInitRtc.mockClear();
+
+		for (const cb of sigListeners['foreground-resume'] ?? []) cb({ source: 'network:online', elapsed: 5_000 });
+		await vi.waitFor(() => {
+			expect(mockCloseRtcForBot).toHaveBeenCalledWith('71');
+		});
+		// network:online 跳过 probe，直接 rebuild
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
+	});
+
+	test('source=network:online + rtc.state=disconnected → 直接 rebuild（不 probe）', async () => {
+		const store = useBotsStore();
+		const fakeRtc = { state: 'disconnected', probe: vi.fn() };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 用 online:false 避免 __bridgeConn 触发 __fullInit
+		store.addOrUpdateBot({ id: '72', name: 'Bot', online: false });
+		store.byId['72'].online = true;
+		store.byId['72'].initialized = true;
+		store.byId['72'].dcReady = true;
+		store.__bridgeConn('72');
+		mockCloseRtcForBot.mockClear();
+		mockInitRtc.mockClear();
+
+		for (const cb of sigListeners['foreground-resume'] ?? []) cb({ source: 'network:online', elapsed: 5_000 });
+		await vi.waitFor(() => {
+			expect(mockCloseRtcForBot).toHaveBeenCalledWith('72');
+		});
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
+	});
+
+	test('source=app:foreground + rtc.state=disconnected → probe（不直接 rebuild）', async () => {
+		const store = useBotsStore();
+		const fakeRtc = { state: 'disconnected', probe: vi.fn().mockResolvedValue(true) };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 用 online:false 避免 __bridgeConn 触发 __fullInit
+		store.addOrUpdateBot({ id: '73', name: 'Bot', online: false });
+		store.byId['73'].online = true;
+		store.byId['73'].initialized = true;
+		store.byId['73'].dcReady = true;
+		store.__bridgeConn('73');
+		mockCloseRtcForBot.mockClear();
+		mockInitRtc.mockClear();
+
+		for (const cb of sigListeners['foreground-resume'] ?? []) cb({ source: 'app:foreground', elapsed: 5_000 });
+		await vi.waitFor(() => {
+			expect(fakeRtc.probe).toHaveBeenCalledWith(3_000);
+		});
+		// probe 成功 → 不 rebuild
+		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
+	});
+
 	test('dcReady=false → 不触发恢复', async () => {
 		const store = useBotsStore();
 		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn() };
@@ -1121,6 +1195,79 @@ describe('__bridgeSignaling 事件处理 — foreground-resume', () => {
 			expect(mockCloseRtcForBot).toHaveBeenCalledWith('67');
 		});
 		expect(fakeRtc.probe).not.toHaveBeenCalled();
+	});
+
+	// --- network:online 与 early-return 守卫的交叉测试 ---
+
+	test('source=network:online + conn.rtc=null → 不触发恢复', async () => {
+		const store = useBotsStore();
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: null, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '80', name: 'Bot', online: true });
+		store.byId['80'].dcReady = true;
+		store.__bridgeConn('80');
+		mockCloseRtcForBot.mockClear();
+
+		for (const cb of sigListeners['foreground-resume'] ?? []) cb({ source: 'network:online', elapsed: 5_000 });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
+	});
+
+	test('source=network:online + _rtcInitInProgress → 跳过 checkAndRecover', async () => {
+		const store = useBotsStore();
+		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn() };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setBots([{ id: '81', name: 'Bot', online: true }]);
+		store.byId['81'].initialized = true;
+		store.byId['81'].dcReady = true;
+		store.__bridgeConn('81');
+
+		// 模拟 _rtcInitInProgress
+		let resolveInit;
+		mockInitRtc.mockImplementation(() => new Promise((r) => { resolveInit = r; }));
+		const p = store.__ensureRtc('81', { forceRebuild: true });
+
+		// 此时 _rtcInitInProgress=true，network:online 的 foreground-resume 应跳过
+		mockCloseRtcForBot.mockClear();
+		for (const cb of sigListeners['foreground-resume'] ?? []) cb({ source: 'network:online', elapsed: 5_000 });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
+		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
+
+		resolveInit('rtc');
+		await p;
+	});
+
+	test('source=network:online + dcReady=false → 不触发恢复', async () => {
+		const store = useBotsStore();
+		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn() };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateBot({ id: '82', name: 'Bot', online: true });
+		store.byId['82'].dcReady = false;
+		store.__bridgeConn('82');
+		mockCloseRtcForBot.mockClear();
+
+		for (const cb of sigListeners['foreground-resume'] ?? []) cb({ source: 'network:online', elapsed: 5_000 });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
+		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
 	});
 });
 
@@ -1742,7 +1889,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 			store.byId['50'].online = false; // bail-out
 			return 'failed';
 		});
-		vi.advanceTimersByTime(10_000);
+		vi.advanceTimersByTime(3_000);
 		await Promise.resolve(); // 让 timer callback 执行
 		await Promise.resolve(); // 让 __ensureRtc 内的 await 链完成
 		expect(mockInitRtc).toHaveBeenCalled();
@@ -1766,7 +1913,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 			return 'failed';
 		});
 
-		vi.advanceTimersByTime(10_000);
+		vi.advanceTimersByTime(3_000);
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(mockInitRtc).toHaveBeenCalled();
@@ -1789,8 +1936,8 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 
 		vi.restoreAllMocks();
 
-		// 延迟序列：10s, 20s, 40s, 80s, 120s（封顶）
-		expect(delays).toEqual([10_000, 20_000, 40_000, 80_000, 120_000]);
+		// 延迟序列：3s, 6s, 12s, 24s, 48s
+		expect(delays).toEqual([3_000, 6_000, 12_000, 24_000, 48_000]);
 	});
 
 	test('__ensureRtc 成功时清除退避状态', async () => {
@@ -1870,8 +2017,8 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		store.__scheduleRetry('50');
 
 		vi.restoreAllMocks();
-		// 应回到初始延迟 10s
-		expect(delays[0]).toBe(10_000);
+		// 应回到初始延迟 3s
+		expect(delays[0]).toBe(3_000);
 	});
 
 	test('最大次数（8）耗尽后不再安排', () => {
@@ -1914,7 +2061,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 			store.byId['50'].online = false;
 			return 'failed';
 		});
-		vi.advanceTimersByTime(10_000);
+		vi.advanceTimersByTime(3_000);
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(mockInitRtc).toHaveBeenCalled();
@@ -1964,7 +2111,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		store.byId['50'].rtcPhase = 'ready';
 
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(10_000);
+		vi.advanceTimersByTime(3_000);
 		// __ensureRtc 不应被调用
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
@@ -1976,11 +2123,11 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		const before = Date.now();
 		store.__scheduleRetry('50');
 		expect(store.byId['50'].retryCount).toBe(1);
-		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 10_000);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 3_000);
 
 		store.__scheduleRetry('50');
 		expect(store.byId['50'].retryCount).toBe(2);
-		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 20_000);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 6_000);
 	});
 
 	test('__clearRetry 重置 retryCount / retryNextAt', () => {
@@ -2014,8 +2161,50 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		store.byId['50'].online = false;
 
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(10_000);
+		vi.advanceTimersByTime(3_000);
 		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+
+	test('退避序列完整验证（含 cap 到 RETRY_BACKOFF_MAX_MS）', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+
+		const delays = [];
+		const origSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, delay) => {
+			delays.push(delay);
+			return origSetTimeout(fn, delay);
+		});
+
+		for (let i = 0; i < 8; i++) {
+			store.__scheduleRetry('50');
+		}
+
+		vi.restoreAllMocks();
+
+		// 3s, 6s, 12s, 24s, 48s, 96s, 120s(cap), 120s(cap)
+		expect(delays).toEqual([3_000, 6_000, 12_000, 24_000, 48_000, 96_000, 120_000, 120_000]);
+	});
+
+	test('clearRetry 后旧 timer callback 不再执行', () => {
+		const store = useBotsStore();
+		setupFailedBot(store);
+
+		store.__scheduleRetry('50');
+		expect(store.byId['50'].retryCount).toBe(1);
+
+		store.__clearRetry('50');
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
+
+		// 推进时间使旧 timer 本应到期
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(3_000);
+
+		// initRtc 不应被调用，退避状态仍为清空
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
 	});
 });
 

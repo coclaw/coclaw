@@ -400,6 +400,102 @@ describe('SignalingConnection – 前台恢复', () => {
 		expect(events.length).toBe(1);
 		expect(events[0].elapsed).toBe(Infinity);
 	});
+
+	test('network:online 不受 throttle 限制', () => {
+		platformMod.isCapacitorApp = true;
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(1000);
+		// 先触发 app:foreground
+		conn.__handleForegroundResume('app:foreground');
+		expect(events.length).toBe(1);
+		// 立即触发 network:online（间隔 < 500ms），不应被节流抑制
+		conn.__handleForegroundResume('network:online');
+		expect(events.length).toBe(2);
+		expect(events[1].source).toBe('network:online');
+	});
+
+	test('network:online + connected + elapsed 很小时仍 forceReconnect', () => {
+		const { conn } = makeConnected();
+		// lastAliveAt 刚被设为 now（elapsed 约 0）
+		const wsBefore = MockWebSocket.instances.length;
+		conn.__handleForegroundResume('network:online');
+		// 应触发 forceReconnect → 创建新 WS
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+	});
+
+	test('network:online + connecting 状态时仍发射 foreground-resume', () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect(); // state → connecting，不 simulateOpen
+		expect(conn.state).toBe('connecting');
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		conn.__handleForegroundResume('network:online');
+		expect(events.length).toBe(1);
+		expect(events[0].source).toBe('network:online');
+		expect(events[0].elapsed).toBe(Infinity);
+	});
+
+	test('非 network:online 在 connecting 状态不发射 foreground-resume', () => {
+		platformMod.isCapacitorApp = true;
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect(); // state → connecting，不 simulateOpen
+		expect(conn.state).toBe('connecting');
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		conn.__handleForegroundResume('app:foreground');
+		expect(events.length).toBe(0);
+		conn.__handleForegroundResume('visibility');
+		expect(events.length).toBe(0);
+	});
+
+	test('throttle 对非 network:online 事件仍生效', () => {
+		platformMod.isCapacitorApp = true;
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(1000);
+		// 第一次 app:foreground 正常触发
+		conn.__handleForegroundResume('app:foreground');
+		expect(events.length).toBe(1);
+		const wsBefore = MockWebSocket.instances.length;
+		// 立即再次触发（间隔 < 500ms），应被节流抑制
+		conn.__handleForegroundResume('app:foreground');
+		expect(events.length).toBe(1); // 未新增事件
+		expect(MockWebSocket.instances.length).toBe(wsBefore); // 未 forceReconnect
+	});
+
+	test('connected + network:online 既 forceReconnect 又发射 foreground-resume', () => {
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		// lastAliveAt 在 makeConnected 中的 simulateOpen 时已设为 now，elapsed 很小
+		const wsBefore = MockWebSocket.instances.length;
+		conn.__handleForegroundResume('network:online');
+		// forceReconnect 应创建新 WS
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		// foreground-resume 应被发射
+		expect(events.length).toBe(1);
+		expect(events[0].source).toBe('network:online');
+		expect(events[0]).toHaveProperty('elapsed');
+		expect(typeof events[0].elapsed).toBe('number');
+	});
+
+	test('连续 network:online：第二次在 connecting 状态不再 forceReconnect', () => {
+		const { conn } = makeConnected();
+		vi.advanceTimersByTime(1000);
+		// 第一次：forceReconnect → state 变为 connecting
+		conn.__handleForegroundResume('network:online');
+		expect(conn.state).toBe('connecting');
+		const wsCountAfterFirst = MockWebSocket.instances.length;
+		// 第二次（WS 还在 connecting）：不会再次创建 WS
+		conn.__handleForegroundResume('network:online');
+		expect(MockWebSocket.instances.length).toBe(wsCountAfterFirst);
+		expect(conn.state).toBe('connecting');
+	});
 });
 
 describe('SignalingConnection – probe()', () => {

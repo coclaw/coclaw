@@ -298,7 +298,7 @@ describe('WebRtcConnection — 状态变更', () => {
 		pc.onconnectionstatechange();
 
 		// 未超时前不触发
-		vi.advanceTimersByTime(9_999);
+		vi.advanceTimersByTime(4_999);
 		expect(failedSpy).not.toHaveBeenCalled();
 
 		// 超时后触发恢复
@@ -326,8 +326,8 @@ describe('WebRtcConnection — 状态变更', () => {
 		pc.connectionState = 'disconnected';
 		pc.onconnectionstatechange();
 
-		// 5s 后恢复 connected → 清除定时器
-		vi.advanceTimersByTime(5_000);
+		// 3s 后恢复 connected → 清除定时器
+		vi.advanceTimersByTime(3_000);
 		pc.connectionState = 'connected';
 		pc.onconnectionstatechange();
 

@@ -2,7 +2,7 @@
 
 > 适用范围：CoClaw UI
 > 创建时间：2026-03-26
-> 最后更新：2026-04-02
+> 最后更新：2026-04-03
 
 本文档记录 CoClaw UI 中所有状态恢复机制的设计与实现。大部分恢复逻辑是 Web 应用本身就需要的（网络异常、页面切换等），Capacitor 移动端只是放大了问题频率并引入少量特有处理。
 
@@ -64,17 +64,20 @@
 ### 2.3 前台恢复重连
 
 - **文件**：`services/signaling-connection.js`（`__handleForegroundResume`）
-- **触发**：`visibilitychange`（visible）、`app:foreground` 或 `network:online`，500ms 节流去重
+- **触发**：`visibilitychange`（visible）、`app:foreground` 或 `network:online`
+- **节流**：500ms 去重（`network:online` 豁免——连续触发由 `connecting` 状态分支自然防护）
 - **分级策略**：
 
 | 条件 | 行为 |
 |------|------|
 | WS 已断连（`state === 'disconnected'`） | 重置退避到 1s，立即重连 |
+| `network:online`（任意 elapsed） | `forceReconnect()`（网络切换后 IP 变化，旧 TCP 必死） |
 | 已连接 + 静默超过 45s（`ASSUME_DEAD_MS`） | `forceReconnect()`（关旧 WS、立即重建） |
 | 已连接 + 静默超过 2.5s（`PROBE_TIMEOUT_MS`） | 发 probe ping，2.5s 无响应则 `forceReconnect()` |
 | 已连接 + 静默 ≤ 2.5s | 无需操作 |
 
-- 恢复后发出 `foreground-resume` 事件，由 `bots.store` 对每个 bot 执行 `__checkAndRecover()`（含 RTC 状态检测和重建）
+- 恢复后发出 `foreground-resume` 事件（含 `source`），由 `bots.store` 对每个 bot 执行 `__checkAndRecover()`（含 RTC 状态检测和重建）
+- `network:online` + WS 处于 `connecting` 状态时，仍发射 `foreground-resume` 事件（WS 正在重连，但 DC 可能需要独立恢复）
 - **场景**：Web + Capacitor
 
 ### 2.4 RTC ICE restart 与 full rebuild
@@ -82,9 +85,10 @@
 - **文件**：`services/webrtc-connection.js`
 - **触发**：ICE `connectionState` 变为 `failed`；或前台恢复时 PC 处于 `disconnected`
 - **行为**：
-  - ICE restart（最多 2 次）→ `createOffer({ iceRestart: true })`
-  - Full rebuild（最多 3 次）→ 销毁旧 PeerConnection，重新协商
-  - 全部用尽 → `state = 'failed'`，`clearRtc()` reject 所有挂起请求（`RTC_LOST`），等下次 WS 重连重试
+  - ICE `disconnected` → 等待 ICE 自愈（5s 超时，`DISCONNECTED_TIMEOUT_MS`）
+  - Full rebuild（最多 3 次）→ 销毁旧 PeerConnection，重新协商（每次获取新 TURN 凭证）
+  - 全部用尽 → `state = 'failed'`，`clearRtc()` reject 所有挂起请求（`RTC_LOST`），进入退避重试
+- **注**：ICE restart 已移除（werift 实现不完整），恢复策略为 full rebuild
 - **场景**：Web + Capacitor
 
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）
@@ -325,8 +329,8 @@
   - **Capacitor**：`@capacitor/network` 的 `networkStatusChange` → 当 `connected === true` 时派发 `network:online` DOM 事件
   - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件
 - **消费者**：SignalingConnection（即时 probe/重连）、SSE（restart）
-- **效果**：WiFi↔蜂窝切换或断网恢复后，无需等待心跳超时（~90s），可立即检测并恢复连接
-- **去重**：BotConnection 的 `__handleForegroundResume` 已有 500ms 节流，`network:online` + `app:foreground` 同时到达时自动去重
+- **效果**：WiFi↔蜂窝切换或断网恢复后，WS 无条件 `forceReconnect()`，RTC 跳过 probe 直接 rebuild，无需等待心跳超时
+- **去重**：SignalingConnection 500ms 节流（`network:online` 豁免；连续触发由 `connecting` 状态自然防护）
 
 ### 7.2 Deep Link 路由导航
 
@@ -374,7 +378,7 @@
 ### visibilitychange + app:foreground + network:online 多信号去重
 
 三个信号取并集，通过时间戳节流去重：
-- SignalingConnection：`__lastForegroundAt` + 500ms
+- SignalingConnection：`__lastForegroundAt` + 500ms（`network:online` 豁免；连续 network:online 由 `connecting` 状态分支自然防护）
 - ChatPage：`__lastResumeAt` + 2s（connReady watcher 触发时也更新此时间戳）
 
 ### 冷启动 vs 暖恢复的区分
