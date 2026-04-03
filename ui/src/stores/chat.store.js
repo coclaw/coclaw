@@ -391,34 +391,28 @@ export function createChatStore(storeKey, opts = {}) {
 						rtcAvailable, !!conn.rtc, conn.rtc?.isReady);
 				}
 
-				// 构建乐观消息：图片仍生成 base64 用于即时预览
+				// 预构建 base64 缓存（WS fallback 路径需要）
 				const imgFiles = files?.filter((f) => f.isImg && f.file) ?? [];
 				const base64Cache = new Map();
-				let content = text;
-				if (imgFiles.length) {
-					const blocks = [];
-					if (text) blocks.push({ type: 'text', text });
-					for (const f of imgFiles) {
-						const base64 = await fileToBase64(f.file);
-						base64Cache.set(f.file, base64);
-						blocks.push({ type: 'image', data: base64, mimeType: f.file.type || 'image/png' });
-					}
-					content = blocks;
+				for (const f of imgFiles) {
+					const base64 = await fileToBase64(f.file);
+					base64Cache.set(f.file, base64);
 				}
+
 				const optimisticUser = {
 					type: 'message',
 					id: `__local_user_${Date.now()}`,
 					_local: true,
-					message: { role: 'user', content, timestamp: Date.now() },
+					message: { role: 'user', content: text, timestamp: Date.now() },
 				};
 				if (hasFiles) {
-					// 图片已 base64 内联到 content，不重复放入 _attachments
-					optimisticUser._attachments = files.filter((f) => !f.isImg).map((f) => ({
+					// 所有附件（含图片）统一放入 _attachments，图片用 blob URL 预览
+					optimisticUser._attachments = files.map((f) => ({
 						name: f.name, size: f.bytes, type: f.file?.type,
+						isImg: f.isImg || false,
 						isVoice: f.isVoice || false,
 						durationMs: f.durationMs || null,
-						// 语音附件需要 blob URL 用于乐观消息播放
-						url: f.isVoice && f.file ? URL.createObjectURL(f.file) : null,
+						url: (f.isVoice || f.isImg) && f.file ? URL.createObjectURL(f.file) : null,
 					}));
 				}
 				const optimisticBot = {
