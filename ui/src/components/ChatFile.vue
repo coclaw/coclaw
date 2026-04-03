@@ -1,0 +1,108 @@
+<template>
+	<div class="inline-flex max-w-full items-center gap-2 rounded-xl border border-default bg-elevated p-2">
+		<!-- 文件图标 -->
+		<UIcon name="i-lucide-file" class="size-8 shrink-0 text-amber-400" />
+
+		<!-- 文件名 + 大小 -->
+		<div class="min-w-0 flex-1 leading-tight">
+			<div class="truncate text-sm text-default">{{ displayName }}</div>
+			<div class="truncate text-xs text-muted">{{ displaySize }}</div>
+		</div>
+
+		<!-- 下载按钮 -->
+		<UButton
+			v-if="src"
+			class="cc-icon-btn shrink-0"
+			icon="i-lucide-download"
+			variant="ghost"
+			color="neutral"
+			size="md"
+			:loading="downloading"
+			:title="$t('chat.fileDownload')"
+			@click="onDownload"
+		/>
+	</div>
+</template>
+
+<script>
+import { isCoclawUrl, fetchCoclawFile } from '../services/coclaw-file.js';
+import { formatFileSize } from '../utils/file-helper.js';
+import { useNotify } from '../composables/use-notify.js';
+
+export default {
+	name: 'ChatFile',
+	props: {
+		/** 文件名 */
+		name: {
+			type: String,
+			default: '',
+		},
+		/** 文件大小（数字会格式化，字符串原样显示） */
+		size: {
+			type: [Number, String],
+			default: null,
+		},
+		/**
+		 * 下载来源。支持：
+		 * - blob URL → 直接下载
+		 * - coclaw-file://botId:agentId/path → 按需下载后触发保存
+		 */
+		src: {
+			type: String,
+			default: null,
+		},
+	},
+	setup() {
+		return { notify: useNotify() };
+	},
+	data() {
+		return {
+			downloading: false,
+		};
+	},
+	computed: {
+		displayName() {
+			return this.name || this.$t('chat.fileUnknown');
+		},
+		displaySize() {
+			if (this.size == null) return '';
+			return typeof this.size === 'number' ? formatFileSize(this.size) : this.size;
+		},
+	},
+	methods: {
+		async onDownload() {
+			if (this.downloading) return;
+			if (!this.src) return;
+
+			try {
+				let url = this.src;
+
+				// coclaw-file URL 需先下载为 blob
+				if (isCoclawUrl(this.src)) {
+					this.downloading = true;
+					const blob = await fetchCoclawFile(this.src);
+					url = URL.createObjectURL(blob);
+					this.__triggerDownload(url);
+					setTimeout(() => URL.revokeObjectURL(url), 5000);
+				} else {
+					this.__triggerDownload(url);
+				}
+			} catch (err) {
+				console.warn('[ChatFile] download failed:', err);
+				this.notify.error(this.$t('chat.fileDownloadFailed'));
+			} finally {
+				this.downloading = false;
+			}
+		},
+
+		__triggerDownload(url) {
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = this.displayName;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+		},
+	},
+};
+</script>

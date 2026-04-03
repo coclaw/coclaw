@@ -342,6 +342,8 @@ export const enMessages = {
 		fileUpload: 'Upload file',
 		fileRemove: 'Remove file',
 		fileUnknown: 'Unknown file',
+		fileDownload: 'Download file',
+		fileDownloadFailed: 'File download failed',
 		sessionRotated: 'OpenClaw has started a new session. Your message will continue in the current conversation.',
 		orphanSendFailed: 'Send failed, please retry',
 		orphanSendTimeout: 'Response timed out, please retry',

@@ -342,6 +342,8 @@ export const zhCNMessages = {
 		fileUpload: '上传文件',
 		fileRemove: '移除文件',
 		fileUnknown: '未知文件',
+		fileDownload: '下载文件',
+		fileDownloadFailed: '文件下载失败',
 		sessionRotated: 'OpenClaw 已自动开启新会话，当前消息将在原会话中继续',
 		orphanSendFailed: '发送失败，请重试',
 		orphanSendTimeout: '回复超时，请重试',

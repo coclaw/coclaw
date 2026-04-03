@@ -29,17 +29,13 @@
 							:src="att.url"
 							:duration-ms="att.durationMs"
 						/>
-						<!-- 普通文件附件卡片 -->
-						<div
+						<!-- 文件附件 -->
+						<ChatFile
 							v-else
-							class="flex items-center gap-2 rounded-lg border border-default bg-elevated px-3 py-2 text-xs"
-						>
-							<UIcon :name="att.isImg ? 'i-lucide-image' : 'i-lucide-file'" class="text-base text-muted shrink-0" />
-							<div class="min-w-0">
-								<div class="truncate font-medium text-default max-w-32">{{ attDisplayName(att) }}</div>
-								<div class="text-muted">{{ att.size }}</div>
-							</div>
-						</div>
+							:name="attDisplayName(att)"
+							:size="att.size"
+							:src="att.url"
+						/>
 					</template>
 				</div>
 				<div class="mt-1.5 flex items-center gap-1 text-xs text-dimmed">
@@ -178,6 +174,7 @@
 import MarkdownBody from './MarkdownBody.vue';
 import ChatImg from './ChatImg.vue';
 import ChatAudio from './ChatAudio.vue';
+import ChatFile from './ChatFile.vue';
 import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
 import { formatFileSize } from '../utils/file-helper.js';
 import { buildCoclawUrl } from '../services/coclaw-file.js';
@@ -185,7 +182,7 @@ import { useNotify } from '../composables/use-notify.js';
 
 export default {
 	name: 'ChatMsgItem',
-	components: { MarkdownBody, ChatImg, ChatAudio },
+	components: { MarkdownBody, ChatImg, ChatAudio, ChatFile },
 	props: {
 		item: {
 			type: Object,
@@ -230,8 +227,8 @@ export default {
 					...a,
 					size: typeof a.size === 'number' ? formatFileSize(a.size) : (a.size || ''),
 				};
-				// 语音附件：乐观消息已有 blob URL；历史消息需构建 coclaw-file URL
-				if (a.isVoice && !a.url && a.path && this.botId && this.agentId) {
+				// 历史消息附件（有 path 无 url）：构建 coclaw-file URL 用于下载/播放
+				if (!a.url && a.path && this.botId && this.agentId) {
 					result.url = buildCoclawUrl(this.botId, this.agentId, a.path);
 				}
 				return result;

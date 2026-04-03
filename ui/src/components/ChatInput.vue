@@ -46,18 +46,21 @@
 					class="h-16 w-16 rounded-md border border-default object-cover"
 				/>
 				<!-- 语音文件卡片 -->
-				<div v-else-if="f.isVoice" class="flex h-16 items-center gap-2 rounded-md border border-default bg-elevated px-3">
-					<UIcon name="i-lucide-mic" class="text-lg text-muted" />
-					<div class="max-w-24 text-xs">
+				<div v-else-if="f.isVoice" class="flex max-w-60 items-center gap-1 rounded-xl border border-default bg-elevated py-2 pl-1 pr-3">
+					<UIcon name="i-lucide-mic" class="size-8 shrink-0 text-muted" />
+					<div class="min-w-0 text-xs leading-tight">
 						<div class="truncate font-medium">{{ voiceDisplayName(f) }}</div>
 						<div class="text-muted">{{ f.label }}</div>
 					</div>
 				</div>
 				<!-- 非图片文件卡片 -->
-				<div v-else class="flex h-16 items-center gap-2 rounded-md border border-default bg-elevated px-3">
-					<UIcon name="i-lucide-file" class="text-lg text-muted" />
-					<div class="max-w-24 text-xs">
-						<div class="truncate font-medium">{{ f.name }}</div>
+				<div v-else class="flex max-w-60 items-center gap-1 rounded-xl border border-default bg-elevated py-2 pl-1 pr-3">
+					<UIcon name="i-lucide-file" class="size-8 shrink-0 text-amber-400" />
+					<div class="min-w-0 text-xs leading-tight">
+						<div class="flex text-default">
+							<span class="truncate">{{ fileBaseName(f) }}</span>
+							<span v-if="f.ext" class="shrink-0">.{{ f.ext }}</span>
+						</div>
 						<div class="text-muted">{{ f.label }}</div>
 					</div>
 				</div>
@@ -406,6 +409,12 @@ export default {
 		},
 
 		// --- 移动端语音 (Phase 4 实现) ---
+		/** 文件名去除扩展名部分（扩展名单独渲染以防被截断） */
+		fileBaseName(f) {
+			if (!f.ext || !f.name) return f.name || '';
+			const suffix = '.' + f.ext;
+			return f.name.endsWith(suffix) ? f.name.slice(0, -suffix.length) : f.name;
+		},
 		voiceDisplayName(f) {
 			if (f.durationMs) {
 				const sec = Math.round(f.durationMs / 1000);
