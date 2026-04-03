@@ -1,5 +1,12 @@
 # @coclaw/ui
 
+## 0.11.3
+
+### Patch Changes
+
+- ui: add cloud deploy guide, debug build variant, reconnection optimization, remove per-bot inline loading
+  server: simplify coverage config, raise test coverage to 90%+
+
 ## 0.9.4
 
 ### Patch Changes
