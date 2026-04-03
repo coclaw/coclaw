@@ -28,6 +28,20 @@
 					</template>
 				</UAccordion>
 			</div>
+
+			<!-- 云部署引导 -->
+			<div class="mt-6 flex flex-col items-center gap-2.5">
+				<h2 class="text-base font-medium">{{ $t('about.cloudDeploy') }}</h2>
+				<p class="text-sm text-toned">{{ $t('about.cloudDeployDesc') }}</p>
+				<UButton
+					class="mt-1"
+					size="lg"
+					variant="outline"
+					color="primary"
+					icon="i-lucide-external-link"
+					@click="openCloudDeploy"
+				>{{ $t('about.cloudDeployBtn') }}</UButton>
+			</div>
 		</div>
 	</main>
 	<footer class="sticky bottom-0 bg-default px-4 pt-4 pb-2 lg:px-5">
@@ -66,7 +80,10 @@ import MobilePageHeader from '../components/MobilePageHeader.vue';
 import UserInfoRows from '../components/user/UserInfoRows.vue';
 import { fetchServerInfo } from '../services/server-info.api.js';
 import { useAuthStore } from '../stores/auth.store.js';
+import { openExternalUrl } from '../utils/external-url.js';
 import logoSrc from '../assets/coclaw-logo.jpg';
+
+const CLOUD_DEPLOY_URL = 'https://cloud.tencent.com/act/cps/redirect?redirect=38041&cps_key=3ad323275dc8d2d3fb6efe6fc6a27794';
 
 export default {
 	name: 'AboutPage',
@@ -127,6 +144,9 @@ export default {
 		async onLogout() {
 			await this.authStore.logout();
 			this.$router.replace('/login');
+		},
+		openCloudDeploy() {
+			openExternalUrl(CLOUD_DEPLOY_URL);
 		},
 	},
 };

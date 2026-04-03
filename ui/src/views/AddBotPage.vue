@@ -89,6 +89,21 @@
 					</div>
 					<p class="mt-2 text-xs text-dimmed">{{ $t('bots.shellSemicolonHint') }}</p>
 				</div>
+
+				<!-- 云部署引导 -->
+				<div class="mt-2 flex flex-col items-center gap-2.5 border-t border-default pt-4">
+					<p class="text-sm text-toned">
+						{{ $t('bots.noOpenClaw') }}
+						{{ $t('bots.noOpenClawDesc') }}
+					</p>
+					<UButton
+						size="lg"
+						variant="outline"
+						color="primary"
+						icon="i-lucide-external-link"
+						@click="openCloudDeploy"
+					>{{ $t('bots.noOpenClawBtn') }}</UButton>
+				</div>
 			</template>
 		</section>
 	</main>
@@ -100,6 +115,9 @@ import MobilePageHeader from '../components/MobilePageHeader.vue';
 import { useNotify } from '../composables/use-notify.js';
 import { cancelBindingCode, createBindingCode, waitBindingCode } from '../services/bots.api.js';
 import { useBotsStore } from '../stores/bots.store.js';
+import { openExternalUrl } from '../utils/external-url.js';
+
+const CLOUD_DEPLOY_URL = 'https://cloud.tencent.com/act/cps/redirect?redirect=38041&cps_key=3ad323275dc8d2d3fb6efe6fc6a27794';
 
 const DEFAULT_SERVER = 'https://im.coclaw.net';
 
@@ -246,6 +264,9 @@ export default {
 				}
 			}
 			this.waitLoopRunning = false;
+		},
+		openCloudDeploy() {
+			openExternalUrl(CLOUD_DEPLOY_URL);
 		},
 	},
 };
