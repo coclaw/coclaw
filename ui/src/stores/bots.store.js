@@ -37,7 +37,7 @@ const RUNTIME_FIELDS = new Set([
 	'retryCount', 'retryNextAt',
 ]);
 
-/** @internal 仅供测试重置 */
+/** 重置模块级状态（logout / 测试） */
 export function __resetBotStoreInternals() {
 	_bridgedConns.clear();
 	_rtcInitInProgress.clear();
