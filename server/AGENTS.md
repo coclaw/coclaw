@@ -53,4 +53,4 @@ server/
 
 ## 单元测试覆盖率要求
 
-server 工作区覆盖率门槛（90%）高于根 CLAUDE.md 基线，已固化在 `pnpm test` 命令中。
+覆盖率门槛（90%）已固化在 `pnpm test` 命令中。
