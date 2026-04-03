@@ -24,7 +24,7 @@
 				>
 					<template v-for="(att, idx) in userAttachments" :key="'att-' + idx">
 						<!-- 图片附件 -->
-						<ChatAttachImg
+						<ChatImg
 							v-if="att.isImg"
 							:src="att.url"
 							:filename="attDisplayName(att)"
@@ -182,7 +182,6 @@ import MarkdownBody from './MarkdownBody.vue';
 import ChatImg from './ChatImg.vue';
 import ChatAudio from './ChatAudio.vue';
 import ChatFile from './ChatFile.vue';
-import ChatAttachImg from './ChatAttachImg.vue';
 import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
 import { formatFileSize } from '../utils/file-helper.js';
 import { buildCoclawUrl } from '../services/coclaw-file.js';
@@ -190,7 +189,7 @@ import { useNotify } from '../composables/use-notify.js';
 
 export default {
 	name: 'ChatMsgItem',
-	components: { MarkdownBody, ChatImg, ChatAudio, ChatFile, ChatAttachImg },
+	components: { MarkdownBody, ChatImg, ChatAudio, ChatFile },
 	props: {
 		item: {
 			type: Object,
