@@ -91,18 +91,19 @@
 				</div>
 
 				<!-- 云部署引导 -->
-				<div class="mt-2 flex flex-col items-center gap-2.5 border-t border-default pt-4">
-					<p class="text-sm text-toned">
-						{{ $t('bots.noOpenClaw') }}
-						{{ $t('bots.noOpenClawDesc') }}
-					</p>
-					<UButton
-						size="lg"
-						variant="outline"
-						color="primary"
-						icon="i-lucide-external-link"
-						@click="openCloudDeploy"
-					>{{ $t('bots.noOpenClawBtn') }}</UButton>
+				<div class="mt-2 flex justify-center border-t border-default pt-4">
+					<div class="flex flex-col items-center gap-2.5">
+						<h2 class="text-base font-medium">{{ $t('about.cloudDeploy') }}</h2>
+						<p class="text-sm text-toned">{{ $t('about.cloudDeployDesc') }}</p>
+						<UButton
+							class="mt-1 w-full justify-center"
+							size="lg"
+							variant="outline"
+							color="primary"
+							icon="i-lucide-external-link"
+							@click="openCloudDeploy"
+						>{{ $t('about.cloudDeployBtn') }}</UButton>
+					</div>
 				</div>
 			</template>
 		</section>
