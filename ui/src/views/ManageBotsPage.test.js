@@ -27,8 +27,11 @@ const mockLoadDashboard = vi.fn().mockResolvedValue(undefined);
 const mockGetDashboard = vi.fn().mockReturnValue(null);
 const mockClearDashboard = vi.fn();
 
+let mockGetReadyConn = vi.fn().mockReturnValue(null);
+
 vi.mock('../stores/bots.store.js', () => ({
 	MAX_BACKOFF_RETRIES: 8,
+	getReadyConn: (...args) => mockGetReadyConn(...args),
 	useBotsStore: () => ({
 		get items() { return mockBots; },
 		get byId() {
@@ -109,6 +112,7 @@ function createWrapper() {
 						'bots.conn.rtcP2PProto': `WebRTC · P2P · ${params?.protocol}`,
 						'bots.conn.rtcRelay': 'WebRTC · Relay',
 						'bots.conn.rtcRelayProto': `WebRTC · Relay · ${params?.protocol}`,
+						'bots.renameFailed': 'Rename failed',
 						'bots.summary.claws': `${params?.n} Claws`,
 						'bots.summary.running': `${params?.n} 工作中`,
 						'bots.summary.failed': `${params?.n} 异常`,
@@ -128,6 +132,7 @@ describe('ManageBotsPage', () => {
 		mockLoadDashboard.mockResolvedValue(undefined);
 		mockIsRunning = vi.fn().mockReturnValue(false);
 		mockGetActiveRun = vi.fn().mockReturnValue(null);
+		mockGetReadyConn = vi.fn().mockReturnValue(null);
 		vi.clearAllMocks();
 	});
 
@@ -522,6 +527,103 @@ describe('connLabel', () => {
 		const wrapper = createWrapper();
 		await flushPromises();
 		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · P2P · TCP');
+	});
+});
+
+describe('rename', () => {
+	test('onConfirmRename 成功：调用 RPC + 乐观更新 pluginInfo.name + 关闭弹窗', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true },
+			agents: [],
+			loading: false,
+		});
+		const mockConn = { request: vi.fn().mockResolvedValue({}) };
+		mockGetReadyConn.mockReturnValue(mockConn);
+
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.openRename({ id: '1', pluginInfo: { name: 'OldName' } });
+		expect(wrapper.vm.renameOpen).toBe(true);
+		expect(wrapper.vm.renameValue).toBe('OldName');
+
+		wrapper.vm.renameValue = 'NewName';
+		await wrapper.vm.onConfirmRename();
+
+		expect(mockConn.request).toHaveBeenCalledWith('coclaw.info.patch', { name: 'NewName' });
+		expect(wrapper.vm.renameOpen).toBe(false);
+		expect(wrapper.vm.renaming).toBe(false);
+	});
+
+	test('onConfirmRename conn 不可用 → notify error', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({ instance: { name: 'Bot1' }, agents: [], loading: false });
+		mockGetReadyConn.mockReturnValue(null);
+
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.openRename({ id: '1' });
+		wrapper.vm.renameValue = 'NewName';
+		await wrapper.vm.onConfirmRename();
+
+		expect(mockNotify.error).toHaveBeenCalled();
+		expect(wrapper.vm.renaming).toBe(false);
+	});
+
+	test('onConfirmRename RPC 报错 → notify error', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({ instance: { name: 'Bot1' }, agents: [], loading: false });
+		const mockConn = { request: vi.fn().mockRejectedValue(new Error('RPC timeout')) };
+		mockGetReadyConn.mockReturnValue(mockConn);
+
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.openRename({ id: '1' });
+		wrapper.vm.renameValue = 'NewName';
+		await wrapper.vm.onConfirmRename();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('RPC timeout');
+		expect(wrapper.vm.renaming).toBe(false);
+		expect(wrapper.vm.renameOpen).toBe(true);
+		warnSpy.mockRestore();
+	});
+
+	test('onConfirmRename 空名称 → 不发请求', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({ instance: { name: 'Bot1' }, agents: [], loading: false });
+		const mockConn = { request: vi.fn() };
+		mockGetReadyConn.mockReturnValue(mockConn);
+
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.openRename({ id: '1' });
+		wrapper.vm.renameValue = '   ';
+		await wrapper.vm.onConfirmRename();
+
+		expect(mockConn.request).not.toHaveBeenCalled();
+	});
+
+	test('离线 bot → openRename 后 conn 不可用，直接报错', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: false }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: false },
+			agents: [],
+			loading: false,
+		});
+		mockGetReadyConn.mockReturnValue(null);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.openRename({ id: '1', name: 'Bot1' });
+		wrapper.vm.renameValue = 'NewName';
+		await wrapper.vm.onConfirmRename();
+
+		expect(mockNotify.error).toHaveBeenCalled();
 	});
 });
 

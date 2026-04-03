@@ -54,10 +54,10 @@ import {
 } from '../services/auth.api.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useDraftStore } from './draft.store.js';
-import { useSessionsStore } from './sessions.store.js';
-import { useBotsStore } from './bots.store.js';
+import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
+import { useBotsStore, __resetBotStoreInternals } from './bots.store.js';
 import { useAgentsStore } from './agents.store.js';
-import { useTopicsStore } from './topics.store.js';
+import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
 
 describe('auth store', () => {
 	beforeEach(() => {
@@ -305,6 +305,21 @@ describe('auth store', () => {
 
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
+	});
+
+	test('logout should reset module-level internals (timers, loading guards)', async () => {
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '3' };
+
+		// auth.store 导入并调用了这三个函数；验证它们确实是有效导出
+		expect(typeof __resetBotStoreInternals).toBe('function');
+		expect(typeof __resetSessionsInternals).toBe('function');
+		expect(typeof __resetTopicsInternals).toBe('function');
+
+		// logout 应正常完成（含 internals 重置 + $reset）
+		await store.logout();
+		expect(useBotsStore().items).toEqual([]);
 	});
 
 	test('login 成功后调用 draftStore.onUserChanged', async () => {

@@ -11,6 +11,12 @@ let _loadingPromise = null;
 /** 正在生成标题的 topicId 集合，防止并发请求 */
 const _generatingTopics = new Set();
 
+/** 重置模块级状态（logout / 测试） */
+export function __resetTopicsInternals() {
+	_loadingPromise = null;
+	_generatingTopics.clear();
+}
+
 export const useTopicsStore = defineStore('topics', {
 	state: () => ({
 		/** @type {Record<string, { topicId: string, agentId: string, title: string | null, createdAt: number, botId: string }>} */

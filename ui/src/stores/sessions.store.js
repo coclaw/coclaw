@@ -6,6 +6,11 @@ import { useBotsStore, getReadyConn } from './bots.store.js';
 // 模块级变量，避免被 Pinia reactive 代理包裹
 let _loadingPromise = null;
 
+/** 重置模块级状态（logout / 测试） */
+export function __resetSessionsInternals() {
+	_loadingPromise = null;
+}
+
 export const useSessionsStore = defineStore('sessions', {
 	state: () => ({
 		/** @type {{ sessionId: string, sessionKey: string, botId: string, agentId: string }[]} */

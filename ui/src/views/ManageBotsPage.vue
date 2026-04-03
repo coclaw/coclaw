@@ -48,7 +48,7 @@
 											color="primary"
 											size="md"
 											icon="i-lucide-pencil"
-											:disabled="renaming"
+											:disabled="renaming || !bot.online"
 											@click="openRename(bot)"
 										/>
 									</div>

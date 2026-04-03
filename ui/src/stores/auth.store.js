@@ -17,10 +17,10 @@ import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useDraftStore } from './draft.store.js';
-import { useSessionsStore } from './sessions.store.js';
-import { useBotsStore } from './bots.store.js';
+import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
+import { useBotsStore, __resetBotStoreInternals } from './bots.store.js';
 import { useAgentsStore } from './agents.store.js';
-import { useTopicsStore } from './topics.store.js';
+import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
 
 function applyUserPreferences(user) {
 	syncThemeModeFromSettings(user?.settings);
@@ -111,6 +111,9 @@ export const useAuthStore = defineStore('auth', {
 			syncThemeModeFromSettings(null);
 			useBotConnections().disconnectAll();
 			useSignalingConnection().disconnect();
+			__resetBotStoreInternals();
+			__resetSessionsInternals();
+			__resetTopicsInternals();
 			useSessionsStore().$reset();
 			useAgentsStore().$reset();
 			useTopicsStore().$reset();

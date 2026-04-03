@@ -204,6 +204,8 @@ export function downloadFile(botConn, agentId, path) {
 			// （WebRTC 某些实现中 close 和最后一条 message 可能几乎同时排入事件队列）
 			setTimeout(() => {
 				if (cancelled || settled) return;
+				// 注销事件监听，释放 dcRef 引用，避免阻碍 GC
+				cleanupRef();
 				// 如果已收完所有字节，视为正常完成（完成确认 string 可能因 close 时序丢失）
 				if (headerReceived && receivedBytes >= totalSize) {
 					const blob = new Blob(chunks);
