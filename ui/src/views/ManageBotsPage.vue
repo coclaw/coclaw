@@ -115,10 +115,6 @@
 						@files="goToFiles(bot.id, $event)"
 					/>
 				</div>
-
-				<div v-if="dashboard?.loading" class="flex items-center justify-center py-8">
-					<UButton loading variant="ghost" disabled>{{ $t('bots.preparing') }}</UButton>
-				</div>
 			</div>
 		</section>
 

@@ -199,15 +199,6 @@ describe('ManageBotsPage', () => {
 		expect(mockLoadDashboard).toHaveBeenCalledWith('1');
 	});
 
-	test('dashboard 加载中显示 loading', async () => {
-		mockBots = [{ id: '1', name: 'Bot1', online: true }];
-		mockGetDashboard.mockReturnValue({ loading: true, instance: null, agents: [] });
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		expect(wrapper.text()).toContain('Preparing...');
-	});
-
 	test('app:foreground 时重新加载 dashboard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		const wrapper = createWrapper();
