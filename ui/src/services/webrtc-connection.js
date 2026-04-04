@@ -368,7 +368,7 @@ export class WebRtcConnection {
 		if (turnCreds) {
 			for (const url of turnCreds.urls) {
 				const s = { urls: url };
-				if (url.startsWith('turn:')) {
+				if (url.startsWith('turn:') || url.startsWith('turns:')) {
 					s.username = turnCreds.username;
 					s.credential = turnCreds.credential;
 				}

@@ -131,9 +131,8 @@ const MOCK_TURN_CREDS = {
 	credential: 'base64==',
 	ttl: 86400,
 	urls: [
-		'stun:coclaw.net:3478',
 		'turn:coclaw.net:3478?transport=udp',
-		'turn:coclaw.net:3478?transport=tcp',
+		'turns:coclaw.net:443?transport=tcp',
 	],
 };
 
@@ -169,7 +168,7 @@ describe('WebRtcConnection — 基础建连', () => {
 		rtc.close();
 	});
 
-	test('connect 正确构建 iceServers（STUN 无 credential，TURN 有）', async () => {
+	test('connect 正确构建 iceServers（turn/turns 均附带 credential）', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
 
@@ -177,10 +176,14 @@ describe('WebRtcConnection — 基础建连', () => {
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		const iceServers = pc.config.iceServers;
-		expect(iceServers).toHaveLength(3);
-		expect(iceServers[0]).toEqual({ urls: 'stun:coclaw.net:3478' });
-		expect(iceServers[1]).toEqual({
+		expect(iceServers).toHaveLength(2);
+		expect(iceServers[0]).toEqual({
 			urls: 'turn:coclaw.net:3478?transport=udp',
+			username: '1234:42',
+			credential: 'base64==',
+		});
+		expect(iceServers[1]).toEqual({
+			urls: 'turns:coclaw.net:443?transport=tcp',
 			username: '1234:42',
 			credential: 'base64==',
 		});
