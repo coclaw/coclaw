@@ -4,6 +4,7 @@
 
 <script>
 import { renderMarkdown, reviseMdText } from '../utils/markdown-engine.js';
+import { openExternalUrl } from '../utils/external-url.js';
 import { useNotify } from '../composables/use-notify.js';
 
 export default {
@@ -104,9 +105,36 @@ export default {
 			void copiedLabel;
 		},
 
-		// 链接点击处理（保留扩展点）
-		onLinkClick() {
-			// 暂不做特殊处理
+		/**
+		 * 链接点击统一拦截
+		 *
+		 * 各 scheme 处理策略：
+		 * - http/https：preventDefault 后走 openExternalUrl 统一分发（Capacitor 必需，否则无法正确打开）
+		 * - mailto/tel：不拦截，各平台系统默认行为均正常
+		 * - #anchor：不拦截，页面内跳转
+		 * - javascript/vbscript/data：安全拦截，直接吞掉（markdown-it 默认已过滤，此处为防御性兜底）
+		 *
+		 * 已知未处理：
+		 * - 自定义协议（vscode://、obsidian:// 等）：Capacitor WebView 中点击无响应，
+		 *   需原生层 intent 转发支持，当前未实现；Browser/Electron 可正常唤起
+		 */
+		onLinkClick(event) {
+			const anchor = event.target.closest('a[href]');
+			if (!anchor) return;
+
+			const href = anchor.getAttribute('href');
+			if (!href) return;
+
+			// 防御性拦截危险 scheme（防止 markdown-it 配置变更后产生此类 <a>）
+			if (/^(?:javascript|vbscript|data):/i.test(href)) {
+				event.preventDefault();
+				return;
+			}
+
+			if (href.startsWith('http://') || href.startsWith('https://')) {
+				event.preventDefault();
+				openExternalUrl(href);
+			}
 		},
 	},
 };
