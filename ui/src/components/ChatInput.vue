@@ -1,5 +1,5 @@
 <template>
-	<footer class="sticky bottom-0 z-10 border-t border-default bg-default py-3">
+	<footer class="sticky bottom-0 z-10 bg-default py-3">
 		<slot name="prepend" />
 		<!-- 上传进度区（上传中替代文件预览） -->
 		<div
@@ -37,26 +37,28 @@
 				v-for="(f, idx) in inputFiles"
 				:key="f.id"
 				class="group relative"
+				:class="f.isImg ? 'min-h-14 aspect-square' : ''"
 			>
 				<!-- 图片缩略图 -->
 				<img
 					v-if="f.isImg"
 					:src="f.url"
 					:alt="f.name"
-					class="h-16 w-16 rounded-md border border-default object-cover"
+					class="absolute inset-0 size-full cursor-pointer rounded-md border border-accented object-cover"
+					@click="previewImg(f)"
 				/>
 				<!-- 语音文件卡片 -->
-				<div v-else-if="f.isVoice" class="flex max-w-60 items-center gap-1 rounded-xl border border-default bg-elevated py-2 pl-1 pr-3">
-					<UIcon name="i-lucide-mic" class="size-8 shrink-0 text-muted" />
-					<div class="min-w-0 text-xs leading-tight">
+				<div v-else-if="f.isVoice" class="flex min-h-14 max-w-60 gap-1 rounded-xl border border-accented py-2 pl-1 pr-3">
+					<UIcon name="i-lucide-mic" class="size-8 shrink-0 self-center text-muted" />
+					<div class="min-w-0 flex flex-1 flex-col justify-evenly text-xs leading-tight">
 						<div class="truncate font-medium">{{ voiceDisplayName(f) }}</div>
 						<div class="text-muted">{{ f.label }}</div>
 					</div>
 				</div>
 				<!-- 非图片文件卡片 -->
-				<div v-else class="flex max-w-60 items-center gap-1 rounded-xl border border-default bg-elevated py-2 pl-1 pr-3">
-					<UIcon name="i-lucide-file" class="size-8 shrink-0 text-amber-400" />
-					<div class="min-w-0 text-xs leading-tight">
+				<div v-else class="flex min-h-14 max-w-60 gap-1 rounded-xl border border-accented py-2 pl-1 pr-3">
+					<UIcon name="i-lucide-file" class="size-8 shrink-0 self-center text-amber-400" />
+					<div class="min-w-0 flex flex-1 flex-col justify-evenly text-xs leading-tight">
 						<div class="flex text-default">
 							<span class="truncate">{{ fileBaseName(f) }}</span>
 							<span v-if="f.ext" class="shrink-0">.{{ f.ext }}</span>
@@ -67,16 +69,22 @@
 				<!-- 移除按钮 -->
 				<button
 					:class="[
-						'absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full',
-						'bg-error text-white text-xs',
+						'absolute -right-1.5 -top-3.5 flex size-6 items-center justify-center rounded-full',
+						'bg-error text-white',
 						this.envStore.canHover ? 'opacity-0 group-hover:opacity-100' : '',
 					]"
 					@click="removeInputFile(idx)"
 				>
-					<UIcon name="i-lucide-x" class="text-xs" />
+					<UIcon name="i-lucide-x" class="size-4" />
 				</button>
 			</div>
 		</div>
+		<!-- 图片预览对话框 -->
+		<ImgViewDialog
+			v-model:open="previewImgOpen"
+			:src="previewImgSrc"
+			:filename="previewImgName"
+		/>
 
 		<form
 			class="mx-auto flex w-full max-w-3xl items-end gap-2 pl-1.5 pr-3"
@@ -226,11 +234,13 @@ import { useNotify } from '../composables/use-notify.js';
 import { formatFileSize, formatFileBlob } from '../utils/file-helper.js';
 import { VoiceRecorder, MAX_RECORD_DURATION } from '../utils/voice-recorder.js';
 import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
+import ImgViewDialog from './ImgViewDialog.vue';
 
 export default {
 	name: 'ChatInput',
 	components: {
 		TouchSpeakOverlay,
+		ImgViewDialog,
 	},
 	props: {
 		modelValue: {
@@ -266,6 +276,10 @@ export default {
 			// 移动端语音
 			touchSpeakOpen: false,
 			touchSpeakTouchId: null,
+			// 图片预览
+			previewImgOpen: false,
+			previewImgSrc: '',
+			previewImgName: '',
 		};
 	},
 	computed: {
@@ -421,6 +435,12 @@ export default {
 				return this.$t('chat.voiceLabelDuration', { duration: `${sec}″` });
 			}
 			return this.$t('chat.voiceLabel');
+		},
+		previewImg(f) {
+			if (!f.url) return;
+			this.previewImgSrc = f.url;
+			this.previewImgName = f.name || 'image';
+			this.previewImgOpen = true;
 		},
 		toggleInputMode() {
 			this.inputMode = this.inputMode === 'keyboard' ? 'voice' : 'keyboard';

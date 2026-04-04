@@ -1,11 +1,14 @@
 <template>
-	<div class="inline-flex max-w-full items-center gap-2 rounded-xl border border-default bg-elevated p-2">
+	<div class="inline-flex max-w-full items-center gap-2 rounded-xl border border-accented py-2 pl-2 pr-1">
 		<!-- 文件图标 -->
 		<UIcon name="i-lucide-file" class="size-8 shrink-0 text-amber-400" />
 
 		<!-- 文件名 + 大小 -->
 		<div class="min-w-0 flex-1 leading-tight">
-			<div class="truncate text-sm text-default">{{ displayName }}</div>
+			<div class="flex text-sm text-default">
+				<span class="truncate">{{ baseName }}</span>
+				<span v-if="ext" class="shrink-0">.{{ ext }}</span>
+			</div>
 			<div class="truncate text-xs text-muted">{{ displaySize }}</div>
 		</div>
 
@@ -61,6 +64,16 @@ export default {
 		};
 	},
 	computed: {
+		ext() {
+			if (!this.name) return '';
+			const dot = this.name.lastIndexOf('.');
+			return dot > 0 ? this.name.slice(dot + 1) : '';
+		},
+		baseName() {
+			const n = this.name || this.$t('chat.fileUnknown');
+			if (!this.ext) return n;
+			return n.slice(0, -(this.ext.length + 1));
+		},
 		displayName() {
 			return this.name || this.$t('chat.fileUnknown');
 		},

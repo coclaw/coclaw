@@ -20,7 +20,7 @@
 				<!-- 附件（图片 / 语音 / 文件） -->
 				<div
 					v-if="userAttachments.length"
-					class="mt-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5"
+					class="mt-2 flex max-w-[85%] flex-wrap justify-end gap-2"
 				>
 					<template v-for="(att, idx) in userAttachments" :key="'att-' + idx">
 						<!-- 图片附件 -->

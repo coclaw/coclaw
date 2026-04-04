@@ -7,7 +7,7 @@ const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default defineConfig({
 	build: {
-		target: ['es2020', 'chrome90', 'edge90', 'safari14', 'firefox90'],
+		target: ['es2020', 'chrome90', 'edge90', 'safari15', 'firefox90'],
 	},
 	define: {
 		__APP_VERSION__: JSON.stringify(pkg.version),

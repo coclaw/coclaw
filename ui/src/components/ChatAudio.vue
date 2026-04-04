@@ -1,5 +1,5 @@
 <template>
-	<div class="inline-flex items-center gap-2 rounded-xl border border-default bg-elevated py-2 pl-3 pr-2 text-sm text-muted">
+	<div class="inline-flex items-center gap-2 rounded-xl border border-accented py-2 pl-3 pr-2 text-sm text-muted">
 		<!-- 波形/图标 -->
 		<SoundWave v-if="playing" :playing="true" size="sm" class="w-6 text-success" />
 		<UIcon v-else name="i-lucide-audio-waveform" class="size-5 shrink-0" />
