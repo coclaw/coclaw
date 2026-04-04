@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia';
 
 import { isCapacitorApp } from '../utils/platform.js';
-import { useAuthStore } from './auth.store.js';
 
 const STORAGE_KEY_PREFIX = 'coclaw:drafts';
 
@@ -11,8 +10,7 @@ function getStorage() {
 }
 
 /** 带 userId 隔离的 storage key */
-function getStorageKey() {
-	const userId = useAuthStore().user?.id;
+function getStorageKey(userId) {
 	return userId ? `${STORAGE_KEY_PREFIX}:${userId}` : STORAGE_KEY_PREFIX;
 }
 
@@ -22,6 +20,8 @@ export const useDraftStore = defineStore('draft', {
 		drafts: {},
 		/** @type {boolean} 防止重复注册事件 */
 		__persistBound: false,
+		/** @type {string|null} 当前用户 ID（由 auth 通过 onUserChanged 注入，用于 storage key 隔离） */
+		_userId: null,
 	}),
 	actions: {
 		/**
@@ -60,7 +60,7 @@ export const useDraftStore = defineStore('draft', {
 		persist() {
 			try {
 				const storage = getStorage();
-				const key = getStorageKey();
+				const key = getStorageKey(this._userId);
 				const entries = Object.entries(this.drafts).filter(([, v]) => v);
 				if (entries.length > 0) {
 					storage.setItem(key, JSON.stringify(Object.fromEntries(entries)));
@@ -76,7 +76,7 @@ export const useDraftStore = defineStore('draft', {
 		restore() {
 			try {
 				const storage = getStorage();
-				const key = getStorageKey();
+				const key = getStorageKey(this._userId);
 				const raw = storage.getItem(key);
 				if (!raw) return;
 				const data = JSON.parse(raw);
@@ -111,8 +111,10 @@ export const useDraftStore = defineStore('draft', {
 		/**
 		 * 用户身份变更后重新加载草稿（登录/切换用户）
 		 * 清空当前内存态后从新 userId 的存储恢复
+		 * @param {string|null} [userId] - 新用户 ID，null 表示已登出
 		 */
-		onUserChanged() {
+		onUserChanged(userId) {
+			this._userId = userId ?? null;
 			this.drafts = {};
 			this.restore();
 		},

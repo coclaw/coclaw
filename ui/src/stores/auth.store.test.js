@@ -134,6 +134,7 @@ describe('auth store', () => {
 		await store.refreshSession();
 
 		expect(spy).toHaveBeenCalledOnce();
+		expect(spy).toHaveBeenCalledWith('2');
 	});
 
 	test('refreshSession 首次加载（user 从 null 到有值）调用 draftStore.onUserChanged', async () => {
@@ -145,6 +146,7 @@ describe('auth store', () => {
 		await store.refreshSession();
 
 		expect(spy).toHaveBeenCalledOnce();
+		expect(spy).toHaveBeenCalledWith('1');
 	});
 
 	test('refreshSession 失败时不调用 draftStore.onUserChanged', async () => {
@@ -330,10 +332,10 @@ describe('auth store', () => {
 
 		await store.login({ loginName: 'a', password: 'b' });
 
-		expect(spy).toHaveBeenCalled();
+		expect(spy).toHaveBeenCalledWith('5');
 	});
 
-	test('logout 时先 persist 草稿再调用 onUserChanged', async () => {
+	test('logout 时先 persist 草稿再调用 onUserChanged(null)', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -345,6 +347,7 @@ describe('auth store', () => {
 		await store.logout();
 
 		expect(callOrder).toEqual(['persist', 'onUserChanged']);
+		expect(draftStore.onUserChanged).toHaveBeenCalledWith(null);
 	});
 
 	test('logout should expose error message on failure', async () => {

@@ -2,15 +2,24 @@ import { defineStore } from 'pinia';
 
 import { useBotConnections } from '../services/bot-connection-manager.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
-import { useAgentRunsStore } from './agent-runs.store.js';
-import { useAgentsStore } from './agents.store.js';
-import { useSessionsStore } from './sessions.store.js';
-import { useDashboardStore } from './dashboard.store.js';
-import { useTopicsStore } from './topics.store.js';
 import { BRIEF_DISCONNECT_MS } from '../services/bot-connection.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
 import { initRtc, closeRtcForBot } from '../services/webrtc-connection.js';
 import { remoteLog } from '../services/remote-log.js';
+
+// bot 生命周期回调（由 bot-lifecycle.js 注册，避免静态循环依赖）
+const _lifecycle = {
+	cleanupBotResources: () => {},
+	syncDashboardOffline: () => {},
+	loadDashboardForBot: () => {},
+	initBotResources: async () => {},
+	refreshBotResources: () => {},
+	dispatchAgentEvent: () => {},
+};
+/** @param {Partial<typeof _lifecycle>} hooks */
+export function __registerBotLifecycleHooks(hooks) {
+	Object.assign(_lifecycle, hooks);
+}
 
 // 跟踪已桥接的 conn 实例（botId → BotConnection），避免重复注册
 const _bridgedConns = new Map();
@@ -133,9 +142,7 @@ export const useBotsStore = defineStore('bots', {
 			bot.online = next;
 			if (!next) {
 				// agents / dashboard 缓存保留：离线时不清除，重连后由对应 load 替换
-				// 同步 dashboard 缓存中的 online 状态，避免状态灯显示陈旧
-				const dashEntry = useDashboardStore().byBot[id];
-				if (dashEntry?.instance) dashEntry.instance.online = false;
+				_lifecycle.syncDashboardOffline(id);
 				// bot 离线 → 立即清除 DC 状态，避免 applySnapshot preserveOnline 误判
 				bot.dcReady = false;
 				bot.rtcPhase = 'idle';
@@ -156,7 +163,7 @@ export const useBotsStore = defineStore('bots', {
 				// RTC 就绪后刷新 dashboard（覆盖 DC 未断 + DC 重建两种场景）
 				this.__clearRetry(id);
 				this.__ensureRtc(id)
-					.then(() => useDashboardStore().loadDashboard(id))
+					.then(() => _lifecycle.loadDashboardForBot(id))
 					.catch(() => {});
 			}
 		},
@@ -166,11 +173,7 @@ export const useBotsStore = defineStore('bots', {
 			const id = String(botId ?? '');
 			closeRtcForBot(id);
 			useBotConnections().disconnect(id);
-			useSessionsStore().removeSessionsByBotId(id);
-			useAgentsStore().removeByBot(id);
-			useAgentRunsStore().removeByBot(id);
-			useDashboardStore().clearDashboard(id);
-			useTopicsStore().removeByBot(id);
+			_lifecycle.cleanupBotResources(id);
 			this.__clearRetry(id);
 			_bridgedConns.delete(id);
 			delete this.byId[id];
@@ -202,11 +205,7 @@ export const useBotsStore = defineStore('bots', {
 			for (const oldId of Object.keys(this.byId)) {
 				if (!newById[oldId]) {
 					closeRtcForBot(oldId);
-					useAgentsStore().removeByBot(oldId);
-					useSessionsStore().removeSessionsByBotId(oldId);
-					useAgentRunsStore().removeByBot(oldId);
-					useDashboardStore().clearDashboard(oldId);
-					useTopicsStore().removeByBot(oldId);
+					_lifecycle.cleanupBotResources(oldId);
 					this.__clearRetry(oldId);
 					_bridgedConns.delete(oldId);
 				}
@@ -270,7 +269,7 @@ export const useBotsStore = defineStore('bots', {
 
 			// event:agent DC 事件桥接
 			conn.on('event:agent', (payload) => {
-				useAgentRunsStore().__dispatch(payload);
+				_lifecycle.dispatchAgentEvent(payload);
 			});
 
 			// event:coclaw.info.updated — claw 实例名变更（来自 plugin 广播）
@@ -345,10 +344,7 @@ export const useBotsStore = defineStore('bots', {
 					}
 				}).catch(() => {});
 			}
-			useAgentsStore().loadAgents(id).catch(() => {});
-			useSessionsStore().loadAllSessions().catch(() => {});
-			useTopicsStore().loadAllTopics().catch(() => {});
-			useDashboardStore().loadDashboard(id).catch(() => {});
+			_lifecycle.refreshBotResources(id);
 		},
 
 		/**
@@ -451,10 +447,7 @@ export const useBotsStore = defineStore('bots', {
 				console.warn('[bots] plugin version %s for botId=%s', info.version ? 'outdated' : 'check failed (bot may be offline)', id);
 				if (!info.version) throw new Error('Bot is offline');
 			}
-			await useAgentsStore().loadAgents(id);
-			useSessionsStore().loadAllSessions();
-			useTopicsStore().loadAllTopics();
-			useDashboardStore().loadDashboard(id).catch(() => {});
+			await _lifecycle.initBotResources(id);
 		},
 
 		/** 安排退避重试（__ensureRtc 失败或被动失败后调用） */
@@ -555,15 +548,3 @@ export const useBotsStore = defineStore('bots', {
 	},
 });
 
-/**
- * 获取就绪的 BotConnection（链式容错）
- * dcReady=false、bot 不存在、conn 不存在 → 均返回 null
- * @param {string} botId
- * @returns {import('../services/bot-connection.js').BotConnection | null}
- */
-export function getReadyConn(botId) {
-	const id = String(botId);
-	const store = useBotsStore();
-	if (!store.byId[id]?.dcReady) return null;
-	return useBotConnections().get(id) ?? null;
-}

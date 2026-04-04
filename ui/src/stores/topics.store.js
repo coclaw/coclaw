@@ -4,7 +4,8 @@
  */
 import { defineStore } from 'pinia';
 
-import { useBotsStore, getReadyConn } from './bots.store.js';
+import { useBotsStore } from './bots.store.js';
+import { getReadyConn } from './get-ready-conn.js';
 
 let _loadingPromise = null;
 

@@ -49,10 +49,12 @@ vi.mock('../services/webrtc-connection.js', () => ({
 
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
-import { useBotsStore, __resetAwaitingConnIds, getReadyConn } from './bots.store.js';
+import { useBotsStore, __resetAwaitingConnIds } from './bots.store.js';
+import { getReadyConn } from './get-ready-conn.js';
 import { useDashboardStore } from './dashboard.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useTopicsStore } from './topics.store.js';
+import './bot-lifecycle.js'; // 注册生命周期回调
 
 beforeEach(() => {
 	setActivePinia(createPinia());

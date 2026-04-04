@@ -29,9 +29,12 @@ const mockClearDashboard = vi.fn();
 
 let mockGetReadyConn = vi.fn().mockReturnValue(null);
 
+vi.mock('../stores/get-ready-conn.js', () => ({
+	getReadyConn: (...args) => mockGetReadyConn(...args),
+}));
+
 vi.mock('../stores/bots.store.js', () => ({
 	MAX_BACKOFF_RETRIES: 8,
-	getReadyConn: (...args) => mockGetReadyConn(...args),
 	useBotsStore: () => ({
 		get items() { return mockBots; },
 		get byId() {

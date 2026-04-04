@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia';
 
 import { useAgentsStore } from './agents.store.js';
-import { useBotsStore, getReadyConn } from './bots.store.js';
+import { useBotsStore } from './bots.store.js';
+import { getReadyConn } from './get-ready-conn.js';
 
 // 模块级变量，避免被 Pinia reactive 代理包裹
 let _loadingPromise = null;

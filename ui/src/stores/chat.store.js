@@ -12,7 +12,7 @@ import { postFile } from '../services/file-transfer.js';
 import { fileToBase64, chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
-import { getReadyConn } from './bots.store.js';
+import { getReadyConn } from './get-ready-conn.js';
 
 const MSG_PAGE_SIZE = 50;
 

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 
-import { useBotsStore, getReadyConn } from './bots.store.js';
+import { useBotsStore } from './bots.store.js';
+import { getReadyConn } from './get-ready-conn.js';
 
 /** per-bot 飞行中请求合并，防止重连路径 + MainList watcher 同时触发时重复请求 */
 const _loadingByBot = new Map();

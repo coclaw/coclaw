@@ -8,7 +8,6 @@ vi.mock('../utils/platform.js', () => ({
 	isDesktop: true,
 }));
 
-import { useAuthStore } from './auth.store.js';
 import { useDraftStore } from './draft.store.js';
 
 describe('draft.store', () => {
@@ -85,8 +84,7 @@ describe('draft.store', () => {
 		});
 
 		test('登录后使用 userId 隔离的 key', () => {
-			const authStore = useAuthStore();
-			authStore.user = { id: 'user-42' };
+			store.onUserChanged('user-42');
 
 			store.setDraft('chat:1:main', '你好');
 			store.persist();
@@ -159,14 +157,11 @@ describe('draft.store', () => {
 		test('清空内存态并从新 userId 的存储恢复', () => {
 			store.setDraft('chat:1:main', '旧用户的草稿');
 
-			const authStore = useAuthStore();
-			authStore.user = { id: 'user-99' };
-
 			storageMock.store['coclaw:drafts:user-99'] = JSON.stringify({
 				'topic:t1': '新用户的草稿',
 			});
 
-			store.onUserChanged();
+			store.onUserChanged('user-99');
 
 			expect(store.getDraft('chat:1:main')).toBe('');
 			expect(store.getDraft('topic:t1')).toBe('新用户的草稿');
@@ -175,10 +170,7 @@ describe('draft.store', () => {
 		test('切换到无存储数据的用户时清空', () => {
 			store.setDraft('chat:1:main', '数据');
 
-			const authStore = useAuthStore();
-			authStore.user = { id: 'user-new' };
-
-			store.onUserChanged();
+			store.onUserChanged('user-new');
 
 			expect(Object.keys(store.drafts)).toHaveLength(0);
 		});

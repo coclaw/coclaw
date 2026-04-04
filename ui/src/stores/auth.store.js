@@ -48,7 +48,7 @@ export const useAuthStore = defineStore('auth', {
 				this.user = await fetchSessionUser();
 				applyUserPreferences(this.user);
 				// 仅在用户实际切换时才重置 draft 存储空间，避免每次导航清空未持久化的内存态草稿
-				if (this.user?.id !== prevUserId) useDraftStore().onUserChanged();
+				if (this.user?.id !== prevUserId) useDraftStore().onUserChanged(this.user?.id);
 				console.debug('[auth] session refreshed, user=%s', this.user?.id ?? null);
 			} catch (err) {
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Failed to load session';
@@ -64,7 +64,7 @@ export const useAuthStore = defineStore('auth', {
 				const data = await loginByLoginName(credentials);
 				this.user = data.user;
 				applyUserPreferences(this.user);
-				useDraftStore().onUserChanged();
+				useDraftStore().onUserChanged(this.user?.id);
 				console.log('[auth] login ok, user=%s', this.user?.id);
 			} catch (err) {
 				this.user = null;
@@ -81,7 +81,7 @@ export const useAuthStore = defineStore('auth', {
 				const data = await registerByLoginName(credentials);
 				this.user = data.user;
 				applyUserPreferences(this.user);
-				useDraftStore().onUserChanged();
+				useDraftStore().onUserChanged(this.user?.id);
 				console.log('[auth] register ok, user=%s', this.user?.id);
 			} catch (err) {
 				this.user = null;
@@ -107,7 +107,7 @@ export const useAuthStore = defineStore('auth', {
 			const draftStore = useDraftStore();
 			draftStore.persist();
 			this.user = null;
-			draftStore.onUserChanged();
+			draftStore.onUserChanged(null);
 			syncThemeModeFromSettings(null);
 			useBotConnections().disconnectAll();
 			useSignalingConnection().disconnect();

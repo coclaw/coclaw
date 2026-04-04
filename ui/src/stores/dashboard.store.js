@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 
-import { useBotsStore, getReadyConn } from './bots.store.js';
+import { useBotsStore } from './bots.store.js';
+import { getReadyConn } from './get-ready-conn.js';
 import { useAgentsStore } from './agents.store.js';
 import { mapToolsToCapabilities } from '../utils/capability-map.js';
 import { generateModelTags } from '../utils/model-tags.js';

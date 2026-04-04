@@ -150,7 +150,8 @@
 import { useNotify } from '../composables/use-notify.js';
 import { unbindBotByUser } from '../services/bots.api.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
-import { useBotsStore, getReadyConn, MAX_BACKOFF_RETRIES } from '../stores/bots.store.js';
+import { useBotsStore, MAX_BACKOFF_RETRIES } from '../stores/bots.store.js';
+import { getReadyConn } from '../stores/get-ready-conn.js';
 import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import AgentCard from '../components/AgentCard.vue';
