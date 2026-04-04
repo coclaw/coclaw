@@ -23,6 +23,13 @@ const UButtonStub = {
 	template: '<button class="u-btn-stub" @click="$emit(\'click\')"><span class="icon-stub">{{ icon }}</span></button>',
 };
 
+// ChatImg 有异步压缩流程，stub 为同步渲染
+const ChatImgStub = {
+	name: 'ChatImg',
+	props: ['src', 'filename', 'customClass'],
+	template: '<img :src="src" alt="" class="rounded-lg" :class="customClass" />',
+};
+
 const i18nMap = {
 	'chat.thought': '已思考',
 	'chat.taskIncomplete': 'chat.taskIncomplete',
@@ -55,6 +62,7 @@ function createWrapper(item = {}) {
 		global: {
 			stubs: {
 				MarkdownBody: MarkdownBodyStub,
+				ChatImg: ChatImgStub,
 				UIcon: UIconStub,
 				UButton: UButtonStub,
 			},

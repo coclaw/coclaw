@@ -1,6 +1,10 @@
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 
+// jsdom 不提供 URL.createObjectURL/revokeObjectURL
+if (!URL.createObjectURL) URL.createObjectURL = () => 'blob:mock';
+if (!URL.revokeObjectURL) URL.revokeObjectURL = () => {};
+
 import { createChatStore } from './chat.store.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useBotsStore, __resetAwaitingConnIds as __resetBotStoreInternals } from './bots.store.js';
