@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.11.2
+
+### Patch Changes
+
+- fix: support turns: URL scheme in ICE server credential mapping
+
 ## 0.11.1
 
 ### Patch Changes
