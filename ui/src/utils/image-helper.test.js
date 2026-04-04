@@ -275,6 +275,7 @@ describe('compressImage', () => {
 			getContext: vi.fn(() => mockOcCtx),
 			convertToBlob: mockConvertToBlob,
 		}));
+		globalThis.OffscreenCanvas.prototype.convertToBlob = function () {};
 
 		const blob = new Blob(['img'], { type: 'image/jpeg' });
 		const result = await compressImage(blob, { quality: 0.6 });
@@ -284,6 +285,20 @@ describe('compressImage', () => {
 		expect(mockConvertToBlob).toHaveBeenCalledWith({ type: 'image/jpeg', quality: 0.6 });
 		expect(result.blob).toBe(thumbData);
 		expect(document.createElement).not.toHaveBeenCalledWith('canvas');
+	});
+
+	test('OffscreenCanvas 存在但缺少 convertToBlob 时回退 canvas', async () => {
+		// 模拟 Firefox 90-104：OffscreenCanvas 存在但 prototype 无 convertToBlob
+		globalThis.OffscreenCanvas = vi.fn();
+		globalThis.OffscreenCanvas.prototype = {};
+
+		const blob = new Blob(['img'], { type: 'image/jpeg' });
+		const result = await compressImage(blob);
+
+		expect(document.createElement).toHaveBeenCalledWith('canvas');
+		expect(result.blob).toBeInstanceOf(Blob);
+		expect(result.width).toBe(256);
+		expect(result.height).toBe(128);
 	});
 
 	test('OffscreenCanvas 路径对 PNG 也绘制棋盘格', async () => {
@@ -296,6 +311,7 @@ describe('compressImage', () => {
 			getContext: vi.fn(() => mockOcCtx),
 			convertToBlob: vi.fn().mockResolvedValue(thumbData),
 		}));
+		globalThis.OffscreenCanvas.prototype.convertToBlob = function () {};
 
 		const blob = new Blob(['png'], { type: 'image/png' });
 		await compressImage(blob);

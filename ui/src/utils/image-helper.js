@@ -78,7 +78,7 @@ export async function compressImage(blob, opts = {}) {
 	const needAlphaBg = ALPHA_TYPES.has(blob.type);
 
 	// 渐进增强：优先 OffscreenCanvas（异步，离主线程）
-	if (typeof OffscreenCanvas !== 'undefined') {
+	if (typeof OffscreenCanvas !== 'undefined' && OffscreenCanvas.prototype.convertToBlob) {
 		const oc = new OffscreenCanvas(tw, th);
 		const ctx = oc.getContext('2d');
 		if (needAlphaBg) fillCheckerboard(ctx, tw, th);
