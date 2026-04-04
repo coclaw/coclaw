@@ -35,6 +35,7 @@
 							v-else-if="att.isVoice"
 							:src="att.url"
 							:duration-ms="att.durationMs"
+							:size="att.size"
 						/>
 						<!-- 文件附件 -->
 						<ChatFile

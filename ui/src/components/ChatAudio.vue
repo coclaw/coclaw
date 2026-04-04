@@ -2,13 +2,14 @@
 	<div class="inline-flex items-center gap-2 rounded-xl border border-accented py-2 pl-3 pr-2 text-sm text-muted">
 		<!-- 波形/图标 -->
 		<SoundWave v-if="playing" :playing="true" size="sm" class="w-6 text-success" />
-		<UIcon v-else name="i-lucide-audio-waveform" class="size-5 shrink-0" />
+		<UIcon v-else name="i-lucide-audio-lines" class="size-5 shrink-0" />
 
-		<!-- 时长 -->
+		<!-- 时长，fallback 显示文件大小 -->
 		<span v-if="durationLabel" class="whitespace-nowrap">{{ durationLabel }}</span>
+		<span v-else-if="size" class="whitespace-nowrap text-xs text-dimmed">{{ size }}</span>
 
 		<!-- 时长比例填充条 -->
-		<span :style="barStyle" />
+		<span v-if="durationSec" :style="barStyle" />
 
 		<!-- 控制按钮 -->
 		<template v-if="loading">
@@ -75,6 +76,11 @@ export default {
 		durationMs: {
 			type: Number,
 			default: null,
+		},
+		/** 文件大小（已格式化的字符串），duration 不可用时 fallback 显示 */
+		size: {
+			type: String,
+			default: '',
 		},
 	},
 	setup() {
