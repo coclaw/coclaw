@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { WebSocketServer } from 'ws';
 
-import { findBotById, findBotByTokenHash, updateBotName } from './repos/bot.repo.js';
+import { findClawById, findClawByTokenHash, updateClawName } from './repos/claw.repo.js';
 import { genTurnCreds } from './routes/turn.route.js';
 import { routeToUi, removeByBotId } from './rtc-signal-router.js';
 
@@ -177,7 +177,7 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	const latestName = rawName || null;
 	let bot = null;
 	try {
-		bot = await findBotById(BigInt(key));
+		bot = await findClawById(BigInt(key));
 	}
 	catch (err) {
 		wsLogWarn(`refreshBotName findBot failed botId=${key}: ${err.message}`);
@@ -188,8 +188,8 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 	}
 	const currentName = bot.name ?? null;
 	if (currentName !== latestName) {
-		await updateBotName(bot.id, latestName).catch((err) => {
-			wsLogWarn(`updateBotName failed botId=${key}: ${err.message}`);
+		await updateClawName(bot.id, latestName).catch((err) => {
+			wsLogWarn(`updateClawName failed botId=${key}: ${err.message}`);
 		});
 		botStatusEmitter.emit('nameUpdated', { botId: key, name: latestName });
 	}
@@ -204,7 +204,7 @@ async function authenticateBotRequest(req) {
 	}
 
 	const tokenHash = crypto.createHash('sha256').update(token, 'utf8').digest();
-	const bot = await findBotByTokenHash(tokenHash);
+	const bot = await findClawByTokenHash(tokenHash);
 	if (!bot) {
 		return { ok: false, code: 401, message: 'invalid token' };
 	}
@@ -254,7 +254,7 @@ async function authenticateUiSession(req) {
 	}
 	let bot = null;
 	try {
-		bot = await findBotById(BigInt(botId));
+		bot = await findClawById(BigInt(botId));
 	}
 	catch {
 		return null;
@@ -343,12 +343,12 @@ function onBotMessage(botId, ws, raw) {
 	if (payload.type === 'event' && payload.event === 'coclaw.info.updated') {
 		const name = payload.payload?.name || payload.payload?.hostName || null;
 		try {
-			updateBotName(BigInt(botId), name).catch((err) => {
-				wsLogWarn(`updateBotName from plugin event failed botId=${botId}: ${err.message}`);
+			updateClawName(BigInt(botId), name).catch((err) => {
+				wsLogWarn(`updateClawName from plugin event failed botId=${botId}: ${err.message}`);
 			});
 		}
 		catch (err) {
-			wsLogWarn(`updateBotName from plugin event failed botId=${botId}: ${err.message}`);
+			wsLogWarn(`updateClawName from plugin event failed botId=${botId}: ${err.message}`);
 		}
 		return;
 	}

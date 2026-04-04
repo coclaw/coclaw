@@ -11,7 +11,7 @@ import { WebSocketServer } from 'ws';
 import { register, remove, removeByWs, lookup } from './rtc-signal-router.js';
 import { forwardToBot, fmtLocalTime } from './bot-ws-hub.js';
 import { genTurnCreds } from './routes/turn.route.js';
-import { findBotById } from './repos/bot.repo.js';
+import { findClawById } from './repos/claw.repo.js';
 
 const WS_VERBOSE = process.env.COCLAW_WS_DEBUG === '1';
 
@@ -23,12 +23,12 @@ function sigLogDebug(msg) { if (WS_VERBOSE) console.debug(`[coclaw/rtc-sig] ${ms
  * 验证 botId 归属 userId
  * @param {string} botId
  * @param {string} userId
- * @param {Function} findBotByIdFn - 可注入，便于测试
+ * @param {Function} findClawByIdFn - 可注入，便于测试
  * @returns {Promise<boolean>}
  */
-async function validateBotOwnership(botId, userId, findBotByIdFn = findBotById) {
+async function validateBotOwnership(botId, userId, findClawByIdFn = findClawById) {
 	try {
-		const bot = await findBotByIdFn(BigInt(botId));
+		const bot = await findClawByIdFn(BigInt(botId));
 		return !!bot && String(bot.userId) === String(userId);
 	} catch {
 		return false;
@@ -41,11 +41,11 @@ async function validateBotOwnership(botId, userId, findBotByIdFn = findBotById) 
  * @param {string} userId
  * @param {string|Buffer} raw
  * @param {object} [deps] - 依赖注入（测试用）
- * @param {Function} [deps.findBotByIdFn]
+ * @param {Function} [deps.findClawByIdFn]
  * @param {Function} [deps.forwardToBotFn]
  */
 async function handleMessage(ws, userId, raw, deps = {}) {
-	const { findBotByIdFn = findBotById, forwardToBotFn = forwardToBot } = deps;
+	const { findClawByIdFn = findClawById, forwardToBotFn = forwardToBot } = deps;
 
 	let payload;
 	try {
@@ -86,7 +86,7 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 	}
 
 	if (type === 'rtc:offer') {
-		const owned = await validateBotOwnership(botId, userId, findBotByIdFn);
+		const owned = await validateBotOwnership(botId, userId, findClawByIdFn);
 		if (!owned) {
 			sigLogWarn(`rtc:offer denied: botId=${botId} not owned by userId=${userId}`);
 			return;
@@ -114,7 +114,7 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		let route = lookup(connId);
 		// 隐式注册
 		if (!route) {
-			const owned = await validateBotOwnership(botId, userId, findBotByIdFn);
+			const owned = await validateBotOwnership(botId, userId, findClawByIdFn);
 			if (!owned) {
 				sigLogWarn(`${type} denied: botId=${botId} not owned by userId=${userId}`);
 				return;
@@ -155,7 +155,7 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		} else {
 			// connId 未注册：需验证 botId 归属后才转发
 			if (botId) {
-				const owned = await validateBotOwnership(botId, userId, findBotByIdFn);
+				const owned = await validateBotOwnership(botId, userId, findClawByIdFn);
 				if (owned) {
 					payload.fromConnId = connId;
 					const sent = forwardToBotFn(botId, payload);

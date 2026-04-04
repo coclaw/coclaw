@@ -41,7 +41,7 @@ test('bindBot: should create new bot record', async () => {
 			expiresAt: new Date('2099-01-01T00:00:00.000Z'),
 		}),
 		deleteCode: async () => null,
-		createBotImpl: async (data) => {
+		createClawImpl: async (data) => {
 			createdInputs.push(data);
 			return ({ id: data.id });
 		},
@@ -66,7 +66,7 @@ test('bindBot: should allow missing name and persist null', async () => {
 			expiresAt: new Date('2099-01-01T00:00:00.000Z'),
 		}),
 		deleteCode: async () => null,
-		createBotImpl: async (data) => {
+		createClawImpl: async (data) => {
 			createdInputs.push(data);
 			return ({ id: data.id });
 		},
@@ -84,7 +84,7 @@ test('unbindBotByUser: should delete specified bot', async () => {
 	const deleted = [];
 	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => ({ id: 2n, userId: 7n, status: 'active' }),
-		deleteBotImpl: async (id) => {
+		deleteClawImpl: async (id) => {
 			deleted.push(id);
 		},
 	});
@@ -103,7 +103,7 @@ test('unbindBotByToken: should delete matched bot', async () => {
 			findInputs.push(tokenHash);
 			return { id: 2n, userId: 7n, status: 'active' };
 		},
-		deleteBotImpl: async (id) => {
+		deleteClawImpl: async (id) => {
 			deleted.push(id);
 		},
 	});
@@ -369,7 +369,7 @@ test('unbindBotByUser: should reject invalid input types', async () => {
 test('unbindBotByUser: should return BOT_NOT_FOUND when bot does not exist', async () => {
 	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => null,
-		deleteBotImpl: async () => {},
+		deleteClawImpl: async () => {},
 	});
 
 	assert.equal(result.ok, false);
@@ -379,7 +379,7 @@ test('unbindBotByUser: should return BOT_NOT_FOUND when bot does not exist', asy
 test('unbindBotByUser: should return BOT_NOT_FOUND when userId does not match', async () => {
 	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => ({ id: 2n, userId: 999n }),
-		deleteBotImpl: async () => {},
+		deleteClawImpl: async () => {},
 	});
 
 	assert.equal(result.ok, false);
@@ -403,7 +403,7 @@ test('unbindBotByToken: should reject non-string token', async () => {
 test('unbindBotByToken: should return UNAUTHORIZED when bot not found', async () => {
 	const result = await unbindBotByToken({ token: 'nonexistent-token' }, {
 		findByTokenHash: async () => null,
-		deleteBotImpl: async () => {},
+		deleteClawImpl: async () => {},
 	});
 
 	assert.equal(result.ok, false);
@@ -448,7 +448,7 @@ test('claimBot: should create bot and return success on valid claim', async () =
 		}),
 		deleteCode: async (c) => { deletedCode = c; },
 		listBots: async () => [],
-		createBotImpl: async (data) => {
+		createClawImpl: async (data) => {
 			createdInputs.push(data);
 			return { id: data.id };
 		},

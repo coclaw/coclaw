@@ -46,6 +46,6 @@ export async function latestRegisteredUsers(limit, db = prisma) {
 	}));
 }
 
-export async function countBots(db = prisma) {
-	return db.bot.count();
+export async function countClaws(db = prisma) {
+	return db.claw.count();
 }

@@ -19,8 +19,8 @@ function createMockWs(opts = {}) {
 	};
 }
 
-// mock findBotById：botId=1,2,3 归属 userId='u1'；botId=999 归属 other-user
-function mockFindBotById(id) {
+// mock findClawById：botId=1,2,3 归属 userId='u1'；botId=999 归属 other-user
+function mockFindClawById(id) {
 	const botId = String(id);
 	if (['1', '2', '3'].includes(botId)) {
 		return Promise.resolve({ id, userId: 'u1' });
@@ -45,7 +45,7 @@ function createForwardMock(opts = {}) {
 
 function makeDeps(forwardMock) {
 	return {
-		findBotByIdFn: mockFindBotById,
+		findClawByIdFn: mockFindClawById,
 		forwardToBotFn: forwardMock ?? createForwardMock(),
 	};
 }
@@ -443,7 +443,7 @@ test('handleMessage: rtc:offer bot 离线时 UI 不收到消息', async () => {
 
 // --- validateBotOwnership 异常分支 ---
 
-test('handleMessage: findBotById 抛异常时视为归属验证失败', async () => {
+test('handleMessage: findClawById 抛异常时视为归属验证失败', async () => {
 	const ws = createMockWs();
 	const fwd = createForwardMock();
 	const throwingFindBot = () => Promise.reject(new Error('db connection lost'));
@@ -452,7 +452,7 @@ test('handleMessage: findBotById 抛异常时视为归属验证失败', async ()
 		botId: '1',
 		connId: 'c_db_err',
 		payload: { sdp: 'sdp' },
-	}), { findBotByIdFn: throwingFindBot, forwardToBotFn: fwd });
+	}), { findClawByIdFn: throwingFindBot, forwardToBotFn: fwd });
 
 	assert.equal(fwd.calls.length, 0, 'should not forward when DB errors');
 	assert.equal(lookup('c_db_err'), null, 'should not register');
@@ -462,21 +462,21 @@ test('handleMessage: findBotById 抛异常时视为归属验证失败', async ()
 // --- validateBotOwnership 直接测试 ---
 
 test('validateBotOwnership: bot 存在且归属匹配返回 true', async () => {
-	const result = await validateBotOwnership('1', 'u1', mockFindBotById);
+	const result = await validateBotOwnership('1', 'u1', mockFindClawById);
 	assert.equal(result, true);
 });
 
 test('validateBotOwnership: bot 存在但归属不匹配返回 false', async () => {
-	const result = await validateBotOwnership('999', 'u1', mockFindBotById);
+	const result = await validateBotOwnership('999', 'u1', mockFindClawById);
 	assert.equal(result, false);
 });
 
 test('validateBotOwnership: bot 不存在返回 false', async () => {
-	const result = await validateBotOwnership('888', 'u1', mockFindBotById);
+	const result = await validateBotOwnership('888', 'u1', mockFindClawById);
 	assert.equal(result, false);
 });
 
-test('validateBotOwnership: findBotByIdFn 抛异常返回 false', async () => {
+test('validateBotOwnership: findClawByIdFn 抛异常返回 false', async () => {
 	const result = await validateBotOwnership('1', 'u1', () => { throw new Error('boom'); });
 	assert.equal(result, false);
 });

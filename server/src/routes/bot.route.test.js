@@ -79,7 +79,7 @@ test('listBotsHandler: should include online state and refreshed name from ws hu
 	const refreshedIds = [];
 
 	await listBotsHandler(req, res, () => {}, {
-		listBotsByUserIdImpl: async () => ([
+		listClawsByUserIdImpl: async () => ([
 			{
 				id: 1n,
 				name: 'a',
@@ -180,7 +180,7 @@ test('listBotsHandler: should fallback to db name when refresh fails', async () 
 	const res = createRes();
 
 	await listBotsHandler(req, res, () => {}, {
-		listBotsByUserIdImpl: async () => ([
+		listClawsByUserIdImpl: async () => ([
 			{
 				id: 2n,
 				name: 'b-cache',
@@ -207,7 +207,7 @@ test('listBotsHandler: should return null name when refresh resolves empty name'
 	const res = createRes();
 
 	await listBotsHandler(req, res, () => {}, {
-		listBotsByUserIdImpl: async () => ([
+		listClawsByUserIdImpl: async () => ([
 			{
 				id: 2n,
 				name: 'old-name',
@@ -569,7 +569,7 @@ test('getBotSelfHandler: should return 401 when token not found in db', async ()
 	const res = createRes();
 
 	await getBotSelfHandler(req, res, () => {}, {
-		findBotByTokenHashImpl: async () => null,
+		findClawByTokenHashImpl: async () => null,
 	});
 
 	assert.equal(res.statusCode, 401);
@@ -581,7 +581,7 @@ test('getBotSelfHandler: should return botId when token is valid', async () => {
 	const res = createRes();
 
 	await getBotSelfHandler(req, res, () => {}, {
-		findBotByTokenHashImpl: async () => ({ id: 99n }),
+		findClawByTokenHashImpl: async () => ({ id: 99n }),
 	});
 
 	assert.equal(res.statusCode, 200);
@@ -595,7 +595,7 @@ test('getBotSelfHandler: should forward error to next', async () => {
 	let nextErr = null;
 
 	await getBotSelfHandler(req, res, (err) => { nextErr = err; }, {
-		findBotByTokenHashImpl: async () => { throw testErr; },
+		findClawByTokenHashImpl: async () => { throw testErr; },
 	});
 
 	assert.equal(nextErr, testErr);
@@ -621,7 +621,7 @@ test('createUiWsTicketHandler: should create ticket with explicit botId', async 
 	const res = createRes();
 
 	await createUiWsTicketHandler(req, res, () => {}, {
-		findBotByIdImpl: async () => ({ id: 42n, userId: 7n }),
+		findClawByIdImpl: async () => ({ id: 42n, userId: 7n }),
 		createUiWsTicketImpl: ({ botId, userId }) => `ticket-${botId}-${userId}`,
 	});
 
@@ -639,7 +639,7 @@ test('createUiWsTicketHandler: should return 400 for invalid botId format', asyn
 	const res = createRes();
 
 	await createUiWsTicketHandler(req, res, () => {}, {
-		findBotByIdImpl: async () => { throw new Error('invalid'); },
+		findClawByIdImpl: async () => { throw new Error('invalid'); },
 	});
 
 	assert.equal(res.statusCode, 400);
@@ -655,7 +655,7 @@ test('createUiWsTicketHandler: should return 404 when bot not found', async () =
 	const res = createRes();
 
 	await createUiWsTicketHandler(req, res, () => {}, {
-		findBotByIdImpl: async () => null,
+		findClawByIdImpl: async () => null,
 	});
 
 	assert.equal(res.statusCode, 404);
@@ -671,7 +671,7 @@ test('createUiWsTicketHandler: should return 404 when bot belongs to another use
 	const res = createRes();
 
 	await createUiWsTicketHandler(req, res, () => {}, {
-		findBotByIdImpl: async () => ({ id: 42n, userId: 999n }),
+		findClawByIdImpl: async () => ({ id: 42n, userId: 999n }),
 	});
 
 	assert.equal(res.statusCode, 404);
@@ -687,7 +687,7 @@ test('createUiWsTicketHandler: should fallback to latest bot when botId not prov
 	const res = createRes();
 
 	await createUiWsTicketHandler(req, res, () => {}, {
-		findLatestBotByUserIdImpl: async () => ({ id: 10n, userId: 7n }),
+		findLatestClawByUserIdImpl: async () => ({ id: 10n, userId: 7n }),
 		createUiWsTicketImpl: () => 'auto-ticket',
 	});
 
@@ -705,7 +705,7 @@ test('createUiWsTicketHandler: should return 404 when no latest bot found', asyn
 	const res = createRes();
 
 	await createUiWsTicketHandler(req, res, () => {}, {
-		findLatestBotByUserIdImpl: async () => null,
+		findLatestClawByUserIdImpl: async () => null,
 	});
 
 	assert.equal(res.statusCode, 404);
@@ -723,7 +723,7 @@ test('createUiWsTicketHandler: should forward error to next', async () => {
 	let nextErr = null;
 
 	await createUiWsTicketHandler(req, res, (err) => { nextErr = err; }, {
-		findLatestBotByUserIdImpl: async () => { throw testErr; },
+		findLatestClawByUserIdImpl: async () => { throw testErr; },
 	});
 
 	assert.equal(nextErr, testErr);
@@ -1194,7 +1194,7 @@ test('listBotsHandler: should forward error to next', async () => {
 	let nextErr = null;
 
 	await listBotsHandler(req, res, (err) => { nextErr = err; }, {
-		listBotsByUserIdImpl: async () => { throw testErr; },
+		listClawsByUserIdImpl: async () => { throw testErr; },
 		listOnlineBotIdsImpl: () => new Set(),
 	});
 
@@ -1209,7 +1209,7 @@ test('listBotsHandler: should use db name for offline bots', async () => {
 	const res = createRes();
 
 	await listBotsHandler(req, res, () => {}, {
-		listBotsByUserIdImpl: async () => ([
+		listClawsByUserIdImpl: async () => ([
 			{
 				id: 1n,
 				name: 'offline-bot',

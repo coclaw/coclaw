@@ -14,7 +14,7 @@ function mockRepo(overrides = {}) {
 		latestRegisteredUsers: async () => overrides.latestRegistered ?? [
 			{ id: '10', name: 'NewUser', loginName: 'newuser', createdAt: '2026-03-24T08:00:00Z' },
 		],
-		countBots: async () => overrides.botsTotal ?? 8,
+		countClaws: async () => overrides.botsTotal ?? 8,
 	};
 }
 
@@ -77,7 +77,7 @@ test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
 		countUsersActiveSince: async () => { calls.push('countUsersActiveSince'); return 0; },
 		topActiveUsers: async () => { calls.push('topActiveUsers'); return []; },
 		latestRegisteredUsers: async () => { calls.push('latestRegisteredUsers'); return []; },
-		countBots: async () => { calls.push('countBots'); return 0; },
+		countClaws: async () => { calls.push('countClaws'); return 0; },
 	};
 
 	await getAdminDashboard({ repo, getOnlineBotCount: () => 0 });
@@ -88,5 +88,5 @@ test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
 	assert.ok(calls.includes('countUsersActiveSince'));
 	assert.ok(calls.includes('topActiveUsers'));
 	assert.ok(calls.includes('latestRegisteredUsers'));
-	assert.ok(calls.includes('countBots'));
+	assert.ok(calls.includes('countClaws'));
 });

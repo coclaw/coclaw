@@ -1,4 +1,4 @@
-import { findBotById, listBotsByUserId } from './repos/bot.repo.js';
+import { findClawById, listClawsByUserId } from './repos/claw.repo.js';
 import { botStatusEmitter, listOnlineBotIds } from './bot-ws-hub.js';
 
 // userId(string) -> Set<Response>
@@ -29,14 +29,14 @@ export function registerSseClient(userId, res) {
  * 向单个 SSE 客户端推送全量 bot 快照
  * @param {string|bigint} userId
  * @param {import('express').Response} res
- * @param {{ listBotsByUserIdImpl?: Function, listOnlineBotIdsImpl?: Function }} [deps]
+ * @param {{ listClawsByUserIdImpl?: Function, listOnlineBotIdsImpl?: Function }} [deps]
  */
 export async function sendSnapshot(userId, res, deps = {}) {
 	const {
-		listBotsByUserIdImpl = listBotsByUserId,
+		listClawsByUserIdImpl = listClawsByUserId,
 		listOnlineBotIdsImpl = listOnlineBotIds,
 	} = deps;
-	const bots = await listBotsByUserIdImpl(userId);
+	const bots = await listClawsByUserIdImpl(userId);
 	const onlineIds = listOnlineBotIdsImpl();
 	const items = bots.map((b) => {
 		const botId = b.id.toString();
@@ -92,15 +92,15 @@ export function hasSseClients() {
  * @param {object} param0
  * @param {string} param0.botId
  * @param {boolean} param0.online
- * @param {{ findBotByIdFn?: Function }} [deps]
+ * @param {{ findClawByIdFn?: Function }} [deps]
  */
 async function handleStatusEvent({ botId, online }, deps = {}) {
-	const { findBotByIdFn = findBotById } = deps;
+	const { findClawByIdFn = findClawById } = deps;
 	if (!hasSseClients()) {
 		return;
 	}
 	try {
-		const bot = await findBotByIdFn(BigInt(botId));
+		const bot = await findClawByIdFn(BigInt(botId));
 		if (!bot) {
 			console.debug('[coclaw/sse] status event: bot not found botId=%s (may be deleted)', botId);
 			return;
@@ -121,15 +121,15 @@ async function handleStatusEvent({ botId, online }, deps = {}) {
  * @param {object} param0
  * @param {string} param0.botId
  * @param {string} param0.name
- * @param {{ findBotByIdFn?: Function }} [deps]
+ * @param {{ findClawByIdFn?: Function }} [deps]
  */
 async function handleNameUpdatedEvent({ botId, name }, deps = {}) {
-	const { findBotByIdFn = findBotById } = deps;
+	const { findClawByIdFn = findClawById } = deps;
 	if (!hasSseClients()) {
 		return;
 	}
 	try {
-		const bot = await findBotByIdFn(BigInt(botId));
+		const bot = await findClawByIdFn(BigInt(botId));
 		if (!bot) {
 			console.debug('[coclaw/sse] nameUpdated event: bot not found botId=%s (may be deleted)', botId);
 			return;

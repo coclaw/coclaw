@@ -1415,7 +1415,7 @@ test('onBotMessage: rtc:closed 通过 signal-router 投递', () => {
 	cleanupSockets('bot-sr3');
 });
 
-// --- onBotMessage: coclaw.info.updated 中 updateBotName 抛同步异常 ---
+// --- onBotMessage: coclaw.info.updated 中 updateClawName 抛同步异常 ---
 
 test('onBotMessage: coclaw.info.updated 处理时不崩溃（payload 为 null）', () => {
 	const botWs = createMockWs();
@@ -1449,9 +1449,9 @@ test('onUiMessage: raw 为 undefined 时解析为空对象', () => {
 	cleanupSockets('bot-uiudef');
 });
 
-// --- refreshBotName: rpc 成功但 findBotById 抛异常（DB 不可用） ---
+// --- refreshBotName: rpc 成功但 findClawById 抛异常（DB 不可用） ---
 
-test('refreshBotName: rpc 成功返回 name，findBotById 抛异常时返回 latestName', async () => {
+test('refreshBotName: rpc 成功返回 name，findClawById 抛异常时返回 latestName', async () => {
 	// 创建自动回复 RPC 的 mock socket
 	const botId = 'rpc-name-bot';
 	const autoReplyWs = createRpcMockWs();
@@ -1473,9 +1473,9 @@ test('refreshBotName: rpc 成功返回 name，findBotById 抛异常时返回 lat
 	};
 	setupSockets(botId, { bot: [autoReplyWs] });
 
-	// findBotById 会抛异常（因为没有 DB），覆盖 lines 179-183
+	// findClawById 会抛异常（因为没有 DB），覆盖 lines 179-183
 	const result = await refreshBotName(botId, { timeoutMs: 500 });
-	// 返回从 rpc 获取的 name（findBotById 失败后 fallback）
+	// 返回从 rpc 获取的 name（findClawById 失败后 fallback）
 	assert.equal(result, 'TestBot');
 
 	cleanupSockets(botId);
@@ -1567,7 +1567,7 @@ test('refreshBotName: rpc 返回 payload.name 非 string 时返回 null', async 
 
 	const result = await refreshBotName(botId, { timeoutMs: 500 });
 	// name 非 string → rawName = '' → latestName = null
-	// findBotById 会失败 → 返回 latestName = null
+	// findClawById 会失败 → 返回 latestName = null
 	assert.equal(result, null);
 
 	cleanupSockets(botId);
@@ -1684,14 +1684,14 @@ test('authenticateUiSession: session 无 userId 时返回 null', async () => {
 	}
 });
 
-test('authenticateUiSession: findBotById 抛异常时返回 null', async () => {
+test('authenticateUiSession: findClawById 抛异常时返回 null', async () => {
 	const orig = __test.wsSessionMiddleware;
 	__test.wsSessionMiddleware = (req, _res, next) => {
 		req.session = { passport: { user: '999' } };
 		next();
 	};
 	try {
-		// findBotById 会尝试 BigInt(botId) 然后查 DB，DB 不可用会抛异常
+		// findClawById 会尝试 BigInt(botId) 然后查 DB，DB 不可用会抛异常
 		const result = await authenticateUiSession({ url: '/api/v1/bots/stream?role=ui&botId=1' });
 		assert.equal(result, null);
 	} finally {
@@ -1774,11 +1774,11 @@ test('authenticateBotRequest: 无效 token 时返回 invalid token', async () =>
 	assert.equal(result.message, 'invalid token');
 });
 
-// --- onBotMessage: coclaw.info.updated 触发 updateBotName 的 .catch 路径 ---
+// --- onBotMessage: coclaw.info.updated 触发 updateClawName 的 .catch 路径 ---
 
 test('onBotMessage: coclaw.info.updated 使用数字 botId 时 BigInt 成功但 DB 失败走 .catch', async () => {
 	const botWs = createMockWs();
-	// 使用数字 botId 使 BigInt() 成功，updateBotName 会尝试 DB 操作然后失败
+	// 使用数字 botId 使 BigInt() 成功，updateClawName 会尝试 DB 操作然后失败
 	setupSockets('12345', { bot: [botWs] });
 
 	// 不应抛异常（.catch 会静默处理）

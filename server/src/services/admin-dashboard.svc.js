@@ -21,13 +21,13 @@ export async function getAdminDashboard(deps = {}) {
 	const todayStart = new Date();
 	todayStart.setHours(0, 0, 0, 0);
 
-	const [total, todayNew, todayActive, topActive, latestRegistered, botsTotal] = await Promise.all([
+	const [total, todayNew, todayActive, topActive, latestRegistered, clawsTotal] = await Promise.all([
 		repo.countUsers(),
 		repo.countUsersCreatedSince(todayStart),
 		repo.countUsersActiveSince(todayStart),
 		repo.topActiveUsers(10),
 		repo.latestRegisteredUsers(30),
-		repo.countBots(),
+		repo.countClaws(),
 	]);
 
 	return {
@@ -35,7 +35,7 @@ export async function getAdminDashboard(deps = {}) {
 		topActiveUsers: topActive,
 		latestRegisteredUsers: latestRegistered,
 		bots: {
-			total: botsTotal,
+			total: clawsTotal,
 			online: getOnlineBotCount(),
 		},
 		version: {

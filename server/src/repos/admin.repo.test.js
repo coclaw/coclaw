@@ -7,7 +7,7 @@ import {
 	countUsersActiveSince,
 	topActiveUsers,
 	latestRegisteredUsers,
-	countBots,
+	countClaws,
 } from './admin.repo.js';
 
 test('countUsers: 调用 prisma.user.count()', async () => {
@@ -81,9 +81,9 @@ test('topActiveUsers: 传递正确的查询参数', async () => {
 	});
 });
 
-test('countBots: 调用 prisma.bot.count()', async () => {
-	const db = { bot: { count: async () => 7 } };
-	assert.equal(await countBots(db), 7);
+test('countClaws: 调用 prisma.claw.count()', async () => {
+	const db = { claw: { count: async () => 7 } };
+	assert.equal(await countClaws(db), 7);
 });
 
 test('latestRegisteredUsers: 返回结果并将 BigInt id 转为 string', async () => {

@@ -2,17 +2,17 @@ import crypto from 'node:crypto';
 import { createId } from '@paralleldrive/cuid2';
 
 import {
-	createBot,
-	deleteBot,
-	findBotById,
-	findBotByTokenHash,
-} from '../repos/bot.repo.js';
+	createClaw,
+	deleteClaw,
+	findClawById,
+	findClawByTokenHash,
+} from '../repos/claw.repo.js';
 import {
 	createBindingCode,
 	deleteBindingCode,
 	findBindingCode,
 	updateBindingCode,
-} from '../repos/bot-binding-code.repo.js';
+} from '../repos/claw-binding-code.repo.js';
 import {
 	createClaimCode as createClaimCodeRecord,
 	deleteClaimCode as deleteClaimCodeRecord,
@@ -110,7 +110,7 @@ export async function bindBot(input, deps = {}) {
 	const {
 		findCode = findBindingCode,
 		deleteCode = deleteBindingCode,
-		createBotImpl = createBot,
+		createClawImpl = createClaw,
 		genId = genBotId,
 		now = () => new Date(),
 	} = deps;
@@ -146,7 +146,7 @@ export async function bindBot(input, deps = {}) {
 	const tokenHash = getTokenHash(token);
 	const botName = isNonEmptyString(name) ? name.trim() : null;
 
-	const created = await createBotImpl({
+	const created = await createClawImpl({
 		id: genId(),
 		userId: bindingCode.userId,
 		name: botName,
@@ -167,8 +167,8 @@ export async function bindBot(input, deps = {}) {
 
 export async function unbindBotByUser(input, deps = {}) {
 	const {
-		findById = findBotById,
-		deleteBotImpl = deleteBot,
+		findById = findClawById,
+		deleteClawImpl = deleteClaw,
 	} = deps;
 	const { userId, botId } = input;
 
@@ -188,7 +188,7 @@ export async function unbindBotByUser(input, deps = {}) {
 			message: 'Bot not found',
 		};
 	}
-	await deleteBotImpl(targetBot.id);
+	await deleteClawImpl(targetBot.id);
 
 	return {
 		ok: true,
@@ -243,7 +243,7 @@ export async function claimBot(input, deps = {}) {
 	const {
 		findCode = findClaimCodeRecord,
 		deleteCode = deleteClaimCodeRecord,
-		createBotImpl = createBot,
+		createClawImpl = createClaw,
 		genId = genBotId,
 		now = () => new Date(),
 	} = deps;
@@ -286,7 +286,7 @@ export async function claimBot(input, deps = {}) {
 	const token = genAccessToken();
 	const tokenHash = getTokenHash(token);
 
-	const created = await createBotImpl({
+	const created = await createClawImpl({
 		id: genId(),
 		userId,
 		name: null,
@@ -304,8 +304,8 @@ export async function claimBot(input, deps = {}) {
 
 export async function unbindBotByToken(input, deps = {}) {
 	const {
-		findByTokenHash = findBotByTokenHash,
-		deleteBotImpl = deleteBot,
+		findByTokenHash = findClawByTokenHash,
+		deleteClawImpl = deleteClaw,
 	} = deps;
 	const { token } = input;
 
@@ -327,7 +327,7 @@ export async function unbindBotByToken(input, deps = {}) {
 			message: 'Invalid token',
 		};
 	}
-	await deleteBotImpl(targetBot.id);
+	await deleteClawImpl(targetBot.id);
 
 	return {
 		ok: true,

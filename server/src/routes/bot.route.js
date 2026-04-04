@@ -7,8 +7,8 @@ import {
 	unbindBotByToken,
 	unbindBotByUser,
 } from '../services/bot-binding.svc.js';
-import { deleteBindingCode, findBindingCode } from '../repos/bot-binding-code.repo.js';
-import { findBotById, findBotByTokenHash, findLatestBotByUserId, listBotsByUserId } from '../repos/bot.repo.js';
+import { deleteBindingCode, findBindingCode } from '../repos/claw-binding-code.repo.js';
+import { findClawById, findClawByTokenHash, findLatestClawByUserId, listClawsByUserId } from '../repos/claw.repo.js';
 import {
 	cancelBindingWait,
 	markBindingBound,
@@ -54,14 +54,14 @@ export async function listBotsHandler(req, res, next, deps = {}) {
 	}
 
 	const {
-		listBotsByUserIdImpl = listBotsByUserId,
+		listClawsByUserIdImpl = listClawsByUserId,
 		listOnlineBotIdsImpl = listOnlineBotIds,
 		refreshBotNameImpl = refreshBotName,
 	} = deps;
 
 	try {
 		const [bots, onlineBotIds] = await Promise.all([
-			listBotsByUserIdImpl(req.user.id),
+			listClawsByUserIdImpl(req.user.id),
 			Promise.resolve(listOnlineBotIdsImpl()),
 		]);
 
@@ -201,7 +201,7 @@ export async function bindBotHandler(req, res, next, deps = {}) {
 }
 
 export async function getBotSelfHandler(req, res, next, deps = {}) {
-	const { findBotByTokenHashImpl = findBotByTokenHash } = deps;
+	const { findClawByTokenHashImpl = findClawByTokenHash } = deps;
 
 	const token = parseBearerToken(req);
 	if (!token) {
@@ -217,7 +217,7 @@ export async function getBotSelfHandler(req, res, next, deps = {}) {
 			.createHash('sha256')
 			.update(token, 'utf8')
 			.digest();
-		const bot = await findBotByTokenHashImpl(tokenHash);
+		const bot = await findClawByTokenHashImpl(tokenHash);
 		if (!bot) {
 			res.status(401).json({
 				code: 'UNAUTHORIZED',
@@ -241,8 +241,8 @@ export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 	}
 
 	const {
-		findBotByIdImpl = findBotById,
-		findLatestBotByUserIdImpl = findLatestBotByUserId,
+		findClawByIdImpl = findClawById,
+		findLatestClawByUserIdImpl = findLatestClawByUserId,
 		createUiWsTicketImpl = createUiWsTicket,
 	} = deps;
 
@@ -252,7 +252,7 @@ export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 
 		if (rawBotId !== undefined && rawBotId !== null && String(rawBotId).trim() !== '') {
 			try {
-				bot = await findBotByIdImpl(BigInt(String(rawBotId)));
+				bot = await findClawByIdImpl(BigInt(String(rawBotId)));
 			}
 			catch {
 				res.status(400).json({
@@ -271,7 +271,7 @@ export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 			}
 		}
 		else {
-			bot = await findLatestBotByUserIdImpl(req.user.id);
+			bot = await findLatestClawByUserIdImpl(req.user.id);
 			if (!bot) {
 				res.status(404).json({
 					code: 'BOT_NOT_FOUND',
