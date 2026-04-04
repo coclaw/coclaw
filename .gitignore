@@ -9,6 +9,8 @@ build/
 # Test & coverage
 coverage/
 test-results/
+.vitest-blobs/
+.vitest-cov-tmp/
 
 # Environment & secrets
 .env

@@ -58,6 +58,17 @@
   - **系统状态恢复**：App 前后台切换（`capacitor-app` 的 resume/pause）、网络状态变化等触发重连的时机
   - **关键业务状态变更**：bot 绑定/解绑等影响连接可用性的操作
 
+## 单元测试命令约定
+
+与其他工作区不同，ui 的 `pnpm test` 不含覆盖率检查：
+
+- `pnpm test`：仅跑测试（开发时快速验证）
+- `pnpm coverage`：跑测试 + 覆盖率门禁
+- `pnpm verify`：`pnpm check && pnpm coverage`（verify 不再单独跑 test，因为 coverage 已包含测试）
+
+> 由于 jsdom 内存累积导致 OOM，测试通过 `scripts/test.sh` 逐文件运行独立 vitest 进程。
+> coverage 模式使用 vitest blob reporter 逐文件收集，最后 `--merge-reports` 聚合覆盖率。
+
 ## 端到端测试 (E2E Testing)
 
 - Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例
