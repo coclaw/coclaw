@@ -66,9 +66,6 @@
 - `pnpm coverage`：跑测试 + 覆盖率门禁
 - `pnpm verify`：`pnpm check && pnpm coverage`（verify 不再单独跑 test，因为 coverage 已包含测试）
 
-> 由于 jsdom 内存累积导致 OOM，测试通过 `scripts/test.sh` 逐文件运行独立 vitest 进程。
-> coverage 模式使用 vitest blob reporter 逐文件收集，最后 `--merge-reports` 聚合覆盖率。
-
 ## 端到端测试 (E2E Testing)
 
 - Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例

@@ -10,7 +10,9 @@ const mockCreateBindingCode = vi.fn().mockResolvedValue({
 	waitToken: 'tok_test',
 });
 
-const mockWaitBindingCode = vi.fn().mockResolvedValue({ code: 'BINDING_TIMEOUT' });
+// 默认返回永不 resolve 的 Promise，模拟 long-polling 等待中
+// 若立即 resolve 非 SUCCESS 值，会造成 while 循环紧密迭代 → OOM
+const mockWaitBindingCode = vi.fn().mockReturnValue(new Promise(() => {}));
 const mockCancelBindingCode = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../services/bots.api.js', () => ({
@@ -81,7 +83,7 @@ beforeEach(() => {
 		expiresAt: new Date(Date.now() + 300_000).toISOString(),
 		waitToken: 'tok_test',
 	});
-	mockWaitBindingCode.mockReset().mockResolvedValue({ code: 'BINDING_TIMEOUT' });
+	mockWaitBindingCode.mockReset().mockReturnValue(new Promise(() => {}));
 	mockCancelBindingCode.mockReset().mockResolvedValue(undefined);
 	mockNotify.success.mockReset();
 	mockNotify.error.mockReset();
