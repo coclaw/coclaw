@@ -3,7 +3,7 @@
  * 从 bots.store 抽取，打破 bots ↔ 子 store 的循环依赖
  *
  * 注册机制：本模块导入时自动向 bots.store 注册回调，
- * 因此必须在 bots.store 的 action 被首次调用前 import 本模块（通��在 app 入口）。
+ * 因此必须在 bots.store 的 action 被首次调用前 import 本模块（通常在 app 入口）。
  */
 import { __registerBotLifecycleHooks } from './bots.store.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
