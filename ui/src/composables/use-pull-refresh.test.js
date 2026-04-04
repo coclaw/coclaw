@@ -123,4 +123,48 @@ describe('usePullRefresh', () => {
 
 		wrapper.unmount();
 	});
+
+	test('无可滚动祖先时使用 window.scrollY 判断是否在顶部', () => {
+		// 创建容器但不设置 overflow-y，使 isScrolledToTop 回退到 window.scrollY
+		const onRefresh = vi.fn();
+		const wrapper = mount(defineComponent({
+			setup() {
+				const containerRef = ref(null);
+				const result = usePullRefresh(containerRef, { onRefresh });
+				return { containerRef, ...result };
+			},
+			// 不设置 overflow-y: auto/scroll，让查找循环走到 document.documentElement
+			template: '<div ref="containerRef"><span>content</span></div>',
+		}));
+
+		// window.scrollY 默认为 0 → isScrolledToTop 返回 true → 可下拉
+		simulatePull(wrapper.element, 100, 300);
+		expect(onRefresh).toHaveBeenCalledOnce();
+
+		wrapper.unmount();
+	});
+
+	test('未提供 onRefresh 时使用默认的 window.location.reload', () => {
+		const reloadMock = vi.fn();
+		const origLocation = window.location;
+		// jsdom 不允许 spyOn location.reload，用替换整个 location 对象的方式
+		delete window.location;
+		window.location = { ...origLocation, reload: reloadMock };
+
+		// 不传 onRefresh，使用默认值
+		const wrapper = mount(defineComponent({
+			setup() {
+				const containerRef = ref(null);
+				const result = usePullRefresh(containerRef);
+				return { containerRef, ...result };
+			},
+			template: '<div ref="containerRef" style="overflow-y:auto"><span>content</span></div>',
+		}));
+
+		simulatePull(wrapper.element, 100, 300);
+		expect(reloadMock).toHaveBeenCalledOnce();
+
+		wrapper.unmount();
+		window.location = origLocation;
+	});
 });

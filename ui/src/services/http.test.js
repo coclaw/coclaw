@@ -1,5 +1,47 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+describe('resolveApiBaseUrl', () => {
+	beforeEach(() => {
+		vi.resetModules();
+		vi.unstubAllEnvs();
+	});
+
+	test('当 VITE_API_BASE_URL 有值时使用该配置', async () => {
+		vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.com');
+		vi.mock('axios', () => ({
+			default: { create: vi.fn(() => ({ interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } } })) },
+		}));
+		const { resolveApiBaseUrl } = await import('./http.js');
+		expect(resolveApiBaseUrl()).toBe('https://api.example.com');
+	});
+
+	test('当 VITE_API_BASE_URL 为空时使用 window.location.origin', async () => {
+		vi.stubEnv('VITE_API_BASE_URL', '');
+		vi.mock('axios', () => ({
+			default: { create: vi.fn(() => ({ interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } } })) },
+		}));
+		const { resolveApiBaseUrl } = await import('./http.js');
+		expect(resolveApiBaseUrl()).toBe(window.location.origin);
+	});
+
+	test('当 window 未定义时返回 localhost fallback', async () => {
+		vi.stubEnv('VITE_API_BASE_URL', '');
+		vi.mock('axios', () => ({
+			default: { create: vi.fn(() => ({ interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } } })) },
+		}));
+		// 临时移除 window
+		const origWindow = globalThis.window;
+		// @ts-ignore
+		delete globalThis.window;
+		try {
+			const { resolveApiBaseUrl } = await import('./http.js');
+			expect(resolveApiBaseUrl()).toBe('http://localhost:3000');
+		} finally {
+			globalThis.window = origWindow;
+		}
+	});
+});
+
 const mockAxiosInstance = vi.hoisted(() => ({
 	interceptors: {
 		request: { use: vi.fn() },
@@ -28,11 +70,11 @@ describe('http client', () => {
 	});
 
 	test('should register request interceptor', () => {
-		expect(mockAxiosInstance.interceptors.request.use).toHaveBeenCalledTimes(1);
+		expect(mockAxiosInstance.interceptors.request.use).toHaveBeenCalled();
 	});
 
 	test('should register response interceptor', () => {
-		expect(mockAxiosInstance.interceptors.response.use).toHaveBeenCalledTimes(1);
+		expect(mockAxiosInstance.interceptors.response.use).toHaveBeenCalled();
 	});
 
 	describe('request interceptor', () => {

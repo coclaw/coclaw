@@ -10,7 +10,13 @@ export default defineConfig({
 		globals: true,
 		setupFiles: ['./vitest.setup.js'],
 		coverage: {
-			include: ['src/stores/**/*.js', 'src/services/**/*.js'],
+			include: [
+				'src/stores/**/*.js',
+				'src/services/**/*.js',
+				'src/utils/**/*.js',
+				'src/composables/**/*.js',
+				'src/validators/**/*.js',
+			],
 			provider: 'v8',
 			reporter: ['text', 'lcov'],
 			exclude: [
@@ -18,12 +24,14 @@ export default defineConfig({
 				'playwright.config.js',
 				'vitest.config.js',
 				'vite.config.js',
+				'src/utils/tauri-app.js',
+				'src/utils/tauri-notify.js',
 			],
 			thresholds: {
-				lines: 70,
-				functions: 70,
-				branches: 60,
-				statements: 70,
+				lines: 95,
+				functions: 95,
+				branches: 90,
+				statements: 95,
 			},
 		},
 	},

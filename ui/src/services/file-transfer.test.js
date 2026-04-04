@@ -134,6 +134,32 @@ function createMockFileOfSize(size, name = 'big.bin') {
 	return createStreamableFile(new Uint8Array(size), name);
 }
 
+/**
+ * 创建 stream 返回超大 chunk 的 mock File（用于测试 sendChunks 的内部切分逻辑）
+ * 每次 pull 返回 chunkSize 字节（可大于 CHUNK_SIZE）
+ */
+function createLargeChunkFile(totalSize, chunkSize, name = 'large-chunk.bin') {
+	const bytes = new Uint8Array(totalSize);
+	return {
+		name,
+		size: totalSize,
+		stream() {
+			let offset = 0;
+			return new ReadableStream({
+				pull(controller) {
+					if (offset >= totalSize) {
+						controller.close();
+						return;
+					}
+					const end = Math.min(offset + chunkSize, totalSize);
+					controller.enqueue(new Uint8Array(bytes.buffer, offset, end - offset));
+					offset = end;
+				},
+			});
+		},
+	};
+}
+
 // --- RPC 操作测试 ---
 
 describe('listFiles', () => {
@@ -430,6 +456,18 @@ describe('downloadFile', () => {
 		await expect(handle.promise).rejects.toThrow('DataChannel error');
 	});
 
+	test('DC open 时 send 抛出异常', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.send = () => { throw new Error('send failed'); };
+		dc.__open();
+
+		await expect(handle.promise).rejects.toThrow('Failed to send download request');
+	});
+
 	test('空文件下载（size=0）— 正常完成', async () => {
 		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const handle = downloadFile(botConn, 'main', 'empty.txt');
@@ -675,6 +713,43 @@ describe('uploadFile', () => {
 		await expect(handle.promise).rejects.toThrow('DataChannel error');
 	});
 
+	test('DC open 时 send 抛出异常', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.send = () => { throw new Error('send failed'); };
+		dc.__open();
+
+		await expect(handle.promise).rejects.toThrow('Failed to send upload request');
+	});
+
+	test('sendChunks 异常传播到上传 promise', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		// 创建一个 stream 会抛异常的 file
+		const file = {
+			name: 'err.txt',
+			size: 100,
+			stream() {
+				return new ReadableStream({
+					pull() {
+						throw new Error('read error');
+					},
+				});
+			},
+		};
+		const handle = uploadFile(botConn, 'main', 'err.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await expect(handle.promise).rejects.toThrow('read error');
+	});
+
 	test('上传完成后 close/message 竞态兜底', async () => {
 		const { botConn, lastDC } = createMockBotConnWithRtc();
 		const file = createMockFile('data', 'file.txt');
@@ -707,6 +782,59 @@ describe('uploadFile', () => {
 		handle.cancel();
 
 		return expect(handle.promise).rejects.toThrow('exceeds limit');
+	});
+
+	test('Plugin 未在限时内回复 ready 则超时', async () => {
+		vi.useFakeTimers();
+		try {
+			const { botConn, lastDC } = createMockBotConnWithRtc();
+			const file = createMockFile('data', 'file.txt');
+			const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+			// 提前捕获 promise，避免 unhandled rejection
+			const resultPromise = handle.promise.catch((e) => e);
+
+			await vi.advanceTimersByTimeAsync(0); // tick: waitReady resolve
+			const dc = lastDC();
+			dc.__open();
+			// 不发 { ok: true } ready 信号
+
+			// 推进 15s 触发 UPLOAD_READY_TIMEOUT
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			const err = await resultPromise;
+			expect(err).toBeInstanceOf(FileTransferError);
+			expect(err.code).toBe('READY_TIMEOUT');
+			expect(err.message).toMatch('Plugin did not respond in time');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('发送 done 信号时 send 抛出异常', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('hi', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+
+		// 拦截 send：让 chunk 发送正常，但 done 信号时抛出
+		let sendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			sendCount++;
+			// 第 1 次是请求 JSON，第 2 次是 binary chunk，第 3 次是 done 信号
+			if (sendCount >= 3 && typeof data === 'string' && data.includes('"done"')) {
+				throw new Error('send failed on done');
+			}
+			origSend(data);
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await expect(handle.promise).rejects.toThrow('Failed to send done signal');
 	});
 });
 
@@ -758,6 +886,182 @@ describe('uploadFile — backpressure', () => {
 		dc.__receiveString({ ok: true, bytes: file.size });
 		const result = await handle.promise;
 		expect(result.bytes).toBe(file.size);
+	});
+
+	test('waitForBufferDrain 时 DC 已非 open 状态则立即 reject', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'bp.bin');
+		const handle = uploadFile(botConn, 'main', 'bp.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				if (binarySendCount === 1) {
+					// 触发 backpressure，同时将 DC 设为非 open 状态
+					dc.bufferedAmount = HIGH_WATER_MARK + 1;
+					dc.readyState = 'closing';
+				}
+			}
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// waitForBufferDrain 发现 dc.readyState !== 'open'，应 reject
+		await expect(handle.promise).rejects.toThrow('DataChannel closed during flow control');
+	});
+
+	test('waitForBufferDrain 期间 DC close 事件触发 reject', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'bp.bin');
+		const handle = uploadFile(botConn, 'main', 'bp.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				if (binarySendCount === 1) {
+					dc.bufferedAmount = HIGH_WATER_MARK + 1;
+				}
+			}
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// 等待 backpressure 暂停
+		await vi.waitFor(() => {
+			expect(binarySendCount).toBeGreaterThanOrEqual(1);
+		});
+
+		// 在等待 buffer drain 期间触发 close 事件
+		dc.__fireEvent('close');
+
+		await expect(handle.promise).rejects.toThrow('DataChannel closed during flow control');
+	});
+
+	test('waitForBufferDrain 的 onLow 触发后 onClose 为 no-op', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'bp.bin');
+		const handle = uploadFile(botConn, 'main', 'bp.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				if (binarySendCount === 1) {
+					dc.bufferedAmount = HIGH_WATER_MARK + 1;
+				}
+			}
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// 等待 backpressure 暂停
+		await vi.waitFor(() => {
+			expect(binarySendCount).toBeGreaterThanOrEqual(1);
+		});
+
+		// 先触发 bufferedamountlow（resolve），再触发 close（应被 done 守卫忽略）
+		dc.bufferedAmount = 0;
+		dc.__fireEvent('bufferedamountlow');
+		dc.__fireEvent('close');
+
+		// 等待全部发完
+		await vi.waitFor(() => {
+			const lastSent = dc.sent[dc.sent.length - 1];
+			expect(typeof lastSent === 'string' && lastSent.includes('"done"')).toBe(true);
+		});
+
+		dc.__receiveString({ ok: true, bytes: file.size });
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+
+	test('waitForBufferDrain 期间取消后 DC close 事件 resolve', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'bp.bin');
+		const handle = uploadFile(botConn, 'main', 'bp.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				if (binarySendCount === 1) {
+					dc.bufferedAmount = HIGH_WATER_MARK + 1;
+				}
+			}
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// 等待 backpressure 暂停
+		await vi.waitFor(() => {
+			expect(binarySendCount).toBeGreaterThanOrEqual(1);
+		});
+
+		// 先取消，再触发 close — isCancelled() 为 true，waitForBufferDrain 的 onClose 应 resolve
+		handle.cancel();
+
+		await expect(handle.promise).rejects.toThrow('Upload cancelled');
+	});
+});
+
+// --- sendChunks 大块切分测试 ---
+
+describe('uploadFile — large chunk splitting', () => {
+	test('reader 返回超过 CHUNK_SIZE 的 chunk 时正确切分', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		// stream 每次返回 CHUNK_SIZE * 2.5 大小的块，总大小 CHUNK_SIZE * 5
+		const totalSize = CHUNK_SIZE * 5;
+		const file = createLargeChunkFile(totalSize, Math.floor(CHUNK_SIZE * 2.5), 'split.bin');
+		const handle = uploadFile(botConn, 'main', 'split.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// 等待 chunk 发送完成
+		await vi.waitFor(() => {
+			const lastSent = dc.sent[dc.sent.length - 1];
+			if (typeof lastSent === 'string') {
+				expect(JSON.parse(lastSent)).toHaveProperty('done', true);
+			}
+		});
+
+		// 验证所有 binary chunk 均不超过 CHUNK_SIZE
+		let totalSentBytes = 0;
+		for (const data of dc.sent) {
+			if (typeof data !== 'string') {
+				expect(data.byteLength).toBeLessThanOrEqual(CHUNK_SIZE);
+				totalSentBytes += data.byteLength;
+			}
+		}
+		expect(totalSentBytes).toBe(totalSize);
+
+		dc.__receiveString({ ok: true, bytes: totalSize });
+		const result = await handle.promise;
+		expect(result.bytes).toBe(totalSize);
 	});
 });
 
@@ -859,6 +1163,554 @@ describe('postFile', () => {
 		const result = await handle.promise;
 		expect(result.bytes).toBe(file.size);
 		expect(result.path).toBeUndefined();
+	});
+});
+
+// --- 下载分支覆盖补充 ---
+
+describe('downloadFile — 分支覆盖补充', () => {
+	test('onmessage 收到无法解析的 JSON 字符串时静默忽略', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+
+		// 发送无法解析的 JSON
+		dc.onmessage?.({ data: '{broken json' });
+
+		// 正常继续下载
+		dc.__receiveString({ ok: true, size: 3, name: 'file.txt' });
+		dc.__receiveBinary(new Uint8Array([1, 2, 3]));
+		dc.__receiveString({ ok: true, bytes: 3 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(3);
+	});
+
+	test('onmessage 在 cancelled 后被忽略', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 100, name: 'file.txt' });
+
+		// 取消后再发消息
+		handle.cancel();
+		// 不应抛出
+		dc.onmessage?.({ data: new Uint8Array(10) });
+
+		await expect(handle.promise).rejects.toThrow('Download cancelled');
+	});
+
+	test('onclose 在 settled 后被忽略', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 3, name: 'file.txt' });
+		dc.__receiveBinary(new Uint8Array(3));
+		dc.__receiveString({ ok: true, bytes: 3 });
+
+		// 已 settled，再触发 close 不应影响
+		dc.__fireClose();
+		await new Promise((r) => setTimeout(r, 10));
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(3);
+	});
+
+	test('Plugin 错误缺少 error.code 和 message 时使用默认值', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		// ok: false 但无 error 字段
+		dc.__receiveString({ ok: false });
+
+		try {
+			await handle.promise;
+		} catch (e) {
+			expect(e.code).toBe('TRANSFER_FAILED');
+			expect(e.message).toBe('Download failed');
+		}
+	});
+
+	test('响应头缺少 size 和 name 时使用默认值', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		// 响应头缺少 size / name
+		dc.__receiveString({ ok: true });
+		dc.__receiveString({ ok: true, bytes: 0 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(0);
+		expect(result.name).toBe('');
+	});
+
+	test('totalSize 为 0 时 progressCb 不被调用', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const progressCalls = [];
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+		handle.onProgress = (recv, total) => progressCalls.push({ recv, total });
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		// 响应头 size=0，但仍发了 binary
+		dc.__receiveString({ ok: true, size: 0, name: 'file.txt' });
+		dc.__receiveBinary(new Uint8Array(5));
+		dc.__receiveString({ ok: true, bytes: 5 });
+
+		await handle.promise;
+		// totalSize === 0 时 progressCb 不调用
+		expect(progressCalls.length).toBe(0);
+	});
+});
+
+// --- 上传分支覆盖补充 ---
+
+describe('uploadFile — 分支覆盖补充', () => {
+	test('Plugin ready 超时', async () => {
+		vi.useFakeTimers();
+		try {
+			const { botConn, lastDC } = createMockBotConnWithRtc();
+			const file = createMockFile('data', 'file.txt');
+			const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+			await vi.advanceTimersByTimeAsync(0); // tick
+			const dc = lastDC();
+			dc.__open();
+			// 不发 ready，让超时触发
+			const p = handle.promise.catch((e) => e);
+			await vi.advanceTimersByTimeAsync(15_001);
+
+			const err = await p;
+			expect(err).toBeInstanceOf(FileTransferError);
+			expect(err.code).toBe('READY_TIMEOUT');
+			expect(err.message).toBe('Plugin did not respond in time');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('onmessage 收到非字符串数据时忽略', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+
+		// 发送 binary 消息（非 string），应被忽略
+		dc.onmessage?.({ data: new Uint8Array(5) });
+
+		// 正常继续
+		dc.__receiveString({ ok: true }); // ready
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+		dc.__receiveString({ ok: true, bytes: file.size });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+
+	test('onmessage 收到无法解析的 JSON 时忽略', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+
+		// 发送无法解析的 JSON
+		dc.onmessage?.({ data: 'not valid json' });
+
+		// 正常继续
+		dc.__receiveString({ ok: true }); // ready
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+		dc.__receiveString({ ok: true, bytes: file.size });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+
+	test('Plugin 错误缺少 error.code 和 message 时使用默认值', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: false });
+
+		try {
+			await handle.promise;
+		} catch (e) {
+			expect(e.code).toBe('TRANSFER_FAILED');
+			expect(e.message).toBe('Upload failed');
+		}
+	});
+
+	test('发送 done 信号时 send 抛出异常', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('hi', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		let sendCallCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			sendCallCount++;
+			// 第一个 send 是请求 JSON，第二个是 binary chunk，第三个是 done 信号
+			if (typeof data === 'string' && sendCallCount > 1) {
+				throw new Error('send failed');
+			}
+			origSend(data);
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await expect(handle.promise).rejects.toThrow('Failed to send done signal');
+	});
+
+	test('onmessage 在 cancelled 后被忽略', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+
+		handle.cancel();
+		// cancelled 后再发消息不应影响
+		dc.onmessage?.({ data: JSON.stringify({ ok: true }) });
+
+		await expect(handle.promise).rejects.toThrow('Upload cancelled');
+	});
+
+	test('sendChunks 中 isCancelled 触发提前退出', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		// 使用较大文件确保 sendChunks 有多次循环
+		const file = createMockFileOfSize(CHUNK_SIZE * 5, 'cancel-mid.bin');
+		const handle = uploadFile(botConn, 'main', 'cancel-mid.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				// 第一个 chunk 发完后取消
+				if (binarySendCount === 1) {
+					handle.cancel();
+				}
+			}
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await expect(handle.promise).rejects.toThrow('Upload cancelled');
+	});
+
+	test('sendChunks catch 中 cancelled/settled 检查 — 不 double settle', async () => {
+		// 当 sendChunks 抛异常但外层已 settled 时，catch 分支的 cancelled||settled 检查生效
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		let rejectReader;
+		const file = {
+			name: 'err.txt',
+			size: 100,
+			stream() {
+				return new ReadableStream({
+					pull(controller) {
+						// 先 enqueue 一些数据，然后通过外部触发错误
+						return new Promise((_, rej) => { rejectReader = rej; });
+					},
+				});
+			},
+		};
+		const handle = uploadFile(botConn, 'main', 'err.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// 等 reader.read() 正在等待
+		await new Promise((r) => setTimeout(r, 20));
+
+		// 先 cancel（settle 为 CANCELLED），再让 reader 报错
+		handle.cancel();
+		rejectReader(new Error('read error'));
+
+		await expect(handle.promise).rejects.toThrow('Upload cancelled');
+	});
+
+	test('上传写入结果不含 path 时 result 无 path 字段', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+		// 写入结果不含 bytes 也不含 path
+		dc.__receiveString({ ok: true });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+		expect(result).not.toHaveProperty('path');
+	});
+});
+
+// --- sendChunks buf 切分逻辑补充 ---
+
+describe('uploadFile — buf offset=0 whole buf return', () => {
+	test('reader 返回恰好 2*CHUNK_SIZE 的 chunk，buf 整段返回后清空', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const totalSize = CHUNK_SIZE * 2;
+		const file = createLargeChunkFile(totalSize, totalSize, 'whole-buf.bin');
+		const handle = uploadFile(botConn, 'main', 'whole-buf.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await vi.waitFor(() => {
+			const lastSent = dc.sent[dc.sent.length - 1];
+			if (typeof lastSent === 'string') {
+				expect(JSON.parse(lastSent)).toHaveProperty('done', true);
+			}
+		});
+
+		let totalSentBytes = 0;
+		for (const data of dc.sent) {
+			if (typeof data !== 'string') {
+				expect(data.byteLength).toBeLessThanOrEqual(CHUNK_SIZE);
+				totalSentBytes += data.byteLength;
+			}
+		}
+		expect(totalSentBytes).toBe(totalSize);
+
+		dc.__receiveString({ ok: true, bytes: totalSize });
+		const result = await handle.promise;
+		expect(result.bytes).toBe(totalSize);
+	});
+
+	test('reader 返回恰好 CHUNK_SIZE+1 的 chunk — buf 第二轮 remaining<=CHUNK_SIZE 做 slice', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const totalSize = CHUNK_SIZE + 1;
+		const file = createLargeChunkFile(totalSize, totalSize, 'plus1.bin');
+		const handle = uploadFile(botConn, 'main', 'plus1.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await vi.waitFor(() => {
+			const lastSent = dc.sent[dc.sent.length - 1];
+			if (typeof lastSent === 'string') {
+				expect(JSON.parse(lastSent)).toHaveProperty('done', true);
+			}
+		});
+
+		// 应有 2 个 binary chunk: CHUNK_SIZE + 1
+		const binaryChunks = dc.sent.filter((d) => typeof d !== 'string');
+		expect(binaryChunks.length).toBe(2);
+		expect(binaryChunks[0].byteLength).toBe(CHUNK_SIZE);
+		expect(binaryChunks[1].byteLength).toBe(1);
+
+		dc.__receiveString({ ok: true, bytes: totalSize });
+		const result = await handle.promise;
+		expect(result.bytes).toBe(totalSize);
+	});
+});
+
+// --- waitForBufferDrain 分支补充 ---
+
+describe('waitForBufferDrain — 分支覆盖补充', () => {
+	test('bufferedamountlow 和 close 同时触发时只处理一次', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'bp.bin');
+		const handle = uploadFile(botConn, 'main', 'bp.bin', file);
+
+		await tick();
+		const dc = lastDC();
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				if (binarySendCount === 1) {
+					dc.bufferedAmount = HIGH_WATER_MARK + 1;
+				}
+			}
+		};
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await vi.waitFor(() => {
+			expect(binarySendCount).toBeGreaterThanOrEqual(1);
+		});
+
+		// 同时触发 bufferedamountlow 和 close（先 low 再 close）
+		dc.bufferedAmount = 0;
+		dc.__fireEvent('bufferedamountlow');
+		// 第二次触发 close — done 已为 true，应被忽略
+		dc.__fireEvent('close');
+
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(5);
+		});
+
+		dc.__receiveString({ ok: true, bytes: file.size });
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+});
+
+// --- cleanup 分支补充 ---
+
+describe('createFileDC cleanup 分支', () => {
+	test('cleanup 重复调用不报错', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 3, name: 'file.txt' });
+		dc.__receiveBinary(new Uint8Array(3));
+		dc.__receiveString({ ok: true, bytes: 3 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(3);
+
+		// 再次取消（cleanup 已执行过），不应抛出
+		handle.cancel();
+	});
+
+	test('cleanup 当 DC 已 closed 时不再次 close', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({
+			ok: false,
+			error: { code: 'ERR', message: 'error' },
+		});
+
+		await expect(handle.promise).rejects.toThrow('error');
+		// DC 已被 cleanupRef() 关闭，再次 cancel 应安全
+		handle.cancel();
+	});
+});
+
+// --- settle 幂等、cleanup 异常、readyTimer 竞态 ---
+
+describe('边界分支补充', () => {
+	test('cleanup 中 dc.close 抛异常时被静默吞掉', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(botConn, 'main', 'file.txt');
+
+		await tick();
+		const dc = lastDC();
+		// 让 dc.close 抛异常
+		dc.close = () => { throw new Error('close boom'); };
+		dc.__open();
+		dc.__receiveString({
+			ok: false,
+			error: { code: 'ERR', message: 'err' },
+		});
+
+		// cleanup 调用 dc.close() 会抛异常，但被 catch{} 吞掉，不影响 reject
+		await expect(handle.promise).rejects.toThrow('err');
+	});
+
+	test('upload settle 幂等 — double settle 时第二次被忽略', async () => {
+		const { botConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('data', 'file.txt');
+		const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		// Plugin 写入结果（settle resolve）
+		dc.__receiveString({ ok: true, bytes: file.size });
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+
+		// 再次收到消息（settle 已为 true），应被忽略
+		dc.onmessage?.({ data: JSON.stringify({ ok: false, error: { code: 'X', message: 'X' } }) });
+	});
+
+	test('readyTimer 到期时 readyReceived 已为 true — 超时回调跳过', async () => {
+		vi.useFakeTimers();
+		try {
+			const { botConn, lastDC } = createMockBotConnWithRtc();
+			const file = createMockFile('hi', 'file.txt');
+			const handle = uploadFile(botConn, 'main', 'file.txt', file);
+
+			await vi.advanceTimersByTimeAsync(0); // tick
+			const dc = lastDC();
+			dc.__open();
+
+			// Plugin 立即回复 ready
+			dc.__receiveString({ ok: true });
+
+			// 推进 sendChunks 完成
+			await vi.advanceTimersByTimeAsync(100);
+
+			// 发送 done 后等 Plugin 确认
+			dc.__receiveString({ ok: true, bytes: file.size });
+
+			// 超时定时器到期，但 readyReceived 已为 true，回调直接 return
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			const result = await handle.promise;
+			expect(result.bytes).toBe(file.size);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

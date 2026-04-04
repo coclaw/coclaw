@@ -137,6 +137,157 @@ describe('env.store', () => {
 		Object.defineProperty(navigator, 'userAgent', { value: origUA, configurable: true });
 	});
 
+	test('detectWebPlatform 通过 userAgentData.platform 识别 Android', async () => {
+		mockMatchMedia({});
+		const origUAData = navigator.userAgentData;
+		Object.defineProperty(navigator, 'userAgentData', {
+			value: { platform: 'Android' },
+			configurable: true,
+		});
+
+		vi.resetModules();
+		setActivePinia(createPinia());
+		const { useEnvStore } = await import('./env.store.js');
+		const env = useEnvStore();
+		expect(env.platform).toBe('android');
+		expect(env.isAndroid).toBe(true);
+
+		Object.defineProperty(navigator, 'userAgentData', { value: origUAData, configurable: true });
+	});
+
+	test('detectWebPlatform 通过 userAgentData.platform 识别 iOS', async () => {
+		mockMatchMedia({});
+		const origUAData = navigator.userAgentData;
+		Object.defineProperty(navigator, 'userAgentData', {
+			value: { platform: 'iOS' },
+			configurable: true,
+		});
+
+		vi.resetModules();
+		setActivePinia(createPinia());
+		const { useEnvStore } = await import('./env.store.js');
+		const env = useEnvStore();
+		expect(env.platform).toBe('ios');
+		expect(env.isIos).toBe(true);
+
+		Object.defineProperty(navigator, 'userAgentData', { value: origUAData, configurable: true });
+	});
+
+	test('detectWebPlatform 通过 userAgentData.platform 识别 Windows', async () => {
+		mockMatchMedia({});
+		const origUAData = navigator.userAgentData;
+		Object.defineProperty(navigator, 'userAgentData', {
+			value: { platform: 'Windows' },
+			configurable: true,
+		});
+
+		vi.resetModules();
+		setActivePinia(createPinia());
+		const { useEnvStore } = await import('./env.store.js');
+		const env = useEnvStore();
+		expect(env.platform).toBe('windows');
+		expect(env.isWin).toBe(true);
+
+		Object.defineProperty(navigator, 'userAgentData', { value: origUAData, configurable: true });
+	});
+
+	test('detectWebPlatform 通过 userAgentData.platform 识别 macOS', async () => {
+		mockMatchMedia({});
+		const origUAData = navigator.userAgentData;
+		Object.defineProperty(navigator, 'userAgentData', {
+			value: { platform: 'macOS' },
+			configurable: true,
+		});
+
+		vi.resetModules();
+		setActivePinia(createPinia());
+		const { useEnvStore } = await import('./env.store.js');
+		const env = useEnvStore();
+		expect(env.platform).toBe('mac');
+		expect(env.isMac).toBe(true);
+
+		Object.defineProperty(navigator, 'userAgentData', { value: origUAData, configurable: true });
+	});
+
+	test('detectWebPlatform 通过 userAgentData.platform 识别 Linux', async () => {
+		mockMatchMedia({});
+		const origUAData = navigator.userAgentData;
+		Object.defineProperty(navigator, 'userAgentData', {
+			value: { platform: 'Linux' },
+			configurable: true,
+		});
+
+		vi.resetModules();
+		setActivePinia(createPinia());
+		const { useEnvStore } = await import('./env.store.js');
+		const env = useEnvStore();
+		expect(env.platform).toBe('linux');
+		expect(env.isLinux).toBe(true);
+
+		Object.defineProperty(navigator, 'userAgentData', { value: origUAData, configurable: true });
+	});
+
+	test('detectWebPlatform UA 不匹配任何已知平台时返回 unknown', async () => {
+		mockMatchMedia({});
+		const origUA = navigator.userAgent;
+		const origUAData = navigator.userAgentData;
+		// 清除 userAgentData 以走 UA 字符串分支
+		Object.defineProperty(navigator, 'userAgentData', {
+			value: undefined,
+			configurable: true,
+		});
+		Object.defineProperty(navigator, 'userAgent', {
+			value: 'SomeUnknownBrowser/1.0',
+			configurable: true,
+		});
+
+		vi.resetModules();
+		setActivePinia(createPinia());
+		const { useEnvStore } = await import('./env.store.js');
+		const env = useEnvStore();
+		expect(env.platform).toBe('unknown');
+
+		Object.defineProperty(navigator, 'userAgent', { value: origUA, configurable: true });
+		Object.defineProperty(navigator, 'userAgentData', { value: origUAData, configurable: true });
+	});
+
+	test('detectWebPlatform 识别 Mac（非 iPadOS，maxTouchPoints=0）', async () => {
+		mockMatchMedia({});
+		const origUA = navigator.userAgent;
+		const origPlatform = navigator.platform;
+		const origTouchPoints = navigator.maxTouchPoints;
+		const origUAData = navigator.userAgentData;
+
+		Object.defineProperty(navigator, 'userAgentData', {
+			value: undefined,
+			configurable: true,
+		});
+		Object.defineProperty(navigator, 'userAgent', {
+			value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+			configurable: true,
+		});
+		Object.defineProperty(navigator, 'platform', {
+			value: 'MacIntel',
+			configurable: true,
+		});
+		Object.defineProperty(navigator, 'maxTouchPoints', {
+			value: 0,
+			configurable: true,
+		});
+
+		vi.resetModules();
+		setActivePinia(createPinia());
+		const { useEnvStore } = await import('./env.store.js');
+		const env = useEnvStore();
+		expect(env.platform).toBe('mac');
+		expect(env.isMac).toBe(true);
+
+		Object.defineProperty(navigator, 'userAgent', { value: origUA, configurable: true });
+		Object.defineProperty(navigator, 'platform', { value: origPlatform, configurable: true });
+		Object.defineProperty(navigator, 'maxTouchPoints', { value: origTouchPoints, configurable: true });
+		Object.defineProperty(navigator, 'userAgentData', { value: origUAData, configurable: true });
+	});
+
 	test('detectWebPlatform 识别 iPadOS (MacIntel + maxTouchPoints)', async () => {
 		mockMatchMedia({});
 		const origUA = navigator.userAgent;

@@ -142,6 +142,43 @@ describe('files.store', () => {
 			expect(mockA.download).toBe('test.bin');
 		});
 
+		test('bot 连接不存在时下载直接标记为 failed', async () => {
+			useBotConnections.mockReturnValue({
+				get: () => undefined,
+			});
+
+			store.enqueueDownload('bot1', 'main', 'docs', 'no-conn.md', 100);
+
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('failed');
+				expect(t.error).toContain('Bot connection');
+			});
+		});
+
+		test('下载进度 total=0 时 progress 设为 0', async () => {
+			mockBotConn();
+			let capturedOnProgress;
+			downloadFile.mockReturnValue({
+				promise: new Promise(() => {}), // 永不 resolve
+				cancel: vi.fn(),
+				set onProgress(cb) { capturedOnProgress = cb; },
+			});
+
+			store.enqueueDownload('bot1', 'main', 'docs', 'progress.bin', 500);
+
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main')[0].status).toBe('running');
+			});
+
+			// total=0 时 progress 应为 0
+			capturedOnProgress(100, 0);
+			expect(store.getAgentTasks('bot1', 'main')[0].progress).toBe(0);
+			// total>0 时正常计算
+			capturedOnProgress(50, 200);
+			expect(store.getAgentTasks('bot1', 'main')[0].progress).toBe(0.25);
+		});
+
 		test('下载失败标记为 failed', async () => {
 			mockBotConn();
 			downloadFile.mockReturnValue({
@@ -462,6 +499,255 @@ describe('files.store', () => {
 				expect(t.status).toBe('failed');
 				expect(t.error).toContain('Bot connection');
 			});
+		});
+	});
+
+	describe('download 边界分支', () => {
+		function mockBrowserDownload() {
+			const mockA = { href: '', download: '', click: vi.fn() };
+			const origCreateElement = document.createElement.bind(document);
+			vi.spyOn(document, 'createElement').mockImplementation((tag) =>
+				tag === 'a' ? mockA : origCreateElement(tag),
+			);
+			vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
+			vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+			URL.createObjectURL = vi.fn(() => 'blob:mock');
+			URL.revokeObjectURL = vi.fn();
+			return mockA;
+		}
+
+		test('下载异常 code=CANCELLED 时静默返回不标记 failed', async () => {
+			mockBotConn();
+			const cancelErr = new Error('cancelled');
+			cancelErr.code = 'CANCELLED';
+			downloadFile.mockReturnValue({
+				promise: Promise.reject(cancelErr),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueDownload('bot1', 'main', '', 'cancel-err.bin', 100);
+
+			// 等任务处理完
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				// CANCELLED 分支 return 后 finally 清理 transferHandle
+				// status 应保持 running（因为 CANCELLED 分支不改状态）
+				expect(t.status).toBe('running');
+				expect(t.transferHandle).toBeNull();
+			});
+		});
+
+		test('下载完成后 result.name 为空时用 task.fileName 作为文件名', async () => {
+			mockBotConn();
+			const blob = new Blob(['data']);
+			downloadFile.mockReturnValue({
+				promise: Promise.resolve({ blob, bytes: 4, name: '' }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			const mockA = mockBrowserDownload();
+			store.enqueueDownload('bot1', 'main', 'docs', 'fallback-name.md', 1024);
+
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('done');
+			});
+
+			// result.name 为空字符串，应回退到 task.fileName
+			expect(mockA.download).toBe('fallback-name.md');
+		});
+
+		test('下载失败无 message 时使用默认错误文本', async () => {
+			mockBotConn();
+			downloadFile.mockReturnValue({
+				promise: Promise.reject({}),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueDownload('bot1', 'main', '', 'no-msg.bin', 100);
+
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('failed');
+				expect(t.error).toBe('Download failed');
+			});
+		});
+	});
+
+	describe('upload 边界分支', () => {
+		test('上传异常 code=CANCELLED 时静默返回不标记 failed', async () => {
+			mockBotConn();
+			const cancelErr = new Error('cancelled');
+			cancelErr.code = 'CANCELLED';
+			uploadFile.mockReturnValue({
+				promise: Promise.reject(cancelErr),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('cancel-upload.txt', 10)]);
+
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				// CANCELLED 分支 return 后 finally 清理 transferHandle
+				expect(t.transferHandle).toBeNull();
+			});
+			// status 应保持 running（CANCELLED 分支不改状态）
+			const t = store.getAgentTasks('bot1', 'main')[0];
+			expect(t.status).toBe('running');
+		});
+
+		test('上传进度 total=0 时 progress 设为 0', async () => {
+			mockBotConn();
+			let progressCb = null;
+			uploadFile.mockReturnValue({
+				promise: new Promise(() => {}), // 永不 resolve
+				cancel: vi.fn(),
+				set onProgress(cb) { progressCb = cb; },
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('zero-total.txt', 10)]);
+
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main')[0].status).toBe('running');
+			});
+
+			progressCb(100, 0);
+			expect(store.getAgentTasks('bot1', 'main')[0].progress).toBe(0);
+		});
+
+		test('上传失败无 message 时使用默认错误文本', async () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: Promise.reject({}),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('no-msg.txt', 10)]);
+
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('failed');
+				expect(t.error).toBe('Upload failed');
+			});
+		});
+	});
+
+	describe('handle 赋值前取消的竞态', () => {
+		test('上传 handle 赋值后检测到已取消 → 补偿 cancel', async () => {
+			mockBotConn();
+			const cancelFn = vi.fn();
+			// 在 uploadFile 返回 handle 的同步时机，模拟 task 已被取消
+			uploadFile.mockImplementation(() => {
+				// 此时 handle 还未赋值到 task.transferHandle
+				// 但我们需要在 handle 赋值后、检查前让 task.status = 'cancelled'
+				// 通过 getter 拦截实现
+				const tasks = store.getAgentTasks('bot1', 'main');
+				const t = tasks.find((t) => t.fileName === 'race-up.txt');
+				if (t) t.status = 'cancelled';
+				return {
+					promise: new Promise(() => {}),
+					cancel: cancelFn,
+					set onProgress(_cb) {},
+				};
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('race-up.txt', 10)]);
+
+			await vi.waitFor(() => {
+				// 补偿 cancel 应被调用
+				expect(cancelFn).toHaveBeenCalled();
+			});
+		});
+
+		test('下载 handle 赋值后检测到已取消 → 补偿 cancel', async () => {
+			mockBotConn();
+			const cancelFn = vi.fn();
+			downloadFile.mockImplementation(() => {
+				const tasks = store.getAgentTasks('bot1', 'main');
+				const t = tasks.find((t) => t.fileName === 'race-dl.bin');
+				if (t) t.status = 'cancelled';
+				return {
+					promise: new Promise(() => {}),
+					cancel: cancelFn,
+					set onProgress(_cb) {},
+				};
+			});
+
+			store.enqueueDownload('bot1', 'main', '', 'race-dl.bin', 100);
+
+			await vi.waitFor(() => {
+				expect(cancelFn).toHaveBeenCalled();
+			});
+		});
+	});
+
+	describe('retryTask 边界', () => {
+		test('retryTask 非 failed 任务时为 no-op', () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: new Promise(() => {}),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('ok.txt', 10)]);
+
+			const task = store.getAgentTasks('bot1', 'main')[0];
+			// task 是 pending 或 running，retryTask 应为 no-op
+			store.retryTask(task.id);
+			// 不应额外调用 uploadFile
+			expect(uploadFile).toHaveBeenCalledTimes(1);
+		});
+
+		test('retryTask 不存在的 taskId 时为 no-op', () => {
+			store.retryTask('nonexistent-id');
+			// 不应抛出
+		});
+	});
+
+	describe('clearFinished 边界', () => {
+		test('clearFinished 包含 cancelled 和 failed 任务', async () => {
+			mockBotConn();
+			let callCount = 0;
+			uploadFile.mockImplementation(() => {
+				callCount++;
+				if (callCount === 1) {
+					return {
+						promise: Promise.reject(new Error('fail')),
+						cancel: vi.fn(),
+						set onProgress(_cb) {},
+					};
+				}
+				return {
+					promise: new Promise(() => {}),
+					cancel: vi.fn(),
+					set onProgress(_cb) {},
+				};
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [
+				createMockFile('fail.txt', 10),
+				createMockFile('pending.txt', 10),
+			]);
+
+			// 等第一个失败
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main').find((t) => t.fileName === 'fail.txt');
+				expect(t.status).toBe('failed');
+			});
+
+			// 取消第二个
+			const pending = store.getAgentTasks('bot1', 'main').find((t) => t.fileName === 'pending.txt');
+			store.cancelTask(pending.id);
+
+			// clearFinished 应清除 failed + cancelled
+			store.clearFinished('bot1', 'main');
+			expect(store.getAgentTasks('bot1', 'main')).toHaveLength(0);
 		});
 	});
 });

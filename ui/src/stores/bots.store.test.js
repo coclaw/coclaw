@@ -635,6 +635,67 @@ describe('WebRTC 集成', () => {
 		expect(mockCloseRtcForBot).toHaveBeenCalledWith('5');
 	});
 
+	test('__fullInit: pluginVersion ok=false + version 存在 → warn outdated 但不抛出', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue({ ok: false, version: '0.3.0', clawVersion: '2025.1.0', name: null, hostName: 'h' });
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		store.addOrUpdateBot({ id: '34', name: 'OldPlugin', online: true });
+
+		await vi.waitFor(() => {
+			expect(store.byId['34'].pluginVersionOk).toBe(false);
+		});
+		// version 存在 → "outdated"
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('plugin version'),
+			'outdated',
+			'34',
+		);
+		warnSpy.mockRestore();
+		// 恢复默认 mock，避免影响后续测试
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
+	});
+
+	test('__fullInit: pluginVersion ok=false + version null → 抛出 Bot is offline', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue({ ok: false, version: null, clawVersion: null, name: null, hostName: null });
+		const store = useBotsStore();
+
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		store.addOrUpdateBot({ id: '35', name: 'OfflinePlugin', online: true });
+
+		// fullInit 抛出后 .catch 触发 → initialized = false
+		await vi.waitFor(() => {
+			expect(store.byId['35'].initialized).toBe(false);
+		});
+		// version null → "check failed"
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('plugin version'),
+			'check failed (bot may be offline)',
+			'35',
+		);
+		warnSpy.mockRestore();
+		// 恢复默认 mock，避免影响后续测试
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
+	});
+
 	test('byId 初始包含 rtcPhase 等字段', () => {
 		const store = useBotsStore();
 		store.setBots([{ id: '1', name: 'Bot' }]);
@@ -783,6 +844,12 @@ describe('__bridgeConn 事件注册', () => {
 
 		const agentCalls = fakeConn.on.mock.calls.filter(([ev]) => ev === 'event:agent');
 		expect(agentCalls).toHaveLength(1);
+
+		// 触发 event:agent 回调，验证 handler 被执行（覆盖 line 272）
+		const agentHandler = agentCalls[0][1];
+		const payload = { type: 'test', data: {} };
+		agentHandler(payload);
+		// _lifecycle.dispatchAgentEvent 是 no-op 默认实现，不会抛错
 	});
 
 	test('注册 event:coclaw.info.updated 监听', () => {
@@ -1469,6 +1536,39 @@ describe('__fullInit 失败重试', () => {
 		});
 	});
 
+	test('updateBotOnline !initialized + fullInit 失败 → initialized 重置为 false', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockRejectedValue(new Error('version check boom'));
+		const store = useBotsStore();
+
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+			rtc: null, clearRtc: vi.fn(),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 先建立 bot（online:false 避免 __bridgeConn 触发 __fullInit）
+		store.addOrUpdateBot({ id: '33', name: 'Bot33', online: false });
+		store.byId['33'].initialized = false;
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// updateBotOnline 走 !initialized 分支 → __fullInit → .catch 触发 lines 157-158
+		store.updateBotOnline('33', true);
+
+		await vi.waitFor(() => {
+			expect(store.byId['33'].initialized).toBe(false);
+		});
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('fullInit failed'),
+			'33',
+			'version check boom',
+		);
+		warnSpy.mockRestore();
+		// 恢复默认 mock，避免影响后续测试
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
+	});
+
 	test('fullInit 失败不覆盖后续成功的重连（generation guard）', async () => {
 		const { checkPluginVersion } = await import('../utils/plugin-version.js');
 		const store = useBotsStore();
@@ -1619,6 +1719,57 @@ describe('rtcPhase 生命周期', () => {
 			expect(mockCloseRtcForBot).toHaveBeenCalledWith('94');
 			expect(mockInitRtc).toHaveBeenCalled();
 		});
+	});
+
+	test('__checkAndRecover probe 失败 → forceRebuild', async () => {
+		const store = useBotsStore();
+		// rtc.state 正常（非 failed/closed），probe 返回 false
+		const fakeRtc = { state: 'connected', probe: vi.fn().mockResolvedValue(false) };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc,
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setBots([{ id: '95', name: 'ProbeBot', online: true }]);
+		store.byId['95'].dcReady = true;
+		store.byId['95'].rtcPhase = 'ready';
+		mockCloseRtcForBot.mockClear();
+		mockRemoteLog.mockClear();
+		// __ensureRtc 返回 pending promise，防止它立即完成覆盖 rtcPhase
+		mockInitRtc.mockReset();
+		mockInitRtc.mockReturnValue(new Promise(() => {}));
+
+		// elapsed < 30s，非 network:online → 走 probe 分支
+		await store.__checkAndRecover('95', 5_000, 'app:foreground');
+		expect(fakeRtc.probe).toHaveBeenCalled();
+		expect(store.byId['95'].rtcPhase).toBe('recovering');
+		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('probe_failed'));
+	});
+
+	test('__checkAndRecover 异常时 catch 不抛出', async () => {
+		const store = useBotsStore();
+		// probe 抛出异常
+		const fakeRtc = { state: 'connected', probe: vi.fn().mockRejectedValue(new Error('probe boom')) };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc,
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setBots([{ id: '96', name: 'ErrBot', online: true }]);
+		store.byId['96'].dcReady = true;
+		store.byId['96'].rtcPhase = 'ready';
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// 不应抛出
+		await store.__checkAndRecover('96', 5_000, 'app:foreground');
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('checkAndRecover failed'),
+			'96',
+			'probe boom',
+		);
+		warnSpy.mockRestore();
 	});
 });
 
@@ -2281,5 +2432,120 @@ describe('remoteLog 诊断日志', () => {
 
 		store.__scheduleRetry('1');
 		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('bot.retryScheduled bot=1'));
+	});
+});
+
+describe('__fullInit 插件版本检查分支', () => {
+	test('pluginVersionOk=false + version 存在 → warn 但继续初始化', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue({ ok: false, version: '0.3.0', clawVersion: '2026.1.1', name: null, hostName: 'h' });
+
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+			rtc: null, clearRtc: vi.fn(),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		store.addOrUpdateBot({ id: '90', name: 'Outdated', online: true });
+
+		await vi.waitFor(() => {
+			expect(store.byId['90'].pluginVersionOk).toBe(false);
+		});
+		// warn 第二个参数为 'outdated'
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('plugin version'),
+			'outdated',
+			'90',
+		);
+		// 初始化应继续完成（initBotResources 被调用）
+		expect(agentsStore.loadAgents).toHaveBeenCalledWith('90');
+		warnSpy.mockRestore();
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
+	});
+
+	test('pluginVersionOk=false + version 为空 → 抛出异常，initialized 重置', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue({ ok: false, version: null, clawVersion: null, name: null, hostName: null });
+
+		const store = useBotsStore();
+		const agentsStore = useAgentsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+			rtc: null, clearRtc: vi.fn(),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		store.addOrUpdateBot({ id: '91', name: 'Offline', online: true });
+
+		await vi.waitFor(() => {
+			expect(store.byId['91'].initialized).toBe(false);
+		});
+		// warn 第二个参数为 'check failed (bot may be offline)'
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('plugin version'),
+			'check failed (bot may be offline)',
+			'91',
+		);
+		// initBotResources 不应被调用（抛异常退出）
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'test-host' });
+	});
+});
+
+describe('__refreshIfStale pluginInfo 刷新', () => {
+	test('断连后 __refreshIfStale 触发 checkPluginVersion 更新 pluginInfo', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.7.0', clawVersion: '2026.4.1', name: 'MyClaw', hostName: 'my-host' });
+
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setBots([{ id: '95', name: 'Bot', online: true }]);
+		store.byId['95'].initialized = true;
+		store.byId['95'].disconnectedAt = Date.now() - 10_000;
+
+		store.__refreshIfStale('95');
+
+		// 等待 checkPluginVersion promise resolve
+		await vi.waitFor(() => {
+			expect(store.byId['95'].pluginVersionOk).toBe(true);
+			expect(store.byId['95'].pluginInfo.version).toBe('0.7.0');
+			expect(store.byId['95'].pluginInfo.name).toBe('MyClaw');
+			expect(store.byId['95'].pluginInfo.hostName).toBe('my-host');
+		});
+	});
+
+	test('__refreshIfStale checkPluginVersion 失败时不抛异常', async () => {
+		const { checkPluginVersion } = await import('../utils/plugin-version.js');
+		checkPluginVersion.mockRejectedValue(new Error('network error'));
+
+		const store = useBotsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setBots([{ id: '96', name: 'Bot', online: true }]);
+		store.byId['96'].initialized = true;
+		store.byId['96'].disconnectedAt = Date.now() - 10_000;
+
+		// 不应抛出异常
+		expect(() => store.__refreshIfStale('96')).not.toThrow();
+		// 等待 promise rejection 被 catch
+		await new Promise((r) => setTimeout(r, 50));
 	});
 });

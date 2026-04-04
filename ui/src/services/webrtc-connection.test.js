@@ -504,6 +504,27 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		rtc.close();
 	});
 
+	test('rtc:answer setRemoteDescription 失败时 warn 日志', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		// 让 setRemoteDescription reject
+		pc.setRemoteDescription = async () => { throw new Error('sdp invalid'); };
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'bad-sdp' } });
+		// 等待异步 rejection 处理
+		await vi.waitFor(() => {
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('setRemoteDescription failed'),
+			);
+		});
+		warnSpy.mockRestore();
+		rtc.close();
+	});
+
 	test('rtc:ice 在 answer 之后直接添加 ICE candidate', async () => {
 		const botConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
@@ -577,6 +598,27 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 
 		rtc.close();
 	});
+
+	test('dc.onmessage 中 reassembler.feed 抛异常时 catch 并 warn', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		// 让 reassembler.feed 抛异常
+		rtc.__reassembler.feed = () => { throw new Error('feed boom'); };
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		expect(() => dc.onmessage({ data: 'bad-data' })).not.toThrow();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('DataChannel 消息错误'),
+			expect.any(Error),
+		);
+		warnSpy.mockRestore();
+		rtc.close();
+	});
+
 });
 
 describe('WebRtcConnection — close', () => {
@@ -970,6 +1012,23 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 		expect(() => dc.onmessage({ data: 'invalid json{' })).not.toThrow();
 		expect(botConn.__onRtcMessage).not.toHaveBeenCalled();
 	});
+
+	test('dc.onmessage reassembler.feed 抛异常时 catch 并 warn', async () => {
+		const botConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		// 让 reassembler.feed 抛异常
+		rtc.__reassembler = { feed: () => { throw new Error('feed boom'); } };
+		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		expect(() => dc.onmessage({ data: 'anything' })).not.toThrow();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('DataChannel 消息错误'),
+			expect.any(Error),
+		);
+		warnSpy.mockRestore();
+	});
 });
 
 describe('WebRtcConnection — send 流控', () => {
@@ -1147,6 +1206,22 @@ describe('WebRtcConnection — send 流控', () => {
 		await expect(p1).rejects.toThrow('send exploded');
 		await expect(p2).rejects.toThrow('DataChannel send failed');
 		await expect(p3).rejects.toThrow('DataChannel send failed');
+	});
+
+	test('排出时 DC 已关闭 → reject 队列', async () => {
+		const { rtc, dc } = await makeReady();
+		dc.bufferedAmount = 1024 * 1024; // HIGH
+
+		const p1 = rtc.send({ seq: 1 });
+		const p2 = rtc.send({ seq: 2 });
+
+		// 在触发 drain 前将 dc 标记为 closed
+		dc.readyState = 'closed';
+		dc.bufferedAmount = 0;
+		dc.__fireDcEvent('bufferedamountlow');
+
+		await expect(p1).rejects.toThrow('DataChannel closed');
+		await expect(p2).rejects.toThrow('DataChannel closed');
 	});
 
 	test('setupDataChannelEvents 设置 bufferedAmountLowThreshold', async () => {

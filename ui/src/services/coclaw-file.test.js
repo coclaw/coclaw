@@ -1,5 +1,16 @@
-import { describe, test, expect } from 'vitest';
-import { buildCoclawUrl, parseCoclawUrl, isCoclawUrl } from './coclaw-file.js';
+import { describe, test, expect, vi } from 'vitest';
+
+vi.mock('./bot-connection-manager.js', () => ({
+	useBotConnections: vi.fn(),
+}));
+
+vi.mock('./file-transfer.js', () => ({
+	downloadFile: vi.fn(),
+}));
+
+import { buildCoclawUrl, parseCoclawUrl, isCoclawUrl, fetchCoclawFile } from './coclaw-file.js';
+import { useBotConnections } from './bot-connection-manager.js';
+import { downloadFile } from './file-transfer.js';
 
 describe('buildCoclawUrl', () => {
 	test('constructs URL with botId, agentId, path', () => {
@@ -88,5 +99,31 @@ describe('buildCoclawUrl + parseCoclawUrl roundtrip', () => {
 		const parsed = parseCoclawUrl(url);
 
 		expect(parsed).toEqual({ botId, agentId, path });
+	});
+});
+
+describe('fetchCoclawFile', () => {
+	test('解析 URL 并通过 downloadFile 获取 blob', async () => {
+		const fakeBlob = new Blob(['hello'], { type: 'text/plain' });
+		const fakeBotConn = { id: '42' };
+		useBotConnections.mockReturnValue({ get: vi.fn(() => fakeBotConn) });
+		downloadFile.mockReturnValue({ promise: Promise.resolve({ blob: fakeBlob }) });
+
+		const result = await fetchCoclawFile('coclaw-file://42:main/path/to/file.txt');
+
+		expect(downloadFile).toHaveBeenCalledWith(fakeBotConn, 'main', 'path/to/file.txt');
+		expect(result).toBe(fakeBlob);
+	});
+
+	test('URL 无效时抛出错误', async () => {
+		await expect(fetchCoclawFile('https://invalid.com/file'))
+			.rejects.toThrow('Invalid coclaw-file URL');
+	});
+
+	test('bot 连接不存在时抛出错误', async () => {
+		useBotConnections.mockReturnValue({ get: vi.fn(() => undefined) });
+
+		await expect(fetchCoclawFile('coclaw-file://99:main/file.txt'))
+			.rejects.toThrow('Bot connection not found: 99');
 	});
 });

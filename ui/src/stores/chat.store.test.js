@@ -755,6 +755,56 @@ describe('useChatStore', () => {
 			expect(fileToBase64).toHaveBeenCalledTimes(1);
 		});
 
+		test('上传进度回调 total=0 时 progress 设为 0', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+
+			let capturedOnProgress;
+			let resolveUpload;
+			postFile.mockReturnValue({
+				promise: new Promise((resolve) => { resolveUpload = resolve; }),
+				cancel: vi.fn(),
+				set onProgress(cb) { capturedOnProgress = cb; },
+			});
+
+			const botsStore = useBotsStore();
+			botsStore.setBots([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const fakeFile = { type: 'image/png', size: 204800 };
+			const files = [{ isImg: true, file: fakeFile, name: 'photo.jpg', bytes: 204800 }];
+			const sendPromise = store.sendMessage('test', files);
+
+			// 等待 onProgress 回调被注册
+			await vi.waitFor(() => expect(capturedOnProgress).toBeDefined());
+			// total=0 时 progress 应为 0
+			capturedOnProgress(50, 0);
+			expect(store.uploadProgress.files[0].progress).toBe(0);
+			// total>0 时正常计算
+			capturedOnProgress(50, 100);
+			expect(store.uploadProgress.files[0].progress).toBe(0.5);
+
+			// 完成上传以让 sendMessage 继续
+			resolveUpload({ path: '.coclaw/chat-files/main/2026-03/photo-a3f1.jpg', bytes: 204800 });
+			await sendPromise;
+		});
+
 		test('RTC 可用时通过 POST 上传附件，message 包含附件信息块', async () => {
 			const { postFile } = await import('../services/file-transfer.js');
 			const { buildAttachmentBlock } = await import('../utils/file-helper.js');
@@ -2412,6 +2462,28 @@ describe('useChatStore', () => {
 
 			const result = await store.__reconcileMessages();
 			expect(result).toBe(false);
+		});
+
+		test('loadMessages 抛出异常时返回 false', async () => {
+			const conn = mockConn();
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.botId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// 直接 mock loadMessages 使其抛出异常
+			vi.spyOn(store, 'loadMessages').mockRejectedValue(new Error('load boom'));
+
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const result = await store.__reconcileMessages();
+			expect(result).toBe(false);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('reconcile failed'),
+				expect.any(Error),
+			);
+			warnSpy.mockRestore();
 		});
 	});
 

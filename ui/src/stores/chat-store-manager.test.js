@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 
 import { chatStoreManager } from './chat-store-manager.js';
+import { useAgentRunsStore } from './agent-runs.store.js';
 
 // --- Mocks ---
 
@@ -117,6 +118,49 @@ describe('chatStoreManager', () => {
 			}
 			// session 仍在
 			expect(chatStoreManager.size).toBe(11); // 1 session + 10 topics
+		});
+
+		test('有活跃 run 的 topic 跳过淘汰，淘汰下一个', () => {
+			const runsStore = useAgentRunsStore();
+			// 创建 10 个 topic
+			for (let i = 0; i < 10; i++) {
+				chatStoreManager.get(`topic:t${i}`, { botId: '1' });
+			}
+			// 让 t0（最旧）有活跃 run → 淘汰时跳过 t0，淘汰 t1
+			const t0Store = chatStoreManager.get('topic:t0');
+			runsStore.runs['run-t0'] = { status: 'streaming' };
+			runsStore.runKeyIndex[t0Store.runKey] = 'run-t0';
+
+			// 创建第 11 个 → 应跳过 t0，淘汰 t1
+			chatStoreManager.get('topic:t10', { botId: '1' });
+			expect(chatStoreManager.topicCount).toBe(10);
+			// t0 仍在，t1 被淘汰
+			expect(chatStoreManager.get('topic:t0')).toBeTruthy();
+		});
+
+		test('所有 topic 都有活跃 run 时淘汰被阻断', () => {
+			const runsStore = useAgentRunsStore();
+			// 创建 10 个 topic，全部设为活跃 run
+			for (let i = 0; i < 10; i++) {
+				chatStoreManager.get(`topic:t${i}`, { botId: '1' });
+				const s = chatStoreManager.get(`topic:t${i}`);
+				runsStore.runs[`run-t${i}`] = { status: 'streaming' };
+				runsStore.runKeyIndex[s.runKey] = `run-t${i}`;
+			}
+
+			// 预先为 t10 的 runKey 注册活跃 run（runKey = sessionId = 't10'）
+			runsStore.runs['run-t10'] = { status: 'streaming' };
+			runsStore.runKeyIndex['t10'] = 'run-t10';
+
+			const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+			// 创建第 11 个 → 淘汰被阻断，总数为 11
+			chatStoreManager.get('topic:t10', { botId: '1' });
+			expect(chatStoreManager.topicCount).toBe(11);
+			expect(debugSpy).toHaveBeenCalledWith(
+				expect.stringContaining('eviction blocked'),
+				expect.any(Number),
+			);
+			debugSpy.mockRestore();
 		});
 
 		test('重复访问 topic 更新 LRU 顺序', () => {

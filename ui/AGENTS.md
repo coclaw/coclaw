@@ -60,11 +60,10 @@
 
 ## 单元测试命令约定
 
-与其他工作区不同，ui 的 `pnpm test` 不含覆盖率检查：
+与其他工作区统一：
 
-- `pnpm test`：仅跑测试（开发时快速验证）
-- `pnpm coverage`：跑测试 + 覆盖率门禁
-- `pnpm verify`：`pnpm check && pnpm coverage`（verify 不再单独跑 test，因为 coverage 已包含测试）
+- `pnpm test`：运行测试 + 覆盖率门禁
+- `pnpm verify`：`pnpm check && pnpm test`
 
 ## 端到端测试 (E2E Testing)
 

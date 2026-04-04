@@ -205,4 +205,108 @@ describe('VoiceRecorder', () => {
 		expect(mockRecordDestroy).toHaveBeenCalled();
 		expect(mockWsDestroy).toHaveBeenCalled();
 	});
+
+	test('cancel 在 IDLE/STOPPED 等非 RECORDING 非 STARTING 状态下直接 destroy', async () => {
+		const { VoiceRecorder } = await import('./voice-recorder.js');
+		const statuses = [];
+		const recorder = new VoiceRecorder({
+			container: document.createElement('div'),
+			onStatusChange: (s) => statuses.push(s),
+		});
+
+		// 此时 status 为 IDLE，cancel 应走 else 分支，仅 destroy
+		recorder.cancel();
+		// 不应变为 CANCELED，因为不是 RECORDING 状态
+		expect(statuses).not.toContain('CANCELED');
+	});
+
+	test('cancel 在 STARTING 状态下设置 abortPending', async () => {
+		const { VoiceRecorder } = await import('./voice-recorder.js');
+		// 让 startRecording 挂起，使 status 停留在 STARTING
+		let resolveStart;
+		const pendingPromise = new Promise((r) => { resolveStart = r; });
+		mockStartRecording.mockImplementationOnce(() => pendingPromise);
+
+		const statuses = [];
+		const recorder = new VoiceRecorder({
+			container: document.createElement('div'),
+			onStatusChange: (s) => statuses.push(s),
+		});
+
+		const startPromise = recorder.start();
+		// 等一个微任务，确保已进入 STARTING 且 startRecording 被调用
+		await new Promise((r) => setTimeout(r, 10));
+		// 此时处于 STARTING
+		recorder.cancel();
+		// 让 startRecording resolve 以完成 start 流程
+		resolveStart();
+		await startPromise;
+		// abortPending 生效，最终转为 CANCELED
+		expect(statuses).toContain('CANCELED');
+	});
+
+	test('__fail 在录音进行中时先停止录音', async () => {
+		const { VoiceRecorder } = await import('./voice-recorder.js');
+		mockIsRecording.mockReturnValueOnce(true);
+
+		const statuses = [];
+		const recorder = new VoiceRecorder({
+			container: document.createElement('div'),
+			onStatusChange: (s, d) => statuses.push({ s, d }),
+		});
+
+		await recorder.start();
+		// 手动触发 __fail 来测试 isRecording 分支
+		recorder.__fail('TestError');
+		expect(mockStopRecording).toHaveBeenCalled();
+		const failed = statuses.find((x) => x.s === 'FAILED');
+		expect(failed).toBeTruthy();
+		expect(failed.d.errName).toBe('TestError');
+	});
+
+	test('start 未知错误且 Capacitor 环境下回退到 UnknownError', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// 设置 Capacitor 环境
+		window.Capacitor = { isNativePlatform: () => true };
+		const err = new Error('something random went wrong');
+		mockStartRecording.mockRejectedValueOnce(err);
+
+		const { VoiceRecorder } = await import('./voice-recorder.js');
+		const statuses = [];
+		const recorder = new VoiceRecorder({
+			container: document.createElement('div'),
+			onStatusChange: (s, d) => statuses.push({ s, d }),
+		});
+
+		await recorder.start();
+		const failed = statuses.find((x) => x.s === 'FAILED');
+		expect(failed).toBeTruthy();
+		expect(failed.d.errName).toBe('UnknownError');
+		warnSpy.mockRestore();
+		delete window.Capacitor;
+	});
+
+	test('start 未知错误且无麦克风时回退到 NotFoundError', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { hasMicDev } = await import('./media-helper.js');
+		hasMicDev.mockResolvedValueOnce(false);
+		// 确保非 Capacitor 环境
+		delete window.Capacitor;
+
+		const err = new Error('something unexpected');
+		mockStartRecording.mockRejectedValueOnce(err);
+
+		const { VoiceRecorder } = await import('./voice-recorder.js');
+		const statuses = [];
+		const recorder = new VoiceRecorder({
+			container: document.createElement('div'),
+			onStatusChange: (s, d) => statuses.push({ s, d }),
+		});
+
+		await recorder.start();
+		const failed = statuses.find((x) => x.s === 'FAILED');
+		expect(failed).toBeTruthy();
+		expect(failed.d.errName).toBe('NotFoundError');
+		warnSpy.mockRestore();
+	});
 });
