@@ -131,10 +131,10 @@ describe('AgentCard', () => {
 		expect(w.vm.statusKey).toBe('offline');
 	});
 
-	test('rtcPhase=failed → statusKey=failed', async () => {
+	test('rtcPhase=failed（claw 级）不影响 agent statusKey，仍为 idle', async () => {
 		const w = createWrapper(makeAgent(), makeBot({ rtcPhase: 'failed' }));
 		await flushPromises();
-		expect(w.vm.statusKey).toBe('failed');
+		expect(w.vm.statusKey).toBe('idle');
 	});
 
 	test('isRunning=true → statusKey=running', async () => {
@@ -144,16 +144,16 @@ describe('AgentCard', () => {
 		expect(w.vm.statusKey).toBe('running');
 	});
 
-	test('rtcPhase=building → statusKey=connecting', async () => {
+	test('rtcPhase=building（claw 级）不影响 agent statusKey，仍为 idle', async () => {
 		const w = createWrapper(makeAgent(), makeBot({ rtcPhase: 'building' }));
 		await flushPromises();
-		expect(w.vm.statusKey).toBe('connecting');
+		expect(w.vm.statusKey).toBe('idle');
 	});
 
-	test('rtcPhase=recovering → statusKey=connecting', async () => {
+	test('rtcPhase=recovering（claw 级）不影响 agent statusKey，仍为 idle', async () => {
 		const w = createWrapper(makeAgent(), makeBot({ rtcPhase: 'recovering' }));
 		await flushPromises();
-		expect(w.vm.statusKey).toBe('connecting');
+		expect(w.vm.statusKey).toBe('idle');
 	});
 
 	test('online + ready + 非 running → statusKey=idle', async () => {
@@ -162,11 +162,11 @@ describe('AgentCard', () => {
 		expect(w.vm.statusKey).toBe('idle');
 	});
 
-	test('failed 优先于 isRunning', async () => {
+	test('rtcPhase=failed 时 isRunning=true → statusKey=running', async () => {
 		mockIsRunning = vi.fn().mockReturnValue(true);
 		const w = createWrapper(makeAgent(), makeBot({ rtcPhase: 'failed' }));
 		await flushPromises();
-		expect(w.vm.statusKey).toBe('failed');
+		expect(w.vm.statusKey).toBe('running');
 	});
 
 	// ---- runKey 使用 agent.id ----
@@ -182,10 +182,8 @@ describe('AgentCard', () => {
 
 	test('各状态对应正确的 dot class', async () => {
 		const cases = [
-			[{ online: false }, 'bg-gray-400'],
-			[{ rtcPhase: 'failed' }, 'bg-red-400'],
-			[{ rtcPhase: 'building' }, 'bg-yellow-400'],
-			[{}, 'bg-green-400'], // idle
+			[{ online: false }, 'bg-gray-400'],  // offline
+			[{}, 'bg-green-400'],                 // idle
 		];
 		for (const [botOverrides, expected] of cases) {
 			const w = createWrapper(makeAgent(), makeBot(botOverrides));
@@ -300,41 +298,24 @@ describe('AgentCard', () => {
 		expect(w.vm.modelLabel).toBeNull();
 	});
 
-	test('stats 区域在 offline 状态不显示', async () => {
-		const w = createWrapper(makeAgent({ totalTokens: 500 }), makeBot({ online: false }));
+	test('offline 状态仍显示缓存的 stats 数据', async () => {
+		const w = createWrapper(makeAgent({ totalTokens: 500, activeSessions: 1 }), makeBot({ online: false }));
 		await flushPromises();
-		expect(w.text()).not.toContain('Tokens');
+		expect(w.text()).toContain('Tokens');
+		expect(w.text()).toContain('500');
+		expect(w.text()).toContain('Sessions');
 	});
 
-	test('failed + retryCount=0 显示重试耗尽', async () => {
-		const w = createWrapper(
-			makeAgent(),
-			makeBot({ rtcPhase: 'failed', retryCount: 0, lastAliveAt: Date.now() - 120_000 }),
-		);
-		await flushPromises();
-		expect(w.text()).toContain('retries exhausted');
-		expect(w.text()).toContain('2 mins ago');
-	});
-
-	test('failed + retryCount>0 显示重试进度', async () => {
+	test('agent 卡片不显示 claw 级连接重试信息', async () => {
 		const w = createWrapper(
 			makeAgent(),
 			makeBot({ rtcPhase: 'failed', retryCount: 3, lastAliveAt: Date.now() - 60_000 }),
 		);
 		await flushPromises();
-		expect(w.text()).toContain('retry 3/8');
-	});
-
-	test('connecting building 文字', async () => {
-		const w = createWrapper(makeAgent(), makeBot({ rtcPhase: 'building' }));
-		await flushPromises();
-		expect(w.text()).toContain('Building connection');
-	});
-
-	test('connecting recovering 文字', async () => {
-		const w = createWrapper(makeAgent(), makeBot({ rtcPhase: 'recovering' }));
-		await flushPromises();
-		expect(w.text()).toContain('Recovering connection');
+		expect(w.text()).not.toContain('retries exhausted');
+		expect(w.text()).not.toContain('retry');
+		expect(w.text()).not.toContain('Building connection');
+		expect(w.text()).not.toContain('Recovering connection');
 	});
 
 	test('offline 显示 lastAlive', async () => {

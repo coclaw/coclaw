@@ -38,7 +38,7 @@
 								<div class="flex items-center gap-2">
 									<span
 										class="inline-block size-2.5 rounded-full"
-										:class="bot.online ? 'bg-green-400 animate-pulse motion-reduce:animate-none' : 'bg-gray-500'"
+										:class="clawDotClass(bot)"
 									></span>
 									<div class="flex items-center gap-1">
 										<h2 class="text-base font-semibold">{{ getClawName(bot) }}</h2>
@@ -255,6 +255,13 @@ export default {
 		}
 	},
 	methods: {
+		/** claw 卡片状态点颜色，同时反映在线状态和 RTC 连接阶段 */
+		clawDotClass(bot) {
+			if (!bot.online) return 'bg-gray-500';
+			if (bot.rtcPhase === 'failed') return 'bg-red-400';
+			if (bot.rtcPhase === 'ready') return 'bg-green-400 animate-pulse motion-reduce:animate-none';
+			return 'bg-yellow-400 animate-pulse motion-reduce:animate-none';
+		},
 		/** 检查 bot 是否有任一 agent 在工作中 */
 		__hasRunningAgent(botId) {
 			const agents = this.dashboardStore.getDashboard(String(botId))?.agents ?? [];

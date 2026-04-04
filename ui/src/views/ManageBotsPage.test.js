@@ -530,6 +530,66 @@ describe('connLabel', () => {
 	});
 });
 
+describe('clawDotClass', () => {
+	test('offline → 灰色', async () => {
+		mockBots = [{ id: '1', name: 'A', online: false }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.clawDotClass(mockBots[0])).toBe('bg-gray-500');
+	});
+
+	test('online + ready → 绿色脉冲', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		const cls = wrapper.vm.clawDotClass(mockBots[0]);
+		expect(cls).toContain('bg-green-400');
+		expect(cls).toContain('animate-pulse');
+	});
+
+	test('online + failed → 红色', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'failed' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		const cls = wrapper.vm.clawDotClass(mockBots[0]);
+		expect(cls).toContain('bg-red-400');
+		expect(cls).not.toContain('animate-pulse');
+	});
+
+	test('online + building → 黄色脉冲', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'building' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		const cls = wrapper.vm.clawDotClass(mockBots[0]);
+		expect(cls).toContain('bg-yellow-400');
+		expect(cls).toContain('animate-pulse');
+	});
+
+	test('online + recovering → 黄色脉冲', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'recovering' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		const cls = wrapper.vm.clawDotClass(mockBots[0]);
+		expect(cls).toContain('bg-yellow-400');
+		expect(cls).toContain('animate-pulse');
+	});
+
+	test('online + idle → 黄色脉冲（RTC 尚未就绪）', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'idle' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		const cls = wrapper.vm.clawDotClass(mockBots[0]);
+		expect(cls).toContain('bg-yellow-400');
+		expect(cls).toContain('animate-pulse');
+	});
+});
+
 describe('rename', () => {
 	test('onConfirmRename 成功：调用 RPC + 乐观更新 pluginInfo.name + 关闭弹窗', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];

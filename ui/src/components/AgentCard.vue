@@ -18,20 +18,13 @@
 					</span>
 				</div>
 
-				<!-- 状态文字（failed / connecting / offline） -->
-				<div v-if="statusKey === 'failed'" class="mt-3 pl-4 space-y-0.5">
-					<p class="text-xs text-danger">{{ failedLabel }}</p>
-					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatRelativeTime(bot.lastAliveAt) }}</p>
-				</div>
-				<div v-else-if="statusKey === 'connecting'" class="mt-3 pl-4">
-					<p class="text-xs text-muted">{{ connectingLabel }}</p>
-				</div>
-				<div v-else-if="statusKey === 'offline'" class="mt-3 pl-4">
+				<!-- 离线时显示 lastAlive -->
+				<div v-if="statusKey === 'offline'" class="mt-3 pl-4">
 					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatRelativeTime(bot.lastAliveAt) }}</p>
 				</div>
 
-				<!-- 数据区：tokens / 会话 / 最近活跃（running 或 idle 时显示） -->
-				<div v-if="statusKey === 'running' || statusKey === 'idle'" class="mt-3 flex flex-wrap items-end gap-x-5 gap-y-1 text-xs text-dimmed">
+				<!-- 数据区：tokens / 会话 / 最近活跃（始终显示缓存数据） -->
+				<div class="mt-3 flex flex-wrap items-end gap-x-5 gap-y-1 text-xs text-dimmed">
 					<div>
 						<p class="text-sm font-medium text-default">{{ formatTokens(agent.totalTokens) }}</p>
 						<p>{{ $t('dashboard.tokens') }}</p>
@@ -114,7 +107,6 @@
 <script>
 import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
-import { MAX_BACKOFF_RETRIES } from '../stores/bots.store.js';
 
 export default {
 	name: 'AgentCard',
@@ -145,12 +137,11 @@ export default {
 
 	computed: {
 		/**
-		 * @returns {'failed' | 'running' | 'connecting' | 'idle' | 'offline'}
+		 * agent 级状态：仅关注 agent 自身运行状态，不反映 claw 级连接状态
+		 * @returns {'running' | 'idle' | 'offline'}
 		 */
 		statusKey() {
 			if (!this.bot.online) return 'offline';
-			if (this.bot.rtcPhase === 'failed') return 'failed';
-			if (this.bot.rtcPhase === 'building' || this.bot.rtcPhase === 'recovering') return 'connecting';
 			const runKey = `agent:${this.agent.id}:main`;
 			if (this.agentRunsStore.isRunning(runKey)) return 'running';
 			return 'idle';
@@ -158,9 +149,7 @@ export default {
 
 		dotClass() {
 			const map = {
-				failed: 'bg-red-400',
 				running: 'bg-blue-400 animate-pulse',
-				connecting: 'bg-yellow-400 animate-pulse',
 				idle: 'bg-green-400',
 				offline: 'bg-gray-400',
 			};
@@ -173,18 +162,6 @@ export default {
 			const sec = s % 60;
 			if (m === 0) return `${sec}s`;
 			return `${m}m ${sec}s`;
-		},
-
-		failedLabel() {
-			if (this.bot.retryCount > 0) {
-				return this.$t('bots.conn.rtcRetrying', { n: this.bot.retryCount, max: MAX_BACKOFF_RETRIES });
-			}
-			return this.$t('bots.conn.rtcRetryExhausted');
-		},
-
-		connectingLabel() {
-			if (this.bot.rtcPhase === 'recovering') return this.$t('chat.connRecovering');
-			return this.$t('chat.connBuilding');
 		},
 
 		modelLabel() {
