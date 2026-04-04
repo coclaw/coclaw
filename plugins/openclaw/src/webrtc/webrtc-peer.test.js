@@ -91,7 +91,7 @@ test('WebRtcPeer: TURN 凭证正确构建 iceServers', async () => {
 	});
 
 	const turnCreds = {
-		urls: ['stun:example.com:3478', 'turn:example.com:3478?transport=udp', 'turn:example.com:3478?transport=tcp'],
+		urls: ['turn:example.com:3478?transport=udp', 'turn:example.com:3478?transport=tcp', 'turns:example.com:443?transport=tcp'],
 		username: 'user1',
 		credential: 'cred1',
 	};
@@ -99,15 +99,16 @@ test('WebRtcPeer: TURN 凭证正确构建 iceServers', async () => {
 
 	const args = PC.instances[0].__constructorArgs;
 	assert.equal(args.iceServers.length, 3);
-	// STUN 不带 username/credential
-	assert.equal(args.iceServers[0].urls, 'stun:example.com:3478');
-	assert.equal(args.iceServers[0].username, undefined);
-	// TURN 带 username/credential
-	assert.equal(args.iceServers[1].urls, 'turn:example.com:3478?transport=udp');
+	// turn: 带 username/credential
+	assert.equal(args.iceServers[0].urls, 'turn:example.com:3478?transport=udp');
+	assert.equal(args.iceServers[0].username, 'user1');
+	assert.equal(args.iceServers[0].credential, 'cred1');
+	assert.equal(args.iceServers[1].urls, 'turn:example.com:3478?transport=tcp');
 	assert.equal(args.iceServers[1].username, 'user1');
-	assert.equal(args.iceServers[1].credential, 'cred1');
-	assert.equal(args.iceServers[2].urls, 'turn:example.com:3478?transport=tcp');
+	// turns: 也带 username/credential
+	assert.equal(args.iceServers[2].urls, 'turns:example.com:443?transport=tcp');
 	assert.equal(args.iceServers[2].username, 'user1');
+	assert.equal(args.iceServers[2].credential, 'cred1');
 
 	await peer.closeAll();
 });

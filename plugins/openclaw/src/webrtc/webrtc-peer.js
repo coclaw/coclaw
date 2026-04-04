@@ -124,7 +124,7 @@ export class WebRtcPeer {
 			const { urls, username, credential } = msg.turnCreds;
 			for (const url of urls) {
 				const server = { urls: url };
-				if (url.startsWith('turn:')) {
+				if (url.startsWith('turn:') || url.startsWith('turns:')) {
 					server.username = username;
 					server.credential = credential;
 				}
