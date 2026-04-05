@@ -951,6 +951,7 @@ export class RealtimeBridge {
 		const implLabel = preloadResult.impl === 'ndc' ? 'node-datachannel(ndc)' : preloadResult.impl;
 		this.logger.info?.(`[coclaw] WebRTC impl: ${implLabel}`);
 		remoteLog(`bridge.webrtc-impl impl=${implLabel}`);
+		remoteLog(`bridge.started version=${this.__pluginVersion}`);
 		await this.__connectIfNeeded();
 	}
 

@@ -13,7 +13,7 @@ import {
 	writeUpgradeLock,
 } from './updater.js';
 import { setRuntime } from '../runtime.js';
-import { addSkippedVersion } from './state.js';
+import { addSkippedVersion, readState, writeState } from './state.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 
 // updater-check.js 的 getPackageInfo 默认读取 import.meta.dirname/../.. 即插件根目录的 package.json
@@ -882,5 +882,221 @@ test('isUpgradeLocked 锁文件无 pid 字段时返回 false 并清理', async (
 	}
 	finally {
 		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+// --- __reportLastUpgradeResult ---
+
+test('__reportLastUpgradeResult - 有未报告的 lastUpgrade 时 remoteLog 并写入 lastReport', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeState({
+			lastUpgrade: { from: '0.10.0', to: '0.11.0', result: 'success', ts: '2026-04-01T00:00:00.000Z' },
+		});
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.result result=success from=0.10.0 to=0.11.0'));
+		assert.ok(logger.infos.some(m => m.includes('Last upgrade') && m.includes('success')));
+		const state = await readState();
+		assert.equal(state.lastReport, '2026-04-01T00:00:00.000Z');
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reportLastUpgradeResult - lastReport 等于 lastUpgrade.ts 时不重复推送', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeState({
+			lastUpgrade: { from: '0.10.0', to: '0.11.0', result: 'success', ts: '2026-04-01T00:00:00.000Z' },
+			lastReport: '2026-04-01T00:00:00.000Z',
+		});
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(!remoteLogBuffer.some(e => e.text.startsWith('upgrade.result')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reportLastUpgradeResult - 无 lastUpgrade 时静默跳过', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeState({});
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(!remoteLogBuffer.some(e => e.text.startsWith('upgrade.result')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reportLastUpgradeResult - state 无 lastReport 字段时正常报告', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		// lastUpgrade 存在，但 state 中无 lastReport 字段
+		await writeState({
+			lastUpgrade: { from: '0.9.0', to: '0.10.0', result: 'rollback', ts: '2026-03-15T12:00:00.000Z' },
+		});
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.result result=rollback from=0.9.0 to=0.10.0'));
+		const state = await readState();
+		assert.equal(state.lastReport, '2026-03-15T12:00:00.000Z');
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reportLastUpgradeResult - readState 抛异常时输出日志和 remoteLog 且不影响 __check 主流程', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+				readStateFn: async () => { throw new Error('disk error'); },
+			},
+		});
+
+		await s.__check();
+
+		// __check 主流程不应被中断
+		assert.ok(logger.infos.some(m => m.includes('Checking for updates')));
+		// 异常应输出本地 warn 和 remoteLog
+		assert.ok(logger.warns.some(m => m.includes('Report last upgrade result failed') && m.includes('disk error')));
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.report-failed msg=disk error'));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reportLastUpgradeResult - writeState 失败时输出 remoteLog 且同进程内不重复报告同一 ts', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeState({
+			lastUpgrade: { from: '0.10.0', to: '0.11.0', result: 'rollback', ts: '2026-04-01T00:00:00.000Z' },
+		});
+
+		const logger = silentLogger();
+		// mock writeState 使 lastReport 写入失败
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+				writeStateFn: async () => { throw new Error('write failed'); },
+			},
+		});
+
+		await s.__check();
+		// upgrade.result 应已推送（在 writeState 失败之前）
+		assert.equal(remoteLogBuffer.filter(e => e.text.startsWith('upgrade.result')).length, 1);
+		// writeState 失败应输出 report-failed
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.report-failed msg=write failed'));
+		assert.ok(logger.warns.some(m => m.includes('Report last upgrade result failed')));
+
+		// 第二次调用，__lastReportedUpgradeTs 应阻止重复推送
+		resetRemoteLog();
+		await s.__check();
+		assert.equal(remoteLogBuffer.filter(e => e.text.startsWith('upgrade.result')).length, 0);
+		// report-failed 也不应再出现
+		assert.equal(remoteLogBuffer.filter(e => e.text.startsWith('upgrade.report-failed')).length, 0);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+// --- __check: skipped 版本 remoteLog ---
+
+test('__check - skippedVersions 命中时 remoteLog upgrade.skipped', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await addSkippedVersion('99.0.0');
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.skipped version=99.0.0'));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
 	}
 });

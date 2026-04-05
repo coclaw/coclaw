@@ -3,7 +3,7 @@ import nodePath from 'node:path';
 
 import { checkForUpdate } from './updater-check.js';
 import { spawnUpgradeWorker } from './updater-spawn.js';
-import { resolveStateDir } from './state.js';
+import { readState, resolveStateDir, writeState } from './state.js';
 import { getRuntime } from '../runtime.js';
 import { remoteLog } from '../remote-log.js';
 
@@ -124,6 +124,8 @@ export class AutoUpgradeScheduler {
 	__pluginId = null;
 	__logger = console;
 	__opts = {};
+	/** 已报告过的 lastUpgrade.ts，用于去重 */
+	__lastReportedUpgradeTs = null;
 
 	/**
 	 * @param {object} [params]
@@ -195,6 +197,29 @@ export class AutoUpgradeScheduler {
 	}
 
 	/**
+	 * 检查 lastUpgrade 是否有未报告的结果，若有则 remoteLog 并标记已报告
+	 */
+	async __reportLastUpgradeResult() {
+		try {
+			const readStateFn = this.__opts.readStateFn ?? readState;
+			const state = await readStateFn();
+			const last = state.lastUpgrade;
+			if (!last?.ts || last.ts === state.lastReport) return;
+			if (last.ts === this.__lastReportedUpgradeTs) return;
+			this.__lastReportedUpgradeTs = last.ts;
+			remoteLog(`upgrade.result result=${last.result} from=${last.from} to=${last.to}`);
+			this.__logger.info?.(`[auto-upgrade] Last upgrade: ${last.from} → ${last.to} result=${last.result}`);
+			state.lastReport = last.ts;
+			const writeStateFn = this.__opts.writeStateFn ?? writeState;
+			await writeStateFn(state);
+		}
+		catch (err) {
+			this.__logger.warn?.(`[auto-upgrade] Report last upgrade result failed: ${err?.message}`);
+			remoteLog(`upgrade.report-failed msg=${err?.message}`);
+		}
+	}
+
+	/**
 	 * 执行一次检查
 	 */
 	async __check() {
@@ -209,6 +234,9 @@ export class AutoUpgradeScheduler {
 				return;
 			}
 
+			// 报告上一次升级结果（若有未报告的）
+			await this.__reportLastUpgradeResult();
+
 			this.__logger.info?.('[auto-upgrade] Checking for updates...');
 			const result = await checkForUpdate({
 				execFileFn: this.__opts.execFileFn,
@@ -216,6 +244,7 @@ export class AutoUpgradeScheduler {
 
 			if (!result.available) {
 				if (result.skipped) {
+					remoteLog(`upgrade.skipped version=${result.latestVersion}`);
 					this.__logger.info?.(`[auto-upgrade] Version ${result.latestVersion} skipped (previously failed)`);
 				} else {
 					this.__logger.info?.(`[auto-upgrade] No update available (current: ${result.currentVersion})`);

@@ -2598,3 +2598,21 @@ test('RealtimeBridge start() aborts if stop() called during preload (race protec
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
+
+test('RealtimeBridge start() should remoteLog plugin version', async () => {
+	resetRemoteLog();
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	const bridge = createBridge();
+
+	try {
+		await bridge.start({ logger: noopLogger() });
+		assert.ok(
+			remoteLogBuffer.some(e => e.text.startsWith('bridge.started version=')),
+			'should remoteLog bridge.started with version',
+		);
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+		resetRemoteLog();
+	}
+});
