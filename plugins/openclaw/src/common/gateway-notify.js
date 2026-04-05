@@ -27,6 +27,7 @@ export function escapeJsonForCmd(json) {
  * 2. 监听 stdout，解析 JSON 输出判断 RPC 成功/失败
  * 3. 检测到完整 JSON 后启动 KILL_DELAY_MS grace period 等待自然退出
  * 4. 总超时默认 NOTIFY_TIMEOUT_MS（注册 CLI 路径覆盖为 30s）
+ *    同时通过 `--timeout` 传递给子进程，确保内外层超时一致
  * 5. 无论成功失败，最终都主动 kill 子进程
  *
  * grace period 设计：openclaw 进程因 WS handle 滞留可能 10s+ 才退出，
@@ -55,6 +56,10 @@ export function callGatewayMethod(method, spawnFn, opts) {
 		try {
 			const isWin = opts?.isWin ?? IS_WIN;
 			const args = ['gateway', 'call', method, '--json'];
+			// 将超时传递给 openclaw gateway call（默认 10s），避免内外层超时不一致
+			if (opts?.timeoutMs) {
+				args.push('--timeout', String(opts.timeoutMs));
+			}
 			if (opts?.params) {
 				const json = JSON.stringify(opts.params);
 				// Windows 需 shell 解析 .cmd → 必须转义 JSON；非 Windows 不经 shell，直传

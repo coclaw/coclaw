@@ -941,11 +941,9 @@ export class RealtimeBridge {
 				.then((v) => { this.__pluginVersion = v; })
 				.catch(() => { this.__pluginVersion = 'unknown'; }),
 		]);
-		// 竞态保护：若 preload 期间 stop() 已执行，不再赋值，立即释放 cleanup
+		// 竞态保护：若 preload 期间 stop() 已执行，不再赋值，直接返回。
+		// 不调 cleanup()——与 stop() 策略一致，native threads 保持活跃供后续复用。
 		if (!this.started) {
-			if (preloadResult.cleanup) {
-				try { preloadResult.cleanup(); } catch {}
-			}
 			return;
 		}
 		this.__ndcPreloadResult = preloadResult;
@@ -979,15 +977,12 @@ export class RealtimeBridge {
 			this.webrtcPeer = null;
 			this.__webrtcPeerReady = null;
 		}
-		// ndc cleanup：node-datachannel 的 native threads 必须通过 cleanup() 释放，
-		// 否则会阻止进程退出（issue #366）。
-		// start() 已 await preload 完成并缓存 cleanup 引用，此处直接使用。
-		// 注意：若进程被 SIGKILL 强杀，此处不会执行，OS 会回收资源。
-		// TODO: 若 OpenClaw 未来提供 graceful shutdown 钩子，应在钩子中也调用 cleanup。
-		if (this.__ndcCleanup) {
-			try { this.__ndcCleanup(); }
-			catch (err) { remoteLog(`ndc.cleanup-failed error=${err?.message}`); }
-		}
+		// 不在 stop() 中调用 ndc.cleanup()：
+		// cleanup() 是同步 native 调用，需 join native threads，耗时 10s+，
+		// 会阻塞事件循环导致 RPC handler 超时。
+		// gateway 是长驻进程，native threads 保持活跃即可；
+		// 下次 start() 重新 import（ESM 缓存命中）可直接复用。
+		// 进程退出时 OS 会回收所有资源。
 		this.__ndcCleanup = null;
 		this.__ndcPreloadResult = null;
 		if (this.__fileHandler) {

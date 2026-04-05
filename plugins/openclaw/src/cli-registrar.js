@@ -41,7 +41,7 @@ async function restartGatewayProcess(spawnFn) {
 }
 /* c8 ignore stop */
 
-// bind/unbind/enroll 的 RPC 超时（覆盖默认 10s）
+// bind/unbind/enroll 的 RPC 超时（覆盖 openclaw gateway call 默认 10s）
 // 卡点是 gateway ↔ server 的网络通信，bind 最多两次（先解绑再绑定）
 const RPC_TIMEOUT_MS = 30_000;
 

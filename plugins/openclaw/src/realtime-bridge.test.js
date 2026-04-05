@@ -2464,7 +2464,7 @@ test('RealtimeBridge start() should await ndc preload before connecting', async 
 	}
 });
 
-test('RealtimeBridge stop() should call ndc cleanup when loaded', async () => {
+test('RealtimeBridge stop() should NOT call ndc cleanup (deferred to process exit)', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let cleanupCalled = false;
 	const bridge = createBridge({
@@ -2477,9 +2477,8 @@ test('RealtimeBridge stop() should call ndc cleanup when loaded', async () => {
 
 	try {
 		await bridge.start({ logger: noopLogger() });
-		// start() 已 await preload 并缓存 cleanup
 		await bridge.stop();
-		assert.ok(cleanupCalled, 'cleanup should be called on stop');
+		assert.ok(!cleanupCalled, 'cleanup should NOT be called on stop (native threads stay alive)');
 		assert.equal(bridge.__ndcCleanup, null);
 		assert.equal(bridge.__ndcPreloadResult, null);
 	} finally {
@@ -2487,21 +2486,22 @@ test('RealtimeBridge stop() should call ndc cleanup when loaded', async () => {
 	}
 });
 
-test('RealtimeBridge stop() should not crash when cleanup throws', async () => {
+test('RealtimeBridge stop() should null cleanup ref without calling it', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	let cleanupCalled = false;
 	const bridge = createBridge({
 		preloadNdc: async () => ({
 			PeerConnection: class NdcPC {},
-			cleanup: () => { throw new Error('cleanup boom'); },
+			cleanup: () => { cleanupCalled = true; },
 			impl: 'ndc',
 		}),
 	});
 
 	try {
 		await bridge.start({ logger: noopLogger() });
-		// stop 不应抛出（cleanup 异常被内部 catch）
 		await bridge.stop();
-		assert.equal(bridge.__ndcCleanup, null);
+		assert.ok(!cleanupCalled, 'cleanup should not be called');
+		assert.equal(bridge.__ndcCleanup, null, 'cleanup ref should be nulled');
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -2591,8 +2591,8 @@ test('RealtimeBridge start() aborts if stop() called during preload (race protec
 			impl: 'ndc',
 		});
 		await startPromise;
-		// start 应检测到 started=false，立即返回并释放 cleanup
-		assert.ok(cleanupCalled, 'cleanup should be called when start detects stopped state');
+		// start 应检测到 started=false，直接返回，不调用 cleanup（native threads 保持活跃）
+		assert.ok(!cleanupCalled, 'cleanup should NOT be called (native threads stay alive for reuse)');
 		assert.equal(bridge.__ndcPreloadResult, null, 'should not assign result after stop');
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });

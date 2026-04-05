@@ -134,6 +134,38 @@ test('callGatewayMethod should not pass --params when params not provided', asyn
 	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.enroll', '--json']);
 });
 
+test('callGatewayMethod should pass --timeout when timeoutMs is provided', async () => {
+	const { spawn, calls } = createMockSpawn({ stdout: '{"status":"ok"}' });
+
+	await callGatewayMethod('coclaw.bind', spawn, { timeoutMs: 20000 });
+
+	assert.deepEqual(calls[0], [
+		'openclaw', 'gateway', 'call', 'coclaw.bind', '--json',
+		'--timeout', '20000',
+	]);
+});
+
+test('callGatewayMethod should not pass --timeout when timeoutMs is not provided', async () => {
+	const { spawn, calls } = createMockSpawn({ stdout: '{"status":"ok"}' });
+
+	await callGatewayMethod('coclaw.bind', spawn);
+
+	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.bind', '--json']);
+});
+
+test('callGatewayMethod should pass both --timeout and --params', async () => {
+	const { spawn, calls } = createMockSpawn({ stdout: '{"status":"ok"}' });
+	const params = { code: '123' };
+
+	await callGatewayMethod('coclaw.bind', spawn, { timeoutMs: 20000, params, isWin: false });
+
+	assert.deepEqual(calls[0], [
+		'openclaw', 'gateway', 'call', 'coclaw.bind', '--json',
+		'--timeout', '20000',
+		'--params', JSON.stringify(params),
+	]);
+});
+
 test('callGatewayMethod should resolve ok for any valid JSON output', async () => {
 	// 即使 JSON 中没有 status 字段，有合法输出即视为成功
 	const { spawn } = createMockSpawn({
