@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.11.6
+
+### Patch Changes
+
+- fix(plugin): 修正 ndc-preloader 的 pluginRoot 路径计算（`..` → `../..`），修复 npm 安装用户无法加载 vendor 预编译包导致 fallback 到 werift 的问题
+
 ## 0.11.5
 
 ### Patch Changes

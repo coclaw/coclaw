@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import nodePath from 'node:path';
 import test from 'node:test';
 
 import { preloadNdc, defaultResolvePaths } from './ndc-preloader.js';
@@ -362,6 +363,49 @@ test('preloadNdc: background import rejection after timeout is silently caught',
 	// 等一会儿让后台 promise 有时间 reject
 	await new Promise((r) => setTimeout(r, 150));
 	// 如果 unhandled rejection 未被兜住，进程会被 node --test 标记为失败
+});
+
+// --- pluginRoot 路径测试 ---
+
+test('preloadNdc: default pluginRoot resolves to package root (contains vendor/)', async () => {
+	// ndc-preloader.js 在 src/webrtc/ 下，import.meta.dirname 向上两级应到达包根目录。
+	// 通过不注入 pluginRoot，让 resolvePaths 使用默认路径，验证 src 路径包含正确的 vendor 目录。
+	let capturedSrc;
+	const logs = [];
+	const result = await preloadNdc({
+		fs: {
+			access: async () => { throw new Error('ENOENT'); },
+			copyFile: async () => {},
+			mkdir: async () => {},
+		},
+		dynamicImport: async (spec) => {
+			if (spec === 'werift') return { RTCPeerConnection: class WeriftPC {} };
+			throw new Error(`unexpected import: ${spec}`);
+		},
+		remoteLog: (text) => logs.push(text),
+		platform: 'linux',
+		arch: 'x64',
+		// pluginRoot 不注入 — 使用默认值
+		resolvePaths: (platformKey, pluginRoot) => {
+			capturedSrc = nodePath.join(pluginRoot, 'vendor', 'ndc-prebuilds', platformKey, 'node_datachannel.node');
+			// pluginRoot 应指向包根目录，不是 src/
+			assert.ok(!pluginRoot.endsWith('/src') && !pluginRoot.endsWith('/src/'),
+				`pluginRoot should not end with /src, got: ${pluginRoot}`);
+			// 验证 pluginRoot 就是包含 package.json 的目录
+			const expectedRoot = nodePath.resolve(import.meta.dirname, '../..');
+			assert.equal(pluginRoot, expectedRoot,
+				`pluginRoot should be ${expectedRoot}, got: ${pluginRoot}`);
+			return {
+				src: capturedSrc,
+				dest: '/fake/dest/node_datachannel.node',
+				destDir: '/fake/dest',
+			};
+		},
+	});
+
+	// 无论最终 impl 是什么，只要 resolvePaths 被调用且断言通过即可
+	assert.ok(capturedSrc);
+	assert.ok(capturedSrc.includes('vendor/ndc-prebuilds/linux-x64'));
 });
 
 // --- defaultResolvePaths 测试 ---

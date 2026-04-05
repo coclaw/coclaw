@@ -110,7 +110,7 @@ export async function preloadNdc(deps = {}) {
 	const log = deps.remoteLog ?? defaultRemoteLog;
 	const platform = deps.platform ?? process.platform;
 	const arch = deps.arch ?? process.arch;
-	const pluginRoot = deps.pluginRoot ?? nodePath.resolve(import.meta.dirname, '..');
+	const pluginRoot = deps.pluginRoot ?? nodePath.resolve(import.meta.dirname, '../..');
 	const resolvePaths = deps.resolvePaths ?? defaultResolvePaths;
 	const importTimeout = deps.importTimeout ?? DEFAULT_IMPORT_TIMEOUT_MS;
 
