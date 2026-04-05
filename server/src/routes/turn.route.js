@@ -22,18 +22,34 @@ export function genTurnCreds(identity, secret, ttl = 86400) {
 	const username = `${timestamp}:${identity}`;
 	const hmac = crypto.createHmac('sha1', secret);
 	hmac.update(username);
-	const domain = process.env.APP_DOMAIN;
+	const turnDomain = process.env.TURN_DOMAIN || process.env.APP_DOMAIN;
 	const port = process.env.TURN_PORT || '3478';
+	const tlsPort = process.env.TURN_TLS_PORT;
+
+	const urls = [
+		`turn:${turnDomain}:${port}?transport=udp`,
+		`turn:${turnDomain}:${port}?transport=tcp`,
+	];
+	if (tlsPort) {
+		urls.push(`turns:${turnDomain}:${tlsPort}?transport=tcp`);
+	}
+
 	return {
 		username,
 		credential: hmac.digest('base64'),
 		ttl,
-		urls: [
-			`stun:${domain}:${port}`,
-			`turn:${domain}:${port}?transport=udp`,
-			`turn:${domain}:${port}?transport=tcp`,
-		],
+		urls,
 	};
+}
+
+/**
+ * 为 gateway/plugin 生成兼容凭证（过滤 turns: URL，旧版 plugin 不支持）
+ * TODO(2026-04-12): 届时旧版 plugin 应已全部升级，移除此函数，直接使用 genTurnCreds
+ */
+export function genTurnCredsForGateway(identity, secret, ttl) {
+	const creds = genTurnCreds(identity, secret, ttl);
+	creds.urls = creds.urls.filter(u => !u.startsWith('turns:'));
+	return creds;
 }
 
 // 启动时校验（生产环境缺失则阻止启动，开发环境仅警告）

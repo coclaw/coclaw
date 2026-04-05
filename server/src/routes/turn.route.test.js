@@ -6,7 +6,7 @@ import test from 'node:test';
 process.env.TURN_SECRET = 'test-secret-for-unit-tests';
 process.env.APP_DOMAIN = 'test.coclaw.net';
 
-const { genTurnCreds, turnRouter } = await import('./turn.route.js');
+const { genTurnCreds, genTurnCredsForGateway, turnRouter } = await import('./turn.route.js');
 
 // --- genTurnCreds 纯函数测试 ---
 
@@ -16,7 +16,7 @@ test('genTurnCreds: 返回正确结构', () => {
 	assert.equal(typeof creds.credential, 'string');
 	assert.equal(creds.ttl, 86400);
 	assert.ok(Array.isArray(creds.urls));
-	assert.equal(creds.urls.length, 3);
+	assert.equal(creds.urls.length, 2);
 });
 
 test('genTurnCreds: username 包含过期时间戳', () => {
@@ -34,15 +34,30 @@ test('genTurnCreds: credential 与手工 HMAC-SHA1 一致', () => {
 	assert.equal(creds.credential, expected);
 });
 
-test('genTurnCreds: urls 使用 APP_DOMAIN', () => {
+test('genTurnCreds: urls 默认使用 APP_DOMAIN', () => {
+	delete process.env.TURN_DOMAIN;
 	const creds = genTurnCreds('u', 'secret');
 	for (const url of creds.urls) {
 		assert.ok(url.includes('test.coclaw.net'), `url should contain domain: ${url}`);
 	}
 });
 
+test('genTurnCreds: urls 使用 TURN_DOMAIN（优先于 APP_DOMAIN）', () => {
+	process.env.TURN_DOMAIN = 'edge.test.net';
+	try {
+		const creds = genTurnCreds('u', 'secret');
+		assert.equal(creds.urls.length, 2);
+		for (const url of creds.urls) {
+			assert.ok(url.includes('edge.test.net'), `url should use TURN_DOMAIN: ${url}`);
+		}
+	} finally {
+		delete process.env.TURN_DOMAIN;
+	}
+});
+
 test('genTurnCreds: urls 默认使用 3478 端口', () => {
 	delete process.env.TURN_PORT;
+	delete process.env.TURN_TLS_PORT;
 	const creds = genTurnCreds('u', 'secret');
 	for (const url of creds.urls) {
 		assert.ok(url.includes(':3478'), `url should contain :3478: ${url}`);
@@ -51,6 +66,7 @@ test('genTurnCreds: urls 默认使用 3478 端口', () => {
 
 test('genTurnCreds: urls 使用自定义 TURN_PORT', () => {
 	process.env.TURN_PORT = '5349';
+	delete process.env.TURN_TLS_PORT;
 	try {
 		const creds = genTurnCreds('u', 'secret');
 		for (const url of creds.urls) {
@@ -58,6 +74,44 @@ test('genTurnCreds: urls 使用自定义 TURN_PORT', () => {
 		}
 	} finally {
 		delete process.env.TURN_PORT;
+	}
+});
+
+test('genTurnCreds: 默认模式生成 turn/udp + turn/tcp', () => {
+	delete process.env.TURN_TLS_PORT;
+	const creds = genTurnCreds('u', 'secret');
+	assert.equal(creds.urls.length, 2);
+	assert.ok(creds.urls[0].startsWith('turn:'));
+	assert.ok(creds.urls[0].includes('transport=udp'));
+	assert.ok(creds.urls[1].startsWith('turn:'));
+	assert.ok(creds.urls[1].includes('transport=tcp'));
+});
+
+test('genTurnCreds: TLS 模式生成 turn/udp + turn/tcp + turns/tcp', () => {
+	process.env.TURN_TLS_PORT = '443';
+	try {
+		const creds = genTurnCreds('u', 'secret');
+		assert.equal(creds.urls.length, 3);
+		assert.ok(creds.urls[0].includes('transport=udp'));
+		assert.ok(creds.urls[1].startsWith('turn:'));
+		assert.ok(creds.urls[1].includes('transport=tcp'));
+		assert.ok(creds.urls[2].startsWith('turns:'));
+		assert.ok(creds.urls[2].includes(':443'));
+	} finally {
+		delete process.env.TURN_TLS_PORT;
+	}
+});
+
+test('genTurnCredsForGateway: 过滤 turns: URL（兼容旧版 plugin）', () => {
+	process.env.TURN_TLS_PORT = '443';
+	try {
+		const creds = genTurnCredsForGateway('u', 'secret');
+		assert.equal(creds.urls.length, 2);
+		assert.ok(creds.urls.every(u => !u.startsWith('turns:')));
+		assert.ok(creds.urls[0].includes('transport=udp'));
+		assert.ok(creds.urls[1].includes('transport=tcp'));
+	} finally {
+		delete process.env.TURN_TLS_PORT;
 	}
 });
 
@@ -110,7 +164,7 @@ test('GET /creds: 认证用户返回有效凭证', () => {
 	assert.ok(res.body.username.endsWith(':42'));
 	assert.equal(typeof res.body.credential, 'string');
 	assert.equal(res.body.ttl, 86400);
-	assert.equal(res.body.urls.length, 3);
+	assert.equal(res.body.urls.length, 2);
 });
 
 test('GET /creds: user 为原始值时正确转换', () => {

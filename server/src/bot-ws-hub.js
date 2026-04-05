@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { WebSocketServer } from 'ws';
 
 import { findClawById, findClawByTokenHash, updateClawName } from './repos/claw.repo.js';
-import { genTurnCreds } from './routes/turn.route.js';
+import { genTurnCredsForGateway } from './routes/turn.route.js';
 import { routeToUi, removeByBotId } from './rtc-signal-router.js';
 
 const botSockets = new Map();
@@ -428,7 +428,7 @@ function onUiMessage(botId, ws, raw) {
 	if (payload.type === 'rtc:offer' || payload.type === 'rtc:ice' || payload.type === 'rtc:ready' || payload.type === 'rtc:closed') {
 		payload.fromConnId = ws.connId;
 		if (payload.type === 'rtc:offer' && process.env.TURN_SECRET) {
-			payload.turnCreds = genTurnCreds(String(botId), process.env.TURN_SECRET);
+			payload.turnCreds = genTurnCredsForGateway(String(botId), process.env.TURN_SECRET);
 		}
 		const sent = forwardToBot(botId, payload);
 		if (!sent) {

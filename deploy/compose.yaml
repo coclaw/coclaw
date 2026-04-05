@@ -21,8 +21,8 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "80:80"
-      - "443:443"
+      - "${NGINX_LISTEN_IP:-0.0.0.0}:80:80"
+      - "${NGINX_LISTEN_IP:-0.0.0.0}:443:443"
     entrypoint: ["/bin/sh", "/etc/nginx/scripts/init.sh"]
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
@@ -63,6 +63,8 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       TURN_SECRET: ${TURN_SECRET}
       TURN_PORT: ${TURN_PORT:-3478}
+      TURN_DOMAIN: ${TURN_DOMAIN:-}
+      TURN_TLS_PORT: ${TURN_TLS_PORT:-}
       APP_DOMAIN: ${APP_DOMAIN}
       COCLAW_WS_DEBUG: ${COCLAW_WS_DEBUG:-}
     expose:
@@ -110,21 +112,21 @@ services:
     restart: unless-stopped
     logging: *default-logging
     network_mode: host
-    command: >-
-      turnserver
-      --listening-port=${TURN_PORT:-3478}
-      --listening-ip=${TURN_INTERNAL_IP}
-      --relay-ip=${TURN_INTERNAL_IP}
-      --external-ip=${TURN_EXTERNAL_IP}/${TURN_INTERNAL_IP}
-      --realm=${APP_DOMAIN}
-      --lt-cred-mech
-      --use-auth-secret
-      --static-auth-secret=${TURN_SECRET}
-      --min-port=${TURN_MIN_PORT:-50000}
-      --max-port=${TURN_MAX_PORT:-51000}
-      --fingerprint
-      --no-cli
-      --log-file=stdout
+    entrypoint: ["/bin/sh", "/scripts/coturn-start.sh"]
+    environment:
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_INTERNAL_IP: ${TURN_INTERNAL_IP}
+      TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP}
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_MIN_PORT: ${TURN_MIN_PORT:-50000}
+      TURN_MAX_PORT: ${TURN_MAX_PORT:-51000}
+      TURN_TLS_PORT: ${TURN_TLS_PORT:-}
+      TURN_TLS_CERT: ${TURN_TLS_CERT:-}
+      TURN_TLS_KEY: ${TURN_TLS_KEY:-}
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./scripts/coturn-start.sh:/scripts/coturn-start.sh:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
 
   certbot-renew:
     image: m.daocloud.io/docker.io/certbot/certbot:latest

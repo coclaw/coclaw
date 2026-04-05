@@ -10,7 +10,7 @@ import { WebSocketServer } from 'ws';
 
 import { register, remove, removeByWs, lookup } from './rtc-signal-router.js';
 import { forwardToBot, fmtLocalTime } from './bot-ws-hub.js';
-import { genTurnCreds } from './routes/turn.route.js';
+import { genTurnCredsForGateway } from './routes/turn.route.js';
 import { findClawById } from './repos/claw.repo.js';
 
 const WS_VERBOSE = process.env.COCLAW_WS_DEBUG === '1';
@@ -98,7 +98,7 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		}
 		// 注入 TURN 凭证
 		if (process.env.TURN_SECRET) {
-			payload.turnCreds = genTurnCreds(String(botId), process.env.TURN_SECRET);
+			payload.turnCreds = genTurnCredsForGateway(String(botId), process.env.TURN_SECRET);
 		}
 		payload.fromConnId = connId;
 		const sent = forwardToBotFn(botId, payload);
