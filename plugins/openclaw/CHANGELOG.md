@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.11.4
+
+### Patch Changes
+
+- fix(plugin): stop() 不调用 ndc.cleanup() 避免阻塞事件循环 10s+ 导致 bind/unbind 超时；修复 callGatewayMethod 未传递 --timeout 给 openclaw gateway call 的问题
+
 ## 0.11.3
 
 ### Patch Changes
