@@ -251,7 +251,7 @@ export default {
 					const result = await waitBindingCode(code, waitToken);
 					if (this.waitCancelled || !this.waitLoopRunning) return;
 					if (result.code === 'BINDING_SUCCESS') {
-						this.botsStore?.addOrUpdateBot(result.bot);
+						this.botsStore?.addOrUpdateBot(result.claw);
 						this.bindingCode = '';
 						this.stopCountdown();
 						this.$router.push('/bots');

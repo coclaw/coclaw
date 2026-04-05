@@ -32,7 +32,7 @@ describe('bots api', () => {
 
 		const result = await listBots();
 
-		expect(mockedHttp.get).toHaveBeenCalledWith('/api/v1/bots');
+		expect(mockedHttp.get).toHaveBeenCalledWith('/api/v1/claws');
 		expect(result).toEqual([{ id: 'bot1' }, { id: 'bot2' }]);
 	});
 
@@ -60,7 +60,7 @@ describe('bots api', () => {
 
 		const result = await createBindingCode();
 
-		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/bots/binding-codes');
+		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/claws/binding-codes');
 		expect(result).toEqual({
 			code: 'ABC123',
 			expiresAt: '2025-01-01T00:00:00Z',
@@ -89,16 +89,16 @@ describe('bots api', () => {
 	// waitBindingCode
 	test('waitBindingCode 应 POST 带 code/waitToken 并返回结果', async () => {
 		mockedHttp.post.mockResolvedValue({
-			data: { code: 'BINDING_SUCCESS', bot: { id: 'bot1' } },
+			data: { code: 'BINDING_SUCCESS', claw: { id: 'bot1' } },
 		});
 
 		const result = await waitBindingCode('ABC123', 'tok');
 
-		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/bots/binding-codes/wait', {
+		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/claws/binding-codes/wait', {
 			code: 'ABC123',
 			waitToken: 'tok',
 		});
-		expect(result).toEqual({ code: 'BINDING_SUCCESS', bot: { id: 'bot1' } });
+		expect(result).toEqual({ code: 'BINDING_SUCCESS', claw: { id: 'bot1' } });
 	});
 
 	test('waitBindingCode 在 data 缺失时应使用默认值', async () => {
@@ -106,15 +106,15 @@ describe('bots api', () => {
 
 		const result = await waitBindingCode('ABC123', 'tok');
 
-		expect(result).toEqual({ code: 'BINDING_PENDING', bot: null });
+		expect(result).toEqual({ code: 'BINDING_PENDING', claw: null });
 	});
 
-	test('waitBindingCode 在 data.bot 缺失时 bot 应为 null', async () => {
+	test('waitBindingCode 在 data.claw 缺失时 claw 应为 null', async () => {
 		mockedHttp.post.mockResolvedValue({ data: { code: 'BINDING_PENDING' } });
 
 		const result = await waitBindingCode('ABC123', 'tok');
 
-		expect(result.bot).toBeNull();
+		expect(result.claw).toBeNull();
 	});
 
 	// cancelBindingCode
@@ -123,19 +123,19 @@ describe('bots api', () => {
 
 		await cancelBindingCode('ABC123');
 
-		expect(mockedHttp.delete).toHaveBeenCalledWith('/api/v1/bots/binding-codes/ABC123');
+		expect(mockedHttp.delete).toHaveBeenCalledWith('/api/v1/claws/binding-codes/ABC123');
 	});
 
 	// claimBot
-	test('claimBot 应 POST 带 code 并返回 botId/botName', async () => {
+	test('claimBot 应 POST 带 code 并返回 clawId/clawName', async () => {
 		mockedHttp.post.mockResolvedValue({
-			data: { botId: 'b1', botName: 'MyBot' },
+			data: { clawId: 'b1', clawName: 'MyBot' },
 		});
 
 		const result = await claimBot('ABC123');
 
 		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/claws/claim', { code: 'ABC123' });
-		expect(result).toEqual({ botId: 'b1', botName: 'MyBot' });
+		expect(result).toEqual({ clawId: 'b1', clawName: 'MyBot' });
 	});
 
 	test('claimBot 在 data 缺失时应返回 null 默认值', async () => {
@@ -143,19 +143,19 @@ describe('bots api', () => {
 
 		const result = await claimBot('ABC123');
 
-		expect(result).toEqual({ botId: null, botName: null });
+		expect(result).toEqual({ clawId: null, clawName: null });
 	});
 
 	// unbindBotByUser
-	test('unbindBotByUser 应 POST 带 botId 并返回 botId/status', async () => {
+	test('unbindBotByUser 应 POST 带 clawId 并返回 clawId/status', async () => {
 		mockedHttp.post.mockResolvedValue({
-			data: { botId: 'b1', status: 'unbound' },
+			data: { clawId: 'b1', status: 'unbound' },
 		});
 
 		const result = await unbindBotByUser('b1');
 
-		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/bots/unbind-by-user', { botId: 'b1' });
-		expect(result).toEqual({ botId: 'b1', status: 'unbound' });
+		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/claws/unbind-by-user', { clawId: 'b1' });
+		expect(result).toEqual({ clawId: 'b1', status: 'unbound' });
 	});
 
 	test('unbindBotByUser 在 data 缺失时应返回 null 默认值', async () => {
@@ -163,6 +163,6 @@ describe('bots api', () => {
 
 		const result = await unbindBotByUser('b1');
 
-		expect(result).toEqual({ botId: null, status: null });
+		expect(result).toEqual({ clawId: null, status: null });
 	});
 });

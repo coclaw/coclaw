@@ -1,12 +1,12 @@
 import { httpClient as client } from './http.js';
 
 export async function listBots() {
-	const res = await client.get('/api/v1/bots');
+	const res = await client.get('/api/v1/claws');
 	return res.data?.items ?? [];
 }
 
 export async function createBindingCode() {
-	const res = await client.post('/api/v1/bots/binding-codes');
+	const res = await client.post('/api/v1/claws/binding-codes');
 	return {
 		code: res.data?.code ?? '',
 		expiresAt: res.data?.expiresAt ?? null,
@@ -15,32 +15,32 @@ export async function createBindingCode() {
 }
 
 export async function waitBindingCode(code, waitToken) {
-	const res = await client.post('/api/v1/bots/binding-codes/wait', {
+	const res = await client.post('/api/v1/claws/binding-codes/wait', {
 		code,
 		waitToken,
 	});
 	return {
 		code: res.data?.code ?? 'BINDING_PENDING',
-		bot: res.data?.bot ?? null,
+		claw: res.data?.claw ?? null,
 	};
 }
 
 export async function cancelBindingCode(code) {
-	await client.delete(`/api/v1/bots/binding-codes/${code}`);
+	await client.delete(`/api/v1/claws/binding-codes/${code}`);
 }
 
 export async function claimBot(code) {
 	const res = await client.post('/api/v1/claws/claim', { code });
 	return {
-		botId: res.data?.botId ?? null,
-		botName: res.data?.botName ?? null,
+		clawId: res.data?.clawId ?? null,
+		clawName: res.data?.clawName ?? null,
 	};
 }
 
 export async function unbindBotByUser(botId) {
-	const res = await client.post('/api/v1/bots/unbind-by-user', { botId });
+	const res = await client.post('/api/v1/claws/unbind-by-user', { clawId: botId });
 	return {
-		botId: res.data?.botId ?? null,
+		clawId: res.data?.clawId ?? null,
 		status: res.data?.status ?? null,
 	};
 }

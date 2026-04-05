@@ -194,7 +194,7 @@ export class SignalingConnection {
 		if (!connId) return;
 		console.debug('[SigConn] releaseConnId botId=%s connId=%s', id, connId);
 		// 尝试通知 server 释放路由（best-effort）
-		this.__sendRaw({ type: 'rtc:closed', botId: id, connId });
+		this.__sendRaw({ type: 'rtc:closed', clawId: id, connId });
 		this.__connIds.delete(id);
 		this.__connIdToBotId.delete(connId);
 	}
@@ -208,7 +208,7 @@ export class SignalingConnection {
 	 */
 	sendSignaling(botId, type, payload) {
 		const connId = this.getOrCreateConnId(botId);
-		const msg = { type, botId: String(botId), connId };
+		const msg = { type, clawId: String(botId), connId };
 		if (payload !== undefined) msg.payload = payload;
 		return this.__sendRaw(msg);
 	}

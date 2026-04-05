@@ -57,7 +57,7 @@ test('should show noCode state when query has no code', async () => {
 });
 
 test('should call claimBot and show success on valid code', async () => {
-	mockClaimBot.mockResolvedValueOnce({ botId: '42', botName: 'test' });
+	mockClaimBot.mockResolvedValueOnce({ clawId: '42', clawName: 'test' });
 	const wrapper = createWrapper({ query: { code: '12345678' } });
 	await flushPromises();
 
@@ -66,7 +66,7 @@ test('should call claimBot and show success on valid code', async () => {
 });
 
 test('should navigate to /bots after success with delay', async () => {
-	mockClaimBot.mockResolvedValueOnce({ botId: '42' });
+	mockClaimBot.mockResolvedValueOnce({ clawId: '42' });
 	const wrapper = createWrapper({ query: { code: '12345678' } });
 	await flushPromises();
 
@@ -108,7 +108,7 @@ test('should show generic error on unknown error and log warning', async () => {
 });
 
 test('should clear navigation timer on unmount', async () => {
-	mockClaimBot.mockResolvedValueOnce({ botId: '42' });
+	mockClaimBot.mockResolvedValueOnce({ clawId: '42' });
 	const wrapper = createWrapper({ query: { code: '12345678' } });
 	await flushPromises();
 

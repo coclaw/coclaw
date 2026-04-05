@@ -62,7 +62,7 @@ describe('useBotStatusSse', () => {
 
 	test('should create EventSource with correct URL', () => {
 		createSse();
-		expect(MockEventSource).toHaveBeenCalledWith('/api/v1/bots/status-stream');
+		expect(MockEventSource).toHaveBeenCalledWith('/api/v1/claws/status-stream');
 	});
 
 	test('should register onBeforeUnmount cleanup', () => {
@@ -79,52 +79,52 @@ describe('useBotStatusSse', () => {
 		expect(mockRemoteLog).toHaveBeenCalledWith('sse.connected');
 	});
 
-	test('should handle bot.snapshot event via applySnapshot', () => {
+	test('should handle claw.snapshot event via applySnapshot', () => {
 		createSse();
 
 		const items = [{ id: '1', name: 'a', online: true }];
 		esInstance.onmessage({
-			data: JSON.stringify({ event: 'bot.snapshot', items }),
+			data: JSON.stringify({ event: 'claw.snapshot', items }),
 		});
 
 		expect(store.applySnapshot).toHaveBeenCalledWith(items);
 	});
 
-	test('should update bot status on message', () => {
+	test('should update claw status on message', () => {
 		createSse();
 
 		esInstance.onmessage({
-			data: JSON.stringify({ event: 'bot.status', botId: '42', online: true }),
+			data: JSON.stringify({ event: 'claw.status', clawId: '42', online: true }),
 		});
 
 		expect(store.updateBotOnline).toHaveBeenCalledWith('42', true);
 	});
 
-	test('should handle bot.nameUpdated event by updating bot name in store', () => {
+	test('should handle claw.nameUpdated event by updating claw name in store', () => {
 		createSse();
 
 		esInstance.onmessage({
-			data: JSON.stringify({ event: 'bot.nameUpdated', botId: '42', name: '小点' }),
+			data: JSON.stringify({ event: 'claw.nameUpdated', clawId: '42', name: '小点' }),
 		});
 
 		expect(store.addOrUpdateBot).toHaveBeenCalledWith({ id: '42', name: '小点' });
 	});
 
-	test('should handle bot.bound event by adding bot to store', () => {
+	test('should handle claw.bound event by adding claw to store', () => {
 		createSse();
 
 		esInstance.onmessage({
-			data: JSON.stringify({ event: 'bot.bound', bot: { id: '42', name: 'test' } }),
+			data: JSON.stringify({ event: 'claw.bound', claw: { id: '42', name: 'test' } }),
 		});
 
 		expect(store.addOrUpdateBot).toHaveBeenCalledWith({ id: '42', name: 'test' });
 	});
 
-	test('should handle bot.unbound event by removing bot', () => {
+	test('should handle claw.unbound event by removing claw', () => {
 		createSse();
 
 		esInstance.onmessage({
-			data: JSON.stringify({ event: 'bot.unbound', botId: '42' }),
+			data: JSON.stringify({ event: 'claw.unbound', clawId: '42' }),
 		});
 
 		expect(store.removeBotById).toHaveBeenCalledWith('42');

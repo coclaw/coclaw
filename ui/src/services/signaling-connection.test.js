@@ -185,7 +185,7 @@ describe('SignalingConnection – connId 管理', () => {
 		const closedMsg = msgs.find(m => m.type === 'rtc:closed');
 		expect(closedMsg).toBeTruthy();
 		expect(closedMsg.connId).toBe(connId);
-		expect(closedMsg.botId).toBe('bot1');
+		expect(closedMsg.clawId).toBe('bot1');
 		// 再次 getOrCreateConnId 应生成新的 connId
 		const newId = conn.getOrCreateConnId('bot1');
 		expect(newId).not.toBe(connId);
@@ -206,7 +206,7 @@ describe('SignalingConnection – sendSignaling()', () => {
 		expect(ok).toBe(true);
 		const msg = JSON.parse(ws.sent[0]);
 		expect(msg.type).toBe('rtc:offer');
-		expect(msg.botId).toBe('bot1');
+		expect(msg.clawId).toBe('bot1');
 		expect(msg.connId).toMatch(/^c_/);
 		expect(msg.payload).toEqual({ sdp: 'test-sdp' });
 	});
