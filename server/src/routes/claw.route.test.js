@@ -153,6 +153,7 @@ test('waitClaimCodeHandler: should return 200 with botId and token when BOUND', 
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.botId, '42');
+	assert.equal(res.body.clawId, '42');
 	assert.equal(res.body.token, 'secret-token');
 });
 
@@ -268,7 +269,9 @@ test('claimHandler: should return 200 on successful claim and notify wait hub', 
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.botId, '42');
+	assert.equal(res.body.clawId, '42');
 	assert.equal(res.body.botName, null);
+	assert.equal(res.body.clawName, null);
 	// 验证 markClaimBound 被调用
 	assert.deepEqual(markArgs, {
 		code: '12345678',

@@ -187,9 +187,14 @@ export async function bindClawHandler(req, res, next, deps = {}) {
 		});
 		res.status(200).json({
 			botId: result.botId.toString(),
+			clawId: result.botId.toString(),
 			token: result.token,
 			rebound: result.rebound,
 			bot: {
+				id: result.botId.toString(),
+				name: boundClawName ?? null,
+			},
+			claw: {
 				id: result.botId.toString(),
 				name: boundClawName ?? null,
 			},
@@ -228,6 +233,7 @@ export async function getClawSelfHandler(req, res, next, deps = {}) {
 
 		res.status(200).json({
 			botId: claw.id.toString(),
+			clawId: claw.id.toString(),
 		});
 	}
 	catch (err) {
@@ -288,6 +294,7 @@ export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 		res.status(201).json({
 			ticket,
 			botId: String(claw.id),
+			clawId: String(claw.id),
 		});
 	}
 	catch (err) {
@@ -359,6 +366,7 @@ export async function waitBindingCodeHandler(req, res, next, deps = {}) {
 			res.status(200).json({
 				code: 'BINDING_SUCCESS',
 				bot: result.bot,
+				claw: result.bot,
 			});
 			return;
 		}
@@ -428,6 +436,7 @@ export async function unbindClawByUserHandler(req, res, next, deps = {}) {
 
 		res.status(200).json({
 			botId: result.botId.toString(),
+			clawId: result.botId.toString(),
 			unbound: true,
 		});
 	}
@@ -474,6 +483,7 @@ export async function unbindClawHandler(req, res, next, deps = {}) {
 
 		res.status(200).json({
 			botId: result.botId.toString(),
+			clawId: result.botId.toString(),
 			unbound: true,
 		});
 	}

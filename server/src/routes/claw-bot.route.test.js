@@ -248,7 +248,9 @@ test('bindClawHandler: should pass bind result name through and markBindingBound
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.botId, '42');
+	assert.equal(res.body.clawId, '42');
 	assert.equal(res.body.bot.name, '小点');
+	assert.equal(res.body.claw.name, '小点');
 	assert.equal(markArgs.clawName, '小点');
 });
 
@@ -276,6 +278,7 @@ test('bindClawHandler: should pass null name through when bind result name is nu
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.bot.name, null);
+	assert.equal(res.body.claw.name, null);
 	assert.equal(markArgs.clawName, null);
 });
 
@@ -293,6 +296,7 @@ test('waitBindingCodeHandler: should return success when bound', async () => {
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.code, 'BINDING_SUCCESS');
 	assert.equal(res.body.bot.id, '1001');
+	assert.equal(res.body.claw.id, '1001');
 });
 
 test('waitBindingCodeHandler: should return timeout when expired', async () => {
@@ -586,6 +590,7 @@ test('getClawSelfHandler: should return botId when token is valid', async () => 
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.botId, '99');
+	assert.equal(res.body.clawId, '99');
 });
 
 test('getClawSelfHandler: should forward error to next', async () => {
@@ -628,6 +633,7 @@ test('createUiWsTicketHandler: should create ticket with explicit botId', async 
 	assert.equal(res.statusCode, 201);
 	assert.equal(res.body.ticket, 'ticket-42-7');
 	assert.equal(res.body.botId, '42');
+	assert.equal(res.body.clawId, '42');
 });
 
 test('createUiWsTicketHandler: should return 400 for invalid botId format', async () => {
@@ -694,6 +700,7 @@ test('createUiWsTicketHandler: should fallback to latest bot when botId not prov
 	assert.equal(res.statusCode, 201);
 	assert.equal(res.body.ticket, 'auto-ticket');
 	assert.equal(res.body.botId, '10');
+	assert.equal(res.body.clawId, '10');
 });
 
 test('createUiWsTicketHandler: should return 404 when no latest bot found', async () => {
@@ -930,6 +937,7 @@ test('unbindClawByUserHandler: should unbind, notify, and return success', async
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.botId, '42');
+	assert.equal(res.body.clawId, '42');
 	assert.equal(res.body.unbound, true);
 	assert.equal(notifiedBotId, 42n);
 	assert.equal(sseEvent.event, 'bot.unbound');
@@ -1014,6 +1022,7 @@ test('unbindClawHandler: should unbind, notify, and return success', async () =>
 
 	assert.equal(res.statusCode, 200);
 	assert.equal(res.body.botId, '55');
+	assert.equal(res.body.clawId, '55');
 	assert.equal(res.body.unbound, true);
 	assert.equal(notifiedBotId, 55n);
 	assert.equal(sseEvent.event, 'bot.unbound');

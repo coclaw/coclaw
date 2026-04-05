@@ -783,6 +783,7 @@ test('notifyAndDisconnectClaw: 通知 claw 和 UI 并断开连接', () => {
 	assert.equal(clawWs.sent[0].type, 'bot.unbound');
 	assert.equal(clawWs.sent[0].reason, 'token_revoked');
 	assert.equal(clawWs.sent[0].botId, 'bot-notify');
+	assert.equal(clawWs.sent[0].clawId, 'bot-notify');
 	assert.ok(clawWs.sent[0].at); // ISO 时间戳
 
 	// claw 连接以 4001 关闭
@@ -905,6 +906,7 @@ test('notifyAndDisconnectClaw: clawId 为数字时转为字符串处理', () => 
 
 	assert.equal(clawWs.sent.length, 1);
 	assert.equal(clawWs.sent[0].botId, '42');
+	assert.equal(clawWs.sent[0].clawId, '42');
 	cleanupSockets('42');
 });
 

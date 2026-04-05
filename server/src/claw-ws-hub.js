@@ -692,6 +692,7 @@ export function notifyAndDisconnectClaw(clawId, reason = 'token_revoked') {
 		type: 'bot.unbound',
 		reason,
 		botId: key,
+		clawId: key,
 		at: new Date().toISOString(),
 	};
 	broadcastToUi(key, payload);

@@ -99,6 +99,7 @@ export async function waitClaimCodeHandler(req, res, next, deps = {}) {
 		if (result.status === 'BOUND') {
 			res.status(200).json({
 				botId: result.botId,
+				clawId: result.botId,
 				token: result.token,
 			});
 			return;
@@ -149,7 +150,9 @@ export async function claimHandler(req, res, next, deps = {}) {
 
 		res.status(200).json({
 			botId: result.botId.toString(),
+			clawId: result.botId.toString(),
 			botName: result.botName,
+			clawName: result.botName,
 		});
 
 		// 通知 wait hub（best-effort，不影响已成功的 claim 响应）
