@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-	bindBot,
-	claimBot,
+	bindClaw,
+	claimClaw,
 	createBindingCodeForUser,
 	createClaimCode,
-	unbindBotByToken,
-	unbindBotByUser,
-} from './bot-binding.svc.js';
+	unbindClawByToken,
+	unbindClawByUser,
+} from './claw-binding.svc.js';
 
 test('createBindingCodeForUser: should create new code', async () => {
 	const created = [];
@@ -26,15 +26,15 @@ test('createBindingCodeForUser: should create new code', async () => {
 	assert.equal(created.length, 1);
 });
 
-test('bindBot: should reject invalid input', async () => {
-	const result = await bindBot({ code: '' });
+test('bindClaw: should reject invalid input', async () => {
+	const result = await bindClaw({ code: '' });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
 });
 
-test('bindBot: should create new bot record', async () => {
+test('bindClaw: should create new claw record', async () => {
 	const createdInputs = [];
-	const result = await bindBot({ code: '12345678', name: 'home' }, {
+	const result = await bindClaw({ code: '12345678', name: 'home' }, {
 		findCode: async () => ({
 			code: '12345678',
 			userId: 9n,
@@ -57,9 +57,9 @@ test('bindBot: should create new bot record', async () => {
 	assert.equal(createdInputs[0].name, 'home');
 });
 
-test('bindBot: should allow missing name and persist null', async () => {
+test('bindClaw: should allow missing name and persist null', async () => {
 	const createdInputs = [];
-	const result = await bindBot({ code: '12345678' }, {
+	const result = await bindClaw({ code: '12345678' }, {
 		findCode: async () => ({
 			code: '12345678',
 			userId: 9n,
@@ -80,9 +80,9 @@ test('bindBot: should allow missing name and persist null', async () => {
 	assert.equal(createdInputs[0].tokenHash.length, 32);
 });
 
-test('unbindBotByUser: should delete specified bot', async () => {
+test('unbindClawByUser: should delete specified claw', async () => {
 	const deleted = [];
-	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
+	const result = await unbindClawByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => ({ id: 2n, userId: 7n, status: 'active' }),
 		deleteClawImpl: async (id) => {
 			deleted.push(id);
@@ -95,10 +95,10 @@ test('unbindBotByUser: should delete specified bot', async () => {
 	assert.equal(deleted[0], 2n);
 });
 
-test('unbindBotByToken: should delete matched bot', async () => {
+test('unbindClawByToken: should delete matched claw', async () => {
 	const deleted = [];
 	const findInputs = [];
-	const result = await unbindBotByToken({ token: 'abc' }, {
+	const result = await unbindClawByToken({ token: 'abc' }, {
 		findByTokenHash: async (tokenHash) => {
 			findInputs.push(tokenHash);
 			return { id: 2n, userId: 7n, status: 'active' };
@@ -220,35 +220,35 @@ test('createClaimCode: should throw on non-P2002 errors', async () => {
 	);
 });
 
-// ---- claimBot ----
+// ---- claimClaw ----
 
-test('claimBot: should reject missing code', async () => {
-	const result = await claimBot({ code: '', userId: 1n });
+test('claimClaw: should reject missing code', async () => {
+	const result = await claimClaw({ code: '', userId: 1n });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
 });
 
-test('claimBot: should reject non-string code', async () => {
-	const result = await claimBot({ code: null, userId: 1n });
+test('claimClaw: should reject non-string code', async () => {
+	const result = await claimClaw({ code: null, userId: 1n });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
 });
 
-test('claimBot: should reject missing userId', async () => {
-	const result = await claimBot({ code: '12345678', userId: undefined });
+test('claimClaw: should reject missing userId', async () => {
+	const result = await claimClaw({ code: '12345678', userId: undefined });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
 	assert.match(result.message, /userId/);
 });
 
-test('claimBot: should reject non-bigint userId', async () => {
-	const result = await claimBot({ code: '12345678', userId: 1 });
+test('claimClaw: should reject non-bigint userId', async () => {
+	const result = await claimClaw({ code: '12345678', userId: 1 });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
 });
 
-test('claimBot: should return CLAIM_CODE_INVALID for unknown code', async () => {
-	const result = await claimBot({ code: '12345678', userId: 7n }, {
+test('claimClaw: should return CLAIM_CODE_INVALID for unknown code', async () => {
+	const result = await claimClaw({ code: '12345678', userId: 7n }, {
 		findCode: async () => null,
 	});
 
@@ -256,9 +256,9 @@ test('claimBot: should return CLAIM_CODE_INVALID for unknown code', async () => 
 	assert.equal(result.code, 'CLAIM_CODE_INVALID');
 });
 
-test('claimBot: should return CLAIM_CODE_EXPIRED for expired code and delete it', async () => {
+test('claimClaw: should return CLAIM_CODE_EXPIRED for expired code and delete it', async () => {
 	let deletedCode = null;
-	const result = await claimBot({ code: '12345678', userId: 7n }, {
+	const result = await claimClaw({ code: '12345678', userId: 7n }, {
 		findCode: async () => ({
 			code: '12345678',
 			expiresAt: new Date('2020-01-01T00:00:00.000Z'),
@@ -354,20 +354,20 @@ test('createBindingCodeForUser: should throw non-P2002 errors', async () => {
 	);
 });
 
-// ---- unbindBotByUser: 分支覆盖 ----
+// ---- unbindClawByUser: 分支覆盖 ----
 
-test('unbindBotByUser: should reject invalid input types', async () => {
-	const r1 = await unbindBotByUser({ userId: 1, botId: 2n });
+test('unbindClawByUser: should reject invalid input types', async () => {
+	const r1 = await unbindClawByUser({ userId: 1, botId: 2n });
 	assert.equal(r1.ok, false);
 	assert.equal(r1.code, 'INVALID_INPUT');
 
-	const r2 = await unbindBotByUser({ userId: 1n, botId: 2 });
+	const r2 = await unbindClawByUser({ userId: 1n, botId: 2 });
 	assert.equal(r2.ok, false);
 	assert.equal(r2.code, 'INVALID_INPUT');
 });
 
-test('unbindBotByUser: should return BOT_NOT_FOUND when bot does not exist', async () => {
-	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
+test('unbindClawByUser: should return BOT_NOT_FOUND when claw does not exist', async () => {
+	const result = await unbindClawByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => null,
 		deleteClawImpl: async () => {},
 	});
@@ -376,8 +376,8 @@ test('unbindBotByUser: should return BOT_NOT_FOUND when bot does not exist', asy
 	assert.equal(result.code, 'BOT_NOT_FOUND');
 });
 
-test('unbindBotByUser: should return BOT_NOT_FOUND when userId does not match', async () => {
-	const result = await unbindBotByUser({ userId: 7n, botId: 2n }, {
+test('unbindClawByUser: should return BOT_NOT_FOUND when userId does not match', async () => {
+	const result = await unbindClawByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => ({ id: 2n, userId: 999n }),
 		deleteClawImpl: async () => {},
 	});
@@ -386,22 +386,22 @@ test('unbindBotByUser: should return BOT_NOT_FOUND when userId does not match', 
 	assert.equal(result.code, 'BOT_NOT_FOUND');
 });
 
-// ---- unbindBotByToken: 分支覆盖 ----
+// ---- unbindClawByToken: 分支覆盖 ----
 
-test('unbindBotByToken: should reject empty token', async () => {
-	const result = await unbindBotByToken({ token: '' });
+test('unbindClawByToken: should reject empty token', async () => {
+	const result = await unbindClawByToken({ token: '' });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
 });
 
-test('unbindBotByToken: should reject non-string token', async () => {
-	const result = await unbindBotByToken({ token: 123 });
+test('unbindClawByToken: should reject non-string token', async () => {
+	const result = await unbindClawByToken({ token: 123 });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 'INVALID_INPUT');
 });
 
-test('unbindBotByToken: should return UNAUTHORIZED when bot not found', async () => {
-	const result = await unbindBotByToken({ token: 'nonexistent-token' }, {
+test('unbindClawByToken: should return UNAUTHORIZED when claw not found', async () => {
+	const result = await unbindClawByToken({ token: 'nonexistent-token' }, {
 		findByTokenHash: async () => null,
 		deleteClawImpl: async () => {},
 	});
@@ -410,10 +410,10 @@ test('unbindBotByToken: should return UNAUTHORIZED when bot not found', async ()
 	assert.equal(result.code, 'UNAUTHORIZED');
 });
 
-// ---- bindBot: 分支覆盖 ----
+// ---- bindClaw: 分支覆盖 ----
 
-test('bindBot: should return BINDING_CODE_INVALID for unknown code', async () => {
-	const result = await bindBot({ code: '99999999' }, {
+test('bindClaw: should return BINDING_CODE_INVALID for unknown code', async () => {
+	const result = await bindClaw({ code: '99999999' }, {
 		findCode: async () => null,
 	});
 
@@ -421,9 +421,9 @@ test('bindBot: should return BINDING_CODE_INVALID for unknown code', async () =>
 	assert.equal(result.code, 'BINDING_CODE_INVALID');
 });
 
-test('bindBot: should return BINDING_CODE_EXPIRED for expired code', async () => {
+test('bindClaw: should return BINDING_CODE_EXPIRED for expired code', async () => {
 	let deleted = null;
-	const result = await bindBot({ code: '12345678' }, {
+	const result = await bindClaw({ code: '12345678' }, {
 		findCode: async () => ({
 			code: '12345678',
 			userId: 9n,
@@ -438,10 +438,10 @@ test('bindBot: should return BINDING_CODE_EXPIRED for expired code', async () =>
 	assert.equal(deleted, '12345678');
 });
 
-test('claimBot: should create bot and return success on valid claim', async () => {
+test('claimClaw: should create claw and return success on valid claim', async () => {
 	const createdInputs = [];
 	let deletedCode = null;
-	const result = await claimBot({ code: '12345678', userId: 7n }, {
+	const result = await claimClaw({ code: '12345678', userId: 7n }, {
 		findCode: async () => ({
 			code: '12345678',
 			expiresAt: new Date('2099-01-01T00:00:00.000Z'),

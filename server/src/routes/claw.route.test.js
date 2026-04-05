@@ -257,7 +257,7 @@ test('claimHandler: should return 200 on successful claim and notify wait hub', 
 	let markArgs = null;
 
 	await claimHandler(req, res, () => {}, {
-		claimBotImpl: async () => ({
+		claimClawImpl: async () => ({
 			ok: true,
 			botId: 42n,
 			botName: null,
@@ -286,7 +286,7 @@ test('claimHandler: should return 410 when CLAIM_CODE_EXPIRED', async () => {
 	const res = createRes();
 
 	await claimHandler(req, res, () => {}, {
-		claimBotImpl: async () => ({
+		claimClawImpl: async () => ({
 			ok: false,
 			code: 'CLAIM_CODE_EXPIRED',
 			message: 'Claim code has expired',
@@ -307,7 +307,7 @@ test('claimHandler: should return 400 when service returns INVALID_INPUT', async
 	const res = createRes();
 
 	await claimHandler(req, res, () => {}, {
-		claimBotImpl: async () => ({
+		claimClawImpl: async () => ({
 			ok: false,
 			code: 'INVALID_INPUT',
 			message: 'code is required',
@@ -328,7 +328,7 @@ test('claimHandler: should return 404 for CLAIM_CODE_INVALID', async () => {
 	const res = createRes();
 
 	await claimHandler(req, res, () => {}, {
-		claimBotImpl: async () => ({
+		claimClawImpl: async () => ({
 			ok: false,
 			code: 'CLAIM_CODE_INVALID',
 			message: 'Claim code is invalid',
@@ -351,7 +351,7 @@ test('claimHandler: should call next on thrown error', async () => {
 	const expectedErr = new Error('db crash');
 
 	await claimHandler(req, res, (err) => { nextErr = err; }, {
-		claimBotImpl: async () => { throw expectedErr; },
+		claimClawImpl: async () => { throw expectedErr; },
 		markClaimBoundImpl: () => {},
 	});
 

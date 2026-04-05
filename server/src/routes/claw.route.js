@@ -1,6 +1,6 @@
 import { Router } from 'express';
 
-import { createClaimCode, claimBot } from '../services/bot-binding.svc.js';
+import { createClaimCode, claimClaw } from '../services/claw-binding.svc.js';
 import {
 	registerClaimWait,
 	cancelClaimWait,
@@ -119,7 +119,7 @@ export async function claimHandler(req, res, next, deps = {}) {
 		return;
 	}
 
-	const { claimBotImpl = claimBot, markClaimBoundImpl = markClaimBound } = deps;
+	const { claimClawImpl = claimClaw, markClaimBoundImpl = markClaimBound } = deps;
 
 	const code = String(req.body?.code ?? '').trim();
 	if (!code) {
@@ -131,7 +131,7 @@ export async function claimHandler(req, res, next, deps = {}) {
 	}
 
 	try {
-		const result = await claimBotImpl({ code, userId: req.user.id });
+		const result = await claimClawImpl({ code, userId: req.user.id });
 
 		if (!result.ok) {
 			const statusMap = {

@@ -20,7 +20,7 @@ const RESERVED_NAMES = new Set([
 	// 编程保留字
 	'null', 'undefined', 'true', 'false',
 	// 特殊身份
-	'test', 'demo', 'guest', 'bot', 'anonymous',
+	'test', 'demo', 'guest', 'bot', 'claw', 'anonymous',
 	// 管理/运维
 	'moderator', 'mod', 'operator', 'webmaster', 'postmaster', 'hostmaster', 'abuse',
 	// 邮箱/系统

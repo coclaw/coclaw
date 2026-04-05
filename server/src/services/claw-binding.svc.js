@@ -18,7 +18,7 @@ import {
 	deleteClaimCode as deleteClaimCodeRecord,
 	findClaimCode as findClaimCodeRecord,
 } from '../repos/claw-claim-code.repo.js';
-import { genBotId } from './id.svc.js';
+import { genClawId } from './id.svc.js';
 
 const BINDING_CODE_EXPIRE_MS =
 	(Number(process.env.BINDING_CODE_EXPIRE_MINUTES) || 30) * 60 * 1000;
@@ -106,12 +106,12 @@ export async function createBindingCodeForUser(input, deps = {}) {
 	};
 }
 
-export async function bindBot(input, deps = {}) {
+export async function bindClaw(input, deps = {}) {
 	const {
 		findCode = findBindingCode,
 		deleteCode = deleteBindingCode,
 		createClawImpl = createClaw,
-		genId = genBotId,
+		genId = genClawId,
 		now = () => new Date(),
 	} = deps;
 	const { code, name } = input;
@@ -144,12 +144,12 @@ export async function bindBot(input, deps = {}) {
 
 	const token = genAccessToken();
 	const tokenHash = getTokenHash(token);
-	const botName = isNonEmptyString(name) ? name.trim() : null;
+	const clawName = isNonEmptyString(name) ? name.trim() : null;
 
 	const created = await createClawImpl({
 		id: genId(),
 		userId: bindingCode.userId,
-		name: botName,
+		name: clawName,
 		tokenHash,
 	});
 	await deleteCode(bindingCode.code).catch(() => {});
@@ -158,14 +158,14 @@ export async function bindBot(input, deps = {}) {
 		ok: true,
 		botId: created.id,
 		userId: bindingCode.userId,
-		botName,
+		botName: clawName,
 		token,
 		rebound: false,
 		bindingCode: bindingCode.code,
 	};
 }
 
-export async function unbindBotByUser(input, deps = {}) {
+export async function unbindClawByUser(input, deps = {}) {
 	const {
 		findById = findClawById,
 		deleteClawImpl = deleteClaw,
@@ -180,19 +180,19 @@ export async function unbindBotByUser(input, deps = {}) {
 		};
 	}
 
-	const targetBot = await findById(botId);
-	if (!targetBot || targetBot.userId !== userId) {
+	const targetClaw = await findById(botId);
+	if (!targetClaw || targetClaw.userId !== userId) {
 		return {
 			ok: false,
 			code: 'BOT_NOT_FOUND',
 			message: 'Bot not found',
 		};
 	}
-	await deleteClawImpl(targetBot.id);
+	await deleteClawImpl(targetClaw.id);
 
 	return {
 		ok: true,
-		botId: targetBot.id,
+		botId: targetClaw.id,
 	};
 }
 
@@ -239,12 +239,12 @@ export async function createClaimCode(deps = {}) {
 	};
 }
 
-export async function claimBot(input, deps = {}) {
+export async function claimClaw(input, deps = {}) {
 	const {
 		findCode = findClaimCodeRecord,
 		deleteCode = deleteClaimCodeRecord,
 		createClawImpl = createClaw,
-		genId = genBotId,
+		genId = genClawId,
 		now = () => new Date(),
 	} = deps;
 	const { code, userId } = input;
@@ -302,7 +302,7 @@ export async function claimBot(input, deps = {}) {
 	};
 }
 
-export async function unbindBotByToken(input, deps = {}) {
+export async function unbindClawByToken(input, deps = {}) {
 	const {
 		findByTokenHash = findClawByTokenHash,
 		deleteClawImpl = deleteClaw,
@@ -318,20 +318,20 @@ export async function unbindBotByToken(input, deps = {}) {
 	}
 
 	const tokenHash = getTokenHash(token);
-	const targetBot = await findByTokenHash(tokenHash);
+	const targetClaw = await findByTokenHash(tokenHash);
 
-	if (!targetBot) {
+	if (!targetClaw) {
 		return {
 			ok: false,
 			code: 'UNAUTHORIZED',
 			message: 'Invalid token',
 		};
 	}
-	await deleteClawImpl(targetBot.id);
+	await deleteClawImpl(targetClaw.id);
 
 	return {
 		ok: true,
-		botId: targetBot.id,
-		userId: targetBot.userId,
+		botId: targetClaw.id,
+		userId: targetClaw.userId,
 	};
 }

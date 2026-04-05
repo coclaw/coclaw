@@ -10,7 +10,7 @@ import { prisma } from './db/prisma.js';
 import { PrismaSessionStore } from './db/prisma-session-store.js';
 import { adminRouter } from './routes/admin.route.js';
 import { authRouter } from './routes/auth.route.js';
-import { botRouter } from './routes/bot.route.js';
+import { clawBotRouter } from './routes/claw-bot.route.js';
 import { clawRouter } from './routes/claw.route.js';
 import { infoRouter } from './routes/info.route.js';
 import { turnRouter } from './routes/turn.route.js';
@@ -94,7 +94,7 @@ export function createApp() {
 	app.use('/api/v1/info', infoRouter);
 	app.use('/api/v1/auth', authRouter);
 	app.use('/api/v1/user', userRouter);
-	app.use('/api/v1/bots', botRouter);
+	app.use('/api/v1/bots', clawBotRouter);
 	app.use('/api/v1/claws', clawRouter);
 	app.use('/api/v1/turn', turnRouter);
 

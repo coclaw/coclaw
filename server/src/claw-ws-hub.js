@@ -4,20 +4,20 @@ import { WebSocketServer } from 'ws';
 
 import { findClawById, findClawByTokenHash, updateClawName } from './repos/claw.repo.js';
 import { genTurnCredsForGateway } from './routes/turn.route.js';
-import { routeToUi, removeByBotId } from './rtc-signal-router.js';
+import { routeToUi, removeByClawId } from './rtc-signal-router.js';
 
-const botSockets = new Map();
+const clawSockets = new Map();
 const uiSockets = new Map();
 const uiTickets = new Map();
-const botRpcPending = new Map();
-/** @type {Map<string, NodeJS.Timeout>} botId → 延迟 offline timer */
+const clawRpcPending = new Map();
+/** @type {Map<string, NodeJS.Timeout>} clawId → 延迟 offline timer */
 const pendingOffline = new Map();
-const BOT_OFFLINE_GRACE_MS = 5_000;
+const CLAW_OFFLINE_GRACE_MS = 5_000;
 let wsServer = null;
 let wsSessionMiddleware = null;
-let botRpcSeq = 1;
+let clawRpcSeq = 1;
 
-export const botStatusEmitter = new EventEmitter();
+export const clawStatusEmitter = new EventEmitter();
 
 const WS_VERBOSE = process.env.COCLAW_WS_DEBUG === '1';
 
@@ -77,8 +77,8 @@ function unregisterSocket(map, key, socket) {
 	}
 }
 
-function getAnyOnlineBotSocket(botId) {
-	const set = botSockets.get(String(botId));
+function getAnyOnlineClawSocket(clawId) {
+	const set = clawSockets.get(String(clawId));
 	if (!set || set.size === 0) {
 		return null;
 	}
@@ -90,8 +90,8 @@ function getAnyOnlineBotSocket(botId) {
 	return null;
 }
 
-function resolveBotRpcPending(botId, id, payload) {
-	const pendingMap = botRpcPending.get(String(botId));
+function resolveClawRpcPending(clawId, id, payload) {
+	const pendingMap = clawRpcPending.get(String(clawId));
 	if (!pendingMap) {
 		return false;
 	}
@@ -102,14 +102,14 @@ function resolveBotRpcPending(botId, id, payload) {
 	clearTimeout(pending.timer);
 	pendingMap.delete(String(id));
 	if (pendingMap.size === 0) {
-		botRpcPending.delete(String(botId));
+		clawRpcPending.delete(String(clawId));
 	}
 	pending.resolve(payload);
 	return true;
 }
 
-function rejectAllBotRpcPending(botId, message = 'bot disconnected') {
-	const pendingMap = botRpcPending.get(String(botId));
+function rejectAllClawRpcPending(clawId, message = 'claw disconnected') {
+	const pendingMap = clawRpcPending.get(String(clawId));
 	if (!pendingMap) {
 		return;
 	}
@@ -117,16 +117,16 @@ function rejectAllBotRpcPending(botId, message = 'bot disconnected') {
 		clearTimeout(pending.timer);
 		pending.reject(new Error(message));
 	}
-	botRpcPending.delete(String(botId));
+	clawRpcPending.delete(String(clawId));
 }
 
-function requestBotRpc(botId, method, params = {}, timeoutMs = 1000) {
-	const key = String(botId);
-	const socket = getAnyOnlineBotSocket(key);
+function requestClawRpc(clawId, method, params = {}, timeoutMs = 1000) {
+	const key = String(clawId);
+	const socket = getAnyOnlineClawSocket(key);
 	if (!socket) {
 		return Promise.resolve(null);
 	}
-	const id = `server-rpc-${Date.now()}-${botRpcSeq++}`;
+	const id = `server-rpc-${Date.now()}-${clawRpcSeq++}`;
 	const req = {
 		type: 'req',
 		id,
@@ -134,14 +134,14 @@ function requestBotRpc(botId, method, params = {}, timeoutMs = 1000) {
 		params,
 	};
 	return new Promise((resolve, reject) => {
-		const pendingMap = botRpcPending.get(key) ?? new Map();
-		botRpcPending.set(key, pendingMap);
+		const pendingMap = clawRpcPending.get(key) ?? new Map();
+		clawRpcPending.set(key, pendingMap);
 		const timer = setTimeout(() => {
 			pendingMap.delete(id);
 			if (pendingMap.size === 0) {
-				botRpcPending.delete(key);
+				clawRpcPending.delete(key);
 			}
-			reject(new Error('bot rpc timeout'));
+			reject(new Error('claw rpc timeout'));
 		}, timeoutMs);
 		pendingMap.set(id, { resolve, reject, timer });
 		try {
@@ -151,21 +151,21 @@ function requestBotRpc(botId, method, params = {}, timeoutMs = 1000) {
 			clearTimeout(timer);
 			pendingMap.delete(id);
 			if (pendingMap.size === 0) {
-				botRpcPending.delete(key);
+				clawRpcPending.delete(key);
 			}
 			reject(err);
 		}
 	});
 }
 
-export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
-	const key = String(botId);
+export async function refreshClawName(clawId, { timeoutMs = 1000 } = {}) {
+	const key = String(clawId);
 	let rpcRes = null;
 	try {
-		rpcRes = await requestBotRpc(key, 'agent.identity.get', {}, timeoutMs);
+		rpcRes = await requestClawRpc(key, 'agent.identity.get', {}, timeoutMs);
 	}
 	catch (err) {
-		wsLogDebug(`refreshBotName rpc failed botId=${key}: ${err.message}`);
+		wsLogDebug(`refreshClawName rpc failed clawId=${key}: ${err.message}`);
 		return undefined;
 	}
 	if (!rpcRes || rpcRes.ok !== true) {
@@ -175,28 +175,28 @@ export async function refreshBotName(botId, { timeoutMs = 1000 } = {}) {
 		? rpcRes.payload.name.trim()
 		: '';
 	const latestName = rawName || null;
-	let bot = null;
+	let claw = null;
 	try {
-		bot = await findClawById(BigInt(key));
+		claw = await findClawById(BigInt(key));
 	}
 	catch (err) {
-		wsLogWarn(`refreshBotName findBot failed botId=${key}: ${err.message}`);
+		wsLogWarn(`refreshClawName findClaw failed clawId=${key}: ${err.message}`);
 		return latestName;
 	}
-	if (!bot) {
+	if (!claw) {
 		return latestName;
 	}
-	const currentName = bot.name ?? null;
+	const currentName = claw.name ?? null;
 	if (currentName !== latestName) {
-		await updateClawName(bot.id, latestName).catch((err) => {
-			wsLogWarn(`updateClawName failed botId=${key}: ${err.message}`);
+		await updateClawName(claw.id, latestName).catch((err) => {
+			wsLogWarn(`updateClawName failed clawId=${key}: ${err.message}`);
 		});
-		botStatusEmitter.emit('nameUpdated', { botId: key, name: latestName });
+		clawStatusEmitter.emit('nameUpdated', { clawId: key, name: latestName });
 	}
 	return latestName;
 }
 
-async function authenticateBotRequest(req) {
+async function authenticateClawRequest(req) {
 	const url = new URL(req.url ?? '', 'http://localhost');
 	const token = url.searchParams.get('token');
 	if (!token) {
@@ -204,11 +204,11 @@ async function authenticateBotRequest(req) {
 	}
 
 	const tokenHash = crypto.createHash('sha256').update(token, 'utf8').digest();
-	const bot = await findClawByTokenHash(tokenHash);
-	if (!bot) {
+	const claw = await findClawByTokenHash(tokenHash);
+	if (!claw) {
 		return { ok: false, code: 401, message: 'invalid token' };
 	}
-	return { ok: true, botId: String(bot.id) };
+	return { ok: true, clawId: String(claw.id) };
 }
 
 function authenticateUiTicket(req) {
@@ -223,7 +223,7 @@ function authenticateUiTicket(req) {
 		return { ok: false, code: 401, message: 'invalid ticket' };
 	}
 	uiTickets.delete(ticket);
-	return { ok: true, botId: info.botId, userId: info.userId };
+	return { ok: true, clawId: info.clawId, userId: info.userId };
 }
 
 async function authenticateUiSession(req) {
@@ -231,8 +231,8 @@ async function authenticateUiSession(req) {
 		return null;
 	}
 	const url = new URL(req.url ?? '', 'http://localhost');
-	const botId = url.searchParams.get('botId');
-	if (!botId) {
+	const clawId = url.searchParams.get('botId');
+	if (!clawId) {
 		return null;
 	}
 	try {
@@ -252,21 +252,21 @@ async function authenticateUiSession(req) {
 	if (!userId) {
 		return null;
 	}
-	let bot = null;
+	let claw = null;
 	try {
-		bot = await findClawById(BigInt(botId));
+		claw = await findClawById(BigInt(clawId));
 	}
 	catch {
 		return null;
 	}
-	if (!bot || String(bot.userId) !== String(userId)) {
+	if (!claw || String(claw.userId) !== String(userId)) {
 		return null;
 	}
-	return { ok: true, botId: String(bot.id), userId: String(userId) };
+	return { ok: true, clawId: String(claw.id), userId: String(userId) };
 }
 
-function broadcastToUi(botId, payload) {
-	const set = uiSockets.get(botId);
+function broadcastToUi(clawId, payload) {
+	const set = uiSockets.get(clawId);
 	if (!set || set.size === 0) {
 		return;
 	}
@@ -276,13 +276,13 @@ function broadcastToUi(botId, payload) {
 			ws.send(text);
 		}
 		catch (err) {
-			wsLogDebug(`broadcastToUi send failed botId=${botId}: ${err.message}`);
+			wsLogDebug(`broadcastToUi send failed clawId=${clawId}: ${err.message}`);
 		}
 	}
 }
 
-function forwardToBot(botId, payload) {
-	const set = botSockets.get(botId);
+function forwardToClaw(clawId, payload) {
+	const set = clawSockets.get(clawId);
 	if (!set || set.size === 0) {
 		return false;
 	}
@@ -292,14 +292,14 @@ function forwardToBot(botId, payload) {
 			ws.send(text);
 		}
 		catch (err) {
-			wsLogDebug(`forwardToBot send failed botId=${botId}: ${err.message}`);
+			wsLogDebug(`forwardToClaw send failed clawId=${clawId}: ${err.message}`);
 		}
 	}
 	return true;
 }
 
-function findUiSocketByConnId(botId, connId) {
-	const set = uiSockets.get(botId);
+function findUiSocketByConnId(clawId, connId) {
+	const set = uiSockets.get(clawId);
 	if (!set) return null;
 	for (const ws of set) {
 		if (ws.connId === connId && ws.readyState === 1) return ws;
@@ -307,7 +307,7 @@ function findUiSocketByConnId(botId, connId) {
 	return null;
 }
 
-function onBotMessage(botId, ws, raw) {
+function onClawMessage(clawId, ws, raw) {
 	let payload = null;
 	try {
 		payload = JSON.parse(String(raw ?? '{}'));
@@ -332,23 +332,23 @@ function onBotMessage(botId, ws, raw) {
 			for (const entry of logs) {
 				if (entry && typeof entry === 'object' && typeof entry.text === 'string') {
 					const time = typeof entry.ts === 'number' ? fmtLocalTime(entry.ts) : '??:??:??.???';
-					console.info(`[remote][plugin][bot:${botId}] ${time} | ${entry.text}`);
+					console.info(`[remote][plugin][claw:${clawId}] ${time} | ${entry.text}`);
 				}
 			}
 		}
 		return;
 	}
 
-	// Plugin 事件：coclaw.info.updated → 持久化 bot.name，不转发给 UI
+	// Plugin 事件：coclaw.info.updated → 持久化 claw name，不转发给 UI
 	if (payload.type === 'event' && payload.event === 'coclaw.info.updated') {
 		const name = payload.payload?.name || payload.payload?.hostName || null;
 		try {
-			updateClawName(BigInt(botId), name).catch((err) => {
-				wsLogWarn(`updateClawName from plugin event failed botId=${botId}: ${err.message}`);
+			updateClawName(BigInt(clawId), name).catch((err) => {
+				wsLogWarn(`updateClawName from plugin event failed clawId=${clawId}: ${err.message}`);
 			});
 		}
 		catch (err) {
-			wsLogWarn(`updateClawName from plugin event failed botId=${botId}: ${err.message}`);
+			wsLogWarn(`updateClawName from plugin event failed clawId=${clawId}: ${err.message}`);
 		}
 		return;
 	}
@@ -360,22 +360,22 @@ function onBotMessage(botId, ws, raw) {
 			rtcLogDebug(`${payload.type} routed via signal-router connId=${payload.toConnId}`);
 			return;
 		}
-		// 旧 per-bot WS fallback
-		const target = findUiSocketByConnId(botId, payload.toConnId);
+		// 旧 per-claw WS fallback
+		const target = findUiSocketByConnId(clawId, payload.toConnId);
 		if (target) {
 			try { target.send(JSON.stringify(payload)); } catch {}
 			if (payload.type === 'rtc:answer') rtcLogInfo(`rtc:answer routed to connId=${payload.toConnId}`);
 			else rtcLogDebug(`${payload.type} routed to connId=${payload.toConnId}`);
 		} else {
-			rtcLogWarn(`rtc target not found botId=${botId} connId=${payload.toConnId}`);
+			rtcLogWarn(`rtc target not found clawId=${clawId} connId=${payload.toConnId}`);
 		}
 		return;
 	}
 
 	if (payload.type === 'res' || payload.type === 'rpc.res') {
-		wsLogDebug(`bot->server res id=${payload.id ?? 'n/a'} ok=${payload.ok !== false}`);
-		resolveBotRpcPending(botId, payload.id, payload);
-		broadcastToUi(botId, payload.type === 'rpc.res' ? {
+		wsLogDebug(`claw->server res id=${payload.id ?? 'n/a'} ok=${payload.ok !== false}`);
+		resolveClawRpcPending(clawId, payload.id, payload);
+		broadcastToUi(clawId, payload.type === 'rpc.res' ? {
 			type: 'res',
 			id: payload.id,
 			ok: payload.ok,
@@ -386,8 +386,8 @@ function onBotMessage(botId, ws, raw) {
 	}
 
 	if (payload.type === 'event' || payload.type === 'rpc.event') {
-		wsLogDebug(`bot->server event=${payload.event ?? 'unknown'}`);
-		broadcastToUi(botId, payload.type === 'rpc.event' ? {
+		wsLogDebug(`claw->server event=${payload.event ?? 'unknown'}`);
+		broadcastToUi(clawId, payload.type === 'rpc.event' ? {
 			type: 'event',
 			event: payload.event,
 			payload: payload.payload,
@@ -396,18 +396,18 @@ function onBotMessage(botId, ws, raw) {
 	}
 
 	if (payload.type === 'bot.unbound') {
-		wsLogInfo(`bot.unbound received botId=${botId}`);
-		broadcastToUi(botId, payload);
+		wsLogInfo(`bot.unbound received clawId=${clawId}`);
+		broadcastToUi(clawId, payload);
 		try {
 			ws.close(4001, 'bot_unbound');
 		}
 		catch (err) {
-			wsLogDebug(`bot.unbound ws.close failed botId=${botId}: ${err.message}`);
+			wsLogDebug(`bot.unbound ws.close failed clawId=${clawId}: ${err.message}`);
 		}
 	}
 }
 
-function onUiMessage(botId, ws, raw) {
+function onUiMessage(clawId, ws, raw) {
 	let payload = null;
 	try {
 		payload = JSON.parse(String(raw ?? '{}'));
@@ -418,24 +418,24 @@ function onUiMessage(botId, ws, raw) {
 	if (!payload || typeof payload !== 'object') {
 		return;
 	}
-	// 应用层心跳：直接回 pong，不转发给 bot
+	// 应用层心跳：直接回 pong，不转发给 claw
 	if (payload.type === 'ping') {
 		try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
 		return;
 	}
 
-	// WebRTC 信令：UI → 转发到 bot，附上 fromConnId
+	// WebRTC 信令：UI → 转发到 claw，附上 fromConnId
 	if (payload.type === 'rtc:offer' || payload.type === 'rtc:ice' || payload.type === 'rtc:ready' || payload.type === 'rtc:closed') {
 		payload.fromConnId = ws.connId;
 		if (payload.type === 'rtc:offer' && process.env.TURN_SECRET) {
-			payload.turnCreds = genTurnCredsForGateway(String(botId), process.env.TURN_SECRET);
+			payload.turnCreds = genTurnCredsForGateway(String(clawId), process.env.TURN_SECRET);
 		}
-		const sent = forwardToBot(botId, payload);
+		const sent = forwardToClaw(clawId, payload);
 		if (!sent) {
-			rtcLogDebug(`rtc message dropped, bot offline botId=${botId} type=${payload.type}`);
+			rtcLogDebug(`rtc message dropped, claw offline clawId=${clawId} type=${payload.type}`);
 		} else {
-			if (payload.type === 'rtc:offer') rtcLogInfo(`rtc:offer forwarded bot=${botId} connId=${ws.connId}`);
-			else rtcLogDebug(`${payload.type} forwarded bot=${botId} connId=${ws.connId}`);
+			if (payload.type === 'rtc:offer') rtcLogInfo(`rtc:offer forwarded claw=${clawId} connId=${ws.connId}`);
+			else rtcLogDebug(`${payload.type} forwarded claw=${clawId} connId=${ws.connId}`);
 		}
 		return;
 	}
@@ -450,9 +450,9 @@ function onUiMessage(botId, ws, raw) {
 		const info = atts.map((a) => `${a.fileName ?? '?'}(${a.mimeType ?? '?'},${Math.round((a.content?.length ?? 0) * 3 / 4 / 1024)}KB)`);
 		wsLogInfo(`ui->server agent attachments: count=${atts.length} ${info.join(', ')} rawBytes=${String(raw).length}`);
 	}
-	const ok = forwardToBot(botId, normalized);
+	const ok = forwardToClaw(clawId, normalized);
 	if (!ok && normalized?.id) {
-		wsLogWarn(`ui req failed: bot offline botId=${botId} id=${normalized.id} method=${normalized.method ?? 'n/a'}`);
+		wsLogWarn(`ui req failed: claw offline clawId=${clawId} id=${normalized.id} method=${normalized.method ?? 'n/a'}`);
 		try {
 			ws.send(JSON.stringify({
 				type: 'res',
@@ -465,23 +465,23 @@ function onUiMessage(botId, ws, raw) {
 	}
 }
 
-export function listOnlineBotIds() {
-	const ids = new Set(botSockets.keys());
-	// grace period 内的 bot 仍视为在线
-	for (const botId of pendingOffline.keys()) {
-		ids.add(botId);
+export function listOnlineClawIds() {
+	const ids = new Set(clawSockets.keys());
+	// grace period 内的 claw 仍视为在线
+	for (const clawId of pendingOffline.keys()) {
+		ids.add(clawId);
 	}
 	return ids;
 }
 
-export function createUiWsTicket({ botId, userId, ttlMs = 60_000 }) {
+export function createUiWsTicket({ clawId, userId, ttlMs = 60_000 }) {
 	const ticket = crypto.randomBytes(16).toString('hex');
 	uiTickets.set(ticket, {
-		botId: String(botId),
+		clawId: String(clawId),
 		userId: String(userId),
 		expiresAt: Date.now() + ttlMs,
 	});
-	wsLogDebug(`ui ws ticket issued botId=${String(botId)} userId=${String(userId)} ttlMs=${ttlMs}`);
+	wsLogDebug(`ui ws ticket issued clawId=${String(clawId)} userId=${String(userId)} ttlMs=${ttlMs}`);
 	return ticket;
 }
 
@@ -496,7 +496,7 @@ export function pruneUiTickets() {
 	}
 }
 
-export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
+export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 	wsSessionMiddleware = sessionMiddleware ?? null;
 	wsServer = new WebSocketServer({ noServer: true });
 
@@ -520,7 +520,7 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				}
 			}
 			else {
-				auth = await authenticateBotRequest(req);
+				auth = await authenticateClawRequest(req);
 			}
 			if (!auth.ok) {
 				wsLogWarn(`ws auth failed role=${role} code=${auth.code} message=${auth.message}`);
@@ -534,47 +534,47 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 				|| 'unknown';
 
 			wsServer.handleUpgrade(req, socket, head, (ws) => {
-				const botId = auth.botId;
+				const clawId = auth.clawId;
 				if (role === 'ui') {
-					registerSocket(uiSockets, botId, ws);
+					registerSocket(uiSockets, clawId, ws);
 					ws.connId = 'c_' + crypto.randomBytes(4).toString('hex');
-					wsLogInfo(`ui ws connected botId=${botId} userId=${auth.userId ?? 'n/a'} ip=${remoteIp} connId=${ws.connId}`);
-					ws.on('message', (raw) => onUiMessage(botId, ws, raw));
+					wsLogInfo(`ui ws connected clawId=${clawId} userId=${auth.userId ?? 'n/a'} ip=${remoteIp} connId=${ws.connId}`);
+					ws.on('message', (raw) => onUiMessage(clawId, ws, raw));
 					// UI 侧不做协议级心跳：由 UI 客户端自行维护应用层心跳，
 					// 避免大消息传输时 server 误 terminate UI 连接
 					ws.on('close', (code, reason) => {
-						unregisterSocket(uiSockets, botId, ws);
-						wsLogInfo(`ui ws disconnected botId=${botId} code=${code} reason=${String(reason || '')}`);
+						unregisterSocket(uiSockets, clawId, ws);
+						wsLogInfo(`ui ws disconnected clawId=${clawId} code=${code} reason=${String(reason || '')}`);
 					});
 					return;
 				}
 
-				const wasOffline = !botSockets.has(botId);
-				// 取消 grace period 的延迟 offline（bot 重连了）
-				if (pendingOffline.has(botId)) {
-					clearTimeout(pendingOffline.get(botId));
-					pendingOffline.delete(botId);
-					wsLogInfo(`bot reconnected within grace period botId=${botId}`);
+				const wasOffline = !clawSockets.has(clawId);
+				// 取消 grace period 的延迟 offline（claw 重连了）
+				if (pendingOffline.has(clawId)) {
+					clearTimeout(pendingOffline.get(clawId));
+					pendingOffline.delete(clawId);
+					wsLogInfo(`claw reconnected within grace period clawId=${clawId}`);
 				}
-				// 淘汰同 botId 的旧连接（避免半开连接残留）
-				const staleSet = botSockets.get(botId);
+				// 淘汰同 clawId 的旧连接（避免半开连接残留）
+				const staleSet = clawSockets.get(clawId);
 				if (staleSet && staleSet.size > 0) {
 					const stale = [...staleSet];
 					for (const old of stale) {
-						wsLogInfo(`closing stale bot ws for botId=${botId}`);
+						wsLogInfo(`closing stale claw ws for clawId=${clawId}`);
 						try { old.terminate(); } catch {}
 					}
 				}
-				registerSocket(botSockets, botId, ws);
-				wsLogInfo(`bot ws connected botId=${botId} ip=${remoteIp}`);
+				registerSocket(clawSockets, clawId, ws);
+				wsLogInfo(`claw ws connected clawId=${clawId} ip=${remoteIp}`);
 				if (wasOffline) {
-					wsLogInfo(`bot online botId=${botId}`);
+					wsLogInfo(`claw online clawId=${clawId}`);
 				}
-				botStatusEmitter.emit('status', { botId, online: true });
+				clawStatusEmitter.emit('status', { clawId, online: true });
 				// TODO: plugin 已通过 coclaw.info.updated 事件主动推送 name，此处拉取待移除
-				void refreshBotName(botId).catch(() => {});
-				ws.on('message', (raw) => onBotMessage(botId, ws, raw));
-				// WS 协议级心跳：检测半开连接（仅 bot 侧）
+				void refreshClawName(clawId).catch(() => {});
+				ws.on('message', (raw) => onClawMessage(clawId, ws, raw));
+				// WS 协议级心跳：检测半开连接（仅 claw 侧）
 				// 45s 间隔，连续 4 次 miss（~180s）才 terminate，与 plugin 侧对齐
 				ws.__isAlive = true;
 				ws.__pingMissCount = 0;
@@ -582,14 +582,14 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 					ws.__isAlive = true;
 					ws.__pingMissCount = 0;
 				});
-				const BOT_PING_INTERVAL_MS = 45_000;
-				const BOT_PING_MAX_MISS = 4;
-				const botPingInterval = setInterval(() => {
-					const tick = botPingTick({
+				const CLAW_PING_INTERVAL_MS = 45_000;
+				const CLAW_PING_MAX_MISS = 4;
+				const clawPingInterval = setInterval(() => {
+					const tick = clawPingTick({
 						isAlive: ws.__isAlive,
 						missCount: ws.__pingMissCount,
 						bufferedAmount: ws.bufferedAmount,
-					}, BOT_PING_MAX_MISS);
+					}, CLAW_PING_MAX_MISS);
 					ws.__pingMissCount = tick.missCount;
 					if (tick.action === 'ok') {
 						ws.__isAlive = false;
@@ -597,44 +597,44 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 						return;
 					}
 					if (tick.action === 'skip') {
-						wsLogDebug(`bot ws ping skip (buffered=${ws.bufferedAmount}) botId=${botId}`);
+						wsLogDebug(`claw ws ping skip (buffered=${ws.bufferedAmount}) clawId=${clawId}`);
 						ws.ping();
 						return;
 					}
 					if (tick.action === 'miss') {
-						wsLogDebug(`bot ws ping miss ${ws.__pingMissCount}/${BOT_PING_MAX_MISS} botId=${botId}`);
+						wsLogDebug(`claw ws ping miss ${ws.__pingMissCount}/${CLAW_PING_MAX_MISS} clawId=${clawId}`);
 						ws.ping();
 						return;
 					}
 					// terminate
-					clearInterval(botPingInterval);
-					wsLogWarn(`bot ws ping timeout after ${ws.__pingMissCount} misses, terminating botId=${botId}`);
+					clearInterval(clawPingInterval);
+					wsLogWarn(`claw ws ping timeout after ${ws.__pingMissCount} misses, terminating clawId=${clawId}`);
 					ws.terminate();
-				}, BOT_PING_INTERVAL_MS);
+				}, CLAW_PING_INTERVAL_MS);
 				ws.on('close', (code, reason) => {
-					clearInterval(botPingInterval);
-					unregisterSocket(botSockets, botId, ws);
-					rejectAllBotRpcPending(botId);
-					wsLogInfo(`bot ws disconnected botId=${botId} code=${code} reason=${String(reason || '')}`);
-					if (!botSockets.has(botId)) {
+					clearInterval(clawPingInterval);
+					unregisterSocket(clawSockets, clawId, ws);
+					rejectAllClawRpcPending(clawId);
+					wsLogInfo(`claw ws disconnected clawId=${clawId} code=${code} reason=${String(reason || '')}`);
+					if (!clawSockets.has(clawId)) {
 						// 管理性断连（解绑/封禁）立即 offline，不走 grace period
 						if (code === 4001 || code === 4003) {
-							wsLogInfo(`bot offline botId=${botId} (admin close code=${code})`);
-							botStatusEmitter.emit('status', { botId, online: false });
+							wsLogInfo(`claw offline clawId=${clawId} (admin close code=${code})`);
+							clawStatusEmitter.emit('status', { clawId, online: false });
 						}
 						else {
-							// 延迟发 offline，给 bot 重连留窗口
-							if (pendingOffline.has(botId)) clearTimeout(pendingOffline.get(botId));
+							// 延迟发 offline，给 claw 重连留窗口
+							if (pendingOffline.has(clawId)) clearTimeout(pendingOffline.get(clawId));
 							const timer = setTimeout(() => {
-								pendingOffline.delete(botId);
+								pendingOffline.delete(clawId);
 								// grace 期间可能已重连，再次确认
-								if (!botSockets.has(botId)) {
-									wsLogInfo(`bot offline botId=${botId} (after grace)`);
-									botStatusEmitter.emit('status', { botId, online: false });
+								if (!clawSockets.has(clawId)) {
+									wsLogInfo(`claw offline clawId=${clawId} (after grace)`);
+									clawStatusEmitter.emit('status', { clawId, online: false });
 								}
-							}, BOT_OFFLINE_GRACE_MS);
+							}, CLAW_OFFLINE_GRACE_MS);
 							timer.unref();
-							pendingOffline.set(botId, timer);
+							pendingOffline.set(clawId, timer);
 						}
 					}
 				});
@@ -649,13 +649,13 @@ export function attachBotWsHub(httpServer, { sessionMiddleware } = {}) {
 }
 
 /**
- * Bot 心跳状态机（单轮判定）。
- * 从 attachBotWsHub 内联逻辑中提取，便于单元测试。
+ * Claw 心跳状态机（单轮判定）。
+ * 从 attachClawWsHub 内联逻辑中提取，便于单元测试。
  * @param {object} state - { isAlive, missCount, bufferedAmount }
  * @param {number} maxMiss
  * @returns {{ action: 'ok'|'skip'|'miss'|'terminate', missCount: number }}
  */
-export function botPingTick(state, maxMiss) {
+export function clawPingTick(state, maxMiss) {
 	if (state.isAlive) {
 		return { action: 'ok', missCount: 0 };
 	}
@@ -669,25 +669,25 @@ export function botPingTick(state, maxMiss) {
 	return { action: 'terminate', missCount: next };
 }
 
-export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
-	if (!botId) {
+export function notifyAndDisconnectClaw(clawId, reason = 'token_revoked') {
+	if (!clawId) {
 		return;
 	}
-	const key = String(botId);
-	// 清理信令路由表中该 bot 的所有 connId
-	removeByBotId(key);
+	const key = String(clawId);
+	// 清理信令路由表中该 claw 的所有 connId
+	removeByClawId(key);
 	// 清理可能残留的 grace period timer（网络断开后管理员解绑的场景）
 	if (pendingOffline.has(key)) {
 		clearTimeout(pendingOffline.get(key));
 		pendingOffline.delete(key);
-		wsLogInfo(`grace period cancelled by admin disconnect botId=${key}`);
+		wsLogInfo(`grace period cancelled by admin disconnect clawId=${key}`);
 	}
-	const set = botSockets.get(key);
+	const set = clawSockets.get(key);
 	if (!set || set.size === 0) {
 		return;
 	}
 
-	wsLogInfo(`notify/disconnect botId=${key} reason=${reason}`);
+	wsLogInfo(`notify/disconnect clawId=${key} reason=${reason}`);
 	const payload = {
 		type: 'bot.unbound',
 		reason,
@@ -701,18 +701,18 @@ export function notifyAndDisconnectBot(botId, reason = 'token_revoked') {
 			ws.send(JSON.stringify(payload));
 		}
 		catch (err) {
-			wsLogDebug(`notifyAndDisconnectBot send failed botId=${key}: ${err.message}`);
+			wsLogDebug(`notifyAndDisconnectClaw send failed clawId=${key}: ${err.message}`);
 		}
 		try {
 			ws.close(closeCode, reason);
 		}
 		catch (err) {
-			wsLogDebug(`notifyAndDisconnectBot close failed botId=${key}: ${err.message}`);
+			wsLogDebug(`notifyAndDisconnectClaw close failed clawId=${key}: ${err.message}`);
 		}
 	}
 }
 
-export { forwardToBot, fmtLocalTime };
+export { forwardToClaw, fmtLocalTime };
 
 // 测试辅助导出（仅用于单元测试访问内部状态）
-export const __test = { uiSockets, botSockets, uiTickets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineBotSocket, resolveBotRpcPending, rejectAllBotRpcPending, requestBotRpc, authenticateBotRequest, broadcastToUi, set wsSessionMiddleware(v) { wsSessionMiddleware = v; }, get wsSessionMiddleware() { return wsSessionMiddleware; } };
+export const __test = { uiSockets, clawSockets, uiTickets, pendingOffline, CLAW_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onClawMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineClawSocket, resolveClawRpcPending, rejectAllClawRpcPending, requestClawRpc, authenticateClawRequest, broadcastToUi, set wsSessionMiddleware(v) { wsSessionMiddleware = v; }, get wsSessionMiddleware() { return wsSessionMiddleware; } };

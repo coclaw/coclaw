@@ -5,82 +5,82 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { botPingTick, createUiWsTicket, listOnlineBotIds, pruneUiTickets, botStatusEmitter, fmtLocalTime, notifyAndDisconnectBot, refreshBotName, forwardToBot, __test } from './bot-ws-hub.js';
+import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, refreshClawName, forwardToClaw, __test } from './claw-ws-hub.js';
 import { register as registerSignalRoute, __test as signalTest } from './rtc-signal-router.js';
 
-const { uiSockets, botSockets, uiTickets, pendingOffline, BOT_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onBotMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineBotSocket, resolveBotRpcPending, rejectAllBotRpcPending, broadcastToUi, authenticateBotRequest } = __test;
+const { uiSockets, clawSockets, uiTickets, pendingOffline, CLAW_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onClawMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineClawSocket, resolveClawRpcPending, rejectAllClawRpcPending, broadcastToUi, authenticateClawRequest } = __test;
 const { routes: signalRoutes } = signalTest;
 
 const MAX_MISS = 4;
 
-test('botPingTick: isAlive=true → action=ok, missCount 重置为 0', () => {
-	const result = botPingTick({ isAlive: true, missCount: 3, bufferedAmount: 0 }, MAX_MISS);
+test('clawPingTick: isAlive=true → action=ok, missCount 重置为 0', () => {
+	const result = clawPingTick({ isAlive: true, missCount: 3, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(result.action, 'ok');
 	assert.equal(result.missCount, 0);
 });
 
-test('botPingTick: isAlive=true 时忽略 bufferedAmount', () => {
-	const result = botPingTick({ isAlive: true, missCount: 2, bufferedAmount: 99999 }, MAX_MISS);
+test('clawPingTick: isAlive=true 时忽略 bufferedAmount', () => {
+	const result = clawPingTick({ isAlive: true, missCount: 2, bufferedAmount: 99999 }, MAX_MISS);
 	assert.equal(result.action, 'ok');
 	assert.equal(result.missCount, 0);
 });
 
-test('botPingTick: isAlive=false + bufferedAmount>0 → action=skip, missCount 不变', () => {
-	const result = botPingTick({ isAlive: false, missCount: 2, bufferedAmount: 1024 }, MAX_MISS);
+test('clawPingTick: isAlive=false + bufferedAmount>0 → action=skip, missCount 不变', () => {
+	const result = clawPingTick({ isAlive: false, missCount: 2, bufferedAmount: 1024 }, MAX_MISS);
 	assert.equal(result.action, 'skip');
 	assert.equal(result.missCount, 2);
 });
 
-test('botPingTick: isAlive=false + bufferedAmount=0 + 未达上限 → action=miss', () => {
-	const result = botPingTick({ isAlive: false, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
+test('clawPingTick: isAlive=false + bufferedAmount=0 + 未达上限 → action=miss', () => {
+	const result = clawPingTick({ isAlive: false, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(result.action, 'miss');
 	assert.equal(result.missCount, 1);
 });
 
-test('botPingTick: 连续 miss 递增直到上限前', () => {
+test('clawPingTick: 连续 miss 递增直到上限前', () => {
 	let missCount = 0;
 	for (let i = 1; i < MAX_MISS; i++) {
-		const result = botPingTick({ isAlive: false, missCount, bufferedAmount: 0 }, MAX_MISS);
+		const result = clawPingTick({ isAlive: false, missCount, bufferedAmount: 0 }, MAX_MISS);
 		assert.equal(result.action, 'miss');
 		assert.equal(result.missCount, i);
 		missCount = result.missCount;
 	}
 });
 
-test('botPingTick: 达到 maxMiss → action=terminate', () => {
-	const result = botPingTick({ isAlive: false, missCount: MAX_MISS - 1, bufferedAmount: 0 }, MAX_MISS);
+test('clawPingTick: 达到 maxMiss → action=terminate', () => {
+	const result = clawPingTick({ isAlive: false, missCount: MAX_MISS - 1, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(result.action, 'terminate');
 	assert.equal(result.missCount, MAX_MISS);
 });
 
-test('botPingTick: bufferedAmount>0 阻止 terminate 即使 missCount 已高', () => {
-	const result = botPingTick({ isAlive: false, missCount: MAX_MISS - 1, bufferedAmount: 500 }, MAX_MISS);
+test('clawPingTick: bufferedAmount>0 阻止 terminate 即使 missCount 已高', () => {
+	const result = clawPingTick({ isAlive: false, missCount: MAX_MISS - 1, bufferedAmount: 500 }, MAX_MISS);
 	assert.equal(result.action, 'skip');
 	assert.equal(result.missCount, MAX_MISS - 1);
 });
 
-test('botPingTick: pong 后 miss 场景——模拟完整周期', () => {
+test('clawPingTick: pong 后 miss 场景——模拟完整周期', () => {
 	// 1. 正常轮次
-	let r = botPingTick({ isAlive: true, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
+	let r = clawPingTick({ isAlive: true, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'ok');
 
 	// 2. miss 1
-	r = botPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 0 }, MAX_MISS);
+	r = clawPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'miss');
 	assert.equal(r.missCount, 1);
 
 	// 3. miss 2
-	r = botPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 0 }, MAX_MISS);
+	r = clawPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'miss');
 	assert.equal(r.missCount, 2);
 
 	// 4. pong 收到 → 模拟外部重置 isAlive=true, missCount=0
-	r = botPingTick({ isAlive: true, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
+	r = clawPingTick({ isAlive: true, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'ok');
 	assert.equal(r.missCount, 0);
 
 	// 5. 再次 miss
-	r = botPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 0 }, MAX_MISS);
+	r = clawPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'miss');
 	assert.equal(r.missCount, 1);
 });
@@ -88,14 +88,14 @@ test('botPingTick: pong 后 miss 场景——模拟完整周期', () => {
 // --- createUiWsTicket & pruneUiTickets ---
 
 test('createUiWsTicket: 返回 32 位 hex 字符串', () => {
-	const ticket = createUiWsTicket({ botId: '1', userId: '2' });
+	const ticket = createUiWsTicket({ clawId: '1', userId: '2' });
 	assert.match(ticket, /^[0-9a-f]{32}$/);
 });
 
 test('pruneUiTickets: 过期 ticket 被清理，未过期 ticket 保留', () => {
 	// ttlMs=1 → 立即过期
-	createUiWsTicket({ botId: '1', userId: '2', ttlMs: 1 });
-	createUiWsTicket({ botId: '1', userId: '2', ttlMs: 60_000 });
+	createUiWsTicket({ clawId: '1', userId: '2', ttlMs: 1 });
+	createUiWsTicket({ clawId: '1', userId: '2', ttlMs: 60_000 });
 
 	// 确保过期 ticket 的 expiresAt 已过
 	const start = Date.now();
@@ -104,23 +104,23 @@ test('pruneUiTickets: 过期 ticket 被清理，未过期 ticket 保留', () => 
 	pruneUiTickets();
 
 	// 再次创建和 prune 确认功能正常，无异常即通过
-	const another = createUiWsTicket({ botId: '3', userId: '4' });
+	const another = createUiWsTicket({ clawId: '3', userId: '4' });
 	assert.match(another, /^[0-9a-f]{32}$/);
 	pruneUiTickets();
 });
 
-test('botPingTick: 大消息传输中途恢复——bufferedAmount 先高后低', () => {
+test('clawPingTick: 大消息传输中途恢复——bufferedAmount 先高后低', () => {
 	// miss 1
-	let r = botPingTick({ isAlive: false, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
+	let r = clawPingTick({ isAlive: false, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'miss');
 
 	// 大消息开始传输，bufferedAmount > 0，跳过
-	r = botPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 8192 }, MAX_MISS);
+	r = clawPingTick({ isAlive: false, missCount: r.missCount, bufferedAmount: 8192 }, MAX_MISS);
 	assert.equal(r.action, 'skip');
 	assert.equal(r.missCount, 1); // 不增加
 
 	// 大消息传完，pong 到达
-	r = botPingTick({ isAlive: true, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
+	r = clawPingTick({ isAlive: true, missCount: 0, bufferedAmount: 0 }, MAX_MISS);
 	assert.equal(r.action, 'ok');
 	assert.equal(r.missCount, 0);
 });
@@ -139,20 +139,20 @@ function createMockWs(opts = {}) {
 	};
 }
 
-// 每个测试前后清理 uiSockets/botSockets
-function setupSockets(botId, { ui = [], bot = [] } = {}) {
-	uiSockets.delete(botId);
-	botSockets.delete(botId);
+// 每个测试前后清理 uiSockets/clawSockets
+function setupSockets(clawId, { ui = [], bot = [] } = {}) {
+	uiSockets.delete(clawId);
+	clawSockets.delete(clawId);
 	if (ui.length) {
-		uiSockets.set(botId, new Set(ui));
+		uiSockets.set(clawId, new Set(ui));
 	}
 	if (bot.length) {
-		botSockets.set(botId, new Set(bot));
+		clawSockets.set(clawId, new Set(bot));
 	}
 }
-function cleanupSockets(botId) {
-	uiSockets.delete(botId);
-	botSockets.delete(botId);
+function cleanupSockets(clawId) {
+	uiSockets.delete(clawId);
+	clawSockets.delete(clawId);
 }
 
 // --- findUiSocketByConnId ---
@@ -191,20 +191,20 @@ test('findUiSocketByConnId: 多个 UI socket 精确匹配', () => {
 	cleanupSockets('bot1');
 });
 
-// --- onUiMessage: rtc:offer 转发到 bot ---
+// --- onUiMessage: rtc:offer 转发到 claw ---
 
-test('onUiMessage: rtc:offer 转发到 bot 并附上 fromConnId 和 turnCreds', () => {
+test('onUiMessage: rtc:offer 转发到 claw 并附上 fromConnId 和 turnCreds', () => {
 	const uiWs = createMockWs({ connId: 'c_1234' });
-	const botWs = createMockWs();
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
 	onUiMessage('bot1', uiWs, JSON.stringify({
 		type: 'rtc:offer',
 		payload: { sdp: 'mock-sdp' },
 	}));
 
-	assert.equal(botWs.sent.length, 1);
-	const msg = botWs.sent[0];
+	assert.equal(clawWs.sent.length, 1);
+	const msg = clawWs.sent[0];
 	assert.equal(msg.type, 'rtc:offer');
 	assert.equal(msg.fromConnId, 'c_1234');
 	assert.equal(msg.payload.sdp, 'mock-sdp');
@@ -215,45 +215,45 @@ test('onUiMessage: rtc:offer 转发到 bot 并附上 fromConnId 和 turnCreds', 
 	cleanupSockets('bot1');
 });
 
-// --- onUiMessage: rtc:ice 转发到 bot ---
+// --- onUiMessage: rtc:ice 转发到 claw ---
 
-test('onUiMessage: rtc:ice 转发到 bot 并附上 fromConnId', () => {
+test('onUiMessage: rtc:ice 转发到 claw 并附上 fromConnId', () => {
 	const uiWs = createMockWs({ connId: 'c_5678' });
-	const botWs = createMockWs();
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
 	onUiMessage('bot1', uiWs, JSON.stringify({
 		type: 'rtc:ice',
 		payload: { candidate: 'cand1', sdpMid: '0', sdpMLineIndex: 0 },
 	}));
 
-	assert.equal(botWs.sent.length, 1);
-	assert.equal(botWs.sent[0].type, 'rtc:ice');
-	assert.equal(botWs.sent[0].fromConnId, 'c_5678');
-	assert.equal(botWs.sent[0].payload.candidate, 'cand1');
+	assert.equal(clawWs.sent.length, 1);
+	assert.equal(clawWs.sent[0].type, 'rtc:ice');
+	assert.equal(clawWs.sent[0].fromConnId, 'c_5678');
+	assert.equal(clawWs.sent[0].payload.candidate, 'cand1');
 	cleanupSockets('bot1');
 });
 
 // --- onUiMessage: rtc:ready / rtc:closed 转发 ---
 
-test('onUiMessage: rtc:ready 转发到 bot', () => {
+test('onUiMessage: rtc:ready 转发到 claw', () => {
 	const uiWs = createMockWs({ connId: 'c_r1' });
-	const botWs = createMockWs();
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
 	onUiMessage('bot1', uiWs, JSON.stringify({ type: 'rtc:ready' }));
 
-	assert.equal(botWs.sent.length, 1);
-	assert.equal(botWs.sent[0].type, 'rtc:ready');
-	assert.equal(botWs.sent[0].fromConnId, 'c_r1');
+	assert.equal(clawWs.sent.length, 1);
+	assert.equal(clawWs.sent[0].type, 'rtc:ready');
+	assert.equal(clawWs.sent[0].fromConnId, 'c_r1');
 	cleanupSockets('bot1');
 });
 
-// --- onUiMessage: rtc:offer bot 离线时不抛异常 ---
+// --- onUiMessage: rtc:offer claw 离线时不抛异常 ---
 
-test('onUiMessage: rtc:offer bot 离线时静默丢弃', () => {
+test('onUiMessage: rtc:offer claw 离线时静默丢弃', () => {
 	const uiWs = createMockWs({ connId: 'c_off' });
-	setupSockets('bot1', { ui: [uiWs] }); // 无 bot socket
+	setupSockets('bot1', { ui: [uiWs] }); // 无 claw socket
 
 	// 不应抛异常
 	onUiMessage('bot1', uiWs, JSON.stringify({
@@ -266,15 +266,15 @@ test('onUiMessage: rtc:offer bot 离线时静默丢弃', () => {
 	cleanupSockets('bot1');
 });
 
-// --- onBotMessage: rtc:answer 定向投递到指定 UI socket ---
+// --- onClawMessage: rtc:answer 定向投递到指定 UI socket ---
 
-test('onBotMessage: rtc:answer 定向投递到匹配 connId 的 UI socket', () => {
+test('onClawMessage: rtc:answer 定向投递到匹配 connId 的 UI socket', () => {
 	const uiWs1 = createMockWs({ connId: 'c_aaa' });
 	const uiWs2 = createMockWs({ connId: 'c_bbb' });
-	const botWs = createMockWs();
-	setupSockets('bot1', { ui: [uiWs1, uiWs2], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot1', { ui: [uiWs1, uiWs2], bot: [clawWs] });
 
-	onBotMessage('bot1', botWs, JSON.stringify({
+	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'rtc:answer',
 		toConnId: 'c_bbb',
 		payload: { sdp: 'answer-sdp' },
@@ -288,14 +288,14 @@ test('onBotMessage: rtc:answer 定向投递到匹配 connId 的 UI socket', () =
 	cleanupSockets('bot1');
 });
 
-// --- onBotMessage: rtc:ice 定向投递 ---
+// --- onClawMessage: rtc:ice 定向投递 ---
 
-test('onBotMessage: rtc:ice 定向投递到指定 UI socket', () => {
+test('onClawMessage: rtc:ice 定向投递到指定 UI socket', () => {
 	const uiWs = createMockWs({ connId: 'c_ice1' });
-	const botWs = createMockWs();
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot1', botWs, JSON.stringify({
+	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'rtc:ice',
 		toConnId: 'c_ice1',
 		payload: { candidate: 'ice-cand' },
@@ -307,14 +307,14 @@ test('onBotMessage: rtc:ice 定向投递到指定 UI socket', () => {
 	cleanupSockets('bot1');
 });
 
-// --- onBotMessage: rtc:answer toConnId 找不到时不抛异常 ---
+// --- onClawMessage: rtc:answer toConnId 找不到时不抛异常 ---
 
-test('onBotMessage: rtc:answer target 不存在时静默处理', () => {
-	const botWs = createMockWs();
-	setupSockets('bot1', { bot: [botWs] }); // 无 UI socket
+test('onClawMessage: rtc:answer target 不存在时静默处理', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot1', { bot: [clawWs] }); // 无 UI socket
 
 	// 不应抛异常
-	onBotMessage('bot1', botWs, JSON.stringify({
+	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'rtc:answer',
 		toConnId: 'c_nonexist',
 		payload: { sdp: 'answer' },
@@ -322,14 +322,14 @@ test('onBotMessage: rtc:answer target 不存在时静默处理', () => {
 	cleanupSockets('bot1');
 });
 
-// --- onBotMessage: rtc:closed 定向投递 ---
+// --- onClawMessage: rtc:closed 定向投递 ---
 
-test('onBotMessage: rtc:closed 定向投递', () => {
+test('onClawMessage: rtc:closed 定向投递', () => {
 	const uiWs = createMockWs({ connId: 'c_cl1' });
-	const botWs = createMockWs();
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot1', botWs, JSON.stringify({
+	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'rtc:closed',
 		toConnId: 'c_cl1',
 	}));
@@ -339,96 +339,96 @@ test('onBotMessage: rtc:closed 定向投递', () => {
 	cleanupSockets('bot1');
 });
 
-// --- 多 bot 交叉隔离测试 ---
+// --- 多 claw 交叉隔离测试 ---
 
-test('多 bot 场景：rtc:answer 按 botId + connId 精确路由，不串 bot', () => {
-	// 用户在 Tab1→Bot1, Tab2→Bot1, Tab3→Bot2
+test('多 claw 场景：rtc:answer 按 clawId + connId 精确路由，不串 claw', () => {
+	// 用户在 Tab1→Claw1, Tab2→Claw1, Tab3→Claw2
 	const tab1 = createMockWs({ connId: 'c_aaaa' });
 	const tab2 = createMockWs({ connId: 'c_bbbb' });
 	const tab3 = createMockWs({ connId: 'c_cccc' });
-	const bot1Ws = createMockWs();
-	const bot2Ws = createMockWs();
-	setupSockets('bot1', { ui: [tab1, tab2], bot: [bot1Ws] });
-	setupSockets('bot2', { ui: [tab3], bot: [bot2Ws] });
+	const claw1Ws = createMockWs();
+	const claw2Ws = createMockWs();
+	setupSockets('bot1', { ui: [tab1, tab2], bot: [claw1Ws] });
+	setupSockets('bot2', { ui: [tab3], bot: [claw2Ws] });
 
-	// Bot1 回给 Tab2（c_bbbb）
-	onBotMessage('bot1', bot1Ws, JSON.stringify({
+	// Claw1 回给 Tab2（c_bbbb）
+	onClawMessage('bot1', claw1Ws, JSON.stringify({
 		type: 'rtc:answer', toConnId: 'c_bbbb', payload: { sdp: 'ans-bot1' },
 	}));
-	assert.equal(tab1.sent.length, 0, 'tab1 should not receive bot1 answer for tab2');
-	assert.equal(tab2.sent.length, 1, 'tab2 should receive bot1 answer');
-	assert.equal(tab3.sent.length, 0, 'tab3 should not receive bot1 answer');
+	assert.equal(tab1.sent.length, 0, 'tab1 should not receive claw1 answer for tab2');
+	assert.equal(tab2.sent.length, 1, 'tab2 should receive claw1 answer');
+	assert.equal(tab3.sent.length, 0, 'tab3 should not receive claw1 answer');
 
-	// Bot2 回给 Tab3（c_cccc）
-	onBotMessage('bot2', bot2Ws, JSON.stringify({
+	// Claw2 回给 Tab3（c_cccc）
+	onClawMessage('bot2', claw2Ws, JSON.stringify({
 		type: 'rtc:answer', toConnId: 'c_cccc', payload: { sdp: 'ans-bot2' },
 	}));
 	assert.equal(tab1.sent.length, 0, 'tab1 still untouched');
 	assert.equal(tab2.sent.length, 1, 'tab2 still only 1 message');
-	assert.equal(tab3.sent.length, 1, 'tab3 should receive bot2 answer');
+	assert.equal(tab3.sent.length, 1, 'tab3 should receive claw2 answer');
 	assert.equal(tab3.sent[0].payload.sdp, 'ans-bot2');
 
-	// Bot1 用 Bot2 的 connId → 找不到（botId 域隔离）
-	onBotMessage('bot1', bot1Ws, JSON.stringify({
+	// Claw1 用 Claw2 的 connId → 找不到（clawId 域隔离）
+	onClawMessage('bot1', claw1Ws, JSON.stringify({
 		type: 'rtc:ice', toConnId: 'c_cccc', payload: { candidate: 'x' },
 	}));
-	assert.equal(tab3.sent.length, 1, 'tab3 should NOT receive bot1 ice with wrong botId');
+	assert.equal(tab3.sent.length, 1, 'tab3 should NOT receive claw1 ice with wrong clawId');
 
 	cleanupSockets('bot1');
 	cleanupSockets('bot2');
 });
 
-test('多 bot 场景：rtc:offer 精确转发到各自 bot', () => {
+test('多 claw 场景：rtc:offer 精确转发到各自 claw', () => {
 	const tab1 = createMockWs({ connId: 'c_t1' });
 	const tab3 = createMockWs({ connId: 'c_t3' });
-	const bot1Ws = createMockWs();
-	const bot2Ws = createMockWs();
-	setupSockets('bot1', { ui: [tab1], bot: [bot1Ws] });
-	setupSockets('bot2', { ui: [tab3], bot: [bot2Ws] });
+	const claw1Ws = createMockWs();
+	const claw2Ws = createMockWs();
+	setupSockets('bot1', { ui: [tab1], bot: [claw1Ws] });
+	setupSockets('bot2', { ui: [tab3], bot: [claw2Ws] });
 
 	onUiMessage('bot1', tab1, JSON.stringify({ type: 'rtc:offer', payload: { sdp: 'offer1' } }));
 	onUiMessage('bot2', tab3, JSON.stringify({ type: 'rtc:offer', payload: { sdp: 'offer2' } }));
 
-	assert.equal(bot1Ws.sent.length, 1);
-	assert.equal(bot1Ws.sent[0].payload.sdp, 'offer1');
-	assert.equal(bot1Ws.sent[0].fromConnId, 'c_t1');
-	assert.equal(bot2Ws.sent.length, 1);
-	assert.equal(bot2Ws.sent[0].payload.sdp, 'offer2');
-	assert.equal(bot2Ws.sent[0].fromConnId, 'c_t3');
+	assert.equal(claw1Ws.sent.length, 1);
+	assert.equal(claw1Ws.sent[0].payload.sdp, 'offer1');
+	assert.equal(claw1Ws.sent[0].fromConnId, 'c_t1');
+	assert.equal(claw2Ws.sent.length, 1);
+	assert.equal(claw2Ws.sent[0].payload.sdp, 'offer2');
+	assert.equal(claw2Ws.sent[0].fromConnId, 'c_t3');
 
 	cleanupSockets('bot1');
 	cleanupSockets('bot2');
 });
 
-// --- Bot offline grace period ---
+// --- Claw offline grace period ---
 
-function cleanupGrace(botId) {
-	cleanupSockets(botId);
-	if (pendingOffline.has(botId)) {
-		clearTimeout(pendingOffline.get(botId));
-		pendingOffline.delete(botId);
+function cleanupGrace(clawId) {
+	cleanupSockets(clawId);
+	if (pendingOffline.has(clawId)) {
+		clearTimeout(pendingOffline.get(clawId));
+		pendingOffline.delete(clawId);
 	}
 }
 
-test('listOnlineBotIds 包含 grace period 中的 bot', () => {
-	// 模拟 grace period：pendingOffline 有 timer，botSockets 无 socket
+test('listOnlineClawIds 包含 grace period 中的 claw', () => {
+	// 模拟 grace period：pendingOffline 有 timer，clawSockets 无 socket
 	const timer = setTimeout(() => {}, 60_000);
 	pendingOffline.set('grace-bot', timer);
 
-	const ids = listOnlineBotIds();
-	assert.ok(ids.has('grace-bot'), 'grace period bot 应出现在 online 列表中');
+	const ids = listOnlineClawIds();
+	assert.ok(ids.has('grace-bot'), 'grace period claw 应出现在 online 列表中');
 
 	clearTimeout(timer);
 	pendingOffline.delete('grace-bot');
 });
 
-test('listOnlineBotIds 同时包含 connected 和 grace period 的 bot', () => {
+test('listOnlineClawIds 同时包含 connected 和 grace period 的 claw', () => {
 	const ws = createMockWs();
 	setupSockets('real-bot', { bot: [ws] });
 	const timer = setTimeout(() => {}, 60_000);
 	pendingOffline.set('grace-bot', timer);
 
-	const ids = listOnlineBotIds();
+	const ids = listOnlineClawIds();
 	assert.ok(ids.has('real-bot'));
 	assert.ok(ids.has('grace-bot'));
 
@@ -436,16 +436,16 @@ test('listOnlineBotIds 同时包含 connected 和 grace period 的 bot', () => {
 	cleanupGrace('grace-bot');
 });
 
-test('grace period 过期后 botStatusEmitter 发出 offline 事件', async () => {
+test('grace period 过期后 clawStatusEmitter 发出 offline 事件', async () => {
 	const events = [];
 	const listener = (evt) => events.push(evt);
-	botStatusEmitter.on('status', listener);
+	clawStatusEmitter.on('status', listener);
 
 	// 用极短的 timeout 模拟 grace 过期
 	const timer = setTimeout(() => {
 		pendingOffline.delete('expire-bot');
-		if (!botSockets.has('expire-bot')) {
-			botStatusEmitter.emit('status', { botId: 'expire-bot', online: false });
+		if (!clawSockets.has('expire-bot')) {
+			clawStatusEmitter.emit('status', { clawId: 'expire-bot', online: false });
 		}
 	}, 10);
 	pendingOffline.set('expire-bot', timer);
@@ -454,23 +454,23 @@ test('grace period 过期后 botStatusEmitter 发出 offline 事件', async () =
 	await new Promise((r) => setTimeout(r, 50));
 
 	assert.equal(events.length, 1);
-	assert.equal(events[0].botId, 'expire-bot');
+	assert.equal(events[0].clawId, 'expire-bot');
 	assert.equal(events[0].online, false);
 	assert.ok(!pendingOffline.has('expire-bot'));
 
-	botStatusEmitter.removeListener('status', listener);
+	clawStatusEmitter.removeListener('status', listener);
 });
 
-test('grace period 内 bot 重连：取消 pending offline，不发 offline 事件', async () => {
+test('grace period 内 claw 重连：取消 pending offline，不发 offline 事件', async () => {
 	const events = [];
 	const listener = (evt) => events.push(evt);
-	botStatusEmitter.on('status', listener);
+	clawStatusEmitter.on('status', listener);
 
 	// 设一个较长的 grace timer
 	const timer = setTimeout(() => {
 		pendingOffline.delete('reconn-bot');
-		if (!botSockets.has('reconn-bot')) {
-			botStatusEmitter.emit('status', { botId: 'reconn-bot', online: false });
+		if (!clawSockets.has('reconn-bot')) {
+			clawStatusEmitter.emit('status', { clawId: 'reconn-bot', online: false });
 		}
 	}, 200);
 	pendingOffline.set('reconn-bot', timer);
@@ -485,37 +485,37 @@ test('grace period 内 bot 重连：取消 pending offline，不发 offline 事�
 	await new Promise((r) => setTimeout(r, 250));
 
 	// 不应有 offline 事件
-	const offlineEvents = events.filter((e) => e.botId === 'reconn-bot' && !e.online);
+	const offlineEvents = events.filter((e) => e.clawId === 'reconn-bot' && !e.online);
 	assert.equal(offlineEvents.length, 0, '重连后不应发出 offline 事件');
 
-	botStatusEmitter.removeListener('status', listener);
+	clawStatusEmitter.removeListener('status', listener);
 	cleanupGrace('reconn-bot');
 });
 
-test('grace period 过期但 bot 已重连：不发 offline 事件', async () => {
+test('grace period 过期但 claw 已重连：不发 offline 事件', async () => {
 	const events = [];
 	const listener = (evt) => events.push(evt);
-	botStatusEmitter.on('status', listener);
+	clawStatusEmitter.on('status', listener);
 
-	// 先注册 socket（bot 已在线）
+	// 先注册 socket（claw 已在线）
 	const ws = createMockWs();
 	setupSockets('online-bot', { bot: [ws] });
 
-	// 模拟 grace timer 到期（但 botSockets 中仍有 socket）
+	// 模拟 grace timer 到期（但 clawSockets 中仍有 socket）
 	const timer = setTimeout(() => {
 		pendingOffline.delete('online-bot');
-		if (!botSockets.has('online-bot')) {
-			botStatusEmitter.emit('status', { botId: 'online-bot', online: false });
+		if (!clawSockets.has('online-bot')) {
+			clawStatusEmitter.emit('status', { clawId: 'online-bot', online: false });
 		}
 	}, 10);
 	pendingOffline.set('online-bot', timer);
 
 	await new Promise((r) => setTimeout(r, 50));
 
-	const offlineEvents = events.filter((e) => e.botId === 'online-bot' && !e.online);
-	assert.equal(offlineEvents.length, 0, 'bot 在线时 grace 过期不应发 offline');
+	const offlineEvents = events.filter((e) => e.clawId === 'online-bot' && !e.online);
+	assert.equal(offlineEvents.length, 0, 'claw 在线时 grace 过期不应发 offline');
 
-	botStatusEmitter.removeListener('status', listener);
+	clawStatusEmitter.removeListener('status', listener);
 	cleanupGrace('online-bot');
 });
 
@@ -536,8 +536,8 @@ test('broadcastToUi: ws.send 抛异常时不中断其他 socket 的发送', () =
 	const goodWs = createMockWs({ connId: 'c_good' });
 	setupSockets('bot1', { ui: [badWs, goodWs] });
 
-	// 通过 onBotMessage 触发 broadcastToUi（type=res 走 broadcastToUi 路径）
-	onBotMessage('bot1', createMockWs(), JSON.stringify({
+	// 通过 onClawMessage 触发 broadcastToUi（type=res 走 broadcastToUi 路径）
+	onClawMessage('bot1', createMockWs(), JSON.stringify({
 		type: 'res',
 		id: 'test-1',
 		ok: true,
@@ -550,15 +550,15 @@ test('broadcastToUi: ws.send 抛异常时不中断其他 socket 的发送', () =
 	cleanupSockets('bot1');
 });
 
-test('forwardToBot: ws.send 抛异常时不中断且仍返回 true', () => {
-	const badBotWs = {
+test('forwardToClaw: ws.send 抛异常时不中断且仍返回 true', () => {
+	const badClawWs = {
 		readyState: 1,
 		send() { throw new Error('ws write error'); },
 	};
-	setupSockets('bot1', { bot: [badBotWs] });
+	setupSockets('bot1', { bot: [badClawWs] });
 
 	const uiWs = createMockWs({ connId: 'c_ui1' });
-	// 通过 onUiMessage 触发 forwardToBot（type=req）
+	// 通过 onUiMessage 触发 forwardToClaw（type=req）
 	onUiMessage('bot1', uiWs, JSON.stringify({
 		type: 'req',
 		id: 'rpc-1',
@@ -566,8 +566,8 @@ test('forwardToBot: ws.send 抛异常时不中断且仍返回 true', () => {
 		params: {},
 	}));
 
-	// forwardToBot 的 send 抛异常但不应崩溃
-	// 且不会给 UI 回 BOT_OFFLINE 错误（因为 forwardToBot 返回 true）
+	// forwardToClaw 的 send 抛异常但不应崩溃
+	// 且不会给 UI 回 BOT_OFFLINE 错误（因为 forwardToClaw 返回 true）
 	assert.equal(uiWs.sent.length, 0);
 	cleanupSockets('bot1');
 });
@@ -584,18 +584,18 @@ test('fmtLocalTime: 无效值返回占位符', () => {
 	assert.equal(fmtLocalTime(undefined), '??:??:??.???');
 });
 
-// --- onBotMessage: type=log 远程日志 ---
+// --- onClawMessage: type=log 远程日志 ---
 
-test('onBotMessage: type=log 逐条输出到 console.info', () => {
-	const botWs = createMockWs();
-	setupSockets('bot1', { bot: [botWs] });
+test('onClawMessage: type=log 逐条输出到 console.info', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot1', { bot: [clawWs] });
 
 	const now = Date.now();
 	const logged = [];
 	const origInfo = console.info;
 	console.info = (msg) => logged.push(msg);
 	try {
-		onBotMessage('bot1', botWs, JSON.stringify({
+		onClawMessage('bot1', clawWs, JSON.stringify({
 			type: 'log',
 			logs: [
 				{ ts: now, text: 'ws.connected peer=server' },
@@ -603,7 +603,7 @@ test('onBotMessage: type=log 逐条输出到 console.info', () => {
 			],
 		}));
 		assert.equal(logged.length, 2);
-		assert.match(logged[0], /\[remote\]\[plugin\]\[bot:bot1\]/);
+		assert.match(logged[0], /\[remote\]\[plugin\]\[claw:bot1\]/);
 		assert.match(logged[0], /ws\.connected/);
 		// ts 被转换为本地时间格式
 		assert.match(logged[0], /\d{2}:\d{2}:\d{2}\.\d{3}/);
@@ -614,15 +614,15 @@ test('onBotMessage: type=log 逐条输出到 console.info', () => {
 	}
 });
 
-test('onBotMessage: type=log 忽略非 {ts,text} 条目', () => {
-	const botWs = createMockWs();
-	setupSockets('bot1', { bot: [botWs] });
+test('onClawMessage: type=log 忽略非 {ts,text} 条目', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot1', { bot: [clawWs] });
 
 	const logged = [];
 	const origInfo = console.info;
 	console.info = (msg) => logged.push(msg);
 	try {
-		onBotMessage('bot1', botWs, JSON.stringify({
+		onClawMessage('bot1', clawWs, JSON.stringify({
 			type: 'log',
 			logs: [
 				{ ts: Date.now(), text: 'valid' },
@@ -645,15 +645,15 @@ test('onBotMessage: type=log 忽略非 {ts,text} 条目', () => {
 	}
 });
 
-test('onBotMessage: type=log logs 不是数组时静默忽略', () => {
-	const botWs = createMockWs();
-	setupSockets('bot1', { bot: [botWs] });
+test('onClawMessage: type=log logs 不是数组时静默忽略', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot1', { bot: [clawWs] });
 
 	const logged = [];
 	const origInfo = console.info;
 	console.info = (msg) => logged.push(msg);
 	try {
-		onBotMessage('bot1', botWs, JSON.stringify({
+		onClawMessage('bot1', clawWs, JSON.stringify({
 			type: 'log',
 			logs: 'not-an-array',
 		}));
@@ -664,15 +664,15 @@ test('onBotMessage: type=log logs 不是数组时静默忽略', () => {
 	}
 });
 
-test('onBotMessage: type=log 不转发给 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: type=log 不转发给 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ui_log' });
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
 	const origInfo = console.info;
 	console.info = () => {};
 	try {
-		onBotMessage('bot1', botWs, JSON.stringify({
+		onClawMessage('bot1', clawWs, JSON.stringify({
 			type: 'log',
 			logs: [{ ts: Date.now(), text: 'some log line' }],
 		}));
@@ -683,14 +683,14 @@ test('onBotMessage: type=log 不转发给 UI', () => {
 	}
 });
 
-test('onBotMessage: bot.unbound 中 ws.close 抛异常时不崩溃', () => {
-	const botWs = createMockWs();
-	botWs.close = () => { throw new Error('close failed'); };
+test('onClawMessage: bot.unbound 中 ws.close 抛异常时不崩溃', () => {
+	const clawWs = createMockWs();
+	clawWs.close = () => { throw new Error('close failed'); };
 	const uiWs = createMockWs({ connId: 'c_ui' });
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
 	// 不应抛异常
-	onBotMessage('bot1', botWs, JSON.stringify({
+	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'bot.unbound',
 		reason: 'token_revoked',
 		botId: 'bot1',
@@ -702,14 +702,14 @@ test('onBotMessage: bot.unbound 中 ws.close 抛异常时不崩溃', () => {
 	cleanupSockets('bot1');
 });
 
-// --- onBotMessage: coclaw.info.updated 事件持久化 bot.name，不转发给 UI ---
+// --- onClawMessage: coclaw.info.updated 事件持久化 claw.name，不转发给 UI ---
 
-test('onBotMessage: coclaw.info.updated 不转发给 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: coclaw.info.updated 不转发给 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ui' });
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot1', botWs, JSON.stringify({
+	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'coclaw.info.updated',
 		payload: { name: 'My Claw', hostName: 'test-host' },
@@ -720,12 +720,12 @@ test('onBotMessage: coclaw.info.updated 不转发给 UI', () => {
 	cleanupSockets('bot1');
 });
 
-test('onBotMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
-	const botWs = createMockWs();
+test('onClawMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ui' });
-	setupSockets('bot1', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot1', botWs, JSON.stringify({
+	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'coclaw.info.updated',
 		payload: { name: null, hostName: 'fallback-host' },
@@ -736,7 +736,7 @@ test('onBotMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
 	cleanupSockets('bot1');
 });
 
-// --- 创建支持 getAnyOnlineBotSocket 的 mock ws（带 OPEN 属性） ---
+// --- 创建支持 getAnyOnlineClawSocket 的 mock ws（带 OPEN 属性） ---
 function createRpcMockWs(opts = {}) {
 	const sent = [];
 	const ws = {
@@ -754,38 +754,38 @@ function createRpcMockWs(opts = {}) {
 	return ws;
 }
 
-// --- notifyAndDisconnectBot ---
+// --- notifyAndDisconnectClaw ---
 
-test('notifyAndDisconnectBot: botId 为空时直接返回', () => {
+test('notifyAndDisconnectClaw: clawId 为空时直接返回', () => {
 	// 不应抛异常
-	notifyAndDisconnectBot(null);
-	notifyAndDisconnectBot(undefined);
-	notifyAndDisconnectBot('');
-	notifyAndDisconnectBot(0);
+	notifyAndDisconnectClaw(null);
+	notifyAndDisconnectClaw(undefined);
+	notifyAndDisconnectClaw('');
+	notifyAndDisconnectClaw(0);
 });
 
-test('notifyAndDisconnectBot: botSockets 中无连接时直接返回', () => {
+test('notifyAndDisconnectClaw: clawSockets 中无连接时直接返回', () => {
 	// 不应抛异常
-	notifyAndDisconnectBot('nonexistent-bot', 'token_revoked');
+	notifyAndDisconnectClaw('nonexistent-bot', 'token_revoked');
 });
 
-test('notifyAndDisconnectBot: 通知 bot 和 UI 并断开连接', () => {
-	const botWs = createMockWs();
+test('notifyAndDisconnectClaw: 通知 claw 和 UI 并断开连接', () => {
+	const clawWs = createMockWs();
 	const closed = [];
-	botWs.close = (code, reason) => closed.push({ code, reason });
+	clawWs.close = (code, reason) => closed.push({ code, reason });
 	const uiWs = createMockWs({ connId: 'c_notify' });
-	setupSockets('bot-notify', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-notify', { ui: [uiWs], bot: [clawWs] });
 
-	notifyAndDisconnectBot('bot-notify', 'token_revoked');
+	notifyAndDisconnectClaw('bot-notify', 'token_revoked');
 
-	// bot 应收到 bot.unbound 消息
-	assert.equal(botWs.sent.length, 1);
-	assert.equal(botWs.sent[0].type, 'bot.unbound');
-	assert.equal(botWs.sent[0].reason, 'token_revoked');
-	assert.equal(botWs.sent[0].botId, 'bot-notify');
-	assert.ok(botWs.sent[0].at); // ISO 时间戳
+	// claw 应收到 bot.unbound 消息
+	assert.equal(clawWs.sent.length, 1);
+	assert.equal(clawWs.sent[0].type, 'bot.unbound');
+	assert.equal(clawWs.sent[0].reason, 'token_revoked');
+	assert.equal(clawWs.sent[0].botId, 'bot-notify');
+	assert.ok(clawWs.sent[0].at); // ISO 时间戳
 
-	// bot 连接以 4001 关闭
+	// claw 连接以 4001 关闭
 	assert.equal(closed.length, 1);
 	assert.equal(closed[0].code, 4001);
 	assert.equal(closed[0].reason, 'token_revoked');
@@ -797,88 +797,88 @@ test('notifyAndDisconnectBot: 通知 bot 和 UI 并断开连接', () => {
 	cleanupSockets('bot-notify');
 });
 
-test('notifyAndDisconnectBot: bot_blocked 使用 closeCode 4003', () => {
-	const botWs = createMockWs();
+test('notifyAndDisconnectClaw: bot_blocked 使用 closeCode 4003', () => {
+	const clawWs = createMockWs();
 	const closed = [];
-	botWs.close = (code, reason) => closed.push({ code, reason });
-	setupSockets('bot-block', { bot: [botWs] });
+	clawWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-block', { bot: [clawWs] });
 
-	notifyAndDisconnectBot('bot-block', 'bot_blocked');
+	notifyAndDisconnectClaw('bot-block', 'bot_blocked');
 
 	assert.equal(closed[0].code, 4003);
 	assert.equal(closed[0].reason, 'bot_blocked');
 	cleanupSockets('bot-block');
 });
 
-test('notifyAndDisconnectBot: bot_unbound 使用 closeCode 4001', () => {
-	const botWs = createMockWs();
+test('notifyAndDisconnectClaw: bot_unbound 使用 closeCode 4001', () => {
+	const clawWs = createMockWs();
 	const closed = [];
-	botWs.close = (code, reason) => closed.push({ code, reason });
-	setupSockets('bot-unbind', { bot: [botWs] });
+	clawWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-unbind', { bot: [clawWs] });
 
-	notifyAndDisconnectBot('bot-unbind', 'bot_unbound');
+	notifyAndDisconnectClaw('bot-unbind', 'bot_unbound');
 
 	assert.equal(closed[0].code, 4001);
 	cleanupSockets('bot-unbind');
 });
 
-test('notifyAndDisconnectBot: 默认 reason 为 token_revoked', () => {
-	const botWs = createMockWs();
+test('notifyAndDisconnectClaw: 默认 reason 为 token_revoked', () => {
+	const clawWs = createMockWs();
 	const closed = [];
-	botWs.close = (code, reason) => closed.push({ code, reason });
-	setupSockets('bot-default', { bot: [botWs] });
+	clawWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-default', { bot: [clawWs] });
 
-	notifyAndDisconnectBot('bot-default');
+	notifyAndDisconnectClaw('bot-default');
 
-	assert.equal(botWs.sent[0].reason, 'token_revoked');
+	assert.equal(clawWs.sent[0].reason, 'token_revoked');
 	assert.equal(closed[0].code, 4001);
 	cleanupSockets('bot-default');
 });
 
-test('notifyAndDisconnectBot: ws.send 抛异常不中断后续 close', () => {
-	const botWs = createMockWs();
-	botWs.send = () => { throw new Error('send error'); };
+test('notifyAndDisconnectClaw: ws.send 抛异常不中断后续 close', () => {
+	const clawWs = createMockWs();
+	clawWs.send = () => { throw new Error('send error'); };
 	const closed = [];
-	botWs.close = (code, reason) => closed.push({ code, reason });
-	setupSockets('bot-sendfail', { bot: [botWs] });
+	clawWs.close = (code, reason) => closed.push({ code, reason });
+	setupSockets('bot-sendfail', { bot: [clawWs] });
 
 	// 不应抛异常
-	notifyAndDisconnectBot('bot-sendfail', 'token_revoked');
+	notifyAndDisconnectClaw('bot-sendfail', 'token_revoked');
 
 	// close 仍然被调用
 	assert.equal(closed.length, 1);
 	cleanupSockets('bot-sendfail');
 });
 
-test('notifyAndDisconnectBot: ws.close 抛异常不崩溃', () => {
-	const botWs = createMockWs();
-	botWs.close = () => { throw new Error('close error'); };
-	setupSockets('bot-closefail', { bot: [botWs] });
+test('notifyAndDisconnectClaw: ws.close 抛异常不崩溃', () => {
+	const clawWs = createMockWs();
+	clawWs.close = () => { throw new Error('close error'); };
+	setupSockets('bot-closefail', { bot: [clawWs] });
 
 	// 不应抛异常
-	notifyAndDisconnectBot('bot-closefail', 'token_revoked');
+	notifyAndDisconnectClaw('bot-closefail', 'token_revoked');
 
 	// send 仍被调用
-	assert.equal(botWs.sent.length, 1);
+	assert.equal(clawWs.sent.length, 1);
 	cleanupSockets('bot-closefail');
 });
 
-test('notifyAndDisconnectBot: 清理 grace period timer', () => {
-	const botWs = createMockWs();
-	botWs.close = () => {};
-	setupSockets('bot-grace-clean', { bot: [botWs] });
+test('notifyAndDisconnectClaw: 清理 grace period timer', () => {
+	const clawWs = createMockWs();
+	clawWs.close = () => {};
+	setupSockets('bot-grace-clean', { bot: [clawWs] });
 
 	// 模拟 grace period
 	const timer = setTimeout(() => {}, 60_000);
 	pendingOffline.set('bot-grace-clean', timer);
 
-	notifyAndDisconnectBot('bot-grace-clean', 'token_revoked');
+	notifyAndDisconnectClaw('bot-grace-clean', 'token_revoked');
 
 	assert.ok(!pendingOffline.has('bot-grace-clean'), 'grace period 应被清理');
 	cleanupSockets('bot-grace-clean');
 });
 
-test('notifyAndDisconnectBot: 多个 bot socket 全部收到通知并关闭', () => {
+test('notifyAndDisconnectClaw: 多个 claw socket 全部收到通知并关闭', () => {
 	const ws1 = createMockWs();
 	const ws2 = createMockWs();
 	const closed1 = [];
@@ -887,7 +887,7 @@ test('notifyAndDisconnectBot: 多个 bot socket 全部收到通知并关闭', ()
 	ws2.close = (code, reason) => closed2.push({ code, reason });
 	setupSockets('bot-multi', { bot: [ws1, ws2] });
 
-	notifyAndDisconnectBot('bot-multi', 'token_revoked');
+	notifyAndDisconnectClaw('bot-multi', 'token_revoked');
 
 	assert.equal(ws1.sent.length, 1);
 	assert.equal(ws2.sent.length, 1);
@@ -896,23 +896,23 @@ test('notifyAndDisconnectBot: 多个 bot socket 全部收到通知并关闭', ()
 	cleanupSockets('bot-multi');
 });
 
-test('notifyAndDisconnectBot: botId 为数字时转为字符串处理', () => {
-	const botWs = createMockWs();
-	botWs.close = () => {};
-	setupSockets('42', { bot: [botWs] });
+test('notifyAndDisconnectClaw: clawId 为数字时转为字符串处理', () => {
+	const clawWs = createMockWs();
+	clawWs.close = () => {};
+	setupSockets('42', { bot: [clawWs] });
 
-	notifyAndDisconnectBot(42, 'token_revoked');
+	notifyAndDisconnectClaw(42, 'token_revoked');
 
-	assert.equal(botWs.sent.length, 1);
-	assert.equal(botWs.sent[0].botId, '42');
+	assert.equal(clawWs.sent.length, 1);
+	assert.equal(clawWs.sent[0].botId, '42');
 	cleanupSockets('42');
 });
 
-// --- onUiMessage: bot 离线时回 BOT_OFFLINE 错误 ---
+// --- onUiMessage: claw 离线时回 BOT_OFFLINE 错误 ---
 
-test('onUiMessage: bot 离线且消息有 id 时回 BOT_OFFLINE 错误', () => {
+test('onUiMessage: claw 离线且消息有 id 时回 BOT_OFFLINE 错误', () => {
 	const uiWs = createMockWs({ connId: 'c_off2' });
-	setupSockets('bot-off', { ui: [uiWs] }); // 无 bot socket
+	setupSockets('bot-off', { ui: [uiWs] }); // 无 claw socket
 
 	onUiMessage('bot-off', uiWs, JSON.stringify({
 		type: 'req',
@@ -929,9 +929,9 @@ test('onUiMessage: bot 离线且消息有 id 时回 BOT_OFFLINE 错误', () => {
 	cleanupSockets('bot-off');
 });
 
-test('onUiMessage: bot 离线且消息无 id 时不回错误', () => {
+test('onUiMessage: claw 离线且消息无 id 时不回错误', () => {
 	const uiWs = createMockWs({ connId: 'c_off3' });
-	setupSockets('bot-off2', { ui: [uiWs] }); // 无 bot socket
+	setupSockets('bot-off2', { ui: [uiWs] }); // 无 claw socket
 
 	onUiMessage('bot-off2', uiWs, JSON.stringify({
 		type: 'req',
@@ -944,10 +944,10 @@ test('onUiMessage: bot 离线且消息无 id 时不回错误', () => {
 	cleanupSockets('bot-off2');
 });
 
-test('onUiMessage: bot 离线回 BOT_OFFLINE 时 ws.send 抛异常不崩溃', () => {
+test('onUiMessage: claw 离线回 BOT_OFFLINE 时 ws.send 抛异常不崩溃', () => {
 	const uiWs = createMockWs({ connId: 'c_off4' });
 	uiWs.send = () => { throw new Error('ws closed'); };
-	setupSockets('bot-off3', { ui: [uiWs] }); // 无 bot socket
+	setupSockets('bot-off3', { ui: [uiWs] }); // 无 claw socket
 
 	// 不应抛异常
 	onUiMessage('bot-off3', uiWs, JSON.stringify({
@@ -961,10 +961,10 @@ test('onUiMessage: bot 离线回 BOT_OFFLINE 时 ws.send 抛异常不崩溃', ()
 
 // --- onUiMessage: rpc.req 规范化 ---
 
-test('onUiMessage: rpc.req 规范化为 req 转发到 bot', () => {
+test('onUiMessage: rpc.req 规范化为 req 转发到 claw', () => {
 	const uiWs = createMockWs({ connId: 'c_rpc1' });
-	const botWs = createMockWs();
-	setupSockets('bot-rpc', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot-rpc', { ui: [uiWs], bot: [clawWs] });
 
 	onUiMessage('bot-rpc', uiWs, JSON.stringify({
 		type: 'rpc.req',
@@ -973,18 +973,18 @@ test('onUiMessage: rpc.req 规范化为 req 转发到 bot', () => {
 		params: { foo: 'bar' },
 	}));
 
-	assert.equal(botWs.sent.length, 1);
-	assert.equal(botWs.sent[0].type, 'req');
-	assert.equal(botWs.sent[0].id, 'rpc-1');
-	assert.equal(botWs.sent[0].method, 'test.method');
-	assert.deepEqual(botWs.sent[0].params, { foo: 'bar' });
+	assert.equal(clawWs.sent.length, 1);
+	assert.equal(clawWs.sent[0].type, 'req');
+	assert.equal(clawWs.sent[0].id, 'rpc-1');
+	assert.equal(clawWs.sent[0].method, 'test.method');
+	assert.deepEqual(clawWs.sent[0].params, { foo: 'bar' });
 	cleanupSockets('bot-rpc');
 });
 
 test('onUiMessage: rpc.req 无 params 时默认为空对象', () => {
 	const uiWs = createMockWs({ connId: 'c_rpc2' });
-	const botWs = createMockWs();
-	setupSockets('bot-rpc2', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot-rpc2', { ui: [uiWs], bot: [clawWs] });
 
 	onUiMessage('bot-rpc2', uiWs, JSON.stringify({
 		type: 'rpc.req',
@@ -992,7 +992,7 @@ test('onUiMessage: rpc.req 无 params 时默认为空对象', () => {
 		method: 'test.method',
 	}));
 
-	assert.deepEqual(botWs.sent[0].params, {});
+	assert.deepEqual(clawWs.sent[0].params, {});
 	cleanupSockets('bot-rpc2');
 });
 
@@ -1000,8 +1000,8 @@ test('onUiMessage: rpc.req 无 params 时默认为空对象', () => {
 
 test('onUiMessage: agent 请求带附件时输出诊断日志', () => {
 	const uiWs = createMockWs({ connId: 'c_att' });
-	const botWs = createMockWs();
-	setupSockets('bot-att', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot-att', { ui: [uiWs], bot: [clawWs] });
 
 	const logged = [];
 	const origInfo = console.info;
@@ -1027,14 +1027,14 @@ test('onUiMessage: agent 请求带附件时输出诊断日志', () => {
 	}
 });
 
-// --- onBotMessage: rpc.res 规范化 ---
+// --- onClawMessage: rpc.res 规范化 ---
 
-test('onBotMessage: rpc.res 规范化为 res 转发到 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: rpc.res 规范化为 res 转发到 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_rpcres' });
-	setupSockets('bot-rpcres', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-rpcres', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-rpcres', botWs, JSON.stringify({
+	onClawMessage('bot-rpcres', clawWs, JSON.stringify({
 		type: 'rpc.res',
 		id: 'res-1',
 		ok: true,
@@ -1049,12 +1049,12 @@ test('onBotMessage: rpc.res 规范化为 res 转发到 UI', () => {
 	cleanupSockets('bot-rpcres');
 });
 
-test('onBotMessage: rpc.res 带 error 字段转发到 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: rpc.res 带 error 字段转发到 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_rpcerr' });
-	setupSockets('bot-rpcerr', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-rpcerr', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-rpcerr', botWs, JSON.stringify({
+	onClawMessage('bot-rpcerr', clawWs, JSON.stringify({
 		type: 'rpc.res',
 		id: 'res-2',
 		ok: false,
@@ -1066,14 +1066,14 @@ test('onBotMessage: rpc.res 带 error 字段转发到 UI', () => {
 	cleanupSockets('bot-rpcerr');
 });
 
-// --- onBotMessage: rpc.event 规范化 ---
+// --- onClawMessage: rpc.event 规范化 ---
 
-test('onBotMessage: rpc.event 规范化为 event 转发到 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: rpc.event 规范化为 event 转发到 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_rpcevt' });
-	setupSockets('bot-rpcevt', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-rpcevt', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-rpcevt', botWs, JSON.stringify({
+	onClawMessage('bot-rpcevt', clawWs, JSON.stringify({
 		type: 'rpc.event',
 		event: 'agent.status',
 		payload: { status: 'ready' },
@@ -1086,14 +1086,14 @@ test('onBotMessage: rpc.event 规范化为 event 转发到 UI', () => {
 	cleanupSockets('bot-rpcevt');
 });
 
-// --- onBotMessage: 普通 event 原样转发 ---
+// --- onClawMessage: 普通 event 原样转发 ---
 
-test('onBotMessage: 普通 event 原样转发给 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: 普通 event 原样转发给 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_evt' });
-	setupSockets('bot-evt', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-evt', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-evt', botWs, JSON.stringify({
+	onClawMessage('bot-evt', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'custom.event',
 		payload: { key: 'value' },
@@ -1105,14 +1105,14 @@ test('onBotMessage: 普通 event 原样转发给 UI', () => {
 	cleanupSockets('bot-evt');
 });
 
-// --- onBotMessage: 普通 res 原样转发 ---
+// --- onClawMessage: 普通 res 原样转发 ---
 
-test('onBotMessage: 普通 res 原样转发给 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: 普通 res 原样转发给 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_res' });
-	setupSockets('bot-res', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-res', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-res', botWs, JSON.stringify({
+	onClawMessage('bot-res', clawWs, JSON.stringify({
 		type: 'res',
 		id: 'res-plain',
 		ok: true,
@@ -1125,47 +1125,47 @@ test('onBotMessage: 普通 res 原样转发给 UI', () => {
 	cleanupSockets('bot-res');
 });
 
-// --- onBotMessage: ping 回复 pong ---
+// --- onClawMessage: ping 回复 pong ---
 
-test('onBotMessage: ping 类型回复 pong，不转发给 UI', () => {
-	const botWs = createMockWs();
+test('onClawMessage: ping 类型回复 pong，不转发给 UI', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ping' });
-	setupSockets('bot-ping', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-ping', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-ping', botWs, JSON.stringify({ type: 'ping' }));
+	onClawMessage('bot-ping', clawWs, JSON.stringify({ type: 'ping' }));
 
-	// bot ws 收到 pong
-	assert.equal(botWs.sent.length, 1);
-	assert.equal(botWs.sent[0].type, 'pong');
+	// claw ws 收到 pong
+	assert.equal(clawWs.sent.length, 1);
+	assert.equal(clawWs.sent[0].type, 'pong');
 	// UI 不应收到
 	assert.equal(uiWs.sent.length, 0);
 	cleanupSockets('bot-ping');
 });
 
-test('onBotMessage: ping 时 ws.send 抛异常不崩溃', () => {
-	const botWs = createMockWs();
-	botWs.send = () => { throw new Error('closed'); };
-	setupSockets('bot-ping2', { bot: [botWs] });
+test('onClawMessage: ping 时 ws.send 抛异常不崩溃', () => {
+	const clawWs = createMockWs();
+	clawWs.send = () => { throw new Error('closed'); };
+	setupSockets('bot-ping2', { bot: [clawWs] });
 
 	// 不应抛异常
-	onBotMessage('bot-ping2', botWs, JSON.stringify({ type: 'ping' }));
+	onClawMessage('bot-ping2', clawWs, JSON.stringify({ type: 'ping' }));
 	cleanupSockets('bot-ping2');
 });
 
 // --- onUiMessage: ping 回复 pong ---
 
-test('onUiMessage: ping 类型回复 pong，不转发给 bot', () => {
+test('onUiMessage: ping 类型回复 pong，不转发给 claw', () => {
 	const uiWs = createMockWs({ connId: 'c_uiping' });
-	const botWs = createMockWs();
-	setupSockets('bot-uiping', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot-uiping', { ui: [uiWs], bot: [clawWs] });
 
 	onUiMessage('bot-uiping', uiWs, JSON.stringify({ type: 'ping' }));
 
 	// UI ws 收到 pong
 	assert.equal(uiWs.sent.length, 1);
 	assert.equal(uiWs.sent[0].type, 'pong');
-	// bot 不应收到
-	assert.equal(botWs.sent.length, 0);
+	// claw 不应收到
+	assert.equal(clawWs.sent.length, 0);
 	cleanupSockets('bot-uiping');
 });
 
@@ -1179,30 +1179,30 @@ test('onUiMessage: ping 时 ws.send 抛异常不崩溃', () => {
 	cleanupSockets('bot-uiping2');
 });
 
-// --- onBotMessage / onUiMessage: 无效 JSON / 非对象 ---
+// --- onClawMessage / onUiMessage: 无效 JSON / 非对象 ---
 
-test('onBotMessage: 无效 JSON 静默忽略', () => {
-	const botWs = createMockWs();
-	setupSockets('bot-bad', { bot: [botWs] });
+test('onClawMessage: 无效 JSON 静默忽略', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot-bad', { bot: [clawWs] });
 
 	// 不应抛异常
-	onBotMessage('bot-bad', botWs, 'not-json{{{');
+	onClawMessage('bot-bad', clawWs, 'not-json{{{');
 	cleanupSockets('bot-bad');
 });
 
-test('onBotMessage: null payload 静默忽略', () => {
-	const botWs = createMockWs();
-	setupSockets('bot-null', { bot: [botWs] });
+test('onClawMessage: null payload 静默忽略', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot-null', { bot: [clawWs] });
 
-	onBotMessage('bot-null', botWs, JSON.stringify(null));
+	onClawMessage('bot-null', clawWs, JSON.stringify(null));
 	cleanupSockets('bot-null');
 });
 
-test('onBotMessage: 非对象 payload 静默忽略', () => {
-	const botWs = createMockWs();
-	setupSockets('bot-str', { bot: [botWs] });
+test('onClawMessage: 非对象 payload 静默忽略', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot-str', { bot: [clawWs] });
 
-	onBotMessage('bot-str', botWs, JSON.stringify('a string'));
+	onClawMessage('bot-str', clawWs, JSON.stringify('a string'));
 	cleanupSockets('bot-str');
 });
 
@@ -1233,79 +1233,79 @@ test('onUiMessage: 非对象 payload 静默忽略', () => {
 
 // --- onUiMessage: rtc:closed 转发 ---
 
-test('onUiMessage: rtc:closed 转发到 bot', () => {
+test('onUiMessage: rtc:closed 转发到 claw', () => {
 	const uiWs = createMockWs({ connId: 'c_cl2' });
-	const botWs = createMockWs();
-	setupSockets('bot-cl', { ui: [uiWs], bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot-cl', { ui: [uiWs], bot: [clawWs] });
 
 	onUiMessage('bot-cl', uiWs, JSON.stringify({ type: 'rtc:closed' }));
 
-	assert.equal(botWs.sent.length, 1);
-	assert.equal(botWs.sent[0].type, 'rtc:closed');
-	assert.equal(botWs.sent[0].fromConnId, 'c_cl2');
+	assert.equal(clawWs.sent.length, 1);
+	assert.equal(clawWs.sent[0].type, 'rtc:closed');
+	assert.equal(clawWs.sent[0].fromConnId, 'c_cl2');
 	cleanupSockets('bot-cl');
 });
 
-// --- refreshBotName: bot 离线时返回 undefined ---
+// --- refreshClawName: claw 离线时返回 undefined ---
 
-test('refreshBotName: bot 离线（无 socket）时返回 undefined', async () => {
-	const result = await refreshBotName('99999');
+test('refreshClawName: claw 离线（无 socket）时返回 undefined', async () => {
+	const result = await refreshClawName('99999');
 	assert.equal(result, undefined);
 });
 
-// --- refreshBotName: bot 在线但 rpc 返回 ok !== true ---
+// --- refreshClawName: claw 在线但 rpc 返回 ok !== true ---
 
-test('refreshBotName: rpc 返回 ok=false 时返回 undefined', async () => {
-	// 使用 rpcMockWs 使 getAnyOnlineBotSocket 返回有效 socket
+test('refreshClawName: rpc 返回 ok=false 时返回 undefined', async () => {
+	// 使用 rpcMockWs 使 getAnyOnlineClawSocket 返回有效 socket
 	const ws = createRpcMockWs();
 	setupSockets('rpc-bot-1', { bot: [ws] });
 
-	// requestBotRpc 会发消息到 ws，但没有人回复，会超时
+	// requestClawRpc 会发消息到 ws，但没有人回复，会超时
 	// 用极短超时使其快速失败
-	const result = await refreshBotName('rpc-bot-1', { timeoutMs: 10 }).catch(() => undefined);
+	const result = await refreshClawName('rpc-bot-1', { timeoutMs: 10 }).catch(() => undefined);
 	assert.equal(result, undefined);
 
 	cleanupSockets('rpc-bot-1');
 });
 
-// --- forwardToBot: 直接测试 ---
+// --- forwardToClaw: 直接测试 ---
 
-test('forwardToBot: 无 socket 时返回 false', () => {
-	const result = forwardToBot('nonexistent-bot', { type: 'req' });
+test('forwardToClaw: 无 socket 时返回 false', () => {
+	const result = forwardToClaw('nonexistent-bot', { type: 'req' });
 	assert.equal(result, false);
 });
 
-test('forwardToBot: 有 socket 时返回 true', () => {
-	const botWs = createMockWs();
-	setupSockets('fwd-bot', { bot: [botWs] });
+test('forwardToClaw: 有 socket 时返回 true', () => {
+	const clawWs = createMockWs();
+	setupSockets('fwd-bot', { bot: [clawWs] });
 
-	const result = forwardToBot('fwd-bot', { type: 'req', id: '1' });
+	const result = forwardToClaw('fwd-bot', { type: 'req', id: '1' });
 	assert.equal(result, true);
-	assert.equal(botWs.sent.length, 1);
+	assert.equal(clawWs.sent.length, 1);
 	cleanupSockets('fwd-bot');
 });
 
-test('forwardToBot: 空 set 返回 false', () => {
-	botSockets.set('empty-bot', new Set());
-	const result = forwardToBot('empty-bot', { type: 'req' });
+test('forwardToClaw: 空 set 返回 false', () => {
+	clawSockets.set('empty-bot', new Set());
+	const result = forwardToClaw('empty-bot', { type: 'req' });
 	assert.equal(result, false);
-	botSockets.delete('empty-bot');
+	clawSockets.delete('empty-bot');
 });
 
-// --- BOT_OFFLINE_GRACE_MS 常量验证 ---
+// --- CLAW_OFFLINE_GRACE_MS 常量验证 ---
 
-test('BOT_OFFLINE_GRACE_MS 为 5000ms', () => {
-	assert.equal(BOT_OFFLINE_GRACE_MS, 5000);
+test('CLAW_OFFLINE_GRACE_MS 为 5000ms', () => {
+	assert.equal(CLAW_OFFLINE_GRACE_MS, 5000);
 });
 
-// --- onBotMessage: 未知 type 不转发也不崩溃 ---
+// --- onClawMessage: 未知 type 不转发也不崩溃 ---
 
-test('onBotMessage: 未知 type 静默忽略', () => {
-	const botWs = createMockWs();
+test('onClawMessage: 未知 type 静默忽略', () => {
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_unk' });
-	setupSockets('bot-unk', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-unk', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-unk', botWs, JSON.stringify({ type: 'unknown_type', data: 123 }));
+	onClawMessage('bot-unk', clawWs, JSON.stringify({ type: 'unknown_type', data: 123 }));
 
 	// UI 不应收到
 	assert.equal(uiWs.sent.length, 0);
@@ -1319,27 +1319,27 @@ test('onUiMessage: rtc:offer 在无 TURN_SECRET 时不附带 turnCreds', () => {
 	delete process.env.TURN_SECRET;
 	try {
 		const uiWs = createMockWs({ connId: 'c_noturn' });
-		const botWs = createMockWs();
-		setupSockets('bot-noturn', { ui: [uiWs], bot: [botWs] });
+		const clawWs = createMockWs();
+		setupSockets('bot-noturn', { ui: [uiWs], bot: [clawWs] });
 
 		onUiMessage('bot-noturn', uiWs, JSON.stringify({
 			type: 'rtc:offer',
 			payload: { sdp: 'sdp' },
 		}));
 
-		assert.equal(botWs.sent.length, 1);
-		assert.equal(botWs.sent[0].turnCreds, undefined);
+		assert.equal(clawWs.sent.length, 1);
+		assert.equal(clawWs.sent[0].turnCreds, undefined);
 		cleanupSockets('bot-noturn');
 	} finally {
 		process.env.TURN_SECRET = origSecret;
 	}
 });
 
-// --- onUiMessage: rtc:ice bot 离线时静默丢弃 ---
+// --- onUiMessage: rtc:ice claw 离线时静默丢弃 ---
 
-test('onUiMessage: rtc:ice bot 离线时静默丢弃', () => {
+test('onUiMessage: rtc:ice claw 离线时静默丢弃', () => {
 	const uiWs = createMockWs({ connId: 'c_iceoff' });
-	setupSockets('bot-iceoff', { ui: [uiWs] }); // 无 bot
+	setupSockets('bot-iceoff', { ui: [uiWs] }); // 无 claw
 
 	onUiMessage('bot-iceoff', uiWs, JSON.stringify({
 		type: 'rtc:ice',
@@ -1350,18 +1350,18 @@ test('onUiMessage: rtc:ice bot 离线时静默丢弃', () => {
 	cleanupSockets('bot-iceoff');
 });
 
-// --- onBotMessage: rtc:answer 通过信令路由表投递 ---
+// --- onClawMessage: rtc:answer 通过信令路由表投递 ---
 
-test('onBotMessage: rtc:answer 通过 signal-router 投递成功时不走 fallback', () => {
+test('onClawMessage: rtc:answer 通过 signal-router 投递成功时不走 fallback', () => {
 	const routeWs = createMockWs({ connId: 'c_sr1' });
 	// 注册到信令路由表
 	registerSignalRoute('c_sr1', routeWs, 'bot-sr', 'user1');
 
-	const botWs = createMockWs();
+	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_sr1' });
-	setupSockets('bot-sr', { ui: [uiWs], bot: [botWs] });
+	setupSockets('bot-sr', { ui: [uiWs], bot: [clawWs] });
 
-	onBotMessage('bot-sr', botWs, JSON.stringify({
+	onClawMessage('bot-sr', clawWs, JSON.stringify({
 		type: 'rtc:answer',
 		toConnId: 'c_sr1',
 		payload: { sdp: 'signal-router-answer' },
@@ -1376,14 +1376,14 @@ test('onBotMessage: rtc:answer 通过 signal-router 投递成功时不走 fallba
 	cleanupSockets('bot-sr');
 });
 
-test('onBotMessage: rtc:ice 通过 signal-router 投递', () => {
+test('onClawMessage: rtc:ice 通过 signal-router 投递', () => {
 	const routeWs = createMockWs({ connId: 'c_sr2' });
 	registerSignalRoute('c_sr2', routeWs, 'bot-sr2', 'user1');
 
-	const botWs = createMockWs();
-	setupSockets('bot-sr2', { bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot-sr2', { bot: [clawWs] });
 
-	onBotMessage('bot-sr2', botWs, JSON.stringify({
+	onClawMessage('bot-sr2', clawWs, JSON.stringify({
 		type: 'rtc:ice',
 		toConnId: 'c_sr2',
 		payload: { candidate: 'ice-via-router' },
@@ -1396,14 +1396,14 @@ test('onBotMessage: rtc:ice 通过 signal-router 投递', () => {
 	cleanupSockets('bot-sr2');
 });
 
-test('onBotMessage: rtc:closed 通过 signal-router 投递', () => {
+test('onClawMessage: rtc:closed 通过 signal-router 投递', () => {
 	const routeWs = createMockWs({ connId: 'c_sr3' });
 	registerSignalRoute('c_sr3', routeWs, 'bot-sr3', 'user1');
 
-	const botWs = createMockWs();
-	setupSockets('bot-sr3', { bot: [botWs] });
+	const clawWs = createMockWs();
+	setupSockets('bot-sr3', { bot: [clawWs] });
 
-	onBotMessage('bot-sr3', botWs, JSON.stringify({
+	onClawMessage('bot-sr3', clawWs, JSON.stringify({
 		type: 'rtc:closed',
 		toConnId: 'c_sr3',
 	}));
@@ -1415,14 +1415,14 @@ test('onBotMessage: rtc:closed 通过 signal-router 投递', () => {
 	cleanupSockets('bot-sr3');
 });
 
-// --- onBotMessage: coclaw.info.updated 中 updateClawName 抛同步异常 ---
+// --- onClawMessage: coclaw.info.updated 中 updateClawName 抛同步异常 ---
 
-test('onBotMessage: coclaw.info.updated 处理时不崩溃（payload 为 null）', () => {
-	const botWs = createMockWs();
-	setupSockets('bot-info-null', { bot: [botWs] });
+test('onClawMessage: coclaw.info.updated 处理时不崩溃（payload 为 null）', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot-info-null', { bot: [clawWs] });
 
 	// payload 无 name 和 hostName → name 为 null
-	onBotMessage('bot-info-null', botWs, JSON.stringify({
+	onClawMessage('bot-info-null', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'coclaw.info.updated',
 		payload: {},
@@ -1430,14 +1430,14 @@ test('onBotMessage: coclaw.info.updated 处理时不崩溃（payload 为 null）
 	cleanupSockets('bot-info-null');
 });
 
-// --- onBotMessage: raw 为 undefined/null ---
+// --- onClawMessage: raw 为 undefined/null ---
 
-test('onBotMessage: raw 为 undefined 时解析为空对象', () => {
-	const botWs = createMockWs();
-	setupSockets('bot-undef', { bot: [botWs] });
+test('onClawMessage: raw 为 undefined 时解析为空对象', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot-undef', { bot: [clawWs] });
 
 	// raw=undefined → String(undefined) = 'undefined' → JSON.parse 失败 → 静默返回
-	onBotMessage('bot-undef', botWs, undefined);
+	onClawMessage('bot-undef', clawWs, undefined);
 	cleanupSockets('bot-undef');
 });
 
@@ -1449,20 +1449,20 @@ test('onUiMessage: raw 为 undefined 时解析为空对象', () => {
 	cleanupSockets('bot-uiudef');
 });
 
-// --- refreshBotName: rpc 成功但 findClawById 抛异常（DB 不可用） ---
+// --- refreshClawName: rpc 成功但 findClawById 抛异常（DB 不可用） ---
 
-test('refreshBotName: rpc 成功返回 name，findClawById 抛异常时返回 latestName', async () => {
+test('refreshClawName: rpc 成功返回 name，findClawById 抛异常时返回 latestName', async () => {
 	// 创建自动回复 RPC 的 mock socket
-	const botId = 'rpc-name-bot';
+	const clawId = 'rpc-name-bot';
 	const autoReplyWs = createRpcMockWs();
 	const origSend = autoReplyWs.send.bind(autoReplyWs);
 	autoReplyWs.send = (data) => {
 		origSend(data);
 		const req = JSON.parse(data);
 		if (req.type === 'req' && req.method === 'agent.identity.get') {
-			// 模拟 bot 立即回复
+			// 模拟 claw 立即回复
 			setTimeout(() => {
-				onBotMessage(botId, autoReplyWs, JSON.stringify({
+				onClawMessage(clawId, autoReplyWs, JSON.stringify({
 					type: 'res',
 					id: req.id,
 					ok: true,
@@ -1471,18 +1471,18 @@ test('refreshBotName: rpc 成功返回 name，findClawById 抛异常时返回 la
 			}, 0);
 		}
 	};
-	setupSockets(botId, { bot: [autoReplyWs] });
+	setupSockets(clawId, { bot: [autoReplyWs] });
 
 	// findClawById 会抛异常（因为没有 DB），覆盖 lines 179-183
-	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	const result = await refreshClawName(clawId, { timeoutMs: 500 });
 	// 返回从 rpc 获取的 name（findClawById 失败后 fallback）
 	assert.equal(result, 'TestBot');
 
-	cleanupSockets(botId);
+	cleanupSockets(clawId);
 });
 
-test('refreshBotName: rpc 成功但 name 为空时返回 null', async () => {
-	const botId = 'rpc-empty-name';
+test('refreshClawName: rpc 成功但 name 为空时返回 null', async () => {
+	const clawId = 'rpc-empty-name';
 	const autoReplyWs = createRpcMockWs();
 	const origSend = autoReplyWs.send.bind(autoReplyWs);
 	autoReplyWs.send = (data) => {
@@ -1490,7 +1490,7 @@ test('refreshBotName: rpc 成功但 name 为空时返回 null', async () => {
 		const req = JSON.parse(data);
 		if (req.type === 'req') {
 			setTimeout(() => {
-				onBotMessage(botId, autoReplyWs, JSON.stringify({
+				onClawMessage(clawId, autoReplyWs, JSON.stringify({
 					type: 'res',
 					id: req.id,
 					ok: true,
@@ -1499,16 +1499,16 @@ test('refreshBotName: rpc 成功但 name 为空时返回 null', async () => {
 			}, 0);
 		}
 	};
-	setupSockets(botId, { bot: [autoReplyWs] });
+	setupSockets(clawId, { bot: [autoReplyWs] });
 
-	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	const result = await refreshClawName(clawId, { timeoutMs: 500 });
 	assert.equal(result, null);
 
-	cleanupSockets(botId);
+	cleanupSockets(clawId);
 });
 
-test('refreshBotName: rpc 返回 ok=false 时返回 undefined', async () => {
-	const botId = 'rpc-notok';
+test('refreshClawName: rpc 返回 ok=false 时返回 undefined', async () => {
+	const clawId = 'rpc-notok';
 	const autoReplyWs = createRpcMockWs();
 	const origSend = autoReplyWs.send.bind(autoReplyWs);
 	autoReplyWs.send = (data) => {
@@ -1516,7 +1516,7 @@ test('refreshBotName: rpc 返回 ok=false 时返回 undefined', async () => {
 		const req = JSON.parse(data);
 		if (req.type === 'req') {
 			setTimeout(() => {
-				onBotMessage(botId, autoReplyWs, JSON.stringify({
+				onClawMessage(clawId, autoReplyWs, JSON.stringify({
 					type: 'res',
 					id: req.id,
 					ok: false,
@@ -1525,28 +1525,28 @@ test('refreshBotName: rpc 返回 ok=false 时返回 undefined', async () => {
 			}, 0);
 		}
 	};
-	setupSockets(botId, { bot: [autoReplyWs] });
+	setupSockets(clawId, { bot: [autoReplyWs] });
 
-	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	const result = await refreshClawName(clawId, { timeoutMs: 500 });
 	assert.equal(result, undefined);
 
-	cleanupSockets(botId);
+	cleanupSockets(clawId);
 });
 
-test('refreshBotName: rpc 超时时返回 undefined（走 catch 分支）', async () => {
-	const botId = 'rpc-timeout';
+test('refreshClawName: rpc 超时时返回 undefined（走 catch 分支）', async () => {
+	const clawId = 'rpc-timeout';
 	// 不自动回复的 socket → rpc 会超时
 	const ws = createRpcMockWs();
-	setupSockets(botId, { bot: [ws] });
+	setupSockets(clawId, { bot: [ws] });
 
-	const result = await refreshBotName(botId, { timeoutMs: 20 });
+	const result = await refreshClawName(clawId, { timeoutMs: 20 });
 	assert.equal(result, undefined);
 
-	cleanupSockets(botId);
+	cleanupSockets(clawId);
 });
 
-test('refreshBotName: rpc 返回 payload.name 非 string 时返回 null', async () => {
-	const botId = 'rpc-nostr';
+test('refreshClawName: rpc 返回 payload.name 非 string 时返回 null', async () => {
+	const clawId = 'rpc-nostr';
 	const autoReplyWs = createRpcMockWs();
 	const origSend = autoReplyWs.send.bind(autoReplyWs);
 	autoReplyWs.send = (data) => {
@@ -1554,7 +1554,7 @@ test('refreshBotName: rpc 返回 payload.name 非 string 时返回 null', async 
 		const req = JSON.parse(data);
 		if (req.type === 'req') {
 			setTimeout(() => {
-				onBotMessage(botId, autoReplyWs, JSON.stringify({
+				onClawMessage(clawId, autoReplyWs, JSON.stringify({
 					type: 'res',
 					id: req.id,
 					ok: true,
@@ -1563,27 +1563,27 @@ test('refreshBotName: rpc 返回 payload.name 非 string 时返回 null', async 
 			}, 0);
 		}
 	};
-	setupSockets(botId, { bot: [autoReplyWs] });
+	setupSockets(clawId, { bot: [autoReplyWs] });
 
-	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	const result = await refreshClawName(clawId, { timeoutMs: 500 });
 	// name 非 string → rawName = '' → latestName = null
 	// findClawById 会失败 → 返回 latestName = null
 	assert.equal(result, null);
 
-	cleanupSockets(botId);
+	cleanupSockets(clawId);
 });
 
-// --- requestBotRpc: socket.send 抛异常时走 catch 分支 ---
+// --- requestClawRpc: socket.send 抛异常时走 catch 分支 ---
 
-test('refreshBotName: socket.send 抛异常时返回 undefined（requestBotRpc catch）', async () => {
-	const botId = 'rpc-sendfail';
+test('refreshClawName: socket.send 抛异常时返回 undefined（requestClawRpc catch）', async () => {
+	const clawId = 'rpc-sendfail';
 	const ws = createRpcMockWs({ throwOnSend: true });
-	setupSockets(botId, { bot: [ws] });
+	setupSockets(clawId, { bot: [ws] });
 
-	const result = await refreshBotName(botId, { timeoutMs: 500 });
+	const result = await refreshClawName(clawId, { timeoutMs: 500 });
 	assert.equal(result, undefined);
 
-	cleanupSockets(botId);
+	cleanupSockets(clawId);
 });
 
 // --- authenticateUiTicket ---
@@ -1606,7 +1606,7 @@ test('authenticateUiTicket: ticket 不存在时返回 invalid ticket', () => {
 test('authenticateUiTicket: ticket 已过期时返回 invalid ticket', () => {
 	// 直接注入一个已过期的 ticket 到 uiTickets
 	uiTickets.set('expired-test-ticket', {
-		botId: '1',
+		clawId: '1',
 		userId: '2',
 		expiresAt: Date.now() - 1000,
 	});
@@ -1618,16 +1618,16 @@ test('authenticateUiTicket: ticket 已过期时返回 invalid ticket', () => {
 });
 
 test('authenticateUiTicket: 有效 ticket 返回 ok', () => {
-	const ticket = createUiWsTicket({ botId: '10', userId: '20' });
+	const ticket = createUiWsTicket({ clawId: '10', userId: '20' });
 	const req = { url: `/api/v1/bots/stream?role=ui&ticket=${ticket}` };
 	const result = authenticateUiTicket(req);
 	assert.equal(result.ok, true);
-	assert.equal(result.botId, '10');
+	assert.equal(result.clawId, '10');
 	assert.equal(result.userId, '20');
 });
 
 test('authenticateUiTicket: ticket 使用后即删除（不可重用）', () => {
-	const ticket = createUiWsTicket({ botId: '10', userId: '20' });
+	const ticket = createUiWsTicket({ clawId: '10', userId: '20' });
 	const req = { url: `/api/v1/bots/stream?role=ui&ticket=${ticket}` };
 	authenticateUiTicket(req);
 	// 第二次应失败
@@ -1723,34 +1723,34 @@ test('unregisterSocket: 最后一个 socket 注销后删除 key', () => {
 	assert.equal(map.has('k2'), false);
 });
 
-// --- getAnyOnlineBotSocket ---
+// --- getAnyOnlineClawSocket ---
 
-test('getAnyOnlineBotSocket: 无 socket 时返回 null', () => {
-	assert.equal(getAnyOnlineBotSocket('nonexist'), null);
+test('getAnyOnlineClawSocket: 无 socket 时返回 null', () => {
+	assert.equal(getAnyOnlineClawSocket('nonexist'), null);
 });
 
-test('getAnyOnlineBotSocket: 所有 socket 非 OPEN 时返回 null', () => {
+test('getAnyOnlineClawSocket: 所有 socket 非 OPEN 时返回 null', () => {
 	const ws = createRpcMockWs({ readyState: 3 }); // CLOSED
 	setupSockets('gao-1', { bot: [ws] });
-	assert.equal(getAnyOnlineBotSocket('gao-1'), null);
+	assert.equal(getAnyOnlineClawSocket('gao-1'), null);
 	cleanupSockets('gao-1');
 });
 
-test('getAnyOnlineBotSocket: 返回第一个 OPEN socket', () => {
+test('getAnyOnlineClawSocket: 返回第一个 OPEN socket', () => {
 	const ws = createRpcMockWs();
 	setupSockets('gao-2', { bot: [ws] });
-	assert.equal(getAnyOnlineBotSocket('gao-2'), ws);
+	assert.equal(getAnyOnlineClawSocket('gao-2'), ws);
 	cleanupSockets('gao-2');
 });
 
-// --- resolveBotRpcPending / rejectAllBotRpcPending ---
+// --- resolveClawRpcPending / rejectAllClawRpcPending ---
 
-test('resolveBotRpcPending: 无 pending 时返回 false', () => {
-	assert.equal(resolveBotRpcPending('no-bot', 'no-id', {}), false);
+test('resolveClawRpcPending: 无 pending 时返回 false', () => {
+	assert.equal(resolveClawRpcPending('no-bot', 'no-id', {}), false);
 });
 
-test('rejectAllBotRpcPending: 无 pending 时不报错', () => {
-	rejectAllBotRpcPending('no-bot');
+test('rejectAllClawRpcPending: 无 pending 时不报错', () => {
+	rejectAllClawRpcPending('no-bot');
 });
 
 // --- broadcastToUi: 无 UI socket 时不报错 ---
@@ -1759,30 +1759,30 @@ test('broadcastToUi: 无 UI socket 时不报错', () => {
 	broadcastToUi('nonexist', { type: 'test' });
 });
 
-// --- authenticateBotRequest ---
+// --- authenticateClawRequest ---
 
-test('authenticateBotRequest: 缺少 token 参数时返回 401', async () => {
-	const result = await authenticateBotRequest({ url: '/api/v1/bots/stream' });
+test('authenticateClawRequest: 缺少 token 参数时返回 401', async () => {
+	const result = await authenticateClawRequest({ url: '/api/v1/bots/stream' });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, 401);
 	assert.equal(result.message, 'missing token');
 });
 
-test('authenticateBotRequest: 无效 token 时返回 invalid token', async () => {
-	const result = await authenticateBotRequest({ url: '/api/v1/bots/stream?token=bad-token' });
+test('authenticateClawRequest: 无效 token 时返回 invalid token', async () => {
+	const result = await authenticateClawRequest({ url: '/api/v1/bots/stream?token=bad-token' });
 	assert.equal(result.ok, false);
 	assert.equal(result.message, 'invalid token');
 });
 
-// --- onBotMessage: coclaw.info.updated 触发 updateClawName 的 .catch 路径 ---
+// --- onClawMessage: coclaw.info.updated 触发 updateClawName 的 .catch 路径 ---
 
-test('onBotMessage: coclaw.info.updated 使用数字 botId 时 BigInt 成功但 DB 失败走 .catch', async () => {
-	const botWs = createMockWs();
-	// 使用数字 botId 使 BigInt() 成功，updateClawName 会尝试 DB 操作然后失败
-	setupSockets('12345', { bot: [botWs] });
+test('onClawMessage: coclaw.info.updated 使用数字 clawId 时 BigInt 成功但 DB 失败走 .catch', async () => {
+	const clawWs = createMockWs();
+	// 使用数字 clawId 使 BigInt() 成功，updateClawName 会尝试 DB 操作然后失败
+	setupSockets('12345', { bot: [clawWs] });
 
 	// 不应抛异常（.catch 会静默处理）
-	onBotMessage('12345', botWs, JSON.stringify({
+	onClawMessage('12345', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'coclaw.info.updated',
 		payload: { name: 'NewName' },

@@ -66,7 +66,7 @@ test('markBindingBound + waitBindingResult: should return BOUND', async () => {
 		userId: '1',
 		expiresAt: futureMs(),
 	});
-	markBindingBound({ code: 'bound-1', botId: 42, botName: 'MyBot' });
+	markBindingBound({ code: 'bound-1', clawId: 42, clawName: 'MyBot' });
 
 	const result = await waitBindingResult({
 		code: 'bound-1',
@@ -83,9 +83,9 @@ test('markBindingBound: should ignore non-pending state', () => {
 		userId: '1',
 		expiresAt: futureMs(),
 	});
-	markBindingBound({ code: 'double-bind', botId: 1, botName: 'A' });
+	markBindingBound({ code: 'double-bind', clawId: 1, clawName: 'A' });
 	// 第二次 bind 应被忽略
-	markBindingBound({ code: 'double-bind', botId: 2, botName: 'B' });
+	markBindingBound({ code: 'double-bind', clawId: 2, clawName: 'B' });
 
 	// 验证仍是第一次 bind 的结果不会报错即可
 });
@@ -132,7 +132,7 @@ test('cancelBindingWait: should reject already-bound state', () => {
 		userId: '1',
 		expiresAt: futureMs(),
 	});
-	markBindingBound({ code: 'cancel-after-bound', botId: 1 });
+	markBindingBound({ code: 'cancel-after-bound', clawId: 1 });
 
 	const cancelled = cancelBindingWait({
 		code: 'cancel-after-bound',
@@ -187,7 +187,7 @@ test('markBindingBound: should notify waiting resolvers', async () => {
 		userId: '1',
 	});
 
-	markBindingBound({ code: 'notify-1', botId: 99, botName: 'Bot99' });
+	markBindingBound({ code: 'notify-1', clawId: 99, clawName: 'Bot99' });
 
 	const result = await waitPromise;
 	assert.equal(result.status, 'BOUND');
@@ -206,7 +206,7 @@ test('settleState: waiter 抛异常时不中断其他 waiter', async () => {
 	const p1 = waitBindingResult({ code: 'settle-throw', waitToken: token, userId: '1' }).then((r) => results.push(r));
 	const p2 = waitBindingResult({ code: 'settle-throw', waitToken: token, userId: '1' }).then((r) => results.push(r));
 
-	markBindingBound({ code: 'settle-throw', botId: 77, botName: 'Bot77' });
+	markBindingBound({ code: 'settle-throw', clawId: 77, clawName: 'Bot77' });
 
 	await Promise.all([p1, p2]);
 	assert.equal(results.length, 2);
@@ -267,7 +267,7 @@ test('waitBindingResult: 长轮询超时时已 bound（绕过 settle）返回 BO
 		// 这样 waiter 不会被提前 settle，超时回调会检测到 bound 状态
 		const state = __test.bindingStates.get('lp-bound');
 		state.status = 'bound';
-		state.boundBot = { id: '88', name: 'Bot88' };
+		state.boundClaw = { id: '88', name: 'Bot88' };
 
 		const result = await promise;
 		assert.equal(result.status, 'BOUND');

@@ -11,12 +11,12 @@ const userIdSnowflake = new Snowflake({
 	workerId: 0,
 });
 
-// botId：12 位十进制数字（~2039 年前），之后 13 位
-const botIdSnowflake = new Snowflake({
+// clawId：12 位十进制数字（~2039 年前），之后 13 位
+const clawIdSnowflake = new Snowflake({
 	epoch: Date.parse('2024-01-01T00:00:00.000Z'), // 绝对不可修改
 	timeSliceMs: 1000,
 	seqBits: 11, // seqBits + workerBits 绝对不可减小
-	seqRandomBits: 10, // bot 显著增多时，可减少该值
+	seqRandomBits: 10, // claw 显著增多时，可减少该值
 	workerBits: 0,
 	workerId: 0,
 });
@@ -25,6 +25,6 @@ export function genUserId() {
 	return userIdSnowflake.nextId();
 }
 
-export function genBotId() {
-	return botIdSnowflake.nextId();
+export function genClawId() {
+	return clawIdSnowflake.nextId();
 }

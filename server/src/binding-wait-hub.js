@@ -15,7 +15,7 @@ function getOrCreateState(code) {
 			userId: '',
 			expiresAt: 0,
 			status: 'pending', // pending | bound | cancelled | expired
-			boundBot: null,
+			boundClaw: null,
 			waiters: new Set(),
 		};
 		bindingStates.set(code, state);
@@ -43,7 +43,7 @@ export function registerBindingWait({ code, userId, expiresAt }) {
 	state.userId = String(userId);
 	state.expiresAt = new Date(expiresAt).getTime();
 	state.status = 'pending';
-	state.boundBot = null;
+	state.boundClaw = null;
 	state.waiters.clear();
 
 	// 清除旧的 cleanup timer（重复注册场景）
@@ -57,19 +57,19 @@ export function registerBindingWait({ code, userId, expiresAt }) {
 	return state.waitToken;
 }
 
-export function markBindingBound({ code, botId, botName }) {
+export function markBindingBound({ code, clawId, clawName }) {
 	const state = bindingStates.get(code);
 	if (!state || state.status !== 'pending') {
 		return;
 	}
 	state.status = 'bound';
-	state.boundBot = {
-		id: String(botId),
-		name: botName ?? null,
+	state.boundClaw = {
+		id: String(clawId),
+		name: clawName ?? null,
 	};
 	settleState(code, {
 		status: 'BOUND',
-		bot: state.boundBot,
+		bot: state.boundClaw,
 	});
 
 	// 已完成的条目延迟清理（60s 缓冲，让迟到的 waiter 仍能获取结果）
@@ -85,7 +85,7 @@ export function waitBindingResult({ code, waitToken, userId }) {
 	}
 
 	if (state.status === 'bound') {
-		return Promise.resolve({ status: 'BOUND', bot: state.boundBot });
+		return Promise.resolve({ status: 'BOUND', bot: state.boundClaw });
 	}
 
 	if (state.status === 'cancelled') {
@@ -101,7 +101,7 @@ export function waitBindingResult({ code, waitToken, userId }) {
 		const timeout = setTimeout(() => {
 			state.waiters.delete(onDone);
 			if (state.status === 'bound') {
-				resolve({ status: 'BOUND', bot: state.boundBot });
+				resolve({ status: 'BOUND', bot: state.boundClaw });
 				return;
 			}
 			if (state.expiresAt <= nowMs()) {
@@ -122,7 +122,7 @@ export function waitBindingResult({ code, waitToken, userId }) {
 }
 
 // cancel 会设 status='cancelled'，这对 binding 流程安全：
-// cancel 由 UI 端 wait 轮询断连触发，markBound 由 plugin 端 bindBotHandler 触发，
+// cancel 由 UI 端 wait 轮询断连触发，markBound 由 plugin 端 bindClawHandler 触发，
 // 两者为不同发起方的独立请求，cancel 不会阻断 markBound。
 // 注意 claim-wait-hub.cancelClaimWait 采用不同策略（不改 status），见其注释。
 export function cancelBindingWait({ code, waitToken, userId }) {

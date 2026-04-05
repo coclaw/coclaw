@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 
 import * as adminRepo from '../repos/admin.repo.js';
-import { listOnlineBotIds } from '../bot-ws-hub.js';
+import { listOnlineClawIds } from '../claw-ws-hub.js';
 
 const require = createRequire(import.meta.url);
 const { version: serverVersion } = require('../../package.json');
@@ -12,11 +12,11 @@ try { pluginVersion = require('../../../plugins/openclaw/package.json').version;
 /**
  * @param {object} [deps] - 依赖注入
  * @param {object} [deps.repo] - admin repo
- * @param {Function} [deps.getOnlineBotCount] - 获取在线 bot 数
+ * @param {Function} [deps.getOnlineClawCount] - 获取在线 claw 数
  */
 export async function getAdminDashboard(deps = {}) {
 	const repo = deps.repo ?? adminRepo;
-	const getOnlineBotCount = deps.getOnlineBotCount ?? (() => listOnlineBotIds().size);
+	const getOnlineClawCount = deps.getOnlineClawCount ?? (() => listOnlineClawIds().size);
 
 	const todayStart = new Date();
 	todayStart.setHours(0, 0, 0, 0);
@@ -36,7 +36,7 @@ export async function getAdminDashboard(deps = {}) {
 		latestRegisteredUsers: latestRegistered,
 		bots: {
 			total: clawsTotal,
-			online: getOnlineBotCount(),
+			online: getOnlineClawCount(),
 		},
 		version: {
 			server: serverVersion,

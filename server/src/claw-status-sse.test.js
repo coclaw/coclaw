@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { hasSseClients, registerSseClient, sendSnapshot, sendToUser, __test } from './bot-status-sse.js';
+import { hasSseClients, registerSseClient, sendSnapshot, sendToUser, __test } from './claw-status-sse.js';
 
 const { handleStatusEvent, handleNameUpdatedEvent } = __test;
 
@@ -81,7 +81,7 @@ test('sendSnapshot: should push bot.snapshot event to single client', async () =
 
 	await sendSnapshot('20', res, {
 		listClawsByUserIdImpl: async () => mockBots,
-		listOnlineBotIdsImpl: () => onlineIds,
+		listOnlineClawIdsImpl: () => onlineIds,
 	});
 
 	assert.equal(res.written.length, 1);
@@ -103,7 +103,7 @@ test('sendSnapshot: should not throw on res.write failure', async () => {
 	// 不应抛异常
 	await sendSnapshot('21', res, {
 		listClawsByUserIdImpl: async () => [],
-		listOnlineBotIdsImpl: () => new Set(),
+		listOnlineClawIdsImpl: () => new Set(),
 	});
 });
 
@@ -154,7 +154,7 @@ test('handleStatusEvent: 无 SSE 客户端时直接返回', async () => {
 	// 确保无客户端
 	assert.equal(hasSseClients(), false);
 	// 不应抛异常
-	await handleStatusEvent({ botId: '1', online: true }, {
+	await handleStatusEvent({ clawId: '1', online: true }, {
 		findClawByIdFn: () => { throw new Error('should not be called'); },
 	});
 });
@@ -168,7 +168,7 @@ test('handleStatusEvent: bot 存在时推送 bot.status 事件', async () => {
 		userId: 100n,
 	});
 
-	await handleStatusEvent({ botId: '5', online: true }, {
+	await handleStatusEvent({ clawId: '5', online: true }, {
 		findClawByIdFn: mockFindBot,
 	});
 
@@ -185,7 +185,7 @@ test('handleStatusEvent: bot 不存在时不推送', async () => {
 	const res = createMockRes();
 	registerSseClient('101', res);
 
-	await handleStatusEvent({ botId: '999', online: false }, {
+	await handleStatusEvent({ clawId: '999', online: false }, {
 		findClawByIdFn: async () => null,
 	});
 
@@ -199,7 +199,7 @@ test('handleStatusEvent: findClawById 抛异常时静默捕获', async () => {
 	registerSseClient('102', res);
 
 	// 不应抛异常
-	await handleStatusEvent({ botId: '1', online: true }, {
+	await handleStatusEvent({ clawId: '1', online: true }, {
 		findClawByIdFn: async () => { throw new Error('db error'); },
 	});
 
@@ -212,7 +212,7 @@ test('handleStatusEvent: findClawById 抛异常时静默捕获', async () => {
 
 test('handleNameUpdatedEvent: 无 SSE 客户端时直接返回', async () => {
 	assert.equal(hasSseClients(), false);
-	await handleNameUpdatedEvent({ botId: '1', name: 'new-name' }, {
+	await handleNameUpdatedEvent({ clawId: '1', name: 'new-name' }, {
 		findClawByIdFn: () => { throw new Error('should not be called'); },
 	});
 });
@@ -226,7 +226,7 @@ test('handleNameUpdatedEvent: bot 存在时推送 bot.nameUpdated 事件', async
 		userId: 200n,
 	});
 
-	await handleNameUpdatedEvent({ botId: '10', name: 'my-bot' }, {
+	await handleNameUpdatedEvent({ clawId: '10', name: 'my-bot' }, {
 		findClawByIdFn: mockFindBot,
 	});
 
@@ -243,7 +243,7 @@ test('handleNameUpdatedEvent: bot 不存在时不推送', async () => {
 	const res = createMockRes();
 	registerSseClient('201', res);
 
-	await handleNameUpdatedEvent({ botId: '999', name: 'x' }, {
+	await handleNameUpdatedEvent({ clawId: '999', name: 'x' }, {
 		findClawByIdFn: async () => null,
 	});
 
@@ -256,7 +256,7 @@ test('handleNameUpdatedEvent: findClawById 抛异常时静默捕获', async () =
 	const res = createMockRes();
 	registerSseClient('202', res);
 
-	await handleNameUpdatedEvent({ botId: '1', name: 'x' }, {
+	await handleNameUpdatedEvent({ clawId: '1', name: 'x' }, {
 		findClawByIdFn: async () => { throw new Error('db error'); },
 	});
 

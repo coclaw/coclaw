@@ -7,7 +7,7 @@ process.env.APP_DOMAIN ??= 'test.coclaw.net';
 import { __test, attachRtcSignalHub } from './rtc-signal-hub.js';
 import { register, lookup, __test as routerTest } from './rtc-signal-router.js';
 
-const { handleMessage, validateBotOwnership } = __test;
+const { handleMessage, validateClawOwnership } = __test;
 const { routes } = routerTest;
 
 function createMockWs(opts = {}) {
@@ -46,7 +46,7 @@ function createForwardMock(opts = {}) {
 function makeDeps(forwardMock) {
 	return {
 		findClawByIdFn: mockFindClawById,
-		forwardToBotFn: forwardMock ?? createForwardMock(),
+		forwardToClawFn: forwardMock ?? createForwardMock(),
 	};
 }
 
@@ -441,7 +441,7 @@ test('handleMessage: rtc:offer bot 离线时 UI 不收到消息', async () => {
 	cleanup();
 });
 
-// --- validateBotOwnership 异常分支 ---
+// --- validateClawOwnership 异常分支 ---
 
 test('handleMessage: findClawById 抛异常时视为归属验证失败', async () => {
 	const ws = createMockWs();
@@ -452,32 +452,32 @@ test('handleMessage: findClawById 抛异常时视为归属验证失败', async (
 		botId: '1',
 		connId: 'c_db_err',
 		payload: { sdp: 'sdp' },
-	}), { findClawByIdFn: throwingFindBot, forwardToBotFn: fwd });
+	}), { findClawByIdFn: throwingFindBot, forwardToClawFn: fwd });
 
 	assert.equal(fwd.calls.length, 0, 'should not forward when DB errors');
 	assert.equal(lookup('c_db_err'), null, 'should not register');
 	cleanup();
 });
 
-// --- validateBotOwnership 直接测试 ---
+// --- validateClawOwnership 直接测试 ---
 
-test('validateBotOwnership: bot 存在且归属匹配返回 true', async () => {
-	const result = await validateBotOwnership('1', 'u1', mockFindClawById);
+test('validateClawOwnership: bot 存在且归属匹配返回 true', async () => {
+	const result = await validateClawOwnership('1', 'u1', mockFindClawById);
 	assert.equal(result, true);
 });
 
-test('validateBotOwnership: bot 存在但归属不匹配返回 false', async () => {
-	const result = await validateBotOwnership('999', 'u1', mockFindClawById);
+test('validateClawOwnership: bot 存在但归属不匹配返回 false', async () => {
+	const result = await validateClawOwnership('999', 'u1', mockFindClawById);
 	assert.equal(result, false);
 });
 
-test('validateBotOwnership: bot 不存在返回 false', async () => {
-	const result = await validateBotOwnership('888', 'u1', mockFindClawById);
+test('validateClawOwnership: bot 不存在返回 false', async () => {
+	const result = await validateClawOwnership('888', 'u1', mockFindClawById);
 	assert.equal(result, false);
 });
 
-test('validateBotOwnership: findClawByIdFn 抛异常返回 false', async () => {
-	const result = await validateBotOwnership('1', 'u1', () => { throw new Error('boom'); });
+test('validateClawOwnership: findClawByIdFn 抛异常返回 false', async () => {
+	const result = await validateClawOwnership('1', 'u1', () => { throw new Error('boom'); });
 	assert.equal(result, false);
 });
 

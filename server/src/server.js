@@ -1,5 +1,5 @@
 import { createApp } from './app.js';
-import { attachBotWsHub } from './bot-ws-hub.js';
+import { attachClawWsHub } from './claw-ws-hub.js';
 import { attachRtcSignalHub } from './rtc-signal-hub.js';
 
 export function startServer() {
@@ -10,7 +10,7 @@ export function startServer() {
 		console.log(`[coclaw/server] listening on :${port}`);
 	});
 
-	attachBotWsHub(server, { sessionMiddleware: app.sessionMiddleware });
+	attachClawWsHub(server, { sessionMiddleware: app.sessionMiddleware });
 	attachRtcSignalHub(server, { sessionMiddleware: app.sessionMiddleware });
 
 	return server;

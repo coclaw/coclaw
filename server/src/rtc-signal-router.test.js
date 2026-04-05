@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { register, remove, removeByWs, removeByBotId, routeToUi, lookup, __test } from './rtc-signal-router.js';
+import { register, remove, removeByWs, removeByClawId, routeToUi, lookup, __test } from './rtc-signal-router.js';
 
 const { routes, wsToConnIds } = __test;
 
@@ -107,31 +107,31 @@ test('removeByWs: 不影响其他 WS 的 connId', () => {
 	cleanup();
 });
 
-// --- removeByBotId ---
+// --- removeByClawId ---
 
-test('removeByBotId: 移除该 botId 下所有 connId', () => {
+test('removeByClawId: 移除该 botId 下所有 connId', () => {
 	const ws1 = createMockWs();
 	const ws2 = createMockWs();
 	register('c_1', ws1, 'bot1', 'user1');
 	register('c_2', ws2, 'bot1', 'user2');
-	removeByBotId('bot1');
+	removeByClawId('bot1');
 	assert.equal(routes.size, 0);
 	cleanup();
 });
 
-test('removeByBotId: 不影响其他 botId 的 connId', () => {
+test('removeByClawId: 不影响其他 botId 的 connId', () => {
 	const ws = createMockWs();
 	register('c_1', ws, 'bot1', 'user1');
 	register('c_2', ws, 'bot2', 'user1');
-	removeByBotId('bot1');
+	removeByClawId('bot1');
 	assert.equal(routes.size, 1);
 	assert.equal(lookup('c_1'), null);
 	assert.deepEqual(lookup('c_2'), { ws, botId: 'bot2', userId: 'user1' });
 	cleanup();
 });
 
-test('removeByBotId: botId 无注册时无副作用', () => {
-	removeByBotId('nonexist');
+test('removeByClawId: botId 无注册时无副作用', () => {
+	removeByClawId('nonexist');
 	assert.equal(routes.size, 0);
 });
 

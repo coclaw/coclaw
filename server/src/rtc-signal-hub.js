@@ -3,13 +3,13 @@
  *
  * 管理 UI 侧信令 WS 连接（/api/v1/rtc/signal），
  * 处理消息路由、TURN 凭证注入。
- * 单一 WS per-tab，承载多个 bot 的 RTC 信令。
+ * 单一 WS per-tab，承载多个 claw 的 RTC 信令。
  */
 
 import { WebSocketServer } from 'ws';
 
 import { register, remove, removeByWs, lookup } from './rtc-signal-router.js';
-import { forwardToBot, fmtLocalTime } from './bot-ws-hub.js';
+import { forwardToClaw, fmtLocalTime } from './claw-ws-hub.js';
 import { genTurnCredsForGateway } from './routes/turn.route.js';
 import { findClawById } from './repos/claw.repo.js';
 
@@ -20,16 +20,16 @@ function sigLogWarn(msg) { console.warn(`[coclaw/rtc-sig] ${msg}`); }
 function sigLogDebug(msg) { if (WS_VERBOSE) console.debug(`[coclaw/rtc-sig] ${msg}`); }
 
 /**
- * 验证 botId 归属 userId
- * @param {string} botId
+ * 验证 clawId 归属 userId
+ * @param {string} clawId
  * @param {string} userId
  * @param {Function} findClawByIdFn - 可注入，便于测试
  * @returns {Promise<boolean>}
  */
-async function validateBotOwnership(botId, userId, findClawByIdFn = findClawById) {
+async function validateClawOwnership(clawId, userId, findClawByIdFn = findClawById) {
 	try {
-		const bot = await findClawByIdFn(BigInt(botId));
-		return !!bot && String(bot.userId) === String(userId);
+		const claw = await findClawByIdFn(BigInt(clawId));
+		return !!claw && String(claw.userId) === String(userId);
 	} catch {
 		return false;
 	}
@@ -42,10 +42,10 @@ async function validateBotOwnership(botId, userId, findClawByIdFn = findClawById
  * @param {string|Buffer} raw
  * @param {object} [deps] - 依赖注入（测试用）
  * @param {Function} [deps.findClawByIdFn]
- * @param {Function} [deps.forwardToBotFn]
+ * @param {Function} [deps.forwardToClawFn]
  */
 async function handleMessage(ws, userId, raw, deps = {}) {
-	const { findClawByIdFn = findClawById, forwardToBotFn = forwardToBot } = deps;
+	const { findClawByIdFn = findClawById, forwardToClawFn = forwardToClaw } = deps;
 
 	let payload;
 	try {
@@ -78,7 +78,7 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		return;
 	}
 
-	// RTC 信令：需要 botId + connId
+	// RTC 信令：需要 botId + connId（botId 是协议字段，保持不变）
 	const { botId, connId } = payload;
 	if (!botId || !connId) {
 		sigLogDebug(`missing botId/connId in ${type}`);
@@ -86,9 +86,9 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 	}
 
 	if (type === 'rtc:offer') {
-		const owned = await validateBotOwnership(botId, userId, findClawByIdFn);
+		const owned = await validateClawOwnership(botId, userId, findClawByIdFn);
 		if (!owned) {
-			sigLogWarn(`rtc:offer denied: botId=${botId} not owned by userId=${userId}`);
+			sigLogWarn(`rtc:offer denied: clawId=${botId} not owned by userId=${userId}`);
 			return;
 		}
 		const ok = register(connId, ws, botId, userId);
@@ -101,11 +101,11 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 			payload.turnCreds = genTurnCredsForGateway(String(botId), process.env.TURN_SECRET);
 		}
 		payload.fromConnId = connId;
-		const sent = forwardToBotFn(botId, payload);
+		const sent = forwardToClawFn(botId, payload);
 		if (sent) {
-			sigLogInfo(`rtc:offer forwarded bot=${botId} connId=${connId}`);
+			sigLogInfo(`rtc:offer forwarded claw=${botId} connId=${connId}`);
 		} else {
-			sigLogDebug(`rtc:offer dropped, bot offline botId=${botId}`);
+			sigLogDebug(`rtc:offer dropped, claw offline clawId=${botId}`);
 		}
 		return;
 	}
@@ -114,9 +114,9 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		let route = lookup(connId);
 		// 隐式注册
 		if (!route) {
-			const owned = await validateBotOwnership(botId, userId, findClawByIdFn);
+			const owned = await validateClawOwnership(botId, userId, findClawByIdFn);
 			if (!owned) {
-				sigLogWarn(`${type} denied: botId=${botId} not owned by userId=${userId}`);
+				sigLogWarn(`${type} denied: clawId=${botId} not owned by userId=${userId}`);
 				return;
 			}
 			const ok = register(connId, ws, botId, userId);
@@ -132,11 +132,11 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 			return;
 		}
 		payload.fromConnId = connId;
-		const sent = forwardToBotFn(route.botId, payload);
+		const sent = forwardToClawFn(route.botId, payload);
 		if (!sent) {
-			sigLogDebug(`${type} dropped, bot offline botId=${route.botId} connId=${connId}`);
+			sigLogDebug(`${type} dropped, claw offline clawId=${route.botId} connId=${connId}`);
 		} else {
-			sigLogDebug(`${type} forwarded bot=${route.botId} connId=${connId}`);
+			sigLogDebug(`${type} forwarded claw=${route.botId} connId=${connId}`);
 		}
 		return;
 	}
@@ -145,27 +145,27 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		const route = lookup(connId);
 		if (route) {
 			payload.fromConnId = connId;
-			const sent = forwardToBotFn(route.botId, payload);
+			const sent = forwardToClawFn(route.botId, payload);
 			if (sent) {
-				sigLogDebug(`rtc:closed forwarded bot=${route.botId} connId=${connId}`);
+				sigLogDebug(`rtc:closed forwarded claw=${route.botId} connId=${connId}`);
 			} else {
-				sigLogDebug(`rtc:closed dropped, bot offline botId=${route.botId} connId=${connId}`);
+				sigLogDebug(`rtc:closed dropped, claw offline clawId=${route.botId} connId=${connId}`);
 			}
 			remove(connId);
 		} else {
-			// connId 未注册：需验证 botId 归属后才转发
+			// connId 未注册：需验证 clawId 归属后才转发
 			if (botId) {
-				const owned = await validateBotOwnership(botId, userId, findClawByIdFn);
+				const owned = await validateClawOwnership(botId, userId, findClawByIdFn);
 				if (owned) {
 					payload.fromConnId = connId;
-					const sent = forwardToBotFn(botId, payload);
+					const sent = forwardToClawFn(botId, payload);
 					if (sent) {
-						sigLogDebug(`rtc:closed forwarded (unregistered) bot=${botId} connId=${connId}`);
+						sigLogDebug(`rtc:closed forwarded (unregistered) claw=${botId} connId=${connId}`);
 					} else {
-						sigLogDebug(`rtc:closed dropped (unregistered), bot offline botId=${botId} connId=${connId}`);
+						sigLogDebug(`rtc:closed dropped (unregistered), claw offline clawId=${botId} connId=${connId}`);
 					}
 				} else {
-					sigLogWarn(`rtc:closed denied: botId=${botId} not owned by userId=${userId}`);
+					sigLogWarn(`rtc:closed denied: clawId=${botId} not owned by userId=${userId}`);
 				}
 			}
 			remove(connId); // no-op，但保持语义一致
@@ -245,4 +245,4 @@ export function attachRtcSignalHub(httpServer, { sessionMiddleware }) {
 }
 
 // 测试辅助
-export const __test = { handleMessage, validateBotOwnership };
+export const __test = { handleMessage, validateClawOwnership };

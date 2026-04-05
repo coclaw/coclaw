@@ -1,5 +1,5 @@
 import { findClawById, listClawsByUserId } from './repos/claw.repo.js';
-import { botStatusEmitter, listOnlineBotIds } from './bot-ws-hub.js';
+import { clawStatusEmitter, listOnlineClawIds } from './claw-ws-hub.js';
 
 // userId(string) -> Set<Response>
 const sseClients = new Map();
@@ -26,27 +26,27 @@ export function registerSseClient(userId, res) {
 }
 
 /**
- * 向单个 SSE 客户端推送全量 bot 快照
+ * 向单个 SSE 客户端推送全量 claw 快照
  * @param {string|bigint} userId
  * @param {import('express').Response} res
- * @param {{ listClawsByUserIdImpl?: Function, listOnlineBotIdsImpl?: Function }} [deps]
+ * @param {{ listClawsByUserIdImpl?: Function, listOnlineClawIdsImpl?: Function }} [deps]
  */
 export async function sendSnapshot(userId, res, deps = {}) {
 	const {
 		listClawsByUserIdImpl = listClawsByUserId,
-		listOnlineBotIdsImpl = listOnlineBotIds,
+		listOnlineClawIdsImpl = listOnlineClawIds,
 	} = deps;
-	const bots = await listClawsByUserIdImpl(userId);
-	const onlineIds = listOnlineBotIdsImpl();
-	const items = bots.map((b) => {
-		const botId = b.id.toString();
+	const claws = await listClawsByUserIdImpl(userId);
+	const onlineIds = listOnlineClawIdsImpl();
+	const items = claws.map((c) => {
+		const clawId = c.id.toString();
 		return {
-			id: botId,
-			name: b.name,
-			online: onlineIds.has(botId),
-			lastSeenAt: b.lastSeenAt,
-			createdAt: b.createdAt,
-			updatedAt: b.updatedAt,
+			id: clawId,
+			name: c.name,
+			online: onlineIds.has(clawId),
+			lastSeenAt: c.lastSeenAt,
+			createdAt: c.createdAt,
+			updatedAt: c.updatedAt,
 		};
 	});
 	const msg = `data: ${JSON.stringify({ event: 'bot.snapshot', items })}\n\n`;
@@ -88,65 +88,65 @@ export function hasSseClients() {
 }
 
 /**
- * 处理 bot status 变更事件
+ * 处理 claw status 变更事件
  * @param {object} param0
- * @param {string} param0.botId
+ * @param {string} param0.clawId
  * @param {boolean} param0.online
  * @param {{ findClawByIdFn?: Function }} [deps]
  */
-async function handleStatusEvent({ botId, online }, deps = {}) {
+async function handleStatusEvent({ clawId, online }, deps = {}) {
 	const { findClawByIdFn = findClawById } = deps;
 	if (!hasSseClients()) {
 		return;
 	}
 	try {
-		const bot = await findClawByIdFn(BigInt(botId));
-		if (!bot) {
-			console.debug('[coclaw/sse] status event: bot not found botId=%s (may be deleted)', botId);
+		const claw = await findClawByIdFn(BigInt(clawId));
+		if (!claw) {
+			console.debug('[coclaw/sse] status event: claw not found clawId=%s (may be deleted)', clawId);
 			return;
 		}
-		sendToUser(String(bot.userId), {
+		sendToUser(String(claw.userId), {
 			event: 'bot.status',
-			botId: String(botId),
+			botId: String(clawId),
 			online,
 		});
 	}
 	catch (err) {
-		console.warn('[coclaw/sse] status event push failed botId=%s: %s', botId, err?.message);
+		console.warn('[coclaw/sse] status event push failed clawId=%s: %s', clawId, err?.message);
 	}
 }
 
 /**
- * 处理 bot 名称变更事件
+ * 处理 claw 名称变更事件
  * @param {object} param0
- * @param {string} param0.botId
+ * @param {string} param0.clawId
  * @param {string} param0.name
  * @param {{ findClawByIdFn?: Function }} [deps]
  */
-async function handleNameUpdatedEvent({ botId, name }, deps = {}) {
+async function handleNameUpdatedEvent({ clawId, name }, deps = {}) {
 	const { findClawByIdFn = findClawById } = deps;
 	if (!hasSseClients()) {
 		return;
 	}
 	try {
-		const bot = await findClawByIdFn(BigInt(botId));
-		if (!bot) {
-			console.debug('[coclaw/sse] nameUpdated event: bot not found botId=%s (may be deleted)', botId);
+		const claw = await findClawByIdFn(BigInt(clawId));
+		if (!claw) {
+			console.debug('[coclaw/sse] nameUpdated event: claw not found clawId=%s (may be deleted)', clawId);
 			return;
 		}
-		sendToUser(String(bot.userId), {
+		sendToUser(String(claw.userId), {
 			event: 'bot.nameUpdated',
-			botId: String(botId),
+			botId: String(clawId),
 			name,
 		});
 	}
 	catch (err) {
-		console.warn('[coclaw/sse] nameUpdated event push failed botId=%s: %s', botId, err?.message);
+		console.warn('[coclaw/sse] nameUpdated event push failed clawId=%s: %s', clawId, err?.message);
 	}
 }
 
-botStatusEmitter.on('status', (data) => handleStatusEvent(data));
-botStatusEmitter.on('nameUpdated', (data) => handleNameUpdatedEvent(data));
+clawStatusEmitter.on('status', (data) => handleStatusEvent(data));
+clawStatusEmitter.on('nameUpdated', (data) => handleNameUpdatedEvent(data));
 
 // 测试辅助
 export const __test = { handleStatusEvent, handleNameUpdatedEvent };

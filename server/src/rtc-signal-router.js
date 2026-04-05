@@ -2,7 +2,7 @@
  * RTC 信令路由表（纯数据模块）
  *
  * 维护 connId → { ws, botId, userId } 的 live 映射，
- * 供 rtc-signal-hub 和 bot-ws-hub 共享使用。
+ * 供 rtc-signal-hub 和 claw-ws-hub 共享使用。
  * 无外部依赖、无定时器、无副作用。
  */
 
@@ -64,12 +64,12 @@ export function removeByWs(ws) {
 }
 
 /**
- * 移除某 botId 下所有 connId 路由（bot 解绑时调用）。
- * @param {string} botId
+ * 移除某 clawId 下所有 connId 路由（claw 解绑时调用）。
+ * @param {string} clawId
  */
-export function removeByBotId(botId) {
+export function removeByClawId(clawId) {
 	for (const [connId, entry] of routes) {
-		if (entry.botId === botId) {
+		if (entry.botId === clawId) {
 			remove(connId);
 		}
 	}

@@ -21,7 +21,7 @@ function mockRepo(overrides = {}) {
 test('getAdminDashboard: 返回正确的汇总结构', async () => {
 	const result = await getAdminDashboard({
 		repo: mockRepo(),
-		getOnlineBotCount: () => 3,
+		getOnlineClawCount: () => 3,
 	});
 
 	assert.equal(result.users.total, 100);
@@ -42,7 +42,7 @@ test('getAdminDashboard: 返回正确的汇总结构', async () => {
 test('getAdminDashboard: 自定义数据正确透传', async () => {
 	const result = await getAdminDashboard({
 		repo: mockRepo({ total: 50, todayNew: 2, todayActive: 10, botsTotal: 0, topActive: [], latestRegistered: [] }),
-		getOnlineBotCount: () => 0,
+		getOnlineClawCount: () => 0,
 	});
 
 	assert.equal(result.users.total, 50);
@@ -55,12 +55,12 @@ test('getAdminDashboard: 自定义数据正确透传', async () => {
 });
 
 test('getAdminDashboard: 使用默认 deps 时不抛异常', async () => {
-	// 覆盖 line 10（pluginVersion try/catch）和 line 18-19（默认 repo/getOnlineBotCount）
+	// 覆盖 line 10（pluginVersion try/catch）和 line 18-19（默认 repo/getOnlineClawCount）
 	// 直接调用不传 deps，验证默认依赖路径可达
-	// 由于默认 repo 依赖真实 DB，这里只传 repo 不传 getOnlineBotCount
+	// 由于默认 repo 依赖真实 DB，这里只传 repo 不传 getOnlineClawCount
 	const result = await getAdminDashboard({
 		repo: mockRepo(),
-		// 不传 getOnlineBotCount，走默认的 listOnlineBotIds().size
+		// 不传 getOnlineClawCount，走默认的 listOnlineClawIds().size
 	});
 
 	assert.equal(result.users.total, 100);
@@ -80,7 +80,7 @@ test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
 		countClaws: async () => { calls.push('countClaws'); return 0; },
 	};
 
-	await getAdminDashboard({ repo, getOnlineBotCount: () => 0 });
+	await getAdminDashboard({ repo, getOnlineClawCount: () => 0 });
 
 	assert.equal(calls.length, 6);
 	assert.ok(calls.includes('countUsers'));
