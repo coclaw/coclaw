@@ -366,24 +366,24 @@ test('unbindClawByUser: should reject invalid input types', async () => {
 	assert.equal(r2.code, 'INVALID_INPUT');
 });
 
-test('unbindClawByUser: should return BOT_NOT_FOUND when claw does not exist', async () => {
+test('unbindClawByUser: should return CLAW_NOT_FOUND when claw does not exist', async () => {
 	const result = await unbindClawByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => null,
 		deleteClawImpl: async () => {},
 	});
 
 	assert.equal(result.ok, false);
-	assert.equal(result.code, 'BOT_NOT_FOUND');
+	assert.equal(result.code, 'CLAW_NOT_FOUND');
 });
 
-test('unbindClawByUser: should return BOT_NOT_FOUND when userId does not match', async () => {
+test('unbindClawByUser: should return CLAW_NOT_FOUND when userId does not match', async () => {
 	const result = await unbindClawByUser({ userId: 7n, botId: 2n }, {
 		findById: async () => ({ id: 2n, userId: 999n }),
 		deleteClawImpl: async () => {},
 	});
 
 	assert.equal(result.ok, false);
-	assert.equal(result.code, 'BOT_NOT_FOUND');
+	assert.equal(result.code, 'CLAW_NOT_FOUND');
 });
 
 // ---- unbindClawByToken: 分支覆盖 ----

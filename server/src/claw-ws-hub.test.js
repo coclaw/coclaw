@@ -261,7 +261,7 @@ test('onUiMessage: rtc:offer claw 离线时静默丢弃', () => {
 		payload: { sdp: 'mock' },
 	}));
 
-	// UI 不应收到 BOT_OFFLINE 错误（rtc 消息无 id）
+	// UI 不应收到 CLAW_OFFLINE 错误（rtc 消息无 id）
 	assert.equal(uiWs.sent.length, 0);
 	cleanupSockets('bot1');
 });
@@ -569,7 +569,7 @@ test('forwardToClaw: ws.send 抛异常时不中断且仍返回 true', () => {
 	}));
 
 	// forwardToClaw 的 send 抛异常但不应崩溃
-	// 且不会给 UI 回 BOT_OFFLINE 错误（因为 forwardToClaw 返回 true）
+	// 且不会给 UI 回 CLAW_OFFLINE 错误（因为 forwardToClaw 返回 true）
 	assert.equal(uiWs.sent.length, 0);
 	cleanupSockets('bot1');
 });
@@ -942,9 +942,9 @@ test('notifyAndDisconnectClaw: clawId 为数字时转为字符串处理', () => 
 	cleanupSockets('42');
 });
 
-// --- onUiMessage: claw 离线时回 BOT_OFFLINE 错误 ---
+// --- onUiMessage: claw 离线时回 CLAW_OFFLINE 错误 ---
 
-test('onUiMessage: claw 离线且消息有 id 时回 BOT_OFFLINE 错误', () => {
+test('onUiMessage: claw 离线且消息有 id 时回 CLAW_OFFLINE 错误', () => {
 	const uiWs = createMockWs({ connId: 'c_off2' });
 	setupSockets('bot-off', { ui: [uiWs] }); // 无 claw socket
 
@@ -959,7 +959,7 @@ test('onUiMessage: claw 离线且消息有 id 时回 BOT_OFFLINE 错误', () => 
 	assert.equal(uiWs.sent[0].type, 'res');
 	assert.equal(uiWs.sent[0].id, 'rpc-offline-1');
 	assert.equal(uiWs.sent[0].ok, false);
-	assert.equal(uiWs.sent[0].error.code, 'BOT_OFFLINE');
+	assert.equal(uiWs.sent[0].error.code, 'CLAW_OFFLINE');
 	cleanupSockets('bot-off');
 });
 
@@ -978,7 +978,7 @@ test('onUiMessage: claw 离线且消息无 id 时不回错误', () => {
 	cleanupSockets('bot-off2');
 });
 
-test('onUiMessage: claw 离线回 BOT_OFFLINE 时 ws.send 抛异常不崩溃', () => {
+test('onUiMessage: claw 离线回 CLAW_OFFLINE 时 ws.send 抛异常不崩溃', () => {
 	const uiWs = createMockWs({ connId: 'c_off4' });
 	uiWs.send = () => { throw new Error('ws closed'); };
 	setupSockets('bot-off3', { ui: [uiWs] }); // 无 claw socket

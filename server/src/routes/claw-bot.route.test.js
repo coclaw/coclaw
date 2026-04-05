@@ -700,7 +700,7 @@ test('createUiWsTicketHandler: should return 404 when bot not found', async () =
 	});
 
 	assert.equal(res.statusCode, 404);
-	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+	assert.equal(res.body.code, 'CLAW_NOT_FOUND');
 });
 
 test('createUiWsTicketHandler: should return 404 when bot belongs to another user', async () => {
@@ -716,7 +716,7 @@ test('createUiWsTicketHandler: should return 404 when bot belongs to another use
 	});
 
 	assert.equal(res.statusCode, 404);
-	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+	assert.equal(res.body.code, 'CLAW_NOT_FOUND');
 });
 
 test('createUiWsTicketHandler: should fallback to latest bot when botId not provided', async () => {
@@ -751,7 +751,7 @@ test('createUiWsTicketHandler: should return 404 when no latest bot found', asyn
 	});
 
 	assert.equal(res.statusCode, 404);
-	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+	assert.equal(res.body.code, 'CLAW_NOT_FOUND');
 });
 
 test('createUiWsTicketHandler: should forward error to next', async () => {
@@ -936,7 +936,7 @@ test('unbindClawByUserHandler: clawId takes precedence over botId', async () => 
 	assert.equal(receivedBotId, 100n);
 });
 
-test('unbindClawByUserHandler: should return 404 when unbind service returns BOT_NOT_FOUND', async () => {
+test('unbindClawByUserHandler: should return 404 when unbind service returns CLAW_NOT_FOUND', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 7n },
@@ -947,13 +947,13 @@ test('unbindClawByUserHandler: should return 404 when unbind service returns BOT
 	await unbindClawByUserHandler(req, res, () => {}, {
 		unbindClawByUserImpl: async () => ({
 			ok: false,
-			code: 'BOT_NOT_FOUND',
+			code: 'CLAW_NOT_FOUND',
 			message: 'Bot not found',
 		}),
 	});
 
 	assert.equal(res.statusCode, 404);
-	assert.equal(res.body.code, 'BOT_NOT_FOUND');
+	assert.equal(res.body.code, 'CLAW_NOT_FOUND');
 });
 
 test('unbindClawByUserHandler: should return 400 when unbind service returns INVALID_INPUT', async () => {

@@ -459,7 +459,7 @@ function onUiMessage(clawId, ws, raw) {
 				type: 'res',
 				id: normalized.id,
 				ok: false,
-				error: { code: 'BOT_OFFLINE', message: 'Bot is offline' },
+				error: { code: 'CLAW_OFFLINE', message: 'Claw is offline' },
 			}));
 		}
 		catch {}

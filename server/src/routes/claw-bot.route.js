@@ -276,8 +276,8 @@ export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 
 			if (!claw || claw.userId !== req.user.id) {
 				res.status(404).json({
-					code: 'BOT_NOT_FOUND',
-					message: 'No active bot found',
+					code: 'CLAW_NOT_FOUND',
+					message: 'No active claw found',
 				});
 				return;
 			}
@@ -286,8 +286,8 @@ export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 			claw = await findLatestClawByUserIdImpl(req.user.id);
 			if (!claw) {
 				res.status(404).json({
-					code: 'BOT_NOT_FOUND',
-					message: 'No active bot found',
+					code: 'CLAW_NOT_FOUND',
+					message: 'No active claw found',
 				});
 				return;
 			}
@@ -423,7 +423,7 @@ export async function unbindClawByUserHandler(req, res, next, deps = {}) {
 		if (!result.ok) {
 			const status = result.code === 'INVALID_INPUT'
 				? 400
-				: result.code === 'BOT_NOT_FOUND'
+				: result.code === 'CLAW_NOT_FOUND'
 					? 404
 					: 401;
 			res.status(status).json({
@@ -434,7 +434,7 @@ export async function unbindClawByUserHandler(req, res, next, deps = {}) {
 		}
 
 		console.info(`[coclaw/api] unbind-by-user success botId=${result.botId.toString()} userId=${req.user.id}`);
-		notifyAndDisconnectClawImpl(result.botId, 'bot_unbound');
+		notifyAndDisconnectClawImpl(result.botId, 'claw_unbound');
 		const unboundClawId = result.botId.toString();
 		sendToUserImpl(String(req.user.id), {
 			event: 'claw.unbound',
@@ -487,7 +487,7 @@ export async function unbindClawHandler(req, res, next, deps = {}) {
 		}
 
 		console.info('[coclaw/api] unbind success botId=%s userId=%s (type=%s)', result.botId, result.userId, typeof result.userId);
-		notifyAndDisconnectClawImpl(result.botId, 'bot_unbound');
+		notifyAndDisconnectClawImpl(result.botId, 'claw_unbound');
 		const unboundClawId = result.botId.toString();
 		sendToUserImpl(String(result.userId), {
 			event: 'claw.unbound',

@@ -34,6 +34,10 @@ export async function getAdminDashboard(deps = {}) {
 		users: { total, todayNew, todayActive },
 		topActiveUsers: topActive,
 		latestRegisteredUsers: latestRegistered,
+		claws: {
+			total: clawsTotal,
+			online: getOnlineClawCount(),
+		},
 		bots: {
 			total: clawsTotal,
 			online: getOnlineClawCount(),

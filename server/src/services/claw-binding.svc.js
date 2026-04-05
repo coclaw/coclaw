@@ -184,8 +184,8 @@ export async function unbindClawByUser(input, deps = {}) {
 	if (!targetClaw || targetClaw.userId !== userId) {
 		return {
 			ok: false,
-			code: 'BOT_NOT_FOUND',
-			message: 'Bot not found',
+			code: 'CLAW_NOT_FOUND',
+			message: 'Claw not found',
 		};
 	}
 	await deleteClawImpl(targetClaw.id);

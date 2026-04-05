@@ -31,6 +31,8 @@ test('getAdminDashboard: 返回正确的汇总结构', async () => {
 	assert.equal(result.topActiveUsers[0].name, 'Alice');
 	assert.equal(result.latestRegisteredUsers.length, 1);
 	assert.equal(result.latestRegisteredUsers[0].name, 'NewUser');
+	assert.equal(result.claws.total, 8);
+	assert.equal(result.claws.online, 3);
 	assert.equal(result.bots.total, 8);
 	assert.equal(result.bots.online, 3);
 	assert.equal(typeof result.version.server, 'string');
@@ -50,6 +52,8 @@ test('getAdminDashboard: 自定义数据正确透传', async () => {
 	assert.equal(result.users.todayActive, 10);
 	assert.deepEqual(result.topActiveUsers, []);
 	assert.deepEqual(result.latestRegisteredUsers, []);
+	assert.equal(result.claws.total, 0);
+	assert.equal(result.claws.online, 0);
 	assert.equal(result.bots.total, 0);
 	assert.equal(result.bots.online, 0);
 });
@@ -64,6 +68,7 @@ test('getAdminDashboard: 使用默认 deps 时不抛异常', async () => {
 	});
 
 	assert.equal(result.users.total, 100);
+	assert.equal(typeof result.claws.online, 'number');
 	assert.equal(typeof result.bots.online, 'number');
 	// pluginVersion 分支（line 10）：在测试环境下可能成功也可能 catch，验证不崩溃即可
 	assert.ok('plugin' in result.version);
