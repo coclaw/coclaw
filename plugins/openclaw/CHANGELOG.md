@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.12.0
+
+### Minor Changes
+
+- refactor: rename bot→claw in API paths, config persistence, WS messages, and internal identifiers
+
 ## 0.11.6
 
 ### Patch Changes
