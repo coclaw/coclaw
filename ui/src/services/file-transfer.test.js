@@ -13,6 +13,8 @@ import {
 	MAX_UPLOAD_SIZE,
 } from './file-transfer.js';
 
+vi.mock('./remote-log.js', () => ({ remoteLog: vi.fn() }));
+
 // --- Mock helpers ---
 
 /** 让 waitReady 的 .then() 链执行（一个微任务 tick） */

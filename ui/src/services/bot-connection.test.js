@@ -10,6 +10,8 @@ vi.mock('./signaling-connection.js', () => {
 	};
 });
 
+vi.mock('./remote-log.js', () => ({ remoteLog: vi.fn() }));
+
 import { __mockReleaseConnId } from './signaling-connection.js';
 
 // 工厂：创建 DC 就绪的连接

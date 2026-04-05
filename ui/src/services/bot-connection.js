@@ -6,6 +6,7 @@
  * WS 信令管理已迁移至 SignalingConnection（per-tab 单例）
  */
 import { useSignalingConnection } from './signaling-connection.js';
+import { remoteLog } from './remote-log.js';
 
 /** 默认请求超时（发送后等待响应），0 表示永不超时 */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -72,6 +73,11 @@ export class BotConnection {
 
 	/** 清除 RTC 连接引用并 reject 所有挂起请求和等待（DC 已不可用） */
 	clearRtc() {
+		const pendingCount = this.__pending.size;
+		const waiterCount = this.__readyWaiters.length;
+		if (pendingCount || waiterCount) {
+			remoteLog(`conn.clearRtc bot=${this.botId} pending=${pendingCount} waiters=${waiterCount}`);
+		}
 		this.__rtc = null;
 		this.__rejectAllWaiters('RTC connection lost', 'RTC_LOST');
 		this.__rejectAllPending('RTC connection lost', 'RTC_LOST');
@@ -109,6 +115,7 @@ export class BotConnection {
 				this.__removeWaiter(waiter);
 				const err = new Error('connect timeout');
 				err.code = 'CONNECT_TIMEOUT';
+				remoteLog(`conn.waitReady.timeout bot=${this.botId} timeout=${timeoutMs}ms phase=${this.__onGetRtcPhase?.() ?? '?'}`);
 				reject(err);
 			}, timeoutMs);
 			this.__readyWaiters.push(waiter);
@@ -141,17 +148,19 @@ export class BotConnection {
 						this.__pending.delete(id);
 						const err = new Error('rpc timeout');
 						err.code = 'RPC_TIMEOUT';
+						remoteLog(`rpc.timeout bot=${this.botId} method=${method} timeout=${timeoutMs}ms`);
 						reject(err);
 					}, timeoutMs);
 				}
 				this.__pending.set(id, waiter);
 				this.__rtc.send({ type: 'req', id, method, params })
-					.catch(() => {
+					.catch((sendErr) => {
 						if (!this.__pending.has(id)) return;
 						this.__pending.delete(id);
 						if (waiter.timer) clearTimeout(waiter.timer);
 						const err = new Error('rtc send failed');
 						err.code = 'RTC_SEND_FAILED';
+						remoteLog(`rpc.sendFailed bot=${this.botId} method=${method} err=${sendErr?.message}`);
 						reject(err);
 					});
 			});
@@ -206,6 +215,7 @@ export class BotConnection {
 			if (waiter.timer) clearTimeout(waiter.timer);
 			const err = new Error(payload?.error?.message ?? 'rpc failed');
 			err.code = payload?.error?.code ?? 'RPC_FAILED';
+			remoteLog(`rpc.failed bot=${this.botId} code=${err.code} err=${err.message}`);
 			waiter.reject(err);
 			return;
 		}
@@ -242,6 +252,9 @@ export class BotConnection {
 	}
 
 	__rejectAllPending(message, code = 'DC_CLOSED') {
+		if (this.__pending.size) {
+			remoteLog(`conn.rejectPending bot=${this.botId} count=${this.__pending.size} code=${code}`);
+		}
 		for (const waiter of this.__pending.values()) {
 			if (waiter.timer) clearTimeout(waiter.timer);
 			const err = new Error(message);

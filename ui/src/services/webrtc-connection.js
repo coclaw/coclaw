@@ -194,6 +194,8 @@ export class WebRtcConnection {
 	send(payload) {
 		const dc = this.__rpcChannel;
 		if (!dc || dc.readyState !== 'open') {
+			const method = payload?.method ?? '?';
+			this.__log('warn', `send: DC not open, method=${method} state=${dc?.readyState ?? 'null'}`);
 			return Promise.reject(new Error('DataChannel not open'));
 		}
 		const jsonStr = JSON.stringify(payload);
@@ -225,10 +227,11 @@ export class WebRtcConnection {
 			} catch (err) {
 				// try-catch 安全网：DC 仍存活则尝试分片（未来扩大 maxMessageSize 时兜底）
 				if (typeof data === 'string' && dc.readyState === 'open') {
-					console.warn('[WebRTC] dc.send threw but DC still open, retrying with chunking:', err?.message);
+					this.__log('warn', `dc.send threw but DC still open, retrying with chunking: ${err?.message}`);
 					const chunks = buildChunks(data, Math.floor((this.__pc?.sctp?.maxMessageSize ?? 65536) / 2), () => this.__nextMsgId++);
 					if (chunks) return this.__enqueueSendMulti(chunks);
 				}
+				this.__log('warn', `dc.send failed: ${err?.message} dcState=${dc.readyState}`);
 				return Promise.reject(err);
 			}
 		}
@@ -252,6 +255,7 @@ export class WebRtcConnection {
 					dc.send(chunks[i]);
 					i++;
 				} catch (err) {
+					this.__log('warn', `dc.sendMulti failed at chunk ${i}/${chunks.length}: ${err?.message}`);
 					return Promise.reject(err);
 				}
 			}
@@ -446,6 +450,9 @@ export class WebRtcConnection {
 				this.__botConn.__rejectAllPending('DataChannel closed', 'DC_CLOSED');
 			}
 		};
+		dc.onerror = (event) => {
+			this.__log('warn', `DataChannel "rpc" error: ${event?.error?.message ?? event?.message ?? 'unknown'}`);
+		};
 		dc.onmessage = (event) => {
 			try {
 				this.__reassembler?.feed(event.data);
@@ -460,6 +467,7 @@ export class WebRtcConnection {
 		const dc = this.__rpcChannel;
 		while (this.__sendQueue.length > 0) {
 			if (!dc || dc.readyState !== 'open') {
+				this.__log('warn', `drainSendQueue: DC not open, rejecting ${this.__sendQueue.length} queued msgs`);
 				this.__rejectSendQueue('DataChannel closed');
 				return;
 			}
@@ -470,6 +478,7 @@ export class WebRtcConnection {
 				item.resolve();
 			}
 			catch (err) {
+				this.__log('warn', `drainSendQueue: dc.send failed, rejecting ${this.__sendQueue.length} remaining: ${err?.message}`);
 				item.reject(err);
 				// send 异常通常意味着通道不可用，reject 剩余队列
 				this.__rejectSendQueue('DataChannel send failed');
@@ -481,6 +490,9 @@ export class WebRtcConnection {
 	/** @private reject 队列中所有待发送消息 */
 	__rejectSendQueue(msg) {
 		const queue = this.__sendQueue.splice(0);
+		if (queue.length) {
+			this.__log('warn', `rejectSendQueue: ${queue.length} msgs rejected reason=${msg}`);
+		}
 		for (const { reject } of queue) {
 			reject(new Error(msg));
 		}
@@ -492,7 +504,7 @@ export class WebRtcConnection {
 		this.__disconnectedTimer = setTimeout(() => {
 			this.__disconnectedTimer = null;
 			if (this.__pc?.connectionState === 'disconnected') {
-				this.__log('warn', 'ICE disconnected timeout (%dms), escalating to recovery', DISCONNECTED_TIMEOUT_MS);
+				this.__log('warn', `ICE disconnected timeout (${DISCONNECTED_TIMEOUT_MS}ms), escalating to recovery`);
 				this.__onIceFailed();
 			}
 		}, DISCONNECTED_TIMEOUT_MS);

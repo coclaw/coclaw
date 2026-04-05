@@ -546,6 +546,16 @@ export default {
 				WS_SEND_FAILED: 'chat.errWsSendFailed',
 				RTC_SEND_FAILED: 'chat.errRtcSendFailed',
 				RTC_LOST: 'chat.errWsClosed',
+				// 连接/文件传输错误
+				RTC_NOT_READY: 'chat.errRtcSendFailed',
+				CONNECT_TIMEOUT: 'chat.errRpcTimeout',
+				TRANSFER_INTERRUPTED: 'chat.errTransferInterrupted',
+				DC_CLOSED: 'chat.errTransferInterrupted',
+				DC_ERROR: 'chat.errTransferInterrupted',
+				DC_SEND_FAILED: 'chat.errTransferInterrupted',
+				READY_TIMEOUT: 'chat.errRpcTimeout',
+				TRANSFER_FAILED: 'chat.errTransferFailed',
+				SIZE_EXCEEDED: 'chat.errFileTooLarge',
 			};
 			const key = codeMap[err?.code];
 			if (key) return this.$t(key);

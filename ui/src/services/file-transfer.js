@@ -8,6 +8,7 @@
  * 设计文档：docs/designs/file-management.md
  */
 import { DEFAULT_CONNECT_TIMEOUT_MS } from './bot-connection.js';
+import { remoteLog } from './remote-log.js';
 
 /** 分片大小 16KB */
 const CHUNK_SIZE = 16384;
@@ -151,9 +152,11 @@ export function downloadFile(botConn, agentId, path) {
 		dcRef.onopen = () => {
 			try {
 				dcRef.send(JSON.stringify({ method: 'GET', agentId, path }));
-			} catch {
+			} catch (err) {
 				cleanupRef();
-				settle(reject, new FileTransferError('DC_ERROR', 'Failed to send download request'));
+				const ftErr = new FileTransferError('DC_ERROR', 'Failed to send download request');
+				remoteLog(`file.dl.err code=${ftErr.code} path=${path} err=${err?.message}`);
+				settle(reject, ftErr);
 			}
 		};
 
@@ -167,10 +170,12 @@ export function downloadFile(botConn, agentId, path) {
 
 				if (msg.ok === false) {
 					cleanupRef();
-					settle(reject, new FileTransferError(
+					const ftErr = new FileTransferError(
 						msg.error?.code ?? 'TRANSFER_FAILED',
 						msg.error?.message ?? 'Download failed',
-					));
+					);
+					remoteLog(`file.dl.err code=${ftErr.code} path=${path} err=${ftErr.message}`);
+					settle(reject, ftErr);
 					return;
 				}
 
@@ -213,13 +218,17 @@ export function downloadFile(botConn, agentId, path) {
 					settle(resolve, { blob, bytes: receivedBytes, name: fileName });
 					return;
 				}
-				settle(reject, new FileTransferError('TRANSFER_INTERRUPTED', 'Download interrupted'));
+				const ftErr = new FileTransferError('TRANSFER_INTERRUPTED', 'Download interrupted');
+				remoteLog(`file.dl.err code=${ftErr.code} path=${path} received=${receivedBytes}/${totalSize}`);
+				settle(reject, ftErr);
 			}, 0);
 		};
 
 		dcRef.onerror = () => {
 			cleanupRef();
-			settle(reject, new FileTransferError('DC_ERROR', 'DataChannel error during download'));
+			const ftErr = new FileTransferError('DC_ERROR', 'DataChannel error during download');
+			remoteLog(`file.dl.err code=${ftErr.code} path=${path} received=${receivedBytes}/${totalSize}`);
+			settle(reject, ftErr);
 		};
 	}));
 
@@ -281,6 +290,9 @@ function __doUpload(botConn, file, reqMsg) {
 	let cancelled = false;
 	let cancelFn = null;
 
+	const fileSize = file.size;
+	const logCtx = `method=${reqMsg.method} size=${fileSize}`;
+
 	// 等待连接就绪（已就绪时同步返回 resolved promise）
 	const readyPromise = botConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
 
@@ -306,11 +318,13 @@ function __doUpload(botConn, file, reqMsg) {
 			dcRef = dc;
 			cleanupRef = cleanup;
 		} catch (err) {
+			remoteLog(`file.up.err code=RTC_NOT_READY ${logCtx} err=${err?.message}`);
 			reject(err);
 			return;
 		}
 
 		let readyReceived = false;
+		let sentBytes = 0;
 
 		cancelFn = () => {
 			cancelled = true;
@@ -323,15 +337,19 @@ function __doUpload(botConn, file, reqMsg) {
 		readyTimer = setTimeout(() => {
 			if (readyReceived || cancelled || settled) return;
 			cleanupRef();
-			settle(reject, new FileTransferError('READY_TIMEOUT', 'Plugin did not respond in time'));
+			const ftErr = new FileTransferError('READY_TIMEOUT', 'Plugin did not respond in time');
+			remoteLog(`file.up.err code=${ftErr.code} ${logCtx}`);
+			settle(reject, ftErr);
 		}, UPLOAD_READY_TIMEOUT_MS);
 
 		dcRef.onopen = () => {
 			try {
 				dcRef.send(JSON.stringify(reqMsg));
-			} catch {
+			} catch (err) {
 				cleanupRef();
-				settle(reject, new FileTransferError('DC_ERROR', 'Failed to send upload request'));
+				const ftErr = new FileTransferError('DC_ERROR', 'Failed to send upload request');
+				remoteLog(`file.up.err code=${ftErr.code} ${logCtx} err=${err?.message}`);
+				settle(reject, ftErr);
 			}
 		};
 
@@ -345,10 +363,12 @@ function __doUpload(botConn, file, reqMsg) {
 
 			if (msg.ok === false) {
 				cleanupRef();
-				settle(reject, new FileTransferError(
+				const ftErr = new FileTransferError(
 					msg.error?.code ?? 'TRANSFER_FAILED',
 					msg.error?.message ?? 'Upload failed',
-				));
+				);
+				remoteLog(`file.up.err code=${ftErr.code} ${logCtx} err=${ftErr.message}`);
+				settle(reject, ftErr);
 				return;
 			}
 
@@ -356,18 +376,22 @@ function __doUpload(botConn, file, reqMsg) {
 				// Plugin 准备就绪：{ ok: true }
 				readyReceived = true;
 				clearTimeout(readyTimer);
-				sendChunks(dcRef, file, () => progressCb, () => cancelled || settled).then(() => {
+				sendChunks(dcRef, file, (b) => { sentBytes = b; }, () => progressCb, () => cancelled || settled).then(() => {
 					if (cancelled || settled) return;
 					// 发送完成信号
 					try {
-						dcRef.send(JSON.stringify({ done: true, bytes: file.size }));
-					} catch {
+						dcRef.send(JSON.stringify({ done: true, bytes: fileSize }));
+					} catch (err) {
 						cleanupRef();
-						settle(reject, new FileTransferError('DC_ERROR', 'Failed to send done signal'));
+						const ftErr = new FileTransferError('DC_ERROR', 'Failed to send done signal');
+						remoteLog(`file.up.err code=${ftErr.code} ${logCtx} sent=${sentBytes}/${fileSize} err=${err?.message}`);
+						settle(reject, ftErr);
 					}
 				}).catch((err) => {
 					if (cancelled || settled) return;
 					cleanupRef();
+					const code = err?.code ?? 'UNKNOWN';
+					remoteLog(`file.up.err code=${code} ${logCtx} sent=${sentBytes}/${fileSize} err=${err?.message}`);
 					settle(reject, err);
 				});
 				return;
@@ -376,23 +400,29 @@ function __doUpload(botConn, file, reqMsg) {
 			// 写入结果：{ ok: true, bytes, path? }
 			if (msg.ok === true) {
 				cleanupRef();
-				const result = { bytes: msg.bytes ?? file.size };
+				const result = { bytes: msg.bytes ?? fileSize };
 				if (msg.path) result.path = msg.path;
 				settle(resolve, result);
 			}
 		};
 
 		dcRef.onclose = () => {
+			// DC 关闭后 bufferedAmount 恒为 0，需在此时立即捕获
+			const buffered = dcRef.bufferedAmount ?? '?';
 			// 与下载同理：延迟一个 macrotask，让可能排队中的 onmessage（写入结果）先执行
 			setTimeout(() => {
 				if (cancelled || settled) return;
-				settle(reject, new FileTransferError('TRANSFER_INTERRUPTED', 'Upload interrupted'));
+				const ftErr = new FileTransferError('TRANSFER_INTERRUPTED', 'Upload interrupted');
+				remoteLog(`file.up.err code=${ftErr.code} ${logCtx} sent=${sentBytes}/${fileSize} buffered=${buffered}`);
+				settle(reject, ftErr);
 			}, 0);
 		};
 
 		dcRef.onerror = () => {
 			cleanupRef();
-			settle(reject, new FileTransferError('DC_ERROR', 'DataChannel error during upload'));
+			const ftErr = new FileTransferError('DC_ERROR', 'DataChannel error during upload');
+			remoteLog(`file.up.err code=${ftErr.code} ${logCtx} sent=${sentBytes}/${fileSize}`);
+			settle(reject, ftErr);
 		};
 	}));
 
@@ -407,11 +437,12 @@ function __doUpload(botConn, file, reqMsg) {
  * 分片发送文件内容（含 backpressure 流控）
  * @param {RTCDataChannel} dc
  * @param {File|Blob} file
+ * @param {(sentBytes: number) => void} onSent - 累计已发送字节回调（供外层日志使用）
  * @param {() => ((sent: number, total: number) => void)|null} getProgressCb - 取最新回调（上层可后设）
  * @param {() => boolean} isCancelled
  * @returns {Promise<void>}
  */
-async function sendChunks(dc, file, getProgressCb, isCancelled) {
+async function sendChunks(dc, file, onSent, getProgressCb, isCancelled) {
 	const reader = file.stream().getReader();
 	let sentBytes = 0;
 	// reader 读出的 chunk 可能不是 CHUNK_SIZE，需内部切分
@@ -445,8 +476,16 @@ async function sendChunks(dc, file, getProgressCb, isCancelled) {
 				}
 			}
 
-			dc.send(chunk);
+			try {
+				dc.send(chunk);
+			} catch (err) {
+				throw new FileTransferError(
+					'DC_SEND_FAILED',
+					`dc.send failed at ${sentBytes}/${file.size}: ${err?.message}`,
+				);
+			}
 			sentBytes += chunk.byteLength;
+			onSent(sentBytes);
 			const cb = getProgressCb();
 			if (cb) cb(sentBytes, file.size);
 
