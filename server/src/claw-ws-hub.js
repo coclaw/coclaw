@@ -511,7 +511,7 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 				return;
 			}
 
-			const role = url.searchParams.get('role') ?? 'bot';
+			const role = url.searchParams.get('role') ?? 'claw';
 			let auth;
 			if (role === 'ui') {
 				// session cookie 优先，ticket 兜底

@@ -259,17 +259,17 @@ export async function createUiWsTicketHandler(req, res, next, deps = {}) {
 	} = deps;
 
 	try {
-		const rawBotId = req.body?.botId;
+		const rawClawId = req.body?.clawId ?? req.body?.botId;
 		let claw = null;
 
-		if (rawBotId !== undefined && rawBotId !== null && String(rawBotId).trim() !== '') {
+		if (rawClawId !== undefined && rawClawId !== null && String(rawClawId).trim() !== '') {
 			try {
-				claw = await findClawByIdImpl(BigInt(String(rawBotId)));
+				claw = await findClawByIdImpl(BigInt(String(rawClawId)));
 			}
 			catch {
 				res.status(400).json({
 					code: 'INVALID_INPUT',
-					message: 'botId is invalid',
+					message: 'clawId is invalid',
 				});
 				return;
 			}
@@ -398,23 +398,23 @@ export async function unbindClawByUserHandler(req, res, next, deps = {}) {
 	} = deps;
 
 	try {
-		const rawBotId = req.body?.botId;
-		if (rawBotId === undefined || rawBotId === null || String(rawBotId).trim() === '') {
+		const rawClawId = req.body?.clawId ?? req.body?.botId;
+		if (rawClawId === undefined || rawClawId === null || String(rawClawId).trim() === '') {
 			res.status(400).json({
 				code: 'INVALID_INPUT',
-				message: 'botId is required',
+				message: 'clawId is required',
 			});
 			return;
 		}
 
 		let clawId;
 		try {
-			clawId = BigInt(String(rawBotId));
+			clawId = BigInt(String(rawClawId));
 		}
 		catch {
 			res.status(400).json({
 				code: 'INVALID_INPUT',
-				message: 'botId is invalid',
+				message: 'clawId is invalid',
 			});
 			return;
 		}

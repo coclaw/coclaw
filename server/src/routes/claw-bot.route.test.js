@@ -636,6 +636,41 @@ test('createUiWsTicketHandler: should create ticket with explicit botId', async 
 	assert.equal(res.body.clawId, '42');
 });
 
+test('createUiWsTicketHandler: should accept clawId in request body', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { clawId: '42' },
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findClawByIdImpl: async () => ({ id: 42n, userId: 7n }),
+		createUiWsTicketImpl: ({ clawId, userId }) => `ticket-${clawId}-${userId}`,
+	});
+
+	assert.equal(res.statusCode, 201);
+	assert.equal(res.body.ticket, 'ticket-42-7');
+	assert.equal(res.body.clawId, '42');
+});
+
+test('createUiWsTicketHandler: clawId takes precedence over botId', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { clawId: '100', botId: '200' },
+	};
+	const res = createRes();
+
+	await createUiWsTicketHandler(req, res, () => {}, {
+		findClawByIdImpl: async (id) => ({ id, userId: 7n }),
+		createUiWsTicketImpl: ({ clawId, userId }) => `ticket-${clawId}-${userId}`,
+	});
+
+	assert.equal(res.statusCode, 201);
+	assert.equal(res.body.clawId, '100');
+});
+
 test('createUiWsTicketHandler: should return 400 for invalid botId format', async () => {
 	const req = {
 		isAuthenticated: () => true,
@@ -827,7 +862,7 @@ test('unbindClawByUserHandler: should return 400 when botId is missing', async (
 
 	assert.equal(res.statusCode, 400);
 	assert.equal(res.body.code, 'INVALID_INPUT');
-	assert.equal(res.body.message, 'botId is required');
+	assert.equal(res.body.message, 'clawId is required');
 });
 
 test('unbindClawByUserHandler: should return 400 when botId is empty string', async () => {
@@ -841,7 +876,7 @@ test('unbindClawByUserHandler: should return 400 when botId is empty string', as
 	await unbindClawByUserHandler(req, res, () => {});
 
 	assert.equal(res.statusCode, 400);
-	assert.equal(res.body.message, 'botId is required');
+	assert.equal(res.body.message, 'clawId is required');
 });
 
 test('unbindClawByUserHandler: should return 400 when botId is not a valid BigInt', async () => {
@@ -855,7 +890,50 @@ test('unbindClawByUserHandler: should return 400 when botId is not a valid BigIn
 	await unbindClawByUserHandler(req, res, () => {});
 
 	assert.equal(res.statusCode, 400);
-	assert.equal(res.body.message, 'botId is invalid');
+	assert.equal(res.body.message, 'clawId is invalid');
+});
+
+test('unbindClawByUserHandler: should accept clawId in request body', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { clawId: '42' },
+	};
+	const res = createRes();
+
+	await unbindClawByUserHandler(req, res, () => {}, {
+		unbindClawByUserImpl: async () => ({
+			ok: true,
+			botId: 42n,
+		}),
+		notifyAndDisconnectClawImpl: () => {},
+		sendToUserImpl: () => {},
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.clawId, '42');
+});
+
+test('unbindClawByUserHandler: clawId takes precedence over botId', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { clawId: '100', botId: '200' },
+	};
+	const res = createRes();
+
+	let receivedBotId;
+	await unbindClawByUserHandler(req, res, () => {}, {
+		unbindClawByUserImpl: async (input) => {
+			receivedBotId = input.botId;
+			return { ok: true, botId: 100n };
+		},
+		notifyAndDisconnectClawImpl: () => {},
+		sendToUserImpl: () => {},
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(receivedBotId, 100n);
 });
 
 test('unbindClawByUserHandler: should return 404 when unbind service returns BOT_NOT_FOUND', async () => {
