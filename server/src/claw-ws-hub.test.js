@@ -521,9 +521,11 @@ test('grace period 过期但 claw 已重连：不发 offline 事件', async () =
 
 // --- 管理性断连 close code 跳过 grace period ---
 
-test('getWebSocketCloseCode: token_revoked/bot_unbound → 4001, bot_blocked → 4003', () => {
+test('getWebSocketCloseCode: token_revoked/claw_unbound/bot_unbound → 4001, claw_blocked/bot_blocked → 4003', () => {
 	assert.equal(getWebSocketCloseCode('token_revoked'), 4001);
+	assert.equal(getWebSocketCloseCode('claw_unbound'), 4001);
 	assert.equal(getWebSocketCloseCode('bot_unbound'), 4001);
+	assert.equal(getWebSocketCloseCode('claw_blocked'), 4003);
 	assert.equal(getWebSocketCloseCode('bot_blocked'), 4003);
 	assert.equal(getWebSocketCloseCode('other'), 4000);
 });
@@ -702,6 +704,27 @@ test('onClawMessage: bot.unbound 中 ws.close 抛异常时不崩溃', () => {
 	cleanupSockets('bot1');
 });
 
+test('onClawMessage: claw.unbound（新版 plugin）转发并关闭连接', () => {
+	const clawWs = createMockWs();
+	const closed = [];
+	clawWs.close = (code, reason) => closed.push({ code, reason });
+	const uiWs = createMockWs({ connId: 'c_ui' });
+	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
+
+	onClawMessage('bot1', clawWs, JSON.stringify({
+		type: 'claw.unbound',
+		reason: 'token_revoked',
+		clawId: 'bot1',
+	}));
+
+	assert.equal(uiWs.sent.length, 1);
+	assert.equal(uiWs.sent[0].type, 'claw.unbound');
+	assert.equal(closed.length, 1);
+	assert.equal(closed[0].code, 4001);
+	assert.equal(closed[0].reason, 'claw_unbound');
+	cleanupSockets('bot1');
+});
+
 // --- onClawMessage: coclaw.info.updated 事件持久化 claw.name，不转发给 UI ---
 
 test('onClawMessage: coclaw.info.updated 不转发给 UI', () => {
@@ -778,22 +801,27 @@ test('notifyAndDisconnectClaw: 通知 claw 和 UI 并断开连接', () => {
 
 	notifyAndDisconnectClaw('bot-notify', 'token_revoked');
 
-	// claw 应收到 bot.unbound 消息
-	assert.equal(clawWs.sent.length, 1);
-	assert.equal(clawWs.sent[0].type, 'bot.unbound');
+	// claw 应收到双消息：先 claw.unbound 后 bot.unbound
+	assert.equal(clawWs.sent.length, 2);
+	assert.equal(clawWs.sent[0].type, 'claw.unbound');
 	assert.equal(clawWs.sent[0].reason, 'token_revoked');
-	assert.equal(clawWs.sent[0].botId, 'bot-notify');
 	assert.equal(clawWs.sent[0].clawId, 'bot-notify');
-	assert.ok(clawWs.sent[0].at); // ISO 时间戳
+	assert.equal(clawWs.sent[0].botId, undefined);
+	assert.ok(clawWs.sent[0].at);
+	assert.equal(clawWs.sent[1].type, 'bot.unbound');
+	assert.equal(clawWs.sent[1].botId, 'bot-notify');
+	assert.equal(clawWs.sent[1].clawId, 'bot-notify');
+	assert.ok(clawWs.sent[1].at);
 
 	// claw 连接以 4001 关闭
 	assert.equal(closed.length, 1);
 	assert.equal(closed[0].code, 4001);
 	assert.equal(closed[0].reason, 'token_revoked');
 
-	// UI 也应收到 bot.unbound 广播
-	assert.equal(uiWs.sent.length, 1);
-	assert.equal(uiWs.sent[0].type, 'bot.unbound');
+	// UI 也应收到双广播
+	assert.equal(uiWs.sent.length, 2);
+	assert.equal(uiWs.sent[0].type, 'claw.unbound');
+	assert.equal(uiWs.sent[1].type, 'bot.unbound');
 
 	cleanupSockets('bot-notify');
 });
@@ -831,6 +859,7 @@ test('notifyAndDisconnectClaw: 默认 reason 为 token_revoked', () => {
 
 	notifyAndDisconnectClaw('bot-default');
 
+	assert.equal(clawWs.sent[0].type, 'claw.unbound');
 	assert.equal(clawWs.sent[0].reason, 'token_revoked');
 	assert.equal(closed[0].code, 4001);
 	cleanupSockets('bot-default');
@@ -859,8 +888,8 @@ test('notifyAndDisconnectClaw: ws.close 抛异常不崩溃', () => {
 	// 不应抛异常
 	notifyAndDisconnectClaw('bot-closefail', 'token_revoked');
 
-	// send 仍被调用
-	assert.equal(clawWs.sent.length, 1);
+	// send 仍被调用（双消息）
+	assert.equal(clawWs.sent.length, 2);
 	cleanupSockets('bot-closefail');
 });
 
@@ -890,8 +919,8 @@ test('notifyAndDisconnectClaw: 多个 claw socket 全部收到通知并关闭', 
 
 	notifyAndDisconnectClaw('bot-multi', 'token_revoked');
 
-	assert.equal(ws1.sent.length, 1);
-	assert.equal(ws2.sent.length, 1);
+	assert.equal(ws1.sent.length, 2);
+	assert.equal(ws2.sent.length, 2);
 	assert.equal(closed1.length, 1);
 	assert.equal(closed2.length, 1);
 	cleanupSockets('bot-multi');
@@ -904,9 +933,12 @@ test('notifyAndDisconnectClaw: clawId 为数字时转为字符串处理', () => 
 
 	notifyAndDisconnectClaw(42, 'token_revoked');
 
-	assert.equal(clawWs.sent.length, 1);
-	assert.equal(clawWs.sent[0].botId, '42');
+	assert.equal(clawWs.sent.length, 2);
+	assert.equal(clawWs.sent[0].type, 'claw.unbound');
 	assert.equal(clawWs.sent[0].clawId, '42');
+	assert.equal(clawWs.sent[1].type, 'bot.unbound');
+	assert.equal(clawWs.sent[1].botId, '42');
+	assert.equal(clawWs.sent[1].clawId, '42');
 	cleanupSockets('42');
 });
 

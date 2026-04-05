@@ -51,10 +51,10 @@ function rtcLogWarn(msg) { console.warn(`[coclaw/rtc] ${msg}`); }
 function rtcLogDebug(msg) { if (WS_VERBOSE) console.debug(`[coclaw/rtc] ${msg}`); }
 
 function getWebSocketCloseCode(reason) {
-	if (reason === 'token_revoked' || reason === 'bot_unbound') {
+	if (reason === 'token_revoked' || reason === 'claw_unbound' || reason === 'bot_unbound') {
 		return 4001;
 	}
-	if (reason === 'bot_blocked') {
+	if (reason === 'claw_blocked' || reason === 'bot_blocked') {
 		return 4003;
 	}
 	return 4000;
@@ -395,14 +395,15 @@ function onClawMessage(clawId, ws, raw) {
 		return;
 	}
 
-	if (payload.type === 'bot.unbound') {
-		wsLogInfo(`bot.unbound received clawId=${clawId}`);
+	if (payload.type === 'claw.unbound' || payload.type === 'bot.unbound') {
+		wsLogInfo(`${payload.type} received clawId=${clawId}`);
 		broadcastToUi(clawId, payload);
+		const closeReason = payload.type === 'claw.unbound' ? 'claw_unbound' : 'bot_unbound';
 		try {
-			ws.close(4001, 'bot_unbound');
+			ws.close(4001, closeReason);
 		}
 		catch (err) {
-			wsLogDebug(`bot.unbound ws.close failed clawId=${clawId}: ${err.message}`);
+			wsLogDebug(`${payload.type} ws.close failed clawId=${clawId}: ${err.message}`);
 		}
 	}
 }
@@ -688,22 +689,29 @@ export function notifyAndDisconnectClaw(clawId, reason = 'token_revoked') {
 	}
 
 	wsLogInfo(`notify/disconnect clawId=${key} reason=${reason}`);
-	const payload = {
+	const clawPayload = {
+		type: 'claw.unbound',
+		reason,
+		clawId: key,
+		at: new Date().toISOString(),
+	};
+	const botPayload = {
 		type: 'bot.unbound',
 		reason,
 		botId: key,
 		clawId: key,
 		at: new Date().toISOString(),
 	};
-	broadcastToUi(key, payload);
+	// SSE 双事件（先 claw 后 bot）
+	broadcastToUi(key, clawPayload);
+	broadcastToUi(key, botPayload);
 	const closeCode = getWebSocketCloseCode(reason);
+	const clawMsg = JSON.stringify(clawPayload);
+	const botMsg = JSON.stringify(botPayload);
 	for (const ws of set) {
-		try {
-			ws.send(JSON.stringify(payload));
-		}
-		catch (err) {
-			wsLogDebug(`notifyAndDisconnectClaw send failed clawId=${key}: ${err.message}`);
-		}
+		// 先发双消息，再关闭连接
+		try { ws.send(clawMsg); } catch {}
+		try { ws.send(botMsg); } catch {}
 		try {
 			ws.close(closeCode, reason);
 		}

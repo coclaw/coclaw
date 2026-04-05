@@ -57,7 +57,13 @@
 - server 已支持 `?clawId=` 和 `?botId=` 查询参数
 - 路由表内部字段已从 `botId` 改为 `clawId`
 - UI 侧待迁移：出站消息 `botId` → `clawId`，连接参数 `?botId=` → `?clawId=`
-- 详见 `docs/designs/api-bot-to-claw-migration.md` "WS 信令中的 botId" 章节
+
+### WS 消息类型 + close reason（server 侧已完成）
+
+- `notifyAndDisconnectClaw`：先发 `claw.unbound` 再发 `bot.unbound`
+- `onClawMessage`：同时接受 `claw.unbound` 和 `bot.unbound`
+- `getWebSocketCloseCode`：同时接受 `claw_unbound`/`bot_unbound` 和 `claw_blocked`/`bot_blocked`
+- 详见 `docs/designs/api-bot-to-claw-migration.md`
 
 ### 注意事项
 

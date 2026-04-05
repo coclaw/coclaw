@@ -104,12 +104,21 @@ WS 信令（RTC signaling）中的 `botId` 字段涉及 server + UI + plugin 三
 
 Plugin 不直接在 RTC 信令消息中发送 `botId`（plugin 的 WS 连接已通过 token 鉴权绑定了 clawId），无需改动。
 
+### WS 消息类型 + close reason 兼容 ✅
+
+**`bot.unbound` / `claw.unbound` WS 消息类型**：
+- `notifyAndDisconnectClaw`（server→plugin/UI）：先发 `claw.unbound` 再发 `bot.unbound`，新版 plugin 匹配前者，旧版匹配后者
+- `onClawMessage`（plugin→server）：同时接受 `claw.unbound` 和 `bot.unbound`，新版 plugin 发前者，旧版发后者
+
+**WS close reason**：
+- `getWebSocketCloseCode` 同时接受 `claw_unbound`/`bot_unbound` → 4001 和 `claw_blocked`/`bot_blocked` → 4003
+- Plugin/server 双方只检查数字 code（4001/4003），不解析 reason 字符串
+- `onClawMessage` 的 close reason 根据收到的消息类型动态选择 `claw_unbound` 或 `bot_unbound`
+
 ## 暂不迁移的协议元素
 
 以下留到远期一次性切换：
 
-- WS 消息 `type` 字段（`bot.unbound`）
-- WS close reason（`bot_unbound`、`bot_blocked`）
 - HTTP 错误码（`BOT_NOT_FOUND`、`BOT_OFFLINE`）
 - `?role=bot` 查询参数
 
@@ -119,6 +128,7 @@ Server 兼容层部署后，需验证：
 
 1. **旧版 Plugin**：绑定（bind/claim）、查询自身（self）、解绑（unbind）、WS 连接、bot.unbound 处理均正常
 2. **旧版 UI**：SSE 事件接收（`bot.*` 事件仍正常触发）、WS ticket 获取、解绑操作均正常
-3. **新增字段/事件不干扰**：旧版 UI 的 `claw.*` SSE 事件被静默忽略；旧版 plugin 的多余 JSON 字段不影响（点访问，无 schema 校验）
+3. **新增字段/事件不干扰**：旧版 UI 的 `claw.*` SSE/WS 事件被静默忽略；旧版 plugin 的多余 JSON 字段不影响（点访问，无 schema 校验）
 4. **路由别名**：`/api/v1/claws/*` 可正常访问所有原 `/api/v1/bots/*` 端点
 5. **WS 路径别名**：`/api/v1/claws/stream` 可正常建立 WS 连接
+6. **WS 双消息**：旧版 plugin 收到 `claw.unbound` 时忽略，收到 `bot.unbound` 时正常处理
