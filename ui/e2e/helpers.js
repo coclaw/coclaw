@@ -17,7 +17,7 @@ export async function login(page) {
 
 // --- 导航 ---
 
-/** 从 topics 页导航到一个可用的 chat session，返回 { botId, agentId }（无可用 session 返回 null） */
+/** 从 topics 页导航到一个可用的 chat session，返回 { clawId, agentId }（无可用 session 返回 null） */
 export async function navigateToChat(page) {
 	await page.goto('/topics');
 	const chatLink = page.locator('main a[href*="/chat/"]').first();
@@ -32,7 +32,7 @@ export async function navigateToChat(page) {
 	await page.waitForURL(/\/chat\//, { timeout: 5000 });
 	const match = href?.match(/\/chat\/([^/?]+)\/([^/?]+)/);
 	if (!match) return null;
-	return { botId: match[1], agentId: match[2] };
+	return { clawId: match[1], agentId: match[2] };
 }
 
 /** 等待 chat 页面完全就绪（chat-root 可见 + textarea 可用） */
@@ -63,7 +63,7 @@ export async function typeText(locator, text) {
 /**
  * 在浏览器上下文中访问 Pinia store 并执行操作
  * @param {import('@playwright/test').Page} page
- * @param {string} storeId - store ID（如 'bots', 'sessions', 'chat'）
+ * @param {string} storeId - store ID（如 'claws', 'sessions', 'chat'）
  * @param {string} fnBody - 以 `store` 为参数的函数体字符串
  * @returns {Promise<*>}
  */

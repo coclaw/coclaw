@@ -6,7 +6,7 @@ import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
  *
  * 前置条件：
  * - server 运行中
- * - test 用户已有至少一个 online bot
+ * - test 用户已有至少一个 online claw
  * - 存在可用 session
  */
 

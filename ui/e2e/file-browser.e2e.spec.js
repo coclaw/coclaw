@@ -6,7 +6,7 @@ import { login, evalStore } from './helpers.js';
  *
  * 前置条件：
  * - server、OpenClaw gateway、plugin 均运行中
- * - test 用户已绑定 bot 且 bot 在线
+ * - test 用户已绑定 claw 且 claw 在线
  * - 本地环境 WebRTC 连接几乎 100% 可建立
  */
 
@@ -14,59 +14,59 @@ import { login, evalStore } from './helpers.js';
 // Helpers
 // ================================================================
 
-/** 等待 bot 在线且 RTC 连接就绪 */
-async function waitBotReady(page, timeout = 30_000) {
+/** 等待 claw 在线�� RTC 连接就绪 */
+async function waitClawReady(page, timeout = 30_000) {
 	try {
 		await expect(async () => {
-			const items = await evalStore(page, 'bots', 'return store.items');
+			const items = await evalStore(page, 'claws', 'return store.items');
 			const ready = items.find((b) => b.online && b.connState === 'connected' && b.transportMode === 'rtc');
 			expect(ready).toBeTruthy();
 		}).toPass({ timeout });
-		const items = await evalStore(page, 'bots', 'return store.items');
-		const bot = items.find((b) => b.online && b.connState === 'connected' && b.transportMode === 'rtc');
-		return { botId: bot.id, agentId: 'main' };
+		const items = await evalStore(page, 'claws', 'return store.items');
+		const claw = items.find((b) => b.online && b.connState === 'connected' && b.transportMode === 'rtc');
+		return { clawId: claw.id, agentId: 'main' };
 	} catch {
 		return null;
 	}
 }
 
-/** 通用前置：登录 → topics 页等 bot + RTC 就绪 */
+/** 通用前置：登录 → topics 页等 claw + RTC 就绪 */
 async function setup(page, t) {
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
-	// topics 页触发 bot 连接和 RTC 建连
+	// topics ���触发 claw 连接�� RTC 建连
 	await page.goto('/topics');
-	const bot = await waitBotReady(page);
-	t.skip(!bot, 'No online bot with RTC available');
-	return bot;
+	const claw = await waitClawReady(page);
+	t.skip(!claw, 'No online claw with RTC available');
+	return claw;
 }
 
 /** 导航到文件管理页并等待列表加载 */
-async function gotoFiles(page, botId, agentId) {
-	await page.goto(`/files/${botId}/${agentId}`);
+async function gotoFiles(page, clawId, agentId) {
+	await page.goto(`/files/${clawId}/${agentId}`);
 	await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 15_000 });
 	await page.waitForTimeout(1500);
 }
 
 /** RPC 创建目录 */
-async function rpcMkdir(page, botId, agentId, dir) {
-	await page.evaluate(async ({ botId, agentId, dir }) => {
-		const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+async function rpcMkdir(page, clawId, agentId, dir) {
+	await page.evaluate(async ({ clawId, agentId, dir }) => {
+		const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 		const { mkdirFiles } = await import('/src/services/file-transfer.js');
-		const conn = useBotConnections().get(botId);
+		const conn = useClawConnections().get(clawId);
 		await mkdirFiles(conn, agentId, dir);
-	}, { botId, agentId, dir });
+	}, { clawId, agentId, dir });
 }
 
 /** RPC 清理路径 */
-async function rpcCleanup(page, botId, agentId, path) {
+async function rpcCleanup(page, clawId, agentId, path) {
 	try {
-		await page.evaluate(async ({ botId, agentId, path }) => {
-			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+		await page.evaluate(async ({ clawId, agentId, path }) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 			const { deleteFile } = await import('/src/services/file-transfer.js');
-			const conn = useBotConnections().get(botId);
+			const conn = useClawConnections().get(clawId);
 			if (conn) await deleteFile(conn, agentId, path, { force: true });
-		}, { botId, agentId, path });
+		}, { clawId, agentId, path });
 	} catch { /* ignore */ }
 }
 
@@ -88,8 +88,8 @@ test.describe('文件浏览器 @file', () => {
 	// ----------------------------------------------------------
 
 	test('打开文件管理页 — 显示 agent 名称和面包屑', async ({ page }) => {
-		const bot = await setup(page, test);
-		await gotoFiles(page, bot.botId, bot.agentId);
+		const claw = await setup(page, test);
+		await gotoFiles(page, claw.clawId, claw.agentId);
 
 		// 面包屑 Root
 		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible();
@@ -107,13 +107,13 @@ test.describe('文件浏览器 @file', () => {
 	// ----------------------------------------------------------
 
 	test('创建目录 → 进入 → ".." 返回 → 面包屑返回 → 删除', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 		const dirName = `__e2e_mkdir_${Date.now()}`;
 
-		await gotoFiles(page, bot.botId, bot.agentId);
+		await gotoFiles(page, claw.clawId, claw.agentId);
 
 		// RPC 创建目录
-		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
 		await clickRefresh(page);
 
 		// 目录出现在列表中
@@ -143,21 +143,21 @@ test.describe('文件浏览器 @file', () => {
 		await page.waitForTimeout(1000);
 
 		// 清理
-		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 		await clickRefresh(page);
 		await expect(page.locator('main').getByText(dirName)).not.toBeVisible({ timeout: 10_000 });
 	});
 
 	test('嵌套目录导航：创建多级目录 → 逐级进入 → 面包屑跳转', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 		const ts = Date.now();
 		const dir1 = `__e2e_nest_${ts}`;
 		const dir2 = 'sub';
 
-		await gotoFiles(page, bot.botId, bot.agentId);
+		await gotoFiles(page, claw.clawId, claw.agentId);
 
 		// RPC 创建嵌套目录
-		await rpcMkdir(page, bot.botId, bot.agentId, `${dir1}/${dir2}`);
+		await rpcMkdir(page, claw.clawId, claw.agentId, `${dir1}/${dir2}`);
 		await clickRefresh(page);
 
 		// 进入 dir1
@@ -178,7 +178,7 @@ test.describe('文件浏览器 @file', () => {
 		await expect(page.locator('main').getByText(dir2, { exact: true })).toBeVisible({ timeout: 5000 });
 
 		// 清理
-		await rpcCleanup(page, bot.botId, bot.agentId, dir1);
+		await rpcCleanup(page, claw.clawId, claw.agentId, dir1);
 	});
 
 	// ----------------------------------------------------------
@@ -186,13 +186,13 @@ test.describe('文件浏览器 @file', () => {
 	// ----------------------------------------------------------
 
 	test('文件上传 → 列表中显示 → 下载', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 		const dirName = `__e2e_upload_${Date.now()}`;
 		const fileName = `test_${Date.now()}.txt`;
 		const content = `E2E upload test ${Date.now()}`;
 
-		await gotoFiles(page, bot.botId, bot.agentId);
-		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await gotoFiles(page, claw.clawId, claw.agentId);
+		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
 		await clickRefresh(page);
 
 		// 进入测试目录
@@ -215,30 +215,30 @@ test.describe('文件浏览器 @file', () => {
 		await page.waitForTimeout(5000);
 
 		// 通过 RPC 直接下载验证文件内容
-		const downloadedText = await page.evaluate(async ({ botId, agentId, dirName, fileName }) => {
-			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+		const downloadedText = await page.evaluate(async ({ clawId, agentId, dirName, fileName }) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 			const { downloadFile } = await import('/src/services/file-transfer.js');
-			const conn = useBotConnections().get(botId);
+			const conn = useClawConnections().get(clawId);
 			const handle = downloadFile(conn.__rtc, agentId, `${dirName}/${fileName}`);
 			const result = await handle.promise;
 			return result.blob.text();
-		}, { botId: bot.botId, agentId: bot.agentId, dirName, fileName });
+		}, { clawId: claw.clawId, agentId: claw.agentId, dirName, fileName });
 		expect(downloadedText).toBe(content);
 
 		// 清理
-		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 	});
 
 	test('多文件上传', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 		const dirName = `__e2e_multi_${Date.now()}`;
 		const files = [
 			{ name: `file1_${Date.now()}.txt`, content: 'content-1' },
 			{ name: `file2_${Date.now()}.txt`, content: 'content-2' },
 		];
 
-		await gotoFiles(page, bot.botId, bot.agentId);
-		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await gotoFiles(page, claw.clawId, claw.agentId);
+		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
 		await clickRefresh(page);
 
 		await page.locator('main').getByText(dirName, { exact: true }).click();
@@ -258,7 +258,7 @@ test.describe('文件浏览器 @file', () => {
 			await expect(page.locator('main').getByText(f.name)).toBeVisible({ timeout: 20_000 });
 		}
 
-		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 	});
 
 	// ----------------------------------------------------------
@@ -266,12 +266,12 @@ test.describe('文件浏览器 @file', () => {
 	// ----------------------------------------------------------
 
 	test('UI 删除文件', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 		const dirName = `__e2e_del_${Date.now()}`;
 		const fileName = `del_${Date.now()}.txt`;
 
-		await gotoFiles(page, bot.botId, bot.agentId);
-		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
+		await gotoFiles(page, claw.clawId, claw.agentId);
+		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
 		await clickRefresh(page);
 
 		// 进入目录
@@ -306,23 +306,23 @@ test.describe('文件浏览器 @file', () => {
 		// 文件消失
 		await expect(page.locator('main').getByText(fileName)).not.toBeVisible({ timeout: 10_000 });
 
-		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 	});
 
 	test('UI 删除非空目录（需勾选 checkbox）', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 		const dirName = `__e2e_rmdir_${Date.now()}`;
 
-		await gotoFiles(page, bot.botId, bot.agentId);
+		await gotoFiles(page, claw.clawId, claw.agentId);
 
 		// 创建目录并在其中放一个文件
-		await rpcMkdir(page, bot.botId, bot.agentId, dirName);
-		await page.evaluate(async ({ botId, agentId, path }) => {
-			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
+		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		await page.evaluate(async ({ clawId, agentId, path }) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 			const { createFile } = await import('/src/services/file-transfer.js');
-			const conn = useBotConnections().get(botId);
+			const conn = useClawConnections().get(clawId);
 			await createFile(conn, agentId, path);
-		}, { botId: bot.botId, agentId: bot.agentId, path: `${dirName}/placeholder.txt` });
+		}, { clawId: claw.clawId, agentId: claw.agentId, path: `${dirName}/placeholder.txt` });
 
 		await clickRefresh(page);
 
@@ -350,12 +350,12 @@ test.describe('文件浏览器 @file', () => {
 	// ----------------------------------------------------------
 
 	test('ChatPage header 有文件管理入口', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 
-		const pluginOk = await evalStore(page, 'bots', `return store.byId['${bot.botId}']?.pluginVersionOk`);
+		const pluginOk = await evalStore(page, 'claws', `return store.byId['${claw.clawId}']?.pluginVersionOk`);
 		test.skip(pluginOk === false, 'Plugin version outdated');
 
-		await page.goto(`/chat/${bot.botId}/${bot.agentId}`);
+		await page.goto(`/chat/${claw.clawId}/${claw.agentId}`);
 		await expect(page.getByRole('heading', { level: 1 }).last()).toBeVisible({ timeout: 15_000 });
 
 		// 找可见的 btn-files 并点击
@@ -379,13 +379,13 @@ test.describe('文件浏览器 @file', () => {
 		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 10_000 });
 	});
 
-	test('ManageBotsPage AgentCard 有文件管理入口', async ({ page }) => {
-		const bot = await setup(page, test);
+	test('ManageClawsPage AgentCard 有文件管理入口', async ({ page }) => {
+		const claw = await setup(page, test);
 
-		const pluginOk = await evalStore(page, 'bots', `return store.byId['${bot.botId}']?.pluginVersionOk`);
+		const pluginOk = await evalStore(page, 'claws', `return store.byId['${claw.clawId}']?.pluginVersionOk`);
 		test.skip(pluginOk === false, 'Plugin version outdated');
 
-		await page.goto('/bots');
+		await page.goto('/claws');
 		// 等待 AgentCard 渲染
 		const agentCard = page.locator('[class*="rounded-xl"]').filter({ hasText: /chat|对话/ }).first();
 		await expect(agentCard).toBeVisible({ timeout: 15_000 });
@@ -412,10 +412,10 @@ test.describe('文件浏览器 @file', () => {
 	// ----------------------------------------------------------
 
 	test('通过 UI 按钮新建目录', async ({ page }) => {
-		const bot = await setup(page, test);
+		const claw = await setup(page, test);
 		const dirName = `__e2e_uimk_${Date.now()}`;
 
-		await gotoFiles(page, bot.botId, bot.agentId);
+		await gotoFiles(page, claw.clawId, claw.agentId);
 
 		await page.getByTestId('btn-mkdir').click();
 
@@ -429,6 +429,6 @@ test.describe('文件浏览器 @file', () => {
 		await expect(page.locator('main').getByText(dirName, { exact: true })).toBeVisible({ timeout: 10_000 });
 
 		// 清理
-		await rpcCleanup(page, bot.botId, bot.agentId, dirName);
+		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 	});
 });

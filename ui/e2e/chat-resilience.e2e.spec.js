@@ -6,7 +6,7 @@ import { login, navigateToChat, waitChatReady, evalStore } from './helpers.js';
  *
  * 前置条件：
  * - server 运行中
- * - test 用户已有至少一个 online bot（已绑定且 OpenClaw gateway 运行中）
+ * - test 用户已有至少一个 online claw（已绑定且 OpenClaw gateway 运行中）
  * - 存在 agent:main:main session
  */
 
@@ -36,7 +36,7 @@ test('ChatPage 刷新：页面恢复正常，无错误提示 @resilience', async
 	// chat-root 可见
 	await expect(page.getByTestId('chat-root')).toBeVisible({ timeout: 10_000 });
 
-	// 不应出现错误文本（'Bot not connected'、'not connected' 等）
+	// 不应出现错误文本（'Claw not connected'、'not connected' 等）
 	const errorEl = page.locator('[data-testid="chat-root"] .text-error');
 	await expect(errorEl).not.toBeVisible({ timeout: 15_000 });
 
@@ -53,7 +53,7 @@ test('不存在的 session：重定向到首页 @resilience', async ({ page }) =
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
-	// 先确保有 bot（否则跳转原因不同）
+	// 先确保有 claw（否则跳转原因不同）
 	await page.goto('/topics');
 	const chatLink = page.locator('main a[href*="/chat/"]').first();
 	try {
@@ -64,12 +64,12 @@ test('不存在的 session：重定向到首页 @resilience', async ({ page }) =
 	}
 
 	// 导航到一个不存在的 session
-	await page.goto('/chat/nonexistent-bot-' + Date.now() + '/main');
+	await page.goto('/chat/nonexistent-claw-' + Date.now() + '/main');
 
 	// 应被重定向离开 chat 页面（到 /home 或其后续调度目标）
 	await expect(async () => {
 		const url = page.url();
-		expect(url).not.toContain('/chat/nonexistent-bot');
+		expect(url).not.toContain('/chat/nonexistent-claw');
 	}).toPass({ timeout: 15_000 });
 
 	// 不应停留在错误状态
@@ -77,10 +77,10 @@ test('不存在的 session：重定向到首页 @resilience', async ({ page }) =
 });
 
 // ================================================================
-// Test 3: Bot 离线 → 显示离线 banner + 输入禁用
+// Test 3: Claw 离线 → 显示离线 banner + 输入禁用
 // ================================================================
 
-test('Bot 离线：显示离线提示且输入禁用 @resilience', async ({ page }) => {
+test('Claw 离线：显示离线提示且输入禁用 @resilience', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -90,10 +90,10 @@ test('Bot 离线：显示离线提示且输入禁用 @resilience', async ({ page
 
 	await waitChatReady(page);
 
-	// 通过 Pinia store 将所有 bot 设为离线（模拟 SSE bot.status 推送）
-	await evalStore(page, 'bots', `
-		for (const bot of store.items) {
-			store.updateBotOnline(bot.id, false);
+	// 通过 Pinia store 将所有 claw 设为离线（模拟 SSE claw.status 推送）
+	await evalStore(page, 'claws', `
+		for (const claw of store.items) {
+			store.updateClawOnline(claw.id, false);
 		}
 	`);
 
@@ -105,10 +105,10 @@ test('Bot 离线：显示离线提示且输入禁用 @resilience', async ({ page
 	await expect(page.getByTestId('chat-textarea')).toBeDisabled({ timeout: 3000 });
 
 	// --- 恢复 ---
-	// 将 bot 重新设为在线
-	await evalStore(page, 'bots', `
-		for (const bot of store.items) {
-			store.updateBotOnline(bot.id, true);
+	// 将 claw 重新设为在线
+	await evalStore(page, 'claws', `
+		for (const claw of store.items) {
+			store.updateClawOnline(claw.id, true);
 		}
 	`);
 

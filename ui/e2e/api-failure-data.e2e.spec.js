@@ -8,23 +8,23 @@ import { login, navigateToChat, waitChatReady } from './helpers.js';
  *
  * 前置条件：
  * - server 运行中
- * - test 用户已有至少一个 online bot
+ * - test 用户已有至少一个 online claw
  */
 
 // ================================================================
-// 1. Bot 列表 API 故障
+// 1. Claw 列表 API 故障
 // ================================================================
 
-test.describe('Bot 列表 API 故障 @resilience', () => {
-	test('GET /api/v1/bots 返回 500 → 页面不崩溃，降级为空列表', async ({ page }) => {
+test.describe('Claw 列表 API 故障 @resilience', () => {
+	test('GET /api/v1/claws 返回 500 → 页面不崩溃，降级为空列表', async ({ page }) => {
 		test.setTimeout(30_000);
 		await page.setViewportSize({ width: 1280, height: 720 });
 
 		// 先正常登录（确保 session 有效）
 		await login(page);
 
-		// 拦截 bot 列表 API
-		await page.route('**/api/v1/bots', (route) => {
+		// 拦截 claw 列表 API
+		await page.route('**/api/v1/claws', (route) => {
 			if (route.request().method() === 'GET') {
 				return route.fulfill({
 					status: 500,
@@ -35,7 +35,7 @@ test.describe('Bot 列表 API 故障 @resilience', () => {
 			route.continue();
 		});
 
-		// 导航到 topics 页（触发 botsStore.loadBots 重新加载）
+		// 导航到 topics 页（触发 clawsStore.loadClaws 重新加载）
 		await page.goto('/topics');
 
 		// 页面应正常渲染，不白屏
@@ -57,7 +57,7 @@ test.describe('SSE 状态流故障 @resilience', () => {
 		await page.setViewportSize({ width: 1280, height: 720 });
 
 		// 在登录前拦截 SSE（EventSource 的初始 HTTP 请求）
-		await page.route('**/api/v1/bots/status-stream', (route) => route.abort());
+		await page.route('**/api/v1/claws/status-stream', (route) => route.abort());
 
 		await login(page);
 
@@ -89,7 +89,7 @@ test.describe('WebSocket 连接故障 @resilience', () => {
 		const chatUrl = page.url();
 
 		// 拦截 WS 升级请求（阻止后续所有 WS 连接）
-		await page.route('**/api/v1/bots/stream**', (route) => route.abort());
+		await page.route('**/api/v1/claws/stream**', (route) => route.abort());
 
 		// 刷新页面 → WS 尝试重连但被拦截
 		await page.reload();
@@ -98,14 +98,14 @@ test.describe('WebSocket 连接故障 @resilience', () => {
 		await expect(page.getByTestId('chat-root')).toBeVisible({ timeout: 10_000 });
 
 		// 应显示连接错误或 loading 状态（WS 无法建立 → 消息加载失败）
-		// errorText = 'Bot not connected' 或 loading 持续
+		// errorText = 'Claw not connected' 或 loading 持续
 		await expect(async () => {
 			const hasError = await page.locator('[data-testid="chat-root"] .text-error').isVisible();
 			const hasLoading = await page.locator('[data-testid="chat-root"] .text-muted').isVisible();
 			expect(hasError || hasLoading).toBe(true);
 		}).toPass({ timeout: 15_000 });
 
-		// textarea 在连接错误时仍可能显示（取决于 isBotOffline 状态）
+		// textarea 在连接错误时仍可能显示（取决于 isClawOffline 状态）
 		// 但发送应不可能（WS 断开）
 		await expect(page).toHaveURL(chatUrl);
 	});

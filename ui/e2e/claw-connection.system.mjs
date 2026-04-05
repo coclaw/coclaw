@@ -1,15 +1,15 @@
 /**
- * BotConnection + Store 系统测试
+ * ClawConnection + Store 系统测试
  *
- * 粒度 1：直接导入 UI 的 BotConnection 类，注入 Node ws 库，验证 WS 通信链路
+ * 粒度 1：直接导入 UI 的 ClawConnection 类，注入 Node ws 库，验证 WS 通信链路
  * 粒度 2：在 headless Vue + Pinia 环境中运行真实 Store，验证完整数据流
  *
  * 前置条件：
  * - server 运行在 localhost:3000
  * - OpenClaw gateway 运行中
- * - test 用户已有至少一个 online bot
+ * - test 用户已有至少一个 online claw
  *
- * 运行：node ui/e2e/bot-connection.system.mjs
+ * 运行：node ui/e2e/claw-connection.system.mjs
  */
 import assert from 'node:assert/strict';
 import axios from 'axios';
@@ -18,9 +18,9 @@ import WebSocket from 'ws';
 // UI 源码依赖 Vite 特有的 import.meta.env 及浏览器 API（FileReader、capacitor 等）。
 // 通过 ESM loader hook 拦截这些模块，返回 Node.js 兼容的 stub。
 import { register } from 'node:module';
-register('./bot-connection.system.loader.mjs', import.meta.url);
+register('./claw-connection.system.loader.mjs', import.meta.url);
 
-const { BotConnection } = await import('../src/services/bot-connection.js');
+const { ClawConnection } = await import('../src/services/claw-connection.js');
 const { createApp } = await import('vue');
 const { createPinia, setActivePinia } = await import('pinia');
 
@@ -56,7 +56,7 @@ async function login() {
 	return { client, cookies };
 }
 
-/** 等待 BotConnection 进入指定状态 */
+/** 等待 ClawConnection 进入指定状态 */
 function waitState(conn, targetState, timeoutMs = 5000) {
 	return new Promise((resolve, reject) => {
 		if (conn.state === targetState) return resolve();
@@ -104,21 +104,21 @@ async function runTest(name, fn) {
 	}
 }
 
-console.log('\n[system-test] BotConnection + Server 系统测试\n');
+console.log('\n[system-test] ClawConnection + Server 系统测试\n');
 
-// 1) 登录并获取 bot 列表
+// 1) 登录并获取 claw 列表
 const { client, cookies } = await login();
-const botsRes = await client.get('/api/v1/bots');
-const bots = botsRes.data?.items ?? [];
-assert.ok(bots.length > 0, '至少需要一个已绑定的 bot');
-const bot = bots[0];
-console.log(`  target bot: id=${bot.id} name=${bot.name} online=${bot.online}\n`);
+const clawsRes = await client.get('/api/v1/claws');
+const claws = clawsRes.data?.items ?? [];
+assert.ok(claws.length > 0, '至少需要一个已绑定的 claw');
+const claw = claws[0];
+console.log(`  target claw: id=${claw.id} name=${claw.name} online=${claw.online}\n`);
 
 const CookieWS = createCookieWebSocket(cookies);
 
 // --- Test 1: Session cookie 认证建立 WS 连接 ---
 await runTest('session cookie 认证建立 WS 连接', async () => {
-	const conn = new BotConnection(bot.id, {
+	const conn = new ClawConnection(claw.id, {
 		baseUrl: BASE_URL,
 		WebSocket: CookieWS,
 	});
@@ -134,7 +134,7 @@ await runTest('session cookie 认证建立 WS 连接', async () => {
 
 // --- Test 2: 无认证连接被拒绝 ---
 await runTest('无认证 WS 连接被拒绝', async () => {
-	const conn = new BotConnection(bot.id, {
+	const conn = new ClawConnection(claw.id, {
 		baseUrl: BASE_URL,
 		WebSocket,
 	});
@@ -149,14 +149,14 @@ await runTest('无认证 WS 连接被拒绝', async () => {
 
 // --- Test 3: 心跳 pong 响应 ---
 await runTest('应用层心跳 ping 收到 pong', async () => {
-	const conn = new BotConnection(bot.id, {
+	const conn = new ClawConnection(claw.id, {
 		baseUrl: BASE_URL,
 		WebSocket: CookieWS,
 	});
 	try {
 		conn.connect();
 		await waitState(conn, 'connected', 5000);
-		// 手动发 ping，检查 pong（BotConnection.__onMessage 会忽略 pong，但不会断开）
+		// 手动发 ping，检查 pong（ClawConnection.__onMessage 会忽略 pong，但不会断开）
 		// 直接访问内部 ws 发 ping，监听原始消息
 		const pongReceived = new Promise((resolve, reject) => {
 			const timer = setTimeout(() => reject(new Error('pong timeout')), 3000);
@@ -183,11 +183,11 @@ await runTest('应用层心跳 ping 收到 pong', async () => {
 
 // --- Test 4: RPC 请求（agent.identity.get）经 server → plugin → OpenClaw → 回来 ---
 await runTest('RPC agent.identity.get 全链路', async () => {
-	if (!bot.online) {
-		console.log('    (skipped: bot offline)');
+	if (!claw.online) {
+		console.log('    (skipped: claw offline)');
 		return;
 	}
-	const conn = new BotConnection(bot.id, {
+	const conn = new ClawConnection(claw.id, {
 		baseUrl: BASE_URL,
 		WebSocket: CookieWS,
 	});
@@ -206,11 +206,11 @@ await runTest('RPC agent.identity.get 全链路', async () => {
 
 // --- Test 5: RPC sessions.listAll 全链路 ---
 await runTest('RPC sessions.listAll 全链路', async () => {
-	if (!bot.online) {
-		console.log('    (skipped: bot offline)');
+	if (!claw.online) {
+		console.log('    (skipped: claw offline)');
 		return;
 	}
-	const conn = new BotConnection(bot.id, {
+	const conn = new ClawConnection(claw.id, {
 		baseUrl: BASE_URL,
 		WebSocket: CookieWS,
 	});
@@ -229,7 +229,7 @@ await runTest('RPC sessions.listAll 全链路', async () => {
 
 // --- Test 6: 断连后自动重连 ---
 await runTest('断连后自动重连', async () => {
-	const conn = new BotConnection(bot.id, {
+	const conn = new ClawConnection(claw.id, {
 		baseUrl: BASE_URL,
 		WebSocket: CookieWS,
 	});
@@ -252,7 +252,7 @@ await runTest('断连后自动重连', async () => {
 
 // --- Test 7: disconnect 后不再重连 ---
 await runTest('主动 disconnect 后不再重连', async () => {
-	const conn = new BotConnection(bot.id, {
+	const conn = new ClawConnection(claw.id, {
 		baseUrl: BASE_URL,
 		WebSocket: CookieWS,
 	});
@@ -265,23 +265,23 @@ await runTest('主动 disconnect 后不再重连', async () => {
 	assert.equal(conn.state, 'disconnected');
 });
 
-// --- Test 8: BotConnectionManager 多连接管理 ---
-await runTest('BotConnectionManager 管理连接生命周期', async () => {
-	// 直接使用 BotConnectionManager 类，避免单例干扰
-	const { BotConnectionManager } = await import('../src/services/bot-connection-manager.js');
-	const mgr = new BotConnectionManager();
+// --- Test 8: ClawConnectionManager 多连接管理 ---
+await runTest('ClawConnectionManager 管理连接生命周期', async () => {
+	// 直接使用 ClawConnectionManager 类，避免单例干扰
+	const { ClawConnectionManager } = await import('../src/services/claw-connection-manager.js');
+	const mgr = new ClawConnectionManager();
 	try {
-		const conn = mgr.connect(bot.id, {
+		const conn = mgr.connect(claw.id, {
 			baseUrl: BASE_URL,
 			WebSocket: CookieWS,
 		});
-		assert.ok(conn instanceof BotConnection);
+		assert.ok(conn instanceof ClawConnection);
 		await waitState(conn, 'connected', 5000);
 		assert.equal(mgr.size, 1);
 		assert.deepEqual(Object.values(mgr.getStates()), ['connected']);
 
-		// 幂等：再次 connect 同一 bot 返回同一实例
-		const conn2 = mgr.connect(bot.id);
+		// 幂等：再次 connect 同一 claw 返回同一实例
+		const conn2 = mgr.connect(claw.id);
 		assert.equal(conn2, conn);
 
 		mgr.disconnectAll();
@@ -301,7 +301,7 @@ console.log('\n[system-test] Store 数据流系统测试（headless Vue + Pinia�
 
 // --- 设置 headless Vue + Pinia 环境 ---
 
-// BotConnectionManager 的 connect 默认使用 globalThis.WebSocket，
+// ClawConnectionManager 的 connect 默认使用 globalThis.WebSocket，
 // 需要在 Store 测试前将其替换为携带 cookie 的 WS
 globalThis.WebSocket = CookieWS;
 
@@ -312,7 +312,7 @@ async function createStoreEnv() {
 	app.use(pinia);
 	setActivePinia(pinia);
 
-	// httpClient 需要携带 cookie 用于 bots.api.listBots
+	// httpClient 需要携带 cookie 用于 claws.api.listClaws
 	const { httpClient } = await import('../src/services/http.js');
 	httpClient.defaults.baseURL = BASE_URL;
 	httpClient.interceptors.request.use((config) => {
@@ -320,12 +320,12 @@ async function createStoreEnv() {
 		return config;
 	});
 
-	const { useBotsStore } = await import('../src/stores/bots.store.js');
+	const { useClawsStore } = await import('../src/stores/claws.store.js');
 	const { useSessionsStore } = await import('../src/stores/sessions.store.js');
 	const { useChatStore } = await import('../src/stores/chat.store.js');
 
 	return {
-		botsStore: useBotsStore(),
+		clawsStore: useClawsStore(),
 		sessionsStore: useSessionsStore(),
 		chatStore: useChatStore(),
 		pinia,
@@ -333,40 +333,40 @@ async function createStoreEnv() {
 	};
 }
 
-// --- Test 9: botsStore.loadBots 加载并同步 WS 连接 ---
-await runTest('botsStore.loadBots 加载 bot 并自动建立 WS', async () => {
+// --- Test 9: clawsStore.loadClaws 加载并同步 WS 连接 ---
+await runTest('clawsStore.loadClaws 加载 claw 并自动建立 WS', async () => {
 	const env = await createStoreEnv();
-	const { __resetBotConnections } = await import('../src/services/bot-connection-manager.js');
+	const { __resetClawConnections } = await import('../src/services/claw-connection-manager.js');
 	try {
-		const loaded = await env.botsStore.loadBots();
-		assert.ok(loaded.length > 0, 'should load at least one bot');
-		assert.equal(env.botsStore.items.length, loaded.length);
-		console.log(`    → loaded ${loaded.length} bot(s)`);
+		const loaded = await env.clawsStore.loadClaws();
+		assert.ok(loaded.length > 0, 'should load at least one claw');
+		assert.equal(env.clawsStore.items.length, loaded.length);
+		console.log(`    → loaded ${loaded.length} claw(s)`);
 
-		// syncConnections 在 loadBots 中被调用
+		// syncConnections 在 loadClaws 中被调用
 		// 等待 WS 连接建立
-		const { useBotConnections } = await import('../src/services/bot-connection-manager.js');
-		const mgr = useBotConnections();
+		const { useClawConnections } = await import('../src/services/claw-connection-manager.js');
+		const mgr = useClawConnections();
 		const targetConn = mgr.get(String(loaded[0].id));
 		assert.ok(targetConn, 'should have created a connection');
 		await waitState(targetConn, 'connected', 5000);
 		assert.equal(targetConn.state, 'connected');
 	}
 	finally {
-		__resetBotConnections();
+		__resetClawConnections();
 	}
 });
 
 // --- Test 10: sessionsStore.loadAllSessions 通过 WS 获取 session 列表 ---
 await runTest('sessionsStore.loadAllSessions 通过 WS 获取 sessions', async () => {
 	const env = await createStoreEnv();
-	const { __resetBotConnections } = await import('../src/services/bot-connection-manager.js');
+	const { __resetClawConnections } = await import('../src/services/claw-connection-manager.js');
 	try {
-		// 先加载 bot 并等待连接
-		await env.botsStore.loadBots();
-		const { useBotConnections } = await import('../src/services/bot-connection-manager.js');
-		const mgr = useBotConnections();
-		const conn = mgr.get(String(bot.id));
+		// 先加载 claw 并等待连接
+		await env.clawsStore.loadClaws();
+		const { useClawConnections } = await import('../src/services/claw-connection-manager.js');
+		const mgr = useClawConnections();
+		const conn = mgr.get(String(claw.id));
 		if (conn) await waitState(conn, 'connected', 5000);
 
 		// 加载 sessions
@@ -374,25 +374,25 @@ await runTest('sessionsStore.loadAllSessions 通过 WS 获取 sessions', async (
 		assert.ok(env.sessionsStore.items.length > 0, 'should load sessions');
 		console.log(`    → loaded ${env.sessionsStore.items.length} session(s)`);
 
-		// 每个 session 应有 sessionId 和 botId
+		// 每个 session 应有 sessionId 和 clawId
 		const first = env.sessionsStore.items[0];
 		assert.ok(first.sessionId, 'session should have sessionId');
-		assert.ok(first.botId, 'session should have botId');
+		assert.ok(first.clawId, 'session should have clawId');
 	}
 	finally {
-		__resetBotConnections();
+		__resetClawConnections();
 	}
 });
 
 // --- Test 11: chatStore.activateSession + loadMessages 全链路 ---
 await runTest('chatStore 激活 session 并加载消息', async () => {
 	const env = await createStoreEnv();
-	const { __resetBotConnections } = await import('../src/services/bot-connection-manager.js');
+	const { __resetClawConnections } = await import('../src/services/claw-connection-manager.js');
 	try {
-		// 加载 bots + 连接
-		await env.botsStore.loadBots();
-		const { useBotConnections } = await import('../src/services/bot-connection-manager.js');
-		const conn = useBotConnections().get(String(bot.id));
+		// 加载 claws + 连接
+		await env.clawsStore.loadClaws();
+		const { useClawConnections } = await import('../src/services/claw-connection-manager.js');
+		const conn = useClawConnections().get(String(claw.id));
 		if (conn) await waitState(conn, 'connected', 5000);
 
 		// 加载 sessions
@@ -404,28 +404,28 @@ await runTest('chatStore 激活 session 并加载消息', async () => {
 		await env.chatStore.activateSession(targetSession.sessionId);
 
 		assert.equal(env.chatStore.sessionId, targetSession.sessionId);
-		assert.equal(env.chatStore.botId, String(bot.id));
+		assert.equal(env.chatStore.clawId, String(claw.id));
 		assert.ok(env.chatStore.messages.length >= 0, 'messages should be loaded (may be empty for new sessions)');
 		console.log(`    → session=${targetSession.sessionId} messages=${env.chatStore.messages.length}`);
 	}
 	finally {
-		__resetBotConnections();
+		__resetClawConnections();
 	}
 });
 
 // --- Test 12: chatStore.sendMessage 全链路（两阶段 RPC → agent 事件 → 终态） ---
 await runTest('chatStore.sendMessage 发送消息全链路', async () => {
-	if (!bot.online) {
-		console.log('    (skipped: bot offline)');
+	if (!claw.online) {
+		console.log('    (skipped: claw offline)');
 		return;
 	}
 	const env = await createStoreEnv();
-	const { __resetBotConnections } = await import('../src/services/bot-connection-manager.js');
+	const { __resetClawConnections } = await import('../src/services/claw-connection-manager.js');
 	try {
-		// 加载 bots + 连接
-		await env.botsStore.loadBots();
-		const { useBotConnections } = await import('../src/services/bot-connection-manager.js');
-		const conn = useBotConnections().get(String(bot.id));
+		// 加载 claws + 连接
+		await env.clawsStore.loadClaws();
+		const { useClawConnections } = await import('../src/services/claw-connection-manager.js');
+		const conn = useClawConnections().get(String(claw.id));
 		if (conn) await waitState(conn, 'connected', 5000);
 
 		// 加载 sessions
@@ -448,22 +448,22 @@ await runTest('chatStore.sendMessage 发送消息全链路', async () => {
 		console.log(`    → accepted, messages before=${msgBefore} after=${env.chatStore.messages.length}`);
 	}
 	finally {
-		__resetBotConnections();
+		__resetClawConnections();
 	}
 });
 
 // --- Test 13: chatStore.resetChat 新建会话 ---
 await runTest('chatStore.resetChat 新建聊天', async () => {
-	if (!bot.online) {
-		console.log('    (skipped: bot offline)');
+	if (!claw.online) {
+		console.log('    (skipped: claw offline)');
 		return;
 	}
 	const env = await createStoreEnv();
-	const { __resetBotConnections } = await import('../src/services/bot-connection-manager.js');
+	const { __resetClawConnections } = await import('../src/services/claw-connection-manager.js');
 	try {
-		await env.botsStore.loadBots();
-		const { useBotConnections } = await import('../src/services/bot-connection-manager.js');
-		const conn = useBotConnections().get(String(bot.id));
+		await env.clawsStore.loadClaws();
+		const { useClawConnections } = await import('../src/services/claw-connection-manager.js');
+		const conn = useClawConnections().get(String(claw.id));
 		if (conn) await waitState(conn, 'connected', 5000);
 		await env.sessionsStore.loadAllSessions();
 
@@ -481,7 +481,7 @@ await runTest('chatStore.resetChat 新建聊天', async () => {
 		console.log(`    → new session: ${newSessionId}, sessions before=${sessionsBefore} after=${env.sessionsStore.items.length}`);
 	}
 	finally {
-		__resetBotConnections();
+		__resetClawConnections();
 	}
 });
 

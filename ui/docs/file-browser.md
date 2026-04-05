@@ -42,21 +42,21 @@
 两处均提供入口：
 
 1. **ChatPage header**：文件管理图标按钮
-2. **Bot 详情页**：文件管理入口
+2. **Claw 详情页**：文件管理入口
 
 ### 路由
 
 ```
-files/:botId/:agentId
+files/:clawId/:agentId
 ```
 
-与 `chat/:botId/:agentId` 平行，agentId 作为路径段。
+与 `chat/:clawId/:agentId` 平行，agentId 作为路径段。
 
 路由 meta：
 
 ```js
 {
-	path: 'files/:botId/:agentId',
+	path: 'files/:clawId/:agentId',
 	name: 'files',
 	component: FileManagerPage,
 	meta: { requiresAuth: true, hideMobileNav: true },
@@ -108,7 +108,7 @@ state: () => ({
 {
 	id,               // crypto.randomUUID()
 	type,             // 'upload' | 'download'
-	botId,
+	clawId,
 	agentId,
 	dir,              // 所在目录（相对 workspace）
 	fileName,         // 文件名
@@ -126,10 +126,10 @@ state: () => ({
 
 ```js
 // 入队上传（传入已解决重名冲突的文件列表）
-enqueueUploads(botId, agentId, dir, files)
+enqueueUploads(clawId, agentId, dir, files)
 
 // 入队下载（重复入队同一文件自动跳过）
-enqueueDownload(botId, agentId, dir, fileName, size)
+enqueueDownload(clawId, agentId, dir, fileName, size)
 
 // 取消任务
 cancelTask(taskId)
@@ -138,22 +138,22 @@ cancelTask(taskId)
 retryTask(taskId)
 
 // 清理指定 agent 已完成/取消/失败的任务
-clearFinished(botId, agentId)
+clearFinished(clawId, agentId)
 ```
 
 ### 关键 Getters
 
 ```js
 // 获取指定目录下的活跃任务（用于列表项合并展示）
-getActiveTasks(botId, agentId, dir)
+getActiveTasks(clawId, agentId, dir)
 
 // 获取指定 agent 的全部任务（用于全局进度指示）
-getAgentTasks(botId, agentId)
+getAgentTasks(clawId, agentId)
 ```
 
 ### 上传队列机制
 
-同一 (botId, agentId) 下的上传任务串行执行：
+同一 (clawId, agentId) 下的上传任务串行执行：
 - `enqueueUploads` 将多个文件创建为 `pending` 状态的 task
 - 内部维护执行循环：取出下一个 `pending` task → 调用 `file-transfer.js` 的 `uploadFile()` → 更新进度 → 完成/失败 → 取下一个
 - 下载任务可并行（每次下载创建独立 DC，互不干扰）
@@ -202,7 +202,7 @@ getAgentTasks(botId, agentId)
 
 **目录切换时的进度保留**：
 
-组件挂载时通过 `files.store` 的 `getActiveTasks(botId, agentId, dir)` 查询当前目录下的活跃任务，合并到目录列表中展示。任务生命周期与组件解耦。
+组件挂载时通过 `files.store` 的 `getActiveTasks(clawId, agentId, dir)` 查询当前目录下的活跃任务，合并到目录列表中展示。任务生命周期与组件解耦。
 
 ### 5.4 文件上传流程
 

@@ -9,7 +9,7 @@ import { login, navigateToChat, waitChatReady, typeText, evalStore } from './hel
  *
  * 前置条件：
  * - server 运行中
- * - test 用户已有至少一个 online bot
+ * - test 用户已有至少一个 online claw
  * - 存在可用 session
  */
 
@@ -57,7 +57,7 @@ test('取消发送（accepted 前）：文本恢复到输入框 @chat', async ({
 			}];
 			store.messages = [...store.messages, {
 				type: 'message',
-				id: '__local_bot_' + Date.now(),
+				id: '__local_claw_' + Date.now(),
 				_local: true,
 				_streaming: true,
 				_startTime: Date.now(),
@@ -162,7 +162,7 @@ test('取消发送（accepted 前）：文本和图片都恢复 @chat', async ({
 			}];
 			store.messages = [...store.messages, {
 				type: 'message',
-				id: '__local_bot_' + Date.now(),
+				id: '__local_claw_' + Date.now(),
 				_local: true,
 				_streaming: true,
 				_startTime: Date.now(),

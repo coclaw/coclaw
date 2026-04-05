@@ -9,7 +9,7 @@ test('local account auth flow should work with new layout @auth', async ({ page 
 	await page.getByTestId('login-password').fill('123456');
 	await page.getByTestId('btn-login').click();
 
-	// 登录后根据 bot 状态重定向到不同页面；只需验证已离开登录页且进入认证区域
+	// 登录后根据 claw 状态重定向到不同页面；只需验证已离开登录页且进入认证区域
 	await expect(page).not.toHaveURL(/\/login$/);
 	await expect(page.getByTestId('session-user')).toBeVisible();
 

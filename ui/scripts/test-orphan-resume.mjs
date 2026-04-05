@@ -4,7 +4,7 @@
  *
  * 流程：
  * 1. 登录获取 cookie
- * 2. 获取 botId + ws ticket
+ * 2. 获取 clawId + ws ticket
  * 3. 建立 WebSocket
  * 4. 调用 nativeui.sessions.listAll 找到 orphan session（indexed=false）
  * 5. 调用 agent(sessionId) 发送消息
@@ -121,20 +121,20 @@ async function main() {
 	});
 	console.log('    user:', loginRes?.user?.name ?? loginRes?.user?.id ?? '(failed)');
 
-	// 2. 获取 bots
-	console.log('[2] 获取 bots...');
-	const botsRes = await request('GET', '/api/v1/bots');
-	const bots = botsRes?.items ?? [];
-	if (!bots.length) {
-		console.error('    无可用 bot，退出');
+	// 2. 获取 claws
+	console.log('[2] 获取 claws...');
+	const clawsRes = await request('GET', '/api/v1/claws');
+	const claws = clawsRes?.items ?? [];
+	if (!claws.length) {
+		console.error('    无可用 claw，退出');
 		process.exit(1);
 	}
-	const bot = bots[0];
-	console.log('    bot: %s (%s, online=%s)', bot.name, bot.id, bot.online);
+	const claw = claws[0];
+	console.log('    claw: %s (%s, online=%s)', claw.name, claw.id, claw.online);
 
 	// 3. 获取 WS ticket
 	console.log('[3] 获取 WS ticket...');
-	const ticketRes = await request('POST', '/api/v1/bots/ws-ticket', { botId: bot.id });
+	const ticketRes = await request('POST', '/api/v1/claws/ws-ticket', { clawId: claw.id });
 	const ticket = ticketRes?.ticket;
 	if (!ticket) {
 		console.error('    ticket 获取失败:', ticketRes);
@@ -144,7 +144,7 @@ async function main() {
 
 	// 4. 连接 WebSocket
 	console.log('[4] 连接 WebSocket...');
-	const wsUrl = `ws://localhost:3000/api/v1/bots/stream?role=ui&ticket=${ticket}`;
+	const wsUrl = `ws://localhost:3000/api/v1/claws/stream?role=ui&ticket=${ticket}`;
 	const ws = new WebSocket(wsUrl);
 	await new Promise((resolve, reject) => {
 		ws.addEventListener('open', () => resolve(), { once: true });

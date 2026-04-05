@@ -122,9 +122,9 @@ test.describe('下拉刷新 @ui', () => {
 		expect(reloaded).toBe(true);
 	});
 
-	test('ManageBotsPage: 下拉触发刷新', async ({ page }) => {
+	test('ManageClawsPage: 下拉触发刷新', async ({ page }) => {
 		await login(page);
-		await page.goto('/bots');
+		await page.goto('/claws');
 		await page.waitForTimeout(1000);
 		await setReloadMarker(page);
 

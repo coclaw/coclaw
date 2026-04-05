@@ -6,10 +6,10 @@ import { evalStore, login, waitChatReady } from './helpers.js';
  *
  * 前置条件：
  * - server 运行中，OpenClaw gateway 运行中
- * - test 用户已绑定 bot 且 bot 在线
+ * - test 用户已绑定 claw 且 claw 在线
  * - OpenClaw 配置了至少 2 个 agent（main + tester）
  *
- * 当 bot 离线时（如被 bot-bind-unbind 测试影响），所有测试自动 skip。
+ * 当 claw 离线时（如被 claw-bind-unbind 测试影响），所有测试自动 skip。
  */
 
 // ================================================================
@@ -23,10 +23,10 @@ import { evalStore, login, waitChatReady } from './helpers.js';
 async function waitAgentsLoaded(page, timeout = 15_000) {
 	try {
 		await expect(async () => {
-			const byBot = await evalStore(page, 'agents', 'return store.byBot');
-			const keys = Object.keys(byBot);
+			const byClaw = await evalStore(page, 'agents', 'return store.byClaw');
+			const keys = Object.keys(byClaw);
 			expect(keys.length).toBeGreaterThan(0);
-			const entry = byBot[keys[0]];
+			const entry = byClaw[keys[0]];
 			expect(entry.fetched).toBe(true);
 			expect(entry.agents.length).toBeGreaterThanOrEqual(2);
 		}).toPass({ timeout });
@@ -58,7 +58,7 @@ async function setupWithAgents(page, test, route = '/topics') {
 	await login(page);
 	await page.goto(route);
 	const loaded = await waitAgentsLoaded(page);
-	test.skip(!loaded, 'Bot offline or agents not available (< 2 agents)');
+	test.skip(!loaded, 'Claw offline or agents not available (< 2 agents)');
 }
 
 // ================================================================
@@ -133,13 +133,13 @@ test('非 main agent (tester) 的 session 可正常加载消息 @chat', async ({
 });
 
 // ================================================================
-// Test 5: ManageBots 页展示 Agent 列表
+// Test 5: ManageClaws 页展示 Agent 列表
 // ================================================================
 
-test('ManageBots 页：Claw 卡片内显示 Agent 列表 @chat', async ({ page }) => {
+test('ManageClaws 页：Claw 卡片内显示 Agent 列表 @chat', async ({ page }) => {
 	test.setTimeout(30_000);
-	await setupWithAgents(page, test, '/bots');
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
+	await setupWithAgents(page, test, '/claws');
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 	await waitSessionsLoaded(page);
 
 	// Claw 卡片内 agent 区域应有 agent 名称
@@ -151,13 +151,13 @@ test('ManageBots 页：Claw 卡片内显示 Agent 列表 @chat', async ({ page }
 });
 
 // ================================================================
-// Test 6: ManageBots 页 Agent "对话"按钮导航
+// Test 6: ManageClaws 页 Agent "对话"按钮导航
 // ================================================================
 
-test('ManageBots 页：点击 Agent 对话按钮进入 chat @chat', async ({ page }) => {
+test('ManageClaws 页：点击 Agent 对话按钮进入 chat @chat', async ({ page }) => {
 	test.setTimeout(30_000);
-	await setupWithAgents(page, test, '/bots');
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
+	await setupWithAgents(page, test, '/claws');
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 	await waitSessionsLoaded(page);
 
 	// 点击第一个"对话"按钮
@@ -222,10 +222,10 @@ test('HomePage：桌面端自动跳转到默认 agent 的 main session @chat', a
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
-	// 先验证 bot 在线
+	// 先验证 claw 在线
 	await page.goto('/topics');
 	const loaded = await waitAgentsLoaded(page);
-	test.skip(!loaded, 'Bot offline or agents not available');
+	test.skip(!loaded, 'Claw offline or agents not available');
 
 	await page.goto('/home');
 

@@ -11,18 +11,18 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		await page.waitForTimeout(3000);
 
 		const transportMode = await page.evaluate(async () => {
-			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
-			const manager = useBotConnections();
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
+			const manager = useClawConnections();
 			const modes = {};
-			for (const [botId, conn] of manager.__connections) {
-				modes[botId] = conn.transportMode;
+			for (const [clawId, conn] of manager.__connections) {
+				modes[clawId] = conn.transportMode;
 			}
 			return modes;
 		});
 
 		console.log('Transport modes:', JSON.stringify(transportMode));
-		for (const [botId, mode] of Object.entries(transportMode)) {
-			expect(mode, `botId=${botId} transportMode should not be null`).not.toBeNull();
+		for (const [clawId, mode] of Object.entries(transportMode)) {
+			expect(mode, `clawId=${clawId} transportMode should not be null`).not.toBeNull();
 			expect(['rtc', 'ws']).toContain(mode);
 		}
 	});
@@ -39,12 +39,12 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		await waitChatReady(page);
 
 		// 检查 transportMode
-		const mode = await page.evaluate(async (botId) => {
-			const { useBotConnections } = await import('/src/services/bot-connection-manager.js');
-			const conn = useBotConnections().get(botId);
+		const mode = await page.evaluate(async (clawId) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
+			const conn = useClawConnections().get(clawId);
 			return conn?.transportMode;
-		}, chatInfo.botId);
-		console.log(`Bot ${chatInfo.botId} transportMode: ${mode}`);
+		}, chatInfo.clawId);
+		console.log(`Claw ${chatInfo.clawId} transportMode: ${mode}`);
 
 		// 记录消息数
 		const msgCountBefore = await page.locator('[data-testid="chat-root"] main .px-3.py-3').count();
@@ -58,7 +58,7 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		// 验证 user 消息出现
 		await expect(page.locator(`text=${testMsg}`)).toBeVisible({ timeout: 5000 });
 
-		// 验证 bot 回复完成（btn-send 重新出现）
+		// 验证 claw 回复完成（btn-send 重新出现）
 		await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 180_000 });
 
 		// 验证消息数增加

@@ -66,7 +66,7 @@ test.describe('Topic management @chat', () => {
 			const chat = pinia?._s?.get('chat');
 			return {
 				sessionId: chat?.sessionId,
-				botId: chat?.botId,
+				clawId: chat?.clawId,
 				topicMode: chat?.topicMode,
 				topicAgentId: chat?.topicAgentId,
 				msgCount: chat?.messages?.length ?? 0,

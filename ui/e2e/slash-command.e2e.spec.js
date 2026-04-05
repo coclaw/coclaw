@@ -6,7 +6,7 @@ import { login, navigateToChat, waitChatReady } from './helpers.js';
  *
  * 前置条件：
  * - server 运行中
- * - test 用户已有至少一个 online bot（已绑定且 OpenClaw gateway 运行中）
+ * - test 用户已有至少一个 online claw（已绑定且 OpenClaw gateway 运行中）
  * - 存在 agent:main:main session
  */
 
@@ -75,7 +75,7 @@ test.describe('斜杠命令 @chat', () => {
 
 	test('topic 模式下不显示斜杠命令菜单', async ({ page }) => {
 		// 导航到新建 topic 路由
-		await page.goto('/topics/new?agent=main&bot=1');
+		await page.goto('/topics/new?agent=main&claw=1');
 		// 等待页面加载
 		await expect(page.getByTestId('chat-root')).toBeVisible({ timeout: 10_000 });
 

@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 import { login, evalStore } from './helpers.js';
 
 /**
- * Bot 绑定与解绑 E2E 测试
+ * Claw 绑定与解绑 E2E 测试
  *
  * 前置条件：
  * - server 运行中
@@ -14,30 +14,30 @@ import { login, evalStore } from './helpers.js';
  *    测试环境中插件已通过 `openclaw plugins install --link` 提前安装。
  *
  * 测试路径：
- * - UI 生成绑定码 → 本机 CLI 执行 bind → UI 检测成功 → 验证 bot 出现
- * - UI 执行解绑 → 验证 bot 移除
+ * - UI 生成绑定码 → 本机 CLI 执行 bind → UI 检测成功 → 验证 claw 出现
+ * - UI 执行解绑 → 验证 claw 移除
  *
  * 未测试路径：
  * - 通过 IM 对话发送绑定指令（当前无条件）
  */
 
-test('Bot 绑定与解绑：完整流程 @bind', async ({ page }) => {
+test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
 	test.setTimeout(180_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
-	// --- 记录绑定前的 bot 列表 ---
-	await page.goto('/bots');
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
-	// 等待 bots store 加载完成
+	// --- 记录绑定前的 claw 列表 ---
+	await page.goto('/claws');
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
+	// 等待 claws store 加载完成
 	await page.waitForTimeout(1000);
-	const botIdsBefore = await evalStore(page, 'bots', 'return store.items.map(b => String(b.id))');
+	const clawIdsBefore = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
 
 	// ================================================================
 	// BIND
 	// ================================================================
 
-	await page.goto('/bots/add');
+	await page.goto('/claws/add');
 
 	// 等待绑定码出现（shell 命令区域的 pre 元素）
 	const preTags = page.locator('main pre');
@@ -63,49 +63,49 @@ test('Bot 绑定与解绑：完整流程 @bind', async ({ page }) => {
 		throw new Error('openclaw coclaw bind failed: ' + (err.stderr || err.message));
 	}
 
-	// 等待 UI 检测到绑定成功 → 自动跳转到 /bots
-	await expect(page).toHaveURL(/\/bots(?:\/)?$/, { timeout: 60_000 });
+	// 等待 UI 检测到绑定成功 → 自动跳转到 /claws
+	await expect(page).toHaveURL(/\/claws(?:\/)?$/, { timeout: 60_000 });
 
 	// 等待页面加载完成
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 
-	// 验证新 bot 出现在列表中
+	// 验证新 claw 出现在列表中
 	await page.waitForTimeout(1000);
-	const botIdsAfter = await evalStore(page, 'bots', 'return store.items.map(b => String(b.id))');
-	const newBotIds = botIdsAfter.filter((id) => !botIdsBefore.includes(id));
-	expect(newBotIds.length).toBeGreaterThanOrEqual(1);
-	const newBotId = newBotIds[0];
-	console.log('[e2e] new bot id:', newBotId);
+	const clawIdsAfter = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
+	const newClawIds = clawIdsAfter.filter((id) => !clawIdsBefore.includes(id));
+	expect(newClawIds.length).toBeGreaterThanOrEqual(1);
+	const newClawId = newClawIds[0];
+	console.log('[e2e] new claw id:', newClawId);
 
-	// 验证新 bot 的卡片可见
-	const botCard = page.getByTestId('bot-' + newBotId);
-	await expect(botCard).toBeVisible({ timeout: 5000 });
+	// 验证新 claw 的卡片可见
+	const clawCard = page.getByTestId('claw-' + newClawId);
+	await expect(clawCard).toBeVisible({ timeout: 5000 });
 
 	// ================================================================
 	// UNBIND
 	// ================================================================
 
-	// 点击新 bot 卡片中的解绑按钮
-	const unbindBtn = botCard.locator('button[color="error"], button.text-error').first();
+	// 点击新 claw 卡片中的解绑按钮
+	const unbindBtn = clawCard.locator('button[color="error"], button.text-error').first();
 	// 如果上面选择器不准确，用最后一个 button（解绑按钮在卡片右侧）
-	const btnCount = await botCard.locator('button').count();
-	const actualUnbindBtn = btnCount > 0 ? botCard.locator('button').last() : unbindBtn;
+	const btnCount = await clawCard.locator('button').count();
+	const actualUnbindBtn = btnCount > 0 ? clawCard.locator('button').last() : unbindBtn;
 	await actualUnbindBtn.click();
 
-	// 等待解绑完成（bot 卡片消失或 bot 列表更新）
+	// 等待解绑完成（claw 卡片消失或 claw 列表更新）
 	await expect(async () => {
-		const currentIds = await evalStore(page, 'bots', 'return store.items.map(b => String(b.id))');
-		expect(currentIds).not.toContain(newBotId);
+		const currentIds = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
+		expect(currentIds).not.toContain(newClawId);
 	}).toPass({ timeout: 15_000 });
 
-	// 验证 bot 卡片不再可见
-	await expect(botCard).not.toBeVisible({ timeout: 5000 });
+	// 验证 claw 卡片不再可见
+	await expect(clawCard).not.toBeVisible({ timeout: 5000 });
 
 	// ================================================================
-	// REBIND（恢复环境，避免后续测试因无 bot 而失败）
+	// REBIND（恢复环境，避免后续测试因无 claw 而失败）
 	// ================================================================
 
-	await page.goto('/bots/add');
+	await page.goto('/claws/add');
 	await expect(preTags.last()).toBeVisible({ timeout: 15_000 });
 
 	const rebindShellText = await preTags.last().textContent();
@@ -125,8 +125,8 @@ test('Bot 绑定与解绑：完整流程 @bind', async ({ page }) => {
 	}
 
 	// 等待重新绑定成功
-	await expect(page).toHaveURL(/\/bots(?:\/)?$/, { timeout: 60_000 });
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
+	await expect(page).toHaveURL(/\/claws(?:\/)?$/, { timeout: 60_000 });
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 
-	console.log('[e2e] bot bind/unbind flow completed, environment restored');
+	console.log('[e2e] claw bind/unbind flow completed, environment restored');
 });

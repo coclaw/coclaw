@@ -51,52 +51,52 @@ test('Topics 页：点击 session 进入聊天页 @ui', async ({ page }) => {
 });
 
 // ================================================================
-// Test 3: ManageBots 页面渲染
+// Test 3: ManageClaws 页面渲染
 // ================================================================
 
-test('ManageBots 页：页面正常渲染 @ui', async ({ page }) => {
+test('ManageClaws 页：页面正常渲染 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
-	await page.goto('/bots');
+	await page.goto('/claws');
 
 	// 刷新按钮和添加按钮可见
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
-	await expect(page.getByTestId('btn-add-bot')).toBeVisible();
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId('btn-add-claw')).toBeVisible();
 });
 
 // ================================================================
-// Test 4: ManageBots → 导航到 AddBot 页面
+// Test 4: ManageClaws → 导航到 AddClaw 页面
 // ================================================================
 
-test('ManageBots 页：点击添加机器人跳转 @ui', async ({ page }) => {
+test('ManageClaws 页：点击添加 Claw 跳转 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
-	await page.goto('/bots');
-	await expect(page.getByTestId('btn-add-bot')).toBeVisible({ timeout: 10_000 });
+	await page.goto('/claws');
+	await expect(page.getByTestId('btn-add-claw')).toBeVisible({ timeout: 10_000 });
 
-	await page.getByTestId('btn-add-bot').click();
+	await page.getByTestId('btn-add-claw').click();
 
-	await expect(page).toHaveURL(/\/bots\/add/, { timeout: 5000 });
+	await expect(page).toHaveURL(/\/claws\/add/, { timeout: 5000 });
 });
 
 // ================================================================
-// Test 5: ManageBots → 刷新按钮可点击
+// Test 5: ManageClaws → 刷新按钮可点击
 // ================================================================
 
-test('ManageBots 页：刷新按钮可点击 @ui', async ({ page }) => {
+test('ManageClaws 页：刷新按钮可点击 @ui', async ({ page }) => {
 	test.setTimeout(30_000);
 	await login(page);
 
-	await page.goto('/bots');
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
+	await page.goto('/claws');
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 
 	// 点击刷新按钮，应无报错
-	await page.getByTestId('btn-refresh-bots').click();
+	await page.getByTestId('btn-refresh-claws').click();
 
 	// 按钮应保持可见（loading 后恢复）
-	await expect(page.getByTestId('btn-refresh-bots')).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 });
 
 // ================================================================
@@ -158,9 +158,9 @@ test('移动端：底部导航栏可切换页面 @ui', async ({ page }) => {
 	// 应有 3 个 tab
 	await expect(tabs).toHaveCount(3);
 
-	// 切换到 bots 页（第 2 个 tab）
+	// 切换到 claws 页（第 2 个 tab）
 	await tabs.nth(1).click();
-	await expect(page).toHaveURL(/\/bots/, { timeout: 5000 });
+	await expect(page).toHaveURL(/\/claws/, { timeout: 5000 });
 
 	// 切换到 user 页（第 3 个 tab）
 	await tabs.nth(2).click();

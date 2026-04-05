@@ -9,7 +9,7 @@ import {
  *
  * 前置条件：
  * - server 运行中
- * - test 用户已有至少一个 online bot（已绑定且 OpenClaw gateway 运行中）
+ * - test 用户已有至少一个 online claw（已绑定且 OpenClaw gateway 运行中）
  * - 存在 agent:main:main session
  *
  * 技术手段：context.setOffline(true/false) 模拟浏览器断网/恢复
@@ -50,7 +50,7 @@ test.describe('网络断开与恢复 @resilience', () => {
 		// 点击发送
 		await page.getByTestId('btn-send').click();
 
-		// 应出现 "Bot not connected" 错误 toast
+		// 应出现 "Claw not connected" 错误 toast
 		await expect(
 			page.locator('[data-slot="title"]').filter({ hasText: /not connected/i }),
 		).toBeVisible({ timeout: 5000 });
@@ -80,17 +80,17 @@ test.describe('网络断开与恢复 @resilience', () => {
 	});
 
 	// ================================================================
-	// Test 3: 断网期间 bot 不误报 offline
+	// Test 3: 断网期间 claw 不误报 offline
 	// ================================================================
 
-	test('断网期间：bot.online 保持 true，无 offline banner', async ({ page, context }) => {
-		// 确认 bot 当前在线
-		const botId = await evalStore(page, 'chat', 'return store.botId');
-		const botOnlineBefore = await evalStore(page, 'bots', `
-			const bot = store.items?.find(b => String(b.id) === String('${botId}'));
-			return bot?.online ?? false;
+	test('断网期间：claw.online 保持 true，无 offline banner', async ({ page, context }) => {
+		// 确认 claw 当前在线
+		const clawId = await evalStore(page, 'chat', 'return store.clawId');
+		const clawOnlineBefore = await evalStore(page, 'claws', `
+			const claw = store.items?.find(b => String(b.id) === String('${clawId}'));
+			return claw?.online ?? false;
 		`);
-		expect(botOnlineBefore).toBe(true);
+		expect(clawOnlineBefore).toBe(true);
 
 		// 强制关闭 WS + 断网阻止重连
 		await forceCloseWs(page);
@@ -100,18 +100,18 @@ test.describe('网络断开与恢复 @resilience', () => {
 		// 等待一段时间，确保 SSE 错误已触发
 		await page.waitForTimeout(3000);
 
-		// bot.online 应仍为 true（SSE 断开不改变 bot.online，只有 SSE 消息才改变）
-		const botOnlineAfter = await evalStore(page, 'bots', `
-			const bot = store.items?.find(b => String(b.id) === String('${botId}'));
-			return bot?.online ?? false;
+		// claw.online 应仍为 true（SSE 断开不改变 claw.online，只有 SSE 消息才改变）
+		const clawOnlineAfter = await evalStore(page, 'claws', `
+			const claw = store.items?.find(b => String(b.id) === String('${clawId}'));
+			return claw?.online ?? false;
 		`);
-		expect(botOnlineAfter).toBe(true);
+		expect(clawOnlineAfter).toBe(true);
 
 		// offline banner 不应出现
 		const offlineBanner = page.locator('[data-testid="chat-root"] .bg-warning\\/10');
 		await expect(offlineBanner).not.toBeVisible({ timeout: 2000 });
 
-		// textarea 不应被禁用（isBotOffline 未变化）
+		// textarea 不应被禁用（isClawOffline 未变化）
 		await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 2000 });
 	});
 
@@ -129,7 +129,7 @@ test.describe('网络断开与恢复 @resilience', () => {
 		await page.getByTestId('btn-send').click();
 		await forceCloseWs(page);
 
-		// BotConnection 会自动重连（指数退避，初始 1s）
+		// ClawConnection 会自动重连（指数退避，初始 1s）
 		await waitForWsState(page, 'connected', 30_000);
 
 		// 等待发送完成（重试逻辑生效，sending 最终变为 false）

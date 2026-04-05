@@ -6,7 +6,7 @@ import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
  *
  * 前置条件：
  * - server 运行中
- * - test 用户已有至少一个 online bot（已绑定且 OpenClaw gateway 运行中）
+ * - test 用户已有至少一个 online claw（已绑定且 OpenClaw gateway 运行中）
  * - 存在 agent:main:main session
  */
 
@@ -14,13 +14,13 @@ import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
 // Test 1: 基础聊天流程
 // ================================================================
 
-test('基础聊天：发送消息并收到 bot 回复 @chat', async ({ page }) => {
+test('基础聊天：发送消息并收到 claw 回复 @chat', async ({ page }) => {
 	test.setTimeout(240_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
 	const sessionId = await navigateToChat(page);
-	test.skip(!sessionId, 'No chat session available (no bot online)');
+	test.skip(!sessionId, 'No chat session available (no claw online)');
 
 	await waitChatReady(page);
 
@@ -36,8 +36,8 @@ test('基础聊天：发送消息并收到 bot 回复 @chat', async ({ page }) =
 	// 验证：user 消息出现
 	await expect(page.locator(`text=${testMsg}`)).toBeVisible({ timeout: 5000 });
 
-	// 验证：bot 回复完成（streaming 结束后 sending 按钮消失，send 按钮重新出现）
-	// bot 回复时间视模型和 prompt 复杂度而定，给足 3 分钟
+	// 验证：claw 回复完成（streaming 结束后 sending 按钮消失，send 按钮重新出现）
+	// claw 回复时间视模型和 prompt 复杂度而定，给足 3 分钟
 	await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 180_000 });
 
 	// 验证消息数增加
@@ -60,7 +60,7 @@ test('Session 切换：不同 session 显示各自的消息 @chat', async ({ pag
 		await chatLink.waitFor({ state: 'visible', timeout: 10_000 });
 	}
 	catch {
-		test.skip(true, 'No chat sessions available (bot offline?)');
+		test.skip(true, 'No chat sessions available (claw offline?)');
 	}
 	const links = page.locator('main a[href*="/chat/"]');
 	const linkCount = await links.count();
@@ -155,7 +155,7 @@ test('发送后离开再返回：页面状态正常 @chat', async ({ page }) => 
 	await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 3000 });
 	await page.getByTestId('btn-send').click();
 
-	// 立即导航离开（不等 bot 回复）
+	// 立即导航离开（不等 claw 回复）
 	await page.goto('/topics');
 	await page.waitForTimeout(1000);
 

@@ -17,7 +17,7 @@ async function loginAndNavigateToChat(page) {
 	await page.getByTestId('btn-login').click();
 	await page.waitForTimeout(2000);
 
-	// 若登录后已进入 chat 页（有 bot 且有 session），直接返回
+	// 若登录后已进入 chat 页（有 claw 且有 session），直接返回
 	if (/\/chat\//.test(page.url())) return true;
 
 	// 尝试从 topics 页面找到可用 session 链接
@@ -76,7 +76,7 @@ function getLayoutMetrics(page) {
 test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 720 });
 	const ok = await loginAndNavigateToChat(page);
-	test.skip(!ok, 'No chat session available (no bot connected)');
+	test.skip(!ok, 'No chat session available (no claw connected)');
 
 	await injectMessages(page, 50);
 	await page.waitForTimeout(300);
@@ -98,7 +98,7 @@ test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 test('Mobile: ChatPage layout with many messages @ui', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	const ok = await loginAndNavigateToChat(page);
-	test.skip(!ok, 'No chat session available (no bot connected)');
+	test.skip(!ok, 'No chat session available (no claw connected)');
 
 	await injectMessages(page, 50);
 	await page.waitForTimeout(300);

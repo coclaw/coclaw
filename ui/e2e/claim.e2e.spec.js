@@ -26,12 +26,12 @@ async function loginAndGetCookies() {
 }
 
 async function ensureUnbound(cookies) {
-	const res = await fetch(`${SERVER}/api/v1/bots`, {
+	const res = await fetch(`${SERVER}/api/v1/claws`, {
 		headers: { cookie: cookies },
 	});
 	const data = await res.json();
-	for (const bot of (data.items || [])) {
-		await serverPost('/api/v1/bots/unbind-by-user', { botId: bot.id }, cookies);
+	for (const claw of (data.items || [])) {
+		await serverPost('/api/v1/claws/unbind-by-user', { clawId: claw.id }, cookies);
 	}
 }
 
@@ -47,7 +47,7 @@ test.describe('Claim Page @bind', () => {
 		await expect(page.locator('main')).toContainText(/no code|认领码/i, { timeout: 5000 });
 	});
 
-	test('should claim successfully and navigate to /bots', async ({ page }) => {
+	test('should claim successfully and navigate to /claws', async ({ page }) => {
 		// 准备：登录、解绑、创建认领码
 		const cookies = await loginAndGetCookies();
 		await ensureUnbound(cookies);
@@ -59,8 +59,8 @@ test.describe('Claim Page @bind', () => {
 		// 等待成功状态
 		await expect(page.locator('main')).toContainText(/success|成功/i, { timeout: 10_000 });
 
-		// 自动跳转到 /bots
-		await expect(page).toHaveURL(/\/bots/, { timeout: 5000 });
+		// 自动跳转到 /claws
+		await expect(page).toHaveURL(/\/claws/, { timeout: 5000 });
 	});
 
 	test('should show error for invalid code', async ({ page }) => {

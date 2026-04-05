@@ -20,14 +20,14 @@
 ┌─────────────────────────────────────────────────┐
 │ 连接层                                            │
 │  SignalingConnection (信令 WS, per-tab 单例)      │
-│  BotConnection (RPC over DataChannel, per-bot)   │
-│  SSE (bot 快照 + 状态推送 + 心跳超时检测)           │
+│  ClawConnection (RPC over DataChannel, per-claw)  │
+│  SSE (claw 快照 + 状态推送 + 心跳超时检测)          │
 └──────────┬──────────────────────────────────────┘
            │ 连接状态变化 → 触发数据恢复
            ▼
 ┌─────────────────────────────────────────────────┐
 │ 数据层                                            │
-│  botsStore → agentsStore / sessionsStore / topicsStore │
+│  clawsStore → agentsStore / sessionsStore / topicsStore │
 │  chatStore → messages / history                   │
 │  agentRunsStore → streaming runs reconcile        │
 └──────────┬──────────────────────────────────────┘
@@ -58,7 +58,7 @@
 - **文件**：`services/signaling-connection.js`
 - **参数**：每 25s 发送 `{ type: "ping" }`；任何入站消息重置 45s 超时计时器并更新 `__lastAliveAt`
 - **判定**：连续 2 次 miss（~90s）→ `ws.close(4000, 'heartbeat_timeout')` → 触发自动重连
-- **说明**：信令 WS 仅承载 SDP/ICE 信令和心跳，不承载业务 RPC。业务 RPC 走 DataChannel，其超时由 `BotConnection.request()` 独立控制
+- **说明**：信令 WS 仅承载 SDP/ICE 信令和心跳，不承载业务 RPC。业务 RPC 走 DataChannel，其超时由 `ClawConnection.request()` 独立控制
 - **场景**：Web + Capacitor
 
 ### 2.3 前台恢复重连
@@ -76,7 +76,7 @@
 | 已连接 + 静默超过 2.5s（`PROBE_TIMEOUT_MS`） | 发 probe ping，2.5s 无响应则 `forceReconnect()` |
 | 已连接 + 静默 ≤ 2.5s | 无需操作 |
 
-- 恢复后发出 `foreground-resume` 事件（含 `source`），由 `bots.store` 对每个 bot 执行 `__checkAndRecover()`（含 RTC 状态检测和重建）
+- 恢复后发出 `foreground-resume` 事件（含 `source`），由 `claws.store` 对每个 claw 执行 `__checkAndRecover()`（含 RTC 状态检测和重建）
 - `network:online` + WS 处于 `connecting` 状态时，仍发射 `foreground-resume` 事件（WS 正在重连，但 DC 可能需要独立恢复）
 - **场景**：Web + Capacitor
 
@@ -101,17 +101,17 @@
 
 ### 2.6 SSE 恢复
 
-- **文件**：`composables/use-bot-status-sse.js`
+- **文件**：`composables/use-claw-status-sse.js`
 - **恢复路径**：
   - **浏览器原生重连**：`EventSource` 断开后自动重连
   - **前台恢复强制重建**：`app:foreground` / `network:online` → `restart()`，销毁旧 EventSource 并新建
-  - 两种路径的 `onopen` 后 server 推送 `bot.snapshot` 全量快照，UI 通过 `applySnapshot()` 同步
-- **SSE 重建不重置 botsStore**：`restart()` 仅销毁/重建 EventSource，不清空 `botsStore.byId`。旧数据保留直到新快照到达后被 `applySnapshot()` 全量替换。这避免了列表闪烁（清空→重填），也不影响正确性——新快照会修复所有不一致
+  - 两种路径的 `onopen` 后 server 推送 `claw.snapshot` 全量快照，UI 通过 `applySnapshot()` 同步
+- **SSE 重建不重置 clawsStore**：`restart()` 仅销毁/重建 EventSource，不清空 `clawsStore.byId`。旧数据保留直到新快照到达后被 `applySnapshot()` 全量替换。这避免了列表闪烁（清空→重填），也不影响正确性——新快照会修复所有不一致
 - **场景**：Web + Capacitor
 
 ### 2.7 SSE 心跳与超时检测
 
-- **文件**：`server/src/routes/bot.route.js`（Server）、`composables/use-bot-status-sse.js`（UI）
+- **文件**：`server/src/routes/bot.route.js`（Server）、`composables/use-claw-status-sse.js`（UI）
 - **Server**：每 30s 发送 `data: {"event":"heartbeat"}\n\n` 应用层心跳
 - **UI**：收到任何 SSE 消息（含心跳）重置 65s 超时计时器；超时未收到数据则自动 `restart()`
 - **场景**：Web + Capacitor
@@ -122,23 +122,23 @@
 
 ### 3.1 重连后按断连时长刷新
 
-- **文件**：`stores/bots.store.js`（`__refreshIfStale`）
+- **文件**：`stores/claws.store.js`（`__refreshIfStale`）
 - **触发**：RTC DataChannel 重建成功（`__ensureRtc` 或 `onRtcStateChange` 回调），且已初始化过（非首次），且断连时长 ≥ 5s（`BRIEF_DISCONNECT_MS`）
-- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`、`loadDashboard()`（bot 列表由 SSE 快照维护）
+- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`、`loadDashboard()`（claw 列表由 SSE 快照维护）
 - **短暂抖动（< 5s）**：跳过刷新，避免无意义开销
 - **场景**：Web + Capacitor
 
 ### 3.2 首次连接完整初始化
 
-- **文件**：`stores/bots.store.js`（`__fullInit`）
-- **触发**：bot 首次 DC 就绪（`bot.initialized === false`）
+- **文件**：`stores/claws.store.js`（`__fullInit`）
+- **触发**：claw 首次 DC 就绪（`claw.initialized === false`）
 - **行为**：插件版本检查 → `loadAgents()` + `loadAllSessions()` + `loadAllTopics()`
 - **场景**：Web + Capacitor
 
 ### 3.3 connReady watcher 驱动消息加载
 
 - **文件**：`views/ChatPage.vue`
-- **计算属性**：`connReady` = `bot.online` + `bot.dcReady` + `agentVerified`（topic 模式跳过 agent 验证）
+- **计算属性**：`connReady` = `claw.online` + `claw.dcReady` + `agentVerified`（topic 模式跳过 agent 验证）
 - **触发**：`connReady` 从 false 变为 true
 - **行为**：
   - 调用 `chatStore.__reconcileSlashCommand()`
@@ -157,17 +157,17 @@
 
 ### 3.5 SSE 快照全量同步
 
-- **文件**：`composables/use-bot-status-sse.js`、`stores/bots.store.js`（`applySnapshot`）
-- **触发**：SSE 连接/重连成功后，server 主动推送 `bot.snapshot` 事件
-- **行为**：`botsStore.applySnapshot(items)` 全量更新 bot 列表（同步连接、清理已移除 bot 的 RTC/sessions/agentRuns）
-- **SSE 是 bot 列表的唯一数据源**：无 HTTP 回退路径。SSE 与 HTTP 端点请求同一台 server、同一数据库，独立 HTTP 回退无额外容错价值
-- **`fetched` 状态语义**：`applySnapshot` 设置 `fetched = true`，标记"bot 列表数据就绪"。在单次登录会话内 `fetched` 一旦为 `true` 不会再变回 `false`（SSE 重建只会触发新的 `applySnapshot` 覆盖数据，不会重置 `fetched`）。仅 logout 时 `botsStore.$reset()` 恢复初始状态
+- **文件**：`composables/use-claw-status-sse.js`、`stores/claws.store.js`（`applySnapshot`）
+- **触发**：SSE 连接/重连成功后，server 主动推送 `claw.snapshot` 事件
+- **行为**：`clawsStore.applySnapshot(items)` 全量更新 claw 列表（同步连接、清理已移除 claw 的 RTC/sessions/agentRuns）
+- **SSE 是 claw 列表的唯一数据源**：无 HTTP 回退路径。SSE 与 HTTP 端点请求同一台 server、同一数据库，独立 HTTP 回退无额外容错价值
+- **`fetched` 状态语义**：`applySnapshot` 设置 `fetched = true`，标记"claw 列表数据就绪"。在单次登录会话内 `fetched` 一旦为 `true` 不会再变回 `false`（SSE 重建只会触发新的 `applySnapshot` 覆盖数据，不会重置 `fetched`）。仅 logout 时 `clawsStore.$reset()` 恢复初始状态
 - **竞态保护**：server 端先 `await sendSnapshot()` 再 `registerSseClient()`，确保增量事件不会在快照之前到达客户端
 - **场景**：Web + Capacitor
 
-### 3.6 Dashboard / ManageBots 前台恢复
+### 3.6 Dashboard / ManageClaws 前台恢复
 
-- **文件**：`views/AdminDashboardPage.vue`、`views/ManageBotsPage.vue`
+- **文件**：`views/AdminDashboardPage.vue`、`views/ManageClawsPage.vue`
 - **触发**：`visibilitychange`（visible）或 `app:foreground`，2s 节流去重
 - **行为**：重新调用 `loadData()`，刷新 dashboard 统计数据
 - **意义**：Dashboard 数据不像 ChatPage 那样有 connReady watcher 驱动，需要显式前台恢复
@@ -176,15 +176,15 @@
 ### 3.7 loadAllSessions 增量合并
 
 - **文件**：`stores/sessions.store.js`（`__doLoadAll`）
-- **设计**：加载时仅替换本次查询到的 bot 的 sessions，保留未查询 bot 的已有 sessions
-- **背景**：多 bot 分时重连时，先重连的 bot 触发 `loadAllSessions`，若整体替换会覆盖尚在重连中的 bot 的 sessions
-- **附加**：无已连接 bot 时 skip 而非清空，避免短暂全断期间丢失数据
+- **设计**：加载时仅替换本次查询到的 claw 的 sessions，保留未查询 claw 的已有 sessions
+- **背景**：多 claw 分时重连时，先重连的 claw 触发 `loadAllSessions`，若整体替换会覆盖尚在重连中的 claw 的 sessions
+- **附加**：无已连接 claw 时 skip 而非清空，避免短暂全断期间丢失数据
 - **场景**：Web + Capacitor
 
-### 3.8 MainList botListKey watcher
+### 3.8 MainList clawListKey watcher
 
 - **文件**：`components/MainList.vue`
-- **触发**：bot 列表变化（增删/上线状态变化）
+- **触发**：claw 列表变化（增删/上线状态变化）
 - **行为**：`loadAllAgents()` + `loadAllTopics()`
 - **场景**：Web + Capacitor
 
@@ -282,7 +282,7 @@
 
 ### 6.2 ~~session.expired 事件~~（已移除）
 
-> 历史上 Server 通过 per-bot WS 推送 `session.expired`，由 BotConnection 处理。当前架构中此路径不存在——session 过期统一由 HTTP 401 拦截（6.3）覆盖。
+> 历史上 Server 通过 per-claw WS 推送 `session.expired`，由 ClawConnection 处理。当前架构中此路径不存在——session 过期统一由 HTTP 401 拦截（6.3）覆盖。
 
 ### 6.3 HTTP 401 统一拦截
 
@@ -294,7 +294,7 @@
 
 ### 6.4 ~~WS session-expired 桥接~~（已移除）
 
-> 历史上 `bots.store.__bridgeConn` 将 BotConnection 的 `session-expired` 事件桥接为 DOM 事件。当前 `__bridgeConn` 仅处理 RTC 回调注入和 agent 事件分发，session 过期由 HTTP 401（6.3）统一处理。
+> 历史上 `claws.store.__bridgeConn` 将 ClawConnection 的 `session-expired` 事件桥接为 DOM 事件。当前 `__bridgeConn` 仅处理 RTC 回调注入和 agent 事件分发，session 过期由 HTTP 401（6.3）统一处理。
 
 ### 6.5 auth:session-expired 统一监听
 
@@ -319,7 +319,7 @@
 
 - **文件**：`utils/capacitor-app.js`（`setupAppStateChange`）
 - **行为**：将 Capacitor 原生 `appStateChange({ isActive })` 转义为标准 DOM 自定义事件 `app:foreground` / `app:background`
-- **消费者**：SignalingConnection、SSE、ChatPage、AdminDashboardPage、ManageBotsPage、DraftStore、Router、AuthedLayout
+- **消费者**：SignalingConnection、SSE、ChatPage、AdminDashboardPage、ManageClawsPage、DraftStore、Router、AuthedLayout
 - 消费者无需依赖 Capacitor SDK，只需监听标准 DOM 事件
 
 ### 7.x 网络变化桥接（network:online）
@@ -363,7 +363,7 @@
 |----|------|------|---------|------|
 | UI → Server 信令 WS | `{ type: "ping" }` | 25s | 2 × 45s miss → close | `signaling-connection.js` |
 | UI → Server 信令 WS | 前台 probe | 即时 | 2.5s 无响应 → forceReconnect | `signaling-connection.js` |
-| Server → UI SSE | `data: {"event":"heartbeat"}` | 30s | UI 65s 无数据 → restart | `bot.route.js` / `use-bot-status-sse.js` |
+| Server → UI SSE | `data: {"event":"heartbeat"}` | 30s | UI 65s 无数据 → restart | `bot.route.js` / `use-claw-status-sse.js` |
 | Plugin → Server WS | `{ type: "ping" }` | 25s | 4 × 45s miss → close | `realtime-bridge.js` |
 | Server → Bot WS | `ws.ping()` 协议级 | 45s | 4 miss → terminate | `bot-ws-hub.js` |
 
@@ -373,7 +373,7 @@
 
 ### 信令心跳独立于业务 RPC
 
-信令 WS 仅承载 SDP/ICE 信令和心跳，不承载业务 RPC。心跳超时判定简单明确：`HB_MAX_MISS = 2`（~90s）。业务 RPC 走 DataChannel，由 `BotConnection.request()` 的两层超时（connectTimeout + requestTimeout）独立控制。
+信令 WS 仅承载 SDP/ICE 信令和心跳，不承载业务 RPC。心跳超时判定简单明确：`HB_MAX_MISS = 2`（~90s）。业务 RPC 走 DataChannel，由 `ClawConnection.request()` 的两层超时（connectTimeout + requestTimeout）独立控制。
 
 ### visibilitychange + app:foreground + network:online 多信号去重
 
@@ -387,4 +387,4 @@
 
 ### RTC 前台恢复策略
 
-UDP NAT 超时（30s~2min）远短于 TCP（5~30min），中等后台后 RTC DTLS 通道大概率失效而信令 WS 仍存活。`request()` 检测 DC 未就绪时通过 `waitReady()` 自动排队等待连接恢复（同时触发重连），对调用方透明。前台恢复时 `bots.store.__checkAndRecover()` 对 `disconnected` 状态主动触发 RTC 重建（而非等 `failed`），节省 2-5s。
+UDP NAT 超时（30s~2min）远短于 TCP（5~30min），中等后台后 RTC DTLS 通道大概率失效而信令 WS 仍存活。`request()` 检测 DC 未就绪时通过 `waitReady()` 自动排队等待连接恢复（同时触发重连），对调用方透明。前台恢复时 `claws.store.__checkAndRecover()` 对 `disconnected` 状态主动触发 RTC 重建（而非等 `failed`），节省 2-5s。
