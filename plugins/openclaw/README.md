@@ -98,7 +98,7 @@ openclaw coclaw enroll [--server <url>]
 {
   "default": {
     "serverUrl": "https://coclaw.net",
-    "botId": "bot-xxx",
+    "clawId": "claw-xxx",
     "token": "token-xxx",
     "boundAt": "2026-03-05T..."
   }

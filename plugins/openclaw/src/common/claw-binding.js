@@ -8,14 +8,14 @@ function resolveServerUrl(serverUrl) {
 	return serverUrl ?? process.env.COCLAW_SERVER_URL ?? DEFAULT_SERVER_URL;
 }
 
-// 这些 HTTP 状态码表示 bot 在 server 端已不存在，视为解绑成功
+// 这些 HTTP 状态码表示 claw 在 server 端已不存在，视为解绑成功
 const ALREADY_UNBOUND_STATUSES = new Set([401, 404, 410]);
 
 function isAlreadyUnbound(err) {
 	return ALREADY_UNBOUND_STATUSES.has(err?.response?.status);
 }
 
-export async function bindBot({ code, serverUrl }, deps = {}) {
+export async function bindClaw({ code, serverUrl }, deps = {}) {
 	const {
 		readCfg = readConfig,
 		clearCfg = clearConfig,
@@ -30,10 +30,10 @@ export async function bindBot({ code, serverUrl }, deps = {}) {
 
 	const config = await readCfg();
 
-	// 已绑定时必须先解绑旧 bot，避免产生孤儿记录
-	let previousBotId;
+	// 已绑定时必须先解绑旧 claw，避免产生孤儿记录
+	let previousClawId;
 	if (config?.token) {
-		previousBotId = config.botId || 'unknown';
+		previousClawId = config.clawId || 'unknown';
 		const oldBaseUrl = config.serverUrl;
 		if (oldBaseUrl) {
 			try {
@@ -41,7 +41,7 @@ export async function bindBot({ code, serverUrl }, deps = {}) {
 			} catch (err) {
 				if (!isAlreadyUnbound(err)) {
 					const rebindErr = new Error(
-						`Failed to unbind previous bot (${previousBotId}): ${err.message}. ` +
+						`Failed to unbind previous claw (${previousClawId}): ${err.message}. ` +
 						'Unbind manually first, then retry.',
 					);
 					rebindErr.code = 'UNBIND_FAILED';
@@ -59,25 +59,25 @@ export async function bindBot({ code, serverUrl }, deps = {}) {
 		code,
 	});
 
-	if (!data?.botId || !data?.token) {
+	if (!data?.clawId || !data?.token) {
 		throw new Error('invalid bind response');
 	}
 
 	await writeCfg({
 		serverUrl: baseUrl,
-		botId: data.botId,
+		clawId: data.clawId,
 		token: data.token,
 		boundAt: new Date().toISOString(),
 	});
 
 	return {
-		botId: data.botId,
+		clawId: data.clawId,
 		rebound: Boolean(data.rebound),
-		previousBotId,
+		previousClawId,
 	};
 }
 
-export async function enrollBot({ serverUrl }, deps = {}) {
+export async function enrollClaw({ serverUrl }, deps = {}) {
 	const { createClaimCode = createClaimCodeOnServer, readCfg = readConfig } = deps;
 
 	const config = await readCfg();
@@ -129,14 +129,14 @@ export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }
 		}
 
 		// 已认领
-		if (data?.botId && data?.token) {
+		if (data?.clawId && data?.token) {
 			await writeCfg({
 				serverUrl: baseUrl,
-				botId: data.botId,
+				clawId: data.clawId,
 				token: data.token,
 				boundAt: new Date().toISOString(),
 			});
-			return { botId: data.botId };
+			return { clawId: data.clawId };
 		}
 
 		// PENDING — 延迟后继续轮询
@@ -150,7 +150,7 @@ export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }
 	}
 }
 
-export async function unbindBot({ serverUrl }, deps = {}) {
+export async function unbindClaw({ serverUrl }, deps = {}) {
 	const {
 		readCfg = readConfig,
 		clearCfg = clearConfig,
@@ -170,7 +170,7 @@ export async function unbindBot({ serverUrl }, deps = {}) {
 		try {
 			await unbindServer({ baseUrl, token: config.token });
 		} catch (err) {
-			// bot 在 server 已不存在 — 视为解绑成功，继续清理本地
+			// claw 在 server 已不存在 — 视为解绑成功，继续清理本地
 			if (!isAlreadyUnbound(err)) {
 				throw err;
 			}
@@ -179,5 +179,5 @@ export async function unbindBot({ serverUrl }, deps = {}) {
 
 	await clearCfg();
 
-	return { botId: config.botId };
+	return { clawId: config.clawId };
 }

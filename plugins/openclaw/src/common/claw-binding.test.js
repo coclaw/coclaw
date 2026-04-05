@@ -5,7 +5,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { bindBot, unbindBot, enrollBot, waitForClaimAndSave } from './bot-binding.js';
+import { bindClaw, unbindClaw, enrollClaw, waitForClaimAndSave } from './claw-binding.js';
 import { saveHomedir, setHomedir, restoreHomedir } from '../homedir-mock.helper.js';
 import { setRuntime } from '../runtime.js';
 
@@ -48,23 +48,23 @@ async function readBindings(dir) {
 	}
 }
 
-test('bindBot should validate code and write config', async () => {
-	await assert.rejects(() => bindBot({}), /binding code is required/);
+test('bindClaw should validate code and write config', async () => {
+	await assert.rejects(() => bindClaw({}), /binding code is required/);
 
 	await setupDir('coclaw-bind-');
 
 	const server = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b1', token: 't1', rebound: true }));
+			res.end(JSON.stringify({ clawId: 'b1', token: 't1', rebound: true }));
 			return;
 		}
 		res.writeHead(404).end();
 	});
 
 	try {
-		const out = await bindBot({ code: '12345678', serverUrl: server.baseUrl });
-		assert.equal(out.botId, 'b1');
+		const out = await bindClaw({ code: '12345678', serverUrl: server.baseUrl });
+		assert.equal(out.clawId, 'b1');
 		assert.equal(out.rebound, true);
 	}
 	finally {
@@ -72,10 +72,10 @@ test('bindBot should validate code and write config', async () => {
 	}
 });
 
-test('bindBot should reject invalid server response', async () => {
+test('bindClaw should reject invalid server response', async () => {
 	await setupDir('coclaw-bind-bad-');
 	const server = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
 			res.end(JSON.stringify({ bad: true }));
 			return;
@@ -83,23 +83,23 @@ test('bindBot should reject invalid server response', async () => {
 		res.writeHead(404).end();
 	});
 	try {
-		await assert.rejects(() => bindBot({ code: '1', serverUrl: server.baseUrl }), /invalid bind response/);
+		await assert.rejects(() => bindClaw({ code: '1', serverUrl: server.baseUrl }), /invalid bind response/);
 	}
 	finally {
 		await server.close();
 	}
 });
 
-test('bindBot should rebind when already bound', async () => {
+test('bindClaw should rebind when already bound', async () => {
 	const dir = await setupDir('coclaw-bind-rebind-');
 
 	// 旧 server：接收 unbind 请求
 	const oldUnbindCalls = [];
 	const oldServer = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/unbind') {
 			oldUnbindCalls.push(req.url);
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b-old' }));
+			res.end(JSON.stringify({ clawId: 'b-old' }));
 			return;
 		}
 		res.writeHead(404).end();
@@ -107,25 +107,25 @@ test('bindBot should rebind when already bound', async () => {
 
 	// 新 server：接收 bind 请求
 	const newServer = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			res.end(JSON.stringify({ clawId: 'b-new', token: 't-new', rebound: false }));
 			return;
 		}
 		res.writeHead(404).end();
 	});
 
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
+	await writeBindings(dir, { clawId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
 
 	try {
-		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
-		assert.equal(out.botId, 'b-new');
-		assert.equal(out.previousBotId, 'b-old');
+		const out = await bindClaw({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.clawId, 'b-new');
+		assert.equal(out.previousClawId, 'b-old');
 		assert.equal(oldUnbindCalls.length, 1);
 
 		// 验证新绑定已写入
 		const saved = await readBindings(dir);
-		assert.equal(saved.default.botId, 'b-new');
+		assert.equal(saved.default.clawId, 'b-new');
 		assert.equal(saved.default.serverUrl, newServer.baseUrl);
 	}
 	finally {
@@ -134,27 +134,27 @@ test('bindBot should rebind when already bound', async () => {
 	}
 });
 
-test('bindBot should fail when old server is unreachable (no orphan)', async () => {
+test('bindClaw should fail when old server is unreachable (no orphan)', async () => {
 	const dir = await setupDir('coclaw-bind-rebind-noserver-');
 
 	// 旧 serverUrl 不可达 — 强制 unbind 失败
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: 'http://127.0.0.1:1' });
+	await writeBindings(dir, { clawId: 'b-old', token: 'tk-old', serverUrl: 'http://127.0.0.1:1' });
 
 	await assert.rejects(
-		() => bindBot({ code: 'newcode', serverUrl: 'http://127.0.0.1:2' }),
+		() => bindClaw({ code: 'newcode', serverUrl: 'http://127.0.0.1:2' }),
 		(err) => {
 			assert.equal(err.code, 'UNBIND_FAILED');
-			assert.match(err.message, /Failed to unbind previous bot/);
+			assert.match(err.message, /Failed to unbind previous claw/);
 			return true;
 		},
 	);
 
 	// 旧绑定应保留（未被清理）
 	const saved = await readBindings(dir);
-	assert.equal(saved.default.botId, 'b-old');
+	assert.equal(saved.default.clawId, 'b-old');
 });
 
-test('bindBot should rebind when old server returns 401 (bot already gone)', async () => {
+test('bindClaw should rebind when old server returns 401 (claw already gone)', async () => {
 	const dir = await setupDir('coclaw-bind-rebind-401-');
 
 	const oldServer = await withServer(async (req, res) => {
@@ -163,20 +163,20 @@ test('bindBot should rebind when old server returns 401 (bot already gone)', asy
 	});
 
 	const newServer = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			res.end(JSON.stringify({ clawId: 'b-new', token: 't-new', rebound: false }));
 			return;
 		}
 		res.writeHead(404).end();
 	});
 
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
+	await writeBindings(dir, { clawId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
 
 	try {
-		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
-		assert.equal(out.botId, 'b-new');
-		assert.equal(out.previousBotId, 'b-old');
+		const out = await bindClaw({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.clawId, 'b-new');
+		assert.equal(out.previousClawId, 'b-old');
 	}
 	finally {
 		await oldServer.close();
@@ -184,7 +184,7 @@ test('bindBot should rebind when old server returns 401 (bot already gone)', asy
 	}
 });
 
-test('bindBot should rebind when old server returns 404 (bot already gone)', async () => {
+test('bindClaw should rebind when old server returns 404 (claw already gone)', async () => {
 	const dir = await setupDir('coclaw-bind-rebind-404-');
 
 	const oldServer = await withServer(async (req, res) => {
@@ -193,20 +193,20 @@ test('bindBot should rebind when old server returns 404 (bot already gone)', asy
 	});
 
 	const newServer = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			res.end(JSON.stringify({ clawId: 'b-new', token: 't-new', rebound: false }));
 			return;
 		}
 		res.writeHead(404).end();
 	});
 
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
+	await writeBindings(dir, { clawId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
 
 	try {
-		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
-		assert.equal(out.botId, 'b-new');
-		assert.equal(out.previousBotId, 'b-old');
+		const out = await bindClaw({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.clawId, 'b-new');
+		assert.equal(out.previousClawId, 'b-old');
 	}
 	finally {
 		await oldServer.close();
@@ -214,7 +214,7 @@ test('bindBot should rebind when old server returns 404 (bot already gone)', asy
 	}
 });
 
-test('bindBot should rebind when old server returns 410 (bot gone)', async () => {
+test('bindClaw should rebind when old server returns 410 (claw gone)', async () => {
 	const dir = await setupDir('coclaw-bind-rebind-410-');
 
 	const oldServer = await withServer(async (req, res) => {
@@ -223,20 +223,20 @@ test('bindBot should rebind when old server returns 410 (bot gone)', async () =>
 	});
 
 	const newServer = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			res.end(JSON.stringify({ clawId: 'b-new', token: 't-new', rebound: false }));
 			return;
 		}
 		res.writeHead(404).end();
 	});
 
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
+	await writeBindings(dir, { clawId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
 
 	try {
-		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
-		assert.equal(out.botId, 'b-new');
-		assert.equal(out.previousBotId, 'b-old');
+		const out = await bindClaw({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.clawId, 'b-new');
+		assert.equal(out.previousClawId, 'b-old');
 	}
 	finally {
 		await oldServer.close();
@@ -244,7 +244,7 @@ test('bindBot should rebind when old server returns 410 (bot gone)', async () =>
 	}
 });
 
-test('bindBot should fail when old server returns 500 (no orphan)', async () => {
+test('bindClaw should fail when old server returns 500 (no orphan)', async () => {
 	const dir = await setupDir('coclaw-bind-rebind-500-');
 
 	const oldServer = await withServer(async (req, res) => {
@@ -252,11 +252,11 @@ test('bindBot should fail when old server returns 500 (no orphan)', async () => 
 		res.end(JSON.stringify({ code: 'INTERNAL_ERROR' }));
 	});
 
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
+	await writeBindings(dir, { clawId: 'b-old', token: 'tk-old', serverUrl: oldServer.baseUrl });
 
 	try {
 		await assert.rejects(
-			() => bindBot({ code: 'newcode', serverUrl: 'http://127.0.0.1:2' }),
+			() => bindClaw({ code: 'newcode', serverUrl: 'http://127.0.0.1:2' }),
 			(err) => {
 				assert.equal(err.code, 'UNBIND_FAILED');
 				return true;
@@ -265,24 +265,24 @@ test('bindBot should fail when old server returns 500 (no orphan)', async () => 
 
 		// 旧绑定应保留
 		const saved = await readBindings(dir);
-		assert.equal(saved.default.botId, 'b-old');
+		assert.equal(saved.default.clawId, 'b-old');
 	}
 	finally {
 		await oldServer.close();
 	}
 });
 
-test('bindBot should rebind with previousBotId=unknown when old config has no botId', async () => {
-	const dir = await setupDir('coclaw-bind-rebind-nobot-');
+test('bindClaw should rebind with previousClawId=unknown when old config has no clawId', async () => {
+	const dir = await setupDir('coclaw-bind-rebind-noclaw-');
 
 	const newServer = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			res.end(JSON.stringify({ clawId: 'b-new', token: 't-new', rebound: false }));
 			return;
 		}
-		// unbind 返回 401 — bot 已不存在
-		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
+		// unbind 返回 401 — claw 已不存在
+		if (req.method === 'POST' && req.url === '/api/v1/claws/unbind') {
 			res.writeHead(401, { 'content-type': 'application/json' });
 			res.end(JSON.stringify({ code: 'UNAUTHORIZED' }));
 			return;
@@ -293,41 +293,41 @@ test('bindBot should rebind with previousBotId=unknown when old config has no bo
 	await writeBindings(dir, { token: 'tk-orphan', serverUrl: newServer.baseUrl });
 
 	try {
-		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
-		assert.equal(out.botId, 'b-new');
-		assert.equal(out.previousBotId, 'unknown');
+		const out = await bindClaw({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.clawId, 'b-new');
+		assert.equal(out.previousClawId, 'unknown');
 	}
 	finally {
 		await newServer.close();
 	}
 });
 
-test('bindBot should rebind without serverUrl in old config (skip server unbind)', async () => {
+test('bindClaw should rebind without serverUrl in old config (skip server unbind)', async () => {
 	const dir = await setupDir('coclaw-bind-rebind-nourl-');
 
 	const newServer = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b-new', token: 't-new', rebound: false }));
+			res.end(JSON.stringify({ clawId: 'b-new', token: 't-new', rebound: false }));
 			return;
 		}
 		res.writeHead(404).end();
 	});
 
 	// 旧绑定无 serverUrl — 跳过 server 解绑
-	await writeBindings(dir, { botId: 'b-old', token: 'tk-old' });
+	await writeBindings(dir, { clawId: 'b-old', token: 'tk-old' });
 
 	try {
-		const out = await bindBot({ code: 'newcode', serverUrl: newServer.baseUrl });
-		assert.equal(out.botId, 'b-new');
-		assert.equal(out.previousBotId, 'b-old');
+		const out = await bindClaw({ code: 'newcode', serverUrl: newServer.baseUrl });
+		assert.equal(out.clawId, 'b-new');
+		assert.equal(out.previousClawId, 'b-old');
 	}
 	finally {
 		await newServer.close();
 	}
 });
 
-test('unbindBot should throw NOT_BOUND when no token', async () => {
+test('unbindClaw should throw NOT_BOUND when no token', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-');
@@ -335,9 +335,9 @@ test('unbindBot should throw NOT_BOUND when no token', async () => {
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
-	await writeBindings(dir, { botId: 'b1', token: '' });
+	await writeBindings(dir, { clawId: 'b1', token: '' });
 	try {
-		await assert.rejects(() => unbindBot({}), (err) => {
+		await assert.rejects(() => unbindClaw({}), (err) => {
 			assert.match(err.message, /not bound/);
 			assert.equal(err.code, 'NOT_BOUND');
 			return true;
@@ -349,7 +349,7 @@ test('unbindBot should throw NOT_BOUND when no token', async () => {
 	}
 });
 
-test('unbindBot should clear config when server returns 401 (bot already gone)', async () => {
+test('unbindClaw should clear config when server returns 401 (claw already gone)', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-401-');
@@ -357,15 +357,15 @@ test('unbindBot should clear config when server returns 401 (bot already gone)',
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
-	await writeBindings(dir, { botId: 'b1', token: 'bad', serverUrl: 'http://127.0.0.1:1' });
+	await writeBindings(dir, { clawId: 'b1', token: 'bad', serverUrl: 'http://127.0.0.1:1' });
 	const server = await withServer(async (req, res) => {
 		res.writeHead(401, { 'content-type': 'application/json' });
 		res.end(JSON.stringify({ code: 'UNAUTHORIZED' }));
 	});
 
 	try {
-		const out = await unbindBot({ serverUrl: server.baseUrl });
-		assert.equal(out.botId, 'b1');
+		const out = await unbindClaw({ serverUrl: server.baseUrl });
+		assert.equal(out.clawId, 'b1');
 		const after = await readBindings(dir);
 		assert.equal(after, null);
 	}
@@ -376,18 +376,18 @@ test('unbindBot should clear config when server returns 401 (bot already gone)',
 	}
 });
 
-test('unbindBot should clear config when server returns 404 (bot already gone)', async () => {
+test('unbindClaw should clear config when server returns 404 (claw already gone)', async () => {
 	const dir = await setupDir('coclaw-unbind-404-');
 
-	await writeBindings(dir, { botId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
+	await writeBindings(dir, { clawId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
 	const server = await withServer(async (req, res) => {
 		res.writeHead(404, { 'content-type': 'application/json' });
 		res.end(JSON.stringify({ code: 'NOT_FOUND' }));
 	});
 
 	try {
-		const out = await unbindBot({ serverUrl: server.baseUrl });
-		assert.equal(out.botId, 'b1');
+		const out = await unbindClaw({ serverUrl: server.baseUrl });
+		assert.equal(out.clawId, 'b1');
 		const after = await readBindings(dir);
 		assert.equal(after, null);
 	}
@@ -396,10 +396,10 @@ test('unbindBot should clear config when server returns 404 (bot already gone)',
 	}
 });
 
-test('unbindBot should throw when server returns 500 (cannot confirm deletion)', async () => {
+test('unbindClaw should throw when server returns 500 (cannot confirm deletion)', async () => {
 	const dir = await setupDir('coclaw-unbind-500-');
 
-	await writeBindings(dir, { botId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
+	await writeBindings(dir, { clawId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
 	const server = await withServer(async (req, res) => {
 		res.writeHead(500, { 'content-type': 'application/json' });
 		res.end(JSON.stringify({ code: 'INTERNAL_SERVER_ERROR' }));
@@ -407,25 +407,25 @@ test('unbindBot should throw when server returns 500 (cannot confirm deletion)',
 
 	try {
 		await assert.rejects(
-			() => unbindBot({ serverUrl: server.baseUrl }),
+			() => unbindClaw({ serverUrl: server.baseUrl }),
 			/HTTP 500/,
 		);
 		// 绑定应保留
 		const after = await readBindings(dir);
-		assert.equal(after.default.botId, 'b1');
+		assert.equal(after.default.clawId, 'b1');
 	}
 	finally {
 		await server.close();
 	}
 });
 
-test('unbindBot should throw when server is unreachable', async () => {
+test('unbindClaw should throw when server is unreachable', async () => {
 	const dir = await setupDir('coclaw-unbind-net-');
 
-	await writeBindings(dir, { botId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
+	await writeBindings(dir, { clawId: 'b1', token: 'tk', serverUrl: 'http://127.0.0.1:1' });
 
 	await assert.rejects(
-		() => unbindBot({ serverUrl: 'http://127.0.0.1:1' }),
+		() => unbindClaw({ serverUrl: 'http://127.0.0.1:1' }),
 		(err) => {
 			// 网络错误没有 response
 			assert.equal(err.response, undefined);
@@ -435,10 +435,10 @@ test('unbindBot should throw when server is unreachable', async () => {
 
 	// 绑定应保留
 	const after = await readBindings(dir);
-	assert.equal(after.default.botId, 'b1');
+	assert.equal(after.default.clawId, 'b1');
 });
 
-test('unbindBot should clear local bindings when serverUrl is missing', async () => {
+test('unbindClaw should clear local bindings when serverUrl is missing', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-nourl-new-');
@@ -447,11 +447,11 @@ test('unbindBot should clear local bindings when serverUrl is missing', async ()
 	process.chdir(dir);
 
 	// token 存在但 serverUrl 缺失 — 跳过 server 通知，直接清理本地
-	await writeBindings(dir, { botId: 'b1', token: 'tk' });
+	await writeBindings(dir, { clawId: 'b1', token: 'tk' });
 
 	try {
-		const out = await unbindBot({});
-		assert.equal(out.botId, 'b1');
+		const out = await unbindClaw({});
+		assert.equal(out.clawId, 'b1');
 		const after = await readBindings(dir);
 		assert.equal(after, null);
 	}
@@ -461,16 +461,16 @@ test('unbindBot should clear local bindings when serverUrl is missing', async ()
 	}
 });
 
-test('enrollBot should reject when already bound', async () => {
-	const mockReadCfg = async () => ({ token: 'existing-token', botId: 'b1' });
+test('enrollClaw should reject when already bound', async () => {
+	const mockReadCfg = async () => ({ token: 'existing-token', clawId: 'b1' });
 
 	await assert.rejects(
-		() => enrollBot({ serverUrl: 'http://127.0.0.1:9999' }, { readCfg: mockReadCfg }),
+		() => enrollClaw({ serverUrl: 'http://127.0.0.1:9999' }, { readCfg: mockReadCfg }),
 		(err) => err.code === 'ALREADY_BOUND' && /unbind first/.test(err.message),
 	);
 });
 
-test('enrollBot should call createClaimCode and return claim info', async () => {
+test('enrollClaw should call createClaimCode and return claim info', async () => {
 	const mockReadCfg = async () => null;
 	const mockCreate = async () => ({
 		code: '12345678',
@@ -478,7 +478,7 @@ test('enrollBot should call createClaimCode and return claim info', async () => 
 		waitToken: 'wt-123',
 	});
 
-	const result = await enrollBot({ serverUrl: 'http://127.0.0.1:9999' }, {
+	const result = await enrollClaw({ serverUrl: 'http://127.0.0.1:9999' }, {
 		readCfg: mockReadCfg,
 		createClaimCode: mockCreate,
 	});
@@ -490,19 +490,19 @@ test('enrollBot should call createClaimCode and return claim info', async () => 
 	assert.ok(result.expiresAt);
 });
 
-test('enrollBot should throw on invalid server response', async () => {
+test('enrollClaw should throw on invalid server response', async () => {
 	const mockReadCfg = async () => null;
 	const mockCreate = async () => ({});
 
 	await assert.rejects(
-		() => enrollBot({ serverUrl: 'http://x' }, { readCfg: mockReadCfg, createClaimCode: mockCreate }),
+		() => enrollClaw({ serverUrl: 'http://x' }, { readCfg: mockReadCfg, createClaimCode: mockCreate }),
 		/invalid enroll response/,
 	);
 });
 
 test('waitForClaimAndSave should save config on BOUND response', async () => {
 	let savedCfg = null;
-	const mockWait = async () => ({ botId: 'b99', token: 'tk-99' });
+	const mockWait = async () => ({ clawId: 'b99', token: 'tk-99' });
 	const mockWrite = async (cfg) => { savedCfg = cfg; };
 
 	const result = await waitForClaimAndSave(
@@ -510,9 +510,9 @@ test('waitForClaimAndSave should save config on BOUND response', async () => {
 		{ waitClaimCode: mockWait, writeCfg: mockWrite },
 	);
 
-	assert.equal(result.botId, 'b99');
+	assert.equal(result.clawId, 'b99');
 	assert.equal(savedCfg.serverUrl, 'http://127.0.0.1:8000');
-	assert.equal(savedCfg.botId, 'b99');
+	assert.equal(savedCfg.clawId, 'b99');
 	assert.equal(savedCfg.token, 'tk-99');
 	assert.ok(savedCfg.boundAt);
 });
@@ -522,7 +522,7 @@ test('waitForClaimAndSave should retry on PENDING then resolve on BOUND', async 
 	const mockWait = async () => {
 		callCount += 1;
 		if (callCount === 1) return { code: 'CLAIM_PENDING' };
-		return { botId: 'b100', token: 'tk-100' };
+		return { clawId: 'b100', token: 'tk-100' };
 	};
 	const mockWrite = async () => {};
 
@@ -531,7 +531,7 @@ test('waitForClaimAndSave should retry on PENDING then resolve on BOUND', async 
 		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
 	);
 
-	assert.equal(result.botId, 'b100');
+	assert.equal(result.clawId, 'b100');
 	assert.equal(callCount, 2);
 });
 
@@ -544,7 +544,7 @@ test('waitForClaimAndSave should retry on 408 timeout error', async () => {
 			err.response = { status: 408 };
 			throw err;
 		}
-		return { botId: 'b101', token: 'tk-101' };
+		return { clawId: 'b101', token: 'tk-101' };
 	};
 	const mockWrite = async () => {};
 
@@ -553,7 +553,7 @@ test('waitForClaimAndSave should retry on 408 timeout error', async () => {
 		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
 	);
 
-	assert.equal(result.botId, 'b101');
+	assert.equal(result.clawId, 'b101');
 	assert.equal(callCount, 2);
 });
 
@@ -564,7 +564,7 @@ test('waitForClaimAndSave should retry on network error (no response)', async ()
 		if (callCount === 1) {
 			throw new Error('fetch failed');
 		}
-		return { botId: 'b102', token: 'tk-102' };
+		return { clawId: 'b102', token: 'tk-102' };
 	};
 	const mockWrite = async () => {};
 
@@ -573,7 +573,7 @@ test('waitForClaimAndSave should retry on network error (no response)', async ()
 		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
 	);
 
-	assert.equal(result.botId, 'b102');
+	assert.equal(result.clawId, 'b102');
 	assert.equal(callCount, 2);
 });
 
@@ -585,7 +585,7 @@ test('waitForClaimAndSave should retry on TimeoutError', async () => {
 			const err = new DOMException('signal timed out', 'TimeoutError');
 			throw err;
 		}
-		return { botId: 'b103', token: 'tk-103' };
+		return { clawId: 'b103', token: 'tk-103' };
 	};
 	const mockWrite = async () => {};
 
@@ -594,7 +594,7 @@ test('waitForClaimAndSave should retry on TimeoutError', async () => {
 		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
 	);
 
-	assert.equal(result.botId, 'b103');
+	assert.equal(result.clawId, 'b103');
 	assert.equal(callCount, 2);
 });
 
@@ -607,7 +607,7 @@ test('waitForClaimAndSave should retry on server 500 error', async () => {
 			err.response = { status: 500 };
 			throw err;
 		}
-		return { botId: 'b104', token: 'tk-104' };
+		return { clawId: 'b104', token: 'tk-104' };
 	};
 	const mockWrite = async () => {};
 
@@ -616,14 +616,14 @@ test('waitForClaimAndSave should retry on server 500 error', async () => {
 		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
 	);
 
-	assert.equal(result.botId, 'b104');
+	assert.equal(result.clawId, 'b104');
 	assert.equal(callCount, 2);
 });
 
 test('waitForClaimAndSave should throw on aborted signal', async () => {
 	const ac = new AbortController();
 	ac.abort();
-	const mockWait = async () => ({ botId: 'b1', token: 't1' });
+	const mockWait = async () => ({ clawId: 'b1', token: 't1' });
 	const mockWrite = async () => {};
 
 	await assert.rejects(
@@ -675,26 +675,26 @@ test('bind/unbind should support env and config server url fallbacks', async () 
 
 	const oldServer = process.env.COCLAW_SERVER_URL;
 	const server = await withServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b2', token: 't2', rebound: false }));
+			res.end(JSON.stringify({ clawId: 'b2', token: 't2', rebound: false }));
 			return;
 		}
-		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/unbind') {
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: 'b2' }));
+			res.end(JSON.stringify({ clawId: 'b2' }));
 			return;
 		}
 		res.writeHead(404).end();
 	});
 	try {
 		process.env.COCLAW_SERVER_URL = server.baseUrl;
-		const b = await bindBot({ code: 'fallback-code' });
-		assert.equal(b.botId, 'b2');
+		const b = await bindClaw({ code: 'fallback-code' });
+		assert.equal(b.clawId, 'b2');
 		const loaded = await readBindings(dir);
 		assert.equal(loaded.default.serverUrl, server.baseUrl);
-		const u = await unbindBot({});
-		assert.equal(u.botId, 'b2');
+		const u = await unbindClaw({});
+		assert.equal(u.clawId, 'b2');
 	}
 	finally {
 		process.env.COCLAW_SERVER_URL = oldServer;

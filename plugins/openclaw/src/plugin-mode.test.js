@@ -67,7 +67,7 @@ test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 		// 验证 enroll 写入了 config
 		const cfgAfterEnroll = await readConfig();
 		assert.ok(cfgAfterEnroll.token);
-		assert.ok(cfgAfterEnroll.botId);
+		assert.ok(cfgAfterEnroll.clawId);
 	}
 	finally {
 		process.chdir(prevCwd);

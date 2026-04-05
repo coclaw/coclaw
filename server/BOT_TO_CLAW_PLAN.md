@@ -41,9 +41,9 @@
 - 部署新版 server，验证旧版 plugin/UI 兼容性
 - 纯增量（新字段、新事件、新路由），无 DB migration，部署风险低
 
-### Plugin 迁移
+### Plugin 迁移（已完成）
 
-- 切换到读 `clawId`/`claw`
+- 已切换到读 `clawId`/`claw`，文件/函数/变量全部重命名
 - 详见 `docs/designs/api-bot-to-claw-migration.md` Phase C
 
 ### UI 迁移

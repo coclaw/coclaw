@@ -31,7 +31,7 @@ const CLAIM_CODE_TIMEOUT = 15_000;
 const CLAIM_WAIT_TIMEOUT = 30_000;
 
 export async function bindWithServer({ baseUrl, code, name }) {
-	return requestJson(baseUrl, '/api/v1/bots/bind', {
+	return requestJson(baseUrl, '/api/v1/claws/bind', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: { code, name },
@@ -40,7 +40,7 @@ export async function bindWithServer({ baseUrl, code, name }) {
 }
 
 export async function unbindWithServer({ baseUrl, token, timeout = UNBIND_TIMEOUT }) {
-	return requestJson(baseUrl, '/api/v1/bots/unbind', {
+	return requestJson(baseUrl, '/api/v1/claws/unbind', {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${token}`,

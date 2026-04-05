@@ -11,7 +11,7 @@ async function request(url, options = {}) {
 test('mock-server helper should cover bind/unbind and not found branches', async () => {
 	const mock = await createMockServer();
 	try {
-		const badBind = await request(`${mock.baseUrl}/api/v1/bots/bind`, {
+		const badBind = await request(`${mock.baseUrl}/api/v1/claws/bind`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({}),
@@ -19,20 +19,20 @@ test('mock-server helper should cover bind/unbind and not found branches', async
 		assert.equal(badBind.status, 400);
 		assert.equal(badBind.json.code, 'INVALID_INPUT');
 
-		const goodBind = await request(`${mock.baseUrl}/api/v1/bots/bind`, {
+		const goodBind = await request(`${mock.baseUrl}/api/v1/claws/bind`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ code: '12345678' }),
 		});
 		assert.equal(goodBind.status, 200);
 
-		const badUnbind = await request(`${mock.baseUrl}/api/v1/bots/unbind`, {
+		const badUnbind = await request(`${mock.baseUrl}/api/v1/claws/unbind`, {
 			method: 'POST',
 			headers: { authorization: 'Bearer wrong' },
 		});
 		assert.equal(badUnbind.status, 401);
 
-		const goodUnbind = await request(`${mock.baseUrl}/api/v1/bots/unbind`, {
+		const goodUnbind = await request(`${mock.baseUrl}/api/v1/claws/unbind`, {
 			method: 'POST',
 			headers: { authorization: 'Bearer mock-token-1' },
 		});

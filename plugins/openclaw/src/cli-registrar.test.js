@@ -112,7 +112,7 @@ test('registerCoclawCli should register coclaw command with bind/unbind/enroll s
 
 test('bind CLI should send coclaw.bind RPC with code and serverUrl', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { botId: 'b1', rebound: false } },
+		data: { status: { clawId: 'b1', rebound: false } },
 	});
 
 	const program = createMockProgram();
@@ -137,7 +137,7 @@ test('bind CLI should send coclaw.bind RPC with code and serverUrl', async () =>
 
 test('bind CLI should send code without serverUrl when --server not provided', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { botId: 'b1', rebound: false } },
+		data: { status: { clawId: 'b1', rebound: false } },
 	});
 
 	const program = createMockProgram();
@@ -157,9 +157,9 @@ test('bind CLI should send code without serverUrl when --server not provided', a
 	assert.equal(parsed.serverUrl, undefined);
 });
 
-test('bind CLI should show previousBotId when rebinding', async () => {
+test('bind CLI should show previousClawId when rebinding', async () => {
 	const { spawn } = createRpcSpawn({
-		data: { status: { botId: 'b-new', rebound: false, previousBotId: 'b-old' } },
+		data: { status: { clawId: 'b-new', rebound: false, previousClawId: 'b-old' } },
 	});
 
 	const program = createMockProgram();
@@ -182,7 +182,7 @@ test('bind CLI should retry on gateway unavailable', async () => {
 		if (method === 'coclaw.bind' && callCount <= 1) {
 			return { error: 'spawn failed' };
 		}
-		return { data: { status: { botId: 'b1', rebound: false } } };
+		return { data: { status: { clawId: 'b1', rebound: false } } };
 	});
 
 	const restartCalls = [];
@@ -222,7 +222,7 @@ test('bind CLI should show error on gateway unavailable after retry', async () =
 
 test('bind CLI should show UNBIND_FAILED error from RPC', async () => {
 	const { spawn } = createRpcSpawn({
-		stderr: 'Gateway call failed: GatewayClientRequestError: UNBIND_FAILED: Failed to unbind previous bot',
+		stderr: 'Gateway call failed: GatewayClientRequestError: UNBIND_FAILED: Failed to unbind previous claw',
 	});
 
 	const program = createMockProgram();
@@ -243,7 +243,7 @@ test('bind CLI should show UNBIND_FAILED error from RPC', async () => {
 
 test('unbind CLI should send coclaw.unbind RPC', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { botId: 'b1' } },
+		data: { status: { clawId: 'b1' } },
 	});
 
 	const program = createMockProgram();
@@ -262,7 +262,7 @@ test('unbind CLI should send coclaw.unbind RPC', async () => {
 
 test('unbind CLI should pass --server as serverUrl param', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { botId: 'b1' } },
+		data: { status: { clawId: 'b1' } },
 	});
 
 	const program = createMockProgram();
@@ -307,7 +307,7 @@ test('unbind CLI should retry on gateway unavailable', async () => {
 		if (method === 'coclaw.unbind' && callCount <= 1) {
 			return { error: 'spawn failed' };
 		}
-		return { data: { status: { botId: 'b1' } } };
+		return { data: { status: { clawId: 'b1' } } };
 	});
 
 	const restartCalls = [];

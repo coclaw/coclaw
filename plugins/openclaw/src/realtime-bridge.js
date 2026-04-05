@@ -24,7 +24,7 @@ const SERVER_HB_MAX_MISS = 4; // 连续 4 次无响应才断连（~3 分钟）
 function toServerWsUrl(baseUrl, token) {
 	const url = new URL(baseUrl);
 	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-	url.pathname = '/api/v1/bots/stream';
+	url.pathname = '/api/v1/claws/stream';
 	url.searchParams.set('token', token);
 	return url.toString();
 }
@@ -176,13 +176,13 @@ export class RealtimeBridge {
 			?? DEFAULT_GATEWAY_WS_URL;
 	}
 
-	async __clearTokenLocal(unboundBotId) {
+	async __clearTokenLocal(unboundClawId) {
 		const cfg = await this.__readConfig();
 		if (!cfg?.token) {
 			return;
 		}
-		// 只清除匹配的 bot，避免新绑定被误清
-		if (unboundBotId && cfg.botId && cfg.botId !== unboundBotId) {
+		// 只清除匹配的 claw，避免新绑定被误清
+		if (unboundClawId && cfg.clawId && cfg.clawId !== unboundClawId) {
 			return;
 		}
 		await this.__clearConfig();
@@ -824,10 +824,10 @@ export class RealtimeBridge {
 			this.__resetServerHbTimeout(sock);
 			try {
 				const payload = JSON.parse(String(event.data ?? '{}'));
-				if (payload?.type === 'bot.unbound') {
-					remoteLog('ws.bot-unbound');
-					await this.__clearTokenLocal(payload.botId);
-					try { sock.close(4001, 'bot_unbound'); }
+				if (payload?.type === 'claw.unbound') {
+					remoteLog('ws.claw-unbound');
+					await this.__clearTokenLocal(payload.clawId);
+					try { sock.close(4001, 'claw_unbound'); }
 					/* c8 ignore next */
 					catch {}
 					return;
@@ -994,7 +994,7 @@ export class RealtimeBridge {
 		if (sock) {
 			this.intentionallyClosed = true;
 			this.serverWs = null;
-			// 等待 WebSocket 真正关闭，避免残留连接收到 bot.unbound 等消息
+			// 等待 WebSocket 真正关闭，避免残留连接收到 claw.unbound 等消息
 			/* c8 ignore next -- readyState === 3 时跳过 */
 			if (sock.readyState === 3) return;
 			await new Promise((resolve) => {

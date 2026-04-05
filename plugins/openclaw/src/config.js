@@ -58,7 +58,12 @@ const bindingsMutex = createMutex();
 export async function readConfig(accountId = DEFAULT_ACCOUNT_ID) {
 	const bindingsPath = getBindingsPath();
 	const bindings = await readJson(bindingsPath);
-	return toRecord(bindings[accountId]);
+	const record = toRecord(bindings[accountId]);
+	// 向后兼容：旧 bindings.json 使用 botId，映射到 clawId
+	if (record.botId && !record.clawId) {
+		record.clawId = record.botId;
+	}
+	return record;
 }
 
 export async function writeConfig(nextConfig, accountId = DEFAULT_ACCOUNT_ID) {
@@ -69,7 +74,7 @@ export async function writeConfig(nextConfig, accountId = DEFAULT_ACCOUNT_ID) {
 
 		const next = { ...current };
 		if (nextConfig.serverUrl !== undefined) next.serverUrl = nextConfig.serverUrl;
-		if (nextConfig.botId !== undefined) next.botId = nextConfig.botId;
+		if (nextConfig.clawId !== undefined) next.clawId = nextConfig.clawId;
 		if (nextConfig.token !== undefined) next.token = nextConfig.token;
 		if (nextConfig.boundAt !== undefined) next.boundAt = nextConfig.boundAt;
 

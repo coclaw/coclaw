@@ -4,11 +4,11 @@ export async function createMockServer({ unbindStatus } = {}) {
 	const state = {
 		bound: false,
 		token: 'mock-token-1',
-		botId: '9001',
+		clawId: '9001',
 	};
 
 	const server = http.createServer(async (req, res) => {
-		if (req.method === 'POST' && req.url === '/api/v1/bots/bind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
 			let body = '';
 			for await (const chunk of req) {
 				body += chunk;
@@ -22,7 +22,7 @@ export async function createMockServer({ unbindStatus } = {}) {
 			}
 			state.bound = true;
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: state.botId, token: state.token, rebound: false }));
+			res.end(JSON.stringify({ clawId: state.clawId, token: state.token, rebound: false }));
 			return;
 		}
 
@@ -40,13 +40,13 @@ export async function createMockServer({ unbindStatus } = {}) {
 			// 模拟立即返回 BOUND
 			res.writeHead(200, { 'content-type': 'application/json' });
 			res.end(JSON.stringify({
-				botId: state.botId,
+				clawId: state.clawId,
 				token: state.token,
 			}));
 			return;
 		}
 
-		if (req.method === 'POST' && req.url === '/api/v1/bots/unbind') {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/unbind') {
 			/* c8 ignore next 5 -- 可配置 unbind 状态码，当前无测试使用 */
 			if (unbindStatus) {
 				res.writeHead(unbindStatus, { 'content-type': 'application/json' });
@@ -61,7 +61,7 @@ export async function createMockServer({ unbindStatus } = {}) {
 			}
 			state.bound = false;
 			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({ botId: state.botId, status: 'inactive' }));
+			res.end(JSON.stringify({ clawId: state.clawId, status: 'inactive' }));
 			return;
 		}
 

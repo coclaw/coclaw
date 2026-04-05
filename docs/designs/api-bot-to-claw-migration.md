@@ -52,16 +52,20 @@ Server 兼容层完成 → 部署 → 验证旧版兼容 → Plugin 迁移 → U
 
 **SSE 路径别名**：`/api/v1/claws/status-stream` 与 `/api/v1/bots/status-stream` 均可接入 SSE 流（通过路由别名自动覆盖）。
 
-## 客户端迁移（待实施）
+## 客户端迁移
 
-### Phase C：Plugin 迁移
+### Phase C：Plugin 迁移 ✅
 
-Plugin 切换到读 `clawId`/`claw`，不再依赖 `botId`/`bot`。
+Plugin 已切换到读 `clawId`/`claw`，不再依赖 `botId`/`bot`。
 
-关键文件：
-- `plugins/openclaw/src/common/bot-binding.js` — 读 `data.botId` → `data.clawId`
-- `plugins/openclaw/src/realtime-bridge.js` — 读 `payload.botId` → `payload.clawId`（WS `bot.unbound` 消息）
-- `plugins/openclaw/src/config.js` — 持久化 `botId` → `clawId`（需兼容旧配置文件）
+已完成：
+- `plugins/openclaw/src/common/bot-binding.js` → `claw-binding.js`，函数 `bindBot`→`bindClaw` 等
+- `plugins/openclaw/src/api.js` — URL 路径 `/api/v1/bots/*` → `/api/v1/claws/*`
+- `plugins/openclaw/src/realtime-bridge.js` — WS 路径、消息类型 `claw.unbound`、close reason `claw_unbound`
+- `plugins/openclaw/src/config.js` — 持久化字段 `clawId`，向后兼容旧 `botId` 文件
+- `plugins/openclaw/src/common/messages.js` — 参数名 `clawId`/`previousClawId`
+- `plugins/openclaw/src/common/errors.js` — `BOT_BLOCKED` → `CLAW_BLOCKED`
+- `plugins/openclaw/index.js` — RPC 响应字段 `clawId`/`previousClawId`
 
 ### Phase D：UI 迁移
 

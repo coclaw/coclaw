@@ -7,16 +7,16 @@ import {
 } from './messages.js';
 
 test('bindOk should format bind success message', () => {
-	assert.equal(bindOk({ botId: 'b1', rebound: false }), 'OK. Claw (b1) bound to CoClaw.');
-	assert.equal(bindOk({ botId: 'b2', rebound: true }), 'OK. Claw (b2) re-bound to CoClaw.');
+	assert.equal(bindOk({ clawId: 'b1', rebound: false }), 'OK. Claw (b1) bound to CoClaw.');
+	assert.equal(bindOk({ clawId: 'b2', rebound: true }), 'OK. Claw (b2) re-bound to CoClaw.');
 	assert.equal(
-		bindOk({ botId: 'b2', rebound: false, previousBotId: 'b1' }),
+		bindOk({ clawId: 'b2', rebound: false, previousClawId: 'b1' }),
 		'OK. Claw (b2) bound to CoClaw. (previous Claw b1 was auto-unbound)',
 	);
 });
 
 test('unbindOk should format unbind success message', () => {
-	assert.equal(unbindOk({ botId: 'b1' }), 'OK. Claw (b1) unbound from CoClaw.');
+	assert.equal(unbindOk({ clawId: 'b1' }), 'OK. Claw (b1) unbound from CoClaw.');
 	assert.equal(unbindOk({}), 'OK. Claw (unknown) unbound from CoClaw.');
 });
 

@@ -231,7 +231,7 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		await bridge.start({ logger, pluginConfig: {} });
 		assert.equal(FakeWebSocket.instances.length >= 1, true);
 		const initialServer = FakeWebSocket.instances[0];
-		assert.equal(initialServer.url.startsWith('wss://server.local/api/v1/bots/stream'), true);
+		assert.equal(initialServer.url.startsWith('wss://server.local/api/v1/claws/stream'), true);
 		initialServer.readyState = 1;
 		initialServer.emit('open', {});
 		assert.equal(logs.some((x) => String(x).includes('connected')), true);
@@ -243,7 +243,7 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		await bridge.refresh();
 		assert.equal(initialServer.readyState, 3, 'initial server should be closed after refresh');
 		const server = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
-		assert.equal(server.url.startsWith('wss://server.local/api/v1/bots/stream'), true);
+		assert.equal(server.url.startsWith('wss://server.local/api/v1/claws/stream'), true);
 		assert.equal(server.url.includes('token=t2'), true, 'new connection should use updated token');
 		assert.equal(server !== initialServer, true, 'should be a different WebSocket instance');
 		// open 后 ensureGatewayConnection 创建 gateway ws
@@ -301,8 +301,8 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		await new Promise((r) => setTimeout(r, 100));
 		assert.equal(server.sent.some((x) => String(x).includes('GATEWAY_OFFLINE')), true);
 
-		// bot.unbound branch (no botId in payload — clears config)
-		server.emit('message', { data: JSON.stringify({ type: 'bot.unbound', reason: 'x' }) });
+		// claw.unbound branch (no clawId in payload — clears config)
+		server.emit('message', { data: JSON.stringify({ type: 'claw.unbound', reason: 'x' }) });
 		for (let i = 0; i < 10; i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
@@ -1816,27 +1816,27 @@ test('singleton gatewayAgentRpc should delegate to bridge instance', async () =>
 	}
 });
 
-test('__clearTokenLocal should skip clearing when botId does not match', async () => {
-	await writeCfg({ token: 't-keep', botId: 'bot-new', serverUrl: 'http://server.local' });
+test('__clearTokenLocal should skip clearing when clawId does not match', async () => {
+	await writeCfg({ token: 't-keep', clawId: 'claw-new', serverUrl: 'http://server.local' });
 	const bridge = createBridge();
 
-	// 传入不匹配的 botId — 不应清除 config
-	await bridge.__clearTokenLocal('bot-old');
+	// 传入不匹配的 clawId — 不应清除 config
+	await bridge.__clearTokenLocal('claw-old');
 	const cfg = await readConfig();
 	assert.equal(cfg.token, 't-keep');
-	assert.equal(cfg.botId, 'bot-new');
+	assert.equal(cfg.clawId, 'claw-new');
 
-	// 传入匹配的 botId — 应清除 config
-	await bridge.__clearTokenLocal('bot-new');
+	// 传入匹配的 clawId — 应清除 config
+	await bridge.__clearTokenLocal('claw-new');
 	const cfgAfter = await readConfig();
 	assert.equal(cfgAfter.token, undefined);
 });
 
-test('__clearTokenLocal should clear when no botId provided (backward compat)', async () => {
-	await writeCfg({ token: 't-clear', botId: 'bot-x', serverUrl: 'http://server.local' });
+test('__clearTokenLocal should clear when no clawId provided (backward compat)', async () => {
+	await writeCfg({ token: 't-clear', clawId: 'claw-x', serverUrl: 'http://server.local' });
 	const bridge = createBridge();
 
-	// 无 botId 参数 — 应清除（兼容旧 server 不传 botId 的情况）
+	// 无 clawId 参数 — 应清除（兼容旧 server 不传 clawId 的情况）
 	await bridge.__clearTokenLocal();
 	const cfg = await readConfig();
 	assert.equal(cfg.token, undefined);

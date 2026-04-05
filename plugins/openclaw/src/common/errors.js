@@ -3,7 +3,7 @@ const ERROR_TEXT_MAP = {
 	BINDING_CODE_INVALID: 'Binding code is invalid',
 	BINDING_CODE_EXPIRED: 'Binding code has expired, please get a new one',
 	BINDING_CODE_EXHAUSTED: 'Server cannot generate binding code right now, please try again later',
-	BOT_BLOCKED: 'Claw is blocked, please contact the admin',
+	CLAW_BLOCKED: 'Claw is blocked, please contact the admin',
 	UNAUTHORIZED: 'Auth failed, please check token or re-bind',
 	INTERNAL_SERVER_ERROR: 'Server error, please try again later',
 };

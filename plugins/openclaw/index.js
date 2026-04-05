@@ -1,4 +1,4 @@
-import { bindBot, unbindBot, enrollBot, waitForClaimAndSave } from './src/common/bot-binding.js';
+import { bindClaw, unbindClaw, enrollClaw, waitForClaimAndSave } from './src/common/claw-binding.js';
 import { registerCoclawCli } from './src/cli-registrar.js';
 import { resolveErrorMessage } from './src/common/errors.js';
 import { notBound, bindOk, unbindOk, claimCodeCreated } from './src/common/messages.js';
@@ -116,7 +116,7 @@ const plugin = {
 			await stopRealtimeBridge();
 			let result;
 			try {
-				result = await bindBot({
+				result = await bindClaw({
 					code,
 					serverUrl: serverUrl ?? api.pluginConfig?.serverUrl,
 				});
@@ -133,7 +133,7 @@ const plugin = {
 		}
 
 		async function doUnbind({ serverUrl }) {
-			const result = await unbindBot({
+			const result = await unbindClaw({
 				serverUrl: serverUrl ?? api.pluginConfig?.serverUrl,
 			});
 			await stopRealtimeBridge();
@@ -153,9 +153,9 @@ const plugin = {
 				});
 				respond(true, {
 					status: {
-						botId: result.botId,
+						clawId: result.clawId,
 						rebound: result.rebound,
-						previousBotId: result.previousBotId,
+						previousClawId: result.previousClawId,
 					},
 				});
 			}
@@ -167,7 +167,7 @@ const plugin = {
 		api.registerGatewayMethod('coclaw.unbind', async ({ params, respond }) => {
 			try {
 				const result = await doUnbind({ serverUrl: params?.serverUrl });
-				respond(true, { status: { botId: result.botId } });
+				respond(true, { status: { clawId: result.clawId } });
 			}
 			catch (err) {
 				respondError(respond, err);
@@ -187,7 +187,7 @@ const plugin = {
 				activeEnrollAbort = abortController;
 
 				const serverUrl = params?.serverUrl ?? api.pluginConfig?.serverUrl;
-				const result = await enrollBot({ serverUrl });
+				const result = await enrollClaw({ serverUrl });
 
 				const rawMinutes = Math.round(
 					(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
@@ -552,7 +552,7 @@ const plugin = {
 						activeEnrollAbort = abortController;
 
 						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
-						const result = await enrollBot({ serverUrl });
+						const result = await enrollClaw({ serverUrl });
 						const rawMinutes = Math.round(
 							(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
 						);

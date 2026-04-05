@@ -44,20 +44,20 @@ test('writeConfig/readConfig should persist to bindings.json', async () => {
 
 	await writeConfig({
 		serverUrl: 'http://localhost:5173',
-		botId: 'b1',
+		clawId: 'b1',
 		token: 't1',
 		boundAt: '2026-03-04T00:00:00.000Z',
 	});
 
 	const loaded = await readConfig();
 	assert.equal(loaded.serverUrl, 'http://localhost:5173');
-	assert.equal(loaded.botId, 'b1');
+	assert.equal(loaded.clawId, 'b1');
 	assert.equal(loaded.token, 't1');
 	assert.equal(loaded.boundAt, '2026-03-04T00:00:00.000Z');
 
 	// 验证文件结构
 	const raw = JSON.parse(await fs.readFile(getBindingsPath(), 'utf8'));
-	assert.equal(raw.default.botId, 'b1');
+	assert.equal(raw.default.clawId, 'b1');
 	assert.equal(raw.default.token, 't1');
 });
 
@@ -66,12 +66,12 @@ test('writeConfig should merge with existing data', async () => {
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
 
-	await writeConfig({ serverUrl: 'http://s1', botId: 'b1', token: 't1' });
+	await writeConfig({ serverUrl: 'http://s1', clawId: 'b1', token: 't1' });
 	await writeConfig({ token: 't2' });
 
 	const loaded = await readConfig();
 	assert.equal(loaded.serverUrl, 'http://s1');
-	assert.equal(loaded.botId, 'b1');
+	assert.equal(loaded.clawId, 'b1');
 	assert.equal(loaded.token, 't2');
 });
 
@@ -82,7 +82,7 @@ test('readConfig should return empty entry when no bindings exist', async () => 
 
 	const loaded = await readConfig();
 	assert.equal(loaded.token, undefined);
-	assert.equal(loaded.botId, undefined);
+	assert.equal(loaded.clawId, undefined);
 });
 
 test('readConfig should delete corrupt file, log warning, and return empty', async () => {
@@ -126,7 +126,7 @@ test('clearConfig should remove account and delete file when empty', async () =>
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
 
-	await writeConfig({ botId: 'b1', token: 't1', serverUrl: 'http://s1' });
+	await writeConfig({ clawId: 'b1', token: 't1', serverUrl: 'http://s1' });
 	const bindingsPath = getBindingsPath();
 
 	// 确认写入
@@ -145,8 +145,8 @@ test('clearConfig should keep other accounts when clearing one', async () => {
 	process.env.OPENCLAW_STATE_DIR = dir;
 
 	// 写入两个 account
-	await writeConfig({ botId: 'b1', token: 't1' }, 'default');
-	await writeConfig({ botId: 'b2', token: 't2' }, 'secondary');
+	await writeConfig({ clawId: 'b1', token: 't1' }, 'default');
+	await writeConfig({ clawId: 'b2', token: 't2' }, 'secondary');
 
 	// 删除 default，secondary 应保留
 	await clearConfig('default');
@@ -154,4 +154,21 @@ test('clearConfig should keep other accounts when clearing one', async () => {
 	const raw = JSON.parse(await fs.readFile(bindingsPath, 'utf8'));
 	assert.equal(raw.default, undefined);
 	assert.equal(raw.secondary.token, 't2');
+});
+
+test('readConfig should map legacy botId to clawId for backward compat', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	const bindingsPath = nodePath.join(dir, 'coclaw', 'bindings.json');
+	await fs.mkdir(nodePath.dirname(bindingsPath), { recursive: true });
+
+	// 模拟旧格式 bindings.json（使用 botId）
+	await fs.writeFile(bindingsPath, JSON.stringify({
+		default: { serverUrl: 'http://s1', botId: 'legacy-bot', token: 't1' },
+	}), 'utf8');
+
+	const loaded = await readConfig();
+	assert.equal(loaded.clawId, 'legacy-bot');
+	assert.equal(loaded.botId, 'legacy-bot'); // 原始字段仍存在
 });
