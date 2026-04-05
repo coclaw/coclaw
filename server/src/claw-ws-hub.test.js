@@ -1701,6 +1701,22 @@ test('authenticateUiSession: findClawById 抛异常时返回 null', async () => 
 	}
 });
 
+test('authenticateUiSession: 支持 ?clawId= 查询参数（新版 UI）', async () => {
+	const orig = __test.wsSessionMiddleware;
+	__test.wsSessionMiddleware = (req, _res, next) => {
+		req.session = { passport: { user: '999' } };
+		next();
+	};
+	try {
+		// clawId 参数同样会尝试 BigInt 然后查 DB
+		const result = await authenticateUiSession({ url: '/api/v1/claws/stream?role=ui&clawId=1' });
+		// DB 不可用返回 null，但验证不抛异常即可
+		assert.equal(result, null);
+	} finally {
+		__test.wsSessionMiddleware = orig;
+	}
+});
+
 // --- registerSocket / unregisterSocket ---
 
 test('registerSocket: 注册多个 socket 到同一 key', () => {

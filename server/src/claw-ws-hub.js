@@ -231,7 +231,7 @@ async function authenticateUiSession(req) {
 		return null;
 	}
 	const url = new URL(req.url ?? '', 'http://localhost');
-	const clawId = url.searchParams.get('botId');
+	const clawId = url.searchParams.get('clawId') || url.searchParams.get('botId');
 	if (!clawId) {
 		return null;
 	}
@@ -506,7 +506,7 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 	httpServer.on('upgrade', async (req, socket, head) => {
 		try {
 			const url = new URL(req.url ?? '', 'http://localhost');
-			if (url.pathname !== '/api/v1/bots/stream') {
+			if (url.pathname !== '/api/v1/bots/stream' && url.pathname !== '/api/v1/claws/stream') {
 				return;
 			}
 

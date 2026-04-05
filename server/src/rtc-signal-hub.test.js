@@ -35,8 +35,8 @@ function mockFindClawById(id) {
 function createForwardMock(opts = {}) {
 	const { returnValue = true } = opts;
 	const calls = [];
-	const fn = (botId, payload) => {
-		calls.push({ botId, payload: structuredClone(payload) });
+	const fn = (clawId, payload) => {
+		calls.push({ clawId, payload: structuredClone(payload) });
 		return returnValue;
 	};
 	fn.calls = calls;
@@ -180,7 +180,7 @@ test('handleMessage: rtc:offer → register + TURN 注入 + forwardToBot', async
 	}), makeDeps(fwd));
 
 	// 路由表已注册
-	assert.equal(lookup('c_offer1')?.botId, '1');
+	assert.equal(lookup('c_offer1')?.clawId, '1');
 	// forwardToBot 被调用
 	assert.equal(fwd.calls.length, 1);
 	const forwarded = fwd.calls[0].payload;
@@ -192,6 +192,22 @@ test('handleMessage: rtc:offer → register + TURN 注入 + forwardToBot', async
 	assert.ok(forwarded.turnCreds.username);
 	assert.ok(forwarded.turnCreds.credential);
 	assert.ok(Array.isArray(forwarded.turnCreds.urls));
+	cleanup();
+});
+
+test('handleMessage: rtc:offer 使用 clawId（新版 UI）正常转发', async () => {
+	const ws = createMockWs();
+	const fwd = createForwardMock();
+	await handleMessage(ws, 'u1', JSON.stringify({
+		type: 'rtc:offer',
+		clawId: '1',
+		connId: 'c_offer_claw',
+		payload: { sdp: 'mock-sdp' },
+	}), makeDeps(fwd));
+
+	assert.equal(lookup('c_offer_claw')?.clawId, '1');
+	assert.equal(fwd.calls.length, 1);
+	assert.equal(fwd.calls[0].clawId, '1');
 	cleanup();
 });
 
@@ -266,7 +282,7 @@ test('handleMessage: rtc:ice 已注册 → 附 fromConnId + forwardToBot', async
 
 	assert.equal(fwd.calls.length, 1);
 	assert.equal(fwd.calls[0].payload.fromConnId, 'c_ice1');
-	assert.equal(fwd.calls[0].botId, '1');
+	assert.equal(fwd.calls[0].clawId, '1');
 	cleanup();
 });
 
@@ -282,7 +298,7 @@ test('handleMessage: rtc:ice 未注册 → 隐式注册 + forwardToBot', async (
 	}), makeDeps(fwd));
 
 	// 应已隐式注册
-	assert.equal(lookup('c_implicit')?.botId, '1');
+	assert.equal(lookup('c_implicit')?.clawId, '1');
 	assert.equal(fwd.calls.length, 1);
 	cleanup();
 });
@@ -337,7 +353,7 @@ test('handleMessage: rtc:closed connId 不存在时不抛异常', async () => {
 
 	// 仍转发（使用 payload 中的 botId）
 	assert.equal(fwd.calls.length, 1);
-	assert.equal(fwd.calls[0].botId, '1');
+	assert.equal(fwd.calls[0].clawId, '1');
 	cleanup();
 });
 
@@ -404,7 +420,7 @@ test('handleMessage: rtc:ready 未注册 → 隐式注册 + forwardToBot', async
 		connId: 'c_rdy_implicit',
 	}), makeDeps(fwd));
 
-	assert.equal(lookup('c_rdy_implicit')?.botId, '1');
+	assert.equal(lookup('c_rdy_implicit')?.clawId, '1');
 	assert.equal(fwd.calls.length, 1);
 	cleanup();
 });
@@ -514,7 +530,7 @@ test('handleMessage: rtc:closed 未注册 + 归属验证通过但 bot 离线', a
 	}), makeDeps(fwd));
 
 	assert.equal(fwd.calls.length, 1, 'should attempt forward');
-	assert.equal(fwd.calls[0].botId, '1');
+	assert.equal(fwd.calls[0].clawId, '1');
 	cleanup();
 });
 
@@ -653,7 +669,7 @@ test('handleMessage: rtc:ice connId 已注册时直接使用现有路由转发',
 
 	// 已注册的 connId 会直接使用现有路由转发
 	assert.equal(fwd.calls.length, 1);
-	assert.equal(fwd.calls[0].botId, '1');
+	assert.equal(fwd.calls[0].clawId, '1');
 	// 原注册不变
 	assert.equal(lookup('c_ice_taken').ws, ws1);
 	cleanup();

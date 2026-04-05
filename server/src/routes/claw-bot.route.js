@@ -178,12 +178,18 @@ export async function bindClawHandler(req, res, next, deps = {}) {
 		});
 
 		console.info(`[coclaw/api] bind success botId=${result.botId.toString()} userId=${result.userId} rebound=${Boolean(result.rebound)}`);
+		const clawObj = {
+			id: result.botId.toString(),
+			name: boundClawName,
+		};
+		sendToUser(String(result.userId), {
+			event: 'claw.bound',
+			claw: clawObj,
+		});
 		sendToUser(String(result.userId), {
 			event: 'bot.bound',
-			bot: {
-				id: result.botId.toString(),
-				name: boundClawName,
-			},
+			bot: clawObj,
+			claw: clawObj,
 		});
 		res.status(200).json({
 			botId: result.botId.toString(),
@@ -429,9 +435,15 @@ export async function unbindClawByUserHandler(req, res, next, deps = {}) {
 
 		console.info(`[coclaw/api] unbind-by-user success botId=${result.botId.toString()} userId=${req.user.id}`);
 		notifyAndDisconnectClawImpl(result.botId, 'bot_unbound');
+		const unboundClawId = result.botId.toString();
+		sendToUserImpl(String(req.user.id), {
+			event: 'claw.unbound',
+			clawId: unboundClawId,
+		});
 		sendToUserImpl(String(req.user.id), {
 			event: 'bot.unbound',
-			botId: result.botId.toString(),
+			botId: unboundClawId,
+			clawId: unboundClawId,
 		});
 
 		res.status(200).json({
@@ -476,9 +488,15 @@ export async function unbindClawHandler(req, res, next, deps = {}) {
 
 		console.info('[coclaw/api] unbind success botId=%s userId=%s (type=%s)', result.botId, result.userId, typeof result.userId);
 		notifyAndDisconnectClawImpl(result.botId, 'bot_unbound');
+		const unboundClawId = result.botId.toString();
+		sendToUserImpl(String(result.userId), {
+			event: 'claw.unbound',
+			clawId: unboundClawId,
+		});
 		sendToUserImpl(String(result.userId), {
 			event: 'bot.unbound',
-			botId: result.botId.toString(),
+			botId: unboundClawId,
+			clawId: unboundClawId,
 		});
 
 		res.status(200).json({

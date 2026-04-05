@@ -924,7 +924,7 @@ test('unbindClawByUserHandler: should unbind, notify, and return success', async
 	};
 	const res = createRes();
 	let notifiedBotId = null;
-	let sseEvent = null;
+	const sseEvents = [];
 
 	await unbindClawByUserHandler(req, res, () => {}, {
 		unbindClawByUserImpl: async () => ({
@@ -932,7 +932,7 @@ test('unbindClawByUserHandler: should unbind, notify, and return success', async
 			botId: 42n,
 		}),
 		notifyAndDisconnectClawImpl: (botId) => { notifiedBotId = botId; },
-		sendToUserImpl: (_userId, evt) => { sseEvent = evt; },
+		sendToUserImpl: (_userId, evt) => { sseEvents.push(evt); },
 	});
 
 	assert.equal(res.statusCode, 200);
@@ -940,8 +940,13 @@ test('unbindClawByUserHandler: should unbind, notify, and return success', async
 	assert.equal(res.body.clawId, '42');
 	assert.equal(res.body.unbound, true);
 	assert.equal(notifiedBotId, 42n);
-	assert.equal(sseEvent.event, 'bot.unbound');
-	assert.equal(sseEvent.botId, '42');
+	// 双事件：先 claw.unbound 后 bot.unbound
+	assert.equal(sseEvents.length, 2);
+	assert.equal(sseEvents[0].event, 'claw.unbound');
+	assert.equal(sseEvents[0].clawId, '42');
+	assert.equal(sseEvents[1].event, 'bot.unbound');
+	assert.equal(sseEvents[1].botId, '42');
+	assert.equal(sseEvents[1].clawId, '42');
 });
 
 test('unbindClawByUserHandler: should forward error to next', async () => {
@@ -1008,7 +1013,7 @@ test('unbindClawHandler: should unbind, notify, and return success', async () =>
 	const req = { headers: { authorization: 'Bearer valid-token' } };
 	const res = createRes();
 	let notifiedBotId = null;
-	let sseEvent = null;
+	const sseEvents = [];
 
 	await unbindClawHandler(req, res, () => {}, {
 		unbindClawByTokenImpl: async () => ({
@@ -1017,7 +1022,7 @@ test('unbindClawHandler: should unbind, notify, and return success', async () =>
 			userId: 7n,
 		}),
 		notifyAndDisconnectClawImpl: (botId) => { notifiedBotId = botId; },
-		sendToUserImpl: (_userId, evt) => { sseEvent = evt; },
+		sendToUserImpl: (_userId, evt) => { sseEvents.push(evt); },
 	});
 
 	assert.equal(res.statusCode, 200);
@@ -1025,7 +1030,12 @@ test('unbindClawHandler: should unbind, notify, and return success', async () =>
 	assert.equal(res.body.clawId, '55');
 	assert.equal(res.body.unbound, true);
 	assert.equal(notifiedBotId, 55n);
-	assert.equal(sseEvent.event, 'bot.unbound');
+	assert.equal(sseEvents.length, 2);
+	assert.equal(sseEvents[0].event, 'claw.unbound');
+	assert.equal(sseEvents[0].clawId, '55');
+	assert.equal(sseEvents[1].event, 'bot.unbound');
+	assert.equal(sseEvents[1].botId, '55');
+	assert.equal(sseEvents[1].clawId, '55');
 });
 
 test('unbindClawHandler: should forward error to next', async () => {

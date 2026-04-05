@@ -1,12 +1,12 @@
 /**
  * RTC 信令路由表（纯数据模块）
  *
- * 维护 connId → { ws, botId, userId } 的 live 映射，
+ * 维护 connId → { ws, clawId, userId } 的 live 映射，
  * 供 rtc-signal-hub 和 claw-ws-hub 共享使用。
  * 无外部依赖、无定时器、无副作用。
  */
 
-/** @type {Map<string, { ws: object, botId: string, userId: string }>} */
+/** @type {Map<string, { ws: object, clawId: string, userId: string }>} */
 const routes = new Map();
 
 /** @type {WeakMap<object, Set<string>>} */
@@ -17,16 +17,16 @@ const wsToConnIds = new WeakMap();
  * connId 已被其他 WS 占用时返回 false；同一 WS 重复注册则更新。
  * @param {string} connId
  * @param {object} ws
- * @param {string} botId
+ * @param {string} clawId
  * @param {string} userId
  * @returns {boolean}
  */
-export function register(connId, ws, botId, userId) {
+export function register(connId, ws, clawId, userId) {
 	const existing = routes.get(connId);
 	if (existing && existing.ws !== ws) {
 		return false;
 	}
-	routes.set(connId, { ws, botId, userId });
+	routes.set(connId, { ws, clawId, userId });
 	let set = wsToConnIds.get(ws);
 	if (!set) {
 		set = new Set();
@@ -69,7 +69,7 @@ export function removeByWs(ws) {
  */
 export function removeByClawId(clawId) {
 	for (const [connId, entry] of routes) {
-		if (entry.botId === clawId) {
+		if (entry.clawId === clawId) {
 			remove(connId);
 		}
 	}
@@ -96,7 +96,7 @@ export function routeToUi(connId, payload) {
 /**
  * 查找路由条目。
  * @param {string} connId
- * @returns {{ ws: object, botId: string, userId: string } | null}
+ * @returns {{ ws: object, clawId: string, userId: string } | null}
  */
 export function lookup(connId) {
 	return routes.get(connId) ?? null;

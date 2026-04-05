@@ -84,14 +84,18 @@ test('sendSnapshot: should push bot.snapshot event to single client', async () =
 		listOnlineClawIdsImpl: () => onlineIds,
 	});
 
-	assert.equal(res.written.length, 1);
-	const parsed = JSON.parse(res.written[0].replace('data: ', '').trim());
-	assert.equal(parsed.event, 'bot.snapshot');
-	assert.equal(parsed.items.length, 2);
-	assert.equal(parsed.items[0].id, '1');
-	assert.equal(parsed.items[0].online, false);
-	assert.equal(parsed.items[1].id, '2');
-	assert.equal(parsed.items[1].online, true);
+	// 双事件：先 claw.snapshot 后 bot.snapshot
+	assert.equal(res.written.length, 2);
+	const clawEvt = JSON.parse(res.written[0].replace('data: ', '').trim());
+	assert.equal(clawEvt.event, 'claw.snapshot');
+	assert.equal(clawEvt.items.length, 2);
+	assert.equal(clawEvt.items[0].id, '1');
+	assert.equal(clawEvt.items[0].online, false);
+	assert.equal(clawEvt.items[1].id, '2');
+	assert.equal(clawEvt.items[1].online, true);
+	const botEvt = JSON.parse(res.written[1].replace('data: ', '').trim());
+	assert.equal(botEvt.event, 'bot.snapshot');
+	assert.deepEqual(botEvt.items, clawEvt.items);
 });
 
 test('sendSnapshot: should not throw on res.write failure', async () => {
@@ -159,7 +163,7 @@ test('handleStatusEvent: 无 SSE 客户端时直接返回', async () => {
 	});
 });
 
-test('handleStatusEvent: bot 存在时推送 bot.status 事件', async () => {
+test('handleStatusEvent: bot 存在时推送 claw.status + bot.status 双事件', async () => {
 	const res = createMockRes();
 	registerSseClient('100', res);
 
@@ -172,11 +176,16 @@ test('handleStatusEvent: bot 存在时推送 bot.status 事件', async () => {
 		findClawByIdFn: mockFindBot,
 	});
 
-	assert.equal(res.written.length, 1);
-	const parsed = JSON.parse(res.written[0].replace('data: ', '').trim());
-	assert.equal(parsed.event, 'bot.status');
-	assert.equal(parsed.botId, '5');
-	assert.equal(parsed.online, true);
+	assert.equal(res.written.length, 2);
+	const clawEvt = JSON.parse(res.written[0].replace('data: ', '').trim());
+	assert.equal(clawEvt.event, 'claw.status');
+	assert.equal(clawEvt.clawId, '5');
+	assert.equal(clawEvt.online, true);
+	const botEvt = JSON.parse(res.written[1].replace('data: ', '').trim());
+	assert.equal(botEvt.event, 'bot.status');
+	assert.equal(botEvt.botId, '5');
+	assert.equal(botEvt.clawId, '5');
+	assert.equal(botEvt.online, true);
 
 	res.__triggerClose();
 });
@@ -217,7 +226,7 @@ test('handleNameUpdatedEvent: 无 SSE 客户端时直接返回', async () => {
 	});
 });
 
-test('handleNameUpdatedEvent: bot 存在时推送 bot.nameUpdated 事件', async () => {
+test('handleNameUpdatedEvent: bot 存在时推送 claw.nameUpdated + bot.nameUpdated 双事件', async () => {
 	const res = createMockRes();
 	registerSseClient('200', res);
 
@@ -230,11 +239,16 @@ test('handleNameUpdatedEvent: bot 存在时推送 bot.nameUpdated 事件', async
 		findClawByIdFn: mockFindBot,
 	});
 
-	assert.equal(res.written.length, 1);
-	const parsed = JSON.parse(res.written[0].replace('data: ', '').trim());
-	assert.equal(parsed.event, 'bot.nameUpdated');
-	assert.equal(parsed.botId, '10');
-	assert.equal(parsed.name, 'my-bot');
+	assert.equal(res.written.length, 2);
+	const clawEvt = JSON.parse(res.written[0].replace('data: ', '').trim());
+	assert.equal(clawEvt.event, 'claw.nameUpdated');
+	assert.equal(clawEvt.clawId, '10');
+	assert.equal(clawEvt.name, 'my-bot');
+	const botEvt = JSON.parse(res.written[1].replace('data: ', '').trim());
+	assert.equal(botEvt.event, 'bot.nameUpdated');
+	assert.equal(botEvt.botId, '10');
+	assert.equal(botEvt.clawId, '10');
+	assert.equal(botEvt.name, 'my-bot');
 
 	res.__triggerClose();
 });

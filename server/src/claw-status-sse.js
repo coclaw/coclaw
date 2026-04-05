@@ -49,9 +49,12 @@ export async function sendSnapshot(userId, res, deps = {}) {
 			updatedAt: c.updatedAt,
 		};
 	});
-	const msg = `data: ${JSON.stringify({ event: 'bot.snapshot', items })}\n\n`;
+	// 先发 claw.snapshot（新版 UI），再发 bot.snapshot（旧版 UI）
+	const clawMsg = `data: ${JSON.stringify({ event: 'claw.snapshot', items })}\n\n`;
+	const botMsg = `data: ${JSON.stringify({ event: 'bot.snapshot', items })}\n\n`;
 	try {
-		res.write(msg);
+		res.write(clawMsg);
+		res.write(botMsg);
 	} catch (err) {
 		console.warn('[coclaw/sse] snapshot write failed userId=%s: %s', userId, err?.message);
 	}
@@ -105,9 +108,17 @@ async function handleStatusEvent({ clawId, online }, deps = {}) {
 			console.debug('[coclaw/sse] status event: claw not found clawId=%s (may be deleted)', clawId);
 			return;
 		}
-		sendToUser(String(claw.userId), {
+		const userId = String(claw.userId);
+		// 先发 claw.*（新版 UI），再发 bot.*（旧版 UI）
+		sendToUser(userId, {
+			event: 'claw.status',
+			clawId: String(clawId),
+			online,
+		});
+		sendToUser(userId, {
 			event: 'bot.status',
 			botId: String(clawId),
+			clawId: String(clawId),
 			online,
 		});
 	}
@@ -134,9 +145,16 @@ async function handleNameUpdatedEvent({ clawId, name }, deps = {}) {
 			console.debug('[coclaw/sse] nameUpdated event: claw not found clawId=%s (may be deleted)', clawId);
 			return;
 		}
-		sendToUser(String(claw.userId), {
+		const userId = String(claw.userId);
+		sendToUser(userId, {
+			event: 'claw.nameUpdated',
+			clawId: String(clawId),
+			name,
+		});
+		sendToUser(userId, {
 			event: 'bot.nameUpdated',
 			botId: String(clawId),
+			clawId: String(clawId),
 			name,
 		});
 	}

@@ -96,6 +96,7 @@ export function createApp() {
 	app.use('/api/v1/user', userRouter);
 	app.use('/api/v1/bots', clawBotRouter);
 	app.use('/api/v1/claws', clawRouter);
+	app.use('/api/v1/claws', clawBotRouter);
 	app.use('/api/v1/turn', turnRouter);
 
 	app.use(globalErrorHandler);

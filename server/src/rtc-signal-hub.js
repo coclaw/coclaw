@@ -78,34 +78,35 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		return;
 	}
 
-	// RTC 信令：需要 botId + connId（botId 是协议字段，保持不变）
-	const { botId, connId } = payload;
-	if (!botId || !connId) {
-		sigLogDebug(`missing botId/connId in ${type}`);
+	// RTC 信令：需要 clawId(或 botId) + connId
+	const clawId = payload.clawId || payload.botId;
+	const { connId } = payload;
+	if (!clawId || !connId) {
+		sigLogDebug(`missing clawId/botId/connId in ${type}`);
 		return;
 	}
 
 	if (type === 'rtc:offer') {
-		const owned = await validateClawOwnership(botId, userId, findClawByIdFn);
+		const owned = await validateClawOwnership(clawId, userId, findClawByIdFn);
 		if (!owned) {
-			sigLogWarn(`rtc:offer denied: clawId=${botId} not owned by userId=${userId}`);
+			sigLogWarn(`rtc:offer denied: clawId=${clawId} not owned by userId=${userId}`);
 			return;
 		}
-		const ok = register(connId, ws, botId, userId);
+		const ok = register(connId, ws, clawId, userId);
 		if (!ok) {
 			sigLogWarn(`rtc:offer denied: connId=${connId} occupied by another WS`);
 			return;
 		}
 		// 注入 TURN 凭证
 		if (process.env.TURN_SECRET) {
-			payload.turnCreds = genTurnCredsForGateway(String(botId), process.env.TURN_SECRET);
+			payload.turnCreds = genTurnCredsForGateway(String(clawId), process.env.TURN_SECRET);
 		}
 		payload.fromConnId = connId;
-		const sent = forwardToClawFn(botId, payload);
+		const sent = forwardToClawFn(clawId, payload);
 		if (sent) {
-			sigLogInfo(`rtc:offer forwarded claw=${botId} connId=${connId}`);
+			sigLogInfo(`rtc:offer forwarded claw=${clawId} connId=${connId}`);
 		} else {
-			sigLogDebug(`rtc:offer dropped, claw offline clawId=${botId}`);
+			sigLogDebug(`rtc:offer dropped, claw offline clawId=${clawId}`);
 		}
 		return;
 	}
@@ -114,12 +115,12 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		let route = lookup(connId);
 		// 隐式注册
 		if (!route) {
-			const owned = await validateClawOwnership(botId, userId, findClawByIdFn);
+			const owned = await validateClawOwnership(clawId, userId, findClawByIdFn);
 			if (!owned) {
-				sigLogWarn(`${type} denied: clawId=${botId} not owned by userId=${userId}`);
+				sigLogWarn(`${type} denied: clawId=${clawId} not owned by userId=${userId}`);
 				return;
 			}
-			const ok = register(connId, ws, botId, userId);
+			const ok = register(connId, ws, clawId, userId);
 			if (!ok) {
 				sigLogWarn(`${type} denied: connId=${connId} occupied by another WS`);
 				return;
@@ -132,11 +133,11 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 			return;
 		}
 		payload.fromConnId = connId;
-		const sent = forwardToClawFn(route.botId, payload);
+		const sent = forwardToClawFn(route.clawId, payload);
 		if (!sent) {
-			sigLogDebug(`${type} dropped, claw offline clawId=${route.botId} connId=${connId}`);
+			sigLogDebug(`${type} dropped, claw offline clawId=${route.clawId} connId=${connId}`);
 		} else {
-			sigLogDebug(`${type} forwarded claw=${route.botId} connId=${connId}`);
+			sigLogDebug(`${type} forwarded claw=${route.clawId} connId=${connId}`);
 		}
 		return;
 	}
@@ -145,28 +146,26 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		const route = lookup(connId);
 		if (route) {
 			payload.fromConnId = connId;
-			const sent = forwardToClawFn(route.botId, payload);
+			const sent = forwardToClawFn(route.clawId, payload);
 			if (sent) {
-				sigLogDebug(`rtc:closed forwarded claw=${route.botId} connId=${connId}`);
+				sigLogDebug(`rtc:closed forwarded claw=${route.clawId} connId=${connId}`);
 			} else {
-				sigLogDebug(`rtc:closed dropped, claw offline clawId=${route.botId} connId=${connId}`);
+				sigLogDebug(`rtc:closed dropped, claw offline clawId=${route.clawId} connId=${connId}`);
 			}
 			remove(connId);
 		} else {
 			// connId 未注册：需验证 clawId 归属后才转发
-			if (botId) {
-				const owned = await validateClawOwnership(botId, userId, findClawByIdFn);
-				if (owned) {
-					payload.fromConnId = connId;
-					const sent = forwardToClawFn(botId, payload);
-					if (sent) {
-						sigLogDebug(`rtc:closed forwarded (unregistered) claw=${botId} connId=${connId}`);
-					} else {
-						sigLogDebug(`rtc:closed dropped (unregistered), claw offline clawId=${botId} connId=${connId}`);
-					}
+			const owned = await validateClawOwnership(clawId, userId, findClawByIdFn);
+			if (owned) {
+				payload.fromConnId = connId;
+				const sent = forwardToClawFn(clawId, payload);
+				if (sent) {
+					sigLogDebug(`rtc:closed forwarded (unregistered) claw=${clawId} connId=${connId}`);
 				} else {
-					sigLogWarn(`rtc:closed denied: clawId=${botId} not owned by userId=${userId}`);
+					sigLogDebug(`rtc:closed dropped (unregistered), claw offline clawId=${clawId} connId=${connId}`);
 				}
+			} else {
+				sigLogWarn(`rtc:closed denied: clawId=${clawId} not owned by userId=${userId}`);
 			}
 			remove(connId); // no-op，但保持语义一致
 		}

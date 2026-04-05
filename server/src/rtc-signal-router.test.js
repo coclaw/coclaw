@@ -24,7 +24,7 @@ function cleanup() {
 test('register: 成功注册返回 true', () => {
 	const ws = createMockWs();
 	assert.equal(register('c_1', ws, 'bot1', 'user1'), true);
-	assert.deepEqual(lookup('c_1'), { ws, botId: 'bot1', userId: 'user1' });
+	assert.deepEqual(lookup('c_1'), { ws, clawId: 'bot1', userId: 'user1' });
 	cleanup();
 });
 
@@ -32,7 +32,7 @@ test('register: 同一 WS 重复注册同一 connId 返回 true 并更新', () =
 	const ws = createMockWs();
 	register('c_1', ws, 'bot1', 'user1');
 	assert.equal(register('c_1', ws, 'bot2', 'user1'), true);
-	assert.equal(lookup('c_1').botId, 'bot2');
+	assert.equal(lookup('c_1').clawId, 'bot2');
 	cleanup();
 });
 
@@ -103,7 +103,7 @@ test('removeByWs: 不影响其他 WS 的 connId', () => {
 	register('c_2', ws2, 'bot1', 'user1');
 	removeByWs(ws1);
 	assert.equal(lookup('c_1'), null);
-	assert.deepEqual(lookup('c_2'), { ws: ws2, botId: 'bot1', userId: 'user1' });
+	assert.deepEqual(lookup('c_2'), { ws: ws2, clawId: 'bot1', userId: 'user1' });
 	cleanup();
 });
 
@@ -126,11 +126,11 @@ test('removeByClawId: 不影响其他 botId 的 connId', () => {
 	removeByClawId('bot1');
 	assert.equal(routes.size, 1);
 	assert.equal(lookup('c_1'), null);
-	assert.deepEqual(lookup('c_2'), { ws, botId: 'bot2', userId: 'user1' });
+	assert.deepEqual(lookup('c_2'), { ws, clawId: 'bot2', userId: 'user1' });
 	cleanup();
 });
 
-test('removeByClawId: botId 无注册时无副作用', () => {
+test('removeByClawId: clawId 无注册时无副作用', () => {
 	removeByClawId('nonexist');
 	assert.equal(routes.size, 0);
 });
@@ -176,7 +176,7 @@ test('lookup: 存在返回条目', () => {
 	register('c_1', ws, 'bot1', 'user1');
 	const entry = lookup('c_1');
 	assert.equal(entry.ws, ws);
-	assert.equal(entry.botId, 'bot1');
+	assert.equal(entry.clawId, 'bot1');
 	assert.equal(entry.userId, 'user1');
 	cleanup();
 });
