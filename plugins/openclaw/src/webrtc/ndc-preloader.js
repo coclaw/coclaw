@@ -61,6 +61,33 @@ export function defaultResolvePaths(platformKey, pluginRoot) {
 }
 
 /**
+ * ndc polyfill 的 RTCPeerConnection 将 iceServers 的 username:credential 直接拼入 URL，
+ * 但 TURN REST API 的 username 格式为 `timestamp:identity`（含冒号），
+ * 导致 libdatachannel 的 URL parser 截断 username。
+ * 此 wrapper 在传入 polyfill 前对 username/credential 做 percent-encoding 规避该问题。
+ */
+function wrapNdcCredentials(NativeRTC) {
+	return class extends NativeRTC {
+		constructor(config = {}) {
+			if (config?.iceServers) {
+				config = {
+					...config,
+					iceServers: config.iceServers.map(s => {
+						if (!s.username && !s.credential) return s;
+						return {
+							...s,
+							username: s.username ? encodeURIComponent(s.username) : s.username,
+							credential: s.credential ? encodeURIComponent(s.credential) : s.credential,
+						};
+					}),
+				};
+			}
+			super(config);
+		}
+	};
+}
+
+/**
  * 预加载 WebRTC 实现：优先 node-datachannel，失败回退 werift，全部失败返回 null。
  *
  * **此函数永不 throw**——所有异常内部捕获，通过 remoteLog 报告。
@@ -160,7 +187,7 @@ export async function preloadNdc(deps = {}) {
 		// 当前由 RealtimeBridge.stop() 负责调用。若 gateway 被 SIGKILL 强杀则无法执行，
 		// 但 OS 会回收所有资源。若 OpenClaw 提供了优雅终止钩子，应在钩子中也调用 cleanup。
 		log(`ndc.loaded platform=${platformKey}`);
-		return { PeerConnection: RTCPeerConnection, cleanup, impl: 'ndc' };
+		return { PeerConnection: wrapNdcCredentials(RTCPeerConnection), cleanup, impl: 'ndc' };
 	} catch (err) {
 		// resolvePaths 或其他未预期异常的兜底
 		log(`ndc.fallback reason=unexpected error=${err.message}`);

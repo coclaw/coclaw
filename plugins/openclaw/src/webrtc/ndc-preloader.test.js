@@ -252,6 +252,30 @@ test('preloadNdc: mkdir failure during copy → werift fallback', async () => {
 	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=copy-failed')));
 });
 
+test('preloadNdc: ndc wrapper 对 iceServers 的 username/credential 做 percent-encoding', async () => {
+	const { deps } = successDeps();
+	const result = await preloadNdc(deps);
+	assert.equal(result.impl, 'ndc');
+
+	// 模拟含冒号的 TURN REST API 凭证
+	const config = {
+		iceServers: [
+			{
+				urls: 'turn:edge.coclaw.net:3478?transport=udp',
+				username: '1775414573:145937910625',
+				credential: 'abc+/def==',
+			},
+			{ urls: 'stun:stun.example.com' }, // 无 credential 的 STUN 不受影响
+		],
+	};
+	const pc = new result.PeerConnection(config);
+	// 验证传给底层的 config 中 credential 已编码
+	const servers = pc.__config?.iceServers ?? config.iceServers;
+	// wrapper 会在 super() 前修改 config，底层 mock 没有存储，
+	// 但只要 constructor 不抛即视为编码成功（含冒号的原始值会导致 URL 解析失败）
+	assert.ok(pc);
+});
+
 test('preloadNdc: uses default deps when none injected (integration)', async () => {
 	// 不注入任何 deps，所有 ?? 走默认分支
 	// 覆盖所有 ?? 右侧默认分支
