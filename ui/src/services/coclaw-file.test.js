@@ -1,7 +1,7 @@
 import { describe, test, expect, vi } from 'vitest';
 
-vi.mock('./bot-connection-manager.js', () => ({
-	useBotConnections: vi.fn(),
+vi.mock('./claw-connection-manager.js', () => ({
+	useClawConnections: vi.fn(),
 }));
 
 vi.mock('./file-transfer.js', () => ({
@@ -9,11 +9,11 @@ vi.mock('./file-transfer.js', () => ({
 }));
 
 import { buildCoclawUrl, parseCoclawUrl, isCoclawUrl, fetchCoclawFile } from './coclaw-file.js';
-import { useBotConnections } from './bot-connection-manager.js';
+import { useClawConnections } from './claw-connection-manager.js';
 import { downloadFile } from './file-transfer.js';
 
 describe('buildCoclawUrl', () => {
-	test('constructs URL with botId, agentId, path', () => {
+	test('constructs URL with clawId, agentId, path', () => {
 		const url = buildCoclawUrl('42', 'main', '.coclaw/chat-files/main/voice_123.webm');
 		expect(url).toBe('coclaw-file://42:main/.coclaw/chat-files/main/voice_123.webm');
 	});
@@ -28,7 +28,7 @@ describe('parseCoclawUrl', () => {
 	test('parses valid URL', () => {
 		const result = parseCoclawUrl('coclaw-file://42:main/.coclaw/chat-files/main/voice.webm');
 		expect(result).toEqual({
-			botId: '42',
+			clawId: '42',
 			agentId: 'main',
 			path: '.coclaw/chat-files/main/voice.webm',
 		});
@@ -37,7 +37,7 @@ describe('parseCoclawUrl', () => {
 	test('parses URL with complex agentId', () => {
 		const result = parseCoclawUrl('coclaw-file://7:agent-x_1/path/to/file.m4a');
 		expect(result).toEqual({
-			botId: '7',
+			clawId: '7',
 			agentId: 'agent-x_1',
 			path: 'path/to/file.m4a',
 		});
@@ -63,7 +63,7 @@ describe('parseCoclawUrl', () => {
 		expect(parseCoclawUrl('coclaw-file://42:main/')).toBeNull();
 	});
 
-	test('returns null when botId or agentId is empty', () => {
+	test('returns null when clawId or agentId is empty', () => {
 		expect(parseCoclawUrl('coclaw-file://:main/file')).toBeNull();
 		expect(parseCoclawUrl('coclaw-file://42:/file')).toBeNull();
 	});
@@ -91,14 +91,14 @@ describe('isCoclawUrl', () => {
 
 describe('buildCoclawUrl + parseCoclawUrl roundtrip', () => {
 	test('parse(build(...)) returns original components', () => {
-		const botId = '99';
+		const clawId = '99';
 		const agentId = 'test-agent';
 		const path = '.coclaw/topic-files/uuid-123/voice_456.webm';
 
-		const url = buildCoclawUrl(botId, agentId, path);
+		const url = buildCoclawUrl(clawId, agentId, path);
 		const parsed = parseCoclawUrl(url);
 
-		expect(parsed).toEqual({ botId, agentId, path });
+		expect(parsed).toEqual({ clawId, agentId, path });
 	});
 });
 
@@ -106,7 +106,7 @@ describe('fetchCoclawFile', () => {
 	test('解析 URL 并通过 downloadFile 获取 blob', async () => {
 		const fakeBlob = new Blob(['hello'], { type: 'text/plain' });
 		const fakeBotConn = { id: '42' };
-		useBotConnections.mockReturnValue({ get: vi.fn(() => fakeBotConn) });
+		useClawConnections.mockReturnValue({ get: vi.fn(() => fakeBotConn) });
 		downloadFile.mockReturnValue({ promise: Promise.resolve({ blob: fakeBlob }) });
 
 		const result = await fetchCoclawFile('coclaw-file://42:main/path/to/file.txt');
@@ -121,9 +121,9 @@ describe('fetchCoclawFile', () => {
 	});
 
 	test('bot 连接不存在时抛出错误', async () => {
-		useBotConnections.mockReturnValue({ get: vi.fn(() => undefined) });
+		useClawConnections.mockReturnValue({ get: vi.fn(() => undefined) });
 
 		await expect(fetchCoclawFile('coclaw-file://99:main/file.txt'))
-			.rejects.toThrow('Bot connection not found: 99');
+			.rejects.toThrow('Claw connection not found: 99');
 	});
 });

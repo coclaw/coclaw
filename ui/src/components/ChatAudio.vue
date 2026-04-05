@@ -66,7 +66,7 @@ export default {
 		/**
 		 * 音频来源。支持两种格式：
 		 * - blob URL / http URL → 直接播放
-		 * - coclaw-file://botId:agentId/path → 按需下载后播放
+		 * - coclaw-file://clawId:agentId/path → 按需下载后播放
 		 */
 		src: {
 			type: String,

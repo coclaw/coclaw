@@ -31,19 +31,19 @@ vi.mock('../components/ChatInput.vue', () => ({
 }));
 
 // --- mock 服务/stores ---
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
 		get: vi.fn(),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../utils/file-helper.js', async (importOriginal) => {
@@ -73,12 +73,12 @@ vi.mock('../utils/platform.js', () => ({
 
 import ChatPage from './ChatPage.vue';
 import { chatStoreManager } from '../stores/chat-store-manager.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { useAgentsStore } from '../stores/agents.store.js';
 
 /** 获取 ChatPage 内部使用的 store 实例（与组件使用同一个 manager） */
-function getChatStore(botId = 'bot-1', agentId = 'main') {
-	return chatStoreManager.get(`session:${botId}:${agentId}`, { botId, agentId });
+function getChatStore(clawId = 'bot-1', agentId = 'main') {
+	return chatStoreManager.get(`session:${clawId}:${agentId}`, { clawId, agentId });
 }
 
 const i18nMap = {
@@ -86,8 +86,8 @@ const i18nMap = {
 	'chat.empty': 'No messages',
 	'chat.orphanSendFailed': 'Orphan send failed',
 	'chat.newChatFailed': 'New chat failed',
-	'chat.botOffline': 'Bot is offline',
-	'chat.botUnbound': 'Bot has been unbound',
+	'chat.clawOffline': 'Claw is offline',
+	'chat.clawUnbound': 'Bot has been unbound',
 	'chat.sessionNotFound': 'Session no longer exists',
 	'topic.newTopic': 'New topic',
 	'topic.createFailed': 'Failed to create topic',
@@ -102,9 +102,9 @@ const i18nMap = {
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
 
 /** 设置 agentsStore 使 agentVerified 返回 true */
-function setupAgents(botId = 'bot-1', agentId = 'main') {
+function setupAgents(clawId = 'bot-1', agentId = 'main') {
 	const agentsStore = useAgentsStore();
-	agentsStore.byBot[botId] = {
+	agentsStore.byClaw[clawId] = {
 		agents: [{ id: agentId }],
 		defaultId: agentId,
 		loading: false,
@@ -113,18 +113,18 @@ function setupAgents(botId = 'bot-1', agentId = 'main') {
 }
 
 function createWrapper(opts = {}) {
-	const { botId = 'bot-1', agentId = 'main', routeName = 'chat', sessionId } = typeof opts === 'string'
-		? { botId: opts } // 兼容旧调用
+	const { clawId = 'bot-1', agentId = 'main', routeName = 'chat', sessionId } = typeof opts === 'string'
+		? { clawId: opts } // 兼容旧调用
 		: opts;
 	const pinia = createPinia();
 	setActivePinia(pinia);
 	const params = routeName === 'topics-chat'
 		? { sessionId: sessionId || 'new' }
-		: { botId, agentId };
+		: { clawId, agentId };
 	const prefix = routeName === 'topics-chat' ? '/topics' : '/chat';
 	const path = routeName === 'topics-chat'
 		? `${prefix}/${params.sessionId}`
-		: `${prefix}/${botId}/${agentId}`;
+		: `${prefix}/${clawId}/${agentId}`;
 	return mount(ChatPage, {
 		global: {
 			plugins: [pinia],
@@ -156,15 +156,15 @@ describe('ChatPage', () => {
 		await flushPromises();
 
 		const chatStore = getChatStore();
-		expect(chatStore.botId).toBe('bot-1');
+		expect(chatStore.clawId).toBe('bot-1');
 		expect(chatStore.chatSessionKey).toBe('agent:main:main');
 		expect(chatStore.__initialized).toBe(true);
 	});
 
 	test('显示 loading 状态', async () => {
 		const wrapper = createWrapper();
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 		setupAgents();
 		const chatStore = getChatStore();
 		// __initialized=true（activate 已设置）, __messagesLoaded=false, messages=[]
@@ -177,8 +177,8 @@ describe('ChatPage', () => {
 
 	test('显示错误状态', async () => {
 		const wrapper = createWrapper();
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 		setupAgents();
 		const chatStore = getChatStore();
 		chatStore.errorText = 'Something went wrong';
@@ -190,8 +190,8 @@ describe('ChatPage', () => {
 
 	test('显示空消息状态', async () => {
 		const wrapper = createWrapper();
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 		setupAgents();
 		const chatStore = getChatStore();
 		chatStore.errorText = '';
@@ -221,8 +221,8 @@ describe('ChatPage', () => {
 
 	test('isLoadingChat 在 messagesLoaded 后变为 false（即使 loading 标志卡住）', async () => {
 		const wrapper = createWrapper();
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 		setupAgents();
 		const chatStore = getChatStore();
 		// 模拟 loading 标志卡住的场景
@@ -248,8 +248,8 @@ describe('ChatPage', () => {
 		expect(wrapper.vm.chatTitle).toBeTruthy();
 	});
 
-	test('chatTitle routeBotId 为空时返回空字符串', async () => {
-		const wrapper = createWrapper({ botId: '' });
+	test('chatTitle routeClawId 为空时返回空字符串', async () => {
+		const wrapper = createWrapper({ clawId: '' });
 		await flushPromises();
 
 		expect(wrapper.vm.chatTitle).toBe('');
@@ -258,17 +258,17 @@ describe('ChatPage', () => {
 	test('显示 bot 离线提示', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'MyBot', online: false }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'MyBot', online: false }]);
 		await wrapper.vm.$nextTick();
 
-		expect(wrapper.text()).toContain('Bot is offline');
+		expect(wrapper.text()).toContain('Claw is offline');
 	});
 
-	test('ChatInput 在无 botId 时不渲染', async () => {
-		const wrapper = createWrapper({ botId: '' });
+	test('ChatInput 在无 clawId 时不渲染', async () => {
+		const wrapper = createWrapper({ clawId: '' });
 		await flushPromises();
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });
@@ -498,7 +498,7 @@ describe('ChatPage new topic', () => {
 	test('onNewTopic 导航到 topics/new 并携带 agent/bot query', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		chatStore.chatSessionKey = 'agent:main:main';
 		await flushPromises();
 
@@ -507,7 +507,7 @@ describe('ChatPage new topic', () => {
 		expect(mockRouter.push).toHaveBeenCalledWith({
 			name: 'topics-chat',
 			params: { sessionId: 'new' },
-			query: { agent: 'main', bot: 'bot-1' },
+			query: { agent: 'main', claw: 'bot-1' },
 		});
 	});
 
@@ -516,7 +516,7 @@ describe('ChatPage new topic', () => {
 		const { useTopicsStore } = await import('../stores/topics.store.js');
 		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-1' });
 		const topicsStore = useTopicsStore();
-		topicsStore.byId = { 'sess-1': { topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, botId: 'bot-2' } };
+		topicsStore.byId = { 'sess-1': { topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, clawId: 'bot-2' } };
 		await flushPromises();
 
 		wrapper.vm.onNewTopic();
@@ -524,7 +524,7 @@ describe('ChatPage new topic', () => {
 		expect(mockRouter.replace).toHaveBeenCalledWith({
 			name: 'topics-chat',
 			params: { sessionId: 'new' },
-			query: { agent: 'main', bot: 'bot-2' },
+			query: { agent: 'main', claw: 'bot-2' },
 		});
 		expect(mockRouter.push).not.toHaveBeenCalled();
 	});
@@ -599,15 +599,15 @@ describe('ChatPage watchers', () => {
 	test('bot 离线时取消发送', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		const cancelSpy = vi.spyOn(chatStore, 'cancelSend');
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 		await wrapper.vm.$nextTick();
 
 		// bot 下线
-		botsStore.updateBotOnline('bot-1', false);
+		clawsStore.updateClawOnline('bot-1', false);
 		await wrapper.vm.$nextTick();
 
 		expect(cancelSpy).toHaveBeenCalled();
@@ -616,18 +616,18 @@ describe('ChatPage watchers', () => {
 	test('bot 重新上线且连接就绪时 connReady 驱动加载消息', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		chatStore.__messagesLoaded = false;
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: false }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: false }]);
 		setupAgents();
 		await wrapper.vm.$nextTick();
 
 		// bot 上线 + 连接就绪 → connReady 变为 true
-		botsStore.byId['bot-1'].online = true;
-		botsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].online = true;
+		clawsStore.byId['bot-1'].dcReady = true;
 		await wrapper.vm.$nextTick();
 
 		expect(loadSpy).toHaveBeenCalled();
@@ -638,13 +638,13 @@ describe('ChatPage watchers', () => {
 		const pinia = createPinia();
 		setActivePinia(pinia);
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].dcReady = true;
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 
 		// 预创建 chatStore 并挂 spy（组件 computed 会复用同一实例）
-		const chatStore = chatStoreManager.get('session:bot-1:main', { botId: 'bot-1', agentId: 'main' });
+		const chatStore = chatStoreManager.get('session:bot-1:main', { clawId: 'bot-1', agentId: 'main' });
 		chatStore.__initialized = true; // 模拟已初始化过（非首次进入）
 		chatStore.__messagesLoaded = true;
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
@@ -656,7 +656,7 @@ describe('ChatPage watchers', () => {
 					$t: (key) => i18nMap[key] ?? key,
 					$route: {
 						name: 'chat',
-						params: { botId: 'bot-1', agentId: 'main' },
+						params: { clawId: 'bot-1', agentId: 'main' },
 						path: '/chat/bot-1/main',
 						query: {},
 					},
@@ -673,14 +673,14 @@ describe('ChatPage watchers', () => {
 	test('chatStore watcher 重置 userScrolledUp 和 __scrollReady', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 
 		// 模拟用户已滚动和 scroll 就绪
 		wrapper.vm.userScrolledUp = true;
 		wrapper.vm.__scrollReady = true;
 
 		// 直接调用 chatStore watcher handler 测试重置行为
-		const newStore = chatStoreManager.get('session:bot-1:alt', { botId: 'bot-1', agentId: 'alt' });
+		const newStore = chatStoreManager.get('session:bot-1:alt', { clawId: 'bot-1', agentId: 'alt' });
 		vi.spyOn(newStore, 'activate').mockImplementation(() => {});
 		wrapper.vm.$options.watch.chatStore.handler.call(wrapper.vm, newStore, chatStore);
 
@@ -690,17 +690,17 @@ describe('ChatPage watchers', () => {
 	test('chatStore watcher 在 connReady 为 true 时调用 __onConnReady', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].dcReady = true;
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 
 		// spy __onConnReady
 		const onConnReadySpy = vi.spyOn(wrapper.vm, '__onConnReady').mockImplementation(() => {});
-		const newStore = chatStoreManager.get('session:bot-1:alt2', { botId: 'bot-1', agentId: 'main' });
+		const newStore = chatStoreManager.get('session:bot-1:alt2', { clawId: 'bot-1', agentId: 'main' });
 		vi.spyOn(newStore, 'activate').mockImplementation(() => {});
 
 		// 直接触发 watcher（绕过路由）
@@ -713,16 +713,16 @@ describe('ChatPage watchers', () => {
 	test('bot 解绑后跳转', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		const cleanupSpy = vi.spyOn(chatStore, 'cleanup');
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.fetched = true;
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.fetched = true;
 		await wrapper.vm.$nextTick();
 
 		// bot 从列表移除（模拟解绑）→ __retryActivation 检测到 bot 不存在 → __exitChat
-		botsStore.setBots([]);
+		clawsStore.setClaws([]);
 		await wrapper.vm.$nextTick();
 
 		expect(cleanupSpy).toHaveBeenCalled();
@@ -752,13 +752,13 @@ describe('ChatPage foreground resume', () => {
 	test('app:foreground 触发静默刷新（connReady 为 true 时）', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		chatStore.__messagesLoaded = true;
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].dcReady = true;
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 
@@ -777,11 +777,11 @@ describe('ChatPage foreground resume', () => {
 	test('connReady 为 false 时 app:foreground 不触发刷新', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: false }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: false }]);
 		await wrapper.vm.$nextTick();
 		loadSpy.mockClear();
 
@@ -794,13 +794,13 @@ describe('ChatPage foreground resume', () => {
 	test('2s 内不重复触发前台恢复', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		chatStore.__messagesLoaded = true;
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].dcReady = true;
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 		loadSpy.mockClear();
@@ -817,13 +817,13 @@ describe('ChatPage foreground resume', () => {
 	test('connReady watcher 与 foreground 去重', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
-		chatStore.botId = 'bot-1';
+		chatStore.clawId = 'bot-1';
 		chatStore.__messagesLoaded = true;
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
 
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
-		botsStore.byId['bot-1'].dcReady = true;
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
 		setupAgents();
 		await wrapper.vm.$nextTick();
 

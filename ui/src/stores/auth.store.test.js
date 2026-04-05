@@ -29,9 +29,9 @@ const mockConnManager = {
 	syncConnections: vi.fn(),
 	disconnectAll: vi.fn(),
 };
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => mockConnManager,
-	__resetBotConnections: vi.fn(),
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => mockConnManager,
+	__resetClawConnections: vi.fn(),
 }));
 
 const mockSigDisconnect = vi.fn();
@@ -39,8 +39,8 @@ vi.mock('../services/signaling-connection.js', () => ({
 	useSignalingConnection: () => ({ disconnect: mockSigDisconnect, state: 'connected' }),
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn(() => Promise.resolve([])),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn(() => Promise.resolve([])),
 }));
 
 import {
@@ -55,7 +55,7 @@ import {
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
-import { useBotsStore, __resetBotStoreInternals } from './bots.store.js';
+import { useClawsStore, __resetClawStoreInternals } from './claws.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
 
@@ -282,23 +282,23 @@ describe('auth store', () => {
 
 		// 预填充业务 store
 		const sessionsStore = useSessionsStore();
-		const botsStore = useBotsStore();
+		const clawsStore = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const topicsStore = useTopicsStore();
 		sessionsStore.items = [{ sessionId: 's1' }];
-		botsStore.items = [{ id: 'b1' }];
-		agentsStore.byBot = { b1: { agents: [{ id: 'a1' }], defaultId: 'main', loading: false, fetched: true } };
-		topicsStore.byId = { t1: { topicId: 't1', agentId: 'main', title: 'test', createdAt: 1, botId: 'b1' } };
+		clawsStore.items = [{ id: 'b1' }];
+		agentsStore.byClaw = { b1: { agents: [{ id: 'a1' }], defaultId: 'main', loading: false, fetched: true } };
+		topicsStore.byId = { t1: { topicId: 't1', agentId: 'main', title: 'test', createdAt: 1, clawId: 'b1' } };
 
 		await store.logout();
 
 		expect(sessionsStore.items).toEqual([]);
-		expect(botsStore.items).toEqual([]);
-		expect(agentsStore.byBot).toEqual({});
+		expect(clawsStore.items).toEqual([]);
+		expect(agentsStore.byClaw).toEqual({});
 		expect(topicsStore.byId).toEqual({});
 	});
 
-	test('logout should disconnect all bot connections and signaling WS', async () => {
+	test('logout should disconnect all claw connections and signaling WS', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -315,13 +315,13 @@ describe('auth store', () => {
 		store.user = { id: '3' };
 
 		// auth.store 导入并调用了这三个函数；验证它们确实是有效导出
-		expect(typeof __resetBotStoreInternals).toBe('function');
+		expect(typeof __resetClawStoreInternals).toBe('function');
 		expect(typeof __resetSessionsInternals).toBe('function');
 		expect(typeof __resetTopicsInternals).toBe('function');
 
 		// logout 应正常完成（含 internals 重置 + $reset）
 		await store.logout();
-		expect(useBotsStore().items).toEqual([]);
+		expect(useClawsStore().items).toEqual([]);
 	});
 
 	test('login 成功后调用 draftStore.onUserChanged', async () => {

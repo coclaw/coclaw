@@ -26,9 +26,9 @@ function fireRtcSignal(data) {
 import {
 	WebRtcConnection,
 	initRtc,
-	initRtcForBot,
+	initRtcForClaw,
 	initRtcAndSelectTransport,
-	closeRtcForBot,
+	closeRtcForClaw,
 	__resetRtcInstances,
 	__getRtcInstance,
 } from './webrtc-connection.js';
@@ -115,7 +115,7 @@ class MockRTCPeerConnection {
 	}
 }
 
-// --- Mock BotConnection ---
+// --- Mock ClawConnection ---
 
 function createMockBotConn() {
 	return {
@@ -143,16 +143,16 @@ describe('WebRtcConnection — 基础建连', () => {
 	});
 
 	test('初始状态为 idle', () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		expect(rtc.state).toBe('idle');
 		expect(rtc.candidateType).toBeNull();
 		expect(rtc.transportInfo).toBeNull();
 	});
 
 	test('connect 发送 offer 并创建 rpc DataChannel', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		mockSendSignaling.mockClear();
 
 		await rtc.connect(MOCK_TURN_CREDS);
@@ -169,8 +169,8 @@ describe('WebRtcConnection — 基础建连', () => {
 	});
 
 	test('connect 正确构建 iceServers（turn/turns 均附带 credential）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -192,8 +192,8 @@ describe('WebRtcConnection — 基础建连', () => {
 	});
 
 	test('connect 无 turnCreds 时 iceServers 为空', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(null);
 
@@ -204,8 +204,8 @@ describe('WebRtcConnection — 基础建连', () => {
 	});
 
 	test('非 idle/closed/failed 状态下 connect 是幂等的', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const firstPc = MockRTCPeerConnection.lastInstance;
@@ -216,8 +216,8 @@ describe('WebRtcConnection — 基础建连', () => {
 	});
 
 	test('closed 状态可重新 connect', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		rtc.close();
@@ -230,8 +230,8 @@ describe('WebRtcConnection — 基础建连', () => {
 	});
 
 	test('connect 不缓存 turnCreds（内部不做 rebuild，由外层退避重试）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		expect(rtc.__turnCreds).toBeUndefined();
@@ -247,8 +247,8 @@ describe('WebRtcConnection — 状态变更', () => {
 	});
 
 	test('onconnectionstatechange → connected 更新状态', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		const stateChanges = [];
 		rtc.onStateChange = (s) => stateChanges.push(s);
 
@@ -265,8 +265,8 @@ describe('WebRtcConnection — 状态变更', () => {
 	});
 
 	test('onconnectionstatechange → disconnected 不改变状态（等待自动恢复）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -285,8 +285,8 @@ describe('WebRtcConnection — 状态变更', () => {
 
 	test('disconnected 超时后升级到 __onIceFailed 恢复链', async () => {
 		vi.useFakeTimers();
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -314,8 +314,8 @@ describe('WebRtcConnection — 状态变更', () => {
 
 	test('disconnected 后自动恢复到 connected 时清除超时定时器', async () => {
 		vi.useFakeTimers();
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -343,8 +343,8 @@ describe('WebRtcConnection — 状态变更', () => {
 	});
 
 	test('onconnectionstatechange → closed 更新状态', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -357,8 +357,8 @@ describe('WebRtcConnection — 状态变更', () => {
 	});
 
 	test('connected 后从 getStats 解析 transportInfo (P2P host/udp)', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		const changes = [];
 		rtc.onStateChange = () => changes.push(rtc.transportInfo);
 
@@ -392,8 +392,8 @@ describe('WebRtcConnection — 状态变更', () => {
 	});
 
 	test('connected 后从 getStats 解析 transportInfo (relay/tls)', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const pc = MockRTCPeerConnection.lastInstance;
@@ -420,8 +420,8 @@ describe('WebRtcConnection — 状态变更', () => {
 	});
 
 	test('getStats 返回时若 PC 已被替换则丢弃结果', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const oldPc = MockRTCPeerConnection.lastInstance;
@@ -458,8 +458,8 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('ICE candidate 通过 WS 发送', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -480,8 +480,8 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('ICE candidate 为 null 时不发送', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		mockSendSignaling.mockClear();
@@ -495,11 +495,11 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('rtc:answer 信令设置 remote description', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__remoteDesc).toEqual({ type: 'answer', sdp: 'mock-answer-sdp' });
@@ -508,8 +508,8 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('rtc:answer setRemoteDescription 失败时 warn 日志', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const pc = MockRTCPeerConnection.lastInstance;
@@ -517,7 +517,7 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 		pc.setRemoteDescription = async () => { throw new Error('sdp invalid'); };
 
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'bad-sdp' } });
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'bad-sdp' } });
 		// 等待异步 rejection 处理
 		await vi.waitFor(() => {
 			expect(warnSpy).toHaveBeenCalledWith(
@@ -529,18 +529,18 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('rtc:ice 在 answer 之后直接添加 ICE candidate', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		// 先设置 answer，等 setRemoteDescription 完成
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 		await vi.waitFor(() => {
 			expect(MockRTCPeerConnection.lastInstance.__remoteDesc).toBeTruthy();
 		});
 
 		const icePayload = { candidate: 'candidate:456', sdpMid: '0', sdpMLineIndex: 0 };
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: icePayload });
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:ice', payload: icePayload });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		expect(pc.__candidates).toContainEqual(icePayload);
@@ -549,23 +549,23 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('rtc:ice 在 answer 之前暂存，answer 后批量添加', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		// answer 到达前先发 ICE candidates
 		const ice1 = { candidate: 'candidate:111', sdpMid: '0', sdpMLineIndex: 0 };
 		const ice2 = { candidate: 'candidate:222', sdpMid: '0', sdpMLineIndex: 0 };
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: ice1 });
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:ice', payload: ice2 });
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:ice', payload: ice1 });
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:ice', payload: ice2 });
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		// answer 前不应添加
 		expect(pc.__candidates).toHaveLength(0);
 
 		// answer 到达后触发排空
-		fireRtcSignal({ botId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
 		await vi.waitFor(() => {
 			expect(pc.__candidates).toHaveLength(2);
 		});
@@ -576,8 +576,8 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('DataChannel open 时发送 rtc:ready', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -590,8 +590,8 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('DataChannel message 仅日志不抛异常', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -603,8 +603,8 @@ describe('WebRtcConnection — 信令与 DataChannel', () => {
 	});
 
 	test('dc.onmessage 中 reassembler.feed 抛异常时 catch 并 warn', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 
@@ -631,8 +631,8 @@ describe('WebRtcConnection — close', () => {
 	});
 
 	test('close 发送 rtc:closed 并清理', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const pc = MockRTCPeerConnection.lastInstance;
@@ -645,8 +645,8 @@ describe('WebRtcConnection — close', () => {
 	});
 
 	test('close 后再 close 不重复发送 rtc:closed', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		rtc.close();
@@ -667,8 +667,8 @@ describe('WebRtcConnection — __onIceFailed', () => {
 	});
 
 	test('ICE failed 直接上报 failed 状态（不做内部 rebuild）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		const stateChanges = [];
 		rtc.onStateChange = (s) => stateChanges.push(s);
 
@@ -696,8 +696,8 @@ describe('WebRtcConnection — DC probe', () => {
 	});
 
 	test('DC open + probe-ack → 返回 true', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -715,8 +715,8 @@ describe('WebRtcConnection — DC probe', () => {
 
 	test('DC open 但超时（无 ack）→ 返回 false', async () => {
 		vi.useFakeTimers();
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -732,8 +732,8 @@ describe('WebRtcConnection — DC probe', () => {
 	});
 
 	test('DC 未就绪 → 返回 false', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		// DC 仍是 connecting，未 open
@@ -743,15 +743,15 @@ describe('WebRtcConnection — DC probe', () => {
 	});
 
 	test('无 DC → 返回 false', () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		// 未 connect，无 DC
 		expect(rtc.probe(100)).resolves.toBe(false);
 	});
 
 	test('DC send 抛异常 → 返回 false', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -765,8 +765,8 @@ describe('WebRtcConnection — DC probe', () => {
 	});
 
 	test('close() 期间活跃 probe → resolve false（不挂起）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -781,8 +781,8 @@ describe('WebRtcConnection — DC probe', () => {
 	});
 
 	test('并发 probe() 复用同一 promise', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -800,9 +800,9 @@ describe('WebRtcConnection — DC probe', () => {
 		rtc.close();
 	});
 
-	test('probe-ack 不传递给 BotConnection.__onRtcMessage', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+	test('probe-ack 不传递给 ClawConnection.__onRtcMessage', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -812,13 +812,13 @@ describe('WebRtcConnection — DC probe', () => {
 		rtc.probe(1000);
 		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
 
-		expect(botConn.__onRtcMessage).not.toHaveBeenCalled();
+		expect(clawConn.__onRtcMessage).not.toHaveBeenCalled();
 
 		rtc.close();
 	});
 });
 
-describe('initRtcForBot / closeRtcForBot', () => {
+describe('initRtcForClaw / closeRtcForClaw', () => {
 	beforeEach(() => {
 		__resetRtcInstances();
 		MockRTCPeerConnection.lastInstance = null;
@@ -831,15 +831,15 @@ describe('initRtcForBot / closeRtcForBot', () => {
 		vi.useRealTimers();
 	});
 
-	test('initRtcForBot 创建实例并发起连接', async () => {
-		const botConn = createMockBotConn();
+	test('initRtcForClaw 创建实例并发起连接', async () => {
+		const clawConn = createMockBotConn();
 		const { httpClient } = await import('./http.js');
 		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 
 		try {
-			const p = initRtcForBot('bot1', botConn);
+			const p = initRtcForClaw('bot1', clawConn);
 			await vi.advanceTimersByTimeAsync(0); // flush connect promise
 
 			const instance = __getRtcInstance('bot1');
@@ -859,15 +859,15 @@ describe('initRtcForBot / closeRtcForBot', () => {
 		}
 	});
 
-	test('initRtcForBot 幂等：已有非 closed 实例时跳过', async () => {
-		const botConn = createMockBotConn();
+	test('initRtcForClaw 幂等：已有非 closed 实例时跳过', async () => {
+		const clawConn = createMockBotConn();
 		const { httpClient } = await import('./http.js');
 		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 
 		try {
-			const p1 = initRtcForBot('bot1', botConn);
+			const p1 = initRtcForClaw('bot1', clawConn);
 			await vi.advanceTimersByTimeAsync(0);
 			const first = __getRtcInstance('bot1');
 			// 触发 DC open
@@ -877,7 +877,7 @@ describe('initRtcForBot / closeRtcForBot', () => {
 			await p1;
 			mockGet.mockClear();
 
-			await initRtcForBot('bot1', botConn);
+			await initRtcForClaw('bot1', clawConn);
 			expect(mockGet).not.toHaveBeenCalled();
 			expect(__getRtcInstance('bot1')).toBe(first);
 		}
@@ -887,15 +887,15 @@ describe('initRtcForBot / closeRtcForBot', () => {
 		}
 	});
 
-	test('initRtcForBot TURN 请求失败时清理实例并降级到 WS', async () => {
-		const botConn = createMockBotConn();
+	test('initRtcForClaw TURN 请求失败时清理实例并降级到 WS', async () => {
+		const clawConn = createMockBotConn();
 		const { httpClient } = await import('./http.js');
 		const mockGet = vi.spyOn(httpClient, 'get').mockRejectedValue(new Error('network error'));
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 
 		try {
-			const p = initRtcForBot('bot1', botConn);
+			const p = initRtcForClaw('bot1', clawConn);
 			await vi.advanceTimersByTimeAsync(0);
 			await p;
 			expect(__getRtcInstance('bot1')).toBeUndefined();
@@ -906,15 +906,15 @@ describe('initRtcForBot / closeRtcForBot', () => {
 		}
 	});
 
-	test('closeRtcForBot 关闭并移除实例', async () => {
-		const botConn = createMockBotConn();
+	test('closeRtcForClaw 关闭并移除实例', async () => {
+		const clawConn = createMockBotConn();
 		const { httpClient } = await import('./http.js');
 		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
 
 		try {
-			const p = initRtcForBot('bot1', botConn);
+			const p = initRtcForClaw('bot1', clawConn);
 			await vi.advanceTimersByTimeAsync(0);
 			// 触发 DC open
 			const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -923,7 +923,7 @@ describe('initRtcForBot / closeRtcForBot', () => {
 			await p;
 			expect(__getRtcInstance('bot1')).toBeTruthy();
 
-			closeRtcForBot('bot1');
+			closeRtcForClaw('bot1');
 			expect(__getRtcInstance('bot1')).toBeUndefined();
 		}
 		finally {
@@ -932,8 +932,8 @@ describe('initRtcForBot / closeRtcForBot', () => {
 		}
 	});
 
-	test('closeRtcForBot 对不存在的 botId 无影响', () => {
-		expect(() => closeRtcForBot('nonexistent')).not.toThrow();
+	test('closeRtcForClaw 对不存在的 clawId 无影响', () => {
+		expect(() => closeRtcForClaw('nonexistent')).not.toThrow();
 	});
 });
 
@@ -946,8 +946,8 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 	});
 
 	test('send() 通过 DataChannel 发送 JSON（快路径）', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -959,8 +959,8 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 	});
 
 	test('send() DC 未 open 时 reject', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		// readyState 默认 'connecting'
@@ -968,8 +968,8 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 	});
 
 	test('isReady 返回 DataChannel 状态', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -980,8 +980,8 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 	});
 
 	test('dc.onopen 触发 onReady 回调', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		const readyFn = vi.fn();
 		rtc.onReady = readyFn;
 		await rtc.connect(MOCK_TURN_CREDS);
@@ -994,31 +994,31 @@ describe('WebRtcConnection — Phase 2 DataChannel 通信', () => {
 		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:ready');
 	});
 
-	test('dc.onmessage 回调 botConn.__onRtcMessage', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+	test('dc.onmessage 回调 clawConn.__onRtcMessage', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
 		const payload = { type: 'res', id: 'ui-1', ok: true, payload: {} };
 		dc.onmessage({ data: JSON.stringify(payload) });
 
-		expect(botConn.__onRtcMessage).toHaveBeenCalledWith(payload);
+		expect(clawConn.__onRtcMessage).toHaveBeenCalledWith(payload);
 	});
 
 	test('dc.onmessage 无效 JSON 不抛异常', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
 		expect(() => dc.onmessage({ data: 'invalid json{' })).not.toThrow();
-		expect(botConn.__onRtcMessage).not.toHaveBeenCalled();
+		expect(clawConn.__onRtcMessage).not.toHaveBeenCalled();
 	});
 
 	test('dc.onmessage reassembler.feed 抛异常时 catch 并 warn', async () => {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 
 		// 让 reassembler.feed 抛异常
@@ -1040,13 +1040,13 @@ describe('WebRtcConnection — send 流控', () => {
 
 	/** 创建已连接的 rtc + open 的 DC */
 	async function makeReady() {
-		const botConn = createMockBotConn();
-		const rtc = new WebRtcConnection('bot1', botConn, { PeerConnection: MockRTCPeerConnection });
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 		const dc = MockRTCPeerConnection.lastInstance.__channels[0];
 		dc.readyState = 'open';
 		dc.bufferedAmount = 0;
-		return { rtc, dc, botConn };
+		return { rtc, dc, clawConn };
 	}
 
 	beforeEach(() => {
@@ -1158,7 +1158,7 @@ describe('WebRtcConnection — send 流控', () => {
 	});
 
 	test('DC close 时 reject 队列中所有消息并 reject pending RPC', async () => {
-		const { rtc, dc, botConn } = await makeReady();
+		const { rtc, dc, clawConn } = await makeReady();
 		dc.bufferedAmount = HIGH;
 
 		const p1 = rtc.send({ seq: 1 });
@@ -1169,7 +1169,7 @@ describe('WebRtcConnection — send 流控', () => {
 
 		await expect(p1).rejects.toThrow('DataChannel closed');
 		await expect(p2).rejects.toThrow('DataChannel closed');
-		expect(botConn.__rejectAllPending).toHaveBeenCalledWith('DataChannel closed', 'DC_CLOSED');
+		expect(clawConn.__rejectAllPending).toHaveBeenCalledWith('DataChannel closed', 'DC_CLOSED');
 	});
 
 	test('close() 时 reject 队列中所有消息', async () => {
@@ -1251,10 +1251,10 @@ describe('initRtc — RTC 建连', () => {
 		const { httpClient } = await import('./http.js');
 		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
 
-		const botConn = createMockBotConn();
+		const clawConn = createMockBotConn();
 
 		try {
-			const p = initRtc('bot1', botConn);
+			const p = initRtc('bot1', clawConn);
 			await vi.advanceTimersByTimeAsync(0);
 
 			const dc = MockRTCPeerConnection.lastInstance.__channels[0];
@@ -1263,7 +1263,7 @@ describe('initRtc — RTC 建连', () => {
 			const result = await p;
 
 			expect(result).toBe('rtc');
-			expect(botConn.setRtc).toHaveBeenCalled();
+			expect(clawConn.setRtc).toHaveBeenCalled();
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -1277,17 +1277,17 @@ describe('initRtc — RTC 建连', () => {
 		const { httpClient } = await import('./http.js');
 		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
 
-		const botConn = createMockBotConn();
+		const clawConn = createMockBotConn();
 
 		try {
-			const p = initRtc('bot2', botConn);
+			const p = initRtc('bot2', clawConn);
 			await vi.advanceTimersByTimeAsync(0);
 
 			await vi.advanceTimersByTimeAsync(15_000);
 			const result = await p;
 
 			expect(result).toBe('failed');
-			expect(botConn.clearRtc).toHaveBeenCalled();
+			expect(clawConn.clearRtc).toHaveBeenCalled();
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;
@@ -1301,15 +1301,15 @@ describe('initRtc — RTC 建连', () => {
 		const { httpClient } = await import('./http.js');
 		const mockGet = vi.spyOn(httpClient, 'get').mockRejectedValue(new Error('network error'));
 
-		const botConn = createMockBotConn();
+		const clawConn = createMockBotConn();
 
 		try {
-			const p = initRtc('bot3', botConn);
+			const p = initRtc('bot3', clawConn);
 			await vi.advanceTimersByTimeAsync(0);
 			const result = await p;
 
 			expect(result).toBe('failed');
-			expect(botConn.clearRtc).toHaveBeenCalled();
+			expect(clawConn.clearRtc).toHaveBeenCalled();
 		}
 		finally {
 			globalThis.RTCPeerConnection = origRTC;

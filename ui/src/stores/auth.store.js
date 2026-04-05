@@ -14,11 +14,11 @@ import {
 	setLocale,
 } from '../i18n/index.js';
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
-import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useClawConnections } from '../services/claw-connection-manager.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
-import { useBotsStore, __resetBotStoreInternals } from './bots.store.js';
+import { useClawsStore, __resetClawStoreInternals } from './claws.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
 
@@ -109,15 +109,15 @@ export const useAuthStore = defineStore('auth', {
 			this.user = null;
 			draftStore.onUserChanged(null);
 			syncThemeModeFromSettings(null);
-			useBotConnections().disconnectAll();
+			useClawConnections().disconnectAll();
 			useSignalingConnection().disconnect();
-			__resetBotStoreInternals();
+			__resetClawStoreInternals();
 			__resetSessionsInternals();
 			__resetTopicsInternals();
 			useSessionsStore().$reset();
 			useAgentsStore().$reset();
 			useTopicsStore().$reset();
-			useBotsStore().$reset();
+			useClawsStore().$reset();
 			console.log('[auth] logged out');
 			this.loading = false;
 		},

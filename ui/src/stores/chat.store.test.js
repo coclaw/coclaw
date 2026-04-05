@@ -7,27 +7,27 @@ if (!URL.revokeObjectURL) URL.revokeObjectURL = () => {};
 
 import { createChatStore } from './chat.store.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
-import { useBotsStore, __resetAwaitingConnIds as __resetBotStoreInternals } from './bots.store.js';
+import { useClawsStore, __resetAwaitingConnIds as __resetClawStoreInternals } from './claws.store.js';
 
 // 兼容旧测试：创建默认空 session store，可手动设置状态字段
 // 同一 Pinia 实例中多次调用返回同一 store（与原 useChatStore 行为一致）
 function useChatStore() {
-	return createChatStore('session::main', { botId: '', agentId: 'main' });
+	return createChatStore('session::main', { clawId: '', agentId: 'main' });
 }
 
 // --- Mocks ---
 
 const mockConnections = new Map();
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
-		get: (botId) => mockConnections.get(String(botId)),
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
+		get: (clawId) => mockConnections.get(String(clawId)),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
 vi.mock('../utils/file-helper.js', () => ({
@@ -41,8 +41,8 @@ vi.mock('../services/file-transfer.js', () => ({
 	postFile: vi.fn(),
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
 // --- Helper ---
@@ -56,14 +56,14 @@ function mockConn(overrides = {}) {
 	};
 }
 
-/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
-function setConn(botId, conn, { dcReady = true } = {}) {
-	mockConnections.set(String(botId), conn);
-	const botsStore = useBotsStore();
-	if (!botsStore.byId[String(botId)]) {
-		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+/** 注册 mock conn 并设置 clawsStore 中 claw 的 dcReady */
+function setConn(clawId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(clawId), conn);
+	const clawsStore = useClawsStore();
+	if (!clawsStore.byId[String(clawId)]) {
+		clawsStore.byId[String(clawId)] = { id: String(clawId), dcReady };
 	} else {
-		botsStore.byId[String(botId)].dcReady = dcReady;
+		clawsStore.byId[String(clawId)].dcReady = dcReady;
 	}
 }
 
@@ -93,7 +93,7 @@ describe('useChatStore', () => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
 		vi.clearAllMocks();
-		__resetBotStoreInternals();
+		__resetClawStoreInternals();
 	});
 
 	afterEach(() => {
@@ -106,15 +106,15 @@ describe('useChatStore', () => {
 
 	describe('createChatStore', () => {
 		test('session 模式：根据 opts 初始化 identity 字段', () => {
-			const store = createChatStore('session:1:ops', { botId: '1', agentId: 'ops' });
-			expect(store.botId).toBe('1');
+			const store = createChatStore('session:1:ops', { clawId: '1', agentId: 'ops' });
+			expect(store.clawId).toBe('1');
 			expect(store.chatSessionKey).toBe('agent:ops:main');
 			expect(store.topicMode).toBe(false);
 			expect(store.sessionId).toBe('');
 		});
 
 		test('topic 模式：根据 storeKey 初始化 identity 字段', () => {
-			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'research' });
+			const store = createChatStore('topic:topic-1', { clawId: '1', agentId: 'research' });
 			expect(store.topicMode).toBe(true);
 			expect(store.sessionId).toBe('topic-1');
 			expect(store.topicAgentId).toBe('research');
@@ -123,7 +123,7 @@ describe('useChatStore', () => {
 		});
 
 		test('agentId 默认为 main', () => {
-			const store = createChatStore('session:1:main', { botId: '1' });
+			const store = createChatStore('session:1:main', { clawId: '1' });
 			expect(store.chatSessionKey).toBe('agent:main:main');
 		});
 	});
@@ -145,7 +145,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			expect(store.messages).toHaveLength(1);
@@ -161,7 +161,7 @@ describe('useChatStore', () => {
 
 		test('连接未就绪时保持 loading 并注册 WS 监听', async () => {
 			// 无连接 → WS 未就绪
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			expect(store.loading).toBe(true);
@@ -173,7 +173,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn);
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 			const callCount = conn.request.mock.calls.length;
 
@@ -186,7 +186,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			setConn('1', conn);
 
-			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:topic-1', { clawId: '1', agentId: 'main' });
 			await store.activate({ skipLoad: true });
 
 			expect(store.__initialized).toBe(true);
@@ -194,8 +194,8 @@ describe('useChatStore', () => {
 			expect(conn.request).not.toHaveBeenCalled();
 		});
 
-		test('botId 为空时不加载', async () => {
-			const store = createChatStore('session::main', { botId: '', agentId: 'main' });
+		test('clawId 为空时不加载', async () => {
+			const store = createChatStore('session::main', { clawId: '', agentId: 'main' });
 			await store.activate();
 			expect(store.__initialized).toBe(true);
 			expect(store.loading).toBe(false);
@@ -211,7 +211,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:topic-1', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			expect(store.messages).toHaveLength(1);
@@ -224,8 +224,8 @@ describe('useChatStore', () => {
 
 	describe('loadMessages', () => {
 		test('调用 sessions.get 和 chat.history，设置 messages 和 currentSessionId', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			const flatMsgs = [
@@ -237,7 +237,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const ok = await store.loadMessages();
@@ -251,7 +251,7 @@ describe('useChatStore', () => {
 
 		test('chatSessionKey 为空时返回 false 且清空消息', async () => {
 			// topic store 的 chatSessionKey 为空
-			const store = createChatStore('topic:t1', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:t1', { clawId: '1', agentId: 'main' });
 			store.sessionId = ''; // 清空 sessionId 使 __loadTopicMessages 短路
 			store.messages = [{ id: 'old' }];
 
@@ -263,7 +263,7 @@ describe('useChatStore', () => {
 		test('连接缺失时返回 false 并保持 loading', async () => {
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '999'; // 无对应连接
+			store.clawId = '999'; // 无对应连接
 			store.chatSessionKey = 'agent:main:main';
 
 			const ok = await store.loadMessages();
@@ -277,7 +277,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const ok = await store.loadMessages();
@@ -288,15 +288,15 @@ describe('useChatStore', () => {
 		});
 
 		test('silent 模式下不设置 loading 状态', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			// 监视 loading 赋值
@@ -313,8 +313,8 @@ describe('useChatStore', () => {
 		});
 
 		test('请求失败时返回 false 并设置 errorText', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('network error'));
@@ -322,7 +322,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const ok = await store.loadMessages();
@@ -334,7 +334,7 @@ describe('useChatStore', () => {
 		test('silent 模式下连接缺失时不设置 errorText', async () => {
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '999'; // 无对应连接
+			store.clawId = '999'; // 无对应连接
 			store.chatSessionKey = 'agent:main:main';
 			store.errorText = '';
 
@@ -344,21 +344,21 @@ describe('useChatStore', () => {
 		});
 
 		test('session 模式 loadMessages 与 sendMessage 并发时保留乐观消息', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			setupConnForLoad(conn, { flatMessages: [{ role: 'user', content: 'old' }] });
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			// 模拟 sendMessage 添加的乐观消息
 			store.messages = [
 				{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'new' } },
-				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+				{ type: 'message', id: '__local_claw_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
 
 			await store.loadMessages();
@@ -366,12 +366,12 @@ describe('useChatStore', () => {
 			expect(store.messages).toHaveLength(3);
 			expect(store.messages[0]).toMatchObject({ id: 'oc-0' }); // 服务端
 			expect(store.messages[1]._local).toBe(true); // 乐观 user
-			expect(store.messages[2]._local).toBe(true); // 乐观 bot
+			expect(store.messages[2]._local).toBe(true); // 乐观 claw
 		});
 
 		test('sessions.get 传递 chatSessionKey', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			setupConnForLoad(conn);
@@ -379,7 +379,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:ops:main';
 
 			await store.loadMessages();
@@ -399,8 +399,8 @@ describe('useChatStore', () => {
 
 	describe('__loadTopicMessages', () => {
 		test('topic 模式下调用 coclaw.sessions.getById', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			const topicMsgs = [
@@ -416,7 +416,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'topic-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.topicMode = true;
 			store.topicAgentId = 'main';
 
@@ -441,8 +441,8 @@ describe('useChatStore', () => {
 		});
 
 		test('loadMessages 与 sendMessage 并发时保留乐观消息', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
@@ -453,7 +453,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('topic:t1', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:t1', { clawId: '1', agentId: 'main' });
 			store.sessionId = 't1';
 
 			// 模拟 sendMessage 添加的乐观消息
@@ -461,11 +461,11 @@ describe('useChatStore', () => {
 				type: 'message', id: '__local_user_1', _local: true,
 				message: { role: 'user', content: 'hello' },
 			};
-			const optimisticBot = {
-				type: 'message', id: '__local_bot_1', _local: true, _streaming: true,
+			const optimisticClaw = {
+				type: 'message', id: '__local_claw_1', _local: true, _streaming: true,
 				message: { role: 'assistant', content: '' },
 			};
-			store.messages = [optimisticUser, optimisticBot];
+			store.messages = [optimisticUser, optimisticClaw];
 
 			// loadMessages 并发执行 → 不应覆盖乐观消息
 			await store.loadMessages();
@@ -474,8 +474,8 @@ describe('useChatStore', () => {
 		});
 
 		test('loadMessages 合并服务端消息与乐观消息', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			const serverMsg = { id: 's1', type: 'message', message: { role: 'user', content: 'old' } };
@@ -487,7 +487,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('topic:t2', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:t2', { clawId: '1', agentId: 'main' });
 			store.sessionId = 't2';
 
 			const optimistic = {
@@ -504,8 +504,8 @@ describe('useChatStore', () => {
 		});
 
 		test('无乐观消息时 loadMessages 正常覆盖', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			const serverMsg = { id: 's1', type: 'message', message: { role: 'user', content: 'hi' } };
@@ -517,7 +517,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('topic:t3', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:t3', { clawId: '1', agentId: 'main' });
 			store.sessionId = 't3';
 			store.messages = [];
 
@@ -533,14 +533,14 @@ describe('useChatStore', () => {
 	describe('sendMessage', () => {
 		test('连接不存在时抛出错误', async () => {
 			const store = useChatStore();
-			store.botId = '999'; // 无连接
+			store.clawId = '999'; // 无连接
 			store.chatSessionKey = 'agent:main:main';
 
-			await expect(store.sendMessage('hello')).rejects.toThrow('Bot not connected');
+			await expect(store.sendMessage('hello')).rejects.toThrow('Claw not connected');
 		});
 
 		test('连接存在但 DC 未就绪时 request 会等待（不再立即抛错）', async () => {
-			// 新设计：sendMessage 通过 useBotConnections().get() 获取 conn，
+			// 新设计：sendMessage 通过 useClawConnections().get() 获取 conn，
 			// 不再检查 dcReady，而是由 request() 内部 waitReady 等待连接就绪
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -553,16 +553,16 @@ describe('useChatStore', () => {
 			setConn('1', conn, { dcReady: false });
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			// request 仍然被调用（等待逻辑在 BotConnection 层处理，这里是 mock）
+			// request 仍然被调用（等待逻辑在 ClawConnection 层处理，这里是 mock）
 			const result = await store.sendMessage('hello');
 			expect(result).toEqual({ accepted: true });
 		});
 
 		test('topic 模式下 sessionId 为空时返回 { accepted: false }', async () => {
-			const store = createChatStore('topic:t1', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:t1', { clawId: '1', agentId: 'main' });
 			store.sessionId = ''; // 清空使 guard 生效
 			const result = await store.sendMessage('hello');
 			expect(result).toEqual({ accepted: false });
@@ -578,8 +578,8 @@ describe('useChatStore', () => {
 		});
 
 		test('正常发送：创建乐观消息并调用 conn.request("agent")', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -596,7 +596,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello world');
@@ -609,8 +609,8 @@ describe('useChatStore', () => {
 		});
 
 		test('onAccepted 回调设置 streamingRunId 和 __accepted', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -626,7 +626,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.sendMessage('test');
@@ -634,8 +634,8 @@ describe('useChatStore', () => {
 		});
 
 		test('RPC resolve 后不立即 settle run，由 reconcile 流程处理', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -652,7 +652,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.sendMessage('test');
@@ -663,8 +663,8 @@ describe('useChatStore', () => {
 		});
 
 		test('chat 模式下 agentParams 使用 sessionKey', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -680,7 +680,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.sendMessage('hi');
@@ -691,8 +691,8 @@ describe('useChatStore', () => {
 		});
 
 		test('topic 模式下 agentParams 使用 sessionId', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -707,7 +707,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'topic-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.topicMode = true;
 			store.topicAgentId = 'main';
 			store.chatSessionKey = '';
@@ -723,8 +723,8 @@ describe('useChatStore', () => {
 			const { fileToBase64 } = await import('../utils/file-helper.js');
 			fileToBase64.mockResolvedValue('imgbase64');
 
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			// conn.rtc 未设置 → RTC 不可用，走 fallback
@@ -741,7 +741,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const fakeFile = { type: 'image/png' };
@@ -766,8 +766,8 @@ describe('useChatStore', () => {
 				set onProgress(cb) { capturedOnProgress = cb; },
 			});
 
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn({ rtc: { isReady: true } });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
@@ -784,7 +784,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const fakeFile = { type: 'image/png', size: 204800 };
@@ -815,8 +815,8 @@ describe('useChatStore', () => {
 				set onProgress(_cb) {},
 			});
 
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn({ rtc: { isReady: true } });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
@@ -833,7 +833,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const fakeFile = { type: 'image/png', size: 204800 };
@@ -866,8 +866,8 @@ describe('useChatStore', () => {
 			});
 			buildAttachmentBlock.mockReturnValue('## coclaw-attachments');
 
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn({ rtc: { isReady: true } });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
@@ -884,7 +884,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const voiceBlob = new Blob(['audio'], { type: 'audio/webm' });
@@ -905,8 +905,8 @@ describe('useChatStore', () => {
 				set onProgress(_cb) {},
 			});
 
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn({ rtc: { isReady: true } });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
@@ -918,7 +918,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100 }];
@@ -928,8 +928,8 @@ describe('useChatStore', () => {
 		});
 
 		test('RTC 不可用时非图片文件被跳过', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			// conn.rtc 未设置 → fallback
@@ -946,7 +946,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100 }];
@@ -974,8 +974,8 @@ describe('useChatStore', () => {
 				set onProgress(_cb) {},
 			});
 
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn({ rtc: { isReady: true } });
 			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
@@ -984,7 +984,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100, id: 'f1' }];
@@ -1005,8 +1005,8 @@ describe('useChatStore', () => {
 		});
 
 		test('发送失败（request 抛出）时清理 streaming 状态并重新抛出', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
@@ -1017,7 +1017,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await expect(store.sendMessage('fail')).rejects.toThrow('send failed');
@@ -1027,8 +1027,8 @@ describe('useChatStore', () => {
 
 		test('pre-acceptance 180s 超时：sending 置 false，__agentSettled 为 true，抛出 PRE_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
@@ -1039,7 +1039,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			// 179s 时不应超时
@@ -1061,8 +1061,8 @@ describe('useChatStore', () => {
 
 		test('post-acceptance 30min 超时：sending 置 false，保留消息并 reconcile，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			// 调用 onAccepted 但永不 resolve
@@ -1079,7 +1079,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const sendPromise = store.sendMessage('hello');
@@ -1103,8 +1103,8 @@ describe('useChatStore', () => {
 		});
 
 		test('__agentSettled 为 true 时，WS_CLOSED 错误被抑制，返回 { accepted: true }', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1123,7 +1123,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1131,9 +1131,9 @@ describe('useChatStore', () => {
 		});
 
 		test('WS_CLOSED 且未 accepted 时等待重连后自动重试一次', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1158,7 +1158,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1167,9 +1167,9 @@ describe('useChatStore', () => {
 		});
 
 		test('DC_NOT_READY 错误码也触发断连重试', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1192,7 +1192,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1201,9 +1201,9 @@ describe('useChatStore', () => {
 		});
 
 		test('WS_CLOSED 重试时复用同一个 idempotencyKey', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			const capturedKeys = [];
 			const conn = mockConn();
@@ -1229,7 +1229,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.sendMessage('hello');
@@ -1239,8 +1239,8 @@ describe('useChatStore', () => {
 
 		test('WS_CLOSED 且未 accepted 时重连超时后仍抛出错误', async () => {
 			vi.useFakeTimers();
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			let callCount = 0;
@@ -1273,7 +1273,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const [, result] = await Promise.allSettled([
@@ -1289,9 +1289,9 @@ describe('useChatStore', () => {
 		});
 
 		test('WS_CLOSED 重试本身再次失败时不二次重试，直接抛出', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1310,7 +1310,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await expect(store.sendMessage('hello')).rejects.toMatchObject({ code: 'WS_CLOSED' });
@@ -1318,9 +1318,9 @@ describe('useChatStore', () => {
 		});
 
 		test('WS_CLOSED 且已 accepted 时不抛出，等重连后 reconcile', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1339,7 +1339,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1350,9 +1350,9 @@ describe('useChatStore', () => {
 		// --- #217: RTC_LOST（后台返回 DC 重建）应走断连重连路径 ---
 
 		test('RTC_LOST 且未 accepted 时等待重连后自动重试一次', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1376,7 +1376,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1385,9 +1385,9 @@ describe('useChatStore', () => {
 		});
 
 		test('RTC_LOST 且已 accepted 时不抛出，等重连后 reconcile', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1405,7 +1405,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1414,9 +1414,9 @@ describe('useChatStore', () => {
 		});
 
 		test('catch 块中 __cancelReject 被清理，避免孤儿 rejection（#217 双重通知）', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
@@ -1431,7 +1431,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await expect(store.sendMessage('hello')).rejects.toThrow();
@@ -1440,8 +1440,8 @@ describe('useChatStore', () => {
 		});
 
 		test('RTC_LOST + __agentSettled 为 true 时被抑制，返回 { accepted }', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1459,7 +1459,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1467,9 +1467,9 @@ describe('useChatStore', () => {
 		});
 
 		test('RTC_LOST + accepted 时立即优雅返回 { accepted: true }', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1485,7 +1485,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			// 不再等待重连，立即返回
@@ -1494,9 +1494,9 @@ describe('useChatStore', () => {
 		});
 
 		test('RTC_LOST + 未 accepted + 重试再次 RTC_LOST 不无限循环', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1515,7 +1515,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await expect(store.sendMessage('hello')).rejects.toMatchObject({ code: 'RTC_LOST' });
@@ -1523,8 +1523,8 @@ describe('useChatStore', () => {
 		});
 
 		test('CONNECT_TIMEOUT 且未 accepted 时走断连重试路径', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			let callCount = 0;
 			const conn = mockConn();
@@ -1547,7 +1547,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1556,8 +1556,8 @@ describe('useChatStore', () => {
 		});
 
 		test('CONNECT_TIMEOUT 且已 accepted 时优雅返回', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1573,7 +1573,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1581,9 +1581,9 @@ describe('useChatStore', () => {
 		});
 
 		test('cleanup 在 reconnect-wait 期间不会触发二次 rejection', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
-			botsStore.byId['1'].dcReady = true;
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+			clawsStore.byId['1'].dcReady = true;
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1601,7 +1601,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1613,8 +1613,8 @@ describe('useChatStore', () => {
 		});
 
 		test('!__accepted 且 status !== "ok" 时返回 { accepted: false } 并移除本地条目', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
@@ -1625,7 +1625,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
@@ -1633,7 +1633,7 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		// event:agent 监听器已由 botsStore.__bridgeConn 集中管理
+		// event:agent 监听器已由 clawsStore.__bridgeConn 集中管理
 		// register 不再自行注册/注销 conn.on('event:agent')，相关测试已移至 agent-runs.store.test.js
 	});
 
@@ -1643,15 +1643,15 @@ describe('useChatStore', () => {
 
 	describe('resetChat', () => {
 		test('调用 sessions.reset 并返回新 sessionId', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ entry: { sessionId: 'sess-new' } });
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const newId = await store.resetChat();
@@ -1665,29 +1665,29 @@ describe('useChatStore', () => {
 
 		test('连接不存在时抛出错误', async () => {
 			const store = useChatStore();
-			store.botId = '999';
+			store.clawId = '999';
 
-			await expect(store.resetChat()).rejects.toThrow('Bot not connected');
+			await expect(store.resetChat()).rejects.toThrow('Claw not connected');
 		});
 
 		test('响应中无 sessionId 时抛出错误', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ entry: {} }); // 无 sessionId
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await expect(store.resetChat()).rejects.toThrow('Failed to resolve new session');
 		});
 
 		test('resetting 标志在执行期间为 true，完成后恢复 false', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			let resettingDuring = false;
@@ -1698,7 +1698,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.resetChat();
@@ -1707,15 +1707,15 @@ describe('useChatStore', () => {
 		});
 
 		test('resetChat 使用 chatSessionKey 解析 agentId 构建 key', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ entry: { sessionId: 'new-sess' } });
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:ops:main';
 
 			const newId = await store.resetChat();
@@ -1727,8 +1727,8 @@ describe('useChatStore', () => {
 		});
 
 		test('并发调用时第二次返回 null（resetting guard）', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			let resolveFirst;
@@ -1736,7 +1736,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const p1 = store.resetChat();
@@ -1755,19 +1755,19 @@ describe('useChatStore', () => {
 
 	describe('cancelSend', () => {
 		test('未 accepted 时取消：清理 streaming 并删除本地消息', () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 			setConn('1', mockConn());
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.sending = true;
 			store.__accepted = false;
 			store.streamingRunId = 'run-x';
 			store.messages = [
 				{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
-				{ id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+				{ id: '__local_claw_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
 
 			store.cancelSend();
@@ -1778,8 +1778,8 @@ describe('useChatStore', () => {
 		});
 
 		test('accepted 之前取消：sendMessage 立即返回 { accepted: false }', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
@@ -1790,7 +1790,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const sendPromise = store.sendMessage('hello');
@@ -1808,8 +1808,8 @@ describe('useChatStore', () => {
 		});
 
 		test('accepted 之后取消：sendMessage 返回 { accepted: true }，保留消息并 reconcile', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method, params, options) => {
@@ -1825,7 +1825,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const sendPromise = store.sendMessage('hello');
@@ -1854,7 +1854,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.messages = [{ id: 'm1' }];
 			store.chatSessionKey = 'agent:main:main';
 			store.sending = true;
@@ -1867,7 +1867,7 @@ describe('useChatStore', () => {
 			expect(store.__streamingTimer).toBeNull();
 			// 数据保留
 			expect(store.messages).toHaveLength(1);
-			expect(store.botId).toBe('1');
+			expect(store.clawId).toBe('1');
 			expect(store.chatSessionKey).toBe('agent:main:main');
 		});
 	});
@@ -1878,7 +1878,7 @@ describe('useChatStore', () => {
 		test('连接不存在时返回 false', async () => {
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '999'; // 无连接
+			store.clawId = '999'; // 无连接
 			store.chatSessionKey = 'agent:main:main';
 			store.streamingRunId = 'run-1';
 
@@ -1964,7 +1964,7 @@ describe('useChatStore', () => {
 				settling: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user_456', _local: true, message: { role: 'user', content: '新消息' } },
-					{ type: 'message', id: '__local_bot_456', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+					{ type: 'message', id: '__local_claw_456', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 				],
 			};
 			runsStore.runKeyIndex[runKey] = runId;
@@ -1987,17 +1987,17 @@ describe('useChatStore', () => {
 				settling: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user_123', _local: true, message: { role: 'user', content: '你好' } },
-					{ type: 'message', id: '__local_bot_123', _local: true, _streaming: true, message: { role: 'assistant', content: '回复中…' } },
+					{ type: 'message', id: '__local_claw_123', _local: true, _streaming: true, message: { role: 'assistant', content: '回复中…' } },
 				],
 			};
 			runsStore.runKeyIndex[runKey] = runId;
 
 			runsStore.stripLocalUserMsgs(runKey);
 
-			// 乐观 user 消息被移除，流式 bot 消息保留
+			// 乐观 user 消息被移除，流式 claw 消息保留
 			const run = runsStore.runs[runId];
 			expect(run.streamingMsgs).toHaveLength(1);
-			expect(run.streamingMsgs[0].id).toBe('__local_bot_123');
+			expect(run.streamingMsgs[0].id).toBe('__local_claw_123');
 		});
 
 		test('stripLocalUserMsgs 对 settled/settling run 不操作', () => {
@@ -2076,8 +2076,8 @@ describe('useChatStore', () => {
 
 	describe('__loadChatHistory', () => {
 		test('加载孤儿 session 列表并设置 historySessionIds', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const historyItems = [
 				{ sessionId: 'hist-1', archivedAt: 100 },
@@ -2093,7 +2093,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.__loadChatHistory();
@@ -2104,15 +2104,15 @@ describe('useChatStore', () => {
 		});
 
 		test('历史列表为空时设置 historyExhausted 为 true', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ history: [] });
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.__loadChatHistory();
@@ -2126,7 +2126,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.topicMode = true;
 			store.chatSessionKey = 'agent:main:main';
 
@@ -2140,7 +2140,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = '';
 
 			await store.__loadChatHistory();
@@ -2149,15 +2149,15 @@ describe('useChatStore', () => {
 		});
 
 		test('请求失败时设置 historyExhausted 为 true', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('rpc failed'));
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.__loadChatHistory();
@@ -2167,15 +2167,15 @@ describe('useChatStore', () => {
 		});
 
 		test('传递正确的 agentId 和 sessionKey', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ history: [] });
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:ops:main';
 
 			await store.__loadChatHistory();
@@ -2187,15 +2187,15 @@ describe('useChatStore', () => {
 		});
 
 		test('并发调用复用同一 promise，仅发起一次 RPC', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ history: [{ sessionId: 'h1', archivedAt: 100 }] });
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const p1 = store.__loadChatHistory();
@@ -2216,8 +2216,8 @@ describe('useChatStore', () => {
 
 	describe('loadNextHistorySession', () => {
 		test('加载下一个历史 session 并 prepend 到 historySegments', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const histMsgs = [
 				{ id: 'hm1', type: 'message', message: { role: 'user', content: 'old msg' } },
@@ -2232,7 +2232,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			store.historySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 200 },
@@ -2249,15 +2249,15 @@ describe('useChatStore', () => {
 		});
 
 		test('加载全部后设置 historyExhausted 为 true', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockResolvedValue({ messages: [] });
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			store.historySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 100 },
@@ -2302,8 +2302,8 @@ describe('useChatStore', () => {
 		});
 
 		test('多次调用按顺序 prepend', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			let callIdx = 0;
 			const conn = mockConn();
@@ -2317,7 +2317,7 @@ describe('useChatStore', () => {
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			store.historySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 200 },
@@ -2335,15 +2335,15 @@ describe('useChatStore', () => {
 		});
 
 		test('请求失败时返回 false，跳过该 session 并恢复 historyLoading', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('load failed'));
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			store.historySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 200 },
@@ -2359,15 +2359,15 @@ describe('useChatStore', () => {
 		});
 
 		test('唯一的历史 session 请求失败时设置 historyExhausted', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockRejectedValue(new Error('load failed'));
 			setConn('1', conn);
 
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			store.historySessionIds = [{ sessionId: 'hist-1', archivedAt: 100 }];
 
@@ -2379,7 +2379,7 @@ describe('useChatStore', () => {
 
 		test('消息未加载完成时空 historySessionIds 不设 exhausted', async () => {
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			// __messagesLoaded 默认 false，historySessionIds 默认 []
 			expect(store.__messagesLoaded).toBe(false);
@@ -2392,7 +2392,7 @@ describe('useChatStore', () => {
 
 		test('消息已加载后空 historySessionIds 正常设 exhausted', async () => {
 			const store = useChatStore();
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			store.__messagesLoaded = true;
 			store.historySessionIds = [];
@@ -2419,7 +2419,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.__reconcileMessages();
@@ -2433,8 +2433,8 @@ describe('useChatStore', () => {
 		});
 
 		test('topic 模式下调用 loadMessages', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: '1', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
 			conn.request.mockImplementation((method) => {
@@ -2447,7 +2447,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'topic-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.topicMode = true;
 			store.topicAgentId = 'main';
 
@@ -2458,7 +2458,7 @@ describe('useChatStore', () => {
 		test('连接不存在时返回 false', async () => {
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '999';
+			store.clawId = '999';
 
 			const result = await store.__reconcileMessages();
 			expect(result).toBe(false);
@@ -2470,7 +2470,7 @@ describe('useChatStore', () => {
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
-			store.botId = '1';
+			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
 			// 直接 mock loadMessages 使其抛出异常
@@ -2500,7 +2500,7 @@ describe('useChatStore', () => {
 			store = useChatStore();
 			conn = mockConn();
 			setConn('1', conn);
-			store.botId = '1';
+			store.clawId = '1';
 			store.sessionId = 'sess-1';
 			store.chatSessionKey = 'agent:main:main';
 			conn.request.mockResolvedValue({ runId: 'test-run', status: 'started' });
@@ -2549,7 +2549,7 @@ describe('useChatStore', () => {
 		});
 
 		test('连接未就绪时不发送', async () => {
-			useBotsStore().byId['1'].dcReady = false;
+			useClawsStore().byId['1'].dcReady = false;
 			await store.sendSlashCommand('/help');
 			expect(conn.request).not.toHaveBeenCalled();
 		});
@@ -2818,7 +2818,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: [] });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			const sessCall = conn.request.mock.calls.find((c) => c[0] === 'sessions.get');
@@ -2832,7 +2832,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: msgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			expect(store.messages).toHaveLength(10);
@@ -2845,7 +2845,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: msgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			expect(store.messages).toHaveLength(50);
@@ -2858,7 +2858,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 			expect(store.hasMoreMessages).toBe(true);
 			expect(store.messages).toHaveLength(50);
@@ -2882,7 +2882,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 			expect(store.hasMoreMessages).toBe(true);
 
@@ -2903,7 +2903,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: msgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 			expect(store.hasMoreMessages).toBe(false);
 
@@ -2917,12 +2917,12 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			store.messages = [
 				...store.messages,
-				{ type: 'message', id: '__local_bot_1', _local: true, _streaming: true, message: { role: 'assistant', content: 'thinking...' } },
+				{ type: 'message', id: '__local_claw_1', _local: true, _streaming: true, message: { role: 'assistant', content: 'thinking...' } },
 			];
 
 			const olderMsgs = Array.from({ length: 80 }, (_, i) => ({ role: 'user', content: `msg-${i}` }));
@@ -2935,7 +2935,7 @@ describe('useChatStore', () => {
 			expect(store.messages).toHaveLength(81);
 			const localMsg = store.messages.find((m) => m._local);
 			expect(localMsg).toBeTruthy();
-			expect(localMsg.id).toBe('__local_bot_1');
+			expect(localMsg.id).toBe('__local_claw_1');
 		});
 
 		test('loadOlderMessages: 用户乐观消息（_local && !_streaming）不重复', async () => {
@@ -2944,7 +2944,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			// 模拟用户发送后的乐观消息（_local=true, _streaming 未设置）
@@ -2975,7 +2975,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('topic:topic-1', { botId: '1', agentId: 'main' });
+			const store = createChatStore('topic:topic-1', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			const result = await store.loadOlderMessages();
@@ -2988,7 +2988,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: initialMsgs });
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			let resolveRequest;
@@ -3017,13 +3017,13 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn, { flatMessages: msgs });
 			setConn('1', conn);
 
-			const store1 = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store1 = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store1.activate();
 			expect(store1.hasMoreMessages).toBe(true);
 
 			// 另一个 store（空消息）
 			setupConnForLoad(conn, { flatMessages: [] });
-			const store2 = createChatStore('session:1:ops', { botId: '1', agentId: 'ops' });
+			const store2 = createChatStore('session:1:ops', { clawId: '1', agentId: 'ops' });
 			await store2.activate();
 
 			expect(store2.hasMoreMessages).toBe(false);
@@ -3033,7 +3033,7 @@ describe('useChatStore', () => {
 	});
 
 	// =====================================================================
-	// activate 简化（连接监听已移至 botsStore 响应式桥接）
+	// activate 简化（连接监听已移至 clawsStore 响应式桥接）
 	// =====================================================================
 
 	describe('activate 简化', () => {
@@ -3041,7 +3041,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			setConn('1', conn, { dcReady: false });
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			expect(store.__initialized).toBe(true);
@@ -3059,7 +3059,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			expect(store.__initialized).toBe(true);
@@ -3071,7 +3071,7 @@ describe('useChatStore', () => {
 			const conn = mockConn();
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate({ skipLoad: true });
 
 			expect(store.__initialized).toBe(true);
@@ -3084,7 +3084,7 @@ describe('useChatStore', () => {
 			setupConnForLoad(conn);
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 			store.dispose();
 
@@ -3114,7 +3114,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			store.__initialized = true;
 
 			store.loadMessages({ silent: true });
@@ -3146,7 +3146,7 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			store.__initialized = true;
 
 			// 模拟 activate() + connReady watcher 同时触发非 silent loadMessages
@@ -3174,12 +3174,12 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			const runsStore = useAgentRunsStore();
 			runsStore.register('run-zombie', {
-				botId: '1',
+				clawId: '1',
 				runKey: store.runKey,
 				topicMode: false,
 				conn,
@@ -3204,12 +3204,12 @@ describe('useChatStore', () => {
 			});
 			setConn('1', conn);
 
-			const store = createChatStore('session:1:main', { botId: '1', agentId: 'main' });
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
 			await store.activate();
 
 			const runsStore = useAgentRunsStore();
 			runsStore.register('run-active', {
-				botId: '1',
+				clawId: '1',
 				runKey: store.runKey,
 				topicMode: false,
 				conn,

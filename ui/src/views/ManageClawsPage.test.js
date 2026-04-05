@@ -2,16 +2,16 @@ import { createPinia } from 'pinia';
 import { mount, flushPromises } from '@vue/test-utils';
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-import ManageBotsPage from './ManageBotsPage.vue';
+import ManageClawsPage from './ManageClawsPage.vue';
 
 // ---- mocks ----
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
-	unbindBotByUser: vi.fn().mockResolvedValue({}),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
+	unbindClawByUser: vi.fn().mockResolvedValue({}),
 }));
 
-import { unbindBotByUser } from '../services/bots.api.js';
+import { unbindClawByUser } from '../services/claws.api.js';
 
 const mockNotify = {
 	success: vi.fn(),
@@ -33,9 +33,9 @@ vi.mock('../stores/get-ready-conn.js', () => ({
 	getReadyConn: (...args) => mockGetReadyConn(...args),
 }));
 
-vi.mock('../stores/bots.store.js', () => ({
+vi.mock('../stores/claws.store.js', () => ({
 	MAX_BACKOFF_RETRIES: 8,
-	useBotsStore: () => ({
+	useClawsStore: () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
@@ -79,7 +79,7 @@ const UBadgeStub = {
 
 const AgentCardStub = {
 	name: 'AgentCard',
-	props: ['agent', 'bot'],
+	props: ['agent', 'claw'],
 	emits: ['chat', 'files'],
 	template: '<div data-testid="agent-card">{{ agent.name }}</div>',
 };
@@ -87,7 +87,7 @@ const AgentCardStub = {
 let mockBots = [];
 
 function createWrapper() {
-	return mount(ManageBotsPage, {
+	return mount(ManageClawsPage, {
 		global: {
 			plugins: [createPinia()],
 			stubs: {
@@ -99,26 +99,26 @@ function createWrapper() {
 			mocks: {
 				$t: (key, params) => {
 					const map = {
-						'bots.pageTitle': 'My Claws',
-						'bots.addBot': 'Add Bot',
-						'bots.noBot': 'No Claw bound.',
-						'bots.remove': 'Remove',
-						'bots.preparing': 'Preparing...',
+						'claws.pageTitle': 'My Claws',
+						'claws.addClaw': 'Add Bot',
+						'claws.noClaw': 'No Claw bound.',
+						'claws.remove': 'Remove',
+						'claws.preparing': 'Preparing...',
 						'dashboard.offline': 'Offline',
-						'bots.conn.disconnected': 'Disconnected',
-						'bots.conn.rtcConnecting': 'WebRTC connecting…',
-						'bots.conn.rtcRetrying': `Connection failed, retry ${params?.n}/${params?.max}…`,
-						'bots.conn.rtcRetryExhausted': 'Connection failed, retries exhausted',
-						'bots.conn.rtcLan': 'WebRTC · LAN',
-						'bots.conn.rtcLanProto': `WebRTC · LAN · ${params?.protocol}`,
-						'bots.conn.rtcP2P': 'WebRTC · P2P',
-						'bots.conn.rtcP2PProto': `WebRTC · P2P · ${params?.protocol}`,
-						'bots.conn.rtcRelay': 'WebRTC · Relay',
-						'bots.conn.rtcRelayProto': `WebRTC · Relay · ${params?.protocol}`,
-						'bots.renameFailed': 'Rename failed',
-						'bots.summary.claws': `${params?.n} Claws`,
-						'bots.summary.running': `${params?.n} 工作中`,
-						'bots.summary.failed': `${params?.n} 异常`,
+						'claws.conn.disconnected': 'Disconnected',
+						'claws.conn.rtcConnecting': 'WebRTC connecting…',
+						'claws.conn.rtcRetrying': `Connection failed, retry ${params?.n}/${params?.max}…`,
+						'claws.conn.rtcRetryExhausted': 'Connection failed, retries exhausted',
+						'claws.conn.rtcLan': 'WebRTC · LAN',
+						'claws.conn.rtcLanProto': `WebRTC · LAN · ${params?.protocol}`,
+						'claws.conn.rtcP2P': 'WebRTC · P2P',
+						'claws.conn.rtcP2PProto': `WebRTC · P2P · ${params?.protocol}`,
+						'claws.conn.rtcRelay': 'WebRTC · Relay',
+						'claws.conn.rtcRelayProto': `WebRTC · Relay · ${params?.protocol}`,
+						'claws.renameFailed': 'Rename failed',
+						'claws.summary.claws': `${params?.n} Claws`,
+						'claws.summary.running': `${params?.n} 工作中`,
+						'claws.summary.failed': `${params?.n} 异常`,
 					};
 					return map[key] ?? key;
 				},
@@ -128,7 +128,7 @@ function createWrapper() {
 	});
 }
 
-describe('ManageBotsPage', () => {
+describe('ManageClawsPage', () => {
 	beforeEach(() => {
 		mockBots = [];
 		mockGetDashboard.mockReturnValue(null);
@@ -139,7 +139,7 @@ describe('ManageBotsPage', () => {
 		vi.clearAllMocks();
 	});
 
-	test('无 bot 时显示空态提示', async () => {
+	test('无 claw 时显示空态提示', async () => {
 		mockBots = [];
 		const wrapper = createWrapper();
 		await flushPromises();
@@ -147,7 +147,7 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).toContain('No Claw bound.');
 	});
 
-	test('在线 bot → 渲染 Claw card（含名称）+ AgentCard', async () => {
+	test('在线 claw → 渲染 Claw card（含名称）+ AgentCard', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue({
 			instance: { name: 'Bot1', online: true, channels: [] },
@@ -162,7 +162,7 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.find('[data-testid="agent-card"]').text()).toContain('Agent1');
 	});
 
-	test('离线 bot → 渲染 fallback header + Offline badge + 解绑按钮', async () => {
+	test('离线 claw → 渲染 fallback header + Offline badge + 解绑按钮', async () => {
 		mockBots = [{ id: '2', name: 'OfflineBot', online: false }];
 		mockGetDashboard.mockReturnValue(null);
 		const wrapper = createWrapper();
@@ -173,7 +173,7 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).toContain('Remove');
 	});
 
-	test('离线 bot 有缓存 rtcTransportInfo → 连接信息行显示 Disconnected，无 detail 按钮', async () => {
+	test('离线 claw 有缓存 rtcTransportInfo → 连接信息行显示 Disconnected，无 detail 按钮', async () => {
 		mockBots = [{ id: '1', name: 'A', online: false, rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
@@ -182,7 +182,7 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).not.toContain('bots.conn.detailTitle');
 	});
 
-	test('离线 bot 无缓存 rtcTransportInfo → 连接信息行不显示', async () => {
+	test('离线 claw 无缓存 rtcTransportInfo → 连接信息行不显示', async () => {
 		mockBots = [{ id: '1', name: 'A', online: false }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
@@ -190,13 +190,13 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.text()).not.toContain('Disconnected');
 	});
 
-	test('bot 容器包含 data-testid', async () => {
+	test('claw 容器包含 data-testid', async () => {
 		mockBots = [{ id: '99', name: 'TestBot', online: true }];
 		mockGetDashboard.mockReturnValue(null);
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		expect(wrapper.find('[data-testid="bot-99"]').exists()).toBe(true);
+		expect(wrapper.find('[data-testid="claw-99"]').exists()).toBe(true);
 	});
 
 	test('mounted 时加载 dashboard', async () => {
@@ -270,7 +270,7 @@ describe('ManageBotsPage', () => {
 		createWrapper();
 		await flushPromises();
 
-		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] loadData failed:', err);
+		expect(warnSpy).toHaveBeenCalledWith('[ManageClawsPage] loadData failed:', err);
 		expect(mockNotify.error).toHaveBeenCalledWith('dashboard boom');
 		warnSpy.mockRestore();
 	});
@@ -280,14 +280,14 @@ describe('ManageBotsPage', () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue(null);
 		const err = new Error('remove boom');
-		unbindBotByUser.mockRejectedValueOnce(err);
+		unbindClawByUser.mockRejectedValueOnce(err);
 		const wrapper = createWrapper();
 		await flushPromises();
 
 		wrapper.vm.removeTargetId = '1';
 		await wrapper.vm.onConfirmRemove();
 
-		expect(warnSpy).toHaveBeenCalledWith('[ManageBotsPage] onConfirmRemove failed:', err);
+		expect(warnSpy).toHaveBeenCalledWith('[ManageClawsPage] onConfirmRemove failed:', err);
 		expect(mockNotify.error).toHaveBeenCalled();
 		expect(wrapper.vm.unbindingId).toBe('');
 		warnSpy.mockRestore();
@@ -315,8 +315,8 @@ describe('ManageBotsPage', () => {
 			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'ready' },
 		];
 		// __hasRunningAgent 通过 dashboardStore 获取 agents
-		mockGetDashboard.mockImplementation((botId) => {
-			if (botId === '1') return { agents: [{ id: 'main' }], instance: null, loading: false };
+		mockGetDashboard.mockImplementation((clawId) => {
+			if (clawId === '1') return { agents: [{ id: 'main' }], instance: null, loading: false };
 			return null;
 		});
 		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
@@ -327,7 +327,7 @@ describe('ManageBotsPage', () => {
 		expect(bar.text()).toContain('工作中');
 	});
 
-	test('有 failed bot → 摘要栏包含异常文字', async () => {
+	test('有 failed claw → 摘要栏包含异常文字', async () => {
 		mockBots = [
 			{ id: '1', name: 'Bot1', online: true, rtcPhase: 'failed' },
 		];
@@ -338,7 +338,7 @@ describe('ManageBotsPage', () => {
 		expect(bar.text()).toContain('异常');
 	});
 
-	test('无 bot 时不显示摘要栏', async () => {
+	test('无 claw 时不显示摘要栏', async () => {
 		mockBots = [];
 		const wrapper = createWrapper();
 		await flushPromises();
@@ -346,9 +346,9 @@ describe('ManageBotsPage', () => {
 		expect(wrapper.find('[data-testid="status-summary"]').exists()).toBe(false);
 	});
 
-	// ---- sortedBots 排序 ----
+	// ---- sortedClaws 排序 ----
 
-	test('sortedBots：failed bot 排在最前', async () => {
+	test('sortedClaws：failed claw 排在最前', async () => {
 		mockBots = [
 			{ id: '1', name: 'IdleBot', online: true, rtcPhase: 'ready', lastAliveAt: 1000 },
 			{ id: '2', name: 'FailedBot', online: true, rtcPhase: 'failed', lastAliveAt: 500 },
@@ -356,50 +356,50 @@ describe('ManageBotsPage', () => {
 		];
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.sortedBots[0].name).toBe('FailedBot');
+		expect(wrapper.vm.sortedClaws[0].name).toBe('FailedBot');
 	});
 
-	test('sortedBots：offline bot 排在最后', async () => {
+	test('sortedClaws：offline claw 排在最后', async () => {
 		mockBots = [
 			{ id: '1', name: 'OfflineBot', online: false, lastAliveAt: 9999 },
 			{ id: '2', name: 'IdleBot', online: true, rtcPhase: 'ready', lastAliveAt: 100 },
 		];
 		const wrapper = createWrapper();
 		await flushPromises();
-		const sorted = wrapper.vm.sortedBots;
+		const sorted = wrapper.vm.sortedClaws;
 		expect(sorted[sorted.length - 1].name).toBe('OfflineBot');
 	});
 
-	test('sortedBots：running bot（有 agent 在工作）排在 connecting 前', async () => {
+	test('sortedClaws：running bot（有 agent 在工作）排在 connecting 前', async () => {
 		mockBots = [
 			{ id: '1', name: 'ConnBot', online: true, rtcPhase: 'building', lastAliveAt: 300 },
 			{ id: '2', name: 'RunBot', online: true, rtcPhase: 'ready', lastAliveAt: 200 },
 		];
-		mockGetDashboard.mockImplementation((botId) => {
-			if (botId === '2') return { agents: [{ id: 'main' }], instance: null, loading: false };
+		mockGetDashboard.mockImplementation((clawId) => {
+			if (clawId === '2') return { agents: [{ id: 'main' }], instance: null, loading: false };
 			return null;
 		});
 		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.sortedBots[0].name).toBe('RunBot');
+		expect(wrapper.vm.sortedClaws[0].name).toBe('RunBot');
 	});
 
-	test('sortedBots：idle 同级按 lastAliveAt 降序', async () => {
+	test('sortedClaws：idle 同级按 lastAliveAt 降序', async () => {
 		mockBots = [
 			{ id: '1', name: 'OldIdle', online: true, rtcPhase: 'ready', lastAliveAt: 1000 },
 			{ id: '2', name: 'NewIdle', online: true, rtcPhase: 'ready', lastAliveAt: 5000 },
 		];
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.sortedBots[0].name).toBe('NewIdle');
+		expect(wrapper.vm.sortedClaws[0].name).toBe('NewIdle');
 	});
 
-	test('sortedBots：空列表 → 空数组', async () => {
+	test('sortedClaws：空列表 → 空数组', async () => {
 		mockBots = [];
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.sortedBots).toEqual([]);
+		expect(wrapper.vm.sortedClaws).toEqual([]);
 	});
 
 	// ---- statusSummary 边界 ----
@@ -421,9 +421,9 @@ describe('ManageBotsPage', () => {
 			{ id: '3', name: 'Idle1', online: true, rtcPhase: 'ready' },
 			{ id: '4', name: 'Offline1', online: false },
 		];
-		mockGetDashboard.mockImplementation((botId) => {
-			if (botId === '1') return { agents: [{ id: 'main' }, { id: 'ops' }], instance: null, loading: false };
-			if (botId === '3') return { agents: [{ id: 'main' }], instance: null, loading: false };
+		mockGetDashboard.mockImplementation((clawId) => {
+			if (clawId === '1') return { agents: [{ id: 'main' }, { id: 'ops' }], instance: null, loading: false };
+			if (clawId === '3') return { agents: [{ id: 'main' }], instance: null, loading: false };
 			return null;
 		});
 		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
@@ -671,7 +671,7 @@ describe('rename', () => {
 		expect(mockConn.request).not.toHaveBeenCalled();
 	});
 
-	test('离线 bot → openRename 后 conn 不可用，直接报错', async () => {
+	test('离线 claw → openRename 后 conn 不可用，直接报错', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: false }];
 		mockGetDashboard.mockReturnValue({
 			instance: { name: 'Bot1', online: false },

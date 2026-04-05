@@ -28,8 +28,8 @@
 					<!-- Claw 统计 + 版本 -->
 					<div class="rounded-xl bg-elevated p-4">
 						<div class="flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.totalBots') }}</span>
-							<span class="font-medium">{{ data.bots.total }} / {{ $t('adminDashboard.onlineBots') }} {{ data.bots.online }}</span>
+							<span class="text-dimmed">{{ $t('adminDashboard.totalClaws') }}</span>
+							<span class="font-medium">{{ data.claws.total }} / {{ $t('adminDashboard.onlineClaws') }} {{ data.claws.online }}</span>
 						</div>
 						<div class="mt-2 flex items-center justify-between text-sm">
 							<span class="text-dimmed">{{ $t('adminDashboard.serverVersion') }}</span>

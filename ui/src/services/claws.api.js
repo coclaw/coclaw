@@ -1,6 +1,6 @@
 import { httpClient as client } from './http.js';
 
-export async function listBots() {
+export async function listClaws() {
 	const res = await client.get('/api/v1/claws');
 	return res.data?.items ?? [];
 }
@@ -29,7 +29,7 @@ export async function cancelBindingCode(code) {
 	await client.delete(`/api/v1/claws/binding-codes/${code}`);
 }
 
-export async function claimBot(code) {
+export async function claimClaw(code) {
 	const res = await client.post('/api/v1/claws/claim', { code });
 	return {
 		clawId: res.data?.clawId ?? null,
@@ -37,8 +37,8 @@ export async function claimBot(code) {
 	};
 }
 
-export async function unbindBotByUser(botId) {
-	const res = await client.post('/api/v1/claws/unbind-by-user', { clawId: botId });
+export async function unbindClawByUser(clawId) {
+	const res = await client.post('/api/v1/claws/unbind-by-user', { clawId: clawId });
 	return {
 		clawId: res.data?.clawId ?? null,
 		status: res.data?.status ?? null,

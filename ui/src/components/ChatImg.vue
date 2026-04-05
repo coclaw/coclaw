@@ -52,7 +52,7 @@ export default {
 		/**
 		 * 图片来源：
 		 * - data URI / blob URL → 获取 Blob 后压缩为缩略图显示
-		 * - coclaw-file://botId:agentId/path → 下载后压缩为缩略图显示
+		 * - coclaw-file://clawId:agentId/path → 下载后压缩为缩略图显示
 		 * - https:// 等 → 直接显示（不压缩）
 		 */
 		src: {

@@ -25,7 +25,7 @@ function compareSemver(a, b) {
 
 /**
  * 检查插件版本并获取插件信息
- * @param {object} conn - BotConnection 实例
+ * @param {object} conn - ClawConnection 实例
  * @returns {Promise<{ ok: boolean, version: string|null, clawVersion: string|null, name: string|null, hostName: string|null }>}
  */
 export async function checkPluginVersion(conn) {

@@ -1,15 +1,15 @@
-import { useBotsStore } from './bots.store.js';
-import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useClawsStore } from './claws.store.js';
+import { useClawConnections } from '../services/claw-connection-manager.js';
 
 /**
- * 获取就绪的 BotConnection（链式容错）
- * dcReady=false、bot 不存在、conn 不存在 → 均返回 null
- * @param {string} botId
- * @returns {import('../services/bot-connection.js').BotConnection | null}
+ * 获取就绪的 ClawConnection（链式容错）
+ * dcReady=false、claw 不存在、conn 不存在 → 均返回 null
+ * @param {string} clawId
+ * @returns {import('../services/claw-connection.js').ClawConnection | null}
  */
-export function getReadyConn(botId) {
-	const id = String(botId);
-	const store = useBotsStore();
+export function getReadyConn(clawId) {
+	const id = String(clawId);
+	const store = useClawsStore();
 	if (!store.byId[id]?.dcReady) return null;
-	return useBotConnections().get(id) ?? null;
+	return useClawConnections().get(id) ?? null;
 }

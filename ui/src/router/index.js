@@ -7,8 +7,8 @@ import NuxtUiDemoPage from '../views/NuxtUiDemoPage.vue';
 import HomePage from '../views/HomePage.vue';
 import ChatPage from '../views/ChatPage.vue';
 import TopicsPage from '../views/TopicsPage.vue';
-import AddBotPage from '../views/AddBotPage.vue';
-import ManageBotsPage from '../views/ManageBotsPage.vue';
+import AddClawPage from '../views/AddClawPage.vue';
+import ManageClawsPage from '../views/ManageClawsPage.vue';
 import UserPage from '../views/UserPage.vue';
 import AboutPage from '../views/AboutPage.vue';
 import ClaimPage from '../views/ClaimPage.vue';
@@ -50,7 +50,7 @@ const routes = [
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
-				path: 'chat/:botId/:agentId',
+				path: 'chat/:clawId/:agentId',
 				name: 'chat',
 				component: ChatPage,
 				meta: { requiresAuth: true, hideMobileNav: true },
@@ -68,15 +68,15 @@ const routes = [
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
-				path: 'bots/add',
-				name: 'bots-add',
-				component: AddBotPage,
+				path: 'claws/add',
+				name: 'claws-add',
+				component: AddClawPage,
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
-				path: 'bots',
-				name: 'bots',
-				component: ManageBotsPage,
+				path: 'claws',
+				name: 'claws',
+				component: ManageClawsPage,
 				meta: { requiresAuth: true, isTopPage: true },
 			},
 			{
@@ -86,7 +86,7 @@ const routes = [
 				meta: { requiresAuth: true, isTopPage: true },
 			},
 			{
-				path: 'files/:botId/:agentId',
+				path: 'files/:clawId/:agentId',
 				name: 'files',
 				component: FileManagerPage,
 				meta: { requiresAuth: true, hideMobileNav: true },

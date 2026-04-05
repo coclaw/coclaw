@@ -4,19 +4,19 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 const mockRequest = vi.fn();
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
 		get: () => ({ state: 'connected', request: mockRequest, on: vi.fn(), off: vi.fn() }),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
 const mockNotify = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
@@ -26,7 +26,7 @@ vi.mock('../composables/use-notify.js', () => ({
 
 import TopicItemActions from './TopicItemActions.vue';
 import { useTopicsStore } from '../stores/topics.store.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 
 const UPopoverStub = {
 	props: ['open'],
@@ -59,12 +59,12 @@ const UIconStub = {
 function createWrapper(props = {}) {
 	const pinia = createPinia();
 	setActivePinia(pinia);
-	const botsStore = useBotsStore();
-	botsStore.byId['bot-1'] = { id: 'bot-1', dcReady: true };
+	const clawsStore = useClawsStore();
+	clawsStore.byId['bot-1'] = { id: 'bot-1', dcReady: true };
 	return mount(TopicItemActions, {
 		props: {
 			topicId: 't1',
-			botId: 'bot-1',
+			clawId: 'bot-1',
 			title: 'Test Topic',
 			...props,
 		},
@@ -138,7 +138,7 @@ test('successful rename calls updateTopic and shows notify', async () => {
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
+	store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, clawId: 'bot-1' }];
 
 	wrapper.vm.renameOpen = true;
 	wrapper.vm.renameValue = '新名称';
@@ -154,7 +154,7 @@ test('failed rename shows error notify', async () => {
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, botId: 'bot-1' }];
+	store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, clawId: 'bot-1' }];
 
 	wrapper.vm.renameOpen = true;
 	wrapper.vm.renameValue = '新名称';
@@ -178,7 +178,7 @@ test('successful delete calls deleteTopic, shows notify and emits deleted', asyn
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, botId: 'bot-1' }];
+	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
@@ -199,7 +199,7 @@ test('deleting current topic navigates to default route', async () => {
 	wrapper.vm.$router = { replace: mockReplace };
 
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, botId: 'bot-1' }];
+	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
@@ -217,7 +217,7 @@ test('deleting non-current topic does not navigate', async () => {
 	wrapper.vm.$router = { replace: mockReplace };
 
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, botId: 'bot-1' }];
+	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
@@ -231,7 +231,7 @@ test('failed delete shows error notify', async () => {
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, botId: 'bot-1' }];
+	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();

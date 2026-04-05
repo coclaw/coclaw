@@ -64,8 +64,8 @@ export default {
 	},
 	methods: {
 		__routeToTab(path) {
-			if (path.startsWith('/bots')) {
-				return 'bots';
+			if (path.startsWith('/claws')) {
+				return 'claws';
 			}
 			if (path.startsWith('/user')) {
 				return 'me';

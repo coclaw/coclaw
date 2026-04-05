@@ -1,4 +1,4 @@
-import openclawIcon from '../assets/bot-avatars/openclaw.svg';
+import openclawIcon from '../assets/claw-avatars/openclaw.svg';
 
 export function getUserMenuItems(t, { isAdmin = false } = {}) {
 	const items = [];
@@ -17,7 +17,7 @@ export function getUserMenuItems(t, { isAdmin = false } = {}) {
 export function getMobileTabs(t) {
 	return [
 		{ value: 'chat', label: t('layout.tabs.chat'), icon: 'i-lucide-message-square', to: '/topics' },
-		{ value: 'bots', label: t('layout.tabs.bots'), avatar: { src: openclawIcon }, to: '/bots' },
+		{ value: 'claws', label: t('layout.tabs.claws'), avatar: { src: openclawIcon }, to: '/claws' },
 		{ value: 'me', label: t('layout.tabs.me'), icon: 'i-lucide-user', to: '/user' },
 	];
 }

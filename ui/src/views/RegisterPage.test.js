@@ -18,16 +18,16 @@ vi.mock('../services/theme-mode.js', () => ({
 	syncThemeModeFromSettings: vi.fn(),
 }));
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({ disconnectAll: vi.fn() }),
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({ disconnectAll: vi.fn() }),
 }));
 
 vi.mock('../stores/sessions.store.js', () => ({
 	useSessionsStore: () => ({}),
 }));
 
-vi.mock('../stores/bots.store.js', () => ({
-	useBotsStore: () => ({}),
+vi.mock('../stores/claws.store.js', () => ({
+	useClawsStore: () => ({}),
 }));
 
 vi.mock('../stores/env.store.js', () => ({

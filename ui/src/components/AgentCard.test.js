@@ -98,9 +98,9 @@ function $t(key, params) {
 	return $tMap[key] ?? key;
 }
 
-function createWrapper(agent = makeAgent(), bot = makeBot()) {
+function createWrapper(agent = makeAgent(), claw = makeBot()) {
 	return mount(AgentCard, {
-		props: { agent, bot },
+		props: { agent, claw },
 		global: {
 			plugins: [createPinia()],
 			stubs: { UButton: UButtonStub, UIcon: UIconStub, UBadge: UBadgeStub },
@@ -125,7 +125,7 @@ describe('AgentCard', () => {
 
 	// ---- statusKey ----
 
-	test('offline bot → statusKey=offline', async () => {
+	test('offline claw → statusKey=offline', async () => {
 		const w = createWrapper(makeAgent(), makeBot({ online: false }));
 		await flushPromises();
 		expect(w.vm.statusKey).toBe('offline');
@@ -206,8 +206,8 @@ describe('AgentCard', () => {
 	// ---- 初始展开状态 ----
 
 	test('所有状态默认折叠', async () => {
-		for (const bot of [makeBot(), makeBot({ online: false }), makeBot({ rtcPhase: 'building' })]) {
-			const w = createWrapper(makeAgent(), bot);
+		for (const claw of [makeBot(), makeBot({ online: false }), makeBot({ rtcPhase: 'building' })]) {
+			const w = createWrapper(makeAgent(), claw);
 			await flushPromises();
 			expect(w.vm.expanded).toBe(false);
 			w.unmount();
@@ -246,14 +246,14 @@ describe('AgentCard', () => {
 
 	// ---- 按钮可见性 ----
 
-	test('bot 在线 → 显示 Chat/Files 按钮', async () => {
+	test('claw 在线 → 显示 Chat/Files 按钮', async () => {
 		const w = createWrapper(makeAgent(), makeBot({ online: true }));
 		await flushPromises();
 		expect(w.find('[data-testid="btn-chat"]').exists()).toBe(true);
 		expect(w.find('[data-testid="btn-files"]').exists()).toBe(true);
 	});
 
-	test('bot 离线 → 不显示按钮', async () => {
+	test('claw 离线 → 不显示按钮', async () => {
 		const w = createWrapper(makeAgent(), makeBot({ online: false }));
 		await flushPromises();
 		expect(w.find('[data-testid="btn-chat"]').exists()).toBe(false);
@@ -352,7 +352,7 @@ describe('AgentCard', () => {
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
 		mockIsRunning = vi.fn().mockReturnValue(false);
-		await w.setProps({ bot: makeBot() });
+		await w.setProps({ claw: makeBot() });
 		await flushPromises();
 		const secs = w.vm.elapsedSecs;
 		vi.advanceTimersByTime(5000);
@@ -394,11 +394,11 @@ describe('AgentCard', () => {
 
 	// ---- topics ----
 
-	test('topics 按 botId + agentId 过滤', async () => {
+	test('topics 按 clawId + agentId 过滤', async () => {
 		mockTopicItems = [
-			{ topicId: 't1', botId: 'bot1', agentId: 'main', title: 'Mine', createdAt: 1 },
-			{ topicId: 't2', botId: 'other', agentId: 'main', title: 'NotMine', createdAt: 2 },
-			{ topicId: 't3', botId: 'bot1', agentId: 'ops', title: 'WrongAgent', createdAt: 3 },
+			{ topicId: 't1', clawId: 'bot1', agentId: 'main', title: 'Mine', createdAt: 1 },
+			{ topicId: 't2', clawId: 'other', agentId: 'main', title: 'NotMine', createdAt: 2 },
+			{ topicId: 't3', clawId: 'bot1', agentId: 'ops', title: 'WrongAgent', createdAt: 3 },
 		];
 		const w = createWrapper(makeAgent({ id: 'main' }), makeBot({ id: 'bot1' }));
 		await flushPromises();
@@ -408,10 +408,10 @@ describe('AgentCard', () => {
 
 	test('topics > 3 → 前3条 + 查看更多', async () => {
 		mockTopicItems = [
-			{ topicId: 't1', botId: 'bot1', agentId: 'main', title: 'T1', createdAt: 1 },
-			{ topicId: 't2', botId: 'bot1', agentId: 'main', title: 'T2', createdAt: 2 },
-			{ topicId: 't3', botId: 'bot1', agentId: 'main', title: 'T3', createdAt: 3 },
-			{ topicId: 't4', botId: 'bot1', agentId: 'main', title: 'T4', createdAt: 4 },
+			{ topicId: 't1', clawId: 'bot1', agentId: 'main', title: 'T1', createdAt: 1 },
+			{ topicId: 't2', clawId: 'bot1', agentId: 'main', title: 'T2', createdAt: 2 },
+			{ topicId: 't3', clawId: 'bot1', agentId: 'main', title: 'T3', createdAt: 3 },
+			{ topicId: 't4', clawId: 'bot1', agentId: 'main', title: 'T4', createdAt: 4 },
 		];
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
@@ -425,10 +425,10 @@ describe('AgentCard', () => {
 
 	test('点击查看更多 → 展示全部', async () => {
 		mockTopicItems = [
-			{ topicId: 't1', botId: 'bot1', agentId: 'main', title: 'T1', createdAt: 1 },
-			{ topicId: 't2', botId: 'bot1', agentId: 'main', title: 'T2', createdAt: 2 },
-			{ topicId: 't3', botId: 'bot1', agentId: 'main', title: 'T3', createdAt: 3 },
-			{ topicId: 't4', botId: 'bot1', agentId: 'main', title: 'T4', createdAt: 4 },
+			{ topicId: 't1', clawId: 'bot1', agentId: 'main', title: 'T1', createdAt: 1 },
+			{ topicId: 't2', clawId: 'bot1', agentId: 'main', title: 'T2', createdAt: 2 },
+			{ topicId: 't3', clawId: 'bot1', agentId: 'main', title: 'T3', createdAt: 3 },
+			{ topicId: 't4', clawId: 'bot1', agentId: 'main', title: 'T4', createdAt: 4 },
 		];
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
@@ -439,7 +439,7 @@ describe('AgentCard', () => {
 
 	test('topic 无 title → 显示 Main Topic', async () => {
 		mockTopicItems = [
-			{ topicId: 't1', botId: 'bot1', agentId: 'main', title: '', createdAt: 1 },
+			{ topicId: 't1', clawId: 'bot1', agentId: 'main', title: '', createdAt: 1 },
 		];
 		const w = createWrapper(makeAgent(), makeBot());
 		await flushPromises();
@@ -451,7 +451,7 @@ describe('AgentCard', () => {
 
 	test('展开后显示 capabilities（在 topics 前）', async () => {
 		mockTopicItems = [
-			{ topicId: 't1', botId: 'bot1', agentId: 'main', title: 'MyTopic', createdAt: 1 },
+			{ topicId: 't1', clawId: 'bot1', agentId: 'main', title: 'MyTopic', createdAt: 1 },
 		];
 		const w = createWrapper(
 			makeAgent({ capabilities: [{ id: 'web', labelKey: 'cap.web', icon: '🌐' }] }),
@@ -535,7 +535,7 @@ describe('AgentCard', () => {
 
 		mockIsRunning = vi.fn().mockReturnValue(true);
 		mockGetActiveRun = vi.fn().mockReturnValue({ startTime: Date.now() - 10_000 });
-		await w.setProps({ bot: makeBot() });
+		await w.setProps({ claw: makeBot() });
 		await flushPromises();
 		expect(w.vm.elapsedSecs).toBe(10);
 	});

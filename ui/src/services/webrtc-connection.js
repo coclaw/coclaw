@@ -23,29 +23,29 @@ const DC_HIGH_WATER_MARK = 1024 * 1024;
 /** 发送流控：低水位（恢复发送），对应 bufferedAmountLowThreshold */
 const DC_LOW_WATER_MARK = 256 * 1024;
 
-/** @type {Map<string, WebRtcConnection>} botId → WebRtcConnection */
+/** @type {Map<string, WebRtcConnection>} clawId → WebRtcConnection */
 const rtcInstances = new Map();
 
 const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
 
 /**
- * 为指定 bot 初始化 RTC 连接
+ * 为指定 claw 初始化 RTC 连接
  * WS 每次连通时调用；内含防重入守卫
- * @param {string} botId
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {string} clawId
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {object} [callbacks]
  * @param {(state: string, transportInfo: object|null) => void} [callbacks.onRtcStateChange] - RTC 状态变更
  * @returns {Promise<'rtc'|'failed'>}
  */
-export function initRtc(botId, botConn, callbacks = {}) {
-	const existing = rtcInstances.get(botId);
+export function initRtc(clawId, clawConn, callbacks = {}) {
+	const existing = rtcInstances.get(clawId);
 	if (existing && existing.state !== 'closed' && existing.state !== 'failed') {
 		return Promise.resolve(existing.isReady ? 'rtc' : 'pending');
 	}
 	if (existing) existing.close();
 
-	const rtc = new WebRtcConnection(botId, botConn);
-	rtcInstances.set(botId, rtc);
+	const rtc = new WebRtcConnection(clawId, clawConn);
+	rtcInstances.set(clawId, rtc);
 
 	return new Promise((resolveTransport) => {
 		let settled = false;
@@ -59,16 +59,16 @@ export function initRtc(botId, botConn, callbacks = {}) {
 		// 15 秒内 DataChannel open → 'rtc'，否则 → 'failed'
 		const fallbackTimer = setTimeout(() => {
 			if (!settle('failed')) return;
-			console.warn('[rtc] RTC 建连超时 botId=%s', botId);
+			console.warn('[rtc] RTC 建连超时 clawId=%s', clawId);
 			rtc.close();
-			rtcInstances.delete(botId);
-			botConn.clearRtc();
+			rtcInstances.delete(clawId);
+			clawConn.clearRtc();
 		}, RTC_TRANSPORT_TIMEOUT_MS);
 
 		rtc.onReady = () => {
 			if (!settle('rtc')) return;
 			clearTimeout(fallbackTimer);
-			botConn.setRtc(rtc);
+			clawConn.setRtc(rtc);
 		};
 
 		// 状态变更 → 通知调用方
@@ -78,7 +78,7 @@ export function initRtc(botId, botConn, callbacks = {}) {
 			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置
 			if (rtc.state === 'failed') {
 				clearTimeout(fallbackTimer);
-				botConn.clearRtc();
+				clawConn.clearRtc();
 				settle('failed');
 			}
 		};
@@ -88,10 +88,10 @@ export function initRtc(botId, botConn, callbacks = {}) {
 			.catch((err) => {
 				if (!settle('failed')) return;
 				clearTimeout(fallbackTimer);
-				console.warn('[rtc] init failed botId=%s: %s', botId, err?.message);
+				console.warn('[rtc] init failed clawId=%s: %s', clawId, err?.message);
 				rtc.close();
-				rtcInstances.delete(botId);
-				botConn.clearRtc();
+				rtcInstances.delete(clawId);
+				clawConn.clearRtc();
 			});
 	});
 }
@@ -99,14 +99,14 @@ export function initRtc(botId, botConn, callbacks = {}) {
 /** @deprecated 使用 initRtc 代替 */
 export const initRtcAndSelectTransport = initRtc;
 /** @deprecated 使用 initRtc 代替 */
-export const initRtcForBot = initRtc;
+export const initRtcForClaw = initRtc;
 
-/** 关闭指定 bot 的 WebRTC 连接 */
-export function closeRtcForBot(botId) {
-	const rtc = rtcInstances.get(botId);
+/** 关闭指定 claw 的 WebRTC 连接 */
+export function closeRtcForClaw(clawId) {
+	const rtc = rtcInstances.get(clawId);
 	if (rtc) {
 		rtc.close();
-		rtcInstances.delete(botId);
+		rtcInstances.delete(clawId);
 	}
 }
 
@@ -117,20 +117,20 @@ export function __resetRtcInstances() {
 }
 
 /** 仅供测试：获取实例 */
-export function __getRtcInstance(botId) {
-	return rtcInstances.get(botId);
+export function __getRtcInstance(clawId) {
+	return rtcInstances.get(clawId);
 }
 
 export class WebRtcConnection {
 	/**
-	 * @param {string} botId
-	 * @param {import('./bot-connection.js').BotConnection} botConn - 关联的 DC 连接
+	 * @param {string} clawId
+	 * @param {import('./claw-connection.js').ClawConnection} clawConn - 关联的 DC 连接
 	 * @param {object} [opts]
 	 * @param {function} [opts.PeerConnection] - 可替换的 RTCPeerConnection 构造函数（测试用）
 	 */
-	constructor(botId, botConn, opts = {}) {
-		this.botId = botId;
-		this.__botConn = botConn;
+	constructor(clawId, clawConn, opts = {}) {
+		this.clawId = clawId;
+		this.__clawConn = clawConn;
 		this.__PeerConnection = opts.PeerConnection ?? globalThis.RTCPeerConnection;
 		this.__pc = null;
 		this.__rpcChannel = null;
@@ -178,7 +178,7 @@ export class WebRtcConnection {
 		this.__removeRtcListener();
 		this.__rejectSendQueue('connection closed');
 		if (this.__pc) {
-			useSignalingConnection().sendSignaling(this.botId, 'rtc:closed');
+			useSignalingConnection().sendSignaling(this.clawId, 'rtc:closed');
 			this.__pc.close();
 			this.__pc = null;
 		}
@@ -362,8 +362,8 @@ export class WebRtcConnection {
 		// 创建并发送 offer
 		const offer = await pc.createOffer();
 		await pc.setLocalDescription(offer);
-		useSignalingConnection().sendSignaling(this.botId, 'rtc:offer', { sdp: offer.sdp });
-		this.__log('info', `offer sent for bot ${this.botId}`);
+		useSignalingConnection().sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp });
+		this.__log('info', `offer sent for claw ${this.clawId}`);
 	}
 
 	/** @private */
@@ -387,7 +387,7 @@ export class WebRtcConnection {
 		// ICE candidate → 通过信令 WS 发给 Plugin
 		pc.onicecandidate = (event) => {
 			if (!event.candidate) return;
-			useSignalingConnection().sendSignaling(this.botId, 'rtc:ice', event.candidate.toJSON());
+			useSignalingConnection().sendSignaling(this.clawId, 'rtc:ice', event.candidate.toJSON());
 		};
 
 		// 连接状态变更
@@ -429,7 +429,7 @@ export class WebRtcConnection {
 					this.__settleProbe(true);
 					return;
 				}
-				this.__botConn.__onRtcMessage(payload);
+				this.__clawConn.__onRtcMessage(payload);
 			} catch (err) {
 				console.warn('[rtc] DataChannel 消息解析失败:', err);
 			}
@@ -437,7 +437,7 @@ export class WebRtcConnection {
 
 		dc.onopen = () => {
 			this.__log('info', 'DataChannel "rpc" opened');
-			useSignalingConnection().sendSignaling(this.botId, 'rtc:ready');
+			useSignalingConnection().sendSignaling(this.clawId, 'rtc:ready');
 			this.onReady?.();
 		};
 		dc.onclose = () => {
@@ -447,7 +447,7 @@ export class WebRtcConnection {
 				this.__rpcChannel = null;
 				this.__rejectSendQueue('DataChannel closed');
 				// 已发出的 pending RPC 永远收不到响应，立即 reject
-				this.__botConn.__rejectAllPending('DataChannel closed', 'DC_CLOSED');
+				this.__clawConn.__rejectAllPending('DataChannel closed', 'DC_CLOSED');
 			}
 		};
 		dc.onerror = (event) => {
@@ -597,8 +597,8 @@ export class WebRtcConnection {
 	/** @private 确保 rtc 事件监听已注册（幂等） */
 	__ensureRtcListener() {
 		if (this.__onRtcMsg) return;
-		this.__onRtcMsg = ({ botId, type, payload }) => {
-			if (botId !== this.botId) return; // 按 botId 过滤
+		this.__onRtcMsg = ({ clawId, type, payload }) => {
+			if (clawId !== this.clawId) return; // 按 clawId 过滤
 			this.__onSignaling({ type, payload });
 		};
 		useSignalingConnection().on('rtc', this.__onRtcMsg);
@@ -626,7 +626,7 @@ export class WebRtcConnection {
 		console[level]?.(`[WebRTC] ${msg}`);
 		// 仅推送 warn + 关键 info（连接状态变更、DC 开关、offer）
 		if (level === 'warn' || level === 'info') {
-			remoteLog(`rtc.${level} bot=${this.botId} ${msg}`);
+			remoteLog(`rtc.${level} claw=${this.clawId} ${msg}`);
 		}
 	}
 }

@@ -6,15 +6,15 @@ import { useAgentRunsStore } from './agent-runs.store.js';
 
 // --- Mocks ---
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
 		get: vi.fn(),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
 vi.mock('../utils/file-helper.js', () => ({
@@ -35,9 +35,9 @@ describe('chatStoreManager', () => {
 
 	describe('get', () => {
 		test('创建 session store 并缓存', () => {
-			const store = chatStoreManager.get('session:1:main', { botId: '1', agentId: 'main' });
+			const store = chatStoreManager.get('session:1:main', { clawId: '1', agentId: 'main' });
 			expect(store).toBeTruthy();
-			expect(store.botId).toBe('1');
+			expect(store.clawId).toBe('1');
 			expect(store.chatSessionKey).toBe('agent:main:main');
 			expect(store.topicMode).toBe(false);
 
@@ -47,7 +47,7 @@ describe('chatStoreManager', () => {
 		});
 
 		test('创建 topic store', () => {
-			const store = chatStoreManager.get('topic:uuid-1', { botId: '2', agentId: 'research' });
+			const store = chatStoreManager.get('topic:uuid-1', { clawId: '2', agentId: 'research' });
 			expect(store.topicMode).toBe(true);
 			expect(store.sessionId).toBe('uuid-1');
 			expect(store.topicAgentId).toBe('research');
@@ -55,16 +55,16 @@ describe('chatStoreManager', () => {
 
 		test('size 正确反映实例数', () => {
 			expect(chatStoreManager.size).toBe(0);
-			chatStoreManager.get('session:1:main', { botId: '1' });
+			chatStoreManager.get('session:1:main', { clawId: '1' });
 			expect(chatStoreManager.size).toBe(1);
-			chatStoreManager.get('topic:t1', { botId: '1' });
+			chatStoreManager.get('topic:t1', { clawId: '1' });
 			expect(chatStoreManager.size).toBe(2);
 		});
 
 		test('topicCount 仅统计 topic 实例', () => {
-			chatStoreManager.get('session:1:main', { botId: '1' });
-			chatStoreManager.get('topic:t1', { botId: '1' });
-			chatStoreManager.get('topic:t2', { botId: '1' });
+			chatStoreManager.get('session:1:main', { clawId: '1' });
+			chatStoreManager.get('topic:t1', { clawId: '1' });
+			chatStoreManager.get('topic:t2', { clawId: '1' });
 			expect(chatStoreManager.topicCount).toBe(2);
 		});
 	});
@@ -75,7 +75,7 @@ describe('chatStoreManager', () => {
 
 	describe('dispose', () => {
 		test('销毁实例并从索引移除', () => {
-			chatStoreManager.get('session:1:main', { botId: '1' });
+			chatStoreManager.get('session:1:main', { clawId: '1' });
 			expect(chatStoreManager.size).toBe(1);
 
 			chatStoreManager.dispose('session:1:main');
@@ -83,8 +83,8 @@ describe('chatStoreManager', () => {
 		});
 
 		test('销毁 topic 实例同时更新 LRU', () => {
-			chatStoreManager.get('topic:t1', { botId: '1' });
-			chatStoreManager.get('topic:t2', { botId: '1' });
+			chatStoreManager.get('topic:t1', { clawId: '1' });
+			chatStoreManager.get('topic:t2', { clawId: '1' });
 			expect(chatStoreManager.topicCount).toBe(2);
 
 			chatStoreManager.dispose('topic:t1');
@@ -104,7 +104,7 @@ describe('chatStoreManager', () => {
 		test('超过上限时淘汰最久未用的 topic', () => {
 			// 创建 11 个 topic（上限为 10）
 			for (let i = 0; i < 11; i++) {
-				chatStoreManager.get(`topic:t${i}`, { botId: '1' });
+				chatStoreManager.get(`topic:t${i}`, { clawId: '1' });
 			}
 			// 第 1 个（t0）应被淘汰
 			expect(chatStoreManager.topicCount).toBe(10);
@@ -112,9 +112,9 @@ describe('chatStoreManager', () => {
 		});
 
 		test('session 实例不受淘汰影响', () => {
-			chatStoreManager.get('session:1:main', { botId: '1' });
+			chatStoreManager.get('session:1:main', { clawId: '1' });
 			for (let i = 0; i < 11; i++) {
-				chatStoreManager.get(`topic:t${i}`, { botId: '1' });
+				chatStoreManager.get(`topic:t${i}`, { clawId: '1' });
 			}
 			// session 仍在
 			expect(chatStoreManager.size).toBe(11); // 1 session + 10 topics
@@ -124,7 +124,7 @@ describe('chatStoreManager', () => {
 			const runsStore = useAgentRunsStore();
 			// 创建 10 个 topic
 			for (let i = 0; i < 10; i++) {
-				chatStoreManager.get(`topic:t${i}`, { botId: '1' });
+				chatStoreManager.get(`topic:t${i}`, { clawId: '1' });
 			}
 			// 让 t0（最旧）有活跃 run → 淘汰时跳过 t0，淘汰 t1
 			const t0Store = chatStoreManager.get('topic:t0');
@@ -132,7 +132,7 @@ describe('chatStoreManager', () => {
 			runsStore.runKeyIndex[t0Store.runKey] = 'run-t0';
 
 			// 创建第 11 个 → 应跳过 t0，淘汰 t1
-			chatStoreManager.get('topic:t10', { botId: '1' });
+			chatStoreManager.get('topic:t10', { clawId: '1' });
 			expect(chatStoreManager.topicCount).toBe(10);
 			// t0 仍在，t1 被淘汰
 			expect(chatStoreManager.get('topic:t0')).toBeTruthy();
@@ -142,7 +142,7 @@ describe('chatStoreManager', () => {
 			const runsStore = useAgentRunsStore();
 			// 创建 10 个 topic，全部设为活跃 run
 			for (let i = 0; i < 10; i++) {
-				chatStoreManager.get(`topic:t${i}`, { botId: '1' });
+				chatStoreManager.get(`topic:t${i}`, { clawId: '1' });
 				const s = chatStoreManager.get(`topic:t${i}`);
 				runsStore.runs[`run-t${i}`] = { status: 'streaming' };
 				runsStore.runKeyIndex[s.runKey] = `run-t${i}`;
@@ -154,7 +154,7 @@ describe('chatStoreManager', () => {
 
 			const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
 			// 创建第 11 个 → 淘汰被阻断，总数为 11
-			chatStoreManager.get('topic:t10', { botId: '1' });
+			chatStoreManager.get('topic:t10', { clawId: '1' });
 			expect(chatStoreManager.topicCount).toBe(11);
 			expect(debugSpy).toHaveBeenCalledWith(
 				expect.stringContaining('eviction blocked'),
@@ -165,13 +165,13 @@ describe('chatStoreManager', () => {
 
 		test('重复访问 topic 更新 LRU 顺序', () => {
 			for (let i = 0; i < 10; i++) {
-				chatStoreManager.get(`topic:t${i}`, { botId: '1' });
+				chatStoreManager.get(`topic:t${i}`, { clawId: '1' });
 			}
 			// 访问 t0（最旧），使其变为最新
 			chatStoreManager.get('topic:t0');
 
 			// 创建第 11 个 → 应淘汰 t1（现在最旧）
-			chatStoreManager.get('topic:t10', { botId: '1' });
+			chatStoreManager.get('topic:t10', { clawId: '1' });
 			expect(chatStoreManager.topicCount).toBe(10);
 		});
 	});
@@ -182,8 +182,8 @@ describe('chatStoreManager', () => {
 
 	describe('__reset', () => {
 		test('清空所有实例', () => {
-			chatStoreManager.get('session:1:main', { botId: '1' });
-			chatStoreManager.get('topic:t1', { botId: '1' });
+			chatStoreManager.get('session:1:main', { clawId: '1' });
+			chatStoreManager.get('topic:t1', { clawId: '1' });
 			chatStoreManager.__reset();
 
 			expect(chatStoreManager.size).toBe(0);

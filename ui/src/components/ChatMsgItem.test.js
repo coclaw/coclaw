@@ -123,7 +123,7 @@ describe('ChatMsgItem', () => {
 
 	test('botTask 始终显示 bot avatar 行', () => {
 		const wrapper = createWrapper({ type: 'botTask', steps: [] });
-		const img = wrapper.find('img[alt="bot"]');
+		const img = wrapper.find('img[alt="claw"]');
 		expect(img.exists()).toBe(true);
 		expect(img.classes()).toContain('size-6');
 	});

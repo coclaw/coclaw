@@ -1,17 +1,17 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { useBotConnections, __resetBotConnections, BotConnectionManager } from './bot-connection-manager.js';
+import { useClawConnections, __resetClawConnections, ClawConnectionManager } from './claw-connection-manager.js';
 
-vi.mock('./bot-connection.js', () => {
-	class MockBotConnection {
-		constructor(botId) {
-			this.botId = botId;
+vi.mock('./claw-connection.js', () => {
+	class MockClawConnection {
+		constructor(clawId) {
+			this.clawId = clawId;
 			this.disconnected = false;
 		}
 		disconnect() { this.disconnected = true; }
 		on() {}
 		off() {}
 	}
-	return { BotConnection: MockBotConnection, BRIEF_DISCONNECT_MS: 5000 };
+	return { ClawConnection: MockClawConnection, BRIEF_DISCONNECT_MS: 5000 };
 });
 
 vi.mock('./signaling-connection.js', () => ({
@@ -19,118 +19,118 @@ vi.mock('./signaling-connection.js', () => ({
 }));
 
 beforeEach(() => {
-	__resetBotConnections();
+	__resetClawConnections();
 });
 
-describe('useBotConnections()', () => {
+describe('useClawConnections()', () => {
 	test('返回单例', () => {
-		const a = useBotConnections();
-		const b = useBotConnections();
+		const a = useClawConnections();
+		const b = useClawConnections();
 		expect(a).toBe(b);
 	});
 
-	test('返回 BotConnectionManager 实例', () => {
-		expect(useBotConnections()).toBeInstanceOf(BotConnectionManager);
+	test('返回 ClawConnectionManager 实例', () => {
+		expect(useClawConnections()).toBeInstanceOf(ClawConnectionManager);
 	});
 });
 
-describe('__resetBotConnections()', () => {
-	test('重置后 useBotConnections() 返回新实例', () => {
-		const a = useBotConnections();
-		__resetBotConnections();
-		const b = useBotConnections();
+describe('__resetClawConnections()', () => {
+	test('重置后 useClawConnections() 返回新实例', () => {
+		const a = useClawConnections();
+		__resetClawConnections();
+		const b = useClawConnections();
 		expect(a).not.toBe(b);
 	});
 
 	test('重置时断开所有现有连接', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		const conn = mgr.connect('bot-1');
-		__resetBotConnections();
+		__resetClawConnections();
 		expect(conn.disconnected).toBe(true);
 	});
 
 	test('重置空单例不报错', () => {
 		// instance 已被 beforeEach 重置为 null，再次重置应无副作用
-		expect(() => __resetBotConnections()).not.toThrow();
+		expect(() => __resetClawConnections()).not.toThrow();
 	});
 });
 
-describe('connect(botId)', () => {
+describe('connect(clawId)', () => {
 	test('创建连接实例', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		const conn = mgr.connect('bot-1');
 		expect(conn).toBeDefined();
-		expect(conn.botId).toBe('bot-1');
+		expect(conn.clawId).toBe('bot-1');
 	});
 
 	test('幂等：第二次 connect 返回同一实例', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		const first = mgr.connect('bot-1');
 		const second = mgr.connect('bot-1');
 		expect(first).toBe(second);
 	});
 
-	test('数字 botId 被转换为字符串', () => {
-		const mgr = useBotConnections();
+	test('数字 clawId 被转换为字符串', () => {
+		const mgr = useClawConnections();
 		const conn = mgr.connect(42);
-		expect(conn.botId).toBe('42');
+		expect(conn.clawId).toBe('42');
 		// 用字符串也能找到同一实例
 		expect(mgr.get('42')).toBe(conn);
 	});
 
-	test('不同 botId 创建独立连接', () => {
-		const mgr = useBotConnections();
+	test('不同 clawId 创建独立连接', () => {
+		const mgr = useClawConnections();
 		const c1 = mgr.connect('bot-1');
 		const c2 = mgr.connect('bot-2');
 		expect(c1).not.toBe(c2);
 	});
 });
 
-describe('disconnect(botId)', () => {
+describe('disconnect(clawId)', () => {
 	test('调用连接的 disconnect() 并从 manager 移除', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		const conn = mgr.connect('bot-1');
 		mgr.disconnect('bot-1');
 		expect(conn.disconnected).toBe(true);
 		expect(mgr.get('bot-1')).toBeUndefined();
 	});
 
-	test('对不存在的 botId 不报错', () => {
-		const mgr = useBotConnections();
+	test('对不存在的 clawId 不报错', () => {
+		const mgr = useClawConnections();
 		expect(() => mgr.disconnect('no-such-bot')).not.toThrow();
 	});
 
-	test('数字 botId 正常断开', () => {
-		const mgr = useBotConnections();
+	test('数字 clawId 正常断开', () => {
+		const mgr = useClawConnections();
 		mgr.connect(7);
 		mgr.disconnect(7);
 		expect(mgr.get('7')).toBeUndefined();
 	});
 });
 
-describe('get(botId)', () => {
+describe('get(clawId)', () => {
 	test('返回已建立的连接', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		const conn = mgr.connect('bot-1');
 		expect(mgr.get('bot-1')).toBe(conn);
 	});
 
 	test('不存在时返回 undefined', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		expect(mgr.get('ghost')).toBeUndefined();
 	});
 
 	test('断开后返回 undefined', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.disconnect('bot-1');
 		expect(mgr.get('bot-1')).toBeUndefined();
 	});
 });
 
-describe('syncConnections(botIds)', () => {
+describe('syncConnections(clawIds)', () => {
 	test('连接新增的 bot', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.syncConnections(['bot-1', 'bot-2']);
 		expect(mgr.get('bot-1')).toBeDefined();
 		expect(mgr.get('bot-2')).toBeDefined();
@@ -138,7 +138,7 @@ describe('syncConnections(botIds)', () => {
 	});
 
 	test('断开已移除的 bot', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		const old = mgr.get('bot-2');
@@ -149,7 +149,7 @@ describe('syncConnections(botIds)', () => {
 	});
 
 	test('不重复连接已存在的 bot', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		const existing = mgr.connect('bot-1');
 		mgr.syncConnections(['bot-1', 'bot-2']);
 		expect(mgr.get('bot-1')).toBe(existing);
@@ -157,15 +157,15 @@ describe('syncConnections(botIds)', () => {
 	});
 
 	test('传入空数组时断开所有连接', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		mgr.syncConnections([]);
 		expect(mgr.size).toBe(0);
 	});
 
-	test('重复 botId 只建立一个连接', () => {
-		const mgr = useBotConnections();
+	test('重复 clawId 只建立一个连接', () => {
+		const mgr = useClawConnections();
 		mgr.syncConnections(['bot-1', 'bot-1']);
 		expect(mgr.size).toBe(1);
 	});
@@ -173,7 +173,7 @@ describe('syncConnections(botIds)', () => {
 
 describe('disconnectAll()', () => {
 	test('断开所有连接并清空 manager', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		const c1 = mgr.connect('bot-1');
 		const c2 = mgr.connect('bot-2');
 		mgr.disconnectAll();
@@ -183,14 +183,14 @@ describe('disconnectAll()', () => {
 	});
 
 	test('无连接时不报错', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		expect(() => mgr.disconnectAll()).not.toThrow();
 	});
 });
 
 describe('getStates()', () => {
-	test('返回所有连接的 botId → signaling WS state 映射', () => {
-		const mgr = useBotConnections();
+	test('返回所有连接的 clawId → signaling WS state 映射', () => {
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		const states = mgr.getStates();
@@ -198,12 +198,12 @@ describe('getStates()', () => {
 	});
 
 	test('无连接时返回空对象', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		expect(mgr.getStates()).toEqual({});
 	});
 
 	test('断开连接后不再出现在 getStates() 中', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		mgr.disconnect('bot-1');
@@ -213,18 +213,18 @@ describe('getStates()', () => {
 
 describe('size', () => {
 	test('初始为 0', () => {
-		expect(useBotConnections().size).toBe(0);
+		expect(useClawConnections().size).toBe(0);
 	});
 
 	test('随连接增加', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		expect(mgr.size).toBe(2);
 	});
 
 	test('随断开减少', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		mgr.disconnect('bot-1');
@@ -232,7 +232,7 @@ describe('size', () => {
 	});
 
 	test('disconnectAll 后归零', () => {
-		const mgr = useBotConnections();
+		const mgr = useClawConnections();
 		mgr.connect('bot-1');
 		mgr.connect('bot-2');
 		mgr.disconnectAll();

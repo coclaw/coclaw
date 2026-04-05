@@ -12,42 +12,42 @@ vi.mock('./http.js', () => ({
 
 import {
 	cancelBindingCode,
-	claimBot,
+	claimClaw,
 	createBindingCode,
-	listBots,
-	unbindBotByUser,
+	listClaws,
+	unbindClawByUser,
 	waitBindingCode,
-} from './bots.api.js';
+} from './claws.api.js';
 
 describe('bots api', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
 
-	// listBots
-	test('listBots 应返回 items 数组', async () => {
+	// listClaws
+	test('listClaws 应返回 items 数组', async () => {
 		mockedHttp.get.mockResolvedValue({
 			data: { items: [{ id: 'bot1' }, { id: 'bot2' }] },
 		});
 
-		const result = await listBots();
+		const result = await listClaws();
 
 		expect(mockedHttp.get).toHaveBeenCalledWith('/api/v1/claws');
 		expect(result).toEqual([{ id: 'bot1' }, { id: 'bot2' }]);
 	});
 
-	test('listBots 在 data.items 缺失时应返回空数组', async () => {
+	test('listClaws 在 data.items 缺失时应返回空数组', async () => {
 		mockedHttp.get.mockResolvedValue({ data: {} });
 
-		const result = await listBots();
+		const result = await listClaws();
 
 		expect(result).toEqual([]);
 	});
 
-	test('listBots 在 data 为 null 时应返回空数组', async () => {
+	test('listClaws 在 data 为 null 时应返回空数组', async () => {
 		mockedHttp.get.mockResolvedValue({ data: null });
 
-		const result = await listBots();
+		const result = await listClaws();
 
 		expect(result).toEqual([]);
 	});
@@ -126,42 +126,42 @@ describe('bots api', () => {
 		expect(mockedHttp.delete).toHaveBeenCalledWith('/api/v1/claws/binding-codes/ABC123');
 	});
 
-	// claimBot
-	test('claimBot 应 POST 带 code 并返回 clawId/clawName', async () => {
+	// claimClaw
+	test('claimClaw 应 POST 带 code 并返回 clawId/clawName', async () => {
 		mockedHttp.post.mockResolvedValue({
 			data: { clawId: 'b1', clawName: 'MyBot' },
 		});
 
-		const result = await claimBot('ABC123');
+		const result = await claimClaw('ABC123');
 
 		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/claws/claim', { code: 'ABC123' });
 		expect(result).toEqual({ clawId: 'b1', clawName: 'MyBot' });
 	});
 
-	test('claimBot 在 data 缺失时应返回 null 默认值', async () => {
+	test('claimClaw 在 data 缺失时应返回 null 默认值', async () => {
 		mockedHttp.post.mockResolvedValue({ data: null });
 
-		const result = await claimBot('ABC123');
+		const result = await claimClaw('ABC123');
 
 		expect(result).toEqual({ clawId: null, clawName: null });
 	});
 
-	// unbindBotByUser
-	test('unbindBotByUser 应 POST 带 clawId 并返回 clawId/status', async () => {
+	// unbindClawByUser
+	test('unbindClawByUser 应 POST 带 clawId 并返回 clawId/status', async () => {
 		mockedHttp.post.mockResolvedValue({
 			data: { clawId: 'b1', status: 'unbound' },
 		});
 
-		const result = await unbindBotByUser('b1');
+		const result = await unbindClawByUser('b1');
 
 		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/claws/unbind-by-user', { clawId: 'b1' });
 		expect(result).toEqual({ clawId: 'b1', status: 'unbound' });
 	});
 
-	test('unbindBotByUser 在 data 缺失时应返回 null 默认值', async () => {
+	test('unbindClawByUser 在 data 缺失时应返回 null 默认值', async () => {
 		mockedHttp.post.mockResolvedValue({ data: null });
 
-		const result = await unbindBotByUser('b1');
+		const result = await unbindClawByUser('b1');
 
 		expect(result).toEqual({ clawId: null, status: null });
 	});

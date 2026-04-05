@@ -6,7 +6,7 @@
 
 <script>
 import { useAgentsStore } from '../stores/agents.store.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { useEnvStore } from '../stores/env.store.js';
 
 const TIMEOUT_MS = 5000;
@@ -26,7 +26,7 @@ export default {
 			this.$router.replace('/topics');
 			return;
 		}
-		// 桌面端：等待 bot 数据就绪后决定跳转目标
+		// 桌面端：等待 claw 数据就绪后决定跳转目标
 		this.timer = setTimeout(() => this.fallback(), TIMEOUT_MS);
 		try {
 			await this.resolveDesktopRoute();
@@ -48,35 +48,35 @@ export default {
 	},
 	methods: {
 		async resolveDesktopRoute() {
-			const botsStore = useBotsStore();
-			await this.waitFetched(botsStore);
-			const bots = botsStore.items;
+			const clawsStore = useClawsStore();
+			await this.waitFetched(clawsStore);
+			const bots = clawsStore.items;
 
 			if (!bots.length) {
-				this.go('/bots/add');
+				this.go('/claws/add');
 				return;
 			}
 
-			const onlineBot = bots.find((b) => b.online);
-			if (!onlineBot) {
-				this.go('/bots');
+			const onlineClaw = bots.find((b) => b.online);
+			if (!onlineClaw) {
+				this.go('/claws');
 				return;
 			}
 
 			const agentsStore = useAgentsStore();
-			await agentsStore.loadAgents(onlineBot.id);
-			const defaultId = agentsStore.byBot[onlineBot.id]?.defaultId || 'main';
+			await agentsStore.loadAgents(onlineClaw.id);
+			const defaultId = agentsStore.byClaw[onlineClaw.id]?.defaultId || 'main';
 			this.go({
 				name: 'chat',
-				params: { botId: String(onlineBot.id), agentId: defaultId },
+				params: { clawId: String(onlineClaw.id), agentId: defaultId },
 			});
 		},
-		/** 等待 SSE 快照到达（botsStore.fetched = true） */
-		waitFetched(botsStore) {
-			if (botsStore.fetched) return Promise.resolve();
+		/** 等待 SSE 快照到达（clawsStore.fetched = true） */
+		waitFetched(clawsStore) {
+			if (clawsStore.fetched) return Promise.resolve();
 			return new Promise((resolve) => {
 				this.__unwatchFetched = this.$watch(
-					() => botsStore.fetched,
+					() => clawsStore.fetched,
 					(val) => {
 						if (val) {
 							this.__unwatchFetched();
@@ -99,7 +99,7 @@ export default {
 		},
 		fallback() {
 			this.timer = null;
-			this.go('/bots');
+			this.go('/claws');
 		},
 	},
 };

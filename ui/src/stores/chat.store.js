@@ -7,7 +7,7 @@
  */
 import { defineStore } from 'pinia';
 
-import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useClawConnections } from '../services/claw-connection-manager.js';
 import { postFile } from '../services/file-transfer.js';
 import { fileToBase64, chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
@@ -25,13 +25,13 @@ function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
  * 创建 ChatStore 实例
  * @param {string} storeKey - 如 'session:1:main' 或 'topic:uuid'
  * @param {object} [opts]
- * @param {string} [opts.botId]
+ * @param {string} [opts.clawId]
  * @param {string} [opts.agentId]
  * @returns {object} Pinia store 实例
  */
 export function createChatStore(storeKey, opts = {}) {
 	const topicMode = storeKey.startsWith('topic:');
-	const botId = String(opts.botId || '');
+	const clawId = String(opts.clawId || '');
 	const agentId = opts.agentId || 'main';
 	const sessionId = topicMode ? storeKey.slice('topic:'.length) : '';
 	const chatSessionKey = topicMode ? '' : `agent:${agentId}:main`;
@@ -40,7 +40,7 @@ export function createChatStore(storeKey, opts = {}) {
 	const useStore = defineStore(`chat-${storeKey}`, {
 		state: () => ({
 			// Identity（创建后不变）
-			botId,
+			clawId,
 			topicMode,
 			chatSessionKey,
 			sessionId,
@@ -134,9 +134,9 @@ export function createChatStore(storeKey, opts = {}) {
 			async activate({ skipLoad = false } = {}) {
 				if (!this.__initialized) {
 					this.__initialized = true;
-					if (!this.botId || skipLoad) return;
+					if (!this.clawId || skipLoad) return;
 
-					const conn = getReadyConn(this.botId);
+					const conn = getReadyConn(this.clawId);
 					if (!conn) {
 						console.debug('[chat] activate: connection not ready, waiting for connReady');
 						this.loading = true;
@@ -191,13 +191,13 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__messagesLoaded = true;
 					return false;
 				}
-				const conn = getReadyConn(this.botId);
+				const conn = getReadyConn(this.clawId);
 				if (!conn) {
-					console.debug('[chat] loadMessages: connection not ready botId=%s', this.botId);
+					console.debug('[chat] loadMessages: connection not ready clawId=%s', this.clawId);
 					if (!silent) this.loading = true;
 					return false;
 				}
-				console.debug('[chat] loadMessages sessionKey=%s botId=%s', this.chatSessionKey, this.botId);
+				console.debug('[chat] loadMessages sessionKey=%s clawId=%s', this.chatSessionKey, this.clawId);
 				if (!silent) {
 					this.loading = true;
 					this.errorText = '';
@@ -269,7 +269,7 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!this.hasMoreMessages || this.messagesLoading) return false;
 				if (this.topicMode || !this.chatSessionKey) return false;
 
-				const conn = getReadyConn(this.botId);
+				const conn = getReadyConn(this.clawId);
 				if (!conn) return false;
 
 				this.messagesLoading = true;
@@ -282,7 +282,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
 					const wrapped = wrapOcMessages(flatMsgs);
 
-					// 仅保留 streaming 中的 bot 占位；用户乐观消息已被服务端持久化
+					// 仅保留 streaming 中的 claw 占位；用户乐观消息已被服务端持久化
 					const localMsgs = this.messages.filter((m) => m._local && m._streaming);
 					const prevNonLocalCount = this.messages.length - localMsgs.length;
 
@@ -317,13 +317,13 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__messagesLoaded = true;
 					return false;
 				}
-				const conn = getReadyConn(this.botId);
+				const conn = getReadyConn(this.clawId);
 				if (!conn) {
 					if (!silent) this.loading = true;
 					return false;
 				}
 				const prevCount = this.messages.length;
-				console.debug('[chat] loadTopicMessages topicId=%s botId=%s prevMsgCount=%d silent=%s', this.sessionId, this.botId, prevCount, silent);
+				console.debug('[chat] loadTopicMessages topicId=%s clawId=%s prevMsgCount=%d silent=%s', this.sessionId, this.clawId, prevCount, silent);
 				if (!silent) {
 					this.loading = true;
 					this.errorText = '';
@@ -373,9 +373,9 @@ export function createChatStore(storeKey, opts = {}) {
 				if (!this.topicMode && !this.chatSessionKey) return { accepted: false };
 				if (this.topicMode && !this.sessionId) return { accepted: false };
 
-				const conn = useBotConnections().get(this.botId);
+				const conn = useClawConnections().get(this.clawId);
 				if (!conn) {
-					throw new Error('Bot not connected');
+					throw new Error('Claw not connected');
 				}
 
 				console.debug('[chat] sendMessage sessionId=%s topicMode=%s files=%d', this.sessionId, this.topicMode, files?.length ?? 0);
@@ -415,16 +415,16 @@ export function createChatStore(storeKey, opts = {}) {
 						url: (f.isVoice || f.isImg) && f.file ? URL.createObjectURL(f.file) : null,
 					}));
 				}
-				const optimisticBot = {
+				const optimisticClaw = {
 					type: 'message',
-					id: `__local_bot_${Date.now()}`,
+					id: `__local_claw_${Date.now()}`,
 					_local: true,
 					_streaming: true,
 					_startTime: Date.now(),
 					message: { role: 'assistant', content: '', stopReason: null },
 				};
 				// 临时追加到 messages 以便 UI 立即展示（accepted 后移入 runsStore）
-				this.messages = [...this.messages, optimisticUser, optimisticBot];
+				this.messages = [...this.messages, optimisticUser, optimisticClaw];
 
 				const idempotencyKey = __idempotencyKey || crypto.randomUUID();
 
@@ -520,7 +520,7 @@ export function createChatStore(storeKey, opts = {}) {
 								const localMsgs = this.messages.filter((m) => m._local);
 								this.messages = this.messages.filter((m) => !m._local);
 								runsStore.register(runId, {
-									botId: this.botId,
+									clawId: this.clawId,
 									runKey,
 									topicMode: this.topicMode,
 									conn,
@@ -632,9 +632,9 @@ export function createChatStore(storeKey, opts = {}) {
 			 */
 			async resetChat() {
 				if (this.resetting) return null;
-				const conn = useBotConnections().get(this.botId);
+				const conn = useClawConnections().get(this.clawId);
 				if (!conn) {
-					throw new Error('Bot not connected');
+					throw new Error('Claw not connected');
 				}
 				this.resetting = true;
 				try {
@@ -690,7 +690,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {string} command - 如 '/compact'、'/new'、'/help'
 			 */
 			async sendSlashCommand(command) {
-				const conn = getReadyConn(this.botId);
+				const conn = getReadyConn(this.clawId);
 				if (!conn || this.sending) return;
 
 				this.sending = true;
@@ -880,7 +880,7 @@ export function createChatStore(storeKey, opts = {}) {
 			async __loadChatHistory() {
 				if (this.topicMode || !this.chatSessionKey) return;
 				if (this.__historyListPromise) return this.__historyListPromise;
-				const conn = getReadyConn(this.botId);
+				const conn = getReadyConn(this.clawId);
 				if (!conn) return;
 				const p = (async () => {
 					try {
@@ -940,7 +940,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const entry = this.historySessionIds[this.__historyLoadedCount];
 					console.debug('[chat] loadNextHistory: loading session %d/%d id=%s',
 						this.__historyLoadedCount + 1, this.historySessionIds.length, entry.sessionId);
-					const conn = getReadyConn(this.botId);
+					const conn = getReadyConn(this.clawId);
 					if (!conn) return false;
 
 					const agentId = this.__resolveAgentId();
@@ -979,7 +979,7 @@ export function createChatStore(storeKey, opts = {}) {
 
 			/**
 			 * 通过 POST 上传附件并构建最终消息文本
-			 * @param {object} conn - BotConnection
+			 * @param {object} conn - ClawConnection
 			 * @param {string} text - 用户原始文本
 			 * @param {object[]} files - ChatInput 的文件对象数组
 			 * @returns {Promise<{ text: string, voicePaths: string[] }>}
@@ -1055,12 +1055,12 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			__getConnection() {
-				if (!this.botId) return null;
-				return useBotConnections().get(this.botId) ?? null;
+				if (!this.clawId) return null;
+				return useClawConnections().get(this.clawId) ?? null;
 			},
 
 			async __reconcileMessages() {
-				const conn = getReadyConn(this.botId);
+				const conn = getReadyConn(this.clawId);
 				if (!conn) return false;
 
 				try {

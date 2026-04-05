@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 
-import { useBotsStore } from './bots.store.js';
+import { useClawsStore } from './claws.store.js';
 import { getReadyConn } from './get-ready-conn.js';
 import { useAgentsStore } from './agents.store.js';
 import { mapToolsToCapabilities } from '../utils/capability-map.js';
@@ -120,45 +120,45 @@ function computeSessionStats(sessions) {
 // Store
 // =====================================================================
 
-/** per-bot 飞行中请求合并，防止并发调用重复发 RPC */
-const _loadingByBot = new Map();
+/** per-claw 飞行中请求合并，防止并发调用重复发 RPC */
+const _loadingByClaw = new Map();
 
 export const useDashboardStore = defineStore('dashboard', {
 	state: () => ({
-		/** @type {Object<string, DashboardData>} botId → dashboard 数据 */
-		byBot: {},
+		/** @type {Object<string, DashboardData>} clawId → dashboard 数据 */
+		byClaw: {},
 	}),
 
 	getters: {
 		/**
-		 * 获取指定 bot 的 dashboard 数据
+		 * 获取指定 claw 的 dashboard 数据
 		 * @returns {function(string): DashboardData|null}
 		 */
 		getDashboard() {
-			return (botId) => this.byBot[String(botId)] ?? null;
+			return (clawId) => this.byClaw[String(clawId)] ?? null;
 		},
 	},
 
 	actions: {
 		/**
-		 * 加载指定 bot 的完整 dashboard 数据
+		 * 加载指定 claw 的完整 dashboard 数据
 		 * 通过 WS RPC 并行调用多个 gateway 方法，聚合结果
-		 * @param {string} botId
+		 * @param {string} clawId
 		 */
-		async loadDashboard(botId) {
-			const id = String(botId);
+		async loadDashboard(clawId) {
+			const id = String(clawId);
 
-			// 飞行中守卫：同一 bot 的并发调用复用已有 promise
-			if (_loadingByBot.has(id)) return _loadingByBot.get(id);
+			// 飞行中守卫：同一 claw 的并发调用复用已有 promise
+			if (_loadingByClaw.has(id)) return _loadingByClaw.get(id);
 
 			const conn = getReadyConn(id);
 			if (!conn) return;
 
 			// 初始化 entry
-			if (!this.byBot[id]) {
-				this.byBot[id] = { loading: false, error: null, instance: null, agents: [] };
+			if (!this.byClaw[id]) {
+				this.byClaw[id] = { loading: false, error: null, instance: null, agents: [] };
 			}
-			const entry = this.byBot[id];
+			const entry = this.byClaw[id];
 			entry.loading = true;
 			entry.error = null;
 
@@ -166,10 +166,10 @@ export const useDashboardStore = defineStore('dashboard', {
 				try {
 					// 先确保 agent 列表已加载
 					const agentsStore = useAgentsStore();
-					if (!agentsStore.byBot[id]?.fetched) {
+					if (!agentsStore.byClaw[id]?.fetched) {
 						await agentsStore.loadAgents(id);
 					}
-					const agentList = agentsStore.getAgentsByBot(id);
+					const agentList = agentsStore.getAgentsByClaw(id);
 
 					// 并行调用所有 RPC（allSettled 部分失败不影响整体）
 					const [
@@ -201,13 +201,13 @@ export const useDashboardStore = defineStore('dashboard', {
 					const channels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
 
 					// 构建实例总览
-					const botsStore = useBotsStore();
-					const bot = botsStore.byId[id];
-					const pluginInfo = bot?.pluginInfo ?? {};
+					const clawsStore = useClawsStore();
+					const claw = clawsStore.byId[id];
+					const pluginInfo = claw?.pluginInfo ?? {};
 
 					entry.instance = {
-						name: pluginInfo.name || pluginInfo.hostName || bot?.name || 'OpenClaw',
-						online: bot?.online ?? false,
+						name: pluginInfo.name || pluginInfo.hostName || claw?.name || 'OpenClaw',
+						online: claw?.online ?? false,
 						pluginVersion: pluginInfo.version ?? null,
 						clawVersion: pluginInfo.clawVersion ?? null,
 						monthlyCost: usageCost,
@@ -251,25 +251,25 @@ export const useDashboardStore = defineStore('dashboard', {
 					});
 				}
 				catch (err) {
-					console.warn('[dashboard] loadDashboard failed for botId=%s:', id, err?.message);
+					console.warn('[dashboard] loadDashboard failed for clawId=%s:', id, err?.message);
 					entry.error = err?.message ?? 'load failed';
 				}
 				finally {
 					entry.loading = false;
 				}
 			})();
-			_loadingByBot.set(id, p);
+			_loadingByClaw.set(id, p);
 			// 确保飞行中守卫在 promise 结束后清理（即使 IIFE 同步完成也不遗漏）
-			p.finally(() => _loadingByBot.delete(id));
+			p.finally(() => _loadingByClaw.delete(id));
 			return p;
 		},
 
 		/**
-		 * 清除指定 bot 的 dashboard 数据
-		 * @param {string} botId
+		 * 清除指定 claw 的 dashboard 数据
+		 * @param {string} clawId
 		 */
-		clearDashboard(botId) {
-			delete this.byBot[String(botId)];
+		clearDashboard(clawId) {
+			delete this.byClaw[String(clawId)];
 		},
 	},
 });
@@ -281,5 +281,5 @@ export const __test__ = {
 	findCurrentModel,
 	filterSessionsByAgent,
 	computeSessionStats,
-	_loadingByBot,
+	_loadingByClaw,
 };

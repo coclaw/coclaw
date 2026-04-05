@@ -9,7 +9,7 @@ const {
 	findCurrentModel,
 	filterSessionsByAgent,
 	computeSessionStats,
-	_loadingByBot,
+	_loadingByClaw,
 } = __test__;
 
 // =====================================================================
@@ -18,22 +18,22 @@ const {
 
 const mockConnections = new Map();
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
-		get: (botId) => mockConnections.get(String(botId)),
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
+		get: (clawId) => mockConnections.get(String(clawId)),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
-import { useBotsStore } from './bots.store.js';
+import { useClawsStore } from './claws.store.js';
 import { useAgentsStore } from './agents.store.js';
 
 // =====================================================================
@@ -265,14 +265,14 @@ function mockAgentConn(agents, identityMap = {}) {
 	};
 }
 
-/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
-function setConn(botId, conn, { dcReady = true } = {}) {
-	mockConnections.set(String(botId), conn);
-	const botsStore = useBotsStore();
-	if (!botsStore.byId[String(botId)]) {
-		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+/** 注册 mock conn 并设置 clawsStore 中 claw 的 dcReady */
+function setConn(clawId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(clawId), conn);
+	const clawsStore = useClawsStore();
+	if (!clawsStore.byId[String(clawId)]) {
+		clawsStore.byId[String(clawId)] = { id: String(clawId), dcReady };
 	} else {
-		botsStore.byId[String(botId)].dcReady = dcReady;
+		clawsStore.byId[String(clawId)].dcReady = dcReady;
 	}
 }
 
@@ -280,7 +280,7 @@ describe('dashboard store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
-		_loadingByBot.clear();
+		_loadingByClaw.clear();
 		vi.clearAllMocks();
 	});
 
@@ -290,9 +290,9 @@ describe('dashboard store', () => {
 	});
 
 	test('loadDashboard 成功加载完整数据', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'MyBot', online: true }]);
-		botsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0' };
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'MyBot', online: true }]);
+		clawsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0' };
 
 		// 先注册 agents mock conn
 		const agentConn = mockAgentConn(
@@ -332,7 +332,7 @@ describe('dashboard store', () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
 
-		const entry = store.byBot['bot-1'];
+		const entry = store.byClaw['bot-1'];
 		expect(entry.loading).toBe(false);
 		expect(entry.error).toBeNull();
 
@@ -365,12 +365,12 @@ describe('dashboard store', () => {
 		expect(agent.capabilities.some(c => c.id === 'file_ops')).toBe(true);
 	});
 
-	test('instance.name 优先使用 pluginInfo.name，其次 hostName，再 bot.name', async () => {
-		const botsStore = useBotsStore();
+	test('instance.name 优先使用 pluginInfo.name，其次 hostName，再 claw.name', async () => {
+		const clawsStore = useClawsStore();
 
 		// 有 pluginInfo.name 时使用 pluginInfo.name
-		botsStore.setBots([{ id: 'bot-1', name: 'ServerName', online: true }]);
-		botsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0', name: 'My Claw', hostName: 'host1' };
+		clawsStore.setClaws([{ id: 'bot-1', name: 'ServerName', online: true }]);
+		clawsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0', name: 'My Claw', hostName: 'host1' };
 
 		const agentConn = mockAgentConn([{ id: 'main', name: 'Main' }]);
 		setConn('bot-1', agentConn);
@@ -391,28 +391,28 @@ describe('dashboard store', () => {
 
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
-		expect(store.byBot['bot-1'].instance.name).toBe('My Claw');
+		expect(store.byClaw['bot-1'].instance.name).toBe('My Claw');
 
 		// 无 pluginInfo.name 时回退到 hostName
-		botsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0', name: null, hostName: 'host1' };
+		clawsStore.byId['bot-1'].pluginInfo = { version: '0.3.0', clawVersion: '0.7.0', name: null, hostName: 'host1' };
 		await store.loadDashboard('bot-1');
-		expect(store.byBot['bot-1'].instance.name).toBe('host1');
+		expect(store.byClaw['bot-1'].instance.name).toBe('host1');
 
-		// 无 pluginInfo 时回退到 bot.name
-		botsStore.byId['bot-1'].pluginInfo = null;
+		// 无 pluginInfo 时回退到 claw.name
+		clawsStore.byId['bot-1'].pluginInfo = null;
 		await store.loadDashboard('bot-1');
-		expect(store.byBot['bot-1'].instance.name).toBe('ServerName');
+		expect(store.byClaw['bot-1'].instance.name).toBe('ServerName');
 
-		// 无 bot.name 时回退到 OpenClaw
-		botsStore.byId['bot-1'].name = null;
-		botsStore.byId['bot-1'].pluginInfo = null;
+		// 无 claw.name 时回退到 OpenClaw
+		clawsStore.byId['bot-1'].name = null;
+		clawsStore.byId['bot-1'].pluginInfo = null;
 		await store.loadDashboard('bot-1');
-		expect(store.byBot['bot-1'].instance.name).toBe('OpenClaw');
+		expect(store.byClaw['bot-1'].instance.name).toBe('OpenClaw');
 	});
 
 	test('loadDashboard 部分 RPC 失败时优雅降级', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
 		// 预加载 agents
 		const agentConn = mockAgentConn([{ id: 'main', name: 'Main' }]);
@@ -435,7 +435,7 @@ describe('dashboard store', () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
 
-		const entry = store.byBot['bot-1'];
+		const entry = store.byClaw['bot-1'];
 		expect(entry.loading).toBe(false);
 		expect(entry.error).toBeNull(); // allSettled 不触发 catch
 
@@ -450,10 +450,10 @@ describe('dashboard store', () => {
 		expect(entry.agents[0].activeSessions).toBe(0);
 	});
 
-	test('loadDashboard bot 未连接时直接返回', async () => {
+	test('loadDashboard claw 未连接时直接返回', async () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('no-conn');
-		expect(store.byBot['no-conn']).toBeUndefined();
+		expect(store.byClaw['no-conn']).toBeUndefined();
 	});
 
 	test('loadDashboard conn 状态非 connected 时直接返回且不污染飞行中守卫', async () => {
@@ -462,15 +462,15 @@ describe('dashboard store', () => {
 
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
-		expect(store.byBot['bot-1']).toBeUndefined();
+		expect(store.byClaw['bot-1']).toBeUndefined();
 		expect(conn.request).not.toHaveBeenCalled();
 		// 提前返回不应留下飞行中守卫
-		expect(_loadingByBot.has('bot-1')).toBe(false);
+		expect(_loadingByClaw.has('bot-1')).toBe(false);
 	});
 
 	test('loadDashboard 异常时记录 error', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
 		// 预加载 agents 避免 loadAgents 内部吞错
 		const agentConn = mockAgentConn([{ id: 'main' }]);
@@ -490,31 +490,31 @@ describe('dashboard store', () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
 
-		const entry = store.byBot['bot-1'];
+		const entry = store.byClaw['bot-1'];
 		expect(entry.loading).toBe(false);
 		expect(entry.error).toBe('total failure');
 		// 失败后飞行中守卫应已清理
-		expect(_loadingByBot.has('bot-1')).toBe(false);
+		expect(_loadingByClaw.has('bot-1')).toBe(false);
 		warnSpy.mockRestore();
 	});
 
 	test('clearDashboard 清除数据', async () => {
 		const store = useDashboardStore();
-		store.byBot['bot-1'] = { loading: false, error: null, instance: {}, agents: [] };
+		store.byClaw['bot-1'] = { loading: false, error: null, instance: {}, agents: [] };
 		expect(store.getDashboard('bot-1')).not.toBeNull();
 
 		store.clearDashboard('bot-1');
 		expect(store.getDashboard('bot-1')).toBeNull();
 	});
 
-	test('clearDashboard 对不存在的 bot 不报错', () => {
+	test('clearDashboard 对不存在的 claw 不报错', () => {
 		const store = useDashboardStore();
 		expect(() => store.clearDashboard('nonexist')).not.toThrow();
 	});
 
-	test('loadDashboard 将 botId 归一化为 string', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: '42', name: 'Bot42', online: true }]);
+	test('loadDashboard 将 clawId 归一化为 string', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: '42', name: 'Bot42', online: true }]);
 
 		const agentConn = mockAgentConn([{ id: 'main' }]);
 		setConn('42', agentConn);
@@ -534,13 +534,13 @@ describe('dashboard store', () => {
 
 		const store = useDashboardStore();
 		await store.loadDashboard(42);
-		expect(store.byBot['42']).toBeDefined();
-		expect(store.byBot['42'].loading).toBe(false);
+		expect(store.byClaw['42']).toBeDefined();
+		expect(store.byClaw['42'].loading).toBe(false);
 	});
 
 	test('loadDashboard 并发调用复用飞行中 promise', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
 		const agentConn = mockAgentConn([{ id: 'main' }]);
 		setConn('bot-1', agentConn);
@@ -565,7 +565,7 @@ describe('dashboard store', () => {
 		await Promise.all([p1, p2]);
 
 		// 飞行中 map 已清理
-		expect(_loadingByBot.has('bot-1')).toBe(false);
+		expect(_loadingByClaw.has('bot-1')).toBe(false);
 
 		// RPC 仅调用一批（status 只调用一次）
 		const statusCalls = dashConn.request.mock.calls.filter(([m]) => m === 'status');
@@ -573,14 +573,14 @@ describe('dashboard store', () => {
 	});
 
 	test('loadDashboard agents 已加载时不重复调用 loadAgents', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
 		const agentConn = mockAgentConn([{ id: 'main' }]);
 		setConn('bot-1', agentConn);
 		const agentsStore = useAgentsStore();
 		await agentsStore.loadAgents('bot-1');
-		expect(agentsStore.byBot['bot-1'].fetched).toBe(true);
+		expect(agentsStore.byClaw['bot-1'].fetched).toBe(true);
 
 		// spy loadAgents 不应再被调用
 		const loadSpy = vi.spyOn(agentsStore, 'loadAgents');

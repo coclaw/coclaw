@@ -7,7 +7,7 @@
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 
 /**
- * 从消息数组末尾查找 streaming bot 条目
+ * 从消息数组末尾查找 streaming claw 条目
  * @param {object[]} msgs
  * @returns {object | null}
  */

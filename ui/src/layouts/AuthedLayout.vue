@@ -38,12 +38,12 @@
 import { ref } from 'vue';
 import DesktopSidebar from '../components/DesktopSidebar.vue';
 import MobileBottomTabs from '../components/MobileBottomTabs.vue';
-import { useBotStatusSse } from '../composables/use-bot-status-sse.js';
+import { useClawStatusSse } from '../composables/use-claw-status-sse.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useRemoteLog } from '../services/remote-log.js';
 import { usePullRefresh } from '../composables/use-pull-refresh.js';
 import { useAuthStore } from '../stores/auth.store.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { isCapacitorApp } from '../utils/platform.js';
 
 export default {
@@ -53,8 +53,8 @@ export default {
 		MobileBottomTabs,
 	},
 	setup() {
-		const botsStore = useBotsStore();
-		useBotStatusSse(botsStore);
+		const clawsStore = useClawsStore();
+		useClawStatusSse(clawsStore);
 		useSignalingConnection().connect();
 		useRemoteLog();
 

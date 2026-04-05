@@ -2,7 +2,7 @@ import { createPinia } from 'pinia';
 import { mount, flushPromises } from '@vue/test-utils';
 import { vi } from 'vitest';
 
-import AddBotPage from './AddBotPage.vue';
+import AddClawPage from './AddClawPage.vue';
 
 const mockCreateBindingCode = vi.fn().mockResolvedValue({
 	code: '12345678',
@@ -15,8 +15,8 @@ const mockCreateBindingCode = vi.fn().mockResolvedValue({
 const mockWaitBindingCode = vi.fn().mockReturnValue(new Promise(() => {}));
 const mockCancelBindingCode = vi.fn().mockResolvedValue(undefined);
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 	createBindingCode: (...args) => mockCreateBindingCode(...args),
 	waitBindingCode: (...args) => mockWaitBindingCode(...args),
 	cancelBindingCode: (...args) => mockCancelBindingCode(...args),
@@ -38,22 +38,22 @@ const UButtonStub = {
 };
 
 const i18nMap = {
-	'bots.addBot': '添加机器人',
-	'bots.preparing': '正在准备，请稍候…',
-	'bots.retry': '重试',
-	'bots.restart': '重新开始',
-	'bots.chatMethodTitle': '方式一：通过对话',
-	'bots.chatMethodDesc': '如果你已经能和你的 OpenClaw 聊天（比如通过 QQ、飞书等），把下面的内容复制发送给它',
-	'bots.shellMethodTitle': '方式二：通过终端',
-	'bots.shellMethodDesc': '如果你能打开 OpenClaw 所在电脑的终端（命令行），复制下面的命令执行即可',
-	'bots.shellSemicolonHint': '如果手动输入，请注意两条命令之间用分号（;）分隔',
-	'bots.copy': '复制',
-	'bots.commandCopied': '已复制',
-	'bots.expired': '已过期，请点击"重新开始"',
+	'claws.addClaw': '添加机器人',
+	'claws.preparing': '正在准备，请稍候…',
+	'claws.retry': '重试',
+	'claws.restart': '重新开始',
+	'claws.chatMethodTitle': '方式一：通过对话',
+	'claws.chatMethodDesc': '如果你已经能和你的 OpenClaw 聊天（比如通过 QQ、飞书等），把下面的内容复制发送给它',
+	'claws.shellMethodTitle': '方式二：通过终端',
+	'claws.shellMethodDesc': '如果你能打开 OpenClaw 所在电脑的终端（命令行），复制下面的命令执行即可',
+	'claws.shellSemicolonHint': '如果手动输入，请注意两条命令之间用分号（;）分隔',
+	'claws.copy': '复制',
+	'claws.commandCopied': '已复制',
+	'claws.expired': '已过期，请点击"重新开始"',
 };
 
 function createWrapper(overrides = {}) {
-	return mount(AddBotPage, {
+	return mount(AddClawPage, {
 		global: {
 			plugins: [createPinia()],
 			stubs: {
@@ -62,10 +62,10 @@ function createWrapper(overrides = {}) {
 			},
 			mocks: {
 				$t: (key, params) => {
-					if (key === 'bots.chatPrompt') {
+					if (key === 'claws.chatPrompt') {
 						return `请帮我依次运行以下两条命令。即使第一条提示已安装或执行失败，也请继续执行第二条：\n1. openclaw plugins install @coclaw/openclaw-coclaw\n2. openclaw coclaw bind ${params?.code ?? ''}${params?.serverSuffix ?? ''}\n注意：必须使用 openclaw plugins install 安装插件，不要用 npm install -g，否则 OpenClaw 无法识别。`;
 					}
-					if (key === 'bots.expiryLeft') {
+					if (key === 'claws.expiryLeft') {
 						return `有效期剩余 ${params?.time ?? ''}`;
 					}
 					return i18nMap[key] ?? key;
@@ -135,7 +135,7 @@ test('should show error state and retry button on failure and log warning', asyn
 
 	expect(wrapper.text()).toContain('network error');
 	expect(wrapper.text()).toContain('重试');
-	expect(warnSpy).toHaveBeenCalledWith('[AddBotPage] startBinding failed:', err);
+	expect(warnSpy).toHaveBeenCalledWith('[AddClawPage] startBinding failed:', err);
 	warnSpy.mockRestore();
 });
 

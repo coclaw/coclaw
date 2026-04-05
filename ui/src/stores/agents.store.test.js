@@ -5,22 +5,22 @@ import { useAgentsStore } from './agents.store.js';
 
 const mockConnections = new Map();
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
-		get: (botId) => mockConnections.get(String(botId)),
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
+		get: (clawId) => mockConnections.get(String(clawId)),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
-import { useBotsStore } from './bots.store.js';
+import { useClawsStore } from './claws.store.js';
 
 function mockConn(agents = [], _state = 'connected', identityMap = {}) {
 	return {
@@ -39,14 +39,14 @@ function mockConn(agents = [], _state = 'connected', identityMap = {}) {
 	};
 }
 
-/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
-function setConn(botId, conn, { dcReady = true } = {}) {
-	mockConnections.set(String(botId), conn);
-	const botsStore = useBotsStore();
-	if (!botsStore.byId[String(botId)]) {
-		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+/** 注册 mock conn 并设置 clawsStore 中 claw 的 dcReady */
+function setConn(clawId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(clawId), conn);
+	const clawsStore = useClawsStore();
+	if (!clawsStore.byId[String(clawId)]) {
+		clawsStore.byId[String(clawId)] = { id: String(clawId), dcReady };
 	} else {
-		botsStore.byId[String(botId)].dcReady = dcReady;
+		clawsStore.byId[String(clawId)].dcReady = dcReady;
 	}
 }
 
@@ -72,12 +72,12 @@ describe('agents store', () => {
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
 
-		expect(store.byBot['bot-1'].agents).toHaveLength(2);
-		expect(store.byBot['bot-1'].agents[0].resolvedIdentity).toEqual(identityMap.main);
-		expect(store.byBot['bot-1'].agents[1].resolvedIdentity).toEqual(identityMap.ops);
-		expect(store.byBot['bot-1'].defaultId).toBe('main');
-		expect(store.byBot['bot-1'].fetched).toBe(true);
-		expect(store.byBot['bot-1'].loading).toBe(false);
+		expect(store.byClaw['bot-1'].agents).toHaveLength(2);
+		expect(store.byClaw['bot-1'].agents[0].resolvedIdentity).toEqual(identityMap.main);
+		expect(store.byClaw['bot-1'].agents[1].resolvedIdentity).toEqual(identityMap.ops);
+		expect(store.byClaw['bot-1'].defaultId).toBe('main');
+		expect(store.byClaw['bot-1'].fetched).toBe(true);
+		expect(store.byClaw['bot-1'].loading).toBe(false);
 		expect(conn.request).toHaveBeenCalledWith('agents.list', {});
 		expect(conn.request).toHaveBeenCalledWith('agent.identity.get', { agentId: 'main' });
 		expect(conn.request).toHaveBeenCalledWith('agent.identity.get', { agentId: 'ops' });
@@ -86,7 +86,7 @@ describe('agents store', () => {
 	test('loadAgents 无连接时应跳过', async () => {
 		const store = useAgentsStore();
 		await store.loadAgents('no-conn');
-		expect(store.byBot['no-conn']).toBeUndefined();
+		expect(store.byClaw['no-conn']).toBeUndefined();
 	});
 
 	test('loadAgents 连接未就绪时应跳过', async () => {
@@ -95,7 +95,7 @@ describe('agents store', () => {
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
-		expect(store.byBot['bot-1']).toBeUndefined();
+		expect(store.byClaw['bot-1']).toBeUndefined();
 		expect(conn.request).not.toHaveBeenCalled();
 	});
 
@@ -109,8 +109,8 @@ describe('agents store', () => {
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
-		expect(store.byBot['bot-1'].agents).toEqual([]);
-		expect(store.byBot['bot-1'].loading).toBe(false);
+		expect(store.byClaw['bot-1'].agents).toEqual([]);
+		expect(store.byClaw['bot-1'].loading).toBe(false);
 	});
 
 	test('identity.get 失败时 resolvedIdentity 为 null', async () => {
@@ -127,7 +127,7 @@ describe('agents store', () => {
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
-		expect(store.byBot['bot-1'].agents[0].resolvedIdentity).toBeNull();
+		expect(store.byClaw['bot-1'].agents[0].resolvedIdentity).toBeNull();
 	});
 
 	test('并发 loadAgents 应复用飞行中请求（in-flight dedup）', async () => {
@@ -158,8 +158,8 @@ describe('agents store', () => {
 		resolveReq({ defaultId: 'main', agents: [{ id: 'main', name: 'main' }] });
 		await Promise.all([p1, p2, p3]);
 
-		expect(store.byBot['bot-1'].agents).toHaveLength(1);
-		expect(store.byBot['bot-1'].loading).toBe(false);
+		expect(store.byClaw['bot-1'].agents).toHaveLength(1);
+		expect(store.byClaw['bot-1'].loading).toBe(false);
 
 		// dedup 清理后，新调用应发起新请求
 		reqCount = 0;
@@ -170,7 +170,7 @@ describe('agents store', () => {
 		await p4;
 	});
 
-	test('getAgentsByBot 应返回指定 bot 的 agents', async () => {
+	test('getAgentsByClaw 应返回指定 claw 的 agents', async () => {
 		const agents = [{ id: 'main', name: 'Main' }];
 		const conn = mockConn(agents);
 		setConn('bot-1', conn);
@@ -178,10 +178,10 @@ describe('agents store', () => {
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
 
-		const result = store.getAgentsByBot('bot-1');
+		const result = store.getAgentsByClaw('bot-1');
 		expect(result).toHaveLength(1);
 		expect(result[0].id).toBe('main');
-		expect(store.getAgentsByBot('unknown')).toEqual([]);
+		expect(store.getAgentsByClaw('unknown')).toEqual([]);
 	});
 
 	test('getAgent 应返回单个 agent', async () => {
@@ -201,9 +201,9 @@ describe('agents store', () => {
 		expect(store.getAgent('bot-1', 'none')).toBeUndefined();
 	});
 
-	test('allAgentItems 应返回附带 bot 信息的扁平列表', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+	test('allAgentItems 应返回附带 claw 信息的扁平列表', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot One', online: true },
 		]);
 
@@ -219,24 +219,24 @@ describe('agents store', () => {
 
 		const items = store.allAgentItems;
 		expect(items).toHaveLength(2);
-		expect(items[0].botId).toBe('bot-1');
-		expect(items[0].botName).toBe('Bot One');
-		expect(items[0].botOnline).toBe(true);
+		expect(items[0].clawId).toBe('bot-1');
+		expect(items[0].clawName).toBe('Bot One');
+		expect(items[0].clawOnline).toBe(true);
 		expect(items[0].id).toBe('main');
 		expect(items[1].id).toBe('ops');
 	});
 
-	test('allAgentItems 无 agents 数据的 bot 不产出条目', () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'Bot', online: true }]);
+	test('allAgentItems 无 agents 数据的 claw 不产出条目', () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
 		const store = useAgentsStore();
 		expect(store.allAgentItems).toEqual([]);
 	});
 
-	test('loadAllAgents 应为所有在线 bot 加载 agents', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+	test('loadAllAgents 应为所有在线 claw 加载 agents', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'B1', online: true },
 			{ id: 'bot-2', name: 'B2', online: true },
 			{ id: 'bot-3', name: 'B3', online: false },
@@ -250,21 +250,21 @@ describe('agents store', () => {
 		const store = useAgentsStore();
 		await store.loadAllAgents();
 
-		expect(store.byBot['bot-1'].agents).toHaveLength(1);
-		expect(store.byBot['bot-2'].agents).toHaveLength(2);
-		expect(store.byBot['bot-3']).toBeUndefined();
+		expect(store.byClaw['bot-1'].agents).toHaveLength(1);
+		expect(store.byClaw['bot-2'].agents).toHaveLength(2);
+		expect(store.byClaw['bot-3']).toBeUndefined();
 	});
 
-	test('removeByBot 应移除指定 bot 的数据', async () => {
+	test('removeByClaw 应移除指定 claw 的数据', async () => {
 		const conn = mockConn([{ id: 'main' }]);
 		setConn('bot-1', conn);
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
-		expect(store.byBot['bot-1']).toBeDefined();
+		expect(store.byClaw['bot-1']).toBeDefined();
 
-		store.removeByBot('bot-1');
-		expect(store.byBot['bot-1']).toBeUndefined();
+		store.removeByClaw('bot-1');
+		expect(store.byClaw['bot-1']).toBeUndefined();
 	});
 
 	// =====================================================================
@@ -273,8 +273,8 @@ describe('agents store', () => {
 
 	describe('getAgentDisplay', () => {
 		test('返回 resolvedIdentity 优先的 name/emoji', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: 'BotName', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'BotName', online: true }]);
 
 			const agents = [{ id: 'main', name: 'main' }];
 			const identityMap = {
@@ -292,9 +292,9 @@ describe('agents store', () => {
 			expect(d.avatarUrl).toBeNull();
 		});
 
-		test('无 resolvedIdentity 时默认 agent fallback 到 botName', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: '我的Bot', online: true }]);
+		test('无 resolvedIdentity 时默认 agent fallback 到 clawName', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: '我的Bot', online: true }]);
 
 			const agents = [{ id: 'main', name: 'main' }];
 			// identity.get 失败 → resolvedIdentity 为 null
@@ -315,9 +315,9 @@ describe('agents store', () => {
 			expect(d.name).toBe('我的Bot');
 		});
 
-		test('非默认 agent 不 fallback 到 botName', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: '我的Bot', online: true }]);
+		test('非默认 agent 不 fallback 到 clawName', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: '我的Bot', online: true }]);
 
 			const agents = [{ id: 'main', name: 'main' }, { id: 'tester', name: 'tester' }];
 			const conn = {
@@ -338,8 +338,8 @@ describe('agents store', () => {
 		});
 
 		test('resolvedIdentity.name 为 Assistant 时应 fallback 到 agent.name', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: 'Assistant', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Assistant', online: true }]);
 
 			const agents = [{ id: 'main', name: '小易' }];
 			const identityMap = {
@@ -356,8 +356,8 @@ describe('agents store', () => {
 		});
 
 		test('多个 agent 无 IDENTITY.md 时应各自显示 agents.list 中的顶层 name', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: 'Assistant', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Assistant', online: true }]);
 
 			const agents = [
 				{ id: 'main', name: '小易' },
@@ -382,8 +382,8 @@ describe('agents store', () => {
 		});
 
 		test('agent.name 等于 agentId 时视为占位名跳过', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: '我的Bot', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: '我的Bot', online: true }]);
 
 			const agents = [{ id: 'main', name: 'main' }];
 			const identityMap = {
@@ -395,16 +395,16 @@ describe('agents store', () => {
 			const store = useAgentsStore();
 			await store.loadAgents('bot-1');
 
-			// agent.name = 'main' = agentId → 被 pick 过滤 → fallback 到 botName
-			// botName = '我的Bot'（非 Assistant 且非 agentId）→ 使用
+			// agent.name = 'main' = agentId → 被 pick 过滤 → fallback 到 clawName
+			// clawName = '我的Bot'（非 Assistant 且非 agentId）→ 使用
 			const d = store.getAgentDisplay('bot-1', 'main');
 			expect(d.name).toBe('我的Bot');
 		});
 
-		test('所有 name 均为默认值时兜底到 agentId（含 botName 过滤）', async () => {
-			const botsStore = useBotsStore();
-			// botName 也是 'Assistant'（server 侧 refreshBotName 同源问题）
-			botsStore.setBots([{ id: 'bot-1', name: 'Assistant', online: true }]);
+		test('所有 name 均为默认值时兜底到 agentId（含 clawName 过滤）', async () => {
+			const clawsStore = useClawsStore();
+			// clawName 也是 'Assistant'（server 侧 refreshBotName 同源问题）
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Assistant', online: true }]);
 
 			const agents = [{ id: 'main', name: 'main' }];
 			const identityMap = {
@@ -417,7 +417,7 @@ describe('agents store', () => {
 			await store.loadAgents('bot-1');
 
 			// ri.name = 'Assistant' → 过滤; agent.name = 'main' = agentId → 过滤;
-			// 默认 agent → botName = 'Assistant' → 过滤; 最终兜底到 agentId
+			// 默认 agent → clawName = 'Assistant' → 过滤; 最终兜底到 agentId
 			const d = store.getAgentDisplay('bot-1', 'main');
 			expect(d.name).toBe('main');
 		});
@@ -431,8 +431,8 @@ describe('agents store', () => {
 		});
 
 		test('avatarUrl 仅接受 data: 和 http(s): URL', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
 
 			const agents = [{
 				id: 'main',
@@ -450,8 +450,8 @@ describe('agents store', () => {
 		});
 
 		test('avatarUrl 为 data URI 时可用', async () => {
-			const botsStore = useBotsStore();
-			botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
 
 			const agents = [{
 				id: 'main',
@@ -489,15 +489,15 @@ describe('agents store', () => {
 		});
 	});
 
-	test('loadAgents 应将 botId 归一化为 string 作为 byBot key', async () => {
+	test('loadAgents 应将 clawId 归一化为 string 作为 byClaw key', async () => {
 		const conn = mockConn([{ id: 'main' }]);
 		setConn('42', conn);
 
 		const store = useAgentsStore();
-		// 传入 numeric botId
+		// 传入 numeric clawId
 		await store.loadAgents(42);
-		expect(store.byBot['42']).toBeDefined();
-		expect(store.byBot['42'].agents).toHaveLength(1);
+		expect(store.byClaw['42']).toBeDefined();
+		expect(store.byClaw['42'].agents).toHaveLength(1);
 	});
 
 	test('identity.get 失败时应输出 debug 日志', async () => {
@@ -537,6 +537,6 @@ describe('agents store', () => {
 
 		const store = useAgentsStore();
 		await store.loadAgents('bot-1');
-		expect(store.byBot['bot-1'].defaultId).toBe('custom');
+		expect(store.byClaw['bot-1'].defaultId).toBe('custom');
 	});
 });

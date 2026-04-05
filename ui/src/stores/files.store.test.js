@@ -8,20 +8,20 @@ vi.mock('../services/file-transfer.js', () => ({
 }));
 
 // mock bot-connection-manager
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: vi.fn(),
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: vi.fn(),
 }));
 
 import { useFilesStore, __createTask } from './files.store.js';
 import { uploadFile, downloadFile } from '../services/file-transfer.js';
-import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useClawConnections } from '../services/claw-connection-manager.js';
 
 function mockBotConn() {
-	const botConn = { rtc: {}, waitReady: vi.fn().mockResolvedValue() };
-	useBotConnections.mockReturnValue({
-		get: (id) => (id === 'bot1' ? botConn : undefined),
+	const clawConn = { rtc: {}, waitReady: vi.fn().mockResolvedValue() };
+	useClawConnections.mockReturnValue({
+		get: (id) => (id === 'bot1' ? clawConn : undefined),
 	});
-	return botConn;
+	return clawConn;
 }
 
 function createMockFile(name, size = 100) {
@@ -51,7 +51,7 @@ describe('files.store', () => {
 
 	describe('enqueueUploads', () => {
 		test('创建 pending 任务并触发上传', async () => {
-			const botConn = mockBotConn();
+			const clawConn = mockBotConn();
 			let resolveUpload;
 			uploadFile.mockReturnValue({
 				promise: new Promise((r) => { resolveUpload = r; }),
@@ -76,7 +76,7 @@ describe('files.store', () => {
 			expect(tasks[1].status).toBe('pending');
 
 			expect(uploadFile).toHaveBeenCalledTimes(1);
-			expect(uploadFile).toHaveBeenCalledWith(botConn, 'main', 'src/a.txt', files[0]);
+			expect(uploadFile).toHaveBeenCalledWith(clawConn, 'main', 'src/a.txt', files[0]);
 
 			// 完成第一个
 			resolveUpload({ bytes: 50 });
@@ -143,7 +143,7 @@ describe('files.store', () => {
 		});
 
 		test('bot 连接不存在时下载直接标记为 failed', async () => {
-			useBotConnections.mockReturnValue({
+			useClawConnections.mockReturnValue({
 				get: () => undefined,
 			});
 
@@ -152,7 +152,7 @@ describe('files.store', () => {
 			await vi.waitFor(() => {
 				const t = store.getAgentTasks('bot1', 'main')[0];
 				expect(t.status).toBe('failed');
-				expect(t.error).toContain('Bot connection');
+				expect(t.error).toContain('Claw connection');
 			});
 		});
 
@@ -488,7 +488,7 @@ describe('files.store', () => {
 
 	describe('RTC 连接不可用', () => {
 		test('无 RTC 连接时任务标记为 failed', async () => {
-			useBotConnections.mockReturnValue({
+			useClawConnections.mockReturnValue({
 				get: () => undefined,
 			});
 
@@ -497,7 +497,7 @@ describe('files.store', () => {
 			await vi.waitFor(() => {
 				const t = store.getAgentTasks('bot1', 'main')[0];
 				expect(t.status).toBe('failed');
-				expect(t.error).toContain('Bot connection');
+				expect(t.error).toContain('Claw connection');
 			});
 		});
 	});

@@ -6,7 +6,7 @@ vi.mock('vue', () => ({
 }));
 
 vi.mock('../stores/sessions.store.js', () => {
-	const mockStore = { removeSessionsByBotId: vi.fn() };
+	const mockStore = { removeSessionsByClawId: vi.fn() };
 	return { useSessionsStore: () => mockStore };
 });
 
@@ -16,9 +16,9 @@ vi.mock('../services/remote-log.js', () => ({ remoteLog: (...args) => mockRemote
 
 import { onBeforeUnmount } from 'vue';
 import { useSessionsStore } from '../stores/sessions.store.js';
-import { useBotStatusSse } from './use-bot-status-sse.js';
+import { useClawStatusSse } from './use-claw-status-sse.js';
 
-describe('useBotStatusSse', () => {
+describe('useClawStatusSse', () => {
 	let store;
 	let MockEventSource;
 	let esInstance;
@@ -27,11 +27,11 @@ describe('useBotStatusSse', () => {
 	beforeEach(() => {
 		store = {
 			applySnapshot: vi.fn(),
-			updateBotOnline: vi.fn(),
-			addOrUpdateBot: vi.fn(),
-			removeBotById: vi.fn(),
+			updateClawOnline: vi.fn(),
+			addOrUpdateClaw: vi.fn(),
+			removeClawById: vi.fn(),
 		};
-		useSessionsStore().removeSessionsByBotId.mockReset();
+		useSessionsStore().removeSessionsByClawId.mockReset();
 		mockRemoteLog.mockClear();
 
 		esInstance = {
@@ -55,7 +55,7 @@ describe('useBotStatusSse', () => {
 	});
 
 	function createSse() {
-		const result = useBotStatusSse(store);
+		const result = useClawStatusSse(store);
 		currentStop = result.stop;
 		return result;
 	}
@@ -97,7 +97,7 @@ describe('useBotStatusSse', () => {
 			data: JSON.stringify({ event: 'claw.status', clawId: '42', online: true }),
 		});
 
-		expect(store.updateBotOnline).toHaveBeenCalledWith('42', true);
+		expect(store.updateClawOnline).toHaveBeenCalledWith('42', true);
 	});
 
 	test('should handle claw.nameUpdated event by updating claw name in store', () => {
@@ -107,7 +107,7 @@ describe('useBotStatusSse', () => {
 			data: JSON.stringify({ event: 'claw.nameUpdated', clawId: '42', name: '小点' }),
 		});
 
-		expect(store.addOrUpdateBot).toHaveBeenCalledWith({ id: '42', name: '小点' });
+		expect(store.addOrUpdateClaw).toHaveBeenCalledWith({ id: '42', name: '小点' });
 	});
 
 	test('should handle claw.bound event by adding claw to store', () => {
@@ -117,7 +117,7 @@ describe('useBotStatusSse', () => {
 			data: JSON.stringify({ event: 'claw.bound', claw: { id: '42', name: 'test' } }),
 		});
 
-		expect(store.addOrUpdateBot).toHaveBeenCalledWith({ id: '42', name: 'test' });
+		expect(store.addOrUpdateClaw).toHaveBeenCalledWith({ id: '42', name: 'test' });
 	});
 
 	test('should handle claw.unbound event by removing claw', () => {
@@ -127,7 +127,7 @@ describe('useBotStatusSse', () => {
 			data: JSON.stringify({ event: 'claw.unbound', clawId: '42' }),
 		});
 
-		expect(store.removeBotById).toHaveBeenCalledWith('42');
+		expect(store.removeClawById).toHaveBeenCalledWith('42');
 	});
 
 	test('should handle heartbeat event silently', () => {
@@ -138,17 +138,17 @@ describe('useBotStatusSse', () => {
 		});
 
 		expect(store.applySnapshot).not.toHaveBeenCalled();
-		expect(store.updateBotOnline).not.toHaveBeenCalled();
+		expect(store.updateClawOnline).not.toHaveBeenCalled();
 	});
 
 	test('should ignore messages with unknown event', () => {
 		createSse();
 
 		esInstance.onmessage({
-			data: JSON.stringify({ event: 'unknown', botId: '42' }),
+			data: JSON.stringify({ event: 'unknown', clawId: '42' }),
 		});
 
-		expect(store.updateBotOnline).not.toHaveBeenCalled();
+		expect(store.updateClawOnline).not.toHaveBeenCalled();
 	});
 
 	test('should ignore malformed JSON messages', () => {
@@ -156,7 +156,7 @@ describe('useBotStatusSse', () => {
 
 		esInstance.onmessage({ data: 'not json' });
 
-		expect(store.updateBotOnline).not.toHaveBeenCalled();
+		expect(store.updateClawOnline).not.toHaveBeenCalled();
 	});
 
 	test('should set connected=false on error and emit remoteLog', () => {

@@ -205,8 +205,8 @@ import FileListItem from '../components/files/FileListItem.vue';
 import FileUploadItem from '../components/files/FileUploadItem.vue';
 import { useFilesStore } from '../stores/files.store.js';
 import { useAgentsStore } from '../stores/agents.store.js';
-import { useBotsStore } from '../stores/bots.store.js';
-import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useClawsStore } from '../stores/claws.store.js';
+import { useClawConnections } from '../services/claw-connection-manager.js';
 import { listFiles, deleteFile, mkdirFiles } from '../services/file-transfer.js';
 import { useNotify } from '../composables/use-notify.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
@@ -226,7 +226,7 @@ export default {
 		return {
 			filesStore: useFilesStore(),
 			agentsStore: useAgentsStore(),
-			botsStore: useBotsStore(),
+			clawsStore: useClawsStore(),
 			notify: useNotify(),
 			promptUi: promptModalUi,
 		};
@@ -257,14 +257,14 @@ export default {
 		};
 	},
 	computed: {
-		botId() { return this.$route.params.botId; },
+		clawId() { return this.$route.params.clawId; },
 		agentId() { return this.$route.params.agentId; },
 		connReady() {
-			const bot = this.botsStore.byId[this.botId];
-			return !!bot?.dcReady;
+			const claw = this.clawsStore.byId[this.clawId];
+			return !!claw?.dcReady;
 		},
 		pageTitle() {
-			const display = this.agentsStore.getAgentDisplay(this.botId, this.agentId);
+			const display = this.agentsStore.getAgentDisplay(this.clawId, this.agentId);
 			return `${display.name} ${this.$t('files.titleSuffix')}`;
 		},
 		sortedEntries() {
@@ -276,11 +276,11 @@ export default {
 			});
 		},
 		uploadTasks() {
-			return this.filesStore.getActiveTasks(this.botId, this.agentId, this.currentDir)
+			return this.filesStore.getActiveTasks(this.clawId, this.agentId, this.currentDir)
 				.filter((t) => t.type === 'upload');
 		},
 		downloadTasks() {
-			return this.filesStore.getActiveTasks(this.botId, this.agentId, this.currentDir)
+			return this.filesStore.getActiveTasks(this.clawId, this.agentId, this.currentDir)
 				.filter((t) => t.type === 'download');
 		},
 		deleteFileProtectedDesc() {
@@ -295,7 +295,7 @@ export default {
 		},
 	},
 	watch: {
-		'$route.params.botId'() { this.resetAndLoad(); },
+		'$route.params.clawId'() { this.resetAndLoad(); },
 		'$route.params.agentId'() { this.resetAndLoad(); },
 		connReady: {
 			immediate: true,
@@ -315,7 +315,7 @@ export default {
 	beforeUnmount() {
 		this.__unmounted = true;
 		clearTimeout(this.__refreshTimer);
-		this.filesStore.clearFinished(this.botId, this.agentId);
+		this.filesStore.clearFinished(this.clawId, this.agentId);
 		this.$el.removeEventListener('dragover', this.__onDragOver);
 		this.$el.removeEventListener('dragleave', this.__onDragLeave);
 		this.$el.removeEventListener('drop', this.__onDrop);
@@ -331,12 +331,12 @@ export default {
 
 		async loadDir() {
 			if (this.loading) return;
-			const botConn = useBotConnections().get(this.botId);
-			if (!botConn) return; // connReady watcher 会在连接就绪后重新触发
+			const clawConn = useClawConnections().get(this.clawId);
+			if (!clawConn) return; // connReady watcher 会在连接就绪后重新触发
 			const gen = ++this.__loadGen;
 			this.loading = true;
 			try {
-				const result = await listFiles(botConn, this.agentId, this.currentDir || '.');
+				const result = await listFiles(clawConn, this.agentId, this.currentDir || '.');
 				if (gen !== this.__loadGen) return; // 被更新的请求取代
 				this.entries = result.files || [];
 			} catch (err) {
@@ -392,7 +392,7 @@ export default {
 			}
 
 			if (!duplicates.length) {
-				this.filesStore.enqueueUploads(this.botId, this.agentId, this.currentDir, clean);
+				this.filesStore.enqueueUploads(this.clawId, this.agentId, this.currentDir, clean);
 				this.__watchUploadsForRefresh();
 				return;
 			}
@@ -425,7 +425,7 @@ export default {
 			}
 			this.duplicateOpen = false;
 			if (toUpload.length) {
-				this.filesStore.enqueueUploads(this.botId, this.agentId, this.currentDir, toUpload);
+				this.filesStore.enqueueUploads(this.clawId, this.agentId, this.currentDir, toUpload);
 				this.__watchUploadsForRefresh();
 			}
 		},
@@ -438,7 +438,7 @@ export default {
 			const check = () => {
 				this.__refreshTimer = null;
 				if (this.__unmounted) return;
-				const active = this.filesStore.getActiveTasks(this.botId, this.agentId, this.currentDir)
+				const active = this.filesStore.getActiveTasks(this.clawId, this.agentId, this.currentDir)
 					.filter((t) => t.type === 'upload' && (t.status === 'pending' || t.status === 'running'));
 				if (!active.length) {
 					this.loadDir();
@@ -453,7 +453,7 @@ export default {
 
 		onDownload(entry) {
 			this.filesStore.enqueueDownload(
-				this.botId, this.agentId, this.currentDir,
+				this.clawId, this.agentId, this.currentDir,
 				entry.name, entry.size,
 			);
 		},
@@ -488,11 +488,11 @@ export default {
 		},
 
 		async onConfirmDeleteFile() {
-			const botConn = useBotConnections().get(this.botId);
-			if (!botConn) return;
+			const clawConn = useClawConnections().get(this.clawId);
+			if (!clawConn) return;
 			this.deleting = true;
 			try {
-				await deleteFile(botConn, this.agentId, this.__deleteFilePath);
+				await deleteFile(clawConn, this.agentId, this.__deleteFilePath);
 				this.deleteFileOpen = false;
 				this.loadDir();
 			} catch (err) {
@@ -504,11 +504,11 @@ export default {
 		},
 
 		async onConfirmDeleteDir() {
-			const botConn = useBotConnections().get(this.botId);
-			if (!botConn) return;
+			const clawConn = useClawConnections().get(this.clawId);
+			if (!clawConn) return;
 			this.deleting = true;
 			try {
-				await deleteFile(botConn, this.agentId, this.__deleteDirPath, { force: true });
+				await deleteFile(clawConn, this.agentId, this.__deleteDirPath, { force: true });
 				this.deleteDirOpen = false;
 				this.loadDir();
 			} catch (err) {
@@ -530,12 +530,12 @@ export default {
 			if (this.mkdirLoading) return;
 			const name = this.mkdirName.trim();
 			if (!name || name === '.' || name === '..' || /[/\\]/.test(name)) return;
-			const botConn = useBotConnections().get(this.botId);
-			if (!botConn) return;
+			const clawConn = useClawConnections().get(this.clawId);
+			if (!clawConn) return;
 			this.mkdirLoading = true;
 			try {
 				const path = this.currentDir ? `${this.currentDir}/${name}` : name;
-				await mkdirFiles(botConn, this.agentId, path);
+				await mkdirFiles(clawConn, this.agentId, path);
 				this.mkdirOpen = false;
 				this.loadDir();
 			} catch (err) {

@@ -34,7 +34,7 @@
 
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
-import { claimBot } from '../services/bots.api.js';
+import { claimClaw } from '../services/claws.api.js';
 
 export default {
 	name: 'ClaimPage',
@@ -77,14 +77,14 @@ export default {
 			this.loading = true;
 			this.errorCode = '';
 			try {
-				await claimBot(code);
+				await claimClaw(code);
 				this.success = true;
 				this.__navTimer = setTimeout(() => {
-					this.$router.replace('/bots');
+					this.$router.replace('/claws');
 				}, 1500);
 			} catch (err) {
 				this.errorCode = err?.response?.data?.code || 'UNKNOWN';
-				console.warn('[ClaimPage] claimBot failed:', err);
+				console.warn('[ClaimPage] claimClaw failed:', err);
 			} finally {
 				this.loading = false;
 			}

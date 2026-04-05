@@ -13,14 +13,14 @@
 				variant="ghost"
 				size="xl"
 				class="cc-icon-btn-lg"
-				@click="$router.push('/bots/add')"
+				@click="$router.push('/claws/add')"
 			/>
 		</header>
 
 		<!-- Group 1: 机器人操作入口 -->
-		<nav v-if="botActionItems.length" class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
+		<nav v-if="clawActionItems.length" class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
 				<RouterLink
-					v-for="item in botActionItems"
+					v-for="item in clawActionItems"
 					:key="item.id"
 					:to="item.to"
 					class="group flex h-11 items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
@@ -55,7 +55,7 @@
 					>{{ item.emoji }}</span>
 					<img
 						v-else
-						:src="defaultBotAvatar"
+						:src="defaultClawAvatar"
 						:alt="item.label"
 						class="size-6 rounded-md object-cover"
 					/>
@@ -100,7 +100,7 @@
 				<TopicItemActions
 					class="topic-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
 					:topic-id="item.id"
-					:bot-id="item.botId"
+					:claw-id="item.clawId"
 					:title="item.rawTitle"
 					@deleted="onTopicDeleted"
 				/>
@@ -111,11 +111,11 @@
 
 <script>
 import { useAgentsStore } from '../stores/agents.store.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { useEnvStore } from '../stores/env.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import TopicItemActions from './TopicItemActions.vue';
-import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
+import defaultClawAvatar from '../assets/claw-avatars/openclaw.svg';
 import logoSrc from '../assets/coclaw-logo.jpg';
 import { isCapacitorApp } from '../utils/platform.js';
 
@@ -142,10 +142,10 @@ export default {
 	},
 	data() {
 		return {
-			defaultBotAvatar,
+			defaultClawAvatar,
 			logoSrc,
 			agentsStore: null,
-			botsStore: null,
+			clawsStore: null,
 			envStore: null,
 			topicsStore: null,
 		};
@@ -160,42 +160,42 @@ export default {
 			const route = this.$route;
 			if (!route) return '';
 			if (route.name === 'chat') {
-				const botId = route.params?.botId;
+				const clawId = route.params?.clawId;
 				const agentId = route.params?.agentId;
-				if (botId && agentId) return `${botId}:${agentId}`;
+				if (clawId && agentId) return `${clawId}:${agentId}`;
 			}
 			return '';
 		},
-		/** 跟踪 bot 增删/上线/连接就绪变化，触发 agents 和 topics 重新加载 */
-		botListKey() {
-			return (this.botsStore?.items ?? [])
+		/** 跟踪 claw 增删/上线/连接就绪变化，触发 agents 和 topics 重新加载 */
+		clawListKey() {
+			return (this.clawsStore?.items ?? [])
 				.map((b) => `${b.id}:${b.online}:${b.dcReady}`)
 				.join(',');
 		},
-		botActionItems() {
-			// Capacitor 无侧边栏模式：header 已有"+"按钮，仅用户无 bot 时显示引导项
+		clawActionItems() {
+			// Capacitor 无侧边栏模式：header 已有"+"按钮，仅用户无 claw 时显示引导项
 			if (this.showCapHeader) {
-				if (!this.botsStore?.fetched || this.botsStore.items.length > 0) {
+				if (!this.clawsStore?.fetched || this.clawsStore.items.length > 0) {
 					return [];
 				}
 				return [
-					{ id: 'add-bot', label: this.$t('layout.addBot'), icon: 'i-lucide-plus', to: '/bots/add' },
+					{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: 'i-lucide-plus', to: '/claws/add' },
 				];
 			}
 			const items = [
-				{ id: 'add-bot', label: this.$t('layout.addBot'), icon: 'i-lucide-plus', to: '/bots/add' },
+				{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: 'i-lucide-plus', to: '/claws/add' },
 			];
 			if (this.scrollable) {
-				items.push({ id: 'manage-bots', label: this.$t('layout.manageBots'), icon: 'i-lucide-settings', to: '/bots' });
+				items.push({ id: 'manage-bots', label: this.$t('layout.manageClaws'), icon: 'i-lucide-settings', to: '/claws' });
 			}
 			return items;
 		},
 		agentItems() {
-			const bots = this.botsStore?.items ?? [];
+			const bots = this.clawsStore?.items ?? [];
 			const display = this.agentsStore?.getAgentDisplay;
 			const result = [];
 			for (const b of bots) {
-				const agents = this.agentsStore?.getAgentsByBot(b.id) ?? [];
+				const agents = this.agentsStore?.getAgentsByClaw(b.id) ?? [];
 				if (agents.length) {
 					// agents 已加载：展开为详细列表
 					for (const agent of agents) {
@@ -207,11 +207,11 @@ export default {
 							emoji: d.emoji,
 							online: Boolean(b.online),
 							active: this.activeAgentKey === `${b.id}:${agent.id}`,
-							to: { name: 'chat', params: { botId: String(b.id), agentId: agent.id } },
+							to: { name: 'chat', params: { clawId: String(b.id), agentId: agent.id } },
 						});
 					}
 				} else {
-					// agents 未加载（离线/连接中）：以 bot 身份兜底
+					// agents 未加载（离线/连接中）：以 claw 身份兜底
 					result.push({
 						id: b.id,
 						label: b.name || 'OpenClaw',
@@ -219,7 +219,7 @@ export default {
 						emoji: null,
 						online: Boolean(b.online),
 						active: this.activeAgentKey === `${b.id}:main`,
-						to: { name: 'chat', params: { botId: String(b.id), agentId: 'main' } },
+						to: { name: 'chat', params: { clawId: String(b.id), agentId: 'main' } },
 					});
 				}
 			}
@@ -232,13 +232,13 @@ export default {
 			return [...items]
 				.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
 				.map((topic) => {
-					const d = display?.(topic.botId, topic.agentId) ?? {};
+					const d = display?.(topic.clawId, topic.agentId) ?? {};
 					const agentName = d.name || topic.agentId || 'Agent';
 					return {
 						id: topic.topicId,
 						label: toTopicLabel(topic, this.$t),
 						rawTitle: topic.title ?? '',
-						botId: topic.botId,
+						clawId: topic.clawId,
 						agentAvatarUrl: d.avatarUrl || null,
 						agentEmoji: d.emoji || null,
 						agentInitial: agentName.charAt(0).toUpperCase(),
@@ -252,14 +252,14 @@ export default {
 	},
 	mounted() {
 		this.agentsStore = useAgentsStore();
-		this.botsStore = useBotsStore();
+		this.clawsStore = useClawsStore();
 		this.envStore = useEnvStore();
 		this.topicsStore = useTopicsStore();
 		this.loadAllData();
 	},
 	watch: {
-		/** bot 列表变化（增删/上线状态）时刷新 agents 和 topics */
-		botListKey: {
+		/** claw 列表变化（增删/上线状态）时刷新 agents 和 topics */
+		clawListKey: {
 			handler() {
 				this.agentsStore?.loadAllAgents();
 				this.topicsStore.loadAllTopics();
@@ -269,11 +269,11 @@ export default {
 	methods: {
 		async loadAllData() {
 			// 等待 SSE 快照到达
-			if (!this.botsStore?.fetched) {
+			if (!this.clawsStore?.fetched) {
 				await new Promise((resolve) => {
 					const timer = setTimeout(() => { unwatch(); resolve(); }, 10_000);
 					const unwatch = this.$watch(
-						() => this.botsStore?.fetched,
+						() => this.clawsStore?.fetched,
 						(val) => {
 							if (val) { clearTimeout(timer); unwatch(); resolve(); }
 						},

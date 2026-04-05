@@ -48,7 +48,7 @@ export default {
 		/**
 		 * 下载来源。支持：
 		 * - blob URL → 直接下载
-		 * - coclaw-file://botId:agentId/path → 按需下载后触发保存
+		 * - coclaw-file://clawId:agentId/path → 按需下载后触发保存
 		 */
 		src: {
 			type: String,

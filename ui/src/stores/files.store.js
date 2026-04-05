@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 
-import { useBotConnections } from '../services/bot-connection-manager.js';
+import { useClawConnections } from '../services/claw-connection-manager.js';
 import { uploadFile, downloadFile } from '../services/file-transfer.js';
 
 /**
@@ -17,12 +17,12 @@ export const useFilesStore = defineStore('files', {
 	getters: {
 		/**
 		 * 获取指定目录下的活跃任务（pending / running / failed）
-		 * @returns {(botId: string, agentId: string, dir: string) => FileTask[]}
+		 * @returns {(clawId: string, agentId: string, dir: string) => FileTask[]}
 		 */
-		getActiveTasks: (state) => (botId, agentId, dir) => {
+		getActiveTasks: (state) => (clawId, agentId, dir) => {
 			const result = [];
 			for (const task of state.tasks.values()) {
-				if (task.botId === botId && task.agentId === agentId && task.dir === dir
+				if (task.clawId === clawId && task.agentId === agentId && task.dir === dir
 					&& (task.status === 'pending' || task.status === 'running' || task.status === 'failed')) {
 					result.push(task);
 				}
@@ -31,12 +31,12 @@ export const useFilesStore = defineStore('files', {
 		},
 		/**
 		 * 获取指定 agent 的全部任务
-		 * @returns {(botId: string, agentId: string) => FileTask[]}
+		 * @returns {(clawId: string, agentId: string) => FileTask[]}
 		 */
-		getAgentTasks: (state) => (botId, agentId) => {
+		getAgentTasks: (state) => (clawId, agentId) => {
 			const result = [];
 			for (const task of state.tasks.values()) {
-				if (task.botId === botId && task.agentId === agentId) {
+				if (task.clawId === clawId && task.agentId === agentId) {
 					result.push(task);
 				}
 			}
@@ -46,37 +46,37 @@ export const useFilesStore = defineStore('files', {
 	actions: {
 		/**
 		 * 入队上传任务（已解决重名冲突后调用）
-		 * @param {string} botId
+		 * @param {string} clawId
 		 * @param {string} agentId
 		 * @param {string} dir - 所在目录（相对 workspace）
 		 * @param {File[]} files
 		 */
-		enqueueUploads(botId, agentId, dir, files) {
+		enqueueUploads(clawId, agentId, dir, files) {
 			for (const file of files) {
 				const task = createTask({
 					type: 'upload',
-					botId, agentId, dir,
+					clawId, agentId, dir,
 					fileName: file.name,
 					size: file.size,
 					file,
 				});
 				this.tasks.set(task.id, task);
 			}
-			this.__runUploadQueue(botId, agentId);
+			this.__runUploadQueue(clawId, agentId);
 		},
 
 		/**
 		 * 入队下载任务（并行执行）
-		 * @param {string} botId
+		 * @param {string} clawId
 		 * @param {string} agentId
 		 * @param {string} dir
 		 * @param {string} fileName
 		 * @param {number} size
 		 */
-		enqueueDownload(botId, agentId, dir, fileName, size) {
+		enqueueDownload(clawId, agentId, dir, fileName, size) {
 			// 去重：同一文件已有 pending/running 的下载时忽略
 			for (const t of this.tasks.values()) {
-				if (t.type === 'download' && t.botId === botId && t.agentId === agentId
+				if (t.type === 'download' && t.clawId === clawId && t.agentId === agentId
 					&& t.dir === dir && t.fileName === fileName
 					&& (t.status === 'pending' || t.status === 'running')) {
 					return;
@@ -84,7 +84,7 @@ export const useFilesStore = defineStore('files', {
 			}
 			const task = createTask({
 				type: 'download',
-				botId, agentId, dir,
+				clawId, agentId, dir,
 				fileName, size,
 			});
 			this.tasks.set(task.id, task);
@@ -118,7 +118,7 @@ export const useFilesStore = defineStore('files', {
 			task.transferHandle = null;
 
 			if (task.type === 'upload') {
-				this.__runUploadQueue(task.botId, task.agentId);
+				this.__runUploadQueue(task.clawId, task.agentId);
 			} else {
 				this.__executeDownload(task);
 			}
@@ -126,12 +126,12 @@ export const useFilesStore = defineStore('files', {
 
 		/**
 		 * 清除已完成/已取消/已失败的任务
-		 * @param {string} botId
+		 * @param {string} clawId
 		 * @param {string} agentId
 		 */
-		clearFinished(botId, agentId) {
+		clearFinished(clawId, agentId) {
 			for (const [id, task] of this.tasks) {
-				if (task.botId === botId && task.agentId === agentId
+				if (task.clawId === clawId && task.agentId === agentId
 					&& (task.status === 'done' || task.status === 'cancelled' || task.status === 'failed')) {
 					this.tasks.delete(id);
 				}
@@ -141,12 +141,12 @@ export const useFilesStore = defineStore('files', {
 		// --- 内部方法 ---
 
 		/**
-		 * 串行执行上传队列：同一 (botId, agentId) 下同时只有一个 running upload
+		 * 串行执行上传队列：同一 (clawId, agentId) 下同时只有一个 running upload
 		 */
-		async __runUploadQueue(botId, agentId) {
+		async __runUploadQueue(clawId, agentId) {
 			// 检查是否已有 running 的上传
 			for (const task of this.tasks.values()) {
-				if (task.botId === botId && task.agentId === agentId
+				if (task.clawId === clawId && task.agentId === agentId
 					&& task.type === 'upload' && task.status === 'running') {
 					return; // 已有运行中的，等它完成后会继续取下一个
 				}
@@ -155,7 +155,7 @@ export const useFilesStore = defineStore('files', {
 			// 取下一个 pending
 			let next = null;
 			for (const task of this.tasks.values()) {
-				if (task.botId === botId && task.agentId === agentId
+				if (task.clawId === clawId && task.agentId === agentId
 					&& task.type === 'upload' && task.status === 'pending') {
 					next = task;
 					break;
@@ -165,7 +165,7 @@ export const useFilesStore = defineStore('files', {
 
 			await this.__executeUpload(next);
 			// 完成后继续取下一个
-			this.__runUploadQueue(botId, agentId);
+			this.__runUploadQueue(clawId, agentId);
 		},
 
 		/**
@@ -173,10 +173,10 @@ export const useFilesStore = defineStore('files', {
 		 * @param {FileTask} task
 		 */
 		async __executeUpload(task) {
-			const botConn = useBotConnections().get(task.botId);
-			if (!botConn) {
+			const clawConn = useClawConnections().get(task.clawId);
+			if (!clawConn) {
 				task.status = 'failed';
-				task.error = 'Bot connection not available';
+				task.error = 'Claw connection not available';
 				return;
 			}
 
@@ -184,7 +184,7 @@ export const useFilesStore = defineStore('files', {
 			const path = task.dir ? `${task.dir}/${task.fileName}` : task.fileName;
 
 			try {
-				const handle = uploadFile(botConn, task.agentId, path, task.file);
+				const handle = uploadFile(clawConn, task.agentId, path, task.file);
 				task.transferHandle = handle;
 				// 防御：handle 赋值前若被 cancelTask 取消，此处补偿
 				if (task.status === 'cancelled') { handle.cancel(); return; }
@@ -209,10 +209,10 @@ export const useFilesStore = defineStore('files', {
 		 * @param {FileTask} task
 		 */
 		async __executeDownload(task) {
-			const botConn = useBotConnections().get(task.botId);
-			if (!botConn) {
+			const clawConn = useClawConnections().get(task.clawId);
+			if (!clawConn) {
 				task.status = 'failed';
-				task.error = 'Bot connection not available';
+				task.error = 'Claw connection not available';
 				return;
 			}
 
@@ -220,7 +220,7 @@ export const useFilesStore = defineStore('files', {
 			const path = task.dir ? `${task.dir}/${task.fileName}` : task.fileName;
 
 			try {
-				const handle = downloadFile(botConn, task.agentId, path);
+				const handle = downloadFile(clawConn, task.agentId, path);
 				task.transferHandle = handle;
 				if (task.status === 'cancelled') { handle.cancel(); return; }
 				handle.onProgress = (received, total) => {
@@ -254,7 +254,7 @@ function createTask(overrides) {
 	return {
 		id: crypto.randomUUID(),
 		type: 'upload',
-		botId: '',
+		clawId: '',
 		agentId: '',
 		dir: '',
 		fileName: '',
@@ -293,7 +293,7 @@ export { createTask as __createTask, triggerBrowserDownload as __triggerBrowserD
  * @typedef {object} FileTask
  * @property {string} id
  * @property {'upload' | 'download'} type
- * @property {string} botId
+ * @property {string} clawId
  * @property {string} agentId
  * @property {string} dir - 所在目录（相对 workspace）
  * @property {string} fileName

@@ -1,13 +1,13 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest';
 
 let botsById = {};
-vi.mock('./bots.store.js', () => ({
-	useBotsStore: () => ({ byId: botsById }),
+vi.mock('./claws.store.js', () => ({
+	useClawsStore: () => ({ byId: botsById }),
 }));
 
 const connectionsMap = new Map();
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => connectionsMap,
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => connectionsMap,
 }));
 
 import { getReadyConn } from './get-ready-conn.js';
@@ -44,7 +44,7 @@ describe('getReadyConn', () => {
 		expect(getReadyConn('b3')).toBeNull();
 	});
 
-	test('botId 为数字时自动转为字符串查找', () => {
+	test('clawId 为数字时自动转为字符串查找', () => {
 		const conn = { id: 'conn-num' };
 		botsById['42'] = { dcReady: true };
 		connectionsMap.set('42', conn);

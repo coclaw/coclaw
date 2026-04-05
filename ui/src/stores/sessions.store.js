@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 
 import { useAgentsStore } from './agents.store.js';
-import { useBotsStore } from './bots.store.js';
+import { useClawsStore } from './claws.store.js';
 import { getReadyConn } from './get-ready-conn.js';
 
 // 模块级变量，避免被 Pinia reactive 代理包裹
@@ -14,7 +14,7 @@ export function __resetSessionsInternals() {
 
 export const useSessionsStore = defineStore('sessions', {
 	state: () => ({
-		/** @type {{ sessionId: string, sessionKey: string, botId: string, agentId: string }[]} */
+		/** @type {{ sessionId: string, sessionKey: string, clawId: string, agentId: string }[]} */
 		items: [],
 		loading: false,
 	}),
@@ -22,9 +22,9 @@ export const useSessionsStore = defineStore('sessions', {
 		setSessions(items) {
 			this.items = Array.isArray(items) ? items : [];
 		},
-		removeSessionsByBotId(botId) {
-			const id = String(botId ?? '');
-			this.items = this.items.filter((s) => String(s.botId) !== id);
+		removeSessionsByClawId(clawId) {
+			const id = String(clawId ?? '');
+			this.items = this.items.filter((s) => String(s.clawId) !== id);
 		},
 		async loadAllSessions() {
 			// 已有加载中的请求，合流等待
@@ -32,20 +32,20 @@ export const useSessionsStore = defineStore('sessions', {
 				console.debug('[sessions] loadAll: coalesced with pending request');
 				return _loadingPromise;
 			}
-			const botsStore = useBotsStore();
-			const bots = botsStore.items ?? [];
-			if (!bots.length) {
-				console.debug('[sessions] loadAll: skipped (no bots)');
+			const clawsStore = useClawsStore();
+			const claws = clawsStore.items ?? [];
+			if (!claws.length) {
+				console.debug('[sessions] loadAll: skipped (no claws)');
 				this.items = [];
 				return;
 			}
-			const connectedBots = bots.filter((b) => getReadyConn(b.id));
-			if (!connectedBots.length) {
-				console.debug('[sessions] loadAll: skipped (no connected bots, total=%d)', bots.length);
+			const connectedClaws = claws.filter((b) => getReadyConn(b.id));
+			if (!connectedClaws.length) {
+				console.debug('[sessions] loadAll: skipped (no connected claws, total=%d)', claws.length);
 				return;
 			}
 			this.loading = true;
-			_loadingPromise = this.__doLoadAll(connectedBots);
+			_loadingPromise = this.__doLoadAll(connectedClaws);
 			try {
 				await _loadingPromise;
 			}
@@ -54,27 +54,27 @@ export const useSessionsStore = defineStore('sessions', {
 				this.loading = false;
 			}
 		},
-		async __doLoadAll(connectedBots) {
-			const queriedBotIds = new Set(connectedBots.map((b) => String(b.id)));
-			const botsStore = useBotsStore();
+		async __doLoadAll(connectedClaws) {
+			const queriedClawIds = new Set(connectedClaws.map((b) => String(b.id)));
+			const clawsStore = useClawsStore();
 			const results = await Promise.allSettled(
-				connectedBots.map((bot) => this.__fetchSessionsForBot(bot.id)),
+				connectedClaws.map((claw) => this.__fetchSessionsForClaw(claw.id)),
 			);
-			// fetch 失败的 bot：从 queriedBotIds 移除，保留其旧 sessions
+			// fetch 失败的 claw：从 queriedClawIds 移除，保留其旧 sessions
 			for (let i = 0; i < results.length; i++) {
 				if (results[i].status !== 'fulfilled') {
-					const failedId = String(connectedBots[i].id);
-					queriedBotIds.delete(failedId);
-					console.warn('[sessions] bot sessions fetch failed botId=%s:', failedId, results[i].reason);
+					const failedId = String(connectedClaws[i].id);
+					queriedClawIds.delete(failedId);
+					console.warn('[sessions] claw sessions fetch failed clawId=%s:', failedId, results[i].reason);
 				}
 			}
-			// 增量合并：保留未查询 bot 的已有 sessions，替换已查询 bot 的
+			// 增量合并：保留未查询 claw 的已有 sessions，替换已查询 claw 的
 			const seen = new Set();
 			const merged = [];
 			for (const item of this.items) {
-				const bid = String(item.botId);
-				// 跳过本次查询范围内的（用新结果替换）和已不存在的 bot
-				if (queriedBotIds.has(bid) || !botsStore.byId[bid]) continue;
+				const bid = String(item.clawId);
+				// 跳过本次查询范围内的（用新结果替换）和已不存在的 claw
+				if (queriedClawIds.has(bid) || !clawsStore.byId[bid]) continue;
 				const key = `${bid}:${item.sessionKey}`;
 				if (!seen.has(key)) {
 					seen.add(key);
@@ -84,7 +84,7 @@ export const useSessionsStore = defineStore('sessions', {
 			for (const r of results) {
 				if (r.status !== 'fulfilled') continue;
 				for (const item of r.value) {
-					const key = `${item.botId}:${item.sessionKey}`;
+					const key = `${item.clawId}:${item.sessionKey}`;
 					if (!seen.has(key)) {
 						seen.add(key);
 						merged.push(item);
@@ -92,14 +92,14 @@ export const useSessionsStore = defineStore('sessions', {
 				}
 			}
 			this.items = merged;
-			console.debug('[sessions] loadAll: merged %d session(s) (queried %d bot(s))', merged.length, queriedBotIds.size);
+			console.debug('[sessions] loadAll: merged %d session(s) (queried %d claw(s))', merged.length, queriedClawIds.size);
 		},
-		async __fetchSessionsForBot(botId) {
-			const conn = getReadyConn(botId);
+		async __fetchSessionsForClaw(clawId) {
+			const conn = getReadyConn(clawId);
 			if (!conn) return [];
 
 			const agentsStore = useAgentsStore();
-			const agents = agentsStore.getAgentsByBot(botId);
+			const agents = agentsStore.getAgentsByClaw(clawId);
 			// 若 agentsStore 未加载完成，fallback 到 ['main']
 			const agentIds = agents.length ? agents.map((a) => a.id) : ['main'];
 
@@ -113,7 +113,7 @@ export const useSessionsStore = defineStore('sessions', {
 					return {
 						sessionId: hist?.sessionId ?? '',
 						sessionKey,
-						botId: String(botId),
+						clawId: String(clawId),
 						agentId,
 					};
 				}),

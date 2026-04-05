@@ -76,7 +76,7 @@
 				<div v-if="isLoadingChat" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('chat.loading') }}
 				</div>
-				<div v-else-if="chatStore?.errorText && !isBotOffline" class="px-4 py-8 text-center text-sm">
+				<div v-else-if="chatStore?.errorText && !isClawOffline" class="px-4 py-8 text-center text-sm">
 					<p class="text-error">{{ chatStore.errorText }}</p>
 					<p v-if="chatStore.errorText.includes('unknown method')" class="mt-3 text-muted">
 						{{ $t('chat.upgradeOpenClawHint') }}
@@ -94,7 +94,7 @@
 							v-else
 							:item="item"
 							:agent-display="agentDisplay"
-							:bot-id="currentBotId"
+							:claw-id="currentClawId"
 							:agent-id="currentAgentId"
 						/>
 					</template>
@@ -106,12 +106,12 @@
 		</main>
 
 		<ChatInput
-			v-if="isTopicRoute || isNewTopic || !!routeBotId"
+			v-if="isTopicRoute || isNewTopic || !!routeClawId"
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore?.isSending ?? false"
 			:upload-progress="chatStore?.uploadProgress ?? null"
-			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isLoadingChat) : (!routeBotId || isLoadingChat)))"
+			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isLoadingChat) : (!routeClawId || isLoadingChat)))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
@@ -119,7 +119,7 @@
 				<SlashCommandMenu
 					v-if="showSlashMenu"
 					class="absolute bottom-full left-0 z-10 pb-1"
-					:disabled="chatStore?.isSending || isBotOffline || isLoadingChat"
+					:disabled="chatStore?.isSending || isClawOffline || isLoadingChat"
 					@command="onSlashCommand"
 				/>
 			</template>
@@ -130,12 +130,12 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import ChatMsgItem from '../components/ChatMsgItem.vue';
-import defaultBotAvatar from '../assets/bot-avatars/openclaw.svg';
+import defaultClawAvatar from '../assets/claw-avatars/openclaw.svg';
 import ChatInput from '../components/ChatInput.vue';
 import SlashCommandMenu from '../components/chat/SlashCommandMenu.vue';
 import { useNotify } from '../composables/use-notify.js';
 import { useAgentsStore } from '../stores/agents.store.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import { chatStoreManager } from '../stores/chat-store-manager.js';
 import { groupSessionMessages } from '../utils/session-msg-group.js';
@@ -160,7 +160,7 @@ export default {
 		return {
 			notify: useNotify(),
 			agentsStore: useAgentsStore(),
-			botsStore: useBotsStore(),
+			clawsStore: useClawsStore(),
 			topicsStore: useTopicsStore(),
 			draftStore: useDraftStore(),
 			suppressPullRefresh: suppress,
@@ -169,7 +169,7 @@ export default {
 	},
 	data() {
 		return {
-			defaultBotAvatar,
+			defaultClawAvatar,
 			userScrolledUp: false,
 			showNoMoreHint: false,
 			__exiting: false,
@@ -184,12 +184,12 @@ export default {
 	computed: {
 		/** 草稿持久化的 key，随路由自动切换 */
 		draftKey() {
-			if (this.isNewTopic) return `new-topic:${this.newTopicBotId}:${this.newTopicAgentId}`;
+			if (this.isNewTopic) return `new-topic:${this.newTopicClawId}:${this.newTopicAgentId}`;
 			if (this.isTopicRoute) {
 				const sid = this.$route.params?.sessionId;
 				return sid ? `topic:${sid}` : '';
 			}
-			return this.routeBotId ? `chat:${this.routeBotId}:${this.routeAgentId}` : '';
+			return this.routeClawId ? `chat:${this.routeClawId}:${this.routeAgentId}` : '';
 		},
 		/** 输入框文本，映射到 draftStore */
 		inputText: {
@@ -210,9 +210,9 @@ export default {
 			}
 			return this.chatStore?.currentSessionId || '';
 		},
-		/** chat 路由的 botId 参数 */
-		routeBotId() {
-			return this.$route.params?.botId || '';
+		/** chat 路由的 clawId 参数 */
+		routeClawId() {
+			return this.$route.params?.clawId || '';
 		},
 		/** chat 路由的 agentId 参数 */
 		routeAgentId() {
@@ -230,15 +230,15 @@ export default {
 		newTopicAgentId() {
 			return this.$route.query?.agent || 'main';
 		},
-		newTopicBotId() {
-			return this.$route.query?.bot || '';
+		newTopicClawId() {
+			return this.$route.query?.claw || '';
 		},
 		/** 新 topic 是否具备发送条件 */
 		newTopicReady() {
 			if (!this.isNewTopic) return false;
-			if (!this.newTopicBotId) return false;
-			const bot = this.botsStore.byId[this.newTopicBotId];
-			return !!bot?.dcReady;
+			if (!this.newTopicClawId) return false;
+			const claw = this.clawsStore.byId[this.newTopicClawId];
+			return !!claw?.dcReady;
 		},
 		/** 当前上下文的 agentId */
 		currentAgentId() {
@@ -252,28 +252,28 @@ export default {
 		/** 是否可打开文件管理（新建 topic 时不显示） */
 		canOpenFiles() {
 			if (this.isNewTopic) return false;
-			return !!this.currentBotId && !!this.currentAgentId;
+			return !!this.currentClawId && !!this.currentAgentId;
 		},
 		/** 是否显示"新话题"按钮 */
 		showNewTopicBtn() {
 			if (this.isTopicRoute) return true;
 			return this.currentAgentId === 'main';
 		},
-		/** 当前上下文的 botId */
-		currentBotId() {
-			if (this.isNewTopic) return this.newTopicBotId;
-			if (this.isTopicRoute) return this.chatStore?.botId || '';
-			return this.routeBotId;
+		/** 当前上下文的 clawId */
+		currentClawId() {
+			if (this.isNewTopic) return this.newTopicClawId;
+			if (this.isTopicRoute) return this.chatStore?.clawId || '';
+			return this.routeClawId;
 		},
-		/** bot ID 列表快照（仅用于检测 bot 增删，避免 deep watch） */
-		botIds() {
-			return Object.keys(this.botsStore.byId).join(',');
+		/** claw ID 列表快照（仅用于检测 claw 增删，避免 deep watch） */
+		clawIds() {
+			return Object.keys(this.clawsStore.byId).join(',');
 		},
-		isBotOffline() {
-			const botId = this.currentBotId;
-			if (!botId) return false;
-			const bot = this.botsStore.byId[botId];
-			return bot ? !bot.online : true;
+		isClawOffline() {
+			const clawId = this.currentClawId;
+			if (!clawId) return false;
+			const claw = this.clawsStore.byId[clawId];
+			return claw ? !claw.online : true;
 		},
 		/**
 		 * 连接状态文案（inline banner）
@@ -281,18 +281,18 @@ export default {
 		 */
 		connStatusText() {
 			if (this.isNewTopic) return '';
-			const botId = this.currentBotId;
-			if (!botId) return '';
-			const bot = this.botsStore.byId[botId];
-			if (!bot) return this.$t('chat.botNotFound');
-			if (!bot.online) return this.$t('chat.botOffline');
-			// bot 在线但 DC 未就绪 → 根据 rtcPhase 细化
-			if (bot.dcReady) return '';
-			const phase = bot.rtcPhase;
+			const clawId = this.currentClawId;
+			if (!clawId) return '';
+			const claw = this.clawsStore.byId[clawId];
+			if (!claw) return this.$t('chat.clawNotFound');
+			if (!claw.online) return this.$t('chat.clawOffline');
+			// claw 在线但 DC 未就绪 → 根据 rtcPhase 细化
+			if (claw.dcReady) return '';
+			const phase = claw.rtcPhase;
 			if (phase === 'building') return this.$t('chat.connBuilding');
 			if (phase === 'recovering') return this.$t('chat.connRecovering');
 			if (phase === 'failed') {
-				return bot.retryCount > 0
+				return claw.retryCount > 0
 					? this.$t('chat.connFailed')
 					: this.$t('chat.connRetryExhausted');
 			}
@@ -301,9 +301,9 @@ export default {
 		},
 		/** 连接状态 banner 的视觉层级：offline/failed 用 warn 色调 */
 		connStatusSeverity() {
-			if (this.isBotOffline) return 'warn';
-			const bot = this.botsStore.byId[this.currentBotId];
-			if (bot?.rtcPhase === 'failed') return 'warn';
+			if (this.isClawOffline) return 'warn';
+			const claw = this.clawsStore.byId[this.currentClawId];
+			if (claw?.rtcPhase === 'failed') return 'warn';
 			return 'info';
 		},
 		chatTitle() {
@@ -314,14 +314,14 @@ export default {
 				if (topic?.title) return topic.title;
 				return this.$t('topic.newTopic');
 			}
-			if (!this.routeBotId) return '';
+			if (!this.routeClawId) return '';
 			return this.agentDisplay?.name || 'Agent';
 		},
 		agentDisplay() {
-			const botId = this.currentBotId;
+			const clawId = this.currentClawId;
 			const agentId = this.currentAgentId;
-			if (!botId || !agentId) return { name: 'Agent', avatarUrl: null, emoji: null };
-			return this.agentsStore.getAgentDisplay(botId, agentId);
+			if (!clawId || !agentId) return { name: 'Agent', avatarUrl: null, emoji: null };
+			return this.agentsStore.getAgentDisplay(clawId, agentId);
 		},
 		/** 斜杠命令菜单仅在 chat 模式（非 topic）且有 sessionKey 时显示 */
 		showSlashMenu() {
@@ -340,27 +340,27 @@ export default {
 		 */
 		agentVerified() {
 			if (this.isTopicRoute || this.isNewTopic) return true;
-			if (!this.routeBotId) return false;
-			const entry = this.agentsStore.byBot[this.routeBotId];
+			if (!this.routeClawId) return false;
+			const entry = this.agentsStore.byClaw[this.routeClawId];
 			if (!entry?.fetched) return false;
 			return entry.agents.some((a) => a.id === this.routeAgentId);
 		},
-		/** bot 在线但 agents 尚未加载（WS 连接中） */
+		/** claw 在线但 agents 尚未加载（WS 连接中） */
 		awaitingAgent() {
 			if (this.isTopicRoute || this.isNewTopic) return false;
-			if (!this.routeBotId || this.isBotOffline) return false;
-			const entry = this.agentsStore.byBot[this.routeBotId];
+			if (!this.routeClawId || this.isClawOffline) return false;
+			const entry = this.agentsStore.byClaw[this.routeClawId];
 			return !entry?.fetched;
 		},
 		/**
-		 * 连接就绪：bot 在线 + DC 可用 + (topic 或 agent 已验证)
+		 * 连接就绪：claw 在线 + DC 可用 + (topic 或 agent 已验证)
 		 * 驱动首次/重连消息加载，消除时序依赖
 		 */
 		connReady() {
 			if (this.isNewTopic || !this.chatStore) return false;
-			const bot = this.botsStore.byId[this.currentBotId];
-			if (!bot || !bot.online) return false;
-			if (!bot.dcReady) return false;
+			const claw = this.clawsStore.byId[this.currentClawId];
+			if (!claw || !claw.online) return false;
+			if (!claw.dcReady) return false;
 			if (this.isTopicRoute) return true;
 			return this.agentVerified;
 		},
@@ -370,14 +370,14 @@ export default {
 		 */
 		isLoadingChat() {
 			const s = this.chatStore;
-			if (!s || this.isBotOffline || this.awaitingAgent) return false;
+			if (!s || this.isClawOffline || this.awaitingAgent) return false;
 			if (s.allMessages.length > 0 || s.errorText) return false;
 			return s.__initialized && !s.__messagesLoaded;
 		},
 
 		/**
 		 * 当前路由对应的 chat store 实例
-		 * 返回 null 表示尚未就绪（新 topic / topic 数据未加载 / 无 botId）
+		 * 返回 null 表示尚未就绪（新 topic / topic 数据未加载 / 无 clawId）
 		 */
 		chatStore() {
 			if (this.isNewTopic) return null;
@@ -386,12 +386,12 @@ export default {
 				if (!sid) return null;
 				const topic = this.topicsStore.findTopic(sid);
 				if (!topic) return null;
-				return chatStoreManager.get(`topic:${sid}`, { botId: topic.botId, agentId: topic.agentId });
+				return chatStoreManager.get(`topic:${sid}`, { clawId: topic.clawId, agentId: topic.agentId });
 			}
-			if (!this.routeBotId) return null;
+			if (!this.routeClawId) return null;
 			return chatStoreManager.get(
-				`session:${this.routeBotId}:${this.routeAgentId}`,
-				{ botId: this.routeBotId, agentId: this.routeAgentId },
+				`session:${this.routeClawId}:${this.routeAgentId}`,
+				{ clawId: this.routeClawId, agentId: this.routeAgentId },
 			);
 		},
 
@@ -437,12 +437,12 @@ export default {
 				}
 			},
 		},
-		/** bot 列表变化（增删）时验证路由 — 避免 deep watch 被高频 lastAliveAt 更新触发 */
-		botIds() { this.__validateRoute(); },
+		/** claw 列表变化（增删）时验证路由 — 避免 deep watch 被高频 lastAliveAt 更新触发 */
+		clawIds() { this.__validateRoute(); },
 		agentVerified(verified) {
 			if (!this.isTopicRoute && verified === false) this.__validateRoute();
 		},
-		isBotOffline(offline) {
+		isClawOffline(offline) {
 			if (offline) {
 				this.chatStore?.cancelSend();
 			}
@@ -450,7 +450,7 @@ export default {
 		},
 		/** connReady 驱动消息加载：首次加载或重连刷新
 		 * immediate: 确保组件挂载时 connReady 已为 true 的场景也能触发加载
-		 * （如返回列表后重新进入会话，bot 已连接但 watcher 不会为初始值触发）
+		 * （如返回列表后重新进入会话，claw 已连接但 watcher 不会为初始值触发）
 		 */
 		connReady: {
 			immediate: true,
@@ -506,7 +506,7 @@ export default {
 			}
 
 			if (!this.chatStore) return;
-			if (!this.isTopicRoute && !this.routeBotId) return;
+			if (!this.isTopicRoute && !this.routeClawId) return;
 			if (this.isTopicRoute && !this.currentSessionId) return;
 
 			const savedText = this.inputText;
@@ -564,13 +564,13 @@ export default {
 
 		async __handleNewTopicSend(text, files) {
 			const agentId = this.newTopicAgentId;
-			const botId = this.newTopicBotId;
-			if (!botId || !agentId) {
+			const clawId = this.newTopicClawId;
+			if (!clawId || !agentId) {
 				this.notify.error(this.$t('topic.createFailed'));
 				return;
 			}
 			// 插件版本过低时话题功能不可用
-			if (this.botsStore.byId[String(botId)]?.pluginVersionOk === false) {
+			if (this.clawsStore.byId[String(clawId)]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 				return;
 			}
@@ -580,9 +580,9 @@ export default {
 			let newDraftKey = '';
 			try {
 				// 1. 创建 topic
-				const topicId = await this.topicsStore.createTopic(botId, agentId);
+				const topicId = await this.topicsStore.createTopic(clawId, agentId);
 				// 2. 获取（创建）store 并跳过消息加载
-				const store = chatStoreManager.get(`topic:${topicId}`, { botId, agentId });
+				const store = chatStoreManager.get(`topic:${topicId}`, { clawId, agentId });
 				store.activate({ skipLoad: true });
 				// 新 topic 无历史消息，直接标记已加载，
 				// 避免 connReady watcher 触发 first-load 路径与 sendMessage 竞态
@@ -622,8 +622,8 @@ export default {
 		__tryGenerateTitle() {
 			if (!this.isTopicRoute || !this.chatStore?.topicMode) return;
 			const topicId = this.chatStore.sessionId;
-			const botId = this.chatStore.botId;
-			if (!topicId || !botId) return;
+			const clawId = this.chatStore.clawId;
+			if (!topicId || !clawId) return;
 			const topic = this.topicsStore.findTopic(topicId);
 			if (topic?.title) return;
 			const userMsgCount = this.chatStore.messages.filter(
@@ -631,28 +631,28 @@ export default {
 			).length;
 			if (userMsgCount > MAX_AUTO_TITLE_MSGS) return;
 			console.debug('[chat] triggering generateTitle topicId=%s userMsgs=%d', topicId, userMsgCount);
-			this.topicsStore.generateTitle(botId, topicId);
+			this.topicsStore.generateTitle(clawId, topicId);
 		},
 
 		openFiles() {
-			if (this.botsStore.byId[String(this.currentBotId)]?.pluginVersionOk === false) {
+			if (this.clawsStore.byId[String(this.currentClawId)]?.pluginVersionOk === false) {
 				this.notify.warning(this.$t('pluginUpgrade.outdated'));
 				return;
 			}
 			this.$router.push({
 				name: 'files',
-				params: { botId: this.currentBotId, agentId: this.currentAgentId },
+				params: { clawId: this.currentClawId, agentId: this.currentAgentId },
 			});
 		},
 
 		/** 新建话题 */
 		onNewTopic() {
 			const agentId = this.currentAgentId;
-			const botId = this.currentBotId;
+			const clawId = this.currentClawId;
 			const route = {
 				name: 'topics-chat',
 				params: { sessionId: 'new' },
-				query: { agent: agentId, bot: botId },
+				query: { agent: agentId, claw: clawId },
 			};
 			if (this.isTopicRoute || isMobileViewport(window.innerWidth)) this.$router.replace(route);
 			else this.$router.push(route);
@@ -725,34 +725,34 @@ export default {
 		},
 
 		/**
-		 * 路由级验证：bot/agent 存在性检查
+		 * 路由级验证：claw/agent 存在性检查
 		 * store 自身通过 WS 重连监听处理数据加载，此处仅做路由合法性判定
 		 */
 		__validateRoute() {
 			if (this.isNewTopic || this.__creatingTopic) return;
-			if (!this.botsStore.fetched) return;
+			if (!this.clawsStore.fetched) return;
 
-			const bots = this.botsStore.items;
+			const bots = this.clawsStore.items;
 			if (!bots.length) {
-				return this.__exitChat(this.$t('chat.botUnbound'));
+				return this.__exitChat(this.$t('chat.clawUnbound'));
 			}
 
 			if (this.isTopicRoute) {
 				const topic = this.topicsStore.findTopic(this.currentSessionId);
 				if (topic) {
-					const ownerBot = bots.find((b) => String(b.id) === String(topic.botId));
-					if (!ownerBot) return this.__exitChat(this.$t('chat.botUnbound'));
+					const ownerBot = bots.find((b) => String(b.id) === String(topic.clawId));
+					if (!ownerBot) return this.__exitChat(this.$t('chat.clawUnbound'));
 				}
 				return;
 			}
 
-			if (!this.routeBotId) return;
-			const botExists = bots.some((b) => String(b.id) === this.routeBotId);
+			if (!this.routeClawId) return;
+			const botExists = bots.some((b) => String(b.id) === this.routeClawId);
 			if (!botExists) {
-				return this.__exitChat(this.$t('chat.botNotFound'));
+				return this.__exitChat(this.$t('chat.clawNotFound'));
 			}
 
-			const agentEntry = this.agentsStore.byBot[this.routeBotId];
+			const agentEntry = this.agentsStore.byClaw[this.routeClawId];
 			if (agentEntry?.fetched && !agentEntry.agents.some((a) => a.id === this.routeAgentId)) {
 				return this.__exitChat(this.$t('chat.agentNotFound'));
 			}

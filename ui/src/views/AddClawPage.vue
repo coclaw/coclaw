@@ -1,9 +1,9 @@
 <template>
 	<div class="flex min-h-0 flex-1 flex-col">
-		<MobilePageHeader :title="$t('bots.addBot')">
+		<MobilePageHeader :title="$t('claws.addClaw')">
 			<template v-if="expired" #actions>
 				<UButton size="md" variant="ghost" color="primary" :loading="loading" @click="startBinding">
-					{{ $t('bots.restart') }}
+					{{ $t('claws.restart') }}
 				</UButton>
 			</template>
 		</MobilePageHeader>
@@ -11,9 +11,9 @@
 		<section class="mx-auto flex w-full max-w-3xl flex-col gap-4">
 			<!-- 桌面端标题 + 倒计时/重新开始 -->
 			<div class="hidden items-center justify-between md:flex">
-				<h1 class="text-base font-medium">{{ $t('bots.addBot') }}</h1>
+				<h1 class="text-base font-medium">{{ $t('claws.addClaw') }}</h1>
 				<UButton v-if="expired" size="md" color="primary" :loading="loading" @click="startBinding">
-					{{ $t('bots.restart') }}
+					{{ $t('claws.restart') }}
 				</UButton>
 				<span v-else-if="bindingCode" class="text-sm text-muted">{{ expiryText }}</span>
 			</div>
@@ -21,20 +21,20 @@
 			<!-- 加载中 -->
 			<div v-if="loading && !bindingCode" class="flex flex-col items-center gap-3 py-12">
 				<UIcon name="i-lucide-loader-2" class="size-8 animate-spin text-muted" />
-				<p class="text-sm text-muted">{{ $t('bots.preparing') }}</p>
+				<p class="text-sm text-muted">{{ $t('claws.preparing') }}</p>
 			</div>
 
 			<!-- 加载失败 -->
 			<div v-else-if="loadError" class="flex flex-col items-center gap-3 py-12">
 				<p class="text-sm text-danger">{{ loadError }}</p>
-				<UButton size="md" color="primary" @click="startBinding">{{ $t('bots.retry') }}</UButton>
+				<UButton size="md" color="primary" @click="startBinding">{{ $t('claws.retry') }}</UButton>
 			</div>
 
 			<!-- 过期 -->
 			<div v-else-if="expired" class="flex flex-col items-center gap-3 py-12">
-				<p class="text-sm text-muted">{{ $t('bots.expired') }}</p>
+				<p class="text-sm text-muted">{{ $t('claws.expired') }}</p>
 				<UButton size="md" color="primary" :loading="loading" @click="startBinding" class="md:hidden">
-					{{ $t('bots.restart') }}
+					{{ $t('claws.restart') }}
 				</UButton>
 			</div>
 
@@ -47,8 +47,8 @@
 
 				<!-- 方式一：通过对话 -->
 				<div>
-					<h2 class="text-base font-medium">{{ $t('bots.chatMethodTitle') }}</h2>
-					<p class="mt-1 text-sm text-dimmed">{{ $t('bots.chatMethodDesc') }}</p>
+					<h2 class="text-base font-medium">{{ $t('claws.chatMethodTitle') }}</h2>
+					<p class="mt-1 text-sm text-dimmed">{{ $t('claws.chatMethodDesc') }}</p>
 					<div class="mt-2 rounded-lg bg-elevated overflow-hidden">
 						<pre class="whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ chatPromptText }}</pre>
 						<div class="flex items-center justify-end px-3 py-1.5">
@@ -58,10 +58,10 @@
 								color="primary"
 								size="md"
 								@click="copyToClipboard('chat', chatPromptText)"
-							>{{ $t('bots.copy') }}</UButton>
+							>{{ $t('claws.copy') }}</UButton>
 							<span v-else class="flex items-center gap-1 text-sm text-success">
 								<UIcon name="i-lucide-check" class="size-4" />
-								{{ $t('bots.commandCopied') }}
+								{{ $t('claws.commandCopied') }}
 							</span>
 						</div>
 					</div>
@@ -69,8 +69,8 @@
 
 				<!-- 方式二：通过终端 -->
 				<div>
-					<h2 class="text-base font-medium">{{ $t('bots.shellMethodTitle') }}</h2>
-					<p class="mt-1 text-sm text-dimmed">{{ $t('bots.shellMethodDesc') }}</p>
+					<h2 class="text-base font-medium">{{ $t('claws.shellMethodTitle') }}</h2>
+					<p class="mt-1 text-sm text-dimmed">{{ $t('claws.shellMethodDesc') }}</p>
 					<div class="mt-2 rounded-lg bg-elevated overflow-hidden">
 						<pre class="whitespace-pre-wrap px-3 py-2 text-sm text-default">{{ shellCommandText }}</pre>
 						<div class="flex items-center justify-end px-3 py-1.5">
@@ -80,14 +80,14 @@
 								color="primary"
 								size="md"
 								@click="copyToClipboard('shell', shellCommandText)"
-							>{{ $t('bots.copy') }}</UButton>
+							>{{ $t('claws.copy') }}</UButton>
 							<span v-else class="flex items-center gap-1 text-sm text-success">
 								<UIcon name="i-lucide-check" class="size-4" />
-								{{ $t('bots.commandCopied') }}
+								{{ $t('claws.commandCopied') }}
 							</span>
 						</div>
 					</div>
-					<p class="mt-2 text-xs text-dimmed">{{ $t('bots.shellSemicolonHint') }}</p>
+					<p class="mt-2 text-xs text-dimmed">{{ $t('claws.shellSemicolonHint') }}</p>
 				</div>
 
 				<!-- 云部署引导 -->
@@ -114,8 +114,8 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import { useNotify } from '../composables/use-notify.js';
-import { cancelBindingCode, createBindingCode, waitBindingCode } from '../services/bots.api.js';
-import { useBotsStore } from '../stores/bots.store.js';
+import { cancelBindingCode, createBindingCode, waitBindingCode } from '../services/claws.api.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { openExternalUrl } from '../utils/external-url.js';
 
 const CLOUD_DEPLOY_URL = 'https://cloud.tencent.com/act/cps/redirect?redirect=38041&cps_key=3ad323275dc8d2d3fb6efe6fc6a27794';
@@ -123,7 +123,7 @@ const CLOUD_DEPLOY_URL = 'https://cloud.tencent.com/act/cps/redirect?redirect=38
 const DEFAULT_SERVER = 'https://im.coclaw.net';
 
 export default {
-	name: 'AddBotPage',
+	name: 'AddClawPage',
 	components: {
 		MobilePageHeader,
 	},
@@ -140,7 +140,7 @@ export default {
 			countdownTimer: null,
 			waitLoopRunning: false,
 			waitCancelled: false,
-			botsStore: null,
+			clawsStore: null,
 			copiedKey: '',
 			copiedTimer: null,
 		};
@@ -155,7 +155,7 @@ export default {
 			const mins = Math.floor(seconds / 60);
 			const secs = seconds % 60;
 			const time = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-			return this.$t('bots.expiryLeft', { time });
+			return this.$t('claws.expiryLeft', { time });
 		},
 		serverSuffix() {
 			return window.location.origin === DEFAULT_SERVER
@@ -163,14 +163,14 @@ export default {
 				: ` --server ${window.location.origin}`;
 		},
 		chatPromptText() {
-			return this.$t('bots.chatPrompt', { code: this.bindingCode, serverSuffix: this.serverSuffix });
+			return this.$t('claws.chatPrompt', { code: this.bindingCode, serverSuffix: this.serverSuffix });
 		},
 		shellCommandText() {
 			return `openclaw plugins install @coclaw/openclaw-coclaw ; openclaw coclaw bind ${this.bindingCode}${this.serverSuffix}`;
 		},
 	},
 	mounted() {
-		this.botsStore = useBotsStore();
+		this.clawsStore = useClawsStore();
 		this.startBinding();
 	},
 	beforeUnmount() {
@@ -214,8 +214,8 @@ export default {
 				this.waitBindingLoop(data.code, data.waitToken, data.expiresAt);
 			}
 			catch (err) {
-				console.warn('[AddBotPage] startBinding failed:', err);
-				this.loadError = err?.response?.data?.message ?? err?.message ?? this.$t('bots.genFailed');
+				console.warn('[AddClawPage] startBinding failed:', err);
+				this.loadError = err?.response?.data?.message ?? err?.message ?? this.$t('claws.genFailed');
 				this.notify.error(this.loadError);
 			}
 			finally {
@@ -232,7 +232,7 @@ export default {
 					this.stopCountdown();
 					this.waitCancelled = true;
 					this.waitLoopRunning = false;
-					this.notify.warning(this.$t('bots.expired'));
+					this.notify.warning(this.$t('claws.expired'));
 				}
 			};
 			tick();
@@ -251,17 +251,17 @@ export default {
 					const result = await waitBindingCode(code, waitToken);
 					if (this.waitCancelled || !this.waitLoopRunning) return;
 					if (result.code === 'BINDING_SUCCESS') {
-						this.botsStore?.addOrUpdateBot(result.claw);
+						this.clawsStore?.addOrUpdateClaw(result.claw);
 						this.bindingCode = '';
 						this.stopCountdown();
-						this.$router.push('/bots');
+						this.$router.push('/claws');
 						return;
 					}
 				}
 				catch (err) {
 					if (this.waitCancelled || !this.waitLoopRunning) return;
 					if (err?.response?.data?.code === 'BINDING_TIMEOUT') return;
-					console.debug('[add-bot] bind wait error:', err?.message);
+					console.debug('[add-claw] bind wait error:', err?.message);
 				}
 			}
 			this.waitLoopRunning = false;

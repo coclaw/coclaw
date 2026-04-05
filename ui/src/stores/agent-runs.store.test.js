@@ -12,13 +12,13 @@ function mockConn() {
 function registerRun(store, overrides = {}) {
 	const conn = overrides.conn ?? mockConn();
 	store.register(overrides.runId ?? 'run-1', {
-		botId: overrides.botId ?? '1',
+		clawId: overrides.clawId ?? '1',
 		runKey: overrides.runKey ?? 'agent:main:main',
 		topicMode: overrides.topicMode ?? false,
 		conn,
 		streamingMsgs: overrides.streamingMsgs ?? [
 			{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
-			{ id: '__local_bot_1', _local: true, _streaming: true, _startTime: 1000, message: { role: 'assistant', content: '', stopReason: null } },
+			{ id: '__local_claw_1', _local: true, _streaming: true, _startTime: 1000, message: { role: 'assistant', content: '', stopReason: null } },
 		],
 	});
 	return conn;
@@ -60,12 +60,12 @@ describe('useAgentRunsStore', () => {
 			expect(store.runKeyIndex['agent:main:main']).toBe('run-2');
 		});
 
-		test('不再自行注册 event:agent 监听器（由 botsStore 集中桥接）', () => {
+		test('不再自行注册 event:agent 监听器（由 clawsStore 集中桥接）', () => {
 			const store = useAgentRunsStore();
 			const conn = { state: 'connected', on: vi.fn(), off: vi.fn() };
 			registerRun(store, { conn });
 
-			// conn.on 不应被调用（事件由 botsStore.__bridgeConn 统一注册）
+			// conn.on 不应被调用（事件由 clawsStore.__bridgeConn 统一注册）
 			expect(conn.on).not.toHaveBeenCalled();
 		});
 	});
@@ -409,17 +409,17 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
-	// removeByBot
+	// removeByClaw
 	// =====================================================================
 
-	describe('removeByBot', () => {
-		test('清理指定 bot 的所有活跃 runs', () => {
+	describe('removeByClaw', () => {
+		test('清理指定 claw 的所有活跃 runs', () => {
 			const store = useAgentRunsStore();
-			registerRun(store, { runId: 'run-1', runKey: 'key1', botId: '1' });
-			registerRun(store, { runId: 'run-2', runKey: 'key2', botId: '1' });
-			registerRun(store, { runId: 'run-3', runKey: 'key3', botId: '2' });
+			registerRun(store, { runId: 'run-1', runKey: 'key1', clawId: '1' });
+			registerRun(store, { runId: 'run-2', runKey: 'key2', clawId: '1' });
+			registerRun(store, { runId: 'run-3', runKey: 'key3', clawId: '2' });
 
-			store.removeByBot('1');
+			store.removeByClaw('1');
 
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runs['run-2']).toBeUndefined();
@@ -429,7 +429,7 @@ describe('useAgentRunsStore', () => {
 
 		test('无活跃 runs 时不报错', () => {
 			const store = useAgentRunsStore();
-			store.removeByBot('nonexistent');
+			store.removeByClaw('nonexistent');
 		});
 	});
 
@@ -527,15 +527,15 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 
-		test('removeByBot 清理 settling + loadInFlight 的 run 无悬挂 timer', () => {
+		test('removeByClaw 清理 settling + loadInFlight 的 run 无悬挂 timer', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
 			store.markLoadInFlight('agent:main:main');
 
-			// removeByBot 应直接清理，含 __settleTimer
-			store.removeByBot('1');
+			// removeByClaw 应直接清理，含 __settleTimer
+			store.removeByClaw('1');
 			expect(store.runs['run-1']).toBeUndefined();
 
 			// 后续 timer 触发不应报错

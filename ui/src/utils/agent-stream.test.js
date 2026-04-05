@@ -6,7 +6,7 @@ import { applyAgentEvent } from './agent-stream.js';
 function makeStreamingMsgs() {
 	return [
 		{
-			id: '__local_bot_1',
+			id: '__local_claw_1',
 			_local: true,
 			_streaming: true,
 			_startTime: 1000,
@@ -162,7 +162,7 @@ describe('applyAgentEvent', () => {
 	test('ensureContentArray：非空字符串 content 被转换为 text block 数组', () => {
 		const msgs = [
 			{
-				id: '__local_bot_1',
+				id: '__local_claw_1',
 				_local: true,
 				_streaming: true,
 				message: { role: 'assistant', content: 'initial', stopReason: null },

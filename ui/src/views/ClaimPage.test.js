@@ -6,8 +6,8 @@ import ClaimPage from './ClaimPage.vue';
 
 const mockClaimBot = vi.fn();
 
-vi.mock('../services/bots.api.js', () => ({
-	claimBot: (...args) => mockClaimBot(...args),
+vi.mock('../services/claws.api.js', () => ({
+	claimClaw: (...args) => mockClaimBot(...args),
 }));
 
 const i18nMap = {
@@ -56,7 +56,7 @@ test('should show noCode state when query has no code', async () => {
 	expect(mockClaimBot).not.toHaveBeenCalled();
 });
 
-test('should call claimBot and show success on valid code', async () => {
+test('should call claimClaw and show success on valid code', async () => {
 	mockClaimBot.mockResolvedValueOnce({ clawId: '42', clawName: 'test' });
 	const wrapper = createWrapper({ query: { code: '12345678' } });
 	await flushPromises();
@@ -71,7 +71,7 @@ test('should navigate to /bots after success with delay', async () => {
 	await flushPromises();
 
 	vi.advanceTimersByTime(1500);
-	expect(wrapper.vm.$router.replace).toHaveBeenCalledWith('/bots');
+	expect(wrapper.vm.$router.replace).toHaveBeenCalledWith('/claws');
 });
 
 test('should show expired error on CLAIM_CODE_EXPIRED with retryHint', async () => {
@@ -103,7 +103,7 @@ test('should show generic error on unknown error and log warning', async () => {
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('Failed');
-	expect(warnSpy).toHaveBeenCalledWith('[ClaimPage] claimBot failed:', err);
+	expect(warnSpy).toHaveBeenCalledWith('[ClaimPage] claimClaw failed:', err);
 	warnSpy.mockRestore();
 });
 

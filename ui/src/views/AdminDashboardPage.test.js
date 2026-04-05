@@ -31,7 +31,7 @@ const fakeDashboard = {
 		{ id: '10', name: '王五', loginName: 'wangwu', createdAt: new Date(Date.now() - 600000).toISOString() },
 		{ id: '11', name: null, loginName: 'noname_user', createdAt: new Date(Date.now() - 3600000).toISOString() },
 	],
-	bots: { total: 10, online: 4 },
+	claws: { total: 10, online: 4 },
 	version: { server: '0.4.2', plugin: '0.3.1' },
 };
 
@@ -40,8 +40,8 @@ const i18nMap = {
 	'adminDashboard.totalUsers': 'Total Users',
 	'adminDashboard.todayNew': 'New Today',
 	'adminDashboard.todayActive': 'Active Today',
-	'adminDashboard.totalBots': 'Bound Instances',
-	'adminDashboard.onlineBots': 'Online',
+	'adminDashboard.totalClaws': 'Bound Instances',
+	'adminDashboard.onlineClaws': 'Online',
 	'adminDashboard.serverVersion': 'Server Version',
 	'adminDashboard.uiVersion': 'UI Version',
 	'adminDashboard.pluginVersion': 'Plugin Version',

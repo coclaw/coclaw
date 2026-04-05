@@ -5,13 +5,13 @@ const HB_TIMEOUT_MS = 65_000; // server 30s 间隔，留 ~2x 余量
 const RESTART_THROTTLE_MS = 500; // restart 节流，防 app:foreground + network:online 同时触发
 
 /**
- * 通过 SSE 实时接收 bot 快照、状态变更及解绑通知。
+ * 通过 SSE 实时接收 claw 快照、状态变更及解绑通知。
  * 连接建立后 server 推送全量快照（claw.snapshot），后续增量更新。
  * 内置心跳超时检测：超过 65s 未收到任何数据则自动重建连接。
- * @param {import('pinia').Store} botsStore - bots store 实例
+ * @param {import('pinia').Store} clawsStore - claws store 实例
  * @returns {{ connected: import('vue').Ref<boolean>, stop: () => void }}
  */
-export function useBotStatusSse(botsStore) {
+export function useClawStatusSse(clawsStore) {
 	const connected = ref(false);
 	let es = null;
 	let stopped = false;
@@ -51,19 +51,19 @@ export function useBotStatusSse(botsStore) {
 				console.debug('[SSE] event=%s', data.event, data);
 				switch (data.event) {
 					case 'claw.snapshot':
-						botsStore.applySnapshot(data.items);
+						clawsStore.applySnapshot(data.items);
 						break;
 					case 'claw.status':
-						botsStore.updateBotOnline(data.clawId, data.online);
+						clawsStore.updateClawOnline(data.clawId, data.online);
 						break;
 					case 'claw.nameUpdated':
-						botsStore.addOrUpdateBot({ id: data.clawId, name: data.name });
+						clawsStore.addOrUpdateClaw({ id: data.clawId, name: data.name });
 						break;
 					case 'claw.bound':
-						botsStore.addOrUpdateBot(data.claw);
+						clawsStore.addOrUpdateClaw(data.claw);
 						break;
 					case 'claw.unbound':
-						botsStore.removeBotById(data.clawId);
+						clawsStore.removeClawById(data.clawId);
 						break;
 					case 'heartbeat':
 						break;

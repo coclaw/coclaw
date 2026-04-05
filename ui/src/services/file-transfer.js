@@ -7,7 +7,7 @@
  *
  * 设计文档：docs/designs/file-management.md
  */
-import { DEFAULT_CONNECT_TIMEOUT_MS } from './bot-connection.js';
+import { DEFAULT_CONNECT_TIMEOUT_MS } from './claw-connection.js';
 import { remoteLog } from './remote-log.js';
 
 /** 分片大小 16KB */
@@ -25,49 +25,49 @@ const UPLOAD_READY_TIMEOUT_MS = 15_000;
 
 /**
  * 列出目录内容（单层）
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path - 相对 workspace 的路径
  * @returns {Promise<{ files: { name: string, type: string, size: number, mtime: number }[] }>}
  */
-export function listFiles(botConn, agentId, path) {
-	return botConn.request('coclaw.files.list', { agentId, path }, { timeout: 60_000 });
+export function listFiles(clawConn, agentId, path) {
+	return clawConn.request('coclaw.files.list', { agentId, path }, { timeout: 60_000 });
 }
 
 /**
  * 删除文件或目录
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path
  * @param {{ force?: boolean }} [opts]
  * @returns {Promise<object>}
  */
-export function deleteFile(botConn, agentId, path, opts) {
+export function deleteFile(clawConn, agentId, path, opts) {
 	const params = { agentId, path };
 	if (opts?.force) params.force = true;
-	return botConn.request('coclaw.files.delete', params, { timeout: 60_000 });
+	return clawConn.request('coclaw.files.delete', params, { timeout: 60_000 });
 }
 
 /**
  * 创建目录（递归，类似 mkdir -p）。目录已存在时视为成功。
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path
  * @returns {Promise<object>}
  */
-export function mkdirFiles(botConn, agentId, path) {
-	return botConn.request('coclaw.files.mkdir', { agentId, path });
+export function mkdirFiles(clawConn, agentId, path) {
+	return clawConn.request('coclaw.files.mkdir', { agentId, path });
 }
 
 /**
  * 创建空文件。文件���存在时返回 ALREADY_EXISTS 错误。
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path
  * @returns {Promise<object>}
  */
-export function createFile(botConn, agentId, path) {
-	return botConn.request('coclaw.files.create', { agentId, path });
+export function createFile(clawConn, agentId, path) {
+	return clawConn.request('coclaw.files.create', { agentId, path });
 }
 
 // --- 文件传输（走 file:<transferId> DataChannel） ---
@@ -100,18 +100,18 @@ function createFileDC(rtcConn) {
 
 /**
  * 下载文件（自动等待连接就绪）
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path
  * @returns {FileTransferHandle}
  */
-export function downloadFile(botConn, agentId, path) {
+export function downloadFile(clawConn, agentId, path) {
 	let progressCb = null;
 	let cancelled = false;
 	let cancelFn = null;
 
 	// 等待连接就绪（已就绪时同步返回 resolved promise）
-	const readyPromise = botConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
+	const readyPromise = clawConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
 
 	const promise = readyPromise.then(() => new Promise((resolve, reject) => {
 		// 等待就绪期间若已被取消，直接 reject
@@ -129,7 +129,7 @@ export function downloadFile(botConn, agentId, path) {
 
 		let dcRef, cleanupRef;
 		try {
-			const { dc, cleanup } = createFileDC(botConn.rtc);
+			const { dc, cleanup } = createFileDC(clawConn.rtc);
 			dcRef = dc;
 			cleanupRef = cleanup;
 		} catch (err) {
@@ -241,41 +241,41 @@ export function downloadFile(botConn, agentId, path) {
 
 /**
  * 上传文件到指定路径（PUT 语义，客户端决定存储路径，自动等待连接就绪）
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path - 具体文件路径
  * @param {File|Blob} file
  * @returns {FileTransferHandle}
  */
-export function uploadFile(botConn, agentId, path, file) {
-	return __doUpload(botConn, file, {
+export function uploadFile(clawConn, agentId, path, file) {
+	return __doUpload(clawConn, file, {
 		method: 'PUT', agentId, path, size: file.size,
 	});
 }
 
 /**
  * 上传文件到集合路径（POST 语义，Plugin 决定最终路径，自动等待连接就绪）
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path - 集合目录路径
  * @param {string} fileName - 原始文件名
  * @param {File|Blob} file
  * @returns {FileTransferHandle} resolve 时额外包含 path 字段（实际存储路径）
  */
-export function postFile(botConn, agentId, path, fileName, file) {
-	return __doUpload(botConn, file, {
+export function postFile(clawConn, agentId, path, fileName, file) {
+	return __doUpload(clawConn, file, {
 		method: 'POST', agentId, path, fileName, size: file.size,
 	});
 }
 
 /**
  * 上传内部实现（PUT / POST 共用）
- * @param {import('./bot-connection.js').BotConnection} botConn
+ * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {File|Blob} file
  * @param {object} reqMsg - 发送到 DC 的请求 JSON（含 method/agentId/path/size 等）
  * @returns {FileTransferHandle}
  */
-function __doUpload(botConn, file, reqMsg) {
+function __doUpload(clawConn, file, reqMsg) {
 	if (file.size > MAX_UPLOAD_SIZE) {
 		const err = new FileTransferError(
 			'SIZE_EXCEEDED',
@@ -294,7 +294,7 @@ function __doUpload(botConn, file, reqMsg) {
 	const logCtx = `method=${reqMsg.method} size=${fileSize}`;
 
 	// 等待连接就绪（已就绪时同步返回 resolved promise）
-	const readyPromise = botConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
+	const readyPromise = clawConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
 
 	const promise = readyPromise.then(() => new Promise((resolve, reject) => {
 		// 等待就绪期间若已被取消，直接 reject
@@ -314,7 +314,7 @@ function __doUpload(botConn, file, reqMsg) {
 
 		let dcRef, cleanupRef;
 		try {
-			const { dc, cleanup } = createFileDC(botConn.rtc);
+			const { dc, cleanup } = createFileDC(clawConn.rtc);
 			dcRef = dc;
 			cleanupRef = cleanup;
 		} catch (err) {

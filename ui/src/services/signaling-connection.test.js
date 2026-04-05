@@ -169,7 +169,7 @@ describe('SignalingConnection – connId 管理', () => {
 		expect(id1).toMatch(/^c_/);
 	});
 
-	test('不同 botId 生成不同 connId', () => {
+	test('不同 clawId 生成不同 connId', () => {
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
 		const id1 = conn.getOrCreateConnId('bot1');
 		const id2 = conn.getOrCreateConnId('bot2');
@@ -191,7 +191,7 @@ describe('SignalingConnection – connId 管理', () => {
 		expect(newId).not.toBe(connId);
 	});
 
-	test('releaseConnId 对不存在的 botId 无副作用', () => {
+	test('releaseConnId 对不存在的 clawId 无副作用', () => {
 		const { conn, ws } = makeConnected();
 		conn.releaseConnId('nonexistent');
 		// 无 rtc:closed 消息
@@ -225,7 +225,7 @@ describe('SignalingConnection – sendSignaling()', () => {
 		expect(ok).toBe(false);
 	});
 
-	test('同一 botId 多次发送使用相同 connId', () => {
+	test('同一 clawId 多次发送使用相同 connId', () => {
 		const { conn, ws } = makeConnected();
 		conn.sendSignaling('bot1', 'rtc:offer', { sdp: '1' });
 		conn.sendSignaling('bot1', 'rtc:ice', { candidate: 'c1' });
@@ -236,14 +236,14 @@ describe('SignalingConnection – sendSignaling()', () => {
 });
 
 describe('SignalingConnection – 入站 RTC 信令', () => {
-	test('rtc:answer 按 toConnId 路由到对应 botId', () => {
+	test('rtc:answer 按 toConnId 路由到对应 clawId', () => {
 		const { conn, ws } = makeConnected();
 		const connId = conn.getOrCreateConnId('bot1');
 		const events = [];
 		conn.on('rtc', (e) => events.push(e));
 		ws.simulateMessage({ type: 'rtc:answer', toConnId: connId, payload: { sdp: 'ans' } });
 		expect(events.length).toBe(1);
-		expect(events[0].botId).toBe('bot1');
+		expect(events[0].clawId).toBe('bot1');
 		expect(events[0].type).toBe('rtc:answer');
 		expect(events[0].payload).toEqual({ sdp: 'ans' });
 	});
@@ -255,7 +255,7 @@ describe('SignalingConnection – 入站 RTC 信令', () => {
 		conn.on('rtc', (e) => events.push(e));
 		ws.simulateMessage({ type: 'rtc:ice', toConnId: connId, payload: { candidate: 'c' } });
 		expect(events.length).toBe(1);
-		expect(events[0].botId).toBe('bot2');
+		expect(events[0].clawId).toBe('bot2');
 	});
 
 	test('未知 toConnId 的消息被忽略', () => {

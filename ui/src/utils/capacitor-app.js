@@ -224,7 +224,7 @@ function setupAppStateChange() {
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
 			remoteLog(`app.stateChange active=${isActive}`);
 			if (isActive) {
-				// 通知各模块进行前台恢复（BotConnection/SSE/Polling/ChatPage）
+				// 通知各模块进行前台恢复（ClawConnection/SSE/Polling/ChatPage）
 				window.dispatchEvent(new CustomEvent('app:foreground'));
 			} else {
 				// 通知各模块进入后台（可用于保存状态、记录时间戳等）

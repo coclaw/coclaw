@@ -1,5 +1,5 @@
 /**
- * 单个 Bot 的数据通道连接
+ * 单个 Claw 的数据通道连接
  * 职责：RPC over DataChannel、WebRtcConnection 引用管理、事件分发、连接就绪等待
  * 无 Vue 依赖，纯 JS
  *
@@ -20,17 +20,17 @@ const TERMINAL_STATUSES = new Set(['ok', 'error']);
 export { BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS };
 
 /**
- * Per-bot 数据通道连接
+ * Per-claw 数据通道连接
  *
  * 事件:
  * - `event:<name>` — DataChannel 推送事件 (data: payload)
  */
-export class BotConnection {
+export class ClawConnection {
 	/**
-	 * @param {string} botId
+	 * @param {string} clawId
 	 */
-	constructor(botId) {
-		this.botId = String(botId);
+	constructor(clawId) {
+		this.clawId = String(clawId);
 
 		// RPC pending
 		this.__pending = new Map();
@@ -47,13 +47,13 @@ export class BotConnection {
 		this.__readyWaiters = [];
 
 		/**
-		 * 由外层（bots.store）注入的回调：触发 RTC 重连（fire-and-forget）
+		 * 由外层（claws.store）注入的回调：触发 RTC 重连（fire-and-forget）
 		 * @type {(() => void) | null}
 		 */
 		this.__onTriggerReconnect = null;
 
 		/**
-		 * 由外层（bots.store）注入的回调：获取当前 rtcPhase
+		 * 由外层（claws.store）注入的回调：获取当前 rtcPhase
 		 * @type {(() => string) | null}
 		 */
 		this.__onGetRtcPhase = null;
@@ -65,7 +65,7 @@ export class BotConnection {
 	/** 设置 RTC 连接引用，并 resolve 所有等待中的 waitReady */
 	setRtc(rtcConn) {
 		if (rtcConn && !rtcConn.isReady) {
-			console.warn('[BotConn] setRtc called with non-ready RTC, waiters may receive unusable connection');
+			console.warn('[ClawConn] setRtc called with non-ready RTC, waiters may receive unusable connection');
 		}
 		this.__rtc = rtcConn;
 		this.__resolveAllWaiters();
@@ -76,7 +76,7 @@ export class BotConnection {
 		const pendingCount = this.__pending.size;
 		const waiterCount = this.__readyWaiters.length;
 		if (pendingCount || waiterCount) {
-			remoteLog(`conn.clearRtc bot=${this.botId} pending=${pendingCount} waiters=${waiterCount}`);
+			remoteLog(`conn.clearRtc claw=${this.clawId} pending=${pendingCount} waiters=${waiterCount}`);
 		}
 		this.__rtc = null;
 		this.__rejectAllWaiters('RTC connection lost', 'RTC_LOST');
@@ -85,14 +85,14 @@ export class BotConnection {
 
 	/** 断开：关闭 RTC + reject pending/waiters + 释放 connId */
 	disconnect() {
-		console.debug('[BotConn] disconnect botId=%s', this.botId);
+		console.debug('[ClawConn] disconnect clawId=%s', this.clawId);
 		if (this.__rtc) {
-			try { this.__rtc.close(); } catch (err) { console.debug('[BotConn] rtc.close() failed: %s', err?.message); }
+			try { this.__rtc.close(); } catch (err) { console.debug('[ClawConn] rtc.close() failed: %s', err?.message); }
 			this.__rtc = null;
 		}
 		this.__rejectAllWaiters('connection closed', 'DC_CLOSED');
 		this.__rejectAllPending('connection closed');
-		useSignalingConnection().releaseConnId(this.botId);
+		useSignalingConnection().releaseConnId(this.clawId);
 	}
 
 	/**
@@ -115,7 +115,7 @@ export class BotConnection {
 				this.__removeWaiter(waiter);
 				const err = new Error('connect timeout');
 				err.code = 'CONNECT_TIMEOUT';
-				remoteLog(`conn.waitReady.timeout bot=${this.botId} timeout=${timeoutMs}ms phase=${this.__onGetRtcPhase?.() ?? '?'}`);
+				remoteLog(`conn.waitReady.timeout claw=${this.clawId} timeout=${timeoutMs}ms phase=${this.__onGetRtcPhase?.() ?? '?'}`);
 				reject(err);
 			}, timeoutMs);
 			this.__readyWaiters.push(waiter);
@@ -148,7 +148,7 @@ export class BotConnection {
 						this.__pending.delete(id);
 						const err = new Error('rpc timeout');
 						err.code = 'RPC_TIMEOUT';
-						remoteLog(`rpc.timeout bot=${this.botId} method=${method} timeout=${timeoutMs}ms`);
+						remoteLog(`rpc.timeout claw=${this.clawId} method=${method} timeout=${timeoutMs}ms`);
 						reject(err);
 					}, timeoutMs);
 				}
@@ -160,7 +160,7 @@ export class BotConnection {
 						if (waiter.timer) clearTimeout(waiter.timer);
 						const err = new Error('rtc send failed');
 						err.code = 'RTC_SEND_FAILED';
-						remoteLog(`rpc.sendFailed bot=${this.botId} method=${method} err=${sendErr?.message}`);
+						remoteLog(`rpc.sendFailed claw=${this.clawId} method=${method} err=${sendErr?.message}`);
 						reject(err);
 					});
 			});
@@ -189,7 +189,7 @@ export class BotConnection {
 		if (!cbs) return;
 		for (const cb of cbs) {
 			try { cb(data); }
-			catch (e) { console.error('[BotConn] listener error:', e); }
+			catch (e) { console.error('[ClawConn] listener error:', e); }
 		}
 	}
 
@@ -205,7 +205,7 @@ export class BotConnection {
 	__handleRpcResponse(payload) {
 		const waiter = this.__pending.get(payload.id);
 		if (!waiter) {
-			console.warn('[BotConn] unmatched rpc response id=%s ok=%s botId=%s', payload.id, payload.ok, this.botId);
+			console.warn('[ClawConn] unmatched rpc response id=%s ok=%s clawId=%s', payload.id, payload.ok, this.clawId);
 			return;
 		}
 
@@ -215,7 +215,7 @@ export class BotConnection {
 			if (waiter.timer) clearTimeout(waiter.timer);
 			const err = new Error(payload?.error?.message ?? 'rpc failed');
 			err.code = payload?.error?.code ?? 'RPC_FAILED';
-			remoteLog(`rpc.failed bot=${this.botId} code=${err.code} err=${err.message}`);
+			remoteLog(`rpc.failed claw=${this.clawId} code=${err.code} err=${err.message}`);
 			waiter.reject(err);
 			return;
 		}
@@ -245,7 +245,7 @@ export class BotConnection {
 		}
 
 		// 未知中间态
-		console.error('[BotConn] unknown intermediate status=%s id=%s', status, payload.id);
+		console.error('[ClawConn] unknown intermediate status=%s id=%s', status, payload.id);
 		if (waiter.onUnknownStatus) {
 			waiter.onUnknownStatus(status, payload.payload);
 		}
@@ -253,7 +253,7 @@ export class BotConnection {
 
 	__rejectAllPending(message, code = 'DC_CLOSED') {
 		if (this.__pending.size) {
-			remoteLog(`conn.rejectPending bot=${this.botId} count=${this.__pending.size} code=${code}`);
+			remoteLog(`conn.rejectPending claw=${this.clawId} count=${this.__pending.size} code=${code}`);
 		}
 		for (const waiter of this.__pending.values()) {
 			if (waiter.timer) clearTimeout(waiter.timer);

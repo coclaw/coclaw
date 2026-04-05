@@ -3,7 +3,7 @@
  * 职责：跟踪所有活跃的 agent run，缓冲流式消息
  * 生命周期独立于 ChatPage / chatStore，run 在页面切换后继续接收事件
  *
- * event:agent 事件由 botsStore.__bridgeConn 集中桥接，所有事件统一通过 __dispatch 到达本 store。
+ * event:agent 事件由 clawsStore.__bridgeConn 集中桥接，所有事件统一通过 __dispatch 到达本 store。
  * 本 store 不再自行管理 per-connection 监听器。
  */
 import { defineStore } from 'pinia';
@@ -19,7 +19,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		/**
 		 * 活跃 run 注册表
 		 * @type {Record<string, RunState>}
-		 * RunState: { runId, botId, runKey, topicMode, startTime, settled, streamingMsgs }
+		 * RunState: { runId, clawId, runKey, topicMode, startTime, settled, streamingMsgs }
 		 */
 		runs: {},
 		/**
@@ -59,14 +59,14 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 * 注册新 run
 		 * @param {string} runId
 		 * @param {object} opts
-		 * @param {string} opts.botId
+		 * @param {string} opts.clawId
 		 * @param {string} opts.runKey
 		 * @param {boolean} opts.topicMode
-		 * @param {object} opts.conn - BotConnection 实例（仅保留引用，不注册监听器）
-		 * @param {object[]} opts.streamingMsgs - 初始流式消息（乐观 user + bot 条目）
+		 * @param {object} opts.conn - ClawConnection 实例（仅保留引用，不注册监听器）
+		 * @param {object[]} opts.streamingMsgs - 初始流式消息（乐观 user + claw 条目）
 		 */
-		register(runId, { botId, runKey, topicMode, conn, streamingMsgs = [] }) {
-			console.debug('[agentRuns] register runId=%s runKey=%s botId=%s', runId, runKey, botId);
+		register(runId, { clawId, runKey, topicMode, conn, streamingMsgs = [] }) {
+			console.debug('[agentRuns] register runId=%s runKey=%s clawId=%s', runId, runKey, clawId);
 
 			// 清理同一 runKey 的旧 run（若有）
 			const oldRunId = this.runKeyIndex[runKey];
@@ -76,7 +76,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 
 			this.runs[runId] = {
 				runId,
-				botId,
+				clawId,
 				runKey,
 				topicMode,
 				startTime: Date.now(),
@@ -110,7 +110,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
-		 * 内部：处理 event:agent 事件路由（由 botsStore.__bridgeConn 集中调用）
+		 * 内部：处理 event:agent 事件路由（由 clawsStore.__bridgeConn 集中调用）
 		 * @param {object} payload
 		 */
 		__dispatch(payload) {
@@ -304,11 +304,11 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
-		 * bot 移除时清理该 bot 的所有 runs
-		 * @param {string} botId
+		 * claw 移除时清理该 claw 的所有 runs
+		 * @param {string} clawId
 		 */
-		removeByBot(botId) {
-			const runIds = Object.keys(this.runs).filter((id) => this.runs[id].botId === botId);
+		removeByClaw(clawId) {
+			const runIds = Object.keys(this.runs).filter((id) => this.runs[id].clawId === clawId);
 			for (const runId of runIds) {
 				this.__cleanupRun(runId);
 			}

@@ -5,23 +5,23 @@ import { useSessionsStore } from './sessions.store.js';
 
 const mockConnections = new Map();
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
-		get: (botId) => mockConnections.get(String(botId)),
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
+		get: (clawId) => mockConnections.get(String(clawId)),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
 import { useAgentsStore } from './agents.store.js';
-import { useBotsStore } from './bots.store.js';
+import { useClawsStore } from './claws.store.js';
 
 /**
  * 创建模拟连接，request('chat.history', { sessionKey, limit: 1 }) 按 sessionKey 返回对应 sessionId
@@ -42,14 +42,14 @@ function mockConn(sessionKeyToId = {}) {
 	};
 }
 
-/** 注册 mock conn 并设置 botsStore 中 bot 的 dcReady */
-function setConn(botId, conn, { dcReady = true } = {}) {
-	mockConnections.set(String(botId), conn);
-	const botsStore = useBotsStore();
-	if (!botsStore.byId[String(botId)]) {
-		botsStore.byId[String(botId)] = { id: String(botId), dcReady };
+/** 注册 mock conn 并设置 clawsStore 中 claw 的 dcReady */
+function setConn(clawId, conn, { dcReady = true } = {}) {
+	mockConnections.set(String(clawId), conn);
+	const clawsStore = useClawsStore();
+	if (!clawsStore.byId[String(clawId)]) {
+		clawsStore.byId[String(clawId)] = { id: String(clawId), dcReady };
 	} else {
-		botsStore.byId[String(botId)].dcReady = dcReady;
+		clawsStore.byId[String(clawId)].dcReady = dcReady;
 	}
 }
 
@@ -67,8 +67,8 @@ describe('sessions store', () => {
 	});
 
 	test('loadAllSessions should return empty when all bots have no connected WS', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot 1', online: false },
 		]);
 		// 没有 mockConnections 条目 -> get() 返回 undefined
@@ -79,8 +79,8 @@ describe('sessions store', () => {
 	});
 
 	test('loadAllSessions should load sessions from multiple bots', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot 1', online: true },
 			{ id: 'bot-2', name: 'Bot 2', online: true },
 		]);
@@ -95,20 +95,20 @@ describe('sessions store', () => {
 		await store.loadAllSessions();
 
 		expect(store.items).toEqual([
-			{ sessionId: 'sid-1', sessionKey: 'agent:main:main', botId: 'bot-1', agentId: 'main' },
-			{ sessionId: 'sid-2', sessionKey: 'agent:main:main', botId: 'bot-2', agentId: 'main' },
+			{ sessionId: 'sid-1', sessionKey: 'agent:main:main', clawId: 'bot-1', agentId: 'main' },
+			{ sessionId: 'sid-2', sessionKey: 'agent:main:main', clawId: 'bot-2', agentId: 'main' },
 		]);
 	});
 
-	test('loadAllSessions should dedup by botId:sessionKey', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+	test('loadAllSessions should dedup by clawId:sessionKey', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot 1', online: true },
 		]);
 
 		const agentsStore = useAgentsStore();
 		// 两个 agent 产出相同 sessionKey（理论上不会，但验证去重逻辑）
-		agentsStore.byBot['bot-1'] = {
+		agentsStore.byClaw['bot-1'] = {
 			agents: [{ id: 'main' }, { id: 'alias' }],
 			defaultId: 'main',
 			loading: false,
@@ -129,8 +129,8 @@ describe('sessions store', () => {
 	});
 
 	test('loadAllSessions should skip bots without connected WS', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-on', name: 'Online', online: true },
 			{ id: 'bot-off', name: 'Offline', online: false },
 		]);
@@ -144,13 +144,13 @@ describe('sessions store', () => {
 
 		expect(connOn.request).toHaveBeenCalledTimes(1);
 		expect(store.items).toEqual([
-			{ sessionId: 'sid-on', sessionKey: 'agent:main:main', botId: 'bot-on', agentId: 'main' },
+			{ sessionId: 'sid-on', sessionKey: 'agent:main:main', clawId: 'bot-on', agentId: 'main' },
 		]);
 	});
 
 	test('loadAllSessions should still load other bots when one fails', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-ok', name: 'OK', online: true },
 			{ id: 'bot-fail', name: 'Fail', online: true },
 		]);
@@ -168,22 +168,22 @@ describe('sessions store', () => {
 		await store.loadAllSessions();
 
 		expect(store.items).toEqual([
-			{ sessionId: 'sid-ok', sessionKey: 'agent:main:main', botId: 'bot-ok', agentId: 'main' },
+			{ sessionId: 'sid-ok', sessionKey: 'agent:main:main', clawId: 'bot-ok', agentId: 'main' },
 		]);
 	});
 
 	test('setSessions should directly set items', () => {
 		const store = useSessionsStore();
 		const items = [
-			{ sessionId: 'x', sessionKey: 'agent:main:main', botId: 'b', agentId: 'main' },
+			{ sessionId: 'x', sessionKey: 'agent:main:main', clawId: 'b', agentId: 'main' },
 		];
 		store.setSessions(items);
 		expect(store.items).toEqual(items);
 	});
 
 	test('concurrent loadAllSessions should join the same request', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
 
 		const conn = mockConn({ 'agent:main:main': 'sid-1' });
 		setConn('bot-1', conn);
@@ -202,8 +202,8 @@ describe('sessions store', () => {
 	});
 
 	test('loading flag should be managed correctly', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'B', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
 
 		const conn = mockConn({});
 		setConn('bot-1', conn);
@@ -218,50 +218,50 @@ describe('sessions store', () => {
 		expect(store.loading).toBe(false);
 	});
 
-	test('removeSessionsByBotId should remove all sessions for the given botId', () => {
+	test('removeSessionsByClawId should remove all sessions for the given clawId', () => {
 		const store = useSessionsStore();
 		store.setSessions([
-			{ sessionId: 's1', sessionKey: 'agent:main:main', botId: 'bot-1', agentId: 'main' },
-			{ sessionId: 's2', sessionKey: 'agent:main:main', botId: 'bot-2', agentId: 'main' },
-			{ sessionId: 's3', sessionKey: 'agent:ops:main', botId: 'bot-1', agentId: 'ops' },
+			{ sessionId: 's1', sessionKey: 'agent:main:main', clawId: 'bot-1', agentId: 'main' },
+			{ sessionId: 's2', sessionKey: 'agent:main:main', clawId: 'bot-2', agentId: 'main' },
+			{ sessionId: 's3', sessionKey: 'agent:ops:main', clawId: 'bot-1', agentId: 'ops' },
 		]);
 
-		store.removeSessionsByBotId('bot-1');
+		store.removeSessionsByClawId('bot-1');
 
 		expect(store.items).toHaveLength(1);
 		expect(store.items[0].sessionId).toBe('s2');
 	});
 
-	test('removeSessionsByBotId should coerce numeric botId to string', () => {
+	test('removeSessionsByClawId should coerce numeric clawId to string', () => {
 		const store = useSessionsStore();
 		store.setSessions([
-			{ sessionId: 's1', sessionKey: 'agent:main:main', botId: '42', agentId: 'main' },
-			{ sessionId: 's2', sessionKey: 'agent:main:main', botId: '99', agentId: 'main' },
+			{ sessionId: 's1', sessionKey: 'agent:main:main', clawId: '42', agentId: 'main' },
+			{ sessionId: 's2', sessionKey: 'agent:main:main', clawId: '99', agentId: 'main' },
 		]);
 
-		store.removeSessionsByBotId(42);
+		store.removeSessionsByClawId(42);
 
 		expect(store.items).toHaveLength(1);
 		expect(store.items[0].sessionId).toBe('s2');
 	});
 
-	test('removeSessionsByBotId should be a no-op when no sessions match', () => {
+	test('removeSessionsByClawId should be a no-op when no sessions match', () => {
 		const store = useSessionsStore();
 		store.setSessions([
-			{ sessionId: 's1', sessionKey: 'agent:main:main', botId: 'bot-1', agentId: 'main' },
+			{ sessionId: 's1', sessionKey: 'agent:main:main', clawId: 'bot-1', agentId: 'main' },
 		]);
 
-		store.removeSessionsByBotId('bot-999');
+		store.removeSessionsByClawId('bot-999');
 
 		expect(store.items).toHaveLength(1);
 	});
 
-	test('__fetchSessionsForBot 应按多个 agent 分别拉取并合并', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+	test('__fetchSessionsForClaw 应按多个 agent 分别拉取并合并', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
 
 		const agentsStore = useAgentsStore();
-		agentsStore.byBot['bot-1'] = {
+		agentsStore.byClaw['bot-1'] = {
 			agents: [{ id: 'main' }, { id: 'ops' }],
 			defaultId: 'main',
 			loading: false,
@@ -287,10 +287,10 @@ describe('sessions store', () => {
 	});
 
 	test('agentsStore 未加载时应 fallback 到 main', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
 
-		// 不设置 agentsStore 数据 -> getAgentsByBot 返回 []
+		// 不设置 agentsStore 数据 -> getAgentsByClaw 返回 []
 
 		const conn = mockConn({ 'agent:main:main': 'sid-1' });
 		setConn('bot-1', conn);
@@ -308,9 +308,9 @@ describe('sessions store', () => {
 		});
 	});
 
-	test('__fetchSessionsForBot 应将 botId 归一化为 string', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 42, name: 'B1', online: true }]);
+	test('__fetchSessionsForClaw 应将 clawId 归一化为 string', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 42, name: 'B1', online: true }]);
 
 		const conn = mockConn({ 'agent:main:main': 'sid-1' });
 		setConn('42', conn);
@@ -319,16 +319,16 @@ describe('sessions store', () => {
 		await store.loadAllSessions();
 
 		expect(store.items).toHaveLength(1);
-		expect(store.items[0].botId).toBe('42');
-		expect(typeof store.items[0].botId).toBe('string');
+		expect(store.items[0].clawId).toBe('42');
+		expect(typeof store.items[0].clawId).toBe('string');
 	});
 
 	test('多 agent 拉取部分失败时应保留成功部分', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
 
 		const agentsStore = useAgentsStore();
-		agentsStore.byBot['bot-1'] = {
+		agentsStore.byClaw['bot-1'] = {
 			agents: [{ id: 'main' }, { id: 'bad' }],
 			defaultId: 'main',
 			loading: false,
@@ -356,8 +356,8 @@ describe('sessions store', () => {
 	});
 
 	test('loadAllSessions 增量合并：保留未查询 bot 的已有 sessions', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot 1', online: true },
 			{ id: 'bot-2', name: 'Bot 2', online: true },
 		]);
@@ -373,17 +373,17 @@ describe('sessions store', () => {
 		expect(store.items).toHaveLength(2);
 
 		// bot-2 断连，仅 bot-1 在线
-		botsStore.byId['bot-2'].dcReady = false;
+		clawsStore.byId['bot-2'].dcReady = false;
 		await store.loadAllSessions();
 
 		// bot-2 的 sessions 应保留
 		expect(store.items).toHaveLength(2);
-		expect(store.items.find((s) => s.botId === 'bot-2')).toBeDefined();
+		expect(store.items.find((s) => s.clawId === 'bot-2')).toBeDefined();
 	});
 
 	test('loadAllSessions 增量合并：已移除 bot 的旧 sessions 不被保留', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot 1', online: true },
 			{ id: 'bot-2', name: 'Bot 2', online: true },
 		]);
@@ -398,7 +398,7 @@ describe('sessions store', () => {
 		expect(store.items).toHaveLength(2);
 
 		// bot-2 被服务端移除：从 store 移除 + 断连
-		delete botsStore.byId['bot-2'];
+		delete clawsStore.byId['bot-2'];
 		mockConnections.delete('bot-2');
 
 		// 重新加载（仅 bot-1 连接中）
@@ -406,12 +406,12 @@ describe('sessions store', () => {
 
 		// bot-2 的 sessions 不应被保留（因为 bot 已不存在）
 		expect(store.items).toHaveLength(1);
-		expect(store.items[0].botId).toBe('bot-1');
+		expect(store.items[0].clawId).toBe('bot-1');
 	});
 
-	test('loadAllSessions 增量合并：__fetchSessionsForBot reject 时保留旧 sessions', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+	test('loadAllSessions 增量合并：__fetchSessionsForClaw reject 时保留旧 sessions', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot 1', online: true },
 			{ id: 'bot-2', name: 'Bot 2', online: true },
 		]);
@@ -425,23 +425,23 @@ describe('sessions store', () => {
 		await store.loadAllSessions();
 		expect(store.items).toHaveLength(2);
 
-		// 第二次加载时，spy __fetchSessionsForBot 使 bot-2 的调用 reject
-		const origFetch = store.__fetchSessionsForBot.bind(store);
-		vi.spyOn(store, '__fetchSessionsForBot').mockImplementation((botId) => {
-			if (String(botId) === 'bot-2') return Promise.reject(new Error('fetch failed'));
-			return origFetch(botId);
+		// 第二次加载时，spy __fetchSessionsForClaw 使 bot-2 的调用 reject
+		const origFetch = store.__fetchSessionsForClaw.bind(store);
+		vi.spyOn(store, '__fetchSessionsForClaw').mockImplementation((clawId) => {
+			if (String(clawId) === 'bot-2') return Promise.reject(new Error('fetch failed'));
+			return origFetch(clawId);
 		});
 		await store.loadAllSessions();
 
 		// bot-1 正常刷新，bot-2 因 fetch 失败应保留旧数据
 		expect(store.items).toHaveLength(2);
-		expect(store.items.find((s) => s.botId === 'bot-1')).toBeDefined();
-		expect(store.items.find((s) => s.botId === 'bot-2')).toBeDefined();
+		expect(store.items.find((s) => s.clawId === 'bot-1')).toBeDefined();
+		expect(store.items.find((s) => s.clawId === 'bot-2')).toBeDefined();
 	});
 
 	test('loadAllSessions 无已连接 bot 时不清空已有 sessions', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
 			{ id: 'bot-1', name: 'Bot 1', online: true },
 		]);
 
@@ -453,7 +453,7 @@ describe('sessions store', () => {
 		expect(store.items).toHaveLength(1);
 
 		// bot-1 断连
-		botsStore.byId['bot-1'].dcReady = false;
+		clawsStore.byId['bot-1'].dcReady = false;
 		await store.loadAllSessions();
 
 		// 已有 sessions 不应被清空
@@ -461,11 +461,11 @@ describe('sessions store', () => {
 	});
 
 	test('chat.history 返回空 sessionId 时应跳过该条目', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
 
 		const agentsStore = useAgentsStore();
-		agentsStore.byBot['bot-1'] = {
+		agentsStore.byClaw['bot-1'] = {
 			agents: [{ id: 'main' }, { id: 'empty' }],
 			defaultId: 'main',
 			loading: false,
@@ -484,11 +484,11 @@ describe('sessions store', () => {
 	});
 
 	test('每条 session 应包含正确的 agentId 字段', async () => {
-		const botsStore = useBotsStore();
-		botsStore.setBots([{ id: 'bot-1', name: 'B1', online: true }]);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
 
 		const agentsStore = useAgentsStore();
-		agentsStore.byBot['bot-1'] = {
+		agentsStore.byClaw['bot-1'] = {
 			agents: [{ id: 'assistant' }],
 			defaultId: 'assistant',
 			loading: false,
@@ -505,7 +505,7 @@ describe('sessions store', () => {
 		expect(store.items[0]).toEqual({
 			sessionId: 'sid-asst',
 			sessionKey: 'agent:assistant:main',
-			botId: 'bot-1',
+			clawId: 'bot-1',
 			agentId: 'assistant',
 		});
 	});

@@ -15,9 +15,9 @@ const topicLru = [];
 export const chatStoreManager = {
 	/**
 	 * 获取或创建 chat store 实例
-	 * @param {string} storeKey - 'session:${botId}:${agentId}' 或 'topic:${sessionId}'
+	 * @param {string} storeKey - 'session:${clawId}:${agentId}' 或 'topic:${sessionId}'
 	 * @param {object} [opts] - 首次创建时需要
-	 * @param {string} [opts.botId]
+	 * @param {string} [opts.clawId]
 	 * @param {string} [opts.agentId]
 	 * @returns {object} Pinia store 实例
 	 */

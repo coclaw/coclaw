@@ -74,7 +74,7 @@ export default {
 	name: 'TopicItemActions',
 	props: {
 		topicId: { type: String, required: true },
-		botId: { type: String, required: true },
+		clawId: { type: String, required: true },
 		title: { type: String, default: '' },
 	},
 	emits: ['deleted'],
@@ -106,7 +106,7 @@ export default {
 			this.renaming = true;
 			try {
 				const store = useTopicsStore();
-				await store.updateTopic(this.botId, this.topicId, { title: newTitle });
+				await store.updateTopic(this.clawId, this.topicId, { title: newTitle });
 				this.renameOpen = false;
 			} catch (err) {
 				this.notify.error(this.$t('topic.renameFailed'));
@@ -123,7 +123,7 @@ export default {
 			this.deleting = true;
 			try {
 				const store = useTopicsStore();
-				await store.deleteTopic(this.botId, this.topicId);
+				await store.deleteTopic(this.clawId, this.topicId);
 				this.deleteOpen = false;
 				// 若当前正在查看被删除的 topic，跳转到默认路由
 				const route = this.$route;

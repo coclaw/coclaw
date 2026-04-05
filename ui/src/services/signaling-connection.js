@@ -35,7 +35,7 @@ function resolveSignalingWsUrl(httpBaseUrl) {
  *
  * 事件:
  * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
- * - `rtc`               — 入站 RTC 信令 (data: { botId, type, payload })
+ * - `rtc`               — 入站 RTC 信令 (data: { clawId, type, payload })
  * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source, elapsed })，仅移动端或 network:online
  * - `log`               — 诊断日志 (data: string)，由 remote-log 桥接推送
  */
@@ -63,10 +63,10 @@ export class SignalingConnection {
 		this.__hbMissCount = 0;
 
 		// connId 管理
-		/** @type {Map<string, string>} botId → connId */
+		/** @type {Map<string, string>} clawId → connId */
 		this.__connIds = new Map();
-		/** @type {Map<string, string>} connId → botId（反向索引） */
-		this.__connIdToBotId = new Map();
+		/** @type {Map<string, string>} connId → clawId（反向索引） */
+		this.__connIdToClawId = new Map();
 
 		// 事件监听
 		this.__listeners = new Map();
@@ -169,46 +169,46 @@ export class SignalingConnection {
 	}
 
 	/**
-	 * 获取或创建某 bot 的 connId
-	 * @param {string} botId
+	 * 获取或创建某 claw 的 connId
+	 * @param {string} clawId
 	 * @returns {string}
 	 */
-	getOrCreateConnId(botId) {
-		const id = String(botId);
+	getOrCreateConnId(clawId) {
+		const id = String(clawId);
 		let connId = this.__connIds.get(id);
 		if (!connId) {
 			connId = `c_${crypto.randomUUID()}`;
 			this.__connIds.set(id, connId);
-			this.__connIdToBotId.set(connId, id);
+			this.__connIdToClawId.set(connId, id);
 		}
 		return connId;
 	}
 
 	/**
-	 * 释放某 bot 的 connId（bot 解绑/移除时调用）
-	 * @param {string} botId
+	 * 释放某 claw 的 connId（claw 解绑/移除时调用）
+	 * @param {string} clawId
 	 */
-	releaseConnId(botId) {
-		const id = String(botId);
+	releaseConnId(clawId) {
+		const id = String(clawId);
 		const connId = this.__connIds.get(id);
 		if (!connId) return;
-		console.debug('[SigConn] releaseConnId botId=%s connId=%s', id, connId);
+		console.debug('[SigConn] releaseConnId clawId=%s connId=%s', id, connId);
 		// 尝试通知 server 释放路由（best-effort）
 		this.__sendRaw({ type: 'rtc:closed', clawId: id, connId });
 		this.__connIds.delete(id);
-		this.__connIdToBotId.delete(connId);
+		this.__connIdToClawId.delete(connId);
 	}
 
 	/**
 	 * 发送 RTC 信令
-	 * @param {string} botId
+	 * @param {string} clawId
 	 * @param {string} type - 消息类型（如 'rtc:offer'）
 	 * @param {object} [payload] - 信令载荷
 	 * @returns {boolean} 是否发送成功（false 表示 WS 不可用）
 	 */
-	sendSignaling(botId, type, payload) {
-		const connId = this.getOrCreateConnId(botId);
-		const msg = { type, clawId: String(botId), connId };
+	sendSignaling(clawId, type, payload) {
+		const connId = this.getOrCreateConnId(clawId);
+		const msg = { type, clawId: String(clawId), connId };
 		if (payload !== undefined) msg.payload = payload;
 		return this.__sendRaw(msg);
 	}
@@ -324,19 +324,19 @@ export class SignalingConnection {
 		// 入站 RTC 信令：rtc:answer / rtc:ice / rtc:closed
 		if (payload?.type?.startsWith('rtc:')) {
 			const connId = payload.toConnId;
-			const botId = connId ? this.__connIdToBotId.get(connId) : null;
-			if (!botId) {
+			const clawId = connId ? this.__connIdToClawId.get(connId) : null;
+			if (!clawId) {
 				console.warn('[SigConn] rtc msg for unknown connId=%s type=%s', connId, payload.type);
 				return;
 			}
 			// server 端关闭通知 → 清理本地 connId 映射
 			if (payload.type === 'rtc:closed') {
-				console.debug('[SigConn] rtc:closed received for botId=%s connId=%s', botId, connId);
-				this.__connIds.delete(botId);
-				this.__connIdToBotId.delete(connId);
+				console.debug('[SigConn] rtc:closed received for clawId=%s connId=%s', clawId, connId);
+				this.__connIds.delete(clawId);
+				this.__connIdToClawId.delete(connId);
 			}
 			this.__emit('rtc', {
-				botId,
+				clawId,
 				type: payload.type,
 				payload: payload.payload,
 			});

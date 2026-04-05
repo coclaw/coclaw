@@ -65,13 +65,13 @@
 			<!-- 头像 + 思考/折叠行 -->
 			<div class="mb-2 flex items-center gap-2">
 				<span
-					v-if="botEmoji && !agentDisplay?.avatarUrl"
+					v-if="clawEmoji && !agentDisplay?.avatarUrl"
 					class="size-6 shrink-0 rounded-sm bg-accented flex items-center justify-center text-sm leading-none"
-				>{{ botEmoji }}</span>
+				>{{ clawEmoji }}</span>
 				<img
 					v-else
-					:src="botAvatarUrl"
-					alt="bot"
+					:src="clawAvatarUrl"
+					alt="claw"
 					class="size-6 rounded-sm object-cover"
 				/>
 				<!-- 流式中 + 有步骤 → 可展开 + 实时计时 -->
@@ -171,7 +171,7 @@
 					variant="ghost"
 					color="neutral"
 					size="md"
-					@click="copyBotResult"
+					@click="copyClawResult"
 				/>
 			</div>
 		</template>
@@ -183,7 +183,7 @@ import MarkdownBody from './MarkdownBody.vue';
 import ChatImg from './ChatImg.vue';
 import ChatAudio from './ChatAudio.vue';
 import ChatFile from './ChatFile.vue';
-import botAvatarSvg from '../assets/bot-avatars/openclaw.svg';
+import clawAvatarSvg from '../assets/claw-avatars/openclaw.svg';
 import { formatFileSize } from '../utils/file-helper.js';
 import { buildCoclawUrl } from '../services/coclaw-file.js';
 import { useNotify } from '../composables/use-notify.js';
@@ -200,7 +200,7 @@ export default {
 			type: Object,
 			default: () => ({ name: 'Agent', avatarUrl: null, emoji: null }),
 		},
-		botId: {
+		clawId: {
 			type: String,
 			default: '',
 		},
@@ -236,16 +236,16 @@ export default {
 					size: typeof a.size === 'number' ? formatFileSize(a.size) : (a.size || ''),
 				};
 				// 历史消息附件（有 path 无 url）：构建 coclaw-file URL 用于下载/播放
-				if (!a.url && a.path && this.botId && this.agentId) {
-					result.url = buildCoclawUrl(this.botId, this.agentId, a.path);
+				if (!a.url && a.path && this.clawId && this.agentId) {
+					result.url = buildCoclawUrl(this.clawId, this.agentId, a.path);
 				}
 				return result;
 			});
 		},
-		botAvatarUrl() {
-			return this.agentDisplay?.avatarUrl || botAvatarSvg;
+		clawAvatarUrl() {
+			return this.agentDisplay?.avatarUrl || clawAvatarSvg;
 		},
-		botEmoji() {
+		clawEmoji() {
 			return this.agentDisplay?.emoji || null;
 		},
 		formattedTime() {
@@ -266,7 +266,7 @@ export default {
 		},
 		streamingThinkingLabel() {
 			if (this.streamingElapsed < 1000) {
-				return this.$t('chat.botThinking');
+				return this.$t('chat.clawThinking');
 			}
 			return this.$t('chat.thinkingFor', { time: this.formatDuration(this.streamingElapsed) });
 		},
@@ -322,7 +322,7 @@ export default {
 			});
 		},
 		// 从渲染后的 DOM 取纯文本，避免复制原始 Markdown 符号（如 blockquote 的 >）
-		copyBotResult() {
+		copyClawResult() {
 			const mdEl = this.$el?.querySelector('.cc-markdown');
 			const text = mdEl?.innerText || this.item.resultText;
 			this.copyText(text);

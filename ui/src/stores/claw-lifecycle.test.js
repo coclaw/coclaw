@@ -5,8 +5,8 @@ const { capture } = vi.hoisted(() => {
 	const capture = { hooks: {} };
 	return { capture };
 });
-vi.mock('./bots.store.js', () => ({
-	__registerBotLifecycleHooks: (hooks) => { capture.hooks = hooks; },
+vi.mock('./claws.store.js', () => ({
+	__registerClawLifecycleHooks: (hooks) => { capture.hooks = hooks; },
 }));
 
 // mock 子 store
@@ -14,7 +14,7 @@ const mockRemoveSessionsByBotId = vi.fn();
 const mockLoadAllSessions = vi.fn().mockResolvedValue();
 vi.mock('./sessions.store.js', () => ({
 	useSessionsStore: () => ({
-		removeSessionsByBotId: mockRemoveSessionsByBotId,
+		removeSessionsByClawId: mockRemoveSessionsByBotId,
 		loadAllSessions: mockLoadAllSessions,
 	}),
 }));
@@ -23,7 +23,7 @@ const mockAgentsRemoveByBot = vi.fn();
 const mockLoadAgents = vi.fn().mockResolvedValue();
 vi.mock('./agents.store.js', () => ({
 	useAgentsStore: () => ({
-		removeByBot: mockAgentsRemoveByBot,
+		removeByClaw: mockAgentsRemoveByBot,
 		loadAgents: mockLoadAgents,
 	}),
 }));
@@ -32,7 +32,7 @@ const mockAgentRunsRemoveByBot = vi.fn();
 const mockDispatch = vi.fn();
 vi.mock('./agent-runs.store.js', () => ({
 	useAgentRunsStore: () => ({
-		removeByBot: mockAgentRunsRemoveByBot,
+		removeByClaw: mockAgentRunsRemoveByBot,
 		__dispatch: mockDispatch,
 	}),
 }));
@@ -42,7 +42,7 @@ const mockClearDashboard = vi.fn();
 const mockLoadDashboard = vi.fn().mockResolvedValue();
 vi.mock('./dashboard.store.js', () => ({
 	useDashboardStore: () => ({
-		byBot: dashboardByBot,
+		byClaw: dashboardByBot,
 		clearDashboard: mockClearDashboard,
 		loadDashboard: mockLoadDashboard,
 	}),
@@ -52,13 +52,13 @@ const mockTopicsRemoveByBot = vi.fn();
 const mockLoadAllTopics = vi.fn().mockResolvedValue();
 vi.mock('./topics.store.js', () => ({
 	useTopicsStore: () => ({
-		removeByBot: mockTopicsRemoveByBot,
+		removeByClaw: mockTopicsRemoveByBot,
 		loadAllTopics: mockLoadAllTopics,
 	}),
 }));
 
 // 导入模块触发自注册
-import './bot-lifecycle.js';
+import './claw-lifecycle.js';
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -66,20 +66,20 @@ beforeEach(() => {
 });
 
 describe('bot-lifecycle 自注册', () => {
-	test('导入时调用 __registerBotLifecycleHooks 注册所有 hooks', () => {
+	test('导入时调用 __registerClawLifecycleHooks 注册所有 hooks', () => {
 		expect(capture.hooks).toBeDefined();
-		expect(typeof capture.hooks.cleanupBotResources).toBe('function');
+		expect(typeof capture.hooks.cleanupClawResources).toBe('function');
 		expect(typeof capture.hooks.syncDashboardOffline).toBe('function');
-		expect(typeof capture.hooks.loadDashboardForBot).toBe('function');
-		expect(typeof capture.hooks.initBotResources).toBe('function');
-		expect(typeof capture.hooks.refreshBotResources).toBe('function');
+		expect(typeof capture.hooks.loadDashboardForClaw).toBe('function');
+		expect(typeof capture.hooks.initClawResources).toBe('function');
+		expect(typeof capture.hooks.refreshClawResources).toBe('function');
 		expect(typeof capture.hooks.dispatchAgentEvent).toBe('function');
 	});
 });
 
-describe('cleanupBotResources', () => {
+describe('cleanupClawResources', () => {
 	test('调用所有 5 个子 store 的 remove/clear 方法', () => {
-		capture.hooks.cleanupBotResources('bot-1');
+		capture.hooks.cleanupClawResources('bot-1');
 
 		expect(mockRemoveSessionsByBotId).toHaveBeenCalledWith('bot-1');
 		expect(mockAgentsRemoveByBot).toHaveBeenCalledWith('bot-1');
@@ -109,16 +109,16 @@ describe('syncDashboardOffline', () => {
 	});
 });
 
-describe('loadDashboardForBot', () => {
+describe('loadDashboardForClaw', () => {
 	test('调用 dashboard.loadDashboard', () => {
-		capture.hooks.loadDashboardForBot('bot-4');
+		capture.hooks.loadDashboardForClaw('bot-4');
 		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-4');
 	});
 });
 
-describe('initBotResources', () => {
+describe('initClawResources', () => {
 	test('await loadAgents 并 fire-and-forget 其他三个', async () => {
-		await capture.hooks.initBotResources('bot-5');
+		await capture.hooks.initClawResources('bot-5');
 
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-5');
 		expect(mockLoadAllSessions).toHaveBeenCalled();
@@ -128,7 +128,7 @@ describe('initBotResources', () => {
 
 	test('loadAgents 失败时抛出异常（不被 catch 吞没）', async () => {
 		mockLoadAgents.mockRejectedValueOnce(new Error('fail'));
-		await expect(capture.hooks.initBotResources('bot-5')).rejects.toThrow('fail');
+		await expect(capture.hooks.initClawResources('bot-5')).rejects.toThrow('fail');
 	});
 
 	test('fire-and-forget 调用失败不影响整体（被 .catch 吞没）', async () => {
@@ -137,13 +137,13 @@ describe('initBotResources', () => {
 		mockLoadDashboard.mockRejectedValueOnce(new Error('dash fail'));
 
 		// 不应抛出
-		await expect(capture.hooks.initBotResources('bot-5')).resolves.toBeUndefined();
+		await expect(capture.hooks.initClawResources('bot-5')).resolves.toBeUndefined();
 	});
 });
 
-describe('refreshBotResources', () => {
+describe('refreshClawResources', () => {
 	test('全部 fire-and-forget 并带 .catch', () => {
-		capture.hooks.refreshBotResources('bot-6');
+		capture.hooks.refreshClawResources('bot-6');
 
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-6');
 		expect(mockLoadAllSessions).toHaveBeenCalled();
@@ -157,7 +157,7 @@ describe('refreshBotResources', () => {
 		mockLoadAllTopics.mockRejectedValueOnce(new Error('fail'));
 		mockLoadDashboard.mockRejectedValueOnce(new Error('fail'));
 
-		expect(() => capture.hooks.refreshBotResources('bot-6')).not.toThrow();
+		expect(() => capture.hooks.refreshClawResources('bot-6')).not.toThrow();
 	});
 });
 

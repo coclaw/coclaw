@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { BotConnection, BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS } from './bot-connection.js';
+import { ClawConnection, BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS } from './claw-connection.js';
 
 // mock signaling-connection 单例
 vi.mock('./signaling-connection.js', () => {
@@ -15,8 +15,8 @@ vi.mock('./remote-log.js', () => ({ remoteLog: vi.fn() }));
 import { __mockReleaseConnId } from './signaling-connection.js';
 
 // 工厂：创建 DC 就绪的连接
-function makeRtcReady(botId = 'bot1') {
-	const conn = new BotConnection(botId);
+function makeRtcReady(clawId = 'bot1') {
+	const conn = new ClawConnection(clawId);
 	const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue(), close: vi.fn() };
 	conn.setRtc(mockRtc);
 	return { conn, mockRtc };
@@ -24,30 +24,30 @@ function makeRtcReady(botId = 'bot1') {
 
 // --- 测试套件 ---
 
-describe('BotConnection – constructor', () => {
-	test('botId 转为字符串', () => {
-		const conn = new BotConnection(42);
-		expect(conn.botId).toBe('42');
+describe('ClawConnection – constructor', () => {
+	test('clawId 转为字符串', () => {
+		const conn = new ClawConnection(42);
+		expect(conn.clawId).toBe('42');
 	});
 
 	test('初始状态无 RTC', () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		expect(conn.rtc).toBeNull();
 	});
 
 	test('初始 readyWaiters 为空', () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		expect(conn.__readyWaiters).toEqual([]);
 	});
 
 	test('初始回调为 null', () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		expect(conn.__onTriggerReconnect).toBeNull();
 		expect(conn.__onGetRtcPhase).toBeNull();
 	});
 });
 
-describe('BotConnection – disconnect()', () => {
+describe('ClawConnection – disconnect()', () => {
 	test('关闭 RTC 并释放 connId', () => {
 		const { conn, mockRtc } = makeRtcReady();
 		__mockReleaseConnId.mockClear();
@@ -58,7 +58,7 @@ describe('BotConnection – disconnect()', () => {
 	});
 
 	test('无 RTC 时也正常执行', () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		__mockReleaseConnId.mockClear();
 		expect(() => conn.disconnect()).not.toThrow();
 		expect(__mockReleaseConnId).toHaveBeenCalledWith('bot1');
@@ -72,16 +72,16 @@ describe('BotConnection – disconnect()', () => {
 	});
 
 	test('reject 所有 readyWaiters (DC_CLOSED)', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady(5000);
 		conn.disconnect();
 		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
 	});
 });
 
-describe('BotConnection – RTC 管理', () => {
+describe('ClawConnection – RTC 管理', () => {
 	test('setRtc / get rtc', () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const rtc = { isReady: true, send: vi.fn(), close: vi.fn() };
 		conn.setRtc(rtc);
 		expect(conn.rtc).toBe(rtc);
@@ -96,14 +96,14 @@ describe('BotConnection – RTC 管理', () => {
 	});
 
 	test('clearRtc rejects readyWaiters with RTC_LOST', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady(5000);
 		conn.clearRtc();
 		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
 	});
 
 	test('setRtc resolves all readyWaiters', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p1 = conn.waitReady(5000);
 		const p2 = conn.waitReady(5000);
 		const mockRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
@@ -114,7 +114,7 @@ describe('BotConnection – RTC 管理', () => {
 	});
 });
 
-describe('BotConnection – waitReady()', () => {
+describe('ClawConnection – waitReady()', () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => vi.useRealTimers());
 
@@ -124,7 +124,7 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('setRtc 后 resolve', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady(5000);
 		const mockRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
 		conn.setRtc(mockRtc);
@@ -132,28 +132,28 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('超时 reject CONNECT_TIMEOUT', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady(3000);
 		vi.advanceTimersByTime(3001);
 		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
 	});
 
 	test('clearRtc 时 reject RTC_LOST', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady(5000);
 		conn.clearRtc();
 		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
 	});
 
 	test('disconnect 时 reject DC_CLOSED', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady(5000);
 		conn.disconnect();
 		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
 	});
 
 	test('多个并发 waitReady 在 setRtc 时全部 resolve', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const promises = [
 			conn.waitReady(5000),
 			conn.waitReady(5000),
@@ -167,7 +167,7 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('超时后 setRtc 不再 resolve 已超时的 waiter', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady(2000);
 		vi.advanceTimersByTime(2001);
 		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
@@ -182,7 +182,7 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('rtcPhase=failed 时调用 __onTriggerReconnect', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		conn.__onGetRtcPhase = vi.fn().mockReturnValue('failed');
 		conn.__onTriggerReconnect = vi.fn();
 
@@ -196,7 +196,7 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('rtcPhase=building 时不调用 __onTriggerReconnect', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		conn.__onGetRtcPhase = vi.fn().mockReturnValue('building');
 		conn.__onTriggerReconnect = vi.fn();
 
@@ -208,7 +208,7 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('rtcPhase=recovering 时不调用 __onTriggerReconnect', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		conn.__onGetRtcPhase = vi.fn().mockReturnValue('recovering');
 		conn.__onTriggerReconnect = vi.fn();
 
@@ -220,7 +220,7 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('回调未注入时不报错', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		expect(conn.__onGetRtcPhase).toBeNull();
 		expect(conn.__onTriggerReconnect).toBeNull();
 
@@ -230,7 +230,7 @@ describe('BotConnection – waitReady()', () => {
 	});
 
 	test('默认 connectTimeout 为 30s', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady();
 		vi.advanceTimersByTime(29_999);
 		expect(conn.__readyWaiters).toHaveLength(1);
@@ -239,12 +239,12 @@ describe('BotConnection – waitReady()', () => {
 	});
 });
 
-describe('BotConnection – request() 连接等待', () => {
+describe('ClawConnection – request() 连接等待', () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => vi.useRealTimers());
 
 	test('DC 未就绪时等待，setRtc 后发送请求并收到响应', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 
 		const p = conn.request('ping', { x: 1 });
 
@@ -270,7 +270,7 @@ describe('BotConnection – request() 连接等待', () => {
 
 	test('waitReady 成功后 send 失败 → reject RTC_SEND_FAILED', async () => {
 		vi.useRealTimers(); // 此测试需要真实定时器让 promise chain 自然执行
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.request('test', {}, { connectTimeout: 5000 });
 
 		// 模拟连接就绪但 send 失败
@@ -282,28 +282,28 @@ describe('BotConnection – request() 连接等待', () => {
 	});
 
 	test('connectTimeout 到期 → reject CONNECT_TIMEOUT', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.request('test', {}, { connectTimeout: 5000 });
 		vi.advanceTimersByTime(5001);
 		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
 	});
 
 	test('clearRtc 在等待期间 → reject RTC_LOST', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.request('test');
 		conn.clearRtc();
 		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
 	});
 
 	test('disconnect 在等待期间 → reject DC_CLOSED', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.request('test');
 		conn.disconnect();
 		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
 	});
 
 	test('等待期间触发重连（rtcPhase=failed）', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		conn.__onGetRtcPhase = vi.fn().mockReturnValue('failed');
 		conn.__onTriggerReconnect = vi.fn();
 
@@ -315,7 +315,7 @@ describe('BotConnection – request() 连接等待', () => {
 	});
 });
 
-describe('BotConnection – request() 超时语义', () => {
+describe('ClawConnection – request() 超时语义', () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => vi.useRealTimers());
 
@@ -351,7 +351,7 @@ describe('BotConnection – request() 超时语义', () => {
 	});
 
 	test('connectTimeout 和 requestTimeout 独立计时', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		// connectTimeout=2s, requestTimeout=3s
 		const p = conn.request('test', {}, { connectTimeout: 2000, timeout: 3000 });
 
@@ -386,12 +386,12 @@ describe('BotConnection – request() 超时语义', () => {
 	});
 });
 
-describe('BotConnection – request() 前台恢复场景', () => {
+describe('ClawConnection – request() 前台恢复场景', () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => vi.useRealTimers());
 
 	test('等待中 setRtc（模拟恢复）→ 请求正常完成', async () => {
-		const conn = new BotConnection('bot1');
+		const conn = new ClawConnection('bot1');
 		const p = conn.request('ping');
 
 		// 模拟 5s 后 RTC 恢复
@@ -417,7 +417,7 @@ describe('BotConnection – request() 前台恢复场景', () => {
 	});
 });
 
-describe('BotConnection – request() 通过 DataChannel 发送', () => {
+describe('ClawConnection – request() 通过 DataChannel 发送', () => {
 	test('通过 DataChannel 发送请求', async () => {
 		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('ping.me', { x: 1 });
@@ -464,7 +464,7 @@ describe('BotConnection – request() 通过 DataChannel 发送', () => {
 	});
 });
 
-describe('BotConnection – request() 两阶段 (onAccepted)', () => {
+describe('ClawConnection – request() 两阶段 (onAccepted)', () => {
 	test('收到 accepted 后调用 onAccepted，不 resolve', async () => {
 		const { conn, mockRtc } = makeRtcReady();
 		const accepted = vi.fn();
@@ -505,9 +505,9 @@ describe('BotConnection – request() 两阶段 (onAccepted)', () => {
 	});
 });
 
-describe('BotConnection – 事件系统', () => {
+describe('ClawConnection – 事件系统', () => {
 	test('on/off/__emit 基本功能', () => {
-		const conn = new BotConnection('b1');
+		const conn = new ClawConnection('b1');
 		const cb = vi.fn();
 		conn.on('custom', cb);
 		conn.__emit('custom', { foo: 1 });
@@ -518,7 +518,7 @@ describe('BotConnection – 事件系统', () => {
 	});
 
 	test('多个监听器都会收到事件', () => {
-		const conn = new BotConnection('b1');
+		const conn = new ClawConnection('b1');
 		const a = vi.fn();
 		const b = vi.fn();
 		conn.on('e', a);
@@ -529,7 +529,7 @@ describe('BotConnection – 事件系统', () => {
 	});
 
 	test('监听器异常不影响其他监听器', () => {
-		const conn = new BotConnection('b1');
+		const conn = new ClawConnection('b1');
 		const bad = vi.fn(() => { throw new Error('oops'); });
 		const good = vi.fn();
 		conn.on('e', bad);
@@ -539,14 +539,14 @@ describe('BotConnection – 事件系统', () => {
 	});
 
 	test('无监听器时 emit 不抛异常', () => {
-		const conn = new BotConnection('b1');
+		const conn = new ClawConnection('b1');
 		expect(() => conn.__emit('nonexistent', {})).not.toThrow();
 	});
 });
 
-describe('BotConnection – __onRtcMessage', () => {
+describe('ClawConnection – __onRtcMessage', () => {
 	test('DC event 分发到 event:<name>', () => {
-		const conn = new BotConnection('b1');
+		const conn = new ClawConnection('b1');
 		const cb = vi.fn();
 		conn.on('event:message.new', cb);
 		conn.__onRtcMessage({ type: 'event', event: 'message.new', payload: { text: 'hi' } });
@@ -563,12 +563,12 @@ describe('BotConnection – __onRtcMessage', () => {
 	});
 
 	test('无 id 的 res 消息被安全忽略', () => {
-		const conn = new BotConnection('b1');
+		const conn = new ClawConnection('b1');
 		expect(() => conn.__onRtcMessage({ type: 'res', ok: true })).not.toThrow();
 	});
 });
 
-describe('BotConnection – __rejectAllPending', () => {
+describe('ClawConnection – __rejectAllPending', () => {
 	test('reject 所有挂起请求并清空', async () => {
 		const { conn } = makeRtcReady();
 		const p1 = conn.request('a');
@@ -580,7 +580,7 @@ describe('BotConnection – __rejectAllPending', () => {
 	});
 });
 
-describe('BotConnection – 常量导出', () => {
+describe('ClawConnection – 常量导出', () => {
 	test('BRIEF_DISCONNECT_MS 是合理的正整数', () => {
 		expect(BRIEF_DISCONNECT_MS).toBeGreaterThan(0);
 		expect(Number.isInteger(BRIEF_DISCONNECT_MS)).toBe(true);

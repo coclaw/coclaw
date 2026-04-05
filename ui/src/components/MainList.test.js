@@ -4,7 +4,7 @@ import { mount } from '@vue/test-utils';
 import { vi } from 'vitest';
 
 import MainList from './MainList.vue';
-import { useBotsStore } from '../stores/bots.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 
 function toById(items) {
@@ -18,23 +18,23 @@ vi.mock('../utils/platform.js', () => ({
 	get isCapacitorApp() { return __mockIsCapacitorApp; },
 }));
 
-vi.mock('../services/bots.api.js', () => ({
-	listBots: vi.fn().mockResolvedValue([]),
+vi.mock('../services/claws.api.js', () => ({
+	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('./TopicItemActions.vue', () => ({
-	default: { name: 'TopicItemActions', template: '<div class="topic-actions-stub" />', props: ['topicId', 'botId', 'title'] },
+	default: { name: 'TopicItemActions', template: '<div class="topic-actions-stub" />', props: ['topicId', 'clawId', 'title'] },
 }));
 
-vi.mock('../services/bot-connection-manager.js', () => ({
-	useBotConnections: () => ({
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
 		get: vi.fn(),
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		syncConnections: vi.fn(),
 		disconnectAll: vi.fn(),
 	}),
-	__resetBotConnections: vi.fn(),
+	__resetClawConnections: vi.fn(),
 }));
 
 const RouterLinkStub = {
@@ -77,8 +77,8 @@ function createWrapper(props = {}) {
 			mocks: {
 				$t: (key) => {
 					const map = {
-						'layout.addBot': '添加机器人',
-						'layout.manageBots': '管理机器人',
+						'layout.addClaw': '添加机器人',
+						'layout.manageClaws': '管理机器人',
 						'layout.productName': 'CoClaw',
 						'layout.unnamedSession': '未命名会话',
 						'layout.notIndexed': '未索引',
@@ -94,7 +94,7 @@ function createWrapper(props = {}) {
 							? to
 							: to.name === 'topics-chat'
 								? `/topics/${to.params?.sessionId ?? ''}`
-								: `/chat/${to.params?.botId ?? ''}/${to.params?.agentId ?? ''}`,
+								: `/chat/${to.params?.clawId ?? ''}/${to.params?.agentId ?? ''}`,
 					}),
 				},
 			},
@@ -116,7 +116,7 @@ test('should apply scroll classes when scrollable prop is true', () => {
 	expect(root.classes()).toContain('overscroll-contain');
 });
 
-test('should show only add-bot in Group 1 on narrow screen (default)', async () => {
+test('should show only add-claw in Group 1 on narrow screen (default)', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
@@ -127,7 +127,7 @@ test('should show only add-bot in Group 1 on narrow screen (default)', async () 
 	expect(group1Nav.classes()).toContain('mt-3');
 });
 
-test('should show add-bot and manage-bots in Group 1 when scrollable (sidebar)', async () => {
+test('should show add-claw and manage-bots in Group 1 when scrollable (sidebar)', async () => {
 	const wrapper = createWrapper({ scrollable: true });
 	await vi.dynamicImportSettled();
 
@@ -143,9 +143,9 @@ test('should not show label text or empty state text when lists are empty', asyn
 	await vi.dynamicImportSettled();
 
 	// 不应显示分组标签和空状态提示
-	expect(wrapper.text()).not.toContain('layout.commonBots');
+	expect(wrapper.text()).not.toContain('layout.commonClaws');
 	expect(wrapper.text()).not.toContain('layout.sessions');
-	expect(wrapper.text()).not.toContain('layout.noBots');
+	expect(wrapper.text()).not.toContain('layout.noClaws');
 	expect(wrapper.text()).not.toContain('layout.emptySession');
 });
 
@@ -155,8 +155,8 @@ test('should render topic items from topics store', async () => {
 
 	const topicsStore = useTopicsStore();
 	topicsStore.byId = toById([
-		{ topicId: 't1', agentId: 'main', title: '话题一', createdAt: 2000, botId: 'b1' },
-		{ topicId: 't2', agentId: 'main', title: null, createdAt: 1000, botId: 'b1' },
+		{ topicId: 't1', agentId: 'main', title: '话题一', createdAt: 2000, clawId: 'b1' },
+		{ topicId: 't2', agentId: 'main', title: null, createdAt: 1000, clawId: 'b1' },
 	]);
 	await wrapper.vm.$nextTick();
 
@@ -171,8 +171,8 @@ test('should sort topics by createdAt desc', async () => {
 
 	const topicsStore = useTopicsStore();
 	topicsStore.byId = toById([
-		{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 100, botId: 'b1' },
-		{ topicId: 't-new', agentId: 'main', title: 'New', createdAt: 200, botId: 'b1' },
+		{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 100, clawId: 'b1' },
+		{ topicId: 't-new', agentId: 'main', title: 'New', createdAt: 200, clawId: 'b1' },
 	]);
 	await wrapper.vm.$nextTick();
 
@@ -187,7 +187,7 @@ test('topic items should navigate to topics-chat route', async () => {
 
 	const topicsStore = useTopicsStore();
 	topicsStore.byId = toById([
-		{ topicId: 't1', agentId: 'main', title: 'Topic', createdAt: 100, botId: 'b1' },
+		{ topicId: 't1', agentId: 'main', title: 'Topic', createdAt: 100, clawId: 'b1' },
 	]);
 	await wrapper.vm.$nextTick();
 
@@ -195,28 +195,28 @@ test('topic items should navigate to topics-chat route', async () => {
 	expect(items[0].to).toEqual({ name: 'topics-chat', params: { sessionId: 't1' } });
 });
 
-test('bot item should navigate to chat with botId/agentId params', async () => {
+test('bot item should navigate to chat with clawId/agentId params', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
-	const botsStore = useBotsStore();
-	botsStore.setBots([{ id: 'b1', name: 'MyBot', online: true }]);
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'MyBot', online: true }]);
 	await wrapper.vm.$nextTick();
 
 	const agentItem = wrapper.vm.agentItems[0];
-	expect(agentItem.to).toEqual({ name: 'chat', params: { botId: 'b1', agentId: 'main' } });
+	expect(agentItem.to).toEqual({ name: 'chat', params: { clawId: 'b1', agentId: 'main' } });
 });
 
 test('bot item always navigates to chat route (no fallback needed)', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
-	const botsStore = useBotsStore();
-	botsStore.setBots([{ id: 'b1', name: 'MyBot', online: true }]);
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'MyBot', online: true }]);
 	await wrapper.vm.$nextTick();
 
 	const agentItem = wrapper.vm.agentItems[0];
-	expect(agentItem.to).toEqual({ name: 'chat', params: { botId: 'b1', agentId: 'main' } });
+	expect(agentItem.to).toEqual({ name: 'chat', params: { clawId: 'b1', agentId: 'main' } });
 });
 
 test('topic with title should display the title', async () => {
@@ -225,7 +225,7 @@ test('topic with title should display the title', async () => {
 
 	const topicsStore = useTopicsStore();
 	topicsStore.byId = toById([
-		{ topicId: 't1', agentId: 'main', title: '自定义标题', createdAt: 100, botId: 'b1' },
+		{ topicId: 't1', agentId: 'main', title: '自定义标题', createdAt: 100, clawId: 'b1' },
 	]);
 	await wrapper.vm.$nextTick();
 
@@ -238,7 +238,7 @@ test('topic without title should show untitled', async () => {
 
 	const topicsStore = useTopicsStore();
 	topicsStore.byId = toById([
-		{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, botId: 'b1' },
+		{ topicId: 't1', agentId: 'main', title: null, createdAt: 100, clawId: 'b1' },
 	]);
 	await wrapper.vm.$nextTick();
 
@@ -254,7 +254,7 @@ test('agent item should NOT be active on topic route', async () => {
 			plugins: [pinia],
 			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' } },
 			mocks: {
-				$t: (key) => ({ 'layout.addBot': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
+				$t: (key) => ({ 'layout.addClaw': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'topics-chat', params: { sessionId: 't-uuid' }, query: {} },
 				$router: { resolve: (to) => ({ path: typeof to === 'string' ? to : `/topics/${to.params?.sessionId ?? ''}` }) },
 			},
@@ -262,8 +262,8 @@ test('agent item should NOT be active on topic route', async () => {
 	});
 	await vi.dynamicImportSettled();
 
-	const botsStore = useBotsStore();
-	botsStore.setBots([{ id: 'b1', name: 'Bot', online: true }]);
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
 	await wrapper.vm.$nextTick();
 
 	// 在 topic 路由下，agent item 不应被高亮
@@ -280,16 +280,16 @@ test('agent item should be active on main session route', async () => {
 			plugins: [pinia],
 			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' } },
 			mocks: {
-				$t: (key) => ({ 'layout.addBot': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
-				$route: { name: 'chat', params: { botId: 'b1', agentId: 'main' }, query: {} },
-				$router: { resolve: (to) => ({ path: typeof to === 'string' ? to : `/chat/${to.params?.botId ?? ''}/${to.params?.agentId ?? ''}` }) },
+				$t: (key) => ({ 'layout.addClaw': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
+				$route: { name: 'chat', params: { clawId: 'b1', agentId: 'main' }, query: {} },
+				$router: { resolve: (to) => ({ path: typeof to === 'string' ? to : `/chat/${to.params?.clawId ?? ''}/${to.params?.agentId ?? ''}` }) },
 			},
 		},
 	});
 	await vi.dynamicImportSettled();
 
-	const botsStore = useBotsStore();
-	botsStore.setBots([{ id: 'b1', name: 'Bot', online: true }]);
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
 	await wrapper.vm.$nextTick();
 
 	// 在 main session 路由下，agent item 应被高亮
@@ -303,7 +303,7 @@ test('topic icon should show agent initial when no avatar', async () => {
 
 	const topicsStore = useTopicsStore();
 	topicsStore.byId = toById([
-		{ topicId: 't1', agentId: 'main', title: 'Test', createdAt: 100, botId: 'b1' },
+		{ topicId: 't1', agentId: 'main', title: 'Test', createdAt: 100, clawId: 'b1' },
 	]);
 	await wrapper.vm.$nextTick();
 
@@ -364,63 +364,63 @@ test('cap header "+" button should navigate to /bots/add', async () => {
 	await wrapper.vm.$nextTick();
 
 	await wrapper.find('.u-button-stub').trigger('click');
-	expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/bots/add');
+	expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/add');
 
 	__mockIsCapacitorApp = false;
 });
 
-test('should hide Group 1 add-bot item when capHeader active and bots exist', async () => {
+test('should hide Group 1 add-claw item when capHeader active and bots exist', async () => {
 	__mockIsCapacitorApp = true;
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
 	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
 
-	const botsStore = useBotsStore();
-	botsStore.fetched = true;
-	botsStore.setBots([{ id: 'b1', name: 'Bot', online: true }]);
+	const clawsStore = useClawsStore();
+	clawsStore.fetched = true;
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
 	await wrapper.vm.$nextTick();
 
 	expect(wrapper.vm.showCapHeader).toBe(true);
-	expect(wrapper.vm.botActionItems).toEqual([]);
+	expect(wrapper.vm.clawActionItems).toEqual([]);
 
 	__mockIsCapacitorApp = false;
 });
 
-test('should show Group 1 add-bot item when capHeader active and no bots', async () => {
+test('should show Group 1 add-claw item when capHeader active and no bots', async () => {
 	__mockIsCapacitorApp = true;
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
 	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
 
-	const botsStore = useBotsStore();
-	botsStore.fetched = true;
-	botsStore.setBots([]);
+	const clawsStore = useClawsStore();
+	clawsStore.fetched = true;
+	clawsStore.setClaws([]);
 	await wrapper.vm.$nextTick();
 
 	expect(wrapper.vm.showCapHeader).toBe(true);
-	expect(wrapper.vm.botActionItems.length).toBe(1);
-	expect(wrapper.vm.botActionItems[0].id).toBe('add-bot');
+	expect(wrapper.vm.clawActionItems.length).toBe(1);
+	expect(wrapper.vm.clawActionItems[0].id).toBe('add-claw');
 
 	__mockIsCapacitorApp = false;
 });
 
-test('should hide Group 1 add-bot item when capHeader active and bots not yet fetched', async () => {
+test('should hide Group 1 add-claw item when capHeader active and bots not yet fetched', async () => {
 	__mockIsCapacitorApp = true;
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
 
 	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
 
-	const botsStore = useBotsStore();
-	botsStore.fetched = false;
-	botsStore.setBots([]);
+	const clawsStore = useClawsStore();
+	clawsStore.fetched = false;
+	clawsStore.setClaws([]);
 	await wrapper.vm.$nextTick();
 
 	expect(wrapper.vm.showCapHeader).toBe(true);
 	// 未 fetch 完成前不显示引导项
-	expect(wrapper.vm.botActionItems).toEqual([]);
+	expect(wrapper.vm.clawActionItems).toEqual([]);
 
 	__mockIsCapacitorApp = false;
 });

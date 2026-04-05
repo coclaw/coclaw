@@ -20,7 +20,7 @@
 
 				<!-- 离线时显示 lastAlive -->
 				<div v-if="statusKey === 'offline'" class="mt-3 pl-4">
-					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatRelativeTime(bot.lastAliveAt) }}</p>
+					<p class="text-xs text-muted">{{ $t('agentCard.lastAlive') }}：{{ formatRelativeTime(claw.lastAliveAt) }}</p>
 				</div>
 
 				<!-- 数据区：tokens / 会话 / 最近活跃（始终显示缓存数据） -->
@@ -46,13 +46,13 @@
 					data-testid="btn-details"
 					@click="expanded = !expanded"
 				>
-					{{ $t('bots.conn.detailTitle') }}
+					{{ $t('claws.conn.detailTitle') }}
 					<UIcon :name="expanded ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
 				</button>
 			</div>
 
-			<!-- 右栏：操作按钮（bot 在线时显示） -->
-			<div v-if="bot.online" class="grid gap-3 pl-3 self-center shrink-0">
+			<!-- 右栏：操作按钮（claw 在线时显示） -->
+			<div v-if="claw.online" class="grid gap-3 pl-3 self-center shrink-0">
 				<UButton
 					data-testid="btn-chat"
 					color="primary"
@@ -112,10 +112,10 @@ export default {
 	name: 'AgentCard',
 
 	props: {
-		/** dashboardStore.getDashboard(botId).agents[] 中的单个 agent */
+		/** dashboardStore.getDashboard(clawId).agents[] 中的单个 agent */
 		agent: { type: Object, required: true },
-		/** botsStore 中的 bot 对象，提供连接状态 */
-		bot: { type: Object, required: true },
+		/** clawsStore 中的 claw 对象，提供连接状态 */
+		claw: { type: Object, required: true },
 	},
 
 	emits: ['chat', 'files'],
@@ -141,7 +141,7 @@ export default {
 		 * @returns {'running' | 'idle' | 'offline'}
 		 */
 		statusKey() {
-			if (!this.bot.online) return 'offline';
+			if (!this.claw.online) return 'offline';
 			const runKey = `agent:${this.agent.id}:main`;
 			if (this.agentRunsStore.isRunning(runKey)) return 'running';
 			return 'idle';
@@ -171,7 +171,7 @@ export default {
 
 		agentTopics() {
 			return this.topicsStore.items.filter(
-				t => t.botId === String(this.bot.id) && t.agentId === this.agent.id
+				t => t.clawId === String(this.claw.id) && t.agentId === this.agent.id
 			);
 		},
 
