@@ -1,7 +1,8 @@
 # TURN over TLS on 443 实施方案
 
 > 创建时间：2026-03-24
-> 状态：待实施
+> 最后更新：2026-04-05
+> 状态：已实施（2026-04-05）
 > 前置依赖：WebRTC P2P 数据通道 Phase 1 & 2 已完成（见 `webrtc-p2p-channel.md`）
 > 对应阶段：`webrtc-p2p-channel.md` Phase 4
 
@@ -62,13 +63,13 @@ IP1 (Web)                          IP2 (TURN)
 
 需要一个独立子域名指向 IP2。域名选择应避免暴露 TURN 用途（防止启发式域名黑名单）。
 
-**建议**：`relay.coclaw.net`（中性，不含 "turn"/"stun" 等协议关键词）
+**实际选用**：`edge.coclaw.net`（中性，不含 "turn"/"stun" 等协议关键词）
 
 > 技术上域名可以任意选择，`edge.*`、`cdn.*`、`link.*` 等均可。避免 `turn.*`、`stun.*`、`webrtc.*` 等直接暴露用途的前缀。
 
 DNS 配置：
 - `im.coclaw.net` → IP1（不变）
-- `relay.coclaw.net` → IP2（新增 A 记录）
+- `edge.coclaw.net` → IP2（新增 A 记录）
 
 ## 五、ICE 降级路径
 
@@ -80,13 +81,13 @@ ICE 候选路径（自动，按优先级递减）：
 1. host / srflx 直连（P2P）
    └── 成功 → 不需要 TURN，结束
 
-2. turn:relay.coclaw.net:3478?transport=udp（常规 TURN UDP）
+2. turn:edge.coclaw.net:3478?transport=udp（常规 TURN UDP）
    └── 成功 → 最快的中继方式
 
-3. turn:relay.coclaw.net:3478?transport=tcp（常规 TURN TCP）
+3. turn:edge.coclaw.net:3478?transport=tcp（常规 TURN TCP）
    └── 成功 → UDP 被封但 3478 TCP 可达
 
-4. turns:relay.coclaw.net:443?transport=tcp（TURN over TLS）★
+4. turns:edge.coclaw.net:443?transport=tcp（TURN over TLS）★
    └── 成功 → 最终兜底，伪装为 HTTPS
    └── 失败 → RTC 建连失败，降级到 WS
 ```
@@ -107,207 +108,166 @@ ICE 候选路径（自动，按优先级递减）：
 
 ## 七、实施细节
 
-### 7.1 nginx 443 绑定变更（高风险）
+> 以下反映实际实施结果。与原方案的偏差以"**实际**"标注。
 
-**现状**：nginx 监听 `0.0.0.0:443`（所有 IP）
-**目标**：改为仅监听 IP1 内网地址
+### 7.1 nginx 443 绑定变更
 
-```nginx
-# 变更前
-listen 443 ssl;
+**实际**：未修改 nginx 配置文件，改为在 compose 层通过 `NGINX_LISTEN_IP` 控制端口映射：
 
-# 变更后
-listen <IP1_INTERNAL>:443 ssl;
+```yaml
+# compose.yaml
+ports:
+  - "${NGINX_LISTEN_IP:-0.0.0.0}:80:80"
+  - "${NGINX_LISTEN_IP:-0.0.0.0}:443:443"
 ```
 
-**注意事项**：
-- 必须修改**所有** `listen 443` 的位置（包括 default server block）
-- 云主机 NAT 环境下使用 VPC 内网 IP，不是公网 IP
-- 变更后立即验证 `https://im.coclaw.net` 可达性
-- port 80 保持 `0.0.0.0`（两个 IP 都需要 ACME 验证）
+不设置 `NGINX_LISTEN_IP` 时行为不变（绑定所有 IP）。仅同主机双 IP 场景需设置为主网卡内网 IP。
 
-### 7.2 nginx 新增 ACME server block
+### 7.2 TURN 域名证书签发
 
-为 `relay.coclaw.net` 在 port 80 上新增 server block，仅处理 certbot ACME challenge：
+**实际**：未使用 nginx webroot 模式，改用 certbot standalone + `--network host`：
 
-```nginx
-server {
-    listen 80;
-    server_name relay.coclaw.net;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-
-    location / {
-        return 444;  # 拒绝其他请求
-    }
-}
+```bash
+docker run --rm --network host \
+  -v ./certbot/conf:/etc/letsencrypt \
+  certbot/certbot certonly --standalone \
+  --http-01-address <IP2> \
+  -d edge.coclaw.net \
+  --email ops@coclaw.net --agree-tos --no-eff-email
 ```
 
-### 7.3 证书签发
+原因：Docker 端口映射 `-p <IP2>:80:80` 会导致回程路由走主网卡（非对称路由），策略路由不生效。`--network host` 直接使用主机网络栈，策略路由正常。
 
-使用 certbot HTTP-01 验证为 `relay.coclaw.net` 签发证书：
-- `relay.coclaw.net` 解析到 IP2
-- IP2:80 由 nginx 处理（0.0.0.0:80 覆盖）
-- certbot webroot 模式，与现有 `im.coclaw.net` 的证书管理流程一致
+证书续期通过 root crontab 执行（同样使用 standalone + --network host）。
 
-证书文件路径：`certbot/conf/live/relay.coclaw.net/`
+**证书目录权限**：certbot 默认创建 700 权限目录，coturn 以 nobody (65534) 运行无法读取。需手动 `chmod 755` conf/live/archive 目录，`chmod 644` privkey 文件。
 
-### 7.4 coturn 配置变更
+### 7.3 coturn 配置
 
-coturn 整体迁移到 IP2（`--listening-ip` 为全局设置，无法按端口绑定不同 IP）：
+**实际**：改为动态启动脚本 `deploy/scripts/coturn-start.sh`，替代 compose 内联 command：
 
 ```yaml
 coturn:
-  command: >-
-    turnserver
-    --listening-port=${TURN_PORT:-3478}
-    --tls-listening-port=443
-    --listening-ip=${TURN_INTERNAL_IP}
-    --relay-ip=${TURN_INTERNAL_IP}
-    --external-ip=${TURN_EXTERNAL_IP}/${TURN_INTERNAL_IP}
-    --cert=/etc/turn-certs/fullchain.pem
-    --pkey=/etc/turn-certs/privkey.pem
-    --realm=${TURN_DOMAIN}
-    --lt-cred-mech
-    --use-auth-secret
-    --static-auth-secret=${TURN_SECRET}
-    --min-port=${TURN_MIN_PORT:-50000}
-    --max-port=${TURN_MAX_PORT:-51000}
-    --fingerprint
-    --no-cli
-    --log-file=stdout
+  entrypoint: ["/bin/sh", "/scripts/coturn-start.sh"]
+  environment:
+    TURN_PORT, TURN_INTERNAL_IP, TURN_EXTERNAL_IP, TURN_SECRET,
+    TURN_MIN_PORT, TURN_MAX_PORT, TURN_TLS_PORT, TURN_TLS_CERT,
+    TURN_TLS_KEY, APP_DOMAIN
+  volumes:
+    - ./scripts/coturn-start.sh:/scripts/coturn-start.sh:ro
+    - ./certbot/conf:/etc/letsencrypt:ro
 ```
 
-新增/变更项：
-- `--tls-listening-port=443`：TLS 监听
-- `--cert` / `--pkey`：TLS 证书路径
-- `--realm`：改为 `TURN_DOMAIN`（`relay.coclaw.net`）
-- `TURN_INTERNAL_IP` / `TURN_EXTERNAL_IP`：改为 IP2 的内网/公网地址
+脚本根据环境变量条件启用 TLS：`TURN_TLS_PORT` 已设置且证书文件存在时才添加 `--tls-listening-port`。
 
-### 7.5 证书热更新
+`TURN_INTERNAL_IP` 未设置时自动回退到 `TURN_EXTERNAL_IP`（适用于 EIP 直通模式，内外 IP 相同）。
 
-coturn 不会自动感知证书文件变更。需要 certbot deploy hook 触发重载：
+### 7.4 证书热更新
 
-```bash
-# certbot renew deploy hook
-docker compose restart coturn
-```
+coturn 不会自动感知证书文件变更。当前通过 root crontab 的 certbot renew `--deploy-hook` 触发 `docker compose restart coturn`。
 
 coturn 重启影响较小：
 - 仅影响正在使用 TURN 中继的用户（P2P 直连用户不受影响）
 - ICE 层检测到 `failed` 后自动触发 ICE restart，秒级恢复
 
-### 7.6 TURN creds API 变更
+### 7.5 TURN creds API 变更
 
-`server/src/routes/turn.route.js` 中 `genTurnCreds` 返回的 URLs 需更新：
+`server/src/routes/turn.route.js` 中 `genTurnCreds` 返回的 URLs：
 
 ```javascript
-// 变更前
-const domain = process.env.APP_DOMAIN;  // im.coclaw.net
+const turnDomain = process.env.TURN_DOMAIN || process.env.APP_DOMAIN;
+const tlsPort = process.env.TURN_TLS_PORT;
 urls: [
-  `stun:${domain}:${port}`,
-  `turn:${domain}:${port}?transport=udp`,
-  `turn:${domain}:${port}?transport=tcp`,
-]
-
-// 变更后
-const turnDomain = process.env.TURN_DOMAIN;  // relay.coclaw.net
-urls: [
-  `stun:${turnDomain}:${port}`,
   `turn:${turnDomain}:${port}?transport=udp`,
   `turn:${turnDomain}:${port}?transport=tcp`,
-  `turns:${turnDomain}:443?transport=tcp`,
+  // 仅 TURN_TLS_PORT 已设置时追加
+  `turns:${turnDomain}:${tlsPort}?transport=tcp`,
 ]
 ```
 
-新增环境变量 `TURN_DOMAIN`，独立于 `APP_DOMAIN`。
+**实际**：移除了原方案中的 `stun:` URL（浏览器和 ndc 均可通过 TURN URL 自动获取 STUN 能力）。
 
-### 7.7 环境变量变更
+`genTurnCredsForGateway()` 过滤掉 `turns:` URL 发给 gateway/plugin（旧版不支持 `turns:` scheme）。此为临时兼容，标注 2026-04-12 后移除。
 
-| 变量 | 变更 | 说明 |
+### 7.6 环境变量
+
+| 变量 | 类型 | 说明 |
 |------|------|------|
-| `TURN_DOMAIN` | **新增** | coturn 独立域名（如 `relay.coclaw.net`） |
-| `TURN_EXTERNAL_IP` | **值变更** | 改为 IP2 公网地址 |
-| `TURN_INTERNAL_IP` | **值变更** | 改为 IP2 VPC 内网地址 |
-| `TURN_SECRET` | 不变 | |
-| `TURN_PORT` | 不变 | 3478 |
-| `TURN_MIN_PORT` / `TURN_MAX_PORT` | 不变 | 50000-51000 |
+| `TURN_DOMAIN` | 新增，可选 | coturn 独立域名，未设置回退到 `APP_DOMAIN` |
+| `TURN_TLS_PORT` | 新增，可选 | TURNS 监听端口，设置后启用 TLS |
+| `TURN_TLS_CERT` | 新增，可选 | TLS 证书路径（coturn 容器内） |
+| `TURN_TLS_KEY` | 新增，可选 | TLS 私钥路径（coturn 容器内） |
+| `NGINX_LISTEN_IP` | 新增，可选 | 同主机双 IP 时 nginx 绑定的 IP，默认 `0.0.0.0` |
+| `TURN_EXTERNAL_IP` | 值变更 | 改为 IP2 公网地址 |
+| `TURN_INTERNAL_IP` | 值变更 | 改为 IP2 内网地址（EIP 直通时可省略） |
 
 ## 八、防火墙规则
 
-### IP2 新规则
+### IP2 规则
 
-| 端口 | 协议 | 防火墙 label | 说明 |
-|------|------|-------------|------|
-| 80 | TCP | `certbot ACME (relay)` | 证书签发验证 |
-| 443 | TCP | `coturn TLS (TURNS)` | TURN over TLS，最终兜底 |
-| 3478 | TCP + UDP | `coturn listening (STUN/TURN)` | 常规 STUN/TURN |
-| 50000-51000 | UDP | `coturn relay pool` | 中继端口池 |
+| 端口 | 协议 | 说明 |
+|------|------|------|
+| 80 | TCP | certbot ACME 验证（standalone） |
+| 443 | TCP | coturn TLS (TURNS) |
+| 3478 | TCP + UDP | coturn (STUN/TURN) |
+| 50000-51000 | UDP | coturn relay 端口池 |
 
 ### IP1 规则清理
 
 coturn 迁移到 IP2 后，IP1 上的 3478 和 50000-51000 规则应移除。
 
-## 九、实施步骤
+## 九、实施检查清单
 
-变更涉及多个环节，分步执行并逐步验证，确保每一步可回滚。
+> 已于 2026-04-05 完成。
 
-### Step 1：准备（不影响线上）
+- [x] 分配第二个公网 IP（阿里云辅助 ENI + EIP 网卡可见模式）
+- [x] OS 策略路由配置（netplan + table 1001）
+- [x] DNS A 记录：`edge.coclaw.net` → IP2
+- [x] 防火墙规则开放 IP2 端口
+- [x] 证书签发（certbot standalone --network host）
+- [x] 证书目录权限调整（chmod 755/644）
+- [x] compose.yaml 更新（nginx 端口、server env、coturn 脚本化）
+- [x] coturn-start.sh 编写
+- [x] .env 更新
+- [x] server turn.route.js 更新（TURN_DOMAIN + TURNS URL + gateway 兼容）
+- [x] server 镜像构建 + 部署（0.8.1）
+- [x] 端到端验证：WebRTC 经 TURN relay 连接成功
+- [x] 部署文档更新
 
-- [ ] 分配第二个公网 IP，确认对应的 VPC 内网 IP
-- [ ] 确定 TURN 域名（如 `relay.coclaw.net`）
-- [ ] DNS 添加 A 记录：`relay.coclaw.net` → IP2
-- [ ] 等待 DNS 生效（`dig relay.coclaw.net` 验证）
+## 十、踩坑记录
 
-### Step 2：证书签发（低风险）
+### 10.1 策略路由与 Docker 端口映射
 
-- [ ] nginx 新增 `relay.coclaw.net` 的 port 80 server block（仅 ACME）
-- [ ] reload nginx
-- [ ] 为 `relay.coclaw.net` 签发证书
-- [ ] 验证证书文件存在
+双网卡主机上，Docker `-p <IP2>:80:80` 端口映射的回程包仍走默认路由（主网卡），导致非对称路由。策略路由 `from <IP2>` 规则仅对从 IP2 直接发出的包生效，不覆盖 Docker NAT 后的包。
 
-### Step 3：nginx 443 绑定变更（高风险，需立即验证）
+**解决**：需要绑定 IP2 端口的容器使用 `--network host`，直接在主机网络栈操作。
 
-- [ ] 将所有 `listen 443` 改为 `listen <IP1_INTERNAL>:443`
-- [ ] `nginx -t` 验证配置语法
-- [ ] reload nginx
-- [ ] **立即验证** `https://im.coclaw.net` 可达
-- [ ] 若失败，立即回滚
+### 10.2 coturn 4.9.0 的 --no-tlsv1_1
 
-### Step 4：IP2 防火墙（低风险）
+coturn 4.9.0（当前 Docker latest）不支持 `--no-tlsv1_1` 选项，启动时报 unrecognized option 并退出。仅 `--no-tlsv1` 可用。
 
-- [ ] 开放 IP2 的 80/443/3478/50000-51000
+### 10.3 coturn --tls-listening-port 绑定所有 listening-ip
 
-### Step 5：coturn 迁移到 IP2 + 启用 TLS（中风险）
+`--tls-listening-port` 会在所有 `--listening-ip` 上绑定 TLS 端口，无法按 IP 选择性启用。若需要某些 IP 只监听 3478 而不监听 TLS 端口，应使用 `--aux-server` 添加这些 IP（`--aux-server` 只绑定 `--listening-port`，不绑定 TLS 端口）。当前方案中 coturn 仅绑定一个 IP（edge），不存在此问题。
 
-- [ ] 更新 `.env`：`TURN_DOMAIN`、`TURN_EXTERNAL_IP`、`TURN_INTERNAL_IP` 改为 IP2
-- [ ] 更新 `compose.yaml`：coturn command 增加 TLS 配置、证书挂载
-- [ ] `docker compose up -d coturn`
-- [ ] 验证 coturn 日志无报错
-- [ ] 验证 3478 可达：`turnutils_uclient -t relay.coclaw.net`（若有工具）
+### 10.4 certbot 证书目录权限
 
-### Step 6：API 变更 + 部署（中风险）
+certbot 创建的 `conf/` 目录树默认 700 权限（root 所有）。coturn 容器以 nobody:nogroup (65534) 运行，无法读取证书文件。需要手动调整：
 
-- [ ] 更新 `turn.route.js`：URLs 改用 `TURN_DOMAIN`，新增 `turns:` URL
-- [ ] 更新 server `.env`：新增 `TURN_DOMAIN`
-- [ ] 部署 server
-- [ ] 验证 `/api/v1/turn/creds` 返回正确 URLs
+```bash
+chmod 755 certbot/conf certbot/conf/live certbot/conf/archive
+chmod 644 certbot/conf/live/edge.coclaw.net/privkey.pem  # 或对应的实际文件
+```
 
-### Step 7：端到端验证
+### 10.5 node-datachannel URL 编码 bug
 
-- [ ] 正常网络：RTC 建连成功，观察 candidate 类型
-- [ ] 模拟 3478 封禁：仅保留 443，验证 TURNS 兜底生效
-- [ ] 验证证书续期 hook 工作正常
+node-datachannel polyfill 的 `RTCPeerConnection` 将 username:credential 直接拼入 TURN URL 字符串。TURN REST API 标准的 username 格式为 `timestamp:identity`（含冒号），拼接后 URL parser 在冒号处截断，导致 coturn 只收到时间戳部分，HMAC 校验必然失败。
 
-### Step 8：清理
+**修复**：在 plugin 侧包装 `RTCPeerConnection`，构造前对 iceServers 的 username/credential 做 `encodeURIComponent()`。浏览器端不受影响（使用结构化参数而非 URL 拼接）。
 
-- [ ] 移除 IP1 上 3478/50000-51000 的防火墙规则
-- [ ] 更新部署文档（deploy/CLAUDE.md、.env.example 等）
-- [ ] 更新设计文档状态
+此 bug 与双 IP 部署无关，但在部署过程中被发现。详见 plugin `ndc-preloader.js` 中的 `wrapNdcCredentials()`。
 
-## 十、coturn 重启影响评估
+## 十一、coturn 重启影响评估
 
 | 场景 | 影响范围 | 恢复方式 | 恢复时间 |
 |------|---------|---------|---------|
@@ -317,10 +277,10 @@ coturn 迁移到 IP2 后，IP1 上的 3478 和 50000-51000 规则应移除。
 
 coturn 重启是三者中影响最小的——P2P 直连用户完全无感。
 
-## 十一、风险与回滚
+## 十二、风险与回滚
 
 | 步骤 | 风险 | 回滚方式 |
 |------|------|---------|
-| nginx 443 绑定 | HTTPS 不可达 | 恢复 `listen 443 ssl`，reload |
+| nginx 端口绑定 | HTTPS 不可达 | 移除 `NGINX_LISTEN_IP`，重启 nginx |
 | coturn 迁移 IP2 | TURN 不通 | 恢复旧 `.env`，`docker compose up -d coturn` |
-| API URLs 变更 | 客户端拿到错误 URL | 恢复旧 `turn.route.js`，重启 server |
+| API URLs 变更 | 客户端拿到错误 URL | 移除 `TURN_DOMAIN`/`TURN_TLS_PORT`，重启 server |

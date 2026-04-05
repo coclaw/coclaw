@@ -13,7 +13,9 @@
 deploy/
   compose.yaml          # 生产部署
   compose.dev.yaml      # 本地开发（MySQL）
-  .env.example                # 统一环境变量模板
+  .env.example          # 统一环境变量模板
+  scripts/
+    coturn-start.sh            # coturn 动态启动脚本（根据环境变量构建命令）
   nginx/
     nginx.conf
     scripts/
@@ -53,6 +55,22 @@ deploy/
 | `certbot-init` | 首次证书签发 | `init-cert` |
 
 `ui-init` 为一次性服务（`restart: "no"`），仅在首次启动或镜像更新后运行。开发者通过 `deploy-ui.sh` rsync 部署，不依赖此服务。
+
+## TURNS / 双 IP 模式（可选）
+
+coturn 支持通过 TURNS (TLS on 443) 穿透限制性网络。需要独立 IP 或独立主机避免与 nginx 443 端口冲突。
+
+配置通过 `.env` 中的可选变量控制（详见 `.env.example` 中的"TURNS / 独立域名模式"段）：
+
+| 部署形态 | 需设置的变量 |
+|---------|------------|
+| 单主机单 IP（默认） | 无需额外配置 |
+| 同主机双 IP + TURNS | `NGINX_LISTEN_IP` + `TURN_DOMAIN` + `TURN_TLS_PORT` + `TURN_TLS_CERT` + `TURN_TLS_KEY` |
+| 独立主机 coturn + TURNS | `TURN_DOMAIN` + `TURN_TLS_PORT` + `TURN_TLS_CERT` + `TURN_TLS_KEY` |
+
+coturn 启动逻辑在 `scripts/coturn-start.sh` 中，根据环境变量条件启用 TLS。
+
+设计方案与踩坑记录详见 `docs/designs/turn-over-tls.md`。
 
 ## 域名与站点规则
 
@@ -97,6 +115,7 @@ deploy/
 2. 域名 HTTPS 访问 200
 3. 验证缓存头：HTML `no-cache`、`/assets/` `max-age=3600`
 4. 验证 API：`/api/v1/auth/session` 正常响应
+5. 若启用 TURNS：coturn 日志确认 TLS 证书加载成功、`/api/v1/turn/creds` 返回 `turns:` URL
 
 ## 变更原则
 
