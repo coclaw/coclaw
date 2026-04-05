@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.11.3
+
+### Patch Changes
+
+- fix: percent-encode TURN credentials for node-datachannel
+
 ## 0.11.2
 
 ### Patch Changes
