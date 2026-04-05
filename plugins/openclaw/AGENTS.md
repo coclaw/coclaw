@@ -35,7 +35,7 @@
   - `atomic-write.js` — 原子文件写入（tmp+rename）
   - `mutex.js` — 进程内异步互斥锁（Promise 链 FIFO）
 - `src/common/` — 共享逻辑
-  - `bot-binding.js` — bind/unbind 核心逻辑
+  - `claw-binding.js` — bind/unbind 核心逻辑
   - `errors.js` — 错误码与消息映射
   - `gateway-notify.js` — gateway RPC 通知（spawn `openclaw gateway call`）
   - `messages.js` — 用户提示文本
@@ -49,7 +49,7 @@
   {
     "default": {
       "serverUrl": "https://...",
-      "botId": "bot-xxx",
+      "clawId": "claw-xxx",
       "token": "token-xxx",
       "boundAt": "2026-03-04T..."
     }
@@ -129,7 +129,7 @@
 ## 约束
 
 - bind/unbind/enroll 的 CLI 命令均为瘦 CLI：仅做参数解析 → `callGatewayMethod` RPC → 结果展示。核心逻辑在 gateway 内的 RPC handler 中执行。
-- 所有 bind/unbind 核心逻辑必须集中在共享层（`common/bot-binding.js`），RPC handler 与斜杠命令 handler 共享同一内部函数（`doBind`/`doUnbind`）。
+- 所有 bind/unbind 核心逻辑必须集中在共享层（`common/claw-binding.js`），RPC handler 与斜杠命令 handler 共享同一内部函数（`doBind`/`doUnbind`）。
 - gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.enroll` / `coclaw.upgradeHealth` / `coclaw.info` / `coclaw.info.get` / `coclaw.info.patch` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById` / `coclaw.files.list` / `coclaw.files.delete` / `coclaw.files.mkdir` / `coclaw.files.create`）仅由本插件提供，禁止重复注册同名方法。
 - gateway method 错误响应格式：`respond(false, undefined, { code, message })`。使用 `respondError(respond, err)` 处理异常，`respondInvalid(respond, message)` 处理参数校验失败。禁止使用旧格式 `respond(false, { error })`。
 - realtime bridge（`coclaw-realtime-bridge`）和 auto-upgrade scheduler（`coclaw-auto-upgrade`）必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接或定时器导致进程无法退出。

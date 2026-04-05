@@ -37,7 +37,7 @@
 
 ## 配置存储原则
 
-- 插件的绑定信息（token、botId 等运行时状态）**不存储在 `openclaw.json` 中**，而是存储在 OpenClaw state 目录下的插件自有文件中（如 `~/.openclaw/coclaw/bindings.json`）。
+- 插件的绑定信息（token、clawId 等运行时状态）**不存储在 `openclaw.json` 中**，而是存储在 OpenClaw state 目录下的插件自有文件中（如 `~/.openclaw/coclaw/bindings.json`）。
 - 这是为了避免卸载插件后 `channels.<id>` 节点残留导致 OpenClaw gateway schema 验证失败、无法启动。
 - `openclaw.json` 中只保留 OpenClaw 管理的插件元数据（`plugins.entries`、`plugins.installs`），这些由 `openclaw plugins install/uninstall` 自动维护。
 - `openclaw.plugin.json` 的 `configSchema` 仅用于 `plugins.entries.<id>.config`（如 serverUrl、gatewayWsUrl 等插件级配置），不用于绑定状态。
