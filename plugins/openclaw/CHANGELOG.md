@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.12.2
+
+### Patch Changes
+
+- Register libdatachannel initLogger to capture native ICE/DTLS/SCTP diagnostics via remoteLog
+
 ## 0.12.1
 
 ### Patch Changes
