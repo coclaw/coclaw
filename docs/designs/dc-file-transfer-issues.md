@@ -1,8 +1,12 @@
-# DataChannel 文件传输流控分析
+# DataChannel 大文件传输故障排查
 
 > **状态**：分析完成，部分实施  
 > **关联**：Issue #226（大文件传输失败）  
-> **日期**：2026-04-06
+> **日期**：2026-04-06  
+> **相关文档**：
+> - [node-datachannel 使用笔记](../../plugins/openclaw/docs/node-datachannel-notes.md) — ndc 已知问题、版本升级、诊断能力评估
+> - [node-datachannel 集成方案](../../plugins/openclaw/docs/node-datachannel-integration-plan.md) — prebuild bootstrap、werift 回退
+> - [WebRTC P2P 数据通道设计](webrtc-p2p-channel.md) — 整体 WebRTC 架构
 
 ## 问题背景
 
@@ -59,10 +63,10 @@ file.sendChunks()
   ↓                                                 
   ↓ ─── SCTP / DTLS / ICE ───→  libdatachannel I/O 线程
                                     ↓ 急切 drain SCTP socket
-                                    ↓ 入 TSFN 队列（无上限）
+                                    ↓ 入 TSFN 队列（无上限）⚠
                                     ↓
                                  Node.js 事件循环
-                                    ↓ 同步 drain 所有排队回调
+                                    ↓ 同步 drain 所有排队回调 ⚠
                                     ↓ dc.onmessage × N
                                     ↓
                                  pendingQueue（中间缓冲）
@@ -71,6 +75,8 @@ file.sendChunks()
                                     ↓
                                  磁盘 I/O
 ```
+
+标注 ⚠ 的位置为 ndc 层不可控问题，详见 [ndc 使用笔记](../../plugins/openclaw/docs/node-datachannel-notes.md#已知问题与限制)。
 
 ## 测试结果汇总
 
@@ -116,27 +122,13 @@ WriteStream 的 `highWaterMark` 设为 16KB。`ws.write()` 在内部缓冲超过
 
 **修复**：在 onmessage 和 ws.write 之间引入中间缓冲队列 `pendingQueue` + `drainLoop` 受控消费循环，尊重 `drain` 事件。每次 write 后通过 `setImmediate` 让出 CPU。
 
-### 2. TSFN 队列无上限（node-datachannel 层，不可控）
+### 2. TSFN 队列无上限（ndc 层，不可控）
 
-**位置**：`node-datachannel/src/cpp/thread-safe-callback.cpp:15`
-
-```cpp
-tsfn = tsfn_t::New(env, ..., 0 /* unlimited queue */, 1);
-```
-
-libdatachannel 的 native I/O 线程通过 `BlockingCall` 将数据入队，队列无上限，`BlockingCall` 永远不阻塞。
-
-**后果**：native 线程无限速地从 SCTP socket 读取数据入队，SCTP receive buffer 永远不会真正填满，**SCTP 层的网络流控被架空**。即使调用 `setSctpSettings()` 调整 `recvBufferSize` 也无法解决此问题——瓶颈在 TSFN 层而非 SCTP 层。
-
-**可控性**：不可控。需要 node-datachannel 上游修改。
+libdatachannel 的 native I/O 线程通过 TSFN 无限速入队，SCTP 层的网络流控被架空。ws.write() 背压修复间接缓解，但根本解决需 ndc 上游修改。详见 [ndc 使用笔记 — TSFN 队列无上限](../../plugins/openclaw/docs/node-datachannel-notes.md#1-tsfn-队列无上限)。
 
 ### 3. 事件循环饥饿（已缓解）
 
-**位置**：`node-datachannel/dist/cjs/polyfill/RTCDataChannel.cjs:81-103`
-
-TSFN 队列中的 N 个消息在同一个事件循环 turn 中同步执行所有回调。100MB 文件（~6400 个 16KB chunk）意味着 6400 次 `onmessage` 在一次 turn 中连续执行。
-
-**缓解**：onmessage 只做 `pendingQueue.push()`（极快），drainLoop 通过 `setImmediate` 让出 CPU，防止 gateway 饿死。
+TSFN 队列中的 N 个消息在同一个事件循环 turn 中同步执行所有回调。缓解方式：onmessage 只做 `pendingQueue.push()`，drainLoop 通过 `setImmediate` 让出 CPU。详见 [ndc 使用笔记 — 事件循环饥饿](../../plugins/openclaw/docs/node-datachannel-notes.md#2-事件循环饥饿)。
 
 ### 4. 内存增长风险
 
@@ -146,6 +138,10 @@ TSFN 队列中的 N 个消息在同一个事件循环 turn 中同步执行所有
 - **V8 heap**：pendingQueue 中的 Buffer 对象（替代了原来 WriteStream 内部无限缓冲）
 
 ws.write() 背压修复后，WriteStream 端的堆积被控制在 ~16KB。pendingQueue 的堆积仍存在（因 DataChannel 没有 `pause()` API），但间接给 SCTP 流控提供了触发机会。
+
+### 5. node-datachannel native 层 bug（已通过升级修复）
+
+libdatachannel v0.24.0 的两个 bug 在 PC/DC 关闭时触发，与观察到的间歇性故障高度相关。已升级到 v0.32.2（libdatachannel v0.24.2）。详见 [ndc 使用笔记 — 版本与升级](../../plugins/openclaw/docs/node-datachannel-notes.md#版本与升级)。
 
 ## 修复方案详情
 
@@ -219,55 +215,8 @@ dc.onbufferedamountlow = () => stream.resume();
 
 这导致每次页面切换都有一次不必要的 RTC 重建。重建后的第一个连接在有文件传输时可能不稳定。
 
-### node-datachannel polyfill 缺陷
-
-- 远端创建的 DC（通过 `ondatachannel`）从不从 `#dataChannels` Set 中移除（内存泄漏）
-- `Blob` 类型的 `send()` 是异步的且无错误处理（.then() 无 .catch()）
-- `send()` 不检查 max-message-size，超限由 native 层抛异常
-
-## node-datachannel 版本与升级
-
-### 版本状态
-
-当前：v0.32.2（libdatachannel v0.24.2）— 已于 2026-04-06 升级
-
-### v0.32.2 关键修复
-
-1. **SCTP `sendReset()` 缓冲区对齐 UB**（libdatachannel issue #1509）— `sctptransport.cpp` 中 `srs_t*` 需要 4 字节对齐但 stack buffer 仅 1 字节对齐。DataChannel 关闭时触发，可导致崩溃或静默内存损坏
-2. **ICE transport 析构竞态**（libdatachannel issue #1525）— `~IceTransport()` 运行时 libnice 回调仍可能触发，造成 use-after-free。PeerConnection 销毁时触发
-
-这两个 bug 都在 PC/DC 关闭时触发，与观察到的"PC 突然从 native 层被关闭"高度相关。**已升级，预期可根治间歇性连接关闭问题。**
-
-### 升级记录
-
-- v0.32.2 无破坏性 API 变更，预编译二进制通过 `scripts/download-ndc-prebuilds.sh` 从 GitHub Releases 下载，覆盖 5 个平台
-
-### initLogger 诊断能力评估
-
-v0.32.2 新增 `initLogger(level, callback)` 的可选 callback 参数，可捕获 libdatachannel 内部日志。
-
-**现有回调的局限**：`onconnectionstatechange` 只给状态字符串（如 `"failed"`），不提供原因。以下四种故障在现有回调中表现完全相同：
-
-- ICE 超时（TURN 不可达 / 无可用 candidate pair）
-- DTLS 握手失败
-- SCTP 心跳超时（网络中断）
-- SCTP association 异常终止
-
-**initLogger 能补什么**：在 `"Warning"` 级别，libdatachannel 在状态跳变前输出具体原因（如 `"ICE failed"`, `"DTLS timeout"`, `"SCTP association closed"`）。正常运行时几乎无输出，仅故障时触发，开销极低。
-
-**限制**：进程全局单例，日志不带 connection ID。多连接时需靠时间戳与状态变更事件关联。
-
-**决策**：暂不引入。v0.32.2 已修复已知 native 层 bug，先观察升级效果。若间歇性断连仍存在，再引入 initLogger 定向排查。
-
 ## 未来优化方向
 
 ### UI 侧发送节流
 
 在 UI 的 `sendChunks()` 中添加主动让步（如每 chunk 后 `await new Promise(r => setTimeout(r, 0))`），可降低 Plugin 端的瞬时接收压力。与 Plugin 端背压修复互补。
-
-### node-datachannel 上游
-
-- 提 issue 建议 TSFN 队列支持上限配置（`max_queue_size` 参数化）
-- 或建议在 `onMessage` 回调中支持返回值控制（返回 false 时暂停从 SCTP socket 读取）
-
-### ~~升级 ndc 到 v0.32.2~~ ✓ 已完成

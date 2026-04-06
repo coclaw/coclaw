@@ -3,6 +3,7 @@
 > 创建时间：2026-03-31
 > 状态：已实施（2026-03-31）
 > 前置文档：`docs/study/webrtc-connection-research.md`（附录 B：选型评估）
+> 后续文档：[node-datachannel 使用笔记](node-datachannel-notes.md) — 使用过程中的问题、排查和发现
 
 ---
 
