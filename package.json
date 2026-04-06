@@ -1,6 +1,6 @@
 {
 	"name": "@coclaw/coclaw",
-	"version": "0.12.0",
+	"version": "0.12.3",
 	"private": true,
 	"description": "CoClaw platform — interact with your OpenClaw through CoClaw, even across network isolation",
 	"license": "SEE LICENSE IN LICENSE",
