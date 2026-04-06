@@ -3,13 +3,18 @@ import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import ChatInput from './ChatInput.vue';
 
+const mockNotify = {
+	success: vi.fn(),
+	info: vi.fn(),
+	warning: vi.fn(),
+	error: vi.fn(),
+};
 vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({
-		success: vi.fn(),
-		info: vi.fn(),
-		warning: vi.fn(),
-		error: vi.fn(),
-	}),
+	useNotify: () => mockNotify,
+}));
+
+vi.mock('../services/file-transfer.js', () => ({
+	MAX_UPLOAD_SIZE: 1024 * 1024, // 1 MB for testing
 }));
 
 // 默认 env store 值（桌面浏览器）
@@ -75,6 +80,9 @@ describe('ChatInput', () => {
 		mockEnv = { ...defaultEnv };
 		// 模拟桌面宽度
 		Object.defineProperty(window, 'innerWidth', { value: 1024, writable: true });
+		// jsdom 不提供 URL.createObjectURL/revokeObjectURL
+		if (!URL.createObjectURL) URL.createObjectURL = vi.fn(() => 'blob:mock');
+		if (!URL.revokeObjectURL) URL.revokeObjectURL = vi.fn();
 	});
 
 	test('canSend returns false when text is empty and no files', () => {
@@ -257,5 +265,114 @@ describe('ChatInput', () => {
 		const wrapper = createWrapper();
 		// 无文件时不应有图片或文件卡片
 		expect(wrapper.findAll('img')).toHaveLength(0);
+	});
+
+	// --- addFiles / 粘贴 / 拖拽入口 ---
+	test('addFiles adds files to inputFiles via formatFileBlob', () => {
+		const wrapper = createWrapper();
+		const file1 = new File(['a'], 'a.txt', { type: 'text/plain' });
+		const file2 = new File(['b'], 'b.png', { type: 'image/png' });
+		wrapper.vm.addFiles([file1, file2]);
+		expect(wrapper.vm.inputFiles).toHaveLength(2);
+		expect(wrapper.vm.inputFiles[0].name).toBe('a.txt');
+		expect(wrapper.vm.inputFiles[1].name).toBe('b.png');
+	});
+
+	test('addFiles ignores empty or null input', () => {
+		const wrapper = createWrapper();
+		wrapper.vm.addFiles([]);
+		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		wrapper.vm.addFiles(null);
+		expect(wrapper.vm.inputFiles).toHaveLength(0);
+	});
+
+	test('__onPaste extracts files from clipboardData and prevents default', () => {
+		const wrapper = createWrapper();
+		const file = new File(['x'], 'clip.png', { type: 'image/png' });
+		const evt = {
+			preventDefault: vi.fn(),
+			clipboardData: {
+				items: [
+					{ kind: 'file', getAsFile: () => file },
+				],
+			},
+		};
+		wrapper.vm.__onPaste(evt);
+		expect(evt.preventDefault).toHaveBeenCalled();
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
+		expect(wrapper.vm.inputFiles[0].name).toBe('clip.png');
+	});
+
+	test('__onPaste does not prevent default when clipboard has no files', () => {
+		const wrapper = createWrapper();
+		const evt = {
+			preventDefault: vi.fn(),
+			clipboardData: {
+				items: [
+					{ kind: 'string', getAsFile: () => null },
+				],
+			},
+		};
+		wrapper.vm.__onPaste(evt);
+		expect(evt.preventDefault).not.toHaveBeenCalled();
+		expect(wrapper.vm.inputFiles).toHaveLength(0);
+	});
+
+	test('__onPaste handles empty clipboardData gracefully', () => {
+		const wrapper = createWrapper();
+		const evt = {
+			preventDefault: vi.fn(),
+			clipboardData: { items: [] },
+		};
+		wrapper.vm.__onPaste(evt);
+		expect(evt.preventDefault).not.toHaveBeenCalled();
+		expect(wrapper.vm.inputFiles).toHaveLength(0);
+	});
+
+	test('__onPaste handles null clipboardData gracefully', () => {
+		const wrapper = createWrapper();
+		const evt = { preventDefault: vi.fn(), clipboardData: null };
+		wrapper.vm.__onPaste(evt);
+		expect(evt.preventDefault).not.toHaveBeenCalled();
+		expect(wrapper.vm.inputFiles).toHaveLength(0);
+	});
+
+	test('__onPaste with mixed text+file items only extracts files', () => {
+		const wrapper = createWrapper();
+		const file = new File(['img'], 'pic.png', { type: 'image/png' });
+		const evt = {
+			preventDefault: vi.fn(),
+			clipboardData: {
+				items: [
+					{ kind: 'string', getAsFile: () => null },
+					{ kind: 'file', getAsFile: () => file },
+				],
+			},
+		};
+		wrapper.vm.__onPaste(evt);
+		expect(evt.preventDefault).toHaveBeenCalled();
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
+		expect(wrapper.vm.inputFiles[0].name).toBe('pic.png');
+	});
+
+	test('addFiles rejects files exceeding MAX_UPLOAD_SIZE', () => {
+		const wrapper = createWrapper();
+		// MAX_UPLOAD_SIZE mocked to 1 MB
+		const big = new File([new ArrayBuffer(1024 * 1024 + 1)], 'big.bin', { type: 'application/octet-stream' });
+		const small = new File(['ok'], 'small.txt', { type: 'text/plain' });
+		wrapper.vm.addFiles([big, small]);
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
+		expect(wrapper.vm.inputFiles[0].name).toBe('small.txt');
+		expect(mockNotify.error).toHaveBeenCalled();
+	});
+
+	test('onFilesSelected delegates to addFiles', () => {
+		const wrapper = createWrapper();
+		const file = new File(['x'], 'sel.txt', { type: 'text/plain' });
+		const evt = { target: { files: [file], value: 'C:\\fake\\sel.txt' } };
+		wrapper.vm.onFilesSelected(evt);
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
+		expect(wrapper.vm.inputFiles[0].name).toBe('sel.txt');
+		expect(evt.target.value).toBe('');
 	});
 });

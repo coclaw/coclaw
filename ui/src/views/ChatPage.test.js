@@ -18,6 +18,7 @@ vi.mock('../components/ChatMsgItem.vue', () => ({
 	},
 }));
 const mockRestoreFiles = vi.fn();
+const mockAddFiles = vi.fn();
 vi.mock('../components/ChatInput.vue', () => ({
 	default: {
 		name: 'ChatInput',
@@ -26,6 +27,7 @@ vi.mock('../components/ChatInput.vue', () => ({
 		template: '<div class="input-stub" />',
 		methods: {
 			restoreFiles: (...args) => mockRestoreFiles(...args),
+			addFiles: (...args) => mockAddFiles(...args),
 		},
 	},
 }));
@@ -930,5 +932,123 @@ describe('ChatPage scroll', () => {
 
 		// force=true 时应忽略 userScrolledUp，执行 scrollTo
 		expect(scrollToSpy).toHaveBeenCalled();
+	});
+
+	// --- 拖拽上传 ---
+	test('dragover 设置 dragging=true', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		const root = wrapper.find('[data-testid="chat-root"]');
+		expect(wrapper.vm.dragging).toBe(false);
+
+		const evt = new Event('dragover', { bubbles: true });
+		evt.preventDefault = vi.fn();
+		Object.defineProperty(evt, 'dataTransfer', { value: { types: ['Files'] } });
+		root.element.dispatchEvent(evt);
+
+		expect(wrapper.vm.dragging).toBe(true);
+		expect(evt.preventDefault).toHaveBeenCalled();
+	});
+
+	test('dragleave 离开根元素时设置 dragging=false', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		const root = wrapper.find('[data-testid="chat-root"]');
+		wrapper.vm.dragging = true;
+
+		// relatedTarget 不在根元素内 → 离开
+		const evt = new Event('dragleave', { bubbles: true });
+		Object.defineProperty(evt, 'relatedTarget', { value: document.body });
+		root.element.dispatchEvent(evt);
+
+		expect(wrapper.vm.dragging).toBe(false);
+	});
+
+	test('dragleave 在子元素间移动时不关闭蒙层', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		const root = wrapper.find('[data-testid="chat-root"]');
+		wrapper.vm.dragging = true;
+
+		// relatedTarget 在根元素内 → 不关闭
+		const child = root.element.querySelector('.input-stub') || root.element.firstElementChild;
+		const evt = new Event('dragleave', { bubbles: true });
+		Object.defineProperty(evt, 'relatedTarget', { value: child });
+		root.element.dispatchEvent(evt);
+
+		expect(wrapper.vm.dragging).toBe(true);
+	});
+
+	test('drop 将文件传递给 chatInput.addFiles', async () => {
+		const wrapper = createWrapper();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		setupAgents();
+		await flushPromises();
+
+		const root = wrapper.find('[data-testid="chat-root"]');
+		wrapper.vm.dragging = true;
+
+		const file = new File(['hello'], 'test.txt', { type: 'text/plain' });
+		const evt = new Event('drop', { bubbles: true });
+		evt.preventDefault = vi.fn();
+		Object.defineProperty(evt, 'dataTransfer', { value: { files: [file] } });
+		root.element.dispatchEvent(evt);
+
+		expect(evt.preventDefault).toHaveBeenCalled();
+		expect(wrapper.vm.dragging).toBe(false);
+		expect(mockAddFiles).toHaveBeenCalledWith([file]);
+	});
+
+	test('drop 无文件时不调用 addFiles', async () => {
+		mockAddFiles.mockClear();
+		const wrapper = createWrapper();
+		await flushPromises();
+		const root = wrapper.find('[data-testid="chat-root"]');
+
+		const evt = new Event('drop', { bubbles: true });
+		evt.preventDefault = vi.fn();
+		Object.defineProperty(evt, 'dataTransfer', { value: { files: [] } });
+		root.element.dispatchEvent(evt);
+
+		expect(wrapper.vm.dragging).toBe(false);
+		expect(mockAddFiles).not.toHaveBeenCalled();
+	});
+
+	test('拖拽蒙层在 dragging=true 时显示', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.text()).not.toContain('files.dropHint');
+
+		await wrapper.setData({ dragging: true });
+		expect(wrapper.text()).toContain('files.dropHint');
+	});
+
+	test('dragleave relatedTarget=null（离开浏览器窗口）关闭蒙层', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		const root = wrapper.find('[data-testid="chat-root"]');
+		wrapper.vm.dragging = true;
+
+		const evt = new Event('dragleave', { bubbles: true });
+		Object.defineProperty(evt, 'relatedTarget', { value: null });
+		root.element.dispatchEvent(evt);
+
+		expect(wrapper.vm.dragging).toBe(false);
+	});
+
+	test('dragover 非文件拖拽不显示蒙层', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		const root = wrapper.find('[data-testid="chat-root"]');
+
+		const evt = new Event('dragover', { bubbles: true });
+		evt.preventDefault = vi.fn();
+		// 模拟拖拽文本（types 中无 Files）
+		Object.defineProperty(evt, 'dataTransfer', { value: { types: ['text/plain'] } });
+		root.element.dispatchEvent(evt);
+
+		expect(wrapper.vm.dragging).toBe(false);
+		expect(evt.preventDefault).not.toHaveBeenCalled();
 	});
 });

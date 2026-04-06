@@ -232,6 +232,7 @@
 import { useEnvStore } from '../stores/env.store.js';
 import { useNotify } from '../composables/use-notify.js';
 import { formatFileSize, formatFileBlob } from '../utils/file-helper.js';
+import { MAX_UPLOAD_SIZE } from '../services/file-transfer.js';
 import { VoiceRecorder, MAX_RECORD_DURATION } from '../utils/voice-recorder.js';
 import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
 import ImgViewDialog from './ImgViewDialog.vue';
@@ -303,7 +304,12 @@ export default {
 			);
 		},
 	},
+	mounted() {
+		// 挂在根元素（footer）上监听 paste，避免 UTextarea 被 v-if 重建导致监听丢失
+		this.$el.addEventListener('paste', this.__onPaste);
+	},
 	beforeUnmount() {
+		this.$el.removeEventListener('paste', this.__onPaste);
 		this.clearInputFiles();
 		if (this.voiceRecorder) {
 			this.voiceRecorder.destroy();
@@ -338,11 +344,36 @@ export default {
 		onFilesSelected(evt) {
 			const files = evt.target?.files;
 			if (!files?.length) return;
-			for (const file of files) {
-				this.inputFiles.push(formatFileBlob(file));
-			}
+			this.addFiles(Array.from(files));
 			// 重置 input 以允许再次选择同一文件
 			evt.target.value = '';
+		},
+		/** 外部（如拖拽）添加文件的公共入口 */
+		addFiles(files) {
+			if (!files?.length) return;
+			for (const file of files) {
+				if (file.size > MAX_UPLOAD_SIZE) {
+					this.notify.error(this.$t('files.fileTooLarge', { name: file.name }));
+					continue;
+				}
+				this.inputFiles.push(formatFileBlob(file));
+			}
+		},
+		/** 粘贴事件：提取剪贴板中的文件，仅有文件时阻止默认行为 */
+		__onPaste(e) {
+			const items = e.clipboardData?.items;
+			if (!items?.length) return;
+			const files = [];
+			for (const item of items) {
+				if (item.kind === 'file') {
+					const file = item.getAsFile();
+					if (file) files.push(file);
+				}
+			}
+			if (files.length > 0) {
+				e.preventDefault();
+				this.addFiles(files);
+			}
 		},
 		removeInputFile(idx) {
 			const removed = this.inputFiles.splice(idx, 1);

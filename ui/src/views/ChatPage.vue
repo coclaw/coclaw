@@ -6,7 +6,7 @@
 		  后续全面改为浏览器滚动后可移除）
 		- 勿同时加 flex-1 + h-dvh-safe，否则 flex 算法以 max-content 撑开父容器
 	-->
-	<div data-testid="chat-root" class="relative flex flex-col overflow-hidden" :class="chatRootClasses">
+	<div ref="chatRoot" data-testid="chat-root" class="relative flex flex-col overflow-hidden" :class="chatRootClasses">
 		<MobilePageHeader :title="chatTitle">
 			<template #actions>
 				<UButton
@@ -124,6 +124,14 @@
 				/>
 			</template>
 		</ChatInput>
+
+		<!-- 拖拽蒙层 -->
+		<div
+			v-if="dragging"
+			class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-default/80"
+		>
+			<p class="text-lg font-medium text-primary">{{ $t('files.dropHint') }}</p>
+		</div>
 	</div>
 </template>
 
@@ -172,6 +180,7 @@ export default {
 			defaultClawAvatar,
 			userScrolledUp: false,
 			showNoMoreHint: false,
+			dragging: false,
 			__exiting: false,
 			// 新建 topic 流程进行中，抑制 watcher 的重复激活
 			__creatingTopic: false,
@@ -484,6 +493,14 @@ export default {
 		};
 		window.addEventListener('app:foreground', this.__onForeground);
 		document.addEventListener('visibilitychange', this.__onVisibility);
+
+		// 拖拽上传
+		const root = this.$refs.chatRoot;
+		if (root) {
+			root.addEventListener('dragover', this.__onDragOver);
+			root.addEventListener('dragleave', this.__onDragLeave);
+			root.addEventListener('drop', this.__onDrop);
+		}
 	},
 	beforeUnmount() {
 		this.__unmounted = true;
@@ -494,6 +511,12 @@ export default {
 		}
 		if (this.__onVisibility) {
 			document.removeEventListener('visibilitychange', this.__onVisibility);
+		}
+		const root = this.$refs.chatRoot;
+		if (root) {
+			root.removeEventListener('dragover', this.__onDragOver);
+			root.removeEventListener('dragleave', this.__onDragLeave);
+			root.removeEventListener('drop', this.__onDrop);
 		}
 	},
 	methods: {
@@ -677,6 +700,27 @@ export default {
 
 		onCancelSend() {
 			this.chatStore?.cancelSend();
+		},
+
+		// --- 拖拽上传 ---
+		__onDragOver(e) {
+			if (!this.$refs.chatInput) return;
+			if (!e.dataTransfer?.types?.includes('Files')) return;
+			e.preventDefault();
+			this.dragging = true;
+		},
+		__onDragLeave(e) {
+			// 仅离开根元素时关闭蒙层，忽略子元素间的冒泡
+			if (this.$refs.chatRoot?.contains(e.relatedTarget)) return;
+			this.dragging = false;
+		},
+		__onDrop(e) {
+			e.preventDefault();
+			this.dragging = false;
+			const files = Array.from(e.dataTransfer?.files || []);
+			if (files.length) {
+				this.$refs.chatInput?.addFiles(files);
+			}
 		},
 
 		/**
