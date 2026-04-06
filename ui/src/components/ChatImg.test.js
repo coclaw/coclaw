@@ -747,6 +747,7 @@ describe('ChatImg', () => {
 			await flushPromises();
 
 			expect(wrapper.vm.loading).toBe(true);
+			expect(wrapper.find('.min-h-\\[52px\\].min-w-\\[128px\\]').exists()).toBe(true);
 			expect(wrapper.find('.animate-spin').exists()).toBe(true);
 
 			resolveFile(makeBlob());
@@ -761,7 +762,7 @@ describe('ChatImg', () => {
 
 			expect(wrapper.vm.error).toBe(true);
 			// 错误占位符应存在
-			expect(wrapper.find('.h-24.w-32').exists()).toBe(true);
+			expect(wrapper.find('.min-h-\\[52px\\].min-w-\\[128px\\]').exists()).toBe(true);
 		});
 
 		test('图片加载成功后渲染 img 标签', async () => {

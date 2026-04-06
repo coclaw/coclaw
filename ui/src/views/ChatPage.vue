@@ -54,7 +54,7 @@
 		</header>
 
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
-		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel">
+		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel" @load.capture="onImgLoad">
 			<div class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
 				<div v-if="connStatusText" class="mx-4 mt-4 rounded-lg px-4 py-2 text-center text-sm" :class="connStatusSeverity === 'warn' ? 'bg-warning/10 text-warning' : 'bg-accented text-muted'">
 					{{ connStatusText }}
@@ -851,6 +851,10 @@ export default {
 					if (!this.__scrollReady) this.__scrollReady = true;
 				});
 			});
+		},
+		/** 图片加载完成后修正滚动位置（capture 阶段捕获不冒泡的 img load） */
+		onImgLoad(e) {
+			if (e.target.tagName === 'IMG') this.scrollToBottom();
 		},
 		onScroll() {
 			const el = this.$refs.scrollContainer;

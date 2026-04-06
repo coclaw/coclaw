@@ -1,10 +1,10 @@
 <template>
-	<!-- 加载中 -->
-	<div v-if="loading" class="flex h-24 w-32 items-center justify-center rounded-lg bg-elevated">
+	<!-- 加载中（最小占位，不预设固定尺寸，避免与实际图片的尺寸差导致布局位移） -->
+	<div v-if="loading" class="flex min-h-[52px] min-w-[128px] items-center justify-center rounded-lg bg-elevated">
 		<UIcon name="i-lucide-loader-circle" class="size-6 animate-spin text-dimmed" />
 	</div>
 	<!-- 加载失败 -->
-	<div v-else-if="error" class="flex h-24 w-32 items-center justify-center rounded-lg bg-elevated">
+	<div v-else-if="error" class="flex min-h-[52px] min-w-[128px] items-center justify-center rounded-lg bg-elevated">
 		<UIcon name="i-lucide-image-off" class="size-6 text-dimmed" />
 	</div>
 	<!-- 图片 -->
