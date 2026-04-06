@@ -109,6 +109,7 @@ export class VoiceRecorder {
 				scrollingWaveform: false,
 				renderRecordedAudio: false,
 				mimeType: this.__mimeType,
+				audioBitsPerSecond: 16000,
 			}));
 
 			await this.__record.startRecording();

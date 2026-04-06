@@ -177,6 +177,7 @@ export default {
 					scrollingWaveform: false,
 					renderRecordedAudio: false,
 					mimeType: this.mimeType,
+					audioBitsPerSecond: 16000,
 				}));
 
 				await this.record.startRecording();
