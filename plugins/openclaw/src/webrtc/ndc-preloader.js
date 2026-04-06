@@ -181,11 +181,31 @@ export async function preloadNdc(deps = {}) {
 			return weriftFallback(dynamicImport, log, importTimeout);
 		}
 
+		// 注册 libdatachannel 内部日志回调（Warning 级别），
+		// 用于捕获 ICE/DTLS/SCTP 层断连原因。
+		// initLogger 是进程全局单例，调用一次即可（cleanup 不会被调用，logger 全程有效）。
+		// callback 通过 TSFN 投递到 JS 主线程，Warning 级别正常运行时零输出。
+		const initLogger = ndc.initLogger ?? ndc.default?.initLogger;
+		if (typeof initLogger === 'function') {
+			try {
+				initLogger('Warning', (level, message) => {
+					try {
+						const msg = typeof message === 'string' ? message.replace(/\n/g, '\\n') : message;
+						log(`ndc.native level=${level} ${msg}`);
+					} catch { /* 不让任何异常传播到 native 层 */ }
+				});
+				log('ndc.logger-registered level=Warning');
+			} catch (err) {
+				// initLogger 失败不影响 ndc 正常使用
+				log(`ndc.logger-failed error=${err.message}`);
+			}
+		}
+
 		// 重要：调用方在不再需要 node-datachannel 时（如 bridge stop），必须调用 cleanup()。
 		// node-datachannel 内部使用 ThreadSafeCallback 维持 native threads，不调用 cleanup()
 		// 会阻止 Node 进程正常退出（上游 issue #366）。
-		// 当前由 RealtimeBridge.stop() 负责调用。若 gateway 被 SIGKILL 强杀则无法执行，
-		// 但 OS 会回收所有资源。若 OpenClaw 提供了优雅终止钩子，应在钩子中也调用 cleanup。
+		// 当前 RealtimeBridge.stop() 不调用 cleanup()（阻塞 10s+），native threads 保持活跃供复用。
+		// 进程退出时 OS 会回收所有资源。
 		log(`ndc.loaded platform=${platformKey}`);
 		return { PeerConnection: wrapNdcCredentials(RTCPeerConnection), cleanup, impl: 'ndc' };
 	} catch (err) {

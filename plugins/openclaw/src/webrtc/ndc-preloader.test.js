@@ -423,6 +423,171 @@ test('defaultResolvePaths: returns correct paths structure', () => {
 	}
 });
 
+// --- initLogger 集成测试 ---
+
+test('preloadNdc: ndc 加载成功后注册 initLogger', async () => {
+	let initLoggerCalled = false;
+	let capturedLevel = null;
+	let capturedCb = null;
+	const { logs, deps } = successDeps({
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'node-datachannel') {
+				return {
+					cleanup: () => {},
+					initLogger: (level, cb) => {
+						initLoggerCalled = true;
+						capturedLevel = level;
+						capturedCb = cb;
+					},
+				};
+			}
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	const result = await preloadNdc(deps);
+	assert.equal(result.impl, 'ndc');
+	assert.ok(initLoggerCalled, 'initLogger should be called');
+	assert.equal(capturedLevel, 'Warning');
+	assert.equal(typeof capturedCb, 'function');
+	assert.ok(logs.some(l => l.includes('ndc.logger-registered')));
+});
+
+test('preloadNdc: initLogger callback 调用 remoteLog', async () => {
+	let capturedCb = null;
+	const { logs, deps } = successDeps({
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'node-datachannel') {
+				return {
+					cleanup: () => {},
+					initLogger: (_level, cb) => { capturedCb = cb; },
+				};
+			}
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	await preloadNdc(deps);
+	// 模拟 native 层调用 callback
+	capturedCb('Warning', 'ICE failed');
+	assert.ok(logs.some(l => l === 'ndc.native level=Warning ICE failed'));
+});
+
+test('preloadNdc: initLogger callback 内异常不传播', async () => {
+	let capturedCb = null;
+	let preloadDone = false;
+	const { deps } = successDeps({
+		remoteLog: (text) => {
+			// preload 阶段正常工作；只在 callback 被 native 调用时才抛异常
+			if (preloadDone) throw new Error('remoteLog crash');
+		},
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'node-datachannel') {
+				return {
+					cleanup: () => {},
+					initLogger: (_level, cb) => { capturedCb = cb; },
+				};
+			}
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	await preloadNdc(deps);
+	preloadDone = true;
+	// callback 内 remoteLog 抛异常，不应传播
+	assert.doesNotThrow(() => capturedCb('Error', 'some error'));
+});
+
+test('preloadNdc: initLogger 自身抛异常不影响 ndc 加载', async () => {
+	const { logs, deps } = successDeps({
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'node-datachannel') {
+				return {
+					cleanup: () => {},
+					initLogger: () => { throw new Error('initLogger boom'); },
+				};
+			}
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	const result = await preloadNdc(deps);
+	assert.equal(result.impl, 'ndc', 'should still return ndc despite initLogger failure');
+	assert.ok(logs.some(l => l.includes('ndc.logger-failed')));
+	assert.ok(logs.some(l => l.includes('ndc.loaded')));
+});
+
+test('preloadNdc: ndc 模块无 initLogger 时静默跳过', async () => {
+	const { logs, deps } = successDeps({
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'node-datachannel') {
+				return { cleanup: () => {} }; // 无 initLogger
+			}
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	const result = await preloadNdc(deps);
+	assert.equal(result.impl, 'ndc');
+	assert.ok(!logs.some(l => l.includes('ndc.logger')));
+	assert.ok(logs.some(l => l.includes('ndc.loaded')));
+});
+
+test('preloadNdc: initLogger 从 ndc.default.initLogger fallback 获取', async () => {
+	let capturedLevel = null;
+	const { logs, deps } = successDeps({
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'node-datachannel') {
+				return {
+					cleanup: () => {},
+					// initLogger 不在顶层，在 default 上
+					default: {
+						initLogger: (level, _cb) => { capturedLevel = level; },
+					},
+				};
+			}
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	await preloadNdc(deps);
+	assert.equal(capturedLevel, 'Warning');
+	assert.ok(logs.some(l => l.includes('ndc.logger-registered')));
+});
+
+test('preloadNdc: initLogger callback 将 message 中的换行替换为 \\n', async () => {
+	let capturedCb = null;
+	const { logs, deps } = successDeps({
+		dynamicImport: async (spec) => {
+			if (spec === 'node-datachannel/polyfill') {
+				return { RTCPeerConnection: createMockRTCPeerConnection() };
+			}
+			if (spec === 'node-datachannel') {
+				return {
+					cleanup: () => {},
+					initLogger: (_level, cb) => { capturedCb = cb; },
+				};
+			}
+			throw new Error(`unexpected import: ${spec}`);
+		},
+	});
+	await preloadNdc(deps);
+	capturedCb('Warning', 'line1\nline2\nline3');
+	assert.ok(logs.some(l => l === 'ndc.native level=Warning line1\\nline2\\nline3'));
+});
+
 test('preloadNdc: default resolvePaths (no injection) — node-datachannel not installed → fallback', async () => {
 	// 不注入 resolvePaths，使用默认的 defaultResolvePaths
 	// 由于 node-datachannel 未安装，require.resolve 会抛 MODULE_NOT_FOUND
