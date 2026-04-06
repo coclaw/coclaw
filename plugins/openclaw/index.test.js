@@ -11,7 +11,7 @@ import { stopRealtimeBridge } from './src/realtime-bridge.js';
 
 // bridgeSvc.start() 触发真实 preloadNdc → initLogger TSFN，需在文件结束时清理
 after(async () => {
-	await stopRealtimeBridge({ forceCleanup: true });
+	try { await stopRealtimeBridge({ forceCleanup: true }); } catch { /* best-effort */ }
 	try {
 		const ndc = await import('node-datachannel');
 		const cleanup = ndc.cleanup ?? ndc.default?.cleanup;

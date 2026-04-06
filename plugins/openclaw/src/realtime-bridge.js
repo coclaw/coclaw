@@ -1047,7 +1047,7 @@ export async function stopRealtimeBridge({ forceCleanup = false } = {}) {
 	await singleton.stop();
 	singleton = null; // 置 null 后须通过 restartRealtimeBridge 重建
 	if (typeof cleanupFn === 'function') {
-		cleanupFn();
+		try { cleanupFn(); } catch { /* c8 ignore next -- cleanup 失败不影响 stop 结果 */ }
 	}
 }
 

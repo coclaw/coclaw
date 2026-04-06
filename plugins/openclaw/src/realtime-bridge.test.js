@@ -14,7 +14,7 @@ import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } fro
 // 阻止进程退出。finally 中的 stop 不带 forceCleanup，cleanup ref 已丢失，
 // 需直接调 ndc cleanup 兜底释放 TSFN。
 after(async () => {
-	await stopRealtimeBridge({ forceCleanup: true });
+	try { await stopRealtimeBridge({ forceCleanup: true }); } catch { /* best-effort */ }
 	try {
 		const ndc = await import('node-datachannel');
 		const cleanup = ndc.cleanup ?? ndc.default?.cleanup;
