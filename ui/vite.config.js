@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import vue from '@vitejs/plugin-vue';
 import ui from '@nuxt/ui/vite';
 import { defineConfig } from 'vite';
@@ -13,6 +13,16 @@ export default defineConfig({
 		__APP_VERSION__: JSON.stringify(pkg.version),
 	},
 	plugins: [
+		{
+			name: 'generate-version-json',
+			writeBundle() {
+				mkdirSync('dist', { recursive: true });
+				writeFileSync('dist/version.json', JSON.stringify({
+					version: pkg.version,
+					buildTime: new Date().toISOString(),
+				}));
+			},
+		},
 		vue(),
 		/* CoClaw 自定义品牌/状态色 — 移除 ui.colors 配置可恢复 Nuxt UI 默认色 */
 		ui({

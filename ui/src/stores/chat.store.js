@@ -110,19 +110,37 @@ export function createChatStore(storeKey, opts = {}) {
 			runKey() {
 				return this.topicMode ? this.sessionId : this.chatSessionKey;
 			},
-			/** 合并服务端消息 + 活跃 run 的流式消息 */
+			/** 合并服务端消息 + 活跃 run 的流式消息（按锚点定位插入位置） */
 			allMessages() {
 				const runsStore = useAgentRunsStore();
 				const run = runsStore.getActiveRun(this.runKey);
-				if (run && run.streamingMsgs.length) {
+				if (!run || !run.streamingMsgs.length) return this.messages;
+
+				if (!run.anchorMsgId) {
 					return [...this.messages, ...run.streamingMsgs];
 				}
-				return this.messages;
+				let anchorIdx = -1;
+				for (let i = this.messages.length - 1; i >= 0; i--) {
+					if (this.messages[i].id === run.anchorMsgId) { anchorIdx = i; break; }
+				}
+				if (anchorIdx === -1) {
+					// 锚点被翻页截断或 reload 后消失，追加到末尾
+					return [...this.messages, ...run.streamingMsgs];
+				}
+				return [
+					...this.messages.slice(0, anchorIdx + 1),
+					...run.streamingMsgs,
+					...this.messages.slice(anchorIdx + 1),
+				];
 			},
 			/** 是否正在发送（含后台 run 仍在执行的情况） */
 			isSending() {
 				if (this.sending) return true;
 				return useAgentRunsStore().isRunning(this.runKey);
+			},
+			/** 是否有不可中断的本地操作（发送、上传、reset） */
+			busy() {
+				return this.sending || this.uploadingFiles || this.resetting;
 			},
 		},
 		actions: {
@@ -518,6 +536,7 @@ export function createChatStore(storeKey, opts = {}) {
 								}, 30 * 60_000);
 								// 将乐观消息移入 agentRunsStore
 								const localMsgs = this.messages.filter((m) => m._local);
+								const lastServerMsg = this.messages.filter((m) => !m._local).at(-1);
 								this.messages = this.messages.filter((m) => !m._local);
 								runsStore.register(runId, {
 									clawId: this.clawId,
@@ -525,6 +544,7 @@ export function createChatStore(storeKey, opts = {}) {
 									topicMode: this.topicMode,
 									conn,
 									streamingMsgs: localMsgs,
+									anchorMsgId: lastServerMsg?.id ?? null,
 								});
 							},
 							onUnknownStatus: (status, payload) => {
@@ -1085,9 +1105,11 @@ export function createChatStore(storeKey, opts = {}) {
 				const runsStore = useAgentRunsStore();
 				// 完成 settling 过渡（lifecycle:end 已到达，等待 loadMessages 替换数据）
 				runsStore.completeSettle(this.runKey);
-				// 去除乐观 user 消息——run 已 accepted，loadMessages 后服务端版本已在 this.messages 中
-				runsStore.stripLocalUserMsgs(this.runKey);
-				// 正在发送中时跳过僵尸检测——避免过早 settle 活跃 run
+				// 去除乐观 user 消息——仅当 server 已包含对应消息时才 strip
+				runsStore.stripLocalUserMsgs(this.runKey, serverMessages);
+				// sendMessage 流程执行中跳过僵尸检测——避免过早 settle 活跃 run
+				// 注：使用 this.sending 而非 this.isSending，因为 isSending 包含 isRunning，
+				// 而僵尸 run 正是 sending=false 但 isRunning=true 的场景
 				if (this.sending) return;
 				// 检查僵尸 run（断连期间完成，lifecycle:end 丢失）
 				runsStore.reconcileAfterLoad(this.runKey, serverMessages);

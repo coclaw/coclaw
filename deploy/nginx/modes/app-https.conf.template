@@ -40,6 +40,13 @@ server {
 		try_files $uri =404;
 	}
 
+	# 版本检测文件：禁止缓存，确保客户端始终获取最新版本号
+	location = /version.json {
+		add_header X-Content-Type-Options nosniff always;
+		add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;
+		try_files $uri =404;
+	}
+
 	# 哈希静态资源：短期缓存（当前 1h）
 	location ^~ /assets/ {
 		expires 1h;

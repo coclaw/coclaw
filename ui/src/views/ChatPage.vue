@@ -697,7 +697,7 @@ export default {
 				await this.chatStore.loadMessages();
 				if (this.__unmounted || !this.chatStore) return;
 				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-			} else {
+			} else if (!this.chatStore.isSending) {
 				this.chatStore.loadMessages({ silent: true });
 			}
 			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
@@ -719,6 +719,7 @@ export default {
 			this.__lastResumeAt = now;
 
 			if (!this.chatStore || !this.connReady) return;
+			if (this.chatStore.isSending) return;
 			console.debug('[ChatPage] foreground resume → silent reload');
 			this.chatStore.__reconcileSlashCommand();
 			this.chatStore.loadMessages({ silent: true });

@@ -180,6 +180,27 @@ describe('chatStoreManager', () => {
 	// __reset
 	// =====================================================================
 
+	// =====================================================================
+	// stores
+	// =====================================================================
+
+	describe('stores', () => {
+		test('返回所有实例的迭代器', () => {
+			chatStoreManager.get('session:1:main', { clawId: '1' });
+			chatStoreManager.get('topic:t1', { clawId: '1' });
+			const all = [...chatStoreManager.stores()];
+			expect(all).toHaveLength(2);
+		});
+
+		test('空时返回空迭代器', () => {
+			expect([...chatStoreManager.stores()]).toHaveLength(0);
+		});
+	});
+
+	// =====================================================================
+	// __reset
+	// =====================================================================
+
 	describe('__reset', () => {
 		test('清空所有实例', () => {
 			chatStoreManager.get('session:1:main', { clawId: '1' });

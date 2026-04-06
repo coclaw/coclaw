@@ -42,6 +42,13 @@ export const useFilesStore = defineStore('files', {
 			}
 			return result;
 		},
+		/** 是否有进行中的传输任务 */
+		busy: (state) => {
+			for (const task of state.tasks.values()) {
+				if (task.status === 'pending' || task.status === 'running') return true;
+			}
+			return false;
+		},
 	},
 	actions: {
 		/**

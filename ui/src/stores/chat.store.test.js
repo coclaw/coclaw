@@ -1973,7 +1973,100 @@ describe('useChatStore', () => {
 			expect(all).toHaveLength(3);
 		});
 
-		test('stripLocalUserMsgs 从 streamingMsgs 移除乐观 user 消息', () => {
+		test('allMessages 空 session 无锚点时正确合并', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+			store.messages = [];
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-empty';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				anchorMsgId: null,
+				settled: false,
+				settling: false,
+				streamingMsgs: [
+					{ type: 'message', id: '__local_user', _local: true, message: { role: 'user', content: '首条消息' } },
+					{ type: 'message', id: '__local_claw', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			const all = store.allMessages;
+			expect(all).toHaveLength(2);
+			expect(all[0].id).toBe('__local_user');
+			expect(all[1].id).toBe('__local_claw');
+		});
+
+		test('allMessages 按锚点定位 streamingMsgs 插入位置', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			// server 消息：包含锚点消息和之后 reload 追加的消息
+			store.messages = [
+				{ type: 'message', id: 'msg-1', message: { role: 'user', content: '旧消息' } },
+				{ type: 'message', id: 'msg-2', message: { role: 'assistant', content: '旧回复' } },
+				{ type: 'message', id: 'msg-3', message: { role: 'assistant', content: '上一个 task 的尾部' } },
+			];
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-anchor';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				anchorMsgId: 'msg-2', // 发送时 messages 最后一条 server 消息
+				settled: false,
+				settling: false,
+				streamingMsgs: [
+					{ type: 'message', id: '__local_user', _local: true, message: { role: 'user', content: '新消息' } },
+					{ type: 'message', id: '__local_claw', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			const all = store.allMessages;
+			expect(all).toHaveLength(5);
+			// streamingMsgs 应插入在锚点 msg-2 之后，msg-3 之前
+			expect(all[0].id).toBe('msg-1');
+			expect(all[1].id).toBe('msg-2');
+			expect(all[2].id).toBe('__local_user');
+			expect(all[3].id).toBe('__local_claw');
+			expect(all[4].id).toBe('msg-3');
+		});
+
+		test('allMessages 锚点不存在时回退到追加', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			store.messages = [
+				{ type: 'message', id: 'msg-99', message: { role: 'assistant', content: 'hi' } },
+			];
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-no-anchor';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				anchorMsgId: 'msg-deleted', // 锚点已不存在
+				settled: false,
+				settling: false,
+				streamingMsgs: [
+					{ type: 'message', id: '__local_user', _local: true, message: { role: 'user', content: '消息' } },
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			const all = store.allMessages;
+			expect(all).toHaveLength(2);
+			expect(all[0].id).toBe('msg-99');
+			expect(all[1].id).toBe('__local_user');
+		});
+
+		test('stripLocalUserMsgs 锚点后有 user 消息 → strip 乐观消息', () => {
 			const store = useChatStore();
 			store.chatSessionKey = 'agent:main:main';
 
@@ -1983,6 +2076,7 @@ describe('useChatStore', () => {
 			runsStore.runs[runId] = {
 				runId,
 				runKey,
+				anchorMsgId: 'oc-assistant-1000',
 				settled: false,
 				settling: false,
 				streamingMsgs: [
@@ -1992,12 +2086,46 @@ describe('useChatStore', () => {
 			};
 			runsStore.runKeyIndex[runKey] = runId;
 
-			runsStore.stripLocalUserMsgs(runKey);
+			// server 数据：锚点之后出现了 user 消息（content 格式不同也无影响）
+			const serverMsgs = [
+				{ id: 'oc-assistant-1000', message: { role: 'assistant', content: '旧回复' } },
+				{ id: 'oc-user-2000', message: { role: 'user', content: [{ type: 'text', text: '你好' }] } },
+			];
+			runsStore.stripLocalUserMsgs(runKey, serverMsgs);
 
-			// 乐观 user 消息被移除，流式 claw 消息保留
 			const run = runsStore.runs[runId];
 			expect(run.streamingMsgs).toHaveLength(1);
 			expect(run.streamingMsgs[0].id).toBe('__local_claw_123');
+		});
+
+		test('stripLocalUserMsgs 锚点后无 user 消息 → 保留乐观消息', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-1';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				anchorMsgId: 'oc-assistant-1000',
+				settled: false,
+				settling: false,
+				streamingMsgs: [
+					{ type: 'message', id: '__local_user_123', _local: true, message: { role: 'user', content: '你好' } },
+					{ type: 'message', id: '__local_claw_123', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			// server 数据：锚点之后无 user 消息
+			const serverMsgs = [
+				{ id: 'oc-assistant-1000', message: { role: 'assistant', content: '旧回复' } },
+			];
+			runsStore.stripLocalUserMsgs(runKey, serverMsgs);
+
+			const run = runsStore.runs[runId];
+			expect(run.streamingMsgs).toHaveLength(2);
 		});
 
 		test('stripLocalUserMsgs 对 settled/settling run 不操作', () => {
@@ -3240,6 +3368,42 @@ describe('useChatStore', () => {
 
 			// sending=true 时应跳过 reconcile，run 仍在
 			expect(runsStore.isRunning(store.runKey)).toBe(true);
+		});
+	});
+
+	// =====================================================================
+	// busy getter
+	// =====================================================================
+
+	describe('busy', () => {
+		test('默认为 false', () => {
+			const s = useChatStore();
+			expect(s.busy).toBe(false);
+		});
+
+		test('sending 时为 true', () => {
+			const s = useChatStore();
+			s.sending = true;
+			expect(s.busy).toBe(true);
+		});
+
+		test('uploadingFiles 时为 true', () => {
+			const s = useChatStore();
+			s.uploadingFiles = true;
+			expect(s.busy).toBe(true);
+		});
+
+		test('resetting 时为 true', () => {
+			const s = useChatStore();
+			s.resetting = true;
+			expect(s.busy).toBe(true);
+		});
+
+		test('多个状态组合仍为 true', () => {
+			const s = useChatStore();
+			s.sending = true;
+			s.uploadingFiles = true;
+			expect(s.busy).toBe(true);
 		});
 	});
 });

@@ -20,6 +20,7 @@ function registerRun(store, overrides = {}) {
 			{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
 			{ id: '__local_claw_1', _local: true, _streaming: true, _startTime: 1000, message: { role: 'assistant', content: '', stopReason: null } },
 		],
+		anchorMsgId: overrides.anchorMsgId ?? undefined,
 	});
 	return conn;
 }
@@ -58,6 +59,20 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runs['run-2']).toBeTruthy();
 			expect(store.runKeyIndex['agent:main:main']).toBe('run-2');
+		});
+
+		test('注册时存储 anchorMsgId', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { anchorMsgId: 'msg-42' });
+
+			expect(store.runs['run-1'].anchorMsgId).toBe('msg-42');
+		});
+
+		test('anchorMsgId 默认为 null', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			expect(store.runs['run-1'].anchorMsgId).toBeNull();
 		});
 
 		test('不再自行注册 event:agent 监听器（由 clawsStore 集中桥接）', () => {
@@ -334,7 +349,24 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('stripLocalUserMsgs', () => {
-		test('从 streamingMsgs 移除 _local user 消息，保留 bot 消息', () => {
+		test('无锚点 + server 有 user 消息 → strip', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			const serverMsgs = [
+				{ id: 's1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
+		});
+
+		test('无锚点 + server 无 user 消息 → 保留', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.runs['run-1'].streamingMsgs = [
@@ -342,7 +374,64 @@ describe('useAgentRunsStore', () => {
 				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main');
+			store.stripLocalUserMsgs('agent:main:main', []);
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(2);
+		});
+
+		test('有锚点 + 锚点后有 user 消息 → strip', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = 'anchor-1';
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			const serverMsgs = [
+				{ id: 'old-1', message: { role: 'user', content: '旧消息' } },
+				{ id: 'anchor-1', message: { role: 'assistant', content: '旧回复' } },
+				{ id: 'new-1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
+		});
+
+		test('有锚点 + 锚点后无 user 消息 → 保留', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = 'anchor-1';
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			// server 只有锚点之前的旧 user 消息，锚点之后无 user 消息
+			const serverMsgs = [
+				{ id: 'old-1', message: { role: 'user', content: '旧消息' } },
+				{ id: 'anchor-1', message: { role: 'assistant', content: '旧回复' } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(2);
+		});
+
+		test('锚点被分页截断 → 视为已持久化 → strip', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = 'anchor-gone';
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			// 锚点 ID 不在 serverMessages 中
+			const serverMsgs = [
+				{ id: 'far-away', message: { role: 'assistant', content: '很后面的消息' } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
@@ -355,7 +444,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main');
+			store.stripLocalUserMsgs('agent:main:main', []);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
@@ -369,7 +458,20 @@ describe('useAgentRunsStore', () => {
 				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main');
+			store.stripLocalUserMsgs('agent:main:main', [{ id: 's1', message: { role: 'user', content: 'hi' } }]);
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+		});
+
+		test('settling run 不操作', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].settling = true;
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+			];
+
+			store.stripLocalUserMsgs('agent:main:main', [{ id: 's1', message: { role: 'user', content: 'hi' } }]);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 		});
@@ -552,6 +654,29 @@ describe('useAgentRunsStore', () => {
 			// 用户主动 settle 应立即生效，不受 loadInFlight 阻挡
 			store.settle('agent:main:main');
 			expect(store.runs['run-1']).toBeUndefined();
+		});
+	});
+
+	// =====================================================================
+	// busy getter
+	// =====================================================================
+
+	describe('busy', () => {
+		test('无 run 时为 false', () => {
+			expect(useAgentRunsStore().busy).toBe(false);
+		});
+
+		test('有未 settled 的 run 时为 true', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			expect(store.busy).toBe(true);
+		});
+
+		test('所有 run settled 后为 false', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settle('agent:main:main');
+			expect(store.busy).toBe(false);
 		});
 	});
 });

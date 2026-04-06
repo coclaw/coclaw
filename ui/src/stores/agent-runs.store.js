@@ -52,6 +52,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const run = state.runs[runId];
 			return !!run && !run.settled;
 		},
+		/** 是否有任何未完成的 run */
+		busy: (state) => Object.values(state.runs).some(r => !r.settled),
 	},
 
 	actions: {
@@ -64,8 +66,9 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 * @param {boolean} opts.topicMode
 		 * @param {object} opts.conn - ClawConnection 实例（仅保留引用，不注册监听器）
 		 * @param {object[]} opts.streamingMsgs - 初始流式消息（乐观 user + claw 条目）
+		 * @param {string|null} [opts.anchorMsgId] - 注册时 chatStore.messages 的最后一条 server 消息 ID（用于 allMessages 定位）
 		 */
-		register(runId, { clawId, runKey, topicMode, conn, streamingMsgs = [] }) {
+		register(runId, { clawId, runKey, topicMode, conn, streamingMsgs = [], anchorMsgId = null }) {
 			console.debug('[agentRuns] register runId=%s runKey=%s clawId=%s', runId, runKey, clawId);
 
 			// 清理同一 runKey 的旧 run（若有）
@@ -79,6 +82,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				clawId,
 				runKey,
 				topicMode,
+				anchorMsgId,
 				startTime: Date.now(),
 				settled: false,
 				settling: false,
@@ -213,15 +217,41 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
-		 * loadMessages 成功后：从 streamingMsgs 中移除乐观 user 消息
-		 * run 已 accepted → 服务端已持久化 → loadMessages 返回的数据必包含该消息
+		 * 去除 streamingMsgs 中的乐观 user 消息——基于锚点范围的存在性判断：
+		 * 仅当 server 数据在 anchorMsgId 之后已出现 user message 时才 strip，
+		 * 避免 server 尚未持久化时误删导致 user message 消逝。
+		 * 不依赖 content 比较（本地为纯字符串，server 为 Claude API 数组格式，无法 === 匹配）。
 		 * @param {string} runKey
+		 * @param {object[]} serverMessages - loadMessages 返回的服务端消息
 		 */
-		stripLocalUserMsgs(runKey) {
+		stripLocalUserMsgs(runKey, serverMessages = []) {
 			const runId = this.runKeyIndex[runKey];
 			if (!runId) return;
 			const run = this.runs[runId];
 			if (!run || run.settled || run.settling) return;
+			if (!run.streamingMsgs.some((m) => m._local && m.message?.role === 'user')) return;
+
+			// 判断 server 是否已持久化本次 run 的 user message
+			const anchorId = run.anchorMsgId;
+			let serverHasUserMsg;
+			if (!anchorId) {
+				// 无锚点（首条消息）：server 中有任何 user message 即视为已持久化
+				serverHasUserMsg = serverMessages.some((m) => m.message?.role === 'user');
+			} else {
+				let anchorIdx = -1;
+				for (let i = serverMessages.length - 1; i >= 0; i--) {
+					if (serverMessages[i].id === anchorId) { anchorIdx = i; break; }
+				}
+				if (anchorIdx === -1) {
+					// 锚点被分页截断 → run 进行了很久 → user message 必然已持久化
+					serverHasUserMsg = true;
+				} else {
+					// 锚点之后存在 user message → 已持久化
+					serverHasUserMsg = serverMessages.slice(anchorIdx + 1).some((m) => m.message?.role === 'user');
+				}
+			}
+			if (!serverHasUserMsg) return;
+
 			const filtered = run.streamingMsgs.filter(
 				(m) => !(m._local && m.message?.role === 'user'),
 			);

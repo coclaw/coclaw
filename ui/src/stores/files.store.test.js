@@ -750,4 +750,31 @@ describe('files.store', () => {
 			expect(store.getAgentTasks('bot1', 'main')).toHaveLength(0);
 		});
 	});
+
+	// =====================================================================
+	// busy getter
+	// =====================================================================
+
+	describe('busy', () => {
+		test('无任��时为 false', () => {
+			expect(store.busy).toBe(false);
+		});
+
+		test('有 pending 任务时为 true', () => {
+			store.tasks.set('t1', __createTask({ status: 'pending' }));
+			expect(store.busy).toBe(true);
+		});
+
+		test('有 running 任务时为 true', () => {
+			store.tasks.set('t1', __createTask({ status: 'running' }));
+			expect(store.busy).toBe(true);
+		});
+
+		test('仅有 done/failed/cancelled 任务时为 false', () => {
+			store.tasks.set('t1', __createTask({ status: 'done' }));
+			store.tasks.set('t2', __createTask({ status: 'failed' }));
+			store.tasks.set('t3', __createTask({ status: 'cancelled' }));
+			expect(store.busy).toBe(false);
+		});
+	});
 });

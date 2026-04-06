@@ -21,6 +21,12 @@ server {
 		try_files $uri =404;
 	}
 
+	location = /version.json {
+		add_header X-Content-Type-Options nosniff always;
+		add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;
+		try_files $uri =404;
+	}
+
 	location ^~ /assets/ {
 		expires 1h;
 		try_files $uri =404;

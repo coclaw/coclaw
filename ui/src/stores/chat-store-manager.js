@@ -55,6 +55,9 @@ export const chatStoreManager = {
 	/** @returns {number} topic 实例数 */
 	get topicCount() { return topicLru.length; },
 
+	/** 遍历所有 store 实例 */
+	stores() { return instances.values(); },
+
 	/** 更新 topic LRU 顺序 */
 	__touchTopic(storeKey) {
 		const idx = topicLru.indexOf(storeKey);
