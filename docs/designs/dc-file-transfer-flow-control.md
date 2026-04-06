@@ -229,21 +229,35 @@ dc.onbufferedamountlow = () => stream.resume();
 
 ### 版本状态
 
-当前：v0.32.1（libdatachannel v0.24.0）  
-最新：v0.32.2（libdatachannel v0.24.2）
+当前：v0.32.2（libdatachannel v0.24.2）— 已于 2026-04-06 升级
 
 ### v0.32.2 关键修复
 
 1. **SCTP `sendReset()` 缓冲区对齐 UB**（libdatachannel issue #1509）— `sctptransport.cpp` 中 `srs_t*` 需要 4 字节对齐但 stack buffer 仅 1 字节对齐。DataChannel 关闭时触发，可导致崩溃或静默内存损坏
 2. **ICE transport 析构竞态**（libdatachannel issue #1525）— `~IceTransport()` 运行时 libnice 回调仍可能触发，造成 use-after-free。PeerConnection 销毁时触发
 
-这两个 bug 都在 PC/DC 关闭时触发，与观察到的"PC 突然从 native 层被关闭"高度相关。**升级 ndc 可能根治间歇性连接关闭问题。**
+这两个 bug 都在 PC/DC 关闭时触发，与观察到的"PC 突然从 native 层被关闭"高度相关。**已升级，预期可根治间歇性连接关闭问题。**
 
-### 升级注意
+### 升级记录
 
-项目使用 `vendor/ndc-prebuilds/` 中的预编译二进制（当前嵌入 libdatachannel v0.24.0）。升级需要：
-1. 更新 npm 包到 v0.32.2
-2. 重新构建所有 5 个平台的 prebuild 二进制（linux-x64, darwin-arm64 等）
+- v0.32.2 无破坏性 API 变更，预编译二进制通过 `scripts/download-ndc-prebuilds.sh` 从 GitHub Releases 下载，覆盖 5 个平台
+
+### initLogger 诊断能力评估
+
+v0.32.2 新增 `initLogger(level, callback)` 的可选 callback 参数，可捕获 libdatachannel 内部日志。
+
+**现有回调的局限**：`onconnectionstatechange` 只给状态字符串（如 `"failed"`），不提供原因。以下四种故障在现有回调中表现完全相同：
+
+- ICE 超时（TURN 不可达 / 无可用 candidate pair）
+- DTLS 握手失败
+- SCTP 心跳超时（网络中断）
+- SCTP association 异常终止
+
+**initLogger 能补什么**：在 `"Warning"` 级别，libdatachannel 在状态跳变前输出具体原因（如 `"ICE failed"`, `"DTLS timeout"`, `"SCTP association closed"`）。正常运行时几乎无输出，仅故障时触发，开销极低。
+
+**限制**：进程全局单例，日志不带 connection ID。多连接时需靠时间戳与状态变更事件关联。
+
+**决策**：暂不引入。v0.32.2 已修复已知 native 层 bug，先观察升级效果。若间歇性断连仍存在，再引入 initLogger 定向排查。
 
 ## 未来优化方向
 
@@ -256,6 +270,4 @@ dc.onbufferedamountlow = () => stream.resume();
 - 提 issue 建议 TSFN 队列支持上限配置（`max_queue_size` 参数化）
 - 或建议在 `onMessage` 回调中支持返回值控制（返回 false 时暂停从 SCTP socket 读取）
 
-### 升级 ndc 到 v0.32.2
-
-修复 native 层已知 bug。需重新构建 prebuild 二进制。
+### ~~升级 ndc 到 v0.32.2~~ ✓ 已完成

@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # 必须与 package.json 中 "node-datachannel" 版本严格一致
-VERSION="0.32.1"
+VERSION="0.32.2"
 BASE_URL="https://github.com/murat-dogan/node-datachannel/releases/download/v${VERSION}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="${SCRIPT_DIR}/../vendor/ndc-prebuilds"

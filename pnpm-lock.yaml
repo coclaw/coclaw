@@ -26,8 +26,8 @@ importers:
   plugins/openclaw:
     dependencies:
       node-datachannel:
-        specifier: 0.32.1
-        version: 0.32.1
+        specifier: 0.32.2
+        version: 0.32.2
       werift:
         specifier: ^0.19.0
         version: 0.19.9
@@ -4214,8 +4214,8 @@ packages:
   node-api-version@0.2.1:
     resolution: {integrity: sha512-2xP/IGGMmmSQpI1+O/k72jF/ykvZ89JeuKX3TLJAYPDVLUalrshrLHkeVcCCZqG/eEa635cr8IBYzgnDvM2O8Q==}
 
-  node-datachannel@0.32.1:
-    resolution: {integrity: sha512-r4UdtA0lCsz6XrG84pJ6lntAyw/MHpmBOhEkg5UQcmWTEpANqCPkMos6rj/QZDdq3GBUsdI/wst5acwWUiibCA==}
+  node-datachannel@0.32.2:
+    resolution: {integrity: sha512-wMnTuGL+UQhd/D8oRY+DecgN4sxYAWKgCwsFulLSvujgRWjFMQ0yKWN36IIBqDc1vBDdqmAgI9jm9NxvEYWEGg==}
     engines: {node: '>=18.20.0'}
 
   node-fetch-native@1.6.7:
@@ -10211,7 +10211,7 @@ snapshots:
     dependencies:
       semver: 7.7.4
 
-  node-datachannel@0.32.1:
+  node-datachannel@0.32.2:
     dependencies:
       prebuild-install: 7.1.3
 
