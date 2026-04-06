@@ -433,6 +433,7 @@ export const zhCNMessages = {
 		overwrite: '覆盖',
 		skip: '跳过',
 		applyToAll: '将此选择应用于所有冲突文件',
+		fileTooLarge: '"{name}" 超过 1 GB，暂不支持上传',
 	},
 	demo: {
 		title: 'Nuxt UI 4 示例',

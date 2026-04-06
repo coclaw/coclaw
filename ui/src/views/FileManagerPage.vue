@@ -207,7 +207,7 @@ import { useFilesStore } from '../stores/files.store.js';
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
-import { listFiles, deleteFile, mkdirFiles } from '../services/file-transfer.js';
+import { listFiles, deleteFile, mkdirFiles, MAX_UPLOAD_SIZE } from '../services/file-transfer.js';
 import { useNotify } from '../composables/use-notify.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
 
@@ -379,11 +379,22 @@ export default {
 		},
 
 		__handleUploadFiles(files) {
+			// 过滤超限文件
+			const allowed = [];
+			for (const file of files) {
+				if (file.size > MAX_UPLOAD_SIZE) {
+					this.notify.error(this.$t('files.fileTooLarge', { name: file.name }));
+				} else {
+					allowed.push(file);
+				}
+			}
+			if (!allowed.length) return;
+
 			// 检测重名
 			const existingNames = new Set(this.entries.map((e) => e.name));
 			const duplicates = [];
 			const clean = [];
-			for (const file of files) {
+			for (const file of allowed) {
 				if (existingNames.has(file.name)) {
 					duplicates.push({ name: file.name, file, action: 'skip' });
 				} else {
@@ -435,18 +446,24 @@ export default {
 		 */
 		__watchUploadsForRefresh() {
 			if (this.__refreshTimer) return; // 已有轮询在跑
+			let prevCount = this.__activeUploadCount();
 			const check = () => {
 				this.__refreshTimer = null;
 				if (this.__unmounted) return;
-				const active = this.filesStore.getActiveTasks(this.clawId, this.agentId, this.currentDir)
-					.filter((t) => t.type === 'upload' && (t.status === 'pending' || t.status === 'running'));
-				if (!active.length) {
-					this.loadDir();
-				} else {
+				const count = this.__activeUploadCount();
+				if (count < prevCount) this.loadDir(); // 有任务完成，刷新目录
+				prevCount = count;
+				if (count) {
 					this.__refreshTimer = setTimeout(check, 500);
 				}
 			};
 			this.__refreshTimer = setTimeout(check, 500);
+		},
+
+		__activeUploadCount() {
+			return this.filesStore.getActiveTasks(this.clawId, this.agentId, this.currentDir)
+				.filter((t) => t.type === 'upload' && (t.status === 'pending' || t.status === 'running'))
+				.length;
 		},
 
 		// --- 下载 ---

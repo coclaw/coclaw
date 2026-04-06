@@ -433,6 +433,7 @@ export const enMessages = {
 		overwrite: 'Overwrite',
 		skip: 'Skip',
 		applyToAll: 'Apply this choice to all conflicting files',
+		fileTooLarge: '"{name}" exceeds 1 GB and cannot be uploaded',
 	},
 	demo: {
 		title: 'Nuxt UI 4 Demo',
