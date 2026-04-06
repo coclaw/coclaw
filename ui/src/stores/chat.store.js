@@ -719,6 +719,10 @@ export function createChatStore(storeKey, opts = {}) {
 				this.__slashCommandResolve = settleResolve;
 				this.__slashCommandReject = settleReject;
 
+				// /new、/reset、/compact 等重量级命令需要更长超时
+				const heavyCmd = /^\/(new|reset|compact)\b/i.test(command);
+				const slashTimeout = heavyCmd ? 600_000 : 300_000;
+
 				this.__slashCommandTimer = setTimeout(() => {
 					const reject = this.__slashCommandReject;
 					this.__cleanupSlashCommand(conn);
@@ -728,7 +732,7 @@ export function createChatStore(storeKey, opts = {}) {
 						err.code = 'SLASH_CMD_TIMEOUT';
 						reject(err);
 					}
-				}, 30_000);
+				}, slashTimeout);
 
 				try {
 					await conn.request('chat.send', {

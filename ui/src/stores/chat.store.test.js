@@ -2749,10 +2749,27 @@ describe('useChatStore', () => {
 			expect(store.sending).toBe(true);
 			expect(store.messages.length).toBe(1); // 乐观 user message
 
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(300_000);
 			expect(store.sending).toBe(false);
 			expect(store.__slashCommandRunId).toBeNull();
 			expect(store.messages.length).toBe(0); // 乐观消息已清理
+
+			await expect(p).rejects.toThrow('slash command timeout');
+		});
+
+		test('/new 等重量级命令使用 600s 超时', async () => {
+			vi.useFakeTimers();
+			const p = store.sendSlashCommand('/new');
+			expect(store.sending).toBe(true);
+
+			// 300s 后不应超时（普通命令已超时，但重量级命令是 600s）
+			vi.advanceTimersByTime(300_000);
+			expect(store.__slashCommandRunId).not.toBeNull();
+
+			// 600s 后超时
+			vi.advanceTimersByTime(300_000);
+			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.sending).toBe(false);
 
 			await expect(p).rejects.toThrow('slash command timeout');
 		});
