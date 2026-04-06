@@ -117,6 +117,7 @@ import { useNotify } from '../composables/use-notify.js';
 import { cancelBindingCode, createBindingCode, waitBindingCode } from '../services/claws.api.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { openExternalUrl } from '../utils/external-url.js';
+import { writeClipboardText } from '../utils/clipboard.js';
 
 const CLOUD_DEPLOY_URL = 'https://cloud.tencent.com/act/cps/redirect?redirect=38041&cps_key=3ad323275dc8d2d3fb6efe6fc6a27794';
 
@@ -183,7 +184,7 @@ export default {
 	methods: {
 		async copyToClipboard(key, text) {
 			try {
-				await navigator.clipboard.writeText(text);
+				await writeClipboardText(text);
 				clearTimeout(this.copiedTimer);
 				this.copiedKey = key;
 				this.copiedTimer = setTimeout(() => { this.copiedKey = ''; }, 3000);

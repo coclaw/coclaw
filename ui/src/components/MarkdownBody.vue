@@ -5,6 +5,7 @@
 <script>
 import { renderMarkdown, reviseMdText } from '../utils/markdown-engine.js';
 import { openExternalUrl } from '../utils/external-url.js';
+import { writeClipboardText } from '../utils/clipboard.js';
 import { useNotify } from '../composables/use-notify.js';
 
 export default {
@@ -58,7 +59,7 @@ export default {
 
 				btn.onclick = () => {
 					const text = (codeEl.textContent ?? '').trim();
-					navigator.clipboard.writeText(text).then(() => {
+					writeClipboardText(text).then(() => {
 						btn.innerHTML = copiedLabel;
 						btn.style.padding = '0 8px';
 						btn.dataset.copied = 'true';

@@ -187,6 +187,7 @@ import clawAvatarSvg from '../assets/claw-avatars/openclaw.svg';
 import { formatFileSize } from '../utils/file-helper.js';
 import { buildCoclawUrl } from '../services/coclaw-file.js';
 import { useNotify } from '../composables/use-notify.js';
+import { writeClipboardText } from '../utils/clipboard.js';
 
 export default {
 	name: 'ChatMsgItem',
@@ -312,7 +313,7 @@ export default {
 		},
 		copyText(text) {
 			if (!text) return;
-			navigator.clipboard.writeText(text).then(() => {
+			writeClipboardText(text).then(() => {
 				this.copied = true;
 				setTimeout(() => {
 					this.copied = false;

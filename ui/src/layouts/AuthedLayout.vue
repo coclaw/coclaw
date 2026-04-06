@@ -88,13 +88,17 @@ export default {
 			// 原生壳下 section 需 min-h-0 以允许 flex 子项内部滚动
 			if (isCapacitorApp) cls.push('min-h-0');
 			if (!isCapacitorApp) cls.push('min-h-screen');
-			// 顶部安全区域（状态栏），始终生效
-			cls.push('pt-[var(--safe-area-inset-top)] md:pt-0');
-			// 底部安全区域：有底部导航时额外加 tab 高度
+			// 顶部/底部安全区域：始终保留，不按断点清除。
+			// index.html 声明了 viewport-fit=cover，浏览器会将内容延伸至安全区内，
+			// 由页面自行通过 env(safe-area-inset-*) 让出空间。在无安全区的环境（桌面浏览器）
+			// 下 CSS 变量值为 0，不产生多余间距；在有安全区的环境（Capacitor 原生壳、
+			// 移动端浏览器、平板横屏）下正确避让状态栏/导航栏。
+			cls.push('pt-[var(--safe-area-inset-top)]');
+			// 底部安全区域：有底部导航时额外加 tab 高度（md 以上底部导航隐藏，只保留安全区）
 			if (this.showMobileNav) {
-				cls.push('pb-[calc(3.25rem+var(--safe-area-inset-bottom))] md:pb-0');
+				cls.push('pb-[calc(3.25rem+var(--safe-area-inset-bottom))] md:pb-[var(--safe-area-inset-bottom)]');
 			} else {
-				cls.push('pb-[var(--safe-area-inset-bottom)] md:pb-0');
+				cls.push('pb-[var(--safe-area-inset-bottom)]');
 			}
 			return cls.join(' ');
 		},

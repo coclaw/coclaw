@@ -26,6 +26,7 @@ import { useAuthStore } from '../../stores/auth.store.js';
 import { useNotify } from '../../composables/use-notify.js';
 import { getUserDisplayName, getUserLoginName } from '../../utils/user-profile.js';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
+import { writeClipboardText } from '../../utils/clipboard.js';
 import UserInfoRows from './UserInfoRows.vue';
 
 export default {
@@ -76,7 +77,7 @@ export default {
 		},
 		async onCopyLoginName() {
 			try {
-				await navigator.clipboard.writeText(this.loginName);
+				await writeClipboardText(this.loginName);
 				this.notify.success(this.$t('profile.loginNameCopied'));
 			} catch {
 				this.notify.error(this.$t('profile.copyFailed'));

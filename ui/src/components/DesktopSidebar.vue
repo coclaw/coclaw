@@ -1,6 +1,6 @@
 <template>
 	<aside
-		class="sticky top-0 hidden h-screen flex-shrink-0 border-r border-default bg-elevated text-highlighted md:flex md:flex-col"
+		class="sticky top-0 hidden h-screen flex-shrink-0 border-r border-default bg-elevated text-highlighted pt-[var(--safe-area-inset-top)] pb-[var(--safe-area-inset-bottom)] md:flex md:flex-col"
 		:style="{ width: uiStore.drawerWidth + 'px' }"
 	>
 		<div class="flex min-h-0 flex-1 flex-col">

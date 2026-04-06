@@ -1,5 +1,5 @@
 <template>
-	<main class="flex min-h-screen items-center justify-center bg-default px-4 py-8 text-highlighted">
+	<main class="flex min-h-screen items-center justify-center bg-default px-4 py-8 pt-[max(2rem,var(--safe-area-inset-top))] pb-[max(2rem,var(--safe-area-inset-bottom))] text-highlighted">
 		<section class="w-full max-w-sm rounded-2xl border border-default bg-elevated p-5 shadow-xl" data-testid="login-page">
 			<h1 class="text-xl font-semibold">{{ $t('login.title') }}</h1>
 
