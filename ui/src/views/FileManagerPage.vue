@@ -171,7 +171,7 @@
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
 					<UButton variant="ghost" color="neutral" @click="deleteFileOpen = false">{{ $t('common.cancel') }}</UButton>
-					<UButton color="error" :disabled="deleteFileProtectedDesc && !deleteFileChecked" :loading="deleting" @click="onConfirmDeleteFile">{{ $t('common.confirm') }}</UButton>
+					<UButton color="error" :disabled="!!deleteFileProtectedDesc && !deleteFileChecked" :loading="deleting" @click="onConfirmDeleteFile">{{ $t('common.confirm') }}</UButton>
 				</div>
 			</template>
 		</UModal>
