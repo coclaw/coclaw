@@ -561,6 +561,9 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 				const staleSet = clawSockets.get(clawId);
 				if (staleSet && staleSet.size > 0) {
 					const stale = [...staleSet];
+					// 同步清除旧 socket，防止 forwardToClaw 广播到已淘汰的连接
+					// （terminate 后的 close 事件是异步的，不能依赖它来移除）
+					staleSet.clear();
 					for (const old of stale) {
 						wsLogInfo(`closing stale claw ws for clawId=${clawId}`);
 						try { old.terminate(); } catch {}

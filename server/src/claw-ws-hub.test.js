@@ -1326,6 +1326,45 @@ test('forwardToClaw: 空 set 返回 false', () => {
 	clawSockets.delete('empty-bot');
 });
 
+// --- forwardToClaw: stale socket 同步清除后不广播 ---
+
+test('forwardToClaw: stale socket 被同步清除后，只发送到新 socket', () => {
+	// 模拟：旧 socket 仍在 Set 中（terminate 后 close 事件尚未触发）
+	const staleWs = createMockWs();
+	const newWs = createMockWs();
+
+	// 手动构造：Set 中同时有旧和新 socket
+	const set = new Set([staleWs, newWs]);
+	clawSockets.set('dup-bot', set);
+
+	forwardToClaw('dup-bot', { type: 'rtc:offer', payload: { sdp: 'test' } });
+
+	// 两个都会收到（这是修复前的行为，此处验证 forwardToClaw 本身的广播逻辑）
+	assert.equal(staleWs.sent.length, 1);
+	assert.equal(newWs.sent.length, 1);
+	cleanupSockets('dup-bot');
+});
+
+test('stale socket 清除：registerSocket 前 staleSet.clear() 确保只保留新 socket', () => {
+	// 模拟修复后的流程：先 clear 旧 socket 再 register 新的
+	const staleWs = createMockWs();
+	setupSockets('clear-bot', { bot: [staleWs] });
+
+	// 模拟新连接到来时的清除逻辑
+	const staleSet = clawSockets.get('clear-bot');
+	assert.equal(staleSet.size, 1);
+	staleSet.clear(); // 同步清除
+
+	const newWs = createMockWs();
+	registerSocket(clawSockets, 'clear-bot', newWs);
+
+	// forwardToClaw 应只发到新 socket
+	forwardToClaw('clear-bot', { type: 'rtc:offer', payload: { sdp: 'new' } });
+	assert.equal(staleWs.sent.length, 0);
+	assert.equal(newWs.sent.length, 1);
+	cleanupSockets('clear-bot');
+});
+
 // --- CLAW_OFFLINE_GRACE_MS 常量验证 ---
 
 test('CLAW_OFFLINE_GRACE_MS 为 5000ms', () => {

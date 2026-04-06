@@ -206,14 +206,23 @@ dc.onbufferedamountlow = () => stream.resume();
 
 ## 发现的附带问题
 
-### SSE 导航断连（待修复）
+### 信令 answer 重复转发（已修复）
 
-每次 SPA 路由导航（如 /home → /files）时：
-1. SSE 连接断开
-2. SSE 重连 → 新 `claw.snapshot` → `applySnapshot`
-3. 触发 RTC 重建（旧 PC 关闭，新 PC 创建）
+Plugin 重连时，server 端 `forwardToClaw()` 会向同一 clawId 的所有 WebSocket 连接广播消息。旧 socket 被 `terminate()` 后依赖异步 `close` 事件才从 Set 中移除，而新 socket 已同步注册——在此窗口期，一个 offer 会被广播到多个 socket，产生多个 answer。
 
-这导致每次页面切换都有一次不必要的 RTC 重建。重建后的第一个连接在有文件传输时可能不稳定。
+**表现**：UI 收到多个 answer，第 1 个成功（PC → stable），后续 `setRemoteDescription` 报 `Called in wrong state: stable`。
+
+**修复**：`claw-ws-hub.js` 中，在 `registerSocket` 前同步 `staleSet.clear()` 清除旧 socket，而非依赖异步 close 事件。
+
+### ~~SSE 导航断连~~ 误判，已排除
+
+经排查，SPA 路由导航**不会**导致 SSE 断连。SSE 在 `AuthedLayout.setup()` 中创建，所有认证页面都是其子路由，导航只替换 `<router-view>` 子组件，不卸载 layout。
+
+日志中观察到的 RTC 重建实际由以下原因触发：
+- **移动端 App 前台恢复**（`app:foreground`）：后台超过 30s（`CONSENT_EXPIRY_MS`）时强制重建所有 RTC 连接
+- **网络状态变化**（`network:online`）：无条件强制重建
+
+这些是 `SignalingConnection.__handleForegroundResume()` → `claws.store.__checkAndRecover()` → `__ensureRtc({ forceRebuild: true })` 的正常路径，不是 bug。
 
 ## 未来优化方向
 
