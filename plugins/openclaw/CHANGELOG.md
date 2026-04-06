@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.12.1
+
+### Patch Changes
+
+- fix: upgrade node-datachannel to v0.32.2, add backpressure and diagnostic logging to DC file upload
+
 ## 0.12.0
 
 ### Minor Changes
