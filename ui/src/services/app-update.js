@@ -21,7 +21,7 @@ let reloadTimer = null;
 export function startUpdateCheck() {
 	if (started || import.meta.env.DEV) return;
 	started = true;
-	// 首次延迟一个周期再检测，避免刚加载就 fetch
+	console.log('[app-update] started, current=%s, poll=%ds', __APP_VERSION__, POLL_INTERVAL_MS / 1000);
 	setTimeout(pollVersion, POLL_INTERVAL_MS);
 }
 
@@ -34,11 +34,12 @@ async function pollVersion() {
 		if (res.ok) {
 			const data = await res.json();
 			if (data.version && data.version !== __APP_VERSION__) {
-				console.log('[app-update] new version detected: %s → %s', __APP_VERSION__, data.version);
+				console.log('[app-update] update available: %s → %s', __APP_VERSION__, data.version);
 				updateAvailable = true;
 				scheduleReload();
 				return; // 停止轮询
 			}
+			console.debug('[app-update] version unchanged: %s', data.version);
 		}
 	} catch (err) {
 		console.warn('[app-update] poll failed:', err.message || err);
@@ -82,8 +83,11 @@ function scheduleReload() {
  */
 function tryReload() {
 	if (!updateAvailable) return false;
-	if (isReloadBlocked()) return false;
-	console.log('[app-update] reloading for update');
+	if (isReloadBlocked()) {
+		console.debug('[app-update] reload blocked: busy');
+		return false;
+	}
+	console.log('[app-update] reloading now');
 	location.reload();
 	return true;
 }
