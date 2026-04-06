@@ -62,6 +62,7 @@
 import WaveSurfer from 'wavesurfer.js';
 import RecordMod from 'wavesurfer.js/dist/plugins/record.esm.js';
 import { queryMicPerm, getPrefAudioType } from '../utils/media-helper.js';
+import { remoteLog } from '../services/remote-log.js';
 import { MAX_RECORD_DURATION } from '../utils/voice-recorder.js';
 import { useNotify } from '../composables/use-notify.js';
 
@@ -159,6 +160,7 @@ export default {
 				}, AUTH_HINT_DELAY);
 
 				this.mimeType = getPrefAudioType();
+				remoteLog(`voice.rec.start mimeType=${this.mimeType}`);
 
 				this.wavesurfer = WaveSurfer.create({
 					container: this.$refs.waveContainer,
