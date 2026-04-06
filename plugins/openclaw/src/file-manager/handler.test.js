@@ -1230,6 +1230,36 @@ test('handleFileChannel PUT: WriteStream ENOSPC 错误触发 DISK_FULL', async (
 	}
 });
 
+test('handleFileChannel PUT: WriteStream 错误无 code 时用 message', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const { Writable } = await import('node:stream');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: () => new Writable({
+					write(chunk, enc, cb) { cb(new Error('unknown write failure')); },
+				}),
+			},
+		});
+		const dc = createMockDC('file:no-code-err');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'nocode.txt', size: 5 }) });
+		await new Promise((r) => setTimeout(r, 50));
+		dc.onmessage({ data: Buffer.from('hello') });
+		await new Promise((r) => setTimeout(r, 200));
+
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const errMsg = strings.find((s) => s.ok === false);
+		assert.ok(errMsg);
+		assert.equal(errMsg.error.code, 'WRITE_FAILED');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('handleFileChannel PUT: DC 在 ws.end 回调期间已关闭', async () => {
 	const dir = await makeTmpDir();
 	try {
@@ -1603,6 +1633,71 @@ test('handleFileChannel PUT: 超限发送后 DC close 不崩溃', async () => {
 		await new Promise((r) => setTimeout(r, 100));
 
 		// 不应崩溃
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: SIZE_EXCEEDED 后 drainLoop 不崩溃', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:exceed-drain');
+		handler.handleFileChannel(dc);
+
+		// 声明 size=10 但发送 20 字节（分两个 chunk）
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'exceed.txt', size: 10 }) });
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 第一个 chunk 入队并触发 drainLoop（通过 setImmediate）
+		dc.onmessage({ data: Buffer.alloc(5, 'a') });
+		// 第二个 chunk 触发 SIZE_EXCEEDED → ws.destroy()
+		dc.onmessage({ data: Buffer.alloc(6, 'b') });
+
+		// 等待 drainLoop 的 setImmediate 执行（ws 已被 destroy，不应崩溃）
+		await new Promise((r) => setTimeout(r, 200));
+
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const errMsg = strings.find((s) => s.error?.code === 'SIZE_EXCEEDED');
+		assert.ok(errMsg);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: drainLoop 中 ws.write 抛异常不崩溃', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const { Writable } = await import('node:stream');
+		let writeCount = 0;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: () => new Writable({
+					write(chunk, enc, cb) {
+						writeCount++;
+						if (writeCount >= 2) throw new Error('stream destroyed');
+						cb();
+					},
+				}),
+			},
+		});
+		const dc = createMockDC('file:throw-drain');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'throw.txt', size: 10 }) });
+		await new Promise((r) => setTimeout(r, 50));
+
+		dc.onmessage({ data: Buffer.alloc(5, 'x') });
+		dc.onmessage({ data: Buffer.alloc(5, 'y') });
+
+		// 等待 drainLoop 执行并处理异常
+		await new Promise((r) => setTimeout(r, 300));
+		// 不应崩溃 gateway
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -2012,6 +2107,113 @@ test('handleFileChannel POST: topic-files 路径', async () => {
 		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
 		assert.ok(result);
 		assert.match(result.path, /\.coclaw\/topic-files\/a1b2c3d4-uuid\/report-[0-9a-f]{4}\.pdf$/);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// --- 诊断日志相关覆盖 ---
+
+test('handleFileChannel PUT: size=0 空文件上传', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:empty-file');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'empty.txt', size: 0 }) });
+		await new Promise((r) => setTimeout(r, 50));
+
+		const ready = JSON.parse(dc.__sent[0]);
+		assert.equal(ready.ok, true);
+
+		// 不发送 binary 数据，直接发送 done
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: 0 }) });
+		await new Promise((r) => setTimeout(r, 200));
+
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
+		assert.ok(result);
+		assert.equal(result.bytes, 0);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: connId 参数传递到 remoteLog', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const content = Buffer.from('with-conn-id');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:connid-test');
+		handler.handleFileChannel(dc, 'c_test123');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'conn.txt', size: content.length }) });
+		await new Promise((r) => setTimeout(r, 50));
+		dc.onmessage({ data: content });
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
+		await new Promise((r) => setTimeout(r, 200));
+
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
+		assert.ok(result);
+		assert.equal(result.bytes, content.length);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: 大文件触发进度日志和背压计数', async () => {
+	const dir = await makeTmpDir();
+	try {
+		// 创建 100 个 16KB chunk = 1.6MB，足以触发 25%/50%/75% 进度
+		const chunkSize = 16_384;
+		const totalChunks = 100;
+		const totalSize = chunkSize * totalChunks;
+		const chunk = Buffer.alloc(chunkSize, 0x41);
+
+		// 注入 WriteStream，write() 返回 false 模拟背压
+		let writeCount = 0;
+		const fsSync = await import('node:fs');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path, opts) => {
+					const ws = fsSync.default.createWriteStream(path, opts);
+					const origWrite = ws.write.bind(ws);
+					ws.write = (data) => {
+						writeCount++;
+						origWrite(data);
+						return false; // 模拟背压
+					};
+					return ws;
+				},
+			},
+		});
+		const dc = createMockDC('file:progress-test');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'big.bin', size: totalSize }) });
+		await new Promise((r) => setTimeout(r, 50));
+
+		for (let i = 0; i < totalChunks; i++) {
+			dc.onmessage({ data: chunk });
+		}
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: totalSize }) });
+		await new Promise((r) => setTimeout(r, 500));
+
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
+		assert.ok(result);
+		assert.equal(result.bytes, totalSize);
+		assert.ok(writeCount >= totalChunks);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import nodePath from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
+import { remoteLog } from '../remote-log.js';
 
 // --- 常量 ---
 
@@ -312,8 +313,9 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	/**
 	 * 处理 file:<transferId> DataChannel
 	 * @param {object} dc - werift DataChannel
+	 * @param {string} [connId] - 所属 PeerConnection 的连接 ID
 	 */
-	function handleFileChannel(dc) {
+	function handleFileChannel(dc, connId) {
 		let requestTimer = setTimeout(() => {
 			try {
 				dc.send(JSON.stringify({
@@ -353,12 +355,12 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 				});
 			} else if (req.method === 'PUT') {
 				/* c8 ignore next 3 -- handlePut 内部已完整处理异常，此 catch 纯防御 */
-				handlePut(dc, req).catch((err) => {
+				handlePut(dc, req, connId).catch((err) => {
 					log.warn?.(`[coclaw/file] PUT error: ${err.message}`);
 				});
 			} else if (req.method === 'POST') {
 				/* c8 ignore next 3 -- handlePost 内部已完整处理异常，此 catch 纯防御 */
-				handlePost(dc, req).catch((err) => {
+				handlePost(dc, req, connId).catch((err) => {
 					log.warn?.(`[coclaw/file] POST error: ${err.message}`);
 				});
 			} else {
@@ -456,7 +458,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		});
 	}
 
-	async function handlePut(dc, req) {
+	async function handlePut(dc, req, connId) {
 		let workspaceDir, resolved;
 		try {
 			const agentId = req.agentId?.trim?.() || 'main';
@@ -466,10 +468,10 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			sendError(dc, err.code ?? 'INTERNAL_ERROR', err.message);
 			return;
 		}
-		await receiveUpload(dc, req, resolved);
+		await receiveUpload(dc, req, resolved, undefined, connId);
 	}
 
-	async function handlePost(dc, req) {
+	async function handlePost(dc, req, connId) {
 		let workspaceDir, dirResolved;
 		try {
 			const agentId = req.agentId?.trim?.() || 'main';
@@ -508,7 +510,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		const resolved = nodePath.join(dirResolved, uniqueName);
 		// 计算相对于 workspace 的路径，作为响应中的 path
 		const relativePath = nodePath.relative(workspaceDir, resolved);
-		await receiveUpload(dc, req, resolved, relativePath);
+		await receiveUpload(dc, req, resolved, relativePath, connId);
 	}
 
 	/**
@@ -517,8 +519,9 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	 * @param {object} req - 请求对象（含 size）
 	 * @param {string} resolved - 目标文件绝对路径
 	 * @param {string} [relativePath] - POST 时附带的相对路径（响应中返回）
+	 * @param {string} [connId] - 所属连接 ID
 	 */
-	async function receiveUpload(dc, req, resolved, relativePath) {
+	async function receiveUpload(dc, req, resolved, relativePath, connId) {
 		const declaredSize = req.size;
 		if (!Number.isFinite(declaredSize) || declaredSize < 0) {
 			sendError(dc, 'INVALID_INPUT', 'size must be a non-negative number');
@@ -550,6 +553,12 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			return;
 		}
 
+		const logTag = connId ? `conn=${connId} ` : '';
+		remoteLog(`file.up.start ${logTag}id=${transferId} method=${req.method} size=${declaredSize}`);
+		const startTime = Date.now();
+		let nextLogAt = declaredSize > 0 ? Math.floor(declaredSize * 0.25) : Infinity;
+		let logStep = 1; // 25% → 50% → 75%
+
 		// 发送就绪信号
 		try {
 			dc.send(JSON.stringify({ ok: true }));
@@ -557,12 +566,110 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			// WriteStream 可能尚未完成文件创建，等 close 后再清理
 			ws.on('close', () => safeUnlink(tmpPath));
 			ws.destroy();
+			remoteLog(`file.up.abort ${logTag}id=${transferId} reason=dc-send-failed`);
 			return;
 		}
 
 		let receivedBytes = 0;
 		let doneReceived = false;
 		let dcClosed = false;
+		let wsBackpressureCount = 0;
+		let wsError = false;
+		let finishing = false;
+
+		// --- 受控写入：中间缓冲 + drain 循环 ---
+		const pendingQueue = [];
+		let draining = false;
+
+		function scheduleDrain() {
+			if (draining) return;
+			draining = true;
+			setImmediate(drainLoop);
+		}
+
+		function drainLoop() {
+			if (wsError || dcClosed) { draining = false; return; }
+			const chunk = pendingQueue.shift();
+			if (!chunk) {
+				draining = false;
+				// 队列排空且已收到 done → 结束写入
+				if (doneReceived) finishUpload();
+				return;
+			}
+			let ok;
+			try {
+				ok = ws.write(chunk);
+			} catch (err) {
+				// ws 可能已被销毁（如 SIZE_EXCEEDED 路径竞态），防止 gateway 崩溃
+				wsError = true;
+				draining = false;
+				pendingQueue.length = 0;
+				log.warn?.(`[coclaw/file] drainLoop write error: ${err.message}`);
+				ws.destroy();
+				if (!dcClosed) sendError(dc, 'WRITE_FAILED', err.message);
+				safeUnlink(tmpPath);
+				const elapsed = Date.now() - startTime;
+				remoteLog(`file.up.fail ${logTag}id=${transferId} reason=drain-write-error err=${err.message} received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms`);
+				return;
+			}
+			if (!ok) {
+				wsBackpressureCount++;
+				// 等待 drain 事件后再继续（尊重磁盘 I/O 速度）
+				ws.once('drain', () => setImmediate(drainLoop));
+			} else {
+				// 每次写入后让出 CPU，防止事件循环饥饿
+				setImmediate(drainLoop);
+			}
+		}
+
+		function finishUpload() {
+			if (finishing) return;
+			finishing = true;
+			ws.end(async () => {
+				const elapsed = Date.now() - startTime;
+				if (dcClosed) {
+					safeUnlink(tmpPath);
+					remoteLog(`file.up.fail ${logTag}id=${transferId} reason=dc-closed-before-flush received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
+					return;
+				}
+				const valid = receivedBytes === declaredSize;
+				if (!valid) {
+					try {
+						dc.send(JSON.stringify({ ok: false, error: { code: 'WRITE_FAILED', message: `Size mismatch: expected ${declaredSize}, got ${receivedBytes}` } }));
+					/* c8 ignore next */
+					} catch { /* ignore */ }
+					safeUnlink(tmpPath);
+					/* c8 ignore next */
+					try { dc.close(); } catch { /* ignore */ }
+					remoteLog(`file.up.fail ${logTag}id=${transferId} reason=size-mismatch expected=${declaredSize} got=${receivedBytes} elapsed=${elapsed}ms`);
+					return;
+				}
+				// 先 rename，再发成功响应（避免 rename 失败时 UI 误认为成功）
+				try {
+					await _rename(tmpPath, resolved);
+				} catch (renameErr) {
+					log.warn?.(`[coclaw/file] rename failed: ${renameErr.message}`);
+					/* c8 ignore next 3 -- dc.send/close 失败属罕见竞态 */
+					try {
+						dc.send(JSON.stringify({ ok: false, error: { code: 'WRITE_FAILED', message: `rename failed: ${renameErr.message}` } }));
+					} catch { /* ignore */ }
+					safeUnlink(tmpPath);
+					/* c8 ignore next */
+					try { dc.close(); } catch { /* ignore */ }
+					remoteLog(`file.up.fail ${logTag}id=${transferId} reason=rename-failed elapsed=${elapsed}ms`);
+					return;
+				}
+				const result = { ok: true, bytes: receivedBytes };
+				if (relativePath) result.path = relativePath;
+				try {
+					dc.send(JSON.stringify(result));
+				/* c8 ignore next */
+				} catch { /* ignore */ }
+				/* c8 ignore next */
+				try { dc.close(); } catch { /* ignore */ }
+				remoteLog(`file.up.ok ${logTag}id=${transferId} bytes=${receivedBytes} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
+			});
+		}
 
 		// 替换原始 onmessage（文件传输模式）
 		dc.onmessage = (event) => {
@@ -571,54 +678,19 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 				try { msg = JSON.parse(event.data); } catch { return; }
 				if (msg.done) {
 					doneReceived = true;
-					ws.end(async () => {
-						if (dcClosed) {
-							safeUnlink(tmpPath);
-							return;
-						}
-						const valid = receivedBytes === declaredSize;
-						if (!valid) {
-							try {
-								dc.send(JSON.stringify({ ok: false, error: { code: 'WRITE_FAILED', message: `Size mismatch: expected ${declaredSize}, got ${receivedBytes}` } }));
-							/* c8 ignore next */
-							} catch { /* ignore */ }
-							safeUnlink(tmpPath);
-							/* c8 ignore next */
-							try { dc.close(); } catch { /* ignore */ }
-							return;
-						}
-						// 先 rename，再发成功响应（避免 rename 失败时 UI 误认为成功）
-						try {
-							await _rename(tmpPath, resolved);
-						} catch (renameErr) {
-							log.warn?.(`[coclaw/file] rename failed: ${renameErr.message}`);
-							/* c8 ignore next 3 -- dc.send/close 失败属罕见竞态 */
-							try {
-								dc.send(JSON.stringify({ ok: false, error: { code: 'WRITE_FAILED', message: `rename failed: ${renameErr.message}` } }));
-							} catch { /* ignore */ }
-							safeUnlink(tmpPath);
-							/* c8 ignore next */
-							try { dc.close(); } catch { /* ignore */ }
-							return;
-						}
-						const result = { ok: true, bytes: receivedBytes };
-						if (relativePath) result.path = relativePath;
-						try {
-							dc.send(JSON.stringify(result));
-						/* c8 ignore next */
-						} catch { /* ignore */ }
-						/* c8 ignore next */
-						try { dc.close(); } catch { /* ignore */ }
-					});
+					// 队列已空则立即结束，否则等 drainLoop 排空后处理
+					if (pendingQueue.length === 0 && !draining) finishUpload();
 				}
 			} else {
-				// binary 数据帧
+				// binary 数据帧 — 入队，由 drainLoop 按节奏写入
 				const chunk = event.data;
 				const len = chunk.byteLength ?? chunk.length ?? 0;
 				receivedBytes += len;
 
 				// 接收端超限防护
 				if (receivedBytes > MAX_UPLOAD_SIZE || receivedBytes > declaredSize) {
+					wsError = true;
+					pendingQueue.length = 0;
 					ws.destroy();
 					safeUnlink(tmpPath);
 					try {
@@ -628,28 +700,50 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 						}));
 					} catch { /* ignore */ }
 					try { dc.close(); } catch { /* ignore */ }
+					remoteLog(`file.up.reject ${logTag}id=${transferId} reason=size-exceeded received=${receivedBytes}`);
 					return;
 				}
-				ws.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+
+				pendingQueue.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				scheduleDrain();
+
+				// 进度日志（25% / 50% / 75%）
+				if (receivedBytes >= nextLogAt && logStep <= 3) {
+					remoteLog(`file.up.progress ${logTag}id=${transferId} ${logStep * 25}% received=${receivedBytes}/${declaredSize} bp=${wsBackpressureCount}`);
+					logStep++;
+					nextLogAt = declaredSize > 0 ? Math.floor(declaredSize * logStep * 0.25) : Infinity;
+				}
 			}
 		};
 
 		dc.onclose = () => {
 			dcClosed = true;
-			if (!doneReceived) {
+			draining = false;
+			pendingQueue.length = 0;
+			if (doneReceived) {
+				// done 已收到但 drain 未完成 — finishUpload 中会检测 dcClosed 并清理 tmp
+				if (!finishing) finishUpload();
+			} else {
 				ws.destroy();
 				safeUnlink(tmpPath);
+				const elapsed = Date.now() - startTime;
+				remoteLog(`file.up.fail ${logTag}id=${transferId} reason=dc-closed received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
 			}
 		};
 
 		// WriteStream 错误处理
 		ws.on('error', (err) => {
+			wsError = true;
+			draining = false;
+			pendingQueue.length = 0;
 			log.warn?.(`[coclaw/file] write stream error: ${err.message}`);
 			if (!dcClosed) {
 				const code = err.code === 'ENOSPC' ? 'DISK_FULL' : 'WRITE_FAILED';
 				sendError(dc, code, err.message);
 			}
 			safeUnlink(tmpPath);
+			const elapsed = Date.now() - startTime;
+			remoteLog(`file.up.fail ${logTag}id=${transferId} reason=write-error err=${err.code || err.message} received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms`);
 		});
 	}
 

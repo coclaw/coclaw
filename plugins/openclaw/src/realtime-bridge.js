@@ -232,8 +232,8 @@ export class RealtimeBridge {
 				this.__fileHandler.handleRpcRequest(payload, sendFn)
 					.catch((err) => this.logger.warn?.(`[coclaw/file] rpc error: ${err.message}`));
 			},
-			onFileChannel: (dc) => {
-				this.__fileHandler.handleFileChannel(dc);
+			onFileChannel: (dc, connId) => {
+				this.__fileHandler.handleFileChannel(dc, connId);
 			},
 			PeerConnection,
 			logger: this.logger,
