@@ -2,11 +2,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import nodePath from 'node:path';
 import os from 'node:os';
-import test from 'node:test';
+import { after, test } from 'node:test';
 
 import plugin, { __resetPluginVersion } from './index.js';
 import { createMockServer } from './src/mock-server.helper.js';
 import { setRuntime } from './src/runtime.js';
+import { stopRealtimeBridge } from './src/realtime-bridge.js';
+
+// bridgeSvc.start() 触发真实 preloadNdc → initLogger TSFN，需在文件结束时清理
+after(async () => {
+	await stopRealtimeBridge({ forceCleanup: true });
+	try {
+		const ndc = await import('node-datachannel');
+		const cleanup = ndc.cleanup ?? ndc.default?.cleanup;
+		if (typeof cleanup === 'function') cleanup();
+	} catch { /* ndc 未安装则无需 cleanup */ }
+});
 
 /** 构造包含 runtime mock 的最小 api 对象 */
 function createMockApi(handlers, extras = {}) {

@@ -1033,12 +1033,22 @@ export async function restartRealtimeBridge(opts) {
 	await singleton.start(opts);
 }
 
-export async function stopRealtimeBridge() {
+/**
+ * @param {object} [opts]
+ * @param {boolean} [opts.forceCleanup] - 调用 ndc cleanup() 释放 native TSFN（仅测试用）。
+ *   生产环境不调用：cleanup() 会 join native threads（无活跃 PC 时通常 sub-second，
+ *   但 worst-case 阻塞 10s），且 gateway 通过 process.exit() 退出无需依赖事件循环排空。
+ */
+export async function stopRealtimeBridge({ forceCleanup = false } = {}) {
 	if (!singleton) {
 		return;
 	}
+	const cleanupFn = forceCleanup ? singleton.__ndcCleanup : null;
 	await singleton.stop();
 	singleton = null; // 置 null 后须通过 restartRealtimeBridge 重建
+	if (typeof cleanupFn === 'function') {
+		cleanupFn();
+	}
 }
 
 export async function waitForSessionsReady() {

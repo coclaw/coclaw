@@ -2,13 +2,25 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import nodePath from 'node:path';
 import os from 'node:os';
-import test from 'node:test';
+import { after, test } from 'node:test';
 
 import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
 import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
+
+// singleton 测试会调用真实 preloadNdc → initLogger 注册 native TSFN，
+// 阻止进程退出。finally 中的 stop 不带 forceCleanup，cleanup ref 已丢失，
+// 需直接调 ndc cleanup 兜底释放 TSFN。
+after(async () => {
+	await stopRealtimeBridge({ forceCleanup: true });
+	try {
+		const ndc = await import('node-datachannel');
+		const cleanup = ndc.cleanup ?? ndc.default?.cleanup;
+		if (typeof cleanup === 'function') cleanup();
+	} catch { /* ndc 未安装则无需 cleanup */ }
+});
 
 class FakeWebSocket {
 	static instances = [];
@@ -160,6 +172,31 @@ test('restartRealtimeBridge should re-create singleton after stop (bind regressi
 		globalThis.WebSocket = old;
 		await stopRealtimeBridge();
 	}
+});
+
+test('stopRealtimeBridge({ forceCleanup: true }) should call __ndcCleanup', async () => {
+	await writeCfg({ token: '' });
+	const logger = noopLogger();
+	const old = globalThis.WebSocket;
+	delete globalThis.WebSocket;
+	try {
+		const opts = { logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } };
+		await restartRealtimeBridge(opts);
+		// restartRealtimeBridge 后 singleton 的 __ndcCleanup 取决于 preload 结果
+		// （可能为 null 或真实 cleanup）。再次 stop 并 forceCleanup 应不抛异常。
+		await stopRealtimeBridge({ forceCleanup: true });
+	}
+	finally {
+		globalThis.WebSocket = old;
+		await stopRealtimeBridge();
+	}
+});
+
+test('stopRealtimeBridge({ forceCleanup: true }) with no singleton should no-op', async () => {
+	// 确保 singleton 为 null
+	await stopRealtimeBridge();
+	// forceCleanup 对空 singleton 不应抛异常
+	await stopRealtimeBridge({ forceCleanup: true });
 });
 
 test('restartRealtimeBridge should replace existing singleton when already running', async () => {

@@ -9,6 +9,7 @@ import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.j
 import { createMockServer } from './mock-server.helper.js';
 import { setRuntime } from './runtime.js';
 import { getBindingsPath, readConfig } from './config.js';
+import { stopRealtimeBridge } from './realtime-bridge.js';
 
 test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 	const prevCwd = process.cwd();
@@ -70,6 +71,9 @@ test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 		assert.ok(cfgAfterEnroll.clawId);
 	}
 	finally {
+		// enroll 的 fire-and-forget 路径会调 restartRealtimeBridge → preloadNdc，
+		// initLogger 注册的 native TSFN 会阻止进程退出。forceCleanup 释放该 TSFN。
+		await stopRealtimeBridge({ forceCleanup: true });
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 		await mock.close();
