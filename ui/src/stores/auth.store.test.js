@@ -286,7 +286,7 @@ describe('auth store', () => {
 		const agentsStore = useAgentsStore();
 		const topicsStore = useTopicsStore();
 		sessionsStore.items = [{ sessionId: 's1' }];
-		clawsStore.items = [{ id: 'b1' }];
+		clawsStore.byId = { b1: { id: 'b1' } };
 		agentsStore.byClaw = { b1: { agents: [{ id: 'a1' }], defaultId: 'main', loading: false, fetched: true } };
 		topicsStore.byId = { t1: { topicId: 't1', agentId: 'main', title: 'test', createdAt: 1, clawId: 'b1' } };
 

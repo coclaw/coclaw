@@ -138,7 +138,7 @@ test('successful rename calls updateTopic and shows notify', async () => {
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, clawId: 'bot-1' }];
+	store.byId = { t1: { topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, clawId: 'bot-1' } };
 
 	wrapper.vm.renameOpen = true;
 	wrapper.vm.renameValue = '新名称';
@@ -154,7 +154,7 @@ test('failed rename shows error notify', async () => {
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, clawId: 'bot-1' }];
+	store.byId = { t1: { topicId: 't1', agentId: 'main', title: 'Old', createdAt: 100, clawId: 'bot-1' } };
 
 	wrapper.vm.renameOpen = true;
 	wrapper.vm.renameValue = '新名称';
@@ -178,7 +178,7 @@ test('successful delete calls deleteTopic, shows notify and emits deleted', asyn
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
+	store.byId = { t1: { topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' } };
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
@@ -199,7 +199,7 @@ test('deleting current topic navigates to default route', async () => {
 	wrapper.vm.$router = { replace: mockReplace };
 
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
+	store.byId = { t1: { topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' } };
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
@@ -217,7 +217,7 @@ test('deleting non-current topic does not navigate', async () => {
 	wrapper.vm.$router = { replace: mockReplace };
 
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
+	store.byId = { t1: { topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' } };
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
@@ -231,7 +231,7 @@ test('failed delete shows error notify', async () => {
 
 	const wrapper = createWrapper();
 	const store = useTopicsStore();
-	store.items = [{ topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' }];
+	store.byId = { t1: { topicId: 't1', agentId: 'main', title: 'X', createdAt: 100, clawId: 'bot-1' } };
 
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
