@@ -368,7 +368,19 @@ describe('SignalingConnection – 前台恢复', () => {
 		expect(events.length).toBe(0);
 	});
 
-	test('network:online → 全平台发出 foreground-resume', () => {
+	test('network:online → 全平台发出 foreground-resume（含 typeChanged）', () => {
+		platformMod.isCapacitorApp = false;
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(1000);
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
+		expect(events.length).toBe(1);
+		expect(events[0].source).toBe('network:online');
+		expect(events[0].typeChanged).toBe(true);
+	});
+
+	test('network:online 无 detail → typeChanged 为 false', () => {
 		platformMod.isCapacitorApp = false;
 		const { conn } = makeConnected();
 		const events = [];
@@ -376,7 +388,32 @@ describe('SignalingConnection – 前台恢复', () => {
 		vi.advanceTimersByTime(1000);
 		conn.__handleForegroundResume('network:online');
 		expect(events.length).toBe(1);
+		expect(events[0].typeChanged).toBe(false);
+	});
+
+	test('disconnected + network:online + typeChanged → typeChanged 透传', () => {
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006);
+		expect(conn.state).toBe('disconnected');
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(600);
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
+		expect(events.length).toBe(1);
 		expect(events[0].source).toBe('network:online');
+		expect(events[0].typeChanged).toBe(true);
+	});
+
+	test('非 network:online source 的 payload 不含 typeChanged', () => {
+		platformMod.isCapacitorApp = true;
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(1000);
+		conn.__handleForegroundResume('app:foreground');
+		expect(events.length).toBe(1);
+		expect(events[0].source).toBe('app:foreground');
+		expect(events[0]).not.toHaveProperty('typeChanged');
 	});
 
 	test('disconnected 状态下前台恢复触发即时重连', () => {
@@ -426,16 +463,17 @@ describe('SignalingConnection – 前台恢复', () => {
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
 	});
 
-	test('network:online + connecting 状态时仍发射 foreground-resume', () => {
+	test('network:online + connecting 状态时仍发射 foreground-resume（含 typeChanged）', () => {
 		MockWebSocket.reset();
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
 		conn.connect(); // state → connecting，不 simulateOpen
 		expect(conn.state).toBe('connecting');
 		const events = [];
 		conn.on('foreground-resume', (data) => events.push(data));
-		conn.__handleForegroundResume('network:online');
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
 		expect(events.length).toBe(1);
 		expect(events[0].source).toBe('network:online');
+		expect(events[0].typeChanged).toBe(true);
 		expect(events[0]).not.toHaveProperty('elapsed');
 	});
 
@@ -502,17 +540,18 @@ describe('SignalingConnection – 前台恢复', () => {
 		probeSpy.mockRestore();
 	});
 
-	test('connected + network:online 既 forceReconnect 又发射 foreground-resume', () => {
+	test('connected + network:online 既 forceReconnect 又发射 foreground-resume（含 typeChanged）', () => {
 		const { conn } = makeConnected();
 		const events = [];
 		conn.on('foreground-resume', (data) => events.push(data));
 		const wsBefore = MockWebSocket.instances.length;
-		conn.__handleForegroundResume('network:online');
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
 		// forceReconnect 应创建新 WS
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
-		// foreground-resume 应被发射（不含 elapsed）
+		// foreground-resume 应被发射（含 typeChanged，不含 elapsed）
 		expect(events.length).toBe(1);
 		expect(events[0].source).toBe('network:online');
+		expect(events[0].typeChanged).toBe(true);
 		expect(events[0]).not.toHaveProperty('elapsed');
 	});
 

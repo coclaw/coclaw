@@ -71,8 +71,12 @@ vi.mock('@capacitor/app', () => ({
 vi.mock('@capacitor/splash-screen', () => ({
 	SplashScreen: { hide: mockSplashHide },
 }));
+const mockGetStatus = vi.hoisted(() => vi.fn().mockResolvedValue({ connectionType: 'wifi' }));
 vi.mock('@capacitor/network', () => ({
-	Network: { addListener: (event, cb) => { networkListeners[event] = cb; } },
+	Network: {
+		addListener: (event, cb) => { networkListeners[event] = cb; },
+		getStatus: mockGetStatus,
+	},
 }));
 
 vi.mock('../composables/use-notify.js', () => ({
@@ -332,8 +336,9 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		await flush();
 
 		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
-		networkListeners['networkStatusChange']({ connected: true });
-		expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeTruthy();
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt).toBeTruthy();
 		dispatchSpy.mockRestore();
 	});
 
@@ -343,8 +348,127 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		await flush();
 
 		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
-		networkListeners['networkStatusChange']({ connected: false });
+		networkListeners['networkStatusChange']({ connected: false, connectionType: 'none' });
 		expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeUndefined();
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: wifi→cellular 时 typeChanged=true', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// 初始化后 _lastType 为 wifi（通过 getStatus mock）
+		// 切换到 cellular → typeChanged
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(true);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: 同类型恢复 typeChanged=false', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// 先恢复到 wifi（与 _lastType 相同）→ 无变化
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(false);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: offline 时不更新 _lastType，恢复后正确比较', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// wifi（初始）→ offline → 恢复 wifi → 无变化
+		networkListeners['networkStatusChange']({ connected: false, connectionType: 'none' });
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(false);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: unknown 类型不更新 _lastType', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// wifi → unknown → wifi：unknown 不更新 _lastType，wifi 回来时仍与 wifi 比较 → 无变化
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'unknown' });
+		dispatchSpy.mockClear();
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(false);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: cellular→wifi 反向切换 typeChanged=true', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// 先切到 cellular
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+		dispatchSpy.mockClear();
+		// 再切回 wifi → typeChanged
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(true);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: wifi→offline→cellular 跨 offline 类型变化', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// wifi（初始）→ offline → cellular → 应检测到变化
+		networkListeners['networkStatusChange']({ connected: false, connectionType: 'none' });
+		dispatchSpy.mockClear();
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(true);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: _lastType 为 null 时首次 online 不触发 typeChanged', async () => {
+		// _lastType 由 getStatus 或 prior events 设置。当 _lastType 为 null 时（如冷启动 getStatus 失败），
+		// 首次 connected=true 只更新 _lastType，不认为发生了类型变化。
+		// 由于模块级 _lastConnectionType 在测试间共享，此处验证：
+		// 第一次 connected + normalized=null（unknown type）不触发 typeChanged
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// unknown type → normalized=null → _lastType 不更新，typeChanged=false
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'unknown' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(false);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: wifi→unknown→cellular 检测到真实类型变化', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// wifi → unknown（不更新 _lastType）→ cellular（与 wifi 比较 → 变化）
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'unknown' });
+		dispatchSpy.mockClear();
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt[0].detail.typeChanged).toBe(true);
 		dispatchSpy.mockRestore();
 	});
 

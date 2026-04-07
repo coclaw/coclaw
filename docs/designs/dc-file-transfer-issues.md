@@ -220,7 +220,7 @@ Plugin 重连时，server 端 `forwardToClaw()` 会向同一 clawId 的所有 We
 
 日志中观察到的 RTC 重建实际由以下原因触发：
 - **移动端 App 前台恢复**（`app:foreground`）：后台 ≥ 25s 时执行 DC probe，probe 失败且 PC 状态非 connected 时 rebuild
-- **网络状态变化**（`network:online`）：~~旧版无条件强制重建~~ 已优化为不触发 RTC 操作，信任 ICE 自检测（详见 `ui/docs/state-recovery.md` §9 "RTC 前台恢复策略"）
+- **网络状态变化**（`network:online`）：~~旧版无条件强制重建~~ 已优化为按 PC 状态 + 网络类型变化分级处理（类型变化→rebuild，PC failed/closed→rebuild，其余→跳过）。详见 `ui/docs/state-recovery.md` §9 "RTC 前台恢复策略"
 
 > 旧版 `network:online` 无条件 rebuild 是导致大文件传输中断的主要原因——Android WiFi 恢复期间连续发出多个 `network:online` 事件，每次都杀死正在传输的 DC。
 

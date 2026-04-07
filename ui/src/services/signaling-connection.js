@@ -36,7 +36,7 @@ function resolveSignalingWsUrl(httpBaseUrl) {
  * 事件:
  * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
  * - `rtc`               — 入站 RTC 信令 (data: { clawId, type, payload })
- * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source })，仅移动端或 network:online
+ * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source, typeChanged? })，仅移动端或 network:online
  * - `log`               — 诊断日志 (data: string)，由 remote-log 桥接推送
  */
 export class SignalingConnection {
@@ -110,7 +110,7 @@ export class SignalingConnection {
 			window.addEventListener('app:foreground', this.__boundForegroundHandler);
 		}
 		if (typeof window !== 'undefined' && !this.__boundNetworkHandler) {
-			this.__boundNetworkHandler = () => this.__handleForegroundResume('network:online');
+			this.__boundNetworkHandler = (e) => this.__handleForegroundResume('network:online', e?.detail);
 			window.addEventListener('network:online', this.__boundNetworkHandler);
 		}
 		this.__doConnect();
@@ -440,7 +440,7 @@ export class SignalingConnection {
 	 * WS 恢复全平台执行；foreground-resume 事件仅在移动端或 network:online 时发射
 	 * @param {string} source - 触发来源
 	 */
-	__handleForegroundResume(source) {
+	__handleForegroundResume(source, detail) {
 		if (this.__intentionalClose) return;
 		const isNetworkOnline = source === 'network:online';
 		// 防重入节流：network:online 豁免（它是明确的网络变更信号，不应被前序事件抑制）
@@ -453,6 +453,11 @@ export class SignalingConnection {
 		// 桌面 visibilitychange 不触发（WebRTC 在桌面后台持续运行）
 		const shouldEmitForRtc = isNetworkOnline || isCapacitorApp;
 
+		// 构建 RTC 恢复事件 payload（network:online 携带 typeChanged）
+		const rtcPayload = isNetworkOnline
+			? { source, typeChanged: Boolean(detail?.typeChanged) }
+			: { source };
+
 		if (this.__state === 'disconnected') {
 			console.debug('[SigConn] %s → immediate reconnect', source);
 			this.__emit('log', `sig.resume source=${source} state=disconnected action=reconnect`);
@@ -460,7 +465,7 @@ export class SignalingConnection {
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__doConnect();
 			if (shouldEmitForRtc) {
-				this.__emit('foreground-resume', { source });
+				this.__emit('foreground-resume', rtcPayload);
 			}
 			return;
 		}
@@ -468,7 +473,7 @@ export class SignalingConnection {
 		if (this.__state === 'connecting') {
 			// network:online 时仍需发射 RTC 恢复事件（WS 正在重连，但 DC 可能需要独立恢复）
 			if (isNetworkOnline) {
-				this.__emit('foreground-resume', { source });
+				this.__emit('foreground-resume', rtcPayload);
 			}
 			return;
 		}
@@ -492,7 +497,7 @@ export class SignalingConnection {
 		}
 
 		if (shouldEmitForRtc) {
-			this.__emit('foreground-resume', { source });
+			this.__emit('foreground-resume', rtcPayload);
 		}
 	}
 

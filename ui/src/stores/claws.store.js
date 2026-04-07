@@ -257,11 +257,16 @@ export const useClawsStore = defineStore('claws', {
 			}
 
 			// RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标。
-			// network:online（前台时）不触发 RTC 检查——ICE 层在前台持续运行，
-			// 有自检测能力（consent check 5s 间隔 → disconnected → 5s 超时 → failed）。
-			// 仅 app:foreground 需要主动 probe（OS 挂起导致 ICE 回调积压，PC 状态不可信）。
-			sigConn.on('foreground-resume', ({ source }) => {
-				if (source === 'network:online') return;
+			// network:online 分级处理：
+			//   - typeChanged → 直接 rebuild（旧 ICE 路径必然失效，ndc 不支持 ICE restart）
+			//   - PC failed/closed → 直接 rebuild（加速长 offline 后的恢复）
+			//   - 其余 → 跳过（ICE 在前台自检测，无需干预）
+			// app:foreground 走 probe 路径（OS 挂起导致 ICE 回调积压，PC 状态不可信）。
+			sigConn.on('foreground-resume', ({ source, typeChanged }) => {
+				if (source === 'network:online') {
+					this.__handleNetworkOnline(typeChanged);
+					return;
+				}
 				// 短后台（<25s）：ICE 自恢复能力充足，无需 probe
 				if (source === 'app:foreground' && _backgroundAt > 0) {
 					const bgDuration = Date.now() - _backgroundAt;
@@ -521,6 +526,39 @@ export const useClawsStore = defineStore('claws', {
 			_rtcRetryState.delete(id);
 			const claw = this.byId[id];
 			if (claw) { claw.retryCount = 0; claw.retryNextAt = 0; }
+		},
+
+		/**
+		 * network:online 分级处理。
+		 * - typeChanged → 直接 rebuild 所有 claw（WiFi↔cellular，旧 ICE 路径失效）
+		 * - PC failed/closed → 直接 rebuild（加速长 offline 后恢复，避免等退避 timer）
+		 * - 其余 → 跳过（ICE 在前台持续运行，有自检测能力）
+		 * @param {boolean} typeChanged
+		 */
+		__handleNetworkOnline(typeChanged) {
+			for (const id of Object.keys(this.byId)) {
+				if (_rtcInitInProgress.get(id)) continue;
+				const claw = this.byId[id];
+				if (!claw?.dcReady) continue;
+				const conn = useClawConnections().get(id);
+				const rtc = conn?.rtc;
+				if (!rtc) continue;
+
+				if (typeChanged) {
+					remoteLog(`claw.recover claw=${id} reason=network_type_changed source=network:online`);
+					claw.rtcPhase = 'recovering';
+					this.__clearRetry(id);
+					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
+					continue;
+				}
+				if (rtc.state === 'failed' || rtc.state === 'closed') {
+					remoteLog(`claw.recover claw=${id} reason=rtc_${rtc.state} source=network:online`);
+					claw.rtcPhase = 'recovering';
+					this.__clearRetry(id);
+					this.__ensureRtc(id).catch(() => {});
+				}
+				// connected / disconnected → 跳过，信任 ICE 自检测
+			}
 		},
 
 		/**

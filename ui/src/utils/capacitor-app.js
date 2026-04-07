@@ -235,15 +235,42 @@ function setupAppStateChange() {
 	});
 }
 
+/** 上次已知的网络类型（仅 wifi/cellular 时更新） */
+let _lastConnectionType = null;
+
+/**
+ * 归一化 connectionType：仅保留 wifi / cellular，其余返回 null
+ * @param {string} type
+ * @returns {'wifi' | 'cellular' | null}
+ */
+function normalizeConnectionType(type) {
+	if (type === 'wifi') return 'wifi';
+	if (type === 'cellular') return 'cellular';
+	return null;
+}
+
 function setupNetworkListener() {
 	import('@capacitor/network').then(({ Network }) => {
-		Network.addListener('networkStatusChange', ({ connected }) => {
-			console.log('[capacitor] networkStatusChange: connected=%s', connected);
-			remoteLog(`app.network connected=${connected}`);
+		Network.addListener('networkStatusChange', ({ connected, connectionType }) => {
+			const normalized = normalizeConnectionType(connectionType);
+			console.log('[capacitor] networkStatusChange: connected=%s type=%s', connected, connectionType);
+			remoteLog(`app.network connected=${connected} type=${connectionType}`);
 			if (connected) {
-				window.dispatchEvent(new CustomEvent('network:online'));
+				let typeChanged = false;
+				if (normalized && _lastConnectionType && normalized !== _lastConnectionType) {
+					typeChanged = true;
+					remoteLog(`app.network typeChanged ${_lastConnectionType}→${normalized}`);
+				}
+				if (normalized) _lastConnectionType = normalized;
+				window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged } }));
 			}
 		});
+		// 读取初始网络类型
+		Network.getStatus().then(({ connectionType }) => {
+			const normalized = normalizeConnectionType(connectionType);
+			if (normalized) _lastConnectionType = normalized;
+			console.log('[capacitor] initial connectionType=%s', connectionType);
+		}).catch(() => {});
 		console.log('[capacitor] Network listener registered');
 	}).catch((e) => console.warn('[capacitor] Network setup failed:', e));
 }
