@@ -355,6 +355,7 @@ export const enMessages = {
 		errTransferInterrupted: 'File transfer interrupted. Please check your network and try again.',
 		errTransferFailed: 'File transfer failed. Please try again.',
 		errFileTooLarge: 'File is too large to send.',
+		errRtcUnavailable: 'Connection not ready. Cannot send files. Please try again later.',
 		errUnknown: 'Something went wrong. Please try again later.',
 		unknownRpcStatus: 'Unknown response status: {status}, please report to developers',
 		connecting: 'Connecting to Claw…',

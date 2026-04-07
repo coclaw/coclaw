@@ -17,9 +17,7 @@ vi.mock('../services/claw-connection-manager.js', () => ({
 	__resetClawConnections: vi.fn(),
 }));
 
-vi.mock('../utils/file-helper.js', () => ({
-	fileToBase64: vi.fn(),
-}));
+vi.mock('../utils/file-helper.js', () => ({}));
 
 // --- Tests ---
 

@@ -50,10 +50,7 @@ vi.mock('../services/claws.api.js', () => ({
 
 vi.mock('../utils/file-helper.js', async (importOriginal) => {
 	const actual = await importOriginal();
-	return {
-		...actual,
-		fileToBase64: vi.fn(() => Promise.resolve('bW9ja2VkX2Jhc2U2NA==')),
-	};
+	return { ...actual };
 });
 
 const mockNotify = {
@@ -98,6 +95,7 @@ const i18nMap = {
 	'chat.errWsClosed': 'Connection lost',
 	'chat.errWsSendFailed': 'Send failed (ws)',
 	'chat.errRtcSendFailed': 'Send failed (rtc)',
+	'chat.errRtcUnavailable': 'File transfer unavailable',
 	'chat.errUnknown': 'Something went wrong',
 };
 
@@ -473,6 +471,29 @@ describe('ChatPage send message', () => {
 		await flushPromises();
 
 		expect(mockNotify.error).toHaveBeenCalledWith('Send failed (rtc)');
+	});
+
+	test('RTC_UNAVAILABLE 错误显示友好文案并回填输入框和恢复文件', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__accepted = false;
+		const err = new Error('File transfer requires RTC connection');
+		err.code = 'RTC_UNAVAILABLE';
+		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
+		await flushPromises();
+
+		wrapper.vm.inputText = 'look at this';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		const files = [{ isImg: true, file: { type: 'image/png' }, name: 'pic.png' }];
+		input.vm.$emit('send', { text: 'look at this', files });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('File transfer unavailable');
+		// 文本回填到草稿
+		expect(wrapper.vm.inputText).toBe('look at this');
+		// 文件恢复
+		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 
 	test('sending 中不重复发送', async () => {

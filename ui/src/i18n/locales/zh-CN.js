@@ -355,6 +355,7 @@ export const zhCNMessages = {
 		errTransferInterrupted: '文件传输中断，请检查网络后重试',
 		errTransferFailed: '文件传输失败，请重试',
 		errFileTooLarge: '文件过大，无法发送',
+		errRtcUnavailable: '连接未就绪，无法发送文件，请稍后重试',
 		errUnknown: '发送遇到问题，请稍后重试',
 		unknownRpcStatus: '收到未知的响应状态: {status}，请反馈给开发者',
 		connecting: '正在连接 Claw…',

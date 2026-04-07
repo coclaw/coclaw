@@ -31,7 +31,6 @@ vi.mock('../services/claw-connection-manager.js', () => ({
 }));
 
 vi.mock('../utils/file-helper.js', () => ({
-	fileToBase64: vi.fn().mockResolvedValue('base64data'),
 	chatFilesDir: vi.fn().mockReturnValue('.coclaw/chat-files/main/2026-03'),
 	topicFilesDir: vi.fn().mockReturnValue('.coclaw/topic-files/topic-1'),
 	buildAttachmentBlock: vi.fn().mockReturnValue('## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| .coclaw/chat-files/main/2026-03/photo-a3f1.jpg | 200.0 KB |'),
@@ -719,24 +718,11 @@ describe('useChatStore', () => {
 			expect(agentCall[1].sessionKey).toBeUndefined();
 		});
 
-		test('RTC 不可用时图片走 WS fallback（base64），fileToBase64 只调用一次', async () => {
-			const { fileToBase64 } = await import('../utils/file-helper.js');
-			fileToBase64.mockResolvedValue('imgbase64');
-
+		test('RTC 不可用时发送图片文件抛出 RTC_UNAVAILABLE，状态正确清理', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
-			// conn.rtc 未设置 → RTC 不可用，走 fallback
-			conn.request.mockImplementation((method, params, options) => {
-				if (method === 'agent') {
-					options?.onAccepted?.({ runId: 'run-1' });
-					return Promise.resolve({ status: 'ok' });
-				}
-				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
-				return Promise.resolve(null);
-			});
 			setConn('1', conn);
 
 			const store = useChatStore();
@@ -746,13 +732,17 @@ describe('useChatStore', () => {
 
 			const fakeFile = { type: 'image/png' };
 			const files = [{ isImg: true, file: fakeFile, name: 'pic.png' }];
-			await store.sendMessage('look at this', files);
+			const err = await store.sendMessage('look at this', files).catch((e) => e);
 
-			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
-			expect(agentCall[1].attachments).toHaveLength(1);
-			expect(agentCall[1].attachments[0].type).toBe('image');
-			// 同一图片文件只编码一次（乐观消息缓存复用到 attachments）
-			expect(fileToBase64).toHaveBeenCalledTimes(1);
+			expect(err.message).toBe('File transfer requires RTC connection');
+			expect(err.code).toBe('RTC_UNAVAILABLE');
+			// 状态清理
+			expect(store.sending).toBe(false);
+			expect(store.uploadProgress).toBeNull();
+			// 乐观消息已移除
+			expect(store.messages.filter((m) => m._local)).toHaveLength(0);
+			// 未调用 agent RPC
+			expect(conn.request).not.toHaveBeenCalled();
 		});
 
 		test('上传进度回调 total=0 时 progress 设为 0', async () => {
@@ -928,12 +918,53 @@ describe('useChatStore', () => {
 			expect(store.sending).toBe(false);
 		});
 
-		test('RTC 不可用时非图片文件被跳过', async () => {
+		test('RTC 不可用时发送非图片文件也抛出 RTC_UNAVAILABLE', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
-			// conn.rtc 未设置 → fallback
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100 }];
+			const err = await store.sendMessage('附件', files).catch((e) => e);
+			expect(err.code).toBe('RTC_UNAVAILABLE');
+			expect(store.sending).toBe(false);
+			expect(store.messages.filter((m) => m._local)).toHaveLength(0);
+		});
+
+		test('RTC 不可用时混合文件（图片+PDF）统一抛出 RTC_UNAVAILABLE', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [
+				{ isImg: true, file: { type: 'image/png' }, name: 'cat.png' },
+				{ isImg: false, file: new Blob(['pdf']), name: 'doc.pdf', bytes: 200 },
+			];
+			const err = await store.sendMessage('', files).catch((e) => e);
+			expect(err.code).toBe('RTC_UNAVAILABLE');
+			expect(store.sending).toBe(false);
+			expect(store.messages.filter((m) => m._local)).toHaveLength(0);
+		});
+
+		test('RTC 不可用但无文件时，纯文本消息正常发送', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			// conn.rtc 未设置 → RTC 不可用，但无文件不影响
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-1' });
@@ -950,12 +981,55 @@ describe('useChatStore', () => {
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			const files = [{ isImg: false, file: new Blob(['data']), name: 'doc.pdf', bytes: 100 }];
-			await store.sendMessage('附件', files);
-
+			const result = await store.sendMessage('hello', []);
+			expect(result.accepted).toBe(true);
 			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
-			// 非图片在 fallback 模式下被跳过，无 attachments
-			expect(agentCall[1].attachments).toBeUndefined();
+			expect(agentCall[1].message).toBe('hello');
+		});
+
+		test('RTC 不可用时无文件、无文本也不触发 RTC_UNAVAILABLE', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// 空文件数组 → hasFiles=false → 走纯文本路径
+			const result = await store.sendMessage('text only');
+			expect(result.accepted).toBe(true);
+		});
+
+		test('conn.rtc 存在但 isReady=false 时，发送文件抛出 RTC_UNAVAILABLE', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.rtc = { isReady: false }; // RTC 对象存在但未就绪
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [{ isImg: true, file: { type: 'image/jpeg' }, name: 'photo.jpg' }];
+			const err = await store.sendMessage('pic', files).catch((e) => e);
+			expect(err.code).toBe('RTC_UNAVAILABLE');
+			expect(store.sending).toBe(false);
 		});
 
 		test('上传阶段 cancelSend 不抛错，返回 accepted: false', async () => {

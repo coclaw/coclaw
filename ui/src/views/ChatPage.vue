@@ -588,6 +588,7 @@ export default {
 				READY_TIMEOUT: 'chat.errRpcTimeout',
 				TRANSFER_FAILED: 'chat.errTransferFailed',
 				SIZE_EXCEEDED: 'chat.errFileTooLarge',
+				RTC_UNAVAILABLE: 'chat.errRtcUnavailable',
 			};
 			const key = codeMap[err?.code];
 			if (key) return this.$t(key);

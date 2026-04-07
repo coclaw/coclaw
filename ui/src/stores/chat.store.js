@@ -9,7 +9,7 @@ import { defineStore } from 'pinia';
 
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { postFile } from '../services/file-transfer.js';
-import { fileToBase64, chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
+import { chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { getReadyConn } from './get-ready-conn.js';
@@ -409,14 +409,6 @@ export function createChatStore(storeKey, opts = {}) {
 						rtcAvailable, !!conn.rtc, conn.rtc?.isReady);
 				}
 
-				// 预构建 base64 缓存（WS fallback 路径需要）
-				const imgFiles = files?.filter((f) => f.isImg && f.file) ?? [];
-				const base64Cache = new Map();
-				for (const f of imgFiles) {
-					const base64 = await fileToBase64(f.file);
-					base64Cache.set(f.file, base64);
-				}
-
 				const optimisticUser = {
 					type: 'message',
 					id: `__local_user_${Date.now()}`,
@@ -450,27 +442,12 @@ export function createChatStore(storeKey, opts = {}) {
 					let finalMessage;
 
 					if (hasFiles && rtcAvailable) {
-						// --- POST 上传模式 ---
 						finalMessage = await this.__uploadAndBuildMessage(conn, text, files);
 					} else if (hasFiles) {
-						// --- Fallback：WS inline base64（仅图片） ---
-						const attachments = [];
-						for (const f of files) {
-							if (!f.file) continue;
-							if (!f.isImg) {
-								console.warn('[chat] non-image attachment skipped (RTC unavailable): %s', f.name);
-								continue;
-							}
-							const base64 = base64Cache.get(f.file) ?? await fileToBase64(f.file);
-							attachments.push({
-								type: 'image',
-								mimeType: f.file.type || 'image/png',
-								fileName: f.name,
-								content: base64,
-							});
-						}
-						const safeText = (!text && attachments.length) ? '\u{1F449}' : text;
-						finalMessage = { text: safeText, attachments };
+						// RTC 不可用时无法传输文件，直接失败
+						const err = new Error('File transfer requires RTC connection');
+						err.code = 'RTC_UNAVAILABLE';
+						throw err;
 					} else {
 						finalMessage = { text };
 					}
@@ -480,10 +457,6 @@ export function createChatStore(storeKey, opts = {}) {
 						deliver: false,
 						idempotencyKey,
 					};
-					if (finalMessage.attachments?.length) {
-						agentParams.attachments = finalMessage.attachments;
-					}
-
 					// 组装 extraSystemPrompt（每次都携带文件渲染能力提示）
 					{
 						const prompts = [
