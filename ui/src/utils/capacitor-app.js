@@ -8,6 +8,8 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
 import { remoteLog } from '../services/remote-log.js';
+import { i18n } from '../i18n/index.js';
+import { useNotify } from '../composables/use-notify.js';
 
 /** 是否运行在 Capacitor 原生壳中 */
 export const isNative = Capacitor.isNativePlatform();
@@ -206,8 +208,6 @@ async function handleShareReceived(data) {
 	console.log('[capacitor] share received: type=%s', data.type, data);
 
 	// TODO (#159): 替换为实际的 Agent 选择 → 路由跳转 → 内容填充
-	const { i18n } = await import('../i18n/index.js');
-	const { useNotify } = await import('../composables/use-notify.js');
 	const notify = useNotify();
 	notify.info({ title: i18n.global.t('common.featureComingSoon'), duration: 4000 });
 

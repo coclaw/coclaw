@@ -1,5 +1,22 @@
 # 前端开发环境故障排查
 
+## capacitor-app.js 层级与职责问题
+
+**日期**：2026-04-07
+
+**背景**：`src/utils/capacitor-app.js` 在构建时产生 Vite 警告——`use-notify.js` 和 `i18n/index.js` 被其动态 `import()` 引入，但已被其他大量模块静态导入，动态导入无法将其拆分到独立 chunk。
+
+**处置**：将这两处动态 import 改为静态 import，消除构建警告。经评估确认无隐患：
+- 模块引用提前到顶部，但实际调用仍在 `handleShareReceived()` 内部，该函数仅在 Capacitor 事件触发时执行（Vue app 已就绪），时序无影响
+- 无循环依赖风险（这两个模块不依赖 `capacitor-app.js`）
+- 这两个模块本就在主 chunk 中，对产物体积零影响
+
+**遗留架构问题（待 #159 一并解决）**：
+1. **层级倒置**：`utils/capacitor-app.js` 向上依赖了 `composables/use-notify.js`，违反了 utils 作为底层工具的定位
+2. **业务逻辑内聚在工具层**：`handleShareReceived()` 直接在 utils 中执行业务处理（通知用户），而同文件中其他功能（`appStateChange`、`networkStatusChange`）均通过 `dispatchEvent(new CustomEvent(...))` 抛出事件由上层消费
+3. **模块定位不准确**：`capacitor-app.js` 本质是原生壳与 Web 层的桥接器，放在 `utils/` 不恰当，应作为独立的 bridge/adapter 层组织
+4. **事件化改造受限**：若将 share 处理改为派发事件，上层处理完业务逻辑后仍需回调 `ShareIntent.clearFiles()` 清理原生临时文件，需要设计恰当的通信机制
+
 ## ESM 模块缓存导致代码行为与源码不一致
 
 **日期**：2026-03-29
