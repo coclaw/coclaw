@@ -754,13 +754,12 @@ export default {
 			} else if (!this.chatStore.isSending) {
 				this.chatStore.loadMessages({ silent: true });
 			}
-			// 首次加载完成后：强制滚到底部，并检测内容是否不足以填满容器
-			if (isFirstLoad) {
-				this.$nextTick(() => {
-					this.scrollToBottom(true);
-					this.__autoFillHistory();
-				});
-			}
+			// 加载完成后：强制滚到底部，并检测内容是否不足以填满容器
+			// 非首次加载（组件重建但 store 复用）时也需 force 以解锁 visibility
+			this.$nextTick(() => {
+				this.scrollToBottom(true);
+				if (isFirstLoad) this.__autoFillHistory();
+			});
 		},
 
 		/**
