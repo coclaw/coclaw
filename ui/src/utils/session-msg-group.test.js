@@ -74,6 +74,7 @@ describe('groupSessionMessages', () => {
 			images: [],
 			attachments: [],
 			timestamp: 1000,
+			_pending: false,
 		});
 		expect(result[1]).toEqual({
 			type: 'botTask',
@@ -87,7 +88,38 @@ describe('groupSessionMessages', () => {
 			attachments: [],
 			isStreaming: false,
 			startTime: null,
+			_pending: false,
 		});
+	});
+
+	test('_pending 标记透传到 user item 和 botTask', () => {
+		const entries = [
+			{ ...userEntry('u1', 'hi', 1000), _pending: true },
+			{ ...assistantEntry('a1', { text: '' }), _pending: true, _streaming: true },
+		];
+		const result = groupSessionMessages(entries);
+
+		expect(result).toHaveLength(2);
+		expect(result[0]._pending).toBe(true);
+		expect(result[1]._pending).toBe(true);
+	});
+
+	test('无 _pending 时 user item 的 _pending 为 false', () => {
+		const entries = [userEntry('u1', 'hi', 1000)];
+		const result = groupSessionMessages(entries);
+		expect(result[0]._pending).toBe(false);
+	});
+
+	test('_pending botTask 同时保留 isStreaming 标记', () => {
+		const entries = [
+			userEntry('u1', 'hi', 1000),
+			{ ...assistantEntry('a1', { text: '' }), _pending: true, _streaming: true, _startTime: 5000 },
+		];
+		const result = groupSessionMessages(entries);
+		const bot = result.find((r) => r.type === 'botTask');
+		expect(bot._pending).toBe(true);
+		expect(bot.isStreaming).toBe(true);
+		expect(bot.startTime).toBe(5000);
 	});
 
 	test('多轮 tool call 合并为一个 botTask', () => {

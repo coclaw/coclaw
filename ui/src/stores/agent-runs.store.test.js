@@ -480,6 +480,66 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			expect(() => store.stripLocalUserMsgs('nonexistent')).not.toThrow();
 		});
+
+		test('strip 时释放被移除 user 消息的 _attachments blob URL', () => {
+			const origRevoke = URL.revokeObjectURL;
+			URL.revokeObjectURL = vi.fn();
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].streamingMsgs = [
+				{
+					id: 'u1', _local: true,
+					message: { role: 'user', content: 'hi' },
+					_attachments: [{ url: 'blob:img1' }, { url: null }, { url: 'blob:voice1' }],
+				},
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			const serverMsgs = [{ id: 's1', message: { role: 'user', content: 'hi' } }];
+
+			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:img1');
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:voice1');
+			expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+			URL.revokeObjectURL = origRevoke;
+		});
+	});
+
+	// =====================================================================
+	// __cleanupRun blob URL 释放
+	// =====================================================================
+
+	describe('__cleanupRun blob URL', () => {
+		test('settle 时释放 streamingMsgs 中 _attachments 的 blob URL', () => {
+			const origRevoke = URL.revokeObjectURL;
+			URL.revokeObjectURL = vi.fn();
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].streamingMsgs = [
+				{
+					id: 'u1', _local: true,
+					message: { role: 'user', content: 'hi' },
+					_attachments: [{ url: 'blob:att1' }, { url: 'blob:att2' }],
+				},
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+
+			store.settle('agent:main:main');
+
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:att1');
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:att2');
+			expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+			URL.revokeObjectURL = origRevoke;
+		});
+
+		test('无 _attachments 的消息不报错', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'b1', message: { role: 'assistant', content: '' } },
+			];
+			expect(() => store.settle('agent:main:main')).not.toThrow();
+		});
 	});
 
 	// =====================================================================

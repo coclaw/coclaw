@@ -74,8 +74,8 @@ export function createChatStore(storeKey, opts = {}) {
 
 			// 附件上传状态
 			uploadingFiles: false,
-			/** @type {{ files: { id: string, name: string, status: string, progress: number }[], currentIdx: number } | null} */
-			uploadProgress: null,
+			/** @type {Object<string, { status: string, progress: number }>|null} 按文件 id 索引 */
+			fileUploadState: null,
 			__uploadHandle: null,
 
 			// 内部状态
@@ -386,7 +386,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @returns {Promise<{ accepted: boolean }>}
 			 * @throws {Error} 发送失败时抛出
 			 */
-			async sendMessage(text, files = [], { __idempotencyKey } = {}) {
+			async sendMessage(text, files = [], { __idempotencyKey, onFileUploaded } = {}) {
 				if (this.sending) return { accepted: false };
 				if (!this.topicMode && !this.chatSessionKey) return { accepted: false };
 				if (this.topicMode && !this.sessionId) return { accepted: false };
@@ -409,48 +409,50 @@ export function createChatStore(storeKey, opts = {}) {
 						rtcAvailable, !!conn.rtc, conn.rtc?.isReady);
 				}
 
-				const optimisticUser = {
-					type: 'message',
-					id: `__local_user_${Date.now()}`,
-					_local: true,
-					message: { role: 'user', content: text, timestamp: Date.now() },
-				};
-				if (hasFiles) {
-					// 所有附件（含图片）统一放入 _attachments，图片用 blob URL 预览
-					optimisticUser._attachments = files.map((f) => ({
-						name: f.name, size: f.bytes, type: f.file?.type,
-						isImg: f.isImg || false,
-						isVoice: f.isVoice || false,
-						durationMs: f.durationMs || null,
-						url: (f.isVoice || f.isImg) && f.file ? URL.createObjectURL(f.file) : null,
-					}));
-				}
-				const optimisticClaw = {
-					type: 'message',
-					id: `__local_claw_${Date.now()}`,
-					_local: true,
-					_streaming: true,
-					_startTime: Date.now(),
-					message: { role: 'assistant', content: '', stopReason: null },
-				};
-				// 临时追加到 messages 以便 UI 立即展示（accepted 后移入 runsStore）
-				this.messages = [...this.messages, optimisticUser, optimisticClaw];
-
 				const idempotencyKey = __idempotencyKey || crypto.randomUUID();
 
 				try {
+					// 阶段1：文件上传（先于乐观消息创建）
 					let finalMessage;
 
 					if (hasFiles && rtcAvailable) {
-						finalMessage = await this.__uploadAndBuildMessage(conn, text, files);
+						finalMessage = await this.__uploadFilesSequentially(conn, text, files, onFileUploaded);
 					} else if (hasFiles) {
-						// RTC 不可用时无法传输文件，直接失败
 						const err = new Error('File transfer requires RTC connection');
 						err.code = 'RTC_UNAVAILABLE';
 						throw err;
 					} else {
 						finalMessage = { text };
 					}
+
+					// 阶段2：创建 pending 乐观消息（文件上传完成后）
+					const optimisticUser = {
+						type: 'message',
+						id: `__local_user_${Date.now()}`,
+						_local: true,
+						_pending: true,
+						message: { role: 'user', content: text, timestamp: Date.now() },
+					};
+					if (hasFiles) {
+						// 从文件 blob 创建新 URL 用于 accepted 后渲染（upload 阶段已 revoke 原 URL）
+						optimisticUser._attachments = files.map((f) => ({
+							name: f.name, size: f.bytes, type: f.file?.type,
+							isImg: f.isImg || false,
+							isVoice: f.isVoice || false,
+							durationMs: f.durationMs || null,
+							url: (f.isVoice || f.isImg) && f.file ? URL.createObjectURL(f.file) : null,
+						}));
+					}
+					const optimisticClaw = {
+						type: 'message',
+						id: `__local_claw_${Date.now()}`,
+						_local: true,
+						_pending: true,
+						_streaming: true,
+						_startTime: Date.now(),
+						message: { role: 'assistant', content: '', stopReason: null },
+					};
+					this.messages = [...this.messages, optimisticUser, optimisticClaw];
 
 					const agentParams = {
 						message: finalMessage.text,
@@ -519,8 +521,9 @@ export function createChatStore(storeKey, opts = {}) {
 									err.code = 'POST_ACCEPTANCE_TIMEOUT';
 									timeoutReject(err);
 								}, 30 * 60_000);
-								// 将乐观消息移入 agentRunsStore
+								// 清除 pending 标记并移入 agentRunsStore
 								const localMsgs = this.messages.filter((m) => m._local);
+								for (const m of localMsgs) m._pending = false;
 								const lastServerMsg = this.messages.filter((m) => !m._local).at(-1);
 								this.messages = this.messages.filter((m) => !m._local);
 								runsStore.register(runId, {
@@ -568,7 +571,7 @@ export function createChatStore(storeKey, opts = {}) {
 					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
 					if (err?.code === 'CANCELLED' && !this.__accepted) {
 						this.sending = false;
-						this.uploadProgress = null;
+						this.fileUploadState = null;
 						this.__removeLocalEntries();
 						return { accepted: false };
 					}
@@ -604,7 +607,7 @@ export function createChatStore(storeKey, opts = {}) {
 						this.sending = false;
 						this.__retried = true;
 						try {
-							return await this.sendMessage(text, files, { __idempotencyKey: idempotencyKey });
+							return await this.sendMessage(text, files, { __idempotencyKey: idempotencyKey, onFileUploaded });
 						} catch (e) {
 							console.debug('[chat] retry sendMessage failed:', e?.message);
 							throw e;
@@ -626,7 +629,7 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__cleanupStreaming();
 						this.sending = false;
 					}
-					this.uploadProgress = null;
+					this.fileUploadState = null;
 					throw err;
 				}
 			},
@@ -666,7 +669,7 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__uploadHandle = null;
 				}
 				this.uploadingFiles = false;
-				this.uploadProgress = null;
+				this.fileUploadState = null;
 				// 通过 reject cancel promise 让 sendMessage 立即 settle
 				if (this.__cancelReject) {
 					const err = new Error('user cancelled');
@@ -857,7 +860,7 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__uploadHandle = null;
 				}
 				this.uploadingFiles = false;
-				this.uploadProgress = null;
+				this.fileUploadState = null;
 				// 让挂起的 sendMessage promise 立即 settle（run 本身继续后台执行）
 				if (this.__cancelReject) {
 					const err = new Error('user cancelled');
@@ -993,62 +996,66 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {object[]} files - ChatInput 的文件对象数组
 			 * @returns {Promise<{ text: string, voicePaths: string[] }>}
 			 */
-			async __uploadAndBuildMessage(conn, text, files) {
+			async __uploadFilesSequentially(conn, text, files, onFileUploaded) {
 				const agentId = this.__resolveAgentId();
 				const dir = this.topicMode
 					? topicFilesDir(this.sessionId)
 					: chatFilesDir(this.chatSessionKey);
 
-				// 初始化上传进度
 				const validFiles = files.filter((f) => f.file);
 				this.uploadingFiles = true;
-				this.uploadProgress = {
-					files: validFiles.map((f) => ({
-						id: f.id, name: f.name, status: 'pending', progress: 0,
-					})),
-					currentIdx: 0,
-				};
+				this.fileUploadState = Object.fromEntries(
+					validFiles.map((f) => [f.id, { status: 'pending', progress: 0 }]),
+				);
 				const uploaded = []; // { path, name, size }
 				const voicePaths = [];
 
 				try {
-					for (let i = 0; i < validFiles.length; i++) {
-						const f = validFiles[i];
-						this.uploadProgress.currentIdx = i;
-						this.uploadProgress.files[i].status = 'uploading';
+					for (const f of validFiles) {
+						// remotePath 优化：已上传的跳过
+						if (f.remotePath) {
+							uploaded.push({ path: f.remotePath, name: f.name, size: f.bytes });
+							if (f.isVoice) voicePaths.push(f.remotePath);
+							this.fileUploadState = { ...this.fileUploadState, [f.id]: { status: 'done', progress: 1 } };
+							onFileUploaded?.(f);
+							continue;
+						}
 
+						this.fileUploadState = { ...this.fileUploadState, [f.id]: { status: 'uploading', progress: 0 } };
 						const handle = postFile(conn, agentId, dir, f.name, f.file);
 						this.__uploadHandle = handle;
 
-						// 注册进度回调
+						let lastProgressAt = 0;
 						handle.onProgress = (sent, total) => {
-							if (this.uploadProgress?.files[i]) {
-								this.uploadProgress.files[i].progress = total > 0 ? sent / total : 0;
-							}
+							if (!this.fileUploadState?.[f.id]) return;
+							const now = Date.now();
+							// 节流：≥100ms 间隔或传输完成时才更新
+							if (now - lastProgressAt < 100 && sent < total) return;
+							lastProgressAt = now;
+							this.fileUploadState = { ...this.fileUploadState, [f.id]: { status: 'uploading', progress: total > 0 ? sent / total : 0 } };
 						};
 
 						const result = await handle.promise;
-						this.uploadProgress.files[i].status = 'done';
-						this.uploadProgress.files[i].progress = 1;
+						f.remotePath = result.path;
+						this.fileUploadState = { ...this.fileUploadState, [f.id]: { status: 'done', progress: 1 } };
 						uploaded.push({ path: result.path, name: f.name, size: f.bytes });
 						if (f.isVoice) voicePaths.push(result.path);
 						console.debug('[chat] uploaded %s → %s', f.name, result.path);
+						onFileUploaded?.(f);
 					}
 				} catch (err) {
-					// 标记当前文件失败（保留 uploadProgress 供 UI 短暂展示）
-					const idx = this.uploadProgress?.currentIdx ?? 0;
-					if (this.uploadProgress?.files[idx]) {
-						this.uploadProgress.files[idx].status = 'failed';
+					// 标记当前文件失败
+					const failingId = validFiles.find((vf) => this.fileUploadState?.[vf.id]?.status === 'uploading')?.id;
+					if (failingId) {
+						this.fileUploadState = { ...this.fileUploadState, [failingId]: { status: 'failed', progress: 0 } };
 					}
-					// 不在此处清除 uploadProgress，让 sendMessage catch 块处理
 					throw err;
 				} finally {
 					this.__uploadHandle = null;
 					this.uploadingFiles = false;
 				}
 
-				// 成功：清除上传进度，构建最终消息
-				this.uploadProgress = null;
+				this.fileUploadState = null;
 				const block = buildAttachmentBlock(uploaded);
 				const finalText = block
 					? (text ? `${text}\n\n${block}` : block)

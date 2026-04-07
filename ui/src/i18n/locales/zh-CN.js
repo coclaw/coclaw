@@ -320,6 +320,7 @@ export const zhCNMessages = {
 		taskIncomplete: '任务未完成',
 		toolCallLabel: '调用 {name}',
 		copied: '已复制',
+		sending: '发送中...',
 		stopSending: '停止发送',
 		voiceHoldToSpeak: '按住说话',
 		voiceRelease: '松开发送',

@@ -320,6 +320,7 @@ export const enMessages = {
 		taskIncomplete: 'Task incomplete',
 		toolCallLabel: 'Call {name}',
 		copied: 'Copied',
+		sending: 'Sending...',
 		stopSending: 'Stop sending',
 		voiceHoldToSpeak: 'Hold to speak',
 		voiceRelease: 'Release to send',

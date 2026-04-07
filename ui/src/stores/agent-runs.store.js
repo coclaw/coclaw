@@ -256,6 +256,13 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				(m) => !(m._local && m.message?.role === 'user'),
 			);
 			if (filtered.length !== run.streamingMsgs.length) {
+				// 释放被移除的乐观 user 消息上的 blob URL
+				for (const m of run.streamingMsgs) {
+					if (!m._local || m.message?.role !== 'user' || !m._attachments) continue;
+					for (const att of m._attachments) {
+						if (att.url) URL.revokeObjectURL(att.url);
+					}
+				}
 				this.runs[runId] = { ...run, streamingMsgs: filtered };
 			}
 		},
@@ -324,6 +331,15 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				clearTimeout(run.__settleTimer);
 				run.__settleTimer = null;
 			}
+
+			// 释放 streamingMsgs 中残留的 blob URL（乐观消息的 _attachments）
+			for (const m of run.streamingMsgs) {
+				if (!m._attachments) continue;
+				for (const att of m._attachments) {
+					if (att.url) URL.revokeObjectURL(att.url);
+				}
+			}
+
 			run.settled = true;
 
 			// 清理索引

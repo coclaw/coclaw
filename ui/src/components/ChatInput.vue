@@ -1,43 +1,16 @@
 <template>
 	<footer class="sticky bottom-0 z-10 bg-default py-3">
 		<slot name="prepend" />
-		<!-- 上传进度区（上传中替代文件预览） -->
+		<!-- 文件预览区（含上传进度覆层） -->
 		<div
-			v-if="uploadProgress"
-			class="mx-auto mb-2 flex w-full max-w-3xl flex-wrap gap-2 px-3"
-		>
-			<div
-				v-for="(uf, idx) in uploadProgress.files"
-				:key="'up-' + idx"
-				class="relative flex h-16 items-center gap-2 rounded-md border border-default px-3"
-				:class="uf.status === 'done' ? 'bg-elevated' : 'bg-elevated/60'"
-			>
-				<UIcon
-					:name="uf.status === 'done' ? 'i-lucide-check-circle' : uf.status === 'failed' ? 'i-lucide-x-circle' : 'i-lucide-file'"
-					class="text-lg shrink-0"
-					:class="uf.status === 'done' ? 'text-success' : uf.status === 'failed' ? 'text-error' : 'text-muted'"
-				/>
-				<div class="max-w-24 text-xs">
-					<div class="truncate font-medium">{{ uf.name }}</div>
-					<div class="text-muted">
-						<template v-if="uf.status === 'uploading'">{{ Math.round((uf.progress ?? 0) * 100) }}%</template>
-						<template v-else-if="uf.status === 'done'">{{ $t('common.done') }}</template>
-						<template v-else-if="uf.status === 'failed'">{{ $t('common.failed') }}</template>
-						<template v-else>{{ $t('common.pending') }}</template>
-					</div>
-				</div>
-			</div>
-		</div>
-		<!-- 文件预览区（未上传时） -->
-		<div
-			v-else-if="inputFiles.length"
+			v-if="inputFiles.length"
 			class="mx-auto mb-2 flex w-full max-w-3xl flex-wrap gap-2 px-3"
 		>
 			<div
 				v-for="(f, idx) in inputFiles"
 				:key="f.id"
 				class="group relative"
-				:class="f.isImg ? 'min-h-14 aspect-square' : ''"
+				:class="[f.isImg ? 'min-h-14 aspect-square' : '', __fileStatus(f.id) === 'uploading' ? 'opacity-70' : '']"
 			>
 				<!-- 图片缩略图 -->
 				<img
@@ -66,8 +39,16 @@
 						<div class="text-muted">{{ f.label }}</div>
 					</div>
 				</div>
-				<!-- 移除按钮 -->
+				<!-- 上传进度覆层 -->
+				<div
+					v-if="__fileStatus(f.id) === 'uploading'"
+					class="absolute inset-0 flex items-center justify-center rounded-md bg-default/50"
+				>
+					<span class="text-xs font-medium text-primary">{{ __filePercent(f.id) }}%</span>
+				</div>
+				<!-- 移除按钮（上传中不显示） -->
 				<button
+					v-if="!__fileStatus(f.id)"
 					:class="[
 						'absolute -right-1.5 -top-3.5 flex size-6 items-center justify-center rounded-full',
 						'bg-error text-white',
@@ -180,6 +161,7 @@
 					variant="ghost"
 					color="primary"
 					size="md"
+					:disabled="sending || disabled"
 					@click="onClickAddFiles"
 				/>
 				<!-- 终止 -->
@@ -252,7 +234,7 @@ export default {
 			type: Boolean,
 			default: false,
 		},
-		uploadProgress: {
+		fileUploadState: {
 			type: Object,
 			default: null,
 		},
@@ -334,7 +316,7 @@ export default {
 				text: this.modelValue?.trim() || '',
 				files: [...this.inputFiles],
 			});
-			this.clearInputFiles();
+			// 不清除文件——文件留在 input 中，由上传过程逐个移除
 		},
 
 		// --- 文件上传 ---
@@ -381,6 +363,13 @@ export default {
 				URL.revokeObjectURL(removed[0].url);
 			}
 		},
+		/** 按文件 id 移除（上传成功后由父组件调用） */
+		removeFileById(id) {
+			const idx = this.inputFiles.findIndex((f) => f.id === id);
+			if (idx === -1) return;
+			const [removed] = this.inputFiles.splice(idx, 1);
+			if (removed?.url) URL.revokeObjectURL(removed.url);
+		},
 		clearInputFiles() {
 			for (const f of this.inputFiles) {
 				if (f.url) URL.revokeObjectURL(f.url);
@@ -392,12 +381,19 @@ export default {
 			if (!files?.length) return;
 			for (const f of files) {
 				const restored = { ...f };
-				// 重建图片预览 URL（原 URL 已在 onSubmit 时释放）
+				// 重建图片预览 URL（原 URL 可能已在 removeFileById 时释放）
 				if (f.isImg && f.file) {
 					restored.url = URL.createObjectURL(f.file);
 				}
 				this.inputFiles.push(restored);
 			}
+		},
+		/** 查询文件上传状态 */
+		__fileStatus(id) {
+			return this.fileUploadState?.[id]?.status ?? null;
+		},
+		__filePercent(id) {
+			return Math.round((this.fileUploadState?.[id]?.progress ?? 0) * 100);
 		},
 
 		// --- 桌面端语音录音 (Phase 3 实现) ---

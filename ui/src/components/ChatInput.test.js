@@ -211,11 +211,11 @@ describe('ChatInput', () => {
 		}
 	});
 
-	test('submit clears inputFiles after send', () => {
+	test('submit 后 inputFiles 保留（由上传过程逐个移除）', () => {
 		const wrapper = createWrapper({ modelValue: 'hi' });
 		wrapper.vm.inputFiles = [{ id: '1', name: 'a.txt', isImg: false, url: null }];
 		wrapper.vm.onSubmit();
-		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
 	});
 
 	test('does not send when text is empty and no files', () => {
@@ -259,6 +259,31 @@ describe('ChatInput', () => {
 		expect(wrapper.vm.inputFiles[0].id).toBe('b');
 		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
 		URL.revokeObjectURL = origRevoke;
+	});
+
+	test('removeFileById 按 id 移除正确的文件', async () => {
+		const origRevoke = URL.revokeObjectURL;
+		URL.revokeObjectURL = vi.fn();
+		const wrapper = createWrapper();
+		await wrapper.setData({
+			inputFiles: [
+				{ id: 'a', isImg: true, url: 'blob:a', name: 'a.png' },
+				{ id: 'b', isImg: false, url: null, name: 'b.txt' },
+			],
+		});
+
+		wrapper.vm.removeFileById('a');
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
+		expect(wrapper.vm.inputFiles[0].id).toBe('b');
+		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
+		URL.revokeObjectURL = origRevoke;
+	});
+
+	test('removeFileById 传入不存在的 id 时不报错', () => {
+		const wrapper = createWrapper();
+		wrapper.vm.inputFiles = [{ id: 'x', name: 'x.txt', url: null }];
+		wrapper.vm.removeFileById('nonexistent');
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
 	});
 
 	test('file preview area hidden when inputFiles is empty', () => {
@@ -374,5 +399,68 @@ describe('ChatInput', () => {
 		expect(wrapper.vm.inputFiles).toHaveLength(1);
 		expect(wrapper.vm.inputFiles[0].name).toBe('sel.txt');
 		expect(evt.target.value).toBe('');
+	});
+
+	// --- fileUploadState 相关 ---
+	test('__fileStatus 返回对应文件的上传状态', () => {
+		const wrapper = createWrapper({
+			fileUploadState: { f1: { status: 'uploading', progress: 0.5 } },
+		});
+		expect(wrapper.vm.__fileStatus('f1')).toBe('uploading');
+		expect(wrapper.vm.__fileStatus('unknown')).toBeNull();
+	});
+
+	test('__filePercent 返回四舍五入的百分比', () => {
+		const wrapper = createWrapper({
+			fileUploadState: { f1: { status: 'uploading', progress: 0.734 } },
+		});
+		expect(wrapper.vm.__filePercent('f1')).toBe(73);
+	});
+
+	test('上传中的文件卡片显示进度覆层且隐藏移除按钮', async () => {
+		const wrapper = createWrapper({
+			fileUploadState: { a: { status: 'uploading', progress: 0.6 } },
+		});
+		await wrapper.setData({
+			inputFiles: [{ id: 'a', isImg: false, name: 'a.txt', url: null, ext: 'txt', label: '1 KB' }],
+		});
+		// 进度覆层
+		expect(wrapper.text()).toContain('60%');
+		// 移除按钮不渲染（v-if="!__fileStatus(f.id)"）
+		const removeBtn = wrapper.findAll('button').filter((b) => b.text().includes('i-lucide-x'));
+		expect(removeBtn).toHaveLength(0);
+	});
+
+	test('restoreFiles 保留 remotePath 字段', () => {
+		const wrapper = createWrapper();
+		const blob = new Blob(['data']);
+		wrapper.vm.restoreFiles([
+			{ id: 'f1', name: 'a.txt', isImg: false, file: blob, remotePath: '/remote/a.txt' },
+		]);
+		expect(wrapper.vm.inputFiles).toHaveLength(1);
+		expect(wrapper.vm.inputFiles[0].remotePath).toBe('/remote/a.txt');
+	});
+
+	test('clearInputFiles 释放所有 blob URL 并清空数组', () => {
+		const origRevoke = URL.revokeObjectURL;
+		URL.revokeObjectURL = vi.fn();
+		const wrapper = createWrapper();
+		wrapper.vm.inputFiles = [
+			{ id: 'a', url: 'blob:a' },
+			{ id: 'b', url: 'blob:b' },
+		];
+		wrapper.vm.clearInputFiles();
+		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+		URL.revokeObjectURL = origRevoke;
+	});
+
+	test('sending 时添加文件按钮 disabled', () => {
+		const wrapper = createWrapper({ sending: true });
+		const attachBtn = wrapper.findAllComponents(UButtonStub).find(
+			(c) => c.props('icon') === 'i-lucide-plus',
+		);
+		expect(attachBtn).toBeTruthy();
+		expect(attachBtn.props('disabled')).toBe(true);
 	});
 });

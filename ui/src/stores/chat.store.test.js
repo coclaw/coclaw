@@ -738,7 +738,7 @@ describe('useChatStore', () => {
 			expect(err.code).toBe('RTC_UNAVAILABLE');
 			// 状态清理
 			expect(store.sending).toBe(false);
-			expect(store.uploadProgress).toBeNull();
+			expect(store.fileUploadState).toBeNull();
 			// 乐观消息已移除
 			expect(store.messages.filter((m) => m._local)).toHaveLength(0);
 			// 未调用 agent RPC
@@ -778,17 +778,20 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const fakeFile = { type: 'image/png', size: 204800 };
-			const files = [{ isImg: true, file: fakeFile, name: 'photo.jpg', bytes: 204800 }];
+			const files = [{ id: 'f1', isImg: true, file: fakeFile, name: 'photo.jpg', bytes: 204800 }];
 			const sendPromise = store.sendMessage('test', files);
 
 			// 等待 onProgress 回调被注册
 			await vi.waitFor(() => expect(capturedOnProgress).toBeDefined());
-			// total=0 时 progress 应为 0
+			// total=0 时 progress 应为 0（首次调用无节流）
 			capturedOnProgress(50, 0);
-			expect(store.uploadProgress.files[0].progress).toBe(0);
-			// total>0 时正常计算
+			expect(store.fileUploadState.f1.progress).toBe(0);
+			// total>0 时正常计算（mock Date.now 跳过 100ms 节流间隔）
+			const origNow = Date.now;
+			Date.now = () => origNow() + 200;
 			capturedOnProgress(50, 100);
-			expect(store.uploadProgress.files[0].progress).toBe(0.5);
+			expect(store.fileUploadState.f1.progress).toBe(0.5);
+			Date.now = origNow;
 
 			// 完成上传以让 sendMessage 继续
 			resolveUpload({ path: '.coclaw/chat-files/main/2026-03/photo-a3f1.jpg', bytes: 204800 });
@@ -1075,7 +1078,7 @@ describe('useChatStore', () => {
 			const result = await sendPromise;
 			expect(result).toEqual({ accepted: false });
 			expect(store.sending).toBe(false);
-			expect(store.uploadProgress).toBeNull();
+			expect(store.fileUploadState).toBeNull();
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
@@ -1706,6 +1709,454 @@ describe('useChatStore', () => {
 			const result = await store.sendMessage('hello');
 			expect(result).toEqual({ accepted: false });
 			expect(store.messages.some((m) => m._local)).toBe(false);
+		});
+
+		test('纯文本发送：乐观消息带 _pending 标记，无上传阶段', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let capturedLocalMsgs;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					// 在 onAccepted 前捕获 _pending 状态
+					capturedLocalMsgs = store.messages.filter((m) => m._local).map((m) => ({
+						_pending: m._pending, role: m.message.role,
+					}));
+					options?.onAccepted?.({ runId: 'run-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await store.sendMessage('hello');
+			// onAccepted 前应有 _pending: true
+			expect(capturedLocalMsgs).toEqual([
+				{ _pending: true, role: 'user' },
+				{ _pending: true, role: 'assistant' },
+			]);
+			// 无上传阶段
+			expect(store.fileUploadState).toBeNull();
+		});
+
+		test('onAccepted 后 _pending 被清除', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const runsStore = useAgentRunsStore();
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-p' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await store.sendMessage('hello');
+			// onAccepted 后 streamingMsgs 中的消息 _pending 应为 false
+			const run = Object.values(runsStore.runs)[0];
+			expect(run).toBeTruthy();
+			for (const m of run.streamingMsgs) {
+				expect(m._pending).toBe(false);
+			}
+		});
+
+		test('上传文件后乐观消息带 _attachments（含 blob URL）', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+			postFile.mockReturnValue({
+				promise: Promise.resolve({ path: '.coclaw/chat-files/main/2026-03/pic.jpg', bytes: 1024 }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let capturedUser;
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					capturedUser = store.messages.find((m) => m._local && m.message.role === 'user');
+					options?.onAccepted?.({ runId: 'run-att' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const fakeFile = { type: 'image/png', size: 1024 };
+			const files = [{ id: 'f1', isImg: true, file: fakeFile, name: 'pic.jpg', bytes: 1024 }];
+			await store.sendMessage('看图', files);
+
+			expect(capturedUser._attachments).toHaveLength(1);
+			expect(capturedUser._attachments[0]).toMatchObject({
+				name: 'pic.jpg', isImg: true, url: 'blob:mock',
+			});
+		});
+
+		test('remotePath 跳过上传且立即调用 onFileUploaded', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+			postFile.mockClear();
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-rp' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const onFileUploaded = vi.fn();
+			const files = [{
+				id: 'f1', isImg: false, file: new Blob(['data']), name: 'doc.pdf',
+				bytes: 100, remotePath: '.coclaw/chat-files/main/2026-03/doc.pdf',
+			}];
+			await store.sendMessage('已上传的文件', files, { onFileUploaded });
+
+			// 不应调用 postFile
+			expect(postFile).not.toHaveBeenCalled();
+			// onFileUploaded 被调用
+			expect(onFileUploaded).toHaveBeenCalledTimes(1);
+			expect(onFileUploaded).toHaveBeenCalledWith(expect.objectContaining({ id: 'f1' }));
+		});
+
+		test('混合文件：有 remotePath 的跳过，无 remotePath 的正常上传', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+			postFile.mockClear();
+			postFile.mockReturnValue({
+				promise: Promise.resolve({ path: '.coclaw/chat-files/main/2026-03/new.pdf', bytes: 200 }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-mix' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const onFileUploaded = vi.fn();
+			const files = [
+				{ id: 'f1', isImg: false, file: new Blob(['old']), name: 'old.pdf', bytes: 100, remotePath: '.coclaw/existing.pdf' },
+				{ id: 'f2', isImg: false, file: new Blob(['new']), name: 'new.pdf', bytes: 200 },
+			];
+			await store.sendMessage('mixed', files, { onFileUploaded });
+
+			// postFile 仅对 f2 调用
+			expect(postFile).toHaveBeenCalledTimes(1);
+			expect(postFile).toHaveBeenCalledWith(conn, 'main', expect.any(String), 'new.pdf', expect.anything());
+			// onFileUploaded 两次
+			expect(onFileUploaded).toHaveBeenCalledTimes(2);
+			// f2 应设置 remotePath
+			expect(files[1].remotePath).toBe('.coclaw/chat-files/main/2026-03/new.pdf');
+		});
+
+		test('onFileUploaded 按上传顺序调用', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+
+			let callCount = 0;
+			postFile.mockImplementation(() => ({
+				promise: Promise.resolve({ path: `.coclaw/file-${++callCount}.pdf`, bytes: 100 }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			}));
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-seq' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const uploadedIds = [];
+			const files = [
+				{ id: 'a', file: new Blob(['a']), name: 'a.txt', bytes: 10 },
+				{ id: 'b', file: new Blob(['b']), name: 'b.txt', bytes: 20 },
+			];
+			await store.sendMessage('seq', files, {
+				onFileUploaded: (f) => uploadedIds.push(f.id),
+			});
+
+			expect(uploadedIds).toEqual(['a', 'b']);
+		});
+
+		test('fileUploadState 生命周期：pending → uploading → done → null', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+
+			const states = [];
+			let resolveUpload;
+			postFile.mockReturnValue({
+				promise: new Promise((resolve) => { resolveUpload = resolve; }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-lc' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [{ id: 'f1', file: new Blob(['d']), name: 'f.txt', bytes: 10 }];
+			const sendPromise = store.sendMessage('lc', files);
+
+			// 等待上传开始
+			await vi.waitFor(() => expect(store.fileUploadState?.f1?.status).toBe('uploading'));
+			states.push({ ...store.fileUploadState.f1 });
+
+			resolveUpload({ path: '.coclaw/f.txt', bytes: 10 });
+			await sendPromise;
+
+			// 最终 null
+			expect(store.fileUploadState).toBeNull();
+			// 中间态为 uploading
+			expect(states[0].status).toBe('uploading');
+		});
+
+		test('部分文件上传失败：已完成的 done，失败的 failed', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+
+			let callIdx = 0;
+			postFile.mockImplementation(() => {
+				callIdx++;
+				if (callIdx === 1) {
+					return {
+						promise: Promise.resolve({ path: '.coclaw/a.txt', bytes: 10 }),
+						cancel: vi.fn(),
+						set onProgress(_cb) {},
+					};
+				}
+				return {
+					promise: Promise.reject(new Error('upload failed')),
+					cancel: vi.fn(),
+					set onProgress(_cb) {},
+				};
+			});
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation(() => new Promise(() => {}));
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [
+				{ id: 'f1', file: new Blob(['a']), name: 'a.txt', bytes: 10 },
+				{ id: 'f2', file: new Blob(['b']), name: 'b.txt', bytes: 20 },
+			];
+			await expect(store.sendMessage('partial', files)).rejects.toThrow('upload failed');
+			// f1 上传成功应有 remotePath
+			expect(files[0].remotePath).toBe('.coclaw/a.txt');
+			// f2 无 remotePath
+			expect(files[1].remotePath).toBeUndefined();
+		});
+
+		test('全部文件有 remotePath 时不调用 postFile，直接发送', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+			postFile.mockClear();
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-skip' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [
+				{ id: 'f1', file: new Blob(['a']), name: 'a.txt', bytes: 10, remotePath: '.coclaw/a.txt' },
+				{ id: 'f2', file: new Blob(['b']), name: 'b.txt', bytes: 20, remotePath: '.coclaw/b.txt' },
+			];
+			const result = await store.sendMessage('all skipped', files);
+
+			expect(postFile).not.toHaveBeenCalled();
+			expect(result.accepted).toBe(true);
+			// message 仍包含附件信息块
+			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
+			expect(agentCall[1].message).toContain('coclaw-attachments');
+		});
+
+		test('断连重试时透传 onFileUploaded', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+			postFile.mockClear();
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let callCount = 0;
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					callCount++;
+					if (callCount === 1) {
+						// 第一次断连
+						const err = new Error('dc closed');
+						err.code = 'DC_CLOSED';
+						return Promise.reject(err);
+					}
+					// 重试时成功
+					options?.onAccepted?.({ runId: 'run-retry' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const uploadedIds = [];
+			const result = await store.sendMessage('retry', [], {
+				onFileUploaded: (f) => uploadedIds.push(f.id),
+			});
+
+			expect(result.accepted).toBe(true);
+			// 纯文本不触发 onFileUploaded，但关键是不报错
+		});
+
+		test('取消发送（上传阶段）：无本地消息、清理 fileUploadState', async () => {
+			const { postFile } = await import('../services/file-transfer.js');
+
+			let rejectFn;
+			postFile.mockReturnValue({
+				promise: new Promise((_r, reject) => { rejectFn = reject; }),
+				cancel() {
+					const err = new Error('cancelled');
+					err.code = 'CANCELLED';
+					rejectFn(err);
+				},
+				set onProgress(_cb) {},
+			});
+
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn({ rtc: { isReady: true } });
+			conn.rtc = { isReady: true, createDataChannel: vi.fn() };
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const files = [{ id: 'f1', file: new Blob(['d']), name: 'f.txt', bytes: 10 }];
+			const sendPromise = store.sendMessage('cancel-upload', files);
+
+			await vi.waitFor(() => expect(store.uploadingFiles).toBe(true));
+			store.cancelSend();
+
+			const result = await sendPromise;
+			expect(result).toEqual({ accepted: false });
+			// 上传阶段取消：不应有本地消息（乐观消息尚未创建）
+			expect(store.messages.some((m) => m._local)).toBe(false);
+			expect(store.fileUploadState).toBeNull();
 		});
 
 		// event:agent 监听器已由 clawsStore.__bridgeConn 集中管理

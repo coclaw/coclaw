@@ -110,7 +110,7 @@
 			ref="chatInput"
 			v-model="inputText"
 			:sending="chatStore?.isSending ?? false"
-			:upload-progress="chatStore?.uploadProgress ?? null"
+			:file-upload-state="chatStore?.fileUploadState ?? null"
 			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isLoadingChat) : (!routeClawId || isLoadingChat)))"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
@@ -548,10 +548,13 @@ export default {
 			this.scrollToBottom();
 
 			try {
-				const result = await this.chatStore.sendMessage(text, files);
+				const result = await this.chatStore.sendMessage(text, files, {
+					onFileUploaded: (f) => this.$refs.chatInput?.removeFileById(f.id),
+				});
 				if (!result.accepted) {
 					// 用闭包 draftKey 恢复，组件可能已 unmount
 					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
+					this.$refs.chatInput?.clearInputFiles();
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
@@ -564,6 +567,7 @@ export default {
 				this.notify.error(errMsg);
 				if (!this.chatStore?.__accepted) {
 					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
+					this.$refs.chatInput?.clearInputFiles();
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 			}
@@ -631,9 +635,12 @@ export default {
 				this.userScrolledUp = false;
 				this.scrollToBottom();
 				if (!this.chatStore) return;
-				const result = await this.chatStore.sendMessage(text, files);
+				const result = await this.chatStore.sendMessage(text, files, {
+					onFileUploaded: (f) => this.$refs.chatInput?.removeFileById(f.id),
+				});
 				if (!result.accepted) {
 					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
+					this.$refs.chatInput?.clearInputFiles();
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 				else {
@@ -646,6 +653,7 @@ export default {
 				this.notify.error(errMsg);
 				if (!this.chatStore?.__accepted) {
 					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
+					this.$refs.chatInput?.clearInputFiles();
 					this.$refs.chatInput?.restoreFiles(files);
 				}
 			}

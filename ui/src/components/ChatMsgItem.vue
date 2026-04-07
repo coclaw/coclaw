@@ -1,62 +1,69 @@
 <template>
-	<div class="px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
+	<div v-if="!item._pending || isUser" class="px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
 		<!-- user 消息 -->
 		<template v-if="isUser">
 			<div class="flex flex-col items-end">
-				<!-- 文本气泡 + inline 图片 -->
-				<div
-					v-if="item.textContent || item.images?.length"
-					class="max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-base leading-relaxed text-white whitespace-pre-wrap break-words"
-				>
-					<template v-if="item.textContent">{{ item.textContent }}</template>
-					<ChatImg
-						v-for="(img, i) in item.images"
-						:key="i"
-						:src="imgSrc(img)"
-						:filename="imgFilename(img, i)"
-						custom-class="mt-1 max-w-full"
-					/>
+				<!-- pending 态：仅显示发送中指示器 -->
+				<div v-if="item._pending" class="flex items-center gap-1.5 py-2 text-sm text-primary">
+					<UIcon name="i-lucide-loader-2" class="size-4 animate-spin" />
+					<span>{{ $t('chat.sending') }}</span>
 				</div>
-				<!-- 附件（图片 / 语音 / 文件） -->
-				<div
-					v-if="userAttachments.length"
-					class="mt-4 flex max-w-[85%] flex-wrap justify-end gap-2"
-				>
-					<template v-for="(att, idx) in userAttachments" :key="'att-' + idx">
-						<!-- 图片附件 -->
+				<template v-else>
+					<!-- 文本气泡 + inline 图片 -->
+					<div
+						v-if="item.textContent || item.images?.length"
+						class="max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-base leading-relaxed text-white whitespace-pre-wrap break-words"
+					>
+						<template v-if="item.textContent">{{ item.textContent }}</template>
 						<ChatImg
-							v-if="att.isImg && att.url"
-							:src="att.url"
-							:filename="attDisplayName(att)"
-							custom-class="max-w-full"
+							v-for="(img, i) in item.images"
+							:key="i"
+							:src="imgSrc(img)"
+							:filename="imgFilename(img, i)"
+							custom-class="mt-1 max-w-full"
 						/>
-						<!-- 语音附件 -->
-						<ChatAudio
-							v-else-if="att.isVoice"
-							:src="att.url"
-							:duration-ms="att.durationMs"
-							:size="att.size"
+					</div>
+					<!-- 附件（图片 / 语音 / 文件） -->
+					<div
+						v-if="userAttachments.length"
+						class="mt-4 flex max-w-[85%] flex-wrap justify-end gap-2"
+					>
+						<template v-for="(att, idx) in userAttachments" :key="'att-' + idx">
+							<!-- 图片附件 -->
+							<ChatImg
+								v-if="att.isImg && att.url"
+								:src="att.url"
+								:filename="attDisplayName(att)"
+								custom-class="max-w-full"
+							/>
+							<!-- 语音附件 -->
+							<ChatAudio
+								v-else-if="att.isVoice"
+								:src="att.url"
+								:duration-ms="att.durationMs"
+								:size="att.size"
+							/>
+							<!-- 文件附件 -->
+							<ChatFile
+								v-else
+								:name="attDisplayName(att)"
+								:size="att.size"
+								:src="att.url"
+							/>
+						</template>
+					</div>
+					<div class="mt-1.5 flex items-center gap-1 text-xs text-dimmed">
+						<span v-if="formattedTime">{{ formattedTime }}</span>
+						<UButton
+							class="cc-icon-btn"
+							:icon="copied ? 'i-lucide-check' : 'i-lucide-copy'"
+							variant="ghost"
+							color="neutral"
+							size="md"
+							@click="copyText(item.textContent)"
 						/>
-						<!-- 文件附件 -->
-						<ChatFile
-							v-else
-							:name="attDisplayName(att)"
-							:size="att.size"
-							:src="att.url"
-						/>
-					</template>
-				</div>
-				<div class="mt-1.5 flex items-center gap-1 text-xs text-dimmed">
-					<span v-if="formattedTime">{{ formattedTime }}</span>
-					<UButton
-						class="cc-icon-btn"
-						:icon="copied ? 'i-lucide-check' : 'i-lucide-copy'"
-						variant="ghost"
-						color="neutral"
-						size="md"
-						@click="copyText(item.textContent)"
-					/>
-				</div>
+					</div>
+				</template>
 			</div>
 		</template>
 

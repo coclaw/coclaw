@@ -33,6 +33,7 @@ const ChatImgStub = {
 const i18nMap = {
 	'chat.thought': '已思考',
 	'chat.taskIncomplete': 'chat.taskIncomplete',
+	'chat.sending': '发送中...',
 };
 
 function createWrapper(item = {}) {
@@ -341,5 +342,51 @@ describe('ChatMsgItem', () => {
 		expect(stepImgs.length).toBe(1);
 		expect(stepImgs[0].attributes('src')).toBe('data:image/png;base64,stepimg');
 		expect(stepImgs[0].classes()).toContain('max-h-32');
+	});
+
+	// --- _pending 状态 ---
+	test('user 消息 _pending 时显示发送中指示器，不显示消息内容', () => {
+		const wrapper = createWrapper({ type: 'user', textContent: '你好', _pending: true });
+		expect(wrapper.text()).toContain('发送中...');
+		expect(wrapper.text()).not.toContain('你好');
+		expect(wrapper.find('.bg-primary').exists()).toBe(false);
+	});
+
+	test('user 消息 _pending 时渲染 spinner 图标且使用 text-primary', () => {
+		const wrapper = createWrapper({ type: 'user', textContent: '你好', _pending: true });
+		const icon = wrapper.findAll('.icon-stub').find((s) => s.text().includes('i-lucide-loader-2'));
+		expect(icon).toBeTruthy();
+		expect(wrapper.find('.text-primary').exists()).toBe(true);
+	});
+
+	test('user 消息 _pending 时不显示复制按钮和时间戳', () => {
+		const ts = new Date(2026, 2, 1, 10, 30, 0).getTime();
+		const wrapper = createWrapper({ type: 'user', textContent: '你好', _pending: true, timestamp: ts });
+		// 无复制按钮
+		const copyBtns = wrapper.findAll('.u-btn-stub').filter((b) => b.text().includes('i-lucide-copy'));
+		expect(copyBtns).toHaveLength(0);
+		// 无时间戳
+		expect(wrapper.text()).not.toContain('10:30');
+	});
+
+	test('user 消息无 _pending 时正常渲染消息内容', () => {
+		const wrapper = createWrapper({ type: 'user', textContent: '你好' });
+		expect(wrapper.text()).toContain('你好');
+		expect(wrapper.text()).not.toContain('发送中...');
+		expect(wrapper.find('.bg-primary').exists()).toBe(true);
+	});
+
+	test('botTask _pending 时整个组件不渲染（包括外层 wrapper）', () => {
+		const wrapper = createWrapper({ type: 'botTask', resultText: '回复', _pending: true });
+		// 外层 div 的 v-if 为 false，整个组件内容为空
+		expect(wrapper.find('.px-3').exists()).toBe(false);
+		expect(wrapper.find('.md-stub').exists()).toBe(false);
+		expect(wrapper.find('img[alt="claw"]').exists()).toBe(false);
+	});
+
+	test('botTask 无 _pending 时正常渲染', () => {
+		const wrapper = createWrapper({ type: 'botTask', resultText: '回复' });
+		expect(wrapper.find('.px-3').exists()).toBe(true);
+		expect(wrapper.find('.md-stub').exists()).toBe(true);
 	});
 });

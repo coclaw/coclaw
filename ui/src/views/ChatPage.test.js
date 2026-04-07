@@ -18,6 +18,8 @@ vi.mock('../components/ChatMsgItem.vue', () => ({
 	},
 }));
 const mockRestoreFiles = vi.fn();
+const mockClearInputFiles = vi.fn();
+const mockRemoveFileById = vi.fn();
 const mockAddFiles = vi.fn();
 vi.mock('../components/ChatInput.vue', () => ({
 	default: {
@@ -27,6 +29,8 @@ vi.mock('../components/ChatInput.vue', () => ({
 		template: '<div class="input-stub" />',
 		methods: {
 			restoreFiles: (...args) => mockRestoreFiles(...args),
+			clearInputFiles: (...args) => mockClearInputFiles(...args),
+			removeFileById: (...args) => mockRemoveFileById(...args),
 			addFiles: (...args) => mockAddFiles(...args),
 		},
 	},
@@ -306,8 +310,29 @@ describe('ChatPage send message', () => {
 		input.vm.$emit('send', { text: 'hello', files: [] });
 		await flushPromises();
 
-		expect(sendSpy).toHaveBeenCalledWith('hello', []);
+		expect(sendSpy).toHaveBeenCalledWith('hello', [], expect.objectContaining({ onFileUploaded: expect.any(Function) }));
 		expect(wrapper.vm.inputText).toBe('');
+	});
+
+	test('onFileUploaded 回调调用 chatInput.removeFileById', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		// sendMessage 在执行过程中调用 onFileUploaded
+		vi.spyOn(chatStore, 'sendMessage').mockImplementation(async (_text, _files, opts) => {
+			opts?.onFileUploaded?.({ id: 'f1' });
+			opts?.onFileUploaded?.({ id: 'f2' });
+			return { accepted: true };
+		});
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [{ id: 'f1' }, { id: 'f2' }] });
+		await flushPromises();
+
+		expect(mockRemoveFileById).toHaveBeenCalledTimes(2);
+		expect(mockRemoveFileById).toHaveBeenCalledWith('f1');
+		expect(mockRemoveFileById).toHaveBeenCalledWith('f2');
 	});
 
 	test('发送失败时恢复输入框文本和文件', async () => {
@@ -324,6 +349,7 @@ describe('ChatPage send message', () => {
 		await flushPromises();
 
 		expect(wrapper.vm.inputText).toBe('hello');
+		expect(mockClearInputFiles).toHaveBeenCalled();
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 
@@ -344,6 +370,7 @@ describe('ChatPage send message', () => {
 		expect(wrapper.vm.inputText).toBe('hello');
 		// 未知错误码 → 通用友好文案
 		expect(mockNotify.error).toHaveBeenCalledWith('Something went wrong');
+		expect(mockClearInputFiles).toHaveBeenCalled();
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 
@@ -492,7 +519,8 @@ describe('ChatPage send message', () => {
 		expect(mockNotify.error).toHaveBeenCalledWith('File transfer unavailable');
 		// 文本回填到草稿
 		expect(wrapper.vm.inputText).toBe('look at this');
-		// 文件恢复
+		// 文件恢复（先 clear 再 restore）
+		expect(mockClearInputFiles).toHaveBeenCalled();
 		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
 	});
 

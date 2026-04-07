@@ -53,12 +53,14 @@ function groupSessionMessages(entries) {
 				images,
 				attachments: attachments.length ? attachments : (localAttachments || []),
 				timestamp: msg.timestamp ?? null,
+				_pending: !!entry._pending,
 			});
 		} else if (role === 'assistant') {
 			if (!currentTask) {
 				currentTask = createBotTask(entry.id);
 			}
 			processAssistant(currentTask, msg);
+			currentTask._pending = currentTask._pending || !!entry._pending;
 			if (entry._streaming) {
 				currentTask.isStreaming = true;
 			}
@@ -110,6 +112,7 @@ function createBotTask(id) {
 		attachments: [],
 		isStreaming: false,
 		startTime: null,
+		_pending: false,
 	};
 }
 
