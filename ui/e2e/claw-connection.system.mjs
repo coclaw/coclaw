@@ -160,7 +160,7 @@ await runTest('应用层心跳 ping 收到 pong', async () => {
 		// 直接访问内部 ws 发 ping，监听原始消息
 		const pongReceived = new Promise((resolve, reject) => {
 			const timer = setTimeout(() => reject(new Error('pong timeout')), 3000);
-			const origOnMessage = conn.__ws.onmessage;
+			const _origOnMessage = conn.__ws.onmessage;
 			conn.__ws.addEventListener('message', function onMsg(event) {
 				try {
 					const data = JSON.parse(String(event.data));

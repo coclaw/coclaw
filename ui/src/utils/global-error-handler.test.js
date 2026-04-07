@@ -10,12 +10,10 @@ function getErrorHandler() {
 describe('global-error-handler', () => {
 	let mod;
 	let consoleErrorSpy;
-	let addEventSpy;
-
 	beforeEach(async () => {
 		vi.resetModules();
 		consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-		addEventSpy = vi.spyOn(window, 'addEventListener');
+		vi.spyOn(window, 'addEventListener');
 		mod = await import('./global-error-handler.js');
 	});
 

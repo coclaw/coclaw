@@ -366,7 +366,6 @@ describe('ClawConnection – request() 超时语义', () => {
 
 		// 请求已发送
 		expect(mockRtc.send).toHaveBeenCalledTimes(1);
-		const reqId = mockRtc.send.mock.calls[0][0].id;
 
 		// 再过 2.5s（总计 4.3s，但 requestTimeout 从发送时开始计 3s）
 		vi.advanceTimersByTime(2999);

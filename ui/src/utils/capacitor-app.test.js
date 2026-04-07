@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 // --- hoisted mocks ---
 const mockCheckPending = vi.hoisted(() => vi.fn().mockResolvedValue({}));

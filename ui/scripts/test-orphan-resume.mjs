@@ -148,7 +148,7 @@ async function main() {
 	const ws = new WebSocket(wsUrl);
 	await new Promise((resolve, reject) => {
 		ws.addEventListener('open', () => resolve(), { once: true });
-		ws.addEventListener('error', (e) => reject(new Error('ws connect failed')), { once: true });
+		ws.addEventListener('error', (_e) => reject(new Error('ws connect failed')), { once: true });
 	});
 	console.log('    WS 已连接');
 

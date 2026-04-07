@@ -58,7 +58,7 @@ function mockCompressed(thumbBlob) {
 }
 
 /** 模拟 compressImage 返回原图（小图/无需压缩） */
-function mockNotCompressed(blob) {
+function mockNotCompressed(_blob) {
 	mockCompressImage.mockImplementation((b) => Promise.resolve({
 		blob: b,
 		width: 100,

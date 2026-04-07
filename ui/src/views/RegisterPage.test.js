@@ -62,7 +62,7 @@ function createWrapper({ query = {} } = {}) {
 		global: {
 			plugins: [pinia],
 			stubs: {
-				UInput: { props: ['modelValue'], template: '<input />' },
+				UInput: { props: ['modelValue'], template: '<div />', inheritAttrs: false },
 				UButton: { template: '<button><slot /></button>' },
 				UFormField: { props: ['label', 'name'], template: '<div><slot /></div>' },
 				RouterLink: { props: ['to'], template: '<a><slot /></a>' },

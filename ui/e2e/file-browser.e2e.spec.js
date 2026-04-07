@@ -391,7 +391,7 @@ test.describe('文件浏览器 @file', () => {
 		await expect(agentCard).toBeVisible({ timeout: 15_000 });
 
 		// AgentCard 中应有文件夹图标按钮
-		const folderBtn = agentCard.locator('button').filter({ has: page.locator('[class*="i-lucide-folder"]') });
+		const _folderBtn = agentCard.locator('button').filter({ has: page.locator('[class*="i-lucide-folder"]') });
 		// Nuxt UI 渲染 icon 为 img，换用更通用的方式
 		const btns = agentCard.locator('button');
 		// AgentCard 动作区有两个按钮：chat + files

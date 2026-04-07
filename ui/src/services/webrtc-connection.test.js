@@ -27,7 +27,6 @@ import {
 	WebRtcConnection,
 	initRtc,
 	initRtcForClaw,
-	initRtcAndSelectTransport,
 	closeRtcForClaw,
 	__resetRtcInstances,
 	__getRtcInstance,

@@ -2183,7 +2183,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		}
 
 		// 第 9 次不应安排
-		const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+		const _timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 		store.__scheduleRetry('50');
 		// setTimeout 可能被 vitest 内部调用，检查 mockInitRtc
 		vi.restoreAllMocks();

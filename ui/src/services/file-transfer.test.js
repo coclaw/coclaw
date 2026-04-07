@@ -1447,7 +1447,7 @@ describe('uploadFile — 分支覆盖补充', () => {
 			size: 100,
 			stream() {
 				return new ReadableStream({
-					pull(controller) {
+					pull(_controller) {
 						// 先 enqueue 一些数据，然后通过外部触发错误
 						return new Promise((_, rej) => { rejectReader = rej; });
 					},

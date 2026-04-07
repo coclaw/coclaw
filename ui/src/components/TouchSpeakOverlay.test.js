@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 
 const {
-	mockNotify, mockWsDestroy, mockRecordDestroy, mockStartRecording, mockWsCreate,
+	mockNotify, mockWsDestroy, mockStartRecording, mockWsCreate,
 } = vi.hoisted(() => {
 	const mockWsDestroy = vi.fn();
 	const mockRecordDestroy = vi.fn();

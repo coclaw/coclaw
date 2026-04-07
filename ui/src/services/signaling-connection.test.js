@@ -35,7 +35,7 @@ class MockWebSocket {
 		if (this.readyState !== 1) throw new Error('ws not open');
 		this.sent.push(data);
 	}
-	close(code, reason) {
+	close(code, _reason) {
 		this.closed = true;
 		this.closeCode = code;
 		this.readyState = 3;
@@ -152,7 +152,7 @@ describe('SignalingConnection – log 事件', () => {
 
 describe('SignalingConnection – disconnect()', () => {
 	test('主动断开后不自动重连', () => {
-		const { conn, ws } = makeConnected();
+		const { conn } = makeConnected();
 		conn.disconnect();
 		expect(conn.state).toBe('disconnected');
 		vi.advanceTimersByTime(60_000);
@@ -307,7 +307,7 @@ describe('SignalingConnection – 心跳', () => {
 	});
 
 	test('连续 miss 后关闭 WS 并重连', () => {
-		const { conn, ws } = makeConnected();
+		const { conn } = makeConnected();
 		// 模拟不收到任何 pong → 心跳超时
 		vi.advanceTimersByTime(45_000); // 第一次 miss
 		vi.advanceTimersByTime(45_000); // 第二次 miss → 关闭 WS
@@ -328,7 +328,7 @@ describe('SignalingConnection – 重连', () => {
 	});
 
 	test('指数退避：第二次重连延迟更长', () => {
-		const { conn, ws } = makeConnected();
+		const { ws } = makeConnected();
 		ws.simulateClose(1006);
 		// 第一次重连 ~1s（含 jitter 最大 1.3s）
 		vi.advanceTimersByTime(1500);
@@ -544,7 +544,7 @@ describe('SignalingConnection – probe()', () => {
 	});
 
 	test('探测超时触发 forceReconnect', () => {
-		const { conn, ws } = makeConnected();
+		const { conn } = makeConnected();
 		conn.probe();
 		// 不回复 pong → 2.5s 后超时
 		vi.advanceTimersByTime(2600);
@@ -609,7 +609,7 @@ describe('SignalingConnection – catch 路径日志', () => {
 	});
 
 	test('JSON 解析失败时输出 warn', () => {
-		const { conn, ws } = makeConnected();
+		const { ws } = makeConnected();
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		ws.simulateMessage('not valid json {{{');
 		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[SigConn] message parse failed'), expect.any(String));
