@@ -177,6 +177,28 @@ test('WebRtcPeer: handleIce 正常添加', async () => {
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: handleIce addIceCandidate 失败时不抛异常', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_021'));
+	const pc = PC.instances[0];
+	pc.addIceCandidate = async () => { throw new Error('remote description not set'); };
+
+	// 不应抛异常
+	await peer.handleSignaling({
+		type: 'rtc:ice',
+		fromConnId: 'c_021',
+		payload: { candidate: 'cand', sdpMid: '0', sdpMLineIndex: 0 },
+	});
+
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: handleIce 无 session 时忽略', async () => {
 	const peer = new WebRtcPeer({
 		onSend: () => {},

@@ -236,8 +236,12 @@ export class WebRtcPeer {
 			this.__logDebug(`ICE candidate from ${connId} but no session`);
 			return;
 		}
-		await session.pc.addIceCandidate(msg.payload);
-		this.__logDebug(`[${connId}] ICE candidate added`);
+		try {
+			await session.pc.addIceCandidate(msg.payload);
+			this.__logDebug(`[${connId}] ICE candidate added`);
+		} catch (err) {
+			this.__logDebug(`[${connId}] addIceCandidate failed: ${err?.message}`);
+		}
 	}
 
 	__setupDataChannel(connId, dc) {

@@ -30,6 +30,14 @@ const _probeInProgress = new Map();
 /** app 进入后台的时间戳（用于前台恢复时判断后台时长） */
 let _backgroundAt = 0;
 
+/**
+ * 两层重试结构：
+ * - 内层：__ensureRtc 每次调用内部循环 RTC_BUILD_MAX_RETRIES 次 initRtc
+ * - 外层：__scheduleRetry 指数退避，最多 MAX_BACKOFF_RETRIES 轮
+ * 理论最大 initRtc 调用次数 = 3 × 5 = 15。
+ * 实际中 SSE 快照、用户操作、前台恢复等外部事件也会触发重连，
+ * 退避重试仅作为兜底机制。
+ */
 const RTC_BUILD_MAX_RETRIES = 3;
 /** DC probe 超时 */
 const DC_PROBE_TIMEOUT_MS = 3_000;
@@ -43,8 +51,8 @@ const SHORT_BACKGROUND_MS = 25_000;
 const RETRY_BACKOFF_BASE_MS = 3_000;
 /** 退避重试：最大间隔 */
 const RETRY_BACKOFF_MAX_MS = 120_000;
-/** 退避重试：最大次数 */
-export const MAX_BACKOFF_RETRIES = 8;
+/** 退避重试：最大次数（兜底性质，外部事件通常更早触发重连） */
+export const MAX_BACKOFF_RETRIES = 5;
 /** 退避重试状态（clawId → { count: number, timer: number|null }） */
 const _rtcRetryState = new Map();
 /** 运行时字段（server snapshot / SSE 事件不应覆盖） */
@@ -539,7 +547,7 @@ export const useClawsStore = defineStore('claws', {
 			for (const id of Object.keys(this.byId)) {
 				if (_rtcInitInProgress.get(id)) continue;
 				const claw = this.byId[id];
-				if (!claw?.dcReady) continue;
+				if (!claw?.online || !claw?.initialized) continue;
 				const conn = useClawConnections().get(id);
 				const rtc = conn?.rtc;
 				if (!rtc) continue;

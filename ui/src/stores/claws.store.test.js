@@ -1427,7 +1427,7 @@ describe('__bridgeSignaling 事件处理 — foreground-resume', () => {
 		await p;
 	});
 
-	test('network:online + typeChanged + dcReady=false → 跳过', async () => {
+	test('network:online + typeChanged + 未初始化 → 跳过', async () => {
 		const store = useClawsStore();
 		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn() };
 		const fakeConn = {
@@ -1437,7 +1437,7 @@ describe('__bridgeSignaling 事件处理 — foreground-resume', () => {
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.addOrUpdateClaw({ id: '94', name: 'Bot', online: true });
-		store.byId['94'].dcReady = false; // DC 未就绪
+		store.byId['94'].initialized = false; // 未完成初始化
 		store.__bridgeConn('94');
 		mockCloseRtcForBot.mockClear();
 
@@ -2903,10 +2903,10 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 
-		for (let i = 0; i < 9; i++) {
+		for (let i = 0; i < 6; i++) {
 			store.__scheduleRetry('50');
 		}
-		// 第 9 次超出 MAX_BACKOFF_RETRIES(8)，应归零
+		// 第 6 次超出 MAX_BACKOFF_RETRIES(5)，应归零
 		expect(store.byId['50'].retryCount).toBe(0);
 		expect(store.byId['50'].retryNextAt).toBe(0);
 	});
@@ -2934,14 +2934,14 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 			return origSetTimeout(fn, delay);
 		});
 
-		for (let i = 0; i < 8; i++) {
+		for (let i = 0; i < 5; i++) {
 			store.__scheduleRetry('50');
 		}
 
 		vi.restoreAllMocks();
 
-		// 3s, 6s, 12s, 24s, 48s, 96s, 120s(cap), 120s(cap)
-		expect(delays).toEqual([3_000, 6_000, 12_000, 24_000, 48_000, 96_000, 120_000, 120_000]);
+		// 3s, 6s, 12s, 24s, 48s
+		expect(delays).toEqual([3_000, 6_000, 12_000, 24_000, 48_000]);
 	});
 
 	test('clearRetry 后旧 timer callback 不再执行', () => {
