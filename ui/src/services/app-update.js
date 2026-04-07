@@ -39,7 +39,7 @@ async function pollVersion() {
 				scheduleReload();
 				return; // 停止轮询
 			}
-			console.debug('[app-update] version unchanged: %s', data.version);
+			// console.debug('[app-update] version unchanged: %s', data.version); // 不再需要了
 		}
 	} catch (err) {
 		console.warn('[app-update] poll failed:', err.message || err);

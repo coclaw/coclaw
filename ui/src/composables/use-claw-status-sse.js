@@ -48,7 +48,9 @@ export function useClawStatusSse(clawsStore) {
 			resetHbTimer();
 			try {
 				const data = JSON.parse(evt.data);
-				console.debug('[SSE] event=%s', data.event, data);
+				if (data.event !== 'heartbeat') {
+					console.info('[SSE] event=%s', data.event, data);
+				}
 				switch (data.event) {
 					case 'claw.snapshot':
 						clawsStore.applySnapshot(data.items);
