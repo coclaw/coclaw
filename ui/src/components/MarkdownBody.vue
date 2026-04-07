@@ -10,7 +10,7 @@
 </template>
 
 <script>
-import { renderMarkdown, reviseMdText, replaceCoclawFileImages } from '../utils/markdown-engine.js';
+import { renderMarkdown, reviseMdText, preprocessCoclawFileLinks } from '../utils/markdown-engine.js';
 import { openExternalUrl } from '../utils/external-url.js';
 import { writeClipboardText } from '../utils/clipboard.js';
 import { useNotify } from '../composables/use-notify.js';
@@ -50,7 +50,7 @@ export default {
 	computed: {
 		revisedText() {
 			let t = reviseMdText(this.text);
-			t = replaceCoclawFileImages(t);
+			t = preprocessCoclawFileLinks(t);
 			return t;
 		},
 		mdHtml() {

@@ -139,6 +139,19 @@ describe('extractCoclawPath', () => {
 		expect(extractCoclawPath('coclaw-file:')).toBeNull();
 	});
 
+	test('decodes percent-encoded Chinese characters', () => {
+		expect(extractCoclawPath('coclaw-file:.coclaw/1935.7%E3%80%8A%E4%B8%AD%E4%BA%9A%E3%80%8B.pdf'))
+			.toBe('.coclaw/1935.7《中亚》.pdf');
+	});
+
+	test('decodes percent-encoded spaces', () => {
+		expect(extractCoclawPath('coclaw-file:output/my%20file.txt')).toBe('output/my file.txt');
+	});
+
+	test('handles already decoded path unchanged', () => {
+		expect(extractCoclawPath('coclaw-file:output/简单.txt')).toBe('output/简单.txt');
+	});
+
 	test('returns null for non-coclaw-file string', () => {
 		expect(extractCoclawPath('https://example.com')).toBeNull();
 	});

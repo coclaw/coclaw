@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { renderMarkdown, reviseMdText, replaceCoclawFileImages } from './markdown-engine.js';
+import { renderMarkdown, reviseMdText, preprocessCoclawFileLinks } from './markdown-engine.js';
 
 describe('reviseMdText', () => {
 	test('空值返回空字符串', () => {
@@ -77,43 +77,54 @@ describe('renderMarkdown', () => {
 	});
 });
 
-describe('replaceCoclawFileImages', () => {
-	test('将 coclaw-file 图片语法转为链接语法', () => {
+describe('preprocessCoclawFileLinks', () => {
+	test('图片语法转为带尖括号的链接语法', () => {
 		const input = '![趋势图](coclaw-file:output/trend.png)';
-		const result = replaceCoclawFileImages(input);
-		expect(result).toContain('[🖼\u00A0趋势图](coclaw-file:output/trend.png)');
-		expect(result).not.toContain('![');
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[🖼\u00A0趋势图](<coclaw-file:output/trend.png>)');
 	});
 
 	test('alt 为空时用文件名', () => {
 		const input = '![](coclaw-file:output/chart.png)';
-		const result = replaceCoclawFileImages(input);
-		expect(result).toContain('[🖼\u00A0chart.png](coclaw-file:output/chart.png)');
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[🖼\u00A0chart.png](<coclaw-file:output/chart.png>)');
+	});
+
+	test('普通链接加尖括号', () => {
+		const input = '[报告](coclaw-file:output/report.pdf)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[报告](<coclaw-file:output/report.pdf>)');
+	});
+
+	test('含空格和中文字符的路径正确处理', () => {
+		const input = '[文档](coclaw-file:.coclaw/chat-files/main/2026-04/1935.7《中亚事务》-056e.pdf)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[文档](<coclaw-file:.coclaw/chat-files/main/2026-04/1935.7《中亚事务》-056e.pdf>)');
 	});
 
 	test('不影响普通图片语法', () => {
 		const input = '![alt](https://example.com/img.png)';
-		const result = replaceCoclawFileImages(input);
+		const result = preprocessCoclawFileLinks(input);
 		expect(result).toBe(input);
 	});
 
-	test('不影响 coclaw-file 链接语法', () => {
-		const input = '[报告](coclaw-file:output/report.pdf)';
-		const result = replaceCoclawFileImages(input);
+	test('不影响普通链接语法', () => {
+		const input = '[link](https://example.com)';
+		const result = preprocessCoclawFileLinks(input);
 		expect(result).toBe(input);
 	});
 
-	test('处理多个图片', () => {
-		const input = '![a](coclaw-file:a.png)\n\n![b](coclaw-file:b.jpg)';
-		const result = replaceCoclawFileImages(input);
-		expect(result).toContain('[🖼\u00A0a](coclaw-file:a.png)');
-		expect(result).toContain('[🖼\u00A0b](coclaw-file:b.jpg)');
+	test('处理多个混合链接', () => {
+		const input = '![a](coclaw-file:a.png)\n\n[b](coclaw-file:b.pdf)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toContain('[🖼\u00A0a](<coclaw-file:a.png>)');
+		expect(result).toContain('[b](<coclaw-file:b.pdf>)');
 		expect(result).not.toContain('![');
 	});
 
 	test('空值或无 coclaw-file 时原样返回', () => {
-		expect(replaceCoclawFileImages(null)).toBeNull();
-		expect(replaceCoclawFileImages('')).toBe('');
-		expect(replaceCoclawFileImages('普通文本')).toBe('普通文本');
+		expect(preprocessCoclawFileLinks(null)).toBeNull();
+		expect(preprocessCoclawFileLinks('')).toBe('');
+		expect(preprocessCoclawFileLinks('普通文本')).toBe('普通文本');
 	});
 });

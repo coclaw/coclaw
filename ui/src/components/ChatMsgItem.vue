@@ -20,7 +20,7 @@
 				<!-- 附件（图片 / 语音 / 文件） -->
 				<div
 					v-if="userAttachments.length"
-					class="mt-2 flex max-w-[85%] flex-wrap justify-end gap-2"
+					class="mt-4 flex max-w-[85%] flex-wrap justify-end gap-2"
 				>
 					<template v-for="(att, idx) in userAttachments" :key="'att-' + idx">
 						<!-- 图片附件 -->
@@ -63,7 +63,7 @@
 		<!-- botTask 消息 -->
 		<template v-else>
 			<!-- 头像 + 思考/折叠行 -->
-			<div class="mb-2 flex items-center gap-2">
+			<div class="mb-3 flex items-center gap-2">
 				<span
 					v-if="clawEmoji && !agentDisplay?.avatarUrl"
 					class="size-6 shrink-0 rounded-sm bg-accented flex items-center justify-center text-sm leading-none"
@@ -167,7 +167,7 @@
 			<!-- agent 文件附件 -->
 			<div
 				v-if="agentAttachments.length"
-				class="mt-2 flex max-w-[85%] flex-wrap gap-2"
+				class="mt-4 flex max-w-[85%] flex-wrap gap-2"
 			>
 				<template v-for="(att, idx) in agentAttachments" :key="'agent-att-' + idx">
 					<ChatImg

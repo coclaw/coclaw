@@ -65,17 +65,24 @@ export function reviseMdText(text) {
 }
 
 /**
- * 将 markdown 中的 coclaw-file 图片语法转为链接语法。
- * ![alt](coclaw-file:path) → [🖼 alt](coclaw-file:path)
- * Phase 2 实现内联图片渲染后，此预处理将不再需要。
+ * 预处理 markdown 中的 coclaw-file 链接，确保 markdown-it 能正确解析。
+ * - 图片语法转链接：![alt](coclaw-file:path) → [🖼 alt](<coclaw-file:path>)
+ * - 普通链接加尖括号：[text](coclaw-file:path) → [text](<coclaw-file:path>)
+ *
+ * 尖括号包裹 URL 是 CommonMark 标准语法，允许 URL 中包含空格、中文等特殊字符，
+ * 解决 markdown-it 无法解析含非 ASCII 字符路径的问题。
  * @param {string} text
  * @returns {string}
  */
-export function replaceCoclawFileImages(text) {
+export function preprocessCoclawFileLinks(text) {
 	if (!text || !text.includes('coclaw-file:')) return text;
-	return text.replace(/!\[([^\]]*)\]\((coclaw-file:[^)]+)\)/g, (_, alt, url) => {
-		const label = alt || url.slice('coclaw-file:'.length).split('/').pop();
-		return `[\u{1F5BC}\u00A0${label}](${url})`;
+	return text.replace(/(!?)\[([^\]]*)\]\((coclaw-file:[^)]+)\)/g, (_, bang, label, url) => {
+		if (bang === '!') {
+			// 图片语法 → 链接语法（Phase 2 实现内联渲染后此转换将移除）
+			const displayLabel = label || url.slice('coclaw-file:'.length).split('/').pop();
+			return `[\u{1F5BC}\u00A0${displayLabel}](<${url}>)`;
+		}
+		return `[${label}](<${url}>)`;
 	});
 }
 

@@ -73,6 +73,7 @@ export function isCoclawScheme(url) {
 /**
  * 从短格式 coclaw-file:path 中提取 workspace 相对路径。
  * 仅处理无 authority 的短格式；完整 URL 返回 null。
+ * markdown-it 会对非 ASCII 字符进行 percent-encoding，此处自动解码。
  * @param {string} url
  * @returns {string|null}
  */
@@ -81,7 +82,12 @@ export function extractCoclawPath(url) {
 	const rest = url.slice(SCHEME_PREFIX.length);
 	// 以 // 开头为完整 URL，非短格式
 	if (rest.startsWith('//')) return null;
-	return rest || null;
+	if (!rest) return null;
+	try {
+		return decodeURI(rest);
+	} catch {
+		return rest;
+	}
 }
 
 /**
