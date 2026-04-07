@@ -433,7 +433,7 @@ test('deleteFile: lstat 非 ENOENT 错误透传', async () => {
 	const dir = await makeTmpDir();
 	try {
 		await fs.writeFile(nodePath.join(dir, 'perm.txt'), 'x');
-		const handler = createFileHandler({
+		const _handler = createFileHandler({
 			resolveWorkspace: async () => dir,
 			logger: silentLogger(),
 			deps: {

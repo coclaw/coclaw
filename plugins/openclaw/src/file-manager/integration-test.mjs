@@ -15,9 +15,8 @@
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
 import nodePath from 'node:path';
-import { createFileHandler, validatePath } from './handler.js';
+import { createFileHandler } from './handler.js';
 
 // --- helpers ---
 
@@ -351,7 +350,7 @@ try {
 			ids.push({ dc, content, i });
 		}
 		await new Promise((r) => setTimeout(r, 200));
-		for (const { dc, content, i } of ids) {
+		for (const { dc, content, i: _i } of ids) {
 			dc.onmessage({ data: content });
 			dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
 		}

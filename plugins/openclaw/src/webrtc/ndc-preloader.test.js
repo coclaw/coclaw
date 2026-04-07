@@ -270,8 +270,6 @@ test('preloadNdc: ndc wrapper 对 iceServers 的 username/credential 做 percent
 		],
 	};
 	const pc = new result.PeerConnection(config);
-	// 验证传给底层的 config 中 credential 已编码
-	const servers = pc.__config?.iceServers ?? config.iceServers;
 	// wrapper 会在 super() 前修改 config，底层 mock 没有存储，
 	// 但只要 constructor 不抛即视为编码成功（含冒号的原始值会导致 URL 解析失败）
 	assert.ok(pc);
@@ -372,7 +370,7 @@ test('preloadNdc: default pluginRoot resolves to package root (contains vendor/)
 	// 通过不注入 pluginRoot，让 resolvePaths 使用默认路径，验证 src 路径包含正确的 vendor 目录。
 	let capturedSrc;
 	const logs = [];
-	const result = await preloadNdc({
+	const _result = await preloadNdc({
 		fs: {
 			access: async () => { throw new Error('ENOENT'); },
 			copyFile: async () => {},
@@ -481,7 +479,7 @@ test('preloadNdc: initLogger callback 内异常不传播', async () => {
 	let capturedCb = null;
 	let preloadDone = false;
 	const { deps } = successDeps({
-		remoteLog: (text) => {
+		remoteLog: (_text) => {
 			// preload 阶段正常工作；只在 callback 被 native 调用时才抛异常
 			if (preloadDone) throw new Error('remoteLog crash');
 		},

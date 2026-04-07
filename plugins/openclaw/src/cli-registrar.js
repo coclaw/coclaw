@@ -87,7 +87,7 @@ function handleRpcError(result, fallbackMsg) {
  * @param {object} ctx.logger - 日志实例
  * @param {object} [deps] - 可注入依赖（测试用）
  */
-export function registerCoclawCli({ program, logger }, deps = {}) {
+export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 	const coclaw = program
 		.command('coclaw')
 		.description('CoClaw bind/unbind commands');
