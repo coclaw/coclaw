@@ -346,7 +346,7 @@ describe('SignalingConnection – 前台恢复', () => {
 		platformMod.isCapacitorApp = false;
 	});
 
-	test('Capacitor + visibility → 发出 foreground-resume（含 payload）', () => {
+	test('Capacitor + visibility → 发出 foreground-resume（含 source）', () => {
 		platformMod.isCapacitorApp = true;
 		const { conn } = makeConnected();
 		const events = [];
@@ -355,7 +355,7 @@ describe('SignalingConnection – 前台恢复', () => {
 		conn.__handleForegroundResume('visibility');
 		expect(events.length).toBe(1);
 		expect(events[0]).toHaveProperty('source', 'visibility');
-		expect(events[0]).toHaveProperty('elapsed');
+		expect(events[0]).not.toHaveProperty('elapsed');
 	});
 
 	test('桌面 visibility → 不发出 foreground-resume', () => {
@@ -389,7 +389,7 @@ describe('SignalingConnection – 前台恢复', () => {
 		expect(MockWebSocket.instances.length).toBeGreaterThan(1);
 	});
 
-	test('disconnected + Capacitor → 发出 foreground-resume（elapsed=Infinity）', () => {
+	test('disconnected + Capacitor → 发出 foreground-resume（无 elapsed）', () => {
 		platformMod.isCapacitorApp = true;
 		const { conn, ws } = makeConnected();
 		ws.simulateClose(1006);
@@ -398,7 +398,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		vi.advanceTimersByTime(600);
 		conn.__handleForegroundResume('app:foreground');
 		expect(events.length).toBe(1);
-		expect(events[0].elapsed).toBe(Infinity);
+		expect(events[0].source).toBe('app:foreground');
+		expect(events[0]).not.toHaveProperty('elapsed');
 	});
 
 	test('network:online 不受 throttle 限制', () => {
@@ -435,7 +436,7 @@ describe('SignalingConnection – 前台恢复', () => {
 		conn.__handleForegroundResume('network:online');
 		expect(events.length).toBe(1);
 		expect(events[0].source).toBe('network:online');
-		expect(events[0].elapsed).toBe(Infinity);
+		expect(events[0]).not.toHaveProperty('elapsed');
 	});
 
 	test('非 network:online 在 connecting 状态不发射 foreground-resume', () => {
@@ -505,16 +506,14 @@ describe('SignalingConnection – 前台恢复', () => {
 		const { conn } = makeConnected();
 		const events = [];
 		conn.on('foreground-resume', (data) => events.push(data));
-		// lastAliveAt 在 makeConnected 中的 simulateOpen 时已设为 now，elapsed 很小
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('network:online');
 		// forceReconnect 应创建新 WS
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
-		// foreground-resume 应被发射
+		// foreground-resume 应被发射（不含 elapsed）
 		expect(events.length).toBe(1);
 		expect(events[0].source).toBe('network:online');
-		expect(events[0]).toHaveProperty('elapsed');
-		expect(typeof events[0].elapsed).toBe('number');
+		expect(events[0]).not.toHaveProperty('elapsed');
 	});
 
 	test('连续 network:online：第二次在 connecting 状态不再 forceReconnect', () => {

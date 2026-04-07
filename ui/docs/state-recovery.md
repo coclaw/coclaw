@@ -2,7 +2,7 @@
 
 > 适用范围：CoClaw UI
 > 创建时间：2026-03-26
-> 最后更新：2026-04-03
+> 最后更新：2026-04-07
 
 本文档记录 CoClaw UI 中所有状态恢复机制的设计与实现。大部分恢复逻辑是 Web 应用本身就需要的（网络异常、页面切换等），Capacitor 移动端只是放大了问题频率并引入少量特有处理。
 
@@ -76,8 +76,8 @@
 | 已连接 + 静默超过 2.5s（`PROBE_TIMEOUT_MS`） | 发 probe ping，2.5s 无响应则 `forceReconnect()` |
 | 已连接 + 静默 ≤ 2.5s | 无需操作 |
 
-- 恢复后发出 `foreground-resume` 事件（含 `source`），由 `claws.store` 对每个 claw 执行 `__checkAndRecover()`（含 RTC 状态检测和重建）
-- `network:online` + WS 处于 `connecting` 状态时，仍发射 `foreground-resume` 事件（WS 正在重连，但 DC 可能需要独立恢复）
+- 恢复后发出 `foreground-resume` 事件（含 `source`），由 `claws.store` 决定是否对各 claw 执行 RTC 健康检查
+- RTC 恢复决策与 WS 完全解耦——详见下方 §2.4 和 §9 "RTC 前台恢复策略"
 - **场景**：Web + Capacitor
 
 ### 2.4 RTC ICE restart 与 full rebuild
@@ -329,7 +329,7 @@
   - **Capacitor**：`@capacitor/network` 的 `networkStatusChange` → 当 `connected === true` 时派发 `network:online` DOM 事件
   - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件
 - **消费者**：SignalingConnection（即时 probe/重连）、SSE（restart）
-- **效果**：WiFi↔蜂窝切换或断网恢复后，WS 无条件 `forceReconnect()`，RTC 跳过 probe 直接 rebuild，无需等待心跳超时
+- **效果**：WiFi↔蜂窝切换或断网恢复后，WS 无条件 `forceReconnect()`。RTC 层不做任何操作——前台时 ICE 有自检测能力（consent check 5s 间隔 → disconnected → 5s 超时 → failed → 自动退避重试）
 - **去重**：SignalingConnection 500ms 节流（`network:online` 豁免；连续触发由 `connecting` 状态自然防护）
 
 ### 7.2 Deep Link 路由导航
@@ -378,8 +378,9 @@
 ### visibilitychange + app:foreground + network:online 多信号去重
 
 三个信号取并集，通过时间戳节流去重：
-- SignalingConnection：`__lastForegroundAt` + 500ms（`network:online` 豁免；连续 network:online 由 `connecting` 状态分支自然防护）
-- ChatPage：`__lastResumeAt` + 2s（connReady watcher 触发时也更新此时间戳）
+- **WS 层**（SignalingConnection）：`__lastForegroundAt` + 500ms（`network:online` 豁免；连续 network:online 由 `connecting` 状态分支自然防护）
+- **RTC 层**（claws.store）：`network:online` 直接过滤不处理；`app:foreground` 短后台（<25s）跳过 probe；`_probeInProgress` 防止同一 claw 并发 probe
+- **ChatPage**：`__lastResumeAt` + 2s（connReady watcher 触发时也更新此时间戳）
 
 ### 冷启动 vs 暖恢复的区分
 
@@ -387,4 +388,20 @@
 
 ### RTC 前台恢复策略
 
-UDP NAT 超时（30s~2min）远短于 TCP（5~30min），中等后台后 RTC DTLS 通道大概率失效而信令 WS 仍存活。`request()` 检测 DC 未就绪时通过 `waitReady()` 自动排队等待连接恢复（同时触发重连），对调用方透明。前台恢复时 `claws.store.__checkAndRecover()` 对 `disconnected` 状态主动触发 RTC 重建（而非等 `failed`），节省 2-5s。
+RTC 恢复决策完全基于 PC 自身状态和 DC probe，不依赖 WS 指标（如 `elapsed`）。
+
+**触发条件**：仅 `app:foreground` 且后台时长 ≥ 25s 时触发 `__checkAndRecover`。
+
+- `network:online`（前台时）→ 不触发 RTC 检查。ICE 层在前台持续运行，有 consent check 自检测能力
+- `app:foreground` 且后台 < 25s → 跳过 probe。OS 给 app ~5s 收尾 + ICE 30s consent 超时 = 25s 内 ICE 有充足自恢复裕量
+- `app:foreground` 且后台 ≥ 25s → 执行 `__checkAndRecover`：
+  - PC `failed`/`closed` → 直接 rebuild
+  - PC `disconnected` → 不干预，交给 ICE 自恢复（WebRtcConnection 内部 5s 超时后升级到 failed → `__scheduleRetry`）
+  - PC `connected` → DC probe（3s 超时）：
+    - probe 成功 → 连接健康，不操作
+    - probe 失败 + PC 仍 `connected` → 不 rebuild（可能是 plugin 繁忙导致 probe-ack 延迟）
+    - probe 失败 + PC 已变为非 `connected` → rebuild
+
+`request()` 检测 DC 未就绪时通过 `waitReady()` 自动排队等待连接恢复（同时触发重连），对调用方透明。
+
+**待实施优化**：检测到网络类型变化（WiFi↔蜂窝）时触发 probe，加速真实网络切换场景的恢复。

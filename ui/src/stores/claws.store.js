@@ -25,12 +25,20 @@ export function __registerClawLifecycleHooks(hooks) {
 const _bridgedConns = new Map();
 /** __ensureRtc 并发防护（clawId → true） */
 const _rtcInitInProgress = new Map();
+/** __checkAndRecover probe 并发防护（clawId → true） */
+const _probeInProgress = new Map();
+/** app 进入后台的时间戳（用于前台恢复时判断后台时长） */
+let _backgroundAt = 0;
 
 const RTC_BUILD_MAX_RETRIES = 3;
-/** werift consent 过期时限 — 超过此时长 PC 必定已死，无需 probe */
-const CONSENT_EXPIRY_MS = 30_000;
 /** DC probe 超时 */
 const DC_PROBE_TIMEOUT_MS = 3_000;
+/**
+ * 短后台阈值：后台时长 < 此值时跳过 probe，信任 ICE 自恢复。
+ * OS 给 app 约 5s 收尾，30s consent 超时 → 25s 以内挂起不超过 20s，
+ * ICE 层仍有 ~10s 裕量自恢复（约 2 次 consent check 机会）。
+ */
+const SHORT_BACKGROUND_MS = 25_000;
 /** 退避重试：初始间隔 */
 const RETRY_BACKOFF_BASE_MS = 3_000;
 /** 退避重试：最大间隔 */
@@ -50,8 +58,10 @@ const RUNTIME_FIELDS = new Set([
 export function __resetClawStoreInternals() {
 	_bridgedConns.clear();
 	_rtcInitInProgress.clear();
+	_probeInProgress.clear();
 	for (const state of _rtcRetryState.values()) clearTimeout(state.timer);
 	_rtcRetryState.clear();
+	_backgroundAt = 0;
 }
 // 保留旧名兼容测试导入
 export { __resetClawStoreInternals as __resetAwaitingConnIds };
@@ -241,10 +251,27 @@ export const useClawsStore = defineStore('claws', {
 			this.__signalingBridged = true;
 			const sigConn = useSignalingConnection();
 
-			// 前台恢复 / 网络切换 → DC probe 探测存活性
-			sigConn.on('foreground-resume', ({ source, elapsed }) => {
+			// 记录进入后台时间戳（用于前台恢复时判断后台时长）
+			if (typeof window !== 'undefined') {
+				window.addEventListener('app:background', () => { _backgroundAt = Date.now(); });
+			}
+
+			// RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标。
+			// network:online（前台时）不触发 RTC 检查——ICE 层在前台持续运行，
+			// 有自检测能力（consent check 5s 间隔 → disconnected → 5s 超时 → failed）。
+			// 仅 app:foreground 需要主动 probe（OS 挂起导致 ICE 回调积压，PC 状态不可信）。
+			sigConn.on('foreground-resume', ({ source }) => {
+				if (source === 'network:online') return;
+				// 短后台（<25s）：ICE 自恢复能力充足，无需 probe
+				if (source === 'app:foreground' && _backgroundAt > 0) {
+					const bgDuration = Date.now() - _backgroundAt;
+					if (bgDuration < SHORT_BACKGROUND_MS) {
+						remoteLog(`claw.skipProbe bgDuration=${bgDuration}ms`);
+						return;
+					}
+				}
 				for (const id of Object.keys(this.byId)) {
-					this.__checkAndRecover(id, elapsed, source);
+					this.__checkAndRecover(id, source);
 				}
 			});
 		},
@@ -497,50 +524,66 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
-		 * DC 健康检查 + 恢复（前台恢复 / 网络切换时调用）
+		 * DC 健康检查 + 恢复（前台恢复时调用，network:online 和短后台已在上层过滤）
+		 *
+		 * 决策完全基于 PC 自身状态和 DC probe，不依赖 WS 指标。
+		 * probe 失败后二次确认 PC.connectionState，避免因 plugin 繁忙
+		 * （如大文件写入阻塞 event loop）导致的误判。
+		 *
 		 * @param {string} id - clawId
-		 * @param {number} elapsed - 距上次 WS 存活消息的时长
-		 * @param {string} [source] - 触发来源（'network:online' | 'app:foreground' | 'visibility'）
+		 * @param {string} [source] - 触发来源
 		 */
-		async __checkAndRecover(id, elapsed, source) {
+		async __checkAndRecover(id, source) {
 			try {
-				if (_rtcInitInProgress.get(id)) return; // rebuild 进行中，跳过
+				if (_rtcInitInProgress.get(id)) return;
+				if (_probeInProgress.get(id)) return;
 				const claw = this.byId[id];
-				if (!claw?.dcReady) return; // 无活跃 DC，由其它路径处理
+				if (!claw?.dcReady) return;
 				const conn = useClawConnections().get(id);
 				const rtc = conn?.rtc;
 				if (!rtc) return;
 
-				const isNetworkChange = source === 'network:online';
-
-				// PC 已 failed/closed/disconnected → 直接 rebuild（外部事件，重置退避）
-				// disconnected 在 network:online 时也直接 rebuild（网络切换后旧接口不可恢复）
-				if (rtc.state === 'failed' || rtc.state === 'closed'
-					|| (rtc.state === 'disconnected' && isNetworkChange)) {
+				// PC 已明确不可用 → 直接 rebuild
+				if (rtc.state === 'failed' || rtc.state === 'closed') {
 					remoteLog(`claw.recover claw=${id} reason=rtc_${rtc.state} source=${source}`);
 					claw.rtcPhase = 'recovering';
 					this.__clearRetry(id);
 					this.__ensureRtc(id).catch(() => {});
 					return;
 				}
-				// 网络切换后 DC 必死（IP 变化），跳过 probe 直接 rebuild
-				// elapsed > 30s → werift consent 已过期，直接 rebuild
-				if (isNetworkChange || elapsed > CONSENT_EXPIRY_MS) {
-					const reason = isNetworkChange ? 'network_change' : 'consent_expired';
-					remoteLog(`claw.recover claw=${id} reason=${reason} elapsed=${elapsed}ms`);
-					claw.rtcPhase = 'recovering';
-					this.__clearRetry(id);
-					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
+
+				// PC disconnected → ICE 正在自恢复，不干预。
+				// WebRtcConnection 内部 5s 超时后升级到 failed，
+				// 届时由 __rtcCallbacks.onRtcStateChange 触发 __scheduleRetry。
+				if (rtc.state === 'disconnected') {
+					remoteLog(`claw.recover claw=${id} reason=rtc_disconnected source=${source} action=wait_ice`);
 					return;
 				}
-				// probe DC 探测存活性
-				const alive = await rtc.probe(DC_PROBE_TIMEOUT_MS);
-				if (!alive && this.byId[id]) {
-					remoteLog(`claw.recover claw=${id} reason=probe_failed`);
-					this.byId[id].rtcPhase = 'recovering';
-					this.__clearRetry(id);
-					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
+
+				// PC connected → probe DC 验证端到端可达性
+				_probeInProgress.set(id, true);
+				let alive;
+				try {
+					alive = await rtc.probe(DC_PROBE_TIMEOUT_MS);
+				} finally {
+					_probeInProgress.delete(id);
 				}
+				if (alive || !this.byId[id]) return;
+
+				// probe 失败 → 二次确认 PC 状态。
+				// 如果 PC 仍为 connected，说明 ICE 层认为链路健康，
+				// 可能是 plugin 繁忙（如大文件写入）导致 probe-ack 延迟，不 rebuild。
+				const rtcAfter = conn?.rtc;
+				if (rtcAfter && rtcAfter.state === 'connected') {
+					remoteLog(`claw.recover claw=${id} reason=probe_timeout_pc_connected action=skip`);
+					return;
+				}
+
+				// PC 在 probe 等待期间已变为非 connected → rebuild
+				remoteLog(`claw.recover claw=${id} reason=probe_failed pc=${rtcAfter?.state ?? 'null'}`);
+				this.byId[id].rtcPhase = 'recovering';
+				this.__clearRetry(id);
+				this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
 			} catch (err) {
 				console.warn('[claws] checkAndRecover failed clawId=%s: %s', id, err?.message);
 			}

@@ -36,7 +36,7 @@ function resolveSignalingWsUrl(httpBaseUrl) {
  * 事件:
  * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
  * - `rtc`               — 入站 RTC 信令 (data: { clawId, type, payload })
- * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source, elapsed })，仅移动端或 network:online
+ * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source })，仅移动端或 network:online
  * - `log`               — 诊断日志 (data: string)，由 remote-log 桥接推送
  */
 export class SignalingConnection {
@@ -460,7 +460,7 @@ export class SignalingConnection {
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__doConnect();
 			if (shouldEmitForRtc) {
-				this.__emit('foreground-resume', { source, elapsed: Infinity });
+				this.__emit('foreground-resume', { source });
 			}
 			return;
 		}
@@ -468,7 +468,7 @@ export class SignalingConnection {
 		if (this.__state === 'connecting') {
 			// network:online 时仍需发射 RTC 恢复事件（WS 正在重连，但 DC 可能需要独立恢复）
 			if (isNetworkOnline) {
-				this.__emit('foreground-resume', { source, elapsed: Infinity });
+				this.__emit('foreground-resume', { source });
 			}
 			return;
 		}
@@ -492,7 +492,7 @@ export class SignalingConnection {
 		}
 
 		if (shouldEmitForRtc) {
-			this.__emit('foreground-resume', { source, elapsed });
+			this.__emit('foreground-resume', { source });
 		}
 	}
 

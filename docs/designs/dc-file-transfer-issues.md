@@ -219,10 +219,10 @@ Plugin 重连时，server 端 `forwardToClaw()` 会向同一 clawId 的所有 We
 经排查，SPA 路由导航**不会**导致 SSE 断连。SSE 在 `AuthedLayout.setup()` 中创建，所有认证页面都是其子路由，导航只替换 `<router-view>` 子组件，不卸载 layout。
 
 日志中观察到的 RTC 重建实际由以下原因触发：
-- **移动端 App 前台恢复**（`app:foreground`）：后台超过 30s（`CONSENT_EXPIRY_MS`）时强制重建所有 RTC 连接
-- **网络状态变化**（`network:online`）：无条件强制重建
+- **移动端 App 前台恢复**（`app:foreground`）：后台 ≥ 25s 时执行 DC probe，probe 失败且 PC 状态非 connected 时 rebuild
+- **网络状态变化**（`network:online`）：~~旧版无条件强制重建~~ 已优化为不触发 RTC 操作，信任 ICE 自检测（详见 `ui/docs/state-recovery.md` §9 "RTC 前台恢复策略"）
 
-这些是 `SignalingConnection.__handleForegroundResume()` → `claws.store.__checkAndRecover()` → `__ensureRtc({ forceRebuild: true })` 的正常路径，不是 bug。
+> 旧版 `network:online` 无条件 rebuild 是导致大文件传输中断的主要原因——Android WiFi 恢复期间连续发出多个 `network:online` 事件，每次都杀死正在传输的 DC。
 
 ## 未来优化方向
 
