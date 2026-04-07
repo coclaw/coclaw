@@ -1,4 +1,4 @@
-import { parseAttachmentBlock, isImageByExt, isVoiceByExt } from './file-helper.js';
+import { parseAttachmentBlock, isImageByExt, isVoiceByExt, extractCoclawFileRefs } from './file-helper.js';
 
 /**
  * 将原始 JSONL 条目分组为渲染用 chat items。
@@ -85,10 +85,14 @@ function groupSessionMessages(entries) {
 	return items;
 }
 
-/** 计算 botTask duration（ms） */
+/** 计算 botTask duration（ms）+ 提取 coclaw-file 附件 */
 function __finalizeBotTask(task, userTs) {
 	if (task.timestamp && userTs && task.timestamp > userTs) {
 		task.duration = task.timestamp - userTs;
+	}
+	// 仅从最终结果中提取 agent 文件附件
+	if (task.resultText) {
+		task.attachments = extractCoclawFileRefs(task.resultText);
 	}
 }
 
@@ -103,6 +107,7 @@ function createBotTask(id) {
 		duration: null,
 		steps: [],
 		images: [],
+		attachments: [],
 		isStreaming: false,
 		startTime: null,
 	};

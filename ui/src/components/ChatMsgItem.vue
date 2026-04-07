@@ -154,9 +154,34 @@
 			<template v-if="item.isStreaming && !item.resultText">
 				<!-- 等待首段文本，不渲染占位 -->
 			</template>
-			<MarkdownBody v-else-if="item.resultText" :text="item.resultText" />
+			<MarkdownBody
+				v-else-if="item.resultText"
+				:text="item.resultText"
+				:claw-id="clawId"
+				:agent-id="agentId"
+			/>
 			<div v-else class="text-base text-dimmed italic">
 				{{ $t('chat.taskIncomplete') }}
+			</div>
+
+			<!-- agent 文件附件 -->
+			<div
+				v-if="agentAttachments.length"
+				class="mt-2 flex max-w-[85%] flex-wrap gap-2"
+			>
+				<template v-for="(att, idx) in agentAttachments" :key="'agent-att-' + idx">
+					<ChatImg
+						v-if="att.isImg && att.url"
+						:src="att.url"
+						:filename="att.name"
+						custom-class="max-w-full"
+					/>
+					<ChatFile
+						v-else
+						:name="att.name"
+						:src="att.url"
+					/>
+				</template>
 			</div>
 
 			<!-- 底部元信息（流式中隐藏） -->
@@ -242,6 +267,15 @@ export default {
 				}
 				return result;
 			});
+		},
+		/** agent 回复中的文件附件（从 resultText 提取的 coclaw-file 引用） */
+		agentAttachments() {
+			const atts = this.item.attachments;
+			if (!atts?.length || this.isUser || !this.clawId || !this.agentId) return [];
+			return atts.map((a) => ({
+				...a,
+				url: buildCoclawUrl(this.clawId, this.agentId, a.path),
+			}));
 		},
 		clawAvatarUrl() {
 			return this.agentDisplay?.avatarUrl || clawAvatarSvg;

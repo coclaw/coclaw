@@ -8,7 +8,7 @@ vi.mock('./file-transfer.js', () => ({
 	downloadFile: vi.fn(),
 }));
 
-import { buildCoclawUrl, parseCoclawUrl, isCoclawUrl, fetchCoclawFile } from './coclaw-file.js';
+import { buildCoclawUrl, parseCoclawUrl, isCoclawUrl, isCoclawScheme, extractCoclawPath, fetchCoclawFile } from './coclaw-file.js';
 import { useClawConnections } from './claw-connection-manager.js';
 import { downloadFile } from './file-transfer.js';
 
@@ -99,6 +99,53 @@ describe('buildCoclawUrl + parseCoclawUrl roundtrip', () => {
 		const parsed = parseCoclawUrl(url);
 
 		expect(parsed).toEqual({ clawId, agentId, path });
+	});
+});
+
+describe('isCoclawScheme', () => {
+	test('returns true for full URL', () => {
+		expect(isCoclawScheme('coclaw-file://1:main/file.txt')).toBe(true);
+	});
+
+	test('returns true for short format', () => {
+		expect(isCoclawScheme('coclaw-file:output/chart.png')).toBe(true);
+	});
+
+	test('returns false for other schemes', () => {
+		expect(isCoclawScheme('https://example.com')).toBe(false);
+		expect(isCoclawScheme('file:///path')).toBe(false);
+	});
+
+	test('returns false for non-string', () => {
+		expect(isCoclawScheme(null)).toBe(false);
+		expect(isCoclawScheme(42)).toBe(false);
+	});
+});
+
+describe('extractCoclawPath', () => {
+	test('extracts path from short format', () => {
+		expect(extractCoclawPath('coclaw-file:output/chart.png')).toBe('output/chart.png');
+	});
+
+	test('extracts nested path', () => {
+		expect(extractCoclawPath('coclaw-file:.coclaw/data/report.xlsx')).toBe('.coclaw/data/report.xlsx');
+	});
+
+	test('returns null for full URL format', () => {
+		expect(extractCoclawPath('coclaw-file://1:main/file.txt')).toBeNull();
+	});
+
+	test('returns null for empty path', () => {
+		expect(extractCoclawPath('coclaw-file:')).toBeNull();
+	});
+
+	test('returns null for non-coclaw-file string', () => {
+		expect(extractCoclawPath('https://example.com')).toBeNull();
+	});
+
+	test('returns null for null/undefined', () => {
+		expect(extractCoclawPath(null)).toBeNull();
+		expect(extractCoclawPath(undefined)).toBeNull();
 	});
 });
 

@@ -852,7 +852,8 @@ describe('useChatStore', () => {
 			expect(agentCall[1].message).toContain('coclaw-attachments');
 			expect(agentCall[1].message).toContain('看这张图');
 			expect(agentCall[1].attachments).toBeUndefined();
-			expect(agentCall[1].extraSystemPrompt).toBeUndefined();
+			// extraSystemPrompt 始终携带文件渲染能力提示
+			expect(agentCall[1].extraSystemPrompt).toContain('coclaw-file:');
 		});
 
 		test('语音文件上传时 agentParams 包含 extraSystemPrompt', async () => {

@@ -65,6 +65,21 @@ export function reviseMdText(text) {
 }
 
 /**
+ * 将 markdown 中的 coclaw-file 图片语法转为链接语法。
+ * ![alt](coclaw-file:path) → [🖼 alt](coclaw-file:path)
+ * Phase 2 实现内联图片渲染后，此预处理将不再需要。
+ * @param {string} text
+ * @returns {string}
+ */
+export function replaceCoclawFileImages(text) {
+	if (!text || !text.includes('coclaw-file:')) return text;
+	return text.replace(/!\[([^\]]*)\]\((coclaw-file:[^)]+)\)/g, (_, alt, url) => {
+		const label = alt || url.slice('coclaw-file:'.length).split('/').pop();
+		return `[\u{1F5BC}\u00A0${label}](${url})`;
+	});
+}
+
+/**
  * 渲染 markdown 文本为 HTML
  * @param {string} text - markdown 源文本
  * @returns {string}

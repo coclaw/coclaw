@@ -102,6 +102,66 @@ export function topicFilesDir(topicId) {
 	return `.coclaw/topic-files/${topicId}`;
 }
 
+/**
+ * 校验 coclaw-file workspace 相对路径
+ * - 拒绝路径穿越（任何段为 ..）
+ * - 拒绝绝对路径（/ 开头）
+ * - 拒绝反斜杠路径（防御性兜底）
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function validateCoclawPath(path) {
+	if (!path) return false;
+	if (path.startsWith('/')) return false;
+	if (path.includes('\\')) return false;
+	if (path.split('/').includes('..')) return false;
+	return true;
+}
+
+/**
+ * 从 markdown 文本中提取所有 coclaw-file: 引用。
+ * 匹配 ![alt](coclaw-file:path) 和 [text](coclaw-file:path)，按出现顺序排列，按 path 去重。
+ * @param {string} text
+ * @returns {{ path: string, name: string, isImg: boolean, isVoice: boolean }[]}
+ */
+export function extractCoclawFileRefs(text) {
+	if (!text) return [];
+	const re = /!?\[([^\]]*)\]\((coclaw-file:[^)]+)\)/g;
+	const refs = [];
+	const seen = new Set();
+	let match;
+	while ((match = re.exec(text)) !== null) {
+		const url = match[2];
+		const path = url.slice('coclaw-file:'.length);
+		if (seen.has(path) || !validateCoclawPath(path)) continue;
+		seen.add(path);
+		const name = match[1] || path.split('/').pop();
+		refs.push({
+			path,
+			name,
+			isImg: isImageByExt(path),
+			isVoice: isVoiceByExt(path),
+		});
+	}
+	return refs;
+}
+
+/**
+ * 将 Blob 作为文件下载保存
+ * @param {Blob} blob
+ * @param {string} filename
+ */
+export function saveBlobToFile(blob, filename) {
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = filename;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	URL.revokeObjectURL(url);
+}
+
 /** 附件信息块标题行 */
 const ATTACHMENT_HEADING = '## coclaw-attachments 🗂';
 

@@ -84,6 +84,7 @@ describe('groupSessionMessages', () => {
 			duration: 1000,
 			steps: [],
 			images: [],
+			attachments: [],
 			isStreaming: false,
 			startTime: null,
 		});
@@ -836,5 +837,82 @@ describe('groupSessionMessages — 附件信息块解析', () => {
 		expect(result[0].textContent).toBe('看看');
 		expect(result[0].attachments).toHaveLength(1);
 		expect(result[0].attachments[0].name).toBe('doc.pdf');
+	});
+});
+
+describe('groupSessionMessages — agent coclaw-file 附件提取', () => {
+	test('从 resultText 中提取 coclaw-file 引用为 attachments', () => {
+		const entries = [
+			userEntry('u1', '分析数据', 1000),
+			assistantEntry('a1', {
+				text: '分析完成\n\n![趋势图](coclaw-file:output/trend.png)\n\n详见 [报告](coclaw-file:output/report.xlsx)',
+				ts: 2000,
+			}),
+		];
+		const result = groupSessionMessages(entries);
+		const botTask = result[1];
+		expect(botTask.type).toBe('botTask');
+		expect(botTask.attachments).toHaveLength(2);
+		expect(botTask.attachments[0]).toEqual({
+			path: 'output/trend.png',
+			name: '趋势图',
+			isImg: true,
+			isVoice: false,
+		});
+		expect(botTask.attachments[1]).toEqual({
+			path: 'output/report.xlsx',
+			name: '报告',
+			isImg: false,
+			isVoice: false,
+		});
+	});
+
+	test('无 coclaw-file 引用时 attachments 为空数组', () => {
+		const entries = [
+			userEntry('u1', '你好', 1000),
+			assistantEntry('a1', { text: '你好！有什么可以帮你的？', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].attachments).toEqual([]);
+	});
+
+	test('按 path 去重', () => {
+		const entries = [
+			userEntry('u1', '看图', 1000),
+			assistantEntry('a1', {
+				text: '![图](coclaw-file:a.png)\n\n再看 ![图](coclaw-file:a.png)',
+				ts: 2000,
+			}),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].attachments).toHaveLength(1);
+	});
+
+	test('跳过不安全的路径', () => {
+		const entries = [
+			userEntry('u1', 'test', 1000),
+			assistantEntry('a1', {
+				text: '[hack](coclaw-file:../etc/passwd)',
+				ts: 2000,
+			}),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].attachments).toEqual([]);
+	});
+
+	test('中断的 botTask（resultText 为 null）attachments 为空', () => {
+		const entries = [
+			userEntry('u1', '请分析', 1000),
+			// 中间步骤的 assistant（stopReason 非终态）
+			assistantEntry('a1', {
+				text: '让我分析一下...',
+				stopReason: 'toolUse',
+				ts: 2000,
+			}),
+		];
+		const result = groupSessionMessages(entries);
+		const botTask = result[1];
+		expect(botTask.resultText).toBeNull();
+		expect(botTask.attachments).toEqual([]);
 	});
 });

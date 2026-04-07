@@ -483,9 +483,21 @@ export function createChatStore(storeKey, opts = {}) {
 					if (finalMessage.attachments?.length) {
 						agentParams.attachments = finalMessage.attachments;
 					}
-					if (finalMessage.voicePaths?.length) {
-						agentParams.extraSystemPrompt = '用户通过语音输入发送了以下音频文件，请先转录再回复：\n'
-							+ finalMessage.voicePaths.map((p) => `- ${p}`).join('\n');
+
+					// 组装 extraSystemPrompt（每次都携带文件渲染能力提示）
+					{
+						const prompts = [
+							'当你需要向用户展示文件时，可在回复中使用 coclaw-file: 协议引用文件：',
+							'- 图片：![描述](coclaw-file:文件路径)',
+							'- 其他文件：[文件名](coclaw-file:文件路径)',
+							'路径为相对于工作目录的相对路径。',
+						];
+						if (finalMessage.voicePaths?.length) {
+							prompts.push('');
+							prompts.push('用户通过语音输入发送了以下音频文件，请先转录再回复：');
+							prompts.push(...finalMessage.voicePaths.map((p) => `- ${p}`));
+						}
+						agentParams.extraSystemPrompt = prompts.join('\n');
 					}
 
 					// chat 模式用 sessionKey，topic 模式用 sessionId

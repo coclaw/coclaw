@@ -3,6 +3,7 @@ import {
 	fileToBase64, formatFileSize, formatFileBlob,
 	isImageByExt, chatFilesDir, topicFilesDir,
 	buildAttachmentBlock, parseAttachmentBlock,
+	validateCoclawPath, extractCoclawFileRefs,
 } from './file-helper.js';
 
 const origCreateObjectURL = URL.createObjectURL;
@@ -253,5 +254,113 @@ describe('parseAttachmentBlock', () => {
 		const text = '看看\n\n## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| a/p.jpg | 200KB |\n| a/r.pdf | 2MB |\n| a/v.webm | 120KB |';
 		const { attachments } = parseAttachmentBlock(text);
 		expect(attachments).toHaveLength(3);
+	});
+});
+
+describe('validateCoclawPath', () => {
+	test('accepts normal relative paths', () => {
+		expect(validateCoclawPath('output/chart.png')).toBe(true);
+		expect(validateCoclawPath('.coclaw/data/report.xlsx')).toBe(true);
+		expect(validateCoclawPath('file.txt')).toBe(true);
+	});
+
+	test('rejects path traversal', () => {
+		expect(validateCoclawPath('../etc/passwd')).toBe(false);
+		expect(validateCoclawPath('output/../../../etc/passwd')).toBe(false);
+		expect(validateCoclawPath('a/b/../c')).toBe(false);
+	});
+
+	test('rejects bare .. (no slash)', () => {
+		expect(validateCoclawPath('..')).toBe(false);
+	});
+
+	test('rejects absolute paths', () => {
+		expect(validateCoclawPath('/home/user/file.txt')).toBe(false);
+		expect(validateCoclawPath('/etc/passwd')).toBe(false);
+	});
+
+	test('rejects backslash paths', () => {
+		expect(validateCoclawPath('output\\file.txt')).toBe(false);
+		expect(validateCoclawPath('..\\etc\\passwd')).toBe(false);
+	});
+
+	test('rejects empty/null', () => {
+		expect(validateCoclawPath('')).toBe(false);
+		expect(validateCoclawPath(null)).toBe(false);
+		expect(validateCoclawPath(undefined)).toBe(false);
+	});
+});
+
+describe('extractCoclawFileRefs', () => {
+	test('extracts image references', () => {
+		const text = '结果如下：\n\n![趋势图](coclaw-file:output/trend.png)\n\n分析完成。';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(1);
+		expect(refs[0]).toEqual({
+			path: 'output/trend.png',
+			name: '趋势图',
+			isImg: true,
+			isVoice: false,
+		});
+	});
+
+	test('extracts link references', () => {
+		const text = '详见 [完整报告](coclaw-file:output/report.xlsx)。';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(1);
+		expect(refs[0]).toEqual({
+			path: 'output/report.xlsx',
+			name: '完整报告',
+			isImg: false,
+			isVoice: false,
+		});
+	});
+
+	test('extracts mixed references in order', () => {
+		const text = '![图](coclaw-file:a.png)\n\n[报告](coclaw-file:b.pdf)\n\n![图2](coclaw-file:c.jpg)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(3);
+		expect(refs[0].path).toBe('a.png');
+		expect(refs[1].path).toBe('b.pdf');
+		expect(refs[2].path).toBe('c.jpg');
+	});
+
+	test('deduplicates by path', () => {
+		const text = '![图](coclaw-file:output/chart.png)\n\n再看一次 ![图](coclaw-file:output/chart.png)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(1);
+	});
+
+	test('uses filename as name when alt is empty', () => {
+		const text = '![](coclaw-file:output/data.csv)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs[0].name).toBe('data.csv');
+	});
+
+	test('skips invalid paths (traversal)', () => {
+		const text = '[hack](coclaw-file:../etc/passwd)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(0);
+	});
+
+	test('skips absolute paths', () => {
+		const text = '[file](coclaw-file:/etc/passwd)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(0);
+	});
+
+	test('returns empty for null/empty text', () => {
+		expect(extractCoclawFileRefs(null)).toEqual([]);
+		expect(extractCoclawFileRefs('')).toEqual([]);
+	});
+
+	test('returns empty when no coclaw-file refs', () => {
+		expect(extractCoclawFileRefs('普通文本 [link](https://example.com)')).toEqual([]);
+	});
+
+	test('identifies voice files', () => {
+		const text = '[录音](coclaw-file:output/recording.webm)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs[0].isVoice).toBe(true);
 	});
 });
