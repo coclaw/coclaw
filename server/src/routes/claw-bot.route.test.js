@@ -1224,7 +1224,7 @@ test('clawStatusStreamHandler: should clear heartbeat timer when write fails', a
 	let writeCount = 0;
 	const res = {
 		writeHead() {},
-		write(data) {
+		write(_data) {
 			writeCount++;
 			// 第一次 write 是初始的 '\n'，之后的心跳 write 抛异常
 			if (writeCount > 1) {

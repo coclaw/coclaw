@@ -183,7 +183,7 @@ test('createClaimCode: should delete expired record on P2002 collision', async (
 	let attempt = 0;
 	const deletedCodes = [];
 	const result = await createClaimCode({
-		createCode: async (data) => {
+		createCode: async (_data) => {
 			attempt += 1;
 			if (attempt === 1) {
 				const err = new Error('Unique constraint');
