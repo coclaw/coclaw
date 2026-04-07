@@ -54,8 +54,8 @@
 		</header>
 
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
-		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel" @load.capture="onImgLoad">
-			<div class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
+		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel">
+			<div ref="scrollContent" class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
 				<div v-if="connStatusText" class="mx-4 mt-4 rounded-lg px-4 py-2 text-center text-sm" :class="connStatusSeverity === 'warn' ? 'bg-warning/10 text-warning' : 'bg-accented text-muted'">
 					{{ connStatusText }}
 				</div>
@@ -494,6 +494,14 @@ export default {
 		window.addEventListener('app:foreground', this.__onForeground);
 		document.addEventListener('visibilitychange', this.__onVisibility);
 
+		// 滚动容器 / 内容区域 ResizeObserver：覆盖软键盘弹起、输入框撑高、
+		// 图片加载、表格包装、steps 展开等所有导致容器或内容尺寸变化的场景
+		this.__resizeOb = new ResizeObserver(() => this.scrollToBottom());
+		const sc = this.$refs.scrollContainer;
+		const content = this.$refs.scrollContent;
+		if (sc) this.__resizeOb.observe(sc);
+		if (content) this.__resizeOb.observe(content);
+
 		// 拖拽上传
 		const root = this.$refs.chatRoot;
 		if (root) {
@@ -506,6 +514,7 @@ export default {
 		this.__unmounted = true;
 		this.unsuppressPullRefresh();
 		this.chatStore?.cleanup();
+		this.__resizeOb?.disconnect();
 		if (this.__onForeground) {
 			window.removeEventListener('app:foreground', this.__onForeground);
 		}
@@ -840,6 +849,8 @@ export default {
 			this.$nextTick(() => {
 				// 二次检查：$nextTick 排队期间用户可能已上划
 				if (!force && this.userScrolledUp) return;
+				// 非 force 且已在底部则跳过，避免 ResizeObserver 高频回调时的冗余 scrollTo
+				if (!force && el.scrollHeight - el.scrollTop - el.clientHeight <= 1) return;
 				el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 				// 兜底：DOM 高度可能在 $nextTick 后仍未稳定，下一帧再校验一次
 				requestAnimationFrame(() => {
@@ -847,14 +858,11 @@ export default {
 					if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
 						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 					}
-					// 首次滚动定位完成，解除 visibility hidden
-					if (!this.__scrollReady) this.__scrollReady = true;
+					// 仅 force 调用（__onConnReady）才解锁 visibility，
+					// 避免 ResizeObserver 等非 force 路径过早移除 hidden
+					if (!this.__scrollReady && force) this.__scrollReady = true;
 				});
 			});
-		},
-		/** 图片加载完成后修正滚动位置（capture 阶段捕获不冒泡的 img load） */
-		onImgLoad(e) {
-			if (e.target.tagName === 'IMG') this.scrollToBottom();
 		},
 		onScroll() {
 			const el = this.$refs.scrollContainer;

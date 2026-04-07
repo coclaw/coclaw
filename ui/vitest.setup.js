@@ -1,6 +1,13 @@
 import { afterEach } from 'vitest';
 import { config } from '@vue/test-utils';
 
+// jsdom 未实现 ResizeObserver，提供最小 stub
+globalThis.ResizeObserver ??= class {
+	observe() {}
+	unobserve() {}
+	disconnect() {}
+};
+
 // 全局 stub Nuxt UI 组件，消除测试中的 "Failed to resolve component" 警告
 config.global.stubs = {
 	UInput: { template: '<div />', inheritAttrs: false },

@@ -934,6 +934,109 @@ describe('ChatPage scroll', () => {
 		expect(scrollToSpy).toHaveBeenCalled();
 	});
 
+	// --- ResizeObserver ---
+	describe('ResizeObserver', () => {
+		let savedRO;
+		beforeEach(() => { savedRO = globalThis.ResizeObserver; });
+		afterEach(() => { globalThis.ResizeObserver = savedRO; });
+
+		test('mounted 时对 scrollContainer 和 scrollContent 注册，unmount 时 disconnect', async () => {
+			const observedEls = [];
+			const disconnectSpy = vi.fn();
+			globalThis.ResizeObserver = class {
+				constructor(cb) { this.cb = cb; }
+				observe(el) { observedEls.push(el); }
+				unobserve() {}
+				disconnect() { disconnectSpy(); }
+			};
+
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const sc = wrapper.vm.$refs.scrollContainer;
+			const content = wrapper.vm.$refs.scrollContent;
+			expect(observedEls).toContain(sc);
+			expect(observedEls).toContain(content);
+
+			wrapper.unmount();
+			expect(disconnectSpy).toHaveBeenCalled();
+		});
+
+		test('回调触发 scrollToBottom', async () => {
+			let resizeCb;
+			globalThis.ResizeObserver = class {
+				constructor(cb) { resizeCb = cb; }
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			};
+
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollSpy = vi.spyOn(wrapper.vm, 'scrollToBottom');
+			resizeCb();
+			expect(scrollSpy).toHaveBeenCalled();
+		});
+
+		test('userScrolledUp 时回调不实际滚动', async () => {
+			let resizeCb;
+			globalThis.ResizeObserver = class {
+				constructor(cb) { resizeCb = cb; }
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			};
+
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			const scrollToSpy = vi.fn();
+			scrollContainer.scrollTo = scrollToSpy;
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 1000, configurable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			wrapper.vm.userScrolledUp = true;
+			resizeCb();
+
+			await wrapper.vm.$nextTick();
+			await new Promise(r => requestAnimationFrame(r));
+
+			expect(scrollToSpy).not.toHaveBeenCalled();
+		});
+
+		test('__loadingHistory 时回调不实际滚动', async () => {
+			let resizeCb;
+			globalThis.ResizeObserver = class {
+				constructor(cb) { resizeCb = cb; }
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			};
+
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			const scrollToSpy = vi.fn();
+			scrollContainer.scrollTo = scrollToSpy;
+
+			wrapper.vm.__loadingHistory = true;
+			resizeCb();
+
+			await wrapper.vm.$nextTick();
+			await new Promise(r => requestAnimationFrame(r));
+
+			expect(scrollToSpy).not.toHaveBeenCalled();
+		});
+	});
+
 	// --- 拖拽上传 ---
 	test('dragover 设置 dragging=true', async () => {
 		const wrapper = createWrapper();
