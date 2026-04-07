@@ -18,8 +18,8 @@ const HIGH_WATER_MARK = 262144;
 const LOW_WATER_MARK = 65536;
 /** 上传大小限制 1GB */
 const MAX_UPLOAD_SIZE = 1024 * 1024 * 1024;
-/** 等待 Plugin ready 信号的超时（DC open + Plugin 回复 { ok: true }） */
-const UPLOAD_READY_TIMEOUT_MS = 15_000;
+/** 等待 Plugin 首条响应的超时（DC open + Plugin 回复首条控制消息） */
+const READY_TIMEOUT_MS = 15_000;
 
 // --- RPC 操作（走 rpc DataChannel） ---
 
@@ -113,6 +113,8 @@ export function downloadFile(clawConn, agentId, path) {
 	// 等待连接就绪（已就绪时同步返回 resolved promise）
 	const readyPromise = clawConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
 
+	const logCtx = `path=${path}`;
+
 	const promise = readyPromise.then(() => new Promise((resolve, reject) => {
 		// 等待就绪期间若已被取消，直接 reject
 		if (cancelled) {
@@ -121,9 +123,11 @@ export function downloadFile(clawConn, agentId, path) {
 		}
 
 		let settled = false;
+		let readyTimer = null;
 		const settle = (fn, val) => {
 			if (settled) return;
 			settled = true;
+			clearTimeout(readyTimer);
 			fn(val);
 		};
 
@@ -133,12 +137,14 @@ export function downloadFile(clawConn, agentId, path) {
 			dcRef = dc;
 			cleanupRef = cleanup;
 		} catch (err) {
+			remoteLog(`file.dl.err code=RTC_NOT_READY ${logCtx} err=${err?.message}`);
 			reject(err);
 			return;
 		}
 
 		cancelFn = () => {
 			cancelled = true;
+			clearTimeout(readyTimer);
 			cleanupRef();
 			settle(reject, new FileTransferError('CANCELLED', 'Download cancelled'));
 		};
@@ -149,13 +155,24 @@ export function downloadFile(clawConn, agentId, path) {
 		let headerReceived = false;
 		const chunks = [];
 
+		remoteLog(`file.dl.start ${logCtx}`);
+
+		// 超时守卫：DC open + Plugin 响应头必须在限时内到达
+		readyTimer = setTimeout(() => {
+			if (headerReceived || cancelled || settled) return;
+			cleanupRef();
+			const ftErr = new FileTransferError('READY_TIMEOUT', 'Plugin did not respond in time');
+			remoteLog(`file.dl.err code=${ftErr.code} ${logCtx}`);
+			settle(reject, ftErr);
+		}, READY_TIMEOUT_MS);
+
 		dcRef.onopen = () => {
 			try {
 				dcRef.send(JSON.stringify({ method: 'GET', agentId, path }));
 			} catch (err) {
 				cleanupRef();
 				const ftErr = new FileTransferError('DC_ERROR', 'Failed to send download request');
-				remoteLog(`file.dl.err code=${ftErr.code} path=${path} err=${err?.message}`);
+				remoteLog(`file.dl.err code=${ftErr.code} ${logCtx} err=${err?.message}`);
 				settle(reject, ftErr);
 			}
 		};
@@ -174,7 +191,7 @@ export function downloadFile(clawConn, agentId, path) {
 						msg.error?.code ?? 'TRANSFER_FAILED',
 						msg.error?.message ?? 'Download failed',
 					);
-					remoteLog(`file.dl.err code=${ftErr.code} path=${path} err=${ftErr.message}`);
+					remoteLog(`file.dl.err code=${ftErr.code} ${logCtx} err=${ftErr.message}`);
 					settle(reject, ftErr);
 					return;
 				}
@@ -182,6 +199,7 @@ export function downloadFile(clawConn, agentId, path) {
 				if (!headerReceived) {
 					// 响应头：{ ok: true, size, name }
 					headerReceived = true;
+					clearTimeout(readyTimer);
 					totalSize = msg.size ?? 0;
 					fileName = msg.name ?? '';
 					return;
@@ -219,7 +237,7 @@ export function downloadFile(clawConn, agentId, path) {
 					return;
 				}
 				const ftErr = new FileTransferError('TRANSFER_INTERRUPTED', 'Download interrupted');
-				remoteLog(`file.dl.err code=${ftErr.code} path=${path} received=${receivedBytes}/${totalSize}`);
+				remoteLog(`file.dl.err code=${ftErr.code} ${logCtx} received=${receivedBytes}/${totalSize}`);
 				settle(reject, ftErr);
 			}, 0);
 		};
@@ -227,7 +245,7 @@ export function downloadFile(clawConn, agentId, path) {
 		dcRef.onerror = () => {
 			cleanupRef();
 			const ftErr = new FileTransferError('DC_ERROR', 'DataChannel error during download');
-			remoteLog(`file.dl.err code=${ftErr.code} path=${path} received=${receivedBytes}/${totalSize}`);
+			remoteLog(`file.dl.err code=${ftErr.code} ${logCtx} received=${receivedBytes}/${totalSize}`);
 			settle(reject, ftErr);
 		};
 	}));
@@ -333,6 +351,8 @@ function __doUpload(clawConn, file, reqMsg) {
 			settle(reject, new FileTransferError('CANCELLED', 'Upload cancelled'));
 		};
 
+		remoteLog(`file.up.start ${logCtx}`);
+
 		// 超时守卫：DC open + Plugin ready 信号必须在限时内到达
 		readyTimer = setTimeout(() => {
 			if (readyReceived || cancelled || settled) return;
@@ -340,7 +360,7 @@ function __doUpload(clawConn, file, reqMsg) {
 			const ftErr = new FileTransferError('READY_TIMEOUT', 'Plugin did not respond in time');
 			remoteLog(`file.up.err code=${ftErr.code} ${logCtx}`);
 			settle(reject, ftErr);
-		}, UPLOAD_READY_TIMEOUT_MS);
+		}, READY_TIMEOUT_MS);
 
 		dcRef.onopen = () => {
 			try {
@@ -558,4 +578,4 @@ export class FileTransferError extends Error {
  */
 
 // 导出常量供测试使用
-export { CHUNK_SIZE, HIGH_WATER_MARK, LOW_WATER_MARK, MAX_UPLOAD_SIZE };
+export { CHUNK_SIZE, HIGH_WATER_MARK, LOW_WATER_MARK, MAX_UPLOAD_SIZE, READY_TIMEOUT_MS };

@@ -801,7 +801,7 @@ describe('uploadFile', () => {
 			dc.__open();
 			// 不发 { ok: true } ready 信号
 
-			// 推进 15s 触发 UPLOAD_READY_TIMEOUT
+			// 推进 15s 触发 READY_TIMEOUT
 			await vi.advanceTimersByTimeAsync(15_000);
 
 			const err = await resultPromise;
@@ -1169,6 +1169,99 @@ describe('postFile', () => {
 });
 
 // --- 下载分支覆盖补充 ---
+
+describe('downloadFile — 超时守卫', () => {
+	test('Plugin 未在限时内回复响应头则超时', async () => {
+		vi.useFakeTimers();
+		try {
+			const { clawConn, lastDC } = createMockBotConnWithRtc();
+			const handle = downloadFile(clawConn, 'main', 'file.txt');
+
+			const resultPromise = handle.promise.catch((e) => e);
+
+			await vi.advanceTimersByTimeAsync(0); // tick: waitReady resolve
+			const dc = lastDC();
+			dc.__open();
+			// 不发响应头，让超时触发
+
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			const err = await resultPromise;
+			expect(err).toBeInstanceOf(FileTransferError);
+			expect(err.code).toBe('READY_TIMEOUT');
+			expect(err.message).toMatch('Plugin did not respond in time');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('DC 未 open 时超时同样触发', async () => {
+		vi.useFakeTimers();
+		try {
+			const { clawConn, lastDC } = createMockBotConnWithRtc();
+			const handle = downloadFile(clawConn, 'main', 'file.txt');
+
+			const resultPromise = handle.promise.catch((e) => e);
+
+			await vi.advanceTimersByTimeAsync(0); // tick: waitReady resolve
+			lastDC(); // DC 已创建但不调用 __open()
+
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			const err = await resultPromise;
+			expect(err).toBeInstanceOf(FileTransferError);
+			expect(err.code).toBe('READY_TIMEOUT');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('响应头到达后超时不再触发', async () => {
+		vi.useFakeTimers();
+		try {
+			const { clawConn, lastDC } = createMockBotConnWithRtc();
+			const handle = downloadFile(clawConn, 'main', 'file.txt');
+
+			await vi.advanceTimersByTimeAsync(0);
+			const dc = lastDC();
+			dc.__open();
+			dc.__receiveString({ ok: true, size: 3, name: 'file.txt' });
+
+			// 推进超时不应影响已收到响应头的传输
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			dc.__receiveBinary(new Uint8Array([1, 2, 3]));
+			dc.__receiveString({ ok: true, bytes: 3 });
+
+			const result = await handle.promise;
+			expect(result.bytes).toBe(3);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('超时前取消下载 — 超时回调跳过', async () => {
+		vi.useFakeTimers();
+		try {
+			const { clawConn, lastDC } = createMockBotConnWithRtc();
+			const handle = downloadFile(clawConn, 'main', 'file.txt');
+
+			const resultPromise = handle.promise.catch((e) => e);
+
+			await vi.advanceTimersByTimeAsync(0);
+			lastDC();
+			handle.cancel();
+
+			// 推进超时 — 不应再触发
+			await vi.advanceTimersByTimeAsync(15_000);
+
+			const err = await resultPromise;
+			expect(err.code).toBe('CANCELLED');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
 
 describe('downloadFile — 分支覆盖补充', () => {
 	test('onmessage 收到无法解析的 JSON 字符串时静默忽略', async () => {
