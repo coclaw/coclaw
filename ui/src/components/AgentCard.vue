@@ -56,6 +56,7 @@
 				<UButton
 					data-testid="btn-chat"
 					color="primary"
+					variant="outline"
 					class="justify-center"
 					@click="$emit('chat', agent.id)"
 				>{{ $t('agents.chat') }}</UButton>

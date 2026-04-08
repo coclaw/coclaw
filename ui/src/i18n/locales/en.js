@@ -80,7 +80,7 @@ export const enMessages = {
 	},
 	user: {
 		role: 'Maintainer',
-		adminDashboard: 'Admin Dashboard',
+		adminDashboard: 'Admin Console',
 	},
 	settings: {
 		title: 'Settings',
@@ -170,7 +170,7 @@ export const enMessages = {
 		sessionNotReady: 'Session not ready, please try again later',
 	},
 	adminDashboard: {
-		title: 'Admin Dashboard',
+		title: 'Admin Console',
 		totalUsers: 'Total Users',
 		todayNew: 'New Today',
 		todayActive: 'Active Today',

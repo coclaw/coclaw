@@ -80,7 +80,7 @@ export const zhCNMessages = {
 	},
 	user: {
 		role: '维护者',
-		adminDashboard: '管理员仪表盘',
+		adminDashboard: '管理工作台',
 	},
 	settings: {
 		title: '设置',
@@ -170,7 +170,7 @@ export const zhCNMessages = {
 		sessionNotReady: '会话尚未就绪，请稍后重试',
 	},
 	adminDashboard: {
-		title: '管理员仪表盘',
+		title: '管理工作台',
 		totalUsers: '注册用户',
 		todayNew: '今日新增',
 		todayActive: '今日活跃',
