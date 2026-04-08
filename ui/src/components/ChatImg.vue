@@ -12,7 +12,7 @@
 		<img
 			:src="resolvedSrc"
 			alt=""
-			class="rounded-lg"
+			class="min-h-10 min-w-10 rounded-lg"
 			:class="[customClass, { 'cursor-pointer': imgLoaded }]"
 			@load="imgLoaded = true"
 			@click="viewImg"
@@ -24,6 +24,19 @@
 		>
 			<UIcon name="i-lucide-loader-circle" class="size-6 animate-spin text-white" />
 		</div>
+		<!-- 下载/分享按钮 -->
+		<UButton
+			class="absolute top-1 right-1 cc-icon-btn"
+			:icon="isNative ? 'i-lucide-share-2' : 'i-lucide-download'"
+			variant="ghost"
+			color="neutral"
+			size="md"
+			:loading="downloading"
+			:ui="{ base: 'text-white bg-black/30 hover:bg-black/50' }"
+			:aria-label="isNative ? $t('chat.fileShare') : $t('chat.fileDownload')"
+			:title="isNative ? $t('chat.fileShare') : $t('chat.fileDownload')"
+			@click.stop="__download"
+		/>
 		<ImgViewDialog
 			v-if="fullSrc || dialogOpen"
 			v-model:open="dialogOpen"
@@ -39,7 +52,9 @@ import ImgViewDialog from './ImgViewDialog.vue';
 import { pushDialogState, popDialogState } from '../utils/dialog-history.js';
 import { isCoclawUrl, fetchCoclawFile, parseCoclawUrl } from '../services/coclaw-file.js';
 import { compressImage } from '../utils/image-helper.js';
+import { saveBlobToFile, saveUrlAsFile } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
+import { isCapacitorApp } from '../utils/platform.js';
 
 /** 缩略图最大边长 */
 const THUMB_MAX = 384;
@@ -81,6 +96,8 @@ export default {
 			dialogOpen: false,
 			fullLoading: false,
 			fullSrc: null,
+			isNative: isCapacitorApp,
+			downloading: false,
 		};
 	},
 	watch: {
@@ -220,6 +237,60 @@ export default {
 			} finally {
 				if (this.src === srcAtStart) this.fullLoading = false;
 			}
+		},
+
+		async __download() {
+			if (this.downloading) return;
+			const srcAtStart = this.src;
+			const filename = this.filename;
+
+			// 外部 URL 且未压缩：Web 端用链接下载避免 CORS，原生端无此限制
+			if (!this.__isThumb && !this.isNative
+				&& !srcAtStart.startsWith('data:') && !srcAtStart.startsWith('blob:')
+				&& !isCoclawUrl(srcAtStart)) {
+				saveUrlAsFile(this.resolvedSrc, filename);
+				return;
+			}
+
+			this.downloading = true;
+			try {
+				const blob = await this.__getFullBlob(srcAtStart);
+				if (this.__unmounted || this.src !== srcAtStart) return;
+				await saveBlobToFile(blob, filename);
+			} catch (err) {
+				console.warn('[ChatImg] download failed:', err);
+				if (!this.__unmounted) this.notify.error(this.$t('files.downloadFailed'));
+			} finally {
+				this.downloading = false;
+			}
+		},
+
+		/** 获取原图 Blob（缩略图场景需还原为原图） */
+		async __getFullBlob(srcAtStart) {
+			// 未压缩 → resolvedSrc 就是完整图
+			if (!this.__isThumb) {
+				const resp = await fetch(this.resolvedSrc);
+				return resp.blob();
+			}
+			// 有缓存
+			if (this.__fullBlob) return this.__fullBlob;
+			// data URI 本身是全图
+			if (this.src.startsWith('data:')) {
+				const resp = await fetch(this.src);
+				return resp.blob();
+			}
+			// 重新获取原图（coclaw-file / blob URL）
+			let blob;
+			if (isCoclawUrl(this.src)) {
+				blob = await fetchCoclawFile(this.src);
+			} else {
+				const resp = await fetch(this.src);
+				blob = await resp.blob();
+			}
+			if (this.__unmounted || this.src !== srcAtStart) return blob;
+			this.__fullBlob = blob;
+			this.__startFullBlobTimer();
+			return blob;
 		},
 
 		/** 设置 fullSrc 并打开 dialog（fullSrc 是外部 URL，关闭时无需 revoke） */

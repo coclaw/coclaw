@@ -31,6 +31,18 @@ vi.mock('../utils/image-helper.js', () => ({
 	compressImage: (...args) => mockCompressImage(...args),
 }));
 
+const mockSaveBlobToFile = vi.fn();
+const mockSaveUrlAsFile = vi.fn();
+vi.mock('../utils/file-helper.js', () => ({
+	saveBlobToFile: (...args) => mockSaveBlobToFile(...args),
+	saveUrlAsFile: (...args) => mockSaveUrlAsFile(...args),
+}));
+
+let mockIsCapacitorApp = false;
+vi.mock('../utils/platform.js', () => ({
+	get isCapacitorApp() { return mockIsCapacitorApp; },
+}));
+
 const mockNotifyError = vi.fn();
 vi.mock('../composables/use-notify.js', () => ({
 	useNotify: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: mockNotifyError }),
@@ -152,6 +164,9 @@ describe('ChatImg', () => {
 		mockPushDialogState.mockClear();
 		mockPopDialogState.mockClear();
 		mockNotifyError.mockClear();
+		mockSaveBlobToFile.mockClear();
+		mockSaveUrlAsFile.mockClear();
+		mockIsCapacitorApp = false;
 	});
 
 	afterEach(() => {
@@ -870,6 +885,168 @@ describe('ChatImg', () => {
 			wrapper.vm.viewImg();
 			await wrapper.vm.$nextTick();
 			expect(wrapper.findComponent(ImgViewDialogStub).exists()).toBe(true);
+		});
+	});
+
+	// ── __download ──
+
+	describe('download', () => {
+		test('外部 URL + Web 端：走 saveUrlAsFile', async () => {
+			const wrapper = createWrapper({ src: 'https://example.com/photo.png', filename: 'photo.png' });
+			await flushPromises();
+
+			await wrapper.vm.__download();
+
+			expect(mockSaveUrlAsFile).toHaveBeenCalledWith('https://example.com/photo.png', 'photo.png');
+			expect(mockSaveBlobToFile).not.toHaveBeenCalled();
+			expect(wrapper.vm.downloading).toBe(false);
+		});
+
+		test('外部 URL + Native 端：走 fetch + saveBlobToFile', async () => {
+			mockIsCapacitorApp = true;
+			const blob = makeBlob();
+			mockFetchFn.mockResolvedValue({ blob: () => Promise.resolve(blob) });
+			const wrapper = createWrapper({ src: 'https://example.com/photo.png', filename: 'photo.png' });
+			await flushPromises();
+			// Native 需重新读取 isNative（data 中在 created 时已读取）
+			wrapper.vm.isNative = true;
+
+			mockSaveBlobToFile.mockResolvedValue();
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			expect(mockSaveUrlAsFile).not.toHaveBeenCalled();
+			expect(mockSaveBlobToFile).toHaveBeenCalledOnce();
+		});
+
+		test('data URI 缩略图：获取原图 blob 并 saveBlobToFile', async () => {
+			mockCompressed();
+			const origBlob = makeBlob('original');
+			mockFetchFn.mockResolvedValue({ blob: () => Promise.resolve(origBlob) });
+			const wrapper = createWrapper({ src: 'data:image/png;base64,abc', filename: 'img.png' });
+			await flushPromises();
+
+			expect(wrapper.vm.__isThumb).toBe(true);
+
+			mockSaveBlobToFile.mockResolvedValue();
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			// data URI thumb 走 fetch(this.src) 路径
+			expect(mockSaveBlobToFile).toHaveBeenCalledWith(origBlob, 'img.png');
+		});
+
+		test('coclaw-file 缩略图有缓存：直接用缓存 blob', async () => {
+			const origBlob = makeBlob('original');
+			mockFetchCoclawFile.mockResolvedValue(origBlob);
+			mockCompressed();
+			const wrapper = createWrapper({ src: 'coclaw-file://c1:a1/test.png', filename: 'test.png' });
+			await flushPromises();
+
+			expect(wrapper.vm.__isThumb).toBe(true);
+			expect(wrapper.vm.__fullBlob).toBe(origBlob);
+
+			mockSaveBlobToFile.mockResolvedValue();
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			// 应直接使用缓存，不再请求
+			expect(mockFetchCoclawFile).toHaveBeenCalledTimes(1); // 只有 resolve 时的一次
+			expect(mockSaveBlobToFile).toHaveBeenCalledWith(origBlob, 'test.png');
+		});
+
+		test('coclaw-file 缩略图缓存过期：重新获取', async () => {
+			const origBlob = makeBlob('original');
+			const refetchBlob = makeBlob('refetched');
+			mockFetchCoclawFile.mockResolvedValue(origBlob);
+			mockCompressed();
+			const wrapper = createWrapper({ src: 'coclaw-file://c1:a1/test.png', filename: 'test.png' });
+			await flushPromises();
+
+			// 过期缓存
+			vi.advanceTimersByTime(300_001);
+			expect(wrapper.vm.__fullBlob).toBeNull();
+
+			mockFetchCoclawFile.mockResolvedValue(refetchBlob);
+			mockSaveBlobToFile.mockResolvedValue();
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			expect(mockFetchCoclawFile).toHaveBeenCalledTimes(2);
+			expect(mockSaveBlobToFile).toHaveBeenCalledWith(refetchBlob, 'test.png');
+			// 重新缓存
+			expect(wrapper.vm.__fullBlob).toBe(refetchBlob);
+		});
+
+		test('重复点击被阻止', async () => {
+			const wrapper = createWrapper({ src: 'https://example.com/x.png', filename: 'x.png' });
+			await flushPromises();
+
+			wrapper.vm.downloading = true;
+			await wrapper.vm.__download();
+
+			expect(mockSaveUrlAsFile).not.toHaveBeenCalled();
+			expect(mockSaveBlobToFile).not.toHaveBeenCalled();
+		});
+
+		test('下载失败时 notify error', async () => {
+			mockCompressed();
+			mockFetchFn.mockRejectedValue(new Error('network error'));
+			const wrapper = createWrapper({ src: 'data:image/png;base64,abc', filename: 'img.png' });
+			await flushPromises();
+
+			// 重置 fetch mock 使 __getFullBlob 也失败
+			mockFetchFn.mockRejectedValue(new Error('fail'));
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			expect(mockNotifyError).toHaveBeenCalledWith('files.downloadFailed');
+		});
+
+		test('src 变更时中止下载', async () => {
+			mockCompressed();
+			const wrapper = createWrapper({ src: 'data:image/png;base64,first', filename: 'first.png' });
+			await flushPromises();
+			expect(wrapper.vm.__isThumb).toBe(true);
+
+			// 替换 fetch mock 为可控的 promise
+			const origBlob = makeBlob('original');
+			const fetchResolvers = [];
+			mockFetchFn.mockImplementation(() => {
+				let resolve;
+				const p = new Promise((r) => { resolve = r; });
+				fetchResolvers.push(resolve);
+				return p;
+			});
+
+			// 触发 download（等待 fetch）
+			const downloadPromise = wrapper.vm.__download();
+			await Promise.resolve();
+
+			// 中途切换 src
+			await wrapper.setProps({ src: 'data:image/png;base64,second' });
+
+			// resolve download 的 fetch（第一个调用）
+			fetchResolvers[0]({ blob: () => Promise.resolve(origBlob) });
+			await downloadPromise;
+
+			// saveBlobToFile 不应被调用（src 已变）
+			expect(mockSaveBlobToFile).not.toHaveBeenCalled();
+		});
+
+		test('组件卸载后不 notify', async () => {
+			mockCompressed();
+			mockFetchFn.mockRejectedValue(new Error('fail'));
+			const wrapper = createWrapper({ src: 'data:image/png;base64,abc', filename: 'img.png' });
+			await flushPromises();
+
+			mockFetchFn.mockRejectedValue(new Error('fail'));
+			const downloadPromise = wrapper.vm.__download();
+			wrapper.unmount();
+			await downloadPromise;
+			await flushPromises();
+
+			expect(mockNotifyError).not.toHaveBeenCalled();
 		});
 	});
 });

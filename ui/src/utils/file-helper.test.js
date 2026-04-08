@@ -4,6 +4,7 @@ import {
 	isImageByExt, chatFilesDir, topicFilesDir,
 	buildAttachmentBlock, parseAttachmentBlock,
 	validateCoclawPath, extractCoclawFileRefs,
+	saveUrlAsFile,
 	// saveBlobToFile / __nativeShareFile 在测试中通过 dynamic import 获取（需 vi.doMock）
 } from './file-helper.js';
 
@@ -432,6 +433,30 @@ describe('saveBlobToFile', () => {
 		expect(Filesystem.writeFile).toHaveBeenCalledOnce();
 		expect(Share.share).toHaveBeenCalledWith({ files: ['file:///cache/test.txt'] });
 		expect(Filesystem.deleteFile).toHaveBeenCalledOnce();
+	});
+});
+
+describe('saveUrlAsFile', () => {
+	test('创建 <a download> 并设置 target/rel', () => {
+		const mockA = { href: '', download: '', target: '', rel: '', click: vi.fn() };
+		const origCreateElement = document.createElement.bind(document);
+		vi.spyOn(document, 'createElement').mockImplementation((tag) =>
+			tag === 'a' ? mockA : origCreateElement(tag),
+		);
+		vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
+		vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+
+		saveUrlAsFile('https://example.com/img.png', 'photo.png');
+
+		expect(mockA.href).toBe('https://example.com/img.png');
+		expect(mockA.download).toBe('photo.png');
+		expect(mockA.target).toBe('_blank');
+		expect(mockA.rel).toBe('noopener');
+		expect(mockA.click).toHaveBeenCalledOnce();
+		expect(document.body.appendChild).toHaveBeenCalledWith(mockA);
+		expect(document.body.removeChild).toHaveBeenCalledWith(mockA);
+
+		vi.restoreAllMocks();
 	});
 });
 

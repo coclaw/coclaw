@@ -171,6 +171,24 @@ export async function saveBlobToFile(blob, filename) {
 }
 
 /**
+ * 通过 <a download> 链接下载外部 URL。
+ * 用于 Web 端绕过 CORS 限制直接触发浏览器下载。
+ * 跨域时浏览器可能忽略 download 属性而改为新标签页打开。
+ * @param {string} url
+ * @param {string} filename
+ */
+export function saveUrlAsFile(url, filename) {
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = filename;
+	a.target = '_blank';
+	a.rel = 'noopener';
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+}
+
+/**
  * Capacitor 原生：写临时文件 → 分享 → 清理
  * @param {Blob} blob
  * @param {string} filename
