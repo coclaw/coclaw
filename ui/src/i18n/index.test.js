@@ -61,6 +61,12 @@ describe('i18n', () => {
 		expect(normalizeSettingsLocale({ lang: 'fr' })).toBe('fr');
 	});
 
+	test('normalizeSettingsLocale should return null for unrecognized lang', () => {
+		expect(normalizeSettingsLocale({ lang: 'ar' })).toBeNull();
+		expect(normalizeSettingsLocale({ lang: 'th' })).toBeNull();
+		expect(normalizeSettingsLocale({ lang: '' })).toBeNull();
+	});
+
 	test('detectBrowserLocale should return en in non-browser env', () => {
 		expect(detectBrowserLocale()).toBe('en');
 	});

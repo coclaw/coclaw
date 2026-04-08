@@ -63,7 +63,6 @@ function validateUserPatchPayload(payload) {
 }
 
 const ALLOWED_THEME_VALUES = new Set(['auto', 'dark', 'light']);
-const ALLOWED_LANG_VALUES = new Set(['zh-CN', 'en']);
 
 function validateSettingsPatchPayload(payload) {
 	if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -101,12 +100,6 @@ function validateSettingsPatchPayload(payload) {
 		return {
 			ok: false,
 			message: 'lang must be a string or null',
-		};
-	}
-	if (Object.hasOwn(payload, 'lang') && payload.lang !== null && !ALLOWED_LANG_VALUES.has(payload.lang)) {
-		return {
-			ok: false,
-			message: 'lang must be one of zh-CN, en or null',
 		};
 	}
 	if (Object.hasOwn(payload, 'perfsPatch') && !isPlainObject(payload.perfsPatch)) {

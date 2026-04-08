@@ -307,23 +307,6 @@ test('patchCurrentUserSettingsHandler: should reject invalid theme value', async
 	assert.equal(res.body.message, 'theme must be one of auto, dark, light or null');
 });
 
-test('patchCurrentUserSettingsHandler: should reject invalid lang value', async () => {
-	const req = {
-		isAuthenticated: () => true,
-		user: { id: 123n },
-		body: {
-			lang: 'ja',
-		},
-	};
-	const res = createRes();
-
-	await patchCurrentUserSettingsHandler(req, res, () => {});
-
-	assert.equal(res.statusCode, 400);
-	assert.equal(res.body.code, 'INVALID_INPUT');
-	assert.equal(res.body.message, 'lang must be one of zh-CN, en or null');
-});
-
 test('changePasswordHandler: should reject missing fields', async () => {
 	const req = {
 		isAuthenticated: () => true,

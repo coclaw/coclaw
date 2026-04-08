@@ -52,13 +52,25 @@ export function detectBrowserLocale() {
 	return normalizeLocale(navigator.language || navigator.userLanguage || DEFAULT_LOCALE);
 }
 
+// 判断输入是否能匹配到已支持的语言
+function isRecognizedLocale(input) {
+	if (typeof input !== 'string') return false;
+	const value = input.trim();
+	if (!value) return false;
+	if (SUPPORTED_LOCALES.has(value)) return true;
+	if (value.startsWith('zh')) return true;
+	const base = value.split('-')[0];
+	return SUPPORTED_LOCALES.has(base);
+}
+
 export function normalizeSettingsLocale(settings) {
 	const value = settings?.lang;
 	if (value === null || value === undefined) {
 		return null;
 	}
-	const locale = normalizeLocale(String(value));
-	return SUPPORTED_LOCALES.has(locale) ? locale : DEFAULT_LOCALE;
+	// 不识别的语言回退到 null（auto 模式，使用浏览器语言）
+	if (!isRecognizedLocale(String(value))) return null;
+	return normalizeLocale(String(value));
 }
 
 const i18n = createI18n({
