@@ -250,11 +250,18 @@ describe('topics store', () => {
 		await expect(store.createTopic('no-bot', 'main')).rejects.toThrow('Claw not connected');
 	});
 
-	test('createTopic 连接状态非 connected 时抛出错误', async () => {
-		setConn('bot-1', { request: vi.fn(), on: vi.fn(), off: vi.fn() }, { dcReady: false });
+	test('createTopic 在 dcReady=false 时仍能成功创建（由底层 waitReady 处理）', async () => {
+		const conn = {
+			request: vi.fn().mockResolvedValue({ topicId: 'new-uuid-2' }),
+			on: vi.fn(), off: vi.fn(),
+		};
+		setConn('bot-1', conn, { dcReady: false });
 
 		const store = useTopicsStore();
-		await expect(store.createTopic('bot-1', 'main')).rejects.toThrow('Claw not connected');
+		const id = await store.createTopic('bot-1', 'main');
+		expect(id).toBe('new-uuid-2');
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.create', { agentId: 'main' });
+		expect(store.byId['new-uuid-2'].topicId).toBe('new-uuid-2');
 	});
 
 	// --- generateTitle ---

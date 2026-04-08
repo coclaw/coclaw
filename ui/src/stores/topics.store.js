@@ -6,6 +6,7 @@ import { defineStore } from 'pinia';
 
 import { useClawsStore } from './claws.store.js';
 import { getReadyConn } from './get-ready-conn.js';
+import { useClawConnections } from '../services/claw-connection-manager.js';
 
 let _loadingPromise = null;
 
@@ -119,7 +120,7 @@ export const useTopicsStore = defineStore('topics', {
 		 * @returns {Promise<string>} topicId
 		 */
 		async createTopic(clawId, agentId) {
-			const conn = getReadyConn(clawId);
+			const conn = useClawConnections().get(String(clawId));
 			if (!conn) throw new Error('Claw not connected');
 			const result = await conn.request('coclaw.topics.create', { agentId });
 			const topicId = result?.topicId;

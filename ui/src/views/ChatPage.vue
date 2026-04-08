@@ -246,8 +246,7 @@ export default {
 		newTopicReady() {
 			if (!this.isNewTopic) return false;
 			if (!this.newTopicClawId) return false;
-			const claw = this.clawsStore.byId[this.newTopicClawId];
-			return !!claw?.dcReady;
+			return !!this.clawsStore.byId[this.newTopicClawId];
 		},
 		/** 当前上下文的 agentId */
 		currentAgentId() {
@@ -592,7 +591,6 @@ export default {
 				READY_TIMEOUT: 'chat.errRpcTimeout',
 				TRANSFER_FAILED: 'chat.errTransferFailed',
 				SIZE_EXCEEDED: 'chat.errFileTooLarge',
-				RTC_UNAVAILABLE: 'chat.errRtcUnavailable',
 			};
 			const key = codeMap[err?.code];
 			if (key) return this.$t(key);

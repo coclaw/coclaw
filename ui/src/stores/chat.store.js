@@ -403,27 +403,13 @@ export function createChatStore(storeKey, opts = {}) {
 				this.__accepted = false;
 
 				const hasFiles = files?.length > 0;
-				const rtcAvailable = hasFiles && !!conn.rtc?.isReady;
-				if (hasFiles) {
-					console.debug('[chat] rtcAvailable=%s rtc=%s isReady=%s',
-						rtcAvailable, !!conn.rtc, conn.rtc?.isReady);
-				}
-
 				const idempotencyKey = __idempotencyKey || crypto.randomUUID();
 
 				try {
 					// 阶段1：文件上传（先于乐观消息创建）
-					let finalMessage;
-
-					if (hasFiles && rtcAvailable) {
-						finalMessage = await this.__uploadFilesSequentially(conn, text, files, onFileUploaded);
-					} else if (hasFiles) {
-						const err = new Error('File transfer requires RTC connection');
-						err.code = 'RTC_UNAVAILABLE';
-						throw err;
-					} else {
-						finalMessage = { text };
-					}
+					const finalMessage = hasFiles
+						? await this.__uploadFilesSequentially(conn, text, files, onFileUploaded)
+						: { text };
 
 					// 阶段2：创建 pending 乐观消息（文件上传完成后）
 					const optimisticUser = {

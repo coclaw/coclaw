@@ -99,7 +99,6 @@ const i18nMap = {
 	'chat.errWsClosed': 'Connection lost',
 	'chat.errWsSendFailed': 'Send failed (ws)',
 	'chat.errRtcSendFailed': 'Send failed (rtc)',
-	'chat.errRtcUnavailable': 'File transfer unavailable',
 	'chat.errUnknown': 'Something went wrong',
 };
 
@@ -117,7 +116,7 @@ function setupAgents(clawId = 'bot-1', agentId = 'main') {
 }
 
 function createWrapper(opts = {}) {
-	const { clawId = 'bot-1', agentId = 'main', routeName = 'chat', sessionId } = typeof opts === 'string'
+	const { clawId = 'bot-1', agentId = 'main', routeName = 'chat', sessionId, query } = typeof opts === 'string'
 		? { clawId: opts } // 兼容旧调用
 		: opts;
 	const pinia = createPinia();
@@ -141,7 +140,7 @@ function createWrapper(opts = {}) {
 					name: routeName,
 					params,
 					path,
-					query: {},
+					query: query || {},
 				},
 				$router: mockRouter,
 			},
@@ -500,30 +499,6 @@ describe('ChatPage send message', () => {
 		expect(mockNotify.error).toHaveBeenCalledWith('Send failed (rtc)');
 	});
 
-	test('RTC_UNAVAILABLE 错误显示友好文案并回填输入框和恢复文件', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		chatStore.__accepted = false;
-		const err = new Error('File transfer requires RTC connection');
-		err.code = 'RTC_UNAVAILABLE';
-		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(err);
-		await flushPromises();
-
-		wrapper.vm.inputText = 'look at this';
-		const input = wrapper.findComponent({ name: 'ChatInput' });
-		const files = [{ isImg: true, file: { type: 'image/png' }, name: 'pic.png' }];
-		input.vm.$emit('send', { text: 'look at this', files });
-		await flushPromises();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('File transfer unavailable');
-		// 文本回填到草稿
-		expect(wrapper.vm.inputText).toBe('look at this');
-		// 文件恢复（先 clear 再 restore）
-		expect(mockClearInputFiles).toHaveBeenCalled();
-		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
-	});
-
 	test('sending 中不重复发送', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
@@ -578,6 +553,28 @@ describe('ChatPage new topic', () => {
 			query: { agent: 'main', claw: 'bot-2' },
 		});
 		expect(mockRouter.push).not.toHaveBeenCalled();
+	});
+
+	test('newTopicReady 在 claw 存在时为 true，不依赖 dcReady', async () => {
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		// createWrapper 内部创建 pinia，之后再获取 store
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		// dcReady 默认为 falsy，不影响 newTopicReady
+		await flushPromises();
+		expect(wrapper.vm.newTopicReady).toBe(true);
+	});
+
+	test('newTopicReady 在 claw 不存在时为 false', async () => {
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'non-existent', agent: 'main' },
+		});
+		await flushPromises();
+		expect(wrapper.vm.newTopicReady).toBe(false);
 	});
 
 	test('showNewTopicBtn 在 topic 路由下始终为 true', async () => {
