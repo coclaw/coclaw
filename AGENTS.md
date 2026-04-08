@@ -57,27 +57,16 @@ General Instructions
 - session 与 sessionId 一一对应：是 chat 内的一段对话，每次 reset 产生新的 session
 - topic 由 CoClaw 自管理，使用 `agent(sessionId=<uuid>)` 发起，不关联 sessionKey
 
-## 仓库结构（monorepo，扁平组织）
-
-- `server`：后端服务
-- `ui`：前端应用（主要开发）
-- `admin`：管理端（已预留，暂不开发）
-- `plugins`：自研插件父目录（面向多 Agent 扩展）
-- `plugins/openclaw`：当前唯一 OpenClaw 插件（含 transport + session-manager + common）
-- `docs`：项目文档（架构、计划、决策、运维等）
-
 ## 包管理器
 
 - 本仓库 **仅使用 `pnpm`**
 - 禁止提交 `package-lock.json`
 - 统一维护 `pnpm-lock.yaml`
 
-## 依赖策略（避免造轮子）
+## 依赖策略
 
-- 在开发过程中遇到通用需求（包括但不限于数据处理、日期、路径、网络请求等）时，应避免“自己造轮子”（即避免手动编写 utils 函数或类）
-- 应当优先利用你内化的知识，首选使用 **工业标准级、社区广泛认可** 的开源库。无需联网搜索，直接你内化的知识来甄选包，并按最佳实践调用
-- 对常见能力（HTTP、日期、数据处理、UUID、classnames 等），禁止重复造轮子
-- 仅当没有满足需要的开源库时，才自己编写工具模块，并将其组织在 `src/utils` 目录中
+- 通用需求优先使用工业标准级开源库，禁止造轮子
+- 仅当无合适开源库时，才自行编写并放入 `src/utils`
 
 ## JavaScript 编码规范（适用于前后端及插件）
 
@@ -91,20 +80,18 @@ General Instructions
   - 涉及词法 `this` 时必须使用箭头函数
 - 对于异步操作，优选 `async/await`，除非链式写法明显更清晰
 - 网络请求优选用 `axios`
-- 对于标识符命名，尽量使用被社区广泛接受的通用缩写
 - class 的 private 方法名不要用 `#` 前缀，需要添加前缀时用 `__`
 - 抛出异常中的 message 用英文描述
 - 注释规范
   - 注释主要供你阅读，应尽量简洁
   - 注释一律用简体中文，因为有时开发者也会阅读
-	- 对于行内注释，多数情况下只需在注释与代码之间用一个空格分隔即可，无需相邻行间纵向对齐
+  - 对于行内注释，多数情况下只需在注释与代码之间用一个空格分隔即可，无需相邻行间纵向对齐
   - JSDoc 数组用 `[]` 语法，如 `string[]`，不用 `Array<string>`
-	- JSDoc `@param` 使用 `name - 描述` 格式
-- 除 vue 组件等被采用 default 
-- 除 Vue 单文件组件或配置文件等框架/工具链明确约定使用 default export 的情形外，所有 JavaScript 模块（包括 Utils、Services、Repos 等）均采用具名导出 (named export) 
+  - JSDoc `@param` 使用 `name - 描述` 格式
+- 除 Vue 单文件组件或配置文件等框架/工具链明确约定使用 default export 的情形外，所有 JavaScript 模块（包括 Utils、Services、Repos 等）均采用具名导出 (named export)
 - 导入部分 node 模块的命名约定
-  - 在导入node path 模块时，将导出名称设置为 nodePath，即 import nodePath from 'path'
-	- js 的单元测试代码直接使用 node 的 test，而不使用 it 方式
+  - 在导入 node path 模块时，将导出名称设置为 nodePath，即 `import nodePath from 'path'`
+  - js 的单元测试代码直接使用 node 的 test，而不使用 it 方式
 
 ## 单元测试规范
 
@@ -128,7 +115,7 @@ General Instructions
 
 ### Mock 与数据安全
 
-- 涉及“增删改”操作时遵循：
+- 涉及"增删改"操作时遵循：
   - 优先 **Create-Test-Delete**（只操作测试创建的数据）
   - 若无法创建，只能 **Modify-Revert**，且必须恢复原状
   - 若恢复失败，立即在 Workspace `TODO.md` 记录人工清理任务
@@ -139,31 +126,15 @@ General Instructions
 - 每次任务先明确影响范围（`server/ui/plugin`）再动手
 - 遵循最小变更原则：非需求要求下，不进行大范围重构/重命名/目录搬迁
 - 涉及跨模块改动（`ui <-> server <-> plugin`）时，先更新 `docs` 中的接口/协议说明，再改实现
-- 代码改动后必须通过验证：`pnpm check` → `pnpm test`
-- 改动应同步文档（尤其 `docs/` 下的计划、决策、接口说明）
 - 不在本阶段推进 `admin` 实质开发，除非明确指令
 
 ## Bug 修复流程
 
-当收到 bug 报告（无论来自开发者还是用户反馈），bug 的存在说明现有测试未覆盖该场景。修复方案确认后，按以下步骤执行：
-
-1. **修复 Bug**：实施代码修改
-2. **Review**：仔细审查修改，确认问题已修复且不会引入新问题
-3. **补充单元测试**：为该 bug 场景补充单元测试用例，确保回归可检测
-4. **补充 E2E 测试**（如涉及 UI 行为）：为该 bug 场景补充端到端测试
-5. **完整验证**：运行 `pnpm check` → `pnpm test`，确保所有测试通过且无回归
-
-以上步骤在修复方案确认后**主动执行**，无需用户逐项要求。
+修复方案确认后，主动执行：修复代码 → review → 补单元测试 → 补 E2E 测试（如涉及 UI）→ `pnpm check` + `pnpm test` 完整验证。无需用户逐项要求。
 
 ## E2E 测试
 
 涉及 E2E 测试的执行、编写或调试时，**必须先加载 `e2e-test` skill**，其中包含执行命令、标签分类、编写规范和关键约束。
-
-## 文档维护
-
-- 架构/协议/关键流程变更须同步更新 `docs/`（参见"文档体系"章节的分类和组织原则）
-- 重要权衡采用 ADR（`docs/decisions/`）
-- 协议约束、边界条件、失败语义需明确记录，避免实现漂移
 
 ## 安全与敏感信息
 
@@ -184,22 +155,10 @@ General Instructions
 ## 版本管理（Changesets）
 
 - 采用 Changesets + Independent 版本策略，详见 `docs/versioning.md`
-- 代码改动涉及包行为变更时，需执行 `pnpm changeset` 声明变更（选择受影响的包、级别、描述），将生成的 `.changeset/*.md` 随代码一起提交
+- 代码改动涉及包行为变更时，需执行 `pnpm changeset` 声明变更，将生成的 `.changeset/*.md` 随代码一起提交
 - 仅改测试/文档/CI 时不需要 changeset
 - 版本级别默认规则：bug 修复/小调整 → patch；新功能 → minor。检测到破坏性变更时提示用户确认级别（开发阶段通常仍选 minor）。用户明确指定时以用户为准
 - 发布流程使用 `/release` skill。默认"发布"仅指 npm 发布（plugins/openclaw），用户明确说"GitHub 发布"时才额外创建 GitHub Release
-
-## 命令约定（示例）
-
-```bash
-pnpm install
-pnpm check              # 静态检查（lint + typecheck）
-pnpm test               # 测试 + 覆盖率
-pnpm changeset          # 声明变更
-pnpm changeset:status   # 查看待发布变更
-pnpm changeset:version  # 消费 changeset，bump 版本
-pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/openclaw 下的 pnpm release）
-```
 
 ## 移动端与桌面端
 
@@ -211,9 +170,9 @@ pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/open
 
 ## 部署执行约定（内部）
 
-- 涉及部署时，优先使用 `scripts/deploy-*.sh`，避免临时手敲分散命令。
-- 部署说明与参数以 `docs/deploy-ops.md` 为准。
-- 默认内部发布域名为 `im.coclaw.net`。
+- 涉及部署时，优先使用 `scripts/deploy-*.sh`，避免临时手敲分散命令
+- 部署说明与参数以 `docs/deploy-ops.md` 为准
+- 默认内部发布域名为 `im.coclaw.net`
 
 ## 遵循对应最佳实践
 
@@ -222,7 +181,7 @@ pnpm changeset:publish  # 发布 npm 包（实际发布插件使用 plugins/open
 
 ## OpenClaw 开发参考
 
-OpenClaw 是较新的项目，且处于快速迭代阶段，训练数据中未包含其最新细节。请务必通过“阅读源码”和“查阅文档”来获取准确信息。
+OpenClaw 是较新的项目，且处于快速迭代阶段，训练数据中未包含其最新细节。请务必通过"阅读源码"和"查阅文档"来获取准确信息。
 
 ### 文档与源码
 
@@ -232,15 +191,12 @@ OpenClaw 网络资源：
 - Source: https://github.com/openclaw/openclaw
 - Community: https://discord.com/invite/clawd
 
-For OpenClaw behavior, commands, config, or architecture: consult local docs first.
-When diagnosing issues, run `openclaw status` yourself when possible; only ask the user if you lack access (e.g., sandboxed).
+需要了解 OpenClaw 行为、命令、配置或架构时，优先查阅本地文档。诊断问题时尽量自行运行 `openclaw status`；仅在无权限时（如沙箱环境）才请用户协助。
 
 ### OpenClaw CLI
 
-OpenClaw is controlled via subcommands. Do not invent commands. To manage the Gateway daemon service (start/stop/restart):
-- openclaw gateway status
-- openclaw gateway start
-- openclaw gateway stop
-- openclaw gateway restart
+OpenClaw 通过子命令控制，禁止编造不存在的命令。管理 Gateway 守护进程：
+- `openclaw gateway status`
+- `openclaw gateway start / stop / restart`
 
-If unsure, ask the user to run openclaw help (or openclaw gateway --help) and paste the output.
+不确定时，请用户运行 `openclaw help` 或 `openclaw gateway --help` 并粘贴输出。

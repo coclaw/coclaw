@@ -49,14 +49,9 @@
 
 ## remoteLog 远程诊断日志
 
-- `remoteLog(text)` 函数（`src/services/remote-log.js`）用于将**重要诊断信息**推送到 CoClaw server，供开发者远程排查问题。
-- 仅用于输出对远程诊断有价值的关键事件，**禁止用于高频/冗余日志**（如逐条消息收发、心跳计数等）
-- 工作原理：写入内存环形缓冲区，后台微任务负责通过 SignalingConnection 发送到 server
-- 日志格式约定：`<模块>.<事件> key=value key=value`，如 `sig.connected`、`rtc.state conn=abc123 connected`
-- 应推送的典型事件：
-  - **连接生命周期**：SignalingConnection / WebRTC 连接的建立、断开、重连、错误
-  - **系统状态恢复**：App 前后台切换（`capacitor-app` 的 resume/pause）、网络状态变化等触发重连的时机
-  - **关键业务状态变更**：bot 绑定/解绑等影响连接可用性的操作
+- `remoteLog(text)` 函数（`src/services/remote-log.js`）用于将**重要诊断信息**推送到 CoClaw server，供开发者远程排查问题
+- 仅用于关键事件（连接生命周期、系统状态恢复、关键业务状态变更），**禁止用于高频/冗余日志**
+- 日志格式：`<模块>.<事件> key=value key=value`，如 `sig.connected`、`rtc.state conn=abc123 connected`
 
 ## 单元测试命令约定
 
@@ -69,7 +64,7 @@
 
 - Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例
 - 当用户明确要求时才执行 E2E 测试
-- 涉及 E2E 测试的执行、编写或调试时，**必须先加载 `e2e-test` skill**（含执行命令、标签分类、编写规范和关键约束）
+- 涉及 E2E 测试时，**必须先加载 `e2e-test` skill**
 
 ## 移动端子页面适配
 

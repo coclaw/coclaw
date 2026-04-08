@@ -3,43 +3,6 @@
 > 适用范围：`coclaw/plugins/openclaw` 及其子目录。
 > 本文件仅写相对上级 `coclaw/AGENTS.md` 与 `coclaw/plugins/AGENTS.md` 的增量规则。
 
-## 当前结构
-
-- `src/` 根 — 核心模块（平铺）
-  - `channel-plugin.js` — channel 注册（OpenClaw channel 插件实现）
-  - `realtime-bridge.js` — CoClaw server ↔ OpenClaw gateway WebSocket 桥接
-  - `transport-adapter.js` — 消息收发适配层
-  - `message-model.js` — 消息格式转换
-  - `config.js` — 绑定信息读写（唯一入口）
-  - `settings.js` — 插件设置读写（claw name 等，存储于 `~/.openclaw/coclaw/settings.json`）
-  - `api.js` — CoClaw server HTTP API 封装
-  - `cli-registrar.js` — OpenClaw `registerCli` 注册（`openclaw coclaw bind/unbind/enroll`）
-  - `plugin-version.js` — 插件版本号读取（缓存）
-  - `runtime.js` — OpenClaw runtime 引用管理
-- `src/webrtc/` — WebRTC 传输层
-  - `webrtc-peer.js` — 多 PeerConnection 管理（以 connId 为粒度，插件作为被叫方）
-  - `ndc-preloader.js` — node-datachannel 预加载 + werift 回退
-  - `dc-chunking.js` — DataChannel 应用层分片/重组协议
-- `src/auto-upgrade/` — 自动升级模块（仅 npm 安装模式生效）
-  - `updater.js` — 调度入口（延迟首次 + 周期轮询 + 升级锁）
-  - `updater-check.js` — 版本检查（npm view）+ `getPackageInfo()`
-  - `updater-spawn.js` — spawn detached worker 进程
-  - `worker.js` — 独立进程：备份 → `openclaw plugins update` → 验证 → 回滚
-  - `worker-backup.js` — 备份与恢复
-  - `worker-verify.js` — 升级后验证（gateway + 插件 + health）
-  - `state.js` — upgrade-state.json / upgrade-log.jsonl 读写
-- `src/chat-history-manager/` — chat 历史追踪（session reset 产生的孤儿 session 链）
-- `src/session-manager/` — 会话读取能力（`nativeui.sessions.listAll/get`、`coclaw.sessions.getById`）
-- `src/file-manager/` — 文件操作（沙箱化，支持 WebRTC DC 和 WS 双路径）
-- `src/utils/` — 通用工具（零外部依赖）
-  - `atomic-write.js` — 原子文件写入（tmp+rename）
-  - `mutex.js` — 进程内异步互斥锁（Promise 链 FIFO）
-- `src/common/` — 共享逻辑
-  - `claw-binding.js` — bind/unbind 核心逻辑
-  - `errors.js` — 错误码与消息映射
-  - `gateway-notify.js` — gateway RPC 通知（spawn `openclaw gateway call`）
-  - `messages.js` — 用户提示文本
-
 ## 绑定信息存储
 
 - 绑定信息存储在 **`~/.openclaw/coclaw/bindings.json`**（通过 `resolveStateDir()` + channel ID 组合路径），**不存储在 `openclaw.json` 中**。
@@ -68,11 +31,9 @@
 
 ## remoteLog 远程日志
 
-- `remoteLog(text)` 函数（`src/remote-log.js`）用于将**重要诊断信息**推送到 CoClaw server，供开发者远程排查问题。
-- 仅用于输出对远程诊断有价值的关键事件（如连接状态变更、ICE 候选汇总、认证失败等），**禁止用于高频/冗余日志**（如逐条消息收发、心跳计数等）。
-- 工作原理：写入内存环形缓冲区，后台微任务通过 `RealtimeBridge` 的 WebSocket 连接发送到 server。
-- **禁止在 auto-upgrade worker 进程中使用**：worker 是独立 spawn 的子进程，没有 bridge 连接。
-- 日志格式约定：`<模块>.<事件> key=value key=value`，如 `rtc.state conn=abc123 connected`。
+- `remoteLog(text)` 函数（`src/remote-log.js`）用于将重要诊断信息推送到 CoClaw server
+- 使用规则与 ui 侧一致（仅关键事件，禁止高频日志），格式：`<模块>.<事件> key=value`
+- **禁止在 auto-upgrade worker 进程中使用**：worker 是独立 spawn 的子进程，没有 bridge 连接
 
 ## 文件 I/O 安全规范
 
@@ -150,21 +111,9 @@
 - Server 收到 `coclaw.info.updated` 后持久化 `bot.name`，不转发给 UI WS
 - UI 通过 DC 直接收到事件，更新 `pluginInfo.name` / `pluginInfo.hostName`
 
-## 测试门禁（强制）
+## 测试门禁
 
-执行顺序：
-1. `pnpm check`（静态检查）
-2. `pnpm test`（测试 + 覆盖率）
-
-> `pnpm verify` = check + test，仅由 release 脚本内部调用，日常开发分步执行上述两条即可。
-
-覆盖率阈值：
-- lines 100%
-- functions 100%
-- branches 95%（`??` / `?.` fallback 分支不强制覆盖）
-- statements 100%
-
-覆盖率未通过，禁止安装到 gateway。
+覆盖率阈值：lines 100%、functions 100%、branches 95%、statements 100%。覆盖率未通过，禁止安装到 gateway。
 
 ### 执行约束
 
@@ -172,16 +121,8 @@
 - 发起新一轮测试前，必须确认上一轮已结束；若超时，先 `ps aux | grep -E 'node.*test|vitest'` 检查并 kill 残留进程，再重试
 - 禁止并发启动多个 test runner——并发执行会因资源竞争导致进程堆积、主机卡顿
 
-## 文档同步
+## 本地更新
 
-插件改动必须同步：
-- `plugins/openclaw/STATUS.md`
-- `plugins/openclaw/README.md`
-- 以及 `docs/` 下相关决策文档
-
-## 本地更新（简要）
-
-- 本地开发采用 `plugins install --link` 一次性接入；后续代码更新默认只 `openclaw gateway restart`。
-- 避免把 `uninstall + 删除 extensions + reinstall` 作为日常流程。
-- **命名陷阱**：CLI 参数叫 `--link`，但 OpenClaw 在 `openclaw.json` 中记录的 `source` 值为 `"path"`（与普通目录安装相同），没有 `"link"` 值。区分方式是 `sourcePath === installPath` 表示 link 模式。脚本层（`scripts/_lib.sh` 的 `get_install_mode()`）已做转换，对外统一返回 `"link"`。
-- 详细流程与故障恢复见：`plugins/openclaw/docs/local-plugin-update-sop.md`。
+- 本地开发采用 `plugins install --link` 一次性接入；后续代码更新只需 `openclaw gateway restart`
+- 避免把 `uninstall + 删除 extensions + reinstall` 作为日常流程
+- 详细流程与故障恢复见：`plugins/openclaw/docs/local-plugin-update-sop.md`
