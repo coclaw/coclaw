@@ -376,6 +376,7 @@ export const enMessages = {
 		titleSuffix: 'Files',
 		connecting: 'Connecting to Claw…',
 		loading: 'Loading…',
+		pending: 'Pending…',
 		dropHint: 'Drop files to upload',
 		emptyDir: 'Empty directory',
 		rootDir: 'Root',

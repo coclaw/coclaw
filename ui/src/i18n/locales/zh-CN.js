@@ -376,6 +376,7 @@ export const zhCNMessages = {
 		titleSuffix: '文件',
 		connecting: '正在连接 Claw…',
 		loading: '正在加载…',
+		pending: '等待中…',
 		dropHint: '松开以上传文件',
 		emptyDir: '空目录',
 		rootDir: '根目录',

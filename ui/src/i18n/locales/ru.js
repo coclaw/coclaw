@@ -376,6 +376,7 @@ export const ruMessages = {
 		titleSuffix: 'Файлы',
 		connecting: 'Подключение к Claw…',
 		loading: 'Загрузка…',
+		pending: 'Ожидание…',
 		dropHint: 'Перетащите файлы для загрузки',
 		emptyDir: 'Папка пуста',
 		rootDir: 'Корень',

@@ -376,6 +376,7 @@ export const zhTWMessages = {
 		titleSuffix: '檔案',
 		connecting: '正在連線 Claw…',
 		loading: '正在載入…',
+		pending: '等待中…',
 		dropHint: '放開以上傳檔案',
 		emptyDir: '空目錄',
 		rootDir: '根目錄',

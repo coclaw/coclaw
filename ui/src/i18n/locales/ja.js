@@ -376,6 +376,7 @@ export const jaMessages = {
 		titleSuffix: 'ファイル',
 		connecting: 'Claw に接続中…',
 		loading: '読み込み中…',
+		pending: '待機中…',
 		dropHint: 'ファイルをドロップしてアップロード',
 		emptyDir: 'フォルダは空です',
 		rootDir: 'ルート',

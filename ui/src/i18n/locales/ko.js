@@ -376,6 +376,7 @@ export const koMessages = {
 		titleSuffix: '파일',
 		connecting: 'Claw에 연결 중…',
 		loading: '불러오는 중…',
+		pending: '대기 중…',
 		dropHint: '파일을 여기에 드롭하여 업로드',
 		emptyDir: '빈 폴더',
 		rootDir: '루트',

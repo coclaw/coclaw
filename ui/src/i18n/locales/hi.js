@@ -376,6 +376,7 @@ export const hiMessages = {
 		titleSuffix: 'फ़ाइलें',
 		connecting: 'Claw से कनेक्ट हो रहा है…',
 		loading: 'लोड हो रहा है…',
+		pending: 'लंबित…',
 		dropHint: 'अपलोड करने के लिए फ़ाइलें छोड़ें',
 		emptyDir: 'खाली डायरेक्टरी',
 		rootDir: 'रूट',
