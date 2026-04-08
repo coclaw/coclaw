@@ -1,10 +1,17 @@
 # @coclaw/openclaw-coclaw
 
-CoClaw 的 OpenClaw 插件（npm: `@coclaw/openclaw-coclaw`，plugin id: `openclaw-coclaw`），包含：
+CoClaw 的 OpenClaw 插件（npm: `@coclaw/openclaw-coclaw`，plugin id: `openclaw-coclaw`），运行在 OpenClaw gateway 进程中，是 CoClaw 与 OpenClaw 之间的核心连接层。
 
-- **transport bridge** — CoClaw server 与 OpenClaw gateway 之间的实时消息桥接
-- **session-manager** — 会话列表/读取能力（`nativeui.sessions.listAll` / `nativeui.sessions.get`）
+主要模块：
+
+- **realtime bridge** — CoClaw server 与 OpenClaw gateway 之间的 WebSocket 实时消息桥接，支持 RPC 转发和事件广播
+- **WebRTC peer** — 与 CoClaw UI 建立 WebRTC DataChannel 直连，提供 RPC 和文件传输两类通道
+- **session manager** — 会话列表/读取能力（`nativeui.sessions.listAll` / `nativeui.sessions.get`）
+- **chat history manager** — 跟踪和管理 chat reset 产生的孤儿 session（`coclaw.chatHistory.list`）
+- **topic manager** — 独立话题的创建、列表、标题生成与删除（`coclaw.topics.*`）
+- **file manager** — 工作区文件管理，支持通过 WebRTC DataChannel 流式传输和 gateway RPC 回退（`coclaw.files.*`）
 - **auto-upgrade** — 从 npm 安装的插件自动检查并升级到最新版本
+- **device identity** — Ed25519 密钥对管理，用于 gateway WebSocket 连接的设备认证
 
 ## 安装与模式切换
 
@@ -59,6 +66,41 @@ pnpm run release:check -- 0.1.7            # 对比指定版本
 WAIT=1 pnpm run release:check -- 0.1.7     # 轮询直到版本生效
 pnpm run release:versions                  # 显示所有已发布版本
 ```
+
+## Gateway RPC 方法
+
+插件注册的所有 gateway method（通过 `openclaw gateway call <method>` 或 WebRTC DC 调用）：
+
+| 方法 | 说明 |
+|------|------|
+| `coclaw.bind` | 绑定 Claw 到 CoClaw server |
+| `coclaw.unbind` | 解绑并停止 bridge |
+| `coclaw.enroll` | 生成认领码，等待用户完成绑定 |
+| `coclaw.info` / `coclaw.info.get` | 获取插件版本、claw 版本、capabilities、名称、主机名 |
+| `coclaw.info.patch` | 修改 claw 显示名称，广播 `coclaw.info.updated` 事件 |
+| `coclaw.topics.create` | 创建话题 |
+| `coclaw.topics.list` | 列出指定 agent 的话题 |
+| `coclaw.topics.get` | 获取单个话题 |
+| `coclaw.topics.getHistory` | 获取话题对话记录 |
+| `coclaw.topics.update` | 更新话题标题 |
+| `coclaw.topics.generateTitle` | 通过 agent RPC 自动生成话题标题 |
+| `coclaw.topics.delete` | 删除话题及其 `.jsonl` 文件 |
+| `coclaw.chatHistory.list` | 列出 chat 的历史（孤儿）session |
+| `coclaw.sessions.getById` | 按 sessionId 获取消息记录 |
+| `coclaw.upgradeHealth` | 返回当前插件版本（升级健康检查） |
+| `coclaw.files.list` | 列出工作区文件（RPC 回退） |
+| `coclaw.files.delete` | 删除工作区文件/目录 |
+| `coclaw.files.mkdir` | 创建工作区目录 |
+| `coclaw.files.create` | 创建空文件 |
+| `nativeui.sessions.listAll` | 列出所有 session（分页 + 标题推导） |
+| `nativeui.sessions.get` | 获取 session 原始 JSONL 行（分页） |
+
+## Gateway Services
+
+| Service ID | 说明 |
+|------------|------|
+| `coclaw-realtime-bridge` | CoClaw server WebSocket 桥接 + WebRTC peer 管理 |
+| `coclaw-auto-upgrade` | npm 安装模式下的自动升级调度器 |
 
 ## 绑定 / 解绑
 
@@ -182,6 +224,19 @@ openclaw logs --limit 300 --plain | rg -n "gateway connect failed|protocol misma
 # 看 rpc/event 透传（需先开启 COCLAW_WS_DEBUG=1）
 openclaw logs --limit 300 --plain | rg -n "ui->server req|bot->server res|bot->server event|gateway req" -i
 ```
+
+## 设置
+
+插件设置存储在 `~/.openclaw/coclaw/settings.json`，独立于绑定信息，解绑后重新绑定不会丢失。
+
+当前支持的设置项：
+- `name` — Claw 显示名称（可选，最长 63 字符），通过 `coclaw.info.patch` RPC 修改
+
+`settings.js` 是读写设置的唯一入口。
+
+## 设备身份
+
+插件在首次运行时自动生成 Ed25519 密钥对，存储在 `~/.openclaw/coclaw/device-identity.json`（mode 0o600）。`deviceId` 为公钥的 SHA-256 摘要，用于 gateway WebSocket 连接的设备认证（v3 auth payload）。
 
 ## 测试门禁
 
