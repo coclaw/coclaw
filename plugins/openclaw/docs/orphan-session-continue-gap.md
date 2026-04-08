@@ -19,17 +19,20 @@
 - 对 orphan transcript（只有 `sessionId`、无可用 `sessionKey`）无法直接继续对话。
 - 因此“list/get 可行，但 orphan continue 暂不可行”。
 
-## 当前决策
-- 暂不在本轮实现 `attach/rehydrate` 类桥接方法。
-- 先保留该缺口，后续专题处理。
+## 后续演进
 
-## 后续可选方向（待评估）
-1. 在插件中增加 `nativeui.sessions.attach`：
-   - 输入 `sessionId`
-   - 输出可用于 `chat.send` 的 `sessionKey`
-2. 评估是否可利用 gateway/session store 现有能力进行安全挂载（不破坏现有 session 索引）。
-3. 若无官方能力，考虑最小可控的“只读 + 显式 attach”双阶段方案。
+自本文档记录以来，session 管理能力已显著增强：
+
+- `nativeui.sessions.listAll` 现在返回 `sessionKey`（通过关联 `sessions.json`），orphan session 标记为 `indexed: false`
+- 新增 `coclaw.sessions.getById`：按 sessionId 获取消息记录（仅 message 行），可用于只读查看 orphan transcript
+- chat history manager（`coclaw.chatHistory.list`）可追踪 chat reset 产生的孤儿 session
+- Topic 功能提供了独立于 sessionKey 体系的对话管理能力
+
+## 仍存在的核心缺口
+
+- **orphan session 续聊**仍不可行：`chat.send` 要求 `sessionKey`，对 orphan transcript（仅有 `sessionId`、无可用 `sessionKey`）无法直接继续对话
+- `attach/rehydrate` 类桥接方法仍未实现
 
 ## 注意事项
-- 在能力缺口未补齐前，不要对 orphan session 执行“继续对话成功”的产品承诺。
-- 会话联调仍遵循：不删已有 session，不默认创建新 session。
+- 在续聊能力缺口未补齐前，不要对 orphan session 执行”继续对话成功”的产品承诺
+- 会话联调仍遵循：不删已有 session，不默认创建新 session

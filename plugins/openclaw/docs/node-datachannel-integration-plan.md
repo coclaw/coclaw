@@ -1,9 +1,11 @@
 # node-datachannel 集成方案
 
 > 创建时间：2026-03-31
-> 状态：已实施（2026-03-31）
+> 状态：已实施（2026-03-31）— 以代码为准，本文档为设计过程记录
 > 前置文档：`docs/study/webrtc-connection-research.md`（附录 B：选型评估）
 > 后续文档：[node-datachannel 使用笔记](node-datachannel-notes.md) — 使用过程中的问题、排查和发现
+>
+> **实施后差异**：版本已升级至 v0.32.2；实际模块位于 `src/webrtc/ndc-preloader.js`（非 `src/ndc-preloader.js`）；API 为 `preloadNdc()` 返回 `{ PeerConnection, cleanup, impl }`；包含 werift 自动回退和 TURN credential percent-encoding wrapper；`initLogger` 已启用（Warning 级别）；迁移路径一步到位（跳过双轨阶段）。详见第七节"实施差异记录"。
 
 ---
 
