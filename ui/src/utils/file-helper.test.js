@@ -4,6 +4,7 @@ import {
 	isImageByExt, chatFilesDir, topicFilesDir,
 	buildAttachmentBlock, parseAttachmentBlock,
 	validateCoclawPath, extractCoclawFileRefs,
+	// saveBlobToFile / __nativeShareFile 在测试中通过 dynamic import 获取（需 vi.doMock）
 } from './file-helper.js';
 
 const origCreateObjectURL = URL.createObjectURL;
@@ -362,5 +363,202 @@ describe('extractCoclawFileRefs', () => {
 		const text = '[录音](coclaw-file:output/recording.webm)';
 		const refs = extractCoclawFileRefs(text);
 		expect(refs[0].isVoice).toBe(true);
+	});
+});
+
+describe('saveBlobToFile', () => {
+	let origCreate;
+
+	beforeEach(() => {
+		origCreate = URL.createObjectURL;
+		URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+		URL.revokeObjectURL = vi.fn();
+	});
+
+	afterEach(() => {
+		URL.createObjectURL = origCreate;
+		URL.revokeObjectURL = origRevokeObjectURL;
+		vi.restoreAllMocks();
+	});
+
+	test('Web 环境：创建 <a download> 触发浏览器下载', async () => {
+		// mock platform 为 web
+		vi.doMock('./platform.js', () => ({ isCapacitorApp: false }));
+
+		const mockA = { href: '', download: '', click: vi.fn() };
+		const origCreateElement = document.createElement.bind(document);
+		vi.spyOn(document, 'createElement').mockImplementation((tag) =>
+			tag === 'a' ? mockA : origCreateElement(tag),
+		);
+		vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
+		vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+
+		const blob = new Blob(['hello'], { type: 'text/plain' });
+		// 重新 import 使 doMock 生效
+		const { saveBlobToFile: save } = await import('./file-helper.js');
+		await save(blob, 'test.txt');
+
+		expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+		expect(mockA.download).toBe('test.txt');
+		expect(mockA.href).toBe('blob:mock-url');
+		expect(mockA.click).toHaveBeenCalledOnce();
+		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
+	});
+
+	test('Capacitor 环境：调用 __nativeShareFile', async () => {
+		vi.doMock('./platform.js', () => ({ isCapacitorApp: true }));
+		vi.doMock('@capacitor/filesystem', () => ({
+			Filesystem: {
+				writeFile: vi.fn().mockResolvedValue({ uri: 'file:///cache/test.txt' }),
+				deleteFile: vi.fn().mockResolvedValue(),
+				rmdir: vi.fn().mockResolvedValue(),
+			},
+			Directory: { Cache: 'CACHE' },
+		}));
+		vi.doMock('@capacitor/share', () => ({
+			Share: { share: vi.fn().mockResolvedValue() },
+		}));
+
+		const blob = new Blob(['hello']);
+		const { saveBlobToFile: save } = await import('./file-helper.js');
+		await save(blob, 'test.txt');
+
+		const { Filesystem } = await import('@capacitor/filesystem');
+		const { Share } = await import('@capacitor/share');
+		expect(Filesystem.writeFile).toHaveBeenCalledOnce();
+		expect(Share.share).toHaveBeenCalledWith({ files: ['file:///cache/test.txt'] });
+		expect(Filesystem.deleteFile).toHaveBeenCalledOnce();
+	});
+});
+
+describe('__nativeShareFile', () => {
+	let writeFileMock, deleteFileMock, rmdirMock, shareMock;
+
+	beforeEach(() => {
+		writeFileMock = vi.fn().mockResolvedValue({ uri: 'file:///cache/doc.pdf' });
+		deleteFileMock = vi.fn().mockResolvedValue();
+		rmdirMock = vi.fn().mockResolvedValue();
+		shareMock = vi.fn().mockResolvedValue();
+
+		vi.doMock('@capacitor/filesystem', () => ({
+			Filesystem: { writeFile: writeFileMock, deleteFile: deleteFileMock, rmdir: rmdirMock },
+			Directory: { Cache: 'CACHE' },
+		}));
+		vi.doMock('@capacitor/share', () => ({
+			Share: { share: shareMock },
+		}));
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test('写入 Cache 目录（含 recursive）、调起分享、最后删除临时文件和子目录', async () => {
+		const blob = new Blob(['pdf-data'], { type: 'application/pdf' });
+		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+		await nativeShare(blob, 'doc.pdf');
+
+		// writeFile 用 base64 写入 Cache 的唯一子目录，保留原始文件名
+		expect(writeFileMock).toHaveBeenCalledOnce();
+		const writeArgs = writeFileMock.mock.calls[0][0];
+		expect(writeArgs.path).toMatch(/^coclaw_\d+\/doc\.pdf$/);
+		expect(writeArgs.directory).toBe('CACHE');
+		expect(writeArgs.recursive).toBe(true);
+		expect(typeof writeArgs.data).toBe('string'); // base64
+
+		// 用返回的 uri 调起分享
+		expect(shareMock).toHaveBeenCalledWith({ files: ['file:///cache/doc.pdf'] });
+
+		// 分享完成后删除临时文件和子目录
+		expect(deleteFileMock).toHaveBeenCalledWith({
+			path: writeArgs.path,
+			directory: 'CACHE',
+		});
+		expect(rmdirMock).toHaveBeenCalledWith({
+			path: writeArgs.path.substring(0, writeArgs.path.lastIndexOf('/')),
+			directory: 'CACHE',
+		});
+	});
+
+	test('用户取消分享面板时静默处理，不向上抛出', async () => {
+		shareMock.mockRejectedValue(new Error('Share canceled'));
+
+		const blob = new Blob(['data']);
+		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+		// 不应抛出
+		await expect(nativeShare(blob, 'cancel.txt')).resolves.toBeUndefined();
+
+		// 仍应清理临时文件
+		expect(deleteFileMock).toHaveBeenCalledOnce();
+		expect(rmdirMock).toHaveBeenCalledOnce();
+	});
+
+	test('非取消的分享错误仍向上抛出，且清理临时文件', async () => {
+		shareMock.mockRejectedValue(new Error('Share plugin unavailable'));
+
+		const blob = new Blob(['data']);
+		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+		await expect(nativeShare(blob, 'fail.txt')).rejects.toThrow('Share plugin unavailable');
+
+		// 即使 share 失败，cleanup 仍应执行
+		expect(deleteFileMock).toHaveBeenCalledOnce();
+		expect(rmdirMock).toHaveBeenCalledOnce();
+	});
+
+	test('deleteFile 失败时输出警告但不抛出', async () => {
+		deleteFileMock.mockRejectedValue(new Error('IO error'));
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const blob = new Blob(['data']);
+		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+		await expect(nativeShare(blob, 'ok.txt')).resolves.toBeUndefined();
+		expect(warnSpy).toHaveBeenCalledWith(
+			'[saveBlobToFile] cache cleanup failed:',
+			expect.any(Error),
+		);
+		warnSpy.mockRestore();
+	});
+
+	test('rmdir 失败时输出警告但不抛出', async () => {
+		rmdirMock.mockRejectedValue(new Error('dir not empty'));
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const blob = new Blob(['data']);
+		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+		await expect(nativeShare(blob, 'ok.txt')).resolves.toBeUndefined();
+		expect(warnSpy).toHaveBeenCalledWith(
+			'[saveBlobToFile] cache dir cleanup failed:',
+			expect.any(Error),
+		);
+		warnSpy.mockRestore();
+	});
+
+	test('writeFile 失败时直接抛出（无需清理）', async () => {
+		writeFileMock.mockRejectedValue(new Error('disk full'));
+
+		const blob = new Blob(['data']);
+		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+		await expect(nativeShare(blob, 'full.txt')).rejects.toThrow('disk full');
+
+		// writeFile 在 try 之前失败，不会触发 cleanup
+		expect(shareMock).not.toHaveBeenCalled();
+		expect(deleteFileMock).not.toHaveBeenCalled();
+	});
+
+	test('base64 数据正确转换', async () => {
+		const blob = new Blob(['hello'], { type: 'text/plain' });
+		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+		await nativeShare(blob, 'hello.txt');
+
+		const writeArgs = writeFileMock.mock.calls[0][0];
+		// 'hello' → base64 = 'aGVsbG8='
+		expect(writeArgs.data).toBe('aGVsbG8=');
 	});
 });

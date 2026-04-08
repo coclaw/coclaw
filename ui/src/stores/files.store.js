@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { uploadFile, downloadFile } from '../services/file-transfer.js';
+import { saveBlobToFile } from '../utils/file-helper.js';
 
 /**
  * 文件传输任务 Store
@@ -234,10 +235,10 @@ export const useFilesStore = defineStore('files', {
 					task.progress = total > 0 ? received / total : 0;
 				};
 				const result = await handle.promise;
-				task.status = 'done';
 				task.progress = 1;
-				// 触发浏览器下载
-				triggerBrowserDownload(result.blob, result.name || task.fileName);
+				// 保存文件（Web 触发浏览器下载；Capacitor 调起系统分享）
+				await saveBlobToFile(result.blob, result.name || task.fileName);
+				task.status = 'done';
 			} catch (err) {
 				if (err?.code === 'CANCELLED') return;
 				task.status = 'failed';
@@ -276,25 +277,8 @@ function createTask(overrides) {
 	};
 }
 
-/**
- * 触发浏览器下载
- * @param {Blob} blob
- * @param {string} fileName
- */
-function triggerBrowserDownload(blob, fileName) {
-	const url = URL.createObjectURL(blob);
-	const a = document.createElement('a');
-	a.href = url;
-	a.download = fileName;
-	document.body.appendChild(a);
-	a.click();
-	document.body.removeChild(a);
-	// 延迟释放，确保浏览器有足够时间发起下载
-	setTimeout(() => URL.revokeObjectURL(url), 200);
-}
-
 /** @internal 仅供测试 */
-export { createTask as __createTask, triggerBrowserDownload as __triggerBrowserDownload };
+export { createTask as __createTask };
 
 /**
  * @typedef {object} FileTask

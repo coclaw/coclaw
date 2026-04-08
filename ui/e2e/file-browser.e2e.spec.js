@@ -209,7 +209,7 @@ test.describe('文件浏览器 @file', () => {
 		// 文件出现在列表
 		await expect(page.locator('main').getByText(fileName)).toBeVisible({ timeout: 20_000 });
 
-		// 点击文件触发下载（store 调用 downloadFile → triggerBrowserDownload）
+		// 点击文件触发下载（store 调用 downloadFile → saveBlobToFile）
 		await page.locator('main').getByText(fileName, { exact: true }).click();
 		// 等待下载进度条出现再消失（表示下载完成）
 		await page.waitForTimeout(5000);

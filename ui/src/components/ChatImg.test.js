@@ -21,6 +21,10 @@ vi.mock('../utils/image-helper.js', () => ({
 	compressImage: (...args) => mockCompressImage(...args),
 }));
 
+vi.mock('../composables/use-notify.js', () => ({
+	useNotify: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn() }),
+}));
+
 import ChatImg from './ChatImg.vue';
 
 // ── stub / helper ──

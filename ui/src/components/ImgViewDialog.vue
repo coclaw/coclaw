@@ -39,6 +39,8 @@
 
 <script>
 import { popDialogState } from '../utils/dialog-history.js';
+import { saveBlobToFile } from '../utils/file-helper.js';
+import { useNotify } from '../composables/use-notify.js';
 
 export default {
 	name: 'ImgViewDialog',
@@ -57,6 +59,9 @@ export default {
 		},
 	},
 	emits: ['update:open', 'after:leave'],
+	setup() {
+		return { notify: useNotify() };
+	},
 	data() {
 		return {
 			modalUi: {
@@ -83,13 +88,15 @@ export default {
 		},
 	},
 	methods: {
-		download() {
-			const a = document.createElement('a');
-			a.href = this.src;
-			a.download = this.filename;
-			document.body.appendChild(a);
-			a.click();
-			document.body.removeChild(a);
+		async download() {
+			try {
+				const resp = await fetch(this.src);
+				const blob = await resp.blob();
+				await saveBlobToFile(blob, this.filename);
+			} catch (err) {
+				console.warn('[ImgViewDialog] download failed:', err);
+				this.notify.error(this.$t('files.downloadFailed'));
+			}
 		},
 	},
 };

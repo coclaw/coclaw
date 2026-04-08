@@ -12,6 +12,12 @@ vi.mock('../services/claw-connection-manager.js', () => ({
 	useClawConnections: vi.fn(),
 }));
 
+// mock saveBlobToFile
+const saveBlobToFileMock = vi.hoisted(() => vi.fn().mockResolvedValue());
+vi.mock('../utils/file-helper.js', () => ({
+	saveBlobToFile: saveBlobToFileMock,
+}));
+
 import { useFilesStore, __createTask } from './files.store.js';
 import { uploadFile, downloadFile } from '../services/file-transfer.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
@@ -35,6 +41,7 @@ describe('files.store', () => {
 		setActivePinia(createPinia());
 		store = useFilesStore();
 		vi.clearAllMocks();
+		saveBlobToFileMock.mockResolvedValue();
 	});
 
 	describe('__createTask', () => {
@@ -107,19 +114,6 @@ describe('files.store', () => {
 	});
 
 	describe('enqueueDownload', () => {
-		function mockBrowserDownload() {
-			const mockA = { href: '', download: '', click: vi.fn() };
-			const origCreateElement = document.createElement.bind(document);
-			vi.spyOn(document, 'createElement').mockImplementation((tag) =>
-				tag === 'a' ? mockA : origCreateElement(tag),
-			);
-			vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
-			vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
-			URL.createObjectURL = vi.fn(() => 'blob:mock');
-			URL.revokeObjectURL = vi.fn();
-			return mockA;
-		}
-
 		test('立即开始下载', async () => {
 			mockBotConn();
 			const blob = new Blob(['data']);
@@ -130,7 +124,6 @@ describe('files.store', () => {
 				set onProgress(_cb) {},
 			});
 
-			const mockA = mockBrowserDownload();
 			store.enqueueDownload('bot1', 'main', 'docs', 'readme.md', 1024);
 
 			await vi.waitFor(() => {
@@ -138,8 +131,47 @@ describe('files.store', () => {
 				expect(tasks[0].status).toBe('done');
 			});
 
-			expect(mockA.click).toHaveBeenCalled();
-			expect(mockA.download).toBe('test.bin');
+			expect(saveBlobToFileMock).toHaveBeenCalledWith(blob, 'test.bin');
+		});
+
+		test('saveBlobToFile 执行期间 task.status 仍为 running', async () => {
+			mockBotConn();
+			const blob = new Blob(['data']);
+			downloadFile.mockReturnValue({
+				promise: Promise.resolve({ blob, bytes: 4, name: 'check.bin' }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			saveBlobToFileMock.mockImplementation(async () => {
+				// saveBlobToFile 执行期间，status 应仍为 running，尚未设为 done
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('running');
+			});
+
+			store.enqueueDownload('bot1', 'main', '', 'check.bin', 100);
+
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main')[0].status).toBe('done');
+			});
+		});
+
+		test('saveBlobToFile 失败时 task 标记为 failed', async () => {
+			mockBotConn();
+			const blob = new Blob(['data']);
+			downloadFile.mockReturnValue({
+				promise: Promise.resolve({ blob, bytes: 4, name: 'err.bin' }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			saveBlobToFileMock.mockRejectedValue(new Error('Native share failed'));
+
+			store.enqueueDownload('bot1', 'main', '', 'err.bin', 100);
+
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('failed');
+				expect(t.error).toBe('Native share failed');
+			});
 		});
 
 		test('bot 连接不存在时下载直接标记为 failed', async () => {
@@ -358,16 +390,6 @@ describe('files.store', () => {
 				};
 			});
 
-			// mock browser download
-			const origCreate = document.createElement.bind(document);
-			vi.spyOn(document, 'createElement').mockImplementation((tag) =>
-				tag === 'a' ? { href: '', download: '', click: vi.fn() } : origCreate(tag),
-			);
-			vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
-			vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
-			URL.createObjectURL = vi.fn(() => 'blob:mock');
-			URL.revokeObjectURL = vi.fn();
-
 			store.enqueueDownload('bot1', 'main', '', 'retry.bin', 100);
 
 			await vi.waitFor(() => {
@@ -503,19 +525,6 @@ describe('files.store', () => {
 	});
 
 	describe('download 边界分支', () => {
-		function mockBrowserDownload() {
-			const mockA = { href: '', download: '', click: vi.fn() };
-			const origCreateElement = document.createElement.bind(document);
-			vi.spyOn(document, 'createElement').mockImplementation((tag) =>
-				tag === 'a' ? mockA : origCreateElement(tag),
-			);
-			vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
-			vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
-			URL.createObjectURL = vi.fn(() => 'blob:mock');
-			URL.revokeObjectURL = vi.fn();
-			return mockA;
-		}
-
 		test('下载异常 code=CANCELLED 时静默返回不标记 failed', async () => {
 			mockBotConn();
 			const cancelErr = new Error('cancelled');
@@ -547,7 +556,6 @@ describe('files.store', () => {
 				set onProgress(_cb) {},
 			});
 
-			const mockA = mockBrowserDownload();
 			store.enqueueDownload('bot1', 'main', 'docs', 'fallback-name.md', 1024);
 
 			await vi.waitFor(() => {
@@ -556,7 +564,7 @@ describe('files.store', () => {
 			});
 
 			// result.name 为空字符串，应回退到 task.fileName
-			expect(mockA.download).toBe('fallback-name.md');
+			expect(saveBlobToFileMock).toHaveBeenCalledWith(blob, 'fallback-name.md');
 		});
 
 		test('下载失败无 message 时使用默认错误文本', async () => {

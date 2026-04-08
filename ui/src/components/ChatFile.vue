@@ -29,7 +29,7 @@
 
 <script>
 import { isCoclawUrl, fetchCoclawFile } from '../services/coclaw-file.js';
-import { formatFileSize } from '../utils/file-helper.js';
+import { formatFileSize, saveBlobToFile } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
 
 export default {
@@ -88,33 +88,22 @@ export default {
 			if (!this.src) return;
 
 			try {
-				let url = this.src;
-
-				// coclaw-file URL 需先下载为 blob
+				this.downloading = true;
+				let blob;
 				if (isCoclawUrl(this.src)) {
-					this.downloading = true;
-					const blob = await fetchCoclawFile(this.src);
-					url = URL.createObjectURL(blob);
-					this.__triggerDownload(url);
-					setTimeout(() => URL.revokeObjectURL(url), 5000);
+					blob = await fetchCoclawFile(this.src);
 				} else {
-					this.__triggerDownload(url);
+					// blob URL → 取回 Blob
+					const resp = await fetch(this.src);
+					blob = await resp.blob();
 				}
+				await saveBlobToFile(blob, this.displayName);
 			} catch (err) {
 				console.warn('[ChatFile] download failed:', err);
 				this.notify.error(this.$t('chat.fileDownloadFailed'));
 			} finally {
 				this.downloading = false;
 			}
-		},
-
-		__triggerDownload(url) {
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = this.displayName;
-			document.body.appendChild(a);
-			a.click();
-			document.body.removeChild(a);
 		},
 	},
 };

@@ -147,11 +147,18 @@ export function extractCoclawFileRefs(text) {
 }
 
 /**
- * 将 Blob 作为文件下载保存
+ * 将 Blob 作为文件保存
+ * - Web：创建 `<a download>` 触发浏览器下载
+ * - Capacitor：写入 Cache → 调起系统分享面板 → 清理临时文件
  * @param {Blob} blob
  * @param {string} filename
  */
-export function saveBlobToFile(blob, filename) {
+export async function saveBlobToFile(blob, filename) {
+	const { isCapacitorApp } = await import('./platform.js');
+	if (isCapacitorApp) {
+		await __nativeShareFile(blob, filename);
+		return;
+	}
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement('a');
 	a.href = url;
@@ -161,6 +168,42 @@ export function saveBlobToFile(blob, filename) {
 	document.body.removeChild(a);
 	URL.revokeObjectURL(url);
 }
+
+/**
+ * Capacitor 原生：写临时文件 → 分享 → 清理
+ * @param {Blob} blob
+ * @param {string} filename
+ */
+async function __nativeShareFile(blob, filename) {
+	const [{ Filesystem, Directory }, { Share }] = await Promise.all([
+		import('@capacitor/filesystem'),
+		import('@capacitor/share'),
+	]);
+	const base64 = await fileToBase64(blob);
+	// 用唯一子目录隔离并发下载的同名文件，保留原始文件名供分享面板展示
+	const cachePath = `coclaw_${Date.now()}/${filename}`;
+	const { uri } = await Filesystem.writeFile({
+		path: cachePath,
+		data: base64,
+		directory: Directory.Cache,
+		recursive: true,
+	});
+	const cacheDir = cachePath.substring(0, cachePath.lastIndexOf('/'));
+	try {
+		await Share.share({ files: [uri] });
+	} catch (err) {
+		// 用户取消分享面板时 Capacitor 会 reject "Share canceled"，属正常操作不向上传播
+		if (!/cancel/i.test(err?.message)) throw err;
+	} finally {
+		await Filesystem.deleteFile({ path: cachePath, directory: Directory.Cache })
+			.catch((err) => console.warn('[saveBlobToFile] cache cleanup failed:', err));
+		await Filesystem.rmdir({ path: cacheDir, directory: Directory.Cache })
+			.catch((err) => console.warn('[saveBlobToFile] cache dir cleanup failed:', err));
+	}
+}
+
+/** @internal 仅供测试 */
+export { __nativeShareFile };
 
 /** 附件信息块标题行 */
 const ATTACHMENT_HEADING = '## coclaw-attachments 🗂';

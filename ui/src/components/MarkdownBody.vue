@@ -199,11 +199,11 @@ export default {
 				if (isImageByExt(path)) {
 					this.__showImgPreview(blob, filename);
 				} else {
-					saveBlobToFile(blob, filename);
+					await saveBlobToFile(blob, filename);
 				}
 			} catch (err) {
 				console.warn('[MarkdownBody] coclaw-file fetch failed:', err);
-				this.notify.error(this.$t('common.downloadFailed'));
+				this.notify.error(this.$t('files.downloadFailed'));
 			}
 		},
 
