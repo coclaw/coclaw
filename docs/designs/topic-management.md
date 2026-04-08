@@ -331,10 +331,10 @@ Topic 必须区分 agentId——每个 topic 属于一个特定的 agent。
 
 确定了一个 agent 后，必须使用该 agent 所属的 OpenClaw 实例的 WS 连接。
 
-- 每个 topic 在本地 store 中存储 `botId`（创建时绑定）
+- 每个 topic 在本地 store 中存储 `clawId`（创建时绑定）
 - 新建 topic 时：通过 query 参数 `bot` 传入
-- 加载已有 topic 时：从 `topicsStore.findTopic(topicId).botId` 获取
-- 发送消息/加载历史时：通过 `chatStore.botId` → `useBotConnections().get(botId)` 获取 WS 连接
+- 加载已有 topic 时：从 `topicsStore.findTopic(topicId).clawId` 获取
+- 发送消息/加载历史时：通过 `chatStore.clawId` → `useClawConnections().get(clawId)` 获取连接
 
 ### 新建 Topic
 

@@ -13,7 +13,7 @@
 描述系统的稳定架构，持续更新以反映现状。
 
 - [架构总览](architecture/overview.md) — 组件视图、通道一览、分层、绑定/认领流程、核心不变式
-- [通信模型](architecture/communication-model.md) — 三层通道（含 server-relayed RPC）、两层超时、连接生命周期、BotConnection 抽象
+- [通信模型](architecture/communication-model.md) — 三层通道（含 server-relayed RPC）、两层超时、连接生命周期、ClawConnection 抽象
 - [绑定与认证](architecture/bot-binding-and-auth.md) — Binding + Claim 双流程、token 认证、数据模型
 - [Agent RPC 协议](architecture/gateway-agent-rpc-protocol.md) — 两阶段响应协议规范
 - [多 Agent 支持](architecture/multi-agent-support.md) — Claw/Agent 层级、身份解析链、数据流
@@ -44,9 +44,11 @@
 - [Chat 历史追踪](designs/chat-history-tracking.md) — 历史 session 追踪（已实施，Phase 3 清理待做）
 - [Topic 管理](designs/topic-management.md) — 独立 Topic 功能（已实施）
 - [认领绑定](designs/claim-bind.md) — OpenClaw 侧发起绑定（已实施）
-- [TURN over TLS](designs/turn-over-tls.md) — 端口 443 穿透方案（待实施）
+- [TURN over TLS](designs/turn-over-tls.md) — 端口 443 穿透方案（已实施）
+- [DC 文件传输排查](designs/dc-file-transfer-issues.md) — DataChannel 大文件传输故障分析（部分实施）
 - [Electron 桌面壳](designs/electron-desktop-shell.md) — 桌面端方案（草案）
 - [Tauri 桌面壳](designs/tauri-desktop-shell.md) — Tauri 方案（已放弃，保留备用）
+- [API 迁移 bot→claw](designs/api-bot-to-claw-migration.md) — bot→claw 命名迁移（全部完成）
 - [OpenClaw 实例身份](designs/openclaw-instance-identity.md) — 跨重绑持久身份（研究阶段）
 
 ## OpenClaw Research — 上游研究

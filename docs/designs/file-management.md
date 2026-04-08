@@ -682,12 +682,12 @@ coclaw-file://botId:agentId/path/to/file
 
 | 函数 | 说明 |
 |------|------|
-| `buildCoclawUrl(botId, agentId, path)` | 构建 URL |
-| `parseCoclawUrl(url)` | 解析 → `{ botId, agentId, path }` 或 `null` |
+| `buildCoclawUrl(clawId, agentId, path)` | 构建 URL |
+| `parseCoclawUrl(url)` | 解析 → `{ clawId, agentId, path }` 或 `null` |
 | `isCoclawUrl(url)` | 判断是否为 `coclaw-file://` URL |
-| `fetchCoclawFile(url)` | 解析 URL → 获取 botConn → `downloadFile` → 返回 `Blob` |
+| `fetchCoclawFile(url)` | 解析 URL → 获取 ClawConnection → `downloadFile` → 返回 `Blob` |
 
-`fetchCoclawFile` 内部通过 `useBotConnections().get(botId)` 获取连接，再调用本文档所述的 `downloadFile` 下载文件。调用方无需接触连接层。
+`fetchCoclawFile` 内部通过 `useClawConnections().get(clawId)` 获取连接，再调用本文档所述的 `downloadFile` 下载文件。调用方无需接触连接层。
 
 ### 7.4 典型用法：消息中的语音附件
 

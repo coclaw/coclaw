@@ -1,6 +1,6 @@
 # CoClaw 架构总览
 
-> 最后更新：2026-04-05
+> 最后更新：2026-04-08
 
 ---
 
@@ -33,8 +33,8 @@ CoClaw 让用户即使与 OpenClaw 处于网络隔离状态，也能通过 CoCla
 │                  │── WS /claws/stream?role=ui▶│  claw-ws-hub ◄──│── WS /claws/stream ── Plugin
 │                  │   (ticket 认证, RPC 中继)   │  (双角色)        │   (token 认证)
 │                  │                           │                  │
-│  BotConnection ══│══ WebRTC DataChannel ═════│══════════════════════════════════════ Plugin
-│  (per-bot)       │   (P2P 或 TURN 中继)       │                  │
+│  ClawConnection ═│══ WebRTC DataChannel ═════│══════════════════════════════════════ Plugin
+│  (per-claw)      │   (P2P 或 TURN 中继)       │                  │
 └──────────────────┘                           └────────┬─────────┘
                                                         │
                                                MySQL (Prisma)
@@ -72,7 +72,7 @@ Vue 组件层 ── 渲染 + 用户交互
      ↕ reactive (Pinia)
 Pinia Store 层 ── 状态管理、RTC 生命周期编排、业务逻辑
      ↕ request() / on() / off()
-Service 层（纯 JS）── BotConnection / SignalingConnection / WebRtcConnection / file-transfer
+Service 层（纯 JS）── ClawConnection / SignalingConnection / WebRtcConnection / file-transfer
      ↕ WebSocket / WebRTC
 CoClaw Server ── 信令路由、REST API、Claw WS hub
 ```

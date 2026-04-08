@@ -1,6 +1,6 @@
 # API 迁移：bot → claw 命名
 
-> **状态**：Server 侧已完成
+> **状态**：Server + Plugin + UI 全部完成
 
 ## 背景
 
@@ -84,14 +84,21 @@ Plugin 已切换到读 `clawId`/`claw`，不再依赖 `botId`/`bot`。
 - `plugins/openclaw/src/common/errors.js` — `BOT_BLOCKED` → `CLAW_BLOCKED`
 - `plugins/openclaw/index.js` — RPC 响应字段 `clawId`/`previousClawId`
 
-### Phase D：UI 迁移
+### Phase D：UI 迁移 ✅
 
-UI 切换到使用 `claw.*` 事件和 `clawId`/`claw` 字段。
+UI 已全面切换到 `claw.*` 事件和 `clawId`/`claw` 字段。
 
-关键文件：
-- `ui/src/composables/use-bot-status-sse.js` — switch 从 `bot.*` 改为 `claw.*` 事件名
-- `ui/src/services/bots.api.js` — 读 `botId`/`botName` → `clawId`/`clawName`；URL 路径 `/api/v1/bots/*` → `/api/v1/claws/*`
-- `ui/src/views/ClaimPage.vue` — 读 `botId` → `clawId`
+已完成：
+- `ui/src/composables/use-bot-status-sse.js` → `use-claw-status-sse.js`，消费 `claw.*` SSE 事件
+- `ui/src/services/bots.api.js` → `claws.api.js`，读 `clawId`/`clawName`，URL 路径 `/api/v1/claws/*`
+- `ui/src/views/ClaimPage.vue` — 读 `clawId`
+- `ui/src/services/signaling-connection.js` — 出站/入站信令全部使用 `clawId`
+- `ui/src/services/webrtc-connection.js` — 信令过滤使用 `clawId`
+- `ui/src/stores/bots.store.js` → `claws.store.js`（store id: `claws`）
+- `ui/src/services/bot-connection.js` → `claw-connection.js`（class: `ClawConnection`）
+- `ui/src/services/bot-connection-manager.js` → `claw-connection-manager.js`（`useClawConnections()`）
+- `ui/src/views/ManageBotsPage.vue` → `ManageClawsPage.vue`
+- `ui/src/views/AddBotPage.vue` → `AddClawPage.vue`
 
 ### 远期：移除旧字段和旧路由
 
@@ -115,11 +122,11 @@ WS 信令（RTC signaling）中的 `botId` 字段涉及 server + UI + plugin 三
 - `rtc-signal-router.js`：路由表内部字段已从 `botId` 改为 `clawId`
 - `claw-ws-hub.js`：UI session 鉴权同时接受 `?clawId=` 和 `?botId=` 查询参数
 
-### UI 侧待迁移
+### UI 侧已完成 ✅
 
-- `signaling-connection.js:197,211` — 出站 RTC 消息中发送 `botId` → 改为 `clawId`
-- `webrtc-connection.js:601` — 入站信令按 `botId` 过滤 → 改为 `clawId`
-- WS 连接查询参数 `?botId=` → `?clawId=`
+- `signaling-connection.js` — 出站 RTC 消息已使用 `clawId`
+- `webrtc-connection.js` — 入站信令已按 `clawId` 过滤
+- WS 连接查询参数已使用 `?clawId=`
 
 ### Plugin 侧
 
