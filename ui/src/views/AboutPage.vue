@@ -48,6 +48,13 @@
 							<p><strong class="text-default">{{ $t('about.conceptSession') }}</strong>{{ $t('about.conceptSessionDesc') }}</p>
 						</div>
 					</template>
+					<template #privacy-body>
+						<div class="space-y-3 text-sm text-muted leading-relaxed">
+							<p><strong class="text-default">{{ $t('about.privacyOpenSource') }}</strong>{{ $t('about.privacyOpenSourceDesc') }} <a class="text-primary underline" href="#" @click.prevent="openGitHub">GitHub</a></p>
+							<p><strong class="text-default">{{ $t('about.privacyComm') }}</strong>{{ $t('about.privacyCommDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.privacyDiag') }}</strong>{{ $t('about.privacyDiagDesc') }}</p>
+						</div>
+					</template>
 				</UAccordion>
 			</div>
 
@@ -109,6 +116,7 @@ import { openExternalUrl } from '../utils/external-url.js';
 import logoSrc from '../assets/coclaw-logo.jpg';
 
 const CLOUD_DEPLOY_URL = 'https://cloud.tencent.com/act/cps/redirect?redirect=38041&cps_key=3ad323275dc8d2d3fb6efe6fc6a27794';
+const GITHUB_URL = 'https://github.com/coclaw/coclaw';
 
 export default {
 	name: 'AboutPage',
@@ -166,6 +174,11 @@ export default {
 					value: 'concepts',
 					slot: 'concepts',
 				},
+				{
+					label: this.$t('about.privacy'),
+					value: 'privacy',
+					slot: 'privacy',
+				},
 			);
 			return items;
 		},
@@ -177,6 +190,9 @@ export default {
 		},
 		openCloudDeploy() {
 			openExternalUrl(CLOUD_DEPLOY_URL);
+		},
+		openGitHub() {
+			openExternalUrl(GITHUB_URL);
 		},
 	},
 };
