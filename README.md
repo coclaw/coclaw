@@ -4,6 +4,8 @@
 
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
+> **Try it now** — [im.coclaw.net](https://im.coclaw.net?utm_source=github&utm_medium=readme&utm_campaign=launch)
+
 CoClaw Chinese Name: 可虾
 
 ---
@@ -109,7 +111,8 @@ To run individually: `pnpm dev:server` or `pnpm dev:ui`.
 
 ```bash
 pnpm check      # Lint + type check
-pnpm test       # Unit tests + coverage check (lines/functions/statements >= 70%, branches >= 60%)
+pnpm test       # Unit tests + coverage check
+pnpm verify     # check + test
 ```
 
 ### Developer Workflow
@@ -117,7 +120,7 @@ pnpm test       # Unit tests + coverage check (lines/functions/statements >= 70%
 ```bash
 pnpm install
 # Make changes + update tests/docs
-pnpm check && pnpm test
+pnpm verify
 git commit -m "feat(scope): short summary"
 ```
 

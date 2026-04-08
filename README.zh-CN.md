@@ -4,6 +4,8 @@
 
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
+> **立即体验** — [im.coclaw.net](https://im.coclaw.net?utm_source=github&utm_medium=readme&utm_campaign=launch)
+
 CoClaw 中文名：可虾
 
 ---
@@ -113,7 +115,8 @@ pnpm dev
 
 ```bash
 pnpm check      # 静态检查（lint + typecheck）
-pnpm test       # 测试 + 覆盖率检查（lines/functions/statements >= 70%，branches >= 60%）
+pnpm test       # 测试 + 覆盖率检查
+pnpm verify     # check + test
 ```
 
 ### 开发流程
