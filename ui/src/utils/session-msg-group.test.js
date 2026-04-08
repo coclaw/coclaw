@@ -407,7 +407,7 @@ describe('groupSessionMessages', () => {
 		expect(result[0].textContent).toBe('看这张图');
 	});
 
-	test('toolResult 中的 image 同时进入 steps 和 botTask.images', () => {
+	test('toolResult 中的 image 仅进入 steps，不进入 botTask.images', () => {
 		const entries = [
 			userEntry('u1', '截图'),
 			assistantEntry('a1', {
@@ -436,8 +436,8 @@ describe('groupSessionMessages', () => {
 		const task = result[1];
 		// steps 中有 image
 		expect(task.steps).toContainEqual({ kind: 'image', data: 'imgdata', mimeType: 'image/jpeg' });
-		// 顶层 images
-		expect(task.images).toEqual([{ data: 'imgdata', mimeType: 'image/jpeg' }]);
+		// 不进入顶层 images（agent 最终输出时会在正文中呈现）
+		expect(task.images).toEqual([]);
 	});
 
 	test('无图像时 images 为空数组', () => {

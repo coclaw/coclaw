@@ -179,7 +179,6 @@ function processToolResult(task, msg) {
 	}
 	for (const img of imgs) {
 		task.steps.push({ kind: 'image', data: img.data, mimeType: img.mimeType });
-		task.images.push(img);
 	}
 }
 
