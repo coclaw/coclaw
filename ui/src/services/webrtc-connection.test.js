@@ -1435,14 +1435,14 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 
 	// --- probe 失败场景 ---
 
-	test('probe 超时 + state=connected → close() 并记录 remoteLog', async () => {
+	test('probe 超时 + 无近期活动 → close() 并记录 remoteLog', async () => {
 		const { remoteLog } = await import('./remote-log.js');
 		remoteLog.mockClear();
 		const { rtc } = await setupConnectedRtc();
 		const closeSpy = vi.spyOn(rtc, 'close');
 
+		// 30s 间隔 + 20s 超时 = 50s，远超 30s 活动宽限
 		await vi.advanceTimersByTimeAsync(30_000);
-		// 不发 ack，等 10s 超时
 		await vi.advanceTimersByTimeAsync(10_000);
 		await vi.advanceTimersByTimeAsync(0);
 
@@ -1464,15 +1464,15 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		await vi.advanceTimersByTimeAsync(10_000);
 		await vi.advanceTimersByTimeAsync(0);
 
-		// __onIceFailed → setState('failed')，保活检查 state !== 'connected' → skip
 		expect(closeSpy).not.toHaveBeenCalled();
 	});
 
-	test('DC 已 null 时 probe 立即返回 false → close()', async () => {
+	test('DC 已 null 且无近期活动 → close()', async () => {
 		const { rtc } = await setupConnectedRtc();
 
 		rtc.__rpcChannel = null;
 
+		// 30s 间隔后 probe 立即返回 false，且 50s 超过 30s 宽限
 		await vi.advanceTimersByTimeAsync(30_000);
 		await vi.advanceTimersByTimeAsync(0);
 
@@ -1723,5 +1723,216 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		expect(result).toBe(true);
 
 		rtc.close();
+	});
+});
+
+describe('WebRtcConnection — DC 保活活动宽限', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	// --- __lastDcActivityAt 初始化与更新 ---
+
+	test('__lastDcActivityAt 初始为 0', () => {
+		const rtc = new WebRtcConnection('bot1', createMockBotConn(), { PeerConnection: MockRTCPeerConnection });
+		expect(rtc.__lastDcActivityAt).toBe(0);
+		rtc.close();
+	});
+
+	test('dc.onopen 更新 __lastDcActivityAt', async () => {
+		const { rtc } = await setupConnectedRtc();
+		expect(rtc.__lastDcActivityAt).toBeGreaterThan(0);
+		rtc.close();
+	});
+
+	test('rpc dc.onmessage 更新 __lastDcActivityAt', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+		const before = rtc.__lastDcActivityAt;
+
+		await vi.advanceTimersByTimeAsync(1_000); // 推进时间让 Date.now() 变化
+		dc.onmessage({ data: JSON.stringify({ type: 'res', id: 1, ok: true }) });
+
+		expect(rtc.__lastDcActivityAt).toBeGreaterThan(before);
+		rtc.close();
+	});
+
+	test('file DC onmessage 通过 addEventListener 更新 __lastDcActivityAt', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const before = rtc.__lastDcActivityAt;
+
+		const fileDc = rtc.createDataChannel('file:test-uuid', { ordered: true });
+		expect(fileDc).not.toBeNull();
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		// 触发 addEventListener 注册的 message handler
+		fileDc.__fireDcEvent('message');
+
+		expect(rtc.__lastDcActivityAt).toBeGreaterThan(before);
+		rtc.close();
+	});
+
+	test('多个 file DC 都能更新 __lastDcActivityAt', async () => {
+		const { rtc } = await setupConnectedRtc();
+
+		const dc1 = rtc.createDataChannel('file:uuid-1', { ordered: true });
+		const dc2 = rtc.createDataChannel('file:uuid-2', { ordered: true });
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		dc1.__fireDcEvent('message');
+		const ts1 = rtc.__lastDcActivityAt;
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		dc2.__fireDcEvent('message');
+		expect(rtc.__lastDcActivityAt).toBeGreaterThan(ts1);
+
+		rtc.close();
+	});
+
+	test('createDataChannel 返回 null 时不报错（PC 不可用）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		rtc.close();
+		const dc = rtc.createDataChannel('file:test', { ordered: true });
+		expect(dc).toBeNull();
+	});
+
+	// --- 宽限逻辑 ---
+
+	test('probe 超时但有近期 file DC 活动 → 跳过 close，重新调度', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		const fileDc = rtc.createDataChannel('file:download', { ordered: true });
+
+		// 推进到 probe 发出（30s）
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		// 在 probe 超时前，file DC 有活动
+		await vi.advanceTimersByTimeAsync(5_000); // T=35s
+		fileDc.__fireDcEvent('message'); // 更新 __lastDcActivityAt
+
+		// probe 超时（再过 5s）
+		await vi.advanceTimersByTimeAsync(5_000); // T=40s, 10s timeout 到期
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 活动在 5s 前 < 30s 宽限 → 不 close
+		expect(closeSpy).not.toHaveBeenCalled();
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	test('probe 超时但有近期 rpc DC 活动 → 跳过 close', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		// rpc DC 有响应（非 probe-ack），在 probe 超时前
+		await vi.advanceTimersByTimeAsync(5_000); // T=35s
+		dc.onmessage({ data: JSON.stringify({ type: 'res', id: 1, ok: true }) });
+
+		await vi.advanceTimersByTimeAsync(5_000); // probe 超时
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(closeSpy).not.toHaveBeenCalled();
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	test('probe 超时 + 活动超出宽限期 → close()', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		// dc.onopen 时设置了 __lastDcActivityAt
+		// 30s 间隔 + 20s 超时 = 50s，远超 30s 宽限
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(closeSpy).toHaveBeenCalledTimes(1);
+	});
+
+	test('__lastDcActivityAt=0 时无宽限保护 → close()', async () => {
+		const { rtc } = await setupConnectedRtc();
+		// 强制清零（模拟未初始化场景）
+		rtc.__lastDcActivityAt = 0;
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('closed');
+	});
+
+	test('连续多次宽限跳过后活动停止 → 最终 close', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+		const fileDc = rtc.createDataChannel('file:big', { ordered: true });
+
+		// 第一次 probe：有活动，跳过
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(5_000);
+		fileDc.__fireDcEvent('message'); // 更新活动时间
+		await vi.advanceTimersByTimeAsync(5_000); // probe 超时
+		await vi.advanceTimersByTimeAsync(0);
+		expect(closeSpy).not.toHaveBeenCalled();
+
+		// 第二次 probe：仍有活动，跳过
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(5_000);
+		fileDc.__fireDcEvent('message');
+		await vi.advanceTimersByTimeAsync(5_000);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(closeSpy).not.toHaveBeenCalled();
+
+		// 第三次 probe：活动停止（不再 fire message）
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+		// 距上次活动 30s+10s=40s > 30s 宽限 → close
+		expect(closeSpy).toHaveBeenCalledTimes(1);
+	});
+
+	test('宽限跳过后 probe 成功 → 正常周期恢复', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+		const fileDc = rtc.createDataChannel('file:dl', { ordered: true });
+
+		// 第一次 probe 超时，靠活动宽限跳过
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(5_000);
+		fileDc.__fireDcEvent('message');
+		await vi.advanceTimersByTimeAsync(5_000); // probe 超时
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('connected');
+
+		// 第二次 probe 成功（拥塞已缓解）
+		dc.sent.length = 0;
+		await vi.advanceTimersByTimeAsync(30_000);
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	// --- close() 后 file DC 活动无副作用 ---
+
+	test('close() 后 file DC onmessage 更新时间戳但无害', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const fileDc = rtc.createDataChannel('file:test', { ordered: true });
+		rtc.close();
+
+		// file DC 仍触发 message（浏览器异步回调）
+		expect(() => fileDc.__fireDcEvent('message')).not.toThrow();
+		// __lastDcActivityAt 被更新但保活已停止，无影响
+		expect(rtc.__keepaliveTimer).toBeNull();
 	});
 });

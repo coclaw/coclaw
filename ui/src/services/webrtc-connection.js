@@ -20,8 +20,10 @@ const DISCONNECTED_TIMEOUT_MS = 5_000;
 
 /** DC 应用层保活：间隔（probe 完成后到下一次 probe 发起） */
 const DC_KEEPALIVE_INTERVAL_MS = 30_000;
-/** DC 应用层保活：单次 probe 超时 */
+/** DC 应用层保活：单次 probe 超时（拥塞场景由活动宽限兜底，此处只管正常检测） */
 const DC_KEEPALIVE_TIMEOUT_MS = 10_000;
+/** DC 应用层保活：活动宽限期（probe 超时期间有 DC 数据活动则视为 SCTP 拥塞而非死亡） */
+const DC_ACTIVITY_GRACE_MS = 20_000;
 
 /** 发送流控：高水位（暂停发送），远低于浏览器 16MB 上限 */
 const DC_HIGH_WATER_MARK = 1024 * 1024;
@@ -160,6 +162,7 @@ export class WebRtcConnection {
 		/** disconnected 状态超时定时器 */
 		this.__disconnectedTimer = null;
 		/** DC 应用层保活 */
+		this.__lastDcActivityAt = 0;
 		this.__keepaliveTimer = null;
 		this.__keepaliveGen = 0;
 		this.__onAppBackground = null;
@@ -300,7 +303,10 @@ export class WebRtcConnection {
 	 */
 	createDataChannel(label, opts) {
 		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return null;
-		return this.__pc.createDataChannel(label, opts);
+		const dc = this.__pc.createDataChannel(label, opts);
+		// 追踪 file DC 的数据活动，证明 SCTP 存活（用于保活宽限判断）
+		dc.addEventListener('message', () => { this.__lastDcActivityAt = Date.now(); });
+		return dc;
 	}
 
 	/**
@@ -449,6 +455,7 @@ export class WebRtcConnection {
 
 		dc.onopen = () => {
 			if (this.__rpcChannel !== dc) return; // PC 已被替换或 close()，忽略旧 DC 事件
+			this.__lastDcActivityAt = Date.now();
 			this.__log('info', 'DataChannel "rpc" opened');
 			useSignalingConnection().sendSignaling(this.clawId, 'rtc:ready');
 			this.onReady?.();
@@ -468,6 +475,7 @@ export class WebRtcConnection {
 			this.__log('warn', `DataChannel "rpc" error: ${event?.error?.message ?? event?.message ?? 'unknown'}`);
 		};
 		dc.onmessage = (event) => {
+			this.__lastDcActivityAt = Date.now();
 			try {
 				this.__reassembler?.feed(event.data);
 			} catch (err) {
@@ -557,6 +565,13 @@ export class WebRtcConnection {
 		const alive = await this.probe(DC_KEEPALIVE_TIMEOUT_MS);
 		if (gen !== this.__keepaliveGen) return;
 		if (!alive && this.__state === 'connected') {
+			// 近期有 DC 数据活动（含 file DC）→ SCTP 存活，只是拥塞，跳过本次
+			const elapsed = Date.now() - this.__lastDcActivityAt;
+			if (elapsed < DC_ACTIVITY_GRACE_MS) {
+				this.__log('debug', `keepalive probe timeout but DC active ${elapsed}ms ago, skipping close`);
+				this.__scheduleKeepalive(gen);
+				return;
+			}
 			remoteLog(`dc.keepalive-failed claw=${this.clawId}`);
 			this.__log('warn', 'DC keepalive probe failed, closing connection');
 			this.close();
