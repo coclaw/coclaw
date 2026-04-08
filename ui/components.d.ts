@@ -46,6 +46,7 @@ declare module 'vue' {
     UInput: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Input.vue')['default']
     UModal: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Modal.vue')['default']
     UPopover: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Popover.vue')['default']
+    URadioGroup: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/RadioGroup.vue')['default']
     USelect: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Select.vue')['default']
     UserInfoRows: typeof import('./src/components/user/UserInfoRows.vue')['default']
     UserProfileDialog: typeof import('./src/components/user/UserProfileDialog.vue')['default']

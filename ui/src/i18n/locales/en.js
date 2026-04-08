@@ -434,7 +434,8 @@ export const enMessages = {
 		duplicateDesc: 'The following files already exist in the target directory:',
 		overwrite: 'Overwrite',
 		skip: 'Skip',
-		applyToAll: 'Apply this choice to all conflicting files',
+		overwriteAll: 'Overwrite All',
+		skipAll: 'Skip All',
 		fileTooLarge: '"{name}" exceeds 1 GB and cannot be uploaded',
 	},
 	demo: {

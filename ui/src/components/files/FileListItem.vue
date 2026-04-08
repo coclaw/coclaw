@@ -14,7 +14,7 @@
 		<div class="min-w-0 flex-1">
 			<p class="truncate text-sm">{{ entry.name }}</p>
 			<p class="text-xs text-muted">
-				<span v-if="entry.type !== 'dir' && entry.size != null">{{ formatBytes(entry.size) }}</span>
+				<span v-if="entry.type !== 'dir' && entry.size != null">{{ formatFileSize(entry.size) }}</span>
 				<span v-if="entry.mtime" :class="entry.type !== 'dir' && entry.size != null ? 'ml-2' : ''">
 					{{ formatDate(entry.mtime) }}
 				</span>
@@ -54,6 +54,8 @@
 </template>
 
 <script>
+import { formatFileSize } from '../../utils/file-helper.js';
+
 export default {
 	name: 'FileListItem',
 	props: {
@@ -63,20 +65,13 @@ export default {
 	},
 	emits: ['open-dir', 'download', 'delete', 'cancel-download', 'retry-download'],
 	methods: {
+		formatFileSize,
 		onClick() {
 			if (this.entry.type === 'dir') {
 				this.$emit('open-dir', this.entry.name);
 			} else {
 				this.$emit('download', this.entry);
 			}
-		},
-		formatBytes(bytes) {
-			if (bytes == null || bytes < 0) return '';
-			if (bytes === 0) return '0 B';
-			const units = ['B', 'KB', 'MB', 'GB'];
-			const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-			const val = bytes / (1024 ** i);
-			return `${i === 0 ? val : val.toFixed(1)} ${units[i]}`;
 		},
 		formatDate(ts) {
 			if (!ts) return '';

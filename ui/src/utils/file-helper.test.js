@@ -48,6 +48,10 @@ describe('formatFileSize', () => {
 	test('returns MB for >= 1MB', () => {
 		expect(formatFileSize(1024 * 1024 * 3.5)).toBe('3.5 MB');
 	});
+
+	test('returns GB for >= 1GB', () => {
+		expect(formatFileSize(1024 * 1024 * 1024 * 2.5)).toBe('2.5 GB');
+	});
 });
 
 describe('formatFileBlob', () => {

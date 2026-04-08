@@ -434,7 +434,8 @@ export const zhCNMessages = {
 		duplicateDesc: '以下文件在目标目录中已存在：',
 		overwrite: '覆盖',
 		skip: '跳过',
-		applyToAll: '将此选择应用于所有冲突文件',
+		overwriteAll: '覆盖全部',
+		skipAll: '跳过全部',
 		fileTooLarge: '"{name}" 超过 1 GB，暂不支持上传',
 	},
 	demo: {

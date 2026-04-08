@@ -108,36 +108,29 @@
 		<input ref="fileInput" type="file" multiple class="hidden" @change="onFileInputChange" />
 
 		<!-- 重名处理对话框 -->
-		<UModal v-model:open="duplicateOpen" :title="$t('files.duplicateTitle')" description=" " :ui="promptUi">
+		<UModal v-model:open="duplicateOpen" :title="$t('files.duplicateTitle')" description=" " :ui="duplicateModalUi">
 			<template #body>
 				<p class="mb-3 text-sm text-muted">{{ $t('files.duplicateDesc') }}</p>
-				<div class="space-y-2">
+				<div class="max-h-60 space-y-2 overflow-y-auto">
 					<div v-for="item in duplicateItems" :key="item.name" class="flex items-center justify-between gap-2 text-sm">
 						<span class="min-w-0 truncate">{{ item.name }}</span>
-						<div class="flex shrink-0 gap-3">
-							<label class="flex items-center gap-1 cursor-pointer">
-								<input
-									type="radio" :name="'dup-' + item.name" :value="'overwrite'"
-									:checked="item.action === 'overwrite'"
-									@change="setDuplicateAction(item, 'overwrite')"
-								/>
-								<span class="text-xs">{{ $t('files.overwrite') }}</span>
-							</label>
-							<label class="flex items-center gap-1 cursor-pointer">
-								<input
-									type="radio" :name="'dup-' + item.name" :value="'skip'"
-									:checked="item.action === 'skip'"
-									@change="setDuplicateAction(item, 'skip')"
-								/>
-								<span class="text-xs">{{ $t('files.skip') }}</span>
-							</label>
-						</div>
+						<URadioGroup
+							:model-value="item.action"
+							:items="duplicateActionItems"
+							class="shrink-0"
+							:ui="{ fieldset: 'flex gap-3' }"
+							@update:model-value="item.action = $event"
+						/>
 					</div>
 				</div>
-				<UCheckbox v-if="duplicateItems.length > 1" v-model="duplicateApplyAll" :label="$t('files.applyToAll')" class="mt-3" />
 			</template>
 			<template #footer>
-				<div class="flex w-full justify-end gap-2">
+				<div class="flex w-full items-center gap-2">
+					<template v-if="duplicateItems.length > 1">
+						<UButton variant="link" color="neutral" size="xs" @click="setAllDuplicateAction('overwrite')">{{ $t('files.overwriteAll') }}</UButton>
+						<UButton variant="link" color="neutral" size="xs" @click="setAllDuplicateAction('skip')">{{ $t('files.skipAll') }}</UButton>
+					</template>
+					<div class="flex-1" />
 					<UButton variant="ghost" color="neutral" @click="duplicateOpen = false">{{ $t('common.cancel') }}</UButton>
 					<UButton @click="onConfirmDuplicates">{{ $t('common.confirm') }}</UButton>
 				</div>
@@ -229,6 +222,10 @@ export default {
 			clawsStore: useClawsStore(),
 			notify: useNotify(),
 			promptUi: promptModalUi,
+			duplicateModalUi: {
+				...promptModalUi,
+				content: 'w-[calc(100vw-2rem)] max-w-lg divide-y-0',
+			},
 		};
 	},
 	data() {
@@ -240,7 +237,6 @@ export default {
 			// 重名处理
 			duplicateOpen: false,
 			duplicateItems: [],
-			duplicateApplyAll: false,
 			// 删除目录
 			deleteDirOpen: false,
 			deleteDirName: '',
@@ -268,8 +264,13 @@ export default {
 			return `${display.name} ${this.$t('files.titleSuffix')}`;
 		},
 		sortedEntries() {
+			// 过滤掉与活跃上传任务同名的条目（覆盖上传期间隐藏旧条目）
+			const uploadingNames = new Set(this.uploadTasks.map((t) => t.fileName));
+			const filtered = uploadingNames.size
+				? this.entries.filter((e) => e.type === 'dir' || !uploadingNames.has(e.name))
+				: this.entries;
 			// 目录在前，文件在后
-			return [...this.entries].sort((a, b) => {
+			return [...filtered].sort((a, b) => {
 				if (a.type === 'dir' && b.type !== 'dir') return -1;
 				if (a.type !== 'dir' && b.type === 'dir') return 1;
 				return a.name.localeCompare(b.name);
@@ -293,6 +294,12 @@ export default {
 			const key = PROTECTED_DIR_KEYS[this.deleteDirName];
 			return key ? this.$t(`files.protectedDirDesc.${key}`) : '';
 		},
+		duplicateActionItems() {
+			return [
+				{ label: this.$t('files.overwrite'), value: 'overwrite' },
+				{ label: this.$t('files.skip'), value: 'skip' },
+			];
+		},
 	},
 	watch: {
 		'$route.params.clawId'() { this.resetAndLoad(); },
@@ -306,6 +313,7 @@ export default {
 	},
 	beforeCreate() {
 		this.__loadGen = 0;
+		this.__pendingFiles = null;
 	},
 	mounted() {
 		this.$el.addEventListener('dragover', this.__onDragOver);
@@ -411,18 +419,12 @@ export default {
 			// 有重名，弹出对话框
 			this.__pendingFiles = clean;
 			this.duplicateItems = duplicates;
-			this.duplicateApplyAll = false;
 			this.duplicateOpen = true;
 		},
 
-		setDuplicateAction(item, action) {
-			item.action = action;
-			if (this.duplicateApplyAll) {
-				for (const d of this.duplicateItems) {
-					d.action = action;
-				}
-				// 设计要求：勾选"应用于全部"后选择即直接确认
-				this.onConfirmDuplicates();
+		setAllDuplicateAction(action) {
+			for (const d of this.duplicateItems) {
+				d.action = action;
 			}
 		},
 
