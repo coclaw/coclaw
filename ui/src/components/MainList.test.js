@@ -80,8 +80,6 @@ function createWrapper(props = {}) {
 						'layout.addClaw': '添加机器人',
 						'layout.manageClaws': '管理机器人',
 						'layout.productName': 'CoClaw',
-						'layout.unnamedSession': '未命名会话',
-						'layout.notIndexed': '未索引',
 						'topic.newTopic': '新话题',
 					};
 					return map[key] ?? key;

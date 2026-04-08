@@ -71,13 +71,8 @@ function makeBot(overrides = {}) {
 }
 
 const $tMap = {
-	'agentCard.rtcPhase': 'RTC Phase',
 	'agentCard.lastAlive': 'Last Alive',
-	'agentCard.working': 'Working',
 	'topic.newTopic': 'New topic',
-	'agentCard.sessions': 'sessions',
-	'agentCard.topics': 'Topics',
-	'agentCard.cached': 'Cached',
 	'chat.connBuilding': 'Building connection…',
 	'chat.connRecovering': 'Recovering connection…',
 	'bots.conn.rtcRetryExhausted': 'Connection failed, retries exhausted',

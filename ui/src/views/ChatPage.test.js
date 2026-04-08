@@ -87,11 +87,8 @@ function getChatStore(clawId = 'bot-1', agentId = 'main') {
 const i18nMap = {
 	'chat.loading': 'Loading...',
 	'chat.empty': 'No messages',
-	'chat.orphanSendFailed': 'Orphan send failed',
-	'chat.newChatFailed': 'New chat failed',
 	'chat.clawOffline': 'Claw is offline',
 	'chat.clawUnbound': 'Bot has been unbound',
-	'chat.sessionNotFound': 'Session no longer exists',
 	'topic.newTopic': 'New topic',
 	'topic.createFailed': 'Failed to create topic',
 	'chat.errRpcTimeout': 'Message timed out',
@@ -133,7 +130,6 @@ function createWrapper(opts = {}) {
 			plugins: [pinia],
 			mocks: {
 				$t: (key, p) => {
-					if (key === 'chat.sessionTitle' && p?.id) return `Session ${p.id}`;
 					return i18nMap[key] ?? key;
 				},
 				$route: {
