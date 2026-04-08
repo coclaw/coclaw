@@ -70,13 +70,12 @@ test('createBindingCodeHandler: should reject unauthenticated request', async ()
 	assert.equal(res.body.code, 'UNAUTHORIZED');
 });
 
-test('listClawsHandler: should include online state and refreshed name from ws hub', async () => {
+test('listClawsHandler: should include online state and db name', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 7n },
 	};
 	const res = createRes();
-	const refreshedIds = [];
 
 	await listClawsHandler(req, res, () => {}, {
 		listClawsByUserIdImpl: async () => ([
@@ -96,13 +95,6 @@ test('listClawsHandler: should include online state and refreshed name from ws h
 			},
 		]),
 		listOnlineClawIdsImpl: () => new Set(['2']),
-		refreshClawNameImpl: async (clawId) => {
-			refreshedIds.push(String(clawId));
-			if (String(clawId) === '2') {
-				return 'b-latest';
-			}
-			return null;
-		},
 	});
 
 	assert.equal(res.statusCode, 200);
@@ -110,8 +102,7 @@ test('listClawsHandler: should include online state and refreshed name from ws h
 	assert.equal(res.body.items[0].online, false);
 	assert.equal(res.body.items[1].online, true);
 	assert.equal(res.body.items[0].name, 'a');
-	assert.equal(res.body.items[1].name, 'b-latest');
-	assert.deepEqual(refreshedIds, ['2']);
+	assert.equal(res.body.items[1].name, 'b');
 });
 
 test('clawStatusStreamHandler: should reject unauthenticated request', async () => {
@@ -172,7 +163,7 @@ function createWaitReq(body) {
 	};
 }
 
-test('listClawsHandler: should fallback to db name when refresh fails', async () => {
+test('listClawsHandler: should return null name when db name is null', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 7n },
@@ -183,41 +174,13 @@ test('listClawsHandler: should fallback to db name when refresh fails', async ()
 		listClawsByUserIdImpl: async () => ([
 			{
 				id: 2n,
-				name: 'b-cache',
+				name: null,
 				lastSeenAt: null,
 				createdAt: new Date('2026-01-01T00:00:00.000Z'),
 				updatedAt: new Date('2026-01-01T00:00:00.000Z'),
 			},
 		]),
 		listOnlineClawIdsImpl: () => new Set(['2']),
-		refreshClawNameImpl: async () => {
-			throw new Error('timeout');
-		},
-	});
-
-	assert.equal(res.statusCode, 200);
-	assert.equal(res.body.items[0].name, 'b-cache');
-});
-
-test('listClawsHandler: should return null name when refresh resolves empty name', async () => {
-	const req = {
-		isAuthenticated: () => true,
-		user: { id: 7n },
-	};
-	const res = createRes();
-
-	await listClawsHandler(req, res, () => {}, {
-		listClawsByUserIdImpl: async () => ([
-			{
-				id: 2n,
-				name: 'old-name',
-				lastSeenAt: null,
-				createdAt: new Date('2026-01-01T00:00:00.000Z'),
-				updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-			},
-		]),
-		listOnlineClawIdsImpl: () => new Set(['2']),
-		refreshClawNameImpl: async () => null,
 	});
 
 	assert.equal(res.statusCode, 200);
@@ -1316,7 +1279,6 @@ test('listClawsHandler: should use db name for offline bots', async () => {
 			},
 		]),
 		listOnlineClawIdsImpl: () => new Set(),
-		refreshClawNameImpl: async () => undefined,
 	});
 
 	assert.equal(res.statusCode, 200);

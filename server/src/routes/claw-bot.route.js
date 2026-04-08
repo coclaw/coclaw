@@ -15,7 +15,7 @@ import {
 	registerBindingWait,
 	waitBindingResult,
 } from '../binding-wait-hub.js';
-import { createUiWsTicket, listOnlineClawIds, notifyAndDisconnectClaw, refreshClawName } from '../claw-ws-hub.js';
+import { createUiWsTicket, listOnlineClawIds, notifyAndDisconnectClaw } from '../claw-ws-hub.js';
 import { registerSseClient, sendSnapshot, sendToUser } from '../claw-status-sse.js';
 
 export const clawBotRouter = Router();
@@ -56,7 +56,6 @@ export async function listClawsHandler(req, res, next, deps = {}) {
 	const {
 		listClawsByUserIdImpl = listClawsByUserId,
 		listOnlineClawIdsImpl = listOnlineClawIds,
-		refreshClawNameImpl = refreshClawName,
 	} = deps;
 
 	try {
@@ -65,31 +64,12 @@ export async function listClawsHandler(req, res, next, deps = {}) {
 			Promise.resolve(listOnlineClawIdsImpl()),
 		]);
 
-		const refreshedNameMap = new Map();
-		const onlineClaws = claws.filter((c) => onlineClawIds.has(c.id.toString()));
-		const refreshResults = await Promise.allSettled(
-			onlineClaws.map(async (c) => {
-				const latestName = await refreshClawNameImpl(c.id, { timeoutMs: 1000 });
-				if (latestName !== undefined) {
-					refreshedNameMap.set(c.id.toString(), latestName);
-				}
-			}),
-		);
-		for (const result of refreshResults) {
-			if (result.status === 'rejected') {
-				// noop: best-effort refresh only
-			}
-		}
-
 		res.status(200).json({
 			items: claws.map((c) => {
 				const clawId = c.id.toString();
-				const name = refreshedNameMap.has(clawId)
-					? refreshedNameMap.get(clawId)
-					: c.name;
 				return {
 					id: clawId,
-					name,
+					name: c.name,
 					online: onlineClawIds.has(clawId),
 					lastSeenAt: c.lastSeenAt,
 					createdAt: c.createdAt,

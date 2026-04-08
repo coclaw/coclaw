@@ -5,7 +5,7 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, refreshClawName, forwardToClaw, __test } from './claw-ws-hub.js';
+import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, forwardToClaw, __test } from './claw-ws-hub.js';
 import { register as registerSignalRoute, __test as signalTest } from './rtc-signal-router.js';
 
 const { uiSockets, clawSockets, uiTickets, pendingOffline, CLAW_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onClawMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineClawSocket, resolveClawRpcPending, rejectAllClawRpcPending, broadcastToUi, authenticateClawRequest } = __test;
@@ -725,12 +725,16 @@ test('onClawMessage: claw.unbound（新版 plugin）转发并关闭连接', () =
 	cleanupSockets('bot1');
 });
 
-// --- onClawMessage: coclaw.info.updated 事件持久化 claw.name，不转发给 UI ---
+// --- onClawMessage: coclaw.info.updated 事件持久化 claw.name，触发 nameUpdated SSE，不转发给 UI ---
 
-test('onClawMessage: coclaw.info.updated 不转发给 UI', () => {
+test('onClawMessage: coclaw.info.updated 不转发给 UI，但触发 nameUpdated 事件', () => {
 	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ui' });
 	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
+
+	const emitted = [];
+	const listener = (data) => emitted.push(data);
+	clawStatusEmitter.on('nameUpdated', listener);
 
 	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'event',
@@ -740,6 +744,12 @@ test('onClawMessage: coclaw.info.updated 不转发给 UI', () => {
 
 	// UI 不应收到该事件（UI 通过 DC 直接从 plugin 获取）
 	assert.equal(uiWs.sent.length, 0);
+	// 应触发 nameUpdated 事件供 SSE 推送
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0].clawId, 'bot1');
+	assert.equal(emitted[0].name, 'My Claw');
+
+	clawStatusEmitter.off('nameUpdated', listener);
 	cleanupSockets('bot1');
 });
 
@@ -747,6 +757,10 @@ test('onClawMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
 	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ui' });
 	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
+
+	const emitted = [];
+	const listener = (data) => emitted.push(data);
+	clawStatusEmitter.on('nameUpdated', listener);
 
 	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'event',
@@ -756,6 +770,11 @@ test('onClawMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
 
 	// 不转发给 UI
 	assert.equal(uiWs.sent.length, 0);
+	// nameUpdated 事件使用 hostName 作为回退
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0].name, 'fallback-host');
+
+	clawStatusEmitter.off('nameUpdated', listener);
 	cleanupSockets('bot1');
 });
 
@@ -1280,28 +1299,6 @@ test('onUiMessage: rtc:closed 转发到 claw', () => {
 	cleanupSockets('bot-cl');
 });
 
-// --- refreshClawName: claw 离线时返回 undefined ---
-
-test('refreshClawName: claw 离线（无 socket）时返回 undefined', async () => {
-	const result = await refreshClawName('99999');
-	assert.equal(result, undefined);
-});
-
-// --- refreshClawName: claw 在线但 rpc 返回 ok !== true ---
-
-test('refreshClawName: rpc 返回 ok=false 时返回 undefined', async () => {
-	// 使用 rpcMockWs 使 getAnyOnlineClawSocket 返回有效 socket
-	const ws = createRpcMockWs();
-	setupSockets('rpc-bot-1', { bot: [ws] });
-
-	// requestClawRpc 会发消息到 ws，但没有人回复，会超时
-	// 用极短超时使其快速失败
-	const result = await refreshClawName('rpc-bot-1', { timeoutMs: 10 }).catch(() => undefined);
-	assert.equal(result, undefined);
-
-	cleanupSockets('rpc-bot-1');
-});
-
 // --- forwardToClaw: 直接测试 ---
 
 test('forwardToClaw: 无 socket 时返回 false', () => {
@@ -1520,143 +1517,6 @@ test('onUiMessage: raw 为 undefined 时解析为空对象', () => {
 
 	onUiMessage('bot-uiudef', uiWs, undefined);
 	cleanupSockets('bot-uiudef');
-});
-
-// --- refreshClawName: rpc 成功但 findClawById 抛异常（DB 不可用） ---
-
-test('refreshClawName: rpc 成功返回 name，findClawById 抛异常时返回 latestName', async () => {
-	// 创建自动回复 RPC 的 mock socket
-	const clawId = 'rpc-name-bot';
-	const autoReplyWs = createRpcMockWs();
-	const origSend = autoReplyWs.send.bind(autoReplyWs);
-	autoReplyWs.send = (data) => {
-		origSend(data);
-		const req = JSON.parse(data);
-		if (req.type === 'req' && req.method === 'agent.identity.get') {
-			// 模拟 claw 立即回复
-			setTimeout(() => {
-				onClawMessage(clawId, autoReplyWs, JSON.stringify({
-					type: 'res',
-					id: req.id,
-					ok: true,
-					payload: { name: 'TestBot' },
-				}));
-			}, 0);
-		}
-	};
-	setupSockets(clawId, { bot: [autoReplyWs] });
-
-	// findClawById 会抛异常（因为没有 DB），覆盖 lines 179-183
-	const result = await refreshClawName(clawId, { timeoutMs: 500 });
-	// 返回从 rpc 获取的 name（findClawById 失败后 fallback）
-	assert.equal(result, 'TestBot');
-
-	cleanupSockets(clawId);
-});
-
-test('refreshClawName: rpc 成功但 name 为空时返回 null', async () => {
-	const clawId = 'rpc-empty-name';
-	const autoReplyWs = createRpcMockWs();
-	const origSend = autoReplyWs.send.bind(autoReplyWs);
-	autoReplyWs.send = (data) => {
-		origSend(data);
-		const req = JSON.parse(data);
-		if (req.type === 'req') {
-			setTimeout(() => {
-				onClawMessage(clawId, autoReplyWs, JSON.stringify({
-					type: 'res',
-					id: req.id,
-					ok: true,
-					payload: { name: '  ' }, // 空白 → trim 后为 '' → null
-				}));
-			}, 0);
-		}
-	};
-	setupSockets(clawId, { bot: [autoReplyWs] });
-
-	const result = await refreshClawName(clawId, { timeoutMs: 500 });
-	assert.equal(result, null);
-
-	cleanupSockets(clawId);
-});
-
-test('refreshClawName: rpc 返回 ok=false 时返回 undefined', async () => {
-	const clawId = 'rpc-notok';
-	const autoReplyWs = createRpcMockWs();
-	const origSend = autoReplyWs.send.bind(autoReplyWs);
-	autoReplyWs.send = (data) => {
-		origSend(data);
-		const req = JSON.parse(data);
-		if (req.type === 'req') {
-			setTimeout(() => {
-				onClawMessage(clawId, autoReplyWs, JSON.stringify({
-					type: 'res',
-					id: req.id,
-					ok: false,
-					error: { message: 'not found' },
-				}));
-			}, 0);
-		}
-	};
-	setupSockets(clawId, { bot: [autoReplyWs] });
-
-	const result = await refreshClawName(clawId, { timeoutMs: 500 });
-	assert.equal(result, undefined);
-
-	cleanupSockets(clawId);
-});
-
-test('refreshClawName: rpc 超时时返回 undefined（走 catch 分支）', async () => {
-	const clawId = 'rpc-timeout';
-	// 不自动回复的 socket → rpc 会超时
-	const ws = createRpcMockWs();
-	setupSockets(clawId, { bot: [ws] });
-
-	const result = await refreshClawName(clawId, { timeoutMs: 20 });
-	assert.equal(result, undefined);
-
-	cleanupSockets(clawId);
-});
-
-test('refreshClawName: rpc 返回 payload.name 非 string 时返回 null', async () => {
-	const clawId = 'rpc-nostr';
-	const autoReplyWs = createRpcMockWs();
-	const origSend = autoReplyWs.send.bind(autoReplyWs);
-	autoReplyWs.send = (data) => {
-		origSend(data);
-		const req = JSON.parse(data);
-		if (req.type === 'req') {
-			setTimeout(() => {
-				onClawMessage(clawId, autoReplyWs, JSON.stringify({
-					type: 'res',
-					id: req.id,
-					ok: true,
-					payload: { name: 123 }, // 非 string
-				}));
-			}, 0);
-		}
-	};
-	setupSockets(clawId, { bot: [autoReplyWs] });
-
-	const result = await refreshClawName(clawId, { timeoutMs: 500 });
-	// name 非 string → rawName = '' → latestName = null
-	// findClawById 会失败 → 返回 latestName = null
-	assert.equal(result, null);
-
-	cleanupSockets(clawId);
-});
-
-// --- requestClawRpc: socket.send 抛异常时走 catch 分支 ---
-
-test('refreshClawName: socket.send 抛异常时返回 undefined（requestClawRpc catch）', async () => {
-	const clawId = 'rpc-sendfail';
-	const ws = createRpcMockWs({ throwOnSend: true });
-	setupSockets(clawId, { bot: [ws] });
-
-	const result = await refreshClawName(clawId, { timeoutMs: 500 });
-	assert.equal(result, undefined);
-
-	cleanupSockets(clawId);
 });
 
 // --- authenticateUiTicket ---

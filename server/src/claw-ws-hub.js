@@ -158,44 +158,6 @@ function requestClawRpc(clawId, method, params = {}, timeoutMs = 1000) {
 	});
 }
 
-export async function refreshClawName(clawId, { timeoutMs = 1000 } = {}) {
-	const key = String(clawId);
-	let rpcRes = null;
-	try {
-		rpcRes = await requestClawRpc(key, 'agent.identity.get', {}, timeoutMs);
-	}
-	catch (err) {
-		wsLogDebug(`refreshClawName rpc failed clawId=${key}: ${err.message}`);
-		return undefined;
-	}
-	if (!rpcRes || rpcRes.ok !== true) {
-		return undefined;
-	}
-	const rawName = typeof rpcRes.payload?.name === 'string'
-		? rpcRes.payload.name.trim()
-		: '';
-	const latestName = rawName || null;
-	let claw = null;
-	try {
-		claw = await findClawById(BigInt(key));
-	}
-	catch (err) {
-		wsLogWarn(`refreshClawName findClaw failed clawId=${key}: ${err.message}`);
-		return latestName;
-	}
-	if (!claw) {
-		return latestName;
-	}
-	const currentName = claw.name ?? null;
-	if (currentName !== latestName) {
-		await updateClawName(claw.id, latestName).catch((err) => {
-			wsLogWarn(`updateClawName failed clawId=${key}: ${err.message}`);
-		});
-		clawStatusEmitter.emit('nameUpdated', { clawId: key, name: latestName });
-	}
-	return latestName;
-}
-
 async function authenticateClawRequest(req) {
 	const url = new URL(req.url ?? '', 'http://localhost');
 	const token = url.searchParams.get('token');
@@ -339,7 +301,7 @@ function onClawMessage(clawId, ws, raw) {
 		return;
 	}
 
-	// Plugin 事件：coclaw.info.updated → 持久化 claw name，不转发给 UI
+	// Plugin 事件：coclaw.info.updated → 持久化 claw name，通过 SSE 推送给 UI
 	if (payload.type === 'event' && payload.event === 'coclaw.info.updated') {
 		const name = payload.payload?.name || payload.payload?.hostName || null;
 		try {
@@ -350,6 +312,7 @@ function onClawMessage(clawId, ws, raw) {
 		catch (err) {
 			wsLogWarn(`updateClawName from plugin event failed clawId=${clawId}: ${err.message}`);
 		}
+		clawStatusEmitter.emit('nameUpdated', { clawId, name });
 		return;
 	}
 
@@ -575,8 +538,6 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 					wsLogInfo(`claw online clawId=${clawId}`);
 				}
 				clawStatusEmitter.emit('status', { clawId, online: true });
-				// TODO: plugin 已通过 coclaw.info.updated 事件主动推送 name，此处拉取待移除
-				void refreshClawName(clawId).catch(() => {});
 				ws.on('message', (raw) => onClawMessage(clawId, ws, raw));
 				// WS 协议级心跳：检测半开连接（仅 claw 侧）
 				// 45s 间隔，连续 4 次 miss（~180s）才 terminate，与 plugin 侧对齐
