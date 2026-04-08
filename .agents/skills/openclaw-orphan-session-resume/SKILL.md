@@ -37,10 +37,10 @@ description: Resume conversation on historical/orphan OpenClaw sessions (session
 
 ## 一键脚本（推荐）
 
-已内置脚本：`scripts/resume-orphan-session.mjs`
+已内置脚本：`.agents/skills/openclaw-orphan-session-resume/scripts/resume-orphan-session.mjs`
 
 ```bash
-node scripts/resume-orphan-session.mjs \
+node .agents/skills/openclaw-orphan-session-resume/scripts/resume-orphan-session.mjs \
   --sessionId <uuid> \
   --message "继续这个历史会话" \
   --url ws://127.0.0.1:3001?role=client

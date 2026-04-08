@@ -31,8 +31,8 @@ Slot:
 
 | meta 字段 | 含义 | 示例页面 |
 |---|---|---|
-| `isTopPage: true` | 底部导航直达页，不显示返回按钮 | topics、bots、user |
-| `hideMobileNav: true` | 隐藏底部导航栏 | chat、bots-add、about |
+| `isTopPage: true` | 底部导航直达页，不显示返回按钮 | topics、claws、user |
+| `hideMobileNav: true` | 隐藏底部导航栏 | chat、claws-add、about |
 
 子页面通常设置 `hideMobileNav: true`，不设置 `isTopPage`。
 

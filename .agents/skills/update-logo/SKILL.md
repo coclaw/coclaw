@@ -176,7 +176,6 @@ npx png2icons "$SRC" "$TAURI/icon" -icns -bz
 
 ## 注意事项
 
-- `src/assets/bot-avatars/openclaw.svg` 是 bot 头像，不是 app logo，不在此流程中更新
 - ICO 使用 `-icowe` 参数生成 Windows 可执行文件兼容格式（含多尺寸 BMP），避免 Electron/Tauri 打包后图标显示异常
 - 更新后用 `ls -lh` 验证所有文件已生成且大小合理
 - 如新增了 logo 相关文件（如新平台或 PWA manifest 引用新尺寸），需同步更新此 skill

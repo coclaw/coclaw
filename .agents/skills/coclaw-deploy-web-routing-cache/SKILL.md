@@ -1,6 +1,6 @@
 ---
 name: coclaw-deploy-web-routing-cache
-description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redirects, certbot certificate issuance, and SPA cache headers. Use when changing deploy/nginx/templates/app.conf.template, deploy/static/ui, or diagnosing browser stale-cache issues after frontend release (especially WeChat Android WebView).
+description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redirects, certbot certificate issuance, and SPA cache headers. Use when changing deploy/nginx/templates/default.conf.template, deploy/static/ui, or diagnosing browser stale-cache issues after frontend release (especially WeChat Android WebView).
 ---
 
 # CoClaw Deploy: 域名路由与缓存策略
@@ -10,7 +10,7 @@ description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redire
 ## 1) 先确认目标域名角色
 
 - 应用域名通过 `.env` 的 `APP_DOMAIN` 配置（默认 `im.coclaw.net`）
-- Nginx 配置使用 envsubst 模板机制，模板位于 `deploy/nginx/templates/app.conf.template`
+- Nginx 配置使用 envsubst 模板机制，模板位于 `deploy/nginx/templates/default.conf.template`
 - 模板中只使用 `${APP_DOMAIN}` 变量，不要引入其他变量以免与 nginx 内置变量冲突
 
 ## 2) 缓存策略（当前标准）

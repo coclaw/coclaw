@@ -34,12 +34,12 @@ pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 | 标签 | 含义 | 涉及文件 |
 |------|------|---------|
 | `@auth` | 登录/注册/认证故障 | `auth`, `register`, `api-failure-auth` |
-| `@bind` | 绑定/解绑/Claim | `bot-bind-unbind`, `claim` |
+| `@bind` | 绑定/解绑/Claim | `claw-bind-unbind`, `claim` |
 | `@chat` | 核心聊天业务 | `chat-flow`, `chat-input`, `chat-cancel-restore`, `slash-command`, `topic-integration`, `multi-agent` |
 | `@resilience` | 异常/网络/容错 | `chat-resilience`, `network-offline`, `network-slow`, `api-failure-data` |
 | `@ui` | 导航/布局/设置/交互 | `navigation`, `about`, `user-profile-settings`, `chat-layout-debug`, `pull-refresh` |
 | `@rtc` | WebRTC 传输 | `rtc-transport` |
-| `@file` | 文件传输 | `file-transfer` |
+| `@file` | 文件传输/浏览 | `file-transfer`, `file-browser` |
 
 新增测试时须在 test title（或所属 describe title）中包含对应标签。
 

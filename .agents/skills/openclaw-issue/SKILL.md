@@ -1,4 +1,5 @@
 ---
+name: openclaw-issue
 description: 向 OpenClaw 上游提交和管理 Issue。当需要向 openclaw/openclaw 仓库报告 bug、提交 feature request，或追踪/回复已提交 issue 时使用。
 ---
 
@@ -7,7 +8,7 @@ description: 向 OpenClaw 上游提交和管理 Issue。当需要向 openclaw/op
 ## 仓库信息
 
 - 仓库：`openclaw/openclaw`（https://github.com/openclaw/openclaw）
-- 本地源码镜像：`./openclaw-repo/openclaw`
+- 本地源码镜像：`./openclaw-repo`
 - 社区：https://discord.com/invite/clawd
 
 ## 模板要求

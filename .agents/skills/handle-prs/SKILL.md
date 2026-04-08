@@ -1,4 +1,5 @@
 ---
+name: handle-prs
 description: 处理 GitHub Pull Requests。当用户要求处理、审查、合并 PR 时触发。
 ---
 
