@@ -8,7 +8,7 @@
 			<p class="flex justify-center text-base text-toned md:mt-4">{{ $t('about.intro') }}</p>
 
 			<div class="mt-4">
-				<UAccordion :items="accordionItems" collapsible :ui="{ trigger: 'text-base' }">
+				<UAccordion :items="accordionItems" collapsible :unmount-on-hide="false" :ui="{ trigger: 'text-base' }">
 					<template #highlights-body>
 						<div class="space-y-3 text-sm text-muted leading-relaxed">
 							<p><strong class="text-default">{{ $t('about.hlNativeApp') }}</strong>{{ $t('about.hlNativeAppDesc') }}</p>
@@ -30,15 +30,20 @@
 						<div class="space-y-3 text-sm text-muted leading-relaxed">
 							<p><strong class="text-default">{{ $t('about.guideBind') }}</strong>{{ $t('about.guideBindDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.guideChat') }}</strong>{{ $t('about.guideChatDesc') }}</p>
-							<p><strong class="text-default">{{ $t('about.guideManage') }}</strong>{{ $t('about.guideManageDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.guideTopic') }}</strong>{{ $t('about.guideTopicDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.guideAttach') }}</strong>{{ $t('about.guideAttachDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.guideFile') }}</strong>{{ $t('about.guideFileDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.guideManageClaw') }}</strong>{{ $t('about.guideManageClawDesc') }}</p>
 						</div>
 					</template>
 					<template #concepts-body>
 						<div class="space-y-3 text-sm text-muted leading-relaxed">
 							<p><strong class="text-default">{{ $t('about.conceptAgent') }}</strong>{{ $t('about.conceptAgentDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.conceptClaw') }}</strong>{{ $t('about.conceptClawDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.conceptClawAgent') }}</strong>{{ $t('about.conceptClawAgentDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.conceptOnline') }}</strong>{{ $t('about.conceptOnlineDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.conceptFlow') }}</strong>{{ $t('about.conceptFlowDesc') }}</p>
+							<p><strong class="text-default">{{ $t('about.conceptTopic') }}</strong>{{ $t('about.conceptTopicDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.conceptMemory') }}</strong>{{ $t('about.conceptMemoryDesc') }}</p>
 							<p><strong class="text-default">{{ $t('about.conceptSession') }}</strong>{{ $t('about.conceptSessionDesc') }}</p>
 						</div>
