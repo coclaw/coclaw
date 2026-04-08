@@ -161,7 +161,7 @@ export const zhCNMessages = {
 		privacyOpenSource: '完全开源：',
 		privacyOpenSourceDesc: 'CoClaw 是开源项目，我们部署和运行的软件与代码仓库中的完全一致。你可以随时审查源代码：',
 		privacyComm: '通信安全：',
-		privacyCommDesc: '条件允许时，App 与你的 OpenClaw 通过 P2P 直连通信；条件不满足时，通过我们部署的开源中继服务（coturn）透明转发，不经过我们的后端服务器。',
+		privacyCommDesc: '条件允许时，App 与你的 OpenClaw 通过 P2P 直连通信；条件不满足时，通过我们部署的开源中继服务（coturn）透明转发，不经过我们的后端服务器。无论哪种方式，你的数据在传输过程中都经过端到端加密，只有你和你的 OpenClaw 能解读内容，中继服务器无法查看。',
 		privacyDiag: '诊断日志：',
 		privacyDiagDesc: '为排查通信等问题，客户端和插件会将必要的诊断信息远程推送到服务端日志中。这些日志仅用于问题定位，不包含你的对话内容。',
 		cloudDeploy: '还没有 OpenClaw？',

@@ -161,7 +161,7 @@ export const enMessages = {
 		privacyOpenSource: 'Fully open source: ',
 		privacyOpenSourceDesc: 'CoClaw is an open-source project. The software we deploy and run is identical to the code in our repository. You can review the source code anytime on ',
 		privacyComm: 'Communication security: ',
-		privacyCommDesc: 'When conditions allow, the App communicates with your OpenClaw directly via P2P. Otherwise, traffic is transparently relayed through our self-hosted open-source relay service (coturn), never through our backend server.',
+		privacyCommDesc: 'When conditions allow, the App communicates with your OpenClaw directly via P2P. Otherwise, traffic is transparently relayed through our self-hosted open-source relay service (coturn), never through our backend server. Either way, your data is end-to-end encrypted in transit — only you and your OpenClaw can read it, and the relay server cannot.',
 		privacyDiag: 'Diagnostic logging: ',
 		privacyDiagDesc: 'To troubleshoot connectivity and other issues, the client and plugin send essential diagnostic information to the server logs. These logs are used solely for debugging and do not contain your conversation content.',
 		cloudDeploy: 'Don\'t have OpenClaw yet?',
