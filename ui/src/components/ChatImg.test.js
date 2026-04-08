@@ -14,6 +14,16 @@ const mockFetchCoclawFile = vi.fn();
 vi.mock('../services/coclaw-file.js', () => ({
 	isCoclawUrl: (url) => typeof url === 'string' && url.startsWith('coclaw-file://'),
 	fetchCoclawFile: (...args) => mockFetchCoclawFile(...args),
+	parseCoclawUrl: (url) => {
+		if (!url || !url.startsWith('coclaw-file://')) return null;
+		const rest = url.slice('coclaw-file://'.length);
+		const slashIdx = rest.indexOf('/');
+		if (slashIdx < 0) return null;
+		const authority = rest.slice(0, slashIdx);
+		const colonIdx = authority.indexOf(':');
+		if (colonIdx < 0) return null;
+		return { clawId: authority.slice(0, colonIdx), agentId: authority.slice(colonIdx + 1), path: rest.slice(slashIdx + 1) };
+	},
 }));
 
 const mockCompressImage = vi.fn();
@@ -21,8 +31,9 @@ vi.mock('../utils/image-helper.js', () => ({
 	compressImage: (...args) => mockCompressImage(...args),
 }));
 
+const mockNotifyError = vi.fn();
 vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn() }),
+	useNotify: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: mockNotifyError }),
 }));
 
 import ChatImg from './ChatImg.vue';
@@ -96,6 +107,9 @@ function createWrapper(props = {}) {
 				ImgViewDialog: ImgViewDialogStub,
 				UIcon: UIconStub,
 			},
+			mocks: {
+				$t: (key) => key,
+			},
 		},
 	});
 }
@@ -137,6 +151,7 @@ describe('ChatImg', () => {
 
 		mockPushDialogState.mockClear();
 		mockPopDialogState.mockClear();
+		mockNotifyError.mockClear();
 	});
 
 	afterEach(() => {
@@ -180,7 +195,7 @@ describe('ChatImg', () => {
 			expect(wrapper.vm.__isThumb).toBe(false);
 		});
 
-		test('fetch 失败时 fallback 为直接显示 src', async () => {
+		test('fetch 失败时 fallback 为直接显示 src，不 notify', async () => {
 			mockFetchFn.mockRejectedValue(new Error('fetch error'));
 			const wrapper = createWrapper({ src: 'data:image/png;base64,bad' });
 			await flushPromises();
@@ -188,15 +203,17 @@ describe('ChatImg', () => {
 			expect(wrapper.vm.resolvedSrc).toBe('data:image/png;base64,bad');
 			expect(wrapper.vm.error).toBe(false);
 			expect(wrapper.vm.loading).toBe(false);
+			expect(mockNotifyError).not.toHaveBeenCalled();
 		});
 
-		test('compressImage 失败时 fallback 为直接显示 src', async () => {
+		test('compressImage 失败时 fallback 为直接显示 src，不 notify', async () => {
 			mockCompressImage.mockRejectedValue(new Error('decode failed'));
 			const wrapper = createWrapper({ src: 'data:image/png;base64,corrupt' });
 			await flushPromises();
 
 			expect(wrapper.vm.resolvedSrc).toBe('data:image/png;base64,corrupt');
 			expect(wrapper.vm.error).toBe(false);
+			expect(mockNotifyError).not.toHaveBeenCalled();
 		});
 	});
 
@@ -226,13 +243,14 @@ describe('ChatImg', () => {
 			expect(createdUrls).toHaveLength(0);
 		});
 
-		test('fetch 失败时 fallback 为直接显示 src', async () => {
+		test('fetch 失败时 fallback 为直接显示 src，不 notify', async () => {
 			mockFetchFn.mockRejectedValue(new Error('revoked'));
 			const wrapper = createWrapper({ src: 'blob:http://origin/dead' });
 			await flushPromises();
 
 			expect(wrapper.vm.resolvedSrc).toBe('blob:http://origin/dead');
 			expect(wrapper.vm.error).toBe(false);
+			expect(mockNotifyError).not.toHaveBeenCalled();
 		});
 	});
 
@@ -266,7 +284,7 @@ describe('ChatImg', () => {
 			expect(wrapper.vm.__isThumb).toBe(false);
 		});
 
-		test('下载失败时显示错误状态', async () => {
+		test('下载失败时显示错误状态并 notify 路径', async () => {
 			mockFetchCoclawFile.mockRejectedValue(new Error('network'));
 			const wrapper = createWrapper({ src: 'coclaw-file://1:main/fail.png' });
 			await flushPromises();
@@ -274,15 +292,30 @@ describe('ChatImg', () => {
 			expect(wrapper.vm.error).toBe(true);
 			expect(wrapper.vm.resolvedSrc).toBeNull();
 			expect(wrapper.vm.loading).toBe(false);
+			expect(mockNotifyError).toHaveBeenCalledOnce();
+			expect(mockNotifyError.mock.calls[0][0]).toContain('fail.png');
 		});
 
-		test('compressImage 失败时显示错误状态', async () => {
+		test('compressImage 失败时显示错误状态并 notify 路径', async () => {
 			mockFetchCoclawFile.mockResolvedValue(makeBlob());
 			mockCompressImage.mockRejectedValue(new Error('decode'));
 			const wrapper = createWrapper({ src: 'coclaw-file://1:main/corrupt.png' });
 			await flushPromises();
 
 			expect(wrapper.vm.error).toBe(true);
+			expect(mockNotifyError).toHaveBeenCalledOnce();
+			expect(mockNotifyError.mock.calls[0][0]).toContain('corrupt.png');
+		});
+
+		test('notify 消息包含 i18n key 和完整相对路径', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('gone'));
+			const wrapper = createWrapper({ src: 'coclaw-file://bot5:main/workspace/output/chart.png' });
+			await flushPromises();
+
+			expect(wrapper.vm.error).toBe(true);
+			const msg = mockNotifyError.mock.calls[0][0];
+			expect(msg).toContain('chat.imgLoadFailed');
+			expect(msg).toContain('workspace/output/chart.png');
 		});
 	});
 
@@ -357,6 +390,38 @@ describe('ChatImg', () => {
 
 			// resolvedSrc 应为第二个的结果
 			expect(wrapper.vm.resolvedSrc).toBe('data:image/png;base64,fast');
+		});
+
+		test('coclaw-file 下载失败但 src 已变化时不 notify', async () => {
+			let rejectFirst;
+			mockFetchCoclawFile.mockReturnValueOnce(new Promise((_r, rej) => { rejectFirst = rej; }));
+
+			const wrapper = createWrapper({ src: 'coclaw-file://1:main/will-fail.png' });
+
+			// src 变化
+			mockNotCompressed();
+			await wrapper.setProps({ src: 'data:image/png;base64,new' });
+			await flushPromises();
+
+			// 第一个请求失败但 src 已变
+			rejectFirst(new Error('too late'));
+			await flushPromises();
+
+			expect(mockNotifyError).not.toHaveBeenCalled();
+			expect(wrapper.vm.error).toBe(false);
+		});
+
+		test('coclaw-file 下载失败但已 unmount 时不 notify', async () => {
+			let rejectFetch;
+			mockFetchCoclawFile.mockReturnValueOnce(new Promise((_r, rej) => { rejectFetch = rej; }));
+
+			const wrapper = createWrapper({ src: 'coclaw-file://1:main/orphan.png' });
+			wrapper.unmount();
+
+			rejectFetch(new Error('too late'));
+			await flushPromises();
+
+			expect(mockNotifyError).not.toHaveBeenCalled();
 		});
 	});
 

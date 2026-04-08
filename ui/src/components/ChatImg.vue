@@ -37,8 +37,9 @@
 <script>
 import ImgViewDialog from './ImgViewDialog.vue';
 import { pushDialogState, popDialogState } from '../utils/dialog-history.js';
-import { isCoclawUrl, fetchCoclawFile } from '../services/coclaw-file.js';
+import { isCoclawUrl, fetchCoclawFile, parseCoclawUrl } from '../services/coclaw-file.js';
 import { compressImage } from '../utils/image-helper.js';
+import { useNotify } from '../composables/use-notify.js';
 
 /** 缩略图最大边长 */
 const THUMB_MAX = 384;
@@ -67,6 +68,9 @@ export default {
 			type: String,
 			default: '',
 		},
+	},
+	setup() {
+		return { notify: useNotify() };
 	},
 	data() {
 		return {
@@ -153,13 +157,15 @@ export default {
 					}
 				}
 			} catch (err) {
-				console.warn('[ChatImg] resolve failed:', err);
+				const filePath = parseCoclawUrl(srcAtStart)?.path || srcAtStart;
+				console.warn('[ChatImg] resolve failed:', filePath, err);
 				if (this.src !== srcAtStart || this.__unmounted) return;
 				// data URI / blob URL 可回退为直接显示
 				if (isData || isBlob) {
 					this.resolvedSrc = this.src;
 				} else {
 					this.error = true;
+					this.notify.error(this.$t('chat.imgLoadFailed') + `: ${filePath}`);
 				}
 			} finally {
 				if (this.src === srcAtStart) this.loading = false;

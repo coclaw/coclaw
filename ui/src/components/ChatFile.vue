@@ -28,7 +28,7 @@
 </template>
 
 <script>
-import { isCoclawUrl, fetchCoclawFile } from '../services/coclaw-file.js';
+import { isCoclawUrl, fetchCoclawFile, parseCoclawUrl } from '../services/coclaw-file.js';
 import { formatFileSize, saveBlobToFile } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
 import { isCapacitorApp } from '../utils/platform.js';
@@ -101,8 +101,9 @@ export default {
 				}
 				await saveBlobToFile(blob, this.displayName);
 			} catch (err) {
-				console.warn('[ChatFile] download failed:', err);
-				this.notify.error(this.$t('chat.fileDownloadFailed'));
+				const filePath = parseCoclawUrl(this.src)?.path || this.src;
+				console.warn('[ChatFile] download failed:', filePath, err);
+				this.notify.error(this.$t('chat.fileDownloadFailed') + `: ${filePath}`);
 			} finally {
 				this.downloading = false;
 			}
