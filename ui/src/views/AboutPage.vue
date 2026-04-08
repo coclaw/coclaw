@@ -5,7 +5,7 @@
 		<div class="mx-auto w-full max-w-xl">
 			<img :src="logoSrc" alt="CoClaw" class="mx-auto mb-4 size-16 rounded-xl" />
 			<h1 v-if="false" class="hidden text-center text-xl font-semibold md:block">{{ $t('about.title') }}</h1>
-			<p class="flex justify-center text-base text-toned md:mt-4">{{ $t('about.intro') }}</p>
+			<p class="text-center text-base text-toned md:mt-4">{{ $t('about.intro1') }}<a class="text-primary underline" href="#" @click.prevent="openGitHub">{{ $t('about.introOpenSource') }}</a>{{ $t('about.intro2') }}</p>
 
 			<div class="mt-4">
 				<UAccordion :items="accordionItems" collapsible :unmount-on-hide="false" :ui="{ trigger: 'text-base' }">

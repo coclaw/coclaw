@@ -113,7 +113,9 @@ export const zhCNMessages = {
 	},
 	about: {
 		title: '关于我们',
-		intro: 'CoClaw 让您即使与 OpenClaw 处于网络隔离状态，也能通过本平台与其交互。',
+		intro1: 'CoClaw 是 ',
+		introOpenSource: '开源',
+		intro2: ' AI 交互平台，让你通过手机或电脑与自己的 OpenClaw 对话。',
 		// loggedIn: '您已登录', // 暂时注释，短期内不清理
 		highlightsTitle: '全球首发特性',
 		hlNativeApp: '原生 App 客户端：',

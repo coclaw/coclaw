@@ -113,7 +113,9 @@ export const enMessages = {
 	},
 	about: {
 		title: 'About us',
-		intro: 'CoClaw enables you to interact with your OpenClaw even when network-isolated, through this platform.',
+		intro1: 'CoClaw is an ',
+		introOpenSource: 'open-source',
+		intro2: ' AI platform that lets you chat with your OpenClaw from your phone or computer — even when you\'re not on the same network.',
 		// loggedIn: 'You are logged in', // 暂时注释，短期内不清理
 		highlightsTitle: 'World-First Features',
 		hlNativeApp: 'Native App Client: ',
