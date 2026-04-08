@@ -96,7 +96,7 @@ export const useFilesStore = defineStore('files', {
 				fileName, size,
 			});
 			this.tasks.set(task.id, task);
-			this.__executeDownload(task);
+			this.__executeDownload(this.tasks.get(task.id));
 		},
 
 		/**

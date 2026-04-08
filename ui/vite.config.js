@@ -47,7 +47,7 @@ export default defineConfig({
 				},
 				radioGroup: {
 					slots: {
-						item: 'cursor-pointer rounded-md px-1.5 -mx-1.5 hover:bg-black/8 dark:hover:bg-white/10',
+						item: 'cursor-pointer',
 					},
 				},
 				toaster: {
