@@ -52,6 +52,7 @@ export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, pluginId
 		detached: true,
 		stdio: 'ignore',
 		env,
+		windowsHide: true,
 	});
 
 	// spawn 失败时 Node.js 会异步 emit 'error'；若无监听器则变为未捕获异常导致 gateway 崩溃

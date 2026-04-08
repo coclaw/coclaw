@@ -9,7 +9,7 @@
  * 注意：
  * - 本模块作为独立 node 进程运行，与 gateway 进程隔离
  * - state dir 通过 OPENCLAW_STATE_DIR 环境变量由 spawner 传入
- * - shell: true 为 Windows 兼容性所需（openclaw 全局安装生成 .cmd 包装器）
+ * - shell 仅在 Windows 启用（openclaw 全局安装生成 .cmd 包装器，需 shell 解析）
  */
 
 import { execFile as nodeExecFile } from 'node:child_process';
@@ -34,7 +34,7 @@ function runPluginUpdate(pluginId, opts) {
 	return new Promise((resolve, reject) => {
 		doExecFile('openclaw', ['plugins', 'update', pluginId], {
 			timeout: 120_000,
-			shell: true,
+			shell: process.platform === 'win32',
 		}, (err) => {
 			if (err) reject(new Error(`plugins update failed: ${err.message}`));
 			else resolve();
@@ -63,7 +63,7 @@ async function fallbackInstallOldVersion(pkgName, version, pluginId, opts) {
 	}
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	const run = (args, timeout = 120_000) => new Promise((resolve, reject) => {
-		doExecFile('openclaw', args, { timeout, shell: true }, (err) => {
+		doExecFile('openclaw', args, { timeout, shell: process.platform === 'win32' }, (err) => {
 			if (err) reject(err);
 			else resolve();
 		});

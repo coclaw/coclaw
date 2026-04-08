@@ -26,7 +26,7 @@ const CMD_TIMEOUT_MS = 30_000;
 function runCmd(cmd, args, opts) {
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	return new Promise((resolve, reject) => {
-		doExecFile(cmd, args, { timeout: CMD_TIMEOUT_MS, shell: true }, (err, stdout) => {
+		doExecFile(cmd, args, { timeout: CMD_TIMEOUT_MS, shell: process.platform === 'win32' }, (err, stdout) => {
 			if (err) reject(err);
 			else resolve(String(stdout).trim());
 		});

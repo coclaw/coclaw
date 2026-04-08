@@ -37,7 +37,7 @@ export async function getLatestVersion(pkgName, opts) {
 	return new Promise((resolve, reject) => {
 		doExecFile('npm', ['view', pkgName, 'version'], {
 			timeout: 30_000,
-			shell: true,
+			shell: process.platform === 'win32',
 		}, (err, stdout) => {
 			if (err) {
 				reject(new Error(`npm view failed: ${err.message}`));
