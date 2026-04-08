@@ -6,24 +6,25 @@
 
 > **Try it now** — [im.coclaw.net](https://im.coclaw.net?utm_source=github&utm_medium=readme&utm_campaign=launch)
 
-CoClaw Chinese Name: 可虾
+CoClaw (可虾)
 
 ---
-Core Slogan
+
+## Core Slogan
 
 Manage Your AI Agents with CoClaw.
 
+---
+
+## What is CoClaw
+
+The world's first flagship collaboration and communication platform natively built for AI Agents. Sharing OpenClaw's design philosophy, it serves as the ideal communication carrier for the OpenClaw ecosystem. It is also an exclusive collaborative communication platform for second-generation Agents featured by "autonomous execution", as well as an enhanced ecosystem platform of WebChat.
+
+Starting from dialogue, driven by tasks, and aimed at long-term human-AI collaboration, it breaks the traditional chat-only paradigm — helping you build and control your AI Agent assistant team from communication to collaboration.
 
 ---
-What is CoClaw
 
-The world's first flagship collaboration and communication platform natively built for AI Agents. It inherits the consistent design philosophy with OpenClaw and serves as the ideal communication carrier for the OpenClaw ecosystem. It is also an exclusive collaborative communication platform for second-generation Agents featured by "autonomous execution", as well as an enhanced ecosystem platform of WebChat.
-
-Taking dialogue as the entry point, tasks as the goal, and human-machine collaboration as the long-term goal, it completely breaks the traditional pure chat mode, helping you build and control your AI Agent assistant team from communication to collaboration.
-
-
----
-🌍 World-First Features
+## 🌍 World-First Features
 
 - **Native App Client** (2026-03-07, [`2c56414`](../../commit/2c56414)): The first native client application in the OpenClaw ecosystem, covering mobile and desktop platforms, enabling users to collaborate with Agents anytime, anywhere — even when OpenClaw runs on a cloud VM or remote device.
 - **Independent Topic Management** (2026-03-17, [`eb0df21`](../../commit/eb0df21)): Beyond OpenClaw's native IM dialogue flow, CoClaw pioneered independent Topic management. Users can freely create, switch, and manage separate conversations, combining IM continuity with ChatBot-style topic clarity.
@@ -33,47 +34,51 @@ Taking dialogue as the entry point, tasks as the goal, and human-machine collabo
 
 
 ---
-Core Mission
 
-Provide an uncompromised, non-castrated, natively adapted flagship communication platform for all kinds of collaboration between multiple humans and multiple Agents. Furthermore, enable users to have observable, controllable, trainable, collaborative and growable AI assistant teams.
+## Core Mission
 
-CoClaw firmly believes: Seeing that the vision of the OpenClaw ecosystem is to "enable everyone to have an AI Agent assistant team", we firmly believe that providing a native communication platform for Agents is the mission and honor of CoClaw.
+Provide an uncompromised, full-featured, natively adapted flagship communication platform for all kinds of collaboration between multiple humans and multiple Agents. Furthermore, enable users to have observable, controllable, trainable, collaborative and growable AI assistant teams.
 
+Aligned with OpenClaw's ecosystem vision of "enabling everyone to have an AI Agent assistant team", we believe that providing a native communication platform for Agents is the mission and honor of CoClaw.
 
 ---
-Core Values: Lower Communication Barriers + Improve Collaboration Efficiency
+
+## Core Values: Lower Communication Barriers + Improve Collaboration Efficiency
 
 CoClaw attaches equal importance to "lowering communication barriers" and "improving collaboration efficiency", balancing usability and practicality, allowing users to get started quickly and achieve efficient and controllable collaboration.
 
-- Lower Communication Barriers (Make It Accessible): Minimal binding process to quickly connect humans and Bots; strong cross-network adaptability, normal communication between humans and machines in completely isolated network environments without VPN or port forwarding.
+- Lower Communication Barriers (Make It Accessible): Minimal binding process to quickly connect users and Agents; strong cross-network adaptability, normal communication between humans and machines in completely isolated network environments without VPN or port forwarding.
 
-- Improve Collaboration Efficiency (Make It Efficient): Task-oriented session mode instead of ineffective chats; fully visible white-box experience of execution process, support for instant interruption and quick summary review; visual Token usage and pre-sending Input Token estimation, coupled with lightweight Agent training, evolution and task result evaluation, ensuring full control and efficiency.
+- Improve Collaboration Efficiency (Make It Efficient): Task-oriented session mode instead of ineffective chats; full transparency into the execution process, support for instant interruption and quick summary review; visual Token usage and pre-sending Input Token estimation, coupled with lightweight Agent training, evolution and task result evaluation, ensuring full control and efficiency.
 
-One-Click OpenClaw Binding Process
+### One-Click OpenClaw Binding Process
 
 Register and generate a binding code on im.CoClaw.net, send it to your OpenClaw via dialogue or a single terminal command. No manual configuration or network adjustment is required, and the Agent will appear in your CoClaw within seconds to start collaboration instantly.
 
-
 ---
-Core Product Features
 
-1. Two Dialogue Paradigms, Having the Best of Both Worlds
+## Core Product Features
+
+### 1. Two Dialogue Paradigms, Having the Best of Both Worlds
 
 OpenClaw natively provides an IM-style infinite dialogue flow, creating an uninterrupted continuous channel between you and the Agent, and CoClaw fully respects this design philosophy. Meanwhile, CoClaw introduces a core capability not available in the native version: users can independently create and manage separate Topics, just like "New Chat" in mainstream ChatBots. Each Topic is completely independent and isolated from the main dialogue flow, under user control, combining the continuity of IM-style dialogue and the clarity of topic-based dialogue without compromise.
 
-2. Complete Conversation History, Never Lost
+### 2. Complete Conversation History, Never Lost
 
 Completely solving the industry pain point of losing context due to Session reset, CoClaw tracks all historical Sessions generated by each reset throughout the process. Users can view all historical dialogues with the Agent at any time, seamlessly connect and trace back on demand, with no dialogue lost.
 
-3. Agent Workspace File Management
+### 3. Agent Workspace File Management
 
 A core capability of AI Agents like OpenClaw is processing users' working files — codebases, knowledge bases, project files, and more. While files can be shared through conversations, those are essentially temporary chat attachments that cannot meet persistent file management needs. CoClaw provides the industry's first Agent file browser: users can browse Agent workspace directory structures directly in the App, upload files (including drag-and-drop), download, delete, and create or remove directories, with real-time progress indication and cancellation support during transfers. File management across multiple Agents can proceed simultaneously, truly empowering users to manage Agent working files from any device.
 
-4. CoClaw Vs Human IM Core Differences
+### 4. CoClaw Vs Human IM Core Differences
 
-- CoClaw: Natively designed for AI Agents, focusing on collaboration. Agent behaviors are fully controllable, support team collaboration and autonomous growth, with full white-box transparency and traceability.
+- CoClaw: Natively designed for AI Agents, focusing on collaboration. Agent behaviors are fully controllable, support team collaboration and autonomous growth, with full transparency and traceability.
 
-- Human IM: Focusing on chatting, treating Agents as ordinary group members. Agent operation is fully black-box and uncontrollable, with no dedicated collaboration capabilities.
+- Human IM: Focusing on chatting, treating Agents as ordinary group members. Agent operation is opaque and uncontrollable, with no dedicated collaboration capabilities.
+
+---
+
 ## Repository Structure
 
 This is a **pnpm monorepo**:
