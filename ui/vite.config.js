@@ -39,6 +39,16 @@ export default defineConfig({
 					slots: {
 						base: 'cursor-pointer active:scale-[0.98] active:opacity-80',
 					},
+					compoundVariants: [{
+						color: 'neutral',
+						variant: 'ghost',
+						class: 'hover:bg-black/8 dark:hover:bg-white/10 active:bg-black/8 dark:active:bg-white/10 focus-visible:bg-black/8 dark:focus-visible:bg-white/10',
+					}],
+				},
+				radioGroup: {
+					slots: {
+						item: 'cursor-pointer rounded-md px-1.5 -mx-1.5 hover:bg-black/8 dark:hover:bg-white/10',
+					},
 				},
 				toaster: {
 					slots: {

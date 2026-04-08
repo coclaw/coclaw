@@ -127,8 +127,8 @@
 			<template #footer>
 				<div class="flex w-full items-center gap-2">
 					<template v-if="duplicateItems.length > 1">
-						<UButton variant="link" color="neutral" size="xs" @click="setAllDuplicateAction('overwrite')">{{ $t('files.overwriteAll') }}</UButton>
-						<UButton variant="link" color="neutral" size="xs" @click="setAllDuplicateAction('skip')">{{ $t('files.skipAll') }}</UButton>
+						<UButton variant="ghost" color="neutral" size="xs" @click="setAllDuplicateAction('overwrite')">{{ $t('files.overwriteAll') }}</UButton>
+						<UButton variant="ghost" color="neutral" size="xs" @click="setAllDuplicateAction('skip')">{{ $t('files.skipAll') }}</UButton>
 					</template>
 					<div class="flex-1" />
 					<UButton variant="ghost" color="neutral" @click="duplicateOpen = false">{{ $t('common.cancel') }}</UButton>
