@@ -248,7 +248,7 @@ test('claimHandler: should return 400 when code is empty string', async () => {
 	assert.equal(res.body.code, 'INVALID_INPUT');
 });
 
-test('claimHandler: should return 200 on successful claim and notify wait hub', async () => {
+test('claimHandler: should return 200 on successful claim and notify wait hub + SSE', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 7n },
@@ -256,6 +256,7 @@ test('claimHandler: should return 200 on successful claim and notify wait hub', 
 	};
 	const res = createRes();
 	let markArgs = null;
+	const sseCalls = [];
 
 	await claimHandler(req, res, () => {}, {
 		claimClawImpl: async () => ({
@@ -265,6 +266,7 @@ test('claimHandler: should return 200 on successful claim and notify wait hub', 
 			token: 'secret-token',
 		}),
 		markClaimBoundImpl: (args) => { markArgs = args; },
+		sendToUserImpl: (userId, data) => { sseCalls.push({ userId, data }); },
 	});
 
 	assert.equal(res.statusCode, 200);
@@ -278,15 +280,46 @@ test('claimHandler: should return 200 on successful claim and notify wait hub', 
 		botId: 42n,
 		token: 'secret-token',
 	});
+	// 验证 SSE claw.bound + bot.bound 事件
+	assert.equal(sseCalls.length, 2);
+	assert.equal(sseCalls[0].userId, '7');
+	assert.equal(sseCalls[0].data.event, 'claw.bound');
+	assert.deepEqual(sseCalls[0].data.claw, { id: '42', name: null });
+	assert.equal(sseCalls[1].data.event, 'bot.bound');
 });
 
-test('claimHandler: should return 410 when CLAIM_CODE_EXPIRED', async () => {
+test('claimHandler: should send claw.bound SSE with botName when present', async () => {
 	const req = {
 		isAuthenticated: () => true,
 		user: { id: 7n },
 		body: { code: '12345678' },
 	};
 	const res = createRes();
+	const sseCalls = [];
+
+	await claimHandler(req, res, () => {}, {
+		claimClawImpl: async () => ({
+			ok: true,
+			botId: 42n,
+			botName: 'MyClaw',
+			token: 'tok',
+		}),
+		markClaimBoundImpl: () => {},
+		sendToUserImpl: (userId, data) => { sseCalls.push({ userId, data }); },
+	});
+
+	assert.equal(res.statusCode, 200);
+	assert.equal(sseCalls[0].data.claw.name, 'MyClaw');
+});
+
+test('claimHandler: should return 410 when CLAIM_CODE_EXPIRED and not send SSE', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { code: '12345678' },
+	};
+	const res = createRes();
+	const sseCalls = [];
 
 	await claimHandler(req, res, () => {}, {
 		claimClawImpl: async () => ({
@@ -295,10 +328,12 @@ test('claimHandler: should return 410 when CLAIM_CODE_EXPIRED', async () => {
 			message: 'Claim code has expired',
 		}),
 		markClaimBoundImpl: () => {},
+		sendToUserImpl: (uid, data) => { sseCalls.push(data); },
 	});
 
 	assert.equal(res.statusCode, 410);
 	assert.equal(res.body.code, 'CLAIM_CODE_EXPIRED');
+	assert.equal(sseCalls.length, 0);
 });
 
 test('claimHandler: should return 400 when service returns INVALID_INPUT', async () => {
@@ -360,4 +395,34 @@ test('claimHandler: should call next on thrown error', async () => {
 
 	assert.equal(nextErr, expectedErr);
 	assert.equal(res.statusCode, null);
+});
+
+test('claimHandler: sendToUser failure should not affect HTTP response or markClaimBound', async () => {
+	const req = {
+		isAuthenticated: () => true,
+		user: { id: 7n },
+		body: { code: '12345678' },
+	};
+	const res = createRes();
+	let nextCalled = false;
+	let markCalled = false;
+
+	await claimHandler(req, res, () => { nextCalled = true; }, {
+		claimClawImpl: async () => ({
+			ok: true,
+			botId: 42n,
+			botName: 'TestBot',
+			token: 'tok',
+		}),
+		sendToUserImpl: () => { throw new Error('SSE push failed'); },
+		markClaimBoundImpl: () => { markCalled = true; },
+	});
+
+	// HTTP 响应已成功发送
+	assert.equal(res.statusCode, 200);
+	assert.equal(res.body.clawId, '42');
+	// SSE 异常不应调用 next(err)
+	assert.equal(nextCalled, false);
+	// markClaimBound 必须仍被调用（plugin 依赖此通知获取 token）
+	assert.equal(markCalled, true);
 });

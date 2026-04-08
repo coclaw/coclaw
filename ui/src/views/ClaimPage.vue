@@ -35,6 +35,7 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import { claimClaw } from '../services/claws.api.js';
+import { useClawsStore } from '../stores/claws.store.js';
 
 export default {
 	name: 'ClaimPage',
@@ -77,7 +78,11 @@ export default {
 			this.loading = true;
 			this.errorCode = '';
 			try {
-				await claimClaw(code);
+				const { clawId, clawName } = await claimClaw(code);
+				// 主动将 claw 加入 store，使后续 claw.status online 事件能触发 RTC 连接
+				if (clawId) {
+					useClawsStore().addOrUpdateClaw({ id: clawId, name: clawName });
+				}
 				this.success = true;
 				this.__navTimer = setTimeout(() => {
 					this.$router.replace('/claws');

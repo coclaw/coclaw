@@ -3,11 +3,31 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { vi } from 'vitest';
 
 import ClaimPage from './ClaimPage.vue';
+import { useClawsStore } from '../stores/claws.store.js';
 
 const mockClaimBot = vi.fn();
 
 vi.mock('../services/claws.api.js', () => ({
 	claimClaw: (...args) => mockClaimBot(...args),
+}));
+
+vi.mock('../services/claw-connection-manager.js', () => ({
+	useClawConnections: () => ({
+		get: vi.fn(),
+		connect: vi.fn(),
+		disconnect: vi.fn(),
+		syncConnections: vi.fn(),
+		disconnectAll: vi.fn(),
+	}),
+}));
+
+vi.mock('../services/signaling-connection.js', () => ({
+	useSignalingConnection: () => ({
+		on: vi.fn(),
+		off: vi.fn(),
+		connect: vi.fn(),
+		disconnect: vi.fn(),
+	}),
 }));
 
 const i18nMap = {
@@ -105,6 +125,27 @@ test('should show generic error on unknown error and log warning', async () => {
 	expect(wrapper.text()).toContain('Failed');
 	expect(warnSpy).toHaveBeenCalledWith('[ClaimPage] claimClaw failed:', err);
 	warnSpy.mockRestore();
+});
+
+test('should add claw to store after successful claim', async () => {
+	mockClaimBot.mockResolvedValueOnce({ clawId: '42', clawName: 'MyClaw' });
+	createWrapper({ query: { code: '12345678' } });
+	await flushPromises();
+
+	const clawsStore = useClawsStore();
+	const claw = clawsStore.byId['42'];
+	expect(claw).toBeDefined();
+	expect(claw.id).toBe('42');
+	expect(claw.name).toBe('MyClaw');
+});
+
+test('should not add claw to store when clawId is missing', async () => {
+	mockClaimBot.mockResolvedValueOnce({ clawId: null, clawName: null });
+	createWrapper({ query: { code: '12345678' } });
+	await flushPromises();
+
+	const clawsStore = useClawsStore();
+	expect(Object.keys(clawsStore.byId)).toHaveLength(0);
 });
 
 test('should clear navigation timer on unmount', async () => {

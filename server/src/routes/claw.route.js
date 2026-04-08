@@ -7,6 +7,7 @@ import {
 	waitClaimResult,
 	markClaimBound,
 } from '../claim-wait-hub.js';
+import { sendToUser } from '../claw-status-sse.js';
 
 export const clawRouter = Router();
 
@@ -120,7 +121,7 @@ export async function claimHandler(req, res, next, deps = {}) {
 		return;
 	}
 
-	const { claimClawImpl = claimClaw, markClaimBoundImpl = markClaimBound } = deps;
+	const { claimClawImpl = claimClaw, markClaimBoundImpl = markClaimBound, sendToUserImpl = sendToUser } = deps;
 
 	const code = String(req.body?.code ?? '').trim();
 	if (!code) {
@@ -155,7 +156,14 @@ export async function claimHandler(req, res, next, deps = {}) {
 			clawName: result.botName,
 		});
 
-		// 通知 wait hub（best-effort，不影响已成功的 claim 响应）
+		// best-effort：通知用户 SSE（与 bindClawHandler 行为对齐）
+		try {
+			const clawObj = { id: result.botId.toString(), name: result.botName ?? null };
+			sendToUserImpl(String(req.user.id), { event: 'claw.bound', claw: clawObj });
+			sendToUserImpl(String(req.user.id), { event: 'bot.bound', bot: clawObj, claw: clawObj });
+		} catch {}
+
+		// best-effort：通知 plugin wait hub（独立 try-catch，不受 SSE 失败影响）
 		try {
 			markClaimBoundImpl({
 				code,
