@@ -12,10 +12,10 @@ datasource db {
 // --- 各表内部的排版要纵向对其，便于开发者阅读。在修改本文件时不要调整原有的排版对齐布局 ---
 
 model User {
-  id								BigInt @id @db.UnsignedBigInt // Snowflake ID，内外统一的单 id
+  id								BigInt @id @db.UnsignedBigInt // Snowflake ID，全局唯一主键
 
   name							String? @db.VarChar(128) // 昵称
-  avatar						String? @db.Text // 在我们系统中设置的头像 URI
+  avatar						String? @db.Text // 用户在本系统设置的头像 URI
   // email					String? @db.VarChar(128) // 仅作为联系方式，不作为登录 ID
 
   level							Int @default(0) @db.TinyInt // 作为 role 使用：0：普通用户；1：VIP；100：SVIP；-100: admin；-1：开发者
@@ -66,7 +66,7 @@ model LocalAuth {
   @@unique([workId])
 }
 
-// 第三方认证表，支持 OAuth，也支持 JWT。JWT 可视为 OAuth
+// 第三方认证表，支持 OAuth 和 JWT；JWT 来源的账号同样作为 ExternalAuth 记录存储
 model ExternalAuth {
   id						Int @id @default(autoincrement()) @db.UnsignedInt
 
@@ -130,9 +130,9 @@ model Claw {
 	@@index([createdAt])
 }
 
-// 绑定 claw => user 的 code，用完即焚的临时记录，实际也可以只再内存中记录
+// 绑定 claw => user 的 code，用完即焚的临时记录，实际也可以只在内存中记录
 model ClawBindingCode {
-  code					String @id @db.VarChar(16) // 目前位8位十进制数字的绑定码
+  code					String @id @db.VarChar(16) // 目前为8位十进制数字的绑定码
 	userId				BigInt @db.UnsignedBigInt // User.id，但这里不作为外键
 
   createdAt			DateTime @default(now())
