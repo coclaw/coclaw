@@ -126,7 +126,7 @@
 					variant="outline"
 					color="neutral"
 					block
-					class="rounded-full"
+					class="h-10 rounded-full"
 					:disabled="sending || disabled"
 					@touchstart.prevent="onTouchSpeakStart"
 				>
