@@ -87,7 +87,17 @@ export default {
 		langOptions() {
 			return [
 				{ label: this.$t('settings.langZh'), value: 'zh-CN' },
+				{ label: this.$t('settings.langZhTW'), value: 'zh-TW' },
 				{ label: this.$t('settings.langEn'), value: 'en' },
+				{ label: this.$t('settings.langJa'), value: 'ja' },
+				{ label: this.$t('settings.langKo'), value: 'ko' },
+				{ label: this.$t('settings.langFr'), value: 'fr' },
+				{ label: this.$t('settings.langDe'), value: 'de' },
+				{ label: this.$t('settings.langEs'), value: 'es' },
+				{ label: this.$t('settings.langPt'), value: 'pt' },
+				{ label: this.$t('settings.langRu'), value: 'ru' },
+				{ label: this.$t('settings.langVi'), value: 'vi' },
+				{ label: this.$t('settings.langHi'), value: 'hi' },
 			];
 		},
 		isLocalAuth() {

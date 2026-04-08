@@ -1,10 +1,23 @@
 import { createI18n } from 'vue-i18n';
 
+import { deMessages } from './locales/de.js';
 import { enMessages } from './locales/en.js';
+import { esMessages } from './locales/es.js';
+import { frMessages } from './locales/fr.js';
+import { hiMessages } from './locales/hi.js';
+import { jaMessages } from './locales/ja.js';
+import { koMessages } from './locales/ko.js';
+import { ptMessages } from './locales/pt.js';
+import { ruMessages } from './locales/ru.js';
+import { viMessages } from './locales/vi.js';
 import { zhCNMessages } from './locales/zh-CN.js';
+import { zhTWMessages } from './locales/zh-TW.js';
 
 const DEFAULT_LOCALE = 'en';
-const SUPPORTED_LOCALES = new Set(['zh-CN', 'en']);
+const SUPPORTED_LOCALES = new Set([
+	'zh-CN', 'zh-TW', 'en', 'ja', 'ko',
+	'fr', 'de', 'es', 'pt', 'ru', 'vi', 'hi',
+]);
 
 export function normalizeLocale(input) {
 	if (typeof input !== 'string') {
@@ -14,11 +27,20 @@ export function normalizeLocale(input) {
 	if (!value) {
 		return DEFAULT_LOCALE;
 	}
-	if (value === 'zh-CN' || value === 'en') {
+	if (SUPPORTED_LOCALES.has(value)) {
 		return value;
 	}
+	// zh-TW, zh-Hant → zh-TW; 其余 zh* → zh-CN
 	if (value.startsWith('zh')) {
+		if (value === 'zh-TW' || value === 'zh-Hant' || value.startsWith('zh-Hant')) {
+			return 'zh-TW';
+		}
 		return 'zh-CN';
+	}
+	// 带区域后缀的匹配，如 ja-JP → ja, ko-KR → ko
+	const base = value.split('-')[0];
+	if (SUPPORTED_LOCALES.has(base)) {
+		return base;
 	}
 	return DEFAULT_LOCALE;
 }
@@ -46,7 +68,17 @@ const i18n = createI18n({
 	fallbackLocale: DEFAULT_LOCALE,
 	messages: {
 		'zh-CN': zhCNMessages,
+		'zh-TW': zhTWMessages,
 		en: enMessages,
+		ja: jaMessages,
+		ko: koMessages,
+		fr: frMessages,
+		de: deMessages,
+		es: esMessages,
+		pt: ptMessages,
+		ru: ruMessages,
+		vi: viMessages,
+		hi: hiMessages,
 	},
 });
 
