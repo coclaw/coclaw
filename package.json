@@ -1,6 +1,6 @@
 {
 	"name": "@coclaw/coclaw",
-	"version": "0.12.9",
+	"version": "0.12.10",
 	"private": true,
 	"type": "module",
 	"description": "CoClaw platform — interact with your OpenClaw through CoClaw, even across network isolation",
