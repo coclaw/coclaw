@@ -898,7 +898,7 @@ describe('useChatStore', () => {
 
 			const agentCall = conn.request.mock.calls.find((c) => c[0] === 'agent');
 			expect(agentCall[1].extraSystemPrompt).toContain('voice_123.webm');
-			expect(agentCall[1].extraSystemPrompt).toContain('语音输入');
+			expect(agentCall[1].extraSystemPrompt).toContain('音频内容即为用户的实际消息输入');
 		});
 
 		test('POST 上传失败时抛出错误，uploadingFiles 恢复', async () => {
