@@ -18,6 +18,11 @@ import { remoteLog } from './remote-log.js';
 /** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链（ICE 自愈通常 1-3s） */
 const DISCONNECTED_TIMEOUT_MS = 5_000;
 
+/** DC 应用层保活：间隔（probe 完成后到下一次 probe 发起） */
+const DC_KEEPALIVE_INTERVAL_MS = 30_000;
+/** DC 应用层保活：单次 probe 超时 */
+const DC_KEEPALIVE_TIMEOUT_MS = 10_000;
+
 /** 发送流控：高水位（暂停发送），远低于浏览器 16MB 上限 */
 const DC_HIGH_WATER_MARK = 1024 * 1024;
 /** 发送流控：低水位（恢复发送），对应 bufferedAmountLowThreshold */
@@ -154,6 +159,11 @@ export class WebRtcConnection {
 		this.__probePromise = null;
 		/** disconnected 状态超时定时器 */
 		this.__disconnectedTimer = null;
+		/** DC 应用层保活 */
+		this.__keepaliveTimer = null;
+		this.__keepaliveGen = 0;
+		this.__onAppBackground = null;
+		this.__onAppForeground = null;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -173,6 +183,8 @@ export class WebRtcConnection {
 
 	/** 关闭连接（主动关闭，不再自动恢复） */
 	close() {
+		this.__stopKeepalive();
+		this.__unregisterAppLifecycle();
 		this.__clearDisconnectedTimer();
 		this.__settleProbe(false);
 		this.__removeRtcListener();
@@ -436,9 +448,11 @@ export class WebRtcConnection {
 		});
 
 		dc.onopen = () => {
+			if (this.__rpcChannel !== dc) return; // PC 已被替换或 close()，忽略旧 DC 事件
 			this.__log('info', 'DataChannel "rpc" opened');
 			useSignalingConnection().sendSignaling(this.clawId, 'rtc:ready');
 			this.onReady?.();
+			this.__startKeepalive();
 		};
 		dc.onclose = () => {
 			this.__log('info', 'DataChannel "rpc" closed');
@@ -515,6 +529,76 @@ export class WebRtcConnection {
 		if (this.__disconnectedTimer) {
 			clearTimeout(this.__disconnectedTimer);
 			this.__disconnectedTimer = null;
+		}
+	}
+
+	// --- 内部：DC 应用层保活 ---
+	// ICE consent refresh 仅验证 DTLS 传输路径，无法感知 SCTP 层断裂。
+	// 大文件经 TURN relay 传输时可能导致 SCTP 静默死亡（ICE 仍报告 connected）。
+	// 此定时保活通过 probe/probe-ack 检测端到端 DC 可达性，失败时关闭 PC 触发重建。
+
+	/** @private 启动保活定时器（幂等） */
+	__startKeepalive() {
+		if (this.__keepaliveTimer) return;
+		const gen = ++this.__keepaliveGen;
+		this.__scheduleKeepalive(gen);
+		this.__registerAppLifecycle();
+	}
+
+	/** @private 调度下一次保活 probe */
+	__scheduleKeepalive(gen) {
+		this.__keepaliveTimer = setTimeout(() => this.__doKeepalive(gen), DC_KEEPALIVE_INTERVAL_MS);
+	}
+
+	/** @private 执行一次保活 probe，失败则关闭连接 */
+	async __doKeepalive(gen) {
+		this.__keepaliveTimer = null;
+		if (gen !== this.__keepaliveGen) return;
+		const alive = await this.probe(DC_KEEPALIVE_TIMEOUT_MS);
+		if (gen !== this.__keepaliveGen) return;
+		if (!alive && this.__state === 'connected') {
+			remoteLog(`dc.keepalive-failed claw=${this.clawId}`);
+			this.__log('warn', 'DC keepalive probe failed, closing connection');
+			this.close();
+			return;
+		}
+		// 仍健康 → 调度下一轮
+		if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
+			this.__scheduleKeepalive(gen);
+		}
+	}
+
+	/** @private 停止保活定时器，让残留回调失效 */
+	__stopKeepalive() {
+		if (this.__keepaliveTimer) {
+			clearTimeout(this.__keepaliveTimer);
+			this.__keepaliveTimer = null;
+		}
+		this.__keepaliveGen++;
+	}
+
+	/** @private 注册 Capacitor app 前后台事件（幂等） */
+	__registerAppLifecycle() {
+		if (this.__onAppBackground) return;
+		this.__onAppBackground = () => this.__stopKeepalive();
+		this.__onAppForeground = () => {
+			if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
+				this.__startKeepalive();
+			}
+		};
+		window.addEventListener('app:background', this.__onAppBackground);
+		window.addEventListener('app:foreground', this.__onAppForeground);
+	}
+
+	/** @private 注销 Capacitor app 前后台事件 */
+	__unregisterAppLifecycle() {
+		if (this.__onAppBackground) {
+			window.removeEventListener('app:background', this.__onAppBackground);
+			this.__onAppBackground = null;
+		}
+		if (this.__onAppForeground) {
+			window.removeEventListener('app:foreground', this.__onAppForeground);
+			this.__onAppForeground = null;
 		}
 	}
 

@@ -1316,3 +1316,412 @@ describe('initRtc — RTC 建连', () => {
 		}
 	});
 });
+
+// --- DC 应用层保活 ---
+
+/** 辅助：建连 + PC connected + DC open，返回 { rtc, pc, dc } */
+async function setupConnectedRtc(clawConn) {
+	const conn = clawConn ?? createMockBotConn();
+	const rtc = new WebRtcConnection('bot1', conn, { PeerConnection: MockRTCPeerConnection });
+	await rtc.connect(MOCK_TURN_CREDS);
+	const pc = MockRTCPeerConnection.lastInstance;
+	const dc = pc.__channels[0];
+	dc.readyState = 'open';
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+	dc.onopen();
+	return { rtc, pc, dc };
+}
+
+describe('WebRtcConnection — DC 应用层保活', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	// --- 启动与停止 ---
+
+	test('dc.onopen 时启动保活定时器', async () => {
+		const { rtc } = await setupConnectedRtc();
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+		expect(rtc.__keepaliveGen).toBe(1);
+		rtc.close();
+	});
+
+	test('__startKeepalive 幂等：重复调用不创建多个定时器', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const timer1 = rtc.__keepaliveTimer;
+		rtc.__startKeepalive();
+		expect(rtc.__keepaliveTimer).toBe(timer1);
+		expect(rtc.__keepaliveGen).toBe(1); // 没有再次递增
+		rtc.close();
+	});
+
+	test('close() 停止保活定时器并注销事件监听', async () => {
+		const { rtc } = await setupConnectedRtc();
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+		expect(rtc.__onAppBackground).not.toBeNull();
+
+		rtc.close();
+
+		expect(rtc.__keepaliveTimer).toBeNull();
+		expect(rtc.__onAppBackground).toBeNull();
+		expect(rtc.__onAppForeground).toBeNull();
+	});
+
+	test('close() 后无残留定时器（不泄漏）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		rtc.close();
+		// 推进大量时间，不应有任何回调触发
+		const probeSpy = vi.spyOn(rtc, 'probe');
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(probeSpy).not.toHaveBeenCalled();
+	});
+
+	test('__stopKeepalive 重复调用安全（幂等）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		rtc.__stopKeepalive();
+		expect(rtc.__keepaliveTimer).toBeNull();
+		// 再次调用不抛异常
+		expect(() => rtc.__stopKeepalive()).not.toThrow();
+		rtc.close();
+	});
+
+	// --- 正常保活周期 ---
+
+	test('30s 后发送 probe，成功则调度下一次', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		const probeSent = dc.sent.find(d => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		});
+		expect(probeSent).toBeTruthy();
+
+		// 模拟 probe-ack
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+		rtc.close();
+	});
+
+	test('probe 成功后 30s 发送第二次 probe', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+
+		// 第一次
+		await vi.advanceTimersByTimeAsync(30_000);
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+		dc.sent.length = 0;
+
+		// 第二次
+		await vi.advanceTimersByTimeAsync(30_000);
+		const probeSent = dc.sent.find(d => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		});
+		expect(probeSent).toBeTruthy();
+
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	// --- probe 失败场景 ---
+
+	test('probe 超时 + state=connected → close() 并记录 remoteLog', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const { rtc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		// 不发 ack，等 10s 超时
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(closeSpy).toHaveBeenCalledTimes(1);
+		expect(rtc.state).toBe('closed');
+		expect(remoteLog).toHaveBeenCalledWith(expect.stringContaining('dc.keepalive-failed'));
+	});
+
+	test('probe 超时 + state≠connected → 不 close', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		// probe 超时前 ICE 进入 failed
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// __onIceFailed → setState('failed')，保活检查 state !== 'connected' → skip
+		expect(closeSpy).not.toHaveBeenCalled();
+	});
+
+	test('DC 已 null 时 probe 立即返回 false → close()', async () => {
+		const { rtc } = await setupConnectedRtc();
+
+		rtc.__rpcChannel = null;
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('closed');
+	});
+
+	// --- generation 机制 ---
+
+	test('stop 后 stale 回调被 generation 拦截，不触发 close', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		rtc.__stopKeepalive();
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(closeSpy).not.toHaveBeenCalled();
+		rtc.close();
+	});
+
+	test('stop → start 快速切换，旧 probe 被忽略，新周期正常', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+
+		await vi.advanceTimersByTimeAsync(30_000); // 第一次 probe 发出
+
+		rtc.__stopKeepalive(); // gen +1
+		rtc.__startKeepalive(); // gen +1, 新 timer 在 T+30s
+
+		// 旧 probe 超时
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('connected'); // gen 不匹配，不 close
+
+		// 推进到新 timer 触发（距离 start 30s），但不要超过 probe timeout
+		dc.sent.length = 0;
+		await vi.advanceTimersByTimeAsync(20_000); // 新 timer 触发，probe 发出
+		await vi.advanceTimersByTimeAsync(0);
+
+		const probeSent = dc.sent.find(d => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		});
+		expect(probeSent).toBeTruthy();
+
+		// 立即 ack（在 probe timeout 之前）
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	test('多次 stop/start 循环后 gen 正确递增', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+		const initialGen = rtc.__keepaliveGen;
+
+		for (let i = 0; i < 5; i++) {
+			rtc.__stopKeepalive();
+			rtc.__startKeepalive();
+		}
+		// 每次 stop +1, start +1 → 共 +10
+		expect(rtc.__keepaliveGen).toBe(initialGen + 10);
+
+		// 最后一次 start 的保活应正常工作
+		await vi.advanceTimersByTimeAsync(30_000);
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	// --- Capacitor app 前后台事件 ---
+
+	test('app:background 停止保活', async () => {
+		const { rtc } = await setupConnectedRtc();
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		window.dispatchEvent(new Event('app:background'));
+
+		expect(rtc.__keepaliveTimer).toBeNull();
+		rtc.close();
+	});
+
+	test('app:foreground + DC 可用 → 重启保活', async () => {
+		const { rtc } = await setupConnectedRtc();
+
+		window.dispatchEvent(new Event('app:background'));
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		window.dispatchEvent(new Event('app:foreground'));
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	test('app:foreground + state≠connected → 不启动保活', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		window.dispatchEvent(new Event('app:background'));
+
+		// __onIceFailed → setState('failed')，不调 close()
+		// foreground handler 仍注册，但检查 state !== 'connected' → 不启动
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+
+		window.dispatchEvent(new Event('app:foreground'));
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('app:foreground + DC 未 open → 不启动保活', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+
+		window.dispatchEvent(new Event('app:background'));
+		dc.readyState = 'closed';
+
+		window.dispatchEvent(new Event('app:foreground'));
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('app:background → app:foreground 快速切换，旧 probe 被忽略', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		window.dispatchEvent(new Event('app:background'));
+		window.dispatchEvent(new Event('app:foreground'));
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(closeSpy).not.toHaveBeenCalled();
+		expect(rtc.state).toBe('connected');
+		rtc.close();
+	});
+
+	test('close() 后 app 事件不触发保活', async () => {
+		const { rtc } = await setupConnectedRtc();
+		rtc.close();
+
+		window.dispatchEvent(new Event('app:foreground'));
+		expect(rtc.__keepaliveTimer).toBeNull();
+	});
+
+	test('__registerAppLifecycle 幂等', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const bgHandler = rtc.__onAppBackground;
+		rtc.__registerAppLifecycle();
+		expect(rtc.__onAppBackground).toBe(bgHandler);
+		rtc.close();
+	});
+
+	// --- 交互场景 ---
+
+	test('外部 close() 在 doKeepalive await probe 期间 → 不双重 close', async () => {
+		const { rtc } = await setupConnectedRtc();
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		rtc.close();
+		expect(rtc.state).toBe('closed');
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('closed');
+	});
+
+	test('probe 成功但 state 已非 connected 时不再调度', async () => {
+		const { rtc, dc, pc } = await setupConnectedRtc();
+
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		// failed 会通过 __onIceFailed 改变 __state
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('failed');
+
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+
+		// state='failed'，不应调度下一次
+		expect(rtc.__keepaliveTimer).toBeNull();
+		rtc.close();
+	});
+
+	test('probe 成功但 DC 已关闭时不再调度', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		dc.readyState = 'closed';
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.__keepaliveTimer).toBeNull();
+		rtc.close();
+	});
+
+	test('DC 在保活 probe 进行中被置 null → probe 超时后 close', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		// probe 发出
+		await vi.advanceTimersByTimeAsync(30_000);
+		// DC 在 probe 超时前被外部置 null（模拟 DC onclose 但 PC 仍 connected）
+		rtc.__rpcChannel = null;
+
+		// probe 超时
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// state 仍是 connected → close()
+		expect(closeSpy).toHaveBeenCalledTimes(1);
+	});
+
+	test('dc.onopen 在 close() 之后触发时被 staleness guard 拦截', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+
+		// 在 DC open 前关闭连接
+		rtc.close();
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		// 模拟 DC open 事件延迟触发
+		dc.readyState = 'open';
+		dc.onopen();
+
+		// staleness guard 应阻止保活启动
+		expect(rtc.__keepaliveTimer).toBeNull();
+		expect(rtc.__onAppBackground).toBeNull();
+	});
+
+	test('保活 probe 进行中时外部 probe() 调用复用同一 promise', async () => {
+		const { rtc, dc } = await setupConnectedRtc();
+
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		const externalProbe = rtc.probe(3_000);
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		const result = await externalProbe;
+		expect(result).toBe(true);
+
+		rtc.close();
+	});
+});
