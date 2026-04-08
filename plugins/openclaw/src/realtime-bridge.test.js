@@ -4,6 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import { after, test } from 'node:test';
 
+import { WebSocket as WsWebSocket } from 'ws';
 import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
@@ -133,13 +134,28 @@ async function drainEnsureAllAgentSessions(gateway) {
 	}
 }
 
+// --- __resolveWebSocket 三态测试 ---
+
+test('__resolveWebSocket should return ws package WebSocket when deps.WebSocket is omitted', () => {
+	const bridge = new RealtimeBridge({});
+	assert.equal(bridge.__resolveWebSocket(), WsWebSocket);
+});
+
+test('__resolveWebSocket should return null when deps.WebSocket is explicitly null', () => {
+	const bridge = new RealtimeBridge({ WebSocket: null });
+	assert.equal(bridge.__resolveWebSocket(), null);
+});
+
+test('__resolveWebSocket should return custom impl when deps.WebSocket is provided', () => {
+	const bridge = new RealtimeBridge({ WebSocket: FakeWebSocket });
+	assert.equal(bridge.__resolveWebSocket(), FakeWebSocket);
+});
+
 // --- 单例便捷 API 测试 ---
 
-test('singleton API should no-op for missing token / missing WebSocket and restart/stop should be safe', async () => {
+test('singleton API should no-op for missing token and restart/stop should be safe', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
-	const old = globalThis.WebSocket;
-	delete globalThis.WebSocket;
 	try {
 		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
 		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
@@ -148,7 +164,6 @@ test('singleton API should no-op for missing token / missing WebSocket and resta
 		assert.equal(cfg.token, '');
 	}
 	finally {
-		globalThis.WebSocket = old;
 		await stopRealtimeBridge();
 	}
 });
@@ -156,8 +171,6 @@ test('singleton API should no-op for missing token / missing WebSocket and resta
 test('restartRealtimeBridge should re-create singleton after stop (bind regression)', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
-	const old = globalThis.WebSocket;
-	delete globalThis.WebSocket;
 	try {
 		// 模拟 bind 流程：restart → stop → restart
 		const opts = { logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } };
@@ -169,7 +182,6 @@ test('restartRealtimeBridge should re-create singleton after stop (bind regressi
 		assert.notEqual(result.error, 'bridge_not_started');
 	}
 	finally {
-		globalThis.WebSocket = old;
 		await stopRealtimeBridge();
 	}
 });
@@ -177,8 +189,6 @@ test('restartRealtimeBridge should re-create singleton after stop (bind regressi
 test('stopRealtimeBridge({ forceCleanup: true }) should call __ndcCleanup', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
-	const old = globalThis.WebSocket;
-	delete globalThis.WebSocket;
 	try {
 		const opts = { logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } };
 		await restartRealtimeBridge(opts);
@@ -187,7 +197,6 @@ test('stopRealtimeBridge({ forceCleanup: true }) should call __ndcCleanup', asyn
 		await stopRealtimeBridge({ forceCleanup: true });
 	}
 	finally {
-		globalThis.WebSocket = old;
 		await stopRealtimeBridge();
 	}
 });
@@ -202,8 +211,6 @@ test('stopRealtimeBridge({ forceCleanup: true }) with no singleton should no-op'
 test('restartRealtimeBridge should replace existing singleton when already running', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
-	const old = globalThis.WebSocket;
-	delete globalThis.WebSocket;
 	try {
 		const opts = { logger, pluginConfig: {} };
 		await restartRealtimeBridge(opts);
@@ -213,7 +220,6 @@ test('restartRealtimeBridge should replace existing singleton when already runni
 		assert.notEqual(result.error, 'bridge_not_started');
 	}
 	finally {
-		globalThis.WebSocket = old;
 		await stopRealtimeBridge();
 	}
 });
@@ -231,20 +237,14 @@ test('singleton API should log warning when token exists but serverUrl is missin
 	}
 });
 
-test('singleton API should log warning when token exists but WebSocket is unavailable', async () => {
+test('bridge should log warning when WebSocket is explicitly disabled (null)', async () => {
 	await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	const warns = [];
 	const logger = { warn: (m) => warns.push(String(m)), info() {} };
-	const old = globalThis.WebSocket;
-	delete globalThis.WebSocket;
-	try {
-		await restartRealtimeBridge({ logger, pluginConfig: {} });
-		assert.equal(warns.some((x) => x.includes('WebSocket not available')), true);
-	}
-	finally {
-		globalThis.WebSocket = old;
-		await stopRealtimeBridge();
-	}
+	const bridge = new RealtimeBridge({ WebSocket: null });
+	await bridge.start({ logger, pluginConfig: {} });
+	assert.equal(warns.some((x) => x.includes('WebSocket not available')), true);
+	await bridge.stop();
 });
 
 // --- DI 类测试 ---
@@ -1014,10 +1014,8 @@ test('waitForSessionsReady should resolve immediately when bridge not started', 
 test('waitForSessionsReady should await __ensureSessionsPromise after gateway connect', async () => {
 	FakeWebSocket.instances.length = 0;
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
-	const oldWs = globalThis.WebSocket;
-	globalThis.WebSocket = FakeWebSocket;
 	try {
-		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
+		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {}, __deps: { WebSocket: FakeWebSocket } });
 		const server = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 		server.readyState = 1;
 		server.emit('open', {});
@@ -1034,7 +1032,6 @@ test('waitForSessionsReady should await __ensureSessionsPromise after gateway co
 		await waitForSessionsReady();
 	}
 	finally {
-		globalThis.WebSocket = oldWs;
 		await stopRealtimeBridge();
 	}
 });

@@ -31,6 +31,9 @@ importers:
       werift:
         specifier: ^0.19.0
         version: 0.19.9
+      ws:
+        specifier: ^8.19.0
+        version: 8.19.0
     devDependencies:
       c8:
         specifier: ^10.1.3

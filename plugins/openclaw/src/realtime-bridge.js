@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
+import { WebSocket as WsWebSocket } from 'ws';
 
 import { clearConfig, getBindingsPath, readConfig } from './config.js';
 import { getHostName, readSettings } from './settings.js';
@@ -85,7 +86,7 @@ export class RealtimeBridge {
 		this.__resolveGatewayAuthToken = deps.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
 		this.__loadDeviceIdentity = deps.loadDeviceIdentity ?? loadOrCreateDeviceIdentity;
 		this.__preloadNdc = deps.preloadNdc ?? null;
-		this.__WebSocket = deps.WebSocket ?? null;
+		this.__WebSocket = deps.WebSocket; // undefined=使用 ws 包, null=禁用（测试用）, 其他=自定义实现
 		this.__gatewayReadyTimeoutMs = deps.gatewayReadyTimeoutMs ?? 1500;
 
 		this.serverWs = null;
@@ -112,7 +113,7 @@ export class RealtimeBridge {
 	}
 
 	__resolveWebSocket() {
-		return this.__WebSocket ?? globalThis.WebSocket;
+		return this.__WebSocket === undefined ? WsWebSocket : this.__WebSocket;
 	}
 
 	__logDebug(message) {
@@ -1029,7 +1030,8 @@ export async function restartRealtimeBridge(opts) {
 		await singleton.stop();
 		singleton = null;
 	}
-	singleton = new RealtimeBridge();
+	const deps = opts?.__deps; // 仅测试用
+	singleton = new RealtimeBridge(deps);
 	await singleton.start(opts);
 }
 

@@ -20,8 +20,8 @@ if [[ "$mode" != "none" ]]; then
 	ensure_uninstalled
 fi
 
-echo "[STEP] openclaw plugins install --link $PLUGIN_DIR"
-openclaw plugins install --link "$PLUGIN_DIR"
+echo "[STEP] openclaw plugins install --link --dangerously-force-unsafe-install $PLUGIN_DIR"
+openclaw plugins install --link --dangerously-force-unsafe-install "$PLUGIN_DIR"
 
 wait_gateway_restart
 verify_install
