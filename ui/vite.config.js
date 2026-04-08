@@ -45,6 +45,11 @@ export default defineConfig({
 						class: 'hover:bg-black/8 dark:hover:bg-white/10 active:bg-black/8 dark:active:bg-white/10 focus-visible:bg-black/8 dark:focus-visible:bg-white/10',
 					}],
 				},
+				checkbox: {
+					slots: {
+						root: 'cursor-pointer',
+					},
+				},
 				radioGroup: {
 					slots: {
 						item: 'cursor-pointer',
