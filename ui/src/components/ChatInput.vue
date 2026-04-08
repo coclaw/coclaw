@@ -42,9 +42,22 @@
 				<!-- 上传进度覆层 -->
 				<div
 					v-if="__fileStatus(f.id) === 'uploading'"
-					class="absolute inset-0 flex items-center justify-center rounded-md bg-default/50"
+					class="absolute inset-0 flex items-center justify-center rounded-md bg-default/60"
 				>
-					<span class="text-xs font-medium text-primary">{{ __filePercent(f.id) }}%</span>
+					<div class="relative inline-flex items-center justify-center">
+						<svg class="size-[2.5em]" viewBox="0 0 36 36">
+							<circle cx="18" cy="18" r="15" fill="none" stroke-width="2.5"
+								class="stroke-muted/30"
+							/>
+							<circle cx="18" cy="18" r="15" fill="none" stroke-width="2.5" stroke-linecap="round"
+								class="stroke-primary transition-[stroke-dashoffset] duration-200"
+								:stroke-dasharray="94.25"
+								:stroke-dashoffset="94.25 * (1 - __filePercent(f.id) / 100)"
+								transform="rotate(-90 18 18)"
+							/>
+						</svg>
+						<span class="absolute text-xs font-medium text-primary">{{ __filePercent(f.id) }}%</span>
+					</div>
 				</div>
 				<!-- 移除按钮（上传中不显示） -->
 				<button
