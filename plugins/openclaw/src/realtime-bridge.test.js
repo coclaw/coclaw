@@ -309,34 +309,32 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 			}
 		}
 
-		// rpc.req happy path
+		// server WS 收到未识别的消息类型，静默忽略
+		const gwSentBefore = gateway.sent.length;
+		const serverSentBefore = server.sent.length;
 		server.emit('message', { data: JSON.stringify({ type: 'rpc.req', id: '1', method: 'm1', params: { a: 1 } }) });
 		await new Promise((r) => setTimeout(r, 0));
-		assert.equal(gateway.sent.length > 0, true);
+		assert.equal(gateway.sent.length, gwSentBefore, 'unrecognized message should NOT be forwarded to gateway');
+		assert.equal(server.sent.length, serverSentBefore, 'unrecognized message should NOT produce any response');
 
-		// rpc.req send failed branch
-		gateway.throwOnSend = true;
-		server.emit('message', { data: JSON.stringify({ type: 'rpc.req', id: '2', method: 'm2', params: {} }) });
-		await new Promise((r) => setTimeout(r, 0));
-		gateway.throwOnSend = false;
-		assert.equal(server.sent.some((x) => String(x).includes('GATEWAY_SEND_FAILED')), true);
-
-		// gateway message parse ignore / non-object / res / event
+		// gateway message parse ignore / non-object / res / event（不再转发到 server WS）
 		gateway.emit('message', { data: '{bad-json' });
 		gateway.emit('message', { data: '123' });
+		const serverSentBeforeGw = server.sent.length;
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: '1', ok: true, payload: { ok: 1 } }) });
 		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'e1', payload: { x: 1 } }) });
-		assert.equal(server.sent.length >= 2, true);
+		assert.equal(server.sent.length, serverSentBeforeGw, 'gateway res/event should NOT be forwarded to server WS');
 
 		// server message parse failed
 		server.emit('message', { data: '{bad-json' });
 		assert.equal(logs.some((x) => String(x).includes('parse failed')), true);
 
-		// rpc.req when gateway offline -> GATEWAY_OFFLINE
+		// 未识别消息在任何状态下都被忽略
 		gateway.readyState = 0;
+		const serverSentBeforeOffline = server.sent.length;
 		server.emit('message', { data: JSON.stringify({ type: 'rpc.req', id: '3', method: 'm3' }) });
 		await new Promise((r) => setTimeout(r, 100));
-		assert.equal(server.sent.some((x) => String(x).includes('GATEWAY_OFFLINE')), true);
+		assert.equal(server.sent.length, serverSentBeforeOffline, 'unrecognized message should be ignored regardless of gateway state');
 
 		// claw.unbound branch (no clawId in payload — clears config)
 		server.emit('message', { data: JSON.stringify({ type: 'claw.unbound', reason: 'x' }) });
@@ -780,7 +778,7 @@ test('RealtimeBridge should ignore error on stale socket', async () => {
 	}
 });
 
-test('RealtimeBridge waitGatewayReady should handle ws reference change', async () => {
+test('RealtimeBridge waitGatewayReady should handle ws reference change (DC path)', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -803,14 +801,20 @@ test('RealtimeBridge waitGatewayReady should handle ws reference change', async 
 		const gw = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 		gw.readyState = 1;
 
+		// mock webrtcPeer.broadcast 以捕获错误响应
+		const broadcasted = [];
+		bridge.webrtcPeer = { broadcast: (p) => broadcasted.push(p), destroy: () => {}, closeAll: () => Promise.resolve() };
+
 		// 发起一个需要 gateway ready 的请求（此时 gateway 不 ready，会进入 waitGatewayReady 循环）
 		// 在等待过程中 close gateway ws
-		const reqP = bridge.__handleGatewayRequestFromServer({ id: 'test-req', method: 'test.m' });
+		const reqP = bridge.__handleGatewayRequestFromDc({ id: 'test-req', method: 'test.m' });
 		// 模拟 gateway ws 关闭
 		gw.emit('close', {});
 		await reqP;
-		// 应收到 GATEWAY_OFFLINE 响应
-		assert.equal(server.sent.some((x) => String(x).includes('GATEWAY_OFFLINE')), true);
+		// 应通过 DC broadcast 收到 GATEWAY_OFFLINE 响应
+		const offlineMsg = broadcasted.find((p) => p.error?.code === 'GATEWAY_OFFLINE');
+		assert.ok(offlineMsg, 'should broadcast GATEWAY_OFFLINE via DC');
+		assert.equal(offlineMsg.id, 'test-req');
 	}
 	finally {
 		await bridge.stop();
@@ -2100,9 +2104,7 @@ test('RealtimeBridge rtc: messages should not interfere with rpc.req handling', 
 		});
 		await new Promise((r) => setTimeout(r, 50));
 
-		// rpc.req 被正常处理（不因 rtc 而被吞掉）
-		// 由于 gateway 未连接，会触发 GATEWAY_OFFLINE 错误响应到 server
-		// 只需确认不崩溃
+		// 未识别的消息类型被静默忽略，只需确认不崩溃
 		assert.ok(true);
 	} finally {
 		await bridge.stop();
@@ -2130,7 +2132,7 @@ test('RealtimeBridge stop() should cleanup webrtcPeer explicitly', async () => {
 	}
 });
 
-test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequestFromServer', async () => {
+test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequestFromDc', async () => {
 	const { bridge, server, prevHome } = await setupConnectedBridge();
 	try {
 		// 触发 rtc:offer 以创建 webrtcPeer
@@ -2147,23 +2149,26 @@ test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequest
 		// 验证 onRequest 已注册
 		assert.equal(typeof bridge.webrtcPeer.__onRequest, 'function');
 
+		// 追踪 DC broadcast
+		const broadcasted = [];
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+
 		// 调用 onRequest 模拟 DataChannel 收到 req
-		// onRequest 内部 void 调用 __handleGatewayRequestFromServer，
-		// 后者 __waitGatewayReady 默认超时 1500ms
 		const reqPayload = { type: 'req', id: 'ui-dc-1', method: 'agent', params: { text: 'hi' } };
 		bridge.webrtcPeer.__onRequest(reqPayload, 'c_req1');
 
 		// 等待 __waitGatewayReady 超时（已注入 50ms）+ 处理完成
 		await new Promise((r) => setTimeout(r, 100));
 
-		// gateway 未连接，应产生 GATEWAY_OFFLINE 错误响应 → __forwardToServer
-		const offlineMsg = server.sent.find((s) => {
-			try {
-				const p = JSON.parse(String(s));
-				return p.type === 'res' && p.id === 'ui-dc-1' && p.error?.code === 'GATEWAY_OFFLINE';
-			} catch { return false; }
+		// gateway 未连接，应产生 GATEWAY_OFFLINE 错误响应 → broadcast to DC（不再发 server WS）
+		const offlineBC = broadcasted.find((p) => p.type === 'res' && p.id === 'ui-dc-1' && p.error?.code === 'GATEWAY_OFFLINE');
+		assert.ok(offlineBC, 'should broadcast GATEWAY_OFFLINE error via DC');
+		// 确认不会发送到 server WS
+		const serverOffline = server.sent.find((s) => {
+			try { return JSON.parse(String(s)).error?.code === 'GATEWAY_OFFLINE'; }
+			catch { return false; }
 		});
-		assert.ok(offlineMsg, 'should forward GATEWAY_OFFLINE error via server ws');
+		assert.equal(serverOffline, undefined, 'should NOT forward GATEWAY_OFFLINE to server WS');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
@@ -2215,7 +2220,7 @@ test('RealtimeBridge gateway res/event should broadcast to webrtcPeer', async ()
 	}
 });
 
-test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer', async () => {
+test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer (DC path)', async () => {
 	const { bridge, server, prevHome } = await setupConnectedBridge();
 	try {
 		// 触发 rtc:offer 以创建 webrtcPeer
@@ -2232,9 +2237,8 @@ test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer', asyn
 		const broadcasted = [];
 		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
 
-		// 不连接 gateway → __handleGatewayRequestFromServer 会产生 GATEWAY_OFFLINE
-		// 直接调用 __handleGatewayRequestFromServer
-		await bridge.__handleGatewayRequestFromServer({ id: 'req-off', method: 'test', params: {} });
+		// 不连接 gateway → __handleGatewayRequestFromDc 会产生 GATEWAY_OFFLINE
+		await bridge.__handleGatewayRequestFromDc({ id: 'req-off', method: 'test', params: {} });
 
 		const offlineBC = broadcasted.find((p) => p.error?.code === 'GATEWAY_OFFLINE');
 		assert.ok(offlineBC, 'GATEWAY_OFFLINE error should be broadcast');
@@ -2245,7 +2249,7 @@ test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer', asyn
 	}
 });
 
-test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer', async () => {
+test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer (DC path)', async () => {
 	const { bridge, server, prevHome } = await setupConnectedBridge();
 	try {
 		// 触发 rtc:offer 以创建 webrtcPeer
@@ -2270,7 +2274,7 @@ test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer', 
 			bridge.gatewayWs = gwWs;
 			gwWs.send = () => { throw new Error('send failed'); };
 
-			await bridge.__handleGatewayRequestFromServer({ id: 'req-fail', method: 'test', params: {} });
+			await bridge.__handleGatewayRequestFromDc({ id: 'req-fail', method: 'test', params: {} });
 
 			const failBC = broadcasted.find((p) => p.error?.code === 'GATEWAY_SEND_FAILED');
 			assert.ok(failBC, 'GATEWAY_SEND_FAILED error should be broadcast');

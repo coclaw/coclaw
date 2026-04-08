@@ -227,7 +227,8 @@ export class RealtimeBridge {
 		this.webrtcPeer = new WebRtcPeer({
 			onSend: (msg) => this.__forwardToServer(msg),
 			onRequest: (dcPayload) => {
-				void this.__handleGatewayRequestFromServer(dcPayload);
+				this.__handleGatewayRequestFromDc(dcPayload)
+					.catch((err) => this.logger.warn?.(`[coclaw] dc request handler error: ${err?.message}`));
 			},
 			onFileRpc: (payload, sendFn) => {
 				this.__fileHandler.handleRpcRequest(payload, sendFn)
@@ -626,8 +627,6 @@ export class RealtimeBridge {
 				return;
 			}
 			if (payload.type === 'res' || payload.type === 'event') {
-				// TODO: UI 已通过 DataChannel 接收业务消息，待旧版 UI 全部更新后移除此转发
-				this.__forwardToServer(payload);
 				this.webrtcPeer?.broadcast(payload);
 			}
 		});
@@ -699,11 +698,11 @@ export class RealtimeBridge {
 		});
 	}
 
-	async __handleGatewayRequestFromServer(payload) {
+	async __handleGatewayRequestFromDc(payload) {
 		const ready = await this.__waitGatewayReady();
 		if (!ready || !this.gatewayWs || this.gatewayWs.readyState !== 1) {
 			this.__logDebug(`gateway req drop (offline): id=${payload.id} method=${payload.method}`);
-			const errorRes = {
+			this.webrtcPeer?.broadcast({
 				type: 'res',
 				id: payload.id,
 				ok: false,
@@ -711,9 +710,7 @@ export class RealtimeBridge {
 					code: 'GATEWAY_OFFLINE',
 					message: 'Gateway is offline',
 				},
-			};
-			this.__forwardToServer(errorRes);
-			this.webrtcPeer?.broadcast(errorRes);
+			});
 			return;
 		}
 		try {
@@ -726,7 +723,7 @@ export class RealtimeBridge {
 			}));
 		}
 		catch {
-			const errorRes = {
+			this.webrtcPeer?.broadcast({
 				type: 'res',
 				id: payload.id,
 				ok: false,
@@ -734,9 +731,7 @@ export class RealtimeBridge {
 					code: 'GATEWAY_SEND_FAILED',
 					message: 'Failed to send request to gateway',
 				},
-			};
-			this.__forwardToServer(errorRes);
-			this.webrtcPeer?.broadcast(errorRes);
+			});
 		}
 	}
 
@@ -848,13 +843,6 @@ export class RealtimeBridge {
 						remoteLog(`rtc.signaling-error msg=${err?.message}`);
 					}
 					return;
-				}
-				if (payload?.type === 'req' || payload?.type === 'rpc.req') {
-					void this.__handleGatewayRequestFromServer({
-						id: payload.id,
-						method: payload.method,
-						params: payload.params ?? {},
-					});
 				}
 			}
 			catch (err) {
