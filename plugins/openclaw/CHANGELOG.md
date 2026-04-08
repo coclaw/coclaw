@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.12.3
+
+### Patch Changes
+
+- fix: improve Windows compat for auto-upgrade subprocess calls; use ws package for WebSocket to bypass undici proxy dispatcher
+
 ## 0.12.2
 
 ### Patch Changes
