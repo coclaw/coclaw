@@ -12,16 +12,16 @@
 			<div class="truncate text-xs text-muted">{{ displaySize }}</div>
 		</div>
 
-		<!-- 下载按钮 -->
+		<!-- 下载/分享按钮 -->
 		<UButton
 			v-if="src"
 			class="cc-icon-btn shrink-0"
-			icon="i-lucide-download"
+			:icon="isNative ? 'i-lucide-share-2' : 'i-lucide-download'"
 			variant="ghost"
 			color="neutral"
 			size="md"
 			:loading="downloading"
-			:title="$t('chat.fileDownload')"
+			:title="isNative ? $t('chat.fileShare') : $t('chat.fileDownload')"
 			@click="onDownload"
 		/>
 	</div>
@@ -31,6 +31,7 @@
 import { isCoclawUrl, fetchCoclawFile } from '../services/coclaw-file.js';
 import { formatFileSize, saveBlobToFile } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
+import { isCapacitorApp } from '../utils/platform.js';
 
 export default {
 	name: 'ChatFile',
@@ -60,6 +61,7 @@ export default {
 	},
 	data() {
 		return {
+			isNative: isCapacitorApp,
 			downloading: false,
 		};
 	},

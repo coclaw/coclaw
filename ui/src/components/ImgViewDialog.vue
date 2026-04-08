@@ -22,10 +22,10 @@
 					:ui="{ base: 'text-white hover:bg-white/20' }"
 					@click="openProxy = false"
 				/>
-				<!-- 下载按钮 -->
+				<!-- 下载/分享按钮 -->
 				<UButton
 					class="absolute top-2 left-2 cc-icon-btn"
-					icon="i-lucide-download"
+					:icon="isNative ? 'i-lucide-share-2' : 'i-lucide-download'"
 					variant="ghost"
 					color="neutral"
 					size="lg"
@@ -41,6 +41,7 @@
 import { popDialogState } from '../utils/dialog-history.js';
 import { saveBlobToFile } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
+import { isCapacitorApp } from '../utils/platform.js';
 
 export default {
 	name: 'ImgViewDialog',
@@ -64,6 +65,7 @@ export default {
 	},
 	data() {
 		return {
+			isNative: isCapacitorApp,
 			modalUi: {
 				content: 'max-w-fit bg-black divide-y-0 p-0 ring-0 shadow-none',
 				body: 'p-0 sm:p-0',
