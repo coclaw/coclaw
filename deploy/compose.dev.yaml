@@ -42,7 +42,7 @@ services:
       --use-auth-secret
       --static-auth-secret=dev-secret-placeholder
       --min-port=50000
-      --max-port=50010
+      --max-port=50100
       --fingerprint
       --no-cli
       --verbose
