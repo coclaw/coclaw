@@ -298,8 +298,11 @@ export default {
 				// 下载成功且此前处于错误态 → 恢复为缩略图显示
 				if (wasError) this.__recoverFromBlob(blob, srcAtStart);
 			} catch (err) {
-				console.warn('[ChatImg] download failed:', err);
-				if (!this.__unmounted) this.notify.error(this.$t('files.downloadFailed'));
+				const filePath = parseCoclawUrl(srcAtStart)?.path || srcAtStart;
+				console.warn('[ChatImg] download failed:', filePath, err);
+				if (!this.__unmounted) {
+					this.notify.error(this.$t('files.downloadFailed') + `: ${filePath}`);
+				}
 			} finally {
 				this.downloading = false;
 			}

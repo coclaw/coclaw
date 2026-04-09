@@ -1044,7 +1044,9 @@ describe('ChatImg', () => {
 			await wrapper.vm.__download();
 			await flushPromises();
 
-			expect(mockNotifyError).toHaveBeenCalledWith('files.downloadFailed');
+			const msg = mockNotifyError.mock.calls[0][0];
+			expect(msg).toContain('files.downloadFailed');
+			expect(msg).toContain('data:image/png;base64,abc');
 		});
 
 		test('src 变更时中止下载', async () => {
@@ -1157,7 +1159,9 @@ describe('ChatImg', () => {
 			await wrapper.vm.__download();
 			await flushPromises();
 
-			expect(mockNotifyError).toHaveBeenCalledWith('files.downloadFailed');
+			const msg = mockNotifyError.mock.calls[0][0];
+			expect(msg).toContain('files.downloadFailed');
+			expect(msg).toContain('still-fail.png');
 		});
 
 		test('错误态下载成功后恢复期间 src 变化则不恢复', async () => {
