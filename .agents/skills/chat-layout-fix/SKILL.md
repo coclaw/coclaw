@@ -1,6 +1,6 @@
 ---
 name: chat-layout-fix
-description: 修复 ChatPage header/footer 不固定的布局问题。当 ChatPage header 不粘顶或 footer 不固定在底部时使用。
+description: 修复 ChatPage header/footer 不固定的布局问题。Use when ChatPage header 不粘顶或 footer 不固定在底部。
 ---
 
 # ChatPage 布局修复

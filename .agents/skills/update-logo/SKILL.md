@@ -1,6 +1,6 @@
 ---
 name: update-logo
-description: 更新 CoClaw App logo/icon。当用户上传新 logo 图片并要求更新时使用。
+description: 更新 CoClaw App logo/icon。Use when 用户上传新 logo 图片并要求更新。
 ---
 
 # 更新 CoClaw Logo

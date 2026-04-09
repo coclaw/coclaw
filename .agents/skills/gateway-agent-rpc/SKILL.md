@@ -1,6 +1,6 @@
 ---
 name: gateway-agent-rpc
-description: OpenClaw Gateway agent RPC 两阶段响应协议。当开发/修改涉及 claw-connection.js、agent 请求、RPC 响应处理、ChatPage 发送消息相关的前端代码时使用。
+description: OpenClaw Gateway agent RPC 两阶段响应协议。Use when 开发/修改涉及 claw-connection.js、agent 请求、RPC 响应处理、ChatPage 发送消息相关的前端代码。
 ---
 
 # OpenClaw Gateway agent RPC 两阶段响应协议

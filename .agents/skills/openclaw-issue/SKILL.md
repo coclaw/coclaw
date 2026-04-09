@@ -1,6 +1,6 @@
 ---
 name: openclaw-issue
-description: 向 OpenClaw 上游提交和管理 Issue。当需要向 openclaw/openclaw 仓库报告 bug、提交 feature request，或追踪/回复已提交 issue 时使用。
+description: 向 OpenClaw 上游提交和管理 Issue。Use when 需要向 openclaw/openclaw 仓库报告 bug、提交 feature request，或追踪/回复已提交 issue。
 ---
 
 # 向 OpenClaw 提交和管理 Issue

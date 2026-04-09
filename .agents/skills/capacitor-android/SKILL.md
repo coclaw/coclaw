@@ -1,6 +1,6 @@
 ---
 name: capacitor-android
-description: Capacitor Android 开发规范与约束。当进行 Android App 构建、调试、配置、原生插件开发等工作时自动加载。
+description: Capacitor Android 开发规范与约束。Use when 进行 Android App 构建、调试、配置、原生插件开发等工作。
 ---
 
 # Capacitor Android 开发

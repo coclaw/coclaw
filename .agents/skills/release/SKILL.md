@@ -1,6 +1,6 @@
 ---
 name: release
-description: 版本发布流程。两种独立发布：npm 发布（plugins/openclaw）和 GitHub Release（整体项目）。当用户要求"发布"、"release"、"bump 版本"时使用。
+description: 版本发布流程：npm 发布（plugins/openclaw）和 GitHub Release（整体项目）。Use when 用户要求"发布"、"release"、"bump 版本"。
 ---
 
 # 版本发布流程

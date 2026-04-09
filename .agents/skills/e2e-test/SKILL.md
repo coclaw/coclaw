@@ -1,6 +1,6 @@
 ---
 name: e2e-test
-description: E2E 测试执行规范与踩坑约束。TRIGGER when：用户要求执行、编写、调试 E2E 测试，或涉及 Playwright、e2e 目录下文件的改动。
+description: E2E 测试执行规范与踩坑约束。Use when 执行、编写、调试 E2E 测试，或涉及 Playwright、e2e 目录下文件的改动。
 ---
 
 # E2E 测试（Playwright）

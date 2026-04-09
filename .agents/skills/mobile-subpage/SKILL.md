@@ -1,6 +1,6 @@
 ---
 name: mobile-subpage
-description: 移动端子页面适配规范。新建子页面时使用 MobilePageHeader 组件、设置路由 meta（isTopPage / hideMobileNav），遵循 checklist。
+description: 移动端子页面适配规范（MobilePageHeader + 路由 meta）。Use when 新建非底部导航直达的子页面，或调整移动端页面 header/导航栏显隐。
 ---
 
 # 移动端子页面适配

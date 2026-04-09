@@ -1,6 +1,6 @@
 ---
 name: prompt-confirm-dialog
-description: 创建 prompt（单行输入）和 confirm（确认操作）对话框。使用 UModal + promptModalUi 共享样式，遵循移动端优先原则。当需要创建确认对话框、单行输入对话框、或类似轻量交互弹窗时使用。
+description: 创建 prompt（单行输入）和 confirm（确认操作）对话框，基于 UModal + promptModalUi 共享样式。Use when 需要创建确认对话框、单行输入对话框、或类似轻量交互弹窗。
 ---
 
 # Prompt / Confirm 对话框

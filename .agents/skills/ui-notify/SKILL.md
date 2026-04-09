@@ -1,6 +1,6 @@
 ---
 name: ui-notify
-description: Use the global notify (toast) mechanism in CoClaw UI. Covers usage pattern, testing mock, and when to use or skip notify.
+description: CoClaw UI 全局 notify (toast) 机制的使用规范与测试 mock。Use when 需要添加操作反馈通知，或判断是否应该 notify。
 ---
 
 # Global Notify (Toast)
