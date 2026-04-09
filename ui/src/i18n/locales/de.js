@@ -411,6 +411,7 @@ export const deMessages = {
 		overwriteAll: 'Alle überschreiben',
 		skipAll: 'Alle überspringen',
 		fileTooLarge: '„{name}" überschreitet 1 GB und kann nicht hochgeladen werden',
+		uploadConflictDownloading: 'Einige Dateien werden gerade heruntergeladen. Bitte versuchen Sie es später erneut',
 	},
 	demo: {
 		title: 'Nuxt UI 4 Demo',

@@ -411,6 +411,7 @@ export const ruMessages = {
 		overwriteAll: 'Перезаписать все',
 		skipAll: 'Пропустить все',
 		fileTooLarge: '«{name}» превышает 1 ГБ и не может быть загружен',
+		uploadConflictDownloading: 'Некоторые файлы сейчас загружаются. Попробуйте позже',
 	},
 	demo: {
 		title: 'Демо Nuxt UI 4',

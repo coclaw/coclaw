@@ -411,6 +411,7 @@ export const viMessages = {
 		overwriteAll: 'Ghi đè tất cả',
 		skipAll: 'Bỏ qua tất cả',
 		fileTooLarge: '"{name}" vượt quá 1 GB và không thể tải lên',
+		uploadConflictDownloading: 'Một số tệp đang được tải xuống. Vui lòng thử lại sau',
 	},
 	demo: {
 		title: 'Demo Nuxt UI 4',

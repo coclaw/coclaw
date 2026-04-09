@@ -47,6 +47,11 @@
 - 若用户可通过界面变化直接感知操作结果（如切换主题/语言），则不必 notify
 - 错误操作始终需要 notify
 
+## 国际化（i18n）
+
+- 语言包位于 `src/i18n/locales/`，每个语言一个文件
+- 新增或修改 i18n key 时，必须同步更新该目录下的**所有**语言文件，不得遗漏
+
 ## remoteLog 远程诊断日志
 
 - `remoteLog(text)` 函数（`src/services/remote-log.js`）用于将**重要诊断信息**推送到 CoClaw server，供开发者远程排查问题

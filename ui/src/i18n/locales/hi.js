@@ -411,6 +411,7 @@ export const hiMessages = {
 		overwriteAll: 'सभी ओवरराइट करें',
 		skipAll: 'सभी छोड़ें',
 		fileTooLarge: '"{name}" 1 GB से अधिक है और अपलोड नहीं किया जा सकता',
+		uploadConflictDownloading: 'कुछ फ़ाइलें डाउनलोड हो रही हैं। कृपया बाद में पुनः प्रयास करें',
 	},
 	demo: {
 		title: 'Nuxt UI 4 डेमो',

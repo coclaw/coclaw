@@ -411,6 +411,7 @@ export const jaMessages = {
 		overwriteAll: 'すべて上書き',
 		skipAll: 'すべてスキップ',
 		fileTooLarge: '「{name}」は 1 GB を超えているためアップロードできません',
+		uploadConflictDownloading: '一部のファイルがダウンロード中です。しばらくしてから再度お試しください',
 	},
 	demo: {
 		title: 'Nuxt UI 4 デモ',

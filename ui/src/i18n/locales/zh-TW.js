@@ -411,6 +411,7 @@ export const zhTWMessages = {
 		overwriteAll: '覆蓋全部',
 		skipAll: '跳過全部',
 		fileTooLarge: '「{name}」超過 1 GB，暫不支援上傳',
+		uploadConflictDownloading: '部分檔案正在下載中，請稍後再上傳',
 	},
 	demo: {
 		title: 'Nuxt UI 4 範例',

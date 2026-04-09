@@ -411,6 +411,7 @@ export const koMessages = {
 		overwriteAll: '모두 덮어쓰기',
 		skipAll: '모두 건너뛰기',
 		fileTooLarge: '"{name}"은(는) 1GB를 초과하여 업로드할 수 없습니다',
+		uploadConflictDownloading: '일부 파일이 다운로드 중입니다. 잠시 후 다시 시도해 주세요',
 	},
 	demo: {
 		title: 'Nuxt UI 4 데모',

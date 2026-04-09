@@ -411,6 +411,7 @@ export const zhCNMessages = {
 		overwriteAll: '覆盖全部',
 		skipAll: '跳过全部',
 		fileTooLarge: '"{name}" 超过 1 GB，暂不支持上传',
+		uploadConflictDownloading: '部分文件正在下载中，请稍后再上传',
 	},
 	demo: {
 		title: 'Nuxt UI 4 示例',

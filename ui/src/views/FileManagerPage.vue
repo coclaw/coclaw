@@ -46,8 +46,8 @@
 		<!-- 文件列表 -->
 		<main class="flex-1 min-h-0 overflow-y-auto">
 			<div class="mx-auto w-full max-w-4xl">
-				<!-- 连接中 -->
-				<div v-if="!connReady" class="px-4 py-8 text-center text-sm text-muted">
+				<!-- 连接中（有缓存数据时仍展示列表，仅禁用操作） -->
+				<div v-if="!connReady && !entries.length" class="px-4 py-8 text-center text-sm text-muted">
 					{{ $t('files.connecting') }}
 				</div>
 
@@ -462,12 +462,28 @@ export default {
 		onConfirmDuplicates() {
 			const toUpload = [...this.__pendingFiles];
 			this.__pendingFiles = null;
+			const overwriteNames = [];
 			for (const item of this.duplicateItems) {
 				if (item.action === 'overwrite') {
 					toUpload.push(item.file);
+					overwriteNames.push(item.name);
 				}
 			}
 			this.duplicateOpen = false;
+
+			// 覆盖的文件中若有正在下载的，放弃整次上传
+			if (overwriteNames.length) {
+				const dlNames = new Set(
+					this.downloadTasks
+						.filter((t) => t.status === 'pending' || t.status === 'running')
+						.map((t) => t.fileName),
+				);
+				if (overwriteNames.some((n) => dlNames.has(n))) {
+					this.notify.warning(this.$t('files.uploadConflictDownloading'));
+					return;
+				}
+			}
+
 			if (toUpload.length) {
 				this.filesStore.enqueueUploads(this.clawId, this.agentId, this.currentDir, toUpload);
 				this.__watchUploadsForRefresh();

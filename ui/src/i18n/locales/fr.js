@@ -411,6 +411,7 @@ export const frMessages = {
 		overwriteAll: 'Tout écraser',
 		skipAll: 'Tout ignorer',
 		fileTooLarge: '"{name}" dépasse 1 Go et ne peut pas être envoyé',
+		uploadConflictDownloading: 'Certains fichiers sont en cours de téléchargement. Veuillez réessayer plus tard',
 	},
 	demo: {
 		title: 'Démo Nuxt UI 4',

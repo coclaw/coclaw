@@ -18,8 +18,9 @@ vi.mock('../components/files/FileUploadItem.vue', () => ({
 
 // --- mock 服务 ---
 const mockNotifyError = vi.fn();
+const mockNotifyWarning = vi.fn();
 vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({ error: mockNotifyError, success: vi.fn(), warning: vi.fn(), info: vi.fn() }),
+	useNotify: () => ({ error: mockNotifyError, success: vi.fn(), warning: mockNotifyWarning, info: vi.fn() }),
 }));
 
 const mockClawConnGet = vi.fn();
@@ -648,6 +649,167 @@ describe('FileManagerPage', () => {
 				{ label: 'files.overwrite', value: 'overwrite' },
 				{ label: 'files.skip', value: 'skip' },
 			]);
+		});
+
+		test('覆盖文件正在下载时放弃整次上传并 warning', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const enqueueSpy = vi.spyOn(store, 'enqueueUploads');
+
+			// 模拟有正在下载的 old.txt
+			store.tasks.set('dl-1', {
+				id: 'dl-1', type: 'download', clawId: 'claw1', agentId: 'main',
+				dir: '', fileName: 'old.txt', status: 'running', progress: 0.5,
+				size: 1000, error: null, file: null, transferHandle: null, createdAt: Date.now(),
+			});
+
+			await setupDuplicateDialog(wrapper,
+				[{ name: 'old.txt', type: 'file' }],
+				[{ name: 'old.txt', size: 200 }, { name: 'new.txt', size: 300 }],
+			);
+
+			wrapper.vm.duplicateItems[0].action = 'overwrite';
+			wrapper.vm.onConfirmDuplicates();
+
+			expect(wrapper.vm.duplicateOpen).toBe(false);
+			expect(mockNotifyWarning).toHaveBeenCalledWith('files.uploadConflictDownloading');
+			expect(enqueueSpy).not.toHaveBeenCalled();
+		});
+
+		test('覆盖文件有 pending 下载时同样放弃上传', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const enqueueSpy = vi.spyOn(store, 'enqueueUploads');
+
+			store.tasks.set('dl-2', {
+				id: 'dl-2', type: 'download', clawId: 'claw1', agentId: 'main',
+				dir: '', fileName: 'a.txt', status: 'pending', progress: 0,
+				size: 500, error: null, file: null, transferHandle: null, createdAt: Date.now(),
+			});
+
+			await setupDuplicateDialog(wrapper,
+				[{ name: 'a.txt', type: 'file' }],
+				[{ name: 'a.txt', size: 10 }],
+			);
+
+			wrapper.vm.duplicateItems[0].action = 'overwrite';
+			wrapper.vm.onConfirmDuplicates();
+
+			expect(mockNotifyWarning).toHaveBeenCalled();
+			expect(enqueueSpy).not.toHaveBeenCalled();
+		});
+
+		test('下载已完成（done）时不阻止覆盖上传', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const enqueueSpy = vi.spyOn(store, 'enqueueUploads');
+
+			// done 不在 getActiveTasks 结果中
+			store.tasks.set('dl-3', {
+				id: 'dl-3', type: 'download', clawId: 'claw1', agentId: 'main',
+				dir: '', fileName: 'old.txt', status: 'done', progress: 1,
+				size: 1000, error: null, file: null, transferHandle: null, createdAt: Date.now(),
+			});
+
+			await setupDuplicateDialog(wrapper,
+				[{ name: 'old.txt', type: 'file' }],
+				[{ name: 'old.txt', size: 200 }],
+			);
+
+			wrapper.vm.duplicateItems[0].action = 'overwrite';
+			wrapper.vm.onConfirmDuplicates();
+
+			expect(mockNotifyWarning).not.toHaveBeenCalled();
+			expect(enqueueSpy).toHaveBeenCalledTimes(1);
+		});
+
+		test('下载已失败（failed）时不阻止覆盖上传', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const enqueueSpy = vi.spyOn(store, 'enqueueUploads');
+
+			// failed 在 getActiveTasks 中但被二次过滤排除
+			store.tasks.set('dl-3f', {
+				id: 'dl-3f', type: 'download', clawId: 'claw1', agentId: 'main',
+				dir: '', fileName: 'old.txt', status: 'failed', progress: 0.3,
+				size: 1000, error: 'network', file: null, transferHandle: null, createdAt: Date.now(),
+			});
+
+			await setupDuplicateDialog(wrapper,
+				[{ name: 'old.txt', type: 'file' }],
+				[{ name: 'old.txt', size: 200 }],
+			);
+
+			wrapper.vm.duplicateItems[0].action = 'overwrite';
+			wrapper.vm.onConfirmDuplicates();
+
+			expect(mockNotifyWarning).not.toHaveBeenCalled();
+			expect(enqueueSpy).toHaveBeenCalledTimes(1);
+		});
+
+		test('多个覆盖文件中部分与下载冲突时放弃整次上传', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const enqueueSpy = vi.spyOn(store, 'enqueueUploads');
+
+			// 仅 a.txt 有活跃下载，b.txt 无下载
+			store.tasks.set('dl-5', {
+				id: 'dl-5', type: 'download', clawId: 'claw1', agentId: 'main',
+				dir: '', fileName: 'a.txt', status: 'running', progress: 0.5,
+				size: 500, error: null, file: null, transferHandle: null, createdAt: Date.now(),
+			});
+
+			await setupDuplicateDialog(wrapper,
+				[{ name: 'a.txt', type: 'file' }, { name: 'b.txt', type: 'file' }],
+				[{ name: 'a.txt', size: 10 }, { name: 'b.txt', size: 20 }],
+			);
+
+			// 两个都选覆盖
+			wrapper.vm.duplicateItems[0].action = 'overwrite';
+			wrapper.vm.duplicateItems[1].action = 'overwrite';
+			wrapper.vm.onConfirmDuplicates();
+
+			// 部分冲突 → some() 命中 → 放弃整次上传
+			expect(mockNotifyWarning).toHaveBeenCalledWith('files.uploadConflictDownloading');
+			expect(enqueueSpy).not.toHaveBeenCalled();
+		});
+
+		test('全部跳过时不检测下载冲突', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const enqueueSpy = vi.spyOn(store, 'enqueueUploads');
+
+			store.tasks.set('dl-4', {
+				id: 'dl-4', type: 'download', clawId: 'claw1', agentId: 'main',
+				dir: '', fileName: 'a.txt', status: 'running', progress: 0.3,
+				size: 500, error: null, file: null, transferHandle: null, createdAt: Date.now(),
+			});
+
+			await setupDuplicateDialog(wrapper,
+				[{ name: 'a.txt', type: 'file' }],
+				[{ name: 'a.txt', size: 10 }, { name: 'clean.txt', size: 20 }],
+			);
+
+			// 默认 skip，不覆盖
+			wrapper.vm.onConfirmDuplicates();
+
+			// 不应触发 warning（跳过了冲突文件），但 clean.txt 应正常入队
+			expect(mockNotifyWarning).not.toHaveBeenCalled();
+			expect(enqueueSpy).toHaveBeenCalledTimes(1);
+			expect(enqueueSpy.mock.calls[0][3]).toHaveLength(1);
+			expect(enqueueSpy.mock.calls[0][3][0].name).toBe('clean.txt');
 		});
 	});
 
@@ -1567,6 +1729,32 @@ describe('FileManagerPage', () => {
 			triggerConnReady(wrapper, false);
 
 			expect(mockListFiles).not.toHaveBeenCalled();
+		});
+
+		test('断连但有缓存 entries 时仍展示列表而非连接提示', async () => {
+			// 使用 claw2（dcReady 为 falsy）模拟断连
+			const wrapper = mountPage({
+				route: { params: { clawId: 'claw2', agentId: 'main' } },
+			});
+			await flushPromises();
+
+			// 手动注入缓存 entries 模拟"断连前已有数据"
+			await wrapper.setData({
+				entries: [{ name: 'cached.txt', type: 'file' }],
+			});
+
+			// 应展示文件列表项，不应显示"连接中"提示
+			expect(wrapper.findAll('.file-list-item')).toHaveLength(1);
+			expect(wrapper.text()).not.toContain('files.connecting');
+		});
+
+		test('断连且无 entries 时显示连接提示', async () => {
+			const wrapper = mountPage({
+				route: { params: { clawId: 'claw2', agentId: 'main' } },
+			});
+			await flushPromises();
+
+			expect(wrapper.text()).toContain('files.connecting');
 		});
 	});
 

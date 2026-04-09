@@ -411,6 +411,7 @@ export const enMessages = {
 		overwriteAll: 'Overwrite All',
 		skipAll: 'Skip All',
 		fileTooLarge: '"{name}" exceeds 1 GB and cannot be uploaded',
+		uploadConflictDownloading: 'Some files are being downloaded. Please try again later',
 	},
 	demo: {
 		title: 'Nuxt UI 4 Demo',

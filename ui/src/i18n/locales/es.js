@@ -411,6 +411,7 @@ export const esMessages = {
 		overwriteAll: 'Sobrescribir todo',
 		skipAll: 'Omitir todo',
 		fileTooLarge: '"{name}" supera 1 GB y no se puede subir',
+		uploadConflictDownloading: 'Algunos archivos se están descargando. Inténtelo de nuevo más tarde',
 	},
 	demo: {
 		title: 'Demo de Nuxt UI 4',

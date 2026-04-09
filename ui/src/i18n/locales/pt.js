@@ -411,6 +411,7 @@ export const ptMessages = {
 		overwriteAll: 'Substituir Todos',
 		skipAll: 'Pular Todos',
 		fileTooLarge: '"{name}" excede 1 GB e não pode ser enviado',
+		uploadConflictDownloading: 'Alguns arquivos estão sendo baixados. Tente novamente mais tarde',
 	},
 	demo: {
 		title: 'Demo Nuxt UI 4',
