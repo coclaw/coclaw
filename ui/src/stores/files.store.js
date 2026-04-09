@@ -5,15 +5,17 @@ import { uploadFile, downloadFile } from '../services/file-transfer.js';
 import { saveBlobToFile } from '../utils/file-helper.js';
 
 /**
- * 文件传输任务 Store
+ * 文件 Store
  *
- * 管理上传/下载任务的生命周期。
- * 目录浏览状态由 FileManagerPage 组件自行管理（局部 UI 状态）。
+ * 1. 传输任务（upload/download）生命周期管理
+ * 2. 目录列表 RAM 缓存——每个 (clawId, agentId) 缓存最近一次成功加载的目录
  */
 export const useFilesStore = defineStore('files', {
 	state: () => ({
 		/** @type {Map<string, FileTask>} */
 		tasks: new Map(),
+		/** @type {Map<string, {currentDir: string, entries: object[]}>} key = clawId:agentId */
+		dirCache: new Map(),
 	}),
 	getters: {
 		/**
@@ -42,6 +44,13 @@ export const useFilesStore = defineStore('files', {
 				}
 			}
 			return result;
+		},
+		/**
+		 * 获取缓存的目录条目
+		 * @returns {(clawId: string, agentId: string) => {currentDir: string, entries: object[]} | undefined}
+		 */
+		getCachedDir: (state) => (clawId, agentId) => {
+			return state.dirCache.get(`${clawId}:${agentId}`);
 		},
 		/** 是否有进行中的传输任务 */
 		busy: (state) => {
@@ -143,6 +152,28 @@ export const useFilesStore = defineStore('files', {
 					&& (task.status === 'done' || task.status === 'cancelled' || task.status === 'failed')) {
 					this.tasks.delete(id);
 				}
+			}
+		},
+
+		/**
+		 * 更新目录缓存
+		 * @param {string} clawId
+		 * @param {string} agentId
+		 * @param {string} currentDir
+		 * @param {object[]} entries
+		 */
+		setDirCache(clawId, agentId, currentDir, entries) {
+			this.dirCache.set(`${clawId}:${agentId}`, { currentDir, entries });
+		},
+
+		/**
+		 * 清除指定 claw 的目录缓存
+		 * @param {string} clawId
+		 */
+		clearDirCacheByClaw(clawId) {
+			const prefix = `${clawId}:`;
+			for (const key of this.dirCache.keys()) {
+				if (key.startsWith(prefix)) this.dirCache.delete(key);
 			}
 		},
 

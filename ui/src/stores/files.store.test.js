@@ -763,6 +763,78 @@ describe('files.store', () => {
 	// busy getter
 	// =====================================================================
 
+	// =====================================================================
+	// dirCache
+	// =====================================================================
+
+	describe('dirCache', () => {
+		test('setDirCache 存储后可通过 getCachedDir 取回', () => {
+			const entries = [{ name: 'a.txt', type: 'file' }];
+			store.setDirCache('bot1', 'main', 'src', entries);
+
+			const cached = store.getCachedDir('bot1', 'main');
+			expect(cached).toEqual({ currentDir: 'src', entries });
+		});
+
+		test('getCachedDir 无缓存时返回 undefined', () => {
+			expect(store.getCachedDir('bot1', 'main')).toBeUndefined();
+		});
+
+		test('setDirCache 覆盖同一 agent 的旧缓存', () => {
+			store.setDirCache('bot1', 'main', 'src', [{ name: 'old.txt', type: 'file' }]);
+			store.setDirCache('bot1', 'main', 'docs', [{ name: 'new.txt', type: 'file' }]);
+
+			const cached = store.getCachedDir('bot1', 'main');
+			expect(cached.currentDir).toBe('docs');
+			expect(cached.entries[0].name).toBe('new.txt');
+		});
+
+		test('根目录 (currentDir="") 可正确存取', () => {
+			const entries = [{ name: 'root.txt', type: 'file' }];
+			store.setDirCache('bot1', 'main', '', entries);
+
+			const cached = store.getCachedDir('bot1', 'main');
+			expect(cached.currentDir).toBe('');
+			expect(cached.entries).toEqual(entries);
+			// 验证与组件中 cached?.currentDir === '' 一致的判断
+			expect(cached?.currentDir === '').toBe(true);
+		});
+
+		test('空 entries 可正确存取', () => {
+			store.setDirCache('bot1', 'main', 'empty-dir', []);
+
+			const cached = store.getCachedDir('bot1', 'main');
+			expect(cached.currentDir).toBe('empty-dir');
+			expect(cached.entries).toEqual([]);
+		});
+
+		test('clearDirCacheByClaw 仅清除目标 claw 的缓存', () => {
+			store.setDirCache('bot1', 'main', '', [{ name: '1.txt', type: 'file' }]);
+			store.setDirCache('bot1', 'alt', 'src', [{ name: '2.txt', type: 'file' }]);
+			store.setDirCache('bot2', 'main', '', [{ name: '3.txt', type: 'file' }]);
+
+			store.clearDirCacheByClaw('bot1');
+
+			expect(store.getCachedDir('bot1', 'main')).toBeUndefined();
+			expect(store.getCachedDir('bot1', 'alt')).toBeUndefined();
+			expect(store.getCachedDir('bot2', 'main')).toBeDefined();
+		});
+
+		test('clearDirCacheByClaw 不误删 clawId 为前缀子串的其他 claw', () => {
+			store.setDirCache('bot1', 'main', '', []);
+			store.setDirCache('bot10', 'main', '', []);
+
+			store.clearDirCacheByClaw('bot1');
+
+			expect(store.getCachedDir('bot1', 'main')).toBeUndefined();
+			expect(store.getCachedDir('bot10', 'main')).toBeDefined();
+		});
+
+		test('clearDirCacheByClaw 无匹配时不报错', () => {
+			expect(() => store.clearDirCacheByClaw('nonexistent')).not.toThrow();
+		});
+	});
+
 	describe('busy', () => {
 		test('无任��时为 false', () => {
 			expect(store.busy).toBe(false);

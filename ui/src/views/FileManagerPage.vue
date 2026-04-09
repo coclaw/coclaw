@@ -307,7 +307,18 @@ export default {
 		connReady: {
 			immediate: true,
 			handler(ready) {
-				if (ready) this.loadDir();
+				if (!ready) return;
+				if (this.entries.length) {
+					// 重连：已有数据，静默刷新
+					this.loadDir({ silent: true });
+				} else {
+					// 首次 / 无数据：尝试从缓存恢复再加载
+					const cached = this.filesStore.getCachedDir(this.clawId, this.agentId);
+					if (cached?.currentDir === this.currentDir) {
+						this.entries = cached.entries;
+					}
+					this.loadDir();
+				}
 			},
 		},
 	},
@@ -332,37 +343,50 @@ export default {
 		resetAndLoad() {
 			clearTimeout(this.__refreshTimer);
 			this.__refreshTimer = null;
+			this.__cancelInFlight();
 			this.currentDir = '';
-			this.entries = [];
+			// 切换 agent 时尝试从缓存恢复，减少白屏
+			const cached = this.filesStore.getCachedDir(this.clawId, this.agentId);
+			this.entries = (cached?.currentDir === '') ? cached.entries : [];
 			this.loadDir();
 		},
 
-		async loadDir() {
+		async loadDir({ silent = false } = {}) {
 			if (this.loading) return;
 			const clawConn = useClawConnections().get(this.clawId);
 			if (!clawConn) return; // connReady watcher 会在连接就绪后重新触发
 			const gen = ++this.__loadGen;
-			this.loading = true;
+			if (!silent) this.loading = true;
 			try {
 				const result = await listFiles(clawConn, this.agentId, this.currentDir || '.');
 				if (gen !== this.__loadGen) return; // 被更新的请求取代
 				this.entries = result.files || [];
+				this.filesStore.setDirCache(this.clawId, this.agentId, this.currentDir, this.entries);
 			} catch (err) {
 				if (gen !== this.__loadGen) return;
-				this.notify.error(err?.message ?? this.$t('common.failed'));
+				// 静默刷新失败时不打扰用户（已有缓存数据在展示）
+				if (!silent) this.notify.error(err?.message ?? this.$t('common.failed'));
 				console.warn('[FileManagerPage] loadDir failed:', err);
-				this.entries = [];
+				// 失败时不清空——保留当前 entries；完全无数据时尝试缓存兜底
+				if (!this.entries.length) {
+					const cached = this.filesStore.getCachedDir(this.clawId, this.agentId);
+					if (cached?.currentDir === this.currentDir) {
+						this.entries = cached.entries;
+					}
+				}
 			} finally {
 				if (gen === this.__loadGen) this.loading = false;
 			}
 		},
 
 		navigateTo(path) {
+			this.__cancelInFlight();
 			this.currentDir = path;
 			this.loadDir();
 		},
 
 		goParent() {
+			this.__cancelInFlight();
 			const parts = this.currentDir.split('/');
 			parts.pop();
 			this.currentDir = parts.join('/');
@@ -370,8 +394,15 @@ export default {
 		},
 
 		onOpenDir(name) {
+			this.__cancelInFlight();
 			this.currentDir = this.currentDir ? `${this.currentDir}/${name}` : name;
 			this.loadDir();
+		},
+
+		/** 中断进行中的 loadDir，确保后续调用不被阻塞且旧响应被丢弃 */
+		__cancelInFlight() {
+			this.loading = false;
+			++this.__loadGen;
 		},
 
 		// --- 上传 ---

@@ -703,6 +703,80 @@ describe('FileManagerPage', () => {
 			wrapper.vm.onOpenDir('utils');
 			expect(wrapper.vm.currentDir).toBe('src/utils');
 		});
+
+		test('导航中断进行中的 loadDir 并发起新请求', async () => {
+			let resolveFirst;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveFirst = r; }));
+
+			const wrapper = mountPage();
+			await wrapper.vm.$nextTick();
+			// 初始 loadDir 在飞行中 (loading=true)
+			expect(wrapper.vm.loading).toBe(true);
+
+			// 用户导航到子目录——应中断旧请求
+			const subFiles = [{ name: 'sub.txt', type: 'file' }];
+			mockListFiles.mockResolvedValueOnce({ files: subFiles });
+			wrapper.vm.onOpenDir('src');
+			await flushPromises();
+
+			expect(wrapper.vm.currentDir).toBe('src');
+			expect(wrapper.vm.entries).toEqual(subFiles);
+
+			// 旧请求迟到的结果不应覆盖
+			resolveFirst({ files: [{ name: 'root-stale.txt', type: 'file' }] });
+			await flushPromises();
+			expect(wrapper.vm.entries).toEqual(subFiles);
+
+			// 缓存应为新目录数据，不应被旧数据污染
+			const store = useFilesStore();
+			const cached = store.getCachedDir('claw1', 'main');
+			expect(cached.currentDir).toBe('src');
+			expect(cached.entries).toEqual(subFiles);
+		});
+
+		test('导航成功后再导航失败时保留前一目录的 entries', async () => {
+			const fooFiles = [{ name: 'foo.txt', type: 'file' }];
+			mockListFiles.mockResolvedValueOnce({ files: [] }); // initial mount
+			const wrapper = mountPage();
+			await flushPromises();
+
+			// 导航到 foo 成功
+			mockListFiles.mockResolvedValueOnce({ files: fooFiles });
+			wrapper.vm.navigateTo('foo');
+			await flushPromises();
+			expect(wrapper.vm.entries).toEqual(fooFiles);
+
+			// 导航到 bar 失败
+			mockListFiles.mockRejectedValueOnce(new Error('fail'));
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			wrapper.vm.navigateTo('bar');
+			await flushPromises();
+
+			// entries 保留的是 foo 的数据（entries.length > 0，不走缓存兜底）
+			expect(wrapper.vm.currentDir).toBe('bar');
+			expect(wrapper.vm.entries).toEqual(fooFiles);
+			warnSpy.mockRestore();
+		});
+
+		test('goParent 中断进行中的 loadDir', async () => {
+			let resolveFirst;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveFirst = r; }));
+
+			const wrapper = mountPage();
+			await wrapper.vm.$nextTick();
+
+			mockListFiles.mockResolvedValueOnce({ files: [] });
+			await wrapper.setData({ currentDir: 'a/b' });
+			wrapper.vm.goParent();
+			await flushPromises();
+
+			expect(wrapper.vm.currentDir).toBe('a');
+
+			// 旧请求不应影响结果
+			resolveFirst({ files: [{ name: 'stale.txt', type: 'file' }] });
+			await flushPromises();
+			expect(wrapper.vm.entries).toEqual([]);
+		});
 	});
 
 	// ===================================================================
@@ -723,16 +797,235 @@ describe('FileManagerPage', () => {
 			expect(wrapper.vm.loading).toBe(false);
 		});
 
-		test('加载失败时 entries 清空并 notify', async () => {
+		test('加载失败时保留已有 entries 并 notify', async () => {
 			mockListFiles.mockRejectedValue(new Error('RPC failed'));
 			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
 			const wrapper = mountPage();
 			await flushPromises();
 
+			// 首次加载失败且无缓存时 entries 仍为空
 			expect(wrapper.vm.entries).toEqual([]);
 			expect(mockNotifyError).toHaveBeenCalled();
 			warnSpy.mockRestore();
+		});
+
+		test('加载失败时保留已有 entries 不清空', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const existingEntries = [{ name: 'keep.txt', type: 'file' }];
+			await wrapper.setData({ entries: existingEntries, loading: false });
+			mockListFiles.mockRejectedValueOnce(new Error('net error'));
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			await wrapper.vm.loadDir();
+			await flushPromises();
+
+			// entries 应保留，不被清空
+			expect(wrapper.vm.entries).toEqual(existingEntries);
+			warnSpy.mockRestore();
+		});
+
+		test('加载失败且无 entries 时从缓存兜底', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const cachedEntries = [{ name: 'fallback.txt', type: 'file' }];
+			store.setDirCache('claw1', 'main', '', cachedEntries);
+
+			await wrapper.setData({ entries: [], currentDir: '', loading: false });
+			mockListFiles.mockRejectedValueOnce(new Error('network'));
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			await wrapper.vm.loadDir();
+			await flushPromises();
+
+			expect(wrapper.vm.entries).toEqual(cachedEntries);
+			warnSpy.mockRestore();
+		});
+
+		test('加载成功时写入 store 缓存', async () => {
+			const files = [{ name: 'cached.txt', type: 'file' }];
+			mockListFiles.mockResolvedValue({ files });
+
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const cached = store.getCachedDir('claw1', 'main');
+			expect(cached).toEqual({ currentDir: '', entries: files });
+		});
+
+		test('silent 模式不设 loading', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			await wrapper.setData({ entries: [{ name: 'x.txt' }], loading: false });
+			let resolveList;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveList = r; }));
+
+			const promise = wrapper.vm.loadDir({ silent: true });
+			await wrapper.vm.$nextTick();
+
+			expect(wrapper.vm.loading).toBe(false); // silent 不设 loading
+			resolveList({ files: [] });
+			await promise;
+		});
+
+		test('silent 模式失败不弹 notify', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			await wrapper.setData({ entries: [{ name: 'x.txt' }], loading: false });
+			mockListFiles.mockRejectedValueOnce(new Error('silent fail'));
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			mockNotifyError.mockClear();
+
+			await wrapper.vm.loadDir({ silent: true });
+			await flushPromises();
+
+			expect(mockNotifyError).not.toHaveBeenCalled();
+			warnSpy.mockRestore();
+		});
+
+		test('加载失败且有 entries 时不从缓存兜底（保留现有数据）', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			store.setDirCache('claw1', 'main', '', [{ name: 'stale-cache.txt', type: 'file' }]);
+
+			const existingEntries = [{ name: 'keep-me.txt', type: 'file' }];
+			await wrapper.setData({ entries: existingEntries, loading: false });
+			mockListFiles.mockRejectedValueOnce(new Error('fail'));
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			await wrapper.vm.loadDir();
+			await flushPromises();
+
+			// 应保留 existing entries，不被缓存数据覆盖
+			expect(wrapper.vm.entries).toEqual(existingEntries);
+			warnSpy.mockRestore();
+		});
+
+		test('加载失败且无 entries 但缓存目录不匹配时不兜底', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			store.setDirCache('claw1', 'main', 'other-dir', [{ name: 'wrong.txt', type: 'file' }]);
+
+			await wrapper.setData({ entries: [], currentDir: 'src', loading: false });
+			mockListFiles.mockRejectedValueOnce(new Error('fail'));
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			await wrapper.vm.loadDir();
+			await flushPromises();
+
+			expect(wrapper.vm.entries).toEqual([]);
+			warnSpy.mockRestore();
+		});
+
+		test('子目录加载成功时缓存包含正确的 currentDir', async () => {
+			const subFiles = [{ name: 'util.js', type: 'file' }];
+			mockListFiles.mockResolvedValueOnce({ files: [] }); // mount
+			const wrapper = mountPage();
+			await flushPromises();
+
+			mockListFiles.mockResolvedValueOnce({ files: subFiles });
+			wrapper.vm.navigateTo('src/utils');
+			await flushPromises();
+
+			const store = useFilesStore();
+			const cached = store.getCachedDir('claw1', 'main');
+			expect(cached).toEqual({ currentDir: 'src/utils', entries: subFiles });
+		});
+
+		test('过期请求的 finally 不重置 loading', async () => {
+			let resolveFirst;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveFirst = r; }));
+
+			const wrapper = mountPage();
+			await wrapper.vm.$nextTick();
+			expect(wrapper.vm.loading).toBe(true);
+
+			// 导航中断第一次请求，启动第二次
+			let resolveSecond;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveSecond = r; }));
+			wrapper.vm.onOpenDir('sub');
+
+			// 第一次请求完成（stale）
+			resolveFirst({ files: [{ name: 'stale.txt', type: 'file' }] });
+			await flushPromises();
+
+			// loading 应仍为 true（第二次请求仍在飞）
+			expect(wrapper.vm.loading).toBe(true);
+
+			resolveSecond({ files: [{ name: 'fresh.txt', type: 'file' }] });
+			await flushPromises();
+			expect(wrapper.vm.loading).toBe(false);
+		});
+
+		test('过期请求失败时 finally 不重置 loading 且不 notify', async () => {
+			let rejectFirst;
+			mockListFiles.mockReturnValueOnce(new Promise((_, rej) => { rejectFirst = rej; }));
+
+			const wrapper = mountPage();
+			await wrapper.vm.$nextTick();
+
+			let resolveSecond;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveSecond = r; }));
+			wrapper.vm.onOpenDir('sub');
+			mockNotifyError.mockClear();
+
+			// 第一次请求失败（stale）
+			rejectFirst(new Error('stale error'));
+			await flushPromises();
+
+			// loading 应仍为 true，且不 notify
+			expect(wrapper.vm.loading).toBe(true);
+			expect(mockNotifyError).not.toHaveBeenCalled();
+
+			resolveSecond({ files: [] });
+			await flushPromises();
+			expect(wrapper.vm.loading).toBe(false);
+		});
+
+		test('silent loadDir 进行中时非 silent loadDir 可以并发且 gen guard 保护', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			await wrapper.setData({ entries: [{ name: 'x.txt' }], loading: false });
+
+			let resolveSilent;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveSilent = r; }));
+			const silentPromise = wrapper.vm.loadDir({ silent: true });
+			await wrapper.vm.$nextTick();
+
+			// 同时发起非 silent 调用
+			const freshFiles = [{ name: 'fresh.txt', type: 'file' }];
+			mockListFiles.mockResolvedValueOnce({ files: freshFiles });
+			await wrapper.vm.loadDir();
+			await flushPromises();
+
+			expect(wrapper.vm.entries).toEqual(freshFiles);
+
+			// silent 请求迟到——gen guard 应丢弃
+			resolveSilent({ files: [{ name: 'stale-silent.txt', type: 'file' }] });
+			await silentPromise;
+			await flushPromises();
+
+			expect(wrapper.vm.entries).toEqual(freshFiles);
+		});
+
+		test('result.files 为 undefined 时 entries 为空数组', async () => {
+			mockListFiles.mockResolvedValue({});
+			const wrapper = mountPage();
+			await flushPromises();
+
+			expect(wrapper.vm.entries).toEqual([]);
 		});
 
 		test('loading 时重复调用 loadDir 是幂等的', async () => {
@@ -1144,6 +1437,136 @@ describe('FileManagerPage', () => {
 			expect(wrapper.vm.currentDir).toBe('');
 			expect(wrapper.vm.entries).toEqual([]);
 			expect(mockListFiles).toHaveBeenCalled();
+		});
+
+		test('有根目录缓存时从缓存恢复', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const cachedEntries = [{ name: 'cached-root.txt', type: 'file' }];
+			store.setDirCache('claw1', 'main', '', cachedEntries);
+
+			await wrapper.setData({ currentDir: 'deep/path', entries: [{ name: 'x' }] });
+			mockListFiles.mockClear();
+
+			wrapper.vm.resetAndLoad();
+			expect(wrapper.vm.currentDir).toBe('');
+			// 应从缓存恢复，而非空数组
+			expect(wrapper.vm.entries).toEqual(cachedEntries);
+		});
+
+		test('缓存目录不是根目录时不恢复', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			store.setDirCache('claw1', 'main', 'src', [{ name: 'sub.txt', type: 'file' }]);
+
+			await wrapper.setData({ currentDir: 'deep/path', entries: [{ name: 'x' }] });
+
+			wrapper.vm.resetAndLoad();
+			expect(wrapper.vm.entries).toEqual([]);
+		});
+
+		test('进行中的请求被 loadGen 中断', async () => {
+			let resolveFirst;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveFirst = r; }));
+
+			const wrapper = mountPage();
+			await wrapper.vm.$nextTick();
+			// 第一个请求在飞行中
+			expect(wrapper.vm.loading).toBe(true);
+
+			// resetAndLoad 应强制中断并发起新请求
+			mockListFiles.mockResolvedValueOnce({ files: [{ name: 'fresh.txt', type: 'file' }] });
+			wrapper.vm.resetAndLoad();
+			await flushPromises();
+
+			expect(wrapper.vm.entries).toEqual([{ name: 'fresh.txt', type: 'file' }]);
+
+			// 第一个请求迟到的结果不应覆盖
+			resolveFirst({ files: [{ name: 'stale.txt', type: 'file' }] });
+			await flushPromises();
+			expect(wrapper.vm.entries[0].name).toBe('fresh.txt');
+		});
+	});
+
+	// ===================================================================
+	// connReady watcher 缓存行为
+	// ===================================================================
+	describe('connReady watcher 缓存行为', () => {
+		/** 手动触发 connReady watcher handler */
+		function triggerConnReady(wrapper, ready = true) {
+			wrapper.vm.$options.watch.connReady.handler.call(wrapper.vm, ready);
+		}
+
+		test('有匹配缓存时先恢复再 loadDir', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			const cachedEntries = [{ name: 'pre-cached.txt', type: 'file' }];
+			store.setDirCache('claw1', 'main', '', cachedEntries);
+
+			// 模拟断开后场景：entries 为空
+			await wrapper.setData({ entries: [], currentDir: '', loading: false });
+
+			let resolveList;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveList = r; }));
+
+			triggerConnReady(wrapper);
+			await wrapper.vm.$nextTick();
+
+			// loadDir 返回前，entries 应已从缓存恢复
+			expect(wrapper.vm.entries).toEqual(cachedEntries);
+			expect(wrapper.vm.loading).toBe(true); // 非 silent
+
+			resolveList({ files: [{ name: 'fresh.txt', type: 'file' }] });
+			await flushPromises();
+			expect(wrapper.vm.entries[0].name).toBe('fresh.txt');
+		});
+
+		test('缓存目录不匹配时不恢复', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			store.setDirCache('claw1', 'main', 'src', [{ name: 'wrong-dir.txt', type: 'file' }]);
+
+			await wrapper.setData({ entries: [], currentDir: '', loading: false });
+			mockListFiles.mockResolvedValueOnce({ files: [] });
+
+			triggerConnReady(wrapper);
+			await wrapper.vm.$nextTick();
+
+			// 缓存目录不匹配，不应恢复
+			expect(wrapper.vm.entries).toEqual([]);
+		});
+
+		test('已有 entries 时走 silent 路径', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			await wrapper.setData({ entries: [{ name: 'existing.txt', type: 'file' }], loading: false });
+			mockListFiles.mockClear();
+
+			triggerConnReady(wrapper);
+			await wrapper.vm.$nextTick();
+
+			// 应发起请求但不设 loading（silent 模式）
+			expect(wrapper.vm.loading).toBe(false);
+			expect(mockListFiles).toHaveBeenCalled();
+		});
+
+		test('ready=false 时不调用 loadDir', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+			mockListFiles.mockClear();
+
+			triggerConnReady(wrapper, false);
+
+			expect(mockListFiles).not.toHaveBeenCalled();
 		});
 	});
 

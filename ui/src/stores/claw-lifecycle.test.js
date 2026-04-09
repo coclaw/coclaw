@@ -57,6 +57,13 @@ vi.mock('./topics.store.js', () => ({
 	}),
 }));
 
+const mockClearDirCacheByClaw = vi.fn();
+vi.mock('./files.store.js', () => ({
+	useFilesStore: () => ({
+		clearDirCacheByClaw: mockClearDirCacheByClaw,
+	}),
+}));
+
 // 导入模块触发自注册
 import './claw-lifecycle.js';
 
@@ -78,7 +85,7 @@ describe('bot-lifecycle 自注册', () => {
 });
 
 describe('cleanupClawResources', () => {
-	test('调用所有 5 个子 store 的 remove/clear 方法', () => {
+	test('调用所有 6 个子 store 的 remove/clear 方法', () => {
 		capture.hooks.cleanupClawResources('bot-1');
 
 		expect(mockRemoveSessionsByBotId).toHaveBeenCalledWith('bot-1');
@@ -86,6 +93,7 @@ describe('cleanupClawResources', () => {
 		expect(mockAgentRunsRemoveByBot).toHaveBeenCalledWith('bot-1');
 		expect(mockClearDashboard).toHaveBeenCalledWith('bot-1');
 		expect(mockTopicsRemoveByBot).toHaveBeenCalledWith('bot-1');
+		expect(mockClearDirCacheByClaw).toHaveBeenCalledWith('bot-1');
 	});
 });
 

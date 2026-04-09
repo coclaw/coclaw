@@ -11,6 +11,7 @@ import { useAgentsStore } from './agents.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { useDashboardStore } from './dashboard.store.js';
 import { useTopicsStore } from './topics.store.js';
+import { useFilesStore } from './files.store.js';
 
 /**
  * 清理某 claw 关联的所有子 store 数据（removeClawById / applySnapshot 时调用）
@@ -22,6 +23,7 @@ function cleanupClawResources(id) {
 	useAgentRunsStore().removeByClaw(id);
 	useDashboardStore().clearDashboard(id);
 	useTopicsStore().removeByClaw(id);
+	useFilesStore().clearDirCacheByClaw(id);
 }
 
 /**
