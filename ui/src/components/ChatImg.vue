@@ -3,9 +3,26 @@
 	<div v-if="loading" class="flex min-h-[52px] min-w-[128px] items-center justify-center rounded-lg bg-elevated">
 		<UIcon name="i-lucide-loader-circle" class="size-6 animate-spin text-dimmed" />
 	</div>
-	<!-- 加载失败 -->
-	<div v-else-if="error" class="flex min-h-[52px] min-w-[128px] items-center justify-center rounded-lg bg-elevated">
-		<UIcon name="i-lucide-image-off" class="size-6 text-dimmed" />
+	<!-- 加载失败：退化为类 ChatFile 卡片 -->
+	<div v-else-if="error" class="inline-flex max-w-full items-center gap-2 rounded-xl border border-accented py-2 pl-2 pr-1">
+		<UIcon name="i-lucide-image-off" class="size-8 shrink-0 text-dimmed" />
+		<div class="min-w-0 flex-1 leading-tight">
+			<div class="flex text-sm text-default">
+				<span class="truncate">{{ errorBaseName }}</span>
+				<span v-if="errorExt" class="shrink-0">.{{ errorExt }}</span>
+			</div>
+			<div v-if="displaySize" class="truncate text-xs text-muted">{{ displaySize }}</div>
+		</div>
+		<UButton
+			class="cc-icon-btn shrink-0"
+			:icon="isNative ? 'i-lucide-share-2' : 'i-lucide-download'"
+			variant="ghost"
+			color="neutral"
+			size="md"
+			:loading="downloading"
+			:title="isNative ? $t('chat.fileShare') : $t('chat.fileDownload')"
+			@click.stop="__download"
+		/>
 	</div>
 	<!-- 图片 -->
 	<div v-else-if="resolvedSrc" class="relative w-fit">
@@ -52,7 +69,7 @@ import ImgViewDialog from './ImgViewDialog.vue';
 import { pushDialogState, popDialogState } from '../utils/dialog-history.js';
 import { isCoclawUrl, fetchCoclawFile, parseCoclawUrl } from '../services/coclaw-file.js';
 import { compressImage } from '../utils/image-helper.js';
-import { saveBlobToFile, saveUrlAsFile } from '../utils/file-helper.js';
+import { formatFileSize, saveBlobToFile, saveUrlAsFile } from '../utils/file-helper.js';
 import { useNotify } from '../composables/use-notify.js';
 import { isCapacitorApp } from '../utils/platform.js';
 
@@ -83,9 +100,30 @@ export default {
 			type: String,
 			default: '',
 		},
+		/** 文件大小（数字会格式化，字符串原样显示），用于加载失败时的退化卡片 */
+		size: {
+			type: [Number, String],
+			default: null,
+		},
 	},
 	setup() {
 		return { notify: useNotify() };
+	},
+	computed: {
+		errorExt() {
+			if (!this.filename) return '';
+			const dot = this.filename.lastIndexOf('.');
+			return dot > 0 ? this.filename.slice(dot + 1) : '';
+		},
+		errorBaseName() {
+			const n = this.filename || this.$t('chat.fileUnknown');
+			if (!this.errorExt) return n;
+			return n.slice(0, -(this.errorExt.length + 1));
+		},
+		displaySize() {
+			if (this.size == null) return '';
+			return typeof this.size === 'number' ? formatFileSize(this.size) : this.size;
+		},
 	},
 	data() {
 		return {
@@ -182,7 +220,6 @@ export default {
 					this.resolvedSrc = this.src;
 				} else {
 					this.error = true;
-					this.notify.error(this.$t('chat.imgLoadFailed') + `: ${filePath}`);
 				}
 			} finally {
 				if (this.src === srcAtStart) this.loading = false;
@@ -235,7 +272,7 @@ export default {
 				// 回退：用缩略图打开预览
 				this.__setFullSrcAndOpen(this.resolvedSrc);
 			} finally {
-				if (this.src === srcAtStart) this.fullLoading = false;
+				this.fullLoading = false;
 			}
 		},
 
@@ -253,10 +290,13 @@ export default {
 			}
 
 			this.downloading = true;
+			const wasError = this.error;
 			try {
 				const blob = await this.__getFullBlob(srcAtStart);
 				if (this.__unmounted || this.src !== srcAtStart) return;
 				await saveBlobToFile(blob, filename);
+				// 下载成功且此前处于错误态 → 恢复为缩略图显示
+				if (wasError) this.__recoverFromBlob(blob, srcAtStart);
 			} catch (err) {
 				console.warn('[ChatImg] download failed:', err);
 				if (!this.__unmounted) this.notify.error(this.$t('files.downloadFailed'));
@@ -267,6 +307,16 @@ export default {
 
 		/** 获取原图 Blob（缩略图场景需还原为原图） */
 		async __getFullBlob(srcAtStart) {
+			// 错误态（coclaw-file 加载失败）→ 优先用缓存，否则重新获取
+			if (this.error) {
+				if (this.__fullBlob) return this.__fullBlob;
+				const blob = await fetchCoclawFile(srcAtStart);
+				if (!this.__unmounted && this.src === srcAtStart) {
+					this.__fullBlob = blob;
+					this.__startFullBlobTimer();
+				}
+				return blob;
+			}
 			// 未压缩 → resolvedSrc 就是完整图
 			if (!this.__isThumb) {
 				const resp = await fetch(this.resolvedSrc);
@@ -291,6 +341,27 @@ export default {
 			this.__fullBlob = blob;
 			this.__startFullBlobTimer();
 			return blob;
+		},
+
+		/** 下载成功后从错误态恢复为缩略图显示 */
+		async __recoverFromBlob(blob, srcAtStart) {
+			try {
+				const result = await compressImage(blob, { maxWidth: THUMB_MAX, maxHeight: THUMB_MAX });
+				if (this.__unmounted || this.src !== srcAtStart) return;
+				this.__revokeResolved();
+				if (result.skipped || result.blob === blob) {
+					this.resolvedSrc = URL.createObjectURL(blob);
+					this.__isThumb = false;
+				} else {
+					this.resolvedSrc = URL.createObjectURL(result.blob);
+					this.__isThumb = true;
+					// 重启缓存计时器，使 TTL 从缩略图显示时刻算起
+					if (this.__fullBlob) this.__startFullBlobTimer();
+				}
+				this.error = false;
+			} catch {
+				// 压缩失败则保持错误态
+			}
 		},
 
 		/** 设置 fullSrc 并打开 dialog（fullSrc 是外部 URL，关闭时无需 revoke） */

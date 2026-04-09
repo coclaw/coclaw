@@ -34,6 +34,7 @@ vi.mock('../utils/image-helper.js', () => ({
 const mockSaveBlobToFile = vi.fn();
 const mockSaveUrlAsFile = vi.fn();
 vi.mock('../utils/file-helper.js', () => ({
+	formatFileSize: (n) => `${n} B`,
 	saveBlobToFile: (...args) => mockSaveBlobToFile(...args),
 	saveUrlAsFile: (...args) => mockSaveUrlAsFile(...args),
 }));
@@ -299,7 +300,7 @@ describe('ChatImg', () => {
 			expect(wrapper.vm.__isThumb).toBe(false);
 		});
 
-		test('下载失败时显示错误状态并 notify 路径', async () => {
+		test('下载失败时显示错误状态，不 notify', async () => {
 			mockFetchCoclawFile.mockRejectedValue(new Error('network'));
 			const wrapper = createWrapper({ src: 'coclaw-file://1:main/fail.png' });
 			await flushPromises();
@@ -307,30 +308,17 @@ describe('ChatImg', () => {
 			expect(wrapper.vm.error).toBe(true);
 			expect(wrapper.vm.resolvedSrc).toBeNull();
 			expect(wrapper.vm.loading).toBe(false);
-			expect(mockNotifyError).toHaveBeenCalledOnce();
-			expect(mockNotifyError.mock.calls[0][0]).toContain('fail.png');
+			expect(mockNotifyError).not.toHaveBeenCalled();
 		});
 
-		test('compressImage 失败时显示错误状态并 notify 路径', async () => {
+		test('compressImage 失败时显示错误状态，不 notify', async () => {
 			mockFetchCoclawFile.mockResolvedValue(makeBlob());
 			mockCompressImage.mockRejectedValue(new Error('decode'));
 			const wrapper = createWrapper({ src: 'coclaw-file://1:main/corrupt.png' });
 			await flushPromises();
 
 			expect(wrapper.vm.error).toBe(true);
-			expect(mockNotifyError).toHaveBeenCalledOnce();
-			expect(mockNotifyError.mock.calls[0][0]).toContain('corrupt.png');
-		});
-
-		test('notify 消息包含 i18n key 和完整相对路径', async () => {
-			mockFetchCoclawFile.mockRejectedValue(new Error('gone'));
-			const wrapper = createWrapper({ src: 'coclaw-file://bot5:main/workspace/output/chart.png' });
-			await flushPromises();
-
-			expect(wrapper.vm.error).toBe(true);
-			const msg = mockNotifyError.mock.calls[0][0];
-			expect(msg).toContain('chat.imgLoadFailed');
-			expect(msg).toContain('workspace/output/chart.png');
+			expect(mockNotifyError).not.toHaveBeenCalled();
 		});
 	});
 
@@ -650,6 +638,40 @@ describe('ChatImg', () => {
 			// 不应创建新 blob URL（已卸载）
 			expect(wrapper.vm.dialogOpen).toBe(false);
 		});
+
+		test('viewImg 获取全图时 src 变化，fullLoading 不卡住', async () => {
+			const origBlob = makeBlob();
+			mockFetchCoclawFile.mockResolvedValue(origBlob);
+			mockCompressed();
+
+			const wrapper = createWrapper({ src: 'coclaw-file://1:main/fl.png' });
+			await flushPromises();
+			wrapper.vm.imgLoaded = true;
+
+			// TTL 过期
+			vi.advanceTimersByTime(300_000);
+
+			// 慢速重新下载
+			let resolveRefetch;
+			mockFetchCoclawFile.mockReturnValueOnce(new Promise((r) => { resolveRefetch = r; }));
+
+			const promise = wrapper.vm.viewImg();
+			expect(wrapper.vm.fullLoading).toBe(true);
+
+			// src 变化
+			mockNotCompressed();
+			await wrapper.setProps({ src: 'data:image/png;base64,new' });
+			await flushPromises();
+
+			// 旧 fetch 完成
+			resolveRefetch(makeBlob('late'));
+			await promise;
+			await flushPromises();
+
+			// fullLoading 应被重置
+			expect(wrapper.vm.fullLoading).toBe(false);
+			expect(wrapper.vm.dialogOpen).toBe(false);
+		});
 	});
 
 	// ── dialog 关闭 ──
@@ -839,14 +861,36 @@ describe('ChatImg', () => {
 			expect(wrapper.vm.loading).toBe(false);
 		});
 
-		test('错误时显示图片错误图标', async () => {
+		test('错误时显示类 ChatFile 退化卡片', async () => {
 			mockFetchCoclawFile.mockRejectedValue(new Error('fail'));
-			const wrapper = createWrapper({ src: 'coclaw-file://1:main/err.png' });
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/err.png',
+				filename: 'photo.png',
+				size: 2048,
+			});
 			await flushPromises();
 
 			expect(wrapper.vm.error).toBe(true);
-			// 错误占位符应存在
-			expect(wrapper.find('.min-h-\\[52px\\].min-w-\\[128px\\]').exists()).toBe(true);
+			// 卡片容器
+			const card = wrapper.find('.rounded-xl.border');
+			expect(card.exists()).toBe(true);
+			// 文件名拆分显示
+			expect(card.text()).toContain('photo');
+			expect(card.text()).toContain('.png');
+			// 大小
+			expect(card.text()).toContain('2048 B');
+		});
+
+		test('错误卡片无 size 时不显示大小行', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('fail'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/err.png',
+				filename: 'chart.png',
+			});
+			await flushPromises();
+
+			expect(wrapper.vm.error).toBe(true);
+			expect(wrapper.vm.displaySize).toBe('');
 		});
 
 		test('图片加载成功后渲染 img 标签', async () => {
@@ -1047,6 +1091,300 @@ describe('ChatImg', () => {
 			await flushPromises();
 
 			expect(mockNotifyError).not.toHaveBeenCalled();
+		});
+
+		test('错误态下载成功后恢复为缩略图', async () => {
+			// 初始加载失败
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/recover.png',
+				filename: 'recover.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+
+			// 连接恢复，下载成功
+			const blob = makeBlob('recovered');
+			mockFetchCoclawFile.mockResolvedValue(blob);
+			mockCompressed();
+			mockSaveBlobToFile.mockResolvedValue();
+
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			expect(mockSaveBlobToFile).toHaveBeenCalledWith(blob, 'recover.png');
+			// 恢复为图片显示
+			expect(wrapper.vm.error).toBe(false);
+			expect(wrapper.vm.resolvedSrc).toMatch(/^blob:/);
+		});
+
+		test('错误态下载成功但压缩失败时保持错误态', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/bad.png',
+				filename: 'bad.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+
+			// 下载成功但压缩失败
+			const blob = makeBlob('data');
+			mockFetchCoclawFile.mockResolvedValue(blob);
+			mockCompressImage.mockRejectedValue(new Error('decode'));
+			mockSaveBlobToFile.mockResolvedValue();
+
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			// 下载本身成功
+			expect(mockSaveBlobToFile).toHaveBeenCalled();
+			// 但恢复失败，保持错误态
+			expect(wrapper.vm.error).toBe(true);
+		});
+
+		test('错误态下载失败时 notify', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/still-fail.png',
+				filename: 'still-fail.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+			mockNotifyError.mockClear();
+
+			// 下载仍然失败
+			mockFetchCoclawFile.mockRejectedValue(new Error('still offline'));
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			expect(mockNotifyError).toHaveBeenCalledWith('files.downloadFailed');
+		});
+
+		test('错误态下载成功后恢复期间 src 变化则不恢复', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/race.png',
+				filename: 'race.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+
+			// 下载成功，但 compressImage 挂起
+			const blob = makeBlob('data');
+			mockFetchCoclawFile.mockResolvedValue(blob);
+			let resolveCompress;
+			mockCompressImage.mockReturnValue(new Promise((r) => { resolveCompress = r; }));
+			mockSaveBlobToFile.mockResolvedValue();
+
+			const downloadPromise = wrapper.vm.__download();
+			await flushPromises();
+			// saveBlobToFile 已完成，__recoverFromBlob 中 compressImage 挂起
+			expect(mockSaveBlobToFile).toHaveBeenCalled();
+
+			// src 变化
+			mockCompressImage.mockResolvedValue({ blob: makeThumbBlob(), skipped: false });
+			await wrapper.setProps({ src: 'data:image/png;base64,new' });
+			await flushPromises();
+
+			// 完成旧的 compressImage
+			resolveCompress({ blob: makeThumbBlob(), skipped: false });
+			await downloadPromise;
+			await flushPromises();
+
+			// 新 src 正常 resolve，旧恢复被丢弃
+			expect(wrapper.vm.error).toBe(false);
+			expect(wrapper.vm.resolvedSrc).toMatch(/^blob:/);
+		});
+
+		test('错误态下载成功后恢复期间组件卸载则不恢复', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/unmount.png',
+				filename: 'unmount.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+
+			const blob = makeBlob('data');
+			mockFetchCoclawFile.mockResolvedValue(blob);
+			let resolveCompress;
+			mockCompressImage.mockReturnValue(new Promise((r) => { resolveCompress = r; }));
+			mockSaveBlobToFile.mockResolvedValue();
+
+			const downloadPromise = wrapper.vm.__download();
+			await flushPromises();
+
+			// 卸载
+			wrapper.unmount();
+
+			// 完成 compressImage
+			resolveCompress({ blob: makeThumbBlob(), skipped: false });
+			await downloadPromise;
+			await flushPromises();
+
+			// 不应修改已卸载组件的状态
+			expect(wrapper.vm.error).toBe(true);
+			expect(wrapper.vm.resolvedSrc).toBeNull();
+		});
+
+		test('错误态二次下载使用缓存的 __fullBlob，不重复请求', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/cache.png',
+				filename: 'cache.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+
+			// 首次下载成功（但假设 saveBlobToFile 失败）
+			const blob = makeBlob('cached');
+			mockFetchCoclawFile.mockResolvedValue(blob);
+			mockSaveBlobToFile.mockRejectedValue(new Error('disk full'));
+			mockCompressed();
+
+			await wrapper.vm.__download();
+			await flushPromises();
+			// __fullBlob 已缓存
+			expect(wrapper.vm.__fullBlob).toBe(blob);
+			expect(mockFetchCoclawFile).toHaveBeenCalledTimes(2); // resolve + 首次下载
+
+			// 二次下载：应使用缓存
+			mockSaveBlobToFile.mockResolvedValue();
+			mockNotifyError.mockClear();
+
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			// 不应再次调用 fetchCoclawFile
+			expect(mockFetchCoclawFile).toHaveBeenCalledTimes(2);
+			expect(mockSaveBlobToFile).toHaveBeenCalledWith(blob, 'cache.png');
+		});
+	});
+
+	// ── 错误态恢复后的状态验证 ──
+
+	describe('错误态恢复后', () => {
+		test('恢复为缩略图后重启 fullBlob 缓存计时器', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/timer.png',
+				filename: 'timer.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+
+			// 下载成功并恢复
+			const blob = makeBlob('recovered');
+			mockFetchCoclawFile.mockResolvedValue(blob);
+			mockCompressed();
+			mockSaveBlobToFile.mockResolvedValue();
+
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			expect(wrapper.vm.error).toBe(false);
+			expect(wrapper.vm.__isThumb).toBe(true);
+			expect(wrapper.vm.__fullBlob).toBe(blob);
+			// timer 已重启
+			expect(wrapper.vm.__fullBlobTimer).toBeTruthy();
+
+			// 300s 后缓存过期
+			vi.advanceTimersByTime(300_000);
+			expect(wrapper.vm.__fullBlob).toBeNull();
+		});
+
+		test('恢复后 viewImg 可正常打开全图', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('offline'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/view.png',
+				filename: 'view.png',
+			});
+			await flushPromises();
+			expect(wrapper.vm.error).toBe(true);
+
+			// 下载成功并恢复
+			const blob = makeBlob('recovered');
+			mockFetchCoclawFile.mockResolvedValue(blob);
+			mockCompressed();
+			mockSaveBlobToFile.mockResolvedValue();
+
+			await wrapper.vm.__download();
+			await flushPromises();
+
+			expect(wrapper.vm.error).toBe(false);
+			expect(wrapper.vm.__isThumb).toBe(true);
+
+			// 模拟 <img> @load 事件
+			wrapper.vm.imgLoaded = true;
+
+			// viewImg 应能正常打开
+			wrapper.vm.viewImg();
+			expect(wrapper.vm.dialogOpen).toBe(true);
+			expect(wrapper.vm.fullSrc).toMatch(/^blob:/);
+		});
+	});
+
+	// ── computed 边界测试 ──
+
+	describe('error 态 computed 属性', () => {
+		test('无扩展名文件', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('fail'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/readme',
+				filename: 'readme',
+			});
+			await flushPromises();
+
+			expect(wrapper.vm.errorExt).toBe('');
+			expect(wrapper.vm.errorBaseName).toBe('readme');
+		});
+
+		test('多个点的文件名', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('fail'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/archive.tar.gz',
+				filename: 'archive.tar.gz',
+			});
+			await flushPromises();
+
+			expect(wrapper.vm.errorExt).toBe('gz');
+			expect(wrapper.vm.errorBaseName).toBe('archive.tar');
+		});
+
+		test('点在开头的隐藏文件', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('fail'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/.hidden',
+				filename: '.hidden',
+			});
+			await flushPromises();
+
+			// lastIndexOf('.') === 0, dot > 0 为 false
+			expect(wrapper.vm.errorExt).toBe('');
+			expect(wrapper.vm.errorBaseName).toBe('.hidden');
+		});
+
+		test('空 filename 回退为 i18n key', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('fail'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/x.png',
+				filename: '',
+			});
+			await flushPromises();
+
+			expect(wrapper.vm.errorExt).toBe('');
+			expect(wrapper.vm.errorBaseName).toBe('chat.fileUnknown');
+		});
+
+		test('displaySize 字符串原样返回', async () => {
+			mockFetchCoclawFile.mockRejectedValue(new Error('fail'));
+			const wrapper = createWrapper({
+				src: 'coclaw-file://1:main/x.png',
+				size: '1.5 MB',
+			});
+			await flushPromises();
+
+			expect(wrapper.vm.displaySize).toBe('1.5 MB');
 		});
 	});
 });

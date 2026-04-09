@@ -34,6 +34,7 @@
 								v-if="att.isImg && att.url"
 								:src="att.url"
 								:filename="attDisplayName(att)"
+								:size="att.size"
 								custom-class="max-w-full"
 							/>
 							<!-- 语音附件 -->
@@ -181,6 +182,7 @@
 						v-if="att.isImg && att.url"
 						:src="att.url"
 						:filename="att.name"
+						:size="att.size"
 						custom-class="max-w-full"
 					/>
 					<ChatFile
