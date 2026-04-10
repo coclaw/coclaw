@@ -151,6 +151,7 @@ import { isCapacitorApp } from '../utils/platform.js';
 import { usePullRefreshSuppress } from '../composables/use-pull-refresh.js';
 import { isMobileViewport } from '../utils/layout.js';
 import { useDraftStore } from '../stores/draft.store.js';
+import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 
 /** 自动生成标题的 user message 数量上限 */
 const MAX_AUTO_TITLE_MSGS = 5;
@@ -757,7 +758,8 @@ export default {
 				await this.chatStore.loadMessages();
 				if (this.__unmounted || !this.chatStore) return;
 				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-			} else if (!this.chatStore.isSending) {
+			} else if (!this.chatStore.sending) {
+				// 重连后可能丢失事件，只要非发送中就强制刷新以触发 reconcile (#235)
 				this.chatStore.loadMessages({ silent: true });
 			}
 			// 加载完成后：强制滚到底部，并检测内容是否不足以填满容器
@@ -778,7 +780,15 @@ export default {
 			this.__lastResumeAt = now;
 
 			if (!this.chatStore || !this.connReady) return;
-			if (this.chatStore.isSending) return;
+			if (this.chatStore.isSending) {
+				// 僵尸 run 检测：非发送中 + 事件流已静默 → 强制刷新以触发 reconcile (#235)
+				if (!this.chatStore.sending && useAgentRunsStore().isRunIdle(this.chatStore.runKey)) {
+					console.debug('[ChatPage] foreground resume → idle run, force silent reload');
+					this.chatStore.__reconcileSlashCommand();
+					this.chatStore.loadMessages({ silent: true });
+				}
+				return;
+			}
 			console.debug('[ChatPage] foreground resume → silent reload');
 			this.chatStore.__reconcileSlashCommand();
 			this.chatStore.loadMessages({ silent: true });

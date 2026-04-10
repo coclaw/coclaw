@@ -111,6 +111,39 @@ describe('useAgentRunsStore', () => {
 			expect(store.isRunning('agent:main:main')).toBe(true);
 			expect(store.isRunning('nonexistent')).toBe(false);
 		});
+
+		test('isRunIdle：无匹配 run 时返回 false', () => {
+			const store = useAgentRunsStore();
+			expect(store.isRunIdle('nonexistent')).toBe(false);
+		});
+
+		test('isRunIdle：lastEventAt 为 0（尚未收到事件）时返回 false', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			expect(store.isRunIdle('agent:main:main')).toBe(false);
+		});
+
+		test('isRunIdle：lastEventAt 较新时返回 false', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].lastEventAt = Date.now() - 3000;
+			expect(store.isRunIdle('agent:main:main')).toBe(false);
+		});
+
+		test('isRunIdle：lastEventAt 超过阈值时返回 true', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].lastEventAt = Date.now() - 15_000;
+			expect(store.isRunIdle('agent:main:main')).toBe(true);
+		});
+
+		test('isRunIdle：run 已 settled 时返回 false', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].lastEventAt = Date.now() - 15_000;
+			store.runs['run-1'].settled = true;
+			expect(store.isRunIdle('agent:main:main')).toBe(false);
+		});
 	});
 
 	// =====================================================================

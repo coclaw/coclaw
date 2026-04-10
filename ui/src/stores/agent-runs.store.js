@@ -13,6 +13,8 @@ import { applyAgentEvent } from '../utils/agent-stream.js';
 const POST_ACCEPT_TIMEOUT_MS = 30 * 60_000;
 /** 事件流静默超过此时长视为已停止（用于 reconcile 判断） */
 const STALE_RUN_MS = 3000;
+/** 事件流静默超过此时长，怀疑 run 可能已结束但 lifecycle:end 丢失 */
+const IDLE_RUN_MS = 10_000;
 
 export const useAgentRunsStore = defineStore('agentRuns', {
 	state: () => ({
@@ -54,6 +56,17 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 		/** 是否有任何未完成的 run */
 		busy: (state) => Object.values(state.runs).some(r => !r.settled),
+		/**
+		 * 指定 runKey 的活跃 run 是否疑似僵尸（已收到过事件但长时间静默）
+		 * @returns {(runKey: string) => boolean}
+		 */
+		isRunIdle: (state) => (runKey) => {
+			const runId = state.runKeyIndex[runKey];
+			if (!runId) return false;
+			const run = state.runs[runId];
+			if (!run || run.settled) return false;
+			return run.lastEventAt > 0 && Date.now() - run.lastEventAt >= IDLE_RUN_MS;
+		},
 	},
 
 	actions: {

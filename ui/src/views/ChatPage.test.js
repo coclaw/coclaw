@@ -714,6 +714,43 @@ describe('ChatPage watchers', () => {
 		expect(loadSpy).toHaveBeenCalled();
 	});
 
+	test('connReady immediate: sending=true 时跳过静默刷新 (#235)', async () => {
+		// 防止 isSending → sending 的修改被回退（即使有僵尸 run，sending 真的发送中也不应触发 reload）
+		const pinia = createPinia();
+		setActivePinia(pinia);
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		setupAgents();
+
+		const chatStore = chatStoreManager.get('session:bot-1:main', { clawId: 'bot-1', agentId: 'main' });
+		chatStore.__initialized = true;
+		chatStore.__messagesLoaded = true;
+		chatStore.sending = true; // 真实发送中
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		mount(ChatPage, {
+			global: {
+				plugins: [pinia],
+				mocks: {
+					$t: (key) => i18nMap[key] ?? key,
+					$route: {
+						name: 'chat',
+						params: { clawId: 'bot-1', agentId: 'main' },
+						path: '/chat/bot-1/main',
+						query: {},
+					},
+					$router: mockRouter,
+				},
+			},
+		});
+		await flushPromises();
+
+		// sending=true 时 __onConnReady 不应触发静默刷新
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
 	test('chatStore watcher 重置 userScrolledUp 和 __scrollReady', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
@@ -876,6 +913,71 @@ describe('ChatPage foreground resume', () => {
 		loadSpy.mockClear();
 
 		// 紧接着触发 app:foreground，应被去重跳过
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await wrapper.vm.$nextTick();
+
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
+	test('app:foreground 僵尸 run（idle）时强制静默刷新 (#235)', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.clawId = 'bot-1';
+		chatStore.__messagesLoaded = true;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+		const reconcileSpy = vi.spyOn(chatStore, '__reconcileSlashCommand').mockImplementation(() => {});
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		setupAgents();
+		await wrapper.vm.$nextTick();
+		loadSpy.mockClear();
+		reconcileSpy.mockClear();
+
+		// 模拟僵尸 run（isSending=true, sending=false, isRunIdle=true）
+		const { useAgentRunsStore } = await import('../stores/agent-runs.store.js');
+		const runsStore = useAgentRunsStore();
+		runsStore.runs['run-z'] = {
+			runId: 'run-z', clawId: 'bot-1', runKey: chatStore.runKey,
+			settled: false, settling: false, lastEventAt: Date.now() - 15_000,
+			streamingMsgs: [], __timer: null,
+		};
+		runsStore.runKeyIndex[chatStore.runKey] = 'run-z';
+
+		wrapper.vm.__lastResumeAt = 0;
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await wrapper.vm.$nextTick();
+
+		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+		expect(reconcileSpy).toHaveBeenCalled();
+	});
+
+	test('app:foreground 活跃 run（非 idle）时不触发刷新', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.clawId = 'bot-1';
+		chatStore.__messagesLoaded = true;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		setupAgents();
+		await wrapper.vm.$nextTick();
+		loadSpy.mockClear();
+
+		// 模拟活跃 run（lastEventAt 很近）
+		const { useAgentRunsStore } = await import('../stores/agent-runs.store.js');
+		const runsStore = useAgentRunsStore();
+		runsStore.runs['run-a'] = {
+			runId: 'run-a', clawId: 'bot-1', runKey: chatStore.runKey,
+			settled: false, settling: false, lastEventAt: Date.now(),
+			streamingMsgs: [], __timer: null,
+		};
+		runsStore.runKeyIndex[chatStore.runKey] = 'run-a';
+
+		wrapper.vm.__lastResumeAt = 0;
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 		await wrapper.vm.$nextTick();
 

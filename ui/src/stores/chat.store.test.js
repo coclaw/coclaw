@@ -181,6 +181,73 @@ describe('useChatStore', () => {
 			expect(conn.request.mock.calls.length).toBeGreaterThan(callCount);
 		});
 
+		test('重复调用 activate 时活跃 run（非 idle）跳过静默刷新', async () => {
+			const conn = mockConn();
+			setupConnForLoad(conn);
+			setConn('1', conn);
+
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
+			await store.activate();
+
+			// 模拟活跃 run（lastEventAt 较新 → 非 idle → isSending=true）
+			const runsStore = useAgentRunsStore();
+			runsStore.runs['run-z'] = {
+				runId: 'run-z', clawId: '1', runKey: store.runKey,
+				settled: false, settling: false, lastEventAt: Date.now(),
+				streamingMsgs: [], __timer: null,
+			};
+			runsStore.runKeyIndex[store.runKey] = 'run-z';
+
+			const loadSpy = vi.spyOn(store, 'loadMessages');
+			await store.activate();
+			expect(loadSpy).not.toHaveBeenCalled();
+		});
+
+		test('重复调用 activate 时 sending=true 跳过静默刷新', async () => {
+			const conn = mockConn();
+			setupConnForLoad(conn);
+			setConn('1', conn);
+
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
+			await store.activate();
+
+			// 模拟 sending=true 且僵尸 run 同时存在 → 仍应跳过（sending 优先）
+			store.sending = true;
+			const runsStore = useAgentRunsStore();
+			runsStore.runs['run-z'] = {
+				runId: 'run-z', clawId: '1', runKey: store.runKey,
+				settled: false, settling: false, lastEventAt: Date.now() - 15_000,
+				streamingMsgs: [], __timer: null,
+			};
+			runsStore.runKeyIndex[store.runKey] = 'run-z';
+
+			const loadSpy = vi.spyOn(store, 'loadMessages');
+			await store.activate();
+			expect(loadSpy).not.toHaveBeenCalled();
+		});
+
+		test('重复调用 activate 时僵尸 run（idle）触发强制静默刷新 (#235)', async () => {
+			const conn = mockConn();
+			setupConnForLoad(conn);
+			setConn('1', conn);
+
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
+			await store.activate();
+
+			// 模拟僵尸 run：sending=false + lastEventAt 超过 IDLE_RUN_MS
+			const runsStore = useAgentRunsStore();
+			runsStore.runs['run-z'] = {
+				runId: 'run-z', clawId: '1', runKey: store.runKey,
+				settled: false, settling: false, lastEventAt: Date.now() - 15_000,
+				streamingMsgs: [], __timer: null,
+			};
+			runsStore.runKeyIndex[store.runKey] = 'run-z';
+
+			const loadSpy = vi.spyOn(store, 'loadMessages');
+			await store.activate();
+			expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+		});
+
 		test('skipLoad 跳过消息加载但注册 WS 监听', async () => {
 			const conn = mockConn();
 			setConn('1', conn);

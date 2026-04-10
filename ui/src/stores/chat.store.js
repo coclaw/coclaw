@@ -168,7 +168,13 @@ export function createChatStore(storeKey, opts = {}) {
 
 				// 重新进入：有活跃 run → allMessages 自动合并；无活跃 run → 静默刷新
 				if (this.isSending) {
-					console.debug('[chat] activate re-entry: skip reload (sending/running)');
+					// 僵尸 run 检测：非发送中 + 事件流已静默 → 强制刷新以触发 reconcile (#235)
+					if (!this.sending && useAgentRunsStore().isRunIdle(this.runKey)) {
+						console.debug('[chat] activate re-entry: idle run detected, force silent reload');
+						this.loadMessages({ silent: true });
+					} else {
+						console.debug('[chat] activate re-entry: skip reload (sending/running)');
+					}
 				} else {
 					console.debug('[chat] activate re-entry: silent reload');
 					this.loadMessages({ silent: true });
