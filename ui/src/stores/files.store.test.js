@@ -18,6 +18,12 @@ vi.mock('../utils/file-helper.js', () => ({
 	saveBlobToFile: saveBlobToFileMock,
 }));
 
+// mock remote-log（用于断言 task 失败的高级别日志）
+const remoteLogMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/remote-log.js', () => ({
+	remoteLog: remoteLogMock,
+}));
+
 import { useFilesStore, __createTask } from './files.store.js';
 import { uploadFile, downloadFile } from '../services/file-transfer.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
@@ -264,6 +270,82 @@ describe('files.store', () => {
 				.filter((t) => t.type === 'download');
 			expect(tasks).toHaveLength(1);
 			expect(downloadFile).toHaveBeenCalledTimes(1);
+		});
+
+		test('多文件下载串行：同一 (claw, agent) 同时只有一个 running download', async () => {
+			mockBotConn();
+			let resolveCurrentPromise;
+			downloadFile.mockImplementation(() => ({
+				promise: new Promise((res) => { resolveCurrentPromise = res; }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			}));
+
+			store.enqueueDownload('bot1', 'main', '', 'a.bin', 100);
+			store.enqueueDownload('bot1', 'main', '', 'b.bin', 200);
+			store.enqueueDownload('bot1', 'main', '', 'c.bin', 300);
+
+			// 等首个 task 进入 running
+			await vi.waitFor(() => {
+				const running = store.getAgentTasks('bot1', 'main').filter((t) => t.status === 'running');
+				expect(running).toHaveLength(1);
+			});
+
+			// 关键：只有 1 个 running，其余还是 pending
+			let tasks = store.getAgentTasks('bot1', 'main');
+			expect(tasks.filter((t) => t.status === 'running')).toHaveLength(1);
+			expect(tasks.filter((t) => t.status === 'pending')).toHaveLength(2);
+			expect(downloadFile).toHaveBeenCalledTimes(1);
+
+			// 完成第一个 → 第二个开始
+			const blob = new Blob(['x']);
+			resolveCurrentPromise({ blob, bytes: 1, name: 'a.bin' });
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main').filter((t) => t.status === 'done')).toHaveLength(1);
+			});
+			tasks = store.getAgentTasks('bot1', 'main');
+			expect(tasks.filter((t) => t.status === 'running')).toHaveLength(1);
+			expect(tasks.filter((t) => t.status === 'pending')).toHaveLength(1);
+			expect(downloadFile).toHaveBeenCalledTimes(2);
+
+			// 完成第二个 → 第三个开始
+			resolveCurrentPromise({ blob, bytes: 1, name: 'b.bin' });
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main').filter((t) => t.status === 'done')).toHaveLength(2);
+			});
+			expect(downloadFile).toHaveBeenCalledTimes(3);
+
+			// 收尾，避免 unhandled rejection
+			resolveCurrentPromise({ blob, bytes: 1, name: 'c.bin' });
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main').filter((t) => t.status === 'done')).toHaveLength(3);
+			});
+		});
+
+		test('不同 (claw 或 agent) 的下载相互独立串行', async () => {
+			const clawConnA = { rtc: {}, waitReady: vi.fn().mockResolvedValue() };
+			const clawConnB = { rtc: {}, waitReady: vi.fn().mockResolvedValue() };
+			useClawConnections.mockReturnValue({
+				get: (id) => (id === 'bot1' ? clawConnA : id === 'bot2' ? clawConnB : undefined),
+			});
+			downloadFile.mockReturnValue({
+				promise: new Promise(() => {}), // 永不 resolve
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueDownload('bot1', 'main', '', 'a.bin', 100);
+			store.enqueueDownload('bot2', 'main', '', 'b.bin', 100);
+
+			await vi.waitFor(() => {
+				const a = store.getAgentTasks('bot1', 'main')[0];
+				const b = store.getAgentTasks('bot2', 'main')[0];
+				expect(a.status).toBe('running');
+				expect(b.status).toBe('running');
+			});
+
+			// 两个都同时 running（分属不同 claw，不互斥）
+			expect(downloadFile).toHaveBeenCalledTimes(2);
 		});
 	});
 
@@ -855,6 +937,108 @@ describe('files.store', () => {
 			store.tasks.set('t2', __createTask({ status: 'failed' }));
 			store.tasks.set('t3', __createTask({ status: 'cancelled' }));
 			expect(store.busy).toBe(false);
+		});
+	});
+
+	describe('logTaskFailure - 高级别失败日志', () => {
+		let consoleErrorSpy;
+		beforeEach(() => {
+			consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		});
+
+		test('上传失败时调用 remoteLog + console.error', async () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: Promise.reject(Object.assign(new Error('boom'), { code: 'DC_ERROR' })),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueUploads('bot1', 'main', 'docs', [createMockFile('a.txt', 100)]);
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('failed');
+			});
+
+			expect(remoteLogMock).toHaveBeenCalledTimes(1);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/task\.upload\.failed/);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/code=DC_ERROR/);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/err=boom/);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/path=docs\/a\.txt/);
+			expect(consoleErrorSpy).toHaveBeenCalled();
+		});
+
+		test('下载传输阶段失败：code 标记为 DOWNLOAD_FAILED 或保留原 code', async () => {
+			mockBotConn();
+			downloadFile.mockReturnValue({
+				promise: Promise.reject(Object.assign(new Error('transfer broken'), { code: 'TRANSFER_INTERRUPTED' })),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueDownload('bot1', 'main', '', 'big.bin', 100);
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('failed');
+			});
+
+			expect(remoteLogMock).toHaveBeenCalledTimes(1);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/task\.download\.failed/);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/code=TRANSFER_INTERRUPTED/);
+		});
+
+		test('下载保存阶段失败：code 标注为 SAVE_FAILED', async () => {
+			mockBotConn();
+			const blob = new Blob(['data']);
+			downloadFile.mockReturnValue({
+				promise: Promise.resolve({ blob, bytes: 4, name: 'doc.bin' }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			saveBlobToFileMock.mockRejectedValue(new Error('Native share failed'));
+
+			store.enqueueDownload('bot1', 'main', '', 'doc.bin', 100);
+			await vi.waitFor(() => {
+				const t = store.getAgentTasks('bot1', 'main')[0];
+				expect(t.status).toBe('failed');
+			});
+
+			expect(remoteLogMock).toHaveBeenCalledTimes(1);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/task\.download\.failed/);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/code=SAVE_FAILED/);
+			expect(remoteLogMock.mock.calls[0][0]).toMatch(/err=Native share failed/);
+		});
+
+		test('claw 不可用时上传/下载分别上报 CLAW_NOT_AVAILABLE', async () => {
+			useClawConnections.mockReturnValue({ get: () => undefined });
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('a.txt', 50)]);
+			store.enqueueDownload('bot1', 'main', '', 'b.txt', 50);
+
+			await vi.waitFor(() => {
+				const tasks = store.getAgentTasks('bot1', 'main');
+				expect(tasks.every((t) => t.status === 'failed')).toBe(true);
+			});
+
+			expect(remoteLogMock).toHaveBeenCalledTimes(2);
+			const logs = remoteLogMock.mock.calls.map((c) => c[0]);
+			expect(logs.some((l) => /task\.upload\.failed/.test(l) && /code=CLAW_NOT_AVAILABLE/.test(l))).toBe(true);
+			expect(logs.some((l) => /task\.download\.failed/.test(l) && /code=CLAW_NOT_AVAILABLE/.test(l))).toBe(true);
+		});
+
+		test('CANCELLED 错误不应触发 logTaskFailure', async () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: Promise.reject(Object.assign(new Error('cancelled'), { code: 'CANCELLED' })),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('c.txt', 50)]);
+			// 等待一段时间，让 promise 完成（CANCELLED 早 return，状态保持 running 或被外部置 cancelled）
+			await new Promise((r) => setTimeout(r, 50));
+
+			expect(remoteLogMock).not.toHaveBeenCalled();
 		});
 	});
 });

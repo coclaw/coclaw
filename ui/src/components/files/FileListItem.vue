@@ -28,7 +28,17 @@
 			</div>
 			<UButton
 				variant="ghost" color="neutral" size="xs"
-				icon="i-lucide-x" class="cc-icon-btn"
+				icon="i-lucide-circle-stop" class="cc-icon-btn"
+				@click.stop="$emit('cancel-download', downloadTask.id)"
+			/>
+		</div>
+
+		<!-- 下载等待中（pending：已入队等待前序任务完成 + 取消） -->
+		<div v-else-if="downloadTask?.status === 'pending'" class="flex items-center gap-2">
+			<span class="text-xs text-muted">{{ $t('files.pending') }}</span>
+			<UButton
+				variant="ghost" color="neutral" size="xs"
+				icon="i-lucide-circle-stop" class="cc-icon-btn"
 				@click.stop="$emit('cancel-download', downloadTask.id)"
 			/>
 		</div>
@@ -43,9 +53,9 @@
 			/>
 		</div>
 
-		<!-- 删除按钮（下载 running 时隐藏） -->
+		<!-- 删除按钮（下载 running / pending 时隐藏，避免误删进行中或排队中的任务） -->
 		<UButton
-			v-if="downloadTask?.status !== 'running'"
+			v-if="downloadTask?.status !== 'running' && downloadTask?.status !== 'pending'"
 			variant="ghost" color="error" size="xs"
 			icon="i-lucide-trash-2" class="cc-icon-btn"
 			@click.stop="$emit('delete', entry)"

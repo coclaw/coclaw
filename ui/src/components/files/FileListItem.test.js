@@ -157,6 +157,38 @@ describe('FileListItem', () => {
 			const buttons = w.findAll('button');
 			expect(buttons.length).toBeGreaterThanOrEqual(1);
 		});
+
+		test('pending 状态显示等待中文字和取消按钮', () => {
+			const w = mountItem(
+				{ name: 'queued.zip', type: 'file', size: 1000 },
+				{ id: 't-pending', status: 'pending', progress: 0 },
+			);
+			// 含等待中文案
+			expect(w.text()).toContain('files.pending');
+			// 不应渲染进度条（running 才有）
+			expect(w.find('.bg-primary').exists()).toBe(false);
+		});
+
+		test('pending 状态隐藏删除按钮', () => {
+			const w = mountItem(
+				{ name: 'queued.zip', type: 'file', size: 1000 },
+				{ id: 't-pending', status: 'pending', progress: 0 },
+			);
+			// 不应有删除按钮（trash 图标）
+			const trashBtn = w.findAll('button').filter((b) => b.attributes('icon') === 'i-lucide-trash-2');
+			expect(trashBtn).toHaveLength(0);
+		});
+
+		test('pending 状态点击取消按钮 emit cancel-download', async () => {
+			const w = mountItem(
+				{ name: 'queued.zip', type: 'file', size: 1000 },
+				{ id: 'task-pending-7', status: 'pending', progress: 0 },
+			);
+			// pending 分支只有一个按钮（取消）
+			const cancelBtn = w.findAll('button').at(-1);
+			await cancelBtn.trigger('click');
+			expect(w.emitted('cancel-download')?.[0]).toEqual(['task-pending-7']);
+		});
 	});
 
 	// =================================================================

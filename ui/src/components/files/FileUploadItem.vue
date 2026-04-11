@@ -24,7 +24,7 @@
 		<UButton
 			v-if="task.status === 'running' || task.status === 'pending'"
 			variant="ghost" color="neutral" size="xs"
-			icon="i-lucide-x" class="cc-icon-btn"
+			icon="i-lucide-circle-stop" class="cc-icon-btn"
 			@click="$emit('cancel', task.id)"
 		/>
 		<UButton

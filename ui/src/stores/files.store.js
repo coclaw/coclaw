@@ -2,7 +2,27 @@ import { defineStore } from 'pinia';
 
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { uploadFile, downloadFile } from '../services/file-transfer.js';
+import { remoteLog } from '../services/remote-log.js';
 import { saveBlobToFile } from '../utils/file-helper.js';
+
+/**
+ * 任务失败统一上报：高级别 console.error + remoteLog。
+ * 用于覆盖 file-transfer.js 内部已 log 之外的失败路径
+ * （例如 saveBlobToFile / Capacitor 权限错误 / 未识别的异常等），
+ * 确保 UI 显示 failed 时一定有可定位的诊断日志。
+ * @param {FileTask} task
+ * @param {Error|object} err
+ */
+function logTaskFailure(task, err) {
+	const code = err?.code ?? 'UNKNOWN';
+	const message = err?.message ?? String(err);
+	const path = task.dir ? `${task.dir}/${task.fileName}` : task.fileName;
+	/* c8 ignore next -- ?? fallback for missing progress */
+	const progress = (task.progress ?? 0).toFixed(3);
+	const ctx = `type=${task.type} clawId=${task.clawId} agentId=${task.agentId} path=${path} size=${task.size} progress=${progress}`;
+	remoteLog(`task.${task.type}.failed ${ctx} code=${code} err=${message}`);
+	console.error(`[files.store] ${task.type} task failed: ${ctx} code=${code} err=${message}`, err);
+}
 
 /**
  * 文件 Store
@@ -83,7 +103,12 @@ export const useFilesStore = defineStore('files', {
 		},
 
 		/**
-		 * 入队下载任务（并行执行）
+		 * 入队下载任务（同一 claw/agent 串行执行）
+		 *
+		 * 改为串行的原因：插件 pion-node 的 SCTP 缓冲区在多 DC 并行下载下会被无脑灌满，
+		 * 应用层 backpressure 失效（详见 pion-node bufferedAmount 修复说明）。
+		 * 串行后单个 DC 的实际带宽与 TURN 持平，避免 SCTP 拥塞导致 UI READY_TIMEOUT。
+		 *
 		 * @param {string} clawId
 		 * @param {string} agentId
 		 * @param {string} dir
@@ -105,7 +130,7 @@ export const useFilesStore = defineStore('files', {
 				fileName, size,
 			});
 			this.tasks.set(task.id, task);
-			this.__executeDownload(this.tasks.get(task.id));
+			this.__runDownloadQueue(clawId, agentId);
 		},
 
 		/**
@@ -137,7 +162,7 @@ export const useFilesStore = defineStore('files', {
 			if (task.type === 'upload') {
 				this.__runUploadQueue(task.clawId, task.agentId);
 			} else {
-				this.__executeDownload(task);
+				this.__runDownloadQueue(task.clawId, task.agentId);
 			}
 		},
 
@@ -208,6 +233,36 @@ export const useFilesStore = defineStore('files', {
 		},
 
 		/**
+		 * 串行执行下载队列：同一 (clawId, agentId) 下同时只有一个 running download。
+		 * 与 __runUploadQueue 对称——参见 enqueueDownload 的注释，串行是为避免
+		 * 多 DC 并发下 SCTP 缓冲区拥塞导致 UI 端超时。
+		 */
+		async __runDownloadQueue(clawId, agentId) {
+			// 检查是否已有 running 的下载
+			for (const task of this.tasks.values()) {
+				if (task.clawId === clawId && task.agentId === agentId
+					&& task.type === 'download' && task.status === 'running') {
+					return;
+				}
+			}
+
+			// 取下一个 pending
+			let next = null;
+			for (const task of this.tasks.values()) {
+				if (task.clawId === clawId && task.agentId === agentId
+					&& task.type === 'download' && task.status === 'pending') {
+					next = task;
+					break;
+				}
+			}
+			if (!next) return;
+
+			await this.__executeDownload(next);
+			// 完成后继续取下一个
+			this.__runDownloadQueue(clawId, agentId);
+		},
+
+		/**
 		 * 执行单个上传任务
 		 * @param {FileTask} task
 		 */
@@ -216,6 +271,7 @@ export const useFilesStore = defineStore('files', {
 			if (!clawConn) {
 				task.status = 'failed';
 				task.error = 'Claw connection not available';
+				logTaskFailure(task, { code: 'CLAW_NOT_AVAILABLE', message: task.error });
 				return;
 			}
 
@@ -238,6 +294,7 @@ export const useFilesStore = defineStore('files', {
 				if (err?.code === 'CANCELLED') return; // cancelTask 已处理状态
 				task.status = 'failed';
 				task.error = err?.message ?? 'Upload failed';
+				logTaskFailure(task, err);
 			} finally {
 				task.transferHandle = null;
 			}
@@ -252,12 +309,15 @@ export const useFilesStore = defineStore('files', {
 			if (!clawConn) {
 				task.status = 'failed';
 				task.error = 'Claw connection not available';
+				logTaskFailure(task, { code: 'CLAW_NOT_AVAILABLE', message: task.error });
 				return;
 			}
 
 			task.status = 'running';
 			const path = task.dir ? `${task.dir}/${task.fileName}` : task.fileName;
 
+			// 区分"下载阶段"和"保存阶段"，分别上报便于排查
+			let stage = 'download';
 			try {
 				const handle = downloadFile(clawConn, task.agentId, path);
 				task.transferHandle = handle;
@@ -267,6 +327,7 @@ export const useFilesStore = defineStore('files', {
 				};
 				const result = await handle.promise;
 				task.progress = 1;
+				stage = 'save';
 				// 保存文件（Web 触发浏览器下载；Capacitor 调起系统分享）
 				await saveBlobToFile(result.blob, result.name || task.fileName);
 				task.status = 'done';
@@ -274,6 +335,11 @@ export const useFilesStore = defineStore('files', {
 				if (err?.code === 'CANCELLED') return;
 				task.status = 'failed';
 				task.error = err?.message ?? 'Download failed';
+				// 标注失败阶段，方便排查"传输 OK 但保存失败"等场景
+				const annotated = err instanceof Error
+					? Object.assign(err, { code: err.code ?? `${stage.toUpperCase()}_FAILED` })
+					: { code: err?.code ?? `${stage.toUpperCase()}_FAILED`, message: err?.message ?? String(err) };
+				logTaskFailure(task, annotated);
 			} finally {
 				task.transferHandle = null;
 			}
