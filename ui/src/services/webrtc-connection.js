@@ -305,7 +305,9 @@ export class WebRtcConnection {
 		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return null;
 		const dc = this.__pc.createDataChannel(label, opts);
 		// 追踪 file DC 的数据活动，证明 SCTP 存活（用于保活宽限判断）
+		// message: 入向数据；bufferedamountlow: 出向数据真实进入网络（上传场景下唯一的活动信号）
 		dc.addEventListener('message', () => { this.__lastDcActivityAt = Date.now(); });
+		dc.addEventListener('bufferedamountlow', () => { this.__lastDcActivityAt = Date.now(); });
 		return dc;
 	}
 

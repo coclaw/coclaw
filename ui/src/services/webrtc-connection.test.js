@@ -1776,6 +1776,22 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		rtc.close();
 	});
 
+	test('file DC bufferedamountlow 更新 __lastDcActivityAt（上传出向 liveness）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const before = rtc.__lastDcActivityAt;
+
+		const fileDc = rtc.createDataChannel('file:upload-uuid', { ordered: true });
+		expect(fileDc).not.toBeNull();
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		// 触发 addEventListener 注册的 bufferedamountlow handler
+		// BAL 表示出向 SCTP 真实进展，是上传场景下唯一的活动信号
+		fileDc.__fireDcEvent('bufferedamountlow');
+
+		expect(rtc.__lastDcActivityAt).toBeGreaterThan(before);
+		rtc.close();
+	});
+
 	test('多个 file DC 都能更新 __lastDcActivityAt', async () => {
 		const { rtc } = await setupConnectedRtc();
 
@@ -1820,6 +1836,31 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		await vi.advanceTimersByTimeAsync(0);
 
 		// 活动在 5s 前 < 30s 宽限 → 不 close
+		expect(closeSpy).not.toHaveBeenCalled();
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	test('probe 超时但有近期 file DC bufferedamountlow → 跳过 close（上传场景）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		const closeSpy = vi.spyOn(rtc, 'close');
+
+		const fileDc = rtc.createDataChannel('file:upload', { ordered: true });
+
+		// 推进到 probe 发出（30s）
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		// 在 probe 超时前，file DC 出向 buffer 排空（上传时唯一的活动证据）
+		await vi.advanceTimersByTimeAsync(5_000); // T=35s
+		fileDc.__fireDcEvent('bufferedamountlow');
+
+		// probe 超时（再过 5s）
+		await vi.advanceTimersByTimeAsync(5_000); // T=40s
+		await vi.advanceTimersByTimeAsync(0);
+
+		// BAL 在 5s 前 < 20s 宽限 → 不 close
 		expect(closeSpy).not.toHaveBeenCalled();
 		expect(rtc.state).toBe('connected');
 		expect(rtc.__keepaliveTimer).not.toBeNull();
