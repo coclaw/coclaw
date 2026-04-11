@@ -265,8 +265,9 @@ export default {
 		},
 		/** 检查 claw 是否有任一 agent 在工作中 */
 		__hasRunningAgent(clawId) {
-			const agents = this.dashboardStore.getDashboard(String(clawId))?.agents ?? [];
-			return agents.some(a => this.agentRunsStore.isRunning(`agent:${a.id}:main`));
+			const id = String(clawId);
+			const agents = this.dashboardStore.getDashboard(id)?.agents ?? [];
+			return agents.some(a => this.agentRunsStore.isRunning(`${id}::agent:${a.id}:main`));
 		},
 		connLabel(clawId) {
 			const id = String(clawId);

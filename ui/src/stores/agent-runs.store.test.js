@@ -13,7 +13,7 @@ function registerRun(store, overrides = {}) {
 	const conn = overrides.conn ?? mockConn();
 	store.register(overrides.runId ?? 'run-1', {
 		clawId: overrides.clawId ?? '1',
-		runKey: overrides.runKey ?? 'agent:main:main',
+		runKey: overrides.runKey ?? '1::agent:main:main',
 		topicMode: overrides.topicMode ?? false,
 		conn,
 		streamingMsgs: overrides.streamingMsgs ?? [
@@ -48,17 +48,17 @@ describe('useAgentRunsStore', () => {
 
 			expect(store.runs['run-1']).toBeTruthy();
 			expect(store.runs['run-1'].settled).toBe(false);
-			expect(store.runKeyIndex['agent:main:main']).toBe('run-1');
+			expect(store.runKeyIndex['1::agent:main:main']).toBe('run-1');
 		});
 
 		test('同一 runKey 重复注册时清理旧 run', () => {
 			const store = useAgentRunsStore();
-			registerRun(store, { runId: 'run-1', runKey: 'agent:main:main' });
-			registerRun(store, { runId: 'run-2', runKey: 'agent:main:main' });
+			registerRun(store, { runId: 'run-1', runKey: '1::agent:main:main' });
+			registerRun(store, { runId: 'run-2', runKey: '1::agent:main:main' });
 
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runs['run-2']).toBeTruthy();
-			expect(store.runKeyIndex['agent:main:main']).toBe('run-2');
+			expect(store.runKeyIndex['1::agent:main:main']).toBe('run-2');
 		});
 
 		test('注册时存储 anchorMsgId', () => {
@@ -94,7 +94,7 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			const run = store.getActiveRun('agent:main:main');
+			const run = store.getActiveRun('1::agent:main:main');
 			expect(run).toBeTruthy();
 			expect(run.runId).toBe('run-1');
 		});
@@ -108,7 +108,7 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			expect(store.isRunning('agent:main:main')).toBe(true);
+			expect(store.isRunning('1::agent:main:main')).toBe(true);
 			expect(store.isRunning('nonexistent')).toBe(false);
 		});
 
@@ -120,21 +120,21 @@ describe('useAgentRunsStore', () => {
 		test('isRunIdle：lastEventAt 为 0（尚未收到事件）时返回 false', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			expect(store.isRunIdle('agent:main:main')).toBe(false);
+			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
 		});
 
 		test('isRunIdle：lastEventAt 较新时返回 false', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.runs['run-1'].lastEventAt = Date.now() - 3000;
-			expect(store.isRunIdle('agent:main:main')).toBe(false);
+			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
 		});
 
 		test('isRunIdle：lastEventAt 超过阈值时返回 true', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.runs['run-1'].lastEventAt = Date.now() - 15_000;
-			expect(store.isRunIdle('agent:main:main')).toBe(true);
+			expect(store.isRunIdle('1::agent:main:main')).toBe(true);
 		});
 
 		test('isRunIdle：run 已 settled 时返回 false', () => {
@@ -142,7 +142,7 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 			store.runs['run-1'].lastEventAt = Date.now() - 15_000;
 			store.runs['run-1'].settled = true;
-			expect(store.isRunIdle('agent:main:main')).toBe(false);
+			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
 		});
 	});
 
@@ -191,7 +191,7 @@ describe('useAgentRunsStore', () => {
 			const run = store.runs['run-1'];
 			expect(run.settling).toBe(true);
 			// getActiveRun 仍返回（保留 streamingMsgs）
-			expect(store.getActiveRun('agent:main:main')).toBeTruthy();
+			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
 		});
 
 		test('settling 过渡 500ms 后自动清理', () => {
@@ -204,7 +204,7 @@ describe('useAgentRunsStore', () => {
 			vi.advanceTimersByTime(500);
 
 			expect(store.runs['run-1']).toBeUndefined();
-			expect(store.runKeyIndex['agent:main:main']).toBeUndefined();
+			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
 		});
 
 		test('lifecycle:error 同样进入 settling 过渡态', () => {
@@ -228,11 +228,11 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			store.settle('agent:main:main');
+			store.settle('1::agent:main:main');
 
 			expect(store.runs['run-1']).toBeUndefined();
-			expect(store.runKeyIndex['agent:main:main']).toBeUndefined();
-			expect(store.isRunning('agent:main:main')).toBe(false);
+			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
+			expect(store.isRunning('1::agent:main:main')).toBe(false);
 		});
 
 		test('settle 不存在的 runKey 不报错', () => {
@@ -254,17 +254,17 @@ describe('useAgentRunsStore', () => {
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
 			expect(store.runs['run-1']?.settling).toBe(true);
 
-			store.completeSettle('agent:main:main');
+			store.completeSettle('1::agent:main:main');
 
 			expect(store.runs['run-1']).toBeUndefined();
-			expect(store.runKeyIndex['agent:main:main']).toBeUndefined();
+			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
 		});
 
 		test('非 settling 状态下不操作', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			store.completeSettle('agent:main:main');
+			store.completeSettle('1::agent:main:main');
 
 			// run 仍在
 			expect(store.runs['run-1']).toBeTruthy();
@@ -293,7 +293,7 @@ describe('useAgentRunsStore', () => {
 				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
 			];
 
-			store.reconcileAfterLoad('agent:main:main', serverMessages);
+			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
 
 			expect(store.runs['run-1']).toBeUndefined();
 		});
@@ -309,7 +309,7 @@ describe('useAgentRunsStore', () => {
 				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
 			];
 
-			store.reconcileAfterLoad('agent:main:main', serverMessages);
+			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
 
 			// 不应 settle
 			expect(store.runs['run-1']).toBeTruthy();
@@ -324,7 +324,7 @@ describe('useAgentRunsStore', () => {
 				{ message: { role: 'user', content: 'hi' } },
 			];
 
-			store.reconcileAfterLoad('agent:main:main', serverMessages);
+			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
 
 			expect(store.runs['run-1']).toBeTruthy();
 		});
@@ -338,7 +338,7 @@ describe('useAgentRunsStore', () => {
 				{ message: { role: 'assistant', content: '', stopReason: 'toolUse' } },
 			];
 
-			store.reconcileAfterLoad('agent:main:main', serverMessages);
+			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
 
 			expect(store.runs['run-1']).toBeTruthy();
 		});
@@ -353,7 +353,7 @@ describe('useAgentRunsStore', () => {
 			const serverMessages = [
 				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
 			];
-			store.reconcileAfterLoad('agent:main:main', serverMessages);
+			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
 
 			// 仍在 settling，未被 reconcile 清理（因为 reconcile 跳过 settling）
 			expect(store.runs['run-1']).toBeTruthy();
@@ -370,7 +370,7 @@ describe('useAgentRunsStore', () => {
 				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
 			];
 
-			store.reconcileAfterLoad('agent:main:main', serverMessages);
+			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
 
 			// 不应被 settle——run 刚注册，事件尚未到达
 			expect(store.runs['run-1']).toBeTruthy();
@@ -393,7 +393,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 's1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
@@ -407,7 +407,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', []);
+			store.stripLocalUserMsgs('1::agent:main:main', []);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(2);
 		});
@@ -426,7 +426,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'new-1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
@@ -446,7 +446,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'anchor-1', message: { role: 'assistant', content: '旧回复' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(2);
 		});
@@ -464,7 +464,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'far-away', message: { role: 'assistant', content: '很后面的消息' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
@@ -477,7 +477,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', []);
+			store.stripLocalUserMsgs('1::agent:main:main', []);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
@@ -491,7 +491,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', [{ id: 's1', message: { role: 'user', content: 'hi' } }]);
+			store.stripLocalUserMsgs('1::agent:main:main', [{ id: 's1', message: { role: 'user', content: 'hi' } }]);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 		});
@@ -504,7 +504,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
 			];
 
-			store.stripLocalUserMsgs('agent:main:main', [{ id: 's1', message: { role: 'user', content: 'hi' } }]);
+			store.stripLocalUserMsgs('1::agent:main:main', [{ id: 's1', message: { role: 'user', content: 'hi' } }]);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 		});
@@ -529,7 +529,7 @@ describe('useAgentRunsStore', () => {
 			];
 			const serverMsgs = [{ id: 's1', message: { role: 'user', content: 'hi' } }];
 
-			store.stripLocalUserMsgs('agent:main:main', serverMsgs);
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
 
 			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:img1');
 			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:voice1');
@@ -557,7 +557,7 @@ describe('useAgentRunsStore', () => {
 				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
 
-			store.settle('agent:main:main');
+			store.settle('1::agent:main:main');
 
 			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:att1');
 			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:att2');
@@ -571,7 +571,7 @@ describe('useAgentRunsStore', () => {
 			store.runs['run-1'].streamingMsgs = [
 				{ id: 'b1', message: { role: 'assistant', content: '' } },
 			];
-			expect(() => store.settle('agent:main:main')).not.toThrow();
+			expect(() => store.settle('1::agent:main:main')).not.toThrow();
 		});
 	});
 
@@ -584,11 +584,11 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			expect(store.isRunning('agent:main:main')).toBe(true);
+			expect(store.isRunning('1::agent:main:main')).toBe(true);
 
 			vi.advanceTimersByTime(30 * 60_000);
 
-			expect(store.isRunning('agent:main:main')).toBe(false);
+			expect(store.isRunning('1::agent:main:main')).toBe(false);
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 
@@ -596,7 +596,7 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			store.settle('agent:main:main');
+			store.settle('1::agent:main:main');
 
 			// 推进时间不应报错
 			vi.advanceTimersByTime(30 * 60_000);
@@ -642,12 +642,12 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']?.settling).toBe(true);
 
 			// 标记 loadMessages 正在进行
-			store.markLoadInFlight('agent:main:main');
+			store.markLoadInFlight('1::agent:main:main');
 
 			// 500ms 后 fallback 不应清理
 			vi.advanceTimersByTime(500);
 			expect(store.runs['run-1']).toBeTruthy();
-			expect(store.getActiveRun('agent:main:main')).toBeTruthy();
+			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
 		});
 
 		test('loadInFlight 清除后下一次 fallback 正常清理', () => {
@@ -655,14 +655,14 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('agent:main:main');
+			store.markLoadInFlight('1::agent:main:main');
 
 			// 第一次 fallback 推迟
 			vi.advanceTimersByTime(500);
 			expect(store.runs['run-1']).toBeTruthy();
 
 			// 模拟 loadMessages 失败，清除标记
-			store.clearLoadInFlight('agent:main:main');
+			store.clearLoadInFlight('1::agent:main:main');
 
 			// 第二次 fallback 应正常清理
 			vi.advanceTimersByTime(500);
@@ -674,10 +674,10 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('agent:main:main');
+			store.markLoadInFlight('1::agent:main:main');
 
 			// loadMessages 成功 → completeSettle
-			store.completeSettle('agent:main:main');
+			store.completeSettle('1::agent:main:main');
 
 			expect(store.runs['run-1']).toBeUndefined();
 		});
@@ -695,10 +695,10 @@ describe('useAgentRunsStore', () => {
 		test('markLoadInFlight 对已 settled 的 run 不设置标记', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			store.settle('agent:main:main');
+			store.settle('1::agent:main:main');
 
 			// run 已被清理，markLoadInFlight 应为 no-op
-			store.markLoadInFlight('agent:main:main');
+			store.markLoadInFlight('1::agent:main:main');
 		});
 
 		test('多次推迟后 clearLoadInFlight 使下一次 fallback 清理', () => {
@@ -706,7 +706,7 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('agent:main:main');
+			store.markLoadInFlight('1::agent:main:main');
 
 			// 推迟 3 次
 			vi.advanceTimersByTime(500);
@@ -717,7 +717,7 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeTruthy();
 
 			// 清除标记后下一次 fallback 正常清理
-			store.clearLoadInFlight('agent:main:main');
+			store.clearLoadInFlight('1::agent:main:main');
 			vi.advanceTimersByTime(500);
 			expect(store.runs['run-1']).toBeUndefined();
 		});
@@ -727,7 +727,7 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('agent:main:main');
+			store.markLoadInFlight('1::agent:main:main');
 
 			// removeByClaw 应直接清理，含 __settleTimer
 			store.removeByClaw('1');
@@ -742,10 +742,10 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('agent:main:main');
+			store.markLoadInFlight('1::agent:main:main');
 
 			// 用户主动 settle 应立即生效，不受 loadInFlight 阻挡
-			store.settle('agent:main:main');
+			store.settle('1::agent:main:main');
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 	});
@@ -768,7 +768,7 @@ describe('useAgentRunsStore', () => {
 		test('所有 run settled 后为 false', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			store.settle('agent:main:main');
+			store.settle('1::agent:main:main');
 			expect(store.busy).toBe(false);
 		});
 	});

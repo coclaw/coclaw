@@ -319,7 +319,7 @@ describe('ManageClawsPage', () => {
 			if (clawId === '1') return { agents: [{ id: 'main' }], instance: null, loading: false };
 			return null;
 		});
-		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
+		mockIsRunning = vi.fn().mockImplementation((k) => k.endsWith('::agent:main:main'));
 		const wrapper = createWrapper();
 		await flushPromises();
 
@@ -379,7 +379,7 @@ describe('ManageClawsPage', () => {
 			if (clawId === '2') return { agents: [{ id: 'main' }], instance: null, loading: false };
 			return null;
 		});
-		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
+		mockIsRunning = vi.fn().mockImplementation((k) => k.endsWith('::agent:main:main'));
 		const wrapper = createWrapper();
 		await flushPromises();
 		expect(wrapper.vm.sortedClaws[0].name).toBe('RunBot');
@@ -426,7 +426,7 @@ describe('ManageClawsPage', () => {
 			if (clawId === '3') return { agents: [{ id: 'main' }], instance: null, loading: false };
 			return null;
 		});
-		mockIsRunning = vi.fn().mockImplementation((k) => k === 'agent:main:main');
+		mockIsRunning = vi.fn().mockImplementation((k) => k.endsWith('::agent:main:main'));
 		const wrapper = createWrapper();
 		await flushPromises();
 		// bot1 has running agent, bot2 failed, bot3 main is running too

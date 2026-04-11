@@ -108,7 +108,10 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 			/** 当前对话的 runKey（用于在 agentRunsStore 中查询活跃 run） */
 			runKey() {
-				return this.topicMode ? this.sessionId : this.chatSessionKey;
+				// topic 模式：sessionId 是 uuid，天然全局唯一
+				// chat 模式：chatSessionKey 不含 clawId，多 claw 共用同名 agent 会碰撞，必须加 clawId 前缀
+				if (this.topicMode) return this.sessionId;
+				return `${this.clawId}::${this.chatSessionKey}`;
 			},
 			/** 合并服务端消息 + 活跃 run 的流式消息（按锚点定位插入位置） */
 			allMessages() {

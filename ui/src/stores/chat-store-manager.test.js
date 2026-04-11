@@ -209,4 +209,66 @@ describe('chatStoreManager', () => {
 			expect(chatStoreManager.topicCount).toBe(0);
 		});
 	});
+
+	// =====================================================================
+	// 跨 claw 同名 agent 隔离（回归测试，对应 runKey 跨 claw 串 bug）
+	// =====================================================================
+
+	describe('cross-claw runKey isolation', () => {
+		test('两个不同 clawId 的同名 agent store 拥有独立 runKey', () => {
+			const a = chatStoreManager.get('session:A:main', { clawId: 'A', agentId: 'main' });
+			const b = chatStoreManager.get('session:B:main', { clawId: 'B', agentId: 'main' });
+			// chatSessionKey 相同，但 runKey 必须不同
+			expect(a.chatSessionKey).toBe('agent:main:main');
+			expect(b.chatSessionKey).toBe('agent:main:main');
+			expect(a.runKey).not.toBe(b.runKey);
+			expect(a.runKey).toBe('A::agent:main:main');
+			expect(b.runKey).toBe('B::agent:main:main');
+		});
+
+		test('A 注册 run 不影响 B 的 isSending / allMessages', () => {
+			const runsStore = useAgentRunsStore();
+			const a = chatStoreManager.get('session:A:main', { clawId: 'A', agentId: 'main' });
+			const b = chatStoreManager.get('session:B:main', { clawId: 'B', agentId: 'main' });
+
+			runsStore.register('run-a', {
+				clawId: 'A',
+				runKey: a.runKey,
+				topicMode: false,
+				conn: { state: 'connected' },
+				streamingMsgs: [
+					{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
+					{ id: '__local_claw_1', _local: true, _streaming: true, message: { role: 'assistant', content: 'streaming...' } },
+				],
+			});
+
+			// A 看到自己的 run
+			expect(a.isSending).toBe(true);
+			expect(a.allMessages).toHaveLength(2);
+			// B 应当完全不受影响
+			expect(b.isSending).toBe(false);
+			expect(b.allMessages).toHaveLength(0);
+		});
+
+		test('B 后注册 run 不驱逐 A 的已有 run', () => {
+			const runsStore = useAgentRunsStore();
+			const a = chatStoreManager.get('session:A:main', { clawId: 'A', agentId: 'main' });
+			const b = chatStoreManager.get('session:B:main', { clawId: 'B', agentId: 'main' });
+
+			runsStore.register('run-a', {
+				clawId: 'A', runKey: a.runKey, topicMode: false,
+				conn: { state: 'connected' }, streamingMsgs: [],
+			});
+			runsStore.register('run-b', {
+				clawId: 'B', runKey: b.runKey, topicMode: false,
+				conn: { state: 'connected' }, streamingMsgs: [],
+			});
+
+			// 两个 run 共存
+			expect(runsStore.runs['run-a']).toBeTruthy();
+			expect(runsStore.runs['run-b']).toBeTruthy();
+			expect(runsStore.runKeyIndex[a.runKey]).toBe('run-a');
+			expect(runsStore.runKeyIndex[b.runKey]).toBe('run-b');
+		});
+	});
 });

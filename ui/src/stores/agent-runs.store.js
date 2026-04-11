@@ -26,7 +26,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		runs: {},
 		/**
 		 * runKey → runId 索引（按 chat/topic 查询）
-		 * runKey = chatSessionKey（chat 模式）或 sessionId（topic 模式）
+		 * runKey = `${clawId}::${chatSessionKey}`（chat 模式）或 sessionId（topic 模式）
+		 * chat 模式带 clawId 前缀以避免多 claw 共用同名 agent 时的碰撞
 		 * @type {Record<string, string>}
 		 */
 		runKeyIndex: {},

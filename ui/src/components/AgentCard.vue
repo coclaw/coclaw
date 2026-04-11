@@ -143,7 +143,7 @@ export default {
 		 */
 		statusKey() {
 			if (!this.claw.online) return 'offline';
-			const runKey = `agent:${this.agent.id}:main`;
+			const runKey = `${this.claw.id}::agent:${this.agent.id}:main`;
 			if (this.agentRunsStore.isRunning(runKey)) return 'running';
 			return 'idle';
 		},
@@ -212,7 +212,7 @@ export default {
 		__startTimer() {
 			this.__stopTimer();
 			this.elapsedSecs = 0;
-			const runKey = `agent:${this.agent.id}:main`;
+			const runKey = `${this.claw.id}::agent:${this.agent.id}:main`;
 			const run = this.agentRunsStore.getActiveRun(runKey);
 			if (run?.startTime) {
 				this.elapsedSecs = Math.floor((Date.now() - run.startTime) / 1000);

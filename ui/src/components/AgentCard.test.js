@@ -166,11 +166,11 @@ describe('AgentCard', () => {
 
 	// ---- runKey 使用 agent.id ----
 
-	test('isRunning 使用正确的 runKey（agent.id）', async () => {
+	test('isRunning 使用正确的 runKey（clawId + agent.id）', async () => {
 		mockIsRunning = vi.fn().mockReturnValue(false);
 		createWrapper(makeAgent({ id: 'ops' }), makeBot());
 		await flushPromises();
-		expect(mockIsRunning).toHaveBeenCalledWith('agent:ops:main');
+		expect(mockIsRunning).toHaveBeenCalledWith('bot1::agent:ops:main');
 	});
 
 	// ---- dotClass ----

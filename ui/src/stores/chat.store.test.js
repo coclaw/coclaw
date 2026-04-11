@@ -2622,16 +2622,16 @@ describe('useChatStore', () => {
 			const runsStore = useAgentRunsStore();
 			runsStore.runs['run-x'] = {
 				runId: 'run-x',
-				runKey: 'agent:main:main',
+				runKey: '::agent:main:main',
 				settled: true,
 				settling: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
 				],
 			};
-			runsStore.runKeyIndex['agent:main:main'] = 'run-x';
+			runsStore.runKeyIndex['::agent:main:main'] = 'run-x';
 
-			runsStore.stripLocalUserMsgs('agent:main:main');
+			runsStore.stripLocalUserMsgs('::agent:main:main');
 
 			// settled run 不做任何操作
 			expect(runsStore.runs['run-x'].streamingMsgs).toHaveLength(1);
