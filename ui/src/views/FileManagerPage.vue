@@ -559,6 +559,7 @@ export default {
 			try {
 				await deleteFile(clawConn, this.agentId, this.__deleteFilePath);
 				this.deleteFileOpen = false;
+				this.__cancelInFlight();
 				this.loadDir();
 			} catch (err) {
 				this.notify.error(this.$t('files.deleteFailed'));
@@ -575,6 +576,7 @@ export default {
 			try {
 				await deleteFile(clawConn, this.agentId, this.__deleteDirPath, { force: true });
 				this.deleteDirOpen = false;
+				this.__cancelInFlight();
 				this.loadDir();
 			} catch (err) {
 				this.notify.error(this.$t('files.deleteFailed'));
@@ -602,6 +604,7 @@ export default {
 				const path = this.currentDir ? `${this.currentDir}/${name}` : name;
 				await mkdirFiles(clawConn, this.agentId, path);
 				this.mkdirOpen = false;
+				this.__cancelInFlight();
 				this.loadDir();
 			} catch (err) {
 				this.notify.error(this.$t('files.mkdirFailed'));

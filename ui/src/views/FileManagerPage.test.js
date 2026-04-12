@@ -1454,6 +1454,29 @@ describe('FileManagerPage', () => {
 			warnSpy.mockRestore();
 		});
 
+		test('删除成功后即使有 loadDir 在飞行中也能刷新', async () => {
+			let resolveLoad;
+			mockListFiles.mockReturnValueOnce(new Promise((r) => { resolveLoad = r; }));
+			const wrapper = mountPage();
+			await wrapper.vm.$nextTick();
+			// 初始 loadDir 在飞行中 (loading=true)
+			expect(wrapper.vm.loading).toBe(true);
+
+			// 删除文件成功——应中断旧 loadDir 并发起新加载
+			const freshFiles = [{ name: 'remaining.txt', type: 'file' }];
+			mockListFiles.mockResolvedValueOnce({ files: freshFiles });
+			wrapper.vm.__deleteFilePath = 'gone.txt';
+			await wrapper.vm.onConfirmDeleteFile();
+			await flushPromises();
+
+			expect(wrapper.vm.entries).toEqual(freshFiles);
+
+			// 旧请求迟到的结果不应覆盖
+			resolveLoad({ files: [{ name: 'stale.txt', type: 'file' }] });
+			await flushPromises();
+			expect(wrapper.vm.entries).toEqual(freshFiles);
+		});
+
 		test('无连接时删除静默返回', async () => {
 			mockClawConnGet.mockReturnValue(undefined);
 
