@@ -183,3 +183,33 @@ test('preloadPion: 意外异常时返回 null', async () => {
 	assert.equal(result, null);
 	assert.ok(logs.some((l) => l.includes('pion.skip') && l.includes('unexpected')));
 });
+
+test('preloadPion: ipc 已启动后意外异常时关闭 Go 进程', async () => {
+	// 模拟 ipc.start() 成功后 log() 抛异常：
+	// 注入一个在 'pion.loaded' 时抛异常的 log 函数
+	let stopCalled = false;
+	class TrackStopIpc extends MockPionIpc {
+		async stop() { stopCalled = true; }
+	}
+	const logs = [];
+	let callCount = 0;
+	const throwingLog = (text) => {
+		logs.push(text);
+		callCount++;
+		// 第 N 次调用抛异常（模拟 'pion.loaded' log 失败）
+		// 前几次是 'pion.preload'、'pion.ipc ...' 等，最后一次是 'pion.loaded'
+		if (text === 'pion.loaded') {
+			throw new Error('log broke');
+		}
+	};
+	const result = await preloadPion({
+		dynamicImport: async () => ({
+			PionIpc: TrackStopIpc,
+			RTCPeerConnection: MockRTCPeerConnection,
+		}),
+		remoteLog: throwingLog,
+		startTimeout: 500,
+	});
+	assert.equal(result, null);
+	assert.ok(stopCalled, 'ipc.stop() 应被调用以关闭已启动的 Go 进程');
+});

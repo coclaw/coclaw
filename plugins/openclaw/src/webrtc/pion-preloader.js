@@ -23,6 +23,7 @@ export async function preloadPion(deps = {}) {
 
 	log('pion.preload');
 
+	let ipc = null;
 	try {
 		// 加载 pion-node SDK
 		let PionIpc, RTCPeerConnection;
@@ -41,7 +42,7 @@ export async function preloadPion(deps = {}) {
 		}
 
 		// 启动 IPC 进程（内部会 ping 验证就绪，binary 由 pion-node 自动解析）
-		const ipc = new PionIpc({
+		ipc = new PionIpc({
 			logger: (msg) => log(`pion.ipc ${msg}`),
 			timeout: startTimeout,
 			autoRestart: true,
@@ -72,6 +73,10 @@ export async function preloadPion(deps = {}) {
 		log('pion.loaded');
 		return { PeerConnection: BoundPeerConnection, cleanup, impl: 'pion', ipc };
 	} catch (err) {
+		// ipc 已启动但后续步骤意外失败 → 关闭 Go 进程，防止泄漏
+		if (ipc) {
+			ipc.stop().catch(() => {});
+		}
 		log(`pion.skip reason=unexpected error=${err.message}`);
 		return null;
 	}
