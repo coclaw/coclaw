@@ -25,6 +25,9 @@ importers:
 
   plugins/openclaw:
     dependencies:
+      '@coclaw/pion-node':
+        specifier: ^0.1.1
+        version: 0.1.1
       node-datachannel:
         specifier: 0.32.2
         version: 0.32.2
@@ -479,6 +482,40 @@ packages:
 
   '@changesets/write@0.4.0':
     resolution: {integrity: sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q==}
+
+  '@coclaw/pion-ipc-darwin-arm64@0.1.1':
+    resolution: {integrity: sha512-n3EbEnNHj14OW37eykJdFrcLHX3SYnZ9ZoCK4G5GCGyJ02LbLDMvtsAqrn+8xwLSpz06aT7Y2LKrvTlrVLDa2Q==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@coclaw/pion-ipc-darwin-x64@0.1.1':
+    resolution: {integrity: sha512-f1/+FTFu1xTNC2NITcca3u479SHMhrh2/nBjup0MxoUWb9rhMoFBuCE9sF0i2C/hAm0uavJ0/DNOFUX36C2iSw==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@coclaw/pion-ipc-linux-arm64@0.1.1':
+    resolution: {integrity: sha512-WZzEFqaRNsPvmOSnNprN2aAgotPd4fuzlkox20pMPrQsArAM5SZaTf61jiidb1j+G3x1rmPS5/NgZsjfu3uOAQ==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@coclaw/pion-ipc-linux-x64@0.1.1':
+    resolution: {integrity: sha512-s63qwaQXH1XgkZmEc5zi5s/lyXZNz+gEA1G7gd0erZtcACJUoYXmIvonZmtiDbMKwFBJd1Yg/QpfLCGS3ODpSw==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [linux]
+
+  '@coclaw/pion-ipc-win32-x64@0.1.1':
+    resolution: {integrity: sha512-xM7uAcvRSewJ4mX1nS48azRk5+hEUZc1jAX0YOLBLkljHky+44rcOgHIGPKi5MwtFrgeGS0wE4zMQ3B7MJJG8A==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [win32]
+
+  '@coclaw/pion-node@0.1.1':
+    resolution: {integrity: sha512-R/S6V88Ow9BgdgIpMuf9514iXLPo5fl6EVCX/c34k0uBDT0WtVRhOaLtFVQbeMMIQLQqsLvb3sVmgPHp2QmOpA==}
+    engines: {node: '>=18'}
 
   '@csstools/color-helpers@6.0.1':
     resolution: {integrity: sha512-NmXRccUJMk2AWA5A7e5a//3bCIMyOu2hAtdRYrhPPHjDxINuCwX1w6rnIZ4xjLcp0ayv6h8Pc3X0eJUGiAAXHQ==}
@@ -1120,6 +1157,10 @@ packages:
 
   '@minhducsun2002/leb128@1.0.0':
     resolution: {integrity: sha512-eFrYUPDVHeuwWHluTG1kwNQUEUcFjVKYwPkU8z9DR1JH3AW7JtJsG9cRVGmwz809kKtGfwGJj58juCZxEvnI/g==}
+
+  '@msgpack/msgpack@3.1.3':
+    resolution: {integrity: sha512-47XIizs9XZXvuJgoaJUIE2lFoID8ugvc0jzSHP+Ptfk8nTbnR8g788wv48N03Kx0UkAv559HWRQ3yzOgzlRNUA==}
+    engines: {node: '>= 18'}
 
   '@noble/curves@1.9.7':
     resolution: {integrity: sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw==}
@@ -6135,6 +6176,31 @@ snapshots:
       human-id: 4.1.3
       prettier: 2.8.8
 
+  '@coclaw/pion-ipc-darwin-arm64@0.1.1':
+    optional: true
+
+  '@coclaw/pion-ipc-darwin-x64@0.1.1':
+    optional: true
+
+  '@coclaw/pion-ipc-linux-arm64@0.1.1':
+    optional: true
+
+  '@coclaw/pion-ipc-linux-x64@0.1.1':
+    optional: true
+
+  '@coclaw/pion-ipc-win32-x64@0.1.1':
+    optional: true
+
+  '@coclaw/pion-node@0.1.1':
+    dependencies:
+      '@msgpack/msgpack': 3.1.3
+    optionalDependencies:
+      '@coclaw/pion-ipc-darwin-arm64': 0.1.1
+      '@coclaw/pion-ipc-darwin-x64': 0.1.1
+      '@coclaw/pion-ipc-linux-arm64': 0.1.1
+      '@coclaw/pion-ipc-linux-x64': 0.1.1
+      '@coclaw/pion-ipc-win32-x64': 0.1.1
+
   '@csstools/color-helpers@6.0.1': {}
 
   '@csstools/css-calc@3.1.1(@csstools/css-parser-algorithms@4.0.0(@csstools/css-tokenizer@4.0.0))(@csstools/css-tokenizer@4.0.0)':
@@ -6736,6 +6802,8 @@ snapshots:
       read-yaml-file: 1.1.0
 
   '@minhducsun2002/leb128@1.0.0': {}
+
+  '@msgpack/msgpack@3.1.3': {}
 
   '@noble/curves@1.9.7':
     dependencies:
