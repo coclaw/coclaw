@@ -11,7 +11,7 @@ const HIGH_WATER_MARK = 262_144; // 256KB
 const LOW_WATER_MARK = 65_536; // 64KB
 const MAX_UPLOAD_SIZE = 1_073_741_824; // 1GB
 const FILE_DC_TIMEOUT_MS = 30_000; // DC 打开后 30s 内需收到请求
-const TMP_CLEANUP_DELAY_MS = 60_000; // 启动后 60s 延迟清理
+const TMP_CLEANUP_DELAY_MS = 2_000; // 启动后 2s 延迟清理
 const TMP_FILE_PATTERN = /\.tmp\.[0-9a-f-]{36}$/;
 
 // --- 路径安全校验 ---

@@ -1511,7 +1511,7 @@ test('scheduleTmpCleanup: listAgentWorkspaces 失败不崩溃', async () => {
 	// 用短延迟测试
 	const origSetTimeout = globalThis.setTimeout;
 	globalThis.setTimeout = (cb, ms) => {
-		if (ms === 60_000) {
+		if (ms === 2_000) {
 			return origSetTimeout(cb, 10);
 		}
 		return origSetTimeout(cb, ms);
@@ -1539,7 +1539,7 @@ test('scheduleTmpCleanup: 正常执行清理', async () => {
 
 		const origSetTimeout = globalThis.setTimeout;
 		globalThis.setTimeout = (cb, ms) => {
-			if (ms === 60_000) return origSetTimeout(cb, 10);
+			if (ms === 2_000) return origSetTimeout(cb, 10);
 			return origSetTimeout(cb, ms);
 		};
 
