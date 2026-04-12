@@ -351,15 +351,17 @@ export default {
 			this.loadDir();
 		},
 
-		async loadDir({ silent = false } = {}) {
+		async loadDir({ silent = false, dir } = {}) {
 			if (this.loading) return;
 			const clawConn = useClawConnections().get(this.clawId);
 			if (!clawConn) return; // connReady watcher 会在连接就绪后重新触发
+			const targetDir = dir ?? this.currentDir;
 			const gen = ++this.__loadGen;
 			if (!silent) this.loading = true;
 			try {
-				const result = await listFiles(clawConn, this.agentId, this.currentDir || '.');
+				const result = await listFiles(clawConn, this.agentId, targetDir || '.');
 				if (gen !== this.__loadGen) return; // 被更新的请求取代
+				this.currentDir = targetDir;
 				this.entries = result.files || [];
 				this.filesStore.setDirCache(this.clawId, this.agentId, this.currentDir, this.entries);
 			} catch (err) {
@@ -381,22 +383,19 @@ export default {
 
 		navigateTo(path) {
 			this.__cancelInFlight();
-			this.currentDir = path;
-			this.loadDir();
+			this.loadDir({ dir: path });
 		},
 
 		goParent() {
 			this.__cancelInFlight();
 			const parts = this.currentDir.split('/');
 			parts.pop();
-			this.currentDir = parts.join('/');
-			this.loadDir();
+			this.loadDir({ dir: parts.join('/') });
 		},
 
 		onOpenDir(name) {
 			this.__cancelInFlight();
-			this.currentDir = this.currentDir ? `${this.currentDir}/${name}` : name;
-			this.loadDir();
+			this.loadDir({ dir: this.currentDir ? `${this.currentDir}/${name}` : name });
 		},
 
 		/** 中断进行中的 loadDir，确保后续调用不被阻塞且旧响应被丢弃 */

@@ -823,6 +823,7 @@ describe('FileManagerPage', () => {
 			mockListFiles.mockClear();
 
 			wrapper.vm.navigateTo('src/utils');
+			await flushPromises();
 
 			expect(wrapper.vm.currentDir).toBe('src/utils');
 			expect(mockListFiles).toHaveBeenCalled();
@@ -836,6 +837,7 @@ describe('FileManagerPage', () => {
 			mockListFiles.mockClear();
 
 			wrapper.vm.goParent();
+			await flushPromises();
 			expect(wrapper.vm.currentDir).toBe('a/b');
 		});
 
@@ -845,6 +847,7 @@ describe('FileManagerPage', () => {
 
 			await wrapper.setData({ currentDir: 'docs' });
 			wrapper.vm.goParent();
+			await flushPromises();
 			expect(wrapper.vm.currentDir).toBe('');
 		});
 
@@ -854,6 +857,7 @@ describe('FileManagerPage', () => {
 
 			await wrapper.setData({ currentDir: '' });
 			wrapper.vm.onOpenDir('src');
+			await flushPromises();
 			expect(wrapper.vm.currentDir).toBe('src');
 		});
 
@@ -863,6 +867,7 @@ describe('FileManagerPage', () => {
 
 			await wrapper.setData({ currentDir: 'src' });
 			wrapper.vm.onOpenDir('utils');
+			await flushPromises();
 			expect(wrapper.vm.currentDir).toBe('src/utils');
 		});
 
@@ -914,10 +919,40 @@ describe('FileManagerPage', () => {
 			wrapper.vm.navigateTo('bar');
 			await flushPromises();
 
-			// entries 保留的是 foo 的数据（entries.length > 0，不走缓存兜底）
-			expect(wrapper.vm.currentDir).toBe('bar');
+			// 悲观更新：导航失败时 currentDir 不变，entries 保留 foo 的数据
+			expect(wrapper.vm.currentDir).toBe('foo');
 			expect(wrapper.vm.entries).toEqual(fooFiles);
 			warnSpy.mockRestore();
+		});
+
+		test('连接不可用时导航不改变 currentDir', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+			mockListFiles.mockClear();
+
+			// 导航到 foo 成功
+			mockListFiles.mockResolvedValueOnce({ files: [{ name: 'a.txt', type: 'file' }] });
+			wrapper.vm.navigateTo('foo');
+			await flushPromises();
+			expect(wrapper.vm.currentDir).toBe('foo');
+
+			// 断开连接后尝试各种导航，currentDir 均不变
+			mockClawConnGet.mockReturnValue(undefined);
+			mockListFiles.mockClear();
+
+			wrapper.vm.onOpenDir('bar');
+			await flushPromises();
+			expect(wrapper.vm.currentDir).toBe('foo');
+
+			wrapper.vm.navigateTo('baz');
+			await flushPromises();
+			expect(wrapper.vm.currentDir).toBe('foo');
+
+			wrapper.vm.goParent();
+			await flushPromises();
+			expect(wrapper.vm.currentDir).toBe('foo');
+
+			expect(mockListFiles).not.toHaveBeenCalled();
 		});
 
 		test('goParent 中断进行中的 loadDir', async () => {
