@@ -1,5 +1,19 @@
 # @coclaw/openclaw-coclaw
 
+## 0.13.0
+
+### Minor Changes
+
+- feat: pion-ipc WebRTC 实现 + ICE restart 恢复策略 + 文件传输诊断增强
+
+  - 新增 pion-ipc preloader（autoRestart watchdog），WebRTC 优先级：pion → ndc → werift
+  - ICE restart-first 连接恢复：断连时优先 ICE restart，失败发送 restart-rejected 由 UI 驱动 full rebuild
+  - connectionState failed 保留 session 以支持 ICE restart 恢复
+  - 文件传输增加 dc.onerror 处理（兼容 pion 异步 send 错误）、进度日志、诊断 dump
+  - dc.close() 改为 await（pion graceful close 支持）
+  - 分片阈值取 min(远端 max-message-size, 本地 maxMessageSize)
+  - pion-node 依赖升级至 ^0.1.1
+
 ## 0.12.3
 
 ### Patch Changes
