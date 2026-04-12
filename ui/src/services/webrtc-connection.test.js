@@ -2310,4 +2310,56 @@ describe('WebRtcConnection — ICE restart', () => {
 
 		rtc.close();
 	});
+
+	test('connectionState=closed during restarting → 清除 restart 状态并变为 closed', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 进入 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartTimer).not.toBeNull();
+
+		// PC 异常关闭（如浏览器回收）
+		pc.connectionState = 'closed';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('closed');
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartAttemptCount).toBe(0);
+	});
+
+	test('close() 后 triggerRestart/nudgeRestart 无效', async () => {
+		const { rtc } = await setupConnectedRtc();
+		rtc.close();
+		expect(rtc.state).toBe('closed');
+
+		mockSendSignaling.mockClear();
+
+		// 关闭后尝试 restart 操作 → 不产生副作用
+		rtc.triggerRestart('test');
+		expect(rtc.state).toBe('closed');
+
+		rtc.nudgeRestart();
+		expect(rtc.state).toBe('closed');
+		expect(mockSendSignaling).not.toHaveBeenCalled();
+	});
+
+	test('__attemptRestart 重置候选缓冲（__remoteDescSet / __pendingCandidates）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 模拟已收到 answer → __remoteDescSet 为 true
+		rtc.__remoteDescSet = true;
+		rtc.__pendingCandidates = [{ candidate: 'old' }];
+
+		// 进入 restarting → 候选缓冲被重置
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__remoteDescSet).toBe(false);
+		expect(rtc.__pendingCandidates).toEqual([]);
+
+		rtc.close();
+	});
 });

@@ -737,6 +737,9 @@ export class WebRtcConnection {
 		}
 
 		this.__restartAttemptCount++;
+		// restart 重新协商 → 重置候选缓冲，确保新 candidates 等待 restart answer 后再添加
+		this.__remoteDescSet = false;
+		this.__pendingCandidates = [];
 
 		try {
 			const offer = await this.__pc.createOffer({ iceRestart: true });

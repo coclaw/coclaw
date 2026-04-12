@@ -385,6 +385,17 @@ describe('ManageClawsPage', () => {
 		expect(wrapper.vm.sortedClaws[0].name).toBe('RunBot');
 	});
 
+	test('sortedClaws：restarting claw 归入 connecting 组', async () => {
+		mockBots = [
+			{ id: '1', name: 'IdleBot', online: true, rtcPhase: 'ready', lastAliveAt: 1000 },
+			{ id: '2', name: 'RestartBot', online: true, rtcPhase: 'restarting', lastAliveAt: 500 },
+		];
+		const wrapper = createWrapper();
+		await flushPromises();
+		// restarting (connecting=2) 排在 idle (3) 前
+		expect(wrapper.vm.sortedClaws[0].name).toBe('RestartBot');
+	});
+
 	test('sortedClaws：idle 同级按 lastAliveAt 降序', async () => {
 		mockBots = [
 			{ id: '1', name: 'OldIdle', online: true, rtcPhase: 'ready', lastAliveAt: 1000 },
@@ -484,6 +495,22 @@ describe('connLabel', () => {
 		expect(wrapper.vm.connLabel('1')).toBe('WebRTC connecting…');
 	});
 
+	test('rtcPhase=restarting + transportInfo → 显示传输详情（DC 仍存活）', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'restarting', rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · P2P');
+	});
+
+	test('rtcPhase=restarting 无 transportInfo → connecting', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'restarting' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC connecting…');
+	});
+
 	test('rtcPhase=ready + relay UDP → Relay', async () => {
 		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready', rtcTransportInfo: { localType: 'relay', relayProtocol: 'udp' } }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
@@ -574,6 +601,16 @@ describe('clawDotClass', () => {
 
 	test('online + recovering → 黄色脉冲', async () => {
 		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'recovering' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		const cls = wrapper.vm.clawDotClass(mockBots[0]);
+		expect(cls).toContain('bg-yellow-400');
+		expect(cls).toContain('animate-pulse');
+	});
+
+	test('online + restarting → 黄色脉冲', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'restarting' }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();

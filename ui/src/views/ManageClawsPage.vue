@@ -194,7 +194,7 @@ export default {
 				if (!claw.online) return 4; // offline
 				if (claw.rtcPhase === 'failed') return 0; // failed
 				if (this.__hasRunningAgent(claw.id)) return 1; // running
-				if (claw.rtcPhase === 'building' || claw.rtcPhase === 'recovering') return 2; // connecting
+				if (claw.rtcPhase === 'building' || claw.rtcPhase === 'recovering' || claw.rtcPhase === 'restarting') return 2; // connecting
 				return 3; // idle
 			};
 			return [...this.claws].sort((a, b) => {
@@ -280,7 +280,8 @@ export default {
 				}
 				return this.$t('claws.conn.rtcRetryExhausted');
 			}
-			if (claw.rtcPhase !== 'ready') return this.$t('claws.conn.rtcConnecting');
+			// restarting 时 DC 仍存活，按 ready 显示传输详情
+			if (claw.rtcPhase !== 'ready' && claw.rtcPhase !== 'restarting') return this.$t('claws.conn.rtcConnecting');
 			const info = claw.rtcTransportInfo;
 			if (!info) return this.$t('claws.conn.rtcConnecting');
 			if (info.localType === 'relay') {

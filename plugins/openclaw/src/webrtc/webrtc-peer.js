@@ -115,7 +115,9 @@ export class WebRtcPeer {
 						toConnId: connId,
 						payload: { reason: 'restart_failed' },
 					});
-					await this.closeByConnId(connId);
+					await this.closeByConnId(connId).catch((closeErr) => {
+						this.logger.warn?.(`[coclaw/rtc] closeByConnId failed after restart rejection for ${connId}: ${closeErr?.message}`);
+					});
 					return;
 				}
 			}
