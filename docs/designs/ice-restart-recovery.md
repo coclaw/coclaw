@@ -1,8 +1,8 @@
 # ICE Restart 恢复策略
 
-> 状态：待实施
+> 状态：已实施（db12a17 + 9a5cdf0）
 > 日期：2026-04-12
-> 范围：UI（WebRtcConnection、claws.store）、Server（claw-ws-hub 信令路由）、Plugin（webrtc-peer）
+> 范���：UI（WebRtcConnection、claws.store、ManageClawsPage）、Server（claw-ws-hub 信令��由）、Plugin（webrtc-peer）
 
 ---
 
@@ -101,11 +101,15 @@ idle → building → ready ⇄ restarting
 **`__attemptRestart(reason)`**：发起 ICE restart offer
 
 ```
-1. 防重入守卫（restarting 时不重复 setState）
-2. pc.createOffer({ iceRestart: true })
-3. pc.setLocalDescription(offer)
-4. sendSignaling('rtc:offer', { sdp, iceRestart: true })
-5. 首次进入 restarting 时启动周期重试定时器
+1. 守卫：!pc || state=closed → return
+2. 连续失败计数 >= ICE_RESTART_MAX_FAILURES → 放弃 → setState('failed')
+3. 同步 setState('restarting')（仅首次，确保状态立即可观测）
+4. 确保周期重试定时器运行（首次进入或 background 后恢复）
+5. 信令 WS 不可用 → 跳过本次 offer（周期重试或 nudge 会再来）
+6. 计数递增 + 重置候选缓冲（__remoteDescSet / __pendingCandidates）
+7. pc.createOffer({ iceRestart: true })
+8. pc.setLocalDescription(offer)
+9. sendSignaling('rtc:offer', { sdp, iceRestart: true })
 ```
 
 **`nudgeRestart()`**（public）：store 调用，外部事件触发立即重试
@@ -126,8 +130,10 @@ if (state === 'connected') → __attemptRestart(reason)
 
 ```
 connected:
-  + 如果当前 restarting → 清除 restart 定时器，log restart 成功
+  + 如果当前 restarting → 清除 restart 定时器/计数器，log restart 成功
   setState('connected')
+  + __startKeepalive()  // 幂等；restart 成功后恢复保活
+  __resolveCandidateType(pc)
 
 disconnected:
   + 如果当前 restarting → 忽略（restart 过程中的中间状态）
@@ -136,6 +142,9 @@ disconnected:
 failed:
   + 如果当前 restarting → 本次 ICE check 失败，留在 restarting，等下次触发
   否则 → __onIceFailed()（现有逻辑不变）
+
+closed:
+  清除 disconnected timer + restart 状态 → setState('closed')
 ```
 
 #### 新增 `rtc:restart-rejected` 信令处理
@@ -156,12 +165,13 @@ __onSignaling(msg):
 
 #### 其他联动修改
 
-- `dc.onclose`：restarting 时 → SCTP 已断，restart 无法挽救 → `__setState('failed')`
+- `dc.onclose`：restarting 时 → SCTP 已断，restart 无法挽救 → `__clearRestartState()` + `__setState('failed')`
 - `__doKeepalive`：restarting 时跳过本轮 probe
+- `__doKeepalive`（失败路径）：从 `this.close()` 改为 `this.__onIceFailed()`
 - `createDataChannel()`：restarting 时返回 null
 - `send()`：**不变**（DC 仍 open，数据进 SCTP 缓冲，restart 成功后 flush）
 - 发送队列：**不 reject、不清空**
-- `close()`：清除 restart 定时器
+- `close()`：清除 restart 定时器/计数器
 
 #### 兼容兜底
 
@@ -180,7 +190,7 @@ __onSignaling(msg):
     return
 ```
 
-其余 `connected`、`failed`、`closed` 处理不变。
+`connected` 分支变更：无条件设置 `claw.rtcPhase = 'ready'`（确保 restarting→connected 正确恢复），用 `wasDisconnected = !claw.dcReady` 判断是否需要 `__refreshIfStale`。其余 `failed`、`closed` 处理不变。
 
 #### `__handleNetworkOnline(typeChanged)`
 
@@ -210,6 +220,14 @@ restarting 时：
 #### 不变部分
 
 `__ensureRtc`、`__scheduleRetry`、`__fullInit`、`__clearRetry` 等全部保留——它们仍是 restart 被 reject 后的 fallback 路径。
+
+### 4.2.1 UI: ManageClawsPage（`ui/src/views/ManageClawsPage.vue`）
+
+`rtcPhase='restarting'` 的 UI 适配：
+
+- **排序优先级**：归入 connecting 组（与 building/recovering 同级），确保 restarting 的 claw 排在 idle 前
+- **连接标签**：restarting 时 DC 仍存活，按 ready 显示传输详情（而非通用"连接中"）；无 transportInfo 时回退到"连接中"
+- **状态点颜色**：黄色脉冲（与其他中间状态一致）
 
 ### 4.3 Server（`server/src/claw-ws-hub.js`）
 
@@ -265,7 +283,7 @@ if (isIceRestart) {
                 toConnId: connId,
                 payload: { reason: 'restart_failed' },
             });
-            await this.closeByConnId(connId);
+            await this.closeByConnId(connId).catch(logWarn);
             return; // 不 fall through
         }
     }
