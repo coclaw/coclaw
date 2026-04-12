@@ -317,7 +317,7 @@ function onClawMessage(clawId, ws, raw) {
 	}
 
 	// WebRTC 信令：Plugin → 定向投递到指定 UI socket
-	if (payload.type === 'rtc:answer' || payload.type === 'rtc:ice' || payload.type === 'rtc:closed') {
+	if (payload.type === 'rtc:answer' || payload.type === 'rtc:ice' || payload.type === 'rtc:closed' || payload.type === 'rtc:restart-rejected') {
 		// 优先通过新信令路由表投递
 		if (routeToUi(payload.toConnId, payload)) {
 			rtcLogDebug(`${payload.type} routed via signal-router connId=${payload.toConnId}`);

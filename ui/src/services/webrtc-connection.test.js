@@ -7,10 +7,13 @@ vi.mock('./remote-log.js', () => ({ remoteLog: vi.fn() }));
 const mockSendSignaling = vi.fn().mockReturnValue(true);
 const mockEnsureConnected = vi.fn().mockResolvedValue(undefined);
 const sigListeners = {};
+/** 信令 WS 状态（可在测试中切换） */
+let mockSigState = 'connected';
 vi.mock('./signaling-connection.js', () => ({
 	useSignalingConnection: () => ({
 		sendSignaling: mockSendSignaling,
 		ensureConnected: mockEnsureConnected,
+		get state() { return mockSigState; },
 		on(event, cb) { (sigListeners[event] ??= []).push(cb); },
 		off(event, cb) {
 			if (sigListeners[event]) sigListeners[event] = sigListeners[event].filter(c => c !== cb);
@@ -38,6 +41,7 @@ beforeEach(() => {
 	mockSendSignaling.mockReturnValue(true);
 	mockEnsureConnected.mockReset();
 	mockEnsureConnected.mockResolvedValue(undefined);
+	mockSigState = 'connected';
 	for (const key of Object.keys(sigListeners)) delete sigListeners[key];
 });
 
@@ -659,19 +663,20 @@ describe('WebRtcConnection — close', () => {
 	});
 });
 
-describe('WebRtcConnection — __onIceFailed', () => {
+describe('WebRtcConnection — __onIceFailed → ICE restart', () => {
 	beforeEach(() => {
 		MockRTCPeerConnection.lastInstance = null;
 		pcInstances.length = 0;
 	});
 
-	test('ICE failed 直接上报 failed 状态（不做内部 rebuild）', async () => {
+	test('ICE failed 触发 ICE restart（发送 restart offer）', async () => {
 		const clawConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		const stateChanges = [];
 		rtc.onStateChange = (s) => stateChanges.push(s);
 
 		await rtc.connect(MOCK_TURN_CREDS);
+		mockSendSignaling.mockClear();
 
 		const pc = MockRTCPeerConnection.lastInstance;
 		pc.connectionState = 'failed';
@@ -679,10 +684,18 @@ describe('WebRtcConnection — __onIceFailed', () => {
 
 		await new Promise((r) => setTimeout(r, 0));
 
-		// 不创建新 PeerConnection（无内部 rebuild）
+		// 不创建新 PC（ICE restart 复用现有 PC）
 		expect(pcInstances.length).toBe(1);
-		expect(rtc.state).toBe('failed');
-		expect(stateChanges).toContain('failed');
+		// 进入 restarting 状态
+		expect(rtc.state).toBe('restarting');
+		expect(stateChanges).toContain('restarting');
+		// 发送了 ICE restart offer
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+		// createOffer 使用了 iceRestart: true
+		expect(pc.__createOfferOpts.at(-1)).toEqual({ iceRestart: true });
 
 		rtc.close();
 	});
@@ -1435,19 +1448,18 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 
 	// --- probe 失败场景 ---
 
-	test('probe 超时 + 无近期活动 → close() 并记录 remoteLog', async () => {
+	test('probe 超时 + 无近期活动 → 触发 ICE restart 并记录 remoteLog', async () => {
 		const { remoteLog } = await import('./remote-log.js');
 		remoteLog.mockClear();
 		const { rtc } = await setupConnectedRtc();
-		const closeSpy = vi.spyOn(rtc, 'close');
 
 		// 30s 间隔 + 20s 超时 = 50s，远超 30s 活动宽限
 		await vi.advanceTimersByTimeAsync(30_000);
 		await vi.advanceTimersByTimeAsync(10_000);
 		await vi.advanceTimersByTimeAsync(0);
 
-		expect(closeSpy).toHaveBeenCalledTimes(1);
-		expect(rtc.state).toBe('closed');
+		// 不再 close，而是触发 ICE restart
+		expect(rtc.state).toBe('restarting');
 		expect(remoteLog).toHaveBeenCalledWith(expect.stringContaining('dc.keepalive-failed'));
 	});
 
@@ -1467,7 +1479,7 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		expect(closeSpy).not.toHaveBeenCalled();
 	});
 
-	test('DC 已 null 且无近期活动 → close()', async () => {
+	test('DC 已 null 且无近期活动 → 触发 ICE restart', async () => {
 		const { rtc } = await setupConnectedRtc();
 
 		rtc.__rpcChannel = null;
@@ -1476,7 +1488,7 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		await vi.advanceTimersByTimeAsync(30_000);
 		await vi.advanceTimersByTimeAsync(0);
 
-		expect(rtc.state).toBe('closed');
+		expect(rtc.state).toBe('restarting');
 	});
 
 	// --- generation 机制 ---
@@ -1575,10 +1587,11 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 
 		window.dispatchEvent(new Event('app:background'));
 
-		// __onIceFailed → setState('failed')，不调 close()
+		// __onIceFailed → restarting（同步），keepalive 已停止
 		// foreground handler 仍注册，但检查 state !== 'connected' → 不启动
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('restarting');
 
 		window.dispatchEvent(new Event('app:foreground'));
 		expect(rtc.__keepaliveTimer).toBeNull();
@@ -1650,15 +1663,16 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 
 		await vi.advanceTimersByTimeAsync(30_000);
 
-		// failed 会通过 __onIceFailed 改变 __state
+		// failed → __onIceFailed → restarting（同步）
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
-		expect(rtc.state).toBe('failed');
+		expect(rtc.state).toBe('restarting');
 
 		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
 		await vi.advanceTimersByTimeAsync(0);
 
-		// state='failed'，不应调度下一次
+		// state='restarting'（非 connected），不应调度 keepalive 下一次
+		// restart 有自己的周期重试定时器
 		expect(rtc.__keepaliveTimer).toBeNull();
 		rtc.close();
 	});
@@ -1675,9 +1689,8 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		rtc.close();
 	});
 
-	test('DC 在保活 probe 进行中被置 null → probe 超时后 close', async () => {
+	test('DC 在保活 probe 进行中被置 null → probe 超时后触发 ICE restart', async () => {
 		const { rtc } = await setupConnectedRtc();
-		const closeSpy = vi.spyOn(rtc, 'close');
 
 		// probe 发出
 		await vi.advanceTimersByTimeAsync(30_000);
@@ -1688,8 +1701,8 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		await vi.advanceTimersByTimeAsync(10_000);
 		await vi.advanceTimersByTimeAsync(0);
 
-		// state 仍是 connected → close()
-		expect(closeSpy).toHaveBeenCalledTimes(1);
+		// state 仍是 connected → 触发 ICE restart
+		expect(rtc.state).toBe('restarting');
 	});
 
 	test('dc.onopen 在 close() 之后触发时被 staleness guard 拦截', async () => {
@@ -1886,9 +1899,8 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		rtc.close();
 	});
 
-	test('probe 超时 + 活动超出宽限期 → close()', async () => {
+	test('probe 超时 + 活动超出宽限期 → 触发 ICE restart', async () => {
 		const { rtc } = await setupConnectedRtc();
-		const closeSpy = vi.spyOn(rtc, 'close');
 
 		// dc.onopen 时设置了 __lastDcActivityAt
 		// 30s 间隔 + 20s 超时 = 50s，远超 30s 宽限
@@ -1896,10 +1908,10 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		await vi.advanceTimersByTimeAsync(10_000);
 		await vi.advanceTimersByTimeAsync(0);
 
-		expect(closeSpy).toHaveBeenCalledTimes(1);
+		expect(rtc.state).toBe('restarting');
 	});
 
-	test('__lastDcActivityAt=0 时无宽限保护 → close()', async () => {
+	test('__lastDcActivityAt=0 时无宽限保护 → 触发 ICE restart', async () => {
 		const { rtc } = await setupConnectedRtc();
 		// 强制清零（模拟未初始化场景）
 		rtc.__lastDcActivityAt = 0;
@@ -1908,12 +1920,11 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		await vi.advanceTimersByTimeAsync(10_000);
 		await vi.advanceTimersByTimeAsync(0);
 
-		expect(rtc.state).toBe('closed');
+		expect(rtc.state).toBe('restarting');
 	});
 
-	test('连续多次宽限跳过后活动停止 → 最终 close', async () => {
+	test('连续多次宽限跳过后活动停止 → 最终触发 ICE restart', async () => {
 		const { rtc, dc } = await setupConnectedRtc();
-		const closeSpy = vi.spyOn(rtc, 'close');
 		const fileDc = rtc.createDataChannel('file:big', { ordered: true });
 
 		// 第一次 probe：有活动，跳过
@@ -1922,7 +1933,7 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		fileDc.__fireDcEvent('message'); // 更新活动时间
 		await vi.advanceTimersByTimeAsync(5_000); // probe 超时
 		await vi.advanceTimersByTimeAsync(0);
-		expect(closeSpy).not.toHaveBeenCalled();
+		expect(rtc.state).toBe('connected');
 
 		// 第二次 probe：仍有活动，跳过
 		await vi.advanceTimersByTimeAsync(30_000);
@@ -1930,14 +1941,14 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		fileDc.__fireDcEvent('message');
 		await vi.advanceTimersByTimeAsync(5_000);
 		await vi.advanceTimersByTimeAsync(0);
-		expect(closeSpy).not.toHaveBeenCalled();
+		expect(rtc.state).toBe('connected');
 
 		// 第三次 probe：活动停止（不再 fire message）
 		await vi.advanceTimersByTimeAsync(30_000);
 		await vi.advanceTimersByTimeAsync(10_000);
 		await vi.advanceTimersByTimeAsync(0);
-		// 距上次活动 30s+10s=40s > 30s 宽限 → close
-		expect(closeSpy).toHaveBeenCalledTimes(1);
+		// 距上次活动 30s+10s=40s > 30s 宽限 → ICE restart
+		expect(rtc.state).toBe('restarting');
 	});
 
 	test('宽限跳过后 probe 成功 → 正常周期恢复', async () => {
@@ -1975,5 +1986,328 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 		expect(() => fileDc.__fireDcEvent('message')).not.toThrow();
 		// __lastDcActivityAt 被更新但保活已停止，无影响
 		expect(rtc.__keepaliveTimer).toBeNull();
+	});
+});
+
+// --- ICE restart 测试 ---
+
+describe('WebRtcConnection — ICE restart', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('restarting 时 connected → 清除 restart 状态，恢复 connected', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 触发 ICE failed → restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartTimer).not.toBeNull();
+
+		// ICE restart 成功 → connected
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartAttemptCount).toBe(0);
+
+		rtc.close();
+	});
+
+	test('restarting 时 disconnected → 忽略（中间状态）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// disconnected 不应改变状态
+		pc.connectionState = 'disconnected';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('restarting');
+
+		rtc.close();
+	});
+
+	test('restarting 时 failed → 留在 restarting（等下次触发）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// 再次 failed（ICE check 失败）��� 仍在 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('restarting');
+
+		rtc.close();
+	});
+
+	test('rtc:restart-rejected → failed', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// plugin 回复 restart-rejected
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:restart-rejected', payload: { reason: 'no_session' } });
+		expect(rtc.state).toBe('failed');
+		expect(rtc.__restartTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('restarting 时 DC 关闭 → SCTP 丢失 → failed', async () => {
+		const { rtc, pc, dc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// DC 关闭（SCTP 断裂）
+		dc.readyState = 'closed';
+		dc.onclose();
+		expect(rtc.state).toBe('failed');
+		expect(rtc.__restartTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('createDataChannel 在 restarting 时返回 null', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		const dc = rtc.createDataChannel('file:test');
+		expect(dc).toBeNull();
+
+		rtc.close();
+	});
+
+	test('nudgeRestart：仅 restarting 时生效', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		mockSendSignaling.mockClear();
+
+		// connected → nudge 无效
+		rtc.nudgeRestart();
+		expect(mockSendSignaling).not.toHaveBeenCalled();
+
+		// 进入 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		mockSendSignaling.mockClear();
+
+		// restarting → nudge 发送新 offer
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+
+		rtc.close();
+	});
+
+	test('triggerRestart：从 connected 主动发起', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		mockSendSignaling.mockClear();
+
+		rtc.triggerRestart('network_type_changed');
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+
+		rtc.close();
+	});
+
+	test('连续失败达到上限 → failed', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartAttemptCount).toBe(1);
+
+		// 第 2、3 次 nudge
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartAttemptCount).toBe(2);
+
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartAttemptCount).toBe(3);
+
+		// 第 4 次 nudge：check 3 >= 3 → 放弃 → failed
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('failed');
+		expect(rtc.__restartAttemptCount).toBe(0);
+
+		rtc.close();
+	});
+
+	test('信令 WS 未连接 → 跳过 offer，仍进入 restarting', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		mockSigState = 'disconnected';
+		mockSendSignaling.mockClear();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		// 没有发送 offer（WS 不通）
+		expect(mockSendSignaling).not.toHaveBeenCalled();
+		// 但 attempt count 没有增加（跳过不计数）
+		expect(rtc.__restartAttemptCount).toBe(0);
+
+		rtc.close();
+	});
+
+	test('周期重试定时器每 60s 重发 offer', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		mockSendSignaling.mockClear();
+
+		// 60s 后周期重试
+		await vi.advanceTimersByTimeAsync(60_000);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+
+		rtc.close();
+	});
+
+	test('close() 清除 restart 状态', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartTimer).not.toBeNull();
+
+		rtc.close();
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartAttemptCount).toBe(0);
+	});
+
+	test('app:background 停止 restart 定时器', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartTimer).not.toBeNull();
+
+		// 模拟进入后台
+		window.dispatchEvent(new Event('app:background'));
+		expect(rtc.__restartTimer).toBeNull();
+		// 仍在 restarting（不改变状态，等前台 nudge）
+		expect(rtc.state).toBe('restarting');
+
+		rtc.close();
+	});
+
+	test('restarting 时 keepalive 跳过 probe', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// 手动启动 keepalive（不应该在 restarting 时启动，但测试防御性）
+		rtc.__keepaliveGen = 99;
+		const probeSpy = vi.spyOn(rtc, 'probe');
+		await rtc.__doKeepalive(99);
+		expect(probeSpy).not.toHaveBeenCalled();
+
+		rtc.close();
+	});
+
+	test('createOffer 抛异常 → 清除 restart 状态，变为 failed', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 让 createOffer 抛异常
+		pc.createOffer = async () => { throw new Error('PC in invalid state'); };
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// createOffer 失败 → 直接 failed
+		expect(rtc.state).toBe('failed');
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartAttemptCount).toBe(0);
+
+		rtc.close();
+	});
+
+	test('ICE restart 成功后 keepalive 重新启动', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 进入 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		// restart 成功
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('connected');
+		// keepalive 应已重启
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	test('background→foreground 后 restart 定时器恢复', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartTimer).not.toBeNull();
+
+		// 后台 → 停止 timer
+		window.dispatchEvent(new Event('app:background'));
+		expect(rtc.__restartTimer).toBeNull();
+
+		// nudge（模拟 store 前台恢复调用）→ 应恢复 timer
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartTimer).not.toBeNull();
+
+		rtc.close();
 	});
 });

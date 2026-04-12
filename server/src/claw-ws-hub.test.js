@@ -1485,6 +1485,27 @@ test('onClawMessage: rtc:closed 通过 signal-router 投递', () => {
 	cleanupSockets('bot-sr3');
 });
 
+test('onClawMessage: rtc:restart-rejected 通过 signal-router 投递', () => {
+	const routeWs = createMockWs({ connId: 'c_sr4' });
+	registerSignalRoute('c_sr4', routeWs, 'bot-sr4', 'user1');
+
+	const clawWs = createMockWs();
+	setupSockets('bot-sr4', { bot: [clawWs] });
+
+	onClawMessage('bot-sr4', clawWs, JSON.stringify({
+		type: 'rtc:restart-rejected',
+		toConnId: 'c_sr4',
+		payload: { reason: 'no_session' },
+	}));
+
+	assert.equal(routeWs.sent.length, 1);
+	assert.equal(routeWs.sent[0].type, 'rtc:restart-rejected');
+	assert.equal(routeWs.sent[0].payload.reason, 'no_session');
+
+	signalRoutes.delete('c_sr4');
+	cleanupSockets('bot-sr4');
+});
+
 // --- onClawMessage: coclaw.info.updated 中 updateClawName 抛同步异常 ---
 
 test('onClawMessage: coclaw.info.updated 处理时不崩溃（payload 为 null）', () => {

@@ -89,7 +89,7 @@ function createClawState(claw) {
 		createdAt: claw.createdAt ?? null,
 		updatedAt: claw.updatedAt ?? null,
 		// RTC 生命周期
-		rtcPhase: 'idle', // 'idle' | 'building' | 'ready' | 'recovering' | 'failed'
+		rtcPhase: 'idle', // 'idle' | 'building' | 'ready' | 'restarting' | 'recovering' | 'failed'
 		lastAliveAt: 0,
 		disconnectedAt: 0,
 		// 初始化标记（首次 vs 重连）
@@ -265,10 +265,11 @@ export const useClawsStore = defineStore('claws', {
 			}
 
 			// RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标。
-			// network:online 分级处理：
-			//   - typeChanged → 直接 rebuild（旧 ICE 路径必然失效，ndc 不支持 ICE restart）
-			//   - PC failed/closed → 直接 rebuild（加速长 offline 后的恢复）
-			//   - 其余 → 跳过（ICE 在前台自检测，无需干预）
+			// network:online 分级处理（restart-first）：
+			//   - restarting → nudge（立即重试 restart offer）
+			//   - connected + typeChanged → triggerRestart（主动 ICE restart）
+			//   - failed/closed → rebuild（restart 失败后的 fallback）
+			//   - 其余 → 跳过（ICE 有自检测能力）
 			// app:foreground 走 probe 路径（OS 挂起导致 ICE 回调积压，PC 状态不可信）。
 			sigConn.on('foreground-resume', ({ source, typeChanged }) => {
 				if (source === 'network:online') {
@@ -345,13 +346,16 @@ export const useClawsStore = defineStore('claws', {
 					if (!claw) return;
 					if (transportInfo) claw.rtcTransportInfo = transportInfo;
 					if (state === 'connected') {
-						// 被动恢复成功：DC 已就绪但 store 未主动发起
 						const conn = useClawConnections().get(clawId);
-						if (conn?.rtc?.isReady && !claw.dcReady) {
+						if (conn?.rtc?.isReady) {
+							const wasDisconnected = !claw.dcReady;
 							claw.dcReady = true;
 							claw.rtcPhase = 'ready';
-							this.__refreshIfStale(clawId);
+							if (wasDisconnected) this.__refreshIfStale(clawId);
 						}
+					} else if (state === 'restarting') {
+						claw.rtcPhase = 'restarting';
+						claw.disconnectedAt = claw.disconnectedAt || Date.now();
 					} else if (state === 'failed' || state === 'closed') {
 						claw.dcReady = false;
 						claw.disconnectedAt = Date.now();
@@ -537,10 +541,11 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
-		 * network:online 分级处理。
-		 * - typeChanged → 直接 rebuild 所有 claw（WiFi↔cellular，旧 ICE 路径失效）
-		 * - PC failed/closed → 直接 rebuild（加速长 offline 后恢复，避免等退避 timer）
-		 * - 其余 → 跳过（ICE 在前台持续运行，有自检测能力）
+		 * network:online 分级处理（restart-first）。
+		 * - restarting → nudge（立即重试 restart offer）
+		 * - connected + typeChanged → triggerRestart（WiFi↔cellular，主动 restart）
+		 * - failed/closed → rebuild（restart 已失败，走 fallback）
+		 * - 其余 → 跳过（ICE 有自检测能力）
 		 * @param {boolean} typeChanged
 		 */
 		__handleNetworkOnline(typeChanged) {
@@ -552,11 +557,13 @@ export const useClawsStore = defineStore('claws', {
 				const rtc = conn?.rtc;
 				if (!rtc) continue;
 
-				if (typeChanged) {
+				if (rtc.state === 'restarting') {
+					rtc.nudgeRestart();
+					continue;
+				}
+				if (rtc.state === 'connected' && typeChanged) {
 					remoteLog(`claw.recover claw=${id} reason=network_type_changed source=network:online`);
-					claw.rtcPhase = 'recovering';
-					this.__clearRetry(id);
-					this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
+					rtc.triggerRestart('network_type_changed');
 					continue;
 				}
 				if (rtc.state === 'failed' || rtc.state === 'closed') {
@@ -565,7 +572,6 @@ export const useClawsStore = defineStore('claws', {
 					this.__clearRetry(id);
 					this.__ensureRtc(id).catch(() => {});
 				}
-				// connected / disconnected → 跳过，信任 ICE 自检测
 			}
 		},
 
@@ -589,7 +595,13 @@ export const useClawsStore = defineStore('claws', {
 				const rtc = conn?.rtc;
 				if (!rtc) return;
 
-				// PC 已明确不可用 → 直接 rebuild
+				// restarting → nudge 立即重试
+				if (rtc.state === 'restarting') {
+					rtc.nudgeRestart();
+					return;
+				}
+
+				// PC 已明确不可用 → 直接 rebuild（restart 已失败）
 				if (rtc.state === 'failed' || rtc.state === 'closed') {
 					remoteLog(`claw.recover claw=${id} reason=rtc_${rtc.state} source=${source}`);
 					claw.rtcPhase = 'recovering';
@@ -599,8 +611,8 @@ export const useClawsStore = defineStore('claws', {
 				}
 
 				// PC disconnected → ICE 正在自恢复，不干预。
-				// WebRtcConnection 内部 5s 超时后升级到 failed，
-				// 届时由 __rtcCallbacks.onRtcStateChange 触发 __scheduleRetry。
+				// WebRtcConnection 内部 5s 超时后升级到 ICE restart，
+				// 届时由 __rtcCallbacks.onRtcStateChange 同步 rtcPhase。
 				if (rtc.state === 'disconnected') {
 					remoteLog(`claw.recover claw=${id} reason=rtc_disconnected source=${source} action=wait_ice`);
 					return;
@@ -625,11 +637,9 @@ export const useClawsStore = defineStore('claws', {
 					return;
 				}
 
-				// PC 在 probe 等待期间已变为非 connected → rebuild
+				// PC 在 probe 等待期间已变为非 connected → 触发 ICE restart
 				remoteLog(`claw.recover claw=${id} reason=probe_failed pc=${rtcAfter?.state ?? 'null'}`);
-				this.byId[id].rtcPhase = 'recovering';
-				this.__clearRetry(id);
-				this.__ensureRtc(id, { forceRebuild: true }).catch(() => {});
+				if (rtcAfter) rtcAfter.triggerRestart('probe_failed');
 			} catch (err) {
 				console.warn('[claws] checkAndRecover failed clawId=%s: %s', id, err?.message);
 			}

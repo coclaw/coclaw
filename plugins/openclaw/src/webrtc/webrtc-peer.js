@@ -1,6 +1,10 @@
 import { chunkAndSend, createReassembler } from './dc-chunking.js';
 import { remoteLog } from '../remote-log.js';
 
+// 单个 session 内 file DC 历史快照的容量上限（满后按 FIFO 淘汰最老条目）。
+// 用于诊断 dump：过大会撑爆 remoteLog 单帧，20 足以覆盖典型多文件传输会话。
+const FILE_CHANNEL_HISTORY_LIMIT = 20;
+
 /**
  * 管理多个 WebRTC PeerConnection（以 connId 为粒度）。
  * Plugin 作为被叫方：收到 UI 的 offer → 回复 answer。
@@ -52,6 +56,9 @@ export class WebRtcPeer {
 		// 先 detach 事件，防止 pc.close() 异步触发 onconnectionstatechange 删除新 session
 		session.pc.onconnectionstatechange = null;
 		session.pc.onicecandidate = null;
+		if ('onselectedcandidatepairchange' in session.pc) {
+			session.pc.onselectedcandidatepairchange = null;
+		}
 		await session.pc.close();
 		remoteLog(`rtc.closed conn=${connId}`);
 		this.logger.info?.(`[coclaw/rtc] [${connId}] closed`);
@@ -100,13 +107,27 @@ export class WebRtcPeer {
 					this.logger.info?.(`[coclaw/rtc] ICE restart answer sent to ${connId}`);
 					return;
 				} catch (err) {
-					// ICE restart 协商失败 → 回退到 full rebuild
+					// ICE restart 协商失败 → reject，不 fall through
 					remoteLog(`rtc.ice-restart-failed conn=${connId}`);
-					this.logger.warn?.(`[coclaw/rtc] ICE restart failed for ${connId}, falling back to rebuild: ${err?.message}`);
+					this.logger.warn?.(`[coclaw/rtc] ICE restart failed for ${connId}: ${err?.message}`);
+					this.__onSend({
+						type: 'rtc:restart-rejected',
+						toConnId: connId,
+						payload: { reason: 'restart_failed' },
+					});
 					await this.closeByConnId(connId);
+					return;
 				}
 			}
-			// 无现有 session 或 ICE restart 失败 → 按 full rebuild 继续
+			// 无 session → reject（plugin 可能已重启）
+			remoteLog(`rtc.ice-restart-no-session conn=${connId}`);
+			this.logger.warn?.(`[coclaw/rtc] ICE restart from ${connId} but no session, rejecting`);
+			this.__onSend({
+				type: 'rtc:restart-rejected',
+				toConnId: connId,
+				payload: { reason: 'no_session' },
+			});
+			return;
 		}
 
 		remoteLog(`rtc.offer conn=${connId}`);
@@ -139,11 +160,15 @@ export class WebRtcPeer {
 
 		const pc = new this.__PeerConnection({ iceServers });
 
-		// 从 SDP 解析对端 maxMessageSize（用于分片决策）
+		// 分片阈值 = min(远端能接收, 本地能发送)
+		// 远端：从 offer SDP 的 a=max-message-size 解析（缺失则 RFC 8841 默认 65536）
+		// 本地：pc.maxMessageSize（pion 为 65536，ndc/werift 无此属性则不限制）
 		const mmsMatch = msg.payload.sdp?.match(/a=max-message-size:(\d+)/);
-		const remoteMaxMessageSize = mmsMatch ? parseInt(mmsMatch[1], 10) : 65536;
+		const remoteMMS = mmsMatch ? parseInt(mmsMatch[1], 10) : 65536;
+		const localMMS = pc.maxMessageSize ?? remoteMMS;
+		const remoteMaxMessageSize = Math.min(remoteMMS, localMMS);
 
-		const session = { pc, rpcChannel: null, remoteMaxMessageSize, nextMsgId: 1 };
+		const session = { pc, rpcChannel: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
 		this.__sessions.set(connId, session);
 
 		// ICE candidate → 发给 UI，并统计各类型 candidate 数量
@@ -175,7 +200,15 @@ export class WebRtcPeer {
 			const state = pc.connectionState;
 			remoteLog(`rtc.state conn=${connId} ${state}`);
 			this.logger.info?.(`[coclaw/rtc] [${connId}] connectionState: ${state}`);
+
+			// 校验 pc 归属：旧 PC 的异步回调可能在新 session 已建立后触发
+			const cur = this.__sessions.get(connId);
+			if (!cur || cur.pc !== pc) return;
+
 			if (state === 'connected') {
+				// 重置 dump 去重水位（disconnected → connected → disconnected 仍能再 dump）
+				cur.__lastDumpState = null;
+				// werift: iceTransports[0].connection.nominated
 				const nominated = pc.iceTransports?.[0]?.connection?.nominated;
 				if (nominated) {
 					const localC = nominated.localCandidate;
@@ -185,13 +218,32 @@ export class WebRtcPeer {
 					remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
 					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
 				}
-			} else if (state === 'failed' || state === 'closed') {
-				const cur = this.__sessions.get(connId);
-				if (cur && cur.pc === pc) {
+				// pion: pair 通过独立的 selectedcandidatepairchange 事件上报
+			} else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+				// 诊断 dump：失败/断连/关闭时输出当前 PC 上 DC 状态，定位"PC 假活/DC 死"现象
+				// - closed 多由本地主动关闭触发，dump 收敛诊断噪声但仍清理 session
+				// - disconnected 可能反复触发，去重避免噪声
+				if (state !== 'closed' && cur.__lastDumpState !== state) {
+					cur.__lastDumpState = state;
+					this.__dumpSessionState(connId, cur, state);
+				}
+				// 仅 closed 删除 session；failed 保留以支持 ICE restart 恢复
+				// （如 app 后台冻结 → pion ICE failed → 前台恢复后 restart）
+				if (state === 'closed') {
 					this.__sessions.delete(connId);
 				}
 			}
 		};
+
+		// pion: 选中的 candidate pair 通过独立事件上报
+		if ('onselectedcandidatepairchange' in pc) {
+			pc.onselectedcandidatepairchange = () => {
+				const pair = pc.selectedCandidatePair;
+				if (pair) {
+					this.__logNominatedPair(connId, pair);
+				}
+			};
+		}
 
 		// 监听 UI 创建的 DataChannel
 		pc.ondatachannel = ({ channel }) => {
@@ -201,6 +253,13 @@ export class WebRtcPeer {
 				session.rpcChannel = channel;
 				this.__setupDataChannel(connId, channel);
 			} else if (channel.label.startsWith('file:')) {
+				// 跟踪 file DC 用于诊断 dump：保留全量历史以便排查"传输到一半挂掉"场景，
+				// 但用 FIFO 上限避免长会话内无界增长
+				if (session.fileChannels.size >= FILE_CHANNEL_HISTORY_LIMIT) {
+					const oldest = session.fileChannels.values().next().value;
+					session.fileChannels.delete(oldest);
+				}
+				session.fileChannels.add(channel);
 				this.__onFileChannel?.(channel, connId);
 			}
 		};
@@ -301,6 +360,27 @@ export class WebRtcPeer {
 				this.logger.warn?.(`[coclaw/rtc] [${connId}] DC message error: ${err.message}`);
 			}
 		};
+	}
+
+	/**
+	 * 失败/断连时输出 session 诊断快照：rpc/file DC readyState、session 总数。
+	 * 用于定位"PC 假活但 DC 已死"或"PC 已断但 DC 仍在传"的异常现象。
+	 */
+	__dumpSessionState(connId, session, state) {
+		const rpcState = session.rpcChannel?.readyState ?? 'none';
+		const fileSummary = session.fileChannels.size === 0
+			? 'none'
+			/* c8 ignore next -- ?? fallback for missing readyState */
+			: [...session.fileChannels].map((dc) => `${dc.label}=${dc.readyState ?? '?'}`).join(',');
+		remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
+		this.logger.info?.(`[coclaw/rtc] [${connId}] dump state=${state} rpc=${rpcState} fileCount=${session.fileChannels.size} files=${fileSummary}`);
+	}
+
+	__logNominatedPair(connId, pair) {
+		const localInfo = `${pair.local?.type ?? '?'} ${pair.local?.address ?? pair.local?.host ?? '?'}:${pair.local?.port ?? '?'}`;
+		const remoteInfo = `${pair.remote?.type ?? '?'} ${pair.remote?.address ?? pair.remote?.host ?? '?'}:${pair.remote?.port ?? '?'}`;
+		remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
+		this.logger.info?.(`[coclaw/rtc] [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
 	}
 
 	__logDebug(message) {

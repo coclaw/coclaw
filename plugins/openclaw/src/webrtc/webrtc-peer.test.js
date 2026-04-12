@@ -530,7 +530,7 @@ test('WebRtcPeer: connectionState connected 有 nominated 但无 localCandidate.
 	assert.ok(logs.some((l) => l.includes('ICE nominated: local=? ?:? remote=? ?:?')));
 });
 
-test('WebRtcPeer: connectionState failed/closed 清理 session', async () => {
+test('WebRtcPeer: connectionState failed 保留 session（支持 ICE restart）', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -544,7 +544,228 @@ test('WebRtcPeer: connectionState failed/closed 清理 session', async () => {
 	const pc = PC.instances[0];
 	pc.connectionState = 'failed';
 	pc.onconnectionstatechange();
-	assert.ok(!peer.__sessions.has('c_050'));
+	// failed 不删除 session，以支持后续 ICE restart 恢复
+	assert.ok(peer.__sessions.has('c_050'));
+});
+
+test('WebRtcPeer: connectionState closed 清理 session', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_050b'));
+	assert.ok(peer.__sessions.has('c_050b'));
+
+	const pc = PC.instances[0];
+	pc.connectionState = 'closed';
+	pc.onconnectionstatechange();
+	assert.ok(!peer.__sessions.has('c_050b'));
+});
+
+test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC 状态）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		onFileChannel: () => {},
+	});
+
+	await peer.handleSignaling(makeOffer('c_dump1'));
+	const pc = PC.instances[0];
+
+	// 注入一个 rpc DC + 两个 file DC（一个仍 open，一个已 closed）
+	pc.ondatachannel({ channel: { label: 'rpc', readyState: 'open', onopen: null, onclose: null, onerror: null, onmessage: null } });
+	pc.ondatachannel({ channel: { label: 'file:abc', readyState: 'open' } });
+	pc.ondatachannel({ channel: { label: 'file:def', readyState: 'closed' } });
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /conn=c_dump1/.test(e.text));
+	assert.ok(dump, `expected rtc.dump log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+	assert.match(dump.text, /state=failed/);
+	assert.match(dump.text, /rpc=open/);
+	assert.match(dump.text, /fileCount=2/);
+	assert.match(dump.text, /file:abc=open/);
+	assert.match(dump.text, /file:def=closed/);
+
+	// failed 保留 session 以支持 ICE restart
+	assert.ok(peer.__sessions.has('c_dump1'));
+});
+
+test('WebRtcPeer: connectionState disconnected 触发 dump 但保留 session（可能恢复）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_disc'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'disconnected';
+	pc.onconnectionstatechange();
+
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /conn=c_disc/.test(e.text));
+	assert.ok(dump);
+	assert.match(dump.text, /state=disconnected/);
+	assert.match(dump.text, /rpc=none/); // 未注入 rpc DC
+	assert.match(dump.text, /fileCount=0/);
+	assert.match(dump.text, /files=\[none\]/);
+
+	// session 不应被清理（disconnected 可能恢复）
+	assert.ok(peer.__sessions.has('c_disc'));
+});
+
+test('WebRtcPeer: connectionState closed 不输出 dump（避免本地主动关闭噪声）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_closed'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'closed';
+	pc.onconnectionstatechange();
+
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /conn=c_closed/.test(e.text));
+	assert.equal(dump, undefined, 'closed should not emit dump');
+});
+
+test('WebRtcPeer: 重复 disconnected 同 state 去重，恢复 connected 后再 disconnected 仍 dump', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_flap'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'disconnected';
+	pc.onconnectionstatechange();
+	pc.onconnectionstatechange();
+	pc.onconnectionstatechange();
+
+	let dumps = remoteLogBuffer.filter((e) => /rtc\.dump/.test(e.text) && /conn=c_flap/.test(e.text));
+	assert.equal(dumps.length, 1, '相同 state 下多次回调只 dump 一次');
+
+	// 恢复 connected
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+
+	// 再次 disconnected 应可重新 dump
+	pc.connectionState = 'disconnected';
+	pc.onconnectionstatechange();
+
+	dumps = remoteLogBuffer.filter((e) => /rtc\.dump/.test(e.text) && /conn=c_flap/.test(e.text));
+	assert.equal(dumps.length, 2, 'connected 恢复后 disconnected 应再次 dump');
+});
+
+test('WebRtcPeer: stale PC 异步回调不污染当前 session 诊断', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_stale'));
+	const oldPc = PC.instances[0];
+	const oldHandler = oldPc.onconnectionstatechange;
+
+	// 重复 offer 触发 close 旧 + 建新
+	await peer.handleSignaling(makeOffer('c_stale'));
+	const newPc = PC.instances[1];
+	assert.notEqual(oldPc, newPc);
+
+	// 假设旧 PC 的异步回调"挣扎"地触发（实际中 closeByConnId 会 detach，
+	// 但本测试模拟极端 race：保留 handler 引用并手动调用）
+	oldPc.connectionState = 'failed';
+	oldHandler();
+
+	// 期望：dump 不应输出（pc 归属校验拒绝旧 PC），新 session 仍存活
+	const dumps = remoteLogBuffer.filter((e) => /rtc\.dump/.test(e.text) && /conn=c_stale/.test(e.text));
+	assert.equal(dumps.length, 0, 'stale PC 不应触发 dump');
+	assert.ok(peer.__sessions.has('c_stale'), '新 session 不应被旧 PC 回调误删');
+});
+
+test('WebRtcPeer: connected 分支 pc 归属校验：旧 PC 不输出 ICE nominated', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_conn'));
+	const oldPc = PC.instances[0];
+	const oldHandler = oldPc.onconnectionstatechange;
+
+	// 重复 offer 替换为新 PC
+	await peer.handleSignaling(makeOffer('c_conn'));
+	const newPc = PC.instances[1];
+	assert.notEqual(oldPc, newPc);
+
+	// 旧 PC 异步进入 connected 状态（极端 race）
+	oldPc.iceTransports[0].connection.nominated = {
+		localCandidate: { type: 'srflx', host: '1.1.1.1', port: 1111 },
+		remoteCandidate: { type: 'host', host: '2.2.2.2', port: 2222 },
+	};
+	oldPc.connectionState = 'connected';
+	oldHandler();
+
+	// 关键：pc 归属校验早 return，不应输出 ICE nominated
+	const nominated = remoteLogBuffer.find((e) => /rtc\.ice-nominated/.test(e.text) && /1\.1\.1\.1/.test(e.text));
+	assert.equal(nominated, undefined, '旧 PC 的 connected 不应触发 ICE nominated 日志');
+});
+
+test('WebRtcPeer: file DC 历史上限 FIFO 淘汰', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		onFileChannel: () => {},
+	});
+
+	await peer.handleSignaling(makeOffer('c_cap'));
+	const pc = PC.instances[0];
+
+	// 注入 25 个 file DC（超过上限 20）
+	for (let i = 0; i < 25; i++) {
+		pc.ondatachannel({ channel: { label: `file:dc${i}`, readyState: 'open' } });
+	}
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /conn=c_cap/.test(e.text));
+	assert.ok(dump);
+	// fileCount 应被限制在 20
+	assert.match(dump.text, /fileCount=20/);
+	// 最老的 5 个（dc0..dc4）应已被 FIFO 淘汰
+	assert.ok(!/file:dc0=/.test(dump.text), 'dc0 should be evicted');
+	assert.ok(!/file:dc4=/.test(dump.text), 'dc4 should be evicted');
+	// 最新的 dc5..dc24 应保留
+	assert.match(dump.text, /file:dc5=/);
+	assert.match(dump.text, /file:dc24=/);
 });
 
 test('WebRtcPeer: connectionState closed 清理 session', async () => {
@@ -978,7 +1199,7 @@ test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 无现有 session 时回退到 full rebuild', async () => {
+test('WebRtcPeer: ICE restart 无现有 session 时发送 rtc:restart-rejected', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -994,15 +1215,16 @@ test('WebRtcPeer: ICE restart 无现有 session 时回退到 full rebuild', asyn
 		payload: { sdp: 'ice-restart-sdp', iceRestart: true },
 	});
 
-	// 应创建新 PC（full rebuild 回退）
-	assert.equal(PC.instances.length, 1);
+	// 不应创建新 PC（不 fall through）
+	assert.equal(PC.instances.length, 0);
+	// 应发送 restart-rejected
 	assert.equal(sent.length, 1);
-	assert.equal(sent[0].type, 'rtc:answer');
-
-	await peer.closeAll();
+	assert.equal(sent[0].type, 'rtc:restart-rejected');
+	assert.equal(sent[0].toConnId, 'c_ir02');
+	assert.equal(sent[0].payload.reason, 'no_session');
 });
 
-test('WebRtcPeer: ICE restart 协商失败时回退到 full rebuild', async () => {
+test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -1025,13 +1247,49 @@ test('WebRtcPeer: ICE restart 协商失败时回退到 full rebuild', async () =
 		payload: { sdp: 'bad-sdp', iceRestart: true },
 	});
 
-	// 应回退创建新 PC
-	assert.equal(PC.instances.length, 2);
-	// 旧 PC 应已关闭
+	// 不应创建新 PC（不 fall through）
+	assert.equal(PC.instances.length, 1);
+	// 旧 PC 应已关闭（closeByConnId）
 	assert.equal(firstPc.connectionState, 'closed');
-	// 新 PC 应发送 answer
+	// 应发送 restart-rejected
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:restart-rejected');
+	assert.equal(sent[0].toConnId, 'c_ir03');
+	assert.equal(sent[0].payload.reason, 'restart_failed');
+});
+
+test('WebRtcPeer: ICE failed 后仍可 ICE restart 恢复', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	// 建立正常连接
+	await peer.handleSignaling(makeOffer('c_ir04'));
+	const pc = PC.instances[0];
+	sent.length = 0;
+
+	// 模拟 ICE failed（如 app 后台冻结后 pion 侧超时）
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	// session 应保留
+	assert.ok(peer.__sessions.has('c_ir04'));
+
+	// 前台恢复后 UI 发起 ICE restart
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ir04',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+
+	// 应在现有 PC 上完成 restart（不创建新 PC）
+	assert.equal(PC.instances.length, 1);
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].type, 'rtc:answer');
+	assert.equal(sent[0].toConnId, 'c_ir04');
 
 	await peer.closeAll();
 });
@@ -1487,4 +1745,126 @@ test('WebRtcPeer: candidate 无 typ 字段时不计入统计', async () => {
 	assert.ok(gathered.text.includes('relay=0'));
 
 	await peer.closeAll();
+});
+
+// --- pion 适配测试 ---
+
+function createPionMockPC() {
+	const pc = {
+		onicecandidate: null,
+		onconnectionstatechange: null,
+		onselectedcandidatepairchange: null,
+		ondatachannel: null,
+		connectionState: 'new',
+		selectedCandidatePair: null,
+		setRemoteDescription: async () => {},
+		createAnswer: async () => ({ sdp: 'mock-sdp-answer' }),
+		setLocalDescription: async () => {},
+		addIceCandidate: async () => {},
+		close: async () => { pc.connectionState = 'closed'; },
+		__constructorArgs: null,
+	};
+	return pc;
+}
+
+function PionMockPCFactory() {
+	const instances = [];
+	function PC(opts) {
+		const pc = createPionMockPC();
+		pc.__constructorArgs = opts;
+		instances.push(pc);
+		return pc;
+	}
+	PC.instances = instances;
+	return PC;
+}
+
+test('WebRtcPeer: pion — connectionState connected 不直接读取 selectedCandidatePair（避免 ICE restart 旧值）', async () => {
+	resetRemoteLog();
+	const PC = PionMockPCFactory();
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_pion_01'));
+	const pc = PC.instances[0];
+
+	// pair 已设置，但 connectionstatechange 不应读取它（pair 通过独立事件上报）
+	pc.selectedCandidatePair = {
+		local: { type: 'srflx', address: '1.2.3.4', port: 12345 },
+		remote: { type: 'host', address: '192.168.0.1', port: 54321 },
+	};
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+
+	// 不应从 connectionstatechange 输出 ice-nominated
+	assert.ok(!logs.some((l) => l.includes('ICE nominated')));
+	assert.ok(!remoteLogBuffer.some((e) => e.text.includes('rtc.ice-nominated') && e.text.includes('c_pion_01')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — onselectedcandidatepairchange 事件上报 pair', async () => {
+	resetRemoteLog();
+	const PC = PionMockPCFactory();
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_pion_02'));
+	const pc = PC.instances[0];
+
+	// 验证 handler 已注册
+	assert.equal(typeof pc.onselectedcandidatepairchange, 'function');
+
+	// 触发事件
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '10.0.0.1', port: 9999, protocol: 'udp' },
+		remote: { type: 'srflx', address: '203.0.113.1', port: 8888, protocol: 'udp' },
+	};
+	pc.onselectedcandidatepairchange();
+
+	assert.ok(logs.some((l) => l.includes('ICE nominated: local=relay 10.0.0.1:9999 remote=srflx 203.0.113.1:8888')));
+	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc.ice-nominated') && e.text.includes('c_pion_02')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — onselectedcandidatepairchange pair 为 null 时不崩溃', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_pion_03'));
+	const pc = PC.instances[0];
+
+	pc.selectedCandidatePair = null;
+	pc.onselectedcandidatepairchange(); // 不应抛异常
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — closeByConnId detach onselectedcandidatepairchange', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_pion_04'));
+	const pc = PC.instances[0];
+	assert.equal(typeof pc.onselectedcandidatepairchange, 'function');
+
+	await peer.closeByConnId('c_pion_04');
+	assert.equal(pc.onselectedcandidatepairchange, null);
 });

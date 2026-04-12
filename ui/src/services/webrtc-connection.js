@@ -2,21 +2,27 @@
  * WebRTC DataChannel 连接管理（UI 侧）
  * DataChannel 是唯一的业务 RPC 通道，WS 仅用于信令和保活哨兵。
  *
- * 连接恢复策略：
- * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈），10s 超时后升级
- * - failed → 上报 failed 状态，由外层 bots.store 退避重试（每次重新获取 TURN 凭证）
- * - 前台恢复 / 网络切换 → DC probe 探测存活性，超时则 rebuild
+ * 连接恢复策略（restart-first, rebuild-fallback）：
+ * - disconnected → 等待 ICE 自动恢复（短暂网络抖动自愈），5s 超时后发起 ICE restart
+ * - ICE restart → 仅重新协商 ICE 层，DTLS/SCTP/DataChannel 完整保留
+ *   → pending RPC 不丢失，文件传输断点续传
+ * - restart 被 reject（plugin 已销毁 PC）或连续失败 → 上报 failed，由外层 rebuild
+ * - 前台恢复 / 网络切换 → 主动触发 ICE restart
  *
- * 注：ICE restart 已移除 — werift 的实现不完整且可能产生僵尸连接
- * 详见 docs/study/webrtc-connection-research.md
+ * 详见 docs/designs/ice-restart-recovery.md
  */
 import { httpClient } from './http.js';
 import { buildChunks, createReassembler } from '../utils/dc-chunking.js';
 import { useSignalingConnection } from './signaling-connection.js';
 import { remoteLog } from './remote-log.js';
 
-/** disconnected 状态超时：超过此时间仍未恢复则升级到 failed 恢复链（ICE 自愈通常 1-3s） */
+/** disconnected 状态超时：超过此时间仍未恢复则升级到 ICE restart（ICE 自愈通常 1-3s） */
 const DISCONNECTED_TIMEOUT_MS = 5_000;
+
+/** ICE restart 周期重试间隔（仅 restarting 状态且信令可用时发送） */
+const ICE_RESTART_RETRY_MS = 60_000;
+/** ICE restart 连续失败上限：超过后放弃 restart → failed → store rebuild（兼容旧 plugin） */
+const ICE_RESTART_MAX_FAILURES = 3;
 
 /** DC 应用层保活：间隔（probe 完成后到下一次 probe 发起） */
 const DC_KEEPALIVE_INTERVAL_MS = 30_000;
@@ -167,13 +173,16 @@ export class WebRtcConnection {
 		this.__keepaliveGen = 0;
 		this.__onAppBackground = null;
 		this.__onAppForeground = null;
+		/** ICE restart 状态 */
+		this.__restartTimer = null;
+		this.__restartAttemptCount = 0;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
 		this.onReady = null;
 	}
 
-	/** @returns {'idle' | 'connecting' | 'connected' | 'failed' | 'closed'} */
+	/** @returns {'idle' | 'connecting' | 'connected' | 'restarting' | 'failed' | 'closed'} */
 	get state() { return this.__state; }
 	get candidateType() { return this.__candidateType; }
 	get transportInfo() { return this.__transportInfo; }
@@ -187,6 +196,7 @@ export class WebRtcConnection {
 	/** 关闭连接（主动关闭，不再自动恢复） */
 	close() {
 		this.__stopKeepalive();
+		this.__clearRestartState();
 		this.__unregisterAppLifecycle();
 		this.__clearDisconnectedTimer();
 		this.__settleProbe(false);
@@ -302,7 +312,7 @@ export class WebRtcConnection {
 	 * @returns {RTCDataChannel|null} 创建的 DC，PC 不可用时返回 null
 	 */
 	createDataChannel(label, opts) {
-		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return null;
+		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed' || this.__state === 'restarting') return null;
 		const dc = this.__pc.createDataChannel(label, opts);
 		// 追踪 file DC 的数据活动，证明 SCTP 存活（用于保活宽限判断）
 		// message: 入向数据；bufferedamountlow: 出向数据真实进入网络（上传场景下唯一的活动信号）
@@ -418,17 +428,30 @@ export class WebRtcConnection {
 
 			if (s === 'connected') {
 				this.__clearDisconnectedTimer();
+				if (this.__state === 'restarting') {
+					this.__log('info', 'ICE restart succeeded');
+					this.__clearRestartState();
+				}
 				this.__setState('connected');
+				this.__startKeepalive(); // 幂等；restart 成功后恢复保活（dc.onopen 不再触发）
 				this.__resolveCandidateType(pc);
 			} else if (s === 'disconnected') {
-				// 短暂网络抖动，等待 ICE 自动恢复；设超时兜底防止永远卡住
+				// restarting 中的 disconnected 是中间状态，忽略
+				if (this.__state === 'restarting') return;
+				// 短暂网络抖动，等待 ICE 自动恢复；设超时兜底
 				this.__log('info', 'ICE disconnected, waiting for auto-recovery...');
 				this.__startDisconnectedTimer();
 			} else if (s === 'failed') {
 				this.__clearDisconnectedTimer();
+				// restarting 中的 failed 表示本次 ICE check 失败，留在 restarting 等下次触发
+				if (this.__state === 'restarting') {
+					this.__log('info', 'ICE check failed during restart, waiting for next attempt');
+					return;
+				}
 				this.__onIceFailed();
 			} else if (s === 'closed') {
 				this.__clearDisconnectedTimer();
+				this.__clearRestartState();
 				this.__setState('closed');
 			}
 		};
@@ -471,6 +494,12 @@ export class WebRtcConnection {
 				this.__rejectSendQueue('DataChannel closed');
 				// 已发出的 pending RPC 永远收不到响应，立即 reject
 				this.__clawConn.__rejectAllPending('DataChannel closed', 'DC_CLOSED');
+				// restarting 时 DC 关闭 → SCTP 已断，restart 无法挽救
+				if (this.__state === 'restarting') {
+					this.__log('warn', 'DC closed during ICE restart, SCTP lost');
+					this.__clearRestartState();
+					this.__setState('failed');
+				}
 			}
 		};
 		dc.onerror = (event) => {
@@ -564,6 +593,8 @@ export class WebRtcConnection {
 	async __doKeepalive(gen) {
 		this.__keepaliveTimer = null;
 		if (gen !== this.__keepaliveGen) return;
+		// restarting 时跳过 probe（DC 可能暂时不通，由 restart 流程处理）
+		if (this.__state === 'restarting') return;
 		const alive = await this.probe(DC_KEEPALIVE_TIMEOUT_MS);
 		if (gen !== this.__keepaliveGen) return;
 		if (!alive && this.__state === 'connected') {
@@ -575,8 +606,8 @@ export class WebRtcConnection {
 				return;
 			}
 			remoteLog(`dc.keepalive-failed claw=${this.clawId}`);
-			this.__log('warn', 'DC keepalive probe failed, closing connection');
-			this.close();
+			this.__log('warn', 'DC keepalive probe failed, triggering ICE recovery');
+			this.__onIceFailed();
 			return;
 		}
 		// 仍健康 → 调度下一轮
@@ -597,7 +628,11 @@ export class WebRtcConnection {
 	/** @private 注册 Capacitor app 前后台事件（幂等） */
 	__registerAppLifecycle() {
 		if (this.__onAppBackground) return;
-		this.__onAppBackground = () => this.__stopKeepalive();
+		this.__onAppBackground = () => {
+			this.__stopKeepalive();
+			// 后台时停止 restart 周期重试（前台恢复后由 store nudge 触发）
+			this.__stopRestartTimer();
+		};
 		this.__onAppForeground = () => {
 			if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
 				this.__startKeepalive();
@@ -662,10 +697,102 @@ export class WebRtcConnection {
 
 	// --- 内部：恢复 ---
 
-	/** @private ICE failed → 上报 failed，由外层退避重试（每次获取 fresh TURN 凭证） */
+	/** @private ICE failed → 尝试 ICE restart，失败后上报 failed 由外层 rebuild */
 	__onIceFailed() {
-		this.__log('warn', 'ICE failed, delegating recovery to outer backoff');
-		this.__setState('failed');
+		this.__attemptRestart('ice_failed');
+	}
+
+	// --- ICE restart ---
+
+	/**
+	 * @private 发起 ICE restart offer
+	 * @param {string} reason - 触发原因（日志用）
+	 */
+	async __attemptRestart(reason) {
+		if (!this.__pc || this.__state === 'closed') return;
+
+		// 兼容兜底：连续失败计数器达到上限 → 放弃 restart
+		if (this.__restartAttemptCount >= ICE_RESTART_MAX_FAILURES) {
+			this.__log('warn', `ICE restart gave up after ${ICE_RESTART_MAX_FAILURES} attempts`);
+			this.__clearRestartState();
+			this.__setState('failed');
+			return;
+		}
+
+		// 同步进入 restarting（先于 async createOffer，确保状态立即可观测）
+		if (this.__state !== 'restarting') {
+			this.__stopKeepalive();
+			this.__setState('restarting');
+		}
+		// 确保周期重试定时器运行（首次进入或 background 后恢复）
+		if (!this.__restartTimer) {
+			this.__startRestartTimer();
+		}
+
+		// 信令 WS 不可用 → 跳过本次 offer（周期重试或 nudge 会再来）
+		const sig = useSignalingConnection();
+		if (sig.state !== 'connected') {
+			this.__log('info', `ICE restart skipped (WS not connected), reason=${reason}`);
+			return;
+		}
+
+		this.__restartAttemptCount++;
+
+		try {
+			const offer = await this.__pc.createOffer({ iceRestart: true });
+			await this.__pc.setLocalDescription(offer);
+			sig.sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true });
+			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount}`);
+		} catch (err) {
+			this.__log('warn', `ICE restart createOffer failed: ${err?.message}`);
+			this.__clearRestartState();
+			this.__setState('failed');
+		}
+	}
+
+	/**
+	 * 外部触发：store 在 restarting 状态调用，立即重试
+	 * （如 network:online、foreground-resume）
+	 */
+	nudgeRestart() {
+		if (this.__state !== 'restarting') return;
+		this.__attemptRestart('nudge');
+	}
+
+	/**
+	 * 外部触发：store 主动发起 ICE restart（如 WiFi→蜂窝）
+	 * @param {string} reason
+	 */
+	triggerRestart(reason) {
+		if (this.__state === 'restarting' || this.__state === 'connected') {
+			this.__attemptRestart(reason);
+		}
+	}
+
+	/** @private 清除 restart 状态（成功/失败/close 时调用） */
+	__clearRestartState() {
+		this.__stopRestartTimer();
+		this.__restartAttemptCount = 0;
+	}
+
+	/** @private 启动 restart 周期重试定时器 */
+	__startRestartTimer() {
+		this.__stopRestartTimer();
+		this.__restartTimer = setInterval(() => {
+			if (this.__state !== 'restarting') {
+				this.__stopRestartTimer();
+				return;
+			}
+			this.__attemptRestart('periodic');
+		}, ICE_RESTART_RETRY_MS);
+	}
+
+	/** @private 停止 restart 周期重试定时器 */
+	__stopRestartTimer() {
+		if (this.__restartTimer) {
+			clearInterval(this.__restartTimer);
+			this.__restartTimer = null;
+		}
 	}
 
 	// --- 内部：信令 ---
@@ -692,6 +819,11 @@ export class WebRtcConnection {
 			} else {
 				this.__pc?.addIceCandidate(msg.payload).catch(() => {});
 			}
+		} else if (msg.type === 'rtc:restart-rejected') {
+			const reason = msg.payload?.reason ?? 'unknown';
+			this.__log('warn', `ICE restart rejected by plugin: ${reason}`);
+			this.__clearRestartState();
+			this.__setState('failed');
 		}
 	}
 
