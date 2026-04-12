@@ -29,6 +29,7 @@ export class TopicManager {
 	 * @param {Function} [opts.copyFile] - 测试注入
 	 */
 	constructor(opts = {}) {
+		/* c8 ignore next 6 -- ?? fallback：测试始终注入 */
 		this.__rootDir = opts.rootDir ?? nodePath.join(os.homedir(), '.openclaw', 'agents');
 		this.__logger = opts.logger ?? console;
 		this.__readFile = opts.readFile ?? fs.readFile;

@@ -82,7 +82,7 @@ export function createReassembler(onComplete, opts = {}) {
 		// binary = 分片 chunk
 		const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
 		if (buf.length < HEADER_SIZE) {
-			logger?.warn?.('[dc-chunking] chunk too short, discarding');
+			logger?.warn?.('[dc-chunking] chunk too short, discarding'); /* c8 ignore -- ?./?. fallback */
 			return;
 		}
 

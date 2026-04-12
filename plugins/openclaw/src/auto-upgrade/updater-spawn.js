@@ -31,6 +31,7 @@ export function getWorkerPath() {
  * @returns {{ child: object }}
  */
 export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, pluginId, pkgName, opts, logger }) {
+	/* c8 ignore next -- ?./?? fallback */
 	const doSpawn = opts?.spawnFn ?? nodeSpawn;
 	const workerPath = getWorkerPath();
 

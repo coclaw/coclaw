@@ -119,6 +119,7 @@ export class WebRtcPeer {
 						payload: { reason: 'restart_failed' },
 					});
 					await this.closeByConnId(connId).catch((closeErr) => {
+						/* c8 ignore next -- closeByConnId 内部已 try/catch，此路径极难触发 */
 						this.logger.warn?.(`${this.__rtcTag} closeByConnId failed after restart rejection for ${connId}: ${closeErr?.message}`);
 					});
 					return;

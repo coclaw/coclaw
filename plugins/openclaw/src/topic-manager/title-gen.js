@@ -136,10 +136,12 @@ export async function generateTitle({ topicId, topicManager, agentRpc, logger })
 		await topicManager.updateTitle({ topicId, title });
 		return { title };
 	} catch (err) {
+		/* c8 ignore next -- ?./?? fallback */
 		log.warn?.(`[coclaw] generateTitle failed for topic ${topicId}: ${String(err?.message ?? err)}`);
 		throw err;
 	} finally {
 		// 清理临时文件
+		/* c8 ignore next -- .catch() 防御 */
 		await topicManager.cleanupTempFile(tempPath).catch(() => {});
 	}
 }

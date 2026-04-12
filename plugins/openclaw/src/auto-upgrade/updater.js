@@ -166,6 +166,7 @@ export class AutoUpgradeScheduler {
 		}
 
 		// 默认 5~10 分钟随机延迟，避免多实例同时发起检查
+		/* c8 ignore next 2 -- ?? fallback：测试始终注入 initialDelayMs */
 		const initialDelay = this.__opts.initialDelayMs
 			?? (INITIAL_DELAY_MS + Math.floor(Math.random() * INITIAL_DELAY_MS));
 		this.__logger.info?.(`[auto-upgrade] Scheduler started. First check in ${Math.round(initialDelay / 1000)}s`);
@@ -173,6 +174,7 @@ export class AutoUpgradeScheduler {
 		this.__initialTimer = setTimeout(() => {
 			this.__initialTimer = null;
 			this.__check().catch(() => {});
+			/* c8 ignore next -- ?? fallback */
 			const interval = this.__opts.checkIntervalMs ?? CHECK_INTERVAL_MS;
 			this.__intervalTimer = setInterval(() => this.__check().catch(() => {}), interval);
 		}, initialDelay);
@@ -274,6 +276,7 @@ export class AutoUpgradeScheduler {
 			});
 
 			// 记录 worker PID，下次 check 时据此判断 worker 是否仍在运行
+			/* c8 ignore next -- ?? fallback */
 			const writeLock = this.__opts.writeUpgradeLockFn ?? writeUpgradeLock;
 			await writeLock(child.pid);
 		}

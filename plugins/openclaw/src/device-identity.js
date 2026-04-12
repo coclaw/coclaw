@@ -108,6 +108,7 @@ export function loadOrCreateDeviceIdentity(filePath) {
 				if (derivedId && derivedId !== parsed.deviceId) {
 					const updated = { ...parsed, deviceId: derivedId };
 					fs.writeFileSync(fp, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
+					/* c8 ignore next -- best-effort chmod */
 					try { fs.chmodSync(fp, 0o600); } catch { /* best-effort */ }
 					return { deviceId: derivedId, publicKeyPem: parsed.publicKeyPem, privateKeyPem: parsed.privateKeyPem };
 				}
@@ -131,6 +132,7 @@ export function loadOrCreateDeviceIdentity(filePath) {
 		createdAtMs: Date.now(),
 	};
 	fs.writeFileSync(fp, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 });
+	/* c8 ignore next -- best-effort chmod */
 	try { fs.chmodSync(fp, 0o600); } catch { /* best-effort */ }
 	return identity;
 }

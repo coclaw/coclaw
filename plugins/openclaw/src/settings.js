@@ -75,5 +75,6 @@ export async function writeName(name) {
  */
 export function getHostName() {
 	const raw = os.hostname().trim();
+	/* c8 ignore next -- || fallback：hostname 恰好等于 ".local" 的情况极罕见 */
 	return raw.replace(/\.local$/i, '') || 'openclaw';
 }

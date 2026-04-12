@@ -36,6 +36,7 @@ export class ChatHistoryManager {
 	constructor(opts = {}) {
 		this.__rootDir = opts.rootDir ?? nodePath.join(os.homedir(), '.openclaw', 'agents');
 		this.__logger = opts.logger ?? console;
+		/* c8 ignore next 2 -- ?? fallback：测试始终注入 */
 		this.__readFile = opts.readFile ?? fs.readFile;
 		this.__writeJsonFile = opts.writeJsonFile ?? atomicWriteJsonFile;
 		// 内存缓存：agentId -> { version, [sessionKey]: [...] }

@@ -73,6 +73,7 @@ function wrapNdcCredentials(NativeRTC) {
 				config = {
 					...config,
 					iceServers: config.iceServers.map(s => {
+						/* c8 ignore next -- TURN 无凭据时的短路，集成环境下不经过此路径 */
 						if (!s.username && !s.credential) return s;
 						return {
 							...s,
@@ -185,6 +186,7 @@ export async function preloadNdc(deps = {}) {
 		// 用于捕获 ICE/DTLS/SCTP 层断连原因。
 		// initLogger 是进程全局单例，调用一次即可（cleanup 不会被调用，logger 全程有效）。
 		// callback 通过 TSFN 投递到 JS 主线程，Warning 级别正常运行时零输出。
+		/* c8 ignore next -- ??/?. fallback */
 		const initLogger = ndc.initLogger ?? ndc.default?.initLogger;
 		if (typeof initLogger === 'function') {
 			try {

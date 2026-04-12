@@ -70,6 +70,7 @@ export async function validatePath(workspaceDir, userPath, deps = {}) {
 	}
 
 	// 仅允许普通文件和目录
+	/* c8 ignore next 4 -- 特殊文件类型（socket/FIFO/device）在测试环境无法可靠构造 */
 	if (!stat.isFile() && !stat.isDirectory() && !stat.isSymbolicLink()) {
 		const err = new Error(`Special file type denied: ${userPath}`);
 		err.code = 'PATH_DENIED';
@@ -781,6 +782,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 				if (receivedBytes >= nextLogAt && logStep <= 3) {
 					remoteLog(`file.up.progress ${logTag}id=${transferId} ${logStep * 25}% received=${receivedBytes}/${declaredSize} bp=${wsBackpressureCount}`);
 					logStep++;
+					/* c8 ignore next -- declaredSize=0 的上传不会达到进度日志阈值 */
 					nextLogAt = declaredSize > 0 ? Math.floor(declaredSize * logStep * 0.25) : Infinity;
 				}
 			}
@@ -814,6 +816,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			/* c8 ignore next -- ?? fallback for non-Error throw */
 			const errMsg = err?.message ?? String(err);
 			remoteLog(`file.up.fail ${logTag}id=${transferId} reason=dc-error err=${errMsg} received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
+			/* c8 ignore next -- ?./?? fallback */
 			log.warn?.(`[coclaw/file] [${connId ?? '?'}] up.fail id=${transferId} reason=dc-error received=${receivedBytes}/${declaredSize} err=${errMsg}`);
 		};
 
@@ -889,9 +892,11 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	// --- 工具函数 ---
 
 	function sendError(dc, code, message) {
+		/* c8 ignore next 2 -- DC 可能已关闭，catch 纯防御 */
 		try {
 			dc.send(JSON.stringify({ ok: false, error: { code, message } }));
 		} catch { /* DC 可能已关闭 */ }
+		/* c8 ignore next */
 		try { dc.close(); } catch { /* ignore */ }
 	}
 

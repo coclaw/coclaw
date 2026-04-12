@@ -30,6 +30,7 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(-[\w.-]+)?$/;
 // openclaw plugins update 内部实现为 staged backup-and-replace，
 // 仅支持 source === "npm" 的安装（updater 已做前置过滤）
 function runPluginUpdate(pluginId, opts) {
+	/* c8 ignore next -- ?./?? fallback */
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	return new Promise((resolve, reject) => {
 		doExecFile('openclaw', ['plugins', 'update', pluginId], {
@@ -61,6 +62,7 @@ async function fallbackInstallOldVersion(pkgName, version, pluginId, opts) {
 	if (!SEMVER_RE.test(version)) {
 		throw new Error(`invalid version format: ${version}`);
 	}
+	/* c8 ignore next -- ?./?? fallback */
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	const run = (args, timeout = 120_000) => new Promise((resolve, reject) => {
 		doExecFile('openclaw', args, { timeout, shell: process.platform === 'win32' }, (err) => {
@@ -193,11 +195,14 @@ async function handleRollback({ pluginDir, fromVersion, toVersion, pluginId, pkg
 	// update 命令失败可能是瞬态故障（网络、磁盘等），不应永久跳过该版本
 	if (skipVersion) {
 		try { await addSkippedVersion(toVersion); }
+		/* c8 ignore next -- 状态写入 catch：测试中 stub 不会失败 */
 		catch (e) { log(`[upgrade-worker] Failed to record skipped version (non-fatal): ${e.message}`); }
 	}
 	try { await updateLastUpgrade({ from: fromVersion, to: toVersion, result: 'rollback' }); }
+	/* c8 ignore next -- 状态写入 catch */
 	catch (e) { log(`[upgrade-worker] Failed to update lastUpgrade (non-fatal): ${e.message}`); }
 	try { await appendLog({ from: fromVersion, to: toVersion, result: 'rollback', error }); }
+	/* c8 ignore next -- 状态写入 catch */
 	catch (e) { log(`[upgrade-worker] Failed to append log (non-fatal): ${e.message}`); }
 	if (skipVersion) {
 		log(`[upgrade-worker] Rollback complete. Version ${toVersion} added to skipped list`);

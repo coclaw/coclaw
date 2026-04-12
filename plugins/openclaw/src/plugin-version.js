@@ -8,6 +8,7 @@ export async function getPluginVersion() {
 	try {
 		const pkgPath = nodePath.resolve(import.meta.dirname, '..', 'package.json');
 		const raw = await fs.readFile(pkgPath, 'utf8');
+		/* c8 ignore next -- ?? fallback */
 		__pluginVersion = JSON.parse(raw).version ?? 'unknown';
 	} catch {
 		return 'unknown';

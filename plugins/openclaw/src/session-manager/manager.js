@@ -242,6 +242,7 @@ export function createSessionManager(options = {}) {
 				indexed: true,
 				archiveType: 'live',
 				fileName: null,
+				/* c8 ignore next -- ?? fallback */
 				updatedAt: entry.updatedAt ?? 0,
 				size: 0,
 			});

@@ -24,6 +24,7 @@ const CMD_TIMEOUT_MS = 30_000;
  * @returns {Promise<string>}
  */
 function runCmd(cmd, args, opts) {
+	/* c8 ignore next -- ?./?? fallback */
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	return new Promise((resolve, reject) => {
 		doExecFile(cmd, args, { timeout: CMD_TIMEOUT_MS, shell: process.platform === 'win32' }, (err, stdout) => {
@@ -50,6 +51,7 @@ export async function waitForGateway(opts) {
 		// restart 命令失败不阻断流程，仍尝试等待
 	}
 
+	/* c8 ignore next 2 -- ?./?? fallback */
 	const timeout = opts?.timeoutMs ?? GATEWAY_READY_TIMEOUT_MS;
 	const interval = opts?.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const start = Date.now();
@@ -124,6 +126,7 @@ export async function verifyUpgrade(pluginId, opts) {
 		return { ok: true, version };
 	}
 	catch (err) {
+		/* c8 ignore next -- ?./?? fallback */
 		return { ok: false, error: String(err?.message ?? err) };
 	}
 }

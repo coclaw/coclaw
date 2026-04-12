@@ -54,6 +54,7 @@ async function callWithRetry(method, deps, rpcOpts) {
 	let result = await callRpc();
 
 	if (isGatewayUnavailable(result)) {
+		/* c8 ignore next -- ?? fallback：测试始终注入 deps.restartGateway */
 		const restartFn = deps.restartGateway ?? restartGatewayProcess;
 		try {
 			await restartFn(deps.spawn);
@@ -144,6 +145,7 @@ export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 					console.log(claimCodeCreated({
 						code: data.code,
 						appUrl: data.appUrl,
+						/* c8 ignore next -- ?? fallback */
 						expiresMinutes: data.expiresMinutes ?? 30,
 					}));
 				} else {

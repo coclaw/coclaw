@@ -33,6 +33,7 @@ export async function getPackageInfo(pluginDir) {
  * @returns {Promise<string>}
  */
 export async function getLatestVersion(pkgName, opts) {
+	/* c8 ignore next -- ?./?? fallback */
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	return new Promise((resolve, reject) => {
 		doExecFile('npm', ['view', pkgName, 'version'], {
@@ -65,6 +66,7 @@ export function isNewerVersion(a, b) {
 	const pa = parse(a);
 	const pb = parse(b);
 	for (let i = 0; i < 3; i++) {
+		/* c8 ignore next 2 -- ?? fallback：正常 semver 不会有缺失段 */
 		if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
 		if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
 	}

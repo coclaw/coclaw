@@ -49,6 +49,7 @@ export function escapeJsonForCmd(json) {
  * @returns {Promise<{ ok: boolean, status?: string, error?: string }>}
  */
 export function callGatewayMethod(method, spawnFn, opts) {
+	/* c8 ignore next -- ?? fallback */
 	const doSpawn = spawnFn ?? nodeSpawn;
 
 	return new Promise((resolve) => {

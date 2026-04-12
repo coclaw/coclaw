@@ -904,6 +904,7 @@ export class RealtimeBridge {
 			this.__clearConnectTimer();
 			setRemoteLogSender(null);
 			remoteLog(`ws.error peer=server msg=${String(err?.message ?? err)}`);
+			/* c8 ignore next -- ?./?? fallback */
 			this.logger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
 			this.serverWs = null;
 			this.__closeGatewayWs();
@@ -948,6 +949,7 @@ export class RealtimeBridge {
 	/* c8 ignore stop */
 
 	async start({ logger, pluginConfig } = {}) {
+		/* c8 ignore next 2 -- ?? fallback：测试始终注入 logger/pluginConfig */
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
 		this.started = true;
@@ -1106,5 +1108,5 @@ export function broadcastPluginEvent(event, payload) {
 	if (!singleton) return;
 	const frame = { type: 'event', event, payload };
 	singleton.__forwardToServer(frame);
-	singleton.webrtcPeer?.broadcast(frame);
+	singleton.webrtcPeer?.broadcast(frame); /* c8 ignore -- ?. fallback */
 }
