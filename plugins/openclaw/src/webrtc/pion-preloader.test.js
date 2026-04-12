@@ -7,7 +7,6 @@ import { preloadPion } from './pion-preloader.js';
 
 class MockPionIpc {
 	constructor(opts = {}) {
-		this.binPath = opts.binPath;
 		this.logger = opts.logger;
 		this.timeout = opts.timeout;
 		this._started = false;
@@ -38,8 +37,6 @@ function successDeps(overrides = {}) {
 				RTCPeerConnection: MockRTCPeerConnection,
 			}),
 			remoteLog: (text) => logs.push(text),
-			pluginRoot: '/fake/plugin',
-			binPath: '/fake/pion-ipc',
 			startTimeout: 500,
 			...overrides,
 		},
@@ -78,22 +75,6 @@ test('preloadPion: cleanup 调用 ipc.stop()', async () => {
 	assert.ok(!result.ipc._stopped);
 	await result.cleanup();
 	assert.ok(result.ipc._stopped);
-});
-
-test('preloadPion: binary 不存在时返回 null', async () => {
-	const origEnv = process.env.PION_IPC_BIN;
-	delete process.env.PION_IPC_BIN;
-	try {
-		const { deps, logs } = successDeps({ binPath: undefined });
-		deps.pluginRoot = '/nonexistent/path';
-		const result = await preloadPion(deps);
-
-		assert.equal(result, null);
-		assert.ok(logs.some((l) => l.includes('pion.skip') && l.includes('binary-not-found')));
-	} finally {
-		if (origEnv === undefined) delete process.env.PION_IPC_BIN;
-		else process.env.PION_IPC_BIN = origEnv;
-	}
 });
 
 test('preloadPion: import 失败时返回 null', async () => {
@@ -146,51 +127,7 @@ test('preloadPion: cleanup 静默忽略 stop 异常', async () => {
 		}),
 	});
 	const result = await preloadPion(deps);
-	// 不应 throw
 	await result.cleanup();
-});
-
-test('preloadPion: PION_IPC_BIN 环境变量指向不存在文件时返回 null', async () => {
-	const origEnv = process.env.PION_IPC_BIN;
-	process.env.PION_IPC_BIN = '/nonexistent/pion-ipc';
-	try {
-		const { deps, logs } = successDeps({ binPath: undefined });
-		const result = await preloadPion(deps);
-		assert.equal(result, null);
-		assert.ok(logs.some((l) => l.includes('pion.skip') && l.includes('binary-not-found')));
-	} finally {
-		if (origEnv === undefined) delete process.env.PION_IPC_BIN;
-		else process.env.PION_IPC_BIN = origEnv;
-	}
-});
-
-test('preloadPion: PION_IPC_BIN 指向有效文件时使用该路径', async () => {
-	const origEnv = process.env.PION_IPC_BIN;
-	// 用 node 可执行文件作为存在的 binary
-	process.env.PION_IPC_BIN = process.execPath;
-	try {
-		let capturedBinPath;
-		class CapturePionIpc extends MockPionIpc {
-			constructor(opts = {}) {
-				super(opts);
-				capturedBinPath = opts.binPath;
-			}
-		}
-		const { deps } = successDeps({
-			binPath: undefined,
-			dynamicImport: async () => ({
-				PionIpc: CapturePionIpc,
-				RTCPeerConnection: MockRTCPeerConnection,
-			}),
-		});
-		const result = await preloadPion(deps);
-		assert.notEqual(result, null);
-		assert.equal(result.impl, 'pion');
-		assert.equal(capturedBinPath, process.execPath);
-	} finally {
-		if (origEnv === undefined) delete process.env.PION_IPC_BIN;
-		else process.env.PION_IPC_BIN = origEnv;
-	}
 });
 
 test('preloadPion: 传递 autoRestart=true 给 PionIpc', async () => {
@@ -212,10 +149,28 @@ test('preloadPion: 传递 autoRestart=true 给 PionIpc', async () => {
 	assert.equal(capturedOpts.autoRestart, true);
 });
 
+test('preloadPion: 不传 binPath，由 pion-node 自行解析', async () => {
+	let capturedOpts;
+	class CapturePionIpc extends MockPionIpc {
+		constructor(opts = {}) {
+			super(opts);
+			capturedOpts = opts;
+		}
+	}
+	const { deps } = successDeps({
+		dynamicImport: async () => ({
+			PionIpc: CapturePionIpc,
+			RTCPeerConnection: MockRTCPeerConnection,
+		}),
+	});
+	const result = await preloadPion(deps);
+	assert.notEqual(result, null);
+	assert.equal(capturedOpts.binPath, undefined);
+});
+
 test('preloadPion: 意外异常时返回 null', async () => {
 	const { deps, logs } = successDeps({
 		dynamicImport: async () => {
-			// 正常返回，但后续流程中抛异常
 			return {
 				PionIpc: class {
 					constructor() { throw new Error('unexpected'); }

@@ -3,6 +3,14 @@
 > 适用范围：`coclaw/plugins/openclaw` 及其子目录。
 > 本文件仅写相对上级 `coclaw/AGENTS.md` 与 `coclaw/plugins/AGENTS.md` 的增量规则。
 
+## pion-ipc / pion-node
+
+插件依赖 `@coclaw/pion-node`（npm 包），由 CoClaw 自行维护。本地仓库：
+- **pion-ipc**（Go）：`~/.openclaw/workspace/pion-ipc`（GitHub: `coclaw/pion-ipc`）
+- **pion-node**（JS SDK）：`~/.openclaw/workspace/pion-node`（GitHub: `coclaw/pion-node`）
+
+binary 解析由 pion-node 内部处理（`PION_IPC_BIN` env → npm 平台包 → PATH），插件不参与。
+
 ## 绑定信息存储
 
 - 绑定信息存储在 **`~/.openclaw/coclaw/bindings.json`**（通过 `resolveStateDir()` + channel ID 组合路径），**不存储在 `openclaw.json` 中**。

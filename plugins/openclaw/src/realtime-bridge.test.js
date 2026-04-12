@@ -103,10 +103,16 @@ async function noopPreloadNdc() {
 	return { PeerConnection: MockPC, cleanup: null, impl: 'werift' };
 }
 
+/** 默认 preloadPion mock：返回 null（pion 不可用，降级到 ndc） */
+async function noopPreloadPion() {
+	return null;
+}
+
 function createBridge(overrides = {}) {
 	return new RealtimeBridge({
 		WebSocket: FakeWebSocket,
 		resolveGatewayAuthToken: () => '',
+		preloadPion: noopPreloadPion,
 		preloadNdc: noopPreloadNdc,
 		gatewayReadyTimeoutMs: 50,
 		...overrides,
@@ -2620,6 +2626,8 @@ test('RealtimeBridge start() aborts if stop() called during preload (race protec
 
 	try {
 		const startPromise = bridge.start({ logger: noopLogger() });
+		// 等待 pion preload（noopPreloadPion）完成后，ndc preload 才会被调用
+		await new Promise((r) => setTimeout(r, 0));
 		// preload 仍在进行中，此时调用 stop
 		bridge.started = false; // 模拟 stop 已执行
 		// resolve preload
@@ -2631,6 +2639,33 @@ test('RealtimeBridge start() aborts if stop() called during preload (race protec
 		await startPromise;
 		// start 应检测到 started=false，直接返回，不调用 cleanup（native threads 保持活跃）
 		assert.ok(!cleanupCalled, 'cleanup should NOT be called (native threads stay alive for reuse)');
+		assert.equal(bridge.__ndcPreloadResult, null, 'should not assign result after stop');
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge start() aborts with pion cleanup when stop() during pion preload', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	let cleanupCalled = false;
+	let resolvePion;
+	const bridge = createBridge({
+		preloadPion: () => new Promise((resolve) => { resolvePion = resolve; }),
+	});
+
+	try {
+		const startPromise = bridge.start({ logger: noopLogger() });
+		// 等待 start → __preloadWebrtc → preloadPion() 被调用
+		await new Promise((r) => setTimeout(r, 0));
+		bridge.started = false; // 模拟 stop 已执行
+		resolvePion({
+			PeerConnection: class PionPC {},
+			cleanup: async () => { cleanupCalled = true; },
+			impl: 'pion',
+		});
+		await startPromise;
+		// pion impl → start 应调用 cleanup 关闭 Go 进程
+		assert.ok(cleanupCalled, 'pion cleanup should be called on race abort');
 		assert.equal(bridge.__ndcPreloadResult, null, 'should not assign result after stop');
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
