@@ -69,6 +69,7 @@ test('WebRtcPeer: offer → answer 流程', async () => {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_001'));
@@ -88,6 +89,7 @@ test('WebRtcPeer: TURN 凭证正确构建 iceServers', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	const turnCreds = {
@@ -119,6 +121,7 @@ test('WebRtcPeer: 无 turnCreds 时 iceServers 为空', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_003'));
@@ -135,6 +138,7 @@ test('WebRtcPeer: ICE candidate 回调 → onSend', async () => {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_010'));
@@ -160,6 +164,7 @@ test('WebRtcPeer: handleIce 正常添加', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_020'));
@@ -183,6 +188,7 @@ test('WebRtcPeer: handleIce addIceCandidate 失败时不抛异常', async () => 
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_021'));
@@ -204,6 +210,7 @@ test('WebRtcPeer: handleIce 无 session 时忽略', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
 	});
 
 	// 不应抛异常
@@ -227,6 +234,7 @@ test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close/err
 		onSend: () => {},
 		logger,
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_030'));
@@ -260,6 +268,7 @@ test('WebRtcPeer: DataChannel onmessage req → onRequest 回调', async () => {
 		onRequest: (payload, connId) => requests.push({ payload, connId }),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_030a'));
@@ -284,6 +293,7 @@ test('WebRtcPeer: DataChannel onmessage 非 req 类型 → debug 日志', async 
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_030b'));
@@ -305,6 +315,7 @@ test('WebRtcPeer: DC probe → 回复 probe-ack，不触发 onRequest', async ()
 		onRequest: (payload) => requests.push(payload),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_probe1'));
@@ -331,6 +342,7 @@ test('WebRtcPeer: DC probe 回复失败（DC 已关闭）不抛异常', async ()
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_probe2'));
@@ -354,6 +366,7 @@ test('WebRtcPeer: DataChannel onmessage 无效 JSON → warn', async () => {
 		onSend: () => {},
 		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_030c'));
@@ -375,6 +388,7 @@ test('WebRtcPeer: DataChannel onmessage string data → reassembler 正常解析
 		onRequest: (payload, connId) => requests.push({ payload, connId }),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_030d'));
@@ -399,6 +413,7 @@ test('WebRtcPeer: 无 onRequest 时 req 消息不崩溃', async () => {
 		// 不传 onRequest
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_030e'));
@@ -420,6 +435,7 @@ test('WebRtcPeer: ondatachannel file:* label → onFileChannel 回调', async ()
 		onFileChannel: (dc, connId) => fileDCs.push({ dc, connId }),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_031'));
@@ -444,6 +460,7 @@ test('WebRtcPeer: ondatachannel file:* 无 onFileChannel 回调时不崩溃', as
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_031b'));
@@ -462,6 +479,7 @@ test('WebRtcPeer: ondatachannel 未知 label 不设置 rpcChannel', async () => 
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_031c'));
@@ -480,6 +498,7 @@ test('WebRtcPeer: connectionState connected 记录 candidate 类型', async () =
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_040'));
@@ -502,6 +521,7 @@ test('WebRtcPeer: connectionState connected 无 nominated 不崩溃', async () =
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_041'));
@@ -518,6 +538,7 @@ test('WebRtcPeer: connectionState connected 有 nominated 但无 localCandidate.
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_042'));
@@ -536,6 +557,7 @@ test('WebRtcPeer: connectionState failed 保留 session（支持 ICE restart）'
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_050'));
@@ -554,6 +576,7 @@ test('WebRtcPeer: connectionState closed 清理 session', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_050b'));
@@ -572,6 +595,7 @@ test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC �
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 		onFileChannel: () => {},
 	});
 
@@ -605,6 +629,7 @@ test('WebRtcPeer: connectionState disconnected 触发 dump 但保留 session（�
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_disc'));
@@ -631,6 +656,7 @@ test('WebRtcPeer: connectionState closed 不输出 dump（避免本地主动关�
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_closed'));
@@ -650,6 +676,7 @@ test('WebRtcPeer: 重复 disconnected 同 state 去重，恢复 connected 后再
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_flap'));
@@ -682,6 +709,7 @@ test('WebRtcPeer: stale PC 异步回调不污染当前 session 诊断', async ()
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_stale'));
@@ -711,6 +739,7 @@ test('WebRtcPeer: connected 分支 pc 归属校验：旧 PC 不输出 ICE nomina
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_conn'));
@@ -742,6 +771,7 @@ test('WebRtcPeer: file DC 历史上限 FIFO 淘汰', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 		onFileChannel: () => {},
 	});
 
@@ -774,6 +804,7 @@ test('WebRtcPeer: connectionState closed 清理 session', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_051'));
@@ -790,6 +821,7 @@ test('WebRtcPeer: 重复 offer 同一 connId → 先关闭旧连接', async () =
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_060'));
@@ -809,6 +841,7 @@ test('WebRtcPeer: 多 connId 并发', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_070'));
@@ -830,6 +863,7 @@ test('WebRtcPeer: closeByConnId 不存在的 connId 不报错', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
 	});
 	await peer.closeByConnId('c_nonexistent'); // 不应抛异常
 });
@@ -839,6 +873,7 @@ test('WebRtcPeer: closeAll 空 sessions', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
 	});
 	await peer.closeAll(); // 不应抛异常
 });
@@ -849,6 +884,7 @@ test('WebRtcPeer: rtc:ready 仅日志', async () => {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
 		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling({ type: 'rtc:ready', fromConnId: 'c_080' });
@@ -861,6 +897,7 @@ test('WebRtcPeer: rtc:closed 触发 closeByConnId', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_090'));
@@ -876,6 +913,7 @@ test('WebRtcPeer: DataChannel onclose 清除 rpcChannel', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_100'));
@@ -897,6 +935,7 @@ test('WebRtcPeer: broadcast 发送到所有已打开的 rpcChannel', async () =>
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_b01'));
@@ -926,6 +965,7 @@ test('WebRtcPeer: broadcast 跳过未打开的 rpcChannel', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_b10'));
@@ -949,6 +989,7 @@ test('WebRtcPeer: broadcast send 失败时不抛异常', async () => {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_b20'));
@@ -966,6 +1007,7 @@ test('WebRtcPeer: broadcast 空 sessions 不报错', () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
 	});
 	peer.broadcast({ type: 'res', id: 'z' }); // 不应抛异常
 });
@@ -975,6 +1017,7 @@ test('WebRtcPeer: __logDebug 无 debug 方法时不报错', async () => {
 		onSend: () => {},
 		logger: { info: () => {} }, // 无 debug
 		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
 	});
 
 	// 直接调用 __logDebug 不应抛异常
@@ -992,6 +1035,7 @@ test('WebRtcPeer: SDP 协商失败时清理 session', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: FailPC,
+		impl: 'ndc',
 	});
 
 	await assert.rejects(
@@ -1012,6 +1056,7 @@ test('WebRtcPeer: createAnswer 失败时清理 session', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: FailPC,
+		impl: 'ndc',
 	});
 
 	await assert.rejects(
@@ -1025,8 +1070,50 @@ test('WebRtcPeer: 默认 logger 为 console', () => {
 	const peer = new WebRtcPeer({
 		onSend: () => {},
 		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
 	});
 	assert.equal(peer.logger, console);
+});
+
+// --- impl 参数 ---
+
+test('WebRtcPeer: impl 参数影响 logger 前缀和 remoteLog 后缀', async () => {
+	resetRemoteLog();
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_impl1'));
+	// logger 前缀应包含 impl
+	assert.ok(logs.some((m) => m.includes('[coclaw/rtc:pion]')), `expected [coclaw/rtc:pion] in logs: ${JSON.stringify(logs)}`);
+	// remoteLog 应追加 rtc=pion
+	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc=pion')), `expected rtc=pion in remoteLog: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 未传 impl 时 logger 前缀和 remoteLog 不含 rtc 标识', async () => {
+	resetRemoteLog();
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+	});
+
+	await peer.handleSignaling(makeOffer('c_impl2'));
+	// logger 前缀应为 [coclaw/rtc]（无后缀）
+	assert.ok(logs.some((m) => m.includes('[coclaw/rtc]')), `expected [coclaw/rtc] in logs: ${JSON.stringify(logs)}`);
+	// remoteLog 不应包含 rtc=
+	assert.ok(!remoteLogBuffer.some((e) => e.text.includes('rtc=')), `expected no rtc= in remoteLog: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+
+	await peer.closeAll();
 });
 
 // --- coclaw.files.* RPC 拦截 ---
@@ -1041,6 +1128,7 @@ test('WebRtcPeer: coclaw.files.* req → onFileRpc 回调（不转发 onRequest�
 		onFileRpc: (payload, sendFn, connId) => fileRpcs.push({ payload, sendFn, connId }),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_file_01'));
@@ -1071,6 +1159,7 @@ test('WebRtcPeer: coclaw.files.* sendFn 发送响应到 DC', async () => {
 		},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_file_02'));
@@ -1098,6 +1187,7 @@ test('WebRtcPeer: coclaw.files.* sendFn DC 关闭时不崩溃', async () => {
 		},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_file_03'));
@@ -1124,6 +1214,7 @@ test('WebRtcPeer: 非 coclaw.files.* req 仍走 onRequest', async () => {
 		onFileRpc: (payload, _sendFn) => fileRpcs.push(payload),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_file_04'));
@@ -1148,6 +1239,7 @@ test('WebRtcPeer: coclaw.files.* 无 onFileRpc 时走 onRequest', async () => {
 		// 不传 onFileRpc
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_file_05'));
@@ -1172,6 +1264,7 @@ test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	// 先建立正常连接
@@ -1206,6 +1299,7 @@ test('WebRtcPeer: ICE restart 无现有 session 时发送 rtc:restart-rejected',
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	// 直接发送 ICE restart offer（无现有 session）
@@ -1231,6 +1325,7 @@ test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	// 先建立正常连接
@@ -1265,6 +1360,7 @@ test('WebRtcPeer: ICE failed 后仍可 ICE restart 恢复', async () => {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	// 建立正常连接
@@ -1302,6 +1398,7 @@ test('WebRtcPeer: closeByConnId detach 事件防止旧 PC 回调影响新 sessio
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_race01'));
@@ -1328,6 +1425,7 @@ test('WebRtcPeer: closeByConnId detach 后旧 PC handler 为 null', async () => 
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_race02'));
@@ -1357,6 +1455,7 @@ test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', asy
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_race03'));
@@ -1396,6 +1495,7 @@ test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: ConditionalFailPC,
+		impl: 'ndc',
 	});
 
 	// 第一次正常
@@ -1417,7 +1517,7 @@ import { HEADER_SIZE, FLAG_BEGIN, FLAG_END, FLAG_MIDDLE } from './dc-chunking.js
 
 test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async () => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	await peer.handleSignaling(makeOffer('c_chunk01', 'v=0\r\na=max-message-size:262144\r\n'));
 	const pc = PC.instances[0];
 	const sent = [];
@@ -1432,7 +1532,7 @@ test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async () =
 
 test('WebRtcPeer: broadcast 大消息自动分片', async () => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	// 设置很小的 maxMessageSize 以触发分片
 	await peer.handleSignaling(makeOffer('c_chunk02', 'v=0\r\na=max-message-size:50\r\n'));
 	const pc = PC.instances[0];
@@ -1459,7 +1559,7 @@ test('WebRtcPeer: broadcast 大消息自动分片', async () => {
 
 test('WebRtcPeer: broadcast 多连接不同 maxMessageSize，各自分片', async () => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 
 	// 连接 1：maxMessageSize=50（小，需要更多 chunk）
 	await peer.handleSignaling(makeOffer('c_chunk03a', 'v=0\r\na=max-message-size:50\r\n'));
@@ -1482,7 +1582,7 @@ test('WebRtcPeer: broadcast 多连接不同 maxMessageSize，各自分片', asyn
 
 test('WebRtcPeer: SDP 无 max-message-size 时默认 65536', async () => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	await peer.handleSignaling(makeOffer('c_chunk04', 'v=0\r\n')); // 无 max-message-size
 	const session = peer.__sessions.get('c_chunk04');
 	assert.equal(session.remoteMaxMessageSize, 65536);
@@ -1491,7 +1591,7 @@ test('WebRtcPeer: SDP 无 max-message-size 时默认 65536', async () => {
 
 test('WebRtcPeer: SDP 中正确提取 max-message-size 值', async () => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC });
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	await peer.handleSignaling(makeOffer('c_chunk05', 'v=0\r\na=max-message-size:131072\r\n'));
 	const session = peer.__sessions.get('c_chunk05');
 	assert.equal(session.remoteMaxMessageSize, 131072);
@@ -1506,6 +1606,7 @@ test('WebRtcPeer: 接收端重组分片消息 → onRequest 收到完整 payload
 		onRequest: (payload, connId) => requests.push({ payload, connId }),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 	await peer.handleSignaling(makeOffer('c_chunk06'));
 	const pc = PC.instances[0];
@@ -1543,6 +1644,7 @@ test('WebRtcPeer: 分片 chunk 中夹杂普通 string 消息，各自正确处�
 		onRequest: (payload) => requests.push(payload),
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 	await peer.handleSignaling(makeOffer('c_chunk07'));
 	const pc = PC.instances[0];
@@ -1591,6 +1693,7 @@ test('WebRtcPeer: sendFn 大响应也会分片', async () => {
 		},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 	await peer.handleSignaling(makeOffer('c_chunk08', 'v=0\r\na=max-message-size:80\r\n'));
 	const pc = PC.instances[0];
@@ -1617,6 +1720,7 @@ test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
 		onRequest: (payload) => requests.push(payload),
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 	await peer.handleSignaling(makeOffer('c_chunk09'));
 	const pc = PC.instances[0];
@@ -1653,6 +1757,7 @@ test('WebRtcPeer: offer 时记录 ICE 服务器配置（脱敏）', async () => 
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	const turnCreds = {
@@ -1680,6 +1785,7 @@ test('WebRtcPeer: 无 STUN/TURN 时 ice-config 显示 none', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_diag_02'));
@@ -1699,6 +1805,7 @@ test('WebRtcPeer: candidate gathering 汇总统计各类型', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_diag_03'));
@@ -1729,6 +1836,7 @@ test('WebRtcPeer: candidate 无 typ 字段时不计入统计', async () => {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_diag_04'));
@@ -1787,6 +1895,7 @@ test('WebRtcPeer: pion — connectionState connected 不直接读取 selectedCan
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_pion_01'));
@@ -1815,6 +1924,7 @@ test('WebRtcPeer: pion — onselectedcandidatepairchange 事件上报 pair', asy
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_pion_02'));
@@ -1842,6 +1952,7 @@ test('WebRtcPeer: pion — onselectedcandidatepairchange pair 为 null 时不崩
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_pion_03'));
@@ -1859,6 +1970,7 @@ test('WebRtcPeer: pion — closeByConnId detach onselectedcandidatepairchange', 
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
+		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_pion_04'));

@@ -18,8 +18,9 @@ export class WebRtcPeer {
 	 * @param {function} [opts.onFileChannel] - file:<transferId> DataChannel 的回调 (dc, connId) => void
 	 * @param {object} [opts.logger] - pino 风格 logger
 	 * @param {function} opts.PeerConnection - RTCPeerConnection 构造函数（由 ndc-preloader 提供）
+	 * @param {string} [opts.impl] - WebRTC 实现标识（pion / ndc / werift）
 	 */
-	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection }) {
+	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection, impl }) {
 		if (!PeerConnection) {
 			throw new Error('PeerConnection constructor is required');
 		}
@@ -29,6 +30,8 @@ export class WebRtcPeer {
 		this.__onFileChannel = onFileChannel;
 		this.logger = logger ?? console;
 		this.__PeerConnection = PeerConnection;
+		this.__impl = impl ?? null;
+		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
 		/** @type {Map<string, { pc: object, rpcChannel: object|null, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
 	}
@@ -60,8 +63,8 @@ export class WebRtcPeer {
 			session.pc.onselectedcandidatepairchange = null;
 		}
 		await session.pc.close();
-		remoteLog(`rtc.closed conn=${connId}`);
-		this.logger.info?.(`[coclaw/rtc] [${connId}] closed`);
+		this.__remoteLog(`rtc.closed conn=${connId}`);
+		this.logger.info?.(`${this.__rtcTag} [${connId}] closed`);
 	}
 
 	/** 关闭所有 PeerConnection */
@@ -93,8 +96,8 @@ export class WebRtcPeer {
 		if (isIceRestart) {
 			const existing = this.__sessions.get(connId);
 			if (existing) {
-				remoteLog(`rtc.ice-restart conn=${connId}`);
-				this.logger.info?.(`[coclaw/rtc] ICE restart offer from ${connId}, renegotiating`);
+				this.__remoteLog(`rtc.ice-restart conn=${connId}`);
+				this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
 				try {
 					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
 					const answer = await existing.pc.createAnswer();
@@ -104,26 +107,26 @@ export class WebRtcPeer {
 						toConnId: connId,
 						payload: { sdp: answer.sdp },
 					});
-					this.logger.info?.(`[coclaw/rtc] ICE restart answer sent to ${connId}`);
+					this.logger.info?.(`${this.__rtcTag} ICE restart answer sent to ${connId}`);
 					return;
 				} catch (err) {
 					// ICE restart 协商失败 → reject，不 fall through
-					remoteLog(`rtc.ice-restart-failed conn=${connId}`);
-					this.logger.warn?.(`[coclaw/rtc] ICE restart failed for ${connId}: ${err?.message}`);
+					this.__remoteLog(`rtc.ice-restart-failed conn=${connId}`);
+					this.logger.warn?.(`${this.__rtcTag} ICE restart failed for ${connId}: ${err?.message}`);
 					this.__onSend({
 						type: 'rtc:restart-rejected',
 						toConnId: connId,
 						payload: { reason: 'restart_failed' },
 					});
 					await this.closeByConnId(connId).catch((closeErr) => {
-						this.logger.warn?.(`[coclaw/rtc] closeByConnId failed after restart rejection for ${connId}: ${closeErr?.message}`);
+						this.logger.warn?.(`${this.__rtcTag} closeByConnId failed after restart rejection for ${connId}: ${closeErr?.message}`);
 					});
 					return;
 				}
 			}
 			// 无 session → reject（plugin 可能已重启）
-			remoteLog(`rtc.ice-restart-no-session conn=${connId}`);
-			this.logger.warn?.(`[coclaw/rtc] ICE restart from ${connId} but no session, rejecting`);
+			this.__remoteLog(`rtc.ice-restart-no-session conn=${connId}`);
+			this.logger.warn?.(`${this.__rtcTag} ICE restart from ${connId} but no session, rejecting`);
 			this.__onSend({
 				type: 'rtc:restart-rejected',
 				toConnId: connId,
@@ -132,8 +135,8 @@ export class WebRtcPeer {
 			return;
 		}
 
-		remoteLog(`rtc.offer conn=${connId}`);
-		this.logger.info?.(`[coclaw/rtc] offer received from ${connId}, creating answer`);
+		this.__remoteLog(`rtc.offer conn=${connId}`);
+		this.logger.info?.(`${this.__rtcTag} offer received from ${connId}, creating answer`);
 
 		// 同一 connId 重复 offer → 先关闭旧连接
 		if (this.__sessions.has(connId)) {
@@ -158,7 +161,7 @@ export class WebRtcPeer {
 		// 记录 ICE 服务器配置（脱敏，不含 credential）
 		const stunUrl = iceServers.find((s) => s.urls?.startsWith('stun:'))?.urls ?? 'none';
 		const turnUrl = iceServers.find((s) => s.urls?.startsWith('turn:'))?.urls ?? 'none';
-		remoteLog(`rtc.ice-config conn=${connId} stun=${stunUrl} turn=${turnUrl}`);
+		this.__remoteLog(`rtc.ice-config conn=${connId} stun=${stunUrl} turn=${turnUrl}`);
 
 		const pc = new this.__PeerConnection({ iceServers });
 
@@ -178,7 +181,7 @@ export class WebRtcPeer {
 		pc.onicecandidate = ({ candidate }) => {
 			if (!candidate) {
 				// gathering 完成，输出汇总
-				remoteLog(`rtc.ice-gathered conn=${connId} host=${candidateCounts.host} srflx=${candidateCounts.srflx} relay=${candidateCounts.relay}`);
+				this.__remoteLog(`rtc.ice-gathered conn=${connId} host=${candidateCounts.host} srflx=${candidateCounts.srflx} relay=${candidateCounts.relay}`);
 				return;
 			}
 			// 从 candidate 字符串中提取类型（typ host / typ srflx / typ relay）
@@ -200,8 +203,8 @@ export class WebRtcPeer {
 		// 连接状态变更（校验 pc 归属，防止旧 PC 异步回调删除新 session）
 		pc.onconnectionstatechange = () => {
 			const state = pc.connectionState;
-			remoteLog(`rtc.state conn=${connId} ${state}`);
-			this.logger.info?.(`[coclaw/rtc] [${connId}] connectionState: ${state}`);
+			this.__remoteLog(`rtc.state conn=${connId} ${state}`);
+			this.logger.info?.(`${this.__rtcTag} [${connId}] connectionState: ${state}`);
 
 			// 校验 pc 归属：旧 PC 的异步回调可能在新 session 已建立后触发
 			const cur = this.__sessions.get(connId);
@@ -217,8 +220,8 @@ export class WebRtcPeer {
 					const remoteC = nominated.remoteCandidate;
 					const localInfo = `${localC?.type ?? '?'} ${localC?.host ?? '?'}:${localC?.port ?? '?'}`;
 					const remoteInfo = `${remoteC?.type ?? '?'} ${remoteC?.host ?? '?'}:${remoteC?.port ?? '?'}`;
-					remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
-					this.logger.info?.(`[coclaw/rtc] [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
+					this.__remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
+					this.logger.info?.(`${this.__rtcTag} [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
 				}
 				// pion: pair 通过独立的 selectedcandidatepairchange 事件上报
 			} else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
@@ -249,8 +252,8 @@ export class WebRtcPeer {
 
 		// 监听 UI 创建的 DataChannel
 		pc.ondatachannel = ({ channel }) => {
-			remoteLog(`dc.received conn=${connId} label=${channel.label}`);
-			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${channel.label}" received`);
+			this.__remoteLog(`dc.received conn=${connId} label=${channel.label}`);
+			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${channel.label}" received`);
 			if (channel.label === 'rpc') {
 				session.rpcChannel = channel;
 				this.__setupDataChannel(connId, channel);
@@ -277,8 +280,8 @@ export class WebRtcPeer {
 				toConnId: connId,
 				payload: { sdp: answer.sdp },
 			});
-			remoteLog(`rtc.answer conn=${connId}`);
-			this.logger.info?.(`[coclaw/rtc] answer sent to ${connId}`);
+			this.__remoteLog(`rtc.answer conn=${connId}`);
+			this.logger.info?.(`${this.__rtcTag} answer sent to ${connId}`);
 		} catch (err) {
 			// SDP 协商失败 → 清理已入 Map 的 session，避免泄漏
 			const cur = this.__sessions.get(connId);
@@ -340,26 +343,26 @@ export class WebRtcPeer {
 		}, { logger: this.logger });
 
 		dc.onopen = () => {
-			remoteLog(`dc.open conn=${connId} label=${dc.label}`);
-			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" opened`);
+			this.__remoteLog(`dc.open conn=${connId} label=${dc.label}`);
+			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" opened`);
 		};
 		dc.onclose = () => {
-			remoteLog(`dc.closed conn=${connId} label=${dc.label}`);
-			this.logger.info?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" closed`);
+			this.__remoteLog(`dc.closed conn=${connId} label=${dc.label}`);
+			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" closed`);
 			reassembler.reset();
 			const session = this.__sessions.get(connId);
 			if (session && dc.label === 'rpc') session.rpcChannel = null;
 		};
 		dc.onerror = (err) => {
-			remoteLog(`dc.error conn=${connId} label=${dc.label}`);
+			this.__remoteLog(`dc.error conn=${connId} label=${dc.label}`);
 			/* c8 ignore next -- ?./?? fallback */
-			this.logger.warn?.(`[coclaw/rtc] [${connId}] DataChannel "${dc.label}" error: ${String(err?.message ?? err)}`);
+			this.logger.warn?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" error: ${String(err?.message ?? err)}`);
 		};
 		dc.onmessage = (event) => {
 			try {
 				reassembler.feed(event.data);
 			} catch (err) {
-				this.logger.warn?.(`[coclaw/rtc] [${connId}] DC message error: ${err.message}`);
+				this.logger.warn?.(`${this.__rtcTag} [${connId}] DC message error: ${err.message}`);
 			}
 		};
 	}
@@ -374,20 +377,24 @@ export class WebRtcPeer {
 			? 'none'
 			/* c8 ignore next -- ?? fallback for missing readyState */
 			: [...session.fileChannels].map((dc) => `${dc.label}=${dc.readyState ?? '?'}`).join(',');
-		remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
-		this.logger.info?.(`[coclaw/rtc] [${connId}] dump state=${state} rpc=${rpcState} fileCount=${session.fileChannels.size} files=${fileSummary}`);
+		this.__remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
+		this.logger.info?.(`${this.__rtcTag} [${connId}] dump state=${state} rpc=${rpcState} fileCount=${session.fileChannels.size} files=${fileSummary}`);
 	}
 
 	__logNominatedPair(connId, pair) {
 		const localInfo = `${pair.local?.type ?? '?'} ${pair.local?.address ?? pair.local?.host ?? '?'}:${pair.local?.port ?? '?'}`;
 		const remoteInfo = `${pair.remote?.type ?? '?'} ${pair.remote?.address ?? pair.remote?.host ?? '?'}:${pair.remote?.port ?? '?'}`;
-		remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
-		this.logger.info?.(`[coclaw/rtc] [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
+		this.__remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
+		this.logger.info?.(`${this.__rtcTag} [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
+	}
+
+	__remoteLog(msg) {
+		remoteLog(this.__impl ? `${msg} rtc=${this.__impl}` : msg);
 	}
 
 	__logDebug(message) {
 		if (typeof this.logger?.debug === 'function') {
-			this.logger.debug(`[coclaw/rtc] ${message}`);
+			this.logger.debug(`${this.__rtcTag} ${message}`);
 		}
 	}
 }

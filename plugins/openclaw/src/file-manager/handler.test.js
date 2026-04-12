@@ -5,6 +5,7 @@ import os from 'node:os';
 import nodePath from 'node:path';
 
 import { validatePath, createFileHandler } from './handler.js';
+import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 
 // --- helpers ---
 
@@ -27,6 +28,7 @@ function createMockDC(label = 'file:test-id') {
 		onmessage: null,
 		onclose: null,
 		onopen: null,
+		onerror: null,
 		onbufferedamountlow: null,
 		send(data) { sent.push(data); },
 		close() { dc.readyState = 'closed'; dc.onclose?.(); },
@@ -813,6 +815,45 @@ test('handleFileChannel GET: bufferedAmount 触发流控暂停', async () => {
 		const completion = strings.find((s) => s.ok === true && s.bytes !== undefined);
 		assert.ok(completion);
 		assert.equal(completion.bytes, 65536);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel GET: 诊断 — bufferedamountlow 在未 pause 时触发也安全', async () => {
+	// 验证"spurious bal"场景：Go 端可能在 JS 还未 pause 时就 emit bufferedamountlow
+	// （例如线程调度差异、threshold cross 检测的边沿条件等）。
+	// 此时 pausedNow=false，bal handler 不应错误地增加 resumeCount，但仍应安全 resume。
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'short.txt'), Buffer.alloc(8192, 'x'));
+
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC();
+		// 先正常开始 → 在尚未 pause 的情况下手动 trigger bal
+		const origSend = dc.send.bind(dc);
+		let triggered = false;
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string' && !triggered) {
+				triggered = true;
+				// 在第一帧后立即 emit spurious bal
+				dc.onbufferedamountlow?.();
+			}
+		};
+
+		handler.handleFileChannel(dc);
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'short.txt' }) });
+		await new Promise((r) => setTimeout(r, 200));
+
+		// 应正常完成传输
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const completion = strings.find((s) => s.ok === true && s.bytes !== undefined);
+		assert.ok(completion, '应正常完成传输');
+		assert.equal(completion.bytes, 8192);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -2214,6 +2255,353 @@ test('handleFileChannel PUT: 大文件触发进度日志和背压计数', async 
 		assert.ok(result);
 		assert.equal(result.bytes, totalSize);
 		assert.ok(writeCount >= totalChunks);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// --- dc.onerror 与诊断日志（pion 异步 send 错误兼容） ---
+
+test('handleFileChannel: 早期 onerror 在请求接管前可上报', async () => {
+	resetRemoteLog();
+	const handler = createFileHandler({
+		resolveWorkspace: async () => '/tmp',
+		logger: silentLogger(),
+	});
+	const dc = createMockDC('file:early-err');
+	handler.handleFileChannel(dc, 'c_early');
+
+	// 模拟 pion 异步 send 失败
+	dc.onerror(new Error('io: closed pipe'));
+
+	const found = remoteLogBuffer.find((e) => /file\.dc\.error/.test(e.text)
+		&& /conn=c_early/.test(e.text)
+		&& /label=file:early-err/.test(e.text)
+		&& /stage=pre-request/.test(e.text)
+		&& /closed pipe/.test(e.text));
+	assert.ok(found, `expected pre-request error log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+});
+
+test('handleFileChannel GET: dc.onerror 中断流并记录诊断', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'big.bin'), Buffer.alloc(64 * 1024, 0x42));
+
+		resetRemoteLog();
+		// 注入一个 deterministic 的 Readable：永远不主动 emit 'data'，
+		// 由测试在适当时机调用 dc.onerror 触发清理路径。
+		const { Readable } = await import('node:stream');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createReadStream: () => new Readable({
+					read() { /* 不 push 任何数据，永远 pending */ },
+				}),
+			},
+		});
+		const dc = createMockDC('file:dl-err');
+		handler.handleFileChannel(dc, 'c_dl');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'big.bin' }) });
+		// 等 handleGet 走到设置 dc.onerror 之后
+		await new Promise((r) => setTimeout(r, 30));
+
+		assert.ok(typeof dc.onerror === 'function', 'onerror should be set by handleGet');
+		dc.onerror(new Error('io: closed pipe'));
+		await new Promise((r) => setTimeout(r, 20));
+
+		const failLog = remoteLogBuffer.find((e) => /file\.dl\.fail/.test(e.text)
+			&& /reason=dc-error/.test(e.text)
+			&& /conn=c_dl/.test(e.text)
+			&& /id=dl-err/.test(e.text)
+			&& /closed pipe/.test(e.text));
+		assert.ok(failLog, `expected dl.fail log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+
+		// start 日志也应已记录
+		const startLog = remoteLogBuffer.find((e) => /file\.dl\.start/.test(e.text) && /id=dl-err/.test(e.text));
+		assert.ok(startLog);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel GET: 进度日志按 25/50/75% 触发', async () => {
+	const dir = await makeTmpDir();
+	try {
+		// 64KB 文件，按 16KB chunk 流出 4 块 → 在 25% 50% 75% 各触发一次
+		const size = 64 * 1024;
+		const big = Buffer.alloc(size, 0x43);
+		await fs.writeFile(nodePath.join(dir, 'prog.bin'), big);
+
+		resetRemoteLog();
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:dl-prog');
+		handler.handleFileChannel(dc, 'c_prog');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'prog.bin' }) });
+		await new Promise((r) => setTimeout(r, 100));
+
+		const progLogs = remoteLogBuffer.filter((e) => /file\.dl\.progress/.test(e.text) && /id=dl-prog/.test(e.text));
+		assert.equal(progLogs.length, 3, `expected 3 progress logs, got ${progLogs.length}: ${JSON.stringify(progLogs.map((e) => e.text))}`);
+		assert.match(progLogs[0].text, /25%/);
+		assert.match(progLogs[1].text, /50%/);
+		assert.match(progLogs[2].text, /75%/);
+
+		const okLog = remoteLogBuffer.find((e) => /file\.dl\.ok/.test(e.text) && /id=dl-prog/.test(e.text));
+		assert.ok(okLog);
+		assert.match(okLog.text, new RegExp(`bytes=${size}`));
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel GET: read stream 错误记录诊断', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'r.txt'), 'data');
+
+		resetRemoteLog();
+		const fsSync = await import('node:fs');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createReadStream: (path, opts) => {
+					const stream = fsSync.default.createReadStream(path, opts);
+					setImmediate(() => stream.emit('error', new Error('fake read error')));
+					return stream;
+				},
+			},
+		});
+		const dc = createMockDC('file:rd-err');
+		handler.handleFileChannel(dc, 'c_rd');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'r.txt' }) });
+		await new Promise((r) => setTimeout(r, 50));
+
+		const failLog = remoteLogBuffer.find((e) => /file\.dl\.fail/.test(e.text)
+			&& /reason=read-error/.test(e.text)
+			&& /id=rd-err/.test(e.text));
+		assert.ok(failLog, `expected read-error fail log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: dc.onerror 中断上传并清理临时文件', async () => {
+	const dir = await makeTmpDir();
+	try {
+		resetRemoteLog();
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:up-err');
+		handler.handleFileChannel(dc, 'c_up');
+
+		// 启动一个上传
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'up.txt', size: 1024 }) });
+		await new Promise((r) => setTimeout(r, 20));
+
+		// 写入一些数据
+		dc.onmessage({ data: Buffer.alloc(256, 0x44) });
+		await new Promise((r) => setTimeout(r, 20));
+
+		// 触发 pion 异步 send 错误
+		dc.onerror(new Error('io: closed pipe'));
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 临时文件应已清理（不应有 .tmp.* 文件残留）
+		const entries = await fs.readdir(dir);
+		const tmpFiles = entries.filter((n) => /\.tmp\./.test(n));
+		assert.equal(tmpFiles.length, 0, `tmp file leaked: ${tmpFiles.join(', ')}`);
+
+		// 目标文件不应存在（上传未完成）
+		const finalFiles = entries.filter((n) => n === 'up.txt');
+		assert.equal(finalFiles.length, 0);
+
+		// 诊断日志应已记录
+		const failLog = remoteLogBuffer.find((e) => /file\.up\.fail/.test(e.text)
+			&& /reason=dc-error/.test(e.text)
+			&& /id=up-err/.test(e.text)
+			&& /received=256\/1024/.test(e.text));
+		assert.ok(failLog, `expected up.fail dc-error log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: dc.onerror → ws.destroy 触发 ws.on(error) 不产生重复日志', async () => {
+	const dir = await makeTmpDir();
+	try {
+		resetRemoteLog();
+		// 注入一个 destroy() 时同步 emit 'error' 的 mock WriteStream，模拟"dc.onerror 触发 ws.destroy 后 ws 立即 emit error"
+		const fsSync = await import('node:fs');
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path, opts) => {
+					const ws = fsSync.default.createWriteStream(path, opts);
+					const origDestroy = ws.destroy.bind(ws);
+					ws.destroy = (err) => {
+						// 模拟 destroy 触发同步 'error' 事件
+						setImmediate(() => ws.emit('error', err ?? new Error('destroyed')));
+						return origDestroy(err);
+					};
+					return ws;
+				},
+			},
+		});
+		const dc = createMockDC('file:upws-err');
+		handler.handleFileChannel(dc, 'c_upws');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'u.txt', size: 256 }) });
+		await new Promise((r) => setTimeout(r, 20));
+
+		// 触发 dc.onerror，这会调用 ws.destroy()，进而触发 ws.on('error')
+		dc.onerror(new Error('io: closed pipe'));
+		await new Promise((r) => setTimeout(r, 50));
+
+		const failLogs = remoteLogBuffer.filter((e) => /file\.up\.fail/.test(e.text) && /id=upws-err/.test(e.text));
+		// 关键：只有 dc-error 一条 fail 日志，ws.on('error') 因 wsError=true 早 return，不再追加
+		assert.equal(failLogs.length, 1, `expected exactly 1 fail log, got: ${JSON.stringify(failLogs.map((e) => e.text))}`);
+		assert.match(failLogs[0].text, /reason=dc-error/);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: dc.onerror 在已关闭/已错误状态下幂等', async () => {
+	const dir = await makeTmpDir();
+	try {
+		resetRemoteLog();
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:idem');
+		handler.handleFileChannel(dc, 'c_idem');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'i.txt', size: 100 }) });
+		await new Promise((r) => setTimeout(r, 20));
+
+		dc.onerror(new Error('first'));
+		dc.onerror(new Error('second'));
+		await new Promise((r) => setTimeout(r, 30));
+
+		const failLogs = remoteLogBuffer.filter((e) => /file\.up\.fail/.test(e.text)
+			&& /reason=dc-error/.test(e.text)
+			&& /id=idem/.test(e.text));
+		assert.equal(failLogs.length, 1, 'second onerror should be idempotent');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel GET: 成功路径必须 await dc.close()（回归保护）', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'await.txt'), 'hello world');
+		resetRemoteLog();
+
+		// 自定义 mock dc.close：返回 50ms 延迟的 promise，并记录时间戳
+		let closeStartedAt = null;
+		let closeResolvedAt = null;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:await-close');
+		const origClose = dc.close;
+		dc.close = () => new Promise((resolve) => {
+			closeStartedAt = Date.now();
+			setTimeout(() => {
+				closeResolvedAt = Date.now();
+				origClose.call(dc);
+				resolve();
+			}, 50);
+		});
+
+		handler.handleFileChannel(dc, 'c_await');
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'await.txt' }) });
+		// 等足够时间：read + close 50ms 延迟 + remoteLog
+		await new Promise((r) => setTimeout(r, 200));
+
+		const okLog = remoteLogBuffer.find((e) => /file\.dl\.ok/.test(e.text) && /id=await-close/.test(e.text));
+		assert.ok(okLog, `expected file.dl.ok log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+		assert.ok(closeStartedAt !== null, 'dc.close should have been called');
+		assert.ok(closeResolvedAt !== null, 'dc.close promise should have resolved');
+		// 关键回归断言：file.dl.ok 的时间戳必须 >= close 完成时间，证明 await dc.close() 生效
+		assert.ok(okLog.ts >= closeResolvedAt,
+			`file.dl.ok ts (${okLog.ts}) should be >= closeResolvedAt (${closeResolvedAt}), proving await is in effect`);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel PUT: 成功路径必须 await dc.close()（回归保护）', async () => {
+	const dir = await makeTmpDir();
+	try {
+		resetRemoteLog();
+		const content = Buffer.from('upload-await-test');
+		let closeResolvedAt = null;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:await-up');
+		const origClose = dc.close;
+		dc.close = () => new Promise((resolve) => {
+			setTimeout(() => {
+				closeResolvedAt = Date.now();
+				origClose.call(dc);
+				resolve();
+			}, 50);
+		});
+
+		handler.handleFileChannel(dc, 'c_await_up');
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'up-await.txt', size: content.length }) });
+		await new Promise((r) => setTimeout(r, 30));
+		dc.onmessage({ data: content });
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
+		await new Promise((r) => setTimeout(r, 250));
+
+		const okLog = remoteLogBuffer.find((e) => /file\.up\.ok/.test(e.text) && /id=await-up/.test(e.text));
+		assert.ok(okLog, `expected file.up.ok log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+		assert.ok(closeResolvedAt !== null, 'dc.close promise should have resolved');
+		assert.ok(okLog.ts >= closeResolvedAt,
+			`file.up.ok ts (${okLog.ts}) should be >= closeResolvedAt (${closeResolvedAt}), proving await is in effect`);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleFileChannel GET: dc.onerror 在已关闭后幂等', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'g.txt'), 'small');
+
+		resetRemoteLog();
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:gidem');
+		handler.handleFileChannel(dc, 'c_gidem');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'g.txt' }) });
+		await new Promise((r) => setTimeout(r, 50));
+
+		// 文件已传完，后续 onerror 应被忽略（dcClosed=true 后由 close 走流程）
+		dc.onerror(new Error('late'));
+
+		const failLogs = remoteLogBuffer.filter((e) => /file\.dl\.fail/.test(e.text) && /reason=dc-error/.test(e.text));
+		assert.equal(failLogs.length, 0, 'onerror after success should be ignored');
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
