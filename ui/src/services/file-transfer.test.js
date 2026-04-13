@@ -11,6 +11,7 @@ import {
 	CHUNK_SIZE,
 	HIGH_WATER_MARK,
 	MAX_UPLOAD_SIZE,
+	formatTransferLog,
 } from './file-transfer.js';
 
 vi.mock('./remote-log.js', () => ({ remoteLog: vi.fn() }));
@@ -1810,6 +1811,35 @@ describe('边界分支补充', () => {
 });
 
 // --- FileTransferError ---
+
+describe('formatTransferLog', () => {
+	test('正常耗时：包含大小、耗时、速度', () => {
+		// 1MB in 2s → 512.0 KB/s
+		const result = formatTransferLog(1024 * 1024, 2000);
+		expect(result).toBe('1.0 MB in 2.00s (512.0 KB/s)');
+	});
+
+	test('耗时为 0：不除零', () => {
+		const result = formatTransferLog(1024, 0);
+		expect(result).toBe('1.0 KB in <1ms');
+	});
+
+	test('负耗时：不除零', () => {
+		const result = formatTransferLog(500, -1);
+		expect(result).toBe('500 B in <1ms');
+	});
+
+	test('0 字节传输', () => {
+		const result = formatTransferLog(0, 1000);
+		expect(result).toBe('0 B in 1.00s (0 B/s)');
+	});
+
+	test('小文件快速传输', () => {
+		// 100B in 50ms → 2000 B/s → 2.0 KB/s
+		const result = formatTransferLog(100, 50);
+		expect(result).toBe('100 B in 0.05s (2.0 KB/s)');
+	});
+});
 
 describe('FileTransferError', () => {
 	test('包含 code 和 message', () => {
