@@ -2169,9 +2169,54 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('信令 WS 未连接 → 跳过 offer，仍进入 restarting', async () => {
+	test('信令 WS 未连接 → 等待 ensureConnected 后发送 offer', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 		mockSigState = 'disconnected';
+		mockSendSignaling.mockClear();
+		mockEnsureConnected.mockClear();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		expect(mockEnsureConnected).toHaveBeenCalledTimes(1);
+		// ensureConnected mock 立即 resolve → offer 已发送
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+		expect(rtc.__restartAttemptCount).toBe(1);
+
+		rtc.close();
+	});
+
+	test('信令 WS 未连接 + ensureConnected 超时 → 不发送 offer，保持 restarting', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		mockSigState = 'disconnected';
+		mockSendSignaling.mockClear();
+		mockEnsureConnected.mockClear();
+		mockEnsureConnected.mockRejectedValueOnce(new Error('ensureConnected timeout'));
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		expect(mockEnsureConnected).toHaveBeenCalledTimes(1);
+		expect(mockSendSignaling).not.toHaveBeenCalled();
+		expect(rtc.__restartAttemptCount).toBe(0);
+		// restart 定时器仍在运行，后续周期重试可恢复
+		expect(rtc.__restartTimer).not.toBeNull();
+
+		rtc.close();
+	});
+
+	test('ensureConnected 等待期间 close() → 不发送 offer', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		mockSigState = 'disconnected';
+		let resolveEnsure;
+		mockEnsureConnected.mockImplementation(() => new Promise(r => { resolveEnsure = r; }));
 		mockSendSignaling.mockClear();
 
 		pc.connectionState = 'failed';
@@ -2179,10 +2224,71 @@ describe('WebRtcConnection — ICE restart', () => {
 		await vi.advanceTimersByTimeAsync(0);
 
 		expect(rtc.state).toBe('restarting');
-		// 没有发送 offer（WS 不通）
-		expect(mockSendSignaling).not.toHaveBeenCalled();
-		// 但 attempt count 没有增加（跳过不计数）
-		expect(rtc.__restartAttemptCount).toBe(0);
+		// ensureConnected 仍挂起，此时 close
+		rtc.close();
+		resolveEnsure();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// close() 会发送 rtc:closed，但不应发送 rtc:offer
+		const offerCalls = mockSendSignaling.mock.calls.filter(c => c[1] === 'rtc:offer');
+		expect(offerCalls).toHaveLength(0);
+		expect(rtc.state).toBe('closed');
+	});
+
+	test('ensureConnected 等待期间 restart 已由其他路径恢复 → 不重复发送 offer', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		mockSigState = 'disconnected';
+		let resolveEnsure;
+		mockEnsureConnected.mockImplementation(() => new Promise(r => { resolveEnsure = r; }));
+		mockSendSignaling.mockClear();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// 模拟 ICE 自行恢复
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('connected');
+
+		// ensureConnected resolve 后，post-await guard 应拦截
+		mockSendSignaling.mockClear();
+		resolveEnsure();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const offerCalls = mockSendSignaling.mock.calls.filter(c => c[1] === 'rtc:offer');
+		expect(offerCalls).toHaveLength(0);
+	});
+
+	test('多个并发 __attemptRestart 等待 ensureConnected → 仅发送一次 offer', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		mockSigState = 'disconnected';
+		let resolveEnsure;
+		// 所有调用共享同一个 pending promise
+		const sharedPromise = new Promise(r => { resolveEnsure = r; });
+		mockEnsureConnected.mockReturnValue(sharedPromise);
+		mockSendSignaling.mockClear();
+
+		// 进入 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// 第二次 nudge（模拟 periodic 或 network:online 再次触发）
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// resolve：两个挂起的 __attemptRestart 同时恢复
+		resolveEnsure();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// __restartInFlight 确保只有一个发出 offer
+		const offerCalls = mockSendSignaling.mock.calls
+			.filter(c => c[1] === 'rtc:offer');
+		expect(offerCalls).toHaveLength(1);
+		expect(rtc.__restartAttemptCount).toBe(1);
 
 		rtc.close();
 	});

@@ -737,11 +737,18 @@ export class WebRtcConnection {
 			this.__startRestartTimer();
 		}
 
-		// 信令 WS 不可用 → 跳过本次 offer（周期重试或 nudge 会再来）
+		// 信令 WS 不可用 → 等待其就绪（与 PC rebuild 路径对齐）
 		const sig = useSignalingConnection();
 		if (sig.state !== 'connected') {
-			this.__log('info', `ICE restart skipped (WS not connected), reason=${reason}`);
-			return;
+			this.__log('info', `ICE restart: WS not ready, waiting... reason=${reason}`);
+			try {
+				await sig.ensureConnected();
+			} catch {
+				this.__log('info', 'ICE restart: ensureConnected failed, will retry');
+				return;
+			}
+			// 等待期间状态可能已变更（close / 其他路径已恢复 / 超时）
+			if (!this.__pc || this.__state !== 'restarting') return;
 		}
 
 		// 防止并发：timer 和 immediate retry 可能在 await 间隙同时触发
