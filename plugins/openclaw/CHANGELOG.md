@@ -1,5 +1,15 @@
 # @coclaw/openclaw-coclaw
 
+## 0.13.2
+
+### Patch Changes
+
+- fix(plugin): 修复 PionIpc listener 泄漏并添加 failed session 清理机制
+
+  - failed 状态的 session 增加 24h TTL 定时器，超时后自动回收释放 IPC listeners 和 Go 侧资源
+  - session 总数上限 20，溢出时淘汰最旧的 failed session
+  - closed 状态通过 closeByConnId 完整释放资源（此前仅删除 Map 条目）
+
 ## 0.13.1
 
 ### Patch Changes
