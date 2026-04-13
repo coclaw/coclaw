@@ -2037,18 +2037,26 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('restarting 时 failed → 留在 restarting（等下次触发）', async () => {
+	test('restarting 时 failed → 立即重试（不等 timer）', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartAttemptCount).toBe(1);
+		mockSendSignaling.mockClear();
 
 		// 再次 failed（ICE check 失败）��� 仍在 restarting
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartAttemptCount).toBe(2);
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
 
 		rtc.close();
 	});
@@ -2141,7 +2149,7 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('连续失败达到上限 → failed', async () => {
+	test('时间预算耗尽 → failed', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
@@ -2149,21 +2157,14 @@ describe('WebRtcConnection — ICE restart', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('restarting');
 		expect(rtc.__restartAttemptCount).toBe(1);
+		expect(rtc.__restartStartTime).toBeGreaterThan(0);
 
-		// 第 2、3 次 nudge
-		rtc.nudgeRestart();
-		await vi.advanceTimersByTimeAsync(0);
-		expect(rtc.__restartAttemptCount).toBe(2);
-
-		rtc.nudgeRestart();
-		await vi.advanceTimersByTimeAsync(0);
-		expect(rtc.__restartAttemptCount).toBe(3);
-
-		// 第 4 次 nudge：check 3 >= 3 → 放弃 → failed
-		rtc.nudgeRestart();
+		// 推进时间到预算耗尽（90s）
+		await vi.advanceTimersByTimeAsync(90_000);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('failed');
 		expect(rtc.__restartAttemptCount).toBe(0);
+		expect(rtc.__restartStartTime).toBe(0);
 
 		rtc.close();
 	});
@@ -2186,7 +2187,7 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('周期重试定时器每 60s 重发 offer', async () => {
+	test('安全网定时器每 30s 重发 offer', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
@@ -2195,8 +2196,8 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(rtc.state).toBe('restarting');
 		mockSendSignaling.mockClear();
 
-		// 60s 后周期重试
-		await vi.advanceTimersByTimeAsync(60_000);
+		// 30s 后安全网重试
+		await vi.advanceTimersByTimeAsync(30_000);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(mockSendSignaling).toHaveBeenCalledWith(
 			'bot1', 'rtc:offer',
@@ -2361,5 +2362,66 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(rtc.__pendingCandidates).toEqual([]);
 
 		rtc.close();
+	});
+
+	test('__restartInFlight 防止并发 createOffer', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 进入 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		mockSendSignaling.mockClear();
+
+		// 模拟 createOffer 阻塞
+		let resolveOffer;
+		pc.createOffer = () => new Promise((r) => { resolveOffer = r; });
+
+		// 触发一次 restart（阻塞在 createOffer）
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartInFlight).toBe(true);
+
+		// 再次触发 → 应被 inFlight 防护跳过
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		// createOffer 仅被调用一次（第二次被跳过）
+		expect(mockSendSignaling).not.toHaveBeenCalled(); // 阻塞中，尚未 send
+
+		// 释放 createOffer → 完成发送
+		resolveOffer({ sdp: 'restart-sdp', type: 'offer' });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartInFlight).toBe(false);
+		expect(mockSendSignaling).toHaveBeenCalledTimes(1);
+
+		rtc.close();
+	});
+
+	test('close() 期间 createOffer → 不覆盖 closed 状态', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 进入 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// 模拟 createOffer 阻塞
+		let resolveOffer;
+		pc.createOffer = () => new Promise((r) => { resolveOffer = r; });
+
+		// 触发 restart（阻塞在 createOffer）
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 阻塞期间 close()
+		rtc.close();
+		expect(rtc.state).toBe('closed');
+
+		// 释放 createOffer → bail out，不应变为 failed
+		resolveOffer({ sdp: 'restart-sdp', type: 'offer' });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('closed'); // 保持 closed，不变为 failed
 	});
 });

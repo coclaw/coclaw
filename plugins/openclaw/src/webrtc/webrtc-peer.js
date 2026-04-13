@@ -96,6 +96,17 @@ export class WebRtcPeer {
 		if (isIceRestart) {
 			const existing = this.__sessions.get(connId);
 			if (existing) {
+				// 仅已验证支持 ICE restart 的 impl 放行，其余立即 reject 让 UI 走 rebuild
+				if (this.__impl !== 'pion') {
+					this.__remoteLog(`rtc.ice-restart-unsupported conn=${connId} impl=${this.__impl}`);
+					this.logger.info?.(`${this.__rtcTag} ICE restart rejected: impl=${this.__impl} not verified`);
+					this.__onSend({
+						type: 'rtc:restart-rejected',
+						toConnId: connId,
+						payload: { reason: 'impl_unsupported' },
+					});
+					return;
+				}
 				this.__remoteLog(`rtc.ice-restart conn=${connId}`);
 				this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
 				try {

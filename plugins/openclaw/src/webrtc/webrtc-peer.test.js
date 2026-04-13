@@ -1264,7 +1264,7 @@ test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
-		impl: 'ndc',
+		impl: 'pion',
 	});
 
 	// 先建立正常连接
@@ -1318,7 +1318,7 @@ test('WebRtcPeer: ICE restart 无现有 session 时发送 rtc:restart-rejected',
 	assert.equal(sent[0].payload.reason, 'no_session');
 });
 
-test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async () => {
+test('WebRtcPeer: ICE restart 非 pion impl 立即 reject（impl_unsupported）', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -1326,6 +1326,39 @@ test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async
 		logger: silentLogger(),
 		PeerConnection: PC,
 		impl: 'ndc',
+	});
+
+	// 先建立正常连接
+	await peer.handleSignaling(makeOffer('c_ir_impl'));
+	assert.equal(PC.instances.length, 1);
+	sent.length = 0;
+
+	// 发送 ICE restart offer → 应被 impl 检查拦截
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ir_impl',
+		payload: { sdp: 'ice-restart-sdp', iceRestart: true },
+	});
+
+	// 应发送 restart-rejected，reason=impl_unsupported
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:restart-rejected');
+	assert.equal(sent[0].toConnId, 'c_ir_impl');
+	assert.equal(sent[0].payload.reason, 'impl_unsupported');
+	// session 应保留（不关闭 PC）
+	assert.ok(peer.__sessions.has('c_ir_impl'));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
 	});
 
 	// 先建立正常连接
@@ -1360,7 +1393,7 @@ test('WebRtcPeer: ICE failed 后仍可 ICE restart 恢复', async () => {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
-		impl: 'ndc',
+		impl: 'pion',
 	});
 
 	// 建立正常连接

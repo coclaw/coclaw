@@ -19,10 +19,10 @@ import { remoteLog } from './remote-log.js';
 /** disconnected 状态超时：超过此时间仍未恢复则升级到 ICE restart（ICE 自愈通常 1-3s） */
 const DISCONNECTED_TIMEOUT_MS = 5_000;
 
-/** ICE restart 周期重试间隔（仅 restarting 状态且信令可用时发送） */
-const ICE_RESTART_RETRY_MS = 60_000;
-/** ICE restart 连续失败上限：超过后放弃 restart → failed → store rebuild（兼容旧 plugin） */
-const ICE_RESTART_MAX_FAILURES = 3;
+/** ICE restart 总时间预算：超过后放弃 restart → failed → store rebuild */
+const ICE_RESTART_TIMEOUT_MS = 90_000;
+/** ICE restart 安全网定时器间隔（覆盖 connectionState:failed 未触发的极端场景） */
+const ICE_RESTART_SAFETY_MS = 30_000;
 
 /** DC 应用层保活：间隔（probe 完成后到下一次 probe 发起） */
 const DC_KEEPALIVE_INTERVAL_MS = 30_000;
@@ -176,6 +176,8 @@ export class WebRtcConnection {
 		/** ICE restart 状态 */
 		this.__restartTimer = null;
 		this.__restartAttemptCount = 0;
+		this.__restartStartTime = 0;
+		this.__restartInFlight = false;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -443,9 +445,10 @@ export class WebRtcConnection {
 				this.__startDisconnectedTimer();
 			} else if (s === 'failed') {
 				this.__clearDisconnectedTimer();
-				// restarting 中的 failed 表示本次 ICE check 失败，留在 restarting 等下次触发
+				// restarting 中的 failed 表示本次 ICE check 失败，立即触发下次尝试（无需等 timer）
 				if (this.__state === 'restarting') {
-					this.__log('info', 'ICE check failed during restart, waiting for next attempt');
+					this.__log('info', 'ICE check failed during restart, retrying immediately');
+					this.__attemptRestart('ice_check_failed');
 					return;
 				}
 				this.__onIceFailed();
@@ -711,20 +714,25 @@ export class WebRtcConnection {
 	async __attemptRestart(reason) {
 		if (!this.__pc || this.__state === 'closed') return;
 
-		// 兼容兜底：连续失败计数器达到上限 → 放弃 restart
-		if (this.__restartAttemptCount >= ICE_RESTART_MAX_FAILURES) {
-			this.__log('warn', `ICE restart gave up after ${ICE_RESTART_MAX_FAILURES} attempts`);
-			this.__clearRestartState();
-			this.__setState('failed');
-			return;
-		}
-
 		// 同步进入 restarting（先于 async createOffer，确保状态立即可观测）
 		if (this.__state !== 'restarting') {
 			this.__stopKeepalive();
 			this.__setState('restarting');
 		}
-		// 确保周期重试定时器运行（首次进入或 background 后恢复）
+		// 首次进入时记录起始时间
+		if (!this.__restartStartTime) {
+			this.__restartStartTime = Date.now();
+		}
+
+		// 时间预算耗尽 → 放弃 restart
+		if (Date.now() - this.__restartStartTime >= ICE_RESTART_TIMEOUT_MS) {
+			this.__log('warn', `ICE restart timed out after ${ICE_RESTART_TIMEOUT_MS}ms (${this.__restartAttemptCount} attempts)`);
+			this.__clearRestartState();
+			this.__setState('failed');
+			return;
+		}
+
+		// 安全网定时器（覆盖 connectionState:failed 未触发的极端场景）
 		if (!this.__restartTimer) {
 			this.__startRestartTimer();
 		}
@@ -736,20 +744,29 @@ export class WebRtcConnection {
 			return;
 		}
 
+		// 防止并发：timer 和 immediate retry 可能在 await 间隙同时触发
+		if (this.__restartInFlight) return;
+
 		this.__restartAttemptCount++;
 		// restart 重新协商 → 重置候选缓冲，确保新 candidates 等待 restart answer 后再添加
 		this.__remoteDescSet = false;
 		this.__pendingCandidates = [];
 
+		this.__restartInFlight = true;
 		try {
 			const offer = await this.__pc.createOffer({ iceRestart: true });
+			if (!this.__pc || this.__state === 'closed') return;
 			await this.__pc.setLocalDescription(offer);
+			if (!this.__pc || this.__state === 'closed') return;
 			sig.sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true });
 			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount}`);
 		} catch (err) {
+			if (this.__state === 'closed') return;
 			this.__log('warn', `ICE restart createOffer failed: ${err?.message}`);
 			this.__clearRestartState();
 			this.__setState('failed');
+		} finally {
+			this.__restartInFlight = false;
 		}
 	}
 
@@ -776,6 +793,7 @@ export class WebRtcConnection {
 	__clearRestartState() {
 		this.__stopRestartTimer();
 		this.__restartAttemptCount = 0;
+		this.__restartStartTime = 0;
 	}
 
 	/** @private 启动 restart 周期重试定时器 */
@@ -787,7 +805,7 @@ export class WebRtcConnection {
 				return;
 			}
 			this.__attemptRestart('periodic');
-		}, ICE_RESTART_RETRY_MS);
+		}, ICE_RESTART_SAFETY_MS);
 	}
 
 	/** @private 停止 restart 周期重试定时器 */
