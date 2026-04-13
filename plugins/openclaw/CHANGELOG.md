@@ -1,5 +1,11 @@
 # @coclaw/openclaw-coclaw
 
+## 0.13.1
+
+### Patch Changes
+
+- 优化 ICE restart 恢复时序与实现门控
+
 ## 0.13.0
 
 ### Minor Changes
