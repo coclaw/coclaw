@@ -2346,6 +2346,38 @@ test('WebRtcPeer: failed → connected → failed 重新启动 timer', async (t)
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: failed 连续触发两次，旧 timer 被替换', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl_ff'));
+	const pc = PC.instances[0];
+
+	// 第一次 failed
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const session = peer.__sessions.get('c_ttl_ff');
+	const timer1 = session.__failedTimer;
+	assert.ok(timer1);
+
+	// 连续第二次 failed（某些 WebRTC 实现可能重复触发）
+	pc.onconnectionstatechange();
+	const timer2 = session.__failedTimer;
+	assert.ok(timer2);
+	assert.notEqual(timer1, timer2, 'old timer should be replaced');
+
+	// 仅新 timer 生效：推进 TTL 后 session 被回收
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+	assert.ok(!peer.__sessions.has('c_ttl_ff'), 'session should be reclaimed by new timer');
+});
+
 // --- queue length 限制 ---
 
 test('WebRtcPeer: session 总数达到 MAX_SESSIONS 时淘汰最旧 failed session', async () => {
