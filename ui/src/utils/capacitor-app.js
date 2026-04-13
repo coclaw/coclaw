@@ -218,12 +218,37 @@ async function handleShareReceived(data) {
 	}
 }
 
+/** 后台切换前最近聚焦的 input/textarea，用于前台恢复键盘 */
+let _lastFocusedInput = null;
+
 function setupAppStateChange() {
+	// 持续追踪最近聚焦的 input/textarea；
+	// 焦点移到非 input 元素时清除，确保只在用户正在输入时才恢复
+	document.addEventListener('focusin', (e) => {
+		const tag = e.target.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA') {
+			_lastFocusedInput = e.target;
+		} else {
+			_lastFocusedInput = null;
+		}
+	});
+
 	import('@capacitor/app').then(({ App }) => {
 		App.addListener('appStateChange', ({ isActive }) => {
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
 			remoteLog(`app.stateChange active=${isActive}`);
 			if (isActive) {
+				// 恢复后台切换前的焦点（Android WebView 进后台时系统会收起键盘）
+				const el = _lastFocusedInput;
+				if (el) {
+					setTimeout(() => {
+						// 若用户已主动聚焦其他元素，不抢夺
+						const active = document.activeElement;
+						if (active && active !== document.body && active !== el) return;
+						if (document.contains(el) && !el.disabled) el.focus();
+					}, 300);
+				}
+				_lastFocusedInput = null;
 				// 通知各模块进行前台恢复（ClawConnection/SSE/Polling/ChatPage）
 				window.dispatchEvent(new CustomEvent('app:foreground'));
 			} else {
