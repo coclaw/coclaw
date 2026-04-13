@@ -5,6 +5,14 @@ import { remoteLog } from '../remote-log.js';
 // 用于诊断 dump：过大会撑爆 remoteLog 单帧，20 足以覆盖典型多文件传输会话。
 const FILE_CHANNEL_HISTORY_LIMIT = 20;
 
+// Failed session 保留 24 小时，支持 Capacitor 长时间后台恢复后 ICE restart。
+// 超时后 session 被回收释放 IPC listeners 和 Go 侧资源。
+const FAILED_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Session 总数上限（活跃 + failed）。溢出时淘汰最旧的 failed session。
+// 20 足以覆盖多 UI 实例（浏览器多标签 + 移动端）的典型场景。
+const MAX_SESSIONS = 20;
+
 /**
  * 管理多个 WebRTC PeerConnection（以 connId 为粒度）。
  * Plugin 作为被叫方：收到 UI 的 offer → 回复 answer。
@@ -55,6 +63,11 @@ export class WebRtcPeer {
 	async closeByConnId(connId) {
 		const session = this.__sessions.get(connId);
 		if (!session) return;
+		// 清理 failed TTL 定时器
+		if (session.__failedTimer) {
+			clearTimeout(session.__failedTimer);
+			session.__failedTimer = null;
+		}
 		this.__sessions.delete(connId);
 		// 先 detach 事件，防止 pc.close() 异步触发 onconnectionstatechange 删除新 session
 		session.pc.onconnectionstatechange = null;
@@ -105,7 +118,12 @@ export class WebRtcPeer {
 						toConnId: connId,
 						payload: { reason: 'impl_unsupported' },
 					});
-					return;
+					return; // TTL timer 保持不变（reject 是同步的，不影响 timer 正常工作）
+				}
+				// 暂停 failed TTL timer：pion restart 涉及异步协商，期间不应被回收
+				if (existing.__failedTimer) {
+					clearTimeout(existing.__failedTimer);
+					existing.__failedTimer = null;
 				}
 				this.__remoteLog(`rtc.ice-restart conn=${connId}`);
 				this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
@@ -153,6 +171,11 @@ export class WebRtcPeer {
 		// 同一 connId 重复 offer → 先关闭旧连接
 		if (this.__sessions.has(connId)) {
 			await this.closeByConnId(connId);
+		}
+
+		// session 总数限制：溢出时淘汰最旧的 failed session
+		if (this.__sessions.size >= MAX_SESSIONS) {
+			this.__evictOldestFailed();
 		}
 
 		// 从 Server 注入的 turnCreds 构建 iceServers
@@ -222,6 +245,12 @@ export class WebRtcPeer {
 			const cur = this.__sessions.get(connId);
 			if (!cur || cur.pc !== pc) return;
 
+			// 离开 failed 状态时清理 TTL timer（ICE restart 恢复、自然关闭等）
+			if (state !== 'failed' && cur.__failedTimer) {
+				clearTimeout(cur.__failedTimer);
+				cur.__failedTimer = null;
+			}
+
 			if (state === 'connected') {
 				// 重置 dump 去重水位（disconnected → connected → disconnected 仍能再 dump）
 				cur.__lastDumpState = null;
@@ -238,16 +267,25 @@ export class WebRtcPeer {
 				// pion: pair 通过独立的 selectedcandidatepairchange 事件上报
 			} else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
 				// 诊断 dump：失败/断连/关闭时输出当前 PC 上 DC 状态，定位"PC 假活/DC 死"现象
-				// - closed 多由本地主动关闭触发，dump 收敛诊断噪声但仍清理 session
+				// - closed 由 closeByConnId 接管清理，dump 收敛诊断噪声
 				// - disconnected 可能反复触发，去重避免噪声
 				if (state !== 'closed' && cur.__lastDumpState !== state) {
 					cur.__lastDumpState = state;
 					this.__dumpSessionState(connId, cur, state);
 				}
-				// 仅 closed 删除 session；failed 保留以支持 ICE restart 恢复
-				// （如 app 后台冻结 → pion ICE failed → 前台恢复后 restart）
-				if (state === 'closed') {
-					this.__sessions.delete(connId);
+				if (state === 'failed') {
+					// 启动 TTL 定时器：超时后回收 session 释放 IPC listeners 和 Go 侧资源。
+					// unref() 确保定时器不阻止进程退出（gateway 由其他连接保活）。
+					if (cur.__failedTimer) clearTimeout(cur.__failedTimer);
+					cur.__failedTimer = setTimeout(() => {
+						this.__remoteLog(`rtc.session-expired conn=${connId} ttl=${FAILED_SESSION_TTL_MS / 1000}s`);
+						this.logger.info?.(`${this.__rtcTag} [${connId}] session TTL expired, closing`);
+						this.closeByConnId(connId).catch(() => {});
+					}, FAILED_SESSION_TTL_MS);
+					cur.__failedTimer.unref?.();
+				} else if (state === 'closed') {
+					// 自然进入 closed 时也需通过 closeByConnId 释放 IPC listeners 和 Go 资源
+					this.closeByConnId(connId).catch(() => {});
 				}
 			}
 		};
@@ -298,6 +336,10 @@ export class WebRtcPeer {
 			// SDP 协商失败 → 清理已入 Map 的 session，避免泄漏
 			const cur = this.__sessions.get(connId);
 			if (cur && cur.pc === pc) {
+				if (cur.__failedTimer) {
+					clearTimeout(cur.__failedTimer);
+					cur.__failedTimer = null;
+				}
 				this.__sessions.delete(connId);
 			}
 			await pc.close().catch(() => {});
@@ -404,9 +446,25 @@ export class WebRtcPeer {
 		remoteLog(this.__impl ? `${msg} rtc=${this.__impl}` : msg);
 	}
 
+	/** 淘汰最旧的 failed session（Map 迭代序 ≈ 创建时间序），用于 queue length 限制 */
+	__evictOldestFailed() {
+		for (const [connId, session] of this.__sessions) {
+			if (session.pc.connectionState === 'failed') {
+				this.__remoteLog(`rtc.session-evicted conn=${connId} sessions=${this.__sessions.size}`);
+				this.logger.info?.(`${this.__rtcTag} [${connId}] session evicted (limit ${MAX_SESSIONS}), closing`);
+				this.closeByConnId(connId).catch(() => {});
+				return true;
+			}
+		}
+		this.logger.warn?.(`${this.__rtcTag} session limit (${MAX_SESSIONS}) reached, no failed sessions to evict`);
+		return false;
+	}
+
 	__logDebug(message) {
 		if (typeof this.logger?.debug === 'function') {
 			this.logger.debug(`${this.__rtcTag} ${message}`);
 		}
 	}
 }
+
+export { FAILED_SESSION_TTL_MS, MAX_SESSIONS };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { WebRtcPeer } from './webrtc-peer.js';
+import { WebRtcPeer, FAILED_SESSION_TTL_MS, MAX_SESSIONS } from './webrtc-peer.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 
 // --- mock helpers ---
@@ -2012,4 +2012,512 @@ test('WebRtcPeer: pion — closeByConnId detach onselectedcandidatepairchange', 
 
 	await peer.closeByConnId('c_pion_04');
 	assert.equal(pc.onselectedcandidatepairchange, null);
+});
+
+// --- failed session 清理机制 ---
+
+test('WebRtcPeer: 导出 FAILED_SESSION_TTL_MS 和 MAX_SESSIONS 常量', () => {
+	assert.equal(typeof FAILED_SESSION_TTL_MS, 'number');
+	assert.ok(FAILED_SESSION_TTL_MS > 0);
+	assert.equal(typeof MAX_SESSIONS, 'number');
+	assert.ok(MAX_SESSIONS > 0);
+});
+
+test('WebRtcPeer: closed 路径调用 pc.close() 释放资源', async () => {
+	const PC = MockPCFactory();
+	let closeCalled = false;
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	await peer.handleSignaling(makeOffer('c_closed_fix'));
+	const pc = PC.instances[0];
+	const origClose = pc.close;
+	pc.close = async () => { closeCalled = true; await origClose.call(pc); };
+
+	pc.connectionState = 'closed';
+	pc.onconnectionstatechange();
+
+	// closeByConnId 是 fire-and-forget，等下一个 microtask
+	await new Promise((r) => setTimeout(r, 0));
+
+	assert.ok(closeCalled, 'pc.close() should be called on natural closed transition');
+	assert.ok(!peer.__sessions.has('c_closed_fix'));
+});
+
+test('WebRtcPeer: failed 状态启动 TTL 定时器', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl01'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+
+	// session 保留
+	assert.ok(peer.__sessions.has('c_ttl01'));
+	const session = peer.__sessions.get('c_ttl01');
+	assert.ok(session.__failedTimer, 'should set __failedTimer');
+});
+
+test('WebRtcPeer: TTL 到期后回收 failed session', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl02'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	assert.ok(peer.__sessions.has('c_ttl02'));
+
+	// 推进到 TTL 到期
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+
+	// closeByConnId 是 fire-and-forget，等 microtask
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+
+	assert.ok(!peer.__sessions.has('c_ttl02'), 'session should be cleaned up after TTL');
+	assert.equal(pc.connectionState, 'closed', 'pc should be closed');
+	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc.session-expired') && e.text.includes('c_ttl02')));
+});
+
+test('WebRtcPeer: ICE restart 恢复 connected 取消 TTL 定时器', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl03'));
+	const pc = PC.instances[0];
+
+	// 进入 failed，启动 timer
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const session = peer.__sessions.get('c_ttl03');
+	assert.ok(session.__failedTimer);
+
+	// ICE restart 成功，恢复 connected
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+	assert.equal(session.__failedTimer, null, 'timer should be cleared on connected');
+
+	// TTL 到期后 session 不应被清理
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+	assert.ok(peer.__sessions.has('c_ttl03'), 'session should survive after TTL when recovered');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: rtc:closed 信令取消 TTL 定时器', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl04'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	assert.ok(peer.__sessions.get('c_ttl04').__failedTimer);
+
+	// rtc:closed 到来
+	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_ttl04' });
+	assert.ok(!peer.__sessions.has('c_ttl04'));
+
+	// TTL 到期后不应有副作用（closeByConnId 幂等）
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+	// 无异常即通过
+});
+
+test('WebRtcPeer: closeAll 清理所有 TTL 定时器', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl05a'));
+	await peer.handleSignaling(makeOffer('c_ttl05b'));
+	PC.instances[0].connectionState = 'failed';
+	PC.instances[0].onconnectionstatechange();
+	PC.instances[1].connectionState = 'failed';
+	PC.instances[1].onconnectionstatechange();
+
+	await peer.closeAll();
+	assert.equal(peer.__sessions.size, 0);
+
+	// TTL 到期后不应有副作用
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+});
+
+test('WebRtcPeer: ICE restart offer 取消 TTL timer 再尝试 restart', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl06'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const session = peer.__sessions.get('c_ttl06');
+	assert.ok(session.__failedTimer);
+
+	// ICE restart offer → timer 应被取消
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ttl06',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	assert.equal(session.__failedTimer, null, 'timer should be cleared during ICE restart');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 非 pion ICE restart reject 后 TTL timer 保持不变', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl07'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const timerBefore = peer.__sessions.get('c_ttl07').__failedTimer;
+	assert.ok(timerBefore);
+
+	// 非 pion restart → reject 是同步的，不影响 TTL timer
+	sent.length = 0;
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ttl07',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	assert.equal(sent[0]?.payload?.reason, 'impl_unsupported');
+	// session 保留，timer 也保持不变（非 pion reject 不清除 timer）
+	assert.ok(peer.__sessions.has('c_ttl07'));
+	assert.equal(peer.__sessions.get('c_ttl07').__failedTimer, timerBefore);
+
+	// TTL 到期后应正常回收
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+	assert.ok(!peer.__sessions.has('c_ttl07'), 'session should be reclaimed after TTL');
+});
+
+test('WebRtcPeer: pion ICE restart 协商失败时清理 TTL timer', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl_rf'));
+	const pc = PC.instances[0];
+
+	// 进入 failed → timer 设置
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	assert.ok(peer.__sessions.get('c_ttl_rf').__failedTimer);
+
+	// pion restart 协商失败
+	pc.setRemoteDescription = async () => { throw new Error('restart SDP failed'); };
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ttl_rf',
+		payload: { sdp: 'bad-sdp', iceRestart: true },
+	});
+
+	// session 应已被 closeByConnId 清理（含 timer）
+	assert.ok(!peer.__sessions.has('c_ttl_rf'));
+	assert.equal(sent.at(-1)?.payload?.reason, 'restart_failed');
+
+	// TTL 到期后不应有副作用
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+});
+
+test('WebRtcPeer: failed → disconnected（异常转换）取消 TTL timer', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl08'));
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const session = peer.__sessions.get('c_ttl08');
+	assert.ok(session.__failedTimer);
+
+	// 异常转换到 disconnected（某些 impl 可能出现）
+	pc.connectionState = 'disconnected';
+	pc.onconnectionstatechange();
+	assert.equal(session.__failedTimer, null, 'timer should be cleared when leaving failed');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: failed → connected → failed 重新启动 timer', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ttl09'));
+	const pc = PC.instances[0];
+
+	// 第一次 failed
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const session = peer.__sessions.get('c_ttl09');
+	const timer1 = session.__failedTimer;
+	assert.ok(timer1);
+
+	// 恢复
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+	assert.equal(session.__failedTimer, null);
+
+	// 再次 failed
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const timer2 = session.__failedTimer;
+	assert.ok(timer2);
+	assert.notEqual(timer1, timer2, 'should be a new timer');
+
+	await peer.closeAll();
+});
+
+// --- queue length 限制 ---
+
+test('WebRtcPeer: session 总数达到 MAX_SESSIONS 时淘汰最旧 failed session', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 创建 MAX_SESSIONS 个 session，前几个进入 failed
+	for (let i = 0; i < MAX_SESSIONS; i++) {
+		await peer.handleSignaling(makeOffer(`c_q${String(i).padStart(2, '0')}`));
+	}
+	assert.equal(peer.__sessions.size, MAX_SESSIONS);
+
+	// 前 3 个进入 failed
+	for (let i = 0; i < 3; i++) {
+		const pc = PC.instances[i];
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+	}
+
+	// 新 offer → 应淘汰 c_q00（最旧的 failed）
+	await peer.handleSignaling(makeOffer('c_q_new'));
+	assert.ok(!peer.__sessions.has('c_q00'), 'oldest failed session should be evicted');
+	assert.ok(peer.__sessions.has('c_q01'), 'second failed session should survive');
+	assert.ok(peer.__sessions.has('c_q_new'), 'new session should be created');
+	assert.equal(peer.__sessions.size, MAX_SESSIONS);
+
+	// 验证 remoteLog
+	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc.session-evicted') && e.text.includes('c_q00')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 无 failed session 可淘汰时仍允许新连接', async () => {
+	const PC = MockPCFactory();
+	const warns = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 创建 MAX_SESSIONS 个 connected session
+	for (let i = 0; i < MAX_SESSIONS; i++) {
+		await peer.handleSignaling(makeOffer(`c_nf${String(i).padStart(2, '0')}`));
+	}
+
+	// 新 offer → 无 failed 可淘汰，但仍创建
+	await peer.handleSignaling(makeOffer('c_nf_new'));
+	assert.ok(peer.__sessions.has('c_nf_new'));
+	assert.equal(peer.__sessions.size, MAX_SESSIONS + 1);
+	assert.ok(warns.some((m) => m.includes('session limit') && m.includes('no failed sessions to evict')));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 同 connId 重复 offer 先释放再检查 queue', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 创建 MAX_SESSIONS 个 session
+	for (let i = 0; i < MAX_SESSIONS; i++) {
+		await peer.handleSignaling(makeOffer(`c_dup${String(i).padStart(2, '0')}`));
+	}
+
+	// 同 connId 重复 offer → 先 close 旧的，count 降到 19，不触发淘汰
+	await peer.handleSignaling(makeOffer('c_dup00'));
+	assert.equal(peer.__sessions.size, MAX_SESSIONS);
+	// 所有其他 session 应保留
+	assert.ok(peer.__sessions.has('c_dup01'));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: queue 淘汰选择 failed 而非 connected session', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 创建 MAX_SESSIONS 个 session
+	for (let i = 0; i < MAX_SESSIONS; i++) {
+		await peer.handleSignaling(makeOffer(`c_mix${String(i).padStart(2, '0')}`));
+	}
+
+	// 偶数 session 进入 failed（c_mix00, c_mix02, ...）
+	for (let i = 0; i < MAX_SESSIONS; i += 2) {
+		PC.instances[i].connectionState = 'failed';
+		PC.instances[i].onconnectionstatechange();
+	}
+
+	// 新 offer → 应淘汰 c_mix00（最旧的 failed），而非 c_mix01（connected）
+	await peer.handleSignaling(makeOffer('c_mix_new'));
+	assert.ok(!peer.__sessions.has('c_mix00'), 'oldest failed should be evicted');
+	assert.ok(peer.__sessions.has('c_mix01'), 'connected session should survive');
+	assert.ok(peer.__sessions.has('c_mix02'), 'second failed should survive');
+	assert.ok(peer.__sessions.has('c_mix_new'));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: SDP 协商期间 PC 进入 failed 后协商失败 → catch 清理 timer', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	function FailDuringSdpPC() {
+		const pc = createMockPC();
+		pc.setRemoteDescription = async () => {
+			// 模拟 Go 进程崩溃导致 PC 在 SDP 协商期间进入 failed
+			pc.connectionState = 'failed';
+			pc.onconnectionstatechange();
+			throw new Error('IPC process exited');
+		};
+		return pc;
+	}
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: FailDuringSdpPC,
+		impl: 'pion',
+	});
+
+	await assert.rejects(
+		() => peer.handleSignaling(makeOffer('c_sdp_timer')),
+		{ message: 'IPC process exited' },
+	);
+	// session 应已被 catch 块清理
+	assert.ok(!peer.__sessions.has('c_sdp_timer'));
+
+	// TTL 到期后不应有副作用（timer 已在 catch 中清理）
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+});
+
+test('WebRtcPeer: queue 淘汰时清理被淘汰 session 的 TTL timer', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	for (let i = 0; i < MAX_SESSIONS; i++) {
+		await peer.handleSignaling(makeOffer(`c_qt${String(i).padStart(2, '0')}`));
+	}
+
+	// 第一个进入 failed → 有 timer
+	PC.instances[0].connectionState = 'failed';
+	PC.instances[0].onconnectionstatechange();
+
+	// 新 offer → 淘汰 c_qt00
+	await peer.handleSignaling(makeOffer('c_qt_new'));
+	assert.ok(!peer.__sessions.has('c_qt00'));
+
+	// TTL 到期后不应有副作用（timer 已清理）
+	t.mock.timers.tick(FAILED_SESSION_TTL_MS);
+	await new Promise((r) => { t.mock.timers.tick(0); setImmediate(r); });
+	// 无异常即通过
+
+	await peer.closeAll();
 });
