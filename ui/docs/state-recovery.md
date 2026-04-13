@@ -83,12 +83,13 @@
 ### 2.4 RTC ICE restart 与 full rebuild
 
 - **文件**：`services/webrtc-connection.js`
+- **设计文档**：`docs/designs/ice-restart-recovery.md`
 - **触发**：ICE `connectionState` 变为 `failed`；或前台恢复时 PC 处于 `disconnected`
 - **行为**：
   - ICE `disconnected` → 等待 ICE 自愈（5s 超时，`DISCONNECTED_TIMEOUT_MS`）
-  - Full rebuild（最多 3 次）→ 销毁旧 PeerConnection，重新协商（每次获取新 TURN 凭证）
-  - 全部用尽 → `state = 'failed'`，`clearRtc()` reject 所有挂起请求（`RTC_LOST`），进入退避重试
-- **注**：ICE restart 已移除（werift 实现不完整），恢复策略为 full rebuild
+  - ICE restart（pion impl）→ 在现有 PC 上重新协商 ICE 层，DTLS/SCTP/DataChannel 保留。ICE check 失败后立即重试，总时间预算 90s（`ICE_RESTART_TIMEOUT_MS`），30s 安全网定时器补位（`ICE_RESTART_SAFETY_MS`）
+  - Plugin 为 ndc/werift impl 时 → 立即收到 `rtc:restart-rejected`（reason=`impl_unsupported`）→ 跳过 restart，直接进入 rebuild
+  - Restart 超时或被 reject → `state = 'failed'` → store 退避重试 → full rebuild（获取新 TURN 凭证，新建 PeerConnection）
 - **场景**：Web + Capacitor
 
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）

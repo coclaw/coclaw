@@ -102,14 +102,16 @@ idle → building → ready ⇄ restarting
 
 ```
 1. 守卫：!pc || state=closed → return
-2. 连续失败计数 >= ICE_RESTART_MAX_FAILURES → 放弃 → setState('failed')
-3. 同步 setState('restarting')（仅首次，确保状态立即可观测）
-4. 确保周期重试定时器运行（首次进入或 background 后恢复）
-5. 信令 WS 不可用 → 跳过本次 offer（周期重试或 nudge 会再来）
-6. 计数递增 + 重置候选缓冲（__remoteDescSet / __pendingCandidates）
-7. pc.createOffer({ iceRestart: true })
-8. pc.setLocalDescription(offer)
-9. sendSignaling('rtc:offer', { sdp, iceRestart: true })
+2. 同步 setState('restarting')（仅首次，确保状态立即可观测）
+3. 首次进入时记录 __restartStartTime
+4. 时间预算检查：Date.now() - startTime >= ICE_RESTART_TIMEOUT_MS(90s) → 放弃 → setState('failed')
+5. 确保安全网定时器运行（ICE_RESTART_SAFETY_MS=30s，覆盖 failed 未触发的极端场景）
+6. 信令 WS 不可用 → 跳过本次 offer（安全网定时器或 nudge 会再来）
+7. 并发防护：__restartInFlight → return（防止 timer 与 immediate retry 产生并发 createOffer）
+8. 计数递增 + 重置候选缓冲（__remoteDescSet / __pendingCandidates）
+9. pc.createOffer({ iceRestart: true })（await 后 bail-out 检查）
+10. pc.setLocalDescription(offer)（await 后 bail-out 检查）
+11. sendSignaling('rtc:offer', { sdp, iceRestart: true })
 ```
 
 **`nudgeRestart()`**（public）：store 调用，外部事件触发立即重试
@@ -140,7 +142,7 @@ disconnected:
   否则 → 启动 5s disconnected 超时（现有逻辑不变）
 
 failed:
-  + 如果当前 restarting → 本次 ICE check 失败，留在 restarting，等下次触发
+  + 如果当前 restarting → 本次 ICE check 失败，立即触发 __attemptRestart('ice_check_failed')
   否则 → __onIceFailed()（现有逻辑不变）
 
 closed:
@@ -156,9 +158,10 @@ __onSignaling(msg):
       __setState('failed')  // → store 走 rebuild
 ```
 
-#### 周期重试定时器
+#### 安全网定时器
 
-- 间隔：60s（`ICE_RESTART_RETRY_MS`）
+- 间隔：30s（`ICE_RESTART_SAFETY_MS`）——作为安全网，覆盖 `connectionState:failed` 未触发的极端场景
+- 主要恢复路径已改为 `connectionState:failed` 时立即重试，安全网定时器仅补位
 - 仅 restarting 状态时活跃
 - 仅 signaling WS connected 时发送 offer
 - `app:background` 时停止，`foreground` 由 store nudge 触发
@@ -175,7 +178,7 @@ __onSignaling(msg):
 
 #### 兼容兜底
 
-连续 restart 失败计数器：如果连续 N 次（如 3 次）restart offer 发出后既无连通、也无 `rtc:restart-rejected` 响应，则放弃 restart → `__setState('failed')` → store rebuild。覆盖旧版 plugin 不支持 `rtc:restart-rejected` 的场景。
+时间预算兜底（`ICE_RESTART_TIMEOUT_MS = 90s`）：从首次进入 restarting 起计时，90s 内如果既无连通、也无 `rtc:restart-rejected` 响应，则放弃 restart → `__setState('failed')` → store rebuild。覆盖旧版 plugin 不支持 `rtc:restart-rejected` 的场景。ICE check 失败后立即重试（不等安全网 timer），约可容纳 2-3 次 ICE check 尝试（每次 ~30s 超时）。
 
 ### 4.2 UI: claws.store（`ui/src/stores/claws.store.js`）
 
@@ -265,16 +268,25 @@ if (state === 'closed') {
 >
 > 此改动仅适用于 pion 环境。如果 ndc/werift 仍在使用，需通过 PeerConnection 来源条件判断。
 
-#### 4.4.2 ICE restart 无 session 或失败时回复 `rtc:restart-rejected`
+#### 4.4.2 ICE restart impl 门控 + reject 处理
 
-当前 `__handleOffer` 中 restart 失败或无 session 时 fall through 创建新 PC。改为显式 reject：
+ICE restart 仅对已验证支持的 impl 放行（当前仅 `pion`），其余 impl（ndc/werift）立即 reject，让 UI 走 PC rebuild：
 
 ```javascript
 if (isIceRestart) {
     const existing = this.__sessions.get(connId);
     if (existing) {
+        // impl 门控：仅 pion 放行
+        if (this.__impl !== 'pion') {
+            this.__onSend({
+                type: 'rtc:restart-rejected',
+                toConnId: connId,
+                payload: { reason: 'impl_unsupported' },
+            });
+            return; // session 保留，UI 会走 rebuild 替换
+        }
         try {
-            // 现有 restart 逻辑（setRemoteDescription → createAnswer → send answer）
+            // restart 逻辑（setRemoteDescription → createAnswer → send answer）
             return;
         } catch (err) {
             // restart 协商失败 → reject
@@ -305,7 +317,7 @@ if (isIceRestart) {
 
 | 消息 | 方向 | 触发条件 | payload |
 |------|------|---------|---------|
-| `rtc:restart-rejected` | Plugin → UI | ICE restart offer 找不到 session 或协商失败 | `{ reason: 'no_session' \| 'restart_failed' }` |
+| `rtc:restart-rejected` | Plugin → UI | ICE restart 不支持/无 session/协商失败 | `{ reason: 'impl_unsupported' \| 'no_session' \| 'restart_failed' }` |
 
 ### 修改的现有消息
 
@@ -395,11 +407,11 @@ WS 断 + ICE 断 → restarting → 周期重试 → WS 不通
 
 ### 旧版 Plugin（不支持 `rtc:restart-rejected`）
 
-收到 restart offer 后 fall through 创建新 PC → 回 answer → DTLS fingerprint 不匹配 → UI 侧 ICE check 失败 → 留在 restarting → 连续失败计数器达到阈值 → `__setState('failed')` → rebuild。
+收到 restart offer 后 fall through 创建新 PC → 回 answer → DTLS fingerprint 不匹配 → UI 侧 ICE check 失败 → 立即重试 → 时间预算耗尽（90s）→ `__setState('failed')` → rebuild。
 
 ### 旧版 Server（不识别 `rtc:restart-rejected`）
 
-`claw-ws-hub` 白名单不含此类型 → 消息被丢弃 → UI 收不到 reject → 同上，连续失败计数器兜底。
+`claw-ws-hub` 白名单不含此类型 → 消息被丢弃 → UI 收不到 reject → 同上，时间预算兜底。
 
 ### 新增信令消息
 
