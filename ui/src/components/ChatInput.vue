@@ -86,11 +86,13 @@
 				<!-- 桌面端：麦克风 -->
 				<UButton
 					v-if="!isTouchDevice && !isDesktopRecording"
+					data-testid="btn-mic-desktop"
 					class="cc-icon-btn-lg"
 					icon="i-lucide-mic"
 					variant="ghost"
 					color="primary"
 					size="md"
+					:disabled="disabled"
 					@click="onStartDesktopRecording"
 				/>
 			</div>
@@ -405,6 +407,7 @@ export default {
 
 		// --- 桌面端语音录音 (Phase 3 实现) ---
 		async onStartDesktopRecording() {
+			if (this.disabled) return;
 			try {
 				// 先切换状态让波形容器 DOM 渲染出来（v-if="isDesktopRecording"）
 				this.recorderStatus = 'STARTING';

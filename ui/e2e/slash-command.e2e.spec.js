@@ -73,6 +73,26 @@ test.describe('斜杠命令 @chat', () => {
 		await expect(page.getByTestId('chat-root')).toBeVisible();
 	});
 
+	// 斜杠命令无服务端取消通道：STOP 按钮可见但禁用，避免用户误以为"点了没用"
+	test('斜杠命令进行中时 STOP 按钮禁用', async ({ page }) => {
+		test.setTimeout(120_000);
+		test.skip(!sessionId, 'No chat session available');
+		await waitChatReady(page);
+
+		await page.getByTestId('btn-slash-menu').click();
+		const compactItem = page.locator('.max-w-60 button').filter({ hasText: /compact|压缩/i });
+		await expect(compactItem).toBeVisible({ timeout: 3000 });
+		await compactItem.click();
+
+		// 进行中：STOP 可见但 disabled
+		const stopBtn = page.getByTestId('btn-stop');
+		await expect(stopBtn).toBeVisible({ timeout: 5000 });
+		await expect(stopBtn).toBeDisabled({ timeout: 3000 });
+
+		// 等待命令完成
+		await expect(stopBtn).not.toBeVisible({ timeout: 60_000 });
+	});
+
 	test('topic 模式下不显示斜杠命令菜单', async ({ page }) => {
 		// 导航到新建 topic 路由
 		await page.goto('/topics/new?agent=main&claw=1');

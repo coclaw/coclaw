@@ -299,11 +299,23 @@ describe('ChatPage', () => {
 		expect(input.props('cancelDisabled')).toBe(true);
 	});
 
-	test('ChatInput 在其他 slash 命令时 cancelDisabled=false', async () => {
+	// 所有斜杠命令无服务端取消通道，STOP 一律禁用避免"按了没用"的错觉
+	test('ChatInput 在非 /compact 斜杠命令进行中时 cancelDisabled=true', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
 		chatStore.__slashCommandType = '/new';
+		await wrapper.vm.$nextTick();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		expect(input.props('cancelDisabled')).toBe(true);
+	});
+
+	test('ChatInput 无斜杠命令进行中时 cancelDisabled=false', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__slashCommandType = null;
 		await wrapper.vm.$nextTick();
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });

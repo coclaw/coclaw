@@ -505,4 +505,34 @@ describe('ChatInput', () => {
 		wrapper.vm.onTouchSpeakStart({ changedTouches: [{ identifier: 1 }] });
 		expect(wrapper.vm.touchSpeakOpen).toBe(false);
 	});
+
+	// 桌面麦克风按钮 gating：需与 textarea / btn-attach 等其它输入控件同步受 disabled 控制
+	test('桌面麦克风：disabled=false 时按钮启用', () => {
+		mockEnv = { ...defaultEnv };
+		const wrapper = createWrapper({ disabled: false });
+		const micBtn = wrapper.findAllComponents(UButtonStub).find(
+			(c) => c.props('icon') === 'i-lucide-mic',
+		);
+		expect(micBtn).toBeTruthy();
+		expect(micBtn.props('disabled')).toBe(false);
+	});
+
+	test('桌面麦克风：disabled=true 时按钮禁用', () => {
+		mockEnv = { ...defaultEnv };
+		const wrapper = createWrapper({ disabled: true });
+		const micBtn = wrapper.findAllComponents(UButtonStub).find(
+			(c) => c.props('icon') === 'i-lucide-mic',
+		);
+		expect(micBtn).toBeTruthy();
+		expect(micBtn.props('disabled')).toBe(true);
+	});
+
+	test('桌面麦克风：disabled=true 时 onStartDesktopRecording 不启动录音', async () => {
+		mockEnv = { ...defaultEnv };
+		const wrapper = createWrapper({ disabled: true });
+		await wrapper.vm.onStartDesktopRecording();
+		// 状态应保持 IDLE，不创建 recorder
+		expect(wrapper.vm.recorderStatus).toBe('IDLE');
+		expect(wrapper.vm.voiceRecorder).toBeNull();
+	});
 });

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
+import { login, navigateToChat, waitChatReady, typeText, evalStore } from './helpers.js';
 
 /**
  * ChatInput 交互 E2E 测试
@@ -211,4 +211,43 @@ test('ChatInput：空输入时发送按钮禁用 @chat', async ({ page }) => {
 	const textarea = page.getByTestId('chat-textarea');
 	await typeText(textarea, 'hello');
 	await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 3000 });
+});
+
+// ================================================================
+// Test 7: 桌面麦克风按钮跟随 disabled 状态（claw 离线时禁用）
+// ================================================================
+
+test('ChatInput：桌面麦克风按钮随输入禁用态同步 @chat', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	const sessionId = await navigateToChat(page);
+	test.skip(!sessionId, 'No chat session available');
+
+	await waitChatReady(page);
+
+	const micBtn = page.getByTestId('btn-mic-desktop');
+	await expect(micBtn).toBeVisible({ timeout: 5000 });
+	await expect(micBtn).toBeEnabled({ timeout: 3000 });
+
+	// 将所有 claw 置为离线，textarea 会被禁用，麦克风应一并禁用
+	await evalStore(page, 'claws', `
+		for (const claw of store.items) {
+			store.updateClawOnline(claw.id, false);
+		}
+	`);
+
+	await expect(page.getByTestId('chat-textarea')).toBeDisabled({ timeout: 5000 });
+	await expect(micBtn).toBeDisabled({ timeout: 3000 });
+
+	// 恢复：离线消除后麦克风应重新可用
+	await evalStore(page, 'claws', `
+		for (const claw of store.items) {
+			store.updateClawOnline(claw.id, true);
+		}
+	`);
+
+	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 5000 });
+	await expect(micBtn).toBeEnabled({ timeout: 3000 });
 });
