@@ -1,7 +1,9 @@
 # Agent Run 取消：分阶段实施方案
 
-> **状态**：阶段 1 已完成（commits `5d3d97e` docs + `2bd7f3a` fix(ui)），阶段 2 待启动（2026-04-14）
+> **状态**：阶段 1、2 已完成；阶段 3（上游 PR）待启动（2026-04-14）
 > **创建时间**：2026-04-14
+> 阶段 1 commits：`5d3d97e` docs + `2bd7f3a` fix(ui)
+> 阶段 2 commits：`3d21a5e` feat(plugin) + `17cc790` feat(ui)
 > **调研依据**：[`docs/openclaw-research/agent-run-cancellation.md`](../openclaw-research/agent-run-cancellation.md)
 > **上游遗留问题**：[`docs/openclaw-upstream-issues.md`](../openclaw-upstream-issues.md) "待提交：Agent Run 取消相关"章节
 
@@ -96,10 +98,9 @@
   - cancel 后 lifecycle:end 到达 → `__dispatch` 升级 reason 为 `'lifecycle'` → 再次 completeSettle 可清理
 - **E2E**：发消息 → accepted → 立即点取消 → 验证用户气泡仍在 → （模拟 WS 闪断重连 / 切到后台再回来）→ 气泡仍在 → 等 agent 自然完成 → 消息最终正常显示
 
-### 产出
+### 产出（已完成）
 
-PR 1（patch，影响用户可见行为）：
-> `fix(ui): preserve message bubble on cancelSend via settling(cancel) reason gate`
+commit `2bd7f3a` — `fix(ui): preserve message bubble on cancelSend via settling reason gate`（@coclaw/ui patch）
 
 ---
 
@@ -189,10 +190,15 @@ export function abortAgentRun(sessionId) {
 - **集成测试**：CoClaw + OpenClaw 端到端：发消息 → accepted → 触发取消 → 通过 `openclaw logs --follow` 观察 abort 日志
 - **降级测试**：mock 侧门缺失，验证 UI 降级到阶段 1 行为且不抛错
 
-### 产出
+### 产出（已完成）
 
-- PR 2a — `feat(plugin): add coclaw.agent.abort RPC using embedded run side door`
-- PR 2b — `feat(ui): call coclaw.agent.abort on user cancel (silent fallback)`
+- commit `3d21a5e` — `feat(plugin): add coclaw.agent.abort RPC via embedded run side door`（@coclaw/openclaw-coclaw minor）
+- commit `17cc790` — `feat(ui): call coclaw.agent.abort on user cancel + disable /compact cancel`（@coclaw/ui minor）
+
+实施与设计的细节差异：
+- sessionId 可靠性核实结果：`onAccepted` payload 只有 `{ runId, status, acceptedAt }`，**不含 sessionId**（见 `openclaw-repo/src/gateway/server-methods/agent.ts:767-771`），因此阶段 2 实际采用 `this.sessionId || this.currentSessionId`；chat 模式首条消息在 `chat.history` 尚未返回时 `currentSessionId` 可能为 null，此时跳过 RPC，降级为纯阶段 1 UI 行为（气泡保留但服务端 run 继续至完成）——设计允许的可接受退化
+- `/compact` 禁用方案采用"禁用按钮"（`ChatInput` 新增 `cancelDisabled` prop），未加新 tooltip 与 i18n key，依赖 UButton 自带 disabled 样式
+- `abortAgentRun` 的 `error` 字段用 `String(err?.message ?? err)` 而非 `String(err)`（对 Error 实例更清爽）
 
 ---
 
