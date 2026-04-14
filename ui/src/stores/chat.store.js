@@ -665,9 +665,10 @@ export function createChatStore(storeKey, opts = {}) {
 			 *
 			 * 已 accepted（post-acceptance）：服务端 run 仍在继续执行。
 			 *   不 reject 原 RPC、不立即 reload，仅将 run 置为 settling（保留 streamingMsgs）。
-			 *   等 lifecycle:end 自然到达时由 __dispatch → __settleWithTransition 驱动 completeSettle。
+			 *   另外通过 coclaw.agent.abort RPC 请求插件侧门真正终止 run（feature detection 不可用或
+			 *   sessionId 不可知时静默降级，依赖 lifecycle:end 自然到达）。
 			 *   此阶段 isSending 仍为 true（isRunning 看 !settled），UI 输入框保持禁用；
-			 *   真正"取消后立即解锁"由阶段 2 的 coclaw.agent.abort 驱动 lifecycle:end 快速到达实现。
+			 *   abort 生效后 lifecycle:end 会快速到达 → __settleWithTransition → completeSettle → 解锁。
 			 */
 			cancelSend() {
 				// 取消进行中的文件上传（pre-acceptance 路径）
@@ -688,6 +689,15 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__streamingTimer = null;
 					}
 					this.sending = false;
+					// 请求插件真正 abort 服务端 run（任何失败都静默降级为纯前端 settling 行为）
+					// sessionId 来源：topic 模式 this.sessionId；chat 模式 this.currentSessionId（可能为 null）
+					const sid = this.sessionId || this.currentSessionId;
+					if (sid) {
+						const conn = this.__getConnection();
+						conn?.request('coclaw.agent.abort', { sessionId: sid }).catch((err) => {
+							console.debug('[chat] coclaw.agent.abort failed: %s', err?.message);
+						});
+					}
 				}
 				else {
 					if (this.__cancelReject) {

@@ -164,7 +164,7 @@
 					:disabled="sending || disabled"
 					@click="onClickAddFiles"
 				/>
-				<!-- 终止 -->
+				<!-- 终止（当 cancelDisabled=true 时按钮禁用） -->
 				<UButton
 					v-if="sending"
 					data-testid="btn-stop"
@@ -173,6 +173,7 @@
 					color="error"
 					variant="soft"
 					size="md"
+					:disabled="cancelDisabled"
 					:title="$t('chat.stopSending')"
 					@click="$emit('cancel')"
 				/>
@@ -241,6 +242,10 @@ export default {
 			default: null,
 		},
 		disabled: {
+			type: Boolean,
+			default: false,
+		},
+		cancelDisabled: {
 			type: Boolean,
 			default: false,
 		},

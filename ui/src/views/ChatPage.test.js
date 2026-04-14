@@ -24,7 +24,7 @@ const mockAddFiles = vi.fn();
 vi.mock('../components/ChatInput.vue', () => ({
 	default: {
 		name: 'ChatInput',
-		props: ['modelValue', 'sending', 'disabled'],
+		props: ['modelValue', 'sending', 'disabled', 'cancelDisabled'],
 		emits: ['update:modelValue', 'send', 'cancel'],
 		template: '<div class="input-stub" />',
 		methods: {
@@ -283,6 +283,28 @@ describe('ChatPage', () => {
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });
 		expect(input.props('sending')).toBe(true);
+	});
+
+	test('ChatInput 在 /compact 进行中时 cancelDisabled=true', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__slashCommandType = '/compact';
+		await wrapper.vm.$nextTick();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		expect(input.props('cancelDisabled')).toBe(true);
+	});
+
+	test('ChatInput 在其他 slash 命令时 cancelDisabled=false', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__slashCommandType = '/new';
+		await wrapper.vm.$nextTick();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		expect(input.props('cancelDisabled')).toBe(false);
 	});
 });
 

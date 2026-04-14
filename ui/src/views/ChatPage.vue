@@ -112,6 +112,7 @@
 			:sending="chatStore?.isSending ?? false"
 			:file-upload-state="chatStore?.fileUploadState ?? null"
 			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isLoadingChat) : (!routeClawId || isLoadingChat)))"
+			:cancel-disabled="chatStore?.__slashCommandType === '/compact'"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>

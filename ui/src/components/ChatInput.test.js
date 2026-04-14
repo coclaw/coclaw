@@ -211,6 +211,22 @@ describe('ChatInput', () => {
 		}
 	});
 
+	test('cancelDisabled=true disables the stop button', () => {
+		const wrapper = createWrapper({ sending: true, cancelDisabled: true });
+		const stopBtnStub = wrapper.findAllComponents(UButtonStub)
+			.find((b) => b.attributes('title') === 'chat.stopSending');
+		expect(stopBtnStub).toBeTruthy();
+		expect(stopBtnStub.props('disabled')).toBe(true);
+	});
+
+	test('cancelDisabled=false keeps stop button enabled', () => {
+		const wrapper = createWrapper({ sending: true, cancelDisabled: false });
+		const stopBtnStub = wrapper.findAllComponents(UButtonStub)
+			.find((b) => b.attributes('title') === 'chat.stopSending');
+		expect(stopBtnStub).toBeTruthy();
+		expect(stopBtnStub.props('disabled')).toBe(false);
+	});
+
 	test('submit 后 inputFiles 保留（由上传过程逐个移除）', () => {
 		const wrapper = createWrapper({ modelValue: 'hi' });
 		wrapper.vm.inputFiles = [{ id: '1', name: 'a.txt', isImg: false, url: null }];

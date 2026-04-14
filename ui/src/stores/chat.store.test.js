@@ -2355,6 +2355,120 @@ describe('useChatStore', () => {
 			// isRunning 仍为 true（run 未 settled），所以 isSending 仍为 true，输入框依然禁用
 			expect(runsStore.isRunning(runKey)).toBe(true);
 			expect(store.isSending).toBe(true);
+			// 插件侧门 RPC 被触发，sessionId 用 store.sessionId
+			expect(conn.request).toHaveBeenCalledWith('coclaw.agent.abort', { sessionId: 'sess-1' });
+		});
+
+		test('accepted 后取消 chat 模式：sessionId 为空时退回 currentSessionId', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-chat' });
+					return new Promise(() => {});
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			// chat 模式下 sessionId 是空串，loadMessages 后 currentSessionId 才被填充
+			store.sessionId = '';
+			store.currentSessionId = 'cur-sess-42';
+
+			store.sendMessage('hello');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+
+			store.cancelSend();
+
+			expect(conn.request).toHaveBeenCalledWith('coclaw.agent.abort', { sessionId: 'cur-sess-42' });
+		});
+
+		test('accepted 后取消：sessionId 与 currentSessionId 均不可知时跳过 abort RPC', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-nosid' });
+					return new Promise(() => {});
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = '';
+			store.currentSessionId = null;
+
+			store.sendMessage('hello');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+
+			store.cancelSend();
+
+			const abortCalls = conn.request.mock.calls.filter(c => c[0] === 'coclaw.agent.abort');
+			expect(abortCalls).toHaveLength(0);
+			// 前端降级到纯阶段 1 行为：settling(cancel)、streamingMsgs 保留
+			const runsStore = useAgentRunsStore();
+			const run = runsStore.getActiveRun(store.runKey);
+			expect(run?.settling).toBe(true);
+			expect(run?.settlingReason).toBe('cancel');
+		});
+
+		test('accepted 后取消：abort RPC 失败时 cancelSend 不抛错、无 unhandledRejection 且保持 settling(cancel) 状态', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-abort-fail' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					return Promise.reject(new Error('RPC_UNKNOWN'));
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-abort-fail';
+
+			store.sendMessage('hello');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+
+			// 捕获 unhandledRejection，若 cancelSend 没在内部 catch 则会被观测到
+			const unhandledRejections = [];
+			const onUnhandled = (err) => { unhandledRejections.push(err); };
+			process.on('unhandledRejection', onUnhandled);
+
+			try {
+				expect(() => store.cancelSend()).not.toThrow();
+				// 等 setImmediate 让 microtask + rejection 检测跑完
+				await new Promise((resolve) => setImmediate(resolve));
+				expect(unhandledRejections).toHaveLength(0);
+			}
+			finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+
+			const runsStore = useAgentRunsStore();
+			const run = runsStore.getActiveRun(store.runKey);
+			expect(run?.settling).toBe(true);
+			expect(run?.settlingReason).toBe('cancel');
 		});
 
 		test('accepted 取消后独立 loadMessages 触发 completeSettle：streamingMsgs 仍保留（P0 回归防护）', async () => {
