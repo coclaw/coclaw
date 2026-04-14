@@ -1,0 +1,78 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { abortAgentRun } from './agent-abort.js';
+
+const KEY = Symbol.for('openclaw.embeddedRunState');
+
+function withStubbedState(stub, fn) {
+	const had = Object.prototype.hasOwnProperty.call(globalThis, KEY);
+	const prev = globalThis[KEY];
+	globalThis[KEY] = stub;
+	try { return fn(); }
+	finally {
+		if (had) globalThis[KEY] = prev;
+		else delete globalThis[KEY];
+	}
+}
+
+test('abortAgentRun returns not-supported when symbol state is absent', () => {
+	withStubbedState(undefined, () => {
+		const result = abortAgentRun('sid-1');
+		assert.deepEqual(result, { ok: false, reason: 'not-supported' });
+	});
+});
+
+test('abortAgentRun returns not-supported when activeRuns missing', () => {
+	withStubbedState({}, () => {
+		const result = abortAgentRun('sid-1');
+		assert.deepEqual(result, { ok: false, reason: 'not-supported' });
+	});
+});
+
+test('abortAgentRun returns not-supported when activeRuns.get is not a function', () => {
+	withStubbedState({ activeRuns: { get: null } }, () => {
+		const result = abortAgentRun('sid-1');
+		assert.deepEqual(result, { ok: false, reason: 'not-supported' });
+	});
+});
+
+test('abortAgentRun returns not-found when sessionId is not registered', () => {
+	withStubbedState({ activeRuns: new Map() }, () => {
+		const result = abortAgentRun('sid-missing');
+		assert.deepEqual(result, { ok: false, reason: 'not-found' });
+	});
+});
+
+test('abortAgentRun returns ok and invokes handle.abort', () => {
+	let called = 0;
+	const handle = { abort: () => { called++; } };
+	const map = new Map([['sid-1', handle]]);
+	withStubbedState({ activeRuns: map }, () => {
+		const result = abortAgentRun('sid-1');
+		assert.deepEqual(result, { ok: true });
+		assert.equal(called, 1);
+	});
+});
+
+test('abortAgentRun returns abort-threw when handle.abort throws Error', () => {
+	const handle = { abort: () => { throw new Error('boom'); } };
+	const map = new Map([['sid-1', handle]]);
+	withStubbedState({ activeRuns: map }, () => {
+		const result = abortAgentRun('sid-1');
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, 'abort-threw');
+		assert.equal(result.error, 'boom');
+	});
+});
+
+test('abortAgentRun returns abort-threw when handle.abort throws non-Error', () => {
+	const handle = { abort: () => { throw 'raw-string'; } };
+	const map = new Map([['sid-1', handle]]);
+	withStubbedState({ activeRuns: map }, () => {
+		const result = abortAgentRun('sid-1');
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, 'abort-threw');
+		assert.equal(result.error, 'raw-string');
+	});
+});

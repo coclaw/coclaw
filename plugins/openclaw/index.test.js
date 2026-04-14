@@ -87,6 +87,7 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 	assert.equal(handlers.has('coclaw.files.delete'), true);
 	assert.equal(handlers.has('coclaw.files.mkdir'), true);
 	assert.equal(handlers.has('coclaw.files.create'), true);
+	assert.equal(handlers.has('coclaw.agent.abort'), true);
 	assert.equal(typeof handlers.get('command'), 'function');
 	const bridgeService = serviceSpecs.find(s => s.id === 'coclaw-realtime-bridge');
 	const upgradeService = serviceSpecs.find(s => s.id === 'coclaw-auto-upgrade');
@@ -586,4 +587,102 @@ test('coclaw.files.* gateway methods handle errors', async () => {
 	});
 	assert.equal(createOut.ok, false);
 	assert.equal(createOut.error?.code, 'PATH_DENIED');
+});
+
+// --- coclaw.agent.abort gateway method ---
+
+const EMBEDDED_RUN_STATE_KEY = Symbol.for('openclaw.embeddedRunState');
+
+function withStubbedEmbeddedRunState(stub, fn) {
+	const had = Object.prototype.hasOwnProperty.call(globalThis, EMBEDDED_RUN_STATE_KEY);
+	const prev = globalThis[EMBEDDED_RUN_STATE_KEY];
+	globalThis[EMBEDDED_RUN_STATE_KEY] = stub;
+	try { return fn(); }
+	finally {
+		if (had) globalThis[EMBEDDED_RUN_STATE_KEY] = prev;
+		else delete globalThis[EMBEDDED_RUN_STATE_KEY];
+	}
+}
+
+test('coclaw.agent.abort rejects missing sessionId with INVALID_INPUT', () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let out = null;
+	handlers.get('coclaw.agent.abort')({
+		params: {},
+		respond(ok, payload, error) { out = { ok, payload, error }; },
+	});
+	assert.equal(out.ok, false);
+	assert.equal(out.error?.code, 'INVALID_INPUT');
+});
+
+test('coclaw.agent.abort rejects empty sessionId', () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let out = null;
+	handlers.get('coclaw.agent.abort')({
+		params: { sessionId: '' },
+		respond(ok, payload, error) { out = { ok, payload, error }; },
+	});
+	assert.equal(out.ok, false);
+	assert.equal(out.error?.code, 'INVALID_INPUT');
+});
+
+test('coclaw.agent.abort rejects non-string sessionId', () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let out = null;
+	handlers.get('coclaw.agent.abort')({
+		params: { sessionId: 123 },
+		respond(ok, payload, error) { out = { ok, payload, error }; },
+	});
+	assert.equal(out.ok, false);
+	assert.equal(out.error?.code, 'INVALID_INPUT');
+});
+
+test('coclaw.agent.abort returns not-supported when side door missing', () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let out = null;
+	withStubbedEmbeddedRunState(undefined, () => {
+		handlers.get('coclaw.agent.abort')({
+			params: { sessionId: 'sid-1' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+	});
+	assert.equal(out.ok, true);
+	assert.deepEqual(out.payload, { ok: false, reason: 'not-supported' });
+});
+
+test('coclaw.agent.abort invokes handle.abort when side door supports sessionId', () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let aborted = 0;
+	const handle = { abort: () => { aborted++; } };
+	const state = { activeRuns: new Map([['sid-live', handle]]) };
+	let out = null;
+	withStubbedEmbeddedRunState(state, () => {
+		handlers.get('coclaw.agent.abort')({
+			params: { sessionId: 'sid-live' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+	});
+	assert.equal(out.ok, true);
+	assert.deepEqual(out.payload, { ok: true });
+	assert.equal(aborted, 1);
+});
+
+test('coclaw.agent.abort returns not-found when sessionId not in activeRuns', () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	const state = { activeRuns: new Map() };
+	let out = null;
+	withStubbedEmbeddedRunState(state, () => {
+		handlers.get('coclaw.agent.abort')({
+			params: { sessionId: 'sid-gone' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+	});
+	assert.equal(out.ok, true);
+	assert.deepEqual(out.payload, { ok: false, reason: 'not-found' });
 });

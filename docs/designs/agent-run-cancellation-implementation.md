@@ -129,7 +129,7 @@ export function abortAgentRun(sessionId) {
     handle.abort();
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: 'abort-threw', error: String(err) };
+    return { ok: false, reason: 'abort-threw', error: String(err?.message ?? err) };
   }
 }
 ```

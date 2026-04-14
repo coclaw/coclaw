@@ -13,6 +13,7 @@ import { generateTitle } from './src/topic-manager/title-gen.js';
 import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
 import { createFileHandler } from './src/file-manager/handler.js';
+import { abortAgentRun } from './src/agent-abort.js';
 
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
 export { getPluginVersion, __resetPluginVersion };
@@ -451,6 +452,22 @@ const plugin = {
 				const agentId = params?.agentId?.trim?.() || 'main';
 				const limit = params?.limit;
 				respond(true, manager.getById({ agentId, sessionId, limit }));
+			}
+			catch (err) {
+				respondError(respond, err);
+			}
+		});
+
+		// 取消正在执行的 embedded agent run（通过 OpenClaw 全局 symbol 侧门）
+		// 侧门不存在 / sessionId 未注册 / handle.abort 抛异常时返回 { ok:false, reason } —— UI 静默降级
+		api.registerGatewayMethod('coclaw.agent.abort', ({ params, respond }) => {
+			try {
+				const sessionId = params?.sessionId;
+				if (typeof sessionId !== 'string' || !sessionId) {
+					respondInvalid(respond, 'sessionId is required');
+					return;
+				}
+				respond(true, abortAgentRun(sessionId));
 			}
 			catch (err) {
 				respondError(respond, err);
