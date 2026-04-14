@@ -70,6 +70,13 @@ export class WebRtcPeer {
 			session.__failedTimer = null;
 		}
 		this.__sessions.delete(connId);
+		// 显式关闭 rpc 发送队列：dc.onclose 路径中 `sessions.get(connId)` 已返回 undefined 而短路，
+		// 此处不主动 close 会丢失 drop 汇总 remoteLog 诊断
+		if (session.rpcSendQueue) {
+			session.rpcSendQueue.close();
+			session.rpcSendQueue = null;
+			session.rpcChannel = null;
+		}
 		// 先 detach 事件，防止 pc.close() 异步触发 onconnectionstatechange 删除新 session
 		session.pc.onconnectionstatechange = null;
 		session.pc.onicecandidate = null;
@@ -131,6 +138,13 @@ export class WebRtcPeer {
 				this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
 				try {
 					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
+					// 重协商 SDP 可能变更 a=max-message-size，同步刷新 queue 分片阈值；
+					// queue 中已入队的 chunks 按旧值分片保留，新消息用新值
+					const newMMS = this.__resolveMaxMessageSize(existing.pc, msg.payload.sdp);
+					if (newMMS !== existing.remoteMaxMessageSize) {
+						existing.remoteMaxMessageSize = newMMS;
+						if (existing.rpcSendQueue) existing.rpcSendQueue.maxMessageSize = newMMS;
+					}
 					const answer = await existing.pc.createAnswer();
 					await existing.pc.setLocalDescription(answer);
 					this.__onSend({
@@ -202,13 +216,7 @@ export class WebRtcPeer {
 
 		const pc = new this.__PeerConnection({ iceServers });
 
-		// 分片阈值 = min(远端能接收, 本地能发送)
-		// 远端：从 offer SDP 的 a=max-message-size 解析（缺失则 RFC 8841 默认 65536）
-		// 本地：pc.maxMessageSize（pion 为 65536，ndc/werift 无此属性则不限制）
-		const mmsMatch = msg.payload.sdp?.match(/a=max-message-size:(\d+)/);
-		const remoteMMS = mmsMatch ? parseInt(mmsMatch[1], 10) : 65536;
-		const localMMS = pc.maxMessageSize ?? remoteMMS;
-		const remoteMaxMessageSize = Math.min(remoteMMS, localMMS);
+		const remoteMaxMessageSize = this.__resolveMaxMessageSize(pc, msg.payload.sdp);
 
 		const session = { pc, rpcChannel: null, rpcSendQueue: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
 		this.__sessions.set(connId, session);
@@ -452,8 +460,24 @@ export class WebRtcPeer {
 			? 'none'
 			/* c8 ignore next -- ?? fallback for missing readyState */
 			: [...session.fileChannels].map((dc) => `${dc.label}=${dc.readyState ?? '?'}`).join(',');
-		this.__remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
-		this.logger.info?.(`${this.__rtcTag} [${connId}] dump state=${state} rpc=${rpcState} fileCount=${session.fileChannels.size} files=${fileSummary}`);
+		const q = session.rpcSendQueue;
+		const queueInfo = q
+			? `queueLen=${q.queue.length} queueBytes=${q.queueBytes} dropped=${q.droppedCount}`
+			: 'queue=none';
+		this.__remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
+		this.logger.info?.(`${this.__rtcTag} [${connId}] dump state=${state} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=${fileSummary}`);
+	}
+
+	/**
+	 * 分片阈值 = min(远端能接收, 本地能发送)
+	 * 远端：从 SDP 的 a=max-message-size 解析（缺失则 RFC 8841 默认 65536）
+	 * 本地：pc.maxMessageSize（pion 为 65536，ndc/werift 无此属性则不限制）
+	 */
+	__resolveMaxMessageSize(pc, sdp) {
+		const mmsMatch = sdp?.match(/a=max-message-size:(\d+)/);
+		const remoteMMS = mmsMatch ? parseInt(mmsMatch[1], 10) : 65536;
+		const localMMS = pc.maxMessageSize ?? remoteMMS;
+		return Math.min(remoteMMS, localMMS);
 	}
 
 	__logNominatedPair(connId, pair) {

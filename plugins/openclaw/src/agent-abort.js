@@ -20,15 +20,16 @@ export function abortAgentRun(sessionId) {
 	if (!state || !state.activeRuns || typeof state.activeRuns.get !== 'function') {
 		return { ok: false, reason: 'not-supported' };
 	}
-	const handle = state.activeRuns.get(sessionId);
-	if (!handle) return { ok: false, reason: 'not-found' };
-	// shape 守卫：abort 字段应为函数；若不是说明 OpenClaw handle 契约变化（归入 not-supported 让 UI 提示升级）
-	if (typeof handle.abort !== 'function') return { ok: false, reason: 'not-supported' };
 	try {
+		const handle = state.activeRuns.get(sessionId);
+		if (!handle) return { ok: false, reason: 'not-found' };
+		// shape 守卫：abort 字段应为函数；若不是说明 OpenClaw handle 契约变化（归入 not-supported 让 UI 提示升级）
+		if (typeof handle.abort !== 'function') return { ok: false, reason: 'not-supported' };
 		handle.abort();
 		return { ok: true };
 	}
 	catch (err) {
+		// activeRuns.get() 或 handle.abort() 抛（非 Map 实现 / OpenClaw 内部错误）
 		return { ok: false, reason: 'abort-threw', error: String(err?.message ?? err) };
 	}
 }

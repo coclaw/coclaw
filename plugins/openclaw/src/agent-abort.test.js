@@ -76,6 +76,18 @@ test('abortAgentRun returns abort-threw when handle.abort throws Error', () => {
 	});
 });
 
+test('abortAgentRun returns abort-threw when activeRuns.get itself throws', () => {
+	// 非 Map 的 duck-typed activeRuns（如自定义代理）实现 get() 时可能抛；
+	// 守卫已确认 get 是函数但不能确认其内部不抛 → 包在 try/catch 内归入 abort-threw
+	const throwing = { get: () => { throw new Error('state corrupted'); } };
+	withStubbedState({ activeRuns: throwing }, () => {
+		const result = abortAgentRun('sid-x');
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, 'abort-threw');
+		assert.equal(result.error, 'state corrupted');
+	});
+});
+
 test('abortAgentRun returns abort-threw when handle.abort throws non-Error', () => {
 	const handle = { abort: () => { throw 'raw-string'; } };
 	const map = new Map([['sid-1', handle]]);

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { WebRtcPeer, FAILED_SESSION_TTL_MS, MAX_SESSIONS } from './webrtc-peer.js';
+import { DC_LOW_WATER_MARK } from './rpc-send-queue.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 
 // --- mock helpers ---
@@ -637,9 +638,30 @@ test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC �
 	assert.match(dump.text, /fileCount=2/);
 	assert.match(dump.text, /file:abc=open/);
 	assert.match(dump.text, /file:def=closed/);
+	// queue 诊断字段：有 rpc DC 则显示 queue 状态（ondatachannel 的 rpc 分支创建了 queue）
+	assert.match(dump.text, /queueLen=\d+ queueBytes=\d+ dropped=\d+/);
 
 	// failed 保留 session 以支持 ICE restart
 	assert.ok(peer.__sessions.has('c_dump1'));
+});
+
+test('WebRtcPeer: dump 在无 rpc DC 时输出 queue=none', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_dump_noq'));
+	const pc = PC.instances[0];
+	// 未绑定任何 DC → session.rpcSendQueue 保持 null
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /conn=c_dump_noq/.test(e.text));
+	assert.ok(dump);
+	assert.match(dump.text, /queue=none/);
 });
 
 test('WebRtcPeer: connectionState disconnected 触发 dump 但保留 session（可能恢复）', async () => {
@@ -1813,7 +1835,7 @@ test('WebRtcPeer: 建立 rpc DC 时创建 RpcSendQueue 并设置 bufferedAmountL
 
 	const session = peer.__sessions.get('c_sq01');
 	assert.ok(session.rpcSendQueue, 'rpcSendQueue should be created');
-	assert.equal(dc.bufferedAmountLowThreshold, 256 * 1024, 'LOW_WATER_MARK should be set on DC');
+	assert.equal(dc.bufferedAmountLowThreshold, DC_LOW_WATER_MARK, 'LOW_WATER_MARK should be set on DC');
 	assert.equal(typeof dc.onbufferedamountlow, 'function', 'onbufferedamountlow should be wired');
 	await peer.closeAll();
 });
@@ -1881,6 +1903,70 @@ test('WebRtcPeer: ICE restart 保留 RpcSendQueue 实例与队列状态', async 
 	dc.onbufferedamountlow();
 	assert.equal(session.rpcSendQueue.queue.length, 0, 'queue drained after restart');
 	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 重协商 max-message-size 变化时刷新 queue.maxMessageSize', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mms_icr', 'v=0\r\na=max-message-size:100\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	const session = peer.__sessions.get('c_mms_icr');
+	assert.equal(session.remoteMaxMessageSize, 100);
+	assert.equal(session.rpcSendQueue.maxMessageSize, 100);
+
+	// ICE restart 带入新的 max-message-size
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mms_icr',
+		payload: { sdp: 'v=0\r\na=max-message-size:512\r\n', iceRestart: true },
+	});
+	assert.equal(session.remoteMaxMessageSize, 512, 'session value refreshed');
+	assert.equal(session.rpcSendQueue.maxMessageSize, 512, 'queue value refreshed');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 同 max-message-size 不触发 queue 刷新（保持同值）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mms_same', 'v=0\r\na=max-message-size:200\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	const session = peer.__sessions.get('c_mms_same');
+	const queueBefore = session.rpcSendQueue;
+	assert.equal(queueBefore.maxMessageSize, 200);
+
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mms_same',
+		payload: { sdp: 'v=0\r\na=max-message-size:200\r\n', iceRestart: true },
+	});
+	assert.equal(session.remoteMaxMessageSize, 200);
+	assert.equal(session.rpcSendQueue, queueBefore);
+	assert.equal(queueBefore.maxMessageSize, 200);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: closeByConnId 显式关闭 RpcSendQueue 并触发 close 汇总 remoteLog', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_close_q', 'v=0\r\na=max-message-size:100\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	const session = peer.__sessions.get('c_close_q');
+	const q = session.rpcSendQueue;
+	// 制造残留：bufferedAmount 高使 chunks 全部入队
+	dc.bufferedAmount = 1024 * 1024;
+	peer.broadcast({ type: 'res', data: 'Y'.repeat(500) });
+	assert.ok(q.queue.length > 0);
+
+	// closeByConnId 应主动 close queue 并发出 rpc-queue.close 汇总
+	await peer.closeByConnId('c_close_q');
+	assert.equal(q.closed, true, 'queue must be closed by closeByConnId');
+	const closeLog = remoteLogBuffer.find((e) => /rpc-queue\.close/.test(e.text));
+	assert.ok(closeLog, 'rpc-queue.close log expected when queue had residual');
+	assert.match(closeLog.text, /residualChunks=[1-9]/);
 });
 
 test('WebRtcPeer: onbufferedamountlow 事件触发 queue drain', async () => {
