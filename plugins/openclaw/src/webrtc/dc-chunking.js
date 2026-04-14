@@ -22,20 +22,15 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * 按需分片并发送消息
- * 小于 maxMessageSize 直接发 string；否则切成 binary chunk 逐个发送
- * @param {object} dc - DataChannel（werift 或浏览器）
+ * 按需分片：小于等于 maxMessageSize 返回 null（调用方直发 string），否则返回 chunk 数组
  * @param {string} jsonStr - 已序列化的 JSON 字符串
  * @param {number} maxMessageSize - 对端声明的 maxMessageSize
  * @param {() => number} getNextMsgId - 获取下一个 msgId
+ * @returns {Buffer[]|null} null 表示不需要分片；否则为 chunk Buffer 数组
  */
-export function chunkAndSend(dc, jsonStr, maxMessageSize, getNextMsgId, logger) {
+export function buildChunks(jsonStr, maxMessageSize, getNextMsgId) {
 	const fullBytes = encoder.encode(jsonStr);
-	// 快路径：不需要分片
-	if (fullBytes.byteLength <= maxMessageSize) {
-		dc.send(jsonStr);
-		return;
-	}
+	if (fullBytes.byteLength <= maxMessageSize) return null;
 
 	const chunkPayloadSize = maxMessageSize - HEADER_SIZE;
 	if (chunkPayloadSize <= 0) {
@@ -44,7 +39,7 @@ export function chunkAndSend(dc, jsonStr, maxMessageSize, getNextMsgId, logger) 
 
 	const msgId = getNextMsgId();
 	const totalChunks = Math.ceil(fullBytes.byteLength / chunkPayloadSize);
-	logger?.info?.(`[dc-chunking] chunking msgId=${msgId}: ${fullBytes.byteLength} bytes → ${totalChunks} chunks (maxMsgSize=${maxMessageSize})`);
+	const chunks = new Array(totalChunks);
 
 	for (let i = 0; i < totalChunks; i++) {
 		const start = i * chunkPayloadSize;
@@ -55,7 +50,30 @@ export function chunkAndSend(dc, jsonStr, maxMessageSize, getNextMsgId, logger) 
 		chunk[0] = flag;
 		chunk.writeUInt32BE(msgId, 1);
 		chunk.set(fullBytes.subarray(start, end), HEADER_SIZE);
+		chunks[i] = chunk;
+	}
+	return chunks;
+}
 
+/**
+ * 按需分片并发送消息（薄包装：buildChunks + dc.send）
+ * 注意：无应用层流控；生产路径请使用 RpcSendQueue
+ * @param {object} dc - DataChannel
+ * @param {string} jsonStr - 已序列化的 JSON 字符串
+ * @param {number} maxMessageSize - 对端声明的 maxMessageSize
+ * @param {() => number} getNextMsgId - 获取下一个 msgId
+ * @param {object} [logger] - 可选 logger
+ */
+export function chunkAndSend(dc, jsonStr, maxMessageSize, getNextMsgId, logger) {
+	const chunks = buildChunks(jsonStr, maxMessageSize, getNextMsgId);
+	if (!chunks) {
+		dc.send(jsonStr);
+		return;
+	}
+	const msgId = chunks[0].readUInt32BE(1);
+	const totalBytes = chunks.reduce((n, c) => n + (c.length - HEADER_SIZE), 0);
+	logger?.info?.(`[dc-chunking] chunking msgId=${msgId}: ${totalBytes} bytes → ${chunks.length} chunks (maxMsgSize=${maxMessageSize})`);
+	for (const chunk of chunks) {
 		dc.send(chunk);
 	}
 }

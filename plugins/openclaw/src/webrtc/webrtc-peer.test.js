@@ -53,6 +53,26 @@ function makeOffer(connId, sdp = 'mock-sdp-offer', turnCreds = null) {
 	};
 }
 
+/**
+ * 创建 rpc DC 的完整 mock，含 RpcSendQueue 所需的属性（bufferedAmount 等）
+ * 用于涉及 broadcast / sendFn 的测试
+ */
+function makeMockRpcDc(overrides = {}) {
+	const dc = {
+		label: 'rpc',
+		readyState: 'open',
+		bufferedAmount: 0,
+		bufferedAmountLowThreshold: 0,
+		onopen: null,
+		onclose: null,
+		onmessage: null,
+		onerror: null,
+		onbufferedamountlow: null,
+		send() {},
+	};
+	return Object.assign(dc, overrides);
+}
+
 // --- tests ---
 
 test('WebRtcPeer: constructor throws when PeerConnection is not provided', () => {
@@ -942,8 +962,8 @@ test('WebRtcPeer: broadcast 发送到所有已打开的 rpcChannel', async () =>
 	await peer.handleSignaling(makeOffer('c_b02'));
 
 	const sentByChannel = { c_b01: [], c_b02: [] };
-	const dc1 = { label: 'rpc', readyState: 'open', send: (d) => sentByChannel.c_b01.push(d), onopen: null, onclose: null, onmessage: null };
-	const dc2 = { label: 'rpc', readyState: 'open', send: (d) => sentByChannel.c_b02.push(d), onopen: null, onclose: null, onmessage: null };
+	const dc1 = makeMockRpcDc({ send: (d) => sentByChannel.c_b01.push(d) });
+	const dc2 = makeMockRpcDc({ send: (d) => sentByChannel.c_b02.push(d) });
 	PC.instances[0].ondatachannel({ channel: dc1 });
 	PC.instances[1].ondatachannel({ channel: dc2 });
 
@@ -974,7 +994,7 @@ test('WebRtcPeer: broadcast 跳过未打开的 rpcChannel', async () => {
 	// 不应报错
 
 	// 设置一个 readyState !== 'open' 的 channel
-	const dc = { label: 'rpc', readyState: 'connecting', send: () => { throw new Error('should not send'); }, onopen: null, onclose: null, onmessage: null };
+	const dc = makeMockRpcDc({ readyState: 'connecting', send: () => { throw new Error('should not send'); } });
 	PC.instances[0].ondatachannel({ channel: dc });
 	peer.broadcast({ type: 'res', id: 'x' });
 	// 不应报错
@@ -982,22 +1002,23 @@ test('WebRtcPeer: broadcast 跳过未打开的 rpcChannel', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast send 失败时不抛异常', async () => {
+test('WebRtcPeer: broadcast send 失败时不抛异常（RpcSendQueue 内部捕获）', async () => {
 	const PC = MockPCFactory();
-	const logs = [];
+	const warns = [];
 	const peer = new WebRtcPeer({
 		onSend: () => {},
-		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
+		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
 		impl: 'ndc',
 	});
 
 	await peer.handleSignaling(makeOffer('c_b20'));
-	const dc = { label: 'rpc', readyState: 'open', send: () => { throw new Error('dc send error'); }, onopen: null, onclose: null, onmessage: null };
+	const dc = makeMockRpcDc({ send: () => { throw new Error('dc send error'); } });
 	PC.instances[0].ondatachannel({ channel: dc });
 
 	peer.broadcast({ type: 'res', id: 'y' });
-	assert.ok(logs.some((l) => l.includes('broadcast send failed')));
+	// RpcSendQueue 内部 try/catch 记录 warn，broadcast 不会抛
+	assert.ok(warns.some((l) => l.includes('fast-path send failed')));
 
 	await peer.closeAll();
 });
@@ -1165,7 +1186,7 @@ test('WebRtcPeer: coclaw.files.* sendFn 发送响应到 DC', async () => {
 	await peer.handleSignaling(makeOffer('c_file_02'));
 	const pc = PC.instances[0];
 	const sent = [];
-	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null, send: (d) => sent.push(d) };
+	const fakeChannel = makeMockRpcDc({ send: (d) => sent.push(d) });
 	pc.ondatachannel({ channel: fakeChannel });
 
 	fakeChannel.onmessage({ data: JSON.stringify({ type: 'req', id: 'f2', method: 'coclaw.files.list', params: {} }) });
@@ -1554,7 +1575,7 @@ test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async () =
 	await peer.handleSignaling(makeOffer('c_chunk01', 'v=0\r\na=max-message-size:262144\r\n'));
 	const pc = PC.instances[0];
 	const sent = [];
-	const dc = { label: 'rpc', readyState: 'open', send: (d) => sent.push(d), onopen: null, onclose: null, onmessage: null };
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
 	pc.ondatachannel({ channel: dc });
 
 	peer.broadcast({ type: 'event', event: 'ping' });
@@ -1570,7 +1591,7 @@ test('WebRtcPeer: broadcast 大消息自动分片', async () => {
 	await peer.handleSignaling(makeOffer('c_chunk02', 'v=0\r\na=max-message-size:50\r\n'));
 	const pc = PC.instances[0];
 	const sent = [];
-	const dc = { label: 'rpc', readyState: 'open', send: (d) => sent.push(d), onopen: null, onclose: null, onmessage: null };
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
 	pc.ondatachannel({ channel: dc });
 
 	const largePayload = { type: 'res', data: 'X'.repeat(200) };
@@ -1597,13 +1618,13 @@ test('WebRtcPeer: broadcast 多连接不同 maxMessageSize，各自分片', asyn
 	// 连接 1：maxMessageSize=50（小，需要更多 chunk）
 	await peer.handleSignaling(makeOffer('c_chunk03a', 'v=0\r\na=max-message-size:50\r\n'));
 	const sent1 = [];
-	const dc1 = { label: 'rpc', readyState: 'open', send: (d) => sent1.push(d), onopen: null, onclose: null, onmessage: null };
+	const dc1 = makeMockRpcDc({ send: (d) => sent1.push(d) });
 	PC.instances[0].ondatachannel({ channel: dc1 });
 
 	// 连接 2：maxMessageSize=200（大，需要更少 chunk）
 	await peer.handleSignaling(makeOffer('c_chunk03b', 'v=0\r\na=max-message-size:200\r\n'));
 	const sent2 = [];
-	const dc2 = { label: 'rpc', readyState: 'open', send: (d) => sent2.push(d), onopen: null, onclose: null, onmessage: null };
+	const dc2 = makeMockRpcDc({ send: (d) => sent2.push(d) });
 	PC.instances[1].ondatachannel({ channel: dc2 });
 
 	peer.broadcast({ type: 'res', data: 'Y'.repeat(150) });
@@ -1731,7 +1752,7 @@ test('WebRtcPeer: sendFn 大响应也会分片', async () => {
 	await peer.handleSignaling(makeOffer('c_chunk08', 'v=0\r\na=max-message-size:80\r\n'));
 	const pc = PC.instances[0];
 	const sent = [];
-	const dc = { label: 'rpc', readyState: 'open', send: (d) => sent.push(d), onopen: null, onclose: null, onmessage: null };
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
 	pc.ondatachannel({ channel: dc });
 
 	// 发送 file RPC 请求
@@ -1757,7 +1778,7 @@ test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
 	});
 	await peer.handleSignaling(makeOffer('c_chunk09'));
 	const pc = PC.instances[0];
-	const dc = { label: 'rpc', readyState: 'open', send: () => {}, onopen: null, onclose: null, onmessage: null };
+	const dc = makeMockRpcDc();
 	pc.ondatachannel({ channel: dc });
 
 	// 发 BEGIN 不发 END
@@ -1778,6 +1799,211 @@ test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
 	dc.onmessage({ data: end });
 
 	assert.equal(requests.length, 0);
+	await peer.closeAll();
+});
+
+// --- RpcSendQueue 集成 ---
+
+test('WebRtcPeer: 建立 rpc DC 时创建 RpcSendQueue 并设置 bufferedAmountLowThreshold', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_sq01'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	const session = peer.__sessions.get('c_sq01');
+	assert.ok(session.rpcSendQueue, 'rpcSendQueue should be created');
+	assert.equal(dc.bufferedAmountLowThreshold, 256 * 1024, 'LOW_WATER_MARK should be set on DC');
+	assert.equal(typeof dc.onbufferedamountlow, 'function', 'onbufferedamountlow should be wired');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: file DC 不创建 RpcSendQueue（仅 rpc label 触发）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onFileChannel: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_sq_file'));
+	const fileDc = { label: 'file:abc', readyState: 'open', onopen: null, onclose: null, onmessage: null };
+	PC.instances[0].ondatachannel({ channel: fileDc });
+	const session = peer.__sessions.get('c_sq_file');
+	assert.equal(session.rpcSendQueue, null, 'file DC must not create RpcSendQueue');
+	assert.equal(session.fileChannels.size, 1);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: DC 不支持 bufferedAmountLowThreshold 时跳过设置但仍创建 queue', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
+	await peer.handleSignaling(makeOffer('c_sq_noba'));
+	// mock DC 不含 bufferedAmountLowThreshold 属性（使用旧 ad-hoc 形式）
+	const dc = { label: 'rpc', readyState: 'open', bufferedAmount: 0, send: () => {}, onopen: null, onclose: null, onmessage: null, onerror: null };
+	PC.instances[0].ondatachannel({ channel: dc });
+	const session = peer.__sessions.get('c_sq_noba');
+	assert.ok(session.rpcSendQueue);
+	assert.equal('bufferedAmountLowThreshold' in dc, false, 'threshold 属性未被注入');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 保留 RpcSendQueue 实例与队列状态', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_sq_icr', 'v=0\r\na=max-message-size:100\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	const session = peer.__sessions.get('c_sq_icr');
+	const queueBefore = session.rpcSendQueue;
+
+	// 让 queue 堆积 chunks（顶到 HIGH 使入队）
+	dc.bufferedAmount = 1024 * 1024;
+	peer.broadcast({ type: 'res', data: 'Q'.repeat(500) });
+	const queuedChunksBefore = queueBefore.queue.length;
+	assert.ok(queuedChunksBefore > 0);
+
+	// 发起 ICE restart offer（同 connId）
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_sq_icr',
+		payload: { sdp: 'v=0\r\na=max-message-size:100\r\n', iceRestart: true },
+	});
+
+	// queue 与 rpcSendQueue 实例应保持不变（设计要点：ICE restart 不触发 DC close）
+	assert.equal(session.rpcSendQueue, queueBefore, 'same queue instance preserved');
+	assert.equal(session.rpcSendQueue.queue.length, queuedChunksBefore, 'queue state preserved');
+	assert.equal(session.rpcSendQueue.closed, false);
+
+	// 模拟 SACK 恢复 → BAL → drain 应能继续
+	dc.bufferedAmount = 0;
+	dc.onbufferedamountlow();
+	assert.equal(session.rpcSendQueue.queue.length, 0, 'queue drained after restart');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: onbufferedamountlow 事件触发 queue drain', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_sq02', 'v=0\r\na=max-message-size:100\r\n'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	// 顶到 HIGH，让大消息全部入队
+	dc.bufferedAmount = 1024 * 1024;
+	peer.broadcast({ type: 'res', data: 'X'.repeat(500) });
+	const session = peer.__sessions.get('c_sq02');
+	assert.ok(session.rpcSendQueue.queue.length > 0, 'chunks queued');
+
+	// 模拟 SACK：bufferedAmount 降到 0，触发 onbufferedamountlow
+	dc.bufferedAmount = 0;
+	dc.onbufferedamountlow();
+
+	// drain 排空队列
+	assert.equal(session.rpcSendQueue.queue.length, 0);
+	assert.ok(sent.length > 0);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: dc.onclose 关闭 RpcSendQueue，之后 broadcast 不再 send', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_sq03'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	const session = peer.__sessions.get('c_sq03');
+	assert.ok(session.rpcSendQueue);
+
+	// 触发 onclose
+	dc.readyState = 'closed';
+	dc.onclose();
+	assert.equal(session.rpcSendQueue, null);
+	assert.equal(session.rpcChannel, null);
+
+	// 之后 broadcast 不应 send（因为 session.rpcSendQueue === null）
+	const sentBefore = sent.length;
+	peer.broadcast({ type: 'event', event: 'after-close' });
+	assert.equal(sent.length, sentBefore);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast 遇到 buildChunks 抛异常时 logDebug 但不崩', async () => {
+	const PC = MockPCFactory();
+	const debugMsgs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	// 过小的 maxMessageSize 让 buildChunks 抛（chunkPayloadSize <= 0）
+	await peer.handleSignaling(makeOffer('c_sq_throw_b', 'v=0\r\na=max-message-size:3\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	// payload > 3 bytes → 触发分片路径 → buildChunks 抛
+	peer.broadcast({ type: 'res', data: 'hello world' });
+	assert.ok(debugMsgs.some((m) => m.includes('broadcast send failed')));
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: files sendFn 遇到 buildChunks 抛异常时 logDebug 但不崩', async () => {
+	const PC = MockPCFactory();
+	const debugMsgs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onFileRpc: (payload, sendFn) => {
+			sendFn({ type: 'res', id: payload.id, data: 'hello world' });
+		},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_sq_throw_f', 'v=0\r\na=max-message-size:3\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'tfz', method: 'coclaw.files.list', params: {} }) });
+	assert.ok(debugMsgs.some((m) => m.includes('sendFn failed')));
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: probe-ack 绕过 RpcSendQueue（背压场景 + spy 双验证）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_sq04'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	// 模拟 queue 处于 "满" 状态 + 高 bufferedAmount 的背压条件
+	const session = peer.__sessions.get('c_sq04');
+	const fakeBig = Buffer.alloc(11 * 1024 * 1024);
+	session.rpcSendQueue.queue.push(fakeBig);
+	session.rpcSendQueue.queueBytes = fakeBig.length;
+	dc.bufferedAmount = 10 * 1024 * 1024; // 远超 HIGH，正常路径 drain 会被阻塞
+
+	// 额外用 spy 替换 queue.send — 若 probe-ack 误走 queue，spy 会记录到
+	let queueSendCallCount = 0;
+	const origQueueSend = session.rpcSendQueue.send.bind(session.rpcSendQueue);
+	session.rpcSendQueue.send = (jsonStr) => {
+		queueSendCallCount += 1;
+		return origQueueSend(jsonStr);
+	};
+
+	// 收到 probe → 触发 probe-ack（应绕过 queue 直发，背压条件下仍成功）
+	dc.onmessage({ data: JSON.stringify({ type: 'probe' }) });
+
+	// probe-ack 应出现在最后一次 dc.send（string）
+	const lastSent = sent[sent.length - 1];
+	assert.equal(typeof lastSent, 'string');
+	assert.equal(JSON.parse(lastSent).type, 'probe-ack');
+	// 且 queue.send 未被调用（严格验证"绕过"）
+	assert.equal(queueSendCallCount, 0, 'probe-ack must NOT go through rpcSendQueue.send');
 	await peer.closeAll();
 });
 

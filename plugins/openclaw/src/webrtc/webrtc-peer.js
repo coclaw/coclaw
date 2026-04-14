@@ -1,4 +1,5 @@
-import { chunkAndSend, createReassembler } from './dc-chunking.js';
+import { createReassembler } from './dc-chunking.js';
+import { RpcSendQueue, DC_LOW_WATER_MARK } from './rpc-send-queue.js';
 import { remoteLog } from '../remote-log.js';
 
 // 单个 session 内 file DC 历史快照的容量上限（满后按 FIFO 淘汰最老条目）。
@@ -40,7 +41,7 @@ export class WebRtcPeer {
 		this.__PeerConnection = PeerConnection;
 		this.__impl = impl ?? null;
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
-		/** @type {Map<string, { pc: object, rpcChannel: object|null, remoteMaxMessageSize: number, nextMsgId: number }>} */
+		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcSendQueue: RpcSendQueue|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
 	}
 
@@ -86,15 +87,16 @@ export class WebRtcPeer {
 		await Promise.all(closing);
 	}
 
-	/** 向所有已打开的 rpcChannel 广播（大消息自动分片） */
+	/** 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 RpcSendQueue 流控） */
 	broadcast(payload) {
 		const jsonStr = JSON.stringify(payload);
 		for (const [connId, session] of this.__sessions) {
-			const dc = session.rpcChannel;
-			if (dc?.readyState === 'open') {
+			const q = session.rpcSendQueue;
+			if (q && session.rpcChannel?.readyState === 'open') {
 				try {
-					chunkAndSend(dc, jsonStr, session.remoteMaxMessageSize, () => session.nextMsgId++, this.logger);
+					q.send(jsonStr);
 				} catch (err) {
+					// buildChunks 抛（maxMessageSize 配置错）等罕见情况
 					this.__logDebug(`[${connId}] broadcast send failed: ${err.message}`);
 				}
 			}
@@ -208,7 +210,7 @@ export class WebRtcPeer {
 		const localMMS = pc.maxMessageSize ?? remoteMMS;
 		const remoteMaxMessageSize = Math.min(remoteMMS, localMMS);
 
-		const session = { pc, rpcChannel: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
+		const session = { pc, rpcChannel: null, rpcSendQueue: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
 		this.__sessions.set(connId, session);
 
 		// ICE candidate → 发给 UI，并统计各类型 candidate 数量
@@ -363,9 +365,29 @@ export class WebRtcPeer {
 	}
 
 	__setupDataChannel(connId, dc) {
+		// rpc DC 发送流控：每条 rpc DC 绑定一个 RpcSendQueue，广播与 files RPC 响应均经此出口
+		const session = this.__sessions.get(connId);
+		if (session && dc.label === 'rpc') {
+			if ('bufferedAmountLowThreshold' in dc) {
+				dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
+			}
+			session.rpcSendQueue = new RpcSendQueue({
+				dc,
+				maxMessageSize: session.remoteMaxMessageSize,
+				getNextMsgId: () => session.nextMsgId++,
+				logger: this.logger,
+				tag: `conn=${connId}`,
+			});
+			dc.onbufferedamountlow = () => {
+				session.rpcSendQueue?.onBufferedAmountLow();
+			};
+		}
+
 		const reassembler = createReassembler((jsonStr) => {
 			const payload = JSON.parse(jsonStr);
 			// DC 探测：立即回复，不走 gateway
+			// 故意绕过 RpcSendQueue：probe-ack 仅用于测量传输层（SCTP/DTLS）健康，
+			// 走 queue 会把应用层积压压力错误地映射到"DC 不通"上。
 			if (payload.type === 'probe') {
 				try { dc.send(JSON.stringify({ type: 'probe-ack' })); }
 				catch { /* DC 已关闭，忽略 */ }
@@ -374,15 +396,10 @@ export class WebRtcPeer {
 			if (payload.type === 'req') {
 				// coclaw.files.* 方法本地处理，不转发 gateway
 				if (payload.method?.startsWith('coclaw.files.') && this.__onFileRpc) {
-					const session = this.__sessions.get(connId);
+					const sess = this.__sessions.get(connId);
 					const sendFn = (response) => {
 						try {
-							chunkAndSend(
-								dc, JSON.stringify(response),
-								session?.remoteMaxMessageSize ?? 65536,
-								() => session.nextMsgId++,
-								this.logger,
-							);
+							sess?.rpcSendQueue?.send(JSON.stringify(response));
 						} catch (err) {
 							this.__logDebug(`[${connId}] sendFn failed: ${err.message}`);
 						}
@@ -404,8 +421,12 @@ export class WebRtcPeer {
 			this.__remoteLog(`dc.closed conn=${connId} label=${dc.label}`);
 			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" closed`);
 			reassembler.reset();
-			const session = this.__sessions.get(connId);
-			if (session && dc.label === 'rpc') session.rpcChannel = null;
+			const sess = this.__sessions.get(connId);
+			if (sess && dc.label === 'rpc') {
+				sess.rpcSendQueue?.close();
+				sess.rpcSendQueue = null;
+				sess.rpcChannel = null;
+			}
 		};
 		dc.onerror = (err) => {
 			this.__remoteLog(`dc.error conn=${connId} label=${dc.label}`);
