@@ -2297,7 +2297,7 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		test('accepted 之后取消：sendMessage 返回 { accepted: true }，保留消息并 reconcile', async () => {
+		test('accepted 之后取消：不终止服务端 run，保留 streamingMsgs、run 进入 settling(reason=cancel)、sending=false', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -2305,6 +2305,66 @@ describe('useChatStore', () => {
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-cancel' });
+					return new Promise(() => {}); // 模拟 run 仍在服务端运行
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// 不 await sendPromise（服务端永不返回）
+			store.sendMessage('hello');
+			await Promise.resolve();
+
+			expect(store.__accepted).toBe(true);
+
+			const runsStore = useAgentRunsStore();
+			const runKey = store.runKey;
+			// accepted 后乐观消息已移入 streamingMsgs
+			expect(runsStore.getActiveRun(runKey)?.streamingMsgs?.length).toBeGreaterThan(0);
+
+			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
+			const cancelRejectBefore = store.__cancelReject;
+			const rejectSpy = vi.fn();
+			// 包一层 spy 以精准验证 reject 未被调用
+			store.__cancelReject = (err) => { rejectSpy(err); cancelRejectBefore(err); };
+
+			store.cancelSend();
+
+			// cancelSend 不立即 reconcile（等 lifecycle:end 驱动）
+			expect(reconcileSpy).not.toHaveBeenCalled();
+			// cancelPromise 未被 reject；cancelSend accepted 分支显式 nullify 槽位
+			expect(rejectSpy).not.toHaveBeenCalled();
+			expect(store.__cancelReject).toBeNull();
+			// run 进入 settling 过渡态，streamingMsgs 仍保留
+			const run = runsStore.getActiveRun(runKey);
+			expect(run).not.toBeNull();
+			expect(run.settling).toBe(true);
+			expect(run.settlingReason).toBe('cancel');
+			expect(run.settled).toBe(false);
+			expect(run.streamingMsgs.length).toBeGreaterThan(0);
+			// UI 本地状态解挂
+			expect(store.sending).toBe(false);
+			expect(store.__streamingTimer).toBeNull();
+			// isRunning 仍为 true（run 未 settled），所以 isSending 仍为 true，输入框依然禁用
+			expect(runsStore.isRunning(runKey)).toBe(true);
+			expect(store.isSending).toBe(true);
+		});
+
+		test('accepted 取消后独立 loadMessages 触发 completeSettle：streamingMsgs 仍保留（P0 回归防护）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-pz' });
 					return new Promise(() => {});
 				}
 				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
@@ -2318,19 +2378,27 @@ describe('useChatStore', () => {
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			const sendPromise = store.sendMessage('hello');
+			store.sendMessage('hello');
 			await Promise.resolve();
-
 			expect(store.__accepted).toBe(true);
 
-			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
+			const runsStore = useAgentRunsStore();
+			const runKey = store.runKey;
+			const streamingBefore = runsStore.getActiveRun(runKey).streamingMsgs.length;
+			expect(streamingBefore).toBeGreaterThan(0);
 
 			store.cancelSend();
+			expect(runsStore.getActiveRun(runKey)?.settlingReason).toBe('cancel');
 
-			const result = await sendPromise;
-			expect(result).toEqual({ accepted: true });
-			// 已 accepted 后取消应 reconcile 而非 removeLocalEntries
-			expect(reconcileSpy).toHaveBeenCalled();
+			// 模拟 WS 重连 / 前台恢复 / activate 重入 等独立触发路径
+			await store.loadMessages({ silent: true });
+
+			// 核心断言：run 仍在、streamingMsgs 未被 completeSettle 清空
+			const run = runsStore.getActiveRun(runKey);
+			expect(run).not.toBeNull();
+			expect(run.settling).toBe(true);
+			expect(run.settlingReason).toBe('cancel');
+			expect(run.streamingMsgs.length).toBe(streamingBefore);
 		});
 	});
 

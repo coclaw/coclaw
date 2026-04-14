@@ -246,18 +246,35 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('completeSettle', () => {
-		test('在 settling 状态下立即清理 run', () => {
+		test('settlingReason=lifecycle 下立即清理 run', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			// 进入 settling
+			// 进入 settling（lifecycle:end 路径）
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
 			expect(store.runs['run-1']?.settling).toBe(true);
+			expect(store.runs['run-1']?.settlingReason).toBe('lifecycle');
 
 			store.completeSettle('1::agent:main:main');
 
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
+		});
+
+		test('settlingReason=cancel 下不清理（等 lifecycle:end 升级 reason）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.settleWithTransitionByKey('1::agent:main:main');
+			expect(store.runs['run-1'].settlingReason).toBe('cancel');
+
+			store.completeSettle('1::agent:main:main');
+
+			// run 仍在、streamingMsgs 保留
+			const run = store.runs['run-1'];
+			expect(run).toBeTruthy();
+			expect(run.settling).toBe(true);
+			expect(run.streamingMsgs.length).toBe(2);
 		});
 
 		test('非 settling 状态下不操作', () => {
@@ -273,6 +290,128 @@ describe('useAgentRunsStore', () => {
 		test('不存在的 runKey 不报错', () => {
 			const store = useAgentRunsStore();
 			store.completeSettle('nonexistent');
+		});
+	});
+
+	// =====================================================================
+	// settleWithTransitionByKey (cancelSend 阶段 1)
+	// =====================================================================
+
+	describe('settleWithTransitionByKey', () => {
+		test('将 run 置为 settling、reason=cancel，保留 streamingMsgs 和 30min timer', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			const postAcceptTimer = store.runs['run-1'].__timer;
+			expect(postAcceptTimer).toBeTruthy();
+
+			store.settleWithTransitionByKey('1::agent:main:main');
+
+			const run = store.runs['run-1'];
+			expect(run).toBeTruthy();
+			expect(run.settling).toBe(true);
+			expect(run.settlingReason).toBe('cancel');
+			expect(run.settled).toBe(false);
+			expect(run.streamingMsgs.length).toBe(2);
+			// 30min post-acceptance timer 保留（不清）
+			expect(run.__timer).toBe(postAcceptTimer);
+			// 不主动调度 500ms fallback
+			expect(run.__settleTimer).toBeFalsy();
+		});
+
+		test('getActiveRun 对 settling 的 run 仍返回非 null', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settleWithTransitionByKey('1::agent:main:main');
+
+			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
+			expect(store.isRunning('1::agent:main:main')).toBe(true);
+		});
+
+		test('cancel 后 lifecycle:end 到达 → __dispatch 把 reason 升级为 lifecycle', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settleWithTransitionByKey('1::agent:main:main');
+			expect(store.runs['run-1'].settlingReason).toBe('cancel');
+			expect(store.runs['run-1'].__settleTimer).toBeFalsy();
+
+			// lifecycle:end 到达触发 __settleWithTransition（clear post-accept timer + 启动 500ms fallback + 升级 reason）
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+
+			const run = store.runs['run-1'];
+			expect(run.settling).toBe(true);
+			expect(run.settlingReason).toBe('lifecycle');
+			expect(run.__timer).toBeNull();
+			expect(run.__settleTimer).toBeTruthy();
+		});
+
+		test('cancel 后 lifecycle:end 到达 → 再次 completeSettle 可正常清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settleWithTransitionByKey('1::agent:main:main');
+
+			// 独立 loadMessages 先触发一次 completeSettle：reason=cancel，不清理
+			store.completeSettle('1::agent:main:main');
+			expect(store.runs['run-1']).toBeTruthy();
+
+			// lifecycle:end 到达，升级 reason
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			expect(store.runs['run-1'].settlingReason).toBe('lifecycle');
+
+			// 再次 completeSettle 可正常清理
+			store.completeSettle('1::agent:main:main');
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+
+		test('cancel 后 lifecycle:end 到达 → 无独立 loadMessages 时 500ms fallback 自然清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settleWithTransitionByKey('1::agent:main:main');
+
+			// lifecycle:end 到达，升级 reason + 启动 500ms fallback
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			expect(store.runs['run-1'].__settleTimer).toBeTruthy();
+
+			// 无 loadMessages 飞行 → 500ms 后 fallback 触发 __cleanupRun
+			vi.advanceTimersByTime(500);
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+
+		test('cancel 后服务端仍推送 content 事件 → streamingMsgs 继续更新（阶段 1 不真 abort 的已知行为）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settleWithTransitionByKey('1::agent:main:main');
+			expect(store.runs['run-1'].settlingReason).toBe('cancel');
+
+			// 取消后仍有 assistant text 事件到达（阶段 1 服务端继续跑）
+			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'after-cancel-content' } });
+
+			const run = store.runs['run-1'];
+			expect(run).toBeTruthy();
+			// run 仍在 settling(cancel) 状态，streamingMsgs 被事件更新而非被清理
+			expect(run.settling).toBe(true);
+			expect(run.settlingReason).toBe('cancel');
+			expect(run.lastEventAt).toBeGreaterThan(0);
+		});
+
+		test('不存在的 runKey / 已 settled / 已 settling 时 no-op', () => {
+			const store = useAgentRunsStore();
+
+			// 不存在
+			store.settleWithTransitionByKey('missing');
+
+			// 已 settled
+			registerRun(store, { runId: 'run-a', runKey: 'k-a' });
+			store.settle('k-a');
+			expect(store.runs['run-a']).toBeUndefined();
+			store.settleWithTransitionByKey('k-a');
+
+			// 已 settling：第二次调用不重置状态
+			registerRun(store, { runId: 'run-b', runKey: 'k-b' });
+			store.settleWithTransitionByKey('k-b');
+			const firstSettling = store.runs['run-b'].settling;
+			store.settleWithTransitionByKey('k-b');
+			expect(store.runs['run-b'].settling).toBe(firstSettling);
 		});
 	});
 

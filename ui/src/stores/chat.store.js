@@ -658,33 +658,44 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 			},
 
-			/** 取消发送（用户主动取消，同时 settle run） */
+			/**
+			 * 用户主动取消
+			 *
+			 * 未 accepted（pre-acceptance）：reject RPC，sendMessage 的 USER_CANCELLED 分支清理乐观消息。
+			 *
+			 * 已 accepted（post-acceptance）：服务端 run 仍在继续执行。
+			 *   不 reject 原 RPC、不立即 reload，仅将 run 置为 settling（保留 streamingMsgs）。
+			 *   等 lifecycle:end 自然到达时由 __dispatch → __settleWithTransition 驱动 completeSettle。
+			 *   此阶段 isSending 仍为 true（isRunning 看 !settled），UI 输入框保持禁用；
+			 *   真正"取消后立即解锁"由阶段 2 的 coclaw.agent.abort 驱动 lifecycle:end 快速到达实现。
+			 */
 			cancelSend() {
-				// 取消进行中的文件上传
+				// 取消进行中的文件上传（pre-acceptance 路径）
 				if (this.__uploadHandle) {
 					this.__uploadHandle.cancel();
 					this.__uploadHandle = null;
 				}
 				this.uploadingFiles = false;
 				this.fileUploadState = null;
-				// 通过 reject cancel promise 让 sendMessage 立即 settle
-				if (this.__cancelReject) {
-					const err = new Error('user cancelled');
-					err.code = 'USER_CANCELLED';
-					this.__cancelReject(err);
-					this.__cancelReject = null;
-				}
+
 				if (this.__accepted) {
-					// 已被服务端接受，settle run 并从服务端拉取真实状态
-					useAgentRunsStore().settle(this.runKey);
+					// 不 reject cancelPromise，让原 agent() RPC 自然 resolve；显式 nullify 槽位，
+					// 避免后续 cleanup() 在同一窗口误触发无意义 reject
+					this.__cancelReject = null;
+					useAgentRunsStore().settleWithTransitionByKey(this.runKey);
 					if (this.__streamingTimer) {
 						clearTimeout(this.__streamingTimer);
 						this.__streamingTimer = null;
 					}
 					this.sending = false;
-					this.__reconcileMessages();
 				}
 				else {
+					if (this.__cancelReject) {
+						const err = new Error('user cancelled');
+						err.code = 'USER_CANCELLED';
+						this.__cancelReject(err);
+						this.__cancelReject = null;
+					}
 					this.__cleanupStreaming();
 					this.sending = false;
 				}

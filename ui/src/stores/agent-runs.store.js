@@ -100,6 +100,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				startTime: Date.now(),
 				settled: false,
 				settling: false,
+				settlingReason: null,
 				lastEventAt: 0,
 				streamingMsgs: [...streamingMsgs],
 				__conn: conn,
@@ -128,6 +129,25 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
+		 * 用户取消（cancelSend 阶段 1）进入 settling 过渡态：
+		 * - settling=true 让 getActiveRun/allMessages 仍保留 streamingMsgs
+		 * - settlingReason='cancel'：用于 completeSettle 区分，避免独立 loadMessages 过早 cleanup streamingMsgs
+		 * - 保留 post-acceptance 30min timer 作兜底（与 __settleWithTransition 不同）
+		 * - 不调度 500ms fallback，等 lifecycle:end 到达时由 __dispatch → __settleWithTransition 升级 reason
+		 * 适用于"UI 已取消但服务端 run 仍在跑"的场景：需要长过渡窗口直到真实终态到达
+		 * @param {string} runKey
+		 */
+		settleWithTransitionByKey(runKey) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
+			const run = this.runs[runId];
+			if (!run || run.settled || run.settling) return;
+			run.settling = true;
+			run.settlingReason = 'cancel';
+			this.runs[runId] = { ...run };
+		},
+
+		/**
 		 * 内部：处理 event:agent 事件路由（由 clawsStore.__bridgeConn 集中调用）
 		 * @param {object} payload
 		 */
@@ -152,6 +172,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		/**
 		 * 带过渡态的 settle：先标记 settling，保留 streamingMsgs 直到外部（如 loadMessages）替换 messages
 		 * 用于 lifecycle:end 到达但 loadMessages 尚未完成的场景，避免 allMessages 内容闪烁
+		 * settlingReason 设为 'lifecycle' 以解锁 completeSettle 的清理（覆盖可能存在的 'cancel' 标记）
 		 * @param {string} runId
 		 */
 		__settleWithTransition(runId) {
@@ -162,6 +183,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				run.__timer = null;
 			}
 			run.settling = true;
+			run.settlingReason = 'lifecycle';
 			this.__scheduleSettleFallback(runId);
 			// settling 状态下 allMessages 仍能看到 streamingMsgs（由 getActiveRun getter 判断）
 			// 注意：spread 必须在调度 fallback 之后，确保新对象持有正确的 timer 引用
@@ -215,6 +237,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 
 		/**
 		 * 完成 settle 过渡（由 chatStore loadMessages 成功后调用）
+		 * 仅处理 settlingReason='lifecycle' 的 run——即真实 lifecycle:end 已到达。
+		 * settlingReason='cancel' 的 run 仍在服务端执行，streamingMsgs 必须保留直到 lifecycle:end 到达后升级为 'lifecycle'。
 		 * @param {string} runKey
 		 */
 		completeSettle(runKey) {
@@ -222,6 +246,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			if (!runId) return;
 			const run = this.runs[runId];
 			if (!run || !run.settling) return;
+			if (run.settlingReason !== 'lifecycle') {
+				console.debug('[agentRuns] completeSettle skip runKey=%s reason=%s', runKey, run.settlingReason);
+				return;
+			}
 			console.debug('[agentRuns] completeSettle runKey=%s runId=%s', runKey, runId);
 			if (run.__settleTimer) {
 				clearTimeout(run.__settleTimer);
