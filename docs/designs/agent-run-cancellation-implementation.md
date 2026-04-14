@@ -1,6 +1,6 @@
 # Agent Run 取消：分阶段实施方案
 
-> **状态**：决策已确认 → 阶段 1 执行中（2026-04-14）
+> **状态**：阶段 1 已完成（commits `5d3d97e` docs + `2bd7f3a` fix(ui)），阶段 2 待启动（2026-04-14）
 > **创建时间**：2026-04-14
 > **调研依据**：[`docs/openclaw-research/agent-run-cancellation.md`](../openclaw-research/agent-run-cancellation.md)
 > **上游遗留问题**：[`docs/openclaw-upstream-issues.md`](../openclaw-upstream-issues.md) "待提交：Agent Run 取消相关"章节
@@ -157,9 +157,11 @@ export function abortAgentRun(sessionId) {
 3. sending = false
 ```
 
-- sessionId 可靠来源：topic 模式 `this.sessionId`（UUID）；main-agent chat `this.currentSessionId`（`chat.history` 返回的当前 session，已在 loadMessages 里同步）
+- sessionId 可靠来源：
+  - topic 模式：`this.sessionId`（UUID，始终有）✓
+  - main-agent chat：`this.currentSessionId`（来自 `chat.history`，`loadMessages` 里同步）——**阶段 2 实施前先核实**：首条消息 accepted 后、loadMessages 跑完前，`currentSessionId` 可能为 null 或指向上一 session；需核实 `agent()` RPC 的 `onAccepted` payload 是否包含 sessionId，若有则优先用 payload 的 sessionId 作为 abort 目标
 - 无需 capability gate：UI 无条件发 RPC，任何失败静默降级
-- 失败场景：RPC 本身不存在（很老的 CoClaw 插件）、侧门不支持（很老的 OpenClaw）、sessionId 不在 activeRuns 中（竞态）
+- 失败场景：RPC 本身不存在（很老的 CoClaw 插件）、侧门不支持（很老的 OpenClaw）、sessionId 不在 activeRuns 中（竞态）、sessionId 本地无法获取（首消息 + currentSessionId 为 null + onAccepted payload 无 sessionId——降级为纯阶段 1 行为）
 
 #### 2.4 斜杠命令（`/compact` UI 禁用取消）
 
