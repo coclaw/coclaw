@@ -1,6 +1,6 @@
 # Agent Run 取消：分阶段实施方案
 
-> **状态**：阶段 1、2 已完成；阶段 3（上游 PR）待启动（2026-04-14）
+> **状态**：阶段 1、2 已完成；阶段 3 上游 issues 已提交（#66531 / #66532 / #66534 / #66535，2026-04-14），等待维护者反馈；合并后按末尾"CoClaw 侧适配路径"表渐进迁移
 > **创建时间**：2026-04-14
 > 阶段 1 commits：`5d3d97e` docs + `2bd7f3a` fix(ui)
 > 阶段 2 commits：`3d21a5e` feat(plugin) + `17cc790` feat(ui)
@@ -202,22 +202,24 @@ export function abortAgentRun(sessionId) {
 
 ---
 
-## 阶段 3：上游 PR（长期去侧门化）
+## 阶段 3：上游 issues（长期去侧门化）
 
-### 四个并列 PR
+### 四条上游 issue（已提交）
 
-| # | PR 主题 | 改动范围 | CoClaw 受益 |
-|---|---|---|---|
-| 3a | 新增 `agent.abort` RPC | `server-methods/agent.ts` + schema + tests（~150 行） | UI 可直调 `agent.abort`，插件 RPC 降为 fallback |
-| 3b | `api.runtime.agent` 暴露 abort 家族 | `runtime-embedded-pi.runtime.ts` + `types-core.ts`（~10 行增量） | 插件去侧门，改用 `api.runtime.agent.abortEmbeddedPiRun(...)` |
-| 3c | `lifecycle:end` 带 `aborted` / `stopReason` | `pi-embedded-subscribe.handlers.lifecycle.ts`（~20 行） | UI 直接从事件区分 abort vs 完成，不再依赖 completion frame |
-| 3d | `/compact` 可取消 | `commands-compact.ts` + `compact.ts`（较大改动） | UI 解除 `/compact` 取消禁用 |
+基于 OpenClaw `v2026.4.14-beta.1+69`（commit `d7cc6f7643`）再校验后的改动范围。CoClaw 仅提交 issue，由 OpenClaw 维护者决定是否/何时实现；合并前保留阶段 2 的侧门 workaround。
+
+| # | GitHub issue | 主题 | 类型 | 改动范围（建议修复要点） | CoClaw 受益 |
+|---|---|---|---|---|---|
+| 3a | [#66531](https://github.com/openclaw/openclaw/issues/66531) | 新增 `agent.abort` RPC | Feature | `src/gateway/server-methods/agent.ts`（新增 `"agent.abort"` handler，当前 `agentHandlers` 只有 `"agent"` / `"agent.identity.get"` / `"agent.wait"`）+ `src/gateway/protocol/schema/agent.ts` 新增 `AgentAbortParamsSchema` + tests（~150 行） | UI 可直调 `agent.abort`，插件 RPC 降为 fallback |
+| 3b | [#66532](https://github.com/openclaw/openclaw/issues/66532) | `api.runtime.agent` 暴露 abort 家族 | Feature | `src/plugins/runtime/runtime-embedded-pi.runtime.ts`（现仅 export `runEmbeddedAgent`/`runEmbeddedPiAgent`，需加 `abortEmbeddedPiRun` / `waitForEmbeddedPiRunEnd` / `isEmbeddedPiRunActive` / `queueEmbeddedPiMessage`）+ `src/plugins/runtime/types-core.ts:49-73` 的 `PluginRuntimeCore["agent"]` 声明（~10 行增量） | 插件去侧门，改用 `api.runtime.agent.abortEmbeddedPiRun(...)` |
+| 3c | [#66534](https://github.com/openclaw/openclaw/issues/66534) | `lifecycle:end` 带 `aborted` / `stopReason` | Bug | `src/agents/pi-embedded-subscribe.handlers.lifecycle.ts` 的 `handleAgentEnd` emit（当前 L130-148）新增字段；`agent-command.ts:919-934` 已有这两个字段可作为参考（~20 行） | UI 直接从事件区分 abort vs 完成，不再依赖 completion frame |
+| 3d | [#66535](https://github.com/openclaw/openclaw/issues/66535) | `/compact` 可取消 | Bug | `src/auto-reply/reply/commands-compact.ts`（当前约 L72-145 调 `compactEmbeddedPiSession` 未传 `abortSignal` 未注册 registry）—— `CompactEmbeddedPiSessionParams.abortSignal` 类型已预留（`compact.types.ts:56`），**实际改动仅需补传参 + 注册 `ACTIVE_EMBEDDED_RUNS`**，比原估小 | UI 解除 `/compact` 取消禁用 |
 
 ### 提交策略
 
-- 3a + 3b **同时提交**（基础设施，互相独立但服务同一目标）
-- 3c 和 3d 作为后续改进，不阻塞
-- 每合并一个，CoClaw 侧渐进迁移
+- 3a + 3b 同批提交（基础设施，互相独立但服务同一目标）—— ✅ 已作为 #66531 / #66532 提交（2026-04-14）
+- 3c + 3d 作为后续改进 —— ✅ 已作为 #66534 / #66535 提交（同日）
+- 每个 issue 合并后，CoClaw 侧按下方"适配路径"表渐进迁移
 
 ### CoClaw 侧适配路径
 
@@ -241,11 +243,11 @@ UI 解除 /compact 取消禁用
 
 ## 实施顺序建议
 
-1. **立即启动**：阶段 1（PR 1）——无外部依赖，单一 PR 完成
-2. **阶段 1 合并后**：阶段 2.1-2.2（插件 `agent-abort.js` + RPC）作为 PR 2a，独立于 UI
-3. **PR 2a 合并后**：阶段 2.3-2.5（UI 集成 + `/compact` 禁用）作为 PR 2b
-4. **并行**：通过 `openclaw-issue` skill 提 3a / 3b 的 feature request，排队等合并
-5. **逐步迁移**：上游合并后按上表路径做 CoClaw 适配
+1. ✅ 阶段 1：前端 settling(cancel) 过渡态修复（单一 PR，commits `5d3d97e` + `2bd7f3a`）
+2. ✅ 阶段 2.1-2.2：插件 `agent-abort.js` + `coclaw.agent.abort` RPC（commit `3d21a5e`）
+3. ✅ 阶段 2.3-2.5：UI 集成 RPC + `/compact` 禁用（commit `17cc790`）
+4. ✅ 阶段 3：通过 `openclaw-issue` skill 提交 4 条上游 issue —— #66531 / #66532（feature）、#66534 / #66535（bug），2026-04-14
+5. ⏳ 逐步迁移：等待上游合并后按下方"适配路径"表渐进迁移（定期通过 `openclaw-issue` skill 的"定期跟进"流程检查状态）
 
 ---
 

@@ -1,7 +1,7 @@
 # OpenClaw Agent Run 取消机制
 
-> 更新时间：2026-04-14
-> 基于 OpenClaw commit `03523c65d5` 源码验证
+> 更新时间：2026-04-14（再次校验，基于 OpenClaw commit `d7cc6f7643`，即 `v2026.4.14-beta.1+69`）
+> 初版基于 commit `03523c65d5`；阶段 3 启动前已逐条核验，核心结论仍成立，差异见下文"再校验备注"
 > 关联文档：[agent-event-streams-and-rpcs.md](./agent-event-streams-and-rpcs.md) · [gateway-protocols.md](./gateway-protocols.md)
 
 ## 结论速查
@@ -23,7 +23,7 @@
 setActiveEmbeddedRun(sessionId, queueHandle, sessionKey);
 ```
 
-将 `EmbeddedPiQueueHandle` 注册到 `ACTIVE_EMBEDDED_RUNS`（Map<sessionId, handle>）。handle 结构（`pi-embedded-runner/runs.ts:19-26`）：
+将 `EmbeddedPiQueueHandle` 注册到 `ACTIVE_EMBEDDED_RUNS`（Map<sessionId, handle>）。handle 结构（`pi-embedded-runner/runs.ts:20-27`）：
 
 ```ts
 type EmbeddedPiQueueHandle = {
@@ -36,13 +36,13 @@ type EmbeddedPiQueueHandle = {
 };
 ```
 
-`handle.abort()` 的行为（`attempt.ts:1316-1328`，同步返回）：
+`handle.abort()` 的行为（当前 `attempt.ts:1457-1468` 的 `abortRun`，同步返回；初版位置 1316-1328）：
 
 1. `runAbortController.abort(reason)` — 信号扩散到 fetch 流、工具 `abortable()` 包装等
-2. `abortCompaction()` — 若在 compacting，中止 compaction session
+2. `abortCompaction()`（`attempt.ts:1443-1455`）— 若在 compacting，中止 compaction session
 3. `void activeSession.abort()` — fire-and-forget，不等实际 idle
 
-attempt 的 `finally` 块（1989-2014）在 run 结束后清理：`unsubscribe()` → `clearActiveEmbeddedRun()` → `notifyEmbeddedRunEnded()`（唤醒 `waitForEmbeddedPiRunEnd` 的等待者）。
+attempt 的 `finally` 块在 run 结束后清理：`unsubscribe()` → `clearActiveEmbeddedRun()`（当前 `attempt.ts:2316`）→ `notifyEmbeddedRunEnded()`（唤醒 `waitForEmbeddedPiRunEnd` 的等待者）。
 
 ---
 
@@ -50,9 +50,9 @@ attempt 的 `finally` 块（1989-2014）在 run 结束后清理：`unsubscribe()
 
 | Registry | 键 | 持有 | 谁填充 | `chat.abort` 能否找到 |
 |---|---|---|---|---|
-| `context.chatAbortControllers` | `clientRunId` | `AbortController` | 仅 `chat.send` (`chat.ts:1532`) | ✓ |
-| `ACTIVE_EMBEDDED_RUNS`（侧门 symbol state） | `sessionId` | `EmbeddedPiQueueHandle`（含 `.abort()`） | 所有 embedded run（含 `agent()`、`chat.send`）(`attempt.ts:1421`) | ✗ |
-| `ReplyRunRegistry` | `sessionKey` | `ReplyOperation` + AbortController | auto-reply/followup 路径 | 经 `abortChatRunBySessionId` fallback |
+| `context.chatAbortControllers` | `clientRunId` | `AbortController` | 仅 `chat.send` (`chat.ts:1313` 注册) | ✓ |
+| `ACTIVE_EMBEDDED_RUNS`（侧门 symbol state） | `sessionId` | `EmbeddedPiQueueHandle`（含 `.abort()`） | 所有 embedded run（含 `agent()`、`chat.send`）(`runs.ts:60` 存储，`attempt.ts:1572` 调用 `setActiveEmbeddedRun`) | ✗ |
+| `ReplyRunRegistry` | `sessionKey` | `ReplyOperation` + AbortController | auto-reply/followup 路径（`reply-run-registry.ts`） | 经 `abortChatRunBySessionId` fallback |
 
 **关键后果**：`chat.abort` 仅查 `chatAbortControllers`；`agent()` 不注册那里，所以 `chat.abort` 对 `agent()` run **无效**。唯一统一的底层原语是 `abortEmbeddedPiRun(sessionId)`（`runs.ts:118-179`），它先查 `ACTIVE_EMBEDDED_RUNS`，未命中时 fallback 到 `abortReplyRunBySessionId`——覆盖所有场景。
 
@@ -147,14 +147,16 @@ agent:${normalizeAgentId(agentId) || "main"}:explicit:${sessionId}
 ### 5.1 `lifecycle` 事件
 
 两个发射源：
-1. **Subscription 层** `pi-embedded-subscribe.handlers.lifecycle.ts:90-104` (`handleAgentEnd`)
-   - 发 `{phase: "end"}`（正常） 或 `{phase: "error", error}`（有 stopReason === "error" 时）
+1. **Subscription 层** `pi-embedded-subscribe.handlers.lifecycle.ts:handleAgentEnd`（当前约 L39 起，发 emit 在 L130-148）
+   - 发 `{phase: "end", livenessState?, replayInvalid?, endedAt}`（正常）或 `{phase: "error", error}`（有 stopReason === "error" 时）
    - **不带 `aborted`、不带 `stopReason`**
-2. **Command 层 fallback** `agent-command.ts:818-833`
+2. **Command 层 fallback** `agent-command.ts` 内 `lifecycleEnded` 标志相关的 emit（当前约 L843-1013 范围，原位置 L818-833）
    - 发 `{phase: "end", aborted, stopReason, startedAt, endedAt}`
    - **仅当源 1 未发射时才触发**（由 `lifecycleEnded` 标志控制）
 
-⚠️ **关键陷阱**：`handleAgentEnd` 会回调 `onAgentEvent`（`agent-command.ts:803-811`），直接置 `lifecycleEnded = true`，导致带 `aborted` 字段的 fallback emit **永远不触发**。
+⚠️ **关键陷阱**：`handleAgentEnd` 会回调 `onAgentEvent`，直接置 `lifecycleEnded = true`（当前 `agent-command.ts:910`），导致源 2 的 emit **永远不触发**——原 agent 入口的主路径收到的 `lifecycle:end` 对 abort 和正常完成看起来完全相同。
+
+**再校验备注（2026-04-14）**：`agent-command.ts:919-934` 的 fallback emit **已含 `aborted: result.meta.aborted ?? false` 和 `stopReason`**，但它仍被 `lifecycleEnded=true` 跳过。真正的缺口在 `pi-embedded-subscribe.handlers.lifecycle.ts:handleAgentEnd` —— 该路径 emit 时未读 `lastAssistant.stopReason`、未从 attempt 结果取 `aborted`。因此上游 PR 3c 的**精准修复位点**是 `handleAgentEnd`，而非 agent-command（agent-command 已写好字段，只是触发分支进不去）。
 
 **结果**：UI 收到的 `lifecycle:end` payload 对 abort 和正常完成**看起来完全相同**。
 
@@ -192,11 +194,13 @@ agent:${normalizeAgentId(agentId) || "main"}:explicit:${sessionId}
 ⚠️ **含义**：若 CoClaw 在 abort 后立即对同 sessionId 发新消息（触发新 run），**旧 run 仍在后台继续**直到自己的 finally 执行。`waitForEmbeddedPiRunEnd` 是唯一确保"真正停了"的信号。
 
 ### 6.3 `/compact` 不可取消
-`commands-compact.ts:65-130`:
+当前 `commands-compact.ts` 内 `/compact` handler 约 L72-145：
 - `/compact` 进入时先 `abortEmbeddedPiRun(sessionId) + waitForEmbeddedPiRunEnd(sessionId, 15_000)` 中止**当前** run
 - 然后调 `compactEmbeddedPiSession({...})`，**不传 `abortSignal`**、**不调 `setActiveEmbeddedRun`**
 - 结果：进行中的 compaction **无法被取消**，仅靠 `compactionTimeoutMs` 兜底
 - `/compact` 影响 CoClaw UX：用户发 `/compact` 时，当前 agent run 会被 **强制中止 + 等待 15s**，前端的 streamingMsgs 与事件流会被打断
+
+**再校验备注（2026-04-14）**：`CompactEmbeddedPiSessionParams` 的类型声明（`src/agents/pi-embedded-runner/compact.types.ts:56`）已新增 `abortSignal?: AbortSignal` 字段；`compact.ts:520` 的 `prepareCompactionSessionAgent` 也已接受 `runAbortController.signal`。换言之上游已预留"接收外部 abort 信号"的接口通道，但 `commands-compact.ts` 调用点仍未传 signal、也未调用 `setActiveEmbeddedRun`。**因此 PR 3d 的改动面比原设想小**：只需在 commands-compact 层构造 AbortController、传入 `abortSignal` 并注册到 `ACTIVE_EMBEDDED_RUNS`，底层类型无需再改。
 
 ### 6.4 队列未清空
 `activeSession.abort()` 仅"wait for idle"，不清空 `queueMessage` 提交的 steering messages。OpenClaw 源码从未调用 `activeSession.clearQueue()`。队列最终随 session dispose 消失，但 abort 后的极短窗口内，`queueEmbeddedPiMessage` 可能仍能接受消息投入已废弃的队列。
