@@ -120,14 +120,14 @@
 						@click="onStopDesktopRecording"
 					/>
 				</div>
-				<!-- 触屏语音模式：按住说话 -->
+				<!-- 触屏语音模式：按住说话（与 textarea / + 按钮对齐：仅受 disabled 控制） -->
 				<UButton
 					v-else-if="isTouchDevice && inputMode === 'voice'"
 					variant="outline"
 					color="neutral"
 					block
 					class="h-10 rounded-full"
-					:disabled="sending || disabled"
+					:disabled="disabled"
 					@touchstart.prevent="onTouchSpeakStart"
 				>
 					{{ $t('chat.voiceHoldToSpeak') }}
@@ -480,7 +480,7 @@ export default {
 			this.inputMode = this.inputMode === 'keyboard' ? 'voice' : 'keyboard';
 		},
 		onTouchSpeakStart(evt) {
-			if (this.sending || this.disabled) return;
+			if (this.disabled) return;
 			const touch = evt.changedTouches?.[0];
 			this.touchSpeakTouchId = touch?.identifier ?? null;
 			this.touchSpeakOpen = true;

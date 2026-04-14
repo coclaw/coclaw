@@ -181,6 +181,31 @@ test('generateTitle - 成功生成标题', async () => {
 	assert.ok(mgr._cleanupCalled);
 });
 
+test('generateTitle - 传递 timeoutMs=300_000 / acceptTimeoutMs=10_000 给 agentRpc', async () => {
+	const mgr = makeMockTopicManager();
+	let capturedOpts = null;
+	const agentRpc = async (_method, _params, opts) => {
+		capturedOpts = opts;
+		return {
+			ok: true,
+			response: {
+				payload: {
+					status: 'ok',
+					result: { payloads: [{ text: '标题' }] },
+				},
+			},
+		};
+	};
+	await generateTitle({
+		topicId: 'topic-1',
+		topicManager: mgr,
+		agentRpc,
+		logger: { warn() {} },
+	});
+	assert.equal(capturedOpts.timeoutMs, 300_000);
+	assert.equal(capturedOpts.acceptTimeoutMs, 10_000);
+});
+
 test('generateTitle - topic 不存在时抛出错误', async () => {
 	const mgr = makeMockTopicManager();
 	await assert.rejects(

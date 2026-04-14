@@ -22,6 +22,8 @@ export function abortAgentRun(sessionId) {
 	}
 	const handle = state.activeRuns.get(sessionId);
 	if (!handle) return { ok: false, reason: 'not-found' };
+	// shape 守卫：abort 字段应为函数；若不是说明 OpenClaw handle 契约变化（归入 not-supported 让 UI 提示升级）
+	if (typeof handle.abort !== 'function') return { ok: false, reason: 'not-supported' };
 	try {
 		handle.abort();
 		return { ok: true };

@@ -10,8 +10,10 @@ import { defineStore } from 'pinia';
 import { applyAgentEvent } from '../utils/agent-stream.js';
 
 /**
- * post-acceptance 超时（24 小时，与 OpenClaw 后端 agent run 生命周期对齐）
- * 作为 lifecycle:end 丢失时的兜底清理，正常情况下 run 由事件驱动结束
+ * post-acceptance fallback 超时（24 小时）。
+ * 客户端等待 lifecycle:end 的最终兜底清理；正常路径下 run 由事件驱动 settle，此 timer 不会触发。
+ * 用于防 WS 丢事件 / OpenClaw 崩溃等异常下 streamingMsgs 永久占用内存。
+ * OpenClaw 后端默认无 run 上限，24h 仅为浏览器侧上限。
  */
 export const POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000;
 /** 事件流静默超过此时长视为已停止（用于 reconcile 判断） */

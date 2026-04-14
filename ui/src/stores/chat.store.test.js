@@ -2523,6 +2523,78 @@ describe('useChatStore', () => {
 			expect(store.cancelSend()).toBeNull();
 		});
 
+		test('accepted 取消但 conn 不可用：cancelSend 返回 null（仍进入 settling(cancel)）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-noconn' });
+					return new Promise(() => {});
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-noconn';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+
+			// 模拟 WS 断连：conn 已从 claw-connection-manager 移除
+			mockConnections.clear();
+
+			expect(store.cancelSend()).toBeNull();
+			// run 仍进入 settling(cancel)，等待 lifecycle:end 或 24h fallback
+			const runsStore = useAgentRunsStore();
+			const run = runsStore.getActiveRun(store.runKey);
+			expect(run?.settling).toBe(true);
+			expect(run?.settlingReason).toBe('cancel');
+		});
+
+		test('accepted 后第二次 cancelSend：守卫生效，不重复发 abort RPC', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCallCount = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-double' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCallCount++;
+					return new Promise(() => {});
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-double';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+
+			const first = store.cancelSend();
+			expect(first).toBeInstanceOf(Promise);
+			expect(abortCallCount).toBe(1);
+
+			// 第二次点击 STOP（双击 / isClawOffline watcher 重入），守卫应拦截
+			const second = store.cancelSend();
+			expect(second).toBeNull();
+			expect(abortCallCount).toBe(1);
+		});
+
 		test('accepted 后取消：abort RPC 失败时 cancelSend 不抛错、无 unhandledRejection 且保持 settling(cancel) 状态', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);

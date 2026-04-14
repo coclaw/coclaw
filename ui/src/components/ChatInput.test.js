@@ -489,4 +489,20 @@ describe('ChatInput', () => {
 		expect(attachBtn).toBeTruthy();
 		expect(attachBtn.props('disabled')).toBe(true);
 	});
+
+	test('触屏语音模式：accepted 后（sending=true, disabled=false）onTouchSpeakStart 仍可触发', () => {
+		mockEnv = { ...defaultEnv, isNative: true };
+		const wrapper = createWrapper({ sending: true, disabled: false });
+		wrapper.vm.inputMode = 'voice';
+		wrapper.vm.onTouchSpeakStart({ changedTouches: [{ identifier: 1 }] });
+		expect(wrapper.vm.touchSpeakOpen).toBe(true);
+	});
+
+	test('触屏语音模式：pre-accepted (disabled=true) 时 onTouchSpeakStart 拒绝', () => {
+		mockEnv = { ...defaultEnv, isNative: true };
+		const wrapper = createWrapper({ sending: true, disabled: true });
+		wrapper.vm.inputMode = 'voice';
+		wrapper.vm.onTouchSpeakStart({ changedTouches: [{ identifier: 1 }] });
+		expect(wrapper.vm.touchSpeakOpen).toBe(false);
+	});
 });

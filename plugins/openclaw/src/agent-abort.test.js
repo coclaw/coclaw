@@ -44,6 +44,16 @@ test('abortAgentRun returns not-found when sessionId is not registered', () => {
 	});
 });
 
+test('abortAgentRun returns not-supported when handle.abort is not a function', () => {
+	// OpenClaw handle shape 契约变化（如 rename abort → terminate）——归入 not-supported 让 UI 提示升级
+	const handle = { terminate: () => {} };
+	const map = new Map([['sid-1', handle]]);
+	withStubbedState({ activeRuns: map }, () => {
+		const result = abortAgentRun('sid-1');
+		assert.deepEqual(result, { ok: false, reason: 'not-supported' });
+	});
+});
+
 test('abortAgentRun returns ok and invokes handle.abort', () => {
 	let called = 0;
 	const handle = { abort: () => { called++; } };

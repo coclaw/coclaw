@@ -683,10 +683,14 @@ export function createChatStore(storeKey, opts = {}) {
 				this.fileUploadState = null;
 
 				if (this.__accepted) {
+					// 守卫：若 run 已因 cancel 进入 settling，避免重复 abort RPC（双击 STOP / watcher 重入）
+					const runsStore = useAgentRunsStore();
+					const activeRun = runsStore.getActiveRun(this.runKey);
+					if (activeRun?.settling && activeRun?.settlingReason === 'cancel') return null;
 					// 不 reject cancelPromise，让原 agent() RPC 自然 resolve；显式 nullify 槽位，
 					// 避免后续 cleanup() 在同一窗口误触发无意义 reject
 					this.__cancelReject = null;
-					useAgentRunsStore().settleWithTransitionByKey(this.runKey);
+					runsStore.settleWithTransitionByKey(this.runKey);
 					if (this.__streamingTimer) {
 						clearTimeout(this.__streamingTimer);
 						this.__streamingTimer = null;
