@@ -3,22 +3,18 @@
 		<!-- 上传图标 -->
 		<UIcon name="i-lucide-upload" class="size-5 shrink-0 text-muted" />
 
-		<!-- 文件名 -->
+		<!-- 文件名 + 状态文字 -->
 		<div class="min-w-0 flex-1">
 			<p class="truncate text-sm">{{ task.fileName }}</p>
-
-			<!-- 进度条（running 时显示） -->
-			<div v-if="task.status === 'running'" class="mt-1 flex items-center gap-2">
-				<div class="h-1.5 flex-1 overflow-hidden rounded-full bg-accented">
-					<div class="h-full rounded-full bg-primary transition-all" :style="{ width: `${Math.round(task.progress * 100)}%` }" />
-				</div>
-				<span class="shrink-0 text-xs text-muted">{{ Math.round(task.progress * 100) }}%</span>
-			</div>
-
-			<!-- 状态文字 -->
-			<p v-else-if="task.status === 'pending'" class="text-xs text-muted">{{ $t('files.pending') }}</p>
+			<p v-if="task.status === 'pending'" class="text-xs text-muted">{{ $t('files.pending') }}</p>
 			<p v-else-if="task.status === 'failed'" class="text-xs text-error">{{ task.error || $t('files.uploadFailed') }}</p>
 		</div>
+
+		<!-- 进度环（running 时与 action 并列） -->
+		<ProgressRing
+			v-if="task.status === 'running'"
+			:value="task.progress"
+		/>
 
 		<!-- 操作 -->
 		<UButton
@@ -37,8 +33,11 @@
 </template>
 
 <script>
+import ProgressRing from '../ProgressRing.vue';
+
 export default {
 	name: 'FileUploadItem',
+	components: { ProgressRing },
 	props: {
 		task: { type: Object, required: true },
 	},

@@ -3,6 +3,11 @@ import { describe, test, expect } from 'vitest';
 
 import FileUploadItem from './FileUploadItem.vue';
 
+const ProgressRingStub = {
+	props: ['value', 'size'],
+	template: '<div class="cc-progress-ring-stub" :data-value="value" />',
+};
+
 function mountItem(task) {
 	return mount(FileUploadItem, {
 		props: { task },
@@ -14,6 +19,7 @@ function mountItem(task) {
 					props: { icon: String },
 					template: '<button @click="$emit(\'click\')"><slot /></button>',
 				},
+				ProgressRing: ProgressRingStub,
 			},
 		},
 	});
@@ -29,18 +35,19 @@ describe('FileUploadItem', () => {
 		expect(w.text()).toContain('files.pending');
 	});
 
-	test('running 状态显示进度条和百分比', () => {
+	test('running 状态渲染 ProgressRing 并传入 progress', () => {
 		const w = mountItem({ id: '2', fileName: 'data.zip', status: 'running', progress: 0.75 });
 		expect(w.text()).toContain('data.zip');
-		expect(w.text()).toContain('75%');
-		const bar = w.find('.bg-primary');
-		expect(bar.exists()).toBe(true);
-		expect(bar.attributes('style')).toContain('75%');
+		const ring = w.find('.cc-progress-ring-stub');
+		expect(ring.exists()).toBe(true);
+		expect(ring.attributes('data-value')).toBe('0.75');
 	});
 
-	test('running 进度 0% 显示 0%', () => {
+	test('running 进度为 0 也渲染 ProgressRing', () => {
 		const w = mountItem({ id: '3', fileName: 'start.bin', status: 'running', progress: 0 });
-		expect(w.text()).toContain('0%');
+		const ring = w.find('.cc-progress-ring-stub');
+		expect(ring.exists()).toBe(true);
+		expect(ring.attributes('data-value')).toBe('0');
 	});
 
 	test('failed 状态显示错误信息', () => {

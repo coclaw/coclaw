@@ -410,11 +410,12 @@ describe('ChatInput', () => {
 		expect(wrapper.vm.__fileStatus('unknown')).toBeNull();
 	});
 
-	test('__filePercent 返回四舍五入的百分比', () => {
+	test('__fileProgress 返回 0~1 的小数', () => {
 		const wrapper = createWrapper({
 			fileUploadState: { f1: { status: 'uploading', progress: 0.734 } },
 		});
-		expect(wrapper.vm.__filePercent('f1')).toBe(73);
+		expect(wrapper.vm.__fileProgress('f1')).toBe(0.734);
+		expect(wrapper.vm.__fileProgress('unknown')).toBe(0);
 	});
 
 	test('上传中的文件卡片显示进度覆层且隐藏移除按钮', async () => {

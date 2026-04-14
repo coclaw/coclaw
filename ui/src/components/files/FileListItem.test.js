@@ -3,6 +3,11 @@ import { describe, test, expect } from 'vitest';
 
 import FileListItem from './FileListItem.vue';
 
+const ProgressRingStub = {
+	props: ['value', 'size'],
+	template: '<div class="cc-progress-ring-stub" :data-value="value" />',
+};
+
 function mountItem(entry, downloadTask = null) {
 	return mount(FileListItem, {
 		props: { entry, downloadTask },
@@ -15,6 +20,7 @@ function mountItem(entry, downloadTask = null) {
 					props: { icon: String },
 					template: '<button @click="$emit(\'click\', $event)"><slot /></button>',
 				},
+				ProgressRing: ProgressRingStub,
 			},
 		},
 	});
@@ -97,15 +103,14 @@ describe('FileListItem', () => {
 	// 下载状态
 	// =================================================================
 	describe('下载状态', () => {
-		test('running 状态显示进度条和取消按钮', () => {
+		test('running 状态渲染 ProgressRing 与取消按钮', () => {
 			const w = mountItem(
 				{ name: 'file.zip', type: 'file', size: 1000 },
 				{ id: 't1', status: 'running', progress: 0.5 },
 			);
-			// 进度条
-			const progressBar = w.find('.bg-primary');
-			expect(progressBar.exists()).toBe(true);
-			expect(progressBar.attributes('style')).toContain('50%');
+			const ring = w.find('.cc-progress-ring-stub');
+			expect(ring.exists()).toBe(true);
+			expect(ring.attributes('data-value')).toBe('0.5');
 		});
 
 		test('running 状态隐藏删除按钮', () => {
@@ -165,8 +170,8 @@ describe('FileListItem', () => {
 			);
 			// 含等待中文案
 			expect(w.text()).toContain('files.pending');
-			// 不应渲染进度条（running 才有）
-			expect(w.find('.bg-primary').exists()).toBe(false);
+			// 不应渲染 ProgressRing(running 才有)
+			expect(w.find('.cc-progress-ring-stub').exists()).toBe(false);
 		});
 
 		test('pending 状态隐藏删除按钮', () => {

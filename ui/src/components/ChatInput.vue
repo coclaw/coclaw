@@ -44,20 +44,7 @@
 					v-if="__fileStatus(f.id) === 'uploading'"
 					class="absolute inset-0 flex items-center justify-center rounded-md bg-default/60"
 				>
-					<div class="relative inline-flex items-center justify-center">
-						<svg class="size-[2.5em]" viewBox="0 0 36 36">
-							<circle cx="18" cy="18" r="15" fill="none" stroke-width="2.5"
-								class="stroke-muted/30"
-							/>
-							<circle cx="18" cy="18" r="15" fill="none" stroke-width="2.5" stroke-linecap="round"
-								class="stroke-primary transition-[stroke-dashoffset] duration-200"
-								:stroke-dasharray="94.25"
-								:stroke-dashoffset="94.25 * (1 - __filePercent(f.id) / 100)"
-								transform="rotate(-90 18 18)"
-							/>
-						</svg>
-						<span class="absolute text-xs font-medium text-primary">{{ __filePercent(f.id) }}%</span>
-					</div>
+					<ProgressRing :value="__fileProgress(f.id)" :size="40" />
 				</div>
 				<!-- 移除按钮（上传中不显示） -->
 				<button
@@ -231,12 +218,14 @@ import { MAX_UPLOAD_SIZE } from '../services/file-transfer.js';
 import { VoiceRecorder, MAX_RECORD_DURATION } from '../utils/voice-recorder.js';
 import TouchSpeakOverlay from './TouchSpeakOverlay.vue';
 import ImgViewDialog from './ImgViewDialog.vue';
+import ProgressRing from './ProgressRing.vue';
 
 export default {
 	name: 'ChatInput',
 	components: {
 		TouchSpeakOverlay,
 		ImgViewDialog,
+		ProgressRing,
 	},
 	props: {
 		modelValue: {
@@ -405,8 +394,8 @@ export default {
 		__fileStatus(id) {
 			return this.fileUploadState?.[id]?.status ?? null;
 		},
-		__filePercent(id) {
-			return Math.round((this.fileUploadState?.[id]?.progress ?? 0) * 100);
+		__fileProgress(id) {
+			return this.fileUploadState?.[id]?.progress ?? 0;
 		},
 
 		// --- 桌面端语音录音 (Phase 3 实现) ---

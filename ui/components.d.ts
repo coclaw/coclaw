@@ -27,6 +27,7 @@ declare module 'vue' {
     MarkdownBody: typeof import('./src/components/MarkdownBody.vue')['default']
     MobileBottomTabs: typeof import('./src/components/MobileBottomTabs.vue')['default']
     MobilePageHeader: typeof import('./src/components/MobilePageHeader.vue')['default']
+    ProgressRing: typeof import('./src/components/ProgressRing.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SlashCommandMenu: typeof import('./src/components/chat/SlashCommandMenu.vue')['default']

@@ -21,11 +21,9 @@
 			</p>
 		</div>
 
-		<!-- 下载进度（running 时显示进度 + 取消） -->
+		<!-- 下载进度（running 时显示圆形进度 + 取消） -->
 		<div v-if="downloadTask?.status === 'running'" class="flex items-center gap-2">
-			<div class="h-1.5 w-16 overflow-hidden rounded-full bg-accented">
-				<div class="h-full rounded-full bg-primary transition-all" :style="{ width: `${Math.round(downloadTask.progress * 100)}%` }" />
-			</div>
+			<ProgressRing :value="downloadTask.progress" />
 			<UButton
 				variant="ghost" color="neutral" size="xs"
 				icon="i-lucide-circle-stop" class="cc-icon-btn"
@@ -65,9 +63,11 @@
 
 <script>
 import { formatFileSize } from '../../utils/file-helper.js';
+import ProgressRing from '../ProgressRing.vue';
 
 export default {
 	name: 'FileListItem',
+	components: { ProgressRing },
 	props: {
 		entry: { type: Object, required: true },
 		/** 该文件关联的下载任务（可选） */
