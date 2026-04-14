@@ -11,7 +11,7 @@ import { useClawConnections } from '../services/claw-connection-manager.js';
 import { postFile } from '../services/file-transfer.js';
 import { chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
-import { useAgentRunsStore } from './agent-runs.store.js';
+import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
 import { getReadyConn } from './get-ready-conn.js';
 
 const MSG_PAGE_SIZE = 50;
@@ -507,7 +507,7 @@ export function createChatStore(storeKey, opts = {}) {
 								console.debug('[chat] agent accepted runId=%s', runId);
 								this.__accepted = true;
 								this.streamingRunId = runId;
-								// 切换到 post-acceptance 30min 超时
+								// 切换到 post-acceptance 超时（与 OpenClaw run 生命周期对齐，见 POST_ACCEPT_TIMEOUT_MS）
 								if (this.__streamingTimer) clearTimeout(this.__streamingTimer);
 								this.__streamingTimer = setTimeout(() => {
 									this.__agentSettled = true;
@@ -517,7 +517,7 @@ export function createChatStore(storeKey, opts = {}) {
 									const err = new Error('post-acceptance timeout');
 									err.code = 'POST_ACCEPTANCE_TIMEOUT';
 									timeoutReject(err);
-								}, 30 * 60_000);
+								}, POST_ACCEPT_TIMEOUT_MS);
 								// 清除 pending 标记并移入 agentRunsStore
 								const localMsgs = this.messages.filter((m) => m._local);
 								for (const m of localMsgs) m._pending = false;
@@ -753,9 +753,13 @@ export function createChatStore(storeKey, opts = {}) {
 				this.__slashCommandResolve = settleResolve;
 				this.__slashCommandReject = settleReject;
 
-				// /new、/reset、/compact 等重量级命令需要更长超时
-				const heavyCmd = /^\/(new|reset|compact)\b/i.test(command);
-				const slashTimeout = heavyCmd ? 600_000 : 300_000;
+				// 按命令代价分档超时：
+				// - /compact 触发服务端 LLM compaction，可跑很久 → 与 agent run 对齐（24h）
+				// - /new、/reset 走 sessions.reset，重量级但很快（~秒级） → 10min
+				// - 其它（/help 等）→ 5min
+				const isLlmCmd = /^\/compact\b/i.test(command);
+				const isHeavyCmd = /^\/(new|reset)\b/i.test(command);
+				const slashTimeout = isLlmCmd ? POST_ACCEPT_TIMEOUT_MS : (isHeavyCmd ? 600_000 : 300_000);
 
 				this.__slashCommandTimer = setTimeout(() => {
 					const reject = this.__slashCommandReject;

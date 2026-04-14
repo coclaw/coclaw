@@ -6,7 +6,7 @@ if (!URL.createObjectURL) URL.createObjectURL = () => 'blob:mock';
 if (!URL.revokeObjectURL) URL.revokeObjectURL = () => {};
 
 import { createChatStore } from './chat.store.js';
-import { useAgentRunsStore } from './agent-runs.store.js';
+import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
 import { useClawsStore, __resetAwaitingConnIds as __resetClawStoreInternals } from './claws.store.js';
 
 // 兼容旧测试：创建默认空 session store，可手动设置状态字段
@@ -1101,7 +1101,7 @@ describe('useChatStore', () => {
 			expect(store.__agentSettled).toBe(true);
 		});
 
-		test('post-acceptance 30min 超时：sending 置 false，保留消息并 reconcile，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
+		test('post-acceptance 超时：sending 置 false，保留消息并 reconcile，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -1133,7 +1133,7 @@ describe('useChatStore', () => {
 			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
 
 			const [, result] = await Promise.allSettled([
-				vi.advanceTimersByTimeAsync(30 * 60_000),
+				vi.advanceTimersByTimeAsync(POST_ACCEPT_TIMEOUT_MS),
 				sendPromise,
 			]);
 
@@ -3667,6 +3667,23 @@ describe('useChatStore', () => {
 
 			// 600s 后超时
 			vi.advanceTimersByTime(300_000);
+			expect(store.__slashCommandRunId).toBeNull();
+			expect(store.sending).toBe(false);
+
+			await expect(p).rejects.toThrow('slash command timeout');
+		});
+
+		test('/compact 使用与 agent run 对齐的 POST_ACCEPT_TIMEOUT_MS 超时', async () => {
+			vi.useFakeTimers();
+			const p = store.sendSlashCommand('/compact');
+			expect(store.sending).toBe(true);
+
+			// 10min 后不应超时（/new|/reset 的 600s 已超，但 /compact 对齐 agent）
+			vi.advanceTimersByTime(600_000);
+			expect(store.__slashCommandRunId).not.toBeNull();
+
+			// 推进到 POST_ACCEPT_TIMEOUT_MS 后超时
+			vi.advanceTimersByTime(POST_ACCEPT_TIMEOUT_MS - 600_000);
 			expect(store.__slashCommandRunId).toBeNull();
 			expect(store.sending).toBe(false);
 

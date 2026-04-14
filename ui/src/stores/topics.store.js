@@ -177,7 +177,7 @@ export const useTopicsStore = defineStore('topics', {
 			const conn = getReadyConn(clawId);
 			if (!conn) return;
 			_generatingTopics.add(topicId);
-			conn.request('coclaw.topics.generateTitle', { topicId }, { timeout: 300_000 })
+			conn.request('coclaw.topics.generateTitle', { topicId }, { timeout: 600_000 })
 				.then((res) => {
 					const title = res?.title;
 					if (!title) return;

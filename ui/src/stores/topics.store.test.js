@@ -281,7 +281,7 @@ describe('topics store', () => {
 		await vi.waitFor(() => {
 			expect(store.byId['t1'].title).toBe('新标题');
 		});
-		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.generateTitle', { topicId: 't1' }, { timeout: 300_000 });
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.generateTitle', { topicId: 't1' }, { timeout: 600_000 });
 	});
 
 	test('generateTitle 失败时不影响本地数据', async () => {

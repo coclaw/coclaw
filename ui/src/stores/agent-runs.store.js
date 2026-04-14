@@ -9,8 +9,11 @@
 import { defineStore } from 'pinia';
 import { applyAgentEvent } from '../utils/agent-stream.js';
 
-/** post-acceptance 超时（30 分钟） */
-const POST_ACCEPT_TIMEOUT_MS = 30 * 60_000;
+/**
+ * post-acceptance 超时（24 小时，与 OpenClaw 后端 agent run 生命周期对齐）
+ * 作为 lifecycle:end 丢失时的兜底清理，正常情况下 run 由事件驱动结束
+ */
+export const POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000;
 /** 事件流静默超过此时长视为已停止（用于 reconcile 判断） */
 const STALE_RUN_MS = 3000;
 /** 事件流静默超过此时长，怀疑 run 可能已结束但 lifecycle:end 丢失 */

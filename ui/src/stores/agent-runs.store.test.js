@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 
-import { useAgentRunsStore } from './agent-runs.store.js';
+import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
 
 // --- Helper ---
 
@@ -725,7 +725,7 @@ describe('useAgentRunsStore', () => {
 
 			expect(store.isRunning('1::agent:main:main')).toBe(true);
 
-			vi.advanceTimersByTime(30 * 60_000);
+			vi.advanceTimersByTime(POST_ACCEPT_TIMEOUT_MS);
 
 			expect(store.isRunning('1::agent:main:main')).toBe(false);
 			expect(store.runs['run-1']).toBeUndefined();
@@ -738,7 +738,7 @@ describe('useAgentRunsStore', () => {
 			store.settle('1::agent:main:main');
 
 			// 推进时间不应报错
-			vi.advanceTimersByTime(30 * 60_000);
+			vi.advanceTimersByTime(POST_ACCEPT_TIMEOUT_MS);
 		});
 	});
 

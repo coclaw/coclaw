@@ -135,12 +135,12 @@ ClawState 结构：
 	lastEventAt: 0,     // 最后一次收到事件的时间戳
 	streamingMsgs: [],  // 流式消息数组
 	__conn,             // ClawConnection 引用
-	__timer,            // 30min 超时定时器
+	__timer,            // 24h 超时定时器（兜底清理）
 }
 ```
 
 **关键常量**：
-- `POST_ACCEPT_TIMEOUT_MS = 30 * 60_000`（30min 超时兜底）
+- `POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000`（24h 兜底，与 OpenClaw agent run 生命周期对齐）
 - `STALE_RUN_MS = 3000`（事件流静默判定阈值）
 
 **`reconcileAfterLoad(runKey, serverMessages)`**：重连后检测僵尸 run——`lastEventAt` 超过 3s 且服务端消息的最后一条 assistant 有终止 `stopReason`（非 `toolUse`）时 settle run。

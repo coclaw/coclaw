@@ -114,7 +114,8 @@ export async function generateTitle({ topicId, topicManager, agentRpc, logger })
 			message: '请为这段对话生成标题',
 			idempotencyKey: randomUUID(),
 		}, {
-			timeoutMs: 60_000,
+			// 题目生成需等待 LLM 完整响应；60s 在复杂对话/慢模型下易超时
+			timeoutMs: 300_000,
 			acceptTimeoutMs: 10_000,
 		});
 
