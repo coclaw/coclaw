@@ -717,13 +717,34 @@ export default {
 		},
 
 		onCancelSend() {
-			this.chatStore?.cancelSend();
+			const pending = this.chatStore?.cancelSend();
+			if (!pending) return;
+			// cancelSend 返回的 promise 不会 reject（reject 已被收敛为 { ok:false, reason:'rpc-error' }）
+			pending.then((result) => {
+				if (!result || result.ok) return;
+				// reason='not-found' / 'rpc-error' 属良性（竞态/底层已 notify），不打扰用户
+				if (result.reason === 'not-supported') {
+					this.notify.warning({
+						title: this.$t('chat.cancelNotSupported'),
+						description: this.$t('chat.upgradeOpenClawHint'),
+					});
+				}
+				else if (result.reason === 'abort-threw') {
+					console.error('[chat] coclaw.agent.abort threw:', result.error);
+					this.notify.error(this.$t('chat.cancelAbortFailed'));
+				}
+				else if (result.reason === 'rpc-error') {
+					console.debug('[chat] coclaw.agent.abort rpc error:', result.error);
+				}
+			});
 		},
 
 		// --- 拖拽上传 ---
 		__onDragOver(e) {
 			if (!this.$refs.chatInput) return;
 			if (!e.dataTransfer?.types?.includes('Files')) return;
+			// pre-accepted 期间（sending && !__accepted）拒绝拖入，与 + 按钮/textarea 禁用语义对齐
+			if (this.inputLocked) return;
 			e.preventDefault();
 			this.dragging = true;
 		},
@@ -733,6 +754,11 @@ export default {
 			this.dragging = false;
 		},
 		__onDrop(e) {
+			// pre-accepted 期间丢弃拖入的文件（不 preventDefault，让浏览器默认处理，避免误上传）
+			if (this.inputLocked) {
+				this.dragging = false;
+				return;
+			}
 			e.preventDefault();
 			this.dragging = false;
 			const files = Array.from(e.dataTransfer?.files || []);

@@ -472,8 +472,17 @@ describe('ChatInput', () => {
 		URL.revokeObjectURL = origRevoke;
 	});
 
-	test('sending 时添加文件按钮 disabled', () => {
-		const wrapper = createWrapper({ sending: true });
+	test('sending 时添加文件按钮仍可用（accepted 后允许准备下次消息附件）', () => {
+		const wrapper = createWrapper({ sending: true, disabled: false });
+		const attachBtn = wrapper.findAllComponents(UButtonStub).find(
+			(c) => c.props('icon') === 'i-lucide-plus',
+		);
+		expect(attachBtn).toBeTruthy();
+		expect(attachBtn.props('disabled')).toBe(false);
+	});
+
+	test('disabled=true（pre-accepted）时添加文件按钮 disabled', () => {
+		const wrapper = createWrapper({ sending: true, disabled: true });
 		const attachBtn = wrapper.findAllComponents(UButtonStub).find(
 			(c) => c.props('icon') === 'i-lucide-plus',
 		);

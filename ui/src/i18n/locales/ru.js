@@ -353,6 +353,8 @@ export const ruMessages = {
 		noMoreHistory: 'Более ранних сообщений нет',
 		scrollUpForMore: '↑ Прокрутите вверх для более ранних сообщений',
 		upgradeOpenClawHint: 'Возможно, потребуется обновить OpenClaw. Попросите OpenClaw обновиться самостоятельно или выполните: npm install -g openclaw',
+		cancelNotSupported: 'Текущая версия OpenClaw не может отменить работающего агента. Выполнение продолжится в фоновом режиме.',
+		cancelAbortFailed: 'Не удалось отменить работающего агента. Выполнение продолжится в фоновом режиме.',
 		clawThinking: 'Думает',
 		thinkingFor: 'Думал {time}',
 	},

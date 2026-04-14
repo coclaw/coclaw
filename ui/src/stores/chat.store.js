@@ -665,10 +665,13 @@ export function createChatStore(storeKey, opts = {}) {
 			 *
 			 * 已 accepted（post-acceptance）：服务端 run 仍在继续执行。
 			 *   不 reject 原 RPC、不立即 reload，仅将 run 置为 settling（保留 streamingMsgs）。
-			 *   另外通过 coclaw.agent.abort RPC 请求插件侧门真正终止 run（feature detection 不可用或
-			 *   sessionId 不可知时静默降级，依赖 lifecycle:end 自然到达）。
-			 *   此阶段 isSending 仍为 true（isRunning 看 !settled），UI 输入框保持禁用；
-			 *   abort 生效后 lifecycle:end 会快速到达 → __settleWithTransition → completeSettle → 解锁。
+			 *   另外通过 coclaw.agent.abort RPC 请求插件侧门真正终止 run。
+			 *   UI 输入框因 inputLocked=sending&&!__accepted 已 accepted 情况下保持启用，
+			 *   仅发送按钮保持 STOP 状态直到 lifecycle:end → completeSettle。
+			 *
+			 * @returns {Promise<object> | null} accepted 分支且有可用 sessionId 时返回 RPC promise，
+			 *   resolve 为 { ok: true } / { ok: false, reason, error? }；其它情况返回 null。
+			 *   调用方根据 reason 决定是否 notify。
 			 */
 			cancelSend() {
 				// 取消进行中的文件上传（pre-acceptance 路径）
@@ -689,15 +692,19 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__streamingTimer = null;
 					}
 					this.sending = false;
-					// 请求插件真正 abort 服务端 run（任何失败都静默降级为纯前端 settling 行为）
+					// 请求插件真正 abort 服务端 run；返回的 promise 永远 resolve，由 ChatPage 处理 notify
 					// sessionId 来源：topic 模式 this.sessionId；chat 模式 this.currentSessionId（可能为 null）
 					const sid = this.sessionId || this.currentSessionId;
-					if (sid) {
-						const conn = this.__getConnection();
-						conn?.request('coclaw.agent.abort', { sessionId: sid }).catch((err) => {
-							console.debug('[chat] coclaw.agent.abort failed: %s', err?.message);
-						});
-					}
+					if (!sid) return null;
+					const conn = this.__getConnection();
+					const p = conn?.request('coclaw.agent.abort', { sessionId: sid });
+					if (!p) return null;
+					// reject 统一收敛为 { ok:false, reason:'rpc-error' }，避免 unhandledRejection 且让
+					// 调用方只需处理单一 shape（与 {ok:false, reason:'not-supported'|'abort-threw'|...} 对齐）
+					return p.then(
+						(result) => result,
+						(err) => ({ ok: false, reason: 'rpc-error', error: String(err?.message ?? err) }),
+					);
 				}
 				else {
 					if (this.__cancelReject) {
@@ -708,6 +715,7 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 					this.__cleanupStreaming();
 					this.sending = false;
+					return null;
 				}
 			},
 

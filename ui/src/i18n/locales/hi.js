@@ -353,6 +353,8 @@ export const hiMessages = {
 		noMoreHistory: 'कोई पहले का संदेश नहीं',
 		scrollUpForMore: '↑ पहले के संदेशों के लिए ऊपर स्क्रॉल करें',
 		upgradeOpenClawHint: 'आपको OpenClaw अपग्रेड करने की जरूरत हो सकती है। OpenClaw से खुद को अपग्रेड करने के लिए कहें, या चलाएं: npm install -g openclaw',
+		cancelNotSupported: 'यह OpenClaw संस्करण चल रहे agent को रद्द नहीं कर सकता। यह पृष्ठभूमि में चलता रहेगा।',
+		cancelAbortFailed: 'चल रहे agent को रद्द करने में विफल। यह पृष्ठभूमि में चलता रहेगा।',
 		clawThinking: 'सोच रहा है',
 		thinkingFor: '{time} सोच रहा है',
 	},

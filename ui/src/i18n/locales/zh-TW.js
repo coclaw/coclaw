@@ -353,6 +353,8 @@ export const zhTWMessages = {
 		noMoreHistory: '沒有更多聊天記錄了',
 		scrollUpForMore: '↑ 上翻載入更早記錄',
 		upgradeOpenClawHint: '可能需要升級 OpenClaw，請讓 OpenClaw 自行升級或執行：npm install -g openclaw',
+		cancelNotSupported: '目前 OpenClaw 版本無法取消執行中的 agent，它將繼續在背景執行。',
+		cancelAbortFailed: '取消執行中的 agent 失敗，它將繼續在背景執行。',
 		clawThinking: '思考中',
 		thinkingFor: '思考中 {time}',
 	},

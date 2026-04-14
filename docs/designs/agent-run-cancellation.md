@@ -23,7 +23,7 @@
 
 ## 决策节点（已确认）
 
-1. ✅ **阶段 1 `cancelSend` 新语义**：改为"保留气泡不消逝、保留 streamingMsgs、让原 RPC 自然完成"，**不额外解锁输入**——因 `isSending = sending || isRunning(runKey)` 而 `isRunning` 判 `!run.settled`（`settling=true` 时仍为 true），阶段 1 下用户在取消后依然被输入框守卫禁用，这是预期行为。真正"取消 → 立即解锁"在阶段 2 生效（真 abort → `lifecycle:end` 快速到达 → `completeSettle` → `isRunning=false`）。
+1. ✅ **阶段 1 `cancelSend` 新语义**：改为"保留气泡不消逝、保留 streamingMsgs、让原 RPC 自然完成"。取消后 `sending=false`、`__accepted=true`，`inputLocked=sending&&!__accepted=false`，输入框启用（与发消息过程中 accepted 后一致：允许 typing/准备下次消息的附件）；`isSending=sending||isRunning` 中 `isRunning` 仍为 true（`!run.settled`），发送按钮保持为 STOP 状态（并非禁用输入）。真正"取消 → 发送按钮恢复 SEND"在阶段 2 生效（真 abort → `lifecycle:end` 快速到达 → `completeSettle` → `isRunning=false`）。
 2. ✅ **阶段 2 RPC 响应 shape**：插件 `coclaw.agent.abort` 用常规 `{ ok: true }` / `{ ok: false, reason }`，语义是"请求是否被接纳"；取消是否真生效由 `lifecycle:end` 事件反映，不放在 RPC 响应里。立即响应不等 `waitForEmbeddedPiRunEnd`。
 3. ✅ **阶段 2 无版本门槛 + 纯 feature detection**：不读 OpenClaw 版本号；UI 端无条件调用 `coclaw.agent.abort`；插件端若侧门不存在直接返回 `{ ok: false, reason: 'not-supported' }`；UI 端对失败静默降级到阶段 1 行为。未来 OpenClaw 若删除 Symbol state，插件仍能工作（abort 失败但不抛错）。**不在 `coclaw.info` 暴露 `capabilities.agentAbort`**（无需）。
 4. ✅ **`/compact` 处理**：UI 的 `/compact` 分支禁用取消按钮或显示"进行中不可中断"。

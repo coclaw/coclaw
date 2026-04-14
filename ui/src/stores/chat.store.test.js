@@ -2424,6 +2424,105 @@ describe('useChatStore', () => {
 			expect(run?.settlingReason).toBe('cancel');
 		});
 
+		test('accepted 后取消：cancelSend 返回 RPC promise，resolve 值透传给调用方', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-ret' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					return Promise.resolve({ ok: false, reason: 'not-supported' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-ret';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+
+			const p = store.cancelSend();
+			expect(p).toBeInstanceOf(Promise);
+			await expect(p).resolves.toEqual({ ok: false, reason: 'not-supported' });
+		});
+
+		test('未 accepted 取消：cancelSend 返回 null', () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sending = true;
+			store.__accepted = false;
+
+			expect(store.cancelSend()).toBeNull();
+		});
+
+		test('accepted 后取消：abort RPC reject 时 cancelSend 返回的 promise 收敛为 {ok:false, reason:rpc-error}', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-reject' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					return Promise.reject(new Error('WS_CLOSED'));
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-reject';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			await expect(p).resolves.toEqual({ ok: false, reason: 'rpc-error', error: 'WS_CLOSED' });
+		});
+
+		test('accepted 取消但 sessionId 不可知：cancelSend 返回 null', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-null' });
+					return new Promise(() => {});
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = '';
+			store.currentSessionId = null;
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			expect(store.cancelSend()).toBeNull();
+		});
+
 		test('accepted 后取消：abort RPC 失败时 cancelSend 不抛错、无 unhandledRejection 且保持 settling(cancel) 状态', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);

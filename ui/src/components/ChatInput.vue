@@ -152,7 +152,7 @@
 
 			<!-- 右侧按钮区 -->
 			<div class="flex shrink-0 items-end gap-1">
-				<!-- 文件上传 -->
+				<!-- 文件上传（与 textarea 对齐：仅受 disabled 控制，允许 accepted 后准备下次消息的附件） -->
 				<UButton
 					v-if="!isDesktopRecording"
 					data-testid="btn-attach"
@@ -161,7 +161,7 @@
 					variant="ghost"
 					color="primary"
 					size="md"
-					:disabled="sending || disabled"
+					:disabled="disabled"
 					@click="onClickAddFiles"
 				/>
 				<!-- 终止（当 cancelDisabled=true 时按钮禁用） -->

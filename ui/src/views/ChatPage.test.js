@@ -97,6 +97,9 @@ const i18nMap = {
 	'chat.errWsSendFailed': 'Send failed (ws)',
 	'chat.errRtcSendFailed': 'Send failed (rtc)',
 	'chat.errUnknown': 'Something went wrong',
+	'chat.cancelNotSupported': 'Cancel not supported',
+	'chat.cancelAbortFailed': 'Cancel failed',
+	'chat.upgradeOpenClawHint': 'Upgrade OpenClaw',
 };
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
@@ -626,6 +629,106 @@ describe('ChatPage cancel and cleanup', () => {
 		await flushPromises();
 
 		expect(cancelSpy).toHaveBeenCalled();
+	});
+
+	test('onCancelSend: cancelSend 返回 null 时不 notify', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(null);
+		await flushPromises();
+
+		wrapper.vm.onCancelSend();
+		await flushPromises();
+
+		expect(mockNotify.warning).not.toHaveBeenCalled();
+		expect(mockNotify.error).not.toHaveBeenCalled();
+	});
+
+	test('onCancelSend: ok=true 时不 notify', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(Promise.resolve({ ok: true }));
+		await flushPromises();
+
+		wrapper.vm.onCancelSend();
+		await flushPromises();
+
+		expect(mockNotify.warning).not.toHaveBeenCalled();
+		expect(mockNotify.error).not.toHaveBeenCalled();
+	});
+
+	test('onCancelSend: reason=not-supported → notify warning 提示升级 OpenClaw', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
+			Promise.resolve({ ok: false, reason: 'not-supported' }),
+		);
+		await flushPromises();
+
+		wrapper.vm.onCancelSend();
+		await flushPromises();
+
+		expect(mockNotify.warning).toHaveBeenCalledWith({
+			title: 'Cancel not supported',
+			description: 'Upgrade OpenClaw',
+		});
+		expect(mockNotify.error).not.toHaveBeenCalled();
+	});
+
+	test('onCancelSend: reason=abort-threw → notify error + console.error', async () => {
+		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
+			Promise.resolve({ ok: false, reason: 'abort-threw', error: 'boom' }),
+		);
+		await flushPromises();
+
+		wrapper.vm.onCancelSend();
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith('Cancel failed');
+		expect(errSpy).toHaveBeenCalledWith('[chat] coclaw.agent.abort threw:', 'boom');
+		expect(mockNotify.warning).not.toHaveBeenCalled();
+		errSpy.mockRestore();
+	});
+
+	test('onCancelSend: reason=not-found 静默（竞态，run 已自然结束）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
+			Promise.resolve({ ok: false, reason: 'not-found' }),
+		);
+		await flushPromises();
+
+		wrapper.vm.onCancelSend();
+		await flushPromises();
+
+		expect(mockNotify.warning).not.toHaveBeenCalled();
+		expect(mockNotify.error).not.toHaveBeenCalled();
+	});
+
+	test('onCancelSend: reason=rpc-error 静默（底层连接层已 notify）', async () => {
+		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
+			Promise.resolve({ ok: false, reason: 'rpc-error', error: 'WS_CLOSED' }),
+		);
+		await flushPromises();
+
+		wrapper.vm.onCancelSend();
+		await flushPromises();
+
+		expect(mockNotify.warning).not.toHaveBeenCalled();
+		expect(mockNotify.error).not.toHaveBeenCalled();
+		debugSpy.mockRestore();
 	});
 
 	test('beforeUnmount 调用 chatStore.cleanup', async () => {
@@ -1319,5 +1422,66 @@ describe('ChatPage scroll', () => {
 
 		expect(wrapper.vm.dragging).toBe(false);
 		expect(evt.preventDefault).not.toHaveBeenCalled();
+	});
+
+	test('pre-accepted 期间 dragover 被拒绝（不 preventDefault、不开蒙层）', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		const chatStore = getChatStore();
+		chatStore.sending = true;
+		chatStore.__accepted = false;
+		await flushPromises();
+
+		const root = wrapper.find('[data-testid="chat-root"]');
+		const evt = new Event('dragover', { bubbles: true });
+		evt.preventDefault = vi.fn();
+		Object.defineProperty(evt, 'dataTransfer', { value: { types: ['Files'] } });
+		root.element.dispatchEvent(evt);
+
+		expect(wrapper.vm.dragging).toBe(false);
+		expect(evt.preventDefault).not.toHaveBeenCalled();
+	});
+
+	test('pre-accepted 期间 drop 丢弃拖入文件', async () => {
+		mockAddFiles.mockClear();
+		const wrapper = createWrapper();
+		await flushPromises();
+		const chatStore = getChatStore();
+		chatStore.sending = true;
+		chatStore.__accepted = false;
+		await flushPromises();
+
+		const root = wrapper.find('[data-testid="chat-root"]');
+		const file = new File(['hi'], 'a.txt', { type: 'text/plain' });
+		const evt = new Event('drop', { bubbles: true });
+		evt.preventDefault = vi.fn();
+		Object.defineProperty(evt, 'dataTransfer', { value: { files: [file] } });
+		root.element.dispatchEvent(evt);
+
+		expect(evt.preventDefault).not.toHaveBeenCalled();
+		expect(mockAddFiles).not.toHaveBeenCalled();
+	});
+
+	test('accepted 后 drop 允许添加文件（sending=true 但 __accepted=true）', async () => {
+		mockAddFiles.mockClear();
+		const wrapper = createWrapper();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		setupAgents();
+		await flushPromises();
+		const chatStore = getChatStore();
+		chatStore.sending = true;
+		chatStore.__accepted = true;
+		await flushPromises();
+
+		const root = wrapper.find('[data-testid="chat-root"]');
+		const file = new File(['hi'], 'b.txt', { type: 'text/plain' });
+		const evt = new Event('drop', { bubbles: true });
+		evt.preventDefault = vi.fn();
+		Object.defineProperty(evt, 'dataTransfer', { value: { files: [file] } });
+		root.element.dispatchEvent(evt);
+
+		expect(evt.preventDefault).toHaveBeenCalled();
+		expect(mockAddFiles).toHaveBeenCalledWith([file]);
 	});
 });
