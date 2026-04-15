@@ -1,5 +1,94 @@
 # @coclaw/ui
 
+## 0.15.0
+
+### Minor Changes
+
+- 64f17a8: ui: admin 基础设施 + 仪表盘改造（实例维度 + 导航 tab）
+
+  - 仪表盘顶部三卡片改为实例维度（总数/在线/今日新增），用户卡片降级到次级位置
+  - 新增三条摘要列表（最近绑定实例 / 最近活跃用户 / 最新注册用户），每条带"查看全部 →"链接
+  - 新增 `admin.store.js`（dashboard/claws/users 三块 state + 全部 actions 含 SSE 事件应用）
+  - 新增 `admin-stream.js` SSE 客户端（心跳超时自动重连，响应 app:foreground / network:online）
+  - `admin.api.js` 新增 `fetchAdminClaws` / `fetchAdminUsers` / `adminStreamUrl`
+  - 新增桌面端 `AdminNavTabs` 组件（仪表盘 / 实例管理 / 用户管理）
+  - 新增 `/admin/claws` 和 `/admin/users` 路由（含 placeholder 页面，S5/S6 填充）
+  - i18n 从 `adminDashboard.*` 整体迁移到 `admin.{nav,common,dashboard,claws,users}.*`，12 语言同步（保留 `user.adminDashboard` 菜单入口 key）
+
+- 9f0f380: ui: admin 实例管理页 AdminClawsPage
+
+  - 新建 `AdminClawsPage.vue`：UTable 展示实例列表（name/online/user/pluginVersion/createdAt），`#expanded` 槽显示 agent × model 明细（null → 「信息暂不可用」；[] → 「无 Agent」）
+  - 顶部搜索框按名称过滤，300ms 去抖；输入变化时 `resetClaws()` 并重新拉取
+  - 底部「加载更多」按钮（cursor 分页），仅在存在 `nextCursor` 时渲染
+  - mount 时连接 admin SSE，`snapshot` / `claw.statusChanged` / `claw.infoUpdated` 分别映射到 store 的 `applyOnlineSnapshot` / `updateClawStatus` / `updateClawInfo`；`beforeUnmount` 关闭连接
+  - 移动端降级为卡片列表，点击卡片切换展开状态显示 agent 明细
+  - i18n 新增 `admin.claws.{searchPlaceholder,columnName,columnStatus,columnUser,columnVersion,columnCreatedAt,expandAgentName,expandModel,noAgentModels,emptyAgents}`，12 语言同步
+
+- 943bf24: ui: admin 用户管理页 AdminUsersPage
+
+  - 新建 `AdminUsersPage.vue`（替换原占位实现）：UTable 展示用户列表（name/loginName/clawCount/createdAt/lastLoginAt）
+  - 顶部搜索框按用户名或登录名过滤，300ms 去抖；输入变化时 `resetUsers()` 并重新拉取
+  - 底部「加载更多」按钮（cursor 分页），仅在存在 `nextCursor` 时渲染
+  - 移动端降级为卡片列表，展示用户名、@登录名、绑定实例数、注册时间、最近登录
+  - i18n 新增 `admin.users.{searchPlaceholder,columnName,columnLoginName,columnClawCount,columnCreatedAt,columnLastLogin}`，12 语言同步
+  - 清理 `admin.common.comingSoon`：仅原占位页引用，AdminUsersPage 完全落地后该 key 成孤儿
+
+### Patch Changes
+
+- c91a917: server/ui: `coclaw.info.updated` 改为 patch 语义，修复改名时清空 pluginVersion/agentModels
+
+  **问题**：plugin 的 `coclaw.info.patch` handler 仅广播 `{ name, hostName }`（按其 patch 命名所暗示）；但 server `applyClawInfoUpdate` 此前按"missing-as-null"当全量处理，导致用户每次从 UI 改名 → DB 清空 pluginVersion + agentModels → admin 仪表盘该 claw 行立即显示 "—" / "信息暂不可用"，直到 bridge 重连才恢复。
+
+  **修复**（方向：按事件命名的 patch 语义，修 server 而不是让 plugin 被迫发全量）：
+
+  - `server/src/claw-ws-hub.js` `applyClawInfoUpdate`：用 `Object.hasOwn(payload, key)` 逐字段判定，仅更新 payload 中实际出现的列；缺失字段保留 DB 原值。name 列的 hostName 回退仅当 payload 同时含 hostName 时应用（与 plugin 两个触发源的实际形态吻合）。
+  - `server/src/claw-status-sse.js` `handleInfoUpdatedEvent`：patch 不含 name 字段时直接返回，不下发冗余的 user-facing `claw.nameUpdated`/`bot.nameUpdated` 事件。
+  - `server/src/admin-sse.js` `handleInfoUpdatedEvent`：按 payload 实际含有的字段透传，wire 不再携带未变更字段。
+  - `ui/src/services/admin-stream.js`：去掉 `?? null` 的字段补齐，保留 patch 中字段的存在/缺失语义，交由 `admin.store.updateClawInfo` 的 "skip undefined" 逻辑只覆盖本次实际变更字段。
+  - `ui/src/views/AdminClawsPage.vue`：onInfoUpdated 回调从解构重组改为 `({ clawId, ...patch })`，避免 undefined 字段污染 patch。
+
+  不向 plugin 施加"必须发全量"的约束；`__pushInstanceInfo()`（bridge connect 时的全量上报）和 `coclaw.info.patch` handler（仅发变更字段）两种形态在 patch 语义下都正确工作。
+
+- 92aa515: ui: 修复 admin 页面 review 发现的两处数据一致性问题
+
+  - `AdminClawsPage` / `AdminUsersPage`：重入页面时从 `adminStore.claws.search` / `adminStore.users.search` 回显 searchInput，避免"输入框空 / 列表仍按旧 search 过滤"的不同步状态
+  - `auth.store.logout()`：末尾补 `useAdminStore().$reset()`，防止上一位管理员的 dashboard / claws / users 聚合数据和搜索词残留到下一位登录的管理员会话
+
+- 1ec7337: ui: admin 页面 review 微调（术语 / 视觉 / 交互）
+
+  **i18n（12 个 locale）**：
+
+  - `admin.nav.claws` / `admin.dashboard.totalClaws` / `admin.users.columnClawCount` / `admin.claws.columnName`：统一品牌化为 **Claws / Claw**（不再按各自语言翻译成"实例/Instance/インスタンス/…"）
+  - `admin.claws.title` / `admin.dashboard.sectionLatestClaws`：句中 Instance/实例 → Claws
+  - `admin.nav.dashboard`：本地化的"概览 / Overview / Übersicht / …"（原"工作台 / Dashboard"）
+  - `admin.dashboard.title` / `admin.users.title`：保留原文（仍为"管理工作台 / Admin Console / 用户管理 / User Management"等），供 MobilePageHeader 和稳定桌面 h1 使用
+
+  **AdminDashboardPage**：
+
+  - 移动 header `#actions` 新增 Claws / Users 图标导航按钮（`i-lucide-server` / `i-lucide-users`），仅总览页提供子页跳转入口，避免子页间乱跳
+  - 5 个卡片 `p-4 → p-3`，与移动优先间距一致
+  - 次级三卡片 `bg-elevated/60 → bg-elevated`，与主卡片背景统一
+
+  **AdminClawsPage**：
+
+  - 桌面 h1 改用 `admin.dashboard.title`，页面切换由右侧 nav tabs 高亮指示（不随页面变化抖动）
+  - 表格 `<md → <lg` 断点，让列宽更舒展
+  - UTable 通过 `:ui` 收紧 `th/td` padding 到 `p-2`，行加 `data-[selectable=true]:cursor-pointer`
+  - `:on-select="onRowSelect"` 让整行可点击展开（配合鼠标指针提示可点击）
+  - name-cell 的 `<button>` 降级为 `<span>`，避免嵌套交互元素；展开行 `<div>` 去掉多余 `py-2`
+  - `data().searchInput` 从 `adminStore.claws.search` 取 snapshot，替换原 mounted 里的 carriedSearch 赋值 + `clearTimeout` 兜底 dance，不再依赖 Vue watcher flush 时序
+
+  **AdminUsersPage**：
+
+  - 桌面 h1 改用 `admin.dashboard.title`（同 Claws 页）
+  - UTable `:ui="{ th: 'p-2', td: 'p-2' }"`
+  - `data().searchInput` 同样改为 store snapshot 初始化
+
+  **搜索框（两页共享）**：
+
+  - `size="md" → size="lg"` 更贴合移动优先触控目标
+  - `:ui="{ base: 'leading-normal' }"` 覆盖 Nuxt UI `text-base/5` 硬编码的 20px 行高，恢复 Tailwind 默认 1.5（24px），中英文混排不再挤
+
 ## 0.14.0
 
 ### Minor Changes
