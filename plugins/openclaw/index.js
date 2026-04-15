@@ -19,14 +19,11 @@ import { remoteLog } from './src/remote-log.js';
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
 export { getPluginVersion, __resetPluginVersion };
 
-// 侧门注册表观测：patch OpenClaw ACTIVE_EMBEDDED_RUNS / replyRunRegistry 的 set/delete，
-// 用于跟踪 sessionId 何时注册/注销，辅助诊断 agent 取消流程。只打 log 不改行为。
-// OpenClaw 侧门形状变化时（缺失某 Map / 抛异常），通过 remoteLog 上报为升级契约变更的早期信号。
+// 侧门注册表观测：patch OpenClaw embeddedRunState.activeRuns 的 set/delete，
+// 用于跟踪 sessionId 何时注册/注销（agent 取消流程实际读取的就是这张表）。
+// OpenClaw 侧门形状变化时（缺失 / 抛异常），通过 remoteLog 上报为升级契约变更的早期信号。
 const PATCH_LABELS = [
 	['embedded.activeRuns', () => globalThis[Symbol.for('openclaw.embeddedRunState')]?.activeRuns],
-	['embedded.sessionIdsByKey', () => globalThis[Symbol.for('openclaw.embeddedRunState')]?.sessionIdsByKey],
-	['reply.activeRunsByKey', () => globalThis[Symbol.for('openclaw.replyRunRegistry')]?.activeRunsByKey],
-	['reply.activeKeysBySessionId', () => globalThis[Symbol.for('openclaw.replyRunRegistry')]?.activeKeysBySessionId],
 ];
 
 function installAbortRegistryDiag(logger) {
@@ -60,7 +57,6 @@ function patchMapLogging(map, label, logger) {
 	}
 	const origSet = map.set.bind(map);
 	const origDel = map.delete.bind(map);
-	const origClear = typeof map.clear === 'function' ? map.clear.bind(map) : null;
 	// log 行包 try/catch 兜底：上游若把 Map 换成有 throwing getter（如 Proxy）的对象，
 	// 不能让本插件的诊断 log 把 OpenClaw 内部 set/delete 流程带崩
 	const safeLog = (msg) => {
@@ -81,15 +77,6 @@ function patchMapLogging(map, label, logger) {
 		safeLog(`[coclaw.diag] ${label}.delete key=${stringifyKey(key)} had=${had} size=${safeSize()}`);
 		return res;
 	};
-	if (origClear) {
-		map.clear = () => {
-			const before = safeSize();
-			const res = origClear();
-			safeLog(`[coclaw.diag] ${label}.clear was=${before} size=${safeSize()}`);
-			return res;
-		};
-	}
-	safeLog(`[coclaw.diag] installed ${label} patch (size=${safeSize()})`);
 	return true;
 }
 
@@ -550,10 +537,11 @@ const plugin = {
 					respondInvalid(respond, 'sessionId is required');
 					return;
 				}
-				logger.info?.(`[coclaw.agent.abort] request sessionId=${sessionId}`);
-				remoteLog(`abort.request sid=${sessionId}`);
-				const result = abortAgentRun(sessionId, logger);
-				logger.info?.(`[coclaw.agent.abort] result sessionId=${sessionId} ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}${result.error ? ` error=${result.error}` : ''}`);
+				const result = abortAgentRun(sessionId);
+				// not-found 是 UI 重试期常态（注册空窗），不打日志避免噪音；其余分支保留 info
+				if (result.reason !== 'not-found') {
+					logger.info?.(`[coclaw.agent.abort] result sessionId=${sessionId} ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}${result.error ? ` error=${result.error}` : ''}`);
+				}
 				if (result.ok) {
 					remoteLog(`abort.success sid=${sessionId}`);
 				}
