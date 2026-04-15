@@ -128,13 +128,14 @@ async function handleStatusEvent({ clawId, online }, deps = {}) {
 }
 
 /**
- * 处理 claw 名称变更事件
+ * 处理 claw 信息变更事件（plugin 上报）。
+ * 用户侧 SSE 仅关心 name，其余字段（hostName/pluginVersion/agentModels）透传给 admin SSE。
  * @param {object} param0
  * @param {string} param0.clawId
  * @param {string} param0.name
  * @param {{ findClawByIdFn?: Function }} [deps]
  */
-async function handleNameUpdatedEvent({ clawId, name }, deps = {}) {
+async function handleInfoUpdatedEvent({ clawId, name }, deps = {}) {
 	const { findClawByIdFn = findClawById } = deps;
 	if (!hasSseClients()) {
 		return;
@@ -142,7 +143,7 @@ async function handleNameUpdatedEvent({ clawId, name }, deps = {}) {
 	try {
 		const claw = await findClawByIdFn(BigInt(clawId));
 		if (!claw) {
-			console.debug('[coclaw/sse] nameUpdated event: claw not found clawId=%s (may be deleted)', clawId);
+			console.debug('[coclaw/sse] infoUpdated event: claw not found clawId=%s (may be deleted)', clawId);
 			return;
 		}
 		const userId = String(claw.userId);
@@ -159,12 +160,12 @@ async function handleNameUpdatedEvent({ clawId, name }, deps = {}) {
 		});
 	}
 	catch (err) {
-		console.warn('[coclaw/sse] nameUpdated event push failed clawId=%s: %s', clawId, err?.message);
+		console.warn('[coclaw/sse] infoUpdated event push failed clawId=%s: %s', clawId, err?.message);
 	}
 }
 
 clawStatusEmitter.on('status', (data) => handleStatusEvent(data));
-clawStatusEmitter.on('nameUpdated', (data) => handleNameUpdatedEvent(data));
+clawStatusEmitter.on('infoUpdated', (data) => handleInfoUpdatedEvent(data));
 
 // 测试辅助
-export const __test = { handleStatusEvent, handleNameUpdatedEvent };
+export const __test = { handleStatusEvent, handleInfoUpdatedEvent };

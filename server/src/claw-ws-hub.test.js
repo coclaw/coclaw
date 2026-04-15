@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 // rtc:offer 测试需要 TURN_SECRET
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, forwardToClaw, __test } from './claw-ws-hub.js';
+import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, forwardToClaw, markClawLastSeen, applyClawInfoUpdate, __test } from './claw-ws-hub.js';
+import { Prisma } from './generated/prisma/client.js';
 import { register as registerSignalRoute, __test as signalTest } from './rtc-signal-router.js';
 
 const { uiSockets, clawSockets, uiTickets, pendingOffline, CLAW_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onClawMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineClawSocket, resolveClawRpcPending, rejectAllClawRpcPending, broadcastToUi, authenticateClawRequest } = __test;
@@ -725,42 +727,50 @@ test('onClawMessage: claw.unbound（新版 plugin）转发并关闭连接', () =
 	cleanupSockets('bot1');
 });
 
-// --- onClawMessage: coclaw.info.updated 事件持久化 claw.name，触发 nameUpdated SSE，不转发给 UI ---
+// --- onClawMessage: coclaw.info.updated 事件持久化 claw 信息，触发 infoUpdated SSE，不转发给 UI ---
 
-test('onClawMessage: coclaw.info.updated 不转发给 UI，但触发 nameUpdated 事件', () => {
+test('onClawMessage: coclaw.info.updated 不转发给 UI，但触发 infoUpdated 事件（带全部字段）', () => {
 	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ui' });
 	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
 	const emitted = [];
 	const listener = (data) => emitted.push(data);
-	clawStatusEmitter.on('nameUpdated', listener);
+	clawStatusEmitter.on('infoUpdated', listener);
 
 	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'coclaw.info.updated',
-		payload: { name: 'My Claw', hostName: 'test-host' },
+		payload: {
+			name: 'My Claw',
+			hostName: 'test-host',
+			pluginVersion: '0.14.0',
+			agentModels: [{ id: 'main', name: 'Main', model: 'claude-opus-4' }],
+		},
 	}));
 
 	// UI 不应收到该事件（UI 通过 DC 直接从 plugin 获取）
 	assert.equal(uiWs.sent.length, 0);
-	// 应触发 nameUpdated 事件供 SSE 推送
+	// 应触发 infoUpdated 事件供 SSE 推送，且带全部字段
 	assert.equal(emitted.length, 1);
 	assert.equal(emitted[0].clawId, 'bot1');
 	assert.equal(emitted[0].name, 'My Claw');
+	assert.equal(emitted[0].hostName, 'test-host');
+	assert.equal(emitted[0].pluginVersion, '0.14.0');
+	assert.deepEqual(emitted[0].agentModels, [{ id: 'main', name: 'Main', model: 'claude-opus-4' }]);
 
-	clawStatusEmitter.off('nameUpdated', listener);
+	clawStatusEmitter.off('infoUpdated', listener);
 	cleanupSockets('bot1');
 });
 
-test('onClawMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
+test('onClawMessage: coclaw.info.updated rawName 为空时 name 回退到 hostName（兼容现有 user UI）', () => {
 	const clawWs = createMockWs();
 	const uiWs = createMockWs({ connId: 'c_ui' });
 	setupSockets('bot1', { ui: [uiWs], bot: [clawWs] });
 
 	const emitted = [];
 	const listener = (data) => emitted.push(data);
-	clawStatusEmitter.on('nameUpdated', listener);
+	clawStatusEmitter.on('infoUpdated', listener);
 
 	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'event',
@@ -770,12 +780,265 @@ test('onClawMessage: coclaw.info.updated 无 name 时使用 hostName', () => {
 
 	// 不转发给 UI
 	assert.equal(uiWs.sent.length, 0);
-	// nameUpdated 事件使用 hostName 作为回退
+	// name 字段用 hostName 兜底（保持与旧行为一致，避免 agents.store 'OpenClaw' 退化）
+	// hostName 同时独立持久化到新列
 	assert.equal(emitted.length, 1);
 	assert.equal(emitted[0].name, 'fallback-host');
+	assert.equal(emitted[0].hostName, 'fallback-host');
+	assert.equal(emitted[0].pluginVersion, null);
+	assert.equal(emitted[0].agentModels, null);
 
-	clawStatusEmitter.off('nameUpdated', listener);
+	clawStatusEmitter.off('infoUpdated', listener);
 	cleanupSockets('bot1');
+});
+
+test('onClawMessage: coclaw.info.updated 空字符串/非法类型时标准化为 null', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot1', { bot: [clawWs] });
+
+	const emitted = [];
+	const listener = (data) => emitted.push(data);
+	clawStatusEmitter.on('infoUpdated', listener);
+
+	onClawMessage('bot1', clawWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		// name='' / hostName=123 / pluginVersion=undefined / agentModels='not-array'
+		payload: { name: '', hostName: 123, agentModels: 'not-array' },
+	}));
+
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0].name, null);
+	assert.equal(emitted[0].hostName, null);
+	assert.equal(emitted[0].pluginVersion, null);
+	assert.equal(emitted[0].agentModels, null);
+
+	clawStatusEmitter.off('infoUpdated', listener);
+	cleanupSockets('bot1');
+});
+
+test('onClawMessage: coclaw.info.updated agentModels 为空数组时原样保留', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot1', { bot: [clawWs] });
+
+	const emitted = [];
+	const listener = (data) => emitted.push(data);
+	clawStatusEmitter.on('infoUpdated', listener);
+
+	onClawMessage('bot1', clawWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		payload: { name: 'A', agentModels: [] },
+	}));
+
+	assert.equal(emitted.length, 1);
+	assert.deepEqual(emitted[0].agentModels, []);
+
+	clawStatusEmitter.off('infoUpdated', listener);
+	cleanupSockets('bot1');
+});
+
+test('onClawMessage: coclaw.info.updated payload 为 null 时不崩溃，全字段规范化为 null', () => {
+	const clawWs = createMockWs();
+	setupSockets('bot1', { bot: [clawWs] });
+
+	const emitted = [];
+	const listener = (data) => emitted.push(data);
+	clawStatusEmitter.on('infoUpdated', listener);
+
+	// payload: null 触发 `eventPayload ?? {}` fallback
+	onClawMessage('bot1', clawWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		payload: null,
+	}));
+
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0].name, null);
+	assert.equal(emitted[0].hostName, null);
+	assert.equal(emitted[0].pluginVersion, null);
+	assert.equal(emitted[0].agentModels, null);
+
+	clawStatusEmitter.off('infoUpdated', listener);
+	cleanupSockets('bot1');
+});
+
+// --- applyClawInfoUpdate ---（抽出的独立函数，便于注入 updateClawImpl）
+
+test('applyClawInfoUpdate: 全字段规范化 + DB 写入 + emit（name 非空时不走 hostName 回退）', async () => {
+	let captured = null;
+	const emitted = [];
+	const emitter = new EventEmitter();
+	emitter.on('infoUpdated', (d) => emitted.push(d));
+	applyClawInfoUpdate('12345', {
+		name: 'My Claw',
+		hostName: 'ubuntu',
+		pluginVersion: '0.14.0',
+		agentModels: [{ id: 'main', name: 'Main', model: 'claude-opus-4' }],
+	}, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	// 等一个 microtask 让 .catch 链路结算
+	await new Promise((r) => setImmediate(r));
+	// DB 写入
+	assert.equal(captured.id, 12345n);
+	assert.equal(captured.data.name, 'My Claw');
+	assert.equal(captured.data.hostName, 'ubuntu');
+	assert.equal(captured.data.pluginVersion, '0.14.0');
+	assert.deepEqual(captured.data.agentModels, [{ id: 'main', name: 'Main', model: 'claude-opus-4' }]);
+	// emit
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0].name, 'My Claw');
+	assert.equal(emitted[0].hostName, 'ubuntu');
+	assert.equal(emitted[0].pluginVersion, '0.14.0');
+	assert.deepEqual(emitted[0].agentModels, [{ id: 'main', name: 'Main', model: 'claude-opus-4' }]);
+});
+
+test('applyClawInfoUpdate: agentModels=null 时 DB 写入使用 Prisma.DbNull（而非 JS null）', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	applyClawInfoUpdate('12345', { name: 'A', agentModels: null }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	// Prisma.DbNull 是 sentinel 对象，必须严格相等
+	assert.strictEqual(captured.data.agentModels, Prisma.DbNull);
+});
+
+test('applyClawInfoUpdate: agentModels=[] 时 DB 写入保留空数组（不转 DbNull）', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	applyClawInfoUpdate('12345', { name: 'A', agentModels: [] }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.deepEqual(captured.data.agentModels, []);
+});
+
+test('applyClawInfoUpdate: rawName 为空且 hostName 存在时 name/hostName 列都写入 hostName', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	applyClawInfoUpdate('12345', { name: null, hostName: 'host1' }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.equal(captured.data.name, 'host1');
+	assert.equal(captured.data.hostName, 'host1');
+});
+
+test('applyClawInfoUpdate: rawName 和 hostName 都为空时 name=null', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	applyClawInfoUpdate('12345', {}, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.equal(captured.data.name, null);
+	assert.equal(captured.data.hostName, null);
+});
+
+test('applyClawInfoUpdate: rawName 非空且 hostName 为空时 name=rawName（不被 null 覆盖）', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	applyClawInfoUpdate('12345', { name: 'user-set', hostName: null }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.equal(captured.data.name, 'user-set');
+	assert.equal(captured.data.hostName, null);
+});
+
+test('applyClawInfoUpdate: updateClaw 同步 throw 时外层 catch 兜住并 warn 日志', async () => {
+	const originalWarn = console.warn;
+	const warnings = [];
+	console.warn = (...args) => warnings.push(args.map(String).join(' '));
+	try {
+		const emitter = new EventEmitter();
+		const emitted = [];
+		emitter.on('infoUpdated', (d) => emitted.push(d));
+		applyClawInfoUpdate('12345', { name: 'A' }, {
+			updateClawImpl: () => { throw new Error('sync-throw'); },
+			emitter,
+		});
+		// sync-throw 走外层 catch
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /updateClaw from plugin event failed clawId=12345: sync-throw/);
+		// 即便 DB 失败，仍 emit（SSE 不依赖 DB 成功）
+		assert.equal(emitted.length, 1);
+	}
+	finally {
+		console.warn = originalWarn;
+	}
+});
+
+test('applyClawInfoUpdate: updateClaw reject 时 .catch 兜住并 warn 日志', async () => {
+	const originalWarn = console.warn;
+	const warnings = [];
+	console.warn = (...args) => warnings.push(args.map(String).join(' '));
+	try {
+		const emitter = new EventEmitter();
+		applyClawInfoUpdate('12345', { name: 'A' }, {
+			updateClawImpl: async () => { throw new Error('db-rejected'); },
+			emitter,
+		});
+		// 等 microtask 让 .catch 回调执行
+		await new Promise((r) => setImmediate(r));
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /updateClaw from plugin event failed clawId=12345: db-rejected/);
+	}
+	finally {
+		console.warn = originalWarn;
+	}
+});
+
+test('applyClawInfoUpdate: clawId 非数字时 BigInt 抛异常走外层 catch', async () => {
+	const originalWarn = console.warn;
+	const warnings = [];
+	console.warn = (...args) => warnings.push(args.map(String).join(' '));
+	try {
+		const emitter = new EventEmitter();
+		const emitted = [];
+		emitter.on('infoUpdated', (d) => emitted.push(d));
+		let called = false;
+		applyClawInfoUpdate('not-a-number', { name: 'A' }, {
+			updateClawImpl: async () => { called = true; return {}; },
+			emitter,
+		});
+		assert.equal(called, false, 'updateClaw 不应被调用');
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /updateClaw from plugin event failed clawId=not-a-number/);
+		// emit 仍触发
+		assert.equal(emitted.length, 1);
+	}
+	finally {
+		console.warn = originalWarn;
+	}
+});
+
+test('applyClawInfoUpdate: 不传 deps 时使用默认 emitter（clawStatusEmitter）', async () => {
+	const emitted = [];
+	const listener = (d) => emitted.push(d);
+	clawStatusEmitter.on('infoUpdated', listener);
+	// 不传 deps → 走默认 updateClaw（会 DB 失败）+ 默认 clawStatusEmitter
+	const originalWarn = console.warn;
+	console.warn = () => {}; // 静默
+	try {
+		applyClawInfoUpdate('12345', { name: 'A' });
+		// 等 microtask 让 .catch 结算
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(emitted.length, 1);
+		assert.equal(emitted[0].name, 'A');
+	}
+	finally {
+		clawStatusEmitter.off('infoUpdated', listener);
+		console.warn = originalWarn;
+	}
 });
 
 // --- 创建支持 getAnyOnlineClawSocket 的 mock ws（带 OPEN 属性） ---
@@ -1506,19 +1769,33 @@ test('onClawMessage: rtc:restart-rejected 通过 signal-router 投递', () => {
 	cleanupSockets('bot-sr4');
 });
 
-// --- onClawMessage: coclaw.info.updated 中 updateClawName 抛同步异常 ---
+// --- onClawMessage: coclaw.info.updated 中 updateClaw 抛同步异常 ---
 
 test('onClawMessage: coclaw.info.updated 处理时不崩溃（payload 为 null）', () => {
 	const clawWs = createMockWs();
 	setupSockets('bot-info-null', { bot: [clawWs] });
 
-	// payload 无 name 和 hostName → name 为 null
+	// payload 缺失全部字段 → 所有值规范化为 null
 	onClawMessage('bot-info-null', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'coclaw.info.updated',
 		payload: {},
 	}));
 	cleanupSockets('bot-info-null');
+});
+
+test('onClawMessage: coclaw.info.updated payload 缺省时 BigInt 抛异常走外层 catch', () => {
+	const clawWs = createMockWs();
+	setupSockets('not-a-number', { bot: [clawWs] });
+
+	// clawId 非数字 → BigInt() 同步抛 → 走外层 catch，不应抛到外部
+	onClawMessage('not-a-number', clawWs, JSON.stringify({
+		type: 'event',
+		event: 'coclaw.info.updated',
+		payload: { name: 'x' },
+	}));
+
+	cleanupSockets('not-a-number');
 });
 
 // --- onClawMessage: raw 为 undefined/null ---
@@ -1744,11 +2021,11 @@ test('authenticateClawRequest: 无效 token 时返回 invalid token', async () =
 	assert.equal(result.message, 'invalid token');
 });
 
-// --- onClawMessage: coclaw.info.updated 触发 updateClawName 的 .catch 路径 ---
+// --- onClawMessage: coclaw.info.updated 触发 updateClaw 的 .catch 路径 ---
 
 test('onClawMessage: coclaw.info.updated 使用数字 clawId 时 BigInt 成功但 DB 失败走 .catch', async () => {
 	const clawWs = createMockWs();
-	// 使用数字 clawId 使 BigInt() 成功，updateClawName 会尝试 DB 操作然后失败
+	// 使用数字 clawId 使 BigInt() 成功，updateClaw 会尝试 DB 操作然后失败
 	setupSockets('12345', { bot: [clawWs] });
 
 	// 不应抛异常（.catch 会静默处理）
@@ -1769,4 +2046,54 @@ test('broadcastToUi: socket set 为空时不发送', () => {
 	uiSockets.set('empty-ui', new Set());
 	broadcastToUi('empty-ui', { type: 'test' });
 	uiSockets.delete('empty-ui');
+});
+
+// --- markClawLastSeen ---
+
+test('markClawLastSeen: 正常路径调用 updateClaw 写入 lastSeenAt', async () => {
+	let captured = null;
+	const fixedNow = new Date('2026-04-15T10:00:00.000Z');
+	await markClawLastSeen('12345', {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		nowImpl: () => fixedNow,
+	});
+	assert.equal(captured.id, 12345n);
+	assert.ok(captured.data.lastSeenAt instanceof Date);
+	assert.equal(captured.data.lastSeenAt.getTime(), fixedNow.getTime());
+});
+
+test('markClawLastSeen: updateClaw 抛异常时静默吞掉并输出 wsLogWarn（诊断日志必须保留）', async () => {
+	const originalWarn = console.warn;
+	const warnings = [];
+	console.warn = (...args) => warnings.push(args.map(String).join(' '));
+	try {
+		// 不应抛异常
+		await markClawLastSeen('99999', {
+			updateClawImpl: async () => { throw new Error('db down'); },
+		});
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /updateClaw lastSeenAt failed clawId=99999: db down/);
+	}
+	finally {
+		console.warn = originalWarn;
+	}
+});
+
+test('markClawLastSeen: clawId 非数字时 BigInt 抛异常同样被 catch', async () => {
+	const originalWarn = console.warn;
+	const warnings = [];
+	console.warn = (...args) => warnings.push(args.map(String).join(' '));
+	try {
+		let called = false;
+		await markClawLastSeen('not-a-number', {
+			updateClawImpl: async () => { called = true; return {}; },
+		});
+		// BigInt('not-a-number') 在 await 前就抛 SyntaxError → 不应调用 updateClaw
+		assert.equal(called, false);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /updateClaw lastSeenAt failed clawId=not-a-number/);
+	}
+	finally {
+		console.warn = originalWarn;
+	}
 });

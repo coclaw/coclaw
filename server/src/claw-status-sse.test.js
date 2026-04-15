@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { hasSseClients, registerSseClient, sendSnapshot, sendToUser, __test } from './claw-status-sse.js';
 
-const { handleStatusEvent, handleNameUpdatedEvent } = __test;
+const { handleStatusEvent, handleInfoUpdatedEvent } = __test;
 
 function createMockRes() {
 	const written = [];
@@ -217,16 +217,16 @@ test('handleStatusEvent: findClawById 抛异常时静默捕获', async () => {
 	res.__triggerClose();
 });
 
-// --- handleNameUpdatedEvent ---
+// --- handleInfoUpdatedEvent ---
 
-test('handleNameUpdatedEvent: 无 SSE 客户端时直接返回', async () => {
+test('handleInfoUpdatedEvent: 无 SSE 客户端时直接返回', async () => {
 	assert.equal(hasSseClients(), false);
-	await handleNameUpdatedEvent({ clawId: '1', name: 'new-name' }, {
+	await handleInfoUpdatedEvent({ clawId: '1', name: 'new-name' }, {
 		findClawByIdFn: () => { throw new Error('should not be called'); },
 	});
 });
 
-test('handleNameUpdatedEvent: bot 存在时推送 claw.nameUpdated + bot.nameUpdated 双事件', async () => {
+test('handleInfoUpdatedEvent: bot 存在时推送 claw.nameUpdated + bot.nameUpdated 双事件（仅 name 下发给用户侧 UI）', async () => {
 	const res = createMockRes();
 	registerSseClient('200', res);
 
@@ -235,15 +235,23 @@ test('handleNameUpdatedEvent: bot 存在时推送 claw.nameUpdated + bot.nameUpd
 		userId: 200n,
 	});
 
-	await handleNameUpdatedEvent({ clawId: '10', name: 'my-bot' }, {
-		findClawByIdFn: mockFindBot,
-	});
+	// 事件载荷含 hostName/pluginVersion/agentModels，但用户侧 SSE 只下发 name
+	await handleInfoUpdatedEvent({
+		clawId: '10',
+		name: 'my-bot',
+		hostName: 'ubuntu',
+		pluginVersion: '0.14.0',
+		agentModels: [{ id: 'main', name: 'Main', model: 'claude-opus-4' }],
+	}, { findClawByIdFn: mockFindBot });
 
 	assert.equal(res.written.length, 2);
 	const clawEvt = JSON.parse(res.written[0].replace('data: ', '').trim());
 	assert.equal(clawEvt.event, 'claw.nameUpdated');
 	assert.equal(clawEvt.clawId, '10');
 	assert.equal(clawEvt.name, 'my-bot');
+	assert.equal(clawEvt.hostName, undefined);
+	assert.equal(clawEvt.pluginVersion, undefined);
+	assert.equal(clawEvt.agentModels, undefined);
 	const botEvt = JSON.parse(res.written[1].replace('data: ', '').trim());
 	assert.equal(botEvt.event, 'bot.nameUpdated');
 	assert.equal(botEvt.botId, '10');
@@ -253,11 +261,11 @@ test('handleNameUpdatedEvent: bot 存在时推送 claw.nameUpdated + bot.nameUpd
 	res.__triggerClose();
 });
 
-test('handleNameUpdatedEvent: bot 不存在时不推送', async () => {
+test('handleInfoUpdatedEvent: bot 不存在时不推送', async () => {
 	const res = createMockRes();
 	registerSseClient('201', res);
 
-	await handleNameUpdatedEvent({ clawId: '999', name: 'x' }, {
+	await handleInfoUpdatedEvent({ clawId: '999', name: 'x' }, {
 		findClawByIdFn: async () => null,
 	});
 
@@ -266,11 +274,11 @@ test('handleNameUpdatedEvent: bot 不存在时不推送', async () => {
 	res.__triggerClose();
 });
 
-test('handleNameUpdatedEvent: findClawById 抛异常时静默捕获', async () => {
+test('handleInfoUpdatedEvent: findClawById 抛异常时静默捕获', async () => {
 	const res = createMockRes();
 	registerSseClient('202', res);
 
-	await handleNameUpdatedEvent({ clawId: '1', name: 'x' }, {
+	await handleInfoUpdatedEvent({ clawId: '1', name: 'x' }, {
 		findClawByIdFn: async () => { throw new Error('db error'); },
 	});
 

@@ -38,13 +38,6 @@ export async function updateClaw(id, data, db = prisma) {
 	});
 }
 
-export async function updateClawName(id, name, db = prisma) {
-	return db.claw.update({
-		where: { id },
-		data: { name },
-	});
-}
-
 export async function deleteClaw(id, db = prisma) {
 	return db.claw.delete({
 		where: { id },

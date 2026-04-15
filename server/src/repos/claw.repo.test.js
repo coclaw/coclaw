@@ -7,7 +7,6 @@ import {
 	findClawByTokenHash,
 	createClaw,
 	updateClaw,
-	updateClawName,
 	deleteClaw,
 	listClawsByUserId,
 } from './claw.repo.js';
@@ -132,21 +131,6 @@ test('updateClaw: 传递正确的 where 和 data', async () => {
 
 	assert.deepEqual(captured, { where: { id: 1n }, data: { name: 'updated' } });
 	assert.equal(result.name, 'updated');
-});
-
-// --- updateClawName ---
-
-test('updateClawName: 传递正确的 where 和 data.name', async () => {
-	let captured;
-	const db = createMockDb('update', async (args) => {
-		captured = args;
-		return makeClaw({ name: 'renamed' });
-	});
-
-	const result = await updateClawName(1n, 'renamed', db);
-
-	assert.deepEqual(captured, { where: { id: 1n }, data: { name: 'renamed' } });
-	assert.equal(result.name, 'renamed');
 });
 
 // --- deleteClaw ---

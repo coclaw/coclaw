@@ -116,6 +116,9 @@ model Claw {
 	user 					User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
 	name					String? @db.VarChar(128) // claw 昵称（可为空）
+	hostName			String? @db.VarChar(128) // plugin 上报的主机名（nullable）
+	pluginVersion	String? @db.VarChar(32) // plugin 自报的插件版本
+	agentModels		Json? // [{id, name, model}] 列表；null 表示 plugin 未上报
 	// status			String @default("active") @db.VarChar(16) // active, inactive, blocked（历史字段，暂注释保留语义）
 
 	// 认证字段：目前只用 tokenHash，将来支持密钥对时，再启用 publicKey 字段，并调整 tokenHash 为可选字段

@@ -33,7 +33,7 @@ UI 定期调用 `GET /api/v1/bots`（30s 间隔，页面可见时才轮询）。
 - `sendSnapshot(userId, res)` — 推送全量 bot 快照（含在线状态）
 - `sendToUser(userId, data)` — 向用户的所有 SSE 客户端推送增量事件
 
-**事件触发链**：`claw-ws-hub.js` 中的 `clawStatusEmitter` 发出 `status`/`nameUpdated` 事件 → `claw-status-sse.js` 监听后查找 claw 所属 userId → 推送到对应用户的 SSE 客户端。
+**事件触发链**：`claw-ws-hub.js` 中的 `clawStatusEmitter` 发出 `status`/`infoUpdated` 事件 → `claw-status-sse.js` 监听后查找 claw 所属 userId → 推送到对应用户的 SSE 客户端。`infoUpdated` 由 plugin 的 `coclaw.info.updated` 触发，payload 含 `{ clawId, name, hostName, pluginVersion, agentModels }`；user-facing SSE 仅下发 `name` 为兼容现有 UI。
 
 **连接流程**：
 1. 客户端建立 SSE 连接

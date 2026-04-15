@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { WebSocketServer } from 'ws';
 
-import { findClawById, findClawByTokenHash, updateClawName } from './repos/claw.repo.js';
+import { Prisma } from './generated/prisma/client.js';
+import { findClawById, findClawByTokenHash, updateClaw } from './repos/claw.repo.js';
 import { genTurnCredsForGateway } from './routes/turn.route.js';
 import { routeToUi, removeByClawId } from './rtc-signal-router.js';
 
@@ -158,6 +159,60 @@ function requestClawRpc(clawId, method, params = {}, timeoutMs = 1000) {
 	});
 }
 
+/**
+ * Claw WS 断开时写 lastSeenAt 到 DB。异常吞掉，不影响断线处理。
+ * 仅在真正 offline 时写（管理性断连立即；普通断连 grace 超时后），不在 grace 内短暂断线时写。
+ * @param {string} clawId
+ * @param {{ updateClawImpl?: Function, nowImpl?: Function }} [deps]
+ */
+export async function markClawLastSeen(clawId, deps = {}) {
+	const { updateClawImpl = updateClaw, nowImpl = () => new Date() } = deps;
+	try {
+		await updateClawImpl(BigInt(clawId), { lastSeenAt: nowImpl() });
+	}
+	catch (err) {
+		wsLogWarn(`updateClaw lastSeenAt failed clawId=${clawId}: ${err.message}`);
+	}
+}
+
+/**
+ * 处理 plugin 发来的 coclaw.info.updated 事件：规范化字段 → 持久化到 DB → emit infoUpdated 给 SSE 下游。
+ * 抽为独立函数便于注入 updateClawImpl 做单测（验证 Prisma.DbNull 等 DB 交互细节）。
+ *
+ * `name` 字段的 hostName 回退是兼容现有 user-facing UI 的必要措施：
+ * snapshot SSE 只下发 claw.name；若 plugin 发来 name=null 而 hostName=xxx，回退后 DB.name=xxx，
+ * UI 显示主机名而非 'OpenClaw' 兜底，避免过渡期显示退化。hostName 同时独立持久化到新列供 admin API 使用。
+ *
+ * `agentModels` 字段的 Prisma.DbNull：Prisma 对 Json? 字段，data 中传 JS `null` 会被解释为"不更新"；
+ * 需 Prisma.DbNull 才能把列显式置为 SQL NULL。
+ *
+ * 语义：emit 在 DB 写入发起之后同步触发，**不等待**也不依赖 DB 持久化成功。
+ * 即使 DB 写失败，SSE 仍会把最新 plugin 上报推给 UI；下次 UI 主动刷新会拉回 DB 真值（允许的回退窗口）。
+ *
+ * @param {string} clawId
+ * @param {object} eventPayload - payload.payload（可能为 null/undefined）
+ * @param {{ updateClawImpl?: Function, emitter?: EventEmitter }} [deps]
+ */
+export function applyClawInfoUpdate(clawId, eventPayload, deps = {}) {
+	const { updateClawImpl = updateClaw, emitter = clawStatusEmitter } = deps;
+	const p = eventPayload ?? {};
+	const rawName = typeof p.name === 'string' && p.name.length > 0 ? p.name : null;
+	const hostName = typeof p.hostName === 'string' && p.hostName.length > 0 ? p.hostName : null;
+	const pluginVersion = typeof p.pluginVersion === 'string' && p.pluginVersion.length > 0 ? p.pluginVersion : null;
+	const agentModels = Array.isArray(p.agentModels) ? p.agentModels : null;
+	const name = rawName ?? hostName;
+	const agentModelsForDb = agentModels === null ? Prisma.DbNull : agentModels;
+	try {
+		updateClawImpl(BigInt(clawId), { name, hostName, pluginVersion, agentModels: agentModelsForDb }).catch((err) => {
+			wsLogWarn(`updateClaw from plugin event failed clawId=${clawId}: ${err.message}`);
+		});
+	}
+	catch (err) {
+		wsLogWarn(`updateClaw from plugin event failed clawId=${clawId}: ${err.message}`);
+	}
+	emitter.emit('infoUpdated', { clawId, name, hostName, pluginVersion, agentModels });
+}
+
 async function authenticateClawRequest(req) {
 	const url = new URL(req.url ?? '', 'http://localhost');
 	const token = url.searchParams.get('token');
@@ -301,18 +356,9 @@ function onClawMessage(clawId, ws, raw) {
 		return;
 	}
 
-	// Plugin 事件：coclaw.info.updated → 持久化 claw name，通过 SSE 推送给 UI
+	// Plugin 事件：coclaw.info.updated → 持久化 claw 信息，通过 SSE 推送给 UI
 	if (payload.type === 'event' && payload.event === 'coclaw.info.updated') {
-		const name = payload.payload?.name || payload.payload?.hostName || null;
-		try {
-			updateClawName(BigInt(clawId), name).catch((err) => {
-				wsLogWarn(`updateClawName from plugin event failed clawId=${clawId}: ${err.message}`);
-			});
-		}
-		catch (err) {
-			wsLogWarn(`updateClawName from plugin event failed clawId=${clawId}: ${err.message}`);
-		}
-		clawStatusEmitter.emit('nameUpdated', { clawId, name });
+		applyClawInfoUpdate(clawId, payload.payload);
 		return;
 	}
 
@@ -585,6 +631,8 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 						// 管理性断连（解绑/封禁）立即 offline，不走 grace period
 						if (code === 4001 || code === 4003) {
 							wsLogInfo(`claw offline clawId=${clawId} (admin close code=${code})`);
+							// 真正 offline 时写 lastSeenAt；.catch 兜底防御（markClawLastSeen 内部已吞异常）
+							markClawLastSeen(clawId).catch((err) => wsLogWarn(`markClawLastSeen unexpected error clawId=${clawId}: ${err?.message ?? err}`));
 							clawStatusEmitter.emit('status', { clawId, online: false });
 						}
 						else {
@@ -595,6 +643,8 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 								// grace 期间可能已重连，再次确认
 								if (!clawSockets.has(clawId)) {
 									wsLogInfo(`claw offline clawId=${clawId} (after grace)`);
+									// grace 过后真正 offline，写 lastSeenAt
+									markClawLastSeen(clawId).catch((err) => wsLogWarn(`markClawLastSeen unexpected error clawId=${clawId}: ${err?.message ?? err}`));
 									clawStatusEmitter.emit('status', { clawId, online: false });
 								}
 							}, CLAW_OFFLINE_GRACE_MS);
