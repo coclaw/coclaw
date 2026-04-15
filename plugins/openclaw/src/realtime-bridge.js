@@ -430,17 +430,46 @@ export class RealtimeBridge {
 		}
 	}
 
-	/** 推送实例名到 server 和已连接的 UI */
-	async __pushInstanceName() {
+	/** 推送实例信息（name/hostName/pluginVersion/agentModels）到 server 和已连接的 UI */
+	async __pushInstanceInfo() {
 		try {
 			const settings = await readSettings();
 			const name = settings.name ?? null;
 			const hostName = getHostName();
-			broadcastPluginEvent('coclaw.info.updated', { name, hostName });
+			const pluginVersion = await getPluginVersion();
+			const agentModels = await this.__collectAgentModels();
+			broadcastPluginEvent('coclaw.info.updated', {
+				name,
+				hostName,
+				pluginVersion,
+				agentModels,
+			});
 		}
 		catch (err) {
 			/* c8 ignore next 2 -- 防御性兜底 */
-			this.logger.warn?.(`[coclaw] pushInstanceName failed: ${String(err?.message ?? err)}`);
+			this.logger.warn?.(`[coclaw] pushInstanceInfo failed: ${String(err?.message ?? err)}`);
+		}
+	}
+
+	/**
+	 * 采集 agent × 有效主模型列表，用于 coclaw.info.updated 上报
+	 * @returns {Promise<Array<{id: string, name: string, model: string|null}>|null>} 采集失败返回 null
+	 */
+	async __collectAgentModels() {
+		try {
+			const result = await this.__gatewayRpc('agents.list', {}, { timeoutMs: 3000 });
+			if (result?.ok !== true) return null;
+			const agents = result?.response?.payload?.agents;
+			if (!Array.isArray(agents)) return null;
+			return agents.map((a) => ({
+				id: a?.id,
+				name: a?.name ?? a?.id,
+				model: a?.model?.primary ?? null,
+			}));
+		}
+		catch {
+			// 防御性兜底：__gatewayRpc 正常会以 { ok:false } 返回，此分支覆盖调用栈意外抛错
+			return null;
 		}
 	}
 
@@ -601,7 +630,7 @@ export class RealtimeBridge {
 					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
 					this.gatewayConnectReqId = null;
 					this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
-					this.__pushInstanceName();
+					this.__pushInstanceInfo();
 				}
 				else {
 					this.gatewayReady = false;

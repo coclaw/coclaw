@@ -120,17 +120,30 @@ function createBridge(overrides = {}) {
 }
 
 /**
- * 消化 __ensureAllAgentSessions 的后台流量：
- * 响应 agents.list + 对应的 sessions.resolve（均返回成功）
+ * 消化 gateway connect 成功后并发的后台流量：
+ * - __ensureAllAgentSessions 发出的 agents.list + sessions.resolve
+ * - __pushInstanceInfo → __collectAgentModels 发出的 agents.list（不影响主流程）
+ * 所有未响应的 agents.list 统一回一份含 main 的列表，避免 RPC 等待超时拖慢测试。
  */
 async function drainEnsureAllAgentSessions(gateway) {
+	const respondedIds = new Set();
+	const respondAgentsList = () => {
+		for (const raw of gateway.sent) {
+			const s = String(raw);
+			if (!s.includes('agents.list')) continue;
+			let msg;
+			try { msg = JSON.parse(s); } catch { continue; }
+			if (msg.method !== 'agents.list' || respondedIds.has(msg.id)) continue;
+			respondedIds.add(msg.id);
+			gateway.emit('message', { data: JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: { defaultId: 'main', agents: [{ id: 'main' }] } }) });
+		}
+	};
+	// 第一轮等 __ensureAllAgentSessions 的 agents.list 发出
 	for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-	const agentsListRaw = gateway.sent.find((s) => String(s).includes('agents.list'));
-	if (!agentsListRaw) return;
-	const msg = JSON.parse(String(agentsListRaw));
-	// 返回含 main 的列表，否则空数组也会 fallback 到 ['main']
-	gateway.emit('message', { data: JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: { defaultId: 'main', agents: [{ id: 'main' }] } }) });
+	respondAgentsList();
+	// 再等一轮：__pushInstanceInfo 在 readSettings / getPluginVersion 之后才发出 agents.list
 	for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+	respondAgentsList();
 	// 响应 sessions.resolve for main
 	const resolveRaw = gateway.sent.find((s) => String(s).includes('sessions.resolve') && String(s).includes('agent:main:main'));
 	if (resolveRaw) {
@@ -2790,6 +2803,200 @@ test('RealtimeBridge ws.open re-emits coclaw.env on reconnect (after sender inje
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+// --- __collectAgentModels 测试 ---
+
+test('RealtimeBridge __collectAgentModels should map agents with name fallback and model.primary', async () => {
+	const bridge = createBridge();
+	bridge.__gatewayRpc = async (method, params, options) => {
+		assert.equal(method, 'agents.list');
+		assert.deepEqual(params, {});
+		// 明确断言 timeoutMs，防止静默改参数导致等待行为改变
+		assert.equal(options?.timeoutMs, 3000);
+		return {
+			ok: true,
+			response: { payload: { agents: [
+				{ id: 'main', name: 'Main Agent', model: { primary: 'claude-opus-4' } },
+				{ id: 'proj-a', model: { primary: 'claude-sonnet-4' } }, // 无 name → 回退到 id
+				{ id: 'no-model' }, // 无 model → primary 回退到 null
+			] } },
+		};
+	};
+	const models = await bridge.__collectAgentModels();
+	assert.deepEqual(models, [
+		{ id: 'main', name: 'Main Agent', model: 'claude-opus-4' },
+		{ id: 'proj-a', name: 'proj-a', model: 'claude-sonnet-4' },
+		{ id: 'no-model', name: 'no-model', model: null },
+	]);
+});
+
+test('RealtimeBridge __collectAgentModels should return null when gateway rpc fails', async () => {
+	const bridge = createBridge();
+	bridge.__gatewayRpc = async () => ({ ok: false, error: 'gateway_not_ready' });
+	const models = await bridge.__collectAgentModels();
+	assert.equal(models, null);
+});
+
+test('RealtimeBridge __collectAgentModels should return null when agents payload is not an array', async () => {
+	const bridge = createBridge();
+	bridge.__gatewayRpc = async () => ({ ok: true, response: { payload: { defaultId: 'main' } } });
+	const models = await bridge.__collectAgentModels();
+	assert.equal(models, null);
+});
+
+test('RealtimeBridge __collectAgentModels should return null when gateway rpc throws', async () => {
+	const bridge = createBridge();
+	bridge.__gatewayRpc = async () => { throw new Error('unexpected'); };
+	const models = await bridge.__collectAgentModels();
+	assert.equal(models, null);
+});
+
+test('RealtimeBridge __collectAgentModels should return empty array when agents list is empty', async () => {
+	const bridge = createBridge();
+	bridge.__gatewayRpc = async () => ({ ok: true, response: { payload: { agents: [] } } });
+	const models = await bridge.__collectAgentModels();
+	assert.deepEqual(models, []);
+});
+
+// --- __pushInstanceInfo 测试 ---
+
+test('RealtimeBridge __pushInstanceInfo should broadcast full info payload after gateway connect', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+
+	try {
+		await restartRealtimeBridge({
+			logger: noopLogger(),
+			pluginConfig: {},
+			__deps: {
+				WebSocket: FakeWebSocket,
+				resolveGatewayAuthToken: () => '',
+				preloadPion: noopPreloadPion,
+				preloadNdc: noopPreloadNdc,
+				gatewayReadyTimeoutMs: 50,
+			},
+		});
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		// 响应 ensureAllAgentSessions + __pushInstanceInfo 内部的 agents.list
+		await drainEnsureAllAgentSessions(gateway);
+		// 额外再等一轮，确保 broadcastPluginEvent 完成
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+
+		const eventMsgs = server.sent
+			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
+			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
+		assert.ok(eventMsgs.length >= 1, 'should emit coclaw.info.updated event');
+		const payload = eventMsgs[eventMsgs.length - 1].payload;
+		assert.ok('name' in payload, 'payload should contain name field');
+		assert.ok('hostName' in payload, 'payload should contain hostName field');
+		assert.ok('pluginVersion' in payload, 'payload should contain pluginVersion field');
+		assert.ok('agentModels' in payload, 'payload should contain agentModels field');
+		assert.equal(typeof payload.hostName, 'string');
+		assert.ok(Array.isArray(payload.agentModels), 'agentModels should be array when agents.list succeeds');
+		assert.equal(payload.agentModels.length, 1, 'drain helper returns exactly 1 agent (main)');
+		// 对映射结果做三字段全断言，确保 __collectAgentModels 的 name/model 回退也在集成路径生效
+		const first = payload.agentModels[0];
+		assert.equal(first.id, 'main');
+		assert.equal(first.name, 'main'); // drain helper 返回的 agents 仅带 id，name 应回退到 id
+		assert.equal(first.model, null); // drain helper 返回的 agents 无 model 字段 → null
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true });
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents.list fails', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+
+	try {
+		await restartRealtimeBridge({
+			logger: noopLogger(),
+			pluginConfig: {},
+			__deps: {
+				WebSocket: FakeWebSocket,
+				resolveGatewayAuthToken: () => '',
+				preloadPion: noopPreloadPion,
+				preloadNdc: noopPreloadNdc,
+				gatewayReadyTimeoutMs: 50,
+			},
+		});
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		// Poll-with-deadline：__ensureAllAgentSessions 和 __pushInstanceInfo 并发发 agents.list，
+		// 后者需要先 await readSettings + getPluginVersion 才触发，慢 CI 上固定 microtask 数不可靠。
+		// 循环扫描直到两个请求都被响应（或超时兜底）。
+		const respondedIds = new Set();
+		const deadline = Date.now() + 500;
+		while (Date.now() < deadline) {
+			let newlyResponded = false;
+			for (const raw of gateway.sent) {
+				const s = String(raw);
+				if (!s.includes('agents.list')) continue;
+				let msg;
+				try { msg = JSON.parse(s); } catch { continue; }
+				if (msg.method !== 'agents.list' || respondedIds.has(msg.id)) continue;
+				respondedIds.add(msg.id);
+				gateway.emit('message', { data: JSON.stringify({ type: 'res', id: msg.id, ok: false, error: { code: 'boom', message: 'rpc failed' } }) });
+				newlyResponded = true;
+			}
+			// 收到至少 2 个请求且本轮无新请求 → 认为全部到齐
+			if (!newlyResponded && respondedIds.size >= 2) break;
+			await new Promise((r) => setTimeout(r, 1));
+		}
+		assert.ok(respondedIds.size >= 2, `should observe agents.list from both __ensureAllAgentSessions and __pushInstanceInfo (got ${respondedIds.size})`);
+		// 给 broadcastPluginEvent 完成最后几个 await 的余地
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+
+		const eventMsgs = server.sent
+			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
+			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
+		assert.ok(eventMsgs.length >= 1, 'should still emit coclaw.info.updated despite agents.list failure');
+		const payload = eventMsgs[eventMsgs.length - 1].payload;
+		assert.equal(payload.agentModels, null, 'agentModels should be null when agents.list fails');
+		assert.ok('name' in payload);
+		assert.ok('hostName' in payload);
+		assert.ok('pluginVersion' in payload);
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true });
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);
 	}
 });
