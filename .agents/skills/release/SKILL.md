@@ -79,15 +79,7 @@ git add .changeset/ plugins/openclaw/package.json plugins/openclaw/CHANGELOG.md
 git commit -m "chore: version @coclaw/openclaw-coclaw@<version>"
 ```
 
-### 5. 质量门禁
-
-在插件目录下执行验证：
-
-```bash
-cd plugins/openclaw && pnpm verify
-```
-
-### 6. 发布 npm 包
+### 5. 发布 npm 包
 
 在插件目录下执行：
 
@@ -96,14 +88,14 @@ cd plugins/openclaw && pnpm release
 ```
 
 此脚本（`scripts/release.sh`）会：
-- 执行 `pnpm verify`（质量门禁）
+- 执行 `pnpm verify`（质量门禁，失败即 abort，后续步骤不会执行）
 - 检查工作目录与 npm 凭据
 - dry-run 确认发布内容无敏感文件
 - 执行 `npm publish --access public`
 - 触发 npmmirror 镜像同步
 - 轮询确认发布生效
 
-### 7. 推送（可选）
+### 6. 推送（可选）
 
 询问用户是否需要推送到 GitHub：
 
