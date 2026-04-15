@@ -190,7 +190,6 @@ export const zhTWMessages = {
 			online: '線上',
 			offline: '離線',
 			viewAll: '查看全部 →',
-			comingSoon: '即將上線',
 		},
 		dashboard: {
 			title: '管理工作台',
@@ -222,6 +221,12 @@ export const zhTWMessages = {
 		},
 		users: {
 			title: '用戶管理',
+			searchPlaceholder: '按名稱或登入名稱搜尋…',
+			columnName: '使用者名稱',
+			columnLoginName: '登入名稱',
+			columnClawCount: '實例數',
+			columnCreatedAt: '註冊時間',
+			columnLastLogin: '最近登入',
 		},
 	},
 	dashboard: {

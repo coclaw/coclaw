@@ -190,7 +190,6 @@ export const ruMessages = {
 			online: 'Онлайн',
 			offline: 'Офлайн',
 			viewAll: 'Показать все →',
-			comingSoon: 'Скоро',
 		},
 		dashboard: {
 			title: 'Консоль администратора',
@@ -222,6 +221,12 @@ export const ruMessages = {
 		},
 		users: {
 			title: 'Управление пользователями',
+			searchPlaceholder: 'Поиск по имени или логину…',
+			columnName: 'Имя',
+			columnLoginName: 'Логин',
+			columnClawCount: 'Экземпляров',
+			columnCreatedAt: 'Зарегистрирован',
+			columnLastLogin: 'Последний вход',
 		},
 	},
 	dashboard: {

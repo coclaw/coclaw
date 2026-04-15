@@ -190,7 +190,6 @@ export const jaMessages = {
 			online: 'オンライン',
 			offline: 'オフライン',
 			viewAll: 'すべて表示 →',
-			comingSoon: '近日公開',
 		},
 		dashboard: {
 			title: '管理コンソール',
@@ -222,6 +221,12 @@ export const jaMessages = {
 		},
 		users: {
 			title: 'ユーザー管理',
+			searchPlaceholder: '名前またはログイン名で検索…',
+			columnName: '名前',
+			columnLoginName: 'ログイン名',
+			columnClawCount: 'インスタンス数',
+			columnCreatedAt: '登録日時',
+			columnLastLogin: '最終ログイン',
 		},
 	},
 	dashboard: {

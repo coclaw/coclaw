@@ -190,7 +190,6 @@ export const esMessages = {
 			online: 'En línea',
 			offline: 'Desconectado',
 			viewAll: 'Ver todo →',
-			comingSoon: 'Próximamente',
 		},
 		dashboard: {
 			title: 'Consola de administración',
@@ -222,6 +221,12 @@ export const esMessages = {
 		},
 		users: {
 			title: 'Gestión de usuarios',
+			searchPlaceholder: 'Buscar por nombre o inicio de sesión…',
+			columnName: 'Nombre',
+			columnLoginName: 'Inicio de sesión',
+			columnClawCount: 'Instancias',
+			columnCreatedAt: 'Registrado',
+			columnLastLogin: 'Último inicio',
 		},
 	},
 	dashboard: {

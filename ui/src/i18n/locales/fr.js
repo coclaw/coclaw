@@ -190,7 +190,6 @@ export const frMessages = {
 			online: 'En ligne',
 			offline: 'Hors ligne',
 			viewAll: 'Tout voir →',
-			comingSoon: 'Bientôt disponible',
 		},
 		dashboard: {
 			title: 'Console d\'administration',
@@ -222,6 +221,12 @@ export const frMessages = {
 		},
 		users: {
 			title: 'Gestion des utilisateurs',
+			searchPlaceholder: 'Rechercher par nom ou identifiant…',
+			columnName: 'Nom',
+			columnLoginName: 'Identifiant',
+			columnClawCount: 'Instances',
+			columnCreatedAt: 'Inscrit le',
+			columnLastLogin: 'Dernière connexion',
 		},
 	},
 	dashboard: {

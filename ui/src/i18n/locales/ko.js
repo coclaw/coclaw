@@ -190,7 +190,6 @@ export const koMessages = {
 			online: '온라인',
 			offline: '오프라인',
 			viewAll: '전체 보기 →',
-			comingSoon: '곧 출시',
 		},
 		dashboard: {
 			title: '관리자 콘솔',
@@ -222,6 +221,12 @@ export const koMessages = {
 		},
 		users: {
 			title: '사용자 관리',
+			searchPlaceholder: '이름 또는 로그인으로 검색…',
+			columnName: '이름',
+			columnLoginName: '로그인',
+			columnClawCount: '인스턴스',
+			columnCreatedAt: '가입일',
+			columnLastLogin: '최근 로그인',
 		},
 	},
 	dashboard: {

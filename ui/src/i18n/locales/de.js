@@ -190,7 +190,6 @@ export const deMessages = {
 			online: 'Online',
 			offline: 'Offline',
 			viewAll: 'Alle anzeigen →',
-			comingSoon: 'Demnächst verfügbar',
 		},
 		dashboard: {
 			title: 'Admin-Konsole',
@@ -222,6 +221,12 @@ export const deMessages = {
 		},
 		users: {
 			title: 'Benutzerverwaltung',
+			searchPlaceholder: 'Nach Name oder Anmeldung suchen…',
+			columnName: 'Name',
+			columnLoginName: 'Anmeldung',
+			columnClawCount: 'Instanzen',
+			columnCreatedAt: 'Registriert',
+			columnLastLogin: 'Letzte Anmeldung',
 		},
 	},
 	dashboard: {

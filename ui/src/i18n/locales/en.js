@@ -190,7 +190,6 @@ export const enMessages = {
 			online: 'Online',
 			offline: 'Offline',
 			viewAll: 'View all →',
-			comingSoon: 'Coming soon',
 		},
 		dashboard: {
 			title: 'Admin Console',
@@ -222,6 +221,12 @@ export const enMessages = {
 		},
 		users: {
 			title: 'User Management',
+			searchPlaceholder: 'Search by name or login…',
+			columnName: 'Name',
+			columnLoginName: 'Login',
+			columnClawCount: 'Instances',
+			columnCreatedAt: 'Joined',
+			columnLastLogin: 'Last Login',
 		},
 	},
 	dashboard: {

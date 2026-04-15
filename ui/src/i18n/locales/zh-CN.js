@@ -190,7 +190,6 @@ export const zhCNMessages = {
 			online: '在线',
 			offline: '离线',
 			viewAll: '查看全部 →',
-			comingSoon: '即将上线',
 		},
 		dashboard: {
 			title: '管理工作台',
@@ -222,6 +221,12 @@ export const zhCNMessages = {
 		},
 		users: {
 			title: '用户管理',
+			searchPlaceholder: '按名称或登录名搜索…',
+			columnName: '用户名',
+			columnLoginName: '登录名',
+			columnClawCount: '实例数',
+			columnCreatedAt: '注册时间',
+			columnLastLogin: '最近登录',
 		},
 	},
 	dashboard: {

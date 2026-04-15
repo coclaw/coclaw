@@ -190,7 +190,6 @@ export const hiMessages = {
 			online: 'ऑनलाइन',
 			offline: 'ऑफ़लाइन',
 			viewAll: 'सभी देखें →',
-			comingSoon: 'जल्द ही आ रहा है',
 		},
 		dashboard: {
 			title: 'एडमिन कंसोल',
@@ -222,6 +221,12 @@ export const hiMessages = {
 		},
 		users: {
 			title: 'उपयोगकर्ता प्रबंधन',
+			searchPlaceholder: 'नाम या लॉगिन से खोजें…',
+			columnName: 'नाम',
+			columnLoginName: 'लॉगिन',
+			columnClawCount: 'इंस्टेंस',
+			columnCreatedAt: 'पंजीकृत',
+			columnLastLogin: 'अंतिम लॉगिन',
 		},
 	},
 	dashboard: {

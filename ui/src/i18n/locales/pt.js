@@ -190,7 +190,6 @@ export const ptMessages = {
 			online: 'Online',
 			offline: 'Offline',
 			viewAll: 'Ver tudo →',
-			comingSoon: 'Em breve',
 		},
 		dashboard: {
 			title: 'Console de Administração',
@@ -222,6 +221,12 @@ export const ptMessages = {
 		},
 		users: {
 			title: 'Gestão de Usuários',
+			searchPlaceholder: 'Buscar por nome ou login…',
+			columnName: 'Nome',
+			columnLoginName: 'Login',
+			columnClawCount: 'Instâncias',
+			columnCreatedAt: 'Cadastrado',
+			columnLastLogin: 'Último Login',
 		},
 	},
 	dashboard: {

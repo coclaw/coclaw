@@ -190,7 +190,6 @@ export const viMessages = {
 			online: 'Trực tuyến',
 			offline: 'Ngoại tuyến',
 			viewAll: 'Xem tất cả →',
-			comingSoon: 'Sắp ra mắt',
 		},
 		dashboard: {
 			title: 'Bảng điều khiển quản trị',
@@ -222,6 +221,12 @@ export const viMessages = {
 		},
 		users: {
 			title: 'Quản lý người dùng',
+			searchPlaceholder: 'Tìm theo tên hoặc tên đăng nhập…',
+			columnName: 'Tên',
+			columnLoginName: 'Tên đăng nhập',
+			columnClawCount: 'Phiên bản',
+			columnCreatedAt: 'Đăng ký',
+			columnLastLogin: 'Đăng nhập gần nhất',
 		},
 	},
 	dashboard: {
