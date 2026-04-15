@@ -310,6 +310,7 @@ export const jaMessages = {
 		toolCallLabel: '{name} を呼び出し',
 		sending: '送信中…',
 		stopSending: '送信を停止',
+		cancelling: 'キャンセル中…',
 		voiceHoldToSpeak: '長押しで録音',
 		voiceRelease: '離して送信',
 		voiceReleaseEnd: '離して終了',

@@ -310,6 +310,7 @@ export const ruMessages = {
 		toolCallLabel: 'Вызов {name}',
 		sending: 'Отправка…',
 		stopSending: 'Остановить отправку',
+		cancelling: 'Отмена…',
 		voiceHoldToSpeak: 'Удержите для записи',
 		voiceRelease: 'Отпустите для отправки',
 		voiceReleaseEnd: 'Отпустите для завершения',

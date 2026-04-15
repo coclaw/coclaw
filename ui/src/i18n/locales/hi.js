@@ -310,6 +310,7 @@ export const hiMessages = {
 		toolCallLabel: '{name} कॉल करें',
 		sending: 'भेज रहा है…',
 		stopSending: 'भेजना रोकें',
+		cancelling: 'रद्द किया जा रहा है…',
 		voiceHoldToSpeak: 'बोलने के लिए दबाए रखें',
 		voiceRelease: 'भेजने के लिए छोड़ें',
 		voiceReleaseEnd: 'समाप्त करने के लिए छोड़ें',

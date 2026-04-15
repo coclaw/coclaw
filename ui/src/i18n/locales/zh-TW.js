@@ -310,6 +310,7 @@ export const zhTWMessages = {
 		toolCallLabel: '呼叫 {name}',
 		sending: '傳送中…',
 		stopSending: '停止傳送',
+		cancelling: '正在取消…',
 		voiceHoldToSpeak: '按住說話',
 		voiceRelease: '放開傳送',
 		voiceReleaseEnd: '放開結束',

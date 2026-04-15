@@ -310,6 +310,7 @@ export const enMessages = {
 		toolCallLabel: 'Call {name}',
 		sending: 'Sending…',
 		stopSending: 'Stop sending',
+		cancelling: 'Cancelling…',
 		voiceHoldToSpeak: 'Hold to speak',
 		voiceRelease: 'Release to send',
 		voiceReleaseEnd: 'Release to end',

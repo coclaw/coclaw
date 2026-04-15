@@ -166,17 +166,18 @@
 					:disabled="disabled"
 					@click="onClickAddFiles"
 				/>
-				<!-- 终止（当 cancelDisabled=true 时按钮禁用） -->
+				<!-- 终止：cancelling=true 时切到旋转 spinner（移动端反馈）+ tooltip 改为"正在取消…"（桌面端 hover 反馈） -->
 				<UButton
 					v-if="sending"
 					data-testid="btn-stop"
 					class="cc-icon-btn-lg"
-					icon="i-lucide-square"
+					:icon="cancelling ? 'i-lucide-loader-circle' : 'i-lucide-square'"
+					:ui="cancelling ? { leadingIcon: 'animate-spin' } : undefined"
 					color="error"
 					variant="soft"
 					size="md"
 					:disabled="cancelDisabled"
-					:title="$t('chat.stopSending')"
+					:title="cancelling ? $t('chat.cancelling') : $t('chat.stopSending')"
 					@click="$emit('cancel')"
 				/>
 				<!-- 发送 -->
@@ -248,6 +249,10 @@ export default {
 			default: false,
 		},
 		cancelDisabled: {
+			type: Boolean,
+			default: false,
+		},
+		cancelling: {
 			type: Boolean,
 			default: false,
 		},

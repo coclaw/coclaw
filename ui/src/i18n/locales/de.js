@@ -310,6 +310,7 @@ export const deMessages = {
 		toolCallLabel: '{name} aufrufen',
 		sending: 'Wird gesendet…',
 		stopSending: 'Senden abbrechen',
+		cancelling: 'Wird abgebrochen…',
 		voiceHoldToSpeak: 'Halten zum Sprechen',
 		voiceRelease: 'Loslassen zum Senden',
 		voiceReleaseEnd: 'Loslassen zum Beenden',

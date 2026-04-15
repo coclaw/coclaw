@@ -24,7 +24,7 @@ const mockAddFiles = vi.fn();
 vi.mock('../components/ChatInput.vue', () => ({
 	default: {
 		name: 'ChatInput',
-		props: ['modelValue', 'sending', 'disabled', 'cancelDisabled'],
+		props: ['modelValue', 'sending', 'disabled', 'cancelDisabled', 'cancelling'],
 		emits: ['update:modelValue', 'send', 'cancel'],
 		template: '<div class="input-stub"><slot name="prepend" /></div>',
 		methods: {
@@ -340,6 +340,20 @@ describe('ChatPage', () => {
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });
 		expect(input.props('cancelDisabled')).toBe(true);
+		// cancelling=true 让按钮显示 spinner + "正在取消…" tooltip（移动端可见反馈）
+		expect(input.props('cancelling')).toBe(true);
+	});
+
+	test('ChatInput cancelling=false 当 isCancelling=false（默认状态，按钮显示停止图标）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__slashCommandType = null;
+		chatStore.__cancelling = null;
+		await wrapper.vm.$nextTick();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		expect(input.props('cancelling')).toBe(false);
 	});
 
 	// SlashCommandMenu disabled 应只反映"避并发 / 等加载"，

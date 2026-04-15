@@ -310,6 +310,7 @@ export const zhCNMessages = {
 		toolCallLabel: '调用 {name}',
 		sending: '发送中…',
 		stopSending: '停止发送',
+		cancelling: '正在取消…',
 		voiceHoldToSpeak: '按住说话',
 		voiceRelease: '松开发送',
 		voiceReleaseEnd: '松开结束',

@@ -310,6 +310,7 @@ export const esMessages = {
 		toolCallLabel: 'Llamar {name}',
 		sending: 'Enviando…',
 		stopSending: 'Detener envío',
+		cancelling: 'Cancelando…',
 		voiceHoldToSpeak: 'Mantén para hablar',
 		voiceRelease: 'Suelta para enviar',
 		voiceReleaseEnd: 'Suelta para terminar',

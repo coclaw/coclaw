@@ -310,6 +310,7 @@ export const frMessages = {
 		toolCallLabel: 'Appel {name}',
 		sending: 'Envoi…',
 		stopSending: 'Arrêter l\'envoi',
+		cancelling: 'Annulation…',
 		voiceHoldToSpeak: 'Maintenir pour parler',
 		voiceRelease: 'Relâcher pour envoyer',
 		voiceReleaseEnd: 'Relâcher pour terminer',

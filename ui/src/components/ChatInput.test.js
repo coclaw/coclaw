@@ -40,7 +40,7 @@ const UTextareaStub = {
 };
 
 const UButtonStub = {
-	props: ['icon', 'variant', 'color', 'size', 'disabled', 'loading'],
+	props: ['icon', 'variant', 'color', 'size', 'disabled', 'loading', 'ui'],
 	emits: ['click'],
 	template: '<button v-bind="$attrs" @click="$emit(\'click\')"><slot /></button>',
 };
@@ -225,6 +225,26 @@ describe('ChatInput', () => {
 			.find((b) => b.attributes('title') === 'chat.stopSending');
 		expect(stopBtnStub).toBeTruthy();
 		expect(stopBtnStub.props('disabled')).toBe(false);
+	});
+
+	test('cancelling=false: stop button uses square icon + chat.stopSending title (default)', () => {
+		const wrapper = createWrapper({ sending: true });
+		const stopBtnStub = wrapper.findAllComponents(UButtonStub)
+			.find((b) => b.attributes('title') === 'chat.stopSending');
+		expect(stopBtnStub).toBeTruthy();
+		expect(stopBtnStub.props('icon')).toBe('i-lucide-square');
+		expect(stopBtnStub.props('ui')).toBeUndefined();
+	});
+
+	test('cancelling=true: stop button swaps to spinner + chat.cancelling title', () => {
+		const wrapper = createWrapper({ sending: true, cancelling: true, cancelDisabled: true });
+		const stopBtnStub = wrapper.findAllComponents(UButtonStub)
+			.find((b) => b.attributes('title') === 'chat.cancelling');
+		expect(stopBtnStub).toBeTruthy();
+		expect(stopBtnStub.props('icon')).toBe('i-lucide-loader-circle');
+		expect(stopBtnStub.props('ui')).toEqual({ leadingIcon: 'animate-spin' });
+		// 仍然禁用，防止重复触发
+		expect(stopBtnStub.props('disabled')).toBe(true);
 	});
 
 	test('submit 后 inputFiles 保留（由上传过程逐个移除）', () => {

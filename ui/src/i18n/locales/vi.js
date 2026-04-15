@@ -310,6 +310,7 @@ export const viMessages = {
 		toolCallLabel: 'Gọi {name}',
 		sending: 'Đang gửi…',
 		stopSending: 'Dừng gửi',
+		cancelling: 'Đang hủy…',
 		voiceHoldToSpeak: 'Giữ để nói',
 		voiceRelease: 'Thả để gửi',
 		voiceReleaseEnd: 'Thả để kết thúc',

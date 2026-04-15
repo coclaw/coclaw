@@ -310,6 +310,7 @@ export const koMessages = {
 		toolCallLabel: '{name} 호출',
 		sending: '전송 중…',
 		stopSending: '전송 중지',
+		cancelling: '취소 중…',
 		voiceHoldToSpeak: '길게 눌러 말하기',
 		voiceRelease: '놓으면 전송',
 		voiceReleaseEnd: '놓으면 종료',

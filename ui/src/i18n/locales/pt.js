@@ -310,6 +310,7 @@ export const ptMessages = {
 		toolCallLabel: 'Chamar {name}',
 		sending: 'Enviando…',
 		stopSending: 'Parar envio',
+		cancelling: 'Cancelando…',
 		voiceHoldToSpeak: 'Segure para falar',
 		voiceRelease: 'Solte para enviar',
 		voiceReleaseEnd: 'Solte para encerrar',
