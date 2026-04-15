@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { login, navigateToChat, waitChatReady } from './helpers.js';
+import { login, navigateToChat, waitChatReady, evalStore } from './helpers.js';
 
 /**
  * 斜杠命令 E2E 测试
@@ -91,6 +91,38 @@ test.describe('斜杠命令 @chat', () => {
 
 		// 等待命令完成
 		await expect(stopBtn).not.toBeVisible({ timeout: 60_000 });
+	});
+
+	// claw 离线时不应禁用斜杠菜单按钮——业务层 sendSlashCommand 已用 wait-mode
+	// 排队（与 sendMessage 对齐），离线点击会被 conn.waitReady() 排队等连接恢复
+	test('claw 离线时斜杠菜单按钮仍可点击', async ({ page }) => {
+		test.setTimeout(30_000);
+		test.skip(!sessionId, 'No chat session available');
+		await waitChatReady(page);
+
+		const btn = page.getByTestId('btn-slash-menu');
+		await expect(btn).toBeEnabled({ timeout: 5000 });
+
+		// 强制所有 claw 离线
+		await evalStore(page, 'claws', `
+			for (const claw of store.items) {
+				store.updateClawOnline(claw.id, false);
+			}
+		`);
+
+		// 离线 banner 出现确认状态生效
+		const offlineBanner = page.locator('[data-testid="chat-root"] .text-warning');
+		await expect(offlineBanner).toBeVisible({ timeout: 5000 });
+
+		// 关键断言：斜杠菜单按钮仍 enabled
+		await expect(btn).toBeEnabled({ timeout: 3000 });
+
+		// 恢复在线避免污染后续测试
+		await evalStore(page, 'claws', `
+			for (const claw of store.items) {
+				store.updateClawOnline(claw.id, true);
+			}
+		`);
 	});
 
 	test('topic 模式下不显示斜杠命令菜单', async ({ page }) => {
