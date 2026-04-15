@@ -1,84 +1,135 @@
 <template>
 	<div class="flex min-h-0 flex-1 flex-col">
-		<MobilePageHeader :title="$t('adminDashboard.title')" />
+		<MobilePageHeader :title="$t('admin.dashboard.title')" />
 		<main class="flex-1 overflow-auto px-3 pt-4 pb-8 sm:px-4 lg:px-5">
 			<section class="mx-auto flex w-full max-w-3xl flex-col gap-5">
-				<!-- 桌面端标题 -->
-				<h1 class="hidden text-base font-medium md:flex">{{ $t('adminDashboard.title') }}</h1>
+				<!-- 桌面端标题 + 导航 -->
+				<header class="hidden items-center justify-between md:flex">
+					<h1 class="text-base font-medium">{{ $t('admin.dashboard.title') }}</h1>
+					<AdminNavTabs />
+				</header>
 
-				<p v-if="loading" class="text-sm text-muted">{{ $t('chat.loading') }}</p>
+				<p v-if="adminStore.dashboardLoading && !adminStore.dashboard" class="text-sm text-muted">{{ $t('chat.loading') }}</p>
 
-				<template v-if="!loading && data">
-					<!-- 用户统计卡片 -->
+				<template v-if="adminStore.dashboard">
+					<!-- Primary: 实例维度三卡片 -->
 					<div class="grid grid-cols-3 gap-3">
 						<div class="rounded-xl bg-elevated p-4 text-center">
-							<p class="text-2xl font-semibold">{{ data.users.total }}</p>
-							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.totalUsers') }}</p>
+							<p class="text-2xl font-semibold">{{ adminStore.dashboard.claws.total }}</p>
+							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.totalClaws') }}</p>
 						</div>
 						<div class="rounded-xl bg-elevated p-4 text-center">
-							<p class="text-2xl font-semibold">{{ data.users.todayNew }}</p>
-							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.todayNew') }}</p>
+							<p class="text-2xl font-semibold">{{ adminStore.dashboard.claws.online }}</p>
+							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.onlineClaws') }}</p>
 						</div>
 						<div class="rounded-xl bg-elevated p-4 text-center">
-							<p class="text-2xl font-semibold">{{ data.users.todayActive }}</p>
-							<p class="mt-1 text-xs text-dimmed">{{ $t('adminDashboard.todayActive') }}</p>
+							<p class="text-2xl font-semibold">{{ adminStore.dashboard.claws.todayNew }}</p>
+							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.todayNewClaws') }}</p>
 						</div>
 					</div>
 
-					<!-- Claw 统计 + 版本 -->
+					<!-- Secondary: 用户维度三卡片 -->
+					<div class="grid grid-cols-3 gap-3">
+						<div class="rounded-lg bg-elevated/60 p-3 text-center">
+							<p class="text-lg font-medium">{{ adminStore.dashboard.users.total }}</p>
+							<p class="mt-0.5 text-[11px] text-dimmed">{{ $t('admin.dashboard.totalUsers') }}</p>
+						</div>
+						<div class="rounded-lg bg-elevated/60 p-3 text-center">
+							<p class="text-lg font-medium">{{ adminStore.dashboard.users.todayNew }}</p>
+							<p class="mt-0.5 text-[11px] text-dimmed">{{ $t('admin.dashboard.todayNewUsers') }}</p>
+						</div>
+						<div class="rounded-lg bg-elevated/60 p-3 text-center">
+							<p class="text-lg font-medium">{{ adminStore.dashboard.users.todayActive }}</p>
+							<p class="mt-0.5 text-[11px] text-dimmed">{{ $t('admin.dashboard.todayActiveUsers') }}</p>
+						</div>
+					</div>
+
+					<!-- 版本 -->
 					<div class="rounded-xl bg-elevated p-4">
 						<div class="flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.totalClaws') }}</span>
-							<span class="font-medium">{{ data.claws.total }} / {{ $t('adminDashboard.onlineClaws') }} {{ data.claws.online }}</span>
+							<span class="text-dimmed">{{ $t('admin.dashboard.serverVersion') }}</span>
+							<span class="font-medium">v{{ adminStore.dashboard.version.server }}</span>
 						</div>
 						<div class="mt-2 flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.serverVersion') }}</span>
-							<span class="font-medium">v{{ data.version.server }}</span>
-						</div>
-						<div class="mt-2 flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.uiVersion') }}</span>
+							<span class="text-dimmed">{{ $t('admin.dashboard.uiVersion') }}</span>
 							<span class="font-medium">v{{ uiVersion }}</span>
 						</div>
 						<div class="mt-2 flex items-center justify-between text-sm">
-							<span class="text-dimmed">{{ $t('adminDashboard.pluginVersion') }}</span>
-							<span class="font-medium">v{{ data.version.plugin }}</span>
+							<span class="text-dimmed">{{ $t('admin.dashboard.pluginVersion') }}</span>
+							<span class="font-medium">v{{ adminStore.dashboard.version.plugin ?? '—' }}</span>
 						</div>
 					</div>
 
-					<!-- 最近活跃用户 -->
+					<!-- 摘要：最近绑定实例 -->
 					<div class="rounded-xl bg-elevated p-4">
-						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.topActiveUsers') }}</h2>
-						<p v-if="!data.topActiveUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
+						<div class="mb-3 flex items-center justify-between">
+							<h2 class="text-sm font-medium">{{ $t('admin.dashboard.sectionLatestClaws') }}</h2>
+							<RouterLink to="/admin/claws" class="text-xs text-primary hover:underline">{{ $t('admin.common.viewAll') }}</RouterLink>
+						</div>
+						<p v-if="!adminStore.dashboard.latestBoundClaws?.length" class="text-sm text-dimmed">{{ $t('admin.common.noData') }}</p>
 						<ul v-else class="space-y-2">
 							<li
-								v-for="(user, idx) in data.topActiveUsers"
-								:key="user.id"
+								v-for="(claw, idx) in adminStore.dashboard.latestBoundClaws"
+								:key="claw.id"
 								class="flex items-center justify-between text-sm"
 							>
-								<span>
-									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name || user.loginName || user.id }}</span>
+								<span class="flex min-w-0 items-center gap-2">
+									<span class="shrink-0 text-dimmed">{{ idx + 1 }}.</span>
+									<span
+										:class="[
+											'inline-block h-2 w-2 shrink-0 rounded-full',
+											claw.online ? 'bg-green-500' : 'bg-neutral-400',
+										]"
+										:aria-label="claw.online ? $t('admin.common.online') : $t('admin.common.offline')"
+									></span>
+									<span class="truncate">{{ claw.name || claw.id }}</span>
+									<span v-if="claw.userName" class="truncate text-xs text-dimmed">· {{ claw.userName }}</span>
 								</span>
-								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.lastLoginAt) }}</span>
+								<span class="shrink-0 pl-2 text-xs text-dimmed">{{ formatTimeAgo(claw.createdAt) }}</span>
 							</li>
 						</ul>
 					</div>
 
-					<!-- 最新注册用户 -->
+					<!-- 摘要：最近活跃用户 -->
 					<div class="rounded-xl bg-elevated p-4">
-						<h2 class="mb-3 text-sm font-medium">{{ $t('adminDashboard.latestRegisteredUsers') }}</h2>
-						<p v-if="!data.latestRegisteredUsers?.length" class="text-sm text-dimmed">{{ $t('adminDashboard.noData') }}</p>
+						<div class="mb-3 flex items-center justify-between">
+							<h2 class="text-sm font-medium">{{ $t('admin.dashboard.sectionTopActiveUsers') }}</h2>
+							<RouterLink to="/admin/users" class="text-xs text-primary hover:underline">{{ $t('admin.common.viewAll') }}</RouterLink>
+						</div>
+						<p v-if="!adminStore.dashboard.topActiveUsers?.length" class="text-sm text-dimmed">{{ $t('admin.common.noData') }}</p>
 						<ul v-else class="space-y-2">
 							<li
-								v-for="(user, idx) in data.latestRegisteredUsers"
+								v-for="(user, idx) in adminStore.dashboard.topActiveUsers"
 								:key="user.id"
 								class="flex items-center justify-between text-sm"
 							>
-								<span>
-									<span class="mr-2 text-dimmed">{{ idx + 1 }}.</span>
-									<span>{{ user.name || user.loginName || user.id }}</span>
+								<span class="flex min-w-0 items-center gap-2">
+									<span class="shrink-0 text-dimmed">{{ idx + 1 }}.</span>
+									<span class="truncate">{{ user.name || user.loginName || user.id }}</span>
 								</span>
-								<span class="text-xs text-dimmed">{{ formatTimeAgo(user.createdAt) }}</span>
+								<span class="shrink-0 pl-2 text-xs text-dimmed">{{ formatTimeAgo(user.lastLoginAt) }}</span>
+							</li>
+						</ul>
+					</div>
+
+					<!-- 摘要：最新注册用户 -->
+					<div class="rounded-xl bg-elevated p-4">
+						<div class="mb-3 flex items-center justify-between">
+							<h2 class="text-sm font-medium">{{ $t('admin.dashboard.sectionLatestRegisteredUsers') }}</h2>
+							<RouterLink to="/admin/users" class="text-xs text-primary hover:underline">{{ $t('admin.common.viewAll') }}</RouterLink>
+						</div>
+						<p v-if="!adminStore.dashboard.latestRegisteredUsers?.length" class="text-sm text-dimmed">{{ $t('admin.common.noData') }}</p>
+						<ul v-else class="space-y-2">
+							<li
+								v-for="(user, idx) in adminStore.dashboard.latestRegisteredUsers"
+								:key="user.id"
+								class="flex items-center justify-between text-sm"
+							>
+								<span class="flex min-w-0 items-center gap-2">
+									<span class="shrink-0 text-dimmed">{{ idx + 1 }}.</span>
+									<span class="truncate">{{ user.name || user.loginName || user.id }}</span>
+								</span>
+								<span class="shrink-0 pl-2 text-xs text-dimmed">{{ formatTimeAgo(user.createdAt) }}</span>
 							</li>
 						</ul>
 					</div>
@@ -89,20 +140,21 @@
 </template>
 
 <script>
+import { RouterLink } from 'vue-router';
+
 import { useNotify } from '../composables/use-notify.js';
-import { fetchAdminDashboard } from '../services/admin.api.js';
+import { useAdminStore } from '../stores/admin.store.js';
 import MobilePageHeader from '../components/MobilePageHeader.vue';
+import AdminNavTabs from '../components/AdminNavTabs.vue';
 
 export default {
 	name: 'AdminDashboardPage',
-	components: { MobilePageHeader },
+	components: { MobilePageHeader, AdminNavTabs, RouterLink },
 	setup() {
-		return { notify: useNotify() };
+		return { notify: useNotify(), adminStore: useAdminStore() };
 	},
 	data() {
 		return {
-			loading: false,
-			data: null,
 			uiVersion: __APP_VERSION__,
 		};
 	},
@@ -132,16 +184,12 @@ export default {
 	},
 	methods: {
 		async loadData() {
-			this.loading = true;
 			try {
-				this.data = await fetchAdminDashboard();
+				await this.adminStore.fetchDashboard();
 			}
 			catch (err) {
 				console.warn('[AdminDashboardPage] loadData failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? 'Load failed');
-			}
-			finally {
-				this.loading = false;
 			}
 		},
 		formatTimeAgo(iso) {

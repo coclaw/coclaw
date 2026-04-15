@@ -14,6 +14,8 @@ import AboutPage from '../views/AboutPage.vue';
 import ClaimPage from '../views/ClaimPage.vue';
 import FileManagerPage from '../views/FileManagerPage.vue';
 import AdminDashboardPage from '../views/AdminDashboardPage.vue';
+import AdminClawsPage from '../views/AdminClawsPage.vue';
+import AdminUsersPage from '../views/AdminUsersPage.vue';
 import { useAuthStore } from '../stores/auth.store.js';
 import { isNative } from '../utils/capacitor-app.js';
 
@@ -101,6 +103,18 @@ const routes = [
 				path: 'admin/dashboard',
 				name: 'admin-dashboard',
 				component: AdminDashboardPage,
+				meta: { requiresAuth: true, hideMobileNav: true },
+			},
+			{
+				path: 'admin/claws',
+				name: 'admin-claws',
+				component: AdminClawsPage,
+				meta: { requiresAuth: true, hideMobileNav: true },
+			},
+			{
+				path: 'admin/users',
+				name: 'admin-users',
+				component: AdminUsersPage,
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
