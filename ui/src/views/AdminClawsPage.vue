@@ -28,7 +28,6 @@
 						:loading="adminStore.claws.loading"
 						:empty="$t('admin.common.noData')"
 						:get-row-id="getRowId"
-						:get-row-can-expand="() => true"
 						:on-select="onRowSelect"
 						:ui="{ th: 'p-2', td: 'p-2', tr: 'data-[selectable=true]:cursor-pointer' }"
 					>
