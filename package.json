@@ -40,5 +40,12 @@
 		"c8": "^10.1.3",
 		"culori": "^4.0.2",
 		"eslint": "^9.20.1"
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"@prisma/client",
+			"@prisma/engines",
+			"prisma"
+		]
 	}
 }

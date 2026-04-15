@@ -1,6 +1,11 @@
 # ── 阶段 1: 安装依赖 ──
 FROM node:22-slim AS deps
 WORKDIR /app
+# node:22-slim 默认不含 openssl 系统库；prisma 的平台检测据此下载对应 engine，
+# 缺失时会回退到 debian-openssl-1.1.x，与最终 runner 阶段的 openssl 3 不匹配。
+RUN echo "deb http://mirrors.ustc.edu.cn/debian/ bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list \
+	&& apt-get update && apt-get install -y --no-install-recommends openssl \
+	&& rm -rf /var/lib/apt/lists/*
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY server/package.json server/
 RUN corepack enable && pnpm install --frozen-lockfile --filter @coclaw/server
