@@ -26,13 +26,21 @@ vi.mock('../components/ChatInput.vue', () => ({
 		name: 'ChatInput',
 		props: ['modelValue', 'sending', 'disabled', 'cancelDisabled'],
 		emits: ['update:modelValue', 'send', 'cancel'],
-		template: '<div class="input-stub" />',
+		template: '<div class="input-stub"><slot name="prepend" /></div>',
 		methods: {
 			restoreFiles: (...args) => mockRestoreFiles(...args),
 			clearInputFiles: (...args) => mockClearInputFiles(...args),
 			removeFileById: (...args) => mockRemoveFileById(...args),
 			addFiles: (...args) => mockAddFiles(...args),
 		},
+	},
+}));
+vi.mock('../components/chat/SlashCommandMenu.vue', () => ({
+	default: {
+		name: 'SlashCommandMenu',
+		props: ['disabled'],
+		emits: ['command'],
+		template: '<div class="slash-menu-stub" />',
 	},
 }));
 
@@ -98,7 +106,6 @@ const i18nMap = {
 	'chat.errRtcSendFailed': 'Send failed (rtc)',
 	'chat.errUnknown': 'Something went wrong',
 	'chat.cancelNotSupported': 'Cancel not supported',
-	'chat.cancelAbortFailed': 'Cancel failed',
 	'chat.upgradeOpenClawHint': 'Upgrade OpenClaw',
 };
 
@@ -320,6 +327,46 @@ describe('ChatPage', () => {
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });
 		expect(input.props('cancelDisabled')).toBe(false);
+	});
+
+	test('ChatInput cancelDisabled=true 当 isCancelling=true（用户已点 STOP，等 run 结束）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.__slashCommandType = null;
+		// 注入 __cancelling 模拟协调进行中（isCancelling getter 返回 true）
+		chatStore.__cancelling = { sid: 'sess-x', promise: new Promise(() => {}), resolve: () => {}, tickTimer: null, tickSeq: 0 };
+		await wrapper.vm.$nextTick();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		expect(input.props('cancelDisabled')).toBe(true);
+	});
+
+	// SlashCommandMenu disabled 应只反映"避并发 / 等加载"，
+	// 不应把 claw.online 作为 gating —— 业务层 sendSlashCommand 已用 wait-mode
+	// 排队（与 sendMessage 对齐），离线点击会被 conn.waitReady() 排队等连接恢复。
+	test('SlashCommandMenu 在 claw 离线时不 disabled（只渲染，不拦启动）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: false }]);
+		await wrapper.vm.$nextTick();
+
+		const slashMenu = wrapper.findComponent({ name: 'SlashCommandMenu' });
+		expect(slashMenu.exists()).toBe(true);
+		expect(slashMenu.props('disabled')).toBe(false);
+	});
+
+	test('SlashCommandMenu 在发送中时 disabled', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		chatStore.sending = true;
+		await wrapper.vm.$nextTick();
+
+		const slashMenu = wrapper.findComponent({ name: 'SlashCommandMenu' });
+		expect(slashMenu.exists()).toBe(true);
+		expect(slashMenu.props('disabled')).toBe(true);
 	});
 });
 
@@ -690,31 +737,12 @@ describe('ChatPage cancel and cleanup', () => {
 		expect(mockNotify.error).not.toHaveBeenCalled();
 	});
 
-	test('onCancelSend: reason=abort-threw → notify error + console.error', async () => {
-		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+	test('onCancelSend: reason=run-ended 静默（用户点 STOP 但 run 先自然结束）', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
 		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
-			Promise.resolve({ ok: false, reason: 'abort-threw', error: 'boom' }),
-		);
-		await flushPromises();
-
-		wrapper.vm.onCancelSend();
-		await flushPromises();
-
-		expect(mockNotify.error).toHaveBeenCalledWith('Cancel failed');
-		expect(errSpy).toHaveBeenCalledWith('[chat] coclaw.agent.abort threw:', 'boom');
-		expect(mockNotify.warning).not.toHaveBeenCalled();
-		errSpy.mockRestore();
-	});
-
-	test('onCancelSend: reason=not-found 静默（竞态，run 已自然结束）', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
-			Promise.resolve({ ok: false, reason: 'not-found' }),
+			Promise.resolve({ ok: false, reason: 'run-ended' }),
 		);
 		await flushPromises();
 
@@ -723,24 +751,6 @@ describe('ChatPage cancel and cleanup', () => {
 
 		expect(mockNotify.warning).not.toHaveBeenCalled();
 		expect(mockNotify.error).not.toHaveBeenCalled();
-	});
-
-	test('onCancelSend: reason=rpc-error 静默（底层连接层已 notify）', async () => {
-		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
-			Promise.resolve({ ok: false, reason: 'rpc-error', error: 'WS_CLOSED' }),
-		);
-		await flushPromises();
-
-		wrapper.vm.onCancelSend();
-		await flushPromises();
-
-		expect(mockNotify.warning).not.toHaveBeenCalled();
-		expect(mockNotify.error).not.toHaveBeenCalled();
-		debugSpy.mockRestore();
 	});
 
 	test('beforeUnmount 调用 chatStore.cleanup', async () => {
@@ -777,7 +787,11 @@ describe('ChatPage watchers', () => {
 		chatStoreManager.__reset();
 	});
 
-	test('bot 离线时取消发送', async () => {
+	// claw.online 是 server 侧观测到的存活信号（rendering signal），
+	// 与 RTC DC / RPC 生命周期解耦——不应在 online→offline 转换时主动
+	// cancel 正在跑的 agent run（否则会触发 settling(cancel) 僵尸，详见
+	// docs/architecture/communication-model.md §3）。
+	test('claw 下线时不应触发 cancelSend（presence 与 RPC 生命周期解耦）', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
 		chatStore.clawId = 'bot-1';
@@ -787,11 +801,11 @@ describe('ChatPage watchers', () => {
 		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 		await wrapper.vm.$nextTick();
 
-		// bot 下线
+		// claw 下线
 		clawsStore.updateClawOnline('bot-1', false);
 		await wrapper.vm.$nextTick();
 
-		expect(cancelSpy).toHaveBeenCalled();
+		expect(cancelSpy).not.toHaveBeenCalled();
 	});
 
 	test('bot 重新上线且连接就绪时 connReady 驱动加载消息', async () => {

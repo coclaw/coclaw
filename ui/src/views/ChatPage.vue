@@ -112,7 +112,7 @@
 			:sending="chatStore?.isSending ?? false"
 			:file-upload-state="chatStore?.fileUploadState ?? null"
 			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isLoadingChat) : (!routeClawId || isLoadingChat)))"
-			:cancel-disabled="!!chatStore?.__slashCommandType"
+			:cancel-disabled="!!chatStore?.__slashCommandType || !!chatStore?.isCancelling"
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
@@ -120,7 +120,7 @@
 				<SlashCommandMenu
 					v-if="showSlashMenu"
 					class="absolute bottom-full left-0 z-10 pb-1"
-					:disabled="chatStore?.isSending || isClawOffline || isLoadingChat"
+					:disabled="chatStore?.isSending || isLoadingChat"
 					@command="onSlashCommand"
 				/>
 			</template>
@@ -452,12 +452,6 @@ export default {
 		agentVerified(verified) {
 			if (!this.isTopicRoute && verified === false) this.__validateRoute();
 		},
-		isClawOffline(offline) {
-			if (offline) {
-				this.chatStore?.cancelSend();
-			}
-			// 上线后由 connReady watcher 驱动消息加载
-		},
 		/** connReady 驱动消息加载：首次加载或重连刷新
 		 * immediate: 确保组件挂载时 connReady 已为 true 的场景也能触发加载
 		 * （如返回列表后重新进入会话，claw 已连接但 watcher 不会为初始值触发）
@@ -717,25 +711,22 @@ export default {
 		},
 
 		onCancelSend() {
+			console.info('[chat] onCancelSend clicked');
 			const pending = this.chatStore?.cancelSend();
 			if (!pending) return;
-			// cancelSend 返回的 promise 不会 reject（reject 已被收敛为 { ok:false, reason:'rpc-error' }）
+			// cancelSend 协调任务：终态为 immediate / not-supported / run-ended / superseded
+			// 新状态机下 rpc-error / abort-threw / not-found 内部消化重试，不再透出给调用方
 			pending.then((result) => {
+				console.info('[chat] cancelSend result', result);
 				if (!result || result.ok) return;
-				// reason='not-found' / 'rpc-error' 属良性（竞态/底层已 notify），不打扰用户
 				if (result.reason === 'not-supported') {
 					this.notify.warning({
 						title: this.$t('chat.cancelNotSupported'),
 						description: this.$t('chat.upgradeOpenClawHint'),
 					});
 				}
-				else if (result.reason === 'abort-threw') {
-					console.error('[chat] coclaw.agent.abort threw:', result.error);
-					this.notify.error(this.$t('chat.cancelAbortFailed'));
-				}
-				else if (result.reason === 'rpc-error') {
-					console.debug('[chat] coclaw.agent.abort rpc error:', result.error);
-				}
+				// run-ended：用户点了 STOP 但 run 先自然结束，静默（体感与取消成功一致）
+				// superseded：用户发起新 send 超越了旧取消意图，静默
 			});
 		},
 

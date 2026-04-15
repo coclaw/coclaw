@@ -354,7 +354,6 @@ export const jaMessages = {
 		scrollUpForMore: '↑ スクロールして以前のメッセージを表示',
 		upgradeOpenClawHint: 'OpenClaw のアップグレードが必要な場合があります。OpenClaw 自身にアップグレードを依頼するか、以下を実行してください：npm install -g openclaw',
 		cancelNotSupported: '現在の OpenClaw バージョンでは実行中のエージェントをキャンセルできません。バックグラウンドで実行が続行されます。',
-		cancelAbortFailed: '実行中のエージェントのキャンセルに失敗しました。バックグラウンドで実行が続行されます。',
 		clawThinking: '考え中',
 		thinkingFor: '{time} 考えました',
 	},

@@ -354,7 +354,6 @@ export const koMessages = {
 		scrollUpForMore: '↑ 위로 스크롤하여 이전 메시지 보기',
 		upgradeOpenClawHint: 'OpenClaw를 업그레이드해야 할 수 있습니다. OpenClaw에게 자체 업그레이드를 요청하거나 npm install -g openclaw를 실행하세요',
 		cancelNotSupported: '현재 OpenClaw 버전은 실행 중인 에이전트를 취소할 수 없습니다. 백그라운드에서 계속 실행됩니다.',
-		cancelAbortFailed: '실행 중인 에이전트 취소에 실패했습니다. 백그라운드에서 계속 실행됩니다.',
 		clawThinking: '생각 중',
 		thinkingFor: '{time} 동안 생각 중',
 	},

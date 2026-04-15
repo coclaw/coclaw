@@ -13,8 +13,12 @@ import { chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
 import { getReadyConn } from './get-ready-conn.js';
+import { remoteLog } from '../services/remote-log.js';
 
 const MSG_PAGE_SIZE = 50;
+
+/** cancelSend accepted 分支的 tick 重试间隔（ms） */
+const CANCEL_TICK_MS = 500;
 
 /** DC/WS 断连相关的错误码 */
 const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED', 'RTC_LOST', 'CONNECT_TIMEOUT']);
@@ -87,6 +91,13 @@ export function createChatStore(storeKey, opts = {}) {
 			__cancelReject: null,
 			__retried: false,
 
+			/**
+			 * 取消协调状态：accepted 后用户点 STOP 时建立，直到 run 结束或 RPC 达成终态清除。
+			 * 存在期间 isCancelling=true，UI 将 STOP 按钮禁用以防重复触发。
+			 * @type {{ sid: string, promise: Promise<object>, resolve: Function, tickTimer: ReturnType<typeof setTimeout>|null, tickSeq: number } | null}
+			 */
+			__cancelling: null,
+
 			// 斜杠命令
 			__slashCommandRunId: null,
 			__slashCommandType: null,
@@ -144,6 +155,10 @@ export function createChatStore(storeKey, opts = {}) {
 			/** 是否有不可中断的本地操作（发送、上传、reset） */
 			busy() {
 				return this.sending || this.uploadingFiles || this.resetting;
+			},
+			/** 取消协调任务是否正在进行（用户点 STOP 后到 run 结束前） */
+			isCancelling() {
+				return !!this.__cancelling;
 			},
 		},
 		actions: {
@@ -405,6 +420,13 @@ export function createChatStore(storeKey, opts = {}) {
 					throw new Error('Claw not connected');
 				}
 
+				// 用户发起新 send → 旧的 cancel 协调意图已被用户自身超越（"算了，继续聊"）。
+				// 必须同步丢弃 __cancelling，否则 chat 模式下同 sessionId 的新 run 会被
+				// 残留 tick 的 abort RPC 命中并误杀（空窗期结束后 ACTIVE_EMBEDDED_RUNS 会
+				// 命中新 run 的 handle）。__clearCancelling 会清 tickTimer 并把 pending
+				// coordination promise 以 superseded 终态结掉，调用方 .then 仍能正常 settle。
+				this.__clearCancelling('superseded');
+
 				console.debug('[chat] sendMessage sessionId=%s topicMode=%s files=%d', this.sessionId, this.topicMode, files?.length ?? 0);
 				this.sending = true;
 				this.streamingRunId = null;
@@ -661,19 +683,30 @@ export function createChatStore(storeKey, opts = {}) {
 			/**
 			 * 用户主动取消
 			 *
-			 * 未 accepted（pre-acceptance）：reject RPC，sendMessage 的 USER_CANCELLED 分支清理乐观消息。
+			 * 未 accepted（pre-acceptance）：reject 原 RPC，sendMessage 的 USER_CANCELLED 分支清理乐观消息。
 			 *
 			 * 已 accepted（post-acceptance）：服务端 run 仍在继续执行。
 			 *   不 reject 原 RPC、不立即 reload，仅将 run 置为 settling（保留 streamingMsgs）。
-			 *   另外通过 coclaw.agent.abort RPC 请求插件侧门真正终止 run。
-			 *   UI 输入框因 inputLocked=sending&&!__accepted 已 accepted 情况下保持启用，
-			 *   仅发送按钮保持 STOP 状态直到 lifecycle:end → completeSettle。
+			 *   建立 __cancelling 协调状态，按 CANCEL_TICK_MS 间隔发 coclaw.agent.abort RPC
+			 *   重试直到：
+			 *     - RPC 返回 ok=true（immediate hit）
+			 *     - RPC 返回 not-supported（侧门缺失，静默降级）
+			 *     - run 自然结束（isRunning 变 false，lifecycle:end / completion / reconcile 驱动）
+			 *   期间 isCancelling=true，UI 禁用 STOP 按钮防止重复触发；无 TTL——协调生命期等于 run 生命期。
 			 *
-			 * @returns {Promise<object> | null} accepted 分支且有可用 sessionId 时返回 RPC promise，
-			 *   resolve 为 { ok: true } / { ok: false, reason, error? }；其它情况返回 null。
-			 *   调用方根据 reason 决定是否 notify。
+			 * @returns {Promise<object> | null} accepted 分支且有可用 sid/conn 时返回协调 promise，
+			 *   resolve 为：
+			 *     - `{ ok: true, aborted: 'immediate' }` RPC 成功 abort
+			 *     - `{ ok: false, reason: 'not-supported' }` 侧门缺失
+			 *     - `{ ok: false, reason: 'run-ended' }` run 已自然结束
+			 *     - `{ ok: false, reason: 'superseded' }` 用户发起了新的 send，
+			 *       旧取消意图被自身行为超越（chatStore.__clearCancelling('superseded')）
+			 *   其它情况（未 accepted / sid 不可知 / conn 不可用）返回 null，调用方降级处理
 			 */
 			cancelSend() {
+				console.info('[chat] cancelSend enter accepted=%s sending=%s runKey=%s',
+					this.__accepted, this.sending, this.runKey);
+
 				// 取消进行中的文件上传（pre-acceptance 路径）
 				if (this.__uploadHandle) {
 					this.__uploadHandle.cancel();
@@ -683,10 +716,18 @@ export function createChatStore(storeKey, opts = {}) {
 				this.fileUploadState = null;
 
 				if (this.__accepted) {
-					// 守卫：若 run 已因 cancel 进入 settling，避免重复 abort RPC（双击 STOP / watcher 重入）
+					// 幂等：协调已在进行，直接返回已有 promise（按钮禁用下不会触发，保留防御性）
+					if (this.__cancelling) {
+						console.debug('[chat] cancelSend: already cancelling sid=%s, reuse promise', this.__cancelling.sid);
+						return this.__cancelling.promise;
+					}
 					const runsStore = useAgentRunsStore();
+					// 守卫：若 run 因 cancel 已进入 settling 但没有 __cancelling（历史残留），同样跳过
 					const activeRun = runsStore.getActiveRun(this.runKey);
-					if (activeRun?.settling && activeRun?.settlingReason === 'cancel') return null;
+					if (activeRun?.settling && activeRun?.settlingReason === 'cancel') {
+						console.debug('[chat] cancelSend skip: already settling(cancel) runKey=%s', this.runKey);
+						return null;
+					}
 					// 不 reject cancelPromise，让原 agent() RPC 自然 resolve；显式 nullify 槽位，
 					// 避免后续 cleanup() 在同一窗口误触发无意义 reject
 					this.__cancelReject = null;
@@ -696,21 +737,24 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__streamingTimer = null;
 					}
 					this.sending = false;
-					// 请求插件真正 abort 服务端 run；返回的 promise 永远 resolve，由 ChatPage 处理 notify
-					// sessionId 来源：topic 模式 this.sessionId；chat 模式 this.currentSessionId（可能为 null）
+					// 请求插件真正 abort 服务端 run；sessionId 来源：topic 模式 this.sessionId；
+					// chat 模式 this.currentSessionId（可能为 null，此时降级为阶段 1 行为）
 					const sid = this.sessionId || this.currentSessionId;
-					if (!sid) return null;
+					if (!sid) {
+						console.info('[chat] cancelSend skip abort RPC: sid unavailable (sessionId=%s currentSessionId=%s)',
+							this.sessionId, this.currentSessionId);
+						return null;
+					}
 					const conn = this.__getConnection();
-					const p = conn?.request('coclaw.agent.abort', { sessionId: sid });
-					if (!p) return null;
-					// reject 统一收敛为 { ok:false, reason:'rpc-error' }，避免 unhandledRejection 且让
-					// 调用方只需处理单一 shape（与 {ok:false, reason:'not-supported'|'abort-threw'|...} 对齐）
-					return p.then(
-						(result) => result,
-						(err) => ({ ok: false, reason: 'rpc-error', error: String(err?.message ?? err) }),
-					);
+					if (!conn) {
+						console.info('[chat] cancelSend skip abort RPC: conn unavailable clawId=%s', this.clawId);
+						return null;
+					}
+					return this.__startCancelCoordination(sid, conn);
 				}
 				else {
+					console.debug('[chat] cancelSend pre-acceptance branch hasCancelReject=%s',
+						!!this.__cancelReject);
 					if (this.__cancelReject) {
 						const err = new Error('user cancelled');
 						err.code = 'USER_CANCELLED';
@@ -724,20 +768,128 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			/**
+			 * 终止 cancel 协调任务（不再 tick，promise 以给定原因 resolve）
+			 *
+			 * 用途：
+			 * - `sendMessage` / `sendSlashCommand` 开头（reason='superseded'）——用户发起新交互，
+			 *   旧取消意图已被自身行为超越；必须立刻停 tick 以免残留 abort RPC 误杀新 run
+			 *   （详见 sendMessage 处注释）。
+			 *
+			 * `cleanup()` 走自己的路径（同步 null 化 + 让 promise 悬挂，靠页面卸载丢引用）——
+			 * 不调本函数，以保持原设计的"无 unhandled 风险"语义。
+			 *
+			 * @param {'superseded'} reason
+			 */
+			__clearCancelling(reason) {
+				if (!this.__cancelling) return;
+				const r = this.__cancelling.resolve;
+				if (this.__cancelling.tickTimer) {
+					clearTimeout(this.__cancelling.tickTimer);
+				}
+				this.__cancelling = null;
+				r({ ok: false, reason });
+			},
+
+			/**
+			 * 建立并驱动 cancel 协调任务（accepted 分支的 tick 重试循环）
+			 * @param {string} sid - sessionId（用于 abort RPC + 标识协调任务）
+			 * @param {object} conn - ClawConnection 实例，已由调用方确保存在
+			 * @returns {Promise<object>}
+			 */
+			__startCancelCoordination(sid, conn) {
+				let resolveFn;
+				const promise = new Promise((r) => { resolveFn = r; });
+				const runKey = this.runKey;
+				// 唯一 id（Symbol，原始值经 Pinia reactive 解引用后仍 ===）。
+				// 防御：若 await 期间发生 __clearCancelling('superseded') + 新 cancelSend2 →
+				// `this.__cancelling` 被替换为新对象；老 tick 用 id 比对发现不再属于自己即退出，
+				// 不会污染新 coordination 的 tickSeq / tickTimer / resolve。
+				// 注：不能用 `this.__cancelling === me` 因 Pinia reactive 把 me 包成 Proxy，
+				// proxy !== 原对象。
+				const myId = Symbol('cancel');
+				const me = { sid, promise, resolve: resolveFn, tickTimer: null, tickSeq: 0, id: myId };
+				this.__cancelling = me;
+				remoteLog(`cancel.start sid=${sid}`);
+
+				const isMine = () => this.__cancelling?.id === myId;
+
+				const cleanup = () => {
+					if (me.tickTimer) clearTimeout(me.tickTimer);
+					if (isMine()) this.__cancelling = null;
+				};
+
+				const tick = async () => {
+					// 协调已被清除 / 替换 → 立即退出
+					if (!isMine()) return;
+					const runsStore = useAgentRunsStore();
+					if (!runsStore.isRunning(runKey)) {
+						console.info('[chat] cancelSend done: run-ended sid=%s', sid);
+						remoteLog(`cancel.run-ended sid=${sid}`);
+						cleanup();
+						resolveFn({ ok: false, reason: 'run-ended' });
+						return;
+					}
+					me.tickSeq += 1;
+					let result;
+					try {
+						result = await conn.request('coclaw.agent.abort', { sessionId: sid });
+					} catch (err) {
+						// WS 闪断 / 其它 RPC 错误：继续重试，由 run-ended/immediate 路径终止
+						if (!isMine()) return;
+						console.debug('[chat] cancelSend rpc err sid=%s %s retry in %dms',
+							sid, err?.message ?? err, CANCEL_TICK_MS);
+						me.tickTimer = setTimeout(tick, CANCEL_TICK_MS);
+						return;
+					}
+					if (!isMine()) return; // cleared / superseded during in-flight
+					if (result?.ok) {
+						console.info('[chat] cancelSend done: immediate sid=%s ticks=%d', sid, me.tickSeq);
+						remoteLog(`cancel.immediate sid=${sid} ticks=${me.tickSeq}`);
+						cleanup();
+						resolveFn({ ok: true, aborted: 'immediate' });
+						return;
+					}
+					if (result?.reason === 'not-supported') {
+						console.info('[chat] cancelSend done: not-supported sid=%s', sid);
+						remoteLog(`cancel.not-supported sid=${sid}`);
+						cleanup();
+						resolveFn({ ok: false, reason: 'not-supported' });
+						return;
+					}
+					// not-found / abort-threw / 其它：继续重试，等空窗期结束或 run 自然结束
+					console.debug('[chat] cancelSend miss sid=%s reason=%s retry in %dms',
+						sid, result?.reason, CANCEL_TICK_MS);
+					me.tickTimer = setTimeout(tick, CANCEL_TICK_MS);
+				};
+
+				tick();
+				return promise;
+			},
+
+			/**
 			 * 发送斜杠命令（通过 chat.send RPC）
 			 * @param {string} command - 如 '/compact'、'/new'、'/help'
 			 */
 			async sendSlashCommand(command) {
-				const conn = getReadyConn(this.clawId);
-				if (!conn || this.sending) return;
+				if (this.sending) return;
+				// 与 sendMessage 对齐：用 wait-mode 取 conn，让 conn.request() 内部 waitReady() 排队
+				// 离线 / DC 重建期点击斜杠命令不会被静默丢弃，连接恢复后照常执行
+				const conn = useClawConnections().get(this.clawId);
+				if (!conn) return;
+
+				// 与 sendMessage 对齐：发起新交互 → 丢弃旧的 cancel 协调，
+				// 防止残留 tick 误 abort 新的 chat.send / embedded run
+				this.__clearCancelling('superseded');
 
 				this.sending = true;
 
-				// 乐观追加 user message
+				// 乐观追加 user message：_pending=true → ChatMsgItem 渲染 spinner 占位、不显示命令文本
+				// 与 sendMessage 的设计一致：服务端 accepted 前不展示用户消息正文
 				this.messages = [...this.messages, {
 					type: 'message',
 					id: `__local_user_${Date.now()}`,
 					_local: true,
+					_pending: true,
 					message: { role: 'user', content: command, timestamp: Date.now() },
 				}];
 
@@ -782,6 +934,16 @@ export function createChatStore(storeKey, opts = {}) {
 						message: command,
 						idempotencyKey,
 					});
+					// chat.send 已成功送达并返回 runId（语义等价于 agent() 的 onAccepted）
+					// → 清 _pending 让本地 user 消息显示出真实命令文本
+					let changed = false;
+					for (const m of this.messages) {
+						if (m._local && m._pending && m.message?.role === 'user') {
+							m._pending = false;
+							changed = true;
+						}
+					}
+					if (changed) this.messages = [...this.messages];
 				}
 				catch (err) {
 					const reject = this.__slashCommandReject;
@@ -804,7 +966,24 @@ export function createChatStore(storeKey, opts = {}) {
 				const reject = this.__slashCommandReject;
 
 				if (evt.state === 'final') {
+					// 快照本次 slash 的本地占位 id：__cleanupSlashCommand 把 sending 置 false 后，
+					// 用户可在 loadMessages 异步期间发起 sendMessage，新添的 _local 若被下方 .then
+					// 一锅端，会破坏 sendMessage 的 streamingMsgs 流程。
+					const slashLocalIds = this.messages.filter((m) => m._local).map((m) => m.id);
+					const removeSlashLocals = () => {
+						if (!slashLocalIds.length) return;
+						const idSet = new Set(slashLocalIds);
+						for (const m of this.messages) {
+							if (!idSet.has(m.id) || !m._attachments) continue;
+							for (const att of m._attachments) {
+								if (att.url) URL.revokeObjectURL(att.url);
+							}
+						}
+						this.messages = this.messages.filter((m) => !idSet.has(m.id));
+					};
 					this.__cleanupSlashCommand(conn);
+					// OpenClaw 不把 /new、/reset、/compact 持久化为 user message（见 commands-compact.ts:71、session.ts:354 拦截点）
+					// → final 后统一移除本地乐观占位，避免残留错位到新会话或与 server 历史重复
 					if (/^\/(new|reset)\b/i.test(cmd)) {
 						const prevSessionId = this.currentSessionId;
 						const prevMessages = this.messages.filter(m => !m._local);
@@ -818,14 +997,22 @@ export function createChatStore(storeKey, opts = {}) {
 									];
 								}
 							}
+							removeSlashLocals();
 							resolve?.();
 						});
 						return;
 					}
 					else if (/^\/compact\b/i.test(cmd)) {
-						this.loadMessages({ silent: true });
+						// resolve 放进 .then 保持和 /new|/reset 分支对称——
+						// 让 sendSlashCommand 的 caller 的 await 在占位清理完成后才返回
+						this.loadMessages({ silent: true }).then(() => {
+							removeSlashLocals();
+							resolve?.();
+						});
+						return;
 					}
 					else if (evt.message) {
+						removeSlashLocals();
 						this.messages = [...this.messages, {
 							type: 'message',
 							id: `chat-${evt.runId}`,
@@ -905,6 +1092,13 @@ export function createChatStore(storeKey, opts = {}) {
 				if (this.__streamingTimer) {
 					clearTimeout(this.__streamingTimer);
 					this.__streamingTimer = null;
+				}
+				// 若正在 cancel 协调（用户点 STOP 后到 run 结束前），停止 tick 重试：
+				// 原 tick 下一次运行时会因 __cancelling=null 立即 return；resolve 留作未决，
+				// 调用方（ChatPage）随页面卸载丢弃 promise 引用，无 unhandled 风险
+				if (this.__cancelling) {
+					clearTimeout(this.__cancelling.tickTimer);
+					this.__cancelling = null;
 				}
 				// 清理斜杠命令状态
 				this.__cleanupSlashCommand(this.__getConnection());

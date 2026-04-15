@@ -354,7 +354,6 @@ export const zhCNMessages = {
 		scrollUpForMore: '↑ 上翻加载更早记录',
 		upgradeOpenClawHint: '可能需要升级 OpenClaw，请让 OpenClaw 自行升级或执行：npm install -g openclaw',
 		cancelNotSupported: '当前 OpenClaw 版本无法取消运行中的 agent，它将继续在后台执行。',
-		cancelAbortFailed: '取消运行中的 agent 失败，它将继续在后台执行。',
 		clawThinking: '思考中',
 		thinkingFor: '思考中 {time}',
 	},

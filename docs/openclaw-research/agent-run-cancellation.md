@@ -2,6 +2,7 @@
 
 > 更新时间：2026-04-14（再次校验，基于 OpenClaw commit `d7cc6f7643`，即 `v2026.4.14-beta.1+69`）
 > 初版基于 commit `03523c65d5`；阶段 3 启动前已逐条核验，核心结论仍成立，差异见下文"再校验备注"
+> **2026-04-14 运行时再确认**：新增"§6.7 注册时序：accepted → setActiveEmbeddedRun 空窗期"——通过插件端 monkey-patch 观察 `activeRuns` 的 `.set` / `.delete` 时点，定位到一个此前未意识到的 race window
 > 关联文档：[agent-event-streams-and-rpcs.md](./agent-event-streams-and-rpcs.md) · [gateway-protocols.md](./gateway-protocols.md)
 
 ## 结论速查
@@ -214,6 +215,54 @@ agent:${normalizeAgentId(agentId) || "main"}:explicit:${sessionId}
 - `attempt.ts:1465-1475` 有 10s `abortWarnTimer`（仍 streaming 就警告）——说明 OpenClaw 内部预期 << 10s
 - `commands-compact.ts:88` 用 15s 作为保守 `waitForEmbeddedPiRunEnd` 超时
 - CoClaw 插件 RPC 推荐 5–10s 超时
+
+### 6.7 注册时序：`accepted` → `setActiveEmbeddedRun` 空窗期
+
+**核心发现**：`agent()` RPC 的 `onAccepted` 帧在 gateway 受理请求时**毫秒级**返回；但 `setActiveEmbeddedRun` 必须等到 attempt.ts 的主循环真正启动才被调用——两者之间存在**可观测的异步准备窗口**，窗口内 `ACTIVE_EMBEDDED_RUNS.get(sessionId)` 返回 undefined。
+
+**实测时序（openai-codex/gpt-5.4，插件 monkey-patch `activeRuns.set` 观察）**：
+
+| 场景 | onAccepted → setActiveEmbeddedRun 窗口 |
+|---|---|
+| main agent 主 chat（session/workspace 暖） | ~4 秒 |
+| topic（冷 session + 新 workspace + skills snapshot） | 10 秒以上，偶见 30 秒+ |
+
+**窗口内发生的准备工作**（`agent-command.ts` / `command/*.ts` / `pi-embedded-runner/run.ts`）：
+- session store 加载 + `resolveSession` + 合成 sessionKey（topic 场景）
+- workspace dir ensure + skills snapshot 构建
+- `buildSessionStartupContextPrelude`（首消息可能拉文件/目录）
+- `resolveAgentRuntimeConfig` + provider/model resolution + auth profile 解析
+- `runWithModelFallback` 入口前置检查
+- fetch 前的 headers/cookie 处理
+
+只有当上述全部完成、进入 `runEmbeddedAttempt` 主体后，才在 `attempt.ts:1572` 执行 `setActiveEmbeddedRun(params.sessionId, handle, sessionKey)`。
+
+**后果**：
+- UI 收到 onAccepted → STOP 按钮亮起 → 用户在空窗期内点击 → `coclaw.agent.abort` 查 `activeRuns` → not-found
+- 用户体验："取消按钮没反应，run 照常跑完"
+- Topic 场景因为冷启动更慢，空窗期更长，因此更容易踩坑（CoClaw 实测中 topic "永远不能取消"的错觉正是由此）
+
+**与 `lifecycle:start` 事件的关系**：`setActiveEmbeddedRun` 调用时点 ≈ `lifecycle:start` 事件发射时点（两者在同一 attempt 入口附近）。UI 若以 `lifecycle:start` 为"已注册"的可靠信号，则可以避免在空窗期发 abort RPC——但此信息在当前 UI 设计里未被用于 gate STOP 按钮。
+
+**与 `runWithModelFallback` retry 的叠加**：每次 retry 都是一次独立的 `runEmbeddedAttempt`，各自 `setActiveEmbeddedRun` + `clearActiveEmbeddedRun`。retry 之间 `activeRuns` 短暂清空——这也会形成次级空窗期（ms 级通常可忽略，但首次 retry 前的"旧 handle 已清、新 handle 未注册"窗口在 UI 看来和首次启动空窗期无异）。
+
+**与"run 已结束后 abort 到达"的区分**：
+- **空窗期**：`activeRuns` 里**尚未**有该 sessionId → 插件返回 `not-found`，但 run 仍在进行（会跑完）
+- **结束后**：`activeRuns` 里**曾经**有、已由 `clearActiveEmbeddedRun` 清除 → 插件返回 `not-found`，run 已完成（无需取消）
+- 插件目前**无法从 `not-found` 单次响应区分两者**；需要额外信号（如查 `sessionIdsByKey` 反向表 + run lifecycle 状态）才能分辨
+
+**CoClaw 阶段 2.5 解决方案**（2026-04-15 实施，详见 [`docs/designs/agent-run-cancellation.md`](../designs/agent-run-cancellation.md#阶段-25注册空窗期-race已实施)）：
+
+将协调状态搬到 UI 侧——插件保持无状态（仅做单次查询），UI 持有 `__cancelling = { sid, promise, tickTimer, ... }`，按 500ms 重试 `coclaw.agent.abort` RPC；每次 tick 头检 `agentRunsStore.isRunning(runKey)` 作为 run-ended 信号，自然消化空窗期 vs 结束后到达的歧义——前者最终命中（hit），后者 isRunning=false 触发 run-ended 终止。无 TTL（生命期=run 生命期）。
+
+**上游粒度调研结论**（subagent 2026-04-15）：
+- `ACTIVE_EMBEDDED_RUNS` 同 sid → 1:1（`runs.ts:359` 直接覆盖；`reply-run-registry.ts:205-206` 抛 `ReplyRunAlreadyActiveError` 强制单例）
+- run 中再发消息走 reply queue 4 模式（interrupt/steer/followup/queue），均**无并发同 sid**
+- `abortEmbeddedPiRun(sid)` 粒度 = 当前唯一 in-flight run
+- handle 对象**未暴露 runId**（`runs.ts:20-27`），插件无法反查
+- `chat.abort` 的 runId abort 仅覆盖 `chat.send`，对 `agent()` RPC 无效
+
+故 CoClaw 维持 sid 粒度协调；queue 模式下 run A→B 转换由 lifecycle:end 自然清除 UI 协调状态，无残留意图。
 
 ---
 

@@ -354,7 +354,6 @@ export const enMessages = {
 		scrollUpForMore: '↑ Scroll up for earlier messages',
 		upgradeOpenClawHint: 'You may need to upgrade OpenClaw. Ask OpenClaw to upgrade itself, or run: npm install -g openclaw',
 		cancelNotSupported: 'This OpenClaw version cannot cancel the running agent. The run will continue in the background.',
-		cancelAbortFailed: 'Failed to cancel the running agent. The run will continue in the background.',
 		clawThinking: 'Thinking',
 		thinkingFor: 'Thinking {time}',
 	},

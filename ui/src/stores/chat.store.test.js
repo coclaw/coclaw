@@ -44,6 +44,12 @@ vi.mock('../services/claws.api.js', () => ({
 	listClaws: vi.fn().mockResolvedValue([]),
 }));
 
+// chat.store 导入 remoteLog 用于 cancel 关键事件上报——测试中屏蔽网络路径，只捕获调用
+const remoteLogCalls = [];
+vi.mock('../services/remote-log.js', () => ({
+	remoteLog: (text) => { remoteLogCalls.push(text); },
+}));
+
 // --- Helper ---
 
 function mockConn(overrides = {}) {
@@ -91,6 +97,7 @@ describe('useChatStore', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
+		remoteLogCalls.length = 0;
 		vi.clearAllMocks();
 		__resetClawStoreInternals();
 	});
@@ -2468,17 +2475,20 @@ describe('useChatStore', () => {
 			expect(store.cancelSend()).toBeNull();
 		});
 
-		test('accepted 后取消：abort RPC reject 时 cancelSend 返回的 promise 收敛为 {ok:false, reason:rpc-error}', async () => {
+		test('accepted 后取消：abort RPC reject 时 tick 继续重试（直到 run 结束）', async () => {
+			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
+			let abortAttempts = 0;
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-reject' });
 					return new Promise(() => {});
 				}
 				if (method === 'coclaw.agent.abort') {
+					abortAttempts++;
 					return Promise.reject(new Error('WS_CLOSED'));
 				}
 				return Promise.resolve(null);
@@ -2494,7 +2504,20 @@ describe('useChatStore', () => {
 			await Promise.resolve();
 
 			const p = store.cancelSend();
-			await expect(p).resolves.toEqual({ ok: false, reason: 'rpc-error', error: 'WS_CLOSED' });
+			// 微任务 flush：首次 tick 的 RPC reject → catch → 调度 500ms 重试
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortAttempts).toBe(1);
+			// 500ms 后第二次 tick 触发新 RPC（再次 reject）
+			await vi.advanceTimersByTimeAsync(500);
+			await Promise.resolve();
+			expect(abortAttempts).toBe(2);
+			// 模拟 run 自然结束：清除 agentRunsStore 中的 run
+			const runsStore = useAgentRunsStore();
+			runsStore.settle(store.runKey);
+			// 下次 tick 检测 isRunning=false → 以 run-ended 结束
+			await vi.advanceTimersByTimeAsync(500);
+			await expect(p).resolves.toEqual({ ok: false, reason: 'run-ended' });
+			expect(store.__cancelling).toBeNull();
 		});
 
 		test('accepted 取消但 sessionId 不可知：cancelSend 返回 null', async () => {
@@ -2557,7 +2580,8 @@ describe('useChatStore', () => {
 			expect(run?.settlingReason).toBe('cancel');
 		});
 
-		test('accepted 后第二次 cancelSend：守卫生效，不重复发 abort RPC', async () => {
+		test('accepted 后第二次 cancelSend：幂等——返回同一 promise，RPC 不重复触发', async () => {
+			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -2570,6 +2594,7 @@ describe('useChatStore', () => {
 				}
 				if (method === 'coclaw.agent.abort') {
 					abortCallCount++;
+					// 永不 resolve，让 tick 调度等待
 					return new Promise(() => {});
 				}
 				return Promise.resolve(null);
@@ -2587,12 +2612,418 @@ describe('useChatStore', () => {
 
 			const first = store.cancelSend();
 			expect(first).toBeInstanceOf(Promise);
+			expect(store.isCancelling).toBe(true);
+			// 首次 tick 同步已发 RPC（返回 never-resolving promise）
+			await Promise.resolve(); await Promise.resolve();
 			expect(abortCallCount).toBe(1);
 
-			// 第二次点击 STOP（双击 / isClawOffline watcher 重入），守卫应拦截
+			// 第二次点击 STOP（双击场景）—— UI 在 isCancelling=true 下禁用按钮，
+			// 但仍保留内部幂等保护：返回同一 cancel 协调 promise（Pinia 反射代理下用 toStrictEqual），
+			// 关键是 RPC 不重复发
 			const second = store.cancelSend();
-			expect(second).toBeNull();
+			expect(second).toStrictEqual(first);
 			expect(abortCallCount).toBe(1);
+		});
+
+		test('accepted 后取消：hit 立即返回 {ok:true, aborted:immediate}，清除 __cancelling', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-hit' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') return Promise.resolve({ ok: true });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-hit';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			expect(store.isCancelling).toBe(true);
+			await expect(p).resolves.toEqual({ ok: true, aborted: 'immediate' });
+			expect(store.__cancelling).toBeNull();
+			expect(store.isCancelling).toBe(false);
+			expect(remoteLogCalls).toContain('cancel.start sid=sess-hit');
+			// ticks=1 是关键证据：tick 头 isRunning 检查通过后立即 RPC，第一次就 hit
+			expect(remoteLogCalls).toContain('cancel.immediate sid=sess-hit ticks=1');
+		});
+
+		test('accepted 后取消：先 miss（not-found）后 hit —— tick 重试直到 immediate', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCalls = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-retry' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCalls++;
+					if (abortCalls < 3) return Promise.resolve({ ok: false, reason: 'not-found' });
+					return Promise.resolve({ ok: true });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-retry';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			// 第 1 次 tick：RPC + miss → 调度 500ms 重试
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortCalls).toBe(1);
+			expect(store.isCancelling).toBe(true);
+			// 推进 500ms：第 2 次 tick
+			await vi.advanceTimersByTimeAsync(500);
+			await Promise.resolve();
+			expect(abortCalls).toBe(2);
+			// 再推进 500ms：第 3 次 tick → hit → resolve
+			await vi.advanceTimersByTimeAsync(500);
+			await expect(p).resolves.toEqual({ ok: true, aborted: 'immediate' });
+			expect(store.__cancelling).toBeNull();
+		});
+
+		test('accepted 后取消：not-supported 立即静默降级，不重试', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCalls = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-ns' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCalls++;
+					return Promise.resolve({ ok: false, reason: 'not-supported' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-ns';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			await expect(p).resolves.toEqual({ ok: false, reason: 'not-supported' });
+			// 推进 500ms 验证不重试
+			await vi.advanceTimersByTimeAsync(500);
+			expect(abortCalls).toBe(1);
+			expect(store.__cancelling).toBeNull();
+			expect(remoteLogCalls).toContain('cancel.not-supported sid=sess-ns');
+		});
+
+		test('accepted 后取消：run 在 tick 之间自然结束 → resolve {ok:false, reason:run-ended}', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-end' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') return Promise.resolve({ ok: false, reason: 'not-found' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-end';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			// 首次 tick：miss + 调度重试
+			await Promise.resolve(); await Promise.resolve();
+			expect(store.isCancelling).toBe(true);
+			// 模拟 run 自然结束（lifecycle:end 到达清理了 agentRunsStore）
+			const runsStore = useAgentRunsStore();
+			runsStore.settle(store.runKey);
+			// 下一个 tick 检测 isRunning=false → 立即 resolve run-ended
+			await vi.advanceTimersByTimeAsync(500);
+			await expect(p).resolves.toEqual({ ok: false, reason: 'run-ended' });
+			expect(remoteLogCalls).toContain('cancel.run-ended sid=sess-end');
+			expect(store.__cancelling).toBeNull();
+		});
+
+		test('cleanup() 期间清理 __cancelling 的 tickTimer，不再重发 RPC', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCalls = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-cleanup' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCalls++;
+					return Promise.resolve({ ok: false, reason: 'not-found' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-cleanup';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortCalls).toBe(1);
+			expect(store.isCancelling).toBe(true);
+
+			// 模拟页面离开 → cleanup()，应清理 __cancelling、撤销 tickTimer
+			store.cleanup();
+			expect(store.__cancelling).toBeNull();
+
+			// 推进 500ms 确认没有新的 RPC 发出
+			await vi.advanceTimersByTimeAsync(500);
+			expect(abortCalls).toBe(1);
+		});
+
+		test('id 隔离：tick1 在 RPC 飞行中被 __clearCancelling+新 cancelSend 取代后，老 tick 不污染新协调', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			const abortResolves = [];
+			let agentCalls = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					agentCalls++;
+					options?.onAccepted?.({ runId: `run-iso-${agentCalls}` });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					return new Promise((r) => { abortResolves.push(r); });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-iso';
+
+			// 第 1 轮：发消息 → cancelSend → tick1 await RPC
+			store.sendMessage('hi-1');
+			await Promise.resolve();
+			const p1 = store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortResolves.length).toBe(1);
+			const resolveAbort1 = abortResolves[0];
+
+			// 第 2 轮：用户发新消息 → __clearCancelling('superseded') 触发 → p1 立即 resolve
+			store.sendMessage('hi-2');
+			await Promise.resolve();
+			await expect(p1).resolves.toEqual({ ok: false, reason: 'superseded' });
+
+			// 第 2 轮：用户再点 STOP → 新 cancelSend → tick2 启动
+			const p2 = store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortResolves.length).toBe(2);
+			const resolveAbort2 = abortResolves[1];
+
+			// 老的 tick1 RPC 现在以 ok=true resolve → tick1 恢复时应识别 id 不匹配 → 退出，
+			// **不能** 误清理 store.__cancelling（即 tick2 的状态）
+			resolveAbort1({ ok: true });
+			await Promise.resolve();
+			expect(store.__cancelling).not.toBeNull();
+			expect(store.__cancelling.sid).toBe('sess-iso');
+
+			// tick2 RPC 正常 resolve → p2 成为 immediate
+			resolveAbort2({ ok: true });
+			await expect(p2).resolves.toEqual({ ok: true, aborted: 'immediate' });
+			expect(store.__cancelling).toBeNull();
+		});
+
+		test('cleanup() 在 RPC 飞行中触发：RPC 结果到达后被 __cancelling=null 守卫吞掉，coordination promise 不 resolve', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let resolveAbort;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-cleanup-await' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					return new Promise((r) => { resolveAbort = r; });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-cleanup-await';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+			// RPC 飞行中（resolveAbort 已捕获但未 resolve），cleanup() 触发
+			expect(typeof resolveAbort).toBe('function');
+			store.cleanup();
+			expect(store.__cancelling).toBeNull();
+
+			// 现在让 RPC 以 hit 结果到达 → tick 恢复后看到 __cancelling=null → 早退、不 resolve p
+			let settled = false;
+			let settledValue = null;
+			p.then((v) => { settled = true; settledValue = v; }, () => { settled = true; });
+			resolveAbort({ ok: true });
+			await new Promise((r) => setImmediate(r));
+			expect(settled).toBe(false);
+			expect(settledValue).toBeNull();
+		});
+
+		// 关键回归：没有这条守护，旧 cancel tick 会在新 send 开始后的空窗期结束时
+		// 命中 ACTIVE_EMBEDDED_RUNS[sid] 的新 handle，把用户新发的 run 误 abort。
+		test('sendMessage 开始时同步清除 __cancelling，旧 tick 不再发 RPC（superseded 终态）', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCalls = 0;
+			let agentCalls = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					agentCalls++;
+					options?.onAccepted?.({ runId: `run-${agentCalls}` });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCalls++;
+					// 永远 not-found：模拟空窗期一直没结束
+					return Promise.resolve({ ok: false, reason: 'not-found' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-sup';
+
+			// 第 1 次 send
+			store.sendMessage('hi');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+
+			// 取消：__cancelling 激活，首 tick 发一次 RPC 并 schedule 重试
+			const p = store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortCalls).toBe(1);
+			expect(store.isCancelling).toBe(true);
+
+			// 用户发起新 send → __cancelling 必须被同步清掉
+			store.sending = false; // cancelSend 已将 sending 置 false，再模拟用户重新输入
+			store.__accepted = false;
+			const p2 = store.sendMessage('follow up');
+			await Promise.resolve();
+
+			// 旧协调 promise 以 superseded 终态 resolve
+			await expect(p).resolves.toEqual({ ok: false, reason: 'superseded' });
+			expect(store.__cancelling).toBeNull();
+
+			// 推进 500ms 以确认旧 tick 不再发 RPC
+			await vi.advanceTimersByTimeAsync(500);
+			expect(abortCalls).toBe(1);
+			// agent RPC 触发了两次（旧 + 新）
+			expect(agentCalls).toBe(2);
+			expect(p2).toBeInstanceOf(Promise);
+		});
+
+		test('sendSlashCommand 开始时也清除 __cancelling（superseded）', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCalls = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-slash' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCalls++;
+					return Promise.resolve({ ok: false, reason: 'not-found' });
+				}
+				if (method === 'chat.send') {
+					return Promise.resolve({ runId: 'slash-run', status: 'started' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-slash';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+			const p = store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortCalls).toBe(1);
+
+			// 取消 cancelSend 的 sending=false 之后，发 /help
+			store.sending = false;
+			store.sendSlashCommand('/help');
+			// sendSlashCommand 是 async——让它进入 try 块完成 chat.send 调用
+			await Promise.resolve();
+
+			await expect(p).resolves.toEqual({ ok: false, reason: 'superseded' });
+			expect(store.__cancelling).toBeNull();
+
+			// 推进 500ms：旧 tick 不会发 RPC
+			await vi.advanceTimersByTimeAsync(500);
+			expect(abortCalls).toBe(1);
 		});
 
 		test('accepted 后取消：abort RPC 失败时 cancelSend 不抛错、无 unhandledRejection 且保持 settling(cancel) 状态', async () => {
@@ -3508,9 +3939,9 @@ describe('useChatStore', () => {
 
 			await p;
 			expect(store.sending).toBe(false);
-			// user message + 追加的 assistant message
-			expect(store.messages.length).toBe(2);
-			expect(store.messages[1].message.content[0].text).toBe('help text');
+			// 本地 user 占位已清除，仅剩 server 回复的 assistant message
+			expect(store.messages.length).toBe(1);
+			expect(store.messages[0].message.content[0].text).toBe('help text');
 		});
 
 		test('sending 为 true 时不发送', async () => {
@@ -3519,10 +3950,49 @@ describe('useChatStore', () => {
 			expect(conn.request).not.toHaveBeenCalled();
 		});
 
-		test('连接未就绪时不发送', async () => {
+		// 与 sendMessage 对齐：用 wait-mode 取 conn，离线 / DC 重建期点击仍发送，
+		// conn.request() 内部 waitReady() 会排队直到连接恢复。
+		test('claw 离线（dcReady=false）时仍发送，由 conn.waitReady() 排队', async () => {
 			useClawsStore().byId['1'].dcReady = false;
+			const p = store.sendSlashCommand('/help');
+			expect(conn.request).toHaveBeenCalledWith('chat.send', expect.any(Object));
+			// 完成 round-trip 以避免悬挂的 promise
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
+		});
+
+		test('claw 未注册（conn 不存在）时静默返回', async () => {
+			store.clawId = 'unknown-claw';
 			await store.sendSlashCommand('/help');
+			// conn 缺失 → 未进入发送路径，连 event:chat 监听都没注册
+			expect(conn.on).not.toHaveBeenCalled();
 			expect(conn.request).not.toHaveBeenCalled();
+			expect(store.sending).toBe(false);
+		});
+
+		// 与 sendMessage 一致：accepted（chat.send resolve）前，乐观 user 消息带
+		// _pending=true，ChatMsgItem 渲染为 spinner 占位、不显示命令文本；
+		// chat.send 成功返回后清 _pending，bubble 才呈现真实命令文本。
+		test('优化 user 消息：chat.send 接受前 _pending=true，接受后清除', async () => {
+			let resolveReq;
+			conn.request.mockImplementation(() => new Promise((resolve) => { resolveReq = resolve; }));
+			const p = store.sendSlashCommand('/help');
+
+			// chat.send 未 resolve：本地 user 消息应带 _pending=true
+			expect(store.messages.length).toBe(1);
+			expect(store.messages[0]._pending).toBe(true);
+
+			// 模拟 chat.send 返回（accepted）
+			resolveReq({ runId: 'r', status: 'started' });
+			await Promise.resolve(); // flush microtasks
+			await Promise.resolve();
+			expect(store.messages[0]._pending).toBe(false);
+
+			// 触发 final 让 sendSlashCommand 完整结束，避免悬挂
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
 		});
 
 		test('/compact 完成后调用 loadMessages', async () => {
@@ -3692,6 +4162,93 @@ describe('useChatStore', () => {
 			await p;
 
 			expect(store.historySegments).toHaveLength(0);
+		});
+
+		// OpenClaw 不把 /new、/reset、/compact 持久化为 user message（拦截点：commands-compact.ts:71、session.ts:354），
+		// 故 final 成功后必须移除本地乐观占位，避免残留错位到新会话或与 server 历史重复。
+		test('/compact final 成功后移除本地乐观占位', async () => {
+			setupConnForLoad(conn, { flatMessages: [], currentSessionId: 'sess-1' });
+			const origImpl = conn.request.getMockImplementation();
+			conn.request.mockImplementation((method, ...args) => {
+				if (method === 'chat.send') return Promise.resolve({ runId: 'r', status: 'started' });
+				return origImpl(method, ...args);
+			});
+
+			const p = store.sendSlashCommand('/compact');
+			expect(store.messages.some((m) => m._local)).toBe(true);
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p; // resolve 现已随 .then 同步释放，await 返回时 removeSlashLocals 已执行
+
+			expect(store.messages.some((m) => m._local)).toBe(false);
+		});
+
+		test('/new final 成功后移除本地乐观占位', async () => {
+			setupConnForLoad(conn, { flatMessages: [], currentSessionId: 'new-sess' });
+			const origImpl = conn.request.getMockImplementation();
+			conn.request.mockImplementation((method, ...args) => {
+				if (method === 'chat.send') return Promise.resolve({ runId: 'r', status: 'started' });
+				return origImpl(method, ...args);
+			});
+
+			const p = store.sendSlashCommand('/new');
+			expect(store.messages.some((m) => m._local)).toBe(true);
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
+
+			expect(store.messages.some((m) => m._local)).toBe(false);
+		});
+
+		// race 回归：final 后 __cleanupSlashCommand 立刻置 sending=false，用户在 loadMessages
+		// 异步期间可启动 sendMessage；若 .then 里无差别 __removeLocalMessages 会连带清掉
+		// sendMessage 刚压入的 _local 占位，破坏其 onAccepted→streamingMsgs 流程。
+		// 修复是按 id 精准删除，下面的用例验证不会误伤其它 _local。
+		test('/compact final 后 loadMessages .then 不会清掉新 sendMessage 的 _local', async () => {
+			setupConnForLoad(conn, { flatMessages: [], currentSessionId: 'sess-1' });
+			const origImpl = conn.request.getMockImplementation();
+			conn.request.mockImplementation((method, ...args) => {
+				if (method === 'chat.send') return Promise.resolve({ runId: 'r', status: 'started' });
+				return origImpl(method, ...args);
+			});
+
+			const p = store.sendSlashCommand('/compact');
+			const slashLocalId = store.messages.find((m) => m._local).id;
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			// 模拟 race：loadMessages 的 .then 尚未跑完前，sendMessage 已 push 新占位
+			store.messages.push(
+				{ type: 'message', id: '__local_user_send', _local: true, message: { role: 'user', content: 'hi' } },
+				{ type: 'message', id: '__local_claw_send', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			);
+
+			await p; // resolve 现已随 .then 同步释放，await 返回时 removeSlashLocals 已执行
+
+			// slash 的占位被精准移除
+			expect(store.messages.some((m) => m.id === slashLocalId)).toBe(false);
+			// 新 sendMessage 的 _local 不受影响
+			expect(store.messages.some((m) => m.id === '__local_user_send')).toBe(true);
+			expect(store.messages.some((m) => m.id === '__local_claw_send')).toBe(true);
+		});
+
+		// 默认分支（如 /help）final 同步处理：slash 本地占位清除 + server 回复入列。
+		// 该分支无异步，故不涉及 race 场景（race 回归见上一条 /compact 测试）。
+		test('默认分支 final 后清除自身占位并入列 server 回复', async () => {
+			const p = store.sendSlashCommand('/help');
+			expect(store.messages.some((m) => m._local)).toBe(true);
+			const slashLocalId = store.messages.find((m) => m._local).id;
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({
+				runId: store.__slashCommandRunId,
+				state: 'final',
+				message: { role: 'assistant', content: 'help text' },
+			});
+			await p;
+
+			expect(store.messages.some((m) => m.id === slashLocalId)).toBe(false);
+			expect(store.messages).toHaveLength(1);
+			expect(store.messages[0].message.role).toBe('assistant');
+			expect(store.messages[0].message.content).toBe('help text');
 		});
 
 		test('event:chat error reject 并清理状态和乐观消息', async () => {

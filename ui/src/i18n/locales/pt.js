@@ -354,7 +354,6 @@ export const ptMessages = {
 		scrollUpForMore: '↑ Role para cima para ver mensagens mais antigas',
 		upgradeOpenClawHint: 'Talvez seja necessário atualizar o OpenClaw. Peça ao OpenClaw para se atualizar, ou execute: npm install -g openclaw',
 		cancelNotSupported: 'Esta versão do OpenClaw não pode cancelar o agente em execução. A execução continuará em segundo plano.',
-		cancelAbortFailed: 'Falha ao cancelar o agente em execução. A execução continuará em segundo plano.',
 		clawThinking: 'Pensando',
 		thinkingFor: 'Pensando {time}',
 	},

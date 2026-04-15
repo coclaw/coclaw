@@ -14,9 +14,89 @@ import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
 import { createFileHandler } from './src/file-manager/handler.js';
 import { abortAgentRun } from './src/agent-abort.js';
+import { remoteLog } from './src/remote-log.js';
 
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
 export { getPluginVersion, __resetPluginVersion };
+
+// 侧门注册表观测：patch OpenClaw ACTIVE_EMBEDDED_RUNS / replyRunRegistry 的 set/delete，
+// 用于跟踪 sessionId 何时注册/注销，辅助诊断 agent 取消流程。只打 log 不改行为。
+// OpenClaw 侧门形状变化时（缺失某 Map / 抛异常），通过 remoteLog 上报为升级契约变更的早期信号。
+const PATCH_LABELS = [
+	['embedded.activeRuns', () => globalThis[Symbol.for('openclaw.embeddedRunState')]?.activeRuns],
+	['embedded.sessionIdsByKey', () => globalThis[Symbol.for('openclaw.embeddedRunState')]?.sessionIdsByKey],
+	['reply.activeRunsByKey', () => globalThis[Symbol.for('openclaw.replyRunRegistry')]?.activeRunsByKey],
+	['reply.activeKeysBySessionId', () => globalThis[Symbol.for('openclaw.replyRunRegistry')]?.activeKeysBySessionId],
+];
+
+function installAbortRegistryDiag(logger) {
+	const installed = [];
+	const missing = [];
+	try {
+		for (const [label, resolve] of PATCH_LABELS) {
+			if (patchMapLogging(resolve(), label, logger)) installed.push(label);
+			else missing.push(label);
+		}
+	}
+	catch (err) {
+		logger?.warn?.(`[coclaw.diag] installAbortRegistryDiag failed: ${String(err?.message ?? err)}`);
+		remoteLog(`abort.patch-failed reason=${String(err?.message ?? err)}`);
+		return;
+	}
+	remoteLog(`abort.patch installed=${installed.join(',') || 'none'} missing=${missing.join(',') || 'none'}`);
+}
+
+function patchMapLogging(map, label, logger) {
+	if (!map || typeof map.set !== 'function' || typeof map.delete !== 'function') return false;
+	if (map.__coclawDiagPatched) return true;
+	// 先打 idempotent 标记：若 map 是 frozen/sealed/Proxy 致 defineProperty 抛，
+	// 立即返回 false 让上层归入 missing；不留下半装好的 wrapper 状态
+	try {
+		Object.defineProperty(map, '__coclawDiagPatched', { value: true, enumerable: false });
+	}
+	catch (err) {
+		logger?.warn?.(`[coclaw.diag] cannot mark ${label} patched: ${String(err?.message ?? err)}`);
+		return false;
+	}
+	const origSet = map.set.bind(map);
+	const origDel = map.delete.bind(map);
+	const origClear = typeof map.clear === 'function' ? map.clear.bind(map) : null;
+	// log 行包 try/catch 兜底：上游若把 Map 换成有 throwing getter（如 Proxy）的对象，
+	// 不能让本插件的诊断 log 把 OpenClaw 内部 set/delete 流程带崩
+	const safeLog = (msg) => {
+		try { logger?.info?.(msg); } catch { /* swallow — diag log 不得影响主流程 */ }
+	};
+	const safeSize = () => {
+		try { return map.size; } catch { return '?'; }
+	};
+	map.set = (key, value) => {
+		const res = origSet(key, value);
+		safeLog(`[coclaw.diag] ${label}.set key=${stringifyKey(key)} size=${safeSize()}`);
+		return res;
+	};
+	map.delete = (key) => {
+		let had;
+		try { had = map.has(key); } catch { had = '?'; }
+		const res = origDel(key);
+		safeLog(`[coclaw.diag] ${label}.delete key=${stringifyKey(key)} had=${had} size=${safeSize()}`);
+		return res;
+	};
+	if (origClear) {
+		map.clear = () => {
+			const before = safeSize();
+			const res = origClear();
+			safeLog(`[coclaw.diag] ${label}.clear was=${before} size=${safeSize()}`);
+			return res;
+		};
+	}
+	safeLog(`[coclaw.diag] installed ${label} patch (size=${safeSize()})`);
+	return true;
+}
+
+function stringifyKey(k) {
+	if (typeof k === 'string') return k;
+	try { return JSON.stringify(k); } catch { return String(k); }
+}
 
 /* c8 ignore start */
 function parseCommandArgs(args) {
@@ -65,6 +145,7 @@ const plugin = {
 	register(api) {
 		setRuntime(api.runtime);
 		const logger = api?.logger ?? console;
+		installAbortRegistryDiag(logger);
 		const manager = createSessionManager({ logger });
 		const topicManager = new TopicManager({ logger });
 		const chatHistoryManager = new ChatHistoryManager({ logger });
@@ -460,16 +541,30 @@ const plugin = {
 
 		// 取消正在执行的 embedded agent run（通过 OpenClaw 全局 symbol 侧门）
 		// 侧门不存在 / sessionId 未注册 / handle.abort 抛异常时返回 { ok:false, reason } —— UI 静默降级
+		// UI 可能在 OpenClaw 注册 sessionId 前点 STOP（注册空窗期），此时返回 not-found；UI 会按 500ms 间隔重试。
 		api.registerGatewayMethod('coclaw.agent.abort', ({ params, respond }) => {
 			try {
 				const sessionId = params?.sessionId;
 				if (typeof sessionId !== 'string' || !sessionId) {
+					logger.warn?.(`[coclaw.agent.abort] invalid sessionId: ${JSON.stringify(sessionId)}`);
 					respondInvalid(respond, 'sessionId is required');
 					return;
 				}
-				respond(true, abortAgentRun(sessionId));
+				logger.info?.(`[coclaw.agent.abort] request sessionId=${sessionId}`);
+				remoteLog(`abort.request sid=${sessionId}`);
+				const result = abortAgentRun(sessionId, logger);
+				logger.info?.(`[coclaw.agent.abort] result sessionId=${sessionId} ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}${result.error ? ` error=${result.error}` : ''}`);
+				if (result.ok) {
+					remoteLog(`abort.success sid=${sessionId}`);
+				}
+				else if (result.reason === 'not-supported') {
+					// 侧门缺失或 handle shape 变化：OpenClaw 升级契约变更的早期信号
+					remoteLog(`abort.not-supported sid=${sessionId}`);
+				}
+				respond(true, result);
 			}
 			catch (err) {
+				logger.error?.(`[coclaw.agent.abort] handler threw: ${String(err?.message ?? err)}`);
 				respondError(respond, err);
 			}
 		});

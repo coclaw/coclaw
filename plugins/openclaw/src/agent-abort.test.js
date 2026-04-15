@@ -4,6 +4,7 @@ import test from 'node:test';
 import { abortAgentRun } from './agent-abort.js';
 
 const KEY = Symbol.for('openclaw.embeddedRunState');
+const REPLY_KEY = Symbol.for('openclaw.replyRunRegistry');
 
 function withStubbedState(stub, fn) {
 	const had = Object.prototype.hasOwnProperty.call(globalThis, KEY);
@@ -13,6 +14,17 @@ function withStubbedState(stub, fn) {
 	finally {
 		if (had) globalThis[KEY] = prev;
 		else delete globalThis[KEY];
+	}
+}
+
+function withStubbedReplyState(stub, fn) {
+	const had = Object.prototype.hasOwnProperty.call(globalThis, REPLY_KEY);
+	const prev = globalThis[REPLY_KEY];
+	globalThis[REPLY_KEY] = stub;
+	try { return fn(); }
+	finally {
+		if (had) globalThis[REPLY_KEY] = prev;
+		else delete globalThis[REPLY_KEY];
 	}
 }
 
@@ -97,4 +109,136 @@ test('abortAgentRun returns abort-threw when handle.abort throws non-Error', () 
 		assert.equal(result.reason, 'abort-threw');
 		assert.equal(result.error, 'raw-string');
 	});
+});
+
+// --- not-found 分支的诊断输出（logger.info）---
+
+test('abortAgentRun not-found with logger dumps embedded + reply registry snapshot', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const embeddedMap = new Map();
+	embeddedMap.set('other-sid', { abort: () => {} });
+	const replyByKey = new Map([['agent:main:main', { foo: 1 }]]);
+	const replyByIdToKey = new Map([['live-sid', 'agent:main:main']]);
+	withStubbedState({ activeRuns: embeddedMap }, () => {
+		withStubbedReplyState({ activeRunsByKey: replyByKey, activeKeysBySessionId: replyByIdToKey }, () => {
+			const result = abortAgentRun('missing-sid', logger);
+			assert.deepEqual(result, { ok: false, reason: 'not-found' });
+		});
+	});
+	assert.equal(infoMsgs.length, 1);
+	const line = infoMsgs[0];
+	assert.match(line, /\[coclaw\.agent\.abort\] not-found diag/);
+	assert.match(line, /sessionId=missing-sid/);
+	assert.match(line, /embedded\.size=1/);
+	assert.match(line, /embedded\.keys=\["other-sid"\]/);
+	assert.match(line, /reply\.activeRunsByKey\.size=1/);
+	assert.match(line, /reply\.keys=\["agent:main:main"\]/);
+	assert.match(line, /reply\.keyForSid=null/);
+});
+
+test('abortAgentRun not-found without logger is silent', () => {
+	const embeddedMap = new Map();
+	withStubbedState({ activeRuns: embeddedMap }, () => {
+		// 不传 logger 也不应抛
+		const result = abortAgentRun('missing-sid');
+		assert.deepEqual(result, { ok: false, reason: 'not-found' });
+	});
+});
+
+test('abortAgentRun not-found diag handles absent reply registry', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const embeddedMap = new Map();
+	withStubbedState({ activeRuns: embeddedMap }, () => {
+		withStubbedReplyState(undefined, () => {
+			abortAgentRun('missing-sid', logger);
+		});
+	});
+	assert.equal(infoMsgs.length, 1);
+	assert.match(infoMsgs[0], /reply\.state=absent/);
+});
+
+test('abortAgentRun not-found diag reports missing activeRunsByKey', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const embeddedMap = new Map();
+	withStubbedState({ activeRuns: embeddedMap }, () => {
+		withStubbedReplyState({ activeKeysBySessionId: new Map() }, () => {
+			abortAgentRun('missing-sid', logger);
+		});
+	});
+	assert.match(infoMsgs[0], /reply\.activeRunsByKey=absent/);
+	assert.match(infoMsgs[0], /reply\.keyForSid=null/);
+});
+
+test('abortAgentRun not-found diag reports missing activeKeysBySessionId', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const embeddedMap = new Map();
+	withStubbedState({ activeRuns: embeddedMap }, () => {
+		withStubbedReplyState({ activeRunsByKey: new Map() }, () => {
+			abortAgentRun('missing-sid', logger);
+		});
+	});
+	assert.match(infoMsgs[0], /reply\.activeKeysBySessionId=absent/);
+	assert.match(infoMsgs[0], /reply\.activeRunsByKey\.size=0/);
+});
+
+test('abortAgentRun not-found diag returns key mapping when reply registry has entry', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const embeddedMap = new Map();
+	const byId = new Map([['target-sid', 'agent:main:main']]);
+	withStubbedState({ activeRuns: embeddedMap }, () => {
+		withStubbedReplyState({ activeRunsByKey: new Map(), activeKeysBySessionId: byId }, () => {
+			abortAgentRun('target-sid', logger);
+		});
+	});
+	assert.match(infoMsgs[0], /reply\.keyForSid="agent:main:main"/);
+});
+
+test('abortAgentRun not-found diag survives thrown keys() iterator on embedded map', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const throwingMap = {
+		get: () => undefined,
+		size: 3,
+		keys: () => { throw new Error('iter-boom'); },
+	};
+	withStubbedState({ activeRuns: throwingMap }, () => {
+		withStubbedReplyState(undefined, () => {
+			abortAgentRun('x', logger);
+		});
+	});
+	assert.match(infoMsgs[0], /embedded\.keysErr=iter-boom/);
+});
+
+test('abortAgentRun not-found diag survives thrown keys() iterator on reply.activeRunsByKey', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const embedded = new Map();
+	const replyRuns = {
+		size: 2,
+		keys: () => { throw new Error('rep-iter'); },
+	};
+	withStubbedState({ activeRuns: embedded }, () => {
+		withStubbedReplyState({ activeRunsByKey: replyRuns }, () => {
+			abortAgentRun('x', logger);
+		});
+	});
+	assert.match(infoMsgs[0], /reply\.keysErr=rep-iter/);
+});
+
+test('abortAgentRun not-found diag survives thrown get() on reply.activeKeysBySessionId', () => {
+	const infoMsgs = [];
+	const logger = { info: (msg) => infoMsgs.push(msg) };
+	const embedded = new Map();
+	const byId = { get: () => { throw new Error('lookup-boom'); } };
+	withStubbedState({ activeRuns: embedded }, () => {
+		withStubbedReplyState({ activeKeysBySessionId: byId }, () => {
+			abortAgentRun('x', logger);
+		});
+	});
+	assert.match(infoMsgs[0], /reply\.keyForSidErr=lookup-boom/);
 });
