@@ -79,7 +79,7 @@ describe('connectAdminStream', () => {
 			.not.toThrow();
 	});
 
-	test('claw.infoUpdated 规范化 payload', () => {
+	test('claw.infoUpdated 全字段 patch 透传', () => {
 		const onInfoUpdated = vi.fn();
 		connect({ onInfoUpdated });
 		esInstance.onmessage({
@@ -101,13 +101,35 @@ describe('connectAdminStream', () => {
 		});
 	});
 
-	test('claw.infoUpdated 缺省字段回退为 null', () => {
+	test('claw.infoUpdated 缺省字段不出现在 patch（保留 undefined 以便 store skip）', () => {
 		const onInfoUpdated = vi.fn();
 		connect({ onInfoUpdated });
 		esInstance.onmessage({ data: JSON.stringify({ event: 'claw.infoUpdated', clawId: '7' }) });
-		expect(onInfoUpdated).toHaveBeenCalledWith({
-			clawId: '7', name: null, hostName: null, pluginVersion: null, agentModels: null,
+		// patch 语义：wire 中不存在的字段 → 回调 patch 中也不存在（不以 null 伪装）
+		expect(onInfoUpdated).toHaveBeenCalledWith({ clawId: '7' });
+		const patch = onInfoUpdated.mock.calls[0][0];
+		expect('name' in patch).toBe(false);
+		expect('hostName' in patch).toBe(false);
+		expect('pluginVersion' in patch).toBe(false);
+		expect('agentModels' in patch).toBe(false);
+	});
+
+	test('claw.infoUpdated 部分字段 patch（仅 pluginVersion）只透传存在的字段', () => {
+		const onInfoUpdated = vi.fn();
+		connect({ onInfoUpdated });
+		esInstance.onmessage({
+			data: JSON.stringify({ event: 'claw.infoUpdated', clawId: '8', pluginVersion: '0.15.0' }),
 		});
+		expect(onInfoUpdated).toHaveBeenCalledWith({ clawId: '8', pluginVersion: '0.15.0' });
+	});
+
+	test('claw.infoUpdated 显式 null 字段（wire 中存在但值为 null）被透传', () => {
+		const onInfoUpdated = vi.fn();
+		connect({ onInfoUpdated });
+		esInstance.onmessage({
+			data: JSON.stringify({ event: 'claw.infoUpdated', clawId: '9', name: null, hostName: null }),
+		});
+		expect(onInfoUpdated).toHaveBeenCalledWith({ clawId: '9', name: null, hostName: null });
 	});
 
 	test('claw.infoUpdated 无 handler 不抛', () => {

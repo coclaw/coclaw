@@ -6,7 +6,7 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, forwardToClaw, markClawLastSeen, applyClawInfoUpdate, __test } from './claw-ws-hub.js';
+import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, forwardToClaw, markClawLastSeen, applyClawInfoUpdate, finalizeClawOffline, scheduleClawGraceOffline, __test } from './claw-ws-hub.js';
 import { Prisma } from './generated/prisma/client.js';
 import { register as registerSignalRoute, __test as signalTest } from './rtc-signal-router.js';
 
@@ -782,17 +782,18 @@ test('onClawMessage: coclaw.info.updated rawName 为空时 name 回退到 hostNa
 	assert.equal(uiWs.sent.length, 0);
 	// name 字段用 hostName 兜底（保持与旧行为一致，避免 agents.store 'OpenClaw' 退化）
 	// hostName 同时独立持久化到新列
+	// patch 语义：未在 payload 中的字段不会出现在 emit 里
 	assert.equal(emitted.length, 1);
 	assert.equal(emitted[0].name, 'fallback-host');
 	assert.equal(emitted[0].hostName, 'fallback-host');
-	assert.equal(emitted[0].pluginVersion, null);
-	assert.equal(emitted[0].agentModels, null);
+	assert.equal('pluginVersion' in emitted[0], false);
+	assert.equal('agentModels' in emitted[0], false);
 
 	clawStatusEmitter.off('infoUpdated', listener);
 	cleanupSockets('bot1');
 });
 
-test('onClawMessage: coclaw.info.updated 空字符串/非法类型时标准化为 null', () => {
+test('onClawMessage: coclaw.info.updated 空字符串/非法类型时标准化为 null（仅对 payload 中存在的字段生效）', () => {
 	const clawWs = createMockWs();
 	setupSockets('bot1', { bot: [clawWs] });
 
@@ -803,15 +804,16 @@ test('onClawMessage: coclaw.info.updated 空字符串/非法类型时标准化�
 	onClawMessage('bot1', clawWs, JSON.stringify({
 		type: 'event',
 		event: 'coclaw.info.updated',
-		// name='' / hostName=123 / pluginVersion=undefined / agentModels='not-array'
+		// name='' / hostName=123 / agentModels='not-array'（pluginVersion 未在 payload 中）
 		payload: { name: '', hostName: 123, agentModels: 'not-array' },
 	}));
 
 	assert.equal(emitted.length, 1);
 	assert.equal(emitted[0].name, null);
 	assert.equal(emitted[0].hostName, null);
-	assert.equal(emitted[0].pluginVersion, null);
 	assert.equal(emitted[0].agentModels, null);
+	// pluginVersion 未在 payload → 不出现在 emit（patch 语义）
+	assert.equal('pluginVersion' in emitted[0], false);
 
 	clawStatusEmitter.off('infoUpdated', listener);
 	cleanupSockets('bot1');
@@ -838,7 +840,7 @@ test('onClawMessage: coclaw.info.updated agentModels 为空数组时原样保留
 	cleanupSockets('bot1');
 });
 
-test('onClawMessage: coclaw.info.updated payload 为 null 时不崩溃，全字段规范化为 null', () => {
+test('onClawMessage: coclaw.info.updated payload 为 null 时不崩溃，emit 只含 clawId', () => {
 	const clawWs = createMockWs();
 	setupSockets('bot1', { bot: [clawWs] });
 
@@ -853,11 +855,9 @@ test('onClawMessage: coclaw.info.updated payload 为 null 时不崩溃，全字�
 		payload: null,
 	}));
 
+	// patch 语义：空 payload → emit 只含 clawId，下游 SSE fan-out 无字段变更
 	assert.equal(emitted.length, 1);
-	assert.equal(emitted[0].name, null);
-	assert.equal(emitted[0].hostName, null);
-	assert.equal(emitted[0].pluginVersion, null);
-	assert.equal(emitted[0].agentModels, null);
+	assert.deepEqual(emitted[0], { clawId: 'bot1' });
 
 	clawStatusEmitter.off('infoUpdated', listener);
 	cleanupSockets('bot1');
@@ -930,16 +930,89 @@ test('applyClawInfoUpdate: rawName 为空且 hostName 存在时 name/hostName �
 	assert.equal(captured.data.hostName, 'host1');
 });
 
-test('applyClawInfoUpdate: rawName 和 hostName 都为空时 name=null', async () => {
+test('applyClawInfoUpdate: 空 payload（无任何已知字段）→ 不调 updateClaw，emit 只含 clawId', async () => {
+	let called = false;
+	const emitter = new EventEmitter();
+	const emitted = [];
+	emitter.on('infoUpdated', (d) => emitted.push(d));
+	applyClawInfoUpdate('12345', {}, {
+		updateClawImpl: async () => { called = true; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.equal(called, false, 'patch 语义下空 payload 不应触发 DB 写入');
+	assert.deepEqual(emitted, [{ clawId: '12345' }]);
+});
+
+test('applyClawInfoUpdate (patch): 仅含 name+hostName 时不写 pluginVersion/agentModels 列', async () => {
 	let captured = null;
 	const emitter = new EventEmitter();
-	applyClawInfoUpdate('12345', {}, {
+	const emitted = [];
+	emitter.on('infoUpdated', (d) => emitted.push(d));
+	applyClawInfoUpdate('12345', { name: 'A', hostName: 'ubuntu' }, {
 		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
 		emitter,
 	});
 	await new Promise((r) => setImmediate(r));
+	assert.deepEqual(Object.keys(captured.data).sort(), ['hostName', 'name']);
+	assert.equal(captured.data.name, 'A');
+	assert.equal(captured.data.hostName, 'ubuntu');
+	// emit payload 只含本次变更字段
+	assert.deepEqual(Object.keys(emitted[0]).sort(), ['clawId', 'hostName', 'name']);
+});
+
+test('applyClawInfoUpdate (patch): 仅含 pluginVersion 时只写该列', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	const emitted = [];
+	emitter.on('infoUpdated', (d) => emitted.push(d));
+	applyClawInfoUpdate('12345', { pluginVersion: '0.15.0' }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.deepEqual(Object.keys(captured.data), ['pluginVersion']);
+	assert.equal(captured.data.pluginVersion, '0.15.0');
+	assert.deepEqual(emitted[0], { clawId: '12345', pluginVersion: '0.15.0' });
+});
+
+test('applyClawInfoUpdate (patch): 仅含 agentModels 时只写该列', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	const emitted = [];
+	emitter.on('infoUpdated', (d) => emitted.push(d));
+	applyClawInfoUpdate('12345', { agentModels: [{ id: 'main', name: 'Main', model: 'claude-opus-4' }] }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.deepEqual(Object.keys(captured.data), ['agentModels']);
+	assert.deepEqual(captured.data.agentModels, [{ id: 'main', name: 'Main', model: 'claude-opus-4' }]);
+	assert.deepEqual(emitted[0].agentModels, [{ id: 'main', name: 'Main', model: 'claude-opus-4' }]);
+});
+
+test('applyClawInfoUpdate (patch): 仅含 name（不带 hostName）时按字面值写 name，不走 hostName 回退', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	applyClawInfoUpdate('12345', { name: 'user-set' }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.deepEqual(Object.keys(captured.data), ['name']);
+	assert.equal(captured.data.name, 'user-set');
+});
+
+test('applyClawInfoUpdate (patch): 仅含 name:null（不带 hostName）时 name 列写 null（不触发回退）', async () => {
+	let captured = null;
+	const emitter = new EventEmitter();
+	applyClawInfoUpdate('12345', { name: null }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	assert.deepEqual(Object.keys(captured.data), ['name']);
 	assert.equal(captured.data.name, null);
-	assert.equal(captured.data.hostName, null);
 });
 
 test('applyClawInfoUpdate: rawName 非空且 hostName 为空时 name=rawName（不被 null 覆盖）', async () => {
@@ -2096,4 +2169,117 @@ test('markClawLastSeen: clawId 非数字时 BigInt 抛异常同样被 catch', as
 	finally {
 		console.warn = originalWarn;
 	}
+});
+
+// --- finalizeClawOffline / scheduleClawGraceOffline ---
+// 保障 ws close handler 内 markClawLastSeen 调用不会被未来误删：
+// close handler 把管理性断连 → finalizeClawOffline，普通断连 → scheduleClawGraceOffline。
+// 只要这两个函数调用 markLastSeen + emit status，就能保证现网 disconnect 路径写入 lastSeenAt。
+
+test('finalizeClawOffline: 调用 markLastSeen 且 emit offline 事件', () => {
+	let markedId = null;
+	const mockEmitter = new EventEmitter();
+	const events = [];
+	mockEmitter.on('status', (evt) => events.push(evt));
+
+	finalizeClawOffline('claw-admin-1', {
+		markLastSeen: async (id) => { markedId = id; },
+		emitter: mockEmitter,
+	});
+
+	assert.equal(markedId, 'claw-admin-1');
+	assert.deepEqual(events, [{ clawId: 'claw-admin-1', online: false }]);
+});
+
+test('finalizeClawOffline: markLastSeen rejection 被 .catch 吞掉并 wsLogWarn', async () => {
+	const originalWarn = console.warn;
+	const warnings = [];
+	console.warn = (...args) => warnings.push(args.map(String).join(' '));
+	try {
+		const mockEmitter = new EventEmitter();
+		finalizeClawOffline('claw-err-1', {
+			markLastSeen: async () => { throw new Error('db disconnected'); },
+			emitter: mockEmitter,
+		});
+		// 等一轮让 Promise.catch 完成
+		await new Promise((r) => setImmediate(r));
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /markClawLastSeen unexpected error clawId=claw-err-1: db disconnected/);
+	}
+	finally {
+		console.warn = originalWarn;
+	}
+});
+
+test('scheduleClawGraceOffline: grace 到期且未重连 → 调用 markLastSeen + emit offline', async () => {
+	const timerMap = new Map();
+	const sockets = new Map();
+	let markedId = null;
+	const mockEmitter = new EventEmitter();
+	const events = [];
+	mockEmitter.on('status', (evt) => events.push(evt));
+
+	scheduleClawGraceOffline('c-grace-1', {
+		markLastSeen: async (id) => { markedId = id; },
+		emitter: mockEmitter,
+		graceMs: 10,
+		timerMap,
+		sockets,
+	});
+	assert.ok(timerMap.has('c-grace-1'));
+	await new Promise((r) => setTimeout(r, 30));
+	assert.equal(markedId, 'c-grace-1');
+	assert.deepEqual(events, [{ clawId: 'c-grace-1', online: false }]);
+	assert.ok(!timerMap.has('c-grace-1'));
+});
+
+test('scheduleClawGraceOffline: grace 期间重连（sockets 又有 claw）→ 不写 lastSeenAt 不 emit', async () => {
+	const timerMap = new Map();
+	const sockets = new Map();
+	let markCount = 0;
+	const mockEmitter = new EventEmitter();
+	const events = [];
+	mockEmitter.on('status', (evt) => events.push(evt));
+
+	scheduleClawGraceOffline('c-reconn-1', {
+		markLastSeen: async () => { markCount += 1; },
+		emitter: mockEmitter,
+		graceMs: 10,
+		timerMap,
+		sockets,
+	});
+	// 模拟重连
+	sockets.set('c-reconn-1', [{}]);
+	await new Promise((r) => setTimeout(r, 30));
+	assert.equal(markCount, 0, 'grace 内重连时不应调用 markLastSeen');
+	assert.equal(events.length, 0, 'grace 内重连时不应 emit offline');
+});
+
+test('scheduleClawGraceOffline: 已有 pending timer 时先清旧计时', () => {
+	const timerMap = new Map();
+	const sockets = new Map();
+	const mockEmitter = new EventEmitter();
+	const noopMark = async () => {};
+
+	scheduleClawGraceOffline('c-dup-1', {
+		markLastSeen: noopMark,
+		emitter: mockEmitter,
+		graceMs: 10_000,
+		timerMap,
+		sockets,
+	});
+	const firstTimer = timerMap.get('c-dup-1');
+
+	scheduleClawGraceOffline('c-dup-1', {
+		markLastSeen: noopMark,
+		emitter: mockEmitter,
+		graceMs: 10_000,
+		timerMap,
+		sockets,
+	});
+	const secondTimer = timerMap.get('c-dup-1');
+
+	assert.notEqual(firstTimer, secondTimer, '应替换为新 timer');
+	clearTimeout(secondTimer);
+	timerMap.delete('c-dup-1');
 });

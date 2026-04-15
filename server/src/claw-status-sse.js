@@ -128,15 +128,21 @@ async function handleStatusEvent({ clawId, online }, deps = {}) {
 }
 
 /**
- * 处理 claw 信息变更事件（plugin 上报）。
- * 用户侧 SSE 仅关心 name，其余字段（hostName/pluginVersion/agentModels）透传给 admin SSE。
- * @param {object} param0
- * @param {string} param0.clawId
- * @param {string} param0.name
+ * 处理 claw 信息变更事件（plugin 上报，patch 语义）。
+ * 用户侧 SSE 仅关心 name：本次 patch 不含 name 字段时直接返回（避免无变化的事件刷新）；
+ * 其余字段（hostName/pluginVersion/agentModels）透传给 admin SSE。
+ * @param {object} evt
+ * @param {string} evt.clawId
+ * @param {string} [evt.name] - 本次 patch 不含 name 时为 undefined
  * @param {{ findClawByIdFn?: Function }} [deps]
  */
-async function handleInfoUpdatedEvent({ clawId, name }, deps = {}) {
+async function handleInfoUpdatedEvent(evt, deps = {}) {
 	const { findClawByIdFn = findClawById } = deps;
+	const { clawId, name } = evt;
+	// name 未在 patch 中出现 → user-facing SSE 无需下发（admin SSE 走独立监听器）
+	if (!Object.hasOwn(evt, 'name')) {
+		return;
+	}
 	if (!hasSseClients()) {
 		return;
 	}

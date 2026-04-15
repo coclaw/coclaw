@@ -106,7 +106,7 @@ test('handleStatusEvent: 向所有客户端广播 claw.statusChanged', () => {
 	r2.__triggerClose();
 });
 
-test('handleInfoUpdatedEvent: 广播完整字段（name/hostName/pluginVersion/agentModels）', () => {
+test('handleInfoUpdatedEvent: 全字段 patch 时广播全部字段', () => {
 	drain();
 	const res = createMockRes();
 	registerAdminSseClient(res, { listOnlineClawIdsImpl: () => new Set() });
@@ -126,6 +126,67 @@ test('handleInfoUpdatedEvent: 广播完整字段（name/hostName/pluginVersion/a
 	assert.equal(evt.hostName, 'ubuntu');
 	assert.equal(evt.pluginVersion, '0.14.0');
 	assert.deepEqual(evt.agentModels, [{ id: 'main', name: 'Main', model: 'opus' }]);
+
+	res.__triggerClose();
+});
+
+test('handleInfoUpdatedEvent: 部分字段 patch（仅 name+hostName）时 wire 不包含未提供字段', () => {
+	drain();
+	const res = createMockRes();
+	registerAdminSseClient(res, { listOnlineClawIdsImpl: () => new Set() });
+
+	handleInfoUpdatedEvent({
+		clawId: '8',
+		name: 'renamed',
+		hostName: 'ubuntu',
+	});
+
+	const evt = JSON.parse(res.written[1].replace('data: ', '').trim());
+	assert.equal(evt.event, 'claw.infoUpdated');
+	assert.equal(evt.clawId, '8');
+	assert.equal(evt.name, 'renamed');
+	assert.equal(evt.hostName, 'ubuntu');
+	assert.equal('pluginVersion' in evt, false, 'wire 不应包含未提供字段');
+	assert.equal('agentModels' in evt, false);
+
+	res.__triggerClose();
+});
+
+test('handleInfoUpdatedEvent: 仅 agentModels patch 时 wire 仅含 clawId + agentModels', () => {
+	drain();
+	const res = createMockRes();
+	registerAdminSseClient(res, { listOnlineClawIdsImpl: () => new Set() });
+
+	handleInfoUpdatedEvent({
+		clawId: '9',
+		agentModels: [],
+	});
+
+	const evt = JSON.parse(res.written[1].replace('data: ', '').trim());
+	assert.equal(evt.event, 'claw.infoUpdated');
+	assert.equal(evt.clawId, '9');
+	assert.deepEqual(evt.agentModels, []);
+	assert.equal('name' in evt, false);
+	assert.equal('hostName' in evt, false);
+	assert.equal('pluginVersion' in evt, false);
+
+	res.__triggerClose();
+});
+
+test('handleInfoUpdatedEvent: 显式 null 字段（patch 中存在但值为 null）应被透传', () => {
+	drain();
+	const res = createMockRes();
+	registerAdminSseClient(res, { listOnlineClawIdsImpl: () => new Set() });
+
+	handleInfoUpdatedEvent({
+		clawId: '10',
+		name: null,
+		hostName: null,
+	});
+
+	const evt = JSON.parse(res.written[1].replace('data: ', '').trim());
+	assert.equal(evt.name, null);
+	assert.equal(evt.hostName, null);
 
 	res.__triggerClose();
 });

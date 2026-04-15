@@ -286,3 +286,23 @@ test('handleInfoUpdatedEvent: findClawById 抛异常时静默捕获', async () =
 
 	res.__triggerClose();
 });
+
+test('handleInfoUpdatedEvent: patch 不含 name 字段时直接返回（不下发 user-facing SSE）', async () => {
+	const res = createMockRes();
+	registerSseClient('203', res);
+	let findCalled = false;
+
+	// 只更新 pluginVersion/agentModels 的 patch，无 name 字段
+	await handleInfoUpdatedEvent({
+		clawId: '50',
+		pluginVersion: '0.15.0',
+		agentModels: [{ id: 'main', name: 'Main', model: 'claude-opus-4' }],
+	}, {
+		findClawByIdFn: async () => { findCalled = true; return null; },
+	});
+
+	assert.equal(findCalled, false, '不含 name 时不应查 DB');
+	assert.equal(res.written.length, 0, '不含 name 时不应下发');
+
+	res.__triggerClose();
+});

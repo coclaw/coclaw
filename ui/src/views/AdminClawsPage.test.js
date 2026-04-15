@@ -253,7 +253,7 @@ describe('AdminClawsPage — mount 与 SSE', () => {
 		expect(mockUpdateClawStatus).toHaveBeenCalledWith('c1', true);
 	});
 
-	test('SSE onInfoUpdated → updateClawInfo 传入完整 patch', async () => {
+	test('SSE onInfoUpdated（全字段）→ updateClawInfo 收到完整 patch', async () => {
 		mountPage();
 		await flushPromises();
 		streamHandlers.onInfoUpdated({
@@ -266,6 +266,17 @@ describe('AdminClawsPage — mount 与 SSE', () => {
 		expect(mockUpdateClawInfo).toHaveBeenCalledWith('c1', {
 			name: 'new', hostName: 'h', pluginVersion: '1.0.0', agentModels: [{ id: 'a' }],
 		});
+	});
+
+	test('SSE onInfoUpdated（部分字段 patch）→ 仅透传 wire 中存在的字段', async () => {
+		mountPage();
+		await flushPromises();
+		// 模拟 wire 只带 clawId + name（比如 coclaw.info.patch 只改名字）
+		streamHandlers.onInfoUpdated({ clawId: 'c1', name: 'renamed' });
+		expect(mockUpdateClawInfo).toHaveBeenCalledWith('c1', { name: 'renamed' });
+		const patch = mockUpdateClawInfo.mock.calls[0][1];
+		expect('pluginVersion' in patch).toBe(false);
+		expect('agentModels' in patch).toBe(false);
 	});
 
 	test('在 fetchClaws 未完成时 unmount 不建立 SSE 连接（防 EventSource 泄漏）', async () => {

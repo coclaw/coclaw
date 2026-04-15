@@ -176,15 +176,62 @@ export async function markClawLastSeen(clawId, deps = {}) {
 }
 
 /**
- * 处理 plugin 发来的 coclaw.info.updated 事件：规范化字段 → 持久化到 DB → emit infoUpdated 给 SSE 下游。
- * 抽为独立函数便于注入 updateClawImpl 做单测（验证 Prisma.DbNull 等 DB 交互细节）。
+ * Claw 真正 offline：写 lastSeenAt + emit offline 事件。
+ * 管理性 close code（4001/4003）路径即刻调用；grace 超时后无重连也调用。
+ * 抽为具名函数便于单测断言 markClawLastSeen 在两条路径上都被调用。
+ * @param {string} clawId
+ * @param {{ markLastSeen?: Function, emitter?: EventEmitter }} [deps]
+ */
+export function finalizeClawOffline(clawId, deps = {}) {
+	const { markLastSeen = markClawLastSeen, emitter = clawStatusEmitter } = deps;
+	markLastSeen(clawId).catch((err) => wsLogWarn(`markClawLastSeen unexpected error clawId=${clawId}: ${err?.message ?? err}`));
+	emitter.emit('status', { clawId, online: false });
+}
+
+/**
+ * 安排 grace 超时后执行 offline finalize（若期间未重连）。
+ * 若已有 pending timer 先清旧计时，避免重复。
+ * @param {string} clawId
+ * @param {{ markLastSeen?: Function, emitter?: EventEmitter, graceMs?: number, timerMap?: Map, sockets?: Map }} [deps]
+ */
+export function scheduleClawGraceOffline(clawId, deps = {}) {
+	const {
+		markLastSeen = markClawLastSeen,
+		emitter = clawStatusEmitter,
+		graceMs = CLAW_OFFLINE_GRACE_MS,
+		timerMap = pendingOffline,
+		sockets = clawSockets,
+	} = deps;
+	if (timerMap.has(clawId)) clearTimeout(timerMap.get(clawId));
+	const timer = setTimeout(() => {
+		timerMap.delete(clawId);
+		if (!sockets.has(clawId)) {
+			wsLogInfo(`claw offline clawId=${clawId} (after grace)`);
+			finalizeClawOffline(clawId, { markLastSeen, emitter });
+		}
+	}, graceMs);
+	timer.unref();
+	timerMap.set(clawId, timer);
+}
+
+/**
+ * 处理 plugin 发来的 coclaw.info.updated 事件（patch 语义）：
+ * 仅更新 payload 中实际出现的字段；缺失字段保留 DB 原值，不被"缺失即 null"语义覆盖。
  *
- * `name` 字段的 hostName 回退是兼容现有 user-facing UI 的必要措施：
- * snapshot SSE 只下发 claw.name；若 plugin 发来 name=null 而 hostName=xxx，回退后 DB.name=xxx，
- * UI 显示主机名而非 'OpenClaw' 兜底，避免过渡期显示退化。hostName 同时独立持久化到新列供 admin API 使用。
+ * plugin 端有两个触发源，均走本函数：
+ *   1) bridge connect 后 `__pushInstanceInfo`：payload 含全部 4 字段（name/hostName/pluginVersion/agentModels）
+ *   2) `coclaw.info.patch` handler：仅含 { name, hostName }（用户通过 UI 改名）
+ * 后者若按全量替换处理会把 pluginVersion/agentModels 清空，因此本函数按 `in payload` 逐字段判定。
+ *
+ * `name` 列的 hostName 回退：仅当本次 payload 同时含 name + hostName 时才应用（即两个 plugin 触发源的
+ * 实际形态）。这样既兼容现有 user-facing UI（snapshot SSE 只下发 claw.name；name=null 时需 hostName 兜底），
+ * 又避免"只带 name 不带 hostName"时错误擦除 hostName 回退值。
  *
  * `agentModels` 字段的 Prisma.DbNull：Prisma 对 Json? 字段，data 中传 JS `null` 会被解释为"不更新"；
  * 需 Prisma.DbNull 才能把列显式置为 SQL NULL。
+ *
+ * emit 的 `infoUpdated` 事件 payload 只包含本次实际变更的字段（加 clawId），
+ * 下游 SSE fan-out（claw-status-sse / admin-sse）按各自需求透传相应字段。
  *
  * 语义：emit 在 DB 写入发起之后同步触发，**不等待**也不依赖 DB 持久化成功。
  * 即使 DB 写失败，SSE 仍会把最新 plugin 上报推给 UI；下次 UI 主动刷新会拉回 DB 真值（允许的回退窗口）。
@@ -196,21 +243,54 @@ export async function markClawLastSeen(clawId, deps = {}) {
 export function applyClawInfoUpdate(clawId, eventPayload, deps = {}) {
 	const { updateClawImpl = updateClaw, emitter = clawStatusEmitter } = deps;
 	const p = eventPayload ?? {};
-	const rawName = typeof p.name === 'string' && p.name.length > 0 ? p.name : null;
-	const hostName = typeof p.hostName === 'string' && p.hostName.length > 0 ? p.hostName : null;
-	const pluginVersion = typeof p.pluginVersion === 'string' && p.pluginVersion.length > 0 ? p.pluginVersion : null;
-	const agentModels = Array.isArray(p.agentModels) ? p.agentModels : null;
-	const name = rawName ?? hostName;
-	const agentModelsForDb = agentModels === null ? Prisma.DbNull : agentModels;
-	try {
-		updateClawImpl(BigInt(clawId), { name, hostName, pluginVersion, agentModels: agentModelsForDb }).catch((err) => {
+
+	const hasName = Object.hasOwn(p, 'name');
+	const hasHostName = Object.hasOwn(p, 'hostName');
+	const hasPluginVersion = Object.hasOwn(p, 'pluginVersion');
+	const hasAgentModels = Object.hasOwn(p, 'agentModels');
+
+	const dbData = {};
+	const emitPatch = {};
+
+	let hostName;
+	if (hasHostName) {
+		hostName = typeof p.hostName === 'string' && p.hostName.length > 0 ? p.hostName : null;
+		dbData.hostName = hostName;
+		emitPatch.hostName = hostName;
+	}
+
+	if (hasName) {
+		const rawName = typeof p.name === 'string' && p.name.length > 0 ? p.name : null;
+		// 仅当本次 payload 同时含 hostName 时才应用回退；单独带 name 时按字面值更新
+		const nameCol = hasHostName ? (rawName ?? hostName) : rawName;
+		dbData.name = nameCol;
+		emitPatch.name = nameCol;
+	}
+
+	if (hasPluginVersion) {
+		const pv = typeof p.pluginVersion === 'string' && p.pluginVersion.length > 0 ? p.pluginVersion : null;
+		dbData.pluginVersion = pv;
+		emitPatch.pluginVersion = pv;
+	}
+
+	if (hasAgentModels) {
+		const am = Array.isArray(p.agentModels) ? p.agentModels : null;
+		dbData.agentModels = am === null ? Prisma.DbNull : am;
+		emitPatch.agentModels = am;
+	}
+
+	if (Object.keys(dbData).length > 0) {
+		try {
+			updateClawImpl(BigInt(clawId), dbData).catch((err) => {
+				wsLogWarn(`updateClaw from plugin event failed clawId=${clawId}: ${err.message}`);
+			});
+		}
+		catch (err) {
 			wsLogWarn(`updateClaw from plugin event failed clawId=${clawId}: ${err.message}`);
-		});
+		}
 	}
-	catch (err) {
-		wsLogWarn(`updateClaw from plugin event failed clawId=${clawId}: ${err.message}`);
-	}
-	emitter.emit('infoUpdated', { clawId, name, hostName, pluginVersion, agentModels });
+
+	emitter.emit('infoUpdated', { clawId, ...emitPatch });
 }
 
 async function authenticateClawRequest(req) {
@@ -631,25 +711,11 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 						// 管理性断连（解绑/封禁）立即 offline，不走 grace period
 						if (code === 4001 || code === 4003) {
 							wsLogInfo(`claw offline clawId=${clawId} (admin close code=${code})`);
-							// 真正 offline 时写 lastSeenAt；.catch 兜底防御（markClawLastSeen 内部已吞异常）
-							markClawLastSeen(clawId).catch((err) => wsLogWarn(`markClawLastSeen unexpected error clawId=${clawId}: ${err?.message ?? err}`));
-							clawStatusEmitter.emit('status', { clawId, online: false });
+							finalizeClawOffline(clawId);
 						}
 						else {
 							// 延迟发 offline，给 claw 重连留窗口
-							if (pendingOffline.has(clawId)) clearTimeout(pendingOffline.get(clawId));
-							const timer = setTimeout(() => {
-								pendingOffline.delete(clawId);
-								// grace 期间可能已重连，再次确认
-								if (!clawSockets.has(clawId)) {
-									wsLogInfo(`claw offline clawId=${clawId} (after grace)`);
-									// grace 过后真正 offline，写 lastSeenAt
-									markClawLastSeen(clawId).catch((err) => wsLogWarn(`markClawLastSeen unexpected error clawId=${clawId}: ${err?.message ?? err}`));
-									clawStatusEmitter.emit('status', { clawId, online: false });
-								}
-							}, CLAW_OFFLINE_GRACE_MS);
-							timer.unref();
-							pendingOffline.set(clawId, timer);
+							scheduleClawGraceOffline(clawId);
 						}
 					}
 				});

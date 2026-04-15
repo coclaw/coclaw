@@ -359,7 +359,7 @@ const plugin = {
 				await writeName(nameToSave);
 				const hostName = getHostName();
 				respond(true, { name: nameToSave, hostName });
-				// 异步广播变更事件到 server 和其他 UI 实例
+				// 仅广播本次 patch 涉及的字段；server 端按 patch 语义仅更新 payload 中出现的列
 				broadcastPluginEvent('coclaw.info.updated', { name: nameToSave, hostName });
 			}
 			catch (err) {

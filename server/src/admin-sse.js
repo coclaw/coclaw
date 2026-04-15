@@ -52,15 +52,14 @@ function handleStatusEvent({ clawId, online }) {
 	broadcast({ event: 'claw.statusChanged', clawId: String(clawId), online });
 }
 
-function handleInfoUpdatedEvent({ clawId, name, hostName, pluginVersion, agentModels }) {
-	broadcast({
-		event: 'claw.infoUpdated',
-		clawId: String(clawId),
-		name,
-		hostName,
-		pluginVersion,
-		agentModels,
-	});
+function handleInfoUpdatedEvent(evt) {
+	// patch 语义：仅透传本次 patch 中实际出现的字段（JSON 序列化自动跳过 undefined）
+	const msg = { event: 'claw.infoUpdated', clawId: String(evt.clawId) };
+	if (Object.hasOwn(evt, 'name')) msg.name = evt.name;
+	if (Object.hasOwn(evt, 'hostName')) msg.hostName = evt.hostName;
+	if (Object.hasOwn(evt, 'pluginVersion')) msg.pluginVersion = evt.pluginVersion;
+	if (Object.hasOwn(evt, 'agentModels')) msg.agentModels = evt.agentModels;
+	broadcast(msg);
 }
 
 clawStatusEmitter.on('status', handleStatusEvent);
