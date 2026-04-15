@@ -209,6 +209,16 @@ export const zhTWMessages = {
 		},
 		claws: {
 			title: '實例管理',
+			searchPlaceholder: '按名稱搜尋…',
+			columnName: '實例',
+			columnStatus: '狀態',
+			columnUser: '所屬使用者',
+			columnVersion: '外掛',
+			columnCreatedAt: '綁定時間',
+			expandAgentName: 'Agent',
+			expandModel: '目前模型',
+			noAgentModels: '資訊暫不可用',
+			emptyAgents: '無 Agent',
 		},
 		users: {
 			title: '用戶管理',

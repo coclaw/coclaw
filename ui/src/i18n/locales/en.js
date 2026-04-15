@@ -209,6 +209,16 @@ export const enMessages = {
 		},
 		claws: {
 			title: 'Instance Management',
+			searchPlaceholder: 'Search by name…',
+			columnName: 'Instance',
+			columnStatus: 'Status',
+			columnUser: 'User',
+			columnVersion: 'Plugin',
+			columnCreatedAt: 'Bound At',
+			expandAgentName: 'Agent',
+			expandModel: 'Current Model',
+			noAgentModels: 'Information not yet available',
+			emptyAgents: 'No agents',
 		},
 		users: {
 			title: 'User Management',

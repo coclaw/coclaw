@@ -209,6 +209,16 @@ export const ptMessages = {
 		},
 		claws: {
 			title: 'Gestão de Instâncias',
+			searchPlaceholder: 'Buscar por nome…',
+			columnName: 'Instância',
+			columnStatus: 'Status',
+			columnUser: 'Usuário',
+			columnVersion: 'Plugin',
+			columnCreatedAt: 'Vinculada em',
+			expandAgentName: 'Agent',
+			expandModel: 'Modelo atual',
+			noAgentModels: 'Informações ainda não disponíveis',
+			emptyAgents: 'Sem agents',
 		},
 		users: {
 			title: 'Gestão de Usuários',

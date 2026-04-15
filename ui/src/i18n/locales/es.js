@@ -209,6 +209,16 @@ export const esMessages = {
 		},
 		claws: {
 			title: 'Gestión de instancias',
+			searchPlaceholder: 'Buscar por nombre…',
+			columnName: 'Instancia',
+			columnStatus: 'Estado',
+			columnUser: 'Usuario',
+			columnVersion: 'Plugin',
+			columnCreatedAt: 'Vinculada el',
+			expandAgentName: 'Agent',
+			expandModel: 'Modelo actual',
+			noAgentModels: 'Información aún no disponible',
+			emptyAgents: 'Sin agents',
 		},
 		users: {
 			title: 'Gestión de usuarios',

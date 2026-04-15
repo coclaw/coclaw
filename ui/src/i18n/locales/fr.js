@@ -209,6 +209,16 @@ export const frMessages = {
 		},
 		claws: {
 			title: 'Gestion des instances',
+			searchPlaceholder: 'Rechercher par nom…',
+			columnName: 'Instance',
+			columnStatus: 'État',
+			columnUser: 'Utilisateur',
+			columnVersion: 'Plugin',
+			columnCreatedAt: 'Liée le',
+			expandAgentName: 'Agent',
+			expandModel: 'Modèle actuel',
+			noAgentModels: 'Informations bientôt disponibles',
+			emptyAgents: 'Aucun agent',
 		},
 		users: {
 			title: 'Gestion des utilisateurs',

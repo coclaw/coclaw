@@ -209,6 +209,16 @@ export const viMessages = {
 		},
 		claws: {
 			title: 'Quản lý phiên bản',
+			searchPlaceholder: 'Tìm theo tên…',
+			columnName: 'Phiên bản',
+			columnStatus: 'Trạng thái',
+			columnUser: 'Người dùng',
+			columnVersion: 'Plugin',
+			columnCreatedAt: 'Liên kết lúc',
+			expandAgentName: 'Agent',
+			expandModel: 'Mô hình hiện tại',
+			noAgentModels: 'Thông tin hiện chưa có',
+			emptyAgents: 'Không có Agent',
 		},
 		users: {
 			title: 'Quản lý người dùng',

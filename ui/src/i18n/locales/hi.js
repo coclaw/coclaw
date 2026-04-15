@@ -209,6 +209,16 @@ export const hiMessages = {
 		},
 		claws: {
 			title: 'इंस्टेंस प्रबंधन',
+			searchPlaceholder: 'नाम से खोजें…',
+			columnName: 'इंस्टेंस',
+			columnStatus: 'स्थिति',
+			columnUser: 'उपयोगकर्ता',
+			columnVersion: 'प्लगिन',
+			columnCreatedAt: 'बाउंड किया गया',
+			expandAgentName: 'Agent',
+			expandModel: 'वर्तमान मॉडल',
+			noAgentModels: 'जानकारी अभी उपलब्ध नहीं है',
+			emptyAgents: 'कोई Agent नहीं',
 		},
 		users: {
 			title: 'उपयोगकर्ता प्रबंधन',

@@ -209,6 +209,16 @@ export const koMessages = {
 		},
 		claws: {
 			title: '인스턴스 관리',
+			searchPlaceholder: '이름으로 검색…',
+			columnName: '인스턴스',
+			columnStatus: '상태',
+			columnUser: '사용자',
+			columnVersion: '플러그인',
+			columnCreatedAt: '연결 일시',
+			expandAgentName: 'Agent',
+			expandModel: '현재 모델',
+			noAgentModels: '정보를 아직 사용할 수 없습니다',
+			emptyAgents: 'Agent 없음',
 		},
 		users: {
 			title: '사용자 관리',

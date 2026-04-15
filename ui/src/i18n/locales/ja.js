@@ -209,6 +209,16 @@ export const jaMessages = {
 		},
 		claws: {
 			title: 'インスタンス管理',
+			searchPlaceholder: '名前で検索…',
+			columnName: 'インスタンス',
+			columnStatus: 'ステータス',
+			columnUser: 'ユーザー',
+			columnVersion: 'プラグイン',
+			columnCreatedAt: 'バインド日時',
+			expandAgentName: 'Agent',
+			expandModel: '現在のモデル',
+			noAgentModels: '情報はまだ利用できません',
+			emptyAgents: 'Agent なし',
 		},
 		users: {
 			title: 'ユーザー管理',

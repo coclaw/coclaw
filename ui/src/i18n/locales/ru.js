@@ -209,6 +209,16 @@ export const ruMessages = {
 		},
 		claws: {
 			title: 'Управление экземплярами',
+			searchPlaceholder: 'Поиск по имени…',
+			columnName: 'Экземпляр',
+			columnStatus: 'Статус',
+			columnUser: 'Пользователь',
+			columnVersion: 'Плагин',
+			columnCreatedAt: 'Привязан',
+			expandAgentName: 'Agent',
+			expandModel: 'Текущая модель',
+			noAgentModels: 'Информация пока недоступна',
+			emptyAgents: 'Нет agent\'ов',
 		},
 		users: {
 			title: 'Управление пользователями',

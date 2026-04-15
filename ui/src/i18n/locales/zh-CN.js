@@ -209,6 +209,16 @@ export const zhCNMessages = {
 		},
 		claws: {
 			title: '实例管理',
+			searchPlaceholder: '按名称搜索…',
+			columnName: '实例',
+			columnStatus: '状态',
+			columnUser: '所属用户',
+			columnVersion: '插件',
+			columnCreatedAt: '绑定时间',
+			expandAgentName: 'Agent',
+			expandModel: '当前模型',
+			noAgentModels: '信息暂不可用',
+			emptyAgents: '无 Agent',
 		},
 		users: {
 			title: '用户管理',

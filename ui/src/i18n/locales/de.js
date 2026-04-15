@@ -209,6 +209,16 @@ export const deMessages = {
 		},
 		claws: {
 			title: 'Instanzverwaltung',
+			searchPlaceholder: 'Nach Name suchen…',
+			columnName: 'Instanz',
+			columnStatus: 'Status',
+			columnUser: 'Benutzer',
+			columnVersion: 'Plugin',
+			columnCreatedAt: 'Gebunden am',
+			expandAgentName: 'Agent',
+			expandModel: 'Aktuelles Modell',
+			noAgentModels: 'Informationen noch nicht verfügbar',
+			emptyAgents: 'Keine Agents',
 		},
 		users: {
 			title: 'Benutzerverwaltung',
