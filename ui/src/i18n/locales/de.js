@@ -180,8 +180,8 @@ export const deMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'Konsole',
-			claws: 'Instanzen',
+			dashboard: 'Übersicht',
+			claws: 'Claws',
 			users: 'Benutzer',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const deMessages = {
 		},
 		dashboard: {
 			title: 'Admin-Konsole',
-			totalClaws: 'Gebundene Instanzen',
+			totalClaws: 'Claws',
 			onlineClaws: 'Online',
 			todayNewClaws: 'Neu heute',
 			totalUsers: 'Benutzer gesamt',
@@ -202,14 +202,14 @@ export const deMessages = {
 			serverVersion: 'Server-Version',
 			uiVersion: 'UI-Version',
 			pluginVersion: 'Plugin-Version',
-			sectionLatestClaws: 'Zuletzt gebundene Instanzen',
+			sectionLatestClaws: 'Zuletzt gebundene Claws',
 			sectionTopActiveUsers: 'Zuletzt aktive Benutzer',
 			sectionLatestRegisteredUsers: 'Zuletzt registrierte Benutzer',
 		},
 		claws: {
-			title: 'Instanzverwaltung',
+			title: 'Claws-Verwaltung',
 			searchPlaceholder: 'Nach Name suchen…',
-			columnName: 'Instanz',
+			columnName: 'Claw',
 			columnStatus: 'Status',
 			columnUser: 'Benutzer',
 			columnVersion: 'Plugin',
@@ -224,7 +224,7 @@ export const deMessages = {
 			searchPlaceholder: 'Nach Name oder Anmeldung suchen…',
 			columnName: 'Name',
 			columnLoginName: 'Anmeldung',
-			columnClawCount: 'Instanzen',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'Registriert',
 			columnLastLogin: 'Letzte Anmeldung',
 		},

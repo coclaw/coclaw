@@ -1,6 +1,25 @@
 <template>
 	<div class="flex min-h-0 flex-1 flex-col">
-		<MobilePageHeader :title="$t('admin.dashboard.title')" />
+		<MobilePageHeader :title="$t('admin.dashboard.title')">
+			<template #actions>
+				<UButton
+					class="cc-icon-btn-lg"
+					variant="ghost"
+					color="neutral"
+					icon="i-lucide-server"
+					:aria-label="$t('admin.nav.claws')"
+					to="/admin/claws"
+				/>
+				<UButton
+					class="cc-icon-btn-lg"
+					variant="ghost"
+					color="neutral"
+					icon="i-lucide-users"
+					:aria-label="$t('admin.nav.users')"
+					to="/admin/users"
+				/>
+			</template>
+		</MobilePageHeader>
 		<main class="flex-1 overflow-auto px-3 pt-4 pb-8 sm:px-4 lg:px-5">
 			<section class="mx-auto flex w-full max-w-3xl flex-col gap-5">
 				<!-- 桌面端标题 + 导航 -->
@@ -14,15 +33,15 @@
 				<template v-if="adminStore.dashboard">
 					<!-- Primary: 实例维度三卡片 -->
 					<div class="grid grid-cols-3 gap-3">
-						<div class="rounded-xl bg-elevated p-4 text-center">
+						<div class="rounded-xl bg-elevated p-3 text-center">
 							<p class="text-2xl font-semibold">{{ adminStore.dashboard.claws.total }}</p>
 							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.totalClaws') }}</p>
 						</div>
-						<div class="rounded-xl bg-elevated p-4 text-center">
+						<div class="rounded-xl bg-elevated p-3 text-center">
 							<p class="text-2xl font-semibold">{{ adminStore.dashboard.claws.online }}</p>
 							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.onlineClaws') }}</p>
 						</div>
-						<div class="rounded-xl bg-elevated p-4 text-center">
+						<div class="rounded-xl bg-elevated p-3 text-center">
 							<p class="text-2xl font-semibold">{{ adminStore.dashboard.claws.todayNew }}</p>
 							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.todayNewClaws') }}</p>
 						</div>
@@ -30,22 +49,22 @@
 
 					<!-- Secondary: 用户维度三卡片 -->
 					<div class="grid grid-cols-3 gap-3">
-						<div class="rounded-lg bg-elevated/60 p-3 text-center">
+						<div class="rounded-lg bg-elevated p-3 text-center">
 							<p class="text-lg font-medium">{{ adminStore.dashboard.users.total }}</p>
 							<p class="mt-0.5 text-[11px] text-dimmed">{{ $t('admin.dashboard.totalUsers') }}</p>
 						</div>
-						<div class="rounded-lg bg-elevated/60 p-3 text-center">
+						<div class="rounded-lg bg-elevated p-3 text-center">
 							<p class="text-lg font-medium">{{ adminStore.dashboard.users.todayNew }}</p>
 							<p class="mt-0.5 text-[11px] text-dimmed">{{ $t('admin.dashboard.todayNewUsers') }}</p>
 						</div>
-						<div class="rounded-lg bg-elevated/60 p-3 text-center">
+						<div class="rounded-lg bg-elevated p-3 text-center">
 							<p class="text-lg font-medium">{{ adminStore.dashboard.users.todayActive }}</p>
 							<p class="mt-0.5 text-[11px] text-dimmed">{{ $t('admin.dashboard.todayActiveUsers') }}</p>
 						</div>
 					</div>
 
 					<!-- 版本 -->
-					<div class="rounded-xl bg-elevated p-4">
+					<div class="rounded-xl bg-elevated p-3">
 						<div class="flex items-center justify-between text-sm">
 							<span class="text-dimmed">{{ $t('admin.dashboard.serverVersion') }}</span>
 							<span class="font-medium">v{{ adminStore.dashboard.version.server }}</span>
@@ -61,7 +80,7 @@
 					</div>
 
 					<!-- 摘要：最近绑定实例 -->
-					<div class="rounded-xl bg-elevated p-4">
+					<div class="rounded-xl bg-elevated p-3">
 						<div class="mb-3 flex items-center justify-between">
 							<h2 class="text-sm font-medium">{{ $t('admin.dashboard.sectionLatestClaws') }}</h2>
 							<RouterLink to="/admin/claws" class="text-xs text-primary hover:underline">{{ $t('admin.common.viewAll') }}</RouterLink>
@@ -91,7 +110,7 @@
 					</div>
 
 					<!-- 摘要：最近活跃用户 -->
-					<div class="rounded-xl bg-elevated p-4">
+					<div class="rounded-xl bg-elevated p-3">
 						<div class="mb-3 flex items-center justify-between">
 							<h2 class="text-sm font-medium">{{ $t('admin.dashboard.sectionTopActiveUsers') }}</h2>
 							<RouterLink to="/admin/users" class="text-xs text-primary hover:underline">{{ $t('admin.common.viewAll') }}</RouterLink>
@@ -113,7 +132,7 @@
 					</div>
 
 					<!-- 摘要：最新注册用户 -->
-					<div class="rounded-xl bg-elevated p-4">
+					<div class="rounded-xl bg-elevated p-3">
 						<div class="mb-3 flex items-center justify-between">
 							<h2 class="text-sm font-medium">{{ $t('admin.dashboard.sectionLatestRegisteredUsers') }}</h2>
 							<RouterLink to="/admin/users" class="text-xs text-primary hover:underline">{{ $t('admin.common.viewAll') }}</RouterLink>

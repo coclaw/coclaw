@@ -180,8 +180,8 @@ export const enMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'Dashboard',
-			claws: 'Instances',
+			dashboard: 'Overview',
+			claws: 'Claws',
 			users: 'Users',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const enMessages = {
 		},
 		dashboard: {
 			title: 'Admin Console',
-			totalClaws: 'Bound Instances',
+			totalClaws: 'Claws',
 			onlineClaws: 'Online',
 			todayNewClaws: 'New Today',
 			totalUsers: 'Total Users',
@@ -202,14 +202,14 @@ export const enMessages = {
 			serverVersion: 'Server Version',
 			uiVersion: 'UI Version',
 			pluginVersion: 'Plugin Version',
-			sectionLatestClaws: 'Recently Bound Instances',
+			sectionLatestClaws: 'Recently Bound Claws',
 			sectionTopActiveUsers: 'Recently Active Users',
 			sectionLatestRegisteredUsers: 'Latest Registered Users',
 		},
 		claws: {
-			title: 'Instance Management',
+			title: 'Claws Management',
 			searchPlaceholder: 'Search by name…',
-			columnName: 'Instance',
+			columnName: 'Claw',
 			columnStatus: 'Status',
 			columnUser: 'User',
 			columnVersion: 'Plugin',
@@ -224,7 +224,7 @@ export const enMessages = {
 			searchPlaceholder: 'Search by name or login…',
 			columnName: 'Name',
 			columnLoginName: 'Login',
-			columnClawCount: 'Instances',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'Joined',
 			columnLastLogin: 'Last Login',
 		},

@@ -180,8 +180,8 @@ export const ruMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'Панель',
-			claws: 'Экземпляры',
+			dashboard: 'Обзор',
+			claws: 'Claws',
 			users: 'Пользователи',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const ruMessages = {
 		},
 		dashboard: {
 			title: 'Консоль администратора',
-			totalClaws: 'Привязанных экземпляров',
+			totalClaws: 'Claws',
 			onlineClaws: 'Онлайн',
 			todayNewClaws: 'Новых сегодня',
 			totalUsers: 'Всего пользователей',
@@ -202,14 +202,14 @@ export const ruMessages = {
 			serverVersion: 'Версия сервера',
 			uiVersion: 'Версия UI',
 			pluginVersion: 'Версия плагина',
-			sectionLatestClaws: 'Недавно привязанные экземпляры',
+			sectionLatestClaws: 'Недавно привязанные Claws',
 			sectionTopActiveUsers: 'Недавно активные пользователи',
 			sectionLatestRegisteredUsers: 'Последние зарегистрированные пользователи',
 		},
 		claws: {
-			title: 'Управление экземплярами',
+			title: 'Управление Claws',
 			searchPlaceholder: 'Поиск по имени…',
-			columnName: 'Экземпляр',
+			columnName: 'Claw',
 			columnStatus: 'Статус',
 			columnUser: 'Пользователь',
 			columnVersion: 'Плагин',
@@ -224,7 +224,7 @@ export const ruMessages = {
 			searchPlaceholder: 'Поиск по имени или логину…',
 			columnName: 'Имя',
 			columnLoginName: 'Логин',
-			columnClawCount: 'Экземпляров',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'Зарегистрирован',
 			columnLastLogin: 'Последний вход',
 		},

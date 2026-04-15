@@ -180,8 +180,8 @@ export const hiMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'डैशबोर्ड',
-			claws: 'इंस्टेंस',
+			dashboard: 'अवलोकन',
+			claws: 'Claws',
 			users: 'उपयोगकर्ता',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const hiMessages = {
 		},
 		dashboard: {
 			title: 'एडमिन कंसोल',
-			totalClaws: 'बाउंड इंस्टेंस',
+			totalClaws: 'Claws',
 			onlineClaws: 'ऑनलाइन',
 			todayNewClaws: 'आज नए',
 			totalUsers: 'कुल उपयोगकर्ता',
@@ -202,14 +202,14 @@ export const hiMessages = {
 			serverVersion: 'सर्वर वर्शन',
 			uiVersion: 'UI वर्शन',
 			pluginVersion: 'प्लगिन वर्शन',
-			sectionLatestClaws: 'हाल ही में बाउंड इंस्टेंस',
+			sectionLatestClaws: 'हाल ही में बाउंड Claws',
 			sectionTopActiveUsers: 'हाल ही में सक्रिय उपयोगकर्ता',
 			sectionLatestRegisteredUsers: 'नवीनतम पंजीकृत उपयोगकर्ता',
 		},
 		claws: {
-			title: 'इंस्टेंस प्रबंधन',
+			title: 'Claws प्रबंधन',
 			searchPlaceholder: 'नाम से खोजें…',
-			columnName: 'इंस्टेंस',
+			columnName: 'Claw',
 			columnStatus: 'स्थिति',
 			columnUser: 'उपयोगकर्ता',
 			columnVersion: 'प्लगिन',
@@ -224,7 +224,7 @@ export const hiMessages = {
 			searchPlaceholder: 'नाम या लॉगिन से खोजें…',
 			columnName: 'नाम',
 			columnLoginName: 'लॉगिन',
-			columnClawCount: 'इंस्टेंस',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'पंजीकृत',
 			columnLastLogin: 'अंतिम लॉगिन',
 		},

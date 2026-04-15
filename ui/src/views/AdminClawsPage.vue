@@ -4,7 +4,7 @@
 		<main class="flex-1 overflow-auto px-3 pt-4 pb-8 sm:px-4 lg:px-5">
 			<section class="mx-auto flex w-full max-w-5xl flex-col gap-4">
 				<header class="hidden items-center justify-between md:flex">
-					<h1 class="text-base font-medium">{{ $t('admin.claws.title') }}</h1>
+					<h1 class="text-base font-medium">{{ $t('admin.dashboard.title') }}</h1>
 					<AdminNavTabs />
 				</header>
 
@@ -12,14 +12,15 @@
 					v-model="searchInput"
 					:placeholder="$t('admin.claws.searchPlaceholder')"
 					icon="i-lucide-search"
-					size="md"
+					size="lg"
 					class="w-full md:w-80"
+					:ui="{ base: 'leading-normal' }"
 				/>
 
 				<p v-if="adminStore.claws.error" class="text-sm text-error">{{ adminStore.claws.error }}</p>
 
 				<!-- 桌面端：UTable -->
-				<div class="hidden md:block">
+				<div class="hidden lg:block">
 					<UTable
 						v-model:expanded="expandedState"
 						:data="adminStore.claws.items"
@@ -28,19 +29,17 @@
 						:empty="$t('admin.common.noData')"
 						:get-row-id="getRowId"
 						:get-row-can-expand="() => true"
+						:on-select="onRowSelect"
+						:ui="{ th: 'p-2', td: 'p-2', tr: 'data-[selectable=true]:cursor-pointer' }"
 					>
 						<template #name-cell="{ row }">
-							<button
-								type="button"
-								class="inline-flex items-center gap-1.5 text-left"
-								@click="row.toggleExpanded()"
-							>
+							<span class="inline-flex items-center gap-1.5">
 								<UIcon
 									:name="row.getIsExpanded() ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
 									class="text-dimmed"
 								/>
 								<span class="font-medium">{{ row.original.name || row.original.hostName || '—' }}</span>
-							</button>
+							</span>
 						</template>
 
 						<template #online-cell="{ row }">
@@ -69,7 +68,7 @@
 						</template>
 
 						<template #expanded="{ row }">
-							<div class="py-2 text-sm">
+							<div class="text-sm">
 								<p v-if="row.original.agentModels === null" class="text-dimmed">
 									{{ $t('admin.claws.noAgentModels') }}
 								</p>
@@ -99,7 +98,7 @@
 				</div>
 
 				<!-- 移动端：卡片降级 + 点击展开 -->
-				<div class="space-y-3 md:hidden">
+				<div class="space-y-3 lg:hidden">
 					<p
 						v-if="!adminStore.claws.items.length && !adminStore.claws.loading"
 						class="text-sm text-dimmed"
@@ -197,7 +196,7 @@ export default {
 	},
 	data() {
 		return {
-			searchInput: '',
+			searchInput: this.adminStore.claws.search ?? '',
 			expandedState: {},
 			mobileExpanded: {},
 		};
@@ -237,8 +236,9 @@ export default {
 		this.__stream = connectAdminStream({
 			onSnapshot: (ids) => this.adminStore.applyOnlineSnapshot(ids),
 			onStatusChanged: ({ clawId, online }) => this.adminStore.updateClawStatus(clawId, online),
-			onInfoUpdated: ({ clawId, name, hostName, pluginVersion, agentModels }) => {
-				this.adminStore.updateClawInfo(clawId, { name, hostName, pluginVersion, agentModels });
+			onInfoUpdated: ({ clawId, ...patch }) => {
+				// patch 语义：仅透传 wire 中实际存在的字段给 store，未变更字段保留原值
+				this.adminStore.updateClawInfo(clawId, patch);
 			},
 		});
 	},
@@ -271,6 +271,9 @@ export default {
 				console.warn('[AdminClawsPage] loadMore failed:', err);
 				this.notify.error(this.__pickErrMsg(err));
 			}
+		},
+		onRowSelect(_e, row) {
+			row.toggleExpanded();
 		},
 		toggleMobileExpanded(id) {
 			this.mobileExpanded = { ...this.mobileExpanded, [id]: !this.mobileExpanded[id] };

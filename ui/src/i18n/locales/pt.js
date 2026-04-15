@@ -180,8 +180,8 @@ export const ptMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'Painel',
-			claws: 'Instâncias',
+			dashboard: 'Visão Geral',
+			claws: 'Claws',
 			users: 'Usuários',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const ptMessages = {
 		},
 		dashboard: {
 			title: 'Console de Administração',
-			totalClaws: 'Instâncias Vinculadas',
+			totalClaws: 'Claws',
 			onlineClaws: 'Online',
 			todayNewClaws: 'Novas Hoje',
 			totalUsers: 'Total de Usuários',
@@ -202,14 +202,14 @@ export const ptMessages = {
 			serverVersion: 'Versão do Servidor',
 			uiVersion: 'Versão da UI',
 			pluginVersion: 'Versão do Plugin',
-			sectionLatestClaws: 'Instâncias Vinculadas Recentemente',
+			sectionLatestClaws: 'Claws Vinculados Recentemente',
 			sectionTopActiveUsers: 'Usuários Recentemente Ativos',
 			sectionLatestRegisteredUsers: 'Últimos Usuários Cadastrados',
 		},
 		claws: {
-			title: 'Gestão de Instâncias',
+			title: 'Gestão de Claws',
 			searchPlaceholder: 'Buscar por nome…',
-			columnName: 'Instância',
+			columnName: 'Claw',
 			columnStatus: 'Status',
 			columnUser: 'Usuário',
 			columnVersion: 'Plugin',
@@ -224,7 +224,7 @@ export const ptMessages = {
 			searchPlaceholder: 'Buscar por nome ou login…',
 			columnName: 'Nome',
 			columnLoginName: 'Login',
-			columnClawCount: 'Instâncias',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'Cadastrado',
 			columnLastLogin: 'Último Login',
 		},

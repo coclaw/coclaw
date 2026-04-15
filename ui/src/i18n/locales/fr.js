@@ -180,8 +180,8 @@ export const frMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'Tableau de bord',
-			claws: 'Instances',
+			dashboard: 'Aperçu',
+			claws: 'Claws',
 			users: 'Utilisateurs',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const frMessages = {
 		},
 		dashboard: {
 			title: 'Console d\'administration',
-			totalClaws: 'Instances liées',
+			totalClaws: 'Claws',
 			onlineClaws: 'En ligne',
 			todayNewClaws: 'Nouvelles aujourd\'hui',
 			totalUsers: 'Utilisateurs total',
@@ -202,14 +202,14 @@ export const frMessages = {
 			serverVersion: 'Version serveur',
 			uiVersion: 'Version UI',
 			pluginVersion: 'Version plugin',
-			sectionLatestClaws: 'Instances liées récemment',
+			sectionLatestClaws: 'Claws liés récemment',
 			sectionTopActiveUsers: 'Utilisateurs récemment actifs',
 			sectionLatestRegisteredUsers: 'Derniers inscrits',
 		},
 		claws: {
-			title: 'Gestion des instances',
+			title: 'Gestion des Claws',
 			searchPlaceholder: 'Rechercher par nom…',
-			columnName: 'Instance',
+			columnName: 'Claw',
 			columnStatus: 'État',
 			columnUser: 'Utilisateur',
 			columnVersion: 'Plugin',
@@ -224,7 +224,7 @@ export const frMessages = {
 			searchPlaceholder: 'Rechercher par nom ou identifiant…',
 			columnName: 'Nom',
 			columnLoginName: 'Identifiant',
-			columnClawCount: 'Instances',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'Inscrit le',
 			columnLastLogin: 'Dernière connexion',
 		},

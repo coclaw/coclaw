@@ -180,8 +180,8 @@ export const esMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'Panel',
-			claws: 'Instancias',
+			dashboard: 'Resumen',
+			claws: 'Claws',
 			users: 'Usuarios',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const esMessages = {
 		},
 		dashboard: {
 			title: 'Consola de administración',
-			totalClaws: 'Instancias vinculadas',
+			totalClaws: 'Claws',
 			onlineClaws: 'En línea',
 			todayNewClaws: 'Nuevas hoy',
 			totalUsers: 'Total de usuarios',
@@ -202,14 +202,14 @@ export const esMessages = {
 			serverVersion: 'Versión del servidor',
 			uiVersion: 'Versión de UI',
 			pluginVersion: 'Versión del plugin',
-			sectionLatestClaws: 'Instancias vinculadas recientemente',
+			sectionLatestClaws: 'Claws vinculados recientemente',
 			sectionTopActiveUsers: 'Usuarios recientemente activos',
 			sectionLatestRegisteredUsers: 'Últimos usuarios registrados',
 		},
 		claws: {
-			title: 'Gestión de instancias',
+			title: 'Gestión de Claws',
 			searchPlaceholder: 'Buscar por nombre…',
-			columnName: 'Instancia',
+			columnName: 'Claw',
 			columnStatus: 'Estado',
 			columnUser: 'Usuario',
 			columnVersion: 'Plugin',
@@ -224,7 +224,7 @@ export const esMessages = {
 			searchPlaceholder: 'Buscar por nombre o inicio de sesión…',
 			columnName: 'Nombre',
 			columnLoginName: 'Inicio de sesión',
-			columnClawCount: 'Instancias',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'Registrado',
 			columnLastLogin: 'Último inicio',
 		},

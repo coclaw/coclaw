@@ -180,8 +180,8 @@ export const zhCNMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: '工作台',
-			claws: '实例',
+			dashboard: '概览',
+			claws: 'Claws',
 			users: '用户',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const zhCNMessages = {
 		},
 		dashboard: {
 			title: '管理工作台',
-			totalClaws: '已绑定实例',
+			totalClaws: 'Claws',
 			onlineClaws: '在线',
 			todayNewClaws: '今日新增',
 			totalUsers: '注册用户',
@@ -202,14 +202,14 @@ export const zhCNMessages = {
 			serverVersion: '服务端版本',
 			uiVersion: '客户端版本',
 			pluginVersion: '插件版本',
-			sectionLatestClaws: '最近绑定实例',
+			sectionLatestClaws: '最近绑定 Claws',
 			sectionTopActiveUsers: '最近活跃用户',
 			sectionLatestRegisteredUsers: '最新注册用户',
 		},
 		claws: {
-			title: '实例管理',
+			title: 'Claws 管理',
 			searchPlaceholder: '按名称搜索…',
-			columnName: '实例',
+			columnName: 'Claw',
 			columnStatus: '状态',
 			columnUser: '所属用户',
 			columnVersion: '插件',
@@ -224,7 +224,7 @@ export const zhCNMessages = {
 			searchPlaceholder: '按名称或登录名搜索…',
 			columnName: '用户名',
 			columnLoginName: '登录名',
-			columnClawCount: '实例数',
+			columnClawCount: 'Claws',
 			columnCreatedAt: '注册时间',
 			columnLastLogin: '最近登录',
 		},

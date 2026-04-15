@@ -180,8 +180,8 @@ export const jaMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'ダッシュボード',
-			claws: 'インスタンス',
+			dashboard: '概要',
+			claws: 'Claws',
 			users: 'ユーザー',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const jaMessages = {
 		},
 		dashboard: {
 			title: '管理コンソール',
-			totalClaws: 'バインド済みインスタンス',
+			totalClaws: 'Claws',
 			onlineClaws: 'オンライン',
 			todayNewClaws: '本日の新規',
 			totalUsers: '総ユーザー数',
@@ -202,14 +202,14 @@ export const jaMessages = {
 			serverVersion: 'サーバーバージョン',
 			uiVersion: 'UI バージョン',
 			pluginVersion: 'プラグインバージョン',
-			sectionLatestClaws: '最近バインドされたインスタンス',
+			sectionLatestClaws: '最近バインドされた Claws',
 			sectionTopActiveUsers: '最近アクティブなユーザー',
 			sectionLatestRegisteredUsers: '最近登録したユーザー',
 		},
 		claws: {
-			title: 'インスタンス管理',
+			title: 'Claws 管理',
 			searchPlaceholder: '名前で検索…',
-			columnName: 'インスタンス',
+			columnName: 'Claw',
 			columnStatus: 'ステータス',
 			columnUser: 'ユーザー',
 			columnVersion: 'プラグイン',
@@ -224,7 +224,7 @@ export const jaMessages = {
 			searchPlaceholder: '名前またはログイン名で検索…',
 			columnName: '名前',
 			columnLoginName: 'ログイン名',
-			columnClawCount: 'インスタンス数',
+			columnClawCount: 'Claws',
 			columnCreatedAt: '登録日時',
 			columnLastLogin: '最終ログイン',
 		},

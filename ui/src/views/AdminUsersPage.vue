@@ -4,7 +4,7 @@
 		<main class="flex-1 overflow-auto px-3 pt-4 pb-8 sm:px-4 lg:px-5">
 			<section class="mx-auto flex w-full max-w-4xl flex-col gap-4">
 				<header class="hidden items-center justify-between md:flex">
-					<h1 class="text-base font-medium">{{ $t('admin.users.title') }}</h1>
+					<h1 class="text-base font-medium">{{ $t('admin.dashboard.title') }}</h1>
 					<AdminNavTabs />
 				</header>
 
@@ -12,20 +12,22 @@
 					v-model="searchInput"
 					:placeholder="$t('admin.users.searchPlaceholder')"
 					icon="i-lucide-search"
-					size="md"
+					size="lg"
 					class="w-full md:w-80"
+					:ui="{ base: 'leading-normal' }"
 				/>
 
 				<p v-if="adminStore.users.error" class="text-sm text-error">{{ adminStore.users.error }}</p>
 
 				<!-- 桌面端：UTable -->
-				<div class="hidden md:block">
+				<div class="hidden lg:block">
 					<UTable
 						:data="adminStore.users.items"
 						:columns="tableColumns"
 						:loading="adminStore.users.loading"
 						:empty="$t('admin.common.noData')"
 						:get-row-id="getRowId"
+						:ui="{ th: 'p-2', td: 'p-2' }"
 					>
 						<template #name-cell="{ row }">
 							<span class="font-medium">{{ row.original.name || row.original.loginName || '—' }}</span>
@@ -50,7 +52,7 @@
 				</div>
 
 				<!-- 移动端：卡片降级 -->
-				<div class="space-y-3 md:hidden">
+				<div class="space-y-3 lg:hidden">
 					<p
 						v-if="!adminStore.users.items.length && !adminStore.users.loading"
 						class="text-sm text-dimmed"
@@ -110,7 +112,7 @@ export default {
 	},
 	data() {
 		return {
-			searchInput: '',
+			searchInput: this.adminStore.users.search ?? '',
 		};
 	},
 	computed: {

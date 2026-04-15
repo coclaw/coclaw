@@ -180,8 +180,8 @@ export const zhTWMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: '工作台',
-			claws: '實例',
+			dashboard: '概覽',
+			claws: 'Claws',
 			users: '用戶',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const zhTWMessages = {
 		},
 		dashboard: {
 			title: '管理工作台',
-			totalClaws: '已綁定實例',
+			totalClaws: 'Claws',
 			onlineClaws: '線上',
 			todayNewClaws: '今日新增',
 			totalUsers: '註冊用戶',
@@ -202,14 +202,14 @@ export const zhTWMessages = {
 			serverVersion: '服務端版本',
 			uiVersion: '客戶端版本',
 			pluginVersion: '插件版本',
-			sectionLatestClaws: '最近綁定實例',
+			sectionLatestClaws: '最近綁定 Claws',
 			sectionTopActiveUsers: '最近活躍用戶',
 			sectionLatestRegisteredUsers: '最新註冊用戶',
 		},
 		claws: {
-			title: '實例管理',
+			title: 'Claws 管理',
 			searchPlaceholder: '按名稱搜尋…',
-			columnName: '實例',
+			columnName: 'Claw',
 			columnStatus: '狀態',
 			columnUser: '所屬使用者',
 			columnVersion: '外掛',
@@ -224,7 +224,7 @@ export const zhTWMessages = {
 			searchPlaceholder: '按名稱或登入名稱搜尋…',
 			columnName: '使用者名稱',
 			columnLoginName: '登入名稱',
-			columnClawCount: '實例數',
+			columnClawCount: 'Claws',
 			columnCreatedAt: '註冊時間',
 			columnLastLogin: '最近登入',
 		},

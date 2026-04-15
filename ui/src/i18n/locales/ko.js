@@ -180,8 +180,8 @@ export const koMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: '대시보드',
-			claws: '인스턴스',
+			dashboard: '개요',
+			claws: 'Claws',
 			users: '사용자',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const koMessages = {
 		},
 		dashboard: {
 			title: '관리자 콘솔',
-			totalClaws: '연결된 인스턴스',
+			totalClaws: 'Claws',
 			onlineClaws: '온라인',
 			todayNewClaws: '오늘 신규',
 			totalUsers: '전체 사용자',
@@ -202,14 +202,14 @@ export const koMessages = {
 			serverVersion: '서버 버전',
 			uiVersion: 'UI 버전',
 			pluginVersion: '플러그인 버전',
-			sectionLatestClaws: '최근 연결된 인스턴스',
+			sectionLatestClaws: '최근 연결된 Claws',
 			sectionTopActiveUsers: '최근 활성 사용자',
 			sectionLatestRegisteredUsers: '최근 가입 사용자',
 		},
 		claws: {
-			title: '인스턴스 관리',
+			title: 'Claws 관리',
 			searchPlaceholder: '이름으로 검색…',
-			columnName: '인스턴스',
+			columnName: 'Claw',
 			columnStatus: '상태',
 			columnUser: '사용자',
 			columnVersion: '플러그인',
@@ -224,7 +224,7 @@ export const koMessages = {
 			searchPlaceholder: '이름 또는 로그인으로 검색…',
 			columnName: '이름',
 			columnLoginName: '로그인',
-			columnClawCount: '인스턴스',
+			columnClawCount: 'Claws',
 			columnCreatedAt: '가입일',
 			columnLastLogin: '최근 로그인',
 		},

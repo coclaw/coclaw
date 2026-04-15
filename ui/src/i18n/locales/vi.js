@@ -180,8 +180,8 @@ export const viMessages = {
 	},
 	admin: {
 		nav: {
-			dashboard: 'Bảng điều khiển',
-			claws: 'Phiên bản',
+			dashboard: 'Tổng quan',
+			claws: 'Claws',
 			users: 'Người dùng',
 		},
 		common: {
@@ -193,7 +193,7 @@ export const viMessages = {
 		},
 		dashboard: {
 			title: 'Bảng điều khiển quản trị',
-			totalClaws: 'Phiên bản đã liên kết',
+			totalClaws: 'Claws',
 			onlineClaws: 'Trực tuyến',
 			todayNewClaws: 'Mới hôm nay',
 			totalUsers: 'Tổng người dùng',
@@ -202,14 +202,14 @@ export const viMessages = {
 			serverVersion: 'Phiên bản Server',
 			uiVersion: 'Phiên bản UI',
 			pluginVersion: 'Phiên bản Plugin',
-			sectionLatestClaws: 'Phiên bản liên kết gần đây',
+			sectionLatestClaws: 'Claws liên kết gần đây',
 			sectionTopActiveUsers: 'Người dùng hoạt động gần đây',
 			sectionLatestRegisteredUsers: 'Người dùng đăng ký mới nhất',
 		},
 		claws: {
-			title: 'Quản lý phiên bản',
+			title: 'Quản lý Claws',
 			searchPlaceholder: 'Tìm theo tên…',
-			columnName: 'Phiên bản',
+			columnName: 'Claw',
 			columnStatus: 'Trạng thái',
 			columnUser: 'Người dùng',
 			columnVersion: 'Plugin',
@@ -224,7 +224,7 @@ export const viMessages = {
 			searchPlaceholder: 'Tìm theo tên hoặc tên đăng nhập…',
 			columnName: 'Tên',
 			columnLoginName: 'Tên đăng nhập',
-			columnClawCount: 'Phiên bản',
+			columnClawCount: 'Claws',
 			columnCreatedAt: 'Đăng ký',
 			columnLastLogin: 'Đăng nhập gần nhất',
 		},
