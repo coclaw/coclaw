@@ -121,6 +121,10 @@ General Instructions
   - 若恢复失败，立即在 Workspace `TODO.md` 记录人工清理任务
 - 禁止删除/污染测试前已存在的核心数据
 
+### 执行与输出采集
+
+`pnpm test|verify|coverage` 三戒：不后台、不接 `| head`（SIGPIPE 杀上游 → vitest fork 子进程孤儿化）、不并行/背靠背。过滤用 `| tail -N` 或先落盘再 grep。残留排查：`pgrep -af vitest`。
+
 ## 开发流程约束
 
 - 每次任务先明确影响范围（`server/ui/plugin`）再动手
