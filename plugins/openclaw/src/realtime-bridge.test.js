@@ -2672,20 +2672,124 @@ test('RealtimeBridge start() aborts with pion cleanup when stop() during pion pr
 	}
 });
 
-test('RealtimeBridge start() should remoteLog plugin version', async () => {
+test('RealtimeBridge start() locally logs coclaw.env line and remoteLogs bridge.started (no env remoteLog)', async () => {
 	resetRemoteLog();
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	const infoLogs = [];
+	const logger = { ...noopLogger(), info: (m) => infoLogs.push(m) };
 	const bridge = createBridge();
 
 	try {
-		await bridge.start({ logger: noopLogger() });
+		await bridge.start({ logger });
+		// bridge.started 是启动完成标记
 		assert.ok(
-			remoteLogBuffer.some(e => e.text.startsWith('bridge.started version=')),
-			'should remoteLog bridge.started with version',
+			remoteLogBuffer.some(e => e.text === 'bridge.started'),
+			'should remoteLog bridge.started',
 		);
+		// 启动时 coclaw.env 只本地 log，不进 remoteLog buffer——ws.open 才是唯一 remote 来源，避免重复
+		assert.ok(
+			!remoteLogBuffer.some(e => e.text.startsWith('coclaw.env ')),
+			'should NOT remoteLog coclaw.env at start; ws.open is the single source',
+		);
+		// 本地 logger.info 输出 coclaw.env 一条，字段值必须具体（不能退化到 pending/unknown）
+		const envInfo = infoLogs.find((m) => m.includes('coclaw.env '));
+		assert.ok(envInfo, 'should log coclaw.env locally via logger.info');
+		// impl 必须是已知 webrtc 实现之一；回归为 'pending' 即视为 fail
+		assert.match(envInfo, /\bimpl=(?:pion|node-datachannel\(ndc\)|werift|none)\b/);
+		// plugin 必须是语义版本；回归为 'unknown' 即视为 fail
+		assert.match(envInfo, /\bplugin=\d+\.\d+\.\d+/);
+		// openclaw 在测试环境 runtime=null 时为 'unknown'，生产环境为语义版本
+		assert.match(envInfo, /\bopenclaw=(?:unknown|\d+\.\d+\.\d+)/);
+		assert.match(envInfo, /\bplatform=/);
+		assert.match(envInfo, /\bnode=v\d+/);
 	} finally {
 		await bridge.stop();
 		await fs.rm(dir, { recursive: true, force: true });
 		resetRemoteLog();
+	}
+});
+
+test('RealtimeBridge __buildEnvLine reflects getRuntime version across branches', () => {
+	const bridge = createBridge();
+	// 为 __buildEnvLine 准备两个依赖字段（正常由 start() 赋值，这里直接注入做单元测试）
+	bridge.__pluginVersion = '1.2.3';
+	bridge.__implLabel = 'pion';
+
+	// 分支 1：runtime 缺失 → openclaw=unknown
+	setRuntime(null);
+	assert.match(bridge.__buildEnvLine(), /\bopenclaw=unknown\b/);
+
+	// 分支 2：runtime.version === 'unknown'（打包路径解析失败占位）→ openclaw=unknown
+	setRuntime({ version: 'unknown' });
+	assert.match(bridge.__buildEnvLine(), /\bopenclaw=unknown\b/);
+
+	// 分支 3：正常版本 → openclaw=4.5.0
+	setRuntime({ version: '4.5.0' });
+	const line = bridge.__buildEnvLine();
+	assert.match(line, /\bopenclaw=4\.5\.0\b/);
+	// 同时验证 impl / plugin 也进入了同一行
+	assert.match(line, /\bimpl=pion\b/);
+	assert.match(line, /\bplugin=1\.2\.3\b/);
+
+	// 清理全局 runtime，避免影响后续测试
+	setRuntime(null);
+});
+
+test('RealtimeBridge ws.open re-emits coclaw.env on reconnect (after sender injected)', async () => {
+	const prevHome = saveHomedir();
+	FakeWebSocket.instances = [];
+	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
+	const bridge = createBridge();
+	try {
+		resetRemoteLog();
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		// 第一次 ws open
+		const server1 = FakeWebSocket.instances[0];
+		server1.readyState = 1;
+		server1.emit('open', {});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 第一次 open 期间发出的 ws.connected / coclaw.env / bridge.webrtc-impl 已被 sender flush 到 server1.sent
+		const collectTexts = (sock) => {
+			const out = [];
+			for (const s of sock.sent) {
+				try {
+					const p = JSON.parse(s);
+					if (p?.type === 'log') out.push(...p.logs.map((l) => l.text));
+				} catch { /* skip */ }
+			}
+			return out;
+		};
+		const firstTexts = collectTexts(server1);
+		const firstEnv = firstTexts.find((t) => t.startsWith('coclaw.env '));
+		assert.ok(firstEnv, 'first ws.open should emit coclaw.env');
+
+		// 模拟 ws 断开 → 重连
+		server1.emit('close', { code: 1006, reason: 'server-restart' });
+		await new Promise((r) => setTimeout(r, 10));
+		// 触发 reconnect
+		await bridge.__connectIfNeeded();
+		const server2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		assert.notEqual(server1, server2, 'should create a new ws instance on reconnect');
+		server2.readyState = 1;
+		server2.emit('open', {});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 第二次 ws.open 必须再次发出 coclaw.env（覆盖 impl + plugin/openclaw 版本 + 平台信息）
+		const secondTexts = collectTexts(server2);
+		const reEmitted = secondTexts.find((t) => t.startsWith('coclaw.env '));
+		assert.ok(reEmitted, 'reconnected ws.open should re-emit coclaw.env');
+		// 收紧为具体值（防回归到 pending/unknown 被静默放行）
+		assert.match(reEmitted, /\bimpl=(?:pion|node-datachannel\(ndc\)|werift|none)\b/);
+		assert.match(reEmitted, /\bplugin=\d+\.\d+\.\d+/);
+		assert.match(reEmitted, /\bopenclaw=(?:unknown|\d+\.\d+\.\d+)/);
+		assert.match(reEmitted, /\bplatform=/);
+		// 缓存不变量：两次连接发出的 envLine 内容必须字节一致
+		assert.equal(reEmitted, firstEnv,
+			'env line must be identical across reconnects (verifies cached plugin+openclaw+platform)');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
 	}
 });

@@ -14,6 +14,7 @@ import {
 import { getRuntime } from './runtime.js';
 import { setSender as setRemoteLogSender, remoteLog } from './remote-log.js';
 import { getPluginVersion } from './plugin-version.js';
+import { getPlatformInfoLine } from './platform-info.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -811,9 +812,14 @@ export class RealtimeBridge {
 			this.__clearConnectTimer();
 			this.logger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
 			remoteLog('ws.connected peer=server');
+			// 顺序很重要：先注入 sender 再 remoteLog 环境信息——这样环境信息能随当前 sock
+			// 立即 flush；同时 sender 内部仅做 sock.send（不回调 remoteLog），无循环依赖。
 			setRemoteLogSender((msg) => {
 				if (sock.readyState === 1) sock.send(JSON.stringify(msg));
 			});
+			// ws 重连后补发环境信息：server 重启重连后能立即看到当前 claw 的运行环境与 webrtc 选型。
+			// __buildEnvLine 内部所有读取均为缓存值，无 native syscall。
+			remoteLog(this.__buildEnvLine());
 			this.__startServerHeartbeat(sock);
 			this.__ensureGatewayConnection();
 		});
@@ -967,10 +973,26 @@ export class RealtimeBridge {
 		this.__ndcPreloadResult = preloadResult;
 		this.__ndcCleanup = preloadResult.cleanup;
 		const implLabel = preloadResult.impl === 'ndc' ? 'node-datachannel(ndc)' : preloadResult.impl;
+		this.__implLabel = implLabel; // 缓存供 ws.open 时发送
+		// 启动信息只本地 log；远程发送统一由 ws.open 触发，避免重复
 		this.logger.info?.(`[coclaw] WebRTC impl: ${implLabel}`);
-		remoteLog(`bridge.webrtc-impl impl=${implLabel}`);
-		remoteLog(`bridge.started version=${this.__pluginVersion}`);
+		this.logger.info?.(`[coclaw] ${this.__buildEnvLine()}`);
+		remoteLog('bridge.started');
 		await this.__connectIfNeeded();
+	}
+
+	/**
+	 * 组装一条覆盖最基础环境信息的 log 行：
+	 *   coclaw.env impl=<...> plugin=<ver> openclaw=<ver> platform=<...> ... mem=<...>
+	 *
+	 * 字段值均为已缓存的轻量同步读取，无 native syscall；不调用 remoteLog，无循环依赖。
+	 */
+	__buildEnvLine() {
+		const rt = getRuntime();
+		const openclawVer = (rt?.version && rt.version !== 'unknown') ? rt.version : 'unknown';
+		const impl = this.__implLabel ?? 'pending';
+		const plugin = this.__pluginVersion ?? 'unknown';
+		return `coclaw.env impl=${impl} plugin=${plugin} openclaw=${openclawVer} ${getPlatformInfoLine()}`;
 	}
 
 	async refresh() {
