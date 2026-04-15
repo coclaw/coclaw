@@ -58,6 +58,7 @@ import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js'
 import { useClawsStore, __resetClawStoreInternals } from './claws.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
+import { useAdminStore } from './admin.store.js';
 
 describe('auth store', () => {
 	beforeEach(() => {
@@ -285,10 +286,15 @@ describe('auth store', () => {
 		const clawsStore = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const topicsStore = useTopicsStore();
+		const adminStore = useAdminStore();
 		sessionsStore.items = [{ sessionId: 's1' }];
 		clawsStore.byId = { b1: { id: 'b1' } };
 		agentsStore.byClaw = { b1: { agents: [{ id: 'a1' }], defaultId: 'main', loading: false, fetched: true } };
 		topicsStore.byId = { t1: { topicId: 't1', agentId: 'main', title: 'test', createdAt: 1, clawId: 'b1' } };
+		adminStore.dashboard = { users: { total: 1 } };
+		adminStore.claws.items = [{ id: 'c1', name: 'x' }];
+		adminStore.claws.search = 'prev-search';
+		adminStore.users.items = [{ id: 'u1' }];
 
 		await store.logout();
 
@@ -296,6 +302,11 @@ describe('auth store', () => {
 		expect(clawsStore.items).toEqual([]);
 		expect(agentsStore.byClaw).toEqual({});
 		expect(topicsStore.byId).toEqual({});
+		// admin store 跨用户数据须在登出时清理，避免下一位管理员看到上一位的残留
+		expect(adminStore.dashboard).toBeNull();
+		expect(adminStore.claws.items).toEqual([]);
+		expect(adminStore.claws.search).toBe('');
+		expect(adminStore.users.items).toEqual([]);
 	});
 
 	test('logout should disconnect all claw connections and signaling WS', async () => {

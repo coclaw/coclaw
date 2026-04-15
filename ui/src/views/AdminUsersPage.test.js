@@ -238,6 +238,25 @@ describe('AdminUsersPage — 搜索', () => {
 		expect(mockFetchUsers).not.toHaveBeenCalled();
 		expect(mockResetUsers).not.toHaveBeenCalled();
 	});
+
+	test('重入时从 store.users.search 回显输入框且不重复触发 doSearch', async () => {
+		vi.useFakeTimers();
+		const wrapper = mountPage({ usersState: { search: 'alice' } });
+		await flushPromises();
+		expect(mockFetchUsers).toHaveBeenCalledTimes(1);
+		expect(wrapper.find('input.u-input-stub').element.value).toBe('alice');
+
+		vi.advanceTimersByTime(500);
+		await flushPromises();
+		expect(mockFetchUsers).toHaveBeenCalledTimes(1);
+		expect(mockResetUsers).not.toHaveBeenCalled();
+	});
+
+	test('重入时 store.users.search 为空则保持输入框空', async () => {
+		const wrapper = mountPage({ usersState: { search: '' } });
+		await flushPromises();
+		expect(wrapper.find('input.u-input-stub').element.value).toBe('');
+	});
 });
 
 describe('AdminUsersPage — 分页', () => {

@@ -21,6 +21,7 @@ import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js'
 import { useClawsStore, __resetClawStoreInternals } from './claws.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
+import { useAdminStore } from './admin.store.js';
 
 function applyUserPreferences(user) {
 	syncThemeModeFromSettings(user?.settings);
@@ -118,6 +119,7 @@ export const useAuthStore = defineStore('auth', {
 			useAgentsStore().$reset();
 			useTopicsStore().$reset();
 			useClawsStore().$reset();
+			useAdminStore().$reset();
 			console.log('[auth] logged out');
 			this.loading = false;
 		},

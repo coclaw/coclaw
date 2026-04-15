@@ -368,6 +368,28 @@ describe('AdminClawsPage — 搜索', () => {
 		expect(mockFetchClaws).not.toHaveBeenCalled();
 		expect(mockResetClaws).not.toHaveBeenCalled();
 	});
+
+	test('重入时从 store.claws.search 回显输入框且不重复触发 doSearch', async () => {
+		vi.useFakeTimers();
+		const wrapper = mountPage({ clawsState: { search: 'alice' } });
+		await flushPromises();
+		// mounted 调用一次 fetchClaws，watcher 排队的 debounce timer 被清除
+		expect(mockFetchClaws).toHaveBeenCalledTimes(1);
+		// 输入框回显 store 中的 search
+		expect(wrapper.find('input.u-input-stub').element.value).toBe('alice');
+
+		// 等超过 300ms，doSearch 不应被再次触发
+		vi.advanceTimersByTime(500);
+		await flushPromises();
+		expect(mockFetchClaws).toHaveBeenCalledTimes(1);
+		expect(mockResetClaws).not.toHaveBeenCalled();
+	});
+
+	test('重入时 store.claws.search 为空则保持输入框空', async () => {
+		const wrapper = mountPage({ clawsState: { search: '' } });
+		await flushPromises();
+		expect(wrapper.find('input.u-input-stub').element.value).toBe('');
+	});
 });
 
 describe('AdminClawsPage — 分页', () => {
