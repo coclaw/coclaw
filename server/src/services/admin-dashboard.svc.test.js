@@ -14,63 +14,60 @@ function mockRepo(overrides = {}) {
 		latestRegisteredUsers: async () => overrides.latestRegistered ?? [
 			{ id: '10', name: 'NewUser', loginName: 'newuser', createdAt: '2026-03-24T08:00:00Z' },
 		],
-		countClaws: async () => overrides.botsTotal ?? 8,
+		countClaws: async () => overrides.clawsTotal ?? 8,
+		countClawsCreatedSince: async () => overrides.clawsTodayNew ?? 2,
+		latestBoundClaws: async () => overrides.latestBoundClaws ?? [
+			{ id: '100', name: 'clawA', userName: 'Alice', createdAt: '2026-04-10T00:00:00Z' },
+			{ id: '101', name: 'clawB', userName: 'Bob', createdAt: '2026-04-09T00:00:00Z' },
+		],
 	};
 }
 
-test('getAdminDashboard: 返回正确的汇总结构', async () => {
+test('getAdminDashboard: 返回实例维度 + 用户维度结构', async () => {
 	const result = await getAdminDashboard({
 		repo: mockRepo(),
-		getOnlineClawCount: () => 3,
+		listOnlineClawIds: () => new Set(['100']),
 	});
 
-	assert.equal(result.users.total, 100);
-	assert.equal(result.users.todayNew, 5);
-	assert.equal(result.users.todayActive, 20);
+	assert.deepEqual(result.users, { total: 100, todayNew: 5, todayActive: 20 });
+	assert.deepEqual(result.claws, { total: 8, online: 1, todayNew: 2 });
 	assert.equal(result.topActiveUsers.length, 1);
 	assert.equal(result.topActiveUsers[0].name, 'Alice');
 	assert.equal(result.latestRegisteredUsers.length, 1);
 	assert.equal(result.latestRegisteredUsers[0].name, 'NewUser');
-	assert.equal(result.claws.total, 8);
-	assert.equal(result.claws.online, 3);
-	assert.equal(result.bots.total, 8);
-	assert.equal(result.bots.online, 3);
+	assert.equal(result.latestBoundClaws.length, 2);
+	assert.equal(result.latestBoundClaws[0].id, '100');
+	assert.equal(result.latestBoundClaws[0].online, true);
+	assert.equal(result.latestBoundClaws[1].online, false);
+	assert.equal('bots' in result, false);
 	assert.equal(typeof result.version.server, 'string');
 	assert.ok(result.version.server.length > 0);
-	assert.equal(typeof result.version.plugin, 'string');
-	assert.ok(result.version.plugin.length > 0);
+	assert.ok('plugin' in result.version);
 });
 
-test('getAdminDashboard: 自定义数据正确透传', async () => {
+test('getAdminDashboard: 自定义数据正确透传且 online 集合为空', async () => {
 	const result = await getAdminDashboard({
-		repo: mockRepo({ total: 50, todayNew: 2, todayActive: 10, botsTotal: 0, topActive: [], latestRegistered: [] }),
-		getOnlineClawCount: () => 0,
+		repo: mockRepo({
+			total: 50, todayNew: 2, todayActive: 10,
+			clawsTotal: 0, clawsTodayNew: 0,
+			topActive: [], latestRegistered: [], latestBoundClaws: [],
+		}),
+		listOnlineClawIds: () => new Set(),
 	});
 
-	assert.equal(result.users.total, 50);
-	assert.equal(result.users.todayNew, 2);
-	assert.equal(result.users.todayActive, 10);
+	assert.deepEqual(result.users, { total: 50, todayNew: 2, todayActive: 10 });
+	assert.deepEqual(result.claws, { total: 0, online: 0, todayNew: 0 });
 	assert.deepEqual(result.topActiveUsers, []);
 	assert.deepEqual(result.latestRegisteredUsers, []);
-	assert.equal(result.claws.total, 0);
-	assert.equal(result.claws.online, 0);
-	assert.equal(result.bots.total, 0);
-	assert.equal(result.bots.online, 0);
+	assert.deepEqual(result.latestBoundClaws, []);
 });
 
 test('getAdminDashboard: 使用默认 deps 时不抛异常', async () => {
-	// 覆盖 line 10（pluginVersion try/catch）和 line 18-19（默认 repo/getOnlineClawCount）
-	// 直接调用不传 deps，验证默认依赖路径可达
-	// 由于默认 repo 依赖真实 DB，这里只传 repo 不传 getOnlineClawCount
-	const result = await getAdminDashboard({
-		repo: mockRepo(),
-		// 不传 getOnlineClawCount，走默认的 listOnlineClawIds().size
-	});
+	// 覆盖 默认 repo 和 listOnlineClawIds 分支（默认依赖路径）
+	const result = await getAdminDashboard({ repo: mockRepo() });
 
 	assert.equal(result.users.total, 100);
 	assert.equal(typeof result.claws.online, 'number');
-	assert.equal(typeof result.bots.online, 'number');
-	// pluginVersion 分支（line 10）：在测试环境下可能成功也可能 catch，验证不崩溃即可
 	assert.ok('plugin' in result.version);
 });
 
@@ -83,15 +80,39 @@ test('getAdminDashboard: 并行调用所有 repo 方法', async () => {
 		topActiveUsers: async () => { calls.push('topActiveUsers'); return []; },
 		latestRegisteredUsers: async () => { calls.push('latestRegisteredUsers'); return []; },
 		countClaws: async () => { calls.push('countClaws'); return 0; },
+		countClawsCreatedSince: async () => { calls.push('countClawsCreatedSince'); return 0; },
+		latestBoundClaws: async () => { calls.push('latestBoundClaws'); return []; },
 	};
 
-	await getAdminDashboard({ repo, getOnlineClawCount: () => 0 });
+	await getAdminDashboard({ repo, listOnlineClawIds: () => new Set() });
 
-	assert.equal(calls.length, 6);
+	assert.equal(calls.length, 8);
 	assert.ok(calls.includes('countUsers'));
 	assert.ok(calls.includes('countUsersCreatedSince'));
 	assert.ok(calls.includes('countUsersActiveSince'));
 	assert.ok(calls.includes('topActiveUsers'));
 	assert.ok(calls.includes('latestRegisteredUsers'));
 	assert.ok(calls.includes('countClaws'));
+	assert.ok(calls.includes('countClawsCreatedSince'));
+	assert.ok(calls.includes('latestBoundClaws'));
+});
+
+test('getAdminDashboard: topActiveUsers / latestRegisteredUsers 请求 10 条', async () => {
+	const captured = {};
+	const repo = {
+		countUsers: async () => 0,
+		countUsersCreatedSince: async () => 0,
+		countUsersActiveSince: async () => 0,
+		topActiveUsers: async (n) => { captured.topActive = n; return []; },
+		latestRegisteredUsers: async (n) => { captured.latestRegistered = n; return []; },
+		countClaws: async () => 0,
+		countClawsCreatedSince: async () => 0,
+		latestBoundClaws: async (n) => { captured.latestBoundClaws = n; return []; },
+	};
+
+	await getAdminDashboard({ repo, listOnlineClawIds: () => new Set() });
+
+	assert.equal(captured.topActive, 10);
+	assert.equal(captured.latestRegistered, 10);
+	assert.equal(captured.latestBoundClaws, 10);
 });

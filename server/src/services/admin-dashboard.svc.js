@@ -12,36 +12,38 @@ try { pluginVersion = require('../../../plugins/openclaw/package.json').version;
 /**
  * @param {object} [deps] - 依赖注入
  * @param {object} [deps.repo] - admin repo
- * @param {Function} [deps.getOnlineClawCount] - 获取在线 claw 数
+ * @param {Function} [deps.listOnlineClawIds] - 获取在线 claw id Set
  */
 export async function getAdminDashboard(deps = {}) {
 	const repo = deps.repo ?? adminRepo;
-	const getOnlineClawCount = deps.getOnlineClawCount ?? (() => listOnlineClawIds().size);
+	const listOnlineClawIdsImpl = deps.listOnlineClawIds ?? listOnlineClawIds;
 
 	const todayStart = new Date();
 	todayStart.setHours(0, 0, 0, 0);
 
-	const [total, todayNew, todayActive, topActive, latestRegistered, clawsTotal] = await Promise.all([
+	const onlineIds = listOnlineClawIdsImpl();
+
+	const [
+		usersTotal, usersTodayNew, usersTodayActive,
+		topActive, latestRegistered,
+		clawsTotal, clawsTodayNew, latestClaws,
+	] = await Promise.all([
 		repo.countUsers(),
 		repo.countUsersCreatedSince(todayStart),
 		repo.countUsersActiveSince(todayStart),
 		repo.topActiveUsers(10),
-		repo.latestRegisteredUsers(30),
+		repo.latestRegisteredUsers(10),
 		repo.countClaws(),
+		repo.countClawsCreatedSince(todayStart),
+		repo.latestBoundClaws(10),
 	]);
 
 	return {
-		users: { total, todayNew, todayActive },
+		users: { total: usersTotal, todayNew: usersTodayNew, todayActive: usersTodayActive },
+		claws: { total: clawsTotal, online: onlineIds.size, todayNew: clawsTodayNew },
 		topActiveUsers: topActive,
 		latestRegisteredUsers: latestRegistered,
-		claws: {
-			total: clawsTotal,
-			online: getOnlineClawCount(),
-		},
-		bots: {
-			total: clawsTotal,
-			online: getOnlineClawCount(),
-		},
+		latestBoundClaws: latestClaws.map((c) => ({ ...c, online: onlineIds.has(c.id) })),
 		version: {
 			server: serverVersion,
 			plugin: pluginVersion,
