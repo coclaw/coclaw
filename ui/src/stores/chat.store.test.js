@@ -707,9 +707,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			await store.sendMessage('test');
-			// RPC resolve 后 run 应通过 reconcileAfterLoad 而非 settle 清理
-			// 由于 loadMessages 成功且 reconcileAfterLoad 的双条件判定，
-			// run 的最终清理取决于事件流静默和服务端消息状态
+			// runAgent 接管 run 生命周期：RPC resolve 后由 watcher endRun + dropRun 清理
 			expect(store.sending).toBe(false);
 		});
 
@@ -1128,7 +1126,7 @@ describe('useChatStore', () => {
 			expect(runsStore.isRunning(store.runKey)).toBe(false);
 		});
 
-		test('__agentSettled 为 true 时，WS_CLOSED 错误被抑制，返回 { accepted: true }', async () => {
+		test('accepted 后 WS_CLOSED：runAgent 接管收尾，sendMessage 返回 { accepted: true }', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -1136,9 +1134,6 @@ describe('useChatStore', () => {
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-ws' });
-					// 模拟 lifecycle:end 事件提前处理
-					const store2 = useChatStore();
-					store2.__agentSettled = true;
 					const err = new Error('ws closed');
 					err.code = 'WS_CLOSED';
 					return Promise.reject(err);
@@ -1465,7 +1460,7 @@ describe('useChatStore', () => {
 			expect(store.__cancelReject).toBeNull();
 		});
 
-		test('RTC_LOST + __agentSettled 为 true 时被抑制，返回 { accepted }', async () => {
+		test('accepted 后 RTC_LOST：runAgent 接管收尾，sendMessage 返回 { accepted: true }', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -1473,8 +1468,6 @@ describe('useChatStore', () => {
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-rtc-settled' });
-					const store2 = useChatStore();
-					store2.__agentSettled = true;
 					const err = new Error('RTC connection lost');
 					err.code = 'RTC_LOST';
 					return Promise.reject(err);
@@ -3046,7 +3039,7 @@ describe('useChatStore', () => {
 			expect(run?.cancelled).toBe(true);
 		});
 
-		test('accepted 取消后独立 loadMessages 触发 completeSettle：streamingMsgs 仍保留（P0 回归防护）', async () => {
+		test('accepted 取消后独立 loadMessages：cancelled run 的 streamingMsgs 仍保留（P0 回归防护）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -4697,7 +4690,7 @@ describe('useChatStore', () => {
 			expect(reqCount).toBe(2);
 		});
 
-		test('sending=true 时 loadMessages 跳过 reconcileAfterLoad', async () => {
+		test('sending=true 时 loadMessages 不影响 run 状态（仍 isRunning=true）', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn, {
 				flatMessages: [

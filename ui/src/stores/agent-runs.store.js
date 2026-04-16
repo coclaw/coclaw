@@ -73,11 +73,6 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 		/** 是否有任何 entry（streamingMsgs 仍占内存即视为 busy） */
 		busy: (state) => Object.keys(state.runs).length > 0,
-		/**
-		 * 已废弃 stub（reconcileAfterLoad 启发式废弃）；保留是为兼容旧调用点（Commit 2 删除）
-		 * @returns {() => boolean}
-		 */
-		isRunIdle: () => () => false,
 	},
 
 	actions: {
@@ -403,13 +398,6 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			}
 			this.__cleanupRun(runId);
 		},
-
-		// ============================ 兼容 stub（Commit 2 删除）============================
-		// 旧调用点暂保留，避免本 commit 改动面过大；实际行为已被 watcher / endRun / dropRun 取代
-		markLoadInFlight() {},
-		clearLoadInFlight() {},
-		completeSettle() {},
-		reconcileAfterLoad() {},
 
 		// ============================ 数据维护 ============================
 

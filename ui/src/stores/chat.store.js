@@ -85,7 +85,6 @@ export function createChatStore(storeKey, opts = {}) {
 			// 内部状态
 			__initialized: false,
 			__messagesLoaded: false,
-			__agentSettled: false,
 			__streamingTimer: null,
 			__accepted: false,
 			__cancelReject: null,
@@ -186,13 +185,7 @@ export function createChatStore(storeKey, opts = {}) {
 
 				// 重新进入：有活跃 run → allMessages 自动合并；无活跃 run → 静默刷新
 				if (this.isSending) {
-					// 僵尸 run 检测：非发送中 + 事件流已静默 → 强制刷新以触发 reconcile (#235)
-					if (!this.sending && useAgentRunsStore().isRunIdle(this.runKey)) {
-						console.debug('[chat] activate re-entry: idle run detected, force silent reload');
-						this.loadMessages({ silent: true });
-					} else {
-						console.debug('[chat] activate re-entry: skip reload (sending/running)');
-					}
+					console.debug('[chat] activate re-entry: skip reload (sending/running)');
 				} else {
 					console.debug('[chat] activate re-entry: silent reload');
 					this.loadMessages({ silent: true });
@@ -245,8 +238,6 @@ export function createChatStore(storeKey, opts = {}) {
 					this.errorText = '';
 				}
 				const doLoad = async () => {
-					// 标记加载中，防止 settling fallback 过早清理 streaming 消息（#193）
-					useAgentRunsStore().markLoadInFlight(this.runKey);
 					try {
 						// 通过 OC 原生 sessions.get 加载当前 session 最近 N 条消息
 						const limit = limitOverride || MSG_PAGE_SIZE;
@@ -289,7 +280,6 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 					finally {
 						this.loading = false;
-						useAgentRunsStore().clearLoadInFlight(this.runKey);
 					}
 				};
 				const p = doLoad();
@@ -370,8 +360,6 @@ export function createChatStore(storeKey, opts = {}) {
 					this.loading = true;
 					this.errorText = '';
 				}
-				// 标记加载中，防止 settling fallback 过早清理 streaming 消息（#193）
-				useAgentRunsStore().markLoadInFlight(this.runKey);
 				try {
 					const result = await conn.request('coclaw.sessions.getById', {
 						sessionId: this.sessionId,
@@ -399,7 +387,6 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				finally {
 					this.loading = false;
-					useAgentRunsStore().clearLoadInFlight(this.runKey);
 				}
 			},
 
@@ -1287,21 +1274,11 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			/**
-			 * loadMessages 成功后：检查并处理 agentRunsStore 中的活跃/settling run
+			 * loadMessages 成功后：去除已被服务端持久化的乐观 user 消息
 			 * @param {object[]} serverMessages
 			 */
 			__reconcileRunAfterLoad(serverMessages) {
-				const runsStore = useAgentRunsStore();
-				// 完成 settling 过渡（lifecycle:end 已到达，等待 loadMessages 替换数据）
-				runsStore.completeSettle(this.runKey);
-				// 去除乐观 user 消息——仅当 server 已包含对应消息时才 strip
-				runsStore.stripLocalUserMsgs(this.runKey, serverMessages);
-				// sendMessage 流程执行中跳过僵尸检测——避免过早 settle 活跃 run
-				// 注：使用 this.sending 而非 this.isSending，因为 isSending 包含 isRunning，
-				// 而僵尸 run 正是 sending=false 但 isRunning=true 的场景
-				if (this.sending) return;
-				// 检查僵尸 run（断连期间完成，lifecycle:end 丢失）
-				runsStore.reconcileAfterLoad(this.runKey, serverMessages);
+				useAgentRunsStore().stripLocalUserMsgs(this.runKey, serverMessages);
 			},
 
 			__cleanupStreaming() {

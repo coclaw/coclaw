@@ -178,13 +178,6 @@ describe('useAgentRunsStore', () => {
 			expect(store.isRunning('nonexistent')).toBe(false);
 		});
 
-		test('isRunIdle 永远返回 false（已废弃 stub）', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
-			expect(store.isRunIdle('nonexistent')).toBe(false);
-		});
-
 		test('busy: 任意 entry 存在即为 true', () => {
 			const store = useAgentRunsStore();
 			expect(store.busy).toBe(false);
