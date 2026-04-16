@@ -53,6 +53,24 @@ server {
 		try_files $uri =404;
 	}
 
+	# 发布产物（Electron 安装包 + APK 等，按平台分子目录）
+	# - /releases/win/ 和 /releases/mac/: electron-builder generic provider 源
+	# - /releases/android/: 手动下载的 APK
+	# - latest.yml / latest-mac.yml: 版本清单，必须每次回源拿最新
+	# - 安装包（.exe / .dmg / .apk / .blockmap 等）: 文件名含版本号，长期缓存
+	location ^~ /releases/ {
+		# 版本清单：no-cache（与 /version.json 同策略；允许任意一级子目录深度）
+		location ~* ^/releases/.+/latest.*\.yml$ {
+			add_header X-Content-Type-Options nosniff always;
+			add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;
+			try_files $uri =404;
+		}
+		# 安装包与 blockmap：immutable 长期缓存
+		add_header X-Content-Type-Options nosniff always;
+		add_header Cache-Control "public, max-age=2592000, immutable" always;
+		try_files $uri =404;
+	}
+
 	# SPA 路由回落到 /index.html
 	location / {
 		add_header X-Content-Type-Options nosniff always;

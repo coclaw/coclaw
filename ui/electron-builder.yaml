@@ -19,10 +19,9 @@ files:
 asar: true
 
 # 自动更新源：走 CoClaw 自己的 CDN，规避 GitHub Releases 的国内访问不稳定。
-# 发布产物（nsis exe、latest.yml、blockmap）需同步到 deploy 下的 /downloads/ 静态路径。
-publish:
-  provider: generic
-  url: https://im.coclaw.net/downloads/
+# Win / Mac 产物分别推送到 /releases/win/ 和 /releases/mac/，语义更清晰。
+# 发布流程：build 后把 dist-electron/ 下对应平台的 latest*.yml + 安装包 + blockmap
+# rsync 到 deploy/static/releases/<平台>/。
 
 # ---- Windows ----
 win:
@@ -32,6 +31,9 @@ win:
     - target: portable
       arch: [x64]
   icon: build-resources/icon.ico
+  publish:
+    - provider: generic
+      url: https://im.coclaw.net/releases/win/
 
 nsis:
   oneClick: false
@@ -63,6 +65,9 @@ mac:
     NSMicrophoneUsageDescription: "CoClaw 需要使用麦克风来录制语音消息"
     NSCameraUsageDescription: "CoClaw 需要使用摄像头来拍摄照片和视频"
     NSScreenCaptureUsageDescription: "CoClaw 需要屏幕录制权限来支持截图功能"
+  publish:
+    - provider: generic
+      url: https://im.coclaw.net/releases/mac/
 
 dmg:
   window:
