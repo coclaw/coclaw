@@ -17,7 +17,7 @@ import AdminDashboardPage from '../views/AdminDashboardPage.vue';
 import AdminClawsPage from '../views/AdminClawsPage.vue';
 import AdminUsersPage from '../views/AdminUsersPage.vue';
 import { useAuthStore } from '../stores/auth.store.js';
-import { isNative } from '../utils/capacitor-app.js';
+import { isNativeShell } from '../utils/platform.js';
 
 const LAST_ROUTE_KEY = 'coclaw:lastRoute';
 
@@ -137,11 +137,12 @@ export const router = createRouter({
 	routes,
 });
 
-// --- Capacitor 冷启动路由恢复 ---
-// OS kill 后重启时，从 localStorage 恢复上次路由
+// --- 原生壳子冷启动路由恢复 ---
+// OS kill / 用户从托盘退出后重启时，从 localStorage 恢复上次路由
 // 暖恢复（app:foreground）时清除，不需要恢复
+// 适用范围：Capacitor (移动端) + Electron (桌面端)
 let __pendingRestore = null;
-if (isNative) {
+if (isNativeShell) {
 	__pendingRestore = localStorage.getItem(LAST_ROUTE_KEY);
 	localStorage.removeItem(LAST_ROUTE_KEY);
 	if (__pendingRestore) {
@@ -173,8 +174,8 @@ router.beforeEach(async (to) => {
 	console.debug('[router] auth passed, user=%s', authStore.user?.id);
 });
 
-// Capacitor: 后台保存路由 / 前台清除
-if (isNative) {
+// 原生壳子：后台保存路由 / 前台清除
+if (isNativeShell) {
 	window.addEventListener('app:background', () => {
 		const path = router.currentRoute.value?.fullPath;
 		if (path && path !== '/login' && path !== '/register') {
