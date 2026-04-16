@@ -151,6 +151,10 @@ describe('disposeElectronApp & 重复 init', () => {
 
 		initElectronApp(router);
 		expect(unsubCalls).toHaveLength(3);
+		// 再 init 后应重新订阅；防止退化为"只 dispose 不 subscribe"
+		expect(api.onDeepLink).toHaveBeenCalledTimes(2);
+		expect(api.onWindowFocus).toHaveBeenCalledTimes(2);
+		expect(api.onWindowBlur).toHaveBeenCalledTimes(2);
 	});
 
 	test('某个 unsub 抛错不影响其它 unsub', async () => {
