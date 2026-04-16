@@ -96,7 +96,7 @@ vi.mock('electron-store', () => ({
 	})),
 }));
 
-const { registerIpcHandlers } = await import('./ipc-handlers.js');
+const { registerIpcHandlers, __resetForTest } = await import('./ipc-handlers.js');
 
 // ---- 测试辅助 ----
 
@@ -451,5 +451,33 @@ describe('app / store', () => {
 	test('store:get 未设置的 key 返回 undefined', async () => {
 		const res = await hoisted.invokeHandlers['store:get']({}, 'nonexistent');
 		expect(res).toBeUndefined();
+	});
+});
+
+describe('重复注册防御', () => {
+	test('重复 registerIpcHandlers 不再次 ipcMain.handle，也不再次 session.on(will-download)', () => {
+		// 此前 beforeEach 中的 registerOnce() 已注册过一次
+		const handleCallsBefore = hoisted.ipcMain.handle.mock.calls.length;
+		const onCallsBefore = hoisted.ipcMain.on.mock.calls.length;
+		const sessionOnCallsBefore = hoisted.session.defaultSession.on.mock.calls.length;
+
+		registerIpcHandlers(() => fakeWin);
+		registerIpcHandlers(() => fakeWin);
+
+		expect(hoisted.ipcMain.handle.mock.calls.length).toBe(handleCallsBefore);
+		expect(hoisted.ipcMain.on.mock.calls.length).toBe(onCallsBefore);
+		expect(hoisted.session.defaultSession.on.mock.calls.length).toBe(sessionOnCallsBefore);
+	});
+
+	test('__resetForTest 后允许再次注册（仅供测试）', () => {
+		__resetForTest();
+		hoisted.ipcMain.handle.mockClear();
+
+		registerIpcHandlers(() => fakeWin);
+		expect(hoisted.ipcMain.handle.mock.calls.length).toBeGreaterThan(0);
+
+		// 恢复状态，避免影响后续测试
+		__resetForTest();
+		registerIpcHandlers(() => fakeWin);
 	});
 });

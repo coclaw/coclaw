@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import windowStateKeeper from 'electron-window-state';
 import { initTray, attachMainWindow, disposeTray } from './tray.js';
+import log from 'electron-log';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
 import {
@@ -234,7 +235,7 @@ if (!gotLock) {
 			if (win) win.webContents.send('screenshot-trigger');
 		});
 		if (!registered) {
-			console.warn(`截图快捷键 ${screenshotKey} 注册失败，可能已被其他应用占用`);
+			log.warn(`[main] 截图快捷键 ${screenshotKey} 注册失败，可能已被其他应用占用`);
 		}
 	});
 

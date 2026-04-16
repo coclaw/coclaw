@@ -6,11 +6,19 @@ import Store from 'electron-store';
 
 const store = new Store();
 
+let registered = false;
+
 /**
- * 注册所有 IPC 处理器（仅调用一次）
+ * 注册所有 IPC 处理器（仅调用一次）。
+ * 重复调用会直接跳过，避免：
+ * 1. ipcMain.handle 对同 channel 抛 "second handler" 错
+ * 2. will-download 监听器重复注册，导致每次下载发多次 progress/done 事件
  * @param {() => Electron.BrowserWindow | null} getWin - 获取当前主窗口的函数
  */
 export function registerIpcHandlers(getWin) {
+	if (registered) return;
+	registered = true;
+
 	// ---- 对话框 ----
 	ipcMain.handle('dialog:openFile', async (_, options) => {
 		const win = getWin();
@@ -151,4 +159,9 @@ export function registerIpcHandlers(getWin) {
 	ipcMain.handle('store:set', (_, key, value) => {
 		store.set(key, value);
 	});
+}
+
+/** @internal 仅供测试重置注册状态 */
+export function __resetForTest() {
+	registered = false;
 }
