@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
-import { isTrustedUrl, TRUSTED_ORIGINS, REMOTE_URL, DEV_URL } from './url-guard.js';
+import { isTrustedUrl, REMOTE_URL, DEV_URL } from './url-guard.js';
 
-describe('url-guard / isTrustedUrl', () => {
+describe('url-guard / isTrustedUrl — 生产模式（默认）', () => {
 	test('远程业务域 origin 严格匹配', () => {
 		expect(isTrustedUrl('https://im.coclaw.net')).toBe(true);
 		expect(isTrustedUrl('https://im.coclaw.net/')).toBe(true);
@@ -9,9 +9,9 @@ describe('url-guard / isTrustedUrl', () => {
 		expect(isTrustedUrl('https://im.coclaw.net/?q=1')).toBe(true);
 	});
 
-	test('本地开发 origin 严格匹配', () => {
-		expect(isTrustedUrl('http://localhost:5173')).toBe(true);
-		expect(isTrustedUrl('http://localhost:5173/path')).toBe(true);
+	test('本地开发地址默认不信任（防生产环境 5173 端口被占用攻击）', () => {
+		expect(isTrustedUrl('http://localhost:5173')).toBe(false);
+		expect(isTrustedUrl('http://localhost:5173/path')).toBe(false);
 	});
 
 	test('前缀绕过攻击：子域名前缀不信任', () => {
@@ -26,13 +26,10 @@ describe('url-guard / isTrustedUrl', () => {
 
 	test('端口不一致不信任（origin 含端口）', () => {
 		expect(isTrustedUrl('https://im.coclaw.net:8443')).toBe(false);
-		expect(isTrustedUrl('http://localhost:5173')).toBe(true);
-		expect(isTrustedUrl('http://localhost:5174')).toBe(false);
 	});
 
 	test('协议不一致不信任', () => {
 		expect(isTrustedUrl('http://im.coclaw.net')).toBe(false);
-		expect(isTrustedUrl('https://localhost:5173')).toBe(false);
 	});
 
 	test('子域名不信任（除非显式加入白名单）', () => {
@@ -57,14 +54,31 @@ describe('url-guard / isTrustedUrl', () => {
 		expect(isTrustedUrl('file:///etc/passwd')).toBe(false);
 	});
 
-	test('TRUSTED_ORIGINS 常量正确', () => {
-		expect(TRUSTED_ORIGINS.has(REMOTE_URL)).toBe(true);
-		expect(TRUSTED_ORIGINS.has(DEV_URL)).toBe(true);
-		expect(TRUSTED_ORIGINS.size).toBe(2);
-	});
-
 	test('REMOTE_URL 和 DEV_URL 的常量值', () => {
 		expect(REMOTE_URL).toBe('https://im.coclaw.net');
 		expect(DEV_URL).toBe('http://localhost:5173');
+	});
+});
+
+describe('url-guard / isTrustedUrl — allowDev=true（开发模式）', () => {
+	test('本地开发地址被信任', () => {
+		expect(isTrustedUrl('http://localhost:5173', { allowDev: true })).toBe(true);
+		expect(isTrustedUrl('http://localhost:5173/path', { allowDev: true })).toBe(true);
+	});
+
+	test('远程业务域仍被信任', () => {
+		expect(isTrustedUrl('https://im.coclaw.net', { allowDev: true })).toBe(true);
+	});
+
+	test('其它端口仍不信任', () => {
+		expect(isTrustedUrl('http://localhost:5174', { allowDev: true })).toBe(false);
+	});
+
+	test('协议不一致仍不信任', () => {
+		expect(isTrustedUrl('https://localhost:5173', { allowDev: true })).toBe(false);
+	});
+
+	test('攻击者域名仍不信任', () => {
+		expect(isTrustedUrl('https://im.coclaw.net.evil.com', { allowDev: true })).toBe(false);
 	});
 });

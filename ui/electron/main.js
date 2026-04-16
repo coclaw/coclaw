@@ -96,9 +96,9 @@ if (!gotLock) {
 			win.webContents.openDevTools({ mode: 'detach' });
 		}
 
-		// 阻止导航到非信任域（严格 origin 匹配）
+		// 阻止导航到非信任域（严格 origin 匹配）；仅开发模式才把 localhost:5173 视为信任
 		win.webContents.on('will-navigate', (event, navUrl) => {
-			if (!isTrustedUrl(navUrl)) {
+			if (!isTrustedUrl(navUrl, { allowDev: isDev })) {
 				event.preventDefault();
 			}
 		});
