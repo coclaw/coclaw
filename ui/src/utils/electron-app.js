@@ -5,8 +5,17 @@
  * - 窗口 focus/blur 桥接为 app:foreground / app:background（与 Capacitor 对齐）
  * - autoUpdater 事件桥接为 window CustomEvent，供 UI 组件订阅
  * - 截图快捷键、文件下载进度/完成事件桥接
+ *
+ * preload 的 onXxx 返回 unsubscribe；本模块保存所有 unsub，
+ * disposeElectronApp() 可清理全部订阅（HMR 重载/测试 teardown 场景）
  */
 import { isElectronApp } from './platform.js';
+
+let unsubs = [];
+
+function track(unsub) {
+	if (typeof unsub === 'function') unsubs.push(unsub);
+}
 
 /**
  * 将 coclaw:// URL 解析为 Vue Router 路径
@@ -28,17 +37,20 @@ export function parseDeepLinkToRoute(url) {
 
 /**
  * 初始化 Electron 壳子渲染端
- * 非 Electron 环境下直接返回。
+ * 非 Electron 环境下直接返回。重复调用会先 dispose 旧订阅，避免 HMR 累积。
  * @param {import('vue-router').Router} router
  */
 export function initElectronApp(router) {
 	if (!isElectronApp) return;
 	console.log('[electron] desktop shell detected, initializing...');
 
+	// 防 HMR 重复 init 导致的订阅泄漏
+	disposeElectronApp();
+
 	const api = window.electronAPI;
 
 	// Deep Link 路由跳转
-	api.onDeepLink((url) => {
+	track(api.onDeepLink((url) => {
 		const routePath = parseDeepLinkToRoute(url);
 		if (routePath) {
 			console.log('[electron] deep-link → %s', routePath);
@@ -47,35 +59,35 @@ export function initElectronApp(router) {
 		else {
 			console.warn('[electron] invalid deep-link URL:', url);
 		}
-	});
+	}));
 
 	// 窗口焦点 → Capacitor 风格事件（app-update / claws.store / ChatPage 等模块依赖）
-	api.onWindowFocus(() => {
+	track(api.onWindowFocus(() => {
 		window.dispatchEvent(new CustomEvent('app:foreground'));
-	});
-	api.onWindowBlur(() => {
+	}));
+	track(api.onWindowBlur(() => {
 		window.dispatchEvent(new CustomEvent('app:background'));
-	});
+	}));
 
 	// 自动更新全流程事件 → CustomEvent
-	api.onUpdateAvailable((info) => {
+	track(api.onUpdateAvailable((info) => {
 		console.log('[electron] update available: %s', info?.version);
 		window.dispatchEvent(new CustomEvent('electron:update-available', { detail: info }));
-	});
-	api.onUpdateDownloadProgress((info) => {
+	}));
+	track(api.onUpdateDownloadProgress((info) => {
 		window.dispatchEvent(new CustomEvent('electron:update-download-progress', { detail: info }));
-	});
-	api.onUpdateDownloaded((info) => {
+	}));
+	track(api.onUpdateDownloaded((info) => {
 		console.log('[electron] update downloaded: %s', info?.version);
 		window.dispatchEvent(new CustomEvent('electron:update-downloaded', { detail: info }));
-	});
-	api.onUpdateNotAvailable((info) => {
+	}));
+	track(api.onUpdateNotAvailable((info) => {
 		window.dispatchEvent(new CustomEvent('electron:update-not-available', { detail: info }));
-	});
-	api.onUpdateError((info) => {
+	}));
+	track(api.onUpdateError((info) => {
 		console.warn('[electron] update error:', info?.message);
 		window.dispatchEvent(new CustomEvent('electron:update-error', { detail: info }));
-	});
+	}));
 	// 补发 renderer 挂载前主进程已缓存的 update-available（若有）
 	api.getPendingUpdate().then((info) => {
 		if (info) {
@@ -85,17 +97,26 @@ export function initElectronApp(router) {
 	}).catch((e) => console.warn('[electron] getPendingUpdate failed:', e));
 
 	// 截图全局快捷键
-	api.onScreenshotTrigger(() => {
+	track(api.onScreenshotTrigger(() => {
 		window.dispatchEvent(new CustomEvent('electron:screenshot-trigger'));
-	});
+	}));
 
 	// 文件下载
-	api.onDownloadProgress((info) => {
+	track(api.onDownloadProgress((info) => {
 		window.dispatchEvent(new CustomEvent('electron:download-progress', { detail: info }));
-	});
-	api.onDownloadDone((info) => {
+	}));
+	track(api.onDownloadDone((info) => {
 		window.dispatchEvent(new CustomEvent('electron:download-done', { detail: info }));
-	});
+	}));
 
 	console.log('[electron] initialized');
+}
+
+/** 清理全部 IPC 订阅，避免 HMR/重 init 累积监听 */
+export function disposeElectronApp() {
+	for (const unsub of unsubs) {
+		try { unsub(); }
+		catch (e) { console.warn('[electron] unsubscribe failed:', e); }
+	}
+	unsubs = [];
 }

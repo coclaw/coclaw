@@ -1,7 +1,32 @@
 // preload.cjs — 沙箱渲染进程的预加载脚本（必须 CommonJS）
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('electronAPI', {
+/**
+ * 为 ipcRenderer.on 封装订阅：保留 handler 引用以便返回 unsubscribe。
+ * renderer 侧 mount/unmount 可调用返回值取消订阅，避免监听器累积。
+ * @param {string} channel
+ * @param {(payload: unknown) => void} cb - 业务回调，只接收 payload（剥离 IpcRendererEvent）
+ * @returns {() => void} unsubscribe
+ */
+function subscribe(channel, cb) {
+	const handler = (_e, payload) => cb(payload);
+	ipcRenderer.on(channel, handler);
+	return () => ipcRenderer.removeListener(channel, handler);
+}
+
+/**
+ * 不接收 payload 的简化订阅（如 window-focus/window-blur/screenshot-trigger）
+ * @param {string} channel
+ * @param {() => void} cb
+ * @returns {() => void} unsubscribe
+ */
+function subscribeVoid(channel, cb) {
+	const handler = () => cb();
+	ipcRenderer.on(channel, handler);
+	return () => ipcRenderer.removeListener(channel, handler);
+}
+
+const electronAPI = Object.freeze({
 	// ---- 平台信息 ----
 	platform: process.platform, // 'win32' | 'darwin' | 'linux'
 
@@ -58,15 +83,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
 	getPendingUpdate: () => ipcRenderer.invoke('updater:getPending'),
 
 	// ---- 事件监听（主进程 → 渲染进程）----
-	onDeepLink: (cb) => ipcRenderer.on('deep-link', (_e, url) => cb(url)),
-	onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, info) => cb(info)),
-	onUpdateDownloadProgress: (cb) => ipcRenderer.on('update-download-progress', (_e, info) => cb(info)),
-	onUpdateDownloaded: (cb) => ipcRenderer.on('update-downloaded', (_e, info) => cb(info)),
-	onUpdateNotAvailable: (cb) => ipcRenderer.on('update-not-available', (_e, info) => cb(info)),
-	onUpdateError: (cb) => ipcRenderer.on('update-error', (_e, info) => cb(info)),
-	onWindowFocus: (cb) => ipcRenderer.on('window-focus', () => cb()),
-	onWindowBlur: (cb) => ipcRenderer.on('window-blur', () => cb()),
-	onScreenshotTrigger: (cb) => ipcRenderer.on('screenshot-trigger', () => cb()),
-	onDownloadProgress: (cb) => ipcRenderer.on('download:progress', (_e, info) => cb(info)),
-	onDownloadDone: (cb) => ipcRenderer.on('download:done', (_e, info) => cb(info)),
+	// 所有 onXxx 均返回 unsubscribe 函数：renderer 在组件 unmount 时调用可移除监听
+	onDeepLink: (cb) => subscribe('deep-link', cb),
+	onUpdateAvailable: (cb) => subscribe('update-available', cb),
+	onUpdateDownloadProgress: (cb) => subscribe('update-download-progress', cb),
+	onUpdateDownloaded: (cb) => subscribe('update-downloaded', cb),
+	onUpdateNotAvailable: (cb) => subscribe('update-not-available', cb),
+	onUpdateError: (cb) => subscribe('update-error', cb),
+	onWindowFocus: (cb) => subscribeVoid('window-focus', cb),
+	onWindowBlur: (cb) => subscribeVoid('window-blur', cb),
+	onScreenshotTrigger: (cb) => subscribeVoid('screenshot-trigger', cb),
+	onDownloadProgress: (cb) => subscribe('download-progress', cb),
+	onDownloadDone: (cb) => subscribe('download-done', cb),
 });
+
+contextBridge.exposeInMainWorld('electronAPI', electronAPI);

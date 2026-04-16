@@ -414,7 +414,7 @@ describe('download', () => {
 		handler({}, item);
 		itemListeners.updated({}, 'progressing');
 
-		expect(fakeWin.webContents.send).toHaveBeenCalledWith('download:progress',
+		expect(fakeWin.webContents.send).toHaveBeenCalledWith('download-progress',
 			expect.objectContaining({ percent: 0.5, filename: 'a.zip' }));
 	});
 
@@ -447,7 +447,7 @@ describe('download', () => {
 		};
 		handler({}, item);
 		itemListeners.done({}, 'completed');
-		expect(fakeWin.webContents.send).toHaveBeenCalledWith('download:done',
+		expect(fakeWin.webContents.send).toHaveBeenCalledWith('download-done',
 			expect.objectContaining({ state: 'completed', savePath: '/downloads/a.zip' }));
 	});
 
@@ -463,7 +463,7 @@ describe('download', () => {
 		};
 		handler({}, item);
 		itemListeners.updated({}, 'progressing');
-		expect(fakeWin.webContents.send).toHaveBeenCalledWith('download:progress',
+		expect(fakeWin.webContents.send).toHaveBeenCalledWith('download-progress',
 			expect.objectContaining({ percent: 0 }));
 	});
 });

@@ -206,6 +206,95 @@ describe('initElectronApp — Electron 环境', () => {
 	});
 });
 
+describe('disposeElectronApp & 重复 init', () => {
+	let router;
+	let api;
+	let unsubCalls;
+
+	beforeEach(() => {
+		vi.resetModules();
+		unsubCalls = [];
+		router = { push: vi.fn() };
+		const makeSub = (tag) => vi.fn(() => {
+			const unsub = vi.fn(() => { unsubCalls.push(tag); });
+			return unsub;
+		});
+		api = {
+			onDeepLink: makeSub('deepLink'),
+			onWindowFocus: makeSub('focus'),
+			onWindowBlur: makeSub('blur'),
+			onUpdateAvailable: makeSub('updateAvail'),
+			onUpdateDownloadProgress: makeSub('updateProg'),
+			onUpdateDownloaded: makeSub('updateDone'),
+			onUpdateNotAvailable: makeSub('updateNa'),
+			onUpdateError: makeSub('updateErr'),
+			getPendingUpdate: vi.fn().mockResolvedValue(null),
+			onScreenshotTrigger: makeSub('screenshot'),
+			onDownloadProgress: makeSub('dlProg'),
+			onDownloadDone: makeSub('dlDone'),
+		};
+		window.electronAPI = api;
+		vi.doMock('./platform.js', () => ({ isElectronApp: true }));
+	});
+
+	afterEach(() => {
+		delete window.electronAPI;
+	});
+
+	test('disposeElectronApp 调用每个 unsubscribe 一次', async () => {
+		const { initElectronApp, disposeElectronApp } = await import('./electron-app.js');
+		initElectronApp(router);
+		expect(unsubCalls).toHaveLength(0);
+
+		disposeElectronApp();
+		// 11 个同步订阅均应被 unsub（getPendingUpdate 不计入，它不是订阅）
+		expect(unsubCalls).toHaveLength(11);
+	});
+
+	test('重复 initElectronApp 先清旧订阅再建新的', async () => {
+		const { initElectronApp } = await import('./electron-app.js');
+		initElectronApp(router);
+		// 第一轮订阅后未 unsub
+		expect(unsubCalls).toHaveLength(0);
+
+		// 第二轮 init：旧订阅被 unsub，新订阅建立
+		initElectronApp(router);
+		expect(unsubCalls).toHaveLength(11);
+	});
+
+	test('某个 unsub 抛错不影响其它 unsub', async () => {
+		api.onDeepLink = vi.fn(() => {
+			return () => { throw new Error('boom'); };
+		});
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { initElectronApp, disposeElectronApp } = await import('./electron-app.js');
+		initElectronApp(router);
+
+		expect(() => disposeElectronApp()).not.toThrow();
+		expect(warn).toHaveBeenCalled();
+		// 其它 10 个 unsub 正常执行
+		expect(unsubCalls).toHaveLength(10);
+
+		warn.mockRestore();
+	});
+
+	test('不返回函数的 onXxx 兼容（preload 旧版本回归时不崩）', async () => {
+		// 模拟旧 preload：onXxx 不返回 unsub
+		api.onDeepLink = vi.fn();
+		const { initElectronApp, disposeElectronApp } = await import('./electron-app.js');
+		initElectronApp(router);
+		// 仅其它 10 个订阅的 unsub 会被记录；onDeepLink 无 unsub，被 track 过滤
+		disposeElectronApp();
+		expect(unsubCalls).toHaveLength(10);
+	});
+
+	test('非 Electron 环境 disposeElectronApp no-op 不抛', async () => {
+		vi.doMock('./platform.js', () => ({ isElectronApp: false }));
+		const { disposeElectronApp } = await import('./electron-app.js');
+		expect(() => disposeElectronApp()).not.toThrow();
+	});
+});
+
 describe('parseDeepLinkToRoute', () => {
 	test('coclaw://chat/123 → /chat/123', async () => {
 		vi.resetModules();

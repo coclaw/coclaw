@@ -127,12 +127,14 @@ export function registerIpcHandlers(getWin) {
 	});
 
 	// 拦截所有下载（含 <a download> 和 downloadURL 触发的）
+	// 事件名改为连字符风格 download-progress / download-done,
+	// 与其它主→渲染事件（deep-link、update-*、window-focus 等）一致
 	session.defaultSession.on('will-download', (_event, item) => {
 		item.on('updated', (_e, state) => {
 			if (state === 'progressing' && !item.isPaused()) {
 				const win = getWin();
 				if (win) {
-					win.webContents.send('download:progress', {
+					win.webContents.send('download-progress', {
 						url: item.getURL(),
 						filename: item.getFilename(),
 						percent: item.getTotalBytes() > 0
@@ -147,7 +149,7 @@ export function registerIpcHandlers(getWin) {
 		item.once('done', (_e, state) => {
 			const win = getWin();
 			if (win) {
-				win.webContents.send('download:done', {
+				win.webContents.send('download-done', {
 					url: item.getURL(),
 					filename: item.getFilename(),
 					savePath: item.getSavePath(),
