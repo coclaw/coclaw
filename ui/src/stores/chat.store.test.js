@@ -200,7 +200,7 @@ describe('useChatStore', () => {
 			const runsStore = useAgentRunsStore();
 			runsStore.runs['run-z'] = {
 				runId: 'run-z', clawId: '1', runKey: store.runKey,
-				settled: false, settling: false, lastEventAt: Date.now(),
+				ended: false, cancelled: false, lastEventAt: Date.now(),
 				streamingMsgs: [], __timer: null,
 			};
 			runsStore.runKeyIndex[store.runKey] = 'run-z';
@@ -223,7 +223,7 @@ describe('useChatStore', () => {
 			const runsStore = useAgentRunsStore();
 			runsStore.runs['run-z'] = {
 				runId: 'run-z', clawId: '1', runKey: store.runKey,
-				settled: false, settling: false, lastEventAt: Date.now() - 15_000,
+				ended: false, cancelled: false, lastEventAt: Date.now() - 15_000,
 				streamingMsgs: [], __timer: null,
 			};
 			runsStore.runKeyIndex[store.runKey] = 'run-z';
@@ -231,28 +231,6 @@ describe('useChatStore', () => {
 			const loadSpy = vi.spyOn(store, 'loadMessages');
 			await store.activate();
 			expect(loadSpy).not.toHaveBeenCalled();
-		});
-
-		test('重复调用 activate 时僵尸 run（idle）触发强制静默刷新 (#235)', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn);
-			setConn('1', conn);
-
-			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
-			await store.activate();
-
-			// 模拟僵尸 run：sending=false + lastEventAt 超过 IDLE_RUN_MS
-			const runsStore = useAgentRunsStore();
-			runsStore.runs['run-z'] = {
-				runId: 'run-z', clawId: '1', runKey: store.runKey,
-				settled: false, settling: false, lastEventAt: Date.now() - 15_000,
-				streamingMsgs: [], __timer: null,
-			};
-			runsStore.runKeyIndex[store.runKey] = 'run-z';
-
-			const loadSpy = vi.spyOn(store, 'loadMessages');
-			await store.activate();
-			expect(loadSpy).toHaveBeenCalledWith({ silent: true });
 		});
 
 		test('skipLoad 跳过消息加载但注册 WS 监听', async () => {
@@ -1074,7 +1052,7 @@ describe('useChatStore', () => {
 			expect(store.messages.some((m) => m._local)).toBe(false);
 		});
 
-		test('pre-acceptance 180s 超时：sending 置 false，__agentSettled 为 true，抛出 PRE_ACCEPTANCE_TIMEOUT', async () => {
+		test('pre-acceptance 180s 超时：sending 置 false，抛出 PRE_ACCEPTANCE_TIMEOUT', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -1105,21 +1083,22 @@ describe('useChatStore', () => {
 			expect(result.status).toBe('rejected');
 			expect(result.reason).toMatchObject({ code: 'PRE_ACCEPTANCE_TIMEOUT' });
 			expect(store.sending).toBe(false);
-			expect(store.__agentSettled).toBe(true);
 		});
 
-		test('post-acceptance 超时：sending 置 false，保留消息并 reconcile，抛出 POST_ACCEPTANCE_TIMEOUT', async () => {
+		test('post-acceptance 24h 兜底：accepted 后 run 由 agent-runs.store 内 24h timer 清理', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
 			const conn = mockConn();
-			// 调用 onAccepted 但永不 resolve
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-timeout' });
 					return new Promise(() => {});
 				}
+				// agent.wait 返回 timeout 无 endedAt（活跃，立即下一轮）→ 死循环防御
+				// 测试关心 24h timer 兜底，避免 watcher 自然结束影响断言
+				if (method === 'agent.wait') return new Promise(() => {});
 				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
 				return Promise.resolve(null);
@@ -1133,22 +1112,20 @@ describe('useChatStore', () => {
 
 			const sendPromise = store.sendMessage('hello');
 			await vi.advanceTimersByTimeAsync(0);
-			// 确认已 accepted，乐观消息已移入 agentRunsStore（allMessages 可见）
 			expect(store.__accepted).toBe(true);
-			expect(store.allMessages.length).toBeGreaterThan(0);
 
-			const reconcileSpy = vi.spyOn(store, '__reconcileMessages');
+			const runsStore = useAgentRunsStore();
+			expect(runsStore.isRunning(store.runKey)).toBe(true);
 
 			const [, result] = await Promise.allSettled([
 				vi.advanceTimersByTimeAsync(POST_ACCEPT_TIMEOUT_MS),
 				sendPromise,
 			]);
 
-			expect(result.status).toBe('rejected');
-			expect(result.reason).toMatchObject({ code: 'POST_ACCEPTANCE_TIMEOUT' });
-			expect(store.sending).toBe(false);
-			// 已 accepted 后超时应 reconcile 而非 removeLocalEntries
-			expect(reconcileSpy).toHaveBeenCalled();
+			// 24h 后 endRun + dropRun 触发：sendMessage resolve（不抛错），run 被清理
+			expect(result.status).toBe('fulfilled');
+			expect(result.value).toMatchObject({ accepted: true });
+			expect(runsStore.isRunning(store.runKey)).toBe(false);
 		});
 
 		test('__agentSettled 为 true 时，WS_CLOSED 错误被抑制，返回 { accepted: true }', async () => {
@@ -2352,9 +2329,8 @@ describe('useChatStore', () => {
 			// run 进入 settling 过渡态，streamingMsgs 仍保留
 			const run = runsStore.getActiveRun(runKey);
 			expect(run).not.toBeNull();
-			expect(run.settling).toBe(true);
-			expect(run.settlingReason).toBe('cancel');
-			expect(run.settled).toBe(false);
+			expect(run.cancelled).toBe(true);
+			expect(run.ended).toBe(false);
 			expect(run.streamingMsgs.length).toBeGreaterThan(0);
 			// UI 本地状态解挂
 			expect(store.sending).toBe(false);
@@ -2427,8 +2403,7 @@ describe('useChatStore', () => {
 			// 前端降级到纯阶段 1 行为：settling(cancel)、streamingMsgs 保留
 			const runsStore = useAgentRunsStore();
 			const run = runsStore.getActiveRun(store.runKey);
-			expect(run?.settling).toBe(true);
-			expect(run?.settlingReason).toBe('cancel');
+			expect(run?.cancelled).toBe(true);
 		});
 
 		test('accepted 后取消：cancelSend 返回 RPC promise，resolve 值透传给调用方', async () => {
@@ -2576,8 +2551,7 @@ describe('useChatStore', () => {
 			// run 仍进入 settling(cancel)，等待 lifecycle:end 或 24h fallback
 			const runsStore = useAgentRunsStore();
 			const run = runsStore.getActiveRun(store.runKey);
-			expect(run?.settling).toBe(true);
-			expect(run?.settlingReason).toBe('cancel');
+			expect(run?.cancelled).toBe(true);
 		});
 
 		test('accepted 后第二次 cancelSend：幂等——返回同一 promise，RPC 不重复触发', async () => {
@@ -3069,8 +3043,7 @@ describe('useChatStore', () => {
 
 			const runsStore = useAgentRunsStore();
 			const run = runsStore.getActiveRun(store.runKey);
-			expect(run?.settling).toBe(true);
-			expect(run?.settlingReason).toBe('cancel');
+			expect(run?.cancelled).toBe(true);
 		});
 
 		test('accepted 取消后独立 loadMessages 触发 completeSettle：streamingMsgs 仍保留（P0 回归防护）', async () => {
@@ -3104,7 +3077,6 @@ describe('useChatStore', () => {
 			expect(streamingBefore).toBeGreaterThan(0);
 
 			store.cancelSend();
-			expect(runsStore.getActiveRun(runKey)?.settlingReason).toBe('cancel');
 
 			// 模拟 WS 重连 / 前台恢复 / activate 重入 等独立触发路径
 			await store.loadMessages({ silent: true });
@@ -3112,8 +3084,7 @@ describe('useChatStore', () => {
 			// 核心断言：run 仍在、streamingMsgs 未被 completeSettle 清空
 			const run = runsStore.getActiveRun(runKey);
 			expect(run).not.toBeNull();
-			expect(run.settling).toBe(true);
-			expect(run.settlingReason).toBe('cancel');
+			expect(run.cancelled).toBe(true);
 			expect(run.streamingMsgs.length).toBe(streamingBefore);
 		});
 	});
@@ -3234,8 +3205,8 @@ describe('useChatStore', () => {
 			runsStore.runs[runId] = {
 				runId,
 				runKey,
-				settled: false,
-				settling: false,
+				ended: false,
+				cancelled: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user_456', _local: true, message: { role: 'user', content: '新消息' } },
 					{ type: 'message', id: '__local_claw_456', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
@@ -3259,8 +3230,8 @@ describe('useChatStore', () => {
 				runId,
 				runKey,
 				anchorMsgId: null,
-				settled: false,
-				settling: false,
+				ended: false,
+				cancelled: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user', _local: true, message: { role: 'user', content: '首条消息' } },
 					{ type: 'message', id: '__local_claw', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
@@ -3292,8 +3263,8 @@ describe('useChatStore', () => {
 				runId,
 				runKey,
 				anchorMsgId: 'msg-2', // 发送时 messages 最后一条 server 消息
-				settled: false,
-				settling: false,
+				ended: false,
+				cancelled: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user', _local: true, message: { role: 'user', content: '新消息' } },
 					{ type: 'message', id: '__local_claw', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
@@ -3326,8 +3297,8 @@ describe('useChatStore', () => {
 				runId,
 				runKey,
 				anchorMsgId: 'msg-deleted', // 锚点已不存在
-				settled: false,
-				settling: false,
+				ended: false,
+				cancelled: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user', _local: true, message: { role: 'user', content: '消息' } },
 				],
@@ -3351,8 +3322,8 @@ describe('useChatStore', () => {
 				runId,
 				runKey,
 				anchorMsgId: 'oc-assistant-1000',
-				settled: false,
-				settling: false,
+				ended: false,
+				cancelled: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user_123', _local: true, message: { role: 'user', content: '你好' } },
 					{ type: 'message', id: '__local_claw_123', _local: true, _streaming: true, message: { role: 'assistant', content: '回复中…' } },
@@ -3383,8 +3354,8 @@ describe('useChatStore', () => {
 				runId,
 				runKey,
 				anchorMsgId: 'oc-assistant-1000',
-				settled: false,
-				settling: false,
+				ended: false,
+				cancelled: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user_123', _local: true, message: { role: 'user', content: '你好' } },
 					{ type: 'message', id: '__local_claw_123', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
@@ -3407,8 +3378,8 @@ describe('useChatStore', () => {
 			runsStore.runs['run-x'] = {
 				runId: 'run-x',
 				runKey: '::agent:main:main',
-				settled: true,
-				settling: false,
+				ended: true,
+				cancelled: false,
 				streamingMsgs: [
 					{ type: 'message', id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
 				],
@@ -4724,36 +4695,6 @@ describe('useChatStore', () => {
 			// 首次 resolve 后 guard 清除，新调用应发起新请求
 			store.loadMessages();
 			expect(reqCount).toBe(2);
-		});
-
-		test('loadMessages 成功后调用 reconcileRunAfterLoad', async () => {
-			const conn = mockConn();
-			setupConnForLoad(conn, {
-				flatMessages: [
-					{ role: 'user', content: 'hi' },
-					{ role: 'assistant', content: 'hello', stopReason: 'stop' },
-				],
-			});
-			setConn('1', conn);
-
-			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
-			await store.activate();
-
-			const runsStore = useAgentRunsStore();
-			runsStore.register('run-zombie', {
-				clawId: '1',
-				runKey: store.runKey,
-				topicMode: false,
-				conn,
-				streamingMsgs: [],
-			});
-			// 模拟僵尸 run：曾收到过事件但已静默超过 STALE_RUN_MS
-			runsStore.runs['run-zombie'].lastEventAt = Date.now() - 10_000;
-			expect(runsStore.isRunning(store.runKey)).toBe(true);
-
-			await store.loadMessages({ silent: true });
-
-			expect(runsStore.isRunning(store.runKey)).toBe(false);
 		});
 
 		test('sending=true 时 loadMessages 跳过 reconcileAfterLoad', async () => {

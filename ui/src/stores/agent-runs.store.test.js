@@ -5,8 +5,12 @@ import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js
 
 // --- Helper ---
 
-function mockConn() {
-	return { state: 'connected' };
+function mockConn(overrides = {}) {
+	return {
+		state: 'connected',
+		request: vi.fn(),
+		...overrides,
+	};
 }
 
 function registerRun(store, overrides = {}) {
@@ -23,6 +27,50 @@ function registerRun(store, overrides = {}) {
 		anchorMsgId: overrides.anchorMsgId ?? undefined,
 	});
 	return conn;
+}
+
+/**
+ * 构造支持两阶段 RPC 的 conn mock：
+ *   - request('agent', ...) 返回受控 promise；onAccepted 在测试触发时调用
+ *   - request('agent.wait', ...) 返回受控 promise
+ * 测试通过返回的 ctrl 操控时机
+ */
+function mockTwoPhaseConn() {
+	const ctrl = {
+		acceptedPayload: null,
+		finalResolve: null,
+		finalReject: null,
+		waitResolve: null,
+		waitReject: null,
+		waitCalls: 0,
+		onAcceptedCb: null,
+	};
+	const conn = {
+		state: 'connected',
+		request: vi.fn((method, params, opts) => {
+			if (method === 'agent') {
+				if (opts?.onAccepted) ctrl.onAcceptedCb = opts.onAccepted;
+				return new Promise((resolve, reject) => {
+					ctrl.finalResolve = resolve;
+					ctrl.finalReject = reject;
+				});
+			}
+			if (method === 'agent.wait') {
+				ctrl.waitCalls += 1;
+				return new Promise((resolve, reject) => {
+					ctrl.waitResolve = resolve;
+					ctrl.waitReject = reject;
+				});
+			}
+			return Promise.resolve({});
+		}),
+	};
+	ctrl.conn = conn;
+	ctrl.fireAccepted = (payload = { runId: 'run-1', status: 'accepted' }) => {
+		ctrl.acceptedPayload = payload;
+		ctrl.onAcceptedCb?.(payload);
+	};
+	return ctrl;
 }
 
 // --- Tests ---
@@ -47,7 +95,8 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 
 			expect(store.runs['run-1']).toBeTruthy();
-			expect(store.runs['run-1'].settled).toBe(false);
+			expect(store.runs['run-1'].ended).toBe(false);
+			expect(store.runs['run-1'].cancelled).toBe(false);
 			expect(store.runKeyIndex['1::agent:main:main']).toBe('run-1');
 		});
 
@@ -75,12 +124,20 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1'].anchorMsgId).toBeNull();
 		});
 
+		test('注册后 watcher 已就位且 idleTimer 已 arm', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			const run = store.runs['run-1'];
+			expect(run.__watcher).toBeTruthy();
+			expect(run.__watcher.idleTimer).toBeTruthy();
+		});
+
 		test('不再自行注册 event:agent 监听器（由 clawsStore 集中桥接）', () => {
 			const store = useAgentRunsStore();
-			const conn = { state: 'connected', on: vi.fn(), off: vi.fn() };
+			const conn = mockConn({ on: vi.fn(), off: vi.fn() });
 			registerRun(store, { conn });
 
-			// conn.on 不应被调用（事件由 clawsStore.__bridgeConn 统一注册）
 			expect(conn.on).not.toHaveBeenCalled();
 		});
 	});
@@ -90,13 +147,11 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('getters', () => {
-		test('getActiveRun 返回活跃 run', () => {
+		test('getActiveRun 返回 entry（无论 ended/cancelled）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			const run = store.getActiveRun('1::agent:main:main');
-			expect(run).toBeTruthy();
-			expect(run.runId).toBe('run-1');
+			expect(store.getActiveRun('1::agent:main:main')?.runId).toBe('run-1');
 		});
 
 		test('getActiveRun 无匹配 runKey 时返回 null', () => {
@@ -104,45 +159,37 @@ describe('useAgentRunsStore', () => {
 			expect(store.getActiveRun('nonexistent')).toBeNull();
 		});
 
-		test('isRunning 正确反映 run 状态', () => {
+		test('isRunning 仅 ended 时返回 false（cancelled 不影响：cancel coordination tick 仍需继续）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			expect(store.isRunning('1::agent:main:main')).toBe(true);
+
+			// cancelled 不让 isRunning 变 false（让 cancel tick 能继续 abort 到 run 真终态）
+			store.runs['run-1'].cancelled = true;
+			expect(store.isRunning('1::agent:main:main')).toBe(true);
+
+			store.runs['run-1'].ended = true;
+			expect(store.isRunning('1::agent:main:main')).toBe(false);
+		});
+
+		test('isRunning 不存在时为 false', () => {
+			const store = useAgentRunsStore();
 			expect(store.isRunning('nonexistent')).toBe(false);
 		});
 
-		test('isRunIdle：无匹配 run 时返回 false', () => {
+		test('isRunIdle 永远返回 false（已废弃 stub）', () => {
 			const store = useAgentRunsStore();
+			registerRun(store);
+			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
 			expect(store.isRunIdle('nonexistent')).toBe(false);
 		});
 
-		test('isRunIdle：lastEventAt 为 0（尚未收到事件）时返回 false', () => {
+		test('busy: 任意 entry 存在即为 true', () => {
 			const store = useAgentRunsStore();
+			expect(store.busy).toBe(false);
 			registerRun(store);
-			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
-		});
-
-		test('isRunIdle：lastEventAt 较新时返回 false', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.runs['run-1'].lastEventAt = Date.now() - 3000;
-			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
-		});
-
-		test('isRunIdle：lastEventAt 超过阈值时返回 true', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.runs['run-1'].lastEventAt = Date.now() - 15_000;
-			expect(store.isRunIdle('1::agent:main:main')).toBe(true);
-		});
-
-		test('isRunIdle：run 已 settled 时返回 false', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.runs['run-1'].lastEventAt = Date.now() - 15_000;
-			store.runs['run-1'].settled = true;
-			expect(store.isRunIdle('1::agent:main:main')).toBe(false);
+			expect(store.busy).toBe(true);
 		});
 	});
 
@@ -163,64 +210,65 @@ describe('useAgentRunsStore', () => {
 			expect(botEntry.message.content.some((b) => b.type === 'text' && b.text === 'hello')).toBe(true);
 		});
 
-		test('更新 lastEventAt', () => {
+		test('非 lifecycle 事件 → 更新 lastEventAt 并重置 idleTimer', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			expect(store.runs['run-1'].lastEventAt).toBe(0);
-			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'hello' } });
+			const t0 = store.runs['run-1'].__watcher.idleTimer;
+			vi.advanceTimersByTime(10_000); // 推 10s
+			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'hi' } });
 			expect(store.runs['run-1'].lastEventAt).toBeGreaterThan(0);
+			// idleTimer 已被重置为新句柄
+			expect(store.runs['run-1'].__watcher.idleTimer).not.toBe(t0);
 		});
 
 		test('未知 runId 的事件被忽略', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			// 不应抛错
 			store.__dispatch({ runId: 'unknown-run', stream: 'assistant', data: { text: 'hello' } });
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(2);
 		});
 
-		test('lifecycle:end 进入 settling 过渡态', () => {
+		test('lifecycle:end → endRun(lifecycle)，run.ended=true 但 entry 保留', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
 
-			// settling 过渡：run 仍存在但标记为 settling
 			const run = store.runs['run-1'];
-			expect(run.settling).toBe(true);
-			// getActiveRun 仍返回（保留 streamingMsgs）
+			expect(run).toBeTruthy();
+			expect(run.ended).toBe(true);
+			// entry 保留（streamingMsgs 仍可见，等 chat.store 调 dropRun）
 			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
+			// isRunning 立即 false
+			expect(store.isRunning('1::agent:main:main')).toBe(false);
 		});
 
-		test('settling 过渡 500ms 后自动清理', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			expect(store.runs['run-1']).toBeTruthy();
-
-			vi.advanceTimersByTime(500);
-
-			expect(store.runs['run-1']).toBeUndefined();
-			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
-		});
-
-		test('lifecycle:error 同样进入 settling 过渡态', () => {
+		test('lifecycle:error 同样进入 ended 态', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
 
-			expect(store.runs['run-1']?.settling).toBe(true);
-			vi.advanceTimersByTime(500);
-			expect(store.runs['run-1']).toBeUndefined();
+			expect(store.runs['run-1'].ended).toBe(true);
+		});
+
+		test('已 ended 的 run 后续事件被忽略（无更新、无重复 endRun）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			const lastEventAt = store.runs['run-1'].lastEventAt;
+
+			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'late' } });
+
+			expect(store.runs['run-1'].lastEventAt).toBe(lastEventAt);
 		});
 	});
 
 	// =====================================================================
-	// settle
+	// settle（外部 API：手动 settle，立即 cleanup）
 	// =====================================================================
 
 	describe('settle', () => {
@@ -242,277 +290,72 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
-	// completeSettle
-	// =====================================================================
-
-	describe('completeSettle', () => {
-		test('settlingReason=lifecycle 下立即清理 run', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			// 进入 settling（lifecycle:end 路径）
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			expect(store.runs['run-1']?.settling).toBe(true);
-			expect(store.runs['run-1']?.settlingReason).toBe('lifecycle');
-
-			store.completeSettle('1::agent:main:main');
-
-			expect(store.runs['run-1']).toBeUndefined();
-			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
-		});
-
-		test('settlingReason=cancel 下不清理（等 lifecycle:end 升级 reason）', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			store.settleWithTransitionByKey('1::agent:main:main');
-			expect(store.runs['run-1'].settlingReason).toBe('cancel');
-
-			store.completeSettle('1::agent:main:main');
-
-			// run 仍在、streamingMsgs 保留
-			const run = store.runs['run-1'];
-			expect(run).toBeTruthy();
-			expect(run.settling).toBe(true);
-			expect(run.streamingMsgs.length).toBe(2);
-		});
-
-		test('非 settling 状态下不操作', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			store.completeSettle('1::agent:main:main');
-
-			// run 仍在
-			expect(store.runs['run-1']).toBeTruthy();
-		});
-
-		test('不存在的 runKey 不报错', () => {
-			const store = useAgentRunsStore();
-			store.completeSettle('nonexistent');
-		});
-	});
-
-	// =====================================================================
 	// settleWithTransitionByKey (cancelSend 阶段 1)
 	// =====================================================================
 
 	describe('settleWithTransitionByKey', () => {
-		test('将 run 置为 settling、reason=cancel，保留 streamingMsgs 和 30min timer', () => {
+		test('标记 cancelled=true，watcher 仍跑，streamingMsgs 保留', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-
-			const postAcceptTimer = store.runs['run-1'].__timer;
-			expect(postAcceptTimer).toBeTruthy();
 
 			store.settleWithTransitionByKey('1::agent:main:main');
 
 			const run = store.runs['run-1'];
 			expect(run).toBeTruthy();
-			expect(run.settling).toBe(true);
-			expect(run.settlingReason).toBe('cancel');
-			expect(run.settled).toBe(false);
+			expect(run.cancelled).toBe(true);
+			expect(run.ended).toBe(false);
 			expect(run.streamingMsgs.length).toBe(2);
-			// 30min post-acceptance timer 保留（不清）
-			expect(run.__timer).toBe(postAcceptTimer);
-			// 不主动调度 500ms fallback
-			expect(run.__settleTimer).toBeFalsy();
+			// 24h 兜底 timer 保留
+			expect(run.__timer).toBeTruthy();
 		});
 
-		test('getActiveRun 对 settling 的 run 仍返回非 null', () => {
+		test('cancelled 后 isRunning 仍 true（让 cancel tick 继续 abort 直到真终态），getActiveRun 仍返回', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.settleWithTransitionByKey('1::agent:main:main');
 
-			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
 			expect(store.isRunning('1::agent:main:main')).toBe(true);
+			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
 		});
 
-		test('cancel 后 lifecycle:end 到达 → __dispatch 把 reason 升级为 lifecycle', () => {
+		test('cancel 后 lifecycle:end → endRun(lifecycle)，cancelled 与 ended 共存', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.settleWithTransitionByKey('1::agent:main:main');
-			expect(store.runs['run-1'].settlingReason).toBe('cancel');
-			expect(store.runs['run-1'].__settleTimer).toBeFalsy();
 
-			// lifecycle:end 到达触发 __settleWithTransition（clear post-accept timer + 启动 500ms fallback + 升级 reason）
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
 
 			const run = store.runs['run-1'];
-			expect(run.settling).toBe(true);
-			expect(run.settlingReason).toBe('lifecycle');
-			expect(run.__timer).toBeNull();
-			expect(run.__settleTimer).toBeTruthy();
+			expect(run.cancelled).toBe(true);
+			expect(run.ended).toBe(true);
 		});
 
-		test('cancel 后 lifecycle:end 到达 → 再次 completeSettle 可正常清理', () => {
+		test('cancel 后服务端仍推送 content 事件 → streamingMsgs 继续更新', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.settleWithTransitionByKey('1::agent:main:main');
 
-			// 独立 loadMessages 先触发一次 completeSettle：reason=cancel，不清理
-			store.completeSettle('1::agent:main:main');
-			expect(store.runs['run-1']).toBeTruthy();
-
-			// lifecycle:end 到达，升级 reason
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			expect(store.runs['run-1'].settlingReason).toBe('lifecycle');
-
-			// 再次 completeSettle 可正常清理
-			store.completeSettle('1::agent:main:main');
-			expect(store.runs['run-1']).toBeUndefined();
-		});
-
-		test('cancel 后 lifecycle:end 到达 → 无独立 loadMessages 时 500ms fallback 自然清理', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.settleWithTransitionByKey('1::agent:main:main');
-
-			// lifecycle:end 到达，升级 reason + 启动 500ms fallback
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			expect(store.runs['run-1'].__settleTimer).toBeTruthy();
-
-			// 无 loadMessages 飞行 → 500ms 后 fallback 触发 __cleanupRun
-			vi.advanceTimersByTime(500);
-			expect(store.runs['run-1']).toBeUndefined();
-		});
-
-		test('cancel 后服务端仍推送 content 事件 → streamingMsgs 继续更新（阶段 1 不真 abort 的已知行为）', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.settleWithTransitionByKey('1::agent:main:main');
-			expect(store.runs['run-1'].settlingReason).toBe('cancel');
-
-			// 取消后仍有 assistant text 事件到达（阶段 1 服务端继续跑）
 			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'after-cancel-content' } });
 
 			const run = store.runs['run-1'];
 			expect(run).toBeTruthy();
-			// run 仍在 settling(cancel) 状态，streamingMsgs 被事件更新而非被清理
-			expect(run.settling).toBe(true);
-			expect(run.settlingReason).toBe('cancel');
+			expect(run.cancelled).toBe(true);
 			expect(run.lastEventAt).toBeGreaterThan(0);
 		});
 
-		test('不存在的 runKey / 已 settled / 已 settling 时 no-op', () => {
+		test('不存在 / 已 ended / 已 cancelled 时 no-op', () => {
 			const store = useAgentRunsStore();
 
-			// 不存在
 			store.settleWithTransitionByKey('missing');
 
-			// 已 settled
 			registerRun(store, { runId: 'run-a', runKey: 'k-a' });
 			store.settle('k-a');
-			expect(store.runs['run-a']).toBeUndefined();
 			store.settleWithTransitionByKey('k-a');
 
-			// 已 settling：第二次调用不重置状态
 			registerRun(store, { runId: 'run-b', runKey: 'k-b' });
 			store.settleWithTransitionByKey('k-b');
-			const firstSettling = store.runs['run-b'].settling;
-			store.settleWithTransitionByKey('k-b');
-			expect(store.runs['run-b'].settling).toBe(firstSettling);
-		});
-	});
-
-	// =====================================================================
-	// reconcileAfterLoad
-	// =====================================================================
-
-	describe('reconcileAfterLoad', () => {
-		test('服务端消息有终止 assistant + 事件流静默 → settle', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			// 模拟事件流已停止（lastEventAt 在 3s+ 之前）
-			store.runs['run-1'].lastEventAt = Date.now() - 5000;
-
-			const serverMessages = [
-				{ message: { role: 'user', content: 'hi' } },
-				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
-			];
-
-			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
-
-			expect(store.runs['run-1']).toBeUndefined();
-		});
-
-		test('事件流仍活跃时不 settle', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			// 刚收到事件
-			store.runs['run-1'].lastEventAt = Date.now();
-
-			const serverMessages = [
-				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
-			];
-
-			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
-
-			// 不应 settle
-			expect(store.runs['run-1']).toBeTruthy();
-		});
-
-		test('服务端消息无终止 assistant 时不 settle', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.runs['run-1'].lastEventAt = Date.now() - 5000;
-
-			const serverMessages = [
-				{ message: { role: 'user', content: 'hi' } },
-			];
-
-			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
-
-			expect(store.runs['run-1']).toBeTruthy();
-		});
-
-		test('stopReason 为 toolUse 时不视为终止', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.runs['run-1'].lastEventAt = Date.now() - 5000;
-
-			const serverMessages = [
-				{ message: { role: 'assistant', content: '', stopReason: 'toolUse' } },
-			];
-
-			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
-
-			expect(store.runs['run-1']).toBeTruthy();
-		});
-
-		test('settling 状态的 run 不做 reconcile（由 completeSettle 处理）', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			expect(store.runs['run-1']?.settling).toBe(true);
-
-			const serverMessages = [
-				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
-			];
-			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
-
-			// 仍在 settling，未被 reconcile 清理（因为 reconcile 跳过 settling）
-			expect(store.runs['run-1']).toBeTruthy();
-		});
-
-		test('lastEventAt=0 时视为非 stale（尚未收到事件），不 settle', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			// lastEventAt 从未更新（刚注册，尚未收到任何事件）
-			expect(store.runs['run-1'].lastEventAt).toBe(0);
-
-			const serverMessages = [
-				{ message: { role: 'assistant', content: 'hello', stopReason: 'stop' } },
-			];
-
-			store.reconcileAfterLoad('1::agent:main:main', serverMessages);
-
-			// 不应被 settle——run 刚注册，事件尚未到达
-			expect(store.runs['run-1']).toBeTruthy();
+			store.settleWithTransitionByKey('k-b'); // 第二次 no-op
+			expect(store.runs['run-b'].cancelled).toBe(true);
 		});
 	});
 
@@ -579,7 +422,6 @@ describe('useAgentRunsStore', () => {
 				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
 				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
-			// server 只有锚点之前的旧 user 消息，锚点之后无 user 消息
 			const serverMsgs = [
 				{ id: 'old-1', message: { role: 'user', content: '旧消息' } },
 				{ id: 'anchor-1', message: { role: 'assistant', content: '旧回复' } },
@@ -598,7 +440,6 @@ describe('useAgentRunsStore', () => {
 				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
 				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
 			];
-			// 锚点 ID 不在 serverMessages 中
 			const serverMsgs = [
 				{ id: 'far-away', message: { role: 'assistant', content: '很后面的消息' } },
 			];
@@ -619,26 +460,12 @@ describe('useAgentRunsStore', () => {
 			store.stripLocalUserMsgs('1::agent:main:main', []);
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
-			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
 		});
 
-		test('settled run 不操作', () => {
+		test('ended run 不操作', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			store.runs['run-1'].settled = true;
-			store.runs['run-1'].streamingMsgs = [
-				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
-			];
-
-			store.stripLocalUserMsgs('1::agent:main:main', [{ id: 's1', message: { role: 'user', content: 'hi' } }]);
-
-			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
-		});
-
-		test('settling run 不操作', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.runs['run-1'].settling = true;
+			store.runs['run-1'].ended = true;
 			store.runs['run-1'].streamingMsgs = [
 				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
 			];
@@ -715,11 +542,11 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
-	// post-acceptance timeout
+	// post-acceptance 24h 兜底
 	// =====================================================================
 
 	describe('timeout', () => {
-		test('post-acceptance 超时后自动 settle', () => {
+		test('post-acceptance 24h 后自动 endRun + cleanup', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
@@ -731,13 +558,12 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 
-		test('settle 清除超时定时器（不会二次触发）', () => {
+		test('settle 清除超时定时器', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			store.settle('1::agent:main:main');
 
-			// 推进时间不应报错
 			vi.advanceTimersByTime(POST_ACCEPT_TIMEOUT_MS);
 		});
 	});
@@ -757,7 +583,6 @@ describe('useAgentRunsStore', () => {
 
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runs['run-2']).toBeUndefined();
-			// bot 2 的 run 不受影响
 			expect(store.runs['run-3']).toBeTruthy();
 		});
 
@@ -768,143 +593,347 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
-	// markLoadInFlight / clearLoadInFlight + settle fallback 推迟（#193）
+	// runAgent（两阶段 RPC + watcher 接入）
 	// =====================================================================
 
-	describe('settle fallback 与 loadInFlight（#193）', () => {
-		test('loadInFlight 为 true 时 settle fallback 推迟清理', () => {
+	describe('runAgent', () => {
+		test('信号 1：RPC 第二阶段 ok → endReason="rpc"', async () => {
 			const store = useAgentRunsStore();
-			registerRun(store);
+			const ctrl = mockTwoPhaseConn();
 
-			// lifecycle:end → settling
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			expect(store.runs['run-1']?.settling).toBe(true);
+			const runPromise = store.runAgent({
+				conn: ctrl.conn,
+				clawId: '1',
+				runKey: 'k1',
+				topicMode: false,
+				agentParams: { message: 'hi' },
+				optimisticMsgs: [{ id: 'l1', _local: true, message: { role: 'user', content: 'hi' } }],
+			});
 
-			// 标记 loadMessages 正在进行
-			store.markLoadInFlight('1::agent:main:main');
+			// 等 microtask 让 conn.request 投出
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1', status: 'accepted' });
 
-			// 500ms 后 fallback 不应清理
-			vi.advanceTimersByTime(500);
 			expect(store.runs['run-1']).toBeTruthy();
-			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
+			expect(store.runs['run-1'].ended).toBe(false);
+
+			// 第二阶段 res 到达
+			ctrl.finalResolve({ status: 'ok' });
+
+			const result = await runPromise;
+			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'rpc' });
+			expect(store.runs['run-1'].ended).toBe(true);
 		});
 
-		test('loadInFlight 清除后下一次 fallback 正常清理', () => {
+		test('信号 1：RPC 第二阶段 error → endReason="rpc"', async () => {
 			const store = useAgentRunsStore();
-			registerRun(store);
+			const ctrl = mockTwoPhaseConn();
 
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('1::agent:main:main');
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			ctrl.finalResolve({ status: 'error', error: { message: 'agent failed' } });
 
-			// 第一次 fallback 推迟
-			vi.advanceTimersByTime(500);
-			expect(store.runs['run-1']).toBeTruthy();
+			const result = await runPromise;
+			expect(result.endReason).toBe('rpc');
+		});
 
-			// 模拟 loadMessages 失败，清除标记
-			store.clearLoadInFlight('1::agent:main:main');
+		test('pre-acceptance 错误（DC 断）→ runAgent reject，未 register', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
 
-			// 第二次 fallback 应正常清理
-			vi.advanceTimersByTime(500);
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			const err = new Error('rtc lost');
+			err.code = 'RTC_LOST';
+			ctrl.finalReject(err);
+
+			await expect(runPromise).rejects.toThrow('rtc lost');
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 
-		test('completeSettle 在 loadInFlight 期间仍可正常清理', () => {
+		test('信号 4：accepted 后 RPC reject → endReason="failed"', async () => {
 			const store = useAgentRunsStore();
-			registerRun(store);
+			const ctrl = mockTwoPhaseConn();
 
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('1::agent:main:main');
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
 
-			// loadMessages 成功 → completeSettle
-			store.completeSettle('1::agent:main:main');
+			const err = new Error('dc closed');
+			err.code = 'DC_CLOSED';
+			ctrl.finalReject(err);
 
-			expect(store.runs['run-1']).toBeUndefined();
+			const result = await runPromise;
+			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'failed' });
+			expect(store.runs['run-1'].ended).toBe(true);
 		});
 
-		test('markLoadInFlight 对不存在的 runKey 不报错', () => {
+		test('onAccepted 钩子在 register 之后被调用', async () => {
 			const store = useAgentRunsStore();
-			store.markLoadInFlight('nonexistent');
-		});
+			const ctrl = mockTwoPhaseConn();
+			let runIdAtCallback = null;
+			let runRegistered = false;
 
-		test('clearLoadInFlight 对不存在的 runKey 不报错', () => {
-			const store = useAgentRunsStore();
-			store.clearLoadInFlight('nonexistent');
-		});
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+				onAccepted: (payload) => {
+					runIdAtCallback = payload?.runId;
+					runRegistered = !!store.runs[payload?.runId];
+				},
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1', status: 'accepted' });
 
-		test('markLoadInFlight 对已 settled 的 run 不设置标记', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.settle('1::agent:main:main');
+			expect(runIdAtCallback).toBe('run-1');
+			expect(runRegistered).toBe(true);
 
-			// run 已被清理，markLoadInFlight 应为 no-op
-			store.markLoadInFlight('1::agent:main:main');
-		});
-
-		test('多次推迟后 clearLoadInFlight 使下一次 fallback 清理', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('1::agent:main:main');
-
-			// 推迟 3 次
-			vi.advanceTimersByTime(500);
-			expect(store.runs['run-1']).toBeTruthy();
-			vi.advanceTimersByTime(500);
-			expect(store.runs['run-1']).toBeTruthy();
-			vi.advanceTimersByTime(500);
-			expect(store.runs['run-1']).toBeTruthy();
-
-			// 清除标记后下一次 fallback 正常清理
-			store.clearLoadInFlight('1::agent:main:main');
-			vi.advanceTimersByTime(500);
-			expect(store.runs['run-1']).toBeUndefined();
-		});
-
-		test('removeByClaw 清理 settling + loadInFlight 的 run 无悬挂 timer', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('1::agent:main:main');
-
-			// removeByClaw 应直接清理，含 __settleTimer
-			store.removeByClaw('1');
-			expect(store.runs['run-1']).toBeUndefined();
-
-			// 后续 timer 触发不应报错
-			vi.advanceTimersByTime(1000);
-		});
-
-		test('settle() 在 loadInFlight 为 true 时仍立即清理（用户取消优先）', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			store.markLoadInFlight('1::agent:main:main');
-
-			// 用户主动 settle 应立即生效，不受 loadInFlight 阻挡
-			store.settle('1::agent:main:main');
-			expect(store.runs['run-1']).toBeUndefined();
+			ctrl.finalResolve({ status: 'ok' });
+			await runPromise;
 		});
 	});
 
 	// =====================================================================
-	// busy getter
+	// watcher（idle / pollOnce / agent.wait 各分支）
+	// =====================================================================
+
+	describe('watcher', () => {
+		test('idle 30s 后启动长挂 agent.wait', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+
+			expect(ctrl.waitCalls).toBe(0);
+			vi.advanceTimersByTime(30_000);
+			expect(ctrl.waitCalls).toBe(1);
+
+			ctrl.finalResolve({ status: 'ok' });
+			await runPromise;
+		});
+
+		test('agent.wait 返回 ok → endReason="wait"', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			ctrl.waitResolve({ status: 'ok' });
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('wait');
+		});
+
+		test('agent.wait timeout + endedAt → endReason="wait"（abort）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			ctrl.waitResolve({ status: 'timeout', startedAt: 100, endedAt: 200 });
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('wait');
+		});
+
+		test('agent.wait timeout 无 endedAt → 立即下一轮 pollOnce', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			expect(ctrl.waitCalls).toBe(1);
+
+			ctrl.waitResolve({ status: 'timeout' });
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(ctrl.waitCalls).toBe(2);
+
+			ctrl.finalResolve({ status: 'ok' });
+			await runPromise;
+		});
+
+		test('agent.wait reject → endReason="failed"（信号 4）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			const err = new Error('dc closed');
+			err.code = 'DC_CLOSED';
+			ctrl.waitReject(err);
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('failed');
+		});
+
+		test('事件流活跃时 idleTimer 被持续重置（不触发长挂）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+
+			// 推 25s + assistant 事件 + 推 25s → 事件流活跃，无长挂
+			vi.advanceTimersByTime(25_000);
+			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'hi' } });
+			vi.advanceTimersByTime(25_000);
+			expect(ctrl.waitCalls).toBe(0);
+
+			ctrl.finalResolve({ status: 'ok' });
+			await runPromise;
+		});
+
+		test('polling 期间 lifecycle:end 到达 → endReason="lifecycle"，飞行 wait 被忽略', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			expect(ctrl.waitCalls).toBe(1);
+
+			// lifecycle 先到
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			ctrl.finalResolve({ status: 'ok' });
+			const result = await runPromise;
+			expect(result.endReason).toBe('lifecycle');
+
+			// 此后 wait 才 resolve，应被忽略（run.ended）
+			ctrl.waitResolve({ status: 'ok' });
+		});
+	});
+
+	// =====================================================================
+	// dropRun（chat.store loadMessages 完成后调用）
+	// =====================================================================
+
+	describe('dropRun', () => {
+		test('endRun 不删 entry，dropRun 才真正 cleanup', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			// endRun 后 entry 仍在
+			expect(store.runs['run-1']).toBeTruthy();
+			expect(store.runs['run-1'].ended).toBe(true);
+
+			store.dropRun('1::agent:main:main');
+
+			expect(store.runs['run-1']).toBeUndefined();
+			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
+		});
+
+		test('dropRun 释放 streamingMsgs 中 blob URL', () => {
+			const origRevoke = URL.revokeObjectURL;
+			URL.revokeObjectURL = vi.fn();
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'a', _attachments: [{ url: 'blob:x' }] },
+			];
+
+			store.dropRun('1::agent:main:main');
+
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:x');
+			URL.revokeObjectURL = origRevoke;
+		});
+
+		test('不存在的 runKey 不报错', () => {
+			const store = useAgentRunsStore();
+			expect(() => store.dropRun('nonexistent')).not.toThrow();
+		});
+	});
+
+	// =====================================================================
+	// 信号去重（多路同时到达）
+	// =====================================================================
+
+	describe('信号去重', () => {
+		test('RPC ok + lifecycle:end 同时到达，endRun 只触发一次', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+
+			// lifecycle 先到
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			expect(store.runs['run-1'].ended).toBe(true);
+			// RPC res 后到
+			ctrl.finalResolve({ status: 'ok' });
+
+			const result = await runPromise;
+			// 第一路命中决定 reason
+			expect(result.endReason).toBe('lifecycle');
+		});
+	});
+
+	// =====================================================================
+	// busy
 	// =====================================================================
 
 	describe('busy', () => {
-		test('无 run 时为 false', () => {
+		test('无 entry 时为 false', () => {
 			expect(useAgentRunsStore().busy).toBe(false);
 		});
 
-		test('有未 settled 的 run 时为 true', () => {
+		test('任意 entry 存在即 true（含 ended/cancelled）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			expect(store.busy).toBe(true);
+			store.runs['run-1'].ended = true;
+			expect(store.busy).toBe(true);
 		});
 
-		test('所有 run settled 后为 false', () => {
+		test('dropRun 后为 false', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.settle('1::agent:main:main');

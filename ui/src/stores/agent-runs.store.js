@@ -1,38 +1,50 @@
 /**
  * Agent Run 全局注册表
- * 职责：跟踪所有活跃的 agent run，缓冲流式消息
- * 生命周期独立于 ChatPage / chatStore，run 在页面切换后继续接收事件
+ * 职责：跟踪所有活跃的 agent run，缓冲流式消息；维护 per-run watcher 协调四路结束信号
  *
- * event:agent 事件由 clawsStore.__bridgeConn 集中桥接，所有事件统一通过 __dispatch 到达本 store。
- * 本 store 不再自行管理 per-connection 监听器。
+ * 四路结束信号：
+ *   1) 调用 runAgent 时 conn.request('agent', ...) 第二阶段 res 到达 → __onRpcDone
+ *   2) event:agent lifecycle:end/error 事件 → __onLifecycleEnd（由 __dispatch 路由）
+ *   3) 事件流静默超 IDLE_THRESHOLD_MS 后启动长挂 agent.wait 拿到结果 → __pollOnce
+ *   4) 任意 RPC 错误（DC 断、send 失败、wait 超时等异常）→ __onRpcFailed
+ *
+ * 任一信号触发 __endRun(reason)：标记 ended=true、停 watcher、唤醒 runAgent 的最终 promise。
+ * chat.store 拿到 promise resolve 后 await loadMessages，再调 dropRun(runKey) 释放 streamingMsgs。
+ *
+ * event:agent 事件由 clawsStore.__bridgeConn 集中桥接到 __dispatch；本 store 不自管 per-conn 监听器。
  */
 import { defineStore } from 'pinia';
 import { applyAgentEvent } from '../utils/agent-stream.js';
 
 /**
- * post-acceptance fallback 超时（24 小时）。
- * 客户端等待 lifecycle:end 的最终兜底清理；正常路径下 run 由事件驱动 settle，此 timer 不会触发。
- * 用于防 WS 丢事件 / OpenClaw 崩溃等异常下 streamingMsgs 永久占用内存。
- * OpenClaw 后端默认无 run 上限，24h 仅为浏览器侧上限。
+ * post-acceptance 内存释放保险（24 小时）。
+ * 正常路径下 run 由 watcher 在合理时间内 endRun + chat.store dropRun 收尾，此 timer 不会触发。
+ * 仅作异常情况下 streamingMsgs 永久占用内存的保险。
  */
 export const POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000;
-/** 事件流静默超过此时长视为已停止（用于 reconcile 判断） */
-const STALE_RUN_MS = 3000;
-/** 事件流静默超过此时长，怀疑 run 可能已结束但 lifecycle:end 丢失 */
-const IDLE_RUN_MS = 10_000;
+
+/** 事件流静默超过此时长，watcher 启动长挂 agent.wait 探测 run 状态 */
+const IDLE_THRESHOLD_MS = 30_000;
+/** agent.wait 服务端 timeoutMs */
+const WAIT_TIMEOUT_MS = 30_000;
+/** agent.wait 客户端 RPC 超时（略大于服务端，避免提前 timeout 把长挂掐断） */
+const WAIT_REQUEST_TIMEOUT_MS = WAIT_TIMEOUT_MS + 3_000;
+
+/** agent.wait 终态 status */
+const TERMINAL_WAIT_STATUSES = new Set(['ok', 'error']);
 
 export const useAgentRunsStore = defineStore('agentRuns', {
 	state: () => ({
 		/**
 		 * 活跃 run 注册表
 		 * @type {Record<string, RunState>}
-		 * RunState: { runId, clawId, runKey, topicMode, startTime, settled, streamingMsgs }
+		 * RunState: { runId, clawId, runKey, topicMode, anchorMsgId, startTime, ended, cancelled,
+		 *             lastEventAt, streamingMsgs, __conn, __timer, __watcher }
 		 */
 		runs: {},
 		/**
 		 * runKey → runId 索引（按 chat/topic 查询）
 		 * runKey = `${clawId}::${chatSessionKey}`（chat 模式）或 sessionId（topic 模式）
-		 * chat 模式带 clawId 前缀以避免多 claw 共用同名 agent 时的碰撞
 		 * @type {Record<string, string>}
 		 */
 		runKeyIndex: {},
@@ -40,234 +52,370 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 
 	getters: {
 		/**
-		 * 根据 runKey 获取活跃（未 settled）的 run
+		 * 根据 runKey 获取 run（只要 entry 存在就返回，allMessages 据此合并 streamingMsgs）
 		 * @returns {(runKey: string) => RunState | null}
 		 */
 		getActiveRun: (state) => (runKey) => {
 			const runId = state.runKeyIndex[runKey];
 			if (!runId) return null;
-			const run = state.runs[runId];
-			// settling 状态仍视为 active（保留 streamingMsgs 直到 loadMessages 替换完成）
-			return (run && !run.settled) ? run : null;
+			return state.runs[runId] ?? null;
 		},
 		/**
-		 * 指定 runKey 是否有活跃 run
+		 * 指定 runKey 是否仍在运行（UI 判断"思考中"+ cancel coordination tick 判断是否继续 abort）。
+		 * 仅终态信号到达（ended）即视为非 running；cancelled 仅是用户意图标记，watcher 仍跑。
 		 * @returns {(runKey: string) => boolean}
 		 */
 		isRunning: (state) => (runKey) => {
 			const runId = state.runKeyIndex[runKey];
 			if (!runId) return false;
 			const run = state.runs[runId];
-			return !!run && !run.settled;
+			return !!run && !run.ended;
 		},
-		/** 是否有任何未完成的 run */
-		busy: (state) => Object.values(state.runs).some(r => !r.settled),
+		/** 是否有任何 entry（streamingMsgs 仍占内存即视为 busy） */
+		busy: (state) => Object.keys(state.runs).length > 0,
 		/**
-		 * 指定 runKey 的活跃 run 是否疑似僵尸（已收到过事件但长时间静默）
-		 * @returns {(runKey: string) => boolean}
+		 * 已废弃 stub（reconcileAfterLoad 启发式废弃）；保留是为兼容旧调用点（Commit 2 删除）
+		 * @returns {() => boolean}
 		 */
-		isRunIdle: (state) => (runKey) => {
-			const runId = state.runKeyIndex[runKey];
-			if (!runId) return false;
-			const run = state.runs[runId];
-			if (!run || run.settled) return false;
-			return run.lastEventAt > 0 && Date.now() - run.lastEventAt >= IDLE_RUN_MS;
-		},
+		isRunIdle: () => () => false,
 	},
 
 	actions: {
 		/**
-		 * 注册新 run
+		 * 注册新 run（通常由 runAgent 在 accepted 时内部调用）
 		 * @param {string} runId
 		 * @param {object} opts
 		 * @param {string} opts.clawId
 		 * @param {string} opts.runKey
 		 * @param {boolean} opts.topicMode
-		 * @param {object} opts.conn - ClawConnection 实例（仅保留引用，不注册监听器）
-		 * @param {object[]} opts.streamingMsgs - 初始流式消息（乐观 user + claw 条目）
-		 * @param {string|null} [opts.anchorMsgId] - 注册时 chatStore.messages 的最后一条 server 消息 ID（用于 allMessages 定位）
+		 * @param {object} opts.conn - ClawConnection 实例
+		 * @param {object[]} opts.streamingMsgs - 初始流式消息
+		 * @param {string|null} [opts.anchorMsgId]
 		 */
 		register(runId, { clawId, runKey, topicMode, conn, streamingMsgs = [], anchorMsgId = null }) {
 			console.debug('[agentRuns] register runId=%s runKey=%s clawId=%s', runId, runKey, clawId);
 
-			// 清理同一 runKey 的旧 run（若有）
+			// 清理同一 runKey 的旧 run
 			const oldRunId = this.runKeyIndex[runKey];
 			if (oldRunId && this.runs[oldRunId]) {
 				this.__cleanupRun(oldRunId);
 			}
 
-			this.runs[runId] = {
+			const run = {
 				runId,
 				clawId,
 				runKey,
 				topicMode,
 				anchorMsgId,
 				startTime: Date.now(),
-				settled: false,
-				settling: false,
-				settlingReason: null,
+				ended: false,
+				cancelled: false,
 				lastEventAt: 0,
 				streamingMsgs: [...streamingMsgs],
 				__conn: conn,
 				__timer: null,
+				__watcher: null,
 			};
+			this.runs[runId] = run;
 			this.runKeyIndex[runKey] = runId;
 
-			// post-acceptance 超时
-			this.runs[runId].__timer = setTimeout(() => {
-				console.debug('[agentRuns] post-acceptance timeout runId=%s', runId);
-				this.settle(runKey);
+			// 内存释放保险
+			run.__timer = setTimeout(() => {
+				console.debug('[agentRuns] post-acceptance memory timeout runId=%s', runId);
+				this.__endRun(runId, 'timeout');
+				this.dropRun(runKey);
 			}, POST_ACCEPT_TIMEOUT_MS);
+
+			this.__startWatcher(runId);
 		},
 
 		/**
-		 * 结束 run（用户取消或 lifecycle 终态）
+		 * 发起 agent run：发 RPC、accepted 时 register、维护 watcher、返回最终 promise
+		 *
+		 * 返回 promise 的语义：
+		 *   - resolve `{ runId, accepted: true, endReason }` —— accepted 后任何路径都 resolve
+		 *     endReason ∈ 'rpc'(信号1) | 'lifecycle'(信号2) | 'wait'(信号3) | 'failed'(信号4) | 'timeout'(24h 兜底)
+		 *   - reject —— pre-acceptance 阶段错误（DC 断、连接超时、参数校验失败、用户取消）
+		 *
+		 * @param {object} opts
+		 * @param {object} opts.conn - ClawConnection 实例
+		 * @param {string} opts.clawId
+		 * @param {string} opts.runKey
+		 * @param {boolean} opts.topicMode
+		 * @param {object} opts.agentParams - 透传给 conn.request('agent', ...)
+		 * @param {object[]} [opts.optimisticMsgs] - 注册时的乐观流式消息
+		 * @param {string|null} [opts.anchorMsgId]
+		 * @param {(payload: object) => void} [opts.onAccepted] - accepted 瞬间的 UI 钩子（在 register 之后触发）
+		 * @returns {Promise<{ runId: string, accepted: boolean, endReason: string }>}
+		 */
+		async runAgent({ conn, clawId, runKey, topicMode, agentParams, optimisticMsgs = [], anchorMsgId = null, onAccepted }) {
+			let registeredRunId = null;
+			let preAcceptError = null;
+			let finalResolve;
+			const finalPromise = new Promise((resolve) => { finalResolve = resolve; });
+
+			// 发起 RPC：不直接 await（否则 watcher 路径触发的 endRun 会与未到的第二阶段 res 互相等待死锁）。
+			// 通过 then/catch 处理两路结局：信号 1（RPC res）/ 信号 4（accepted 后 reject）/ pre-acceptance 错误
+			conn.request('agent', agentParams, {
+				timeout: 0,
+				onAccepted: (payload) => {
+					const runId = payload?.runId ?? null;
+					if (!runId) return;
+					registeredRunId = runId;
+					this.register(runId, {
+						clawId, runKey, topicMode, conn,
+						streamingMsgs: optimisticMsgs,
+						anchorMsgId,
+					});
+					// 把 final hook 挂到 watcher，由 __endRun 唤醒
+					const run = this.runs[runId];
+					if (run?.__watcher) {
+						run.__watcher.onEnd = (reason) => {
+							finalResolve({ runId, accepted: true, endReason: reason });
+						};
+					}
+					if (onAccepted) {
+						try { onAccepted(payload); }
+						catch (e) { console.error('[agentRuns] onAccepted callback err:', e); }
+					}
+				},
+				onUnknownStatus: (status, payload) => {
+					console.error('[agentRuns] unknown agent rpc status=%s', status, payload);
+				},
+			}).then(
+				(rpcResult) => {
+					if (registeredRunId) {
+						// 信号 1
+						this.__onRpcDone(registeredRunId, rpcResult);
+					} else {
+						// 极罕见：RPC 直接返回 ok=true 但未 accepted
+						finalResolve({ runId: null, accepted: false, endReason: 'norun' });
+					}
+				},
+				(err) => {
+					if (registeredRunId) {
+						// 信号 4：accepted 后 RPC reject
+						this.__onRpcFailed(registeredRunId, err);
+					} else {
+						// pre-acceptance 错误
+						preAcceptError = err;
+						finalResolve(null);
+					}
+				},
+			);
+
+			const result = await finalPromise;
+			if (preAcceptError) throw preAcceptError;
+			return result;
+		},
+
+		/**
+		 * chat.store loadMessages 完成后调用：真正释放 streamingMsgs 与 entry
 		 * @param {string} runKey
 		 */
-		settle(runKey) {
+		dropRun(runKey) {
 			const runId = this.runKeyIndex[runKey];
 			if (!runId) return;
-			const run = this.runs[runId];
-			if (!run || run.settled) return;
-			console.debug('[agentRuns] settle runKey=%s runId=%s', runKey, runId);
 			this.__cleanupRun(runId);
 		},
 
-		/**
-		 * 用户取消（cancelSend 阶段 1）进入 settling 过渡态：
-		 * - settling=true 让 getActiveRun/allMessages 仍保留 streamingMsgs
-		 * - settlingReason='cancel'：用于 completeSettle 区分，避免独立 loadMessages 过早 cleanup streamingMsgs
-		 * - 保留 post-acceptance 30min timer 作兜底（与 __settleWithTransition 不同）
-		 * - 不调度 500ms fallback，等 lifecycle:end 到达时由 __dispatch → __settleWithTransition 升级 reason
-		 * 适用于"UI 已取消但服务端 run 仍在跑"的场景：需要长过渡窗口直到真实终态到达
-		 * @param {string} runKey
-		 */
-		settleWithTransitionByKey(runKey) {
-			const runId = this.runKeyIndex[runKey];
-			if (!runId) return;
+		// ============================ watcher ============================
+
+		__startWatcher(runId) {
 			const run = this.runs[runId];
-			if (!run || run.settled || run.settling) return;
-			run.settling = true;
-			run.settlingReason = 'cancel';
-			this.runs[runId] = { ...run };
+			if (!run) return;
+			run.__watcher = {
+				idleTimer: null,
+				waitPending: false,
+				onEnd: null,
+			};
+			this.__armIdleTimer(runId);
+		},
+
+		__armIdleTimer(runId) {
+			const run = this.runs[runId];
+			if (!run || run.ended || !run.__watcher) return;
+			if (run.__watcher.idleTimer) {
+				clearTimeout(run.__watcher.idleTimer);
+			}
+			run.__watcher.idleTimer = setTimeout(() => {
+				this.__pollOnce(runId);
+			}, IDLE_THRESHOLD_MS);
+		},
+
+		__noteEvent(runId) {
+			const run = this.runs[runId];
+			if (!run || run.ended) return;
+			run.lastEventAt = Date.now();
+			this.__armIdleTimer(runId);
 		},
 
 		/**
-		 * 内部：处理 event:agent 事件路由（由 clawsStore.__bridgeConn 集中调用）
+		 * 长挂 agent.wait 一次。运行端事件驱动，正常路径事件到达即 resolve；
+		 * 真超时（活跃）→ 立即下一轮；wait 失败 → endRun('failed')
+		 */
+		async __pollOnce(runId) {
+			const run = this.runs[runId];
+			if (!run || run.ended || !run.__watcher) return;
+			if (run.__watcher.waitPending) return;
+			const conn = run.__conn;
+			if (!conn) return;
+
+			run.__watcher.waitPending = true;
+			let result;
+			try {
+				result = await conn.request('agent.wait', {
+					runId,
+					timeoutMs: WAIT_TIMEOUT_MS,
+				}, { timeout: WAIT_REQUEST_TIMEOUT_MS });
+			}
+			catch (err) {
+				const r = this.runs[runId];
+				if (!r || r.ended) return;
+				r.__watcher.waitPending = false;
+				console.debug('[agentRuns] agent.wait failed runId=%s err=%s', runId, err?.message);
+				this.__endRun(runId, 'failed');
+				return;
+			}
+
+			const r = this.runs[runId];
+			if (!r || r.ended) return;
+			r.__watcher.waitPending = false;
+
+			const status = result?.status;
+			if (TERMINAL_WAIT_STATUSES.has(status)) {
+				this.__endRun(runId, 'wait');
+				return;
+			}
+			if (status !== 'timeout') {
+				// 异常响应（无 status / 未知 status）—— 防御：按结束处理避免下一轮死循环
+				console.warn('[agentRuns] agent.wait unexpected result runId=%s', runId, result);
+				this.__endRun(runId, 'wait');
+				return;
+			}
+			// status === 'timeout'：靠 endedAt 间接区分
+			if (result?.endedAt) {
+				// run 已结束（abort / TTL 写入），按结束处理
+				this.__endRun(runId, 'wait');
+				return;
+			}
+			// 真超时（活跃）：立即下一轮
+			this.__pollOnce(runId);
+		},
+
+		__onRpcDone(runId) {
+			const run = this.runs[runId];
+			if (!run || run.ended) return;
+			this.__endRun(runId, 'rpc');
+		},
+
+		__onLifecycleEnd(runId) {
+			const run = this.runs[runId];
+			if (!run || run.ended) return;
+			this.__endRun(runId, 'lifecycle');
+		},
+
+		__onRpcFailed(runId, err) {
+			const run = this.runs[runId];
+			if (!run || run.ended) return;
+			console.debug('[agentRuns] rpc failed runId=%s err=%s', runId, err?.message);
+			this.__endRun(runId, 'failed');
+		},
+
+		/**
+		 * 终结 run：标记 ended、停 watcher、唤醒 finalPromise；不释放 streamingMsgs（等 dropRun）
+		 * @param {string} runId
+		 * @param {string} reason - 'rpc' | 'lifecycle' | 'wait' | 'failed' | 'timeout' | 'manual'
+		 */
+		__endRun(runId, reason) {
+			const run = this.runs[runId];
+			if (!run || run.ended) return;
+			console.debug('[agentRuns] endRun runId=%s reason=%s', runId, reason);
+			run.ended = true;
+			if (run.__watcher?.idleTimer) {
+				clearTimeout(run.__watcher.idleTimer);
+				run.__watcher.idleTimer = null;
+			}
+			if (run.__timer) {
+				clearTimeout(run.__timer);
+				run.__timer = null;
+			}
+			const onEnd = run.__watcher?.onEnd;
+			if (run.__watcher) run.__watcher.onEnd = null;
+			// 触发响应式更新（让 isRunning getter 通知 UI）
+			this.runs[runId] = { ...run };
+			if (onEnd) {
+				try { onEnd(reason); }
+				catch (e) { console.error('[agentRuns] onEnd hook err:', e); }
+			}
+		},
+
+		// ============================ 事件路由 ============================
+
+		/**
+		 * 内部：处理 event:agent 事件（由 clawsStore.__bridgeConn 集中调用）
 		 * @param {object} payload
 		 */
 		__dispatch(payload) {
 			const runId = payload?.runId;
 			if (!runId) return;
 			const run = this.runs[runId];
-			if (!run || run.settled) return;
+			if (!run || run.ended) return;
 
-			run.lastEventAt = Date.now();
 			const { changed, settled } = applyAgentEvent(run.streamingMsgs, payload);
 			if (changed) {
-				// 触发 Pinia 响应式更新
 				this.runs[runId] = { ...run, streamingMsgs: [...run.streamingMsgs] };
 			}
 			if (settled) {
-				console.debug('[agentRuns] lifecycle settled runId=%s', runId);
-				this.__settleWithTransition(runId);
+				this.__onLifecycleEnd(runId);
+			} else {
+				this.__noteEvent(runId);
 			}
 		},
 
+		// ============================ 用户取消协调 ============================
+
 		/**
-		 * 带过渡态的 settle：先标记 settling，保留 streamingMsgs 直到外部（如 loadMessages）替换 messages
-		 * 用于 lifecycle:end 到达但 loadMessages 尚未完成的场景，避免 allMessages 内容闪烁
-		 * settlingReason 设为 'lifecycle' 以解锁 completeSettle 的清理（覆盖可能存在的 'cancel' 标记）
-		 * @param {string} runId
+		 * 用户取消（cancelSend 阶段 1）：标记 cancelled=true，watcher 仍跑等待真实终态信号
+		 * isRunning 立即 false（UI 恢复输入），streamingMsgs 保留显示直到 endRun + dropRun
+		 * @param {string} runKey
 		 */
-		__settleWithTransition(runId) {
+		settleWithTransitionByKey(runKey) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
 			const run = this.runs[runId];
-			if (!run) return;
-			if (run.__timer) {
-				clearTimeout(run.__timer);
-				run.__timer = null;
-			}
-			run.settling = true;
-			run.settlingReason = 'lifecycle';
-			this.__scheduleSettleFallback(runId);
-			// settling 状态下 allMessages 仍能看到 streamingMsgs（由 getActiveRun getter 判断）
-			// 注意：spread 必须在调度 fallback 之后，确保新对象持有正确的 timer 引用
+			if (!run || run.ended || run.cancelled) return;
+			run.cancelled = true;
 			this.runs[runId] = { ...run };
 		},
 
 		/**
-		 * 调度 settle 兜底定时器
-		 * loadMessages 飞行中时推迟清理，避免 streamingMsgs 闪烁（#193）
-		 * @param {string} runId
-		 */
-		__scheduleSettleFallback(runId) {
-			const run = this.runs[runId];
-			if (!run || run.settled) return;
-			if (run.__settleTimer) {
-				clearTimeout(run.__settleTimer);
-			}
-			run.__settleTimer = setTimeout(() => {
-				const r = this.runs[runId];
-				if (!r || r.settled) return;
-				if (r.__loadInFlight) {
-					console.debug('[agentRuns] settle fallback deferred: load in-flight runId=%s', runId);
-					this.__scheduleSettleFallback(runId);
-					return;
-				}
-				this.__cleanupRun(runId);
-			}, 500);
-		},
-
-		/**
-		 * 标记指定 run 有 loadMessages 正在进行
+		 * 手动 settle（外部 API 保留：僵尸清理 / page unmount 等场景）
 		 * @param {string} runKey
 		 */
-		markLoadInFlight(runKey) {
+		settle(runKey) {
 			const runId = this.runKeyIndex[runKey];
 			if (!runId) return;
 			const run = this.runs[runId];
-			if (run && !run.settled) run.__loadInFlight = true;
-		},
-
-		/**
-		 * 清除 loadInFlight 标记
-		 * @param {string} runKey
-		 */
-		clearLoadInFlight(runKey) {
-			const runId = this.runKeyIndex[runKey];
-			if (!runId) return;
-			const run = this.runs[runId];
-			if (run) run.__loadInFlight = false;
-		},
-
-		/**
-		 * 完成 settle 过渡（由 chatStore loadMessages 成功后调用）
-		 * 仅处理 settlingReason='lifecycle' 的 run——即真实 lifecycle:end 已到达。
-		 * settlingReason='cancel' 的 run 仍在服务端执行，streamingMsgs 必须保留直到 lifecycle:end 到达后升级为 'lifecycle'。
-		 * @param {string} runKey
-		 */
-		completeSettle(runKey) {
-			const runId = this.runKeyIndex[runKey];
-			if (!runId) return;
-			const run = this.runs[runId];
-			if (!run || !run.settling) return;
-			if (run.settlingReason !== 'lifecycle') {
-				console.debug('[agentRuns] completeSettle skip runKey=%s reason=%s', runKey, run.settlingReason);
-				return;
-			}
-			console.debug('[agentRuns] completeSettle runKey=%s runId=%s', runKey, runId);
-			if (run.__settleTimer) {
-				clearTimeout(run.__settleTimer);
-				run.__settleTimer = null;
+			if (!run) return;
+			if (!run.ended) {
+				this.__endRun(runId, 'manual');
 			}
 			this.__cleanupRun(runId);
 		},
 
+		// ============================ 兼容 stub（Commit 2 删除）============================
+		// 旧调用点暂保留，避免本 commit 改动面过大；实际行为已被 watcher / endRun / dropRun 取代
+		markLoadInFlight() {},
+		clearLoadInFlight() {},
+		completeSettle() {},
+		reconcileAfterLoad() {},
+
+		// ============================ 数据维护 ============================
+
 		/**
 		 * 去除 streamingMsgs 中的乐观 user 消息——基于锚点范围的存在性判断：
-		 * 仅当 server 数据在 anchorMsgId 之后已出现 user message 时才 strip，
-		 * 避免 server 尚未持久化时误删导致 user message 消逝。
-		 * 不依赖 content 比较（本地为纯字符串，server 为 Claude API 数组格式，无法 === 匹配）。
+		 * 仅当 server 数据在 anchorMsgId 之后已出现 user message 时才 strip。
 		 * @param {string} runKey
 		 * @param {object[]} serverMessages - loadMessages 返回的服务端消息
 		 */
@@ -275,14 +423,12 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const runId = this.runKeyIndex[runKey];
 			if (!runId) return;
 			const run = this.runs[runId];
-			if (!run || run.settled || run.settling) return;
+			if (!run || run.ended) return;
 			if (!run.streamingMsgs.some((m) => m._local && m.message?.role === 'user')) return;
 
-			// 判断 server 是否已持久化本次 run 的 user message
 			const anchorId = run.anchorMsgId;
 			let serverHasUserMsg;
 			if (!anchorId) {
-				// 无锚点（首条消息）：server 中有任何 user message 即视为已持久化
 				serverHasUserMsg = serverMessages.some((m) => m.message?.role === 'user');
 			} else {
 				let anchorIdx = -1;
@@ -290,10 +436,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 					if (serverMessages[i].id === anchorId) { anchorIdx = i; break; }
 				}
 				if (anchorIdx === -1) {
-					// 锚点被分页截断 → run 进行了很久 → user message 必然已持久化
 					serverHasUserMsg = true;
 				} else {
-					// 锚点之后存在 user message → 已持久化
 					serverHasUserMsg = serverMessages.slice(anchorIdx + 1).some((m) => m.message?.role === 'user');
 				}
 			}
@@ -303,7 +447,6 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				(m) => !(m._local && m.message?.role === 'user'),
 			);
 			if (filtered.length !== run.streamingMsgs.length) {
-				// 释放被移除的乐观 user 消息上的 blob URL
 				for (const m of run.streamingMsgs) {
 					if (!m._local || m.message?.role !== 'user' || !m._attachments) continue;
 					for (const att of m._attachments) {
@@ -314,56 +457,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			}
 		},
 
-		/**
-		 * 重连后 reconcile：loadMessages 成功后检查是否应 settle 僵尸 run
-		 * @param {string} runKey
-		 * @param {object[]} serverMessages - loadMessages 返回的服务端消息
-		 */
-		reconcileAfterLoad(runKey, serverMessages) {
-			const runId = this.runKeyIndex[runKey];
-			if (!runId) return;
-			const run = this.runs[runId];
-			if (!run || run.settled || run.settling) return;
-
-			// 条件1：事件流已静默（尚未收到任何事件时视为非 stale）
-			if (!run.lastEventAt || Date.now() - run.lastEventAt < STALE_RUN_MS) {
-				console.debug('[agentRuns] reconcile skip: events still active runKey=%s (lastEventAt=%d, age=%dms)',
-					runKey, run.lastEventAt || 0, run.lastEventAt ? Date.now() - run.lastEventAt : -1);
-				return;
-			}
-
-			// 条件2：服务端消息已包含 run 的最终结果
-			if (!this.__serverMessagesIndicateRunDone(run, serverMessages)) {
-				console.debug('[agentRuns] reconcile skip: server msgs indicate run not done runKey=%s', runKey);
-				return;
-			}
-
-			console.debug('[agentRuns] reconcile settle runKey=%s runId=%s', runKey, runId);
-			this.__cleanupRun(runId);
-		},
+		// ============================ cleanup ============================
 
 		/**
-		 * 检查服务端消息是否已包含 run 的最终结果
-		 * @param {object} run
-		 * @param {object[]} messages
-		 * @returns {boolean}
-		 */
-		__serverMessagesIndicateRunDone(run, messages) {
-			if (!messages?.length) return false;
-			// 从后向前找最后一条 assistant 消息
-			for (let i = messages.length - 1; i >= 0; i--) {
-				const msg = messages[i]?.message;
-				if (!msg || msg.role !== 'assistant') continue;
-				// 终止类型 stopReason 表示 run 已完成（toolUse 是中间态，不算）
-				if (msg.stopReason && msg.stopReason !== 'toolUse') return true;
-				// 找到 assistant 但无 stopReason → run 未完成
-				return false;
-			}
-			return false;
-		},
-
-		/**
-		 * 清理单个 run
+		 * 清理单个 run：清 timer、释放 blob URL、删 entry + 索引
 		 * @param {string} runId
 		 */
 		__cleanupRun(runId) {
@@ -374,12 +471,11 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				clearTimeout(run.__timer);
 				run.__timer = null;
 			}
-			if (run.__settleTimer) {
-				clearTimeout(run.__settleTimer);
-				run.__settleTimer = null;
+			if (run.__watcher?.idleTimer) {
+				clearTimeout(run.__watcher.idleTimer);
+				run.__watcher.idleTimer = null;
 			}
 
-			// 释放 streamingMsgs 中残留的 blob URL（乐观消息的 _attachments）
 			for (const m of run.streamingMsgs) {
 				if (!m._attachments) continue;
 				for (const att of m._attachments) {
@@ -387,9 +483,6 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				}
 			}
 
-			run.settled = true;
-
-			// 清理索引
 			if (this.runKeyIndex[run.runKey] === runId) {
 				delete this.runKeyIndex[run.runKey];
 			}

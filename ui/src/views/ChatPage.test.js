@@ -1084,40 +1084,6 @@ describe('ChatPage foreground resume', () => {
 		expect(loadSpy).not.toHaveBeenCalled();
 	});
 
-	test('app:foreground 僵尸 run（idle）时强制静默刷新 (#235)', async () => {
-		const wrapper = createWrapper();
-		const chatStore = getChatStore();
-		chatStore.clawId = 'bot-1';
-		chatStore.__messagesLoaded = true;
-		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
-		const reconcileSpy = vi.spyOn(chatStore, '__reconcileSlashCommand').mockImplementation(() => {});
-
-		const clawsStore = useClawsStore();
-		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
-		clawsStore.byId['bot-1'].dcReady = true;
-		setupAgents();
-		await wrapper.vm.$nextTick();
-		loadSpy.mockClear();
-		reconcileSpy.mockClear();
-
-		// 模拟僵尸 run（isSending=true, sending=false, isRunIdle=true）
-		const { useAgentRunsStore } = await import('../stores/agent-runs.store.js');
-		const runsStore = useAgentRunsStore();
-		runsStore.runs['run-z'] = {
-			runId: 'run-z', clawId: 'bot-1', runKey: chatStore.runKey,
-			settled: false, settling: false, lastEventAt: Date.now() - 15_000,
-			streamingMsgs: [], __timer: null,
-		};
-		runsStore.runKeyIndex[chatStore.runKey] = 'run-z';
-
-		wrapper.vm.__lastResumeAt = 0;
-		window.dispatchEvent(new CustomEvent('app:foreground'));
-		await wrapper.vm.$nextTick();
-
-		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
-		expect(reconcileSpy).toHaveBeenCalled();
-	});
-
 	test('app:foreground 活跃 run（非 idle）时不触发刷新', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();

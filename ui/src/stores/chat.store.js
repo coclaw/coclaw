@@ -430,7 +430,6 @@ export function createChatStore(storeKey, opts = {}) {
 				console.debug('[chat] sendMessage sessionId=%s topicMode=%s files=%d', this.sessionId, this.topicMode, files?.length ?? 0);
 				this.sending = true;
 				this.streamingRunId = null;
-				this.__agentSettled = false;
 				this.__accepted = false;
 
 				const hasFiles = files?.length > 0;
@@ -501,15 +500,19 @@ export function createChatStore(storeKey, opts = {}) {
 						agentParams.sessionKey = this.chatSessionKey;
 					}
 
+					// 计算锚点 + optimistic 子集（runAgent 内 register 时使用）
+					const lastServerMsg = this.messages.filter((m) => !m._local).at(-1);
+					const anchorMsgId = lastServerMsg?.id ?? null;
+					const optimisticMsgs = [optimisticUser, optimisticClaw];
+
 					// 超时 / 取消 reject 句柄
 					let timeoutReject;
 					const timeoutPromise = new Promise((_, reject) => { timeoutReject = reject; });
 					const cancelPromise = new Promise((_, reject) => { this.__cancelReject = reject; });
 
-					// pre-acceptance 超时（用户可主动取消）
+					// pre-acceptance 超时（accepted 之前；accepted 后由 agent-runs.store 内 24h 内存释放保险接管）
 					this.__streamingTimer = setTimeout(() => {
 						if (!this.__accepted) {
-							this.__agentSettled = true;
 							this.__cleanupStreaming();
 							this.sending = false;
 							const err = new Error('pre-acceptance timeout');
@@ -521,48 +524,42 @@ export function createChatStore(storeKey, opts = {}) {
 					const runsStore = useAgentRunsStore();
 					const runKey = this.runKey;
 
-					const final = await Promise.race([
-						conn.request('agent', agentParams, {
-							timeout: 0, // agent 长任务，不设请求超时，由外层 pre/post-acceptance timer 管理
-							onAccepted: (payload) => {
-								const runId = payload?.runId ?? null;
-								console.debug('[chat] agent accepted runId=%s', runId);
-								this.__accepted = true;
-								this.streamingRunId = runId;
-								// 切换到 post-acceptance 超时（与 OpenClaw run 生命周期对齐，见 POST_ACCEPT_TIMEOUT_MS）
-								if (this.__streamingTimer) clearTimeout(this.__streamingTimer);
-								this.__streamingTimer = setTimeout(() => {
-									this.__agentSettled = true;
-									this.sending = false;
-									runsStore.settle(runKey);
-									this.__reconcileMessages();
-									const err = new Error('post-acceptance timeout');
-									err.code = 'POST_ACCEPTANCE_TIMEOUT';
-									timeoutReject(err);
-								}, POST_ACCEPT_TIMEOUT_MS);
-								// 清除 pending 标记并移入 agentRunsStore
-								const localMsgs = this.messages.filter((m) => m._local);
-								for (const m of localMsgs) m._pending = false;
-								const lastServerMsg = this.messages.filter((m) => !m._local).at(-1);
-								this.messages = this.messages.filter((m) => !m._local);
-								runsStore.register(runId, {
-									clawId: this.clawId,
-									runKey,
-									topicMode: this.topicMode,
-									conn,
-									streamingMsgs: localMsgs,
-									anchorMsgId: lastServerMsg?.id ?? null,
-								});
-							},
-							onUnknownStatus: (status, payload) => {
-								console.error('[chat] unknown agent rpc status=%s', status, payload);
-							},
-						}),
-						timeoutPromise,
-						cancelPromise,
-					]);
+					// 发起 agent run（内部封装两阶段 RPC + watcher 四路结束信号）
+					const runPromise = runsStore.runAgent({
+						conn,
+						clawId: this.clawId,
+						runKey,
+						topicMode: this.topicMode,
+						agentParams,
+						optimisticMsgs,
+						anchorMsgId,
+						onAccepted: (payload) => {
+							const runId = payload?.runId ?? null;
+							console.debug('[chat] agent accepted runId=%s', runId);
+							this.__accepted = true;
+							this.streamingRunId = runId;
+							// 清 pre-acceptance timer；post-accept 由 agent-runs.store 内的 24h 兜底接管
+							if (this.__streamingTimer) clearTimeout(this.__streamingTimer);
+							this.__streamingTimer = null;
+							// 移走乐观 _local 条目（streamingMsgs 已由 register 接管显示）
+							const localMsgs = this.messages.filter((m) => m._local);
+							for (const m of localMsgs) m._pending = false;
+							this.messages = this.messages.filter((m) => !m._local);
+						},
+					});
 
-					// 终态到达（RPC resolved）
+					// 独立挂钩：accepted 后 endRun 信号到达 → loadMessages + dropRun。
+					// cancel 路径下 cancelPromise 已 reject，但 runPromise 仍在等真实终态，此 then 接管收尾。
+					runPromise.then(async (res) => {
+						if (res?.accepted) {
+							await this.loadMessages({ silent: true });
+							runsStore.dropRun(runKey);
+						}
+					}).catch(() => { /* runPromise reject 走外层 catch */ });
+
+					const final = await Promise.race([runPromise, timeoutPromise, cancelPromise]);
+
+					// 终态到达
 					this.__cancelReject = null;
 					if (this.__streamingTimer) {
 						clearTimeout(this.__streamingTimer);
@@ -570,23 +567,18 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 					this.sending = false;
 
-					if (!this.__accepted && final?.status !== 'ok') {
+					if (!this.__accepted) {
+						// 未 accepted（罕见：runAgent 直接返回 norun）
 						this.__removeLocalEntries();
 						return { accepted: false };
 					}
-					// run 的清理交给 __settleWithTransition + completeSettle 流程：
-					// lifecycle:end → settling 状态 → loadMessages 成功后 completeSettle 清理
-					// 此处不主动 settle，避免在 loadMessages 完成前清除 streamingMsgs 导致消息闪烁
-					await this.__reconcileMessages();
+					// final.endReason 内部保留（用于 debug/未来扩展），不对外暴露
+					console.debug('[chat] sendMessage done endReason=%s', final?.endReason);
 					return { accepted: true };
 				}
 				catch (err) {
-					// Promise.race 已 settle，cancelPromise 不再需要；立即清理防止孤儿 rejection
 					this.__cancelReject = null;
-					// lifecycle:end 已完成清理，WS 关闭尾巴错误忽略
-					if (this.__agentSettled && isDisconnectError(err)) {
-						return { accepted: this.__accepted };
-					}
+
 					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
 					if (err?.code === 'CANCELLED' && !this.__accepted) {
 						this.sending = false;
@@ -594,10 +586,8 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__removeLocalEntries();
 						return { accepted: false };
 					}
-					// 用户主动取消：不抛错；根据是否已 accepted 决定是否让调用方恢复输入
+					// 用户主动取消
 					if (err?.code === 'USER_CANCELLED') {
-						// 注：cleanup() 触发的取消不 settle run（让后台继续执行）；
-						// cancelSend() 触发的取消已在 cancelSend 内主动 settle
 						this.sending = false;
 						if (this.__streamingTimer) {
 							clearTimeout(this.__streamingTimer);
@@ -606,18 +596,8 @@ export function createChatStore(storeKey, opts = {}) {
 						if (!this.__accepted) {
 							this.__removeLocalEntries();
 						}
+						// accepted 后取消：runPromise.then 接管 loadMessages + dropRun
 						return { accepted: this.__accepted };
-					}
-					// 已 accepted 但 agent 尚未完成时断连：reconcile 会在连接恢复后由 __refreshIfStale 触发
-					if (isDisconnectError(err) && this.__accepted && !this.__agentSettled) {
-						console.debug('[chat] dc closed after accepted, will reconcile on reconnect');
-						if (this.__streamingTimer) {
-							clearTimeout(this.__streamingTimer);
-							this.__streamingTimer = null;
-						}
-						this.sending = false;
-						this.__reconcileMessages().catch(() => {});
-						return { accepted: true };
 					}
 					// 断连且尚未 accepted：自动重试一次（内层 request() 会等待连接恢复）
 					if (isDisconnectError(err) && !this.__accepted && !this.__retried) {
@@ -634,20 +614,9 @@ export function createChatStore(storeKey, opts = {}) {
 							this.__retried = false;
 						}
 					}
-					if (this.__accepted) {
-						// 已被服务端接受，保留消息并从服务端拉取真实状态
-						if (this.__streamingTimer) {
-							clearTimeout(this.__streamingTimer);
-							this.__streamingTimer = null;
-						}
-						this.sending = false;
-						// settle 交给 reconcileAfterLoad 的双条件判定
-						this.__reconcileMessages();
-					}
-					else {
-						this.__cleanupStreaming();
-						this.sending = false;
-					}
+					// pre-acceptance 其它错误：清理并抛
+					this.__cleanupStreaming();
+					this.sending = false;
 					this.fileUploadState = null;
 					throw err;
 				}
@@ -722,10 +691,10 @@ export function createChatStore(storeKey, opts = {}) {
 						return this.__cancelling.promise;
 					}
 					const runsStore = useAgentRunsStore();
-					// 守卫：若 run 因 cancel 已进入 settling 但没有 __cancelling（历史残留），同样跳过
+					// 守卫：若 run 已被标记 cancelled 但没有 __cancelling（历史残留），同样跳过
 					const activeRun = runsStore.getActiveRun(this.runKey);
-					if (activeRun?.settling && activeRun?.settlingReason === 'cancel') {
-						console.debug('[chat] cancelSend skip: already settling(cancel) runKey=%s', this.runKey);
+					if (activeRun?.cancelled) {
+						console.debug('[chat] cancelSend skip: already cancelled runKey=%s', this.runKey);
 						return null;
 					}
 					// 不 reject cancelPromise，让原 agent() RPC 自然 resolve；显式 nullify 槽位，
