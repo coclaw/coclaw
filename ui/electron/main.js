@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, session, shell, globalShortcut } from 'electr
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import windowStateKeeper from 'electron-window-state';
-import { initTray } from './tray.js';
+import { initTray, attachMainWindow, disposeTray } from './tray.js';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
 import {
@@ -11,7 +11,7 @@ import {
 	bootstrapDeepLinkFromArgv,
 	flushPendingDeepLink,
 } from './deep-link.js';
-import { initUpdater } from './updater.js';
+import { initUpdater, disposeUpdater } from './updater.js';
 import { getAppTitle, t } from './locale.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,7 +68,13 @@ if (!gotLock) {
 			minWidth: 360,
 			minHeight: 640,
 			title: appTitle,
-			icon: path.join(__dirname, '../build-resources/icon.png'),
+			// Windows 用 .ico（多分辨率，200% DPI 下不模糊）；其余平台用 .png
+			icon: path.join(
+				__dirname,
+				process.platform === 'win32'
+					? '../build-resources/icon.ico'
+					: '../build-resources/icon.png',
+			),
 			autoHideMenuBar: true,
 			// 远程加载有 TLS + 网络耗时，延迟到 ready-to-show 再显示，规避首屏白闪
 			show: false,
@@ -220,7 +226,7 @@ if (!gotLock) {
 		registerProtocol(app);
 
 		// 创建主窗口
-		createWindow();
+		const win = createWindow();
 
 		// Windows 冷启动：若 process.argv 中携带 coclaw:// URL（protocol handler 首次触发），
 		// 在窗口创建后投递（pending buffer 会等 did-finish-load 再 flush）
@@ -229,6 +235,8 @@ if (!gotLock) {
 		// 以下只注册一次，通过 getMainWindow() 获取当前窗口
 		registerIpcHandlers(getMainWindow);
 		initTray(app, getMainWindow);
+		// 主窗口的 close→托盘、focus/blur 事件绑定（仅对主窗口生效，避免误伤后续弹窗）
+		attachMainWindow(app, win);
 
 		// 自动更新（仅生产模式）
 		if (!isDev) {
@@ -250,8 +258,11 @@ if (!gotLock) {
 
 	// macOS：点击 Dock 图标时，若无窗口则重建
 	app.on('activate', () => {
+		// 仅 macOS 才会触发 activate；其它平台 window-all-closed 后已 app.quit()
+		if (process.platform !== 'darwin') return;
 		if (BrowserWindow.getAllWindows().length === 0) {
-			createWindow();
+			const win = createWindow();
+			attachMainWindow(app, win);
 		} else {
 			const win = BrowserWindow.getAllWindows()[0];
 			win.show();
@@ -268,5 +279,7 @@ if (!gotLock) {
 
 	app.on('will-quit', () => {
 		globalShortcut.unregisterAll();
+		disposeTray();
+		disposeUpdater();
 	});
 }

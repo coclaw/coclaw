@@ -32,7 +32,7 @@ vi.mock('electron', () => ({
 	},
 }));
 
-const { initUpdater, __resetForTest } = await import('./updater.js');
+const { initUpdater, disposeUpdater, __resetForTest } = await import('./updater.js');
 
 function resetMocks() {
 	__resetForTest();
@@ -273,5 +273,26 @@ describe('initUpdater — 正常模式', () => {
 		const first = autoUpdaterMock.on.mock.calls.length;
 		initUpdater(getWin);
 		expect(autoUpdaterMock.on.mock.calls.length).toBe(first);
+	});
+
+	test('disposeUpdater 后首次检查 timer 不再触发', () => {
+		initUpdater(getWin);
+		disposeUpdater();
+		vi.advanceTimersByTime(30_000);
+		expect(autoUpdaterMock.checkForUpdates).not.toHaveBeenCalled();
+	});
+
+	test('disposeUpdater 后 4h 周期性检查 timer 不再触发', () => {
+		initUpdater(getWin);
+		// 先走完 30s 初检
+		vi.advanceTimersByTime(30_000);
+		expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+		disposeUpdater();
+		vi.advanceTimersByTime(4 * 60 * 60 * 1000);
+		expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+	});
+
+	test('未 initUpdater 直接 dispose 不抛', () => {
+		expect(() => disposeUpdater()).not.toThrow();
 	});
 });

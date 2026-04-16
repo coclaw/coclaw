@@ -7,6 +7,8 @@ const { autoUpdater } = electronUpdater;
 /** 最近一次 update-available 信息；renderer 挂载前即收到时用于补发 */
 let pendingUpdate = null;
 let initialized = false;
+let initialCheckTimer = null;
+let periodicCheckInterval = null;
 
 /**
  * 初始化自动更新（仅调用一次）
@@ -66,14 +68,26 @@ export function initUpdater(getWin) {
 	registerIpcHandlers(getWin, false);
 
 	// 启动时延迟 30s 检查，避开冷启动网络竞争
-	setTimeout(() => {
+	initialCheckTimer = setTimeout(() => {
 		autoUpdater.checkForUpdates().catch((err) => log.warn('[updater] initial check failed:', err));
 	}, 30_000);
 
 	// 每 4 小时检查一次
-	setInterval(() => {
+	periodicCheckInterval = setInterval(() => {
 		autoUpdater.checkForUpdates().catch((err) => log.warn('[updater] periodic check failed:', err));
 	}, 4 * 60 * 60 * 1000);
+}
+
+/** 退出前清理定时器（生产进程退出 OS 会回收，显式清理可避免测试污染和极端场景句柄泄漏） */
+export function disposeUpdater() {
+	if (initialCheckTimer) {
+		clearTimeout(initialCheckTimer);
+		initialCheckTimer = null;
+	}
+	if (periodicCheckInterval) {
+		clearInterval(periodicCheckInterval);
+		periodicCheckInterval = null;
+	}
 }
 
 function sendToWin(getWin, channel, payload) {
@@ -127,4 +141,8 @@ function registerIpcHandlers(getWin, portable) {
 export function __resetForTest() {
 	initialized = false;
 	pendingUpdate = null;
+	if (initialCheckTimer) clearTimeout(initialCheckTimer);
+	if (periodicCheckInterval) clearInterval(periodicCheckInterval);
+	initialCheckTimer = null;
+	periodicCheckInterval = null;
 }

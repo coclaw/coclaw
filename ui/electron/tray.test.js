@@ -8,6 +8,8 @@ const mockTray = {
 	setContextMenu: vi.fn(),
 	setImage: vi.fn(),
 	on: vi.fn(),
+	destroy: vi.fn(),
+	isDestroyed: vi.fn(() => false),
 };
 
 const ipcHandlers = {};
@@ -41,7 +43,7 @@ vi.mock('./locale.js', () => ({
 	t: (zh, en) => en,
 }));
 
-const { initTray } = await import('./tray.js');
+const { initTray, attachMainWindow, disposeTray } = await import('./tray.js');
 const { nativeImage } = await import('electron');
 
 describe('tray flash', () => {
@@ -91,5 +93,88 @@ describe('tray flash', () => {
 		assert.ok(tags.includes('unread'), 'should flash unread icon');
 		assert.ok(tags.includes('normal'), 'should flash normal icon');
 		assert.ok(!tags.includes('empty'), 'should never use empty icon');
+	});
+});
+
+describe('attachMainWindow', () => {
+	let fakeApp;
+	let fakeWin;
+	let winHandlers;
+
+	beforeEach(() => {
+		fakeApp = { isQuitting: false };
+		winHandlers = {};
+		fakeWin = {
+			isDestroyed: () => false,
+			on: vi.fn((event, handler) => {
+				winHandlers[event] = handler;
+			}),
+			webContents: { send: vi.fn() },
+			flashFrame: vi.fn(),
+			hide: vi.fn(),
+		};
+	});
+
+	test('绑定 close/focus/blur/hide 四个事件', () => {
+		attachMainWindow(fakeApp, fakeWin);
+		assert.ok(winHandlers.close, 'should bind close');
+		assert.ok(winHandlers.focus, 'should bind focus');
+		assert.ok(winHandlers.blur, 'should bind blur');
+		assert.ok(winHandlers.hide, 'should bind hide');
+	});
+
+	test('close 事件：minimize_to_tray=true 时 preventDefault 并 hide', () => {
+		attachMainWindow(fakeApp, fakeWin);
+		const event = { preventDefault: vi.fn() };
+		winHandlers.close(event);
+		assert.equal(event.preventDefault.mock.calls.length, 1);
+		assert.equal(fakeWin.hide.mock.calls.length, 1);
+	});
+
+	test('close 事件：app.isQuitting=true 时不拦截', () => {
+		fakeApp.isQuitting = true;
+		attachMainWindow(fakeApp, fakeWin);
+		const event = { preventDefault: vi.fn() };
+		winHandlers.close(event);
+		assert.equal(event.preventDefault.mock.calls.length, 0);
+		assert.equal(fakeWin.hide.mock.calls.length, 0);
+	});
+
+	test('blur 事件：发送 window-blur 到 renderer', () => {
+		attachMainWindow(fakeApp, fakeWin);
+		winHandlers.blur();
+		assert.deepEqual(fakeWin.webContents.send.mock.calls[0], ['window-blur']);
+	});
+
+	test('hide 事件：同样发送 window-blur（与 blur 对齐 Capacitor app:background）', () => {
+		attachMainWindow(fakeApp, fakeWin);
+		winHandlers.hide();
+		assert.deepEqual(fakeWin.webContents.send.mock.calls[0], ['window-blur']);
+	});
+
+	test('win=null 或 已 destroyed 时静默返回', () => {
+		attachMainWindow(fakeApp, null);
+		attachMainWindow(fakeApp, { isDestroyed: () => true, on: vi.fn() });
+		// 无异常即通过
+	});
+});
+
+describe('disposeTray', () => {
+	test('清 flashTimer + destroy tray', () => {
+		const fakeApp = { on: vi.fn() };
+		const fakeWin = { on: vi.fn(), isVisible: () => true, webContents: { send: vi.fn() } };
+		vi.useFakeTimers();
+		try {
+			initTray(fakeApp, () => fakeWin);
+			ipcHandlers['tray:setUnread'](null, true); // 启动闪烁
+			mockTray.destroy.mockClear();
+
+			disposeTray();
+
+			assert.equal(mockTray.destroy.mock.calls.length, 1);
+		}
+		finally {
+			vi.useRealTimers();
+		}
 	});
 });

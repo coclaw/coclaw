@@ -11,8 +11,11 @@ directories:
   buildResources: build-resources
 
 # 远程加载模式：仅打包 electron/ 目录和必要资源
+# icon.ico 和 icon.icns 由 electron-builder 依据 win.icon/mac.icon 自动注入；
+# icon.png 需显式声明，供 BrowserWindow.icon 在 Linux/非 Windows 兜底路径加载
 files:
   - electron/**/*
+  - build-resources/icon.png
   - build-resources/tray-icon*.png
   - package.json
 
