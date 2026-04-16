@@ -85,3 +85,29 @@ pnpm changeset
 - **破坏性变更**：检测到时不自动选 major，而是提示用户确认。开发阶段（1.0 之前）通常仍选 minor
 
 用户明确指定级别时以用户为准。
+
+## Electron 壳子版本独立维护
+
+Electron 壳子（`ui/electron-builder.yaml`）的版本号**独立于 `@coclaw/ui` 的 npm 版本**，不进入 changesets 流程。
+
+### 为什么独立
+
+- 壳子定位是"薄壳 + 远程加载"：大多数 Web 端迭代都由远程加载的前端直接覆盖，壳子本身无需跟随升级
+- `@coclaw/ui` 版本随 Web 端每次发布都可能 bump，若壳子跟车，用户每次开机都会被推送一次"新壳子"安装包，而壳子实际没有变化
+- 壳子升级需要走 NSIS 安装器（Windows）/ DMG 重新挂载（macOS），打扰成本高，应严格限定在"壳子自身改动"时
+
+### 如何维护
+
+壳子版本写在 `ui/electron-builder.yaml` 的 `extraMetadata.version` 字段，手工修改。
+
+**bump 规则**：
+
+| 场景 | 级别 |
+|---|---|
+| 新增原生权限、IPC 通道、系统集成能力 | minor |
+| 修壳子 bug（不新增能力） | patch |
+| 破坏性变更（较少出现，会影响远程前端的契约时） | major |
+
+修改 `extraMetadata.version` 后打 GitHub Release tag（如 `shell-v1.1.0`），便于追溯每次壳子发布。
+
+> **注**：Web 端（`@coclaw/ui`）版本按 changesets 自动 bump，与壳子完全解耦。

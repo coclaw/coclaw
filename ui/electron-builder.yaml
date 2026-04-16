@@ -63,7 +63,7 @@ mac:
   entitlementsInherit: build-resources/entitlements.mac.inherit.plist
   extendInfo:
     NSMicrophoneUsageDescription: "CoClaw 需要使用麦克风来录制语音消息"
-    NSCameraUsageDescription: "CoClaw 需要使用摄像头来拍摄照片和视频"
+    NSCameraUsageDescription: "CoClaw 需要使用摄像头拍摄图片用于对话"
     NSScreenCaptureUsageDescription: "CoClaw 需要屏幕录制权限来支持截图功能"
   publish:
     - provider: generic

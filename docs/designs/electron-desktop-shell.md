@@ -85,7 +85,7 @@
 │  │ BrowserWindow (Chromium)            │  │
 │  │  loadURL('https://im.coclaw.net')   │  │
 │  │  ┌─────────────────────────────┐    │  │
-│  │  │ preload.js (contextBridge)  │    │  │
+│  │  │ preload.cjs (contextBridge) │    │  │
 │  │  │  window.electronAPI = {...} │    │  │
 │  │  └─────────────────────────────┘    │  │
 │  └─────────────────────────────────────┘  │
@@ -104,7 +104,7 @@
 // main.js（简化）
 const win = new BrowserWindow({
   webPreferences: {
-    preload: path.join(__dirname, 'preload.js'),
+    preload: path.join(__dirname, 'preload.cjs'),
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true,
@@ -114,7 +114,8 @@ win.loadURL('https://im.coclaw.net');
 ```
 
 - 远程页面不能直接访问 Node.js 或 Electron API
-- 所有原生能力通过 `preload.js` → `contextBridge` → `window.electronAPI` 暴露
+- 所有原生能力通过 `preload.cjs` → `contextBridge` → `window.electronAPI` 暴露
+- preload 必须是 CommonJS（沙箱限制），因此显式使用 `.cjs` 扩展名；主进程本身是 ESM
 - Web 端通过检测 `window.electronAPI` 判断是否运行在 Electron 壳子中
 
 ### 2.2 与 Android 壳子的对应关系
@@ -123,7 +124,7 @@ win.loadURL('https://im.coclaw.net');
 |---|---|---|
 | `capacitor.config.ts` server.url | `win.loadURL(url)` | 远程加载入口 |
 | AndroidManifest.xml 权限 | `session.setPermissionRequestHandler` | 权限授予 |
-| Capacitor 插件 | preload.js + ipcMain handlers | 原生桥接 |
+| Capacitor 插件 | preload.cjs + ipcMain handlers | 原生桥接 |
 | KeepAliveService | 系统托盘常驻 | 后台保活 |
 | Intent Filter (Deep Link) | `app.setAsDefaultProtocolClient` | `coclaw://` 协议 |
 | `Capacitor.isNativePlatform()` | `!!window.electronAPI` | 平台检测 |
@@ -148,7 +149,7 @@ ui/
 │   ├── tray-icon.png          # 托盘图标
 │   ├── entitlements.mac.plist          # macOS Hardened Runtime 权限
 │   └── entitlements.mac.inherit.plist  # macOS 子进程继承权限
-├── electron-builder.yml       # electron-builder 配置
+├── electron-builder.yaml      # electron-builder 配置（.yaml 与 compose.yaml 风格一致）
 ├── src/                       # 前端代码（现有，不变）
 ├── android/                   # Android 壳子（现有）
 ├── src-tauri/                 # Tauri 骨架（保留不动）
@@ -220,7 +221,9 @@ if (!gotLock) {
 }
 ```
 
-### 4.2 preload.js — 暴露给远程页面的 API
+### 4.2 preload.cjs — 暴露给远程页面的 API
+
+> 沙箱要求 preload 为 CommonJS；主进程是 ESM，preload 单独用 `.cjs` 扩展名显式标识。
 
 ```js
 const { contextBridge, ipcRenderer } = require('electron');
@@ -931,11 +934,17 @@ export function initElectronApp(router) {
 
 ## 10. 构建与分发
 
-### 10.1 electron-builder.yml
+### 10.1 electron-builder.yaml
+
+> 实施文件为 `ui/electron-builder.yaml`（与仓库内 `compose.yaml` 风格对齐）。
+> **Phase 1 仅产出 NSIS + portable + DMG**。MAS（Mac App Store）在 Phase 3 再行接入，届时补 MAS target 与 entitlements 配置。
 
 ```yaml
 appId: net.coclaw.im
 productName: CoClaw
+# 壳子版本独立维护（详见 docs/versioning.md "Electron 壳子版本独立维护" 一节）
+extraMetadata:
+  version: "1.0.0"
 copyright: "Copyright 2026 Chengdu Gongyan Technology Co., Ltd."
 
 directories:
@@ -945,26 +954,23 @@ directories:
 # 不打包前端代码（远程加载）
 files:
   - electron/**/*
+  - build-resources/icon.png
   - build-resources/tray-icon*.png
   - package.json
 
 asar: true
 
-publish:
-  provider: github
-  owner: AYuaner
-  repo: coclaw
-  releaseType: release
-
 # ---- Windows ----
 win:
   target:
     - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
   icon: build-resources/icon.ico
-  appx:
-    publisher: "CN=xxxxx"  # 从 Partner Center 获取
-    identityName: "xxxxx"
-    publisherDisplayName: "Chengdu Gongyan Technology Co., Ltd."
+  publish:
+    - provider: generic
+      url: https://im.coclaw.net/releases/win/
 
 nsis:
   oneClick: false
@@ -972,16 +978,18 @@ nsis:
   allowElevation: true
   createDesktopShortcut: true
   shortcutName: CoClaw
+  artifactName: coclaw-setup-${version}.${ext}
   installerLanguages:
     - zh_CN
     - en_US
 
-# ---- macOS ----
+portable:
+  artifactName: coclaw-${version}.${ext}
+
+# ---- macOS（Phase 1 仅 DMG） ----
 mac:
   target:
     - target: dmg
-      arch: [universal]
-    - target: mas
       arch: [universal]
   icon: build-resources/icon.icns
   category: public.app-category.social-networking
@@ -992,19 +1000,19 @@ mac:
   entitlementsInherit: build-resources/entitlements.mac.inherit.plist
   extendInfo:
     NSMicrophoneUsageDescription: "CoClaw 需要使用麦克风来录制语音消息"
-    NSCameraUsageDescription: "CoClaw 需要使用摄像头来拍摄照片和视频"
+    NSCameraUsageDescription: "CoClaw 需要使用摄像头来拍摄图片用于对话"
     NSScreenCaptureUsageDescription: "CoClaw 需要屏幕录制权限来支持截图功能"
-
-mas:
-  hardenedRuntime: false
-  entitlements: build-resources/entitlements.mas.plist
-  entitlementsInherit: build-resources/entitlements.mas.inherit.plist
+  publish:
+    - provider: generic
+      url: https://im.coclaw.net/releases/mac/
 
 dmg:
   window:
     width: 540
     height: 380
 ```
+
+> **自动更新源**：由 GitHub Releases 切换为走自家 CDN（`im.coclaw.net/releases/{win,mac}/`）。原因：GitHub Releases 在国内访问不稳定；域名内产物便于通过 nginx 统一缓存策略（`latest*.yml` no-cache，其它产物 immutable）。发布流程由 `rsync` 将 `dist-electron/` 产物推送到 `deploy/static/releases/<平台>/`，详见 `deploy/static/releases/README.md`。
 
 ### 10.2 macOS 权限文件
 
@@ -1068,16 +1076,16 @@ dmg:
 
 ```bash
 # Windows NSIS（可在 Linux/WSL2 上执行，需 Wine）
-pnpm electron:build --win nsis
+pnpm electron:build:win
 
-# Windows AppX（仅 Windows 上执行）
-pnpm electron:build --win appx
+# Windows portable（免安装版，在 Linux/WSL2 上也可构建）
+pnpm electron:build:win:portable
 
-# macOS DMG（仅 macOS 上执行）
-pnpm electron:build --mac dmg
+# macOS DMG（仅 macOS 上执行，需代码签名 + 公证）
+pnpm electron:build:mac
 
-# macOS App Store（仅 macOS 上执行）
-pnpm electron:build --mac mas
+# Phase 3 追加：Microsoft Store (AppX) / Mac App Store (MAS)
+# 目前不提供脚本，待 Phase 2/3 补充
 ```
 
 ### 10.4 交叉编译能力
@@ -1085,61 +1093,69 @@ pnpm electron:build --mac mas
 | 构建目标 | 从 Linux/WSL2 | 从 Windows | 从 macOS |
 |---|---|---|---|
 | Windows NSIS | ✅（需 Wine） | ✅ | ✅ |
-| Windows AppX | ❌ | ✅ | ❌ |
+| Windows portable | ✅（需 Wine） | ✅ | ✅ |
+| Windows AppX（Phase 2） | ❌ | ✅ | ❌ |
 | macOS DMG | ❌（无法签名） | ❌ | ✅ |
-| macOS MAS | ❌ | ❌ | ✅ |
+| macOS MAS（Phase 3） | ❌ | ❌ | ✅ |
 
 **关键优势**：日常 Windows NSIS 构建可直接在 WSL2 中完成，无需切换到 Windows 宿主机。
 
 ### 10.5 安装包输出
 
+Phase 1 实际产出：
+
 | 平台 | 格式 | 用途 | 大致体积 |
 |---|---|---|---|
-| Windows | `CoClaw-Setup-{version}.exe` (NSIS) | 官网直接下载 | ~80-100 MB |
-| Windows | `.appx` | Microsoft Store | ~80-100 MB |
-| macOS | `CoClaw-{version}-universal.dmg` | 官网直接下载 | ~120-150 MB |
-| macOS | `.pkg` (MAS) | Mac App Store | ~120-150 MB |
+| Windows | `coclaw-setup-{version}.exe` (NSIS) | 官网直接下载 | ~80-100 MB |
+| Windows | `coclaw-{version}.exe` (portable) | 免安装版（不参与自动更新） | ~80-100 MB |
+| macOS | `coclaw-{version}-universal.dmg` | 官网直接下载 | ~120-150 MB |
+
+Phase 2/3 追加：Windows `.appx`（Microsoft Store）、macOS `.pkg`（Mac App Store）。
 
 ### 10.6 代码签名策略
 
 | 平台 | 分发渠道 | 签名方式 |
 |---|---|---|
-| Windows | Microsoft Store (AppX) | 商店自动签名 |
+| Windows | Microsoft Store (AppX，Phase 2) | 商店自动签名 |
 | Windows | 官网直接下载 (NSIS) | OV 证书（初期） |
-| macOS | Mac App Store | Apple Distribution 证书 |
+| macOS | Mac App Store (Phase 3) | Apple Distribution 证书 |
 | macOS | 官网直接下载 (DMG) | Developer ID Application + Notarization |
 
 ### 10.7 自动更新
 
-使用 `electron-updater`，配合 GitHub Releases：
+使用 `electron-updater`，配合 CoClaw 自家 CDN（`im.coclaw.net/releases/`）：
 
 ```
-用户端                                    GitHub Releases
+用户端                                    CoClaw CDN
   │                                           │
   ├─ checkForUpdates()  ──────────────────► │
-  │  GET /latest.yml                          │
+  │  GET /releases/win/latest.yml             │
+  │  (mac 对应 /releases/mac/latest-mac.yml)   │
   │                                           │
   ◄─────────────── 有更新（version, url）─────┤
   │                                           │
   ├─ downloadUpdate() ───────────────────► │
-  │  进度回调                                  │
+  │  下载 .exe / .dmg                          │
   │                                           │
   ├─ quitAndInstall() ──► 重启应用            │
 ```
 
-electron-builder 构建时自动生成 `latest.yml`（Windows）/ `latest-mac.yml`（macOS）清单文件，随安装包一起发布到 GitHub Releases。
+electron-builder 构建时自动生成 `latest.yml`（Windows）/ `latest-mac.yml`（macOS），连同安装包 + blockmap 一起 `rsync` 到 `deploy/static/releases/<平台>/` 即发布完成。
+
+缓存策略：`latest*.yml` 强制 `no-cache`，其它产物 `immutable`（详见 `deploy/static/releases/README.md`）。
 
 ## 11. package.json 变更
 
 ```jsonc
 {
+  "type": "module",
   "main": "electron/main.js",
   "devDependencies": {
     "electron": "^41",
     "electron-builder": "^26"
   },
   "dependencies": {
-    "electron-store": "^10",
+    "electron-store": "^11",
     "electron-updater": "^6",
     "electron-window-state": "^5",
     "electron-log": "^5"
@@ -1148,13 +1164,13 @@ electron-builder 构建时自动生成 `latest.yml`（Windows）/ `latest-mac.ym
     "electron:dev": "electron .",
     "electron:build": "electron-builder",
     "electron:build:win": "electron-builder --win nsis",
-    "electron:build:mac": "electron-builder --mac dmg",
-    "electron:build:mas": "electron-builder --mac mas"
+    "electron:build:win:portable": "electron-builder --win portable",
+    "electron:build:mac": "electron-builder --mac dmg"
   }
 }
 ```
 
-> **注**：`electron-store` v10+ 是 ESM-only。若主进程使用 CommonJS（`require`），需使用 v8.x 或将主进程改为 ESM。建议主进程保持 CommonJS，使用 `electron-store@8`。
+> **实施现状**：主进程采用 ESM（配合 `"type": "module"`），可直接用 `electron-store@11`。`preload.cjs` 由于 sandbox 要求使用 CommonJS（扩展名显式 `.cjs`），这是 preload 的单独要求，不影响主进程模块类型。
 
 ## 12. 已知风险与缓解
 
@@ -1180,10 +1196,9 @@ electron-builder 构建时自动生成 `latest.yml`（Windows）/ `latest-mac.ym
 
 与 Tauri 方案相同。OV 证书初期有"未知发布者"警告，引导用户优先从 Microsoft Store 安装。
 
-### 12.4 electron-store ESM 兼容性
+### 12.4 electron-store ESM 兼容性（已解决）
 
-**风险**：`electron-store` v10+ 为 ESM-only，与 CommonJS 主进程不兼容
-**缓解**：使用 `electron-store@8`（最后一个 CommonJS 版本），或将主进程改为 ESM
+原方案打算用 CommonJS 主进程 + `electron-store@8`。实施时改为 ESM 主进程 + `electron-store@11`（最新），理由：仓库内其它 JS 代码已普遍使用 ESM，壳子保持一致减少心智负担；`electron-store@11` 是官方维护的最新版本，能直接获得后续修复。
 
 ### 12.5 Electron 大版本升级
 
@@ -1200,12 +1215,12 @@ electron-builder 构建时自动生成 `latest.yml`（Windows）/ `latest-mac.ym
 1. **项目初始化**
    - 创建 `electron/` 目录结构
    - 安装依赖（`electron`, `electron-builder`, `electron-store`, `electron-updater`, `electron-window-state`）
-   - 配置 `electron-builder.yml`
+   - 配置 `electron-builder.yaml`
    - 准备图标资源
 
 2. **核心功能实现**
    - `main.js`：窗口创建、远程加载、安全配置
-   - `preload.js`：`contextBridge` 全部 API 暴露（含截图、徽章、托盘等）
+   - `preload.cjs`：`contextBridge` 全部 API 暴露（含截图、徽章、托盘等）
    - `permissions.js`：权限自动授予（media、notifications、display-capture）
    - `tray.js`：系统托盘、最小化到托盘、图标闪动
    - `ipc-handlers.js`：对话框、剪贴板、通知、徽章、截图源获取

@@ -71,6 +71,55 @@
 - 当用户明确要求时才执行 E2E 测试
 - 涉及 E2E 测试时，**必须先加载 `e2e-test` skill**
 
+## Electron 桌面壳子开发
+
+壳子代码在 `ui/electron/` 下，采用 ESM 主进程 + CommonJS preload（sandbox 要求 preload 必须是 `.cjs`）。
+
+### 本地开发
+
+```bash
+# 1 个终端：起前端 dev 服务器（Vite, http://localhost:5173）
+pnpm dev
+
+# 另 1 个终端：起 Electron 壳子（会加载 http://localhost:5173）
+pnpm electron:dev
+```
+
+开发模式下 DevTools 自动打开（`detach` 模式）；生产模式加载 `https://im.coclaw.net`。
+
+### 构建
+
+```bash
+# Windows NSIS 安装包（WSL2 上需先装 wine：sudo apt install wine）
+pnpm electron:build:win
+
+# Windows portable（免安装版，不参与自动更新）
+pnpm electron:build:win:portable
+
+# macOS DMG（仅 macOS + 代码签名环境下可构建）
+pnpm electron:build:mac
+```
+
+产物在 `ui/dist-electron/`。发布见 `deploy/static/releases/README.md`。
+
+### 测试
+
+```bash
+# 壳子测试独立跑（vitest.electron.config.js，node 环境）
+pnpm test:electron
+
+# src 和 electron 全跑
+pnpm test
+```
+
+### 壳子版本维护
+
+壳子版本独立于 `@coclaw/ui` 的 npm 版本，写在 `ui/electron-builder.yaml` 的 `extraMetadata.version`，手工修改。规则详见 `docs/versioning.md` 的 "Electron 壳子版本独立维护" 小节。
+
+### 设计文档
+
+`docs/designs/electron-desktop-shell.md` —— 涵盖壳子架构、安全模型、权限模型、截图、自动更新、构建分发等完整设计。
+
 ## 移动端子页面适配
 
 - 非底部导航直达的子页面（如 AddBotPage、AboutPage、ChatPage），统一使用 `MobilePageHeader` 组件提供移动端 header（含返回按钮）
