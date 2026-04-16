@@ -18,11 +18,11 @@ files:
 
 asar: true
 
+# 自动更新源：走 CoClaw 自己的 CDN，规避 GitHub Releases 的国内访问不稳定。
+# 发布产物（nsis exe、latest.yml、blockmap）需同步到 deploy 下的 /downloads/ 静态路径。
 publish:
-  provider: github
-  owner: AYuaner
-  repo: coclaw
-  releaseType: release
+  provider: generic
+  url: https://im.coclaw.net/downloads/
 
 # ---- Windows ----
 win:

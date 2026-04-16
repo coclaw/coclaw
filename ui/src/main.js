@@ -8,6 +8,7 @@ import { router } from './router/index.js';
 import { installGlobalErrorHandlers } from './utils/global-error-handler.js';
 import { initCapacitorApp } from './utils/capacitor-app.js';
 import { initTauriApp } from './utils/tauri-app.js';
+import { initElectronApp } from './utils/electron-app.js';
 import { startUpdateCheck } from './services/app-update.js';
 import { useDraftStore } from './stores/draft.store.js';
 import './stores/claw-lifecycle.js'; // 注册 claw 生命周期回调（须在 claws.store action 被调用前）
@@ -27,6 +28,7 @@ app.mount('#app');
 useDraftStore().initPersist();
 initCapacitorApp(router);
 initTauriApp(router);
+initElectronApp(router);
 startUpdateCheck();
 
 console.log('[app] mounted');

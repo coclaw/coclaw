@@ -5,7 +5,12 @@ import windowStateKeeper from 'electron-window-state';
 import { initTray } from './tray.js';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
-import { setupSingleInstance, registerProtocol } from './deep-link.js';
+import {
+	setupSingleInstance,
+	registerProtocol,
+	bootstrapDeepLinkFromArgv,
+	flushPendingDeepLink,
+} from './deep-link.js';
 import { initUpdater } from './updater.js';
 import { getAppTitle, t } from './locale.js';
 
@@ -14,6 +19,22 @@ const isDev = !app.isPackaged;
 
 const REMOTE_URL = 'https://im.coclaw.net';
 const DEV_URL = 'http://localhost:5173';
+
+/** 信任的导航来源（严格 origin 匹配） */
+const TRUSTED_ORIGINS = new Set([REMOTE_URL, DEV_URL]);
+
+/**
+ * 严格的信任 URL 判定：基于 URL.origin 精确匹配，防子域名前缀绕过
+ * @param {string} urlStr
+ */
+function isTrustedUrl(urlStr) {
+	try {
+		return TRUSTED_ORIGINS.has(new URL(urlStr).origin);
+	}
+	catch {
+		return false;
+	}
+}
 
 /** 当前主窗口引用，供各模块通过 getMainWindow() 获取 */
 let mainWin = null;
@@ -49,6 +70,8 @@ if (!gotLock) {
 			title: appTitle,
 			icon: path.join(__dirname, '../build-resources/icon.png'),
 			autoHideMenuBar: true,
+			// 远程加载有 TLS + 网络耗时，延迟到 ready-to-show 再显示，规避首屏白闪
+			show: false,
 			webPreferences: {
 				preload: path.join(__dirname, 'preload.cjs'),
 				contextIsolation: true,
@@ -67,19 +90,27 @@ if (!gotLock) {
 		mainWindowState.manage(win);
 		mainWin = win;
 
+		win.once('ready-to-show', () => {
+			win.show();
+		});
+
 		// 加载页面
 		const url = isDev ? DEV_URL : REMOTE_URL;
 		win.loadURL(url);
+
+		// 页面加载完成后 flush 早期累积的 deep-link
+		win.webContents.on('did-finish-load', () => {
+			flushPendingDeepLink(win);
+		});
 
 		// 开发模式打开 DevTools
 		if (isDev) {
 			win.webContents.openDevTools({ mode: 'detach' });
 		}
 
-		// 阻止导航到非信任域
+		// 阻止导航到非信任域（严格 origin 匹配）
 		win.webContents.on('will-navigate', (event, navUrl) => {
-			const allowed = navUrl.startsWith(REMOTE_URL) || navUrl.startsWith(DEV_URL);
-			if (!allowed) {
+			if (!isTrustedUrl(navUrl)) {
 				event.preventDefault();
 			}
 		});
@@ -190,6 +221,10 @@ if (!gotLock) {
 
 		// 创建主窗口
 		createWindow();
+
+		// Windows 冷启动：若 process.argv 中携带 coclaw:// URL（protocol handler 首次触发），
+		// 在窗口创建后投递（pending buffer 会等 did-finish-load 再 flush）
+		bootstrapDeepLinkFromArgv(process.argv);
 
 		// 以下只注册一次，通过 getMainWindow() 获取当前窗口
 		registerIpcHandlers(getMainWindow);

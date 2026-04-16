@@ -80,6 +80,14 @@ export function initTray(app, getWin) {
 			// 停止任务栏闪烁
 			win.flashFrame(false);
 		});
+
+		// 窗口失焦/隐藏时通知 Web 端，对应 Capacitor 的 app:background
+		win.on('blur', () => {
+			if (!win.isDestroyed()) win.webContents.send('window-blur');
+		});
+		win.on('hide', () => {
+			if (!win.isDestroyed()) win.webContents.send('window-blur');
+		});
 	}
 
 	// 绑定当前窗口

@@ -50,10 +50,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
 	// ---- 下载 ----
 	downloadFile: (url) => ipcRenderer.invoke('download:start', url),
 
+	// ---- 自动更新 ----
+	checkForUpdatesNow: () => ipcRenderer.invoke('updater:checkForUpdates'),
+	downloadUpdate: () => ipcRenderer.invoke('updater:downloadUpdate'),
+	quitAndInstall: () => ipcRenderer.invoke('updater:quitAndInstall'),
+	// 获取 renderer 挂载前已触发的 update-available（避免早期事件丢失）
+	getPendingUpdate: () => ipcRenderer.invoke('updater:getPending'),
+
 	// ---- 事件监听（主进程 → 渲染进程）----
 	onDeepLink: (cb) => ipcRenderer.on('deep-link', (_e, url) => cb(url)),
 	onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, info) => cb(info)),
+	onUpdateDownloadProgress: (cb) => ipcRenderer.on('update-download-progress', (_e, info) => cb(info)),
+	onUpdateDownloaded: (cb) => ipcRenderer.on('update-downloaded', (_e, info) => cb(info)),
+	onUpdateNotAvailable: (cb) => ipcRenderer.on('update-not-available', (_e, info) => cb(info)),
+	onUpdateError: (cb) => ipcRenderer.on('update-error', (_e, info) => cb(info)),
 	onWindowFocus: (cb) => ipcRenderer.on('window-focus', () => cb()),
+	onWindowBlur: (cb) => ipcRenderer.on('window-blur', () => cb()),
 	onScreenshotTrigger: (cb) => ipcRenderer.on('screenshot-trigger', () => cb()),
 	onDownloadProgress: (cb) => ipcRenderer.on('download:progress', (_e, info) => cb(info)),
 	onDownloadDone: (cb) => ipcRenderer.on('download:done', (_e, info) => cb(info)),
