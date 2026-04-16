@@ -145,10 +145,10 @@ describe('initUpdater — 正常模式', () => {
 		]));
 	});
 
-	test('autoDownload 被设为 false（让用户确认）', () => {
-		autoUpdaterMock.autoDownload = true;
+	test('autoDownload 被设为 true（无感更新，对齐 Capacitor）', () => {
+		autoUpdaterMock.autoDownload = false;
 		initUpdater(getWin);
-		expect(autoUpdaterMock.autoDownload).toBe(false);
+		expect(autoUpdaterMock.autoDownload).toBe(true);
 	});
 
 	test('update-available 事件 → send 到 renderer + 缓存 pending', async () => {

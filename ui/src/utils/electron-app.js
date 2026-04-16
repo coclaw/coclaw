@@ -3,13 +3,18 @@
  *
  * - Deep Link (coclaw://xxx) 解析并路由跳转
  * - 窗口 focus/blur 桥接为 app:foreground / app:background（与 Capacitor 对齐）
- * - autoUpdater 事件桥接为 window CustomEvent，供 UI 组件订阅
- * - 截图快捷键、文件下载进度/完成事件桥接
+ * - 前后台切换调 remoteLog 上报（与 Capacitor 对齐 app.stateChange 埋点）
  *
- * preload 的 onXxx 返回 unsubscribe；本模块保存所有 unsub，
+ * 自动更新走 electron-updater 后台无感模式（autoDownload=true，下次退出时安装），
+ * 与 Capacitor /version.json 路径一致，因此 renderer 不再桥接 update-* 事件。
+ * 文件下载走 OS 自带下载条提示，与 Capacitor 系统分享一致，也不桥接 download-* 事件。
+ * 截图全局快捷键暂未启用（无对应业务），相关事件桥接同步移除。
+ *
+ * preload 的 onXxx 仍返回 unsubscribe；本模块保存订阅的 unsub，
  * disposeElectronApp() 可清理全部订阅（HMR 重载/测试 teardown 场景）
  */
 import { isElectronApp } from './platform.js';
+import { remoteLog } from '../services/remote-log.js';
 
 let unsubs = [];
 
@@ -61,52 +66,15 @@ export function initElectronApp(router) {
 		}
 	}));
 
-	// 窗口焦点 → Capacitor 风格事件（app-update / claws.store / ChatPage 等模块依赖）
+	// 窗口焦点 → Capacitor 风格事件 + 远程日志埋点
+	// （app-update / claws.store / ChatPage 等模块依赖 app:foreground/background）
 	track(api.onWindowFocus(() => {
+		remoteLog('app.stateChange active=true source=electron');
 		window.dispatchEvent(new CustomEvent('app:foreground'));
 	}));
 	track(api.onWindowBlur(() => {
+		remoteLog('app.stateChange active=false source=electron');
 		window.dispatchEvent(new CustomEvent('app:background'));
-	}));
-
-	// 自动更新全流程事件 → CustomEvent
-	track(api.onUpdateAvailable((info) => {
-		console.log('[electron] update available: %s', info?.version);
-		window.dispatchEvent(new CustomEvent('electron:update-available', { detail: info }));
-	}));
-	track(api.onUpdateDownloadProgress((info) => {
-		window.dispatchEvent(new CustomEvent('electron:update-download-progress', { detail: info }));
-	}));
-	track(api.onUpdateDownloaded((info) => {
-		console.log('[electron] update downloaded: %s', info?.version);
-		window.dispatchEvent(new CustomEvent('electron:update-downloaded', { detail: info }));
-	}));
-	track(api.onUpdateNotAvailable((info) => {
-		window.dispatchEvent(new CustomEvent('electron:update-not-available', { detail: info }));
-	}));
-	track(api.onUpdateError((info) => {
-		console.warn('[electron] update error:', info?.message);
-		window.dispatchEvent(new CustomEvent('electron:update-error', { detail: info }));
-	}));
-	// 补发 renderer 挂载前主进程已缓存的 update-available（若有）
-	api.getPendingUpdate().then((info) => {
-		if (info) {
-			console.log('[electron] pending update restored: %s', info.version);
-			window.dispatchEvent(new CustomEvent('electron:update-available', { detail: info }));
-		}
-	}).catch((e) => console.warn('[electron] getPendingUpdate failed:', e));
-
-	// 截图全局快捷键
-	track(api.onScreenshotTrigger(() => {
-		window.dispatchEvent(new CustomEvent('electron:screenshot-trigger'));
-	}));
-
-	// 文件下载
-	track(api.onDownloadProgress((info) => {
-		window.dispatchEvent(new CustomEvent('electron:download-progress', { detail: info }));
-	}));
-	track(api.onDownloadDone((info) => {
-		window.dispatchEvent(new CustomEvent('electron:download-done', { detail: info }));
 	}));
 
 	console.log('[electron] initialized');

@@ -5,7 +5,14 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
  *
  * 关键：isElectronApp 是 platform.js 顶层 `!!window.electronAPI`，首次 import 时求值。
  * 本测试通过 vi.mock 替换 platform.js 控制 isElectronApp，以便验证初始化流程。
+ *
+ * 桥接已精简到 3 个订阅（deep-link / window-focus / window-blur），
+ * update-* / download-* / screenshot-trigger 在 review 后撤掉（无业务消费）。
  */
+
+vi.mock('../services/remote-log.js', () => ({
+	remoteLog: vi.fn(),
+}));
 
 // --- 非 Electron 环境 ---
 describe('initElectronApp — 非 Electron 环境', () => {
@@ -33,18 +40,9 @@ describe('initElectronApp — Electron 环境', () => {
 		listeners = {};
 		router = { push: vi.fn() };
 		api = {
-			onDeepLink: vi.fn((cb) => { listeners.deepLink = cb; }),
-			onWindowFocus: vi.fn((cb) => { listeners.focus = cb; }),
-			onWindowBlur: vi.fn((cb) => { listeners.blur = cb; }),
-			onUpdateAvailable: vi.fn((cb) => { listeners.updateAvailable = cb; }),
-			onUpdateDownloadProgress: vi.fn((cb) => { listeners.downloadProgress = cb; }),
-			onUpdateDownloaded: vi.fn((cb) => { listeners.downloaded = cb; }),
-			onUpdateNotAvailable: vi.fn((cb) => { listeners.notAvailable = cb; }),
-			onUpdateError: vi.fn((cb) => { listeners.updateError = cb; }),
-			getPendingUpdate: vi.fn().mockResolvedValue(null),
-			onScreenshotTrigger: vi.fn((cb) => { listeners.screenshot = cb; }),
-			onDownloadProgress: vi.fn((cb) => { listeners.dlProgress = cb; }),
-			onDownloadDone: vi.fn((cb) => { listeners.dlDone = cb; }),
+			onDeepLink: vi.fn((cb) => { listeners.deepLink = cb; return () => {}; }),
+			onWindowFocus: vi.fn((cb) => { listeners.focus = cb; return () => {}; }),
+			onWindowBlur: vi.fn((cb) => { listeners.blur = cb; return () => {}; }),
 		};
 		window.electronAPI = api;
 		vi.doMock('./platform.js', () => ({ isElectronApp: true }));
@@ -54,21 +52,12 @@ describe('initElectronApp — Electron 环境', () => {
 		delete window.electronAPI;
 	});
 
-	test('订阅全部 12 个事件通道', async () => {
+	test('订阅 3 个事件通道（deep-link / focus / blur）', async () => {
 		const { initElectronApp } = await import('./electron-app.js');
 		initElectronApp(router);
 		expect(api.onDeepLink).toHaveBeenCalledTimes(1);
 		expect(api.onWindowFocus).toHaveBeenCalledTimes(1);
 		expect(api.onWindowBlur).toHaveBeenCalledTimes(1);
-		expect(api.onUpdateAvailable).toHaveBeenCalledTimes(1);
-		expect(api.onUpdateDownloadProgress).toHaveBeenCalledTimes(1);
-		expect(api.onUpdateDownloaded).toHaveBeenCalledTimes(1);
-		expect(api.onUpdateNotAvailable).toHaveBeenCalledTimes(1);
-		expect(api.onUpdateError).toHaveBeenCalledTimes(1);
-		expect(api.getPendingUpdate).toHaveBeenCalledTimes(1);
-		expect(api.onScreenshotTrigger).toHaveBeenCalledTimes(1);
-		expect(api.onDownloadProgress).toHaveBeenCalledTimes(1);
-		expect(api.onDownloadDone).toHaveBeenCalledTimes(1);
 	});
 
 	test('deep-link 有效 URL → router.push 对应路径', async () => {
@@ -95,114 +84,28 @@ describe('initElectronApp — Electron 环境', () => {
 		warn.mockRestore();
 	});
 
-	test('window-focus → 派发 app:foreground', async () => {
+	test('window-focus → 派发 app:foreground 且 remoteLog', async () => {
 		const { initElectronApp } = await import('./electron-app.js');
+		const { remoteLog } = await import('../services/remote-log.js');
 		initElectronApp(router);
 		const fn = vi.fn();
 		window.addEventListener('app:foreground', fn);
 		listeners.focus();
 		expect(fn).toHaveBeenCalledTimes(1);
+		expect(remoteLog).toHaveBeenCalledWith(expect.stringContaining('active=true'));
 		window.removeEventListener('app:foreground', fn);
 	});
 
-	test('window-blur → 派发 app:background', async () => {
+	test('window-blur → 派发 app:background 且 remoteLog', async () => {
 		const { initElectronApp } = await import('./electron-app.js');
+		const { remoteLog } = await import('../services/remote-log.js');
 		initElectronApp(router);
 		const fn = vi.fn();
 		window.addEventListener('app:background', fn);
 		listeners.blur();
 		expect(fn).toHaveBeenCalledTimes(1);
+		expect(remoteLog).toHaveBeenCalledWith(expect.stringContaining('active=false'));
 		window.removeEventListener('app:background', fn);
-	});
-
-	test('onUpdateAvailable → 派发 electron:update-available', async () => {
-		const { initElectronApp } = await import('./electron-app.js');
-		initElectronApp(router);
-		const fn = vi.fn();
-		window.addEventListener('electron:update-available', fn);
-		listeners.updateAvailable({ version: '1.2.3' });
-		expect(fn).toHaveBeenCalledTimes(1);
-		expect(fn.mock.calls[0][0].detail).toEqual({ version: '1.2.3' });
-		window.removeEventListener('electron:update-available', fn);
-	});
-
-	test('onUpdateDownloadProgress / Downloaded / NotAvailable / Error 各自派发对应事件', async () => {
-		const { initElectronApp } = await import('./electron-app.js');
-		initElectronApp(router);
-		const names = [
-			'electron:update-download-progress',
-			'electron:update-downloaded',
-			'electron:update-not-available',
-			'electron:update-error',
-		];
-		const fns = names.map(() => vi.fn());
-		names.forEach((n, i) => window.addEventListener(n, fns[i]));
-		listeners.downloadProgress({ percent: 50 });
-		listeners.downloaded({ version: '1.2.3' });
-		listeners.notAvailable({ version: '1.0.0' });
-		listeners.updateError({ message: 'boom' });
-		fns.forEach((fn) => expect(fn).toHaveBeenCalledTimes(1));
-		names.forEach((n, i) => window.removeEventListener(n, fns[i]));
-	});
-
-	test('getPendingUpdate 返回非 null → 派发 electron:update-available', async () => {
-		api.getPendingUpdate.mockResolvedValueOnce({ version: '9.9.9' });
-		const { initElectronApp } = await import('./electron-app.js');
-		const fn = vi.fn();
-		window.addEventListener('electron:update-available', fn);
-		initElectronApp(router);
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(fn).toHaveBeenCalledTimes(1);
-		expect(fn.mock.calls[0][0].detail).toEqual({ version: '9.9.9' });
-		window.removeEventListener('electron:update-available', fn);
-	});
-
-	test('getPendingUpdate 返回 null → 不派发', async () => {
-		const { initElectronApp } = await import('./electron-app.js');
-		const fn = vi.fn();
-		window.addEventListener('electron:update-available', fn);
-		initElectronApp(router);
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(fn).not.toHaveBeenCalled();
-		window.removeEventListener('electron:update-available', fn);
-	});
-
-	test('getPendingUpdate 拒绝 → catch warn 且不抛', async () => {
-		api.getPendingUpdate.mockRejectedValueOnce(new Error('rpc-failed'));
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		const { initElectronApp } = await import('./electron-app.js');
-		initElectronApp(router);
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(warn).toHaveBeenCalled();
-		warn.mockRestore();
-	});
-
-	test('onScreenshotTrigger → 派发 electron:screenshot-trigger', async () => {
-		const { initElectronApp } = await import('./electron-app.js');
-		initElectronApp(router);
-		const fn = vi.fn();
-		window.addEventListener('electron:screenshot-trigger', fn);
-		listeners.screenshot();
-		expect(fn).toHaveBeenCalledTimes(1);
-		window.removeEventListener('electron:screenshot-trigger', fn);
-	});
-
-	test('onDownloadProgress / onDownloadDone 派发对应 CustomEvent', async () => {
-		const { initElectronApp } = await import('./electron-app.js');
-		initElectronApp(router);
-		const progFn = vi.fn();
-		const doneFn = vi.fn();
-		window.addEventListener('electron:download-progress', progFn);
-		window.addEventListener('electron:download-done', doneFn);
-		listeners.dlProgress({ percent: 0.5 });
-		listeners.dlDone({ state: 'completed' });
-		expect(progFn).toHaveBeenCalledTimes(1);
-		expect(doneFn).toHaveBeenCalledTimes(1);
-		window.removeEventListener('electron:download-progress', progFn);
-		window.removeEventListener('electron:download-done', doneFn);
 	});
 });
 
@@ -223,15 +126,6 @@ describe('disposeElectronApp & 重复 init', () => {
 			onDeepLink: makeSub('deepLink'),
 			onWindowFocus: makeSub('focus'),
 			onWindowBlur: makeSub('blur'),
-			onUpdateAvailable: makeSub('updateAvail'),
-			onUpdateDownloadProgress: makeSub('updateProg'),
-			onUpdateDownloaded: makeSub('updateDone'),
-			onUpdateNotAvailable: makeSub('updateNa'),
-			onUpdateError: makeSub('updateErr'),
-			getPendingUpdate: vi.fn().mockResolvedValue(null),
-			onScreenshotTrigger: makeSub('screenshot'),
-			onDownloadProgress: makeSub('dlProg'),
-			onDownloadDone: makeSub('dlDone'),
 		};
 		window.electronAPI = api;
 		vi.doMock('./platform.js', () => ({ isElectronApp: true }));
@@ -247,19 +141,16 @@ describe('disposeElectronApp & 重复 init', () => {
 		expect(unsubCalls).toHaveLength(0);
 
 		disposeElectronApp();
-		// 11 个同步订阅均应被 unsub（getPendingUpdate 不计入，它不是订阅）
-		expect(unsubCalls).toHaveLength(11);
+		expect(unsubCalls).toHaveLength(3);
 	});
 
 	test('重复 initElectronApp 先清旧订阅再建新的', async () => {
 		const { initElectronApp } = await import('./electron-app.js');
 		initElectronApp(router);
-		// 第一轮订阅后未 unsub
 		expect(unsubCalls).toHaveLength(0);
 
-		// 第二轮 init：旧订阅被 unsub，新订阅建立
 		initElectronApp(router);
-		expect(unsubCalls).toHaveLength(11);
+		expect(unsubCalls).toHaveLength(3);
 	});
 
 	test('某个 unsub 抛错不影响其它 unsub', async () => {
@@ -272,8 +163,8 @@ describe('disposeElectronApp & 重复 init', () => {
 
 		expect(() => disposeElectronApp()).not.toThrow();
 		expect(warn).toHaveBeenCalled();
-		// 其它 10 个 unsub 正常执行
-		expect(unsubCalls).toHaveLength(10);
+		// 其它 2 个 unsub 正常执行
+		expect(unsubCalls).toHaveLength(2);
 
 		warn.mockRestore();
 	});
@@ -283,9 +174,9 @@ describe('disposeElectronApp & 重复 init', () => {
 		api.onDeepLink = vi.fn();
 		const { initElectronApp, disposeElectronApp } = await import('./electron-app.js');
 		initElectronApp(router);
-		// 仅其它 10 个订阅的 unsub 会被记录；onDeepLink 无 unsub，被 track 过滤
+		// 仅其它 2 个订阅的 unsub 会被记录；onDeepLink 无 unsub，被 track 过滤
 		disposeElectronApp();
-		expect(unsubCalls).toHaveLength(10);
+		expect(unsubCalls).toHaveLength(2);
 	});
 
 	test('非 Electron 环境 disposeElectronApp no-op 不抛', async () => {

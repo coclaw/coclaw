@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import windowStateKeeper from 'electron-window-state';
 import { initTray, attachMainWindow, disposeTray } from './tray.js';
-import log from 'electron-log';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
 import {
@@ -226,17 +225,8 @@ if (!gotLock) {
 			initUpdater(getMainWindow);
 		}
 
-		// 全局快捷键：截图
-		const screenshotKey = process.platform === 'darwin'
-			? 'Command+Shift+A'
-			: 'Ctrl+Shift+A';
-		const registered = globalShortcut.register(screenshotKey, () => {
-			const win = getMainWindow();
-			if (win) win.webContents.send('screenshot-trigger');
-		});
-		if (!registered) {
-			log.warn(`[main] 截图快捷键 ${screenshotKey} 注册失败，可能已被其他应用占用`);
-		}
+		// 全局快捷键目前无业务消费，暂不注册；preload 的 getScreenSources 等
+		// 截图相关 API 保留作为预埋，真有截图需求时再接上 globalShortcut.register
 	});
 
 	// macOS：点击 Dock 图标时，若无窗口则重建

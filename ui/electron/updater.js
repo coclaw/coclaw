@@ -31,7 +31,9 @@ export function initUpdater(getWin) {
 	initialized = true;
 
 	autoUpdater.logger = log;
-	autoUpdater.autoDownload = false; // 让用户确认后再下载
+	// 无感更新：发现新版本立即下载、下次退出时自动应用，与 Capacitor /version.json 路径一致
+	// renderer 不再需要 UI 弹窗"是否下载"，避免维护两套更新交互
+	autoUpdater.autoDownload = true;
 
 	autoUpdater.on('update-available', (info) => {
 		const payload = {
