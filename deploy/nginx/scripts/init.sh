@@ -4,6 +4,11 @@ set -e
 HTTPS_MODE="${HTTPS_MODE:-auto}"
 MODES_DIR="/etc/nginx/modes"
 TEMPLATES_DIR="/etc/nginx/templates"
+RELEASES_DIR="/usr/share/nginx/html/releases"
+
+# 初始化发布产物目录（win/mac/android 三分子目录，对应 nginx /releases/ 路由）
+# 幂等：已存在不报错。全新部署首次自动创建；已运营部署 restart nginx 时自动补齐
+mkdir -p "$RELEASES_DIR/win" "$RELEASES_DIR/mac" "$RELEASES_DIR/android"
 
 case "$HTTPS_MODE" in
 	off)
