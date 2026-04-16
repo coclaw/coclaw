@@ -2,11 +2,30 @@ import {
 	ipcMain, dialog, clipboard, shell, nativeImage, session,
 	Notification, desktopCapturer, systemPreferences, app,
 } from 'electron';
+import log from 'electron-log';
 import Store from 'electron-store';
 
 const store = new Store();
 
 let registered = false;
+
+/**
+ * ipcMain.handle 的安全包装：handler 抛错时写 electron-log 并重抛
+ * （重抛是为了让 renderer 收到 IPC reject 能感知失败；只是补一份主进程日志便于排查）
+ * @param {string} channel
+ * @param {(event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown} fn
+ */
+function safeHandle(channel, fn) {
+	ipcMain.handle(channel, async (event, ...args) => {
+		try {
+			return await fn(event, ...args);
+		}
+		catch (err) {
+			log.error(`[ipc] ${channel} failed:`, err);
+			throw err;
+		}
+	});
+}
 
 /**
  * 注册所有 IPC 处理器（仅调用一次）。
@@ -20,32 +39,32 @@ export function registerIpcHandlers(getWin) {
 	registered = true;
 
 	// ---- 对话框 ----
-	ipcMain.handle('dialog:openFile', async (_, options) => {
+	safeHandle('dialog:openFile', async (_, options) => {
 		const win = getWin();
 		return win ? dialog.showOpenDialog(win, options) : null;
 	});
-	ipcMain.handle('dialog:saveFile', async (_, options) => {
+	safeHandle('dialog:saveFile', async (_, options) => {
 		const win = getWin();
 		return win ? dialog.showSaveDialog(win, options) : null;
 	});
 
 	// ---- 剪贴板 ----
-	ipcMain.handle('clipboard:writeText', (_, text) => {
+	safeHandle('clipboard:writeText', (_, text) => {
 		clipboard.writeText(text);
 	});
-	ipcMain.handle('clipboard:readText', () => {
+	safeHandle('clipboard:readText', () => {
 		return clipboard.readText();
 	});
-	ipcMain.handle('clipboard:writeImage', (_, dataUrl) => {
+	safeHandle('clipboard:writeImage', (_, dataUrl) => {
 		clipboard.writeImage(nativeImage.createFromDataURL(dataUrl));
 	});
-	ipcMain.handle('clipboard:readImage', () => {
+	safeHandle('clipboard:readImage', () => {
 		const img = clipboard.readImage();
 		return img.isEmpty() ? null : img.toDataURL();
 	});
 
 	// ---- 通知 ----
-	ipcMain.handle('notification:show', (_, title, body, options = {}) => {
+	safeHandle('notification:show', (_, title, body, options = {}) => {
 		const notif = new Notification({ title, body, ...options });
 		notif.on('click', () => {
 			const win = getWin();
@@ -55,7 +74,7 @@ export function registerIpcHandlers(getWin) {
 	});
 
 	// ---- 外部链接 ----
-	ipcMain.handle('shell:openExternal', (_, url) => {
+	safeHandle('shell:openExternal', (_, url) => {
 		return shell.openExternal(url);
 	});
 
@@ -101,7 +120,7 @@ export function registerIpcHandlers(getWin) {
 	});
 
 	// ---- 截图 ----
-	ipcMain.handle('screenshot:getSources', async () => {
+	safeHandle('screenshot:getSources', async () => {
 		const sources = await desktopCapturer.getSources({
 			types: ['screen', 'window'],
 			thumbnailSize: { width: 1920, height: 1080 },
@@ -112,7 +131,7 @@ export function registerIpcHandlers(getWin) {
 			thumbnail: s.thumbnail.toDataURL(),
 		}));
 	});
-	ipcMain.handle('screenshot:checkPermission', () => {
+	safeHandle('screenshot:checkPermission', () => {
 		if (process.platform === 'darwin') {
 			return systemPreferences.getMediaAccessStatus('screen');
 		}
@@ -121,7 +140,7 @@ export function registerIpcHandlers(getWin) {
 
 	// ---- 下载管理 ----
 	// Web 端主动触发下载（使用 Electron 原生 downloadURL）
-	ipcMain.handle('download:start', (_, url) => {
+	safeHandle('download:start', (_, url) => {
 		const win = getWin();
 		if (win) win.webContents.downloadURL(url);
 	});
@@ -160,15 +179,15 @@ export function registerIpcHandlers(getWin) {
 	});
 
 	// ---- 应用信息 ----
-	ipcMain.handle('app:getShellVersion', () => {
+	safeHandle('app:getShellVersion', () => {
 		return app.getVersion();
 	});
 
 	// ---- 设置 ----
-	ipcMain.handle('store:get', (_, key) => {
+	safeHandle('store:get', (_, key) => {
 		return store.get(key);
 	});
-	ipcMain.handle('store:set', (_, key, value) => {
+	safeHandle('store:set', (_, key, value) => {
 		store.set(key, value);
 	});
 }

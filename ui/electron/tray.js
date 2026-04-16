@@ -116,7 +116,7 @@ export function attachMainWindow(app, win) {
 	});
 }
 
-/** 退出前清理：停闪动、destroy 托盘 */
+/** 退出前清理：停闪动、destroy 托盘、移除 ipcMain 监听（对称 initTray） */
 export function disposeTray() {
 	if (flashTimer) {
 		clearInterval(flashTimer);
@@ -129,6 +129,8 @@ export function disposeTray() {
 	isUnread = false;
 	cachedNormalIcon = null;
 	cachedUnreadIcon = null;
+	ipcMain.removeAllListeners('tray:setTooltip');
+	ipcMain.removeAllListeners('tray:setUnread');
 }
 
 function startFlash() {

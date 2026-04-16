@@ -75,6 +75,16 @@ const hoisted = vi.hoisted(() => {
 	};
 });
 
+const logMock = vi.hoisted(() => ({
+	error: vi.fn(),
+	warn: vi.fn(),
+	info: vi.fn(),
+}));
+
+vi.mock('electron-log', () => ({
+	default: logMock,
+}));
+
 vi.mock('electron', () => ({
 	ipcMain: hoisted.ipcMain,
 	dialog: hoisted.dialog,
@@ -485,6 +495,36 @@ describe('app / store', () => {
 	test('store:get 未设置的 key 返回 undefined', async () => {
 		const res = await hoisted.invokeHandlers['store:get']({}, 'nonexistent');
 		expect(res).toBeUndefined();
+	});
+});
+
+describe('safeHandle 错误处理', () => {
+	test('handler 抛错 → log.error 写日志且 reject 重抛给 renderer', async () => {
+		logMock.error.mockClear();
+		hoisted.desktopCapturer.getSources.mockRejectedValueOnce(new Error('no-permission'));
+		await expect(hoisted.invokeHandlers['screenshot:getSources']())
+			.rejects.toThrow('no-permission');
+		expect(logMock.error).toHaveBeenCalledWith(
+			expect.stringContaining('screenshot:getSources'),
+			expect.any(Error),
+		);
+	});
+
+	test('handler 同步抛错 → log.error 写日志', async () => {
+		logMock.error.mockClear();
+		hoisted.clipboard.writeImage.mockImplementationOnce(() => { throw new Error('clipboard-busy'); });
+		await expect(hoisted.invokeHandlers['clipboard:writeImage']({}, 'data:png,x'))
+			.rejects.toThrow('clipboard-busy');
+		expect(logMock.error).toHaveBeenCalledWith(
+			expect.stringContaining('clipboard:writeImage'),
+			expect.any(Error),
+		);
+	});
+
+	test('handler 正常返回 → 不写错误日志', async () => {
+		logMock.error.mockClear();
+		await hoisted.invokeHandlers['app:getShellVersion']();
+		expect(logMock.error).not.toHaveBeenCalled();
 	});
 });
 

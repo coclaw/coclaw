@@ -31,6 +31,9 @@ vi.mock('electron', () => ({
 		on: vi.fn((channel, handler) => {
 			ipcHandlers[channel] = handler;
 		}),
+		removeAllListeners: vi.fn((channel) => {
+			delete ipcHandlers[channel];
+		}),
 	},
 }));
 
@@ -160,7 +163,7 @@ describe('attachMainWindow', () => {
 });
 
 describe('disposeTray', () => {
-	test('清 flashTimer + destroy tray', () => {
+	test('清 flashTimer + destroy tray + 移除 tray:* 监听', async () => {
 		const fakeApp = { on: vi.fn() };
 		const fakeWin = { on: vi.fn(), isVisible: () => true, webContents: { send: vi.fn() } };
 		vi.useFakeTimers();
@@ -169,9 +172,13 @@ describe('disposeTray', () => {
 			ipcHandlers['tray:setUnread'](null, true); // 启动闪烁
 			mockTray.destroy.mockClear();
 
+			const { ipcMain } = await import('electron');
+			ipcMain.removeAllListeners.mockClear();
 			disposeTray();
 
 			assert.equal(mockTray.destroy.mock.calls.length, 1);
+			assert.deepEqual(ipcMain.removeAllListeners.mock.calls,
+				[['tray:setTooltip'], ['tray:setUnread']]);
 		}
 		finally {
 			vi.useRealTimers();
