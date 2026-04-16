@@ -271,21 +271,55 @@ describe('window/tray effects', () => {
 		finally { restorePlatform(); }
 	});
 
-	test('window:setOverlayIcon 在 macOS no-op', () => {
+	test('window:setOverlayIcon 在 macOS 转调 Dock badge count（description 是数字）', () => {
 		setPlatform('darwin');
 		try {
 			fakeWin.setOverlayIcon.mockClear();
+			hoisted.app.setBadgeCount.mockClear();
 			hoisted.onHandlers['window:setOverlayIcon']({}, 'data:png,x', '3');
+			expect(fakeWin.setOverlayIcon).not.toHaveBeenCalled();
+			expect(hoisted.app.setBadgeCount).toHaveBeenCalledWith(3);
+		}
+		finally { restorePlatform(); }
+	});
+
+	test('window:setOverlayIcon 在 macOS description 非数字 → 小红点（badge=1）', () => {
+		setPlatform('darwin');
+		try {
+			hoisted.app.setBadgeCount.mockClear();
+			hoisted.onHandlers['window:setOverlayIcon']({}, 'data:png,x', 'unread');
+			expect(hoisted.app.setBadgeCount).toHaveBeenCalledWith(1);
+		}
+		finally { restorePlatform(); }
+	});
+
+	test('window:setOverlayIcon 在 Linux no-op', () => {
+		setPlatform('linux');
+		try {
+			hoisted.app.setBadgeCount.mockClear();
+			fakeWin.setOverlayIcon.mockClear();
+			hoisted.onHandlers['window:setOverlayIcon']({}, 'data:png,x', '3');
+			expect(hoisted.app.setBadgeCount).not.toHaveBeenCalled();
 			expect(fakeWin.setOverlayIcon).not.toHaveBeenCalled();
 		}
 		finally { restorePlatform(); }
 	});
 
-	test('window:clearOverlayIcon 仅 Windows 生效', () => {
+	test('window:clearOverlayIcon 仅 Windows 走 setOverlayIcon', () => {
 		setPlatform('win32');
 		try {
 			hoisted.onHandlers['window:clearOverlayIcon']();
 			expect(fakeWin.setOverlayIcon).toHaveBeenCalledWith(null, '');
+		}
+		finally { restorePlatform(); }
+	});
+
+	test('window:clearOverlayIcon 在 macOS 清 badge', () => {
+		setPlatform('darwin');
+		try {
+			hoisted.app.setBadgeCount.mockClear();
+			hoisted.onHandlers['window:clearOverlayIcon']();
+			expect(hoisted.app.setBadgeCount).toHaveBeenCalledWith(0);
 		}
 		finally { restorePlatform(); }
 	});

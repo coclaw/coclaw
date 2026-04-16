@@ -74,11 +74,21 @@ export function registerIpcHandlers(getWin) {
 			const win = getWin();
 			if (win) win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), desc || '');
 		}
+		else if (process.platform === 'darwin') {
+			// macOS 任务栏无 overlay icon；转调 Dock badge count
+			// description 若是数字字符串，解析为数字；否则显示小红点（设为 1）
+			const parsed = parseInt(desc, 10);
+			const count = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+			app.setBadgeCount(count);
+		}
 	});
 	ipcMain.on('window:clearOverlayIcon', () => {
 		if (process.platform === 'win32') {
 			const win = getWin();
 			if (win) win.setOverlayIcon(null, '');
+		}
+		else if (process.platform === 'darwin') {
+			app.setBadgeCount(0);
 		}
 	});
 	ipcMain.on('window:requestAttention', (_, type) => {

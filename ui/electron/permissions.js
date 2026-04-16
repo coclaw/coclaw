@@ -53,7 +53,10 @@ export function setupPermissions(ses) {
 		callback(isTrustedHostname(hostname));
 	});
 
-	// 屏幕捕获请求处理（getDisplayMedia 拦截）
+	// 屏幕捕获请求处理（getDisplayMedia 拦截）。
+	// useSystemPicker: true → macOS 12.3+ / Windows 11 24H2+ 走 OS 原生 picker，
+	// 用户可选择屏/窗口/画面分享，体验和隐私都优于强行选 sources[0]。
+	// 系统不支持原生 picker 时会回落到下面的 callback，这里保持取第一屏的兜底。
 	ses.setDisplayMediaRequestHandler(async (_request, callback) => {
 		const { desktopCapturer } = await import('electron');
 		try {
@@ -66,5 +69,5 @@ export function setupPermissions(ses) {
 		} catch {
 			callback({});
 		}
-	});
+	}, { useSystemPicker: true });
 }

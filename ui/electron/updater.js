@@ -1,14 +1,17 @@
 import electronUpdater from 'electron-updater';
 import log from 'electron-log';
-import { ipcMain } from 'electron';
+import { ipcMain, powerMonitor } from 'electron';
+import Store from 'electron-store';
 
 const { autoUpdater } = electronUpdater;
+const store = new Store();
 
 /** 最近一次 update-available 信息；renderer 挂载前即收到时用于补发 */
 let pendingUpdate = null;
 let initialized = false;
 let initialCheckTimer = null;
 let periodicCheckInterval = null;
+let resumeListener = null;
 
 /**
  * 初始化自动更新（仅调用一次）
@@ -67,6 +70,13 @@ export function initUpdater(getWin) {
 
 	registerIpcHandlers(getWin, false);
 
+	// 用户可在设置页关闭自动检查；已关闭时仅保留手动 checkForUpdates IPC
+	const autoEnabled = store.get('auto_update_enabled', true);
+	if (!autoEnabled) {
+		log.info('[updater] auto-check disabled by user setting');
+		return;
+	}
+
 	// 启动时延迟 30s 检查，避开冷启动网络竞争
 	initialCheckTimer = setTimeout(() => {
 		autoUpdater.checkForUpdates().catch((err) => log.warn('[updater] initial check failed:', err));
@@ -76,9 +86,15 @@ export function initUpdater(getWin) {
 	periodicCheckInterval = setInterval(() => {
 		autoUpdater.checkForUpdates().catch((err) => log.warn('[updater] periodic check failed:', err));
 	}, 4 * 60 * 60 * 1000);
+
+	// 系统休眠后恢复 → 立即检查一次（比 4h 周期更及时）
+	resumeListener = () => {
+		autoUpdater.checkForUpdates().catch((err) => log.warn('[updater] resume check failed:', err));
+	};
+	powerMonitor.on('resume', resumeListener);
 }
 
-/** 退出前清理定时器（生产进程退出 OS 会回收，显式清理可避免测试污染和极端场景句柄泄漏） */
+/** 退出前清理定时器 + powerMonitor 监听（进程退出 OS 会回收，显式清理避免测试污染和极端场景句柄泄漏） */
 export function disposeUpdater() {
 	if (initialCheckTimer) {
 		clearTimeout(initialCheckTimer);
@@ -87,6 +103,10 @@ export function disposeUpdater() {
 	if (periodicCheckInterval) {
 		clearInterval(periodicCheckInterval);
 		periodicCheckInterval = null;
+	}
+	if (resumeListener) {
+		powerMonitor.removeListener('resume', resumeListener);
+		resumeListener = null;
 	}
 }
 
@@ -143,6 +163,8 @@ export function __resetForTest() {
 	pendingUpdate = null;
 	if (initialCheckTimer) clearTimeout(initialCheckTimer);
 	if (periodicCheckInterval) clearInterval(periodicCheckInterval);
+	if (resumeListener) powerMonitor.removeListener?.('resume', resumeListener);
 	initialCheckTimer = null;
 	periodicCheckInterval = null;
+	resumeListener = null;
 }

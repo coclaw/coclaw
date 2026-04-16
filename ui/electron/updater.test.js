@@ -26,10 +26,33 @@ vi.mock('electron-log', () => ({
 }));
 
 const ipcHandlers = vi.hoisted(() => ({}));
+
+const powerMonitorMock = vi.hoisted(() => {
+	const listeners = {};
+	return {
+		listeners,
+		on: vi.fn((event, cb) => {
+			listeners[event] = cb;
+		}),
+		removeListener: vi.fn((event, cb) => {
+			if (listeners[event] === cb) delete listeners[event];
+		}),
+	};
+});
+
 vi.mock('electron', () => ({
 	ipcMain: {
 		handle: vi.fn((ch, cb) => { ipcHandlers[ch] = cb; }),
 	},
+	powerMonitor: powerMonitorMock,
+}));
+
+const storeData = new Map();
+vi.mock('electron-store', () => ({
+	default: vi.fn(() => ({
+		get: (key, fallback) => (storeData.has(key) ? storeData.get(key) : fallback),
+		set: (key, val) => { storeData.set(key, val); },
+	})),
 }));
 
 const { initUpdater, disposeUpdater, __resetForTest } = await import('./updater.js');
@@ -42,6 +65,10 @@ function resetMocks() {
 	autoUpdaterMock.quitAndInstall.mockClear();
 	Object.keys(autoUpdaterMock.handlers).forEach((k) => delete autoUpdaterMock.handlers[k]);
 	Object.keys(ipcHandlers).forEach((k) => delete ipcHandlers[k]);
+	powerMonitorMock.on.mockClear();
+	powerMonitorMock.removeListener.mockClear();
+	Object.keys(powerMonitorMock.listeners).forEach((k) => delete powerMonitorMock.listeners[k]);
+	storeData.clear();
 }
 
 describe('initUpdater — portable 模式', () => {
@@ -294,5 +321,100 @@ describe('initUpdater — 正常模式', () => {
 
 	test('未 initUpdater 直接 dispose 不抛', () => {
 		expect(() => disposeUpdater()).not.toThrow();
+	});
+});
+
+describe('initUpdater — auto_update_enabled 开关', () => {
+	let getWin;
+	let win;
+
+	beforeEach(() => {
+		resetMocks();
+		delete process.env.PORTABLE_EXECUTABLE_FILE;
+		vi.useFakeTimers();
+		win = { isDestroyed: () => false, webContents: { send: vi.fn() } };
+		getWin = () => win;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('默认启用（store 中无值）→ 注册定时器 + powerMonitor', () => {
+		initUpdater(getWin);
+		vi.advanceTimersByTime(30_000);
+		expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+		expect(powerMonitorMock.on).toHaveBeenCalledWith('resume', expect.any(Function));
+	});
+
+	test('用户关闭 auto_update_enabled → 不设定时器、不订阅 powerMonitor', () => {
+		storeData.set('auto_update_enabled', false);
+		initUpdater(getWin);
+		vi.advanceTimersByTime(30_000);
+		expect(autoUpdaterMock.checkForUpdates).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(4 * 60 * 60 * 1000);
+		expect(autoUpdaterMock.checkForUpdates).not.toHaveBeenCalled();
+		expect(powerMonitorMock.on).not.toHaveBeenCalled();
+	});
+
+	test('关闭自动更新 → 手动 checkForUpdates IPC 仍可用', async () => {
+		storeData.set('auto_update_enabled', false);
+		initUpdater(getWin);
+		const res = await ipcHandlers['updater:checkForUpdates']();
+		expect(res.ok).toBe(true);
+		expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalled();
+	});
+
+	test('显式 true 与默认行为一致', () => {
+		storeData.set('auto_update_enabled', true);
+		initUpdater(getWin);
+		vi.advanceTimersByTime(30_000);
+		expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('powerMonitor resume 触发', () => {
+	let getWin;
+	let win;
+
+	beforeEach(() => {
+		resetMocks();
+		delete process.env.PORTABLE_EXECUTABLE_FILE;
+		vi.useFakeTimers();
+		win = { isDestroyed: () => false, webContents: { send: vi.fn() } };
+		getWin = () => win;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('resume 事件 → 立即检查一次', () => {
+		initUpdater(getWin);
+		autoUpdaterMock.checkForUpdates.mockClear();
+		powerMonitorMock.listeners.resume();
+		expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalledTimes(1);
+	});
+
+	test('resume 抛错 → log.warn 兜底，不上抛', () => {
+		autoUpdaterMock.checkForUpdates.mockRejectedValueOnce(new Error('net'));
+		initUpdater(getWin);
+		expect(() => powerMonitorMock.listeners.resume()).not.toThrow();
+	});
+
+	test('disposeUpdater 移除 resume 监听', () => {
+		initUpdater(getWin);
+		disposeUpdater();
+		expect(powerMonitorMock.removeListener).toHaveBeenCalledWith('resume', expect.any(Function));
+		expect(powerMonitorMock.listeners.resume).toBeUndefined();
+	});
+
+	test('portable 模式不订阅 powerMonitor', () => {
+		process.env.PORTABLE_EXECUTABLE_FILE = '/p.exe';
+		try {
+			initUpdater(getWin);
+			expect(powerMonitorMock.on).not.toHaveBeenCalled();
+		}
+		finally {
+			delete process.env.PORTABLE_EXECUTABLE_FILE;
+		}
 	});
 });

@@ -91,23 +91,32 @@ describe('permissions 异步 setPermissionRequestHandler', () => {
 
 describe('permissions setDisplayMediaRequestHandler', () => {
 	let display;
+	let capturedOpts;
 	beforeEach(() => {
 		let fn = null;
+		capturedOpts = null;
 		setupPermissions({
 			setPermissionCheckHandler: () => {},
 			setPermissionRequestHandler: () => {},
-			setDisplayMediaRequestHandler: (f) => { fn = f; },
+			setDisplayMediaRequestHandler: (f, opts) => {
+				fn = f;
+				capturedOpts = opts;
+			},
 		});
 		display = fn;
 	});
 
-	test('有源 → callback 传入 sources[0]', async () => {
+	test('启用 useSystemPicker（macOS 12.3+/Win 11 24H2+ 走 OS 原生 picker）', () => {
+		expect(capturedOpts).toEqual({ useSystemPicker: true });
+	});
+
+	test('系统 picker 不可用时回落：有源 → callback 传入 sources[0]', async () => {
 		mockGetSources.mockResolvedValueOnce([{ id: 'screen:0:0' }, { id: 'screen:1:0' }]);
 		const cb = vi.fn();
 		await display(null, cb);
 		expect(cb).toHaveBeenCalledWith({ video: { id: 'screen:0:0' } });
 	});
-	test('无源 → callback({})', async () => {
+	test('系统 picker 不可用时回落：无源 → callback({})', async () => {
 		mockGetSources.mockResolvedValueOnce([]);
 		const cb = vi.fn();
 		await display(null, cb);
