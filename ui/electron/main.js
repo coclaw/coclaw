@@ -13,28 +13,10 @@ import {
 } from './deep-link.js';
 import { initUpdater, disposeUpdater } from './updater.js';
 import { getAppTitle, t } from './locale.js';
+import { REMOTE_URL, DEV_URL, isTrustedUrl } from './url-guard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
-
-const REMOTE_URL = 'https://im.coclaw.net';
-const DEV_URL = 'http://localhost:5173';
-
-/** 信任的导航来源（严格 origin 匹配） */
-const TRUSTED_ORIGINS = new Set([REMOTE_URL, DEV_URL]);
-
-/**
- * 严格的信任 URL 判定：基于 URL.origin 精确匹配，防子域名前缀绕过
- * @param {string} urlStr
- */
-function isTrustedUrl(urlStr) {
-	try {
-		return TRUSTED_ORIGINS.has(new URL(urlStr).origin);
-	}
-	catch {
-		return false;
-	}
-}
 
 /** 当前主窗口引用，供各模块通过 getMainWindow() 获取 */
 let mainWin = null;
