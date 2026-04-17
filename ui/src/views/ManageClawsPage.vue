@@ -28,7 +28,7 @@
 
 			<p v-if="!loading && !claws.length" class="text-sm text-muted">{{ $t('claws.noClaw') }}</p>
 
-			<div v-for="{ claw, dashboard, connDetail } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
+			<div v-for="{ claw, dashboard, connDetail, rtcPhase } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
 				<!-- Claw card：左侧信息 + 右侧解绑 -->
 				<div class="rounded-xl bg-elevated p-3 mb-3">
 					<div class="flex">
@@ -87,11 +87,11 @@
 					</div>
 				</div>
 
-				<!-- 连接信息（在线 或 有缓存连接信息时显示） -->
-				<div v-if="claw.online || connDetail" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 mb-3 text-xs text-muted">
+				<!-- 连接信息（有 RTC 活动迹象时显示；与 claw.online 解耦，独立反映 rtcPhase） -->
+				<div v-if="connDetail || rtcPhase !== 'idle'" class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 mb-3 text-xs text-muted">
 					<span>{{ connLabel(claw.id) }}</span>
 					<button
-						v-if="claw.online && connDetail"
+						v-if="connDetail"
 						class="inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 opacity-70 hover:opacity-100"
 						@click="toggleDetail(claw.id)"
 					>
@@ -99,7 +99,7 @@
 						<UIcon :name="expandedDetails[claw.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
 					</button>
 				</div>
-				<div v-if="claw.online && expandedDetails[claw.id] && connDetail" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted mb-3">
+				<div v-if="expandedDetails[claw.id] && connDetail" class="rounded-lg bg-elevated px-3 py-2 text-xs text-muted mb-3">
 					<p>{{ $t('claws.conn.localCandidate') }}：{{ connDetail.localType }} · {{ connDetail.localProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('claws.conn.remoteCandidate') }}：{{ connDetail.remoteType }} · {{ connDetail.remoteProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('claws.conn.relayProtocol') }}：{{ connDetail.relayProtocol?.toUpperCase() ?? '—' }}</p>
@@ -223,10 +223,12 @@ export default {
 		clawEntries() {
 			return this.sortedClaws.map(claw => {
 				const id = String(claw.id);
+				const clawById = this.clawsStore.byId[id];
 				return {
 					claw,
 					dashboard: this.dashboardStore.getDashboard(id),
-					connDetail: this.clawsStore.byId[id]?.rtcTransportInfo ?? null,
+					connDetail: clawById?.rtcTransportInfo ?? null,
+					rtcPhase: clawById?.rtcPhase ?? 'idle',
 				};
 			});
 		},
@@ -272,31 +274,36 @@ export default {
 		connLabel(clawId) {
 			const id = String(clawId);
 			const claw = this.clawsStore.byId[id];
-			if (!claw) return this.$t('claws.conn.disconnected');
-			if (!claw.online) return this.$t('claws.conn.disconnected');
-			if (claw.rtcPhase === 'failed') {
+			if (!claw) return '';
+			const phase = claw.rtcPhase;
+			if (phase === 'failed') {
 				if (claw.retryCount > 0) {
 					return this.$t('claws.conn.rtcRetrying', { n: claw.retryCount, max: MAX_BACKOFF_RETRIES });
 				}
 				return this.$t('claws.conn.rtcRetryExhausted');
 			}
-			// restarting 时 DC 仍存活，按 ready 显示传输详情
-			if (claw.rtcPhase !== 'ready' && claw.rtcPhase !== 'restarting') return this.$t('claws.conn.rtcConnecting');
-			const info = claw.rtcTransportInfo;
-			if (!info) return this.$t('claws.conn.rtcConnecting');
-			if (info.localType === 'relay') {
-				const rp = (info.relayProtocol ?? 'udp').toLowerCase();
-				return rp === 'udp'
-					? this.$t('claws.conn.rtcRelay')
-					: this.$t('claws.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
+			if (phase === 'restarting') return this.$t('claws.conn.rtcRestarting');
+			if (phase === 'building') return this.$t('claws.conn.rtcBuilding');
+			if (phase === 'recovering') return this.$t('claws.conn.rtcRecovering');
+			if (phase === 'ready') {
+				const info = claw.rtcTransportInfo;
+				// ready 但 transportInfo 尚未落地属极短暂过渡态，退回到 building 文案
+				if (!info) return this.$t('claws.conn.rtcBuilding');
+				if (info.localType === 'relay') {
+					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
+					return rp === 'udp'
+						? this.$t('claws.conn.rtcRelay')
+						: this.$t('claws.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
+				}
+				const isLan = info.localType === 'host';
+				const proto = (info.localProtocol ?? 'udp').toLowerCase();
+				if (proto === 'udp') {
+					return this.$t(isLan ? 'claws.conn.rtcLan' : 'claws.conn.rtcP2P');
+				}
+				const key = isLan ? 'claws.conn.rtcLanProto' : 'claws.conn.rtcP2PProto';
+				return this.$t(key, { protocol: proto.toUpperCase() });
 			}
-			const isLan = info.localType === 'host';
-			const proto = (info.localProtocol ?? 'udp').toLowerCase();
-			if (proto === 'udp') {
-				return this.$t(isLan ? 'claws.conn.rtcLan' : 'claws.conn.rtcP2P');
-			}
-			const key = isLan ? 'claws.conn.rtcLanProto' : 'claws.conn.rtcP2PProto';
-			return this.$t(key, { protocol: proto.toUpperCase() });
+			return this.$t('claws.conn.rtcIdle');
 		},
 		toggleDetail(clawId) {
 			const id = String(clawId);

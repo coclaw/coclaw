@@ -105,16 +105,18 @@ function createWrapper() {
 						'claws.remove': 'Remove',
 						'claws.preparing': 'Preparing...',
 						'dashboard.offline': 'Offline',
-						'claws.conn.disconnected': 'Disconnected',
-						'claws.conn.rtcConnecting': 'WebRTC connecting…',
-						'claws.conn.rtcRetrying': `Connection failed, retry ${params?.n}/${params?.max}…`,
-						'claws.conn.rtcRetryExhausted': 'Connection failed, retries exhausted',
-						'claws.conn.rtcLan': 'WebRTC · LAN',
-						'claws.conn.rtcLanProto': `WebRTC · LAN · ${params?.protocol}`,
-						'claws.conn.rtcP2P': 'WebRTC · P2P',
-						'claws.conn.rtcP2PProto': `WebRTC · P2P · ${params?.protocol}`,
-						'claws.conn.rtcRelay': 'WebRTC · Relay',
-						'claws.conn.rtcRelayProto': `WebRTC · Relay · ${params?.protocol}`,
+						'claws.conn.rtcIdle': 'WebRTC: idle',
+						'claws.conn.rtcBuilding': 'WebRTC: connecting…',
+						'claws.conn.rtcRecovering': 'WebRTC: recovering…',
+						'claws.conn.rtcRestarting': 'WebRTC: ICE restarting…',
+						'claws.conn.rtcRetrying': `WebRTC: connection failed, retry ${params?.n}/${params?.max}…`,
+						'claws.conn.rtcRetryExhausted': 'WebRTC: connection failed (retries exhausted)',
+						'claws.conn.rtcLan': 'WebRTC: LAN',
+						'claws.conn.rtcLanProto': `WebRTC: LAN · ${params?.protocol}`,
+						'claws.conn.rtcP2P': 'WebRTC: P2P',
+						'claws.conn.rtcP2PProto': `WebRTC: P2P · ${params?.protocol}`,
+						'claws.conn.rtcRelay': 'WebRTC: Relay',
+						'claws.conn.rtcRelayProto': `WebRTC: Relay · ${params?.protocol}`,
 						'claws.renameFailed': 'Rename failed',
 						'claws.summary.claws': `${params?.n} Claws`,
 						'claws.summary.running': `${params?.n} 工作中`,
@@ -173,13 +175,13 @@ describe('ManageClawsPage', () => {
 		expect(wrapper.text()).toContain('Remove');
 	});
 
-	test('离线 claw 有缓存 rtcTransportInfo → 连接信息行显示 Disconnected，无 detail 按钮', async () => {
+	test('离线 claw + 缓存 rtcTransportInfo → 连接行显示 idle 文案（与 online 解耦，detail 按钮仍可展开）', async () => {
 		mockBots = [{ id: '1', name: 'A', online: false, rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.text()).toContain('Disconnected');
-		expect(wrapper.text()).not.toContain('bots.conn.detailTitle');
+		// rtcPhase 默认 idle；connDetail 非空 → 外层 v-if 成立
+		expect(wrapper.text()).toContain('WebRTC: idle');
 	});
 
 	test('离线 claw 无缓存 rtcTransportInfo → 连接信息行不显示', async () => {
@@ -187,7 +189,8 @@ describe('ManageClawsPage', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.text()).not.toContain('Disconnected');
+		// connDetail=null + rtcPhase=idle → 外层 v-if 假，整行隐藏
+		expect(wrapper.text()).not.toContain('WebRTC');
 	});
 
 	test('claw 容器包含 data-testid', async () => {
@@ -446,20 +449,28 @@ describe('ManageClawsPage', () => {
 });
 
 describe('connLabel', () => {
-	test('bot 不存在时返回 disconnected', async () => {
+	test('bot 不存在时返回空字符串', async () => {
 		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready' }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('999')).toBe('Disconnected');
+		expect(wrapper.vm.connLabel('999')).toBe('');
 	});
 
-	test('bot 离线时返回 disconnected', async () => {
+	test('bot 离线（rtcPhase=idle）→ 按 rtcPhase 反映 idle（与 online 解耦）', async () => {
 		mockBots = [{ id: '1', name: 'A', online: false, rtcPhase: 'idle' }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('Disconnected');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: idle');
+	});
+
+	test('bot 离线但 rtcPhase=ready（解耦后可能出现）→ 仍显示 ready 文案', async () => {
+		mockBots = [{ id: '1', name: 'A', online: false, rtcPhase: 'ready', rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: P2P');
 	});
 
 	test('rtcPhase=failed + retryCount>0 显示重试进度', async () => {
@@ -467,8 +478,10 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toContain('retry');
-		expect(wrapper.vm.connLabel('1')).toContain('3');
+		const text = wrapper.vm.connLabel('1');
+		expect(text).toContain('WebRTC');
+		expect(text).toContain('retry');
+		expect(text).toContain('3');
 	});
 
 	test('rtcPhase=failed + retryCount=0 显示重试耗尽', async () => {
@@ -476,39 +489,47 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('Connection failed, retries exhausted');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: connection failed (retries exhausted)');
 	});
 
-	test('rtcPhase=building 显示 connecting', async () => {
+	test('rtcPhase=building → WebRTC connecting', async () => {
 		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'building' }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC connecting…');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: connecting…');
 	});
 
-	test('rtcPhase=ready 无 transportInfo 显示 connecting', async () => {
-		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready' }];
+	test('rtcPhase=recovering → WebRTC recovering', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'recovering' }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC connecting…');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: recovering…');
 	});
 
-	test('rtcPhase=restarting + transportInfo → 显示传输详情（DC 仍存活）', async () => {
+	test('rtcPhase=restarting → 始终显示 ICE restarting（不看 transportInfo）', async () => {
 		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'restarting', rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · P2P');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: ICE restarting…');
 	});
 
-	test('rtcPhase=restarting 无 transportInfo → connecting', async () => {
+	test('rtcPhase=restarting 无 transportInfo → ICE restarting', async () => {
 		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'restarting' }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC connecting…');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: ICE restarting…');
+	});
+
+	test('rtcPhase=ready 无 transportInfo → 过渡态 fallback 到 building 文案', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'ready' }];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: connecting…');
 	});
 
 	test('rtcPhase=ready + relay UDP → Relay', async () => {
@@ -516,7 +537,7 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · Relay');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: Relay');
 	});
 
 	test('rtcPhase=ready + relay TCP → Relay + protocol', async () => {
@@ -524,7 +545,7 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · Relay · TCP');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: Relay · TCP');
 	});
 
 	test('rtcPhase=ready + host UDP → LAN', async () => {
@@ -532,7 +553,7 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · LAN');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: LAN');
 	});
 
 	test('rtcPhase=ready + srflx UDP → P2P', async () => {
@@ -540,7 +561,7 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · P2P');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: P2P');
 	});
 
 	test('rtcPhase=ready + host TCP → LAN + protocol', async () => {
@@ -548,7 +569,7 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · LAN · TCP');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: LAN · TCP');
 	});
 
 	test('rtcPhase=ready + srflx TCP → P2P + protocol', async () => {
@@ -556,7 +577,7 @@ describe('connLabel', () => {
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		expect(wrapper.vm.connLabel('1')).toBe('WebRTC · P2P · TCP');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: P2P · TCP');
 	});
 });
 
