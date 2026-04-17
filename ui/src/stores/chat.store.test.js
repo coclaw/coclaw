@@ -2221,30 +2221,53 @@ describe('useChatStore', () => {
 	// =====================================================================
 
 	describe('cancelSend', () => {
-		test('未 accepted 时取消：清理 streaming 并删除本地消息', () => {
+		test('pre-accept（RPC 在飞、等 accepted）取消：挂起意图、保留气泡、sending 不变', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
-			setConn('1', mockConn());
+
+			const conn = mockConn();
+			// agent RPC 永不触发 onAccepted，也永不 resolve → 模拟真实"在飞"状态
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
 
 			const store = useChatStore();
 			store.sessionId = 'sess-1';
 			store.clawId = '1';
-			store.sending = true;
-			store.__accepted = false;
-			store.streamingRunId = 'run-x';
-			store.messages = [
-				{ id: '__local_user_1', _local: true, message: { role: 'user', content: 'hi' } },
-				{ id: '__local_claw_1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
-			];
+			store.chatSessionKey = 'agent:main:main';
 
-			store.cancelSend();
+			let sendResolved = false;
+			const sendPromise = store.sendMessage('hello').then((r) => { sendResolved = true; return r; });
+			// 等 sendMessage 走到 await Promise.race 的位置（乐观消息已追加、__cancelReject 已就绪）
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
 
-			expect(store.sending).toBe(false);
-			expect(store.streamingRunId).toBeNull();
-			expect(store.messages.some((m) => m._local)).toBe(false);
+			expect(store.sending).toBe(true);
+			expect(store.__accepted).toBe(false);
+			expect(store.messages.some((m) => m._local)).toBe(true);
+
+			expect(store.cancelSend()).toBeNull();
+
+			// 挂起意图标志置位；isCancelling getter 反映出来
+			expect(store.__pendingCancelIntent).toBe(true);
+			expect(store.isCancelling).toBe(true);
+			// 气泡保留、sending 仍 true（STOP 按钮依旧显示且被禁用）
+			expect(store.messages.some((m) => m._local)).toBe(true);
+			expect(store.sending).toBe(true);
+			// sendMessage 不立即 resolve——等 onAccepted / 超时 / 断连
+			await Promise.resolve(); await Promise.resolve();
+			expect(sendResolved).toBe(false);
+			// 未发起 abort RPC（没有 sid 可用、且 run 尚未 accepted）
+			const abortCalls = conn.request.mock.calls.filter(c => c[0] === 'coclaw.agent.abort');
+			expect(abortCalls).toHaveLength(0);
+
+			// 清理 pending sendPromise
+			store.cleanup();
+			await expect(sendPromise).resolves.toEqual({ accepted: false });
 		});
 
-		test('accepted 之前取消：sendMessage 立即返回 { accepted: false }', async () => {
+		test('pre-accept 挂意图后 cancelSend 幂等：第二次点击不抛错、标志位保持', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -2260,18 +2283,198 @@ describe('useChatStore', () => {
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			const sendPromise = store.sendMessage('hello');
+			store.sendMessage('hi');
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+
+			expect(store.cancelSend()).toBeNull();
+			expect(store.__pendingCancelIntent).toBe(true);
+			// 幂等：第二次仍返回 null，不抛错
+			expect(store.cancelSend()).toBeNull();
+			expect(store.__pendingCancelIntent).toBe(true);
+
+			store.cleanup();
+		});
+
+		test('pre-accept 挂意图后 onAccepted 到达：立刻转交 accepted 分支发 abort RPC', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let triggerOnAccepted;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					triggerOnAccepted = () => options?.onAccepted?.({ runId: 'run-handoff' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					return Promise.resolve({ ok: true });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-handoff';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			store.sendMessage('hi');
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+
+			// 用户在 accepted 之前点 STOP → 挂意图
+			expect(store.cancelSend()).toBeNull();
+			expect(store.__pendingCancelIntent).toBe(true);
+			expect(store.isCancelling).toBe(true);
+
+			// 服务端终于回了 accepted
+			triggerOnAccepted();
 			await Promise.resolve();
 
-			expect(store.sending).toBe(true);
-			expect(store.__accepted).toBe(false);
+			// 意图已被消费，__cancelling 协调任务已启动并触发 abort RPC
+			expect(store.__pendingCancelIntent).toBe(false);
+			expect(store.__accepted).toBe(true);
+			await vi.waitFor(() => {
+				const abortCalls = conn.request.mock.calls.filter(c => c[0] === 'coclaw.agent.abort');
+				expect(abortCalls.length).toBeGreaterThan(0);
+				expect(abortCalls[0][1]).toEqual({ sessionId: 'sess-handoff' });
+			});
+			// run 已进入 settling(cancel) 状态
+			const runsStore = useAgentRunsStore();
+			const run = runsStore.getActiveRun(store.runKey);
+			expect(run?.cancelled).toBe(true);
 
+			store.cleanup();
+		});
+
+		test('pre-accept 挂意图后调 cleanup()：意图清除', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const sendPromise = store.sendMessage('hi');
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
 			store.cancelSend();
+			expect(store.__pendingCancelIntent).toBe(true);
 
-			const result = await sendPromise;
-			expect(result).toEqual({ accepted: false });
+			store.cleanup();
+			expect(store.__pendingCancelIntent).toBe(false);
+			await expect(sendPromise).resolves.toEqual({ accepted: false });
+		});
+
+		test('pre-accept 挂意图后 pre-acceptance timeout 触发：意图清除', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-timeout';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const sendPromise = store.sendMessage('hi').catch((e) => e);
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+			store.cancelSend();
+			expect(store.__pendingCancelIntent).toBe(true);
+
+			// 180s 预发超时触发：catch 块顶部清意图 + 抛 PRE_ACCEPTANCE_TIMEOUT
+			await vi.advanceTimersByTimeAsync(180_000);
+			const err = await sendPromise;
+			expect(err?.code).toBe('PRE_ACCEPTANCE_TIMEOUT');
+			expect(store.__pendingCancelIntent).toBe(false);
 			expect(store.sending).toBe(false);
-			expect(store.messages.some((m) => m._local)).toBe(false);
+		});
+
+		test('pre-accept 挂意图后 DC 断连触发 retry：意图清除', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentCall = 0;
+			let firstReject;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					agentCall++;
+					if (agentCall === 1) {
+						// 可控的 pending 拒绝：测试在 cancelSend 挂意图之后再触发 reject
+						return new Promise((_, reject) => { firstReject = reject; });
+					}
+					// 第二次（retry）直接回 accepted（不触发 handoff，因意图已被 catch 清除）
+					options?.onAccepted?.({ runId: 'run-retry' });
+					return new Promise(() => {});
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-retry' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-retry';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			store.sendMessage('hi');
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+
+			// 用户点 STOP → 挂意图
+			store.cancelSend();
+			expect(store.__pendingCancelIntent).toBe(true);
+
+			// 触发 DC_CLOSED → catch 清意图 → 走 retry → 第二次 agent 调用回 accepted
+			const err = new Error('DC closed'); err.code = 'DC_CLOSED';
+			firstReject(err);
+
+			await vi.waitFor(() => expect(agentCall).toBe(2));
+			// retry 后意图清除，且第二轮 onAccepted 下意图为 false 不触发 handoff
+			expect(store.__pendingCancelIntent).toBe(false);
+			expect(store.__accepted).toBe(true);
+
+			store.cleanup();
+		});
+
+		test('pre-accept 挂意图后再 send 被 __clearCancelling(superseded) 清除', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			store.sendMessage('first');
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+			store.cancelSend();
+			expect(store.__pendingCancelIntent).toBe(true);
+
+			// sending=true 下新 send 会被早退；手动释放后再触发以模拟"用户清了输入又发"的路径
+			store.sending = false;
+			store.__clearCancelling('superseded');
+			expect(store.__pendingCancelIntent).toBe(false);
 		});
 
 		test('accepted 之后取消：不终止服务端 run，保留 streamingMsgs、run 进入 settling(reason=cancel)、sending=false', async () => {

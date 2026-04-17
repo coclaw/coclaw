@@ -1,10 +1,11 @@
 # Agent Run 取消：分阶段实施方案
 
-> **状态**：阶段 1、2、2.5 已完成；阶段 3 上游 issues 已提交（#66531 / #66532 / #66534 / #66535，2026-04-14），等待维护者反馈；合并后按末尾"CoClaw 侧适配路径"表渐进迁移
+> **状态**：阶段 1、2、2.5、2.6 已完成；阶段 3 上游 issues 已提交（#66531 / #66532 / #66534 / #66535，2026-04-14），等待维护者反馈；合并后按末尾"CoClaw 侧适配路径"表渐进迁移
 > **创建时间**：2026-04-14
 > 阶段 1 commits：`5d3d97e` docs + `2bd7f3a` fix(ui)
 > 阶段 2 commits：`3d21a5e` feat(plugin) + `17cc790` feat(ui)
 > 阶段 2.5：UI 主导的 cancel 协调状态机（500ms 重试无 TTL）+ 插件诊断 patch 产品化 + remoteLog 触点（2026-04-15 实施完成）
+> 阶段 2.6：pre-accept 窗口点取消的"假取消"bug 修复——挂起取消意图 + onAccepted 转交 accepted 分支（2026-04-17）
 > **调研依据**：[`docs/openclaw-research/agent-run-cancellation.md`](../openclaw-research/agent-run-cancellation.md)（见 §6.7 注册时序空窗期）
 > **上游遗留问题**：[`docs/openclaw-upstream-issues.md`](../openclaw-upstream-issues.md) "待提交：Agent Run 取消相关"章节
 
@@ -329,6 +330,82 @@ export function abortAgentRun(sessionId) {
 ### 实施提交
 
 - 单一 commit（pending）：`fix(ui,plugin): UI-led cancel coordination + plugin diag patch productionalization`
+
+---
+
+## 阶段 2.6：pre-accept 窗口点取消的"假取消"bug 修复
+
+### 症状
+
+用户在 chat/topic 里点发送后、服务端回 accepted 之前（pre-accept 窗口）点 STOP：本地气泡瞬间消失看起来取消成功，但服务端的 agent run 实际会跑到底——几秒后气泡又冒出来、LLM 继续思考并流式输出到自然结束。
+
+### 根因
+
+- 原阶段 1 的 `cancelSend` **未 accepted 分支**走 reject `__cancelReject(USER_CANCELLED)` + `__cleanupStreaming` 清本地——只销毁 UI 不触达服务端；
+- `agent()` RPC 没有"发送后取消"原语（`chat.abort` 只覆盖 `chat.send` 路径），前端无法撤回已发出的请求；
+- server 后续仍会回 accepted 帧 → `runAgent` 的 onAccepted 里 `register` 把 run 挂进 agent-runs.store → `streamingMsgs` 引用原 `optimisticMsgs`（未被清理，仍在内存），通过 `allMessages` getter 重新混入消息列表；
+- 原 `runPromise.then` 挂钩仍在等 run 自然结束（几秒到几分钟），完成后才 `loadMessages + dropRun`——期间 UI 表现为"气泡复活、agent 思考、完整回答"。
+
+### 为什么不选"accepted 前直接禁用 STOP 按钮"
+
+该方案最简单，但违反用户直觉——topic 冷启动要 10-30 秒，按钮显示可点却拒绝响应会更糟。用户发送后想反悔是合理诉求，系统应当接收而非拒绝。
+
+### 方案：挂起取消意图 + onAccepted 转交
+
+**核心思路**：pre-accept 点 STOP 时不假装取消，而是记录"用户想取消这次发送"的意图，让 STOP 按钮转"取消中"禁用态；等 onAccepted 到达后立刻转交已有的 accepted 分支协调流程，由 `coclaw.agent.abort` 轮询真正终止 run。
+
+### 变更清单
+
+#### 2.6.1 `ui/src/stores/chat.store.js`
+
+- 新增 state `__pendingCancelIntent: false`
+- `isCancelling` getter 改为 `!!this.__cancelling || this.__pendingCancelIntent`——覆盖两阶段
+- `cancelSend()` pre-accept 分支拆两档：
+  - **仍在上传**（`__uploadHandle` 存在）→ 只 cancel upload handle；其余由 sendMessage 的 CANCELLED catch 分支清理，行为不变
+  - **上传完、RPC 在飞** → `__pendingCancelIntent = true` + remoteLog `cancel.intent` + 返回 null；不 reject `__cancelReject`、不清本地、不改 sending
+- `sendMessage` 的 `onAccepted` 回调末尾：若 `__pendingCancelIntent=true`，清意图 + remoteLog `cancel.handoff` + 立刻再调 `this.cancelSend()`（此时 `__accepted=true` 走 accepted 分支）
+- 多路清意图：
+  - `sendMessage` catch 块顶部（发送以任何形式终结都丢弃意图）
+  - `__clearCancelling(reason)` 顶部（覆盖 sendMessage / sendSlashCommand 开头的 superseded 场景）
+  - `cleanup()`（页面卸载）
+
+### 关键决策
+
+1. **为什么不复用 `__cancelReject`/`__cancelling`**：语义不同。`__cancelReject` 代表"RPC 在飞的 reject 句柄"；`__cancelling` 是 accepted 后协调任务（含 sid/promise/tickTimer）。pre-accept 意图是独立的短命中间状态，用独立 boolean 最清晰。
+2. **handoff 为何在 `onAccepted` 回调末尾而非 `agent-runs.store` 里**：意图是 UI 层概念，`agent-runs.store` 不应感知。handoff 在 chatStore.onAccepted 里，re-entrant 调用 cancelSend 干净。
+3. **runKey 闭包稳定性**：sendMessage 顶部 `const runKey = this.runKey` 捕获；`this.runKey` 依赖 `sessionId`/`clawId`/`chatSessionKey`，都是 Identity 字段（store 创建后不变），无闭包过期风险。
+
+### UX 影响
+
+- **好**：用户点 STOP 不再看到"假成功"，agent 不会偷跑；server 端请求一旦被接纳，CoClaw 立刻发 abort 真终止
+- **变**：原"pre-accept 取消 → 草稿自动恢复"语义消失（旧 e2e `chat-cancel-restore.e2e.spec.js` 的 UX 旅程）——这本来是基于"取消成功"假设的衍生体验，真相是消息已发送无法撤回。typo 修正场景用户需等协调完成后重新输入
+- **等**：topic 冷启动 10-30 秒的 accepted 窗口，点 STOP 后用户会看见"取消中"spinner 持续到 accepted 到达。最坏 3 分钟由 pre-acceptance timeout 兜底清状态
+
+### 边界场景
+
+| # | 场景 | 行为 |
+|---|---|---|
+| 1 | pre-accept 挂意图后用户再点 STOP | 幂等：`__pendingCancelIntent` 检查直接返回 null，不重复 remoteLog |
+| 2 | pre-accept 挂意图后 cleanup（页面卸载） | 意图清除；`__cancelReject` 以 USER_CANCELLED reject；sendMessage catch 返回 `{accepted:false}`；server 若仍回 accepted，runPromise.then 挂钩仍会执行 dropRun 清理 |
+| 3 | pre-accept 挂意图后 pre-acceptance timeout（180s）触发 | catch 清意图；throw PRE_ACCEPTANCE_TIMEOUT；与 B2 同样有 runPromise.then 兜底 |
+| 4 | pre-accept 挂意图后 DC 断连触发 retry | catch 清意图 → 递归 sendMessage，新一轮入口 `__clearCancelling('superseded')` 再清意图，双保险 |
+| 5 | pre-accept 挂意图后用户发新消息 | `sendMessage` 开头 `__clearCancelling('superseded')` 清意图；旧 sendMessage 在 isSending=true 下早退返回 `{accepted:false}`，不冲突 |
+| 6 | onAccepted 迟到（超过 cleanup/timeout 之后） | register 仍会挂 run 到 agent-runs.store，`streamingMsgs` 短暂出现；runPromise.then 仍挂钩 → 等 run 自然结束 → dropRun 清理。与本修复前同类场景一致，不是新泄漏 |
+
+### 测试覆盖
+
+**单元（vitest）** `ui/src/stores/chat.store.test.js > useChatStore > cancelSend`：
+- pre-accept RPC 在飞取消：挂意图、保留气泡、sending 不变、isCancelling=true
+- pre-accept 挂意图后 cancelSend 幂等：第二次不抛错、标志位保持
+- pre-accept 挂意图后 onAccepted 到达：转交 accepted 分支发 abort RPC、run.cancelled=true
+- pre-accept 挂意图后 cleanup：意图清除
+- pre-accept 挂意图后 __clearCancelling(superseded)：意图清除
+
+**E2E** `ui/e2e/chat-cancel-restore.e2e.spec.js`：改为验证新行为——气泡保留、STOP 按钮转 loader 禁用、`__pendingCancelIntent` 为 true、cleanup 清意图
+
+### 实施提交
+
+- 单一 commit：`fix(ui): pre-accept cancel intent handoff (agent run true cancellation)` + changeset `chat-pre-accept-cancel-handoff.md`
 
 ---
 

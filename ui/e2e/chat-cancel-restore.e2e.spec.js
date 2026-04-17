@@ -2,22 +2,21 @@ import { expect, test } from '@playwright/test';
 import { login, navigateToChat, waitChatReady, typeText, evalStore } from './helpers.js';
 
 /**
- * 发送取消后恢复输入 E2E 测试
+ * pre-accept 窗口点取消的行为验证
  *
- * 验证：在 OpenClaw accepted 事件到达之前点击停止，
- * 用户的文本和附件应回显到输入框。
+ * 语义：agent 请求已发出但尚未收到 accepted 时点 STOP，不立刻清 UI，
+ * 而是挂起取消意图 + 让 STOP 按钮转"取消中"禁用态，等 accepted 到达后转交真取消流程。
  *
- * 前置条件：
- * - server 运行中
- * - test 用户已有至少一个 online claw
- * - 存在可用 session
+ * 这些用例通过替换 sendMessage 模拟"RPC 永不 resolve"的飞行态，精准验证 pre-accept
+ * 分支里 cancelSend 的 UI 表现；真正的 accepted→abort 链路由单元测试（chat.store.test.js
+ * 的 cancelSend 套件）覆盖。
  */
 
 // ================================================================
-// Test 1: 文本在 accepted 前取消后恢复
+// Test 1: pre-accept RPC 在飞时取消：气泡保留 + STOP 转"取消中"
 // ================================================================
 
-test('取消发送（accepted 前）：文本恢复到输入框 @chat', async ({ page }) => {
+test('pre-accept 取消（RPC 飞行）：气泡保留、STOP 按钮转取消中 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);
@@ -27,76 +26,76 @@ test('取消发送（accepted 前）：文本恢复到输入框 @chat', async ({
 
 	await waitChatReady(page);
 
-	// 输入文本
 	const textarea = page.getByTestId('chat-textarea');
-	const testMsg = `restore-test-${Date.now()}`;
+	const testMsg = `intent-test-${Date.now()}`;
 	await typeText(textarea, testMsg);
 	await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 3000 });
 
-	// 拦截 sendMessage：替换为永不 settle 的 promise（模拟 accepted 未到达）
+	// 替换 sendMessage：模拟"已发 RPC、等 accepted"状态——
+	// 保留 sending + 追加乐观气泡 + 建立 __cancelReject，但永不 accepted
 	await evalStore(page, 'chat', `
 		const origSend = store.sendMessage.bind(store);
 		store.__origSendMessage = origSend;
-		store.sendMessage = function(text, files) {
-			// 保持 sending 标志和乐观消息，但让 promise 永不 resolve
+		store.sendMessage = function(text /*, files*/) {
 			store.sending = true;
 			store.__accepted = false;
 			store.__cancelReject = null;
 
-			// 创建 cancel promise
 			const cancelPromise = new Promise((_, reject) => {
 				store.__cancelReject = reject;
 			});
 
-			// 追加乐观 user 消息（模拟真实 sendMessage 行为）
 			store.messages = [...store.messages, {
 				type: 'message',
 				id: '__local_user_' + Date.now(),
 				_local: true,
+				_pending: true,
 				message: { role: 'user', content: text, timestamp: Date.now() },
 			}];
 			store.messages = [...store.messages, {
 				type: 'message',
 				id: '__local_claw_' + Date.now(),
 				_local: true,
+				_pending: true,
 				_streaming: true,
 				_startTime: Date.now(),
 				message: { role: 'assistant', content: '', stopReason: null },
 			}];
 
-			// 返回一个可被 cancel 的 promise
 			return cancelPromise.catch(err => {
-				if (err?.code === 'USER_CANCELLED') {
-					return { accepted: false };
-				}
+				if (err?.code === 'USER_CANCELLED') return { accepted: false };
 				throw err;
-			}).finally(() => {
-				store.__cancelReject = null;
-			});
+			}).finally(() => { store.__cancelReject = null; });
 		};
 	`);
 
-	// 点击发送
+	// 发送
 	await page.getByTestId('btn-send').click();
 
-	// 等待进入 sending 状态（停止按钮出现）
 	const stopBtn = page.getByTestId('btn-stop');
 	await expect(stopBtn).toBeVisible({ timeout: 5000 });
-
-	// 输入框应已清空
+	// 发送后输入框应清空
 	await expect(textarea).toHaveValue('');
 
-	// 点击停止
+	// 点 STOP
 	await stopBtn.click();
 
-	// 验证：文本恢复到输入框
-	await expect(textarea).toHaveValue(testMsg, { timeout: 5000 });
+	// 断言：STOP 按钮仍在、转成"取消中"禁用态（图标切到 loader-circle，disabled=true）
+	await expect(stopBtn).toBeVisible({ timeout: 3000 });
+	await expect(stopBtn).toBeDisabled({ timeout: 3000 });
 
-	// 验证：发送按钮恢复（不再是 sending 状态）
-	await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 3000 });
+	// 断言：乐观气泡仍在（内部 __pendingCancelIntent=true，isCancelling=true）
+	const intent = await evalStore(page, 'chat', 'return store.__pendingCancelIntent;');
+	expect(intent).toBe(true);
+	const isCancelling = await evalStore(page, 'chat', 'return store.isCancelling;');
+	expect(isCancelling).toBe(true);
 
-	// 恢复原始 sendMessage
+	// 断言：输入框保持清空，不恢复草稿——消息已视为已发出，用户需等取消协调完成
+	await expect(textarea).toHaveValue('');
+
+	// 收尾：触发 cleanup 放行挂起的 promise + 恢复 sendMessage
 	await evalStore(page, 'chat', `
+		store.cleanup();
 		if (store.__origSendMessage) {
 			store.sendMessage = store.__origSendMessage;
 			delete store.__origSendMessage;
@@ -105,10 +104,10 @@ test('取消发送（accepted 前）：文本恢复到输入框 @chat', async ({
 });
 
 // ================================================================
-// Test 2: 文本 + 图片在 accepted 前取消后恢复
+// Test 2: pre-accept 挂意图后 cleanup（如页面离开）：意图清除
 // ================================================================
 
-test('取消发送（accepted 前）：文本和图片都恢复 @chat', async ({ page }) => {
+test('pre-accept 取消后 cleanup：__pendingCancelIntent 清除 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);
@@ -118,89 +117,43 @@ test('取消发送（accepted 前）：文本和图片都恢复 @chat', async ({
 
 	await waitChatReady(page);
 
-	// 输入文本
 	const textarea = page.getByTestId('chat-textarea');
-	const testMsg = `img-restore-${Date.now()}`;
-	await typeText(textarea, testMsg);
-
-	// 附加图片
-	const fileInput = page.getByTestId('file-input');
-	const pngBuffer = Buffer.from(
-		'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==',
-		'base64',
-	);
-	await fileInput.setInputFiles({
-		name: 'test-cancel.png',
-		mimeType: 'image/png',
-		buffer: pngBuffer,
-	});
-
-	// 确认图片预览出现
-	const imgPreview = page.locator('footer img[alt="test-cancel.png"]');
-	await expect(imgPreview).toBeVisible({ timeout: 5000 });
-
+	await typeText(textarea, `cleanup-test-${Date.now()}`);
 	await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 3000 });
 
-	// 拦截 sendMessage（同 Test 1）
 	await evalStore(page, 'chat', `
 		const origSend = store.sendMessage.bind(store);
 		store.__origSendMessage = origSend;
-		store.sendMessage = function(text, files) {
+		store.sendMessage = function(text) {
 			store.sending = true;
 			store.__accepted = false;
-			store.__cancelReject = null;
-
-			const cancelPromise = new Promise((_, reject) => {
-				store.__cancelReject = reject;
-			});
-
+			const cancelPromise = new Promise((_, reject) => { store.__cancelReject = reject; });
 			store.messages = [...store.messages, {
-				type: 'message',
-				id: '__local_user_' + Date.now(),
-				_local: true,
+				type: 'message', id: '__local_user_' + Date.now(),
+				_local: true, _pending: true,
 				message: { role: 'user', content: text, timestamp: Date.now() },
 			}];
-			store.messages = [...store.messages, {
-				type: 'message',
-				id: '__local_claw_' + Date.now(),
-				_local: true,
-				_streaming: true,
-				_startTime: Date.now(),
-				message: { role: 'assistant', content: '', stopReason: null },
-			}];
-
 			return cancelPromise.catch(err => {
-				if (err?.code === 'USER_CANCELLED') {
-					return { accepted: false };
-				}
+				if (err?.code === 'USER_CANCELLED') return { accepted: false };
 				throw err;
-			}).finally(() => {
-				store.__cancelReject = null;
-			});
+			}).finally(() => { store.__cancelReject = null; });
 		};
 	`);
 
-	// 点击发送
 	await page.getByTestId('btn-send').click();
+	await expect(page.getByTestId('btn-stop')).toBeVisible({ timeout: 5000 });
 
-	// 等待 sending 状态
-	const stopBtn = page.getByTestId('btn-stop');
-	await expect(stopBtn).toBeVisible({ timeout: 5000 });
+	await page.getByTestId('btn-stop').click();
 
-	// 点击停止
-	await stopBtn.click();
+	const intentBefore = await evalStore(page, 'chat', 'return store.__pendingCancelIntent;');
+	expect(intentBefore).toBe(true);
 
-	// 验证：文本恢复
-	await expect(textarea).toHaveValue(testMsg, { timeout: 5000 });
+	// 模拟页面离开
+	await evalStore(page, 'chat', 'store.cleanup();');
 
-	// 验证：图片预览恢复
-	const restoredImg = page.locator('footer img[alt="test-cancel.png"]');
-	await expect(restoredImg).toBeVisible({ timeout: 5000 });
+	const intentAfter = await evalStore(page, 'chat', 'return store.__pendingCancelIntent;');
+	expect(intentAfter).toBe(false);
 
-	// 验证：发送按钮恢复
-	await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 3000 });
-
-	// 恢复原始 sendMessage
 	await evalStore(page, 'chat', `
 		if (store.__origSendMessage) {
 			store.sendMessage = store.__origSendMessage;

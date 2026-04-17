@@ -91,6 +91,15 @@ export function createChatStore(storeKey, opts = {}) {
 			__retried: false,
 
 			/**
+			 * pre-accept 取消意图：已发出 agent 请求但尚未收到 accepted 时用户点了 STOP。
+			 * 不立即清理 UI 也不 reject sendMessage，保留气泡并让按钮转"取消中"。
+			 * onAccepted 到达后在 sendMessage 的 onAccepted 回调里转交 accepted 分支启动真取消。
+			 * 发送因超时/断连/error 终止时，在 catch/retry/cleanup 中清零。
+			 * @type {boolean}
+			 */
+			__pendingCancelIntent: false,
+
+			/**
 			 * 取消协调状态：accepted 后用户点 STOP 时建立，直到 run 结束或 RPC 达成终态清除。
 			 * 存在期间 isCancelling=true，UI 将 STOP 按钮禁用以防重复触发。
 			 * @type {{ sid: string, promise: Promise<object>, resolve: Function, tickTimer: ReturnType<typeof setTimeout>|null, tickSeq: number } | null}
@@ -155,9 +164,9 @@ export function createChatStore(storeKey, opts = {}) {
 			busy() {
 				return this.sending || this.uploadingFiles || this.resetting;
 			},
-			/** 取消协调任务是否正在进行（用户点 STOP 后到 run 结束前） */
+			/** 取消协调任务是否正在进行（含 pre-accept 挂起意图 + accepted 后协调两阶段） */
 			isCancelling() {
-				return !!this.__cancelling;
+				return !!this.__cancelling || this.__pendingCancelIntent;
 			},
 			/**
 			 * 是否有 loadMessages 正在进行（silent 或非 silent 任一路径）
@@ -544,6 +553,13 @@ export function createChatStore(storeKey, opts = {}) {
 							const localMsgs = this.messages.filter((m) => m._local);
 							for (const m of localMsgs) m._pending = false;
 							this.messages = this.messages.filter((m) => !m._local);
+							// pre-accept 期间用户已点 STOP → 立刻转交 accepted 分支启动真取消
+							if (this.__pendingCancelIntent) {
+								this.__pendingCancelIntent = false;
+								remoteLog(`cancel.handoff runKey=${runKey}`);
+								console.info('[chat] cancel intent → handoff to accepted branch runKey=%s', runKey);
+								this.cancelSend();
+							}
 						},
 					});
 
@@ -581,6 +597,8 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				catch (err) {
 					this.__cancelReject = null;
+					// 发送已经以某种形式终结，任何挂起的取消意图都失去意义
+					this.__pendingCancelIntent = false;
 
 					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
 					if (err?.code === 'CANCELLED' && !this.__accepted) {
@@ -655,7 +673,12 @@ export function createChatStore(storeKey, opts = {}) {
 			/**
 			 * 用户主动取消
 			 *
-			 * 未 accepted（pre-acceptance）：reject 原 RPC，sendMessage 的 USER_CANCELLED 分支清理乐观消息。
+			 * pre-accept：按是否仍在上传再分两种情况：
+			 *   - **仍在上传**：中断上传 handle，sendMessage 会通过 CANCELLED 错误路径清理乐观消息
+			 *     并以 `{ accepted: false }` 结束。
+			 *   - **上传已完成、agent RPC 在飞**：不立即清 UI，也不 reject sendMessage，而是挂起
+			 *     `__pendingCancelIntent = true`。保留气泡 + 让按钮转"取消中"。等 onAccepted 到达
+			 *     后在 sendMessage 的 onAccepted 回调里立刻转交 accepted 分支启动真取消。
 			 *
 			 * 已 accepted（post-acceptance）：服务端 run 仍在继续执行。
 			 *   不 reject 原 RPC、不立即 reload，仅将 run 置为 settling（保留 streamingMsgs）。
@@ -673,19 +696,11 @@ export function createChatStore(storeKey, opts = {}) {
 			 *     - `{ ok: false, reason: 'run-ended' }` run 已自然结束
 			 *     - `{ ok: false, reason: 'superseded' }` 用户发起了新的 send，
 			 *       旧取消意图被自身行为超越（chatStore.__clearCancelling('superseded')）
-			 *   其它情况（未 accepted / sid 不可知 / conn 不可用）返回 null，调用方降级处理
+			 *   其它情况（pre-accept / sid 不可知 / conn 不可用）返回 null，调用方降级处理
 			 */
 			cancelSend() {
-				console.info('[chat] cancelSend enter accepted=%s sending=%s runKey=%s',
-					this.__accepted, this.sending, this.runKey);
-
-				// 取消进行中的文件上传（pre-acceptance 路径）
-				if (this.__uploadHandle) {
-					this.__uploadHandle.cancel();
-					this.__uploadHandle = null;
-				}
-				this.uploadingFiles = false;
-				this.fileUploadState = null;
+				console.info('[chat] cancelSend enter accepted=%s sending=%s runKey=%s pendingIntent=%s',
+					this.__accepted, this.sending, this.runKey, this.__pendingCancelIntent);
 
 				if (this.__accepted) {
 					// 幂等：协调已在进行，直接返回已有 promise（按钮禁用下不会触发，保留防御性）
@@ -724,23 +739,33 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 					return this.__startCancelCoordination(sid, conn);
 				}
-				else {
-					console.debug('[chat] cancelSend pre-acceptance branch hasCancelReject=%s',
-						!!this.__cancelReject);
-					if (this.__cancelReject) {
-						const err = new Error('user cancelled');
-						err.code = 'USER_CANCELLED';
-						this.__cancelReject(err);
-						this.__cancelReject = null;
-					}
-					this.__cleanupStreaming();
-					this.sending = false;
+
+				// pre-accept：仍在上传 → 中断上传 handle
+				if (this.__uploadHandle) {
+					console.debug('[chat] cancelSend: abort upload');
+					this.__uploadHandle.cancel();
+					this.__uploadHandle = null;
+					this.uploadingFiles = false;
+					this.fileUploadState = null;
+					// 上传 await 会抛 CANCELLED，由 sendMessage catch 清理本地 + 返回 { accepted: false }
+					// 此处不动 __cancelReject / __streamingTimer / sending，避免与 catch 竞态
 					return null;
 				}
+
+				// pre-accept：上传已完成或无文件，agent RPC 在飞等 accepted → 挂起取消意图
+				if (this.__pendingCancelIntent) {
+					console.debug('[chat] cancelSend: intent already pending');
+					return null;
+				}
+				this.__pendingCancelIntent = true;
+				remoteLog(`cancel.intent runKey=${this.runKey}`);
+				console.info('[chat] cancelSend: pending intent runKey=%s', this.runKey);
+				return null;
 			},
 
 			/**
-			 * 终止 cancel 协调任务（不再 tick，promise 以给定原因 resolve）
+			 * 终止 cancel 协调任务（不再 tick，promise 以给定原因 resolve）。
+			 * 同时清掉 pre-accept 挂起意图——两者都是"旧取消意图"，用户的新交互应当一并超越。
 			 *
 			 * 用途：
 			 * - `sendMessage` / `sendSlashCommand` 开头（reason='superseded'）——用户发起新交互，
@@ -753,6 +778,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {'superseded'} reason
 			 */
 			__clearCancelling(reason) {
+				this.__pendingCancelIntent = false;
 				if (!this.__cancelling) return;
 				const r = this.__cancelling.resolve;
 				if (this.__cancelling.tickTimer) {
@@ -1050,6 +1076,8 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				this.uploadingFiles = false;
 				this.fileUploadState = null;
+				// 丢弃 pre-accept 挂起的取消意图（页面都关了，发送一旦触发 onAccepted 也没 store 来接手）
+				this.__pendingCancelIntent = false;
 				// 让挂起的 sendMessage promise 立即 settle（run 本身继续后台执行）
 				if (this.__cancelReject) {
 					const err = new Error('user cancelled');
