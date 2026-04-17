@@ -123,7 +123,11 @@ General Instructions
 
 ### 执行与输出采集
 
-`pnpm test|verify|coverage` 三戒：不后台、不接 `| head`（SIGPIPE 杀上游 → vitest fork 子进程孤儿化）、不并行/背靠背。过滤用 `| tail -N` 或先落盘再 grep。残留排查：`pgrep -af vitest`。
+`pnpm test|verify|coverage` 三戒：不后台、不接 `| head`（SIGPIPE 杀上游 → vitest fork 子进程孤儿化）、不并行/背靠背。
+
+- **一次跑完，多次查看**：要看输出的不同片段（整体/失败摘要/具体用例）时，**不要重跑**——第一次就把输出落盘 `pnpm test > /tmp/test.log 2>&1`，之后用 `grep`/`tail` 反复查同一个文件。过滤输出末尾用 `| tail -N` 也可以，但禁止 `| head`。
+- **背靠背定义**：上一次 `pnpm test` 结束到下一次开始之间未手动清残留，即算背靠背。修完一个问题要再验证时，先 `pgrep -af vitest` 确认干净，或 `pkill -f vitest` 清一遍再跑。
+- **违反立即自清**：若本会话内已违反上述任一条，立即 `pkill -f vitest` 清理孤儿进程并告知用户，不要拖到用户发现。
 
 ## 开发流程约束
 
