@@ -387,14 +387,14 @@ export default {
 			return !entry?.fetched;
 		},
 		/**
-		 * 连接就绪：claw 在线 + DC 可用 + (topic 或 agent 已验证)
-		 * 驱动首次/重连消息加载，消除时序依赖
+		 * 连接就绪：DC 可用 + (topic 或 agent 已验证)
+		 * 驱动首次/重连消息加载，消除时序依赖。
+		 * 不读 claw.online——presence 是展示层信号，通信就绪只看 DC（详见通信模型 §5.5）
 		 */
 		connReady() {
 			if (this.isNewTopic || !this.chatStore) return false;
 			const claw = this.clawsStore.byId[this.currentClawId];
-			if (!claw || !claw.online) return false;
-			if (!claw.dcReady) return false;
+			if (!claw || !claw.dcReady) return false;
 			if (this.isTopicRoute) return true;
 			return this.agentVerified;
 		},

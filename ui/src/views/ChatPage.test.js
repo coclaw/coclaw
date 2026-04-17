@@ -842,6 +842,25 @@ describe('ChatPage watchers', () => {
 		expect(loadSpy).toHaveBeenCalled();
 	});
 
+	test('connReady 只看 dcReady：online=false + dcReady=true 也触发加载（presence 不 gate 通信）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.clawId = 'bot-1';
+		chatStore.__messagesLoaded = false;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: false }]);
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// SSE 推 online=false，但本地 DC 仍健在 → connReady 应为 true
+		clawsStore.byId['bot-1'].dcReady = true;
+		await wrapper.vm.$nextTick();
+
+		expect(loadSpy).toHaveBeenCalled();
+	});
+
 	test('connReady immediate: 挂载时 bot 已连接则立即加载消息', async () => {
 		// 预创建 pinia 并填充 bot 状态，模拟"返回列表后再进入会话"
 		const pinia = createPinia();
@@ -1027,7 +1046,9 @@ describe('ChatPage foreground resume', () => {
 		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
 
 		const clawsStore = useClawsStore();
-		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: false }]);
+		// dcReady=false 维持 connReady=false（online 已不参与 connReady 判断）
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = false;
 		await wrapper.vm.$nextTick();
 		loadSpy.mockClear();
 

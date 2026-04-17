@@ -43,7 +43,7 @@ ChatStore 实例 (per-chat/topic, Pinia store)
         ▼ (computed)
 ChatPage
   ├─ chatStore (computed)                ← 由路由参数 + chatStoreManager 动态解析
-  └─ connReady (computed)                ← claw.online + claw.dcReady + agentVerified
+  └─ connReady (computed)                ← claw.dcReady + agentVerified
 ```
 
 ## 核心数据模型
@@ -218,12 +218,13 @@ chatStore 不直接监听连接状态。消息加载由 ChatPage 的 `connReady`
 connReady() {
 	if (this.isNewTopic || !this.chatStore) return false;
 	const claw = this.clawsStore.byId[this.currentClawId];
-	if (!claw || !claw.online) return false;
-	if (!claw.dcReady) return false;
+	if (!claw || !claw.dcReady) return false;
 	if (this.isTopicRoute) return true;
 	return this.agentVerified;
 }
 ```
+
+不读 `claw.online`——presence 是展示层信号，通信就绪只看 DC。详见 `docs/architecture/communication-model.md` §5.5。
 
 watcher 行为：
 - `ready = true` 且 `__messagesLoaded = false` → 首次加载（`loadMessages()`）

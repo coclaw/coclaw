@@ -161,10 +161,10 @@ export const useClawsStore = defineStore('claws', {
 			if (!next) {
 				// agents / dashboard 缓存保留：离线时不清除，重连后由对应 load 替换
 				_lifecycle.syncDashboardOffline(id);
-				// claw 离线 → 立即清除 DC 状态，避免 applySnapshot preserveOnline 误判
-				claw.dcReady = false;
-				claw.rtcPhase = 'idle';
-				this.__clearRetry(id);
+				// SSE presence 仅是展示信号，不毒化 DC 状态（详见通信模型 §5.5）。
+				// 轻触发 DC 自检：若 DC 健在，probe 会成功无副作用；若 DC 实际已坏，
+				// 能在秒级拉起 ICE restart / rebuild，避免等浏览器 consent 超时（~20-35s）。
+				this.__checkAndRecover(id, 'sse_offline').catch(() => {});
 			} else if (!claw.initialized) {
 				// claw 上线且未初始化 → fullInit（ensureConnected 内部处理 WS）
 				claw.initialized = true;
@@ -208,12 +208,10 @@ export const useClawsStore = defineStore('claws', {
 				if (!id) continue;
 				const existing = this.byId[id];
 				if (existing) {
-					const preserveOnline = existing.dcReady;
 					// 保留运行时状态（server snapshot 不应覆盖这些字段）
 					const runtime = {};
 					for (const k of RUNTIME_FIELDS) runtime[k] = existing[k];
 					Object.assign(existing, b, { id }, runtime);
-					if (preserveOnline) existing.online = true;
 					newById[id] = existing;
 				} else {
 					newById[id] = createClawState({ ...b, id });
@@ -240,10 +238,10 @@ export const useClawsStore = defineStore('claws', {
 				this.__bridgeConn(id);
 			}
 			// server 重启后 RTC 内部重建可能已耗尽 → rtcPhase='failed'
-			// 新快照到达时为这些 claw 重新尝试
+			// 新快照到达时为这些 claw 重新尝试（持续维护 gate 不看 online）
 			for (const id of clawIds) {
 				const claw = this.byId[id];
-				if (claw?.online && claw.initialized && claw.rtcPhase === 'failed') {
+				if (claw?.initialized && claw.rtcPhase === 'failed') {
 					this.__clearRetry(id); // 外部事件，重置退避
 					this.__ensureRtc(id).catch(() => {});
 				}
@@ -326,7 +324,10 @@ export const useClawsStore = defineStore('claws', {
 			this.__bridgeSignaling();
 
 			// 新 claw + online + 未初始化 → 启动 fullInit
-			// ensureConnected() 内部透明处理 WS 可用性（等待 WS 就绪）
+			// 首次 init 用 SSE presence 作启动先验：建连成本不低（ICE gathering、
+			// TURN 协商、一轮 signaling），明确离线时不白跑。持续维护（__ensureRtc
+			// 循环、__scheduleRetry、__handleNetworkOnline）则不看 online，由 PC
+			// 自身状态驱动。详见通信模型 §5.5。
 			const claw = this.byId[clawId];
 			if (claw && claw.online && !claw.initialized) {
 				claw.initialized = true;
@@ -431,8 +432,8 @@ export const useClawsStore = defineStore('claws', {
 				let result = 'failed';
 				let bailedOut = false;
 				for (let i = 0; i < RTC_BUILD_MAX_RETRIES; i++) {
-					if (!this.byId[id] || !this.byId[id].online) {
-						console.debug('[claws] ensureRtc: bail-out (claw removed or offline) clawId=%s', id);
+					if (!this.byId[id]) {
+						console.debug('[claws] ensureRtc: bail-out (claw removed) clawId=%s', id);
 						bailedOut = true;
 						break;
 					}
@@ -451,8 +452,7 @@ export const useClawsStore = defineStore('claws', {
 					this.__refreshIfStale(id);
 					remoteLog(`claw.rtcReady claw=${id}`);
 				} else if (bailedOut) {
-					const claw = this.byId[id];
-					if (claw) claw.rtcPhase = 'idle';
+					// bail-out 唯一触发条件是 this.byId[id] 已被删除，无对象可写 phase
 					remoteLog(`claw.rtcBailOut claw=${id}`);
 				} else {
 					const claw = this.byId[id];
@@ -473,7 +473,8 @@ export const useClawsStore = defineStore('claws', {
 		async __fullInit(id, conn) {
 			remoteLog(`claw.fullInit claw=${id}`);
 			const claw = this.byId[id];
-			if (!claw?.online) throw new Error('Claw is offline');
+			// race: claw 在 init 过程中被移除（调用方 catch 会回退 initialized）
+			if (!claw) throw new Error('Claw removed during init');
 
 			// 等待 RTC 建立（DC 是唯一的 RPC 通道）
 			await this.__ensureRtc(id);
@@ -497,7 +498,7 @@ export const useClawsStore = defineStore('claws', {
 		/** 安排退避重试（__ensureRtc 失败或被动失败后调用） */
 		__scheduleRetry(id) {
 			const claw = this.byId[id];
-			if (!claw?.online) return;
+			if (!claw) return;
 			let state = _rtcRetryState.get(id);
 			if (!state) {
 				state = { count: 0, timer: null };
@@ -522,7 +523,7 @@ export const useClawsStore = defineStore('claws', {
 			remoteLog(`claw.retryScheduled claw=${id} attempt=${state.count}/${MAX_BACKOFF_RETRIES} delay=${delay}ms`);
 			state.timer = setTimeout(() => {
 				state.timer = null;
-				if (!this.byId[id]?.online || this.byId[id]?.rtcPhase !== 'failed') {
+				if (!this.byId[id] || this.byId[id]?.rtcPhase !== 'failed') {
 					this.__clearRetry(id);
 					return;
 				}
@@ -552,7 +553,7 @@ export const useClawsStore = defineStore('claws', {
 			for (const id of Object.keys(this.byId)) {
 				if (_rtcInitInProgress.get(id)) continue;
 				const claw = this.byId[id];
-				if (!claw?.online || !claw?.initialized) continue;
+				if (!claw?.initialized) continue;
 				const conn = useClawConnections().get(id);
 				const rtc = conn?.rtc;
 				if (!rtc) continue;

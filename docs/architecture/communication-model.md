@@ -214,6 +214,36 @@ idle → building → ready ⇄ recovering
 
 `waitReady()` 在 `failed` 状态下会自动调用 `__onTriggerReconnect` 触发新一轮重连尝试。
 
+### 5.5 claw.online 与 DC 生命周期的解耦
+
+**`claw.online` 是展示层字段，不参与 DC 生命周期决策。**
+
+- 来源：SSE `claw.status` / `claw.snapshot` 事件，反映 server 视角看到的 plugin↔server WS 是否在线
+- 语义：**presence 信号**——告诉 UI "server 那边认不认得这台 plugin"，用于列表展示、离线提示、首次 init 的启动先验
+- 禁止用途：不作为 "DC 是否可用" 的判据，不参与 `dcReady` / `rtcPhase` 决策
+
+**为什么解耦**：plugin↔server WS 和 UI↔plugin WebRTC DC 是两条独立通路。前者短暂抖动（gateway 重启、plugin 端网络波动、server 内部剔除会话）不应让后者正在用的 DC 被强制重置——DC 是否真坏应由 PC 自身的 connectionState / consent 机制裁决，SSE presence 不具备数据面的判断权威。
+
+**SSE claw.online=false 时 UI 的动作**：
+
+```
+SSE claw.status {online:false}
+  → claws.store.updateClawOnline(id, false)
+  → claw.online = false   （仅更新展示字段）
+  → _lifecycle.syncDashboardOffline(id)   （dashboard 展示层同步）
+  → __checkAndRecover(id, 'sse_offline')   （轻触发 DC 自检）
+```
+
+`__checkAndRecover` 按 PC 状态分发：probe 验证 DC 可达 / `triggerRestart` ICE 重启 / rebuild PC。DC 实际健在时 probe 会通过，无副作用；DC 真坏时能在秒级触发 restart，而不是等浏览器 consent 超时（约 20–35s）。
+
+**前提**：`__checkAndRecover` 只在 `dcReady=true` 的 claw 上生效（首行 `if (!claw?.dcReady) return`）；若 SSE offline 推来时 DC 本就不 ready（从未建成 / 已失败等待退避），该路径静默返回，恢复由 `__scheduleRetry` 退避重试或下一次 `network:online` / `app:foreground` 兜底。
+
+**其他 online 消费点的原则**：
+- 展示（banner、徽标、列表排序、操作可用性提示）：**允许**
+- 首次 init 的启动先验（`__bridgeConn` 决定是否对未初始化的 claw 立即建 DC）：**允许**——建连成本不低，明确离线时不白跑
+- 持续维护期的通信 gate（`__ensureRtc` 循环、`__scheduleRetry`、`__handleNetworkOnline`、`applySnapshot` 末尾 failed 重试、`connReady` 等）：**禁止**——这些路径已进入"期望 DC 工作"的状态，应只看 PC/DC 自身信号
+- `applySnapshot` 的 `preserveOnline` 兜底（"DC 通就保住 online=true"）一并移除——presence 作为单一来源由 SSE 提供，DC 可达性由 PC 独立驱动，不互相覆盖
+
 ---
 
 ## 六、Agent 两阶段响应

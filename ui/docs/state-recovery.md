@@ -139,7 +139,7 @@
 ### 3.3 connReady watcher 驱动消息加载
 
 - **文件**：`views/ChatPage.vue`
-- **计算属性**：`connReady` = `claw.online` + `claw.dcReady` + `agentVerified`（topic 模式跳过 agent 验证）
+- **计算属性**：`connReady` = `claw.dcReady` + `agentVerified`（topic 模式跳过 agent 验证）。不读 `claw.online`——presence 不参与通信就绪判断，详见 `docs/architecture/communication-model.md` §5.5
 - **触发**：`connReady` 从 false 变为 true
 - **行为**：
   - 调用 `chatStore.__reconcileSlashCommand()`
@@ -389,8 +389,12 @@
 
 ### RTC 前台恢复策略
 
-RTC 恢复决策完全基于 PC 自身状态和 DC probe，不依赖 WS 指标（如 `elapsed`）。两个入口：
+RTC 恢复决策完全基于 PC 自身状态和 DC probe，不依赖 WS 指标（如 `elapsed`）。三个入口：
 
+- `sse_offline`（SSE 推 claw.online=false）→ `__checkAndRecover`（轻触发自检）：
+  - DC 健在 → probe 成功，无副作用
+  - DC 已坏 → 按 PC 状态走 probe / triggerRestart / rebuild 分发，避免等浏览器 consent 超时（约 20–35s）
+  - 目的：让 SSE presence 只负责展示，不再毒化 DC 状态；同时在 DC 真坏时快速拉起恢复
 - `network:online` → `__handleNetworkOnline`（按 PC 状态 + 网络类型变化分级处理）：
   - **类型变化**（WiFi↔蜂窝，由 Capacitor Network plugin `connectionType` 检测）→ 直接 rebuild 所有 claw。旧 ICE 路径必然失效，ndc 不支持 ICE restart
   - **类型未变 + PC `failed`/`closed`** → 直接 rebuild（加速长 offline 后恢复，避免等退避 timer）
