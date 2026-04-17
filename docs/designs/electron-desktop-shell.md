@@ -1,9 +1,11 @@
 # Electron 桌面壳子应用设计方案
 
-> 状态：草案
+> 状态：已实施，以 `ui/electron/` 代码为准
 > 创建时间：2026-03-15
 > 适用范围：Windows + macOS 桌面端
 > 替代文档：`tauri-desktop-shell.md`（Tauri 方案已放弃，保留作参考）
+>
+> 本文档为过程设计稿，部分示例代码在实施过程中有调整（如 autoDownload 默认值、URL 白名单 API、files 声明、全局快捷键预埋等）；实际行为以代码为准。
 
 ## 技术选型变更说明
 
@@ -565,7 +567,9 @@ const log = require('electron-log');
 
 function initUpdater() {
   autoUpdater.logger = log;
-  autoUpdater.autoDownload = false; // 让用户确认后再下载
+  // 实现中：autoDownload 跟随用户设置 auto_update_enabled（默认 true → 无感下载，
+  // 下次退出时自动应用，对齐 Capacitor 路径；关闭则完全不动）
+  autoUpdater.autoDownload = true;
 
   autoUpdater.on('update-available', (info) => {
     const { BrowserWindow } = require('electron');
@@ -609,16 +613,21 @@ module.exports = { initUpdater };
 ### 5.3 导航限制
 
 ```js
-// 阻止导航到非信任域
-win.webContents.on('will-navigate', (event, url) => {
-  if (!url.startsWith('https://im.coclaw.net')) {
-    event.preventDefault();
-  }
-});
+// 实现中：走 electron/url-guard.js 的 isTrustedUrl（严格 origin 匹配，防子域前后缀绕过）
+// 生产模式仅信任 https://im.coclaw.net；{ allowDev: true } 时额外信任 http://localhost:5173
+// will-navigate + will-redirect 对称拦截，防 3xx 重定向绕过
+const guardNav = (event, navUrl) => {
+  if (!isTrustedUrl(navUrl, { allowDev: isDev })) event.preventDefault();
+};
+win.webContents.on('will-navigate', guardNav);
+win.webContents.on('will-redirect', guardNav);
 
-// 阻止新窗口打开（外部链接走 shell.openExternal）
+// 新窗口走系统浏览器（仅放行 http/https；coclaw:// file:// javascript: 等一律拒绝）
 win.webContents.setWindowOpenHandler(({ url }) => {
-  shell.openExternal(url);
+  try {
+    const { protocol } = new URL(url);
+    if (protocol === 'http:' || protocol === 'https:') shell.openExternal(url);
+  } catch { /* 忽略无效 URL */ }
   return { action: 'deny' };
 });
 ```
@@ -907,7 +916,7 @@ export const isNativeShell = isCapacitorApp || isElectronApp;
 
 ### 9.2 `isNative` 迁移
 
-与 Tauri 方案相同：现有 `isNative` 引用改为 `isCapacitorApp`（仅移动壳子需要的适配）。Electron 桌面端行为与 Web 浏览器一致，不需要这些移动端适配。
+实现中：`isNative` 按语义分流——`StatusBar / env.store / 分享按钮` 等仅移动端存在的能力仍用 `isCapacitorApp`；`router 路由恢复` 等"原生壳子冷启动"通用能力改用 `isNativeShell`（覆盖 Capacitor + Electron + Tauri），让 Electron 也受益。
 
 ### 9.3 Electron 壳子初始化
 
@@ -952,9 +961,12 @@ directories:
   buildResources: build-resources
 
 # 不打包前端代码（远程加载）
+# 实现中：icon.ico / icon.icns 都需显式列入，BrowserWindow.icon 运行时从 asar 读
 files:
   - electron/**/*
   - build-resources/icon.png
+  - build-resources/icon.ico
+  - build-resources/icon.icns
   - build-resources/tray-icon*.png
   - package.json
 

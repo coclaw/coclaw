@@ -81,4 +81,14 @@ describe('url-guard / isTrustedUrl — allowDev=true（开发模式）', () => {
 	test('攻击者域名仍不信任', () => {
 		expect(isTrustedUrl('https://im.coclaw.net.evil.com', { allowDev: true })).toBe(false);
 	});
+
+	test('无效 URL 仍返回 false（allowDev 不影响 URL 解析失败路径）', () => {
+		expect(isTrustedUrl('not a url', { allowDev: true })).toBe(false);
+		expect(isTrustedUrl(null, { allowDev: true })).toBe(false);
+	});
+
+	test('allowDev=false 显式传与不传等价（生产模式）', () => {
+		expect(isTrustedUrl('http://localhost:5173', { allowDev: false })).toBe(false);
+		expect(isTrustedUrl('https://im.coclaw.net', { allowDev: false })).toBe(true);
+	});
 });

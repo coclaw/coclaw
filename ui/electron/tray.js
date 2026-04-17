@@ -66,6 +66,8 @@ export function initTray(app, getWin) {
 
 	// ---- IPC：托盘状态更新 ----
 	ipcMain.on('tray:setTooltip', (_, text) => {
+		// disposeTray 先置 tray=null 再 removeAllListeners，中间窗口内 IPC 可能进来，需守卫
+		if (!tray || tray.isDestroyed()) return;
 		// 中文系统兜底 "可虾"，英文系统兜底 "CoClaw"
 		tray.setToolTip(text || getAppTitle());
 	});

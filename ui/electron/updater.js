@@ -31,9 +31,13 @@ export function initUpdater(getWin) {
 	initialized = true;
 
 	autoUpdater.logger = log;
+
+	// 用户可在设置页关闭自动检查；autoDownload 跟随该开关，保证"关闭 = 完全不自动"
+	// 即便用户手动调 updater:checkForUpdates，也只会走 update-available，不会自动下载
+	const autoEnabled = store.get('auto_update_enabled', true);
 	// 无感更新：发现新版本立即下载、下次退出时自动应用，与 Capacitor /version.json 路径一致
 	// renderer 不再需要 UI 弹窗"是否下载"，避免维护两套更新交互
-	autoUpdater.autoDownload = true;
+	autoUpdater.autoDownload = autoEnabled;
 
 	autoUpdater.on('update-available', (info) => {
 		const payload = {
@@ -72,8 +76,7 @@ export function initUpdater(getWin) {
 
 	registerIpcHandlers(getWin, false);
 
-	// 用户可在设置页关闭自动检查；已关闭时仅保留手动 checkForUpdates IPC
-	const autoEnabled = store.get('auto_update_enabled', true);
+	// 已关闭时仅保留手动 checkForUpdates IPC（且因 autoDownload=false, 检查到也不会自动下载）
 	if (!autoEnabled) {
 		log.info('[updater] auto-check disabled by user setting');
 		return;

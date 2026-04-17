@@ -156,6 +156,8 @@ beforeEach(() => {
 	hoisted.app.setBadgeCount.mockClear();
 	hoisted.app.dock.bounce.mockClear();
 	hoisted.notifications.length = 0;
+	// safeHandle "正常不写错误日志"用例需要干净的 logMock.error 起点
+	logMock.error.mockClear();
 	storeData.clear();
 	registerOnce();
 });

@@ -97,11 +97,14 @@ if (!gotLock) {
 		}
 
 		// 阻止导航到非信任域（严格 origin 匹配）；仅开发模式才把 localhost:5173 视为信任
-		win.webContents.on('will-navigate', (event, navUrl) => {
+		// will-redirect 对称拦截：防 3xx 重定向绕过白名单
+		const guardNav = (event, navUrl) => {
 			if (!isTrustedUrl(navUrl, { allowDev: isDev })) {
 				event.preventDefault();
 			}
-		});
+		};
+		win.webContents.on('will-navigate', guardNav);
+		win.webContents.on('will-redirect', guardNav);
 
 		// 外部链接用系统浏览器打开（仅放行 http/https）
 		win.webContents.setWindowOpenHandler(({ url: openUrl }) => {

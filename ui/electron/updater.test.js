@@ -63,6 +63,8 @@ function resetMocks() {
 	autoUpdaterMock.checkForUpdates.mockClear();
 	autoUpdaterMock.downloadUpdate.mockClear();
 	autoUpdaterMock.quitAndInstall.mockClear();
+	// 回到"非 true"初值，防 autoDownload 断言被上个用例的副作用污染
+	autoUpdaterMock.autoDownload = false;
 	Object.keys(autoUpdaterMock.handlers).forEach((k) => delete autoUpdaterMock.handlers[k]);
 	Object.keys(ipcHandlers).forEach((k) => delete ipcHandlers[k]);
 	powerMonitorMock.on.mockClear();
@@ -145,8 +147,7 @@ describe('initUpdater — 正常模式', () => {
 		]));
 	});
 
-	test('autoDownload 被设为 true（无感更新，对齐 Capacitor）', () => {
-		autoUpdaterMock.autoDownload = false;
+	test('默认启用时 autoDownload=true（无感更新，对齐 Capacitor）', () => {
 		initUpdater(getWin);
 		expect(autoUpdaterMock.autoDownload).toBe(true);
 	});
@@ -362,6 +363,12 @@ describe('initUpdater — auto_update_enabled 开关', () => {
 		const res = await ipcHandlers['updater:checkForUpdates']();
 		expect(res.ok).toBe(true);
 		expect(autoUpdaterMock.checkForUpdates).toHaveBeenCalled();
+	});
+
+	test('关闭自动更新 → autoDownload=false，手动 check 不会触发静默下载', () => {
+		storeData.set('auto_update_enabled', false);
+		initUpdater(getWin);
+		expect(autoUpdaterMock.autoDownload).toBe(false);
 	});
 
 	test('显式 true 与默认行为一致', () => {

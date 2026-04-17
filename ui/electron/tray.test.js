@@ -177,11 +177,22 @@ describe('disposeTray', () => {
 			disposeTray();
 
 			assert.equal(mockTray.destroy.mock.calls.length, 1);
-			assert.deepEqual(ipcMain.removeAllListeners.mock.calls,
-				[['tray:setTooltip'], ['tray:setUnread']]);
+			// 两个 channel 都被清理即可，顺序不重要（避免实现细节耦合）
+			const channels = ipcMain.removeAllListeners.mock.calls.map(c => c[0]).sort();
+			assert.deepEqual(channels, ['tray:setTooltip', 'tray:setUnread']);
 		}
 		finally {
 			vi.useRealTimers();
 		}
+	});
+
+	test('tray:setTooltip 在 tray 已销毁时静默返回', () => {
+		const fakeApp = { on: vi.fn() };
+		const fakeWin = { on: vi.fn(), isVisible: () => true, webContents: { send: vi.fn() } };
+		initTray(fakeApp, () => fakeWin);
+		mockTray.setToolTip.mockClear();
+		mockTray.isDestroyed.mockReturnValueOnce(true);
+		ipcHandlers['tray:setTooltip'](null, 'x');
+		assert.equal(mockTray.setToolTip.mock.calls.length, 0);
 	});
 });
