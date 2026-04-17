@@ -214,10 +214,12 @@ test('ChatInput：空输入时发送按钮禁用 @chat', async ({ page }) => {
 });
 
 // ================================================================
-// Test 7: 桌面麦克风按钮跟随 disabled 状态（claw 离线时禁用）
+// Test 7: 桌面麦克风按钮与 textarea disabled 状态同步
+// presence 与通信已解耦：离线不触发 disabled（详见通信模型 §5.5），
+// 本测试验证 mic 和 textarea 通过 prop 透传保持同一 disabled 态
 // ================================================================
 
-test('ChatInput：桌面麦克风按钮随输入禁用态同步 @chat', async ({ page }) => {
+test('ChatInput：桌面麦克风按钮 disabled 状态与 textarea 同步 @chat', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -231,17 +233,31 @@ test('ChatInput：桌面麦克风按钮随输入禁用态同步 @chat', async ({
 	await expect(micBtn).toBeVisible({ timeout: 5000 });
 	await expect(micBtn).toBeEnabled({ timeout: 3000 });
 
-	// 将所有 claw 置为离线，textarea 会被禁用，麦克风应一并禁用
+	// 离线不再触发 disabled：textarea 和 mic 都保持可用
 	await evalStore(page, 'claws', `
 		for (const claw of store.items) {
 			store.updateClawOnline(claw.id, false);
 		}
 	`);
 
+	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 5000 });
+	await expect(micBtn).toBeEnabled({ timeout: 3000 });
+
+	// 通过 inputLocked（sending 且未 accepted）触发 disabled：
+	// mic 与 textarea 应一并被禁用，验证 disabled prop 透传链
+	await evalStore(page, 'chat', `
+		store.sending = true;
+		store.__accepted = false;
+	`);
+
 	await expect(page.getByTestId('chat-textarea')).toBeDisabled({ timeout: 5000 });
 	await expect(micBtn).toBeDisabled({ timeout: 3000 });
 
-	// 恢复：离线消除后麦克风应重新可用
+	// 恢复 sending 标志（避免影响后续用例状态）
+	await evalStore(page, 'chat', `
+		store.sending = false;
+	`);
+	// 顺便恢复 claw online
 	await evalStore(page, 'claws', `
 		for (const claw of store.items) {
 			store.updateClawOnline(claw.id, true);

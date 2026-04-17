@@ -77,10 +77,12 @@ test('不存在的 session：重定向到首页 @resilience', async ({ page }) =
 });
 
 // ================================================================
-// Test 3: Claw 离线 → 显示离线 banner + 输入禁用
+// Test 3: Claw 离线 → 显示离线 banner，但输入保持可用
+// presence 与通信已解耦：离线仅影响展示，DC 若健在则仍可打字；
+// sendMessage 靠 conn.waitReady() 排队等 DC 恢复（详见通信模型 §5.5）
 // ================================================================
 
-test('Claw 离线：显示离线提示且输入禁用 @resilience', async ({ page }) => {
+test('Claw 离线：显示离线提示但输入保持可用 @resilience', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
@@ -97,12 +99,12 @@ test('Claw 离线：显示离线提示且输入禁用 @resilience', async ({ pag
 		}
 	`);
 
-	// 离线 banner 应出现
+	// 离线 banner 应出现（展示层依然响应 presence）
 	const offlineBanner = page.locator('[data-testid="chat-root"] .text-warning');
 	await expect(offlineBanner).toBeVisible({ timeout: 5000 });
 
-	// textarea 应被禁用
-	await expect(page.getByTestId('chat-textarea')).toBeDisabled({ timeout: 3000 });
+	// textarea 应保持可用（presence 不 gate 通信）
+	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 3000 });
 
 	// --- 恢复 ---
 	// 将 claw 重新设为在线
@@ -115,6 +117,6 @@ test('Claw 离线：显示离线提示且输入禁用 @resilience', async ({ pag
 	// 离线 banner 应消失
 	await expect(offlineBanner).not.toBeVisible({ timeout: 5000 });
 
-	// textarea 应重新可用
+	// textarea 持续可用
 	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 5000 });
 });
