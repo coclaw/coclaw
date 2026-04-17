@@ -394,6 +394,7 @@ export const zhTWMessages = {
 		cancelNotSupported: '目前 OpenClaw 版本無法取消執行中的 agent，它將繼續在背景執行。',
 		clawThinking: '思考中',
 		thinkingFor: '思考中 {time}',
+		refresh: '重新整理',
 	},
 	markdown: {
 		copy: '複製',

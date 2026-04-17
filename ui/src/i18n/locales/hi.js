@@ -394,6 +394,7 @@ export const hiMessages = {
 		cancelNotSupported: 'यह OpenClaw संस्करण चल रहे agent को रद्द नहीं कर सकता। यह पृष्ठभूमि में चलता रहेगा।',
 		clawThinking: 'सोच रहा है',
 		thinkingFor: '{time} सोच रहा है',
+		refresh: 'रिफ्रेश',
 	},
 	markdown: {
 		copy: 'कॉपी करें',

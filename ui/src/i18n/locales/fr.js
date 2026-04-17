@@ -394,6 +394,7 @@ export const frMessages = {
 		cancelNotSupported: 'Cette version d\'OpenClaw ne peut pas annuler l\'agent en cours. L\'exécution continuera en arrière-plan.',
 		clawThinking: 'Réflexion',
 		thinkingFor: 'Réflexion {time}',
+		refresh: 'Actualiser',
 	},
 	markdown: {
 		copy: 'Copier',

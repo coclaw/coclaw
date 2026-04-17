@@ -394,6 +394,7 @@ export const viMessages = {
 		cancelNotSupported: 'Phiên bản OpenClaw hiện tại không thể hủy agent đang chạy. Nó sẽ tiếp tục chạy ở nền.',
 		clawThinking: 'Đang suy nghĩ',
 		thinkingFor: 'Đang suy nghĩ {time}',
+		refresh: 'Làm mới',
 	},
 	markdown: {
 		copy: 'Sao chép',

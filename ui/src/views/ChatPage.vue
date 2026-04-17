@@ -10,6 +10,17 @@
 		<MobilePageHeader :title="chatTitle">
 			<template #actions>
 				<UButton
+					data-testid="btn-refresh"
+					class="cc-icon-btn-lg"
+					variant="ghost"
+					color="neutral"
+					icon="i-lucide-refresh-cw"
+					:title="$t('chat.refresh')"
+					:disabled="refreshDisabled"
+					:loading="refreshLoading"
+					@click="onRefresh"
+				/>
+				<UButton
 					v-if="canOpenFiles"
 					data-testid="btn-files"
 					class="cc-icon-btn-lg"
@@ -32,6 +43,17 @@
 		<header class="z-10 hidden shrink-0 min-h-12 items-center justify-between border-b border-default bg-elevated pl-4 pr-1 lg:pl-5 lg:pr-2 py-1 md:flex">
 			<h1 class="text-base">{{ chatTitle }}</h1>
 			<div class="flex items-center">
+				<UButton
+					data-testid="btn-refresh"
+					class="cc-icon-btn-lg"
+					variant="ghost"
+					color="neutral"
+					icon="i-lucide-refresh-cw"
+					:title="$t('chat.refresh')"
+					:disabled="refreshDisabled"
+					:loading="refreshLoading"
+					@click="onRefresh"
+				/>
 				<UButton
 					v-if="canOpenFiles"
 					data-testid="btn-files"
@@ -190,6 +212,8 @@ export default {
 			__loadingHistory: false,
 			// 首次消息加载 + scrollToBottom 完成前隐藏消息列表，防止闪顶
 			__scrollReady: false,
+			// 刷新按钮本地状态（用户发起刷新到完成的窗口）
+			refreshing: false,
 		};
 	},
 	computed: {
@@ -383,6 +407,14 @@ export default {
 			if (!s || this.isClawOffline || this.awaitingAgent) return false;
 			if (s.allMessages.length > 0 || s.errorText) return false;
 			return s.__initialized && !s.__messagesLoaded;
+		},
+		/** 刷新按钮：本地请求中 / store 内部 load 中 / 连接未就绪时 disabled */
+		refreshDisabled() {
+			return this.refreshing || !!this.chatStore?.isLoadingMessages || !this.connReady;
+		},
+		/** 刷新按钮 spinner：本地请求中 或 store 内部 load 中 */
+		refreshLoading() {
+			return this.refreshing || !!this.chatStore?.isLoadingMessages;
 		},
 
 		/**
@@ -678,6 +710,27 @@ export default {
 				name: 'files',
 				params: { clawId: this.currentClawId, agentId: this.currentAgentId },
 			});
+		},
+
+		/**
+		 * 刷新按钮：静默拉一次当前 session 的消息。
+		 * 用 silent 模式避免失败时清空 messages，失败保留当前视图；成功时顺带清掉 errorText
+		 * 残留（ChatPage.vue v-else-if 里 errorText 比 messages 优先，不清会遮住新拉回的数据）
+		 */
+		async onRefresh() {
+			if (this.refreshing || !this.chatStore) return;
+			this.refreshing = true;
+			try {
+				const ok = await this.chatStore.loadMessages({ silent: true });
+				// await 返回后组件可能已卸载（用户切路由），对齐 __onConnReady 的 guard
+				if (this.__unmounted) return;
+				if (ok && this.chatStore?.errorText) {
+					this.chatStore.errorText = '';
+				}
+			}
+			finally {
+				this.refreshing = false;
+			}
 		},
 
 		/** 新建话题 */

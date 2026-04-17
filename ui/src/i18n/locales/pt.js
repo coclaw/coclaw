@@ -394,6 +394,7 @@ export const ptMessages = {
 		cancelNotSupported: 'Esta versão do OpenClaw não pode cancelar o agente em execução. A execução continuará em segundo plano.',
 		clawThinking: 'Pensando',
 		thinkingFor: 'Pensando {time}',
+		refresh: 'Atualizar',
 	},
 	markdown: {
 		copy: 'Copiar',

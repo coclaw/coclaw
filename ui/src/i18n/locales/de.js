@@ -394,6 +394,7 @@ export const deMessages = {
 		cancelNotSupported: 'Diese OpenClaw-Version kann den laufenden Agenten nicht abbrechen. Die Ausführung wird im Hintergrund fortgesetzt.',
 		clawThinking: 'Denkt nach',
 		thinkingFor: 'Denkt {time}',
+		refresh: 'Aktualisieren',
 	},
 	markdown: {
 		copy: 'Kopieren',

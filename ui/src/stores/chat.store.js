@@ -159,6 +159,13 @@ export function createChatStore(storeKey, opts = {}) {
 			isCancelling() {
 				return !!this.__cancelling;
 			},
+			/**
+			 * 是否有 loadMessages 正在进行（silent 或非 silent 任一路径）
+			 * 用于 refresh 按钮展示"后台也在刷"的状态反馈
+			 */
+			isLoadingMessages() {
+				return !!(this.__silentLoadPromise || this.__loadPromise);
+			},
 		},
 		actions: {
 			/**

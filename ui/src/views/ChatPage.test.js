@@ -1491,3 +1491,143 @@ describe('ChatPage scroll', () => {
 		expect(mockAddFiles).toHaveBeenCalledWith([file]);
 	});
 });
+
+// --- 刷新按钮 ---
+
+describe('ChatPage refresh button', () => {
+	const wrappers = [];
+	beforeEach(() => {
+		vi.clearAllMocks();
+		chatStoreManager.__reset();
+	});
+	afterEach(() => {
+		// 清 mounted 注册的 window/document 监听器，避免跨测试累积
+		while (wrappers.length) wrappers.pop().unmount();
+	});
+
+	/** 创建一个 connReady=true 的 wrapper + chatStore，并 mock loadMessages */
+	async function setupReady() {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		setupAgents();
+		const chatStore = chatStoreManager.get('session:bot-1:main', { clawId: 'bot-1', agentId: 'main' });
+		chatStore.__initialized = true;
+		chatStore.__messagesLoaded = true;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+		const wrapper = mount(ChatPage, {
+			global: {
+				plugins: [pinia],
+				mocks: {
+					$t: (key) => i18nMap[key] ?? key,
+					$route: {
+						name: 'chat',
+						params: { clawId: 'bot-1', agentId: 'main' },
+						path: '/chat/bot-1/main',
+						query: {},
+					},
+					$router: mockRouter,
+				},
+			},
+		});
+		await flushPromises();
+		// 清掉 connReady watcher 触发的初始 load，关注按钮点击路径
+		loadSpy.mockClear();
+		wrappers.push(wrapper);
+		return { wrapper, chatStore, loadSpy };
+	}
+
+	test('点击触发 silent loadMessages', async () => {
+		const { wrapper, loadSpy } = await setupReady();
+		await wrapper.vm.onRefresh();
+		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+	});
+
+	test('refreshing 期间拦截重入（快速双击只发一次 RPC）', async () => {
+		const { wrapper, chatStore, loadSpy } = await setupReady();
+		let resolveLoad;
+		chatStore.loadMessages.mockImplementation(() => new Promise((r) => { resolveLoad = r; }));
+		const p1 = wrapper.vm.onRefresh();
+		// 让 p1 的同步前缀跑完，refreshing guard 就位再试第二次点击
+		await Promise.resolve();
+		expect(wrapper.vm.refreshing).toBe(true);
+		const p2 = wrapper.vm.onRefresh();
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		resolveLoad(true);
+		await Promise.all([p1, p2]);
+		expect(wrapper.vm.refreshing).toBe(false);
+	});
+
+	test('成功后清空 errorText 残留（initial load 失败后的恢复路径）', async () => {
+		const { wrapper, chatStore } = await setupReady();
+		chatStore.errorText = 'prior error';
+		await wrapper.vm.onRefresh();
+		expect(chatStore.errorText).toBe('');
+	});
+
+	test('silent load 返回 false 时不清 errorText（避免误清真实错误）', async () => {
+		const { wrapper, chatStore } = await setupReady();
+		chatStore.loadMessages.mockResolvedValue(false);
+		chatStore.errorText = 'prior error';
+		await wrapper.vm.onRefresh();
+		expect(chatStore.errorText).toBe('prior error');
+	});
+
+	test('finally 分支：loadMessages 抛错时 refreshing 也会复位', async () => {
+		const { wrapper, chatStore } = await setupReady();
+		chatStore.loadMessages.mockRejectedValue(new Error('boom'));
+		await expect(wrapper.vm.onRefresh()).rejects.toThrow('boom');
+		expect(wrapper.vm.refreshing).toBe(false);
+	});
+
+	test('refreshDisabled：connReady=false 时禁用', async () => {
+		const { wrapper } = await setupReady();
+		const clawsStore = useClawsStore();
+		clawsStore.byId['bot-1'].dcReady = false;
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.refreshDisabled).toBe(true);
+	});
+
+	test('refreshDisabled：chatStore.isLoadingMessages=true 时禁用', async () => {
+		const { wrapper, chatStore } = await setupReady();
+		chatStore.__silentLoadPromise = Promise.resolve(true);
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.refreshDisabled).toBe(true);
+		expect(wrapper.vm.refreshLoading).toBe(true);
+	});
+
+	test('refreshDisabled：refreshing=true 时禁用', async () => {
+		const { wrapper } = await setupReady();
+		wrapper.vm.refreshing = true;
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.refreshDisabled).toBe(true);
+		expect(wrapper.vm.refreshLoading).toBe(true);
+	});
+
+	test('按钮 DOM 在 connReady=true、非 loading 时可点', async () => {
+		const { wrapper } = await setupReady();
+		const btn = wrapper.find('[data-testid="btn-refresh"]');
+		expect(btn.exists()).toBe(true);
+		expect(wrapper.vm.refreshDisabled).toBe(false);
+	});
+
+	test('DOM 层：disabled 状态下点击不触发 loadMessages', async () => {
+		const { wrapper, loadSpy } = await setupReady();
+		const clawsStore = useClawsStore();
+		clawsStore.byId['bot-1'].dcReady = false; // 让 connReady=false → refreshDisabled=true
+		await wrapper.vm.$nextTick();
+		const btn = wrapper.find('[data-testid="btn-refresh"]');
+		await btn.trigger('click');
+		await flushPromises();
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
+	test('移动端 + 桌面端两份按钮都存在于 DOM', async () => {
+		const { wrapper } = await setupReady();
+		const btns = wrapper.findAll('[data-testid="btn-refresh"]');
+		// Tailwind md:hidden / md:flex 只控制可见性，DOM 节点都会挂载
+		expect(btns).toHaveLength(2);
+	});
+});

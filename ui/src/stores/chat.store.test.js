@@ -3182,6 +3182,36 @@ describe('useChatStore', () => {
 			expect(store.isMainSession).toBe(false);
 		});
 
+		// --- isLoadingMessages ---
+
+		test('isLoadingMessages 默认 false', () => {
+			const store = useChatStore();
+			expect(store.isLoadingMessages).toBe(false);
+		});
+
+		test('isLoadingMessages 在 __silentLoadPromise 飞行中为 true', () => {
+			const store = useChatStore();
+			store.__silentLoadPromise = Promise.resolve(true);
+			expect(store.isLoadingMessages).toBe(true);
+			store.__silentLoadPromise = null;
+			expect(store.isLoadingMessages).toBe(false);
+		});
+
+		test('isLoadingMessages 在 __loadPromise 飞行中为 true', () => {
+			const store = useChatStore();
+			store.__loadPromise = Promise.resolve(true);
+			expect(store.isLoadingMessages).toBe(true);
+			store.__loadPromise = null;
+			expect(store.isLoadingMessages).toBe(false);
+		});
+
+		test('isLoadingMessages 两个 promise 都在飞行时为 true', () => {
+			const store = useChatStore();
+			store.__silentLoadPromise = Promise.resolve(true);
+			store.__loadPromise = Promise.resolve(true);
+			expect(store.isLoadingMessages).toBe(true);
+		});
+
 		// --- allMessages 合并 + stripLocalUserMsgs 去重 ---
 
 		test('allMessages 合并 streamingMsgs（不做过滤）', () => {

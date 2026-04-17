@@ -394,6 +394,7 @@ export const jaMessages = {
 		cancelNotSupported: '現在の OpenClaw バージョンでは実行中のエージェントをキャンセルできません。バックグラウンドで実行が続行されます。',
 		clawThinking: '考え中',
 		thinkingFor: '{time} 考えました',
+		refresh: '更新',
 	},
 	markdown: {
 		copy: 'コピー',

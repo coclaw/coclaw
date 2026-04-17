@@ -394,6 +394,7 @@ export const enMessages = {
 		cancelNotSupported: 'This OpenClaw version cannot cancel the running agent. The run will continue in the background.',
 		clawThinking: 'Thinking',
 		thinkingFor: 'Thinking {time}',
+		refresh: 'Refresh',
 	},
 	markdown: {
 		copy: 'Copy',

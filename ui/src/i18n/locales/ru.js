@@ -394,6 +394,7 @@ export const ruMessages = {
 		cancelNotSupported: 'Текущая версия OpenClaw не может отменить работающего агента. Выполнение продолжится в фоновом режиме.',
 		clawThinking: 'Думает',
 		thinkingFor: 'Думал {time}',
+		refresh: 'Обновить',
 	},
 	markdown: {
 		copy: 'Копировать',

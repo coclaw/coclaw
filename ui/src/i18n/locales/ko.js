@@ -394,6 +394,7 @@ export const koMessages = {
 		cancelNotSupported: '현재 OpenClaw 버전은 실행 중인 에이전트를 취소할 수 없습니다. 백그라운드에서 계속 실행됩니다.',
 		clawThinking: '생각 중',
 		thinkingFor: '{time} 동안 생각 중',
+		refresh: '새로고침',
 	},
 	markdown: {
 		copy: '복사',
