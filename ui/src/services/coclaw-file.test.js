@@ -214,6 +214,24 @@ describe('findCoclawMarkdownLinks', () => {
 		expect(links[0].path).toBe('a(b(c(d)))');
 	});
 
+	// ── 路径含 [] {} 等字符（扫描器应透明通过，不作为终止符）──
+
+	test('裸形式路径含方括号 []', () => {
+		const links = findCoclawMarkdownLinks('[x](coclaw-file:report[final].pdf)');
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('report[final].pdf');
+	});
+
+	test('裸形式路径同时含 [] 和平衡 ()', () => {
+		const links = findCoclawMarkdownLinks('[x](coclaw-file:a[b]_(2).pdf)');
+		expect(links[0].path).toBe('a[b]_(2).pdf');
+	});
+
+	test('尖括号形式路径含 [] {} 等特殊字符', () => {
+		const links = findCoclawMarkdownLinks('[x](<coclaw-file:archive_[2026]_{v2}.zip>)');
+		expect(links[0].path).toBe('archive_[2026]_{v2}.zip');
+	});
+
 	test('裸形式回归用户实际 bug 文件名', () => {
 		const text = '[文件](coclaw-file:盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx)';
 		const links = findCoclawMarkdownLinks(text);
