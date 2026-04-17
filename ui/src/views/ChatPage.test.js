@@ -1608,7 +1608,7 @@ describe('ChatPage refresh button', () => {
 
 	test('按钮 DOM 在 connReady=true、非 loading 时可点', async () => {
 		const { wrapper } = await setupReady();
-		const btn = wrapper.find('[data-testid="btn-refresh"]');
+		const btn = wrapper.find('[data-testid="btn-refresh-mobile"]');
 		expect(btn.exists()).toBe(true);
 		expect(wrapper.vm.refreshDisabled).toBe(false);
 	});
@@ -1618,16 +1618,16 @@ describe('ChatPage refresh button', () => {
 		const clawsStore = useClawsStore();
 		clawsStore.byId['bot-1'].dcReady = false; // 让 connReady=false → refreshDisabled=true
 		await wrapper.vm.$nextTick();
-		const btn = wrapper.find('[data-testid="btn-refresh"]');
+		const btn = wrapper.find('[data-testid="btn-refresh-mobile"]');
 		await btn.trigger('click');
 		await flushPromises();
 		expect(loadSpy).not.toHaveBeenCalled();
 	});
 
-	test('移动端 + 桌面端两份按钮都存在于 DOM', async () => {
+	test('移动端和桌面端两份按钮各自独立存在（通过 -mobile / -desktop testid 区分）', async () => {
 		const { wrapper } = await setupReady();
-		const btns = wrapper.findAll('[data-testid="btn-refresh"]');
-		// Tailwind md:hidden / md:flex 只控制可见性，DOM 节点都会挂载
-		expect(btns).toHaveLength(2);
+		// Tailwind md:hidden / md:flex 只控制可见性，DOM 节点都会挂载，testid 分离避免 e2e strict-mode 冲突
+		expect(wrapper.find('[data-testid="btn-refresh-mobile"]').exists()).toBe(true);
+		expect(wrapper.find('[data-testid="btn-refresh-desktop"]').exists()).toBe(true);
 	});
 });

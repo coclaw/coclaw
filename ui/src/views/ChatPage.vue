@@ -10,7 +10,7 @@
 		<MobilePageHeader :title="chatTitle">
 			<template #actions>
 				<UButton
-					data-testid="btn-refresh"
+					data-testid="btn-refresh-mobile"
 					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="neutral"
@@ -22,7 +22,7 @@
 				/>
 				<UButton
 					v-if="canOpenFiles"
-					data-testid="btn-files"
+					data-testid="btn-files-mobile"
 					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="neutral"
@@ -31,7 +31,7 @@
 				/>
 				<UButton
 					v-if="showNewTopicBtn"
-					data-testid="btn-new-topic"
+					data-testid="btn-new-topic-mobile"
 					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="primary"
@@ -44,7 +44,7 @@
 			<h1 class="text-base">{{ chatTitle }}</h1>
 			<div class="flex items-center">
 				<UButton
-					data-testid="btn-refresh"
+					data-testid="btn-refresh-desktop"
 					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="neutral"
@@ -56,7 +56,7 @@
 				/>
 				<UButton
 					v-if="canOpenFiles"
-					data-testid="btn-files"
+					data-testid="btn-files-desktop"
 					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="neutral"
@@ -65,7 +65,7 @@
 				/>
 				<UButton
 					v-if="showNewTopicBtn"
-					data-testid="btn-new-topic"
+					data-testid="btn-new-topic-desktop"
 					class="cc-icon-btn-lg"
 					variant="ghost"
 					color="primary"

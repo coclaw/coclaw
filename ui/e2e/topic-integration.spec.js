@@ -30,8 +30,8 @@ test.describe('Topic management @chat', () => {
 		await page.waitForURL(/\/chat\//, { timeout: 10_000 });
 		await waitChatReady(page);
 
-		// 3. 点击"新话题"按钮（desktop header 中的可见按钮）
-		const newTopicBtn = page.getByTestId('btn-new-topic').last();
+		// 3. 点击"新话题"按钮（desktop header；桌面/移动端 testid 已独立）
+		const newTopicBtn = page.getByTestId('btn-new-topic-desktop');
 		await expect(newTopicBtn).toBeVisible({ timeout: 5000 });
 		await newTopicBtn.click();
 

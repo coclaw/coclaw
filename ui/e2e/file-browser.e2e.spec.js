@@ -358,22 +358,10 @@ test.describe('文件浏览器 @file', () => {
 		await page.goto(`/chat/${claw.clawId}/${claw.agentId}`);
 		await expect(page.getByRole('heading', { level: 1 }).last()).toBeVisible({ timeout: 15_000 });
 
-		// 找可见的 btn-files 并点击
-		const filesBtns = page.getByTestId('btn-files');
-		await expect(async () => {
-			let visible = false;
-			for (let i = 0; i < await filesBtns.count(); i++) {
-				if (await filesBtns.nth(i).isVisible()) { visible = true; break; }
-			}
-			expect(visible).toBe(true);
-		}).toPass({ timeout: 10_000 });
-
-		for (let i = 0; i < await filesBtns.count(); i++) {
-			if (await filesBtns.nth(i).isVisible()) {
-				await filesBtns.nth(i).click();
-				break;
-			}
-		}
+		// 桌面端可见（Playwright 默认 viewport 宽度走桌面分支）；testid 已按屏幕尺寸分离避免歧义
+		const filesBtn = page.getByTestId('btn-files-desktop');
+		await expect(filesBtn).toBeVisible({ timeout: 10_000 });
+		await filesBtn.click();
 
 		await page.waitForURL(/\/files\//, { timeout: 5000 });
 		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 10_000 });
