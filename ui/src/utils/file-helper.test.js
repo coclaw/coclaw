@@ -394,7 +394,7 @@ describe('extractCoclawFileRefs', () => {
 		expect(refs[1].path).toBe('b.pdf');
 	});
 
-	test('bare form with balanced parens now extracted correctly', () => {
+	test('bare form with balanced parens extracted correctly', () => {
 		// 容错机制：裸形式含平衡括号时扫描器能正确提取完整路径
 		const text = '[文件](coclaw-file:foo(2020).xlsx)';
 		const refs = extractCoclawFileRefs(text);
