@@ -28,6 +28,8 @@ services:
   # TURN/STUN 服务（WebRTC 中继）
   # 本地开发用，host 网络模式让 coturn 直接使用 WSL2/主机网络栈，
   # 无需逐个映射 relay 端口。
+  # listening-ip / relay-ip 钉死 127.0.0.1：避免主机 IP 漂移（切网线/WiFi、
+  # WSL2 重启）导致 coturn 尝试 bind 失效接口 relay 端口失败。
   coturn:
     container_name: coclaw-coturn
     image: coturn/coturn:latest
@@ -36,6 +38,8 @@ services:
     command: >-
       turnserver
       --listening-port=3478
+      --listening-ip=127.0.0.1
+      --relay-ip=127.0.0.1
       --external-ip=127.0.0.1
       --realm=localhost
       --lt-cred-mech

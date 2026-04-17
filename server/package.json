@@ -14,7 +14,7 @@
 		"node": ">=20.0.0"
 	},
 	"scripts": {
-		"dev": "cross-env NODE_ENV=development nodemon --watch src --ext js,mjs,cjs src/index.js",
+		"dev": "bash ../scripts/ensure-dev-dockers.sh && cross-env NODE_ENV=development nodemon --watch src --ext js,mjs,cjs src/index.js",
 		"start": "cross-env NODE_ENV=production node src/index.js",
 		"build": "echo \"TODO: build server\"",
 		"lint": "eslint \"**/*.{js,mjs,cjs}\" --ignore-pattern \"src/generated/**\" --no-error-on-unmatched-pattern",
