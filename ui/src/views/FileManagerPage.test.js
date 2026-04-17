@@ -41,8 +41,9 @@ vi.mock('../services/file-transfer.js', () => ({
 	listFiles: (...args) => mockListFiles(...args),
 	deleteFile: (...args) => mockDeleteFile(...args),
 	mkdirFiles: (...args) => mockMkdirFiles(...args),
-	uploadFile: vi.fn(),
-	downloadFile: vi.fn(),
+	// 默认返回一个完整但永不 settle 的 handle，避免测试只关心入队但上传真跑时 onProgress 写到 undefined 抛 TypeError
+	uploadFile: vi.fn(() => ({ onProgress: null, promise: new Promise(() => {}), cancel: vi.fn() })),
+	downloadFile: vi.fn(() => ({ onProgress: null, promise: new Promise(() => {}), cancel: vi.fn() })),
 	MAX_UPLOAD_SIZE: 1024 * 1024 * 1024,
 }));
 

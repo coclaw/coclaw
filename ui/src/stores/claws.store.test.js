@@ -111,7 +111,7 @@ describe('setClaws', () => {
 describe('addOrUpdateClaw', () => {
 	test('inserts new claw with normalized fields and calls connect', () => {
 		const store = useClawsStore();
-		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		const fakeConn = { on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn(), request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
 		const bot = {
 			id: 42,
@@ -144,7 +144,7 @@ describe('addOrUpdateClaw', () => {
 
 	test('updates existing claw in place and calls connect', () => {
 		const store = useClawsStore();
-		const fakeConn = { state: 'disconnected', on: vi.fn(), __onAlive: null };
+		const fakeConn = { state: 'disconnected', on: vi.fn(), off: vi.fn(), __onAlive: null, rtc: null, clearRtc: vi.fn(), request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
 		store.setClaws([{ id: '1', name: 'OldName', online: false }]);
 		store.addOrUpdateClaw({ id: '1', name: 'NewName', online: true });
@@ -446,6 +446,7 @@ describe('updateClawOnline', () => {
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(),
 			rtc: null, clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -466,6 +467,7 @@ describe('updateClawOnline', () => {
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(),
 			rtc: null, clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -654,6 +656,7 @@ describe('WebRTC 集成', () => {
 
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 		// __bridgeConn 对 online + !initialized 的 bot 直接触发 __fullInit
@@ -790,6 +793,7 @@ describe('WebRTC 集成', () => {
 		const store = useClawsStore();
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -813,6 +817,7 @@ describe('WebRTC 集成', () => {
 		const fakeRtc = { state: 'connected', isReady: true };
 		const fakeConn = {
 			rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -833,6 +838,7 @@ describe('WebRTC 集成', () => {
 		const fakeRtc = { state: 'disconnected' };
 		const fakeConn = {
 			rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -872,6 +878,7 @@ describe('WebRTC 集成', () => {
 
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -901,6 +908,7 @@ describe('WebRTC 集成', () => {
 
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
@@ -1009,7 +1017,7 @@ describe('__bridgeConn 事件注册', () => {
 		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
 		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
 
-		const fakeConn = { on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn() };
+		const fakeConn = { on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn(), request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
@@ -2691,7 +2699,7 @@ describe('dcReady 响应式标记', () => {
 		store.byId['1'].dcReady = false;
 		store.byId['1'].disconnectedAt = Date.now() - 10_000; // 长间隔
 
-		const fakeConn = { rtc: { isReady: true } };
+		const fakeConn = { rtc: { isReady: true }, request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
 
 		const cbs = store.__rtcCallbacks('1');
