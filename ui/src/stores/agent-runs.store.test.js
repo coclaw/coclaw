@@ -110,6 +110,27 @@ describe('useAgentRunsStore', () => {
 			expect(store.runKeyIndex['1::agent:main:main']).toBe('run-2');
 		});
 
+		test('同一 runKey 重复注册时旧 runAgent 的 finalPromise 被唤起（endReason="superseded"）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl1 = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl1.conn, clawId: '1', runKey: 'k-same', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl1.fireAccepted({ runId: 'run-old' });
+			expect(store.runs['run-old'].ended).toBe(false);
+
+			// 用户发新消息：同 runKey 注册新 run
+			registerRun(store, { runId: 'run-new', runKey: 'k-same', clawId: '1' });
+
+			const result = await runPromise;
+			expect(result).toEqual({ runId: 'run-old', accepted: true, endReason: 'superseded' });
+			expect(store.runs['run-old']).toBeUndefined();
+			expect(store.runs['run-new']).toBeTruthy();
+		});
+
 		test('注册时存储 anchorMsgId', () => {
 			const store = useAgentRunsStore();
 			registerRun(store, { anchorMsgId: 'msg-42' });
@@ -583,6 +604,25 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			store.removeByClaw('nonexistent');
 		});
+
+		test('未 ended run 被 removeByClaw 时唤起 finalPromise（endReason="claw-removed"）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			expect(store.runs['run-1'].ended).toBe(false);
+
+			store.removeByClaw('1');
+
+			const result = await runPromise;
+			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'claw-removed' });
+			expect(store.runs['run-1']).toBeUndefined();
+		});
 	});
 
 	// =====================================================================
@@ -878,6 +918,24 @@ describe('useAgentRunsStore', () => {
 		test('不存在的 runKey 不报错', () => {
 			const store = useAgentRunsStore();
 			expect(() => store.dropRun('nonexistent')).not.toThrow();
+		});
+
+		test('expectedRunId 不匹配时跳过清理（防 loadMessages 期间 runKey 被新 run 覆盖误删）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-new', runKey: '1::agent:main:main' });
+			// 模拟：旧 runPromise.then 闭包里的 expectedRunId 是 run-old，但 runKey 已被 run-new 占据
+			store.dropRun('1::agent:main:main', 'run-old');
+			// run-new 未被误删
+			expect(store.runs['run-new']).toBeTruthy();
+			expect(store.runKeyIndex['1::agent:main:main']).toBe('run-new');
+		});
+
+		test('expectedRunId 匹配时正常清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.dropRun('1::agent:main:main', 'run-1');
+			expect(store.runs['run-1']).toBeUndefined();
 		});
 	});
 

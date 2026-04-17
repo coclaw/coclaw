@@ -90,10 +90,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		register(runId, { clawId, runKey, topicMode, conn, streamingMsgs = [], anchorMsgId = null }) {
 			console.debug('[agentRuns] register runId=%s runKey=%s clawId=%s', runId, runKey, clawId);
 
-			// 清理同一 runKey 的旧 run
+			// 清理同一 runKey 的旧 run——先 endRun 唤起 onEnd，避免旧 runAgent 的 finalPromise 泄漏
 			const oldRunId = this.runKeyIndex[runKey];
 			if (oldRunId && this.runs[oldRunId]) {
-				this.__cleanupRun(oldRunId);
+				this.__cleanupRun(oldRunId, 'superseded');
 			}
 
 			const run = {
@@ -118,7 +118,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			run.__timer = setTimeout(() => {
 				console.debug('[agentRuns] post-acceptance memory timeout runId=%s', runId);
 				this.__endRun(runId, 'timeout');
-				this.dropRun(runKey);
+				this.dropRun(runKey, runId);
 			}, POST_ACCEPT_TIMEOUT_MS);
 
 			this.__startWatcher(runId);
@@ -205,12 +205,16 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
-		 * chat.store loadMessages 完成后调用：真正释放 streamingMsgs 与 entry
+		 * chat.store loadMessages 完成后调用：真正释放 streamingMsgs 与 entry。
+		 * 传入 expectedRunId 防误删：loadMessages 期间用户发新消息可能让 runKey 被新 run 占据，
+		 * 此时老 runPromise.then 的 dropRun 应跳过（新 run 的 lifecycle 会独立走自己的收尾）。
 		 * @param {string} runKey
+		 * @param {string} [expectedRunId] - 仅在 runKeyIndex 仍指向此 runId 时清理
 		 */
-		dropRun(runKey) {
+		dropRun(runKey, expectedRunId) {
 			const runId = this.runKeyIndex[runKey];
 			if (!runId) return;
+			if (expectedRunId && runId !== expectedRunId) return;
 			this.__cleanupRun(runId);
 		},
 
@@ -448,12 +452,17 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		// ============================ cleanup ============================
 
 		/**
-		 * 清理单个 run：清 timer、释放 blob URL、删 entry + 索引
+		 * 清理单个 run：若尚未 ended 先 endRun 唤起 onEnd，再清 timer / 释放 blob URL / 删 entry + 索引
 		 * @param {string} runId
+		 * @param {string} [reason] - 未 ended 时传给 __endRun 的 endReason
 		 */
-		__cleanupRun(runId) {
+		__cleanupRun(runId, reason = 'cleanup') {
 			const run = this.runs[runId];
 			if (!run) return;
+
+			// 外部路径（register 清旧 run / removeByClaw / settle manual）可能在未终结时 cleanup，
+			// 此时必须先 __endRun 唤起 onEnd，避免 runAgent 的 finalPromise 悬挂泄漏
+			if (!run.ended) this.__endRun(runId, reason);
 
 			if (run.__timer) {
 				clearTimeout(run.__timer);
@@ -484,7 +493,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		removeByClaw(clawId) {
 			const runIds = Object.keys(this.runs).filter((id) => this.runs[id].clawId === clawId);
 			for (const runId of runIds) {
-				this.__cleanupRun(runId);
+				this.__cleanupRun(runId, 'claw-removed');
 			}
 		},
 	},

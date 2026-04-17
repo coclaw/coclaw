@@ -537,12 +537,16 @@ export function createChatStore(storeKey, opts = {}) {
 
 					// 独立挂钩：accepted 后 endRun 信号到达 → loadMessages + dropRun。
 					// cancel 路径下 cancelPromise 已 reject，但 runPromise 仍在等真实终态，此 then 接管收尾。
+					// dropRun 带 res.runId：loadMessages 期间用户若发新消息 register 同 runKey 的新 run，
+					// 旧挂钩的 dropRun 校验 runId 不匹配即跳过，避免误清新 run。
 					runPromise.then(async (res) => {
 						if (res?.accepted) {
 							await this.loadMessages({ silent: true });
-							runsStore.dropRun(runKey);
+							runsStore.dropRun(runKey, res.runId);
 						}
-					}).catch(() => { /* runPromise reject 走外层 catch */ });
+					}).catch((e) => {
+						console.debug('[chat] runPromise rejected (handled by outer catch):', e?.message);
+					});
 
 					const final = await Promise.race([runPromise, timeoutPromise, cancelPromise]);
 
