@@ -75,7 +75,9 @@ const prompts = [
 // 语音转录提示（条件追加）
 if (finalMessage.voicePaths?.length) {
   prompts.push('');
-  prompts.push('用户通过语音输入发送了以下音频文件，请先转录再回复：');
+  prompts.push('用户通过语音发送了以下音频文件，音频内容即为用户的实际消息输入。');
+  prompts.push('请转录后直接根据内容回复——若结合对话上下文能明确用户意图，直接处理，无需复述转录结果或向用户确认；');
+  prompts.push('仅当转录质量差或意图确实无法判断时，才简要说明并请用户澄清。');
   prompts.push(...finalMessage.voicePaths.map((p) => `- ${p}`));
 }
 
