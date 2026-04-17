@@ -191,31 +191,91 @@ describe('findCoclawMarkdownLinks', () => {
 		expect(links[0].path).toBe('带空格 和中文.pdf');
 	});
 
-	test('含半角括号的裸形式不匹配（避免截断）', () => {
-		// 宁可不渲染为链接，也不生成被截断的错误 URL
-		const text = '[文件](coclaw-file:foo(2020).xlsx)';
-		expect(findCoclawMarkdownLinks(text)).toEqual([]);
+	// ── 裸形式的平衡括号容错（核心修复）──
+
+	test('裸形式单层平衡括号', () => {
+		const links = findCoclawMarkdownLinks('[x](coclaw-file:a(b).pdf)');
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('a(b).pdf');
 	});
 
-	test('混合形式按出现顺序返回', () => {
-		const text = '![a](<coclaw-file:a.png>)\n\n[b](coclaw-file:b.pdf)';
+	test('裸形式多对平衡括号', () => {
+		const links = findCoclawMarkdownLinks('[x](coclaw-file:a(1)_b_(2).pdf)');
+		expect(links[0].path).toBe('a(1)_b_(2).pdf');
+	});
+
+	test('裸形式嵌套平衡括号', () => {
+		const links = findCoclawMarkdownLinks('[x](coclaw-file:a(b(c)d).pdf)');
+		expect(links[0].path).toBe('a(b(c)d).pdf');
+	});
+
+	test('裸形式深度嵌套括号', () => {
+		const links = findCoclawMarkdownLinks('[x](coclaw-file:a(b(c(d))))');
+		expect(links[0].path).toBe('a(b(c(d)))');
+	});
+
+	test('裸形式回归用户实际 bug 文件名', () => {
+		const text = '[文件](coclaw-file:盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx)';
 		const links = findCoclawMarkdownLinks(text);
-		expect(links).toHaveLength(2);
-		expect(links[0]).toMatchObject({ isImg: true, path: 'a.png' });
-		expect(links[1]).toMatchObject({ isImg: false, path: 'b.pdf' });
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx');
 	});
 
-	test('返回 match 和 index 便于原位替换', () => {
-		const text = '前缀 [x](<coclaw-file:a.txt>) 后缀';
+	// ── 跨行保护（关键安全性）──
+
+	test('跨行保护：裸形式不平衡开括号不吞掉下一行的合法链接', () => {
+		// 第一个链接 URL 里只有 (，没有对应 )，按旧版如果用贪婪就会吞掉下面好链接
+		const text = '[坏](coclaw-file:bad(oops\n[好](coclaw-file:good.pdf)';
 		const links = findCoclawMarkdownLinks(text);
-		expect(links[0].match).toBe('[x](<coclaw-file:a.txt>)');
-		expect(text.slice(links[0].index, links[0].index + links[0].match.length)).toBe(links[0].match);
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('good.pdf');
 	});
 
-	test('空值/无 coclaw-file 时返回空数组', () => {
-		expect(findCoclawMarkdownLinks(null)).toEqual([]);
-		expect(findCoclawMarkdownLinks('')).toEqual([]);
-		expect(findCoclawMarkdownLinks('纯文本 [x](https://example.com)')).toEqual([]);
+	test('跨行保护：未收尾的裸形式不影响下一行', () => {
+		const text = '[a](coclaw-file:start\n[b](coclaw-file:b.pdf)';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('b.pdf');
+	});
+
+	test('跨行保护：未收尾的尖括号形式不影响下一行', () => {
+		const text = '[a](<coclaw-file:start\n[b](coclaw-file:b.pdf)';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('b.pdf');
+	});
+
+	// ── 不平衡括号行为 ──
+
+	test('裸形式单开括号：扫描到末尾仍无收尾 ) → 不匹配', () => {
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:a(b.pdf)')).toEqual([]);
+	});
+
+	test('裸形式单闭括号：在第一个 ) 收尾（路径被截短，符合语法预期）', () => {
+		// 这种文件名（ASCII ) 但无配对 ( ）现实几乎不存在；此测试固化行为，避免静默回归
+		const links = findCoclawMarkdownLinks('[x](coclaw-file:a)b.pdf)');
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('a');
+	});
+
+	// ── 终止字符 ──
+
+	test('裸形式路径含空格终止', () => {
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:foo bar.pdf)')).toEqual([]);
+	});
+
+	test('裸形式路径含 Tab 终止', () => {
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:foo\tbar.pdf)')).toEqual([]);
+	});
+
+	test('裸形式路径含 < 或 > 终止', () => {
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:foo<bar.pdf)')).toEqual([]);
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:foo>bar.pdf)')).toEqual([]);
+	});
+
+	test('裸形式路径含换行（CR/LF）终止', () => {
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:a\nb.pdf)')).toEqual([]);
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:a\rb.pdf)')).toEqual([]);
 	});
 
 	test('尖括号形式内出现 < 或 > 时不匹配', () => {
@@ -228,10 +288,92 @@ describe('findCoclawMarkdownLinks', () => {
 		expect(findCoclawMarkdownLinks('[x](<coclaw-file:a\rb.txt>)')).toEqual([]);
 	});
 
+	// ── 边界 ──
+
+	test('空路径不匹配（裸形式）', () => {
+		expect(findCoclawMarkdownLinks('[x](coclaw-file:)')).toEqual([]);
+	});
+
+	test('空路径不匹配（尖括号形式）', () => {
+		expect(findCoclawMarkdownLinks('[x](<coclaw-file:>)')).toEqual([]);
+	});
+
+	test('空 label 允许', () => {
+		const links = findCoclawMarkdownLinks('[](<coclaw-file:a.pdf>)');
+		expect(links).toHaveLength(1);
+		expect(links[0].label).toBe('');
+		expect(links[0].path).toBe('a.pdf');
+	});
+
+	test('尖括号形式紧跟非 ) 时不匹配', () => {
+		// <url> 后必须是 )
+		expect(findCoclawMarkdownLinks('[x](<coclaw-file:a.pdf> extra)')).toEqual([]);
+	});
+
+	test('尖括号形式到字符串末尾仍未闭合时不匹配', () => {
+		// EOF 前没找到 > → 失败，不产生半截匹配
+		expect(findCoclawMarkdownLinks('[x](<coclaw-file:unterminated')).toEqual([]);
+	});
+
+	// ── 多链接与混合 ──
+
+	test('混合形式按出现顺序返回', () => {
+		const text = '![a](<coclaw-file:a.png>)\n\n[b](coclaw-file:b.pdf)';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links).toHaveLength(2);
+		expect(links[0]).toMatchObject({ isImg: true, path: 'a.png' });
+		expect(links[1]).toMatchObject({ isImg: false, path: 'b.pdf' });
+	});
+
+	test('同一行多个链接（其中含平衡括号）', () => {
+		const text = '[a](coclaw-file:1.pdf) [b](coclaw-file:2(v2).pdf)';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links).toHaveLength(2);
+		expect(links[0].path).toBe('1.pdf');
+		expect(links[1].path).toBe('2(v2).pdf');
+	});
+
+	test('返回 match 和 index 便于原位替换', () => {
+		const text = '前缀 [x](<coclaw-file:a.txt>) 后缀';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links[0].match).toBe('[x](<coclaw-file:a.txt>)');
+		expect(text.slice(links[0].index, links[0].index + links[0].match.length)).toBe(links[0].match);
+	});
+
+	test('match 字段包含裸形式的完整括号', () => {
+		const text = '前 [x](coclaw-file:a(1).pdf) 后';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links[0].match).toBe('[x](coclaw-file:a(1).pdf)');
+	});
+
+	// ── 无匹配场景 ──
+
+	test('空值/无 coclaw-file 时返回空数组', () => {
+		expect(findCoclawMarkdownLinks(null)).toEqual([]);
+		expect(findCoclawMarkdownLinks('')).toEqual([]);
+		expect(findCoclawMarkdownLinks('纯文本 [x](https://example.com)')).toEqual([]);
+	});
+
+	test('非 coclaw-file scheme 不匹配', () => {
+		expect(findCoclawMarkdownLinks('[x](file:/etc/passwd)')).toEqual([]);
+		expect(findCoclawMarkdownLinks('[x](coclaw:foo.txt)')).toEqual([]);
+	});
+
+	// ── 稳定性 ──
+
 	test('多次调用互不干扰（无 lastIndex 泄漏）', () => {
 		const text = '[a](<coclaw-file:a.txt>)';
 		expect(findCoclawMarkdownLinks(text)).toHaveLength(1);
 		expect(findCoclawMarkdownLinks(text)).toHaveLength(1);
+	});
+
+	test('URL 内含嵌套 [...] 时不被当作新链接重复匹配', () => {
+		// 罕见输入，固化行为：扫描器按平衡括号规则消费整段，
+		// 嵌套的 (coclaw-file:x.pdf) 会被当作外层 URL 的一段字符
+		const text = '[outer](coclaw-file:weird[inner](coclaw-file:x.pdf)nope)';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('weird[inner](coclaw-file:x.pdf)nope');
 	});
 });
 

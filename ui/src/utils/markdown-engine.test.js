@@ -140,15 +140,38 @@ describe('preprocessCoclawFileLinks', () => {
 		expect(result).toBe('[🖼\u00A0图](<coclaw-file:a b(1).png>)');
 	});
 
-	test('裸形式路径含括号时不做处理（避免截断）', () => {
-		// 向后兼容：老消息若出现这种写法，宁可渲染为原文也不产生被截断的错误链接
-		const input = '[文件](coclaw-file:foo(2020).xlsx)';
-		expect(preprocessCoclawFileLinks(input)).toBe(input);
+	test('裸形式含平衡括号容错：转换为尖括号形式后保留完整括号', () => {
+		const input = '[文件](coclaw-file:盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[文件](<coclaw-file:盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx>)');
+	});
+
+	test('裸形式图片含括号：转换为链接形式并正确包尖括号', () => {
+		const input = '![预览](coclaw-file:chart(v2).png)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[🖼\u00A0预览](<coclaw-file:chart(v2).png>)');
+	});
+
+	test('裸形式不平衡开括号不影响后续链接', () => {
+		// 关键安全性：一条坏链接不应吞掉后面的好链接
+		const input = '[坏](coclaw-file:bad(oops\n[好](coclaw-file:good.pdf)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toContain('[好](<coclaw-file:good.pdf>)');
+		expect(result).toContain('[坏](coclaw-file:bad(oops'); // 未转换的原文保留
 	});
 
 	test('多次调用结果一致（幂等）', () => {
-		const input = '[x](<coclaw-file:a.txt>) 和 ![y](coclaw-file:y.png)';
+		const input = '[x](<coclaw-file:a.txt>) 和 ![y](coclaw-file:y(1).png)';
 		const once = preprocessCoclawFileLinks(input);
-		expect(preprocessCoclawFileLinks(once)).toBe(once);
+		const twice = preprocessCoclawFileLinks(once);
+		expect(twice).toBe(once);
+	});
+
+	test('集成：preprocess + renderMarkdown 对含括号裸形式生成完整 href', () => {
+		// 端到端：agent 原文 → 预处理 → markdown-it 渲染，href 必须保留完整括号路径
+		const input = '[文件](coclaw-file:盛成(2020版)_(7).xlsx)';
+		const html = renderMarkdown(preprocessCoclawFileLinks(input));
+		// markdown-it 对非 ASCII 会 percent-encode，但括号保持原样
+		expect(html).toMatch(/href="coclaw-file:[^"]*\(2020%E7%89%88\)_\(7\)\.xlsx"/);
 	});
 });

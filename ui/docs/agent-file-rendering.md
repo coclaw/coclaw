@@ -101,9 +101,9 @@ Agent 回复的 markdown 在渲染前：
 - 转换后图片不会被浏览器尝试加载（避免破图），而是显示为可点击链接
 - 若 `desc` 为空，用文件名作为显示文本：`[🖼 trend.png](<coclaw-file:output/trend.png>)`
 
-识别正则支持两种形式（见 `src/services/coclaw-file.js` 的 `findCoclawMarkdownLinks`）：
-- 尖括号形式（推荐）：`[label](<coclaw-file:path>)` —— 路径可含半角括号、空格等
-- 裸形式（向后兼容）：`[label](coclaw-file:path)` —— 路径不得含 `()` 空格 `<>`
+识别逻辑（见 `src/services/coclaw-file.js` 的 `findCoclawMarkdownLinks`）：
+- **尖括号形式**（推荐）：`[label](<coclaw-file:path>)` —— 路径可含半角括号、空格、非换行任意字符
+- **裸形式**（容错）：`[label](coclaw-file:path)` —— 路径支持**平衡**的半角括号（如 `a(2020)_(7).xlsx`）；不平衡括号/空白/换行会使扫描器失败，该链接不匹配但不影响其它链接
 
 #### 1B. 链接点击拦截
 

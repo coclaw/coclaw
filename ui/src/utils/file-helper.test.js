@@ -394,10 +394,19 @@ describe('extractCoclawFileRefs', () => {
 		expect(refs[1].path).toBe('b.pdf');
 	});
 
-	test('bare form with parens yields no match (avoids truncated path)', () => {
-		// 老消息若意外出现这种写法，应保持无匹配，而不是返回 path 被截断的错误条目
+	test('bare form with balanced parens now extracted correctly', () => {
+		// 容错机制：裸形式含平衡括号时扫描器能正确提取完整路径
 		const text = '[文件](coclaw-file:foo(2020).xlsx)';
-		expect(extractCoclawFileRefs(text)).toEqual([]);
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(1);
+		expect(refs[0].path).toBe('foo(2020).xlsx');
+	});
+
+	test('bare form with unbalanced open paren: no match (does not affect later links)', () => {
+		const text = '[坏](coclaw-file:bad(oops\n[好](coclaw-file:good.pdf)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(1);
+		expect(refs[0].path).toBe('good.pdf');
 	});
 });
 

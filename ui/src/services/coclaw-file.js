@@ -90,37 +90,111 @@ export function extractCoclawPath(url) {
 	}
 }
 
-/**
- * 匹配 markdown 中的 coclaw-file 链接（含可选 `!` 前缀的图片语法）。
- * 两种形式：
- * - 尖括号形式 `[label](<coclaw-file:path>)`：推荐，CommonMark 允许 URL 含括号/空格等
- * - 裸形式 `[label](coclaw-file:path)`：向后兼容，路径不得含 `()` 空格 `<>`
- * 捕获组：1=`!?` 前缀，2=label，3=尖括号形式 URL，4=裸形式 URL（3/4 互斥）
- */
-const COCLAW_LINK_RE = /(!?)\[([^\]]*)\]\((?:<(coclaw-file:[^>\r\n]+)>|(coclaw-file:[^()\s<>]+))\)/g;
+// 匹配 `[label](` 或 `![label](` 的头部；URL 体由扫描器单独处理
+const COCLAW_LINK_HEADER_RE = /(!?)\[([^\]]*)\]\(/g;
 
 /**
- * 遍历 markdown 文本中所有 coclaw-file 链接。
+ * 扫描裸形式 URL 体，返回收尾 `)` 的位置（不含）；失败返回 -1。
  *
- * 供 markdown 预处理与附件提取共用，避免两处正则重复且容易漂移。
+ * 算法：跟踪括号深度。`(` 深度 +1；`)` 若深度为 0 则是 markdown 链接的收尾（停止并返回），
+ * 否则深度 -1（括号是路径的一部分）。
+ *
+ * 终止（返回 -1，视为不匹配）：
+ * - 换行 `\n`/`\r`：CommonMark 链接禁止跨行，避免一条坏链接吞掉后续多行正常内容
+ * - 空白 ` `/`\t`：CommonMark 裸 URL 不允许空白
+ * - `<`/`>`：保留给尖括号形式
+ * - 字符串结束仍未找到收尾 `)`
+ * @param {string} text
+ * @param {number} startIdx - 开始扫描的位置（通常是 `coclaw-file:` 之后）
+ * @returns {number}
+ */
+function __scanBareUrlEnd(text, startIdx) {
+	let depth = 0;
+	for (let i = startIdx; i < text.length; i++) {
+		const c = text[i];
+		if (c === '\n' || c === '\r' || c === ' ' || c === '\t' || c === '<' || c === '>') return -1;
+		if (c === '(') {
+			depth++;
+		} else if (c === ')') {
+			if (depth === 0) return i;
+			depth--;
+		}
+	}
+	return -1;
+}
+
+/**
+ * 扫描尖括号 URL 体，返回 `>` 的位置（不含）；失败返回 -1。
+ * 终止：遇 `<`/`\n`/`\r` 直接失败；遇 `>` 成功返回。
+ * @param {string} text
+ * @param {number} startIdx
+ * @returns {number}
+ */
+function __scanAngleUrlEnd(text, startIdx) {
+	for (let i = startIdx; i < text.length; i++) {
+		const c = text[i];
+		if (c === '\n' || c === '\r' || c === '<') return -1;
+		if (c === '>') return i;
+	}
+	return -1;
+}
+
+/**
+ * 遍历 markdown 文本中所有 coclaw-file 链接（含可选 `!` 前缀的图片语法）。
+ *
+ * 支持两种形式：
+ * - 尖括号形式 `[label](<coclaw-file:path>)`：推荐，`<>` 内仅禁 `<>` 与换行
+ * - 裸形式 `[label](coclaw-file:path)`：容错支持**平衡的**半角括号（`a(b).pdf`、`a(1)_(2).pdf` 等）；
+ *   不平衡的开括号会使扫描器吞到字符串末尾而失败，不影响其它链接
+ *
+ * 已知局限：label 用 `[^\]]*` 匹配，不支持 CommonMark 的 `\]` 转义（如 `[a\]b](...)` 会漏识别）。
+ * Agent 输出概率极低，不做复杂化处理。
+ *
+ * 供 markdown 预处理与附件提取共用，避免两处解析逻辑重复漂移。
  * @param {string} text
  * @returns {{ isImg: boolean, label: string, url: string, path: string, match: string, index: number }[]}
  */
 export function findCoclawMarkdownLinks(text) {
 	if (!text) return [];
-	const re = new RegExp(COCLAW_LINK_RE.source, 'g');
+	const headerRE = new RegExp(COCLAW_LINK_HEADER_RE.source, 'g');
 	const links = [];
-	let m;
-	while ((m = re.exec(text)) !== null) {
-		const url = m[3] || m[4];
+	let h;
+	while ((h = headerRE.exec(text)) !== null) {
+		const headerIdx = h.index;
+		const isImg = h[1] === '!';
+		const label = h[2];
+		const urlStart = headerIdx + h[0].length; // `(` 之后的位置
+
+		let url;
+		let matchEnd; // 完整 markdown 链接结束位置（不含，即下一个字符）
+
+		if (text[urlStart] === '<') {
+			// 尖括号形式
+			const gt = __scanAngleUrlEnd(text, urlStart + 1);
+			if (gt === -1 || text[gt + 1] !== ')') continue;
+			url = text.slice(urlStart + 1, gt);
+			matchEnd = gt + 2;
+		} else {
+			// 裸形式
+			if (!text.startsWith(SCHEME_PREFIX, urlStart)) continue;
+			const closeParen = __scanBareUrlEnd(text, urlStart + SCHEME_PREFIX.length);
+			if (closeParen === -1) continue;
+			url = text.slice(urlStart, closeParen);
+			matchEnd = closeParen + 1;
+		}
+
+		if (!url.startsWith(SCHEME_PREFIX) || url.length <= SCHEME_PREFIX.length) continue;
+
 		links.push({
-			isImg: m[1] === '!',
-			label: m[2],
+			isImg,
+			label,
 			url,
 			path: url.slice(SCHEME_PREFIX.length),
-			match: m[0],
-			index: m.index,
+			match: text.slice(headerIdx, matchEnd),
+			index: headerIdx,
 		});
+		// 手动推进 lastIndex 越过整个 link，避免在 URL 内部重复匹配嵌套的 `[...]`
+		headerRE.lastIndex = matchEnd;
 	}
 	return links;
 }

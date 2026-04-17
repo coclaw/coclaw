@@ -932,6 +932,25 @@ describe('groupSessionMessages — agent coclaw-file 附件提取', () => {
 		expect(result[1].attachments).toEqual([]);
 	});
 
+	test('裸形式含平衡括号时正确提取为 attachments', () => {
+		// 集成回归：用户 bug 文件名（含两对半角括号）经过完整分组链路仍能产出附件
+		const entries = [
+			userEntry('u1', '处理文件', 1000),
+			assistantEntry('a1', {
+				text: '完成。详见 [报表](coclaw-file:盛成(2020版)_副本_(7).xlsx)',
+				ts: 2000,
+			}),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].attachments).toHaveLength(1);
+		expect(result[1].attachments[0]).toEqual({
+			path: '盛成(2020版)_副本_(7).xlsx',
+			name: '报表',
+			isImg: false,
+			isVoice: false,
+		});
+	});
+
 	test('中断的 botTask（resultText 为 null）attachments 为空', () => {
 		const entries = [
 			userEntry('u1', '请分析', 1000),
