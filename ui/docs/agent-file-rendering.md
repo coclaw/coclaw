@@ -1,7 +1,7 @@
 # Agent 文件渲染
 
-- **状态**：设计中
-- **更新日期**：2026-04-07
+- **状态**：Phase 1 已实施（以代码为准）
+- **更新日期**：2026-04-17
 - **适用范围**：`ui` 工作区，涉及 MarkdownBody、ChatMsgItem、chat.store、session-msg-group、coclaw-file 服务等模块
 
 ## 背景
@@ -40,14 +40,14 @@ coclaw-file:path/to/file
 
 ### 示例
 
-Agent 在 markdown 中写：
+Agent 在 markdown 中写（URL 必须用尖括号 `< >` 包裹，允许路径含半角括号、空格等字符）：
 
 ```markdown
 分析完成，结果如下：
 
-![趋势图](coclaw-file:output/trend.png)
+![趋势图](<coclaw-file:output/trend.png>)
 
-详细数据见 [完整报告](coclaw-file:output/report.xlsx)。
+详细数据见 [完整报告](<coclaw-file:output/report.xlsx>)。
 ```
 
 ## extraSystemPrompt
@@ -66,8 +66,9 @@ Agent 在 markdown 中写：
 // 基础提示（始终携带）
 const prompts = [
   '当你需要向用户展示文件时，可在回复中使用 coclaw-file: 协议引用文件：',
-  '- 图片：![描述](coclaw-file:文件路径)',
-  '- 其他文件：[文件名](coclaw-file:文件路径)',
+  '- 图片：![描述](<coclaw-file:文件路径>)',
+  '- 其他文件：[文件名](<coclaw-file:文件路径>)',
+  'URL 必须用尖括号 < > 包裹，否则文件名中的半角括号、空格等字符会破坏解析。',
   '路径为相对于工作目录的相对路径。',
 ];
 
@@ -90,22 +91,19 @@ Phase 1 中 agent 回复的 coclaw-file 引用通过两种方式呈现：
 - **A（链接点击）**：markdown 中的 `coclaw-file:` 链接可点击，触发下载或查看
 - **B（附件卡片）**：从最终结果中提取所有 coclaw-file 引用，以附件卡片形式渲染
 
-#### 1A. Markdown 预处理：图片语法转链接语法
+#### 1A. Markdown 预处理：图片语法转链接语法 + 统一尖括号形式
 
-Agent 回复的 markdown 在渲染前，将 `![desc](coclaw-file:path)` 转为 `[🖼 desc](coclaw-file:path)`。
+Agent 回复的 markdown 在渲染前：
+- 将 `![desc](<coclaw-file:path>)` 转为 `[🖼 desc](<coclaw-file:path>)`
+- 裸形式链接 `[x](coclaw-file:path)` 也会被包一层尖括号（容错老消息）
 
-- 转换时机：`MarkdownBody` 的 `revisedText` computed 阶段，或在 `renderMarkdown` 之前
+- 转换时机：`MarkdownBody` 的 `revisedText` computed 阶段
 - 转换后图片不会被浏览器尝试加载（避免破图），而是显示为可点击链接
-- 若 `desc` 为空，用文件名作为显示文本：`[🖼 trend.png](coclaw-file:output/trend.png)`
+- 若 `desc` 为空，用文件名作为显示文本：`[🖼 trend.png](<coclaw-file:output/trend.png>)`
 
-正则示例：
-
-```js
-text.replace(/!\[([^\]]*)\]\((coclaw-file:[^)]+)\)/g, (_, alt, url) => {
-  const label = alt || url.split('/').pop();
-  return `[🖼\u00A0${label}](${url})`;
-});
-```
+识别正则支持两种形式（见 `src/services/coclaw-file.js` 的 `findCoclawMarkdownLinks`）：
+- 尖括号形式（推荐）：`[label](<coclaw-file:path>)` —— 路径可含半角括号、空格等
+- 裸形式（向后兼容）：`[label](coclaw-file:path)` —— 路径不得含 `()` 空格 `<>`
 
 #### 1B. 链接点击拦截
 
@@ -126,10 +124,10 @@ onLinkClick 判断链路：
 
 **提取时机**：仅在 agent run 结束后提取。在 `session-msg-group.js` 的消息分组阶段处理。
 
-**提取逻辑**：从 botTask 的 `resultText` 中扫描所有 `coclaw-file:` 引用：
+**提取逻辑**：从 botTask 的 `resultText` 中扫描所有 `coclaw-file:` 引用（尖括号/裸形式均可）：
 
-- `![...](coclaw-file:path)` → 图片附件
-- `[...](coclaw-file:path)` → 根据扩展名判断类型（isImageByExt / isVoiceByExt）
+- `![...](<coclaw-file:path>)` → 图片附件
+- `[...](<coclaw-file:path>)` → 根据扩展名判断类型（isImageByExt / isVoiceByExt）
 
 提取结果按出现顺序排列，按 path 去重，存入 botTask 的新字段 `attachments`：
 

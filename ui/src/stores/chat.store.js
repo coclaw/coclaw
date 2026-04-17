@@ -473,8 +473,9 @@ export function createChatStore(storeKey, opts = {}) {
 					{
 						const prompts = [
 							'当你需要向用户展示文件时，可在回复中使用 coclaw-file: 协议引用文件：',
-							'- 图片：![描述](coclaw-file:文件路径)',
-							'- 其他文件：[文件名](coclaw-file:文件路径)',
+							'- 图片：![描述](<coclaw-file:文件路径>)',
+							'- 其他文件：[文件名](<coclaw-file:文件路径>)',
+							'URL 必须用尖括号 < > 包裹，否则文件名中的半角括号、空格等字符会破坏解析。',
 							'路径为相对于工作目录的相对路径。',
 						];
 						if (finalMessage.voicePaths?.length) {

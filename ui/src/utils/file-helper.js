@@ -1,3 +1,5 @@
+import { findCoclawMarkdownLinks } from '../services/coclaw-file.js';
+
 /**
  * 将 File/Blob 读取为纯 base64 字符串（不含 data-url 前缀）
  * @param {File|Blob} file
@@ -121,25 +123,21 @@ export function validateCoclawPath(path) {
 
 /**
  * 从 markdown 文本中提取所有 coclaw-file: 引用。
- * 匹配 ![alt](coclaw-file:path) 和 [text](coclaw-file:path)，按出现顺序排列，按 path 去重。
+ * 同时识别裸形式 `[label](coclaw-file:path)` 与尖括号形式 `[label](<coclaw-file:path>)`
+ * （图片语法 `!` 前缀均支持），按出现顺序排列，按 path 去重。
  * @param {string} text
  * @returns {{ path: string, name: string, isImg: boolean, isVoice: boolean }[]}
  */
 export function extractCoclawFileRefs(text) {
 	if (!text) return [];
-	const re = /!?\[([^\]]*)\]\((coclaw-file:[^)]+)\)/g;
 	const refs = [];
 	const seen = new Set();
-	let match;
-	while ((match = re.exec(text)) !== null) {
-		const url = match[2];
-		const path = url.slice('coclaw-file:'.length);
+	for (const { label, path } of findCoclawMarkdownLinks(text)) {
 		if (seen.has(path) || !validateCoclawPath(path)) continue;
 		seen.add(path);
-		const name = match[1] || path.split('/').pop();
 		refs.push({
 			path,
-			name,
+			name: label || path.split('/').pop(),
 			isImg: isImageByExt(path),
 			isVoice: isVoiceByExt(path),
 		});

@@ -868,8 +868,8 @@ describe('useChatStore', () => {
 			expect(agentCall[1].message).toContain('coclaw-attachments');
 			expect(agentCall[1].message).toContain('看这张图');
 			expect(agentCall[1].attachments).toBeUndefined();
-			// extraSystemPrompt 始终携带文件渲染能力提示
-			expect(agentCall[1].extraSystemPrompt).toContain('coclaw-file:');
+			// extraSystemPrompt 始终携带文件渲染能力提示，且示例必须用尖括号形式
+			expect(agentCall[1].extraSystemPrompt).toContain('<coclaw-file:');
 		});
 
 		test('dcReady=false 时有附件仍走上传路径（由底层 waitReady 处理）', async () => {

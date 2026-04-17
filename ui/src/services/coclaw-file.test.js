@@ -8,7 +8,7 @@ vi.mock('./file-transfer.js', () => ({
 	downloadFile: vi.fn(),
 }));
 
-import { buildCoclawUrl, parseCoclawUrl, isCoclawUrl, isCoclawScheme, extractCoclawPath, fetchCoclawFile } from './coclaw-file.js';
+import { buildCoclawUrl, parseCoclawUrl, isCoclawUrl, isCoclawScheme, extractCoclawPath, fetchCoclawFile, findCoclawMarkdownLinks } from './coclaw-file.js';
 import { useClawConnections } from './claw-connection-manager.js';
 import { downloadFile } from './file-transfer.js';
 
@@ -159,6 +159,79 @@ describe('extractCoclawPath', () => {
 	test('returns null for null/undefined', () => {
 		expect(extractCoclawPath(null)).toBeNull();
 		expect(extractCoclawPath(undefined)).toBeNull();
+	});
+});
+
+describe('findCoclawMarkdownLinks', () => {
+	test('裸形式匹配普通链接', () => {
+		const links = findCoclawMarkdownLinks('[报告](coclaw-file:output/report.pdf)');
+		expect(links).toHaveLength(1);
+		expect(links[0]).toMatchObject({
+			isImg: false,
+			label: '报告',
+			url: 'coclaw-file:output/report.pdf',
+			path: 'output/report.pdf',
+		});
+	});
+
+	test('裸形式匹配图片语法', () => {
+		const links = findCoclawMarkdownLinks('![趋势](coclaw-file:chart.png)');
+		expect(links[0]).toMatchObject({ isImg: true, label: '趋势', path: 'chart.png' });
+	});
+
+	test('尖括号形式支持含半角括号的文件名', () => {
+		const text = '[文件](<coclaw-file:盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx>)';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links).toHaveLength(1);
+		expect(links[0].path).toBe('盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx');
+	});
+
+	test('尖括号形式支持含空格的路径', () => {
+		const links = findCoclawMarkdownLinks('[doc](<coclaw-file:带空格 和中文.pdf>)');
+		expect(links[0].path).toBe('带空格 和中文.pdf');
+	});
+
+	test('含半角括号的裸形式不匹配（避免截断）', () => {
+		// 宁可不渲染为链接，也不生成被截断的错误 URL
+		const text = '[文件](coclaw-file:foo(2020).xlsx)';
+		expect(findCoclawMarkdownLinks(text)).toEqual([]);
+	});
+
+	test('混合形式按出现顺序返回', () => {
+		const text = '![a](<coclaw-file:a.png>)\n\n[b](coclaw-file:b.pdf)';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links).toHaveLength(2);
+		expect(links[0]).toMatchObject({ isImg: true, path: 'a.png' });
+		expect(links[1]).toMatchObject({ isImg: false, path: 'b.pdf' });
+	});
+
+	test('返回 match 和 index 便于原位替换', () => {
+		const text = '前缀 [x](<coclaw-file:a.txt>) 后缀';
+		const links = findCoclawMarkdownLinks(text);
+		expect(links[0].match).toBe('[x](<coclaw-file:a.txt>)');
+		expect(text.slice(links[0].index, links[0].index + links[0].match.length)).toBe(links[0].match);
+	});
+
+	test('空值/无 coclaw-file 时返回空数组', () => {
+		expect(findCoclawMarkdownLinks(null)).toEqual([]);
+		expect(findCoclawMarkdownLinks('')).toEqual([]);
+		expect(findCoclawMarkdownLinks('纯文本 [x](https://example.com)')).toEqual([]);
+	});
+
+	test('尖括号形式内出现 < 或 > 时不匹配', () => {
+		// CommonMark 规范：尖括号内不允许未转义的 < 或 >
+		expect(findCoclawMarkdownLinks('[x](<coclaw-file:weird<a>.txt>)')).toEqual([]);
+	});
+
+	test('尖括号形式路径含换行（CR/LF）时不匹配', () => {
+		expect(findCoclawMarkdownLinks('[x](<coclaw-file:a\nb.txt>)')).toEqual([]);
+		expect(findCoclawMarkdownLinks('[x](<coclaw-file:a\rb.txt>)')).toEqual([]);
+	});
+
+	test('多次调用互不干扰（无 lastIndex 泄漏）', () => {
+		const text = '[a](<coclaw-file:a.txt>)';
+		expect(findCoclawMarkdownLinks(text)).toHaveLength(1);
+		expect(findCoclawMarkdownLinks(text)).toHaveLength(1);
 	});
 });
 

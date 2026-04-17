@@ -127,4 +127,28 @@ describe('preprocessCoclawFileLinks', () => {
 		expect(preprocessCoclawFileLinks('')).toBe('');
 		expect(preprocessCoclawFileLinks('普通文本')).toBe('普通文本');
 	});
+
+	test('尖括号形式含半角括号的文件名正确保留', () => {
+		const input = '[文件](<coclaw-file:盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx>)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[文件](<coclaw-file:盛成2026年3月会计报表(2020版)_已填充_副本_(7).xlsx>)');
+	});
+
+	test('尖括号形式的图片语法转换且保留 URL', () => {
+		const input = '![图](<coclaw-file:a b(1).png>)';
+		const result = preprocessCoclawFileLinks(input);
+		expect(result).toBe('[🖼\u00A0图](<coclaw-file:a b(1).png>)');
+	});
+
+	test('裸形式路径含括号时不做处理（避免截断）', () => {
+		// 向后兼容：老消息若出现这种写法，宁可渲染为原文也不产生被截断的错误链接
+		const input = '[文件](coclaw-file:foo(2020).xlsx)';
+		expect(preprocessCoclawFileLinks(input)).toBe(input);
+	});
+
+	test('多次调用结果一致（幂等）', () => {
+		const input = '[x](<coclaw-file:a.txt>) 和 ![y](coclaw-file:y.png)';
+		const once = preprocessCoclawFileLinks(input);
+		expect(preprocessCoclawFileLinks(once)).toBe(once);
+	});
 });

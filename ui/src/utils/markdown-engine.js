@@ -2,6 +2,7 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js/lib/common';
 import MarkdownItKatex from '@iktakahiro/markdown-it-katex';
 import MarkdownItLinkAttributes from 'markdown-it-link-attributes';
+import { findCoclawMarkdownLinks } from '../services/coclaw-file.js';
 
 // markdown-it 全局单例
 const md = createMarkdownIt();
@@ -67,23 +68,28 @@ export function reviseMdText(text) {
 /**
  * 预处理 markdown 中的 coclaw-file 链接，确保 markdown-it 能正确解析。
  * - 图片语法转链接：![alt](coclaw-file:path) → [🖼 alt](<coclaw-file:path>)
- * - 普通链接加尖括号：[text](coclaw-file:path) → [text](<coclaw-file:path>)
+ * - 普通链接统一包尖括号：[text](coclaw-file:path) → [text](<coclaw-file:path>)
+ * - 已是尖括号形式的链接也会被命中（输出保持尖括号形式，等价幂等）
  *
- * 尖括号包裹 URL 是 CommonMark 标准语法，允许 URL 中包含空格、中文等特殊字符，
- * 解决 markdown-it 无法解析含非 ASCII 字符路径的问题。
+ * 尖括号包裹 URL 是 CommonMark 标准语法，允许 URL 中含空格、中文、半角括号等，
+ * 解决 markdown-it 对含特殊字符路径解析截断的问题。
  * @param {string} text
  * @returns {string}
  */
 export function preprocessCoclawFileLinks(text) {
 	if (!text || !text.includes('coclaw-file:')) return text;
-	return text.replace(/(!?)\[([^\]]*)\]\((coclaw-file:[^)]+)\)/g, (_, bang, label, url) => {
-		if (bang === '!') {
-			// 图片语法 → 链接语法（Phase 2 实现内联渲染后此转换将移除）
-			const displayLabel = label || url.slice('coclaw-file:'.length).split('/').pop();
-			return `[\u{1F5BC}\u00A0${displayLabel}](<${url}>)`;
-		}
-		return `[${label}](<${url}>)`;
-	});
+	const links = findCoclawMarkdownLinks(text);
+	if (!links.length) return text;
+	// 逆序替换，避免 index 漂移
+	let result = text;
+	for (let i = links.length - 1; i >= 0; i--) {
+		const { isImg, label, url, path, match, index } = links[i];
+		const displayLabel = isImg ? (label || path.split('/').pop()) : label;
+		const prefix = isImg ? '\u{1F5BC}\u00A0' : '';
+		const replacement = `[${prefix}${displayLabel}](<${url}>)`;
+		result = result.slice(0, index) + replacement + result.slice(index + match.length);
+	}
+	return result;
 }
 
 /**

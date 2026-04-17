@@ -91,6 +91,41 @@ export function extractCoclawPath(url) {
 }
 
 /**
+ * 匹配 markdown 中的 coclaw-file 链接（含可选 `!` 前缀的图片语法）。
+ * 两种形式：
+ * - 尖括号形式 `[label](<coclaw-file:path>)`：推荐，CommonMark 允许 URL 含括号/空格等
+ * - 裸形式 `[label](coclaw-file:path)`：向后兼容，路径不得含 `()` 空格 `<>`
+ * 捕获组：1=`!?` 前缀，2=label，3=尖括号形式 URL，4=裸形式 URL（3/4 互斥）
+ */
+const COCLAW_LINK_RE = /(!?)\[([^\]]*)\]\((?:<(coclaw-file:[^>\r\n]+)>|(coclaw-file:[^()\s<>]+))\)/g;
+
+/**
+ * 遍历 markdown 文本中所有 coclaw-file 链接。
+ *
+ * 供 markdown 预处理与附件提取共用，避免两处正则重复且容易漂移。
+ * @param {string} text
+ * @returns {{ isImg: boolean, label: string, url: string, path: string, match: string, index: number }[]}
+ */
+export function findCoclawMarkdownLinks(text) {
+	if (!text) return [];
+	const re = new RegExp(COCLAW_LINK_RE.source, 'g');
+	const links = [];
+	let m;
+	while ((m = re.exec(text)) !== null) {
+		const url = m[3] || m[4];
+		links.push({
+			isImg: m[1] === '!',
+			label: m[2],
+			url,
+			path: url.slice(SCHEME_PREFIX.length),
+			match: m[0],
+			index: m.index,
+		});
+	}
+	return links;
+}
+
+/**
  * 通过 coclaw-file URL 获取文件内容
  *
  * 解析 URL → 获取 clawConn → 调用 downloadFile → 返回 Blob。

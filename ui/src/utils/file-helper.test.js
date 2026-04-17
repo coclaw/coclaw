@@ -369,6 +369,36 @@ describe('extractCoclawFileRefs', () => {
 		const refs = extractCoclawFileRefs(text);
 		expect(refs[0].isVoice).toBe(true);
 	});
+
+	test('extracts angle-bracket form with parens in filename', () => {
+		const text = '[文件](<coclaw-file:盛成2026年3月会计报表(2020版)_副本_(7).xlsx>)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(1);
+		expect(refs[0].path).toBe('盛成2026年3月会计报表(2020版)_副本_(7).xlsx');
+		expect(refs[0].name).toBe('文件');
+	});
+
+	test('extracts angle-bracket form with spaces in path', () => {
+		const text = '![trend](<coclaw-file:带空格 目录/趋势 图.png>)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(1);
+		expect(refs[0].path).toBe('带空格 目录/趋势 图.png');
+		expect(refs[0].isImg).toBe(true);
+	});
+
+	test('mixed bare and angle-bracket forms', () => {
+		const text = '![a](<coclaw-file:a.png>)\n\n[b](coclaw-file:b.pdf)';
+		const refs = extractCoclawFileRefs(text);
+		expect(refs).toHaveLength(2);
+		expect(refs[0].path).toBe('a.png');
+		expect(refs[1].path).toBe('b.pdf');
+	});
+
+	test('bare form with parens yields no match (avoids truncated path)', () => {
+		// 老消息若意外出现这种写法，应保持无匹配，而不是返回 path 被截断的错误条目
+		const text = '[文件](coclaw-file:foo(2020).xlsx)';
+		expect(extractCoclawFileRefs(text)).toEqual([]);
+	});
 });
 
 describe('saveBlobToFile', () => {
