@@ -583,6 +583,9 @@ export const useClawsStore = defineStore('claws', {
 		 * probe 失败后二次确认 PC.connectionState，避免因 plugin 繁忙
 		 * （如大文件写入阻塞 event loop）导致的误判。
 		 *
+		 * 契约：此函数永不抛异常——所有路径由 try/catch 兜底。调用方可安全 fire-and-forget。
+		 * 若未来扩展此函数，新增代码必须置于 try 块内以维持该契约。
+		 *
 		 * @param {string} id - clawId
 		 * @param {string} [source] - 触发来源
 		 */
