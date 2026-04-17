@@ -378,3 +378,105 @@ E2E（选做）：
 - `openclaw-repo/src/config/agent-timeout-defaults.ts:1` — 120s LLM 空闲看门狗
 - `openclaw-repo/src/gateway/server-methods/agent-wait-dedupe.test.ts` — agent.wait 测试套件
 - `openclaw-repo/src/gateway/server-chat.gateway-server-chat.test.ts:904-1041` — agent.wait 覆盖 chat run 的 e2e 测试
+
+---
+
+## 7. 已知局限（实施后复核发现）
+
+实施完成后针对方案做了一轮独立复核（不依赖实施讨论记忆），发现以下遗留问题。经评估**严重性远低于原 bug**，暂不修复，记录待后续处理。
+
+### 7.1 loadMessages 静默失败时 dropRun 误释放 streamingMsgs
+
+**现象** —— `chat.store.js:542-549` 的 `runPromise.then` 在 `await loadMessages` 后**无条件**调 `dropRun`：
+
+```js
+runPromise.then(async (res) => {
+    if (res?.accepted) {
+        await this.loadMessages({ silent: true });
+        runsStore.dropRun(runKey, res.runId);  // ← 不检查 loadMessages 是否成功
+    }
+})
+```
+
+`loadMessages` 的静默失败路径（`getReadyConn` 返 null / `sessions.get` 抛错被 catch 吞掉）内部 `return false` 不抛。此时 `this.messages` **未被更新**（silent 模式下 catch 分支连 errorText 都不写），但 `dropRun` 仍会释放 `streamingMsgs` —— UI 丢失当前这轮的 user 消息和 assistant 回复，回退到发送前的状态。
+
+**触发条件（低概率）**：
+- DC 恰好在 run 结束瞬间断开（信号 4 `endRun('failed')` 触发后，loadMessages 里 `getReadyConn` 立即返 null）
+- `sessions.get` RPC 偶发失败（服务端 fs 读错、请求超时等，极罕见）
+
+**最坏后果**：
+- UI 临时显示不一致（当前这轮消息看不见）
+- **数据不丢**：服务端 JSONL 已写完（见 §2.6）
+- **无内存泄漏**：dropRun 正常释放 streamingMsgs
+- 影响仅限 UI 短暂状态错位
+
+**自愈路径**（多数场景秒级恢复）：
+- `connReady` watcher（DC 重连即触发新 loadMessages，见 `ChatPage.vue:459-470`）
+- `app:foreground` / `visibilitychange` handler
+- `activate` re-entry（用户导航离开再回来）
+
+**极端情况**：DC 永久不恢复且用户不做任何操作 → 消息持续看不见；此时处境等价于原 bug 冷启恢复（app 重启后 activate → loadMessages 成功）。
+
+**严重性对比**：
+
+| 维度 | 原 bug | 本限制 |
+|---|---|---|
+| 概率 | ~30%（用户反馈） | <1%（估计） |
+| 现象 | 永久"思考中" | 消息临时消失 |
+| 自愈 | 需冷启 | 多数自动 |
+| 用户感知 | 明显卡住 | 无声（潜在重发困惑） |
+
+原 bug 从 ~30% 永久卡死降为 <1% 临时不一致，量级显著降低；"无声"这一点比原 bug 更易混淆，但整体仍在可接受范围。
+
+### 7.2 为什么不能简单 fix
+
+直觉方案 `if (ok) dropRun(...)` **会引入更糟的新 bug**：
+
+- `runPromise.then` 由 `finalPromise` 驱动，每个 run 只触发一次
+- loadMessages 失败后 streamingMsgs 保留，但**没有后续 drop 机制**
+- 当 `connReady` watcher / foreground / activate 后来触发 loadMessages 成功时，`this.messages` 被更新包含这轮完整数据，而 streamingMsgs 仍然存活
+- `allMessages = [...this.messages, ...streamingMsgs]` → **消息重复显示**（user 和 assistant 各出现两次）
+
+比原问题更糟。简单 fix 不可取。
+
+### 7.3 正确的修复方向（未来处理）
+
+把 dropRun 的职责从 `runPromise.then` 上移到 `__reconcileRunAfterLoad`，与 `stripLocalUserMsgs` 并列成为 loadMessages 成功后的统一状态校准点：
+
+```js
+// chat.store.js
+__reconcileRunAfterLoad(serverMessages) {
+    const runsStore = useAgentRunsStore();
+    runsStore.stripLocalUserMsgs(this.runKey, serverMessages);
+    // 新增：run 已 ended 时释放 entry（此处与 this.messages 更新同属一个 reactivity tick）
+    const run = runsStore.getActiveRun(this.runKey);
+    if (run?.ended) {
+        runsStore.dropRun(this.runKey, run.runId);
+    }
+}
+
+// chat.store.js:542-549 改为只触发加载
+runPromise.then(async (res) => {
+    if (res?.accepted) {
+        await this.loadMessages({ silent: true });
+        // drop 由 __reconcileRunAfterLoad 统一处理
+    }
+}).catch((e) => console.debug('[chat] runPromise rejected:', e?.message));
+```
+
+**安全性论证**：
+- loadMessages 失败 → streamingMsgs 保留 → 后续任何成功 loadMessages 自动清，无需重试机制
+- `this.messages` 更新和 dropRun 在同一 reactivity tick 内同步执行，UI 无中间态闪烁
+- `dropRun` 内部有 `runKeyIndex` 校验和 `expectedRunId` 校验，多处调用幂等
+- supersede 路径（register 内部主动 `__cleanupRun`）不受影响，与此钩子解耦
+
+**暂不实施的原因**：
+- 测试覆盖需要补：loadMessages 失败保留 streamingMsgs、后续成功 loadMessages 触发 drop、supersede 后新旧 run 的 drop 幂等性、cancel 路径不受影响等
+- 相对原 bug 的严重性降幅大，正确 fix 的 review/测试成本与当前收益不平衡
+- 修复时需参考此处的时序分析，避免再次选择简单但错误的方向
+
+### 7.4 相关 pre-existing 竞态：loadMessages 飞行中共享导致 run2 数据陈旧
+
+Run1 ended → `runPromise1.then` 启动 `loadMessages` A 飞行中；用户快速发 msg 2，run2 register 后快速 ended；`runPromise2.then` 的 `await loadMessages` 复用 A（`__silentLoadPromise` 守卫机制，`chat.store.js:202-209`）→ A 带回的是 run1 ended 时刻的数据，不含 run2 → `dropRun(run2)` 释放 streamingMsgs 后 UI 丢 run2 内容。
+
+实施前后都存在，不由本次设计引入，依赖后续 loadMessages 自愈（connReady/foreground/activate 任一触发即恢复）。严重性低于 §7.1，修复代价高（需要"loadMessages 发起时刻 vs run.endedAt"比较机制），建议保持现状。
