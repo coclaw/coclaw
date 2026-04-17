@@ -2958,6 +2958,22 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
+	test('__scheduleRetry 在 claw 已删后早退（防 __ensureRtc async race）', () => {
+		// race 场景：__ensureRtc 内部 await 期间，removeClawById 并发删除 claw；
+		// 随后 __ensureRtc finally 调 __scheduleRetry 时 byId 已无此 claw
+		const store = useClawsStore();
+		setupFailedBot(store);
+		store.removeClawById('50');
+
+		// 删除后再调 __scheduleRetry 应静默早退，不抛、不新建 retry state
+		expect(() => store.__scheduleRetry('50')).not.toThrow();
+
+		// timer 不应被排上
+		mockInitRtc.mockClear();
+		vi.advanceTimersByTime(300_000);
+		expect(mockInitRtc).not.toHaveBeenCalled();
+	});
+
 	test('外部事件（applySnapshot）重置退避计数', () => {
 		const store = useClawsStore();
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
