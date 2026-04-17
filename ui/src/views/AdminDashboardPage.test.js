@@ -11,6 +11,11 @@ vi.mock('../services/admin.api.js', () => ({
 	fetchAdminUsers: vi.fn(),
 }));
 
+// 页面不再直接订阅 SSE（由 AdminLayout 管），stub 掉传输层以防误建连
+vi.mock('../services/admin-stream.js', () => ({
+	connectAdminStream: vi.fn(() => ({ close: vi.fn() })),
+}));
+
 vi.mock('../composables/use-notify.js', () => ({
 	useNotify: () => ({
 		success: vi.fn(),
@@ -23,10 +28,11 @@ vi.mock('../composables/use-notify.js', () => ({
 vi.stubGlobal('__APP_VERSION__', '0.9.0');
 
 import AdminDashboardPage from './AdminDashboardPage.vue';
+import { useAdminStore } from '../stores/admin.store.js';
 
 const fakeDashboard = {
 	users: { total: 100, todayNew: 5, todayActive: 23 },
-	claws: { total: 10, online: 4, todayNew: 2 },
+	claws: { total: 10, todayNew: 2 },
 	topActiveUsers: [
 		{ id: '1', name: '张三', lastLoginAt: new Date(Date.now() - 180_000).toISOString() },
 		{ id: '2', name: '李四', lastLoginAt: new Date(Date.now() - 7_200_000).toISOString() },
@@ -36,8 +42,8 @@ const fakeDashboard = {
 		{ id: '11', name: null, loginName: 'noname_user', createdAt: new Date(Date.now() - 3_600_000).toISOString() },
 	],
 	latestBoundClaws: [
-		{ id: 'c1', name: 'My Claw', userName: 'alice', online: true, createdAt: new Date(Date.now() - 60_000 * 2).toISOString() },
-		{ id: 'c2', name: '', userName: null, online: false, createdAt: new Date(Date.now() - 3600_000).toISOString() },
+		{ id: 'c1', name: 'My Claw', userName: 'alice', createdAt: new Date(Date.now() - 60_000 * 2).toISOString() },
+		{ id: 'c2', name: '', userName: null, createdAt: new Date(Date.now() - 3600_000).toISOString() },
 	],
 	version: { server: '0.4.2', plugin: '0.3.1' },
 };
@@ -115,14 +121,27 @@ test('loading 态显示 chat.loading 文案', async () => {
 	await flushPromises();
 });
 
+// 把在线数大卡片定位到 DOM 元素（避免 text() 匹配被其他数字误中）
+function onlineClawCard(wrapper) {
+	// 第二张实例卡（总/在线/今日新增）
+	return wrapper.findAll('.grid.grid-cols-3.gap-3 .text-2xl')[1];
+}
+
 test('渲染三卡片（总/在线/今日新增）+ 用户次级 + 版本', async () => {
 	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 
-	// 实例卡片数值
+	// 标记 snapshot 已到达，使在线数卡片切换出占位符
+	const store = useAdminStore();
+	store.onlineClawIds = new Set(['x1', 'x2', 'x3', 'x4']);
+	store.hasOnlineSnapshot = true;
+	await wrapper.vm.$nextTick();
+
+	// 在线数卡片展示的值必须精确等于 Set.size
+	expect(onlineClawCard(wrapper).text()).toBe('4');
+	// 其余数字
 	expect(wrapper.text()).toContain('10');
-	expect(wrapper.text()).toContain('4');
 	expect(wrapper.text()).toContain('2');
 	// 用户卡片数值
 	expect(wrapper.text()).toContain('100');
@@ -136,6 +155,53 @@ test('渲染三卡片（总/在线/今日新增）+ 用户次级 + 版本', asyn
 	expect(wrapper.text()).toContain('My Claw');
 	expect(wrapper.text()).toContain('张三');
 	expect(wrapper.text()).toContain('王五');
+});
+
+test('在线数大卡片响应 store.onlineClawIds 变化（SSE 事实源）', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+	const store = useAdminStore();
+	store.hasOnlineSnapshot = true;
+
+	store.onlineClawIds = new Set(['a', 'b']);
+	await wrapper.vm.$nextTick();
+	expect(onlineClawCard(wrapper).text()).toBe('2');
+
+	store.onlineClawIds = new Set(['a']);
+	await wrapper.vm.$nextTick();
+	expect(onlineClawCard(wrapper).text()).toBe('1');
+
+	store.onlineClawIds = new Set();
+	await wrapper.vm.$nextTick();
+	expect(onlineClawCard(wrapper).text()).toBe('0');
+});
+
+test('SSE snapshot 未到达时在线数卡片显示占位符 —', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+	const store = useAdminStore();
+	// snapshot 未置位 → 即便 Set 有值也不暴露（避免首屏闪 0）
+	store.onlineClawIds = new Set(['a', 'b', 'c']);
+	expect(store.hasOnlineSnapshot).toBe(false);
+	await wrapper.vm.$nextTick();
+	expect(onlineClawCard(wrapper).text()).toBe('—');
+});
+
+test('Top 10 绿点由 isClawOnline 驱动', async () => {
+	mockFetchAdminDashboard.mockResolvedValueOnce(fakeDashboard);
+	const wrapper = createWrapper();
+	await flushPromises();
+	const store = useAdminStore();
+	store.onlineClawIds = new Set(['c1']);
+	await wrapper.vm.$nextTick();
+
+	// c1 在线：span 带 bg-green-500；c2 离线：span 带 bg-neutral-400
+	const dots = wrapper.findAll('li span.inline-block.h-2.w-2');
+	expect(dots.length).toBeGreaterThanOrEqual(2);
+	expect(dots[0].classes()).toContain('bg-green-500');
+	expect(dots[1].classes()).toContain('bg-neutral-400');
 });
 
 test('pluginVersion 为 null 时显示占位 —', async () => {

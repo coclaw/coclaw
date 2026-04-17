@@ -7,7 +7,19 @@ const mockedApi = vi.hoisted(() => ({
 	fetchAdminUsers: vi.fn(),
 }));
 
+const mockedStream = vi.hoisted(() => {
+	const close = vi.fn();
+	const connect = vi.fn();
+	return { close, connect };
+});
+
 vi.mock('../services/admin.api.js', () => mockedApi);
+vi.mock('../services/admin-stream.js', () => ({
+	connectAdminStream: (handlers) => {
+		mockedStream.connect(handlers);
+		return { close: mockedStream.close };
+	},
+}));
 
 import { useAdminStore } from './admin.store.js';
 
@@ -15,6 +27,8 @@ describe('admin store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		vi.clearAllMocks();
+		mockedStream.close.mockClear();
+		mockedStream.connect.mockClear();
 	});
 
 	describe('fetchDashboard', () => {
@@ -306,41 +320,53 @@ describe('admin store', () => {
 	});
 
 	describe('SSE 事件应用', () => {
-		test('applyOnlineSnapshot 标记命中者 online=true 其余 false', () => {
+		test('applyOnlineSnapshot 标记命中者 online=true 其余 false，并写入 onlineClawIds + 置 hasOnlineSnapshot', () => {
 			const store = useAdminStore();
 			store.claws.items = [
 				{ id: '1', online: false },
 				{ id: '2', online: true },
 				{ id: '3', online: false },
 			];
+			expect(store.hasOnlineSnapshot).toBe(false);
 			store.applyOnlineSnapshot(['1', '3']);
 			expect(store.claws.items.map(c => c.online)).toEqual([true, false, true]);
+			expect(store.onlineClawIds.has('1')).toBe(true);
+			expect(store.onlineClawIds.has('2')).toBe(false);
+			expect(store.onlineClawIds.has('3')).toBe(true);
+			expect(store.onlineClawCount).toBe(2);
+			expect(store.hasOnlineSnapshot).toBe(true);
 		});
 
 		test('applyOnlineSnapshot 传入 undefined 视为全部离线', () => {
 			const store = useAdminStore();
 			store.claws.items = [{ id: '1', online: true }];
+			store.onlineClawIds = new Set(['1']);
 			store.applyOnlineSnapshot();
 			expect(store.claws.items[0].online).toBe(false);
+			expect(store.onlineClawCount).toBe(0);
 		});
 
-		test('updateClawStatus 匹配后更新并跳出', () => {
+		test('updateClawStatus 匹配后更新并跳出，同步 onlineClawIds', () => {
 			const store = useAdminStore();
 			store.claws.items = [
 				{ id: '1', online: false },
 				{ id: '2', online: true },
 			];
+			store.onlineClawIds = new Set(['2']);
 			store.updateClawStatus(2, true);
 			expect(store.claws.items[1].online).toBe(true);
+			expect(store.onlineClawIds.has('2')).toBe(true);
 			store.updateClawStatus(2, 0);
 			expect(store.claws.items[1].online).toBe(false);
+			expect(store.onlineClawIds.has('2')).toBe(false);
 		});
 
-		test('updateClawStatus 无匹配时无副作用', () => {
+		test('updateClawStatus 无匹配列表项时仍更新 onlineClawIds', () => {
 			const store = useAdminStore();
 			store.claws.items = [{ id: '1', online: false }];
 			store.updateClawStatus('999', true);
 			expect(store.claws.items[0].online).toBe(false);
+			expect(store.onlineClawIds.has('999')).toBe(true);
 		});
 
 		test('updateClawInfo 覆盖指定字段且跳过 undefined', () => {
@@ -381,6 +407,99 @@ describe('admin store', () => {
 			store.claws.items = [{ id: '1', name: 'a' }];
 			store.updateClawInfo('1');
 			expect(store.claws.items[0]).toEqual({ id: '1', name: 'a' });
+		});
+	});
+
+	describe('getters: onlineClawCount / isClawOnline', () => {
+		test('onlineClawCount 读 Set.size', () => {
+			const store = useAdminStore();
+			expect(store.onlineClawCount).toBe(0);
+			store.onlineClawIds = new Set(['a', 'b', 'c']);
+			expect(store.onlineClawCount).toBe(3);
+		});
+
+		test('isClawOnline 对字符串/数字 id 均归一化为字符串', () => {
+			const store = useAdminStore();
+			store.onlineClawIds = new Set(['100', '200']);
+			expect(store.isClawOnline('100')).toBe(true);
+			expect(store.isClawOnline(100)).toBe(true);
+			expect(store.isClawOnline('999')).toBe(false);
+		});
+	});
+
+	describe('SSE 订阅生命周期', () => {
+		test('startStream 首次调用建立订阅', () => {
+			const store = useAdminStore();
+			store.startStream();
+			expect(mockedStream.connect).toHaveBeenCalledTimes(1);
+			expect(store.__streamRefs).toBe(1);
+		});
+
+		test('startStream 多次调用只建一条连接', () => {
+			const store = useAdminStore();
+			store.startStream();
+			store.startStream();
+			store.startStream();
+			expect(mockedStream.connect).toHaveBeenCalledTimes(1);
+			expect(store.__streamRefs).toBe(3);
+		});
+
+		test('stopStream 引用计数归零才 close，并清空 onlineClawIds + hasOnlineSnapshot', () => {
+			const store = useAdminStore();
+			store.startStream();
+			store.startStream();
+			store.onlineClawIds = new Set(['1', '2']);
+			store.hasOnlineSnapshot = true;
+
+			store.stopStream();
+			expect(mockedStream.close).not.toHaveBeenCalled();
+			expect(store.onlineClawIds.size).toBe(2);
+			expect(store.hasOnlineSnapshot).toBe(true);
+
+			store.stopStream();
+			expect(mockedStream.close).toHaveBeenCalledTimes(1);
+			expect(store.onlineClawIds.size).toBe(0);
+			expect(store.hasOnlineSnapshot).toBe(false);
+			expect(store.__streamRefs).toBe(0);
+		});
+
+		test('stopStream 在未 start 时幂等不抛', () => {
+			const store = useAdminStore();
+			expect(() => store.stopStream()).not.toThrow();
+			expect(mockedStream.close).not.toHaveBeenCalled();
+			expect(store.__streamRefs).toBe(0);
+		});
+
+		test('SSE 回调桥接到 store actions', () => {
+			const store = useAdminStore();
+			store.claws.items = [{ id: '1', online: false }];
+			store.startStream();
+			const handlers = mockedStream.connect.mock.calls[0][0];
+
+			// onSnapshot → applyOnlineSnapshot
+			handlers.onSnapshot(['1']);
+			expect(store.onlineClawIds.has('1')).toBe(true);
+			expect(store.claws.items[0].online).toBe(true);
+
+			// onStatusChanged → updateClawStatus
+			handlers.onStatusChanged({ clawId: '1', online: false });
+			expect(store.onlineClawIds.has('1')).toBe(false);
+
+			// onInfoUpdated → updateClawInfo（patch 语义：clawId 不落到字段里）
+			handlers.onInfoUpdated({ clawId: '1', name: 'renamed' });
+			expect(store.claws.items[0].name).toBe('renamed');
+			expect('clawId' in store.claws.items[0]).toBe(false);
+		});
+
+		test('close→重启后仍可重新订阅', () => {
+			const store = useAdminStore();
+			store.startStream();
+			store.stopStream();
+			expect(mockedStream.close).toHaveBeenCalledTimes(1);
+
+			store.startStream();
+			expect(mockedStream.connect).toHaveBeenCalledTimes(2);
+			expect(store.__streamRefs).toBe(1);
 		});
 	});
 });

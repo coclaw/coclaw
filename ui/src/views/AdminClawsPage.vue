@@ -181,7 +181,6 @@
 <script>
 import { useNotify } from '../composables/use-notify.js';
 import { useAdminStore } from '../stores/admin.store.js';
-import { connectAdminStream } from '../services/admin-stream.js';
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import AdminNavTabs from '../components/AdminNavTabs.vue';
 
@@ -221,8 +220,6 @@ export default {
 	},
 	async mounted() {
 		this.__searchTimer = null;
-		this.__stream = null;
-		this.__destroyed = false;
 		try {
 			await this.adminStore.fetchClaws();
 		}
@@ -230,24 +227,9 @@ export default {
 			console.warn('[AdminClawsPage] fetchClaws failed:', err);
 			this.notify.error(this.__pickErrMsg(err));
 		}
-		// 若 fetchClaws 尚未完成时组件已卸载，避免再建立 SSE 造成 EventSource 泄漏
-		if (this.__destroyed) return;
-		this.__stream = connectAdminStream({
-			onSnapshot: (ids) => this.adminStore.applyOnlineSnapshot(ids),
-			onStatusChanged: ({ clawId, online }) => this.adminStore.updateClawStatus(clawId, online),
-			onInfoUpdated: ({ clawId, ...patch }) => {
-				// patch 语义：仅透传 wire 中实际存在的字段给 store，未变更字段保留原值
-				this.adminStore.updateClawInfo(clawId, patch);
-			},
-		});
 	},
 	beforeUnmount() {
-		this.__destroyed = true;
 		clearTimeout(this.__searchTimer);
-		if (this.__stream) {
-			this.__stream.close();
-			this.__stream = null;
-		}
 	},
 	methods: {
 		async doSearch(q) {

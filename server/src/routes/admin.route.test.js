@@ -30,7 +30,7 @@ function mockRes() {
 }
 
 test('dashboardHandler: 正常返回 dashboard 数据', async () => {
-	const fakeData = { users: { total: 10 }, claws: { total: 2, online: 1, todayNew: 0 } };
+	const fakeData = { users: { total: 10 }, claws: { total: 2, todayNew: 0 } };
 	const res = mockRes();
 
 	await dashboardHandler({}, res, () => {}, {

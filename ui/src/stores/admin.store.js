@@ -5,6 +5,7 @@ import {
 	fetchAdminClaws,
 	fetchAdminUsers,
 } from '../services/admin.api.js';
+import { connectAdminStream } from '../services/admin-stream.js';
 
 /**
  * @typedef {{
@@ -22,7 +23,7 @@ function emptyList() {
 
 export const useAdminStore = defineStore('admin', {
 	state: () => ({
-		/** @type {object|null} dashboard 聚合数据 */
+		/** @type {object|null} dashboard 聚合数据（弱实时） */
 		dashboard: null,
 		dashboardLoading: false,
 		dashboardError: null,
@@ -30,7 +31,26 @@ export const useAdminStore = defineStore('admin', {
 		claws: emptyList(),
 		/** @type {ListState} */
 		users: emptyList(),
+		/**
+		 * 在线 claw id 集合（SSE 唯一事实源，强实时）。
+		 * 更新时整体替换以触发 Vue 响应式。
+		 * @type {Set<string>}
+		 */
+		onlineClawIds: new Set(),
+		/** SSE snapshot 是否已到达 —— 用于模板显示占位符避免首屏闪 0 */
+		hasOnlineSnapshot: false,
+		/** 连接引用计数 */
+		__streamRefs: 0,
+		/** connectAdminStream 返回的句柄 */
+		__streamHandle: null,
 	}),
+
+	getters: {
+		/** 当前在线 claw 总数 */
+		onlineClawCount: (state) => state.onlineClawIds.size,
+		/** 指定 claw 是否在线 */
+		isClawOnline: (state) => (id) => state.onlineClawIds.has(String(id)),
+	},
 
 	actions: {
 		async fetchDashboard() {
@@ -151,17 +171,52 @@ export const useAdminStore = defineStore('admin', {
 			this.users = emptyList();
 		},
 
-		/** SSE snapshot：标记列表中命中的 claw 为 online，其余为 offline */
+		/**
+		 * 启动 SSE 订阅（引用计数，从 0 升到 1 时真正建连）。
+		 * 由 AdminLayout.mounted 调用；多个调用方互不干扰。
+		 */
+		startStream() {
+			this.__streamRefs += 1;
+			if (this.__streamRefs > 1) return;
+			this.__streamHandle = connectAdminStream({
+				onSnapshot: (ids) => this.applyOnlineSnapshot(ids),
+				onStatusChanged: ({ clawId, online }) => this.updateClawStatus(clawId, online),
+				onInfoUpdated: ({ clawId, ...patch }) => this.updateClawInfo(clawId, patch),
+			});
+		},
+
+		/**
+		 * 停止 SSE 订阅（引用计数归零时真正断连，并清空在线集合）。
+		 * 由 AdminLayout.beforeUnmount 调用。
+		 */
+		stopStream() {
+			if (this.__streamRefs === 0) return;
+			this.__streamRefs -= 1;
+			if (this.__streamRefs > 0) return;
+			if (this.__streamHandle) {
+				this.__streamHandle.close();
+				this.__streamHandle = null;
+			}
+			this.onlineClawIds = new Set();
+			this.hasOnlineSnapshot = false;
+		},
+
+		/** SSE snapshot：替换 onlineClawIds，并同步列表 items[].online */
 		applyOnlineSnapshot(onlineIds) {
-			const set = new Set((onlineIds ?? []).map(String));
+			this.onlineClawIds = new Set((onlineIds ?? []).map(String));
+			this.hasOnlineSnapshot = true;
 			for (const c of this.claws.items) {
-				c.online = set.has(String(c.id));
+				c.online = this.onlineClawIds.has(String(c.id));
 			}
 		},
 
-		/** SSE statusChanged：更新对应 claw 的在线状态 */
+		/** SSE statusChanged：更新 onlineClawIds 成员 + 同步对应列表项 */
 		updateClawStatus(clawId, online) {
 			const id = String(clawId);
+			const next = new Set(this.onlineClawIds);
+			if (online) next.add(id);
+			else next.delete(id);
+			this.onlineClawIds = next;
 			for (const c of this.claws.items) {
 				if (String(c.id) === id) {
 					c.online = !!online;

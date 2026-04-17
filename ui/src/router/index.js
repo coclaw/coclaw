@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
 
 import AuthedLayout from '../layouts/AuthedLayout.vue';
+import AdminLayout from '../layouts/AdminLayout.vue';
 import LoginPage from '../views/LoginPage.vue';
 import RegisterPage from '../views/RegisterPage.vue';
 import NuxtUiDemoPage from '../views/NuxtUiDemoPage.vue';
@@ -100,22 +101,26 @@ const routes = [
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
-				path: 'admin/dashboard',
-				name: 'admin-dashboard',
-				component: AdminDashboardPage,
-				meta: { requiresAuth: true, hideMobileNav: true },
-			},
-			{
-				path: 'admin/claws',
-				name: 'admin-claws',
-				component: AdminClawsPage,
-				meta: { requiresAuth: true, hideMobileNav: true },
-			},
-			{
-				path: 'admin/users',
-				name: 'admin-users',
-				component: AdminUsersPage,
-				meta: { requiresAuth: true, hideMobileNav: true },
+				path: 'admin',
+				component: AdminLayout,
+				meta: { requiresAuth: true, requiresAdmin: true, hideMobileNav: true },
+				children: [
+					{
+						path: 'dashboard',
+						name: 'admin-dashboard',
+						component: AdminDashboardPage,
+					},
+					{
+						path: 'claws',
+						name: 'admin-claws',
+						component: AdminClawsPage,
+					},
+					{
+						path: 'users',
+						name: 'admin-users',
+						component: AdminUsersPage,
+					},
+				],
 			},
 			{
 				path: 'about',
@@ -150,6 +155,29 @@ if (isNativeShell) {
 	}
 }
 
+/**
+ * 鉴权守卫的纯函数实现（供单测直接驱动）。
+ * 返回 undefined 表示放行；返回路由对象表示重定向。
+ * @param {object} to - 目标路由
+ * @param {{ user: ({ level: number }|null) }} authStore
+ */
+export function evaluateAuthGuard(to, authStore) {
+	if (!to.meta.requiresAuth) {
+		return undefined;
+	}
+	if (!authStore.user) {
+		console.log('[router] auth redirect → /login');
+		return { path: '/login', query: { redirect: to.fullPath }, replace: true };
+	}
+	// admin 区二次守卫：非 admin 用户访问 /admin/* 直接回 /home，
+	// 避免 AdminLayout 挂载后触发 /admin/stream 的无授权 EventSource 死循环
+	if (to.meta.requiresAdmin && authStore.user.level !== -100) {
+		console.log('[router] admin-only redirect → /home');
+		return { path: '/home', replace: true };
+	}
+	return undefined;
+}
+
 router.beforeEach(async (to) => {
 	// 冷启动路由恢复（一次性）
 	if (__pendingRestore) {
@@ -167,10 +195,8 @@ router.beforeEach(async (to) => {
 	}
 	const authStore = useAuthStore();
 	await authStore.refreshSession();
-	if (!authStore.user) {
-		console.log('[router] auth redirect → /login');
-		return { path: '/login', query: { redirect: to.fullPath }, replace: true };
-	}
+	const decision = evaluateAuthGuard(to, authStore);
+	if (decision) return decision;
 	console.debug('[router] auth passed, user=%s', authStore.user?.id);
 });
 

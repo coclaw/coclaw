@@ -7,18 +7,11 @@ import { afterEach, beforeEach, describe, test, expect, vi } from 'vitest';
 const mockFetchClaws = vi.fn();
 const mockFetchMoreClaws = vi.fn();
 const mockResetClaws = vi.fn();
-const mockApplyOnlineSnapshot = vi.fn();
-const mockUpdateClawStatus = vi.fn();
-const mockUpdateClawInfo = vi.fn();
 const mockNotifyError = vi.fn();
 
-let streamHandlers = null;
-const mockStreamClose = vi.fn();
-const mockConnectAdminStream = vi.fn((handlers) => {
-	streamHandlers = handlers;
-	return { close: mockStreamClose };
-});
-
+// 页面本身不再直接订阅 SSE（由 AdminLayout 管理 store.startStream / stopStream），
+// 但 mock 保留以便断言"页面不会主动建连"
+const mockConnectAdminStream = vi.fn(() => ({ close: vi.fn() }));
 vi.mock('../services/admin-stream.js', () => ({
 	connectAdminStream: (...args) => mockConnectAdminStream(...args),
 }));
@@ -141,9 +134,6 @@ function mountPage(overrides = {}) {
 		fetchClaws: mockFetchClaws,
 		fetchMoreClaws: mockFetchMoreClaws,
 		resetClaws: mockResetClaws,
-		applyOnlineSnapshot: mockApplyOnlineSnapshot,
-		updateClawStatus: mockUpdateClawStatus,
-		updateClawInfo: mockUpdateClawInfo,
 	};
 
 	return mount(AdminClawsPage, {
@@ -176,13 +166,8 @@ beforeEach(() => {
 	mockFetchClaws.mockReset();
 	mockFetchMoreClaws.mockReset();
 	mockResetClaws.mockReset();
-	mockApplyOnlineSnapshot.mockReset();
-	mockUpdateClawStatus.mockReset();
-	mockUpdateClawInfo.mockReset();
 	mockNotifyError.mockReset();
 	mockConnectAdminStream.mockClear();
-	mockStreamClose.mockClear();
-	streamHandlers = null;
 	mockFetchClaws.mockResolvedValue();
 	mockFetchMoreClaws.mockResolvedValue();
 });
@@ -191,20 +176,18 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-describe('AdminClawsPage — mount 与 SSE', () => {
-	test('mounted 调用 fetchClaws 并建立 SSE 连接', async () => {
+describe('AdminClawsPage — mount', () => {
+	test('mounted 调用 fetchClaws，但不直接订阅 SSE', async () => {
 		const wrapper = mountPage();
 		await flushPromises();
 
 		expect(mockFetchClaws).toHaveBeenCalledTimes(1);
-		expect(mockConnectAdminStream).toHaveBeenCalledTimes(1);
-		expect(streamHandlers).toHaveProperty('onSnapshot');
-		expect(streamHandlers).toHaveProperty('onStatusChanged');
-		expect(streamHandlers).toHaveProperty('onInfoUpdated');
+		// 页面本身不再主动建连（由 AdminLayout 统一管理）
+		expect(mockConnectAdminStream).not.toHaveBeenCalled();
 		wrapper.unmount();
 	});
 
-	test('fetchClaws 失败时 notify.error 并 warn，但 SSE 仍建立', async () => {
+	test('fetchClaws 失败时 notify.error 并 warn', async () => {
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		mockFetchClaws.mockRejectedValueOnce(new Error('Network down'));
 		mountPage();
@@ -212,7 +195,7 @@ describe('AdminClawsPage — mount 与 SSE', () => {
 
 		expect(mockNotifyError).toHaveBeenCalledWith('Network down');
 		expect(warnSpy).toHaveBeenCalled();
-		expect(mockConnectAdminStream).toHaveBeenCalledTimes(1);
+		expect(mockConnectAdminStream).not.toHaveBeenCalled();
 		warnSpy.mockRestore();
 	});
 
@@ -230,72 +213,6 @@ describe('AdminClawsPage — mount 与 SSE', () => {
 		mountPage();
 		await flushPromises();
 		expect(mockNotifyError).toHaveBeenCalledWith('Load failed');
-	});
-
-	test('beforeUnmount 关闭 SSE', async () => {
-		const wrapper = mountPage();
-		await flushPromises();
-		wrapper.unmount();
-		expect(mockStreamClose).toHaveBeenCalledTimes(1);
-	});
-
-	test('SSE onSnapshot → applyOnlineSnapshot', async () => {
-		mountPage();
-		await flushPromises();
-		streamHandlers.onSnapshot(['1', '2']);
-		expect(mockApplyOnlineSnapshot).toHaveBeenCalledWith(['1', '2']);
-	});
-
-	test('SSE onStatusChanged → updateClawStatus', async () => {
-		mountPage();
-		await flushPromises();
-		streamHandlers.onStatusChanged({ clawId: 'c1', online: true });
-		expect(mockUpdateClawStatus).toHaveBeenCalledWith('c1', true);
-	});
-
-	test('SSE onInfoUpdated（全字段）→ updateClawInfo 收到完整 patch', async () => {
-		mountPage();
-		await flushPromises();
-		streamHandlers.onInfoUpdated({
-			clawId: 'c1',
-			name: 'new',
-			hostName: 'h',
-			pluginVersion: '1.0.0',
-			agentModels: [{ id: 'a' }],
-		});
-		expect(mockUpdateClawInfo).toHaveBeenCalledWith('c1', {
-			name: 'new', hostName: 'h', pluginVersion: '1.0.0', agentModels: [{ id: 'a' }],
-		});
-	});
-
-	test('SSE onInfoUpdated（部分字段 patch）→ 仅透传 wire 中存在的字段', async () => {
-		mountPage();
-		await flushPromises();
-		// 模拟 wire 只带 clawId + name（比如 coclaw.info.patch 只改名字）
-		streamHandlers.onInfoUpdated({ clawId: 'c1', name: 'renamed' });
-		expect(mockUpdateClawInfo).toHaveBeenCalledWith('c1', { name: 'renamed' });
-		const patch = mockUpdateClawInfo.mock.calls[0][1];
-		expect('pluginVersion' in patch).toBe(false);
-		expect('agentModels' in patch).toBe(false);
-	});
-
-	test('在 fetchClaws 未完成时 unmount 不建立 SSE 连接（防 EventSource 泄漏）', async () => {
-		// 让 fetchClaws 挂起不 resolve
-		let resolveFetch;
-		mockFetchClaws.mockReturnValueOnce(new Promise((r) => { resolveFetch = r; }));
-
-		const wrapper = mountPage();
-		// mounted 的 await fetchClaws 还未完成
-		expect(mockConnectAdminStream).not.toHaveBeenCalled();
-
-		// unmount 触发 __destroyed = true
-		wrapper.unmount();
-
-		// 放行 fetchClaws，后续代码应因 __destroyed 短路
-		resolveFetch();
-		await flushPromises();
-
-		expect(mockConnectAdminStream).not.toHaveBeenCalled();
 	});
 });
 

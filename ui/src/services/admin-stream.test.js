@@ -247,4 +247,33 @@ describe('connectAdminStream', () => {
 		window.dispatchEvent(new CustomEvent('network:online'));
 		expect(MockEventSource).toHaveBeenCalledTimes(3);
 	});
+
+	test('未 onopen 的 onerror 连续 3 次即熔断，不再重连', () => {
+		connect();
+		// 三次握手失败（从未 onopen），第三次应触发熔断：stopped=true + close + 清除 es
+		esInstance.onerror();
+		esInstance.onerror();
+		esInstance.onerror();
+		expect(esInstance.close).toHaveBeenCalled();
+		// 熔断后 foreground / network:online 不再重连
+		MockEventSource.mockClear();
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		window.dispatchEvent(new CustomEvent('network:online'));
+		expect(MockEventSource).not.toHaveBeenCalled();
+		// 记了 handshakeBlocked 远程日志
+		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringMatching(/^adminSse\.handshakeBlocked/));
+	});
+
+	test('onopen 后再 onerror 不计入熔断（生产期断线可继续重连）', () => {
+		connect();
+		esInstance.onopen(); // 握手成功 → 清零计数
+		// 断线 若干次：错误不累计进熔断计数
+		esInstance.onerror();
+		esInstance.onerror();
+		esInstance.onerror();
+		esInstance.onerror();
+		// foreground 触发重连：熔断开关 stopped 仍为 false，应建立新 EventSource
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		expect(MockEventSource).toHaveBeenCalledTimes(2);
+	});
 });

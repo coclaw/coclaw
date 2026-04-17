@@ -38,7 +38,7 @@
 							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.totalClaws') }}</p>
 						</div>
 						<div class="rounded-xl bg-elevated p-3 text-center">
-							<p class="text-2xl font-semibold">{{ adminStore.dashboard.claws.online }}</p>
+							<p class="text-2xl font-semibold">{{ adminStore.hasOnlineSnapshot ? adminStore.onlineClawCount : '—' }}</p>
 							<p class="mt-1 text-xs text-dimmed">{{ $t('admin.dashboard.onlineClaws') }}</p>
 						</div>
 						<div class="rounded-xl bg-elevated p-3 text-center">
@@ -97,9 +97,9 @@
 									<span
 										:class="[
 											'inline-block h-2 w-2 shrink-0 rounded-full',
-											claw.online ? 'bg-green-500' : 'bg-neutral-400',
+											adminStore.isClawOnline(claw.id) ? 'bg-green-500' : 'bg-neutral-400',
 										]"
-										:aria-label="claw.online ? $t('admin.common.online') : $t('admin.common.offline')"
+										:aria-label="adminStore.isClawOnline(claw.id) ? $t('admin.common.online') : $t('admin.common.offline')"
 									></span>
 									<span class="truncate">{{ claw.name || claw.id }}</span>
 									<span v-if="claw.userName" class="truncate text-xs text-dimmed">· {{ claw.userName }}</span>
