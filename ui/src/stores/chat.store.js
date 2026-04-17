@@ -253,6 +253,8 @@ export function createChatStore(storeKey, opts = {}) {
 							limit,
 						}, { timeout: 120_000 });
 						const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
+						console.debug('[chat] loadMessages raw messages sessionKey=%s count=%d %o',
+							this.chatSessionKey, flatMsgs.length, flatMsgs);
 						// 薄包装为 JSONL 行级结构（补 type + id）
 						const serverMsgs = wrapOcMessages(flatMsgs);
 						// 保留乐观消息（sendMessage 与 loadMessages 可能并发执行）
@@ -374,6 +376,8 @@ export function createChatStore(storeKey, opts = {}) {
 					}, { timeout: 120_000 });
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
+					console.debug('[chat] loadTopicMessages raw messages topicId=%s count=%d %o',
+						this.sessionId, msgs.length, msgs);
 					// 保留乐观消息（sendMessage 与 loadMessages 可能并发执行）
 					const localMsgs = this.messages.filter((m) => m._local);
 					this.messages = localMsgs.length ? [...msgs, ...localMsgs] : msgs;
@@ -801,11 +805,9 @@ export function createChatStore(storeKey, opts = {}) {
 					let result;
 					try {
 						result = await conn.request('coclaw.agent.abort', { sessionId: sid });
-					} catch (err) {
+					} catch {
 						// WS 闪断 / 其它 RPC 错误：继续重试，由 run-ended/immediate 路径终止
 						if (!isMine()) return;
-						console.debug('[chat] cancelSend rpc err sid=%s %s retry in %dms',
-							sid, err?.message ?? err, CANCEL_TICK_MS);
 						me.tickTimer = setTimeout(tick, CANCEL_TICK_MS);
 						return;
 					}
@@ -825,8 +827,6 @@ export function createChatStore(storeKey, opts = {}) {
 						return;
 					}
 					// not-found / abort-threw / 其它：继续重试，等空窗期结束或 run 自然结束
-					console.debug('[chat] cancelSend miss sid=%s reason=%s retry in %dms',
-						sid, result?.reason, CANCEL_TICK_MS);
 					me.tickTimer = setTimeout(tick, CANCEL_TICK_MS);
 				};
 
