@@ -19,7 +19,10 @@ let refreshInFlight = false;
 
 async function defaultFetchFromSource(baseUrl, timeoutMs) {
 	const url = `${baseUrl}${PKG_NAME}/latest`;
-	const res = await axios.get(url, { timeout: timeoutMs });
+	// proxy:false 绕过 shell 的 HTTPS_PROXY。本服务只请求公网 npm registry，
+	// 开发环境常见的本地代理对 axios 兼容性差（易返回 400 / socket hangup），
+	// 而部署环境普遍直连，因此统一不走代理
+	const res = await axios.get(url, { timeout: timeoutMs, proxy: false });
 	const ver = res?.data?.version;
 	if (typeof ver !== 'string' || ver.length === 0) {
 		throw new Error(`invalid response from ${baseUrl}: missing version field`);
