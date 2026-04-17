@@ -27,6 +27,7 @@ test('getAdminDashboard: 返回实例维度 + 用户维度结构', async () => {
 	const result = await getAdminDashboard({
 		repo: mockRepo(),
 		listOnlineClawIds: () => new Set(['100']),
+		getLatestPluginVersion: () => '0.15.2',
 	});
 
 	assert.deepEqual(result.users, { total: 100, todayNew: 5, todayActive: 20 });
@@ -42,7 +43,16 @@ test('getAdminDashboard: 返回实例维度 + 用户维度结构', async () => {
 	assert.equal('bots' in result, false);
 	assert.equal(typeof result.version.server, 'string');
 	assert.ok(result.version.server.length > 0);
-	assert.ok('plugin' in result.version);
+	assert.equal(result.version.plugin, '0.15.2');
+});
+
+test('getAdminDashboard: 插件版本缓存未就绪时返回 null', async () => {
+	const result = await getAdminDashboard({
+		repo: mockRepo(),
+		listOnlineClawIds: () => new Set(),
+		getLatestPluginVersion: () => null,
+	});
+	assert.equal(result.version.plugin, null);
 });
 
 test('getAdminDashboard: 自定义数据正确透传且 online 集合为空', async () => {

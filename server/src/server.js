@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { attachClawWsHub } from './claw-ws-hub.js';
 import { attachRtcSignalHub } from './rtc-signal-hub.js';
+import { startPolling as startPluginLatestPolling } from './services/plugin-latest.svc.js';
 
 export function startServer() {
 	const app = createApp();
@@ -12,6 +13,7 @@ export function startServer() {
 
 	attachClawWsHub(server, { sessionMiddleware: app.sessionMiddleware });
 	attachRtcSignalHub(server, { sessionMiddleware: app.sessionMiddleware });
+	startPluginLatestPolling();
 
 	return server;
 }
