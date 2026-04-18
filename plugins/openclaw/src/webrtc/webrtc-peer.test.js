@@ -1045,6 +1045,329 @@ test('WebRtcPeer: broadcast send 失败时不抛异常（RpcSendQueue 内部捕�
 	await peer.closeAll();
 });
 
+// --- sendTo 单播 API ---
+
+test('WebRtcPeer: sendTo 向指定 session 的 rpc DC 发送', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	await peer.handleSignaling(makeOffer('c_s01'));
+	await peer.handleSignaling(makeOffer('c_s02'));
+
+	const sent = { c_s01: [], c_s02: [] };
+	const dc1 = makeMockRpcDc({ send: (d) => sent.c_s01.push(d) });
+	const dc2 = makeMockRpcDc({ send: (d) => sent.c_s02.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc1 });
+	PC.instances[1].ondatachannel({ channel: dc2 });
+
+	const ok = peer.sendTo('c_s01', { type: 'event', event: 'x' });
+	assert.equal(ok, true);
+	assert.equal(sent.c_s01.length, 1);
+	assert.equal(sent.c_s02.length, 0); // 不发给其他 session
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo 在 session 不存在时返回 false', () => {
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+	});
+	assert.equal(peer.sendTo('nonexistent', { type: 'event' }), false);
+});
+
+test('WebRtcPeer: sendTo 在 rpcChannel 未 open 时返回 false', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_s10'));
+	// rpcChannel 未赋值
+	assert.equal(peer.sendTo('c_s10', { type: 'event' }), false);
+
+	// rpcChannel 存在但 readyState 非 open
+	const dc = makeMockRpcDc({ readyState: 'connecting' });
+	PC.instances[0].ondatachannel({ channel: dc });
+	assert.equal(peer.sendTo('c_s10', { type: 'event' }), false);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo 在 send 抛异常时返回 false', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_s20'));
+	const dc = makeMockRpcDc({ send: () => { throw new Error('boom'); } });
+	PC.instances[0].ondatachannel({ channel: dc });
+	// RpcSendQueue 吞了异常返回 true（参考 rpc-send-queue 实现），sendTo 依旧返回 true
+	// 这里直接替换 rpcSendQueue 验证 sendTo 错误路径
+	const session = peer.__sessions.get('c_s20');
+	session.rpcSendQueue.send = () => { throw new Error('queue fail'); };
+	assert.equal(peer.sendTo('c_s20', { type: 'event' }), false);
+
+	await peer.closeAll();
+});
+
+// --- __sendPeerTransport & 触发点 ---
+
+/** 轮等微任务：queueMicrotask 入队的回调会在下一个微任务边界执行 */
+async function flushMicrotasks() {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
+test('WebRtcPeer: pion — rpc dc.onopen 触发 __sendPeerTransport，发送事件到 UI', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_pt01'));
+	const pc = PC.instances[0];
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '10.0.0.1', port: 9999, protocol: 'udp', relayProtocol: 'tcp' },
+		remote: { type: 'host', address: '1.2.3.4', port: 3000, protocol: 'udp' },
+	};
+
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	pc.ondatachannel({ channel: dc });
+	dc.onopen();
+	await flushMicrotasks();
+
+	const frames = sent.map((s) => JSON.parse(s));
+	const evt = frames.find((f) => f.type === 'event' && f.event === 'coclaw.rtc.peerTransport');
+	assert.ok(evt, '应收到 coclaw.rtc.peerTransport 事件');
+	assert.deepEqual(evt.payload, {
+		candidateType: 'relay',
+		protocol: 'udp',
+		relayProtocol: 'tcp',
+	});
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — onselectedcandidatepairchange 触发 __sendPeerTransport（ICE restart 场景）', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_pt02'));
+	const pc = PC.instances[0];
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	pc.ondatachannel({ channel: dc });
+	dc.onopen();
+	await flushMicrotasks();
+	// 首次 dc.onopen pair 为 null，不应发出事件
+	let frames = sent.map((s) => JSON.parse(s));
+	assert.ok(!frames.some((f) => f.event === 'coclaw.rtc.peerTransport'));
+
+	// 模拟 ICE 选中 relay
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '10.0.0.1', port: 9999, protocol: 'udp', relayProtocol: 'udp' },
+		remote: { type: 'host', address: '1.2.3.4', port: 3000, protocol: 'udp' },
+	};
+	pc.onselectedcandidatepairchange();
+	await flushMicrotasks();
+
+	frames = sent.map((s) => JSON.parse(s));
+	const evts = frames.filter((f) => f.event === 'coclaw.rtc.peerTransport');
+	assert.equal(evts.length, 1);
+	assert.equal(evts[0].payload.relayProtocol, 'udp');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — __sendPeerTransport 签名去重：相同 pair 不重复发送', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_pt03'));
+	const pc = PC.instances[0];
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '1.1.1.1', port: 1, protocol: 'udp', relayProtocol: 'tcp' },
+		remote: { type: 'host', address: '2.2.2.2', port: 2, protocol: 'udp' },
+	};
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	pc.ondatachannel({ channel: dc });
+	dc.onopen();
+	await flushMicrotasks();
+	// dc.onopen + onselectedcandidatepairchange 都会触发，但签名相同应只发一次
+	pc.onselectedcandidatepairchange();
+	pc.onselectedcandidatepairchange();
+	await flushMicrotasks();
+
+	const evts = sent.map((s) => JSON.parse(s)).filter((f) => f.event === 'coclaw.rtc.peerTransport');
+	assert.equal(evts.length, 1, `期望 1 次，实际 ${evts.length}`);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — __sendPeerTransport pair 变化（relay → host）重新发送', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_pt04'));
+	const pc = PC.instances[0];
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	pc.ondatachannel({ channel: dc });
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '1.1.1.1', port: 1, protocol: 'udp', relayProtocol: 'udp' },
+		remote: {},
+	};
+	dc.onopen();
+	await flushMicrotasks();
+
+	// pair 切换到 host
+	pc.selectedCandidatePair = {
+		local: { type: 'host', address: '192.168.1.1', port: 2, protocol: 'udp' },
+		remote: {},
+	};
+	pc.onselectedcandidatepairchange();
+	await flushMicrotasks();
+
+	const evts = sent.map((s) => JSON.parse(s)).filter((f) => f.event === 'coclaw.rtc.peerTransport');
+	assert.equal(evts.length, 2);
+	assert.equal(evts[0].payload.candidateType, 'relay');
+	assert.equal(evts[1].payload.candidateType, 'host');
+	assert.equal(evts[1].payload.relayProtocol, null);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — __sendPeerTransport pair 未就绪时早退', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_pt05'));
+	const pc = PC.instances[0];
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	pc.ondatachannel({ channel: dc });
+	// 不设置 selectedCandidatePair
+	pc.selectedCandidatePair = null;
+	dc.onopen();
+	await flushMicrotasks();
+
+	const evts = sent.map((s) => JSON.parse(s)).filter((f) => f.event === 'coclaw.rtc.peerTransport');
+	assert.equal(evts.length, 0);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: __sendPeerTransport session 不存在时静默返回', () => {
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'pion',
+	});
+	// 不抛异常
+	peer.__sendPeerTransport('nonexistent');
+});
+
+test('WebRtcPeer: pion — microtask 执行前 session 已被 close，__sendPeerTransport 静默早退', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_pt07'));
+	const pc = PC.instances[0];
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	pc.ondatachannel({ channel: dc });
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '1.1.1.1', port: 1, protocol: 'udp', relayProtocol: 'udp' },
+		remote: {},
+	};
+
+	// 同步触发 onselectedcandidatepairchange（queueMicrotask 入队 __sendPeerTransport），
+	// 微任务执行前立刻 close —— 此时微任务里 __sessions.get 返回 undefined，应静默早退
+	pc.onselectedcandidatepairchange();
+	await peer.closeByConnId('c_pt07');
+	await flushMicrotasks();
+
+	const evts = sent.map((s) => JSON.parse(s)).filter((f) => f.event === 'coclaw.rtc.peerTransport');
+	assert.equal(evts.length, 0, 'close 先于 microtask 时不应发送任何事件');
+});
+
+test('WebRtcPeer: pion — sendTo 失败时 __sendPeerTransport 回滚签名允许重试', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_pt06'));
+	const pc = PC.instances[0];
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '1.1.1.1', port: 1, protocol: 'udp', relayProtocol: 'udp' },
+		remote: {},
+	};
+	// 先在 rpcChannel 未 open 时触发 selectedpairchange → sendTo 失败
+	pc.onselectedcandidatepairchange();
+	await flushMicrotasks();
+	assert.equal(peer.__sessions.get('c_pt06').__lastPeerTransportSig, null, '签名应被回滚');
+
+	// 随后 dc.onopen（或再次 pair-change）应能成功发送
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	pc.ondatachannel({ channel: dc });
+	dc.onopen();
+	await flushMicrotasks();
+
+	const evts = sent.map((s) => JSON.parse(s)).filter((f) => f.event === 'coclaw.rtc.peerTransport');
+	assert.equal(evts.length, 1);
+
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: broadcast 空 sessions 不报错', () => {
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -2280,12 +2603,13 @@ test('WebRtcPeer: pion — onselectedcandidatepairchange 事件上报 pair', asy
 
 	// 触发事件
 	pc.selectedCandidatePair = {
-		local: { type: 'relay', address: '10.0.0.1', port: 9999, protocol: 'udp' },
+		local: { type: 'relay', address: '10.0.0.1', port: 9999, protocol: 'udp', relayProtocol: 'tcp' },
 		remote: { type: 'srflx', address: '203.0.113.1', port: 8888, protocol: 'udp' },
 	};
 	pc.onselectedcandidatepairchange();
 
-	assert.ok(logs.some((l) => l.includes('ICE nominated: local=relay 10.0.0.1:9999 remote=srflx 203.0.113.1:8888')));
+	// 日志格式升级：type/protocol(relayProtocol) address:port
+	assert.ok(logs.some((l) => l.includes('ICE nominated: local=relay/udp(tcp) 10.0.0.1:9999 remote=srflx/udp 203.0.113.1:8888')));
 	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc.ice-nominated') && e.text.includes('c_pion_02')));
 
 	await peer.closeAll();

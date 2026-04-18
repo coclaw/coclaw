@@ -39,7 +39,7 @@ vi.mock('../stores/claws.store.js', () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: b.rtcTransportInfo ?? null, retryCount: b.retryCount ?? 0, retryNextAt: b.retryNextAt ?? 0 };
+			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: b.rtcTransportInfo ?? null, rtcPeerTransportInfo: b.rtcPeerTransportInfo ?? null, retryCount: b.retryCount ?? 0, retryNextAt: b.retryNextAt ?? 0 };
 			return map;
 		},
 		fetched: true, // SSE 快照已到达
@@ -117,6 +117,7 @@ function createWrapper() {
 						'claws.conn.rtcP2PProto': `WebRTC: P2P · ${params?.protocol}`,
 						'claws.conn.rtcRelay': 'WebRTC: Relay',
 						'claws.conn.rtcRelayProto': `WebRTC: Relay · ${params?.protocol}`,
+						'claws.conn.rtcRelayBothSides': `WebRTC: ${params?.browser} ↔ Relay ↔ ${params?.peer}`,
 						'claws.renameFailed': 'Rename failed',
 						'claws.summary.claws': `${params?.n} Claws`,
 						'claws.summary.running': `${params?.n} 工作中`,
@@ -578,6 +579,92 @@ describe('connLabel', () => {
 		const wrapper = createWrapper();
 		await flushPromises();
 		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: P2P · TCP');
+	});
+
+	// --- relay 双端协议展示 ---
+
+	test('relay + plugin 侧信息未到（browser UDP）→ 老 rtcRelay 兜底', async () => {
+		mockBots = [{
+			id: '1', name: 'A', online: true, rtcPhase: 'ready',
+			rtcTransportInfo: { localType: 'relay', relayProtocol: 'udp' },
+			// rtcPeerTransportInfo 缺失
+		}];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: Relay');
+	});
+
+	test('relay + plugin 侧信息未到（browser TCP）→ 老 rtcRelayProto 兜底', async () => {
+		mockBots = [{
+			id: '1', name: 'A', online: true, rtcPhase: 'ready',
+			rtcTransportInfo: { localType: 'relay', relayProtocol: 'tcp' },
+			// rtcPeerTransportInfo 缺失
+		}];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: Relay · TCP');
+	});
+
+	test('relay + 双端协议一致（UDP ↔ UDP）→ 简化为单段', async () => {
+		mockBots = [{
+			id: '1', name: 'A', online: true, rtcPhase: 'ready',
+			rtcTransportInfo: { localType: 'relay', relayProtocol: 'udp' },
+			rtcPeerTransportInfo: { candidateType: 'relay', protocol: 'udp', relayProtocol: 'udp' },
+		}];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: Relay');
+	});
+
+	test('relay + 双端协议不同（UDP ↔ TCP）→ 展示链路', async () => {
+		mockBots = [{
+			id: '1', name: 'A', online: true, rtcPhase: 'ready',
+			rtcTransportInfo: { localType: 'relay', relayProtocol: 'udp' },
+			rtcPeerTransportInfo: { candidateType: 'relay', protocol: 'udp', relayProtocol: 'tcp' },
+		}];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: UDP ↔ Relay ↔ TCP');
+	});
+
+	test('relay + 双端协议不同（TCP ↔ TLS）→ 展示链路', async () => {
+		mockBots = [{
+			id: '1', name: 'A', online: true, rtcPhase: 'ready',
+			rtcTransportInfo: { localType: 'relay', relayProtocol: 'tcp' },
+			rtcPeerTransportInfo: { candidateType: 'relay', protocol: 'udp', relayProtocol: 'tls' },
+		}];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: TCP ↔ Relay ↔ TLS');
+	});
+
+	test('relay（浏览器）+ plugin 侧 host/UDP（直连）→ 双段都 UDP 落入简化分支', async () => {
+		mockBots = [{
+			id: '1', name: 'A', online: true, rtcPhase: 'ready',
+			rtcTransportInfo: { localType: 'relay', relayProtocol: 'udp' },
+			rtcPeerTransportInfo: { candidateType: 'host', protocol: 'udp', relayProtocol: null },
+		}];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: Relay');
+	});
+
+	test('relay（浏览器 UDP）+ plugin 侧 host/TCP（直连 TCP）→ 展示双段链路', async () => {
+		mockBots = [{
+			id: '1', name: 'A', online: true, rtcPhase: 'ready',
+			rtcTransportInfo: { localType: 'relay', relayProtocol: 'udp' },
+			rtcPeerTransportInfo: { candidateType: 'host', protocol: 'tcp', relayProtocol: null },
+		}];
+		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
+		const wrapper = createWrapper();
+		await flushPromises();
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: UDP ↔ Relay ↔ TCP');
 	});
 });
 

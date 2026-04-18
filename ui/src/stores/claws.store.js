@@ -59,6 +59,7 @@ const _rtcRetryState = new Map();
 const RUNTIME_FIELDS = new Set([
 	'dcReady', 'rtcPhase', 'lastAliveAt', 'disconnectedAt',
 	'initialized', 'pluginVersionOk', 'pluginInfo', 'rtcTransportInfo',
+	'rtcPeerTransportInfo',
 	'retryCount', 'retryNextAt',
 ]);
 
@@ -98,6 +99,8 @@ function createClawState(claw) {
 		pluginVersionOk: null,
 		pluginInfo: null,
 		rtcTransportInfo: null,
+		// plugin 本端 transport（含 relayProtocol），通过 coclaw.rtc.peerTransport 事件更新
+		rtcPeerTransportInfo: null,
 		dcReady: false,
 		// 退避重试（UI 可读）
 		retryCount: 0,
@@ -320,6 +323,21 @@ export const useClawsStore = defineStore('claws', {
 				if (payload?.hostName !== undefined) claw.pluginInfo.hostName = payload.hostName;
 			});
 
+			// event:coclaw.rtc.peerTransport — plugin 本端 ICE candidate 信息（含 relayProtocol）
+			// 用于展示双端中继协议（浏览器↔coturn↔plugin）。与 rtcTransportInfo 字段分离，
+			// 避免被 webrtc-connection.js 的 getStats 轮询整体 replace 覆盖。
+			conn.on('event:coclaw.rtc.peerTransport', (payload) => {
+				const claw = this.byId[id];
+				if (!claw || !payload) return;
+				claw.rtcPeerTransportInfo = {
+					candidateType: payload.candidateType ?? 'unknown',
+					protocol: String(payload.protocol ?? 'udp').toLowerCase(),
+					relayProtocol: payload.relayProtocol
+						? String(payload.relayProtocol).toLowerCase()
+						: null,
+				};
+			});
+
 			// 确保全局信令桥接已注册
 			this.__bridgeSignaling();
 
@@ -361,6 +379,8 @@ export const useClawsStore = defineStore('claws', {
 						claw.dcReady = false;
 						claw.disconnectedAt = Date.now();
 						claw.rtcPhase = 'failed';
+						// plugin 侧 transport 信息失效；新连接建立后 plugin 会重新推送
+						claw.rtcPeerTransportInfo = null;
 						// 被动失败（非 __ensureRtc 主动管理）→ 启动退避重试
 						if (!_rtcInitInProgress.get(clawId)) {
 							this.__scheduleRetry(clawId);

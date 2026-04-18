@@ -28,7 +28,7 @@
 
 			<p v-if="!loading && !claws.length" class="text-sm text-muted">{{ $t('claws.noClaw') }}</p>
 
-			<div v-for="{ claw, dashboard, connDetail, rtcPhase } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
+			<div v-for="{ claw, dashboard, connDetail, peerDetail, rtcPhase } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
 				<!-- Claw card：左侧信息 + 右侧解绑 -->
 				<div class="rounded-xl bg-elevated p-3 mb-3">
 					<div class="flex">
@@ -103,6 +103,7 @@
 					<p>{{ $t('claws.conn.localCandidate') }}：{{ connDetail.localType }} · {{ connDetail.localProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('claws.conn.remoteCandidate') }}：{{ connDetail.remoteType }} · {{ connDetail.remoteProtocol?.toUpperCase() }}</p>
 					<p>{{ $t('claws.conn.relayProtocol') }}：{{ connDetail.relayProtocol?.toUpperCase() ?? '—' }}</p>
+					<p v-if="peerDetail">{{ $t('claws.conn.peerCandidate') }}：{{ peerDetail.candidateType }} · {{ peerDetail.protocol?.toUpperCase() }}<span v-if="peerDetail.relayProtocol"> · {{ $t('claws.conn.peerRelayProtocol') }} {{ peerDetail.relayProtocol.toUpperCase() }}</span></p>
 				</div>
 
 				<div class="flex flex-col gap-3">
@@ -228,6 +229,7 @@ export default {
 					claw,
 					dashboard: this.dashboardStore.getDashboard(id),
 					connDetail: clawById?.rtcTransportInfo ?? null,
+					peerDetail: clawById?.rtcPeerTransportInfo ?? null,
 					rtcPhase: clawById?.rtcPhase ?? 'idle',
 				};
 			});
@@ -290,10 +292,28 @@ export default {
 				// ready 但 transportInfo 尚未落地属极短暂过渡态，退回到 building 文案
 				if (!info) return this.$t('claws.conn.rtcBuilding');
 				if (info.localType === 'relay') {
-					const rp = (info.relayProtocol ?? 'udp').toLowerCase();
-					return rp === 'udp'
-						? this.$t('claws.conn.rtcRelay')
-						: this.$t('claws.conn.rtcRelayProto', { protocol: rp.toUpperCase() });
+					const rpBrowser = (info.relayProtocol ?? 'udp').toLowerCase();
+					const peer = claw.rtcPeerTransportInfo;
+					// plugin 侧信息未到（老 plugin 或事件尚未送达）→ 老文案兜底
+					if (!peer) {
+						return rpBrowser === 'udp'
+							? this.$t('claws.conn.rtcRelay')
+							: this.$t('claws.conn.rtcRelayProto', { protocol: rpBrowser.toUpperCase() });
+					}
+					// plugin 侧 relay 时用 relayProtocol，否则用 candidate 的 protocol（通常 UDP）
+					const rpPeer = peer.candidateType === 'relay'
+						? (peer.relayProtocol ?? peer.protocol ?? 'udp').toLowerCase()
+						: (peer.protocol ?? 'udp').toLowerCase();
+					// 双端协议一致 → 简化展示（避免刷屏），通过详情面板仍可查看 plugin 侧 candidate type
+					if (rpBrowser === rpPeer) {
+						return rpBrowser === 'udp'
+							? this.$t('claws.conn.rtcRelay')
+							: this.$t('claws.conn.rtcRelayProto', { protocol: rpBrowser.toUpperCase() });
+					}
+					return this.$t('claws.conn.rtcRelayBothSides', {
+						browser: rpBrowser.toUpperCase(),
+						peer: rpPeer.toUpperCase(),
+					});
 				}
 				const isLan = info.localType === 'host';
 				const proto = (info.localProtocol ?? 'udp').toLowerCase();

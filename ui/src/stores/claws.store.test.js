@@ -997,6 +997,61 @@ describe('__bridgeConn 事件注册', () => {
 		expect(store.byId['1'].pluginInfo.hostName).toBe('h1');
 	});
 
+	test('event:coclaw.rtc.peerTransport 更新 rtcPeerTransportInfo', () => {
+		const store = useClawsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+
+		const handler = fakeConn.on.mock.calls.find(([ev]) => ev === 'event:coclaw.rtc.peerTransport')[1];
+		handler({ candidateType: 'relay', protocol: 'UDP', relayProtocol: 'TCP' });
+
+		expect(store.byId['1'].rtcPeerTransportInfo).toEqual({
+			candidateType: 'relay',
+			protocol: 'udp',
+			relayProtocol: 'tcp',
+		});
+	});
+
+	test('event:coclaw.rtc.peerTransport relayProtocol 缺失时保留为 null', () => {
+		const store = useClawsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+
+		const handler = fakeConn.on.mock.calls.find(([ev]) => ev === 'event:coclaw.rtc.peerTransport')[1];
+		handler({ candidateType: 'host', protocol: 'udp', relayProtocol: null });
+
+		expect(store.byId['1'].rtcPeerTransportInfo).toEqual({
+			candidateType: 'host',
+			protocol: 'udp',
+			relayProtocol: null,
+		});
+	});
+
+	test('event:coclaw.rtc.peerTransport 对不存在的 claw 静默返回', () => {
+		const store = useClawsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+		delete store.byId['1'];
+
+		const handler = fakeConn.on.mock.calls.find(([ev]) => ev === 'event:coclaw.rtc.peerTransport')[1];
+		handler({ candidateType: 'relay', protocol: 'udp', relayProtocol: 'udp' }); // 不抛
+	});
+
+	test('event:coclaw.rtc.peerTransport payload 为空时静默返回', () => {
+		const store = useClawsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		store.applySnapshot([{ id: '1', name: 'A' }]);
+
+		const handler = fakeConn.on.mock.calls.find(([ev]) => ev === 'event:coclaw.rtc.peerTransport')[1];
+		handler(null);
+		handler(undefined);
+		expect(store.byId['1'].rtcPeerTransportInfo).toBe(null);
+	});
+
 	test('同一 conn 实例不重复注册监听器', () => {
 		const store = useClawsStore();
 		const fakeConn = { on: vi.fn(), off: vi.fn() };
@@ -2640,6 +2695,21 @@ describe('dcReady 响应式标记', () => {
 		expect(store.byId['1'].dcReady).toBe(false);
 		expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
 		expect(store.byId['1'].rtcPhase).toBe('failed');
+	});
+
+	test('__rtcCallbacks: failed/closed 时清空 rtcPeerTransportInfo（新连接会重新推送）', () => {
+		const store = useClawsStore();
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		store.byId['1'].rtcPeerTransportInfo = { candidateType: 'relay', protocol: 'udp', relayProtocol: 'tcp' };
+
+		const cbs = store.__rtcCallbacks('1');
+		cbs.onRtcStateChange('failed', null);
+		expect(store.byId['1'].rtcPeerTransportInfo).toBe(null);
+
+		// 重新赋值，closed 路径也清空
+		store.byId['1'].rtcPeerTransportInfo = { candidateType: 'relay', protocol: 'udp', relayProtocol: 'tcp' };
+		cbs.onRtcStateChange('closed', null);
+		expect(store.byId['1'].rtcPeerTransportInfo).toBe(null);
 	});
 
 	test('__rtcCallbacks: connected + dcReady 已为 true → rtcPhase 仍恢复为 ready', () => {

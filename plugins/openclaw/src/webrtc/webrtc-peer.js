@@ -110,6 +110,27 @@ export class WebRtcPeer {
 		}
 	}
 
+	/**
+	 * 向指定 connId 的 rpc DC 单播一个 JSON 帧（不走 server 中转）。
+	 * 若 session/DC 未就绪返回 false，由调用方决定是否重试。
+	 * @param {string} connId
+	 * @param {object} payload - 完整的 JSON 帧（通常是 { type: 'event', event, payload }）
+	 * @returns {boolean} true=已入队发送，false=未能发送（session 不存在 / DC 未 open）
+	 */
+	sendTo(connId, payload) {
+		const session = this.__sessions.get(connId);
+		if (!session) return false;
+		const q = session.rpcSendQueue;
+		if (!q || session.rpcChannel?.readyState !== 'open') return false;
+		try {
+			q.send(JSON.stringify(payload));
+			return true;
+		} catch (err) {
+			this.__logDebug(`[${connId}] sendTo failed: ${err.message}`);
+			return false;
+		}
+	}
+
 	async __handleOffer(msg) {
 		const connId = msg.fromConnId;
 		const isIceRestart = !!msg.payload?.iceRestart;
@@ -307,6 +328,9 @@ export class WebRtcPeer {
 				if (pair) {
 					this.__logNominatedPair(connId, pair);
 				}
+				// ICE restart 或初次选中都会触发；让出一次 CPU 后再单播 transport 信息。
+				// 签名去重保证 pair 不变时不会重复发送。
+				queueMicrotask(() => this.__sendPeerTransport(connId));
 			};
 		}
 
@@ -424,6 +448,12 @@ export class WebRtcPeer {
 		dc.onopen = () => {
 			this.__remoteLog(`dc.open conn=${connId} label=${dc.label}`);
 			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" opened`);
+			// rpc DC 建立后，把本端 transport 信息单播给 UI。
+			// queueMicrotask 让出一次 CPU：确保 pion 侧 selectedCandidatePair setter 已 assign，
+			// 同时避免在 onopen 同步栈里触发可能的重入。
+			if (dc.label === 'rpc') {
+				queueMicrotask(() => this.__sendPeerTransport(connId));
+			}
 		};
 		dc.onclose = () => {
 			this.__remoteLog(`dc.closed conn=${connId} label=${dc.label}`);
@@ -481,10 +511,49 @@ export class WebRtcPeer {
 	}
 
 	__logNominatedPair(connId, pair) {
-		const localInfo = `${pair.local?.type ?? '?'} ${pair.local?.address ?? pair.local?.host ?? '?'}:${pair.local?.port ?? '?'}`;
-		const remoteInfo = `${pair.remote?.type ?? '?'} ${pair.remote?.address ?? pair.remote?.host ?? '?'}:${pair.remote?.port ?? '?'}`;
+		const l = pair.local, r = pair.remote;
+		const lProto = (l?.protocol ?? '?').toLowerCase();
+		const rProto = (r?.protocol ?? '?').toLowerCase();
+		const lRelay = l?.relayProtocol ? `(${String(l.relayProtocol).toLowerCase()})` : '';
+		const localInfo = `${l?.type ?? '?'}/${lProto}${lRelay} ${l?.address ?? l?.host ?? '?'}:${l?.port ?? '?'}`;
+		const remoteInfo = `${r?.type ?? '?'}/${rProto} ${r?.address ?? r?.host ?? '?'}:${r?.port ?? '?'}`;
 		this.__remoteLog(`rtc.ice-nominated conn=${connId} local=${localInfo} remote=${remoteInfo}`);
 		this.logger.info?.(`${this.__rtcTag} [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
+	}
+
+	/**
+	 * 把当前 session 本端 candidate 的 transport 信息（type/protocol/relayProtocol）
+	 * 通过 coclaw.rtc.peerTransport 事件单播给对应 UI。已内置签名去重，
+	 * 同一签名不会重复发送；发送失败（DC 未 open）时回滚签名允许后续重试。
+	 *
+	 * @param {string} connId
+	 */
+	__sendPeerTransport(connId) {
+		const session = this.__sessions.get(connId);
+		if (!session) return;
+		const local = session.pc?.selectedCandidatePair?.local;
+		if (!local) return; // nominated pair 尚未产生
+		const payload = {
+			candidateType: local.type ?? 'unknown',
+			protocol: String(local.protocol ?? 'udp').toLowerCase(),
+			relayProtocol: local.relayProtocol
+				? String(local.relayProtocol).toLowerCase()
+				: null,
+		};
+		const sig = `${payload.candidateType}|${payload.protocol}|${payload.relayProtocol ?? ''}`;
+		if (session.__lastPeerTransportSig === sig) return;
+		session.__lastPeerTransportSig = sig;
+		const ok = this.sendTo(connId, {
+			type: 'event',
+			event: 'coclaw.rtc.peerTransport',
+			payload,
+		});
+		if (!ok) {
+			// DC 尚未 open，回滚签名以便 dc.onopen 再次触发时重发
+			session.__lastPeerTransportSig = null;
+			return;
+		}
+		this.__remoteLog(`rtc.peer-transport conn=${connId} type=${payload.candidateType} proto=${payload.protocol} relay=${payload.relayProtocol ?? '-'}`);
 	}
 
 	__remoteLog(msg) {
