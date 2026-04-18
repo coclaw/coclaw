@@ -55,19 +55,32 @@ server {
 		try_files $uri $uri/ /index.html;
 	}
 
-	location ~* ^/api/.*/(stream|signal)$ {
+	# WebSocket 端点（白名单，精确匹配）
+	# claws/stream 与 bots/stream 为别名，server 端同时接受
+	location = /api/v1/rtc/signal {
+		include /etc/nginx/includes/proxy-ws.conf;
+		proxy_pass http://server:3000;
+	}
+	location = /api/v1/claws/stream {
+		include /etc/nginx/includes/proxy-ws.conf;
+		proxy_pass http://server:3000;
+	}
+	location = /api/v1/bots/stream {
 		include /etc/nginx/includes/proxy-ws.conf;
 		proxy_pass http://server:3000;
 	}
 
-	# SSE: claw 在线状态
+	# SSE 端点（白名单，精确匹配）
+	# claws/status-stream 与 bots/status-stream 为别名
+	location = /api/v1/admin/stream {
+		include /etc/nginx/includes/proxy-sse.conf;
+		proxy_pass http://server:3000;
+	}
 	location = /api/v1/claws/status-stream {
 		include /etc/nginx/includes/proxy-sse.conf;
 		proxy_pass http://server:3000;
 	}
-
-	# SSE: admin dashboard 实时推送
-	location = /api/v1/admin/stream {
+	location = /api/v1/bots/status-stream {
 		include /etc/nginx/includes/proxy-sse.conf;
 		proxy_pass http://server:3000;
 	}
