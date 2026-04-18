@@ -1328,6 +1328,34 @@ describe('initRtc — RTC 建连', () => {
 			mockGet.mockRestore();
 		}
 	});
+
+	test('connect 期间 rtc 被 close(asFailed) → resolve failed 且从 rtcInstances 移除', async () => {
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+		const { httpClient } = await import('./http.js');
+		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
+
+		const clawConn = createMockBotConn();
+
+		try {
+			const p = initRtc('bot4', clawConn);
+			await vi.advanceTimersByTimeAsync(0);
+			// connect 已发出 offer，此时手动触发失败（模拟 restart 超时等路径）
+			const rtc = __getRtcInstance('bot4');
+			expect(rtc).not.toBeUndefined();
+			rtc.close({ asFailed: true });
+
+			const result = await p;
+			expect(result).toBe('failed');
+			expect(clawConn.clearRtc).toHaveBeenCalled();
+			// 关键：failed 分支应从 rtcInstances 删除，下次 initRtc 才能干净建连
+			expect(__getRtcInstance('bot4')).toBeUndefined();
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+		}
+	});
 });
 
 // --- DC 应用层保活 ---
@@ -2061,7 +2089,7 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('rtc:restart-rejected → failed', async () => {
+	test('rtc:restart-rejected → failed + 完整释放资源', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
@@ -2073,11 +2101,17 @@ describe('WebRtcConnection — ICE restart', () => {
 		fireRtcSignal({ clawId: 'bot1', type: 'rtc:restart-rejected', payload: { reason: 'no_session' } });
 		expect(rtc.state).toBe('failed');
 		expect(rtc.__restartTimer).toBeNull();
+		// 底层 PC 立即释放 + 向 plugin 发 rtc:closed 信令
+		expect(pc.__closed).toBe(true);
+		expect(rtc.__pc).toBeNull();
+		expect(rtc.__rpcChannel).toBeNull();
+		expect(rtc.__keepaliveTimer).toBeNull();
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:closed');
 
 		rtc.close();
 	});
 
-	test('restarting 时 DC 关闭 → SCTP 丢失 → failed', async () => {
+	test('restarting 时 DC 关闭 → SCTP 丢失 → failed + 完整释放资源', async () => {
 		const { rtc, pc, dc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
@@ -2090,6 +2124,10 @@ describe('WebRtcConnection — ICE restart', () => {
 		dc.onclose();
 		expect(rtc.state).toBe('failed');
 		expect(rtc.__restartTimer).toBeNull();
+		expect(pc.__closed).toBe(true);
+		expect(rtc.__pc).toBeNull();
+		expect(rtc.__rpcChannel).toBeNull();
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:closed');
 
 		rtc.close();
 	});
@@ -2149,7 +2187,7 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('时间预算耗尽 → failed', async () => {
+	test('时间预算耗尽 → failed + 完整释放资源', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
@@ -2165,6 +2203,10 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(rtc.state).toBe('failed');
 		expect(rtc.__restartAttemptCount).toBe(0);
 		expect(rtc.__restartStartTime).toBe(0);
+		expect(pc.__closed).toBe(true);
+		expect(rtc.__pc).toBeNull();
+		expect(rtc.__rpcChannel).toBeNull();
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:closed');
 
 		rtc.close();
 	});
@@ -2360,7 +2402,7 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('createOffer 抛异常 → 清除 restart 状态，变为 failed', async () => {
+	test('createOffer 抛异常 → 清除 restart 状态，变为 failed + 完整释放资源', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		// 让 createOffer 抛异常
@@ -2374,6 +2416,10 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(rtc.state).toBe('failed');
 		expect(rtc.__restartTimer).toBeNull();
 		expect(rtc.__restartAttemptCount).toBe(0);
+		expect(pc.__closed).toBe(true);
+		expect(rtc.__pc).toBeNull();
+		expect(rtc.__rpcChannel).toBeNull();
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:closed');
 
 		rtc.close();
 	});
@@ -2529,5 +2575,65 @@ describe('WebRtcConnection — ICE restart', () => {
 		resolveOffer({ sdp: 'restart-sdp', type: 'offer' });
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('closed'); // 保持 closed，不变为 failed
+	});
+});
+
+describe('WebRtcConnection — 失败路径资源清理', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('close({asFailed:true}) 后再调 close() 幂等：不重发 rtc:closed', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 进入 restarting 并耗尽预算 → 首次 close({asFailed:true})
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(90_000);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('failed');
+
+		const closedCalls = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
+		expect(closedCalls).toHaveLength(1);
+
+		// 二次 close（模拟 __ensureRtc 退避后 closeRtcForClaw → rtc.close()）
+		rtc.close();
+		expect(rtc.state).toBe('closed');
+
+		// 信令不应重发
+		const closedCallsAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
+		expect(closedCallsAfter).toHaveLength(1);
+	});
+
+	test('失败路径触发 onStateChange 回调值为 "failed"（store 据此决定 rebuild）', async () => {
+		const clawConn = createMockBotConn();
+		const { rtc, pc } = await setupConnectedRtc(clawConn);
+
+		const stateChanges = [];
+		rtc.onStateChange = () => stateChanges.push(rtc.state);
+
+		// 触发 restart 时间预算耗尽
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(90_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 末尾状态应为 'failed'，不是 'closed'
+		expect(stateChanges.at(-1)).toBe('failed');
+
+		rtc.close();
+	});
+
+	test('close() 不带参数默认进入 closed（向后兼容）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		rtc.close();
+		expect(rtc.state).toBe('closed');
 	});
 });

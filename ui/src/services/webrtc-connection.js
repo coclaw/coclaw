@@ -88,9 +88,10 @@ export function initRtc(clawId, clawConn, callbacks = {}) {
 		rtc.onStateChange = () => {
 			callbacks.onRtcStateChange?.(rtc.state, rtc.transportInfo);
 
-			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置
+			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置（rtc 内部 close 已完成）
 			if (rtc.state === 'failed') {
 				clearTimeout(fallbackTimer);
+				rtcInstances.delete(clawId);
 				clawConn.clearRtc();
 				settle('failed');
 			}
@@ -195,22 +196,28 @@ export class WebRtcConnection {
 		await this.__buildPeerConnection(turnCreds);
 	}
 
-	/** 关闭连接（主动关闭，不再自动恢复） */
-	close() {
+	/**
+	 * 关闭连接并释放所有资源。
+	 * - 默认 asFailed=false：主动关闭（如 claw 移除、rebuild 前清理），state → 'closed'
+	 * - asFailed=true：因恢复失败而终结（4 处 restart 失败入口），state → 'failed'
+	 *   语义上仍表示"此 PC 已死"，store 据此退避重试 rebuild
+	 * 幂等：二次调用不重发 rtc:closed 信令，__pc 已为 null 时直接跳过 close
+	 */
+	close({ asFailed = false } = {}) {
 		this.__stopKeepalive();
 		this.__clearRestartState();
 		this.__unregisterAppLifecycle();
 		this.__clearDisconnectedTimer();
 		this.__settleProbe(false);
 		this.__removeRtcListener();
-		this.__rejectSendQueue('connection closed');
+		this.__rejectSendQueue(asFailed ? 'rtc failed' : 'connection closed');
 		if (this.__pc) {
 			useSignalingConnection().sendSignaling(this.clawId, 'rtc:closed');
 			this.__pc.close();
 			this.__pc = null;
 		}
 		this.__rpcChannel = null;
-		this.__setState('closed');
+		this.__setState(asFailed ? 'failed' : 'closed');
 	}
 
 	/**
@@ -500,8 +507,7 @@ export class WebRtcConnection {
 				// restarting 时 DC 关闭 → SCTP 已断，restart 无法挽救
 				if (this.__state === 'restarting') {
 					this.__log('warn', 'DC closed during ICE restart, SCTP lost');
-					this.__clearRestartState();
-					this.__setState('failed');
+					this.close({ asFailed: true });
 				}
 			}
 		};
@@ -727,8 +733,7 @@ export class WebRtcConnection {
 		// 时间预算耗尽 → 放弃 restart
 		if (Date.now() - this.__restartStartTime >= ICE_RESTART_TIMEOUT_MS) {
 			this.__log('warn', `ICE restart timed out after ${ICE_RESTART_TIMEOUT_MS}ms (${this.__restartAttemptCount} attempts)`);
-			this.__clearRestartState();
-			this.__setState('failed');
+			this.close({ asFailed: true });
 			return;
 		}
 
@@ -768,10 +773,9 @@ export class WebRtcConnection {
 			sig.sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true });
 			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount}`);
 		} catch (err) {
-			if (this.__state === 'closed') return;
+			if (this.__state === 'closed' || this.__state === 'failed') return;
 			this.__log('warn', `ICE restart createOffer failed: ${err?.message}`);
-			this.__clearRestartState();
-			this.__setState('failed');
+			this.close({ asFailed: true });
 		} finally {
 			this.__restartInFlight = false;
 		}
@@ -850,8 +854,7 @@ export class WebRtcConnection {
 		} else if (msg.type === 'rtc:restart-rejected') {
 			const reason = msg.payload?.reason ?? 'unknown';
 			this.__log('warn', `ICE restart rejected by plugin: ${reason}`);
-			this.__clearRestartState();
-			this.__setState('failed');
+			this.close({ asFailed: true });
 		}
 	}
 
