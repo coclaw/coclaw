@@ -1,3 +1,4 @@
 .pack/
+.build/
 dist/
 vendor/
