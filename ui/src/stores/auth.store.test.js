@@ -39,6 +39,13 @@ vi.mock('../services/signaling-connection.js', () => ({
 	useSignalingConnection: () => ({ disconnect: mockSigDisconnect, state: 'connected' }),
 }));
 
+const mockClearRemoteLogBuffer = vi.fn();
+vi.mock('../services/remote-log.js', () => ({
+	clearRemoteLogBuffer: (...args) => mockClearRemoteLogBuffer(...args),
+	useRemoteLog: () => ({ log: () => {} }),
+	remoteLog: () => {},
+}));
+
 vi.mock('../services/claws.api.js', () => ({
 	listClaws: vi.fn(() => Promise.resolve([])),
 }));
@@ -318,6 +325,17 @@ describe('auth store', () => {
 
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
+	});
+
+	test('logout 清空 remote-log 缓冲区，防止跨用户 flush', async () => {
+		logout.mockResolvedValue();
+		mockClearRemoteLogBuffer.mockClear();
+		const store = useAuthStore();
+		store.user = { id: '3' };
+
+		await store.logout();
+
+		expect(mockClearRemoteLogBuffer).toHaveBeenCalledTimes(1);
 	});
 
 	test('logout should reset module-level internals (timers, loading guards)', async () => {

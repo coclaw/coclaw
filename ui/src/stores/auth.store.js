@@ -16,6 +16,7 @@ import {
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
+import { clearRemoteLogBuffer } from '../services/remote-log.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
 import { useClawsStore, __resetClawStoreInternals } from './claws.store.js';
@@ -112,6 +113,7 @@ export const useAuthStore = defineStore('auth', {
 			syncThemeModeFromSettings(null);
 			useClawConnections().disconnectAll();
 			useSignalingConnection().disconnect();
+			clearRemoteLogBuffer(); // 防止前一用户的未发送日志被下一用户的 WS 通道 flush 出去
 			__resetClawStoreInternals();
 			__resetSessionsInternals();
 			__resetTopicsInternals();

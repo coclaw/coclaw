@@ -1,7 +1,7 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
 import {
 	RemoteLog, useRemoteLog, remoteLog, __resetRemoteLog,
-	MAX_BUFFER, BATCH_SIZE,
+	clearRemoteLogBuffer, MAX_BUFFER, BATCH_SIZE,
 } from './remote-log.js';
 import {
 	useSignalingConnection, __resetSignalingConnection,
@@ -84,6 +84,15 @@ describe('RemoteLog 类', () => {
 		await new Promise(r => setTimeout(r, 20));
 		expect(callCount).toBe(1);
 		expect(rl.__buffer).toHaveLength(2);
+	});
+
+	test('clearBuffer 清空缓冲区', () => {
+		const rl = new RemoteLog();
+		rl.log('a');
+		rl.log('b');
+		expect(rl.__buffer).toHaveLength(2);
+		rl.clearBuffer();
+		expect(rl.__buffer).toHaveLength(0);
 	});
 
 	test('sender 置 null 后 flush 中断', async () => {
@@ -177,6 +186,18 @@ describe('useRemoteLog 单例 + SignalingConnection 集成', () => {
 		await new Promise(r => setTimeout(r, 20));
 		expect(ws.sent.length).toBe(sentBefore);
 		expect(rl.__buffer.length).toBeGreaterThanOrEqual(1);
+	});
+
+	test('clearRemoteLogBuffer 清空单例缓冲区；未初始化时为 no-op', () => {
+		// 未初始化时为 no-op，不抛异常
+		expect(() => clearRemoteLogBuffer()).not.toThrow();
+
+		// 初始化后清空
+		const rl = useRemoteLog();
+		rl.log('pending');
+		expect(rl.__buffer).toHaveLength(1);
+		clearRemoteLogBuffer();
+		expect(rl.__buffer).toHaveLength(0);
 	});
 
 	test('sigConn 已 connected 时 useRemoteLog 立即注入 sender', async () => {

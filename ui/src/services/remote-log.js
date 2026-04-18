@@ -61,11 +61,14 @@ class RemoteLog {
 			this.__flushing = false;
 		}
 	}
+
+	/** 清空缓冲区（logout 时调用，避免跨用户 flush） */
+	clearBuffer() {
+		this.__buffer.length = 0;
+	}
 }
 
 // --- 单例 ---
-// TODO: logout 时未清空 buffer，若换用户登录会将旧用户的缓冲日志发出。
-//       当前诊断日志不含敏感内容，暂可接受；后续可在 logout 时清空 buffer。
 
 let instance = null;
 
@@ -99,6 +102,14 @@ export function useRemoteLog() {
  */
 export function remoteLog(text) {
 	useRemoteLog().log(text);
+}
+
+/**
+ * 清空当前单例的缓冲区。若单例未初始化，为 no-op。
+ * 典型调用点：logout 时调用，确保前一用户的未发送日志不会 flush 到下一用户的 WS 通道。
+ */
+export function clearRemoteLogBuffer() {
+	if (instance) instance.clearBuffer();
 }
 
 /** @internal 仅供测试重置 */
