@@ -22,28 +22,81 @@ vi.mock('../i18n/index.js', () => ({
 	setLocale: vi.fn(),
 }));
 
-const mockConnManager = {
-	get: vi.fn(),
-	connect: vi.fn(),
-	disconnect: vi.fn(),
-	syncConnections: vi.fn(),
-	disconnectAll: vi.fn(),
-};
+// logout 调用顺序跟踪（按计划中的顺序断言）
+// 顶层常量——vi.mock 工厂被 hoist 到 import 前执行，必须用 vi.hoisted 才能在工厂中引用
+const {
+	logoutCallOrder,
+	mockConnManager,
+	mockSigDisconnect,
+	mockClearRemoteLogBuffer,
+	mockFilesCancelAll,
+	mockAgentRunsResetAll,
+	mockChatStoreDisposeAll,
+	mockDashboardReset,
+} = vi.hoisted(() => {
+	const order = [];
+	return {
+		logoutCallOrder: order,
+		mockConnManager: {
+			get: vi.fn(),
+			connect: vi.fn(),
+			disconnect: vi.fn(),
+			syncConnections: vi.fn(),
+			disconnectAll: vi.fn(() => { order.push('disconnectAll'); }),
+		},
+		mockSigDisconnect: vi.fn(() => { order.push('sigDisconnect'); }),
+		mockClearRemoteLogBuffer: vi.fn(),
+		mockFilesCancelAll: vi.fn(() => { order.push('filesCancelAll'); }),
+		mockAgentRunsResetAll: vi.fn(() => { order.push('agentRunsResetAll'); }),
+		mockChatStoreDisposeAll: vi.fn(() => { order.push('chatStoreDisposeAll'); }),
+		mockDashboardReset: vi.fn(() => { order.push('dashboardReset'); }),
+	};
+});
+
 vi.mock('../services/claw-connection-manager.js', () => ({
 	useClawConnections: () => mockConnManager,
 	__resetClawConnections: vi.fn(),
 }));
 
-const mockSigDisconnect = vi.fn();
 vi.mock('../services/signaling-connection.js', () => ({
 	useSignalingConnection: () => ({ disconnect: mockSigDisconnect, state: 'connected' }),
 }));
 
-const mockClearRemoteLogBuffer = vi.fn();
 vi.mock('../services/remote-log.js', () => ({
 	clearRemoteLogBuffer: (...args) => mockClearRemoteLogBuffer(...args),
 	useRemoteLog: () => ({ log: () => {} }),
 	remoteLog: () => {},
+}));
+
+// 4 个新接入的清理目标——mock 模块返回带间谍的实例/对象
+vi.mock('./files.store.js', () => ({
+	useFilesStore: () => ({
+		cancelAll: mockFilesCancelAll,
+		tasks: new Map(),
+		dirCache: new Map(),
+	}),
+}));
+
+vi.mock('./agent-runs.store.js', () => ({
+	useAgentRunsStore: () => ({
+		resetAll: mockAgentRunsResetAll,
+		runs: {},
+		runKeyIndex: {},
+	}),
+}));
+
+vi.mock('./chat-store-manager.js', () => ({
+	chatStoreManager: {
+		disposeAll: mockChatStoreDisposeAll,
+		get size() { return 0; },
+	},
+}));
+
+vi.mock('./dashboard.store.js', () => ({
+	useDashboardStore: () => ({
+		$reset: mockDashboardReset,
+		byClaw: {},
+	}),
 }));
 
 vi.mock('../services/claws.api.js', () => ({
@@ -71,6 +124,7 @@ describe('auth store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		vi.clearAllMocks();
+		logoutCallOrder.length = 0;
 	});
 
 	test('refreshSession should set user when api returns session user', async () => {
@@ -325,6 +379,33 @@ describe('auth store', () => {
 
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
+	});
+
+	test('logout 按顺序清理 files → agent runs → conns → sig → chat stores → dashboard', async () => {
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '3' };
+
+		await store.logout();
+
+		expect(mockFilesCancelAll).toHaveBeenCalledTimes(1);
+		expect(mockAgentRunsResetAll).toHaveBeenCalledTimes(1);
+		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
+		expect(mockChatStoreDisposeAll).toHaveBeenCalledTimes(1);
+		expect(mockDashboardReset).toHaveBeenCalledTimes(1);
+
+		// 顺序：files.cancelAll 必须在 disconnectAll 之前（让 transfer abort 有机会下发）
+		// agent runs.resetAll 在 disconnectAll 之前（清 timer 不依赖网络）
+		// chat stores.disposeAll 在 sig.disconnect 之后（先断连再 cleanup 避免 off 到 null conn）
+		expect(logoutCallOrder).toEqual([
+			'filesCancelAll',
+			'agentRunsResetAll',
+			'disconnectAll',
+			'sigDisconnect',
+			'chatStoreDisposeAll',
+			'dashboardReset',
+		]);
 	});
 
 	test('logout 清空 remote-log 缓冲区，防止跨用户 flush', async () => {

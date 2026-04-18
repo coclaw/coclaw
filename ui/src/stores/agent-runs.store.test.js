@@ -968,6 +968,97 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
+	// resetAll（登出清理）
+	// =====================================================================
+
+	describe('resetAll', () => {
+		test('清空 runs 与 runKeyIndex', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-a', runKey: 'k-a', clawId: '1' });
+			registerRun(store, { runId: 'run-b', runKey: 'k-b', clawId: '2' });
+
+			store.resetAll();
+
+			expect(store.runs).toEqual({});
+			expect(store.runKeyIndex).toEqual({});
+			expect(store.busy).toBe(false);
+		});
+
+		test('每个 run 的 24h 兜底 timer 和 idleTimer 被 clear', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-a', runKey: 'k-a' });
+			registerRun(store, { runId: 'run-b', runKey: 'k-b' });
+			// 捕获 run 原引用：__cleanupRun 虽然删 Map 条目，但原对象上的 __timer/__watcher.idleTimer
+			// 会在 __endRun 里被置 null（参见 agent-runs.store.js:329-341）。通过原引用断言。
+			const runA = store.runs['run-a'];
+			const runB = store.runs['run-b'];
+			expect(runA.__timer).toBeTruthy();
+			expect(runA.__watcher.idleTimer).toBeTruthy();
+			expect(runB.__timer).toBeTruthy();
+			expect(runB.__watcher.idleTimer).toBeTruthy();
+			const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+
+			store.resetAll();
+
+			// 若代码忘记 clearTimeout，这两断言会失败
+			expect(runA.__timer).toBeNull();
+			expect(runA.__watcher.idleTimer).toBeNull();
+			expect(runB.__timer).toBeNull();
+			expect(runB.__watcher.idleTimer).toBeNull();
+			// 并确保 clearTimeout 被调用（__endRun + __cleanupRun 双层共 4 次：2 run × 2 timer）
+			expect(clearSpy).toHaveBeenCalled();
+			clearSpy.mockRestore();
+		});
+
+		test('释放所有 run 的 streamingMsgs 中 _attachments blob URL', () => {
+			const origRevoke = URL.revokeObjectURL;
+			URL.revokeObjectURL = vi.fn();
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-a', runKey: 'k-a' });
+			store.runs['run-a'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' },
+					_attachments: [{ url: 'blob:a1' }, { url: 'blob:a2' }] },
+			];
+			registerRun(store, { runId: 'run-b', runKey: 'k-b' });
+			store.runs['run-b'].streamingMsgs = [
+				{ id: 'u2', _local: true, message: { role: 'user', content: 'hi' },
+					_attachments: [{ url: 'blob:b1' }] },
+			];
+
+			store.resetAll();
+
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a1');
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a2');
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:b1');
+			URL.revokeObjectURL = origRevoke;
+		});
+
+		test('唤起未结束 run 的 onEnd（runAgent finalPromise 被 resolve，endReason="logout"）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			expect(store.runs['run-1'].ended).toBe(false);
+
+			store.resetAll();
+
+			const result = await runPromise;
+			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'logout' });
+			expect(store.runs['run-1']).toBeUndefined();
+		});
+
+		test('空注册表时不报错', () => {
+			const store = useAgentRunsStore();
+			expect(() => store.resetAll()).not.toThrow();
+		});
+	});
+
+	// =====================================================================
 	// busy
 	// =====================================================================
 

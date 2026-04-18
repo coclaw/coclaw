@@ -23,6 +23,10 @@ import { useClawsStore, __resetClawStoreInternals } from './claws.store.js';
 import { useAgentsStore } from './agents.store.js';
 import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
 import { useAdminStore } from './admin.store.js';
+import { useAgentRunsStore } from './agent-runs.store.js';
+import { chatStoreManager } from './chat-store-manager.js';
+import { useFilesStore } from './files.store.js';
+import { useDashboardStore } from './dashboard.store.js';
 
 function applyUserPreferences(user) {
 	syncThemeModeFromSettings(user?.settings);
@@ -111,9 +115,16 @@ export const useAuthStore = defineStore('auth', {
 			this.user = null;
 			draftStore.onUserChanged(null);
 			syncThemeModeFromSettings(null);
+			// 先 files.cancelAll：让 transferHandle.cancel 能借仍在线的 DC 下发 abort
+			useFilesStore().cancelAll();
+			// agent runs：清 24h 兜底 timer 与 idle watcher，释放 blob URL，唤醒悬挂的 finalPromise
+			useAgentRunsStore().resetAll();
 			useClawConnections().disconnectAll();
 			useSignalingConnection().disconnect();
 			clearRemoteLogBuffer(); // 防止前一用户的未发送日志被下一用户的 WS 通道 flush 出去
+			// chat/topic store 实例逐个 dispose（cleanup() + $dispose()）
+			chatStoreManager.disposeAll();
+			useDashboardStore().$reset();
 			__resetClawStoreInternals();
 			__resetSessionsInternals();
 			__resetTopicsInternals();

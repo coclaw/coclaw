@@ -211,6 +211,60 @@ describe('chatStoreManager', () => {
 	});
 
 	// =====================================================================
+	// disposeAll（登出清理）
+	// =====================================================================
+
+	describe('disposeAll', () => {
+		test('清空所有 session 与 topic 实例', () => {
+			chatStoreManager.get('session:1:main', { clawId: '1', agentId: 'main' });
+			chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
+			chatStoreManager.get('topic:t2', { clawId: '1', agentId: 'main' });
+			expect(chatStoreManager.size).toBe(3);
+			expect(chatStoreManager.topicCount).toBe(2);
+
+			chatStoreManager.disposeAll();
+
+			expect(chatStoreManager.size).toBe(0);
+			expect(chatStoreManager.topicCount).toBe(0);
+		});
+
+		test('对每个实例调用 store.dispose() 和 $dispose()', () => {
+			const s1 = chatStoreManager.get('session:1:main', { clawId: '1', agentId: 'main' });
+			const s2 = chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
+			const disposeSpy1 = vi.spyOn(s1, 'dispose');
+			const disposeSpy2 = vi.spyOn(s2, 'dispose');
+			const pDisposeSpy1 = vi.spyOn(s1, '$dispose');
+			const pDisposeSpy2 = vi.spyOn(s2, '$dispose');
+
+			chatStoreManager.disposeAll();
+
+			expect(disposeSpy1).toHaveBeenCalledOnce();
+			expect(disposeSpy2).toHaveBeenCalledOnce();
+			expect(pDisposeSpy1).toHaveBeenCalledOnce();
+			expect(pDisposeSpy2).toHaveBeenCalledOnce();
+		});
+
+		test('遍历期间 dispose 内部删 Map 不漏条目（Array.from 快照生效）', () => {
+			const keys = ['session:1:main', 'topic:t1', 'topic:t2'];
+			for (const k of keys) {
+				chatStoreManager.get(k, { clawId: '1', agentId: 'main' });
+			}
+			expect(chatStoreManager.size).toBe(3);
+
+			chatStoreManager.disposeAll();
+
+			// 3 个全部被 dispose；若未用快照，Map 迭代在 delete 时会跳条目导致残留
+			expect(chatStoreManager.size).toBe(0);
+			expect(chatStoreManager.topicCount).toBe(0);
+		});
+
+		test('空管理器 disposeAll 不报错', () => {
+			expect(() => chatStoreManager.disposeAll()).not.toThrow();
+			expect(chatStoreManager.size).toBe(0);
+		});
+	});
+
+	// =====================================================================
 	// 跨 claw 同名 agent 隔离（回归测试，对应 runKey 跨 claw 串 bug）
 	// =====================================================================
 

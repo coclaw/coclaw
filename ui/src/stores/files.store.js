@@ -148,6 +148,21 @@ export const useFilesStore = defineStore('files', {
 		},
 
 		/**
+		 * 登出清理：取消所有进行中/排队中的任务，清空 tasks 与 dirCache
+		 * 必须在连接断开前调用，让 transferHandle.cancel 有机会通过 DC 下发 abort
+		 */
+		cancelAll() {
+			for (const task of this.tasks.values()) {
+				if (task.status === 'running' && task.transferHandle) {
+					try { task.transferHandle.cancel(); }
+					catch (err) { console.debug('[files] cancel during logout failed: %s', err?.message); }
+				}
+			}
+			this.tasks.clear();
+			this.dirCache.clear();
+		},
+
+		/**
 		 * 重试失败任务
 		 * @param {string} taskId
 		 */

@@ -413,6 +413,92 @@ describe('files.store', () => {
 		});
 	});
 
+	describe('cancelAll', () => {
+		test('对 running 任务调用 transferHandle.cancel，清空 tasks 与 dirCache', async () => {
+			mockBotConn();
+			const cancelFn = vi.fn();
+			uploadFile.mockReturnValue({
+				promise: new Promise(() => {}),
+				cancel: cancelFn,
+				set onProgress(_cb) {},
+			});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('big.zip', 999)]);
+			store.setDirCache('bot1', 'main', '/', [{ name: 'x' }]);
+			await vi.waitFor(() => {
+				const tasks = store.getAgentTasks('bot1', 'main');
+				expect(tasks[0].status).toBe('running');
+			});
+
+			store.cancelAll();
+
+			expect(cancelFn).toHaveBeenCalledOnce();
+			expect(store.tasks.size).toBe(0);
+			expect(store.dirCache.size).toBe(0);
+		});
+
+		test('pending 任务不调用 transferHandle.cancel（尚未建立 handle）', () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: new Promise(() => {}),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+
+			// 入队两个 upload，串行下第一条变 running，第二条 pending
+			store.enqueueUploads('bot1', 'main', '', [
+				createMockFile('1.txt'),
+				createMockFile('2.txt'),
+			]);
+			const pending = store.getAgentTasks('bot1', 'main').find((t) => t.status === 'pending');
+			expect(pending).toBeDefined();
+			expect(pending.transferHandle).toBeNull();
+
+			store.cancelAll();
+			expect(store.tasks.size).toBe(0);
+		});
+
+		test('transferHandle.cancel 抛异常时 cancelAll 不抛（DC 已断兜底）', async () => {
+			mockBotConn();
+			const cancelFn = vi.fn(() => { throw new Error('dc closed'); });
+			uploadFile.mockReturnValue({
+				promise: new Promise(() => {}),
+				cancel: cancelFn,
+				set onProgress(_cb) {},
+			});
+			const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('big.zip', 999)]);
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main')[0].status).toBe('running');
+			});
+
+			expect(() => store.cancelAll()).not.toThrow();
+			expect(cancelFn).toHaveBeenCalled();
+			// 错误被 console.debug 捕获记录
+			const logged = debugSpy.mock.calls.some(
+				(args) => typeof args[0] === 'string' && args[0].includes('cancel during logout failed'),
+			);
+			expect(logged).toBe(true);
+			expect(store.tasks.size).toBe(0);
+
+			debugSpy.mockRestore();
+		});
+
+		test('cancelAll 后 __runUploadQueue 无 pending 立即 return（不崩溃）', () => {
+			mockBotConn();
+			store.cancelAll();
+			expect(() => store.__runUploadQueue('bot1', 'main')).not.toThrow();
+			expect(() => store.__runDownloadQueue('bot1', 'main')).not.toThrow();
+		});
+
+		test('空 store 调用 cancelAll 不报错', () => {
+			expect(() => store.cancelAll()).not.toThrow();
+			expect(store.tasks.size).toBe(0);
+			expect(store.dirCache.size).toBe(0);
+		});
+	});
+
 	describe('retryTask', () => {
 		test('重试失败的上传任务', async () => {
 			mockBotConn();

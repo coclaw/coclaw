@@ -49,6 +49,16 @@ export const chatStoreManager = {
 		if (idx !== -1) topicLru.splice(idx, 1);
 	},
 
+	/**
+	 * 登出清理：dispose 所有 chat/topic store 实例
+	 * 遍历前 Array.from(keys) 快照，避免 dispose 内部 delete 导致 iterator 跳条目
+	 */
+	disposeAll() {
+		for (const key of Array.from(instances.keys())) {
+			this.dispose(key);
+		}
+	},
+
 	/** @returns {number} 当前实例数 */
 	get size() { return instances.size; },
 

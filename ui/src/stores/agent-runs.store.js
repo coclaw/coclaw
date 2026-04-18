@@ -496,5 +496,15 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				this.__cleanupRun(runId, 'claw-removed');
 			}
 		},
+
+		/**
+		 * 登出清理：遍历所有 run 走完整 cleanup 流程
+		 * 不能用 $reset()：state 替换不会 clearTimeout 已排期的 __timer 和 __watcher.idleTimer
+		 */
+		resetAll() {
+			for (const runId of Object.keys(this.runs)) {
+				this.__cleanupRun(runId, 'logout');
+			}
+		},
 	},
 });
