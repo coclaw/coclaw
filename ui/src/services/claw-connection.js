@@ -83,7 +83,7 @@ export class ClawConnection {
 		this.__rejectAllPending('RTC connection lost', 'RTC_LOST');
 	}
 
-	/** 断开：关闭 RTC + reject pending/waiters + 释放 connId */
+	/** 断开：关闭 RTC + reject pending/waiters + 清事件监听 + 释放 connId */
 	disconnect() {
 		console.debug('[ClawConn] disconnect clawId=%s', this.clawId);
 		if (this.__rtc) {
@@ -92,6 +92,10 @@ export class ClawConnection {
 		}
 		this.__rejectAllWaiters('connection closed', 'DC_CLOSED');
 		this.__rejectAllPending('connection closed');
+		// 主动切断 listener 闭包（chat.store 的 event:chat handler 持 store Proxy 引用）。
+		// logout 顺序使得 chat.store.cleanup 里的 conn.off 拿到 null conn 跳过解绑，
+		// 这里兜底清理避免依赖 ClawConnection 本身的 GC 时机。
+		this.__listeners.clear();
 		useSignalingConnection().releaseConnId(this.clawId);
 	}
 

@@ -77,6 +77,20 @@ describe('ClawConnection – disconnect()', () => {
 		conn.disconnect();
 		await expect(p).rejects.toMatchObject({ code: 'DC_CLOSED' });
 	});
+
+	test('清空事件 listener 避免 handler 闭包延迟释放', () => {
+		const conn = new ClawConnection('bot1');
+		const cb = vi.fn();
+		conn.on('event:chat', cb);
+		expect(conn.__listeners.get('event:chat')?.size).toBe(1);
+
+		conn.disconnect();
+
+		expect(conn.__listeners.size).toBe(0);
+		// 断开后再 emit，cb 不应再被调用
+		conn.__emit('event:chat', {});
+		expect(cb).not.toHaveBeenCalled();
+	});
 });
 
 describe('ClawConnection – RTC 管理', () => {
