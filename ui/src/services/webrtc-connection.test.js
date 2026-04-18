@@ -2402,6 +2402,37 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
+	test('createOffer await 期间 state 已 failed → catch 守卫生效，不重复 close', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// createOffer 阻塞，模拟底层延迟
+		let rejectOffer;
+		pc.createOffer = () => new Promise((_, reject) => { rejectOffer = reject; });
+
+		// 进入 restarting
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartInFlight).toBe(true);
+
+		// 并发：plugin 先回 rtc:restart-rejected → 内部调 close({asFailed:true})
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:restart-rejected', payload: { reason: 'no_session' } });
+		expect(rtc.state).toBe('failed');
+		mockSendSignaling.mockClear();
+
+		// createOffer 终于 reject → catch 守卫检测到 state==='failed' 直接 return
+		rejectOffer(new Error('PC destroyed'));
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 守卫生效：state 保持 failed 不被误改为 closed、不重发 rtc:closed 信令
+		expect(rtc.state).toBe('failed');
+		const closedCalls = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
+		expect(closedCalls).toHaveLength(0);
+		// finally 仍正常复位
+		expect(rtc.__restartInFlight).toBe(false);
+	});
+
 	test('createOffer 抛异常 → 清除 restart 状态，变为 failed + 完整释放资源', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
