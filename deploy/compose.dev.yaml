@@ -42,7 +42,6 @@ services:
       --relay-ip=127.0.0.1
       --external-ip=127.0.0.1
       --realm=localhost
-      --lt-cred-mech
       --use-auth-secret
       --static-auth-secret=dev-secret-placeholder
       --min-port=50000

@@ -13,7 +13,6 @@ set -- \
 	--relay-ip="${TURN_INTERNAL_IP}" \
 	--external-ip="${TURN_EXTERNAL_IP}/${TURN_INTERNAL_IP}" \
 	--realm="${APP_DOMAIN}" \
-	--lt-cred-mech \
 	--use-auth-secret \
 	--static-auth-secret="${TURN_SECRET}" \
 	--min-port="${TURN_MIN_PORT}" \
