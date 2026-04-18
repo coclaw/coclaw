@@ -12,6 +12,8 @@ CoClaw 有两种**独立**的发布类型，通常不会同时执行：
 | npm 发布 | "发布"、"release" | 仅 `@coclaw/openclaw-coclaw` 插件 |
 | GitHub Release | "GitHub 发布"、"项目发布" | 整体项目里程碑 |
 
+> **语言约定**：所有发布相关的描述文本一律用英语，包括：commit message、changeset 描述、CHANGELOG、`gh release` 的 title/body 等。
+
 ## npm 发布流程（默认）
 
 ### 前置条件

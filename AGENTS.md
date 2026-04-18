@@ -157,7 +157,7 @@ General Instructions
   2) `pnpm check` 通过
   3) `pnpm test` 通过（含覆盖率检查；若暂无法达标需在变更说明记录例外原因）
 - 每次 commit 保持单一主题，避免将无关改动混在一起
-- commit message 使用祈使句并包含范围（建议：`feat(server): ...` / `fix(ui): ...` / `refactor(tunnel): ...` / `test(...): ...` / `docs(...): ...`）
+- commit message 一律用英语，使用祈使句并包含范围（建议：`feat(server): ...` / `fix(ui): ...` / `refactor(tunnel): ...` / `test(...): ...` / `docs(...): ...`）
 - 禁止提交：临时调试代码、无关格式化噪音、敏感信息、无意义大文件
 
 ## 版本管理（Changesets）
@@ -167,6 +167,7 @@ General Instructions
 - 仅改测试/文档/CI 时不需要 changeset
 - 版本级别默认规则：bug 修复/小调整 → patch；新功能 → minor。检测到破坏性变更时提示用户确认级别（开发阶段通常仍选 minor）。用户明确指定时以用户为准
 - 发布流程使用 `/release` skill。默认"发布"仅指 npm 发布（plugins/openclaw），用户明确说"GitHub 发布"时才额外创建 GitHub Release
+- 发布相关的描述文本（changeset 描述、CHANGELOG、release notes、`gh release` title/body 等）一律用英语
 
 ## 移动端与桌面端
 
