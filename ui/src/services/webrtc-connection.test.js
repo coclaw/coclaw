@@ -61,6 +61,7 @@ class MockRTCPeerConnection {
 		this.__candidates = [];
 		this.__channels = [];
 		this.__closed = false;
+		this.__closeCallCount = 0; // 统计 close() 调用次数，用于验证幂等
 		this.__createOfferOpts = []; // 记录每次 createOffer 的选项
 		MockRTCPeerConnection.lastInstance = this;
 		pcInstances.push(this);
@@ -114,6 +115,7 @@ class MockRTCPeerConnection {
 
 	close() {
 		this.__closed = true;
+		this.__closeCallCount++;
 		this.connectionState = 'closed';
 	}
 }
@@ -2619,7 +2621,7 @@ describe('WebRtcConnection — 失败路径资源清理', () => {
 		vi.useRealTimers();
 	});
 
-	test('close({asFailed:true}) 后再调 close() 幂等：不重发 rtc:closed', async () => {
+	test('close({asFailed:true}) 后再调 close() 幂等：不重发 rtc:closed、不重关 pc', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		// 进入 restarting 并耗尽预算 → 首次 close({asFailed:true})
@@ -2632,14 +2634,16 @@ describe('WebRtcConnection — 失败路径资源清理', () => {
 
 		const closedCalls = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
 		expect(closedCalls).toHaveLength(1);
+		expect(pc.__closeCallCount).toBe(1);
 
 		// 二次 close（模拟 __ensureRtc 退避后 closeRtcForClaw → rtc.close()）
 		rtc.close();
 		expect(rtc.state).toBe('closed');
 
-		// 信令不应重发
+		// 信令不应重发、pc.close 不应再被调
 		const closedCallsAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
 		expect(closedCallsAfter).toHaveLength(1);
+		expect(pc.__closeCallCount).toBe(1);
 	});
 
 	test('失败路径触发 onStateChange 回调值为 "failed"（store 据此决定 rebuild）', async () => {

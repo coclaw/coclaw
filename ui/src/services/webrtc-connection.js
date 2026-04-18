@@ -767,9 +767,9 @@ export class WebRtcConnection {
 		this.__restartInFlight = true;
 		try {
 			const offer = await this.__pc.createOffer({ iceRestart: true });
-			if (!this.__pc || this.__state === 'closed') return;
+			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
 			await this.__pc.setLocalDescription(offer);
-			if (!this.__pc || this.__state === 'closed') return;
+			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
 			sig.sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true });
 			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount}`);
 		} catch (err) {
