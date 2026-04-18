@@ -43,6 +43,8 @@ Thumbs.db
 # .claude is a symlink to .agents, git won't traverse into it
 **/.agents/settings.json
 **/.agents/settings.local.json
+# Claude Code runtime lock (scheduled tasks)
+**/scheduled_tasks.lock
 # .codex — keep (contains MCP configs)
 
 # Local symlinks (developer-specific)
