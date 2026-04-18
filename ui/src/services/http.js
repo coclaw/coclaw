@@ -25,6 +25,14 @@ httpClient.interceptors.request.use((config) => {
 let __lastExpiredAt = 0;
 const AUTH_EXPIRED_THROTTLE_MS = 3000;
 
+/**
+ * 复位 401 节流窗口。登出时调用，避免前一用户临登出前的时间戳吞掉
+ * 下一用户登录后的首次合法 401 事件。
+ */
+export function resetAuthExpiredThrottle() {
+	__lastExpiredAt = 0;
+}
+
 httpClient.interceptors.response.use(
 	(res) => {
 		console.debug('[http] %s %s → %d', res.config.method?.toUpperCase(), res.config.url, res.status);

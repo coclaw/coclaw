@@ -201,6 +201,22 @@ export const useAdminStore = defineStore('admin', {
 			this.hasOnlineSnapshot = false;
 		},
 
+		/**
+		 * 强制销毁 SSE 订阅（与引用计数无关），用于登出等强制清理路径。
+		 * 与 stopStream 的差异：不依赖 __streamRefs 是否为 0，直接 close() 并清零状态。
+		 * 避免 $reset() 仅把 __streamHandle 置 null 而不调 close()，导致 EventSource
+		 * 与 connectAdminStream 内部注册的 app:foreground / network:online 监听器泄漏。
+		 */
+		teardownStream() {
+			if (this.__streamHandle) {
+				this.__streamHandle.close();
+				this.__streamHandle = null;
+			}
+			this.__streamRefs = 0;
+			this.onlineClawIds = new Set();
+			this.hasOnlineSnapshot = false;
+		},
+
 		/** SSE snapshot：替换 onlineClawIds，并同步列表 items[].online */
 		applyOnlineSnapshot(onlineIds) {
 			this.onlineClawIds = new Set((onlineIds ?? []).map(String));

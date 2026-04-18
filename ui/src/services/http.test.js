@@ -56,7 +56,7 @@ vi.mock('axios', () => ({
 }));
 
 import axios from 'axios';
-import { httpClient } from './http.js';
+import { httpClient, resetAuthExpiredThrottle } from './http.js';
 
 describe('http client', () => {
 	test('should create axios instance with withCredentials', () => {
@@ -170,6 +170,43 @@ describe('http client', () => {
 			);
 			expect(event).toBeFalsy();
 			dispatchSpy.mockRestore();
+		});
+
+		test('resetAuthExpiredThrottle 立即释放节流窗口', async () => {
+			vi.useFakeTimers();
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+			const makeErr = (url) => ({
+				config: { method: 'get', url },
+				response: { status: 401, data: {} },
+			});
+
+			// 第一次：跳过节流（距上次超过 3s）
+			vi.advanceTimersByTime(3001);
+			try { await onRejected(makeErr('/api/v1/bots')); } catch {}
+			const count1 = dispatchSpy.mock.calls.filter(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			).length;
+
+			// 正常应被节流
+			vi.advanceTimersByTime(500);
+			try { await onRejected(makeErr('/api/v1/bots')); } catch {}
+			let count2 = dispatchSpy.mock.calls.filter(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			).length;
+			expect(count2).toBe(count1);
+
+			// 复位节流后立刻再来一次 401，应放行
+			resetAuthExpiredThrottle();
+			try { await onRejected(makeErr('/api/v1/bots')); } catch {}
+			count2 = dispatchSpy.mock.calls.filter(
+				([e]) => e instanceof CustomEvent && e.type === 'auth:session-expired',
+			).length;
+			expect(count2).toBe(count1 + 1);
+
+			dispatchSpy.mockRestore();
+			vi.useRealTimers();
 		});
 
 		test('should throttle auth:session-expired within 3s', async () => {

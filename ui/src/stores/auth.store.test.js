@@ -29,6 +29,7 @@ const {
 	mockConnManager,
 	mockSigDisconnect,
 	mockClearRemoteLogBuffer,
+	mockResetAuthExpiredThrottle,
 	mockFilesCancelAll,
 	mockAgentRunsResetAll,
 	mockChatStoreDisposeAll,
@@ -45,7 +46,8 @@ const {
 			disconnectAll: vi.fn(() => { order.push('disconnectAll'); }),
 		},
 		mockSigDisconnect: vi.fn(() => { order.push('sigDisconnect'); }),
-		mockClearRemoteLogBuffer: vi.fn(),
+		mockClearRemoteLogBuffer: vi.fn(() => { order.push('clearRemoteLogBuffer'); }),
+		mockResetAuthExpiredThrottle: vi.fn(() => { order.push('resetAuthExpiredThrottle'); }),
 		mockFilesCancelAll: vi.fn(() => { order.push('filesCancelAll'); }),
 		mockAgentRunsResetAll: vi.fn(() => { order.push('agentRunsResetAll'); }),
 		mockChatStoreDisposeAll: vi.fn(() => { order.push('chatStoreDisposeAll'); }),
@@ -66,6 +68,12 @@ vi.mock('../services/remote-log.js', () => ({
 	clearRemoteLogBuffer: (...args) => mockClearRemoteLogBuffer(...args),
 	useRemoteLog: () => ({ log: () => {} }),
 	remoteLog: () => {},
+}));
+
+vi.mock('../services/http.js', () => ({
+	resetAuthExpiredThrottle: (...args) => mockResetAuthExpiredThrottle(...args),
+	httpClient: { interceptors: { request: { use: () => {} }, response: { use: () => {} } } },
+	resolveApiBaseUrl: () => '',
 }));
 
 // 4 个新接入的清理目标——mock 模块返回带间谍的实例/对象
@@ -381,10 +389,13 @@ describe('auth store', () => {
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
 	});
 
-	test('logout 按顺序清理 files → agent runs → conns → sig → chat stores → dashboard', async () => {
+	test('logout 按顺序清理 files → agent runs → conns → sig → remote log → throttle → chat stores → dashboard → admin SSE', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
+		const adminStore = useAdminStore();
+		const teardownSpy = vi.spyOn(adminStore, 'teardownStream')
+			.mockImplementation(() => { logoutCallOrder.push('adminTeardownStream'); });
 
 		await store.logout();
 
@@ -394,17 +405,22 @@ describe('auth store', () => {
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
 		expect(mockChatStoreDisposeAll).toHaveBeenCalledTimes(1);
 		expect(mockDashboardReset).toHaveBeenCalledTimes(1);
+		expect(teardownSpy).toHaveBeenCalledTimes(1);
 
 		// 顺序：files.cancelAll 必须在 disconnectAll 之前（让 transfer abort 有机会下发）
 		// agent runs.resetAll 在 disconnectAll 之前（清 timer 不依赖网络）
 		// chat stores.disposeAll 在 sig.disconnect 之后（先断连再 cleanup 避免 off 到 null conn）
+		// admin.teardownStream 在 admin.$reset 之前（否则 $reset 直接清引用会泄漏 EventSource）
 		expect(logoutCallOrder).toEqual([
 			'filesCancelAll',
 			'agentRunsResetAll',
 			'disconnectAll',
 			'sigDisconnect',
+			'clearRemoteLogBuffer',
+			'resetAuthExpiredThrottle',
 			'chatStoreDisposeAll',
 			'dashboardReset',
+			'adminTeardownStream',
 		]);
 	});
 
@@ -417,6 +433,38 @@ describe('auth store', () => {
 		await store.logout();
 
 		expect(mockClearRemoteLogBuffer).toHaveBeenCalledTimes(1);
+	});
+
+	test('logout 复位 401 节流窗口，避免跨用户误吞首个合法 401', async () => {
+		logout.mockResolvedValue();
+		mockResetAuthExpiredThrottle.mockClear();
+		const store = useAuthStore();
+		store.user = { id: '3' };
+
+		await store.logout();
+
+		expect(mockResetAuthExpiredThrottle).toHaveBeenCalledTimes(1);
+	});
+
+	test('logout API 失败时新接入的清理钩子仍被执行', async () => {
+		// 验证 auth.store.js 的契约：catch 不 return，本地清理链无条件跑
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		logout.mockRejectedValue({ response: { data: { message: 'server error' } } });
+		mockResetAuthExpiredThrottle.mockClear();
+		mockClearRemoteLogBuffer.mockClear();
+		const store = useAuthStore();
+		store.user = { id: '9' };
+		const adminStore = useAdminStore();
+		const teardownSpy = vi.spyOn(adminStore, 'teardownStream');
+
+		await store.logout();
+
+		expect(store.errorMessage).toBe('server error');
+		expect(store.user).toBeNull();
+		expect(teardownSpy).toHaveBeenCalledTimes(1);
+		expect(mockResetAuthExpiredThrottle).toHaveBeenCalledTimes(1);
+		expect(mockClearRemoteLogBuffer).toHaveBeenCalledTimes(1);
+		warnSpy.mockRestore();
 	});
 
 	test('logout should reset module-level internals (timers, loading guards)', async () => {

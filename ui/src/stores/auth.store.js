@@ -17,6 +17,7 @@ import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
 import { clearRemoteLogBuffer } from '../services/remote-log.js';
+import { resetAuthExpiredThrottle } from '../services/http.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
 import { useClawsStore, __resetClawStoreInternals } from './claws.store.js';
@@ -122,9 +123,12 @@ export const useAuthStore = defineStore('auth', {
 			useClawConnections().disconnectAll();
 			useSignalingConnection().disconnect();
 			clearRemoteLogBuffer(); // 防止前一用户的未发送日志被下一用户的 WS 通道 flush 出去
+			resetAuthExpiredThrottle(); // 复位 401 节流窗口，避免跨用户误吞首个合法 401
 			// chat/topic store 实例逐个 dispose（cleanup() + $dispose()）
 			chatStoreManager.disposeAll();
 			useDashboardStore().$reset();
+			// admin SSE 强制关闭：$reset() 不会 close handle，直接清引用会泄漏 EventSource + 窗口监听器
+			useAdminStore().teardownStream();
 			__resetClawStoreInternals();
 			__resetSessionsInternals();
 			__resetTopicsInternals();

@@ -501,5 +501,41 @@ describe('admin store', () => {
 			expect(mockedStream.connect).toHaveBeenCalledTimes(2);
 			expect(store.__streamRefs).toBe(1);
 		});
+
+		describe('teardownStream', () => {
+			test('未 start 时幂等、不抛、不调 close', () => {
+				const store = useAdminStore();
+				expect(() => store.teardownStream()).not.toThrow();
+				expect(mockedStream.close).not.toHaveBeenCalled();
+				expect(store.__streamRefs).toBe(0);
+			});
+
+			test('已 start 时无视引用计数强制 close 并清空在线状态', () => {
+				const store = useAdminStore();
+				store.startStream();
+				store.startStream();
+				store.onlineClawIds = new Set(['1', '2']);
+				store.hasOnlineSnapshot = true;
+
+				store.teardownStream();
+
+				expect(mockedStream.close).toHaveBeenCalledTimes(1);
+				expect(store.__streamRefs).toBe(0);
+				expect(store.__streamHandle).toBeNull();
+				expect(store.onlineClawIds.size).toBe(0);
+				expect(store.hasOnlineSnapshot).toBe(false);
+			});
+
+			test('teardown 后仍可重新订阅', () => {
+				const store = useAdminStore();
+				store.startStream();
+				store.teardownStream();
+				expect(mockedStream.close).toHaveBeenCalledTimes(1);
+
+				store.startStream();
+				expect(mockedStream.connect).toHaveBeenCalledTimes(2);
+				expect(store.__streamRefs).toBe(1);
+			});
+		});
 	});
 });
