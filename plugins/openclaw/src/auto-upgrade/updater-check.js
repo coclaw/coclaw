@@ -2,7 +2,7 @@
  * updater-check.js — 版本检查
  *
  * 通过 `npm view` 查询 registry 最新版本，与本地 package.json 对比。
- * 选择 npm view 而非直接 fetch registry API，是因为它自动继承用户完整的
+ * 选择 npm view 而非自己打 registry HTTP 接口，是因为它自动继承用户完整的
  * npm 环境配置（registry 镜像、proxy、scoped registry、auth token 等），
  * 避免自行解析多层 .npmrc 的复杂性。每小时一次的频率下进程启动开销可忽略。
  */
