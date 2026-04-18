@@ -8,13 +8,21 @@ const RESTART_THROTTLE_MS = 500; // restart 节流，防 app:foreground + networ
  * 通过 SSE 实时接收 claw 快照、状态变更及解绑通知。
  * 连接建立后 server 推送全量快照（claw.snapshot），后续增量更新。
  * 内置心跳超时检测：超过 65s 未收到任何数据则自动重建连接。
+ *
+ * 生命周期：
+ * - autoStart=true（默认）：创建即 start，onBeforeUnmount 自动 stop + dispose。
+ * - autoStart=false：需手动 start；stop 后可重新 start；onBeforeUnmount 后 dispose 永久禁用。
+ *
  * @param {import('pinia').Store} clawsStore - claws store 实例
- * @returns {{ connected: import('vue').Ref<boolean>, stop: () => void }}
+ * @param {object} [opts]
+ * @param {boolean} [opts.autoStart=true] - 是否在创建时自动启动
+ * @returns {{ connected: import('vue').Ref<boolean>, start: () => void, stop: () => void }}
  */
-export function useClawStatusSse(clawsStore) {
+export function useClawStatusSse(clawsStore, { autoStart = true } = {}) {
 	const connected = ref(false);
 	let es = null;
-	let stopped = false;
+	let running = false;
+	let disposed = false;
 	let hbTimer = null;
 	let lastRestartAt = 0;
 
@@ -33,8 +41,7 @@ export function useClawStatusSse(clawsStore) {
 		hbTimer = null;
 	}
 
-	function start() {
-		if (stopped || es) return;
+	function openEventSource() {
 		es = new EventSource('/api/v1/claws/status-stream');
 
 		es.onopen = () => {
@@ -84,9 +91,17 @@ export function useClawStatusSse(clawsStore) {
 		};
 	}
 
+	function start() {
+		if (disposed || running) return;
+		running = true;
+		openEventSource();
+		window.addEventListener('app:foreground', onForeground);
+		window.addEventListener('network:online', onNetworkOnline);
+	}
+
 	/** 强制重建 SSE 连接（前台恢复 / 心跳超时时调用） */
 	function restart() {
-		if (stopped) return;
+		if (disposed || !running) return;
 		const now = Date.now();
 		if (now - lastRestartAt < RESTART_THROTTLE_MS) return;
 		lastRestartAt = now;
@@ -97,7 +112,8 @@ export function useClawStatusSse(clawsStore) {
 		}
 		connected.value = false;
 		clearHbTimer();
-		start();
+		// 仅重建 ES，不重装 window 监听器（它们跟随 running 生命周期，start/stop 成对管理）
+		openEventSource();
 	}
 
 	function onForeground() {
@@ -109,21 +125,24 @@ export function useClawStatusSse(clawsStore) {
 	}
 
 	function stop() {
-		stopped = true;
 		if (es) {
 			es.close();
 			es = null;
 		}
 		connected.value = false;
 		clearHbTimer();
+		if (!running) return; // 未 running 时仅兜底清理，不动 listener
+		running = false;
 		window.removeEventListener('app:foreground', onForeground);
 		window.removeEventListener('network:online', onNetworkOnline);
 	}
 
-	start();
-	window.addEventListener('app:foreground', onForeground);
-	window.addEventListener('network:online', onNetworkOnline);
-	onBeforeUnmount(stop);
+	if (autoStart) start();
 
-	return { connected, stop };
+	onBeforeUnmount(() => {
+		stop();
+		disposed = true;
+	});
+
+	return { connected, start, stop };
 }

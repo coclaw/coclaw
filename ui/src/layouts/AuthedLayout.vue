@@ -35,7 +35,7 @@
 </template>
 
 <script>
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import DesktopSidebar from '../components/DesktopSidebar.vue';
 import MobileBottomTabs from '../components/MobileBottomTabs.vue';
 import { useClawStatusSse } from '../composables/use-claw-status-sse.js';
@@ -53,16 +53,35 @@ export default {
 		MobileBottomTabs,
 	},
 	setup() {
+		const authStore = useAuthStore();
 		const clawsStore = useClawsStore();
-		useClawStatusSse(clawsStore);
-		useSignalingConnection().connect();
-		useRemoteLog();
+		const sigConn = useSignalingConnection();
+		const sse = useClawStatusSse(clawsStore, { autoStart: false });
+		useRemoteLog(); // 单例，未登录时 sig 不连 → 无 flush 副作用
+
+		// 登录态驱动 WS + SSE 启停：
+		// 未登录（含冷启动直达 /about、登出后留在 /about）保持零连接；
+		// refreshSession 成功后 user 响应式变化触发首次 connect/start；
+		// logout 使 user→null 触发 disconnect/stop。
+		watch(
+			() => authStore.user?.id ?? null,
+			(userId) => {
+				if (userId) {
+					sigConn.connect();
+					sse.start();
+				} else {
+					sigConn.disconnect();
+					sse.stop();
+				}
+			},
+			{ immediate: true },
+		);
 
 		const contentSection = ref(null);
 		const { pulling, pullDistance, pastThreshold } = usePullRefresh(contentSection);
 
 		return {
-			authStore: useAuthStore(),
+			authStore,
 			contentSection,
 			pulling,
 			pullDistance,

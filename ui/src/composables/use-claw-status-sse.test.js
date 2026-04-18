@@ -280,6 +280,56 @@ describe('useClawStatusSse', () => {
 		expect(removeSpy).toHaveBeenCalledWith('network:online', expect.any(Function));
 	});
 
+	describe('autoStart 与 start/stop 生命周期', () => {
+		test('autoStart:false 时不创建 EventSource', () => {
+			useClawStatusSse(store, { autoStart: false });
+			expect(MockEventSource).not.toHaveBeenCalled();
+		});
+
+		test('autoStart:false 后手动 start() 创建 EventSource', () => {
+			const { start, stop } = useClawStatusSse(store, { autoStart: false });
+			currentStop = stop;
+			expect(MockEventSource).not.toHaveBeenCalled();
+			start();
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+		});
+
+		test('stop() 后再 start() 可重新创建 EventSource（登出再登录场景）', () => {
+			const { start, stop } = useClawStatusSse(store);
+			currentStop = stop;
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+			stop();
+			start();
+			expect(MockEventSource).toHaveBeenCalledTimes(2);
+		});
+
+		test('stop → start 后 app:foreground 仍能触发重建', () => {
+			const { start, stop } = useClawStatusSse(store);
+			currentStop = stop;
+			stop();
+			start();
+			MockEventSource.mockClear();
+			window.dispatchEvent(new CustomEvent('app:foreground'));
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+		});
+
+		test('start() 幂等：连续调用只创建一个 EventSource', () => {
+			const { start, stop } = useClawStatusSse(store, { autoStart: false });
+			currentStop = stop;
+			start();
+			start();
+			start();
+			expect(MockEventSource).toHaveBeenCalledTimes(1);
+		});
+
+		test('stop() 幂等：连续调用不报错', () => {
+			const { stop } = useClawStatusSse(store);
+			currentStop = null; // 测试已显式 stop
+			expect(() => { stop(); stop(); stop(); }).not.toThrow();
+			expect(esInstance.close).toHaveBeenCalledTimes(1); // 首次 stop 关闭；后续无 ES 可关
+		});
+	});
+
 	describe('restart 节流', () => {
 		test('500ms 内连续两次 restart 只创建一个新 EventSource', () => {
 			createSse();
