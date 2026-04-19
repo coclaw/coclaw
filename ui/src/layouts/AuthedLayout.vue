@@ -42,7 +42,7 @@ import { useClawStatusSse } from '../composables/use-claw-status-sse.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useRemoteLog } from '../services/remote-log.js';
 import { usePullRefresh } from '../composables/use-pull-refresh.js';
-import { useAuthStore } from '../stores/auth.store.js';
+import { useAuthStore, isLogoutInflight } from '../stores/auth.store.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { isCapacitorApp } from '../utils/platform.js';
 
@@ -134,6 +134,12 @@ export default {
 		// 必须在 refreshSession() 之前注册，避免 await 期间事件丢失
 		this.__onSessionExpired = async () => {
 			if (!this.authStore.user) return; // 未登录或已在登出流程中
+			// 用户主动发起的 logout 如果 API 自身 401，http.js 会同步派发本事件。
+			// 此时 logout 已在跑清理 + 将完成自己的跳转（如 /about），本分支跳过避免双重 router.replace
+			if (isLogoutInflight()) {
+				console.log('[AuthedLayout] session expired event ignored: logout already in flight');
+				return;
+			}
 			console.warn('[AuthedLayout] session expired → full cleanup + redirect to login');
 			const redirect = this.$route.fullPath;
 			try {

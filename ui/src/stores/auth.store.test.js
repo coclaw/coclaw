@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { useAuthStore } from './auth.store.js';
+import { useAuthStore, isLogoutInflight, __resetAuthInternals } from './auth.store.js';
 
 vi.mock('../services/auth.api.js', () => ({
 	changePassword: vi.fn(),
@@ -139,6 +139,7 @@ describe('auth store', () => {
 		setActivePinia(createPinia());
 		vi.clearAllMocks();
 		logoutCallOrder.length = 0;
+		__resetAuthInternals();
 	});
 
 	test('refreshSession should set user when api returns session user', async () => {
@@ -772,5 +773,255 @@ describe('auth store', () => {
 		});
 
 		expect(store.errorMessage).toBe('settings-message');
+	});
+
+	// --- logout 进行中锁 ---
+	// 这组用例涉及 deferred logout API：统一使用 mockImplementationOnce/mockReturnValueOnce，
+	// 避免 vi.clearAllMocks 不清 mock 实现导致 Promise 泄漏到后续 test
+
+	test('logout 幂等：重入调用返回同一 Promise，API 只被调用一次', async () => {
+		// 用 deferred 手动控制 logout API 结算时机，制造"API 还没返回时再次调用 logout"的场景
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		// 第一次 logout 尚未 settle
+		const p1 = store.logout();
+		// 锁应该已经占位
+		expect(isLogoutInflight()).toBe(true);
+		// 重入调用：API 不应被再次调用，清理链也不应再跑一次
+		// （p1/p2/p3 是不同的 Promise 壳——async 函数每次调用产生新 Promise——
+		// 但它们都在等同一 __logoutInflight，同时 settle；功能等价不要求对象相等）
+		const p2 = store.logout();
+		const p3 = store.logout();
+
+		resolveLogoutApi();
+		await Promise.all([p1, p2, p3]);
+
+		// API 只调用一次，清理动作只执行一次
+		expect(logout).toHaveBeenCalledTimes(1);
+		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mockFilesCancelAll).toHaveBeenCalledTimes(1);
+		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
+		// 锁已释放
+		expect(isLogoutInflight()).toBe(false);
+		expect(store.user).toBeNull();
+	});
+
+	test('logout API 抛错时锁仍释放，后续 logout 可再次发起', async () => {
+		// 先让一次 logout 以 API 错误结束
+		logout.mockRejectedValueOnce(new Error('network failed'));
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		await store.logout();
+		expect(isLogoutInflight()).toBe(false);
+
+		// 再次 logout（例如回到 /about 后用户又点登出）应能正常进入
+		store.user = { id: '2' };
+		logout.mockResolvedValueOnce();
+		await store.logout();
+		expect(logout).toHaveBeenCalledTimes(2);
+		expect(store.user).toBeNull();
+		warnSpy.mockRestore();
+	});
+
+	test('logout 清理链中途抛错时锁仍被释放，loading 恢复 false', async () => {
+		// 模拟某个 safeRun 兜不住的路径抛同步错（虽然目前所有步骤都被 safeRun 包裹；
+		// 本 test 固定"锁释放独立于清理成败"这一不变量，防御未来重构）
+		logout.mockResolvedValueOnce();
+		// 让 disconnectAll 同步抛错——其实 safeRun 会兜住；我们关注锁是否释放
+		mockConnManager.disconnectAll.mockImplementationOnce(() => {
+			logoutCallOrder.push('disconnectAll');
+			throw new Error('boom mid-cleanup');
+		});
+
+		const store = useAuthStore();
+		store.user = { id: '1' };
+		await store.logout();
+
+		expect(isLogoutInflight()).toBe(false);
+		expect(store.loading).toBe(false);
+		expect(store.user).toBeNull();
+	});
+
+	test('login 发起时若 logout 在飞，先等它完成再跑自己的逻辑', async () => {
+		// 场景：401 自动 logout 还在进行，用户恰好此时在 /login 页提交登录
+		const logoutOrder = [];
+		let resolveLogoutApi;
+		logout.mockImplementationOnce(() => {
+			logoutOrder.push('logout:api-start');
+			return new Promise((r) => { resolveLogoutApi = () => { logoutOrder.push('logout:api-end'); r(); }; });
+		});
+		loginByLoginName.mockImplementationOnce(async () => {
+			logoutOrder.push('login:api-start');
+			return { user: { id: 'new' } };
+		});
+
+		const store = useAuthStore();
+		store.user = { id: 'old' };
+
+		const logoutP = store.logout();
+		// logout 未完成就发起 login
+		const loginP = store.login({ loginName: 'alice', password: 'x' });
+
+		// 此时 logout API 还没 settle，login API 不应该已经被调用
+		await Promise.resolve();
+		expect(logoutOrder).toEqual(['logout:api-start']);
+		expect(loginByLoginName).not.toHaveBeenCalled();
+
+		// 结算 logout API，让清理链跑完 → login 继续
+		resolveLogoutApi();
+		await Promise.all([logoutP, loginP]);
+
+		// 严格顺序：logout API → (清理链) → login API；且 login 只跑一次
+		expect(logoutOrder).toEqual(['logout:api-start', 'logout:api-end', 'login:api-start']);
+		expect(loginByLoginName).toHaveBeenCalledTimes(1);
+		// 清理动作已跑完（在 login 发起前）
+		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
+		expect(store.user).toEqual({ id: 'new' });
+	});
+
+	test('register 发起时若 logout 在飞，先等它完成再注册', async () => {
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		registerByLoginName.mockResolvedValueOnce({ user: { id: 'reg-1' } });
+
+		const store = useAuthStore();
+		store.user = { id: 'old' };
+		const logoutP = store.logout();
+		const registerP = store.register({ loginName: 'new', password: 'pwd' });
+
+		await Promise.resolve();
+		expect(registerByLoginName).not.toHaveBeenCalled();
+
+		resolveLogoutApi();
+		await Promise.all([logoutP, registerP]);
+
+		expect(registerByLoginName).toHaveBeenCalledTimes(1);
+		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(store.user).toEqual({ id: 'reg-1' });
+	});
+
+	test('refreshSession 发起时若 logout 在飞，先等它完成再拉 session', async () => {
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		fetchSessionUser.mockResolvedValueOnce({ id: 'fresh' });
+
+		const store = useAuthStore();
+		store.user = { id: 'old' };
+		const logoutP = store.logout();
+		const refreshP = store.refreshSession();
+
+		await Promise.resolve();
+		expect(fetchSessionUser).not.toHaveBeenCalled();
+
+		resolveLogoutApi();
+		await Promise.all([logoutP, refreshP]);
+
+		expect(fetchSessionUser).toHaveBeenCalledTimes(1);
+		// logout 清空了 user → refreshSession 重新填入
+		expect(store.user).toEqual({ id: 'fresh' });
+	});
+
+	test('isLogoutInflight 在 logout 过程中为 true，完成后为 false', async () => {
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		expect(isLogoutInflight()).toBe(false);
+		const p = store.logout();
+		expect(isLogoutInflight()).toBe(true);
+		resolveLogoutApi();
+		await p;
+		expect(isLogoutInflight()).toBe(false);
+	});
+
+	test('__resetAuthInternals 强制清理锁（测试工具）', async () => {
+		// 人为置锁 → 验证 reset 能把它清空
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		const store = useAuthStore();
+		store.user = { id: '1' };
+		const p = store.logout();
+		expect(isLogoutInflight()).toBe(true);
+
+		__resetAuthInternals();
+		expect(isLogoutInflight()).toBe(false);
+
+		// 原 logout 还在跑，让它结算避免泄漏
+		resolveLogoutApi();
+		await p;
+	});
+
+	// --- logout 期间的 user-data 写入被阻拦 ---
+
+	test('updateProfile 在 logout 进行中时直接返回，不调 API、不写 user，置 errorMessage', async () => {
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		patchCurrentUserProfile.mockResolvedValueOnce({ name: 'x' });
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		const logoutP = store.logout();
+		// logout 飞行中调 updateProfile
+		await store.updateProfile({ name: 'x' });
+
+		// API 未被调用、user 未被"复活"
+		expect(patchCurrentUserProfile).not.toHaveBeenCalled();
+		// errorMessage 必须非空：调用方 UI 的 "if (!errorMessage) notify.success" 才不会误报成功
+		expect(store.errorMessage).toBe('Cannot update profile while signing out');
+
+		resolveLogoutApi();
+		await logoutP;
+		// logout 完成后 user 为 null（不是被 updateProfile 复活的 { name: 'x' }）
+		expect(store.user).toBeNull();
+		// 注意：logout 的 clearError() 发生在 IIFE 头部（早于 updateProfile 的守卫），
+		// 所以守卫设的 errorMessage 在 logout 完成后仍保留。
+		// 这不构成用户可见 bug：UserProfilePanel 已随导航 /about 卸载；下次 login 的 clearError 会清。
+		expect(store.errorMessage).toBe('Cannot update profile while signing out');
+	});
+
+	test('updateSettings 在 logout 进行中时直接返回并置 errorMessage', async () => {
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		patchCurrentUserSettings.mockResolvedValueOnce({ lang: 'en' });
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		const logoutP = store.logout();
+		await store.updateSettings({ lang: 'en' });
+
+		expect(patchCurrentUserSettings).not.toHaveBeenCalled();
+		expect(store.errorMessage).toBe('Cannot update settings while signing out');
+
+		resolveLogoutApi();
+		await logoutP;
+		expect(store.user).toBeNull();
+		// 同 updateProfile：守卫设的 errorMessage 在 logout 完成后保留
+		expect(store.errorMessage).toBe('Cannot update settings while signing out');
+	});
+
+	test('changePassword 在 logout 进行中时返回 false 并置 errorMessage（避免空 toast）', async () => {
+		let resolveLogoutApi;
+		logout.mockReturnValueOnce(new Promise((r) => { resolveLogoutApi = r; }));
+		changePassword.mockResolvedValueOnce({ message: 'ok' });
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		const logoutP = store.logout();
+		const ok = await store.changePassword({ oldPassword: 'a', newPassword: 'b' });
+
+		expect(ok).toBe(false);
+		expect(changePassword).not.toHaveBeenCalled();
+		expect(store.errorMessage).toBe('Cannot change password while signing out');
+
+		resolveLogoutApi();
+		await logoutP;
+		expect(store.errorMessage).toBe('Cannot change password while signing out');
 	});
 });

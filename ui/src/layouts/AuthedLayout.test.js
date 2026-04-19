@@ -7,6 +7,7 @@ const hoisted = vi.hoisted(() => ({
 	authStore: null, // 由 vi.mock 内 reactive 构造填充
 	sigConn: null,
 	sseInstances: [], // 每次 setup 调用 useClawStatusSse 追加一个
+	isLogoutInflightFn: null, // 测试驱动：返回 true/false 影响 __onSessionExpired 分支
 }));
 
 vi.mock('../stores/auth.store.js', async () => {
@@ -16,7 +17,11 @@ vi.mock('../stores/auth.store.js', async () => {
 		refreshSession: vi.fn(() => Promise.resolve()),
 		logout: vi.fn(() => Promise.resolve()),
 	});
-	return { useAuthStore: () => hoisted.authStore };
+	hoisted.isLogoutInflightFn = vi.fn(() => false);
+	return {
+		useAuthStore: () => hoisted.authStore,
+		isLogoutInflight: () => hoisted.isLogoutInflightFn(),
+	};
 });
 
 vi.mock('../stores/claws.store.js', () => ({
@@ -110,6 +115,9 @@ beforeEach(() => {
 	hoisted.sigConn.disconnect.mockReset();
 	hoisted.sseInstances = [];
 	vi.mocked(useClawStatusSse).mockClear();
+	hoisted.authStore.logout.mockClear();
+	hoisted.isLogoutInflightFn.mockReset();
+	hoisted.isLogoutInflightFn.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -230,5 +238,104 @@ describe('AuthedLayout 按登录态启停连接', () => {
 		expect(hoisted.sigConn.connect).not.toHaveBeenCalled();
 		expect(hoisted.sigConn.disconnect).not.toHaveBeenCalled();
 		expect(sse.start).not.toHaveBeenCalled();
+	});
+});
+
+describe('AuthedLayout 认证过期事件处理', () => {
+	test('正常路径：user 在登录态 + 无 logout 在飞 → 触发 logout 并 replace 到 /login', async () => {
+		hoisted.authStore.user = { id: 'u1' };
+		const routerReplace = vi.fn(() => Promise.resolve());
+		const wrapper = mount(AuthedLayout, {
+			global: {
+				stubs: {
+					DesktopSidebar: { template: '<div />' },
+					MobileBottomTabs: { template: '<div />' },
+					RouterView: { template: '<div />' },
+					UIcon: { template: '<i />' },
+				},
+				mocks: {
+					$route: { path: '/home', fullPath: '/home', meta: {} },
+					$router: { replace: routerReplace },
+				},
+			},
+		});
+		activeWrappers.push(wrapper);
+		await flushPromises();
+		hoisted.authStore.logout.mockClear();
+
+		window.dispatchEvent(new CustomEvent('auth:session-expired'));
+		await flushPromises();
+
+		expect(hoisted.authStore.logout).toHaveBeenCalledTimes(1);
+		expect(routerReplace).toHaveBeenCalledWith({
+			path: '/login',
+			query: { redirect: '/home' },
+		});
+		wrapper.unmount();
+	});
+
+	test('logout 已在飞时：__onSessionExpired 直接跳过，不二次触发 logout、不 replace', async () => {
+		// 场景：用户点登出 → logout API 自身 401 → http.js 同步派发 auth:session-expired
+		// 此时 logout 已写入 __logoutInflight，期望本事件处理器跳过以避免双重 router.replace
+		hoisted.authStore.user = { id: 'u1' };
+		hoisted.isLogoutInflightFn.mockReturnValueOnce(true);
+		const routerReplace = vi.fn(() => Promise.resolve());
+		const wrapper = mount(AuthedLayout, {
+			global: {
+				stubs: {
+					DesktopSidebar: { template: '<div />' },
+					MobileBottomTabs: { template: '<div />' },
+					RouterView: { template: '<div />' },
+					UIcon: { template: '<i />' },
+				},
+				mocks: {
+					$route: { path: '/home', fullPath: '/home', meta: {} },
+					$router: { replace: routerReplace },
+				},
+			},
+		});
+		activeWrappers.push(wrapper);
+		await flushPromises();
+		hoisted.authStore.logout.mockClear();
+		routerReplace.mockClear();
+
+		window.dispatchEvent(new CustomEvent('auth:session-expired'));
+		await flushPromises();
+
+		// 守卫生效：不应再发起第二次 logout，也不应自行 router.replace
+		expect(hoisted.authStore.logout).not.toHaveBeenCalled();
+		expect(routerReplace).not.toHaveBeenCalled();
+		// 守卫只应查 1 次锁（防御未来重构成双检）
+		expect(hoisted.isLogoutInflightFn).toHaveBeenCalledTimes(1);
+		wrapper.unmount();
+	});
+
+	test('user 为空时：__onSessionExpired 直接返回（未登录状态的冗余事件）', async () => {
+		hoisted.authStore.user = null;
+		const routerReplace = vi.fn(() => Promise.resolve());
+		const wrapper = mount(AuthedLayout, {
+			global: {
+				stubs: {
+					DesktopSidebar: { template: '<div />' },
+					MobileBottomTabs: { template: '<div />' },
+					RouterView: { template: '<div />' },
+					UIcon: { template: '<i />' },
+				},
+				mocks: {
+					$route: { path: '/about', fullPath: '/about', meta: {} },
+					$router: { replace: routerReplace },
+				},
+			},
+		});
+		activeWrappers.push(wrapper);
+		await flushPromises();
+		hoisted.authStore.logout.mockClear();
+
+		window.dispatchEvent(new CustomEvent('auth:session-expired'));
+		await flushPromises();
+
+		expect(hoisted.authStore.logout).not.toHaveBeenCalled();
+		expect(routerReplace).not.toHaveBeenCalled();
+		wrapper.unmount();
 	});
 });
