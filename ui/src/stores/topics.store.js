@@ -9,6 +9,8 @@ import { getReadyConn } from './get-ready-conn.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
 
 let _loadingPromise = null;
+/** per-claw 加载合流（clawId → Promise），与全量 _loadingPromise 互不干扰 */
+const _perClawLoading = new Map();
 
 /** 正在生成标题的 topicId 集合，防止并发请求 */
 const _generatingTopics = new Set();
@@ -16,6 +18,7 @@ const _generatingTopics = new Set();
 /** 重置模块级状态（logout / 测试） */
 export function __resetTopicsInternals() {
 	_loadingPromise = null;
+	_perClawLoading.clear();
 	_generatingTopics.clear();
 }
 
@@ -111,6 +114,69 @@ export const useTopicsStore = defineStore('topics', {
 			}
 			this.byId = newById;
 			console.debug('[topics] loadAll: merged %d topic(s) (queried %d claw(s))', Object.keys(newById).length, queriedClawIds.size);
+		},
+
+		/**
+		 * 按 claw 加载 topics。专为 per-claw 触发场景（DC 重连恢复 / 首次 init），
+		 * 避免 loadAllTopics() 在多 claw 错峰恢复时的 N² RPC 放大。
+		 * - 同 claw 并发调用合流到同一 promise
+		 * - 仅替换该 claw 的 topics，其他 claw 的旧数据保留
+		 * - fetch 失败保留旧 topics（不清空）
+		 * @param {string} clawId
+		 */
+		async loadTopicsForClaw(clawId) {
+			const id = String(clawId);
+			const inflight = _perClawLoading.get(id);
+			if (inflight) {
+				console.debug('[topics] loadForClaw: coalesced clawId=%s', id);
+				return inflight;
+			}
+			const conn = getReadyConn(id);
+			if (!conn) {
+				console.debug('[topics] loadForClaw: skipped (no connected) clawId=%s', id);
+				return;
+			}
+			const promise = this.__doLoadForClaw(id, conn).finally(() => {
+				_perClawLoading.delete(id);
+			});
+			_perClawLoading.set(id, promise);
+			return promise;
+		},
+		async __doLoadForClaw(id, conn) {
+			let topics;
+			try {
+				const res = await conn.request('coclaw.topics.list', { agentId: 'main' }, { timeout: 60_000 });
+				topics = Array.isArray(res?.topics) ? res.topics : [];
+			}
+			catch (err) {
+				console.warn('[topics] loadForClaw failed clawId=%s:', id, err);
+				return; // 保留旧 topics
+			}
+			const clawsStore = useClawsStore();
+			// fetch 期间 claw 可能被 SSE claw.unbound 移除（cleanupClawResources 已同步清空）
+			// → 此时不能把刚拉到的 topics 写回，否则成为"幽灵数据"
+			if (!clawsStore.byId[id]) {
+				console.debug('[topics] loadForClaw: claw removed during fetch clawId=%s', id);
+				return;
+			}
+			const newById = {};
+			for (const [tid, topic] of Object.entries(this.byId)) {
+				const bid = String(topic.clawId);
+				if (bid === id) continue; // 当前 claw 的旧 topic 用新结果替换
+				if (!clawsStore.byId[bid]) continue; // 顺手清理已不存在的 claw
+				newById[tid] = topic;
+			}
+			for (const topic of topics) {
+				newById[topic.topicId] = {
+					topicId: topic.topicId,
+					agentId: topic.agentId,
+					title: topic.title ?? null,
+					createdAt: topic.createdAt ?? 0,
+					clawId: id,
+				};
+			}
+			this.byId = newById;
+			console.debug('[topics] loadForClaw: merged %d topic(s) clawId=%s', topics.length, id);
 		},
 
 		/**

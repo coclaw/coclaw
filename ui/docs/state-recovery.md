@@ -128,7 +128,8 @@
 
 - **文件**：`stores/claws.store.js`（`__refreshIfStale`）
 - **触发**：RTC DataChannel 重建成功（`__ensureRtc` 或 `onRtcStateChange` 回调），且已初始化过（非首次），且断连时长 ≥ 5s（`BRIEF_DISCONNECT_MS`）
-- **行为**：重新 `loadAgents()`、`loadAllSessions()`、`loadAllTopics()`、`loadDashboard()`（claw 列表由 SSE 快照维护）
+- **行为**：仅刷新当前 claw —— `loadAgents(id)`、`loadSessionsForClaw(id)`、`loadTopicsForClaw(id)`、`loadDashboard(id)`（claw 列表由 SSE 快照维护）
+- **per-claw 局部刷新**：refresh / init 路径中的所有数据加载均按 claw 局部进行，避免多 claw 错峰恢复时全量横扫造成的 N² RPC 放大
 - **短暂抖动（< 5s）**：跳过刷新，避免无意义开销
 - **场景**：Web + Capacitor
 
@@ -136,7 +137,7 @@
 
 - **文件**：`stores/claws.store.js`（`__fullInit`）
 - **触发**：claw 首次 DC 就绪（`claw.initialized === false`）
-- **行为**：插件版本检查 → `loadAgents()` + `loadAllSessions()` + `loadAllTopics()`
+- **行为**：插件版本检查 → `loadAgents(id)` + `loadSessionsForClaw(id)` + `loadTopicsForClaw(id)` + `loadDashboard(id)`（per-claw，与 §3.1 一致）
 - **场景**：Web + Capacitor
 
 ### 3.3 connReady watcher 驱动消息加载
@@ -170,11 +171,11 @@
 - **意义**：Dashboard / Claws 数据不经 DC 推送，无 connReady 驱动，需显式前台恢复；同时桌面长驻用户可通过顶栏刷新按钮主动刷新
 - **场景**：Web + Capacitor
 
-### 3.7 loadAllSessions 增量合并
+### 3.7 sessions / topics 加载语义
 
-- **文件**：`stores/sessions.store.js`（`__doLoadAll`）
-- **设计**：加载时仅替换本次查询到的 claw 的 sessions，保留未查询 claw 的已有 sessions
-- **背景**：多 claw 分时重连时，先重连的 claw 触发 `loadAllSessions`，若整体替换会覆盖尚在重连中的 claw 的 sessions
+- **文件**：`stores/sessions.store.js`、`stores/topics.store.js`
+- **per-claw 路径**（重连恢复 / 首次 init）：`loadSessionsForClaw(id)` / `loadTopicsForClaw(id)` 仅替换该 claw 的数据，其他 claw 旧数据保留；同 claw 并发调用按 in-flight Map 合流；fetch 期间 claw 被移除则丢弃结果
+- **全量路径**（MainList 列表渲染）：`loadAllTopics()` 走全量增量合并——仅替换本次查询到的 claw 的 topics，未查询/失败的 claw 旧数据保留。`loadAllSessions()` 当前无生产调用方（保留为内部接口）
 - **附加**：无已连接 claw 时 skip 而非清空，避免短暂全断期间丢失数据
 - **场景**：Web + Capacitor
 

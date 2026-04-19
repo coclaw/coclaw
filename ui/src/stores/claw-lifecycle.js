@@ -45,23 +45,24 @@ function loadDashboardForClaw(id) {
 
 /**
  * claw 首次初始化：加载 agents（阻塞）+ sessions/topics/dashboard（fire-and-forget）
+ * 全部 per-claw，避免多 claw 错峰恢复时全量横扫造成的 N² RPC 放大。
  * @param {string} id - clawId
  */
 async function initClawResources(id) {
 	await useAgentsStore().loadAgents(id);
-	useSessionsStore().loadAllSessions().catch(() => {});
-	useTopicsStore().loadAllTopics().catch(() => {});
+	useSessionsStore().loadSessionsForClaw(id).catch(() => {});
+	useTopicsStore().loadTopicsForClaw(id).catch(() => {});
 	useDashboardStore().loadDashboard(id).catch(() => {});
 }
 
 /**
- * RTC 长断连恢复后刷新所有子 store 数据
+ * RTC 长断连恢复后刷新该 claw 的子 store 数据（per-claw 局部刷新）
  * @param {string} id - clawId
  */
 function refreshClawResources(id) {
 	useAgentsStore().loadAgents(id).catch(() => {});
-	useSessionsStore().loadAllSessions().catch(() => {});
-	useTopicsStore().loadAllTopics().catch(() => {});
+	useSessionsStore().loadSessionsForClaw(id).catch(() => {});
+	useTopicsStore().loadTopicsForClaw(id).catch(() => {});
 	useDashboardStore().loadDashboard(id).catch(() => {});
 }
 

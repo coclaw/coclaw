@@ -281,7 +281,7 @@ ChatPage 的 `__handleForegroundResume` 在 WS 未断连时独立刷新数据（
 
 | 数据 | Store | 离线行为 | 重连行为 |
 |------|-------|---------|---------|
-| Topic list | `topicsStore.byId` | 保留（增量合并，离线不清除） | `__refreshIfStale` / `__fullInit` 触发 `loadAllTopics()` |
+| Topic list | `topicsStore.byId` | 保留（增量合并，离线不清除） | `__refreshIfStale` / `__fullInit` 触发 `loadTopicsForClaw(id)`（per-claw） |
 | Chat/topic content | `chatStoreManager` Map | 保留（实例留在 Map 中） | ChatPage `connReady` watcher 触发 silent refresh |
 | Agent items | `agentsStore.byClaw` | 保留（离线不删除，重连后替换） | `__refreshIfStale` / `__fullInit` 触发 `loadAgents()` |
 | Dashboard | `dashboardStore.byClaw` | 保留（离线不清除，重连后替换） | `__refreshIfStale` / `__fullInit` 触发 `loadDashboard()` |

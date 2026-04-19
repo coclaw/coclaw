@@ -12,10 +12,12 @@ vi.mock('./claws.store.js', () => ({
 // mock 子 store
 const mockRemoveSessionsByBotId = vi.fn();
 const mockLoadAllSessions = vi.fn().mockResolvedValue();
+const mockLoadSessionsForClaw = vi.fn().mockResolvedValue();
 vi.mock('./sessions.store.js', () => ({
 	useSessionsStore: () => ({
 		removeSessionsByClawId: mockRemoveSessionsByBotId,
 		loadAllSessions: mockLoadAllSessions,
+		loadSessionsForClaw: mockLoadSessionsForClaw,
 	}),
 }));
 
@@ -50,10 +52,12 @@ vi.mock('./dashboard.store.js', () => ({
 
 const mockTopicsRemoveByBot = vi.fn();
 const mockLoadAllTopics = vi.fn().mockResolvedValue();
+const mockLoadTopicsForClaw = vi.fn().mockResolvedValue();
 vi.mock('./topics.store.js', () => ({
 	useTopicsStore: () => ({
 		removeByClaw: mockTopicsRemoveByBot,
 		loadAllTopics: mockLoadAllTopics,
+		loadTopicsForClaw: mockLoadTopicsForClaw,
 	}),
 }));
 
@@ -125,13 +129,19 @@ describe('loadDashboardForClaw', () => {
 });
 
 describe('initClawResources', () => {
-	test('await loadAgents 并 fire-and-forget 其他三个', async () => {
+	test('await loadAgents 并 per-claw fire-and-forget 其他三个', async () => {
 		await capture.hooks.initClawResources('bot-5');
 
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-5');
-		expect(mockLoadAllSessions).toHaveBeenCalled();
-		expect(mockLoadAllTopics).toHaveBeenCalled();
+		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-5');
+		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-5');
 		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-5');
+	});
+
+	test('不调用全量加载接口（避免多 claw 错峰恢复时 N² RPC 放大）', async () => {
+		await capture.hooks.initClawResources('bot-5');
+		expect(mockLoadAllSessions).not.toHaveBeenCalled();
+		expect(mockLoadAllTopics).not.toHaveBeenCalled();
 	});
 
 	test('loadAgents 失败时抛出异常（不被 catch 吞没）', async () => {
@@ -140,8 +150,8 @@ describe('initClawResources', () => {
 	});
 
 	test('fire-and-forget 调用失败不影响整体（被 .catch 吞没）', async () => {
-		mockLoadAllSessions.mockRejectedValueOnce(new Error('session fail'));
-		mockLoadAllTopics.mockRejectedValueOnce(new Error('topic fail'));
+		mockLoadSessionsForClaw.mockRejectedValueOnce(new Error('session fail'));
+		mockLoadTopicsForClaw.mockRejectedValueOnce(new Error('topic fail'));
 		mockLoadDashboard.mockRejectedValueOnce(new Error('dash fail'));
 
 		// 不应抛出
@@ -150,19 +160,25 @@ describe('initClawResources', () => {
 });
 
 describe('refreshClawResources', () => {
-	test('全部 fire-and-forget 并带 .catch', () => {
+	test('全部 per-claw fire-and-forget 并带 .catch', () => {
 		capture.hooks.refreshClawResources('bot-6');
 
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-6');
-		expect(mockLoadAllSessions).toHaveBeenCalled();
-		expect(mockLoadAllTopics).toHaveBeenCalled();
+		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-6');
+		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-6');
 		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-6');
+	});
+
+	test('不调用全量加载接口', () => {
+		capture.hooks.refreshClawResources('bot-6');
+		expect(mockLoadAllSessions).not.toHaveBeenCalled();
+		expect(mockLoadAllTopics).not.toHaveBeenCalled();
 	});
 
 	test('所有调用失败时不抛出异常', () => {
 		mockLoadAgents.mockRejectedValueOnce(new Error('fail'));
-		mockLoadAllSessions.mockRejectedValueOnce(new Error('fail'));
-		mockLoadAllTopics.mockRejectedValueOnce(new Error('fail'));
+		mockLoadSessionsForClaw.mockRejectedValueOnce(new Error('fail'));
+		mockLoadTopicsForClaw.mockRejectedValueOnce(new Error('fail'));
 		mockLoadDashboard.mockRejectedValueOnce(new Error('fail'));
 
 		expect(() => capture.hooks.refreshClawResources('bot-6')).not.toThrow();

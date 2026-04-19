@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { useSessionsStore } from './sessions.store.js';
+import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
 
 const mockConnections = new Map();
 
@@ -57,6 +57,7 @@ describe('sessions store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
+		__resetSessionsInternals(); // 清模块级 in-flight Map，防跨用例污染
 		vi.clearAllMocks();
 	});
 
@@ -507,6 +508,202 @@ describe('sessions store', () => {
 			sessionKey: 'agent:assistant:main',
 			clawId: 'bot-1',
 			agentId: 'assistant',
+		});
+	});
+
+	describe('loadSessionsForClaw (per-claw)', () => {
+		test('仅替换该 claw 的 sessions，其他 claw 的旧数据保留', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'Bot 1', online: true },
+				{ id: 'bot-2', name: 'Bot 2', online: true },
+			]);
+			const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
+			const conn2 = mockConn({ 'agent:main:main': 'sid-2' });
+			setConn('bot-1', conn1);
+			setConn('bot-2', conn2);
+
+			const store = useSessionsStore();
+			await store.loadAllSessions();
+			expect(store.items).toHaveLength(2);
+
+			// 只刷 bot-1：bot-1 sessionId 变化，bot-2 应原封不动
+			conn1.request.mockResolvedValue({ sessionId: 'sid-1-new' });
+			await store.loadSessionsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(2);
+			expect(store.items.find((s) => s.clawId === 'bot-1').sessionId).toBe('sid-1-new');
+			expect(store.items.find((s) => s.clawId === 'bot-2').sessionId).toBe('sid-2');
+			// bot-2 不应被打扰
+			expect(conn2.request).toHaveBeenCalledTimes(1); // 仅 loadAllSessions 那次
+		});
+
+		test('无连接时跳过，不动 items', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
+			const conn = mockConn({ 'agent:main:main': 'sid-1' });
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.loadAllSessions();
+			expect(store.items).toHaveLength(1);
+
+			// 断连
+			clawsStore.byId['bot-1'].dcReady = false;
+			await store.loadSessionsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(1); // 旧数据保留
+			expect(conn.request).toHaveBeenCalledTimes(1); // 没再发请求
+		});
+
+		test('fetch 抛出时保留旧 sessions', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
+			const conn = mockConn({ 'agent:main:main': 'sid-1' });
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.loadAllSessions();
+			expect(store.items).toHaveLength(1);
+
+			vi.spyOn(store, '__fetchSessionsForClaw').mockRejectedValueOnce(new Error('boom'));
+			await store.loadSessionsForClaw('bot-1');
+
+			// 旧数据保留
+			expect(store.items).toHaveLength(1);
+			expect(store.items[0].sessionId).toBe('sid-1');
+		});
+
+		test('同 claw 并发调用合流到同一 promise', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
+			const conn = mockConn({ 'agent:main:main': 'sid-1' });
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await Promise.all([
+				store.loadSessionsForClaw('bot-1'),
+				store.loadSessionsForClaw('bot-1'),
+				store.loadSessionsForClaw('bot-1'),
+			]);
+
+			// chat.history 只发一次
+			expect(conn.request).toHaveBeenCalledTimes(1);
+			expect(store.items).toHaveLength(1);
+		});
+
+		test('不同 claw 并发不互相合流', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-2', name: 'B2', online: true },
+			]);
+			const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
+			const conn2 = mockConn({ 'agent:main:main': 'sid-2' });
+			setConn('bot-1', conn1);
+			setConn('bot-2', conn2);
+
+			const store = useSessionsStore();
+			await Promise.all([
+				store.loadSessionsForClaw('bot-1'),
+				store.loadSessionsForClaw('bot-2'),
+			]);
+
+			expect(conn1.request).toHaveBeenCalledTimes(1);
+			expect(conn2.request).toHaveBeenCalledTimes(1);
+			expect(store.items).toHaveLength(2);
+		});
+
+		test('clawId 归一化为 string', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 42, name: 'B', online: true }]);
+			const conn = mockConn({ 'agent:main:main': 'sid-1' });
+			setConn('42', conn);
+
+			const store = useSessionsStore();
+			await store.loadSessionsForClaw(42);
+
+			expect(store.items).toHaveLength(1);
+			expect(store.items[0].clawId).toBe('42');
+		});
+
+		test('fetch 返回空数组时该 claw 的旧 sessions 被清空', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn({ 'agent:main:main': 'sid-1' });
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.loadAllSessions();
+			expect(store.items).toHaveLength(1);
+
+			// 服务端不再有 session（chat.history 返回空 sessionId）
+			conn.request.mockResolvedValue({ sessionId: '' });
+			await store.loadSessionsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(0);
+		});
+
+		test('fetch 期间目标 claw 被移除时丢弃结果（防幽灵数据）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-keep', name: 'Keep', online: true },
+			]);
+			// 准备 deferred conn：手动控制 chat.history 何时 resolve
+			let resolveReq;
+			const deferredConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', deferredConn);
+			const connKeep = mockConn({ 'agent:main:main': 'sid-keep' });
+			setConn('bot-keep', connKeep);
+
+			const store = useSessionsStore();
+			// 先把 bot-keep 的 sessions 装好，验证不被波及
+			await store.loadSessionsForClaw('bot-keep');
+			expect(store.items).toHaveLength(1);
+
+			// 触发 bot-1 的 loadForClaw（进入 await fetch 状态）
+			const inflight = store.loadSessionsForClaw('bot-1');
+
+			// 模拟 SSE claw.unbound：同步移除 bot-1（与 cleanupClawResources 等价）
+			delete clawsStore.byId['bot-1'];
+			store.removeSessionsByClawId('bot-1');
+
+			// fetch 返回结果
+			resolveReq({ sessionId: 'sid-1' });
+			await inflight;
+
+			// bot-1 已被移除，刚 fetch 到的数据不应写回
+			expect(store.items.find((s) => s.clawId === 'bot-1')).toBeUndefined();
+			// bot-keep 不受影响
+			expect(store.items.find((s) => s.clawId === 'bot-keep')?.sessionId).toBe('sid-keep');
+		});
+
+		test('顺手清理 clawsStore 中已不存在的 claw 的旧 sessions', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-gone', name: 'Gone', online: true },
+			]);
+			const conn1 = mockConn({ 'agent:main:main': 'sid-1' });
+			const connGone = mockConn({ 'agent:main:main': 'sid-gone' });
+			setConn('bot-1', conn1);
+			setConn('bot-gone', connGone);
+
+			const store = useSessionsStore();
+			await store.loadAllSessions();
+			expect(store.items).toHaveLength(2);
+
+			// bot-gone 从 clawsStore 移除（模拟 SSE 推送 unbind）
+			delete clawsStore.byId['bot-gone'];
+
+			await store.loadSessionsForClaw('bot-1');
+			expect(store.items).toHaveLength(1);
+			expect(store.items[0].clawId).toBe('bot-1');
 		});
 	});
 });

@@ -142,8 +142,8 @@ describe('addOrUpdateClaw', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(),
@@ -159,8 +159,8 @@ describe('addOrUpdateClaw', () => {
 
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('10');
-			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
-			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+			expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('10');
+			expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('10');
 		});
 	});
 
@@ -170,8 +170,8 @@ describe('addOrUpdateClaw', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = { on: vi.fn(), off: vi.fn(), request: vi.fn().mockResolvedValue({}), rtc: null, clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -179,8 +179,8 @@ describe('addOrUpdateClaw', () => {
 		store.addOrUpdateClaw({ id: '11', name: 'AlreadyReady', online: true });
 		await vi.waitFor(() => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('11');
-			expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
-			expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+			expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('11');
+			expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('11');
 		});
 	});
 
@@ -421,8 +421,8 @@ describe('updateClawOnline', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(),
@@ -632,8 +632,8 @@ describe('WebRTC 集成', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
@@ -656,8 +656,8 @@ describe('WebRTC 集成', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
@@ -683,8 +683,8 @@ describe('WebRTC 集成', () => {
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(useSessionsStore(), 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(useTopicsStore(), 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
@@ -714,8 +714,8 @@ describe('WebRTC 集成', () => {
 		checkPluginVersion.mockResolvedValue({ ok: true, version: '0.6.0', clawVersion: '2026.3.14', name: null, hostName: 'h' });
 		const store = useClawsStore();
 		vi.spyOn(useAgentsStore(), 'loadAgents').mockResolvedValue();
-		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(useSessionsStore(), 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(useTopicsStore(), 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeRtc = { isReady: true };
 		const fakeConn = {
@@ -1050,8 +1050,8 @@ describe('__bridgeConn 事件注册', () => {
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(useSessionsStore(), 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(useTopicsStore(), 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = { on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn(), request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -1846,8 +1846,8 @@ describe('__refreshIfStale', () => {
 		const topicsStore = useTopicsStore();
 		const dashboardStore = useDashboardStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
 
 		store.setClaws([{ id: '20', name: 'Bot', online: true }]);
@@ -1857,8 +1857,8 @@ describe('__refreshIfStale', () => {
 		store.__refreshIfStale('20');
 
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
-		expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
-		expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('20');
+		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('20');
 		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('20');
 		// disconnectedAt 被重置
 		expect(store.byId['20'].disconnectedAt).toBe(0);
@@ -1870,8 +1870,8 @@ describe('__refreshIfStale', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		store.setClaws([{ id: '21', name: 'Bot', online: true }]);
 		store.byId['21'].initialized = true;
@@ -1880,8 +1880,8 @@ describe('__refreshIfStale', () => {
 		store.__refreshIfStale('21');
 
 		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
-		expect(sessionsStore.loadAllSessions).not.toHaveBeenCalled();
-		expect(topicsStore.loadAllTopics).not.toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).not.toHaveBeenCalled();
+		expect(topicsStore.loadTopicsForClaw).not.toHaveBeenCalled();
 	});
 
 	test('disconnectedAt = 0 时不刷新', () => {
@@ -1921,8 +1921,8 @@ describe('__ensureRtc 后通过 __refreshIfStale 刷新', () => {
 		const topicsStore = useTopicsStore();
 		const dashboardStore = useDashboardStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
 
 		const fakeConn = {
@@ -1937,8 +1937,8 @@ describe('__ensureRtc 后通过 __refreshIfStale 刷新', () => {
 		await store.__ensureRtc('20');
 
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
-		expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
-		expect(topicsStore.loadAllTopics).toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('20');
+		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('20');
 		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('20');
 	});
 
@@ -1948,8 +1948,8 @@ describe('__ensureRtc 后通过 __refreshIfStale 刷新', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
@@ -1963,8 +1963,8 @@ describe('__ensureRtc 后通过 __refreshIfStale 刷新', () => {
 		await store.__ensureRtc('21');
 
 		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
-		expect(sessionsStore.loadAllSessions).not.toHaveBeenCalled();
-		expect(topicsStore.loadAllTopics).not.toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).not.toHaveBeenCalled();
+		expect(topicsStore.loadTopicsForClaw).not.toHaveBeenCalled();
 	});
 });
 
@@ -2011,8 +2011,8 @@ describe('__fullInit 失败重试', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(),
@@ -2072,8 +2072,8 @@ describe('__fullInit 失败重试', () => {
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(useSessionsStore(), 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(useTopicsStore(), 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(useSessionsStore(), 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(useTopicsStore(), 'loadTopicsForClaw').mockResolvedValue();
 
 		// 第一次 fullInit 用一个永远 pending 的 promise，稍后手动 reject
 		let rejectFirst;
@@ -2720,7 +2720,7 @@ describe('dcReady 响应式标记', () => {
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
 
 		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
 		store.byId['1'].initialized = true;
@@ -2734,7 +2734,7 @@ describe('dcReady 响应式标记', () => {
 		cbs.onRtcStateChange('connected', null);
 		expect(store.byId['1'].dcReady).toBe(true);
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
-		expect(sessionsStore.loadAllSessions).toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
 		expect(store.byId['1'].disconnectedAt).toBe(0);
 	});
 
@@ -3320,8 +3320,8 @@ describe('__fullInit 插件版本检查分支', () => {
 		const sessionsStore = useSessionsStore();
 		const topicsStore = useTopicsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
-		vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
 
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(),

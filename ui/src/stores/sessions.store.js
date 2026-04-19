@@ -6,10 +6,13 @@ import { getReadyConn } from './get-ready-conn.js';
 
 // 模块级变量，避免被 Pinia reactive 代理包裹
 let _loadingPromise = null;
+/** per-claw 加载合流（clawId → Promise），与全量 _loadingPromise 互不干扰 */
+const _perClawLoading = new Map();
 
 /** 重置模块级状态（logout / 测试） */
 export function __resetSessionsInternals() {
 	_loadingPromise = null;
+	_perClawLoading.clear();
 }
 
 export const useSessionsStore = defineStore('sessions', {
@@ -93,6 +96,70 @@ export const useSessionsStore = defineStore('sessions', {
 			}
 			this.items = merged;
 			console.debug('[sessions] loadAll: merged %d session(s) (queried %d claw(s))', merged.length, queriedClawIds.size);
+		},
+		/**
+		 * 按 claw 加载 sessions。专为 per-claw 触发场景（DC 重连恢复 / 首次 init），
+		 * 避免 loadAllSessions() 在多 claw 错峰恢复时的 N² RPC 放大。
+		 * - 同 claw 并发调用合流到同一 promise
+		 * - 仅替换该 claw 的 sessions，其他 claw 的旧数据保留
+		 * - fetch 失败保留旧 sessions（不清空）
+		 * @param {string} clawId
+		 */
+		async loadSessionsForClaw(clawId) {
+			const id = String(clawId);
+			const inflight = _perClawLoading.get(id);
+			if (inflight) {
+				console.debug('[sessions] loadForClaw: coalesced clawId=%s', id);
+				return inflight;
+			}
+			if (!getReadyConn(id)) {
+				console.debug('[sessions] loadForClaw: skipped (no connected) clawId=%s', id);
+				return;
+			}
+			const promise = this.__doLoadForClaw(id).finally(() => {
+				_perClawLoading.delete(id);
+			});
+			_perClawLoading.set(id, promise);
+			return promise;
+		},
+		async __doLoadForClaw(id) {
+			let items;
+			try {
+				items = await this.__fetchSessionsForClaw(id);
+			}
+			catch (err) {
+				// 防御：__fetchSessionsForClaw 当前不会抛，万一未来改动抛了也保留旧数据
+				console.warn('[sessions] loadForClaw failed clawId=%s:', id, err);
+				return;
+			}
+			const clawsStore = useClawsStore();
+			// fetch 期间 claw 可能被 SSE claw.unbound 移除（cleanupClawResources 已同步清空）
+			// → 此时不能把刚拉到的 sessions 写回，否则成为"幽灵数据"
+			if (!clawsStore.byId[id]) {
+				console.debug('[sessions] loadForClaw: claw removed during fetch clawId=%s', id);
+				return;
+			}
+			const seen = new Set();
+			const merged = [];
+			for (const old of this.items) {
+				const bid = String(old.clawId);
+				if (bid === id) continue; // 当前 claw 的旧记录用新结果替换
+				if (!clawsStore.byId[bid]) continue; // 顺手清理已不存在的 claw
+				const key = `${bid}:${old.sessionKey}`;
+				if (!seen.has(key)) {
+					seen.add(key);
+					merged.push(old);
+				}
+			}
+			for (const item of items) {
+				const key = `${item.clawId}:${item.sessionKey}`;
+				if (!seen.has(key)) {
+					seen.add(key);
+					merged.push(item);
+				}
+			}
+			this.items = merged;
+			console.debug('[sessions] loadForClaw: merged %d session(s) clawId=%s', items.length, id);
 		},
 		async __fetchSessionsForClaw(clawId) {
 			const conn = getReadyConn(clawId);

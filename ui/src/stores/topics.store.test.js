@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { useTopicsStore } from './topics.store.js';
+import { useTopicsStore, __resetTopicsInternals } from './topics.store.js';
 
 const mockConnections = new Map();
 
@@ -52,6 +52,7 @@ describe('topics store', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
+		__resetTopicsInternals(); // 清模块级 in-flight Map，防跨用例污染
 		vi.clearAllMocks();
 	});
 
@@ -482,5 +483,211 @@ describe('topics store', () => {
 		const store = useTopicsStore();
 		store.byId = toById([{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100, clawId: 'b1' }]);
 		expect(store.findTopic('nonexistent')).toBeNull();
+	});
+
+	describe('loadTopicsForClaw (per-claw)', () => {
+		test('仅替换该 claw 的 topics，其他 claw 的旧数据保留', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-2', name: 'B2', online: true },
+			]);
+			const conn1 = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'T1', createdAt: 100 }] });
+			const conn2 = mockConn({ topics: [{ topicId: 't2', agentId: 'main', title: 'T2', createdAt: 200 }] });
+			setConn('bot-1', conn1);
+			setConn('bot-2', conn2);
+
+			const store = useTopicsStore();
+			await store.loadAllTopics();
+			expect(store.items).toHaveLength(2);
+
+			// bot-1 新增一个 topic，bot-2 不变
+			conn1.request.mockResolvedValue({
+				topics: [
+					{ topicId: 't1', agentId: 'main', title: 'T1', createdAt: 100 },
+					{ topicId: 't1b', agentId: 'main', title: 'T1b', createdAt: 150 },
+				],
+			});
+			await store.loadTopicsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(3);
+			expect(store.byId['t1']).toBeDefined();
+			expect(store.byId['t1b']).toBeDefined();
+			expect(store.byId['t2']).toBeDefined();
+			expect(store.byId['t2'].title).toBe('T2');
+			expect(conn2.request).toHaveBeenCalledTimes(1); // 没再打扰 bot-2
+		});
+
+		test('该 claw 服务端删除某 topic 后，对应条目被移除', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn({
+				topics: [
+					{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 },
+					{ topicId: 't2', agentId: 'main', title: 'B', createdAt: 200 },
+				],
+			});
+			setConn('bot-1', conn);
+
+			const store = useTopicsStore();
+			await store.loadAllTopics();
+			expect(store.items).toHaveLength(2);
+
+			// 服务端只剩 t1
+			conn.request.mockResolvedValue({
+				topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }],
+			});
+			await store.loadTopicsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(1);
+			expect(store.byId['t1']).toBeDefined();
+			expect(store.byId['t2']).toBeUndefined();
+		});
+
+		test('无连接时跳过，不动 byId', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
+			setConn('bot-1', conn);
+
+			const store = useTopicsStore();
+			await store.loadAllTopics();
+			expect(store.items).toHaveLength(1);
+
+			clawsStore.byId['bot-1'].dcReady = false;
+			await store.loadTopicsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(1); // 旧数据保留
+			expect(conn.request).toHaveBeenCalledTimes(1); // 没再发请求
+		});
+
+		test('RPC 失败时保留旧 topics', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
+			setConn('bot-1', conn);
+
+			const store = useTopicsStore();
+			await store.loadAllTopics();
+			expect(store.items).toHaveLength(1);
+
+			conn.request.mockRejectedValueOnce(new Error('rpc error'));
+			await store.loadTopicsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(1); // 旧数据保留
+			expect(store.byId['t1'].title).toBe('A');
+		});
+
+		test('同 claw 并发调用合流到同一 promise', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
+			setConn('bot-1', conn);
+
+			const store = useTopicsStore();
+			await Promise.all([
+				store.loadTopicsForClaw('bot-1'),
+				store.loadTopicsForClaw('bot-1'),
+				store.loadTopicsForClaw('bot-1'),
+			]);
+
+			expect(conn.request).toHaveBeenCalledTimes(1);
+			expect(store.items).toHaveLength(1);
+		});
+
+		test('不同 claw 并发不互相合流', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-2', name: 'B2', online: true },
+			]);
+			const conn1 = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
+			const conn2 = mockConn({ topics: [{ topicId: 't2', agentId: 'main', title: 'B', createdAt: 200 }] });
+			setConn('bot-1', conn1);
+			setConn('bot-2', conn2);
+
+			const store = useTopicsStore();
+			await Promise.all([
+				store.loadTopicsForClaw('bot-1'),
+				store.loadTopicsForClaw('bot-2'),
+			]);
+
+			expect(conn1.request).toHaveBeenCalledTimes(1);
+			expect(conn2.request).toHaveBeenCalledTimes(1);
+			expect(store.items).toHaveLength(2);
+		});
+
+		test('顺手清理已不存在的 claw 的旧 topics', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-gone', name: 'Gone', online: true },
+			]);
+			const conn1 = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
+			const connGone = mockConn({ topics: [{ topicId: 't-gone', agentId: 'main', title: 'X', createdAt: 50 }] });
+			setConn('bot-1', conn1);
+			setConn('bot-gone', connGone);
+
+			const store = useTopicsStore();
+			await store.loadAllTopics();
+			expect(store.items).toHaveLength(2);
+
+			delete clawsStore.byId['bot-gone'];
+			await store.loadTopicsForClaw('bot-1');
+
+			expect(store.items).toHaveLength(1);
+			expect(store.byId['t1']).toBeDefined();
+			expect(store.byId['t-gone']).toBeUndefined();
+		});
+
+		test('clawId 归一化为 string', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 42, name: 'B', online: true }]);
+			const conn = mockConn({ topics: [{ topicId: 't1', agentId: 'main', title: 'A', createdAt: 100 }] });
+			setConn('42', conn);
+
+			const store = useTopicsStore();
+			await store.loadTopicsForClaw(42);
+
+			expect(store.items).toHaveLength(1);
+			expect(store.byId['t1'].clawId).toBe('42');
+		});
+
+		test('fetch 期间目标 claw 被移除时丢弃结果（防幽灵数据）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-keep', name: 'Keep', online: true },
+			]);
+			let resolveReq;
+			const deferredConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', deferredConn);
+			const connKeep = mockConn({ topics: [{ topicId: 't-keep', agentId: 'main', title: 'Keep', createdAt: 100 }] });
+			setConn('bot-keep', connKeep);
+
+			const store = useTopicsStore();
+			await store.loadTopicsForClaw('bot-keep');
+			expect(store.items).toHaveLength(1);
+
+			// 触发 bot-1 的 loadForClaw 进入 await fetch
+			const inflight = store.loadTopicsForClaw('bot-1');
+
+			// 模拟 SSE claw.unbound：同步移除 bot-1
+			delete clawsStore.byId['bot-1'];
+			store.removeByClaw('bot-1');
+
+			// fetch 返回结果
+			resolveReq({ topics: [{ topicId: 't-ghost', agentId: 'main', title: 'Ghost', createdAt: 200 }] });
+			await inflight;
+
+			// bot-1 已被移除，刚 fetch 到的数据不应写回
+			expect(store.byId['t-ghost']).toBeUndefined();
+			// bot-keep 不受影响
+			expect(store.byId['t-keep']).toBeDefined();
+		});
 	});
 });
