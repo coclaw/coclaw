@@ -11,6 +11,12 @@
 
 binary 解析由 pion-node 内部处理（`PION_IPC_BIN` env → npm 平台包 → PATH），插件不参与。
 
+## WebRTC 实现路径
+
+- 主力实现为 **pion**，pion 加载失败时回退到 **werift**。
+- `ndc`（node-datachannel）的代码路径（`src/webrtc/ndc-preloader.js`）仍保留，但 npm 依赖和 vendor 预编译包已于 2026-04-19 摘除 —— 运行时必然走 fallback 到 werift。此段属过渡期残留，待整体清理时与 werift 一并移除。
+- **后续行为分析、设计决策、资源模型（如 coturn TURN 占用）均只考虑 pion**，不必再为 ndc/werift 做额外评估或兼容设计。
+
 ## 绑定信息存储
 
 - 绑定信息存储在 **`~/.openclaw/coclaw/bindings.json`**（通过 `resolveStateDir()` + channel ID 组合路径），**不存储在 `openclaw.json` 中**。

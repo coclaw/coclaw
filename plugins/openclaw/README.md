@@ -172,22 +172,14 @@ openclaw gateway call coclaw.upgradeHealth --json
 
 ## WebRTC 实现
 
-插件支持两个 WebRTC 实现，运行时自动选择：
+插件在运行时按优先级选择 WebRTC 实现：
 
-1. **node-datachannel**（首选）— 基于 libdatachannel 的工业级实现，通过 vendor 预编译 native binary 部署。
-2. **werift**（回退）— 纯 JavaScript 实现，作为 node-datachannel 加载失败时的兜底。
+1. **pion**（主力）— 通过 `@coclaw/pion-node` SDK 驱动 Go 侧 pion-ipc 进程，实现完整 WebRTC 能力。
+2. **werift**（回退）— 纯 JavaScript 实现，作为 pion 加载失败时的兜底。
 
-选择结果通过 remoteLog 上报（`ndc.loaded` 或 `ndc.using-werift`）。
+选择结果通过 `bridge.started` / `coclaw.env impl=...` 日志上报。
 
-### vendor 预编译包
-
-由于 OpenClaw 使用 `--ignore-scripts` 安装插件，node-datachannel 的 native binary 需通过 vendor 预编译包提供：
-
-```bash
-bash scripts/download-ndc-prebuilds.sh   # 下载 5 平台预编译包到 vendor/ndc-prebuilds/
-```
-
-支持的平台：linux-x64、linux-arm64、darwin-x64、darwin-arm64、win32-x64。vendor 目录不入 git，通过 npm publish 的 `files` 字段包含在发布包中。
+> `ndc-preloader.js`（node-datachannel 路径）的代码仍保留但已摘除 `node-datachannel` 依赖和 vendor 预编译包（2026-04-19）——运行时必然走 fallback 到 werift，待 pion 在全部线上平台稳定观察期结束后与 werift 一并移除。
 
 ## 运行与排障日志
 

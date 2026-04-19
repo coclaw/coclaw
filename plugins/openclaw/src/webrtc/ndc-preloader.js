@@ -46,6 +46,7 @@ export function defaultResolvePaths(platformKey, pluginRoot) {
 	// 定位 node-datachannel 包根：从入口路径向上查找 package.json
 	const require = createRequire(nodePath.join(pluginRoot, 'package.json'));
 	const entryPath = require.resolve('node-datachannel');
+	/* c8 ignore start -- node-datachannel 依赖已于 2026-04-19 摘除，以下路径仅在 ndc 实际安装时命中；代码保留作为过渡期 fallback 自然失败锚点，待 ndc-preloader 整体清理时一并删除 */
 	let pkgRoot = nodePath.dirname(entryPath);
 	while (pkgRoot !== nodePath.dirname(pkgRoot)) {
 		try {
@@ -58,6 +59,7 @@ export function defaultResolvePaths(platformKey, pluginRoot) {
 	const dest = nodePath.join(destDir, 'node_datachannel.node');
 
 	return { src, dest, destDir };
+	/* c8 ignore stop */
 }
 
 /**
