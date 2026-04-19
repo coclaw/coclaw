@@ -6,13 +6,13 @@ import { remoteLog } from '../remote-log.js';
 // 用于诊断 dump：过大会撑爆 remoteLog 单帧，20 足以覆盖典型多文件传输会话。
 const FILE_CHANNEL_HISTORY_LIMIT = 20;
 
-// Failed session 保留 24 小时，支持 Capacitor 长时间后台恢复后 ICE restart。
+// Failed session 保留 12 小时，支持 Capacitor 后台恢复后 ICE restart。
 // 超时后 session 被回收释放 IPC listeners 和 Go 侧资源。
-const FAILED_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const FAILED_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 // Session 总数上限（活跃 + failed）。溢出时淘汰最旧的 failed session。
-// 20 足以覆盖多 UI 实例（浏览器多标签 + 移动端）的典型场景。
-const MAX_SESSIONS = 20;
+// 10 足以覆盖多 UI 实例（浏览器多标签 + 移动端）的典型场景。
+const MAX_SESSIONS = 10;
 
 /**
  * 管理多个 WebRTC PeerConnection（以 connId 为粒度）。
