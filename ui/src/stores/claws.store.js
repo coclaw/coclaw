@@ -30,6 +30,13 @@ const _probeInProgress = new Map();
 let _backgroundAt = 0;
 /** 生命周期事件 window handler 引用（用于测试场景下清理旧 store 的注册） */
 let _lifecycleHandlers = null;
+/**
+ * 生命周期 window 监听器是否已挂载。
+ * 必须用模块级变量（非 store 实例字段），否则 logout 时 `$reset()` 只清 state，
+ * 这个标记会残留在 store 实例上，重新登录时 `__bridgeLifecycle` 直接短路返回，
+ * 监听器永不再挂，`app:foreground` / `network:online` 驱动的 RTC 恢复全部失效。
+ */
+let _lifecycleBridged = false;
 
 /**
  * 两层重试结构：
@@ -78,6 +85,7 @@ export function __resetClawStoreInternals() {
 		window.removeEventListener('app:foreground', _lifecycleHandlers.fg);
 	}
 	_lifecycleHandlers = null;
+	_lifecycleBridged = false;
 }
 // 保留旧名兼容测试导入
 export { __resetClawStoreInternals as __resetAwaitingConnIds };
@@ -292,8 +300,8 @@ export const useClawsStore = defineStore('claws', {
 		 * （来自前一实例），先移除再重新注册，避免多 store 共存时的事件分发污染。
 		 */
 		__bridgeLifecycle() {
-			if (this.__lifecycleBridged) return;
-			this.__lifecycleBridged = true;
+			if (_lifecycleBridged) return;
+			_lifecycleBridged = true;
 			if (typeof window === 'undefined') return;
 
 			if (_lifecycleHandlers) {

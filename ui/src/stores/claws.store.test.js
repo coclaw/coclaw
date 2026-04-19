@@ -1836,6 +1836,45 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		vi.useRealTimers();
 	});
 
+	// 回归：登出清理后再次桥接，监听器必须重新挂回来
+	// 历史 bug：__lifecycleBridged 曾挂在 store 实例上，$reset 不清，重登录时短路返回，
+	// app:foreground / network:online 驱动的 RTC 恢复全部失效
+	test('__resetClawStoreInternals 后再次 __bridgeConn → 生命周期监听器重新生效', async () => {
+		const store = useClawsStore();
+		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn().mockResolvedValue(true) };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '87', name: 'Bot', online: true });
+		store.byId['87'].dcReady = true;
+		store.__bridgeConn('87');
+
+		// 首轮：app:foreground 应触发 probe
+		emitForegroundResume('app:foreground');
+		await vi.waitFor(() => {
+			expect(fakeRtc.probe).toHaveBeenCalledTimes(1);
+		});
+
+		// 模拟 logout：清理模块级状态（含监听器）
+		__resetAwaitingConnIds();
+
+		// 确认清理后事件已不再路由到 store（监听器已摘除）
+		fakeRtc.probe.mockClear();
+		emitForegroundResume('app:foreground');
+		await new Promise((r) => setTimeout(r, 20));
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
+
+		// 模拟 re-login：同一 store 实例再次桥接
+		store.__bridgeConn('87');
+		emitForegroundResume('app:foreground');
+		await vi.waitFor(() => {
+			expect(fakeRtc.probe).toHaveBeenCalledTimes(1);
+		});
+	});
+
 });
 
 describe('__refreshIfStale', () => {
