@@ -3361,3 +3361,446 @@ test('WebRtcPeer: queue 淘汰时清理被淘汰 session 的 TTL timer', async (
 
 	await peer.closeAll();
 });
+
+// --- 诊断日志：ICE restart-answer-sent + iceConnectionState + connected 恢复 dump + plugin-probe ---
+
+test('WebRtcPeer: ICE restart 成功回复 answer 时输出 rtc.restart-answer-sent', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ras01'));
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ras01',
+		payload: { sdp: 'ice-restart-sdp', iceRestart: true },
+	});
+
+	assert.ok(
+		remoteLogBuffer.some((e) => e.text.includes('rtc.restart-answer-sent') && e.text.includes('c_ras01')),
+		'should emit rtc.restart-answer-sent after successful restart',
+	);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion oniceconnectionstatechange 触发 rtc.iceState 日志', async () => {
+	resetRemoteLog();
+	// 构造带 oniceconnectionstatechange / iceConnectionState 的 mock（模拟 pion-node 行为）
+	function PionPC() {
+		const pc = createMockPC();
+		pc.iceConnectionState = 'new';
+		// 通过直接设置属性而非 Object.defineProperty 使 `'...' in pc` 为 true
+		pc.oniceconnectionstatechange = null;
+		return pc;
+	}
+	PionPC.instances = [];
+	function Factory() {
+		const pc = PionPC();
+		PionPC.instances.push(pc);
+		return pc;
+	}
+	Factory.instances = PionPC.instances;
+
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: Factory,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ics01'));
+	const pc = Factory.instances[0];
+	pc.iceConnectionState = 'checking';
+	pc.oniceconnectionstatechange();
+	pc.iceConnectionState = 'connected';
+	pc.oniceconnectionstatechange();
+
+	const lines = remoteLogBuffer.filter((e) => /rtc\.iceState/.test(e.text) && /c_ics01/.test(e.text));
+	assert.equal(lines.length, 2, 'should emit one iceState line per state change');
+	assert.ok(lines[0].text.includes('checking'));
+	assert.ok(lines[1].text.includes('connected'));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion oniceconnectionstatechange 对旧 PC 回调 no-op（pc 归属校验）', async () => {
+	resetRemoteLog();
+	function PionPC() {
+		const pc = createMockPC();
+		pc.iceConnectionState = 'new';
+		pc.oniceconnectionstatechange = null;
+		return pc;
+	}
+	const instances = [];
+	function Factory() {
+		const pc = PionPC();
+		instances.push(pc);
+		return pc;
+	}
+
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: Factory,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ics02'));
+	const oldPc = instances[0];
+	const oldHandler = oldPc.oniceconnectionstatechange;
+
+	await peer.handleSignaling(makeOffer('c_ics02')); // 替换 PC
+	const newPc = instances[1];
+	assert.notEqual(oldPc, newPc);
+
+	oldPc.iceConnectionState = 'checking';
+	oldHandler(); // 旧 PC 回调不应记录日志
+
+	const lines = remoteLogBuffer.filter((e) => /rtc\.iceState.*c_ics02/.test(e.text));
+	assert.equal(lines.length, 0, 'stale PC oniceconnectionstatechange should be ignored');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion 从 disconnected 恢复 connected 时 dump + 调度 plugin-probe', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_rec01'));
+	const pc = PC.instances[0];
+
+	// 装配一个打开的 rpc DC，让 __sendPluginProbe 有目标可发
+	const session = peer.__sessions.get('c_rec01');
+	const dcSent = [];
+	session.rpcChannel = makeMockRpcDc({ send: (d) => dcSent.push(d) });
+
+	// 先 disconnected，再 connected → 触发恢复分支
+	pc.connectionState = 'disconnected';
+	pc.onconnectionstatechange();
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+
+	// 期望：rtc.dump state=connected 出现一次
+	const dumps = remoteLogBuffer.filter((e) => /rtc\.dump/.test(e.text) && /c_rec01/.test(e.text) && /state=connected/.test(e.text));
+	assert.equal(dumps.length, 1, 'should dump on disconnected→connected recovery');
+
+	// 推进 500ms 让 probe 发出
+	t.mock.timers.tick(500);
+
+	assert.equal(dcSent.length, 1, 'plugin-probe should be sent after 500ms');
+	const payload = JSON.parse(dcSent[0]);
+	assert.equal(payload.type, 'plugin-probe');
+	assert.ok(typeof payload.id === 'number');
+	assert.ok(remoteLogBuffer.some((e) => /rtc\.plugin-probe.*c_rec01.*sent/.test(e.text)));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 首次 connected（prevDumpState 为 null）不触发恢复 dump/probe', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_first01'));
+	const pc = PC.instances[0];
+	const session = peer.__sessions.get('c_first01');
+	const dcSent = [];
+	session.rpcChannel = makeMockRpcDc({ send: (d) => dcSent.push(d) });
+
+	// 首次进入 connected，此前没有 dump（prevDumpState=null）
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+
+	t.mock.timers.tick(500);
+
+	const dumps = remoteLogBuffer.filter((e) => /rtc\.dump/.test(e.text) && /c_first01/.test(e.text) && /state=connected/.test(e.text));
+	assert.equal(dumps.length, 0, 'initial connected should not dump');
+	assert.equal(dcSent.length, 0, 'initial connected should not send plugin-probe');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 非 pion impl 的 connected 恢复不触发 dump/probe', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc', // 非 pion
+	});
+
+	await peer.handleSignaling(makeOffer('c_ndc01'));
+	const pc = PC.instances[0];
+	const session = peer.__sessions.get('c_ndc01');
+	const dcSent = [];
+	session.rpcChannel = makeMockRpcDc({ send: (d) => dcSent.push(d) });
+
+	pc.connectionState = 'disconnected';
+	pc.onconnectionstatechange();
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+	t.mock.timers.tick(500);
+
+	const dumps = remoteLogBuffer.filter((e) => /rtc\.dump/.test(e.text) && /c_ndc01/.test(e.text) && /state=connected/.test(e.text));
+	assert.equal(dumps.length, 0, 'non-pion impl should not dump on recovery');
+	assert.equal(dcSent.length, 0, 'non-pion impl should not send plugin-probe');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: __sendPluginProbe 无 session 时静默', () => {
+	resetRemoteLog();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'pion',
+	});
+	peer.__sendPluginProbe('missing');
+	const lines = remoteLogBuffer.filter((e) => /rtc\.plugin-probe/.test(e.text));
+	assert.equal(lines.length, 0);
+});
+
+test('WebRtcPeer: __sendPluginProbe DC 未 open 时静默', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_probe_closed'));
+	const session = peer.__sessions.get('c_probe_closed');
+	session.rpcChannel = makeMockRpcDc({ readyState: 'closed' });
+
+	peer.__sendPluginProbe('c_probe_closed');
+	const lines = remoteLogBuffer.filter((e) => /rtc\.plugin-probe/.test(e.text));
+	assert.equal(lines.length, 0);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: __sendPluginProbe 已有 in-flight 时跳过', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_probe_inflight'));
+	const session = peer.__sessions.get('c_probe_inflight');
+	const dcSent = [];
+	session.rpcChannel = makeMockRpcDc({ send: (d) => dcSent.push(d) });
+
+	peer.__sendPluginProbe('c_probe_inflight');
+	peer.__sendPluginProbe('c_probe_inflight'); // 第二次应被跳过
+
+	assert.equal(dcSent.length, 1, 'only first call sends');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: __sendPluginProbe dc.send 抛异常时记录 send-failed', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_probe_err'));
+	const session = peer.__sessions.get('c_probe_err');
+	session.rpcChannel = makeMockRpcDc({ send: () => { throw new Error('dc broken'); } });
+
+	peer.__sendPluginProbe('c_probe_err');
+
+	assert.ok(remoteLogBuffer.some((e) => /rtc\.plugin-probe.*c_probe_err.*send-failed.*dc broken/.test(e.text)));
+	assert.equal(session.__pluginProbeInFlight, null, 'in-flight cleared on send failure');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: __sendPluginProbe 5s 未 ack → timeout 日志', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_probe_to'));
+	const session = peer.__sessions.get('c_probe_to');
+	session.rpcChannel = makeMockRpcDc({ send: () => {} });
+
+	peer.__sendPluginProbe('c_probe_to');
+	t.mock.timers.tick(5000);
+
+	assert.ok(remoteLogBuffer.some((e) => /rtc\.plugin-probe.*c_probe_to.*timeout/.test(e.text)));
+	assert.equal(session.__pluginProbeInFlight, null, 'in-flight cleared on timeout');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: __handlePluginProbeAck 匹配 id → 记 rtt + 清 in-flight', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_ack01'));
+	const session = peer.__sessions.get('c_ack01');
+	session.rpcChannel = makeMockRpcDc({ send: () => {} });
+
+	peer.__sendPluginProbe('c_ack01');
+	const id = session.__pluginProbeInFlight.id;
+	peer.__handlePluginProbeAck('c_ack01', id);
+
+	const acked = remoteLogBuffer.find((e) => /rtc\.plugin-probe.*c_ack01.*acked.*rtt=/.test(e.text));
+	assert.ok(acked, 'should log acked line with rtt');
+	assert.equal(session.__pluginProbeInFlight, null);
+	assert.equal(session.__pluginProbeTimer, null);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: __handlePluginProbeAck 无 session / 无 in-flight / id 不匹配时静默', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	// 无 session
+	peer.__handlePluginProbeAck('missing', 1);
+
+	await peer.handleSignaling(makeOffer('c_ack02'));
+	// 无 in-flight
+	peer.__handlePluginProbeAck('c_ack02', 1);
+
+	const session = peer.__sessions.get('c_ack02');
+	session.rpcChannel = makeMockRpcDc({ send: () => {} });
+	peer.__sendPluginProbe('c_ack02');
+	// id 不匹配
+	peer.__handlePluginProbeAck('c_ack02', 9999);
+
+	const acked = remoteLogBuffer.filter((e) => /rtc\.plugin-probe.*acked/.test(e.text));
+	assert.equal(acked.length, 0, 'no ack logged for mismatched scenarios');
+	// in-flight 仍保留（未被错误清掉）
+	assert.ok(session.__pluginProbeInFlight);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: reassembler 收到 plugin-probe-ack 路由到 __handlePluginProbeAck', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_ack03'));
+	const pc = PC.instances[0];
+	const dc = makeMockRpcDc({ send: () => {} });
+	pc.ondatachannel({ channel: dc });
+	const session = peer.__sessions.get('c_ack03');
+	session.rpcChannel = dc;
+
+	// 先发 probe 建立 in-flight
+	peer.__sendPluginProbe('c_ack03');
+	const id = session.__pluginProbeInFlight.id;
+
+	// 模拟 UI 回 ack 经 DC message 到达。reassembler 对 string 类型直接交付（未分片路径）。
+	dc.onmessage({ data: JSON.stringify({ type: 'plugin-probe-ack', id }) });
+
+	assert.ok(remoteLogBuffer.some((e) => /rtc\.plugin-probe.*c_ack03.*acked/.test(e.text)));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: closeByConnId 清理 plugin-probe timer 避免 session 关闭后误打 timeout', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_cleanup'));
+	const session = peer.__sessions.get('c_cleanup');
+	session.rpcChannel = makeMockRpcDc({ send: () => {} });
+	peer.__sendPluginProbe('c_cleanup');
+	assert.ok(session.__pluginProbeTimer);
+
+	await peer.closeByConnId('c_cleanup');
+
+	// 推进到 timeout 应到期的时刻，应不再触发 timeout 日志
+	t.mock.timers.tick(10000);
+	const timeouts = remoteLogBuffer.filter((e) => /rtc\.plugin-probe.*c_cleanup.*timeout/.test(e.text));
+	assert.equal(timeouts.length, 0, 'cleared timer should not fire timeout after close');
+});
+
+test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）', async () => {
+	resetRemoteLog();
+	function PionPC() {
+		const pc = createMockPC();
+		pc.iceConnectionState = 'new';
+		pc.oniceconnectionstatechange = null;
+		return pc;
+	}
+	const instances = [];
+	function Factory() {
+		const pc = PionPC();
+		instances.push(pc);
+		return pc;
+	}
+
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: Factory,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_det01'));
+	const pc = instances[0];
+	assert.ok(pc.oniceconnectionstatechange, 'handler installed before close');
+
+	await peer.closeByConnId('c_det01');
+	assert.equal(pc.oniceconnectionstatechange, null, 'handler detached after close');
+});

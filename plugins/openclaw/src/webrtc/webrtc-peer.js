@@ -69,6 +69,12 @@ export class WebRtcPeer {
 			clearTimeout(session.__failedTimer);
 			session.__failedTimer = null;
 		}
+		// 清理 plugin-probe 定时器（避免 session 已关闭仍触发 timeout 日志）
+		if (session.__pluginProbeTimer) {
+			clearTimeout(session.__pluginProbeTimer);
+			session.__pluginProbeTimer = null;
+			session.__pluginProbeInFlight = null;
+		}
 		this.__sessions.delete(connId);
 		// 显式关闭 rpc 发送队列：dc.onclose 路径中 `sessions.get(connId)` 已返回 undefined 而短路，
 		// 此处不主动 close 会丢失 drop 汇总 remoteLog 诊断
@@ -82,6 +88,9 @@ export class WebRtcPeer {
 		session.pc.onicecandidate = null;
 		if ('onselectedcandidatepairchange' in session.pc) {
 			session.pc.onselectedcandidatepairchange = null;
+		}
+		if ('oniceconnectionstatechange' in session.pc) {
+			session.pc.oniceconnectionstatechange = null;
 		}
 		await session.pc.close();
 		this.__remoteLog(`rtc.closed conn=${connId}`);
@@ -175,6 +184,7 @@ export class WebRtcPeer {
 						toConnId: connId,
 						payload: { sdp: answer.sdp },
 					});
+					this.__remoteLog(`rtc.restart-answer-sent conn=${connId}`);
 					this.logger.info?.(`${this.__rtcTag} ICE restart answer sent to ${connId}`);
 					return;
 				} catch (err) {
@@ -268,6 +278,17 @@ export class WebRtcPeer {
 			});
 		};
 
+		// ICE agent 状态（pion 暴露的独立事件）：能看到 checking / connected / failed 等纯 ICE 侧跳转，
+		// 与复合 connectionState 互补。对诊断"pion 说 connected 但 UI 看不到数据"非常关键。
+		// 仅在 pion-node 实现中可用；其他实现赋值是 no-op。
+		if ('oniceconnectionstatechange' in pc) {
+			pc.oniceconnectionstatechange = () => {
+				const cur = this.__sessions.get(connId);
+				if (!cur || cur.pc !== pc) return;
+				this.__remoteLog(`rtc.iceState conn=${connId} ${pc.iceConnectionState ?? '?'}`);
+			};
+		}
+
 		// 连接状态变更（校验 pc 归属，防止旧 PC 异步回调删除新 session）
 		pc.onconnectionstatechange = () => {
 			const state = pc.connectionState;
@@ -285,6 +306,7 @@ export class WebRtcPeer {
 			}
 
 			if (state === 'connected') {
+				const prevDumpState = cur.__lastDumpState;
 				// 重置 dump 去重水位（disconnected → connected → disconnected 仍能再 dump）
 				cur.__lastDumpState = null;
 				// werift: iceTransports[0].connection.nominated
@@ -298,6 +320,16 @@ export class WebRtcPeer {
 					this.logger.info?.(`${this.__rtcTag} [${connId}] ICE nominated: local=${localInfo} remote=${remoteInfo}`);
 				}
 				// pion: pair 通过独立的 selectedcandidatepairchange 事件上报
+				// ICE restart 恢复（disconnected/failed → connected）时做诊断动作：
+				// - dump 当前 session DC 状态，对照"UI 看不到 connected 时 plugin 侧看到什么"
+				// - 发一次 plugin-probe，实测 DC 是否双向可用
+				// 只对 pion 生效：werift/ndc 为兼容路径，不涉及本次调查的病态场景。
+				if (this.__impl === 'pion' && (prevDumpState === 'disconnected' || prevDumpState === 'failed')) {
+					this.__dumpSessionState(connId, cur, 'connected');
+					// unref() 避免定时器阻塞 gateway 进程退出（gateway 由其他连接保活）。
+					const probeTimer = setTimeout(() => this.__sendPluginProbe(connId), 500);
+					probeTimer.unref?.();
+				}
 			} else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
 				// 诊断 dump：失败/断连/关闭时输出当前 PC 上 DC 状态，定位"PC 假活/DC 死"现象
 				// - closed 由 closeByConnId 接管清理，dump 收敛诊断噪声
@@ -425,6 +457,11 @@ export class WebRtcPeer {
 			if (payload.type === 'probe') {
 				try { dc.send(JSON.stringify({ type: 'probe-ack' })); }
 				catch { /* DC 已关闭，忽略 */ }
+				return;
+			}
+			// 来自 UI 的 plugin-probe 回复：验证 plugin → UI 方向确实传达并被回传
+			if (payload.type === 'plugin-probe-ack') {
+				this.__handlePluginProbeAck(connId, payload.id);
 				return;
 			}
 			if (payload.type === 'req') {
@@ -556,6 +593,59 @@ export class WebRtcPeer {
 			return;
 		}
 		this.__remoteLog(`rtc.peer-transport conn=${connId} type=${payload.candidateType} proto=${payload.protocol} relay=${payload.relayProtocol ?? '-'}`);
+	}
+
+	/**
+	 * 主动探针：在 rpc DC 上发一个 plugin-probe，期待 UI 回 plugin-probe-ack。
+	 * 用于区分"pion 报告 connected 但 UI 其实没收到数据"与"UI 真的收到了但没记录事件"。
+	 * 绕过 RpcSendQueue（与 probe-ack 对称），仅测量传输层，不受应用层积压影响。
+	 * 同一 session 同时只保留一条 in-flight 探针；超时仅打日志，不影响业务恢复。
+	 */
+	__sendPluginProbe(connId) {
+		const session = this.__sessions.get(connId);
+		if (!session) return;
+		const dc = session.rpcChannel;
+		if (!dc || dc.readyState !== 'open') return;
+		// 已有 in-flight 则跳过（避免重复）
+		if (session.__pluginProbeInFlight) return;
+
+		const id = (session.__pluginProbeIdSeq = (session.__pluginProbeIdSeq ?? 0) + 1);
+		const startMs = Date.now();
+		const timer = setTimeout(() => {
+			if (session.__pluginProbeInFlight?.id === id) {
+				session.__pluginProbeInFlight = null;
+				session.__pluginProbeTimer = null;
+				this.__remoteLog(`rtc.plugin-probe conn=${connId} id=${id} timeout`);
+			}
+		}, 5000);
+		timer.unref?.();
+		session.__pluginProbeInFlight = { id, startMs };
+		session.__pluginProbeTimer = timer;
+
+		try {
+			dc.send(JSON.stringify({ type: 'plugin-probe', id }));
+			this.__remoteLog(`rtc.plugin-probe conn=${connId} id=${id} sent`);
+		} catch (err) {
+			clearTimeout(timer);
+			session.__pluginProbeInFlight = null;
+			session.__pluginProbeTimer = null;
+			this.__remoteLog(`rtc.plugin-probe conn=${connId} id=${id} send-failed msg=${err?.message ?? err}`);
+		}
+	}
+
+	/** 收到 UI 的 plugin-probe-ack：计算 RTT 并释放 in-flight 槽位 */
+	__handlePluginProbeAck(connId, id) {
+		const session = this.__sessions.get(connId);
+		if (!session) return;
+		const inFlight = session.__pluginProbeInFlight;
+		if (!inFlight || inFlight.id !== id) return; // 过期 ack，忽略
+		const rtt = Date.now() - inFlight.startMs;
+		if (session.__pluginProbeTimer) {
+			clearTimeout(session.__pluginProbeTimer);
+			session.__pluginProbeTimer = null;
+		}
+		session.__pluginProbeInFlight = null;
+		this.__remoteLog(`rtc.plugin-probe conn=${connId} id=${id} acked rtt=${rtt}`);
 	}
 
 	__remoteLog(msg) {

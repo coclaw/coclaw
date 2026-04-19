@@ -57,7 +57,14 @@ class MockRTCPeerConnection {
 		this.config = config;
 		this.onicecandidate = null;
 		this.onconnectionstatechange = null;
+		this.oniceconnectionstatechange = null;
+		this.onicegatheringstatechange = null;
+		this.onsignalingstatechange = null;
+		this.onicecandidateerror = null;
 		this.connectionState = 'new';
+		this.iceConnectionState = 'new';
+		this.iceGatheringState = 'new';
+		this.signalingState = 'stable';
 		this.localDescription = null;
 		this.__remoteDesc = null;
 		this.__candidates = [];
@@ -2904,5 +2911,619 @@ describe('WebRtcConnection — 失败路径资源清理', () => {
 		const { rtc } = await setupConnectedRtc();
 		rtc.close();
 		expect(rtc.state).toBe('closed');
+	});
+});
+
+// 读 remoteLog mock，避免每个测试都重复一遍
+async function getRemoteLogCalls() {
+	const mod = await import('./remote-log.js');
+	return mod.remoteLog.mock.calls.map((args) => args[0]);
+}
+
+describe('WebRtcConnection — 诊断日志补全', () => {
+	beforeEach(() => {
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+
+	test('oniceconnectionstatechange → rtc.info claw=X iceState: <state>', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		pc.iceConnectionState = 'checking';
+		pc.oniceconnectionstatechange();
+		pc.iceConnectionState = 'connected';
+		pc.oniceconnectionstatechange();
+
+		const calls = await getRemoteLogCalls();
+		const iceLogs = calls.filter((s) => /iceState:/.test(s));
+		expect(iceLogs.length).toBeGreaterThanOrEqual(2);
+		expect(iceLogs.some((s) => s.includes('iceState: checking'))).toBe(true);
+		expect(iceLogs.some((s) => s.includes('iceState: connected'))).toBe(true);
+
+		rtc.close();
+	});
+
+	test('oniceconnectionstatechange 被替换 PC 回调时静默', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const firstPc = MockRTCPeerConnection.lastInstance;
+
+		rtc.close();
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		firstPc.iceConnectionState = 'checking';
+		firstPc.oniceconnectionstatechange();
+		const iceLogs = (await getRemoteLogCalls()).filter((s) => /iceState:/.test(s));
+		expect(iceLogs.length).toBe(0);
+
+		rtc.close();
+	});
+
+	test('onicegatheringstatechange=gathering 重置候选计数器', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		// 先累积一些计数
+		pc.onicecandidate({ candidate: { candidate: 'candidate:1 1 udp 999 1.2.3.4 5678 typ host', toJSON: () => ({}) } });
+		pc.onicecandidate({ candidate: { candidate: 'candidate:2 1 udp 999 1.2.3.4 5678 typ relay', toJSON: () => ({}) } });
+		expect(rtc.__iceCandCounts.host).toBe(1);
+		expect(rtc.__iceCandCounts.relay).toBe(1);
+
+		// gathering 重启应清零
+		pc.iceGatheringState = 'gathering';
+		pc.onicegatheringstatechange();
+		expect(rtc.__iceCandCounts.host).toBe(0);
+		expect(rtc.__iceCandCounts.relay).toBe(0);
+
+		rtc.close();
+	});
+
+	test('onicegatheringstatechange=complete 不重置计数器', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		pc.onicecandidate({ candidate: { candidate: 'candidate:1 1 udp 999 1.2.3.4 5678 typ host', toJSON: () => ({}) } });
+		pc.iceGatheringState = 'complete';
+		pc.onicegatheringstatechange();
+		expect(rtc.__iceCandCounts.host).toBe(1);
+
+		rtc.close();
+	});
+
+	test('onsignalingstatechange 记录 rtc.info sigState: <state>', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		pc.signalingState = 'have-local-offer';
+		pc.onsignalingstatechange();
+		pc.signalingState = 'stable';
+		pc.onsignalingstatechange();
+
+		const logs = (await getRemoteLogCalls()).filter((s) => /sigState:/.test(s));
+		expect(logs.some((s) => s.includes('sigState: have-local-offer'))).toBe(true);
+		expect(logs.some((s) => s.includes('sigState: stable'))).toBe(true);
+
+		rtc.close();
+	});
+
+	test('onsignalingstatechange 被替换 PC 时静默', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const firstPc = MockRTCPeerConnection.lastInstance;
+		rtc.close();
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		firstPc.signalingState = 'stable';
+		firstPc.onsignalingstatechange();
+		expect((await getRemoteLogCalls()).filter((s) => /sigState:/.test(s))).toHaveLength(0);
+
+		rtc.close();
+	});
+
+	test('onicegatheringstatechange 被替换 PC 时静默', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const firstPc = MockRTCPeerConnection.lastInstance;
+		rtc.close();
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		firstPc.iceGatheringState = 'gathering';
+		firstPc.onicegatheringstatechange();
+		expect((await getRemoteLogCalls()).filter((s) => /iceGather:/.test(s))).toHaveLength(0);
+
+		rtc.close();
+	});
+
+	test('onicecandidateerror 记录 rtc.warn iceCandErr 行', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		pc.onicecandidateerror({
+			url: 'turn:example:3478',
+			hostCandidate: '10.0.0.1',
+			port: 54321,
+			errorCode: 401,
+			errorText: 'unauthorized',
+		});
+		const logs = (await getRemoteLogCalls()).filter((s) => /iceCandErr/.test(s));
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain('url=turn:example:3478');
+		expect(logs[0]).toContain('host=10.0.0.1');
+		expect(logs[0]).toContain('code=401');
+		expect(logs[0]).toContain('text=unauthorized');
+
+		rtc.close();
+	});
+
+	test('onicecandidateerror 全字段缺失 → 使用 "?" 占位不崩溃', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		pc.onicecandidateerror({});
+		const logs = (await getRemoteLogCalls()).filter((s) => /iceCandErr/.test(s));
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain('url=?');
+		expect(logs[0]).toContain('host=?');
+		expect(logs[0]).toContain('code=?');
+
+		rtc.close();
+	});
+
+	test('onicecandidateerror address fallback（hostCandidate 缺失但有 address）', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		pc.onicecandidateerror({ address: '10.0.0.5', errorCode: 500 });
+		const logs = (await getRemoteLogCalls()).filter((s) => /iceCandErr/.test(s));
+		expect(logs[0]).toContain('host=10.0.0.5');
+
+		rtc.close();
+	});
+
+	test('onicecandidateerror 被替换 PC 时静默', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const firstPc = MockRTCPeerConnection.lastInstance;
+		rtc.close();
+		await rtc.connect(MOCK_TURN_CREDS);
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		firstPc.onicecandidateerror({ errorCode: 401 });
+		expect((await getRemoteLogCalls()).filter((s) => /iceCandErr/.test(s))).toHaveLength(0);
+
+		rtc.close();
+	});
+
+	test('candidate 按类型统计 + null candidate 输出 iceGathered 汇总', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		// 各类型各来一个
+		pc.onicecandidate({ candidate: { candidate: 'candidate:a 1 udp 1 1.1.1.1 1 typ host', toJSON: () => ({}) } });
+		pc.onicecandidate({ candidate: { candidate: 'candidate:b 1 udp 1 1.1.1.1 2 typ srflx raddr 2.2.2.2', toJSON: () => ({}) } });
+		pc.onicecandidate({ candidate: { candidate: 'candidate:c 1 udp 1 3.3.3.3 3 typ relay', toJSON: () => ({}) } });
+		pc.onicecandidate({ candidate: { candidate: 'candidate:d 1 udp 1 4.4.4.4 4 typ prflx', toJSON: () => ({}) } });
+		// 未知类型不应抛
+		pc.onicecandidate({ candidate: { candidate: 'candidate:e 1 udp 1 5.5.5.5 5 typ weird', toJSON: () => ({}) } });
+		// null 触发汇总
+		pc.onicecandidate({ candidate: null });
+
+		const logs = await getRemoteLogCalls();
+		const gathered = logs.find((s) => /iceGathered/.test(s));
+		expect(gathered).toBeDefined();
+		expect(gathered).toContain('host=1');
+		expect(gathered).toContain('srflx=1');
+		expect(gathered).toContain('relay=1');
+		expect(gathered).toContain('prflx=1');
+
+		rtc.close();
+	});
+
+	test('candidate 字符串缺 typ 匹配时不崩溃（只发信令不增计数）', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+
+		pc.onicecandidate({ candidate: { candidate: 'candidate-no-typ', toJSON: () => ({}) } });
+		expect(rtc.__iceCandCounts.host).toBe(0);
+		expect(rtc.__iceCandCounts.srflx).toBe(0);
+
+		rtc.close();
+	});
+
+	test('__attemptRestart 入口记录 restart.trigger 快照（含 dcIdleAgo）', async () => {
+		vi.useFakeTimers();
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		dc.readyState = 'open';
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		dc.onopen();
+		// 模拟近期 DC 活动
+		rtc.__lastDcActivityAt = Date.now() - 1234;
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+
+		rtc.triggerRestart('unit-test');
+		await vi.advanceTimersByTimeAsync(0);
+
+		const logs = (await getRemoteLogCalls()).filter((s) => /restart\.trigger/.test(s));
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain('reason=unit-test');
+		expect(logs[0]).toContain('connState=connected');
+		expect(logs[0]).toMatch(/dcIdleAgo=\d+/);
+
+		vi.useRealTimers();
+		rtc.close();
+	});
+
+	test('__attemptRestart 再次调用（仍 restarting）不重复 restart.trigger', async () => {
+		vi.useFakeTimers();
+		const { rtc } = await setupConnectedRtc();
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		rtc.triggerRestart('first');
+		await vi.advanceTimersByTimeAsync(0);
+		rtc.nudgeRestart(); // 同一 epoch 内再进入
+		await vi.advanceTimersByTimeAsync(0);
+
+		const triggers = (await getRemoteLogCalls()).filter((s) => /restart\.trigger/.test(s));
+		expect(triggers).toHaveLength(1);
+
+		vi.useRealTimers();
+		rtc.close();
+	});
+
+	test('__attemptRestart 入口 lastDcActivityAt=0 时记录 dcIdleAgo=never', async () => {
+		vi.useFakeTimers();
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		dc.readyState = 'open';
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		// 不触发 dc.onopen，保持 __lastDcActivityAt=0
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		rtc.triggerRestart('first');
+		await vi.advanceTimersByTimeAsync(0);
+
+		const triggers = (await getRemoteLogCalls()).filter((s) => /restart\.trigger/.test(s));
+		expect(triggers[0]).toContain('dcIdleAgo=never');
+
+		vi.useRealTimers();
+		rtc.close();
+	});
+
+	test('__dumpStats 输出 stats.<reason> 格式，覆盖 pair/transport/data-channel', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const report = new Map();
+		report.set('cp1', {
+			type: 'candidate-pair', nominated: true, state: 'succeeded',
+			localCandidateId: 'l1', remoteCandidateId: 'r1',
+			bytesSent: 100, bytesReceived: 200, currentRoundTripTime: 0.042,
+			requestsSent: 3, responsesReceived: 3,
+		});
+		report.set('l1', { type: 'local-candidate', id: 'l1', candidateType: 'host', protocol: 'udp' });
+		report.set('r1', { type: 'remote-candidate', id: 'r1', candidateType: 'prflx', protocol: 'udp' });
+		report.set('tp', {
+			type: 'transport', dtlsState: 'connected', iceState: 'connected',
+			bytesSent: 1000, bytesReceived: 2000, selectedCandidatePairId: 'cp1',
+		});
+		report.set('dc1', {
+			type: 'data-channel', label: 'rpc', state: 'open',
+			messagesSent: 5, messagesReceived: 7, bytesSent: 500, bytesReceived: 700,
+		});
+		pc.__statsReport = report;
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		await rtc.__dumpStats('unit');
+		const calls = await getRemoteLogCalls();
+		const stats = calls.find((s) => /stats\.unit/.test(s));
+		expect(stats).toBeDefined();
+		expect(stats).toContain('pair=[host/udp>prflx/udp');
+		expect(stats).toContain('nom=1');
+		expect(stats).toContain('bs=100');
+		expect(stats).toContain('rtt=0.042');
+		expect(stats).toContain('dtls=connected');
+		expect(stats).toContain('ice=connected');
+		expect(stats).toContain('dc=[state=open');
+
+		rtc.close();
+	});
+
+	test('__dumpStats 无 PC 时静默', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		await rtc.__dumpStats('no-pc');
+		expect((await getRemoteLogCalls()).filter((s) => /stats\./.test(s))).toHaveLength(0);
+	});
+
+	test('__dumpStats getStats 不存在时静默', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.getStats = undefined;
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		await rtc.__dumpStats('no-getstats');
+		expect((await getRemoteLogCalls()).filter((s) => /stats\./.test(s))).toHaveLength(0);
+
+		rtc.close();
+	});
+
+	test('__dumpStats getStats 抛异常 → 记录 warn 行', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.getStats = async () => { throw new Error('stats boom'); };
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		await rtc.__dumpStats('boom');
+		const logs = await getRemoteLogCalls();
+		const warn = logs.find((s) => /stats\.boom getStats failed/.test(s));
+		expect(warn).toBeDefined();
+		expect(warn).toContain('stats boom');
+
+		rtc.close();
+	});
+
+	test('__dumpStats PC 已被替换时丢弃结果', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		let resolveStats;
+		pc.getStats = () => new Promise((r) => { resolveStats = r; });
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const p = rtc.__dumpStats('race');
+		// 在 getStats 返回前替换 PC
+		rtc.__pc = null;
+		resolveStats(new Map());
+		await p;
+		expect((await getRemoteLogCalls()).filter((s) => /stats\.race/.test(s))).toHaveLength(0);
+	});
+
+	test('__dumpStats 无 pair/transport/dc 时输出 pair=none tp=none dc=[state=none]', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.__statsReport = new Map();
+		// 清掉 rpcChannel 引用
+		rtc.__rpcChannel = null;
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		await rtc.__dumpStats('empty');
+		const stats = (await getRemoteLogCalls()).find((s) => /stats\.empty/.test(s));
+		expect(stats).toContain('pair=none');
+		expect(stats).toContain('tp=none');
+		expect(stats).toContain('dc=[state=none');
+
+		rtc.close();
+	});
+
+	test('__dumpStats 使用 succeeded pair 作为回退（无 nominated）', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const report = new Map();
+		report.set('cp_x', { type: 'candidate-pair', nominated: false, state: 'succeeded', localCandidateId: 'lx', remoteCandidateId: 'rx' });
+		report.set('lx', { type: 'local-candidate', id: 'lx', candidateType: 'srflx', protocol: 'udp' });
+		report.set('rx', { type: 'remote-candidate', id: 'rx', candidateType: 'host', protocol: 'udp' });
+		pc.__statsReport = report;
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		await rtc.__dumpStats('fallback');
+		const stats = (await getRemoteLogCalls()).find((s) => /stats\.fallback/.test(s));
+		expect(stats).toContain('pair=[srflx/udp>host/udp');
+		expect(stats).toContain('nom=0');
+
+		rtc.close();
+	});
+
+	test('rtc:answer 在 restarting 状态下 3s 后触发 post-answer stats dump', async () => {
+		vi.useFakeTimers();
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map();
+
+		// 进入 restarting
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'ans' } });
+		// 等 setRemoteDescription
+		await vi.advanceTimersByTimeAsync(0);
+		// 未到 3s 不应有 post-answer
+		await vi.advanceTimersByTimeAsync(2999);
+		expect((await getRemoteLogCalls()).some((s) => /stats\.post-answer/.test(s))).toBe(false);
+		// 3s 到期
+		await vi.advanceTimersByTimeAsync(1);
+		await vi.advanceTimersByTimeAsync(0);
+		expect((await getRemoteLogCalls()).some((s) => /stats\.post-answer/.test(s))).toBe(true);
+
+		vi.useRealTimers();
+		rtc.close();
+	});
+
+	test('rtc:answer 非 restarting 时不触发 post-answer dump', async () => {
+		vi.useFakeTimers();
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map();
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'ans' } });
+		await vi.advanceTimersByTimeAsync(5000);
+
+		expect((await getRemoteLogCalls()).some((s) => /stats\.post-answer/.test(s))).toBe(false);
+
+		vi.useRealTimers();
+		rtc.close();
+	});
+
+	test('ICE restart 成功时 2s 后触发 post-restart-success stats dump', async () => {
+		vi.useFakeTimers();
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map();
+
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		// 模拟 restart 成功 → onconnectionstatechange 再回 connected
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		await vi.advanceTimersByTimeAsync(2000);
+		await vi.advanceTimersByTimeAsync(0);
+		expect((await getRemoteLogCalls()).some((s) => /stats\.post-restart-success/.test(s))).toBe(true);
+
+		vi.useRealTimers();
+		rtc.close();
+	});
+
+	test('ICE restart 超时前输出 stats.restart-timeout', async () => {
+		vi.useFakeTimers();
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map();
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+
+		// triggerRestart → 第一次 attempt 快速超时：手动把 __restartStartTime 设为 91s 前
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		rtc.__restartStartTime = Date.now() - 91_000;
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const logs = await getRemoteLogCalls();
+		expect(logs.some((s) => /stats\.restart-timeout/.test(s))).toBe(true);
+
+		vi.useRealTimers();
+		rtc.close();
+	});
+
+	test('post-restart-success 在 2s 内 PC 换掉时不发 stats（闭包守卫）', async () => {
+		vi.useFakeTimers();
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map();
+
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		// 中途替换 PC
+		rtc.__pc = null;
+		await vi.advanceTimersByTimeAsync(2500);
+		expect((await getRemoteLogCalls()).some((s) => /stats\.post-restart-success/.test(s))).toBe(false);
+
+		vi.useRealTimers();
+	});
+
+	test('plugin-probe 消息被 UI 回 ack 并打 echoed 日志', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		dc.readyState = 'open';
+		dc.sent.length = 0;
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		// 直接触发 onmessage 上的 JSON 字符串（reassembler 对 string 直接交付）
+		dc.onmessage({ data: JSON.stringify({ type: 'plugin-probe', id: 42 }) });
+
+		// 断言 ack 已发送
+		expect(dc.sent).toHaveLength(1);
+		const echoed = JSON.parse(dc.sent[0]);
+		expect(echoed).toEqual({ type: 'plugin-probe-ack', id: 42 });
+		// 断言日志行
+		expect((await getRemoteLogCalls()).some((s) => /plugin-probe echoed id=42/.test(s))).toBe(true);
+		// 断言不转发给业务层
+		expect(clawConn.__onRtcMessage).not.toHaveBeenCalled();
+
+		rtc.close();
+	});
+
+	test('plugin-probe 时 dc.send 抛异常 → warn 日志、不崩溃', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		dc.readyState = 'open';
+		dc.send = () => { throw new Error('dc closed'); };
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		dc.onmessage({ data: JSON.stringify({ type: 'plugin-probe', id: 7 }) });
+		const logs = await getRemoteLogCalls();
+		expect(logs.some((s) => /plugin-probe-ack send failed.*dc closed/.test(s))).toBe(true);
+
+		rtc.close();
 	});
 });

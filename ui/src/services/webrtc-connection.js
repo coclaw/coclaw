@@ -204,10 +204,20 @@ export class WebRtcConnection {
 		this.__restartInFlight = false;
 		/** TURN 凭证过期时间戳（Unix 秒），用于 ICE restart 日志诊断 */
 		this.__credExpireAt = null;
+		/** 本地 ICE candidate 按 typ 分类计数（诊断用），gathering 完成时输出汇总 */
+		this.__iceCandCounts = { host: 0, srflx: 0, relay: 0, prflx: 0 };
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
 		this.onReady = null;
+	}
+
+	/** @private 重置本地 candidate 类型计数器 */
+	__resetIceCandCounts() {
+		this.__iceCandCounts.host = 0;
+		this.__iceCandCounts.srflx = 0;
+		this.__iceCandCounts.relay = 0;
+		this.__iceCandCounts.prflx = 0;
 	}
 
 	/** @returns {'idle' | 'connecting' | 'connected' | 'restarting' | 'failed' | 'closed'} */
@@ -410,6 +420,7 @@ export class WebRtcConnection {
 		this.__candidateType = null;
 		this.__transportInfo = null;
 		this.__credExpireAt = parseCredExpireAt(turnCreds?.username);
+		this.__resetIceCandCounts();
 		this.__setState('connecting');
 
 		const iceServers = this.__buildIceServers(turnCreds);
@@ -449,10 +460,50 @@ export class WebRtcConnection {
 
 	/** @private */
 	__setupPcEvents(pc) {
-		// ICE candidate → 通过信令 WS 发给 Plugin
+		// ICE candidate → 通过信令 WS 发给 Plugin；同时按类型计数，gathering 完成时打印汇总
 		pc.onicecandidate = (event) => {
-			if (!event.candidate) return;
+			if (!event.candidate) {
+				const c = this.__iceCandCounts;
+				this.__log('info', `iceGathered host=${c.host} srflx=${c.srflx} relay=${c.relay} prflx=${c.prflx}`);
+				return;
+			}
+			const typMatch = event.candidate.candidate?.match(/typ (\w+)/);
+			const typ = typMatch?.[1];
+			if (typ && this.__iceCandCounts[typ] !== undefined) this.__iceCandCounts[typ]++;
 			useSignalingConnection().sendSignaling(this.clawId, 'rtc:ice', event.candidate.toJSON());
+		};
+
+		// ICE candidate gathering 过程出错（TURN 认证失败、STUN 超时等）→ 告警
+		// 不同浏览器对此事件的支持度不同；赋值本身对老内核无副作用。
+		pc.onicecandidateerror = (event) => {
+			if (this.__pc !== pc) return;
+			const url = event?.url ?? '?';
+			const hostCandidate = event?.hostCandidate ?? event?.address ?? '?';
+			const port = event?.port ?? '?';
+			const code = event?.errorCode ?? '?';
+			const text = event?.errorText ?? '';
+			this.__log('warn', `iceCandErr url=${url} host=${hostCandidate} port=${port} code=${code} text=${text}`);
+		};
+
+		// ICE agent 状态（independent from connectionState；能看到 checking→connected 的真实跳转）
+		pc.oniceconnectionstatechange = () => {
+			if (this.__pc !== pc) return;
+			this.__log('info', `iceState: ${pc.iceConnectionState}`);
+		};
+
+		// ICE gathering 阶段（new/gathering/complete）
+		pc.onicegatheringstatechange = () => {
+			if (this.__pc !== pc) return;
+			const g = pc.iceGatheringState;
+			// 每次进入 gathering（含 restart）→ 重置候选计数器
+			if (g === 'gathering') this.__resetIceCandCounts();
+			this.__log('info', `iceGather: ${g}`);
+		};
+
+		// 信令状态机（have-local-offer / stable / have-remote-offer 等）
+		pc.onsignalingstatechange = () => {
+			if (this.__pc !== pc) return;
+			this.__log('info', `sigState: ${pc.signalingState}`);
 		};
 
 		// 连接状态变更
@@ -463,13 +514,22 @@ export class WebRtcConnection {
 
 			if (s === 'connected') {
 				this.__clearDisconnectedTimer();
-				if (this.__state === 'restarting') {
+				const wasRestarting = this.__state === 'restarting';
+				if (wasRestarting) {
 					this.__log('info', 'ICE restart succeeded');
 					this.__clearRestartState();
 				}
 				this.__setState('connected');
 				this.__startKeepalive(); // 幂等；restart 成功后恢复保活（dc.onopen 不再触发）
 				this.__resolveCandidateType(pc);
+				// restart 成功后 2s 再 dump 一次 stats，验证通告 connected 后是否真的有数据流
+				if (wasRestarting) {
+					setTimeout(() => {
+						if (this.__pc === pc && this.__state === 'connected') {
+							this.__dumpStats('post-restart-success');
+						}
+					}, 2000);
+				}
 			} else if (s === 'disconnected') {
 				// restarting 中的 disconnected 是中间状态，忽略
 				if (this.__state === 'restarting') return;
@@ -506,6 +566,14 @@ export class WebRtcConnection {
 				const payload = JSON.parse(jsonStr);
 				if (payload.type === 'probe-ack') {
 					this.__settleProbe(true);
+					return;
+				}
+				// plugin 主动探针：立即回 ack（绕过发送队列，与 probe-ack 对称处理）
+				// 用于诊断"pion 报告 connected 但 DC 实际不通"的场景
+				if (payload.type === 'plugin-probe') {
+					try { dc.send(JSON.stringify({ type: 'plugin-probe-ack', id: payload.id })); }
+					catch (err) { this.__log('warn', `plugin-probe-ack send failed: ${err?.message}`); }
+					this.__log('info', `plugin-probe echoed id=${payload.id}`);
 					return;
 				}
 				this.__clawConn.__onRtcMessage(payload);
@@ -730,6 +798,74 @@ export class WebRtcConnection {
 		}).catch(() => {});
 	}
 
+	/**
+	 * @private 汇总 getStats 关键诊断字段到一行 remoteLog。
+	 * 不抛异常；getStats 失败或 PC 已替换时静默跳过（只记录一条 error 日志）。
+	 * @param {string} reason - 本次 dump 的触发原因（供日志分类）
+	 */
+	async __dumpStats(reason) {
+		const pc = this.__pc;
+		if (!pc || typeof pc.getStats !== 'function') return;
+		let report;
+		try {
+			report = await pc.getStats();
+		} catch (err) {
+			this.__log('warn', `stats.${reason} getStats failed: ${err?.message ?? err}`);
+			return;
+		}
+		if (this.__pc !== pc) return; // PC 已被替换
+
+		let pair = null;
+		let transport = null;
+		let rpcStat = null;
+		for (const stat of report.values()) {
+			if (stat.type === 'candidate-pair') {
+				// 优先 nominated，其次 succeeded
+				if (stat.nominated) pair = stat;
+				else if (!pair && stat.state === 'succeeded') pair = stat;
+			} else if (stat.type === 'transport') {
+				// 优选带 selectedCandidatePairId 的那个；否则第一个
+				if (!transport || stat.selectedCandidatePairId) transport = stat;
+			} else if (stat.type === 'data-channel' && stat.label === 'rpc') {
+				rpcStat = stat;
+			}
+		}
+
+		let local = null;
+		let remote = null;
+		if (pair) {
+			for (const s of report.values()) {
+				if (s.type === 'local-candidate' && s.id === pair.localCandidateId) local = s;
+				if (s.type === 'remote-candidate' && s.id === pair.remoteCandidateId) remote = s;
+				if (local && remote) break;
+			}
+		}
+
+		const pairDesc = pair
+			? `pair=[${local?.candidateType ?? '?'}/${local?.protocol ?? '?'}`
+				+ `>${remote?.candidateType ?? '?'}/${remote?.protocol ?? '?'}`
+				+ ` state=${pair.state ?? '?'} nom=${pair.nominated ? 1 : 0}`
+				+ ` bs=${pair.bytesSent ?? 0} br=${pair.bytesReceived ?? 0}`
+				+ ` rtt=${pair.currentRoundTripTime ?? '?'}`
+				+ ` req=${pair.requestsSent ?? 0} resp=${pair.responsesReceived ?? 0}]`
+			: 'pair=none';
+
+		const dtlsDesc = transport
+			? `tp=[dtls=${transport.dtlsState ?? '?'} ice=${transport.iceState ?? '?'}`
+				+ ` bs=${transport.bytesSent ?? 0} br=${transport.bytesReceived ?? 0}]`
+			: 'tp=none';
+
+		const dc = this.__rpcChannel;
+		const dcDesc = rpcStat
+			? `dc=[state=${rpcStat.state ?? dc?.readyState ?? 'none'}`
+				+ ` ms=${rpcStat.messagesSent ?? 0} mr=${rpcStat.messagesReceived ?? 0}`
+				+ ` bs=${rpcStat.bytesSent ?? 0} br=${rpcStat.bytesReceived ?? 0}`
+				+ ` buf=${dc?.bufferedAmount ?? 0}]`
+			: `dc=[state=${dc?.readyState ?? 'none'} buf=${dc?.bufferedAmount ?? 0}]`;
+
+		this.__log('info', `stats.${reason} ${pairDesc} ${dtlsDesc} ${dcDesc}`);
+	}
+
 	// --- 内部：恢复 ---
 
 	/** @private ICE failed → 尝试 ICE restart，失败后上报 failed 由外层 rebuild */
@@ -746,6 +882,24 @@ export class WebRtcConnection {
 	async __attemptRestart(reason) {
 		if (!this.__pc || this.__state === 'closed') return;
 
+		// 首次进入 restarting 前打一条"为什么走到这里"的快照，便于定位"UI 以为自己还 connected"的假设
+		const firstTriggerThisEpoch = this.__state !== 'restarting';
+		if (firstTriggerThisEpoch) {
+			const pc = this.__pc;
+			const dc = this.__rpcChannel;
+			const idleAgo = this.__lastDcActivityAt ? Date.now() - this.__lastDcActivityAt : null;
+			this.__log('info',
+				`restart.trigger reason=${reason}`
+				+ ` connState=${pc.connectionState ?? '?'}`
+				+ ` iceState=${pc.iceConnectionState ?? '?'}`
+				+ ` sigState=${pc.signalingState ?? '?'}`
+				+ ` dc=[state=${dc?.readyState ?? 'none'} buf=${dc?.bufferedAmount ?? 0}]`
+				+ ` dcIdleAgo=${idleAgo == null ? 'never' : idleAgo}`
+				+ ` attempt=${this.__restartAttemptCount}`);
+			// fire-and-forget：stats 快照异步到达即可，不阻塞 restart 流程
+			this.__dumpStats('pre-restart').catch(() => {});
+		}
+
 		// 同步进入 restarting（先于 async createOffer，确保状态立即可观测）
 		if (this.__state !== 'restarting') {
 			this.__stopKeepalive();
@@ -759,6 +913,8 @@ export class WebRtcConnection {
 		// 时间预算耗尽 → 放弃 restart
 		if (Date.now() - this.__restartStartTime >= ICE_RESTART_TIMEOUT_MS) {
 			this.__log('warn', `ICE restart timed out after ${ICE_RESTART_TIMEOUT_MS}ms (${this.__restartAttemptCount} attempts)`);
+			// close 前同步抓一次 stats；内部有 try/catch，不会抛
+			await this.__dumpStats('restart-timeout');
 			this.close({ asFailed: true });
 			return;
 		}
@@ -860,13 +1016,21 @@ export class WebRtcConnection {
 	__onSignaling(msg) {
 		if (msg.type === 'rtc:answer') {
 			this.__log('info', 'answer received, setting remote description');
-			this.__pc?.setRemoteDescription({ type: 'answer', sdp: msg.payload.sdp })
+			const pcAtAnswer = this.__pc;
+			const wasRestarting = this.__state === 'restarting';
+			pcAtAnswer?.setRemoteDescription({ type: 'answer', sdp: msg.payload.sdp })
 				.then(() => {
 					this.__remoteDescSet = true;
 					// 排空 answer 到达前暂存的 ICE candidates
 					const pending = this.__pendingCandidates.splice(0);
 					for (const c of pending) {
 						this.__pc?.addIceCandidate(c).catch(() => {});
+					}
+					// restart 应用 answer 后 3s dump 一次 stats：验证新 pair 是否真的在传数据
+					if (wasRestarting) {
+						setTimeout(() => {
+							if (this.__pc === pcAtAnswer) this.__dumpStats('post-answer');
+						}, 3000);
 					}
 				})
 				.catch((err) => {
