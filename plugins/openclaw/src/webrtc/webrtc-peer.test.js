@@ -1752,6 +1752,178 @@ test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async
 	assert.equal(sent[0].payload.reason, 'restart_failed');
 });
 
+// --- ICE restart credRemain 诊断字段 ---
+
+test('WebRtcPeer: ICE restart 日志带 credRemain（凭证仍有效）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_cr01'));
+
+	// 构造未过期凭证：expireAt = now + 3600
+	const expireAt = Math.floor(Date.now() / 1000) + 3600;
+	resetRemoteLog();
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_cr01',
+		payload: { sdp: 'sdp', iceRestart: true },
+		turnCreds: { username: `${expireAt}:42`, credential: 'x', urls: [] },
+	});
+
+	const log = remoteLogBuffer.find((e) => /rtc\.ice-restart conn=c_cr01/.test(e.text));
+	assert.ok(log, `expected rtc.ice-restart log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+	const m = log.text.match(/credRemain=(-?\d+)/);
+	assert.ok(m, `credRemain field missing in log: ${log.text}`);
+	const v = Number(m[1]);
+	assert.ok(v > 3500 && v <= 3600, `credRemain ${v} should be ~3600`);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 日志 credRemain 为负（凭证已过期）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_cr02'));
+
+	// 构造已过期凭证：expireAt = now - 60
+	const expireAt = Math.floor(Date.now() / 1000) - 60;
+	resetRemoteLog();
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_cr02',
+		payload: { sdp: 'sdp', iceRestart: true },
+		turnCreds: { username: `${expireAt}:42`, credential: 'x', urls: [] },
+	});
+
+	const log = remoteLogBuffer.find((e) => /rtc\.ice-restart conn=c_cr02/.test(e.text));
+	assert.ok(log, 'expected rtc.ice-restart log');
+	const m = log.text.match(/credRemain=(-?\d+)/);
+	assert.ok(m, `credRemain field missing: ${log.text}`);
+	assert.ok(Number(m[1]) < 0, `expected negative credRemain, got ${m[1]}`);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 日志 credRemain=none（无 turnCreds 或解析失败）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_cr03'));
+
+	// 1) 不带 turnCreds → credRemain=none
+	resetRemoteLog();
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_cr03',
+		payload: { sdp: 'sdp', iceRestart: true },
+	});
+	let log = remoteLogBuffer.find((e) => /rtc\.ice-restart conn=c_cr03/.test(e.text));
+	assert.ok(/credRemain=none/.test(log.text), `expected credRemain=none, got: ${log.text}`);
+
+	// 2) username 不含冒号或非数字时间戳 → credRemain=none
+	resetRemoteLog();
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_cr03',
+		payload: { sdp: 'sdp', iceRestart: true },
+		turnCreds: { username: 'malformed', credential: 'x', urls: [] },
+	});
+	log = remoteLogBuffer.find((e) => /rtc\.ice-restart conn=c_cr03/.test(e.text));
+	assert.ok(/credRemain=none/.test(log.text), `expected credRemain=none for malformed username, got: ${log.text}`);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 各失败/拒绝路径日志均带 credRemain', async () => {
+	const expireAt = Math.floor(Date.now() / 1000) + 1800;
+	const turnCreds = { username: `${expireAt}:42`, credential: 'x', urls: [] };
+
+	// 1) ice-restart-no-session：无 session 时
+	{
+		resetRemoteLog();
+		const PC = MockPCFactory();
+		const peer = new WebRtcPeer({
+			onSend: () => {},
+			logger: silentLogger(),
+			PeerConnection: PC,
+			impl: 'pion',
+		});
+		await peer.handleSignaling({
+			type: 'rtc:offer',
+			fromConnId: 'c_cr_ns',
+			payload: { sdp: 'sdp', iceRestart: true },
+			turnCreds,
+		});
+		const log = remoteLogBuffer.find((e) => /rtc\.ice-restart-no-session/.test(e.text));
+		assert.ok(log && /credRemain=\d+/.test(log.text), `no-session log missing credRemain: ${log?.text}`);
+	}
+
+	// 2) ice-restart-unsupported：非 pion impl
+	{
+		resetRemoteLog();
+		const PC = MockPCFactory();
+		const peer = new WebRtcPeer({
+			onSend: () => {},
+			logger: silentLogger(),
+			PeerConnection: PC,
+			impl: 'ndc',
+		});
+		await peer.handleSignaling(makeOffer('c_cr_un'));
+		resetRemoteLog();
+		await peer.handleSignaling({
+			type: 'rtc:offer',
+			fromConnId: 'c_cr_un',
+			payload: { sdp: 'sdp', iceRestart: true },
+			turnCreds,
+		});
+		const log = remoteLogBuffer.find((e) => /rtc\.ice-restart-unsupported/.test(e.text));
+		assert.ok(log && /credRemain=\d+/.test(log.text), `unsupported log missing credRemain: ${log?.text}`);
+		await peer.closeAll();
+	}
+
+	// 3) ice-restart-failed：协商抛错
+	{
+		resetRemoteLog();
+		const PC = MockPCFactory();
+		const peer = new WebRtcPeer({
+			onSend: () => {},
+			logger: silentLogger(),
+			PeerConnection: PC,
+			impl: 'pion',
+		});
+		await peer.handleSignaling(makeOffer('c_cr_fail'));
+		PC.instances[0].setRemoteDescription = async () => { throw new Error('boom'); };
+		resetRemoteLog();
+		await peer.handleSignaling({
+			type: 'rtc:offer',
+			fromConnId: 'c_cr_fail',
+			payload: { sdp: 'sdp', iceRestart: true },
+			turnCreds,
+		});
+		const log = remoteLogBuffer.find((e) => /rtc\.ice-restart-failed/.test(e.text));
+		assert.ok(log && /credRemain=\d+/.test(log.text), `failed log missing credRemain: ${log?.text}`);
+	}
+});
+
 test('WebRtcPeer: ICE failed 后仍可 ICE restart 恢复', async () => {
 	const sent = [];
 	const PC = MockPCFactory();

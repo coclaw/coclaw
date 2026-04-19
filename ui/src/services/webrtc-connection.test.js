@@ -32,6 +32,7 @@ import {
 	initRtcForClaw,
 	closeRtcForClaw,
 	closeAllRtcInstances,
+	parseCredExpireAt,
 	__resetRtcInstances,
 	__getRtcInstance,
 } from './webrtc-connection.js';
@@ -235,12 +236,35 @@ describe('WebRtcConnection — 基础建连', () => {
 		rtc.close();
 	});
 
-	test('connect 不缓存 turnCreds（内部不做 rebuild，由外层退避重试）', async () => {
+	test('connect 不缓存完整 turnCreds，但缓存过期时间戳用于 ICE restart 诊断', async () => {
 		const clawConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 
 		await rtc.connect(MOCK_TURN_CREDS);
+		// 完整 turnCreds 不缓存（外层 rebuild 会重新 fetch）
 		expect(rtc.__turnCreds).toBeUndefined();
+		// 但 username 里的过期时间戳缓存供 credRemain 日志使用
+		expect(rtc.__credExpireAt).toBe(1234);
+
+		rtc.close();
+	});
+
+	test('connect 凭证 username 解析失败时 __credExpireAt 为 null', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect({ ...MOCK_TURN_CREDS, username: 'malformed' });
+		expect(rtc.__credExpireAt).toBeNull();
+
+		rtc.close();
+	});
+
+	test('connect 无 turnCreds 时 __credExpireAt 为 null', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(null);
+		expect(rtc.__credExpireAt).toBeNull();
 
 		rtc.close();
 	});
@@ -2723,6 +2747,101 @@ describe('WebRtcConnection — ICE restart', () => {
 		resolveOffer({ sdp: 'restart-sdp', type: 'offer' });
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('closed'); // 保持 closed，不变为 failed
+	});
+
+	// --- credRemain 诊断字段 ---
+
+	test('ICE restart offer 日志带 credRemain（凭证有效）', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		// 控制"现在"为 expireAt - 3600s，credRemain 应为约 3600
+		const now = 1_000_000_000;
+		const expireAt = now + 3600;
+		vi.setSystemTime(now * 1000);
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect({ ...MOCK_TURN_CREDS, username: `${expireAt}:42` });
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		remoteLog.mockClear();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const calls = remoteLog.mock.calls.map((c) => c[0]);
+		const restartLog = calls.find((s) => /ICE restart offer sent/.test(s));
+		expect(restartLog).toBeDefined();
+		expect(restartLog).toMatch(/credRemain=3600\b/);
+
+		rtc.close();
+	});
+
+	test('ICE restart offer 日志 credRemain 为负（凭证已过期）', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		const now = 1_000_000_000;
+		const expireAt = now - 60;
+		vi.setSystemTime(now * 1000);
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect({ ...MOCK_TURN_CREDS, username: `${expireAt}:42` });
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		remoteLog.mockClear();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const calls = remoteLog.mock.calls.map((c) => c[0]);
+		const restartLog = calls.find((s) => /ICE restart offer sent/.test(s));
+		expect(restartLog).toBeDefined();
+		expect(restartLog).toMatch(/credRemain=-60\b/);
+
+		rtc.close();
+	});
+
+	test('ICE restart offer 日志 credRemain=none（无 turnCreds）', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(null);
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		remoteLog.mockClear();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const calls = remoteLog.mock.calls.map((c) => c[0]);
+		const restartLog = calls.find((s) => /ICE restart offer sent/.test(s));
+		expect(restartLog).toBeDefined();
+		expect(restartLog).toMatch(/credRemain=none\b/);
+
+		rtc.close();
+	});
+});
+
+describe('WebRtcConnection — parseCredExpireAt', () => {
+	test('解析有效 username（"<timestamp>:<userId>"）', () => {
+		expect(parseCredExpireAt('1700000000:42')).toBe(1700000000);
+	});
+
+	test('username 缺冒号 → 取整段，仍可解析时返回数字', () => {
+		expect(parseCredExpireAt('1700000000')).toBe(1700000000);
+	});
+
+	test('非数字时间戳 → null', () => {
+		expect(parseCredExpireAt('malformed:42')).toBeNull();
+	});
+
+	test('非字符串输入 → null', () => {
+		expect(parseCredExpireAt(undefined)).toBeNull();
+		expect(parseCredExpireAt(null)).toBeNull();
+		expect(parseCredExpireAt(123)).toBeNull();
 	});
 });
 

@@ -134,6 +134,8 @@ export class WebRtcPeer {
 	async __handleOffer(msg) {
 		const connId = msg.fromConnId;
 		const isIceRestart = !!msg.payload?.iceRestart;
+		const credRemain = this.__credRemainSec(msg.turnCreds);
+		const credRemainStr = credRemain ?? 'none';
 
 		// ICE restart：在现有 PC 上重新协商，保持 DTLS session
 		if (isIceRestart) {
@@ -141,7 +143,7 @@ export class WebRtcPeer {
 			if (existing) {
 				// 仅已验证支持 ICE restart 的 impl 放行，其余立即 reject 让 UI 走 rebuild
 				if (this.__impl !== 'pion') {
-					this.__remoteLog(`rtc.ice-restart-unsupported conn=${connId} impl=${this.__impl}`);
+					this.__remoteLog(`rtc.ice-restart-unsupported conn=${connId} impl=${this.__impl} credRemain=${credRemainStr}`);
 					this.logger.info?.(`${this.__rtcTag} ICE restart rejected: impl=${this.__impl} not verified`);
 					this.__onSend({
 						type: 'rtc:restart-rejected',
@@ -155,7 +157,7 @@ export class WebRtcPeer {
 					clearTimeout(existing.__failedTimer);
 					existing.__failedTimer = null;
 				}
-				this.__remoteLog(`rtc.ice-restart conn=${connId}`);
+				this.__remoteLog(`rtc.ice-restart conn=${connId} credRemain=${credRemainStr}`);
 				this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
 				try {
 					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
@@ -177,7 +179,7 @@ export class WebRtcPeer {
 					return;
 				} catch (err) {
 					// ICE restart 协商失败 → reject，不 fall through
-					this.__remoteLog(`rtc.ice-restart-failed conn=${connId}`);
+					this.__remoteLog(`rtc.ice-restart-failed conn=${connId} credRemain=${credRemainStr}`);
 					this.logger.warn?.(`${this.__rtcTag} ICE restart failed for ${connId}: ${err?.message}`);
 					this.__onSend({
 						type: 'rtc:restart-rejected',
@@ -192,7 +194,7 @@ export class WebRtcPeer {
 				}
 			}
 			// 无 session → reject（plugin 可能已重启）
-			this.__remoteLog(`rtc.ice-restart-no-session conn=${connId}`);
+			this.__remoteLog(`rtc.ice-restart-no-session conn=${connId} credRemain=${credRemainStr}`);
 			this.logger.warn?.(`${this.__rtcTag} ICE restart from ${connId} but no session, rejecting`);
 			this.__onSend({
 				type: 'rtc:restart-rejected',
@@ -558,6 +560,16 @@ export class WebRtcPeer {
 
 	__remoteLog(msg) {
 		remoteLog(this.__impl ? `${msg} rtc=${this.__impl}` : msg);
+	}
+
+	// 解析 HMAC turnCreds 中的剩余秒数（username 形如 "<expireAt>:<userId>"）；
+	// 负值表示已过期；解析失败或 turnCreds 缺失返回 null。仅用于 ICE restart 日志诊断。
+	__credRemainSec(turnCreds) {
+		const username = turnCreds?.username;
+		if (typeof username !== 'string') return null;
+		const expireAt = Number(username.split(':')[0]);
+		if (!Number.isFinite(expireAt)) return null;
+		return expireAt - Math.floor(Date.now() / 1000);
 	}
 
 	/** 淘汰最旧的 failed session（Map 迭代序 ≈ 创建时间序），用于 queue length 限制 */

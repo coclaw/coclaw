@@ -39,6 +39,14 @@ const DC_LOW_WATER_MARK = 256 * 1024;
 /** @type {Map<string, WebRtcConnection>} clawId → WebRtcConnection */
 const rtcInstances = new Map();
 
+// 解析 HMAC turnCreds username 中的过期时间戳（Unix 秒）；解析失败返回 null。
+// 仅供 ICE restart 时计算 credRemain 诊断字段使用，不参与凭证验证。
+export function parseCredExpireAt(username) {
+	if (typeof username !== 'string') return null;
+	const ts = Number(username.split(':')[0]);
+	return Number.isFinite(ts) ? ts : null;
+}
+
 const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
 
 /**
@@ -194,6 +202,8 @@ export class WebRtcConnection {
 		this.__restartAttemptCount = 0;
 		this.__restartStartTime = 0;
 		this.__restartInFlight = false;
+		/** TURN 凭证过期时间戳（Unix 秒），用于 ICE restart 日志诊断 */
+		this.__credExpireAt = null;
 		/** @type {function|null} 状态变更回调（供外部同步 store） */
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
@@ -399,6 +409,7 @@ export class WebRtcConnection {
 		this.__pendingCandidates = [];
 		this.__candidateType = null;
 		this.__transportInfo = null;
+		this.__credExpireAt = parseCredExpireAt(turnCreds?.username);
 		this.__setState('connecting');
 
 		const iceServers = this.__buildIceServers(turnCreds);
@@ -786,7 +797,8 @@ export class WebRtcConnection {
 			await this.__pc.setLocalDescription(offer);
 			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
 			sig.sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true });
-			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount}`);
+			const credRemain = this.__credExpireAt != null ? this.__credExpireAt - Math.floor(Date.now() / 1000) : null;
+			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount} credRemain=${credRemain ?? 'none'}`);
 		} catch (err) {
 			if (this.__state === 'closed' || this.__state === 'failed') return;
 			this.__log('warn', `ICE restart createOffer failed: ${err?.message}`);
@@ -798,7 +810,7 @@ export class WebRtcConnection {
 
 	/**
 	 * 外部触发：store 在 restarting 状态调用，立即重试
-	 * （如 network:online、foreground-resume）
+	 * （如 network:online / app:foreground 事件触发的恢复路径）
 	 */
 	nudgeRestart() {
 		if (this.__state !== 'restarting') return;
