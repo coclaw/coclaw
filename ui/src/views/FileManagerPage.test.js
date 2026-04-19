@@ -250,77 +250,155 @@ describe('FileManagerPage', () => {
 	});
 
 	// ===================================================================
-	// 上传完成增量刷新
+	// 上传完成乐观插入（__onUploadDone）
 	// ===================================================================
-	describe('上传完成增量刷新', () => {
-		test('上传任务数减少时立即调用 loadDir', async () => {
+	describe('上传完成乐观插入', () => {
+		function makeDoneTask(overrides = {}) {
+			return {
+				id: 't1', type: 'upload',
+				clawId: 'claw1', agentId: 'main', dir: '',
+				fileName: 'new.txt', status: 'done', progress: 1,
+				size: 123, error: null, file: null, transferHandle: null, onDone: null,
+				createdAt: Date.now(),
+				...overrides,
+			};
+		}
+
+		test('enqueueUploads 传入 __onUploadDone 作为回调', async () => {
 			const wrapper = mountPage();
 			await flushPromises();
 
-			const loadDirSpy = vi.spyOn(wrapper.vm, 'loadDir');
-			let callCount = 0;
+			const store = useFilesStore();
+			const enqueueSpy = vi.spyOn(store, 'enqueueUploads');
 
-			vi.spyOn(wrapper.vm, '__activeUploadCount').mockImplementation(() => {
-				callCount++;
-				if (callCount <= 1) return 3;
-				if (callCount === 2) return 2;
-				return 0;
+			wrapper.vm.__handleUploadFiles([{ name: 'a.txt', size: 10 }]);
+
+			expect(enqueueSpy).toHaveBeenCalledTimes(1);
+			// 第 5 个参数是 onDone 回调，应为组件的方法
+			expect(enqueueSpy.mock.calls[0][4]).toBe(wrapper.vm.__onUploadDone);
+		});
+
+		test('新文件被追加到 entries 尾部', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			await wrapper.setData({
+				currentDir: '',
+				entries: [
+					{ name: 'b.txt', type: 'file', size: 20, mtime: 1 },
+				],
 			});
 
-			wrapper.vm.__watchUploadsForRefresh();
+			wrapper.vm.__onUploadDone(makeDoneTask({ fileName: 'new.txt', size: 50 }));
 
-			vi.advanceTimersByTime(500);
-			await flushPromises();
-			expect(loadDirSpy).toHaveBeenCalledTimes(1);
-
-			vi.advanceTimersByTime(500);
-			await flushPromises();
-			expect(loadDirSpy).toHaveBeenCalledTimes(2);
-
-			vi.advanceTimersByTime(1000);
-			await flushPromises();
-			expect(loadDirSpy).toHaveBeenCalledTimes(2);
+			expect(wrapper.vm.entries.map((e) => e.name)).toEqual(['b.txt', 'new.txt']);
+			const inserted = wrapper.vm.entries[1];
+			expect(inserted).toMatchObject({ name: 'new.txt', type: 'file', size: 50 });
+			expect(typeof inserted.mtime).toBe('number');
 		});
 
-		test('上传任务数未变时不刷新', async () => {
+		test('同名文件被原地替换（覆盖上传）', async () => {
 			const wrapper = mountPage();
 			await flushPromises();
 
-			const loadDirSpy = vi.spyOn(wrapper.vm, 'loadDir');
-			vi.spyOn(wrapper.vm, '__activeUploadCount').mockReturnValue(2);
+			await wrapper.setData({
+				currentDir: '',
+				entries: [
+					{ name: 'a.txt', type: 'file', size: 10, mtime: 1 },
+					{ name: 'x.txt', type: 'file', size: 20, mtime: 2 },
+				],
+			});
 
-			wrapper.vm.__watchUploadsForRefresh();
+			wrapper.vm.__onUploadDone(makeDoneTask({ fileName: 'x.txt', size: 999 }));
 
-			vi.advanceTimersByTime(500);
-			await flushPromises();
-			expect(loadDirSpy).not.toHaveBeenCalled();
+			expect(wrapper.vm.entries.map((e) => e.name)).toEqual(['a.txt', 'x.txt']);
+			expect(wrapper.vm.entries[1].size).toBe(999);
+			expect(wrapper.vm.entries[1].mtime).toBeGreaterThan(2);
 		});
 
-		test('已有轮询在跑时不重复启动', async () => {
+		test('同名目录不会被替换（只匹配文件条目）', async () => {
 			const wrapper = mountPage();
 			await flushPromises();
-			vi.spyOn(wrapper.vm, '__activeUploadCount').mockReturnValue(1);
 
-			wrapper.vm.__watchUploadsForRefresh();
-			wrapper.vm.__watchUploadsForRefresh(); // 重复调用
+			await wrapper.setData({
+				currentDir: '',
+				entries: [
+					{ name: 'docs', type: 'dir' },
+				],
+			});
 
-			// 500ms 后只应 check 一次（一个定时器）
-			vi.advanceTimersByTime(500);
-			await flushPromises();
-			// 不报错即可
+			wrapper.vm.__onUploadDone(makeDoneTask({ fileName: 'docs', size: 100 }));
+
+			// 新 entry 作为 file 被 push，而不是替换掉 dir
+			expect(wrapper.vm.entries).toHaveLength(2);
+			expect(wrapper.vm.entries[0]).toMatchObject({ name: 'docs', type: 'dir' });
+			expect(wrapper.vm.entries[1]).toMatchObject({ name: 'docs', type: 'file', size: 100 });
 		});
 
-		test('组件卸载后停止轮询', async () => {
+		test('乐观插入后同步写入 dirCache', async () => {
 			const wrapper = mountPage();
 			await flushPromises();
-			vi.spyOn(wrapper.vm, '__activeUploadCount').mockReturnValue(2);
-			wrapper.vm.__watchUploadsForRefresh();
+
+			const store = useFilesStore();
+			await wrapper.setData({
+				currentDir: 'src',
+				entries: [{ name: 'b.txt', type: 'file', size: 5 }],
+			});
+
+			wrapper.vm.__onUploadDone(makeDoneTask({ dir: 'src', fileName: 'a.txt', size: 11 }));
+
+			const cached = store.getCachedDir('claw1', 'main');
+			expect(cached.currentDir).toBe('src');
+			expect(cached.entries.map((e) => e.name)).toEqual(['b.txt', 'a.txt']);
+		});
+
+		test('任务所属目录与当前目录不一致时跳过', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			await wrapper.setData({
+				currentDir: 'src',
+				entries: [{ name: 'keep.txt', type: 'file' }],
+			});
+
+			// 任务 dir='docs' != currentDir='src'
+			wrapper.vm.__onUploadDone(makeDoneTask({ dir: 'docs', fileName: 'other.txt' }));
+
+			expect(wrapper.vm.entries).toEqual([{ name: 'keep.txt', type: 'file' }]);
+		});
+
+		test('任务所属 clawId/agentId 与当前不一致时跳过', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			await wrapper.setData({
+				currentDir: '',
+				entries: [{ name: 'keep.txt', type: 'file' }],
+			});
+
+			wrapper.vm.__onUploadDone(makeDoneTask({ clawId: 'other', fileName: 'x.txt' }));
+			expect(wrapper.vm.entries).toEqual([{ name: 'keep.txt', type: 'file' }]);
+
+			wrapper.vm.__onUploadDone(makeDoneTask({ agentId: 'other', fileName: 'x.txt' }));
+			expect(wrapper.vm.entries).toEqual([{ name: 'keep.txt', type: 'file' }]);
+		});
+
+		test('组件已卸载时跳过', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			// 拿到 vm 的方法引用后再 unmount——模拟 onDone 在卸载后触发的场景
+			const onUploadDone = wrapper.vm.__onUploadDone.bind(wrapper.vm);
+			const vm = wrapper.vm;
+			const store = useFilesStore();
+			const setDirCacheSpy = vi.spyOn(store, 'setDirCache');
 
 			wrapper.unmount();
 
-			vi.advanceTimersByTime(500);
-			await flushPromises();
-			// 不报错即可——__unmounted guard 阻止继续
+			// 卸载后回调进来，不应改 entries、不应写 dirCache
+			expect(() => onUploadDone(makeDoneTask({ fileName: 'late.txt' }))).not.toThrow();
+			expect(vm.entries.find((e) => e.name === 'late.txt')).toBeUndefined();
+			expect(setDirCacheSpy).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1821,7 +1899,7 @@ describe('FileManagerPage', () => {
 	// 生命周期
 	// ===================================================================
 	describe('生命周期', () => {
-		test('beforeUnmount 清理定时器和完成任务', async () => {
+		test('beforeUnmount 清理完成任务', async () => {
 			const wrapper = mountPage();
 			await flushPromises();
 
@@ -1830,6 +1908,35 @@ describe('FileManagerPage', () => {
 
 			wrapper.unmount();
 			expect(clearSpy).toHaveBeenCalledWith('claw1', 'main');
+		});
+
+		test('beforeUnmount 解除 upload task 对本实例的 onDone 引用', async () => {
+			const wrapper = mountPage();
+			await flushPromises();
+
+			const store = useFilesStore();
+			// 注入一个引用本实例 __onUploadDone 的上传任务
+			store.tasks.set('u-live', {
+				id: 'u-live', type: 'upload',
+				clawId: 'claw1', agentId: 'main', dir: '',
+				fileName: 'x.txt', status: 'running', progress: 0.5,
+				size: 1000, error: null, file: null, transferHandle: null,
+				onDone: wrapper.vm.__onUploadDone, createdAt: Date.now(),
+			});
+			// 再注入一个指向其他实例 onDone 的任务（不应被清除）
+			const foreignOnDone = () => {};
+			store.tasks.set('u-other', {
+				id: 'u-other', type: 'upload',
+				clawId: 'claw1', agentId: 'main', dir: '',
+				fileName: 'y.txt', status: 'pending', progress: 0,
+				size: 500, error: null, file: null, transferHandle: null,
+				onDone: foreignOnDone, createdAt: Date.now(),
+			});
+
+			wrapper.unmount();
+
+			expect(store.tasks.get('u-live').onDone).toBeNull();
+			expect(store.tasks.get('u-other').onDone).toBe(foreignOnDone);
 		});
 	});
 

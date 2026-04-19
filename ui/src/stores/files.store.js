@@ -87,8 +87,10 @@ export const useFilesStore = defineStore('files', {
 		 * @param {string} agentId
 		 * @param {string} dir - 所在目录（相对 workspace）
 		 * @param {File[]} files
+		 * @param {(task: FileTask) => void} [onDone] - 单个任务上传成功后的回调，
+		 *   供 UI 把新文件乐观地插入目录列表（避免 loadDir 往返导致的短暂消失）
 		 */
-		enqueueUploads(clawId, agentId, dir, files) {
+		enqueueUploads(clawId, agentId, dir, files, onDone) {
 			for (const file of files) {
 				const task = createTask({
 					type: 'upload',
@@ -96,6 +98,7 @@ export const useFilesStore = defineStore('files', {
 					fileName: file.name,
 					size: file.size,
 					file,
+					onDone,
 				});
 				this.tasks.set(task.id, task);
 			}
@@ -305,6 +308,10 @@ export const useFilesStore = defineStore('files', {
 				task.status = 'done';
 				task.progress = 1;
 				task.file = null; // 释放 File 引用
+				if (task.onDone) {
+					try { task.onDone(task); }
+					catch (err) { console.warn('[files.store] upload onDone threw: %s', err?.message); }
+				}
 			} catch (err) {
 				if (err?.code === 'CANCELLED') return; // cancelTask 已处理状态
 				task.status = 'failed';
@@ -384,6 +391,7 @@ function createTask(overrides) {
 		error: null,
 		file: null,
 		transferHandle: null,
+		onDone: null,
 		createdAt: Date.now(),
 		...overrides,
 	};
@@ -406,5 +414,6 @@ export { createTask as __createTask };
  * @property {string | null} error
  * @property {File | null} file - upload 时保留原始 File 引用（用于重试）
  * @property {import('../services/file-transfer.js').FileTransferHandle | null} transferHandle
+ * @property {((task: FileTask) => void) | null} onDone - upload 成功后的回调（仅 upload）
  * @property {number} createdAt
  */

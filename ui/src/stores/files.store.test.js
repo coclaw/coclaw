@@ -1112,6 +1112,87 @@ describe('files.store', () => {
 			expect(logs.some((l) => /task\.download\.failed/.test(l) && /code=CLAW_NOT_AVAILABLE/.test(l))).toBe(true);
 		});
 
+		test('onDone 在上传成功后被调用，带 task 作为参数', async () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: Promise.resolve({ bytes: 10 }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			const onDone = vi.fn();
+
+			store.enqueueUploads('bot1', 'main', 'src', [createMockFile('ok.txt', 10)], onDone);
+
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main')[0].status).toBe('done');
+			});
+			expect(onDone).toHaveBeenCalledTimes(1);
+			const arg = onDone.mock.calls[0][0];
+			expect(arg.fileName).toBe('ok.txt');
+			expect(arg.dir).toBe('src');
+			expect(arg.status).toBe('done');
+		});
+
+		test('onDone 在上传失败时不被调用', async () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: Promise.reject(new Error('boom')),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			const onDone = vi.fn();
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('fail.txt', 10)], onDone);
+
+			await vi.waitFor(() => {
+				expect(store.getAgentTasks('bot1', 'main')[0].status).toBe('failed');
+			});
+			expect(onDone).not.toHaveBeenCalled();
+		});
+
+		test('onDone 在上传取消时不被调用', async () => {
+			mockBotConn();
+			const cancelErr = Object.assign(new Error('cancelled'), { code: 'CANCELLED' });
+			uploadFile.mockReturnValue({
+				promise: Promise.reject(cancelErr),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			const onDone = vi.fn();
+
+			store.enqueueUploads('bot1', 'main', '', [createMockFile('cancel.txt', 10)], onDone);
+
+			// 等异步处理完（CANCELLED 分支 return 前不会修改状态到 done）
+			await new Promise((r) => setTimeout(r, 20));
+			expect(onDone).not.toHaveBeenCalled();
+		});
+
+		test('onDone 抛异常不影响后续任务执行', async () => {
+			mockBotConn();
+			uploadFile.mockReturnValue({
+				promise: Promise.resolve({ bytes: 10 }),
+				cancel: vi.fn(),
+				set onProgress(_cb) {},
+			});
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const onDone = vi.fn(() => { throw new Error('downstream boom'); });
+
+			store.enqueueUploads('bot1', 'main', '', [
+				createMockFile('a.txt', 10),
+				createMockFile('b.txt', 10),
+			], onDone);
+
+			await vi.waitFor(() => {
+				const tasks = store.getAgentTasks('bot1', 'main');
+				expect(tasks.every((t) => t.status === 'done')).toBe(true);
+			});
+			expect(onDone).toHaveBeenCalledTimes(2);
+			expect(warnSpy.mock.calls.some(
+				(args) => typeof args[0] === 'string' && args[0].includes('upload onDone threw'),
+			)).toBe(true);
+			warnSpy.mockRestore();
+		});
+
 		test('CANCELLED 错误不应触发 logTaskFailure', async () => {
 			mockBotConn();
 			uploadFile.mockReturnValue({

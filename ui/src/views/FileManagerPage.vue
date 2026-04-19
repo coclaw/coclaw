@@ -333,7 +333,13 @@ export default {
 	},
 	beforeUnmount() {
 		this.__unmounted = true;
-		clearTimeout(this.__refreshTimer);
+		// 切掉仍在排队/执行的本页上传任务对本组件实例的回调引用，
+		// 避免 task 长期持有已卸载的组件实例（大文件上传 + 切页场景下的内存占用）
+		for (const task of this.filesStore.tasks.values()) {
+			if (task.type === 'upload' && task.onDone === this.__onUploadDone) {
+				task.onDone = null;
+			}
+		}
 		this.filesStore.clearFinished(this.clawId, this.agentId);
 		this.$el.removeEventListener('dragover', this.__onDragOver);
 		this.$el.removeEventListener('dragleave', this.__onDragLeave);
@@ -341,8 +347,6 @@ export default {
 	},
 	methods: {
 		resetAndLoad() {
-			clearTimeout(this.__refreshTimer);
-			this.__refreshTimer = null;
 			this.__cancelInFlight();
 			this.currentDir = '';
 			// 切换 agent 时尝试从缓存恢复，减少白屏
@@ -441,8 +445,7 @@ export default {
 			}
 
 			if (!duplicates.length) {
-				this.filesStore.enqueueUploads(this.clawId, this.agentId, this.currentDir, clean);
-				this.__watchUploadsForRefresh();
+				this.filesStore.enqueueUploads(this.clawId, this.agentId, this.currentDir, clean, this.__onUploadDone);
 				return;
 			}
 
@@ -484,34 +487,32 @@ export default {
 			}
 
 			if (toUpload.length) {
-				this.filesStore.enqueueUploads(this.clawId, this.agentId, this.currentDir, toUpload);
-				this.__watchUploadsForRefresh();
+				this.filesStore.enqueueUploads(this.clawId, this.agentId, this.currentDir, toUpload, this.__onUploadDone);
 			}
 		},
 
 		/**
-		 * 监听上传完成后自动刷新目录
+		 * 上传完成回调：把新文件乐观地插入当前目录列表，
+		 * 避免等 loadDir 往返期间该文件从 UI 上短暂消失。
+		 * 限制：onDone 在 enqueueUploads 时固化到当时的组件实例——
+		 * 若用户在上传完成前 unmount + 在同一路由 remount，新实例拿不到这次乐观插入，
+		 * 会回退到"等下一次 loadDir 拉回"的老行为（不是 regression）。
+		 * @param {import('../stores/files.store.js').FileTask} task
 		 */
-		__watchUploadsForRefresh() {
-			if (this.__refreshTimer) return; // 已有轮询在跑
-			let prevCount = this.__activeUploadCount();
-			const check = () => {
-				this.__refreshTimer = null;
-				if (this.__unmounted) return;
-				const count = this.__activeUploadCount();
-				if (count < prevCount) this.loadDir(); // 有任务完成，刷新目录
-				prevCount = count;
-				if (count) {
-					this.__refreshTimer = setTimeout(check, 500);
-				}
+		__onUploadDone(task) {
+			if (this.__unmounted) return;
+			// 任务从其他目录完成（用户已切换目录）：本地列表不是它的归属，跳过
+			if (task.clawId !== this.clawId || task.agentId !== this.agentId || task.dir !== this.currentDir) return;
+			const entry = {
+				name: task.fileName,
+				type: 'file',
+				size: task.size,
+				mtime: Date.now(),
 			};
-			this.__refreshTimer = setTimeout(check, 500);
-		},
-
-		__activeUploadCount() {
-			return this.filesStore.getActiveTasks(this.clawId, this.agentId, this.currentDir)
-				.filter((t) => t.type === 'upload' && (t.status === 'pending' || t.status === 'running'))
-				.length;
+			const idx = this.entries.findIndex((e) => e.type !== 'dir' && e.name === task.fileName);
+			if (idx >= 0) this.entries.splice(idx, 1, entry);
+			else this.entries.push(entry);
+			this.filesStore.setDirCache(this.clawId, this.agentId, this.currentDir, this.entries);
 		},
 
 		// --- 下载 ---
