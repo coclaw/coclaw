@@ -343,7 +343,6 @@ export const ruMessages = {
 	},
 	chat: {
 		loading: 'Загрузка сессии…',
-		empty: 'Сообщений пока нет',
 		inputPlaceholder: 'Введите сообщение',
 		thought: 'Размышление',
 		thoughtFor: 'Размышлял {time}',

@@ -343,7 +343,6 @@ export const zhTWMessages = {
 	},
 	chat: {
 		loading: '正在載入會話…',
-		empty: '暫無訊息',
 		inputPlaceholder: '請輸入訊息',
 		thought: '已思考',
 		thoughtFor: '已思考 {time}',

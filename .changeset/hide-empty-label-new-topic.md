@@ -2,6 +2,6 @@
 '@coclaw/ui': patch
 ---
 
-Hide the "no messages" placeholder on new topic screens.
+Drop the "no messages" placeholder from the chat screen.
 
-For a freshly-created topic the user clearly sees an empty conversation above the input — the placeholder text added no information and felt like a system empty-state. Keeps the placeholder for the regular chat route where it can still help confirm the session loaded empty.
+Both new topics and freshly-loaded chats show a blank area above the composer, which is already a clearer "start typing here" cue than a system-style empty-state line. Removed the i18n key across all locales to keep strings honest.

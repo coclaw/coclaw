@@ -343,7 +343,6 @@ export const jaMessages = {
 	},
 	chat: {
 		loading: 'セッションを読み込み中…',
-		empty: 'メッセージはまだありません',
 		inputPlaceholder: 'メッセージを入力',
 		thought: '思考',
 		thoughtFor: '{time} 考えました',

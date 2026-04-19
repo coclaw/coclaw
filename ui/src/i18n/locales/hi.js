@@ -343,7 +343,6 @@ export const hiMessages = {
 	},
 	chat: {
 		loading: 'Session लोड हो रहा है…',
-		empty: 'अभी तक कोई संदेश नहीं',
 		inputPlaceholder: 'संदेश लिखें',
 		thought: 'विचार',
 		thoughtFor: '{time} सोचा',

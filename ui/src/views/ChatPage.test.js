@@ -94,7 +94,6 @@ function getChatStore(clawId = 'bot-1', agentId = 'main') {
 
 const i18nMap = {
 	'chat.loading': 'Loading...',
-	'chat.empty': 'No messages',
 	'chat.clawOffline': 'Claw is offline',
 	'chat.clawUnbound': 'Bot has been unbound',
 	'topic.newTopic': 'New topic',
@@ -197,7 +196,7 @@ describe('ChatPage', () => {
 		expect(wrapper.text()).toContain('Something went wrong');
 	});
 
-	test('显示空消息状态', async () => {
+	test('空消息状态下不再渲染占位文案', async () => {
 		const wrapper = createWrapper();
 		const clawsStore = useClawsStore();
 		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
@@ -209,20 +208,8 @@ describe('ChatPage', () => {
 		await wrapper.vm.$nextTick();
 
 		expect(wrapper.vm.isLoadingChat).toBe(false);
-		expect(wrapper.text()).toContain('No messages');
-	});
-
-	test('新 topic 下不显示空消息提示', async () => {
-		const wrapper = createWrapper({
-			routeName: 'topics-chat', sessionId: 'new',
-			query: { claw: 'bot-1', agent: 'main' },
-		});
-		const clawsStore = useClawsStore();
-		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
-		await flushPromises();
-
-		expect(wrapper.vm.isNewTopic).toBe(true);
 		expect(wrapper.text()).not.toContain('No messages');
+		expect(wrapper.text()).not.toContain('chat.empty');
 	});
 
 	test('渲染消息列表', async () => {
@@ -258,7 +245,7 @@ describe('ChatPage', () => {
 		chatStore.messages = [];
 		await wrapper.vm.$nextTick();
 		expect(wrapper.vm.isLoadingChat).toBe(false);
-		expect(wrapper.text()).toContain('No messages');
+		expect(wrapper.text()).not.toContain('Loading...');
 	});
 
 	test('chatTitle 在 session 模式下显示 agent 名称', async () => {

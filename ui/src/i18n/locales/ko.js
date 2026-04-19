@@ -343,7 +343,6 @@ export const koMessages = {
 	},
 	chat: {
 		loading: '세션 불러오는 중…',
-		empty: '아직 메시지가 없습니다',
 		inputPlaceholder: '메시지 입력',
 		thought: '생각',
 		thoughtFor: '{time} 동안 생각함',

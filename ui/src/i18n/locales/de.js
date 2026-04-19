@@ -343,7 +343,6 @@ export const deMessages = {
 	},
 	chat: {
 		loading: 'Sitzung wird geladen…',
-		empty: 'Noch keine Nachrichten',
 		inputPlaceholder: 'Nachricht eingeben',
 		thought: 'Gedanke',
 		thoughtFor: 'Gedacht für {time}',

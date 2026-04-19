@@ -343,7 +343,6 @@ export const frMessages = {
 	},
 	chat: {
 		loading: 'Chargement de la session…',
-		empty: 'Aucun message pour l\'instant',
 		inputPlaceholder: 'Saisissez un message',
 		thought: 'Réflexion',
 		thoughtFor: 'Réfléchi pendant {time}',

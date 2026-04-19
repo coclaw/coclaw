@@ -343,7 +343,6 @@ export const esMessages = {
 	},
 	chat: {
 		loading: 'Cargando sesión…',
-		empty: 'Aún no hay mensajes',
 		inputPlaceholder: 'Escribe un mensaje',
 		thought: 'Pensamiento',
 		thoughtFor: 'Pensó durante {time}',

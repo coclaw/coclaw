@@ -343,7 +343,6 @@ export const enMessages = {
 	},
 	chat: {
 		loading: 'Loading session…',
-		empty: 'No messages yet',
 		inputPlaceholder: 'Type a message',
 		thought: 'Thought',
 		thoughtFor: 'Thought for {time}',

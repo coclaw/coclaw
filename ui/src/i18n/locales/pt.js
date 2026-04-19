@@ -343,7 +343,6 @@ export const ptMessages = {
 	},
 	chat: {
 		loading: 'Carregando sessão…',
-		empty: 'Ainda não há mensagens',
 		inputPlaceholder: 'Digite uma mensagem',
 		thought: 'Pensamento',
 		thoughtFor: 'Pensou por {time}',

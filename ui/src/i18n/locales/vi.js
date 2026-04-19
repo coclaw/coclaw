@@ -343,7 +343,6 @@ export const viMessages = {
 	},
 	chat: {
 		loading: 'Đang tải session…',
-		empty: 'Chưa có tin nhắn',
 		inputPlaceholder: 'Nhập tin nhắn',
 		thought: 'Suy nghĩ',
 		thoughtFor: 'Đã suy nghĩ trong {time}',

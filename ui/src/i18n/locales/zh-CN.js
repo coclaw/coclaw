@@ -343,7 +343,6 @@ export const zhCNMessages = {
 	},
 	chat: {
 		loading: '正在加载会话…',
-		empty: '暂无消息',
 		inputPlaceholder: '请输入信息',
 		thought: '已思考',
 		thoughtFor: '已思考 {time}',
