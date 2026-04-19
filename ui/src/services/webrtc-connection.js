@@ -913,8 +913,13 @@ export class WebRtcConnection {
 		// 时间预算耗尽 → 放弃 restart
 		if (Date.now() - this.__restartStartTime >= ICE_RESTART_TIMEOUT_MS) {
 			this.__log('warn', `ICE restart timed out after ${ICE_RESTART_TIMEOUT_MS}ms (${this.__restartAttemptCount} attempts)`);
-			// close 前同步抓一次 stats；内部有 try/catch，不会抛
-			await this.__dumpStats('restart-timeout');
+			// close 前抓一次 stats，但用 500ms 超时兜底：
+			// 病态场景下 pc.getStats() 可能长时间不 resolve（正是本次调查目标），
+			// 若直接 await 会阻塞 close() → state 卡在 restarting → store 无法 rebuild。
+			await Promise.race([
+				this.__dumpStats('restart-timeout'),
+				new Promise((r) => setTimeout(r, 500)),
+			]);
 			this.close({ asFailed: true });
 			return;
 		}

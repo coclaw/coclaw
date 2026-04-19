@@ -3775,6 +3775,39 @@ test('WebRtcPeer: closeByConnId 清理 plugin-probe timer 避免 session 关闭�
 	assert.equal(timeouts.length, 0, 'cleared timer should not fire timeout after close');
 });
 
+test('WebRtcPeer: 500ms plugin-probe 调度窗口内 closeByConnId 取消探针发送', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_sched_cancel'));
+	const pc = PC.instances[0];
+	const session = peer.__sessions.get('c_sched_cancel');
+	const dcSent = [];
+	session.rpcChannel = makeMockRpcDc({ send: (d) => dcSent.push(d) });
+
+	// 触发 disconnected → connected 走恢复分支，安排 500ms 探针
+	pc.connectionState = 'disconnected';
+	pc.onconnectionstatechange();
+	pc.connectionState = 'connected';
+	pc.onconnectionstatechange();
+	assert.ok(session.__pluginProbeSchedTimer, 'schedule timer installed');
+
+	// 500ms 到之前关闭 session
+	await peer.closeByConnId('c_sched_cancel');
+	t.mock.timers.tick(500);
+
+	// 不应有 plugin-probe 发出
+	assert.equal(dcSent.length, 0, 'closed session should not send plugin-probe');
+	// 也不应有 sent 日志
+	assert.equal(remoteLogBuffer.filter((e) => /rtc\.plugin-probe.*c_sched_cancel.*sent/.test(e.text)).length, 0);
+});
+
 test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）', async () => {
 	resetRemoteLog();
 	function PionPC() {

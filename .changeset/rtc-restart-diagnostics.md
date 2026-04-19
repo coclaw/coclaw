@@ -55,8 +55,9 @@ Plugin (`plugins/openclaw/src/webrtc/webrtc-peer.js`):
   RTT on `plugin-probe-ack`, a `timeout` line after 5 s unref'd, or a
   `send-failed` line if `dc.send` throws. `closeByConnId` clears the
   in-flight probe timer so a late timeout does not fire after session
-  teardown. The branch is gated on `impl === 'pion'` so werift/ndc
-  compatibility paths are untouched.
+  teardown. The probe bypasses the send queue, mirroring the existing
+  `probe-ack` fast-path. The branch is gated on `impl === 'pion'` so
+  werift/ndc compatibility paths are untouched.
 
 No existing recovery/retry/rebuild behaviour is changed; this commit is
 purely additive instrumentation plus the symmetric probe plumbing.

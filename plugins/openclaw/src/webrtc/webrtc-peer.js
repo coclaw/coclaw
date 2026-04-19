@@ -69,7 +69,12 @@ export class WebRtcPeer {
 			clearTimeout(session.__failedTimer);
 			session.__failedTimer = null;
 		}
-		// 清理 plugin-probe 定时器（避免 session 已关闭仍触发 timeout 日志）
+		// 清理 plugin-probe 定时器（避免 session 已关闭仍触发 timeout 日志，
+		// 或 500ms 调度窗口内 session 被替换时对着新 session 误发探针）
+		if (session.__pluginProbeSchedTimer) {
+			clearTimeout(session.__pluginProbeSchedTimer);
+			session.__pluginProbeSchedTimer = null;
+		}
 		if (session.__pluginProbeTimer) {
 			clearTimeout(session.__pluginProbeTimer);
 			session.__pluginProbeTimer = null;
@@ -326,9 +331,15 @@ export class WebRtcPeer {
 				// 只对 pion 生效：werift/ndc 为兼容路径，不涉及本次调查的病态场景。
 				if (this.__impl === 'pion' && (prevDumpState === 'disconnected' || prevDumpState === 'failed')) {
 					this.__dumpSessionState(connId, cur, 'connected');
+					// 挂到 session 上，使 closeByConnId 能在 500ms 窗口内取消；
+					// 否则 session 被替换（同 connId 新 offer）时会对着新 session 误发探针。
+					if (cur.__pluginProbeSchedTimer) clearTimeout(cur.__pluginProbeSchedTimer);
+					cur.__pluginProbeSchedTimer = setTimeout(() => {
+						cur.__pluginProbeSchedTimer = null;
+						this.__sendPluginProbe(connId);
+					}, 500);
 					// unref() 避免定时器阻塞 gateway 进程退出（gateway 由其他连接保活）。
-					const probeTimer = setTimeout(() => this.__sendPluginProbe(connId), 500);
-					probeTimer.unref?.();
+					cur.__pluginProbeSchedTimer.unref?.();
 				}
 			} else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
 				// 诊断 dump：失败/断连/关闭时输出当前 PC 上 DC 状态，定位"PC 假活/DC 死"现象

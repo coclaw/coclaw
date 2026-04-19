@@ -2921,9 +2921,12 @@ async function getRemoteLogCalls() {
 }
 
 describe('WebRtcConnection — 诊断日志补全', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		MockRTCPeerConnection.lastInstance = null;
 		pcInstances.length = 0;
+		// 清掉之前测试留下的 remoteLog 调用，避免按 filter 断言被污染
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
 	});
 
 	test('oniceconnectionstatechange → rtc.info claw=X iceState: <state>', async () => {
@@ -3156,10 +3159,15 @@ describe('WebRtcConnection — 诊断日志补全', () => {
 		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		await rtc.connect(MOCK_TURN_CREDS);
 		const pc = MockRTCPeerConnection.lastInstance;
+		mockSendSignaling.mockClear();
 
-		pc.onicecandidate({ candidate: { candidate: 'candidate-no-typ', toJSON: () => ({}) } });
+		const toJson = { from: 'missing-typ' };
+		pc.onicecandidate({ candidate: { candidate: 'candidate-no-typ', toJSON: () => toJson } });
+		// 计数器不加
 		expect(rtc.__iceCandCounts.host).toBe(0);
 		expect(rtc.__iceCandCounts.srflx).toBe(0);
+		// 仍应把 candidate 通过信令发出，不能早退
+		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:ice', toJson);
 
 		rtc.close();
 	});
@@ -3461,6 +3469,29 @@ describe('WebRtcConnection — 诊断日志补全', () => {
 
 		vi.useRealTimers();
 		rtc.close();
+	});
+
+	test('ICE restart 超时时 getStats 挂住 → 500ms 兜底解除阻塞，state 变 failed', async () => {
+		vi.useFakeTimers();
+		const { rtc, pc } = await setupConnectedRtc();
+		// 让 getStats 永不 resolve：模拟 pion 病态场景（正是本次调查目标）
+		pc.getStats = () => new Promise(() => {});
+
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		rtc.__restartStartTime = Date.now() - 91_000;
+		rtc.nudgeRestart();
+		// __attemptRestart 走到 Promise.race，等待 500ms 兜底
+		await vi.advanceTimersByTimeAsync(0);
+		// 此时还在 race 中，state 仍是 restarting
+		expect(rtc.state).toBe('restarting');
+
+		// 推到 500ms 超时 → race resolve → close 执行
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('failed');
+
+		vi.useRealTimers();
 	});
 
 	test('post-restart-success 在 2s 内 PC 换掉时不发 stats（闭包守卫）', async () => {
