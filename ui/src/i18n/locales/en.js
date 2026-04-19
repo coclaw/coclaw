@@ -12,6 +12,8 @@ export const enMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Add Claw',
 		manageClaws: 'My Claws',
+		rtcConnecting: 'Connecting to Claws…',
+		rtcUnreachable: 'Some Claws unreachable. Tap to retry.',
 		menu: {
 			about: 'About',
 			settings: 'Settings',

@@ -12,6 +12,8 @@ export const ruMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Добавить Claw',
 		manageClaws: 'Мои Claws',
+		rtcConnecting: 'Подключение к Claw…',
+		rtcUnreachable: 'Некоторые Claw недоступны. Нажмите для повтора.',
 		menu: {
 			about: 'О приложении',
 			settings: 'Настройки',

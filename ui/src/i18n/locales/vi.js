@@ -12,6 +12,8 @@ export const viMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Thêm Claw',
 		manageClaws: 'Claws của tôi',
+		rtcConnecting: 'Đang kết nối với Claw…',
+		rtcUnreachable: 'Một số Claw không kết nối được. Nhấn để thử lại.',
 		menu: {
 			about: 'Giới thiệu',
 			settings: 'Cài đặt',

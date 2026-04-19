@@ -12,6 +12,8 @@ export const koMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Claw 추가',
 		manageClaws: '내 Claw',
+		rtcConnecting: 'Claw에 연결 중…',
+		rtcUnreachable: '일부 Claw에 연결할 수 없습니다. 탭하여 재시도',
 		menu: {
 			about: '정보',
 			settings: '설정',

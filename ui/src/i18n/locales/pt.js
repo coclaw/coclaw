@@ -12,6 +12,8 @@ export const ptMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Adicionar Claw',
 		manageClaws: 'Meus Claws',
+		rtcConnecting: 'Conectando aos Claws…',
+		rtcUnreachable: 'Alguns Claws inacessíveis. Toque para tentar novamente.',
 		menu: {
 			about: 'Sobre',
 			settings: 'Configurações',

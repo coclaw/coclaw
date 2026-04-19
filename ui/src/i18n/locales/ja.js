@@ -12,6 +12,8 @@ export const jaMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Clawを追加',
 		manageClaws: 'マイ Claws',
+		rtcConnecting: 'Claw に接続中…',
+		rtcUnreachable: '一部の Claw に接続できません。タップして再試行',
 		menu: {
 			about: 'CoClaw について',
 			settings: '設定',

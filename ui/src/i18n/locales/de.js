@@ -12,6 +12,8 @@ export const deMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Claw hinzufügen',
 		manageClaws: 'Meine Claws',
+		rtcConnecting: 'Verbinde mit Claws…',
+		rtcUnreachable: 'Einige Claws nicht erreichbar. Zum Wiederholen tippen.',
 		menu: {
 			about: 'Über',
 			settings: 'Einstellungen',

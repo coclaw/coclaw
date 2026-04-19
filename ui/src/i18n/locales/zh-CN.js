@@ -12,6 +12,8 @@ export const zhCNMessages = {
 		productName: 'CoClaw',
 		addClaw: '添加 Claw',
 		manageClaws: '我的 Claw',
+		rtcConnecting: '正在连接 Claw…',
+		rtcUnreachable: '部分 Claw 无法连接，点击重试',
 		menu: {
 			about: '关于我们',
 			settings: '设置',

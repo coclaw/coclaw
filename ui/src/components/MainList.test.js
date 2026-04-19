@@ -1,7 +1,7 @@
 import { ref } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { mount } from '@vue/test-utils';
-import { vi } from 'vitest';
+import { vi, afterEach } from 'vitest';
 
 import MainList from './MainList.vue';
 import { useClawsStore } from '../stores/claws.store.js';
@@ -16,7 +16,13 @@ function toById(items) {
 let __mockIsCapacitorApp = false;
 vi.mock('../utils/platform.js', () => ({
 	get isCapacitorApp() { return __mockIsCapacitorApp; },
+	detectWebPlatform: () => 'unknown',
 }));
+
+// 用例尾部若因断言失败提前抛错，手动复位不会执行；此处兜底，避免下一用例继承 true 状态
+afterEach(() => {
+	__mockIsCapacitorApp = false;
+});
 
 vi.mock('../services/claws.api.js', () => ({
 	listClaws: vi.fn().mockResolvedValue([]),
@@ -80,6 +86,8 @@ function createWrapper(props = {}) {
 						'layout.addClaw': '添加机器人',
 						'layout.manageClaws': '管理机器人',
 						'layout.productName': 'CoClaw',
+						'layout.rtcConnecting': '正在连接',
+						'layout.rtcUnreachable': '部分无法连接',
 						'topic.newTopic': '新话题',
 					};
 					return map[key] ?? key;
@@ -421,4 +429,107 @@ test('should hide Group 1 add-claw item when capHeader active and bots not yet f
 	expect(wrapper.vm.clawActionItems).toEqual([]);
 
 	__mockIsCapacitorApp = false;
+});
+
+// --- RTC 连接状态图标 ---
+
+async function mountCapHeader() {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+	await wrapper.vm.$nextTick();
+	return wrapper;
+}
+
+function findSpinner(wrapper) {
+	return wrapper.find('[data-testid="rtc-connecting"]');
+}
+
+function findWarnBtn(wrapper) {
+	return wrapper.find('[data-testid="rtc-unreachable"]');
+}
+
+test('cap header 初始状态无 spinner / warning（无 claw）', async () => {
+	const wrapper = await mountCapHeader();
+	expect(findSpinner(wrapper).exists()).toBe(false);
+	expect(findWarnBtn(wrapper).exists()).toBe(false);
+});
+
+test('任一 online claw 处于 building → DOM 出现 spinner，无 warning', async () => {
+	const wrapper = await mountCapHeader();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	clawsStore.byId['b1'].rtcPhase = 'building';
+	await wrapper.vm.$nextTick();
+
+	expect(findSpinner(wrapper).exists()).toBe(true);
+	expect(findWarnBtn(wrapper).exists()).toBe(false);
+});
+
+test('failed + retryNextAt>0 → DOM 出现 spinner（系统还在排退避）', async () => {
+	const wrapper = await mountCapHeader();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	clawsStore.byId['b1'].rtcPhase = 'failed';
+	clawsStore.byId['b1'].retryNextAt = Date.now() + 5000;
+	await wrapper.vm.$nextTick();
+
+	expect(findSpinner(wrapper).exists()).toBe(true);
+	expect(findWarnBtn(wrapper).exists()).toBe(false);
+});
+
+test('failed + retryNextAt=0 → DOM 出现 warning，无 spinner', async () => {
+	const wrapper = await mountCapHeader();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	clawsStore.byId['b1'].rtcPhase = 'failed';
+	clawsStore.byId['b1'].retryNextAt = 0;
+	await wrapper.vm.$nextTick();
+
+	expect(findSpinner(wrapper).exists()).toBe(false);
+	expect(findWarnBtn(wrapper).exists()).toBe(true);
+});
+
+test('同时存在 building 与 failed-exhausted → DOM 优先渲染 spinner', async () => {
+	const wrapper = await mountCapHeader();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([
+		{ id: 'b1', name: 'Bot1', online: true },
+		{ id: 'b2', name: 'Bot2', online: true },
+	]);
+	clawsStore.byId['b1'].rtcPhase = 'building';
+	clawsStore.byId['b2'].rtcPhase = 'failed';
+	clawsStore.byId['b2'].retryNextAt = 0;
+	await wrapper.vm.$nextTick();
+
+	// v-else-if 模板层保证互斥：两个状态都为 true 时 spinner 优先渲染
+	expect(findSpinner(wrapper).exists()).toBe(true);
+	expect(findWarnBtn(wrapper).exists()).toBe(false);
+});
+
+test('offline 的 failed claw 不渲染任何图标', async () => {
+	const wrapper = await mountCapHeader();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: false }]);
+	clawsStore.byId['b1'].rtcPhase = 'failed';
+	clawsStore.byId['b1'].retryNextAt = 0;
+	await wrapper.vm.$nextTick();
+
+	expect(findSpinner(wrapper).exists()).toBe(false);
+	expect(findWarnBtn(wrapper).exists()).toBe(false);
+});
+
+test('点击告警按钮触发 manualRetryUnreachable', async () => {
+	const wrapper = await mountCapHeader();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	clawsStore.byId['b1'].rtcPhase = 'failed';
+	clawsStore.byId['b1'].retryNextAt = 0;
+	await wrapper.vm.$nextTick();
+
+	const spy = vi.spyOn(clawsStore, 'manualRetryUnreachable').mockImplementation(() => {});
+	await findWarnBtn(wrapper).trigger('click');
+
+	expect(spy).toHaveBeenCalledTimes(1);
 });

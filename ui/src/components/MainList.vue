@@ -3,10 +3,34 @@
 		class="min-h-0 flex-1"
 		:class="scrollable ? 'overflow-auto overscroll-contain scrollbar-hide' : 'overflow-hidden'"
 	>
-		<!-- Capacitor header：logo + 名称 + 添加按钮 -->
+		<!-- Capacitor header：logo + 名称 + RTC 连接状态 + 添加按钮 -->
 		<header v-if="showCapHeader" class="sticky top-0 z-10 flex items-center gap-2 border-b border-default bg-default pl-3.5 pr-1 py-[3px] md:hidden">
 			<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 			<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
+			<!-- RTC 建连/恢复中：不可交互的转圈图标。尺寸对齐 cc-icon-btn-lg 的 40px 基底，避免切换时 header 抖动 -->
+			<span
+				v-if="showRtcConnecting"
+				class="inline-flex size-10 shrink-0 items-center justify-center text-dimmed"
+				data-testid="rtc-connecting"
+				:title="$t('layout.rtcConnecting')"
+				:aria-label="$t('layout.rtcConnecting')"
+				role="status"
+			>
+				<UIcon name="i-lucide-loader-2" class="size-5 animate-spin" />
+			</span>
+			<!-- RTC 退避耗尽：告警图标，点击触发手动重试 -->
+			<UButton
+				v-else-if="hasUnreachableClaws"
+				icon="i-lucide-wifi-off"
+				color="warning"
+				variant="ghost"
+				size="xl"
+				class="cc-icon-btn-lg"
+				data-testid="rtc-unreachable"
+				:title="$t('layout.rtcUnreachable')"
+				:aria-label="$t('layout.rtcUnreachable')"
+				@click="onManualRetry"
+			/>
 			<UButton
 				icon="i-lucide-plus"
 				color="primary"
@@ -155,6 +179,14 @@ export default {
 		showCapHeader() {
 			return !this.scrollable && isCapacitorApp && this.envStore?.screen.ltMd;
 		},
+		/** 至少一个 online claw 正在 RTC 建连/恢复/排退避 */
+		showRtcConnecting() {
+			return Boolean(this.clawsStore?.isConnectingRtc);
+		},
+		/** 存在退避耗尽的 online claw；与 spinner 的互斥由模板 v-else-if 保证 */
+		hasUnreachableClaws() {
+			return Boolean(this.clawsStore?.unreachableClaws.length);
+		},
 		/** 当前路由上下文解析出的活跃 agentId（仅 main session 路由时高亮 agent） */
 		activeAgentKey() {
 			const route = this.$route;
@@ -283,6 +315,9 @@ export default {
 			}
 			await this.agentsStore?.loadAllAgents();
 			await this.topicsStore.loadAllTopics();
+		},
+		onManualRetry() {
+			this.clawsStore?.manualRetryUnreachable();
 		},
 		onTopicDeleted(topicId) {
 			// 兜底：桌面端侧边栏始终挂载，若正在查看被删除的 topic 则跳转默认路由
