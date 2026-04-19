@@ -1,5 +1,326 @@
 # @coclaw/ui
 
+## 0.17.0
+
+### Minor Changes
+
+- a1e1b64: admin Dashboard 在线实例数实时化 —— SSE 作为在线状态的唯一事实源，消除 Dashboard 页与 Claws 列表页之间的不一致。
+
+  - **server（API 响应结构调整）**：`GET /api/v1/admin/dashboard` 响应移除两个字段：`claws.online`（聚合在线数）与 `latestBoundClaws[].online`（每条布尔）。在线状态改由 `GET /api/v1/admin/stream`（已具备 `requireAdmin` 校验）独立提供。`/api/v1/admin/claws` 列表的 online 字段保留以作为 HTTP 首屏填充。旧版 UI 客户端访问新 server 时，Dashboard 在线数大卡片会显示空白而非数字，但不会崩溃。
+  - **ui**：SSE 订阅从页面组件上移到 Pinia `admin` store（引用计数），新增 `onlineClawIds: Set<string>`、`hasOnlineSnapshot`、`onlineClawCount`、`isClawOnline(id)`；连接生命周期由新建的 `AdminLayout` 父路由薄壳在 `/admin/*` 挂载/卸载时自动启停。Dashboard 大卡片在 SSE snapshot 到达前显示 `—` 占位符，snapshot 到达后切换为实时数字；Top 10 绿点改读 store 派生值。AdminClawsPage 不再直接订阅 SSE。
+  - **ui（权限守卫加固）**：路由 `beforeEach` 新增 `requiresAdmin` meta 校验，非 admin 用户访问 `/admin/*` 直接重定向到 `/home`，避免 AdminLayout 挂载后对 `/admin/stream` 发起无授权的 EventSource 握手。
+  - **ui（SSE 握手熔断）**：`admin-stream.js` 在从未 `onopen` 成功的情况下连续 3 次 `onerror` 则停止重连，避免非授权环境下的死循环。握手成功后错误不计入熔断计数。
+  - 保活机制不变（server 30s heartbeat / client 65s timeout）。
+
+- 782ebd0: ChatPage header 右侧新增刷新按钮（移动端 + 桌面端），点击静默重新拉取当前 session 的消息。
+
+  作为 agent-run 结束判定残留边界的人工兜底入口：当信号丢失或 loadMessages 静默失败等少见场景导致 UI 消息暂时不一致时，用户可以通过该按钮主动恢复。
+
+  按钮同步反映全局 load 状态——后台 `connReady` watcher / `runPromise.then` / foreground 恢复等任意路径触发的 loadMessages 都会让按钮显示 spinner + disabled，帮助用户感知"后台也在同步"，也便于反馈问题时描述状态。
+
+  成功刷新顺带清 `errorText` 残留，让按钮也成为"初始加载失败 → 手动重试"的恢复入口。
+
+- 1ef6782: 解除 SSE `claw.online` 与 WebRTC DC 生命周期的耦合。
+
+  此前 SSE 推来 `claw.online=false` 时，UI 会同步清空 `dcReady`、将 `rtcPhase` 拍回 `idle` 并清掉退避重试，这让已排队的 RPC 无法触发重连、只能等 30s 超时，对应生产环境"agent 状态冻结、重发才恢复"的体感。
+
+  按通信模型设计意图，plugin↔server WS 与 UI↔plugin WebRTC DC 是两条独立通路。本次改动把 `claw.online` 降格为展示层字段，DC 生命周期只由 PC 自身状态驱动：
+
+  - `updateClawOnline(false)` 不再动 `dcReady` / `rtcPhase` / 退避 retry；改为轻触发 `__checkAndRecover(id, 'sse_offline')` 让 DC 自检——健在则 probe 通过无副作用，真坏则秒级拉起 ICE restart 或 rebuild（避免等浏览器 consent 超时 20–35s）
+  - `__ensureRtc` 内层循环、`__scheduleRetry`、`__handleNetworkOnline`、`__fullInit` 以及 `applySnapshot` 末尾的 "failed 重试" gate 均去掉 `!online` 守卫
+  - `applySnapshot` 的 `preserveOnline` 兜底删除——presence 单一来源，DC 状态独立驱动
+  - `ChatPage.connReady` 去掉 `claw.online`，只看 `dcReady`
+  - `__bridgeConn` 首次 init 入口的 `online` 判断保留（首次建连成本不低，用 presence 作启动先验合理），加注释区分"首次"和"持续维护"
+
+  文档同步：`docs/architecture/communication-model.md` §5.5 新增"claw.online 与 DC 生命周期的解耦"章节，`docs/designs/ice-restart-recovery.md` §6.5 重写，`ui/docs/state-recovery.md` 与 `ui/docs/chat-state-architecture.md` 对齐。
+
+- b51e3c0: Electron 壳子对齐 Capacitor 无感更新策略，撤掉无业务消费的 renderer 桥接：
+
+  - `updater.js` 改 `autoDownload: true`：发现新版本立即下载、下次退出时自动安装，与 Capacitor `/version.json` 路径一致；不再要求 renderer 弹窗确认
+  - `electron-app.js` 移除 5 个 `electron:update-*` / 2 个 `electron:download-*` / 1 个 `electron:screenshot-trigger` 事件桥接（src 全局无任何 `addEventListener` 消费点）
+  - `main.js` 移除 `globalShortcut.register(Ctrl+Shift+A)`：项目无截图业务，避免按键无反应的假象（preload 的 `getScreenSources` / `onScreenshotTrigger` API 保留作为预埋）
+  - `electron-app.js` 在 window-focus / window-blur 调 `remoteLog`，对齐 Capacitor `app.stateChange` 上报埋点
+
+  preload 公共 API 保持不变（onUpdate* / onDownload* / onScreenshotTrigger 等仍可订阅，调用方按需），仅 renderer 端的桥接订阅简化为 3 个（deep-link / window-focus / window-blur）。
+
+- ca30e1a: Electron 壳子功能补完（Batch C）：
+
+  - 屏幕共享体验：`setDisplayMediaRequestHandler` 传 `{ useSystemPicker: true }`，macOS 12.3+ / Windows 11 24H2+ 走 OS 原生 picker，用户可选屏/窗口/画面，隐私和体验都优于之前的"强行取第一屏"
+  - macOS Dock 徽章：`window:setOverlayIcon` / `window:clearOverlayIcon` 在 macOS 上转调 `app.setBadgeCount`（此前 macOS 分支是 silent no-op，导致 Web 端未读提示在 macOS 上完全不显示）
+  - 自动更新开关：用户可通过 `store.set('auto_update_enabled', false)` 关闭后台自动检查；关闭后不启动定时器、不订阅 powerMonitor，但手动的"检查更新"IPC 仍可用。默认 true，维持原行为
+  - 休眠恢复检查：订阅 `powerMonitor.on('resume', ...)`，系统睡眠恢复后立即触发一次更新检查，比 4h 周期更及时抓到发布
+  - `disposeUpdater` 同步移除 powerMonitor 监听，避免极端场景句柄泄漏
+
+- 35e7e5d: Electron 壳子 preload 重构（Batch D）：
+
+  - 所有 `onXxx(cb)` 返回 unsubscribe 函数，renderer 可主动取消订阅；防止 HMR / 组件 unmount/remount 时监听器累积
+  - `electron-app.js` 追踪每个订阅的 unsub，新增 `disposeElectronApp()` 一键清理；`initElectronApp` 重复调用时先 dispose 再订阅，HMR 不再累积
+  - preload 导出对象改为 `Object.freeze(...)`，防御 preload 自身未来扩展误改已暴露 API；contextBridge 对 renderer 侧再次隔离
+  - 命名一致性：`download:progress` / `download:done` 两个事件通道改为 `download-progress` / `download-done`，与其它主 → 渲染事件（deep-link、update-\*、window-focus、screenshot-trigger）统一连字符风格
+
+  preload 公共 API（方法名、参数、行为）保持不变，仅 `onXxx` 多了一个可选的返回值；内部 IPC channel 重命名对 renderer 透明（all plumbing in preload/main）。
+
+- ef7c499: Electron 壳子深度加固与预埋补完：
+
+  - 自动更新链路闭环：preload 补 `downloadUpdate`/`quitAndInstall`/`checkForUpdatesNow`/`getPendingUpdate`；主进程 forward `update-download-progress`/`update-downloaded`/`update-not-available`/`update-error` 事件并缓存早期 pending payload；portable 模式自动跳过 autoUpdater
+  - Windows 冷启动 Deep Link：扫描 `process.argv` 中的 `coclaw://` URL 并在 `did-finish-load` 后 flush 补发
+  - 安全加固：`will-navigate` 改为严格 origin 匹配（修子域名前缀绕过）；permissions 同步/异步 handler 统一采用 URL hostname 严格比对 + permission 名白名单（对齐设计文档 §5.4）
+  - 用户体验：窗口 `show:false` + `ready-to-show` 防远程加载首屏白闪；窗口 `blur`/`hide` 事件桥接为 `app:background`
+  - 渲染端预埋：新增 `src/utils/electron-app.js`，订阅 deep-link→router.push、window-focus/blur→`app:foreground`/`app:background`、update 全流程 →`electron:update-*` CustomEvent
+  - 发布源切换：`publish.provider` 从指向不一致仓库的 github 改为 generic，按平台分子目录（`https://im.coclaw.net/releases/win/`、`/releases/mac/`），规避 GitHub Releases 国内访问不稳定；`electron-builder.yml` 重命名为 `.yaml` 与项目内 `compose.yaml` 风格一致
+  - 测试闭环：新增 `test:electron` 脚本接通 `vitest.electron.config.js`（原 `tray.test.js` 此前从未被执行）；补 `permissions.test.js`/`deep-link.test.js`/`updater.test.js`/`electron-app.test.js` 共 ~60 个测试
+
+### Patch Changes
+
+- 9ab1849: 修复 agent run watcher 重构的两处清理边界 bug（deep-review 发现）。
+
+  1. `__cleanupRun` 在 `register` 清旧 run 和 `removeByClaw` 路径下不触发 `onEnd`，导致 `runAgent` 的 `finalPromise` 悬挂、外层 `sendMessage` Promise 泄漏。现在两条路径分别按 `superseded` / `claw-removed` 原因 endRun 后再清理。
+  2. `dropRun(runKey)` 通过 runKey 反查 runId，若旧 run 在 `await loadMessages` 期间被用户新发消息覆盖同一 runKey，老挂钩会误清新 run 的 streamingMsgs。`dropRun` 新增可选 `expectedRunId` 参数，`chat.store` 的 `runPromise.then` 与 24h 内存兜底均传入闭包 runId 校验。
+
+- 7a783f9: 修复 agent run 卡"思考中"的高发 bug（约 30% 概率），同时让 gateway 重启场景能在数秒内被识别。
+
+  把 agent run 的发起和生命周期管理收敛到 `agentRunsStore.runAgent`，引入 watcher 协调四路结束信号：
+
+  - agent RPC 第二阶段 res（终态权威信号，原代码完全忽略）
+  - `lifecycle:end` 事件
+  - 事件流静默 30 秒后启动的长挂 `agent.wait` 兜底
+  - 任何 RPC 错误 / DC 失败（异常结束，覆盖 gateway 重启场景）
+
+  任一信号命中即触发 endRun，UI 立即退出"思考中"状态；之后由 `loadMessages` 拉服务端真实状态再 `dropRun` 释放 streamingMsgs（避免消息列表瞬间空白）。
+
+- 7374a56: Bump `BRIEF_DISCONNECT_MS` from 5s to 30s to suppress refresh after short network jitter.
+
+  `__refreshIfStale` 在 RTC DC 重建成功后按断连时长决定是否拉取 agents/sessions/topics/dashboard。原 5s 门槛过短，10s 量级的网络抖动也会触发全量刷新。
+
+  抬到 30s 不会影响长后台恢复场景：`disconnectedAt` 是在 PC 进入 `restarting`/`failed`/`closed` 时打点，不是用户切回前台时打点；长后台时 PC 通常在切到后台不久就失败，gap 累计到回前台时远超 30s。中等时长断连（25–60s）数据漂移很小，跳过刷新可接受，下一轮真断连或手动刷新会兜底。
+
+- cadb403: 修复 pre-accept 窗口点取消的"假取消"bug。
+
+  之前在 chat/topic 发消息后、服务端回 accepted 之前点 STOP：本地气泡瞬间消失看起来取消成功，但服务端的 agent run 实际会跑到底（onAccepted 仍到达 → `register` → 流式输出继续到自然结束）。
+
+  改为：pre-accept 点 STOP 时挂起 `__pendingCancelIntent` 标记——不清乐观气泡、不 reject sendMessage，让 STOP 按钮转"取消中"禁用态；等 `onAccepted` 到达后在 sendMessage 的 onAccepted 回调末尾立刻转交 accepted 分支，由已有的 `coclaw.agent.abort` 轮询协调真正终止 run。`isCancelling` getter 把挂意图纳入，UI 绑定无需改动。
+
+  上传阶段取消走原路径不变（中断 upload handle + sendMessage CANCELLED catch 分支清理）。cleanup / superseded / catch 均同步清意图避免残留。
+
+- ff3b1db: claws 页面的 WebRTC 连接状态 label 重构：文案头部统一加 `WebRTC:` 前缀，中段文案与 `rtcPhase` 精确一一对应。
+
+  - 原实现把 `building / recovering / idle` 混显示为"连接中…"，把 `restarting` 与 `ready` 混显示为同一套传输详情；现按阶段分别呈现 `空闲 / 连接中 / 恢复中 / ICE 重启中 / P2P|LAN|中继 / 连接失败…` 共 6 档语义明确的文案。
+  - label 与 `claw.online` 解耦：依据通信模型，claw 在线与否由 server 反馈，与 WebRTC 连接状态是两条独立路径；label 现只反映 `rtcPhase` / `rtcTransportInfo`，不再受 online 门控。离线但有 RTC 历史的 claw 仍能查看 WebRTC 状态与详情。
+  - 新增/修改 i18n key：`rtcIdle / rtcBuilding / rtcRecovering / rtcRestarting`（新增），`rtcLan{Proto} / rtcP2P{Proto} / rtcRelay{Proto} / rtcRetrying / rtcRetryExhausted`（前缀改为 `WebRTC:`），删除不再使用的 `disconnected / rtcConnecting`。12 个语言包全部同步。
+  - 状态圆点颜色逻辑保持不变。
+
+- c84527a: 修复文件名含半角括号时 `coclaw-file:` 链接被截断导致下载失败的 bug。
+
+  原因：`preprocessCoclawFileLinks` 与 `extractCoclawFileRefs` 的正则用 `[^)]+` 截取 URL，碰到文件名里的 `)` 就提前收尾，下载请求带着被截断的路径自然失败。
+
+  修复：
+
+  - Agent 提示词改为 `[文件名](<coclaw-file:文件路径>)` 形式（CommonMark 尖括号包裹），并明确声明"URL 必须用尖括号 < > 包裹"的硬约束
+  - 两处解析逻辑统一合并为 `coclaw-file.js` 的 `findCoclawMarkdownLinks` 工具函数，同时支持尖括号形式与裸形式
+  - **裸形式容错**：裸形式用字符扫描器追踪括号深度，支持平衡括号的路径（如 `a(2020)_(7).xlsx`）；不平衡开括号扫描到末尾自然失败，不影响其它链接。该容错层是防御性设计——提示词已要求 agent 用尖括号，但老消息回放或 agent 偶发不遵循时仍能正确解析
+  - **跨行保护**：扫描遇 `\n`/`\r`/空白/`<>` 立即停止，避免一条坏链接吞掉后续多行合法内容
+  - 尖括号形式同样在 `\r`/`\n` 处终止，避免 CR 字符注入 URL
+
+- 7d2076a: Electron 壳子实施后的文档对齐 + 修 macOS 摄像头权限文案：
+
+  - 设计文档 `docs/designs/electron-desktop-shell.md`：builder 配置样本、构建命令、自动更新流程、package.json 样本同步为实施态（ESM 主进程 + electron-store@11、generic publish 指向 im.coclaw.net/releases/、preload.cjs、electron-builder.yaml 重命名、Phase 1 仅 DMG 声明）
+  - 根 `docs/versioning.md` 增 "Electron 壳子版本独立维护" 一节
+  - `ui/CLAUDE.md` 增 "Electron 桌面壳子开发" 小节（`electron:dev` / 构建命令 / WSL2 Wine 依赖 / 测试命令）
+  - `electron-builder.yaml` 的 `NSCameraUsageDescription` 改为 "CoClaw 需要使用摄像头拍摄图片用于对话"（去除不存在的视频通话描述，避免 App Store 审核被追问）
+
+- ab00e89: Electron 把 `icon.ico` / `icon.icns` 加进 asar 包：
+
+  `electron-builder.yaml` 的 `files` 白名单原本只包含 `icon.png` 和 `tray-icon*.png`，导致 `BrowserWindow.icon` 在 Windows 运行时按 `path.join(__dirname, '../build-resources/icon.ico')` 读到空 nativeImage（窗口栏 fallback 到 .exe 默认图标）。
+
+  现把三种格式都显式列入 files，让 BrowserWindow.icon 在所有平台都能命中正确资源。
+
+- 00fe79c: Electron 壳子小修（Batch F）：
+
+  - `ipc-handlers.js` 加注册幂等守卫：重复调用 `registerIpcHandlers` 直接跳过，防御两类问题：(1) `ipcMain.handle` 对同一 channel 重复注册会抛错；(2) `session.on('will-download', ...)` 累积监听会导致每次下载重复发送 `download:progress` / `download:done` 事件
+  - `main.js` 的 `console.warn`（截图快捷键注册失败分支）替换为 `electron-log` 的 `log.warn`，确保生产环境日志能落盘被 `electron-log` 统一收集
+
+- 5d0fc0b: Electron IPC handler 错误处理对称：
+
+  - `ipc-handlers.js` 抽出 `safeHandle(channel, fn)` 包装 `ipcMain.handle`，所有 handler 抛错时写 `electron-log` 后重抛（renderer 仍能感知失败，主进程多一份排查日志）。受益最大的是 `screenshot:getSources`（macOS 无屏幕录制权限时会抛）、`clipboard:writeImage`、`store:get/set` 等
+  - `tray.js` 的 `disposeTray()` 加 `ipcMain.removeAllListeners('tray:setTooltip' / 'tray:setUnread')`，对称 `initTray` 中的 `ipcMain.on` 注册，避免测试场景重复注册或生产端口残留监听
+
+  测试同步：ipc-handlers 加 3 个 safeHandle 错误路径用例；tray 在 disposeTray 用例验证 removeAllListeners 调用。
+
+- 6abb3a4: Electron 壳子生命周期与窗口管理加固（Batch B）：
+
+  - 托盘：`attachMainWindow(app, win)` 替代之前全量监听 `browser-window-created`，避免将来截图/模态子窗口被误绑 close→hide
+  - 生命周期清理：新增 `disposeTray()` / `disposeUpdater()`，`will-quit` 统一调用，释放闪动 timer、托盘实例、自动更新的 30s + 4h 两个 timer 句柄
+  - 主窗口图标：Windows 改用 `icon.ico`（多分辨率、200% DPI 不糊），其它平台继续 `icon.png`
+  - 打包白名单：`electron-builder.yaml` 的 `files` 显式加入 `build-resources/icon.png`，非 Windows 平台 `BrowserWindow.icon` 不再指向打包外文件
+  - 跨平台守卫：`app.on('activate')` 加 `process.platform !== 'darwin'` 早 return（其它平台不会触发，显式守卫提高可读性）
+  - 本地化兜底：`tray:setTooltip` IPC 收到空文本时用 `getAppTitle()`（中文系统 "可虾"，英文系统 "CoClaw"），原先硬编码 "CoClaw"
+
+- 130b896: Electron 壳子第三轮 deep-review 回归修复：
+
+  - `updater.js` `autoDownload` 跟随 `auto_update_enabled` 开关：关闭自动更新时即便 renderer 主动调 `updater:checkForUpdates`，也不会意外触发静默下载
+  - `main.js` 新增 `will-redirect` 对称拦截：与 `will-navigate` 共享 guard，防 3xx 重定向绕过 URL 白名单
+  - `tray.js` `tray:setTooltip` 处理器加 `tray.isDestroyed()` 守卫：对齐 `tray:setUnread` 路径，规避 disposeTray 进程中的竞态
+  - 测试稳健性：updater.test `autoDownload` 在 resetMocks 中复位；tray.test `disposeTray` 断言改为无序比较；ipc-handlers.test 在 `beforeEach` 清 `logMock.error`；url-guard.test 补 `allowDev=false` 显式语义 + `allowDev=true + 无效 URL` 边界
+  - 文档同步：`docs/designs/electron-desktop-shell.md` 头部标"已实施，以代码为准"；修正 autoDownload / URL 白名单 / files 声明 / isNative 迁移 4 处过时示例
+
+- 4c37bfc: Electron 托盘图标补 `@2x` 高分辨率版本：
+
+  - 新增 `build-resources/tray-icon@2x.png` 和 `tray-icon-unread@2x.png`（64×64），由 `build-resources/icon.png`（512×512 产品 logo）下采样生成，红点参数与现有 32×32 版本对齐（RGB 255,59,48；中心 (52,12)；半径 11）
+  - Electron 的 `nativeImage.createFromPath` 会按当前 DPI 自动选取 `@2x`——Windows 200% DPI、macOS Retina 下不再因强行放大 32×32 而糊
+  - `electron-builder.yaml` 的 `files` glob `build-resources/tray-icon*.png` 已覆盖新文件，无需改配置
+  - 无代码变更、无测试变更，仅资产追加
+
+- e80e609: Electron URL 白名单生产模式收紧：
+
+  `url-guard.js` 原本静态把 `localhost:5173` 加入 `TRUSTED_ORIGINS`，生产包亦然。攻击面虽小（要本地 5173 端口被恶意进程占用 + 用户被诱导点链接），但纵深防御角度应区分。
+
+  API 调整：`isTrustedUrl(urlStr, { allowDev })` —— 默认仅信任远程业务域；`main.js` 在开发模式下传 `allowDev: isDev` 才放行 `localhost:5173`。
+
+  测试同步补 4 个 allowDev=true 用例。
+
+- b1c4233: Drop the "no messages" placeholder from the chat screen.
+
+  Both new topics and freshly-loaded chats show a blank area above the composer, which is already a clearer "start typing here" cue than a system-style empty-state line. Removed the i18n key across all locales to keep strings honest.
+
+- f1909f2: Add `credRemain` field to all ICE restart remoteLog lines on the UI side.
+
+  `credRemain` reports the seconds remaining until the embedded TURN credential expires (negative when already expired, `none` when no creds or unparseable). Helps diagnose whether ICE restart failures correlate with stale credentials (PC lifetime > 24h cred TTL window). Pure telemetry — no behavior change. UI caches the parsed expiry on `__credExpireAt` at `__buildPeerConnection` time.
+
+- 5a8cd53: Fix: per-claw 化 RTC 重连恢复 / 首次 init 的数据加载路径，消除多 claw 错峰恢复时的 RPC 风暴。
+
+  `__refreshIfStale(id)` 与 `__fullInit(id)` 之前通过 `loadAllSessions()` / `loadAllTopics()` 横扫所有已连接 claw，单 claw 触发却拉所有 claw 的 sessions 与 topics。3 个 claw（每个 2 agent）错峰恢复时单轮可达 36 个 RPC，与用户反馈的"数据风暴"现象吻合。
+
+  改为新增 `loadSessionsForClaw(id)` / `loadTopicsForClaw(id)` per-claw 加载方法（带 in-flight Map 合流），refresh / init 路径只刷当前 claw 的数据。3 claw 错峰恢复 RPC 数从 36 → 12，单 claw 恢复从 12 → 4。
+
+  `loadAllSessions()` / `loadAllTopics()` 全量接口保留，仍用于 MainList 列表渲染等真正需要全量的场景。
+
+- f899f65: 冷启动路由恢复扩展到 Electron：
+
+  `router/index.js` 的 `app:background` 保存路由 + 启动时从 localStorage 恢复路由的逻辑此前用 `isNative`（仅 Capacitor）门控；改为 `isNativeShell`（Capacitor + Electron + 预留 Tauri）。
+
+  效果：用户从托盘 Quit 或 `Cmd+Q` 退出 Electron 后再次启动，会自动回到上次访问的页面，与移动端体验一致。
+
+- d3d3895: fix(ui): gate signaling WS and claw-status SSE by login state to stop connections when logged out.
+
+  Previously `AuthedLayout` started the signaling WS and the claw-status SSE unconditionally on mount. Combined with the `/about` route being nested under `AuthedLayout` (while marked `requiresAuth: false`), this caused two issues:
+
+  - Unauthenticated users visiting `/about` directly would immediately open a WS + SSE to the server.
+  - After logout, the app navigates to `/about`; since `AuthedLayout` stays mounted, the SSE never stopped and kept pushing snapshots that in turn re-triggered `claws.store` side effects.
+
+  `AuthedLayout.setup` now drives both connections from `authStore.user?.id`: connect + start when a user id is present, disconnect + stop when it becomes null. `useClawStatusSse` gained an `{ autoStart: false }` option and its `stop()` is no longer a one-shot lock — the composable can be re-`start()`ed across login/logout cycles. Window listeners (`app:foreground`, `network:online`) move in and out of scope with `start`/`stop` so post-stop events can no longer resurrect the SSE.
+
+  As a related cleanup, `auth.store.logout()` now clears the `remote-log` buffer (new exported `clearRemoteLogBuffer`) so unsent diagnostics from the previous user are not flushed onto the next user's signaling WS after re-login — previously this was a latent issue covered by a TODO; the new login/logout flow makes the reconnect path reliably trigger flush, so the fix is needed here.
+
+- 7c38ed6: fix(ui): clear event listeners on ClawConnection.disconnect
+
+  Chat store registers an `event:chat` handler on the per-claw ClawConnection.
+  At logout, chat-store's cleanup path tries to `conn.off(...)` but the
+  connection manager has already removed the conn, so `__getConnection()`
+  returns null and the off path is skipped. The handler closure stays on
+  `ClawConnection.__listeners`, pinning the chat store proxy (and its
+  streaming buffers) until the ClawConnection itself is GC'd.
+
+  Currently this still releases because disconnected ClawConnections have
+  no other strong references, but the release is indirect and will break
+  if someone later adds a self-referencing timer to ClawConnection.
+  Clearing the listener map in `disconnect()` is a one-line defensive fix
+  that makes the intent explicit and does not rely on GC timing.
+
+- 48aae20: fix(ui): rebind claws-store window lifecycle listeners after logout+relogin
+
+  `__bridgeLifecycle` guarded against duplicate registration with a
+  `this.__lifecycleBridged` flag set on the Pinia store **instance** — not
+  declared in `state()`. On logout, `__resetClawStoreInternals()` correctly
+  removed the `app:background` / `app:foreground` / `network:online` window
+  listeners, but `claws.$reset()` only restores declared state and left the
+  instance flag set to `true`. On re-login in the same tab/app, `__bridgeConn`
+  called `__bridgeLifecycle()`, the flag short-circuited, and listeners were
+  never re-attached — silently breaking mobile RTC auto-recovery after
+  background/foreground and Wi-Fi↔cellular transitions until a full page
+  reload.
+
+  Lift the flag to a module-level `_lifecycleBridged` variable next to
+  `_lifecycleHandlers`, and reset both in the same logout cleanup helper.
+  Add a regression test that logs out and re-bridges on the same store
+  instance, asserting `app:foreground` probes fire in both cycles.
+
+- d060718: fix(ui): complete logout state cleanup for agent runs, chat stores, dashboard, file transfers, admin SSE, and 401 throttle
+
+  Previously logout left behind: per-run 24h timers and stream buffers (agent-runs),
+  cached chat/topic store instances with their event handlers (chat-store-manager),
+  per-claw dashboard data (dashboard), file transfer tasks with running async loops
+  (files), admin SSE `EventSource` + its `app:foreground`/`network:online` listeners
+  (admin store `$reset()` nulled the handle without calling `close()`), and the
+  module-level 3s `auth:session-expired` throttle timestamp in `http.js` which
+  could swallow the next user's first legitimate 401.
+
+  Adds `agentRunsStore.resetAll()`, `chatStoreManager.disposeAll()`,
+  `filesStore.cancelAll()`, `adminStore.teardownStream()` (forced close,
+  independent of the refcounted `stopStream`), and `resetAuthExpiredThrottle()`
+  in `http.js`. Wires them plus `dashboardStore.$reset()` into the logout
+  cleanup chain. Order matters: files cancel runs before disconnecting
+  the data channel so transfer-abort frames can be flushed; admin SSE teardown
+  runs before `admin.$reset()` so the `EventSource` and its window listeners
+  are actually released rather than orphaned.
+
+- a14fae5: fix(ui): guard auth actions against user-data writes that await across a logout
+
+  Follow-up to the `__logoutInflight` lock: the entry guard only prevents an action
+  from starting while a logout is already in flight. It does not cover the window
+  where an action has already passed the entry check and is awaiting its API
+  response when a logout starts and completes.
+
+  Concrete scenario: `visibilitychange` fires `refreshSession()` → checks
+  `__logoutInflight` (null), calls `fetchSessionUser()` and awaits. The user
+  then clicks Logout; the full logout cleanup runs and `__logoutInflight` returns
+  to null. When `fetchSessionUser` finally resolves, `this.user = data` revives the
+  just-cleared user — the AuthedLayout watch re-fires, WS/SSE reconnect, Pinia
+  state is half-reset, half-populated. The same shape affects `login`,
+  `register`, `updateProfile`, `updateSettings` (the latter two previously merged
+  the response into `this.user = null`, reviving it as a partial object).
+
+  Fix: add a module-level `__logoutEpoch` counter, bumped synchronously at the
+  start of every `logout()` IIFE. Each of the five actions captures the epoch
+  before its first `await`; after the await, if the epoch has changed, the
+  action drops its result (both the success-path write and the catch-path
+  `errorMessage`) without touching store state. This complements, not replaces,
+  the existing entry guard.
+
+- 5207fec: fix(ui): harden logout against active-state leaks and single-step cleanup failures
+
+  Second pass on logout state cleanup — covering the "user logs out while something is active" scenarios that the previous static-resource pass did not address.
+
+  - `auth.store.logout()`: the 13-step cleanup chain had no error isolation — any single step throwing (e.g. Capacitor permission edge case, polyfill oddity, third-party blob URL) would skip every subsequent step and leak WebRTC PCs, WS, SSE, timers, and blob URLs across users. Each step is now wrapped in a `safeRun(label, fn)` helper; failures degrade to a debug log and the chain keeps going.
+  - `webrtc-connection.js`: expose `closeAllRtcInstances()` (production name for the previously test-only `__resetRtcInstances`) and call it from logout. `clawConnection.disconnect()` only handles already-`setRtc`'d rtc instances, so an RTC whose init was still in progress (`clawConn.__rtc === null`) was orphaned in the module-level `rtcInstances` Map. A same-`clawId` re-login within the 15s fallback-timer window would reuse the old rtc Promise whose `onReady` closure points at the previous user's `clawConn`. `initRtc`'s `onStateChange` also now treats `'closed'` identically to `'failed'` so the in-closure `fallbackTimer` is cleared on external close — otherwise the stale 15s timer would fire after `closeAllRtcInstances` and call `rtcInstances.delete(clawId)` on the next user's fresh entry.
+  - `chatStoreManager.disposeAll`, `agentRunsStore.resetAll`, `clawConnectionManager.disconnectAll`: each now wraps the per-item cleanup call in a try/catch so a single failure does not halt the loop and leak the remaining items' timers / DC / blob URLs. `disconnectAll` additionally calls `__connections.clear()` at the end so an exception-skipped entry cannot be reused across users.
+  - `signaling-connection.js`: `disconnect()` now clears `__connIds` and `__connIdToClawId` maps. Normally each `clawConn.disconnect()` releases its own connId, but the new per-item try/catch above could swallow a failure and leave stale mappings on the singleton; the explicit clear guarantees fresh connIds for the next user.
+  - `chat.store.cleanup`: if cleanup runs while a slash command is still in flight (dispose path — events already missed, timer no longer relevant), actively settle `__slashCommandResolve` before nulling it instead of leaving the caller's await permanently pending.
+
+  Ordering-wise, `closeAllRtcInstances` is inserted between `disconnectAll` and `signaling.disconnect` so the existing dependency chain (`files.cancelAll` → `disconnectAll` → `signaling.disconnect`) is preserved and `rtc:closed` signaling frames can still reach the gateway.
+
+- ffd81f8: fix(ui): make logout idempotent and serialize auth actions against it
+
+  Third pass on logout. Two related gaps:
+
+  1. **401-during-logout double-cleanup.** When the POST `/logout` API itself returns 401 (common when the session has already expired), `http.js` synchronously dispatches `auth:session-expired`. `AuthedLayout.__onSessionExpired` saw `authStore.user` still populated (the first `logout()` had not yet written `user = null`) and called `authStore.logout()` a second time. Two cleanup chains then ran in parallel — `$reset`, `disconnectAll`, timer clears all invoked twice, and two competing `router.replace` calls landed on different targets.
+  2. **No guarantee that a new login starts in a clean environment.** While existing call sites all `await authStore.logout()` before navigating, the invariant was not enforced at the store level. Any future trigger that forgot to `await` would race resource cleanup against a concurrent login.
+
+  Fix: add a module-level `__logoutInflight` Promise lock in `auth.store.js`.
+
+  - `logout()` is now idempotent: reentrant calls return the same in-flight Promise; the API call, the 20-step cleanup chain, and `router.replace` side-effects each run exactly once. The cleanup body is now an IIFE inside the `logout` action (not a separate `__doLogout` action), so external callers cannot bypass the lock; the IIFE has a dedicated `try/finally` around `this.loading` so UI loading state cannot get stuck even if a cleanup step throws a way `safeRun` does not catch.
+  - `login()`, `register()`, `refreshSession()` each `await __logoutInflight` at their start (when non-null). New authentication requests never see residual WebRTC PCs, signaling WS, SSE handles, timers, or store state from the departing user.
+  - `updateProfile()`, `updateSettings()`, `changePassword()` return early with an `errorMessage` set when a logout is in flight. Previously, a server response arriving during logout would re-merge into `this.user = null` and revive it as a partial object — e.g. `UserProfilePanel` would then show a "Name updated" success toast even though the API call never happened. Setting `errorMessage` pushes those UI paths into the error branch instead.
+  - `AuthedLayout.__onSessionExpired` now checks `isLogoutInflight()` at entry and bails. When the current user is already running a logout flow (e.g. user-clicked logout whose API itself 401s), this stops the handler from kicking off a second cleanup and a conflicting `router.replace('/login')`.
+  - Export `isLogoutInflight()` for callers that want a read-only check without touching the Promise, and `__resetAuthInternals()` for test cleanup.
+
+  The lock is deliberately module-level (not Pinia state) so Promises stay non-reactive.
+
+- 1aba02d: 修复 WebRtcConnection 失败路径的 PC 资源泄漏：4 处 `__setState('failed')` 入口（DC 在 restart 中关闭、ICE restart 超时、createOffer 抛异常、`rtc:restart-rejected`）原本只改状态字段，不释放底层 `RTCPeerConnection` 也不通知 plugin，需要等 3~120 秒的退避重试才延迟清理；5 轮退避耗尽后更会永久悬挂。
+
+  改造：`close()` 方法新增 `{ asFailed }` 参数复用统一清理逻辑，4 处失败入口立即释放 native PC、清理定时器/监听器、并向 plugin 发 `rtc:closed` 信令。同时修复 `initRtc` 的 `state === 'failed'` 分支漏清 `rtcInstances` Map 的问题。
+
+- 473c663: claws 页面 WebRTC 连接状态文案：zh-CN / zh-TW / ja 三个 CJK 语种把 `WebRTC:` 后的半角冒号改为全角 `WebRTC：`（无后空格），与同文件内已有的 `插件：` / `OpenClaw：` 排版风格保持一致；其他语种按各自主流排版保持原样（en/es/pt/de/hi/vi/ru/ko 半角 `: `，fr 法式 `:`）。
+
 ## 0.16.0
 
 ### Minor Changes

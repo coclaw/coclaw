@@ -1,5 +1,33 @@
 # @coclaw/openclaw-coclaw
 
+## 0.17.0
+
+### Minor Changes
+
+- f32b8e5: Harden plugin auto-upgrade against slow npm downloads and registry-side throttling, fixing the upgrade loop observed on slow / firewalled networks.
+
+  - Raise the `openclaw plugins update` execution timeout from 2 minutes to 10 minutes, so first-time installs of native deps (e.g. `node-datachannel`) no longer get killed mid-download.
+  - Add a one-shot reverse-mirror retry: if the first attempt fails (timeout / 429 / network error), the worker reads the user's current `npm config get registry` and retries once with the opposite side — `npmjs.org` users fall back to `registry.npmmirror.com`, and `npmmirror` users fall back to `registry.npmjs.org`. Either side being healthy is enough to escape the failure.
+  - Increase the scheduler's first-check delay from 5 minutes to 60 minutes (effective range 60-120 minutes random). Prevents the failed-upgrade → gateway-restart → re-check cycle from disturbing gateway availability every few minutes when an upgrade keeps failing.
+  - Preserve the original `skipVersion: false` semantics on update-command failures: failures are still treated as transient and re-attempted on the next cycle (now an hour later, not minutes).
+
+### Patch Changes
+
+- 88e1b46: Drop the `node-datachannel` dependency and its `vendor/ndc-prebuilds/**` publish entry to shrink the npm tarball from ~50 MB to ~82 kB, removing the main source of auto-upgrade stalls on slow networks.
+
+  - Pion has been validated as the reliable primary WebRTC implementation; werift remains as the runtime fallback when pion fails to load.
+  - `src/webrtc/ndc-preloader.js` is deliberately left in place during this transition. With the package missing, `require.resolve('node-datachannel')` throws synchronously and the preloader's existing `try/catch` falls through to werift via the unchanged fallback path — no consumer ever reaches an ndc-only code path.
+  - No change to gateway RPC methods, plugin events, or binding protocol.
+
+- 42b37e8: Add `credRemain` field to all ICE restart remoteLog lines on the plugin side.
+
+  `credRemain` reports the seconds remaining until the embedded TURN credential expires (negative when already expired, `none` when no creds or unparseable). Helps diagnose whether ICE restart failures correlate with stale credentials (PC lifetime > 24h cred TTL window). Pure telemetry — no behavior change. Plugin reads it from `msg.turnCreds.username`.
+
+- 87e953c: Tighten WebRTC peer session limits to cut idle resource usage.
+
+  - `MAX_SESSIONS`: 20 → 10 — caps active + failed PeerConnections per peer. Eviction policy unchanged: only the oldest failed session is reclaimed; connected sessions are never evicted, and when none is failed the new offer still proceeds with a warning.
+  - `FAILED_SESSION_TTL_MS`: 24h → 12h — failed sessions reclaim their IPC listeners and Go-side resources sooner. ICE restart after foreground resume still works within the new window; beyond it the UI falls back to a fresh offer/answer.
+
 ## 0.16.0
 
 ### Minor Changes
