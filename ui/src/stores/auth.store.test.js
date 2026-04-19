@@ -1024,4 +1024,114 @@ describe('auth store', () => {
 		await logoutP;
 		expect(store.errorMessage).toBe('Cannot change password while signing out');
 	});
+
+	// --- logout 期间 API 返回结果被丢弃，防止 user 复活 ---
+	// 场景：action（如 refreshSession）先通过了 __logoutInflight 守卫，await API 期间
+	// 用户点 Logout，logout 完整跑完，API 才 resolve。无 epoch 守卫时 `this.user = data`
+	// 会把已清理的 user 复活（watch 被重新触发、WS/SSE 重连等）。
+
+	test('refreshSession await 期间发生过 logout 时丢弃结果，不复活 user', async () => {
+		let resolveFetch;
+		fetchSessionUser.mockImplementationOnce(() => new Promise((r) => { resolveFetch = r; }));
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		// refreshSession 先进入，卡在 fetchSessionUser 的 await 处
+		const refreshP = store.refreshSession();
+		// 期间 logout 完整跑完（含 user=null + store reset + epoch++）
+		await store.logout();
+		expect(store.user).toBeNull();
+
+		// 现在 fetchSessionUser 返回——如果没有 epoch 守卫，`this.user = data` 会复活 user
+		resolveFetch({ id: '1', name: 'stale' });
+		await refreshP;
+
+		expect(store.user).toBeNull();
+	});
+
+	test('refreshSession await 期间 logout 发生后，fetchSessionUser 抛错不置 errorMessage', async () => {
+		// 对称场景：API reject 而非 resolve。catch 分支同样需要 epoch 守卫，
+		// 否则 logout 期间网络错被当作 refreshSession 的真实失败展示给用户。
+		let rejectFetch;
+		fetchSessionUser.mockImplementationOnce(() => new Promise((_, reject) => { rejectFetch = reject; }));
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		const refreshP = store.refreshSession();
+		await store.logout();
+
+		rejectFetch({ response: { data: { message: 'stale-error' } } });
+		await refreshP;
+
+		// logout 完成后的 catch 不应写 errorMessage
+		expect(store.errorMessage).toBe('');
+	});
+
+	test('login await 期间发生过 logout 时丢弃结果，不复活 user', async () => {
+		// 极少见但仍覆盖：比如某些跨 tab/多入口场景。
+		let resolveLogin;
+		loginByLoginName.mockImplementationOnce(() => new Promise((r) => { resolveLogin = r; }));
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		const loginP = store.login({ loginName: 'a', password: 'b' });
+		await store.logout();
+		expect(store.user).toBeNull();
+
+		resolveLogin({ user: { id: '42', name: 'stale' } });
+		await loginP;
+		expect(store.user).toBeNull();
+	});
+
+	test('register await 期间发生过 logout 时丢弃结果，不复活 user', async () => {
+		let resolveRegister;
+		registerByLoginName.mockImplementationOnce(() => new Promise((r) => { resolveRegister = r; }));
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '1' };
+
+		const registerP = store.register({ loginName: 'a', password: 'b' });
+		await store.logout();
+
+		resolveRegister({ user: { id: '77' } });
+		await registerP;
+		expect(store.user).toBeNull();
+	});
+
+	test('updateProfile 先通过入口守卫后，await 期间发生过 logout 时不合并 profile', async () => {
+		// updateProfile 头部的 __logoutInflight 守卫只防"进入时已在 logout"；
+		// 如果 logout 在 await 期间开始再结束，epoch 守卫才是最后一道防线。
+		let resolveProfile;
+		patchCurrentUserProfile.mockReturnValueOnce(new Promise((r) => { resolveProfile = r; }));
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '1', name: 'old' };
+
+		const updP = store.updateProfile({ name: 'new' });
+		await store.logout();
+		expect(store.user).toBeNull();
+
+		resolveProfile({ name: 'new' });
+		await updP;
+		// 若 epoch 守卫失效，store.user 会变成 { name: 'new' }（从 null 合并 profile）
+		expect(store.user).toBeNull();
+	});
+
+	test('updateSettings 先通过入口守卫后，await 期间发生过 logout 时不合并 settings', async () => {
+		let resolveSettings;
+		patchCurrentUserSettings.mockReturnValueOnce(new Promise((r) => { resolveSettings = r; }));
+		logout.mockResolvedValue();
+		const store = useAuthStore();
+		store.user = { id: '1', settings: { theme: 'dark' } };
+
+		const setP = store.updateSettings({ lang: 'en' });
+		await store.logout();
+
+		resolveSettings({ lang: 'en' });
+		await setP;
+		expect(store.user).toBeNull();
+	});
 });

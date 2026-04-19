@@ -51,9 +51,18 @@ function safeRun(label, fn) {
 // 作用 2：login / register / refreshSession 开头 await 该锁，保证"新 login 面对的是干净环境"
 let __logoutInflight = null;
 
+// logout 纪元计数器。每次 logout 进入 IIFE 时递增。
+// 作用：仅靠 __logoutInflight 无法防住"action 先 await API，期间 logout 开始又结束"这种交错：
+//   visibilitychange → refreshSession → await fetchSessionUser ……
+//     （期间用户点 Logout）→ logout 完整跑完 → __logoutInflight 回归 null
+//   fetchSessionUser 最终 resolve 后 `this.user = data` 把已清理的 user 复活。
+// 各 action 在进入 await 前捕获 epoch，await 结束后若 epoch 已变，丢弃本次结果，不写 user。
+let __logoutEpoch = 0;
+
 /** @internal 仅供测试重置 */
 export function __resetAuthInternals() {
 	__logoutInflight = null;
+	__logoutEpoch = 0;
 }
 
 /** 对外暴露是否有 logout 正在进行（只读视图，避免外部直接操作 Promise） */
@@ -77,16 +86,24 @@ export const useAuthStore = defineStore('auth', {
 				try { await __logoutInflight; }
 				catch (err) { console.debug('[auth] refreshSession waited logout settle with error: %s', err?.message); }
 			}
+			const epochAtStart = __logoutEpoch;
 			this.loading = true;
 			this.clearError();
 			try {
 				const prevUserId = this.user?.id;
-				this.user = await fetchSessionUser();
+				const data = await fetchSessionUser();
+				// await 期间若 logout 执行过，本次响应已无效，丢弃避免把刚清理的 user 复活
+				if (__logoutEpoch !== epochAtStart) {
+					console.debug('[auth] refreshSession result dropped: logout occurred during fetch');
+					return;
+				}
+				this.user = data;
 				applyUserPreferences(this.user);
 				// 仅在用户实际切换时才重置 draft 存储空间，避免每次导航清空未持久化的内存态草稿
 				if (this.user?.id !== prevUserId) useDraftStore().onUserChanged(this.user?.id);
 				console.debug('[auth] session refreshed, user=%s', this.user?.id ?? null);
 			} catch (err) {
+				if (__logoutEpoch !== epochAtStart) return; // logout 期间的 401/网络错不是真正的失败
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Failed to load session';
 				console.warn('[auth] refreshSession failed:', this.errorMessage);
 			} finally {
@@ -100,15 +117,21 @@ export const useAuthStore = defineStore('auth', {
 				try { await __logoutInflight; }
 				catch (err) { console.debug('[auth] login waited logout settle with error: %s', err?.message); }
 			}
+			const epochAtStart = __logoutEpoch;
 			this.loading = true;
 			this.clearError();
 			try {
 				const data = await loginByLoginName(credentials);
+				if (__logoutEpoch !== epochAtStart) {
+					console.debug('[auth] login result dropped: logout occurred during request');
+					return;
+				}
 				this.user = data.user;
 				applyUserPreferences(this.user);
 				useDraftStore().onUserChanged(this.user?.id);
 				console.log('[auth] login ok, user=%s', this.user?.id);
 			} catch (err) {
+				if (__logoutEpoch !== epochAtStart) return;
 				this.user = null;
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Login failed';
 				console.warn('[auth] login failed:', this.errorMessage);
@@ -123,15 +146,21 @@ export const useAuthStore = defineStore('auth', {
 				try { await __logoutInflight; }
 				catch (err) { console.debug('[auth] register waited logout settle with error: %s', err?.message); }
 			}
+			const epochAtStart = __logoutEpoch;
 			this.loading = true;
 			this.clearError();
 			try {
 				const data = await registerByLoginName(credentials);
+				if (__logoutEpoch !== epochAtStart) {
+					console.debug('[auth] register result dropped: logout occurred during request');
+					return;
+				}
 				this.user = data.user;
 				applyUserPreferences(this.user);
 				useDraftStore().onUserChanged(this.user?.id);
 				console.log('[auth] register ok, user=%s', this.user?.id);
 			} catch (err) {
+				if (__logoutEpoch !== epochAtStart) return;
 				this.user = null;
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Registration failed';
 				console.warn('[auth] register failed:', this.errorMessage);
@@ -145,6 +174,7 @@ export const useAuthStore = defineStore('auth', {
 			// 用 IIFE 包裹清理体：不作为 pinia action 暴露，外部无法绕过锁直接触发
 			// loading 用 try/finally 兜底：即便中间同步抛错（safeRun 兜不住的边界情形），UI 也不会卡在 loading
 			__logoutInflight = (async () => {
+				__logoutEpoch++; // 供其他 action 的 await-recheck 识别
 				this.loading = true;
 				this.clearError();
 				try {
@@ -159,6 +189,13 @@ export const useAuthStore = defineStore('auth', {
 					}
 					// 无论 API 成功/401/其他错误，均执行本地清理。
 					// 每一步独立 safeRun 包裹：单步抛错不传染，保证后续资源一定被清理。
+					//
+					// 重要：从 `this.user = null` 起到 `signaling.disconnect` 之间**严禁插入 await**。
+					// AuthedLayout.vue 对 `authStore.user?.id` 的 watch 默认 flush:'pre'（异步 microtask），
+					// 当前这段顺序同步执行，watch 回调延迟到 IIFE 完成后才 fire，因此 WS/SSE 的手动 disconnect
+					// 先于 watch 触发的 disconnect，DC/RTC 资源能在连接仍在线时完成清理。
+					// 若在这段期间 await（例如未来想让 files.cancelAll 等待 abort 发出），
+					// watch 会抢先 disconnect WS，导致 DC 提前关闭、abort 无法送达、rtcInstances.delete 竞态。
 					const draftStore = useDraftStore();
 					safeRun('draft.persist', () => draftStore.persist());
 					this.user = null;
@@ -204,15 +241,21 @@ export const useAuthStore = defineStore('auth', {
 				this.errorMessage = 'Cannot update profile while signing out';
 				return;
 			}
+			const epochAtStart = __logoutEpoch;
 			this.loading = true;
 			this.clearError();
 			try {
 				const profile = await patchCurrentUserProfile(payload);
+				if (__logoutEpoch !== epochAtStart) {
+					console.debug('[auth] updateProfile result dropped: logout occurred during request');
+					return;
+				}
 				this.user = {
 					...(this.user ?? {}),
 					...(profile ?? {}),
 				};
 			} catch (err) {
+				if (__logoutEpoch !== epochAtStart) return;
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Update profile failed';
 				console.warn('[auth] updateProfile failed:', this.errorMessage);
 			} finally {
@@ -244,10 +287,15 @@ export const useAuthStore = defineStore('auth', {
 				this.errorMessage = 'Cannot update settings while signing out';
 				return;
 			}
+			const epochAtStart = __logoutEpoch;
 			this.loading = true;
 			this.clearError();
 			try {
 				const settings = await patchCurrentUserSettings(payload);
+				if (__logoutEpoch !== epochAtStart) {
+					console.debug('[auth] updateSettings result dropped: logout occurred during request');
+					return;
+				}
 				this.user = {
 					...(this.user ?? {}),
 					settings: {
@@ -257,6 +305,7 @@ export const useAuthStore = defineStore('auth', {
 				};
 				applyUserPreferences(this.user);
 			} catch (err) {
+				if (__logoutEpoch !== epochAtStart) return;
 				this.errorMessage = err?.response?.data?.message ?? err?.message ?? 'Update settings failed';
 				console.warn('[auth] updateSettings failed:', this.errorMessage);
 			} finally {
