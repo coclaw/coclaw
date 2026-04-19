@@ -121,7 +121,7 @@
 						/>
 					</template>
 				</div>
-				<div v-else class="px-4 py-8 text-center text-sm text-toned">
+				<div v-else-if="!isNewTopic" class="px-4 py-8 text-center text-sm text-toned">
 					{{ $t('chat.empty') }}
 				</div>
 			</div>

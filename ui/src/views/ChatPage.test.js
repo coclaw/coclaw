@@ -212,6 +212,19 @@ describe('ChatPage', () => {
 		expect(wrapper.text()).toContain('No messages');
 	});
 
+	test('新 topic 下不显示空消息提示', async () => {
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		await flushPromises();
+
+		expect(wrapper.vm.isNewTopic).toBe(true);
+		expect(wrapper.text()).not.toContain('No messages');
+	});
+
 	test('渲染消息列表', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
