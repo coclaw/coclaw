@@ -7,7 +7,10 @@ import { readState, resolveStateDir, writeState } from './state.js';
 import { getRuntime } from '../runtime.js';
 import { remoteLog } from '../remote-log.js';
 
-const INITIAL_DELAY_MS = 5 * 60 * 1000; // 5 分钟
+// 首次检查延迟较长：失败时由 worker 触发 gateway restart，scheduler 重启后会重新计时；
+// 60 分钟基线（实际随机 60-120 分钟）能把"失败→重启→再次检查"的循环周期拉长，
+// 避免连续升级失败时 gateway 在短时间内反复被打扰。
+const INITIAL_DELAY_MS = 60 * 60 * 1000; // 60 分钟
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时
 const CHANNEL_ID = 'coclaw';
 const LOCK_FILENAME = 'upgrade.lock';

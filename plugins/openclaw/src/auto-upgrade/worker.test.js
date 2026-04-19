@@ -265,7 +265,7 @@ test('runUpgrade — 更新命令失败：回滚但不记录 skippedVersions（�
 	process.env.OPENCLAW_STATE_DIR = stateDir;
 
 	try {
-		const { execFileFn } = createMockExec({
+		const { execFileFn, calls } = createMockExec({
 			updateFails: true,
 			gatewayRunning: true,
 		});
@@ -299,6 +299,11 @@ test('runUpgrade — 更新命令失败：回滚但不记录 skippedVersions（�
 		assert.ok(logs.some(l => l.includes('Update command failed')));
 		assert.ok(logs.some(l => l.includes('Restored from backup')));
 		assert.ok(logs.some(l => l.includes('not skipped (transient failure)')));
+
+		// 冻结新行为：失败后必须有 fallback retry（而不是立刻 rollback），
+		// 防止未来重构把 mirror 兜底逻辑去掉而测试静默通过
+		const updateCount = calls.filter(c => c.args.join(' ').includes('plugins update')).length;
+		assert.equal(updateCount, 2, '失败后应触发一次 fallback retry，共调用两次 plugins update');
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
@@ -978,6 +983,289 @@ test('runUpgrade — 回滚后 gateway 成功重启', async () => {
 
 		assert.ok(logs.some(l => l.includes('Gateway restarted after rollback')));
 	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 11. registry fallback：第一次 update 失败、第二次 retry 成功
+// ============================================================
+
+test('runUpgrade — 第一次 update 失败时用反向 mirror 重试，成功后视为升级成功', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+	// sentinel 用于验证 retry env 真正继承了 process.env，
+	// 而不是只设了一个 npm_config_registry 字段
+	const sentinelKey = `__UW_SENTINEL_${Date.now()}`;
+	process.env[sentinelKey] = 'sentinel-value';
+
+	try {
+		const captured = { updates: [], registry: false };
+		const execFileFn = (cmd, args, opts, cb) => {
+			const argsStr = args.join(' ');
+
+			if (argsStr.includes('config get registry')) {
+				captured.registry = true;
+				return cb(null, 'https://registry.npmjs.org/\n', '');
+			}
+
+			if (argsStr.includes('plugins update')) {
+				captured.updates.push({ env: opts?.env });
+				if (captured.updates.length === 1) return cb(new Error('first boom'));
+				return cb(null, 'ok', '');
+			}
+
+			if (argsStr.includes('gateway status')) return cb(null, 'running', '');
+			if (argsStr.includes('plugins list')) return cb(null, 'test-plugin', '');
+			if (argsStr.includes('coclaw.upgradeHealth')) {
+				return cb(null, JSON.stringify({ version: '1.1.0' }), '');
+			}
+			return cb(null, '', '');
+		};
+
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// 共两次 update 调用：首次无 env override，第二次注入 npmmirror
+		assert.equal(captured.updates.length, 2);
+		assert.equal(captured.updates[0].env, undefined);
+		assert.equal(captured.updates[1].env.npm_config_registry, 'https://registry.npmmirror.com/');
+		// 验证 retry env 真正继承了 process.env（而非孤立对象）
+		assert.equal(captured.updates[1].env[sentinelKey], 'sentinel-value');
+		assert.equal(captured.registry, true);
+
+		// state 应记录成功
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+
+		// 关键日志
+		assert.ok(logs.some(l => l.includes('Update command failed')));
+		assert.ok(logs.some(l => l.includes('Retrying with fallback registry')));
+		assert.ok(logs.some(l => l.includes('Update command completed on retry')));
+		assert.ok(logs.some(l => l.includes('Upgrade complete')));
+	} finally {
+		delete process.env[sentinelKey];
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 12. registry fallback：用户已配 npmmirror 时反向选 npmjs
+// ============================================================
+
+test('runUpgrade — 用户当前 registry 是 npmmirror 时，retry 切到 npmjs', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		const captured = { updates: [] };
+		const execFileFn = (cmd, args, opts, cb) => {
+			const argsStr = args.join(' ');
+
+			if (argsStr.includes('config get registry')) {
+				return cb(null, 'https://registry.npmmirror.com/\n', '');
+			}
+
+			if (argsStr.includes('plugins update')) {
+				captured.updates.push({ env: opts?.env });
+				if (captured.updates.length === 1) return cb(new Error('first boom'));
+				return cb(null, 'ok', '');
+			}
+
+			if (argsStr.includes('gateway status')) return cb(null, 'running', '');
+			if (argsStr.includes('plugins list')) return cb(null, 'test-plugin', '');
+			if (argsStr.includes('coclaw.upgradeHealth')) {
+				return cb(null, JSON.stringify({ version: '1.1.0' }), '');
+			}
+			return cb(null, '', '');
+		};
+
+		const { logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.equal(captured.updates.length, 2);
+		assert.equal(captured.updates[1].env.npm_config_registry, 'https://registry.npmjs.org/');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 13. registry fallback：两次都失败时走 rollback，且日志含两次失败提示
+// ============================================================
+
+test('runUpgrade — 两次 update 都失败时走 rollback 且日志含 retry 失败提示', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		const { execFileFn } = createMockExec({
+			updateFails: true,
+			gatewayRunning: true,
+		});
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// 两次失败的日志都应出现
+		assert.ok(logs.some(l => l.includes('Update command failed')));
+		assert.ok(logs.some(l => l.includes('Retrying with fallback registry')));
+		assert.ok(logs.some(l => l.includes('Retry with fallback registry failed')));
+
+		// 仍按瞬态处理：rollback + 不 skip
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'rollback');
+		assert.equal(state.skippedVersions, undefined);
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 14. 第一次 update 成功时不调 npm config，不构造 retry env
+// ============================================================
+
+test('runUpgrade — 第一次 update 成功时不读取 npm registry、不重试', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		const captured = { updates: [], registryQueried: false };
+		const execFileFn = (cmd, args, opts, cb) => {
+			const argsStr = args.join(' ');
+
+			if (argsStr.includes('config get registry')) {
+				captured.registryQueried = true;
+				return cb(null, 'https://registry.npmjs.org/\n', '');
+			}
+
+			if (argsStr.includes('plugins update')) {
+				captured.updates.push({ env: opts?.env });
+				return cb(null, 'ok', '');
+			}
+
+			if (argsStr.includes('gateway status')) return cb(null, 'running', '');
+			if (argsStr.includes('plugins list')) return cb(null, 'test-plugin', '');
+			if (argsStr.includes('coclaw.upgradeHealth')) {
+				return cb(null, JSON.stringify({ version: '1.1.0' }), '');
+			}
+			return cb(null, '', '');
+		};
+
+		const { logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.equal(captured.updates.length, 1);
+		assert.equal(captured.updates[0].env, undefined, '首次 update 不传 env，让 Node 默认继承 process.env');
+		assert.equal(captured.registryQueried, false, '不应读取当前 npm registry');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 15. registry fallback：retry 时移除用户 NPM_CONFIG_REGISTRY 大写覆盖
+// ============================================================
+
+test('runUpgrade — retry 时清除用户 NPM_CONFIG_REGISTRY 大写 env，确保小写 fallback 生效', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+	// 模拟用户 export 了大写 NPM_CONFIG_REGISTRY，且原值就是慢/卡住的源
+	process.env.NPM_CONFIG_REGISTRY = 'https://stuck.example.com/';
+
+	try {
+		const captured = { updates: [] };
+		const execFileFn = (cmd, args, opts, cb) => {
+			const argsStr = args.join(' ');
+
+			if (argsStr.includes('config get registry')) {
+				return cb(null, 'https://registry.npmjs.org/\n', '');
+			}
+
+			if (argsStr.includes('plugins update')) {
+				captured.updates.push({ env: opts?.env });
+				if (captured.updates.length === 1) return cb(new Error('first boom'));
+				return cb(null, 'ok', '');
+			}
+
+			if (argsStr.includes('gateway status')) return cb(null, 'running', '');
+			if (argsStr.includes('plugins list')) return cb(null, 'test-plugin', '');
+			if (argsStr.includes('coclaw.upgradeHealth')) {
+				return cb(null, JSON.stringify({ version: '1.1.0' }), '');
+			}
+			return cb(null, '', '');
+		};
+
+		const { logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.equal(captured.updates.length, 2);
+		// 关键断言：retry env 中大写已被 delete，小写注入正确 fallback
+		assert.equal(
+			captured.updates[1].env.NPM_CONFIG_REGISTRY,
+			undefined,
+			'retry 必须 delete 用户大写 NPM_CONFIG_REGISTRY 以避免覆盖小写',
+		);
+		assert.equal(
+			captured.updates[1].env.npm_config_registry,
+			'https://registry.npmmirror.com/',
+		);
+	} finally {
+		delete process.env.NPM_CONFIG_REGISTRY;
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
 	}

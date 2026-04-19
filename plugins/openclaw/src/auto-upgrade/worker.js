@@ -17,26 +17,35 @@ import { parseArgs } from 'node:util';
 import { createBackup, restoreFromBackup, removeBackup } from './worker-backup.js';
 import { verifyUpgrade, waitForGateway } from './worker-verify.js';
 import { addSkippedVersion, updateLastUpgrade, appendLog } from './state.js';
+import { getCurrentNpmRegistry, pickFallbackRegistry } from './registry-fallback.js';
 
 const SEMVER_RE = /^\d+\.\d+\.\d+(-[\w.-]+)?$/;
+// 单次 plugins update 上限：包含 npm install 大型 native deps，慢网络 + 弱机器需较长时间
+const UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * 执行 openclaw plugins update
+ *
+ * 仅支持 source === "npm" 的安装（updater 已做前置过滤）。
+ * env 由调用方决定：缺省时子进程继承当前 process.env（含用户 .npmrc 自动生效）；
+ * 显式传入时用于覆盖 registry 等 npm 配置以做兜底重试。
  * @param {string} pluginId - 插件 ID
  * @param {object} [opts]
  * @param {Function} [opts.execFileFn]
+ * @param {NodeJS.ProcessEnv} [opts.env]
  * @returns {Promise<void>}
  */
-// openclaw plugins update 内部实现为 staged backup-and-replace，
-// 仅支持 source === "npm" 的安装（updater 已做前置过滤）
 function runPluginUpdate(pluginId, opts) {
 	/* c8 ignore next -- ?./?? fallback */
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
 	return new Promise((resolve, reject) => {
-		doExecFile('openclaw', ['plugins', 'update', pluginId], {
-			timeout: 120_000,
+		const execOpts = {
+			timeout: UPDATE_TIMEOUT_MS,
 			shell: process.platform === 'win32',
-		}, (err) => {
+		};
+		// 不传 env 时让 Node 默认继承父进程；显式 env 才覆盖
+		if (opts?.env) execOpts.env = opts.env;
+		doExecFile('openclaw', ['plugins', 'update', pluginId], execOpts, (err) => {
 			if (err) reject(new Error(`plugins update failed: ${err.message}`));
 			else resolve();
 		});
@@ -110,21 +119,44 @@ export async function runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, 
 	await createBackup(pluginDir);
 	log('[upgrade-worker] Backup created');
 
-	// 2. 执行升级
+	// 2. 执行升级（首次按用户原 env，失败后用反向 mirror 重试一次）
 	log('[upgrade-worker] Running plugins update...');
+	let updateErr = null;
 	try {
 		await runPluginUpdate(pluginId, opts);
+		log('[upgrade-worker] Update command completed');
 	}
-	catch (updateErr) {
-		// 升级命令本身失败（可能是瞬态故障），恢复备份但不标记版本为 skipped
-		log(`[upgrade-worker] Update command failed: ${updateErr.message}`);
+	catch (firstErr) {
+		log(`[upgrade-worker] Update command failed: ${firstErr.message}`);
+		updateErr = firstErr;
+		try {
+			const current = await getCurrentNpmRegistry(opts);
+			const fallback = pickFallbackRegistry(current);
+			log(`[upgrade-worker] Retrying with fallback registry: ${fallback}`);
+			// npm 同时认 npm_config_X 与 NPM_CONFIG_X 两种 env 命名，
+			// 若用户已 export 大写版（国内常见），仅 set 小写不足以覆盖，
+			// 显式 delete 大写避免 retry 仍走原 registry。
+			const retryEnv = { ...process.env };
+			delete retryEnv.NPM_CONFIG_REGISTRY;
+			retryEnv.npm_config_registry = fallback;
+			await runPluginUpdate(pluginId, { ...opts, env: retryEnv });
+			log('[upgrade-worker] Update command completed on retry');
+			updateErr = null;
+		}
+		catch (retryErr) {
+			log(`[upgrade-worker] Retry with fallback registry failed: ${retryErr.message}`);
+			updateErr = retryErr;
+		}
+	}
+
+	if (updateErr) {
+		// 两次都失败仍按瞬态故障处理（保留原 skipVersion: false 设计意图）
 		await handleRollback({
 			pluginDir, fromVersion, toVersion, pluginId, pkgName,
 			error: updateErr.message, skipVersion: false, opts, log,
 		});
 		return;
 	}
-	log('[upgrade-worker] Update command completed');
 
 	// 3. 等待 gateway 重启并验证
 	log('[upgrade-worker] Verifying upgrade...');
