@@ -308,30 +308,33 @@ test('app:foreground 触发重新加载', async () => {
 	const wrapper = createWrapper();
 	await flushPromises();
 	mockFetchAdminDashboard.mockClear();
+	// 首次 mount 已写 __lastLoadedAt = now，需清零以绕开 freshness gate
+	wrapper.vm.__lastLoadedAt = 0;
 	window.dispatchEvent(new CustomEvent('app:foreground'));
 	await flushPromises();
 	expect(mockFetchAdminDashboard).toHaveBeenCalled();
 	wrapper.unmount();
 });
 
-test('visibilitychange visible 触发重新加载', async () => {
+test('60s freshness gate 内 app:foreground 跳过 reload', async () => {
 	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 	mockFetchAdminDashboard.mockClear();
-	Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-	document.dispatchEvent(new Event('visibilitychange'));
+	// 不清 __lastLoadedAt：mount 已写入 now，gate 命中
+	window.dispatchEvent(new CustomEvent('app:foreground'));
 	await flushPromises();
-	expect(mockFetchAdminDashboard).toHaveBeenCalled();
+	expect(mockFetchAdminDashboard).not.toHaveBeenCalled();
 	wrapper.unmount();
 });
 
-test('foreground 2s 内节流只执行一次', async () => {
+test('freshness gate 过期后 app:foreground 重新加载', async () => {
 	mockFetchAdminDashboard.mockResolvedValue(fakeDashboard);
 	const wrapper = createWrapper();
 	await flushPromises();
 	mockFetchAdminDashboard.mockClear();
-	window.dispatchEvent(new CustomEvent('app:foreground'));
+	// 模拟距离上次 load 已过 61s
+	wrapper.vm.__lastLoadedAt = Date.now() - 61_000;
 	window.dispatchEvent(new CustomEvent('app:foreground'));
 	await flushPromises();
 	expect(mockFetchAdminDashboard).toHaveBeenCalledTimes(1);

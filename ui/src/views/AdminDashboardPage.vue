@@ -166,6 +166,11 @@ import { useAdminStore } from '../stores/admin.store.js';
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import AdminNavTabs from '../components/AdminNavTabs.vue';
 
+/** 前台恢复刷新的 freshness gate：60s 内不重复 reload */
+const RELOAD_FRESHNESS_MS = 60_000;
+/** 失败冷却：catch 后写入 now - FAIL_COOLDOWN_MS，等价于 30s 后允许下次重试 */
+const FAIL_COOLDOWN_MS = 30_000;
+
 export default {
 	name: 'AdminDashboardPage',
 	components: { MobilePageHeader, AdminNavTabs, RouterLink },
@@ -178,18 +183,14 @@ export default {
 		};
 	},
 	async mounted() {
-		this.__lastResumeAt = 0;
+		// 仅监听 app:foreground（移动浏览器由 capacitor-app.js 桥接 visibility 覆盖）
+		// 桌面浏览器 tab 切换不再触发刷新——避免 desktop 高频 tab 切换的连锁请求
+		this.__lastLoadedAt = 0;
 		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
+			if (Date.now() - this.__lastLoadedAt < RELOAD_FRESHNESS_MS) return;
 			this.loadData();
 		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
 		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
 
 		await this.loadData();
 	},
@@ -197,16 +198,16 @@ export default {
 		if (this.__onResume) {
 			window.removeEventListener('app:foreground', this.__onResume);
 		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 	},
 	methods: {
 		async loadData() {
 			try {
 				await this.adminStore.fetchDashboard();
+				this.__lastLoadedAt = Date.now();
 			}
 			catch (err) {
+				// 失败冷却：30s 后允许 app:foreground 再次触发重试，防 server 持续 5xx 时的重试风暴
+				this.__lastLoadedAt = Date.now() - (RELOAD_FRESHNESS_MS - FAIL_COOLDOWN_MS);
 				console.warn('[AdminDashboardPage] loadData failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? 'Load failed');
 			}

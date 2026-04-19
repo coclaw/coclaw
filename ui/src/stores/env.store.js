@@ -7,6 +7,7 @@
 import { defineStore } from 'pinia';
 import { useBreakpoints, breakpointsTailwind, useMediaQuery } from '@vueuse/core';
 import { Capacitor } from '@capacitor/core';
+import { detectWebPlatform } from '../utils/platform.js';
 
 export const useEnvStore = defineStore('env', () => {
 	// --- 屏幕断点（Tailwind: sm=640, md=768, lg=1024, xl=1280, 2xl=1536） ---
@@ -55,32 +56,3 @@ export const useEnvStore = defineStore('env', () => {
 		isLinux,
 	};
 });
-
-/**
- * Web 环境下通过 UA 检测操作系统平台
- * @returns {'android'|'ios'|'windows'|'mac'|'linux'|'unknown'}
- */
-function detectWebPlatform() {
-	if (typeof navigator === 'undefined') return 'unknown';
-
-	// 优先使用 User-Agent Client Hints（Chromium 系）
-	const uaData = navigator.userAgentData;
-	if (uaData?.platform) {
-		const p = uaData.platform.toLowerCase();
-		if (p === 'android') return 'android';
-		if (p === 'ios') return 'ios';
-		if (p === 'windows') return 'windows';
-		if (p.includes('mac')) return 'mac';
-		if (p.includes('linux')) return 'linux';
-	}
-
-	// 回退到 UA 字符串
-	const ua = navigator.userAgent || '';
-	if (/Android/i.test(ua)) return 'android';
-	if (/iPad|iPhone|iPod/.test(ua)
-		|| (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'ios';
-	if (/Windows/i.test(ua)) return 'windows';
-	if (/Macintosh|Mac OS/i.test(ua)) return 'mac';
-	if (/Linux/i.test(ua)) return 'linux';
-	return 'unknown';
-}

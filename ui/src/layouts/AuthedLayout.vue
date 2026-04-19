@@ -157,9 +157,11 @@ export default {
 		window.addEventListener('auth:session-expired', this.__onSessionExpired);
 
 		// 前台恢复刷新 session（覆盖"停留在页面不导航"的过期场景）
+		// 仅监听 app:foreground（移动浏览器由 capacitor-app.js 桥接 visibility 覆盖）；
+		// 桌面浏览器 tab 切换不再触发 session 验证——401 拦截器在下次 API 调用时会兜底清理
 		this.__lastResumeAt = 0;
 		this.__refreshSessionOnResume = async () => {
-			// 节流：2s 内不重复执行（visibilitychange + app:foreground 可能同时触发）
+			// 节流：app:foreground 在 Capacitor 下可能多源派发，2s 节流作幂等保险
 			const now = Date.now();
 			if (now - this.__lastResumeAt < 2000) return;
 			this.__lastResumeAt = now;
@@ -167,13 +169,7 @@ export default {
 			await this.authStore.refreshSession();
 			// 若 session 已过期，401 拦截器派发 auth:session-expired → __onSessionExpired 执行完整清理 + 跳转
 		};
-		this.__onVisibilityChange = () => {
-			if (document.visibilityState === 'visible') {
-				this.__refreshSessionOnResume();
-			}
-		};
 		window.addEventListener('app:foreground', this.__refreshSessionOnResume);
-		document.addEventListener('visibilitychange', this.__onVisibilityChange);
 
 		// 为非 requiresAuth 路由（如 AboutPage）填充用户数据
 		await this.authStore.refreshSession();
@@ -184,9 +180,6 @@ export default {
 		}
 		if (this.__refreshSessionOnResume) {
 			window.removeEventListener('app:foreground', this.__refreshSessionOnResume);
-		}
-		if (this.__onVisibilityChange) {
-			document.removeEventListener('visibilitychange', this.__onVisibilityChange);
 		}
 	},
 	methods: {

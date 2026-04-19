@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia';
 
 import { useClawConnections } from '../services/claw-connection-manager.js';
-import { useSignalingConnection } from '../services/signaling-connection.js';
 import { BRIEF_DISCONNECT_MS } from '../services/claw-connection.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
 import { initRtc, closeRtcForClaw } from '../services/webrtc-connection.js';
@@ -29,6 +28,8 @@ const _rtcInitInProgress = new Map();
 const _probeInProgress = new Map();
 /** app 进入后台的时间戳（用于前台恢复时判断后台时长） */
 let _backgroundAt = 0;
+/** 生命周期事件 window handler 引用（用于测试场景下清理旧 store 的注册） */
+let _lifecycleHandlers = null;
 
 /**
  * 两层重试结构：
@@ -71,6 +72,12 @@ export function __resetClawStoreInternals() {
 	for (const state of _rtcRetryState.values()) clearTimeout(state.timer);
 	_rtcRetryState.clear();
 	_backgroundAt = 0;
+	if (_lifecycleHandlers && typeof window !== 'undefined') {
+		window.removeEventListener('app:background', _lifecycleHandlers.bg);
+		window.removeEventListener('network:online', _lifecycleHandlers.net);
+		window.removeEventListener('app:foreground', _lifecycleHandlers.fg);
+	}
+	_lifecycleHandlers = null;
 }
 // 保留旧名兼容测试导入
 export { __resetClawStoreInternals as __resetAwaitingConnIds };
@@ -117,6 +124,27 @@ export const useClawsStore = defineStore('claws', {
 	getters: {
 		/** 列表视图（供列表渲染和遍历用） */
 		items: (state) => Object.values(state.byId),
+		/**
+		 * 至少一个 online claw 正在 RTC 建立/恢复中。
+		 * 覆盖 building / recovering / restarting，以及 failed 且排着退避重试的 claw。
+		 * 仅统计 online claw——离线 claw 的 RTC 状态用户不关心。
+		 */
+		isConnectingRtc: (state) => {
+			const active = new Set(['building', 'recovering', 'restarting']);
+			for (const c of Object.values(state.byId)) {
+				if (!c.online) continue;
+				if (active.has(c.rtcPhase)) return true;
+				if (c.rtcPhase === 'failed' && c.retryNextAt > 0) return true;
+			}
+			return false;
+		},
+		/**
+		 * 重试已耗尽、仍不可达的 online claw 列表。
+		 * 语义：rtcPhase='failed' 且 retryNextAt=0 表示系统已放弃退避重试，
+		 * 只能靠 network:online / SSE 快照 / 用户手动点击来唤醒。
+		 */
+		unreachableClaws: (state) => Object.values(state.byId)
+			.filter((c) => c.online && c.rtcPhase === 'failed' && c.retryNextAt === 0),
 	},
 	actions: {
 		setClaws(items) {
@@ -252,33 +280,36 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
-		 * 注册全局信令事件桥接（仅注册一次）
-		 * WS state 事件不消费——WS 仅是信令通道，其断连不影响 DC 可用性
+		 * 注册全局生命周期事件桥接（仅注册一次）
+		 *
+		 * 直接监听 window 事件，不经由 signaling——signaling 只负责维护自身 WS。
+		 * RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标。
+		 * - network:online 分级处理（restart-first）：见 __handleNetworkOnline。
+		 * - app:foreground 走 probe 路径（OS 挂起导致 ICE 回调积压，PC 状态不可信）；
+		 *   短后台（<25s）信任 ICE 自恢复。
+		 *
+		 * 测试场景下 pinia 会为每个用例创建新 store 实例：此处若检测到已有注册
+		 * （来自前一实例），先移除再重新注册，避免多 store 共存时的事件分发污染。
 		 */
-		__bridgeSignaling() {
-			if (this.__signalingBridged) return;
-			this.__signalingBridged = true;
-			const sigConn = useSignalingConnection();
+		__bridgeLifecycle() {
+			if (this.__lifecycleBridged) return;
+			this.__lifecycleBridged = true;
+			if (typeof window === 'undefined') return;
 
-			// 记录进入后台时间戳（用于前台恢复时判断后台时长）
-			if (typeof window !== 'undefined') {
-				window.addEventListener('app:background', () => { _backgroundAt = Date.now(); });
+			if (_lifecycleHandlers) {
+				window.removeEventListener('app:background', _lifecycleHandlers.bg);
+				window.removeEventListener('network:online', _lifecycleHandlers.net);
+				window.removeEventListener('app:foreground', _lifecycleHandlers.fg);
 			}
 
-			// RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标。
-			// network:online 分级处理（restart-first）：
-			//   - restarting → nudge（立即重试 restart offer）
-			//   - connected + typeChanged → triggerRestart（主动 ICE restart）
-			//   - failed/closed → rebuild（restart 失败后的 fallback）
-			//   - 其余 → 跳过（ICE 有自检测能力）
-			// app:foreground 走 probe 路径（OS 挂起导致 ICE 回调积压，PC 状态不可信）。
-			sigConn.on('foreground-resume', ({ source, typeChanged }) => {
-				if (source === 'network:online') {
-					this.__handleNetworkOnline(typeChanged);
-					return;
-				}
+			const bg = () => { _backgroundAt = Date.now(); };
+			const net = (e) => {
+				const typeChanged = Boolean(e?.detail?.typeChanged);
+				this.__handleNetworkOnline(typeChanged);
+			};
+			const fg = () => {
 				// 短后台（<25s）：ICE 自恢复能力充足，无需 probe
-				if (source === 'app:foreground' && _backgroundAt > 0) {
+				if (_backgroundAt > 0) {
 					const bgDuration = Date.now() - _backgroundAt;
 					if (bgDuration < SHORT_BACKGROUND_MS) {
 						remoteLog(`claw.skipProbe bgDuration=${bgDuration}ms`);
@@ -286,9 +317,14 @@ export const useClawsStore = defineStore('claws', {
 					}
 				}
 				for (const id of Object.keys(this.byId)) {
-					this.__checkAndRecover(id, source);
+					this.__checkAndRecover(id, 'app:foreground');
 				}
-			});
+			};
+
+			_lifecycleHandlers = { bg, net, fg };
+			window.addEventListener('app:background', bg);
+			window.addEventListener('network:online', net);
+			window.addEventListener('app:foreground', fg);
 		},
 
 		/**
@@ -338,8 +374,8 @@ export const useClawsStore = defineStore('claws', {
 				};
 			});
 
-			// 确保全局信令桥接已注册
-			this.__bridgeSignaling();
+			// 确保全局生命周期桥接已注册
+			this.__bridgeLifecycle();
 
 			// 新 claw + online + 未初始化 → 启动 fullInit
 			// 首次 init 用 SSE presence 作启动先验：建连成本不低（ICE gathering、
@@ -559,6 +595,26 @@ export const useClawsStore = defineStore('claws', {
 			_rtcRetryState.delete(id);
 			const claw = this.byId[id];
 			if (claw) { claw.retryCount = 0; claw.retryNextAt = 0; }
+		},
+
+		/**
+		 * 用户主动触发：对所有退避已耗尽的不可达 online claw 发起重连。
+		 * 语义与 SSE 新快照 / network:online 的 failed 恢复路径一致：
+		 * 清退避状态 + 重新走 __ensureRtc（__ensureRtc 同步把 rtcPhase
+		 * 置为 building/recovering，UI 图标会立即从告警切回转圈）。
+		 *
+		 * 并发安全：__ensureRtc 内部有 _rtcInitInProgress 守卫，连点无副作用。
+		 * 目标已过滤 online=false 的 claw，不会无谓尝试已知离线的 claw。
+		 */
+		manualRetryUnreachable() {
+			const targets = this.unreachableClaws;
+			if (targets.length === 0) return;
+			const ids = targets.map((c) => c.id);
+			remoteLog(`claw.manualRetry count=${ids.length} ids=${ids.join(',')}`);
+			for (const id of ids) {
+				this.__clearRetry(id);
+				this.__ensureRtc(id).catch(() => {});
+			}
 		},
 
 		/**

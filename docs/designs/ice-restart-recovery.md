@@ -351,7 +351,7 @@ network:online typeChanged=true
 ```
 app:background → 浏览器冻结 → pion ICE failed → session 保留, SCTP 存活
 app:foreground → 冻结回调触发 failed → __onIceFailed → restarting
-  + store foreground-resume → nudgeRestart（双保险）
+  + store 监听 window.app:foreground → nudgeRestart（双保险）
   → pion 有 session → restart answer → connected ✓ → SCTP flush
 ```
 

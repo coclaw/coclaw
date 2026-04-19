@@ -157,7 +157,10 @@ import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import AgentCard from '../components/AgentCard.vue';
 
-const RESUME_THROTTLE_MS = 2000;
+/** 前台恢复刷新的 freshness gate：60s 内不重复 reload */
+const RELOAD_FRESHNESS_MS = 60_000;
+/** 失败冷却：catch 后写入 now - (FRESHNESS - COOLDOWN)，等价于 30s 后允许下次重试 */
+const FAIL_COOLDOWN_MS = 30_000;
 const FETCHED_WAIT_MS = 10_000;
 
 export default {
@@ -236,27 +239,20 @@ export default {
 		},
 	},
 	async mounted() {
-		this.__lastResumeAt = 0;
+		// 仅监听 app:foreground（移动浏览器由 capacitor-app.js 桥接 visibility 覆盖）
+		// 桌面浏览器 tab 切换不再触发刷新——避免 desktop 多 claw 用户切 tab 时的 N×10+ RPC 风暴
+		this.__lastLoadedAt = 0;
 		this.__onResume = () => {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < RESUME_THROTTLE_MS) return;
-			this.__lastResumeAt = now;
+			if (Date.now() - this.__lastLoadedAt < RELOAD_FRESHNESS_MS) return;
 			this.loadData();
 		};
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__onResume();
-		};
 		window.addEventListener('app:foreground', this.__onResume);
-		document.addEventListener('visibilitychange', this.__onVisibility);
 
 		await this.loadData();
 	},
 	beforeUnmount() {
 		if (this.__onResume) {
 			window.removeEventListener('app:foreground', this.__onResume);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
 		}
 	},
 	methods: {
@@ -368,8 +364,11 @@ export default {
 				await Promise.allSettled(
 					this.claws.map(claw => this.dashboardStore.loadDashboard(String(claw.id)))
 				);
+				this.__lastLoadedAt = Date.now();
 			}
 			catch (err) {
+				// 失败冷却：30s 后允许 app:foreground 再次触发重试，防 server 持续 5xx 时的重试风暴
+				this.__lastLoadedAt = Date.now() - (RELOAD_FRESHNESS_MS - FAIL_COOLDOWN_MS);
 				console.warn('[ManageClawsPage] loadData failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('claws.loadFailed'));
 			}

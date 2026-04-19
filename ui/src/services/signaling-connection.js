@@ -6,7 +6,7 @@
  * 无 Vue 依赖，纯 JS。
  */
 import { resolveApiBaseUrl } from './http.js';
-import { isCapacitorApp } from '../utils/platform.js';
+import { isMobileOs } from '../utils/platform.js';
 
 const HB_PING_MS = 25_000;
 const HB_TIMEOUT_MS = 45_000;
@@ -18,7 +18,7 @@ const RECONNECT_JITTER = 0.3;
 const PROBE_TIMEOUT_MS = 2500;
 /** 前台恢复：超过此时长无消息则假定连接已死 */
 const ASSUME_DEAD_MS = 45_000;
-/** 防重入节流（visibilitychange + app:foreground；network:online 豁免） */
+/** 防重入节流（app:foreground；network:online 豁免） */
 const FOREGROUND_THROTTLE_MS = 500;
 /** ensureConnected verify 冷却期 */
 const VERIFY_COOLDOWN_MS = 5000;
@@ -36,8 +36,12 @@ function resolveSignalingWsUrl(httpBaseUrl) {
  * 事件:
  * - `state`             — WS 状态变更 (data: 'connecting' | 'connected' | 'disconnected')
  * - `rtc`               — 入站 RTC 信令 (data: { clawId, type, payload })
- * - `foreground-resume`  — 前台恢复 / 网络切换 (data: { source, typeChanged? })，仅移动端或 network:online
  * - `log`               — 诊断日志 (data: string)，由 remote-log 桥接推送
+ *
+ * 生命周期事件（app:foreground / network:online）仅用于本实例维护 WS 自身存活；
+ * 不再代其它模块分发前台恢复信号。
+ * 注：`visibilitychange` 不在此处监听——移动浏览器的可见性事件已由
+ * capacitor-app.js 桥接为 app:foreground，桌面浏览器 tab 切换不应触发 WS 重建。
  */
 export class SignalingConnection {
 	/**
@@ -72,7 +76,6 @@ export class SignalingConnection {
 		this.__listeners = new Map();
 
 		// 前台恢复
-		this.__boundVisibilityHandler = null;
 		this.__boundForegroundHandler = null;
 		this.__boundNetworkHandler = null;
 		this.__lastForegroundAt = 0;
@@ -101,10 +104,6 @@ export class SignalingConnection {
 		if (this.__ws) return;
 		console.debug('[SigConn] connect');
 		this.__intentionalClose = false;
-		if (typeof document !== 'undefined' && !this.__boundVisibilityHandler) {
-			this.__boundVisibilityHandler = () => this.__onVisibilityChange();
-			document.addEventListener('visibilitychange', this.__boundVisibilityHandler);
-		}
 		if (typeof window !== 'undefined' && !this.__boundForegroundHandler) {
 			this.__boundForegroundHandler = () => this.__onAppForeground();
 			window.addEventListener('app:foreground', this.__boundForegroundHandler);
@@ -423,40 +422,37 @@ export class SignalingConnection {
 		}
 	}
 
-	// --- Visibility / Foreground 恢复 ---
-
-	__onVisibilityChange() {
-		if (typeof document === 'undefined') return;
-		if (document.visibilityState !== 'visible') return;
-		this.__handleForegroundResume('visibility');
-	}
+	// --- Foreground 恢复 ---
 
 	__onAppForeground() {
 		this.__handleForegroundResume('app:foreground');
 	}
 
 	/**
-	 * 前台恢复统一入口（visibilitychange / app:foreground / network:online 共用）
-	 * WS 恢复全平台执行；foreground-resume 事件仅在移动端或 network:online 时发射
+	 * 前台恢复统一入口（app:foreground / network:online 共用）
+	 * 仅用于维护本 WS 的存活性；不再代表其它模块分发前台信号。
+	 *
+	 * 处理策略：
+	 * - app:foreground：仅对移动端 OS 有意义（桌面 Electron 后台 WS 持续运行），其它直接跳过。
+	 *   移动浏览器通过 capacitor-app.js 的 visibilitychange 桥接进入此分支。
+	 * - network:online：
+	 *   - typeChanged=true → forceReconnect（IP 可能变更，旧 TCP 几乎必死）
+	 *   - typeChanged=false → elapsed 较大才 probe，否则跳过（心跳足以兜底）
 	 * @param {string} source - 触发来源
+	 * @param {object} [detail]
+	 * @param {boolean} [detail.typeChanged]
 	 */
 	__handleForegroundResume(source, detail) {
 		if (this.__intentionalClose) return;
 		const isNetworkOnline = source === 'network:online';
-		// 防重入节流：network:online 豁免（它是明确的网络变更信号，不应被前序事件抑制）
-		// 连续 network:online 由 connecting 状态分支 + RTC _rtcInitInProgress 守卫自然防护
+
+		// app:foreground 仅对移动端 OS 有意义（Electron 桌面后台 WS 持续运行）
+		if (!isNetworkOnline && !isMobileOs) return;
+
+		// 防重入节流：network:online 豁免（明确的网络变更信号，不应被前序事件抑制）
 		const now = Date.now();
 		if (!isNetworkOnline && now - this.__lastForegroundAt < FOREGROUND_THROTTLE_MS) return;
 		this.__lastForegroundAt = now;
-
-		// RTC 恢复事件仅对移动端 visibility/app:foreground 或全平台 network:online 有意义
-		// 桌面 visibilitychange 不触发（WebRTC 在桌面后台持续运行）
-		const shouldEmitForRtc = isNetworkOnline || isCapacitorApp;
-
-		// 构建 RTC 恢复事件 payload（network:online 携带 typeChanged）
-		const rtcPayload = isNetworkOnline
-			? { source, typeChanged: Boolean(detail?.typeChanged) }
-			: { source };
 
 		if (this.__state === 'disconnected') {
 			console.debug('[SigConn] %s → immediate reconnect', source);
@@ -464,29 +460,32 @@ export class SignalingConnection {
 			this.__clearReconnect();
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__doConnect();
-			if (shouldEmitForRtc) {
-				this.__emit('foreground-resume', rtcPayload);
-			}
 			return;
 		}
 
-		if (this.__state === 'connecting') {
-			// network:online 时仍需发射 RTC 恢复事件（WS 正在重连，但 DC 可能需要独立恢复）
-			if (isNetworkOnline) {
-				this.__emit('foreground-resume', rtcPayload);
-			}
-			return;
-		}
+		if (this.__state === 'connecting') return;
 
 		// state === 'connected'
 		const elapsed = now - this.__lastAliveAt;
 
 		if (isNetworkOnline) {
-			// 网络切换后 IP 变化，旧 TCP 连接必死，无论 elapsed 多少都应重建
-			console.debug('[SigConn] %s → forceReconnect (network change)', source);
-			this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=forceReconnect(network)`);
-			this.forceReconnect();
-		} else if (elapsed > ASSUME_DEAD_MS) {
+			if (detail?.typeChanged) {
+				console.debug('[SigConn] %s → forceReconnect (type changed)', source);
+				this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=forceReconnect(typeChanged)`);
+				this.forceReconnect();
+				return;
+			}
+			// typeChanged=false：WS 仍大概率健康，仅在久未活动时 probe
+			if (this.__lastAliveAt > 0 && elapsed > PROBE_TIMEOUT_MS) {
+				console.debug('[SigConn] %s → probe (elapsed=%dms)', source, elapsed);
+				this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=probe`);
+				this.probe();
+			}
+			return;
+		}
+
+		// 移动端 app:foreground
+		if (elapsed > ASSUME_DEAD_MS) {
 			console.debug('[SigConn] %s → assume dead (elapsed=%dms)', source, elapsed);
 			this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=forceReconnect`);
 			this.forceReconnect();
@@ -494,10 +493,6 @@ export class SignalingConnection {
 			console.debug('[SigConn] %s → probe (elapsed=%dms)', source, elapsed);
 			this.__emit('log', `sig.resume source=${source} elapsed=${elapsed}ms action=probe`);
 			this.probe();
-		}
-
-		if (shouldEmitForRtc) {
-			this.__emit('foreground-resume', rtcPayload);
 		}
 	}
 
@@ -584,10 +579,6 @@ export class SignalingConnection {
 	__cleanup() {
 		this.__clearHeartbeat();
 		this.__clearProbe();
-		if (this.__boundVisibilityHandler && typeof document !== 'undefined') {
-			document.removeEventListener('visibilitychange', this.__boundVisibilityHandler);
-			this.__boundVisibilityHandler = null;
-		}
 		if (this.__boundForegroundHandler && typeof window !== 'undefined') {
 			window.removeEventListener('app:foreground', this.__boundForegroundHandler);
 			this.__boundForegroundHandler = null;

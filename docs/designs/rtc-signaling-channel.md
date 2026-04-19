@@ -381,7 +381,7 @@ Per-tab 单例，管理单一信令 WS，替代原来分散在各 BotConnection 
 - 信令 WS 连接管理（connect、reconnect、heartbeat）
 - connId 管理（`Map<botId, connId>`，生成、持有）
 - 信令消息收发（`sendSignaling(botId, type, payload)`）
-- 前台恢复（visibilitychange/app:foreground/network:online → WS probe + 通知 RTC 检查）
+- 前台恢复（**app:foreground/network:online** → 自身 WS probe/forceReconnect；**不再监听 visibilitychange**、**不再对外 emit 生命周期事件**）
 
 **对外接口**：
 
@@ -403,7 +403,9 @@ signalingConn.state → 'disconnected' | 'connecting' | 'connected'
 
 // 事件
 signalingConn.on('state', callback(state))
-signalingConn.on('foreground-resume', callback({ source, elapsed })) // 前台恢复 / 网络切换，仅移动端或 network:online
+signalingConn.on('log', callback(text))        // 诊断日志（由 remote-log 桥接上报）
+// 注意：历史上的 `foreground-resume` 事件已移除。
+// 生命周期恢复由各消费者直接监听 window 的 app:foreground / network:online，不再经由 signaling 转发。
 ```
 
 **心跳**：单套，沿用现有 BotConnection 的心跳策略（25s ping、45s timeout、2 次 miss 关闭）。
@@ -456,15 +458,20 @@ WS 仅是信令通道，其断连不影响 DataChannel 可用性。bots.store �
 
 **前台恢复**：
 
-监听 `signalingConn.on('foreground-resume', { source })` 事件。RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标：
-- `network:online` → RTC 层不做任何操作（ICE 在前台有自检测能力）
+`claws.store.__bridgeLifecycle` 直接监听 `window` 的 `app:foreground` / `network:online` / `app:background`，与 signaling 解耦。RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标：
+- `network:online` → `__handleNetworkOnline(typeChanged)` 分级处理（见 §7.3）
 - `app:foreground` 且后台 < 25s → 跳过 probe（ICE 自恢复裕量充足）
 - `app:foreground` 且后台 ≥ 25s → 对每个 dcReady 的 claw 执行 `__checkAndRecover`：
   - PC `failed`/`closed` → 直接 rebuild
   - PC `disconnected` → 不干预，交给 ICE 自恢复（5s 超时 → failed → `__scheduleRetry`）
   - PC `connected` → DC probe（3s）→ 成功: 不动 / 失败 + PC 仍 connected: 不动（plugin 可能繁忙）/ 失败 + PC 非 connected: rebuild
 
-仅在移动端（Capacitor）的 visibility/app:foreground 或全平台 network:online 时发射 `foreground-resume`。桌面 visibilitychange 不触发（WebRTC 在桌面后台持续运行）。
+**`app:foreground` 的三种来源**（由 `utils/capacitor-app.js` 统一派发）：
+- Capacitor 原生：`appStateChange({ isActive: true })`
+- Electron：IPC 窗口可见事件
+- 移动浏览器（`!isNative && isMobileOs`）：桥接 `document.visibilitychange`
+
+**桌面浏览器不派发 `app:foreground`**（tab 切换不视为 app 恢复，WebRTC 在后台持续运行）。
 
 **数据刷新**：RTC 恢复后通过 `__refreshIfStale` 按断连间隔判断是否刷新 agents/sessions/topics/dashboard。
 
@@ -510,7 +517,7 @@ network:online → __handleNetworkOnline(typeChanged)
   └─ typeChanged=false + PC connected/disconnected → 跳过
         （ICE 在前台有自检测能力）
 
-app:foreground（Capacitor）
+app:foreground（Capacitor / Electron / 移动浏览器桥接）
   │
   ├─ 后台 < 25s → 跳过（ICE 自恢复裕量充足）
   └─ 后台 ≥ 25s → __checkAndRecover：
@@ -524,7 +531,7 @@ app:foreground（Capacitor）
 
 **网络类型检测**：Capacitor Network plugin `connectionType` 仅区分 `wifi`/`cellular`/`none`/`unknown`。`_lastConnectionType` 仅在 `connected=true` 且类型为 `wifi`/`cellular` 时更新；`none`（offline）和 `unknown` 不更新，避免污染比较基线。
 
-桌面 visibilitychange 不触发 RTC 恢复（WebRTC 在桌面后台持续运行）。
+**平台门控**：`app:foreground` 覆盖 Capacitor、Electron、移动浏览器（后者通过 `capacitor-app.js` 桥接 `document.visibilitychange`）。桌面浏览器不派发 `app:foreground`（WebRTC 在桌面后台持续运行，tab 切换不应触发重建）。
 主机休眠/待机 → TODO（现由被动恢复路径覆盖：PC disconnected 5s → setState('failed') → 外层退避重试）。
 
 **待实施优化**：向 server 请求 UI 侧 IP 变化检测，作为网络类型变化检测的补充（覆盖 VPN 等 connectionType 不变但 IP 变化的场景）。
@@ -676,7 +683,7 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 | `__onIceFailed` 的恢复决策 | 简化 — ICE restart 已移除，直接 `setState('failed')`，由外层 bots.store 退避重试接管恢复 |
 | `__ensureRtc` 循环的 `sigConn.state !== 'connected'` bail-out | 移除 — `initRtc` 内部 await ensureConnected 自然阻塞或超时 |
 | sendSignaling 返回值处理 | 简化 — 由 ensureConnected 在上游保障 WS 可用，sendSignaling 返回值退化为防御性检查 |
-| WS 恢复后 RTC 恢复入口 | WS 状态不再触发 RTC 恢复；恢复由外部事件（foreground-resume、bot online）和被动检测驱动 |
+| WS 恢复后 RTC 恢复入口 | WS 状态不再触发 RTC 恢复；恢复由外部事件（window 的 `app:foreground` / `network:online`、SSE 的 bot online）和被动检测驱动 |
 
 ---
 
@@ -705,7 +712,7 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 WS 与 DC 状态已解耦。初始化/恢复触发机制：
 
 - **首次初始化**：`__bridgeConn` 直接触发 `__fullInit`（对 online + 未初始化的 bot），`ensureConnected()` 内部透明等待 WS 就绪
-- **前台/网络恢复**：`foreground-resume` 事件 → `__checkAndRecover` → DC probe / rebuild
+- **前台/网络恢复**：window 的 `app:foreground` / `network:online` 事件 → `__checkAndRecover` / `__handleNetworkOnline` → DC probe / rebuild
 - **被动恢复**：WebRtcConnection 内部 disconnected 10s → setState('failed') → bots.store 退避重试
 - **bot 上线**：`updateBotOnline` → `__fullInit`（未初始化）或 `__ensureRtc`（已初始化）
 - **数据刷新**：`__refreshIfStale` 在 RTC 恢复后按断连间隔自动触发

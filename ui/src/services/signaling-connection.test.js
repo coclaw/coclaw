@@ -1,7 +1,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// mock platform 检测（默认非 Capacitor）
-vi.mock('../utils/platform.js', () => ({ isCapacitorApp: false }));
+// mock platform 检测（默认非移动端 OS）
+vi.mock('../utils/platform.js', () => ({ isMobileOs: false }));
 import * as platformMod from '../utils/platform.js';
 
 import {
@@ -358,229 +358,189 @@ describe('SignalingConnection – 重连', () => {
 
 describe('SignalingConnection – 前台恢复', () => {
 	afterEach(() => {
-		platformMod.isCapacitorApp = false;
+		platformMod.isMobileOs = false;
 	});
 
-	test('Capacitor + visibility → 发出 foreground-resume（含 source）', () => {
-		platformMod.isCapacitorApp = true;
+	// app:foreground：仅对移动端 OS 有意义，桌面环境直接跳过
+	// visibility 已由 capacitor-app.js 桥接成 app:foreground（仅移动浏览器），sig 不再直接监听
+
+	test('桌面 app:foreground → 不触发任何 WS 动作', () => {
+		platformMod.isMobileOs = false;
 		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		vi.advanceTimersByTime(1000);
-		conn.__handleForegroundResume('visibility');
-		expect(events.length).toBe(1);
-		expect(events[0]).toHaveProperty('source', 'visibility');
-		expect(events[0]).not.toHaveProperty('elapsed');
-	});
-
-	test('桌面 visibility → 不发出 foreground-resume', () => {
-		platformMod.isCapacitorApp = false;
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', () => events.push(true));
-		vi.advanceTimersByTime(1000);
-		conn.__handleForegroundResume('visibility');
-		expect(events.length).toBe(0);
-	});
-
-	test('network:online → 全平台发出 foreground-resume（含 typeChanged）', () => {
-		platformMod.isCapacitorApp = false;
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		vi.advanceTimersByTime(1000);
-		conn.__handleForegroundResume('network:online', { typeChanged: true });
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('network:online');
-		expect(events[0].typeChanged).toBe(true);
-	});
-
-	test('network:online 无 detail → typeChanged 为 false', () => {
-		platformMod.isCapacitorApp = false;
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		vi.advanceTimersByTime(1000);
-		conn.__handleForegroundResume('network:online');
-		expect(events.length).toBe(1);
-		expect(events[0].typeChanged).toBe(false);
-	});
-
-	test('disconnected + network:online + typeChanged → typeChanged 透传', () => {
-		const { conn, ws } = makeConnected();
-		ws.simulateClose(1006);
-		expect(conn.state).toBe('disconnected');
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		vi.advanceTimersByTime(600);
-		conn.__handleForegroundResume('network:online', { typeChanged: true });
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('network:online');
-		expect(events[0].typeChanged).toBe(true);
-	});
-
-	test('非 network:online source 的 payload 不含 typeChanged', () => {
-		platformMod.isCapacitorApp = true;
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		vi.advanceTimersByTime(1000);
+		const probeSpy = vi.spyOn(conn, 'probe');
+		const forceSpy = vi.spyOn(conn, 'forceReconnect');
+		vi.advanceTimersByTime(46_000);
 		conn.__handleForegroundResume('app:foreground');
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('app:foreground');
-		expect(events[0]).not.toHaveProperty('typeChanged');
+		expect(probeSpy).not.toHaveBeenCalled();
+		expect(forceSpy).not.toHaveBeenCalled();
+		probeSpy.mockRestore();
+		forceSpy.mockRestore();
 	});
 
-	test('disconnected 状态下前台恢复触发即时重连', () => {
+	test('移动端 app:foreground + elapsed > ASSUME_DEAD_MS → forceReconnect', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		vi.advanceTimersByTime(46_000);
+		const wsBefore = MockWebSocket.instances.length;
+		conn.__handleForegroundResume('app:foreground');
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+	});
+
+	test('移动端 app:foreground + elapsed > PROBE_TIMEOUT_MS 但 < ASSUME_DEAD_MS → probe', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		const probeSpy = vi.spyOn(conn, 'probe');
+		vi.advanceTimersByTime(5_000);
+		conn.__handleForegroundResume('app:foreground');
+		expect(probeSpy).toHaveBeenCalledTimes(1);
+		probeSpy.mockRestore();
+	});
+
+	test('移动端 app:foreground + elapsed 极小 → 不 probe 也不 forceReconnect', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		const probeSpy = vi.spyOn(conn, 'probe');
+		const forceSpy = vi.spyOn(conn, 'forceReconnect');
+		vi.advanceTimersByTime(600); // 过 FOREGROUND_THROTTLE_MS（500ms）但不过 PROBE_TIMEOUT_MS
+		conn.__handleForegroundResume('app:foreground');
+		expect(probeSpy).not.toHaveBeenCalled();
+		expect(forceSpy).not.toHaveBeenCalled();
+		probeSpy.mockRestore();
+		forceSpy.mockRestore();
+	});
+
+	test('移动端 throttle 对非 network:online 事件仍生效', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		const probeSpy = vi.spyOn(conn, 'probe');
+		vi.advanceTimersByTime(5_000); // 触发 probe 分支
+		conn.__handleForegroundResume('app:foreground');
+		expect(probeSpy).toHaveBeenCalledTimes(1);
+		// 立即再次触发（间隔 < 500ms）→ 被节流抑制
+		conn.__handleForegroundResume('app:foreground');
+		expect(probeSpy).toHaveBeenCalledTimes(1);
+		probeSpy.mockRestore();
+	});
+
+	// network:online：全平台生效，typeChanged 门控
+
+	test('network:online + connected + typeChanged=true → forceReconnect（桌面）', () => {
+		platformMod.isMobileOs = false;
+		const { conn } = makeConnected();
+		const wsBefore = MockWebSocket.instances.length;
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+	});
+
+	test('network:online + connected + typeChanged=false + elapsed 小 → 跳过', () => {
+		platformMod.isMobileOs = false;
+		const { conn } = makeConnected();
+		const probeSpy = vi.spyOn(conn, 'probe');
+		const forceSpy = vi.spyOn(conn, 'forceReconnect');
+		conn.__handleForegroundResume('network:online', { typeChanged: false });
+		expect(probeSpy).not.toHaveBeenCalled();
+		expect(forceSpy).not.toHaveBeenCalled();
+		probeSpy.mockRestore();
+		forceSpy.mockRestore();
+	});
+
+	test('network:online + connected + typeChanged=false + elapsed > PROBE_TIMEOUT_MS → probe', () => {
+		platformMod.isMobileOs = false;
+		const { conn } = makeConnected();
+		const probeSpy = vi.spyOn(conn, 'probe');
+		vi.advanceTimersByTime(5_000);
+		conn.__handleForegroundResume('network:online');
+		expect(probeSpy).toHaveBeenCalledTimes(1);
+		probeSpy.mockRestore();
+	});
+
+	test('network:online 无 detail → 视同 typeChanged=false', () => {
+		platformMod.isMobileOs = false;
+		const { conn } = makeConnected();
+		const probeSpy = vi.spyOn(conn, 'probe');
+		const forceSpy = vi.spyOn(conn, 'forceReconnect');
+		conn.__handleForegroundResume('network:online');
+		expect(probeSpy).not.toHaveBeenCalled();
+		expect(forceSpy).not.toHaveBeenCalled();
+		probeSpy.mockRestore();
+		forceSpy.mockRestore();
+	});
+
+	test('network:online 不受 throttle 限制', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		vi.advanceTimersByTime(5_000); // 使 app:foreground 会走 probe
+		// 先触发 app:foreground（进入节流窗口）
+		conn.__handleForegroundResume('app:foreground');
+		const wsBefore = MockWebSocket.instances.length;
+		// 立即触发 network:online + typeChanged（间隔 < 500ms），不应被节流抑制
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+	});
+
+	// state 分支
+
+	test('disconnected 状态下 network:online 触发即时重连', () => {
 		const { conn, ws } = makeConnected();
 		ws.simulateClose(1006);
 		expect(conn.state).toBe('disconnected');
 		vi.advanceTimersByTime(600); // 过节流期
+		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('network:online');
-		// 应创建新 WS
-		expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
 	});
 
-	test('disconnected + Capacitor → 发出 foreground-resume（无 elapsed）', () => {
-		platformMod.isCapacitorApp = true;
+	test('移动端 disconnected + app:foreground → 即时重连', () => {
+		platformMod.isMobileOs = true;
 		const { conn, ws } = makeConnected();
 		ws.simulateClose(1006);
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
 		vi.advanceTimersByTime(600);
-		conn.__handleForegroundResume('app:foreground');
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('app:foreground');
-		expect(events[0]).not.toHaveProperty('elapsed');
-	});
-
-	test('network:online 不受 throttle 限制', () => {
-		platformMod.isCapacitorApp = true;
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		vi.advanceTimersByTime(1000);
-		// 先触发 app:foreground
-		conn.__handleForegroundResume('app:foreground');
-		expect(events.length).toBe(1);
-		// 立即触发 network:online（间隔 < 500ms），不应被节流抑制
-		conn.__handleForegroundResume('network:online');
-		expect(events.length).toBe(2);
-		expect(events[1].source).toBe('network:online');
-	});
-
-	test('network:online + connected + elapsed 很小时仍 forceReconnect', () => {
-		const { conn } = makeConnected();
-		// lastAliveAt 刚被设为 now（elapsed 约 0）
 		const wsBefore = MockWebSocket.instances.length;
-		conn.__handleForegroundResume('network:online');
-		// 应触发 forceReconnect → 创建新 WS
+		conn.__handleForegroundResume('app:foreground');
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
 	});
 
-	test('network:online + connecting 状态时仍发射 foreground-resume（含 typeChanged）', () => {
+	test('桌面 disconnected + app:foreground → 跳过（不重连）', () => {
+		platformMod.isMobileOs = false;
+		const { conn, ws } = makeConnected();
+		ws.simulateClose(1006);
+		vi.advanceTimersByTime(600);
+		const wsBefore = MockWebSocket.instances.length;
+		conn.__handleForegroundResume('app:foreground');
+		expect(MockWebSocket.instances.length).toBe(wsBefore);
+	});
+
+	test('connecting 状态下 network:online 不再动作', () => {
 		MockWebSocket.reset();
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
-		conn.connect(); // state → connecting，不 simulateOpen
+		conn.connect();
 		expect(conn.state).toBe('connecting');
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		conn.__handleForegroundResume('network:online', { typeChanged: true });
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('network:online');
-		expect(events[0].typeChanged).toBe(true);
-		expect(events[0]).not.toHaveProperty('elapsed');
-	});
-
-	test('非 network:online 在 connecting 状态不发射 foreground-resume', () => {
-		platformMod.isCapacitorApp = true;
-		MockWebSocket.reset();
-		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
-		conn.connect(); // state → connecting，不 simulateOpen
-		expect(conn.state).toBe('connecting');
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		conn.__handleForegroundResume('app:foreground');
-		expect(events.length).toBe(0);
-		conn.__handleForegroundResume('visibility');
-		expect(events.length).toBe(0);
-	});
-
-	test('throttle 对非 network:online 事件仍生效', () => {
-		platformMod.isCapacitorApp = true;
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		vi.advanceTimersByTime(1000);
-		// 第一次 app:foreground 正常触发
-		conn.__handleForegroundResume('app:foreground');
-		expect(events.length).toBe(1);
-		const wsBefore = MockWebSocket.instances.length;
-		// 立即再次触发（间隔 < 500ms），应被节流抑制
-		conn.__handleForegroundResume('app:foreground');
-		expect(events.length).toBe(1); // 未新增事件
-		expect(MockWebSocket.instances.length).toBe(wsBefore); // 未 forceReconnect
-	});
-
-	test('connected + elapsed > ASSUME_DEAD_MS → forceReconnect', () => {
-		platformMod.isCapacitorApp = true;
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		// 推进时间超过 ASSUME_DEAD_MS（45s）
-		vi.advanceTimersByTime(46_000);
-		const wsBefore = MockWebSocket.instances.length;
-		conn.__handleForegroundResume('app:foreground');
-		// 应触发 forceReconnect → 创建新 WS
-		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
-		// 应发射 foreground-resume（Capacitor 平台）
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('app:foreground');
-	});
-
-	test('connected + elapsed > PROBE_TIMEOUT_MS 但 < ASSUME_DEAD_MS 且 lastAliveAt > 0 → probe', () => {
-		platformMod.isCapacitorApp = true;
-		const { conn } = makeConnected();
-		const probeSpy = vi.spyOn(conn, 'probe');
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
-		// 推进时间超过 PROBE_TIMEOUT_MS（2.5s）但不超过 ASSUME_DEAD_MS（45s）
-		vi.advanceTimersByTime(5_000);
-		conn.__handleForegroundResume('app:foreground');
-		// 应触发 probe
-		expect(probeSpy).toHaveBeenCalledTimes(1);
-		// 应发射 foreground-resume（Capacitor 平台）
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('app:foreground');
-		probeSpy.mockRestore();
-	});
-
-	test('connected + network:online 既 forceReconnect 又发射 foreground-resume（含 typeChanged）', () => {
-		const { conn } = makeConnected();
-		const events = [];
-		conn.on('foreground-resume', (data) => events.push(data));
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('network:online', { typeChanged: true });
-		// forceReconnect 应创建新 WS
-		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
-		// foreground-resume 应被发射（含 typeChanged，不含 elapsed）
-		expect(events.length).toBe(1);
-		expect(events[0].source).toBe('network:online');
-		expect(events[0].typeChanged).toBe(true);
-		expect(events[0]).not.toHaveProperty('elapsed');
+		expect(MockWebSocket.instances.length).toBe(wsBefore);
+		expect(conn.state).toBe('connecting');
 	});
 
 	test('连续 network:online：第二次在 connecting 状态不再 forceReconnect', () => {
 		const { conn } = makeConnected();
 		vi.advanceTimersByTime(1000);
-		// 第一次：forceReconnect → state 变为 connecting
-		conn.__handleForegroundResume('network:online');
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
 		expect(conn.state).toBe('connecting');
 		const wsCountAfterFirst = MockWebSocket.instances.length;
-		// 第二次（WS 还在 connecting）：不会再次创建 WS
-		conn.__handleForegroundResume('network:online');
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
 		expect(MockWebSocket.instances.length).toBe(wsCountAfterFirst);
 		expect(conn.state).toBe('connecting');
+	});
+
+	test('不再发射 foreground-resume 事件', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		const events = [];
+		conn.on('foreground-resume', (data) => events.push(data));
+		vi.advanceTimersByTime(5_000);
+		conn.__handleForegroundResume('app:foreground');
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
+		expect(events.length).toBe(0);
 	});
 });
 
@@ -848,27 +808,7 @@ describe('SignalingConnection – ensureConnected', () => {
 	});
 });
 
-describe('SignalingConnection – __onVisibilityChange / __onAppForeground', () => {
-	test('__onVisibilityChange visible 时调用 __handleForegroundResume', () => {
-		const { conn } = makeConnected();
-		const spy = vi.spyOn(conn, '__handleForegroundResume');
-		// 模拟 document.visibilityState = 'visible'
-		Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-		vi.advanceTimersByTime(1000); // 过节流期
-		conn.__onVisibilityChange();
-		expect(spy).toHaveBeenCalledWith('visibility');
-		spy.mockRestore();
-	});
-
-	test('__onVisibilityChange hidden 时不调用 __handleForegroundResume', () => {
-		const { conn } = makeConnected();
-		const spy = vi.spyOn(conn, '__handleForegroundResume');
-		Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
-		conn.__onVisibilityChange();
-		expect(spy).not.toHaveBeenCalled();
-		spy.mockRestore();
-	});
-
+describe('SignalingConnection – __onAppForeground', () => {
 	test('__onAppForeground 调用 __handleForegroundResume', () => {
 		const { conn } = makeConnected();
 		const spy = vi.spyOn(conn, '__handleForegroundResume');

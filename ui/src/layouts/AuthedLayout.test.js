@@ -339,3 +339,46 @@ describe('AuthedLayout 认证过期事件处理', () => {
 		wrapper.unmount();
 	});
 });
+
+describe('AuthedLayout app:foreground 触发 refreshSession', () => {
+	test('mount 后 app:foreground 触发 refreshSession（已登录）', async () => {
+		hoisted.authStore.user = { id: 'u1' };
+		const wrapper = mountLayout();
+		await flushPromises();
+		hoisted.authStore.refreshSession.mockClear();
+		// 清 2s 节流时间戳，避免 mount 时已写入造成被节流跳过
+		wrapper.vm.__lastResumeAt = 0;
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await flushPromises();
+
+		expect(hoisted.authStore.refreshSession).toHaveBeenCalledTimes(1);
+		wrapper.unmount();
+	});
+
+	test('user=null 时 app:foreground 不触发 refreshSession', async () => {
+		const wrapper = mountLayout();
+		await flushPromises();
+		hoisted.authStore.refreshSession.mockClear();
+		wrapper.vm.__lastResumeAt = 0;
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await flushPromises();
+
+		expect(hoisted.authStore.refreshSession).not.toHaveBeenCalled();
+		wrapper.unmount();
+	});
+
+	test('unmount 后 app:foreground 不再触发 refreshSession', async () => {
+		hoisted.authStore.user = { id: 'u1' };
+		const wrapper = mountLayout();
+		await flushPromises();
+		wrapper.unmount();
+		hoisted.authStore.refreshSession.mockClear();
+
+		window.dispatchEvent(new CustomEvent('app:foreground'));
+		await flushPromises();
+
+		expect(hoisted.authStore.refreshSession).not.toHaveBeenCalled();
+	});
+});

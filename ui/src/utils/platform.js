@@ -24,6 +24,45 @@ export const isNativeShell = isCapacitorApp || isElectronApp || isTauriApp;
 export const isDesktop = isElectronApp || isTauriApp || !isCapacitorApp;
 
 /**
+ * 浏览器环境下通过 UA 检测操作系统平台
+ * 优先 User-Agent Client Hints（Chromium 系），回退到 UA 字符串 + iPadOS 桌面模式伪装识别
+ * @returns {'android'|'ios'|'windows'|'mac'|'linux'|'unknown'}
+ */
+export function detectWebPlatform() {
+	if (typeof navigator === 'undefined') return 'unknown';
+	const uaData = navigator.userAgentData;
+	if (uaData?.platform) {
+		const p = uaData.platform.toLowerCase();
+		if (p === 'android') return 'android';
+		if (p === 'ios') return 'ios';
+		if (p === 'windows') return 'windows';
+		if (p.includes('mac')) return 'mac';
+		if (p.includes('linux')) return 'linux';
+	}
+	const ua = navigator.userAgent || '';
+	if (/Android/i.test(ua)) return 'android';
+	if (/iPad|iPhone|iPod/.test(ua)
+		|| (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'ios';
+	if (/Windows/i.test(ua)) return 'windows';
+	if (/Macintosh|Mac OS/i.test(ua)) return 'mac';
+	if (/Linux/i.test(ua)) return 'linux';
+	return 'unknown';
+}
+
+/**
+ * 是否运行在移动端操作系统（Android/iOS），覆盖原生壳与移动浏览器。
+ * 用于判断 OS 是否会在应用进入后台时挂起进程/暂停网络——桌面 OS 不会。
+ */
+export const isMobileOs = detectMobileOs();
+
+function detectMobileOs() {
+	if (isCapacitorApp) return true;
+	if (isElectronApp || isTauriApp) return false;
+	const p = detectWebPlatform();
+	return p === 'android' || p === 'ios';
+}
+
+/**
  * 平台标识
  * @returns {'capacitor' | 'electron' | 'tauri' | 'web'}
  */

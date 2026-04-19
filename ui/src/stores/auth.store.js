@@ -53,7 +53,7 @@ let __logoutInflight = null;
 
 // logout 纪元计数器。每次 logout 进入 IIFE 时递增。
 // 作用：仅靠 __logoutInflight 无法防住"action 先 await API，期间 logout 开始又结束"这种交错：
-//   visibilitychange → refreshSession → await fetchSessionUser ……
+//   app:foreground → refreshSession → await fetchSessionUser ……
 //     （期间用户点 Logout）→ logout 完整跑完 → __logoutInflight 回归 null
 //   fetchSessionUser 最终 resolve 后 `this.user = data` 把已清理的 user 复活。
 // 各 action 在进入 await 前捕获 epoch，await 结束后若 epoch 已变，丢弃本次结果，不写 user。

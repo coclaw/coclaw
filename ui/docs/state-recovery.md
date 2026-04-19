@@ -2,7 +2,7 @@
 
 > 适用范围：CoClaw UI
 > 创建时间：2026-03-26
-> 最后更新：2026-04-08
+> 最后更新：2026-04-19
 
 本文档记录 CoClaw UI 中所有状态恢复机制的设计与实现。大部分恢复逻辑是 Web 应用本身就需要的（网络异常、页面切换等），Capacitor 移动端只是放大了问题频率并引入少量特有处理。
 
@@ -35,7 +35,8 @@
            ▼
 ┌─────────────────────────────────────────────────┐
 │ UI 层                                             │
-│  ChatPage connReady watcher / 前台恢复             │
+│  ChatPage connReady watcher                       │
+│  Dashboard / Claws / AuthedLayout app:foreground │
 │  Draft 持久化与恢复                                │
 │  发送失败输入恢复                                   │
 │  滚动位置管理                                      │
@@ -64,21 +65,23 @@
 ### 2.3 前台恢复重连
 
 - **文件**：`services/signaling-connection.js`（`__handleForegroundResume`）
-- **触发**：`visibilitychange`（visible）、`app:foreground` 或 `network:online`
-- **节流**：500ms 去重（`network:online` 豁免——连续触发由 `connecting` 状态分支自然防护）
+- **触发**：`app:foreground` 或 `network:online`（**不再监听 `visibilitychange`**——移动浏览器已由 `capacitor-app.js` 桥接成 `app:foreground`，桌面浏览器 tab 切换不应触发 WS 重建）
+- **平台门控**：`app:foreground` 仅在 `isMobileOs` 时处理（Electron 桌面壳子的 app:foreground 跳过，因为桌面后台 WS 持续运行）
+- **节流**：500ms 去重（`network:online` 豁免）
 - **分级策略**：
 
 | 条件 | 行为 |
 |------|------|
 | WS 已断连（`state === 'disconnected'`） | 重置退避到 1s，立即重连 |
-| `network:online`（任意 elapsed） | `forceReconnect()`（网络切换后 IP 变化，旧 TCP 必死） |
-| 已连接 + 静默超过 45s（`ASSUME_DEAD_MS`） | `forceReconnect()`（关旧 WS、立即重建） |
-| 已连接 + 静默超过 2.5s（`PROBE_TIMEOUT_MS`） | 发 probe ping，2.5s 无响应则 `forceReconnect()` |
-| 已连接 + 静默 ≤ 2.5s | 无需操作 |
+| `network:online` + `typeChanged=true` | `forceReconnect()`（IP 可能变更，旧 TCP 几乎必死） |
+| `network:online` + `typeChanged=false` + 静默 > 2.5s | 发 probe ping，失败则 forceReconnect |
+| `network:online` + `typeChanged=false` + 静默 ≤ 2.5s | 跳过（心跳足以兜底） |
+| `app:foreground` + 静默超过 45s（`ASSUME_DEAD_MS`） | `forceReconnect()` |
+| `app:foreground` + 静默超过 2.5s | 发 probe ping，2.5s 无响应则 `forceReconnect()` |
+| `app:foreground` + 静默 ≤ 2.5s | 无需操作 |
 
-- 恢复后发出 `foreground-resume` 事件（含 `source`），由 `claws.store` 决定是否对各 claw 执行 RTC 健康检查
-- RTC 恢复决策与 WS 完全解耦——详见下方 §2.4 和 §9 "RTC 前台恢复策略"
-- **场景**：Web + Capacitor
+- signaling **不再对外 emit** `foreground-resume` 事件。RTC 恢复决策完全独立，claws.store 直接监听 window 的 `app:foreground` / `network:online` / `app:background`，详见 §2.4 和 §9
+- **场景**：Web + Capacitor + 移动浏览器（后两者通过 `capacitor-app.js` 桥接提供 `app:foreground`）
 
 ### 2.4 RTC ICE restart 与 full rebuild
 
@@ -142,19 +145,12 @@
 - **计算属性**：`connReady` = `claw.dcReady` + `agentVerified`（topic 模式跳过 agent 验证）。不读 `claw.online`——presence 不参与通信就绪判断，详见 `docs/architecture/communication-model.md` §5.5
 - **触发**：`connReady` 从 false 变为 true
 - **行为**：
-  - 调用 `chatStore.__reconcileSlashCommand()`
+  - 调用 `chatStore.__reconcileSlashCommand()`（清理挂起的 slash 命令）
   - 首次加载：`loadMessages()` + `__loadChatHistory()`
   - 已加载过：`loadMessages({ silent: true })`
-  - 设置 `__lastResumeAt` 防止与前台恢复去重
 - **场景**：Web + Capacitor
-
-### 3.4 ChatPage 前台恢复静默刷新
-
-- **文件**：`views/ChatPage.vue`（`__handleForegroundResume`）
-- **触发**：`visibilitychange`（visible）或 `app:foreground`，与 connReady watcher 2s 去重
-- **行为**：若 `connReady` 已为 true，直接 `loadMessages({ silent: true })`。若 false，由 connReady watcher 处理
-- **意义**：覆盖"WS 未断连的短暂后台"场景（connReady 无状态转换，watcher 不触发）
-- **场景**：Web + Capacitor
+- **设计取舍**：ChatPage 不再监听 `visibilitychange` / `app:foreground`。消息刷新完全由 connReady 翻转驱动——DC 不断时 `event:agent` 实时推送、agentRunsStore 增量合并；DC 断后恢复时 connReady 翻转触发 silent reload。
+  - 边界场景"DC 全程未断、应用层数据陈旧"由用户手动刷新或路由跳走再回来兜底（`chatStore.activate()` 重入分支会触发 silent reload）。生产数据（`tmp/connection-instability-analysis-2026-04-19.md`）显示该边界无观测到的发生频次，且原"前台恢复 silent reload"在 6h 25 次触发中零救回数据，故移除。
 
 ### 3.5 SSE 快照全量同步
 
@@ -169,9 +165,9 @@
 ### 3.6 Dashboard / ManageClaws 前台恢复
 
 - **文件**：`views/AdminDashboardPage.vue`、`views/ManageClawsPage.vue`
-- **触发**：`visibilitychange`（visible）或 `app:foreground`，2s 节流去重
-- **行为**：重新调用 `loadData()`，刷新 dashboard 统计数据
-- **意义**：Dashboard 数据不像 ChatPage 那样有 connReady watcher 驱动，需要显式前台恢复
+- **触发**：`app:foreground`（移动浏览器经 `capacitor-app.js` 桥接 visibility 覆盖）；**不再监听 `visibilitychange`**——避免桌面 tab 切换的高频请求
+- **freshness gate**：60 秒内不重复 `loadData()`；失败回退到 30 秒冷却（`__lastLoadedAt = now - 30s`）防服务端 5xx 时的重试风暴
+- **意义**：Dashboard / Claws 数据不经 DC 推送，无 connReady 驱动，需显式前台恢复；同时桌面长驻用户可通过顶栏刷新按钮主动刷新
 - **场景**：Web + Capacitor
 
 ### 3.7 loadAllSessions 增量合并
@@ -307,9 +303,10 @@
 ### 6.6 前台恢复刷新 session
 
 - **文件**：`layouts/AuthedLayout.vue`
-- **触发**：`visibilitychange`（visible）或 `app:foreground`
+- **触发**：`app:foreground`（移动浏览器经 `capacitor-app.js` 桥接 visibility 覆盖）；**不再监听 `visibilitychange`**——桌面 tab 切换不再 churn session 验证
+- **节流**：2s 节流（`app:foreground` 在 Capacitor 下可能多源派发，作幂等保险）
 - **行为**：调用 `authStore.refreshSession()`，若 session 已过期则 401 → 6.3 → 6.5 自动跳转登录页
-- **与路由守卫互补**：路由守卫覆盖"导航时验证"，此处覆盖"停留在页面不导航时的后台恢复验证"
+- **与路由守卫 + 401 拦截器互补**：路由守卫覆盖"导航时验证"，401 拦截器覆盖"任意 API 调用时验证"，此处覆盖"app 后台归来时的主动验证"
 - **场景**：Web + Capacitor
 
 ---
@@ -318,20 +315,33 @@
 
 ### 7.1 app:foreground / app:background 事件桥接
 
-- **文件**：`utils/capacitor-app.js`（`setupAppStateChange`）
-- **行为**：将 Capacitor 原生 `appStateChange({ isActive })` 转义为标准 DOM 自定义事件 `app:foreground` / `app:background`
-- **消费者**：SignalingConnection、SSE、ChatPage、AdminDashboardPage、ManageClawsPage、DraftStore、Router、AuthedLayout
+- **文件**：`utils/capacitor-app.js`
+- **三个来源**：
+  - **Capacitor 原生**（`setupAppStateChange`）：`appStateChange({ isActive })` → `app:foreground` / `app:background`
+  - **Electron**（`electron-app.js`）：IPC 窗口可见事件 → 同样 DOM 事件
+  - **移动浏览器**（模块级非原生 block）：`isMobileOs && !isNative` 时桥接 `document.visibilitychange` → `app:foreground` / `app:background`。这覆盖了 Android Chrome / iOS Safari 里直接访问 coclaw.net 的用户——OS 会冻结后台 tab 但浏览器不派发 app:foreground，桥接后所有只听 `app:foreground` 的模块（webrtc / claws / SSE / stream）也能正常恢复
+- **桌面浏览器不桥接**：tab 切换不会挂起连接，桥接会带来无用的重建与日志噪音
+- **消费者**：SignalingConnection、SSE、AdminDashboardPage、ManageClawsPage、DraftStore（`app:background` 持久化）、Router、AuthedLayout
+  - **ChatPage 不在列**——消息刷新完全由 connReady watcher（DC 状态翻转）驱动，详见 §3.3
 - 消费者无需依赖 Capacitor SDK，只需监听标准 DOM 事件
+- **去抖策略（设计取舍）**：**不做源头层 dedup**，统一由消费者侧各自节流
+  - SignalingConnection 500ms、use-claw-status-sse 500ms、admin-stream 500ms 的节流是**跨事件协调**（`app:foreground` 与 `network:online` 共享同一个 `__lastAt` 时间戳），作用是"本模块 500ms 内两种恢复事件只做一轮"。源头按事件名 dedup 无法替代这一协调语义
+  - Capacitor 原生 `appStateChange` 存在多发（Android 生命周期双回调、权限弹窗返回等），实际损害停留在"多一次幂等 probe"级别，消费者侧节流已足够吸收
+  - **若未来仍要在源头做**：正确语义是**状态机式**（维护 `_lastState` + `_lastDispatchAt`，同状态窗口内丢、状态变化立即放行），而非 per-event-name 独立计时——后者会在 `fg→bg→fg` 500ms 内吞掉最后的状态转换
 
 ### 7.x 网络变化桥接（network:online）
 
 - **文件**：`utils/capacitor-app.js`（`setupNetworkListener` + 模块级 Web online 桥接）
 - **机制**：
-  - **Capacitor**：`@capacitor/network` 的 `networkStatusChange` → 当 `connected === true` 时派发 `network:online` DOM 事件
-  - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件
-- **消费者**：SignalingConnection（即时 probe/重连）、SSE（restart）
+  - **Capacitor**：`@capacitor/network` 的 `networkStatusChange` → 当 `connected === true` 时经源头去抖后派发 `network:online` DOM 事件
+  - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件（Web 路径另有 `wasOffline` gate，无前置 offline 不派发）
+- **消费者**：SignalingConnection（即时 probe/重连）、SSE（restart）、claws.store（逐 claw 按状态分级恢复）
 - **效果**：WiFi↔蜂窝切换或断网恢复后，WS 无条件 `forceReconnect()`。RTC 层按 PC 状态和网络类型变化分级处理（详见 §9 "RTC 前台恢复策略"）
-- **去重**：SignalingConnection 500ms 节流（`network:online` 豁免；连续触发由 `connecting` 状态自然防护）
+- **源头去抖**（Capacitor 分支，`dispatchNetworkOnline`）：leading-edge content-aware dedup，窗口 500ms
+  - 同 `connectionType` 且窗口内重复 → 丢弃（压缩 Android 切网瞬间 3–5 次连发），并记一条 `app.network dropped` 诊断日志
+  - `typeChanged=true`（wifi↔cellular）→ 立即放行并重置计时器，保证关键恢复信号零延迟
+  - 原始 `networkStatusChange` 事件的 `remoteLog` 在去抖之前记录，诊断粒度不丢
+- **消费者侧节流**（保留）：SignalingConnection 500ms 节流（`network:online` 豁免；连续触发由 `connecting` 状态自然防护）；SSE restart 500ms 节流（防 `app:foreground + network:online` 同时触发）
 
 ### 7.2 Deep Link 路由导航
 
@@ -376,12 +386,18 @@
 
 信令 WS 仅承载 SDP/ICE 信令和心跳，不承载业务 RPC。心跳超时判定简单明确：`HB_MAX_MISS = 2`（~90s）。业务 RPC 走 DataChannel，由 `ClawConnection.request()` 的两层超时（connectTimeout + requestTimeout）独立控制。
 
-### visibilitychange + app:foreground + network:online 多信号去重
+### app 级 vs tab 级事件的分工
 
-三个信号取并集，通过时间戳节流去重：
+- **app 级**（`app:foreground` / `app:background`）：连接层 + 数据层前台刷新用——SignalingConnection、webrtc-connection、claws.store、use-claw-status-sse、admin-stream、app-update、AdminDashboardPage、ManageClawsPage、AuthedLayout。三种真实环境（Capacitor、Electron、移动浏览器）通过 `capacitor-app.js` 统一桥接。**桌面浏览器不派发**（有意为之——tab 切换不是"app 恢复"）。
+- **tab 级**（`visibilitychange`）：仅 `draft.store`（hidden 时持久化草稿）。其他原本兼用 visibility 的页面（ChatPage / AdminDashboardPage / ManageClawsPage / AuthedLayout）已收敛为 app 级，移除 tab 级监听以消除桌面 tab 切换的连锁请求噪音；ChatPage 进一步取消所有外部事件监听，消息刷新完全由 connReady watcher 驱动。
+
+### 多信号去重
+
 - **WS 层**（SignalingConnection）：`__lastForegroundAt` + 500ms（`network:online` 豁免；连续 network:online 由 `connecting` 状态分支自然防护）
 - **RTC 层**（claws.store）：`network:online` 按 PC 状态 + 网络类型变化分级处理；`app:foreground` 短后台（<25s）跳过 probe；`_probeInProgress` 防止同一 claw 并发 probe
-- **ChatPage**：`__lastResumeAt` + 2s（connReady watcher 触发时也更新此时间戳）
+- **AdminDashboardPage / ManageClawsPage**：`__lastLoadedAt` + 60s freshness gate（成功后 = now；失败后 = now - 30s 等价 30s 冷却防 5xx 重试风暴）
+- **AuthedLayout**：`__lastResumeAt` + 2s（多源派发幂等保险；refreshSession 频率天然低，不加 freshness gate）
+- **ChatPage**：无（消息刷新仅由 connReady watcher 驱动，不再监听任何外部事件）
 
 ### 冷启动 vs 暖恢复的区分
 

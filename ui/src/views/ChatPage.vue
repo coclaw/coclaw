@@ -511,15 +511,8 @@ export default {
 	mounted() {
 		this.suppressPullRefresh();
 		// chatStore watcher (immediate: true) 已处理激活
-
-		// 前台恢复监听：覆盖 WS 未断连时的数据刷新
-		this.__lastResumeAt = 0;
-		this.__onForeground = () => this.__handleForegroundResume();
-		this.__onVisibility = () => {
-			if (document.visibilityState === 'visible') this.__handleForegroundResume();
-		};
-		window.addEventListener('app:foreground', this.__onForeground);
-		document.addEventListener('visibilitychange', this.__onVisibility);
+		// 消息刷新完全交给 connReady watcher（dcReady 翻转驱动），不再监听 visibility/app:foreground
+		// —— DC 不断时 event:agent 实时推送；DC 断后恢复时 connReady 翻转触发 silent reload
 
 		// 滚动容器 / 内容区域 ResizeObserver：覆盖软键盘弹起、输入框撑高、
 		// 图片加载、表格包装、steps 展开等所有导致容器或内容尺寸变化的场景
@@ -542,12 +535,6 @@ export default {
 		this.unsuppressPullRefresh();
 		this.chatStore?.cleanup();
 		this.__resizeOb?.disconnect();
-		if (this.__onForeground) {
-			window.removeEventListener('app:foreground', this.__onForeground);
-		}
-		if (this.__onVisibility) {
-			document.removeEventListener('visibilitychange', this.__onVisibility);
-		}
 		const root = this.$refs.chatRoot;
 		if (root) {
 			root.removeEventListener('dragover', this.__onDragOver);
@@ -820,8 +807,6 @@ export default {
 			// 同一 store 实例去重：chatStore watcher 和 connReady watcher 可能在同一 tick 各触发一次
 			if (this.__connReadyStore === this.chatStore) return;
 			this.__connReadyStore = this.chatStore;
-			// 与 __handleForegroundResume 去重
-			this.__lastResumeAt = Date.now();
 			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
 			this.chatStore.__reconcileSlashCommand();
 			const isFirstLoad = !this.chatStore.__messagesLoaded;
@@ -839,22 +824,6 @@ export default {
 				this.scrollToBottom(true);
 				if (isFirstLoad) this.__autoFillHistory();
 			});
-		},
-
-		/**
-		 * 前台恢复：WS 未断连时 connReady 不会转换，需独立刷新数据
-		 * 与 connReady watcher 去重：2s 内不重复执行
-		 */
-		__handleForegroundResume() {
-			const now = Date.now();
-			if (now - this.__lastResumeAt < 2000) return;
-			this.__lastResumeAt = now;
-
-			if (!this.chatStore || !this.connReady) return;
-			if (this.chatStore.isSending) return;
-			console.debug('[ChatPage] foreground resume → silent reload');
-			this.chatStore.__reconcileSlashCommand();
-			this.chatStore.loadMessages({ silent: true });
 		},
 
 		/**

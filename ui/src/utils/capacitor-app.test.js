@@ -129,10 +129,14 @@ function flush() {
 describe('initCapacitorApp - 各模块初始化', () => {
 	let mockRouter;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		resetMocks();
 		clearListeners();
 		mockRouter = createMockRouter();
+		// 复位 network:online 去抖状态：模块级 _lastOnlineDispatchAt / _lastConnectionType
+		// 在用例间共享，背靠背用例会落入同一 500ms 窗口导致事件被误吞
+		const mod = await import('./capacitor-app.js');
+		mod.__resetNetworkDedupForTest();
 	});
 
 	// --- StatusBar ---
@@ -395,14 +399,16 @@ describe('initCapacitorApp - 各模块初始化', () => {
 	});
 
 	test('setupNetworkListener: unknown 类型不更新 _lastType', async () => {
-		const { initCapacitorApp } = await import('./capacitor-app.js');
-		await initCapacitorApp(mockRouter);
+		const mod = await import('./capacitor-app.js');
+		await mod.initCapacitorApp(mockRouter);
 		await flush();
 
 		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
 		// wifi → unknown → wifi：unknown 不更新 _lastType，wifi 回来时仍与 wifi 比较 → 无变化
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'unknown' });
 		dispatchSpy.mockClear();
+		// 复位去抖计时器：本用例仅验证类型追踪逻辑，两次同 type 派发需各自到达
+		mod.__resetNetworkDedupForTest();
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
 		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
 		expect(evt[0].detail.typeChanged).toBe(false);
@@ -466,10 +472,74 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		// wifi → unknown（不更新 _lastType）→ cellular（与 wifi 比较 → 变化）
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'unknown' });
 		dispatchSpy.mockClear();
+		// 跨事件走 typeChanged=true 路径，天然豁免去抖窗口；不需要复位计时器
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
 		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
 		expect(evt[0].detail.typeChanged).toBe(true);
 		dispatchSpy.mockRestore();
+	});
+
+	// --- Network dedup（源头去抖）---
+
+	test('setupNetworkListener: 同 type 窗口内连发只派发一次', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// 模拟 Android 切网瞬间的 5 连发（同 type）
+		for (let i = 0; i < 5; i++) {
+			networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		}
+		const onlineEvents = dispatchSpy.mock.calls.filter((c) => c[0]?.type === 'network:online');
+		expect(onlineEvents.length).toBe(1);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: 窗口过期后同 type 可再次派发', async () => {
+		const mod = await import('./capacitor-app.js');
+		await mod.initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		// 模拟窗口过期
+		mod.__resetNetworkDedupForTest();
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		const onlineEvents = dispatchSpy.mock.calls.filter((c) => c[0]?.type === 'network:online');
+		expect(onlineEvents.length).toBe(2);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: typeChanged=true 在窗口内仍立即派发', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		// 先 wifi 垫底（初始 _last=wifi，此次同 type），再立即 cellular（typeChanged=true）
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+		const onlineEvents = dispatchSpy.mock.calls.filter((c) => c[0]?.type === 'network:online');
+		// 两次都应派发：首次 leading-edge 通过、第二次 typeChanged=true 豁免窗口
+		expect(onlineEvents.length).toBe(2);
+		expect(onlineEvents[0][0].detail.typeChanged).toBe(false);
+		expect(onlineEvents[1][0].detail.typeChanged).toBe(true);
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: 去抖丢弃时 remoteLog 记录 dropped', async () => {
+		const { remoteLog } = await import('../services/remote-log.js');
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		remoteLog.mockClear();
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		// 第二次同 type 在窗口内 → dropped 日志
+		const droppedCall = remoteLog.mock.calls.find((c) => /app\.network dropped/.test(c[0]));
+		expect(droppedCall).toBeTruthy();
 	});
 
 	// --- SplashScreen ---

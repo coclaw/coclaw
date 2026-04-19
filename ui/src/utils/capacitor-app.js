@@ -10,6 +10,7 @@ import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
 import { remoteLog } from '../services/remote-log.js';
 import { i18n } from '../i18n/index.js';
 import { useNotify } from '../composables/use-notify.js';
+import { isMobileOs } from './platform.js';
 
 /** 是否运行在 Capacitor 原生壳中 */
 export const isNative = Capacitor.isNativePlatform();
@@ -26,6 +27,17 @@ if (!isNative && typeof window !== 'undefined') {
 		remoteLog('app.network connected=true source=browser');
 		window.dispatchEvent(new CustomEvent('network:online'));
 	});
+
+	// 移动浏览器（Android Chrome / iOS Safari 等）：OS 在切到后台时会冻结 tab，
+	// 但浏览器不会派发 app:foreground。此处将 tab 可见性桥接为 app:foreground/background，
+	// 使下游模块（webrtc / claws / SSE）在移动浏览器下也能收到一致的前后台信号。
+	// 桌面浏览器不桥接：tab 切换不会挂起连接，触发重建会产生噪音与误操作。
+	if (isMobileOs) {
+		document.addEventListener('visibilitychange', () => {
+			const event = document.visibilityState === 'visible' ? 'app:foreground' : 'app:background';
+			window.dispatchEvent(new CustomEvent(event));
+		});
+	}
 }
 
 /**
@@ -263,6 +275,11 @@ function setupAppStateChange() {
 /** 上次已知的网络类型（仅 wifi/cellular 时更新） */
 let _lastConnectionType = null;
 
+/** network:online 源头去抖窗口：压缩 Android 切网瞬间的连发；窗口 < 1s 保证不吃真实切换 */
+const NETWORK_ONLINE_DEDUP_MS = 500;
+/** 上次 dispatch network:online 的时间戳（typeChanged=true 会重置） */
+let _lastOnlineDispatchAt = 0;
+
 /**
  * 归一化 connectionType：仅保留 wifi / cellular，其余返回 null
  * @param {string} type
@@ -272,6 +289,24 @@ function normalizeConnectionType(type) {
 	if (type === 'wifi') return 'wifi';
 	if (type === 'cellular') return 'cellular';
 	return null;
+}
+
+/**
+ * 派发 network:online 并在源头做 leading-edge content-aware 去抖。
+ * - typeChanged=true：立即放行（wifi↔cellular 是关键恢复信号，不可延迟）
+ * - 同 type 且窗口内重复：丢弃（避免连发触发多轮 probe/rebuild）
+ * 去抖仅影响事件派发；原始 remoteLog 在调用方记录，诊断粒度不丢。
+ * @param {boolean} typeChanged
+ * @param {string} rawType - 原始 connectionType，用于 dropped 日志
+ */
+function dispatchNetworkOnline(typeChanged, rawType) {
+	const now = Date.now();
+	if (!typeChanged && now - _lastOnlineDispatchAt < NETWORK_ONLINE_DEDUP_MS) {
+		remoteLog(`app.network dropped type=${rawType}`);
+		return;
+	}
+	_lastOnlineDispatchAt = now;
+	window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged } }));
 }
 
 function setupNetworkListener() {
@@ -287,7 +322,7 @@ function setupNetworkListener() {
 					remoteLog(`app.network typeChanged ${_lastConnectionType}→${normalized}`);
 				}
 				if (normalized) _lastConnectionType = normalized;
-				window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged } }));
+				dispatchNetworkOnline(typeChanged, connectionType);
 			}
 		});
 		// 读取初始网络类型
@@ -298,6 +333,11 @@ function setupNetworkListener() {
 		}).catch(() => {});
 		console.log('[capacitor] Network listener registered');
 	}).catch((e) => console.warn('[capacitor] Network setup failed:', e));
+}
+
+/** @internal 单测专用：复位 network:online 去抖计时器（不动 _lastConnectionType，由 getStatus 自然恢复） */
+export function __resetNetworkDedupForTest() {
+	_lastOnlineDispatchAt = 0;
 }
 
 function setupDeepLink(router) {
