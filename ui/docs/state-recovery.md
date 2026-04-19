@@ -127,10 +127,10 @@
 ### 3.1 重连后按断连时长刷新
 
 - **文件**：`stores/claws.store.js`（`__refreshIfStale`）
-- **触发**：RTC DataChannel 重建成功（`__ensureRtc` 或 `onRtcStateChange` 回调），且已初始化过（非首次），且断连时长 ≥ 5s（`BRIEF_DISCONNECT_MS`）
+- **触发**：RTC DataChannel 重建成功（`__ensureRtc` 或 `onRtcStateChange` 回调），且已初始化过（非首次），且断连时长 ≥ 30s（`BRIEF_DISCONNECT_MS`）
 - **行为**：仅刷新当前 claw —— `loadAgents(id)`、`loadSessionsForClaw(id)`、`loadTopicsForClaw(id)`、`loadDashboard(id)`（claw 列表由 SSE 快照维护）
 - **per-claw 局部刷新**：refresh / init 路径中的所有数据加载均按 claw 局部进行，避免多 claw 错峰恢复时全量横扫造成的 N² RPC 放大
-- **短暂抖动（< 5s）**：跳过刷新，避免无意义开销
+- **短暂抖动（< 30s）**：跳过刷新，避免无意义开销。`disconnectedAt` 在 PC 进入 `restarting`/`failed`/`closed` 时打点，长后台恢复场景的 gap 远超 30s，不会被误吞
 - **场景**：Web + Capacitor
 
 ### 3.2 首次连接完整初始化

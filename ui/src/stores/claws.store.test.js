@@ -1852,7 +1852,7 @@ describe('__refreshIfStale', () => {
 
 		store.setClaws([{ id: '20', name: 'Bot', online: true }]);
 		store.byId['20'].initialized = true;
-		store.byId['20'].disconnectedAt = Date.now() - 10_000;
+		store.byId['20'].disconnectedAt = Date.now() - 35_000;
 
 		store.__refreshIfStale('20');
 
@@ -1905,7 +1905,7 @@ describe('__refreshIfStale', () => {
 
 		store.setClaws([{ id: '23', name: 'Bot', online: true }]);
 		store.byId['23'].initialized = false;
-		store.byId['23'].disconnectedAt = Date.now() - 10_000;
+		store.byId['23'].disconnectedAt = Date.now() - 35_000;
 
 		store.__refreshIfStale('23');
 
@@ -1932,7 +1932,7 @@ describe('__ensureRtc 后通过 __refreshIfStale 刷新', () => {
 
 		store.setClaws([{ id: '20', name: 'Bot', online: true }]);
 		store.byId['20'].initialized = true;
-		store.byId['20'].disconnectedAt = Date.now() - 10_000;
+		store.byId['20'].disconnectedAt = Date.now() - 35_000;
 
 		await store.__ensureRtc('20');
 
@@ -2725,7 +2725,7 @@ describe('dcReady 响应式标记', () => {
 		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
 		store.byId['1'].initialized = true;
 		store.byId['1'].dcReady = false;
-		store.byId['1'].disconnectedAt = Date.now() - 10_000; // 长间隔
+		store.byId['1'].disconnectedAt = Date.now() - 35_000; // 长间隔
 
 		const fakeConn = { rtc: { isReady: true }, request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -3393,7 +3393,7 @@ describe('__refreshIfStale pluginInfo 刷新', () => {
 
 		store.setClaws([{ id: '95', name: 'Bot', online: true }]);
 		store.byId['95'].initialized = true;
-		store.byId['95'].disconnectedAt = Date.now() - 10_000;
+		store.byId['95'].disconnectedAt = Date.now() - 35_000;
 
 		store.__refreshIfStale('95');
 
@@ -3416,7 +3416,7 @@ describe('__refreshIfStale pluginInfo 刷新', () => {
 
 		store.setClaws([{ id: '96', name: 'Bot', online: true }]);
 		store.byId['96'].initialized = true;
-		store.byId['96'].disconnectedAt = Date.now() - 10_000;
+		store.byId['96'].disconnectedAt = Date.now() - 35_000;
 
 		// 不应抛出异常
 		expect(() => store.__refreshIfStale('96')).not.toThrow();

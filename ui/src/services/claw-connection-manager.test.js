@@ -11,7 +11,7 @@ vi.mock('./claw-connection.js', () => {
 		on() {}
 		off() {}
 	}
-	return { ClawConnection: MockClawConnection, BRIEF_DISCONNECT_MS: 5000 };
+	return { ClawConnection: MockClawConnection, BRIEF_DISCONNECT_MS: 30_000 };
 });
 
 vi.mock('./signaling-connection.js', () => ({

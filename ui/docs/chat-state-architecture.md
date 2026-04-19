@@ -206,7 +206,7 @@ reconcile 替换 messages 不会抖动——streaming 标记已清除，DOM 已�
 
 | 常量 | 值 | 含义 |
 |---|---|---|
-| `BRIEF_DISCONNECT_MS` | 5000 | 短暂抖动 vs 实质断连分界 |
+| `BRIEF_DISCONNECT_MS` | 30000 | 短暂抖动 vs 实质断连分界 |
 | `DEFAULT_REQUEST_TIMEOUT_MS` | 30000 | RPC 请求超时 |
 | `DEFAULT_CONNECT_TIMEOUT_MS` | 30000 | 连接超时 |
 
@@ -244,7 +244,7 @@ watcher 行为：
 
 `claws.store.__bridgeConn` 中记录 `disconnectedAt`。重连后计算 gap：
 
-- **gap < `BRIEF_DISCONNECT_MS`（5s）**：短暂抖动，仅 `connReady` watcher 刷新当前 chatStore
+- **gap < `BRIEF_DISCONNECT_MS`（30s）**：短暂抖动，仅 `connReady` watcher 刷新当前 chatStore
 - **gap >= `BRIEF_DISCONNECT_MS`**：实质断连，`__refreshIfStale` 触发 agents + sessions + topics 批量刷新（agents 优先，sessions/topics 并行）
 
 ### Capacitor 前台恢复

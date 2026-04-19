@@ -12,8 +12,8 @@ import { remoteLog } from './remote-log.js';
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** 默认连接等待超时（等待 DC 就绪） */
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
-/** 短暂抖动 vs 实质断连分界 */
-const BRIEF_DISCONNECT_MS = 5000;
+/** 短暂抖动 vs 实质断连分界（reconnect gap < 此值跳过 refresh，避免短抖动后无意义全量刷新） */
+const BRIEF_DISCONNECT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['ok', 'error']);
 
 // 导出常量供外部模块使用
