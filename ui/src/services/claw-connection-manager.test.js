@@ -186,6 +186,28 @@ describe('disconnectAll()', () => {
 		const mgr = useClawConnections();
 		expect(() => mgr.disconnectAll()).not.toThrow();
 	});
+
+	test('单个 disconnect 抛错不影响其余连接断开（错误隔离）+ 末尾 clear 兜底', () => {
+		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+		const mgr = useClawConnections();
+		const c1 = mgr.connect('bot-1');
+		const c2 = mgr.connect('bot-2');
+		const c3 = mgr.connect('bot-3');
+
+		// 让中间那个的 disconnect 抛错
+		c2.disconnect = () => { throw new Error('boom from disconnect'); };
+
+		expect(() => mgr.disconnectAll()).not.toThrow();
+
+		// c1、c3 仍被断开；若未隔离，c2 抛错会中断循环、c3 漏清
+		expect(c1.disconnected).toBe(true);
+		expect(c3.disconnected).toBe(true);
+		// 末尾的 __connections.clear() 兜底：即使 c2 抛错跳过了成功路径的 delete(key)，
+		// Map 也必须被清空，否则下一用户 connect(sameClawId) 会复用废实例
+		expect(mgr.size).toBe(0);
+		expect(debugSpy).toHaveBeenCalled();
+		debugSpy.mockRestore();
+	});
 });
 
 describe('getStates()', () => {

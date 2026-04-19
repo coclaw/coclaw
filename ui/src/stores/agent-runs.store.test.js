@@ -1056,6 +1056,33 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			expect(() => store.resetAll()).not.toThrow();
 		});
+
+		test('单个 run cleanup 抛错不影响其余 run 清理（错误隔离）', () => {
+			const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-a', runKey: 'k-a' });
+			registerRun(store, { runId: 'run-b', runKey: 'k-b' });
+			registerRun(store, { runId: 'run-c', runKey: 'k-c' });
+
+			// 让中间 run 的 __cleanupRun 抛错（模拟 URL.revokeObjectURL 边界异常等）
+			const origCleanup = store.__cleanupRun.bind(store);
+			const cleanupSpy = vi.spyOn(store, '__cleanupRun').mockImplementation((runId, reason) => {
+				if (runId === 'run-b') throw new Error('boom from cleanup');
+				return origCleanup(runId, reason);
+			});
+
+			expect(() => store.resetAll()).not.toThrow();
+
+			// a 和 c 都被清掉；若未隔离，循环从 b 处中断，c 会残留
+			expect(store.runs['run-a']).toBeUndefined();
+			expect(store.runs['run-c']).toBeUndefined();
+			// b 因为抛错未完成清理，仍残留（这是预期——隔离不掩盖失败项，只保护后续项）
+			expect(store.runs['run-b']).toBeDefined();
+			expect(cleanupSpy).toHaveBeenCalledTimes(3);
+			expect(debugSpy).toHaveBeenCalled();
+			cleanupSpy.mockRestore();
+			debugSpy.mockRestore();
+		});
 	});
 
 	// =====================================================================

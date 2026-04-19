@@ -51,11 +51,13 @@ export const chatStoreManager = {
 
 	/**
 	 * 登出清理：dispose 所有 chat/topic store 实例
-	 * 遍历前 Array.from(keys) 快照，避免 dispose 内部 delete 导致 iterator 跳条目
+	 * 遍历前 Array.from(keys) 快照，避免 dispose 内部 delete 导致 iterator 跳条目。
+	 * per-item try/catch：单个 dispose 抛错不影响其余实例清理（防止 tickTimer / streamingTimer 泄漏）。
 	 */
 	disposeAll() {
 		for (const key of Array.from(instances.keys())) {
-			this.dispose(key);
+			try { this.dispose(key); }
+			catch (err) { console.debug('[chatStoreMgr] dispose key=%s failed: %s', key, err?.message); }
 		}
 	},
 

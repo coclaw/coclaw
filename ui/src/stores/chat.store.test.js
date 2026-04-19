@@ -4531,6 +4531,19 @@ describe('useChatStore', () => {
 			expect(store.sending).toBe(false);
 		});
 
+		test('cleanup 主动 settle 挂起的 slash command promise（防止调用方 await 永久悬挂）', async () => {
+			const p = store.sendSlashCommand('/help');
+			expect(store.__slashCommandRunId).toBeTruthy();
+			expect(store.sending).toBe(true);
+
+			// 直接走 cleanup（模拟 dispose / logout 路径）
+			store.cleanup();
+
+			// promise 应被 resolve（而非永挂）
+			await expect(p).resolves.toBeUndefined();
+			expect(store.__slashCommandResolve).toBeNull();
+		});
+
 		test('忽略不匹配的 runId 事件', async () => {
 			const p = store.sendSlashCommand('/help');
 			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];

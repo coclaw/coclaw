@@ -16,6 +16,7 @@ import {
 import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
+import { closeAllRtcInstances } from '../services/webrtc-connection.js';
 import { clearRemoteLogBuffer } from '../services/remote-log.js';
 import { resetAuthExpiredThrottle } from '../services/http.js';
 import { useDraftStore } from './draft.store.js';
@@ -35,6 +36,12 @@ function applyUserPreferences(user) {
 	if (locale) {
 		setLocale(locale);
 	}
+}
+
+// logout 清理链单步隔离工具：任一步抛错只打 debug log，不中断后续清理
+function safeRun(label, fn) {
+	try { fn(); }
+	catch (err) { console.debug('[auth] logout step %s failed: %s', label, err?.message); }
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -110,33 +117,37 @@ export const useAuthStore = defineStore('auth', {
 					console.warn('[auth] logout failed:', this.errorMessage);
 				}
 			}
-			// 无论 API 成功/401/其他错误，均执行本地清理
+			// 无论 API 成功/401/其他错误，均执行本地清理。
+			// 每一步独立 safeRun 包裹：单步抛错不传染，保证后续资源一定被清理。
 			const draftStore = useDraftStore();
-			draftStore.persist();
+			safeRun('draft.persist', () => draftStore.persist());
 			this.user = null;
-			draftStore.onUserChanged(null);
-			syncThemeModeFromSettings(null);
+			safeRun('draft.onUserChanged', () => draftStore.onUserChanged(null));
+			safeRun('theme.reset', () => syncThemeModeFromSettings(null));
 			// 先 files.cancelAll：让 transferHandle.cancel 能借仍在线的 DC 下发 abort
-			useFilesStore().cancelAll();
+			safeRun('files.cancelAll', () => useFilesStore().cancelAll());
 			// agent runs：清 24h 兜底 timer 与 idle watcher，释放 blob URL，唤醒悬挂的 finalPromise
-			useAgentRunsStore().resetAll();
-			useClawConnections().disconnectAll();
-			useSignalingConnection().disconnect();
-			clearRemoteLogBuffer(); // 防止前一用户的未发送日志被下一用户的 WS 通道 flush 出去
-			resetAuthExpiredThrottle(); // 复位 401 节流窗口，避免跨用户误吞首个合法 401
+			safeRun('agentRuns.resetAll', () => useAgentRunsStore().resetAll());
+			safeRun('clawConns.disconnectAll', () => useClawConnections().disconnectAll());
+			// 补清未完成 init 的 rtc（此时 clawConn.__rtc === null，disconnectAll 碰不到）：
+			// 否则 15s 内同 clawId 重登会复用旧 rtc Promise，onReady 闭包指向旧 clawConn
+			safeRun('rtc.closeAll', () => closeAllRtcInstances());
+			safeRun('signaling.disconnect', () => useSignalingConnection().disconnect());
+			safeRun('remoteLog.clear', () => clearRemoteLogBuffer()); // 防止前一用户未发送日志 flush 到下一用户 WS 通道
+			safeRun('http.resetThrottle', () => resetAuthExpiredThrottle()); // 复位 401 节流窗口，避免跨用户误吞首个合法 401
 			// chat/topic store 实例逐个 dispose（cleanup() + $dispose()）
-			chatStoreManager.disposeAll();
-			useDashboardStore().$reset();
+			safeRun('chatStoreMgr.disposeAll', () => chatStoreManager.disposeAll());
+			safeRun('dashboard.$reset', () => useDashboardStore().$reset());
 			// admin SSE 强制关闭：$reset() 不会 close handle，直接清引用会泄漏 EventSource + 窗口监听器
-			useAdminStore().teardownStream();
-			__resetClawStoreInternals();
-			__resetSessionsInternals();
-			__resetTopicsInternals();
-			useSessionsStore().$reset();
-			useAgentsStore().$reset();
-			useTopicsStore().$reset();
-			useClawsStore().$reset();
-			useAdminStore().$reset();
+			safeRun('admin.teardownStream', () => useAdminStore().teardownStream());
+			safeRun('claws.__resetInternals', () => __resetClawStoreInternals());
+			safeRun('sessions.__resetInternals', () => __resetSessionsInternals());
+			safeRun('topics.__resetInternals', () => __resetTopicsInternals());
+			safeRun('sessions.$reset', () => useSessionsStore().$reset());
+			safeRun('agents.$reset', () => useAgentsStore().$reset());
+			safeRun('topics.$reset', () => useTopicsStore().$reset());
+			safeRun('claws.$reset', () => useClawsStore().$reset());
+			safeRun('admin.$reset', () => useAdminStore().$reset());
 			console.log('[auth] logged out');
 			this.loading = false;
 		},

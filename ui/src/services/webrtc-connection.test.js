@@ -31,6 +31,7 @@ import {
 	initRtc,
 	initRtcForClaw,
 	closeRtcForClaw,
+	closeAllRtcInstances,
 	__resetRtcInstances,
 	__getRtcInstance,
 } from './webrtc-connection.js';
@@ -948,6 +949,120 @@ describe('initRtcForClaw / closeRtcForClaw', () => {
 
 	test('closeRtcForClaw 对不存在的 clawId 无影响', () => {
 		expect(() => closeRtcForClaw('nonexistent')).not.toThrow();
+	});
+
+	test('closeAllRtcInstances 关闭全部实例并清空 Map（logout 场景）', async () => {
+		const clawConn1 = createMockBotConn();
+		const clawConn2 = createMockBotConn();
+		const { httpClient } = await import('./http.js');
+		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+
+		try {
+			const p1 = initRtcForClaw('bot1', clawConn1);
+			await vi.advanceTimersByTimeAsync(0);
+			const dc1 = MockRTCPeerConnection.lastInstance.__channels[0];
+			dc1.readyState = 'open';
+			dc1.onopen();
+			await p1;
+
+			// 第二个 rtc 故意停留在 init 中（DC 未 open）——模拟 logout 时尚未完成初始化的孤儿
+			initRtcForClaw('bot2', clawConn2);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(__getRtcInstance('bot1')).toBeTruthy();
+			expect(__getRtcInstance('bot2')).toBeTruthy();
+
+			const rtc2 = __getRtcInstance('bot2');
+			const closeSpy = vi.spyOn(rtc2, 'close');
+
+			closeAllRtcInstances();
+
+			// 包括未完成 init 的 bot2 也被 close + 从 Map 移除
+			expect(closeSpy).toHaveBeenCalledTimes(1);
+			expect(__getRtcInstance('bot1')).toBeUndefined();
+			expect(__getRtcInstance('bot2')).toBeUndefined();
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+		}
+	});
+
+	test('closeAllRtcInstances 后 fallbackTimer 不再误删下一用户同 clawId 的 rtc 条目', async () => {
+		const clawConn1 = createMockBotConn();
+		const { httpClient } = await import('./http.js');
+		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+
+		try {
+			// 用户 A：init 启动但未完成（DC 未 open），fallbackTimer 挂起
+			initRtcForClaw('bot1', clawConn1);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(__getRtcInstance('bot1')).toBeTruthy();
+
+			// 用户 A logout：closeAllRtcInstances 应同步触发 rtc.onStateChange('closed')
+			// 路径清掉 fallbackTimer；Map 也被清空
+			closeAllRtcInstances();
+			expect(__getRtcInstance('bot1')).toBeUndefined();
+
+			// 用户 B 马上用同 clawId 重登并让 DC 成功 open（清掉自己的 fallbackTimer）
+			const clawConnB = createMockBotConn();
+			const pB = initRtcForClaw('bot1', clawConnB);
+			await vi.advanceTimersByTimeAsync(0);
+			const dcB = MockRTCPeerConnection.lastInstance.__channels[0];
+			dcB.readyState = 'open';
+			dcB.onopen();
+			await pB;
+			const newRtc = __getRtcInstance('bot1');
+			expect(newRtc).toBeTruthy();
+
+			// 推进 30s——若 onStateChange('closed') 分支漏清 fallbackTimer，
+			// 旧 rtc 的 timer 会 fire、其闭包里 rtcInstances.delete('bot1') 删掉新 rtc
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(__getRtcInstance('bot1')).toBe(newRtc);
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+		}
+	});
+
+	test('closeAllRtcInstances 单个 rtc.close 抛错不影响其余清理', async () => {
+		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+		const clawConn1 = createMockBotConn();
+		const clawConn2 = createMockBotConn();
+		const { httpClient } = await import('./http.js');
+		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+
+		try {
+			initRtcForClaw('bot1', clawConn1);
+			await vi.advanceTimersByTimeAsync(0);
+			initRtcForClaw('bot2', clawConn2);
+			await vi.advanceTimersByTimeAsync(0);
+
+			const rtc1 = __getRtcInstance('bot1');
+			const rtc2 = __getRtcInstance('bot2');
+			// 让 rtc1.close 抛错
+			vi.spyOn(rtc1, 'close').mockImplementation(() => { throw new Error('boom from close'); });
+			const close2Spy = vi.spyOn(rtc2, 'close');
+
+			expect(() => closeAllRtcInstances()).not.toThrow();
+
+			expect(close2Spy).toHaveBeenCalledTimes(1);
+			// Map 仍被清空（rtc1 抛错不阻塞 rtc2 + clear）
+			expect(__getRtcInstance('bot1')).toBeUndefined();
+			expect(__getRtcInstance('bot2')).toBeUndefined();
+			expect(debugSpy).toHaveBeenCalled();
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+			debugSpy.mockRestore();
+		}
 	});
 });
 

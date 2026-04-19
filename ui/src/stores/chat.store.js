@@ -1096,8 +1096,17 @@ export function createChatStore(storeKey, opts = {}) {
 					clearTimeout(this.__cancelling.tickTimer);
 					this.__cancelling = null;
 				}
+				// 主动 settle 挂起的 slash command promise，防止 dispose 路径下
+				// 调用方 await 永久悬挂（正常 timeout/RPC-error/event-final 路径
+				// 都在调用 __cleanupSlashCommand 之后显式 reject/resolve，不经此处）。
+				// 快照在 __cleanupSlashCommand 之前取，避免被它清空。
+				const pendingSlashResolve = this.__slashCommandResolve;
 				// 清理斜杠命令状态
 				this.__cleanupSlashCommand(this.__getConnection());
+				if (pendingSlashResolve) {
+					try { pendingSlashResolve(); }
+					catch (err) { console.debug('[chat] slash resolve on cleanup failed: %s', err?.message); }
+				}
 			},
 
 			/**

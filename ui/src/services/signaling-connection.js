@@ -601,6 +601,12 @@ export class SignalingConnection {
 		if (ws) {
 			try { ws.close(1000, 'disconnect'); } catch (err) { console.debug('[SigConn] cleanup ws.close failed: %s', err?.message); }
 		}
+		// 单例跨 login 生命周期，必须清 connId 映射：
+		// 正常路径下每个 clawConn.disconnect 会走 releaseConnId 删除对应 entry；
+		// 但若 ClawConnMgr.disconnectAll 的 per-item try/catch 吞了异常，
+		// 映射残留会让下一用户用到跨用户的旧 connId 与 server 路由
+		this.__connIds.clear();
+		this.__connIdToClawId.clear();
 	}
 }
 

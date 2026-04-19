@@ -262,6 +262,27 @@ describe('chatStoreManager', () => {
 			expect(() => chatStoreManager.disposeAll()).not.toThrow();
 			expect(chatStoreManager.size).toBe(0);
 		});
+
+		test('单个 dispose 抛错不影响其余 store 清理（错误隔离）', () => {
+			const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+			const s1 = chatStoreManager.get('session:1:main', { clawId: '1', agentId: 'main' });
+			const s2 = chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
+			const s3 = chatStoreManager.get('topic:t2', { clawId: '1', agentId: 'main' });
+
+			// 让中间那个 store 的 dispose 抛错
+			vi.spyOn(s2, 'dispose').mockImplementation(() => { throw new Error('boom from dispose'); });
+			const dispose1Spy = vi.spyOn(s1, 'dispose');
+			const dispose3Spy = vi.spyOn(s3, 'dispose');
+
+			expect(() => chatStoreManager.disposeAll()).not.toThrow();
+
+			// s1 和 s3 仍被 dispose；若未隔离，s2 抛错会中断循环、s3 漏清
+			expect(dispose1Spy).toHaveBeenCalledOnce();
+			expect(dispose3Spy).toHaveBeenCalledOnce();
+			// debug log 至少出现一次
+			expect(debugSpy).toHaveBeenCalled();
+			debugSpy.mockRestore();
+		});
 	});
 
 	// =====================================================================

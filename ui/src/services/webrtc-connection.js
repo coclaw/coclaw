@@ -88,8 +88,12 @@ export function initRtc(clawId, clawConn, callbacks = {}) {
 		rtc.onStateChange = () => {
 			callbacks.onRtcStateChange?.(rtc.state, rtc.transportInfo);
 
-			// state === 'failed' 仅在所有恢复尝试耗尽后才被设置（rtc 内部 close 已完成）
-			if (rtc.state === 'failed') {
+			// 'failed'（所有恢复尝试耗尽）与 'closed'（外部 close：closeRtcForClaw /
+			// closeAllRtcInstances / clawConn.disconnect）都终结 init：
+			// 清 fallbackTimer、从 Map 删、让 clawConn 释放对 rtc 的引用、settle 为 'failed'
+			// 若不覆盖 'closed'，外部 close 后 fallbackTimer 仍会 15s 后 fire，
+			// 其闭包里的 `rtcInstances.delete(clawId)` 会误删下一用户同 clawId 的新 rtc 条目
+			if (rtc.state === 'failed' || rtc.state === 'closed') {
 				clearTimeout(fallbackTimer);
 				rtcInstances.delete(clawId);
 				clawConn.clearRtc();
@@ -124,11 +128,22 @@ export function closeRtcForClaw(clawId) {
 	}
 }
 
-/** 仅供测试：重置所有实例 */
-export function __resetRtcInstances() {
-	for (const rtc of rtcInstances.values()) rtc.close();
+/**
+ * 关闭并清空所有 RTC 实例（logout 场景用）。
+ * 场景：未完成 init 的 rtc 仍在 rtcInstances 中挂着 fallbackTimer + clawConn 闭包引用。
+ * clawConnection.disconnect() 只能处理已 setRtc 的活跃 rtc，碰不到初始化中的漏网之鱼。
+ * 若不清理，15s 内同 clawId 重登会复用旧 rtc Promise，onReady 闭包指向已废弃的 clawConn。
+ */
+export function closeAllRtcInstances() {
+	for (const rtc of rtcInstances.values()) {
+		try { rtc.close(); }
+		catch (err) { console.debug('[rtc] closeAll rtc.close failed: %s', err?.message); }
+	}
 	rtcInstances.clear();
 }
+
+/** 仅供测试：重置所有实例（与 closeAllRtcInstances 共享语义，保留别名以兼容既有测试） */
+export const __resetRtcInstances = closeAllRtcInstances;
 
 /** 仅供测试：获取实例 */
 export function __getRtcInstance(clawId) {

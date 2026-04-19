@@ -158,6 +158,21 @@ describe('SignalingConnection – disconnect()', () => {
 		vi.advanceTimersByTime(60_000);
 		expect(MockWebSocket.instances.length).toBe(1); // 未创建新 WS
 	});
+
+	test('disconnect 清空 connId 映射（防异常路径下跨用户复用旧 connId）', () => {
+		const { conn } = makeConnected();
+		const id1 = conn.getOrCreateConnId('bot1');
+		const id2 = conn.getOrCreateConnId('bot2');
+		expect(id1).toMatch(/^c_/);
+		expect(id2).toMatch(/^c_/);
+
+		conn.disconnect();
+
+		// 再次 getOrCreateConnId 应生成全新的 connId（旧映射已清）
+		conn.connect();
+		const newId1 = conn.getOrCreateConnId('bot1');
+		expect(newId1).not.toBe(id1);
+	});
 });
 
 describe('SignalingConnection – connId 管理', () => {

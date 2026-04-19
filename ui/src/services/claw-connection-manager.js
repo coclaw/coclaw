@@ -72,12 +72,19 @@ class ClawConnectionManager {
 		}
 	}
 
-	/** 断开所有连接 */
+	/**
+	 * 断开所有连接。
+	 * per-item try/catch：单个 disconnect 抛错（如 rtc.close 或 releaseConnId 路径异常）
+	 * 不影响其余 claw 连接的释放。
+	 * 末尾无条件 clear()：确保因异常未经 delete 的残留实例不会跨用户复用（single-instance 语义）
+	 */
 	disconnectAll() {
 		console.debug('[ClawConnMgr] disconnectAll count=%d', this.__connections.size);
 		for (const key of [...this.__connections.keys()]) {
-			this.disconnect(key);
+			try { this.disconnect(key); }
+			catch (err) { console.debug('[ClawConnMgr] disconnect key=%s failed: %s', key, err?.message); }
 		}
+		this.__connections.clear();
 	}
 
 	/**

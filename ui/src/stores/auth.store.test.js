@@ -34,6 +34,7 @@ const {
 	mockAgentRunsResetAll,
 	mockChatStoreDisposeAll,
 	mockDashboardReset,
+	mockCloseAllRtcInstances,
 } = vi.hoisted(() => {
 	const order = [];
 	return {
@@ -52,6 +53,7 @@ const {
 		mockAgentRunsResetAll: vi.fn(() => { order.push('agentRunsResetAll'); }),
 		mockChatStoreDisposeAll: vi.fn(() => { order.push('chatStoreDisposeAll'); }),
 		mockDashboardReset: vi.fn(() => { order.push('dashboardReset'); }),
+		mockCloseAllRtcInstances: vi.fn(() => { order.push('rtcCloseAll'); }),
 	};
 });
 
@@ -62,6 +64,10 @@ vi.mock('../services/claw-connection-manager.js', () => ({
 
 vi.mock('../services/signaling-connection.js', () => ({
 	useSignalingConnection: () => ({ disconnect: mockSigDisconnect, state: 'connected' }),
+}));
+
+vi.mock('../services/webrtc-connection.js', () => ({
+	closeAllRtcInstances: (...args) => mockCloseAllRtcInstances(...args),
 }));
 
 vi.mock('../services/remote-log.js', () => ({
@@ -389,7 +395,7 @@ describe('auth store', () => {
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
 	});
 
-	test('logout 按顺序清理 files → agent runs → conns → sig → remote log → throttle → chat stores → dashboard → admin SSE', async () => {
+	test('logout 按顺序清理 files → agent runs → conns → rtc → sig → remote log → throttle → chat stores → dashboard → admin SSE', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -402,6 +408,7 @@ describe('auth store', () => {
 		expect(mockFilesCancelAll).toHaveBeenCalledTimes(1);
 		expect(mockAgentRunsResetAll).toHaveBeenCalledTimes(1);
 		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mockCloseAllRtcInstances).toHaveBeenCalledTimes(1);
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
 		expect(mockChatStoreDisposeAll).toHaveBeenCalledTimes(1);
 		expect(mockDashboardReset).toHaveBeenCalledTimes(1);
@@ -409,12 +416,14 @@ describe('auth store', () => {
 
 		// 顺序：files.cancelAll 必须在 disconnectAll 之前（让 transfer abort 有机会下发）
 		// agent runs.resetAll 在 disconnectAll 之前（清 timer 不依赖网络）
+		// rtc.closeAll 紧跟 disconnectAll：补清未完成 init 的 rtc（clawConn.__rtc 为 null，disconnectAll 碰不到）
 		// chat stores.disposeAll 在 sig.disconnect 之后（先断连再 cleanup 避免 off 到 null conn）
 		// admin.teardownStream 在 admin.$reset 之前（否则 $reset 直接清引用会泄漏 EventSource）
 		expect(logoutCallOrder).toEqual([
 			'filesCancelAll',
 			'agentRunsResetAll',
 			'disconnectAll',
+			'rtcCloseAll',
 			'sigDisconnect',
 			'clearRemoteLogBuffer',
 			'resetAuthExpiredThrottle',
@@ -422,6 +431,51 @@ describe('auth store', () => {
 			'dashboardReset',
 			'adminTeardownStream',
 		]);
+	});
+
+	test('logout 某一步清理钩子抛错时，后续钩子仍被调用（错误隔离）', async () => {
+		// 场景：任意一步抛同步异常（Capacitor/polyfill 边界 case），
+		// 应由 safeRun 隔离并降级为 debug log，后续步骤照常执行。
+		const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+		logout.mockResolvedValue();
+		mockFilesCancelAll.mockClear();
+		mockAgentRunsResetAll.mockClear();
+		mockConnManager.disconnectAll.mockClear();
+		mockCloseAllRtcInstances.mockClear();
+		mockSigDisconnect.mockClear();
+		mockChatStoreDisposeAll.mockClear();
+		mockDashboardReset.mockClear();
+		mockClearRemoteLogBuffer.mockClear();
+		mockResetAuthExpiredThrottle.mockClear();
+
+		// 让 files.cancelAll 抛错，验证剩余链条不被打断
+		mockFilesCancelAll.mockImplementationOnce(() => {
+			logoutCallOrder.push('filesCancelAll');
+			throw new Error('boom from cancelAll');
+		});
+
+		const store = useAuthStore();
+		store.user = { id: '9' };
+		const adminStore = useAdminStore();
+		const teardownSpy = vi.spyOn(adminStore, 'teardownStream');
+
+		await store.logout();
+
+		// 后续每一个清理钩子都应被调用——哪怕早期抛错
+		expect(mockFilesCancelAll).toHaveBeenCalledTimes(1);
+		expect(mockAgentRunsResetAll).toHaveBeenCalledTimes(1);
+		expect(mockConnManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mockCloseAllRtcInstances).toHaveBeenCalledTimes(1);
+		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
+		expect(mockChatStoreDisposeAll).toHaveBeenCalledTimes(1);
+		expect(mockDashboardReset).toHaveBeenCalledTimes(1);
+		expect(teardownSpy).toHaveBeenCalledTimes(1);
+		expect(mockClearRemoteLogBuffer).toHaveBeenCalledTimes(1);
+		expect(mockResetAuthExpiredThrottle).toHaveBeenCalledTimes(1);
+		expect(store.user).toBeNull();
+		// debug log 至少记录了那一次失败
+		expect(debugSpy).toHaveBeenCalled();
+		debugSpy.mockRestore();
 	});
 
 	test('logout 清空 remote-log 缓冲区，防止跨用户 flush', async () => {

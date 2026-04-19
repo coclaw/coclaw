@@ -499,11 +499,14 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 
 		/**
 		 * 登出清理：遍历所有 run 走完整 cleanup 流程
-		 * 不能用 $reset()：state 替换不会 clearTimeout 已排期的 __timer 和 __watcher.idleTimer
+		 * 不能用 $reset()：state 替换不会 clearTimeout 已排期的 __timer 和 __watcher.idleTimer。
+		 * per-item try/catch：单个 cleanup 抛错（如 URL.revokeObjectURL 边界异常）
+		 * 不影响其余 run 的 timer 清理。
 		 */
 		resetAll() {
 			for (const runId of Object.keys(this.runs)) {
-				this.__cleanupRun(runId, 'logout');
+				try { this.__cleanupRun(runId, 'logout'); }
+				catch (err) { console.debug('[agentRuns] cleanup runId=%s failed: %s', runId, err?.message); }
 			}
 		},
 	},
