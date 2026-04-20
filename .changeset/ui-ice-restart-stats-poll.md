@@ -31,3 +31,24 @@ disambiguation) and handles the "old pair already failed" scenario as
 before. If `getStats()` cannot produce a pre-restart ufrag we disable
 the stats path for that cycle (no comparison baseline → no false
 positives).
+
+Additional hardening from a second deep-review pass:
+
+- `__checkRestartViaStats` now captures `epochAtEntry` and rejects
+  cross-epoch late ticks after the `getStats` await (symmetric with
+  the snap.then epoch guard). Closes a narrow TOCTOU where the event
+  path wins a restart and an immediate `triggerRestart` opens a new
+  epoch while the previous tick's getStats is still in flight.
+- Multi-nominated-pair handling: the check now aggregates **all**
+  nominated+succeeded pairs' local candidates and declares success if
+  **any** local ufrag differs from the snapshot. The earlier
+  "first-match" loop could stay pinned on the stale pair during the
+  short migration window when the browser reports both old and new
+  pair as nominated+succeeded simultaneously.
+- SDP-ufrag fallback for cross-browser compatibility: when
+  `RTCIceCandidateStats.usernameFragment` is unavailable (some Safari
+  and older Firefox builds), both snapshot and check now fall back to
+  parsing `a=ice-ufrag:` from `pc.localDescription.sdp`, which the SDP
+  spec mandates. Snapshot captures the SDP ufrag synchronously before
+  the `getStats` await, so it reflects the pre-restart SDP regardless
+  of when the stats resolve.

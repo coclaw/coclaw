@@ -26,6 +26,17 @@ const ICE_RESTART_SAFETY_MS = 30_000;
 /** ICE restart stats 轮询间隔：覆盖"旧 pair 还活着、connectionState 从未跳变"的场景 */
 const ICE_RESTART_STATS_POLL_MS = 500;
 
+/**
+ * 从 SDP 文本中提取 a=ice-ufrag 行的值。
+ * ICE spec 强制 ufrag 必填，因此 localDescription.sdp 是跨浏览器稳定的 ufrag 来源，
+ * 用于当 RTCIceCandidateStats.usernameFragment 未暴露时（部分 Safari/Firefox 版本）的兜底。
+ */
+function parseIceUfragFromSdp(sdp) {
+	if (!sdp) return null;
+	const m = sdp.match(/^a=ice-ufrag:(\S+)/m);
+	return m ? m[1] : null;
+}
+
 /** DC 应用层保活：间隔（probe 完成后到下一次 probe 发起） */
 const DC_KEEPALIVE_INTERVAL_MS = 30_000;
 /** DC 应用层保活：单次 probe 超时（拥塞场景由活动宽限兜底，此处只管正常检测） */
@@ -1075,17 +1086,25 @@ export class WebRtcConnection {
 	 * @private 读取 pc 当前 selected pair 的 local candidate ufrag
 	 *
 	 * ICE spec 强保证每次 restart 使用新的 ufrag/pwd，因此 pre-restart ufrag
-	 * 可作为"新路径已生效"的可靠基准。读不到时返回 null，上层应退化为仅事件路径。
+	 * 可作为"新路径已生效"的可靠基准。
+	 *
+	 * 优先从 getStats 的 local-candidate.usernameFragment 读；若浏览器未暴露
+	 * 该字段（部分 Safari/老 Firefox），退回 pc.localDescription.sdp 的
+	 * a=ice-ufrag（SDP spec 必填，跨浏览器稳定）。SDP 解析是**同步**的，
+	 * 先于 await 执行；调用点 __attemptRestart 在 createOffer 之前发起 snap，
+	 * 因此此处捕获到的 localDescription 一定是 restart 前的旧 SDP。
 	 * @param {RTCPeerConnection} pc
 	 * @returns {Promise<string|null>}
 	 */
 	async __snapshotSelectedUfrag(pc) {
 		if (!pc || typeof pc.getStats !== 'function') return null;
+		// 同步捕获旧 SDP 的 ufrag（在 getStats await 之前）
+		const sdpUfrag = parseIceUfragFromSdp(pc.localDescription?.sdp);
 		let report;
 		try {
 			report = await pc.getStats();
 		} catch {
-			return null;
+			return sdpUfrag;
 		}
 		if (this.__pc !== pc) return null;
 		let pair = null;
@@ -1095,13 +1114,16 @@ export class WebRtcConnection {
 				break;
 			}
 		}
-		if (!pair) return null;
-		for (const stat of report.values()) {
-			if (stat.type === 'local-candidate' && stat.id === pair.localCandidateId) {
-				return stat.usernameFragment ?? null;
+		if (pair) {
+			for (const stat of report.values()) {
+				if (stat.type === 'local-candidate' && stat.id === pair.localCandidateId) {
+					if (stat.usernameFragment) return stat.usernameFragment;
+					break;
+				}
 			}
 		}
-		return null;
+		// getStats 未暴露 usernameFragment（或无 pair）→ SDP 兜底
+		return sdpUfrag;
 	}
 
 	/**
@@ -1138,38 +1160,59 @@ export class WebRtcConnection {
 	async __checkRestartViaStats(pc) {
 		const snap = this.__restartUfragSnap;
 		if (!snap) return;
+		// 与 snap.then 对称的跨 epoch 护栏：await 期间另一路径若赢下当前 restart
+		// 并立即 triggerRestart 进入下一 epoch，本 tick 局部 snap 就变成"上一
+		// epoch 的旧 ufrag"，对新 epoch 做比较是错判。epoch guard 使其静默早退。
+		const epochAtEntry = this.__restartEpoch;
 		let report;
 		try {
 			report = await pc.getStats();
 		} catch {
 			return;
 		}
+		if (this.__restartEpoch !== epochAtEntry) return;
 		if (this.__pc !== pc || this.__state !== 'restarting') return;
-		let pair = null;
+		// 聚合所有 nominated+succeeded pair 的 localCandidateId：migration 窗口内
+		// 浏览器可能同时报告旧+新两个 pair 都满足条件，"首个命中即 break"会卡在
+		// 旧 pair 导致永不判成功。正确做法是只要**任一** nominated pair 的 local
+		// ufrag ≠ snap 即视为新路径生效。
+		const nominatedLocalIds = new Set();
 		for (const stat of report.values()) {
 			if (stat.type === 'candidate-pair' && stat.nominated && stat.state === 'succeeded') {
-				pair = stat;
-				break;
+				nominatedLocalIds.add(stat.localCandidateId);
 			}
 		}
-		if (!pair) return;
-		let ufrag = null;
+		if (nominatedLocalIds.size === 0) return;
+		let resolvedAny = false;
+		let newUfrag = null;
 		for (const stat of report.values()) {
-			if (stat.type === 'local-candidate' && stat.id === pair.localCandidateId) {
-				ufrag = stat.usernameFragment ?? null;
-				break;
+			if (stat.type === 'local-candidate' && nominatedLocalIds.has(stat.id)) {
+				const u = stat.usernameFragment ?? null;
+				if (u) {
+					resolvedAny = true;
+					if (u !== snap) { newUfrag = u; break; }
+				}
 			}
 		}
-		if (!ufrag) {
-			// 浏览器未在 local-candidate 上暴露 usernameFragment → stats 路径本 epoch 无法判定；
-			// 事件路径仍会兜底。每 epoch 只打一次，避免 poll 每 500ms 刷日志
-			if (!this.__restartUfragMissingLogged) {
-				this.__restartUfragMissingLogged = true;
-				this.__log('warn', 'ICE restart stats-poll: local-candidate.usernameFragment unavailable, event path only');
+		if (!resolvedAny) {
+			// getStats 未暴露任何 usernameFragment（Safari/老 Firefox）→ SDP 兜底。
+			// 该时刻 pc.localDescription 可能是：(a) restart 的新 offer（已 setLocalDescription）
+			// → 新 ufrag，与 snap 不等 → 判成功；(b) 仍是 restart 前的旧 SDP（createOffer/
+			// setLocalDescription 尚未完成）→ 与 snap 相等 → 静默等下一 tick。不会误报。
+			const sdpUfrag = parseIceUfragFromSdp(pc.localDescription?.sdp);
+			if (!sdpUfrag) {
+				// usernameFragment 和 SDP ufrag 都读不到——SDP spec 要求 ufrag 必填，
+				// 此分支理论上不应发生；留 warn 便于现场排查
+				if (!this.__restartUfragMissingLogged) {
+					this.__restartUfragMissingLogged = true;
+					this.__log('warn', 'ICE restart stats-poll: usernameFragment and SDP ufrag unavailable, event path only');
+				}
+				return;
 			}
-			return;
+			if (sdpUfrag === snap) return;
+			newUfrag = sdpUfrag;
 		}
-		if (ufrag === snap) return;
+		if (!newUfrag) return;
 		// 新路径已选中且生效 → 与事件路径对齐的状态转移
 		this.__log('info', 'ICE restart succeeded via=stats');
 		this.__clearRestartState();

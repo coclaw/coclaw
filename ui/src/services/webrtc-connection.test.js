@@ -3081,56 +3081,114 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('stats 轮询：跨 epoch 迟到的 snap.then 不污染新 epoch', async () => {
+	test('stats 轮询：跨 epoch 迟到的 snap.then 不污染新 epoch（即使新 epoch 处于 restarting）', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
-		// 让第一次 snapshot 的 getStats 挂起
-		let resolveFirstSnap;
-		const originalGetStats = pc.getStats.bind(pc);
-		pc.getStats = () => new Promise((r) => { resolveFirstSnap = r; });
+		// E1 snap 的 getStats 挂起
+		let resolveE1Snap;
+		pc.getStats = () => new Promise((r) => { resolveE1Snap = r; });
 
-		pc.__statsReport = new Map([
-			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
-			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'OLD' }],
-		]);
-		rtc.triggerRestart('test');
+		rtc.triggerRestart('e1');
 		await vi.advanceTimersByTimeAsync(0);
-		// 此时 snap 还挂在 promise 里，__restartUfragSnap 仍是 null
 		expect(rtc.__restartUfragSnap).toBeNull();
-		const epochBefore = rtc.__restartEpoch;
+		const epochAtE1 = rtc.__restartEpoch;
 
-		// 事件路径直接成功 → 进入下一 epoch
+		// 事件路径先成功（E1 → 进入下一 epoch，state=connected）
 		pc.connectionState = 'connected';
 		pc.onconnectionstatechange();
 		expect(rtc.state).toBe('connected');
-		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+		expect(rtc.__restartEpoch).toBe(epochAtE1 + 1);
 
-		// 恢复 getStats，让挂起的 snap 以 'OLD' resolve
-		pc.getStats = originalGetStats;
-		resolveFirstSnap(new Map([
+		// 立即再次 triggerRestart 进入 E3 的 restarting；新 snap 的 getStats 也挂起（不关心 resolver）
+		pc.getStats = () => new Promise(() => {});
+		rtc.triggerRestart('e3');
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		// triggerRestart 自身不递增 epoch（只有 __clearRestartState 会）；事件成功递增过一次
+		expect(rtc.__restartEpoch).toBe(epochAtE1 + 1);
+		expect(rtc.__restartUfragSnap).toBeNull(); // E3 snap 未到
+
+		// E1 的旧 snap 现在 resolve，返回 'E1-OLD'
+		// 关键点：此时 (pc 同) 且 (state==='restarting')——如果 epoch guard 缺失，
+		// 旧 E1 snap 会被误写入 E3 的 __restartUfragSnap；epoch guard 生效则拒之。
+		resolveE1Snap(new Map([
 			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
-			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'OLD' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'E1-OLD' }],
 		]));
 		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
 
-		// epoch 已变 → 旧 snap.then 被拒绝，不写 __restartUfragSnap，不启 poll
+		// 没被污染：E3 snap 仍未就位
 		expect(rtc.__restartUfragSnap).toBeNull();
 		expect(rtc.__restartPollTimer).toBeNull();
 
 		rtc.close();
 	});
 
-	test('stats 轮询：ufrag 字段缺失 → warn 日志每 epoch 只打一次', async () => {
+	test('stats 轮询：check tick 跨 epoch TOCTOU——await getStats 期间 epoch 推进不误判', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'E1-OLD' }],
+		]);
+		rtc.triggerRestart('e1');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartUfragSnap).toBe('E1-OLD');
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		// 切挂起版 getStats，让下一次 check tick 挂起
+		let resolveCheckTick;
+		pc.getStats = () => new Promise((r) => { resolveCheckTick = r; });
+
+		// 触发 poll tick → __checkRestartViaStats 捕获 epochAtEntry，await getStats 挂起
+		await vi.advanceTimersByTimeAsync(500);
+		const savedCheckResolver = resolveCheckTick;
+
+		// 切回非挂起版 getStats，保证事件路径/新 triggerRestart 里的 getStats 正常 resolve
+		pc.getStats = async () => pc.__statsReport ?? new Map();
+		pc.__statsReport = new Map();
+
+		// 事件路径赢下当前 restart → __clearRestartState 里 epoch++，state=connected
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('connected');
+
+		// 立即再次 triggerRestart 进入新 epoch 的 restarting（新 snap 取不到 ufrag → null）
+		rtc.triggerRestart('e3');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartUfragSnap).toBeNull();
+
+		// E1 的 check tick 现在 resolve，返回"新 ufrag"。
+		// 关键：local const snap='E1-OLD'，pc 同、state='restarting' 守卫都成立；
+		// 若无 epoch guard 会把当前 E3 误判成功（state→connected）；epoch guard 拦下。
+		savedCheckResolver(new Map([
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
+			['lc2', { type: 'local-candidate', id: 'lc2', usernameFragment: 'E1-NEW' }],
+		]));
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting'); // 未被误触 connected
+
+		rtc.close();
+	});
+
+	test('stats 轮询：ufrag 字段缺失且 SDP 也读不到 → warn 每 epoch 只打一次、切 epoch 后可再 warn', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		// 让 localDescription.sdp 不含 a=ice-ufrag，阻断 SDP fallback，强制走 warn 路径
+		pc.localDescription = { type: 'offer', sdp: 'mock-sdp-no-ufrag' };
 		pc.__statsReport = new Map([
 			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
 			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
 		]);
-		rtc.triggerRestart('test');
+		rtc.triggerRestart('e1');
 		await vi.advanceTimersByTimeAsync(0);
 		await vi.advanceTimersByTimeAsync(0);
 
-		// poll 后 stats 的新 pair 没有 usernameFragment 字段（Safari 某些版本场景）
+		// poll 后 stats 的新 pair 没有 usernameFragment 字段
 		pc.__statsReport = new Map([
 			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
 			['lc2', { type: 'local-candidate', id: 'lc2' }], // 无 usernameFragment
@@ -3139,18 +3197,99 @@ describe('WebRtcConnection — ICE restart', () => {
 		const { remoteLog } = await import('./remote-log.js');
 		remoteLog.mockClear();
 
-		// 多次 poll tick
-		await vi.advanceTimersByTimeAsync(500);
+		// 多次 poll tick（同一 epoch 内）→ 只 warn 一次
+		for (let i = 0; i < 3; i++) {
+			await vi.advanceTimersByTimeAsync(500);
+			await vi.advanceTimersByTimeAsync(0);
+		}
+		let warnLogs = (await getRemoteLogCalls()).filter((s) => /ufrag unavailable/.test(s));
+		expect(warnLogs).toHaveLength(1);
+		expect(rtc.state).toBe('restarting');
+
+		// 推进到下一个 epoch：事件路径走失败 + 再 trigger restart → 新 epoch
+		rtc.__clearRestartState(); // 模拟走任意 __clearRestartState 路径：epoch++，missingLogged flag 重置
+		rtc.__setState('connected');
+		// 重新 triggerRestart → 新 epoch 的 restarting（snap 也将拿不到 ufrag）
+		pc.__statsReport = new Map([
+			['cp3', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc3' }],
+			['lc3', { type: 'local-candidate', id: 'lc3', usernameFragment: 'C' }],
+		]);
+		remoteLog.mockClear();
+		rtc.triggerRestart('e2');
 		await vi.advanceTimersByTimeAsync(0);
-		await vi.advanceTimersByTimeAsync(500);
 		await vi.advanceTimersByTimeAsync(0);
+		// 进入第二 epoch 后 poll 的 stats 再次没有 usernameFragment
+		pc.__statsReport = new Map([
+			['cp4', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc4' }],
+			['lc4', { type: 'local-candidate', id: 'lc4' }],
+		]);
+		for (let i = 0; i < 3; i++) {
+			await vi.advanceTimersByTimeAsync(500);
+			await vi.advanceTimersByTimeAsync(0);
+		}
+		warnLogs = (await getRemoteLogCalls()).filter((s) => /ufrag unavailable/.test(s));
+		// 新 epoch 重置了 missingLogged flag → 再次 warn 一次
+		expect(warnLogs).toHaveLength(1);
+
+		rtc.close();
+	});
+
+	test('stats 轮询：SDP ufrag fallback（usernameFragment 缺失但 SDP 可读）→ 判成功', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		// snap 阶段：localDescription.sdp 是"旧" ufrag
+		pc.localDescription = { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:OLDF\r\n' };
+		// stats 的 usernameFragment 为空（模拟 Safari / 老 Firefox 场景）
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1' }], // 无 usernameFragment
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		// snap 应通过 SDP fallback 拿到 'OLDF'
+		expect(rtc.__restartUfragSnap).toBe('OLDF');
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		// restart 完成：SDP 更新为新 ufrag；getStats 仍不暴露 usernameFragment
+		pc.localDescription = { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:NEWF\r\n' };
+		pc.__statsReport = new Map([
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
+			['lc2', { type: 'local-candidate', id: 'lc2' }],
+		]);
 		await vi.advanceTimersByTimeAsync(500);
 		await vi.advanceTimersByTimeAsync(0);
 
-		const logs = await getRemoteLogCalls();
-		const warnLogs = logs.filter((s) => /usernameFragment unavailable/.test(s));
-		expect(warnLogs).toHaveLength(1); // 只打一次
-		expect(rtc.state).toBe('restarting'); // 没有误判成功
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartPollTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('stats 轮询：同时存在多个 nominated+succeeded pair，只要任一 local ufrag 已变即判成功', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'OLD' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartUfragSnap).toBe('OLD');
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		// migration 窗口：旧 pair 仍 nominated+succeeded（报告顺序在前），新 pair 也出现
+		// 如果按"首个命中"逻辑，会取到旧 pair 的 ufrag='OLD' → 判失败；
+		// 正确聚合策略应识别到新 pair 的 ufrag='NEW' ≠ snap 即判成功。
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'OLD' }],
+			['lc2', { type: 'local-candidate', id: 'lc2', usernameFragment: 'NEW' }],
+		]);
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('connected');
 
 		rtc.close();
 	});
