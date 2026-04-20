@@ -1,5 +1,116 @@
 # @coclaw/openclaw-coclaw
 
+## 0.17.1
+
+### Patch Changes
+
+- 39cd433: fix(rtc): filter gateway admin-broadcast events from DC forwarding + expand ICE gathering diagnostics
+
+  Two small, complementary changes on the plugin side:
+
+  **Gateway event filter (`realtime-bridge.js`)**
+
+  The bridge currently forwards every `res` / `event` frame from the
+  gateway WS to every open rpc DataChannel. Two gateway-maintenance events
+  carry no business meaning for WebChat / plugin clients but are pushed
+  unconditionally on a timer:
+
+  - `health` — a full state snapshot (~3 KB: channels, every agent,
+    recent sessions, stateVersion) broadcast on a 60 s tick and again on
+    every client-issued `health` RPC. Intended for the Admin UI
+    dashboard.
+  - `tick` — gateway WS keepalive, emitted every 30 s. The DC side
+    already has its own transport probe (`probe` / `plugin-probe`) so
+    the UI does not need it, and it is piggy-backed through the DC for
+    no purpose.
+
+  When the Android APK is backgrounded the WebView stops draining the
+  DC; these two streams alone fill the plugin's 10 MB app-layer send
+  queue in ~1–2 h, after which real events start being dropped. The
+  upstream gateway has no subscription mechanism for filtering event
+  broadcasts per client (not in `EVENT_SCOPE_GUARDS`), so until that is
+  added we drop both event names at the bridge before they reach
+  `webrtcPeer.broadcast`. `res` frames and all other events are
+  forwarded unchanged.
+
+  **ICE gathering diagnostics (`webrtc-peer.js`)**
+
+  Under pion-node the existing `rtc.ice-gathered` summary never emits
+  because pion does not fire `onicecandidate(null)` at gather-complete.
+  Install an `onicegatheringstatechange` handler as a fallback: on the
+  `complete` state transition we flush the same summary, guarded against
+  double-emission when the null-candidate path fires too (e.g. werift).
+  The summary now also includes a `hosts=addr:port,...` list for each
+  host candidate so we can observe whether pion is gathering docker /
+  bridge / loopback interfaces as host candidates. The `gathering` state
+  resets the flag so ICE restart cycles also get a fresh summary.
+
+  **Diagnostic logs in `rpc-send-queue.js`**
+
+  Commented-out `info` payload dumps left in place (one on every queued
+  message, one on queue-full drop) so they can be temporarily enabled to
+  sample what the gateway is still pushing without editing the release
+  build.
+
+- d11cc40: feat(rtc): expand ICE restart diagnostics on both UI and plugin
+
+  Investigating a reproducible failure where a backgrounded APK (~20 min) comes
+  back foreground, the plugin's pion reports `ice connection state: connected`
+  for every ICE restart, but the UI's RTCPeerConnection never fires another
+  `connectionState=connected` and eventually gives up, forcing a full PC rebuild.
+  Existing logs could not distinguish between "ICE agent never left checking",
+  "new pair nominated but DTLS transport did not migrate", and "WS/signaling
+  lost an ICE candidate". This change adds a minimal, low-noise set of log
+  anchors plus a bidirectional plugin-initiated probe so the next reproduction
+  can be diagnosed without further instrumentation.
+
+  UI (`ui/src/services/webrtc-connection.js`):
+
+  - Wire the previously absent `iceconnectionstatechange`, `icegatheringstatechange`,
+    `signalingstatechange`, and `icecandidateerror` handlers; each emits a single
+    `remoteLog` line on state change. `iceconnectionstatechange` exposes the
+    ICE-only `checking/connected/failed` transitions that `connectionState` hides.
+  - Classify each local ICE candidate by `typ` (host / srflx / relay / prflx) and
+    emit a `iceGathered host=N srflx=N relay=N prflx=N` summary when gathering
+    completes. Counters reset at each `gathering` entry (including ICE restart).
+  - `__attemptRestart` now logs a `restart.trigger reason=... connState=...
+iceState=... sigState=... dc=[...] dcIdleAgo=... attempt=N` snapshot on the
+    first entry of each restart epoch, making it possible to distinguish "we
+    fired restart while UI still believed itself connected" from "UI already
+    went to failed".
+  - New `__dumpStats(reason)` helper walks `getStats()` and emits one line
+    summarising the nominated candidate-pair (state / nominated / bytes /
+    RTT / STUN req-resp counts), DTLS+ICE transport state and bytes, and
+    rpc DataChannel stats (state / messages / buffered). Called at four
+    points: before the first restart offer, 3s after a restart-answer is
+    applied, on restart-timeout (awaited before close), and 2s after a
+    `connectionState=connected` restart-success.
+  - New `plugin-probe` frame type on the rpc DC: when the plugin sends one,
+    the UI echoes `plugin-probe-ack` (bypassing the send queue, same as the
+    existing UI→plugin `probe-ack` path) and logs the echo.
+
+  Plugin (`plugins/openclaw/src/webrtc/webrtc-peer.js`):
+
+  - Wire `oniceconnectionstatechange` on pion PCs (guarded by `in pc` so werift
+    is unaffected); emit `rtc.iceState conn=X <state>` on each transition, and
+    detach the handler in `closeByConnId` alongside the other listeners.
+  - Log `rtc.restart-answer-sent conn=X` after a successful ICE restart answer
+    is emitted, mirroring the existing `rtc.ice-restart` on the receive side.
+  - On `pion` PC transition to `connected` when the previous dump state was
+    `disconnected`/`failed` (i.e. an ICE restart just recovered): run one
+    `rtc.dump state=connected` snapshot of the current session, then schedule
+    a `plugin-probe` on the rpc DC with a 500 ms delay. The probe is bypasses
+    the send queue, tracks a single in-flight id per session, and logs the
+    RTT on `plugin-probe-ack`, a `timeout` line after 5 s unref'd, or a
+    `send-failed` line if `dc.send` throws. `closeByConnId` clears the
+    in-flight probe timer so a late timeout does not fire after session
+    teardown. The probe bypasses the send queue, mirroring the existing
+    `probe-ack` fast-path. The branch is gated on `impl === 'pion'` so
+    werift/ndc compatibility paths are untouched.
+
+  No existing recovery/retry/rebuild behaviour is changed; this commit is
+  purely additive instrumentation plus the symmetric probe plumbing.
+
 ## 0.17.0
 
 ### Minor Changes

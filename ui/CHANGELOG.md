@@ -1,5 +1,156 @@
 # @coclaw/ui
 
+## 0.17.1
+
+### Patch Changes
+
+- d11cc40: feat(rtc): expand ICE restart diagnostics on both UI and plugin
+
+  Investigating a reproducible failure where a backgrounded APK (~20 min) comes
+  back foreground, the plugin's pion reports `ice connection state: connected`
+  for every ICE restart, but the UI's RTCPeerConnection never fires another
+  `connectionState=connected` and eventually gives up, forcing a full PC rebuild.
+  Existing logs could not distinguish between "ICE agent never left checking",
+  "new pair nominated but DTLS transport did not migrate", and "WS/signaling
+  lost an ICE candidate". This change adds a minimal, low-noise set of log
+  anchors plus a bidirectional plugin-initiated probe so the next reproduction
+  can be diagnosed without further instrumentation.
+
+  UI (`ui/src/services/webrtc-connection.js`):
+
+  - Wire the previously absent `iceconnectionstatechange`, `icegatheringstatechange`,
+    `signalingstatechange`, and `icecandidateerror` handlers; each emits a single
+    `remoteLog` line on state change. `iceconnectionstatechange` exposes the
+    ICE-only `checking/connected/failed` transitions that `connectionState` hides.
+  - Classify each local ICE candidate by `typ` (host / srflx / relay / prflx) and
+    emit a `iceGathered host=N srflx=N relay=N prflx=N` summary when gathering
+    completes. Counters reset at each `gathering` entry (including ICE restart).
+  - `__attemptRestart` now logs a `restart.trigger reason=... connState=...
+iceState=... sigState=... dc=[...] dcIdleAgo=... attempt=N` snapshot on the
+    first entry of each restart epoch, making it possible to distinguish "we
+    fired restart while UI still believed itself connected" from "UI already
+    went to failed".
+  - New `__dumpStats(reason)` helper walks `getStats()` and emits one line
+    summarising the nominated candidate-pair (state / nominated / bytes /
+    RTT / STUN req-resp counts), DTLS+ICE transport state and bytes, and
+    rpc DataChannel stats (state / messages / buffered). Called at four
+    points: before the first restart offer, 3s after a restart-answer is
+    applied, on restart-timeout (awaited before close), and 2s after a
+    `connectionState=connected` restart-success.
+  - New `plugin-probe` frame type on the rpc DC: when the plugin sends one,
+    the UI echoes `plugin-probe-ack` (bypassing the send queue, same as the
+    existing UI→plugin `probe-ack` path) and logs the echo.
+
+  Plugin (`plugins/openclaw/src/webrtc/webrtc-peer.js`):
+
+  - Wire `oniceconnectionstatechange` on pion PCs (guarded by `in pc` so werift
+    is unaffected); emit `rtc.iceState conn=X <state>` on each transition, and
+    detach the handler in `closeByConnId` alongside the other listeners.
+  - Log `rtc.restart-answer-sent conn=X` after a successful ICE restart answer
+    is emitted, mirroring the existing `rtc.ice-restart` on the receive side.
+  - On `pion` PC transition to `connected` when the previous dump state was
+    `disconnected`/`failed` (i.e. an ICE restart just recovered): run one
+    `rtc.dump state=connected` snapshot of the current session, then schedule
+    a `plugin-probe` on the rpc DC with a 500 ms delay. The probe is bypasses
+    the send queue, tracks a single in-flight id per session, and logs the
+    RTT on `plugin-probe-ack`, a `timeout` line after 5 s unref'd, or a
+    `send-failed` line if `dc.send` throws. `closeByConnId` clears the
+    in-flight probe timer so a late timeout does not fire after session
+    teardown. The probe bypasses the send queue, mirroring the existing
+    `probe-ack` fast-path. The branch is gated on `impl === 'pion'` so
+    werift/ndc compatibility paths are untouched.
+
+  No existing recovery/retry/rebuild behaviour is changed; this commit is
+  purely additive instrumentation plus the symmetric probe plumbing.
+
+- 39a400e: fix(ui): keep uploaded files visible in FileManagerPage the moment transfer completes
+
+  Multi-file upload briefly lost freshly-uploaded files from the listing
+  right after each transfer finished. Cause: the "uploading" placeholder
+  was removed the instant the task flipped to `done`, while the real entry
+  only appeared after the next `loadDir` round-trip (driven by a 500 ms
+  poll). The poll window + RPC latency produced a noticeable gap where
+  the file existed on disk but showed up nowhere in the UI — worst on
+  file #1, intermittent on later files depending on poll phase.
+
+  Switch to optimistic insertion: `enqueueUploads` now takes an optional
+  `onDone` callback, fired on successful upload; `FileManagerPage` injects
+  the just-uploaded file into its `entries` array (and `dirCache`) in the
+  same synchronous tick that drops the placeholder. No more poll timer,
+  no more `loadDir` round-trip after each file. Manual refresh and
+  directory navigation still re-reconcile against the server.
+
+  `beforeUnmount` also unbinds the instance-scoped `onDone` from any
+  still-running tasks so that an in-flight large upload does not keep the
+  unmounted component alive.
+
+- 6a2de9d: fix(rtc): detect ICE restart success via getStats ufrag comparison
+
+  On APK network switches (e.g., WiFi↔cellular) the UI triggers an ICE
+  restart while the old candidate pair is still healthy. The restart
+  completes cleanly end-to-end (plugin's pion reports the new pair as
+  connected, stats show the new `relay/udp>prflx/udp` pair nominated and
+  succeeded, DataChannel keeps flowing), but the browser's
+  `connectionState` never leaves `connected` throughout, so
+  `onconnectionstatechange` is never fired and the UI stays stuck in
+  `restarting`, sending periodic offers until the 90s timeout and finally
+  falling back to a full PC rebuild. The MainList spinner stays on the
+  whole time despite chat continuing to work.
+
+  Add a parallel stats-poll detection path. At restart trigger we
+  snapshot the current selected pair's local-candidate `usernameFragment`
+  via `getStats()` (per ICE spec each restart mints a new ufrag). While
+  in `restarting`, a 500 ms `getStats()` poll looks for a nominated
+  succeeded candidate-pair whose local ufrag differs from the snapshot —
+  that is exactly the same invariant the browser uses to keep
+  `connectionState=connected`, just observed via polling instead of
+  waiting for a state-change event that will never fire. On match we
+  declare `ICE restart succeeded via=stats` and run the usual transitions
+  (`__clearRestartState`, `__setState('connected')`, `__startKeepalive`,
+  `__resolveCandidateType`, `stats.post-restart-success` after 2s). The
+  existing event path is untouched (now logs `via=event` for
+  disambiguation) and handles the "old pair already failed" scenario as
+  before. If `getStats()` cannot produce a pre-restart ufrag we disable
+  the stats path for that cycle (no comparison baseline → no false
+  positives).
+
+  Additional hardening from a second deep-review pass:
+
+  - `__checkRestartViaStats` now captures `epochAtEntry` and rejects
+    cross-epoch late ticks after the `getStats` await (symmetric with
+    the snap.then epoch guard). Closes a narrow TOCTOU where the event
+    path wins a restart and an immediate `triggerRestart` opens a new
+    epoch while the previous tick's getStats is still in flight.
+  - Multi-nominated-pair handling: the check now aggregates **all**
+    nominated+succeeded pairs' local candidates and declares success if
+    **any** local ufrag differs from the snapshot. The earlier
+    "first-match" loop could stay pinned on the stale pair during the
+    short migration window when the browser reports both old and new
+    pair as nominated+succeeded simultaneously.
+  - SDP-ufrag fallback for cross-browser compatibility: when
+    `RTCIceCandidateStats.usernameFragment` is unavailable (some Safari
+    and older Firefox builds), both snapshot and check now fall back to
+    parsing `a=ice-ufrag:` from `pc.localDescription.sdp`, which the SDP
+    spec mandates. Snapshot captures the SDP ufrag synchronously before
+    the `getStats` await, so it reflects the pre-restart SDP regardless
+    of when the stats resolve.
+
+- 72dfb9e: fix(ui): align MainList Capacitor header action buttons with ChatPage
+
+  MainList's Capacitor-only header (logo + refresh + "+") rendered its
+  icon buttons with `size="xl"` and relied on the header-level `gap-2`
+  for all siblings, producing 24 px icons and an 8 px gap between the
+  refresh icon and the "+" button. ChatPage's mobile header renders
+  refresh/new-topic via `MobilePageHeader`'s actions slot — default
+  `md` size (20 px icons) packed tightly with no inner gap.
+
+  Drop `size="xl"` from the three action buttons (RTC connecting
+  spinner, RTC unreachable warning, add-claw plus) and wrap them in a
+  no-gap `<div class="flex shrink-0 items-center">` inside the header.
+  The outer header keeps its `gap-2` so logo/title/actions-group stay
+  separated, while the three action buttons are now flush with each
+  other and sized identically to ChatPage's refresh/new-topic icons.
+
 ## 0.17.0
 
 ### Minor Changes
