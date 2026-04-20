@@ -11,6 +11,12 @@ import { remoteLog } from '../services/remote-log.js';
 import { i18n } from '../i18n/index.js';
 import { useNotify } from '../composables/use-notify.js';
 import { isMobileOs } from './platform.js';
+import { dispatchNetworkOnline } from './network-debounce.js';
+
+// 测试文件 capacitor-app.test.js 里用 `mod = await import('./capacitor-app.js')` 做模块级访问，
+// 再调 mod.__flushNetworkDebounceForTest() / __cancelPendingNetworkDispatch()。
+// 从 network-debounce.js 直接 re-export 避免测试里再加第二个 import，保持同一文件心智。
+export { __cancelPendingNetworkDispatch, __flushNetworkDebounceForTest } from './network-debounce.js';
 
 /** 是否运行在 Capacitor 原生壳中 */
 export const isNative = Capacitor.isNativePlatform();
@@ -276,19 +282,6 @@ function setupAppStateChange() {
 let _lastConnectionType = null;
 
 /**
- * network:online trailing-edge debounce 窗口。
- * Android wifi 开关瞬间会连发 wifi→cellular→wifi 两次 typeChanged 事件，实测间隔可达 500-900ms；
- * 1200ms 覆盖观察到的最坏样本并留足安全边际，对 ICE restart 启动延迟无感。
- */
-const NETWORK_ONLINE_DEBOUNCE_MS = 1200;
-/** 窗口内累计 typeChanged 的 OR 聚合（任一事件为 true → 最终派发 true） */
-let _pendingTypeChanged = false;
-/** 窗口内累计的事件数，用于 merged 日志诊断 */
-let _pendingCount = 0;
-/** 当前 debounce timer 句柄；null 表示无活跃窗口 */
-let _debounceTimer = null;
-
-/**
  * 归一化 connectionType：仅保留 wifi / cellular，其余返回 null
  * @param {string} type
  * @returns {'wifi' | 'cellular' | null}
@@ -297,30 +290,6 @@ function normalizeConnectionType(type) {
 	if (type === 'wifi') return 'wifi';
 	if (type === 'cellular') return 'cellular';
 	return null;
-}
-
-/**
- * 派发 network:online，在源头做 trailing-edge debounce。
- * - 每次事件重置窗口，窗口无新事件后以聚合结果派发一次
- * - typeChanged 做 OR 聚合：窗口内任何一次为 true → 最终派发 typeChanged=true
- *   （wifi→cellular→wifi 即便首尾 type 相同，中间真的切过，消费端仍需做完整 restart）
- * @param {boolean} typeChanged
- */
-function dispatchNetworkOnline(typeChanged) {
-	_pendingTypeChanged = _pendingTypeChanged || typeChanged;
-	_pendingCount++;
-	if (_debounceTimer) clearTimeout(_debounceTimer);
-	_debounceTimer = setTimeout(() => {
-		const detail = { typeChanged: _pendingTypeChanged };
-		const merged = _pendingCount;
-		_pendingTypeChanged = false;
-		_pendingCount = 0;
-		_debounceTimer = null;
-		if (merged > 1) {
-			remoteLog(`app.network merged count=${merged} typeChanged=${detail.typeChanged}`);
-		}
-		window.dispatchEvent(new CustomEvent('network:online', { detail }));
-	}, NETWORK_ONLINE_DEBOUNCE_MS);
 }
 
 function setupNetworkListener() {
@@ -347,25 +316,6 @@ function setupNetworkListener() {
 		}).catch(() => {});
 		console.log('[capacitor] Network listener registered');
 	}).catch((e) => console.warn('[capacitor] Network setup failed:', e));
-}
-
-/** @internal 单测专用：复位 debounce 状态（不动 _lastConnectionType，由 getStatus 自然恢复） */
-export function __resetNetworkDebounceForTest() {
-	if (_debounceTimer) clearTimeout(_debounceTimer);
-	_debounceTimer = null;
-	_pendingTypeChanged = false;
-	_pendingCount = 0;
-}
-
-/** @internal 单测专用：立即冲刷 pending dispatch（绕过 setTimeout，便于同步断言事件） */
-export function __flushNetworkDebounceForTest() {
-	if (!_debounceTimer) return;
-	clearTimeout(_debounceTimer);
-	const detail = { typeChanged: _pendingTypeChanged };
-	_pendingTypeChanged = false;
-	_pendingCount = 0;
-	_debounceTimer = null;
-	window.dispatchEvent(new CustomEvent('network:online', { detail }));
 }
 
 function setupDeepLink(router) {

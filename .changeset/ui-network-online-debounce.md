@@ -21,3 +21,11 @@ per-event `typeChanged` computation in the listener is unchanged
 (incremental comparison against `_lastConnectionType`), so wifi→cellular→wifi
 remains correctly classified as a type change end-to-end. Window size chosen
 from observed samples where the two events were 500-900ms apart.
+
+Additional hardening from a deep-review pass: extracted the debounce
+state/helpers into a standalone `network-debounce.js` module (no Capacitor /
+Nuxt UI deps), so the logout cleanup chain in `auth.store` can cancel any
+in-flight debounce timer without pulling heavy imports into tests that touch
+auth. Without the cancel, a logout happening inside a 1.2s debounce window
+would let the pending event fire 1.2s later against the already-reset
+environment — low real-world impact but trivial to eliminate at the source.

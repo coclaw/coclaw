@@ -134,9 +134,10 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		clearListeners();
 		mockRouter = createMockRouter();
 		// 复位 network:online debounce 状态：模块级 pending/timer 在用例间共享，
-		// 背靠背用例会遗留未派发的 pending 事件污染下一个用例
+		// 背靠背用例会遗留未派发的 pending 事件污染下一个用例。
+		// 该函数同时也是 auth.store logout 链里使用的生产 API，复用之以保持同一执行路径。
 		const mod = await import('./capacitor-app.js');
-		mod.__resetNetworkDebounceForTest();
+		mod.__cancelPendingNetworkDispatch();
 	});
 
 	// --- StatusBar ---
@@ -571,7 +572,7 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
 		// merged 日志在 setTimeout 回调内输出；flush helper 绕过 setTimeout，
 		// 所以用真实计时器推进窗口
-		await new Promise((r) => setTimeout(r, 1300));
+		await new Promise((r) => setTimeout(r, 1500));
 		const mergedCall = remoteLog.mock.calls.find((c) => /app\.network merged count=3/.test(c[0]));
 		expect(mergedCall).toBeTruthy();
 	});
@@ -586,9 +587,24 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		// 还没到窗口，不应派发
 		expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeUndefined();
 		// 等待窗口超时
-		await new Promise((r) => setTimeout(r, 1300));
+		await new Promise((r) => setTimeout(r, 1500));
 		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
 		expect(evt).toBeTruthy();
+		dispatchSpy.mockRestore();
+	});
+
+	test('__cancelPendingNetworkDispatch: 丢弃 pending timer 且不派发（logout 清理语义）', async () => {
+		const mod = await import('./capacitor-app.js');
+		await mod.initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+		// 立即取消（模拟 logout 清理链）
+		mod.__cancelPendingNetworkDispatch();
+		// 等待原窗口应到期的时点，确认 timer 已真的被清掉，不会迟到派发
+		await new Promise((r) => setTimeout(r, 1500));
+		expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeUndefined();
 		dispatchSpy.mockRestore();
 	});
 
