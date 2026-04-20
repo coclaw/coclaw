@@ -1215,6 +1215,7 @@ export class WebRtcConnection {
 		if (!newUfrag) return;
 		// 新路径已选中且生效 → 与事件路径对齐的状态转移
 		this.__log('info', 'ICE restart succeeded via=stats');
+		this.__clearDisconnectedTimer();
 		this.__clearRestartState();
 		this.__setState('connected');
 		this.__startKeepalive();

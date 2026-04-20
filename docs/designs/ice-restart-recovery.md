@@ -1,8 +1,8 @@
 # ICE Restart 恢复策略
 
-> 状态：已实施（db12a17 + 9a5cdf0）
-> 日期：2026-04-12
-> 范���：UI（WebRtcConnection、claws.store、ManageClawsPage）、Server（claw-ws-hub 信令��由）、Plugin（webrtc-peer）
+> 状态：已实施（db12a17 + 9a5cdf0；stats-poll 成功判定 6a2de9d + 4f6c625）
+> 日期：2026-04-12（stats-poll 判定补充 2026-04-20）
+> 范围：UI（WebRtcConnection、claws.store、ManageClawsPage）、Server（claw-ws-hub 信令路由）、Plugin（webrtc-peer）
 
 ---
 
@@ -127,6 +127,28 @@ __attemptRestart('nudge');
 if (state === 'restarting') → __attemptRestart(reason)
 if (state === 'connected') → __attemptRestart(reason)
 ```
+
+#### restart 成功判定（事件 + stats poll 双路径）
+
+`onconnectionstatechange === 'connected'` 是主判据，但在"旧 pair 还活着、restart 完成"场景下，Chromium 对 `connectionState` 的认定是"存在 nominated+succeeded 的 selected pair 即 connected"——restart 只是换了 pair，state 自始至终不离开 connected，事件永不触发。UI 会卡在 restarting 直到 90s 时间预算耗尽，最终走 rebuild（期间 MainList spinner 一直转）。
+
+解法：与事件路径并行跑一条 **stats 轮询路径**，先到先算。
+
+**判据**：restart 触发时读当前 selected pair 的 local candidate `usernameFragment` 作基准（snap）；restart 期间每 500ms `getStats()`，若出现 `nominated && state='succeeded'` 的 pair 且其 local ufrag ≠ snap → 判成功。
+
+**为什么用 ufrag**：ICE RFC 强制规定每次 restart 必须 mint 新 ufrag/pwd，是**协议级强保证**。其他字段（`localCandidateId`、`foundation`、`port`）都是实现级规定，host candidate 有可能被浏览器复用 id。
+
+**浏览器兼容**：`RTCIceCandidateStats.usernameFragment` 在部分 Safari 和老 Firefox 版本中不暴露。snap / check 两侧都加 `pc.localDescription.sdp` 的 `a=ice-ufrag:` fallback（SDP spec 必填，跨浏览器稳定）。snap 在 `await getStats()` 之前**同步**读取 SDP，因此捕获到的一定是 restart 前的旧 SDP——即使整个 `__attemptRestart` 后续已经 `setLocalDescription(newOffer)` 更新了 localDescription。
+
+**并发与生命周期守卫**：
+- `__restartEpoch`：每次 `__clearRestartState()` 递增。snap.then 和 check tick 都在 `await` 后再次校验 epoch，防止"上一轮 restart 的 async 回调"污染新一轮。
+- `__pc` / `__state` 校验：防 pc 替换、状态已切换（closed/failed/connected）。
+- 多 nominated pair 聚合：migration 窗口内浏览器可能同时报告旧+新两个 pair 都 nominated+succeeded。采用"任一 local ufrag ≠ snap 即成功"聚合策略，而非"首个命中"——后者在旧 pair 出现在报告前面时会误判失败。
+- 超时分支顺序：同步 stop poll/timer → `Promise.race([dumpStats, 500ms])` → 再次校验 `state === 'restarting'` → 才 `close({asFailed:true})`。避免 500ms 窗内 poll tick 胜出后被 close 覆盖为 failed。
+- `app:background` 停 poll 但保留 snap；`foreground` 通过 store `nudgeRestart()` 经 `__attemptRestart` 的恢复分支（`__restartUfragSnap && !__restartPollTimer && __pc`）重启 poll。
+- snap 为 null 时（pre-restart 无 nominated pair，说明 PC 已处于非"旧 pair 健康"状态）本 epoch 降级为仅事件路径——事件路径必然经 checking→connected 可覆盖，不需补救。
+
+> **未来方向**：若基线浏览器升级，事件化 `RTCIceTransport.selectedcandidatepairchange` 可替代本 stats 轮询。参见"## 七、兼容性 → RTCIceTransport.selectedcandidatepairchange 事件"。
 
 #### 修改 `onconnectionstatechange`
 
@@ -421,6 +443,34 @@ WS 断 + ICE 断 → restarting → 周期重试 → WS 不通
 ### 新增信令消息
 
 `rtc:restart-rejected` 遵循现有 `rtc:*` 命名约定，UI 侧 `signaling-connection.js` 的泛匹配 `startsWith('rtc:')` 自动转发，无需改动。
+
+### `RTCIceTransport.selectedcandidatepairchange` 事件（未来方向）
+
+W3C webrtc-pc 规范定义了该事件：ICE agent 选中新 candidate pair 时触发，语义与当前 stats-poll 成功判定**完全一致**，但无需轮询。若全部基线浏览器都支持，可直接替代 4.1 "restart 成功判定" 中的 stats 轮询块（`__snapshotSelectedUfrag` / `__startRestartPoll` / `__checkRestartViaStats` 及相关 epoch/guard），并发/生命周期守卫（epoch、pc、state）仍保留——它们是"新判定路径与既有 `onconnectionstatechange` 路径并存"的通用账单。
+
+**兼容性调研（2026-04）**：
+
+| 浏览器 | 最低支持版本 | CoClaw 基线 | 是否满足 |
+|---|---|---|---|
+| Chrome | 75 | 90 | ✓ |
+| Edge | 79 | 90 | ✓ |
+| Safari | 16.4 | 15 | ✗ |
+| Firefox | 完全不支持 | 90 | ✗ |
+
+Firefox 所有版本均不支持；Safari 基线（15）之下整整一年多（16.0–16.3）的版本不支持。MDN 标注 "Limited availability"（非 Baseline）。因此当前保留 stats 轮询 + ufrag 方案。
+
+**启用前置条件**：
+- CoClaw 浏览器基线调整到 Safari 16.4+
+- 以及 Firefox 开始实现该事件（目前 Bugzilla 上尚无明确时间表），或放弃支持 Firefox
+
+当这两个条件同时满足时，可评估切换为事件驱动路径。
+
+**获取 iceTransport 的路径**：DataChannel-only PC 可通过 `pc.sctp?.transport?.iceTransport` 访问对应的 `RTCIceTransport` 实例。
+
+来源：
+- W3C webrtc-pc § RTCIceTransport `onselectedcandidatepairchange`: <https://w3c.github.io/webrtc-pc/#dom-rtcicetransport-onselectedcandidatepairchange>
+- MDN: selectedcandidatepairchange event: <https://developer.mozilla.org/en-US/docs/Web/API/RTCIceTransport/selectedcandidatepairchange_event>
+- caniuse: selectedcandidatepairchange event: <https://caniuse.com/mdn-api_rtcicetransport_selectedcandidatepairchange_event>
 
 ---
 
