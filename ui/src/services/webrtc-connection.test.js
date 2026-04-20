@@ -2830,6 +2830,330 @@ describe('WebRtcConnection — ICE restart', () => {
 
 		rtc.close();
 	});
+
+	// --- stats 轮询路径（覆盖"旧 pair 还活着、connectionState 从未跳变"的 ICE restart 成功判定）
+
+	test('stats 轮询：ufrag 变化 → 判定 restart 成功（事件路径静默场景）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		// pre-restart：nominated pair 的 local ufrag 为 'A'
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1', remoteCandidateId: 'rc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', candidateType: 'host', protocol: 'udp', usernameFragment: 'A' }],
+			['rc1', { type: 'remote-candidate', id: 'rc1', candidateType: 'host', protocol: 'udp' }],
+		]);
+
+		rtc.triggerRestart('network_type_changed');
+		await vi.advanceTimersByTimeAsync(0); // offer 发出 + snap 首次 getStats
+		await vi.advanceTimersByTimeAsync(0); // snap.then → startPoll
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartUfragSnap).toBe('A');
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+
+		// 模拟 plugin 完成 restart：新 pair 使用新 ufrag 'B'；connectionState 故意保持不动
+		pc.__statsReport = new Map([
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2', remoteCandidateId: 'rc2' }],
+			['lc2', { type: 'local-candidate', id: 'lc2', candidateType: 'relay', protocol: 'udp', usernameFragment: 'B' }],
+			['rc2', { type: 'remote-candidate', id: 'rc2', candidateType: 'prflx', protocol: 'udp' }],
+		]);
+		expect(pc.connectionState).toBe('connected');
+
+		await vi.advanceTimersByTimeAsync(500); // 下一次 poll
+		await vi.advanceTimersByTimeAsync(0); // poll 内部 getStats.then
+
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartPollTimer).toBeNull();
+		expect(rtc.__restartUfragSnap).toBeNull();
+		expect(rtc.__restartAttemptCount).toBe(0);
+		const logs = await getRemoteLogCalls();
+		expect(logs.some((s) => /ICE restart succeeded via=stats/.test(s))).toBe(true);
+
+		rtc.close();
+	});
+
+	test('stats 轮询：ufrag 不变 → 不判定成功（防误报）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartUfragSnap).toBe('A');
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		// 连跑多轮 poll，ufrag 都是 'A' → 不判成功
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartUfragSnap).toBe('A');
+
+		rtc.close();
+	});
+
+	test('stats 轮询：pre-restart 无 selected pair → 不启动轮询', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		// 清空 stats：模拟 getStats 读不到 nominated+succeeded pair
+		pc.__statsReport = new Map();
+
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartUfragSnap).toBeNull();
+		expect(rtc.__restartPollTimer).toBeNull();
+
+		// 即使后来 stats 里出现"新 ufrag"，也不应误判成功（没有基准可比）
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'B' }],
+		]);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(rtc.state).toBe('restarting');
+
+		rtc.close();
+	});
+
+	test('stats 轮询：close 时清理 poll 和 snap', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartPollTimer).not.toBeNull();
+		expect(rtc.__restartUfragSnap).toBe('A');
+
+		rtc.close();
+		expect(rtc.__restartPollTimer).toBeNull();
+		expect(rtc.__restartUfragSnap).toBeNull();
+	});
+
+	test('stats 轮询：事件路径先成功时 poll 不再误触发（幂等）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		// 事件路径先到：假设 pc 报上来 disconnected→connected（比如 ice_failed 恢复）
+		pc.connectionState = 'disconnected';
+		pc.onconnectionstatechange();
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartPollTimer).toBeNull();
+
+		// 进一步把 stats 改成新 ufrag 'B'——poll 已经停了，不会再触发
+		pc.__statsReport = new Map([
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
+			['lc2', { type: 'local-candidate', id: 'lc2', usernameFragment: 'B' }],
+		]);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(rtc.state).toBe('connected'); // 无变化
+
+		rtc.close();
+	});
+
+	test('stats 轮询：多轮 poll 才命中（第二次 tick 才出现新 ufrag）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		// 第 1 次 poll：仍是旧 pair → 不判成功
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// 第 2 次 poll 前 restart 真正完成，新 ufrag 'B' 出现
+		pc.__statsReport = new Map([
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
+			['lc2', { type: 'local-candidate', id: 'lc2', usernameFragment: 'B' }],
+		]);
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('connected');
+
+		rtc.close();
+	});
+
+	test('stats 轮询：poll 获取 getStats 期间 pc 被替换 → 静默早退，不改状态', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartPollTimer).not.toBeNull();
+
+		// 让 getStats 挂起
+		let resolveGetStats;
+		pc.getStats = () => new Promise((r) => { resolveGetStats = r; });
+
+		// 触发 poll tick
+		await vi.advanceTimersByTimeAsync(500);
+
+		// poll 正在 await getStats 期间，__pc 被清空（模拟 close 中间态）
+		rtc.__pc = null;
+
+		// 让挂起的 getStats resolve 出"新 ufrag 的 report"，此时 guard 应阻止误判
+		resolveGetStats(new Map([
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
+			['lc2', { type: 'local-candidate', id: 'lc2', usernameFragment: 'B' }],
+		]));
+		await vi.advanceTimersByTimeAsync(0);
+
+		// state 没有被误改（__pc !== pc 守卫生效）
+		expect(rtc.state).toBe('restarting');
+	});
+
+	test('stats 轮询：超时 await 窗内 state 已切成 connected → close 不覆盖（guard 生效）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 让 __attemptRestart 进入超时分支：把 startTime 推到 91s 前，且 dumpStats 的 getStats 挂住
+		rtc.__restartStartTime = Date.now() - 91_000;
+		pc.getStats = () => new Promise(() => {}); // 永不 resolve，依赖 500ms 兜底
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0); // 进入分支 → stopPoll/stopTimer → await Promise.race(...)
+
+		// 模拟"500ms 窗内 poll tick 迟到判成功"：手工把 state 切到 connected 并清 restart 状态
+		rtc.__clearRestartState();
+		rtc.__setState('connected');
+
+		// 推进到兜底 timer 触发 → Promise.race resolve → guard 判断 state 后决定是否 close
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 关键断言：state 保持 connected，close({asFailed:true}) 被 guard 拦下
+		expect(rtc.state).toBe('connected');
+
+		rtc.close();
+	});
+
+	test('stats 轮询：background 停 poll，foreground nudge 后恢复', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartPollTimer).not.toBeNull();
+		expect(rtc.__restartUfragSnap).toBe('A');
+
+		// 切后台 → poll 停
+		window.dispatchEvent(new Event('app:background'));
+		expect(rtc.__restartPollTimer).toBeNull();
+		expect(rtc.__restartUfragSnap).toBe('A'); // snap 保留
+
+		// nudge（模拟前台恢复）→ poll 恢复
+		rtc.nudgeRestart();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartPollTimer).not.toBeNull();
+		expect(rtc.__restartUfragSnap).toBe('A'); // snap 没变
+
+		rtc.close();
+	});
+
+	test('stats 轮询：跨 epoch 迟到的 snap.then 不污染新 epoch', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 让第一次 snapshot 的 getStats 挂起
+		let resolveFirstSnap;
+		const originalGetStats = pc.getStats.bind(pc);
+		pc.getStats = () => new Promise((r) => { resolveFirstSnap = r; });
+
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'OLD' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		// 此时 snap 还挂在 promise 里，__restartUfragSnap 仍是 null
+		expect(rtc.__restartUfragSnap).toBeNull();
+		const epochBefore = rtc.__restartEpoch;
+
+		// 事件路径直接成功 → 进入下一 epoch
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+
+		// 恢复 getStats，让挂起的 snap 以 'OLD' resolve
+		pc.getStats = originalGetStats;
+		resolveFirstSnap(new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'OLD' }],
+		]));
+		await vi.advanceTimersByTimeAsync(0);
+
+		// epoch 已变 → 旧 snap.then 被拒绝，不写 __restartUfragSnap，不启 poll
+		expect(rtc.__restartUfragSnap).toBeNull();
+		expect(rtc.__restartPollTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('stats 轮询：ufrag 字段缺失 → warn 日志每 epoch 只打一次', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.__statsReport = new Map([
+			['cp1', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc1' }],
+			['lc1', { type: 'local-candidate', id: 'lc1', usernameFragment: 'A' }],
+		]);
+		rtc.triggerRestart('test');
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// poll 后 stats 的新 pair 没有 usernameFragment 字段（Safari 某些版本场景）
+		pc.__statsReport = new Map([
+			['cp2', { type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lc2' }],
+			['lc2', { type: 'local-candidate', id: 'lc2' }], // 无 usernameFragment
+		]);
+
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+
+		// 多次 poll tick
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.advanceTimersByTimeAsync(0);
+
+		const logs = await getRemoteLogCalls();
+		const warnLogs = logs.filter((s) => /usernameFragment unavailable/.test(s));
+		expect(warnLogs).toHaveLength(1); // 只打一次
+		expect(rtc.state).toBe('restarting'); // 没有误判成功
+
+		rtc.close();
+	});
 });
 
 describe('WebRtcConnection — parseCredExpireAt', () => {

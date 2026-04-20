@@ -23,6 +23,8 @@ const DISCONNECTED_TIMEOUT_MS = 5_000;
 const ICE_RESTART_TIMEOUT_MS = 90_000;
 /** ICE restart 安全网定时器间隔（覆盖 connectionState:failed 未触发的极端场景） */
 const ICE_RESTART_SAFETY_MS = 30_000;
+/** ICE restart stats 轮询间隔：覆盖"旧 pair 还活着、connectionState 从未跳变"的场景 */
+const ICE_RESTART_STATS_POLL_MS = 500;
 
 /** DC 应用层保活：间隔（probe 完成后到下一次 probe 发起） */
 const DC_KEEPALIVE_INTERVAL_MS = 30_000;
@@ -199,9 +201,16 @@ export class WebRtcConnection {
 		this.__onAppForeground = null;
 		/** ICE restart 状态 */
 		this.__restartTimer = null;
+		this.__restartPollTimer = null;
 		this.__restartAttemptCount = 0;
 		this.__restartStartTime = 0;
 		this.__restartInFlight = false;
+		/** pre-restart selected pair 的 local ufrag 快照；stats 轮询据此判"是否走上新路径" */
+		this.__restartUfragSnap = null;
+		/** restart 代次（每次 __clearRestartState 递增）；用于拦截跨 epoch 的 snap.then 迟到 */
+		this.__restartEpoch = 0;
+		/** 本 epoch 内 ufrag 缺失日志是否已打；避免每次 poll 都刷日志 */
+		this.__restartUfragMissingLogged = false;
 		/** TURN 凭证过期时间戳（Unix 秒），用于 ICE restart 日志诊断 */
 		this.__credExpireAt = null;
 		/** 本地 ICE candidate 按 typ 分类计数（诊断用），gathering 完成时输出汇总 */
@@ -403,13 +412,16 @@ export class WebRtcConnection {
 
 	/** @private */
 	async __buildPeerConnection(turnCreds) {
-		// 清理旧 PC（rebuild 场景）
+		// 清理旧 PC（rebuild 场景）；同步清 restart 状态，保证 snap/epoch 与 PC 对齐
+		// （正常路径 close() 已前置清过，这里是防御性 invariant：任何 rebuild 入口都不会
+		// 让旧 PC 的 ufrag snap 被新 PC 的 poll 误用）
 		if (this.__pc) {
 			this.__pc.onicecandidate = null;
 			this.__pc.onconnectionstatechange = null;
 			this.__pc.close();
 			this.__pc = null;
 			this.__rpcChannel = null;
+			this.__clearRestartState();
 		}
 
 		// 确保信令 WS 可用（rebuild 场景下 WS 可能已断开）
@@ -516,7 +528,7 @@ export class WebRtcConnection {
 				this.__clearDisconnectedTimer();
 				const wasRestarting = this.__state === 'restarting';
 				if (wasRestarting) {
-					this.__log('info', 'ICE restart succeeded');
+					this.__log('info', 'ICE restart succeeded via=event');
 					this.__clearRestartState();
 				}
 				this.__setState('connected');
@@ -735,6 +747,8 @@ export class WebRtcConnection {
 			this.__stopKeepalive();
 			// 后台时停止 restart 周期重试（前台恢复后由 store nudge 触发）
 			this.__stopRestartTimer();
+			// stats 轮询同样在后台停；前台 nudge 进入 __attemptRestart 时按 snap 存在与否恢复
+			this.__stopRestartPoll();
 		};
 		this.__onAppForeground = () => {
 			if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
@@ -898,6 +912,33 @@ export class WebRtcConnection {
 				+ ` attempt=${this.__restartAttemptCount}`);
 			// fire-and-forget：stats 快照异步到达即可，不阻塞 restart 流程
 			this.__dumpStats('pre-restart').catch(() => {});
+			// 采集当前 selected pair 的 local ufrag → stats 轮询用它判"新路径"
+			// 异步获取；epoch 捕获用于识别"跨 epoch 迟到"——旧 epoch 的 snap 即使在
+			// 新 epoch 的 restarting 窗口里到达，也不应覆盖新 epoch 的 snap/poll 基准，
+			// 否则会把旧 epoch 的 ufrag 当基准比较当前连接，导致新 restart 窗内的中间
+			// 状态被误判为成功。
+			const pcAtSnap = this.__pc;
+			const epochAtSnap = this.__restartEpoch;
+			this.__snapshotSelectedUfrag(pcAtSnap).then((snap) => {
+				if (this.__restartEpoch !== epochAtSnap) return; // 已进入下一 epoch
+				if (this.__pc !== pcAtSnap || this.__state !== 'restarting') return;
+				if (!snap) {
+					// 读不到基准就不开启 stats 路径，避免误报；退化为仅事件路径。
+					// 语义上：若 pre-restart 根本没有 nominated+succeeded pair，说明 PC 已处于
+					// failed/checking/closed 等非"旧 pair 健康"状态——本次 stats 路径想解决的
+					// "旧 pair 还活着就 restart"前提本就不成立，事件路径（必然经过
+					// checking→connected）即可覆盖。本 epoch 内不再补采。
+					this.__log('info', 'ICE restart: no ufrag snap, stats-poll disabled');
+					return;
+				}
+				this.__restartUfragSnap = snap;
+				// 仅当 restart timer 仍在跑（即：未被 app:background 暂停）时启动 poll；
+				// 若处于后台暂停态，只存 snap，等 foreground nudge 时由 __attemptRestart
+				// 的恢复分支（__restartUfragSnap && !__restartPollTimer）启动 poll
+				if (this.__restartTimer) {
+					this.__startRestartPoll(pcAtSnap);
+				}
+			}).catch(() => {});
 		}
 
 		// 同步进入 restarting（先于 async createOffer，确保状态立即可观测）
@@ -913,6 +954,9 @@ export class WebRtcConnection {
 		// 时间预算耗尽 → 放弃 restart
 		if (Date.now() - this.__restartStartTime >= ICE_RESTART_TIMEOUT_MS) {
 			this.__log('warn', `ICE restart timed out after ${ICE_RESTART_TIMEOUT_MS}ms (${this.__restartAttemptCount} attempts)`);
+			// 立刻停 poll/timer，防止 500ms dumpStats 窗内 poll tick 迟到判成功后又被 close 覆盖
+			this.__stopRestartPoll();
+			this.__stopRestartTimer();
 			// close 前抓一次 stats，但用 500ms 超时兜底：
 			// 病态场景下 pc.getStats() 可能长时间不 resolve（正是本次调查目标），
 			// 若直接 await 会阻塞 close() → state 卡在 restarting → store 无法 rebuild。
@@ -920,6 +964,9 @@ export class WebRtcConnection {
 				this.__dumpStats('restart-timeout'),
 				new Promise((r) => setTimeout(r, 500)),
 			]);
+			// 500ms 窗内已完成的在途 poll tick 可能已把 state 切到 connected（且清过 restart
+			// 状态）；此时不应再 close({asFailed:true}) 把合法的 connected 覆盖成 failed
+			if (this.__state !== 'restarting') return;
 			this.close({ asFailed: true });
 			return;
 		}
@@ -927,6 +974,10 @@ export class WebRtcConnection {
 		// 安全网定时器（覆盖 connectionState:failed 未触发的极端场景）
 		if (!this.__restartTimer) {
 			this.__startRestartTimer();
+		}
+		// 恢复 stats 轮询：snap 已采但 poll 被 background 停过 → 重启（nudge/periodic 路径）
+		if (this.__restartUfragSnap && !this.__restartPollTimer && this.__pc) {
+			this.__startRestartPoll(this.__pc);
 		}
 
 		// 信令 WS 不可用 → 等待其就绪（与 PC rebuild 路径对齐）
@@ -991,8 +1042,13 @@ export class WebRtcConnection {
 	/** @private 清除 restart 状态（成功/失败/close 时调用） */
 	__clearRestartState() {
 		this.__stopRestartTimer();
+		this.__stopRestartPoll();
 		this.__restartAttemptCount = 0;
 		this.__restartStartTime = 0;
+		this.__restartUfragSnap = null;
+		this.__restartUfragMissingLogged = false;
+		// 递增 epoch → 让跨 epoch 的 snap.then / poll tick 失效
+		this.__restartEpoch++;
 	}
 
 	/** @private 启动 restart 周期重试定时器 */
@@ -1013,6 +1069,118 @@ export class WebRtcConnection {
 			clearInterval(this.__restartTimer);
 			this.__restartTimer = null;
 		}
+	}
+
+	/**
+	 * @private 读取 pc 当前 selected pair 的 local candidate ufrag
+	 *
+	 * ICE spec 强保证每次 restart 使用新的 ufrag/pwd，因此 pre-restart ufrag
+	 * 可作为"新路径已生效"的可靠基准。读不到时返回 null，上层应退化为仅事件路径。
+	 * @param {RTCPeerConnection} pc
+	 * @returns {Promise<string|null>}
+	 */
+	async __snapshotSelectedUfrag(pc) {
+		if (!pc || typeof pc.getStats !== 'function') return null;
+		let report;
+		try {
+			report = await pc.getStats();
+		} catch {
+			return null;
+		}
+		if (this.__pc !== pc) return null;
+		let pair = null;
+		for (const stat of report.values()) {
+			if (stat.type === 'candidate-pair' && stat.nominated && stat.state === 'succeeded') {
+				pair = stat;
+				break;
+			}
+		}
+		if (!pair) return null;
+		for (const stat of report.values()) {
+			if (stat.type === 'local-candidate' && stat.id === pair.localCandidateId) {
+				return stat.usernameFragment ?? null;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * @private 启动 stats 轮询：事件路径的并行兜底
+	 *
+	 * 覆盖"旧 pair 还活着 → restart 瞬间完成 → connectionState 从未跳变"的场景：
+	 * 此时 oniceconnectionstatechange / onconnectionstatechange 均不触发，仅靠
+	 * getStats 观察到新 pair 被 nominate 才能判定成功。
+	 * @param {RTCPeerConnection} pc
+	 */
+	__startRestartPoll(pc) {
+		this.__stopRestartPoll();
+		this.__restartPollTimer = setInterval(() => {
+			if (this.__pc !== pc || this.__state !== 'restarting') {
+				this.__stopRestartPoll();
+				return;
+			}
+			this.__checkRestartViaStats(pc).catch(() => {});
+		}, ICE_RESTART_STATS_POLL_MS);
+	}
+
+	/** @private 停止 restart stats 轮询 */
+	__stopRestartPoll() {
+		if (this.__restartPollTimer) {
+			clearInterval(this.__restartPollTimer);
+			this.__restartPollTimer = null;
+		}
+	}
+
+	/**
+	 * @private 读一次 getStats，若出现 nominated+succeeded 且 ufrag 已变则判定成功
+	 * @param {RTCPeerConnection} pc
+	 */
+	async __checkRestartViaStats(pc) {
+		const snap = this.__restartUfragSnap;
+		if (!snap) return;
+		let report;
+		try {
+			report = await pc.getStats();
+		} catch {
+			return;
+		}
+		if (this.__pc !== pc || this.__state !== 'restarting') return;
+		let pair = null;
+		for (const stat of report.values()) {
+			if (stat.type === 'candidate-pair' && stat.nominated && stat.state === 'succeeded') {
+				pair = stat;
+				break;
+			}
+		}
+		if (!pair) return;
+		let ufrag = null;
+		for (const stat of report.values()) {
+			if (stat.type === 'local-candidate' && stat.id === pair.localCandidateId) {
+				ufrag = stat.usernameFragment ?? null;
+				break;
+			}
+		}
+		if (!ufrag) {
+			// 浏览器未在 local-candidate 上暴露 usernameFragment → stats 路径本 epoch 无法判定；
+			// 事件路径仍会兜底。每 epoch 只打一次，避免 poll 每 500ms 刷日志
+			if (!this.__restartUfragMissingLogged) {
+				this.__restartUfragMissingLogged = true;
+				this.__log('warn', 'ICE restart stats-poll: local-candidate.usernameFragment unavailable, event path only');
+			}
+			return;
+		}
+		if (ufrag === snap) return;
+		// 新路径已选中且生效 → 与事件路径对齐的状态转移
+		this.__log('info', 'ICE restart succeeded via=stats');
+		this.__clearRestartState();
+		this.__setState('connected');
+		this.__startKeepalive();
+		this.__resolveCandidateType(pc);
+		setTimeout(() => {
+			if (this.__pc === pc && this.__state === 'connected') {
+				this.__dumpStats('post-restart-success');
+			}
+		}, 2000);
 	}
 
 	// --- 内部：信令 ---
