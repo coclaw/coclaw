@@ -1820,6 +1820,129 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		rtc.close();
 	});
 
+	// --- 前后台 disconnected timer 生命周期 ---
+
+	test('app:background 清除已 arm 的 disconnected timer', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 前台先进入 disconnected → arm 5s timer
+		pc.connectionState = 'disconnected';
+		pc.onconnectionstatechange();
+		expect(rtc.__disconnectedTimer).not.toBeNull();
+
+		const failedSpy = vi.spyOn(rtc, '__onIceFailed');
+		window.dispatchEvent(new Event('app:background'));
+		expect(rtc.__disconnectedTimer).toBeNull();
+
+		// 推 6s（超过原 5s 超时）不应触发升级
+		await vi.advanceTimersByTimeAsync(6_000);
+		expect(failedSpy).not.toHaveBeenCalled();
+
+		rtc.close();
+	});
+
+	test('app:background 记录 __backgroundAt（PC 仍 connected 场景）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		expect(rtc.__backgroundAt).toBe(0);
+
+		window.dispatchEvent(new Event('app:background'));
+		expect(rtc.__disconnectedTimer).toBeNull();
+		expect(rtc.__backgroundAt).toBeGreaterThan(0);
+
+		rtc.close();
+	});
+
+	test('短后台 < 25s 回前台 + PC disconnected → 5s 后升级', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		const failedSpy = vi.spyOn(rtc, '__onIceFailed');
+
+		window.dispatchEvent(new Event('app:background'));
+		await vi.advanceTimersByTimeAsync(10_000);
+		// 模拟后台期间 PC 变 disconnected（事件未派发到 JS）
+		pc.connectionState = 'disconnected';
+		window.dispatchEvent(new Event('app:foreground'));
+
+		expect(rtc.__disconnectedTimer).not.toBeNull();
+		await vi.advanceTimersByTimeAsync(4_999);
+		expect(failedSpy).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(2);
+		expect(failedSpy).toHaveBeenCalledTimes(1);
+
+		rtc.close();
+	});
+
+	test('长后台 ≥ 25s 回前台 + PC disconnected → 1.5s 后升级', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		const failedSpy = vi.spyOn(rtc, '__onIceFailed');
+
+		window.dispatchEvent(new Event('app:background'));
+		await vi.advanceTimersByTimeAsync(60_000);
+		pc.connectionState = 'disconnected';
+		window.dispatchEvent(new Event('app:foreground'));
+
+		expect(rtc.__disconnectedTimer).not.toBeNull();
+		await vi.advanceTimersByTimeAsync(1_499);
+		expect(failedSpy).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(2);
+		expect(failedSpy).toHaveBeenCalledTimes(1);
+
+		rtc.close();
+	});
+
+	test('后台 → 前台 PC disconnected 但 state=restarting → 不 arm timer（restart 进行中不干预）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		window.dispatchEvent(new Event('app:background'));
+		await vi.advanceTimersByTimeAsync(60_000);
+
+		// 模拟 restart 进行中：state='restarting' + PC 层仍在 disconnected
+		rtc.__state = 'restarting';
+		pc.connectionState = 'disconnected';
+		window.dispatchEvent(new Event('app:foreground'));
+
+		expect(rtc.__disconnectedTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('后台 → 前台 PC 仍 connected → 不 arm disconnected timer，仅恢复 keepalive', async () => {
+		const { rtc } = await setupConnectedRtc();
+
+		window.dispatchEvent(new Event('app:background'));
+		expect(rtc.__keepaliveTimer).toBeNull();
+		await vi.advanceTimersByTimeAsync(50_000);
+
+		// PC 仍 connected
+		window.dispatchEvent(new Event('app:foreground'));
+		expect(rtc.__disconnectedTimer).toBeNull();
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+		expect(rtc.__backgroundAt).toBe(0);
+
+		rtc.close();
+	});
+
+	test('foreground 时 __backgroundAt=0 → 不报错且不 arm disconnected timer', async () => {
+		const { rtc } = await setupConnectedRtc();
+		expect(rtc.__backgroundAt).toBe(0);
+
+		expect(() => window.dispatchEvent(new Event('app:foreground'))).not.toThrow();
+		expect(rtc.__disconnectedTimer).toBeNull();
+		expect(rtc.__backgroundAt).toBe(0);
+
+		rtc.close();
+	});
+
+	test('close() 后 app:foreground 不触发动作（回归，防 __pc=null 空指针）', async () => {
+		const { rtc } = await setupConnectedRtc();
+		rtc.close();
+		expect(rtc.state).toBe('closed');
+
+		expect(() => window.dispatchEvent(new Event('app:foreground'))).not.toThrow();
+		expect(rtc.__disconnectedTimer).toBeNull();
+		expect(rtc.__keepaliveTimer).toBeNull();
+		expect(rtc.state).toBe('closed');
+	});
+
 	// --- 交互场景 ---
 
 	test('外部 close() 在 doKeepalive await probe 期间 → 不双重 close', async () => {

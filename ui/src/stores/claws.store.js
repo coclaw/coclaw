@@ -630,7 +630,11 @@ export const useClawsStore = defineStore('claws', {
 		 * - restarting → nudge（立即重试 restart offer）
 		 * - connected + typeChanged → triggerRestart（WiFi↔cellular，主动 restart）
 		 * - failed/closed → rebuild（restart 已失败，走 fallback）
-		 * - 其余 → 跳过（ICE 有自检测能力）
+		 * - 其余（idle/connecting）→ 跳过（ICE 有自检测能力）
+		 *
+		 * 注：rtc.state 枚举为 idle/connecting/connected/restarting/failed/closed，
+		 * 不会是 'disconnected'（PC 底层 connectionState 是 disconnected 时 rtc.state 仍为 connected，
+		 * 由 WebRtcConnection 内部的 __disconnectedTimer 自行升级，store 层不再匹配 disconnected 分支）。
 		 * @param {boolean} typeChanged
 		 */
 		__handleNetworkOnline(typeChanged) {
@@ -698,15 +702,10 @@ export const useClawsStore = defineStore('claws', {
 					return;
 				}
 
-				// PC disconnected → ICE 正在自恢复，不干预。
-				// WebRtcConnection 内部 5s 超时后升级到 ICE restart，
-				// 届时由 __rtcCallbacks.onRtcStateChange 同步 rtcPhase。
-				if (rtc.state === 'disconnected') {
-					remoteLog(`claw.recover claw=${id} reason=rtc_disconnected source=${source} action=wait_ice`);
-					return;
-				}
-
 				// PC connected → probe DC 验证端到端可达性
+				// 注：rtc.state 只能是 idle/connecting/connected/restarting/failed/closed；
+				// PC 底层 disconnected 时 rtc.state 仍为 connected，由 WebRtcConnection
+				// 内部的 __disconnectedTimer 自行升级，store 层不再干预。
 				_probeInProgress.set(id, true);
 				let alive;
 				try {

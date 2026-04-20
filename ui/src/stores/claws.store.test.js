@@ -816,7 +816,7 @@ describe('WebRTC 集成', () => {
 
 	test('bot offline→online + RTC 非 connected → close + rebuild', async () => {
 		const store = useClawsStore();
-		const fakeRtc = { state: 'disconnected' };
+		const fakeRtc = { state: 'failed' };
 		const fakeConn = {
 			rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
 			request: vi.fn().mockResolvedValue({}),
@@ -1216,11 +1216,11 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('source=app:foreground 长后台 + probe 失败 + PC 变 disconnected → triggerRestart', async () => {
+	test('source=app:foreground 长后台 + probe 失败 + PC 变 failed → triggerRestart', async () => {
 		const store = useClawsStore();
 		const fakeRtc = { state: 'connected', probe: vi.fn().mockImplementation(async () => {
-			// probe 期间 PC 状态变为 disconnected
-			fakeRtc.state = 'disconnected';
+			// probe 期间 PC 状态变为 failed（probe 失败 + state≠connected → triggerRestart 分支）
+			fakeRtc.state = 'failed';
 			return false;
 		}), triggerRestart: vi.fn() };
 		const fakeConn = {
@@ -1275,30 +1275,6 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		// PC 仍 connected → 不 rebuild
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
 		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('probe_timeout_pc_connected'));
-	});
-
-	test('PC disconnected → 不干预，交给 ICE 自恢复', async () => {
-		const store = useClawsStore();
-		const fakeRtc = { state: 'disconnected', probe: vi.fn() };
-		const fakeConn = {
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
-			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateClaw({ id: '72', name: 'Bot', online: false });
-		store.byId['72'].online = true;
-		store.byId['72'].initialized = true;
-		store.byId['72'].dcReady = true;
-		store.__bridgeConn('72');
-		mockCloseRtcForBot.mockClear();
-		mockInitRtc.mockClear();
-
-		emitForegroundResume('app:foreground');
-		await new Promise((r) => setTimeout(r, 50));
-		// disconnected 时不 probe 也不 rebuild，交给 ICE 自恢复
-		expect(fakeRtc.probe).not.toHaveBeenCalled();
-		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
 	});
 
 	test('dcReady=false → 不触发恢复', async () => {
@@ -1457,28 +1433,6 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		});
 	});
 
-	test('network:online + PC disconnected + 无类型变化 → 跳过（ICE 自恢复中）', async () => {
-		const store = useClawsStore();
-		const fakeRtc = { state: 'disconnected', probe: vi.fn() };
-		const fakeConn = {
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
-			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateClaw({ id: '84', name: 'Bot', online: false });
-		store.byId['84'].online = true;
-		store.byId['84'].initialized = true;
-		store.byId['84'].dcReady = true;
-		store.__bridgeConn('84');
-		mockCloseRtcForBot.mockClear();
-
-		emitForegroundResume('network:online', { typeChanged: false });
-		await new Promise((r) => setTimeout(r, 50));
-		expect(fakeRtc.probe).not.toHaveBeenCalled();
-		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-	});
-
 	test('network:online + typeChanged + PC connected → triggerRestart（ICE restart-first）', async () => {
 		const store = useClawsStore();
 		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn(), triggerRestart: vi.fn() };
@@ -1504,10 +1458,11 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('network_type_changed'));
 	});
 
-	test('network:online + typeChanged + 多个 claw → connected 触发 triggerRestart，disconnected 跳过', async () => {
+	test('network:online + typeChanged + 多个 claw → connected 触发 triggerRestart，connecting 跳过', async () => {
 		const store = useClawsStore();
 		const fakeRtcA = { state: 'connected', isReady: true, probe: vi.fn(), triggerRestart: vi.fn() };
-		const fakeRtcB = { state: 'disconnected', probe: vi.fn(), triggerRestart: vi.fn() };
+		// connecting 状态不匹配 restarting/connected+typeChanged/failed/closed 任何分支 → skip
+		const fakeRtcB = { state: 'connecting', probe: vi.fn(), triggerRestart: vi.fn() };
 		const conns = {
 			'91': { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), rtc: fakeRtcA, request: vi.fn().mockResolvedValue({}) },
 			'92': { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), rtc: fakeRtcB, request: vi.fn().mockResolvedValue({}) },
@@ -1531,7 +1486,7 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		await new Promise((r) => setTimeout(r, 50));
 		// connected claw → triggerRestart
 		expect(fakeRtcA.triggerRestart).toHaveBeenCalledWith('network_type_changed');
-		// disconnected claw → skipped（ICE 自恢复中）
+		// connecting claw → skipped（不匹配任何恢复分支）
 		expect(fakeRtcB.triggerRestart).not.toHaveBeenCalled();
 		// 无 rebuild
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
@@ -1582,30 +1537,6 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		emitForegroundResume('network:online', { typeChanged: true });
 		await new Promise((r) => setTimeout(r, 50));
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-	});
-
-	test('network:online + typeChanged + PC disconnected → 跳过（ICE 自恢复中，不触发 restart）', async () => {
-		const store = useClawsStore();
-		const fakeRtc = { state: 'disconnected', probe: vi.fn(), triggerRestart: vi.fn() };
-		const fakeConn = {
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
-			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.addOrUpdateClaw({ id: '95', name: 'Bot', online: false });
-		store.byId['95'].online = true;
-		store.byId['95'].initialized = true;
-		store.byId['95'].dcReady = true;
-		store.__bridgeConn('95');
-		mockCloseRtcForBot.mockClear();
-
-		emitForegroundResume('network:online', { typeChanged: true });
-		await new Promise((r) => setTimeout(r, 50));
-		// disconnected + typeChanged → skipped（triggerRestart 仅对 connected 触发）
-		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
-		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-		expect(fakeRtc.probe).not.toHaveBeenCalled();
 	});
 
 	test('network:online + typeChanged + PC failed → rebuild', async () => {
@@ -2330,26 +2261,6 @@ describe('rtcPhase 生命周期', () => {
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
 		expect(store.byId['97'].rtcPhase).toBe('ready');
 		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('probe_timeout_pc_connected'));
-	});
-
-	test('__checkAndRecover PC disconnected → 不干预', async () => {
-		const store = useClawsStore();
-		const fakeRtc = { state: 'disconnected', probe: vi.fn() };
-		const fakeConn = {
-			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
-			rtc: fakeRtc,
-		};
-		mockManager.get.mockReturnValue(fakeConn);
-
-		store.setClaws([{ id: '98', name: 'DiscoBot', online: true }]);
-		store.byId['98'].dcReady = true;
-		mockCloseRtcForBot.mockClear();
-		mockRemoteLog.mockClear();
-
-		await store.__checkAndRecover('98');
-		expect(fakeRtc.probe).not.toHaveBeenCalled();
-		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('rtc_disconnected'));
 	});
 
 	test('__checkAndRecover 异常时 catch 不抛出', async () => {

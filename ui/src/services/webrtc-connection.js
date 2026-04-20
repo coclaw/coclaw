@@ -19,6 +19,17 @@ import { remoteLog } from './remote-log.js';
 /** disconnected 状态超时：超过此时间仍未恢复则升级到 ICE restart（ICE 自愈通常 1-3s） */
 const DISCONNECTED_TIMEOUT_MS = 5_000;
 
+// --- 前台恢复场景下的 disconnected 容忍 ---
+// __onAppBackground 已清 __disconnectedTimer，前台恢复时按后台驻留时长 re-arm。
+// 注：长后台（分钟级）场景下 consent 早已连续失败、PC 通常已升到 failed，会走
+// onconnectionstatechange 的 failed 分支立即 restart，不经此 timer；因此无需再分"长后台"档。
+/** 短后台阈值（与 claws.store.js SHORT_BACKGROUND_MS 语义对齐，各自独立定义）：
+ *  < 此时长视为同一条网络会话，NAT binding 仍在，沿用 5s 自愈窗口 */
+const SHORT_BACKGROUND_MS = 25_000;
+/** 长于短后台阈值后回前台的 disconnected 容忍：主要用于让浏览器/WebView
+ *  从挂起恢复后完成内部状态同步，不再指望 ICE 自愈 */
+const DISCONNECTED_TIMEOUT_RESUME_MS = 1_500;
+
 /** ICE restart 总时间预算：超过后放弃 restart → failed → store rebuild */
 const ICE_RESTART_TIMEOUT_MS = 90_000;
 /** ICE restart 安全网定时器间隔（覆盖 connectionState:failed 未触发的极端场景） */
@@ -204,6 +215,9 @@ export class WebRtcConnection {
 		this.__probePromise = null;
 		/** disconnected 状态超时定时器 */
 		this.__disconnectedTimer = null;
+		/** APP 进入后台的时间戳（ms epoch），0 = 未进过后台或已处理完；
+		 *  前台恢复时据此按后台时长选择 disconnected timer 长度（短后台 5s / 长后台 1.5s） */
+		this.__backgroundAt = 0;
 		/** DC 应用层保活 */
 		this.__lastDcActivityAt = 0;
 		this.__keepaliveTimer = null;
@@ -263,6 +277,7 @@ export class WebRtcConnection {
 		this.__clearRestartState();
 		this.__unregisterAppLifecycle();
 		this.__clearDisconnectedTimer();
+		this.__backgroundAt = 0;
 		this.__settleProbe(false);
 		this.__removeRtcListener();
 		this.__rejectSendQueue(asFailed ? 'rtc failed' : 'connection closed');
@@ -677,16 +692,19 @@ export class WebRtcConnection {
 		}
 	}
 
-	/** @private 启动 disconnected 状态超时定时器 */
-	__startDisconnectedTimer() {
+	/**
+	 * @private 启动 disconnected 状态超时定时器
+	 * @param {number} [timeoutMs=DISCONNECTED_TIMEOUT_MS] - 覆盖默认超时（前台恢复路径用）
+	 */
+	__startDisconnectedTimer(timeoutMs = DISCONNECTED_TIMEOUT_MS) {
 		this.__clearDisconnectedTimer();
 		this.__disconnectedTimer = setTimeout(() => {
 			this.__disconnectedTimer = null;
 			if (this.__pc?.connectionState === 'disconnected') {
-				this.__log('warn', `ICE disconnected timeout (${DISCONNECTED_TIMEOUT_MS}ms), escalating to recovery`);
+				this.__log('warn', `ICE disconnected timeout (${timeoutMs}ms), escalating to recovery`);
 				this.__onIceFailed();
 			}
-		}, DISCONNECTED_TIMEOUT_MS);
+		}, timeoutMs);
 	}
 
 	/** @private 清除 disconnected 超时定时器 */
@@ -760,8 +778,26 @@ export class WebRtcConnection {
 			this.__stopRestartTimer();
 			// stats 轮询同样在后台停；前台 nudge 进入 __attemptRestart 时按 snap 存在与否恢复
 			this.__stopRestartPoll();
+			// 后台期间不启动主动恢复：清 disconnected timer，避免 fire 后 setLocalDescription
+			// 换掉 ICE creds 导致原 pair 自愈机会被剥夺，且后台 offer 可能发不出
+			this.__clearDisconnectedTimer();
+			// 记录进入后台时刻，前台恢复时按驻留时长决定新 disconnected timer 长度
+			this.__backgroundAt = Date.now();
 		};
 		this.__onAppForeground = () => {
+			const bgAt = this.__backgroundAt;
+			// Math.max 保护：系统时钟回跳（NTP 校准）导致 Date.now() < bgAt 时归零
+			const bgDuration = bgAt ? Math.max(0, Date.now() - bgAt) : 0;
+			this.__backgroundAt = 0;
+			// PC 仍处于 disconnected 时按后台时长 re-arm timer；restart 进行中不干预
+			if (this.__pc?.connectionState === 'disconnected' && this.__state !== 'restarting') {
+				const timeoutMs = bgDuration < SHORT_BACKGROUND_MS
+					? DISCONNECTED_TIMEOUT_MS
+					: DISCONNECTED_TIMEOUT_RESUME_MS;
+				this.__log('info', `foreground disconnected re-arm bgDur=${bgDuration}ms timeout=${timeoutMs}ms`);
+				this.__startDisconnectedTimer(timeoutMs);
+			}
+			// 保留：连接仍健康则恢复保活
 			if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
 				this.__startKeepalive();
 			}

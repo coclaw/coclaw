@@ -161,7 +161,11 @@ connected:
 
 disconnected:
   + 如果当前 restarting → 忽略（restart 过程中的中间状态）
-  否则 → 启动 5s disconnected 超时（现有逻辑不变）
+  否则 → 启动 5s disconnected 超时（DISCONNECTED_TIMEOUT_MS，常规抖动自愈窗口）
+
+  注：`app:background` 会清掉此 timer（见 §App 前后台生命周期），避免后台 fire
+  造成 setLocalDescription 换 ICE creds + __restartStartTime 被记成后台时刻，
+  前台恢复时命中"时间预算耗尽 → rebuild"坏路径。
 
 failed:
   + 如果当前 restarting → 本次 ICE check 失败，立即触发 __attemptRestart('ice_check_failed')
@@ -187,6 +191,25 @@ __onSignaling(msg):
 - 仅 restarting 状态时活跃
 - 仅 signaling WS connected 时发送 offer
 - `app:background` 时停止，`foreground` 由 store nudge 触发
+
+#### App 前后台生命周期（disconnected timer 二段式）
+
+`__onAppBackground`（`webrtc-connection.js`）：
+- 停 keepalive / restart-timer / restart-poll
+- **清 `__disconnectedTimer`**（防止后台 fire 后走 `__onIceFailed → __attemptRestart`：
+  `setLocalDescription` 换掉 ICE creds → 原 pair 再不可能自愈；`__restartStartTime`
+  被记成后台时刻，前台恢复后命中"时间预算 90s 耗尽 → close asFailed → rebuild"坏路径）
+- 记录 `__backgroundAt = Date.now()`
+
+`__onAppForeground`：
+- 读 `bgDuration = Date.now() - __backgroundAt`，然后清 `__backgroundAt = 0`
+- 仅当 PC `connectionState === 'disconnected'` 且 `__state !== 'restarting'` 时 re-arm timer：
+  - `bgDuration < SHORT_BACKGROUND_MS`（25s）→ 5s（`DISCONNECTED_TIMEOUT_MS`，允许瞬抖自愈）
+  - `bgDuration ≥ 25s` → 1.5s（`DISCONNECTED_TIMEOUT_RESUME_MS`，只等浏览器/WebView 内部状态同步）
+- 连接仍健康（state=connected + DC open）则恢复 keepalive
+
+为什么没有"长后台"第三档：长后台（分钟级）下 consent refresh 已连续失败多轮，PC 通常已升到
+`failed`，会走 `onconnectionstatechange` 的 failed 分支立即 restart，**不经此 timer**。
 
 #### 其他联动修改
 
