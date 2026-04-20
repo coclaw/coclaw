@@ -12,11 +12,16 @@ const { routes } = routerTest;
 
 function createMockWs(opts = {}) {
 	const sent = [];
-	return {
+	const ws = {
 		readyState: opts.readyState ?? 1,
 		sent,
+		terminateCalls: 0,
+		closeCalls: [],
 		send(data) { sent.push(JSON.parse(data)); },
+		terminate() { ws.terminateCalls++; },
+		close(code, reason) { ws.closeCalls.push({ code, reason }); },
 	};
+	return ws;
 }
 
 // mock findClawById：botId=1,2,3 归属 userId='u1'；botId=999 归属 other-user
@@ -247,7 +252,7 @@ test('handleMessage: rtc:offer bot 归属验证失败时拒绝', async () => {
 	cleanup();
 });
 
-test('handleMessage: rtc:offer connId 被其他 WS 占用时拒绝', async () => {
+test('handleMessage: rtc:offer 同 user+claw 的 connId 冲突触发 WS 级接管', async () => {
 	const ws1 = createMockWs();
 	const ws2 = createMockWs();
 	register('c_taken', ws1, '1', 'u1');
@@ -260,9 +265,31 @@ test('handleMessage: rtc:offer connId 被其他 WS 占用时拒绝', async () =>
 		payload: { sdp: 'sdp' },
 	}), makeDeps(fwd));
 
+	// 接管：消息正常转发到 claw，路由迁到新 WS，旧 WS 被 terminate
+	assert.equal(fwd.calls.length, 1, 'should forward after takeover');
+	assert.equal(fwd.calls[0].payload.fromConnId, 'c_taken');
+	assert.equal(lookup('c_taken').ws, ws2);
+	assert.equal(ws1.terminateCalls, 1);
+	cleanup();
+});
+
+test('handleMessage: rtc:offer connId 被其他 user 的 WS 占用时仍拒绝', async () => {
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	// 模拟 ws1 是另一个 user 的——直接用路由底层注册绕开归属校验
+	register('c_conflict', ws1, '1', 'other-user');
+
+	const fwd = createForwardMock();
+	await handleMessage(ws2, 'u1', JSON.stringify({
+		type: 'rtc:offer',
+		botId: '1',
+		connId: 'c_conflict',
+		payload: { sdp: 'sdp' },
+	}), makeDeps(fwd));
+
 	assert.equal(fwd.calls.length, 0, 'should not forward');
-	// 原注册不变
-	assert.equal(lookup('c_taken').ws, ws1);
+	assert.equal(lookup('c_conflict').ws, ws1);
+	assert.equal(ws1.terminateCalls, 0);
 	cleanup();
 });
 
@@ -354,6 +381,27 @@ test('handleMessage: rtc:closed connId 不存在时不抛异常', async () => {
 	// 仍转发（使用 payload 中的 botId）
 	assert.equal(fwd.calls.length, 1);
 	assert.equal(fwd.calls[0].clawId, '1');
+	cleanup();
+});
+
+test('handleMessage: rtc:closed 来自旧 WS 但路由已迁走时不误删新路由', async () => {
+	// 场景：接管刚发生，routes[connId].ws=ws2；此时旧 ws1 的 rtc:closed 仍被投递（延迟消息）。
+	// 守卫应保证 remove(connId) 不把新 WS 刚接管的路由抹掉。
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	register('c_migrated', ws2, '1', 'u1'); // 模拟接管后的状态
+	const fwd = createForwardMock();
+
+	await handleMessage(ws1, 'u1', JSON.stringify({
+		type: 'rtc:closed',
+		botId: '1',
+		connId: 'c_migrated',
+	}), makeDeps(fwd));
+
+	// 转发照常（旧 WS 的 rtc:closed 仍会通知 claw）
+	assert.equal(fwd.calls.length, 1);
+	// 关键：路由保持指向 ws2，未被误删
+	assert.equal(lookup('c_migrated').ws, ws2);
 	cleanup();
 });
 
@@ -654,24 +702,23 @@ test('attachRtcSignalHub: 认证通过时调用 wss.handleUpgrade', async () => 
 
 // --- rtc:ice/rtc:ready 隐式注册被占用时拒绝 ---
 
-test('handleMessage: rtc:ice connId 已注册时直接使用现有路由转发', async () => {
-	const ws1 = createMockWs();
-	const ws2 = createMockWs();
-	register('c_ice_taken', ws1, '1', 'u1');
+test('handleMessage: rtc:ice connId 已注册在同一 WS 上时直接转发', async () => {
+	const ws = createMockWs();
+	register('c_ice_taken', ws, '1', 'u1');
 
 	const fwd = createForwardMock();
-	await handleMessage(ws2, 'u1', JSON.stringify({
+	await handleMessage(ws, 'u1', JSON.stringify({
 		type: 'rtc:ice',
 		botId: '1',
 		connId: 'c_ice_taken',
 		payload: { candidate: 'cand' },
 	}), makeDeps(fwd));
 
-	// 已注册的 connId 会直接使用现有路由转发
+	// 路由指向当前 ws → 直接走已注册路径、不触发接管
 	assert.equal(fwd.calls.length, 1);
 	assert.equal(fwd.calls[0].clawId, '1');
-	// 原注册不变
-	assert.equal(lookup('c_ice_taken').ws, ws1);
+	assert.equal(lookup('c_ice_taken').ws, ws);
+	assert.equal(ws.terminateCalls, 0);
 	cleanup();
 });
 
@@ -720,34 +767,32 @@ test('handleMessage: payload 为 null 时静默忽略', async () => {
 	assert.equal(ws.sent.length, 0);
 });
 
-// --- rtc:ice 隐式注册 connId 被占用时拒绝（覆盖 lines 124-126） ---
+// --- rtc:ice/ready 路由指向旧 WS 时触发接管 ---
 
-test('handleMessage: rtc:ice 未注册 + 隐式注册被其他 WS 占用时拒绝', async () => {
+test('handleMessage: rtc:ice 路由指向旧 WS 时触发接管', async () => {
 	const ws1 = createMockWs();
 	const ws2 = createMockWs();
-	// ws1 先注册了 connId
 	register('c_ice_occupied', ws1, '1', 'u1');
 
 	const fwd = createForwardMock();
-	// ws2 尝试发 rtc:ice，connId 被 ws1 占用，隐式注册失败
 	await handleMessage(ws2, 'u1', JSON.stringify({
 		type: 'rtc:ice',
 		botId: '1',
 		connId: 'c_ice_occupied',
 	}), makeDeps(fwd));
 
-	// 已注册路由存在，应直接使用现有路由转发（不走隐式注册路径）
+	// 接管：转发正常，路由迁到 ws2，旧 WS 被 terminate
 	assert.equal(fwd.calls.length, 1);
+	assert.equal(lookup('c_ice_occupied').ws, ws2);
+	assert.equal(ws1.terminateCalls, 1);
 	cleanup();
 });
 
-// --- rtc:ice/ready 隐式注册成功后 lookup 必定非 null（覆盖 lines 131-133 防御分支） ---
-// 这是一个防御分支，正常情况下 register 成功后 lookup 必不为 null
-// 无法在单线程中触发，仅作为文档说明
+// --- rtc:ice/ready 隐式注册成功后 lookup 必定非 null 的防御分支 ---
+// 正常情况下 register 成功后 lookup 必不为 null（JS 单线程 + 迁移路径无 await）
+// 无法通过正常路径触发，仅作为防御性保护；不做测试
 
-// --- rtc:ready 隐式注册被占用时拒绝 ---
-
-test('handleMessage: rtc:ready 未注册 + 归属验证通过但 connId 被占用时拒绝', async () => {
+test('handleMessage: rtc:ready 路由指向旧 WS 时触发接管', async () => {
 	const ws1 = createMockWs();
 	const ws2 = createMockWs();
 	register('c_rdy_occ', ws1, '1', 'u1');
@@ -759,7 +804,31 @@ test('handleMessage: rtc:ready 未注册 + 归属验证通过但 connId 被占�
 		connId: 'c_rdy_occ',
 	}), makeDeps(fwd));
 
-	// 已注册路由存在，走已注册路径
+	// 接管成功，转发照常
 	assert.equal(fwd.calls.length, 1);
+	assert.equal(lookup('c_rdy_occ').ws, ws2);
+	assert.equal(ws1.terminateCalls, 1);
+	cleanup();
+});
+
+// --- rtc:ice/ready 接管被 userId 不匹配挡住时拒绝 ---
+
+test('handleMessage: rtc:ice 路由指向旧 WS 但 userId 不匹配时拒绝', async () => {
+	const ws1 = createMockWs();
+	const ws2 = createMockWs();
+	// ws1 归属 u1；ws2 的 userId 是 u1，但 ws2 发 rtc:ice 的 botId=999（归属 other-user）
+	// 借助归属校验挡住——ownership 校验通过不了 → 直接拒绝，路由不动
+	register('c_ice_crossuser', ws1, '999', 'other-user');
+
+	const fwd = createForwardMock();
+	await handleMessage(ws2, 'u1', JSON.stringify({
+		type: 'rtc:ice',
+		botId: '999',
+		connId: 'c_ice_crossuser',
+	}), makeDeps(fwd));
+
+	assert.equal(fwd.calls.length, 0);
+	assert.equal(lookup('c_ice_crossuser').ws, ws1);
+	assert.equal(ws1.terminateCalls, 0);
 	cleanup();
 });

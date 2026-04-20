@@ -92,10 +92,13 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 			sigLogWarn(`rtc:offer denied: clawId=${clawId} not owned by userId=${userId}`);
 			return;
 		}
-		const ok = register(connId, ws, clawId, userId);
+		const { ok, migrated } = register(connId, ws, clawId, userId);
 		if (!ok) {
-			sigLogWarn(`rtc:offer denied: connId=${connId} occupied by another WS`);
+			sigLogWarn(`rtc:offer denied: connId=${connId} conflicts with different userId`);
 			return;
+		}
+		if (migrated) {
+			sigLogInfo(`signal ws takeover userId=${userId} connId=${connId} via=rtc:offer`);
 		}
 		// 注入 TURN 凭证
 		if (process.env.TURN_SECRET) {
@@ -113,17 +116,20 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 
 	if (type === 'rtc:ice' || type === 'rtc:ready') {
 		let route = lookup(connId);
-		// 隐式注册
-		if (!route) {
+		// 隐式注册 / 接管：route 不存在，或 route 指向另一条 ws（同一 UI 实例换 WS 后的首条 ice/ready）
+		if (!route || route.ws !== ws) {
 			const owned = await validateClawOwnership(clawId, userId, findClawByIdFn);
 			if (!owned) {
 				sigLogWarn(`${type} denied: clawId=${clawId} not owned by userId=${userId}`);
 				return;
 			}
-			const ok = register(connId, ws, clawId, userId);
+			const { ok, migrated } = register(connId, ws, clawId, userId);
 			if (!ok) {
-				sigLogWarn(`${type} denied: connId=${connId} occupied by another WS`);
+				sigLogWarn(`${type} denied: connId=${connId} conflicts with different userId`);
 				return;
+			}
+			if (migrated) {
+				sigLogInfo(`signal ws takeover userId=${userId} connId=${connId} via=${type}`);
 			}
 			route = lookup(connId);
 		}
@@ -152,7 +158,9 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 			} else {
 				sigLogDebug(`rtc:closed dropped, claw offline clawId=${route.clawId} connId=${connId}`);
 			}
-			remove(connId);
+			// 守卫：仅当路由仍属于当前 ws 时才清除；否则说明接管已将 connId 迁到新 WS，
+			// 旧 WS 的延迟 rtc:closed 不应误删新路由（对称于 removeByWs 的 entry.ws === ws 守卫）
+			if (route.ws === ws) remove(connId);
 		} else {
 			// connId 未注册：需验证 clawId 归属后才转发
 			const owned = await validateClawOwnership(clawId, userId, findClawByIdFn);
