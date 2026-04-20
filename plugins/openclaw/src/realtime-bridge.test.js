@@ -2239,6 +2239,41 @@ test('RealtimeBridge gateway res/event should broadcast to webrtcPeer', async ()
 	}
 });
 
+test('RealtimeBridge gateway health/tick events are filtered (not forwarded to DC)', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_filter',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 50));
+
+		const broadcasted = [];
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+
+		const gwWs = FakeWebSocket.instances.find((ws) => ws !== server);
+		assert.ok(gwWs, 'gateway ws should exist');
+		gwWs.readyState = 1;
+		bridge.gatewayReady = true;
+
+		// health / tick 被拦截
+		gwWs.emit('message', { data: JSON.stringify({ type: 'event', event: 'health', payload: { ok: true } }) });
+		gwWs.emit('message', { data: JSON.stringify({ type: 'event', event: 'tick', payload: { ts: 1 } }) });
+		assert.equal(broadcasted.length, 0, 'health/tick must not be forwarded');
+
+		// 其他 event 正常转发
+		gwWs.emit('message', { data: JSON.stringify({ type: 'event', event: 'agent', payload: { runId: 'r1' } }) });
+		assert.equal(broadcasted.length, 1);
+		assert.equal(broadcasted[0].event, 'agent');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
 test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer (DC path)', async () => {
 	const { bridge, server, prevHome } = await setupConnectedBridge();
 	try {

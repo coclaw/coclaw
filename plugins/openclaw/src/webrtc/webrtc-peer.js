@@ -260,17 +260,38 @@ export class WebRtcPeer {
 		this.__sessions.set(connId, session);
 
 		// ICE candidate → 发给 UI，并统计各类型 candidate 数量
+		// gather complete 时一并输出 host 候选的 IP:port 列表（诊断 docker/vbridge 误 gather）
 		const candidateCounts = { host: 0, srflx: 0, relay: 0 };
+		const hostAddrs = [];
+		let gatheringEmitted = false;
+		const flushGatherDiag = () => {
+			if (gatheringEmitted) return;
+			gatheringEmitted = true;
+			const hostInfo = hostAddrs.length ? ` hosts=${hostAddrs.join(',')}` : '';
+			this.__remoteLog(`rtc.ice-gathered conn=${connId} host=${candidateCounts.host} srflx=${candidateCounts.srflx} relay=${candidateCounts.relay}${hostInfo}`);
+			candidateCounts.host = 0;
+			candidateCounts.srflx = 0;
+			candidateCounts.relay = 0;
+			hostAddrs.length = 0;
+		};
 		pc.onicecandidate = ({ candidate }) => {
 			if (!candidate) {
-				// gathering 完成，输出汇总
-				this.__remoteLog(`rtc.ice-gathered conn=${connId} host=${candidateCounts.host} srflx=${candidateCounts.srflx} relay=${candidateCounts.relay}`);
+				// 浏览器路径：gathering 完成通过 null candidate 通知
+				flushGatherDiag();
 				return;
 			}
 			// 从 candidate 字符串中提取类型（typ host / typ srflx / typ relay）
 			const typMatch = candidate.candidate?.match(/typ (\w+)/);
 			if (typMatch && candidateCounts[typMatch[1]] !== undefined) {
 				candidateCounts[typMatch[1]]++;
+			}
+			// host 候选记录 addr:port，用于观察 pion 是否把 docker0 / br-* / loopback 等接口当成 host
+			// candidate 格式: "candidate:<foundation> <comp> <proto> <prio> <ADDR> <PORT> typ host ..."
+			if (typMatch?.[1] === 'host') {
+				const parts = candidate.candidate.split(' ');
+				if (parts.length >= 6) {
+					hostAddrs.push(`${parts[4]}:${parts[5]}`);
+				}
 			}
 			this.__onSend({
 				type: 'rtc:ice',
@@ -282,6 +303,18 @@ export class WebRtcPeer {
 				},
 			});
 		};
+		// pion-node 不会在 gather complete 时 fire onicecandidate(null)，用 icegatheringstatechange 兜底。
+		// gathering→ 重置 flag 支持 ICE restart；complete→ flush 汇总
+		if ('onicegatheringstatechange' in pc) {
+			pc.onicegatheringstatechange = () => {
+				const state = pc.iceGatheringState;
+				if (state === 'gathering') {
+					gatheringEmitted = false;
+				} else if (state === 'complete') {
+					flushGatherDiag();
+				}
+			};
+		}
 
 		// ICE agent 状态（pion 暴露的独立事件）：能看到 checking / connected / failed 等纯 ICE 侧跳转，
 		// 与复合 connectionState 互补。对诊断"pion 说 connected 但 UI 看不到数据"非常关键。

@@ -659,6 +659,14 @@ export class RealtimeBridge {
 				return;
 			}
 			if (payload.type === 'res' || payload.type === 'event') {
+				// 过滤 gateway 的管理层广播事件，这些对 WebChat / plugin 客户端无意义：
+				// - health: 全量状态快照（~3KB, ~60s 一次 + RPC 触发），给 Admin UI 的监控仪表盘用
+				// - tick: gateway WS 保活心跳（30s 一次），UI 隔着 DC 不需要，DC 自己有 probe 机制
+				// 不转发可避免后台时 rpc DC 队列被灌满。上游支持按需订阅前先在插件侧拦截。
+				if (payload.type === 'event'
+					&& (payload.event === 'health' || payload.event === 'tick')) {
+					return;
+				}
 				this.webrtcPeer?.broadcast(payload);
 			}
 		});

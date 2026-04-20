@@ -62,6 +62,10 @@ export class RpcSendQueue {
 	send(jsonStr) {
 		if (this.closed || this.dc.readyState !== 'open') return false;
 
+		// 诊断日志：打印每次入队的事件，跟踪 gateway 还会推哪些事件
+		// 需要时临时打开，平时保持注释避免日志噪音
+		// this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] send-payload ${jsonStr}`);
+
 		const chunks = buildChunks(jsonStr, this.maxMessageSize, this.getNextMsgId);
 		const totalBytes = chunks
 			? chunks.reduce((n, c) => n + c.length, 0)
@@ -80,6 +84,8 @@ export class RpcSendQueue {
 			this.droppedCount += 1;
 			this.droppedBytes += totalBytes;
 			this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] drop reason=queue-full size=${totalBytes} queueBytes=${this.queueBytes}`);
+			// 诊断日志：定位后台长时间占队的事件来源。需要时临时打开
+			// this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] dropped-payload ${jsonStr}`);
 			if (!this.queueOverflowActive) {
 				this.queueOverflowActive = true;
 				remoteLog(`rpc-queue.overflow-start${this.__tagSuffix()} queueBytes=${this.queueBytes}`);

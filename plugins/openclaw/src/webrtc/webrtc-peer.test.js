@@ -2702,8 +2702,10 @@ function createPionMockPC() {
 		onicecandidate: null,
 		onconnectionstatechange: null,
 		onselectedcandidatepairchange: null,
+		onicegatheringstatechange: null,
 		ondatachannel: null,
 		connectionState: 'new',
+		iceGatheringState: 'new',
 		selectedCandidatePair: null,
 		setRemoteDescription: async () => {},
 		createAnswer: async () => ({ sdp: 'mock-sdp-answer' }),
@@ -3836,4 +3838,140 @@ test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）',
 
 	await peer.closeByConnId('c_det01');
 	assert.equal(pc.oniceconnectionstatechange, null, 'handler detached after close');
+});
+
+test('WebRtcPeer: pion icegatheringstatechange=complete flushes gather diag (host addrs included)', async () => {
+	resetRemoteLog();
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_gather_pion'));
+	const pc = PC.instances[0];
+	assert.equal(typeof pc.onicegatheringstatechange, 'function', 'handler should be installed');
+
+	pc.onicecandidate({ candidate: { candidate: 'candidate:1 1 udp 2122260223 192.168.1.1 10000 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.onicecandidate({ candidate: { candidate: 'candidate:2 1 udp 2122194687 172.17.0.1 10001 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+
+	// pion 路径：complete 事件触发 flush
+	pc.iceGatheringState = 'complete';
+	pc.onicegatheringstatechange();
+
+	const gathered = remoteLogBuffer.find((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('c_gather_pion'));
+	assert.ok(gathered, 'should log ice-gathered on complete');
+	assert.ok(gathered.text.includes('host=2'));
+	assert.ok(gathered.text.includes('hosts=192.168.1.1:10000,172.17.0.1:10001'));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion icegatheringstatechange idempotent (null candidate + complete fires once)', async () => {
+	resetRemoteLog();
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_gather_dup'));
+	const pc = PC.instances[0];
+
+	pc.onicecandidate({ candidate: { candidate: 'candidate:1 1 udp 2122260223 10.0.0.1 10000 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+	// 先走 null candidate flush
+	pc.onicecandidate({ candidate: null });
+	// 再收到 complete —— 不应重复 flush
+	pc.iceGatheringState = 'complete';
+	pc.onicegatheringstatechange();
+
+	const gathered = remoteLogBuffer.filter((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('c_gather_dup'));
+	assert.equal(gathered.length, 1, 'only one gather log expected');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion icegatheringstatechange=gathering resets flag for ICE restart', async () => {
+	resetRemoteLog();
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_gather_restart'));
+	const pc = PC.instances[0];
+
+	// 第一轮 gather：host 候选 → complete
+	pc.onicecandidate({ candidate: { candidate: 'candidate:1 1 udp 2122260223 192.168.1.1 10000 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.iceGatheringState = 'complete';
+	pc.onicegatheringstatechange();
+
+	// ICE restart: gathering 重置 flag，再收 host + complete 应再次 flush
+	pc.iceGatheringState = 'gathering';
+	pc.onicegatheringstatechange();
+	pc.onicecandidate({ candidate: { candidate: 'candidate:2 1 udp 2122194687 10.0.0.2 20000 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.iceGatheringState = 'complete';
+	pc.onicegatheringstatechange();
+
+	const gathered = remoteLogBuffer.filter((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('c_gather_restart'));
+	assert.equal(gathered.length, 2, 'should flush once per gather cycle');
+	assert.ok(gathered[0].text.includes('hosts=192.168.1.1:10000'));
+	assert.ok(gathered[1].text.includes('hosts=10.0.0.2:20000'));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion icegatheringstatechange=other states are no-op', async () => {
+	resetRemoteLog();
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_gather_other'));
+	const pc = PC.instances[0];
+
+	// 只进到 'new' 等非 gathering/complete 状态，不应产生日志
+	pc.iceGatheringState = 'new';
+	pc.onicegatheringstatechange();
+
+	const gathered = remoteLogBuffer.filter((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('c_gather_other'));
+	assert.equal(gathered.length, 0);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: host candidate with short string does not crash addr extraction', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	await peer.handleSignaling(makeOffer('c_short_host'));
+	const pc = PC.instances[0];
+
+	// candidate 字符串被截断（少于 6 段），应仅计数不记地址
+	pc.onicecandidate({ candidate: { candidate: 'candidate:1 typ host', sdpMid: '0', sdpMLineIndex: 0 } });
+	pc.onicecandidate({ candidate: null });
+
+	const gathered = remoteLogBuffer.find((e) => e.text.includes('rtc.ice-gathered') && e.text.includes('c_short_host'));
+	assert.ok(gathered);
+	assert.ok(gathered.text.includes('host=1'));
+	assert.ok(!gathered.text.includes('hosts='), 'short candidate: no addr recorded');
+
+	await peer.closeAll();
 });
