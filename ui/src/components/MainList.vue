@@ -7,41 +7,40 @@
 		<header v-if="showCapHeader" class="sticky top-0 z-10 flex items-center gap-2 border-b border-default bg-default pl-3.5 pr-1 py-[3px] md:hidden">
 			<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 			<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
-			<!-- RTC 建连/恢复中：loading 状态的 refresh 按钮（样式对齐 ChatPage header 的 refresh 按钮，由 Nuxt UI 内部把 icon 替换为 spinner） -->
-			<UButton
-				v-if="showRtcConnecting"
-				icon="i-lucide-refresh-cw"
-				color="neutral"
-				variant="ghost"
-				size="xl"
-				class="cc-icon-btn-lg"
-				data-testid="rtc-connecting"
-				:title="$t('layout.rtcConnecting')"
-				:aria-label="$t('layout.rtcConnecting')"
-				:loading="true"
-				:disabled="true"
-			/>
-			<!-- RTC 退避耗尽：warning 色 refresh 按钮，点击触发手动重试 -->
-			<UButton
-				v-else-if="hasUnreachableClaws"
-				icon="i-lucide-refresh-cw"
-				color="warning"
-				variant="ghost"
-				size="xl"
-				class="cc-icon-btn-lg"
-				data-testid="rtc-unreachable"
-				:title="$t('layout.rtcUnreachable')"
-				:aria-label="$t('layout.rtcUnreachable')"
-				@click="onManualRetry"
-			/>
-			<UButton
-				icon="i-lucide-plus"
-				color="primary"
-				variant="ghost"
-				size="xl"
-				class="cc-icon-btn-lg"
-				@click="$router.push('/claws/add')"
-			/>
+			<div class="flex shrink-0 items-center">
+				<!-- RTC 建连/恢复中：loading 状态的 refresh 按钮（样式对齐 ChatPage header 的 refresh 按钮，由 Nuxt UI 内部把 icon 替换为 spinner） -->
+				<UButton
+					v-if="showRtcConnecting"
+					icon="i-lucide-refresh-cw"
+					color="neutral"
+					variant="ghost"
+					class="cc-icon-btn-lg"
+					data-testid="rtc-connecting"
+					:title="$t('layout.rtcConnecting')"
+					:aria-label="$t('layout.rtcConnecting')"
+					:loading="true"
+					:disabled="true"
+				/>
+				<!-- RTC 退避耗尽：warning 色 refresh 按钮，点击触发手动重试 -->
+				<UButton
+					v-else-if="hasUnreachableClaws"
+					icon="i-lucide-refresh-cw"
+					color="warning"
+					variant="ghost"
+					class="cc-icon-btn-lg"
+					data-testid="rtc-unreachable"
+					:title="$t('layout.rtcUnreachable')"
+					:aria-label="$t('layout.rtcUnreachable')"
+					@click="onManualRetry"
+				/>
+				<UButton
+					icon="i-lucide-plus"
+					color="primary"
+					variant="ghost"
+					class="cc-icon-btn-lg"
+					@click="$router.push('/claws/add')"
+				/>
+			</div>
 		</header>
 
 		<!-- Group 1: 机器人操作入口 -->
