@@ -30,7 +30,8 @@
     "index.js",
     "src/**/*.js",
     "!src/**/*.test.js",
-    "!src/**/*.helper.js",
+    "!src/mock-server.helper.js",
+    "!src/homedir-mock.helper.js",
     "openclaw.plugin.json",
     "LICENSE"
   ],
