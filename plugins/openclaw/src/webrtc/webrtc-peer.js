@@ -252,7 +252,14 @@ export class WebRtcPeer {
 		const turnUrl = iceServers.find((s) => s.urls?.startsWith('turn:'))?.urls ?? 'none';
 		this.__remoteLog(`rtc.ice-config conn=${connId} stun=${stunUrl} turn=${turnUrl}`);
 
-		const pc = new this.__PeerConnection({ iceServers });
+		// settings 仅对 pion 生效：werift 路径不吃 settings 字段（大概率静默忽略，
+		// 但按 __impl 分层更干净）。只收紧 pion 的 SCTP RTO 退避上限到 10s，
+		// 让 APK 后台唤醒后的深度退避窗口能落在 UI 的 15s 超时内。
+		const pcConfig = { iceServers };
+		if (this.__impl === 'pion') {
+			pcConfig.settings = { sctpRtoMax: 10000 };
+		}
+		const pc = new this.__PeerConnection(pcConfig);
 
 		const remoteMaxMessageSize = this.__resolveMaxMessageSize(pc, msg.payload.sdp);
 
@@ -579,6 +586,28 @@ export class WebRtcPeer {
 			: 'queue=none';
 		this.__remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
 		this.logger.info?.(`${this.__rtcTag} [${connId}] dump state=${state} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=${fileSummary}`);
+		// 仅 pion 路径追加 SCTP 采样：cwnd 是否塌回 1×MTU + bytesSent 增量是否 ~0
+		// 是判定"是否陷入深度 RTO 退避"的关键。fire-and-forget + 内部 try/catch
+		// 双保险，不阻塞 dump 主流程；rtc.sctp 独立一行避免污染既有 rtc.dump 格式。
+		if (this.__impl === 'pion' && typeof session.pc.getSctpStats === 'function') {
+			this.__dumpSctpStats(connId, session, state).catch(() => {});
+		}
+	}
+
+	async __dumpSctpStats(connId, session, state) {
+		try {
+			const stats = await session.pc.getSctpStats();
+			if (!stats) {
+				this.__remoteLog(`rtc.sctp conn=${connId} state=${state} sctp=none`);
+				return;
+			}
+			this.__remoteLog(
+				`rtc.sctp conn=${connId} state=${state} cwnd=${stats.congestionWindow} srtt=${Math.round(stats.srttMs)}ms sent=${stats.bytesSent} recv=${stats.bytesReceived} mtu=${stats.mtu}`,
+			);
+		} catch (err) {
+			this.__remoteLog(`rtc.sctp conn=${connId} state=${state} error=${err.message}`);
+			this.logger.warn?.(`${this.__rtcTag} [${connId}] getSctpStats error: ${err.message}`);
+		}
 	}
 
 	/**

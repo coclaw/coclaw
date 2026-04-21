@@ -3975,3 +3975,190 @@ test('WebRtcPeer: host candidate with short string does not crash addr extractio
 
 	await peer.closeAll();
 });
+
+// --- sctpRtoMax + SCTP stats dump (Phase 3) ---
+// 下面的异步用例依赖模块级 flushMicrotasks（2 次 await）排空 __dumpSctpStats 的
+// 单次 await 跳。若将来给 __dumpSctpStats 加入额外的 await，需要同步加深排空次数，
+// 否则测试会在断言 rtc.sctp 时看到空 buffer 误通过。
+
+test('WebRtcPeer: pion impl passes settings.sctpRtoMax=10000 to PeerConnection', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_sctp_s01'));
+
+	assert.equal(PC.instances.length, 1);
+	const args = PC.instances[0].__constructorArgs;
+	assert.deepEqual(args.settings, { sctpRtoMax: 10000 });
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: non-pion impl does NOT pass settings to PeerConnection', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	await peer.handleSignaling(makeOffer('c_sctp_s02'));
+
+	const args = PC.instances[0].__constructorArgs;
+	assert.equal(args.settings, undefined);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion dump appends rtc.sctp line with cwnd/srtt/sent/recv/mtu', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_sctp01'));
+	const pc = PC.instances[0];
+	pc.getSctpStats = async () => ({
+		bytesSent: 100,
+		bytesReceived: 200,
+		srttMs: 23.4,
+		congestionWindow: 4380,
+		receiverWindow: 65535,
+		mtu: 1228,
+	});
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	await flushMicrotasks();
+
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /c_sctp01/.test(e.text));
+	assert.ok(dump, 'rtc.dump should still be emitted');
+	const sctp = remoteLogBuffer.find((e) => /rtc\.sctp/.test(e.text) && /c_sctp01/.test(e.text));
+	assert.ok(sctp, `expected rtc.sctp log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
+	assert.match(sctp.text, /state=failed/);
+	assert.match(sctp.text, /cwnd=4380/);
+	assert.match(sctp.text, /srtt=23ms/);
+	assert.match(sctp.text, /sent=100/);
+	assert.match(sctp.text, /recv=200/);
+	assert.match(sctp.text, /mtu=1228/);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion rtc.sctp emits sctp=none when association not yet up (null stats)', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_sctp02'));
+	const pc = PC.instances[0];
+	pc.getSctpStats = async () => null;
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	await flushMicrotasks();
+
+	const sctp = remoteLogBuffer.find((e) => /rtc\.sctp/.test(e.text) && /c_sctp02/.test(e.text));
+	assert.ok(sctp);
+	assert.match(sctp.text, /sctp=none/);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion rtc.sctp emits error line when getSctpStats rejects; dump survives', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_sctp03'));
+	const pc = PC.instances[0];
+	pc.getSctpStats = async () => { throw new Error('boom'); };
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	await flushMicrotasks();
+
+	const sctp = remoteLogBuffer.find((e) => /rtc\.sctp/.test(e.text) && /c_sctp03/.test(e.text));
+	assert.ok(sctp);
+	assert.match(sctp.text, /error=boom/);
+	// dump 本身不受影响
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /c_sctp03/.test(e.text));
+	assert.ok(dump);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: non-pion impl does not emit rtc.sctp line on dump', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	await peer.handleSignaling(makeOffer('c_sctp04'));
+	const pc = PC.instances[0];
+	// 即使挂了 getSctpStats，非 pion 路径也不应调用
+	let called = false;
+	pc.getSctpStats = async () => { called = true; return null; };
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	await flushMicrotasks();
+
+	assert.equal(called, false, 'non-pion impl must not call getSctpStats');
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /c_sctp04/.test(e.text));
+	assert.ok(dump, 'rtc.dump should still be emitted');
+	const sctp = remoteLogBuffer.find((e) => /rtc\.sctp/.test(e.text) && /c_sctp04/.test(e.text));
+	assert.equal(sctp, undefined, 'non-pion should not emit rtc.sctp');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion impl without pc.getSctpStats method skips rtc.sctp gracefully', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_sctp05'));
+	// 不挂 getSctpStats → typeof !== 'function'
+	const pc = PC.instances[0];
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+	await flushMicrotasks();
+
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /c_sctp05/.test(e.text));
+	assert.ok(dump);
+	const sctp = remoteLogBuffer.find((e) => /rtc\.sctp/.test(e.text) && /c_sctp05/.test(e.text));
+	assert.equal(sctp, undefined, 'missing getSctpStats method should not emit rtc.sctp');
+
+	await peer.closeAll();
+});
