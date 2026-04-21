@@ -295,15 +295,6 @@ describe('SignalingConnection – resume 协议已移除', () => {
 		expect(msgs.find(m => m.type === 'signal:resume')).toBeUndefined();
 	});
 
-	test('WS open 后 5s 内 ensureConnected verify 不触发 forceReconnect', async () => {
-		const { conn, ws } = makeConnected();
-		// WS 刚打开，__lastVerifiedAt 已被标记
-		const p = conn.ensureConnected({ verify: true });
-		// 不应创建新 WS（verify 被冷却降级）
-		expect(MockWebSocket.lastInstance).toBe(ws);
-		await p;
-	});
-
 	test('入站 signal:resumed 消息被忽略（不触发事件）', () => {
 		const { conn, ws } = makeConnected();
 		const events = [];
@@ -510,11 +501,12 @@ describe('SignalingConnection – 前台恢复', () => {
 		expect(MockWebSocket.instances.length).toBe(wsBefore);
 	});
 
-	test('connecting 状态下 network:online 不再动作', () => {
+	test('connecting + connElapsed < CONNECT_TIMEOUT_MS → network:online 不 forceReconnect', () => {
 		MockWebSocket.reset();
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
 		conn.connect();
 		expect(conn.state).toBe('connecting');
+		vi.advanceTimersByTime(5_000); // 远小于 CONNECT_TIMEOUT_MS(15s)
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('network:online', { typeChanged: true });
 		expect(MockWebSocket.instances.length).toBe(wsBefore);
@@ -522,6 +514,8 @@ describe('SignalingConnection – 前台恢复', () => {
 	});
 
 	test('连续 network:online：第二次在 connecting 状态不再 forceReconnect', () => {
+		// 第一次 forceReconnect 会切 state 到 connecting 并重置 __stateEnteredAt；
+		// 随即第二次 handleForegroundResume 观察到的 connElapsed≈0 → 不陈旧 → 不再 forceReconnect
 		const { conn } = makeConnected();
 		vi.advanceTimersByTime(1000);
 		conn.__handleForegroundResume('network:online', { typeChanged: true });
@@ -530,6 +524,29 @@ describe('SignalingConnection – 前台恢复', () => {
 		conn.__handleForegroundResume('network:online', { typeChanged: true });
 		expect(MockWebSocket.instances.length).toBe(wsCountAfterFirst);
 		expect(conn.state).toBe('connecting');
+	});
+
+	test('connecting + connElapsed > CONNECT_TIMEOUT_MS → network:online 触发 forceReconnect', () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(conn.state).toBe('connecting');
+		vi.advanceTimersByTime(16_000); // > CONNECT_TIMEOUT_MS(15s)
+		const wsBefore = MockWebSocket.instances.length;
+		conn.__handleForegroundResume('network:online', { typeChanged: false });
+		// 陈旧 connecting → forceReconnect 创建新 WS
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+	});
+
+	test('connecting + connElapsed > CONNECT_TIMEOUT_MS → app:foreground（移动端）触发 forceReconnect', () => {
+		platformMod.isMobileOs = true;
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect();
+		vi.advanceTimersByTime(16_000);
+		const wsBefore = MockWebSocket.instances.length;
+		conn.__handleForegroundResume('app:foreground');
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
 	});
 
 	test('不再发射 foreground-resume 事件', () => {
@@ -657,97 +674,86 @@ describe('SignalingConnection – catch 路径日志', () => {
 });
 
 describe('SignalingConnection – ensureConnected', () => {
-	test('connected + verify=false → 立即 resolve', async () => {
+	// --- 新鲜度兜底：connected 分支 ---
+
+	test('connected + lastAliveAt 新鲜（elapsed < HB_TIMEOUT_MS）→ 立即 resolve，不 forceReconnect', async () => {
 		const { conn } = makeConnected();
-		await conn.ensureConnected({ verify: false });
-		// 无 forceReconnect（仍是同一 WS）
+		vi.advanceTimersByTime(5_000); // 远小于 HB_TIMEOUT_MS(45s)
+		await conn.ensureConnected();
 		expect(MockWebSocket.instances.length).toBe(1);
-		conn.disconnect();
-	});
-
-	test('connected + verify=true → forceReconnect → 等新 WS → resolve', async () => {
-		const { conn } = makeConnected();
-		// 等冷却过期（WS open 时标记了 __lastVerifiedAt）
-		vi.advanceTimersByTime(5001);
-		const p = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
-		// forceReconnect 创建了新 WS
-		expect(MockWebSocket.instances.length).toBe(2);
-		expect(conn.state).toBe('connecting');
-		// 模拟新 WS open
-		MockWebSocket.lastInstance.simulateOpen();
-		await p;
 		expect(conn.state).toBe('connected');
 		conn.disconnect();
 	});
 
-	test('connected + verify=true 冷却期内 → 立即 resolve（不 reconnect）', async () => {
+	test('connected + lastAliveAt 陈旧（elapsed > HB_TIMEOUT_MS）→ forceReconnect 后等待', async () => {
 		const { conn } = makeConnected();
-		// 等冷却过期后做第一次 verify
-		vi.advanceTimersByTime(5001);
-		const p1 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
-		MockWebSocket.lastInstance.simulateOpen();
-		await p1;
-		const countAfterFirst = MockWebSocket.instances.length;
-		// 冷却期内第二次 verify → 应立即返回
-		await conn.ensureConnected({ verify: true, timeoutMs: 5000 });
-		expect(MockWebSocket.instances.length).toBe(countAfterFirst);
-		conn.disconnect();
-	});
-
-	test('connected + verify=true 冷却期后 → 再次 forceReconnect', async () => {
-		const { conn } = makeConnected();
-		// 等冷却过期后做第一次 verify
-		vi.advanceTimersByTime(5001);
-		const p1 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
-		MockWebSocket.lastInstance.simulateOpen();
-		await p1;
-		const countAfterFirst = MockWebSocket.instances.length;
-		// 超过冷却期（6s > VERIFY_COOLDOWN_MS 5s）
-		vi.advanceTimersByTime(6000);
-		// 第二次 verify：冷却已过，应触发 forceReconnect
-		const p2 = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
-		expect(MockWebSocket.instances.length).toBeGreaterThan(countAfterFirst);
-		MockWebSocket.lastInstance.simulateOpen();
-		await p2;
-		conn.disconnect();
-	});
-
-	test('connected + verify=true + WS 最近有活动（< PROBE_TIMEOUT）→ 不 forceReconnect', async () => {
-		const { conn, ws } = makeConnected();
-		// 等冷却过期
-		vi.advanceTimersByTime(5001);
-		// 模拟收到心跳 pong → 刷新 lastAliveAt
-		ws.simulateMessage({ type: 'pong' });
+		vi.advanceTimersByTime(46_000); // > HB_TIMEOUT_MS(45s)
 		const countBefore = MockWebSocket.instances.length;
-		await conn.ensureConnected({ verify: true, timeoutMs: 5000 });
-		// WS 最近有活动 → 不 forceReconnect
-		expect(MockWebSocket.instances.length).toBe(countBefore);
-		expect(conn.state).toBe('connected');
-		conn.disconnect();
-	});
-
-	test('connected + verify=true + WS 长时间无活动（> PROBE_TIMEOUT）→ forceReconnect', async () => {
-		const { conn } = makeConnected();
-		// 等冷却过期 + lastAliveAt 过期（5001ms > PROBE_TIMEOUT_MS 2500ms）
-		vi.advanceTimersByTime(5001);
-		const countBefore = MockWebSocket.instances.length;
-		const p = conn.ensureConnected({ verify: true, timeoutMs: 5000 });
-		// lastAliveAt 已过期 → forceReconnect → 新 WS
+		const p = conn.ensureConnected({ timeoutMs: 5_000 });
+		// 陈旧检测到 → forceReconnect → 新 WS
 		expect(MockWebSocket.instances.length).toBeGreaterThan(countBefore);
+		expect(conn.state).toBe('connecting');
 		MockWebSocket.lastInstance.simulateOpen();
 		await p;
+		expect(conn.state).toBe('connected');
 		conn.disconnect();
 	});
 
-	test('connecting → 等待 WS open → resolve', async () => {
+	test('并发 ensureConnected 均遇陈旧 connected → 仅触发一次 forceReconnect', async () => {
+		const { conn } = makeConnected();
+		vi.advanceTimersByTime(46_000);
+		const countBefore = MockWebSocket.instances.length;
+		const p1 = conn.ensureConnected({ timeoutMs: 5_000 });
+		const p2 = conn.ensureConnected({ timeoutMs: 5_000 });
+		// 第一次 forceReconnect 已把 state 切到 connecting，第二个 caller 不会再 rebuild
+		expect(MockWebSocket.instances.length).toBe(countBefore + 1);
+		MockWebSocket.lastInstance.simulateOpen();
+		await Promise.all([p1, p2]);
+		conn.disconnect();
+	});
+
+	// --- 新鲜度兜底：connecting 分支 ---
+
+	test('connecting + stateEnteredAt 新鲜（< CONNECT_TIMEOUT_MS）→ 仅等待，不 forceReconnect', async () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect(); // state → connecting，__stateEnteredAt=now
+		expect(conn.state).toBe('connecting');
+		vi.advanceTimersByTime(5_000); // 远小于 CONNECT_TIMEOUT_MS(15s)
+		const p = conn.ensureConnected({ timeoutMs: 20_000 });
+		// 未触发 forceReconnect，仍是原 WS
+		expect(MockWebSocket.instances.length).toBe(1);
+		MockWebSocket.lastInstance.simulateOpen();
+		await p;
+		expect(conn.state).toBe('connected');
+		conn.disconnect();
+	});
+
+	test('connecting + stateEnteredAt 陈旧（> CONNECT_TIMEOUT_MS）→ forceReconnect 后等新 WS', async () => {
 		MockWebSocket.reset();
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
 		conn.connect(); // state → connecting
-		expect(conn.state).toBe('connecting');
-		const p = conn.ensureConnected({ timeoutMs: 5000 });
+		vi.advanceTimersByTime(16_000); // > CONNECT_TIMEOUT_MS(15s)
+		const p = conn.ensureConnected({ timeoutMs: 20_000 });
+		// 陈旧检测 → forceReconnect → 第二条 WS
+		expect(MockWebSocket.instances.length).toBe(2);
 		MockWebSocket.lastInstance.simulateOpen();
 		await p;
 		expect(conn.state).toBe('connected');
+		conn.disconnect();
+	});
+
+	test('并发 ensureConnected 均遇陈旧 connecting → 仅触发一次 forceReconnect', async () => {
+		MockWebSocket.reset();
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost:3000', WebSocket: MockWebSocket });
+		conn.connect();
+		vi.advanceTimersByTime(16_000);
+		const p1 = conn.ensureConnected({ timeoutMs: 20_000 });
+		const p2 = conn.ensureConnected({ timeoutMs: 20_000 });
+		// 第一次 forceReconnect 后 __stateEnteredAt 已重置，第二个 caller connElapsed≈0
+		expect(MockWebSocket.instances.length).toBe(2);
+		MockWebSocket.lastInstance.simulateOpen();
+		await Promise.all([p1, p2]);
 		conn.disconnect();
 	});
 

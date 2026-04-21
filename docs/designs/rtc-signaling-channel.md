@@ -565,7 +565,7 @@ sendSignaling(botId, type, payload) → boolean
 
 ## 八、ensureConnected：信令通道可用性保障
 
-> 状态：已实施（阶段二：lastAliveAt 判断优化）
+> 状态：已实施（阶段三：统一新鲜度兜底，`verify` 参数移除）
 
 ### 8.1 动机
 
@@ -574,116 +574,73 @@ sendSignaling(botId, type, payload) → boolean
 核心问题：
 
 1. **offer 静默丢弃**：`__buildPeerConnection` 中 `sendSignaling` 返回值未检查，offer 写入死连接的 socket buffer → 15s 空等
-2. **WS 假活未检测**：WS 表面 connected 但 TCP 已死（NAT 映射过期等），心跳检测最慢需 ~90s
-3. **verify 路径优化**：`verify: true` 现基于 `lastAliveAt` 判断 WS 存活性，WS 最近有活动（< PROBE_TIMEOUT_MS）则信任，避免不必要的 forceReconnect
+2. **WS "已连上"假活未检测**：WS 表面 `connected` 但 TCP 已死（长后台 NAT 映射过期等），心跳检测最慢需 ~90s
+3. **WS "正在连"卡死**：后台前 WS 刚处于 `connecting`、后台期间 TLS 握手停滞，前台恢复后状态仍显示 `connecting`，调用方盲目等完成
 
 ### 8.2 设计：阻塞式 ensureConnected 原语
 
-将"确保信令通道可用"收敛为 SignalingConnection 上的一个阻塞原语：
-
 ```js
 /**
- * 确保信令 WS 可用。
+ * 确保信令 WS 已连接且新鲜可用。
+ * 兜底策略（防范 JS 层 state 盲信）：
+ *   - state === 'connected' 且 elapsed > HB_TIMEOUT_MS → forceReconnect
+ *   - state === 'connecting' 且 connElapsed > CONNECT_TIMEOUT_MS → forceReconnect
  * @param {object} [opts]
- * @param {boolean} [opts.verify=false] - true 时主动验证连接活性（用于 RTC 恢复场景）
- * @param {number} [opts.timeoutMs=15000] - 等待超时
- * @returns {Promise<void>} resolve 表示 WS 已 connected；reject 表示超时或主动断开
+ * @param {number} [opts.timeoutMs=CONNECT_TIMEOUT_MS] - 等待超时，默认 15s
+ * @returns {Promise<void>}
  */
-async ensureConnected({ verify = false, timeoutMs = 15000 } = {})
+async ensureConnected({ timeoutMs = CONNECT_TIMEOUT_MS } = {})
 ```
 
 行为：
 
-| WS 当前状态 | verify=false | verify=true |
-|------------|-------------|------------|
-| `connected` + 近期有消息（<5s） | 立即返回 | 立即返回（冷却期内） |
-| `connected` + 无近期消息 | 立即返回 | 探测存活 / force-reconnect，然后返回 |
-| `connecting` | 等待 connected | 等待 connected |
-| `disconnected` | 触发连接 + 等待 | 触发连接 + 等待 |
-| `intentionalClose` | reject | reject |
+| WS 当前状态 | 判断 | 动作 |
+|------------|------|------|
+| `connected` + `elapsed` ≤ 45s（`HB_TIMEOUT_MS`） | 新鲜 | 立即返回 |
+| `connected` + `elapsed` > 45s | 陈旧，视为僵尸 | `forceReconnect()` + `__waitForConnected(timeoutMs)` |
+| `connecting` + `connElapsed` ≤ 15s（`CONNECT_TIMEOUT_MS`） | 新鲜 | `__waitForConnected(timeoutMs)` |
+| `connecting` + `connElapsed` > 15s | 陈旧，视为卡死 | `forceReconnect()` + `__waitForConnected(timeoutMs)` |
+| `disconnected` | — | `__doConnect()` + `__waitForConnected(timeoutMs)` |
+| `__intentionalClose` | — | reject |
 
-### 8.3 verify 模式：WS 假活检测
+### 8.3 新鲜度判断基础
 
-当 `verify=true` 时，ensureConnected 会主动验证 WS 连接活性：
+- **`connected` 分支**：`elapsed = Date.now() - __lastAliveAt`。`__lastAliveAt` 在 WS `open` 事件（同步经 `__startHeartbeat` → `__resetHbTimeout`）和每次入站 message 上刷新。`state === 'connected'` 的时刻必然 `__lastAliveAt > 0`（顺序不变式：`__setState('connected')` 与 `__startHeartbeat()` 在 open handler 内顺序同步执行，不得调换）。阈值沿用 `HB_TIMEOUT_MS(45s)`——即 WS 自身心跳超时该察觉到的不活跃程度。
 
-**阶段一（已废弃）**：~~直接 force-reconnect（简单粗暴，适用于用户量少的阶段）~~
+- **`connecting` 分支**：`connElapsed = Date.now() - __stateEnteredAt`。`__stateEnteredAt` 在 `__setState` 发生真实状态切换时刷新（早期 return 之后）。阈值 `CONNECT_TIMEOUT_MS(15s)` 同时作为 `ensureConnected` 默认 timeoutMs，语义上是"一个正常 WS 握手最多应在此时长内完成"。
 
-```js
-// 已被阶段二取代
-if (this.__state === 'connected' && verify) {
-    if (Date.now() - this.__lastVerifiedAt < VERIFY_COOLDOWN_MS) return; // 冷却
-    this.forceReconnect();
-    return this.__waitForConnected(timeoutMs);
-}
-```
+### 8.4 并发安全
 
-**阶段二（当前实施）**：先探测，探测失败再 force-reconnect
+两个 caller 同时命中陈旧分支时：
+1. 第一个 caller 调 `forceReconnect()` —— 同步把 state 切到 `disconnected` → `connecting` 并刷新 `__stateEnteredAt`（通过 `__setState`）
+2. 第二个 caller 进入时读到的 `__state` 已是 `connecting` 且 `connElapsed ≈ 0` → 不陈旧，走普通等待分支
 
-```js
-if (this.__state === 'connected' && verify) {
-    if (Date.now() - this.__lastVerifiedAt < VERIFY_COOLDOWN_MS) return;
-    const elapsed = Date.now() - this.__lastAliveAt;
-    if (elapsed < PROBE_TIMEOUT_MS) { this.__lastVerifiedAt = Date.now(); return; }
-    const alive = await this.__probeAsync(PROBE_TIMEOUT_MS);
-    if (alive) { this.__lastVerifiedAt = Date.now(); return; }
-    this.forceReconnect();
-    return this.__waitForConnected(timeoutMs);
-}
-```
-
-阶段二中各场景耗时对比：
-
-| WS 状态 | 耗时 |
-|---------|------|
-| 健康 + 近期有消息 | 0ms |
-| 健康 + 无近期消息 | ~10-50ms（ping RTT） |
-| 假活 | ~2.5s（探测超时）+ ~100-500ms（重连） |
-| 已断开 | 等重连时间 |
-
-vs 当前（无 ensureConnected）：假活场景 → offer 静默丢弃 → **15s 空等**。
-
-### 8.4 冷却机制
-
-防止重试循环中重复 force-reconnect：
-
-- `__lastVerifiedAt`：上次 verify 成功完成的时间戳
-- 冷却窗口：5s（`VERIFY_COOLDOWN_MS`）
-- 在冷却期内，`verify=true` 视同 `verify=false`（直接返回）
-
-典型场景：`__ensureRtc` 的 3 轮重试 → 第 1 轮 verify + reconnect → 第 2、3 轮命中冷却 → 零额外开销。
+自然速率限制：极端退化场景下 rebuild 频率 ≥ 15s/次（必须 `connecting` 自身也陈旧才会再次 rebuild）。
 
 ### 8.5 使用位置
 
 ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 
-| 调用位置 | verify | 说明 |
-|---------|--------|------|
-| `__buildPeerConnection`（build/rebuild） | true | offer 是建连的发起消息，必须到达 |
+| 调用位置 | 说明 |
+|---------|------|
+| `__buildPeerConnection`（build/rebuild） | offer 是建连的发起消息，必须到达；沿用默认新鲜度兜底 |
+| `__attemptRestart`（仅当 `sig.state !== 'connected'` 时） | 等 WS 就绪后发送 ICE restart offer |
 
 后续的 ICE candidate（`rtc:ice`）和状态通知（`rtc:ready`、`rtc:closed`）不使用 ensureConnected：
 - ICE candidate 是异步多条 trickle，部分丢失可容忍（通常有冗余 candidate）
 - `rtc:ready` / `rtc:closed` 是通知性质，丢失不影响功能
 
-### 8.6 重入安全
+### 8.6 对恢复策略的简化
 
-| 场景 | 行为 | 安全性 |
-|------|------|--------|
-| build 期间旧 PC 触发 rebuild | `__buildPeerConnection` 先清理旧 PC（detach 事件）再 await → 窗口消除 | ✅ |
-| 多 bot 同时 build | 第一个触发 forceReconnect，后续者 state=connecting → 加入等待 | ✅ |
-| `__ensureRtc` 重试循环 | 第 2+ 轮命中冷却 → 跳过 verify | ✅ |
-
-关键设计：`forceReconnect` 只在 `state === 'connected'` 时触发。`state` 为 `connecting` 或 `disconnected` 时仅等待，不重复触发重连。
-
-### 8.7 对恢复策略的简化
-
-引入 ensureConnected 后，§7 中多处 WS 可用性相关的应对逻辑已收敛：
+引入 ensureConnected 及其新鲜度兜底后，多处 WS 可用性相关的应对逻辑已收敛：
 
 | 原有逻辑 | 变化 |
 |---------|------|
-| `__onIceFailed` 的恢复决策 | 简化 — ICE restart 已移除，直接 `setState('failed')`，由外层 bots.store 退避重试接管恢复 |
+| RTC 对 WS 前台事件处理顺序的隐含依赖 | 消除 — ensureConnected 自判断 WS 新鲜度，无论 RTC handler 与 WS handler 的触发顺序如何，都不会把 offer 发给僵尸/卡死的 WS |
+| `verify` / `__lastVerifiedAt` / `VERIFY_COOLDOWN_MS` | 移除 — 新鲜度判断替代了 verify 的语义，cooldown 由 state 同步切换天然限流 |
+| `__onIceFailed` 的恢复决策 | 简化 — `setState('failed')`，由外层 claws.store 退避重试接管恢复 |
 | `__ensureRtc` 循环的 `sigConn.state !== 'connected'` bail-out | 移除 — `initRtc` 内部 await ensureConnected 自然阻塞或超时 |
 | sendSignaling 返回值处理 | 简化 — 由 ensureConnected 在上游保障 WS 可用，sendSignaling 返回值退化为防御性检查 |
-| WS 恢复后 RTC 恢复入口 | WS 状态不再触发 RTC 恢复；恢复由外部事件（window 的 `app:foreground` / `network:online`、SSE 的 bot online）和被动检测驱动 |
 
 ---
 

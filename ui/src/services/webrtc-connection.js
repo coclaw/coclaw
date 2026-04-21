@@ -450,8 +450,8 @@ export class WebRtcConnection {
 			this.__clearRestartState();
 		}
 
-		// 确保信令 WS 可用（rebuild 场景下 WS 可能已断开）
-		await useSignalingConnection().ensureConnected({ verify: true });
+		// 确保信令 WS 可用（rebuild 场景下 WS 可能已断开）；ensureConnected 内部自带新鲜度兜底
+		await useSignalingConnection().ensureConnected();
 
 		this.__remoteDescSet = false;
 		this.__pendingCandidates = [];

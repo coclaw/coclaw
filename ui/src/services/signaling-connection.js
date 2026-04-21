@@ -20,8 +20,8 @@ const PROBE_TIMEOUT_MS = 2500;
 const ASSUME_DEAD_MS = 45_000;
 /** 防重入节流（app:foreground；network:online 豁免） */
 const FOREGROUND_THROTTLE_MS = 500;
-/** ensureConnected verify 冷却期 */
-const VERIFY_COOLDOWN_MS = 5000;
+/** ensureConnected 默认超时 & 'connecting' 状态陈旧阈值：驻留超过此时长的 connecting 视为卡死 */
+const CONNECT_TIMEOUT_MS = 15_000;
 
 function resolveSignalingWsUrl(httpBaseUrl) {
 	const url = new URL(httpBaseUrl);
@@ -83,8 +83,8 @@ export class SignalingConnection {
 		// 连接感知
 		this.__lastAliveAt = 0;
 		this.__probeTimer = null;
-		/** @type {number} 上次 verify 成功的时间戳 */
-		this.__lastVerifiedAt = 0;
+		/** @type {number} 进入当前 state 的时间戳；0 = 尚未发生过状态切换 */
+		this.__stateEnteredAt = 0;
 	}
 
 	/** @returns {'disconnected' | 'connecting' | 'connected'} */
@@ -116,37 +116,42 @@ export class SignalingConnection {
 	}
 
 	/**
-	 * 确保信令 WS 已连接。
+	 * 确保信令 WS 已连接且新鲜可用。
+	 *
+	 * 兜底策略（防范 JS 层 state 盲信导致 caller 发信令给僵尸 WS）：
+	 *  - state === 'connected' 且距上次收消息 > HB_TIMEOUT_MS → 不信任，forceReconnect
+	 *  - state === 'connecting' 且状态驻留 > CONNECT_TIMEOUT_MS → 视为卡死，forceReconnect
+	 *
+	 * 并发安全：两个 caller 同时进入陈旧分支时，第一个 forceReconnect 同步把 state
+	 * 切到 disconnected → connecting 并刷新 __stateEnteredAt，第二个观察到的 elapsed
+	 * 已接近 0，自然不会重复 rebuild。
+	 *
 	 * @param {object} [opts]
-	 * @param {boolean} [opts.verify=false] - true 时强制验证连接存活性（用于 RTC 恢复场景）
-	 * @param {number} [opts.timeoutMs=15000] - 超时毫秒数
+	 * @param {number} [opts.timeoutMs=CONNECT_TIMEOUT_MS] - 等待 connected 的最大时长
 	 * @returns {Promise<void>} resolve = connected；reject = 超时或主动断开
 	 */
-	async ensureConnected({ verify = false, timeoutMs = 15_000 } = {}) {
+	async ensureConnected({ timeoutMs = CONNECT_TIMEOUT_MS } = {}) {
 		if (this.__intentionalClose) {
 			throw new Error('SignalingConnection intentionally closed');
 		}
 
-		// verify 冷却：5s 内视同 verify=false
-		if (verify && (Date.now() - this.__lastVerifiedAt < VERIFY_COOLDOWN_MS)) {
-			verify = false;
-		}
-
 		if (this.__state === 'connected') {
-			if (!verify) return;
-			this.__lastVerifiedAt = Date.now();
-			// WS 最近有活动 → 信任其存活性，不 forceReconnect
 			const elapsed = Date.now() - this.__lastAliveAt;
-			if (elapsed <= PROBE_TIMEOUT_MS) return;
-			// WS 疑似僵死 → forceReconnect
-			this.forceReconnect();
-			await this.__waitForConnected(timeoutMs);
+			if (this.__lastAliveAt > 0 && elapsed > HB_TIMEOUT_MS) {
+				this.__emit('log', `sig.ensure stale-connected elapsed=${elapsed}ms → forceReconnect`);
+				this.forceReconnect();
+				await this.__waitForConnected(timeoutMs);
+			}
 			return;
 		}
 
 		if (this.__state === 'connecting') {
+			const connElapsed = Date.now() - this.__stateEnteredAt;
+			if (this.__stateEnteredAt > 0 && connElapsed > CONNECT_TIMEOUT_MS) {
+				this.__emit('log', `sig.ensure stale-connecting elapsed=${connElapsed}ms → forceReconnect`);
+				this.forceReconnect();
+			}
 			await this.__waitForConnected(timeoutMs);
-			if (verify) this.__lastVerifiedAt = Date.now();
 			return;
 		}
 
@@ -155,7 +160,6 @@ export class SignalingConnection {
 		this.__reconnectDelay = INITIAL_RECONNECT_MS;
 		this.__doConnect();
 		await this.__waitForConnected(timeoutMs);
-		if (verify) this.__lastVerifiedAt = Date.now();
 	}
 
 	/** 主动断开，不再自动重连 */
@@ -239,6 +243,9 @@ export class SignalingConnection {
 		if (this.__state === newState) return;
 		const prev = this.__state;
 		this.__state = newState;
+		// 仅在真实状态切换后更新，供 ensureConnected / __handleForegroundResume
+		// 判断 'connecting' 驻留时长做陈旧兜底
+		this.__stateEnteredAt = Date.now();
 		console.debug('[SigConn] state %s→%s', prev, newState);
 		this.__emit('log', `sig.state ${prev}→${newState}`);
 		this.__emit('state', newState);
@@ -278,8 +285,10 @@ export class SignalingConnection {
 		ws.addEventListener('open', () => {
 			if (this.__ws !== ws) return;
 			console.debug('[SigConn] ws open');
+			// 顺序不可调整：__setState('connected') 先置位 state，随后 __startHeartbeat()
+			// 通过 __resetHbTimeout 同步写入 __lastAliveAt。ensureConnected 的新鲜度
+			// 兜底依赖"state===connected ⇒ __lastAliveAt 已刷新"这一不变式。
 			this.__setState('connected');
-			this.__lastVerifiedAt = Date.now();
 			this.__reconnectDelay = INITIAL_RECONNECT_MS;
 			this.__startHeartbeat();
 		});
@@ -463,7 +472,16 @@ export class SignalingConnection {
 			return;
 		}
 
-		if (this.__state === 'connecting') return;
+		if (this.__state === 'connecting') {
+			// 'connecting' 长时间驻留视为卡死（后台期间 TLS 握手可能停滞）
+			const connElapsed = now - this.__stateEnteredAt;
+			if (this.__stateEnteredAt > 0 && connElapsed > CONNECT_TIMEOUT_MS) {
+				console.debug('[SigConn] %s → stale connecting (elapsed=%dms) → forceReconnect', source, connElapsed);
+				this.__emit('log', `sig.resume source=${source} connElapsed=${connElapsed}ms action=forceReconnect(staleConnecting)`);
+				this.forceReconnect();
+			}
+			return;
+		}
 
 		// state === 'connected'
 		const elapsed = now - this.__lastAliveAt;

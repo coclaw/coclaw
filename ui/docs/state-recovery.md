@@ -73,6 +73,8 @@
 | 条件 | 行为 |
 |------|------|
 | WS 已断连（`state === 'disconnected'`） | 重置退避到 1s，立即重连 |
+| `state === 'connecting'` + 驻留 > 15s（`CONNECT_TIMEOUT_MS`） | `forceReconnect()`（视为卡死，通常发生在后台期间 TLS 握手停滞） |
+| `state === 'connecting'` + 驻留 ≤ 15s | 不干预（等握手自然完成） |
 | `network:online` + `typeChanged=true` | `forceReconnect()`（IP 可能变更，旧 TCP 几乎必死） |
 | `network:online` + `typeChanged=false` + 静默 > 2.5s | 发 probe ping，失败则 forceReconnect |
 | `network:online` + `typeChanged=false` + 静默 ≤ 2.5s | 跳过（心跳足以兜底） |
@@ -82,6 +84,15 @@
 
 - signaling **不再对外 emit** `foreground-resume` 事件。RTC 恢复决策完全独立，claws.store 直接监听 window 的 `app:foreground` / `network:online` / `app:background`，详见 §2.4 和 §9
 - **场景**：Web + Capacitor + 移动浏览器（后两者通过 `capacitor-app.js` 桥接提供 `app:foreground`）
+
+#### `ensureConnected` 的新鲜度兜底
+
+`SignalingConnection.ensureConnected()` 是 RTC 在发信令前的确保点。为防范"JS 层 state 盲信"（长后台后 TCP 实死但 `state === 'connected'` 尚未察觉、或 `connecting` 卡死），内置两条兜底规则：
+
+- `state === 'connected'` 且距上次收消息 > 45s（`HB_TIMEOUT_MS`）→ 不信任，主动 `forceReconnect()` 并等待新 WS
+- `state === 'connecting'` 且 `__stateEnteredAt` 驻留 > 15s（`CONNECT_TIMEOUT_MS`）→ 视为卡死，`forceReconnect()` 后再等
+
+该兜底让 RTC 不再依赖"前台事件处理顺序"的隐含假设（即使 RTC 的 handler 比 WS 先跑，也能自己判断 WS 新鲜度）。两条规则对并发 caller 安全：首次 `forceReconnect` 同步把 state 切到 `disconnected → connecting` 并重置 `__stateEnteredAt`，后续 caller 观察到的 elapsed 已接近 0，不会重复 rebuild。
 
 ### 2.4 RTC ICE restart 与 full rebuild
 

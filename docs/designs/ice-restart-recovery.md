@@ -211,6 +211,19 @@ __onSignaling(msg):
 为什么没有"长后台"第三档：长后台（分钟级）下 consent refresh 已连续失败多轮，PC 通常已升到
 `failed`，会走 `onconnectionstatechange` 的 failed 分支立即 restart，**不经此 timer**。
 
+#### signaling WS 新鲜度兜底（与 restart 交互）
+
+RTC 发 restart offer 前调 `SignalingConnection.ensureConnected()`。该方法不再盲信 JS 层
+`state`，内部做两道兜底（详见 `rtc-signaling-channel.md` §8）：
+
+- `state === 'connected'` 且 `elapsed > 45s`（`HB_TIMEOUT_MS`）→ WS 可能是僵尸，主动
+  `forceReconnect()` 后再等就绪
+- `state === 'connecting'` 且驻留 > `15s`（`CONNECT_TIMEOUT_MS`）→ 卡死握手，同上处理
+
+对 ICE restart 的意义：前台恢复时即使 RTC 的 `app:foreground` handler 比 WS 的 handler 先跑，
+RTC 走到 `__attemptRestart` 也不会把 restart offer 发给一条僵尸或卡死的 WS —— `ensureConnected`
+自判断新鲜度并主动 `forceReconnect`。这消除了对"window 事件 dispatch 顺序"的隐含依赖。
+
 #### 其他联动修改
 
 - `dc.onclose`：restarting 时 → SCTP 已断，restart 无法挽救 → `__clearRestartState()` + `__setState('failed')`
