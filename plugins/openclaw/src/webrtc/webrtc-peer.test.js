@@ -636,8 +636,10 @@ test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC �
 	assert.match(dump.text, /state=failed/);
 	assert.match(dump.text, /rpc=open/);
 	assert.match(dump.text, /fileCount=2/);
-	assert.match(dump.text, /file:abc=open/);
-	assert.match(dump.text, /file:def=closed/);
+	// 非 closed 态附带 label；closed 态只给计数
+	assert.match(dump.text, /open:1\(file:abc\)/);
+	assert.match(dump.text, /closed:1/);
+	assert.ok(!/file:def/.test(dump.text), 'closed DC labels should not be listed');
 	// queue 诊断字段：有 rpc DC 则显示 queue 状态（ondatachannel 的 rpc 分支创建了 queue）
 	assert.match(dump.text, /queueLen=\d+ queueBytes=\d+ dropped=\d+/);
 
@@ -833,11 +835,12 @@ test('WebRtcPeer: file DC 历史上限 FIFO 淘汰', async () => {
 	// fileCount 应被限制在 20
 	assert.match(dump.text, /fileCount=20/);
 	// 最老的 5 个（dc0..dc4）应已被 FIFO 淘汰
-	assert.ok(!/file:dc0=/.test(dump.text), 'dc0 should be evicted');
-	assert.ok(!/file:dc4=/.test(dump.text), 'dc4 should be evicted');
-	// 最新的 dc5..dc24 应保留
-	assert.match(dump.text, /file:dc5=/);
-	assert.match(dump.text, /file:dc24=/);
+	assert.ok(!/file:dc0\b/.test(dump.text), 'dc0 should be evicted');
+	assert.ok(!/file:dc4\b/.test(dump.text), 'dc4 should be evicted');
+	// 最新的 dc5..dc24 应保留（open 态列出 label）
+	assert.match(dump.text, /file:dc5\b/);
+	assert.match(dump.text, /file:dc24\b/);
+	assert.match(dump.text, /open:20\(/);
 });
 
 test('WebRtcPeer: connectionState closed 清理 session', async () => {

@@ -576,10 +576,7 @@ export class WebRtcPeer {
 	 */
 	__dumpSessionState(connId, session, state) {
 		const rpcState = session.rpcChannel?.readyState ?? 'none';
-		const fileSummary = session.fileChannels.size === 0
-			? 'none'
-			/* c8 ignore next -- ?? fallback for missing readyState */
-			: [...session.fileChannels].map((dc) => `${dc.label}=${dc.readyState ?? '?'}`).join(',');
+		const fileSummary = this.__summarizeFileChannels(session.fileChannels);
 		const q = session.rpcSendQueue;
 		const queueInfo = q
 			? `queueLen=${q.queue.length} queueBytes=${q.queueBytes} dropped=${q.droppedCount}`
@@ -592,6 +589,28 @@ export class WebRtcPeer {
 		if (this.__impl === 'pion' && typeof session.pc.getSctpStats === 'function') {
 			this.__dumpSctpStats(connId, session, state).catch(() => {});
 		}
+	}
+
+	/**
+	 * 按 readyState 聚合 file DC。closed 态只给计数，非 closed 态附带 label —
+	 * 长会话内已关闭的 DC 会累积到 FIFO 上限，全量拼 label 会让 dump 膨胀，
+	 * 而断连时真正有诊断价值的是"还没关干净"的 DC。
+	 */
+	__summarizeFileChannels(fileChannels) {
+		if (fileChannels.size === 0) return 'none';
+		const byState = new Map();
+		for (const dc of fileChannels) {
+			/* c8 ignore next -- ?? fallback for missing readyState */
+			const st = dc.readyState ?? '?';
+			if (!byState.has(st)) byState.set(st, []);
+			byState.get(st).push(dc.label);
+		}
+		const parts = [];
+		for (const [st, labels] of byState) {
+			if (st === 'closed') parts.push(`closed:${labels.length}`);
+			else parts.push(`${st}:${labels.length}(${labels.join(',')})`);
+		}
+		return parts.join(' ');
 	}
 
 	async __dumpSctpStats(connId, session, state) {
