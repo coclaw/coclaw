@@ -1,5 +1,63 @@
 # @coclaw/ui
 
+## 0.17.3
+
+### Patch Changes
+
+- 617045a: Fix silent image corruption on file downloads when `dc.close` races ahead of the final `{ok:true,bytes}` JSON.
+
+  `WebRtcConnection.createDataChannel` (the public entry point used for `file:<transferId>` DCs) was not setting `dc.binaryType`. The W3C WebRTC default is `'blob'`, which is what Firefox and Safari/WebKit use; Chromium has historically deviated but behavior across WebView versions is not guaranteed. Under `binaryType='blob'`, each incoming binary chunk in `file-transfer.js` was a `Blob` (which has `.size`, not `.byteLength`), so `receivedBytes += event.data.byteLength` accumulated `NaN` from the first chunk on.
+
+  On the happy path (`{ok:true,bytes}` JSON arrives before `dc.close` fires), downloads still appeared to succeed — `new Blob(chunks)` transparently concatenates a mixed array of Blobs. The bug only surfaced on the `onclose`-first race (acknowledged by existing defensive comments on both ends — `plugins/openclaw/src/file-manager/handler.js` explicitly `await dc.close()` for graceful semantics, and `file-transfer.js` adds a `setTimeout(0)` macrotask to let queued `message` events drain first). In that branch the fallback checks `receivedBytes >= totalSize`, which with `NaN` is always `false`, rejecting the transfer as `TRANSFER_INTERRUPTED` even though every byte had in fact arrived and `chunks` held a valid payload. Users see a broken image; remounting the component (navigate away + back) usually wins the race the second time. The race is more likely during ICE restart recovery, app foreground resume, long list renders, or any main-thread pressure — precisely the moments aggressive topic/chat cache + silent background reload triggers batch downloads, so the defect compounds.
+
+  Changes:
+
+  - `webrtc-connection.js`: set `dc.binaryType = 'arraybuffer'` immediately after creating the DC in `createDataChannel`, before returning (mirrors the rpc DC setup at the private `__setupDataChannelEvents` path). Async Blob construction is removed from the binary-message dispatch path, shrinking the race window as a side benefit.
+  - `file-transfer.js`: defensive `event.data.byteLength ?? event.data.size ?? 0` so that any future path which forgets to set `binaryType` cannot silently corrupt the byte counter.
+  - `webrtc-connection.test.js`: mock PeerConnection's `createDataChannel` now exposes `binaryType: 'blob'` as the default (matching spec), and a new assertion verifies the public API flips it to `'arraybuffer'`.
+  - `file-transfer.test.js`: new close/message race test where the binary chunk arrives as an actual `Blob` (no `byteLength`); the `onclose` fallback must still recognize the bytes are complete and resolve.
+
+  No protocol or wire-format change.
+
+- 2f1e57d: Fix disconnected timer lifecycle across app:background/foreground transitions. Previously `__disconnectedTimer` was not cleared on background, allowing it to fire during suspension and trigger `setLocalDescription` (which replaces ICE credentials, preventing original-pair auto-recovery). On long backgrounds, the resulting `__restartStartTime` would be recorded while suspended, causing the foreground `nudgeRestart` to hit the "time budget exhausted → rebuild" bad path. Now:
+
+  - `__onAppBackground` clears the disconnected timer and records the background timestamp.
+  - `__onAppForeground` re-arms the timer only if PC is still `disconnected`, with a two-tier timeout based on background duration: < 25s uses the standard 5s self-heal window; ≥ 25s uses 1.5s (enough for browser/WebView internal state to settle, not for self-healing). Long backgrounds typically surface as `connectionState='failed'` events that trigger restart immediately, bypassing this timer.
+  - Removes dead code in `claws.store.js` `__checkAndRecover` that branched on `rtc.state === 'disconnected'` — `WebRtcConnection.__state` is never `'disconnected'` (the PC's `connectionState` is a separate machine).
+
+- 835023e: Tighten ICE restart safety-net timer from 30s → 15s and add offer→answer RTT observability.
+
+  The safety-net timer re-sends an `rtc:offer` when neither the `connectionState` event path nor the 500ms stats-poll path has detected recovery — the canonical remaining case is a lost `rtc:answer` in the return path. Previously the worst-case recovery latency in that scenario was 30s; now it is 15s. Normal offer→answer RTT sits in the 1–3s range, so 15s retains an order-of-magnitude safety margin.
+
+  To ground future tuning in real data, this change records the timestamp at each `rtc:offer` send and, on arrival of the corresponding `rtc:answer` during `restarting`, emits both a local `__log('info', …)` entry and a structured `remoteLog('rtc.restartAnswer claw=… rtt=…ms attempt=…')` event.
+
+  No API or behavior change outside the ICE restart retry cadence; the field `__restartOfferSentAt` is cleared in `__clearRestartState` alongside the existing restart-state fields.
+
+- 3a7c1e5: Harden `SignalingConnection.ensureConnected` against stale WS states. Previously both `ensureConnected` and `__handleForegroundResume` trusted the JS-layer `__state` blindly — after long mobile backgrounds a `connected` state could mask a zombie TCP, and a `connecting` state could persist indefinitely after a stalled handshake. RTC would send offers into the void or wait up to 15s on a dead handshake.
+
+  Now `ensureConnected` applies a freshness safety net:
+
+  - `state === 'connected'` + `elapsed > HB_TIMEOUT_MS` (45s) → `forceReconnect()` then wait for new WS.
+  - `state === 'connecting'` + state-duration > `CONNECT_TIMEOUT_MS` (15s) → `forceReconnect()` then wait.
+
+  `__handleForegroundResume` applies the same staleness check in its `connecting` branch. The `verify` parameter, `VERIFY_COOLDOWN_MS` constant, and `__lastVerifiedAt` field are removed — their semantics are subsumed by the new unified freshness check. `webrtc-connection.js` rebuild path no longer passes `{verify:true}`; ICE restart path unchanged.
+
+  Eliminates the implicit dependency on event-listener registration order (WS handler before RTC handler), making the recovery path robust to future refactors of the foreground-event dispatch.
+
+- 6a0479b: Add AbortSignal support to RPC and file-transfer; extend connect timeouts to 120s to match RTC recovery window.
+
+  Previously `waitReady` / `request()` used a 30s `connectTimeout` and `READY_TIMEOUT_MS` was 15s. But the underlying RTC recovery cycle can last up to ~3 minutes (ICE restart 90s + rebuild backoff), so application-level requests could reject with `CONNECT_TIMEOUT` while RTC was still quietly recovering — the user would see a stale error toast, then everything would work again seconds later.
+
+  - `ClawConnection.request()` now accepts `options.signal` (AbortSignal). The signal covers both the `waitReady` queueing stage and the `pending` wait-for-response stage.
+  - `downloadFile` / `uploadFile` / `postFile` now accept `opts.signal`. The signal covers the full three-stage lifecycle (waitReady → wait for response header → chunk send/receive), aligning with the fetch/axios mental model.
+  - `handle.cancel()` on file transfers is kept as a backward-compatible API (internally equivalent to `controller.abort()`). Existing callers are unaffected.
+  - Abort reject shape aligns with axios `CanceledError`: `err.name = 'CanceledError'`, `err.code = 'ERR_CANCELED'`. Check via `err.code === 'ERR_CANCELED'`.
+  - `DEFAULT_CONNECT_TIMEOUT_MS`: 30s → 120s. `READY_TIMEOUT_MS`: 15s → 120s.
+  - Existing call sites pass no signal — this is purely infrastructure groundwork. No behavioural change for callers that don't opt in.
+  - Fixes a pre-existing latent bug: file-transfer `handle.cancel()` during the waitReady queueing stage used to defer the outer-promise reject until `waitReady` itself settled. Now the signal is threaded through `waitReady`, so cancel is immediate.
+
+  Internal error code migration: file-transfer's cancellation error code changed from `CANCELLED` to `ERR_CANCELED`. Two call-site checks (`files.store.js`, `chat.store.js`) were updated in lockstep. No i18n changes required — the chat-store cancellation path early-returns before hitting UI notify.
+
 ## 0.17.2
 
 ### Patch Changes
