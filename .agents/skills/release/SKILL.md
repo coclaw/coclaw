@@ -116,32 +116,69 @@ git tag -l "v<version>"
 # 若不存在，创建轻量标签
 git tag v<version>
 
-# 推送代码和标签
+# 推送代码和标签（轻量 tag 可能需要额外显式 push）
 git push --follow-tags
+git push origin v<version>  # 若上一步未推送 tag
 ```
+
+push 完成后，按下一节规则判断是否创建 GitHub Release。
 
 ## GitHub Release 流程
 
-独立于 npm 发布，用于标记项目整体里程碑。
+独立于 npm 发布，用于标记项目整体里程碑，是 Release 页面的"浓缩视图"。tag 是"技术快照"、Release 是"值得回顾的节点"——二者可以分离。
 
-### 前置条件
+### 何时创建
 
-- 代码已推送到 GitHub（含对应版本的 git tag）
-- 确定发布版本号
+| 场景 | 是否创建 |
+|---|---|
+| **minor / major bump**（如 0.17.x → 0.18.0） | **必打** |
+| **新 minor 发布时**，上一个 minor 的**最终 patch** | **补打一个**（先补旧 minor 末版，再打新 minor 首版） |
+| **patch bump**，含面向终端用户的**重要修复**（数据损坏、启动失败、安全等） | **Claude 判断，必要时提示用户确认** |
+| **patch bump**，普通小修 / 纯内部改动 | **不打**，累积到下次 minor |
 
-### 1. Bump workspace 版本并同步根版本
+**"Claude 判断"的操作要求**：push 完成后，Claude 应结合以下因素综合评估，再决定是否主动提示用户：
+- 本次 patch 的变更规模、影响范围、是否面向终端用户
+- 距上一个已创建 Release 累积的 patch 数量与跨度（例如上个 Release 后已累积 ≥5 个 patch 可考虑补一个节点）
+- GitHub Releases 页面的既有节奏（参考 `gh release list` 的最近几条）
 
-按需 patch bump 各 workspace（server / ui / admin）的版本号（插件版本由 npm 发布流程单独管理，此处不动）。
+若判断可能有必要 → 以一句话提示用户："本次是否创建 Release？理由：xxx"，等用户确认；若判断明显无必要 → **不打扰**，直接跳过，在收尾汇报中简短说明"本次 patch 未创建 Release（理由）"。
 
-**根版本号约定**：根 `package.json` 的 `version` 始终保持为所有 workspace（含 plugins）中最高的版本号。bump 完各 workspace 后，取最高版本写入根 `package.json`，一并提交推送。
+### 创建 Release（命令）
 
-### 2. 创建 Release
+**当前本机 gh 版本偏旧（< 2.28），不支持 `--notes-start-tag`。用 `gh api` 生成 notes 再创建**：
+
+```bash
+# 生成 notes 到临时文件
+gh api repos/:owner/:repo/releases/generate-notes \
+  -f tag_name=v<version> \
+  -f previous_tag_name=v<prev-release-tag> \
+  --jq .body > /tmp/notes.md
+
+# 创建 Release
+gh release create v<version> \
+  --title "CoClaw v<version>" \
+  --notes-file /tmp/notes.md
+```
+
+`<prev-release-tag>` 是 GitHub 上**上一个已存在的 Release 的 tag**（不是"上一个 git tag"）。用 `gh release list --limit 3` 确认。
+
+**若 gh ≥ 2.28**，可合并为单命令：
 
 ```bash
 gh release create v<version> \
   --title "CoClaw v<version>" \
-  --generate-notes
+  --generate-notes \
+  --notes-start-tag v<prev-release-tag>
 ```
+
+### 新 minor 时的双 Release 操作
+
+从 v0.N.x 跨入 v0.N+1.0 时，按顺序执行两次 create：
+
+1. **先为 v0.N 系列的最终 patch 创建 Release**（起点为上一个已有 Release）
+2. **再为 v0.N+1.0 创建 Release**（起点为第 1 步创建的 v0.N 最终 patch）
+
+这样两个 Release 的 notes 范围不重叠、衔接完整。
 
 ## 注意事项
 
