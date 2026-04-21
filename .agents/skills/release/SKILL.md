@@ -145,31 +145,16 @@ push 完成后，按下一节规则判断是否创建 GitHub Release。
 
 ### 创建 Release（命令）
 
-**当前本机 gh 版本偏旧（< 2.28），不支持 `--notes-start-tag`。用 `gh api` 生成 notes 再创建**：
-
-```bash
-# 生成 notes 到临时文件
-gh api repos/:owner/:repo/releases/generate-notes \
-  -f tag_name=v<version> \
-  -f previous_tag_name=v<prev-release-tag> \
-  --jq .body > /tmp/notes.md
-
-# 创建 Release
-gh release create v<version> \
-  --title "CoClaw v<version>" \
-  --notes-file /tmp/notes.md
-```
-
-`<prev-release-tag>` 是 GitHub 上**上一个已存在的 Release 的 tag**（不是"上一个 git tag"）。用 `gh release list --limit 3` 确认。
-
-**若 gh ≥ 2.28**，可合并为单命令：
-
 ```bash
 gh release create v<version> \
   --title "CoClaw v<version>" \
   --generate-notes \
   --notes-start-tag v<prev-release-tag>
 ```
+
+`<prev-release-tag>` 是 GitHub 上**上一个已存在的 Release 的 tag**（不是"上一个 git tag"）。用 `gh release list --limit 3` 确认。
+
+需要 gh ≥ 2.28 支持 `--notes-start-tag`。
 
 ### 新 minor 时的双 Release 操作
 
