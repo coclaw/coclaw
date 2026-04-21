@@ -279,8 +279,11 @@ export function downloadFile(clawConn, agentId, path, opts = {}) {
 				}
 			} else {
 				// binary chunk
+				// binaryType 正常为 'arraybuffer' 时 event.data 是 ArrayBuffer（.byteLength）；
+				// 保留 .size fallback 以防未来某条路径漏设 binaryType，event.data 退化为 Blob，
+				// 不让账本再度变成 NaN —— 否则 onclose 兜底里的 receivedBytes >= totalSize 会恒 false。
 				chunks.push(event.data);
-				receivedBytes += event.data.byteLength;
+				receivedBytes += event.data.byteLength ?? event.data.size ?? 0;
 				if (progressCb && totalSize > 0) {
 					progressCb(receivedBytes, totalSize);
 				}

@@ -81,6 +81,8 @@ class MockRTCPeerConnection {
 		const dc = {
 			label,
 			ordered: opts?.ordered,
+			// 规范默认值（与真实浏览器行为一致，用来验证代码显式覆盖为 'arraybuffer'）
+			binaryType: 'blob',
 			onopen: null,
 			onclose: null,
 			onmessage: null,
@@ -2413,6 +2415,16 @@ describe('WebRtcConnection — ICE restart', () => {
 
 		const dc = rtc.createDataChannel('file:test');
 		expect(dc).toBeNull();
+
+		rtc.close();
+	});
+
+	test('createDataChannel 显式把 binaryType 置为 arraybuffer（防 Blob 默认导致的下载兜底失效）', async () => {
+		const { rtc } = await setupConnectedRtc();
+
+		const fileDc = rtc.createDataChannel('file:bt-check', { ordered: true });
+		expect(fileDc).not.toBeNull();
+		expect(fileDc.binaryType).toBe('arraybuffer');
 
 		rtc.close();
 	});

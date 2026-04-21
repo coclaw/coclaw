@@ -518,6 +518,25 @@ describe('downloadFile', () => {
 		const result = await handle.promise;
 		expect(result.bytes).toBe(5);
 	});
+
+	test('binary chunk 以 Blob 形式到达时账本仍正确（防 binaryType 退化为默认 blob）', async () => {
+		// 场景假设：未来某条路径漏设 binaryType，event.data 变成 Blob（无 byteLength 只有 size）。
+		// 代码里的 .byteLength ?? .size 双保险应让 receivedBytes 正确累加，onclose 兜底继续生效。
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(clawConn, 'main', 'data.bin');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		dc.__receiveString({ ok: true, size: 5, name: 'data.bin' });
+		// 模拟 Blob：只有 size，没有 byteLength
+		dc.onmessage?.({ data: new Blob([new Uint8Array(5)]) });
+		// 完成确认丢失 → 走 onclose 兜底
+		dc.__fireClose();
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(5);
+	});
 });
 
 // --- 上传测试 ---

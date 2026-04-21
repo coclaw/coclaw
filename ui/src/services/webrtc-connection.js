@@ -397,6 +397,10 @@ export class WebRtcConnection {
 	createDataChannel(label, opts) {
 		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed' || this.__state === 'restarting') return null;
 		const dc = this.__pc.createDataChannel(label, opts);
+		// binary 帧以 ArrayBuffer 形式到达（规范默认为 'blob'，部分浏览器实现也不一致）。
+		// 必须在 dc 打开前设置：一是确保第一条 binary 到来时账本能正确计字节；
+		// 二是避免 Blob 构造的异步性让最后一条 message 被 onclose 抢先派发。
+		dc.binaryType = 'arraybuffer';
 		// 追踪 file DC 的数据活动，证明 SCTP 存活（用于保活宽限判断）
 		// message: 入向数据；bufferedamountlow: 出向数据真实进入网络（上传场景下唯一的活动信号）
 		dc.addEventListener('message', () => { this.__lastDcActivityAt = Date.now(); });
