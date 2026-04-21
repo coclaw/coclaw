@@ -601,7 +601,7 @@ export function createChatStore(storeKey, opts = {}) {
 					this.__pendingCancelIntent = false;
 
 					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
-					if (err?.code === 'CANCELLED' && !this.__accepted) {
+					if (err?.code === 'ERR_CANCELED' && !this.__accepted) {
 						this.sending = false;
 						this.fileUploadState = null;
 						this.__removeLocalEntries();

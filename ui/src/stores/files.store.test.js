@@ -693,10 +693,10 @@ describe('files.store', () => {
 	});
 
 	describe('download 边界分支', () => {
-		test('下载异常 code=CANCELLED 时静默返回不标记 failed', async () => {
+		test('下载异常 code=ERR_CANCELED 时静默返回不标记 failed', async () => {
 			mockBotConn();
 			const cancelErr = new Error('cancelled');
-			cancelErr.code = 'CANCELLED';
+			cancelErr.code = 'ERR_CANCELED';
 			downloadFile.mockReturnValue({
 				promise: Promise.reject(cancelErr),
 				cancel: vi.fn(),
@@ -708,8 +708,8 @@ describe('files.store', () => {
 			// 等任务处理完
 			await vi.waitFor(() => {
 				const t = store.getAgentTasks('bot1', 'main')[0];
-				// CANCELLED 分支 return 后 finally 清理 transferHandle
-				// status 应保持 running（因为 CANCELLED 分支不改状态）
+				// ERR_CANCELED 分支 return 后 finally 清理 transferHandle
+				// status 应保持 running（因为取消分支不改状态）
 				expect(t.status).toBe('running');
 				expect(t.transferHandle).toBeNull();
 			});
@@ -754,10 +754,10 @@ describe('files.store', () => {
 	});
 
 	describe('upload 边界分支', () => {
-		test('上传异常 code=CANCELLED 时静默返回不标记 failed', async () => {
+		test('上传异常 code=ERR_CANCELED 时静默返回不标记 failed', async () => {
 			mockBotConn();
 			const cancelErr = new Error('cancelled');
-			cancelErr.code = 'CANCELLED';
+			cancelErr.code = 'ERR_CANCELED';
 			uploadFile.mockReturnValue({
 				promise: Promise.reject(cancelErr),
 				cancel: vi.fn(),
@@ -1152,7 +1152,7 @@ describe('files.store', () => {
 
 		test('onDone 在上传取消时不被调用', async () => {
 			mockBotConn();
-			const cancelErr = Object.assign(new Error('cancelled'), { code: 'CANCELLED' });
+			const cancelErr = Object.assign(new Error('cancelled'), { code: 'ERR_CANCELED' });
 			uploadFile.mockReturnValue({
 				promise: Promise.reject(cancelErr),
 				cancel: vi.fn(),
@@ -1162,7 +1162,7 @@ describe('files.store', () => {
 
 			store.enqueueUploads('bot1', 'main', '', [createMockFile('cancel.txt', 10)], onDone);
 
-			// 等异步处理完（CANCELLED 分支 return 前不会修改状态到 done）
+			// 等异步处理完（ERR_CANCELED 分支 return 前不会修改状态到 done）
 			await new Promise((r) => setTimeout(r, 20));
 			expect(onDone).not.toHaveBeenCalled();
 		});
@@ -1193,16 +1193,16 @@ describe('files.store', () => {
 			warnSpy.mockRestore();
 		});
 
-		test('CANCELLED 错误不应触发 logTaskFailure', async () => {
+		test('ERR_CANCELED 错误不应触发 logTaskFailure', async () => {
 			mockBotConn();
 			uploadFile.mockReturnValue({
-				promise: Promise.reject(Object.assign(new Error('cancelled'), { code: 'CANCELLED' })),
+				promise: Promise.reject(Object.assign(new Error('cancelled'), { code: 'ERR_CANCELED' })),
 				cancel: vi.fn(),
 				set onProgress(_cb) {},
 			});
 
 			store.enqueueUploads('bot1', 'main', '', [createMockFile('c.txt', 50)]);
-			// 等待一段时间，让 promise 完成（CANCELLED 早 return，状态保持 running 或被外部置 cancelled）
+			// 等待一段时间，让 promise 完成（ERR_CANCELED 早 return，状态保持 running 或被外部置 cancelled）
 			await new Promise((r) => setTimeout(r, 50));
 
 			expect(remoteLogMock).not.toHaveBeenCalled();

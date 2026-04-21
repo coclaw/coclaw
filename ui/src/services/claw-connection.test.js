@@ -243,10 +243,10 @@ describe('ClawConnection – waitReady()', () => {
 		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
 	});
 
-	test('默认 connectTimeout 为 30s', async () => {
+	test('默认 connectTimeout 为 120s（覆盖 ICE restart 90s 预算）', async () => {
 		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady();
-		vi.advanceTimersByTime(29_999);
+		vi.advanceTimersByTime(119_999);
 		expect(conn.__readyWaiters).toHaveLength(1);
 		vi.advanceTimersByTime(2);
 		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
@@ -593,13 +593,178 @@ describe('ClawConnection – __rejectAllPending', () => {
 	});
 });
 
+describe('ClawConnection – waitReady() 取消支持 (AbortSignal)', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	test('传入已 abort 的 signal → 同步 reject ERR_CANCELED / CanceledError', async () => {
+		const conn = new ClawConnection('bot1');
+		const ctrl = new AbortController();
+		ctrl.abort();
+		const p = conn.waitReady(5000, ctrl.signal);
+		await expect(p).rejects.toMatchObject({ code: 'ERR_CANCELED', name: 'CanceledError' });
+		expect(conn.__readyWaiters).toHaveLength(0);
+	});
+
+	test('waitReady 排队期间 abort → 立即 reject + 从 __readyWaiters 移除', async () => {
+		const conn = new ClawConnection('bot1');
+		const ctrl = new AbortController();
+		const p = conn.waitReady(5000, ctrl.signal);
+		expect(conn.__readyWaiters).toHaveLength(1);
+
+		ctrl.abort();
+		await expect(p).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+		expect(conn.__readyWaiters).toHaveLength(0);
+	});
+
+	test('setRtc 正常 resolve 后 signal abort 不再影响', async () => {
+		const conn = new ClawConnection('bot1');
+		const ctrl = new AbortController();
+		const p = conn.waitReady(5000, ctrl.signal);
+
+		const mockRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		await expect(p).resolves.toBeUndefined();
+
+		// resolve 后再 abort 不会抛异常或误伤后续
+		expect(() => ctrl.abort()).not.toThrow();
+	});
+
+	test('abort 已触发后超时 timer 不再误 reject（资源泄漏回归）', async () => {
+		const conn = new ClawConnection('bot1');
+		const ctrl = new AbortController();
+		const p = conn.waitReady(3000, ctrl.signal);
+		p.catch(() => {}); // 防 unhandled
+
+		ctrl.abort();
+		await Promise.resolve(); // 让 abort reject 先 propagate
+
+		// 推进到 timeout 之后，不应有任何残留 waiter
+		vi.advanceTimersByTime(5000);
+		expect(conn.__readyWaiters).toHaveLength(0);
+	});
+
+	test('未传 signal 时行为与旧版完全一致（兼容性回归）', async () => {
+		const conn = new ClawConnection('bot1');
+		const p = conn.waitReady(3000);
+		vi.advanceTimersByTime(3001);
+		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
+	});
+});
+
+describe('ClawConnection – request() 取消支持 (AbortSignal)', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	test('传入已 abort 的 signal → 同步 reject ERR_CANCELED，不调 rtc.send', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const ctrl = new AbortController();
+		ctrl.abort();
+		const p = conn.request('ping', {}, { signal: ctrl.signal });
+		await expect(p).rejects.toMatchObject({ code: 'ERR_CANCELED', name: 'CanceledError' });
+		expect(mockRtc.send).not.toHaveBeenCalled();
+		expect(conn.__pending.size).toBe(0);
+	});
+
+	test('waitReady 排队阶段 abort → reject ERR_CANCELED，__readyWaiters 清空', async () => {
+		const conn = new ClawConnection('bot1');
+		const ctrl = new AbortController();
+		const p = conn.request('ping', {}, { signal: ctrl.signal });
+		expect(conn.__readyWaiters).toHaveLength(1);
+		expect(conn.__pending.size).toBe(0);
+
+		ctrl.abort();
+		await expect(p).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+		expect(conn.__readyWaiters).toHaveLength(0);
+	});
+
+	test('pending 阶段 abort → reject ERR_CANCELED，__pending 清空，timer 清理', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const ctrl = new AbortController();
+		const p = conn.request('slow', {}, { signal: ctrl.signal, timeout: 60_000 });
+		await vi.advanceTimersByTimeAsync(0); // 让 send promise 链执行
+		expect(mockRtc.send).toHaveBeenCalledTimes(1);
+		expect(conn.__pending.size).toBe(1);
+
+		ctrl.abort();
+		await expect(p).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+		expect(conn.__pending.size).toBe(0);
+
+		// timer 已清理：推进到 timeout 之后也不应残留
+		vi.advanceTimersByTime(60_001);
+		expect(conn.__pending.size).toBe(0);
+	});
+
+	test('abort 后迟到的响应静默丢弃，不重复 settle', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const ctrl = new AbortController();
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const p = conn.request('slow', {}, { signal: ctrl.signal });
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+
+		ctrl.abort();
+		await expect(p).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+
+		// 迟到响应：__handleRpcResponse 已无对应 waiter，warn 但不抛
+		expect(() => conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: {} })).not.toThrow();
+		expect(warnSpy).toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
+	test('同一 signal 触发多个请求都被 abort', async () => {
+		const { conn } = makeRtcReady();
+		const ctrl = new AbortController();
+		const p1 = conn.request('a', {}, { signal: ctrl.signal });
+		const p2 = conn.request('b', {}, { signal: ctrl.signal });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(conn.__pending.size).toBe(2);
+
+		ctrl.abort();
+		await expect(p1).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+		await expect(p2).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+		expect(conn.__pending.size).toBe(0);
+	});
+
+	test('未传 signal 时行为完全一致（兼容性回归）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('ping', { x: 1 });
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { ok: 1 } });
+		await expect(p).resolves.toEqual({ ok: 1 });
+	});
+
+	test('DC 已 ready 但 signal 已 abort → 立即 reject（abort 优先于 fast-path）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const ctrl = new AbortController();
+		ctrl.abort();
+		const p = conn.request('ping', {}, { signal: ctrl.signal });
+		await expect(p).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+		expect(mockRtc.send).not.toHaveBeenCalled();
+	});
+
+	test('正常 resolve 后 signal abort 不影响（listener 已清理）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const ctrl = new AbortController();
+		const p = conn.request('ping', {}, { signal: ctrl.signal });
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { done: true } });
+		await expect(p).resolves.toEqual({ done: true });
+
+		// resolve 后再 abort 不应抛
+		expect(() => ctrl.abort()).not.toThrow();
+	});
+});
+
 describe('ClawConnection – 常量导出', () => {
 	test('BRIEF_DISCONNECT_MS 是合理的正整数', () => {
 		expect(BRIEF_DISCONNECT_MS).toBeGreaterThan(0);
 		expect(Number.isInteger(BRIEF_DISCONNECT_MS)).toBe(true);
 	});
 
-	test('DEFAULT_CONNECT_TIMEOUT_MS 为 30s', () => {
-		expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(30_000);
+	test('DEFAULT_CONNECT_TIMEOUT_MS 为 120s', () => {
+		expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(120_000);
 	});
 });

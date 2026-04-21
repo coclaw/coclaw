@@ -20,7 +20,42 @@ const LOW_WATER_MARK = 65536;
 /** 上传大小限制 1GB */
 const MAX_UPLOAD_SIZE = 1024 * 1024 * 1024;
 /** 等待 Plugin 首条响应的超时（DC open + Plugin 回复首条控制消息） */
-const READY_TIMEOUT_MS = 15_000;
+const READY_TIMEOUT_MS = 120_000;
+
+/** 构造与 axios CanceledError 对齐的取消错误 */
+function makeAbortError(message) {
+	const err = new Error(message ?? 'request aborted');
+	err.name = 'CanceledError';
+	err.code = 'ERR_CANCELED';
+	return err;
+}
+
+/**
+ * 创建内部 AbortController 并挂外部 signal 联动
+ * 外部 signal abort → 内部 ctrl.abort()
+ * 若外部 signal 已 abort，ctrl 同步进入 aborted 状态
+ * 返回 cleanup 方法，用于传输正常完成时解绑外部 signal 的 listener
+ * @param {AbortSignal} [externalSignal]
+ * @returns {{ ctrl: AbortController, cleanup: () => void }}
+ */
+function createLinkedAbortController(externalSignal) {
+	const ctrl = new AbortController();
+	let onExternalAbort = null;
+	if (externalSignal) {
+		if (externalSignal.aborted) {
+			ctrl.abort();
+		} else {
+			onExternalAbort = () => ctrl.abort();
+			externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+		}
+	}
+	return {
+		ctrl,
+		cleanup() {
+			if (onExternalAbort) externalSignal.removeEventListener('abort', onExternalAbort);
+		},
+	};
+}
 
 /**
  * 格式化传输日志摘要（大小、耗时、速度）
@@ -118,22 +153,25 @@ function createFileDC(rtcConn) {
  * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {string} agentId
  * @param {string} path
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal] - 可选取消信号；与 handle.cancel() 等价，任一触发都会终止传输
  * @returns {FileTransferHandle}
  */
-export function downloadFile(clawConn, agentId, path) {
+export function downloadFile(clawConn, agentId, path, opts = {}) {
 	let progressCb = null;
-	let cancelled = false;
-	let cancelFn = null;
+	const { ctrl, cleanup: cleanupLink } = createLinkedAbortController(opts.signal);
+	const isCancelled = () => ctrl.signal.aborted;
 
-	// 等待连接就绪（已就绪时同步返回 resolved promise）
-	const readyPromise = clawConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
+	// 等待连接就绪（signal 透传，排队阶段也能立刻响应 abort）
+	const readyPromise = clawConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS, ctrl.signal);
 
 	const logCtx = `path=${path}`;
 
 	const promise = readyPromise.then(() => new Promise((resolve, reject) => {
-		// 等待就绪期间若已被取消，直接 reject
-		if (cancelled) {
-			reject(new FileTransferError('CANCELLED', 'Download cancelled'));
+		// 等待就绪期间若已被取消，直接 reject（兜底：一般 waitReady 会先 reject 这里不进）
+		if (isCancelled()) {
+			cleanupLink();
+			reject(makeAbortError('Download cancelled'));
 			return;
 		}
 
@@ -144,6 +182,7 @@ export function downloadFile(clawConn, agentId, path) {
 			if (settled) return;
 			settled = true;
 			clearTimeout(readyTimer);
+			cleanupLink();
 			if (fn === resolve) {
 				const stats = formatTransferLog(val.bytes, Date.now() - startTime);
 				console.log(`[file-transfer] download ok path=${path} ${stats}`);
@@ -161,16 +200,18 @@ export function downloadFile(clawConn, agentId, path) {
 			cleanupRef = cleanup;
 		} catch (err) {
 			remoteLog(`file.dl.err code=RTC_NOT_READY ${logCtx} err=${err?.message}`);
+			cleanupLink();
 			reject(err);
 			return;
 		}
 
-		cancelFn = () => {
-			cancelled = true;
+		// 挂 abort listener：DC 阶段 abort → 关 DC + reject ERR_CANCELED
+		const onAbort = () => {
 			clearTimeout(readyTimer);
 			cleanupRef();
-			settleWithLog(reject, new FileTransferError('CANCELLED', 'Download cancelled'));
+			settleWithLog(reject, makeAbortError('Download cancelled'));
 		};
+		ctrl.signal.addEventListener('abort', onAbort, { once: true });
 
 		let totalSize = 0;
 		let fileName = '';
@@ -183,7 +224,7 @@ export function downloadFile(clawConn, agentId, path) {
 
 		// 超时守卫：DC open + Plugin 响应头必须在限时内到达
 		readyTimer = setTimeout(() => {
-			if (headerReceived || cancelled || settled) return;
+			if (headerReceived || isCancelled() || settled) return;
 			cleanupRef();
 			const ftErr = new FileTransferError('READY_TIMEOUT', 'Plugin did not respond in time');
 			remoteLog(`file.dl.err code=${ftErr.code} ${logCtx}`);
@@ -202,7 +243,7 @@ export function downloadFile(clawConn, agentId, path) {
 		};
 
 		dcRef.onmessage = (event) => {
-			if (cancelled || settled) return;
+			if (isCancelled() || settled) return;
 
 			if (typeof event.data === 'string') {
 				let msg;
@@ -250,7 +291,7 @@ export function downloadFile(clawConn, agentId, path) {
 			// 延迟一个 macrotask，让可能排队中的 onmessage 先执行
 			// （WebRTC 某些实现中 close 和最后一条 message 可能几乎同时排入事件队列）
 			setTimeout(() => {
-				if (cancelled || settled) return;
+				if (isCancelled() || settled) return;
 				// 注销事件监听，释放 dcRef 引用，避免阻碍 GC
 				cleanupRef();
 				// 如果已收完所有字节，视为正常完成（完成确认 string 可能因 close 时序丢失）
@@ -272,11 +313,14 @@ export function downloadFile(clawConn, agentId, path) {
 			remoteLog(`file.dl.err code=${ftErr.code} ${logCtx} received=${receivedBytes}/${totalSize}`);
 			settleWithLog(reject, ftErr);
 		};
-	}));
+	})).catch((err) => {
+		cleanupLink();
+		throw err;
+	});
 
 	return {
 		promise,
-		cancel() { cancelled = true; cancelFn?.(); },
+		cancel() { if (!ctrl.signal.aborted) ctrl.abort(); },
 		set onProgress(cb) { progressCb = cb; },
 	};
 }
@@ -287,12 +331,13 @@ export function downloadFile(clawConn, agentId, path) {
  * @param {string} agentId
  * @param {string} path - 具体文件路径
  * @param {File|Blob} file
+ * @param {{ signal?: AbortSignal }} [opts]
  * @returns {FileTransferHandle}
  */
-export function uploadFile(clawConn, agentId, path, file) {
+export function uploadFile(clawConn, agentId, path, file, opts = {}) {
 	return __doUpload(clawConn, file, {
 		method: 'PUT', agentId, path, size: file.size,
-	});
+	}, opts);
 }
 
 /**
@@ -302,12 +347,13 @@ export function uploadFile(clawConn, agentId, path, file) {
  * @param {string} path - 集合目录路径
  * @param {string} fileName - 原始文件名
  * @param {File|Blob} file
+ * @param {{ signal?: AbortSignal }} [opts]
  * @returns {FileTransferHandle} resolve 时额外包含 path 字段（实际存储路径）
  */
-export function postFile(clawConn, agentId, path, fileName, file) {
+export function postFile(clawConn, agentId, path, fileName, file, opts = {}) {
 	return __doUpload(clawConn, file, {
 		method: 'POST', agentId, path, fileName, size: file.size,
-	});
+	}, opts);
 }
 
 /**
@@ -315,9 +361,10 @@ export function postFile(clawConn, agentId, path, fileName, file) {
  * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {File|Blob} file
  * @param {object} reqMsg - 发送到 DC 的请求 JSON（含 method/agentId/path/size 等）
+ * @param {{ signal?: AbortSignal }} [opts]
  * @returns {FileTransferHandle}
  */
-function __doUpload(clawConn, file, reqMsg) {
+function __doUpload(clawConn, file, reqMsg, opts = {}) {
 	if (file.size > MAX_UPLOAD_SIZE) {
 		const err = new FileTransferError(
 			'SIZE_EXCEEDED',
@@ -329,19 +376,19 @@ function __doUpload(clawConn, file, reqMsg) {
 	}
 
 	let progressCb = null;
-	let cancelled = false;
-	let cancelFn = null;
+	const { ctrl, cleanup: cleanupLink } = createLinkedAbortController(opts.signal);
+	const isCancelled = () => ctrl.signal.aborted;
 
 	const fileSize = file.size;
 	const logCtx = `method=${reqMsg.method} size=${fileSize}`;
 
-	// 等待连接就绪（已就绪时同步返回 resolved promise）
-	const readyPromise = clawConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS);
+	// 等待连接就绪（signal 透传，排队阶段也能立刻响应 abort）
+	const readyPromise = clawConn.waitReady(DEFAULT_CONNECT_TIMEOUT_MS, ctrl.signal);
 
 	const promise = readyPromise.then(() => new Promise((resolve, reject) => {
-		// 等待就绪期间若已被取消，直接 reject
-		if (cancelled) {
-			reject(new FileTransferError('CANCELLED', 'Upload cancelled'));
+		if (isCancelled()) {
+			cleanupLink();
+			reject(makeAbortError('Upload cancelled'));
 			return;
 		}
 
@@ -353,6 +400,7 @@ function __doUpload(clawConn, file, reqMsg) {
 			if (settled) return;
 			settled = true;
 			clearTimeout(readyTimer);
+			cleanupLink();
 			if (fn === resolve) {
 				const stats = formatTransferLog(val.bytes, Date.now() - startTime);
 				console.log(`[file-transfer] upload ok path=${uploadPath} ${stats}`);
@@ -370,6 +418,7 @@ function __doUpload(clawConn, file, reqMsg) {
 			cleanupRef = cleanup;
 		} catch (err) {
 			remoteLog(`file.up.err code=RTC_NOT_READY ${logCtx} err=${err?.message}`);
+			cleanupLink();
 			reject(err);
 			return;
 		}
@@ -377,19 +426,19 @@ function __doUpload(clawConn, file, reqMsg) {
 		let readyReceived = false;
 		let sentBytes = 0;
 
-		cancelFn = () => {
-			cancelled = true;
+		const onAbort = () => {
 			clearTimeout(readyTimer);
 			cleanupRef();
-			settleWithLog(reject, new FileTransferError('CANCELLED', 'Upload cancelled'));
+			settleWithLog(reject, makeAbortError('Upload cancelled'));
 		};
+		ctrl.signal.addEventListener('abort', onAbort, { once: true });
 
 		console.log(`[file-transfer] upload start path=${uploadPath} size=${formatFileSize(fileSize)}`);
 		remoteLog(`file.up.start ${logCtx}`);
 
 		// 超时守卫：DC open + Plugin ready 信号必须在限时内到达
 		readyTimer = setTimeout(() => {
-			if (readyReceived || cancelled || settled) return;
+			if (readyReceived || isCancelled() || settled) return;
 			cleanupRef();
 			const ftErr = new FileTransferError('READY_TIMEOUT', 'Plugin did not respond in time');
 			remoteLog(`file.up.err code=${ftErr.code} ${logCtx}`);
@@ -408,7 +457,7 @@ function __doUpload(clawConn, file, reqMsg) {
 		};
 
 		dcRef.onmessage = (event) => {
-			if (cancelled || settled) return;
+			if (isCancelled() || settled) return;
 			if (typeof event.data !== 'string') return;
 
 			let msg;
@@ -430,8 +479,8 @@ function __doUpload(clawConn, file, reqMsg) {
 				// Plugin 准备就绪：{ ok: true }
 				readyReceived = true;
 				clearTimeout(readyTimer);
-				sendChunks(dcRef, file, (b) => { sentBytes = b; }, () => progressCb, () => cancelled || settled).then(() => {
-					if (cancelled || settled) return;
+				sendChunks(dcRef, file, (b) => { sentBytes = b; }, () => progressCb, () => isCancelled() || settled).then(() => {
+					if (isCancelled() || settled) return;
 					// 发送完成信号
 					try {
 						dcRef.send(JSON.stringify({ done: true, bytes: fileSize }));
@@ -442,7 +491,7 @@ function __doUpload(clawConn, file, reqMsg) {
 						settleWithLog(reject, ftErr);
 					}
 				}).catch((err) => {
-					if (cancelled || settled) return;
+					if (isCancelled() || settled) return;
 					cleanupRef();
 					const code = err?.code ?? 'UNKNOWN';
 					remoteLog(`file.up.err code=${code} ${logCtx} sent=${sentBytes}/${fileSize} err=${err?.message}`);
@@ -465,7 +514,7 @@ function __doUpload(clawConn, file, reqMsg) {
 			const buffered = dcRef.bufferedAmount ?? '?';
 			// 与下载同理：延迟一个 macrotask，让可能排队中的 onmessage（写入结果）先执行
 			setTimeout(() => {
-				if (cancelled || settled) return;
+				if (isCancelled() || settled) return;
 				const ftErr = new FileTransferError('TRANSFER_INTERRUPTED', 'Upload interrupted');
 				remoteLog(`file.up.err code=${ftErr.code} ${logCtx} sent=${sentBytes}/${fileSize} buffered=${buffered}`);
 				settleWithLog(reject, ftErr);
@@ -478,11 +527,14 @@ function __doUpload(clawConn, file, reqMsg) {
 			remoteLog(`file.up.err code=${ftErr.code} ${logCtx} sent=${sentBytes}/${fileSize}`);
 			settleWithLog(reject, ftErr);
 		};
-	}));
+	})).catch((err) => {
+		cleanupLink();
+		throw err;
+	});
 
 	return {
 		promise,
-		cancel() { cancelled = true; cancelFn?.(); },
+		cancel() { if (!ctrl.signal.aborted) ctrl.abort(); },
 		set onProgress(cb) { progressCb = cb; },
 	};
 }

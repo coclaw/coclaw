@@ -10,14 +10,22 @@ import { remoteLog } from './remote-log.js';
 
 /** 默认请求超时（发送后等待响应），0 表示永不超时 */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-/** 默认连接等待超时（等待 DC 就绪） */
-const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
+/** 默认连接等待超时（等待 DC 就绪），覆盖底层 RTC ICE restart 90s 预算 */
+const DEFAULT_CONNECT_TIMEOUT_MS = 120_000;
 /** 短暂抖动 vs 实质断连分界（reconnect gap < 此值跳过 refresh，避免短抖动后无意义全量刷新） */
 const BRIEF_DISCONNECT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['ok', 'error']);
 
 // 导出常量供外部模块使用
 export { BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS };
+
+/** 构造与 axios CanceledError 对齐的取消错误（err.name='CanceledError', err.code='ERR_CANCELED'） */
+function makeAbortError() {
+	const err = new Error('request aborted');
+	err.name = 'CanceledError';
+	err.code = 'ERR_CANCELED';
+	return err;
+}
 
 /**
  * Per-claw 数据通道连接
@@ -102,9 +110,11 @@ export class ClawConnection {
 	/**
 	 * 等待 DataChannel 就绪
 	 * @param {number} [timeoutMs] - 超时 ms，默认 DEFAULT_CONNECT_TIMEOUT_MS
+	 * @param {AbortSignal} [signal] - 可选取消信号；abort 优先于 fast-path（即使 DC 已 ready 也 reject）
 	 * @returns {Promise<void>}
 	 */
-	waitReady(timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS) {
+	waitReady(timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS, signal) {
+		if (signal?.aborted) return Promise.reject(makeAbortError());
 		if (this.__rtc?.isReady) return Promise.resolve();
 
 		// 若 rtcPhase 为 failed（重试耗尽），主动触发重连
@@ -114,7 +124,7 @@ export class ClawConnection {
 		}
 
 		return new Promise((resolve, reject) => {
-			const waiter = { resolve, reject, timer: null };
+			const waiter = { resolve, reject, timer: null, signal: null, onAbort: null };
 			waiter.timer = setTimeout(() => {
 				this.__removeWaiter(waiter);
 				const err = new Error('connect timeout');
@@ -122,6 +132,14 @@ export class ClawConnection {
 				remoteLog(`conn.waitReady.timeout claw=${this.clawId} timeout=${timeoutMs}ms phase=${this.__onGetRtcPhase?.() ?? '?'}`);
 				reject(err);
 			}, timeoutMs);
+			if (signal) {
+				waiter.signal = signal;
+				waiter.onAbort = () => {
+					this.__removeWaiter(waiter);
+					reject(makeAbortError());
+				};
+				signal.addEventListener('abort', waiter.onAbort, { once: true });
+			}
 			this.__readyWaiters.push(waiter);
 		});
 	}
@@ -134,34 +152,56 @@ export class ClawConnection {
 	 * @param {(payload: object) => void} [options.onAccepted] - 两阶段模式回调
 	 * @param {(status: string, payload: object) => void} [options.onUnknownStatus]
 	 * @param {number} [options.timeout] - 请求超时 ms（0 = 永不超时），默认 30s
-	 * @param {number} [options.connectTimeout] - 连接等待超时 ms，默认 30s
+	 * @param {number} [options.connectTimeout] - 连接等待超时 ms，默认 DEFAULT_CONNECT_TIMEOUT_MS
+	 * @param {AbortSignal} [options.signal] - 可选取消信号，覆盖 waitReady 排队 + pending 两段；abort → reject ERR_CANCELED
 	 * @returns {Promise<object>}
 	 */
 	request(method, params = {}, options = {}) {
 		const connectTimeout = options.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT_MS;
+		const signal = options.signal;
+
+		if (signal?.aborted) return Promise.reject(makeAbortError());
 
 		const doSend = () => {
 			const id = `ui-${Date.now()}-${this.__counter++}`;
 			return new Promise((resolve, reject) => {
-				const waiter = { resolve, reject };
+				const waiter = { resolve, reject, signal: null, onAbort: null };
 				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
 				if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
 				const timeoutMs = options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS;
 				if (timeoutMs > 0) {
 					waiter.timer = setTimeout(() => {
+						if (!this.__pending.has(id)) return;
 						this.__pending.delete(id);
+						this.__cleanupWaiter(waiter);
 						const err = new Error('rpc timeout');
 						err.code = 'RPC_TIMEOUT';
 						remoteLog(`rpc.timeout claw=${this.clawId} method=${method} timeout=${timeoutMs}ms`);
 						reject(err);
 					}, timeoutMs);
 				}
+				// 发送前在 pending 阶段再次检查 signal（可能在 waitReady 与 doSend 之间被 abort）
+				if (signal?.aborted) {
+					if (waiter.timer) clearTimeout(waiter.timer);
+					reject(makeAbortError());
+					return;
+				}
+				if (signal) {
+					waiter.signal = signal;
+					waiter.onAbort = () => {
+						if (!this.__pending.has(id)) return;
+						this.__pending.delete(id);
+						this.__cleanupWaiter(waiter);
+						reject(makeAbortError());
+					};
+					signal.addEventListener('abort', waiter.onAbort, { once: true });
+				}
 				this.__pending.set(id, waiter);
 				this.__rtc.send({ type: 'req', id, method, params })
 					.catch((sendErr) => {
 						if (!this.__pending.has(id)) return;
 						this.__pending.delete(id);
-						if (waiter.timer) clearTimeout(waiter.timer);
+						this.__cleanupWaiter(waiter);
 						const err = new Error('rtc send failed');
 						err.code = 'RTC_SEND_FAILED';
 						remoteLog(`rpc.sendFailed claw=${this.clawId} method=${method} err=${sendErr?.message}`);
@@ -170,8 +210,9 @@ export class ClawConnection {
 			});
 		};
 
+		// abort 优先级高于 fast-path：即使 DC 已 ready 也要尊重已 abort 的 signal（上方已处理）
 		if (this.__rtc?.isReady) return doSend();
-		return this.waitReady(connectTimeout).then(doSend);
+		return this.waitReady(connectTimeout, signal).then(doSend);
 	}
 
 	/** @param {string} event @param {Function} cb */
@@ -216,7 +257,7 @@ export class ClawConnection {
 		// 失败：立即 reject
 		if (payload.ok === false) {
 			this.__pending.delete(payload.id);
-			if (waiter.timer) clearTimeout(waiter.timer);
+			this.__cleanupWaiter(waiter);
 			const err = new Error(payload?.error?.message ?? 'rpc failed');
 			err.code = payload?.error?.code ?? 'RPC_FAILED';
 			remoteLog(`rpc.failed claw=${this.clawId} code=${err.code} err=${err.message}`);
@@ -235,7 +276,7 @@ export class ClawConnection {
 		// 非两阶段：任何 ok=true 直接 resolve
 		if (!waiter.onAccepted) {
 			this.__pending.delete(payload.id);
-			if (waiter.timer) clearTimeout(waiter.timer);
+			this.__cleanupWaiter(waiter);
 			waiter.resolve(payload.payload ?? {});
 			return;
 		}
@@ -243,7 +284,7 @@ export class ClawConnection {
 		// 两阶段终态
 		if (TERMINAL_STATUSES.has(status)) {
 			this.__pending.delete(payload.id);
-			if (waiter.timer) clearTimeout(waiter.timer);
+			this.__cleanupWaiter(waiter);
 			waiter.resolve(payload.payload ?? {});
 			return;
 		}
@@ -255,12 +296,20 @@ export class ClawConnection {
 		}
 	}
 
+	/** 清理 waiter 上的 timer 和 abort listener（resolve/reject 任一出口调用） */
+	__cleanupWaiter(waiter) {
+		if (waiter.timer) clearTimeout(waiter.timer);
+		if (waiter.signal && waiter.onAbort) {
+			waiter.signal.removeEventListener('abort', waiter.onAbort);
+		}
+	}
+
 	__rejectAllPending(message, code = 'DC_CLOSED') {
 		if (this.__pending.size) {
 			remoteLog(`conn.rejectPending claw=${this.clawId} count=${this.__pending.size} code=${code}`);
 		}
 		for (const waiter of this.__pending.values()) {
-			if (waiter.timer) clearTimeout(waiter.timer);
+			this.__cleanupWaiter(waiter);
 			const err = new Error(message);
 			err.code = code;
 			waiter.reject(err);
@@ -272,7 +321,7 @@ export class ClawConnection {
 	__resolveAllWaiters() {
 		const waiters = this.__readyWaiters.splice(0);
 		for (const w of waiters) {
-			if (w.timer) clearTimeout(w.timer);
+			this.__cleanupWaiter(w);
 			w.resolve();
 		}
 	}
@@ -281,16 +330,17 @@ export class ClawConnection {
 	__rejectAllWaiters(message, code) {
 		const waiters = this.__readyWaiters.splice(0);
 		for (const w of waiters) {
-			if (w.timer) clearTimeout(w.timer);
+			this.__cleanupWaiter(w);
 			const err = new Error(message);
 			err.code = code;
 			w.reject(err);
 		}
 	}
 
-	/** 从 readyWaiters 中移除指定 waiter */
+	/** 从 readyWaiters 中移除指定 waiter（同时清理 timer 和 abort listener） */
 	__removeWaiter(waiter) {
 		const idx = this.__readyWaiters.indexOf(waiter);
 		if (idx !== -1) this.__readyWaiters.splice(idx, 1);
+		this.__cleanupWaiter(waiter);
 	}
 }

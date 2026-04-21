@@ -993,7 +993,7 @@ describe('useChatStore', () => {
 				cancel() {
 					cancelFn();
 					const err = new Error('Upload cancelled');
-					err.code = 'CANCELLED';
+					err.code = 'ERR_CANCELED';
 					rejectFn(err);
 				},
 				set onProgress(_cb) {},
@@ -2069,7 +2069,7 @@ describe('useChatStore', () => {
 				promise: new Promise((_r, reject) => { rejectFn = reject; }),
 				cancel() {
 					const err = new Error('cancelled');
-					err.code = 'CANCELLED';
+					err.code = 'ERR_CANCELED';
 					rejectFn(err);
 				},
 				set onProgress(_cb) {},

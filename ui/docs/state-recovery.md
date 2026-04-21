@@ -111,7 +111,7 @@
 - **文件**：`services/webrtc-connection.js`、`utils/dc-chunking.js`
 - **机制**：DataChannel 通过分片（chunking）传输大 payload
 - **流控**：发送端 high water mark 1MB / low water mark 256KB，超限时暂停发送，`bufferedamountlow` 恢复
-- **DC 不可用**：`request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 30s），不再直接 reject
+- **DC 不可用**：`request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 120s，覆盖 ICE restart 90s 预算），不再直接 reject；调用方可通过 `options.signal` 主动放弃等待
 - **场景**：Web + Capacitor
 
 ### 2.6 SSE 恢复
@@ -212,7 +212,7 @@
 
 - **文件**：`stores/chat.store.js`
 - **触发**：发送过程中 DC 断连（`isDisconnectError(err)`），且消息尚未被服务端 accepted，且未重试过
-- **行为**：递归调用 `sendMessage`（携带相同 idempotencyKey），内层 `request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 30s）
+- **行为**：递归调用 `sendMessage`（携带相同 idempotencyKey），内层 `request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 120s）
 - **场景**：Web + Capacitor
 
 ### 4.2 accepted 消息 reconcile

@@ -132,10 +132,11 @@ ClawConnection ══ DC "rpc" (持久) ═════════════�
 
 ### 4.1 connectTimeout（连接等待超时）
 
-- 默认：30s（`DEFAULT_CONNECT_TIMEOUT_MS`）
+- 默认：**120s**（`DEFAULT_CONNECT_TIMEOUT_MS`）—— 覆盖底层 RTC 一次 ICE restart 90s 预算 + 余量
 - 触发条件：调用 `request()` 时 DC 尚未就绪
 - 超时错误码：`CONNECT_TIMEOUT`
 - 快速路径：DC 已就绪时跳过，直接进入发送阶段
+- 可通过 `options.connectTimeout` 覆盖；可通过 `options.signal` 主动取消等待（详见 §4.5）
 
 ### 4.2 requestTimeout（请求响应超时）
 
@@ -143,6 +144,7 @@ ClawConnection ══ DC "rpc" (持久) ═════════════�
 - 通过 `options.timeout` 覆盖，`timeout: 0` 表示永不超时
 - 超时错误码：`RPC_TIMEOUT`
 - DC 断开时由 `clearRtc()` 统一 reject（错误码 `RTC_LOST`）
+- 可通过 `options.signal` 主动取消等待（详见 §4.5）
 
 ### 4.3 业务层超时配置
 
@@ -160,6 +162,19 @@ ClawConnection ══ DC "rpc" (持久) ═════════════�
 ### 4.4 文件二进制传输的超时
 
 文件二进制传输（`downloadFile`/`uploadFile`/`postFile`）使用 `waitReady()` 确保连接就绪后创建临时 DataChannel，传输阶段不设置超时——文件大小不可预知，且 DC 断开会自然终止传输。
+
+DC open 后额外有一层 `READY_TIMEOUT_MS = 120s` 的守卫，等待 Plugin 回复首条控制消息（响应头或 ready 信号）。
+
+### 4.5 请求取消（AbortSignal）
+
+`request()` 和 `downloadFile/uploadFile/postFile` 均支持 `options.signal` / `opts.signal` 参数（AbortSignal），语义与 fetch/axios 对齐：signal 覆盖**连接等待 → 等响应头 → 流式收发**三段完整生命周期，任一阶段被 abort 都立即 reject，不做任何 DC I/O。
+
+- 错误形态：`err.name = 'CanceledError'`，`err.code = 'ERR_CANCELED'`（对齐 axios v0.22+）
+- 传入已 abort 的 signal → 同步 reject，不发起任何 I/O
+- 文件传输的 `handle.cancel()` 向后兼容保留，内部等价于 `controller.abort()`
+- ERR_CANCELED 不在断连错误集合中（`DISCONNECT_CODES`），不会触发上层自动重试
+
+**为什么要覆盖整个等待周期**：底层 RTC 恢复最长可达 ~3 分钟（ICE restart 90s + rebuild 退避），应用层通过长 connectTimeout 加上 signal 主动取消来表达"是否继续等"，与 fetch 心智一致——调用方不关心下层在哪个恢复阶段。
 
 ---
 

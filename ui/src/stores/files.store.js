@@ -313,7 +313,7 @@ export const useFilesStore = defineStore('files', {
 					catch (err) { console.warn('[files.store] upload onDone threw: %s', err?.message); }
 				}
 			} catch (err) {
-				if (err?.code === 'CANCELLED') return; // cancelTask 已处理状态
+				if (err?.code === 'ERR_CANCELED') return; // cancelTask 已处理状态
 				task.status = 'failed';
 				task.error = err?.message ?? 'Upload failed';
 				logTaskFailure(task, err);
@@ -354,7 +354,7 @@ export const useFilesStore = defineStore('files', {
 				await saveBlobToFile(result.blob, result.name || task.fileName);
 				task.status = 'done';
 			} catch (err) {
-				if (err?.code === 'CANCELLED') return;
+				if (err?.code === 'ERR_CANCELED') return;
 				task.status = 'failed';
 				task.error = err?.message ?? 'Download failed';
 				// 标注失败阶段，方便排查"传输 OK 但保存失败"等场景

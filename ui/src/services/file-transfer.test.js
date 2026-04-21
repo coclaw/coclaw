@@ -802,8 +802,8 @@ describe('uploadFile', () => {
 			dc.__open();
 			// 不发 { ok: true } ready 信号
 
-			// 推进 15s 触发 READY_TIMEOUT
-			await vi.advanceTimersByTimeAsync(15_000);
+			// 推进 120s 触发 READY_TIMEOUT（READY_TIMEOUT_MS = 120s）
+			await vi.advanceTimersByTimeAsync(120_000);
 
 			const err = await resultPromise;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -1185,7 +1185,7 @@ describe('downloadFile — 超时守卫', () => {
 			dc.__open();
 			// 不发响应头，让超时触发
 
-			await vi.advanceTimersByTimeAsync(15_000);
+			await vi.advanceTimersByTimeAsync(120_000);
 
 			const err = await resultPromise;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -1207,7 +1207,7 @@ describe('downloadFile — 超时守卫', () => {
 			await vi.advanceTimersByTimeAsync(0); // tick: waitReady resolve
 			lastDC(); // DC 已创建但不调用 __open()
 
-			await vi.advanceTimersByTimeAsync(15_000);
+			await vi.advanceTimersByTimeAsync(120_000);
 
 			const err = await resultPromise;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -1253,11 +1253,12 @@ describe('downloadFile — 超时守卫', () => {
 			lastDC();
 			handle.cancel();
 
-			// 推进超时 — 不应再触发
-			await vi.advanceTimersByTimeAsync(15_000);
+			// 推进 ready 超时 — 不应再触发
+			await vi.advanceTimersByTimeAsync(120_001);
 
 			const err = await resultPromise;
-			expect(err.code).toBe('CANCELLED');
+			expect(err.code).toBe('ERR_CANCELED');
+			expect(err.name).toBe('CanceledError');
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1390,7 +1391,7 @@ describe('uploadFile — 分支覆盖补充', () => {
 			dc.__open();
 			// 不发 ready，让超时触发
 			const p = handle.promise.catch((e) => e);
-			await vi.advanceTimersByTimeAsync(15_001);
+			await vi.advanceTimersByTimeAsync(120_001);
 
 			const err = await p;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -1944,5 +1945,223 @@ describe('WebRtcConnection.createDataChannel', () => {
 
 		const dc = rtc.createDataChannel('file:test', { ordered: true });
 		expect(dc).toBeNull();
+	});
+});
+
+// --- AbortSignal 取消支持 ---
+
+/**
+ * 构造 mock：waitReady 仿真支持 (timeoutMs, signal)，返回一个"可由测试控制"的 pending promise
+ * 用于验证 waitReady 排队阶段的 abort/cancel 行为（存量缺陷修复点）
+ */
+function createMockBotConnWithPendingWait() {
+	const channels = [];
+	let resolveWait = null;
+	let rejectWait = null;
+
+	const rtcConn = {
+		createDataChannel(label, opts) {
+			const listeners = {};
+			const dc = {
+				label,
+				ordered: opts?.ordered,
+				readyState: 'connecting',
+				bufferedAmount: 0,
+				bufferedAmountLowThreshold: 0,
+				onopen: null, onmessage: null, onclose: null, onerror: null,
+				sent: [],
+				send(data) { dc.sent.push(data); },
+				close() { dc.readyState = 'closed'; },
+				addEventListener(event, cb) { (listeners[event] ??= []).push(cb); },
+				removeEventListener(event, cb) {
+					if (listeners[event]) listeners[event] = listeners[event].filter((c) => c !== cb);
+				},
+				__open() { dc.readyState = 'open'; dc.onopen?.(); },
+				__receiveString(json) { dc.onmessage?.({ data: JSON.stringify(json) }); },
+			};
+			channels.push(dc);
+			return dc;
+		},
+	};
+
+	const clawConn = {
+		request: vi.fn().mockResolvedValue({}),
+		waitReady: vi.fn((_timeoutMs, signal) => {
+			if (signal?.aborted) {
+				const err = new Error('request aborted');
+				err.name = 'CanceledError';
+				err.code = 'ERR_CANCELED';
+				return Promise.reject(err);
+			}
+			return new Promise((resolve, reject) => {
+				resolveWait = resolve;
+				rejectWait = reject;
+				if (signal) {
+					signal.addEventListener('abort', () => {
+						const err = new Error('request aborted');
+						err.name = 'CanceledError';
+						err.code = 'ERR_CANCELED';
+						reject(err);
+					}, { once: true });
+				}
+			});
+		}),
+		rtc: rtcConn,
+	};
+
+	return {
+		clawConn,
+		rtcConn,
+		channels,
+		lastDC: () => channels[channels.length - 1],
+		resolveWait: () => resolveWait?.(),
+		rejectWait: (err) => rejectWait?.(err),
+	};
+}
+
+describe('downloadFile – AbortSignal 取消支持', () => {
+	test('传入已 abort 的 signal → 立即 reject，不调 waitReady/不创建 DC', async () => {
+		const { clawConn, channels } = createMockBotConnWithPendingWait();
+		const ctrl = new AbortController();
+		ctrl.abort();
+
+		const handle = downloadFile(clawConn, 'main', 'file.txt', { signal: ctrl.signal });
+		const err = await handle.promise.catch((e) => e);
+
+		expect(err.code).toBe('ERR_CANCELED');
+		expect(err.name).toBe('CanceledError');
+		// 外部 signal 已 abort → createLinkedAbortController 同步 abort 内部 ctrl
+		// waitReady 被调用时 signal.aborted=true，立即 reject，不会创建 DC
+		expect(channels.length).toBe(0);
+	});
+
+	test('waitReady 排队阶段 abort → 立即 reject（存量缺陷修复验证）', async () => {
+		const { clawConn, channels } = createMockBotConnWithPendingWait();
+		const ctrl = new AbortController();
+
+		const handle = downloadFile(clawConn, 'main', 'file.txt', { signal: ctrl.signal });
+		// waitReady 尚未 resolve/reject — handle.promise pending
+		// 旧实现此时调 cancel 只能等 waitReady settle 才 reject；新实现立即 reject
+		ctrl.abort();
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err.code).toBe('ERR_CANCELED');
+		expect(channels.length).toBe(0); // 修复缺陷：不应进入 DC 创建阶段
+	});
+
+	test('handle.cancel() 在 waitReady 排队阶段调用 → 立即 reject（存量缺陷修复）', async () => {
+		const { clawConn, channels } = createMockBotConnWithPendingWait();
+
+		const handle = downloadFile(clawConn, 'main', 'file.txt');
+		handle.cancel(); // 不依赖外部 signal，只用旧 API
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err.code).toBe('ERR_CANCELED');
+		expect(channels.length).toBe(0);
+	});
+
+	test('DC 已 open 等响应头阶段 abort → 关 DC + reject ERR_CANCELED', async () => {
+		const { clawConn, resolveWait, lastDC } = createMockBotConnWithPendingWait();
+		const ctrl = new AbortController();
+
+		const handle = downloadFile(clawConn, 'main', 'file.txt', { signal: ctrl.signal });
+		resolveWait(); // 放行 waitReady → 创建 DC
+		await Promise.resolve();
+
+		const dc = lastDC();
+		dc.__open();
+		expect(dc.readyState).toBe('open');
+
+		ctrl.abort();
+		const err = await handle.promise.catch((e) => e);
+		expect(err.code).toBe('ERR_CANCELED');
+		expect(dc.readyState).toBe('closed');
+	});
+
+	test('外部 signal + handle.cancel() 任一触发都能终止', async () => {
+		// 场景 A：外部 signal abort
+		{
+			const { clawConn } = createMockBotConnWithPendingWait();
+			const ctrl = new AbortController();
+			const handle = downloadFile(clawConn, 'main', 'f.txt', { signal: ctrl.signal });
+			ctrl.abort();
+			const err = await handle.promise.catch((e) => e);
+			expect(err.code).toBe('ERR_CANCELED');
+		}
+		// 场景 B：handle.cancel() 触发（配合外部 signal 同时存在）
+		{
+			const { clawConn } = createMockBotConnWithPendingWait();
+			const ctrl = new AbortController();
+			const handle = downloadFile(clawConn, 'main', 'f.txt', { signal: ctrl.signal });
+			handle.cancel();
+			const err = await handle.promise.catch((e) => e);
+			expect(err.code).toBe('ERR_CANCELED');
+			// handle.cancel() 不会影响外部 ctrl.signal.aborted
+			expect(ctrl.signal.aborted).toBe(false);
+		}
+	});
+
+	test('handle.cancel() 向后兼容 — 不传 signal 也能正常取消', async () => {
+		const { clawConn, resolveWait, lastDC } = createMockBotConnWithPendingWait();
+
+		const handle = downloadFile(clawConn, 'main', 'file.txt'); // 不传 opts
+		resolveWait();
+		await Promise.resolve();
+		lastDC().__open();
+
+		handle.cancel();
+		const err = await handle.promise.catch((e) => e);
+		expect(err.code).toBe('ERR_CANCELED');
+	});
+});
+
+describe('uploadFile – AbortSignal 取消支持', () => {
+	test('传入已 abort 的 signal → 立即 reject，不创建 DC', async () => {
+		const { clawConn, channels } = createMockBotConnWithPendingWait();
+		const ctrl = new AbortController();
+		ctrl.abort();
+
+		const handle = uploadFile(clawConn, 'main', 'out.bin',
+			createStreamableFile(new Uint8Array(100)),
+			{ signal: ctrl.signal });
+		const err = await handle.promise.catch((e) => e);
+
+		expect(err.code).toBe('ERR_CANCELED');
+		expect(channels.length).toBe(0);
+	});
+
+	test('waitReady 排队阶段 abort → 立即 reject（存量缺陷修复）', async () => {
+		const { clawConn, channels } = createMockBotConnWithPendingWait();
+		const ctrl = new AbortController();
+
+		const handle = uploadFile(clawConn, 'main', 'out.bin',
+			createStreamableFile(new Uint8Array(100)),
+			{ signal: ctrl.signal });
+		ctrl.abort();
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err.code).toBe('ERR_CANCELED');
+		expect(channels.length).toBe(0);
+	});
+});
+
+describe('postFile – AbortSignal 取消支持', () => {
+	test('传入已 abort 的 signal → 立即 reject', async () => {
+		const { clawConn } = createMockBotConnWithPendingWait();
+		const ctrl = new AbortController();
+		ctrl.abort();
+
+		const handle = postFile(clawConn, 'main', 'dir', 'f.bin',
+			createStreamableFile(new Uint8Array(50)),
+			{ signal: ctrl.signal });
+		const err = await handle.promise.catch((e) => e);
+		expect(err.code).toBe('ERR_CANCELED');
+	});
+});
+
+describe('file-transfer – READY_TIMEOUT_MS 导出', () => {
+	test('READY_TIMEOUT_MS 为 120s（对齐 connectTimeout 恢复窗口）', async () => {
+		const { READY_TIMEOUT_MS } = await import('./file-transfer.js');
+		expect(READY_TIMEOUT_MS).toBe(120_000);
 	});
 });

@@ -208,7 +208,7 @@ reconcile 替换 messages 不会抖动——streaming 标记已清除，DOM 已�
 |---|---|---|
 | `BRIEF_DISCONNECT_MS` | 30000 | 短暂抖动 vs 实质断连分界 |
 | `DEFAULT_REQUEST_TIMEOUT_MS` | 30000 | RPC 请求超时 |
-| `DEFAULT_CONNECT_TIMEOUT_MS` | 30000 | 连接超时 |
+| `DEFAULT_CONNECT_TIMEOUT_MS` | 120000 | 连接超时（覆盖底层 RTC ICE restart 90s 预算） |
 
 ### ChatPage connReady 驱动
 
