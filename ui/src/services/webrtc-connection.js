@@ -32,8 +32,10 @@ const DISCONNECTED_TIMEOUT_RESUME_MS = 1_500;
 
 /** ICE restart 总时间预算：超过后放弃 restart → failed → store rebuild */
 const ICE_RESTART_TIMEOUT_MS = 90_000;
-/** ICE restart 安全网定时器间隔（覆盖 connectionState:failed 未触发的极端场景） */
-const ICE_RESTART_SAFETY_MS = 30_000;
+/** ICE restart 安全网定时器间隔（覆盖 connectionState:failed 未触发的极端场景）。
+ *  15s 取值：正常 offer→answer 往返应在 1-3s 完成；15s 仍远高于该水位，
+ *  同时把 answer 丢失场景下的最坏恢复延迟压到 15s 内。 */
+const ICE_RESTART_SAFETY_MS = 15_000;
 /** ICE restart stats 轮询间隔：覆盖"旧 pair 还活着、connectionState 从未跳变"的场景 */
 const ICE_RESTART_STATS_POLL_MS = 500;
 
@@ -230,6 +232,8 @@ export class WebRtcConnection {
 		this.__restartAttemptCount = 0;
 		this.__restartStartTime = 0;
 		this.__restartInFlight = false;
+		/** 本轮 ICE restart 最近一次 offer 发出时间戳；answer 到达时据此计算 RTT */
+		this.__restartOfferSentAt = 0;
 		/** pre-restart selected pair 的 local ufrag 快照；stats 轮询据此判"是否走上新路径" */
 		this.__restartUfragSnap = null;
 		/** restart 代次（每次 __clearRestartState 递增）；用于拦截跨 epoch 的 snap.then 迟到 */
@@ -1055,6 +1059,7 @@ export class WebRtcConnection {
 			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
 			await this.__pc.setLocalDescription(offer);
 			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
+			this.__restartOfferSentAt = Date.now();
 			sig.sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true });
 			const credRemain = this.__credExpireAt != null ? this.__credExpireAt - Math.floor(Date.now() / 1000) : null;
 			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount} credRemain=${credRemain ?? 'none'}`);
@@ -1092,6 +1097,7 @@ export class WebRtcConnection {
 		this.__stopRestartPoll();
 		this.__restartAttemptCount = 0;
 		this.__restartStartTime = 0;
+		this.__restartOfferSentAt = 0;
 		this.__restartUfragSnap = null;
 		this.__restartUfragMissingLogged = false;
 		// 递增 epoch → 让跨 epoch 的 snap.then / poll tick 失效
@@ -1268,9 +1274,16 @@ export class WebRtcConnection {
 	/** @private */
 	__onSignaling(msg) {
 		if (msg.type === 'rtc:answer') {
-			this.__log('info', 'answer received, setting remote description');
 			const pcAtAnswer = this.__pc;
 			const wasRestarting = this.__state === 'restarting';
+			if (wasRestarting && this.__restartOfferSentAt > 0) {
+				const rtt = Date.now() - this.__restartOfferSentAt;
+				this.__log('info', `ICE restart answer received, offerRtt=${rtt}ms attempt=${this.__restartAttemptCount}`);
+				remoteLog(`rtc.restartAnswer claw=${this.clawId} rtt=${rtt}ms attempt=${this.__restartAttemptCount}`);
+				this.__restartOfferSentAt = 0;
+			} else {
+				this.__log('info', 'answer received, setting remote description');
+			}
 			pcAtAnswer?.setRemoteDescription({ type: 'answer', sdp: msg.payload.sdp })
 				.then(() => {
 					this.__remoteDescSet = true;

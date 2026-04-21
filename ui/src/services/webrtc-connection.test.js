@@ -2606,7 +2606,7 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('安全网定时器每 30s 重发 offer', async () => {
+	test('安全网定时器每 15s 重发 offer', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
@@ -2615,8 +2615,8 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(rtc.state).toBe('restarting');
 		mockSendSignaling.mockClear();
 
-		// 30s 后安全网重试
-		await vi.advanceTimersByTimeAsync(30_000);
+		// 15s 后安全网重试
+		await vi.advanceTimersByTimeAsync(15_000);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(mockSendSignaling).toHaveBeenCalledWith(
 			'bot1', 'rtc:offer',
@@ -2624,6 +2624,97 @@ describe('WebRtcConnection — ICE restart', () => {
 		);
 
 		rtc.close();
+	});
+
+	test('restart answer 到达 → 本地日志 + remoteLog 记录 offer→answer RTT', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 进入 restarting → 等 __attemptRestart 的 async 段落把 offer 发出
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartOfferSentAt).toBeGreaterThan(0);
+
+		// 模拟 plugin 回 answer,1200ms 往返
+		await vi.advanceTimersByTimeAsync(1200);
+		remoteLog.mockClear();
+		const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringMatching(/ICE restart answer received, offerRtt=\d+ms attempt=\d+/),
+		);
+		expect(remoteLog).toHaveBeenCalledWith(
+			expect.stringMatching(/^rtc\.restartAnswer claw=bot1 rtt=\d+ms attempt=\d+$/),
+		);
+		// 已消费,避免后续误用
+		expect(rtc.__restartOfferSentAt).toBe(0);
+
+		infoSpy.mockRestore();
+		rtc.close();
+	});
+
+	test('非 restart 路径的 rtc:answer 不记录 restart RTT', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		await rtc.connect(MOCK_TURN_CREDS);
+		remoteLog.mockClear();
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+
+		const restartCalls = remoteLog.mock.calls.filter((c) => String(c[0]).startsWith('rtc.restartAnswer'));
+		expect(restartCalls).toHaveLength(0);
+
+		rtc.close();
+	});
+
+	test('安全网周期重试后 RTT 基于最新一次 offer 计算', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		const firstOfferAt = rtc.__restartOfferSentAt;
+		expect(firstOfferAt).toBeGreaterThan(0);
+
+		// 触发一次安全网周期重试：timestamp 应被刷新
+		await vi.advanceTimersByTimeAsync(15_000);
+		await vi.advanceTimersByTimeAsync(0);
+		const secondOfferAt = rtc.__restartOfferSentAt;
+		expect(secondOfferAt).toBeGreaterThan(firstOfferAt);
+
+		// 第二次 offer 发出后 800ms,answer 到达
+		await vi.advanceTimersByTimeAsync(800);
+		remoteLog.mockClear();
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer-sdp' } });
+
+		// RTT 应基于最近一次 offer（800ms 级别），而不是首次 offer（~15.8s）
+		const restartCalls = remoteLog.mock.calls.filter((c) => String(c[0]).startsWith('rtc.restartAnswer'));
+		expect(restartCalls).toHaveLength(1);
+		const match = String(restartCalls[0][0]).match(/rtt=(\d+)ms/);
+		expect(match).not.toBeNull();
+		const rtt = Number(match[1]);
+		expect(rtt).toBeGreaterThanOrEqual(800);
+		expect(rtt).toBeLessThan(2000);
+
+		rtc.close();
+	});
+
+	test('close() 清除 __restartOfferSentAt', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__restartOfferSentAt).toBeGreaterThan(0);
+
+		rtc.close();
+		expect(rtc.__restartOfferSentAt).toBe(0);
 	});
 
 	test('close() 清除 restart 状态', async () => {

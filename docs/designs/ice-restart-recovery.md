@@ -105,7 +105,7 @@ idle → building → ready ⇄ restarting
 2. 同步 setState('restarting')（仅首次，确保状态立即可观测）
 3. 首次进入时记录 __restartStartTime
 4. 时间预算检查：Date.now() - startTime >= ICE_RESTART_TIMEOUT_MS(90s) → 放弃 → setState('failed')
-5. 确保安全网定时器运行（ICE_RESTART_SAFETY_MS=30s，覆盖 failed 未触发的极端场景）
+5. 确保安全网定时器运行（ICE_RESTART_SAFETY_MS=15s，覆盖 failed 未触发的极端场景）
 6. 信令 WS 不可用 → 跳过本次 offer（安全网定时器或 nudge 会再来）
 7. 并发防护：__restartInFlight → return（防止 timer 与 immediate retry 产生并发 createOffer）
 8. 计数递增 + 重置候选缓冲（__remoteDescSet / __pendingCandidates）
@@ -186,8 +186,9 @@ __onSignaling(msg):
 
 #### 安全网定时器
 
-- 间隔：30s（`ICE_RESTART_SAFETY_MS`）——作为安全网，覆盖 `connectionState:failed` 未触发的极端场景
-- 主要恢复路径已改为 `connectionState:failed` 时立即重试，安全网定时器仅补位
+- 间隔：15s（`ICE_RESTART_SAFETY_MS`）——作为安全网，覆盖 `connectionState:failed` 未触发的极端场景（如 answer 回程丢失）。
+- 正常 offer→answer 往返在 1–3s 量级，15s 仍远高于该水位；仅在事件路径 / stats 轮询路径全部落空时触发，将这类极端场景的最坏恢复延迟从 30s 压缩到 15s。
+- 主要恢复路径已改为 `connectionState:failed` 时立即重试，安全网定时器仅补位。
 - 仅 restarting 状态时活跃
 - 仅 signaling WS connected 时发送 offer
 - `app:background` 时停止，`foreground` 由 store nudge 触发
