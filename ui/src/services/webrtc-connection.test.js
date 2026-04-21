@@ -2405,7 +2405,7 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
-	test('createDataChannel 在 restarting 时返回 null', async () => {
+	test('createDataChannel 在 restarting 时仍返回有效 DC（ICE restart 期间 SCTP 保留，新 DC 可 open）', async () => {
 		const { rtc, pc } = await setupConnectedRtc();
 
 		pc.connectionState = 'failed';
@@ -2413,8 +2413,10 @@ describe('WebRtcConnection — ICE restart', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('restarting');
 
-		const dc = rtc.createDataChannel('file:test');
-		expect(dc).toBeNull();
+		const dc = rtc.createDataChannel('file:test', { ordered: true });
+		expect(dc).not.toBeNull();
+		// restart 期间新建也要 arraybuffer，不能让 mock 的默认 'blob' 漏过
+		expect(dc.binaryType).toBe('arraybuffer');
 
 		rtc.close();
 	});

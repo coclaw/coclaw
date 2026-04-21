@@ -395,7 +395,10 @@ export class WebRtcConnection {
 	 * @returns {RTCDataChannel|null} 创建的 DC，PC 不可用时返回 null
 	 */
 	createDataChannel(label, opts) {
-		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed' || this.__state === 'restarting') return null;
+		// restarting 不拒：ICE restart 保留 SCTP/DTLS，新 DC 会先停在 connecting、
+		// 等 ICE 切完 UDP 通路后自己 open（与现有 DC 在 restart 期间存活同构）。
+		// 若此处误拒会把前台恢复瞬间并发触发的文件下载立即拍死成 RTC_NOT_READY。
+		if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return null;
 		const dc = this.__pc.createDataChannel(label, opts);
 		// binary 帧以 ArrayBuffer 形式到达（规范默认为 'blob'，部分浏览器实现也不一致）。
 		// 必须在 dc 打开前设置：一是确保第一条 binary 到来时账本能正确计字节；
