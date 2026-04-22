@@ -198,12 +198,9 @@ export const useClawsStore = defineStore('claws', {
 			}
 			claw.online = next;
 			if (!next) {
-				// agents / dashboard 缓存保留：离线时不清除，重连后由对应 load 替换
-				_lifecycle.syncDashboardOffline(id);
-				// SSE presence 仅是展示信号，不毒化 DC 状态（详见通信模型 §5.5）。
-				// 轻触发 DC 自检：若 DC 健在，probe 会成功无副作用；若 DC 实际已坏，
-				// 能在秒级拉起 ICE restart / rebuild，避免等浏览器 consent 超时（~20-35s）。
-				this.__checkAndRecover(id, 'sse_offline').catch(() => {});
+				// claw offline：暂停所有 RTC 主动恢复动作，PC 保留，退避定时器清零。
+				// agents / dashboard 缓存保留：离线时不清除，重连后由对应 load 替换。
+				this.__handleClawGoOffline(id);
 			} else if (!claw.initialized) {
 				// claw 上线且未初始化 → fullInit（ensureConnected 内部处理 WS）
 				claw.initialized = true;
@@ -216,12 +213,8 @@ export const useClawsStore = defineStore('claws', {
 					});
 				}
 			} else if (prev === false) {
-				// claw offline→online → 恢复 RTC（外部事件，重置退避）
-				// RTC 就绪后刷新 dashboard（覆盖 DC 未断 + DC 重建两种场景）
-				this.__clearRetry(id);
-				this.__ensureRtc(id)
-					.then(() => _lifecycle.loadDashboardForClaw(id))
-					.catch(() => {});
+				// claw offline→online → 按 PC 状态分派恢复路径（restart / rebuild / noop）
+				this.__resumeOnline(id);
 			}
 		},
 		removeClawById(clawId) {
@@ -242,12 +235,15 @@ export const useClawsStore = defineStore('claws', {
 		applySnapshot(items) {
 			const arr = Array.isArray(items) ? items : [];
 			const newById = {};
+			// Phase 1: 快照 apply 前先记录每个已有 claw 的 online 值，供 Phase 3 diff
+			const prevOnlineMap = new Map();
 			for (const b of arr) {
 				const id = String(b.id ?? '');
 				if (!id) continue;
 				const existing = this.byId[id];
 				if (existing) {
-					// 保留运行时状态（server snapshot 不应覆盖这些字段）
+					prevOnlineMap.set(id, existing.online);
+					// Phase 2: 保留运行时状态（server snapshot 不应覆盖这些字段）
 					const runtime = {};
 					for (const k of RUNTIME_FIELDS) runtime[k] = existing[k];
 					Object.assign(existing, b, { id }, runtime);
@@ -276,15 +272,24 @@ export const useClawsStore = defineStore('claws', {
 			for (const id of clawIds) {
 				this.__bridgeConn(id);
 			}
-			// server 重启后 RTC 内部重建可能已耗尽 → rtcPhase='failed'
-			// 新快照到达时为这些 claw 重新尝试（持续维护 gate 不看 online）
+			// Phase 3: 按 online 转换 + failed 兜底分派动作（覆盖 SSE 断连重连场景）
+			// - online true→false：走 __handleClawGoOffline 暂停恢复
+			// - online false→true 且已 initialized：走 __resumeOnline 按 PC 状态分派
+			// - online 未变但 rtcPhase='failed'：server 重启导致 RTC 内部重试耗尽，也走 resume
+			const toResume = new Set();
 			for (const id of clawIds) {
 				const claw = this.byId[id];
-				if (claw?.initialized && claw.rtcPhase === 'failed') {
-					this.__clearRetry(id); // 外部事件，重置退避
-					this.__ensureRtc(id).catch(() => {});
+				if (!claw?.initialized) continue;
+				const prev = prevOnlineMap.get(id);
+				if (prev === true && claw.online === false) {
+					this.__handleClawGoOffline(id);
+				} else if (prev === false && claw.online === true) {
+					toResume.add(id);
+				} else if (claw.online && claw.rtcPhase === 'failed') {
+					toResume.add(id);
 				}
 			}
+			for (const id of toResume) this.__resumeOnline(id);
 		},
 
 		/**
@@ -401,6 +406,60 @@ export const useClawsStore = defineStore('claws', {
 			}
 		},
 
+		/**
+		 * claw 转入 offline：暂停所有 RTC 主动恢复动作，PC 保留。
+		 * - `syncDashboardOffline`：dashboard 展示同步为 offline
+		 * - `__clearRetry`：取消排队中的退避重试定时器
+		 * - `dcReady = false` + stamp `disconnectedAt`：offline 期间 DC 视同不可用（server
+		 *   无法 relay 到离线的 plugin；getReadyConn 快速失败；恢复时 `__refreshIfStale`
+		 *   能凭 `wasDisconnected=true` 触发业务数据刷新）
+		 * - PC 在 `restarting` 时调 `pauseRestart`：停 restart 循环、重置预算、清 ufragSnap
+		 *
+		 * 触发点：`updateClawOnline(id, false)`、`applySnapshot` 检测到 online true→false。
+		 */
+		__handleClawGoOffline(id) {
+			_lifecycle.syncDashboardOffline(id);
+			this.__clearRetry(id);
+			const claw = this.byId[id];
+			if (claw) {
+				claw.dcReady = false;
+				claw.disconnectedAt = claw.disconnectedAt || Date.now();
+			}
+			const conn = useClawConnections().get(id);
+			if (conn?.rtc?.state === 'restarting') {
+				conn.rtc.pauseRestart();
+			}
+		},
+
+		/**
+		 * claw 转入 online：按 PC 当前状态分派恢复路径。
+		 * - `restarting`（pauseRestart 冻结而来）→ 复用 PC 走 ICE restart（全新 90s 预算），
+		 *   数据刷新由 `__refreshIfStale` 在 `onRtcStateChange('connected')` 自动接手
+		 * - 其余（rtc 不存在 / `connected` / `failed` / `closed` / `idle` / `connecting`）→ `__ensureRtc`
+		 *   - `connected`：`__ensureRtc` 内部早退并校正 dcReady/rtcPhase
+		 *   - 其他：走 rebuild，完成后 `.then` 链加载 dashboard
+		 *
+		 * 触发点：`updateClawOnline(id, true)` prev=false、`applySnapshot` 检测到 online false→true
+		 * 或持续 online 但 `rtcPhase='failed'`（server 重启兜底）。
+		 */
+		__resumeOnline(id) {
+			const conn = useClawConnections().get(id);
+			if (!conn) return;
+			this.__clearRetry(id);
+			const rtc = conn.rtc;
+			if (rtc?.state === 'restarting') {
+				// 仅当 PC 处于 pauseRestart 冻结态时才 unstick；
+				// 若已在正常 restart 循环中（非冻结），不重复 triggerRestart 避免 attemptCount 虚涨/重发 offer
+				if (rtc.restartPaused) {
+					rtc.triggerRestart('online_resume');
+				}
+				return;
+			}
+			this.__ensureRtc(id)
+				.then(() => _lifecycle.loadDashboardForClaw(id))
+				.catch(() => {});
+		},
+
 		/** 构建 RTC 回调（store 侧状态同步） */
 		__rtcCallbacks(clawId) {
 			return {
@@ -465,6 +524,8 @@ export const useClawsStore = defineStore('claws', {
 		 */
 		async __ensureRtc(id, { forceRebuild = false } = {}) {
 			if (_rtcInitInProgress.get(id)) return;
+			// online gate：plugin 离线时 rebuild 必然失败，不浪费 ICE gathering / TURN 预算
+			if (!this.byId[id]?.online) return;
 			_rtcInitInProgress.set(id, true);
 
 			const conn = useClawConnections().get(id);
@@ -473,11 +534,15 @@ export const useClawsStore = defineStore('claws', {
 			try {
 				const rtc = conn.rtc;
 				// RTC 已连接且健康（非强制 rebuild）→ 确保 dcReady
+				// 若 dcReady 是从 false 翻到 true（connected-throughout-offline 场景），
+				// 同步触发 __refreshIfStale 刷业务数据，对齐 onRtcStateChange('connected') 路径
 				if (!forceRebuild && rtc && rtc.state === 'connected') {
 					const claw = this.byId[id];
 					if (claw && rtc.isReady) {
+						const wasDisconnected = !claw.dcReady;
 						claw.dcReady = true;
 						claw.rtcPhase = 'ready';
+						if (wasDisconnected) this.__refreshIfStale(id);
 					}
 					return;
 				}
@@ -495,10 +560,19 @@ export const useClawsStore = defineStore('claws', {
 
 				let result = 'failed';
 				let bailedOut = false;
+				let bailReason = null;
 				for (let i = 0; i < RTC_BUILD_MAX_RETRIES; i++) {
 					if (!this.byId[id]) {
 						console.debug('[claws] ensureRtc: bail-out (claw removed) clawId=%s', id);
 						bailedOut = true;
+						bailReason = 'removed';
+						break;
+					}
+					// 中途翻 offline：立即停止继续烧 attempts
+					if (!this.byId[id].online) {
+						console.debug('[claws] ensureRtc: bail-out (claw offline mid-build) clawId=%s', id);
+						bailedOut = true;
+						bailReason = 'offline';
 						break;
 					}
 					result = await initRtc(id, conn, this.__rtcCallbacks(id));
@@ -516,8 +590,13 @@ export const useClawsStore = defineStore('claws', {
 					this.__refreshIfStale(id);
 					remoteLog(`claw.rtcReady claw=${id}`);
 				} else if (bailedOut) {
-					// bail-out 唯一触发条件是 this.byId[id] 已被删除，无对象可写 phase
-					remoteLog(`claw.rtcBailOut claw=${id}`);
+					// claw 被删除 → 无对象可写 phase；claw 翻 offline → 显式 phase=failed
+					// 让后续 online→true 走 rebuild 分支（而非 triggerRestart）
+					if (bailReason === 'offline') {
+						const claw = this.byId[id];
+						if (claw) claw.rtcPhase = 'failed';
+					}
+					remoteLog(`claw.rtcBailOut claw=${id} reason=${bailReason}`);
 				} else {
 					const claw = this.byId[id];
 					if (claw) claw.rtcPhase = 'failed';
@@ -563,6 +642,8 @@ export const useClawsStore = defineStore('claws', {
 		__scheduleRetry(id) {
 			const claw = this.byId[id];
 			if (!claw) return;
+			// online gate：offline 时不排队退避，online 回来由 __resumeOnline 分派
+			if (!claw.online) return;
 			let state = _rtcRetryState.get(id);
 			if (!state) {
 				state = { count: 0, timer: null };
@@ -642,6 +723,8 @@ export const useClawsStore = defineStore('claws', {
 				if (_rtcInitInProgress.get(id)) continue;
 				const claw = this.byId[id];
 				if (!claw?.initialized) continue;
+				// online gate：offline 的 claw 不在此参与恢复（online 回来由 __resumeOnline 分派）
+				if (!claw.online) continue;
 				const conn = useClawConnections().get(id);
 				const rtc = conn?.rtc;
 				if (!rtc) continue;
@@ -683,6 +766,8 @@ export const useClawsStore = defineStore('claws', {
 				if (_probeInProgress.get(id)) return;
 				const claw = this.byId[id];
 				if (!claw?.dcReady) return;
+				// online gate：offline 时不 probe、不 restart，恢复交给 __resumeOnline
+				if (!claw.online) return;
 				const conn = useClawConnections().get(id);
 				const rtc = conn?.rtc;
 				if (!rtc) return;

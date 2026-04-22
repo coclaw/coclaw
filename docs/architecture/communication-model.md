@@ -229,35 +229,58 @@ idle → building → ready ⇄ recovering
 
 `waitReady()` 在 `failed` 状态下会自动调用 `__onTriggerReconnect` 触发新一轮重连尝试。
 
-### 5.5 claw.online 与 DC 生命周期的解耦
+### 5.5 claw.online 与 DC 恢复路径的协调
 
-**`claw.online` 是展示层字段，不参与 DC 生命周期决策。**
+**`claw.online` 是 presence 信号，不作为 DC 是否可用的判据；但主动恢复动作（ICE restart / rebuild / retry 调度）以它为门控**——offline 时暂停，online 时分派。
 
-- 来源：SSE `claw.status` / `claw.snapshot` 事件，反映 server 视角看到的 plugin↔server WS 是否在线
-- 语义：**presence 信号**——告诉 UI "server 那边认不认得这台 plugin"，用于列表展示、离线提示、首次 init 的启动先验
-- 禁止用途：不作为 "DC 是否可用" 的判据，不参与 `dcReady` / `rtcPhase` 决策
+- 来源：SSE `claw.status` / `claw.snapshot` / `claw.bound` 事件的**内容**驱动
+- 与 SSE 连接本身的存亡**无关**：SSE 断开/重连不会把所有 claw 刷成 offline
+- 与 DC 是否可用解耦：不参与 `dcReady` / `rtcPhase` 的直接赋值，也不作为"DC 通不通"的断言
 
-**为什么解耦**：plugin↔server WS 和 UI↔plugin WebRTC DC 是两条独立通路。前者短暂抖动（gateway 重启、plugin 端网络波动、server 内部剔除会话）不应让后者正在用的 DC 被强制重置——DC 是否真坏应由 PC 自身的 connectionState / consent 机制裁决，SSE presence 不具备数据面的判断权威。
+**为什么引入 online 门控（从"完全解耦"变为"恢复路径看 online"）**：WebRTC 已相当稳定（ICE restart 90s 预算内多能成，rebuild 兜底可靠），但 plugin 离线时，ICE restart offer 送过去没有 plugin 可接（server 无法 relay 到已断的 plugin），restart 预算必然白烧；退避重试也会在无接收方的情况下空转 5 轮。所以：**plugin 不在线的时间对 RTC 恢复而言是"时间停止"——所有预算、计数冻结，PC 保留，等 online 回来视为新一轮事件。**
 
-**SSE claw.online=false 时 UI 的动作**：
+**SSE claw.online=false 时 UI 的动作**（由 `__handleClawGoOffline(id)` 统一封装）：
 
 ```
 SSE claw.status {online:false}
   → claws.store.updateClawOnline(id, false)
   → claw.online = false   （仅更新展示字段）
-  → _lifecycle.syncDashboardOffline(id)   （dashboard 展示层同步）
-  → __checkAndRecover(id, 'sse_offline')   （轻触发 DC 自检）
+  → __handleClawGoOffline(id):
+      1. _lifecycle.syncDashboardOffline(id)   （dashboard 展示层同步）
+      2. __clearRetry(id)   （取消排队中的退避重试定时器）
+      3. 若 conn.rtc.state === 'restarting' → conn.rtc.pauseRestart()
+         （停 restart 循环、stats poll；重置预算；epoch++；清 ufragSnap；PC 保留不关）
 ```
 
-`__checkAndRecover` 按 PC 状态分发：probe 验证 DC 可达 / `triggerRestart` ICE 重启 / rebuild PC。DC 实际健在时 probe 会通过，无副作用；DC 真坏时能在秒级触发 restart，而不是等浏览器 consent 超时（约 20–35s）。
+`pauseRestart()` 不改变 `__state`（仍为 `'restarting'`），但设 `__restartPaused=true`；resume 时 `triggerRestart` 进 `__attemptRestart` 会走 first-trigger 分支重采 snap、重记 dumpStats，预算全新。
 
-**前提**：`__checkAndRecover` 只在 `dcReady=true` 的 claw 上生效（首行 `if (!claw?.dcReady) return`）；若 SSE offline 推来时 DC 本就不 ready（从未建成 / 已失败等待退避），该路径静默返回，恢复由 `__scheduleRetry` 退避重试或下一次 `network:online` / `app:foreground` 兜底。
+**SSE claw.online=true（从 false 转来）时 UI 的动作**（由 `__resumeOnline(id)` 按 PC 状态分派）：
 
-**其他 online 消费点的原则**：
-- 展示（banner、徽标、列表排序、操作可用性提示）：**允许**
+```
+SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→true
+  → claws.store.updateClawOnline(id, true) / applySnapshot Phase 3
+  → __resumeOnline(id):
+      - rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'
+        → __ensureRtc(id).then(loadDashboardForClaw)  （全量 rebuild）
+      - 'restarting'（从 pause 冻结而来）
+        → rtc.triggerRestart('online_resume')  （复用 PC + 新 90s 预算）
+           数据刷新由 __refreshIfStale 在 onRtcStateChange('connected') 自动接手
+      - 'connected' + isReady （DC 全程未断）
+        → 只 loadDashboardForClaw（dashboard 可能 stale）
+```
+
+**`applySnapshot` 的三阶段 diff**：Phase 1 capture prev online → Phase 2 apply snapshot（覆盖字段）→ Phase 3 按 `online: true→false` / `false→true` / 未变但 `rtcPhase='failed'` 分派动作，覆盖 SSE 断连重连且 server 没发增量 `claw.status` 的场景。
+
+**online 门控的布点**：
+- `__ensureRtc` 入口 + 循环中途 → offline 即 bail-out；循环中途 bail-out 显式写 `rtcPhase='failed'`，让后续 online→true 走 rebuild 分支
+- `__scheduleRetry` 入口 → offline 不排队退避
+- `__checkAndRecover` 入口 → offline 不 probe、不 restart
+- `__handleNetworkOnline` 循环内 → offline 的 claw 不参与 network 恢复路径
+
+**其他 online 消费点**：
+- 展示（banner、徽标、列表排序、操作可用性提示）：**允许**，UI 优先用 `online=false` 表示"离线"而非"连接失败"，即使 `rtcPhase='failed'`
 - 首次 init 的启动先验（`__bridgeConn` 决定是否对未初始化的 claw 立即建 DC）：**允许**——建连成本不低，明确离线时不白跑
-- 持续维护期的通信 gate（`__ensureRtc` 循环、`__scheduleRetry`、`__handleNetworkOnline`、`applySnapshot` 末尾 failed 重试、`connReady` 等）：**禁止**——这些路径已进入"期望 DC 工作"的状态，应只看 PC/DC 自身信号
-- `applySnapshot` 的 `preserveOnline` 兜底（"DC 通就保住 online=true"）一并移除——presence 作为单一来源由 SSE 提供，DC 可达性由 PC 独立驱动，不互相覆盖
+- 手动重试（`manualRetryUnreachable`）：`unreachableClaws` getter 已过滤 `online`；极罕见竞态下 `__ensureRtc` 的 gate 会静默 skip，语义正确
 
 ---
 

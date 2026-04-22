@@ -240,6 +240,8 @@ export class WebRtcConnection {
 		this.__restartEpoch = 0;
 		/** 本 epoch 内 ufrag 缺失日志是否已打；避免每次 poll 都刷日志 */
 		this.__restartUfragMissingLogged = false;
+		/** pauseRestart 标志：下次 __attemptRestart 视为 first trigger（重采 snap、重 dumpStats） */
+		this.__restartPaused = false;
 		/** TURN 凭证过期时间戳（Unix 秒），用于 ICE restart 日志诊断 */
 		this.__credExpireAt = null;
 		/** 本地 ICE candidate 按 typ 分类计数（诊断用），gathering 完成时输出汇总 */
@@ -262,6 +264,8 @@ export class WebRtcConnection {
 	get state() { return this.__state; }
 	get candidateType() { return this.__candidateType; }
 	get transportInfo() { return this.__transportInfo; }
+	/** ICE restart 是否被 pauseRestart 冻结（外部判断是否需要 online_resume 触发 unstick） */
+	get restartPaused() { return this.__restartPaused; }
 
 	/** 发起 WebRTC 连接 */
 	async connect(turnCreds) {
@@ -954,8 +958,12 @@ export class WebRtcConnection {
 	async __attemptRestart(reason) {
 		if (!this.__pc || this.__state === 'closed') return;
 
+		// 从 pauseRestart 恢复：当作全新一轮 restart，重采 snap/重 dumpStats/重置预算
+		const resumingFromPause = this.__restartPaused;
+		if (resumingFromPause) this.__restartPaused = false;
+
 		// 首次进入 restarting 前打一条"为什么走到这里"的快照，便于定位"UI 以为自己还 connected"的假设
-		const firstTriggerThisEpoch = this.__state !== 'restarting';
+		const firstTriggerThisEpoch = resumingFromPause || this.__state !== 'restarting';
 		if (firstTriggerThisEpoch) {
 			const pc = this.__pc;
 			const dc = this.__rpcChannel;
@@ -1055,17 +1063,23 @@ export class WebRtcConnection {
 		// 防止并发：timer 和 immediate retry 可能在 await 间隙同时触发
 		if (this.__restartInFlight) return;
 
-		this.__restartAttemptCount++;
 		// restart 重新协商 → 重置候选缓冲，确保新 candidates 等待 restart answer 后再添加
 		this.__remoteDescSet = false;
 		this.__pendingCandidates = [];
 
 		this.__restartInFlight = true;
+		// epoch 守卫：pauseRestart / __clearRestartState 会递增 epoch；await 间隙若发生
+		// pause/resume，旧 epoch 的 offer 不应作为新 resume 的首 offer 被发出
+		const epochAtOffer = this.__restartEpoch;
 		try {
 			const offer = await this.__pc.createOffer({ iceRestart: true });
 			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
+			if (this.__restartEpoch !== epochAtOffer) return;
 			await this.__pc.setLocalDescription(offer);
 			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
+			if (this.__restartEpoch !== epochAtOffer) return;
+			// 只在确定要真正发 offer 时才累加 attempt，避免 epoch 换代导致虚涨
+			this.__restartAttemptCount++;
 			this.__restartOfferSentAt = Date.now();
 			sig.sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp, iceRestart: true });
 			const credRemain = this.__credExpireAt != null ? this.__credExpireAt - Math.floor(Date.now() / 1000) : null;
@@ -1098,6 +1112,32 @@ export class WebRtcConnection {
 		}
 	}
 
+	/**
+	 * 外部触发：claw offline 时暂停 ICE restart 循环，保留 PC
+	 *
+	 * - 停掉周期 restart 与 stats poll（不再空发 offer）
+	 * - 重置 restart 预算字段；递增 epoch 让在途 snap.then / poll tick 失效
+	 * - 清 __restartUfragSnap 避免 resume 时 stats-poll 拿旧 ufrag 误判成功
+	 * - __state 保持 'restarting'；resume 通过 triggerRestart('online_resume') 进入
+	 *   __attemptRestart，__restartPaused 标志触发 first-trigger 分支重采 snap
+	 *
+	 * 仅在 __state === 'restarting' 时生效，其他状态静默 no-op。
+	 * 与 __clearRestartState 的区别：保留 __state 不变，设 __restartPaused=true。
+	 */
+	pauseRestart() {
+		if (this.__state !== 'restarting') return;
+		this.__stopRestartTimer();
+		this.__stopRestartPoll();
+		this.__restartStartTime = 0;
+		this.__restartAttemptCount = 0;
+		this.__restartOfferSentAt = 0;
+		this.__restartUfragSnap = null;
+		this.__restartUfragMissingLogged = false;
+		this.__restartEpoch++;
+		this.__restartPaused = true;
+		this.__log('info', 'ICE restart paused (claw offline)');
+	}
+
 	/** @private 清除 restart 状态（成功/失败/close 时调用） */
 	__clearRestartState() {
 		this.__stopRestartTimer();
@@ -1107,6 +1147,7 @@ export class WebRtcConnection {
 		this.__restartOfferSentAt = 0;
 		this.__restartUfragSnap = null;
 		this.__restartUfragMissingLogged = false;
+		this.__restartPaused = false;
 		// 递增 epoch → 让跨 epoch 的 snap.then / poll tick 失效
 		this.__restartEpoch++;
 	}

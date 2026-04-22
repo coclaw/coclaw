@@ -333,23 +333,25 @@ describe('updateClawOnline', () => {
 		expect(dashboardStore.byClaw['1'].instance.online).toBe(false);
 	});
 
-	test('bot 离线时保留 dcReady 和 rtcPhase（presence 不毒化 DC 状态）', () => {
+	test('bot 离线时 dcReady 清零 + stamp disconnectedAt；rtcPhase 保留原值', () => {
 		const store = useClawsStore();
 		store.setClaws([{ id: '1', online: true }]);
 		store.byId['1'].dcReady = true;
 		store.byId['1'].rtcPhase = 'ready';
-		// 让 __checkAndRecover 成为 no-op（无 conn → 提前 return）
+		store.byId['1'].disconnectedAt = 0;
 		mockManager.get.mockReturnValue(null);
 
 		store.updateClawOnline('1', false);
 
 		expect(store.byId['1'].online).toBe(false);
-		// DC 状态不受 SSE presence 影响
-		expect(store.byId['1'].dcReady).toBe(true);
+		// offline 期间 DC 视同不可用：清 dcReady、stamp disconnectedAt，让 __refreshIfStale 恢复时可触发
+		expect(store.byId['1'].dcReady).toBe(false);
+		expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
+		// rtcPhase 保留原值，不提前改写（WebRtcConnection 内部 state 决定）
 		expect(store.byId['1'].rtcPhase).toBe('ready');
 	});
 
-	test('bot 离线时调用 __checkAndRecover(sse_offline) 轻触发 DC 自检', () => {
+	test('bot 离线时不再调用 __checkAndRecover（offline gate 下不浪费 probe/restart）', () => {
 		const store = useClawsStore();
 		store.setClaws([{ id: '1', online: true }]);
 		store.byId['1'].dcReady = true;
@@ -357,23 +359,62 @@ describe('updateClawOnline', () => {
 
 		store.updateClawOnline('1', false);
 
-		expect(spy).toHaveBeenCalledWith('1', 'sse_offline');
+		expect(spy).not.toHaveBeenCalled();
 	});
 
-	test('bot 离线时保留退避 retry 状态', () => {
+	test('bot 离线 + PC 在 restarting → 调用 rtc.pauseRestart 停 restart 循环', () => {
 		const store = useClawsStore();
 		store.setClaws([{ id: '1', online: true }]);
-		store.byId['1'].retryCount = 2;
-		store.byId['1'].retryNextAt = Date.now() + 10_000;
-		mockManager.get.mockReturnValue(null);
+		store.byId['1'].dcReady = true;
+
+		const fakeRtc = {
+			state: 'restarting',
+			pauseRestart: vi.fn(),
+			probe: vi.fn(),
+			nudgeRestart: vi.fn(),
+			triggerRestart: vi.fn(),
+		};
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
 
 		store.updateClawOnline('1', false);
 
-		expect(store.byId['1'].retryCount).toBe(2);
-		expect(store.byId['1'].retryNextAt).toBeGreaterThan(0);
+		expect(fakeRtc.pauseRestart).toHaveBeenCalled();
+		// 不再 probe、不主动 restart
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 	});
 
-	test('bot 离线 + DC 健在时 __checkAndRecover probe 通过，不改 DC 状态', async () => {
+	test('bot 离线 + PC 在 connected → 不调用 pauseRestart（仅 restarting 才需要暂停）', () => {
+		const store = useClawsStore();
+		store.setClaws([{ id: '1', online: true }]);
+
+		const fakeRtc = {
+			state: 'connected',
+			isReady: true,
+			pauseRestart: vi.fn(),
+		};
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.updateClawOnline('1', false);
+
+		expect(fakeRtc.pauseRestart).not.toHaveBeenCalled();
+	});
+
+	test('bot 离线时调用 __clearRetry 取消排队的退避重试（PC 保留；online 回来由 __resumeOnline 重启）', () => {
+		const store = useClawsStore();
+		store.setClaws([{ id: '1', online: true }]);
+		mockManager.get.mockReturnValue(null);
+		const clearSpy = vi.spyOn(store, '__clearRetry');
+
+		store.updateClawOnline('1', false);
+
+		// __handleClawGoOffline 会调 __clearRetry
+		expect(clearSpy).toHaveBeenCalledWith('1');
+	});
+
+	test('bot 离线 + DC 健在：不再主动 probe 或 triggerRestart（等 online 回来再动）', async () => {
 		const store = useClawsStore();
 		store.setClaws([{ id: '1', online: true }]);
 		store.byId['1'].dcReady = true;
@@ -384,21 +425,23 @@ describe('updateClawOnline', () => {
 			probe: vi.fn().mockResolvedValue(true),
 			nudgeRestart: vi.fn(),
 			triggerRestart: vi.fn(),
+			pauseRestart: vi.fn(),
 		};
 		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.updateClawOnline('1', false);
-		// 等待 __checkAndRecover 内部的 async probe
+		// 给任何可能的异步动作留 3 个 microtask
 		await Promise.resolve();
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(fakeRtc.probe).toHaveBeenCalled();
-		// probe 通过：DC 状态不变
-		expect(store.byId['1'].dcReady).toBe(true);
-		expect(store.byId['1'].rtcPhase).toBe('ready');
+		// offline gate：probe / triggerRestart 都不应被调用
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
 		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		// dcReady 被清（offline 期间 DC 视同不可用），rtcPhase 保留
+		expect(store.byId['1'].dcReady).toBe(false);
+		expect(store.byId['1'].rtcPhase).toBe('ready');
 	});
 
 	test('bot 上线时不清理 agents 缓存', () => {
@@ -2167,7 +2210,7 @@ describe('rtcPhase 生命周期', () => {
 		expect(callCount).toBe(1);
 	});
 
-	test('__ensureRtc 在 claw online=false 下不再 bail-out，跑满重试次数', async () => {
+	test('__ensureRtc 入口 gate：claw online=false 时直接 early-return，不发 offer', async () => {
 		const store = useClawsStore();
 		let callCount = 0;
 		mockInitRtc.mockImplementation(async () => {
@@ -2181,12 +2224,13 @@ describe('rtcPhase 生命周期', () => {
 		mockManager.get.mockReturnValue(fakeConn);
 
 		store.setClaws([{ id: 'off1', name: 'Bot', online: false }]);
+		const prevPhase = store.byId['off1'].rtcPhase;
 
 		await store.__ensureRtc('off1');
 
-		// 持续维护不看 online：跑满 RTC_BUILD_MAX_RETRIES=3 轮
-		expect(callCount).toBe(3);
-		expect(store.byId['off1'].rtcPhase).toBe('failed');
+		// offline gate：0 次 initRtc 调用，rtcPhase 不被提前切到 building/recovering
+		expect(callCount).toBe(0);
+		expect(store.byId['off1'].rtcPhase).toBe(prevPhase);
 	});
 
 	test('__checkAndRecover PC failed → 触发 __ensureRtc rebuild', async () => {
@@ -2502,7 +2546,7 @@ describe('ICE restart store 交互', () => {
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
 	});
 
-	test('__handleNetworkOnline: claw offline + restarting → nudgeRestart（presence 不 gate 通信）', async () => {
+	test('__handleNetworkOnline: claw offline + restarting → 被 gate 挡住，不 nudgeRestart', async () => {
 		const store = useClawsStore();
 		store.applySnapshot([{ id: 'off2', name: 'B', online: false }]);
 		store.byId['off2'].initialized = true;
@@ -2513,10 +2557,11 @@ describe('ICE restart store 交互', () => {
 
 		store.__handleNetworkOnline(true);
 
-		expect(fakeRtc.nudgeRestart).toHaveBeenCalledTimes(1);
+		// offline 被 gate 挡住：不 nudge、不 trigger；恢复交给 online→true 的 __resumeOnline
+		expect(fakeRtc.nudgeRestart).not.toHaveBeenCalled();
 	});
 
-	test('__handleNetworkOnline: claw offline + connected + typeChanged → triggerRestart', async () => {
+	test('__handleNetworkOnline: claw offline + connected + typeChanged → 被 gate 挡住，不 triggerRestart', async () => {
 		const store = useClawsStore();
 		store.applySnapshot([{ id: 'off3', name: 'C', online: false }]);
 		store.byId['off3'].initialized = true;
@@ -2527,10 +2572,10 @@ describe('ICE restart store 交互', () => {
 
 		store.__handleNetworkOnline(true);
 
-		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('network_type_changed');
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 	});
 
-	test('__handleNetworkOnline: claw offline + PC failed → rebuild', async () => {
+	test('__handleNetworkOnline: claw offline + PC failed → 被 gate 挡住，不 rebuild', async () => {
 		const store = useClawsStore();
 		store.applySnapshot([{ id: 'off4', name: 'D', online: false }]);
 		store.byId['off4'].initialized = true;
@@ -2543,13 +2588,12 @@ describe('ICE restart store 交互', () => {
 		mockCloseRtcForBot.mockClear();
 
 		store.__handleNetworkOnline(false);
-		// 允许 async __ensureRtc 启动
 		await Promise.resolve();
 		await Promise.resolve();
 
-		// 走 rebuild 分支：closeRtc + initRtc，且未误走 triggerRestart
-		expect(mockCloseRtcForBot).toHaveBeenCalledWith('off4');
-		expect(mockInitRtc).toHaveBeenCalled();
+		// offline gate 挡住：不 rebuild、不 triggerRestart
+		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 	});
 
@@ -2747,16 +2791,14 @@ describe('getReadyConn', () => {
 });
 
 describe('运行时字段防御', () => {
-	test('server snapshot 含运行时字段同名属性时不覆盖运行时状态', () => {
+	test('server snapshot 含运行时字段同名属性时不覆盖运行时状态（online 未变）', () => {
 		const store = useClawsStore();
 		const fakeConn = { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), rtc: null, request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
 
-		// 首次快照建立 bot（online:false 避免 __fullInit 副作用）
-		store.applySnapshot([{ id: '1', name: 'Bot', online: false }]);
+		// 首次快照建立 bot
+		store.applySnapshot([{ id: '1', name: 'Bot', online: true }]);
 		const bot = store.byId['1'];
-		// 模拟运行时状态已设置
-		bot.online = true;
 		bot.dcReady = true;
 		bot.rtcPhase = 'ready';
 		bot.initialized = true;
@@ -2766,19 +2808,19 @@ describe('运行时字段防御', () => {
 		bot.lastAliveAt = 12345;
 		bot.disconnectedAt = 999;
 
-		// 第二次快照：server 数据意外包含运行时字段
+		// 第二次快照：保持 online=true（避免触发 Phase 3 online-transition 副作用），
+		// 但 payload 含运行时字段同名属性——这些应被 RUNTIME_FIELDS 保护、不覆盖
 		store.applySnapshot([{
-			id: '1', name: 'BotRenamed', online: false,
+			id: '1', name: 'BotRenamed', online: true,
 			dcReady: false, rtcPhase: 'idle', initialized: false,
 			pluginVersionOk: null, pluginInfo: null, rtcTransportInfo: null,
 			lastAliveAt: 0, disconnectedAt: 0,
 		}]);
 
 		const updated = store.byId['1'];
-		// server 字段应更新
+		// server 非运行时字段应更新
 		expect(updated.name).toBe('BotRenamed');
-		// presence 单一来源：server 的 online=false 直接生效（不再 preserveOnline）
-		expect(updated.online).toBe(false);
+		expect(updated.online).toBe(true);
 		// 运行时字段应保留
 		expect(updated.dcReady).toBe(true);
 		expect(updated.rtcPhase).toBe('ready');
@@ -2918,18 +2960,17 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('updateClawOnline(false) 保留退避 retry 状态（presence 不影响通信）', () => {
+	test('updateClawOnline(false) 清退避 retry 状态（offline 恢复动作按下暂停）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 		store.__scheduleRetry('50');
-		const snapshotCount = store.byId['50'].retryCount;
-		const snapshotNextAt = store.byId['50'].retryNextAt;
+		expect(store.byId['50'].retryCount).toBeGreaterThan(0);
 
 		store.updateClawOnline('50', false);
 
-		// retry 状态应被保留
-		expect(store.byId['50'].retryCount).toBe(snapshotCount);
-		expect(store.byId['50'].retryNextAt).toBe(snapshotNextAt);
+		// __handleClawGoOffline 会 __clearRetry：count 和 nextAt 归 0，timer 停
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
 	});
 
 	test('removeClawById 清除退避', () => {
@@ -3129,18 +3170,21 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('timer 触发时 claw offline 但 rtcPhase=failed → 仍调用 __ensureRtc（持续维护不看 online）', async () => {
+	test('__scheduleRetry 入口 gate：claw offline 时不排队退避', async () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
-		store.byId['50'].online = false; // claw 离线但本地期望 DC 工作
+		store.byId['50'].online = false;
+
 		store.__scheduleRetry('50');
 
+		// offline → 不排 timer、不写字段
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
+		// 就算时间推进也不会调 __ensureRtc
 		mockInitRtc.mockClear();
-		mockInitRtc.mockResolvedValue('failed');
-		vi.advanceTimersByTime(3_000);
+		vi.advanceTimersByTime(300_000);
 		await Promise.resolve();
-		await Promise.resolve();
-		expect(mockInitRtc).toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
 	test('退避序列完整验证（含 cap 到 RETRY_BACKOFF_MAX_MS）', () => {
@@ -3536,3 +3580,477 @@ describe('manualRetryUnreachable', () => {
 		expect(ids).toEqual(['a', 'b']);
 	});
 });
+
+describe('__handleClawGoOffline helper', () => {
+	test('dashboard 同步 + clearRetry + 清 dcReady/stamp disconnectedAt + PC restarting 时 pauseRestart', () => {
+		const store = useClawsStore();
+		const dashboardStore = useDashboardStore();
+		dashboardStore.byClaw['1'] = { loading: false, error: null, instance: { name: 'Bot', online: true }, agents: [] };
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].dcReady = true;
+		store.byId['1'].disconnectedAt = 0;
+
+		const fakeRtc = { state: 'restarting', pauseRestart: vi.fn() };
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+		const clearSpy = vi.spyOn(store, '__clearRetry');
+
+		store.__handleClawGoOffline('1');
+
+		expect(dashboardStore.byClaw['1'].instance.online).toBe(false);
+		expect(clearSpy).toHaveBeenCalledWith('1');
+		expect(store.byId['1'].dcReady).toBe(false);
+		expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
+		expect(fakeRtc.pauseRestart).toHaveBeenCalled();
+	});
+
+	test('已有 disconnectedAt 时不覆盖（保留最早时刻以便 __refreshIfStale 算 gap）', () => {
+		const store = useClawsStore();
+		const prevAt = Date.now() - 30_000;
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].disconnectedAt = prevAt;
+
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.__handleClawGoOffline('1');
+
+		expect(store.byId['1'].disconnectedAt).toBe(prevAt);
+	});
+
+	test('PC 为 null 时 pauseRestart 不报错', () => {
+		const store = useClawsStore();
+		store.setClaws([{ id: '1', online: true }]);
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		expect(() => store.__handleClawGoOffline('1')).not.toThrow();
+	});
+});
+
+describe('__resumeOnline helper', () => {
+	test('rtc.state === restarting + restartPaused=true → triggerRestart(online_resume)，不 __ensureRtc', () => {
+		const store = useClawsStore();
+		const fakeRtc = { state: 'restarting', restartPaused: true, triggerRestart: vi.fn() };
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		const ensureSpy = vi.spyOn(store, '__ensureRtc').mockResolvedValue();
+
+		store.__resumeOnline('1');
+
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		expect(ensureSpy).not.toHaveBeenCalled();
+	});
+
+	test('rtc.state === restarting + restartPaused=false → 不 triggerRestart（正常 restart 进行中，避免 attemptCount 泄漏）', () => {
+		const store = useClawsStore();
+		const fakeRtc = { state: 'restarting', restartPaused: false, triggerRestart: vi.fn() };
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		const ensureSpy = vi.spyOn(store, '__ensureRtc').mockResolvedValue();
+
+		store.__resumeOnline('1');
+
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		expect(ensureSpy).not.toHaveBeenCalled();
+	});
+
+	test('rtc.state === connected → __ensureRtc 早退校正 dcReady（不 rebuild），后 loadDashboard', async () => {
+		const store = useClawsStore();
+		const dashboardStore = useDashboardStore();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+
+		const fakeRtc = { state: 'connected', isReady: true, triggerRestart: vi.fn() };
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+
+		mockInitRtc.mockClear();
+		store.__resumeOnline('1');
+		await vi.waitFor(() => {
+			expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		});
+		// 不会 rebuild（initRtc 不被调）
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		// triggerRestart 只在 restarting 分支调用
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		// __ensureRtc 早退后把 dcReady 同步为 true
+		expect(store.byId['1'].dcReady).toBe(true);
+		expect(store.byId['1'].rtcPhase).toBe('ready');
+	});
+
+	test('rtc === null → __ensureRtc 走 rebuild', async () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+
+		mockInitRtc.mockClear();
+		store.__resumeOnline('1');
+
+		await vi.waitFor(() => {
+			expect(mockInitRtc).toHaveBeenCalledWith('1', fakeConn, expect.any(Object));
+		});
+	});
+
+	test('rtc.state === failed → __ensureRtc 走 rebuild', async () => {
+		const store = useClawsStore();
+		const fakeRtc = { state: 'failed', triggerRestart: vi.fn() };
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+
+		mockInitRtc.mockClear();
+		store.__resumeOnline('1');
+
+		await vi.waitFor(() => {
+			expect(mockInitRtc).toHaveBeenCalled();
+		});
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+	});
+
+	test('conn 不存在 → 安全返回', () => {
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue(null);
+		store.setClaws([{ id: '1', online: true }]);
+
+		expect(() => store.__resumeOnline('1')).not.toThrow();
+	});
+
+	test('调 __resumeOnline 时调 __clearRetry', () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		const clearSpy = vi.spyOn(store, '__clearRetry');
+
+		store.__resumeOnline('1');
+
+		expect(clearSpy).toHaveBeenCalledWith('1');
+	});
+
+	test('集成：offline → resume → onRtcStateChange(connected) 触发 __refreshIfStale 刷业务数据', async () => {
+		const store = useClawsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		const dashboardStore = useDashboardStore();
+		// 4 个下游 store 的 loader 都需要 mockResolvedValue，否则 refreshClawResources 里的
+		// .catch(() => {}) 会因为某个 loader 返回非 Promise 而抛 TypeError 中断后续调用
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+
+		const fakeRtc = { state: 'restarting', restartPaused: true, isReady: true, pauseRestart: vi.fn(), triggerRestart: vi.fn() };
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].dcReady = true;
+
+		// Step 1: offline → clear dcReady + stamp disconnectedAt
+		store.__handleClawGoOffline('1');
+		expect(store.byId['1'].dcReady).toBe(false);
+		expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
+
+		// 让 disconnectedAt 超过 BRIEF_DISCONNECT_MS（30s），确保 __refreshIfStale 会实际 refresh
+		store.byId['1'].disconnectedAt = Date.now() - 60_000;
+
+		// Step 2: resume online → triggerRestart('online_resume')
+		store.__resumeOnline('1');
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+
+		// Step 3: 模拟 WebRtcConnection 内部 restart 成功 → onRtcStateChange('connected')
+		store.__rtcCallbacks('1').onRtcStateChange('connected');
+
+		// 验证 wasDisconnected=true 分支跑完：dcReady 置回 true，disconnectedAt 被清 0
+		expect(store.byId['1'].dcReady).toBe(true);
+		expect(store.byId['1'].disconnectedAt).toBe(0);
+
+		// __refreshIfStale → _lifecycle.refreshClawResources → 4 个下游 loader 都被调
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		});
+		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
+		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+
+		// 幂等验证：模拟 __attemptRestart 消费 paused 标志 + PC 已转入 connected，再次 __resumeOnline 不应重复 triggerRestart
+		fakeRtc.restartPaused = false;
+		fakeRtc.state = 'connected';
+		store.__resumeOnline('1');
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledTimes(1);
+		// 唯一一次 triggerRestart 的 reason 是 online_resume
+		expect(fakeRtc.triggerRestart.mock.calls[0][0]).toBe('online_resume');
+	});
+
+	test('集成：connected-throughout-offline → __ensureRtc 早退分支触发 __refreshIfStale', async () => {
+		const store = useClawsStore();
+		const dashboardStore = useDashboardStore();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+		const agentsStore = useAgentsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		const sessionsStore = useSessionsStore();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		const topicsStore = useTopicsStore();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
+
+		// PC 整段保持 connected（未经历 restart），只有 store 侧的 online 字段翻转
+		const fakeRtc = { state: 'connected', isReady: true, restartPaused: false, pauseRestart: vi.fn(), triggerRestart: vi.fn() };
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].dcReady = true;
+		store.byId['1'].rtcPhase = 'ready';
+
+		// Step 1: offline → 清 dcReady + stamp disconnectedAt
+		store.__handleClawGoOffline('1');
+		expect(store.byId['1'].dcReady).toBe(false);
+
+		// 让 disconnectedAt 超过 BRIEF_DISCONNECT_MS
+		store.byId['1'].disconnectedAt = Date.now() - 60_000;
+
+		// Step 2: online → __resumeOnline 非 restarting 分支 → __ensureRtc 早退（PC 已 connected）→ __refreshIfStale
+		store.__resumeOnline('1');
+
+		// __ensureRtc 内部早退：dcReady 置回 true、rtcPhase='ready'
+		expect(store.byId['1'].dcReady).toBe(true);
+		expect(store.byId['1'].rtcPhase).toBe('ready');
+
+		// __refreshIfStale 触发下游 4 个 loader
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		});
+		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
+		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
+		// .then(loadDashboardForClaw) 也会触发 dashboard 加载（两次：refreshIfStale 里 + .then 里）
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		// 不走 triggerRestart
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+	});
+});
+
+describe('offline gate on recovery paths', () => {
+	test('__ensureRtc 入口 offline gate：offline claw 不建 RTC', async () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '1', name: 'A', online: false });
+		store.byId['1'].initialized = true;
+		const phaseBefore = store.byId['1'].rtcPhase;
+
+		mockInitRtc.mockClear();
+		await store.__ensureRtc('1');
+
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		// rtcPhase 不被提前切到 building/recovering
+		expect(store.byId['1'].rtcPhase).toBe(phaseBefore);
+	});
+
+	test('__ensureRtc 循环中途 claw 翻 offline → bail-out + rtcPhase=failed', async () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 用 setClaws 避开 addOrUpdateClaw 触发的 __bridgeConn → __fullInit 副作用
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+
+		// 第一轮 initRtc 失败 + 翻 offline；第二轮迭代前检测到 online=false → bail
+		let call = 0;
+		mockInitRtc.mockImplementation(async () => {
+			call++;
+			if (call === 1) {
+				store.byId['1'].online = false;
+			}
+			return 'failed';
+		});
+
+		await store.__ensureRtc('1');
+
+		// 第一轮跑完，第二轮 iteration 在 initRtc 之前检测到 offline → bail
+		expect(call).toBe(1);
+		// bail-out (offline 分支) → phase 显式置为 failed
+		expect(store.byId['1'].rtcPhase).toBe('failed');
+	});
+
+	test('__scheduleRetry offline gate：offline claw 不排队退避', () => {
+		const store = useClawsStore();
+		store.addOrUpdateClaw({ id: '1', name: 'A', online: false });
+		store.byId['1'].initialized = true;
+
+		store.__scheduleRetry('1');
+
+		expect(store.byId['1'].retryCount).toBe(0);
+		expect(store.byId['1'].retryNextAt).toBe(0);
+	});
+
+	test('__checkAndRecover offline gate：offline claw 不 probe/restart', async () => {
+		const store = useClawsStore();
+		const fakeRtc = {
+			state: 'connected',
+			probe: vi.fn().mockResolvedValue(true),
+			triggerRestart: vi.fn(),
+			nudgeRestart: vi.fn(),
+		};
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '1', name: 'A', online: false });
+		store.byId['1'].dcReady = true;
+
+		await store.__checkAndRecover('1', 'test');
+
+		expect(fakeRtc.probe).not.toHaveBeenCalled();
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		expect(fakeRtc.nudgeRestart).not.toHaveBeenCalled();
+	});
+
+	test('__handleNetworkOnline offline gate：offline claw 不参与 network 恢复路径', () => {
+		const store = useClawsStore();
+		const fakeRtc = {
+			state: 'failed',
+			triggerRestart: vi.fn(),
+			nudgeRestart: vi.fn(),
+		};
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '1', name: 'A', online: false });
+		store.byId['1'].initialized = true;
+		const ensureSpy = vi.spyOn(store, '__ensureRtc').mockResolvedValue();
+
+		store.__handleNetworkOnline(false);
+
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		expect(fakeRtc.nudgeRestart).not.toHaveBeenCalled();
+		expect(ensureSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe('applySnapshot online transition dispatch', () => {
+	test('online false→true + initialized → __resumeOnline', async () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 先放一个 offline + initialized 的 claw
+		store.byId['1'] = {
+			...createTestClaw('1'),
+			online: false,
+			initialized: true,
+		};
+
+		const resumeSpy = vi.spyOn(store, '__resumeOnline');
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+
+		expect(resumeSpy).toHaveBeenCalledWith('1');
+	});
+
+	test('online true→false + initialized → __handleClawGoOffline', () => {
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue(null);
+
+		store.byId['1'] = {
+			...createTestClaw('1'),
+			online: true,
+			initialized: true,
+		};
+
+		const goOfflineSpy = vi.spyOn(store, '__handleClawGoOffline');
+		store.applySnapshot([{ id: '1', name: 'A', online: false }]);
+
+		expect(goOfflineSpy).toHaveBeenCalledWith('1');
+	});
+
+	test('online 未变 + rtcPhase=failed + initialized → __resumeOnline（server 重启兜底）', () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.byId['1'] = {
+			...createTestClaw('1'),
+			online: true,
+			initialized: true,
+			rtcPhase: 'failed',
+		};
+
+		const resumeSpy = vi.spyOn(store, '__resumeOnline');
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+
+		expect(resumeSpy).toHaveBeenCalledWith('1');
+	});
+
+	test('online 未变 + rtcPhase=ready → 不触发 resume/offline（snapshot no-op）', () => {
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue(null);
+
+		store.byId['1'] = {
+			...createTestClaw('1'),
+			online: true,
+			initialized: true,
+			rtcPhase: 'ready',
+		};
+
+		const resumeSpy = vi.spyOn(store, '__resumeOnline');
+		const goOfflineSpy = vi.spyOn(store, '__handleClawGoOffline');
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+
+		expect(resumeSpy).not.toHaveBeenCalled();
+		expect(goOfflineSpy).not.toHaveBeenCalled();
+	});
+
+	test('online false→true 且 rtcPhase=failed → 只 __resumeOnline 一次（去重）', () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.byId['1'] = {
+			...createTestClaw('1'),
+			online: false,
+			initialized: true,
+			rtcPhase: 'failed',
+		};
+
+		const resumeSpy = vi.spyOn(store, '__resumeOnline');
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+
+		expect(resumeSpy).toHaveBeenCalledTimes(1);
+	});
+});
+
+/** 造一个完整的 claw state，供 applySnapshot 测试用（保留运行时字段） */
+function createTestClaw(id) {
+	return {
+		id, name: `claw-${id}`,
+		online: false,
+		lastSeenAt: null, createdAt: null, updatedAt: null,
+		rtcPhase: 'idle', lastAliveAt: 0, disconnectedAt: 0,
+		initialized: false,
+		pluginVersionOk: null, pluginInfo: null, pluginUserConfig: null,
+		rtcTransportInfo: null, rtcPeerTransportInfo: null,
+		dcReady: false,
+		retryCount: 0, retryNextAt: 0,
+	};
+}

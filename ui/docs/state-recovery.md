@@ -417,18 +417,22 @@
 
 ### RTC 前台恢复策略
 
-RTC 恢复决策完全基于 PC 自身状态和 DC probe，不依赖 WS 指标（如 `elapsed`）。三个入口：
+RTC 恢复决策基于 PC 自身状态、DC probe 和 `claw.online`（SSE presence）作为门控。四个入口：
 
-- `sse_offline`（SSE 推 claw.online=false）→ `__checkAndRecover`（轻触发自检）：
-  - DC 健在 → probe 成功，无副作用
-  - DC 已坏 → 按 PC 状态走 probe / triggerRestart / rebuild 分发，避免等浏览器 consent 超时（约 20–35s）
-  - 目的：让 SSE presence 只负责展示，不再毒化 DC 状态；同时在 DC 真坏时快速拉起恢复
-- `network:online` → `__handleNetworkOnline`（按 PC 状态 + 网络类型变化分级处理）：
-  - **类型变化**（WiFi↔蜂窝，由 Capacitor Network plugin `connectionType` 检测）→ 直接 rebuild 所有 claw。旧 ICE 路径必然失效，ndc 不支持 ICE restart
-  - **类型未变 + PC `failed`/`closed`** → 直接 rebuild（加速长 offline 后恢复，避免等退避 timer）
+- **SSE `claw.online=false`** → `__handleClawGoOffline`（暂停所有 RTC 主动恢复）：
+  - `syncDashboardOffline` + `__clearRetry` + 清 `dcReady` + stamp `disconnectedAt`
+  - PC 在 `restarting` 时调 `rtc.pauseRestart()`：停 restart timer / poll；清预算字段；epoch++；置 `__restartPaused=true`；PC 保留不关
+  - **不再** probe / triggerRestart：plugin 离线时这些动作必然无效，等 online 回来再动
+- **SSE `claw.online=true`（从 false 转来）** → `__resumeOnline`（按 PC 状态分派）：
+  - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 90s 预算；PC 连接成功后 `onRtcStateChange('connected')` 触发 `__refreshIfStale`（凭 `wasDisconnected=true`）刷业务数据
+  - `connected` + `isReady`（DC 全程未断）→ `__ensureRtc` 早退分支同样凭 `wasDisconnected=true` 触发 `__refreshIfStale` + 链末加载 dashboard
+  - 其余（`failed`/`closed`/`idle`/`connecting`/rtc 为 null）→ `__ensureRtc` 全量 rebuild；成功后链末加载 dashboard
+- `network:online` → `__handleNetworkOnline`（按 PC 状态 + 网络类型变化分级处理，offline claw 被 gate 挡住）：
+  - **类型变化**（WiFi↔蜂窝，由 Capacitor Network plugin `connectionType` 检测）→ 对每个 online claw triggerRestart / rebuild。旧 ICE 路径必然失效
+  - **类型未变 + PC `failed`/`closed`** → 直接 rebuild（加速长 offline 后恢复）
   - **类型未变 + PC `connected`/`disconnected`** → 跳过。ICE 在前台持续运行，有 consent check 自检测能力
 - `app:foreground` 且后台 < 25s → 跳过 probe。OS 给 app ~5s 收尾 + ICE 30s consent 超时 = 25s 内 ICE 有充足自恢复裕量
-- `app:foreground` 且后台 ≥ 25s → 执行 `__checkAndRecover`：
+- `app:foreground` 且后台 ≥ 25s → 执行 `__checkAndRecover`（offline claw 被 gate 挡住）：
   - PC `failed`/`closed` → 直接 rebuild
   - PC `disconnected` → 不干预，交给 ICE 自恢复（WebRtcConnection 内部 5s 超时后升级到 failed → `__scheduleRetry`）
   - PC `connected` → DC probe（3s 超时）：
@@ -437,6 +441,8 @@ RTC 恢复决策完全基于 PC 自身状态和 DC probe，不依赖 WS 指标�
     - probe 失败 + PC 已变为非 `connected` → rebuild
 
 `request()` 检测 DC 未就绪时通过 `waitReady()` 自动排队等待连接恢复（同时触发重连），对调用方透明。
+
+**online 门控的不变式**：`claw.online=false` 期间所有 RTC 主动恢复动作（restart / rebuild / retry 调度 / probe）都暂停，预算/计数清零，PC 保留，`dcReady=false`。online 回来视为新一轮恢复事件。
 
 **网络类型检测机制**：Capacitor Network plugin 的 `connectionType` 仅区分 `wifi`/`cellular`/`none`/`unknown`。`_lastConnectionType` 仅在 `connected=true` 且类型为 `wifi` 或 `cellular` 时更新；`none`（offline）和 `unknown` 不更新，避免污染后续比较基线。类型变化信息通过 `network:online` 事件的 `detail.typeChanged` 字段传递。
 

@@ -425,14 +425,17 @@ ICE failed → restarting → 周期重试 → WS 断了 → 发不出
 ### 6.5 Gateway 重启（SSE 正常）
 
 ```
-SSE claw.online=false → __checkAndRecover(sse_offline)
-  → DC probe / PC state 裁决：
-    - DC 通（P2P 情形，数据面未断）→ probe 成功，不动
-    - DC 坏（TURN 情形，数据面随 gateway 挂）→ triggerRestart / rebuild
-SSE claw.online=true → 若本地 DC 恢复，展示层回同步；否则已在 restart/rebuild 进程中
+SSE claw.online=false → __handleClawGoOffline
+  → syncDashboardOffline + __clearRetry + clear dcReady/stamp disconnectedAt
+  → PC 在 restarting 时 rtc.pauseRestart()（停 restart 循环、清预算、epoch++、PC 不关）
+  → 其余主动恢复（probe / rebuild / retry）在 gate 下全部暂停
+SSE claw.online=true → __resumeOnline 按 PC 状态分派：
+  - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 90s 预算
+  - connected + isReady → __ensureRtc 早退 + __refreshIfStale 刷业务数据 + 加载 dashboard
+  - failed/closed/idle/connecting/null → __ensureRtc 全量 rebuild
 ```
 
-**关键**：UI↔plugin 的 DC 状态不会被 SSE 事件直接修改。SSE offline 只做一次轻触发 probe，PC 自身状态才是数据面的权威来源。详见 `docs/architecture/communication-model.md` §5.5。
+**关键**：`claw.online` 现在是 RTC 主动恢复动作的门控——offline 期间暂停，online 回来按 PC 状态分派，最大化利用 ICE restart 的零成本恢复能力。详见 `docs/architecture/communication-model.md` §5.5。
 
 ### 6.6 Gateway 重启（SSE 延迟）
 

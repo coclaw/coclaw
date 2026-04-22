@@ -3523,6 +3523,143 @@ describe('WebRtcConnection — ICE restart', () => {
 	});
 });
 
+describe('WebRtcConnection — pauseRestart', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** 把 rtc 推入 'restarting' 状态并等到 restart offer 发出 */
+	async function driveIntoRestarting() {
+		const { rtc, pc, dc } = await setupConnectedRtc();
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		return { rtc, pc, dc };
+	}
+
+	test('非 restarting 状态下 pauseRestart 为 no-op', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		expect(rtc.state).toBe('connected');
+
+		const epochBefore = rtc.__restartEpoch;
+		rtc.pauseRestart();
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartEpoch).toBe(epochBefore);
+		expect(rtc.__restartPaused).toBe(false);
+
+		// idle 状态（未 connect）
+		const rtc2 = new WebRtcConnection('bot2', createMockBotConn(), { PeerConnection: MockRTCPeerConnection });
+		expect(rtc2.state).toBe('idle');
+		rtc2.pauseRestart();
+		expect(rtc2.__restartPaused).toBe(false);
+
+		rtc.close();
+		void pc; // 引用避免 eslint unused
+	});
+
+	test('restarting 状态下 pauseRestart 停止 timer / poll，重置预算，置 __restartPaused=true', async () => {
+		const { rtc } = await driveIntoRestarting();
+		// 让 ufragSnap 的异步 promise 解析（让 startRestartPoll 有机会跑）
+		await vi.advanceTimersByTimeAsync(0);
+
+		// pause 前断言有 restart timer 在跑（安全网）
+		expect(rtc.__restartTimer).not.toBeNull();
+		const epochBefore = rtc.__restartEpoch;
+
+		rtc.pauseRestart();
+
+		// state 保持 'restarting'，PC 保留不关
+		expect(rtc.state).toBe('restarting');
+		// timer 与 poll 已停
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartPollTimer).toBeNull();
+		// 预算字段清零
+		expect(rtc.__restartStartTime).toBe(0);
+		expect(rtc.__restartAttemptCount).toBe(0);
+		expect(rtc.__restartOfferSentAt).toBe(0);
+		expect(rtc.__restartUfragSnap).toBeNull();
+		expect(rtc.__restartUfragMissingLogged).toBe(false);
+		// epoch 递增让在途回调失效
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+		// paused 标志置位
+		expect(rtc.__restartPaused).toBe(true);
+
+		rtc.close();
+	});
+
+	test('pause 后 triggerRestart 视为 first-trigger：重新计预算、发新 offer', async () => {
+		const { rtc, pc } = await driveIntoRestarting();
+		await vi.advanceTimersByTimeAsync(0);
+
+		rtc.pauseRestart();
+		mockSendSignaling.mockClear();
+		pc.__createOfferOpts.length = 0;
+
+		// Resume：触发 online_resume
+		rtc.triggerRestart('online_resume');
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 首次进入（视为 first trigger）应该重新 set restartStartTime
+		expect(rtc.__restartStartTime).toBeGreaterThan(0);
+		// attempt 从 1 开始（pause 时清 0 + 本次 attemptRestart 里 count++）
+		expect(rtc.__restartAttemptCount).toBe(1);
+		// paused 标志已被消费
+		expect(rtc.__restartPaused).toBe(false);
+		// 新 offer 发出
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+		// state 仍是 restarting（PC 复用）
+		expect(rtc.state).toBe('restarting');
+
+		rtc.close();
+	});
+
+	test('pause 后 close：资源清理干净，无 leak', async () => {
+		const { rtc, pc } = await driveIntoRestarting();
+		await vi.advanceTimersByTimeAsync(0);
+
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+
+		rtc.close();
+
+		// close 通过 __clearRestartState 把 paused 清掉
+		expect(rtc.__restartPaused).toBe(false);
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartPollTimer).toBeNull();
+		expect(rtc.state).toBe('closed');
+		expect(pc.__closed).toBe(true);
+	});
+
+	test('__clearRestartState 清 __restartPaused（restart 成功路径）', async () => {
+		const { rtc, pc } = await driveIntoRestarting();
+		await vi.advanceTimersByTimeAsync(0);
+
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+
+		// Resume → 成功到 connected
+		rtc.triggerRestart('online_resume');
+		await vi.advanceTimersByTimeAsync(0);
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartPaused).toBe(false);
+		expect(rtc.__restartAttemptCount).toBe(0);
+
+		rtc.close();
+	});
+});
+
 describe('WebRtcConnection — parseCredExpireAt', () => {
 	test('解析有效 username（"<timestamp>:<userId>"）', () => {
 		expect(parseCredExpireAt('1700000000:42')).toBe(1700000000);
