@@ -4,12 +4,13 @@
  *
  * 行为约定详见 docs/rpc-dc-file-queue.md。
  * - FIFO、单一生产者／消费者；多消费者时每条只交付给其中一个。
- * - 构造时清理目录残留（不跨生命周期复用）。
+ * - 构造纯字段初始化，不碰 FS；使用前需 `await q.init()`。
  * - 消费侧：`for await (const item of queue) { ... }`；`destroy()` 让迭代结束。
+ * - FS 异常下进入 `fsBroken` 粘性降级：mem 路径继续工作，溢出消息 drop。
  */
 
 import fs from 'node:fs/promises';
-import { createReadStream, createWriteStream, rmSync } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import nodePath from 'node:path';
 import readline from 'node:readline';
 
@@ -18,13 +19,22 @@ import { createMutex } from './mutex.js';
 const DEFAULT_MEM_BUDGET = 8 * 1024 * 1024;
 const DEFAULT_DISK_CAP = 1024 * 1024 * 1024;
 
+// JS 对象开销估算（string header + array slot 等），仅用于 admission 决策不影响 memBytes 报告
+const ENTRY_OVERHEAD = 64;
+
+// id 字符集：UUID / 字母数字 / 点 / 下划线 / 减号，且不能是 "." 或 ".."
+const ID_RE = /^[A-Za-z0-9._-]+$/;
+
+// 压缩阈值：head 越过 64 且占 memQueue 一半以上时切片回收
+const COMPACT_HEAD_THRESHOLD = 64;
+
 class FileBackedQueue {
 	/**
 	 * @param {object} opts
 	 * @param {string} opts.dir - 队列文件根目录
-	 * @param {string} opts.id - 队列标识（用于子目录命名）
+	 * @param {string} opts.id - 队列标识，字符集受限，防路径穿越
 	 * @param {number} [opts.memBudget=8MB] - 内存持有字节数上限
-	 * @param {number} [opts.diskCap=1GB] - 磁盘+内存总字节数硬上限
+	 * @param {number} [opts.diskCap=1GB] - 磁盘+内存总字节数硬上限（含 `\n`）
 	 * @param {(reason: string, size: number) => void} [opts.onDrop] - 拒入队时的回调
 	 * @param {{ warn?: Function, info?: Function, error?: Function }} [opts.logger=console]
 	 */
@@ -40,6 +50,9 @@ class FileBackedQueue {
 
 		if (!dir || typeof dir !== 'string') throw new TypeError('dir is required');
 		if (!id || typeof id !== 'string') throw new TypeError('id is required');
+		if (id === '.' || id === '..' || !ID_RE.test(id)) {
+			throw new TypeError('id contains invalid characters');
+		}
 
 		this.dir = dir;
 		this.id = id;
@@ -48,28 +61,52 @@ class FileBackedQueue {
 		this.onDrop = onDrop;
 		this.logger = logger;
 
-		this.subdir = nodePath.join(dir, id);
-		this.filePath = nodePath.join(this.subdir, 'queue.jsonl');
+		this.filePath = nodePath.join(dir, `${id}.jsonl`);
 
+		// 单文件 ring-ish 结构：head 指针 + 数组；shift 为 O(1) 摊销
 		this.memQueue = [];
+		this.head = 0;
 		this.memBytes = 0;
-		this.diskBytes = 0;       // 磁盘上未消费的 payload 字节（不含分隔 \n）
 		this.writtenBytes = 0;    // 已写入文件的累计字节（含 \n）
 		this.readOffset = 0;      // 下次 refill 的起始偏移
 		this.spilled = false;
+		this.initialized = false;
 		this.destroyed = false;
+		this.fsBroken = false;    // 粘性：一旦 FS 出错，不再尝试 reopen
 		this.writeStream = null;
 		this.writeErr = null;
 		this.waiters = [];
 		this.mutex = createMutex();
+	}
 
-		// 防御性清理：不跨生命周期复用旧数据
-		try {
-			rmSync(this.subdir, { recursive: true, force: true });
-		} catch (err) {
-			/* c8 ignore next 2 -- rmSync with force rarely fails on posix */
-			this.logger?.warn?.('fbq.construct cleanup error', err);
-		}
+	/**
+	 * 派生的未消费磁盘字节数（含 \n），用于 admission 与 stats。
+	 */
+	get diskBytes() {
+		return this.writtenBytes - this.readOffset;
+	}
+
+	/**
+	 * 异步初始化：清理残留文件，标记可用。幂等。
+	 */
+	async init() {
+		return await this.mutex.withLock(async () => {
+			if (this.destroyed) return;
+			if (this.initialized) return;
+			try {
+				await fs.rm(this.filePath, { force: true });
+			} catch (err) {
+				// best-effort：init 的 rm 可能因 ENOTDIR / EACCES 等失败。
+				// 权威残留清理在 __openWriteStream 中（首次 spill 前）再做一次，
+				// 确保不会用 'a' flag 追加到旧数据上污染 FIFO。
+				this.logger?.warn?.('fbq.init rm warning', err);
+			}
+			this.initialized = true;
+		});
+	}
+
+	async [Symbol.asyncDispose]() {
+		await this.destroy();
 	}
 
 	/**
@@ -80,24 +117,35 @@ class FileBackedQueue {
 	async enqueue(jsonStr) {
 		return await this.mutex.withLock(async () => {
 			if (this.destroyed) return false;
+			if (!this.initialized) throw new TypeError('queue not initialized');
 			if (typeof jsonStr !== 'string') throw new TypeError('jsonStr must be a string');
 
 			const size = Buffer.byteLength(jsonStr, 'utf8');
 
-			if (this.memBytes + this.diskBytes + size > this.diskCap) {
+			// admission：当前 mem + 磁盘未消费 + 新消息含 \n 超过 diskCap 则拒
+			if (this.memBytes + this.diskBytes + size + 1 > this.diskCap) {
 				this.__dispatchDrop('disk-cap', size);
 				return false;
 			}
 
-			// 内存路径：未溢出且加上新条目仍在预算内
-			if (!this.spilled && this.memBytes + size <= this.memBudget) {
-				this.memQueue.push(jsonStr);
-				this.memBytes += size;
-				this.__wakeOne();
-				return true;
+			// 内存路径：未溢出且 admission 通过（考虑 overhead；首条无论多大都收）
+			if (!this.spilled) {
+				const pendingCount = this.memQueue.length - this.head;
+				const cost = this.memBytes + pendingCount * ENTRY_OVERHEAD + size + ENTRY_OVERHEAD;
+				if (pendingCount === 0 || cost <= this.memBudget) {
+					this.memQueue.push(jsonStr);
+					this.memBytes += size;
+					this.__wakeOne();
+					return true;
+				}
 			}
 
-			// 溢出路径：lazy 打开写流
+			// 溢出路径：FS 已破直接 drop，不再尝试 reopen
+			if (this.fsBroken) {
+				this.__dispatchDrop('fs-error', size);
+				return false;
+			}
+
 			if (!this.spilled) {
 				await this.__openWriteStream();
 				if (this.writeErr) {
@@ -109,7 +157,6 @@ class FileBackedQueue {
 
 			try {
 				await this.__writeLine(jsonStr + '\n');
-				this.diskBytes += size;
 				this.writtenBytes += size + 1;
 				this.__wakeOne();
 				return true;
@@ -122,19 +169,20 @@ class FileBackedQueue {
 	}
 
 	/**
-	 * @returns {{ memCount: number, memBytes: number, diskBytes: number, spilled: boolean }}
+	 * @returns {{ memCount: number, memBytes: number, diskBytes: number, spilled: boolean, fsBroken: boolean }}
 	 */
 	stats() {
 		return {
-			memCount: this.memQueue.length,
+			memCount: this.memQueue.length - this.head,
 			memBytes: this.memBytes,
 			diskBytes: this.diskBytes,
 			spilled: this.spilled,
+			fsBroken: this.fsBroken,
 		};
 	}
 
 	/**
-	 * 清空数据但保留实例可用。
+	 * 清空数据但保留实例可用；显式清 fsBroken，允许再次尝试落盘。
 	 */
 	async clear() {
 		return await this.mutex.withLock(async () => {
@@ -147,17 +195,18 @@ class FileBackedQueue {
 				this.logger?.warn?.('fbq.clear rm error', err);
 			}
 			this.memQueue = [];
+			this.head = 0;
 			this.memBytes = 0;
-			this.diskBytes = 0;
 			this.writtenBytes = 0;
 			this.readOffset = 0;
 			this.spilled = false;
+			this.fsBroken = false;
 			this.writeErr = null;
 		});
 	}
 
 	/**
-	 * 停写、关 FD、删目录、结束所有迭代器。幂等。
+	 * 停写、关 FD、删文件、结束所有迭代器。幂等。
 	 */
 	async destroy() {
 		return await this.mutex.withLock(async () => {
@@ -170,15 +219,15 @@ class FileBackedQueue {
 
 			await this.__closeWriteStream();
 			try {
-				await fs.rm(this.subdir, { recursive: true, force: true });
+				await fs.rm(this.filePath, { force: true });
 			} catch (err) {
 				/* c8 ignore next 2 -- rm with force rarely fails */
 				this.logger?.warn?.('fbq.destroy rm error', err);
 			}
 
 			this.memQueue = [];
+			this.head = 0;
 			this.memBytes = 0;
-			this.diskBytes = 0;
 			this.writtenBytes = 0;
 			this.readOffset = 0;
 			this.spilled = false;
@@ -198,12 +247,20 @@ class FileBackedQueue {
 		while (true) {
 			let waitPromise = null;
 			const result = await this.mutex.withLock(async () => {
-				if (this.memQueue.length === 0 && this.spilled && !this.destroyed) {
+				const pendingCount = this.memQueue.length - this.head;
+				if (pendingCount === 0 && this.spilled && !this.destroyed) {
 					await this.__refillImpl();
 				}
-				if (this.memQueue.length > 0) {
-					const item = this.memQueue.shift();
+				if (this.memQueue.length - this.head > 0) {
+					const item = this.memQueue[this.head];
+					this.memQueue[this.head] = undefined;
+					this.head += 1;
 					this.memBytes -= Buffer.byteLength(item, 'utf8');
+					// 惰性压缩：避免 head 一直向前、数组永不回收
+					if (this.head > COMPACT_HEAD_THRESHOLD && this.head * 2 >= this.memQueue.length) {
+						this.memQueue = this.memQueue.slice(this.head);
+						this.head = 0;
+					}
 					return { value: item, done: false };
 				}
 				if (this.destroyed) return { done: true, value: undefined };
@@ -224,6 +281,11 @@ class FileBackedQueue {
 		}
 	}
 
+	__wakeAll() {
+		const toWake = this.waiters.splice(0);
+		for (const w of toWake) w.resolve();
+	}
+
 	__dispatchDrop(reason, size) {
 		try {
 			this.onDrop?.(reason, size);
@@ -237,7 +299,10 @@ class FileBackedQueue {
 	async __openWriteStream() {
 		this.writeErr = null;
 		try {
-			await fs.mkdir(this.subdir, { recursive: true });
+			await fs.mkdir(nodePath.dirname(this.filePath), { recursive: true });
+			// 权威残留清理：即便 init 的 rm 被吞掉，这里开流前再 rm 一次，
+			// 避免 'a' flag 追加到旧数据上污染 FIFO。
+			await fs.rm(this.filePath, { force: true });
 		} catch (err) {
 			this.writeErr = err;
 			return;
@@ -246,11 +311,15 @@ class FileBackedQueue {
 		this.writeStream.on('error', (err) => {
 			this.writeErr = err;
 			this.logger?.warn?.('fbq.writeStream error', err);
+			// 异步错误：排队到 mutex 做粘性降级清理，避免状态半截卡死
+			this.mutex.withLock(() => this.__handleFsError(err)).catch(() => {});
 		});
 	}
 
 	async __writeLine(str) {
-		if (this.writeErr) throw this.writeErr;
+		// 不再前置 writeErr 检查：一旦 writeErr 被异步设置，__handleFsError 会立即排队清理并
+		// 把 fsBroken 置粘性；spill 路径入口已判 fsBroken，到这里 writeErr 必为 null。
+		// 写失败通过 write 回调的 err 反映，catch 块处理。
 		return await new Promise((resolve, reject) => {
 			this.writeStream.write(str, (err) => {
 				if (err) reject(err);
@@ -278,6 +347,25 @@ class FileBackedQueue {
 		});
 	}
 
+	// mutex 内调用：FS 错误粘性降级
+	async __handleFsError(_err) {
+		if (this.destroyed || this.fsBroken) return;
+		this.fsBroken = true;
+		await this.__closeWriteStream();
+		try {
+			await fs.rm(this.filePath, { force: true });
+		} catch (err) {
+			/* c8 ignore next 2 -- rm with force rarely fails */
+			this.logger?.warn?.('fbq.handleFsError rm error', err);
+		}
+		this.spilled = false;
+		this.writtenBytes = 0;
+		this.readOffset = 0;
+		this.writeErr = null;
+		// 唤醒全部消费者，让它们重新观察状态
+		this.__wakeAll();
+	}
+
 	// 调用方必须已持有 mutex，且已确认 !destroyed
 	async __refillImpl() {
 		if (!this.spilled) return;
@@ -302,6 +390,9 @@ class FileBackedQueue {
 		let cumPayload = 0;   // 仅 payload
 		let stoppedAtEof = true;
 
+		const pendingCount = this.memQueue.length - this.head;
+		const baseCost = this.memBytes + pendingCount * ENTRY_OVERHEAD;
+
 		const stream = createReadStream(this.filePath, {
 			start: this.readOffset,
 			end: actualEnd - 1,
@@ -311,7 +402,9 @@ class FileBackedQueue {
 		try {
 			for await (const line of rl) {
 				const sz = Buffer.byteLength(line, 'utf8');
-				if (newLines.length > 0 && this.memBytes + cumPayload + sz > this.memBudget) {
+				// overhead 一致性：admission 侧已用 overhead，refill 侧同步考虑
+				const newLinesCost = newLines.length * ENTRY_OVERHEAD;
+				if (newLines.length > 0 && baseCost + cumPayload + newLinesCost + sz + ENTRY_OVERHEAD > this.memBudget) {
 					stoppedAtEof = false;
 					break;
 				}
@@ -349,7 +442,6 @@ class FileBackedQueue {
 			this.memQueue.push(line);
 			this.memBytes += Buffer.byteLength(line, 'utf8');
 		}
-		this.diskBytes -= cumPayload;
 
 		if (this.readOffset >= this.writtenBytes) {
 			await this.__dropFile();
@@ -367,7 +459,6 @@ class FileBackedQueue {
 		this.spilled = false;
 		this.writtenBytes = 0;
 		this.readOffset = 0;
-		this.diskBytes = 0;
 		this.writeErr = null;
 	}
 }

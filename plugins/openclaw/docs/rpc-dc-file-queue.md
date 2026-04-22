@@ -1,7 +1,8 @@
 # rpc DC 文件回退发送队列（FileBackedQueue）
 
-> 状态：设计
+> 状态：FBQ 已实施（`src/utils/file-backed-queue.js`，100% 覆盖）；与 `RpcSendQueue` 的集成待实施
 > 创建：2026-04-20
+> 更新：2026-04-22（深度 review 后的鲁棒性修正：id 校验/flat 路径、async init、diskBytes 派生、fsBroken 粘性降级、head 指针 O(1) shift）
 
 ## 背景与动机
 
@@ -45,14 +46,16 @@ producer ─enqueue─► FileBackedQueue ─consumer─► RpcSendQueue ─► 
 class FileBackedQueue {
   constructor({ dir, id, memBudget, diskCap, onDrop, logger })
 
+  async init()                    // 必须在首次 enqueue/consume 前调用；幂等
+
   async enqueue(jsonStr)          // 异步；失败返回 false 并触发 onDrop
 
   [Symbol.asyncIterator]()        // 消费侧：for await (const msg of queue) { ... }
 
-  stats()                         // { memCount, memBytes, diskBytes, spilled }
+  stats()                         // { memCount, memBytes, diskBytes, spilled, fsBroken }
 
   async destroy()                 // 停写、关 FD、删文件、结束所有迭代器；幂等
-  async clear()                   // 清空但实例仍可用
+  async clear()                   // 清空但实例仍可用；同时清 fsBroken
 
   [Symbol.asyncDispose]()         // 可选：等价于 destroy()，支持 await using
 }
@@ -63,17 +66,17 @@ class FileBackedQueue {
 | 参数 | 含义 | 默认 |
 |------|------|------|
 | `dir` | 队列文件根目录 | 无默认，调用方提供 |
-| `id` | 队列标识（用于子目录命名） | 无默认 |
-| `memBudget` | 内存持有字节数上限 | 8 MB |
-| `diskCap` | 磁盘文件字节数上限（硬上限） | 1 GB |
+| `id` | 队列标识，用作文件名；字符集受限 `[A-Za-z0-9._-]+`，非 `.` `..` | 无默认 |
+| `memBudget` | 内存持有字节数上限（软性，含 64B/条对象开销近似） | 8 MB |
+| `diskCap` | 磁盘+内存总字节数硬上限（含分隔 `\n`） | 1 GB |
 | `onDrop` | 拒入队时的回调 `(reason, size) => void` | 仅 warn |
 | `logger` | pino 风格 logger | `console` |
 
 ### API 选择理由
 
-- **构造同步 + 文件 lazy 创建**：未发生溢出时根本不触碰文件系统。对齐 `better-sqlite3` / `leveldb` 的"构造好就能用"习惯。
+- **构造纯字段初始化 + 显式异步 `init()`**：构造函数不触碰文件系统（零副作用、不阻塞 event loop），使用前需 `await q.init()` 完成残留清理；与 Node 流式 API（`createServer` 后 `listen()`、`createPool` 后 `initialize()`）的两阶段模式一致。首次溢出时才创建文件，维持 lazy 语义。
 - **`destroy()` 而非 `close()`**：Node 生态里 `close()` 通常只关句柄不删文件（fs / sqlite / leveldb）。我们的场景是 PC 重建时整体清理，命名必须传达"彻底终结"。`destroy()` 与 Node streams 的"比 close 更狠的终结动作"语义方向一致。
-- **`clear()` 而非 `purge()`**：与 `Map.clear` / `Set.clear` 对齐。
+- **`clear()` 而非 `purge()`**：与 `Map.clear` / `Set.clear` 对齐；同时重置 `fsBroken`，允许 FS 恢复后继续尝试落盘。
 - **async iterator 消费模式**：消费循环代码最少，`destroy()` 让迭代器自然结束，原生支持 `break`/异常退出。优于手动 `while (!q.destroyed) { ... }` 轮询。
 
 ## 核心状态机
@@ -83,17 +86,23 @@ class FileBackedQueue {
 ### 入队
 
 ```
-if (spilled) {
-  追加到文件尾
-} else if (memBytes + len(jsonStr) ≤ memBudget) {
-  进内存队列
-} else {
-  开始溢出：创建/打开文件 → 追加到文件；进入 spilled 状态
+admission：若 memBytes + diskBytes + len(jsonStr) + 1 > diskCap
+  → 拒绝，onDrop('disk-cap', size)，返回 false
+
+if (!spilled) {
+  if (pendingCount === 0 或 mem 容量够容纳本条)
+    → 进内存队列   // safety valve：队列全空时首条无论多大都收，避免超大消息进退两难
 }
 
-两种情况都要检查：memBytes + diskBytes + len(jsonStr) ≤ diskCap
-超过则拒绝，触发 onDrop('disk-cap', size)，返回 false
+若上一步没进 mem：
+  if (fsBroken)
+    → 拒绝，onDrop('fs-error', size)，返回 false   // 粘性降级，不再尝试 reopen
+  if (!spilled)
+    → 创建/打开文件；进入 spilled 状态
+  追加到文件尾；失败则 onDrop('fs-error', size)
 ```
+
+mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 RSS 远超账面。
 
 ### 出队 / 消费
 
@@ -106,21 +115,31 @@ if (spilled) {
 
 ### 不变量
 
-- `memBytes + diskBytes ≤ diskCap`
+- `memBytes + diskBytes + (size + 1) ≤ diskCap`（含待入条目的 `\n`）
+- `diskBytes === writtenBytes - readOffset`（派生值，不单独维护）
 - `spilled === true ⟺ 文件存在且有未消费字节`
-- 所有 enqueue/dequeue 通过同一个 promise 链串行化，避免并发交错
-- 崩溃导致的半截尾行：refill 时 parse/split 失败即丢弃该行，不影响前面
+- 所有 enqueue/dequeue/fs-error 清理均通过同一个 mutex 串行化，避免状态半截
+- 崩溃导致的半截尾行：refill 时识别并丢弃，不影响前面
+
+### FS 错误降级
+
+写流 `'error'` 事件（异步）由 mutex 调度 `__handleFsError` 清理：关流、删文件、重置 `spilled/writtenBytes/readOffset`、置 `fsBroken=true`（粘性）、唤醒所有消费者。
+
+- 此后溢出路径的 enqueue 全部 `drop('fs-error')`，不再尝试 reopen；
+- 内存路径仍然可用，已在 mem 的消息继续交付；
+- 上层应在感知降级后 destroy + 重建队列（或调 `clear()` 手动恢复尝试）；
+- 粘性设计的理由：瞬时 FS 错误在 Node 环境下常指向系统性问题（fd 耗尽、磁盘满、权限变化），静默重试风暴只会掩盖根因。
 
 ## 落盘布局
 
 ```
-{dir}/{id}/
-└── queue.jsonl        一条消息一行，尾部 '\n'
+{dir}/{id}.jsonl        一条消息一行，尾部 '\n'
 ```
 
+- 单文件，无子目录层级；`id` 经字符集校验后直接拼接，杜绝路径穿越
 - **不持久化读指针**：读 offset 仅在内存
-- **不跨生命周期复用**：`constructor` 检测到已存在的文件直接删除（PC 重建时上层会新建 id，不会复用旧文件；但防御性清理残留）
-- **写侧**：长开一个 append 写流，`destroy()` 时 `end()`
+- **不跨生命周期复用**：`init()` 会异步清除同名残留文件（PC 重建时上层会新建 id，不会复用旧文件；但防御性清理残留）
+- **写侧**：首次溢出时 lazy 打开 append 写流，`destroy()` / `clear()` / `__handleFsError` 时关闭并删除文件
 - **读侧**：refill 时按需开 read stream 从 offset 读行
 
 ## 与 `RpcSendQueue` 的集成
@@ -167,7 +186,7 @@ fbq.enqueue(JSON.stringify(msg)).catch(err => logger.warn?.(...));
 | rpc DC close | `RpcSendQueue.close()` | `RpcSendQueue.close()` + `FileBackedQueue.destroy()`（删文件、结束消费循环）|
 | `closeByConnId` | 同上 | 同上 |
 
-`FileBackedQueue` 的 `id` 用 `connId`，目录建议 `~/.openclaw/coclaw/rpc-queue/{connId}/`（走 `resolveStateDir()`，与 bindings.json 同根）。
+`FileBackedQueue` 的 `id` 用 `connId`（必须匹配 `[A-Za-z0-9._-]+`——UUID 形式天然满足），目录建议 `~/.openclaw/coclaw/rpc-queue/`（走 `resolveStateDir()`，与 bindings.json 同根）；文件形如 `~/.openclaw/coclaw/rpc-queue/{connId}.jsonl`。
 
 ## 相邻隐患（非本方案引入，顺带记录）
 
@@ -198,21 +217,28 @@ fbq.enqueue(JSON.stringify(msg)).catch(err => logger.warn?.(...));
 4. **磁盘上限**：构造满文件后 enqueue 返回 false + onDrop 触发，不抛错
 5. **崩溃残留**：构造尾行半截的文件，`refill` 丢弃末行且消费前面的行
 6. **destroy 幂等**：多次 `destroy()` 不抛；`destroy()` 后 enqueue 返回 false；进行中的迭代器 `for await` 自然结束
-7. **clear 语义**：清空后实例仍可继续 enqueue；文件删除
-8. **文件 I/O 失败**：write 抛错时 enqueue 返回 false + onDrop；不污染内存状态、不阻塞后续操作
-9. **集成测试**：与修改后的 `RpcSendQueue` 组合，验证 canAccept 反压流正确、生命周期对齐、ICE restart 保留、DC close 销毁
+7. **clear 语义**：清空后实例仍可继续 enqueue；文件删除；`fsBroken` 复位
+8. **id 校验**：`..`、`/`、`\`、`\0`、空格等非法字符在构造期抛 `TypeError`
+9. **init 幂等**：重复 `init()` 无副作用；`init` 前调用 `enqueue` 抛 `queue not initialized`
+10. **FS 错误降级（关键回归）**：异步 `writeStream.on('error')` 后，即使"未成功落盘任何字节"场景下，consumer 也不会卡死；后续溢出 enqueue drop `fs-error`；`fsBroken=true`
+11. **head 指针压缩**：大量 mem enqueue+消费后 `memQueue.length` 收敛，不线性增长
+12. **集成测试**：与修改后的 `RpcSendQueue` 组合，验证 canAccept 反压流正确、生命周期对齐、ICE restart 保留、DC close 销毁
 
 ## 文件清单（预期）
 
 ```
+plugins/openclaw/src/utils/
+├── file-backed-queue.js             # 已完成
+└── file-backed-queue.test.js        # 已完成
+
 plugins/openclaw/src/webrtc/
-├── file-backed-queue.js             # 新增
-├── file-backed-queue.test.js        # 新增
-├── rpc-send-queue.js                # 修改：新增 canAccept / acceptResumed
-├── rpc-send-queue.test.js           # 修改：补新接口测试
-├── webrtc-peer.js                   # 修改：session 上挂 fileBackedQueue；生产者改走 enqueue
-└── webrtc-peer.test.js              # 修改：生命周期 / ICE restart / close 集成断言
+├── rpc-send-queue.js                # 待改：新增 canAccept / acceptResumed
+├── rpc-send-queue.test.js           # 待改：补新接口测试
+├── webrtc-peer.js                   # 待改：session 上挂 fileBackedQueue；生产者改走 enqueue
+└── webrtc-peer.test.js              # 待改：生命周期 / ICE restart / close 集成断言
 ```
+
+> 队列本身放在 `src/utils/`——作为业务无关纯工具，与 `atomic-write.js` / `mutex.js` 并列。WebRTC 集成侧逻辑另开文件挂接。
 
 ## 后续扩展（不在本次范围）
 

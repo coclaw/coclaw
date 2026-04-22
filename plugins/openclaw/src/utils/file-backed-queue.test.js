@@ -14,6 +14,13 @@ function silentLogger() {
 	return { warn: () => {}, info: () => {}, error: () => {} };
 }
 
+// 统一构造 + init 的简单工厂，避免每个用例都写两行
+async function makeQ(opts) {
+	const q = new FileBackedQueue({ logger: silentLogger(), ...opts });
+	await q.init();
+	return q;
+}
+
 // 等待 iter.next() 进入 waiter 等待态，替代基于 setTimeout 的时序臆测。
 async function waitForWaiter(q, n = 1, maxMs = 500) {
 	const start = Date.now();
@@ -35,6 +42,10 @@ test('constructor throws when dir missing', () => {
 	);
 });
 
+test('constructor throws when called with no opts', () => {
+	assert.throws(() => new FileBackedQueue(), /dir is required/);
+});
+
 test('constructor throws when id missing', () => {
 	assert.throws(
 		() => new FileBackedQueue({ dir: '/tmp/whatever' }),
@@ -50,48 +61,131 @@ test('constructor throws on non-string id', () => {
 	assert.throws(() => new FileBackedQueue({ dir: '/tmp', id: 123 }), /id is required/);
 });
 
-test('constructor cleans up pre-existing residue under subdir', async () => {
-	const dir = await makeTmpDir();
-	const subdir = nodePath.join(dir, 'res');
-	await fs.mkdir(subdir, { recursive: true });
-	await fs.writeFile(nodePath.join(subdir, 'stale.jsonl'), 'stale\n');
+test('constructor rejects id with path-traversal sequences', () => {
+	for (const badId of ['../escape', 'a/b', 'a\\b', '..', '.', 'a\0b', 'a b']) {
+		assert.throws(
+			() => new FileBackedQueue({ dir: '/tmp/whatever', id: badId }),
+			/invalid/,
+			`expected rejection for id=${JSON.stringify(badId)}`,
+		);
+	}
+});
 
+test('constructor accepts UUID-shaped id', () => {
+	const q = new FileBackedQueue({
+		dir: '/tmp/whatever', id: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+		logger: silentLogger(),
+	});
+	assert.equal(q.id, '6ba7b810-9dad-11d1-80b4-00c04fd430c8');
+});
+
+test('constructor does not touch filesystem', async () => {
+	const dir = await makeTmpDir();
+	const before = await fs.readdir(dir);
+	// 提前放置残留，确保构造不误删
+	const residual = nodePath.join(dir, 'res.jsonl');
+	await fs.writeFile(residual, 'old\n');
 	const q = new FileBackedQueue({ dir, id: 'res', logger: silentLogger() });
-	// subdir should have been removed by constructor
-	await assert.rejects(() => fs.stat(subdir));
+	// 残留仍然在，构造没做任何 IO
+	await fs.access(residual);
+	const after = await fs.readdir(dir);
+	assert.equal(after.length, before.length + 1);
+	await q.init();
+	// init 后残留被清理
+	await assert.rejects(() => fs.access(residual));
 	await q.destroy();
 });
 
 test('constructor accepts default memBudget and diskCap', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'def', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'def' });
 	assert.equal(q.memBudget, 8 * 1024 * 1024);
 	assert.equal(q.diskCap, 1024 * 1024 * 1024);
 	await q.destroy();
 });
 
+// --- init ---
+
+test('init is idempotent', async () => {
+	const dir = await makeTmpDir();
+	const q = new FileBackedQueue({ dir, id: 'idem', logger: silentLogger() });
+	await q.init();
+	await q.init(); // should not throw
+	await q.enqueue('x');
+	await q.destroy();
+});
+
+test('enqueue before init throws', async () => {
+	const dir = await makeTmpDir();
+	const q = new FileBackedQueue({ dir, id: 'noinit', logger: silentLogger() });
+	await assert.rejects(() => q.enqueue('x'), /not initialized/);
+});
+
+test('init after destroy is a no-op', async () => {
+	const dir = await makeTmpDir();
+	const q = new FileBackedQueue({ dir, id: 'initafterdst', logger: silentLogger() });
+	await q.destroy();
+	await q.init(); // must not throw
+	assert.equal(q.initialized, false);
+});
+
+test('init is best-effort on rm errors; authoritative cleanup happens at spill', async () => {
+	// 残留文件位置被一个目录占住，rm(file) 会抛 EISDIR；init 吞下继续
+	const dir = await makeTmpDir();
+	const residualAsDir = nodePath.join(dir, 'initbest.jsonl');
+	await fs.mkdir(residualAsDir, { recursive: true });
+	await fs.writeFile(nodePath.join(residualAsDir, 'child'), 'keeps dir non-empty');
+
+	const q = new FileBackedQueue({ dir, id: 'initbest', logger: silentLogger() });
+	await q.init(); // must not throw despite rm failure
+	assert.equal(q.initialized, true);
+
+	// 清理
+	await fs.rm(residualAsDir, { recursive: true, force: true });
+	await q.destroy();
+});
+
+test('spill-time rm authoritatively cleans up cross-lifecycle residual', async () => {
+	// 模拟上次运行留下的残留 jsonl
+	const dir = await makeTmpDir();
+	const stale = nodePath.join(dir, 'lifec.jsonl');
+	await fs.writeFile(stale, 'STALE-DATA-SHOULD-BE-WIPED\n');
+
+	const q = new FileBackedQueue({ dir, id: 'lifec', memBudget: 1, logger: silentLogger() });
+	await q.init(); // init rm 成功清除 stale
+	// 这里即使 init 的 rm 失败，__openWriteStream 的 rm 也会再清一次；此处只验证 spill 后文件内容不含 STALE
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill → __openWriteStream rm + createWriteStream
+	const content = await fs.readFile(stale, 'utf8');
+	assert.equal(content, 'bb\n'); // 只有新数据，旧残留消失
+	await q.destroy();
+});
+
+test('Symbol.asyncDispose delegates to destroy', async () => {
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'disp' });
+	await q.enqueue('x');
+	await q[Symbol.asyncDispose]();
+	assert.equal(q.destroyed, true);
+});
+
 // --- stats initial ---
 
 test('stats returns initial zeros', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'stats', logger: silentLogger() });
-	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, spilled: false });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'stats' });
+	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, spilled: false, fsBroken: false });
 	await q.destroy();
 });
 
 // --- enqueue memory path ---
 
 test('enqueue throws on non-string input', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'nstr', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'nstr' });
 	await assert.rejects(() => q.enqueue(123), /jsonStr must be a string/);
 	await assert.rejects(() => q.enqueue(null), /jsonStr must be a string/);
 	await q.destroy();
 });
 
 test('enqueue in memory; stats reflect mem state', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'mem', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'mem' });
 	assert.equal(await q.enqueue('hello'), true);
 	assert.equal(await q.enqueue('world!'), true);
 	const s = q.stats();
@@ -103,8 +197,7 @@ test('enqueue in memory; stats reflect mem state', async () => {
 });
 
 test('enqueue empty string works', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'empty', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'empty' });
 	assert.equal(await q.enqueue(''), true);
 	assert.equal(q.stats().memCount, 1);
 	const iter = q[Symbol.asyncIterator]();
@@ -117,23 +210,22 @@ test('enqueue empty string works', async () => {
 
 test('enqueue spills to disk when memBudget exceeded', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'spill', memBudget: 3, logger: silentLogger() });
-	assert.equal(await q.enqueue('aa'), true); // 2 bytes, fits
-	assert.equal(await q.enqueue('bb'), true); // 2+2=4 > 3 → spill
+	const q = await makeQ({ dir, id: 'spill', memBudget: 3 });
+	assert.equal(await q.enqueue('aa'), true); // 首条无论多大都入 mem（safety valve）
+	assert.equal(await q.enqueue('bb'), true); // 2+2+overhead 超 budget → spill
 	const s = q.stats();
 	assert.equal(s.spilled, true);
 	assert.equal(s.memCount, 1);
 	assert.equal(s.memBytes, 2);
-	assert.equal(s.diskBytes, 2);
-	// Queue file exists
-	const fp = nodePath.join(dir, 'spill', 'queue.jsonl');
-	await assert.doesNotReject(() => fs.stat(fp));
+	assert.equal(s.diskBytes, 3); // 'bb\n' = 3 bytes
+	// 文件存在
+	await assert.doesNotReject(() => fs.stat(nodePath.join(dir, 'spill.jsonl')));
 	await q.destroy();
 });
 
 test('FIFO preserved across spill and refill, file removed on drain', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'fifo', memBudget: 4, logger: silentLogger() });
+	const q = await makeQ({ dir, id: 'fifo', memBudget: 4 });
 	const inputs = ['a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff'];
 	for (const s of inputs) assert.equal(await q.enqueue(s), true);
 	assert.equal(q.stats().spilled, true);
@@ -146,32 +238,24 @@ test('FIFO preserved across spill and refill, file removed on drain', async () =
 	assert.deepEqual(out, inputs);
 	assert.equal(q.stats().spilled, false);
 	assert.equal(q.stats().diskBytes, 0);
-	// Queue file should be gone
-	const fp = nodePath.join(dir, 'fifo', 'queue.jsonl');
-	await assert.rejects(() => fs.stat(fp));
+	// 文件应已消失
+	await assert.rejects(() => fs.stat(nodePath.join(dir, 'fifo.jsonl')));
 	await q.destroy();
 });
 
 test('refill respects memBudget (partial fill, stays spilled)', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'partial', memBudget: 2, logger: silentLogger() });
-	// 5 items of 1 byte each: 'a','b','c','d','e'
-	// 'a': fits. 'b': 1+1>2? No, 2<=2 fits. Hmm. Need tighter.
-	// Use items of 2 bytes with budget 2.
-	// Actually let's compute: each item 2 bytes, budget 2.
-	// 'aa': 0+2<=2 → mem. 'bb': 2+2>2 → spill. 'cc': spill. 'dd': spill.
-	for (const s of ['aa', 'bb', 'cc', 'dd']) {
-		assert.equal(await q.enqueue(s), true);
-	}
+	// 用较大 budget 精细控制：每条 32 字节 payload，overhead 64 → 每条"成本" 96
+	// budget 200 能装 2 条（96*2=192 ≤ 200），第三条 96*3=288 > 200 → 需要分批
+	const payload = 'x'.repeat(32);
+	const q = await makeQ({ dir, id: 'partial', memBudget: 200 });
+	for (let i = 0; i < 4; i++) assert.equal(await q.enqueue(payload + i), true);
 	assert.equal(q.stats().spilled, true);
 
 	const iter = q[Symbol.asyncIterator]();
-	// Consume 'aa' from mem. Inline refill runs when mem empties.
-	assert.equal((await iter.next()).value, 'aa');
-	// Next item: mem is empty, inline refill reads 'bb' (fits budget 2) then breaks (next item would exceed 2+2).
-	assert.equal((await iter.next()).value, 'bb');
-	assert.equal((await iter.next()).value, 'cc');
-	assert.equal((await iter.next()).value, 'dd');
+	const out = [];
+	for (let i = 0; i < 4; i++) out.push((await iter.next()).value);
+	assert.deepEqual(out, [payload + 0, payload + 1, payload + 2, payload + 3]);
 	assert.equal(q.stats().spilled, false);
 	await q.destroy();
 });
@@ -181,28 +265,29 @@ test('refill respects memBudget (partial fill, stays spilled)', async () => {
 test('enqueue rejected when exceeding diskCap; onDrop receives disk-cap', async () => {
 	const dir = await makeTmpDir();
 	const drops = [];
-	const q = new FileBackedQueue({
+	// memBudget=2 让 'bb' 溢出；diskCap=5（2+3='bb\n'）塞满后再入一条就触顶
+	// memBytes=2 + diskBytes=3 + new.size+1(=2) = 7 > 5 → drop
+	const q = await makeQ({
 		dir, id: 'cap',
-		memBudget: 2, diskCap: 4,
+		memBudget: 2, diskCap: 5,
 		onDrop: (reason, size) => drops.push({ reason, size }),
-		logger: silentLogger(),
 	});
-	assert.equal(await q.enqueue('aa'), true); // mem 2
-	assert.equal(await q.enqueue('bb'), true); // spill, disk 2, total 4
-	assert.equal(await q.enqueue('c'), false); // total 4+1 > 4 → drop
+	assert.equal(await q.enqueue('aa'), true); // mem (first item)
+	assert.equal(await q.enqueue('bb'), true); // spill, disk 3 bytes (含 \n)
+	assert.equal(await q.enqueue('c'), false); // 2+3+2 > 5 → drop
 	assert.deepEqual(drops, [{ reason: 'disk-cap', size: 1 }]);
 	await q.destroy();
 });
 
 test('onDrop that throws does not break enqueue', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({
+	const q = await makeQ({
 		dir, id: 'cap2',
-		memBudget: 1, diskCap: 1,
+		memBudget: 2, diskCap: 1,
 		onDrop: () => { throw new Error('onDrop bug'); },
-		logger: silentLogger(),
 	});
-	await q.enqueue('a');
+	// 'a' admission: mem+disk+size+1 = 0+0+1+1 = 2 > diskCap(1) → drop；onDrop 抛错被 catch
+	assert.equal(await q.enqueue('a'), false);
 	assert.equal(await q.enqueue('b'), false);
 	await q.destroy();
 });
@@ -210,8 +295,7 @@ test('onDrop that throws does not break enqueue', async () => {
 // --- asyncIterator waiting ---
 
 test('asyncIterator waits for enqueue then delivers', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'wait', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'wait' });
 	const iter = q[Symbol.asyncIterator]();
 	const pending = iter.next();
 	await waitForWaiter(q); // 确认 next() 真的进入了 waiter 等待态
@@ -222,8 +306,7 @@ test('asyncIterator waits for enqueue then delivers', async () => {
 });
 
 test('for-await break invokes iterator return() cleanly', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'brk', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'brk' });
 	for (const v of ['x', 'y', 'z']) await q.enqueue(v);
 	let count = 0;
 	for await (const _v of q) {
@@ -238,17 +321,14 @@ test('for-await break invokes iterator return() cleanly', async () => {
 
 test('destroy is idempotent', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'dst', logger: silentLogger() });
+	const q = await makeQ({ dir, id: 'dst' });
 	await q.enqueue('x');
 	await q.destroy();
 	await q.destroy(); // should not throw
-	// subdir gone
-	await assert.rejects(() => fs.stat(nodePath.join(dir, 'dst')));
 });
 
 test('destroy ends active iterator', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'dst2', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst2' });
 	const iter = q[Symbol.asyncIterator]();
 	const pending = iter.next();
 	await waitForWaiter(q);
@@ -258,30 +338,29 @@ test('destroy ends active iterator', async () => {
 });
 
 test('enqueue after destroy returns false', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'dst3', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst3' });
 	await q.destroy();
 	assert.equal(await q.enqueue('x'), false);
 });
 
-test('destroy with spilled data closes stream and removes subdir', async () => {
+test('destroy with spilled data closes stream and removes file', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'dst4', memBudget: 1, logger: silentLogger() });
-	await q.enqueue('aa'); // spill
+	const q = await makeQ({ dir, id: 'dst4', memBudget: 1 });
+	await q.enqueue('aa'); // mem (first item)
+	await q.enqueue('bb'); // spill
 	assert.equal(q.stats().spilled, true);
 	await q.destroy();
-	await assert.rejects(() => fs.stat(nodePath.join(dir, 'dst4')));
+	await assert.rejects(() => fs.stat(nodePath.join(dir, 'dst4.jsonl')));
 });
 
 // --- clear ---
 
 test('clear empties in-memory state, instance still usable', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'clr', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'clr' });
 	await q.enqueue('a');
 	await q.enqueue('b');
 	await q.clear();
-	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, spilled: false });
+	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, spilled: false, fsBroken: false });
 	// still usable
 	await q.enqueue('c');
 	assert.equal(q.stats().memCount, 1);
@@ -290,14 +369,13 @@ test('clear empties in-memory state, instance still usable', async () => {
 
 test('clear on spilled state deletes file and resets state', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'clr2', memBudget: 2, logger: silentLogger() });
-	await q.enqueue('aa');
+	const q = await makeQ({ dir, id: 'clr2', memBudget: 1 });
+	await q.enqueue('aa'); // mem
 	await q.enqueue('bb'); // spill
 	assert.equal(q.stats().spilled, true);
 	await q.clear();
 	assert.equal(q.stats().spilled, false);
-	const fp = nodePath.join(dir, 'clr2', 'queue.jsonl');
-	await assert.rejects(() => fs.stat(fp));
+	await assert.rejects(() => fs.stat(nodePath.join(dir, 'clr2.jsonl')));
 	// can enqueue again and it goes back to mem path
 	await q.enqueue('x');
 	assert.equal(q.stats().memCount, 1);
@@ -305,9 +383,16 @@ test('clear on spilled state deletes file and resets state', async () => {
 	await q.destroy();
 });
 
+test('clear resets fsBroken so future spills can reopen', async () => {
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'clrbrk', memBudget: 1 });
+	q.fsBroken = true; // 人为模拟
+	await q.clear();
+	assert.equal(q.stats().fsBroken, false);
+	await q.destroy();
+});
+
 test('clear after destroy is a no-op', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'clr3', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'clr3' });
 	await q.destroy();
 	await q.clear(); // should not throw
 });
@@ -317,15 +402,15 @@ test('clear after destroy is a no-op', async () => {
 test('refill discards unterminated tail line and logs partial warn with size', async () => {
 	const dir = await makeTmpDir();
 	const warnings = [];
-	const q = new FileBackedQueue({
+	const q = await makeQ({
 		dir, id: 'part',
-		memBudget: 2,
+		memBudget: 1,
 		logger: { warn: (...args) => warnings.push(args), info: () => {}, error: () => {} },
 	});
-	await q.enqueue('aa'); // mem
+	await q.enqueue('aa'); // mem (first item)
 	await q.enqueue('bb'); // spill: 'bb\n' on disk
 
-	const fp = nodePath.join(dir, 'part', 'queue.jsonl');
+	const fp = nodePath.join(dir, 'part.jsonl');
 	const st = await fs.stat(fp);
 	await fs.truncate(fp, st.size - 1); // strip trailing \n → 'bb' partial
 
@@ -333,7 +418,6 @@ test('refill discards unterminated tail line and logs partial warn with size', a
 	assert.equal((await iter.next()).value, 'aa');
 
 	// Next call: mem empty, spilled true → refill. Partial tail discarded; spilled collapses.
-	// Must NOT yield 'bb' as a value — verify by asserting iter enters waiter state.
 	const pending = iter.next();
 	await waitForWaiter(q);
 	await q.destroy();
@@ -347,20 +431,20 @@ test('refill discards unterminated tail line and logs partial warn with size', a
 
 test('refill with some valid lines plus unterminated tail keeps valid, discards partial', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'part2', memBudget: 3, logger: silentLogger() });
-	await q.enqueue('aa');    // mem 2
-	await q.enqueue('bbb');   // 2+3>3 spill. disk: 'bbb\n'
+	const q = await makeQ({ dir, id: 'part2', memBudget: 1 });
+	await q.enqueue('aa');    // mem
+	await q.enqueue('bbb');   // spill. disk: 'bbb\n'
 	await q.enqueue('cc');    // disk: 'bbb\ncc\n'
 
-	const fp = nodePath.join(dir, 'part2', 'queue.jsonl');
+	const fp = nodePath.join(dir, 'part2.jsonl');
 	const st = await fs.stat(fp);
 	await fs.truncate(fp, st.size - 1); // strip final \n → cc partial
 
 	const iter = q[Symbol.asyncIterator]();
 	assert.equal((await iter.next()).value, 'aa');
-	assert.equal((await iter.next()).value, 'bbb'); // bbb valid
+	assert.equal((await iter.next()).value, 'bbb');
 
-	// cc was partial → must be discarded. Assert iter goes into wait (no third value).
+	// cc was partial → must be discarded.
 	const pending = iter.next();
 	await waitForWaiter(q);
 	await q.destroy();
@@ -370,7 +454,7 @@ test('refill with some valid lines plus unterminated tail keeps valid, discards 
 
 test('refill drops file when external truncation puts readOffset past actualEnd', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'trunc', memBudget: 2, logger: silentLogger() });
+	const q = await makeQ({ dir, id: 'trunc', memBudget: 1 });
 	await q.enqueue('aa'); // mem
 	await q.enqueue('bb'); // spill
 	await q.enqueue('cc'); // spill
@@ -379,11 +463,10 @@ test('refill drops file when external truncation puts readOffset past actualEnd'
 	assert.equal((await iter.next()).value, 'aa');
 	assert.equal((await iter.next()).value, 'bb');
 
-	// readOffset is now 3 (past 'bb\n'). Truncate file below it.
-	const fp = nodePath.join(dir, 'trunc', 'queue.jsonl');
+	// readOffset 现在推到 'bb\n' 末尾。外部截到更短。
+	const fp = nodePath.join(dir, 'trunc.jsonl');
 	await fs.truncate(fp, 2);
 
-	// Next refill: readOffset(3) >= actualEnd(2) → drop file.
 	const pending = iter.next();
 	await waitForWaiter(q);
 	await q.destroy();
@@ -393,8 +476,9 @@ test('refill drops file when external truncation puts readOffset past actualEnd'
 
 test('destroy after writeStream error does not hang', async () => {
 	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'hng', memBudget: 1, logger: silentLogger() });
-	await q.enqueue('aa'); // opens stream
+	const q = await makeQ({ dir, id: 'hng', memBudget: 1 });
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill → opens stream
 	q.writeStream.emit('error', new Error('simulated'));
 	// Safety: if close path hangs, fail fast instead of hanging the whole suite.
 	await Promise.race([
@@ -404,8 +488,7 @@ test('destroy after writeStream error does not hang', async () => {
 });
 
 test('iterator next() after destroy returns done', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'postd', logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'postd' });
 	await q.destroy();
 	const iter = q[Symbol.asyncIterator]();
 	const r = await iter.next();
@@ -414,8 +497,12 @@ test('iterator next() after destroy returns done', async () => {
 
 // --- fs errors ---
 
-test('enqueue returns false when subdir path is occupied by a file (mkdir fails)', async () => {
-	const dir = await makeTmpDir();
+test('enqueue returns false when mkdir of parent dir fails', async () => {
+	// 用一个不存在的嵌套父目录，放置文件当障碍让 mkdir 失败
+	const base = await makeTmpDir();
+	const blocker = nodePath.join(base, 'blocker');
+	await fs.writeFile(blocker, 'not-a-dir');
+	const dir = nodePath.join(blocker, 'sub'); // mkdir(sub) on file 'blocker' 会 ENOTDIR
 	const drops = [];
 	const q = new FileBackedQueue({
 		dir, id: 'mkf',
@@ -423,60 +510,144 @@ test('enqueue returns false when subdir path is occupied by a file (mkdir fails)
 		onDrop: (reason, size) => drops.push({ reason, size }),
 		logger: silentLogger(),
 	});
-	// Place a file at subdir path so mkdir(recursive:true) fails with ENOTDIR/EEXIST
-	await fs.writeFile(nodePath.join(dir, 'mkf'), 'blocker');
-	const ok = await q.enqueue('aa'); // triggers spill path → __openWriteStream → mkdir fails
+	await q.init(); // init 的 rm force 允许 ENOENT，不报错
+	await q.enqueue('aa'); // mem (first item)
+	const ok = await q.enqueue('bb'); // 尝试 spill → mkdir fails
 	assert.equal(ok, false);
 	assert.equal(drops.length, 1);
 	assert.equal(drops[0].reason, 'fs-error');
-	assert.equal(drops[0].size, 2);
-	// Clean up for assertion that directory was not left broken
-	await fs.rm(nodePath.join(dir, 'mkf'), { force: true });
 });
 
-test('enqueue returns false when writeStream emits error before next write', async () => {
+test('enqueue returns false when writeStream emits error; queue enters fsBroken', async () => {
 	const dir = await makeTmpDir();
 	const drops = [];
-	const q = new FileBackedQueue({
+	const q = await makeQ({
 		dir, id: 'werr',
 		memBudget: 1,
 		onDrop: (reason, size) => drops.push({ reason, size }),
-		logger: silentLogger(),
 	});
-	await q.enqueue('aa'); // spill, opens stream
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill, opens stream
 	q.writeStream.emit('error', new Error('simulated stream error'));
-	// writeErr is now set; next enqueue should see it and fail
-	const ok = await q.enqueue('bb');
+	// 下一轮 enqueue 走 spill 路径应直接被 fsBroken 拦下
+	const ok = await q.enqueue('cc');
 	assert.equal(ok, false);
 	assert.equal(drops.length, 1);
 	assert.equal(drops[0].reason, 'fs-error');
+	assert.equal(q.stats().fsBroken, true);
 	await q.destroy();
 });
 
 test('enqueue returns false when write callback errors', async () => {
 	const dir = await makeTmpDir();
 	const drops = [];
-	const q = new FileBackedQueue({
+	const q = await makeQ({
 		dir, id: 'wcb',
 		memBudget: 1,
 		onDrop: (reason, size) => drops.push({ reason, size }),
-		logger: silentLogger(),
 	});
-	await q.enqueue('aa'); // opens stream
-	// Replace write to fail via cb
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill, opens stream
+	// 替换 write 让 cb 直接报错
 	q.writeStream.write = (_data, cb) => { cb(new Error('cb err')); };
-	const ok = await q.enqueue('bb');
+	const ok = await q.enqueue('cc');
 	assert.equal(ok, false);
 	assert.equal(drops.length, 1);
 	assert.equal(drops[0].reason, 'fs-error');
 	await q.destroy();
 });
 
+// 关键回归：写流异步 error 后消费者必须不卡死，队列进入 fsBroken 降级
+test('async write stream error wakes blocked consumer and enters fsBroken', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'stuck',
+		memBudget: 1,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	// 劫持 __openWriteStream：保持 mkdir 成功，但让接下来的 write 永远 cb err + emit error
+	const origOpen = q.__openWriteStream.bind(q);
+	q.__openWriteStream = async function() {
+		await origOpen();
+		this.writeStream.write = (_chunk, cb) => { process.nextTick(() => cb(new Error('simulated-write-fail'))); return false; };
+		process.nextTick(() => this.writeStream.emit('error', new Error('simulated-async-open-fail')));
+	};
+
+	// 第一条入 mem（safety valve），第二条触发 spill 路径 → 我们的劫持生效
+	await q.enqueue('aa');
+	const okSpill = await q.enqueue('bb');
+	assert.equal(okSpill, false); // write cb err
+
+	// 关键断言：即便异步错误把 spilled 置 true 过，最终 fsBroken 粘性+唤醒全部消费者，consumer 不会卡死
+	const iter = q[Symbol.asyncIterator]();
+	const first = await Promise.race([
+		iter.next(),
+		new Promise((_, rej) => setTimeout(() => rej(new Error('consumer hung on first')), 800)),
+	]);
+	assert.equal(first.value, 'aa'); // mem 里的 'aa' 仍可消费
+
+	// 消费完之后 memQueue 空，spilled=false（已被 __handleFsError 清），且 fsBroken=true
+	assert.equal(q.stats().fsBroken, true);
+
+	// 下一次 next() 应进入等待（而不是卡在 refill 里），通过 destroy 把它唤醒
+	const pending = iter.next();
+	await waitForWaiter(q);
+	await q.destroy();
+	const r = await pending;
+	assert.equal(r.done, true);
+});
+
+test('fsBroken is sticky: after FS error, overflow enqueue keeps dropping', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'sticky',
+		memBudget: 1,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill, opens stream
+	q.writeStream.emit('error', new Error('boom'));
+	// 让 mutex 里的清理任务跑完
+	await q.enqueue('cc'); // 第一次 drop
+	const ok = await q.enqueue('dd'); // 第二次仍 drop
+	assert.equal(ok, false);
+	assert.equal(drops.length, 2);
+	assert.equal(drops.every(d => d.reason === 'fs-error'), true);
+	assert.equal(q.stats().fsBroken, true);
+	// 但 mem 仍可继续：消费 'aa' 后 pendingCount=0，下一条 mem 路径再次首条被接受
+	const iter = q[Symbol.asyncIterator]();
+	assert.equal((await iter.next()).value, 'aa');
+	const ee = await q.enqueue('ee');
+	assert.equal(ee, true); // 接受到 mem（safety valve）
+	await q.destroy();
+});
+
+// --- head pointer compaction ---
+
+test('head pointer compacts on drain; memQueue array size bounded', async () => {
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'head' });
+	// 入队 200 条纯内存
+	for (let i = 0; i < 200; i++) await q.enqueue(`i-${i}`);
+	const iter = q[Symbol.asyncIterator]();
+	// 消费一半，应触发若干次压缩
+	for (let i = 0; i < 120; i++) await iter.next();
+	// 压缩点：head > 64 且 head*2 >= memQueue.length
+	// 消费 120 条之后 head 应多次重置，数组长度不会接近 200
+	assert.ok(q.memQueue.length < 200, `memQueue length should shrink, got ${q.memQueue.length}`);
+	// 剩余项仍能正确消费，FIFO
+	for (let i = 120; i < 200; i++) {
+		const r = await iter.next();
+		assert.equal(r.value, `i-${i}`);
+	}
+	await q.destroy();
+});
+
 // --- integration-ish: many items through spill/refill ---
 
 test('many items round-trip through spill', async () => {
-	const dir = await makeTmpDir();
-	const q = new FileBackedQueue({ dir, id: 'many', memBudget: 64, logger: silentLogger() });
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'many', memBudget: 2048 });
 	const N = 200;
 	for (let i = 0; i < N; i++) {
 		assert.equal(await q.enqueue(`item-${i}`), true);
