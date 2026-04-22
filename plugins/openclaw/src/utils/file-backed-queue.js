@@ -122,8 +122,10 @@ class FileBackedQueue {
 
 			const size = Buffer.byteLength(jsonStr, 'utf8');
 
-			// admission：当前 mem + 磁盘未消费 + 新消息含 \n 超过 diskCap 则拒
-			if (this.memBytes + this.diskBytes + size + 1 > this.diskCap) {
+			// admission：按物理占用（mem + 已写文件总字节，含 \n）判定，保证 diskCap 是真正的硬上限。
+			// 用 writtenBytes（不减 readOffset）的含义：文件前缀已读但未被 __dropFile 回收前仍算占用。
+			// 代价：持续背压下消费者还没追到写端时新消息可能被 drop，直到完全 drain 触发 __dropFile 重置。
+			if (this.memBytes + this.writtenBytes + size + 1 > this.diskCap) {
 				this.__dispatchDrop('disk-cap', size);
 				return false;
 			}
@@ -163,19 +165,26 @@ class FileBackedQueue {
 			} catch (err) {
 				this.logger?.warn?.('fbq.enqueue fs-error', err);
 				this.__dispatchDrop('fs-error', size);
+				// 直接在当前锁内触发粘性降级：真实 Node stream 下 cb err 通常也会 emit 'error'
+				// （监听器会另外排一次 handleFsError，但 fsBroken 已置 → no-op）；测试里的 monkey-patch
+				// 只触发 cb、不发 'error'，这里主动降级保证行为一致。
+				await this.__handleFsError(err);
 				return false;
 			}
 		});
 	}
 
 	/**
-	 * @returns {{ memCount: number, memBytes: number, diskBytes: number, spilled: boolean, fsBroken: boolean }}
+	 * @returns {{ memCount: number, memBytes: number, diskBytes: number, writtenBytes: number, spilled: boolean, fsBroken: boolean }}
+	 *   - diskBytes：未消费 backlog（writtenBytes - readOffset）
+	 *   - writtenBytes：本次生命周期累计已写字节（admission 依据的物理占用），drain 或 FS 降级后重置为 0
 	 */
 	stats() {
 		return {
 			memCount: this.memQueue.length - this.head,
 			memBytes: this.memBytes,
 			diskBytes: this.diskBytes,
+			writtenBytes: this.writtenBytes,
 			spilled: this.spilled,
 			fsBroken: this.fsBroken,
 		};
@@ -299,7 +308,9 @@ class FileBackedQueue {
 	async __openWriteStream() {
 		this.writeErr = null;
 		try {
-			await fs.mkdir(nodePath.dirname(this.filePath), { recursive: true });
+			// 目录 0o700 / 文件 0o600：JSONL 里可能包含用户消息、文件 payload 等敏感内容，
+			// 只允许队列进程所属用户访问；同仓 atomic-write.js 已是同一策略。
+			await fs.mkdir(nodePath.dirname(this.filePath), { recursive: true, mode: 0o700 });
 			// 权威残留清理：即便 init 的 rm 被吞掉，这里开流前再 rm 一次，
 			// 避免 'a' flag 追加到旧数据上污染 FIFO。
 			await fs.rm(this.filePath, { force: true });
@@ -307,7 +318,7 @@ class FileBackedQueue {
 			this.writeErr = err;
 			return;
 		}
-		this.writeStream = createWriteStream(this.filePath, { flags: 'a' });
+		this.writeStream = createWriteStream(this.filePath, { flags: 'a', mode: 0o600 });
 		this.writeStream.on('error', (err) => {
 			this.writeErr = err;
 			this.logger?.warn?.('fbq.writeStream error', err);

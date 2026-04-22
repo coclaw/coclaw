@@ -171,7 +171,7 @@ test('Symbol.asyncDispose delegates to destroy', async () => {
 
 test('stats returns initial zeros', async () => {
 	const q = await makeQ({ dir: await makeTmpDir(), id: 'stats' });
-	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, spilled: false, fsBroken: false });
+	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, writtenBytes: 0, spilled: false, fsBroken: false });
 	await q.destroy();
 });
 
@@ -266,7 +266,7 @@ test('enqueue rejected when exceeding diskCap; onDrop receives disk-cap', async 
 	const dir = await makeTmpDir();
 	const drops = [];
 	// memBudget=2 让 'bb' 溢出；diskCap=5（2+3='bb\n'）塞满后再入一条就触顶
-	// memBytes=2 + diskBytes=3 + new.size+1(=2) = 7 > 5 → drop
+	// memBytes=2 + writtenBytes=3 + new.size+1(=2) = 7 > 5 → drop
 	const q = await makeQ({
 		dir, id: 'cap',
 		memBudget: 2, diskCap: 5,
@@ -276,6 +276,71 @@ test('enqueue rejected when exceeding diskCap; onDrop receives disk-cap', async 
 	assert.equal(await q.enqueue('bb'), true); // spill, disk 3 bytes (含 \n)
 	assert.equal(await q.enqueue('c'), false); // 2+3+2 > 5 → drop
 	assert.deepEqual(drops, [{ reason: 'disk-cap', size: 1 }]);
+	await q.destroy();
+});
+
+test('diskCap caps physical file size, not just backlog; recovers after full drain', async () => {
+	// 关键回归：producer/consumer 持续交错、readOffset 追不上 writtenBytes 时，
+	// 物理文件仍然不会无界增长；admission 基于 writtenBytes 保证 diskCap 是硬上限。
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'phys',
+		memBudget: 1, diskCap: 10,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+
+	// enqueue 5 条 'a'：第 1 条进 mem（safety valve），后 4 条 spill，每条含 \n=2 字节
+	// 入队后 memBytes=1, writtenBytes=8
+	for (let i = 0; i < 5; i++) assert.equal(await q.enqueue('a'), true);
+	// 下一条 admission：1 + 8 + 1 + 1 = 11 > 10 → drop
+	assert.equal(await q.enqueue('a'), false);
+	assert.equal(drops.length, 1);
+
+	// 消费者读一条（mem 中的 'a'）→ memBytes=0, writtenBytes 不变
+	const iter = q[Symbol.asyncIterator]();
+	assert.equal((await iter.next()).value, 'a');
+
+	// 消费者继续读：refill 把 1 条从 disk 取到 mem，然后 shift。writtenBytes 仍不变（未触发 __dropFile）
+	assert.equal((await iter.next()).value, 'a');
+
+	// 此刻 memBytes 接近 0、writtenBytes 仍 8（还没 drain 完）；admission：0+8+1+1=10 不>10 → accept
+	// 这恰好卡在上限；再塞一条会变 0+10+1+1=12 > 10
+	assert.equal(await q.enqueue('a'), true);
+	assert.equal(await q.enqueue('a'), false);
+	assert.equal(drops.length, 2);
+
+	// 持续消费直到完全 drain → __dropFile 重置 writtenBytes=0
+	while (q.writtenBytes > 0) {
+		const r = await Promise.race([
+			iter.next(),
+			new Promise((_, rej) => setTimeout(() => rej(new Error('drain stalled')), 500)),
+		]);
+		if (r.done) break;
+	}
+	assert.equal(q.stats().spilled, false);
+	assert.equal(q.writtenBytes, 0);
+
+	// drain 完后 admission 重置，新 enqueue 可以重新被接受
+	assert.equal(await q.enqueue('x'), true);
+	await q.destroy();
+});
+
+test('file and directory are created with restrictive mode (0o600 / 0o700)', async () => {
+	const dir = await makeTmpDir();
+	// 嵌入 nested 目录，确保 mkdir 真的创建目录而不是复用已存在的 base
+	const nested = nodePath.join(dir, 'nested');
+	const q = await makeQ({ dir: nested, id: 'perm', memBudget: 1 });
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill → opens stream，创建文件与父目录
+
+	// 非 linux 平台权限语义不同；这里只在 posix 下断言
+	if (process.platform !== 'win32') {
+		const fileStat = await fs.stat(nodePath.join(nested, 'perm.jsonl'));
+		assert.equal(fileStat.mode & 0o777, 0o600, `file mode should be 0o600, got ${(fileStat.mode & 0o777).toString(8)}`);
+		const dirStat = await fs.stat(nested);
+		assert.equal(dirStat.mode & 0o777, 0o700, `dir mode should be 0o700, got ${(dirStat.mode & 0o777).toString(8)}`);
+	}
 	await q.destroy();
 });
 
@@ -360,7 +425,7 @@ test('clear empties in-memory state, instance still usable', async () => {
 	await q.enqueue('a');
 	await q.enqueue('b');
 	await q.clear();
-	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, spilled: false, fsBroken: false });
+	assert.deepEqual(q.stats(), { memCount: 0, memBytes: 0, diskBytes: 0, writtenBytes: 0, spilled: false, fsBroken: false });
 	// still usable
 	await q.enqueue('c');
 	assert.equal(q.stats().memCount, 1);
@@ -538,7 +603,7 @@ test('enqueue returns false when writeStream emits error; queue enters fsBroken'
 	await q.destroy();
 });
 
-test('enqueue returns false when write callback errors', async () => {
+test('enqueue returns false when write callback errors and enters fsBroken', async () => {
 	const dir = await makeTmpDir();
 	const drops = [];
 	const q = await makeQ({
@@ -554,6 +619,13 @@ test('enqueue returns false when write callback errors', async () => {
 	assert.equal(ok, false);
 	assert.equal(drops.length, 1);
 	assert.equal(drops[0].reason, 'fs-error');
+	// #3 修复：cb err 时 catch 直接触发 __handleFsError，不依赖 stream 'error' event 闭环
+	assert.equal(q.stats().fsBroken, true);
+	// 后续 spill 请求被 fsBroken 粘性拦下
+	const ok2 = await q.enqueue('dd');
+	assert.equal(ok2, false);
+	assert.equal(drops.length, 2);
+	assert.equal(drops[1].reason, 'fs-error');
 	await q.destroy();
 });
 

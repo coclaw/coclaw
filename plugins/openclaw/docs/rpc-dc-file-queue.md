@@ -86,8 +86,9 @@ class FileBackedQueue {
 ### 入队
 
 ```
-admission：若 memBytes + diskBytes + len(jsonStr) + 1 > diskCap
+admission：若 memBytes + writtenBytes + len(jsonStr) + 1 > diskCap
   → 拒绝，onDrop('disk-cap', size)，返回 false
+  （writtenBytes 是本次生命周期累计已写字节，在完全 drain 或 FS 降级时重置为 0）
 
 if (!spilled) {
   if (pendingCount === 0 或 mem 容量够容纳本条)
@@ -115,11 +116,14 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 
 ### 不变量
 
-- `memBytes + diskBytes + (size + 1) ≤ diskCap`（含待入条目的 `\n`）
-- `diskBytes === writtenBytes - readOffset`（派生值，不单独维护）
+- `memBytes + writtenBytes + (size + 1) ≤ diskCap`（含待入条目的 `\n`；以物理占用为准）
+- `writtenBytes` 只在完全 drain（`__dropFile`）或 FS 降级（`__handleFsError`）时重置为 0
+- `diskBytes === writtenBytes - readOffset`（暴露给消费者的 backlog 指标，派生值）
 - `spilled === true ⟺ 文件存在且有未消费字节`
 - 所有 enqueue/dequeue/fs-error 清理均通过同一个 mutex 串行化，避免状态半截
 - 崩溃导致的半截尾行：refill 时识别并丢弃，不影响前面
+
+**diskCap 语义**：硬上限指的是**物理文件 + 内存的总占用**，而不是 backlog（未消费字节）。代价是：持续背压场景下即便消费者在追赶，只要消费者还没追上写端触发 `__dropFile` 重置，admission 就持续以"已写总量"判定，可能 drop 部分新消息。这是有意选择，保证 diskCap 是真正的"磁盘不会超过这个数"。
 
 ### FS 错误降级
 
