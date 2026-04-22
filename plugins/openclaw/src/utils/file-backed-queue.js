@@ -53,6 +53,14 @@ class FileBackedQueue {
 		if (id === '.' || id === '..' || !ID_RE.test(id)) {
 			throw new TypeError('id contains invalid characters');
 		}
+		// 基础设施 fail-fast：容量参数必须是有限正数，避免 NaN/Infinity/非数字绕过 admission。
+		// NaN 与任何数比较皆为 false → admission 永远通过 → diskCap 变相失效。
+		if (!Number.isFinite(memBudget) || memBudget <= 0) {
+			throw new TypeError('memBudget must be a finite positive number');
+		}
+		if (!Number.isFinite(diskCap) || diskCap <= 0) {
+			throw new TypeError('diskCap must be a finite positive number');
+		}
 
 		this.dir = dir;
 		this.id = id;
@@ -393,8 +401,10 @@ class FileBackedQueue {
 			const st = await fs.stat(this.filePath);
 			actualEnd = st.size;
 		} catch (err) {
-			/* c8 ignore next 3 -- stat 在正常持有期间不会失败 */
+			// 读侧 FS 错误（外部删文件、权限丢失等）走粘性降级，
+			// 避免 spilled=true / fsBroken=false 的悬空态让消费者永远挂 waiter。
 			this.logger?.warn?.('fbq.refill stat error', err);
+			await this.__handleFsError(err);
 			return;
 		}
 
@@ -431,10 +441,12 @@ class FileBackedQueue {
 				cumPayload += sz;
 			}
 		} catch (err) {
-			/* c8 ignore next 4 -- read 错误罕见，保守退出 */
+			/* c8 ignore next 6 -- read 错误极罕见（stat 已通过、fd 已打开），路径保留用于粘性降级 */
+			// read 错误同 stat：统一走粘性降级而非静默 return
 			this.logger?.warn?.('fbq.refill read error', err);
 			rl.close();
 			stream.destroy();
+			await this.__handleFsError(err);
 			return;
 		} finally {
 			rl.close();

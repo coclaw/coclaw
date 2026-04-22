@@ -96,6 +96,23 @@ test('constructor does not touch filesystem', async () => {
 	await q.destroy();
 });
 
+test('constructor rejects non-finite or non-positive memBudget / diskCap', () => {
+	const base = { dir: '/tmp/whatever', id: 'cap', logger: silentLogger() };
+	// 注意：undefined 会被解构默认值覆盖为默认值，不进入校验分支；故不列入
+	for (const bad of [NaN, Infinity, -Infinity, 0, -1, '1', null]) {
+		assert.throws(
+			() => new FileBackedQueue({ ...base, memBudget: bad }),
+			/memBudget must be a finite positive number/,
+			`expected rejection for memBudget=${String(bad)}`,
+		);
+		assert.throws(
+			() => new FileBackedQueue({ ...base, diskCap: bad }),
+			/diskCap must be a finite positive number/,
+			`expected rejection for diskCap=${String(bad)}`,
+		);
+	}
+});
+
 test('constructor accepts default memBudget and diskCap', async () => {
 	const q = await makeQ({ dir: await makeTmpDir(), id: 'def' });
 	assert.equal(q.memBudget, 8 * 1024 * 1024);
@@ -674,6 +691,34 @@ test('async write stream error wakes blocked consumer and enters fsBroken', asyn
 	// 下一次 next() 应进入等待（而不是卡在 refill 里），通过 destroy 把它唤醒
 	const pending = iter.next();
 	await waitForWaiter(q);
+	await q.destroy();
+	const r = await pending;
+	assert.equal(r.done, true);
+});
+
+// 关键回归：读侧 FS 错误（外部删文件、权限丢失等）也走 fsBroken 粘性降级，
+// consumer 不会永远挂在 waiter 上。
+test('refill stat error latches fsBroken and wakes blocked consumer', async () => {
+	const dir = await makeTmpDir();
+	const q = await makeQ({ dir, id: 'rstat', memBudget: 1 });
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill: 'bb\n' on disk
+	assert.equal(q.stats().spilled, true);
+
+	// 消费掉 mem 里的 'aa'
+	const iter = q[Symbol.asyncIterator]();
+	assert.equal((await iter.next()).value, 'aa');
+
+	// 外部删除 spill 文件，下一次 refill 的 stat 会 ENOENT
+	await fs.rm(nodePath.join(dir, 'rstat.jsonl'), { force: true });
+
+	// 下一次 next() 应触发 refill → stat fails → __handleFsError → wakeAll → 看到 nothing → 回到 waiter
+	// 再把 destroy 拉起它退出
+	const pending = iter.next();
+	await waitForWaiter(q);
+	// 此时 fsBroken 应已粘性置 true
+	assert.equal(q.stats().fsBroken, true);
+	assert.equal(q.stats().spilled, false);
 	await q.destroy();
 	const r = await pending;
 	assert.equal(r.done, true);

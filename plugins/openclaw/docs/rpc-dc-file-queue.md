@@ -67,10 +67,12 @@ class FileBackedQueue {
 |------|------|------|
 | `dir` | 队列文件根目录 | 无默认，调用方提供 |
 | `id` | 队列标识，用作文件名；字符集受限 `[A-Za-z0-9._-]+`，非 `.` `..` | 无默认 |
-| `memBudget` | 内存持有字节数上限（软性，含 64B/条对象开销近似） | 8 MB |
-| `diskCap` | 磁盘+内存总字节数硬上限（含分隔 `\n`） | 1 GB |
+| `memBudget` | 内存持有字节数上限（软性，含 64B/条对象开销近似）；必须是有限正数 | 8 MB |
+| `diskCap` | 磁盘+内存总字节数硬上限（含分隔 `\n`）；必须是有限正数 | 1 GB |
 | `onDrop` | 拒入队时的回调 `(reason, size) => void` | 仅 warn |
 | `logger` | pino 风格 logger | `console` |
+
+`memBudget` / `diskCap` 在构造时 fail-fast：`Number.isFinite` 且 `> 0`，否则抛 `TypeError`。此约束避免 `NaN` 等退化值让 admission `>` 比较恒假、变相绕过硬上限。单条消息大小不在 FBQ 层拦截，由上层按场景配置（如 `RpcSendQueue` 的 `MAX_SINGLE_MSG_BYTES=50MB`）。
 
 ### API 选择理由
 
@@ -127,7 +129,12 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 
 ### FS 错误降级
 
-写流 `'error'` 事件（异步）由 mutex 调度 `__handleFsError` 清理：关流、删文件、重置 `spilled/writtenBytes/readOffset`、置 `fsBroken=true`（粘性）、唤醒所有消费者。
+任何 FS 错误都收敛到 `__handleFsError`（mutex 内）：关流、删文件、重置 `spilled/writtenBytes/readOffset`、置 `fsBroken=true`（粘性）、唤醒所有消费者。触发路径包括：
+
+- **写侧 `'error'` 事件**（异步）：listener 排队到 mutex 调度；
+- **写侧前置 FS 失败**（`mkdir` / `rm`）：enqueue 检测到 `writeErr` 后直接在当前锁内调用；
+- **写侧 `write` 回调 err**：enqueue 的 catch 块直接调用（覆盖 monkey-patch / cb 不 emit error 的路径）；
+- **读侧 `stat` / 读流错误**（外部删文件、权限丢失等）：refill 的 catch 块调用，避免 `spilled=true / fsBroken=false` 的悬空态让消费者永久挂 waiter。
 
 - 此后溢出路径的 enqueue 全部 `drop('fs-error')`，不再尝试 reopen；
 - 内存路径仍然可用，已在 mem 的消息继续交付；
