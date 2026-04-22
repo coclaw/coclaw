@@ -307,6 +307,34 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 - 首次 init 的启动先验（`__bridgeConn` 决定是否对未初始化的 claw 立即建 DC）：**允许**——建连成本不低，明确离线时不白跑
 - 手动重试（`manualRetryUnreachable`）：`unreachableClaws` getter 已过滤 `online`；极罕见竞态下 `__ensureRtc` 的 gate 会静默 skip，语义正确
 
+### 5.5.1 信令 WS gate（第二把锁）
+
+`claw.online` 解决"plugin 有没有 online"。但**信令 WS（浏览器↔server）不通**的场景（电梯/地下车库/飞行模式/WiFi↔蜂窝瞬断/server 重启）下，ICE restart offer 送不出 server、rebuild 的 signaling 握手也送不出——与 plugin offline 对称，**所有 RTC 主动恢复动作都是空烧预算**。故引入第二把并列的锁 `_sigOffline`：信令 WS 不通时全局冻结所有 claw 的 ICE restart / rebuild / 退避计数。
+
+**信号源唯一**：`SignalingConnection.on('state', cb)` 事件。不用 `navigator.onLine`，不用 Capacitor Network 的 offline 分支。理由：
+- `navigator.onLine` 在桌面浏览器准确度低（VPN / 本地代理 / 局域网无网均可能误报 true/false）
+- Capacitor Network `connected=false` 仅反映系统路由层，不等价于"WS 到 server 可达"——server 重启时系统路由正常但 WS 不通
+- `sig.state` 直接反映 WS 握手/心跳结果，是"能否向 server 发 signaling"这件事本身的度量，无代理偏差
+
+**判定**：`_sigOffline = (sig.state !== 'connected')`。`connecting` 也算 offline——`__sendRaw` 在 `ws.readyState !== 1` 时直接返回 false，与 disconnected 行为一致；WS 层自身已在指数退避重连，store 层不需要二次 debounce。
+
+**UI 动作**（`__bridgeLifecycle` 的 sigState handler 分派）：
+- 进入（`connected → 非 connected`）：`__freezeAllClawsForSigOffline()` 遍历 `byId`，对每个 claw 调 `__clearRetry(id)` + `conn.rtc?.pauseRestart()`。**不调** `__handleClawGoOffline`——后者会 `syncDashboardOffline`，而 sig 不通时 plugin 可能仍 online，dashboard 不应联动
+- 退出（`非 connected → connected`）：`__resumeAllClawsForSigOnline()` 遍历 `byId`，对 `claw.online === true` 的调 `__resumeOnline(id)`；`claw.online === false` 的不动（等 SSE online 回来走单独路径）
+
+**两把锁独立、两把都开才恢复**。协调核心：`__resumeOnline` 入口 `if (_sigOffline) return`——任意一把锁关闭都阻断恢复动作；sig online handler 与 claw online 事件无论先后，最晚那次触发才真正执行 resume。
+
+**gate 布点**（与 online gate 平行的 5 处）：
+- `__ensureRtc` 入口 + 循环中途 → sig 不通即 bail-out；循环中途 bail `bailReason='sig_offline'`，**不**写 `rtcPhase='failed'`（sig 是环境故障，恢复后继续 rebuild，不应被标为 unreachable）
+- `__scheduleRetry` 入口 → sig 不通不排队退避
+- `__checkAndRecover` 入口 → sig 不通不 probe、不 restart
+- `__handleNetworkOnline` 入口 → sig 不通时整个循环跳过
+- `__resumeOnline` 入口 → 两把锁协调核心
+
+**初始挂 listener 时的同步**：`SignalingConnection.on('state', ...)` 不会立即回调（仅在状态变更时派发）。`__bridgeLifecycle` 挂 listener 后主动读一次 `sig.state`，若非 connected 立即 `_sigOffline=true` + 调 freeze，覆盖"登录瞬间 sig 仍在 connecting"场景。乐观默认 `_sigOffline=false`。
+
+**forceReconnect 二连发**：`sig.forceReconnect()` 同步派发 `disconnected → connecting` 两次 state 事件。handler 最外层 `if (shouldBeOffline === _sigOffline) return` 确保 freeze/resume 只跑一次。
+
 ---
 
 ## 六、Agent 两阶段响应

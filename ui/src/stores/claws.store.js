@@ -5,6 +5,7 @@ import { BRIEF_DISCONNECT_MS } from '../services/claw-connection.js';
 import { checkPluginVersion } from '../utils/plugin-version.js';
 import { initRtc, closeRtcForClaw } from '../services/webrtc-connection.js';
 import { remoteLog } from '../services/remote-log.js';
+import { useSignalingConnection } from '../services/signaling-connection.js';
 
 // claw 生命周期回调（由 claw-lifecycle.js 注册，避免静态循环依赖）
 const _lifecycle = {
@@ -53,6 +54,15 @@ let _lifecycleHandlers = null;
  * 监听器永不再挂，`app:foreground` / `network:online` 驱动的 RTC 恢复全部失效。
  */
 let _lifecycleBridged = false;
+/**
+ * 信令 WS 不通时的冻结闸（与 claw.online 并列的第二把锁）。
+ * 为 true 时所有 RTC 主动恢复动作（restart / rebuild / retry 调度）被阻断。
+ * 判据：`sig.state !== 'connected'`（connecting 也算——`__sendRaw` 需要 readyState=1）。
+ * 必须 module-level：logout 时 $reset() 不清模块变量，清理由 __resetClawStoreInternals 负责。
+ */
+let _sigOffline = false;
+/** 进入 sig offline 的时间戳，用于 resume 时输出冻结时长（生产诊断 WS 闪断 vs 长时间失联） */
+let _sigOfflineAt = 0;
 
 /**
  * 两层重试结构：
@@ -96,10 +106,16 @@ export function __resetClawStoreInternals() {
 	_rtcRetryState.clear();
 	_pendingForceRefreshOnRebuild.clear();
 	_backgroundAt = 0;
+	_sigOffline = false;
+	_sigOfflineAt = 0;
 	if (_lifecycleHandlers && typeof window !== 'undefined') {
 		window.removeEventListener('app:background', _lifecycleHandlers.bg);
 		window.removeEventListener('network:online', _lifecycleHandlers.net);
 		window.removeEventListener('app:foreground', _lifecycleHandlers.fg);
+		if (_lifecycleHandlers.sigState) {
+			try { useSignalingConnection().off('state', _lifecycleHandlers.sigState); }
+			catch (err) { console.debug('[claws] reset sig off failed: %s', err?.message); }
+		}
 	}
 	_lifecycleHandlers = null;
 	_lifecycleBridged = false;
@@ -314,11 +330,13 @@ export const useClawsStore = defineStore('claws', {
 		/**
 		 * 注册全局生命周期事件桥接（仅注册一次）
 		 *
-		 * 直接监听 window 事件，不经由 signaling——signaling 只负责维护自身 WS。
-		 * RTC 恢复决策完全基于 PC 自身状态，不依赖 WS 指标。
+		 * 监听 window 事件 + 信令 WS state。RTC 恢复决策主要基于 PC 自身状态，
+		 * sig state 仅作为"主动恢复动作"的全局闸（与 claw.online 并列的第二把锁）：
 		 * - network:online 分级处理（restart-first）：见 __handleNetworkOnline。
 		 * - app:foreground 走 probe 路径（OS 挂起导致 ICE 回调积压，PC 状态不可信）；
 		 *   短后台（<25s）信任 ICE 自恢复。
+		 * - sig.state 翻转：非 connected → 冻结所有 claw 的预算和退避；
+		 *   connected 回来 → 按 claw online 分派恢复（详见 §5.5.1）。
 		 *
 		 * 测试场景下 pinia 会为每个用例创建新 store 实例：此处若检测到已有注册
 		 * （来自前一实例），先移除再重新注册，避免多 store 共存时的事件分发污染。
@@ -332,6 +350,10 @@ export const useClawsStore = defineStore('claws', {
 				window.removeEventListener('app:background', _lifecycleHandlers.bg);
 				window.removeEventListener('network:online', _lifecycleHandlers.net);
 				window.removeEventListener('app:foreground', _lifecycleHandlers.fg);
+				if (_lifecycleHandlers.sigState) {
+					try { useSignalingConnection().off('state', _lifecycleHandlers.sigState); }
+					catch (err) { console.debug('[claws] bridge sig off (prev) failed: %s', err?.message); }
+				}
 			}
 
 			const bg = () => { _backgroundAt = Date.now(); };
@@ -352,11 +374,47 @@ export const useClawsStore = defineStore('claws', {
 					this.__checkAndRecover(id, 'app:foreground');
 				}
 			};
+			const sigState = (newState) => {
+				// 幂等去重：forceReconnect 会同步派发 disconnected→connecting 两次；
+				// 仅在 _sigOffline 真翻转时才触发 freeze / resume
+				const shouldBeOffline = newState !== 'connected';
+				if (shouldBeOffline === _sigOffline) return;
+				_sigOffline = shouldBeOffline;
+				try {
+					if (shouldBeOffline) {
+						_sigOfflineAt = Date.now();
+						this.__freezeAllClawsForSigOffline();
+					} else {
+						const duration = _sigOfflineAt > 0 ? Date.now() - _sigOfflineAt : 0;
+						_sigOfflineAt = 0;
+						this.__resumeAllClawsForSigOnline(duration);
+					}
+				} catch (err) {
+					console.warn('[claws] sig state handler failed state=%s: %s', newState, err?.message);
+					remoteLog(`claw.sigHandlerError state=${newState} msg=${err?.message ?? 'unknown'}`);
+				}
+			};
 
-			_lifecycleHandlers = { bg, net, fg };
+			_lifecycleHandlers = { bg, net, fg, sigState };
 			window.addEventListener('app:background', bg);
 			window.addEventListener('network:online', net);
 			window.addEventListener('app:foreground', fg);
+
+			// sig listener + 初态同步。sig.on 仅在状态**变更**时派发，不重放历史——
+			// 订阅瞬间 listener 不会被触发，需主动读 sig.state 兜底初态。
+			// 注：`on` 与 `sig.state` 之间同步代码无机会让 listener fire，所以此刻
+			// `_sigOffline` 必然仍为 module-level 初值（或刚被 __resetClawStoreInternals 清零）。
+			try {
+				const sig = useSignalingConnection();
+				sig.on('state', sigState);
+				if (sig.state !== 'connected') {
+					_sigOffline = true;
+					_sigOfflineAt = Date.now();
+					this.__freezeAllClawsForSigOffline();
+				}
+			} catch (err) {
+				console.debug('[claws] bridge sig on failed: %s', err?.message);
+			}
 		},
 
 		/**
@@ -452,6 +510,55 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
+		 * 信令 WS 不通：冻结所有 claw 的 ICE restart / rebuild 预算。
+		 *
+		 * 与 `__handleClawGoOffline` 的关键差异：
+		 * - 不调 `syncDashboardOffline`——sig 不通时 claw presence 可能仍 online，
+		 *   dashboard 不应联动成 offline
+		 * - 不改 `claw.online` / `dcReady` / `rtcPhase` / `disconnectedAt`——sig 是环境故障，
+		 *   不污染 presence 与 DC 生命周期维度（两把锁正交）
+		 *
+		 * 触发点：`__bridgeLifecycle` 的 sigState handler 在 sig.state 由 connected 翻非 connected 时调用。
+		 */
+		__freezeAllClawsForSigOffline() {
+			// logout 时 $reset 把 fetched 清为 false：此时 sig.disconnect 的 state 事件
+			// 可能仍触发本函数，但 byId 即将被清、listener 也将被卸——日志和遍历都是噪音
+			if (!this.fetched) return;
+			const ids = Object.keys(this.byId);
+			if (ids.length === 0) return;
+			remoteLog(`claw.sigOffline freezing count=${ids.length}`);
+			for (const id of ids) {
+				this.__clearRetry(id);
+				const conn = useClawConnections().get(id);
+				if (conn?.rtc) conn.rtc.pauseRestart();
+			}
+		},
+
+		/**
+		 * 信令 WS 恢复：按 claw.online 分派恢复动作。
+		 *
+		 * 仅对 `claw.online === true` 的 claw 调 `__resumeOnline`；offline claw 不动
+		 * （等 SSE 推 online 时由 `updateClawOnline` / `applySnapshot` 路径接手）。
+		 * `__resumeOnline` 入口 sig gate 保证 sig 已通才执行（两把锁协调核心）。
+		 *
+		 * 触发点：sigState handler 在 sig.state 由非 connected 翻 connected 时调用。
+		 * @param {number} [duration] - sig offline 持续毫秒（sigState handler 计算后传入）
+		 */
+		__resumeAllClawsForSigOnline(duration = 0) {
+			if (!this.fetched) return;
+			let resumedCount = 0;
+			for (const id of Object.keys(this.byId)) {
+				const claw = this.byId[id];
+				if (!claw?.online) continue;
+				this.__resumeOnline(id);
+				resumedCount++;
+			}
+			if (resumedCount > 0) {
+				remoteLog(`claw.sigOnline resumed count=${resumedCount} duration=${duration}ms`);
+			}
+		},
+
+		/**
 		 * claw 转入 online：按 PC 当前状态分派恢复路径 + 强制刷新业务数据。
 		 *
 		 * plugin 离线过（不管多短），UI 数据一定可能 stale——offline→online 事件本身
@@ -474,6 +581,9 @@ export const useClawsStore = defineStore('claws', {
 		 * 或持续 online 但 `rtcPhase='failed'`（server 重启兜底）。
 		 */
 		__resumeOnline(id) {
+			// 两把锁协调核心：sig 不通时不做任何恢复动作（等 sig 回来时由
+			// __resumeAllClawsForSigOnline 遍历重调；或由 claw online 事件再次触发）
+			if (_sigOffline) return;
 			const conn = useClawConnections().get(id);
 			if (!conn) return;
 			this.__clearRetry(id);
@@ -599,6 +709,9 @@ export const useClawsStore = defineStore('claws', {
 		 */
 		async __ensureRtc(id, { forceRebuild = false } = {}) {
 			if (_rtcInitInProgress.get(id)) return;
+			// sig gate：WS 不通时发不出 signaling，rebuild 必然卡死；sig 回来时由
+			// __resumeAllClawsForSigOnline 遍历重试
+			if (_sigOffline) return;
 			// online gate：plugin 离线时 rebuild 必然失败，不浪费 ICE gathering / TURN 预算
 			if (!this.byId[id]?.online) return;
 			_rtcInitInProgress.set(id, true);
@@ -653,6 +766,13 @@ export const useClawsStore = defineStore('claws', {
 						bailReason = 'offline';
 						break;
 					}
+					// 中途 sig 掉线：停止继续烧 attempts，sig 回来时由 resume 路径重试
+					if (_sigOffline) {
+						console.debug('[claws] ensureRtc: bail-out (sig offline mid-build) clawId=%s', id);
+						bailedOut = true;
+						bailReason = 'sig_offline';
+						break;
+					}
 					result = await initRtc(id, conn, this.__rtcCallbacks(id));
 					if (result === 'rtc') break;
 					console.debug('[claws] ensureRtc: build attempt %d/%d failed clawId=%s', i + 1, RTC_BUILD_MAX_RETRIES, id);
@@ -672,7 +792,9 @@ export const useClawsStore = defineStore('claws', {
 					remoteLog(`claw.rtcReady claw=${id}${forceRefresh ? ' force_refresh=1' : ''}`);
 				} else if (bailedOut) {
 					// claw 被删除 → 无对象可写 phase；claw 翻 offline → 显式 phase=failed
-					// 让后续 online→true 走 rebuild 分支（而非 triggerRestart）
+					// 让后续 online→true 走 rebuild 分支（而非 triggerRestart）。
+					// bailReason='sig_offline' / 'removed' 不改 rtcPhase：sig 是环境故障，
+					// sig 回来时走 resume 路径，不应被标成 unreachable（触发 banner/retry UI）
 					if (bailReason === 'offline') {
 						const claw = this.byId[id];
 						if (claw) claw.rtcPhase = 'failed';
@@ -723,6 +845,8 @@ export const useClawsStore = defineStore('claws', {
 		__scheduleRetry(id) {
 			const claw = this.byId[id];
 			if (!claw) return;
+			// sig gate：WS 不通时排退避无意义，sig 回来时由 resume 路径重试
+			if (_sigOffline) return;
 			// online gate：offline 时不排队退避，online 回来由 __resumeOnline 分派
 			if (!claw.online) return;
 			let state = _rtcRetryState.get(id);
@@ -803,6 +927,8 @@ export const useClawsStore = defineStore('claws', {
 		 * @param {boolean} typeChanged
 		 */
 		__handleNetworkOnline(typeChanged) {
+			// sig gate：WS 不通时 restart/rebuild 均发不出去；sig 回来时由 resume 路径统一恢复
+			if (_sigOffline) return;
 			for (const id of Object.keys(this.byId)) {
 				if (_rtcInitInProgress.get(id)) continue;
 				const claw = this.byId[id];
@@ -850,6 +976,8 @@ export const useClawsStore = defineStore('claws', {
 				if (_probeInProgress.get(id)) return;
 				const claw = this.byId[id];
 				if (!claw?.dcReady) return;
+				// sig gate：WS 不通时 probe 无意义（restart 也发不出），恢复交给 resume 路径
+				if (_sigOffline) return;
 				// online gate：offline 时不 probe、不 restart，恢复交给 __resumeOnline
 				if (!claw.online) return;
 				const conn = useClawConnections().get(id);
