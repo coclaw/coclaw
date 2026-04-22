@@ -562,7 +562,7 @@ test('iterator next() after destroy returns done', async () => {
 
 // --- fs errors ---
 
-test('enqueue returns false when mkdir of parent dir fails', async () => {
+test('enqueue returns false when mkdir of parent dir fails and latches fsBroken', async () => {
 	// 用一个不存在的嵌套父目录，放置文件当障碍让 mkdir 失败
 	const base = await makeTmpDir();
 	const blocker = nodePath.join(base, 'blocker');
@@ -581,6 +581,15 @@ test('enqueue returns false when mkdir of parent dir fails', async () => {
 	assert.equal(ok, false);
 	assert.equal(drops.length, 1);
 	assert.equal(drops[0].reason, 'fs-error');
+	// 前置 FS 失败同样进入粘性降级，不再反复重试
+	assert.equal(q.stats().fsBroken, true);
+	const ok2 = await q.enqueue('cc');
+	assert.equal(ok2, false);
+	assert.equal(drops.length, 2);
+	// mem 路径仍可工作（pendingCount=1 的 'aa' 消费掉后，下一条首条被接受）
+	const iter = q[Symbol.asyncIterator]();
+	assert.equal((await iter.next()).value, 'aa');
+	assert.equal(await q.enqueue('dd'), true); // mem safety valve
 });
 
 test('enqueue returns false when writeStream emits error; queue enters fsBroken', async () => {

@@ -52,7 +52,7 @@ class FileBackedQueue {
 
   [Symbol.asyncIterator]()        // 消费侧：for await (const msg of queue) { ... }
 
-  stats()                         // { memCount, memBytes, diskBytes, spilled, fsBroken }
+  stats()                         // { memCount, memBytes, diskBytes, writtenBytes, spilled, fsBroken }
 
   async destroy()                 // 停写、关 FD、删文件、结束所有迭代器；幂等
   async clear()                   // 清空但实例仍可用；同时清 fsBroken

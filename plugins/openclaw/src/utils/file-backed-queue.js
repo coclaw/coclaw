@@ -151,7 +151,11 @@ class FileBackedQueue {
 			if (!this.spilled) {
 				await this.__openWriteStream();
 				if (this.writeErr) {
+					const err = this.writeErr;
 					this.__dispatchDrop('fs-error', size);
+					// 前置 mkdir/rm 失败也进入粘性降级：与 stream 'error' 路径语义一致，
+					// 避免后续每次 overflow 都重试同一个持续性 FS 故障。
+					await this.__handleFsError(err);
 					return false;
 				}
 				this.spilled = true;
