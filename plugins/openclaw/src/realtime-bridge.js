@@ -22,6 +22,12 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const SERVER_HB_PING_MS = 25_000;
 const SERVER_HB_TIMEOUT_MS = 45_000;
 const SERVER_HB_MAX_MISS = 4; // 连续 4 次无响应才断连（~3 分钟）
+// gateway 握手失败的指数退避表：每个元素是"上一次失败"之后、"下一次尝试"之前的等待时间。
+// 最多 5 次重试（加上首次尝试共 6 次），全部失败后进入 gave-up 终态，不再自动尝试。
+const GATEWAY_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 20_000, 20_000];
+// v3 握手失败时，只有错误消息匹配此正则才回退到不带 device 的 legacy 握手。
+// 严格限定在"签名/设备/scope/协议"相关错误，避免对网络/内部错误做无意义的降级尝试。
+const GATEWAY_HANDSHAKE_FALLBACK_PATTERN = /signature|device|scope|protocol/i;
 
 function toServerWsUrl(baseUrl, token) {
 	const url = new URL(baseUrl);
@@ -112,6 +118,12 @@ export class RealtimeBridge {
 		this.__fileHandler = null;
 		this.__ndcPreloadResult = null;
 		this.__ndcCleanup = null;
+		// gateway 握手重试状态（刷屏治理 + 兼容性回退）
+		this.__gatewayAttempts = 0;          // 已失败的连续握手次数（握手成功时归零）
+		this.__gatewayRetryTimer = null;     // 下一次尝试的 setTimeout 句柄
+		this.__gatewayGaveUp = false;        // 重试次数耗尽 → 终态，不再自动尝试
+		this.__gatewayLegacyMode = false;    // 学到"本 gateway 不接受带 device 的 v3"
+		this.__gatewayLastReason = null;     // 最近一次失败原因（用于 gave-up 上报）
 	}
 
 	__resolveWebSocket() {
@@ -192,6 +204,14 @@ export class RealtimeBridge {
 	}
 
 	__closeGatewayWs() {
+		// 当 server WS 失效主动关闭 gateway 时，取消任何 pending 重试定时器、把连续失败计数归零：
+		// 新 server 会话应从新预算开始重试 gateway，避免旧会话的零散失败累计吞掉未来的重试机会。
+		// 不清 __gatewayGaveUp / __gatewayLegacyMode —— 那是跨会话的终态/学习，只由 stop() 复位。
+		if (this.__gatewayRetryTimer) {
+			clearTimeout(this.__gatewayRetryTimer);
+			this.__gatewayRetryTimer = null;
+		}
+		this.__gatewayAttempts = 0;
 		if (!this.gatewayWs) {
 			return;
 		}
@@ -558,12 +578,13 @@ export class RealtimeBridge {
 		};
 	}
 
-	__sendGatewayConnectRequest(ws, nonce) {
-		this.gatewayConnectReqId = `coclaw-connect-${Date.now()}`;
-		this.__logDebug(`gateway connect request -> id=${this.gatewayConnectReqId}`);
+	__sendGatewayConnectRequest(ws, nonce, { legacy = false } = {}) {
+		// 用 rpcSeq 保证 ID 唯一，避免 v3→legacy 同毫秒内两次调用产生相同 id
+		this.gatewayRpcSeq += 1;
+		this.gatewayConnectReqId = `coclaw-connect-${Date.now()}-${this.gatewayRpcSeq}`;
+		this.__logDebug(`gateway connect request -> id=${this.gatewayConnectReqId} legacy=${legacy}`);
 		try {
 			const authToken = this.__resolveGatewayAuthToken();
-			const device = this.__buildDeviceField(nonce, authToken);
 			const params = {
 				minProtocol: 3,
 				maxProtocol: 3,
@@ -577,8 +598,12 @@ export class RealtimeBridge {
 				role: 'operator',
 				scopes: ['operator.admin'],
 				auth: authToken ? { token: authToken } : undefined,
-				device,
 			};
+			// legacy 回退仅省略 device 字段；其他字段保持与 v3 一致。
+			// 当 gateway 不支持/不接受 device 字段时，auth.token 足以完成旧版握手。
+			if (!legacy) {
+				params.device = this.__buildDeviceField(nonce, authToken);
+			}
 			ws.send(JSON.stringify({
 				type: 'req',
 				id: this.gatewayConnectReqId,
@@ -592,7 +617,42 @@ export class RealtimeBridge {
 		}
 	}
 
+	/**
+	 * 握手失败一次：累加计数；未耗尽则按退避表调度下次尝试，耗尽则进入 gave-up 终态。
+	 * 调度 / 尝试 / 终态 guard 由 __ensureGatewayConnection 一致执行。
+	 * @param {string} reason - 本次失败原因，用于 gave-up 时汇总上报
+	 */
+	__onGatewayAttemptFailed(reason) {
+		if (!this.started || this.__gatewayGaveUp || this.__gatewayRetryTimer) {
+			return;
+		}
+		this.__gatewayLastReason = reason;
+		this.__gatewayAttempts += 1;
+		if (this.__gatewayAttempts > GATEWAY_RETRY_DELAYS_MS.length) {
+			this.__gatewayGaveUp = true;
+			remoteLog(`gateway.handshake.gave-up attempts=${this.__gatewayAttempts} lastReason=${reason}`);
+			this.logger.warn?.(`[coclaw] gateway handshake gave up after ${this.__gatewayAttempts} attempts (last reason: ${reason})`);
+			return;
+		}
+		const delay = GATEWAY_RETRY_DELAYS_MS[this.__gatewayAttempts - 1];
+		this.__gatewayRetryTimer = setTimeout(() => {
+			this.__gatewayRetryTimer = null;
+			this.__ensureGatewayConnection();
+		}, delay);
+		this.__gatewayRetryTimer.unref?.();
+	}
+
 	__ensureGatewayConnection() {
+		// 停机守卫：防止 stop() 之后某个已进入调度队列的 retry timer callback 再触发新 WS
+		if (!this.started) {
+			return;
+		}
+		// 刷屏治理：已进入终态 / 已调度下次尝试 → 不启动新 WS。
+		// 这两个 guard 保证在 __waitGatewayReady 或 server WS 重连的连续触发下
+		// 只会按退避表节奏新建连接。
+		if (this.__gatewayGaveUp || this.__gatewayRetryTimer) {
+			return;
+		}
 		if (this.gatewayWs || !this.serverWs || this.serverWs.readyState !== 1) {
 			return;
 		}
@@ -605,6 +665,12 @@ export class RealtimeBridge {
 		this.gatewayWs = ws;
 		this.gatewayReady = false;
 		this.gatewayConnectReqId = null;
+
+		// per-WS 闭包状态，只在本条 WS 的生命周期内有效。
+		let connectFailReported = false;   // 已经打过 ws.connect-failed；close 时抑制重复的 ws.disconnected
+		let pendingLegacyAttempted = false; // 本 WS 已尝试过 legacy 握手，避免重复降级
+		let wasReady = false;               // 本 WS 曾经握手成功（区分"握手失败"与"成功后断开"）
+		let lastChallengeNonce = '';        // 最近一次 challenge 的 nonce，legacy 回退时复用
 
 		ws.addEventListener('message', (event) => {
 			let payload = null;
@@ -619,13 +685,23 @@ export class RealtimeBridge {
 			}
 			if (payload.type === 'event' && payload.event === 'connect.challenge') {
 				const nonce = payload?.payload?.nonce ?? '';
-				this.__logDebug('gateway event <- connect.challenge');
-				this.__sendGatewayConnectRequest(ws, nonce);
+				lastChallengeNonce = nonce;
+				this.__logDebug(`gateway event <- connect.challenge legacyMode=${this.__gatewayLegacyMode}`);
+				// 已经学到此 gateway 是 legacy（上一条 WS 回退过）→ 直接发 legacy 握手
+				if (this.__gatewayLegacyMode) {
+					pendingLegacyAttempted = true;
+					this.__sendGatewayConnectRequest(ws, nonce, { legacy: true });
+				}
+				else {
+					this.__sendGatewayConnectRequest(ws, nonce);
+				}
 				return;
 			}
 			if (payload.type === 'res' && this.gatewayConnectReqId && payload.id === this.gatewayConnectReqId) {
 				if (payload.ok === true) {
 					this.gatewayReady = true;
+					wasReady = true;
+					this.__gatewayAttempts = 0; // 成功握手 → 重置失败计数，让后续瞬态断开有完整重试预算
 					remoteLog('ws.connected peer=gateway');
 					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
 					this.gatewayConnectReqId = null;
@@ -633,10 +709,28 @@ export class RealtimeBridge {
 					this.__pushInstanceInfo();
 				}
 				else {
+					const reason = payload?.error?.message ?? 'unknown';
+					// v3 → legacy 同 WS 回退：仅在签名/协议相关错误、且本 WS 尚未尝试 legacy 时触发
+					const shouldFallback =
+						!pendingLegacyAttempted
+						&& !this.__gatewayLegacyMode
+						&& GATEWAY_HANDSHAKE_FALLBACK_PATTERN.test(reason);
+					if (shouldFallback) {
+						pendingLegacyAttempted = true;
+						this.__gatewayLegacyMode = true;
+						// v3 的失败原因已由这条 remoteLog 单独上报，不写入 __gatewayLastReason；
+						// 后者保持"最后一次真正失败的原因"语义，供 gave-up 时使用。
+						remoteLog(`gateway.handshake.fallback v3→legacy reason=${reason}`);
+						this.logger.info?.(`[coclaw] gateway v3 handshake failed (${reason}), falling back to legacy`);
+						this.__sendGatewayConnectRequest(ws, lastChallengeNonce, { legacy: true });
+						return;
+					}
 					this.gatewayReady = false;
 					this.gatewayConnectReqId = null;
-					remoteLog(`ws.connect-failed peer=gateway msg=${payload?.error?.message ?? 'unknown'}`);
-					this.logger.warn?.(`[coclaw] gateway connect failed: ${payload?.error?.message ?? 'unknown'}`);
+					connectFailReported = true;
+					this.__gatewayLastReason = reason;
+					remoteLog(`ws.connect-failed peer=gateway msg=${reason}`);
+					this.logger.warn?.(`[coclaw] gateway connect failed: ${reason}`);
 					try { ws.close(1008, 'gateway_connect_failed'); }
 					/* c8 ignore next */
 					catch {}
@@ -675,21 +769,46 @@ export class RealtimeBridge {
 			this.__logDebug('gateway ws open, waiting for connect.challenge');
 		});
 		ws.addEventListener('close', (ev) => {
-			remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'}`);
+			// 握手失败路径已经打过 ws.connect-failed，这里抑制重复的 disconnected 日志；
+			// 成功后的意外断开、握手途中的异常断开仍按原样上报。
+			if (!connectFailReported) {
+				remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'}`);
+			}
 			this.logger.info?.(`[coclaw] gateway ws closed (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
-			this.gatewayWs = null;
-			this.gatewayReady = false;
-			this.gatewayConnectReqId = null;
+			if (this.gatewayWs === ws) {
+				this.gatewayWs = null;
+				this.gatewayReady = false;
+				this.gatewayConnectReqId = null;
+			}
 			/* c8 ignore next 3 -- gateway 意外断开时结算未完成 RPC，避免等超时 */
 			for (const [, settle] of this.gatewayPendingRequests) {
 				settle({ ok: false, error: 'gateway_closed' });
 			}
 			this.gatewayPendingRequests.clear();
+			// 调度下一次尝试：仅在 bridge 仍活着、未 gave-up、server WS 健康时；
+			// 其他场景（如 bridge stop、server WS 已断）由上游流程兜底，不参与 gateway 重试。
+			if (this.started && !this.__gatewayGaveUp
+				&& this.serverWs && this.serverWs.readyState === 1
+				&& (wasReady || connectFailReported)) {
+				if (wasReady) {
+					// 之前握成功过，视为瞬态掉线 → 重置计数，让新一轮拿到完整重试预算
+					this.__gatewayAttempts = 0;
+				}
+				this.__onGatewayAttemptFailed(
+					/* c8 ignore next -- connectFailReported 路径必然已设 __gatewayLastReason */
+					wasReady ? 'disconnected' : (this.__gatewayLastReason ?? 'connect-failed')
+				);
+			}
 		});
 		ws.addEventListener('error', (err) => {
 			/* c8 ignore next -- ?./?? fallback */
 			remoteLog(`ws.error peer=gateway msg=${String(err?.message ?? err)}`);
 			this.logger.warn?.(`[coclaw] gateway ws error: ${String(err?.message ?? err)}`);
+			// 防御 ws 库在某些错误下只 emit error 不跟随 close 的情况：主动关闭让 close handler
+			// 接管清理和重试调度，避免 gatewayWs 引用卡在僵尸状态阻塞后续 __ensureGatewayConnection。
+			try { ws.close(1011, 'ws_error'); }
+			/* c8 ignore next */
+			catch {}
 		});
 	}
 
@@ -1049,6 +1168,15 @@ export class RealtimeBridge {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
 		}
+		// 清理 gateway 重试状态：refresh()（stop+start 同一实例）后应以全新状态启动
+		if (this.__gatewayRetryTimer) {
+			clearTimeout(this.__gatewayRetryTimer);
+			this.__gatewayRetryTimer = null;
+		}
+		this.__gatewayAttempts = 0;
+		this.__gatewayGaveUp = false;
+		this.__gatewayLegacyMode = false;
+		this.__gatewayLastReason = null;
 		this.__closeGatewayWs();
 		if (this.webrtcPeer) {
 			await this.webrtcPeer.closeAll().catch(() => {});

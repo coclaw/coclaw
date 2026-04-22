@@ -694,6 +694,9 @@ test('RealtimeBridge should handle gateway connect failure', async () => {
 		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: false, error: { message: 'auth failed' } }) });
 		assert.ok(logs.some((x) => String(x).includes('gateway connect failed')));
 		assert.equal(gateway.readyState, 3, 'gateway should be closed after connect failure');
+		// 新行为回归锁：close handler 应记一次失败并调度下一次重试
+		assert.equal(bridge.__gatewayAttempts, 1, 'one failure should have been counted');
+		assert.ok(bridge.__gatewayRetryTimer, 'next retry should have been scheduled');
 	}
 	finally {
 		await bridge.stop();
@@ -1563,6 +1566,554 @@ test('device identity should be cached across multiple connect attempts', async 
 		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n3' } }) });
 
 		assert.equal(loadCount, 1, 'loadDeviceIdentity should be called only once');
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+// --- gateway 握手重试 + legacy 回退测试 ---
+
+const FAKE_DEVICE_IDENTITY = {
+	deviceId: 'fake-device-id',
+	publicKeyPem: '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAtzDL7h2Z4PZiOmNjmyl+U2gKexygXrWLjOWMufVSZKU=\n-----END PUBLIC KEY-----\n',
+	privateKeyPem: '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJYc25BaxT+DkFPCYoNeX0a5Vtv3VPJ+o9iEHcuh3+G6\n-----END PRIVATE KEY-----\n',
+};
+
+const GATEWAY_RETRY_DELAYS = [5_000, 10_000, 20_000, 20_000, 20_000];
+
+/**
+ * 替换 global.setTimeout / clearTimeout，捕获 setTimeout 回调以便测试手动触发。
+ * restore() 必须在测试 finally 中调用。fireFirstRetryTimer() 触发当前最早的未取消、未触发的
+ * retry 定时器（只识别 GATEWAY_RETRY_DELAYS 中的延时值），返回 true/false 表示是否有可触发。
+ */
+function captureTimers() {
+	const realSetTimeout = global.setTimeout;
+	const realClearTimeout = global.clearTimeout;
+	const timers = [];
+	global.setTimeout = ((fn, ms) => {
+		const obj = { __fn: fn, __ms: ms, __cancelled: false, __fired: false, unref() {} };
+		timers.push(obj);
+		return obj;
+	});
+	global.clearTimeout = ((t) => {
+		if (t && typeof t === 'object' && typeof t.__ms === 'number') {
+			t.__cancelled = true;
+		}
+	});
+	return {
+		timers,
+		restore() {
+			global.setTimeout = realSetTimeout;
+			global.clearTimeout = realClearTimeout;
+		},
+		fireFirstRetryTimer() {
+			const t = timers.find((x) => !x.__cancelled && !x.__fired && GATEWAY_RETRY_DELAYS.includes(x.__ms));
+			if (!t) return false;
+			t.__fired = true;
+			t.__fn();
+			return true;
+		},
+	};
+}
+
+async function bootGatewayWithChallenge(bridge) {
+	await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+	const server = FakeWebSocket.instances[0];
+	server.readyState = 1;
+	server.emit('open', {});
+	const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+	gateway.readyState = 1;
+	gateway.emit('open', {});
+	gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+	return { server, gateway };
+}
+
+function lastConnectReq(gateway) {
+	const raw = gateway.sent.findLast?.((s) => String(s).includes('"method":"connect"'))
+		?? [...gateway.sent].reverse().find((s) => String(s).includes('"method":"connect"'));
+	return raw ? JSON.parse(String(raw)) : null;
+}
+
+/**
+ * 采集本次测试里所有 remoteLog 的 text：
+ *   - sock.sent 中已被 flush 出去的 batch（async flush 只同步 drain 一次就 await，后续会堵）
+ *   - remoteLogBuffer 中尚未 flush 的残余
+ * 两者合并即是这次测试发起的 remoteLog 全集，顺序不严格保证但对按模式断言足够。
+ */
+function collectRemoteLogTexts(serverWs) {
+	const texts = [];
+	for (const raw of serverWs.sent) {
+		let msg;
+		try { msg = JSON.parse(String(raw)); }
+		catch { continue; }
+		if (msg?.type === 'log' && Array.isArray(msg.logs)) {
+			for (const entry of msg.logs) {
+				if (entry && typeof entry.text === 'string') texts.push(entry.text);
+			}
+		}
+	}
+	for (const entry of remoteLogBuffer) {
+		if (entry && typeof entry.text === 'string') texts.push(entry.text);
+	}
+	return texts;
+}
+
+test('v3 handshake signature failure triggers legacy fallback on the same WS', async () => {
+	FakeWebSocket.instances.length = 0;
+	resetRemoteLog();
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge({
+		resolveGatewayAuthToken: () => 'tkn',
+		loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY,
+	});
+	try {
+		const { gateway } = await bootGatewayWithChallenge(bridge);
+		const v3Req = lastConnectReq(gateway);
+		assert.ok(v3Req.params.device, 'first connect should carry device field (v3)');
+
+		// v3 失败：device signature invalid
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: v3Req.id, ok: false,
+			error: { message: 'device signature invalid' },
+		}) });
+
+		// 同一条 WS 上已发出 legacy 握手（无 device 字段）
+		assert.equal(gateway.readyState, 1, 'gateway WS should NOT be closed during fallback');
+		const legacyReq = lastConnectReq(gateway);
+		assert.notEqual(legacyReq.id, v3Req.id, 'legacy request should have a new id');
+		assert.equal(legacyReq.params.device, undefined, 'legacy request must omit device field');
+		assert.equal(legacyReq.params.auth?.token, 'tkn', 'auth token should be preserved');
+		assert.deepEqual(legacyReq.params.scopes, ['operator.admin']);
+
+		// bridge 内部状态
+		assert.equal(bridge.__gatewayLegacyMode, true, 'legacy mode learned');
+		assert.equal(bridge.__gatewayAttempts, 0, 'fallback in same WS should NOT count as failure');
+
+		// remoteLog 仅一条 fallback，不应有 connect-failed / disconnected
+		const server = FakeWebSocket.instances[0];
+		const logs = collectRemoteLogTexts(server);
+		assert.ok(logs.some((m) => /gateway\.handshake\.fallback v3→legacy/.test(m)));
+		assert.ok(!logs.some((m) => /ws\.connect-failed peer=gateway/.test(m)));
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('legacy fallback success marks gateway ready and keeps legacy mode', async () => {
+	FakeWebSocket.instances.length = 0;
+	resetRemoteLog();
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge({
+		resolveGatewayAuthToken: () => 'tkn',
+		loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY,
+	});
+	try {
+		const { gateway } = await bootGatewayWithChallenge(bridge);
+		const v3Req = lastConnectReq(gateway);
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: v3Req.id, ok: false,
+			error: { message: 'device signature invalid' },
+		}) });
+		const legacyReq = lastConnectReq(gateway);
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: legacyReq.id, ok: true, payload: {},
+		}) });
+
+		assert.equal(bridge.gatewayReady, true);
+		assert.equal(bridge.__gatewayLegacyMode, true);
+		assert.equal(bridge.__gatewayAttempts, 0);
+
+		const server = FakeWebSocket.instances[0];
+		const logs = collectRemoteLogTexts(server);
+		assert.ok(logs.some((m) => m === 'ws.connected peer=gateway'));
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('v3 handshake non-signature failure does NOT trigger legacy and schedules retry', async () => {
+	FakeWebSocket.instances.length = 0;
+	resetRemoteLog();
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const t = captureTimers();
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		const { server, gateway } = await bootGatewayWithChallenge(bridge);
+		const req = lastConnectReq(gateway);
+		// "auth failed" 不含签名/协议关键词，不应触发 legacy 回退
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: req.id, ok: false,
+			error: { message: 'auth failed' },
+		}) });
+		assert.equal(gateway.readyState, 3, 'gateway ws closed after non-recoverable failure');
+		assert.equal(bridge.__gatewayLegacyMode, false, 'legacy mode NOT set on non-signature failure');
+		assert.equal(bridge.__gatewayAttempts, 1, 'one failure counted');
+		// 下一次尝试已调度（delay[0]=5s）
+		const retryTimer = t.timers.find((x) => !x.__cancelled && x.__ms === 5_000);
+		assert.ok(retryTimer, 'a 5s retry timer should be scheduled');
+
+		const logs = collectRemoteLogTexts(server);
+		assert.ok(logs.some((m) => /ws\.connect-failed peer=gateway msg=auth failed/.test(m)));
+		// connectFailReported 抑制重复的 disconnected 日志
+		assert.equal(logs.filter((m) => /peer=gateway/.test(m)).length, 1,
+			'only one gateway-related log (no duplicate disconnected)');
+	}
+	finally {
+		t.restore();
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('learned legacy mode sends legacy handshake on subsequent WS challenge', async () => {
+	FakeWebSocket.instances.length = 0;
+	resetRemoteLog();
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const t = captureTimers();
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		// 先经历一轮 v3→legacy→legacy 失败的完整流程，学会 legacyMode
+		const { gateway: gw1 } = await bootGatewayWithChallenge(bridge);
+		const v3 = lastConnectReq(gw1);
+		gw1.emit('message', { data: JSON.stringify({
+			type: 'res', id: v3.id, ok: false,
+			error: { message: 'device signature invalid' },
+		}) });
+		const legacy = lastConnectReq(gw1);
+		gw1.emit('message', { data: JSON.stringify({
+			type: 'res', id: legacy.id, ok: false,
+			error: { message: 'auth failed' },
+		}) });
+		assert.equal(gw1.readyState, 3);
+		assert.equal(bridge.__gatewayLegacyMode, true);
+
+		// 触发第一个重试定时器（5s），进入第二条 WS
+		assert.equal(t.fireFirstRetryTimer(), true, 'first retry timer fired');
+		const gw2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		assert.notEqual(gw2, gw1);
+		gw2.readyState = 1;
+		gw2.emit('open', {});
+		gw2.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n2' } }) });
+
+		const nextReq = lastConnectReq(gw2);
+		assert.equal(nextReq.params.device, undefined, 'should use legacy directly (no device field)');
+	}
+	finally {
+		t.restore();
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('gateway retry exhausts after 5 attempts and enters gave-up state', async () => {
+	FakeWebSocket.instances.length = 0;
+	resetRemoteLog();
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const t = captureTimers();
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		// 首次尝试：fail with 'auth failed'
+		const { gateway: gw0 } = await bootGatewayWithChallenge(bridge);
+		const req0 = lastConnectReq(gw0);
+		gw0.emit('message', { data: JSON.stringify({ type: 'res', id: req0.id, ok: false, error: { message: 'auth failed' } }) });
+		assert.equal(bridge.__gatewayAttempts, 1);
+
+		// 5 次重试，每次都失败
+		const instancesBefore = [gw0];
+		for (let i = 0; i < 5; i++) {
+			assert.equal(t.fireFirstRetryTimer(), true, `retry #${i + 1} timer fired`);
+			const gw = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+			assert.ok(!instancesBefore.includes(gw), `retry #${i + 1} should create a new WS`);
+			instancesBefore.push(gw);
+			gw.readyState = 1;
+			gw.emit('open', {});
+			gw.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: `n${i}` } }) });
+			const req = lastConnectReq(gw);
+			gw.emit('message', { data: JSON.stringify({ type: 'res', id: req.id, ok: false, error: { message: 'auth failed' } }) });
+		}
+
+		// 第 6 次失败（5 次重试用完） → gave-up
+		assert.equal(bridge.__gatewayAttempts, 6);
+		assert.equal(bridge.__gatewayGaveUp, true);
+		assert.equal(bridge.__gatewayRetryTimer, null, 'no further timer scheduled after gave-up');
+
+		// 再次触发 __ensureGatewayConnection 应是 no-op（不创建新 WS）
+		const instancesCount = FakeWebSocket.instances.length;
+		bridge.__ensureGatewayConnection();
+		assert.equal(FakeWebSocket.instances.length, instancesCount);
+
+		// remoteLog 有一条 gave-up
+		const server = FakeWebSocket.instances[0];
+		const logs = collectRemoteLogTexts(server);
+		assert.ok(logs.some((m) => /gateway\.handshake\.gave-up attempts=6 lastReason=auth failed/.test(m)));
+		// 刷屏治理：在这 6 次尝试中 ws.connect-failed 应该恰好 6 条
+		assert.equal(logs.filter((m) => /ws\.connect-failed peer=gateway/.test(m)).length, 6);
+	}
+	finally {
+		t.restore();
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__waitGatewayReady returns false when gateway has given up', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		// 直接强置 gave-up 状态（模拟已经耗尽）
+		bridge.__gatewayGaveUp = true;
+		bridge.__closeGatewayWs();
+		const ready = await bridge.__waitGatewayReady(25);
+		assert.equal(ready, false);
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('gateway disconnection after successful handshake reschedules with fresh retry budget', async () => {
+	FakeWebSocket.instances.length = 0;
+	resetRemoteLog();
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		const { gateway } = await bootGatewayWithChallenge(bridge);
+		const req = lastConnectReq(gateway);
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: req.id, ok: true, payload: {} }) });
+		await drainEnsureAllAgentSessions(gateway);
+		assert.equal(bridge.gatewayReady, true);
+
+		// 提前消化已有的后台定时器后再切到捕获模式，避免干扰
+		const t = captureTimers();
+		try {
+			// 先跑掉 attempts 到 3，模拟之前已累计过失败（验证 wasReady 路径重置计数）
+			bridge.__gatewayAttempts = 3;
+			// 模拟 gateway 自行关闭
+			gateway.readyState = 3;
+			for (const fn of gateway.listeners.get('close') ?? []) {
+				fn({ code: 1006, reason: 'remote' });
+			}
+			// wasReady=true → attempts 被重置为 0，然后 __onGatewayAttemptFailed 递增到 1
+			assert.equal(bridge.__gatewayAttempts, 1);
+			const retryTimer = t.timers.find((x) => !x.__cancelled && x.__ms === 5_000);
+			assert.ok(retryTimer, 'should schedule retry with fresh 5s delay');
+			// 成功后断开应打 disconnected 日志（connectFailReported=false）
+			const server = FakeWebSocket.instances[0];
+			const logs = collectRemoteLogTexts(server);
+			assert.ok(logs.some((m) => /ws\.disconnected peer=gateway code=1006/.test(m)));
+		}
+		finally {
+			t.restore();
+		}
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__onGatewayAttemptFailed is a no-op when retry timer already scheduled', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const t = captureTimers();
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		// 手动设置一个 retryTimer，模拟已经调度
+		bridge.__gatewayRetryTimer = { __ms: 5_000, __cancelled: false, unref() {} };
+		bridge.__gatewayLastReason = 'prev';
+		const attemptsBefore = bridge.__gatewayAttempts;
+		bridge.__onGatewayAttemptFailed('forced');
+		assert.equal(bridge.__gatewayAttempts, attemptsBefore, 'should not increment when timer already set');
+		assert.equal(bridge.__gatewayLastReason, 'prev',
+			'lastReason should NOT be overwritten when guard short-circuits');
+		// 清理手动设置的 timer 避免 stop() 误操作
+		bridge.__gatewayRetryTimer = null;
+	}
+	finally {
+		t.restore();
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__onGatewayAttemptFailed is a no-op when bridge is stopped', async () => {
+	FakeWebSocket.instances.length = 0;
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	// bridge 从未 start，started=false
+	bridge.__onGatewayAttemptFailed('forced');
+	assert.equal(bridge.__gatewayAttempts, 0);
+	assert.equal(bridge.__gatewayRetryTimer, null);
+});
+
+test('__closeGatewayWs cancels pending retry timer and resets attempts', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const t = captureTimers();
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		const { gateway } = await bootGatewayWithChallenge(bridge);
+		const req = lastConnectReq(gateway);
+		// 先让握手失败，让 __onGatewayAttemptFailed 调度出一个 retry timer
+		gateway.emit('message', { data: JSON.stringify({
+			type: 'res', id: req.id, ok: false, error: { message: 'auth failed' },
+		}) });
+		const scheduled = t.timers.find((x) => !x.__cancelled && x.__ms === 5_000);
+		assert.ok(scheduled, 'retry timer should exist');
+		assert.equal(bridge.__gatewayAttempts, 1);
+
+		// 模拟 server WS 失效：__closeGatewayWs 应取消 retry timer 并归零 attempts
+		bridge.__closeGatewayWs();
+		assert.equal(scheduled.__cancelled, true, 'retry timer should be cancelled');
+		assert.equal(bridge.__gatewayRetryTimer, null);
+		assert.equal(bridge.__gatewayAttempts, 0,
+			'attempts reset so new server session starts with fresh retry budget');
+		// __gatewayGaveUp / __gatewayLegacyMode 保留——只由 stop() 复位（设计意图）
+		assert.equal(bridge.__gatewayGaveUp, false);
+		assert.equal(bridge.__gatewayLegacyMode, false);
+	}
+	finally {
+		t.restore();
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('refresh resets gateway retry state so next start attempts v3 from scratch', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		// 人工脏化新字段，模拟 bridge 正处于各种学到/终态
+		bridge.__gatewayAttempts = 4;
+		bridge.__gatewayGaveUp = true;
+		bridge.__gatewayLegacyMode = true;
+		bridge.__gatewayLastReason = 'prev failure';
+		bridge.__gatewayRetryTimer = setTimeout(() => {}, 999_999);
+
+		await bridge.refresh();
+
+		assert.equal(bridge.__gatewayAttempts, 0);
+		assert.equal(bridge.__gatewayGaveUp, false);
+		assert.equal(bridge.__gatewayLegacyMode, false);
+		assert.equal(bridge.__gatewayLastReason, null);
+		assert.equal(bridge.__gatewayRetryTimer, null);
+	}
+	finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('gateway ws error handler defensively closes the ws to unblock retry flow', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		// 触发 error 事件（未伴随 close）
+		gateway.emit('error', { message: 'simulated' });
+		// error handler 应主动调 ws.close(1011, ...) → readyState=3 + close 事件被 emit
+		assert.equal(gateway.readyState, 3, 'error handler should have closed the ws');
+		assert.equal(bridge.gatewayWs, null, 'close handler should have cleared gatewayWs');
 	}
 	finally {
 		await bridge.stop();
