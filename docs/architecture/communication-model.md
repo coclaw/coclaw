@@ -244,30 +244,55 @@ idle → building → ready ⇄ recovering
 ```
 SSE claw.status {online:false}
   → claws.store.updateClawOnline(id, false)
-  → claw.online = false   （仅更新展示字段）
+  → claw.online = false   （仅更新展示字段；不写 dcReady/rtcPhase/disconnectedAt）
   → __handleClawGoOffline(id):
       1. _lifecycle.syncDashboardOffline(id)   （dashboard 展示层同步）
       2. __clearRetry(id)   （取消排队中的退避重试定时器）
-      3. 若 conn.rtc.state === 'restarting' → conn.rtc.pauseRestart()
-         （停 restart 循环、stats poll；重置预算；epoch++；清 ufragSnap；PC 保留不关）
+      3. conn.rtc?.pauseRestart()   （按 state 暂停 UI 主动恢复动作）
 ```
 
-`pauseRestart()` 不改变 `__state`（仍为 `'restarting'`），但设 `__restartPaused=true`；resume 时 `triggerRestart` 进 `__attemptRestart` 会走 first-trigger 分支重采 snap、重记 dumpStats，预算全新。
+`pauseRestart()` 按 `rtc.__state` 分派，不改变 `__state`：
 
-**SSE claw.online=true（从 false 转来）时 UI 的动作**（由 `__resumeOnline(id)` 按 PC 状态分派）：
+- **`restarting`**：停 restart timer / stats poll；清预算（restartStartTime/AttemptCount/OfferSentAt/UfragSnap）；epoch++；设 `__restartPaused=true`
+- **`connected`**：停 keepalive；清 disconnected timer（防止 keepalive probe 失败或 disconnected 超时经 `__onIceFailed` 升级成空发 offer 的 restart）；epoch++；设 `__restartPaused=true`
+- **`idle`/`connecting`/`failed`/`closed`**：no-op
+
+**PC/DC 生命周期不被 presence 污染**：`dcReady` / `rtcPhase` / `disconnectedAt` 只由 RTC 状态机（`onRtcStateChange` / `dc.onclose` / `__ensureRtc`）按真实 DC 状态维护。offline 期间如果 DC 仍 open（SCTP 跨 ICE restart 存活），`dcReady` 保持 `true`、`getReadyConn` 正常返回 conn、pending RPC 继续通过 `waitReady()` 排队等 SCTP 送达——这是 1ef6782 确立的"两条通路独立"原则。
+
+`__attemptRestart` 入口有 `paused && reason !== 'online_resume'` gate：任何自动路径（`__onIceFailed` / periodic timer / nudge / ICE 事件）尝试在 paused 态触发 restart 都被 drop；只有显式的 `triggerRestart('online_resume')` 能穿过 gate。gate 后的 `epochAtEntry` guard 额外覆盖"`pauseRestart` 发生在 `await sig.ensureConnected()` 或 `await createOffer` 期间"的跨 await 窗口。
+
+**SSE claw.online=true（从 false 转来）时 UI 的动作**（由 `__resumeOnline(id)` 强制刷新 + 按 PC 状态分派）：
 
 ```
 SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→true
   → claws.store.updateClawOnline(id, true) / applySnapshot Phase 3
   → __resumeOnline(id):
-      - rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'
-        → __ensureRtc(id).then(loadDashboardForClaw)  （全量 rebuild）
-      - 'restarting'（从 pause 冻结而来）
-        → rtc.triggerRestart('online_resume')  （复用 PC + 新 90s 预算）
-           数据刷新由 __refreshIfStale 在 onRtcStateChange('connected') 自动接手
-      - 'connected' + isReady （DC 全程未断）
-        → 只 loadDashboardForClaw（dashboard 可能 stale）
+      1. __clearRetry(id)
+      2. force refresh 分流（关键：按 rtc.state 决定立即刷还是延后）：
+         - DC 预期可用（'connected' / 'restarting'，SCTP 多能存活）→ 立即
+           __refreshIfStale(id, {force:true})（loader 可用 dcReady=true 发 RPC）
+         - 需要 rebuild（rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'）→
+           add id 到 `_pendingForceRefreshOnRebuild` Set；任何一次 __ensureRtc 真正
+           成功时 consume 该标记并 force refresh。此机制可靠覆盖：
+             * `_rtcInitInProgress` 守卫下 __ensureRtc 早退（.then 立即 fire 但
+               rebuild 未完成）
+             * 当前 __ensureRtc attempts 全失败、等退避重试多轮后最终成功
+      3. 按 rtc.state 分派动作：
+         - 'restarting' + restartPaused → rtc.triggerRestart('online_resume')
+           （复用 PC + 全新 90s 预算；paused gate 仅此路径可穿过）
+         - 'restarting' + 非 paused → 已在正常 restart 循环，不重入
+         - 'connected' + restartPaused → rtc.resumeRecovery()
+           （清 paused + 重启 keepalive；不触发 ICE restart，PC 本身仍健康）
+         - 其余 → __ensureRtc(id).then(force refresh? + loadDashboardForClaw)
 ```
+
+**`__refreshIfStale(id, {force})`** 有两种语义：
+- `force=false`（默认）：RTC 层断连恢复后的"顺便刷"——看 `disconnectedAt` gap，短于 `BRIEF_DISCONNECT_MS` 跳过（浏览器短暂切后台、网络闪断不值得全量刷）。由 `onRtcStateChange('connected')`（wasDisconnected=true 分支）和 `__ensureRtc` rebuild 成功路径调用
+- `force=true`：presence 恢复后的"必须刷"——跳过 gap，只要 `initialized` 就刷。只由 `__resumeOnline` 调用。语义：plugin 真的离线过（不管多短），UI 数据一定可能 stale，不赌概率
+
+`onRtcStateChange('connected')` 的 wasDisconnected=false 分支（ICE restart 成功但 DC 全程未断）也会把 `disconnectedAt=0`——修复 pre-existing 漏洞：多次 restart 间 stamp 会累积最旧时刻污染后续 gap 判断。
+
+**已知限制**：offline 期间 `pauseRestart` 停了 keepalive 探测，SCTP 若静默死亡（plugin 进程挂但浏览器未检测到底层 transport 故障）`dcReady` 会脱钩保持 `true`。resume 时 `resumeRecovery` 重启 keepalive，首次 probe 间隔 30s 内 UI 以为 DC 可用，期间 RPC 写入 SCTP buffer 但送不到 plugin——最终通过 keepalive probe 失败升级为 `__onIceFailed` → ICE restart 或 rebuild 被动恢复。这是"presence 与 DC 生命周期独立"原则的权衡：后续可选在 `resumeRecovery` 里加 immediate probe 缩短探测时延。
 
 **`applySnapshot` 的三阶段 diff**：Phase 1 capture prev online → Phase 2 apply snapshot（覆盖字段）→ Phase 3 按 `online: true→false` / `false→true` / 未变但 `rtcPhase='failed'` 分派动作，覆盖 SSE 断连重连且 server 没发增量 `claw.status` 的场景。
 

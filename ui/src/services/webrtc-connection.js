@@ -651,9 +651,14 @@ export class WebRtcConnection {
 				this.__rejectSendQueue('DataChannel closed');
 				// 已发出的 pending RPC 永远收不到响应，立即 reject
 				this.__clawConn.__rejectAllPending('DataChannel closed', 'DC_CLOSED');
-				// restarting 时 DC 关闭 → SCTP 已断，restart 无法挽救
-				if (this.__state === 'restarting') {
-					this.__log('warn', 'DC closed during ICE restart, SCTP lost');
+				// DC 意外关闭（SCTP 已断）：
+				// - restarting 时：restart 无法挽救（ICE 层就算恢复，SCTP session 已失效）
+				// - connected 时：对端 close DC 或 SCTP 故障，PC 已不可用
+				// 两种情况都走 close({asFailed:true})，让 onRtcStateChange('failed') 把
+				// store.dcReady 同步为 false，并让 __scheduleRetry 接管 rebuild。
+				// closed / failed 态下不重复 close（幂等）。
+				if (this.__state === 'restarting' || this.__state === 'connected') {
+					this.__log('warn', `DC closed unexpectedly, SCTP lost (state=${this.__state})`);
 					this.close({ asFailed: true });
 				}
 			}
@@ -958,9 +963,22 @@ export class WebRtcConnection {
 	async __attemptRestart(reason) {
 		if (!this.__pc || this.__state === 'closed') return;
 
+		// paused 态（claw offline）仅接受显式 'online_resume' 原因的解冻调用；
+		// keepalive→__onIceFailed / pc oniceconnectionstatechange=failed /
+		// periodic timer / nudge 等自动路径一律 drop，防止 offline 期间空烧预算+发 offer
+		const isExplicitResume = reason === 'online_resume';
+		if (this.__restartPaused && !isExplicitResume) {
+			this.__log('debug', `restart attempt dropped while paused reason=${reason}`);
+			return;
+		}
 		// 从 pauseRestart 恢复：当作全新一轮 restart，重采 snap/重 dumpStats/重置预算
 		const resumingFromPause = this.__restartPaused;
 		if (resumingFromPause) this.__restartPaused = false;
+
+		// epoch 捕获提前到函数入口：覆盖所有后续 await（ensureConnected / createOffer /
+		// setLocalDescription）——若期间 pauseRestart/__clearRestartState 递增 epoch，
+		// await 迟到的 resolve 统一凭 epoch guard 早退，不越过 pause 屏障发 offer。
+		const epochAtEntry = this.__restartEpoch;
 
 		// 首次进入 restarting 前打一条"为什么走到这里"的快照，便于定位"UI 以为自己还 connected"的假设
 		const firstTriggerThisEpoch = resumingFromPause || this.__state !== 'restarting';
@@ -1056,7 +1074,8 @@ export class WebRtcConnection {
 				this.__log('info', 'ICE restart: ensureConnected failed, will retry');
 				return;
 			}
-			// 等待期间状态可能已变更（close / 其他路径已恢复 / 超时）
+			// 等待期间状态可能已变更（close / 其他路径已恢复 / 超时 / pauseRestart 冻结）
+			if (this.__restartEpoch !== epochAtEntry) return;
 			if (!this.__pc || this.__state !== 'restarting') return;
 		}
 
@@ -1068,16 +1087,13 @@ export class WebRtcConnection {
 		this.__pendingCandidates = [];
 
 		this.__restartInFlight = true;
-		// epoch 守卫：pauseRestart / __clearRestartState 会递增 epoch；await 间隙若发生
-		// pause/resume，旧 epoch 的 offer 不应作为新 resume 的首 offer 被发出
-		const epochAtOffer = this.__restartEpoch;
 		try {
 			const offer = await this.__pc.createOffer({ iceRestart: true });
 			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
-			if (this.__restartEpoch !== epochAtOffer) return;
+			if (this.__restartEpoch !== epochAtEntry) return;
 			await this.__pc.setLocalDescription(offer);
 			if (!this.__pc || this.__state === 'closed' || this.__state === 'failed') return;
-			if (this.__restartEpoch !== epochAtOffer) return;
+			if (this.__restartEpoch !== epochAtEntry) return;
 			// 只在确定要真正发 offer 时才累加 attempt，避免 epoch 换代导致虚涨
 			this.__restartAttemptCount++;
 			this.__restartOfferSentAt = Date.now();
@@ -1113,19 +1129,29 @@ export class WebRtcConnection {
 	}
 
 	/**
-	 * 外部触发：claw offline 时暂停 ICE restart 循环，保留 PC
+	 * 外部触发：claw offline 时暂停所有 UI 主动恢复动作，保留 PC
 	 *
-	 * - 停掉周期 restart 与 stats poll（不再空发 offer）
-	 * - 重置 restart 预算字段；递增 epoch 让在途 snap.then / poll tick 失效
-	 * - 清 __restartUfragSnap 避免 resume 时 stats-poll 拿旧 ufrag 误判成功
-	 * - __state 保持 'restarting'；resume 通过 triggerRestart('online_resume') 进入
-	 *   __attemptRestart，__restartPaused 标志触发 first-trigger 分支重采 snap
+	 * 涵盖两种源状态：
+	 * - `restarting`：停 restart timer/poll、清预算字段
+	 * - `connected`：停 keepalive、清 disconnected timer，避免 probe 失败或
+	 *   disconnected 超时经 __onIceFailed 偷偷升级成新的 restart 周期
 	 *
-	 * 仅在 __state === 'restarting' 时生效，其他状态静默 no-op。
-	 * 与 __clearRestartState 的区别：保留 __state 不变，设 __restartPaused=true。
+	 * 共同动作：
+	 * - 递增 __restartEpoch，让所有在途 await（ensureConnected / createOffer /
+	 *   setLocalDescription / snap.then / poll tick）回到 __attemptRestart 时
+	 *   凭 epoch guard 即刻退出
+	 * - 置 __restartPaused=true：后续任何非 'online_resume' 原因进入
+	 *   __attemptRestart 都会在入口被 drop
+	 *
+	 * idle/connecting/failed/closed 状态下为 no-op（无主动恢复可停）。
+	 * __state 不变；resume 由 store 按状态分派：
+	 * - connected → resumeRecovery()
+	 * - restarting → triggerRestart('online_resume')
 	 */
 	pauseRestart() {
-		if (this.__state !== 'restarting') return;
+		if (this.__state !== 'restarting' && this.__state !== 'connected') return;
+		this.__stopKeepalive();
+		this.__clearDisconnectedTimer();
 		this.__stopRestartTimer();
 		this.__stopRestartPoll();
 		this.__restartStartTime = 0;
@@ -1135,7 +1161,22 @@ export class WebRtcConnection {
 		this.__restartUfragMissingLogged = false;
 		this.__restartEpoch++;
 		this.__restartPaused = true;
-		this.__log('info', 'ICE restart paused (claw offline)');
+		this.__log('info', `recovery paused (claw offline) state=${this.__state}`);
+	}
+
+	/**
+	 * 外部触发：claw 从 offline 恢复 online，且 PC 当时仍在 connected（未进入 restarting）。
+	 * 仅清 __restartPaused 并恢复 keepalive；不发起 ICE restart（PC 本身仍健康）。
+	 * restarting+paused 的 resume 路径由 triggerRestart('online_resume') 接管。
+	 * 非 paused 或 PC 状态非 connected 时为 no-op（调用方负责走正确分支）。
+	 */
+	resumeRecovery() {
+		if (!this.__restartPaused) return;
+		this.__restartPaused = false;
+		if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
+			this.__startKeepalive();
+		}
+		this.__log('info', `recovery resumed state=${this.__state}`);
 	}
 
 	/** @private 清除 restart 状态（成功/失败/close 时调用） */

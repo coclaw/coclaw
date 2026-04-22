@@ -26,6 +26,22 @@ const _bridgedConns = new Map();
 const _rtcInitInProgress = new Map();
 /** __checkAndRecover probe 并发防护（clawId → true） */
 const _probeInProgress = new Map();
+/**
+ * 等待 rebuild 真正完成后触发 force refresh 的 clawId 集合。
+ *
+ * 背景：`__resumeOnline` 在 rebuild 分支（rtc null / failed / closed / idle / connecting）
+ * 下不能立即 force refresh——loader 的 `getReadyConn` 会被 `dcReady=false` gate 全 skip。
+ * 必须等 rebuild 真正完成（`__ensureRtc` 内部写 dcReady=true）后再 force refresh。
+ *
+ * 但 `__ensureRtc` 入口有 `_rtcInitInProgress` 早退守卫，`.then` 可能在 in-progress
+ * rebuild 完成前触发；且退避重试链下 rebuild 可能跨多次 `__ensureRtc` 调用才最终成功。
+ * 单凭 `.then` 时机不足以可靠捕获"rebuild 真正完成"事件。
+ *
+ * 解法：`__resumeOnline` 在 rebuild 分支 add id 到 Set；任何 `__ensureRtc` 成功路径
+ * 都 consume 这个标记（若存在则 delete + force=true 调 `__refreshIfStale`）。
+ * `removeClawById` 负责清理。
+ */
+const _pendingForceRefreshOnRebuild = new Set();
 /** app 进入后台的时间戳（用于前台恢复时判断后台时长） */
 let _backgroundAt = 0;
 /** 生命周期事件 window handler 引用（用于测试场景下清理旧 store 的注册） */
@@ -78,6 +94,7 @@ export function __resetClawStoreInternals() {
 	_probeInProgress.clear();
 	for (const state of _rtcRetryState.values()) clearTimeout(state.timer);
 	_rtcRetryState.clear();
+	_pendingForceRefreshOnRebuild.clear();
 	_backgroundAt = 0;
 	if (_lifecycleHandlers && typeof window !== 'undefined') {
 		window.removeEventListener('app:background', _lifecycleHandlers.bg);
@@ -226,6 +243,7 @@ export const useClawsStore = defineStore('claws', {
 			_lifecycle.cleanupClawResources(id);
 			this.__clearRetry(id);
 			_bridgedConns.delete(id);
+			_pendingForceRefreshOnRebuild.delete(id);
 			delete this.byId[id];
 		},
 		/**
@@ -259,6 +277,7 @@ export const useClawsStore = defineStore('claws', {
 					_lifecycle.cleanupClawResources(oldId);
 					this.__clearRetry(oldId);
 					_bridgedConns.delete(oldId);
+					_pendingForceRefreshOnRebuild.delete(oldId);
 				}
 			}
 			this.byId = newById;
@@ -407,37 +426,49 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
-		 * claw 转入 offline：暂停所有 RTC 主动恢复动作，PC 保留。
-		 * - `syncDashboardOffline`：dashboard 展示同步为 offline
-		 * - `__clearRetry`：取消排队中的退避重试定时器
-		 * - `dcReady = false` + stamp `disconnectedAt`：offline 期间 DC 视同不可用（server
-		 *   无法 relay 到离线的 plugin；getReadyConn 快速失败；恢复时 `__refreshIfStale`
-		 *   能凭 `wasDisconnected=true` 触发业务数据刷新）
-		 * - PC 在 `restarting` 时调 `pauseRestart`：停 restart 循环、重置预算、清 ufragSnap
+		 * claw 转入 offline：暂停所有 RTC 主动恢复动作，PC/DC 生命周期不被 presence 污染。
+		 *
+		 * - `syncDashboardOffline`：dashboard 展示层同步为 offline（仅展示字段）
+		 * - `__clearRetry`：取消排队中的退避重试定时器（offline 下 rebuild 也打不通）
+		 * - `pauseRestart`：暂停所有 UI 主动恢复动作（无论 rtc.state）
+		 *   - state='restarting'：停 restart timer/poll、清预算、epoch++
+		 *   - state='connected'：停 keepalive、清 disconnected timer、epoch++（防止
+		 *     keepalive probe 失败升级为 __onIceFailed → 空烧 restart 预算）
+		 *
+		 * **不动 `dcReady` / `rtcPhase` / `disconnectedAt`**：这些字段由 RTC 状态机
+		 * （`onRtcStateChange` / `dc.onclose` / `__ensureRtc`）按真实 DC 状态维护。
+		 * presence 写入它们会违背"两条通路独立"的通信模型（详见 §5.5 和 1ef6782）。
+		 * 数据刷新由 `__resumeOnline` 入口显式 force refresh 触发，不依赖 dcReady 翻转。
 		 *
 		 * 触发点：`updateClawOnline(id, false)`、`applySnapshot` 检测到 online true→false。
 		 */
 		__handleClawGoOffline(id) {
 			_lifecycle.syncDashboardOffline(id);
 			this.__clearRetry(id);
-			const claw = this.byId[id];
-			if (claw) {
-				claw.dcReady = false;
-				claw.disconnectedAt = claw.disconnectedAt || Date.now();
-			}
 			const conn = useClawConnections().get(id);
-			if (conn?.rtc?.state === 'restarting') {
+			if (conn?.rtc) {
 				conn.rtc.pauseRestart();
 			}
 		},
 
 		/**
-		 * claw 转入 online：按 PC 当前状态分派恢复路径。
-		 * - `restarting`（pauseRestart 冻结而来）→ 复用 PC 走 ICE restart（全新 90s 预算），
-		 *   数据刷新由 `__refreshIfStale` 在 `onRtcStateChange('connected')` 自动接手
-		 * - 其余（rtc 不存在 / `connected` / `failed` / `closed` / `idle` / `connecting`）→ `__ensureRtc`
-		 *   - `connected`：`__ensureRtc` 内部早退并校正 dcReady/rtcPhase
-		 *   - 其他：走 rebuild，完成后 `.then` 链加载 dashboard
+		 * claw 转入 online：按 PC 当前状态分派恢复路径 + 强制刷新业务数据。
+		 *
+		 * plugin 离线过（不管多短），UI 数据一定可能 stale——offline→online 事件本身
+		 * 就是 refresh 的触发信号，不依赖 `dcReady` 翻转（presence 与 DC 生命周期解耦）。
+		 *
+		 * refresh 时机按 rtc.state 分派（关键）：
+		 * - `connected` / `restarting` → **立即** force refresh：DC 预期可用（SCTP 多能跨 restart 存活），
+		 *   loader 的 `getReadyConn` 不会被 dcReady gate 挡住
+		 * - rebuild 路径（rtc 不存在 / `failed` / `closed` / `idle` / `connecting`）→ **延后**到 rebuild 成功后
+		 *   force refresh：rebuild 前 dcReady=false，loader 会被 `getReadyConn` gate 全部 skip，
+		 *   立即 refresh 是 no-op。必须等 `__ensureRtc` 里写 dcReady=true 后再刷
+		 *
+		 * 分派动作：
+		 * - `restarting` + paused → `triggerRestart('online_resume')`（复用 PC + 新 90s 预算）
+		 * - `restarting` + 非 paused → 已在正常 restart 循环，不重入
+		 * - `connected` + paused → `resumeRecovery`（清 paused + 重启 keepalive；不发 ICE restart）
+		 * - 其余 → `__ensureRtc`（connected 早退 / rebuild）
 		 *
 		 * 触发点：`updateClawOnline(id, true)` prev=false、`applySnapshot` 检测到 online false→true
 		 * 或持续 online 但 `rtcPhase='failed'`（server 重启兜底）。
@@ -447,6 +478,17 @@ export const useClawsStore = defineStore('claws', {
 			if (!conn) return;
 			this.__clearRetry(id);
 			const rtc = conn.rtc;
+			// 区分 DC 预期可用（立即刷）vs 需要 rebuild（延后刷）
+			const canRefreshNow = rtc?.state === 'connected' || rtc?.state === 'restarting';
+			if (canRefreshNow) {
+				this.__refreshIfStale(id, { force: true });
+			} else {
+				// rebuild 路径：dcReady=false 时 loader 会被 getReadyConn gate skip，
+				// 立即 force refresh 是 no-op。打标记，让任意一次 __ensureRtc 真正成功
+				// （无论当前 call 还是退避链中的 call）时自动触发 force refresh。
+				_pendingForceRefreshOnRebuild.add(id);
+			}
+
 			if (rtc?.state === 'restarting') {
 				// 仅当 PC 处于 pauseRestart 冻结态时才 unstick；
 				// 若已在正常 restart 循环中（非冻结），不重复 triggerRestart 避免 attemptCount 虚涨/重发 offer
@@ -454,6 +496,11 @@ export const useClawsStore = defineStore('claws', {
 					rtc.triggerRestart('online_resume');
 				}
 				return;
+			}
+			if (rtc?.state === 'connected' && rtc.restartPaused) {
+				// connected 态从 pause 冻结恢复：仅清 paused 标志 + 重启 keepalive，
+				// 不触发 ICE restart（PC 本身仍健康）
+				rtc.resumeRecovery();
 			}
 			this.__ensureRtc(id)
 				.then(() => _lifecycle.loadDashboardForClaw(id))
@@ -473,7 +520,17 @@ export const useClawsStore = defineStore('claws', {
 							const wasDisconnected = !claw.dcReady;
 							claw.dcReady = true;
 							claw.rtcPhase = 'ready';
-							if (wasDisconnected) this.__refreshIfStale(clawId);
+							if (wasDisconnected) {
+								// dcReady 真翻转（如 rebuild / ICE restart 后 DC 首次就绪）
+								// → 走 __refreshIfStale：内部按 gap 判断是否触发刷新，并清 disconnectedAt
+								this.__refreshIfStale(clawId);
+							} else {
+								// ICE restart 成功但 DC 全程未断（SCTP 存活）：wasDisconnected=false，
+								// 不刷数据（presence 未翻转；短 RTC 抖动不值得全量刷）。但 disconnectedAt
+								// 是 onRtcStateChange('restarting') stamp 的，必须在这里清零，
+								// 否则会在多次 restart 间累积最旧 stamp，污染后续 gap 判断。
+								claw.disconnectedAt = 0;
+							}
 						}
 					} else if (state === 'restarting') {
 						claw.rtcPhase = 'restarting';
@@ -493,14 +550,32 @@ export const useClawsStore = defineStore('claws', {
 			};
 		},
 
-		/** 数据刷新（RTC 恢复后，断连间隔较长时触发） */
-		__refreshIfStale(id) {
+		/**
+		 * 数据刷新（RTC 恢复后或 plugin presence 恢复后触发）
+		 *
+		 * 两种调用语义：
+		 * - 默认（`force=false`）：RTC 层面断连恢复后的"顺便刷"——
+		 *   看 `disconnectedAt` gap：< BRIEF_DISCONNECT_MS 跳过（浏览器短暂切后台 / 网络闪断
+		 *   不值得全量刷），>= gap 门槛才刷。由 `onRtcStateChange('connected')` /
+		 *   `__ensureRtc` rebuild 成功路径调用。
+		 * - 强制（`force=true`）：plugin presence 变化后的"必须刷"——
+		 *   跳过 gap 检查，只要 initialized 就刷。由 `__resumeOnline` 调用。
+		 *   语义：plugin 真的离线过（不管多短），UI 数据一定 stale，不赌概率。
+		 *
+		 * 两种情况都会清 `disconnectedAt = 0`（避免后续重复触发）。
+		 * @param {string} id - clawId
+		 * @param {object} [opts]
+		 * @param {boolean} [opts.force] - 跳过 BRIEF_DISCONNECT_MS 门槛
+		 */
+		__refreshIfStale(id, { force = false } = {}) {
 			const claw = this.byId[id];
-			if (!claw?.initialized || claw.disconnectedAt <= 0) return;
-			const gap = Date.now() - claw.disconnectedAt;
+			if (!claw?.initialized) return;
+			if (!force && claw.disconnectedAt <= 0) return;
+			const gap = claw.disconnectedAt > 0 ? Date.now() - claw.disconnectedAt : 0;
 			claw.disconnectedAt = 0;
-			if (gap < BRIEF_DISCONNECT_MS) return;
-			console.debug('[claws] reconnect gap=%dms → refresh stores clawId=%s', gap, id);
+			if (!force && gap < BRIEF_DISCONNECT_MS) return;
+			console.debug('[claws] reconnect%s gap=%dms → refresh stores clawId=%s',
+				force ? ' (force)' : '', gap, id);
 			// 刷新 pluginInfo（含 claw name）
 			const conn = useClawConnections().get(id);
 			if (conn) {
@@ -533,9 +608,12 @@ export const useClawsStore = defineStore('claws', {
 
 			try {
 				const rtc = conn.rtc;
-				// RTC 已连接且健康（非强制 rebuild）→ 确保 dcReady
-				// 若 dcReady 是从 false 翻到 true（connected-throughout-offline 场景），
-				// 同步触发 __refreshIfStale 刷业务数据，对齐 onRtcStateChange('connected') 路径
+				// RTC 已连接且健康（非强制 rebuild）→ 兜底同步 store 视图（dcReady / rtcPhase）。
+				// wasDisconnected=true 表示 store 视图落后于真实 DC 状态
+				// （onRtcStateChange 尚未 fire 或因某种竞态漏 fire 的 bug-correction 场景），
+				// 视为 dcReady 隐式翻转，触发 __refreshIfStale 兜底刷业务数据。
+				// connected-throughout-offline 场景下 dcReady 全程为 true，wasDisconnected=false，
+				// 此分支不刷（由 __resumeOnline 入口的 force refresh 负责刷新）。
 				if (!forceRebuild && rtc && rtc.state === 'connected') {
 					const claw = this.byId[id];
 					if (claw && rtc.isReady) {
@@ -587,8 +665,11 @@ export const useClawsStore = defineStore('claws', {
 						claw.rtcPhase = 'ready';
 					}
 					this.__clearRetry(id);
-					this.__refreshIfStale(id);
-					remoteLog(`claw.rtcReady claw=${id}`);
+					// 如果 __resumeOnline 在 rebuild 分支登记了强制刷新，consume 标记并 force；
+					// 否则沿用默认 gap-aware refresh（纯 RTC 断又恢复，非 presence 事件）
+					const forceRefresh = _pendingForceRefreshOnRebuild.delete(id);
+					this.__refreshIfStale(id, { force: forceRefresh });
+					remoteLog(`claw.rtcReady claw=${id}${forceRefresh ? ' force_refresh=1' : ''}`);
 				} else if (bailedOut) {
 					// claw 被删除 → 无对象可写 phase；claw 翻 offline → 显式 phase=failed
 					// 让后续 online→true 走 rebuild 分支（而非 triggerRestart）
@@ -670,6 +751,9 @@ export const useClawsStore = defineStore('claws', {
 				state.timer = null;
 				if (!this.byId[id] || this.byId[id]?.rtcPhase !== 'failed') {
 					this.__clearRetry(id);
+					// claw 被删 / 外部路径已恢复 RTC：本轮退避不再跑 __ensureRtc，
+					// 悬挂的 pending force-refresh 标记显式清掉，避免极端时序下的永久残留
+					_pendingForceRefreshOnRebuild.delete(id);
 					return;
 				}
 				this.__ensureRtc(id).catch(() => {});
