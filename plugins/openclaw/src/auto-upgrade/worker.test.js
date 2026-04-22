@@ -117,7 +117,7 @@ function createLogger() {
 function fastOpts(execFileFn) {
 	return {
 		execFileFn,
-		timeoutMs: 200,
+		totalTimeoutMs: 200,
 		pollIntervalMs: 20,
 	};
 }
@@ -205,14 +205,14 @@ test('runUpgrade — 成功升级但备份清理失败时仍正常完成', async
 
 		// 让 backup 创建完成后，把父目录改为只读
 		// 我们需要在 update 完成之后、removeBackup 之前执行
-		// 通过 wrappedExecFn 在 gateway status 检查时（verify 阶段）设置只读
-		let gatewayChecks = 0;
+		// 通过 wrappedExecFn 在 verify 阶段的 gateway restart 首次调用时设置只读
+		let restartCalls = 0;
 		const wrappedExecFn = (cmd, args, opts, cb) => {
 			const argsStr = args.join(' ');
-			if (argsStr.includes('gateway status')) {
-				gatewayChecks++;
-				if (gatewayChecks === 1) {
-					// 第一次 gateway status 检查时（verify 阶段），
+			if (argsStr.includes('gateway restart')) {
+				restartCalls++;
+				if (restartCalls === 1) {
+					// 第一次 gateway restart（verify 阶段的 triggerGatewayRestart）时，
 					// 在 .bak 下创建一个只读子目录使 rm 失败
 					const protectedDir = nodePath.join(bakDir, 'protected');
 					fs.mkdir(protectedDir, { recursive: true })
@@ -320,10 +320,10 @@ test('runUpgrade — 验证失败：回滚并记录失败', async () => {
 	process.env.OPENCLAW_STATE_DIR = stateDir;
 
 	try {
-		// gateway 不运行 → verifyUpgrade 会超时返回 { ok: false }
+		// upgradeHealth 始终返回旧版本（不等于 toVersion）→ 轮询超时 → 回滚
 		const { execFileFn } = createMockExec({
 			updateFails: false,
-			gatewayRunning: false,
+			healthVersion: '1.0.0',
 		});
 		const { logs, logger } = createLogger();
 
@@ -813,42 +813,6 @@ test('runUpgrade — fromVersion 为含连字符的 pre-release（如 rc-1）时
 });
 
 // ============================================================
-// 7. 验证失败且 pluginListed 为 false
-// ============================================================
-
-test('runUpgrade — 验证时插件未加载，触发回滚', async () => {
-	const { base, pluginDir, stateDir } = await createTmpEnv();
-	const origEnv = process.env.OPENCLAW_STATE_DIR;
-	process.env.OPENCLAW_STATE_DIR = stateDir;
-
-	try {
-		const { execFileFn } = createMockExec({
-			gatewayRunning: true,
-			pluginListed: false,
-		});
-		const { logs, logger } = createLogger();
-
-		await runUpgrade({
-			pluginDir,
-			fromVersion: '1.0.0',
-			toVersion: '1.1.0',
-			pluginId: 'test-plugin',
-			pkgName: '@test/pkg',
-			opts: fastOpts(execFileFn),
-			logger,
-		});
-
-		// 验证失败应触发回滚
-		assert.ok(logs.some(l => l.includes('Verification failed')));
-		const state = await readState();
-		assert.equal(state.lastUpgrade.result, 'rollback');
-	} finally {
-		process.env.OPENCLAW_STATE_DIR = origEnv;
-		await cleanTmpEnv(base);
-	}
-});
-
-// ============================================================
 // 7. 验证时 upgradeHealth 失败
 // ============================================================
 
@@ -917,19 +881,18 @@ test('runUpgrade — 未提供 logger 时使用 console.log', async () => {
 });
 
 // ============================================================
-// 9. 回滚后 gateway 未重启（waitForGateway 超时）
+// 9. 回滚路径触发 gateway restart（不验证结果）
 // ============================================================
 
-test('runUpgrade — 回滚后 gateway 未重启，仍正常完成', async () => {
+test('runUpgrade — 回滚路径触发 gateway restart（尽力而为）', async () => {
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
 
 	try {
-		// update 失败触发回滚，gateway status 也失败
-		const { execFileFn } = createMockExec({
+		// update 失败触发回滚；rollback 里调 triggerGatewayRestart 吞掉命令失败
+		const { execFileFn, calls } = createMockExec({
 			updateFails: true,
-			gatewayRunning: false,
 		});
 		const { logs, logger } = createLogger();
 
@@ -943,10 +906,18 @@ test('runUpgrade — 回滚后 gateway 未重启，仍正常完成', async () =>
 			logger,
 		});
 
-		// 应记录 gateway 未重启
-		assert.ok(logs.some(l => l.includes('Gateway did not restart after rollback')));
+		// 回滚路径应打出触发 restart 的日志
+		assert.ok(logs.some(l => l.includes('Triggering gateway restart after rollback')));
 
-		// 但仍完成回滚流程
+		// update 失败场景下 verify 不跑，所以 restart 调用只来自 rollback 路径
+		const restartCalls = calls.filter(c => c.args.join(' ').includes('gateway restart'));
+		assert.equal(restartCalls.length, 1, '仅 rollback 路径触发一次 restart（update 失败 → 不跑 verify）');
+
+		// restart 发生在所有 plugins update 调用之后（时序上属于 rollback 阶段）
+		const lastRestartIdx = calls.findLastIndex(c => c.args.join(' ').includes('gateway restart'));
+		const lastUpdateIdx = calls.findLastIndex(c => c.args.join(' ').includes('plugins update'));
+		assert.ok(lastRestartIdx > lastUpdateIdx, 'rollback 的 restart 必须在所有 update 之后');
+
 		const state = await readState();
 		assert.equal(state.lastUpgrade.result, 'rollback');
 	} finally {
@@ -955,33 +926,35 @@ test('runUpgrade — 回滚后 gateway 未重启，仍正常完成', async () =>
 	}
 });
 
-// ============================================================
-// 10. 回滚后 gateway 成功重启
-// ============================================================
-
-test('runUpgrade — 回滚后 gateway 成功重启', async () => {
+test('runUpgrade — 回滚路径中 gateway restart 命令失败也不抛', async () => {
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
 
 	try {
-		const { execFileFn } = createMockExec({
-			updateFails: true,
-			gatewayRunning: true,
-		});
-		const { logs, logger } = createLogger();
+		const { execFileFn } = createMockExec({ updateFails: true });
+		// 包一层使 gateway restart 命令失败
+		const wrappedExecFn = (cmd, args, opts, cb) => {
+			if (args.join(' ').includes('gateway restart')) {
+				return cb(new Error('restart boom'));
+			}
+			return execFileFn(cmd, args, opts, cb);
+		};
+		const { logger } = createLogger();
 
+		// 未抛即为通过
 		await runUpgrade({
 			pluginDir,
 			fromVersion: '1.0.0',
 			toVersion: '1.1.0',
 			pluginId: 'test-plugin',
 			pkgName: '@test/pkg',
-			opts: fastOpts(execFileFn),
+			opts: fastOpts(wrappedExecFn),
 			logger,
 		});
 
-		assert.ok(logs.some(l => l.includes('Gateway restarted after rollback')));
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'rollback');
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);

@@ -15,7 +15,7 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { createBackup, restoreFromBackup, removeBackup } from './worker-backup.js';
-import { verifyUpgrade, waitForGateway } from './worker-verify.js';
+import { verifyUpgrade, triggerGatewayRestart } from './worker-verify.js';
 import { addSkippedVersion, updateLastUpgrade, appendLog } from './state.js';
 import { getCurrentNpmRegistry, pickFallbackRegistry } from './registry-fallback.js';
 
@@ -160,7 +160,7 @@ export async function runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, 
 
 	// 3. 等待 gateway 重启并验证
 	log('[upgrade-worker] Verifying upgrade...');
-	const result = await verifyUpgrade(pluginId, opts);
+	const result = await verifyUpgrade(pluginDir, toVersion, opts, log);
 
 	if (result.ok) {
 		// 4a. 成功
@@ -212,15 +212,9 @@ async function handleRollback({ pluginDir, fromVersion, toVersion, pluginId, pkg
 		}
 	}
 
-	// 等待 gateway 重启
-	log('[upgrade-worker] Waiting for gateway to restart after rollback...');
-	try {
-		await waitForGateway(opts);
-		log('[upgrade-worker] Gateway restarted after rollback');
-	}
-	catch {
-		log('[upgrade-worker] Gateway did not restart after rollback');
-	}
+	// 触发 gateway 重启让老版本回到运行态（尽力而为，不验证结果）
+	log('[upgrade-worker] Triggering gateway restart after rollback...');
+	await triggerGatewayRestart(opts);
 
 	// 记录状态（顺序执行因共享 state 文件，但各自 try/catch 避免单个失败阻断其余）
 	// 仅验证失败（新版本确实被加载并发现有问题）才标记为 skipped；

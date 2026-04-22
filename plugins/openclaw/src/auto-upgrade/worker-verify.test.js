@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs/promises';
+import nodePath from 'node:path';
+import os from 'node:os';
 
 import {
-	waitForGateway,
-	verifyPluginLoaded,
-	verifyUpgradeHealth,
+	triggerGatewayRestart,
+	readDiskPackageVersion,
+	pollUpgradeHealth,
 	verifyUpgrade,
 } from './worker-verify.js';
 
@@ -12,192 +15,383 @@ import {
 
 /**
  * 创建 mock execFileFn
- * @param {Function} handler - (cmd, args) => { stdout, err }
+ * @param {Function} handler - (cmd, args) => { stdout, stderr, err }
  */
 function createExecFileFn(handler) {
 	return (cmd, args, _opts, callback) => {
-		const { stdout, err } = handler(cmd, args);
-		callback(err ?? null, stdout ?? '');
+		const { stdout, stderr, err } = handler(cmd, args);
+		callback(err ?? null, stdout ?? '', stderr ?? '');
 	};
 }
 
-/** 始终成功返回指定 stdout */
-function successExec(stdout) {
-	return createExecFileFn(() => ({ stdout }));
+/** 快速 opts：短总超时 + 短轮询间隔，避免测试慢 */
+function fastOpts(execFileFn, extra) {
+	return { execFileFn, totalTimeoutMs: 200, pollIntervalMs: 20, ...extra };
 }
 
-/** 始终失败 */
-function failExec(msg = 'command failed') {
-	return createExecFileFn(() => ({ err: new Error(msg) }));
+/** 创建含 package.json 的临时目录 */
+async function createTmpPluginDir(pkg) {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wv-test-'));
+	if (pkg !== undefined) {
+		await fs.writeFile(nodePath.join(dir, 'package.json'), pkg);
+	}
+	return dir;
 }
 
-// --- waitForGateway ---
+async function cleanTmpDir(dir) {
+	await fs.rm(dir, { recursive: true, force: true });
+}
 
-test('waitForGateway 成功 — 输出包含 running', async () => {
-	const execFileFn = successExec('Gateway is running');
-	await waitForGateway({ execFileFn, timeoutMs: 100, pollIntervalMs: 20 });
-	// 无异常即通过
+// ============================================================
+// triggerGatewayRestart
+// ============================================================
+
+test('triggerGatewayRestart — 命令成功时 resolve', async () => {
+	let called = false;
+	const execFileFn = createExecFileFn((cmd, args) => {
+		called = true;
+		assert.equal(cmd, 'openclaw');
+		assert.deepStrictEqual(args, ['gateway', 'restart']);
+		return { stdout: 'ok' };
+	});
+	await triggerGatewayRestart({ execFileFn });
+	assert.equal(called, true);
 });
 
-test('waitForGateway 重试后成功', async () => {
-	let callCount = 0;
+test('triggerGatewayRestart — 命令失败时吞错不抛', async () => {
+	const execFileFn = createExecFileFn(() => ({ err: new Error('restart boom') }));
+	// 未抛即为通过
+	await triggerGatewayRestart({ execFileFn });
+});
+
+// ============================================================
+// readDiskPackageVersion
+// ============================================================
+
+test('readDiskPackageVersion — 读取合法 package.json 返回版本号', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x', version: '1.2.3' }));
+	try {
+		const v = await readDiskPackageVersion(dir);
+		assert.equal(v, '1.2.3');
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('readDiskPackageVersion — 目录不存在返回 null', async () => {
+	const v = await readDiskPackageVersion('/nonexistent/path/definitely-not-there');
+	assert.equal(v, null);
+});
+
+test('readDiskPackageVersion — JSON 非法返回 null', async () => {
+	const dir = await createTmpPluginDir('not-json-at-all');
+	try {
+		const v = await readDiskPackageVersion(dir);
+		assert.equal(v, null);
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('readDiskPackageVersion — version 非字符串返回 null', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x', version: 123 }));
+	try {
+		const v = await readDiskPackageVersion(dir);
+		assert.equal(v, null);
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('readDiskPackageVersion — package.json 缺 version 字段返回 null', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x' }));
+	try {
+		const v = await readDiskPackageVersion(dir);
+		assert.equal(v, null);
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('readDiskPackageVersion — package.json 内容为 JSON null 时返回 null', async () => {
+	// JSON.parse('null') 返回 null；pkg?.version 走 optional chaining 短路
+	const dir = await createTmpPluginDir('null');
+	try {
+		const v = await readDiskPackageVersion(dir);
+		assert.equal(v, null);
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+// ============================================================
+// pollUpgradeHealth
+// ============================================================
+
+test('pollUpgradeHealth — 首次调用即命中目标版本', async () => {
+	let calls = 0;
 	const execFileFn = createExecFileFn(() => {
-		callCount++;
-		if (callCount < 3) return { err: new Error('not ready') };
-		return { stdout: 'running' };
+		calls += 1;
+		return { stdout: JSON.stringify({ version: '1.1.0' }) };
 	});
-
-	await waitForGateway({ execFileFn, timeoutMs: 500, pollIntervalMs: 20 });
-	assert.ok(callCount >= 3, `expected at least 3 calls, got ${callCount}`);
+	const result = await pollUpgradeHealth('1.1.0', fastOpts(execFileFn));
+	assert.equal(result.ok, true);
+	assert.equal(result.version, '1.1.0');
+	assert.equal(result.attempts, 1);
+	assert.equal(calls, 1);
+	assert.equal(typeof result.elapsedMs, 'number');
 });
 
-test('waitForGateway 输出不含 running 时继续轮询直到超时', async () => {
-	const execFileFn = successExec('Gateway is stopped');
-
-	await assert.rejects(
-		() => waitForGateway({ execFileFn, timeoutMs: 80, pollIntervalMs: 20 }),
-		{ message: 'Gateway did not become ready within timeout' },
-	);
-});
-
-test('waitForGateway 持续失败时超时抛出错误', async () => {
-	const execFileFn = failExec('connection refused');
-
-	await assert.rejects(
-		() => waitForGateway({ execFileFn, timeoutMs: 80, pollIntervalMs: 20 }),
-		{ message: 'Gateway did not become ready within timeout' },
-	);
-});
-
-// --- verifyPluginLoaded ---
-
-test('verifyPluginLoaded 成功 — 输出包含插件 ID', async () => {
-	const execFileFn = successExec('installed plugins:\n  test-plugin-id (0.1.7)\n  another-plugin');
-	await verifyPluginLoaded('test-plugin-id', { execFileFn });
-});
-
-test('verifyPluginLoaded 失败 — 输出不含插件 ID', async () => {
-	const execFileFn = successExec('installed plugins:\n  other-plugin (1.0.0)');
-
-	await assert.rejects(
-		() => verifyPluginLoaded('test-plugin-id', { execFileFn }),
-		{ message: /test-plugin-id not found/ },
-	);
-});
-
-test('verifyPluginLoaded 命令执行失败时传播错误', async () => {
-	const execFileFn = failExec('plugins list failed');
-
-	await assert.rejects(
-		() => verifyPluginLoaded('test-plugin-id', { execFileFn }),
-		{ message: 'plugins list failed' },
-	);
-});
-
-// --- verifyUpgradeHealth ---
-
-test('verifyUpgradeHealth 成功 — 返回版本号', async () => {
-	const execFileFn = successExec(JSON.stringify({ version: '0.2.0', status: 'ok' }));
-	const version = await verifyUpgradeHealth({ execFileFn });
-	assert.equal(version, '0.2.0');
-});
-
-test('verifyUpgradeHealth 失败 — 响应缺少 version 字段', async () => {
-	const execFileFn = successExec(JSON.stringify({ status: 'ok' }));
-
-	await assert.rejects(
-		() => verifyUpgradeHealth({ execFileFn }),
-		{ message: 'upgradeHealth response missing version' },
-	);
-});
-
-test('verifyUpgradeHealth 失败 — 响应非 JSON', async () => {
-	const execFileFn = successExec('not json at all');
-
-	await assert.rejects(
-		() => verifyUpgradeHealth({ execFileFn }),
-		{ message: /Failed to parse upgradeHealth response: not json at all/ },
-	);
-});
-
-test('verifyUpgradeHealth 命令失败时传播错误', async () => {
-	const execFileFn = failExec('gateway call failed');
-
-	await assert.rejects(
-		() => verifyUpgradeHealth({ execFileFn }),
-		{ message: 'gateway call failed' },
-	);
-});
-
-// --- verifyUpgrade ---
-
-test('verifyUpgrade 全流程成功', async () => {
-	let callCount = 0;
-	const execFileFn = createExecFileFn((_cmd, args) => {
-		callCount++;
-		if (args.includes('status')) return { stdout: 'running' };
-		if (args.includes('list')) return { stdout: 'test-plugin-id (0.2.0)' };
-		if (args.includes('call')) return { stdout: JSON.stringify({ version: '0.2.0' }) };
-		return { err: new Error('unexpected args') };
+test('pollUpgradeHealth — 前两次失败后第三次成功', async () => {
+	let calls = 0;
+	const execFileFn = createExecFileFn(() => {
+		calls += 1;
+		if (calls < 3) return { err: new Error('ECONNREFUSED'), stderr: '1006 closed' };
+		return { stdout: JSON.stringify({ version: '2.0.0' }) };
 	});
-
-	const result = await verifyUpgrade('test-plugin-id', { execFileFn, timeoutMs: 100, pollIntervalMs: 20 });
-	assert.deepStrictEqual(result, { ok: true, version: '0.2.0' });
-	assert.ok(callCount >= 3);
+	const result = await pollUpgradeHealth('2.0.0', fastOpts(execFileFn, { totalTimeoutMs: 1000 }));
+	assert.equal(result.ok, true);
+	assert.equal(result.attempts, 3);
 });
 
-test('verifyUpgrade 返回错误 — gateway 未就绪', async () => {
-	const execFileFn = failExec('not ready');
-
-	const result = await verifyUpgrade('test-plugin-id', { execFileFn, timeoutMs: 80, pollIntervalMs: 20 });
+test('pollUpgradeHealth — 持续返回旧版本直到超时', async () => {
+	const execFileFn = createExecFileFn(() => ({ stdout: JSON.stringify({ version: '0.9.0' }) }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
 	assert.equal(result.ok, false);
-	assert.ok(result.error.includes('Gateway did not become ready'));
+	assert.ok(result.attempts >= 1);
+	assert.equal(result.lastVersion, '0.9.0');
+	assert.match(result.lastReason, /version-mismatch got=0\.9\.0 want=1\.0\.0/);
 });
 
-test('verifyUpgrade 返回错误 — 插件未加载', async () => {
-	const execFileFn = createExecFileFn((_cmd, args) => {
-		if (args.includes('status')) return { stdout: 'running' };
-		if (args.includes('list')) return { stdout: 'no-such-plugin' };
-		return { err: new Error('unexpected') };
-	});
-
-	const result = await verifyUpgrade('test-plugin-id', { execFileFn, timeoutMs: 100, pollIntervalMs: 20 });
+test('pollUpgradeHealth — 响应 JSON 非法记录 invalid-json reason', async () => {
+	const execFileFn = createExecFileFn(() => ({ stdout: 'not-json-output' }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
 	assert.equal(result.ok, false);
-	assert.ok(result.error.includes('not found'));
+	assert.match(result.lastReason, /^invalid-json: not-json-output/);
 });
 
-test('verifyUpgrade 返回错误 — upgradeHealth 失败', async () => {
-	const execFileFn = createExecFileFn((_cmd, args) => {
-		if (args.includes('status')) return { stdout: 'running' };
-		if (args.includes('list')) return { stdout: 'test-plugin-id' };
-		if (args.includes('call')) return { stdout: 'bad json' };
-		return { err: new Error('unexpected') };
-	});
-
-	const result = await verifyUpgrade('test-plugin-id', { execFileFn, timeoutMs: 100, pollIntervalMs: 20 });
+test('pollUpgradeHealth — 响应缺少 version 字段记录 missing-version', async () => {
+	const execFileFn = createExecFileFn(() => ({ stdout: JSON.stringify({ status: 'ok' }) }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
 	assert.equal(result.ok, false);
-	assert.ok(result.error.includes('Failed to parse'));
+	assert.equal(result.lastReason, 'missing-version');
 });
 
-// --- exec 内部行为覆盖 ---
-
-test('waitForGateway 不传 opts 时使用默认值（通过短超时验证）', async () => {
-	// 直接调用不传 opts，验证不会报 TypeError
-	// 但会使用真实 execFile，所以我们只验证它能正常抛超时
-	// 改用传入 execFileFn 但不传 timeoutMs/pollIntervalMs，确保默认值路径被覆盖
-	const execFileFn = successExec('running');
-	await waitForGateway({ execFileFn, timeoutMs: 100, pollIntervalMs: 20 });
+test('pollUpgradeHealth — exec 错误的 stderr 被纳入 reason', async () => {
+	const execFileFn = createExecFileFn(() => ({
+		err: new Error('spawn failed'),
+		stderr: '  INVALID_REQUEST: unknown method: coclaw.upgradeHealth  ',
+	}));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
+	assert.equal(result.ok, false);
+	assert.match(result.lastReason, /INVALID_REQUEST: unknown method: coclaw\.upgradeHealth/);
 });
 
-test('verifyUpgrade 错误对象无 message 时使用 String() 转换', async () => {
-	// 模拟 err.message 为 undefined 的情况
+test('pollUpgradeHealth — exec 错误无 stderr 时用 message', async () => {
+	const execFileFn = createExecFileFn(() => ({ err: new Error('gateway closed 1006') }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
+	assert.equal(result.ok, false);
+	assert.match(result.lastReason, /gateway closed 1006/);
+});
+
+test('pollUpgradeHealth — reason 截断到 200 字', async () => {
+	const longStderr = 'x'.repeat(500);
+	const execFileFn = createExecFileFn(() => ({ err: new Error('boom'), stderr: longStderr }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
+	assert.equal(result.ok, false);
+	// 冻结精确长度，防止截断参数被悄悄改小
+	assert.equal(result.lastReason.length, 200);
+});
+
+test('pollUpgradeHealth — invalid-json reason 截断 output 到 120 字', async () => {
+	const longOutput = 'a'.repeat(500);
+	const execFileFn = createExecFileFn(() => ({ stdout: longOutput }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
+	assert.equal(result.ok, false);
+	// "invalid-json: " (14) + 120 = 134
+	assert.ok(result.lastReason.length <= 14 + 120);
+});
+
+test('pollUpgradeHealth — 版本不匹配后恢复为匹配', async () => {
+	let calls = 0;
+	const execFileFn = createExecFileFn(() => {
+		calls += 1;
+		if (calls === 1) return { stdout: JSON.stringify({ version: '0.9.0' }) };
+		return { stdout: JSON.stringify({ version: '1.0.0' }) };
+	});
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn, { totalTimeoutMs: 500 }));
+	assert.equal(result.ok, true);
+	assert.equal(result.attempts, 2);
+});
+
+test('pollUpgradeHealth — pollIntervalMs >= totalTimeoutMs 时仅探测一次', async () => {
+	let calls = 0;
+	const execFileFn = createExecFileFn(() => {
+		calls += 1;
+		return { stdout: JSON.stringify({ version: '0.9.0' }) };
+	});
+	const result = await pollUpgradeHealth('1.0.0', {
+		execFileFn,
+		totalTimeoutMs: 50,
+		pollIntervalMs: 200,
+	});
+	assert.equal(result.ok, false);
+	assert.equal(result.attempts, 1);
+	assert.equal(calls, 1);
+	// 无 sleep 等待：elapsed 应远小于 pollIntervalMs
+	assert.ok(result.elapsedMs < 100);
+});
+
+test('pollUpgradeHealth — version 为数字时 String() 归一化', async () => {
+	const execFileFn = createExecFileFn(() => ({ stdout: JSON.stringify({ version: 2 }) }));
+	const result = await pollUpgradeHealth('2', fastOpts(execFileFn));
+	assert.equal(result.ok, true);
+	assert.equal(result.version, '2');
+});
+
+test('pollUpgradeHealth — payload 为 null 时归类为 missing-version', async () => {
+	const execFileFn = createExecFileFn(() => ({ stdout: 'null' }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
+	assert.equal(result.ok, false);
+	assert.equal(result.lastReason, 'missing-version');
+});
+
+test('pollUpgradeHealth — err 无 message 时 reason 仍可字符串化', async () => {
 	const execFileFn = createExecFileFn(() => {
 		const err = new Error();
 		err.message = undefined;
 		return { err };
 	});
-
-	const result = await verifyUpgrade('test-plugin-id', { execFileFn, timeoutMs: 80, pollIntervalMs: 20 });
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
 	assert.equal(result.ok, false);
-	assert.equal(typeof result.error, 'string');
+	assert.equal(typeof result.lastReason, 'string');
+});
+
+// ============================================================
+// verifyUpgrade（集成）
+// ============================================================
+
+test('verifyUpgrade — 全流程成功：触发 restart → 读磁盘 → 轮询 RPC 命中', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x', version: '1.1.0' }));
+	try {
+		const logs = [];
+		const log = (msg) => logs.push(msg);
+		const execFileFn = createExecFileFn((_cmd, args) => {
+			if (args.includes('restart')) return { stdout: 'ok' };
+			if (args.includes('call')) return { stdout: JSON.stringify({ version: '1.1.0' }) };
+			/* c8 ignore next -- 测试中不会触达 */
+			return { stdout: '' };
+		});
+		const result = await verifyUpgrade(dir, '1.1.0', fastOpts(execFileFn), log);
+		assert.equal(result.ok, true);
+		assert.equal(result.version, '1.1.0');
+		assert.ok(logs.some(l => l.includes('On-disk package.json version: 1.1.0')));
+		assert.ok(logs.some(l => l.includes('upgradeHealth verified: version=1.1.0')));
+		assert.ok(logs.some(l => l.includes('attempts=1')));
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('verifyUpgrade — 磁盘读不到版本时日志标为 unreadable 但不影响流程', async () => {
+	const dir = await createTmpPluginDir();
+	try {
+		const logs = [];
+		const log = (msg) => logs.push(msg);
+		const execFileFn = createExecFileFn((_cmd, args) => {
+			if (args.includes('restart')) return { stdout: 'ok' };
+			if (args.includes('call')) return { stdout: JSON.stringify({ version: '0.5.0' }) };
+			/* c8 ignore next -- 测试中不会触达 */
+			return { stdout: '' };
+		});
+		const result = await verifyUpgrade(dir, '0.5.0', fastOpts(execFileFn), log);
+		assert.equal(result.ok, true);
+		assert.ok(logs.some(l => l.includes('On-disk package.json version: (unreadable)')));
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('verifyUpgrade — 超时失败时返回含 attempts/elapsed/lastReason 的 error 字符串', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x', version: '0.9.0' }));
+	try {
+		const logs = [];
+		const log = (msg) => logs.push(msg);
+		const execFileFn = createExecFileFn((_cmd, args) => {
+			if (args.includes('restart')) return { stdout: 'ok' };
+			if (args.includes('call')) return { stdout: JSON.stringify({ version: '0.9.0' }) };
+			/* c8 ignore next -- 测试中不会触达 */
+			return { stdout: '' };
+		});
+		const result = await verifyUpgrade(dir, '1.0.0', fastOpts(execFileFn), log);
+		assert.equal(result.ok, false);
+		assert.match(result.error, /verify timeout: attempts=\d+ elapsed=\d+ms/);
+		assert.match(result.error, /lastVersion=0\.9\.0/);
+		assert.match(result.error, /version-mismatch got=0\.9\.0 want=1\.0\.0/);
+		// 日志也应包含相同错误
+		assert.ok(logs.some(l => l.includes('verify timeout')));
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('verifyUpgrade — gateway restart 失败也能继续进入轮询', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x', version: '2.0.0' }));
+	try {
+		const execFileFn = createExecFileFn((_cmd, args) => {
+			if (args.includes('restart')) return { err: new Error('restart boom') };
+			if (args.includes('call')) return { stdout: JSON.stringify({ version: '2.0.0' }) };
+			/* c8 ignore next -- 测试中不会触达 */
+			return { stdout: '' };
+		});
+		const result = await verifyUpgrade(dir, '2.0.0', fastOpts(execFileFn), () => {});
+		assert.equal(result.ok, true);
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('verifyUpgrade — 未传 log 时不抛异常', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x', version: '1.0.0' }));
+	try {
+		const execFileFn = createExecFileFn((_cmd, args) => {
+			if (args.includes('restart')) return { stdout: 'ok' };
+			if (args.includes('call')) return { stdout: JSON.stringify({ version: '1.0.0' }) };
+			/* c8 ignore next -- 测试中不会触达 */
+			return { stdout: '' };
+		});
+		const result = await verifyUpgrade(dir, '1.0.0', fastOpts(execFileFn));
+		assert.equal(result.ok, true);
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
+});
+
+test('verifyUpgrade — lastVersion/lastReason 为空时 error 字符串显示 (none)', async () => {
+	const dir = await createTmpPluginDir(JSON.stringify({ name: 'x', version: '1.0.0' }));
+	try {
+		// totalTimeoutMs=0 导致 while 循环一次都不进入，attempts=0
+		const execFileFn = createExecFileFn((_cmd, args) => {
+			if (args.includes('restart')) return { stdout: 'ok' };
+			/* c8 ignore next -- 不应到达：totalTimeoutMs=0 下 while 不会进入 */
+			return { stdout: '' };
+		});
+		const result = await verifyUpgrade(dir, '1.0.0', { execFileFn, totalTimeoutMs: 0, pollIntervalMs: 20 }, () => {});
+		assert.equal(result.ok, false);
+		assert.match(result.error, /lastVersion=\(none\)/);
+		assert.match(result.error, /lastReason=\(none\)/);
+	}
+	finally {
+		await cleanTmpDir(dir);
+	}
 });

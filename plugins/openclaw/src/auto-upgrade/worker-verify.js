@@ -1,134 +1,199 @@
 /**
  * worker-verify.js — 升级后验证
  *
- * 三步验证策略（任一失败即判定升级失败）：
- * 1. Gateway 存活：轮询 `openclaw gateway status`，超时 60s
- * 2. 插件已加载：`openclaw plugins list` 包含指定插件
- * 3. 升级模块健康：`openclaw gateway call coclaw.upgradeHealth` 返回版本号
+ * 策略：触发 gateway restart → 轮询 coclaw.upgradeHealth RPC 直到返回版本
+ * 严格等于 toVersion。单次调用失败（gateway 未就绪 / plugin 未注册 / JSON 非法 /
+ * 版本不对）一律按"稍后重试"处理，在总超时窗口内持续尝试。
  *
- * 第 3 步同时验证了插件代码能正常执行、gateway method 注册链路正常，
- * 确保插件仍具备自我升级能力。
+ * 磁盘 package.json 的版本仅作为诊断写入本地日志，不参与判定——openclaw 侧
+ * `plugins.installs[id].installPath` 可能在 id-migration 等极端场景发生漂移，
+ * 而 upgradeHealth 是 gateway 进程内"新代码真的被加载"的权威信号。
+ *
+ * worker 运行在独立子进程中，禁止使用 remoteLog；诊断信息全部通过 logger
+ * （本地日志）输出，由 updater 记录到 upgrade-log.jsonl。
  */
 import { execFile as nodeExecFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import nodePath from 'node:path';
 
-const GATEWAY_READY_TIMEOUT_MS = 60_000;
-const POLL_INTERVAL_MS = 2000;
 const CMD_TIMEOUT_MS = 30_000;
+const HEALTH_POLL_INTERVAL_MS = 3_000;
+// 本机 openclaw 冷启动可能需访问外部资源（AWS 诊断、ollama 探测等）
+// 及插件 bootstrap，合计 30~60s 常见；5 分钟给足余量
+const HEALTH_TOTAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
- * 执行命令并返回 stdout
+ * 执行命令并返回 stdout；错误对象附带 stderr 以便诊断
  * @param {string} cmd
  * @param {string[]} args
  * @param {object} [opts]
  * @param {Function} [opts.execFileFn]
+ * @param {number} [opts.cmdTimeoutMs]
  * @returns {Promise<string>}
  */
 function runCmd(cmd, args, opts) {
 	/* c8 ignore next -- ?./?? fallback */
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
+	/* c8 ignore next -- ?./?? fallback */
+	const timeout = opts?.cmdTimeoutMs ?? CMD_TIMEOUT_MS;
 	return new Promise((resolve, reject) => {
-		doExecFile(cmd, args, { timeout: CMD_TIMEOUT_MS, shell: process.platform === 'win32' }, (err, stdout) => {
-			if (err) reject(err);
+		doExecFile(cmd, args, { timeout, shell: process.platform === 'win32' }, (err, stdout, stderr) => {
+			if (err) {
+				/* c8 ignore next -- ?? fallback：execFile 实现不保证 stderr 一定字符串化 */
+				err.stderr = String(stderr ?? '');
+				reject(err);
+			}
 			else resolve(String(stdout).trim());
 		});
 	});
 }
 
 /**
- * 步骤 1：等待 gateway 恢复运行
+ * 触发一次 gateway 重启；失败不抛（后续轮询 RPC 会兜底验证 gateway 是否就绪）
  * @param {object} [opts]
  * @param {Function} [opts.execFileFn]
- * @param {number} [opts.timeoutMs]
- * @param {number} [opts.pollIntervalMs]
  * @returns {Promise<void>}
  */
-export async function waitForGateway(opts) {
-	// 主动触发重启，不依赖 OpenClaw 的文件变更自动重启策略
+export async function triggerGatewayRestart(opts) {
 	try {
 		await runCmd('openclaw', ['gateway', 'restart'], opts);
 	}
 	catch {
-		// restart 命令失败不阻断流程，仍尝试等待
+		// restart 命令本身失败不阻断：openclaw 可能已在重启/daemon 自恢复；
+		// 无论如何都进入后续 upgradeHealth 轮询，由它判定 gateway 最终是否可用
 	}
+}
 
-	/* c8 ignore next 2 -- ?./?? fallback */
-	const timeout = opts?.timeoutMs ?? GATEWAY_READY_TIMEOUT_MS;
-	const interval = opts?.pollIntervalMs ?? POLL_INTERVAL_MS;
-	const start = Date.now();
+/**
+ * 读取磁盘 package.json 的版本号（诊断用途，不参与判定）
+ * @param {string} pluginDir
+ * @returns {Promise<string | null>}
+ */
+export async function readDiskPackageVersion(pluginDir) {
+	try {
+		const pkgPath = nodePath.join(pluginDir, 'package.json');
+		const raw = await readFile(pkgPath, 'utf8');
+		const pkg = JSON.parse(raw);
+		return typeof pkg?.version === 'string' ? pkg.version : null;
+	}
+	catch {
+		return null;
+	}
+}
 
-	while (Date.now() - start < timeout) {
+/**
+ * 单次调用 coclaw.upgradeHealth；永不抛异常，失败归一化为 { ok: false, reason }
+ * @param {object} [opts]
+ * @returns {Promise<{ ok: true, version: string } | { ok: false, reason: string }>}
+ */
+async function callUpgradeHealthOnce(opts) {
+	try {
+		const output = await runCmd(
+			'openclaw',
+			['gateway', 'call', 'coclaw.upgradeHealth', '--json'],
+			opts,
+		);
+		let payload;
 		try {
-			const output = await runCmd('openclaw', ['gateway', 'status'], opts);
-			if (output.includes('running')) return;
+			payload = JSON.parse(output);
 		}
 		catch {
-			// gateway 未就绪，继续轮询
+			return { ok: false, reason: `invalid-json: ${output.slice(0, 120)}` };
 		}
-		await sleep(interval);
-	}
-
-	throw new Error('Gateway did not become ready within timeout');
-}
-
-/**
- * 步骤 2：验证插件已加载
- * @param {string} pluginId - 插件 ID
- * @param {object} [opts]
- * @param {Function} [opts.execFileFn]
- * @returns {Promise<void>}
- */
-export async function verifyPluginLoaded(pluginId, opts) {
-	const output = await runCmd('openclaw', ['plugins', 'list'], opts);
-	if (!output.includes(pluginId)) {
-		throw new Error(`Plugin ${pluginId} not found in plugins list`);
-	}
-}
-
-/**
- * 步骤 3：验证升级模块健康
- * @param {object} [opts]
- * @param {Function} [opts.execFileFn]
- * @returns {Promise<string>} 返回版本号
- */
-export async function verifyUpgradeHealth(opts) {
-	const output = await runCmd(
-		'openclaw',
-		['gateway', 'call', 'coclaw.upgradeHealth', '--json'],
-		opts,
-	);
-	try {
-		const result = JSON.parse(output);
-		if (!result.version) {
-			throw new Error('upgradeHealth response missing version');
-		}
-		return result.version;
+		if (!payload?.version) return { ok: false, reason: 'missing-version' };
+		return { ok: true, version: String(payload.version) };
 	}
 	catch (err) {
-		if (err.message?.includes('upgradeHealth')) throw err;
-		throw new Error(`Failed to parse upgradeHealth response: ${output}`);
+		const stderr = typeof err?.stderr === 'string' ? err.stderr.trim() : '';
+		/* c8 ignore next -- ?? fallback */
+		const msg = err?.message ?? String(err);
+		const reason = (stderr || msg || 'unknown').slice(0, 200);
+		return { ok: false, reason };
 	}
 }
 
 /**
- * 执行完整验证流程
- * @param {string} pluginId - 插件 ID
+ * 轮询 upgradeHealth 直到版本严格等于 toVersion，或总超时
+ * @param {string} toVersion
  * @param {object} [opts]
  * @param {Function} [opts.execFileFn]
- * @param {number} [opts.timeoutMs]
+ * @param {number} [opts.totalTimeoutMs]
  * @param {number} [opts.pollIntervalMs]
- * @returns {Promise<{ ok: boolean, version?: string, error?: string }>}
+ * @param {number} [opts.cmdTimeoutMs]
+ * @returns {Promise<{ ok: true, version: string, attempts: number, elapsedMs: number }
+ *   | { ok: false, attempts: number, elapsedMs: number, lastReason: string, lastVersion: string }>}
  */
-export async function verifyUpgrade(pluginId, opts) {
-	try {
-		await waitForGateway(opts);
-		await verifyPluginLoaded(pluginId, opts);
-		const version = await verifyUpgradeHealth(opts);
-		return { ok: true, version };
+export async function pollUpgradeHealth(toVersion, opts) {
+	/* c8 ignore next -- ?? fallback */
+	const totalTimeout = opts?.totalTimeoutMs ?? HEALTH_TOTAL_TIMEOUT_MS;
+	/* c8 ignore next -- ?? fallback */
+	const pollInterval = opts?.pollIntervalMs ?? HEALTH_POLL_INTERVAL_MS;
+	const start = Date.now();
+	let attempts = 0;
+	let lastReason = '';
+	let lastVersion = '';
+
+	while (Date.now() - start < totalTimeout) {
+		attempts += 1;
+		const result = await callUpgradeHealthOnce(opts);
+		if (result.ok) {
+			if (result.version === toVersion) {
+				return {
+					ok: true,
+					version: result.version,
+					attempts,
+					elapsedMs: Date.now() - start,
+				};
+			}
+			lastVersion = result.version;
+			lastReason = `version-mismatch got=${result.version} want=${toVersion}`;
+		}
+		else {
+			lastReason = result.reason;
+		}
+		// 剩余时间不足以再等一个 interval 就直接退出，避免最后一次毫无意义的 sleep
+		if (Date.now() - start + pollInterval >= totalTimeout) break;
+		await sleep(pollInterval);
 	}
-	catch (err) {
-		/* c8 ignore next -- ?./?? fallback */
-		return { ok: false, error: String(err?.message ?? err) };
+
+	return {
+		ok: false,
+		attempts,
+		elapsedMs: Date.now() - start,
+		lastReason,
+		lastVersion,
+	};
+}
+
+/**
+ * 完整验证流程：触发 gateway restart → 读磁盘版本（诊断）→ 轮询 upgradeHealth
+ * @param {string} pluginDir - 插件安装目录（来自 openclaw.json 的权威 installPath）
+ * @param {string} toVersion - 目标版本
+ * @param {object} [opts]
+ * @param {Function} [opts.execFileFn]
+ * @param {number} [opts.totalTimeoutMs]
+ * @param {number} [opts.pollIntervalMs]
+ * @param {number} [opts.cmdTimeoutMs]
+ * @param {Function} [log] - 本地日志函数
+ * @returns {Promise<{ ok: true, version: string } | { ok: false, error: string }>}
+ */
+export async function verifyUpgrade(pluginDir, toVersion, opts, log) {
+	const logFn = typeof log === 'function' ? log : () => {};
+
+	await triggerGatewayRestart(opts);
+
+	const onDiskVersion = await readDiskPackageVersion(pluginDir);
+	logFn(`[upgrade-worker] On-disk package.json version: ${onDiskVersion ?? '(unreadable)'} (expected ${toVersion})`);
+
+	const result = await pollUpgradeHealth(toVersion, opts);
+	if (result.ok) {
+		logFn(`[upgrade-worker] upgradeHealth verified: version=${result.version} attempts=${result.attempts} elapsed=${result.elapsedMs}ms`);
+		return { ok: true, version: result.version };
 	}
+
+	const error = `verify timeout: attempts=${result.attempts} elapsed=${result.elapsedMs}ms lastVersion=${result.lastVersion || '(none)'} lastReason=${result.lastReason || '(none)'}`;
+	logFn(`[upgrade-worker] ${error}`);
+	return { ok: false, error };
 }
 
 function sleep(ms) {
