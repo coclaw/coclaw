@@ -145,6 +145,7 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 - **不跨生命周期复用**：`init()` 会异步清除同名残留文件（PC 重建时上层会新建 id，不会复用旧文件；但防御性清理残留）
 - **写侧**：首次溢出时 lazy 打开 append 写流，`destroy()` / `clear()` / `__handleFsError` 时关闭并删除文件
 - **读侧**：refill 时按需开 read stream 从 offset 读行
+- **权限**：POSIX 下以 `0o700` 创建目录、`0o600` 创建文件（best-effort）。**已存在的目录不会被 chmod 收紧**——依赖其既有权限；**Windows** 下 mode 参数无 owner/group/other 语义，访问控制实际由父目录 NTFS ACL 决定。调用方若把 `dir` 放在可由其他本机用户读的目录下，需要自行保证目录权限
 
 ## 与 `RpcSendQueue` 的集成
 

@@ -312,8 +312,11 @@ class FileBackedQueue {
 	async __openWriteStream() {
 		this.writeErr = null;
 		try {
-			// 目录 0o700 / 文件 0o600：JSONL 里可能包含用户消息、文件 payload 等敏感内容，
-			// 只允许队列进程所属用户访问；同仓 atomic-write.js 已是同一策略。
+			// 目录 0o700 / 文件 0o600：POSIX best-effort。
+			// - 新建目录/文件会按此 mode（再经 umask）创建
+			// - 已存在的目录 mkdir(recursive) 不会被 chmod 收紧，以该目录原权限为准
+			// - Windows 下 mode 参数语义很弱（无 owner/group/other 概念），实际访问控制依赖父目录 NTFS ACL
+			// 仍比默认 0o644 更保守；atomic-write.js 也是同一策略。
 			await fs.mkdir(nodePath.dirname(this.filePath), { recursive: true, mode: 0o700 });
 			// 权威残留清理：即便 init 的 rm 被吞掉，这里开流前再 rm 一次，
 			// 避免 'a' flag 追加到旧数据上污染 FIFO。
