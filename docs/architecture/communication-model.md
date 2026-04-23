@@ -346,7 +346,15 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 - **sig offline + typeChanged + sig resume 时 claw 仍 offline**：claw 后续回 online 时由 `__resumeOnline` 消费（sig resume 的 `__resumeAllClawsForSigOnline` 对 offline claw 不动）
 - **多 claw 同时离线并先后恢复**：每个 claw 独立持有 Set 条目；不再互相抢 boolean
 
-清理：`removeClawById` / `__resetClawStoreInternals`（logout）。`!initialized` 的 claw 由 `__resumeAllClawsForSigOnline` 补跑 `__fullInit` 时主动 delete（全新 ICE 路径天然"强 restart"，Set 条目变余项主动清理）。
+**paused 态特殊规则**：`connected + restartPaused + typeChanged` 在主循环不发 `triggerRestart('network_type_changed')`——`WebRtcConnection.__attemptRestart` 的 paused gate 只接受 `'online_resume'` 为穿透原因（其他 reason 一律 drop）；若在此发 restart 会被 drop，若同时清 Set 则信号永久丢失。故主循环在 paused 子分支直接 `continue`，Set 条目保留给后续 `__resumeOnline` 消费时升级为 `'online_resume'` triggerRestart（唯一能穿透 paused gate 的 reason）。
+
+清理点（所有"新 ICE 路径建成"或"信号消费"路径同步 delete，防止陈旧条目在下次 resume 虚发）：
+- `__resumeOnline` 消费（唯一读点，`delete(id)` 的返回值即 forceRestartOnConnected 信号）
+- `__handleNetworkOnline` 主循环三分支（`restarting → nudgeRestart`、`connected + !paused + typeChanged → triggerRestart('network_type_changed')`、`failed/closed → rebuild`——都在本次调用中产生新 ICE 路径）
+- `__ensureRtc` 成功（rebuild 成功即新路径）
+- `updateClawOnline` `!initialized` 分支 / `__resumeAllClawsForSigOnline` `!initialized` 分支（`__fullInit` 建全新路径）
+- `removeClawById` / `applySnapshot` 清理循环（claw 从 `byId` 消失）
+- `__resetClawStoreInternals`（logout / 测试）
 
 ---
 

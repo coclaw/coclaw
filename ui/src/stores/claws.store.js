@@ -847,6 +847,10 @@ export const useClawsStore = defineStore('claws', {
 						claw.rtcPhase = 'ready';
 					}
 					this.__clearRetry(id);
+					// rebuild 建出的是全新 ICE 路径 → typeChanged 记账条目无意义，主动清
+					// （与 `__resumeAllClawsForSigOnline` / `updateClawOnline` 的 !initialized
+					// 分支对称：新路径天然"强 restart"，不需要后续 __resumeOnline 虚发）
+					_pendingTypeChangedRestartClaws.delete(id);
 					// 如果 __resumeOnline 在 rebuild 分支登记了强制刷新，consume 标记并 force；
 					// 否则沿用默认 gap-aware refresh（纯 RTC 断又恢复，非 presence 事件）
 					const forceRefresh = _pendingForceRefreshOnRebuild.delete(id);
@@ -1031,12 +1035,20 @@ export const useClawsStore = defineStore('claws', {
 					continue;
 				}
 				if (rtc.state === 'connected' && typeChanged) {
+					if (rtc.restartPaused) {
+						// paused 态下 __attemptRestart 只接受 reason='online_resume'，
+						// `network_type_changed` 会被 drop → 若此处发 triggerRestart 则 restart 没发
+						// 且本次若同时清 Set，信号将永久丢失。
+						// 正确做法：保留 Set 条目，让后续 __resumeOnline 消费时升级为 'online_resume'
+						// triggerRestart（paused 穿透白名单唯一成员），由 resume 路径完成真正的 restart。
+						remoteLog(`claw.typeChanged claw=${id} paused defer_to_resume`);
+						continue;
+					}
 					remoteLog(`claw.recover claw=${id} reason=network_type_changed source=network:online`);
-					// **必须**清 Set：`connected + restartPaused` 的 claw 预循环 willHandleNow=false
-					// 已被 add，本分支 triggerRestart 已就地处理；若不清则下次 __resumeOnline
-					// 消费到陈旧条目，会在已健康连接上虚发 online_resume triggerRestart。
-					// （`connected + !restartPaused` 预循环 willHandleNow=true 不会入 Set，
-					// 此 delete 对这条子路径是 no-op。）
+					// 非 paused 态：triggerRestart 会被 __attemptRestart 正常处理 → 新 ICE 路径建成后
+					// Set 条目即陈旧，主动清避免下次 __resumeOnline 虚发 online_resume triggerRestart。
+					// （非 paused+connected 预循环 willHandleNow=true 本来就不入 Set，此 delete
+					// 对这条子路径是 no-op；但若预循环与主循环之间 pause 状态翻转过，delete 仍生效。）
 					_pendingTypeChangedRestartClaws.delete(id);
 					rtc.triggerRestart('network_type_changed');
 					continue;

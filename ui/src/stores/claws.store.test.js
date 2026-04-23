@@ -4873,26 +4873,47 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
 	});
 
-	test('#2 round3: 主循环 connected+paused + typeChanged 处理后清 Set（再 resume 不虚发 triggerRestart）', () => {
-		// 场景：claw connected+paused（某瞬态，如 sig 刚 down→up 期间）+ typeChanged
-		// 预循环把 claw 加入 Set（willHandleNow=false，因 paused）；主循环 connected+typeChanged
-		// 分支直接 triggerRestart('network_type_changed') 当场处理 → 必须清 Set。
-		// 若不清，后续任一 __resumeOnline 会消费到陈旧条目，在已健康连接上虚发 online_resume。
+	test('#2 round4: 主循环 connected+paused + typeChanged 不发 triggerRestart，Set 保留给 resume 消费', () => {
+		// 背景：WebRtcConnection.__attemptRestart 的 paused gate 只接受 reason='online_resume'，
+		// 其他 reason（包括 'network_type_changed'）会被 drop（webrtc-connection.js:969-973）。
+		// 若 connected+paused+typeChanged 时直接发 'network_type_changed' triggerRestart 且
+		// 同时 delete Set → restart 没发 + 记账丢失 = 信号永久丢失。
+		// 正确行为：paused 分支不发 triggerRestart，保留 Set 给后续 __resumeOnline 消费升级。
 		const store = useClawsStore();
 		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
 		store.__bridgeLifecycle();
 
 		store.__handleNetworkOnline(true);
-		// 主循环 network_type_changed 分支已触发
-		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('network_type_changed');
-		fakeRtc.triggerRestart.mockClear();
+		// paused 态 + typeChanged：主循环识别到 paused，不发 triggerRestart，不清 Set
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 
-		// sig 翻转 down/up（触发 __resumeAllClawsForSigOnline → __resumeOnline 尝试消费 Set）
+		// 后续 sig down/up → __resumeAllClawsForSigOnline → __resumeOnline 消费保留的 Set 条目
+		// → connected+paused + forceRestartOnConnected → triggerRestart('online_resume')
+		// （online_resume 是 paused gate 唯一穿透 reason，restart 能真正生效）
 		__emitSigState('disconnected');
 		__emitSigState('connected');
 
-		// Set 已被主循环 delete 清掉，__resumeOnline 消费返回 false
-		// → connected+paused（__freezeAllClawsForSigOffline 再次 pauseRestart）走 resumeRecovery
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
+	});
+
+	test('#2 round4 对照组: 主循环 connected+!paused + typeChanged 直接发 network_type_changed 并清 Set', () => {
+		// 对照：非 paused 态下 triggerRestart('network_type_changed') 正常生效，Set 清除，
+		// 下次 __resumeOnline 走 resumeRecovery 不虚发。
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: false });
+		store.__bridgeLifecycle();
+
+		store.__handleNetworkOnline(true);
+		// willHandleNow=true 的 claw 预循环本来就不进 Set，主循环正常发 network_type_changed
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('network_type_changed');
+		fakeRtc.triggerRestart.mockClear();
+
+		// Set 为空 → 后续 sig resume → 走 resumeRecovery（restartPaused 需模拟被 freeze 置为 true）
+		fakeRtc.restartPaused = true; // 模拟 __freezeAllClawsForSigOffline 效果
+		__emitSigState('disconnected');
+		__emitSigState('connected');
+
 		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 		expect(fakeRtc.resumeRecovery).toHaveBeenCalledTimes(1);
 	});
