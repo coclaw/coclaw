@@ -346,7 +346,32 @@ export const useClawsStore = defineStore('claws', {
 			const toResume = new Set();
 			for (const id of clawIds) {
 				const claw = this.byId[id];
-				if (!claw?.initialized) continue;
+				if (!claw?.initialized) {
+					// snapshot 漏初始化补救：一个已桥接的 claw 若首次桥接时 online=false
+					// 或 __fullInit 失败回滚了 initialized=false，下次 snapshot 时
+					// `__bridgeConn` 因 `_bridgedConns` 已记录而短路（§bridgeConn），不再 fire fullInit；
+					// 而本循环原 `!initialized continue` 又跳过 Phase 3 分派——两边夹住，
+					// claw 卡在 online=true + initialized=false + dcReady=false 永不恢复。
+					// 此处显式补救（逻辑复刻 `__resumeAllClawsForSigOnline` 的 !initialized 分支）。
+					// 双 gate 防风暴：
+					// - `_rtcInitInProgress`：前次 rescue 的 `__ensureRtc` 还在飞，重 fire 只会空转
+					//   并多打一条 `claw.fullInit` remoteLog，跳过
+					// - `_rtcRetryState`：`__ensureRtc` 已耗尽轮循环并排了 __scheduleRetry backoff，
+					//   重 fire 会绕过退避节流（新 fullInit 再包 __ensureRtc → 再排 retry 让 count++），
+					//   跳过让 backoff timer 自然接管
+					if (claw?.online && !_rtcInitInProgress.get(id) && !_rtcRetryState.has(id)) {
+						_pendingTypeChangedRestartClaws.delete(id);
+						const conn = useClawConnections().get(id);
+						if (!conn) continue; // 未 bridge：等后续 __bridgeConn 接手
+						claw.initialized = true;
+						const attempt = claw.__initAttempt = (claw.__initAttempt || 0) + 1;
+						this.__fullInit(id, conn).catch((err) => {
+							if (claw.__initAttempt === attempt) claw.initialized = false;
+							console.warn('[claws] fullInit (snapshot rescue) failed for clawId=%s: %s', id, err?.message);
+						});
+					}
+					continue;
+				}
 				const prev = prevOnlineMap.get(id);
 				if (prev === true && claw.online === false) {
 					this.__handleClawGoOffline(id);
@@ -858,14 +883,20 @@ export const useClawsStore = defineStore('claws', {
 						if (postBailReason) {
 							console.debug('[claws] ensureRtc: post-await bail-out (%s) clawId=%s', postBailReason, id);
 							// `closeRtcForClaw` 同步调 `rtc.close()` → `__setState('closed')` →
-							// 触发 `__rtcCallbacks.onRtcStateChange('closed')` → 写 `rtcPhase='failed'`。
-							// 对 offline bail，这是期望语义（online→true 走 rebuild）；
-							// 对 sig_offline bail，违反"sig 是环境故障，不标 unreachable"设计意图——
-							// 需 snapshot + restore。removed bail 下 cur=null，不受影响
+							// 触发 `__rtcCallbacks.onRtcStateChange('closed')` → 写 `rtcPhase='failed'` +
+							// `disconnectedAt=Date.now()`。对 offline bail，这是期望语义（online→true
+							// 走 rebuild）；对 sig_offline bail，违反"sig 是环境故障，不污染 DC 生命周期
+							// 与 unreachable 标记"设计意图——rtcPhase 和 disconnectedAt 都需 snapshot + restore，
+							// 避免 sig 恢复后 gap-aware refresh 因虚假的 disconnectedAt 误判短断跳过刷新。
+							// removed bail 下 cur=null，不受影响
 							const prevRtcPhase = cur?.rtcPhase;
+							const prevDisconnectedAt = cur?.disconnectedAt;
 							closeRtcForClaw(id);
 							conn.clearRtc();
-							if (postBailReason === 'sig_offline' && cur) cur.rtcPhase = prevRtcPhase;
+							if (postBailReason === 'sig_offline' && cur) {
+								cur.rtcPhase = prevRtcPhase;
+								cur.disconnectedAt = prevDisconnectedAt;
+							}
 							bailedOut = true;
 							bailReason = postBailReason;
 							result = 'failed'; // 走 bailedOut 分支，不进入成功分支
@@ -923,10 +954,11 @@ export const useClawsStore = defineStore('claws', {
 			// race: claw 在 init 过程中被移除（调用方 catch 会回退 initialized）
 			if (!claw) throw new Error('Claw removed during init');
 
-			// 等待 RTC 建立（DC 是唯一的 RPC 通道）
+			// 等待 RTC 建立（DC 是唯一的 RPC 通道）。
+			// dcReady 由 RTC 状态机写（`__ensureRtc` 成功路径 + `onRtcStateChange('connected')`），
+			// 本函数不旁路写 dcReady——保持 "仅 RTC 状态机写 dcReady" 的 presence/DC 解耦原则。
 			await this.__ensureRtc(id);
 			if (!conn.rtc?.isReady) throw new Error('RTC not available');
-			if (claw) claw.dcReady = true;
 
 			// DC 就绪，后续 RPC 走 DataChannel
 			const info = await checkPluginVersion(conn);

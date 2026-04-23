@@ -3926,6 +3926,54 @@ describe('WebRtcConnection — pauseRestart', () => {
 		rtc.close();
 	});
 
+	test('resumeRecovery 发现 pc.connectionState=failed → 升级为 ice-restart（online_resume）', async () => {
+		// 背景：paused 期间 __onIceFailed 触发 __attemptRestart 会在 L975 paused gate 被 drop，
+		// 没有留下"已失败"标记；UI __state 仍为 connected（__setState 没走）。此时若仅清 paused +
+		// startKeepalive，实际路径已死，要等下一轮 probe/keepalive 超时（30-40s）才被动触发 restart。
+		// 修法：resumeRecovery 入口读 pc.connectionState，failed/disconnected 升级为
+		// triggerRestart('online_resume')（paused 白名单 reason）立即发 ICE restart offer。
+		const { rtc, pc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+
+		// 模拟 paused 期间 PC 真失败
+		pc.connectionState = 'failed';
+		mockSendSignaling.mockClear();
+
+		rtc.resumeRecovery();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 升级为 ICE restart：state='restarting'，发了 iceRestart offer
+		expect(rtc.state).toBe('restarting');
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+		// paused 也被清（triggerRestart → __attemptRestart 会清）
+		expect(rtc.__restartPaused).toBe(false);
+
+		rtc.close();
+	});
+
+	test('resumeRecovery 发现 pc.connectionState=disconnected → 同样升级为 ice-restart', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+
+		pc.connectionState = 'disconnected';
+		mockSendSignaling.mockClear();
+
+		rtc.resumeRecovery();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		expect(mockSendSignaling).toHaveBeenCalledWith(
+			'bot1', 'rtc:offer',
+			expect.objectContaining({ iceRestart: true }),
+		);
+
+		rtc.close();
+	});
+
 	test('resumeRecovery 未 paused 或非 connected 时为 no-op', async () => {
 		const { rtc: rtc1 } = await setupConnectedRtc();
 		// 未 paused
@@ -3933,15 +3981,24 @@ describe('WebRtcConnection — pauseRestart', () => {
 		expect(rtc1.__restartPaused).toBe(false);
 		rtc1.close();
 
-		// restarting + paused：resumeRecovery 不触发 keepalive（restart 场景走 triggerRestart 路径）
+		// restarting + paused：resumeRecovery 不触发 keepalive（restart 场景走 triggerRestart 路径）。
+		// 注意 driveIntoRestarting 里把 pc.connectionState 置为 'failed' —— 即使如此，
+		// resumeRecovery 也不自动升级为 ice-restart（restarting+paused 由调用方显式走
+		// triggerRestart('online_resume') 分派，API 合约只在 connected+paused 时升级）
 		const { rtc: rtc2, pc: pc2 } = await driveIntoRestarting();
 		rtc2.pauseRestart();
 		expect(rtc2.__keepaliveTimer).toBeNull();
+		mockSendSignaling.mockClear();
 		rtc2.resumeRecovery();
+		await vi.advanceTimersByTimeAsync(0);
 		// paused 被清（便于调用方判断）
 		expect(rtc2.__restartPaused).toBe(false);
 		// 但 keepalive 在 restarting 下不启动
 		expect(rtc2.__keepaliveTimer).toBeNull();
+		// 且不发 offer：保守——restarting+paused 的 ICE restart 由调用方显式发起，
+		// 防止未来有人撤掉 `__state === 'connected'` 限定后引入意外 restart
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
 		void pc2;
 		rtc2.close();
 	});

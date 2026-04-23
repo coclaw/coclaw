@@ -673,6 +673,114 @@ describe('applySnapshot', () => {
 		expect(mockManager.syncConnections).toHaveBeenCalledWith([]);
 	});
 
+	test('applySnapshot 二次快照补救：已桥接 offline !initialized 的 claw 变 online → 触发 fullInit', async () => {
+		// 背景：__bridgeConn L458 `_bridgedConns.get === conn` 会在二次 snapshot 时短路不再 fire
+		// fullInit；Phase 3 原 `!initialized continue` 也跳过——两边夹住 claw 永远卡在
+		// online=true + initialized=false + dcReady=false。修法：Phase 3 对 !initialized + online
+		// 的 claw 显式补 __fullInit（复刻 __bridgeConn L509 和 __resumeAllClawsForSigOnline L590-606）
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 首次 snapshot：online=false → __bridgeConn L509 不 fire（online 条件不满足），
+		// 但 conn 已被 __bridgeConn 加入 _bridgedConns（短路标记）
+		store.applySnapshot([{ id: '1', name: 'A', online: false }]);
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		expect(store.byId['1'].initialized).toBe(false);
+
+		// 二次 snapshot：online=true。__bridgeConn L458 短路、Phase 3 原代码 L349 也跳过
+		// → 修法前此处 initRtc 永不被调。修法后 Phase 3 补救分支应触发 fullInit
+		mockInitRtc.mockClear();
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+
+		await vi.waitFor(() => {
+			expect(mockInitRtc).toHaveBeenCalledWith('1', fakeConn, expect.any(Object));
+		});
+		expect(store.byId['1'].initialized).toBe(true);
+	});
+
+	test('applySnapshot 二次快照补救：_rtcInitInProgress 持锁时不重 fire（防空转日志风暴）', async () => {
+		// 防风暴 gate：前次 rescue 的 __fullInit 还在 await __ensureRtc，若此时二次 snapshot 到达
+		// 又进 rescue 分支，__fullInit 入口的 `remoteLog('claw.fullInit')` 会重复打发。
+		// 修法：rescue 前查 `_rtcInitInProgress.get(id)`，若在飞则跳过
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 让 initRtc 返回 pending promise → __ensureRtc 持 `_rtcInitInProgress[id]=true`
+		let resolveInit;
+		mockInitRtc.mockImplementation(() => new Promise((r) => { resolveInit = r; }));
+
+		// 首次 snapshot：online=true → __bridgeConn fire fullInit → 进 __ensureRtc 持锁
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(mockInitRtc).toHaveBeenCalledTimes(1);
+
+		// 人为把 initialized 回滚（模拟 __fullInit 的 catch rollback），保持 `_rtcInitInProgress` 持锁
+		store.byId['1'].initialized = false;
+
+		// 二次 snapshot：rescue 看到 !initialized + online，但 `_rtcInitInProgress` 持锁 → 短路
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		await Promise.resolve();
+		expect(mockInitRtc).toHaveBeenCalledTimes(1); // 没被二次调用
+		expect(store.byId['1'].initialized).toBe(false); // rescue 没把 initialized 写 true
+
+		resolveInit('rtc');
+	});
+
+	test('applySnapshot 二次快照补救：_rtcRetryState 有条目时不重 fire（尊重 backoff 节流）', async () => {
+		// 防风暴 gate：前次 rescue 的 __ensureRtc 已耗尽轮循环排了 __scheduleRetry backoff，
+		// 此时二次 snapshot 到达又进 rescue，新 __fullInit → 新 __ensureRtc → 再排 retry（count++）
+		// 会打破 backoff 节流。修法：rescue 前查 `_rtcRetryState.has(id)`，有则跳过让 backoff 接管
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 预置 claw：已桥接过（_bridgedConns 持有）+ online=true + !initialized
+		store.applySnapshot([{ id: '1', name: 'A', online: false }]);
+
+		// 人为排一个 retry backoff（模拟 __scheduleRetry 已排队中）
+		store.__scheduleRetry('1'); // 不会真排（!online 会早退）——换条路径
+		// __scheduleRetry 在 !online 下早退；直接写 online=true 后再 scheduleRetry
+		store.byId['1'].online = true;
+		store.byId['1'].initialized = false;
+		store.__scheduleRetry('1');
+
+		mockInitRtc.mockClear();
+		// 二次 snapshot：rescue 看 !initialized + online，但 `_rtcRetryState` 已有条目 → 短路
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+		await Promise.resolve();
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		expect(store.byId['1'].initialized).toBe(false);
+
+		store.__clearRetry('1'); // 清理排队
+	});
+
+	test('applySnapshot 二次快照补救：conn 未 bridge 时不 fire，等 __bridgeConn 接手', () => {
+		// 边界：conn 还没被 syncConnections 建出来时，Phase 3 补救应跳过（复刻
+		// __resumeAllClawsForSigOnline L600 的同样处理）
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue(null); // conn=null 模拟未 bridge
+
+		store.applySnapshot([{ id: '1', name: 'A', online: false }]);
+		mockInitRtc.mockClear();
+		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
+
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		// initialized 保持 false，等 __bridgeConn 下次 fire 或下次 snapshot 接手
+		expect(store.byId['1'].initialized).toBe(false);
+	});
+
 	test('applySnapshot 为 rtcPhase=failed 的 online bot 重新尝试 ensureRtc', async () => {
 		const store = useClawsStore();
 		const fakeConn = {
@@ -4612,6 +4720,50 @@ describe('offline gate on recovery paths', () => {
 		// 但修法 snapshot + restore 保留原值 'building'
 		expect(store.byId['1'].rtcPhase).toBe('building');
 		expect(fakeConn.clearRtc).toHaveBeenCalled();
+	});
+
+	test('__ensureRtc post-await recheck：sig 掉线 → disconnectedAt 不被 closeRtcForClaw 副作用污染', async () => {
+		// 配套 rtcPhase snapshot 的 disconnectedAt 同步修法：sig_offline bail 时 closeRtcForClaw
+		// 触发 onRtcStateChange('closed') 会写 disconnectedAt=Date.now()。若不 snapshot+restore，
+		// sig 恢复后 gap-aware refresh 看到虚假的 disconnectedAt（几毫秒 gap）误判短断跳过刷新，
+		// 破坏"sig 是环境故障不污染 DC 生命周期"原则。
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null,
+			on: vi.fn(), off: vi.fn(),
+			clearRtc: vi.fn(() => { fakeConn.rtc = null; }),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].rtcPhase = 'building';
+		store.byId['1'].disconnectedAt = 0; // 预设 healthy 值
+		store.__bridgeLifecycle();
+
+		let capturedCallbacks;
+		let resolveInit;
+		mockInitRtc.mockImplementation((id, conn, callbacks) => {
+			capturedCallbacks = callbacks;
+			return new Promise((r) => { resolveInit = r; });
+		});
+		mockCloseRtcForBot.mockImplementation(() => {
+			capturedCallbacks?.onRtcStateChange?.('closed');
+		});
+
+		const pending = store.__ensureRtc('1');
+		await Promise.resolve();
+		await Promise.resolve();
+
+		__emitSigState('disconnected');
+
+		resolveInit('rtc');
+		await pending;
+
+		// sig_offline bail + snapshot+restore：disconnectedAt 保持 0（不被 closeRtc 副作用污染）
+		expect(store.byId['1'].disconnectedAt).toBe(0);
+		// rtcPhase 同理保持 snapshot 值（round 6 既有断言）
+		expect(store.byId['1'].rtcPhase).toBe('building');
 	});
 
 	test('__ensureRtc 循环中途 claw 翻 offline → bail-out + rtcPhase=failed', async () => {

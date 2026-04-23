@@ -341,7 +341,7 @@
   - Capacitor 原生 `appStateChange` 存在多发（Android 生命周期双回调、权限弹窗返回等），实际损害停留在"多一次幂等 probe"级别，消费者侧节流已足够吸收
   - **若未来仍要在源头做**：正确语义是**状态机式**（维护 `_lastState` + `_lastDispatchAt`，同状态窗口内丢、状态变化立即放行），而非 per-event-name 独立计时——后者会在 `fg→bg→fg` 500ms 内吞掉最后的状态转换
 
-### 7.x 网络变化桥接（network:online）
+### 7.2 网络变化桥接（network:online）
 
 - **文件**：`utils/capacitor-app.js`（`setupNetworkListener` + 模块级 Web online 桥接）
 - **机制**：
@@ -356,14 +356,14 @@
   - 取舍：trailing-edge 在 WiFi 切换场景多延迟约 1.2s 派发，换来"多次事件只做一轮恢复"的稳定性；ICE restart 自身 offer→answer 量级远大于此，感知不到
 - **消费者侧节流**（保留）：SignalingConnection 500ms 节流（`network:online` 豁免；连续触发由 `connecting` 状态自然防护）；SSE restart 500ms 节流（防 `app:foreground + network:online` 同时触发）
 
-### 7.2 Deep Link 路由导航
+### 7.3 Deep Link 路由导航
 
 - **文件**：`utils/capacitor-app.js`（`setupDeepLink`）、`utils/tauri-app.js`（`initDeepLink`）
 - **触发**：`coclaw://` URL scheme 打开（通过 `App.addListener('appUrlOpen', ...)` 或 Tauri `onOpenUrl`）
 - **行为**：解析 URL 路径后调用 `router.push()`，如 `coclaw://chat/bot1/main` → `/chat/bot1/main`
 - **场景**：Capacitor (Android) + Tauri (Desktop)
 
-### 7.3 冷启动路由恢复
+### 7.4 冷启动路由恢复
 
 - **文件**：`router/index.js`
 - **机制**：
@@ -373,7 +373,7 @@
 - **auth 兼容**：恢复的路由若需要认证，由后续 beforeEach auth guard 正常处理
 - **不恢复滚动位置**：消息列表始终 scroll-to-bottom，其他页面滚动位置不关键
 
-### 7.4 KeepAlive 前台服务（Android）
+### 7.5 KeepAlive 前台服务（Android）
 
 - **文件**：`utils/capacitor-app.js`
 - **行为**：通过 `registerPlugin('KeepAlive')` 启动 Android 前台服务（`FOREGROUND_SERVICE_DATA_SYNC`），降低进程被系统杀死的概率

@@ -1175,10 +1175,31 @@ export class WebRtcConnection {
 	 * 外部触发：claw 从 offline 恢复 online，且 PC 当时仍在 connected（未进入 restarting）。
 	 * 仅清 __restartPaused 并恢复 keepalive；不发起 ICE restart（PC 本身仍健康）。
 	 * restarting+paused 的 resume 路径由 triggerRestart('online_resume') 接管。
+	 *
+	 * 失配修正：paused 期间底层 `pc.connectionState` 已经 failed/disconnected 的场景——
+	 * `__onIceFailed` 触发 `__attemptRestart` 会在 paused gate (L975) 被 drop，且 UI 层
+	 * `__state` 仍为 connected（__setState 没走）。此时若仅清 paused + startKeepalive，
+	 * 实际路径已死，要等下一轮 probe/keepalive 超时（30-40s）才被动触发 restart。
+	 * 在 resume 入口读 pc.connectionState，failed/disconnected 直接升级为
+	 * triggerRestart('online_resume')（paused gate 白名单 reason）立即发 ICE restart offer。
+	 *
 	 * 非 paused 或 PC 状态非 connected 时为 no-op（调用方负责走正确分支）。
 	 */
 	resumeRecovery() {
 		if (!this.__restartPaused) return;
+		// 升级仅限 connected+paused 场景——这是 resumeRecovery 的设计合约（见 JSDoc）。
+		// restarting+paused 由调用方显式走 triggerRestart('online_resume')，
+		// resumeRecovery 不自动升级以避免无调用者时的意外行为，保持 API 语义稳定
+		if (this.__state === 'connected') {
+			const pcState = this.__pc?.connectionState;
+			if (pcState === 'failed' || pcState === 'disconnected') {
+				this.__log('info', `resumeRecovery upgrade to ice-restart pc=${pcState}`);
+				remoteLog(`rtc.resumeUpgradeRestart claw=${this.clawId} pc=${pcState}`);
+				// triggerRestart → __attemptRestart('online_resume') 自身会清 __restartPaused
+				this.triggerRestart('online_resume');
+				return;
+			}
+		}
 		this.__restartPaused = false;
 		if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
 			this.__startKeepalive();
