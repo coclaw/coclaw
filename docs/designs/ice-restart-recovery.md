@@ -430,11 +430,19 @@ SSE claw.online=false → __handleClawGoOffline
     （停 restart timer/keepalive、清预算、epoch++、置 restartPaused；PC 不关）
   → 不动 dcReady / rtcPhase / disconnectedAt / PC（presence 与 DC 生命周期正交，commit 4a05074 原则）
   → 其余主动恢复（probe / rebuild / retry）在 online gate 下全部暂停
-SSE claw.online=true → __resumeOnline 按 PC 状态分派：
+SSE claw.online=true → __resumeOnline（入口三分派 refresh + PC 状态分派）：
+
+  refresh 时机（不依赖 wasDisconnected 翻转；offline 期间 dcReady 从未被清）：
+  - forceRestart 命中（typeChanged 记账）→ 跳过 refresh（ICE restart 让 SCTP 无缝延续；
+    旧路径必失效，发 RPC 会应用层超时）
+  - connected / restarting（非 forceRestart）→ 入口立即 __refreshIfStale({ force: true })
+  - rebuild → add 到 _pendingForceRefreshOnRebuild，延后到 __ensureRtc 成功后消费
+
+  PC 状态分派：
   - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 90s 预算
-  - connected + paused → resumeRecovery（清 paused + 重启 keepalive；不发 ICE restart）；
-    例外：typeChanged 记账命中 → 升级为 triggerRestart
-  - connected + 非 paused → __ensureRtc 早退 + __refreshIfStale 刷业务数据 + 加载 dashboard
+  - connected + paused → 默认 resumeRecovery（清 paused + 重启 keepalive；不发 ICE restart）；
+    typeChanged 记账命中 → 升级为 triggerRestart('online_resume')
+  - connected + 非 paused → __ensureRtc 早退 + 加载 dashboard
   - failed/closed/idle/connecting/null → __ensureRtc 全量 rebuild
 ```
 

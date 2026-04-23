@@ -423,10 +423,16 @@ RTC 恢复决策基于 PC 自身状态、DC probe 和两把正交的"全局闸"�
   - `syncDashboardOffline`（dashboard 展示层同步）+ `__clearRetry`（停退避定时器）+ `rtc.pauseRestart()`（停 restart timer / poll / keepalive；清预算字段；epoch++；置 `__restartPaused=true`）
   - **不动 `dcReady` / `rtcPhase` / `disconnectedAt` / PC**：presence 与 DC 生命周期正交（commit `4a05074` 原则——详见通信模型 §5.5）
   - **不再** probe / triggerRestart：plugin 离线时这些动作必然无效，等 online 回来再动
-- **SSE `claw.online=true`（从 false 转来）** → `__resumeOnline`（按 PC 状态分派）：
-  - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 90s 预算；PC 连接成功后 `onRtcStateChange('connected')` 触发 `__refreshIfStale`（凭 `wasDisconnected=true`）刷业务数据
-  - `connected` + `isReady`（DC 全程未断）→ `__ensureRtc` 早退分支同样凭 `wasDisconnected=true` 触发 `__refreshIfStale` + 链末加载 dashboard
-  - 其余（`failed`/`closed`/`idle`/`connecting`/rtc 为 null）→ `__ensureRtc` 全量 rebuild；成功后链末加载 dashboard
+- **SSE `claw.online=true`（从 false 转来）** → `__resumeOnline`（refresh 三分派 + PC 状态分派）：
+  - **refresh 三分派**（入口处同步决定，不依赖 `wasDisconnected` 翻转——offline 期间 `dcReady` 从未被清）：
+    - `forceRestartOnConnected` 命中（typeChanged per-claw Set 消费）→ **跳过** immediate refresh：旧 ICE 路径必已失效，发 RPC 只会应用层超时；ICE restart 成功后 SCTP/DC 无缝延续，`onRtcStateChange('connected')` 的 `wasDisconnected=false` 分支也不补刷（设计一致）
+    - `connected` / `restarting`（非 forceRestart，DC 预期可用）→ 入口立即 `__refreshIfStale({ force: true })`（presence 事件即刷新信号，不看 gap）
+    - rebuild 路径（`failed`/`closed`/`idle`/`connecting`/rtc 为 null）→ add 到 `_pendingForceRefreshOnRebuild`，延后到 `__ensureRtc` 成功时消费（rebuild 前 `dcReady=false` 会被 loader gate skip）
+  - **PC 状态分派**：
+    - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 90s 预算
+    - `connected` + paused → 默认 `resumeRecovery`；forceRestart 命中时升级为 `triggerRestart('online_resume')`
+    - `connected` + 非 paused → `__ensureRtc` 早退 + 链末加载 dashboard
+    - 其余 → `__ensureRtc` 全量 rebuild；成功后链末加载 dashboard
 - `network:online` → `__handleNetworkOnline`（按 PC 状态 + 网络类型变化分级处理，offline claw 被 gate 挡住）：
   - **类型变化**（WiFi↔蜂窝，由 Capacitor Network plugin `connectionType` 检测）→ 对每个 online claw triggerRestart / rebuild。旧 ICE 路径必然失效
   - **类型未变 + PC `failed`/`closed`** → 直接 rebuild（加速长 offline 后恢复）

@@ -150,16 +150,18 @@ describe('addOrUpdateClaw', () => {
 		expect(store.byId['7'].lastSeenAt).toBeNull();
 	});
 
-	test('updates existing claw in place and calls connect', () => {
+	test('updates existing claw in place and calls connect (does not override online)', () => {
 		const store = useClawsStore();
 		const fakeConn = { state: 'disconnected', on: vi.fn(), off: vi.fn(), __onAlive: null, rtc: null, clearRtc: vi.fn(), request: vi.fn().mockResolvedValue({}) };
 		mockManager.get.mockReturnValue(fakeConn);
 		store.setClaws([{ id: '1', name: 'OldName', online: false }]);
+		// addOrUpdateClaw 覆盖 name 等普通字段，但 online 属于 GATED_FIELDS，
+		// 必须走 updateClawOnline / applySnapshot 专用入口（以触发 gate 副作用）
 		store.addOrUpdateClaw({ id: '1', name: 'NewName', online: true });
 
 		expect(Object.keys(store.byId)).toHaveLength(1);
 		expect(store.byId['1'].name).toBe('NewName');
-		expect(store.byId['1'].online).toBe(true);
+		expect(store.byId['1'].online).toBe(false); // online 被 GATED_FIELDS 拒，保持原值
 		expect(mockManager.connect).toHaveBeenCalledWith('1');
 	});
 
@@ -2937,6 +2939,23 @@ describe('运行时字段防御', () => {
 		expect(bot.rtcPhase).toBe('ready');
 		expect(bot.initialized).toBe(true);
 	});
+
+	test('addOrUpdateClaw 不覆盖 online（GATED_FIELDS 防御性契约）', () => {
+		// 外部 review round 5 #2：server 当前 claw.bound / claw.nameUpdated payload 不带 online，
+		// 但该契约是隐式的。UI 侧用 GATED_FIELDS 把 online 纳入黑名单，防御未来 server 误发
+		// 旁路绕过 updateClawOnline / applySnapshot 的 gate 副作用（pause/resume/retry 清理）。
+		const store = useClawsStore();
+		const fakeConn = { on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(), rtc: null, request: vi.fn().mockResolvedValue({}) };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '2', name: 'Bot', online: false });
+		expect(store.byId['2'].online).toBe(false);
+
+		// 模拟未来 server 扩展 payload 意外带了 online=true
+		store.addOrUpdateClaw({ id: '2', name: 'Renamed', online: true });
+		expect(store.byId['2'].name).toBe('Renamed'); // 非 gated 字段正常更新
+		expect(store.byId['2'].online).toBe(false); // online 被拒，保持原值
+	});
 });
 
 describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
@@ -4232,6 +4251,103 @@ describe('__resumeOnline helper', () => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 		});
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
+	});
+
+	test('forceRestartOnConnected 分支跳过 immediate refresh（不发 RPC、不打 pending 标记）', async () => {
+		// 外部 review round 5 #1：WiFi↔蜂窝切换 + claw offline/resume 场景下
+		// forceRestartOnConnected=true 表明旧 ICE 路径必已失效。原实现会先通过旧 SCTP 路径
+		// 发 force refresh RPC（应用层 30s 超时），然后才 triggerRestart。
+		// 修复后：forceRestart 分支直接跳过 immediate refresh；restart 成功后
+		// `onRtcStateChange('connected')` 的 wasDisconnected=false 分支也不补刷（SCTP 无缝延续设计）。
+		const store = useClawsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		const dashboardStore = useDashboardStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+
+		const fakeRtc = {
+			state: 'connected',
+			restartPaused: true,
+			isReady: true,
+			pauseRestart: vi.fn(),
+			triggerRestart: vi.fn(),
+			resumeRecovery: vi.fn(),
+		};
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].dcReady = true;
+		store.byId['1'].rtcPhase = 'ready';
+
+		// 关键：forceRestartOnConnected=true 触发 round 5 修复的分支
+		store.__resumeOnline('1', { forceRestartOnConnected: true });
+
+		// 断言 1：立即 refresh 没发——下游 4 个 loader 全部未被调
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).not.toHaveBeenCalled();
+		expect(topicsStore.loadTopicsForClaw).not.toHaveBeenCalled();
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
+
+		// 断言 2：走 triggerRestart('online_resume')（paused gate 唯一穿透 reason）
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
+
+		// 断言 3：ICE restart 成功后（SCTP 无缝延续）也不补 refresh
+		store.__rtcCallbacks('1').onRtcStateChange('connected');
+		await new Promise((r) => setTimeout(r, 20));
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+	});
+
+	test('forceRestartOnConnected 命中后不污染 _pendingForceRefreshOnRebuild', async () => {
+		// 契约保护：forceRestart 分支**不得** `.add(id)` 到 pendingForceRefreshOnRebuild
+		// —— 否则后续任何 rebuild 都会误触发 force refresh（覆盖 gap gate 的保护）。
+		// 验证方式：forceRestart 走完后切 rebuild（清 rtc→null）+ __ensureRtc 成功，
+		// 若 Set 被误污染 loader 会被调；正确实现下 disconnectedAt=0 被 gap gate skip。
+		const store = useClawsStore();
+		const agentsStore = useAgentsStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(useSessionsStore(), 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(useTopicsStore(), 'loadTopicsForClaw').mockResolvedValue();
+		vi.spyOn(useDashboardStore(), 'loadDashboard').mockResolvedValue();
+
+		const fakeRtc = {
+			state: 'connected',
+			restartPaused: true,
+			isReady: true,
+			pauseRestart: vi.fn(),
+			triggerRestart: vi.fn(),
+			resumeRecovery: vi.fn(),
+		};
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].dcReady = true;
+
+		store.__resumeOnline('1', { forceRestartOnConnected: true });
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		agentsStore.loadAgents.mockClear();
+
+		// 切 rebuild 路径：模拟 restart 失败后 claw 走 __ensureRtc 重建
+		fakeConn.rtc = null;
+		store.byId['1'].dcReady = false;
+		mockInitRtc.mockClear();
+		mockInitRtc.mockResolvedValue('rtc');
+
+		await store.__ensureRtc('1');
+
+		// __ensureRtc 成功路径 consume _pendingForceRefreshOnRebuild：若 forceRestart 分支
+		// 误 add 了 id，这里 force=true 会触发 loader。正确实现下标记未被 add → force=false
+		// → disconnectedAt=0 被 __refreshIfStale 的 gap gate skip
+		await new Promise((r) => setTimeout(r, 10));
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
 	});
 });
 

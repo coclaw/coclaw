@@ -266,10 +266,18 @@ SSE claw.status {online:false}
 ```
 SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→true
   → claws.store.updateClawOnline(id, true) / applySnapshot Phase 3
-  → __resumeOnline(id):
+  → __resumeOnline(id, {forceRestartOnConnected?}):
       1. __clearRetry(id)
-      2. force refresh 分流（关键：按 rtc.state 决定立即刷还是延后）：
-         - DC 预期可用（'connected' / 'restarting'，SCTP 多能存活）→ 立即
+      2. 消费 `_pendingTypeChangedRestartClaws.delete(id)` 的返回值，若命中
+         则 forceRestartOnConnected=true（覆盖外部传入）
+      3. refresh 时机三分派（关键：不依赖 `wasDisconnected` 翻转——offline 期间
+         `dcReady` 从未被清，`onRtcStateChange('connected')` 的 wasDisconnected=false
+         分支也不 refresh；presence 恢复的唯一 refresh 入口就是 __resumeOnline）：
+         - forceRestartOnConnected=true（typeChanged 记账命中）→ 跳过 refresh：
+           旧 ICE 路径必已失效，发 RPC 只会应用层超时；ICE restart 成功后 SCTP/DC
+           无缝延续，onRtcStateChange('connected') 的 wasDisconnected=false 分支也
+           不补刷（设计一致）
+         - DC 预期可用（'connected' / 'restarting'，非 forceRestart）→ 立即
            __refreshIfStale(id, {force:true})（loader 可用 dcReady=true 发 RPC）
          - 需要 rebuild（rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'）→
            add id 到 `_pendingForceRefreshOnRebuild` Set；任何一次 __ensureRtc 真正
@@ -277,12 +285,13 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
              * `_rtcInitInProgress` 守卫下 __ensureRtc 早退（.then 立即 fire 但
                rebuild 未完成）
              * 当前 __ensureRtc attempts 全失败、等退避重试多轮后最终成功
-      3. 按 rtc.state 分派动作：
+      4. 按 rtc.state 分派动作：
          - 'restarting' + restartPaused → rtc.triggerRestart('online_resume')
            （复用 PC + 全新 90s 预算；paused gate 仅此路径可穿过）
          - 'restarting' + 非 paused → 已在正常 restart 循环，不重入
-         - 'connected' + restartPaused → rtc.resumeRecovery()
-           （清 paused + 重启 keepalive；不触发 ICE restart，PC 本身仍健康）
+         - 'connected' + restartPaused → 默认 rtc.resumeRecovery()（清 paused +
+           重启 keepalive；不触发 ICE restart，PC 本身仍健康）；forceRestartOnConnected
+           命中时升级为 rtc.triggerRestart('online_resume')（旧 ICE 路径必失效需走 restart）
          - 其余 → __ensureRtc(id).then(force refresh? + loadDashboardForClaw)
 ```
 

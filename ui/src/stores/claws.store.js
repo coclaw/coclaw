@@ -112,6 +112,17 @@ const RUNTIME_FIELDS = new Set([
 	'rtcPeerTransportInfo',
 	'retryCount', 'retryNextAt',
 ]);
+/**
+ * 必须走专用入口的字段（拒绝 `addOrUpdateClaw` 等旁路覆盖）。
+ *
+ * `online` 是 server 侧 presence，UI 侧必须走 `updateClawOnline`（SSE `claw.status` 事件）
+ * 或 `applySnapshot` 的 diff 入口触发 gate 副作用（pause/resume/retry 清理）。
+ * 这里把 `online` 纳入黑名单，防御性禁止 `addOrUpdateClaw`（`claw.bound` / `claw.nameUpdated`）
+ * 旁路覆盖 online——当前 server payload 不带 online 属于隐式契约，此条保证契约被外部改动时
+ * 也不会静默绕过 gate。注意**不放进 `RUNTIME_FIELDS`**：`applySnapshot` 的 Phase 2 保留
+ * 运行时状态时，online 必须由 snapshot 覆盖才能让 Phase 3 的 true↔false diff 生效。
+ */
+const GATED_FIELDS = new Set(['online']);
 
 /** 重置模块级状态（logout / 测试） */
 export function __resetClawStoreInternals() {
@@ -226,7 +237,7 @@ export const useClawsStore = defineStore('claws', {
 				// 更新已有 claw（保留运行时状态，跳过 server 不应覆盖的字段）
 				const existing = this.byId[id];
 				for (const [k, v] of Object.entries(claw)) {
-					if (k === 'id' || RUNTIME_FIELDS.has(k)) continue;
+					if (k === 'id' || RUNTIME_FIELDS.has(k) || GATED_FIELDS.has(k)) continue;
 					existing[k] = v;
 				}
 			} else {
@@ -611,9 +622,13 @@ export const useClawsStore = defineStore('claws', {
 		 * plugin 离线过（不管多短），UI 数据一定可能 stale——offline→online 事件本身
 		 * 就是 refresh 的触发信号，不依赖 `dcReady` 翻转（presence 与 DC 生命周期解耦）。
 		 *
-		 * refresh 时机按 rtc.state 分派（关键）：
-		 * - `connected` / `restarting` → **立即** force refresh：DC 预期可用（SCTP 多能跨 restart 存活），
-		 *   loader 的 `getReadyConn` 不会被 dcReady gate 挡住
+		 * refresh 时机分派（关键）：
+		 * - `forceRestartOnConnected` → **跳过** refresh：即将走 triggerRestart('online_resume')，
+		 *   ICE restart 让 SCTP/DC 无缝延续（restart 成功后 `onRtcStateChange('connected')` 的
+		 *   `wasDisconnected=false` 分支也不 refresh，设计一致）；旧 ICE 路径已失效，立即发 RPC 只会
+		 *   应用层超时
+		 * - `connected` / `restarting`（非 forceRestart） → **立即** force refresh：DC 预期可用
+		 *   （SCTP 多能跨 restart 存活），loader 的 `getReadyConn` 不会被 dcReady gate 挡住
 		 * - rebuild 路径（rtc 不存在 / `failed` / `closed` / `idle` / `connecting`）→ **延后**到 rebuild 成功后
 		 *   force refresh：rebuild 前 dcReady=false，loader 会被 `getReadyConn` gate 全部 skip，
 		 *   立即 refresh 是 no-op。必须等 `__ensureRtc` 里写 dcReady=true 后再刷
@@ -644,14 +659,17 @@ export const useClawsStore = defineStore('claws', {
 			if (!conn) return;
 			this.__clearRetry(id);
 			const rtc = conn.rtc;
-			// 区分 DC 预期可用（立即刷）vs 需要 rebuild（延后刷）
-			const canRefreshNow = rtc?.state === 'connected' || rtc?.state === 'restarting';
-			if (canRefreshNow) {
+			// refresh 时机三分派：
+			// - forceRestartOnConnected：即将走 triggerRestart('online_resume')，ICE restart 让
+			//   SCTP/DC 无缝延续，无需 refresh；旧 ICE 路径已失效，立即发 RPC 只会应用层超时
+			// - connected / restarting（DC 预期可用）：立即 force refresh
+			// - rebuild 路径：dcReady=false 时立即 refresh 会被 getReadyConn gate skip，
+			//   打标记延后到 __ensureRtc 成功后触发
+			if (forceRestartOnConnected) {
+				// 跳过 refresh：交给 ICE restart 后的 SCTP 数据流自然延续
+			} else if (rtc?.state === 'connected' || rtc?.state === 'restarting') {
 				this.__refreshIfStale(id, { force: true });
 			} else {
-				// rebuild 路径：dcReady=false 时 loader 会被 getReadyConn gate skip，
-				// 立即 force refresh 是 no-op。打标记，让任意一次 __ensureRtc 真正成功
-				// （无论当前 call 还是退避链中的 call）时自动触发 force refresh。
 				_pendingForceRefreshOnRebuild.add(id);
 			}
 
