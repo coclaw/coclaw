@@ -37,7 +37,7 @@ function successDeps(overrides = {}) {
 				RTCPeerConnection: MockRTCPeerConnection,
 			}),
 			remoteLog: (text) => logs.push(text),
-			startTimeout: 500,
+			ipcRequestTimeout: 500,
 			...overrides,
 		},
 	};
@@ -208,8 +208,129 @@ test('preloadPion: ipc 已启动后意外异常时关闭 Go 进程', async () =>
 			RTCPeerConnection: MockRTCPeerConnection,
 		}),
 		remoteLog: throwingLog,
-		startTimeout: 500,
+		ipcRequestTimeout: 500,
 	});
 	assert.equal(result, null);
 	assert.ok(stopCalled, 'ipc.stop() 应被调用以关闭已启动的 Go 进程');
+});
+
+test('preloadPion: ipcRequestTimeout 未传时使用默认 20s', async () => {
+	let capturedOpts;
+	class CapturePionIpc extends MockPionIpc {
+		constructor(opts = {}) {
+			super(opts);
+			capturedOpts = opts;
+		}
+	}
+	const logs = [];
+	const result = await preloadPion({
+		dynamicImport: async () => ({
+			PionIpc: CapturePionIpc,
+			RTCPeerConnection: MockRTCPeerConnection,
+		}),
+		remoteLog: (text) => logs.push(text),
+	});
+	assert.notEqual(result, null);
+	assert.equal(capturedOpts.timeout, 20_000);
+});
+
+test('preloadPion: logger 回调双打——严重事件本地 error，其他本地 info，remoteLog 始终走', async () => {
+	let capturedOpts;
+	class CapturePionIpc extends MockPionIpc {
+		constructor(opts = {}) {
+			super(opts);
+			capturedOpts = opts;
+		}
+	}
+	const infoCalls = [];
+	const errorCalls = [];
+	const warnCalls = [];
+	const localLogger = {
+		info: (msg) => infoCalls.push(msg),
+		warn: (msg) => warnCalls.push(msg),
+		error: (msg) => errorCalls.push(msg),
+	};
+	const { deps, logs } = successDeps({
+		logger: localLogger,
+		dynamicImport: async () => ({
+			PionIpc: CapturePionIpc,
+			RTCPeerConnection: MockRTCPeerConnection,
+		}),
+	});
+	const result = await preloadPion(deps);
+	assert.notEqual(result, null);
+
+	// 喂不同严重度的消息给 pion-node 的 logger 回调
+	capturedOpts.logger('spawning /path/to/bin');
+	capturedOpts.logger('pion-ipc ready');
+	capturedOpts.logger('dc error pcId=abc label=rpc ctx=send err=request timeout: dc.send (id=15)');
+	capturedOpts.logger('orphan response id=15');
+	capturedOpts.logger('dc error pcId=abc label=rpc ctx=remote-error err=abort chunk: User Initiated Abort');
+
+	// remoteLog 始终全部收到
+	assert.ok(logs.includes('pion.ipc spawning /path/to/bin'));
+	assert.ok(logs.includes('pion.ipc pion-ipc ready'));
+	assert.ok(logs.some((l) => l.includes('request timeout: dc.send (id=15)')));
+	assert.ok(logs.some((l) => l.includes('orphan response id=15')));
+	assert.ok(logs.some((l) => l.includes('ctx=remote-error')));
+
+	// 本地分级：timeout / orphan 走 error，其他走 info
+	assert.equal(errorCalls.length, 2, '应产生 2 条 error（timeout + orphan）');
+	assert.ok(errorCalls.some((l) => l.includes('request timeout: dc.send (id=15)')));
+	assert.ok(errorCalls.some((l) => l.includes('orphan response id=15')));
+
+	assert.equal(infoCalls.length, 3, '应产生 3 条 info（spawning + ready + remote-error）');
+	assert.ok(infoCalls.some((l) => l.includes('spawning')));
+	assert.ok(infoCalls.some((l) => l.includes('pion-ipc ready')));
+	assert.ok(infoCalls.some((l) => l.includes('ctx=remote-error')));
+
+	assert.equal(warnCalls.length, 0);
+});
+
+test('preloadPion: 不传 logger 时不抛，remoteLog 仍按原逻辑走', async () => {
+	let capturedOpts;
+	class CapturePionIpc extends MockPionIpc {
+		constructor(opts = {}) {
+			super(opts);
+			capturedOpts = opts;
+		}
+	}
+	const { deps, logs } = successDeps({
+		dynamicImport: async () => ({
+			PionIpc: CapturePionIpc,
+			RTCPeerConnection: MockRTCPeerConnection,
+		}),
+	});
+	const result = await preloadPion(deps);
+	assert.notEqual(result, null);
+
+	// 不应抛：logger 未注入，回调内部仍须能安全执行
+	capturedOpts.logger('spawning /path/to/bin');
+	capturedOpts.logger('dc error ctx=send err=request timeout: dc.send (id=99)');
+
+	assert.ok(logs.includes('pion.ipc spawning /path/to/bin'));
+	assert.ok(logs.some((l) => l.includes('request timeout: dc.send (id=99)')));
+});
+
+test('preloadPion: logger 缺少 error/info 方法时不抛（可选链兜底）', async () => {
+	let capturedOpts;
+	class CapturePionIpc extends MockPionIpc {
+		constructor(opts = {}) {
+			super(opts);
+			capturedOpts = opts;
+		}
+	}
+	const { deps } = successDeps({
+		logger: {}, // 空 logger：既无 .info 也无 .error
+		dynamicImport: async () => ({
+			PionIpc: CapturePionIpc,
+			RTCPeerConnection: MockRTCPeerConnection,
+		}),
+	});
+	const result = await preloadPion(deps);
+	assert.notEqual(result, null);
+
+	capturedOpts.logger('spawning');
+	capturedOpts.logger('request timeout: dc.send (id=1)');
+	// 未抛即通过
 });

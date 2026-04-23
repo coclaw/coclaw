@@ -1087,7 +1087,7 @@ export class RealtimeBridge {
 		// 1. 尝试 pion（最高优先级）
 		const preloadPionFn = this.__preloadPion
 			?? (await import('./webrtc/pion-preloader.js')).preloadPion;
-		const pionResult = await preloadPionFn().catch((err) => {
+		const pionResult = await preloadPionFn({ logger: this.logger }).catch((err) => {
 			this.logger.warn?.(`[coclaw] pion preload unexpected failure: ${err?.message}`);
 			return null;
 		});

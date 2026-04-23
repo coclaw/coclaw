@@ -1,6 +1,9 @@
 import { remoteLog as defaultRemoteLog } from '../remote-log.js';
 
-const DEFAULT_START_TIMEOUT_MS = 10_000;
+const DEFAULT_IPC_REQUEST_TIMEOUT_MS = 20_000;
+
+// 匹配 pion-node 内部视为严重的 log：IPC 请求超时、以及 Go 侧迟到的响应（主请求已 reject，响应变孤儿）
+const SEVERE_LOG_PATTERN = /request timeout|orphan response/;
 
 /**
  * 预加载 Pion WebRTC 实现：启动 pion-ipc Go 进程，返回绑定了 ipc 的 PeerConnection。
@@ -13,13 +16,15 @@ const DEFAULT_START_TIMEOUT_MS = 10_000;
  * @param {object} [deps] - 可注入依赖（测试用）
  * @param {Function} [deps.dynamicImport] - (specifier) => import(specifier)
  * @param {Function} [deps.remoteLog] - (text) => void
- * @param {number} [deps.startTimeout] - 启动超时（ms），默认 10s
+ * @param {object} [deps.logger] - plugin 本地 pino-style logger（.info/.warn/.error），用于本地调试可见性
+ * @param {number} [deps.ipcRequestTimeout] - 每次 IPC 请求的超时（ms，也用于启动 ping），默认 20s
  * @returns {Promise<{ PeerConnection: Function, cleanup: Function, impl: string, ipc: object }|null>}
  */
 export async function preloadPion(deps = {}) {
 	const log = deps.remoteLog ?? defaultRemoteLog;
+	const localLogger = deps.logger ?? null;
 	const dynamicImport = deps.dynamicImport ?? ((spec) => import(spec));
-	const startTimeout = deps.startTimeout ?? DEFAULT_START_TIMEOUT_MS;
+	const ipcRequestTimeout = deps.ipcRequestTimeout ?? DEFAULT_IPC_REQUEST_TIMEOUT_MS;
 
 	log('pion.preload');
 
@@ -42,9 +47,18 @@ export async function preloadPion(deps = {}) {
 		}
 
 		// 启动 IPC 进程（内部会 ping 验证就绪，binary 由 pion-node 自动解析）
+		// logger 回调双打：始终走 remoteLog；同时送本地 logger，严重事件（IPC 超时、orphan 响应）
+		// 升级到 error 级别，便于本地调试时一眼可见；其他运维类消息走 info。
 		ipc = new PionIpc({
-			logger: (msg) => log(`pion.ipc ${msg}`),
-			timeout: startTimeout,
+			logger: (msg) => {
+				log(`pion.ipc ${msg}`);
+				if (SEVERE_LOG_PATTERN.test(msg)) {
+					localLogger?.error?.(`[pion-ipc] ${msg}`);
+				} else {
+					localLogger?.info?.(`[pion-ipc] ${msg}`);
+				}
+			},
+			timeout: ipcRequestTimeout,
 			autoRestart: true,
 		});
 
