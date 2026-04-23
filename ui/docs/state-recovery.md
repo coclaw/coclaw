@@ -442,7 +442,7 @@ RTC 恢复决策基于 PC 自身状态、DC probe 和两把正交的"全局闸"�
 
 `request()` 检测 DC 未就绪时通过 `waitReady()` 自动排队等待连接恢复（同时触发重连），对调用方透明。
 
-**online 门控的不变式**：`claw.online=false` 期间所有 RTC 主动恢复动作（restart / rebuild / retry 调度 / probe）都暂停，预算/计数清零，PC 保留，`dcReady=false`。online 回来视为新一轮恢复事件。
+**online 门控的不变式**：`claw.online=false` 期间所有 RTC 主动恢复动作（restart / rebuild / retry 调度 / probe）都暂停，预算/计数清零，PC 保留。**不动 `dcReady` / `rtcPhase` / `disconnectedAt`**：presence 与 DC 生命周期正交（详见主真相源 `docs/architecture/communication-model.md` §5.5）。online 回来视为新一轮恢复事件。
 
 **网络类型检测机制**：Capacitor Network plugin 的 `connectionType` 仅区分 `wifi`/`cellular`/`none`/`unknown`。`_lastConnectionType` 仅在 `connected=true` 且类型为 `wifi` 或 `cellular` 时更新；`none`（offline）和 `unknown` 不更新，避免污染后续比较基线。类型变化信息通过 `network:online` 事件的 `detail.typeChanged` 字段传递。
 

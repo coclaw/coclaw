@@ -337,7 +337,16 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 
 **心智模型**：sig gate 不是"RTC 依赖 WS 的连接状态"，而是 RTC 和 WS 都读取同一个公共的**端到端可达性**信号——WS 顺手承担了探测职责。对比替代方案：OS 级 `navigator.onLine` 或 Capacitor Network 只看本地网卡，电梯 / 地下车库 / server 故障时仍报 online，假阴性严重；应用级 WS heartbeat 是真正的端到端探测，上述场景都能准确感知。WS 的地位是"顺手承担 heartbeat 职责的长连接"，不是业务依赖。
 
-**typeChanged 跨 sig-gate 记账**（`_pendingTypeChangedRestart`）：`network:online(typeChanged=true)` 在 sig 不通时被入口 gate 吞掉会导致丢信号——sig 恢复后 `__resumeAllClawsForSigOnline` 对 `connected+paused` 的 claw 默认走 `resumeRecovery()`（不发 ICE restart），而网络类型切换（WiFi↔蜂窝）后旧 ICE 路径必然失效，必须走 restart 才能恢复。故在 `__handleNetworkOnline` 的 sig gate return 前设模块级布尔 `_pendingTypeChangedRestart=true` 记账；`__resumeAllClawsForSigOnline` 遍历前读并消费该标记，为真时把 `connected+paused` 的分派升级为 `rtc.triggerRestart('online_resume')`。消费后立即清零——不粘着、不误复用旧信号。
+**typeChanged 跨恢复路径记账**（`_pendingTypeChangedRestartClaws`，per-claw Set）：`network:online(typeChanged=true)` 要覆盖所有"发生换网时暂不能立刻 ICE restart，之后某刻才恢复"的 claw——否则这些 claw 下次走 `resumeRecovery()` 会复用已失效的旧 ICE 路径（IP 已变），等 ~30s consent 超时才被动 restart。
+
+记账法：`__handleNetworkOnline(typeChanged=true)` 入口（sig gate 之前）对每个 claw 判断"本次循环是否会立刻发起有效 restart"——仅"sig 通 + `claw.online` + `initialized` + `connected` + `!restartPaused`"的走下方循环 `triggerRestart('network_type_changed')`；**其余全部 `add(id)` 到 Set**（包括 offline / sig offline / paused / restarting / failed / 未 initialized / rtc=null）。消费在 `__resumeOnline(id)` 入口唯一点：`delete(id)` 的返回值直接作为 `forceRestartOnConnected` 信号——命中则将 `connected+paused` 分派升级为 `rtc.triggerRestart('online_resume')`。
+
+覆盖的三条漏网路径（对应早期 boolean 版本无法处理的场景）：
+- **sig 通 + claw offline + typeChanged**：claw 回 online 时由 `updateClawOnline` 调 `__resumeOnline` 消费
+- **sig offline + typeChanged + sig resume 时 claw 仍 offline**：claw 后续回 online 时由 `__resumeOnline` 消费（sig resume 的 `__resumeAllClawsForSigOnline` 对 offline claw 不动）
+- **多 claw 同时离线并先后恢复**：每个 claw 独立持有 Set 条目；不再互相抢 boolean
+
+清理：`removeClawById` / `__resetClawStoreInternals`（logout）。`!initialized` 的 claw 由 `__resumeAllClawsForSigOnline` 补跑 `__fullInit` 时主动 delete（全新 ICE 路径天然"强 restart"，Set 条目变余项主动清理）。
 
 ---
 

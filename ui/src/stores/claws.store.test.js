@@ -4511,7 +4511,7 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 		__emitSigState('connected');
 
 		expect(resumeSpy).toHaveBeenCalledTimes(1);
-		expect(resumeSpy).toHaveBeenCalledWith('1', { forceRestartOnConnected: false });
+		expect(resumeSpy).toHaveBeenCalledWith('1');
 	});
 
 	test('forceReconnect 二连发 disconnected→connecting：handler 去重，freeze 仅 1 次', () => {
@@ -4772,7 +4772,7 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 		__emitSigState('connected');
 
 		expect(fullInitSpy).not.toHaveBeenCalled();
-		expect(resumeSpy).toHaveBeenCalledWith('1', { forceRestartOnConnected: false });
+		expect(resumeSpy).toHaveBeenCalledWith('1');
 	});
 
 	// -------- review 修复：#2 typeChanged 跨 sig-gate 记账 --------
@@ -4826,6 +4826,92 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 		__emitSigState('connected');
 		expect(fakeRtc.resumeRecovery).toHaveBeenCalledTimes(1);
 		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+	});
+
+	// -------- review round 3 修复：per-claw Set 覆盖漏网路径（sig 在线/sig 恢复时 claw 仍 offline）--------
+
+	test('#2 round3: sig 在线 + claw offline 期间 typeChanged → claw 回 online 时 forceRestart', () => {
+		// 外部 review round 3 #1 核心场景：机器人离线时换网，信号此前被丢
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__bridgeLifecycle();
+		store.byId['1'].online = false;
+
+		// sig 仍在线（不走 sig gate return）+ claw offline + typeChanged
+		// 主循环 `!claw.online continue` 会跳过，但预循环把 '1' 加入 Set
+		store.__handleNetworkOnline(true);
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+
+		// claw 回 online → updateClawOnline 调 __resumeOnline → 消费 Set → forceRestart
+		store.updateClawOnline('1', true);
+
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
+	});
+
+	test('#2 round3: sig offline + typeChanged + sig resume 时 claw 仍 offline → claw 后续回 online 时 forceRestart', () => {
+		// 外部 review round 3 #1 另一场景：sig 恢复时 claw 还没回来
+		// boolean 版本在 sig resume 会消费掉标记，此时 offline claw 被跳过，信号丢失
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__bridgeLifecycle();
+
+		__emitSigState('disconnected');
+		store.byId['1'].online = false;
+		store.__handleNetworkOnline(true); // Set 记账 '1'
+
+		// sig 恢复 + claw 仍 offline：__resumeAllClawsForSigOnline 对 offline claw 不动
+		// 旧设计：boolean 在此处消费清零 → 后续 claw 回 online 时信号已丢
+		// 新设计：Set 条目保留
+		__emitSigState('connected');
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+
+		// claw 稍后回 online → __resumeOnline 消费 Set → forceRestart
+		store.updateClawOnline('1', true);
+
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
+	});
+
+	test('#2 round3: 主循环 connected+paused + typeChanged 处理后清 Set（再 resume 不虚发 triggerRestart）', () => {
+		// 场景：claw connected+paused（某瞬态，如 sig 刚 down→up 期间）+ typeChanged
+		// 预循环把 claw 加入 Set（willHandleNow=false，因 paused）；主循环 connected+typeChanged
+		// 分支直接 triggerRestart('network_type_changed') 当场处理 → 必须清 Set。
+		// 若不清，后续任一 __resumeOnline 会消费到陈旧条目，在已健康连接上虚发 online_resume。
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__bridgeLifecycle();
+
+		store.__handleNetworkOnline(true);
+		// 主循环 network_type_changed 分支已触发
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('network_type_changed');
+		fakeRtc.triggerRestart.mockClear();
+
+		// sig 翻转 down/up（触发 __resumeAllClawsForSigOnline → __resumeOnline 尝试消费 Set）
+		__emitSigState('disconnected');
+		__emitSigState('connected');
+
+		// Set 已被主循环 delete 清掉，__resumeOnline 消费返回 false
+		// → connected+paused（__freezeAllClawsForSigOffline 再次 pauseRestart）走 resumeRecovery
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		expect(fakeRtc.resumeRecovery).toHaveBeenCalledTimes(1);
+	});
+
+	test('#2 round3: removeClawById 清 Set 条目（重用同 id 时不污染恢复路径）', () => {
+		const store = useClawsStore();
+		setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__bridgeLifecycle();
+
+		store.__handleNetworkOnline(true); // '1' 进 Set（paused 不满足 willHandleNow）
+		store.removeClawById('1');
+
+		// 重建同 id claw，直接走恢复路径
+		const { fakeRtc: rtcB } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__resumeOnline('1');
+
+		// Set 被 removeClawById 清理后，消费不到 → 走默认 resumeRecovery 不 forceRestart
+		expect(rtcB.triggerRestart).not.toHaveBeenCalled();
+		expect(rtcB.resumeRecovery).toHaveBeenCalledTimes(1);
 	});
 });
 

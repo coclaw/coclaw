@@ -64,13 +64,21 @@ let _sigOffline = false;
 /** 进入 sig offline 的时间戳，用于 resume 时输出冻结时长（生产诊断 WS 闪断 vs 长时间失联） */
 let _sigOfflineAt = 0;
 /**
- * typeChanged restart 记账标记（模块级布尔）。
- * sig 不通时 `network:online(typeChanged=true)` 无法发 offer；记下此标记，
- * sig 恢复时在 `__resumeAllClawsForSigOnline` 里升级恢复策略：
- * `connected+paused` 的 claw 从 `resumeRecovery()` 改为 `triggerRestart('online_resume')`。
- * 整轮 sig down/up 里最多一次 typeChanged → per-claw Set 无必要。
+ * typeChanged restart 记账集合（per-claw）。
+ *
+ * `network:online(typeChanged=true)` 时若某 claw**无法立刻 ICE restart**
+ * （sig offline / claw offline / `connected+paused` / 未 initialized 等），
+ * 将其 id 加入此集合——标记"下次恢复时必须 triggerRestart 而非 resumeRecovery"（旧 ICE 路径已因 IP 变化失效）。
+ *
+ * 消费：`__resumeOnline` 入口用 `delete(id)` 的返回值作为 `forceRestartOnConnected` 信号。
+ * 覆盖三条漏网路径（对应 boolean 版本无法处理的场景）：
+ * 1. sig 在线 + claw offline + typeChanged → claw 回 online 时消费
+ * 2. sig offline + typeChanged + sig resume 但 claw 仍 offline → claw 回 online 时消费
+ * 3. 多 claw 同时离线时，boolean 只能服务一把；Set 每个 claw 独立管
+ *
+ * 清理：`__resetClawStoreInternals`（logout）/ `removeClawById`。
  */
-let _pendingTypeChangedRestart = false;
+const _pendingTypeChangedRestartClaws = new Set();
 
 /**
  * 两层重试结构：
@@ -116,7 +124,7 @@ export function __resetClawStoreInternals() {
 	_backgroundAt = 0;
 	_sigOffline = false;
 	_sigOfflineAt = 0;
-	_pendingTypeChangedRestart = false;
+	_pendingTypeChangedRestartClaws.clear();
 	if (_lifecycleHandlers && typeof window !== 'undefined') {
 		window.removeEventListener('app:background', _lifecycleHandlers.bg);
 		window.removeEventListener('network:online', _lifecycleHandlers.net);
@@ -245,6 +253,9 @@ export const useClawsStore = defineStore('claws', {
 				this.__handleClawGoOffline(id);
 			} else if (!claw.initialized) {
 				// claw 上线且未初始化 → fullInit（ensureConnected 内部处理 WS）
+				// __fullInit 会建全新 ICE 路径，typeChanged 记账无意义 → 主动清 Set 条目
+				//（与 __resumeAllClawsForSigOnline 的 !initialized 分支对称）
+				_pendingTypeChangedRestartClaws.delete(id);
 				claw.initialized = true;
 				const conn = useClawConnections().get(id);
 				if (conn) {
@@ -269,6 +280,7 @@ export const useClawsStore = defineStore('claws', {
 			this.__clearRetry(id);
 			_bridgedConns.delete(id);
 			_pendingForceRefreshOnRebuild.delete(id);
+			_pendingTypeChangedRestartClaws.delete(id);
 			delete this.byId[id];
 		},
 		/**
@@ -303,6 +315,7 @@ export const useClawsStore = defineStore('claws', {
 					this.__clearRetry(oldId);
 					_bridgedConns.delete(oldId);
 					_pendingForceRefreshOnRebuild.delete(oldId);
+					_pendingTypeChangedRestartClaws.delete(oldId);
 				}
 			}
 			this.byId = newById;
@@ -554,12 +567,12 @@ export const useClawsStore = defineStore('claws', {
 		 * @param {number} [duration] - sig offline 持续毫秒（sigState handler 计算后传入）
 		 */
 		__resumeAllClawsForSigOnline(duration = 0) {
-			// 无论是否早退都消费清零，避免"sig up 时 fetched=false 不消费 → 未来某次 sig up
-			// 时陈旧标记误升级为 triggerRestart"的 stale-signal 风险
-			const forceRestart = _pendingTypeChangedRestart;
-			_pendingTypeChangedRestart = false;
 			if (!this.fetched) return;
 			let resumedCount = 0;
+			// 诊断：本次 sig-resume 里因 typeChanged 记账被升级为 triggerRestart 的 claw 数。
+			// 仅在 initialized 分支（真正调 __resumeOnline 消费 Set）里计数，避免
+			// !initialized 分支的主动清理造成 force_restart 虚增。
+			let forceRestartCount = 0;
 			for (const id of Object.keys(this.byId)) {
 				const claw = this.byId[id];
 				if (!claw?.online) continue;
@@ -568,6 +581,10 @@ export const useClawsStore = defineStore('claws', {
 					// 拦过（__ensureRtc 入口早退 → 抛 'RTC not available' → catch 回滚
 					// initialized=false）。sig 恢复时在此补跑（逻辑复刻 updateClawOnline 的
 					// !initialized 分支）。
+					// 说明：!initialized 的 claw 即将通过 __fullInit 建全新 ICE 路径，
+					// 无论 Set 是否含它都不必 forceRestart（全新路径天然"强 restart"），
+					// 但为正确清理 Set 条目，主动 delete。
+					_pendingTypeChangedRestartClaws.delete(id);
 					const conn = useClawConnections().get(id);
 					if (!conn) continue; // conn 未 bridged：本次跳过，等 __bridgeConn 就绪后由后续路径接手
 					claw.initialized = true;
@@ -577,12 +594,14 @@ export const useClawsStore = defineStore('claws', {
 						console.warn('[claws] fullInit (sig resume) failed for clawId=%s: %s', id, err?.message);
 					});
 				} else {
-					this.__resumeOnline(id, { forceRestartOnConnected: forceRestart });
+					if (_pendingTypeChangedRestartClaws.has(id)) forceRestartCount++;
+					// __resumeOnline 内部会消费 Set 条目（若命中则自动升级为 triggerRestart）
+					this.__resumeOnline(id);
 				}
 				resumedCount++;
 			}
 			if (resumedCount > 0) {
-				remoteLog(`claw.sigOnline resumed count=${resumedCount} duration=${duration}ms force_restart=${forceRestart ? 1 : 0}`);
+				remoteLog(`claw.sigOnline resumed count=${resumedCount} duration=${duration}ms force_restart=${forceRestartCount}`);
 			}
 		},
 
@@ -612,12 +631,15 @@ export const useClawsStore = defineStore('claws', {
 		 *
 		 * @param {string} id - clawId
 		 * @param {object} [opts]
-		 * @param {boolean} [opts.forceRestartOnConnected=false] - connected+paused 时强制 triggerRestart 而非 resumeRecovery
+		 * @param {boolean} [opts.forceRestartOnConnected=false] - connected+paused 时强制 triggerRestart 而非 resumeRecovery；
+		 *   典型来源是 `_pendingTypeChangedRestartClaws` 消费（内部自动完成），外部调用者一般不传
 		 */
 		__resumeOnline(id, { forceRestartOnConnected = false } = {}) {
 			// 两把锁协调核心：sig 不通时不做任何恢复动作（等 sig 回来时由
 			// __resumeAllClawsForSigOnline 遍历重调；或由 claw online 事件再次触发）
 			if (_sigOffline) return;
+			// 消费 typeChanged per-claw 记账：命中则升级 connected+paused 分派为 triggerRestart
+			if (_pendingTypeChangedRestartClaws.delete(id)) forceRestartOnConnected = true;
 			const conn = useClawConnections().get(id);
 			if (!conn) return;
 			this.__clearRetry(id);
@@ -967,13 +989,30 @@ export const useClawsStore = defineStore('claws', {
 		 * @param {boolean} typeChanged
 		 */
 		__handleNetworkOnline(typeChanged) {
-			// sig gate：WS 不通时 restart/rebuild 均发不出去；但 typeChanged 必须记下来，
-			// sig 恢复时由 __resumeAllClawsForSigOnline 升级恢复策略（connected+paused
-			// 从 resumeRecovery 改为 triggerRestart('online_resume')）。
-			if (_sigOffline) {
-				if (typeChanged) _pendingTypeChangedRestart = true;
-				return;
+			// typeChanged 记账（per-claw）：对本次调用**不会**被下方循环立刻 triggerRestart
+			// 的 claw 全部打标——下次它们走 __resumeOnline 时（不管是 claw-online 还是
+			// sig-online 路径），自动升级为 triggerRestart（旧 ICE 路径已失效）。
+			// 必须在 sig gate `return` 之前，才能覆盖 "sig offline + typeChanged" 场景。
+			if (typeChanged) {
+				for (const id of Object.keys(this.byId)) {
+					const claw = this.byId[id];
+					if (!claw) continue;
+					const conn = useClawConnections().get(id);
+					const rtc = conn?.rtc;
+					// 仅"sig 通 + claw online + initialized + connected + 未 paused"的 claw
+					// 会被下方循环 L991 的 `triggerRestart('network_type_changed')` 立刻处理；
+					// 其余一律打标（包括 offline / sig offline / paused / restarting / failed /
+					// 未 initialized / rtc=null 等）。
+					const willHandleNow = !_sigOffline
+						&& claw.online
+						&& claw.initialized
+						&& rtc?.state === 'connected'
+						&& !rtc.restartPaused;
+					if (!willHandleNow) _pendingTypeChangedRestartClaws.add(id);
+				}
 			}
+			// sig gate：WS 不通时 restart/rebuild 均发不出去（typeChanged 已在上方记账完毕）。
+			if (_sigOffline) return;
 			for (const id of Object.keys(this.byId)) {
 				if (_rtcInitInProgress.get(id)) continue;
 				const claw = this.byId[id];
@@ -985,16 +1024,27 @@ export const useClawsStore = defineStore('claws', {
 				if (!rtc) continue;
 
 				if (rtc.state === 'restarting') {
+					// 本次调用当场 nudge 继续 restart 循环 → 新 ICE 路径自然建在当前网络上
+					// → typeChanged 记账条目变陈旧，主动清理避免下次 __resumeOnline 虚发
+					_pendingTypeChangedRestartClaws.delete(id);
 					rtc.nudgeRestart();
 					continue;
 				}
 				if (rtc.state === 'connected' && typeChanged) {
 					remoteLog(`claw.recover claw=${id} reason=network_type_changed source=network:online`);
+					// **必须**清 Set：`connected + restartPaused` 的 claw 预循环 willHandleNow=false
+					// 已被 add，本分支 triggerRestart 已就地处理；若不清则下次 __resumeOnline
+					// 消费到陈旧条目，会在已健康连接上虚发 online_resume triggerRestart。
+					// （`connected + !restartPaused` 预循环 willHandleNow=true 不会入 Set，
+					// 此 delete 对这条子路径是 no-op。）
+					_pendingTypeChangedRestartClaws.delete(id);
 					rtc.triggerRestart('network_type_changed');
 					continue;
 				}
 				if (rtc.state === 'failed' || rtc.state === 'closed') {
 					remoteLog(`claw.recover claw=${id} reason=rtc_${rtc.state} source=network:online`);
+					// 本次调用启动 rebuild → 全新 ICE 路径 → 清陈旧条目
+					_pendingTypeChangedRestartClaws.delete(id);
 					claw.rtcPhase = 'recovering';
 					this.__clearRetry(id);
 					this.__ensureRtc(id).catch(() => {});

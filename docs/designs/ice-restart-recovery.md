@@ -426,12 +426,15 @@ ICE failed → restarting → 周期重试 → WS 断了 → 发不出
 
 ```
 SSE claw.online=false → __handleClawGoOffline
-  → syncDashboardOffline + __clearRetry + clear dcReady/stamp disconnectedAt
-  → PC 在 restarting 时 rtc.pauseRestart()（停 restart 循环、清预算、epoch++、PC 不关）
-  → 其余主动恢复（probe / rebuild / retry）在 gate 下全部暂停
+  → syncDashboardOffline（dashboard 层同步）+ __clearRetry（停退避定时器）+ rtc.pauseRestart()
+    （停 restart timer/keepalive、清预算、epoch++、置 restartPaused；PC 不关）
+  → 不动 dcReady / rtcPhase / disconnectedAt / PC（presence 与 DC 生命周期正交，commit 4a05074 原则）
+  → 其余主动恢复（probe / rebuild / retry）在 online gate 下全部暂停
 SSE claw.online=true → __resumeOnline 按 PC 状态分派：
   - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 90s 预算
-  - connected + isReady → __ensureRtc 早退 + __refreshIfStale 刷业务数据 + 加载 dashboard
+  - connected + paused → resumeRecovery（清 paused + 重启 keepalive；不发 ICE restart）；
+    例外：typeChanged 记账命中 → 升级为 triggerRestart
+  - connected + 非 paused → __ensureRtc 早退 + __refreshIfStale 刷业务数据 + 加载 dashboard
   - failed/closed/idle/connecting/null → __ensureRtc 全量 rebuild
 ```
 
