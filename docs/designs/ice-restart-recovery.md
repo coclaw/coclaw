@@ -430,21 +430,22 @@ SSE claw.online=false → __handleClawGoOffline
     （停 restart timer/keepalive、清预算、epoch++、置 restartPaused；PC 不关）
   → 不动 dcReady / rtcPhase / disconnectedAt / PC（presence 与 DC 生命周期正交，commit 4a05074 原则）
   → 其余主动恢复（probe / rebuild / retry）在 online gate 下全部暂停
-SSE claw.online=true → __resumeOnline（入口三分派 refresh + PC 状态分派）：
+SSE claw.online=true → __resumeOnline（按 PC 状态分派，仅 rebuild 触发 refresh）：
 
-  refresh 时机（跳过 refresh 仅在"ICE restart 能让 SCTP 延续"场景；不依赖 wasDisconnected
-  翻转；offline 期间 dcReady 从未被清）：
-  - forceRestart 命中 + connected/restarting（走 triggerRestart('online_resume')）
-    → 跳过 refresh（ICE restart 让 SCTP 无缝延续；旧路径必失效，发 RPC 会应用层超时）
-  - connected / restarting（非 forceRestart）→ 入口立即 __refreshIfStale({ force: true })
-  - rebuild（含 forceRestart=true 的 rebuild 子场景）→ add 到 _pendingForceRefreshOnRebuild，
-    延后到 __ensureRtc 成功后消费。rebuild 建全新 PC + SCTP，必须 force refresh
+  refresh 规则（唯一触发场景是 rebuild）：
+  - rebuild 路径（rtc 不存在 / failed / closed / idle / connecting）→ add 到
+    _pendingForceRefreshOnRebuild，__ensureRtc 成功后消费并 force refresh。
+    rebuild 建全新 PC + 全新 SCTP，plugin 侧旧 DC buffer 的 rpc msg 丢失、plugin
+    可能换端，必须主动刷
+  - DC 延续路径（connected / restarting，含 forceRestart=true 的 ICE restart 子场景）
+    → **不刷**。PC 没 rebuild、SCTP 延续时，plugin 侧缓冲的 rpc msg 会随 ICE 恢复
+    自然送达 UI；主动 refresh 是冗余流量
 
   PC 状态分派：
   - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 90s 预算
   - connected + paused → 默认 resumeRecovery（清 paused + 重启 keepalive；不发 ICE restart）；
     typeChanged 记账命中 → 升级为 triggerRestart('online_resume')
-  - connected + 非 paused → __ensureRtc 早退 + 加载 dashboard
+  - connected + 非 paused → __ensureRtc 早退（DC 延续场景不单独刷 dashboard，与其他 loader 对称）
   - failed/closed/idle/connecting/null → __ensureRtc 全量 rebuild
 ```
 

@@ -36,14 +36,6 @@ function syncDashboardOffline(id) {
 }
 
 /**
- * claw 恢复在线后刷新 dashboard
- * @param {string} id - clawId
- */
-function loadDashboardForClaw(id) {
-	useDashboardStore().loadDashboard(id);
-}
-
-/**
  * claw 首次初始化：加载 agents（阻塞）+ sessions/topics/dashboard（fire-and-forget）
  * 全部 per-claw，避免多 claw 错峰恢复时全量横扫造成的 N² RPC 放大。
  * @param {string} id - clawId
@@ -78,7 +70,6 @@ function dispatchAgentEvent(payload) {
 __registerClawLifecycleHooks({
 	cleanupClawResources,
 	syncDashboardOffline,
-	loadDashboardForClaw,
 	initClawResources,
 	refreshClawResources,
 	dispatchAgentEvent,

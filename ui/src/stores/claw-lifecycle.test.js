@@ -81,7 +81,6 @@ describe('bot-lifecycle 自注册', () => {
 		expect(capture.hooks).toBeDefined();
 		expect(typeof capture.hooks.cleanupClawResources).toBe('function');
 		expect(typeof capture.hooks.syncDashboardOffline).toBe('function');
-		expect(typeof capture.hooks.loadDashboardForClaw).toBe('function');
 		expect(typeof capture.hooks.initClawResources).toBe('function');
 		expect(typeof capture.hooks.refreshClawResources).toBe('function');
 		expect(typeof capture.hooks.dispatchAgentEvent).toBe('function');
@@ -121,12 +120,6 @@ describe('syncDashboardOffline', () => {
 	});
 });
 
-describe('loadDashboardForClaw', () => {
-	test('调用 dashboard.loadDashboard', () => {
-		capture.hooks.loadDashboardForClaw('bot-4');
-		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-4');
-	});
-});
 
 describe('initClawResources', () => {
 	test('await loadAgents 并 per-claw fire-and-forget 其他三个', async () => {

@@ -809,6 +809,11 @@ export class WebRtcConnection {
 			// Math.max 保护：系统时钟回跳（NTP 校准）导致 Date.now() < bgAt 时归零
 			const bgDuration = bgAt ? Math.max(0, Date.now() - bgAt) : 0;
 			this.__backgroundAt = 0;
+			// pauseRestart 冻结期间（门控关：claw.offline 或 sig_offline）不 re-arm
+			// disconnected timer / keepalive——等 resumeRecovery 或 triggerRestart('online_resume')
+			// 显式解锁后再启动。否则 probe 失败会走到 __onIceFailed，虽然 restart offer 会被 paused
+			// gate drop，但 probe RPC 白发 + 破坏"门控关着时预算冻结"语义
+			if (this.__restartPaused) return;
 			// PC 仍处于 disconnected 时按后台时长 re-arm timer；restart 进行中不干预
 			if (this.__pc?.connectionState === 'disconnected' && this.__state !== 'restarting') {
 				const timeoutMs = bgDuration < SHORT_BACKGROUND_MS

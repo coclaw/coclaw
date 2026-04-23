@@ -536,7 +536,10 @@ describe('updateClawOnline', () => {
 		});
 	});
 
-	test('bot offline→online + DC 仍 connected → __ensureRtc 快速返回后加载 dashboard', async () => {
+	test('bot offline→online + DC 仍 connected → __ensureRtc 快速返回，dcReady=true，不刷 dashboard', async () => {
+		// round 7：DC 延续场景（connected/restarting）不刷任何业务数据（包括 dashboard），
+		// 与 agents/sessions/topics 对称；rebuild 场景由 _pendingForceRefreshOnRebuild
+		// 消费点的 refreshClawResources 统一刷
 		const store = useClawsStore();
 		const dashboardStore = useDashboardStore();
 		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
@@ -554,11 +557,10 @@ describe('updateClawOnline', () => {
 
 		store.updateClawOnline('1', true);
 
-		// __ensureRtc 快速返回（RTC 已 connected），然后 .then() 触发 loadDashboard
-		await vi.waitFor(() => {
-			expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
-		});
+		// __ensureRtc 快速返回（RTC 已 connected）；dashboard 不单独刷
+		await new Promise((r) => setTimeout(r, 10));
 		expect(store.byId['1'].dcReady).toBe(true);
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
 	});
 });
 
@@ -3791,7 +3793,7 @@ describe('__resumeOnline helper', () => {
 		expect(ensureSpy).not.toHaveBeenCalled();
 	});
 
-	test('rtc.state === connected + restartPaused=true → 调 resumeRecovery + __ensureRtc 早退', async () => {
+	test('rtc.state === connected + restartPaused=true → 调 resumeRecovery + __ensureRtc 早退（不刷 dashboard）', async () => {
 		const store = useClawsStore();
 		const dashboardStore = useDashboardStore();
 		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
@@ -3811,17 +3813,18 @@ describe('__resumeOnline helper', () => {
 
 		mockInitRtc.mockClear();
 		store.__resumeOnline('1');
-		await vi.waitFor(() => {
-			expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
-		});
+		// 等一小窗：connected + paused → resumeRecovery + __ensureRtc 早退
+		await new Promise((r) => setTimeout(r, 10));
 
 		// connected + paused 走 resumeRecovery，不 triggerRestart、不 rebuild
 		expect(fakeRtc.resumeRecovery).toHaveBeenCalled();
 		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 		expect(mockInitRtc).not.toHaveBeenCalled();
+		// DC 延续场景 → dashboard 与 agents/sessions/topics 对称不刷
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
 	});
 
-	test('rtc.state === connected + restartPaused=false → 不调 resumeRecovery（无需解冻）', async () => {
+	test('rtc.state === connected + restartPaused=false → 不调 resumeRecovery（无需解冻；不刷 dashboard）', async () => {
 		const store = useClawsStore();
 		const dashboardStore = useDashboardStore();
 		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
@@ -3840,14 +3843,14 @@ describe('__resumeOnline helper', () => {
 		store.byId['1'].initialized = true;
 
 		store.__resumeOnline('1');
-		await vi.waitFor(() => {
-			expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
-		});
+		await new Promise((r) => setTimeout(r, 10));
 
 		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
+		// DC 延续场景 → dashboard 不单独刷
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
 	});
 
-	test('rtc.state === connected → __ensureRtc 早退校正 dcReady（不 rebuild），后 loadDashboard', async () => {
+	test('rtc.state === connected → __ensureRtc 早退校正 dcReady（不 rebuild，不刷 dashboard）', async () => {
 		const store = useClawsStore();
 		const dashboardStore = useDashboardStore();
 		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
@@ -3861,9 +3864,7 @@ describe('__resumeOnline helper', () => {
 
 		mockInitRtc.mockClear();
 		store.__resumeOnline('1');
-		await vi.waitFor(() => {
-			expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
-		});
+		await new Promise((r) => setTimeout(r, 10));
 		// 不会 rebuild（initRtc 不被调）
 		expect(mockInitRtc).not.toHaveBeenCalled();
 		// triggerRestart 只在 restarting 分支调用
@@ -3871,6 +3872,8 @@ describe('__resumeOnline helper', () => {
 		// __ensureRtc 早退后把 dcReady 同步为 true
 		expect(store.byId['1'].dcReady).toBe(true);
 		expect(store.byId['1'].rtcPhase).toBe('ready');
+		// DC 延续场景 → dashboard 不单独刷
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
 	});
 
 	test('rtc === null → __ensureRtc 走 rebuild', async () => {
@@ -3929,7 +3932,9 @@ describe('__resumeOnline helper', () => {
 		expect(clearSpy).toHaveBeenCalledWith('1');
 	});
 
-	test('集成：offline → resume (restarting+paused) → force refresh + triggerRestart', async () => {
+	test('集成：offline → resume (restarting+paused) → 不刷 + triggerRestart（DC 延续）', async () => {
+		// round 7 简化：DC 延续场景（restarting+paused）不刷——SCTP 跨 ICE restart 存活，
+		// plugin 侧缓冲的 rpc msg 会随 ICE 恢复自然送达。只有 rebuild 才 refresh
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -3955,27 +3960,25 @@ describe('__resumeOnline helper', () => {
 		expect(store.byId['1'].dcReady).toBe(true);
 		expect(store.byId['1'].disconnectedAt).toBe(0);
 
-		// Step 2: resume online → force refresh（presence 事件即刷新信号，不看 gap）+ triggerRestart
+		// Step 2: resume online → triggerRestart('online_resume')，不发 refresh
 		store.__resumeOnline('1');
 		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
 
-		// force refresh 不依赖 dcReady 翻转：即使 dcReady 从未被清，4 个下游 loader 也必须被调
-		await vi.waitFor(() => {
-			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
-		});
-		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
-		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		// DC 延续：4 个下游 loader 不被调（rpc msg 会随 ICE 恢复自然送达）
+		await new Promise((r) => setTimeout(r, 20));
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).not.toHaveBeenCalled();
+		expect(topicsStore.loadTopicsForClaw).not.toHaveBeenCalled();
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
 
 		// Step 3: 模拟 WebRtcConnection 内部 restart 成功 → onRtcStateChange('connected')
-		// 因 dcReady 整段为 true，wasDisconnected=false → 不再调 __refreshIfStale（避免重复刷）
-		agentsStore.loadAgents.mockClear();
+		// 因 dcReady 整段为 true，wasDisconnected=false → 不走 __refreshIfStale
 		store.__rtcCallbacks('1').onRtcStateChange('connected');
 		expect(store.byId['1'].dcReady).toBe(true);
 		expect(store.byId['1'].rtcPhase).toBe('ready');
 		// connected 分支兜底清 disconnectedAt（修 pre-existing 累积 stamp 漏洞）
 		expect(store.byId['1'].disconnectedAt).toBe(0);
-		// 短窗等一下看有没有触发——force refresh 已经在 __resumeOnline 做过，这里不应再刷
+		// 短窗再等一下——不应触发 refresh
 		await new Promise((r) => setTimeout(r, 10));
 		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
 
@@ -3988,7 +3991,9 @@ describe('__resumeOnline helper', () => {
 		expect(fakeRtc.triggerRestart.mock.calls[0][0]).toBe('online_resume');
 	});
 
-	test('集成：connected-throughout-offline → force refresh 触发下游 loader（不依赖 dcReady 翻转）', async () => {
+	test('集成：connected-throughout-offline → 不刷（DC 延续，plugin rpc msg 自然送达）', async () => {
+		// round 7 简化：DC 延续场景不刷——PC 整段保持 connected，SCTP 从未断，
+		// plugin 侧缓冲的 rpc msg 会在 resume 后随 DC 自然送达 UI
 		const store = useClawsStore();
 		const dashboardStore = useDashboardStore();
 		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
@@ -4015,17 +4020,15 @@ describe('__resumeOnline helper', () => {
 		expect(store.byId['1'].disconnectedAt).toBe(0);
 		expect(store.byId['1'].rtcPhase).toBe('ready');
 
-		// 模拟 pauseRestart 后的状态（store 侧 rtc mock 的 restartPaused 仍为 false，无需改）
-		// Step 2: online → __resumeOnline force refresh（不看 gap）
+		// Step 2: online → __resumeOnline（connected 路径：DC 延续，所有 4 个 loader 对称不刷）
 		store.__resumeOnline('1');
 
-		// force refresh 即使 disconnectedAt=0（短 offline 或 connected-throughout）也触发下游刷新
-		await vi.waitFor(() => {
-			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
-		});
-		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
-		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		// DC 延续场景：4 个 loader 全部对称不刷（dashboard 也不单独加载）
+		await new Promise((r) => setTimeout(r, 20));
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+		expect(sessionsStore.loadSessionsForClaw).not.toHaveBeenCalled();
+		expect(topicsStore.loadTopicsForClaw).not.toHaveBeenCalled();
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
 
 		// __ensureRtc 内部早退：dcReady 保持 true、rtcPhase='ready'
 		expect(store.byId['1'].dcReady).toBe(true);
@@ -4074,7 +4077,9 @@ describe('__resumeOnline helper', () => {
 		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
 	});
 
-	test('connected 分支入口立即 force refresh（DC 预期可用）', () => {
+	test('connected 分支：DC 延续场景不刷（plugin 侧 rpc msg 会随 ICE 恢复自然送达）', () => {
+		// round 7 简化：只有 rebuild 才刷——PC 没换，SCTP 延续，plugin 侧缓冲的 rpc msg
+		// 会随 ICE 恢复自然送达 UI；主动 refresh 是冗余流量
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
@@ -4092,11 +4097,15 @@ describe('__resumeOnline helper', () => {
 
 		store.__resumeOnline('1');
 
-		// connected 路径：入口同步（fire-and-forget）触发 force refresh；loader 可立即发起
-		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		// connected 路径：4 个 loader 对称不刷
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+		expect(useSessionsStore().loadSessionsForClaw).not.toHaveBeenCalled();
+		expect(useTopicsStore().loadTopicsForClaw).not.toHaveBeenCalled();
+		expect(useDashboardStore().loadDashboard).not.toHaveBeenCalled();
 	});
 
-	test('restarting+paused 分支入口立即 force refresh（DC 可能仍 open）', () => {
+	test('restarting+paused 分支：DC 延续场景不刷（SCTP 跨 ICE restart 存活）', () => {
+		// round 7 简化：同上，PC 没 rebuild、SCTP 延续，不需要主动刷
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
@@ -4115,8 +4124,11 @@ describe('__resumeOnline helper', () => {
 
 		store.__resumeOnline('1');
 
-		// restarting 路径：入口同步触发 force refresh
-		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		// restarting 路径：4 个 loader 对称不刷；但仍 triggerRestart('online_resume') 穿透 paused gate
+		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+		expect(useSessionsStore().loadSessionsForClaw).not.toHaveBeenCalled();
+		expect(useTopicsStore().loadTopicsForClaw).not.toHaveBeenCalled();
+		expect(useDashboardStore().loadDashboard).not.toHaveBeenCalled();
 		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
 	});
 
@@ -4251,14 +4263,16 @@ describe('__resumeOnline helper', () => {
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 		});
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
+		expect(useTopicsStore().loadTopicsForClaw).toHaveBeenCalledWith('1');
+		// dashboard 也由 refreshClawResources 统一刷（P1.1/1.2 修法后唯一触发点）
+		expect(useDashboardStore().loadDashboard).toHaveBeenCalledWith('1');
 	});
 
-	test('forceRestartOnConnected 分支跳过 immediate refresh（不发 RPC、不打 pending 标记）', async () => {
-		// 外部 review round 5 #1：WiFi↔蜂窝切换 + claw offline/resume 场景下
-		// forceRestartOnConnected=true 表明旧 ICE 路径必已失效。原实现会先通过旧 SCTP 路径
-		// 发 force refresh RPC（应用层 30s 超时），然后才 triggerRestart。
-		// 修复后：forceRestart 分支直接跳过 immediate refresh；restart 成功后
-		// `onRtcStateChange('connected')` 的 wasDisconnected=false 分支也不补刷（SCTP 无缝延续设计）。
+	test('forceRestartOnConnected + connected+paused：走 triggerRestart 不刷（DC 延续）', async () => {
+		// round 7 简化：DC 延续（connected / restarting）一律不刷，不再区分 forceRestart。
+		// forceRestart + connected+paused 走 triggerRestart('online_resume')，SCTP 跨 ICE restart
+		// 延续，plugin 侧缓冲的 rpc msg 会随 ICE 恢复自然送达。此测试验证：
+		// (1) 不发 immediate refresh；(2) 不打 pending 标记；(3) 走 triggerRestart('online_resume')。
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -4351,9 +4365,10 @@ describe('__resumeOnline helper', () => {
 	});
 
 	test('forceRestartOnConnected + rebuild 路径：pending 标记触发 rebuild 成功后 force refresh', async () => {
-		// round 6 #1：round 5 的 skip 条件过宽，把"forceRestart+PC 需要 rebuild"的子场景也吃掉了。
-		// rebuild 建全新 PC + 全新 SCTP，plugin 可能已换端，refresh 不能跳过——必须打 pending 标记
-		// 让 rebuild 成功时 force=true 刷新业务数据。
+		// round 7 简化：refresh 规则只看"是否 rebuild"——rebuild 建全新 PC + 全新 SCTP，
+		// plugin 侧旧 DC 发送 buffer 的 rpc msg 会丢，且 plugin 可能换端，必须主动刷。
+		// 此测试验证 forceRestart + rtc=null 的 rebuild 子场景：进入 pending 标记路径，
+		// __ensureRtc 成功时 consume 并 force refresh。
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();

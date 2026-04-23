@@ -1923,6 +1923,51 @@ describe('WebRtcConnection — DC 应用层保活', () => {
 		rtc.close();
 	});
 
+	test('后台 → 前台 但 __restartPaused=true → 不 re-arm disconnected timer / keepalive', async () => {
+		// round 7 P2：pauseRestart 冻结期间（claw.offline / sig_offline 门控关）前后台切换
+		// 不应偷偷绕过冻结重启 keepalive——否则 probe RPC 白发，破坏"门控关着时预算冻结"语义
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 门控路径：调 pauseRestart 冻结
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		// 切后台（独立于 pauseRestart）
+		window.dispatchEvent(new Event('app:background'));
+
+		// 模拟后台期间 PC 层变 disconnected（connected 路径也要验证；两路分支见下一条）
+		pc.connectionState = 'disconnected';
+
+		// 切回前台：__restartPaused=true 让 handler 整体早退
+		window.dispatchEvent(new Event('app:foreground'));
+
+		// 断言：disconnected timer 不 arm、keepalive 不重启、__backgroundAt 仍被清零
+		expect(rtc.__disconnectedTimer).toBeNull();
+		expect(rtc.__keepaliveTimer).toBeNull();
+		expect(rtc.__backgroundAt).toBe(0);
+
+		rtc.close();
+	});
+
+	test('后台 → 前台 + __restartPaused=true + PC connected → 不重启 keepalive', async () => {
+		// P2 补充：覆盖 pauseRestart 的典型路径（PC 保持 connected），防 foreground 重启 keepalive
+		const { rtc } = await setupConnectedRtc();
+
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+
+		window.dispatchEvent(new Event('app:background'));
+		await vi.advanceTimersByTimeAsync(50_000);
+		window.dispatchEvent(new Event('app:foreground'));
+
+		// PC 仍 connected 但因 paused → 不启动 keepalive
+		expect(rtc.__keepaliveTimer).toBeNull();
+		expect(rtc.__disconnectedTimer).toBeNull();
+
+		rtc.close();
+	});
+
 	test('foreground 时 __backgroundAt=0 → 不报错且不 arm disconnected timer', async () => {
 		const { rtc } = await setupConnectedRtc();
 		expect(rtc.__backgroundAt).toBe(0);

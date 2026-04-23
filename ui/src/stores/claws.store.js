@@ -11,7 +11,6 @@ import { useSignalingConnection } from '../services/signaling-connection.js';
 const _lifecycle = {
 	cleanupClawResources: () => {},
 	syncDashboardOffline: () => {},
-	loadDashboardForClaw: () => {},
 	initClawResources: async () => {},
 	refreshClawResources: () => {},
 	dispatchAgentEvent: () => {},
@@ -503,8 +502,9 @@ export const useClawsStore = defineStore('claws', {
 			// 新 claw + online + 未初始化 → 启动 fullInit
 			// 首次 init 用 SSE presence 作启动先验：建连成本不低（ICE gathering、
 			// TURN 协商、一轮 signaling），明确离线时不白跑。持续维护（__ensureRtc
-			// 循环、__scheduleRetry、__handleNetworkOnline）则不看 online，由 PC
-			// 自身状态驱动。详见通信模型 §5.5。
+			// 循环、__scheduleRetry、__handleNetworkOnline、__checkAndRecover）
+			// 同样 gate claw.online 和 _sigOffline：门控关着时不烧恢复预算。
+			// 详见通信模型 §5.5 和 §5.5.1。
 			const claw = this.byId[clawId];
 			if (claw && claw.online && !claw.initialized) {
 				claw.initialized = true;
@@ -617,22 +617,15 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
-		 * claw 转入 online：按 PC 当前状态分派恢复路径 + 强制刷新业务数据。
+		 * claw 转入 online：按 PC 当前状态分派恢复路径；业务数据仅在 rebuild 后刷新。
 		 *
-		 * plugin 离线过（不管多短），UI 数据一定可能 stale——offline→online 事件本身
-		 * 就是 refresh 的触发信号，不依赖 `dcReady` 翻转（presence 与 DC 生命周期解耦）。
-		 *
-		 * refresh 时机分派（关键：跳过 refresh 仅在"ICE restart 能让 SCTP 延续"场景）：
-		 * - `forceRestartOnConnected` + `connected`/`restarting` → **跳过** refresh：即将走
-		 *   `triggerRestart('online_resume')`，ICE restart 让 SCTP/DC 无缝延续（restart 成功后
-		 *   `onRtcStateChange('connected')` 的 `wasDisconnected=false` 分支也不 refresh，设计一致）；
-		 *   旧 ICE 路径已失效，立即发 RPC 只会应用层超时
-		 * - `connected` / `restarting`（非 forceRestart） → **立即** force refresh：DC 预期可用
-		 *   （SCTP 多能跨 restart 存活），loader 的 `getReadyConn` 不会被 dcReady gate 挡住
-		 * - rebuild 路径（rtc 不存在 / `failed` / `closed` / `idle` / `connecting`；含 forceRestart=true
-		 *   的 rebuild 子场景）→ **延后**到 rebuild 成功后 force refresh：rebuild 前 dcReady=false，loader
-		 *   会被 `getReadyConn` gate 全部 skip，立即 refresh 是 no-op。rebuild 建的是全新 PC + 全新 SCTP，
-		 *   plugin 可能已换端，必须 force refresh 不能跳过
+		 * refresh 规则（唯一触发场景是 PC rebuild）：
+		 * - rebuild 路径（rtc 不存在 / `failed` / `closed` / `idle` / `connecting`）
+		 *   → `_pendingForceRefreshOnRebuild.add(id)`，`__ensureRtc` 成功后消费并 force refresh。
+		 *   理由：rebuild 建的是全新 PC + 全新 SCTP，plugin 侧旧 DC 发送 buffer 的 rpc msg 会丢，
+		 *   且 plugin 可能换端，必须主动刷数据
+		 * - DC 延续路径（`connected` / `restarting`）→ **不刷**。PC 没 rebuild、SCTP 延续时，
+		 *   plugin 侧缓冲的 rpc msg 会随 ICE 恢复自然送达 UI，主动 refresh 是冗余流量
 		 *
 		 * 分派动作：
 		 * - `restarting` + paused → `triggerRestart('online_resume')`（复用 PC + 新 90s 预算）
@@ -660,22 +653,11 @@ export const useClawsStore = defineStore('claws', {
 			if (!conn) return;
 			this.__clearRetry(id);
 			const rtc = conn.rtc;
-			// refresh 时机三分派（关键：跳过 refresh 只在"ICE restart 能让 SCTP 延续"场景）：
-			// - forceRestart + connected/restarting（走 triggerRestart('online_resume')）：
-			//   跳过 refresh——ICE restart 让 SCTP/DC 无缝延续；旧 ICE 路径已失效，立即发 RPC 只会
-			//   应用层超时；restart 成功后 `onRtcStateChange('connected')` 的 wasDisconnected=false
-			//   分支也不补刷（设计一致）
-			// - connected / restarting（非 forceRestart，DC 预期可用）：立即 force refresh
-			// - rebuild 路径（rtc=null / failed / closed / idle / connecting，含 forceRestart=true
-			//   的 rebuild 子场景）：dcReady=false 时立即 refresh 会被 getReadyConn gate skip，
-			//   打标记延后到 __ensureRtc 成功后触发。**forceRestart 不能在此路径下跳过 refresh**
-			//   ——rebuild 建的是全新 PC + 全新 SCTP，plugin 可能已换端，必须 force refresh
-			const canRefreshNow = rtc?.state === 'connected' || rtc?.state === 'restarting';
-			if (canRefreshNow && forceRestartOnConnected) {
-				// 跳过 refresh：交给 ICE restart 后的 SCTP 数据流自然延续
-			} else if (canRefreshNow) {
-				this.__refreshIfStale(id, { force: true });
-			} else {
+			// refresh 仅在 rebuild 场景触发：全新 PC + 全新 SCTP 会丢 plugin 侧 DC 发送 buffer，
+			// 且 plugin 可能换端，必须主动刷。DC 延续场景（connected / restarting）plugin 缓冲
+			// 的 rpc msg 会随 ICE 恢复自然送达，不需要主动 refresh（冗余流量）
+			const dcContinuous = rtc?.state === 'connected' || rtc?.state === 'restarting';
+			if (!dcContinuous) {
 				_pendingForceRefreshOnRebuild.add(id);
 			}
 
@@ -698,9 +680,10 @@ export const useClawsStore = defineStore('claws', {
 				// 不触发 ICE restart（PC 本身仍健康）
 				rtc.resumeRecovery();
 			}
-			this.__ensureRtc(id)
-				.then(() => _lifecycle.loadDashboardForClaw(id))
-				.catch(() => {});
+			// dashboard 不在此处单独加载：与 agents/sessions/topics 保持对称——
+			// DC 延续（connected/restarting）场景下 plugin 侧缓冲会自然送达，不需要刷；
+			// rebuild 成功场景由 `_pendingForceRefreshOnRebuild` consume 点的 refreshClawResources 统一刷（已含 dashboard）
+			this.__ensureRtc(id).catch(() => {});
 		},
 
 		/** 构建 RTC 回调（store 侧状态同步） */
@@ -747,16 +730,18 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
-		 * 数据刷新（RTC 恢复后或 plugin presence 恢复后触发）
+		 * 数据刷新（RTC 恢复后触发）
 		 *
 		 * 两种调用语义：
 		 * - 默认（`force=false`）：RTC 层面断连恢复后的"顺便刷"——
 		 *   看 `disconnectedAt` gap：< BRIEF_DISCONNECT_MS 跳过（浏览器短暂切后台 / 网络闪断
 		 *   不值得全量刷），>= gap 门槛才刷。由 `onRtcStateChange('connected')` /
 		 *   `__ensureRtc` rebuild 成功路径调用。
-		 * - 强制（`force=true`）：plugin presence 变化后的"必须刷"——
-		 *   跳过 gap 检查，只要 initialized 就刷。由 `__resumeOnline` 调用。
-		 *   语义：plugin 真的离线过（不管多短），UI 数据一定 stale，不赌概率。
+		 * - 强制（`force=true`）：rebuild 后的"必须刷"——跳过 gap 检查，只要 initialized 就刷。
+		 *   由 `__ensureRtc` 成功路径 consume `_pendingForceRefreshOnRebuild` 标记时调用
+		 *   （标记由 `__resumeOnline` rebuild 分支 add）。
+		 *   语义：rebuild 建全新 SCTP，plugin 侧旧 DC buffer 的 rpc msg 丢失 + plugin 可能换端，
+		 *   UI 数据必刷。DC 延续场景不走此路径（msg 会随 ICE 恢复自然送达）。
 		 *
 		 * 两种情况都会清 `disconnectedAt = 0`（避免后续重复触发）。
 		 * @param {string} id - clawId
@@ -1117,7 +1102,8 @@ export const useClawsStore = defineStore('claws', {
 		/**
 		 * DC 健康检查 + 恢复（前台恢复时调用，network:online 和短后台已在上层过滤）
 		 *
-		 * 决策完全基于 PC 自身状态和 DC probe，不依赖 WS 指标。
+		 * 决策基于 PC 自身状态和 DC probe；入口 gate `_sigOffline`：WS 不通时 probe / restart
+		 * 都发不出，恢复交给 sig 回来后的 resume 路径（见 §5.5.1）。
 		 * probe 失败后二次确认 PC.connectionState，避免因 plugin 繁忙
 		 * （如大文件写入阻塞 event loop）导致的误判。
 		 *

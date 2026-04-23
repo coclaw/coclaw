@@ -261,7 +261,7 @@ SSE claw.status {online:false}
 
 `__attemptRestart` 入口有 `paused && reason !== 'online_resume'` gate：任何自动路径（`__onIceFailed` / periodic timer / nudge / ICE 事件）尝试在 paused 态触发 restart 都被 drop；只有显式的 `triggerRestart('online_resume')` 能穿过 gate。gate 后的 `epochAtEntry` guard 额外覆盖"`pauseRestart` 发生在 `await sig.ensureConnected()` 或 `await createOffer` 期间"的跨 await 窗口。
 
-**SSE claw.online=true（从 false 转来）时 UI 的动作**（由 `__resumeOnline(id)` 强制刷新 + 按 PC 状态分派）：
+**SSE claw.online=true（从 false 转来）时 UI 的动作**（由 `__resumeOnline(id)` 按 PC 状态分派恢复路径，仅在 rebuild 时刷新业务数据）：
 
 ```
 SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→true
@@ -270,23 +270,18 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
       1. __clearRetry(id)
       2. 消费 `_pendingTypeChangedRestartClaws.delete(id)` 的返回值，若命中
          则 forceRestartOnConnected=true（覆盖外部传入）
-      3. refresh 时机三分派（关键：不依赖 `wasDisconnected` 翻转——offline 期间
-         `dcReady` 从未被清，`onRtcStateChange('connected')` 的 wasDisconnected=false
-         分支也不 refresh；presence 恢复的唯一 refresh 入口就是 __resumeOnline）：
-         - forceRestartOnConnected=true + connected/restarting（即走
-           triggerRestart('online_resume')）→ 跳过 refresh：旧 ICE 路径必已失效，
-           发 RPC 只会应用层超时；ICE restart 成功后 SCTP/DC 无缝延续，
-           onRtcStateChange('connected') 的 wasDisconnected=false 分支也不补刷（设计一致）
-         - DC 预期可用（'connected' / 'restarting'，非 forceRestart）→ 立即
-           __refreshIfStale(id, {force:true})（loader 可用 dcReady=true 发 RPC）
-         - rebuild 路径（rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'，
-           含 forceRestart=true 的 rebuild 子场景）→ add id 到
-           `_pendingForceRefreshOnRebuild` Set；任何一次 __ensureRtc 真正成功时
-           consume 该标记并 force refresh。rebuild 建全新 PC + 全新 SCTP，
-           plugin 可能已换端，refresh 不能跳过。此机制可靠覆盖：
+      3. refresh 规则（唯一触发场景是 rebuild）：
+         - rebuild 路径（rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'）
+           → add id 到 `_pendingForceRefreshOnRebuild` Set；任何一次 __ensureRtc
+           真正成功时 consume 该标记并 force refresh。rebuild 建全新 PC + 全新 SCTP，
+           plugin 侧旧 DC 发送 buffer 的 rpc msg 会丢，且 plugin 可能换端，必须刷。
+           此机制可靠覆盖：
              * `_rtcInitInProgress` 守卫下 __ensureRtc 早退（.then 立即 fire 但
                rebuild 未完成）
              * 当前 __ensureRtc attempts 全失败、等退避重试多轮后最终成功
+         - DC 延续路径（'connected' / 'restarting'，含 forceRestart=true 的 ICE
+           restart 子场景）→ **不刷**。PC 没 rebuild、SCTP 延续时，plugin 侧缓冲
+           的 rpc msg 会随 ICE 恢复自然送达 UI；主动 refresh 是冗余流量
       4. 按 rtc.state 分派动作：
          - 'restarting' + restartPaused → rtc.triggerRestart('online_resume')
            （复用 PC + 全新 90s 预算；paused gate 仅此路径可穿过）
@@ -294,12 +289,14 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
          - 'connected' + restartPaused → 默认 rtc.resumeRecovery()（清 paused +
            重启 keepalive；不触发 ICE restart，PC 本身仍健康）；forceRestartOnConnected
            命中时升级为 rtc.triggerRestart('online_resume')（旧 ICE 路径必失效需走 restart）
-         - 其余 → __ensureRtc(id).then(force refresh? + loadDashboardForClaw)
+         - 其余 → __ensureRtc(id)。业务数据刷新统一由 `_pendingForceRefreshOnRebuild`
+           consume 点（rebuild 成功时）触发；DC 延续路径不在此处单独刷 dashboard，
+           与 agents/sessions/topics 保持对称
 ```
 
 **`__refreshIfStale(id, {force})`** 有两种语义：
 - `force=false`（默认）：RTC 层断连恢复后的"顺便刷"——看 `disconnectedAt` gap，短于 `BRIEF_DISCONNECT_MS` 跳过（浏览器短暂切后台、网络闪断不值得全量刷）。由 `onRtcStateChange('connected')`（wasDisconnected=true 分支）和 `__ensureRtc` rebuild 成功路径调用
-- `force=true`：presence 恢复后的"必须刷"——跳过 gap，只要 `initialized` 就刷。只由 `__resumeOnline` 调用。语义：plugin 真的离线过（不管多短），UI 数据一定可能 stale，不赌概率
+- `force=true`：rebuild 后"必须刷"——跳过 gap，只要 `initialized` 就刷。由 `__ensureRtc` 成功路径的 `_pendingForceRefreshOnRebuild` consume 点调用。语义：rebuild 建全新 SCTP，plugin 侧旧 DC buffer 的 rpc msg 丢失、plugin 可能换端，UI 数据必刷
 
 `onRtcStateChange('connected')` 的 wasDisconnected=false 分支（ICE restart 成功但 DC 全程未断）也会把 `disconnectedAt=0`——修复 pre-existing 漏洞：多次 restart 间 stamp 会累积最旧时刻污染后续 gap 判断。
 
