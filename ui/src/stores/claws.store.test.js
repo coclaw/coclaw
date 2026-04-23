@@ -5279,6 +5279,29 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 		expect(fakeRtc.resumeRecovery).toHaveBeenCalledTimes(1);
 	});
 
+	test('#2 round9: 主循环 restarting+paused + typeChanged 不发 nudgeRestart，Set 保留给 resume 消费', () => {
+		// 背景：与 connected+paused 分支对称。__attemptRestart 的 paused gate 只接受 'online_resume'
+		// （webrtc-connection.js:975）；nudgeRestart → __attemptRestart('nudge') 在 paused 态被 drop。
+		// 若此时 delete Set → restart 没发 + 记账丢失 = 信号永久丢失。
+		// 正确行为：paused 分支不发 nudgeRestart，保留 Set 给后续 __resumeOnline 消费升级。
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'restarting', restartPaused: true });
+		store.__bridgeLifecycle();
+
+		store.__handleNetworkOnline(true);
+		// paused+restarting：主循环识别到 paused，不发 nudgeRestart、不清 Set
+		expect(fakeRtc.nudgeRestart).not.toHaveBeenCalled();
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+
+		// 后续 sig down/up → __resumeAllClawsForSigOnline → __resumeOnline 消费保留的 Set 条目
+		// → restarting+paused 分支发 triggerRestart('online_resume')（paused gate 唯一穿透 reason）
+		__emitSigState('disconnected');
+		__emitSigState('connected');
+
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		expect(fakeRtc.nudgeRestart).not.toHaveBeenCalled();
+	});
+
 	test('#2 round3: removeClawById 清 Set 条目（重用同 id 时不污染恢复路径）', () => {
 		const store = useClawsStore();
 		setupClaw(store, { rtcState: 'connected', restartPaused: true });

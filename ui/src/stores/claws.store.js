@@ -1077,7 +1077,16 @@ export const useClawsStore = defineStore('claws', {
 				}
 
 				if (rtc.state === 'restarting') {
-					// 本次调用当场 nudge 继续 restart 循环 → 新 ICE 路径自然建在当前网络上
+					if (rtc.restartPaused) {
+						// paused+restarting：nudge → __attemptRestart('nudge') 在 L975 被 drop
+						// （非 online_resume）→ 若此时 delete Set 则 restart 没发 + 信号永久丢。
+						// 保留 Set 条目，让后续 __resumeOnline 消费时升级为
+						// triggerRestart('online_resume')（paused 穿透白名单唯一成员）。
+						// 与下方 connected+paused 分支对称。
+						remoteLog(`claw.typeChanged claw=${id} paused_restarting defer_to_resume`);
+						continue;
+					}
+					// 非 paused：当场 nudge 继续 restart 循环 → 新 ICE 路径自然建在当前网络上
 					// → typeChanged 记账条目变陈旧，主动清理避免下次 __resumeOnline 虚发
 					_pendingTypeChangedRestartClaws.delete(id);
 					rtc.nudgeRestart();

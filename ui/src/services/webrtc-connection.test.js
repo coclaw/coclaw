@@ -2178,7 +2178,7 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 	// --- 宽限逻辑 ---
 
 	test('probe 超时但有近期 file DC 活动 → 跳过 close，重新调度', async () => {
-		const { rtc, dc } = await setupConnectedRtc();
+		const { rtc } = await setupConnectedRtc();
 		const closeSpy = vi.spyOn(rtc, 'close');
 
 		const fileDc = rtc.createDataChannel('file:download', { ordered: true });
@@ -2270,7 +2270,7 @@ describe('WebRtcConnection — DC 保活活动宽限', () => {
 	});
 
 	test('连续多次宽限跳过后活动停止 → 最终触发 ICE restart', async () => {
-		const { rtc, dc } = await setupConnectedRtc();
+		const { rtc } = await setupConnectedRtc();
 		const fileDc = rtc.createDataChannel('file:big', { ordered: true });
 
 		// 第一次 probe：有活动，跳过
@@ -2592,7 +2592,7 @@ describe('WebRtcConnection — ICE restart', () => {
 	});
 
 	test('triggerRestart：从 connected 主动发起', async () => {
-		const { rtc, pc } = await setupConnectedRtc();
+		const { rtc } = await setupConnectedRtc();
 		mockSendSignaling.mockClear();
 
 		rtc.triggerRestart('network_type_changed');
