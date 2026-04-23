@@ -22,6 +22,10 @@ import { getCurrentNpmRegistry, pickFallbackRegistry } from './registry-fallback
 const SEMVER_RE = /^\d+\.\d+\.\d+(-[\w.-]+)?$/;
 // 单次 plugins update 上限：包含 npm install 大型 native deps，慢网络 + 弱机器需较长时间
 const UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
+// 回滚兜底重装旧版本走的是同一条 npm 下载链路，且触发前置本身是"备份已丢"的异常态，
+// 此时尽量兜住比快速失败更重要，与 UPDATE_TIMEOUT_MS 对齐
+const FALLBACK_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const FALLBACK_UNINSTALL_TIMEOUT_MS = 60 * 1000;
 
 /**
  * 执行 openclaw plugins update
@@ -73,7 +77,7 @@ async function fallbackInstallOldVersion(pkgName, version, pluginId, opts) {
 	}
 	/* c8 ignore next -- ?./?? fallback */
 	const doExecFile = opts?.execFileFn ?? nodeExecFile;
-	const run = (args, timeout = 120_000) => new Promise((resolve, reject) => {
+	const run = (args, timeout) => new Promise((resolve, reject) => {
 		doExecFile('openclaw', args, { timeout, shell: process.platform === 'win32' }, (err) => {
 			if (err) reject(err);
 			else resolve();
@@ -82,13 +86,13 @@ async function fallbackInstallOldVersion(pkgName, version, pluginId, opts) {
 
 	// 先卸载：install 不支持覆盖已安装插件
 	try {
-		await run(['plugins', 'uninstall', pluginId], 60_000);
+		await run(['plugins', 'uninstall', pluginId], FALLBACK_UNINSTALL_TIMEOUT_MS);
 	} catch {
 		// uninstall 失败不阻断，继续尝试 install
 	}
 
 	try {
-		await run(['plugins', 'install', `${pkgName}@${version}`]);
+		await run(['plugins', 'install', `${pkgName}@${version}`], FALLBACK_INSTALL_TIMEOUT_MS);
 	} catch (err) {
 		throw new Error(`fallback install failed: ${err.message}`);
 	}
@@ -171,11 +175,11 @@ export async function runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, 
 		catch (e) {
 			log(`[upgrade-worker] Backup cleanup failed (non-fatal): ${e.message}`);
 		}
-		// 记录真实装上的版本而非目标版本——dist-tag 前移窗口下两者可能不同
-		/* c8 ignore next -- ?? fallback: result.ok 时 version 必为字符串 */
-		const installedVersion = result.version ?? toVersion;
-		await updateLastUpgrade({ from: fromVersion, to: installedVersion, result: 'ok' });
-		await appendLog({ from: fromVersion, to: installedVersion, result: 'ok' });
+		// 记录真实装上的版本而非目标版本——dist-tag 前移窗口下两者可能不同。
+		// 不加 fallback：若 result.ok 时 version 缺失，说明上游契约被破坏，
+		// 宁可让状态里直接暴露 undefined 便于排障，也不要用 toVersion 糊过去
+		await updateLastUpgrade({ from: fromVersion, to: result.version, result: 'ok' });
+		await appendLog({ from: fromVersion, to: result.version, result: 'ok' });
 		log('[upgrade-worker] Upgrade complete');
 	} else {
 		// 4b. 失败，回滚

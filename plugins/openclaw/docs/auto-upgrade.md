@@ -252,7 +252,7 @@ Bridge 握手时上报 `pluginVersion`，server 回传：
 | 回滚后 gateway 恢复 | 等待 gateway 重启 | 仅触发 restart，fire-and-forget，不验证旧版本是否回到运行态 | 已知权衡：当前只保证"备份文件已就位"。若 restart 命令无效或加载旧版失败，状态仍会记录为 rollback，不会重试——权衡下保持实现简单 |
 | 回滚是否 skipVersion | 未提及 | 升级命令失败 → 不 skip（瞬态）；验证超时 → skip（保守，避免每小时反复回滚影响用户使用） | 现阶段妥协：upgradeHealth 只返回版本号，无法把"瞬时故障"与"新版本真坏了"彻底分开；选择 skip 防抖动，等真修好的新版本出来再自动升 |
 | worker 参数传递 | 未提及 | 通过 `--` 命名参数传递，worker 用 `util.parseArgs` 解析（`--pluginDir/--fromVersion/--toVersion/--pluginId/--pkgName`） | 清晰的参数传递，避免位置参数歧义 |
-| 超时配置 | 未提及 | npm view 30s、plugins update 10min、gateway restart / upgradeHealth 单次调用 30s、回滚兜底 uninstall 60s / install 120s、upgradeHealth 轮询总超时 5min | 各环节均有超时保护；plugins update 需跨慢网络下载，放宽到 10 分钟；回滚兜底安装也可能走 npm，需比常规 30s 更宽 |
+| 超时配置 | 未提及 | npm view 30s、plugins update 10min、gateway restart / upgradeHealth 单次调用 30s、回滚兜底 uninstall 60s / install 10min、upgradeHealth 轮询总超时 5min | plugins update 走 npm 下载，慢网下需 10 分钟；回滚兜底走同一条链路且前置通常已是异常态（本地备份丢失），与 update 对齐给足恢复机会 |
 | registry 重试 | 未提及 | 首次 `plugins update` 失败时，自动在 npmjs ⇄ npmmirror 间切换 registry 重试一次 | 国内网络对单一源不稳定；反向 fallback 提升一次 update 成功率 |
 | scheduler 注册 | 未提及 | 注册为 gateway service `coclaw-auto-upgrade`（start/stop 生命周期） | 随 gateway 自动启停，无需手动管理生命周期 |
 | state.js 职责 | upgrade-state.json 读写 + 升级锁 | state.js 仅处理 state + log；升级锁（upgrade.lock）在 updater.js | 锁逻辑与调度器耦合更紧密 |
