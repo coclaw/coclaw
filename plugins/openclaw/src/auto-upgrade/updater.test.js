@@ -892,7 +892,8 @@ test('isUpgradeLocked 锁文件超龄（> TTL）时返回 false 并清理，不�
 	try {
 		const lockPath = getLockPath();
 		await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
-		// ts 比 TTL 还早得多；PID 用当前进程 PID（肯定活），验证超龄优先于 PID 检活
+		// ts 比 TTL 还早得多；PID 用当前进程 PID（肯定活）反证 "TTL 判断优先于 PID 检活"——
+		// 若实现遗漏 TTL 分支直接走 process.kill(pid, 0)，本测试会因 locked === true 而挂
 		const staleTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
 		await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: staleTs }), 'utf8');
 
