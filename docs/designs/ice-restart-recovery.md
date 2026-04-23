@@ -432,11 +432,13 @@ SSE claw.online=false → __handleClawGoOffline
   → 其余主动恢复（probe / rebuild / retry）在 online gate 下全部暂停
 SSE claw.online=true → __resumeOnline（入口三分派 refresh + PC 状态分派）：
 
-  refresh 时机（不依赖 wasDisconnected 翻转；offline 期间 dcReady 从未被清）：
-  - forceRestart 命中（typeChanged 记账）→ 跳过 refresh（ICE restart 让 SCTP 无缝延续；
-    旧路径必失效，发 RPC 会应用层超时）
+  refresh 时机（跳过 refresh 仅在"ICE restart 能让 SCTP 延续"场景；不依赖 wasDisconnected
+  翻转；offline 期间 dcReady 从未被清）：
+  - forceRestart 命中 + connected/restarting（走 triggerRestart('online_resume')）
+    → 跳过 refresh（ICE restart 让 SCTP 无缝延续；旧路径必失效，发 RPC 会应用层超时）
   - connected / restarting（非 forceRestart）→ 入口立即 __refreshIfStale({ force: true })
-  - rebuild → add 到 _pendingForceRefreshOnRebuild，延后到 __ensureRtc 成功后消费
+  - rebuild（含 forceRestart=true 的 rebuild 子场景）→ add 到 _pendingForceRefreshOnRebuild，
+    延后到 __ensureRtc 成功后消费。rebuild 建全新 PC + SCTP，必须 force refresh
 
   PC 状态分派：
   - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 90s 预算

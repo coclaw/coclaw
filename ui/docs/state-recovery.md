@@ -424,10 +424,10 @@ RTC 恢复决策基于 PC 自身状态、DC probe 和两把正交的"全局闸"�
   - **不动 `dcReady` / `rtcPhase` / `disconnectedAt` / PC**：presence 与 DC 生命周期正交（commit `4a05074` 原则——详见通信模型 §5.5）
   - **不再** probe / triggerRestart：plugin 离线时这些动作必然无效，等 online 回来再动
 - **SSE `claw.online=true`（从 false 转来）** → `__resumeOnline`（refresh 三分派 + PC 状态分派）：
-  - **refresh 三分派**（入口处同步决定，不依赖 `wasDisconnected` 翻转——offline 期间 `dcReady` 从未被清）：
-    - `forceRestartOnConnected` 命中（typeChanged per-claw Set 消费）→ **跳过** immediate refresh：旧 ICE 路径必已失效，发 RPC 只会应用层超时；ICE restart 成功后 SCTP/DC 无缝延续，`onRtcStateChange('connected')` 的 `wasDisconnected=false` 分支也不补刷（设计一致）
+  - **refresh 三分派**（入口处同步决定；跳过 refresh 仅在"ICE restart 能让 SCTP 延续"的子场景；offline 期间 `dcReady` 从未被清，不依赖 `wasDisconnected` 翻转）：
+    - `forceRestartOnConnected` 命中**且** `rtc.state` 为 `connected`/`restarting`（即将走 `triggerRestart('online_resume')`）→ **跳过** immediate refresh：旧 ICE 路径必已失效，发 RPC 只会应用层超时；ICE restart 成功后 SCTP/DC 无缝延续，`onRtcStateChange('connected')` 的 `wasDisconnected=false` 分支也不补刷（设计一致）
     - `connected` / `restarting`（非 forceRestart，DC 预期可用）→ 入口立即 `__refreshIfStale({ force: true })`（presence 事件即刷新信号，不看 gap）
-    - rebuild 路径（`failed`/`closed`/`idle`/`connecting`/rtc 为 null）→ add 到 `_pendingForceRefreshOnRebuild`，延后到 `__ensureRtc` 成功时消费（rebuild 前 `dcReady=false` 会被 loader gate skip）
+    - rebuild 路径（`failed`/`closed`/`idle`/`connecting`/rtc 为 null；**含 forceRestart=true 的 rebuild 子场景**）→ add 到 `_pendingForceRefreshOnRebuild`，延后到 `__ensureRtc` 成功时消费。rebuild 建全新 PC + 全新 SCTP，plugin 可能已换端，refresh 不能跳过
   - **PC 状态分派**：
     - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 90s 预算
     - `connected` + paused → 默认 `resumeRecovery`；forceRestart 命中时升级为 `triggerRestart('online_resume')`

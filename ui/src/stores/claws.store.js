@@ -622,16 +622,17 @@ export const useClawsStore = defineStore('claws', {
 		 * plugin 离线过（不管多短），UI 数据一定可能 stale——offline→online 事件本身
 		 * 就是 refresh 的触发信号，不依赖 `dcReady` 翻转（presence 与 DC 生命周期解耦）。
 		 *
-		 * refresh 时机分派（关键）：
-		 * - `forceRestartOnConnected` → **跳过** refresh：即将走 triggerRestart('online_resume')，
-		 *   ICE restart 让 SCTP/DC 无缝延续（restart 成功后 `onRtcStateChange('connected')` 的
-		 *   `wasDisconnected=false` 分支也不 refresh，设计一致）；旧 ICE 路径已失效，立即发 RPC 只会
-		 *   应用层超时
+		 * refresh 时机分派（关键：跳过 refresh 仅在"ICE restart 能让 SCTP 延续"场景）：
+		 * - `forceRestartOnConnected` + `connected`/`restarting` → **跳过** refresh：即将走
+		 *   `triggerRestart('online_resume')`，ICE restart 让 SCTP/DC 无缝延续（restart 成功后
+		 *   `onRtcStateChange('connected')` 的 `wasDisconnected=false` 分支也不 refresh，设计一致）；
+		 *   旧 ICE 路径已失效，立即发 RPC 只会应用层超时
 		 * - `connected` / `restarting`（非 forceRestart） → **立即** force refresh：DC 预期可用
 		 *   （SCTP 多能跨 restart 存活），loader 的 `getReadyConn` 不会被 dcReady gate 挡住
-		 * - rebuild 路径（rtc 不存在 / `failed` / `closed` / `idle` / `connecting`）→ **延后**到 rebuild 成功后
-		 *   force refresh：rebuild 前 dcReady=false，loader 会被 `getReadyConn` gate 全部 skip，
-		 *   立即 refresh 是 no-op。必须等 `__ensureRtc` 里写 dcReady=true 后再刷
+		 * - rebuild 路径（rtc 不存在 / `failed` / `closed` / `idle` / `connecting`；含 forceRestart=true
+		 *   的 rebuild 子场景）→ **延后**到 rebuild 成功后 force refresh：rebuild 前 dcReady=false，loader
+		 *   会被 `getReadyConn` gate 全部 skip，立即 refresh 是 no-op。rebuild 建的是全新 PC + 全新 SCTP，
+		 *   plugin 可能已换端，必须 force refresh 不能跳过
 		 *
 		 * 分派动作：
 		 * - `restarting` + paused → `triggerRestart('online_resume')`（复用 PC + 新 90s 预算）
@@ -659,15 +660,20 @@ export const useClawsStore = defineStore('claws', {
 			if (!conn) return;
 			this.__clearRetry(id);
 			const rtc = conn.rtc;
-			// refresh 时机三分派：
-			// - forceRestartOnConnected：即将走 triggerRestart('online_resume')，ICE restart 让
-			//   SCTP/DC 无缝延续，无需 refresh；旧 ICE 路径已失效，立即发 RPC 只会应用层超时
-			// - connected / restarting（DC 预期可用）：立即 force refresh
-			// - rebuild 路径：dcReady=false 时立即 refresh 会被 getReadyConn gate skip，
-			//   打标记延后到 __ensureRtc 成功后触发
-			if (forceRestartOnConnected) {
+			// refresh 时机三分派（关键：跳过 refresh 只在"ICE restart 能让 SCTP 延续"场景）：
+			// - forceRestart + connected/restarting（走 triggerRestart('online_resume')）：
+			//   跳过 refresh——ICE restart 让 SCTP/DC 无缝延续；旧 ICE 路径已失效，立即发 RPC 只会
+			//   应用层超时；restart 成功后 `onRtcStateChange('connected')` 的 wasDisconnected=false
+			//   分支也不补刷（设计一致）
+			// - connected / restarting（非 forceRestart，DC 预期可用）：立即 force refresh
+			// - rebuild 路径（rtc=null / failed / closed / idle / connecting，含 forceRestart=true
+			//   的 rebuild 子场景）：dcReady=false 时立即 refresh 会被 getReadyConn gate skip，
+			//   打标记延后到 __ensureRtc 成功后触发。**forceRestart 不能在此路径下跳过 refresh**
+			//   ——rebuild 建的是全新 PC + 全新 SCTP，plugin 可能已换端，必须 force refresh
+			const canRefreshNow = rtc?.state === 'connected' || rtc?.state === 'restarting';
+			if (canRefreshNow && forceRestartOnConnected) {
 				// 跳过 refresh：交给 ICE restart 后的 SCTP 数据流自然延续
-			} else if (rtc?.state === 'connected' || rtc?.state === 'restarting') {
+			} else if (canRefreshNow) {
 				this.__refreshIfStale(id, { force: true });
 			} else {
 				_pendingForceRefreshOnRebuild.add(id);
@@ -854,7 +860,33 @@ export const useClawsStore = defineStore('claws', {
 						break;
 					}
 					result = await initRtc(id, conn, this.__rtcCallbacks(id));
-					if (result === 'rtc') break;
+					if (result === 'rtc') {
+						// post-await gate recheck：initRtc 期间 gate 可能翻转
+						// （offline handler 在此期间只能调 `conn.rtc?.pauseRestart()`，但
+						// initRtc 尚未 resolve 时 `conn.rtc=null`，pauseRestart 空转），
+						// 不补一次 recheck 则成功建成的 RTC 会越过关着的门，违反"门控关着预算冻结"
+						const cur = this.byId[id];
+						let postBailReason = null;
+						if (!cur) postBailReason = 'removed';
+						else if (!cur.online) postBailReason = 'offline';
+						else if (_sigOffline) postBailReason = 'sig_offline';
+						if (postBailReason) {
+							console.debug('[claws] ensureRtc: post-await bail-out (%s) clawId=%s', postBailReason, id);
+							// `closeRtcForClaw` 同步调 `rtc.close()` → `__setState('closed')` →
+							// 触发 `__rtcCallbacks.onRtcStateChange('closed')` → 写 `rtcPhase='failed'`。
+							// 对 offline bail，这是期望语义（online→true 走 rebuild）；
+							// 对 sig_offline bail，违反"sig 是环境故障，不标 unreachable"设计意图——
+							// 需 snapshot + restore。removed bail 下 cur=null，不受影响
+							const prevRtcPhase = cur?.rtcPhase;
+							closeRtcForClaw(id);
+							conn.clearRtc();
+							if (postBailReason === 'sig_offline' && cur) cur.rtcPhase = prevRtcPhase;
+							bailedOut = true;
+							bailReason = postBailReason;
+							result = 'failed'; // 走 bailedOut 分支，不进入成功分支
+						}
+						break;
+					}
 					console.debug('[claws] ensureRtc: build attempt %d/%d failed clawId=%s', i + 1, RTC_BUILD_MAX_RETRIES, id);
 				}
 

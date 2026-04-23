@@ -4349,6 +4349,44 @@ describe('__resumeOnline helper', () => {
 		await new Promise((r) => setTimeout(r, 10));
 		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
 	});
+
+	test('forceRestartOnConnected + rebuild 路径：pending 标记触发 rebuild 成功后 force refresh', async () => {
+		// round 6 #1：round 5 的 skip 条件过宽，把"forceRestart+PC 需要 rebuild"的子场景也吃掉了。
+		// rebuild 建全新 PC + 全新 SCTP，plugin 可能已换端，refresh 不能跳过——必须打 pending 标记
+		// 让 rebuild 成功时 force=true 刷新业务数据。
+		const store = useClawsStore();
+		const agentsStore = useAgentsStore();
+		const sessionsStore = useSessionsStore();
+		const topicsStore = useTopicsStore();
+		const dashboardStore = useDashboardStore();
+		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+		vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+
+		// PC 需要 rebuild 的状态：rtc=null
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].dcReady = false;
+		store.byId['1'].rtcPhase = 'failed';
+
+		mockInitRtc.mockClear();
+		mockInitRtc.mockResolvedValue('rtc');
+
+		// forceRestart + rtc=null → 不跳过 refresh，改走 pending 标记
+		store.__resumeOnline('1', { forceRestartOnConnected: true });
+
+		// rebuild 成功路径 consume pending → __refreshIfStale({force:true}) 触发所有 loader
+		await vi.waitFor(() => {
+			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		});
+		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
+		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+	});
 });
 
 describe('offline gate on recovery paths', () => {
@@ -4367,6 +4405,101 @@ describe('offline gate on recovery paths', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 		// rtcPhase 不被提前切到 building/recovering
 		expect(store.byId['1'].rtcPhase).toBe(phaseBefore);
+	});
+
+	test('__ensureRtc post-await recheck：initRtc 期间 claw 翻 offline → 回收 RTC + rtcPhase=failed', async () => {
+		// round 6 #2：pre-existing race——循环头检查 gate 后、await initRtc 期间 gate 可能翻转。
+		// offline handler 此时只能调 conn.rtc?.pauseRestart()，但 initRtc 未 resolve 时 conn.rtc=null
+		// 空转；initRtc resolve 成功后的成功分支若不再次 recheck，新建的 RTC 就越过关着的门。
+		// 此 test 验证修法：post-await 检测到 offline 时 closeRtcForClaw + clearRtc + 走 bail 分支。
+		//
+		// 关键：mockCloseRtcForBot 模拟生产真实副作用——同步触发 onStateChange('closed')，
+		// 让 store `__rtcCallbacks` 写 rtcPhase='failed'，与 bail 分支的 `if (bailReason==='offline')`
+		// 形成重复写入但一致的语义。若 fix 错漏，此 mock 能帮助捕获副作用偏差。
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null,
+			on: vi.fn(), off: vi.fn(),
+			clearRtc: vi.fn(() => { fakeConn.rtc = null; }),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+
+		// 捕获 initRtc 传入的 callbacks 供 closeRtc mock 回放 onStateChange('closed')
+		let capturedCallbacks;
+		let resolveInit;
+		mockInitRtc.mockImplementation((id, conn, callbacks) => {
+			capturedCallbacks = callbacks;
+			return new Promise((r) => { resolveInit = r; });
+		});
+		mockCloseRtcForBot.mockImplementation(() => {
+			capturedCallbacks?.onRtcStateChange?.('closed');
+		});
+
+		const pending = store.__ensureRtc('1');
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// 翻 offline（模拟 SSE 推 claw.status=false）
+		store.byId['1'].online = false;
+
+		// initRtc 成功 resolve 返回 'rtc'
+		resolveInit('rtc');
+		await pending;
+
+		// 验证 post-await bail 效果：
+		expect(store.byId['1'].dcReady).toBe(false);
+		expect(store.byId['1'].rtcPhase).toBe('failed');
+		expect(fakeConn.clearRtc).toHaveBeenCalled();
+		expect(mockCloseRtcForBot).toHaveBeenCalledWith('1');
+	});
+
+	test('__ensureRtc post-await recheck：initRtc 期间 sig 掉线 → 回收 RTC + rtcPhase 不变', async () => {
+		// round 6 #2 对照：sig_offline bail 不改 rtcPhase（sig 是环境故障，sig 回来时走 resume 路径，
+		// 不应被标成 unreachable 触发 UI banner）。
+		//
+		// 关键：mock 真实触发 onStateChange('closed') 副作用——若只靠 bail 分支的 `if (bailReason==='offline')`
+		// 保护 rtcPhase 不被写，callback 会抢先写成 'failed'，违反设计意图。修法需 snapshot + restore rtcPhase。
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null,
+			on: vi.fn(), off: vi.fn(),
+			clearRtc: vi.fn(() => { fakeConn.rtc = null; }),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].rtcPhase = 'building'; // 预设，确认 sig_offline 不覆写
+		store.__bridgeLifecycle();
+
+		let capturedCallbacks;
+		let resolveInit;
+		mockInitRtc.mockImplementation((id, conn, callbacks) => {
+			capturedCallbacks = callbacks;
+			return new Promise((r) => { resolveInit = r; });
+		});
+		mockCloseRtcForBot.mockImplementation(() => {
+			capturedCallbacks?.onRtcStateChange?.('closed');
+		});
+
+		const pending = store.__ensureRtc('1');
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// sig 掉线
+		__emitSigState('disconnected');
+
+		resolveInit('rtc');
+		await pending;
+
+		expect(store.byId['1'].dcReady).toBe(false);
+		// sig_offline bail：closeRtcForClaw 的 onStateChange('closed') 副作用会尝试写 rtcPhase='failed'，
+		// 但修法 snapshot + restore 保留原值 'building'
+		expect(store.byId['1'].rtcPhase).toBe('building');
+		expect(fakeConn.clearRtc).toHaveBeenCalled();
 	});
 
 	test('__ensureRtc 循环中途 claw 翻 offline → bail-out + rtcPhase=failed', async () => {

@@ -273,15 +273,17 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
       3. refresh 时机三分派（关键：不依赖 `wasDisconnected` 翻转——offline 期间
          `dcReady` 从未被清，`onRtcStateChange('connected')` 的 wasDisconnected=false
          分支也不 refresh；presence 恢复的唯一 refresh 入口就是 __resumeOnline）：
-         - forceRestartOnConnected=true（typeChanged 记账命中）→ 跳过 refresh：
-           旧 ICE 路径必已失效，发 RPC 只会应用层超时；ICE restart 成功后 SCTP/DC
-           无缝延续，onRtcStateChange('connected') 的 wasDisconnected=false 分支也
-           不补刷（设计一致）
+         - forceRestartOnConnected=true + connected/restarting（即走
+           triggerRestart('online_resume')）→ 跳过 refresh：旧 ICE 路径必已失效，
+           发 RPC 只会应用层超时；ICE restart 成功后 SCTP/DC 无缝延续，
+           onRtcStateChange('connected') 的 wasDisconnected=false 分支也不补刷（设计一致）
          - DC 预期可用（'connected' / 'restarting'，非 forceRestart）→ 立即
            __refreshIfStale(id, {force:true})（loader 可用 dcReady=true 发 RPC）
-         - 需要 rebuild（rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'）→
-           add id 到 `_pendingForceRefreshOnRebuild` Set；任何一次 __ensureRtc 真正
-           成功时 consume 该标记并 force refresh。此机制可靠覆盖：
+         - rebuild 路径（rtc 不存在 / 'failed' / 'closed' / 'idle' / 'connecting'，
+           含 forceRestart=true 的 rebuild 子场景）→ add id 到
+           `_pendingForceRefreshOnRebuild` Set；任何一次 __ensureRtc 真正成功时
+           consume 该标记并 force refresh。rebuild 建全新 PC + 全新 SCTP，
+           plugin 可能已换端，refresh 不能跳过。此机制可靠覆盖：
              * `_rtcInitInProgress` 守卫下 __ensureRtc 早退（.then 立即 fire 但
                rebuild 未完成）
              * 当前 __ensureRtc attempts 全失败、等退避重试多轮后最终成功
@@ -306,10 +308,12 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 **`applySnapshot` 的三阶段 diff**：Phase 1 capture prev online → Phase 2 apply snapshot（覆盖字段）→ Phase 3 按 `online: true→false` / `false→true` / 未变但 `rtcPhase='failed'` 分派动作，覆盖 SSE 断连重连且 server 没发增量 `claw.status` 的场景。
 
 **online 门控的布点**：
-- `__ensureRtc` 入口 + 循环中途 → offline 即 bail-out；循环中途 bail-out 显式写 `rtcPhase='failed'`，让后续 online→true 走 rebuild 分支
+- `__ensureRtc` 入口 + 循环中途 + **await initRtc 之后** → offline 即 bail-out；`rtcPhase='failed'` 仅在 bailReason='offline' 时显式写，让后续 online→true 走 rebuild 分支
 - `__scheduleRetry` 入口 → offline 不排队退避
 - `__checkAndRecover` 入口 → offline 不 probe、不 restart
 - `__handleNetworkOnline` 循环内 → offline 的 claw 不参与 network 恢复路径
+
+**`__ensureRtc` 的 post-await recheck**：循环头检查 gate 只覆盖"`await initRtc` 之前"，但 `initRtc` 可能耗时数秒（ICE gathering / DTLS 握手）。期间若 offline / sig_offline 发生，`__handleClawGoOffline` 调 `conn.rtc?.pauseRestart()` 会空转——此时 `conn.rtc` 还是 `null`（`initRtc` 未 resolve）——成功 resolve 后若不再次 recheck，新建的 RTC 会越过关着的门继续运行。修法：`result === 'rtc'` 后、进入成功分支前检查 `byId[id]?.online && !_sigOffline`；失败则 `closeRtcForClaw` + `conn.clearRtc` + 走 bailedOut 分支（和循环内 bail 复用同一处理逻辑）。
 
 **其他 online 消费点**：
 - 展示（banner、徽标、列表排序、操作可用性提示）：**允许**，UI 优先用 `online=false` 表示"离线"而非"连接失败"，即使 `rtcPhase='failed'`
