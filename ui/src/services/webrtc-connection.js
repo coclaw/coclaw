@@ -1184,6 +1184,13 @@ export class WebRtcConnection {
 	 * triggerRestart('online_resume')（paused gate 白名单 reason）立即发 ICE restart offer。
 	 *
 	 * 非 paused 或 PC 状态非 connected 时为 no-op（调用方负责走正确分支）。
+	 *
+	 * connected + PC 健康 路径：不再仅 `__startKeepalive()`（那要等完整 30s 周期首次 probe），
+	 * 而是调 `__probeNow()` 立即发一次 probe。场景：网络刚恢复时 SCTP 可能已死
+	 * 但 pc.connectionState 尚未翻 failed/disconnected（浏览器靠 ICE 自身心跳判定，秒到十几秒级），
+	 * 此时仅重启 keepalive 要等 30s 间隔 + 10s 超时才能发现 ≈ 30-40s 黑洞；
+	 * 立即 probe 把窗口压到 ~1-3s（probe 超时由 DC_KEEPALIVE_TIMEOUT_MS 决定），
+	 * 失败复用 `__doKeepalive` 的 activity-grace / `__onIceFailed` 路径，不新增分派规则。
 	 */
 	resumeRecovery() {
 		if (!this.__restartPaused) return;
@@ -1202,9 +1209,34 @@ export class WebRtcConnection {
 		}
 		this.__restartPaused = false;
 		if (this.__state === 'connected' && this.__rpcChannel?.readyState === 'open') {
-			this.__startKeepalive();
+			this.__probeNow();
 		}
 		this.__log('info', `recovery resumed state=${this.__state}`);
+	}
+
+	/**
+	 * @private 立即启动一次保活 probe（替代 `__startKeepalive` 等完整 30s 周期），
+	 * 用于 resumeRecovery 入口——SCTP 已死但 PC 未翻 failed 的场景下能把黑洞从 30-40s 压到 ~1-3s。
+	 * 清掉已有 keepalive 定时器（若有）、bump gen 防回调串扰，然后立即调 `__doKeepalive`，
+	 * 它的内部会按 probe 结果 schedule 下一轮或走 `__onIceFailed`。
+	 */
+	__probeNow() {
+		if (this.__keepaliveTimer) {
+			clearTimeout(this.__keepaliveTimer);
+			this.__keepaliveTimer = null;
+		}
+		// activity-grace 绕过：短 pause（< DC_ACTIVITY_GRACE_MS=20s）场景下，pause 期间 DC 入向事件
+		// 停摆 → __lastDcActivityAt 停在 pause 前最后一次活动的时间戳；resume 立即 probe 超时时
+		// elapsed = pause 时长 + probe 超时 ≈ 15s < 20s grace → __doKeepalive 会跳过 __onIceFailed
+		// 走 schedule 下一轮，"把黑洞压到 ~1-3s" 的意图被抵消退化到 ~45s。
+		// 显式清零让 grace 失效一次，probe 失败直接升级 __onIceFailed。
+		// 对拥塞保护无误伤：真拥塞不会进 pause 态（pauseRestart 仅由 offline/sig-offline 路径调用）。
+		this.__lastDcActivityAt = 0;
+		const gen = ++this.__keepaliveGen;
+		this.__registerAppLifecycle();
+		// __doKeepalive 是 async 但同步返回 Promise：不 await（resumeRecovery 同步语义）；
+		// probe 结果由 __doKeepalive 内部自行分派（schedule 下轮 / onIceFailed）
+		this.__doKeepalive(gen);
 	}
 
 	/** @private 清除 restart 状态（成功/失败/close 时调用） */

@@ -81,6 +81,7 @@ describe('bot-lifecycle 自注册', () => {
 		expect(capture.hooks).toBeDefined();
 		expect(typeof capture.hooks.cleanupClawResources).toBe('function');
 		expect(typeof capture.hooks.syncDashboardOffline).toBe('function');
+		expect(typeof capture.hooks.syncDashboardOnline).toBe('function');
 		expect(typeof capture.hooks.initClawResources).toBe('function');
 		expect(typeof capture.hooks.refreshClawResources).toBe('function');
 		expect(typeof capture.hooks.dispatchAgentEvent).toBe('function');
@@ -117,6 +118,26 @@ describe('syncDashboardOffline', () => {
 	test('dashEntry 存在但 instance 为 null 时不报错', () => {
 		dashboardByBot['bot-3'] = { instance: null };
 		expect(() => capture.hooks.syncDashboardOffline('bot-3')).not.toThrow();
+	});
+});
+
+describe('syncDashboardOnline', () => {
+	test('dashEntry.instance 存在时设置 online=true（复原 syncDashboardOffline 写入的 false）', () => {
+		const instance = { online: false };
+		dashboardByBot['bot-10'] = { instance };
+
+		capture.hooks.syncDashboardOnline('bot-10');
+
+		expect(instance.online).toBe(true);
+	});
+
+	test('dashEntry 不存在时不报错（首次 init 场景：entry 尚未被 loadDashboard 建立）', () => {
+		expect(() => capture.hooks.syncDashboardOnline('non-existent')).not.toThrow();
+	});
+
+	test('dashEntry 存在但 instance 为 null 时不报错（loadDashboard 加载中 / 失败场景）', () => {
+		dashboardByBot['bot-11'] = { instance: null };
+		expect(() => capture.hooks.syncDashboardOnline('bot-11')).not.toThrow();
 	});
 });
 

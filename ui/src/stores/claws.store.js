@@ -11,6 +11,7 @@ import { useSignalingConnection } from '../services/signaling-connection.js';
 const _lifecycle = {
 	cleanupClawResources: () => {},
 	syncDashboardOffline: () => {},
+	syncDashboardOnline: () => {},
 	initClawResources: async () => {},
 	refreshClawResources: () => {},
 	dispatchAgentEvent: () => {},
@@ -266,9 +267,14 @@ export const useClawsStore = defineStore('claws', {
 				// __fullInit 会建全新 ICE 路径，typeChanged 记账无意义 → 主动清 Set 条目
 				//（与 __resumeAllClawsForSigOnline 的 !initialized 分支对称）
 				_pendingTypeChangedRestartClaws.delete(id);
-				claw.initialized = true;
+				// 顺序：先取 conn、判存在、再置 initialized=true、最后 fire __fullInit。
+				// 若 conn 未 bridge（bridge 通常随 addOrUpdateClaw/applySnapshot 先行，但 SSE 时序
+				// 不保证），过去先置 initialized=true 再判空会在 conn 缺失时卡死 initialized=true
+				// + dcReady=false + 永不再 fullInit（与 Phase 3 rescue 同源）；对齐另两处
+				// rescue 分支（applySnapshot Phase 3 L362 / __resumeAllClawsForSigOnline L623）。
 				const conn = useClawConnections().get(id);
 				if (conn) {
+					claw.initialized = true;
 					const attempt = claw.__initAttempt = (claw.__initAttempt || 0) + 1;
 					this.__fullInit(id, conn).catch((err) => {
 						if (claw.__initAttempt === attempt) claw.initialized = false;
@@ -672,6 +678,11 @@ export const useClawsStore = defineStore('claws', {
 			// 两把锁协调核心：sig 不通时不做任何恢复动作（等 sig 回来时由
 			// __resumeAllClawsForSigOnline 遍历重调；或由 claw online 事件再次触发）
 			if (_sigOffline) return;
+			// dashboard 展示层同步回 online=true，与 __handleClawGoOffline 的 syncDashboardOffline 对称。
+			// 仅同步展示字段，不刷聚合数据——DC 延续场景（connected/restarting）下 plugin 侧缓冲会自然送达，
+			// rebuild 成功路径由 `_pendingForceRefreshOnRebuild` consume 点的 refreshClawResources 统一刷（含 dashboard）。
+			// 此处用意：防止 DC 延续时 ManageClawsPage 等处长期显示"已离线"（因为 refreshClawResources 不会被触发）。
+			_lifecycle.syncDashboardOnline(id);
 			// 消费 typeChanged per-claw 记账：命中则升级 connected+paused 分派为 triggerRestart
 			if (_pendingTypeChangedRestartClaws.delete(id)) forceRestartOnConnected = true;
 			const conn = useClawConnections().get(id);

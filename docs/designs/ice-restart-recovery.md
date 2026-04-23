@@ -443,7 +443,9 @@ SSE claw.online=true → __resumeOnline（按 PC 状态分派，仅 rebuild 触�
 
   PC 状态分派：
   - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 90s 预算
-  - connected + paused → 默认 resumeRecovery（清 paused + 重启 keepalive；不发 ICE restart）；
+  - connected + paused → 默认 resumeRecovery（清 paused + 立即发一次 probe 探测 SCTP 活性；
+    probe 失败 → __onIceFailed → ICE restart；probe 成功 → 继续正常保活周期；
+    pc.connectionState 已 failed/disconnected → 直接升级 triggerRestart('online_resume')）；
     typeChanged 记账命中 → 升级为 triggerRestart('online_resume')
   - connected + 非 paused → __ensureRtc 早退（DC 延续场景不单独刷 dashboard，与其他 loader 对称）
   - failed/closed/idle/connecting/null → __ensureRtc 全量 rebuild

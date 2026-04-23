@@ -3902,8 +3902,11 @@ describe('WebRtcConnection — pauseRestart', () => {
 		rtc.close();
 	});
 
-	test('resumeRecovery 在 connected+paused 下清 paused 并重启 keepalive，不发 offer', async () => {
-		const { rtc, pc } = await setupConnectedRtc();
+	test('resumeRecovery 在 connected+paused 下清 paused 并立即触发一次 probe（把 30-40s 黑洞压到 ~1-3s），不发 offer', async () => {
+		// Finding 1: 网络恢复时 SCTP 可能已死但 pc.connectionState 尚未翻 failed/disconnected，
+		// 仅 __startKeepalive() 要等完整 30s 间隔+10s 超时才能发现 → ~30-40s 黑洞。
+		// 修法：__probeNow() 立即发一次 probe，失败复用 __doKeepalive 的 __onIceFailed 路径。
+		const { rtc, pc, dc } = await setupConnectedRtc();
 		expect(rtc.__keepaliveTimer).not.toBeNull();
 		rtc.pauseRestart();
 		expect(rtc.__restartPaused).toBe(true);
@@ -3911,17 +3914,58 @@ describe('WebRtcConnection — pauseRestart', () => {
 		const keepaliveGenBefore = rtc.__keepaliveGen;
 		mockSendSignaling.mockClear();
 		pc.__createOfferOpts.length = 0;
+		dc.sent.length = 0;
 
 		rtc.resumeRecovery();
 
 		expect(rtc.__restartPaused).toBe(false);
-		// keepalive 重启：新 timer 产生、gen 递增（startKeepalive 内部 ++gen）
-		expect(rtc.__keepaliveTimer).not.toBeNull();
+		// gen 递增（__probeNow bump）；不等 30s 间隔
 		expect(rtc.__keepaliveGen).toBe(keepaliveGenBefore + 1);
+		await vi.advanceTimersByTimeAsync(0);
+		const probeSent = dc.sent.find((d) => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		});
+		expect(probeSent).toBeTruthy();
+		// probe-ack → __doKeepalive schedule 下一轮 keepaliveTimer
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.__keepaliveTimer).not.toBeNull();
 		// 未发 ICE restart offer（PC 还健康，不需要）
 		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
 		expect(offers).toHaveLength(0);
 		expect(rtc.state).toBe('connected');
+
+		rtc.close();
+	});
+
+	test('resumeRecovery 立即 probe 超时 → 短 pause 下也走 __onIceFailed（__probeNow 自身绕过 activity-grace）', async () => {
+		// Finding 1 失败路径（短 pause 场景，deep-review A-P2 修复）：
+		// resume 立即 probe 超时时，pause 期间 __lastDcActivityAt 不再被更新（DC 入向事件停摆），
+		// elapsed < DC_ACTIVITY_GRACE_MS(20s) 原本会被 grace 跳过 → 退化到等 30s+10s 才升级。
+		// 修法：__probeNow 入口清零 __lastDcActivityAt，让 grace 失效一次 probe 失败直接升级。
+		// 断言：dc.onopen 刚刚设过 __lastDcActivityAt=Date.now()，若 __probeNow 不清，probe 超时会被 skip；
+		//       清后 probe 超时 → __onIceFailed → triggerRestart → state='restarting'
+		const { rtc, dc } = await setupConnectedRtc();
+		expect(rtc.__lastDcActivityAt).toBeGreaterThan(0); // 确认 dc.onopen 设过
+		rtc.pauseRestart();
+		mockSendSignaling.mockClear();
+		dc.sent.length = 0;
+
+		rtc.resumeRecovery();
+		// 立即发 probe
+		await vi.advanceTimersByTimeAsync(0);
+		const probeSent = dc.sent.find((d) => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		});
+		expect(probeSent).toBeTruthy();
+		// probe 不 ack → 超时 DC_KEEPALIVE_TIMEOUT_MS=10_000
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// __doKeepalive → probe=false → activity grace 过 → __onIceFailed → triggerRestart
+		expect(rtc.state).toBe('restarting');
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers.length).toBeGreaterThan(0);
 
 		rtc.close();
 	});

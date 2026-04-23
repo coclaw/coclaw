@@ -36,6 +36,18 @@ function syncDashboardOffline(id) {
 }
 
 /**
+ * claw 恢复上线时把 dashboard 缓存中的 online 标志写回 true。
+ * 与 `syncDashboardOffline` 对称，仅同步展示字段；不刷新聚合数据
+ * （聚合数据的刷新由 `_pendingForceRefreshOnRebuild` → `refreshClawResources` 的 rebuild 路径负责）。
+ * DC 延续场景（PC 未 rebuild）下，此函数防止 dashboard 长期显示"已离线"的陈旧状态。
+ * @param {string} id - clawId
+ */
+function syncDashboardOnline(id) {
+	const dashEntry = useDashboardStore().byClaw[id];
+	if (dashEntry?.instance) dashEntry.instance.online = true;
+}
+
+/**
  * claw 首次初始化：加载 agents（阻塞）+ sessions/topics/dashboard（fire-and-forget）
  * 全部 per-claw，避免多 claw 错峰恢复时全量横扫造成的 N² RPC 放大。
  * @param {string} id - clawId
@@ -70,6 +82,7 @@ function dispatchAgentEvent(payload) {
 __registerClawLifecycleHooks({
 	cleanupClawResources,
 	syncDashboardOffline,
+	syncDashboardOnline,
 	initClawResources,
 	refreshClawResources,
 	dispatchAgentEvent,

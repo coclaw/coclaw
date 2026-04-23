@@ -287,8 +287,10 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
            （复用 PC + 全新 90s 预算；paused gate 仅此路径可穿过）
          - 'restarting' + 非 paused → 已在正常 restart 循环，不重入
          - 'connected' + restartPaused → 默认 rtc.resumeRecovery()（清 paused +
-           重启 keepalive；不触发 ICE restart，PC 本身仍健康）；forceRestartOnConnected
-           命中时升级为 rtc.triggerRestart('online_resume')（旧 ICE 路径必失效需走 restart）
+           立即发一次 probe 探测 SCTP 活性，不等完整 30s keepalive 周期；probe 失败
+           则升级 __onIceFailed → ICE restart；PC 本身仍健康时 probe 成功继续正常周期）；
+           forceRestartOnConnected 命中时升级为 rtc.triggerRestart('online_resume')
+           （旧 ICE 路径必失效需走 restart）
          - 其余 → __ensureRtc(id)。业务数据刷新统一由 `_pendingForceRefreshOnRebuild`
            consume 点（rebuild 成功时）触发；DC 延续路径不在此处单独刷 dashboard，
            与 agents/sessions/topics 保持对称
@@ -300,7 +302,7 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 
 `onRtcStateChange('connected')` 的 wasDisconnected=false 分支（ICE restart 成功但 DC 全程未断）也会把 `disconnectedAt=0`——修复 pre-existing 漏洞：多次 restart 间 stamp 会累积最旧时刻污染后续 gap 判断。
 
-**已知限制**：offline 期间 `pauseRestart` 停了 keepalive 探测，SCTP 若静默死亡（plugin 进程挂但浏览器未检测到底层 transport 故障）`dcReady` 会脱钩保持 `true`。resume 时 `resumeRecovery` 重启 keepalive，首次 probe 间隔 30s 内 UI 以为 DC 可用，期间 RPC 写入 SCTP buffer 但送不到 plugin——最终通过 keepalive probe 失败升级为 `__onIceFailed` → ICE restart 或 rebuild 被动恢复。这是"presence 与 DC 生命周期独立"原则的权衡：后续可选在 `resumeRecovery` 里加 immediate probe 缩短探测时延。
+**黑洞窗口收敛**：offline 期间 `pauseRestart` 停了 keepalive 探测，SCTP 若静默死亡（plugin 进程挂但浏览器未检测到底层 transport 故障）`dcReady` 会脱钩保持 `true`。resume 时 `resumeRecovery` 在 PC 仍健康的分支下通过 `__probeNow` 立即发一次 probe（不等完整 30s 周期），把"UI 误以为 DC 可用"的黑洞窗口从 ~30-40s 压到 ~1-3s：probe 失败直接走 `__onIceFailed → ICE restart`；probe 成功则继续正常保活周期。`__probeNow` 入口显式清零 `__lastDcActivityAt` 以绕过 activity-grace（pause 期间 DC 入向事件停摆，时间戳失真会错误保护失败的 probe）。PC 已失 connected（进 failed/disconnected）时 `resumeRecovery` 直接升级 `triggerRestart('online_resume')` 发 ICE restart offer。
 
 **`applySnapshot` 的三阶段 diff**：Phase 1 capture prev online → Phase 2 apply snapshot（覆盖字段）→ Phase 3 按 `online: true→false` / `false→true` / 未变但 `rtcPhase='failed'` 分派动作，覆盖 SSE 断连重连且 server 没发增量 `claw.status` 的场景。
 

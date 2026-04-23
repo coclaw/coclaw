@@ -562,6 +562,62 @@ describe('updateClawOnline', () => {
 		expect(store.byId['1'].dcReady).toBe(true);
 		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
 	});
+
+	test('bot 上线 + initialized=false + conn 未 bridge → 不提前置 initialized=true（避免卡死）', () => {
+		// Finding 3: 历史上 L264-277 会先置 initialized=true 再查 conn，若 conn 尚未 bridge
+		// 则没有 __fullInit 被 fire，claw 就卡在 initialized=true + dcReady=false + 永不再 init
+		// （applySnapshot Phase 3 rescue 因 initialized=true 跳过、__bridgeConn 因 _bridgedConns 短路跳过）。
+		// 修法：先查 conn、判存在、再置——对齐 applySnapshot Phase 3 / __resumeAllClawsForSigOnline 两处 rescue 分支。
+		const store = useClawsStore();
+		store.setClaws([{ id: '1', online: false }]);
+		store.byId['1'].initialized = false;
+		// 模拟 conn 未 bridge：manager.get 返回 null
+		mockManager.get.mockReturnValue(null);
+
+		store.updateClawOnline('1', true);
+
+		expect(store.byId['1'].online).toBe(true);
+		// conn 缺失 → initialized 必须保持 false（等后续 __bridgeConn 接手时再 init）
+		expect(store.byId['1'].initialized).toBe(false);
+	});
+
+	test('bot offline→online + DC 仍 connected → syncDashboardOnline 复原 dashboard.instance.online=true（与 syncDashboardOffline 对称）', async () => {
+		// Finding 2: offline 时 syncDashboardOffline 硬写 instance.online=false；DC 延续场景下
+		// 若不刷 dashboard，该字段会长期陈旧留 false（直到 app:foreground / 手动进 ManageClawsPage）。
+		// 修法：__resumeOnline 入口调 syncDashboardOnline（展示层同步，不刷聚合数据——保持与"仅 rebuild 才刷"原则一致）。
+		const store = useClawsStore();
+		const dashboardStore = useDashboardStore();
+		vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+
+		// dashboard 缓存预置（含 instance.online=true）
+		store.addOrUpdateClaw({ id: '1', name: 'Bot', online: true });
+		store.byId['1'].initialized = true;
+		dashboardStore.byClaw['1'] = {
+			loading: false, error: null,
+			instance: { name: 'Bot', online: true }, agents: [],
+		};
+
+		// offline → syncDashboardOffline 写 false
+		mockManager.get.mockReturnValue(null);
+		store.updateClawOnline('1', false);
+		expect(dashboardStore.byClaw['1'].instance.online).toBe(false);
+
+		// online 恢复（DC 延续）
+		const fakeRtc = { state: 'connected', isReady: true, restartPaused: false };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(),
+			rtc: fakeRtc, clearRtc: vi.fn(),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.updateClawOnline('1', true);
+
+		// syncDashboardOnline 复原 instance.online=true
+		expect(dashboardStore.byClaw['1'].instance.online).toBe(true);
+		// 聚合数据（loadDashboard）仍不刷——DC 延续场景保持"仅 rebuild 才刷"原则
+		await new Promise((r) => setTimeout(r, 10));
+		expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
+	});
 });
 
 describe('applySnapshot', () => {

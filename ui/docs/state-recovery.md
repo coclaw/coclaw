@@ -430,7 +430,7 @@ RTC 恢复决策基于 PC 自身状态、DC probe 和两把正交的"全局闸"�
     - DC 延续路径（`connected` / `restarting`，含 forceRestart=true 的 ICE restart 子场景）→ **不刷**。PC 没 rebuild、SCTP 延续时，plugin 侧缓冲的 rpc msg 会随 ICE 恢复自然送达 UI；主动 refresh 是冗余流量
   - **PC 状态分派**：
     - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 90s 预算
-    - `connected` + paused → 默认 `resumeRecovery`；forceRestart 命中时升级为 `triggerRestart('online_resume')`
+    - `connected` + paused → 默认 `resumeRecovery`（清 paused + 立即 probe 一次，失败升级 `__onIceFailed`，把黑洞从 30-40s 压到 ~1-3s；`pc.connectionState` 已 failed/disconnected 则直接升级 `triggerRestart('online_resume')`）；forceRestart 命中时升级为 `triggerRestart('online_resume')`
     - `connected` + 非 paused → `__ensureRtc` 早退（不单独刷 dashboard，DC 延续场景对称不刷）
     - 其余 → `__ensureRtc` 全量 rebuild；rebuild 成功由 `_pendingForceRefreshOnRebuild` consume 统一刷 dashboard/agents/sessions/topics
 - `network:online` → `__handleNetworkOnline`（按 PC 状态 + 网络类型变化分级处理，offline claw 被 gate 挡住）：
