@@ -25,7 +25,7 @@
 | 验证标准 | gateway running + 插件已加载 + 升级模块可响应 | 最低保证：插件还能继续自我升级 |
 | 失败版本处理 | 记录在 upgrade-state.json 中，后续跳过 | 避免反复升级到已知有问题的版本 |
 | 升级日志 | `upgrade-log.jsonl`，只追加 | 仅用于运维可观测性，不承担兜底职责 |
-| 并发控制 | `__checking` 标志位 + `upgrade.lock` 文件锁（PID 检活 + 110min TTL 兜底） | 标志位防止 interval 重叠检查；文件锁防止 gateway 重启后新 scheduler 与旧 worker 并发；锁超过 TTL 一律视为过期清理，兜住 PID 复用误判与 worker 被强杀未清锁的场景 |
+| 并发控制 | `__checking` 标志位 + `upgrade.lock` 文件锁（PID 检活 + 110min TTL 兜底） | 标志位防止 interval 重叠检查；文件锁防止 gateway 重启后新 scheduler 与旧 worker 并发；锁超过 TTL 一律视为过期清理，兜住 PID 复用误判与 worker 被强杀未清锁的场景；清锁若遇系统性故障（权限/只读 FS 等）会 warn 日志 + `remoteLog('upgrade.lock-cleanup-failed')` 上报，避免与 writeUpgradeLock 同源故障叠加时陷入无感循环 |
 | 用户通知 | 暂不做 | channel 机制尚未启用，后续接入成本低 |
 | 独立升级插件 | 不采用 | 鸡生蛋问题；OpenClaw 插件生态尚早期；Node.js 插件不存在二进制锁定 |
 

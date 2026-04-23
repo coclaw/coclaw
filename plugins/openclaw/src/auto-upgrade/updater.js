@@ -31,6 +31,30 @@ export function getLockPath() {
 }
 
 /**
+ * 清理过期锁文件。
+ *
+ * 成功才打 "Stale lock removed" 的 info；失败意味着系统性异常（权限/只读 FS/
+ * 路径被替换为目录等），打 warn 并上报 server，避免运维无感——这类失败若与
+ * writeUpgradeLock 同源故障叠加，会让锁陷入"每轮都判过期但写不进新 pid"的循环。
+ * { force: true } 对文件不存在本身不会抛，所以这里 catch 到的一定是真故障。
+ * 函数本身不抛——调用方无需额外 catch。
+ * @param {string} lockPath
+ * @param {'missing-pid'|'ttl-exceeded'|'pid-dead'} reason - 清理原因 token，
+ *   同时用作 remoteLog 的 key=value 字段
+ * @param {object} [logger]
+ */
+async function removeStaleLock(lockPath, reason, logger) {
+	try {
+		await fs.rm(lockPath, { force: true });
+		logger?.info?.(`[auto-upgrade] Stale lock removed (${reason})`);
+	}
+	catch (err) {
+		logger?.warn?.(`[auto-upgrade] Stale lock removal failed (${reason}): ${err?.message}`);
+		remoteLog(`upgrade.lock-cleanup-failed reason=${reason} msg=${err?.message}`);
+	}
+}
+
+/**
  * 检查升级锁是否被持有（worker 进程是否存活）
  *
  * 若锁文件存在但判定为过期（PID 已死 / JSON 无效 / 超龄），顺手清理残留文件。
@@ -51,16 +75,14 @@ export async function isUpgradeLocked(opts) {
 	try {
 		const lock = JSON.parse(raw);
 		if (!lock.pid) {
-			logger?.info?.('[auto-upgrade] Stale lock removed (missing pid)');
-			await fs.rm(lockPath, { force: true }).catch(() => {});
+			await removeStaleLock(lockPath, 'missing-pid', logger);
 			return false;
 		}
 		// 超龄兜底：PID 复用误判、worker 被强杀未清锁等场景下一律视为过期。
 		// ts 不可解析也当过期（writeUpgradeLock 必写 ISO 时间戳，缺字段即异常状态）。
 		const lockTs = Date.parse(lock.ts);
 		if (!Number.isFinite(lockTs) || Date.now() - lockTs > LOCK_TTL_MS) {
-			logger?.info?.(`[auto-upgrade] Stale lock removed (ttl exceeded, pid=${lock.pid})`);
-			await fs.rm(lockPath, { force: true }).catch(() => {});
+			await removeStaleLock(lockPath, 'ttl-exceeded', logger);
 			return false;
 		}
 		// signal 0 不发信号，仅检查进程存活性；进程不存在时抛异常
@@ -69,8 +91,7 @@ export async function isUpgradeLocked(opts) {
 	}
 	catch {
 		// JSON 无效 / PID 已死 → 清理过期锁
-		logger?.info?.('[auto-upgrade] Stale lock removed (worker pid no longer alive)');
-		await fs.rm(lockPath, { force: true }).catch(() => {});
+		await removeStaleLock(lockPath, 'pid-dead', logger);
 		return false;
 	}
 }

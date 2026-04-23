@@ -878,7 +878,7 @@ test('isUpgradeLocked 锁文件无 pid 字段时返回 false 并清理', async (
 		const locked = await isUpgradeLocked({ logger });
 		assert.equal(locked, false);
 		await assert.rejects(fs.access(lockPath));
-		assert.ok(logger.infos.some(m => m.includes('missing pid')));
+		assert.ok(logger.infos.some(m => m.includes('missing-pid')));
 	}
 	finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -901,7 +901,7 @@ test('isUpgradeLocked 锁文件超龄（> TTL）时返回 false 并清理，不�
 		const locked = await isUpgradeLocked({ logger });
 		assert.equal(locked, false);
 		await assert.rejects(fs.access(lockPath));
-		assert.ok(logger.infos.some(m => m.includes('ttl exceeded')));
+		assert.ok(logger.infos.some(m => m.includes('ttl-exceeded')));
 	}
 	finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -921,10 +921,45 @@ test('isUpgradeLocked 锁文件 ts 字段无效时返回 false 并清理', async
 		const locked = await isUpgradeLocked({ logger });
 		assert.equal(locked, false);
 		await assert.rejects(fs.access(lockPath));
-		assert.ok(logger.infos.some(m => m.includes('ttl exceeded')));
+		assert.ok(logger.infos.some(m => m.includes('ttl-exceeded')));
 	}
 	finally {
 		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('isUpgradeLocked 清锁失败时打 warn + 上报 remoteLog，不抛异常', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	const lockPath = getLockPath();
+	const lockDir = nodePath.dirname(lockPath);
+	try {
+		await fs.mkdir(lockDir, { recursive: true });
+		// 构造一个会走 ttl-exceeded 清锁分支的锁
+		const staleTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+		await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: staleTs }), 'utf8');
+		// 去掉父目录写权限，让 fs.rm(lockPath) 抛 EACCES
+		await fs.chmod(lockDir, 0o555);
+
+		const logger = silentLogger();
+		const locked = await isUpgradeLocked({ logger });
+
+		assert.equal(locked, false);
+		assert.ok(
+			logger.warns.some(m => m.includes('Stale lock removal failed') && m.includes('ttl-exceeded')),
+			'expected warn containing "Stale lock removal failed (ttl-exceeded)"',
+		);
+		assert.ok(
+			remoteLogBuffer.some(e => e.text.startsWith('upgrade.lock-cleanup-failed reason=ttl-exceeded')),
+			'expected remoteLog entry with reason=ttl-exceeded',
+		);
+	}
+	finally {
+		try { await fs.chmod(lockDir, 0o755); } catch {}
+		await fs.rm(dir, { recursive: true, force: true });
+		resetRemoteLog();
 	}
 });
 
