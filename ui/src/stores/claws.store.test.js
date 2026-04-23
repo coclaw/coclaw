@@ -1643,15 +1643,21 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		};
 		mockManager.get.mockReturnValue(fakeConn);
 
-		store.addOrUpdateClaw({ id: '97', name: 'Bot', online: true });
-		store.byId['97'].dcReady = true;
-		// 不设 initialized=true → 循环顶部被 initialized gate 拦住
+		// 用 online=false 建 claw → __bridgeConn 不触发 __fullInit（L509 分支条件不成立）
+		// → _rtcInitInProgress 不被占用、initialized 保持 false
+		// 再手动置 online=true 以让 online gate 放行，仅 !initialized 作为真正的拦截点
+		store.addOrUpdateClaw({ id: '97', name: 'Bot', online: false });
 		store.__bridgeConn('97');
+		store.byId['97'].online = true;
+		store.byId['97'].dcReady = true;
 		mockCloseRtcForBot.mockClear();
+		mockInitRtc.mockClear();
 
 		emitForegroundResume('network:online', { typeChanged: true });
 		await new Promise((r) => setTimeout(r, 50));
+		// 未发起任何 rebuild：既不走 rtc=null 的新分支，也不走 failed/closed 分支
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
 	test('network:online + typeChanged 未传入（undefined）→ 视为无类型变化', async () => {
@@ -1774,6 +1780,30 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		await vi.waitFor(() => {
 			expect(mockInitRtc).toHaveBeenCalledWith('99d', fakeConn, expect.any(Object));
 		});
+		expect(store.byId['99d'].rtcPhase).toBe('ready');
+	});
+
+	test('network:online + initialized + rtc=null + !dcReady + rtcPhase=idle → 立即 rebuild（覆盖默认 phase）', async () => {
+		const store = useClawsStore();
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: null, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// createClawState 默认 rtcPhase='idle' + dcReady=false —— 覆盖"!dcReady"侧的触发
+		// 路径，防止未来条件收紧成 phase in {failed, recovering} 而静默丢失 idle 场景
+		store.addOrUpdateClaw({ id: '99f', name: 'Bot', online: false });
+		store.byId['99f'].online = true;
+		store.byId['99f'].initialized = true;
+		store.__bridgeConn('99f');
+		mockInitRtc.mockClear();
+
+		emitForegroundResume('network:online', { typeChanged: true });
+		await vi.waitFor(() => {
+			expect(mockInitRtc).toHaveBeenCalledWith('99f', fakeConn, expect.any(Object));
+		});
+		expect(store.byId['99f'].rtcPhase).toBe('ready');
 	});
 
 	test('network:online + initialized + rtc=null + rtcPhase=ready + dcReady=true → 跳过（防御性边界，不应存在的组合）', async () => {
