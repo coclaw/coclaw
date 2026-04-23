@@ -1,5 +1,40 @@
 # @coclaw/openclaw-coclaw
 
+## 0.17.5
+
+### Patch Changes
+
+- cfef3aa: Raise pion-ipc request timeout from 10s to 20s and stream pion-node internal logs to the plugin's local logger in addition to `remoteLog`. Severe events (IPC `request timeout` and `orphan response`) are logged at `error` level locally so operators can spot them immediately during on-host debugging; other messages go to `info`. Also renames the preloader option `startTimeout` to `ipcRequestTimeout` (same value controls both the startup ping and every subsequent IPC request, so the old name was misleading).
+
+  Motivation: a production incident on 0.17.3 surfaced a `dc.send` IPC timeout whose details were only visible server-side via `remoteLog`, making local diagnosis difficult. The longer window provides a safety margin against rare process-wide stalls without changing any IPC semantics.
+
+- a4aa32a: Make stale upgrade-lock cleanup failures observable (local warn + remoteLog upstream).
+
+  Previously every `fs.rm` call that cleaned a stale `upgrade.lock` swallowed errors with `.catch(() => {})`. Since `{ force: true }` already suppresses "file not found", any error reaching the catch is a real system-level failure — permission denied, read-only filesystem, lock path replaced by a directory, etc. Swallowing it was dangerous: if the cleanup failure co-occurs with a `writeUpgradeLock` failure (same underlying fault), the lock file retains the stale (expired) contents forever. Every subsequent hourly scheduler check then re-enters the same "judge as expired → fail to remove → spawn parallel worker" loop, piling up workers that race against each other on the same backup directory and state files. Before this change there was no local warn log and no remote signal, so the issue could only be diagnosed post-mortem.
+
+  Three stale-lock branches (`missing-pid`, `ttl-exceeded`, `pid-dead`) are now routed through a single `removeStaleLock(lockPath, reason, logger)` helper. On success it logs an info line as before; on failure it logs a `warn` with the reason and error message, and emits `upgrade.lock-cleanup-failed reason=<reason> msg=<err>` via `remoteLog` so server-side observability sees it. The helper itself does not throw, so the gateway-stability guarantee of `isUpgradeLocked` is preserved. The `reason` values are short tokens (no spaces) so they work as `key=value` fields in the remote-log wire format and are easy to bucket.
+
+  Incidental fix: the old code emitted `Stale lock removed` before attempting the removal, which meant the log claimed success even when the removal had actually failed. The new helper logs only on actual success.
+
+- 07d1fc7: Add a 110-minute TTL to the auto-upgrade worker lock so the scheduler cannot be permanently blocked.
+
+  The lock (`~/.openclaw/coclaw/upgrade.lock`) previously relied solely on `process.kill(pid, 0)` liveness checks. Two rare-but-real scenarios could leave the lock forever "held": (1) the worker is killed by `SIGKILL` / OOM / power loss and never cleans up; (2) the OS recycles the dead worker's PID to an unrelated long-lived process (e.g. the gateway itself, or a system daemon), so `kill(pid, 0)` keeps succeeding. Under either scenario every subsequent hourly check short-circuits and auto-upgrade stays disabled until someone manually removes the lock file. The recent rollback-timeout widening (worst-case worker run ~36 min) makes the exposure window noticeably larger.
+
+  Fix: `isUpgradeLocked` now treats any lock whose recorded `ts` is older than 110 minutes — or whose `ts` is missing/unparseable — as stale and removes it. No process is killed; we only drop the lock file, because at TTL expiry the owning PID is almost always either already dead (current code path handles it) or has been reassigned to an unrelated process that we must not harm.
+
+  The TTL is ~3× the worst-case worker runtime, so a worker that genuinely runs long does not trip the cleanup. 110 min is deliberately chosen over an even 120 min: the scheduler polls every 60 min, and if the TTL landed on an integer multiple of that interval the lock age would sit right on the "not yet expired" boundary at the Nth poll (due to second-level jitter between lock write and poll), forcing the scheduler to wait an extra full hour until the N+1th poll. 110 min guarantees the 2nd poll after a stuck worker clears the lock. In the vanishingly unlikely event a real worker is still alive past 110 min, the scheduler will launch a parallel worker; any concurrent `plugins update` conflicts surface as install/rollback errors rather than permanent plugin damage — an acceptable price for regaining autonomous recovery. Lock ownership remains with the gateway (scheduler writes/reads/removes); the worker still does not touch the lock, preserving single-owner mental model.
+
+- 5f2c94d: Tighten two leftover edges in the auto-upgrade worker:
+
+  - **Rollback fallback install timeout raised from 120 s to 10 min** (aligned with the forward `plugins update` timeout). The fallback path is only reached when the local backup is missing, so the situation is already anomalous; giving npm download the same budget it has on the upgrade path makes recovery far more likely to actually succeed instead of tripping the timer. Trade-off: the fallback flow uninstalls the plugin before reinstalling the old version, and the final `gateway restart` only fires after install completes. This widens the "uninstalled in `openclaw.json` but old code still live in the gateway process" inconsistency window from ~2 min to ~10 min — accepted as the lesser evil than aborting recovery halfway. Scheduler's hourly check honors the existing PID-keyed `upgrade.lock`, so no concurrent worker is spawned during this window.
+  - **Removed the `?? toVersion` fallback** when recording the installed version into `lastUpgrade.to` / `upgrade-log.jsonl`. Under the current `pollUpgradeHealth` contract `result.version` is guaranteed to be a string whenever `result.ok` is true, so the fallback was dead code. Worse, if that contract were ever broken, the fallback would silently paper the break over with the scheduled target version — turning a "verify succeeded without a version" bug into an invisible one. With the fallback gone, such a break would surface as `undefined` in state/logs, which is exactly what we want during diagnosis.
+
+- 378f0da: Auto-upgrade verification now accepts any installed version that is **greater than or equal to** the originally scheduled `toVersion`, not only a strict string match. Also records the **actually installed** version in `upgrade-state.json.lastUpgrade.to` (and `upgrade-log.jsonl`) instead of the scheduled target.
+
+  Motivation: between the moment the scheduler observes `latest=x` on the npm registry and the moment the worker actually runs `openclaw plugins update`, the dist-tag can advance to `x+1`. Under the old strict-equal verification this was reported as "version mismatch", triggering a rollback and permanently skipping `x` — even though the install had succeeded and produced an even newer version. The plugin would be stuck on the prior version until the next manual intervention.
+
+  The worker now uses the same semver comparison as the scheduler (locally duplicated to avoid cross-process imports from the gateway), and reports `version-too-old got=X want>=Y` as the failure reason when the observed version is still older than the target. Documentation in `docs/auto-upgrade.md` has been brought back in sync with the current single-path (upgradeHealth polling) verification flow.
+
 ## 0.17.4
 
 ### Patch Changes
