@@ -25,7 +25,7 @@
 | 验证标准 | gateway running + 插件已加载 + 升级模块可响应 | 最低保证：插件还能继续自我升级 |
 | 失败版本处理 | 记录在 upgrade-state.json 中，后续跳过 | 避免反复升级到已知有问题的版本 |
 | 升级日志 | `upgrade-log.jsonl`，只追加 | 仅用于运维可观测性，不承担兜底职责 |
-| 并发控制 | `__checking` 标志位 + `upgrade.lock` 文件锁（PID 检活 + 120min TTL 兜底） | 标志位防止 interval 重叠检查；文件锁防止 gateway 重启后新 scheduler 与旧 worker 并发；锁超过 TTL 一律视为过期清理，兜住 PID 复用误判与 worker 被强杀未清锁的场景 |
+| 并发控制 | `__checking` 标志位 + `upgrade.lock` 文件锁（PID 检活 + 110min TTL 兜底） | 标志位防止 interval 重叠检查；文件锁防止 gateway 重启后新 scheduler 与旧 worker 并发；锁超过 TTL 一律视为过期清理，兜住 PID 复用误判与 worker 被强杀未清锁的场景 |
 | 用户通知 | 暂不做 | channel 机制尚未启用，后续接入成本低 |
 | 独立升级插件 | 不采用 | 鸡生蛋问题；OpenClaw 插件生态尚早期；Node.js 插件不存在二进制锁定 |
 
@@ -242,7 +242,7 @@ Bridge 握手时上报 `pluginVersion`，server 回传：
 | 首次延迟 | 5–10 分钟（待定） | 5–10 分钟随机抖动 | 避免多实例同时发起检查 |
 | 日志轮转 | 待定 | 超过 200 行截断至 100 行 | 已实现 |
 | `coclaw.upgradeHealth` 返回格式 | 待定 | `{ "version": "x.y.z" }`（通过 `getPackageInfo()` 读取 package.json） | 已实现 |
-| 并发控制 | 不加锁 | `__checking` 标志位 + `upgrade.lock` 文件锁（PID 检活 + 120min TTL 超龄清理） | 标志位防止 interval 重叠；文件锁防止 gateway 重启后新 scheduler 与旧 worker 并发；TTL 兜住 worker 被强杀未清锁、PID 被 OS 复用给长命进程导致"永久锁死"的场景（worker 最坏耗时约 36min，TTL 给到约 3 倍余量；超龄即清，不 kill 进程以免误伤被复用 PID 的其他程序） |
+| 并发控制 | 不加锁 | `__checking` 标志位 + `upgrade.lock` 文件锁（PID 检活 + 110min TTL 超龄清理） | 标志位防止 interval 重叠；文件锁防止 gateway 重启后新 scheduler 与旧 worker 并发；TTL 兜住 worker 被强杀未清锁、PID 被 OS 复用给长命进程导致"永久锁死"的场景（worker 最坏耗时约 36min，TTL 给到约 3 倍余量；选 110min 而非整点 120min 是为了避开巡检间隔 60min 的整数倍临界——否则年龄刚好卡在"未过期"边界会多等一轮巡检才清；超龄即清，不 kill 进程以免误伤被复用 PID 的其他程序） |
 | worker 进程 state dir | 未提及 | 通过 `OPENCLAW_STATE_DIR` 环境变量传递给 worker | worker 作为 detached 进程无 runtime，需显式传递 |
 | version 参数校验 | 未提及 | `fallbackInstallOldVersion` 校验 semver 格式 | 防御 shell 注入（`shell: true` 下的额外安全层） |
 | 备份临时目录命名 | `.bak-tmp` | `.tmp.bak` | OpenClaw gateway 扫描 extensions/ 时仅跳过以 `.bak` 结尾的目录；`.bak-tmp` 不匹配，会在 fs.cp 窗口期被误加载 |
