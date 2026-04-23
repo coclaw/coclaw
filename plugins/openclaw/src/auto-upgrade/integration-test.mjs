@@ -8,8 +8,8 @@
  *   3. version 等于 plugin 当前 package.json 里的 version
  *   4. `callUpgradeHealthOnce`（产品代码内部函数）能正确解析真实响应
  *   5. `pollUpgradeHealth` 正面路径（toVersion === 当前版本）立即返回 ok
- *   6. `pollUpgradeHealth` 负面路径（toVersion 不匹配）按预期 timeout 并给出
- *      version-mismatch 诊断
+ *   6. `pollUpgradeHealth` 负面路径（目标版本比实际更新）按预期 timeout 并给出
+ *      version-too-old 诊断
  *   7. `verifyUpgrade` 端到端链路（不触发 gateway restart）能串起来
  *   8. 旧 bug 现场：`openclaw plugins list` stdout 是否把 `openclaw-coclaw`
  *      折行——验证之前 `.includes('openclaw-coclaw')` 为何脆弱
@@ -187,10 +187,10 @@ async function main() {
 		fail('负面路径 ok=false', JSON.stringify(negativeResult));
 	}
 
-	if (negativeResult.lastReason?.includes(`version-mismatch got=${groundTruthVersion} want=${BOGUS_VERSION}`)) {
-		ok('负面路径 lastReason 指明 version-mismatch');
+	if (negativeResult.lastReason?.includes(`version-too-old got=${groundTruthVersion} want>=${BOGUS_VERSION}`)) {
+		ok('负面路径 lastReason 指明 version-too-old');
 	} else {
-		fail('负面路径 lastReason 指明 version-mismatch', `got=${negativeResult.lastReason}`);
+		fail('负面路径 lastReason 指明 version-too-old', `got=${negativeResult.lastReason}`);
 	}
 
 	if (negativeResult.lastVersion === groundTruthVersion) {

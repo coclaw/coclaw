@@ -165,7 +165,43 @@ test('pollUpgradeHealth — 持续返回旧版本直到超时', async () => {
 	assert.equal(result.ok, false);
 	assert.ok(result.attempts >= 1);
 	assert.equal(result.lastVersion, '0.9.0');
-	assert.match(result.lastReason, /version-mismatch got=0\.9\.0 want=1\.0\.0/);
+	assert.match(result.lastReason, /version-too-old got=0\.9\.0 want>=1\.0\.0/);
+});
+
+test('pollUpgradeHealth — 观察到比 toVersion 更新的版本时视为成功', async () => {
+	// 场景：scheduler 观察到 latest=1.0.0 并发起升级，执行时 npm 已前移到 1.0.1
+	const execFileFn = createExecFileFn(() => ({ stdout: JSON.stringify({ version: '1.0.1' }) }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
+	assert.equal(result.ok, true);
+	assert.equal(result.version, '1.0.1');
+	assert.equal(result.attempts, 1);
+});
+
+test('pollUpgradeHealth — pre-release 版本判定遵循 semver（release > prerelease）', async () => {
+	// 期望 1.0.0-rc.1，实际装上 1.0.0（release 比 pre-release 新），应视为成功
+	const execFileFn = createExecFileFn(() => ({ stdout: JSON.stringify({ version: '1.0.0' }) }));
+	const result = await pollUpgradeHealth('1.0.0-rc.1', fastOpts(execFileFn));
+	assert.equal(result.ok, true);
+	assert.equal(result.version, '1.0.0');
+});
+
+test('pollUpgradeHealth — 实际版本为 prerelease 而目标为 release 时视为过旧', async () => {
+	// 期望 1.0.0，实际 1.0.0-rc.1（pre-release 旧于 release），不应视为成功
+	const execFileFn = createExecFileFn(() => ({ stdout: JSON.stringify({ version: '1.0.0-rc.1' }) }));
+	const result = await pollUpgradeHealth('1.0.0', fastOpts(execFileFn));
+	assert.equal(result.ok, false);
+	assert.equal(result.lastVersion, '1.0.0-rc.1');
+	assert.match(result.lastReason, /version-too-old got=1\.0\.0-rc\.1 want>=1\.0\.0/);
+});
+
+test('pollUpgradeHealth — x.y.z 相同的两个 pre-release 之间视为过旧（冻结保守判定）', async () => {
+	// 目标 1.0.0-rc.1，实际 1.0.0-rc.2：当前 isNewerVersion 对"同 x.y.z + 都是 pre-release"
+	// 不做 pre-release 内部 tag 排序，一律返回 false（保守策略，宁可多轮询不误判）。
+	// 本测试冻结该行为，防止后续若有人把判定改成 semver 严格比较而破坏 rc 链路上的保守性
+	const execFileFn = createExecFileFn(() => ({ stdout: JSON.stringify({ version: '1.0.0-rc.2' }) }));
+	const result = await pollUpgradeHealth('1.0.0-rc.1', fastOpts(execFileFn));
+	assert.equal(result.ok, false);
+	assert.match(result.lastReason, /version-too-old got=1\.0\.0-rc\.2 want>=1\.0\.0-rc\.1/);
 });
 
 test('pollUpgradeHealth — 响应 JSON 非法记录 invalid-json reason', async () => {
@@ -334,7 +370,7 @@ test('verifyUpgrade — 超时失败时返回含 attempts/elapsed/lastReason 的
 		assert.equal(result.ok, false);
 		assert.match(result.error, /verify timeout: attempts=\d+ elapsed=\d+ms/);
 		assert.match(result.error, /lastVersion=0\.9\.0/);
-		assert.match(result.error, /version-mismatch got=0\.9\.0 want=1\.0\.0/);
+		assert.match(result.error, /version-too-old got=0\.9\.0 want>=1\.0\.0/);
 		// 日志也应包含相同错误
 		assert.ok(logs.some(l => l.includes('verify timeout')));
 	}

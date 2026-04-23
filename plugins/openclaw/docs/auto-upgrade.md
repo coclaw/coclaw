@@ -65,8 +65,7 @@ plugins/openclaw/src/
 }
 ```
 
-- `skippedVersions`：升级失败并回滚后，将该版本加入；检查时跳过这些版本
-- 当 npm 上出现比所有 skippedVersions 更新的版本时，正常触发升级
+- `skippedVersions`：**验证超时并回滚**的版本会加入（`openclaw plugins update` 命令自身失败视为瞬态故障，不加入）。当 npm 上出现比所有 skippedVersions 更新的版本时，正常触发升级
 - `lastCheck`：上次版本检查时间，用于调度器判断是否该检查
 - `lastUpgrade`：上次升级的摘要信息
 
@@ -100,13 +99,12 @@ gateway 启动
   → 写入 upgrade.lock（记录 worker PID）
 
 upgrade-worker（独立 node 进程）：
-  1. 读取当前版本号并记录
-  2. 物理备份 extensions/openclaw-coclaw/ → extensions/openclaw-coclaw.bak/
-  3. 执行 openclaw plugins update openclaw-coclaw
-  4. 主动执行 openclaw gateway restart，然后轮询等待 gateway 就绪
-  5. 验证升级结果
-  6a. 成功 → 删除备份，记录日志，更新 state
-  6b. 失败 → 恢复备份 → 主动重启并等待 gateway → 记录失败版本 → 记录日志
+  1. 物理备份 extensions/openclaw-coclaw/ → extensions/openclaw-coclaw.bak/
+  2. 执行 openclaw plugins update openclaw-coclaw
+     （失败时用反向 mirror 切换 registry 重试一次）
+  3. 触发 openclaw gateway restart，轮询 coclaw.upgradeHealth 直到版本 ≥ toVersion
+  4a. 成功 → 删除备份，记录日志，更新 state
+  4b. 失败 → 恢复备份 → 触发 gateway restart（fire-and-forget）→ 记录失败版本 → 记录日志
 ```
 
 ### upgrade-worker 详细流程
@@ -114,50 +112,49 @@ upgrade-worker（独立 node 进程）：
 ```
 ┌─ 开始 ──────────────────────────────────────────────────────┐
 │                                                              │
-│  1. 读取当前插件版本号（从 extensions 目录的 package.json）    │
-│  2. fs.cp extensions/openclaw-coclaw/ → .bak/                │
+│  1. fs.cp extensions/openclaw-coclaw/ → .bak/                │
 │                                                              │
-│  3. child_process.execFile('openclaw', ['plugins', 'update', │
+│  2. child_process.execFile('openclaw', ['plugins', 'update', │
 │     'openclaw-coclaw'])                                      │
+│     ├─ 失败：切换 registry（npmjs ⇄ npmmirror）重试一次       │
+│     └─ 仍失败：进入回滚（skipVersion=false，瞬态故障不跳过）  │
 │                                                              │
-│  4. 主动 openclaw gateway restart，然后轮询                   │
-│     openclaw gateway status 等待就绪（超时 60 秒）            │
-│                                                              │
-│  5. 验证：                                                    │
-│     a. openclaw gateway status → running                     │
-│     b. openclaw plugins list → openclaw-coclaw 已加载         │
-│     c. openclaw gateway call coclaw.upgradeHealth → 响应正常  │
+│  3. 验证（verifyUpgrade）：                                    │
+│     a. 触发 openclaw gateway restart（命令失败不阻断）          │
+│     b. 记录磁盘 package.json 版本（仅诊断）                    │
+│     c. 轮询 openclaw gateway call coclaw.upgradeHealth        │
+│        直到版本 ≥ toVersion（总超时 5 分钟，间隔 3 秒）         │
 │                                                              │
 │  ┌─ 验证通过 ──────────────┐  ┌─ 验证失败 ─────────────────┐ │
-│  │ fs.rm .bak/             │  │ fs.rm extensions/openclaw-  │ │
-│  │ 写入 upgrade-log.jsonl  │  │   coclaw/ (损坏的新版)      │ │
-│  │ 更新 upgrade-state.json │  │ fs.rename .bak/ →           │ │
-│  │ 退出                    │  │   extensions/openclaw-coclaw│ │
-│  └─────────────────────────┘  │                             │ │
-│                               │ 如果 mv 失败：              │ │
-│                               │   execFile openclaw plugins │ │
-│                               │     install @coclaw/...@旧版│ │
+│  │ fs.rm .bak/             │  │ fs.rename .bak/ →           │ │
+│  │ 写入 upgrade-log.jsonl  │  │   extensions/openclaw-coclaw│ │
+│  │ 更新 upgrade-state.json │  │                             │ │
+│  │ 退出                    │  │ 如果恢复失败：              │ │
+│  └─────────────────────────┘  │   execFile openclaw plugins │ │
+│                               │     uninstall 然后 install  │ │
+│                               │     @coclaw/...@旧版         │ │
 │                               │                             │ │
-│                               │ 等待 gateway 重启           │ │
-│                               │ skippedVersions += 新版本   │ │
-│                               │ 写入 upgrade-log.jsonl      │ │
-│                               │ 更新 upgrade-state.json     │ │
-│                               │ 退出                        │ │
+│                               │ 触发 gateway restart         │ │
+│                               │   （fire-and-forget，不验证） │ │
+│                               │ skippedVersions += 新版本    │ │
+│                               │ 写入 upgrade-log.jsonl       │ │
+│                               │ 更新 upgrade-state.json      │ │
+│                               │ 退出                         │ │
 │                               └─────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ### 验证策略
 
-验证的核心目标：**确保插件还能继续自我升级**。
+验证的核心目标：**确认新版本代码已在 gateway 进程内被加载且可响应**。
 
-验证步骤（按顺序执行，任一失败即判定升级失败）：
+实现上只保留一条权威信号——轮询 `openclaw gateway call coclaw.upgradeHealth --json` 直到返回的 `version` 字段 ≥ `toVersion`：
 
-1. **Gateway 存活**：轮询 `openclaw gateway status`，等待其返回 `running`（超时 60 秒）
-2. **插件已加载**：`openclaw plugins list` 输出中包含 `openclaw-coclaw` 且状态正常
-3. **升级模块健康**：`openclaw gateway call coclaw.upgradeHealth --json` 返回成功响应
+- 把 gateway 存活、插件加载、RPC 注册链路、新代码执行这几件事**隐含包在同一次 RPC 成功里**。不再单独跑 `openclaw gateway status` / `openclaw plugins list`：前者等价于"RPC 能否返回"，后者的 stdout 曾出现折行/别名导致 `.includes()` 误判，权威性不如 RPC 自报版本
+- **判定用 "≥" 而非严格等于**：scheduler 观察到 `latest=x` 并发起升级后，到 worker 实际执行 `plugins update` 之间 npm dist-tag 可能已前移到 `x+1`；严格等 `x` 会把"装上更新版本"误判为失败并回滚。用 semver 比较避免这个窗口误判
+- 磁盘 `package.json` 的版本号仅写入本地诊断日志，不参与判定（symlink / installPath 漂移等场景下磁盘版本可能骗人）
 
-第 3 步需要插件注册一个轻量级 gateway method `coclaw.upgradeHealth`，仅返回当前版本号即可。这同时验证了插件代码能正常执行、gateway method 注册链路正常。
+`coclaw.upgradeHealth` 目前只返回 `{ version }`，因此"版本已升上去但其它东西坏了"这类情况**没有办法在验证阶段检出**——这也决定了回滚路径下的 `skipVersion` 当前只有"升级命令失败"与"验证超时"两种入口。若未来需要更严的验证（如 scheduler 是否在跑、service 是否注册），可在 `upgradeHealth` 返回里加字段，并由 worker 把"观察到新版本但深层 health 失败"单独归类以决定是否 skip。
 
 ## 版本检查细节
 
@@ -249,9 +246,13 @@ Bridge 握手时上报 `pluginVersion`，server 回传：
 | worker 进程 state dir | 未提及 | 通过 `OPENCLAW_STATE_DIR` 环境变量传递给 worker | worker 作为 detached 进程无 runtime，需显式传递 |
 | version 参数校验 | 未提及 | `fallbackInstallOldVersion` 校验 semver 格式 | 防御 shell 注入（`shell: true` 下的额外安全层） |
 | 备份临时目录命名 | `.bak-tmp` | `.tmp.bak` | OpenClaw gateway 扫描 extensions/ 时仅跳过以 `.bak` 结尾的目录；`.bak-tmp` 不匹配，会在 fs.cp 窗口期被误加载 |
-| Gateway 重启方式 | 等待 chokidar 自动重启 | 主动 `openclaw gateway restart`，再轮询 status | 不依赖文件变更检测机制，确保可靠重启 |
-| 验证命令 | `openclaw gateway call coclaw.upgradeHealth` | 添加 `--json` 标志 | 确保输出为可解析 JSON |
+| Gateway 重启方式 | 等待 chokidar 自动重启 | 主动 `openclaw gateway restart` 后进入 upgradeHealth 轮询 | 不依赖文件变更检测机制；gateway 就绪由 RPC 能否成功隐式判定，不再单跑 status |
+| 验证链路 | `gateway status` + `plugins list` + `upgradeHealth` 三段串行 | 只轮询 `coclaw.upgradeHealth --json` 直到版本 ≥ toVersion | 前两步对"是否真加载了新代码"无权威判定能力；status 等价于 RPC 可响应，plugins list 的 stdout 曾折行导致 `.includes()` 误判 |
+| 验证版本比较 | 未提及 | `got === toVersion` 或 `isNewerVersion(got, toVersion)` | 覆盖 scheduler 发起升级后 npm dist-tag 前移到 `toVersion+1` 的窗口，避免把"装上更新版本"误判为失败 |
+| 回滚后 gateway 恢复 | 等待 gateway 重启 | 仅触发 restart，fire-and-forget，不验证旧版本是否回到运行态 | 已知权衡：当前只保证"备份文件已就位"。若 restart 命令无效或加载旧版失败，状态仍会记录为 rollback，不会重试——权衡下保持实现简单 |
+| 回滚是否 skipVersion | 未提及 | 升级命令失败 → 不 skip（瞬态）；验证超时 → skip（保守，避免每小时反复回滚影响用户使用） | 现阶段妥协：upgradeHealth 只返回版本号，无法把"瞬时故障"与"新版本真坏了"彻底分开；选择 skip 防抖动，等真修好的新版本出来再自动升 |
 | worker 参数传递 | 未提及 | 通过 `--` 命名参数传递，worker 用 `util.parseArgs` 解析（`--pluginDir/--fromVersion/--toVersion/--pluginId/--pkgName`） | 清晰的参数传递，避免位置参数歧义 |
-| 超时配置 | 未提及 | npm view 30s、plugins update 120s、命令执行 30s、gateway 就绪 60s | 各环节均有超时保护 |
+| 超时配置 | 未提及 | npm view 30s、plugins update 10min、gateway restart / upgradeHealth 单次调用 30s、回滚兜底 uninstall 60s / install 120s、upgradeHealth 轮询总超时 5min | 各环节均有超时保护；plugins update 需跨慢网络下载，放宽到 10 分钟；回滚兜底安装也可能走 npm，需比常规 30s 更宽 |
+| registry 重试 | 未提及 | 首次 `plugins update` 失败时，自动在 npmjs ⇄ npmmirror 间切换 registry 重试一次 | 国内网络对单一源不稳定；反向 fallback 提升一次 update 成功率 |
 | scheduler 注册 | 未提及 | 注册为 gateway service `coclaw-auto-upgrade`（start/stop 生命周期） | 随 gateway 自动启停，无需手动管理生命周期 |
 | state.js 职责 | upgrade-state.json 读写 + 升级锁 | state.js 仅处理 state + log；升级锁（upgrade.lock）在 updater.js | 锁逻辑与调度器耦合更紧密 |

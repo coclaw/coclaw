@@ -178,6 +178,46 @@ test('runUpgrade — 成功升级：备份→更新→验证→删除备份→�
 });
 
 // ============================================================
+// 1a.1 dist-tag 前移窗口：装上的版本比 toVersion 更新时，state 记录真实版本
+// ============================================================
+
+test('runUpgrade — 装上的版本比 toVersion 更新时，state/log 记录真实装上版本', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// scheduler 观察到 latest=1.1.0 并发起升级，worker 执行 plugins update 时
+		// npm dist-tag 已前移到 1.1.1，upgradeHealth 返回 1.1.1；应视为成功并记录 1.1.1
+		const { execFileFn } = createMockExec({ healthVersion: '1.1.1' });
+		const { logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// state 的 to 必须是真实装上的版本 1.1.1，不是参数 toVersion=1.1.0
+		const state = await readState();
+		assert.equal(state.lastUpgrade.to, '1.1.1');
+		assert.equal(state.lastUpgrade.result, 'ok');
+
+		// log 也要记录真实版本
+		const logPath = nodePath.join(stateDir, 'coclaw', 'upgrade-log.jsonl');
+		const entry = JSON.parse((await fs.readFile(logPath, 'utf8')).trim());
+		assert.equal(entry.to, '1.1.1');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
 // 1b. 成功升级但 removeBackup 失败（non-fatal）
 // ============================================================
 

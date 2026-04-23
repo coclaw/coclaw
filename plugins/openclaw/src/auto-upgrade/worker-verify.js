@@ -2,8 +2,12 @@
  * worker-verify.js — 升级后验证
  *
  * 策略：触发 gateway restart → 轮询 coclaw.upgradeHealth RPC 直到返回版本
- * 严格等于 toVersion。单次调用失败（gateway 未就绪 / plugin 未注册 / JSON 非法 /
- * 版本不对）一律按"稍后重试"处理，在总超时窗口内持续尝试。
+ * ≥ toVersion（等于或更新）。单次调用失败（gateway 未就绪 / plugin 未注册 /
+ * JSON 非法 / 版本不够新）一律按"稍后重试"处理，在总超时窗口内持续尝试。
+ *
+ * 允许 > toVersion 的原因：scheduler 观察到 latest=x 并发起升级后，到实际
+ * 执行 `plugins update` 之间 npm dist-tag 可能已指向 x+1；严格等 x 会把
+ * 这种"升级到了更新版本"误判为失败并回滚。
  *
  * 磁盘 package.json 的版本仅作为诊断写入本地日志，不参与判定——openclaw 侧
  * `plugins.installs[id].installPath` 可能在 id-migration 等极端场景发生漂移，
@@ -15,6 +19,23 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
+
+// 与 updater-check.js 同逻辑，worker 运行在独立子进程，不跨进程复用 gateway 模块
+function isNewerVersion(a, b) {
+	const parse = (v) => v.replace(/-.*$/, '').split('.').map(Number);
+	const pa = parse(a);
+	const pb = parse(b);
+	for (let i = 0; i < 3; i++) {
+		/* c8 ignore next 2 -- ?? fallback：正常 semver 不会有缺失段 */
+		if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
+		if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
+	}
+	// x.y.z 相同时：release > pre-release（semver 规则）
+	const aHasPre = a.includes('-');
+	const bHasPre = b.includes('-');
+	if (bHasPre && !aHasPre) return true;
+	return false;
+}
 
 const CMD_TIMEOUT_MS = 30_000;
 const HEALTH_POLL_INTERVAL_MS = 3_000;
@@ -113,7 +134,7 @@ async function callUpgradeHealthOnce(opts) {
 }
 
 /**
- * 轮询 upgradeHealth 直到版本严格等于 toVersion，或总超时
+ * 轮询 upgradeHealth 直到版本 ≥ toVersion，或总超时
  * @param {string} toVersion
  * @param {object} [opts]
  * @param {Function} [opts.execFileFn]
@@ -137,7 +158,8 @@ export async function pollUpgradeHealth(toVersion, opts) {
 		attempts += 1;
 		const result = await callUpgradeHealthOnce(opts);
 		if (result.ok) {
-			if (result.version === toVersion) {
+			// 等于或更新均视为成功，覆盖"升级窗口期 dist-tag 前移"的情形
+			if (result.version === toVersion || isNewerVersion(result.version, toVersion)) {
 				return {
 					ok: true,
 					version: result.version,
@@ -146,7 +168,7 @@ export async function pollUpgradeHealth(toVersion, opts) {
 				};
 			}
 			lastVersion = result.version;
-			lastReason = `version-mismatch got=${result.version} want=${toVersion}`;
+			lastReason = `version-too-old got=${result.version} want>=${toVersion}`;
 		}
 		else {
 			lastReason = result.reason;

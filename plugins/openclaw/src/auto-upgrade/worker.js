@@ -171,8 +171,11 @@ export async function runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, 
 		catch (e) {
 			log(`[upgrade-worker] Backup cleanup failed (non-fatal): ${e.message}`);
 		}
-		await updateLastUpgrade({ from: fromVersion, to: toVersion, result: 'ok' });
-		await appendLog({ from: fromVersion, to: toVersion, result: 'ok' });
+		// 记录真实装上的版本而非目标版本——dist-tag 前移窗口下两者可能不同
+		/* c8 ignore next -- ?? fallback: result.ok 时 version 必为字符串 */
+		const installedVersion = result.version ?? toVersion;
+		await updateLastUpgrade({ from: fromVersion, to: installedVersion, result: 'ok' });
+		await appendLog({ from: fromVersion, to: installedVersion, result: 'ok' });
 		log('[upgrade-worker] Upgrade complete');
 	} else {
 		// 4b. 失败，回滚
