@@ -885,6 +885,48 @@ test('isUpgradeLocked 锁文件无 pid 字段时返回 false 并清理', async (
 	}
 });
 
+test('isUpgradeLocked 锁文件超龄（> TTL）时返回 false 并清理，不检查 PID 存活', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		const lockPath = getLockPath();
+		await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
+		// ts 比 TTL 还早得多；PID 用当前进程 PID（肯定活），验证超龄优先于 PID 检活
+		const staleTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+		await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: staleTs }), 'utf8');
+
+		const logger = silentLogger();
+		const locked = await isUpgradeLocked({ logger });
+		assert.equal(locked, false);
+		await assert.rejects(fs.access(lockPath));
+		assert.ok(logger.infos.some(m => m.includes('ttl exceeded')));
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('isUpgradeLocked 锁文件 ts 字段无效时返回 false 并清理', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		const lockPath = getLockPath();
+		await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
+		await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: 'not-a-date' }), 'utf8');
+
+		const logger = silentLogger();
+		const locked = await isUpgradeLocked({ logger });
+		assert.equal(locked, false);
+		await assert.rejects(fs.access(lockPath));
+		assert.ok(logger.infos.some(m => m.includes('ttl exceeded')));
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
 // --- __reportLastUpgradeResult ---
 
 test('__reportLastUpgradeResult - 有未报告的 lastUpgrade 时 remoteLog 并写入 lastReport', async () => {

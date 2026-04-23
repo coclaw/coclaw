@@ -14,6 +14,11 @@ const INITIAL_DELAY_MS = 60 * 60 * 1000; // 60 分钟
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时
 const CHANNEL_ID = 'coclaw';
 const LOCK_FILENAME = 'upgrade.lock';
+// 锁年龄兜底：worker 最坏耗时约 36 分钟，TTL 给到 3 倍余量。
+// 超龄一律视为过期清理，兜住 worker 被强杀未清锁 / PID 被 OS 复用给长命进程的场景，
+// 避免自动升级被永久卡住。代价是 worker 真卡超两小时会多起一个并行 worker，
+// 此概率在当前超时矩阵下极低，且底层升级命令失败会走回滚，不会破坏插件。
+const LOCK_TTL_MS = 2 * 60 * 60 * 1000; // 120 分钟
 
 // ── upgrade.lock：保证同时最多一个 worker 进程 ──
 
@@ -24,7 +29,7 @@ export function getLockPath() {
 /**
  * 检查升级锁是否被持有（worker 进程是否存活）
  *
- * 若锁文件存在但 PID 已死（过期锁），顺手清理残留文件。
+ * 若锁文件存在但判定为过期（PID 已死 / JSON 无效 / 超龄），顺手清理残留文件。
  * @param {object} [opts]
  * @param {object} [opts.logger]
  * @returns {Promise<boolean>}
@@ -43,6 +48,14 @@ export async function isUpgradeLocked(opts) {
 		const lock = JSON.parse(raw);
 		if (!lock.pid) {
 			logger?.info?.('[auto-upgrade] Stale lock removed (missing pid)');
+			await fs.rm(lockPath, { force: true }).catch(() => {});
+			return false;
+		}
+		// 超龄兜底：PID 复用误判、worker 被强杀未清锁等场景下一律视为过期。
+		// ts 不可解析也当过期（writeUpgradeLock 必写 ISO 时间戳，缺字段即异常状态）。
+		const lockTs = Date.parse(lock.ts);
+		if (!Number.isFinite(lockTs) || Date.now() - lockTs > LOCK_TTL_MS) {
+			logger?.info?.(`[auto-upgrade] Stale lock removed (ttl exceeded, pid=${lock.pid})`);
 			await fs.rm(lockPath, { force: true }).catch(() => {});
 			return false;
 		}
