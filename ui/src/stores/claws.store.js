@@ -683,10 +683,12 @@ export const useClawsStore = defineStore('claws', {
 			// rebuild 成功路径由 `_pendingForceRefreshOnRebuild` consume 点的 refreshClawResources 统一刷（含 dashboard）。
 			// 此处用意：防止 DC 延续时 ManageClawsPage 等处长期显示"已离线"（因为 refreshClawResources 不会被触发）。
 			_lifecycle.syncDashboardOnline(id);
-			// 消费 typeChanged per-claw 记账：命中则升级 connected+paused 分派为 triggerRestart
-			if (_pendingTypeChangedRestartClaws.delete(id)) forceRestartOnConnected = true;
 			const conn = useClawConnections().get(id);
 			if (!conn) return;
+			// 消费 typeChanged per-claw 记账：命中则升级 connected+paused 分派为 triggerRestart。
+			// 消费必须晚于 conn 检查——conn 缺失早退时若先消费会丢 per-claw 信号，`__resumeAllClawsForSigOnline`
+			// 的 force_restart 预计数也会与实际 restart 次数脱节；条目保留到下次 resume 触发（conn 回来后）
+			if (_pendingTypeChangedRestartClaws.delete(id)) forceRestartOnConnected = true;
 			this.__clearRetry(id);
 			const rtc = conn.rtc;
 			// refresh 仅在 rebuild 场景触发：全新 PC + 全新 SCTP 会丢 plugin 侧 DC 发送 buffer，
@@ -942,6 +944,10 @@ export const useClawsStore = defineStore('claws', {
 						const claw = this.byId[id];
 						if (claw) claw.rtcPhase = 'failed';
 					}
+					// bail = 本次 rebuild 意图作废，与成功分支 L933 对称清 pending force-refresh 标记。
+					// 不清会导致后续由非 __resumeOnline 路径（timer/manualRetry/foreground）触发的
+					// __ensureRtc 成功分支 consume 残留条目，对 DC 延续的健康 PC 误 force_refresh
+					_pendingForceRefreshOnRebuild.delete(id);
 					remoteLog(`claw.rtcBailOut claw=${id} reason=${bailReason}`);
 				} else {
 					const claw = this.byId[id];

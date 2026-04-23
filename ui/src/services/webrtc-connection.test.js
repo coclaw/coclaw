@@ -4046,6 +4046,115 @@ describe('WebRtcConnection — pauseRestart', () => {
 		void pc2;
 		rtc2.close();
 	});
+
+	// --- resumeRecovery 在 rpcChannel 非 open 时的健壮性（G-06）---
+
+	test('resumeRecovery gate：__rpcChannel=null 时只清 paused、不调 __probeNow', async () => {
+		// 边界场景：paused 期间 DC 被清空（onclose 先 fire 过）。gate 条件
+		// `__rpcChannel?.readyState === 'open'` 必须拦住 __probeNow，避免
+		// 在 probe 内触碰 null.send 之类的未定义行为。
+		const { rtc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		// 强制 rpcChannel=null，模拟 DC 已关
+		rtc.__rpcChannel = null;
+		const keepaliveGenBefore = rtc.__keepaliveGen;
+		const lastActivityBefore = rtc.__lastDcActivityAt;
+		mockSendSignaling.mockClear();
+
+		// 不应抛
+		expect(() => rtc.resumeRecovery()).not.toThrow();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// paused 清掉（API 合约），__probeNow 未跑（gen 不 bump、__lastDcActivityAt 未清零）
+		expect(rtc.__restartPaused).toBe(false);
+		expect(rtc.__keepaliveGen).toBe(keepaliveGenBefore);
+		expect(rtc.__lastDcActivityAt).toBe(lastActivityBefore);
+		// 不发 offer
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+
+		rtc.close();
+	});
+
+	test('resumeRecovery gate：__rpcChannel.readyState=closing 时同样不调 __probeNow', async () => {
+		// DC.onclose 尚未 fire 但 readyState 已进入 closing 的瞬间窗口；
+		// gate 只识别 'open'，其他状态（connecting/closing/closed）均不 probe。
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		dc.readyState = 'closing';
+		const keepaliveGenBefore = rtc.__keepaliveGen;
+		const lastActivityBefore = rtc.__lastDcActivityAt;
+		dc.sent.length = 0;
+
+		expect(() => rtc.resumeRecovery()).not.toThrow();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.__restartPaused).toBe(false);
+		expect(rtc.__keepaliveGen).toBe(keepaliveGenBefore);
+		expect(rtc.__lastDcActivityAt).toBe(lastActivityBefore);
+		// 未发 probe
+		const probeSent = dc.sent.find((d) => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		});
+		expect(probeSent).toBeFalsy();
+
+		rtc.close();
+	});
+
+	test('resumeRecovery：gate 通过后 dc.send 抛异常 → probe try/catch 收敛，走 __onIceFailed → triggerRestart', async () => {
+		// 场景：gate 判断瞬间 DC readyState='open' 通过，但 __probeNow → __doKeepalive → probe()
+		// 内执行 dc.send 时底层抛（如 SCTP 层已断但 readyState 未同步翻 closing）。
+		// probe() 内部 try/catch 调 __settleProbe(false) → probe resolve false
+		// → __doKeepalive 看 __lastDcActivityAt=0（__probeNow 已清零）→ grace 过 → __onIceFailed
+		// → triggerRestart('ice_failed')。
+		// 断言：不把异常冒泡、最终 state='restarting' 且发了 iceRestart offer。
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		// send 抛异常（gate 已经以 readyState='open' 过关）
+		dc.send = vi.fn(() => { throw new Error('dc send failed'); });
+		mockSendSignaling.mockClear();
+
+		expect(() => rtc.resumeRecovery()).not.toThrow();
+		// probe 内 catch → __settleProbe(false)（同步）；让 __doKeepalive 的 await 推进
+		await vi.advanceTimersByTimeAsync(0);
+
+		// __lastDcActivityAt 被 __probeNow 清零 → elapsed 超 grace → __onIceFailed → restart
+		expect(rtc.state).toBe('restarting');
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers.length).toBeGreaterThan(0);
+		expect(offers[0][2]).toEqual(expect.objectContaining({ iceRestart: true }));
+
+		rtc.close();
+	});
+
+	test('resumeRecovery：gate 通过后 rpcChannel 在 probe 开始前翻 closed → probe 内置守卫 resolve(false) → __onIceFailed', async () => {
+		// 场景 C：gate 判断（readyState='open'）与 probe 实际执行之间，DC 状态翻到 'closed'。
+		// probe() 函数入口的 `if (!dc || dc.readyState !== 'open')` 守卫兜底 → 返回 Promise.resolve(false)，
+		// 不触碰 dc.send。然后 __doKeepalive 看 !alive + __lastDcActivityAt=0 → __onIceFailed。
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		// 用 getter 让 gate 读到 'open'，之后 probe() 再读时已 'closed'
+		let readCount = 0;
+		Object.defineProperty(dc, 'readyState', {
+			configurable: true,
+			get() { return readCount++ === 0 ? 'open' : 'closed'; },
+		});
+		const sendSpy = vi.spyOn(dc, 'send');
+		mockSendSignaling.mockClear();
+
+		expect(() => rtc.resumeRecovery()).not.toThrow();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// probe 内置守卫拦下：send 未被调用
+		expect(sendSpy).not.toHaveBeenCalled();
+		// __doKeepalive 仍然看到 alive=false → grace 已被 __probeNow 清零 → __onIceFailed → restart
+		expect(rtc.state).toBe('restarting');
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers.length).toBeGreaterThan(0);
+
+		rtc.close();
+	});
 });
 
 describe('WebRtcConnection — parseCredExpireAt', () => {
