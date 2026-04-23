@@ -4511,7 +4511,7 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 		__emitSigState('connected');
 
 		expect(resumeSpy).toHaveBeenCalledTimes(1);
-		expect(resumeSpy).toHaveBeenCalledWith('1');
+		expect(resumeSpy).toHaveBeenCalledWith('1', { forceRestartOnConnected: false });
 	});
 
 	test('forceReconnect 二连发 disconnected→connecting：handler 去重，freeze 仅 1 次', () => {
@@ -4715,6 +4715,117 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 
 		__emitSigState('disconnected');
 		expect(mockRemoteLog).not.toHaveBeenCalledWith(expect.stringContaining('claw.sigOffline'));
+	});
+
+	// -------- review 修复：#1 首启补救（SSE snapshot 先于 sig 握手到达导致 initialized=false）--------
+
+	test('#1 sig 恢复：initialized=false 的 online claw 被补跑 __fullInit', () => {
+		__mockSigState = 'disconnected';
+		const store = useClawsStore();
+		const { fakeConn } = setupClaw(store);
+		// 模拟首启竞态结果：SSE snapshot 先到 + __fullInit 被 sig gate 拦过
+		store.byId['1'].initialized = false;
+		store.__bridgeLifecycle();
+		const fullInitSpy = vi.spyOn(store, '__fullInit').mockResolvedValue();
+
+		__emitSigState('connected');
+
+		expect(fullInitSpy).toHaveBeenCalledTimes(1);
+		expect(fullInitSpy).toHaveBeenCalledWith('1', fakeConn);
+		expect(store.byId['1'].initialized).toBe(true);
+		expect(store.byId['1'].__initAttempt).toBe(1);
+	});
+
+	test('#1 sig 恢复：__fullInit 拒绝时 initialized 回滚为 false（catch 分支）', async () => {
+		__mockSigState = 'disconnected';
+		const store = useClawsStore();
+		setupClaw(store);
+		store.byId['1'].initialized = false;
+		store.__bridgeLifecycle();
+		const fullInitSpy = vi.spyOn(store, '__fullInit').mockRejectedValue(new Error('sig gate blocked again'));
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		__emitSigState('connected');
+		// 等微任务消化 catch
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(fullInitSpy).toHaveBeenCalledTimes(1);
+		expect(store.byId['1'].initialized).toBe(false);
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('fullInit (sig resume) failed'),
+			'1',
+			expect.stringContaining('sig gate blocked again'),
+		);
+		warnSpy.mockRestore();
+	});
+
+	test('#1 对照组 sig 恢复：initialized=true 的 online claw 走 __resumeOnline，不调 __fullInit', () => {
+		__mockSigState = 'disconnected';
+		const store = useClawsStore();
+		setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.byId['1'].initialized = true;
+		store.__bridgeLifecycle();
+		const fullInitSpy = vi.spyOn(store, '__fullInit').mockResolvedValue();
+		const resumeSpy = vi.spyOn(store, '__resumeOnline');
+
+		__emitSigState('connected');
+
+		expect(fullInitSpy).not.toHaveBeenCalled();
+		expect(resumeSpy).toHaveBeenCalledWith('1', { forceRestartOnConnected: false });
+	});
+
+	// -------- review 修复：#2 typeChanged 跨 sig-gate 记账 --------
+
+	test('#2 sig down + network:online(typeChanged=true) → sig up：connected+paused 升级为 triggerRestart(online_resume)', () => {
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__bridgeLifecycle();
+
+		__emitSigState('disconnected');
+		// 模拟 network:online typeChanged=true 事件（sig 不通时走 sig gate return 路径，只记账不动作）
+		store.__handleNetworkOnline(true);
+		// 记账后还没 sig up，fakeRtc 不应被触发
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
+
+		__emitSigState('connected');
+
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		expect(fakeRtc.resumeRecovery).not.toHaveBeenCalled();
+	});
+
+	test('#2 对照组 sig down + network:online(typeChanged=false) → sig up：connected+paused 走 resumeRecovery', () => {
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__bridgeLifecycle();
+
+		__emitSigState('disconnected');
+		store.__handleNetworkOnline(false);
+		__emitSigState('connected');
+
+		expect(fakeRtc.resumeRecovery).toHaveBeenCalledTimes(1);
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+	});
+
+	test('#2 typeChanged 标记消费后清零：下一轮 sig down/up 不粘着', () => {
+		const store = useClawsStore();
+		const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: true });
+		store.__bridgeLifecycle();
+
+		// 第一轮：带 typeChanged → 升级为 triggerRestart
+		__emitSigState('disconnected');
+		store.__handleNetworkOnline(true);
+		__emitSigState('connected');
+		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('online_resume');
+		fakeRtc.triggerRestart.mockClear();
+		fakeRtc.resumeRecovery.mockClear();
+
+		// 第二轮：不带 typeChanged（无 network:online 事件）→ 标记已消费应走 resumeRecovery
+		__emitSigState('disconnected');
+		__emitSigState('connected');
+		expect(fakeRtc.resumeRecovery).toHaveBeenCalledTimes(1);
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 	});
 });
 

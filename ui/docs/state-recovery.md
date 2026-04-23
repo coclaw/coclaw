@@ -417,11 +417,11 @@
 
 ### RTC 前台恢复策略
 
-RTC 恢复决策基于 PC 自身状态、DC probe 和 `claw.online`（SSE presence）作为门控。四个入口：
+RTC 恢复决策基于 PC 自身状态、DC probe 和两把正交的"全局闸"（`claw.online` SSE presence + `_sigOffline` 信令 WS 可达性）作为门控。**主真相源**：`docs/architecture/communication-model.md` §5.5 / §5.5.1。四个入口：
 
-- **SSE `claw.online=false`** → `__handleClawGoOffline`（暂停所有 RTC 主动恢复）：
-  - `syncDashboardOffline` + `__clearRetry` + 清 `dcReady` + stamp `disconnectedAt`
-  - PC 在 `restarting` 时调 `rtc.pauseRestart()`：停 restart timer / poll；清预算字段；epoch++；置 `__restartPaused=true`；PC 保留不关
+- **SSE `claw.online=false`** → `__handleClawGoOffline`（暂停该 claw 的所有 RTC 主动恢复）：
+  - `syncDashboardOffline`（dashboard 展示层同步）+ `__clearRetry`（停退避定时器）+ `rtc.pauseRestart()`（停 restart timer / poll / keepalive；清预算字段；epoch++；置 `__restartPaused=true`）
+  - **不动 `dcReady` / `rtcPhase` / `disconnectedAt` / PC**：presence 与 DC 生命周期正交（commit `4a05074` 原则——详见通信模型 §5.5）
   - **不再** probe / triggerRestart：plugin 离线时这些动作必然无效，等 online 回来再动
 - **SSE `claw.online=true`（从 false 转来）** → `__resumeOnline`（按 PC 状态分派）：
   - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 90s 预算；PC 连接成功后 `onRtcStateChange('connected')` 触发 `__refreshIfStale`（凭 `wasDisconnected=true`）刷业务数据

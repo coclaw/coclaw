@@ -63,6 +63,14 @@ let _lifecycleBridged = false;
 let _sigOffline = false;
 /** 进入 sig offline 的时间戳，用于 resume 时输出冻结时长（生产诊断 WS 闪断 vs 长时间失联） */
 let _sigOfflineAt = 0;
+/**
+ * typeChanged restart 记账标记（模块级布尔）。
+ * sig 不通时 `network:online(typeChanged=true)` 无法发 offer；记下此标记，
+ * sig 恢复时在 `__resumeAllClawsForSigOnline` 里升级恢复策略：
+ * `connected+paused` 的 claw 从 `resumeRecovery()` 改为 `triggerRestart('online_resume')`。
+ * 整轮 sig down/up 里最多一次 typeChanged → per-claw Set 无必要。
+ */
+let _pendingTypeChangedRestart = false;
 
 /**
  * 两层重试结构：
@@ -108,6 +116,7 @@ export function __resetClawStoreInternals() {
 	_backgroundAt = 0;
 	_sigOffline = false;
 	_sigOfflineAt = 0;
+	_pendingTypeChangedRestart = false;
 	if (_lifecycleHandlers && typeof window !== 'undefined') {
 		window.removeEventListener('app:background', _lifecycleHandlers.bg);
 		window.removeEventListener('network:online', _lifecycleHandlers.net);
@@ -545,16 +554,35 @@ export const useClawsStore = defineStore('claws', {
 		 * @param {number} [duration] - sig offline 持续毫秒（sigState handler 计算后传入）
 		 */
 		__resumeAllClawsForSigOnline(duration = 0) {
+			// 无论是否早退都消费清零，避免"sig up 时 fetched=false 不消费 → 未来某次 sig up
+			// 时陈旧标记误升级为 triggerRestart"的 stale-signal 风险
+			const forceRestart = _pendingTypeChangedRestart;
+			_pendingTypeChangedRestart = false;
 			if (!this.fetched) return;
 			let resumedCount = 0;
 			for (const id of Object.keys(this.byId)) {
 				const claw = this.byId[id];
 				if (!claw?.online) continue;
-				this.__resumeOnline(id);
+				if (!claw.initialized) {
+					// 首启竞态补救：SSE snapshot 先到、sig 未连上时 __fullInit 被 sig gate
+					// 拦过（__ensureRtc 入口早退 → 抛 'RTC not available' → catch 回滚
+					// initialized=false）。sig 恢复时在此补跑（逻辑复刻 updateClawOnline 的
+					// !initialized 分支）。
+					const conn = useClawConnections().get(id);
+					if (!conn) continue; // conn 未 bridged：本次跳过，等 __bridgeConn 就绪后由后续路径接手
+					claw.initialized = true;
+					const attempt = claw.__initAttempt = (claw.__initAttempt || 0) + 1;
+					this.__fullInit(id, conn).catch((err) => {
+						if (claw.__initAttempt === attempt) claw.initialized = false;
+						console.warn('[claws] fullInit (sig resume) failed for clawId=%s: %s', id, err?.message);
+					});
+				} else {
+					this.__resumeOnline(id, { forceRestartOnConnected: forceRestart });
+				}
 				resumedCount++;
 			}
 			if (resumedCount > 0) {
-				remoteLog(`claw.sigOnline resumed count=${resumedCount} duration=${duration}ms`);
+				remoteLog(`claw.sigOnline resumed count=${resumedCount} duration=${duration}ms force_restart=${forceRestart ? 1 : 0}`);
 			}
 		},
 
@@ -575,12 +603,18 @@ export const useClawsStore = defineStore('claws', {
 		 * - `restarting` + paused → `triggerRestart('online_resume')`（复用 PC + 新 90s 预算）
 		 * - `restarting` + 非 paused → 已在正常 restart 循环，不重入
 		 * - `connected` + paused → `resumeRecovery`（清 paused + 重启 keepalive；不发 ICE restart）
+		 *   - 例外：`forceRestartOnConnected=true`（如 typeChanged 记账命中）→ 升级为
+		 *     `triggerRestart('online_resume')`，因为旧 ICE 路径必已失效（WiFi↔蜂窝 IP 变）
 		 * - 其余 → `__ensureRtc`（connected 早退 / rebuild）
 		 *
 		 * 触发点：`updateClawOnline(id, true)` prev=false、`applySnapshot` 检测到 online false→true
-		 * 或持续 online 但 `rtcPhase='failed'`（server 重启兜底）。
+		 * 或持续 online 但 `rtcPhase='failed'`（server 重启兜底）、`__resumeAllClawsForSigOnline`。
+		 *
+		 * @param {string} id - clawId
+		 * @param {object} [opts]
+		 * @param {boolean} [opts.forceRestartOnConnected=false] - connected+paused 时强制 triggerRestart 而非 resumeRecovery
 		 */
-		__resumeOnline(id) {
+		__resumeOnline(id, { forceRestartOnConnected = false } = {}) {
 			// 两把锁协调核心：sig 不通时不做任何恢复动作（等 sig 回来时由
 			// __resumeAllClawsForSigOnline 遍历重调；或由 claw online 事件再次触发）
 			if (_sigOffline) return;
@@ -608,6 +642,12 @@ export const useClawsStore = defineStore('claws', {
 				return;
 			}
 			if (rtc?.state === 'connected' && rtc.restartPaused) {
+				if (forceRestartOnConnected) {
+					// 网络类型变化 + sig 回来：旧 ICE 路径必然失效，走 restart 不走轻量 resume
+					// 镜像 restarting+paused 路径，早退不 fall through
+					rtc.triggerRestart('online_resume');
+					return;
+				}
 				// connected 态从 pause 冻结恢复：仅清 paused 标志 + 重启 keepalive，
 				// 不触发 ICE restart（PC 本身仍健康）
 				rtc.resumeRecovery();
@@ -927,8 +967,13 @@ export const useClawsStore = defineStore('claws', {
 		 * @param {boolean} typeChanged
 		 */
 		__handleNetworkOnline(typeChanged) {
-			// sig gate：WS 不通时 restart/rebuild 均发不出去；sig 回来时由 resume 路径统一恢复
-			if (_sigOffline) return;
+			// sig gate：WS 不通时 restart/rebuild 均发不出去；但 typeChanged 必须记下来，
+			// sig 恢复时由 __resumeAllClawsForSigOnline 升级恢复策略（connected+paused
+			// 从 resumeRecovery 改为 triggerRestart('online_resume')）。
+			if (_sigOffline) {
+				if (typeChanged) _pendingTypeChangedRestart = true;
+				return;
+			}
 			for (const id of Object.keys(this.byId)) {
 				if (_rtcInitInProgress.get(id)) continue;
 				const claw = this.byId[id];

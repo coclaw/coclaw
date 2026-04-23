@@ -963,7 +963,7 @@ export class WebRtcConnection {
 	async __attemptRestart(reason) {
 		if (!this.__pc || this.__state === 'closed') return;
 
-		// paused 态（claw offline）仅接受显式 'online_resume' 原因的解冻调用；
+		// paused 态（claw offline 或 sig offline 任一路径）仅接受显式 'online_resume' 原因的解冻调用；
 		// keepalive→__onIceFailed / pc oniceconnectionstatechange=failed /
 		// periodic timer / nudge 等自动路径一律 drop，防止 offline 期间空烧预算+发 offer
 		const isExplicitResume = reason === 'online_resume';
@@ -1129,7 +1129,9 @@ export class WebRtcConnection {
 	}
 
 	/**
-	 * 外部触发：claw offline 时暂停所有 UI 主动恢复动作，保留 PC
+	 * 外部触发：暂停所有 UI 主动恢复动作，保留 PC。
+	 * 由两条路径共用：`__handleClawGoOffline`（SSE 告知 plugin 离线）和
+	 * `__freezeAllClawsForSigOffline`（信令 WS 不通时遍历所有 claw）。
 	 *
 	 * 涵盖两种源状态：
 	 * - `restarting`：停 restart timer/poll、清预算字段
@@ -1161,7 +1163,7 @@ export class WebRtcConnection {
 		this.__restartUfragMissingLogged = false;
 		this.__restartEpoch++;
 		this.__restartPaused = true;
-		this.__log('info', `recovery paused (claw offline) state=${this.__state}`);
+		this.__log('info', `recovery paused state=${this.__state}`);
 	}
 
 	/**
