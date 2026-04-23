@@ -1406,6 +1406,14 @@ export class WebRtcConnection {
 			}
 		} else if (msg.type === 'rtc:restart-rejected') {
 			const reason = msg.payload?.reason ?? 'unknown';
+			// connId 按 claw 复用、不按 restart 代际；rebuild 后新 PC 的 listener 仍会收到
+			// 旧 restart 的 reject。必须校验"我现在还在 restarting 态"才接受，否则迟到的旧
+			// reject 会误杀新 PC，触发多余 failed→rebuild 循环
+			if (this.__state !== 'restarting') {
+				this.__log('info', `ICE restart-rejected ignored (stale) state=${this.__state} reason=${reason}`);
+				remoteLog(`rtc.restartRejectedStale claw=${this.clawId} state=${this.__state} reason=${reason}`);
+				return;
+			}
 			this.__log('warn', `ICE restart rejected by plugin: ${reason}`);
 			this.close({ asFailed: true });
 		}

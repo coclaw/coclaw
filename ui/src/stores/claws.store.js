@@ -1020,6 +1020,7 @@ export const useClawsStore = defineStore('claws', {
 		 * - restarting → nudge（立即重试 restart offer）
 		 * - connected + typeChanged → triggerRestart（WiFi↔cellular，主动 restart）
 		 * - failed/closed → rebuild（restart 已失败，走 fallback）
+		 * - rtc=null + (rtcPhase='failed' 或 !dcReady) → rebuild（退避中抢时机 rebuild，避免空等下一个退避 fire 在失效路径上消耗）
 		 * - 其余（idle/connecting）→ 跳过（ICE 有自检测能力）
 		 *
 		 * 注：rtc.state 枚举为 idle/connecting/connected/restarting/failed/closed，
@@ -1060,7 +1061,20 @@ export const useClawsStore = defineStore('claws', {
 				if (!claw.online) continue;
 				const conn = useClawConnections().get(id);
 				const rtc = conn?.rtc;
-				if (!rtc) continue;
+				if (!rtc) {
+					// rtc=null 但 rtcPhase='failed' / dcReady=false：rebuild 退避重试中
+					// （或 clearRtc 后尚未重建）。network:online 是立即 rebuild 的好时机，
+					// 否则要等下一次退避 fire，典型场景（WiFi↔蜂窝）那次 retry 用的是失效 ICE
+					// 路径、必然失败——多等一个退避周期毫无意义。
+					if (claw.rtcPhase === 'failed' || !claw.dcReady) {
+						remoteLog(`claw.recover claw=${id} reason=rtc_null source=network:online`);
+						_pendingTypeChangedRestartClaws.delete(id);
+						claw.rtcPhase = 'recovering';
+						this.__clearRetry(id);
+						this.__ensureRtc(id).catch(() => {});
+					}
+					continue;
+				}
 
 				if (rtc.state === 'restarting') {
 					// 本次调用当场 nudge 继续 restart 循环 → 新 ICE 路径自然建在当前网络上

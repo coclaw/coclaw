@@ -349,10 +349,11 @@
   - **Web**：浏览器原生 `online` 事件 → 同样桥接为 `network:online` DOM 事件（Web 路径另有 `wasOffline` gate，无前置 offline 不派发）
 - **消费者**：SignalingConnection（即时 probe/重连）、SSE（restart）、claws.store（逐 claw 按状态分级恢复）
 - **效果**：WiFi↔蜂窝切换或断网恢复后，WS 无条件 `forceReconnect()`。RTC 层按 PC 状态和网络类型变化分级处理（详见 §9 "RTC 前台恢复策略"）
-- **源头去抖**（Capacitor 分支，`dispatchNetworkOnline`）：leading-edge content-aware dedup，窗口 500ms
-  - 同 `connectionType` 且窗口内重复 → 丢弃（压缩 Android 切网瞬间 3–5 次连发），并记一条 `app.network dropped` 诊断日志
-  - `typeChanged=true`（wifi↔cellular）→ 立即放行并重置计时器，保证关键恢复信号零延迟
-  - 原始 `networkStatusChange` 事件的 `remoteLog` 在去抖之前记录，诊断粒度不丢
+- **源头去抖**（Capacitor 分支，`dispatchNetworkOnline`）：trailing-edge debounce，窗口 1200ms，`typeChanged` 做 OR 聚合
+  - 每次事件重置窗口，无新事件到达后以聚合结果派发一次
+  - `typeChanged=true`（wifi↔cellular）与其它事件一样聚合等待；Android 切网瞬间连发多个事件（观测到 wifi→cellular→wifi 间隔 500–900ms），1200ms 覆盖最坏样本，最终派发一次 `typeChanged=true` 足够驱动下游完整恢复
+  - 窗口内 `count>1` 时记一条 `app.network merged count=N typeChanged=...` 诊断日志；原始 `networkStatusChange` 事件的 `remoteLog` 在去抖之前记录，诊断粒度不丢
+  - 取舍：trailing-edge 在 WiFi 切换场景多延迟约 1.2s 派发，换来"多次事件只做一轮恢复"的稳定性；ICE restart 自身 offer→answer 量级远大于此，感知不到
 - **消费者侧节流**（保留）：SignalingConnection 500ms 节流（`network:online` 豁免；连续触发由 `connecting` 状态自然防护）；SSE restart 500ms 节流（防 `app:foreground + network:online` 同时触发）
 
 ### 7.2 Deep Link 路由导航

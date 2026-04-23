@@ -1635,7 +1635,7 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		});
 	});
 
-	test('network:online + typeChanged + conn.rtc=null → 跳过', async () => {
+	test('network:online + typeChanged + !initialized → 跳过（initialized gate 短路，rtc=null 分支不介入）', async () => {
 		const store = useClawsStore();
 		const fakeConn = {
 			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
@@ -1645,6 +1645,7 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 
 		store.addOrUpdateClaw({ id: '97', name: 'Bot', online: true });
 		store.byId['97'].dcReady = true;
+		// 不设 initialized=true → 循环顶部被 initialized gate 拦住
 		store.__bridgeConn('97');
 		mockCloseRtcForBot.mockClear();
 
@@ -1728,6 +1729,72 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		});
 		await new Promise((r) => setTimeout(r, 50));
 		expect(store.byId['99b'].retryCount).toBe(0);
+	});
+
+	test('network:online + initialized + rtc=null + rtcPhase=failed → 立即 rebuild（抢退避时机）', async () => {
+		const store = useClawsStore();
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: null, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '99c', name: 'Bot', online: false });
+		store.byId['99c'].online = true;
+		store.byId['99c'].initialized = true;
+		store.byId['99c'].dcReady = false;
+		store.byId['99c'].rtcPhase = 'failed';
+		store.__bridgeConn('99c');
+		mockInitRtc.mockClear();
+
+		emitForegroundResume('network:online', { typeChanged: true });
+		await vi.waitFor(() => {
+			expect(mockInitRtc).toHaveBeenCalledWith('99c', fakeConn, expect.any(Object));
+		});
+		expect(store.byId['99c'].rtcPhase).toBe('ready');
+	});
+
+	test('network:online + initialized + rtc=null + !dcReady + rtcPhase=recovering → 立即 rebuild', async () => {
+		const store = useClawsStore();
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: null, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '99d', name: 'Bot', online: false });
+		store.byId['99d'].online = true;
+		store.byId['99d'].initialized = true;
+		store.byId['99d'].dcReady = false;
+		store.byId['99d'].rtcPhase = 'recovering';
+		store.__bridgeConn('99d');
+		mockInitRtc.mockClear();
+
+		emitForegroundResume('network:online', { typeChanged: false });
+		await vi.waitFor(() => {
+			expect(mockInitRtc).toHaveBeenCalledWith('99d', fakeConn, expect.any(Object));
+		});
+	});
+
+	test('network:online + initialized + rtc=null + rtcPhase=ready + dcReady=true → 跳过（防御性边界，不应存在的组合）', async () => {
+		const store = useClawsStore();
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: null, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '99e', name: 'Bot', online: false });
+		store.byId['99e'].online = true;
+		store.byId['99e'].initialized = true;
+		store.byId['99e'].dcReady = true;
+		store.byId['99e'].rtcPhase = 'ready';
+		store.__bridgeConn('99e');
+		mockInitRtc.mockClear();
+
+		emitForegroundResume('network:online', { typeChanged: true });
+		await new Promise((r) => setTimeout(r, 50));
+		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
 	test('probe in-flight + network:type-changed + PC connected → triggerRestart 安全执行', async () => {

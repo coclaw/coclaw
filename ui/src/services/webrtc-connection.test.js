@@ -2429,6 +2429,26 @@ describe('WebRtcConnection — ICE restart', () => {
 		rtc.close();
 	});
 
+	test('rtc:restart-rejected 迟到（已非 restarting 态）→ 忽略，不关闭 PC', async () => {
+		// 模拟：旧 restart offer 发出 → UI 因其它路径已 rebuild 新 PC（新 PC 当前 connected）
+		// 旧 reject 迟到到达时，connId 按 claw 复用 → 路由到新 WebRtcConnection
+		// 若不校验 __state=='restarting' 会误杀新 PC
+		const { rtc, pc } = await setupConnectedRtc();
+		expect(rtc.state).toBe('connected');
+
+		// 迟到的旧 reject 到达
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:restart-rejected', payload: { reason: 'no_session' } });
+
+		// PC 仍然 connected，未被关闭
+		expect(rtc.state).toBe('connected');
+		expect(pc.__closed).toBe(false);
+		expect(rtc.__pc).toBe(pc);
+		// 未发 rtc:closed（未走 close 流程）
+		expect(mockSendSignaling).not.toHaveBeenCalledWith('bot1', 'rtc:closed');
+
+		rtc.close();
+	});
+
 	test('restarting 时 DC 关闭 → SCTP 丢失 → failed + 完整释放资源', async () => {
 		const { rtc, pc, dc } = await setupConnectedRtc();
 
