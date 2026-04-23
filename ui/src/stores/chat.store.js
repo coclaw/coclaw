@@ -283,7 +283,7 @@ export function createChatStore(storeKey, opts = {}) {
 						const hist = await conn.request('chat.history', {
 							sessionKey: this.chatSessionKey,
 							limit: 1,
-						});
+						}, { timeout: 60_000 });
 						this.currentSessionId = hist?.sessionId ?? null;
 
 						return true;

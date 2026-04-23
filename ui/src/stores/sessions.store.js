@@ -176,7 +176,7 @@ export const useSessionsStore = defineStore('sessions', {
 					const hist = await conn.request('chat.history', {
 						sessionKey,
 						limit: 1,
-					});
+					}, { timeout: 60_000 });
 					return {
 						sessionId: hist?.sessionId ?? '',
 						sessionKey,

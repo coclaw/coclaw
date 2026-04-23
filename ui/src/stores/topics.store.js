@@ -188,7 +188,7 @@ export const useTopicsStore = defineStore('topics', {
 		async createTopic(clawId, agentId) {
 			const conn = useClawConnections().get(String(clawId));
 			if (!conn) throw new Error('Claw not connected');
-			const result = await conn.request('coclaw.topics.create', { agentId });
+			const result = await conn.request('coclaw.topics.create', { agentId }, { timeout: 60_000 });
 			const topicId = result?.topicId;
 			if (!topicId) throw new Error('Failed to create topic');
 			this.byId[topicId] = { topicId, agentId, title: null, createdAt: Date.now(), clawId: String(clawId) };
@@ -203,7 +203,7 @@ export const useTopicsStore = defineStore('topics', {
 		async deleteTopic(clawId, topicId) {
 			const conn = getReadyConn(clawId);
 			if (!conn) throw new Error('Claw not connected');
-			const result = await conn.request('coclaw.topics.delete', { topicId });
+			const result = await conn.request('coclaw.topics.delete', { topicId }, { timeout: 60_000 });
 			if (result?.ok === false) throw new Error('Topic not found');
 			delete this.byId[topicId];
 		},
@@ -217,7 +217,7 @@ export const useTopicsStore = defineStore('topics', {
 		async updateTopic(clawId, topicId, changes) {
 			const conn = getReadyConn(clawId);
 			if (!conn) throw new Error('Claw not connected');
-			const result = await conn.request('coclaw.topics.update', { topicId, changes });
+			const result = await conn.request('coclaw.topics.update', { topicId, changes }, { timeout: 60_000 });
 			const updated = result?.topic;
 			if (!updated) throw new Error('Update failed');
 			if (this.byId[topicId]) {

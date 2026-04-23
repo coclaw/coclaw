@@ -106,7 +106,7 @@ export function deleteFile(clawConn, agentId, path, opts) {
  * @returns {Promise<object>}
  */
 export function mkdirFiles(clawConn, agentId, path) {
-	return clawConn.request('coclaw.files.mkdir', { agentId, path });
+	return clawConn.request('coclaw.files.mkdir', { agentId, path }, { timeout: 60_000 });
 }
 
 /**
@@ -117,7 +117,7 @@ export function mkdirFiles(clawConn, agentId, path) {
  * @returns {Promise<object>}
  */
 export function createFile(clawConn, agentId, path) {
-	return clawConn.request('coclaw.files.create', { agentId, path });
+	return clawConn.request('coclaw.files.create', { agentId, path }, { timeout: 60_000 });
 }
 
 // --- 文件传输（走 file:<transferId> DataChannel） ---

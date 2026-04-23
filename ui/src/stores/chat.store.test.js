@@ -440,7 +440,7 @@ describe('useChatStore', () => {
 			}), { timeout: 120_000 });
 			expect(conn.request).toHaveBeenCalledWith('chat.history', expect.objectContaining({
 				sessionKey: 'agent:ops:main',
-			}));
+			}), { timeout: 60_000 });
 		});
 	});
 

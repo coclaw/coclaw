@@ -181,14 +181,14 @@ export const useDashboardStore = defineStore('dashboard', {
 						channelsResult,
 						...toolResults
 					] = await Promise.allSettled([
-						conn.request('status', {}),
-						conn.request('models.list', {}),
-						conn.request('usage.cost', { mode: 'month' }),
-						conn.request('sessions.list', {}),
-						conn.request('tts.status', {}),
-						conn.request('channels.status', { probe: false }),
+						conn.request('status', {}, { timeout: 180_000 }),
+						conn.request('models.list', {}, { timeout: 180_000 }),
+						conn.request('usage.cost', { mode: 'month' }, { timeout: 180_000 }),
+						conn.request('sessions.list', {}, { timeout: 180_000 }),
+						conn.request('tts.status', {}, { timeout: 180_000 }),
+						conn.request('channels.status', { probe: false }, { timeout: 180_000 }),
 						...agentList.map(agent =>
-							conn.request('tools.catalog', { agentId: agent.id })
+							conn.request('tools.catalog', { agentId: agent.id }, { timeout: 180_000 })
 						),
 					]);
 

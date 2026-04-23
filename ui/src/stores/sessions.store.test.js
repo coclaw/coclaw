@@ -306,7 +306,7 @@ describe('sessions store', () => {
 		expect(conn.request).toHaveBeenCalledWith('chat.history', {
 			sessionKey: 'agent:main:main',
 			limit: 1,
-		});
+		}, { timeout: 60_000 });
 	});
 
 	test('__fetchSessionsForClaw 应将 clawId 归一化为 string', async () => {

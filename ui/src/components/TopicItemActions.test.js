@@ -142,7 +142,7 @@ test('successful rename calls updateTopic and shows notify', async () => {
 	wrapper.vm.renameValue = '新名称';
 	await wrapper.vm.onConfirmRename();
 
-	expect(mockRequest).toHaveBeenCalledWith('coclaw.topics.update', { topicId: 't1', changes: { title: '新名称' } });
+	expect(mockRequest).toHaveBeenCalledWith('coclaw.topics.update', { topicId: 't1', changes: { title: '新名称' } }, { timeout: 60_000 });
 	expect(mockNotify.success).not.toHaveBeenCalled();
 	expect(wrapper.vm.renameOpen).toBe(false);
 });
@@ -181,7 +181,7 @@ test('successful delete calls deleteTopic, shows notify and emits deleted', asyn
 	wrapper.vm.deleteOpen = true;
 	await wrapper.vm.onConfirmDelete();
 
-	expect(mockRequest).toHaveBeenCalledWith('coclaw.topics.delete', { topicId: 't1' });
+	expect(mockRequest).toHaveBeenCalledWith('coclaw.topics.delete', { topicId: 't1' }, { timeout: 60_000 });
 	expect(mockNotify.success).not.toHaveBeenCalled();
 	expect(wrapper.vm.deleteOpen).toBe(false);
 	expect(wrapper.emitted('deleted')).toBeTruthy();

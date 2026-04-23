@@ -30,7 +30,7 @@ function compareSemver(a, b) {
  */
 export async function checkPluginVersion(conn) {
 	try {
-		const result = await conn.request('coclaw.info', {}, { timeout: 10_000 });
+		const result = await conn.request('coclaw.info', {});
 		const version = result?.version;
 		const clawVersion = result?.clawVersion ?? null;
 		const name = result?.name ?? null;

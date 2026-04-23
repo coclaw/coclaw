@@ -243,7 +243,7 @@ describe('topics store', () => {
 		expect(store.byId['new-uuid'].title).toBeNull();
 		expect(store.byId['new-uuid'].agentId).toBe('main');
 		expect(store.byId['new-uuid'].clawId).toBe('bot-1');
-		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.create', { agentId: 'main' });
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.create', { agentId: 'main' }, { timeout: 60_000 });
 	});
 
 	test('createTopic claw 未连接时抛出错误', async () => {
@@ -261,7 +261,7 @@ describe('topics store', () => {
 		const store = useTopicsStore();
 		const id = await store.createTopic('bot-1', 'main');
 		expect(id).toBe('new-uuid-2');
-		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.create', { agentId: 'main' });
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.create', { agentId: 'main' }, { timeout: 60_000 });
 		expect(store.byId['new-uuid-2'].topicId).toBe('new-uuid-2');
 	});
 
@@ -383,7 +383,7 @@ describe('topics store', () => {
 		expect(store.items).toHaveLength(1);
 		expect(store.byId['t1']).toBeUndefined();
 		expect(store.byId['t2']).toBeTruthy();
-		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.delete', { topicId: 't1' });
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.delete', { topicId: 't1' }, { timeout: 60_000 });
 	});
 
 	test('deleteTopic topic 不存在时抛出错误', async () => {
@@ -417,7 +417,7 @@ describe('topics store', () => {
 		await store.updateTopic('bot-1', 't1', { title: '新标题' });
 		expect(store.byId['t1'].title).toBe('新标题');
 		expect(store.byId['t1'].clawId).toBe('bot-1'); // clawId 保留
-		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.update', { topicId: 't1', changes: { title: '新标题' } });
+		expect(conn.request).toHaveBeenCalledWith('coclaw.topics.update', { topicId: 't1', changes: { title: '新标题' } }, { timeout: 60_000 });
 	});
 
 	test('updateTopic 响应无 topic 时抛出错误', async () => {

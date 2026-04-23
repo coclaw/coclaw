@@ -242,7 +242,7 @@ describe('mkdirFiles', () => {
 		expect(clawConn.request).toHaveBeenCalledWith('coclaw.files.mkdir', {
 			agentId: 'main',
 			path: 'data/exports',
-		});
+		}, { timeout: 60_000 });
 	});
 
 	test('RPC 失败时 reject', async () => {
@@ -263,7 +263,7 @@ describe('createFile', () => {
 		expect(clawConn.request).toHaveBeenCalledWith('coclaw.files.create', {
 			agentId: 'main',
 			path: 'notes.txt',
-		});
+		}, { timeout: 60_000 });
 	});
 
 	test('文件已存在时 reject', async () => {
