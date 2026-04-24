@@ -1513,3 +1513,208 @@ describe('ChatPage refresh button', () => {
 		expect(wrapper.find('[data-testid="btn-refresh-desktop"]').exists()).toBe(true);
 	});
 });
+
+// --- 恢复路径 watcher 契约（claw offline / sig offline / ICE restart） ---
+
+describe('ChatPage recovery watchers', () => {
+	/**
+	 * 通用 setup：挂载一个 connReady=true 的 wrapper 并 mock loadMessages。
+	 * 挂载后立即 mockClear，使后续断言只关注恢复路径引发的调用次数。
+	 */
+	async function setupConnReadyWrapper() {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].rtcPhase = 'ready';
+		setupAgents();
+
+		const chatStore = chatStoreManager.get('session:bot-1:main', { clawId: 'bot-1', agentId: 'main' });
+		chatStore.__initialized = true;
+		chatStore.__messagesLoaded = true;
+		chatStore.sending = false;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const wrapper = mount(ChatPage, {
+			global: {
+				plugins: [pinia],
+				mocks: {
+					$t: (key) => i18nMap[key] ?? key,
+					$route: {
+						name: 'chat',
+						params: { clawId: 'bot-1', agentId: 'main' },
+						path: '/chat/bot-1/main',
+						query: {},
+					},
+					$router: mockRouter,
+				},
+			},
+		});
+		await flushPromises();
+		// immediate watcher 已触发一次 silent load；清记录，聚焦后续恢复路径
+		expect(loadSpy).toHaveBeenCalled();
+		loadSpy.mockClear();
+		return { wrapper, chatStore, clawsStore, loadSpy };
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		chatStoreManager.__reset();
+	});
+
+	// T1：presence 与 DC 正交 —— online→false 不动 dcReady，connReady 持稳
+	test('claw 下线不改 dcReady 且不重复触发 silent reload（presence 与 DC 正交）', async () => {
+		const { wrapper, clawsStore, loadSpy } = await setupConnReadyWrapper();
+
+		clawsStore.updateClawOnline('bot-1', false);
+		await wrapper.vm.$nextTick();
+
+		const claw = clawsStore.byId['bot-1'];
+		expect(claw.online).toBe(false);
+		// __handleClawGoOffline 不碰 dcReady（presence 与 DC 生命周期两把锁正交）
+		expect(claw.dcReady).toBe(true);
+		// connReady 只看 dcReady（+ agentVerified），dcReady 未变 → watcher 不该再跑
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
+	// T2：claw offline 且 DC 随后断 → rebuild 完成后触发 silent reload
+	test('claw 下线后 DC 关闭令 connReady 翻 false，rebuild 完成再翻 true 恰好触发 1 次 silent reload', async () => {
+		const { wrapper, clawsStore, loadSpy } = await setupConnReadyWrapper();
+
+		clawsStore.updateClawOnline('bot-1', false);
+		await wrapper.vm.$nextTick();
+
+		// DC 关闭：webrtc-connection 的 state='closed'|'failed' 分支会翻 dcReady=false
+		clawsStore.byId['bot-1'].dcReady = false;
+		clawsStore.byId['bot-1'].rtcPhase = 'failed';
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.connReady).toBe(false);
+
+		// online 回来且 rebuild 完成
+		clawsStore.byId['bot-1'].online = true;
+		clawsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].rtcPhase = 'ready';
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.connReady).toBe(true);
+
+		// __messagesLoaded=true → 走 silent 分支；connReady 翻 true 恰好 1 次 load
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+	});
+
+	// T3：ICE restart 全程 DC 不断，connReady 不翻转 → 无额外 load
+	test('ICE restart 期间 DC 延续（dcReady 始终 true）不触发任何 reload', async () => {
+		const { wrapper, clawsStore, loadSpy } = await setupConnReadyWrapper();
+
+		// ICE restart 开始：rtcPhase 翻 restarting，但 DC 保留
+		clawsStore.byId['bot-1'].rtcPhase = 'restarting';
+		await wrapper.vm.$nextTick();
+		// dcReady 没动 → connReady 必须仍为 true
+		expect(wrapper.vm.connReady).toBe(true);
+
+		// restart 成功：回到 ready，全程 dcReady 未被翻
+		clawsStore.byId['bot-1'].rtcPhase = 'ready';
+		await wrapper.vm.$nextTick();
+
+		expect(clawsStore.byId['bot-1'].dcReady).toBe(true);
+		// connReady 全程保持 true，watcher 不该再触发
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
+	// T4：ICE restart 导致 DC 重建 —— 掉线→重建 → 恰好 1 次 silent reload
+	test('ICE restart 导致 DC 重建：connReady false→true 恰好触发 1 次 silent reload', async () => {
+		const { wrapper, clawsStore, loadSpy } = await setupConnReadyWrapper();
+
+		clawsStore.byId['bot-1'].rtcPhase = 'restarting';
+		await wrapper.vm.$nextTick();
+
+		// DC 掉（restart 过程中旧 DC 真的断了）
+		clawsStore.byId['bot-1'].dcReady = false;
+		clawsStore.byId['bot-1'].rtcPhase = 'failed';
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.connReady).toBe(false);
+
+		// 新 DC 就绪
+		clawsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].rtcPhase = 'ready';
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.connReady).toBe(true);
+
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+	});
+
+	// T5：sig offline 冻结 —— 契约保证不动 dcReady，connReady 持稳
+	test('sig offline 冻结不改 dcReady，connReady 持稳且不触发 reload', async () => {
+		const { wrapper, clawsStore, loadSpy } = await setupConnReadyWrapper();
+
+		// __freezeAllClawsForSigOffline 在 !fetched 时早退；setClaws 不设 fetched，
+		// 必须显式打开才能真实执行 freeze body（遍历 + pauseRestart + clearRetry）
+		clawsStore.fetched = true;
+		// __freezeAllClawsForSigOffline 的可观察副作用：只调 pauseRestart + clearRetry，
+		// 不动 online/dcReady/rtcPhase（claws.store.js L604-605）
+		clawsStore.__freezeAllClawsForSigOffline();
+		await wrapper.vm.$nextTick();
+
+		const claw = clawsStore.byId['bot-1'];
+		expect(claw.dcReady).toBe(true);
+		expect(wrapper.vm.connReady).toBe(true);
+		// dcReady / agentVerified 均未变，connReady watcher 不该再跑
+		expect(loadSpy).not.toHaveBeenCalled();
+	});
+
+	// T6：首启在 sig offline 期间挂载 —— immediate 不触发；dcReady 翻 true 才首次加载
+	test('首启 sig offline 挂载时 connReady=false immediate 不触发；dcReady 翻 true 首次触发 loadMessages（无 silent）', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+
+		// 模拟 fullInit 被 sig gate 拦过：online=true 但 dcReady=false
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = false;
+		clawsStore.byId['bot-1'].rtcPhase = 'idle';
+		setupAgents();
+
+		const chatStore = chatStoreManager.get('session:bot-1:main', { clawId: 'bot-1', agentId: 'main' });
+		chatStore.__initialized = true;
+		chatStore.__messagesLoaded = false; // 首次加载：走非 silent 分支
+		chatStore.sending = false;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const wrapper = mount(ChatPage, {
+			global: {
+				plugins: [pinia],
+				mocks: {
+					$t: (key) => i18nMap[key] ?? key,
+					$route: {
+						name: 'chat',
+						params: { clawId: 'bot-1', agentId: 'main' },
+						path: '/chat/bot-1/main',
+						query: {},
+					},
+					$router: mockRouter,
+				},
+			},
+		});
+		await flushPromises();
+
+		// 挂载直后：connReady=false（dcReady 被 sig gate 拦住），connReady watcher handler early return
+		expect(wrapper.vm.connReady).toBe(false);
+		// activate() 在 re-entry 分支会自发 silent reload，与本测试关注点无关；清掉再看 connReady 驱动路径
+		loadSpy.mockClear();
+		// 让 activate() 里刚发出的 silent reload 走完，避免 __silentLoadPromise guard 影响后续断言
+		chatStore.__silentLoadPromise = null;
+		// __messagesLoaded 仍为 false（mock loadMessages 不会真的把它翻 true）→ 保持首次加载语义
+
+		// sig 恢复 + fullInit 完成 → DC 就绪
+		clawsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].rtcPhase = 'ready';
+		await flushPromises();
+
+		expect(wrapper.vm.connReady).toBe(true);
+		// __messagesLoaded=false → __onConnReady 走首次加载分支（不带 silent）
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(loadSpy).toHaveBeenCalledWith();
+	});
+});
