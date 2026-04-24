@@ -2184,3 +2184,165 @@ describe('file-transfer – READY_TIMEOUT_MS 导出', () => {
 		expect(READY_TIMEOUT_MS).toBe(120_000);
 	});
 });
+
+// --- P2-2：跨 ICE restart 的文件传输集成场景 ---
+//
+// 背景：WebRtcConnection.createDataChannel 在 rtc.state==='restarting' 时不拒绝
+// （SCTP/DTLS 在 ICE restart 期间保留，新 DC 会先停在 connecting、等 ICE 切通后 open）。
+// 这里从 file-transfer 层验证端到端行为：
+//   - 在 restart 期间发起 download / upload，DC 停在 connecting、不立即出错
+//   - restart 完成后 DC onopen → 请求发出 → 传输正常结束
+//   - restart 失败 PC close → DC close → 传输被正确取消并报 TRANSFER_INTERRUPTED
+//
+// 设计说明：file-transfer.js 本身并不感知 rtc.state，它只依赖 createDataChannel
+// 返回的 DC 事件。因此这些测试通过"延迟 __open / 直接 __fireClose"模拟 restart 期间
+// 的 DC 生命周期，覆盖 file-transfer 在此生命周期下的行为契约。
+describe('file-transfer – 跨 ICE restart 集成场景', () => {
+	test('restarting 期间 downloadFile 发起 — DC 停在 connecting、不立即出错', async () => {
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(clawConn, 'main', 'src/app.js');
+
+		// 挂一个 catch 防止 unhandled rejection（测试末尾 cancel 清理）
+		handle.promise.catch(() => {});
+
+		await tick();
+		const dc = lastDC();
+
+		// 关键断言：restarting 期间 createDataChannel 返回真实 DC（不是 null），并停在 connecting
+		expect(dc).toBeDefined();
+		expect(dc.readyState).toBe('connecting');
+		expect(dc.label).toMatch(/^file:/);
+		// 此时未 open，不应向 DC 发送任何请求
+		expect(dc.sent.length).toBe(0);
+
+		// 清理：取消这次下载，避免悬挂的 promise
+		handle.cancel();
+		await handle.promise.catch(() => {});
+	});
+
+	test('restarting → restart 成功 → DC open → 下载正常完成', async () => {
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(clawConn, 'main', 'data.bin');
+
+		await tick();
+		const dc = lastDC();
+		// restart 期间：DC 停在 connecting，请求未发
+		expect(dc.readyState).toBe('connecting');
+		expect(dc.sent.length).toBe(0);
+
+		// restart 完成后 ICE 切通 → DC 自动 open
+		dc.__open();
+		expect(dc.readyState).toBe('open');
+		// open 后才发起请求
+		expect(dc.sent.length).toBe(1);
+		const req = JSON.parse(dc.sent[0]);
+		expect(req).toEqual({ method: 'GET', agentId: 'main', path: 'data.bin' });
+
+		// 正常数据流
+		dc.__receiveString({ ok: true, size: 4, name: 'data.bin' });
+		dc.__receiveBinary(new Uint8Array([1, 2, 3, 4]));
+		dc.__receiveString({ ok: true, bytes: 4 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(4);
+		expect(result.name).toBe('data.bin');
+		expect(result.blob.size).toBe(4);
+	});
+
+	test('restarting → restart 成功 → DC open → 上传正常完成', async () => {
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('upload-during-restart', 'out.txt');
+		const handle = uploadFile(clawConn, 'main', 'out.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		// restart 期间：DC connecting、请求未发
+		expect(dc.readyState).toBe('connecting');
+		expect(dc.sent.length).toBe(0);
+
+		// restart 完成 → DC open
+		dc.__open();
+		expect(dc.readyState).toBe('open');
+
+		// 首条应为 PUT 请求
+		const req = JSON.parse(dc.sent[0]);
+		expect(req).toEqual({
+			method: 'PUT', agentId: 'main', path: 'out.txt', size: file.size,
+		});
+
+		// Plugin 就绪 → 触发 chunk 发送
+		dc.__receiveString({ ok: true });
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(3);
+		});
+
+		// 最后一条应为 done 信号
+		const doneMsg = JSON.parse(dc.sent[dc.sent.length - 1]);
+		expect(doneMsg).toEqual({ done: true, bytes: file.size });
+
+		// Plugin 写入结果
+		dc.__receiveString({ ok: true, bytes: file.size });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+	});
+
+	test('restart 失败 → PC 关闭 → DC close → downloadFile reject TRANSFER_INTERRUPTED', async () => {
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(clawConn, 'main', 'file.bin');
+
+		await tick();
+		const dc = lastDC();
+		// restart 期间 DC 停在 connecting
+		expect(dc.readyState).toBe('connecting');
+		expect(dc.sent.length).toBe(0);
+
+		// restart 失败 → WebRtcConnection 关 PC → SCTP 归零 → DC 触发 close
+		dc.__fireClose();
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err).toBeInstanceOf(FileTransferError);
+		expect(err.code).toBe('TRANSFER_INTERRUPTED');
+		// DC 已关闭，资源已释放
+		expect(dc.readyState).toBe('closed');
+	});
+
+	test('restart 失败 → DC close → uploadFile reject TRANSFER_INTERRUPTED', async () => {
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('lost-during-restart', 'out.txt');
+		const handle = uploadFile(clawConn, 'main', 'out.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		expect(dc.readyState).toBe('connecting');
+		// 尚未 open，还没发 PUT 请求
+		expect(dc.sent.length).toBe(0);
+
+		// restart 失败 → DC close
+		dc.__fireClose();
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err).toBeInstanceOf(FileTransferError);
+		expect(err.code).toBe('TRANSFER_INTERRUPTED');
+		expect(dc.readyState).toBe('closed');
+	});
+
+	test('restarting 期间 cancel → DC 关闭、不走 TRANSFER_INTERRUPTED 分支', async () => {
+		// 用户在 restart 未完成时按了取消 → 应报 ERR_CANCELED（cancel 语义优先于 DC close 兜底）
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(clawConn, 'main', 'slow.bin');
+
+		await tick();
+		const dc = lastDC();
+		expect(dc.readyState).toBe('connecting');
+		expect(dc.sent.length).toBe(0);
+
+		handle.cancel();
+
+		const err = await handle.promise.catch((e) => e);
+		// cancel 语义：ERR_CANCELED，而不是 TRANSFER_INTERRUPTED
+		expect(err.code).toBe('ERR_CANCELED');
+		expect(err.name).toBe('CanceledError');
+		expect(dc.readyState).toBe('closed');
+	});
+});

@@ -572,6 +572,110 @@ describe('dashboard store', () => {
 		expect(statusCalls).toHaveLength(1);
 	});
 
+	test('所有 dashboard RPC 请求都带 180s timeout 选项（弱网超时防御）', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+		const agentConn = mockAgentConn([{ id: 'main', name: 'Main' }]);
+		setConn('bot-1', agentConn);
+		const agentsStore = useAgentsStore();
+		await agentsStore.loadAgents('bot-1');
+
+		const dashConn = mockConn({
+			'status': { model: 'claude-3' },
+			'models.list': { models: [] },
+			'usage.cost': { total: 0 },
+			'sessions.list': { sessions: [] },
+			'tts.status': { enabled: false },
+			'channels.status': {},
+			'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', dashConn);
+
+		const store = useDashboardStore();
+		await store.loadDashboard('bot-1');
+
+		// 期望的 7 种方法都被调用，且每次都带 timeout: 180_000
+		const expectedMethods = [
+			'status',
+			'models.list',
+			'usage.cost',
+			'sessions.list',
+			'tts.status',
+			'channels.status',
+			'tools.catalog',
+		];
+
+		for (const method of expectedMethods) {
+			const calls = dashConn.request.mock.calls.filter(([m]) => m === method);
+			expect(calls.length).toBeGreaterThanOrEqual(1);
+			for (const call of calls) {
+				// 第三个参数必须包含 timeout: 180_000
+				expect(call[2]).toBeDefined();
+				expect(call[2]).toMatchObject({ timeout: 180_000 });
+			}
+		}
+
+		// 总 call 数精确等于 7（每个方法各一次，1 个 agent）
+		const dashCalls = dashConn.request.mock.calls.filter(([m]) => expectedMethods.includes(m));
+		expect(dashCalls).toHaveLength(7);
+
+		// 关键参数也同时校验（确保不是空 params 而 options 偷跑）
+		const usageCostCall = dashConn.request.mock.calls.find(([m]) => m === 'usage.cost');
+		expect(usageCostCall[1]).toEqual({ mode: 'month' });
+		const channelsCall = dashConn.request.mock.calls.find(([m]) => m === 'channels.status');
+		expect(channelsCall[1]).toEqual({ probe: false });
+	});
+
+	test('tools.catalog 在多 agent 场景下每次调用都带 180s timeout', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+		const agents = [
+			{ id: 'main', name: 'Main' },
+			{ id: 'ops', name: 'Ops' },
+			{ id: 'research', name: 'Research' },
+		];
+		const agentConn = mockAgentConn(agents);
+		setConn('bot-1', agentConn);
+		const agentsStore = useAgentsStore();
+		await agentsStore.loadAgents('bot-1');
+
+		const dashConn = mockConn({
+			'status': { model: 'claude-3' },
+			'models.list': { models: [] },
+			'usage.cost': { total: 0 },
+			'sessions.list': { sessions: [] },
+			'tts.status': { enabled: false },
+			'channels.status': {},
+			'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', dashConn);
+
+		const store = useDashboardStore();
+		await store.loadDashboard('bot-1');
+
+		// tools.catalog 被调用 3 次（每个 agent 各一次），每次都带 timeout: 180_000
+		const toolsCalls = dashConn.request.mock.calls.filter(([m]) => m === 'tools.catalog');
+		expect(toolsCalls).toHaveLength(3);
+
+		// 每一次调用的 agentId 与 agent.id 对应，且 options 都带 180s timeout
+		const seenAgentIds = new Set();
+		for (const call of toolsCalls) {
+			expect(call[1]).toHaveProperty('agentId');
+			seenAgentIds.add(call[1].agentId);
+			expect(call[2]).toMatchObject({ timeout: 180_000 });
+		}
+		expect(seenAgentIds).toEqual(new Set(['main', 'ops', 'research']));
+
+		// 基础 6 个 RPC 也仍然各带 timeout
+		for (const method of ['status', 'models.list', 'usage.cost', 'sessions.list', 'tts.status', 'channels.status']) {
+			const call = dashConn.request.mock.calls.find(([m]) => m === method);
+			expect(call).toBeDefined();
+			expect(call[2]).toMatchObject({ timeout: 180_000 });
+		}
+	});
+
 	test('loadDashboard agents 已加载时不重复调用 loadAgents', async () => {
 		const clawsStore = useClawsStore();
 		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);

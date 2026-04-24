@@ -4155,6 +4155,157 @@ describe('WebRtcConnection — pauseRestart', () => {
 
 		rtc.close();
 	});
+
+	test('pauseRestart 发生在 await createOffer 期间 → 旧 tick 不发 offer、attempt 保持', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// createOffer 挂起：便于在 await 窗口里插 pauseRestart
+		let resolveOffer;
+		pc.createOffer = (opts) => {
+			pc.__createOfferOpts.push(opts);
+			return new Promise((r) => { resolveOffer = r; });
+		};
+		// setLocalDescription 计数：断言 createOffer 之后没再往前走
+		let sldCalls = 0;
+		const origSld = pc.setLocalDescription.bind(pc);
+		pc.setLocalDescription = (desc) => { sldCalls++; return origSld(desc); };
+
+		// 进入 restarting → __attemptRestart 走到 await pc.createOffer 挂起
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartInFlight).toBe(true);
+		expect(pc.__createOfferOpts.at(-1)).toEqual({ iceRestart: true });
+
+		mockSendSignaling.mockClear();
+		const epochBefore = rtc.__restartEpoch;
+
+		// createOffer await 期间 pauseRestart → epoch++
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+
+		// 现在 resolve createOffer → 回到 __attemptRestart，epoch guard 应拦截
+		resolveOffer({ type: 'offer', sdp: 'stale-restart-sdp' });
+		await vi.advanceTimersByTimeAsync(0);
+
+		// L1098 epoch guard 生效：不走 setLocalDescription、不 sendSignaling、不 attempt++
+		expect(sldCalls).toBe(0);
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+		expect(rtc.__restartAttemptCount).toBe(0);
+		expect(rtc.__restartOfferSentAt).toBe(0);
+		// paused 标志不被旧 tick 误清
+		expect(rtc.__restartPaused).toBe(true);
+		// finally 正常复位
+		expect(rtc.__restartInFlight).toBe(false);
+
+		rtc.close();
+	});
+
+	test('pauseRestart 发生在 await setLocalDescription 期间 → 不发 offer、attempt 保持', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// createOffer 走默认 mock（立即 resolve）；只挂起 setLocalDescription
+		let resolveSld;
+		pc.setLocalDescription = (desc) => {
+			pc.localDescription = desc;
+			return new Promise((r) => { resolveSld = r; });
+		};
+
+		// 清 connect 阶段的 rtc:offer 计数
+		mockSendSignaling.mockClear();
+
+		// 进入 restarting → 走完 createOffer、挂在 setLocalDescription 的 await
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartInFlight).toBe(true);
+		// createOffer 已跑过
+		expect(pc.__createOfferOpts.at(-1)).toEqual({ iceRestart: true });
+		// SLD 挂起中 → 还没到 sendSignaling
+		const offersMid = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offersMid).toHaveLength(0);
+
+		const epochBefore = rtc.__restartEpoch;
+
+		// SLD await 期间 pauseRestart → epoch++
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+
+		// 释放 SLD → 回到 __attemptRestart，epoch guard（L1101）应拦截 sendSignaling
+		resolveSld();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+		expect(rtc.__restartAttemptCount).toBe(0);
+		expect(rtc.__restartOfferSentAt).toBe(0);
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartInFlight).toBe(false);
+
+		rtc.close();
+	});
+
+	test('对照：createOffer 全流程无 pause 干扰 → attempt++ 且 offer 正常发出', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		mockSendSignaling.mockClear();
+
+		// 进入 restarting → __attemptRestart 一路走完（createOffer/SLD 均使用默认 mock，立即 resolve）
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartInFlight).toBe(false); // finally 复位
+		expect(rtc.__restartAttemptCount).toBe(1);
+		expect(rtc.__restartOfferSentAt).toBeGreaterThan(0);
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(1);
+		expect(offers[0][2]).toEqual(expect.objectContaining({ iceRestart: true }));
+
+		rtc.close();
+	});
+
+	test('对照：SLD 挂起但无 pause → 释放后 sendSignaling 正常调、attempt++', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// 挂起 SLD，但不调 pauseRestart
+		let resolveSld;
+		pc.setLocalDescription = (desc) => {
+			pc.localDescription = desc;
+			return new Promise((r) => { resolveSld = r; });
+		};
+
+		// 清 connect 阶段的 rtc:offer 计数
+		mockSendSignaling.mockClear();
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartInFlight).toBe(true);
+		// SLD 挂起期间 offer 还没发（clear 后）
+		expect(mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer')).toHaveLength(0);
+		expect(rtc.__restartAttemptCount).toBe(0);
+
+		// 释放 SLD → epoch 未变 → 正常 sendSignaling + attempt++
+		resolveSld();
+		await vi.advanceTimersByTimeAsync(0);
+
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(1);
+		expect(offers[0][2]).toEqual(expect.objectContaining({ iceRestart: true }));
+		expect(rtc.__restartAttemptCount).toBe(1);
+		expect(rtc.__restartOfferSentAt).toBeGreaterThan(0);
+		expect(rtc.__restartInFlight).toBe(false);
+
+		rtc.close();
+	});
 });
 
 describe('WebRtcConnection — parseCredExpireAt', () => {
@@ -4879,6 +5030,370 @@ describe('WebRtcConnection — 诊断日志补全', () => {
 		dc.onmessage({ data: JSON.stringify({ type: 'plugin-probe', id: 7 }) });
 		const logs = await getRemoteLogCalls();
 		expect(logs.some((s) => /plugin-probe-ack send failed.*dc closed/.test(s))).toBe(true);
+
+		rtc.close();
+	});
+});
+
+// --- P0-3: stale rtc:answer/ice across rebuild ---
+//
+// rebuild 场景（claws.store.js:858 closeRtcForClaw → conn.clearRtc → new WebRtcConnection）：
+// 旧 rtc.close() 内（webrtc-connection.js:290）调用 __removeRtcListener → 从 signaling 'rtc' 事件解绑。
+// 期望：旧 listener 在 close 后不再接收 signaling，新 rtc 实例独立运作。
+//
+// 锚点：
+// - __onSignaling rtc:answer (L1425-1453)：pcAtAnswer?.setRemoteDescription — 无显式 stale guard
+// - __onSignaling rtc:ice (L1454-1459)：this.__pc?.addIceCandidate — 无 epoch/pc 代际校验
+// - rtc:restart-rejected (L1465)：有 state==='restarting' guard
+// - close() (L290)：__removeRtcListener → sig.off('rtc', this.__onRtcMsg)
+// - __ensureRtcListener (L1476-1483)：__onRtcMsg 闭包 → 调 this.__onSignaling
+describe('P0-3: stale rtc:answer/ice across rebuild', () => {
+	beforeEach(() => {
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+
+	test('rebuild 后旧 rtc 的 listener 已从 signaling 解绑（不接收新消息）', async () => {
+		const oldConn = createMockBotConn();
+		const oldRtc = new WebRtcConnection('bot1', oldConn, { PeerConnection: MockRTCPeerConnection });
+		await oldRtc.connect(MOCK_TURN_CREDS);
+		const oldPc = MockRTCPeerConnection.lastInstance;
+
+		// close 前：应已订阅 signaling 'rtc'
+		expect(sigListeners['rtc']?.length).toBe(1);
+		expect(oldRtc.__onRtcMsg).toBeTruthy();
+
+		// 模拟 rebuild 的第一步：closeRtcForClaw → rtc.close()
+		oldRtc.close();
+
+		// close 后：旧 listener 已从 signaling 摘除
+		expect(sigListeners['rtc']?.length ?? 0).toBe(0);
+		expect(oldRtc.__onRtcMsg).toBeNull();
+		expect(oldRtc.__pc).toBeNull();
+
+		// 模拟 rebuild 第二步：new WebRtcConnection（新实例注册自己的 listener）
+		const newConn = createMockBotConn();
+		const newRtc = new WebRtcConnection('bot1', newConn, { PeerConnection: MockRTCPeerConnection });
+		await newRtc.connect(MOCK_TURN_CREDS);
+		const newPc = MockRTCPeerConnection.lastInstance;
+
+		// 新 listener 已注册，且与旧 PC 是独立实例
+		expect(sigListeners['rtc']?.length).toBe(1);
+		expect(newPc).not.toBe(oldPc);
+
+		// 发 rtc:answer → 仅新 PC 收到 setRemoteDescription，旧 PC __remoteDesc 保持 null
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'new-ans' } });
+		await vi.waitFor(() => {
+			expect(newPc.__remoteDesc).toEqual({ type: 'answer', sdp: 'new-ans' });
+		});
+		expect(oldPc.__remoteDesc).toBeNull();
+
+		newRtc.close();
+	});
+
+	test('rebuild 后对旧 clawId 的 rtc:ice 仅路由到新 PC，旧 PC 不收', async () => {
+		const oldConn = createMockBotConn();
+		const oldRtc = new WebRtcConnection('bot1', oldConn, { PeerConnection: MockRTCPeerConnection });
+		await oldRtc.connect(MOCK_TURN_CREDS);
+		const oldPc = MockRTCPeerConnection.lastInstance;
+
+		// 模拟 rebuild
+		oldRtc.close();
+		const newConn = createMockBotConn();
+		const newRtc = new WebRtcConnection('bot1', newConn, { PeerConnection: MockRTCPeerConnection });
+		await newRtc.connect(MOCK_TURN_CREDS);
+		const newPc = MockRTCPeerConnection.lastInstance;
+
+		// 先让新 rtc 进入 remoteDescSet=true（否则 rtc:ice 会入暂存队列）
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'new-ans' } });
+		await vi.waitFor(() => {
+			expect(newRtc.__remoteDescSet).toBe(true);
+		});
+
+		// 发 rtc:ice → 新 PC 收到，旧 PC 一条 candidate 都不收
+		const icePayload = { candidate: 'candidate:999', sdpMid: '0', sdpMLineIndex: 0 };
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:ice', payload: icePayload });
+
+		expect(newPc.__candidates).toContainEqual(icePayload);
+		expect(oldPc.__candidates).toHaveLength(0);
+		// 旧 PC 已 close
+		expect(oldPc.__closed).toBe(true);
+
+		newRtc.close();
+	});
+
+	test('旧 rtc close 后 __pc=null，迟到 rtc:answer/ice 对旧实例完全 no-op', async () => {
+		// 精细场景：即便测试直接调旧实例的 __onSignaling（绕过 signaling 分发），
+		// 也不应对已 close 的 PC 产生副作用（optional chaining 护栏）。
+		const oldConn = createMockBotConn();
+		const oldRtc = new WebRtcConnection('bot1', oldConn, { PeerConnection: MockRTCPeerConnection });
+		await oldRtc.connect(MOCK_TURN_CREDS);
+		const oldPc = MockRTCPeerConnection.lastInstance;
+
+		oldRtc.close();
+		expect(oldRtc.__pc).toBeNull();
+		expect(oldPc.__closed).toBe(true);
+
+		// 直接调 __onSignaling 模拟"假如 listener 清理出现竞态"的迟到消息
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		oldRtc.__onSignaling({ type: 'rtc:answer', payload: { sdp: 'late-ans' } });
+		oldRtc.__onSignaling({
+			type: 'rtc:ice',
+			payload: { candidate: 'candidate:late', sdpMid: '0', sdpMLineIndex: 0 },
+		});
+		// 等一轮 microtask 让 setRemoteDescription Promise 链路走完（__pc?.setRemote... 已是 undefined?.）
+		await Promise.resolve();
+
+		// 已关闭的旧 PC 不应被改动
+		expect(oldPc.__remoteDesc).toBeNull();
+		expect(oldPc.__candidates).toHaveLength(0);
+		// setRemoteDescription failed warn 不应被打（__pc?. 短路成 undefined → Promise 调用不发生）
+		expect(warnSpy).not.toHaveBeenCalledWith(
+			expect.stringContaining('setRemoteDescription failed'),
+		);
+		warnSpy.mockRestore();
+	});
+
+	test('两条 rtc 实例（不同 clawId）共存时，按 clawId 过滤不串台', async () => {
+		// __onRtcMsg 内 `if (clawId !== this.clawId) return;` 做过滤
+		const connA = createMockBotConn();
+		const rtcA = new WebRtcConnection('botA', connA, { PeerConnection: MockRTCPeerConnection });
+		await rtcA.connect(MOCK_TURN_CREDS);
+		const pcA = MockRTCPeerConnection.lastInstance;
+
+		const connB = createMockBotConn();
+		const rtcB = new WebRtcConnection('botB', connB, { PeerConnection: MockRTCPeerConnection });
+		await rtcB.connect(MOCK_TURN_CREDS);
+		const pcB = MockRTCPeerConnection.lastInstance;
+
+		expect(sigListeners['rtc']?.length).toBe(2);
+		expect(pcA).not.toBe(pcB);
+
+		// 针对 botA 发 answer → 仅 pcA 收
+		fireRtcSignal({ clawId: 'botA', type: 'rtc:answer', payload: { sdp: 'ans-A' } });
+		await vi.waitFor(() => {
+			expect(pcA.__remoteDesc).toEqual({ type: 'answer', sdp: 'ans-A' });
+		});
+		expect(pcB.__remoteDesc).toBeNull();
+
+		// 针对 botB 发 answer → 仅 pcB 收
+		fireRtcSignal({ clawId: 'botB', type: 'rtc:answer', payload: { sdp: 'ans-B' } });
+		await vi.waitFor(() => {
+			expect(pcB.__remoteDesc).toEqual({ type: 'answer', sdp: 'ans-B' });
+		});
+		// pcA 的 remoteDesc 未被覆盖
+		expect(pcA.__remoteDesc).toEqual({ type: 'answer', sdp: 'ans-A' });
+
+		rtcA.close();
+		rtcB.close();
+		// 两条 listener 均摘除
+		expect(sigListeners['rtc']?.length ?? 0).toBe(0);
+	});
+});
+
+// --- P1-1: resumeRecovery probe 期间 re-offline ---
+// 场景：resumeRecovery → __probeNow 发起 probe 后、结果回来前，若再次 pauseRestart
+// （claw 再次 offline / sig 再次 offline），probe 的迟到回调不应偷发 ICE restart。
+// 防护点：
+//   1) __probeNow bump __keepaliveGen=N，__doKeepalive 捕获 gen=N
+//   2) pauseRestart → __stopKeepalive 再 bump __keepaliveGen=N+1
+//   3) probe settle（超时或 ack）后 __doKeepalive 的 `gen !== this.__keepaliveGen` 提前 return
+//      → 不进 __onIceFailed → 不进 __attemptRestart → 即便不靠 pause gate 也已被拦
+//   4) pause gate (L975) 作为 defense-in-depth，即使有人漏掉 gen-guard 也能 drop
+describe('P1-1: resumeRecovery probe 期间 re-offline', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('probe 未完成期间 claw 再次 offline (pauseRestart)：probe 超时的迟到回调不偷发 ICE restart', async () => {
+		// 第一轮 pause（claw offline）→ resumeRecovery 触发 __probeNow（gen=N）
+		// 第二轮 pause（claw 再次 offline）→ gen=N+1；probe 超时到来时 gen-guard 拦下
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		dc.sent.length = 0;
+		mockSendSignaling.mockClear();
+
+		// resumeRecovery → __probeNow：发出 probe，__keepaliveGen bump 到 N
+		rtc.resumeRecovery();
+		expect(rtc.__restartPaused).toBe(false);
+		const genAfterResume = rtc.__keepaliveGen;
+		// probe 已通过 dc.send 发出（同步）
+		const probeMsg = dc.sent.find((d) => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		});
+		expect(probeMsg).toBeTruthy();
+
+		// probe 还没回——此时 claw 再次 offline → pauseRestart
+		const epochBeforeRePause = rtc.__restartEpoch;
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		// __stopKeepalive bump 了 __keepaliveGen
+		expect(rtc.__keepaliveGen).toBe(genAfterResume + 1);
+		// pauseRestart 递增 restart epoch
+		expect(rtc.__restartEpoch).toBe(epochBeforeRePause + 1);
+
+		// 现在让 probe 超时：DC_KEEPALIVE_TIMEOUT_MS=10_000
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 迟到的 probe 回调：gen-guard 早退 → 没走到 __onIceFailed → __attemptRestart 未被调
+		expect(rtc.state).toBe('connected'); // __setState 未走
+		expect(rtc.__restartAttemptCount).toBe(0);
+		expect(rtc.__restartOfferSentAt).toBe(0);
+		// 没发 ICE restart offer
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+		// pause 状态不被迟到回调误清
+		expect(rtc.__restartPaused).toBe(true);
+		// keepalive 也没被 schedule（gen 失配 → 不走 __scheduleKeepalive 分支）
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		rtc.close();
+	});
+
+	test('probe 未完成期间 sig 再次 offline (pauseRestart)：同样不偷发 ICE restart', async () => {
+		// 对称路径：sig offline 由 signaling-connection 的 offline 事件触发 store 调 pauseRestart，
+		// 对 rtc 来说与 claw offline 是同一个入口。这里构造 mockSigState='disconnected' 以贴近语义。
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		dc.sent.length = 0;
+		mockSendSignaling.mockClear();
+
+		rtc.resumeRecovery();
+		const genAfterResume = rtc.__keepaliveGen;
+		expect(rtc.__restartPaused).toBe(false);
+		expect(dc.sent.some((d) => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		})).toBe(true);
+
+		// sig 再次 offline 模拟：state 切换 + pauseRestart
+		mockSigState = 'disconnected';
+		const epochBefore = rtc.__restartEpoch;
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__keepaliveGen).toBe(genAfterResume + 1);
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+
+		// probe 超时 → 迟到回调
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// gen-guard 拦下：不升级 __onIceFailed
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartAttemptCount).toBe(0);
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+		expect(rtc.__restartPaused).toBe(true);
+
+		mockSigState = 'connected';
+		rtc.close();
+	});
+
+	test('probe 成功 ack 迟到：gen 失配 → 不调度下一轮 keepalive、不发 offer', async () => {
+		// 与失败路径对称：probe 回来是成功的，但 __doKeepalive 第二次 gen-guard（probe 后那个）
+		// 同样拦下 → __scheduleKeepalive 不被调 → __keepaliveTimer 保持 null。
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		dc.sent.length = 0;
+		mockSendSignaling.mockClear();
+
+		rtc.resumeRecovery();
+		expect(rtc.__restartPaused).toBe(false);
+		const genAfterResume = rtc.__keepaliveGen;
+		// __probeNow 把 __keepaliveTimer 清空了
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		// 再次 pause（模拟 probe 在途期间 offline）
+		rtc.pauseRestart();
+		expect(rtc.__keepaliveGen).toBe(genAfterResume + 1);
+		expect(rtc.__restartPaused).toBe(true);
+
+		// 现在对端 ack 迟到
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+
+		// __doKeepalive 第二次 gen-guard（probe 成功后那个 L763）拦下
+		// → 既不进 !alive 分支、也不进 __scheduleKeepalive 分支
+		expect(rtc.__keepaliveTimer).toBeNull();
+		// 不发 offer
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+		// state 仍 connected
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartAttemptCount).toBe(0);
+
+		rtc.close();
+	});
+
+	test('pause 后没有 pause gate 兜底也安全：gen-guard 已经在 pause gate 之前拦截', async () => {
+		// 防御纵深验证：即使我们"绕过" gen-guard（手动把 __keepaliveGen 复原，模拟 gen-guard 被未来重构破坏），
+		// pause gate（L975）依然拦住 __attemptRestart 不发 offer。用 test.skip 的反面——这里真跑，
+		// 断言两道防线独立有效。
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		dc.sent.length = 0;
+		mockSendSignaling.mockClear();
+
+		rtc.resumeRecovery();
+		const genCaptured = rtc.__keepaliveGen; // = N
+		expect(dc.sent.some((d) => {
+			try { return JSON.parse(d).type === 'probe'; } catch { return false; }
+		})).toBe(true);
+
+		// 再次 pause → __stopKeepalive bump 到 N+1，同时 __restartPaused=true
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+
+		// 人为把 gen 复原成 N，模拟 gen-guard 不再有效的未来场景
+		// （只在本测试内手动改，业务代码不受影响）
+		rtc.__keepaliveGen = genCaptured;
+
+		// 让 probe 超时 → __doKeepalive 会走到 !alive 分支 → __onIceFailed → __attemptRestart('ice_failed')
+		// pause gate（L975）：reason='ice_failed' !== 'online_resume' 且 paused → drop
+		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// pause gate 拦住 restart：不发 offer、state 不变
+		expect(rtc.state).toBe('connected');
+		expect(rtc.__restartAttemptCount).toBe(0);
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+		// paused 标志不被 drop 路径误清
+		expect(rtc.__restartPaused).toBe(true);
+
+		rtc.close();
+	});
+
+	test('对照：probe 期间不 pause，probe 成功 → 正常 schedule 下一轮 keepalive、state 保持 connected', async () => {
+		// 确保测试框架对 probe 的处理没有副作用——无 pause 时 probe 正常走完并 schedule。
+		const { rtc, dc } = await setupConnectedRtc();
+		rtc.pauseRestart();
+		dc.sent.length = 0;
+		mockSendSignaling.mockClear();
+
+		rtc.resumeRecovery();
+		expect(rtc.__restartPaused).toBe(false);
+		const genAfterResume = rtc.__keepaliveGen;
+		expect(rtc.__keepaliveTimer).toBeNull();
+
+		// 不再 pause；probe ack 及时回
+		dc.onmessage({ data: JSON.stringify({ type: 'probe-ack' }) });
+		await vi.advanceTimersByTimeAsync(0);
+
+		// gen 未变 → __doKeepalive 走到健康分支 → __scheduleKeepalive(gen) 重启 timer
+		expect(rtc.__keepaliveGen).toBe(genAfterResume);
+		expect(rtc.__keepaliveTimer).not.toBeNull();
+		expect(rtc.state).toBe('connected');
+		// 无 offer
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
 
 		rtc.close();
 	});

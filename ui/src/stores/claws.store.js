@@ -366,6 +366,12 @@ export const useClawsStore = defineStore('claws', {
 					//   重 fire 会绕过退避节流（新 fullInit 再包 __ensureRtc → 再排 retry 让 count++），
 					//   跳过让 backoff timer 自然接管
 					if (claw?.online && !_rtcInitInProgress.get(id) && !_rtcRetryState.has(id)) {
+						// sig offline 期间 __fullInit → __ensureRtc 的 sig gate (L820-823)
+						// 在 `_rtcInitInProgress.set` 之前早退，锁从不置位；每次 snapshot 都会
+						// 重跑 rescue → 刷一轮 `claw.fullInit` / `snapshot rescue fullInit ok` 日志。
+						// sig 恢复时 `__resumeAllClawsForSigOnline` 的 !initialized 分支会兜底
+						// 补跑 __fullInit，此处直接跳过即可（对称 __resumeAllClawsForSigOnline 的做法）
+						if (_sigOffline) continue;
 						_pendingTypeChangedRestartClaws.delete(id);
 						const conn = useClawConnections().get(id);
 						if (!conn) continue; // 未 bridge：等后续 __bridgeConn 接手
@@ -717,6 +723,12 @@ export const useClawsStore = defineStore('claws', {
 				// connected 态从 pause 冻结恢复：仅清 paused 标志 + 重启 keepalive，
 				// 不触发 ICE restart（PC 本身仍健康）
 				rtc.resumeRecovery();
+				// resumeRecovery 可能因 pc.connectionState='failed'/'disconnected' 升级到
+				// triggerRestart('online_resume') → __attemptRestart 同步 setState('restarting')。
+				// 若此时 fall through 到 L724 __ensureRtc，__ensureRtc 的 early-return 只认
+				// rtc.state==='connected'，会把刚启动的 restart PC 当非 connected 关掉重 rebuild，
+				// 白烧 ICE/TURN 预算、延迟恢复。升级后走正常 restart 循环，不需要 __ensureRtc
+				if (rtc.state === 'restarting') return;
 			}
 			// dashboard 不在此处单独加载：与 agents/sessions/topics 保持对称——
 			// DC 延续（connected/restarting）场景下 plugin 侧缓冲会自然送达，不需要刷；
