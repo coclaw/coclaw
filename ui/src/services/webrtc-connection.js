@@ -1076,7 +1076,20 @@ export class WebRtcConnection {
 			try {
 				await sig.ensureConnected();
 			} catch {
-				this.__log('info', 'ICE restart: ensureConnected failed, will retry');
+				// 起点是 pauseRestart 冻结态 → 本次 online_resume 实际失败，回滚到 pause 原状
+				// 否则后续自动路径（__onIceFailed/keepalive 等）会通过门控，时间预算到期会被误 close asFailed。
+				// state 维持 'restarting' 与 pauseRestart 从 restarting 源态 pause 后的稳态等价——
+				// 下轮 __resumeOnline 遍历会按 restarting+paused 分派 triggerRestart('online_resume')
+				if (resumingFromPause && this.__restartEpoch === epochAtEntry && this.__state === 'restarting') {
+					this.__restartPaused = true;
+					this.__restartStartTime = 0; // 下次 online_resume 按"新一轮"起算
+					// 停本次 online_resume 入口起的 timer/poll，彻底对齐 pauseRestart 的停机语义
+					this.__stopRestartTimer();
+					this.__stopRestartPoll();
+					this.__log('info', 'ICE restart: ensureConnected failed, revert to paused');
+				} else {
+					this.__log('info', 'ICE restart: ensureConnected failed, will retry');
+				}
 				return;
 			}
 			// 等待期间状态可能已变更（close / 其他路径已恢复 / 超时 / pauseRestart 冻结）
@@ -1107,6 +1120,12 @@ export class WebRtcConnection {
 			this.__log('info', `ICE restart offer sent, reason=${reason} attempt=${this.__restartAttemptCount} credRemain=${credRemain ?? 'none'}`);
 		} catch (err) {
 			if (this.__state === 'closed' || this.__state === 'failed') return;
+			// 若 await 期间被 pauseRestart 冻结或 epoch 已换代（__clearRestartState），
+			// 本次 reject 属于旧 epoch 的尾声——不应 close，保留 PC 等显式 resume
+			if (this.__restartPaused || this.__restartEpoch !== epochAtEntry) {
+				this.__log('debug', `ICE restart reject dropped (paused/epoch) reason=${err?.message ?? '?'}`);
+				return;
+			}
 			this.__log('warn', `ICE restart createOffer failed: ${err?.message}`);
 			this.close({ asFailed: true });
 		} finally {

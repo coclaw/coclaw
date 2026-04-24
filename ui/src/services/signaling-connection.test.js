@@ -1015,6 +1015,50 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 		expect(conn.__pausedOffline).toBe(false);
 	});
 
+	test('offline + ensureConnected({ timeoutMs }) → 不建 WS，超时 reject，__pausedOffline=true', async () => {
+		// offline 门控（__doConnect 入口 navigator.onLine===false 分支）让 WS 构造被跳过；
+		// ensureConnected 的 __waitForConnected 此时只靠 timeoutMs 兜底。要点：不应建 WS、
+		// 等待超时时 promise reject；__pausedOffline 必须被置 true（供 log 去重）
+		setOnLine(false);
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		const p = conn.ensureConnected({ timeoutMs: 3000 });
+		// 给底层 reconnect/ensure 的微任务排进
+		await Promise.resolve();
+		expect(MockWebSocket.instances.length).toBe(0);
+		expect(conn.__pausedOffline).toBe(true);
+
+		// 时间前推到 timeout 触发
+		vi.advanceTimersByTime(3000);
+		await expect(p).rejects.toThrow(/timeout/i);
+	});
+
+	test('offline 期间 connect 排 __reconnectTimer；setOnLine(true)+network:online 立即 resumed 并建 WS', () => {
+		// 验证"从 offline 回 online 的快速路径"——不等 40s 退避，
+		// network:online handler 若落到 disconnected 分支会走 immediate reconnect；
+		// 此处观测 __reconnectTimer 被清 + 新 WS 实例出现
+		setOnLine(false);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		// offline 期间排了 retry timer，未建 WS
+		expect(conn.__reconnectTimer).not.toBeNull();
+		expect(MockWebSocket.instances.length).toBe(0);
+
+		// 切 online 并派发 network:online 事件
+		setOnLine(true);
+		window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged: false } }));
+
+		// 立即出现新 WS（不等 40s，不走退避路径）——immediate reconnect 路径的关键断言是
+		// "不等 40s 就建 WS"；本 mock 同步回调链会多次进入构造，只断言 > 0 足够验证路径
+		expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+		// 原 retry timer 被清掉（走了 immediate reconnect 路径时 __clearReconnect 被调）
+		expect(conn.__reconnectTimer).toBeNull();
+		// resumed 日志仅一条（__doConnect 边沿触发）
+		const resumedLogs = logs.filter((t) => t.startsWith('sig.reconnect resumed'));
+		expect(resumedLogs.length).toBe(1);
+	});
+
 	test('forceReconnect() 在 offline 期间不建 WS，仅翻 paused log（一条）', () => {
 		// 先在 online 建立一条连接
 		setOnLine(true);

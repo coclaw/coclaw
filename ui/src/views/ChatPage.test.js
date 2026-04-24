@@ -975,6 +975,64 @@ describe('ChatPage watchers', () => {
 		expect(onConnReadySpy).toHaveBeenCalled();
 	});
 
+	test('connReady 稳态下切 chatStore：新 store 的 loadMessages 被调（旧 pending 不阻塞）', async () => {
+		// 场景：dcReady=true 稳态下，先让 __connReadyStore 指向 A；然后切到 B（vm.chatStore 变成 B）。
+		// __onConnReady 里的 `__connReadyStore === chatStore` 去重看的是"当前 chatStore 与上次标记的是否同一实例"——
+		// 切到 B 后 vm.chatStore=B ≠ __connReadyStore(=A)，去重不拦；B.loadMessages 正常触发。
+		// 即使 A 的 loadMessages 返回永不 resolve 的 promise（被旧请求占住），也不阻塞 B 的流程。
+		const pinia = createPinia();
+		setActivePinia(pinia);
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		// agent 'main'（A）与 'alt'（B）都注册
+		const agentsStore = useAgentsStore();
+		agentsStore.byClaw['bot-1'] = {
+			agents: [{ id: 'main' }, { id: 'alt' }],
+			defaultId: 'main',
+			loading: false,
+			fetched: true,
+		};
+
+		// 预建 A store 并用"永不 resolve"的 loadMessages 占坑
+		const chatStoreA = chatStoreManager.get('session:bot-1:main', { clawId: 'bot-1', agentId: 'main' });
+		chatStoreA.__messagesLoaded = false;
+		const pendingA = new Promise(() => {});
+		vi.spyOn(chatStoreA, 'loadMessages').mockReturnValue(pendingA);
+
+		// 预建 B store 并挂 spy
+		const chatStoreB = chatStoreManager.get('session:bot-1:alt', { clawId: 'bot-1', agentId: 'alt' });
+		chatStoreB.__messagesLoaded = false;
+		const loadB = vi.spyOn(chatStoreB, 'loadMessages').mockResolvedValue(true);
+
+		// 以 B 的路由挂载（vm.chatStore=B）
+		const wrapper = mount(ChatPage, {
+			global: {
+				plugins: [pinia],
+				mocks: {
+					$t: (key) => i18nMap[key] ?? key,
+					$route: {
+						name: 'chat',
+						params: { clawId: 'bot-1', agentId: 'alt' },
+						path: '/chat/bot-1/alt',
+						query: {},
+					},
+					$router: mockRouter,
+				},
+			},
+		});
+		await flushPromises();
+
+		// 预设 __connReadyStore=A（模拟"之前 A 已 fire 过 __onConnReady"的稳态）
+		wrapper.vm.__connReadyStore = chatStoreA;
+		loadB.mockClear();
+
+		// 手动触发 __onConnReady：验证去重不误拦，B.loadMessages 被调
+		await wrapper.vm.__onConnReady();
+		expect(loadB).toHaveBeenCalledTimes(1);
+	});
+
 	test('bot 解绑后跳转', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
