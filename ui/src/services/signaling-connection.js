@@ -60,6 +60,9 @@ export class SignalingConnection {
 		// 重连
 		this.__reconnectTimer = null;
 		this.__reconnectDelay = INITIAL_RECONNECT_MS;
+		// OS 层 navigator.onLine=false 时暂停 WS 构造，仅用于日志去重
+		// （边沿触发：paused/resumed 各打一条，稳态静默）
+		this.__pausedOffline = false;
 
 		// 心跳
 		this.__hbInterval = null;
@@ -168,6 +171,7 @@ export class SignalingConnection {
 		this.__intentionalClose = true;
 		this.__clearReconnect();
 		this.__cleanup();
+		this.__pausedOffline = false;
 		this.__setState('disconnected');
 	}
 
@@ -268,6 +272,25 @@ export class SignalingConnection {
 	}
 
 	__doConnect() {
+		// OS 层明确 offline：跳过 WS 构造（避免无谓的 DNS/TCP 尝试 + 日志风暴）。
+		// 退避节奏保留，仍排下一轮；`network:online` / `app:foreground` 能正常打断退避。
+		// 基线浏览器/WebView 对 navigator.onLine=false 的真 offline 判定可靠；
+		// 误报 false 时最差延后一个退避周期，不会永久卡住。
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			if (!this.__pausedOffline) {
+				this.__pausedOffline = true;
+				console.debug('[SigConn] paused (offline)');
+				this.__emit('log', 'sig.reconnect paused offline');
+			}
+			this.__scheduleReconnect();
+			return;
+		}
+		if (this.__pausedOffline) {
+			this.__pausedOffline = false;
+			console.debug('[SigConn] resumed (online)');
+			this.__emit('log', 'sig.reconnect resumed');
+		}
+
 		this.__setState('connecting');
 		const wsUrl = resolveSignalingWsUrl(this.__baseUrl);
 		let ws;
@@ -414,7 +437,10 @@ export class SignalingConnection {
 		const jitter = 1 + (Math.random() * 2 - 1) * RECONNECT_JITTER;
 		const delay = Math.min(this.__reconnectDelay * jitter, MAX_RECONNECT_MS);
 		console.debug('[SigConn] reconnect in %dms', Math.round(delay));
-		this.__emit('log', `sig.reconnect delay=${Math.round(delay)}ms`);
+		// offline 稳态静默：避免每轮都打一条 remoteLog（日志风暴根因）
+		if (!this.__pausedOffline) {
+			this.__emit('log', `sig.reconnect delay=${Math.round(delay)}ms`);
+		}
 		this.__reconnectTimer = setTimeout(() => {
 			this.__reconnectTimer = null;
 			if (!this.__intentionalClose) {

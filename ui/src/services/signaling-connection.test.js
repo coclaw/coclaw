@@ -858,3 +858,182 @@ describe('SignalingConnection – 单例', () => {
 		expect(a).not.toBe(b);
 	});
 });
+
+describe('SignalingConnection – offline 闸（真 offline 日志静默）', () => {
+	let originalOnLineDesc;
+
+	beforeEach(() => {
+		originalOnLineDesc = Object.getOwnPropertyDescriptor(globalThis.navigator, 'onLine');
+	});
+
+	afterEach(() => {
+		// jsdom 里 navigator.onLine 常为原型链属性，getOwnPropertyDescriptor 返回 undefined。
+		// 此时若不 delete，test 内 defineProperty 设的 own property 会残留泄漏到后续 test。
+		if (originalOnLineDesc) {
+			Object.defineProperty(globalThis.navigator, 'onLine', originalOnLineDesc);
+		} else {
+			delete globalThis.navigator.onLine;
+		}
+	});
+
+	function setOnLine(value) {
+		Object.defineProperty(globalThis.navigator, 'onLine', {
+			configurable: true,
+			get: () => value,
+		});
+	}
+
+	test('navigator.onLine=false 时 connect 跳过 new WebSocket，state 不变为 connecting', () => {
+		setOnLine(false);
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(MockWebSocket.lastInstance).toBeNull();
+		expect(conn.state).toBe('disconnected');
+	});
+
+	test('首次 offline 排下一轮 retry 并打一条 paused log（仅一条）', () => {
+		setOnLine(false);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		expect(pausedLogs.length).toBe(1);
+		expect(pausedLogs[0]).toBe('sig.reconnect paused offline');
+		// 下一轮 retry 已排
+		expect(conn.__reconnectTimer).not.toBeNull();
+	});
+
+	test('offline 稳态下多轮 retry 不重复打 paused/delay log（边沿触发）', () => {
+		setOnLine(false);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		// 连续触发 10 轮退避 timer 到期
+		for (let i = 0; i < 10; i++) {
+			vi.advanceTimersByTime(40_000);
+		}
+		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		const delayLogs = logs.filter(t => t.startsWith('sig.reconnect delay='));
+		expect(pausedLogs.length).toBe(1); // 仅入场那一条
+		expect(delayLogs.length).toBe(0);   // offline 期间不再打 delay
+		expect(MockWebSocket.instances.length).toBe(0); // 完全没 new WebSocket
+	});
+
+	test('从 offline 回到 online：下一轮 __doConnect 打 resumed 并建 WS（宽松版 A）', () => {
+		setOnLine(false);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		// 切回 online
+		setOnLine(true);
+		// 下一轮 retry 触发
+		vi.advanceTimersByTime(40_000);
+		const resumedLogs = logs.filter(t => t.startsWith('sig.reconnect resumed'));
+		expect(resumedLogs.length).toBe(1);
+		expect(MockWebSocket.lastInstance).not.toBeNull();
+		expect(conn.state).toBe('connecting');
+	});
+
+	test('online/offline toggle 一轮只产一对 paused/resumed', () => {
+		setOnLine(false);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		// 回 online → 下一轮 resumed
+		setOnLine(true);
+		vi.advanceTimersByTime(40_000);
+		// WS 建立成功
+		MockWebSocket.lastInstance.simulateOpen();
+		// 再次 offline 之前连 WS 掉线 → 退回 disconnected → 退避
+		MockWebSocket.lastInstance.simulateClose(1006, 'net');
+		// 切 offline
+		setOnLine(false);
+		vi.advanceTimersByTime(2000);
+		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		const resumedLogs = logs.filter(t => t.startsWith('sig.reconnect resumed'));
+		expect(pausedLogs.length).toBe(2); // 首次进 offline + 再次进 offline
+		expect(resumedLogs.length).toBe(1); // 中间回到 online 那一次
+	});
+
+	test('disconnect() 重置 __pausedOffline，下次 connect 重新打 paused 日志', () => {
+		setOnLine(false);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		expect(conn.__pausedOffline).toBe(true);
+		conn.disconnect();
+		expect(conn.__pausedOffline).toBe(false);
+		// 新一轮 connect（仍 offline）
+		conn.__intentionalClose = false;
+		conn.connect();
+		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		expect(pausedLogs.length).toBe(2); // 两个独立 session 各一条
+	});
+
+	test('navigator.onLine=true 时 connect 正常建立 WS 且不打 paused/resumed', () => {
+		setOnLine(true);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		expect(conn.state).toBe('connected');
+		const offlineLogs = logs.filter(t => t.startsWith('sig.reconnect paused') || t.startsWith('sig.reconnect resumed'));
+		expect(offlineLogs.length).toBe(0);
+	});
+
+	test('navigator.onLine=true 的 retry 正常发 delay log（未被 offline 门控影响）', () => {
+		setOnLine(true);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		MockWebSocket.lastInstance.simulateClose(1006);
+		const delayLogs = logs.filter(t => t.startsWith('sig.reconnect delay='));
+		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		const resumedLogs = logs.filter(t => t.startsWith('sig.reconnect resumed'));
+		expect(delayLogs.length).toBe(1);
+		expect(pausedLogs.length).toBe(0);
+		expect(resumedLogs.length).toBe(0);
+	});
+
+	test('navigator.onLine===undefined 走正常路径（严格 === false 判断，防 !navigator.onLine 回归）', () => {
+		Object.defineProperty(globalThis.navigator, 'onLine', {
+			configurable: true,
+			get: () => undefined,
+		});
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(MockWebSocket.lastInstance).not.toBeNull();
+		expect(conn.state).toBe('connecting');
+		expect(conn.__pausedOffline).toBe(false);
+	});
+
+	test('forceReconnect() 在 offline 期间不建 WS，仅翻 paused log（一条）', () => {
+		// 先在 online 建立一条连接
+		setOnLine(true);
+		const logs = [];
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.on('log', (t) => logs.push(t));
+		conn.connect();
+		MockWebSocket.lastInstance.simulateOpen();
+		const instancesBefore = MockWebSocket.instances.length;
+
+		// 切 offline 后 forceReconnect（模拟 network:online typeChanged=true 之类的上层触发）
+		setOnLine(false);
+		conn.forceReconnect();
+
+		// 原 ws 被关，但没创建新 WS
+		expect(MockWebSocket.instances.length).toBe(instancesBefore);
+		expect(conn.state).toBe('disconnected');
+		expect(conn.__pausedOffline).toBe(true);
+		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		expect(pausedLogs.length).toBe(1);
+	});
+});
