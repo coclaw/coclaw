@@ -1148,7 +1148,9 @@ export class WebRtcConnection {
 	 *   setLocalDescription / snap.then / poll tick）回到 __attemptRestart 时
 	 *   凭 epoch guard 即刻退出
 	 * - 置 __restartPaused=true：后续任何非 'online_resume' 原因进入
-	 *   __attemptRestart 都会在入口被 drop
+	 *   __attemptRestart 都会在入口被 drop；同时 __onSignaling 入口 drop 迟到的
+	 *   rtc:answer / rtc:ice / rtc:restart-rejected，避免被动应用旧 restart 的信令
+	 *   让 ICE 跑通或 PC 被关，反把 paused 清掉
 	 *
 	 * idle/connecting/failed/closed 状态下为 no-op（无主动恢复可停）。
 	 * __state 不变；resume 由 store 按状态分派：
@@ -1422,6 +1424,17 @@ export class WebRtcConnection {
 
 	/** @private */
 	__onSignaling(msg) {
+		// paused 期间 restart 相关的迟到信令（answer / ice / reject）一律 drop。
+		// 冻结恢复预算的语义要求"不做 active 恢复"：
+		// - answer/ice 被处理后，底层 ICE 可能跑通 → onconnectionstatechange('connected')
+		//   会走 __clearRestartState 把 __restartPaused 清掉
+		// - reject 被处理会直接 close PC + 清 __restartPaused
+		// resume 由 resumeRecovery / triggerRestart('online_resume') 显式接手，届时
+		// __restartPaused 已被清，新一代信令自然不受此门控影响。
+		if (this.__restartPaused) {
+			this.__log('debug', `signaling dropped (paused) type=${msg?.type}`);
+			return;
+		}
 		if (msg.type === 'rtc:answer') {
 			const pcAtAnswer = this.__pc;
 			const wasRestarting = this.__state === 'restarting';

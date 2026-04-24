@@ -4308,6 +4308,128 @@ describe('WebRtcConnection — pauseRestart', () => {
 	});
 });
 
+describe('paused gate 抗迟到 signaling', () => {
+	// 覆盖 __onSignaling 入口的 paused guard：paused 期间 restart 相关的迟到信令
+	// （answer / ice / restart-rejected）一律 drop，避免：
+	// - answer/ice 让 ICE 跑通 → onconnectionstatechange('connected') → __clearRestartState 清 paused
+	// - reject 直接 close PC + 清 paused
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** 把 rtc 推入 restarting + paused 状态 */
+	async function driveIntoRestartingPaused() {
+		const { rtc, pc, dc } = await setupConnectedRtc();
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__state).toBe('restarting');
+		return { rtc, pc, dc };
+	}
+
+	test('paused + restarting 下迟到 rtc:restart-rejected → drop，不 close PC', async () => {
+		const { rtc, pc } = await driveIntoRestartingPaused();
+		mockSendSignaling.mockClear();
+
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:restart-rejected', payload: { reason: 'no_session' } });
+
+		// PC 未被关
+		expect(pc.__closed).toBe(false);
+		expect(pc.__closeCallCount).toBe(0);
+		// 未向 plugin 发 rtc:closed
+		const closedCalls = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
+		expect(closedCalls).toHaveLength(0);
+		// paused 与 restarting 状态均未被动摇
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__state).toBe('restarting');
+
+		rtc.close();
+	});
+
+	test('paused + restarting 下迟到 rtc:answer → drop，不 setRemoteDescription', async () => {
+		const { rtc, pc } = await driveIntoRestartingPaused();
+		const sldSpy = vi.spyOn(pc, 'setRemoteDescription');
+
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'late-ans' } });
+		await vi.advanceTimersByTimeAsync(0);
+
+		// setRemoteDescription 完全没被调
+		expect(sldSpy).toHaveBeenCalledTimes(0);
+		// __remoteDescSet 保持初始 false（restart 后 __restartWithNewPc 会重置它）
+		expect(rtc.__remoteDescSet).toBe(false);
+		// paused 未被动摇
+		expect(rtc.__restartPaused).toBe(true);
+
+		rtc.close();
+	});
+
+	test('paused + restarting 下迟到 rtc:ice → drop，不入队、不 addIceCandidate', async () => {
+		const { rtc, pc } = await driveIntoRestartingPaused();
+		const addSpy = vi.spyOn(pc, 'addIceCandidate');
+		// 基线：pending 队列在 paused 开始时为空
+		expect(rtc.__pendingCandidates).toHaveLength(0);
+
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:ice', payload: { candidate: 'candidate:late', sdpMid: '0' } });
+
+		// addIceCandidate 完全没被调
+		expect(addSpy).toHaveBeenCalledTimes(0);
+		// 也没被 push 进 pending 队列
+		expect(rtc.__pendingCandidates).toHaveLength(0);
+		// paused 未被动摇
+		expect(rtc.__restartPaused).toBe(true);
+
+		rtc.close();
+	});
+
+	/** 把 rtc 推入 connected + paused 状态（pauseRestart 入口同样允许 connected 源态） */
+	async function driveIntoConnectedPaused() {
+		const { rtc, pc, dc } = await setupConnectedRtc();
+		expect(rtc.__state).toBe('connected');
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__state).toBe('connected');
+		return { rtc, pc, dc };
+	}
+
+	test('paused + connected 下迟到 rtc:answer → drop，不 setRemoteDescription', async () => {
+		const { rtc, pc } = await driveIntoConnectedPaused();
+		const sldSpy = vi.spyOn(pc, 'setRemoteDescription');
+
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'late-ans' } });
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(sldSpy).toHaveBeenCalledTimes(0);
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__state).toBe('connected');
+
+		rtc.close();
+	});
+
+	test('paused + connected 下迟到 rtc:ice → drop，不 addIceCandidate', async () => {
+		const { rtc, pc } = await driveIntoConnectedPaused();
+		const addSpy = vi.spyOn(pc, 'addIceCandidate');
+		const pendingBefore = rtc.__pendingCandidates.length;
+
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:ice', payload: { candidate: 'candidate:late', sdpMid: '0' } });
+
+		expect(addSpy).toHaveBeenCalledTimes(0);
+		// 不入队，长度未变
+		expect(rtc.__pendingCandidates).toHaveLength(pendingBefore);
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__state).toBe('connected');
+
+		rtc.close();
+	});
+});
+
 describe('WebRtcConnection — parseCredExpireAt', () => {
 	test('解析有效 username（"<timestamp>:<userId>"）', () => {
 		expect(parseCredExpireAt('1700000000:42')).toBe(1700000000);
