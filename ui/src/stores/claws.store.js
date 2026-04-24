@@ -305,12 +305,28 @@ export const useClawsStore = defineStore('claws', {
 		 */
 		applySnapshot(items) {
 			const arr = Array.isArray(items) ? items : [];
+			// 过滤 malformed id：接受非空 string / number；拒绝 null/undefined/空串/对象/
+			// 数组/Symbol/boolean，以及 String() 会产生 ghost id 的"null"/"undefined"/
+			// "[object Object]" 字面量。server 合约不发这些，仅为 proxy 篡改 / 序列化错误兜底——
+			// 不过滤会被 `arr.map(b => String(b.id))` 送进 syncConnections 建 ghost 连接，
+			// 烧 ICE/TURN 预算 + 脏列表
+			const validArr = arr.filter((b) => {
+				const raw = b?.id;
+				if (raw == null || raw === '') return false;
+				if (typeof raw !== 'string' && typeof raw !== 'number') return false;
+				const s = String(raw);
+				return s !== '' && s !== 'null' && s !== 'undefined' && s !== '[object Object]';
+			});
+			const dropped = arr.length - validArr.length;
+			if (dropped > 0) {
+				console.warn('[claws] snapshot dropped %d malformed id item(s)', dropped);
+				remoteLog(`claw.snapshotMalformed dropped=${dropped} received=${arr.length}`);
+			}
 			const newById = {};
 			// Phase 1: 快照 apply 前先记录每个已有 claw 的 online 值，供 Phase 3 diff
 			const prevOnlineMap = new Map();
-			for (const b of arr) {
-				const id = String(b.id ?? '');
-				if (!id) continue;
+			for (const b of validArr) {
+				const id = String(b.id);
 				const existing = this.byId[id];
 				if (existing) {
 					prevOnlineMap.set(id, existing.online);
@@ -336,10 +352,10 @@ export const useClawsStore = defineStore('claws', {
 			}
 			this.byId = newById;
 			this.fetched = true;
-			console.debug('[claws] snapshot applied %d claw(s)', arr.length);
+			console.debug('[claws] snapshot applied %d claw(s)', validArr.length);
 			remoteLog(`claw.snapshot count=${arr.length}`);
 
-			const clawIds = arr.map((b) => String(b.id));
+			const clawIds = validArr.map((b) => String(b.id));
 			const manager = useClawConnections();
 			manager.syncConnections(clawIds);
 			for (const id of clawIds) {

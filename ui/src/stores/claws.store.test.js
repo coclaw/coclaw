@@ -7305,10 +7305,9 @@ describe('P2-3: malformed snapshot 防御', () => {
 		expect(store.fetched).toBe(true);
 	});
 
-	test.skip('TODO(bug): byId 应跳过 string "null" / "undefined" / "[object Object]" 等 malformed id', () => {
-		// 锚点：claws.store.js:312 `const id = String(b.id ?? '')` 只过滤"空"型
-		// （null/undefined/missing/""），对 string "null"/"undefined" 或对象 toString
-		// 结果无防御 → 这些 malformed id 会进 byId。
+	test('byId 跳过 string "null" / "undefined" / "[object Object]" 等 malformed id', () => {
+		// applySnapshot 入口的 filter 对非空 string / number 放行；拒绝 null/undefined/
+		// {}/空串/boolean/Symbol，以及 String() 产物为 ghost 字面量的 string 字面量
 		const store = useClawsStore();
 		mockManager.get.mockReturnValue(null);
 
@@ -7326,10 +7325,9 @@ describe('P2-3: malformed snapshot 防御', () => {
 		expect(store.byId['[object Object]']).toBeUndefined();
 	});
 
-	test.skip('TODO(bug): syncConnections 不应收到 malformed id（claws.store.js:342 map 未过滤）', () => {
-		// 锚点：claws.store.js:342 `arr.map((b) => String(b.id))` —— 直接把原始 id 转字符串
-		// 不做空/malformed 过滤，Phase 1 过滤过的 null/undefined 在这里又以 "null"/"undefined"
-		// 身份被送进 manager.syncConnections，ClawConnectionManager 会据此创建 ghost 连接。
+	test('syncConnections 只收到有效 id（Phase 2 map 走 validArr，不再产 ghost id）', () => {
+		// Phase 2 `validArr.map(String)` 仅对已过滤的有效条目转字符串，不会把
+		// null/undefined/{} 以 "null"/"undefined"/"[object Object]" 身份送进 manager
 		const store = useClawsStore();
 		mockManager.get.mockReturnValue(null);
 
@@ -7378,10 +7376,8 @@ describe('P2-3: malformed snapshot 防御', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test.skip('TODO(bug): 纯 malformed snapshot 下 syncConnections 应收空列表（当前会收 malformed 字符串数组）', () => {
-		// 锚点：claws.store.js:342 `arr.map((b) => String(b.id))` 不过滤 → 上面这批
-		// malformed items 会被映射为 `['null', 'undefined', 'undefined', '']`
-		// 直接传给 manager.syncConnections，形成 ghost 连接。
+	test('纯 malformed snapshot 下 syncConnections 收空列表', () => {
+		// 全部被 filter 拦掉后，Phase 2 map 输出空列表；manager 不建 ghost 连接
 		const store = useClawsStore();
 		mockManager.get.mockReturnValue(null);
 
