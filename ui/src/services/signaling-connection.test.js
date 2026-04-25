@@ -1111,6 +1111,48 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 		conn.disconnect();
 	});
+
+	test('Round 20 Test 5: 已 connected 后 OS 断网 → 仅一条 paused log + 后续 retry 静默（不再打 delay）', () => {
+		// 现有 offline 测试组都从"未连接 + offline"起步，缺少"已连接后 OS 断网"路径覆盖：
+		// makeConnected → ws close → setOnLine(false) → 推 retry timer →
+		// 验证仅一条 paused log + retry 静默（不再打 delay）
+		const { conn, ws } = makeConnected();
+		const logs = [];
+		conn.on('log', (t) => logs.push(t));
+
+		// 模拟 WS 断开（如服务端关连接 / 网络层 RST），触发 __scheduleReconnect
+		ws.simulateClose(1006, 'net');
+
+		// 此时仍 online：第一次退避会打 delay log（正常路径）
+		const initialDelayLogs = logs.filter(t => t.startsWith('sig.reconnect delay='));
+		expect(initialDelayLogs.length).toBe(1);
+
+		// OS 断网（用 setOnLine helper 与同 describe 块其他 test 风格一致）
+		setOnLine(false);
+
+		// 推进退避 timer：__doConnect 检测 navigator.onLine===false → __pausedOffline=true → 打一条 paused log
+		// 然后 __scheduleReconnect 排下一轮，但 __pausedOffline 真后 delay log 静默
+		logs.length = 0; // 清旧 logs
+		vi.advanceTimersByTime(40_000);
+
+		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		const delayLogs = logs.filter(t => t.startsWith('sig.reconnect delay='));
+		expect(pausedLogs.length).toBe(1); // 入场 paused 一条
+		expect(pausedLogs[0]).toBe('sig.reconnect paused offline');
+		expect(delayLogs.length).toBe(0); // offline 期间 delay log 静默
+
+		// 多轮 retry 推进：稳态静默
+		for (let i = 0; i < 10; i++) {
+			vi.advanceTimersByTime(40_000);
+		}
+		const pausedLogs2 = logs.filter(t => t.startsWith('sig.reconnect paused'));
+		const delayLogs2 = logs.filter(t => t.startsWith('sig.reconnect delay='));
+		expect(pausedLogs2.length).toBe(1); // 仍只一条
+		expect(delayLogs2.length).toBe(0);
+
+		// 清理：navigator.onLine 由 afterEach 还原
+		conn.disconnect();
+	});
 });
 
 describe('SignalingConnection – probe + network:online 互动', () => {

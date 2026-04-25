@@ -345,6 +345,9 @@ export const useClawsStore = defineStore('claws', {
 			// 清 probe guard，避免 remove 后立即 re-add 同 id 时新 claw 被旧 probe guard 阻塞、
 			// 旧 probe 迟到 resolve 写到 stale claw 对象
 			_probeInProgress.delete(id);
+			// 同步清 _rtcInitInProgress：与 _probeInProgress 对称——否则 remove + 立即 re-add 同 id 时，
+			// 新 claw 的 __ensureRtc 入口会被旧 lock 早退拦死（旧 await initRtc 即便 resolve 也写不进新 claw）
+			_rtcInitInProgress.delete(id);
 			delete this.byId[id];
 		},
 		/**
@@ -391,12 +394,24 @@ export const useClawsStore = defineStore('claws', {
 					_pendingTypeChangedRestartClaws.delete(oldId);
 					// 与 removeClawById 对称：清 probe guard，避免快照剔除→再添加同 id 时残留
 					_probeInProgress.delete(oldId);
+					// 同步清 _rtcInitInProgress：与 _probeInProgress 对称
+					_rtcInitInProgress.delete(oldId);
 				}
 			}
+			const prevFetched = this.fetched;
 			this.byId = newById;
 			this.fetched = true;
 			console.debug('[claws] snapshot applied %d claw(s)', validArr.length);
 			remoteLog(`claw.snapshot count=${arr.length}`);
+
+			// fetched=false→true 的边沿补扫：sig 已 offline 但首次 snapshot 之前
+			// __freezeAllClawsForSigOffline 因 `!fetched` 早退（noop），现在 fetched 翻 true，
+			// 但 _sigOffline 仍 true——既不再 freeze 也不暂停已建的 RTC，
+			// 留下"sig 已死 + RTC 仍活"的窗口。这里显式补 freeze 一次。
+			if (prevFetched === false && _sigOffline) {
+				remoteLog(`claw.sigOfflineCatchup count=${Object.keys(this.byId).length}`);
+				this.__freezeAllClawsForSigOffline();
+			}
 
 			const clawIds = validArr.map((b) => String(b.id));
 			const manager = useClawConnections();
@@ -750,10 +765,11 @@ export const useClawsStore = defineStore('claws', {
 			_lifecycle.syncDashboardOnline(id);
 			const conn = useClawConnections().get(id);
 			if (!conn) return;
-			// 消费 typeChanged per-claw 记账：命中则升级 connected+paused 分派为 triggerRestart。
-			// 消费必须晚于 conn 检查——conn 缺失早退时若先消费会丢 per-claw 信号，`__resumeAllClawsForSigOnline`
-			// 的 force_restart 预计数也会与实际 restart 次数脱节；条目保留到下次 resume 触发（conn 回来后）
-			if (_pendingTypeChangedRestartClaws.delete(id)) forceRestartOnConnected = true;
+			// typeChanged per-claw 记账查询（不消费）：命中则升级到 triggerRestart('online_resume')。
+			// 消费延后到真正 fire restart 的分支——避免 connected+!paused / restarting+!paused 等
+			// fall-through 路径上 Set 被早消费但 typeChanged 信号被无声吞掉（旧 ICE 路径失效未替换）。
+			// conn 缺失场景由 G-04 保证 Set 条目保留：lookup 不消费天然满足。
+			forceRestartOnConnected = forceRestartOnConnected || _pendingTypeChangedRestartClaws.has(id);
 			this.__clearRetry(id);
 			const rtc = conn.rtc;
 			// refresh 仅在 rebuild 场景触发：全新 PC + 全新 SCTP 会丢 plugin 侧 DC 发送 buffer，
@@ -765,10 +781,18 @@ export const useClawsStore = defineStore('claws', {
 			}
 
 			if (rtc?.state === 'restarting') {
-				// 仅当 PC 处于 pauseRestart 冻结态时才 unstick；
-				// 若已在正常 restart 循环中（非冻结），不重复 triggerRestart 避免 attemptCount 虚涨/重发 offer
 				if (rtc.restartPaused) {
+					// 仅当 PC 处于 pauseRestart 冻结态时才 unstick；
+					// 若已在正常 restart 循环中（非冻结），不重复 triggerRestart 避免 attemptCount 虚涨/重发 offer
 					rtc.triggerRestart('online_resume');
+					// 真 fire restart：消费 Set 条目（满足 typeChanged 信号）
+					_pendingTypeChangedRestartClaws.delete(id);
+				} else if (forceRestartOnConnected) {
+					// restarting+!paused 已在正常 restart 循环；新 ICE 路径会建在当前网络上，
+					// 信任正在跑的 restart 即可——主动消费 Set 条目避免后续重复 fire。
+					// （__handleNetworkOnline 的 restarting+!paused 分支已 nudgeRestart + delete 过；
+					// 此处看到 entry 概率很低，但保险起见兜底清掉）
+					_pendingTypeChangedRestartClaws.delete(id);
 				}
 				return;
 			}
@@ -777,6 +801,7 @@ export const useClawsStore = defineStore('claws', {
 					// 网络类型变化 + sig 回来：旧 ICE 路径必然失效，走 restart 不走轻量 resume
 					// 镜像 restarting+paused 路径，早退不 fall through
 					rtc.triggerRestart('online_resume');
+					_pendingTypeChangedRestartClaws.delete(id);
 					return;
 				}
 				// connected 态从 pause 冻结恢复：仅清 paused 标志 + 重启 keepalive，
@@ -788,6 +813,14 @@ export const useClawsStore = defineStore('claws', {
 				// rtc.state==='connected'，会把刚启动的 restart PC 当非 connected 关掉重 rebuild，
 				// 白烧 ICE/TURN 预算、延迟恢复。升级后走正常 restart 循环，不需要 __ensureRtc
 				if (rtc.state === 'restarting') return;
+			}
+			// connected + !paused + forceRestartOnConnected：升级为 triggerRestart('online_resume')。
+			// 不升级会 fall through 到 __ensureRtc 的 connected 早退 → typeChanged 信号被无声吞掉。
+			// 必须放在 fall through 到 __ensureRtc 之前。
+			if (rtc?.state === 'connected' && forceRestartOnConnected) {
+				rtc.triggerRestart('online_resume');
+				_pendingTypeChangedRestartClaws.delete(id);
+				return;
 			}
 			// dashboard 不在此处单独加载：与 agents/sessions/topics 保持对称——
 			// DC 延续（connected/restarting）场景下 plugin 侧缓冲会自然送达，不需要刷；
@@ -883,6 +916,16 @@ export const useClawsStore = defineStore('claws', {
 		/**
 		 * 统一 RTC 建立/恢复入口。
 		 * 触发点：claw offline→online、__bridgeConn 首次初始化、probe 失败。
+		 *
+		 * post-await bail reason 集（rebuild 循环内 await initRtc 解决后判定）：
+		 * - `removed`：claw 被删（this.byId[id] 缺失）
+		 * - `offline`：claw 翻 offline（此分支显式置 rtcPhase='failed'，让后续 online→true 走 rebuild）
+		 * - `sig_offline`：sig 掉线（rtcPhase / disconnectedAt snapshot+restore，
+		 *   避免 sig 是环境故障却被误标 unreachable / 污染 gap-aware refresh）
+		 * - `replaced`：同 id remove + re-add 致 byId[id] 实例换新（cur !== clawAtStart）；
+		 *   仅纯回收旧 conn 的 rtc，不读写新 claw 任何字段，不消费 _pendingForceRefreshOnRebuild
+		 *   （新 claw 入 Set 由其自身 ensureRtc 消费）
+		 *
 		 * @param {string} id - clawId
 		 * @param {object} [opts]
 		 * @param {boolean} [opts.forceRebuild] - 跳过 connected 检查，强制 rebuild
@@ -898,6 +941,9 @@ export const useClawsStore = defineStore('claws', {
 
 			const conn = useClawConnections().get(id);
 			if (!conn) { _rtcInitInProgress.delete(id); return; }
+			// post-await 用：识别 await initRtc 期间发生的 remove + re-add 同 id 场景
+			// （新 claw 实例换新；旧 await 的成功结果不能写到新 claw 上）
+			const clawAtStart = this.byId[id];
 
 			try {
 				const rtc = conn.rtc;
@@ -962,6 +1008,7 @@ export const useClawsStore = defineStore('claws', {
 						const cur = this.byId[id];
 						let postBailReason = null;
 						if (!cur) postBailReason = 'removed';
+						else if (cur !== clawAtStart) postBailReason = 'replaced';
 						else if (!cur.online) postBailReason = 'offline';
 						else if (_sigOffline) postBailReason = 'sig_offline';
 						if (postBailReason) {
@@ -972,14 +1019,21 @@ export const useClawsStore = defineStore('claws', {
 							// 走 rebuild）；对 sig_offline bail，违反"sig 是环境故障，不污染 DC 生命周期
 							// 与 unreachable 标记"设计意图——rtcPhase 和 disconnectedAt 都需 snapshot + restore，
 							// 避免 sig 恢复后 gap-aware refresh 因虚假的 disconnectedAt 误判短断跳过刷新。
-							// removed bail 下 cur=null，不受影响
-							const prevRtcPhase = cur?.rtcPhase;
-							const prevDisconnectedAt = cur?.disconnectedAt;
-							closeRtcForClaw(id);
-							conn.clearRtc();
-							if (postBailReason === 'sig_offline' && cur) {
-								cur.rtcPhase = prevRtcPhase;
-								cur.disconnectedAt = prevDisconnectedAt;
+							// removed bail 下 cur=null，不受影响。
+							// replaced bail 下 cur 是**新** claw 对象，不应被旧 await 的成功结果污染：
+							// 既不读 prevRtcPhase（旧值无意义）也不写新 claw 任何字段，仅纯回收旧 conn 的 rtc。
+							if (postBailReason === 'replaced') {
+								closeRtcForClaw(id);
+								conn.clearRtc();
+							} else {
+								const prevRtcPhase = cur?.rtcPhase;
+								const prevDisconnectedAt = cur?.disconnectedAt;
+								closeRtcForClaw(id);
+								conn.clearRtc();
+								if (postBailReason === 'sig_offline' && cur) {
+									cur.rtcPhase = prevRtcPhase;
+									cur.disconnectedAt = prevDisconnectedAt;
+								}
 							}
 							bailedOut = true;
 							bailReason = postBailReason;
@@ -1009,16 +1063,21 @@ export const useClawsStore = defineStore('claws', {
 				} else if (bailedOut) {
 					// claw 被删除 → 无对象可写 phase；claw 翻 offline → 显式 phase=failed
 					// 让后续 online→true 走 rebuild 分支（而非 triggerRestart）。
-					// bailReason='sig_offline' / 'removed' 不改 rtcPhase：sig 是环境故障，
-					// sig 回来时走 resume 路径，不应被标成 unreachable（触发 banner/retry UI）
+					// bailReason='sig_offline' / 'removed' / 'replaced' 不改 rtcPhase：sig 是环境故障，
+					// sig 回来时走 resume 路径；replaced 下 byId[id] 是新 claw，旧 ensureRtc 不应污染它。
 					if (bailReason === 'offline') {
 						const claw = this.byId[id];
 						if (claw) claw.rtcPhase = 'failed';
 					}
 					// bail = 本次 rebuild 意图作废，与成功分支 L933 对称清 pending force-refresh 标记。
 					// 不清会导致后续由非 __resumeOnline 路径（timer/manualRetry/foreground）触发的
-					// __ensureRtc 成功分支 consume 残留条目，对 DC 延续的健康 PC 误 force_refresh
-					_pendingForceRefreshOnRebuild.delete(id);
+					// __ensureRtc 成功分支 consume 残留条目，对 DC 延续的健康 PC 误 force_refresh。
+					// 例外：'replaced' 场景下 byId[id] 是**新** claw 对象，可能已通过自身的
+					// __resumeOnline 入 Set，旧 ensureRtc 不应代它消费——只清旧 claw 的语义责任由
+					// removeClawById 完成。
+					if (bailReason !== 'replaced') {
+						_pendingForceRefreshOnRebuild.delete(id);
+					}
 					remoteLog(`claw.rtcBailOut claw=${id} reason=${bailReason}`);
 				} else {
 					const claw = this.byId[id];
@@ -1297,6 +1356,15 @@ export const useClawsStore = defineStore('claws', {
 					_probeInProgress.delete(id);
 				}
 				if (alive || !this.byId[id]) return;
+				// probe 等待期间 sig / online gate 可能翻转：
+				// - sig_offline：__ensureRtc 入口 sig gate 拦下重建，但 triggerRestart 直接走 rtc 层
+				//   没有 sig gate，会把 signaling 发给已死 WS
+				// - claw offline：ensureRtc 有 online gate 兜底，但写 rtcPhase='recovering' / 调
+				//   triggerRestart 仍是无意义动作；统一在此早退保持各 gate 语义对称
+				if (_sigOffline || !this.byId[id]?.online) {
+					remoteLog(`claw.recover claw=${id} bail=${_sigOffline ? 'sig_offline' : 'offline'}_post_probe source=${source}`);
+					return;
+				}
 
 				// probe 失败 → 二次确认 PC 状态。
 				// 如果 PC 仍为 connected，说明 ICE 层认为链路健康，

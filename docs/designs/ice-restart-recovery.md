@@ -447,8 +447,15 @@ SSE claw.online=true → __resumeOnline（按 PC 状态分派，仅 rebuild 触�
     probe 失败 → __onIceFailed → ICE restart；probe 成功 → 继续正常保活周期；
     pc.connectionState 已 failed/disconnected → 直接升级 triggerRestart('online_resume')）；
     typeChanged 记账命中 → 升级为 triggerRestart('online_resume')
-  - connected + 非 paused → __ensureRtc 早退（DC 延续场景不单独刷 dashboard，与其他 loader 对称）
+  - connected + 非 paused → 默认走 __ensureRtc 早退；typeChanged 记账命中时升级为
+    triggerRestart('online_resume')，避免新 conn 已 non-paused connected 时 fall-through
+    早退把 typeChanged 信号无声吞掉（旧 ICE 路径未替换）
   - failed/closed/idle/connecting/null → __ensureRtc 全量 rebuild
+
+  **typeChanged 记账（_pendingTypeChangedRestartClaws）的消费时机契约**：__resumeOnline
+  入口仅 lookup 不消费（`Set.has(id)`）；消费（`Set.delete(id)`）绑定到每个真正 fire
+  triggerRestart('online_resume') 的分支以及 restarting+!paused 的兜底清理（信任正在
+  跑的 restart 会用新网络）。fall-through 路径若不消费即可保留信号供后续触发兜底。
 ```
 
 **关键**：`claw.online` 现在是 RTC 主动恢复动作的门控——offline 期间暂停，online 回来按 PC 状态分派，最大化利用 ICE restart 的零成本恢复能力。详见 `docs/architecture/communication-model.md` §5.5。
