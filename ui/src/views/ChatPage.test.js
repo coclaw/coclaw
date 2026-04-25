@@ -1939,4 +1939,84 @@ describe('ChatPage recovery watchers', () => {
 		expect(loadSpy).toHaveBeenCalledTimes(1);
 		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
 	});
+
+	// P2-9: __onConnReady 在 await loadMessages 完成后再次 guard：
+	//   - 组件已 unmount → 跳过 __loadChatHistory（避免对已卸载组件再操作）
+	//   - chatStore 已切走 → 不对旧 store 加历史，且 dedup guard 回滚（切回时可重入）
+	test('__onConnReady: loadMessages resolve 后但组件 unmount → 跳过 __loadChatHistory', async () => {
+		const { wrapper, chatStore, loadSpy } = await setupConnReadyWrapper();
+		// __messagesLoaded=false → 走 await 首次加载分支（会进入 __loadChatHistory）
+		chatStore.__messagesLoaded = false;
+		wrapper.vm.__connReadyStore = null;
+
+		// loadMessages 改成手控 promise
+		let resolveLoad;
+		loadSpy.mockReset();
+		loadSpy.mockImplementationOnce(() => new Promise((r) => { resolveLoad = r; }));
+
+		const histSpy = vi.spyOn(chatStore, '__loadChatHistory').mockResolvedValue(undefined);
+
+		const p = wrapper.vm.__onConnReady();
+		// 推进到 await loadMessages
+		await Promise.resolve();
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(histSpy).not.toHaveBeenCalled();
+
+		// 关键：await 期间 unmount → __unmounted=true
+		wrapper.unmount();
+
+		// 解开 loadMessages → 守卫命中 __unmounted → 早退，跳过 __loadChatHistory
+		resolveLoad(true);
+		await p;
+		await flushPromises();
+
+		expect(histSpy).not.toHaveBeenCalled();
+		// succeeded 仍为 false（早退在 succeeded 赋值前）→ guard 回滚
+		expect(wrapper.vm.__connReadyStore).toBeNull();
+	});
+
+	test('__onConnReady: loadMessages resolve 后但 chatStore 已切走 → 不对旧 store 加载历史 + guard 可恢复', async () => {
+		const { wrapper, chatStore: storeA, loadSpy } = await setupConnReadyWrapper();
+		storeA.__messagesLoaded = false;
+		wrapper.vm.__connReadyStore = null;
+
+		// 用 spy getter 模拟 chatStore 切走（避免改路由的复杂联动）
+		let resolveLoadA;
+		loadSpy.mockReset();
+		loadSpy.mockImplementationOnce(() => new Promise((r) => { resolveLoadA = r; }));
+		const histA = vi.spyOn(storeA, '__loadChatHistory').mockResolvedValue(undefined);
+
+		const pA = wrapper.vm.__onConnReady();
+		// 进入 await loadMessages（targetStore 已捕获为 A）
+		await Promise.resolve();
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+
+		// 切到 storeB：让 wrapper.vm.chatStore 返回另一个 store 实例。
+		// __onConnReady await 后做 `this.chatStore !== targetStore` 检查，应早退。
+		const storeB = { __messagesLoaded: true, sending: false };
+		const getSpy = vi.spyOn(wrapper.vm, 'chatStore', 'get').mockReturnValue(storeB);
+
+		// resolve A 的 loadMessages → 守卫看到 chatStore!=targetStore → 早退
+		resolveLoadA(true);
+		await pA;
+		await flushPromises();
+
+		// 旧 store 的 __loadChatHistory 不应被调
+		expect(histA).not.toHaveBeenCalled();
+		// guard 回滚（succeeded=false）
+		expect(wrapper.vm.__connReadyStore).toBeNull();
+
+		// 切回 storeA：dedup guard 已被回滚 → 再次 __onConnReady 能正常进入加载分支
+		getSpy.mockRestore();
+		loadSpy.mockReset();
+		loadSpy.mockResolvedValueOnce(true);
+		histA.mockClear();
+		await wrapper.vm.__onConnReady();
+		await flushPromises();
+
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(histA).toHaveBeenCalledTimes(1);
+		// 成功路径 → guard 标记 storeA
+		expect(wrapper.vm.__connReadyStore).toBe(storeA);
+	});
 });

@@ -5702,6 +5702,87 @@ describe('P0-4: connect 跨 await close 防护', () => {
 			MockRTCPeerConnection.prototype.createOffer = origCreateOffer;
 		}
 	});
+
+	test('setLocalDescription pending 时 close → late resolve 不 sendOffer/复活 PC', async () => {
+		// 与 createOffer 用例对称：把手控 promise 移到 setLocalDescription（offer 已生成、
+		// 但 SLD 卡在 await 阶段）。close 期间晚到的 SLD resolve 必须凭 epoch 守卫早退，
+		// 不能继续 sendSignaling('rtc:offer')、不能复活 __pc 或 state
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		let resolveSld;
+		const origSld = MockRTCPeerConnection.prototype.setLocalDescription;
+		MockRTCPeerConnection.prototype.setLocalDescription = function () {
+			return new Promise((r) => { resolveSld = r; });
+		};
+
+		try {
+			const connectPromise = rtc.connect(MOCK_TURN_CREDS);
+			// 推进到 setLocalDescription await：ensureConnected + createOffer 各占一拍 microtask
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(rtc.state).toBe('connecting');
+			const pcCountBefore = pcInstances.length;
+			const offerCallsBefore = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+
+			rtc.close();
+			expect(rtc.state).toBe('closed');
+
+			// late resolve SLD → 守卫应早退，不进入 sendSignaling 路径
+			resolveSld();
+			await connectPromise;
+
+			// 断言：无新 PC、无新 offer、state 不被复活、__pc 已清
+			expect(pcInstances.length).toBe(pcCountBefore);
+			const offerCallsAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+			expect(offerCallsAfter).toBe(offerCallsBefore);
+			expect(rtc.state).toBe('closed');
+			expect(rtc.__pc).toBeNull();
+		} finally {
+			MockRTCPeerConnection.prototype.setLocalDescription = origSld;
+		}
+	});
+
+	test('setLocalDescription pending 时 close → late reject InvalidStateError 不穿透成 connect 失败', async () => {
+		// 浏览器在已 close 的 pc 上调 setLocalDescription 也会抛 InvalidStateError。
+		// 修法：try/catch 包住 SLD await，凭 epoch 早退 → 异常不能穿透到 initRtc 的
+		// .then(rtc.connect).catch（否则会走 settle('failed') + clearRtc，触发 store 退避重试）
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		let rejectSld;
+		const origSld = MockRTCPeerConnection.prototype.setLocalDescription;
+		MockRTCPeerConnection.prototype.setLocalDescription = function () {
+			return new Promise((_resolve, reject) => { rejectSld = reject; });
+		};
+
+		try {
+			let connectErr = null;
+			const connectPromise = rtc.connect(MOCK_TURN_CREDS).catch((err) => { connectErr = err; });
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			const offerCallsBefore = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+
+			rtc.close();
+			expect(rtc.state).toBe('closed');
+
+			const invalidErr = new Error('InvalidStateError: pc closed');
+			invalidErr.name = 'InvalidStateError';
+			rejectSld(invalidErr);
+			await connectPromise;
+
+			// 异常被守卫 + try/catch 吞掉，不向上传
+			expect(connectErr).toBeNull();
+			expect(rtc.state).toBe('closed');
+			expect(rtc.__pc).toBeNull();
+			const offerCallsAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+			expect(offerCallsAfter).toBe(offerCallsBefore);
+		} finally {
+			MockRTCPeerConnection.prototype.setLocalDescription = origSld;
+		}
+	});
 });
 
 describe('P0-5: 主动 close 同步 dc.onclose 不重入', () => {

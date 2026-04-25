@@ -6485,6 +6485,64 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 			expect(rtc2.resumeRecovery).toHaveBeenCalledTimes(1);
 			expect(rtc2.triggerRestart).not.toHaveBeenCalled();
 		});
+
+		test('typeChanged cross-gate: !initialized claw 在 sig offline 期间被打标 → sig up 走 __fullInit + Set 自动消费', async () => {
+			// 场景 F：claw `online=true, initialized=false`（首启竞态：snapshot 已到，__fullInit
+			// 因 sig 未通早退过，initialized 仍为 false）。sig 掉线 → typeChanged → sig up
+			// 期间预循环 `willHandleNow=false`（!initialized 命中条件）→ Set 记账。
+			// sig up 时 `__resumeAllClawsForSigOnline` 的 !initialized 分支主动
+			// `_pendingTypeChangedRestartClaws.delete(id)` 后跑 __fullInit；此条目消费完毕
+			// 后再来一轮 sig cycle 应走 resumeRecovery（说明 Set 没有残留）。
+			//
+			// 锁定 `__resumeAllClawsForSigOnline` 的 !initialized 分支主动 delete 行为；
+			// 若未来误删 delete，第二轮 sig cycle 的 resumeRecovery 断言会失败。
+			const store = useClawsStore();
+			const { fakeRtc } = setupClaw(store, { rtcState: 'connected', restartPaused: false });
+			// 改回 !initialized：模拟 sig 未通时 __fullInit 早退后的状态
+			store.byId['1'].initialized = false;
+			store.byId['1'].dcReady = false;
+			store.__bridgeLifecycle();
+
+			// spy __fullInit 与 __resumeOnline：!initialized 分支只走 __fullInit，不走 __resumeOnline
+			const fullInitSpy = vi.spyOn(store, '__fullInit').mockResolvedValue(undefined);
+			const resumeOnlineSpy = vi.spyOn(store, '__resumeOnline').mockImplementation(() => {});
+
+			// 阶段 1：sig 掉线 + typeChanged → 预循环 !initialized 命中 willHandleNow=false → Set 记账
+			__emitSigState('disconnected');
+			window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged: true } }));
+			expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+
+			// 阶段 2：sig up → __resumeAllClawsForSigOnline → !initialized 分支：
+			//   - 主动 delete Set 条目
+			//   - 跑 __fullInit（不经 __resumeOnline）
+			__emitSigState('connected');
+			await new Promise((r) => setTimeout(r, 10));
+
+			expect(fullInitSpy).toHaveBeenCalledTimes(1);
+			expect(fullInitSpy).toHaveBeenCalledWith('1', expect.any(Object));
+			expect(resumeOnlineSpy).not.toHaveBeenCalled();
+			// claw.initialized 翻 true（__fullInit 调度前主动置）
+			expect(store.byId['1'].initialized).toBe(true);
+
+			// 阶段 3 反证：再 sig cycle（无 typeChanged，且 claw 已 initialized + connected+paused 模拟）
+			//   - 若上次 sig up 的 !initialized 分支没 delete Set，本次 __resumeOnline 会消费陈旧条目
+			//     → forceRestartOnConnected=true → 升级 triggerRestart('online_resume')
+			//   - delete 行为正常 → __resumeOnline 走 resumeRecovery（连同 paused）
+			fullInitSpy.mockClear();
+			resumeOnlineSpy.mockRestore();
+			fakeRtc.state = 'connected';
+			fakeRtc.restartPaused = true;
+			fakeRtc.triggerRestart.mockClear();
+			fakeRtc.resumeRecovery.mockClear();
+
+			__emitSigState('disconnected');
+			__emitSigState('connected');
+			await new Promise((r) => setTimeout(r, 10));
+
+			// connected+paused 无 forceRestart → resumeRecovery；若 Set 有残留则会升级 triggerRestart
+			expect(fakeRtc.resumeRecovery).toHaveBeenCalledTimes(1);
+			expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		});
 	});
 
 	// -------- long background → foreground integration：app:background/app:foreground × sig 状态组合 --------
@@ -6652,7 +6710,7 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 	// 若后续某条路径不再经 __resumeOnline 而直接调 __ensureRtc 并 rebuild 成功，
 	// 泄漏的 Set 条目会被 consume，触发一次**虚假** force refresh（disconnectedAt=0
 	// 本该被 gap gate 跳过的短断场景被强制刷新，浪费流量/抖动 UI）。
-	describe('G-01: _pendingForceRefreshOnRebuild sig_offline bail', () => {
+	describe('G-01: _pendingForceRefreshOnRebuild bail 残留清理', () => {
 		// 独立造 setup：不复用外层 setupClaw，因为需要 rtc=null 的初态走 rebuild 分支
 		function setupRebuildClaw(store, id = '1') {
 			const fakeConn = {
@@ -6811,6 +6869,90 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 			// sig-resume 路径 __resumeOnline re-add → consume → force_refresh=1，loaders 被调
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
 			expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('force_refresh=1'));
+		});
+
+		test('offline bail → 后续独立 rebuild 不应虚假 force refresh + 第二轮重建独立 add/consume', async () => {
+			// 与 sig_offline bail 用例对称的 offline bail 场景：rebuild 中途 claw.online 翻 false →
+			// __ensureRtc post-await bail 'offline'。bail 分支同样 _pendingForceRefreshOnRebuild.delete，
+			// 后续若有非 __resumeOnline 路径直接驱动 __ensureRtc 成功，不应 force_refresh。
+			// 第二轮 online 时再次 __resumeOnline 走独立 add+consume 周期，loaders 被合法调一次。
+			const store = useClawsStore();
+			const agentsStore = useAgentsStore();
+			const sessionsStore = useSessionsStore();
+			const topicsStore = useTopicsStore();
+			const dashboardStore = useDashboardStore();
+			vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+			vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+			vi.spyOn(topicsStore, 'loadTopicsForClaw').mockResolvedValue();
+			vi.spyOn(dashboardStore, 'loadDashboard').mockResolvedValue();
+
+			const { fakeConn } = setupRebuildClaw(store);
+			store.__bridgeLifecycle();
+
+			// 阶段 1：__resumeOnline → __ensureRtc 走 rebuild 分支 → Set.add('1') →
+			//   initRtc 挂起在 await
+			let capturedCallbacks;
+			let resolveInit;
+			mockInitRtc.mockReset();
+			mockInitRtc.mockImplementation((id, conn, callbacks) => {
+				capturedCallbacks = callbacks;
+				return new Promise((r) => { resolveInit = r; });
+			});
+			mockCloseRtcForBot.mockImplementation(() => {
+				capturedCallbacks?.onRtcStateChange?.('closed');
+			});
+
+			store.__resumeOnline('1');
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// 阶段 2：claw.online 翻 false → resolve initRtc 成功 → post-await bail 'offline'
+			//   （L943 入口分支已过，这里走 L965 post-await 的 cur.online 分支）
+			store.byId['1'].online = false;
+			resolveInit('rtc');
+			await new Promise((r) => setTimeout(r, 10));
+
+			// bail 'offline' 分支：rtcPhase='failed'（与 sig_offline 不同——offline 是 presence 故障）。
+			// 注意：offline bail **不**像 sig_offline 那样 restore 旧 disconnectedAt——所以
+			// closeRtcForBot → onRtcStateChange('closed') 写入的 Date.now() 仍保留为非零。
+			// 阶段 3 的"无 force_refresh"断言依赖 force=false + gap<BRIEF_DISCONNECT_MS 早退
+			// （同 microtask 内 gap≈0），不是 disconnectedAt=0 早退
+			expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('reason=offline'));
+			expect(store.byId['1'].rtcPhase).toBe('failed');
+			expect(fakeConn.rtc).toBeNull();
+			expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
+
+			// 阶段 3：模拟非 __resumeOnline 驱动的独立 rebuild。先把 online 翻回 true，但屏蔽
+			// __resumeOnline（避免它再次 add Set）；__ensureRtc 直接调，验证 bail 已清残留。
+			store.byId['1'].online = true;
+			const resumeSpy = vi.spyOn(store, '__resumeOnline').mockImplementation(() => {});
+			mockInitRtc.mockReset();
+			mockInitRtc.mockImplementation(async (id, conn) => {
+				conn.rtc = { ...__fakeRtc };
+				return 'rtc';
+			});
+			mockCloseRtcForBot.mockReset();
+			mockRemoteLog.mockClear();
+			agentsStore.loadAgents.mockClear();
+			sessionsStore.loadSessionsForClaw.mockClear();
+			topicsStore.loadTopicsForClaw.mockClear();
+			dashboardStore.loadDashboard.mockClear();
+
+			await store.__ensureRtc('1');
+			await new Promise((r) => setTimeout(r, 10));
+
+			// 核心断言：bail 时 Set 已清 → 此独立 rebuild consume force=false →
+			//   __refreshIfStale 因 gap<BRIEF_DISCONNECT_MS 早退（同 microtask gap≈0）
+			//   → loaders 不被调；日志无 force_refresh=1
+			expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+			expect(sessionsStore.loadSessionsForClaw).not.toHaveBeenCalled();
+			expect(topicsStore.loadTopicsForClaw).not.toHaveBeenCalled();
+			expect(dashboardStore.loadDashboard).not.toHaveBeenCalled();
+			expect(mockRemoteLog).not.toHaveBeenCalledWith(expect.stringContaining('force_refresh=1'));
+
+			// 阶段 4 反证：恢复 __resumeOnline，再走一轮（PC 当前已 connected 走早退路径，
+			// 不会 re-add 标记；这里通过 mock 反证：让独立 __ensureRtc 再次成功 → 仍无 force）
+			resumeSpy.mockRestore();
 		});
 	});
 

@@ -230,7 +230,7 @@ RTC 走到 `__attemptRestart` 也不会把 restart offer 发给一条僵尸或�
 - `dc.onclose`：restarting 时 → SCTP 已断，restart 无法挽救 → `__clearRestartState()` + `__setState('failed')`
 - `__doKeepalive`：restarting 时跳过本轮 probe
 - `__doKeepalive`（失败路径）：从 `this.close()` 改为 `this.__onIceFailed()`
-- `createDataChannel()`：restarting 时返回 null
+- `createDataChannel()`：restarting 期间允许新建 DC（ICE restart 保留 SCTP/DTLS，新 DC 先停在 connecting，ICE 切通后自己 open，与现有 DC 在 restart 期间存活同构）。仅当 `!__pc || state in {'closed','failed'}` 时拒新 DC——否则前台恢复瞬间触发的文件下载会被误拍死成 RTC_NOT_READY
 - `send()`：**不变**（DC 仍 open，数据进 SCTP 缓冲，restart 成功后 flush）
 - 发送队列：**不 reject、不清空**
 - `close()`：清除 restart 定时器/计数器
@@ -467,7 +467,8 @@ ICE failed → restarting → restart offer
 file DC 传输中 → WiFi→蜂窝 → triggerRestart
   → file DC 保持 open → SCTP buffer 填满 → flow control 暂停
   → restart 成功 → buffer flush → 上传从断点继续 ✓
-  → createDataChannel() 在 restarting 返回 null → 新传输需等 restart 完成
+  → restarting 期间并发的新传输：createDataChannel() 直接放行（DC 先停在 connecting，
+     ICE 切通后自己 open），不被拒成 RTC_NOT_READY
 ```
 
 ### 6.8 Server 宕机
