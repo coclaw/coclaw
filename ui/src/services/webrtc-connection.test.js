@@ -5520,3 +5520,215 @@ describe('P1-1: resumeRecovery probe 期间 re-offline', () => {
 		rtc.close();
 	});
 });
+
+describe('P0-4: connect 跨 await close 防护', () => {
+	// 修法：__buildPeerConnection 三处 await（ensureConnected / createOffer /
+	// setLocalDescription）后加 state==='closed'/'failed' 守卫；createOffer / SLD 在 closed pc 上
+	// 抛 InvalidStateError 时 try/catch 吃掉 + 守卫早退（不让异常穿透到 initRtc 的
+	// .then(rtc.connect).catch → 误判建连失败）。
+
+	test('ensureConnected pending 时 close → late resolve 不 setState/创建 PC/sendOffer', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		// ensureConnected 返回手控 promise
+		let resolveEnsure;
+		mockEnsureConnected.mockImplementationOnce(() => new Promise((r) => { resolveEnsure = r; }));
+
+		const pcCountBefore = pcInstances.length;
+		const offerCallsBefore = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+
+		const connectPromise = rtc.connect(MOCK_TURN_CREDS);
+		// 此时 ensureConnected 未 resolve；state 仍是 idle
+		expect(rtc.state).toBe('idle');
+
+		// 主动 close（state → 'closed'）
+		rtc.close();
+		expect(rtc.state).toBe('closed');
+
+		// late resolve ensureConnected → 守卫看到 state='closed' 应 abort
+		resolveEnsure();
+		await connectPromise;
+
+		// 断言：没有新 PC、没发新 offer、state 不被复活
+		expect(pcInstances.length).toBe(pcCountBefore);
+		const offerCallsAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+		expect(offerCallsAfter).toBe(offerCallsBefore);
+		expect(rtc.state).toBe('closed');
+		expect(rtc.__pc).toBeNull();
+	});
+
+	test('createOffer pending 时 close → late resolve 不 SLD 不 sendOffer', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		// 拦截 createOffer：返回手控 promise
+		let resolveCreate;
+		const origCreateOffer = MockRTCPeerConnection.prototype.createOffer;
+		MockRTCPeerConnection.prototype.createOffer = function () {
+			return new Promise((r) => { resolveCreate = r; });
+		};
+
+		try {
+			const connectPromise = rtc.connect(MOCK_TURN_CREDS);
+			// 等到 connect 推进到 await pc.createOffer 阶段（ensureConnected 默认立即 resolve）
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(rtc.state).toBe('connecting');
+			const pc = MockRTCPeerConnection.lastInstance;
+			const sldCountBefore = pc.localDescription;
+			const offerCallsBefore = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+
+			// close 期间 createOffer pending
+			rtc.close();
+			expect(rtc.state).toBe('closed');
+
+			// late resolve createOffer → 守卫应早退
+			resolveCreate({ type: 'offer', sdp: 'late-sdp' });
+			await connectPromise;
+
+			// 断言：setLocalDescription 未被调（pc.localDescription 不变）；rtc:offer 未发；__pc 已清
+			expect(pc.localDescription).toBe(sldCountBefore);
+			const offerCallsAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+			expect(offerCallsAfter).toBe(offerCallsBefore);
+			expect(rtc.state).toBe('closed');
+			expect(rtc.__pc).toBeNull();
+		} finally {
+			MockRTCPeerConnection.prototype.createOffer = origCreateOffer;
+		}
+	});
+
+	test('createOffer pending 时 close → late reject 不 unhandled（异常被 try/catch 吃掉）', async () => {
+		// late reject 模拟浏览器在 closed pc 上抛 InvalidStateError；不能让异常穿透到
+		// initRtc 的 .then(rtc.connect).catch → 误判建连失败 + clearRtc + 重复退避
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+
+		let rejectCreate;
+		const origCreateOffer = MockRTCPeerConnection.prototype.createOffer;
+		MockRTCPeerConnection.prototype.createOffer = function () {
+			return new Promise((_resolve, reject) => { rejectCreate = reject; });
+		};
+
+		try {
+			let connectErr = null;
+			const connectPromise = rtc.connect(MOCK_TURN_CREDS).catch((err) => { connectErr = err; });
+			await Promise.resolve();
+			await Promise.resolve();
+			const offerCallsBefore = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+
+			rtc.close();
+			expect(rtc.state).toBe('closed');
+
+			// late reject InvalidStateError
+			const invalidErr = new Error('InvalidStateError: pc closed');
+			invalidErr.name = 'InvalidStateError';
+			rejectCreate(invalidErr);
+			await connectPromise;
+
+			// 断言：异常被守卫 try/catch 早退吃掉 → connect 不 reject + 副作用未穿透
+			expect(connectErr).toBeNull();
+			expect(rtc.state).toBe('closed');
+			expect(rtc.__pc).toBeNull();
+			const offerCallsAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer').length;
+			expect(offerCallsAfter).toBe(offerCallsBefore);
+		} finally {
+			MockRTCPeerConnection.prototype.createOffer = origCreateOffer;
+		}
+	});
+});
+
+describe('P0-5: 主动 close 同步 dc.onclose 不重入', () => {
+	// 修法：close() 把 `__rpcChannel = null` 移到 pc.close() 之前；同步 fire 的 dc.onclose 检查
+	// `__rpcChannel === dc` 不通过 → short-circuit。同时 close() 顶层接管 __rejectAllPending
+	// 调用，避免依赖 dc.onclose 路径。
+
+	test('asFailed=false：pc.close 同步 fire dc.onclose 不二次 sendSignaling("rtc:closed")，最终 state="closed"', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		dc.readyState = 'open';
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		dc.onopen();
+		expect(rtc.state).toBe('connected');
+
+		// 让 mock 的 pc.close() 同步 fire dc.onclose（覆盖浏览器同步 fire 行为）
+		const origClose = pc.close.bind(pc);
+		pc.close = () => {
+			origClose();
+			dc.readyState = 'closed';
+			if (dc.onclose) dc.onclose();
+		};
+
+		// 主动 close（asFailed=false）
+		const sigCloseBefore = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed').length;
+		rtc.close({ asFailed: false });
+
+		// 断言：rtc:closed 仅发 1 次（不被同步重入二次发送）
+		const sigCloseAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed').length;
+		expect(sigCloseAfter - sigCloseBefore).toBe(1);
+		// state 终态为 'closed'（不被同步重入的 close({asFailed:true}) 翻成 'failed' 再被覆盖）
+		expect(rtc.state).toBe('closed');
+		expect(rtc.__pc).toBeNull();
+		expect(rtc.__rpcChannel).toBeNull();
+	});
+
+	test('asFailed=true：pc.close 同步 fire dc.onclose 不重入，最终 state="failed"', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		dc.readyState = 'open';
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		dc.onopen();
+
+		const origClose = pc.close.bind(pc);
+		pc.close = () => {
+			origClose();
+			dc.readyState = 'closed';
+			if (dc.onclose) dc.onclose();
+		};
+
+		const sigCloseBefore = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed').length;
+		rtc.close({ asFailed: true });
+
+		const sigCloseAfter = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed').length;
+		expect(sigCloseAfter - sigCloseBefore).toBe(1);
+		expect(rtc.state).toBe('failed');
+		expect(rtc.__pc).toBeNull();
+		expect(rtc.__rpcChannel).toBeNull();
+	});
+
+	test('close() 顶层兜底调 __rejectAllPending（防 dc.onclose short-circuit 后 pending RPC 永不 reject）', async () => {
+		const clawConn = createMockBotConn();
+		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
+		await rtc.connect(MOCK_TURN_CREDS);
+		const pc = MockRTCPeerConnection.lastInstance;
+		const dc = pc.__channels[0];
+		dc.readyState = 'open';
+		pc.connectionState = 'connected';
+		pc.onconnectionstatechange();
+		dc.onopen();
+
+		// pc.close 同步 fire dc.onclose 模拟浏览器
+		const origClose = pc.close.bind(pc);
+		pc.close = () => {
+			origClose();
+			dc.readyState = 'closed';
+			if (dc.onclose) dc.onclose();
+		};
+
+		clawConn.__rejectAllPending.mockClear();
+		rtc.close({ asFailed: false });
+
+		// close() 顶层调一次；dc.onclose 同步重入因 __rpcChannel === dc 失败 short-circuit，
+		// 不会再调 __rejectAllPending。总次数 1。
+		expect(clawConn.__rejectAllPending).toHaveBeenCalledTimes(1);
+		expect(clawConn.__rejectAllPending).toHaveBeenCalledWith(expect.any(String), 'DC_CLOSED');
+	});
+});

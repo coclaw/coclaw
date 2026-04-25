@@ -124,6 +124,27 @@ const RUNTIME_FIELDS = new Set([
  */
 const GATED_FIELDS = new Set(['online']);
 
+/**
+ * 校验 claw id：接受非空 string / 非 NaN number；拒绝 null/undefined/空串/对象/
+ * 数组/Symbol/boolean，以及 String() 会产生 ghost id 的 "null"/"undefined"/
+ * "[object Object]" 字面量、纯空白串。
+ *
+ * 通过则返回规范化的 string id，否则返回 null。
+ * 由 `addOrUpdateClaw` 与 `applySnapshot` 共用，保证两条入口对 malformed id 的过滤
+ * 一致——否则 SSE 增量更新会绕过 snapshot 的过滤建出 ghost 连接。
+ *
+ * @param {*} raw - 原始 id 值
+ * @returns {string|null} 规范化的 string id 或 null
+ */
+function __validateClawId(raw) {
+	if (raw == null || raw === '') return null;
+	if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+	if (typeof raw === 'number' && !Number.isFinite(raw)) return null;
+	const s = String(raw).trim();
+	if (s === '' || s === 'null' || s === 'undefined' || s === '[object Object]') return null;
+	return s;
+}
+
 /** 重置模块级状态（logout / 测试） */
 export function __resetClawStoreInternals() {
 	_bridgedConns.clear();
@@ -234,8 +255,17 @@ export const useClawsStore = defineStore('claws', {
 			this.byId = newById;
 		},
 		addOrUpdateClaw(claw) {
-			if (!claw?.id) return;
-			const id = String(claw.id);
+			// 弱 id 校验拦截：`!claw?.id` 让 `{id: {}}` / `{id: 'null'}` / `{id: '[object Object]'}`
+			// 等通过真值检查，再经 `String()` 进 byId 创建 ghost 连接（与 applySnapshot 同源）。
+			// 复用 `__validateClawId` 与 snapshot 入口保持一致。
+			const id = __validateClawId(claw?.id);
+			if (!id) {
+				if (claw?.id !== undefined && claw?.id !== null && claw?.id !== '') {
+					console.warn('[claws] addOrUpdateClaw dropped malformed id=%o', claw?.id);
+					remoteLog(`claw.upsertMalformed id=${typeof claw?.id}`);
+				}
+				return;
+			}
 			console.debug('[claws] upsert id=%s', id);
 			remoteLog(`claw.upsert claw=${id}`);
 			if (this.byId[id]) {
@@ -310,18 +340,11 @@ export const useClawsStore = defineStore('claws', {
 		 */
 		applySnapshot(items) {
 			const arr = Array.isArray(items) ? items : [];
-			// 过滤 malformed id：接受非空 string / number；拒绝 null/undefined/空串/对象/
-			// 数组/Symbol/boolean，以及 String() 会产生 ghost id 的"null"/"undefined"/
-			// "[object Object]" 字面量。server 合约不发这些，仅为 proxy 篡改 / 序列化错误兜底——
+			// 过滤 malformed id：复用 `__validateClawId` 与 `addOrUpdateClaw` 入口保持一致。
+			// server 合约不发 ghost id，仅为 proxy 篡改 / 序列化错误兜底——
 			// 不过滤会被 `arr.map(b => String(b.id))` 送进 syncConnections 建 ghost 连接，
 			// 烧 ICE/TURN 预算 + 脏列表
-			const validArr = arr.filter((b) => {
-				const raw = b?.id;
-				if (raw == null || raw === '') return false;
-				if (typeof raw !== 'string' && typeof raw !== 'number') return false;
-				const s = String(raw);
-				return s !== '' && s !== 'null' && s !== 'undefined' && s !== '[object Object]';
-			});
+			const validArr = arr.filter((b) => __validateClawId(b?.id) !== null);
 			const dropped = arr.length - validArr.length;
 			if (dropped > 0) {
 				console.warn('[claws] snapshot dropped %d malformed id item(s)', dropped);

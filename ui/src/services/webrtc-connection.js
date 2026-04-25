@@ -198,6 +198,12 @@ export class WebRtcConnection {
 		this.__pc = null;
 		this.__rpcChannel = null;
 		this.__state = 'idle';
+		/**
+		 * close() 计数器：每次 close() 自增。供 __buildPeerConnection 跨 await 检测
+		 * "build 期间是否被外部 close 打断"——比靠 state==='closed' 判断更精确，
+		 * 因为允许从 'closed' 起步重新 connect（合法场景）。
+		 */
+		this.__closeEpoch = 0;
 		this.__candidateType = null;
 		/** @type {{ localType: string, localProtocol: string, remoteType: string, remoteProtocol: string, relayProtocol: string|null }|null} */
 		this.__transportInfo = null;
@@ -281,6 +287,7 @@ export class WebRtcConnection {
 	 * 幂等：二次调用不重发 rtc:closed 信令，__pc 已为 null 时直接跳过 close
 	 */
 	close({ asFailed = false } = {}) {
+		this.__closeEpoch++;
 		this.__stopKeepalive();
 		this.__clearRestartState();
 		this.__unregisterAppLifecycle();
@@ -291,11 +298,35 @@ export class WebRtcConnection {
 		this.__rejectSendQueue(asFailed ? 'rtc failed' : 'connection closed');
 		if (this.__pc) {
 			useSignalingConnection().sendSignaling(this.clawId, 'rtc:closed');
-			this.__pc.close();
+			// __rpcChannel = null 必须早于 pc.close()。`pc.close()` 在浏览器中会同步 fire
+			// `dc.onclose`，原顺序（pc.close → __pc=null → __rpcChannel=null）会让重入的
+			// onclose 看到 `__rpcChannel === dc` 仍 true + `state === 'connected'` 仍 true →
+			// 二次 close({asFailed:true}) → 第二次 sendSignaling('rtc:closed') + state 短暂
+			// 转 'failed' 再被外层覆盖回 'closed'。提前清空 __rpcChannel 让同步重入 short-circuit。
+			// 由于此后 dc.onclose 不再调 `__rejectAllPending`，需要在此处兜底 reject pending RPC，
+			// 避免 close 路径下挂起请求永远等不到响应。
+			this.__rpcChannel = null;
+			this.__rejectClawConnPending(asFailed ? 'rtc failed' : 'connection closed');
+			const pc = this.__pc;
 			this.__pc = null;
+			pc.close();
+		} else {
+			// __pc 不存在分支也保持幂等：清 __rpcChannel + reject pending（即使绝大多数情况下
+			// 此时已为空，避免依赖外部调用顺序）
+			this.__rpcChannel = null;
+			this.__rejectClawConnPending(asFailed ? 'rtc failed' : 'connection closed');
 		}
-		this.__rpcChannel = null;
 		this.__setState(asFailed ? 'failed' : 'closed');
+	}
+
+	/**
+	 * @private 调 clawConn.__rejectAllPending（容忍 mock 不实现该方法）。
+	 * 生产代码下 ClawConnection 必有此方法；此处的容错主要为旧测试 mock 兼容。
+	 * @param {string} message
+	 */
+	__rejectClawConnPending(message) {
+		const fn = this.__clawConn?.__rejectAllPending;
+		if (typeof fn === 'function') fn.call(this.__clawConn, message, 'DC_CLOSED');
 	}
 
 	/**
@@ -465,8 +496,18 @@ export class WebRtcConnection {
 			this.__clearRestartState();
 		}
 
+		// 跨 await close 防护用 epoch 快照：build 期间任何 close() 调用都会让 __closeEpoch 递增；
+		// 三个 await 后比对 epoch 是否变化 → 变化即视为 build 被外部打断，立即 abort。
+		// 不能仅靠 `state==='closed'` 判断：从 'closed' 起步 connect 是合法场景（rebuild），
+		// 此时初始 state 就是 'closed'，跨 await 后没收到 close 也仍是 'closed'。
+		const buildEpoch = this.__closeEpoch;
+
 		// 确保信令 WS 可用（rebuild 场景下 WS 可能已断开）；ensureConnected 内部自带新鲜度兜底
 		await useSignalingConnection().ensureConnected();
+		if (this.__closeEpoch !== buildEpoch) {
+			this.__log('info', 'connect aborted: closed during ensureConnected');
+			return;
+		}
 
 		this.__remoteDescSet = false;
 		this.__pendingCandidates = [];
@@ -488,9 +529,38 @@ export class WebRtcConnection {
 		this.__rpcChannel = dc;
 		this.__setupDataChannelEvents(dc);
 
-		// 创建并发送 offer
-		const offer = await pc.createOffer();
-		await pc.setLocalDescription(offer);
+		// 创建并发送 offer。
+		// createOffer / setLocalDescription 在 closed pc 上会抛 InvalidStateError；
+		// 跨 await close 时 try/catch 吃掉异常 + 守卫 __closeEpoch：避免把"已 close 后清理产生的
+		// late reject"当成真实建连失败穿透到 initRtc 的 .then(rtc.connect).catch（initRtc 会
+		// settle('failed') 并 clearRtc → 重复触发 store 退避）。
+		let offer;
+		try {
+			offer = await pc.createOffer();
+		} catch (err) {
+			if (this.__closeEpoch !== buildEpoch || this.__pc !== pc) {
+				this.__log('info', `connect aborted: closed during createOffer (${err?.message ?? 'err'})`);
+				return;
+			}
+			throw err;
+		}
+		if (this.__closeEpoch !== buildEpoch || this.__pc !== pc) {
+			this.__log('info', 'connect aborted: closed/replaced during createOffer');
+			return;
+		}
+		try {
+			await pc.setLocalDescription(offer);
+		} catch (err) {
+			if (this.__closeEpoch !== buildEpoch || this.__pc !== pc) {
+				this.__log('info', `connect aborted: closed during setLocalDescription (${err?.message ?? 'err'})`);
+				return;
+			}
+			throw err;
+		}
+		if (this.__closeEpoch !== buildEpoch || this.__pc !== pc) {
+			this.__log('info', 'connect aborted: closed/replaced during setLocalDescription');
+			return;
+		}
 		useSignalingConnection().sendSignaling(this.clawId, 'rtc:offer', { sdp: offer.sdp });
 		this.__log('info', `offer sent for claw ${this.clawId}`);
 	}

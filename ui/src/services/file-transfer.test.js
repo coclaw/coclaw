@@ -2162,6 +2162,81 @@ describe('uploadFile – AbortSignal 取消支持', () => {
 		expect(err.code).toBe('ERR_CANCELED');
 		expect(channels.length).toBe(0);
 	});
+
+	test('DC open + sendChunks backpressure 中 abort → reject ERR_CANCELED + DC close + listener 解绑', async () => {
+		// B5：DC 已 open + 已发若干 chunk + buffer 满（waitForBufferDrain 等待期间）→ external abort
+		// 期望：handle.promise reject ERR_CANCELED；dc.close() 被调（cleanupRef）；listener 已 removed
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFileOfSize(CHUNK_SIZE * 3, 'abort-bp.bin');
+		const ctrl = new AbortController();
+		const handle = uploadFile(clawConn, 'main', 'abort-bp.bin', file, { signal: ctrl.signal });
+
+		await tick();
+		const dc = lastDC();
+		// 拦 send：第 1 个 binary chunk 后置 bufferedAmount 超阈值 → 触发 backpressure 等待
+		let binarySendCount = 0;
+		const origSend = dc.send.bind(dc);
+		dc.send = (data) => {
+			origSend(data);
+			if (typeof data !== 'string') {
+				binarySendCount++;
+				if (binarySendCount === 1) {
+					dc.bufferedAmount = HIGH_WATER_MARK + 1;
+				}
+			}
+		};
+		const closeSpy = vi.spyOn(dc, 'close');
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+
+		// 等到 backpressure 暂停
+		await vi.waitFor(() => {
+			expect(binarySendCount).toBeGreaterThanOrEqual(1);
+		});
+		// 此时 waitForBufferDrain 已注册 'bufferedamountlow' / 'close' listener
+		expect((dc.__listeners['bufferedamountlow'] ?? []).length).toBeGreaterThanOrEqual(1);
+		expect((dc.__listeners['close'] ?? []).length).toBeGreaterThanOrEqual(1);
+
+		// 外部 abort：onAbort 关 DC + reject
+		ctrl.abort();
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err?.code).toBe('ERR_CANCELED');
+		expect(err?.name).toBe('CanceledError');
+		expect(closeSpy).toHaveBeenCalled();
+		expect(dc.readyState).toBe('closed');
+	});
+});
+
+describe('postFile – AbortSignal 取消支持（补强）', () => {
+	test('DC open + sendChunks 期间 abort → reject ERR_CANCELED + DC close', async () => {
+		// 与上面 uploadFile 测试同源，覆盖 postFile（POST 走相同的 doUploadInternal 路径）
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFileOfSize(CHUNK_SIZE * 2, 'post-abort.bin');
+		const ctrl = new AbortController();
+		const handle = postFile(clawConn, 'main', 'dir', 'post-abort.bin', file, { signal: ctrl.signal });
+
+		await tick();
+		const dc = lastDC();
+		const closeSpy = vi.spyOn(dc, 'close');
+
+		dc.__open();
+		dc.__receiveString({ ok: true }); // ready
+		// 等到至少 1 个 chunk 已发
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(2); // PUT/POST + ≥1 chunk
+		});
+
+		// 外部 abort
+		ctrl.abort();
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err?.code).toBe('ERR_CANCELED');
+		expect(err?.name).toBe('CanceledError');
+		expect(closeSpy).toHaveBeenCalled();
+		expect(dc.readyState).toBe('closed');
+	});
 });
 
 describe('postFile – AbortSignal 取消支持', () => {
@@ -2344,5 +2419,82 @@ describe('file-transfer – 跨 ICE restart 集成场景', () => {
 		expect(err.code).toBe('ERR_CANCELED');
 		expect(err.name).toBe('CanceledError');
 		expect(dc.readyState).toBe('closed');
+	});
+
+	// B3：DC 已 open 后发生 ICE restart 的两个分支 —— 成功完成传输 vs 失败 reject TRANSFER_INTERRUPTED
+	test('downloadFile DC 已 open + 部分 chunk 后 → restart 成功（无 close）→ 传输完成', async () => {
+		// 既有 "restarting → restart 成功 → DC open" 测试是从 connecting 起步的；
+		// 这里覆盖另一形态：DC 已 open + 部分数据流到达后，底层 ICE restart 不影响
+		// SCTP/DC 生命周期 → file-transfer 不感知 restart，传输继续完成。
+		// （restart 期间 DC 不 fire close 是关键——本测试不主动 __fireClose 即模拟）
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(clawConn, 'main', 'mid.bin');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		// 请求已发出
+		expect(dc.sent.length).toBe(1);
+		// 响应头 + 第 1 个 chunk
+		dc.__receiveString({ ok: true, size: 8, name: 'mid.bin' });
+		dc.__receiveBinary(new Uint8Array([1, 2, 3, 4]));
+
+		// 模拟 ICE restart 期间 webrtc-connection 内部走完 restarting → connected：
+		// SCTP 保留、DC 状态不变（仍 open）、不 fire close。file-transfer 层不感知，
+		// 后续 chunk 与 ack 自然送达
+		dc.__receiveBinary(new Uint8Array([5, 6, 7, 8]));
+		dc.__receiveString({ ok: true, bytes: 8 });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(8);
+		expect(result.blob.size).toBe(8);
+		// 注：成功路径 cleanupRef() 会关 DC，readyState 终态为 'closed' —— 这是正常清理，
+		// 不代表 restart 期间被中断
+	});
+
+	test('downloadFile DC 已 open + 部分 chunk 后 → restart 失败（DC close）→ reject TRANSFER_INTERRUPTED', async () => {
+		// 对照分支：restart 失败 → webrtc-connection close({asFailed:true}) → SCTP 断 → DC close
+		// → file-transfer 走 onclose 兜底 → reject TRANSFER_INTERRUPTED
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const handle = downloadFile(clawConn, 'main', 'broken.bin');
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		// 请求已发出 + 响应头 + 1 个 chunk 已到
+		dc.__receiveString({ ok: true, size: 16, name: 'broken.bin' });
+		dc.__receiveBinary(new Uint8Array([1, 2, 3, 4]));
+
+		// restart 失败 → DC close
+		dc.__fireClose();
+
+		const err = await handle.promise.catch((e) => e);
+		expect(err).toBeInstanceOf(FileTransferError);
+		expect(err.code).toBe('TRANSFER_INTERRUPTED');
+		expect(dc.readyState).toBe('closed');
+	});
+
+	test('uploadFile DC 已 open + 部分 chunk 已发 → restart 成功（无 close）→ 上传完成', async () => {
+		const { clawConn, lastDC } = createMockBotConnWithRtc();
+		const file = createMockFile('AAAAAAAAAA', 'mid-upload.txt'); // 10 bytes
+		const handle = uploadFile(clawConn, 'main', 'mid-upload.txt', file);
+
+		await tick();
+		const dc = lastDC();
+		dc.__open();
+		// PUT 请求
+		expect(dc.sent.length).toBe(1);
+		// Plugin ready → 触发 chunk 发送
+		dc.__receiveString({ ok: true });
+		await vi.waitFor(() => {
+			expect(dc.sent.length).toBeGreaterThanOrEqual(2);
+		});
+
+		// 模拟 ICE restart 成功：SCTP/DC 不变，写入结果照常到达
+		dc.__receiveString({ ok: true, bytes: file.size });
+
+		const result = await handle.promise;
+		expect(result.bytes).toBe(file.size);
+		// 同 download：成功完成时 cleanupRef 会关 DC，readyState='closed' 是正常清理终态
 	});
 });

@@ -1812,6 +1812,68 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		await p;
 	});
 
+	test('network:online + typeChanged + _rtcInitInProgress 完成后 → typeChanged 标记被 __ensureRtc 消费、后续 __resumeOnline 不再 triggerRestart', async () => {
+		// 验证 B2：rebuild 进行中（rtc 暂时为 null）时 __handleNetworkOnline 命中
+		// `rtc?.state === 'connected'`=false 分支 → 给 '93' 打标
+		// `_pendingTypeChangedRestartClaws.add`；rebuild 主循环又因 _rtcInitInProgress 短路。
+		// 待 init 完成后 __ensureRtc 成功路径主动清 _pendingTypeChangedRestartClaws，
+		// 后续 sig disconnect→connect 走 __resumeAllClawsForSigOnline → __resumeOnline 时不再升级
+		// 为 triggerRestart('online_resume')。
+		const store = useClawsStore();
+		const fakeRtc = {
+			state: 'connected', isReady: true, restartPaused: false,
+			probe: vi.fn(), triggerRestart: vi.fn(), nudgeRestart: vi.fn(), resumeRecovery: vi.fn(),
+		};
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(),
+			// clearRtc 真正把 rtc 置 null，模拟 ensureRtc rebuild 路径行为
+			clearRtc: vi.fn(function () { this.rtc = null; }),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '93', name: 'Bot', online: true });
+		store.byId['93'].dcReady = true;
+		store.byId['93'].initialized = true;
+		store.fetched = true; // __resumeAllClawsForSigOnline 入口 gate
+		store.__bridgeConn('93');
+		store.__bridgeLifecycle();
+
+		// 模拟 _rtcInitInProgress：mockInitRtc 返回 pending promise，await 期间 rtc=null
+		let resolveInit;
+		mockInitRtc.mockImplementation(async (_id, conn) => {
+			await new Promise((r) => { resolveInit = r; });
+			conn.rtc = fakeRtc;
+			return 'rtc';
+		});
+		const p = store.__ensureRtc('93', { forceRebuild: true });
+		// 等 ensureRtc 推进到 await initRtc（此时 rtc=null）
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 触发 typeChanged：rtc 为 null + initialized=true → willHandleNow=false → 入 Set 打标；
+		// 主循环 `_rtcInitInProgress` 短路 → 不 rebuild
+		emitForegroundResume('network:online', { typeChanged: true });
+		await new Promise((r) => setTimeout(r, 10));
+
+		// init 完成 → __ensureRtc 成功路径执行 _pendingTypeChangedRestartClaws.delete
+		resolveInit('rtc');
+		await p;
+
+		// 清 mock，区分前后阶段对 triggerRestart 的调用
+		fakeRtc.triggerRestart.mockClear();
+		fakeRtc.resumeRecovery.mockClear();
+
+		// 后续 sig disconnect → connect → __resumeAllClawsForSigOnline → __resumeOnline('93')
+		__emitSigState('disconnected');
+		__emitSigState('connected');
+		await new Promise((r) => setTimeout(r, 10));
+
+		// 断言：typeChanged 标记已被 __ensureRtc 成功路径消费 → __resumeOnline 不会升级为
+		// triggerRestart('online_resume')。fakeRtc.state='connected' + restartPaused=false →
+		// 走 __ensureRtc 早退路径（rtc.state==='connected'），triggerRestart/resumeRecovery 都不调
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+	});
+
 	test('network:online + typeChanged + 未初始化 → 跳过', async () => {
 		const store = useClawsStore();
 		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn() };
@@ -7303,6 +7365,52 @@ describe('P0-4: network:online 跨 gate 多 listener 顺序', () => {
 	});
 });
 
+describe('P1-3: sig offline 重复 updateClawOnline 防回归', () => {
+	// 对称 P1-2 的 SSE 增量版本：sig offline 期间 server SSE 反复推 `claw.status online=true`
+	// （或 reconnect 时连续回放）→ updateClawOnline 多次。
+	// 修法的内置防御：第一次调用同步 set claw.initialized=true → 后续调用 `else if (!initialized)`
+	// 短路退出。`__ensureRtc` 内部 sig gate 进一步保证 mockInitRtc 在 sig offline 下 0 调用。
+	// 回归目标：同步多次 updateClawOnline 不产生 mockInitRtc 风暴 + fullInit 日志仅 1 条。
+	test('sig offline + 同步连续 3 次 updateClawOnline(id, true) → fullInit 仅 fire 1 次、mockInitRtc 0 调用', async () => {
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 准备初态：fetched 已翻、_sigOffline=true、byId 含一条 online=false + initialized=false 的 claw
+		store.fetched = true;
+		store.setClaws([{ id: '1', name: 'A' }]);
+		store.byId['1'].online = false;
+		store.byId['1'].initialized = false;
+
+		store.__bridgeLifecycle();
+		__emitSigState('disconnected');
+		// __bridgeConn 之前已注册，__bridgeLifecycle 不重复注册；setClaws 不调 __bridgeConn
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		for (let i = 0; i < 3; i++) {
+			store.updateClawOnline('1', true);
+		}
+
+		// 微任务 flush：让 __fullInit 内部 await + catch 回滚跑完
+		await vi.waitFor(() => expect(store.byId['1'].initialized).toBe(false));
+
+		// 断言 1：sig 离线下 __ensureRtc 入口 sig gate 拦住，initRtc 0 调用
+		expect(mockInitRtc).not.toHaveBeenCalled();
+
+		// 断言 2：__fullInit 仅 fire 1 次（initialized=true sync set 让后续 2 次调用短路）
+		const fullInitLogs = mockRemoteLog.mock.calls.filter(([msg]) =>
+			typeof msg === 'string' && msg.startsWith('claw.fullInit '),
+		);
+		expect(fullInitLogs.length).toBe(1);
+
+		warnSpy.mockRestore();
+	});
+});
+
 describe('P1-2: sig offline 重复 snapshot 防回归', () => {
 	// 修法：Phase 3 rescue 入口加 `if (_sigOffline) continue;`（与 __ensureRtc 入口
 	// sig gate 对称）。sig offline 期间 SSE 连推同一 snapshot 不再每次 fire __fullInit；
@@ -7632,6 +7740,134 @@ describe('P2-3: malformed snapshot 防御', () => {
 		expect(store.byId['d1'].name).toBe('Second');
 		// 断言 2：syncConnections 单次 batched 调用（不会因为 dup id 退化成 N 次）
 		expect(mockManager.syncConnections).toHaveBeenCalledTimes(1);
+	});
+
+	test('applySnapshot dup-id online 冲突 → 最终 online 取 last-wins、不触发 __handleClawGoOffline', async () => {
+		// 同一 snapshot 内重复 id + 中间 online 翻转：byId 终态 = 最后一条；
+		// Phase 1 prevOnlineMap 在第二轮被第一轮的 post-assign 值覆盖 → Phase 3 看到的 prev 是
+		// 中间态而非真正的 prev=true。结果：原本 prev=true→true（no-op）变成 prev=false→true，
+		// 走 __resumeOnline 一次；__handleClawGoOffline 始终不被调（因为 final online=true）。
+		// 锁定 dedupe 在 Phase 3 toResume Set 里完成，transition 仅一次的当前语义。
+		const store = useClawsStore();
+		const fakeRtc = { state: 'connected', isReady: true, restartPaused: false, probe: vi.fn(), nudgeRestart: vi.fn() };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 初态：byId 含 d1，online=true、initialized=true（用 setClaws + 手动改字段建立）
+		store.setClaws([{ id: 'd1', name: 'init' }]);
+		store.byId['d1'].online = true;
+		store.byId['d1'].initialized = true;
+		store.byId['d1'].dcReady = true;
+
+		const handleOfflineSpy = vi.spyOn(store, '__handleClawGoOffline');
+		const resumeOnlineSpy = vi.spyOn(store, '__resumeOnline');
+
+		store.applySnapshot([
+			{ id: 'd1', name: 'mid', online: false },
+			{ id: 'd1', name: 'final', online: true },
+		]);
+
+		// 断言 1：byId 终态 last-wins
+		expect(Object.keys(store.byId)).toEqual(['d1']);
+		expect(store.byId['d1'].online).toBe(true);
+		expect(store.byId['d1'].name).toBe('final');
+
+		// 断言 2：__handleClawGoOffline 不被调（final online=true，Phase 3 不进 true→false 分支）
+		expect(handleOfflineSpy).not.toHaveBeenCalled();
+
+		// 断言 3：__resumeOnline 仅 1 次（Phase 3 toResume Set 去重 dup-id 的两次 add）
+		expect(resumeOnlineSpy).toHaveBeenCalledTimes(1);
+		expect(resumeOnlineSpy).toHaveBeenCalledWith('d1');
+	});
+
+	test('防御性锁定：非空旧态 + 全 malformed snapshot → byId 清空、closeRtc 调每个旧 id 一次', () => {
+		// 锁定当前"全 malformed = 等价空快照"语义：旧 claw 被 Phase 2 清理 + manager.syncConnections([])。
+		// 未来若改为"保留旧态"必须显式拍板（修法时同步更新本测试）。
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue(null);
+		mockManager.syncConnections.mockClear();
+		mockCloseRtcForBot.mockClear();
+
+		// 初态：两个真实 claw（已建过 RTC）
+		store.setClaws([
+			{ id: 'real-1', name: 'A' },
+			{ id: 'real-2', name: 'B' },
+		]);
+		store.byId['real-1'].online = true;
+		store.byId['real-1'].initialized = true;
+		store.byId['real-1'].dcReady = true;
+		store.byId['real-2'].online = true;
+		store.byId['real-2'].initialized = true;
+		store.byId['real-2'].dcReady = true;
+
+		// 全 malformed snapshot：所有 item 被 filter 拦下
+		store.applySnapshot([
+			{ id: null, name: 'x' },
+			{ id: '[object Object]', name: 'y' },
+		]);
+
+		// 断言 1：byId 全空（旧 claw 被 Phase 2 清理）
+		expect(Object.keys(store.byId)).toEqual([]);
+		// 断言 2：closeRtcForClaw 对每个旧 id 调一次
+		expect(mockCloseRtcForBot).toHaveBeenCalledTimes(2);
+		expect(mockCloseRtcForBot).toHaveBeenCalledWith('real-1');
+		expect(mockCloseRtcForBot).toHaveBeenCalledWith('real-2');
+		// 断言 3：syncConnections 收空列表（manager 不建 ghost 连接）
+		expect(mockManager.syncConnections).toHaveBeenCalledTimes(1);
+		expect(mockManager.syncConnections).toHaveBeenCalledWith([]);
+	});
+});
+
+describe('P2-4: malformed addOrUpdateClaw id 防御', () => {
+	// 背景：旧 `if (!claw?.id) return;` 真值检查通过 `{id: {}}` / `{id: []}` /
+	// `{id: 'null'}` / `{id: '[object Object]'}` 等 truthy 但 String() 后会产生 ghost 字面量
+	// 的输入；`String({})='[object Object]'` 等被写进 byId + manager.connect 创建 ghost 连接。
+	// 修法：复用 `__validateClawId` 与 applySnapshot 入口保持一致的过滤规则。
+
+	test('字面量 / 容器型 malformed id：不写入 byId、不调 manager.connect', () => {
+		const store = useClawsStore();
+		mockManager.connect.mockClear();
+		mockManager.get.mockReturnValue(null);
+
+		const malformed = [
+			{ id: {}, name: 'obj' },                  // String({}) → '[object Object]'
+			{ id: [], name: 'arr' },                  // String([]) → ''（旧 `!claw?.id` 已拦，新加固保持）
+			{ id: ['x'], name: 'arr-1' },              // String(['x']) → 'x'（旧逻辑会建 ghost）
+			{ id: null, name: 'null' },
+			{ id: undefined, name: 'undef' },
+			{ id: '[object Object]', name: 'ghost-str' },
+			{ id: '   ', name: 'whitespace' },
+			{ id: 'null', name: 'str-null' },
+			{ id: 'undefined', name: 'str-undef' },
+			{ id: '', name: 'empty' },
+			{ id: NaN, name: 'nan' },                  // Number 但非 finite
+			{ id: true, name: 'bool' },                // boolean，typeof !== 'string'/'number'
+		];
+		for (const m of malformed) store.addOrUpdateClaw(m);
+
+		expect(Object.keys(store.byId)).toEqual([]);
+		expect(mockManager.connect).not.toHaveBeenCalled();
+	});
+
+	test('反向 sanity：合法 string / number id 正常进入 byId', () => {
+		const store = useClawsStore();
+		mockManager.connect.mockClear();
+		mockManager.get.mockReturnValue({
+			on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		});
+
+		store.addOrUpdateClaw({ id: 'real-claw-1', name: 'A' });
+		store.addOrUpdateClaw({ id: 12345, name: 'B' });
+
+		expect(Object.keys(store.byId).sort()).toEqual(['12345', 'real-claw-1']);
+		expect(store.byId['real-claw-1'].name).toBe('A');
+		expect(store.byId['12345'].name).toBe('B');
+		expect(mockManager.connect).toHaveBeenCalledWith('real-claw-1');
+		expect(mockManager.connect).toHaveBeenCalledWith('12345');
 	});
 });
 
