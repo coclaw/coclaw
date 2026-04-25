@@ -70,26 +70,35 @@ export const useTopicsStore = defineStore('topics', {
 		async __doLoadAll(connectedClaws) {
 			const clawsStore = useClawsStore();
 			const queriedClawIds = new Set(connectedClaws.map((b) => String(b.id)));
-			const tasks = [];
-			for (const claw of connectedClaws) {
-				const conn = getReadyConn(claw.id);
-				if (!conn) continue;
-				// 当前版本只支持 main agent 的 topic（受限于 OpenClaw agent 路由机制）
-				tasks.push(
-					conn.request('coclaw.topics.list', { agentId: 'main' }, { timeout: 60_000 })
+			// 用 map 让 results 长度严格等于 connectedClaws 长度，避免 zip 错位：
+			// 同步 conn 消失的 claw 用 null sentinel 占位，由后面 result-time 处理统一剔除
+			const results = await Promise.allSettled(
+				connectedClaws.map((claw) => {
+					const cid = String(claw.id);
+					const conn = getReadyConn(cid);
+					if (!conn) return Promise.resolve(null);
+					// 当前版本只支持 main agent 的 topic（受限于 OpenClaw agent 路由机制）
+					return conn.request('coclaw.topics.list', { agentId: 'main' }, { timeout: 60_000 })
 						.then((res) => ({
 							topics: Array.isArray(res?.topics) ? res.topics : [],
-							clawId: String(claw.id),
-						}))
-				);
-			}
-			const results = await Promise.allSettled(tasks);
+							clawId: cid,
+						}));
+				}),
+			);
 			// fetch 失败的 claw：从 queriedClawIds 移除，保留其旧 topics
 			for (let i = 0; i < results.length; i++) {
+				const cid = String(connectedClaws[i].id);
 				if (results[i].status !== 'fulfilled') {
-					const failedId = String(connectedClaws[i].id);
-					queriedClawIds.delete(failedId);
-					console.warn('[topics] load failed for one agent:', results[i].reason);
+					queriedClawIds.delete(cid);
+					console.warn('[topics] claw topics fetch failed clawId=%s:', cid, results[i].reason);
+					continue;
+				}
+				// fetch 期间或刚完成时 conn 可能被 SSE claw.unbound 异步清掉（同步早退返 null，
+				// 或事后消失）。此时把它纳入 queriedClawIds 会导致后续合并环节把旧 topics
+				// 一并清空，因此 result-time 重新核对一次 conn，已消失则跳过该 claw
+				if (results[i].value === null || !getReadyConn(cid)) {
+					queriedClawIds.delete(cid);
+					console.debug('[topics] claw conn vanished during fetch clawId=%s', cid);
 				}
 			}
 			// 增量合并：保留未查询 claw 的已有 topics，替换已查询 claw 的
@@ -101,7 +110,7 @@ export const useTopicsStore = defineStore('topics', {
 				newById[tid] = topic;
 			}
 			for (const r of results) {
-				if (r.status !== 'fulfilled') continue;
+				if (r.status !== 'fulfilled' || r.value === null) continue;
 				for (const topic of r.value.topics) {
 					newById[topic.topicId] = {
 						topicId: topic.topicId,

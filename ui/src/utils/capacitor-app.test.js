@@ -279,6 +279,52 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		window.removeEventListener('app:foreground', handler);
 	});
 
+	// 三个 setup* 函数（appStateChange / deepLink / backButton）的动态 import 必须各自
+	// 跟 .catch warn，与 setupKeyboard / setupNetworkListener 的姐妹函数对齐；否则
+	// `@capacitor/app` 在原生层未注入时会变成 unhandledrejection。vitest 动态 import
+	// mock 限制（见 backlog）让"真 reject 行为"难以直接测，此处用源码 pattern lock
+	// 三处对称的 .catch 链路，防回归
+	// parseDeepLinkPath 是 setupDeepLink 内 URL 解析的纯函数提取，三分支覆盖：
+	// 正常路径转换 / 根路径返 null（不导航）/ 非法 URL 抛 TypeError 由 caller catch
+	test('parseDeepLinkPath: coclaw://chat/123 → /chat/123（正常路径）', async () => {
+		const { parseDeepLinkPath } = await import('./capacitor-app.js');
+		expect(parseDeepLinkPath('coclaw://chat/123')).toBe('/chat/123');
+	});
+
+	test('parseDeepLinkPath: coclaw:// → null（根路径不导航）', async () => {
+		const { parseDeepLinkPath } = await import('./capacitor-app.js');
+		expect(parseDeepLinkPath('coclaw://')).toBeNull();
+	});
+
+	test('parseDeepLinkPath: 非法 URL 抛 TypeError（由 caller catch 转 warn）', async () => {
+		const { parseDeepLinkPath } = await import('./capacitor-app.js');
+		expect(() => parseDeepLinkPath('not a url')).toThrow();
+	});
+
+	test('parseDeepLinkPath: coclaw://chat → /chat（pathname 为空时 host 当 path）', async () => {
+		const { parseDeepLinkPath } = await import('./capacitor-app.js');
+		expect(parseDeepLinkPath('coclaw://chat')).toBe('/chat');
+	});
+
+	test('setupAppStateChange/DeepLink/BackButton: 三个 import @capacitor/app 都跟对称的 .catch warn（源码 pattern lock，非行为测试，仅防漏 .catch）', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const url = await import('node:url');
+		const here = path.dirname(url.fileURLToPath(import.meta.url));
+		const src = fs.readFileSync(path.join(here, 'capacitor-app.js'), 'utf8');
+		// 每条 import('@capacitor/app').then(...) 后都应有对应 .catch 兜底
+		const importMatches = src.match(/import\(['"]@capacitor\/app['"]\)\.then\(/g) ?? [];
+		expect(importMatches.length).toBeGreaterThanOrEqual(3);
+		const expectedCatches = [
+			"\\.catch\\(\\(e\\) => console\\.warn\\('\\[capacitor\\] appStateChange setup failed:'",
+			"\\.catch\\(\\(e\\) => console\\.warn\\('\\[capacitor\\] deep-link setup failed:'",
+			"\\.catch\\(\\(e\\) => console\\.warn\\('\\[capacitor\\] backButton setup failed:'",
+		];
+		for (const pattern of expectedCatches) {
+			expect(src).toMatch(new RegExp(pattern));
+		}
+	});
+
 	// --- BackButton ---
 
 	test('setupBackButton: 有打开的对话框时关闭对话框', async () => {
@@ -591,6 +637,34 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		await new Promise((r) => setTimeout(r, 1500));
 		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
 		expect(evt).toBeTruthy();
+		dispatchSpy.mockRestore();
+	});
+
+	test('setupNetworkListener: getStatus 慢返回不覆盖已被实时事件写过的 _lastConnectionType', async () => {
+		// 让 init 阶段的 getStatus 处于 pending 状态（deferred），实时事件先到
+		let resolveGetStatus;
+		mockGetStatus.mockImplementationOnce(() => new Promise((r) => { resolveGetStatus = r; }));
+
+		const mod = await import('./capacitor-app.js');
+		await mod.initCapacitorApp(mockRouter);
+		await flush();
+
+		// 实时事件先到 wifi → 写入 _lastConnectionType=wifi（getStatus 仍 pending）
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		mod.__flushNetworkDebounceForTest();
+
+		// 慢返回的 getStatus 给出 cellular —— 修法后必须被忽略，不覆盖已写入的 wifi
+		resolveGetStatus({ connectionType: 'cellular' });
+		await flush();
+
+		// 再派 wifi：修法后 _lastConnectionType 仍是 wifi → typeChanged=false
+		// （旧版会被慢 getStatus 覆盖成 cellular，此处会误判 typeChanged=true）
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+		mod.__flushNetworkDebounceForTest();
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt).toBeDefined();
+		expect(evt[0].detail.typeChanged).toBe(false);
 		dispatchSpy.mockRestore();
 	});
 

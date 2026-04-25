@@ -759,4 +759,108 @@ describe('dashboard store', () => {
 		await store.loadDashboard('bot-1');
 		expect(loadSpy).not.toHaveBeenCalled();
 	});
+
+	// 与 agents/sessions/topics 三 store 对称：clearDashboard 必须同步清飞行中 dedup
+	// Map，避免同 id 重绑后新 loadDashboard 命中 dedup 拿到旧 promise（旧 promise
+	// 完成后写到 byClaw 的是旧 claw 的实例信息）
+	test('clearDashboard 同步清飞行中 dedup：同 id 重绑后新 loadDashboard 走独立请求', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+		const agentConn = mockAgentConn([{ id: 'main' }]);
+		setConn('bot-1', agentConn);
+		const agentsStore = useAgentsStore();
+		await agentsStore.loadAgents('bot-1');
+
+		// 旧 conn：所有 RPC 都 deferred（永不 resolve），让旧 loadDashboard 长期飞行中
+		const oldConn = {
+			request: vi.fn().mockImplementation(() => new Promise(() => {})),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		setConn('bot-1', oldConn);
+
+		const store = useDashboardStore();
+		// fire-and-forget：不取 promise（IIFE 永不 settle 是预期，由 GC 兜底）
+		store.loadDashboard('bot-1');
+		expect(_loadingByClaw.has('bot-1')).toBe(true);
+		// 至少触发了首批 RPC
+		expect(oldConn.request).toHaveBeenCalled();
+
+		// 清除 + 同 id 重绑：飞行中 dedup 必须被清掉
+		store.clearDashboard('bot-1');
+		expect(_loadingByClaw.has('bot-1')).toBe(false);
+
+		// 重新挂 conn 用一个立即 resolve 的新对象，模拟同 id 新 claw
+		const newConn = mockConn({
+			'status': { model: 'claude-3' },
+			'models.list': { models: [] },
+			'usage.cost': null,
+			'sessions.list': { sessions: [] },
+			'tts.status': {},
+			'channels.status': {},
+			'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', newConn);
+
+		// 新 loadDashboard：应走独立请求（不被旧 dedup 命中）
+		const newPromise = store.loadDashboard('bot-1');
+		expect(newConn.request).toHaveBeenCalled();
+
+		await newPromise;
+	});
+
+	// 与 agents/sessions/topics 三 store 对称：旧 promise resolve 后 finally 必须做 identity
+	// check，避免擦掉 NEW promise 已写入的 dedup 入口（否则下次同 id loadDashboard 再
+	// 命中 dedup miss 多发一批 RPC）
+	test('同 id 重绑：旧 loadDashboard 的 stale finally 不删替换 promise', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+		const agentConn = mockAgentConn([{ id: 'main' }]);
+		setConn('bot-1', agentConn);
+		const agentsStore = useAgentsStore();
+		await agentsStore.loadAgents('bot-1');
+
+		// 旧 conn：所有 RPC 立即 resolve，让旧 loadDashboard 自然完成（finally 触发）
+		const oldConn = mockConn({
+			'status': {}, 'models.list': {}, 'usage.cost': null, 'sessions.list': {},
+			'tts.status': {}, 'channels.status': {}, 'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', oldConn);
+
+		const store = useDashboardStore();
+		const oldPromise = store.loadDashboard('bot-1');
+		expect(_loadingByClaw.has('bot-1')).toBe(true);
+
+		// 立即 clearDashboard 同步清 dedup（让旧 finally 跑时 Map 已被换成 NEW 入口）
+		store.clearDashboard('bot-1');
+		expect(_loadingByClaw.has('bot-1')).toBe(false);
+
+		// 新 conn：deferred，让新 loadDashboard 留在 dedup map 里供 identity 比对
+		const newConn = {
+			request: vi.fn().mockImplementation(() => new Promise(() => {})),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		setConn('bot-1', newConn);
+
+		// 第一次新 loadDashboard：fire-and-forget，新 promise 入 dedup map
+		store.loadDashboard('bot-1');
+		expect(_loadingByClaw.has('bot-1')).toBe(true);
+		const newCallsAfter1 = newConn.request.mock.calls.length;
+		expect(newCallsAfter1).toBeGreaterThan(0);
+
+		// 等旧 promise 完成（让 stale finally 跑）
+		await oldPromise;
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// 关键：旧 finally 的 identity check 应阻止它擦掉新 entry
+		expect(_loadingByClaw.has('bot-1')).toBe(true);
+
+		// 第二次同 id loadDashboard：被新 promise dedup 拦下，不发起新一批 RPC
+		store.loadDashboard('bot-1');
+		expect(newConn.request.mock.calls.length).toBe(newCallsAfter1);
+	});
 });

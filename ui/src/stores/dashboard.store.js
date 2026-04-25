@@ -158,6 +158,9 @@ export const useDashboardStore = defineStore('dashboard', {
 			if (!this.byClaw[id]) {
 				this.byClaw[id] = { loading: false, error: null, instance: null, agents: [] };
 			}
+			// 闭包捕获原 entry 引用：clearDashboard 在 IIFE 跑完前 delete byClaw[id] 时，
+			// 旧 IIFE 仍会写到这个孤儿对象，对 store 不可见、可被 GC。后续如果有人改成
+			// "复用旧 entry" 或 "clearDashboard 占位空对象" 会破，需重新评审
 			const entry = this.byClaw[id];
 			entry.loading = true;
 			entry.error = null;
@@ -259,8 +262,12 @@ export const useDashboardStore = defineStore('dashboard', {
 				}
 			})();
 			_loadingByClaw.set(id, p);
-			// 确保飞行中守卫在 promise 结束后清理（即使 IIFE 同步完成也不遗漏）
-			p.finally(() => _loadingByClaw.delete(id));
+			// 确保飞行中守卫在 promise 结束后清理（即使 IIFE 同步完成也不遗漏）；
+			// 仅当 Map 当前条目仍是本 promise 时才清，避免老 promise 的 finally
+			// 把 clearDashboard 后重入新建的飞行 promise 一起删掉
+			p.finally(() => {
+				if (_loadingByClaw.get(id) === p) _loadingByClaw.delete(id);
+			});
 			return p;
 		},
 
@@ -269,7 +276,10 @@ export const useDashboardStore = defineStore('dashboard', {
 		 * @param {string} clawId
 		 */
 		clearDashboard(clawId) {
-			delete this.byClaw[String(clawId)];
+			const id = String(clawId);
+			delete this.byClaw[id];
+			// 同步清飞行中守卫，避免同 id 重绑后新 loadDashboard 命中 dedup 拿到旧 promise
+			_loadingByClaw.delete(id);
 		},
 	},
 });

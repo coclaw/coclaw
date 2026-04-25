@@ -156,8 +156,10 @@ beforeEach(() => {
 	hoisted.app.setBadgeCount.mockClear();
 	hoisted.app.dock.bounce.mockClear();
 	hoisted.notifications.length = 0;
-	// safeHandle "正常不写错误日志"用例需要干净的 logMock.error 起点
+	// safeHandle "正常不写错误日志"用例需要干净的 logMock.error 起点；
+	// 协议白名单测试同样依赖干净的 logMock.warn 起点，避免跨 test 累积误判
 	logMock.error.mockClear();
+	logMock.warn.mockClear();
 	storeData.clear();
 	registerOnce();
 });
@@ -240,9 +242,39 @@ describe('notification', () => {
 // ---- shell ----
 
 describe('shell', () => {
-	test('shell:openExternal 透传', async () => {
+	test('shell:openExternal 透传 https', async () => {
 		await hoisted.invokeHandlers['shell:openExternal']({}, 'https://x.com');
 		expect(hoisted.shell.openExternal).toHaveBeenCalledWith('https://x.com');
+	});
+
+	test('shell:openExternal 透传 http', async () => {
+		await hoisted.invokeHandlers['shell:openExternal']({}, 'http://x.com/page');
+		expect(hoisted.shell.openExternal).toHaveBeenCalledWith('http://x.com/page');
+	});
+
+	// 协议白名单：renderer 通过 IPC 主动调用绕过 setWindowOpenHandler / will-navigate
+	// 那层防御，故此处对称拦截非 http(s) 协议（含本地 file:// 与自定义协议）
+	test('shell:openExternal 拒绝 file:// 协议（log.warn + 不调下游）', async () => {
+		await hoisted.invokeHandlers['shell:openExternal']({}, 'file:///etc/passwd');
+		expect(hoisted.shell.openExternal).not.toHaveBeenCalled();
+		expect(logMock.warn).toHaveBeenCalledWith(expect.stringContaining('shell:openExternal rejected'));
+	});
+
+	test('shell:openExternal 拒绝 javascript: 等自定义协议', async () => {
+		await hoisted.invokeHandlers['shell:openExternal']({}, 'javascript:alert(1)');
+		expect(hoisted.shell.openExternal).not.toHaveBeenCalled();
+		expect(logMock.warn).toHaveBeenCalledWith(expect.stringContaining('shell:openExternal rejected'));
+	});
+
+	test('shell:openExternal 拒绝非法 URL 字符串', async () => {
+		await hoisted.invokeHandlers['shell:openExternal']({}, 'not a url');
+		expect(hoisted.shell.openExternal).not.toHaveBeenCalled();
+		expect(logMock.warn).toHaveBeenCalledWith(expect.stringContaining('shell:openExternal rejected'));
+	});
+
+	test('shell:openExternal 拒绝非 string 入参', async () => {
+		await hoisted.invokeHandlers['shell:openExternal']({}, undefined);
+		expect(hoisted.shell.openExternal).not.toHaveBeenCalled();
 	});
 });
 
@@ -407,6 +439,18 @@ describe('download', () => {
 	test('download:start 调 win.webContents.downloadURL', async () => {
 		await hoisted.invokeHandlers['download:start']({}, 'https://x.com/a.zip');
 		expect(fakeWin.webContents.downloadURL).toHaveBeenCalledWith('https://x.com/a.zip');
+	});
+
+	test('download:start 拒绝 file:// 协议（防 Chromium 把本地文件当下载源）', async () => {
+		await hoisted.invokeHandlers['download:start']({}, 'file:///etc/passwd');
+		expect(fakeWin.webContents.downloadURL).not.toHaveBeenCalled();
+		expect(logMock.warn).toHaveBeenCalledWith(expect.stringContaining('download:start rejected'));
+	});
+
+	test('download:start 拒绝非法 URL', async () => {
+		await hoisted.invokeHandlers['download:start']({}, 'not a url');
+		expect(fakeWin.webContents.downloadURL).not.toHaveBeenCalled();
+		expect(logMock.warn).toHaveBeenCalledWith(expect.stringContaining('download:start rejected'));
 	});
 
 	test('will-download 进度事件 → download:progress channel', () => {

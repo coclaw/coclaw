@@ -275,11 +275,15 @@ function setupAppStateChange() {
 			}
 		});
 		console.log('[capacitor] appStateChange listener registered');
-	});
+	}).catch((e) => console.warn('[capacitor] appStateChange setup failed:', e));
 }
 
 /** 上次已知的网络类型（仅 wifi/cellular 时更新） */
 let _lastConnectionType = null;
+
+/** 单调递增计数：每次 networkStatusChange 实时事件 fire 时 +1，用于 init 期间
+ *  判定 getStatus 是否被实时事件抢先（值比对会因"恰巧同值"误判，故用计数） */
+let _networkEventCount = 0;
 
 /**
  * 归一化 connectionType：仅保留 wifi / cellular，其余返回 null
@@ -293,8 +297,12 @@ function normalizeConnectionType(type) {
 }
 
 function setupNetworkListener() {
+	// snapshot init 时刻的实时事件计数；getStatus.then 跑时若计数已涨，说明实时事件
+	// 已经写过 _lastConnectionType（哪怕值碰巧相同），不能让慢 getStatus 覆盖
+	const eventCountBefore = _networkEventCount;
 	import('@capacitor/network').then(({ Network }) => {
 		Network.addListener('networkStatusChange', ({ connected, connectionType }) => {
+			_networkEventCount++;
 			const normalized = normalizeConnectionType(connectionType);
 			console.log('[capacitor] networkStatusChange: connected=%s type=%s', connected, connectionType);
 			remoteLog(`app.network connected=${connected} type=${connectionType}`);
@@ -308,14 +316,33 @@ function setupNetworkListener() {
 				dispatchNetworkOnline(typeChanged);
 			}
 		});
-		// 读取初始网络类型
+		// 读取初始网络类型；仅当 init 期间无任何实时事件 fire 过时才填初值，
+		// 防止慢返回的 getStatus 覆盖更新的 networkStatusChange，导致下一次类型变化
+		// 被误判为"和上次一样"（typeChanged=false）。用计数而非值比对避开"碰巧同值"
 		Network.getStatus().then(({ connectionType }) => {
 			const normalized = normalizeConnectionType(connectionType);
-			if (normalized) _lastConnectionType = normalized;
+			if (normalized && _networkEventCount === eventCountBefore) _lastConnectionType = normalized;
 			console.log('[capacitor] initial connectionType=%s', connectionType);
 		}).catch(() => {});
 		console.log('[capacitor] Network listener registered');
 	}).catch((e) => console.warn('[capacitor] Network setup failed:', e));
+}
+
+/**
+ * 解析 coclaw:// deep-link URL 为 router path
+ * - `coclaw://chat/123` → `/chat/123`
+ * - `coclaw://` → `null`（根路径不导航）
+ * - 非法 URL → 抛 TypeError（caller 自行 catch）
+ *
+ * 抽为 export 是为了在不依赖 vitest 动态 import mock 的前提下测三分支
+ * @param {string} url
+ * @returns {string|null}
+ */
+export function parseDeepLinkPath(url) {
+	const parsed = new URL(url);
+	// host 可能为空，pathname 可能为 "/"；filter+replace 把多余前导斜杠归一
+	const routePath = '/' + [parsed.host, parsed.pathname].filter(Boolean).join('').replace(/^\/+/, '');
+	return routePath === '/' ? null : routePath;
 }
 
 function setupDeepLink(router) {
@@ -323,12 +350,10 @@ function setupDeepLink(router) {
 		App.addListener('appUrlOpen', ({ url }) => {
 			if (!url) return;
 			try {
-				const parsed = new URL(url);
-				// coclaw://chat/123 → host="chat", pathname="/123" → routePath="/chat/123"
-				const routePath = '/' + [parsed.host, parsed.pathname].filter(Boolean).join('').replace(/^\/+/, '');
-				if (routePath !== '/') {
-					console.log('[capacitor] deep-link → %s', routePath);
-					router.push(routePath);
+				const path = parseDeepLinkPath(url);
+				if (path) {
+					console.log('[capacitor] deep-link → %s', path);
+					router.push(path);
 				}
 			}
 			catch (e) {
@@ -336,7 +361,7 @@ function setupDeepLink(router) {
 			}
 		});
 		console.log('[capacitor] deep-link listener registered');
-	});
+	}).catch((e) => console.warn('[capacitor] deep-link setup failed:', e));
 }
 
 function setupBackButton(router) {
@@ -355,5 +380,5 @@ function setupBackButton(router) {
 			window.history.back();
 		});
 		console.log('[capacitor] backButton listener registered');
-	});
+	}).catch((e) => console.warn('[capacitor] backButton setup failed:', e));
 }

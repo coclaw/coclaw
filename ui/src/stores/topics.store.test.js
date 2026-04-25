@@ -776,4 +776,85 @@ describe('topics store', () => {
 			await newPromise2;
 		});
 	});
+
+	// __doLoadAll：tasks 必须与 connectedClaws 长度严格对齐；同步 conn 消失（getReadyConn 返 null）
+	// 的 claw 不能让 results 数组比 connectedClaws 短，否则后续按 i 索引会把"失败 result"
+	// 错位归因到错误的 claw，导致旧 topics 被误清
+	describe('__doLoadAll zip alignment', () => {
+		test('同步 conn 消失的 claw 用 null sentinel 占位，旧 topics 保留且不错位', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-A', name: 'A', online: true },
+				{ id: 'bot-B', name: 'B', online: true },
+			]);
+
+			// bot-A 进入 setClaws 后立刻把 conn 抹掉：getReadyConn(A) 在 sync 阶段返 null
+			const connA = mockConn({ topics: [] });
+			setConn('bot-A', connA);
+			mockConnections.delete('bot-A');
+
+			// bot-B 正常返 1 条新 topic
+			const connB = mockConn({ topics: [{ topicId: 't-B-new', agentId: 'main', title: 'B new', createdAt: 200 }] });
+			setConn('bot-B', connB);
+
+			const store = useTopicsStore();
+			// 预置 bot-A 的旧 topic
+			store.byId = toById([{ topicId: 't-A-old', agentId: 'main', title: 'A old', createdAt: 100, clawId: 'bot-A' }]);
+
+			await store.loadAllTopics();
+
+			// 关键：A 旧 topic 必须保留（同步 conn 消失从 queriedClawIds 删除，合并不替换）
+			expect(store.byId['t-A-old']?.title).toBe('A old');
+			// B 新 topic 写入
+			expect(store.byId['t-B-new']?.title).toBe('B new');
+			// A 一次 RPC 都没发
+			expect(connA.request).toHaveBeenCalledTimes(0);
+			expect(connB.request).toHaveBeenCalledTimes(1);
+		});
+
+		test('result-time conn vanish：fetch 完成后 conn 消失，旧 topics 保留', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			// 预置 bot-1 的旧 topic
+			const store = useTopicsStore();
+			store.byId = toById([{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 50, clawId: 'bot-1' }]);
+
+			// request 在途同步把 mockConnections 抹掉，模拟 SSE claw.unbound
+			// 在 RPC 在途期间清掉 conn → result-time getReadyConn() === null
+			const conn = {
+				request: vi.fn().mockImplementation(() => {
+					mockConnections.delete('bot-1');
+					return Promise.resolve({ topics: [] });
+				}),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			await store.loadAllTopics();
+
+			// 关键：result-time getReadyConn 复核应让该 claw 落到"未查询"列，
+			// 旧 topic 在合并时保留，不被空 topics 数组覆盖
+			expect(store.byId['t-old']?.title).toBe('Old');
+		});
+
+		test('反向断言：conn 健康但远端真空 topics 时，旧 topics 仍被清空', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			// 预置 bot-1 的旧 topic
+			const store = useTopicsStore();
+			store.byId = toById([{ topicId: 't-stale', agentId: 'main', title: 'Stale', createdAt: 50, clawId: 'bot-1' }]);
+
+			// conn 全程在线，远端返空 topics
+			const conn = mockConn({ topics: [] });
+			setConn('bot-1', conn);
+
+			await store.loadAllTopics();
+
+			// 旧 t-stale 应被清空——bot-1 在 queriedClawIds 中，合并按"已查询"覆盖
+			expect(store.byId['t-stale']).toBeUndefined();
+		});
+	});
 });

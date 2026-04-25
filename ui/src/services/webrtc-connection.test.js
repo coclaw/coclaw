@@ -1394,6 +1394,39 @@ describe('WebRtcConnection — send 流控', () => {
 		expect(dc.bufferedAmountLowThreshold).toBe(256 * 1024); // DC_LOW_WATER_MARK
 	});
 
+	// __enqueueSendMulti 快路径中第 N 个 dc.send 同步抛错的契约锁：与"DC close 触发
+	// __rejectSendQueue"路径不同——快路径 throw 时 chunks 还没入队，整体 promise 由
+	// `return Promise.reject(err)` 直接 reject；__sendQueue 仍为空、__rpcChannel 不动。
+	// 防止将来误改成"throw 后还入队"或"清队列"，把两条路径混淆
+	test('快路径中第 N 个 dc.send 抛错 → 整体 promise reject 同一 error，队列保持空且 __rpcChannel 不动', async () => {
+		const { rtc, dc } = await makeReady();
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.sctp = { maxMessageSize: 64 }; // 强制分片
+		dc.bufferedAmount = 0; // 维持低水位让快路径 while 跑多轮
+
+		// 让 dc.send 在第 2 次调用时抛错（前 1 次已成功，正中"partial throw"窗口）
+		const sendErr = new Error('send failed');
+		let sendCount = 0;
+		dc.send = vi.fn(() => {
+			sendCount++;
+			if (sendCount === 2) throw sendErr;
+		});
+
+		const longStr = 'x'.repeat(500); // 跨 ≥ 3 chunk 的 payload
+		const p = rtc.send({ method: 'big', payload: longStr });
+
+		// 整体 reject 同一 error 实例
+		await expect(p).rejects.toBe(sendErr);
+		// 快路径 throw 后不入队
+		expect(rtc.__sendQueue.length).toBe(0);
+		// dc.send 调用次数严格等于失败时的 i+1=2（验证未继续后续 chunk）
+		expect(dc.send).toHaveBeenCalledTimes(2);
+		// __rpcChannel 不被置空（与 DC close 路径区分：close 才会清，throw 不会）
+		expect(rtc.__rpcChannel).toBe(dc);
+
+		rtc.close();
+	});
+
 	// 多 chunk 大消息发送中 DC 突然关：__enqueueSendMulti 把第 2..N 块入队后，
 	// dc.onclose 同步触发 __rejectSendQueue('DataChannel closed') 把整个 promise reject。
 	// 锁的是"分片消息整体作为一个 promise（看最后一片的 reject）跨 close 边界正确失败"

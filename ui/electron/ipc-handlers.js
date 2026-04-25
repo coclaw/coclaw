@@ -28,6 +28,26 @@ function safeHandle(channel, fn) {
 }
 
 /**
+ * 判断 URL 是否为 http/https 协议——electron-shell 已对 setWindowOpenHandler /
+ * will-navigate 做了协议白名单（见 docs/designs/electron-desktop-shell.md），但
+ * renderer 通过 IPC 主动调用的 shell:openExternal / download:start 绕过了那层防御。
+ * 此处补上对称白名单：拒绝 file://、自定义协议（如 javascript:）和非法 URL，避免
+ * renderer 被入侵后能以系统权限打开本地文件 / 任意协议处理器
+ * @param {unknown} url
+ * @returns {boolean}
+ */
+function isAllowedExternalProtocol(url) {
+	if (typeof url !== 'string') return false;
+	try {
+		const protocol = new URL(url).protocol;
+		return protocol === 'http:' || protocol === 'https:';
+	}
+	catch {
+		return false;
+	}
+}
+
+/**
  * 注册所有 IPC 处理器（仅调用一次）。
  * 重复调用会直接跳过，避免：
  * 1. ipcMain.handle 对同 channel 抛 "second handler" 错
@@ -75,6 +95,10 @@ export function registerIpcHandlers(getWin) {
 
 	// ---- 外部链接 ----
 	safeHandle('shell:openExternal', (_, url) => {
+		if (!isAllowedExternalProtocol(url)) {
+			log.warn(`[ipc] shell:openExternal rejected non-http(s) url=${url}`);
+			return;
+		}
 		return shell.openExternal(url);
 	});
 
@@ -141,6 +165,10 @@ export function registerIpcHandlers(getWin) {
 	// ---- 下载管理 ----
 	// Web 端主动触发下载（使用 Electron 原生 downloadURL）
 	safeHandle('download:start', (_, url) => {
+		if (!isAllowedExternalProtocol(url)) {
+			log.warn(`[ipc] download:start rejected non-http(s) url=${url}`);
+			return;
+		}
 		const win = getWin();
 		if (win) win.webContents.downloadURL(url);
 	});
