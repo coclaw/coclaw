@@ -1507,10 +1507,10 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('source=app:foreground 长后台 + probe 失败 + PC 变 failed → triggerRestart', async () => {
+	test('source=app:foreground 长后台 + probe 失败 + PC 变 failed → 走 __ensureRtc rebuild', async () => {
 		const store = useClawsStore();
 		const fakeRtc = { state: 'connected', probe: vi.fn().mockImplementation(async () => {
-			// probe 期间 PC 状态变为 failed（probe 失败 + state≠connected → triggerRestart 分支）
+			// probe 期间 PC 状态变为 failed —— triggerRestart 会被服务层 gate 哑火，必须 rebuild
 			fakeRtc.state = 'failed';
 			return false;
 		}), triggerRestart: vi.fn() };
@@ -1532,11 +1532,12 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 		await vi.waitFor(() => {
 			expect(fakeRtc.probe).toHaveBeenCalled();
 		});
-		await new Promise((r) => setTimeout(r, 50));
-		// probe 失败 + PC 变 disconnected → triggerRestart（非 rebuild）
-		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('probe_failed');
-		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-		expect(mockInitRtc).not.toHaveBeenCalled();
+		// probe 失败 + PC 变 failed → rebuild（与 pre-probe failed 路径对称）
+		await vi.waitFor(() => {
+			expect(mockCloseRtcForBot).toHaveBeenCalledWith('65');
+			expect(mockInitRtc).toHaveBeenCalled();
+		});
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
 	});
 
 	test('probe 失败 + PC 仍 connected → 不 rebuild（plugin 繁忙场景）', async () => {
@@ -2653,9 +2654,10 @@ describe('rtcPhase 生命周期', () => {
 		});
 	});
 
-	test('__checkAndRecover probe 失败 + PC 变非 connected → triggerRestart', async () => {
+	test('__checkAndRecover probe 失败 + PC 变 failed → 走 __ensureRtc rebuild', async () => {
 		const store = useClawsStore();
-		// probe 返回 false 且 PC 在 probe 期间变为 failed
+		// probe 返回 false 且 PC 在 probe 期间变为 failed —— triggerRestart 会被 service 端 gate 哑火，
+		// 必须直接 rebuild 与 pre-probe 路径对称
 		const fakeRtc = { state: 'connected', probe: vi.fn().mockImplementation(async () => {
 			fakeRtc.state = 'failed';
 			return false;
@@ -2670,15 +2672,18 @@ describe('rtcPhase 生命周期', () => {
 		store.byId['95'].dcReady = true;
 		store.byId['95'].rtcPhase = 'ready';
 		mockCloseRtcForBot.mockClear();
+		mockInitRtc.mockClear();
 		mockRemoteLog.mockClear();
 
 		await store.__checkAndRecover('95', 'app:foreground');
 		expect(fakeRtc.probe).toHaveBeenCalled();
-		// store 不再同步设置 rtcPhase，由 WebRtcConnection 的 onRtcStateChange 回调驱动
-		expect(store.byId['95'].rtcPhase).toBe('ready');
-		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('probe_failed');
-		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
-		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('probe_failed'));
+		// triggerRestart 在 failed 状态会被服务层 gate 哑火，必须改走 rebuild
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		await vi.waitFor(() => {
+			expect(mockCloseRtcForBot).toHaveBeenCalledWith('95');
+			expect(mockInitRtc).toHaveBeenCalled();
+		});
+		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('probe_failed_pc_failed action=rebuild source=app:foreground'));
 	});
 
 	test('__checkAndRecover probe 失败 + PC 仍 connected → 不 rebuild', async () => {
@@ -2728,7 +2733,7 @@ describe('rtcPhase 生命周期', () => {
 		warnSpy.mockRestore();
 	});
 
-	test('__checkAndRecover probe 失败 + PC 变 closed → triggerRestart', async () => {
+	test('__checkAndRecover probe 失败 + PC 变 closed → 走 __ensureRtc rebuild', async () => {
 		const store = useClawsStore();
 		const fakeRtc = { state: 'connected', probe: vi.fn().mockImplementation(async () => {
 			fakeRtc.state = 'closed';
@@ -2744,12 +2749,45 @@ describe('rtcPhase 生命周期', () => {
 		store.byId['99'].dcReady = true;
 		store.byId['99'].rtcPhase = 'ready';
 		mockCloseRtcForBot.mockClear();
+		mockInitRtc.mockClear();
+		mockRemoteLog.mockClear();
 
-		await store.__checkAndRecover('99');
-		// store 不再同步设置 rtcPhase，由 WebRtcConnection 的 onRtcStateChange 回调驱动
-		expect(store.byId['99'].rtcPhase).toBe('ready');
+		await store.__checkAndRecover('99', 'manual');
+		// closed 同样走 rebuild（triggerRestart 会被服务层 gate 哑火）
+		expect(fakeRtc.triggerRestart).not.toHaveBeenCalled();
+		await vi.waitFor(() => {
+			expect(mockCloseRtcForBot).toHaveBeenCalledWith('99');
+			expect(mockInitRtc).toHaveBeenCalled();
+		});
+		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('probe_failed_pc_closed action=rebuild source=manual'));
+	});
+
+	test('__checkAndRecover probe 失败 + PC 变 restarting → triggerRestart(probe_failed)', async () => {
+		const store = useClawsStore();
+		// probe 期间 PC 进入 transient restarting（非 failed/closed）→ 维持 triggerRestart 路径，不 rebuild
+		const fakeRtc = { state: 'connected', probe: vi.fn().mockImplementation(async () => {
+			fakeRtc.state = 'restarting';
+			return false;
+		}), triggerRestart: vi.fn() };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc,
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '99r', name: 'RestartingBot', online: true }]);
+		store.byId['99r'].dcReady = true;
+		store.byId['99r'].rtcPhase = 'ready';
+		mockCloseRtcForBot.mockClear();
+		mockInitRtc.mockClear();
+		mockRemoteLog.mockClear();
+
+		await store.__checkAndRecover('99r');
 		expect(fakeRtc.triggerRestart).toHaveBeenCalledWith('probe_failed');
+		// transient 路径不动 rtcPhase，也不 rebuild
+		expect(store.byId['99r'].rtcPhase).toBe('ready');
 		expect(mockCloseRtcForBot).not.toHaveBeenCalled();
+		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
 	test('__checkAndRecover probe 成功 → 不修改任何状态', async () => {
@@ -6539,6 +6577,36 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 	// 始终与 `_rtcInitInProgress=true` 的 __ensureRtc 流水线并存；其 post-await 成功分支已在 L930
 	// 主动清 _pendingTypeChangedRestartClaws。孤立的 onRtcStateChange('connected') 回调迁移不可达。
 	// 原 skip 测试与生产链路无对应，已删除。
+
+	test('addOrUpdateClaw 在 fetched=false 时建 RTC，随后 sig disconnect 不 pause RTC（设计意图：snapshot 未到则 freeze 整轮跳过）', () => {
+		// 设计意图：__freezeAllClawsForSigOffline 入口 `!fetched` 早退（claws.store.js L617），
+		// 过滤 logout / 首启 snapshot 未到的 sig 状态噪音事件。
+		// 防回归：若有人去掉 fetched gate，会把首启竞态期间提前建的 RTC 误 pause。
+		// 注：不要求改源——本测试仅锁定现有设计意图。
+		const store = useClawsStore();
+		// 不调 setClaws，不设 fetched=true
+		const fakeRtc = {
+			state: 'connected',
+			isReady: true,
+			restartPaused: false,
+			pauseRestart: vi.fn(),
+			resumeRecovery: vi.fn(),
+			triggerRestart: vi.fn(),
+			nudgeRestart: vi.fn(),
+			probe: vi.fn().mockResolvedValue(true),
+		};
+		const fakeConn = { rtc: fakeRtc, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: 'X', name: 'EarlyBot', online: true });
+		store.__bridgeLifecycle();
+
+		// sig disconnect 触发 __freezeAllClawsForSigOffline
+		__emitSigState('disconnected');
+
+		// pauseRestart 不应被调（fetched=false → freeze 整轮跳过）
+		expect(fakeRtc.pauseRestart).not.toHaveBeenCalled();
+	});
 });
 
 // -------- G-03: _bridgedConns 同 clawId remove→re-add 时新旧 conn 实例切换 --------
@@ -7544,6 +7612,26 @@ describe('P2-3: malformed snapshot 防御', () => {
 		// 断言 3：存取一致（byId key 与 syncConnections 参数同 key）
 		expect(store.byId['123'].name).toBe('num-id');
 		expect(store.byId['1'].name).toBe('str-id');
+	});
+
+	test('applySnapshot duplicate id → last-write-wins、byId 单条', () => {
+		// 同一 snapshot 内出现两条 id 相同的 item：byId 用对象键唯一性去重（last-write-wins），
+		// 传给 manager.syncConnections 的 ids 数组保持原顺序（含 dup），由 manager 内部 Set 去重。
+		// 锁住 store 这一层"byId 单条 + 单次 batched 调用 manager"语义即可。
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue(null);
+		mockManager.syncConnections.mockClear();
+
+		store.applySnapshot([
+			{ id: 'd1', name: 'First' },
+			{ id: 'd1', name: 'Second' },
+		]);
+
+		// 断言 1：byId 只剩一条，且为后写入的 'Second'
+		expect(Object.keys(store.byId)).toEqual(['d1']);
+		expect(store.byId['d1'].name).toBe('Second');
+		// 断言 2：syncConnections 单次 batched 调用（不会因为 dup id 退化成 N 次）
+		expect(mockManager.syncConnections).toHaveBeenCalledTimes(1);
 	});
 });
 

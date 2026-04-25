@@ -1033,6 +1033,67 @@ describe('ChatPage watchers', () => {
 		expect(loadB).toHaveBeenCalledTimes(1);
 	});
 
+	test('topic mode: DC rebuild → 单次 silent reload + 不调 __loadChatHistory', async () => {
+		// topic 路由下，chatStore.topicMode=true → __onConnReady 走 silent reload 分支，
+		// 不应触发 __loadChatHistory（topic 不走首次历史加载路径）。
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-2', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-2'].dcReady = true;
+		clawsStore.byId['bot-2'].rtcPhase = 'ready';
+		setupAgents('bot-2', 'main');
+
+		const topicsStore = useTopicsStore();
+		topicsStore.byId = {
+			'sess-1': { topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, clawId: 'bot-2' },
+		};
+
+		// topic store —— key 以 `topic:` 前缀创建 → topicMode=true
+		const chatStore = chatStoreManager.get('topic:sess-1', { clawId: 'bot-2', agentId: 'main' });
+		chatStore.__initialized = true;
+		chatStore.__messagesLoaded = true;
+		chatStore.sending = false;
+		expect(chatStore.topicMode).toBe(true);
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+		const histSpy = vi.spyOn(chatStore, '__loadChatHistory').mockResolvedValue(undefined);
+
+		const wrapper = mount(ChatPage, {
+			global: {
+				plugins: [pinia],
+				mocks: {
+					$t: (key) => i18nMap[key] ?? key,
+					$route: {
+						name: 'topics-chat',
+						params: { sessionId: 'sess-1' },
+						path: '/topics/sess-1',
+						query: {},
+					},
+					$router: mockRouter,
+				},
+			},
+		});
+		await flushPromises();
+		// 挂载初始：immediate watcher 触发首轮 silent reload
+		expect(loadSpy).toHaveBeenCalled();
+		loadSpy.mockClear();
+
+		// DC rebuild 模拟：dcReady false → true
+		clawsStore.byId['bot-2'].dcReady = false;
+		await wrapper.vm.$nextTick();
+		expect(wrapper.vm.connReady).toBe(false);
+		clawsStore.byId['bot-2'].dcReady = true;
+		await wrapper.vm.$nextTick();
+		await flushPromises();
+
+		// rebuild 后恰好 1 次 silent reload
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+		// topic 模式不走首次历史加载
+		expect(histSpy).not.toHaveBeenCalled();
+	});
+
 	test('bot 解绑后跳转', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();

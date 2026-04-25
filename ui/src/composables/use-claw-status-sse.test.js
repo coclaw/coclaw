@@ -168,6 +168,11 @@ describe('useClawStatusSse', () => {
 		esInstance.onerror();
 		expect(connected.value).toBe(false);
 		expect(mockRemoteLog).toHaveBeenCalledWith('sse.error');
+		// SSE 断线不应改 presence 维度（只翻 connected 这一指示灯）
+		expect(store.applySnapshot).not.toHaveBeenCalled();
+		expect(store.updateClawOnline).not.toHaveBeenCalled();
+		expect(store.addOrUpdateClaw).not.toHaveBeenCalled();
+		expect(store.removeClawById).not.toHaveBeenCalled();
 	});
 
 	test('stop() should close EventSource and clear heartbeat timer', () => {
@@ -199,6 +204,11 @@ describe('useClawStatusSse', () => {
 		expect(esInstance.close).toHaveBeenCalled();
 		expect(MockEventSource).toHaveBeenCalledTimes(2);
 		expect(mockRemoteLog).toHaveBeenCalledWith('sse.hbTimeout');
+		// 心跳超时不应改 presence 维度（只重建 SSE）
+		expect(store.applySnapshot).not.toHaveBeenCalled();
+		expect(store.updateClawOnline).not.toHaveBeenCalled();
+		expect(store.addOrUpdateClaw).not.toHaveBeenCalled();
+		expect(store.removeClawById).not.toHaveBeenCalled();
 	});
 
 	test('heartbeat timeout should be reset by any incoming message', () => {

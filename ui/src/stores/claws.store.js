@@ -216,6 +216,11 @@ export const useClawsStore = defineStore('claws', {
 			.filter((c) => c.online && c.rtcPhase === 'failed' && c.retryNextAt === 0),
 	},
 	actions: {
+		/**
+		 * 测试脚手架：直接覆盖 byId（绕过 fetched gate / 生命周期副作用）。
+		 * 不要在生产代码中使用——会导致 sig/online gate 错位。
+		 * @internal Test-only.
+		 */
 		setClaws(items) {
 			const arr = Array.isArray(items) ? items : [];
 			const newById = {};
@@ -1261,6 +1266,14 @@ export const useClawsStore = defineStore('claws', {
 				const rtcAfter = conn?.rtc;
 				if (rtcAfter && rtcAfter.state === 'connected') {
 					remoteLog(`claw.recover claw=${id} reason=probe_timeout_pc_connected action=skip`);
+					return;
+				}
+				// PC 在 probe 期间变 failed/closed → triggerRestart 会哑火，必须直接 rebuild（与 pre-probe 路径对称）
+				if (rtcAfter && (rtcAfter.state === 'failed' || rtcAfter.state === 'closed')) {
+					remoteLog(`claw.recover claw=${id} reason=probe_failed_pc_${rtcAfter.state} action=rebuild source=${source}`);
+					claw.rtcPhase = 'recovering';
+					this.__clearRetry(id);
+					this.__ensureRtc(id).catch(() => {});
 					return;
 				}
 
