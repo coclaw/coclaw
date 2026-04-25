@@ -861,6 +861,35 @@ describe('ChatPage watchers', () => {
 		expect(loadSpy).toHaveBeenCalled();
 	});
 
+	/**
+	 * 契约锁：claw.online=false + dcReady=true 时
+	 * - connStatusText 显示 "离线" banner（视觉提示）
+	 * - ChatInput 的 :disabled 不因 offline 升起（仍允许输入和发送）
+	 *
+	 * 这是 "presence 单独显示 / DC 单独 gate 通信" 设计的产品契约：banner 是用户感知，
+	 * 真正的发送闸是 dcReady。改动这两条断言里的任何一条都意味着改了产品契约。
+	 */
+	test('contract: online=false + dcReady=true → 显示离线 banner 但 ChatInput 仍允许输入', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.clawId = 'bot-1';
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: false }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// banner 文案显示 offline 字符串（i18n key 'chat.clawOffline'）
+		expect(wrapper.vm.connStatusText).toBe(i18nMap['chat.clawOffline']);
+		expect(wrapper.text()).toContain('Claw is offline');
+
+		// ChatInput :disabled 应为 false（chat 路由 + routeClawId 已有 + 非 isLoading + 非 inputLocked）
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		expect(input.exists()).toBe(true);
+		expect(input.props('disabled')).toBe(false);
+	});
+
 	test('connReady immediate: 挂载时 bot 已连接则立即加载消息', async () => {
 		// 预创建 pinia 并填充 bot 状态，模拟"返回列表后再进入会话"
 		const pinia = createPinia();

@@ -1393,6 +1393,38 @@ describe('WebRtcConnection — send 流控', () => {
 		const { dc } = await makeReady();
 		expect(dc.bufferedAmountLowThreshold).toBe(256 * 1024); // DC_LOW_WATER_MARK
 	});
+
+	// 多 chunk 大消息发送中 DC 突然关：__enqueueSendMulti 把第 2..N 块入队后，
+	// dc.onclose 同步触发 __rejectSendQueue('DataChannel closed') 把整个 promise reject。
+	// 锁的是"分片消息整体作为一个 promise（看最后一片的 reject）跨 close 边界正确失败"
+	// 的契约，不再让任何残留 chunk 在 rebuild 后被误发到新 DC。
+	test('多 chunk 发送中 DC 关闭 → 整体 promise reject "DataChannel closed"，队列清空', async () => {
+		const { rtc, dc } = await makeReady();
+		// 强制分片：低 maxMessageSize 让 jsonStr 必须分片
+		const pc = MockRTCPeerConnection.lastInstance;
+		pc.sctp = { maxMessageSize: 64 };
+		// 高水位入队全部尾部 chunk（首块走快路径同步发出，其余进队等 drain）
+		const HIGH = 1024 * 1024;
+		dc.bufferedAmount = HIGH;
+
+		// 构造一个 jsonStr 跨 chunk 数 ≥ 3 的 payload
+		const longStr = 'x'.repeat(500);
+		const p = rtc.send({ method: 'big', payload: longStr });
+
+		// 让微任务跑一遍，确认队列里至少有一项尾部 chunk 等 drain
+		await Promise.resolve();
+		expect(rtc.__sendQueue.length).toBeGreaterThan(0);
+
+		// DC 关闭 → onclose 同步触发 __rejectSendQueue
+		dc.readyState = 'closed';
+		dc.onclose();
+
+		await expect(p).rejects.toThrow('DataChannel closed');
+		expect(rtc.__sendQueue.length).toBe(0);
+
+		// dc.onclose 同步把 __rpcChannel 置空，后续 rebuild 不会拿到旧 chunk 残留
+		expect(rtc.__rpcChannel).toBeNull();
+	});
 });
 
 describe('initRtc — RTC 建连', () => {
@@ -2514,6 +2546,31 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(sigCloseAfter).toBe(sigCloseBefore);
 	});
 
+	// dc.onerror 是孤立事件契约：浏览器 spec 里 DC error 多数情况只是临时 transport 抖动，
+	// 后续会再 fire dc.onclose 才真的失效。代码里 onerror 仅打 warn 日志、不动 state/不关 PC，
+	// 防止把"还能恢复的 transient error"误升级为 close+rebuild。本 test 锁这个契约。
+	test('dc.onerror 单独 fire 不动 state、不发 rtc:closed、不重建 PC', async () => {
+		const { rtc, pc, dc } = await setupConnectedRtc();
+		mockSendSignaling.mockClear();
+		const stateBefore = rtc.state;
+		const pcBefore = rtc.__pc;
+		const dcBefore = rtc.__rpcChannel;
+
+		// 模拟 DC transient error（没有伴随 onclose）
+		dc.onerror({ error: { message: 'transient' } });
+
+		expect(rtc.state).toBe(stateBefore); // 'connected'
+		expect(rtc.__pc).toBe(pcBefore);
+		expect(rtc.__rpcChannel).toBe(dcBefore);
+		expect(pc.__closed).toBe(false);
+		// 没发 rtc:closed 信令，没排 restart timer
+		const closedMsgs = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
+		expect(closedMsgs).toHaveLength(0);
+		expect(rtc.__restartTimer).toBeNull();
+
+		rtc.close();
+	});
+
 	test('restarting 下 DC 关 → close(asFailed) → 二次 fire dc.onclose 不重复 close', async () => {
 		// 某些浏览器会在 pc.close() 内部异步再 fire 一次 dc.onclose；
 		// 首次 fire 里 __rpcChannel 已置 null，第二次 fire 的 `__rpcChannel === dc` 分支不成立
@@ -2603,6 +2660,38 @@ describe('WebRtcConnection — ICE restart', () => {
 			'bot1', 'rtc:offer',
 			expect.objectContaining({ iceRestart: true }),
 		);
+
+		rtc.close();
+	});
+
+	test('triggerRestart from connected：始终 await ensureConnected（让陈旧 WS 检查有机会触发）', async () => {
+		// FIX-1 回归锁：typeChanged 切网窗口里 sig.state 仍 'connected' 但 lastAliveAt 陈旧时，
+		// 旧实现按 sig.state==='connected' 早跳，rtc:offer 直接被丢进死 WS。
+		// 修法：去掉 `if (sig.state !== 'connected')` 早退，始终 await ensureConnected——
+		// 让其内部的 lastAliveAt > HB_TIMEOUT_MS → forceReconnect 检查有机会跑一遍。
+		// 健康路径基本零成本（ensureConnected 一次分支判断即返回）。
+		const { rtc } = await setupConnectedRtc();
+		mockSigState = 'connected'; // 注意：state 是 connected，但仍要求调 ensureConnected
+		mockSendSignaling.mockClear();
+		mockEnsureConnected.mockClear();
+		mockEnsureConnected.mockResolvedValue(undefined);
+
+		rtc.triggerRestart('network_type_changed');
+		await vi.advanceTimersByTimeAsync(0);
+
+		// 断言 1：ensureConnected 恰好被调一次（即使 sig.state=connected）
+		expect(mockEnsureConnected).toHaveBeenCalledTimes(1);
+
+		// 断言 2：state 已切到 restarting
+		expect(rtc.state).toBe('restarting');
+
+		// 断言 3：rtc:offer 在 ensureConnected 之后送出
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(1);
+		expect(offers[0][2]).toEqual(expect.objectContaining({ iceRestart: true }));
+		// 调用次序：mockEnsureConnected.invocationCallOrder < sendSignaling.invocationCallOrder
+		expect(mockEnsureConnected.mock.invocationCallOrder[0])
+			.toBeLessThan(mockSendSignaling.mock.invocationCallOrder.at(-1));
 
 		rtc.close();
 	});
@@ -4245,6 +4334,89 @@ describe('WebRtcConnection — pauseRestart', () => {
 		expect(rtc.__restartAttemptCount).toBe(0);
 		expect(rtc.__restartOfferSentAt).toBe(0);
 		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartInFlight).toBe(false);
+
+		rtc.close();
+	});
+
+	// pauseRestart 在 createOffer await 期间 reject 路径：旧 tick 的 reject 不应越过 pause
+	// 屏障 close({asFailed:true})。L1195 的 epoch / paused guard 应吞掉 reject。
+	test('pauseRestart 后 createOffer reject → 不发 rtc:closed、保持 restarting + paused', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		let rejectOffer;
+		pc.createOffer = (opts) => {
+			pc.__createOfferOpts.push(opts);
+			return new Promise((_, rej) => { rejectOffer = rej; });
+		};
+
+		// 进入 restarting → 挂在 await createOffer
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartInFlight).toBe(true);
+
+		mockSendSignaling.mockClear();
+		const epochBefore = rtc.__restartEpoch;
+		const pcBefore = rtc.__pc;
+
+		// pauseRestart → epoch++、paused=true
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+
+		// 旧 createOffer 现在 reject → catch 里的 paused/epoch guard 应吞掉
+		rejectOffer(new Error('createOffer failed'));
+		await vi.advanceTimersByTimeAsync(0);
+
+		// state 维持 restarting（不被 close 升级到 closed/failed）
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__pc).toBe(pcBefore);
+		expect(pcBefore.__closed).toBe(false);
+		expect(rtc.__restartPaused).toBe(true);
+		// 没发 rtc:closed
+		const closedMsgs = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
+		expect(closedMsgs).toHaveLength(0);
+		// finally 复位
+		expect(rtc.__restartInFlight).toBe(false);
+
+		rtc.close();
+	});
+
+	test('pauseRestart 后 setLocalDescription reject → 不发 rtc:closed、保持 restarting + paused', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+
+		// createOffer 走默认（立即 resolve），SLD 挂起后 reject
+		let rejectSld;
+		pc.setLocalDescription = (desc) => {
+			pc.localDescription = desc;
+			return new Promise((_, rej) => { rejectSld = rej; });
+		};
+
+		mockSendSignaling.mockClear();
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__restartInFlight).toBe(true);
+
+		const epochBefore = rtc.__restartEpoch;
+		const pcBefore = rtc.__pc;
+
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+
+		rejectSld(new Error('SLD failed'));
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.state).toBe('restarting');
+		expect(rtc.__pc).toBe(pcBefore);
+		expect(pcBefore.__closed).toBe(false);
+		expect(rtc.__restartPaused).toBe(true);
+		const closedMsgs = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:closed');
+		expect(closedMsgs).toHaveLength(0);
 		expect(rtc.__restartInFlight).toBe(false);
 
 		rtc.close();

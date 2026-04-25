@@ -1023,6 +1023,45 @@ describe('applySnapshot', () => {
 			expect(mockInitRtc).toHaveBeenCalledWith('1', fakeConn, expect.any(Object));
 		});
 	});
+
+	/**
+	 * B4 quirk 锁：applySnapshot 入参里同一 id 出现两次（异常 server 行为或 proxy 篡改），
+	 * Phase 1 循环里 prevOnlineMap.set(id, existing.online) 会被第二次出现时覆盖——
+	 * 第二次出现时 existing.online 已是第一次 set 完的最新值，prevOnlineMap[id] 不再
+	 * 反映"快照前真实 online"，Phase 3 dispatch 因此基于"被污染的 prev"判定动作。
+	 *
+	 * 本测试锁的是当前实际行为：实际 prev 是 false → true → false，但 prevOnlineMap 记的
+	 * 是中间态 true，结合最终 online=false → Phase 3 走 true→false 分支调
+	 * __handleClawGoOffline；不会走 __resumeOnline。
+	 *
+	 * 该 quirk 已记入 backlog (B4)：实际场景下 server 不会推 dup id；正式修法待评估。
+	 */
+	test('B4: 同一 id 在 snapshot 内出现两次 (true 后 false) → 锁当前 quirk: 触发 handleClawGoOffline，不触发 resumeOnline', () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 准备：一个已存在、initialized 的 claw，初始 online=false
+		store.setClaws([{ id: 'd1', online: false, initialized: true }]);
+		store.byId['d1'].online = false;
+		store.byId['d1'].initialized = true;
+
+		const goOfflineSpy = vi.spyOn(store, '__handleClawGoOffline');
+		const resumeSpy = vi.spyOn(store, '__resumeOnline');
+
+		// snapshot 含 dup id：先 online=true，后 online=false
+		store.applySnapshot([
+			{ id: 'd1', name: 'A', online: true },
+			{ id: 'd1', name: 'A', online: false },
+		]);
+
+		// 锁 B4 quirk: prevOnlineMap['d1'] 被 Phase 1 第二次迭代覆盖为 true（中间态污染），
+		// 最终 claw.online=false → Phase 3 走 prev=true && online=false 分支 → __handleClawGoOffline
+		expect(goOfflineSpy).toHaveBeenCalledWith('d1');
+		expect(resumeSpy).not.toHaveBeenCalled();
+		// 最终 online 状态确实是 false（Phase 1 第二次迭代写入）
+		expect(store.byId['d1'].online).toBe(false);
+	});
 });
 
 describe('WebRTC 集成', () => {
@@ -4207,6 +4246,60 @@ describe('manualRetryUnreachable', () => {
 		expect(ensureSpy).toHaveBeenCalledTimes(2);
 		const ids = ensureSpy.mock.calls.map((call) => call[0]).sort();
 		expect(ids).toEqual(['a', 'b']);
+	});
+
+	// 用户在 sig WS 不通时点"重试"按钮：__clearRetry 跑、__ensureRtc 入口 sig gate 拦住、
+	// 不烧 ICE/TURN 预算；sig 恢复时 __resumeAllClawsForSigOnline 自然接手 → __resumeOnline
+	// 把 claw 推回正常 lifecycle。
+	test('sig offline + manualRetryUnreachable → ensureRtc 入口 sig gate 拦住、initRtc 不被调；sig 恢复后由 resumeOnline 接手', async () => {
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		// 直接 setClaws 跳过 addOrUpdateClaw 的 __bridgeLifecycle/__fullInit 副作用
+		// （fakeConn.rtc 始终保持 null，更贴合"还没建过 RTC 的 unreachable"语义）
+		store.fetched = true;
+		store.setClaws([{ id: 'bad', name: 'A', online: true }]);
+		store.byId['bad'].initialized = true;
+		store.byId['bad'].rtcPhase = 'failed';
+		store.byId['bad'].retryCount = 3;
+		store.byId['bad'].retryNextAt = 0;
+		store.byId['bad'].dcReady = false;
+
+		// 注册 sig listener 并切到 disconnected
+		store.__bridgeLifecycle();
+		__emitSigState('disconnected');
+
+		mockInitRtc.mockClear();
+		const clearSpy = vi.spyOn(store, '__clearRetry');
+
+		store.manualRetryUnreachable();
+		// 等 __ensureRtc 入口 sig gate 早退跑完
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// 断言 1：__clearRetry 调过（去退避状态）
+		expect(clearSpy).toHaveBeenCalledWith('bad');
+		// 断言 2：retryNextAt 维持 0（unreachable 入参条件本就要求 0）
+		expect(store.byId['bad'].retryNextAt).toBe(0);
+		// 断言 3：sig gate 拦住 → initRtc 一次都没被调（不烧预算）
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		// rtcPhase 不动（既没 building 也没 ready；sig 恢复路径接手）
+		expect(store.byId['bad'].rtcPhase).toBe('failed');
+
+		// sig 恢复 → __resumeAllClawsForSigOnline 应把 'bad' 当 initialized 分支处理
+		// → __resumeOnline → __ensureRtc → 这次 sig gate 已开 → mockInitRtc 真正被调
+		clearSpy.mockClear();
+		mockInitRtc.mockClear();
+		const resumeSpy = vi.spyOn(store, '__resumeOnline');
+		__emitSigState('connected');
+		await vi.waitFor(() => expect(resumeSpy).toHaveBeenCalledWith('bad'));
+		expect(resumeSpy).toHaveBeenCalledWith('bad');
+		// initRtc 在 resumeOnline → ensureRtc 路径被真正触发（rtc=null + rtcPhase=failed 走 rebuild）
+		await vi.waitFor(() => expect(mockInitRtc).toHaveBeenCalled());
 	});
 });
 
@@ -7733,6 +7826,54 @@ describe('P1-3: sig offline 重复 updateClawOnline 防回归', () => {
 			typeof msg === 'string' && msg.startsWith('claw.fullInit '),
 		);
 		expect(fullInitLogs.length).toBe(1);
+
+		warnSpy.mockRestore();
+	});
+
+	// 当前行为锁：sync 防御只挡同步连发——rollback (initialized=false) 之后再来的 updateClawOnline
+	// 仍会重新走一遍 __fullInit。这是为了保证合法 SSE 推送有重试机会（sig 中途短跳恢复时不被锁死）。
+	// 若后续团队想做 "rollback 后短期内不再重试" 的去重，本测试需要改。
+	test('sig offline + __fullInit rollback 之后再调一次 → 每次都重新尝试 fullInit (锁现状)', async () => {
+		const store = useClawsStore();
+		const fakeConn = {
+			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.fetched = true;
+		store.setClaws([{ id: '1', name: 'A' }]);
+		store.byId['1'].online = false;
+		store.byId['1'].initialized = false;
+
+		store.__bridgeLifecycle();
+		__emitSigState('disconnected');
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		// 第 1 次调用 → sync set initialized=true → fullInit 内部 await __ensureRtc 跑完后
+		// 因 conn.rtc?.isReady=false 抛 'RTC not available' → catch 回滚 initialized=false
+		store.updateClawOnline('1', true);
+		await vi.waitFor(() => expect(store.byId['1'].initialized).toBe(false));
+
+		// 第 2 次调用：rollback 之后 initialized=false，仍走 `!initialized` 分支重新发起
+		store.updateClawOnline('1', true);
+		await vi.waitFor(() => expect(store.byId['1'].initialized).toBe(false));
+
+		// initRtc 永远不该被调用（sig gate 拦住）
+		expect(mockInitRtc).not.toHaveBeenCalled();
+
+		// 锁定：两次合法尝试 → fullInit 日志 2 条
+		const fullInitLogs = mockRemoteLog.mock.calls.filter(([msg]) =>
+			typeof msg === 'string' && msg.startsWith('claw.fullInit '),
+		);
+		expect(fullInitLogs.length).toBe(2);
+
+		// 同时确认每次失败都打了 catch 里的 fullInit failed warn
+		const failWarnCount = warnSpy.mock.calls.filter(([msg]) =>
+			typeof msg === 'string' && msg.includes('fullInit failed'),
+		).length;
+		expect(failWarnCount).toBe(2);
 
 		warnSpy.mockRestore();
 	});

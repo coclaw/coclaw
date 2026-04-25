@@ -1139,33 +1139,35 @@ export class WebRtcConnection {
 			this.__startRestartPoll(this.__pc);
 		}
 
-		// 信令 WS 不可用 → 等待其就绪（与 PC rebuild 路径对齐）
+		// 信令 WS 健康检查：始终 await ensureConnected，让其内部的 lastAliveAt 陈旧检查
+		// （signaling-connection.js: HB_TIMEOUT_MS → forceReconnect）有机会触发。
+		// __sendRaw / sendSignaling 不做陈旧检查——typeChanged 切网窗口里 WS state 仍 'connected'
+		// 但已死掉时，跳过此调用会把 rtc:offer 直接丢进死 WS。
+		// WS 健康路径在 ensureConnected 内部基本零成本（一次分支判断即返回）。
 		const sig = useSignalingConnection();
-		if (sig.state !== 'connected') {
-			this.__log('info', `ICE restart: WS not ready, waiting... reason=${reason}`);
-			try {
-				await sig.ensureConnected();
-			} catch {
-				// 起点是 pauseRestart 冻结态 → 本次 online_resume 实际失败，回滚到 pause 原状
-				// 否则后续自动路径（__onIceFailed/keepalive 等）会通过门控，时间预算到期会被误 close asFailed。
-				// state 维持 'restarting' 与 pauseRestart 从 restarting 源态 pause 后的稳态等价——
-				// 下轮 __resumeOnline 遍历会按 restarting+paused 分派 triggerRestart('online_resume')
-				if (resumingFromPause && this.__restartEpoch === epochAtEntry && this.__state === 'restarting') {
-					this.__restartPaused = true;
-					this.__restartStartTime = 0; // 下次 online_resume 按"新一轮"起算
-					// 停本次 online_resume 入口起的 timer/poll，彻底对齐 pauseRestart 的停机语义
-					this.__stopRestartTimer();
-					this.__stopRestartPoll();
-					this.__log('info', 'ICE restart: ensureConnected failed, revert to paused');
-				} else {
-					this.__log('info', 'ICE restart: ensureConnected failed, will retry');
-				}
-				return;
+		this.__log('debug', `ICE restart: ensureConnected check reason=${reason}`);
+		try {
+			await sig.ensureConnected();
+		} catch {
+			// 起点是 pauseRestart 冻结态 → 本次 online_resume 实际失败，回滚到 pause 原状
+			// 否则后续自动路径（__onIceFailed/keepalive 等）会通过门控，时间预算到期会被误 close asFailed。
+			// state 维持 'restarting' 与 pauseRestart 从 restarting 源态 pause 后的稳态等价——
+			// 下轮 __resumeOnline 遍历会按 restarting+paused 分派 triggerRestart('online_resume')
+			if (resumingFromPause && this.__restartEpoch === epochAtEntry && this.__state === 'restarting') {
+				this.__restartPaused = true;
+				this.__restartStartTime = 0; // 下次 online_resume 按"新一轮"起算
+				// 停本次 online_resume 入口起的 timer/poll，彻底对齐 pauseRestart 的停机语义
+				this.__stopRestartTimer();
+				this.__stopRestartPoll();
+				this.__log('info', 'ICE restart: ensureConnected failed, revert to paused');
+			} else {
+				this.__log('info', 'ICE restart: ensureConnected failed, will retry');
 			}
-			// 等待期间状态可能已变更（close / 其他路径已恢复 / 超时 / pauseRestart 冻结）
-			if (this.__restartEpoch !== epochAtEntry) return;
-			if (!this.__pc || this.__state !== 'restarting') return;
+			return;
 		}
+		// 等待期间状态可能已变更（close / 其他路径已恢复 / 超时 / pauseRestart 冻结）
+		if (this.__restartEpoch !== epochAtEntry) return;
+		if (!this.__pc || this.__state !== 'restarting') return;
 
 		// 防止并发：timer 和 immediate retry 可能在 await 间隙同时触发
 		if (this.__restartInFlight) return;
