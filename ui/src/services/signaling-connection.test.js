@@ -1080,4 +1080,64 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
 		expect(pausedLogs.length).toBe(1);
 	});
+
+	// P1-9: ensureConnected wait + online 在 timeout 前到达 → resolve 不超时
+	test('ensureConnected pending 期间 setOnLine(true)+network:online → 在 timeoutMs 内 resolve', async () => {
+		setOnLine(false);
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		// 必须先 connect 一次注册 network:online listener（构造时不挂；ensureConnected 走的是
+		// __doConnect，但 listener 注册在 public connect()），否则 dispatch 没人接
+		conn.connect();
+		const instancesBefore = MockWebSocket.instances.length;
+
+		// 启动 ensureConnected：offline 门控让 __doConnect 不建 WS，进入 __waitForConnected
+		const p = conn.ensureConnected({ timeoutMs: 10_000 });
+		await Promise.resolve();
+
+		// 切 online + 派发 network:online → 立即重连
+		setOnLine(true);
+		window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged: false } }));
+
+		// 新 WS 已创建
+		expect(MockWebSocket.instances.length).toBeGreaterThan(instancesBefore);
+		MockWebSocket.lastInstance.simulateOpen();
+		// 让 microtask + state 事件回调跑完
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// 不超时：__waitForConnected 已 resolve
+		await expect(p).resolves.toBeUndefined();
+		expect(conn.state).toBe('connected');
+
+		conn.disconnect();
+	});
+});
+
+describe('SignalingConnection – probe + network:online 互动', () => {
+	// P1-10: probe in flight 时 network:online typeChanged=true 触发 forceReconnect；
+	// 旧 probe timer 必须被清，fast-forward 到 probe 应该 fire 的时间点 forceReconnect 不重复调
+	test('probe in flight + network:online typeChanged=true → forceReconnect 1 次，旧 probe timer 不再 fire', () => {
+		const { conn } = makeConnected();
+		const fcSpy = vi.spyOn(conn, 'forceReconnect');
+
+		const instancesBefore = MockWebSocket.instances.length;
+		// 触发 probe → __probeTimer set
+		conn.probe();
+		expect(conn.__probeTimer).not.toBeNull();
+
+		// network:online + typeChanged=true → forceReconnect 一次
+		conn.__handleForegroundResume('network:online', { typeChanged: true });
+		expect(fcSpy).toHaveBeenCalledTimes(1);
+		// MockWebSocket 增量恰为 1（forceReconnect 内 __doConnect 建一条新 WS）
+		expect(MockWebSocket.instances.length).toBe(instancesBefore + 1);
+		// probeTimer 已被 forceReconnect 内 __clearProbe 清掉
+		expect(conn.__probeTimer).toBeNull();
+
+		// fast-forward 到原 probe timer 应 fire 的时间点 + 1ms
+		// （PROBE_TIMEOUT_MS=2500，留足余量推进 5s）→ forceReconnect 不应再被调
+		vi.advanceTimersByTime(5_000);
+		expect(fcSpy).toHaveBeenCalledTimes(1);
+
+		conn.disconnect();
+	});
 });

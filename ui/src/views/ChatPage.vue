@@ -803,24 +803,34 @@ export default {
 			if (!this.chatStore) return;
 			// 同一 store 实例去重：chatStore watcher 和 connReady watcher 可能在同一 tick 各触发一次
 			if (this.__connReadyStore === this.chatStore) return;
-			this.__connReadyStore = this.chatStore;
-			// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
-			this.chatStore.__reconcileSlashCommand();
-			const isFirstLoad = !this.chatStore.__messagesLoaded;
-			if (isFirstLoad) {
-				await this.chatStore.loadMessages();
-				if (this.__unmounted || !this.chatStore) return;
-				if (!this.chatStore.topicMode) this.chatStore.__loadChatHistory();
-			} else if (!this.chatStore.sending) {
-				// 重连后可能丢失事件，只要非发送中就强制刷新以触发 reconcile (#235)
-				this.chatStore.loadMessages({ silent: true });
+			const targetStore = this.chatStore;
+			this.__connReadyStore = targetStore;
+			let succeeded = false;
+			try {
+				// WS 重连时清理挂起的 slash command（event:chat 可能在断连期间丢失）
+				targetStore.__reconcileSlashCommand();
+				const isFirstLoad = !targetStore.__messagesLoaded;
+				if (isFirstLoad) {
+					await targetStore.loadMessages();
+					if (this.__unmounted || this.chatStore !== targetStore) return;
+					if (!targetStore.topicMode) targetStore.__loadChatHistory();
+				} else if (!targetStore.sending) {
+					// 重连后可能丢失事件，只要非发送中就强制刷新以触发 reconcile (#235)
+					targetStore.loadMessages({ silent: true });
+				}
+				// 加载完成后：强制滚到底部，并检测内容是否不足以填满容器
+				// 非首次加载（组件重建但 store 复用）时也需 force 以解锁 visibility
+				this.$nextTick(() => {
+					this.scrollToBottom(true);
+					if (isFirstLoad) this.__autoFillHistory();
+				});
+				succeeded = true;
+			} finally {
+				// reject / 中途切走时回滚 guard，避免后续切回 targetStore 时 dedup 拦死
+				if (!succeeded && this.__connReadyStore === targetStore) {
+					this.__connReadyStore = null;
+				}
 			}
-			// 加载完成后：强制滚到底部，并检测内容是否不足以填满容器
-			// 非首次加载（组件重建但 store 复用）时也需 force 以解锁 visibility
-			this.$nextTick(() => {
-				this.scrollToBottom(true);
-				if (isFirstLoad) this.__autoFillHistory();
-			});
 		},
 
 		/**

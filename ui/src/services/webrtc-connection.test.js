@@ -4428,6 +4428,72 @@ describe('paused gate 抗迟到 signaling', () => {
 
 		rtc.close();
 	});
+
+	// P0-5: rtc:answer setRemoteDescription pending 期间 pauseRestart →
+	// .then 中的 paused/pc-replace guard 必须丢弃迟到 resolve，不写 __remoteDescSet 不 drain
+	test('setRemoteDescription pending 期间 pauseRestart → resolve 后 drop（不 drain pendingCandidates）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		// 推入 restarting 让 rtc:answer 走"restarting answer"路径
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		// 用手动可控 promise 替换 pc.setRemoteDescription
+		let resolveSDP;
+		const sdpPromise = new Promise((r) => { resolveSDP = r; });
+		const sldSpy = vi.spyOn(pc, 'setRemoteDescription').mockReturnValue(sdpPromise);
+		const addSpy = vi.spyOn(pc, 'addIceCandidate');
+
+		// 预先注入一个 pending candidate，验证 drain 不被执行
+		rtc.__pendingCandidates.push({ candidate: 'cand:pre', sdpMid: '0' });
+
+		// 触发 rtc:answer：进入 setRemoteDescription（仍 pending）
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer' } });
+		expect(sldSpy).toHaveBeenCalledTimes(1);
+
+		// await 期间 pause
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+
+		// resolve setRemoteDescription
+		resolveSDP();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// guard 拦住：__remoteDescSet 不被翻 true，pendingCandidates 不被 drain
+		expect(rtc.__remoteDescSet).toBe(false);
+		expect(rtc.__pendingCandidates).toHaveLength(1);
+		expect(addSpy).toHaveBeenCalledTimes(0);
+
+		rtc.close();
+	});
+
+	test('正常路径（无 pause）：setRemoteDescription resolve 后 drain pendingCandidates（guard 不误伤）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		let resolveSDP;
+		const sdpPromise = new Promise((r) => { resolveSDP = r; });
+		vi.spyOn(pc, 'setRemoteDescription').mockReturnValue(sdpPromise);
+		const addSpy = vi.spyOn(pc, 'addIceCandidate');
+
+		// 注入 candidate，验证正常路径会 drain
+		rtc.__pendingCandidates.push({ candidate: 'cand:normal', sdpMid: '0' });
+
+		fireRtcSignal({ clawId: 'bot1', type: 'rtc:answer', payload: { sdp: 'mock-answer' } });
+		// 不 pause，直接 resolve
+		resolveSDP();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(rtc.__remoteDescSet).toBe(true);
+		expect(rtc.__pendingCandidates).toHaveLength(0);
+		expect(addSpy).toHaveBeenCalledTimes(1);
+
+		rtc.close();
+	});
 });
 
 describe('WebRtcConnection — parseCredExpireAt', () => {
@@ -5730,5 +5796,93 @@ describe('P0-5: 主动 close 同步 dc.onclose 不重入', () => {
 		// 不会再调 __rejectAllPending。总次数 1。
 		expect(clawConn.__rejectAllPending).toHaveBeenCalledTimes(1);
 		expect(clawConn.__rejectAllPending).toHaveBeenCalledWith(expect.any(String), 'DC_CLOSED');
+	});
+});
+
+// P0-6: paused + online_resume 触发的 __attemptRestart 在 sig.ensureConnected reject 时，
+// 应回滚到 paused 原状（恢复 __restartPaused=true、清 timer/poll、重置 __restartStartTime=0），
+// 而不是让自动路径继续烧预算
+describe('P0-6: online_resume + ensureConnected 失败 → 回到 paused', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		MockRTCPeerConnection.lastInstance = null;
+		pcInstances.length = 0;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('paused 起点 + ensureConnected reject → 回到 paused 原状（清 timer/poll/重置 startTime）', async () => {
+		// 推到 restarting + paused
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartPollTimer).toBeNull();
+		expect(rtc.__restartStartTime).toBe(0);
+
+		// sig 不可用：ensureConnected reject
+		mockSigState = 'connecting';
+		mockEnsureConnected.mockReset();
+		mockEnsureConnected.mockRejectedValueOnce(new Error('ws not ready'));
+		mockSendSignaling.mockClear();
+
+		// online_resume 入口（白名单 reason 可越过 paused gate）
+		rtc.triggerRestart('online_resume');
+		// 同步路径：__attemptRestart 进入 sig.ensureConnected await
+		await vi.advanceTimersByTimeAsync(0);
+		// reject 已抛回 catch 分支，回到 paused
+		await Promise.resolve();
+
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartTimer).toBeNull();
+		expect(rtc.__restartPollTimer).toBeNull();
+		expect(rtc.__restartStartTime).toBe(0);
+		// 未发出 offer
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(0);
+
+		rtc.close();
+	});
+
+	test('从 paused 二次 online_resume + ensureConnected resolve → 正常发 offer（证明可从 paused 重启）', async () => {
+		const { rtc, pc } = await setupConnectedRtc();
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+
+		// 第一次：sig 不通 → 回到 paused
+		mockSigState = 'connecting';
+		mockEnsureConnected.mockReset();
+		mockEnsureConnected.mockRejectedValueOnce(new Error('ws not ready'));
+		rtc.triggerRestart('online_resume');
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.resolve();
+		expect(rtc.__restartPaused).toBe(true);
+
+		// 第二次：sig 来了 → ensureConnected resolve，正常发 offer
+		mockSigState = 'connecting';
+		mockEnsureConnected.mockResolvedValueOnce(undefined);
+		mockSendSignaling.mockClear();
+
+		rtc.triggerRestart('online_resume');
+		// 让 await ensureConnected 完成
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.resolve();
+		await Promise.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+
+		// rtc:offer 被发出（含 iceRestart）
+		const offers = mockSendSignaling.mock.calls.filter((c) => c[1] === 'rtc:offer');
+		expect(offers).toHaveLength(1);
+		expect(offers[0][2]).toEqual(expect.objectContaining({ iceRestart: true }));
+
+		rtc.close();
 	});
 });

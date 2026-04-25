@@ -1537,6 +1537,12 @@ export class WebRtcConnection {
 			}
 			pcAtAnswer?.setRemoteDescription({ type: 'answer', sdp: msg.payload.sdp })
 				.then(() => {
+					// guard：await 期间若被 pauseRestart 冻结或 PC 已被 close 替换，
+					// 此处 resolve 是迟到信号，不能写 __remoteDescSet 也不能 drain pendingCandidates
+					if (this.__pc !== pcAtAnswer || this.__restartPaused) {
+						this.__log('debug', 'rtc:answer setRemoteDescription resolved after pause/rebuild, dropping');
+						return;
+					}
 					this.__remoteDescSet = true;
 					// 排空 answer 到达前暂存的 ICE candidates
 					const pending = this.__pendingCandidates.splice(0);

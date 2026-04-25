@@ -676,6 +676,61 @@ describe('dashboard store', () => {
 		}
 	});
 
+	// P2-2: 第二次 loadDashboard 某个 RPC reject 时的字段语义
+	// 当前实现：entry.instance 整个被重写；reject 字段被写成 null（无条件覆盖），不保留旧值
+	// 注：如果将来要改成"保留旧值"，本测试也要相应修改
+	test('第二次 loadDashboard reject 字段被写为 null（锁定当前无条件覆盖行为；不保留旧值）', async () => {
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].pluginInfo = { version: '0.5.0', clawVersion: '2026.3.14' };
+
+		const agentConn = mockAgentConn([{ id: 'main', name: 'Main' }]);
+		setConn('bot-1', agentConn);
+		const agentsStore = useAgentsStore();
+		await agentsStore.loadAgents('bot-1');
+
+		// 第一次：全成功
+		const dashConn = mockConn({
+			'status': { model: 'claude-3', provider: 'anthropic' },
+			'models.list': { models: [] },
+			'usage.cost': { total: 50, currency: 'USD' },
+			'sessions.list': { sessions: [] },
+			'tts.status': { enabled: false },
+			'channels.status': { discord: { accounts: [{ enabled: true }] } },
+			'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', dashConn);
+
+		const store = useDashboardStore();
+		await store.loadDashboard('bot-1');
+
+		const entry1 = store.byClaw['bot-1'];
+		expect(entry1.instance.monthlyCost).toEqual({ total: 50, currency: 'USD' });
+		expect(entry1.instance.channels).toEqual([{ id: 'discord', connected: true }]);
+		expect(entry1.instance.model).toBe('claude-3');
+
+		// 第二次：usage.cost reject、其他成功；锁定"reject 字段被写 null/默认值"
+		const dashConn2 = mockConn({
+			'status': { model: 'claude-3.5', provider: 'anthropic' },
+			'models.list': { models: [] },
+			'usage.cost': new Error('rpc timeout'),
+			'sessions.list': { sessions: [] },
+			'tts.status': { enabled: false },
+			'channels.status': { discord: { accounts: [{ enabled: true }] } },
+			'tools.catalog': { groups: [] },
+		});
+		setConn('bot-1', dashConn2);
+
+		await store.loadDashboard('bot-1');
+
+		const entry2 = store.byClaw['bot-1'];
+		// reject 字段被写 null（不保留旧 50/USD）——dashboard.store.js 当前实现是无条件覆盖
+		expect(entry2.instance.monthlyCost).toBeNull();
+		// 其他成功 RPC 字段被新值覆盖
+		expect(entry2.instance.model).toBe('claude-3.5');
+		expect(entry2.instance.channels).toEqual([{ id: 'discord', connected: true }]);
+	});
+
 	test('loadDashboard agents 已加载时不重复调用 loadAgents', async () => {
 		const clawsStore = useClawsStore();
 		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);

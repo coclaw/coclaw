@@ -172,6 +172,11 @@ export function __resetClawStoreInternals() {
 // 保留旧名兼容测试导入
 export { __resetClawStoreInternals as __resetAwaitingConnIds };
 
+/** @internal 仅供测试访问内部 module-level 状态 */
+export const __test__ = {
+	_probeInProgress,
+};
+
 /**
  * 创建 per-claw 聚合状态对象
  * @param {object} claw - 基础 claw 信息
@@ -319,6 +324,11 @@ export const useClawsStore = defineStore('claws', {
 			} else if (prev === false) {
 				// claw offline→online → 按 PC 状态分派恢复路径（restart / rebuild / noop）
 				this.__resumeOnline(id);
+			} else if (claw.rtcPhase === 'failed') {
+				// 同值 online + rtcPhase=failed：rescue 路径（与 applySnapshot Phase 3 对称）
+				// 用例：服务端推 claw.status SSE 同值，但本地 RTC 已死，snapshot 节流间隔大时
+				// 此分支是唯一兜底入口
+				this.__resumeOnline(id);
 			}
 		},
 		removeClawById(clawId) {
@@ -332,6 +342,9 @@ export const useClawsStore = defineStore('claws', {
 			_bridgedConns.delete(id);
 			_pendingForceRefreshOnRebuild.delete(id);
 			_pendingTypeChangedRestartClaws.delete(id);
+			// 清 probe guard，避免 remove 后立即 re-add 同 id 时新 claw 被旧 probe guard 阻塞、
+			// 旧 probe 迟到 resolve 写到 stale claw 对象
+			_probeInProgress.delete(id);
 			delete this.byId[id];
 		},
 		/**
@@ -376,6 +389,8 @@ export const useClawsStore = defineStore('claws', {
 					_bridgedConns.delete(oldId);
 					_pendingForceRefreshOnRebuild.delete(oldId);
 					_pendingTypeChangedRestartClaws.delete(oldId);
+					// 与 removeClawById 对称：清 probe guard，避免快照剔除→再添加同 id 时残留
+					_probeInProgress.delete(oldId);
 				}
 			}
 			this.byId = newById;

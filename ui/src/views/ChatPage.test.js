@@ -1836,4 +1836,107 @@ describe('ChatPage recovery watchers', () => {
 		expect(loadSpy).toHaveBeenCalledTimes(1);
 		expect(loadSpy).toHaveBeenCalledWith();
 	});
+
+	// P1-8: __onConnReady reject 时回滚 __connReadyStore guard，
+	// 否则 reject 后切到其他 chat 再切回同一 chatStore 时 dedup 拦死、永不再触发首次加载
+	test('loadMessages reject 时回滚 __connReadyStore guard，再次触发可重新加载', async () => {
+		const { wrapper, chatStore, loadSpy } = await setupConnReadyWrapper();
+		// setup 内已 mockClear 过；__messagesLoaded=true → 后续 __onConnReady 走 silent 分支（fire-and-forget）
+		// 让 silent 分支返回 reject promise（finally 触发 guard 回滚）
+		// 注：silent 分支不 await，但 __onConnReady 入口判断 isFirstLoad；此处用 __messagesLoaded=false
+		// 反向构造首次加载（await）路径
+		chatStore.__messagesLoaded = false;
+		// 清掉 guard，让 __onConnReady 重新执行
+		wrapper.vm.__connReadyStore = null;
+		loadSpy.mockReset();
+		loadSpy.mockRejectedValueOnce(new Error('boom'));
+
+		// 显式触发 __onConnReady（连接已就绪）
+		const reject1 = wrapper.vm.__onConnReady();
+		await reject1.catch(() => {});
+		await flushPromises();
+
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		// finally 回滚 guard（reject 时 succeeded 仍为 false）
+		expect(wrapper.vm.__connReadyStore).toBeNull();
+
+		// 再次触发：dedup 不应拦住，loadMessages 又被调
+		loadSpy.mockResolvedValueOnce(true);
+		await wrapper.vm.__onConnReady();
+		await flushPromises();
+		expect(loadSpy).toHaveBeenCalledTimes(2);
+		// 成功路径：guard 保留指向 chatStore
+		expect(wrapper.vm.__connReadyStore).toBe(chatStore);
+	});
+
+	test('loadMessages resolve 正常路径：__connReadyStore guard 保留（下次同 store 不会重复加载）', async () => {
+		const { wrapper, chatStore, loadSpy } = await setupConnReadyWrapper();
+		chatStore.__messagesLoaded = false;
+		wrapper.vm.__connReadyStore = null;
+		loadSpy.mockReset();
+		loadSpy.mockResolvedValue(true);
+
+		await wrapper.vm.__onConnReady();
+		await flushPromises();
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(wrapper.vm.__connReadyStore).toBe(chatStore);
+
+		// 同一 store 再次调 __onConnReady 被 dedup 拦
+		await wrapper.vm.__onConnReady();
+		await flushPromises();
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+	});
+
+	// P1-6: dcReady=true 但 agents 未 fetched → connReady=false；agents fetched 翻 true 触发首次加载
+	test('dcReady=true + agents !fetched → connReady=false；agents fetched=true 翻 true 触发 loadMessages', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].rtcPhase = 'ready';
+
+		const agentsStore = useAgentsStore();
+		// 只有 fetched=false 时 agentVerified=false → connReady=false
+		agentsStore.byClaw['bot-1'] = { agents: [], defaultId: null, loading: false, fetched: false };
+
+		const chatStore = chatStoreManager.get('session:bot-1:main', { clawId: 'bot-1', agentId: 'main' });
+		chatStore.__initialized = true;
+		chatStore.__messagesLoaded = true; // 避免 activate re-entry 的 silent reload 干扰首测
+		chatStore.sending = false;
+		const loadSpy = vi.spyOn(chatStore, 'loadMessages').mockResolvedValue(true);
+
+		const wrapper = mount(ChatPage, {
+			global: {
+				plugins: [pinia],
+				mocks: {
+					$t: (key) => i18nMap[key] ?? key,
+					$route: {
+						name: 'chat',
+						params: { clawId: 'bot-1', agentId: 'main' },
+						path: '/chat/bot-1/main',
+						query: {},
+					},
+					$router: mockRouter,
+				},
+			},
+		});
+		await flushPromises();
+
+		// activate() re-entry 走 silent reload（一条），但 __onConnReady 因 connReady=false 早退；
+		// 清掉 setup 阶段的 spy 记录，关注 agents fetched 翻转后的真实触发
+		loadSpy.mockClear();
+
+		// agentVerified=false → connReady=false
+		expect(wrapper.vm.connReady).toBe(false);
+
+		// agents fetched=true + 非空 → agentVerified 翻 true → connReady false→true
+		agentsStore.byClaw['bot-1'] = { agents: [{ id: 'main' }], defaultId: 'main', loading: false, fetched: true };
+		await flushPromises();
+
+		expect(wrapper.vm.connReady).toBe(true);
+		// connReady 翻转触发 __onConnReady → __messagesLoaded=true 走 silent 分支
+		expect(loadSpy).toHaveBeenCalledTimes(1);
+		expect(loadSpy).toHaveBeenCalledWith({ silent: true });
+	});
 });

@@ -88,4 +88,24 @@ describe('checkPluginVersion', () => {
 	test('MIN_PLUGIN_VERSION 为 0.4.0', () => {
 		expect(MIN_PLUGIN_VERSION).toBe('0.4.0');
 	});
+
+	// P2-3: 弱网下 RPC 默认 30s timeout 契约
+	// checkPluginVersion 不传 timeout 选项 → 沿用 conn.request 的默认（30s）
+	// 弱网（永不 resolve）下，超时由 conn 层 reject，checkPluginVersion 走 catch 返回 ok=false
+	test('弱网（RPC 默认 30s timeout）下 conn.request reject → 返回 ok=false', async () => {
+		const conn = mockConnError(new Error('RPC_TIMEOUT'));
+		const result = await checkPluginVersion(conn);
+		expect(result).toEqual({ ok: false, version: null, clawVersion: null, name: null, hostName: null });
+	});
+
+	test('checkPluginVersion 调用 conn.request 不携带 timeout option（依赖默认值，验证 round 15 移除显式 10s timeout 契约）', async () => {
+		const conn = mockConn({ version: '0.5.0' });
+		await checkPluginVersion(conn);
+		expect(conn.request).toHaveBeenCalledTimes(1);
+		const callArgs = conn.request.mock.calls[0];
+		expect(callArgs[0]).toBe('coclaw.info');
+		expect(callArgs[1]).toEqual({});
+		// 第三个参数（options）应为 undefined：不显式带 timeout
+		expect(callArgs[2]).toBeUndefined();
+	});
 });
