@@ -163,6 +163,14 @@ export class ClawConnection {
 		if (signal?.aborted) return Promise.reject(makeAbortError());
 
 		const doSend = () => {
+			// waitReady → setRtc → doSend 是同步 resolve + 微任务两段。若同 sync 段或更早的微任务
+			// 先 clearRtc，到 doSend 时 __rtc 已是 null，下面 send 会抛 TypeError 逃出 .then 链
+			// 成为非 RTC_LOST 的 unmapped rejection。提前重核一次，与 clearRtc 路径同形式 reject。
+			if (!this.__rtc?.isReady) {
+				const err = new Error('RTC connection lost');
+				err.code = 'RTC_LOST';
+				return Promise.reject(err);
+			}
 			const id = `ui-${Date.now()}-${this.__counter++}`;
 			return new Promise((resolve, reject) => {
 				const waiter = { resolve, reject, signal: null, onAbort: null };

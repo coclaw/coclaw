@@ -174,10 +174,13 @@ export const useAgentsStore = defineStore('agents', {
 
 		/**
 		 * 移除指定 claw 的 agent 数据
+		 * 同步清飞行中 dedup 入口：若 claw 在 in-flight 期间被 unbind 后又以同 id 重绑，
+		 * 旧 promise 会把数据写到已分离的 entry，且新 loadAgents 被 dedup 拦死 → 新 claw 没数据。
 		 * @param {string} clawId
 		 */
 		removeByClaw(clawId) {
 			delete this.byClaw[clawId];
+			_loadingByClaw.delete(String(clawId));
 		},
 	},
 });

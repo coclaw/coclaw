@@ -428,6 +428,52 @@ describe('ClawConnection – request() 前台恢复场景', () => {
 		conn.clearRtc();
 		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
 	});
+
+	// waitReady 同步 resolve 所有 waiters（setRtc 内 splice + w.resolve），
+	// 但 .then(doSend) 在微任务里跑。若 setRtc 与 doSend 之间 clearRtc，
+	// __rtc 已为 null，doSend 内 this.__rtc.send(...) 会抛 TypeError 逃出 .then 链
+	// 成为非 RTC_LOST 的 unmapped reject。doSend 入口必须重核 __rtc?.isReady。
+	test('setRtc resolve waiter 后 clearRtc，doSend 入口重核 → reject RTC_LOST 不泄漏 pending/timer', async () => {
+		vi.useRealTimers();
+		const conn = new ClawConnection('bot1');
+		const p = conn.request('queued', {}, { timeout: 30_000 });
+
+		// 此时 waiter 已排队，pending 尚未创建
+		expect(conn.__readyWaiters).toHaveLength(1);
+		expect(conn.__pending.size).toBe(0);
+
+		// setRtc 同步 resolve waiter；doSend 进入微任务队列
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue(), close: vi.fn() };
+		conn.setRtc(mockRtc);
+		// 立刻 clearRtc（同 sync 段；微任务 doSend 还没跑）
+		conn.clearRtc();
+
+		// doSend 微任务跑起来 → 入口重核 __rtc?.isReady === false → reject RTC_LOST
+		await expect(p).rejects.toMatchObject({ code: 'RTC_LOST' });
+
+		// 关键：未泄漏 pending entry / timer，未调用 send
+		expect(conn.__pending.size).toBe(0);
+		expect(mockRtc.send).not.toHaveBeenCalled();
+		vi.useFakeTimers();
+	});
+
+	test('正常路径：waitReady 排队 → setRtc 后 doSend 仍能发送（行为锁）', async () => {
+		vi.useRealTimers();
+		const conn = new ClawConnection('bot1');
+		const mockRtc = { isReady: true, send: vi.fn().mockResolvedValue(), close: vi.fn() };
+		const p = conn.request('queued.normal');
+
+		// 模拟正常恢复：仅 setRtc 不 clearRtc
+		conn.setRtc(mockRtc);
+		// 等微任务跑完 → doSend 应该正常发送
+		await new Promise((r) => setTimeout(r, 0));
+		expect(mockRtc.send).toHaveBeenCalledTimes(1);
+
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { ok: 1 } });
+		await expect(p).resolves.toEqual({ ok: 1 });
+		vi.useFakeTimers();
+	});
 });
 
 describe('ClawConnection – request() 通过 DataChannel 发送', () => {

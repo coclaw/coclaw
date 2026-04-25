@@ -136,6 +136,35 @@ describe('chatStoreManager', () => {
 			expect(chatStoreManager.get('topic:t0')).toBeTruthy();
 		});
 
+		// 契约锁：endRun 已触发但 dropRun 尚未跑（settling 窗口，streamingMsgs 非空）的 topic
+		// 仍会被 LRU 淘汰——因为 isRunning 仅检查 !run.ended，而 settling 状态 ended=true。
+		// 与 chat.store sendMessage accepted 分支的 silent loadMessages → dropRun 链相关：
+		// 该窗口内若 LRU 触发淘汰，被淘汰的 store 会 dispose，丢失 streamingMsgs。
+		// 当前是设计：accepted 后 sending=false → busy 不阻塞淘汰，只有真正在跑的 run 才阻塞。
+		test('settling 状态（ended=true 但 streamingMsgs 非空）的 topic 仍被 LRU 淘汰（契约锁）', () => {
+			const runsStore = useAgentRunsStore();
+			// 创建 10 个 topic（t0 是 LRU 最旧）
+			const stores = [];
+			for (let i = 0; i < 10; i++) {
+				stores.push(chatStoreManager.get(`topic:t${i}`, { clawId: '1' }));
+			}
+			// t0 处于 settling：ended=true + streamingMsgs 非空（不 touch t0，保持其 LRU 最旧地位）
+			runsStore.runs['run-t0-settle'] = {
+				runId: 'run-t0-settle',
+				ended: true,
+				streamingMsgs: [{ id: '__local_claw_x', _local: true, _streaming: true, message: { role: 'assistant', content: 'tail' } }],
+			};
+			runsStore.runKeyIndex[stores[0].runKey] = 'run-t0-settle';
+
+			// 创建第 11 个：__evictTopics 从最旧扫起，t0 在 i=0 被检查，
+			// isRunning(t0.runKey)=false（!run.ended=false）→ 不跳过 → 淘汰 t0
+			chatStoreManager.get('topic:t10', { clawId: '1' });
+			expect(chatStoreManager.topicCount).toBe(10);
+			// 关键断言：t0（settling）确实被淘汰
+			const t0AfterEvict = [...chatStoreManager.stores()].find((s) => s.sessionId === 't0');
+			expect(t0AfterEvict).toBeUndefined();
+		});
+
 		test('所有 topic 都有活跃 run 时淘汰被阻断', () => {
 			const runsStore = useAgentRunsStore();
 			// 创建 10 个 topic，全部设为活跃 run

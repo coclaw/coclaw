@@ -2102,6 +2102,98 @@ describe('useChatStore', () => {
 
 		// event:agent 监听器已由 clawsStore.__bridgeConn 集中管理
 		// register 不再自行注册/注销 conn.on('event:agent')，相关测试已移至 agent-runs.store.test.js
+
+		// =====================================================================
+		// runPromise.then accepted 分支：silent loadMessages 失败时不应 dropRun
+		// （否则用户已收到的流式 streamingMsgs 会被无声清空、终态消息又没拉到）
+		// =====================================================================
+
+		test('accepted 后 silent loadMessages 失败：保留 run 与 streamingMsgs，不调 dropRun', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-fail-load' });
+					// RPC 终态到达 → endRun → runPromise.then 触发 silent loadMessages
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') {
+					// silent reload 失败：网络/连接错误
+					return Promise.reject(new Error('network down'));
+				}
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+
+			// 等待 runPromise.then 链跑完 if 判断：仅等 sessions.get 被调不够（catch + return false +
+			// then continuation 仍在 microtask 队列里）。挂额外 spy 在 runPromise.then 之后的
+			// loadMessages 路径——当 storeRun.streamingMsgs 还在且 dropRun 始终未触发，等多个 microtask
+			// 让 then 链 settle。
+			await vi.waitFor(() => {
+				const sessGet = conn.request.mock.calls.find((c) => c[0] === 'sessions.get');
+				expect(sessGet).toBeTruthy();
+			});
+			// 多排几次 microtask + macrotask，确保 then 链跑完 await loadMessages → catch → return false → if(ok) 分支
+			await Promise.resolve();
+			await Promise.resolve();
+			await new Promise((r) => setTimeout(r, 0));
+
+			// 关键断言：dropRun 没被调用，run 仍在 + streamingMsgs 仍保留
+			expect(dropSpy).not.toHaveBeenCalled();
+			const run = runsStore.getActiveRun(store.runKey);
+			expect(run).not.toBeNull();
+			// register 时把 optimisticUser + optimisticClaw 入 streamingMsgs
+			expect(run.streamingMsgs.length).toBeGreaterThan(0);
+		});
+
+		test('accepted 后 silent loadMessages 成功：触发 dropRun', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-load-ok' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			const result = await store.sendMessage('hello');
+			expect(result).toEqual({ accepted: true });
+
+			// loadMessages 成功后 dropRun 被调用一次（带 expectedRunId）
+			await vi.waitFor(() => {
+				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-load-ok');
+			});
+			// run 已被 dropRun 清掉
+			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
+		});
 	});
 
 	// =====================================================================

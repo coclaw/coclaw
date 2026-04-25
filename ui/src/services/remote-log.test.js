@@ -86,6 +86,30 @@ describe('RemoteLog 类', () => {
 		expect(rl.__buffer).toHaveLength(2);
 	});
 
+	// __sendRaw 在 WS 不可用 / send 内部失败时返回 false（不抛）。
+	// 旧实现忽略返回值直接 splice，导致这一批 log 静默丢失（"WS 看似 connected
+	// 但马上要断" 的窗口尤其常见）。修法：返回 false → 中断 flush 保留缓冲。
+	test('sender 返回 false 时不 splice，缓冲区保留供下次 flush', async () => {
+		const rl = new RemoteLog();
+		rl.log('a');
+		rl.log('b');
+		let callCount = 0;
+		rl.setSender(() => { callCount++; return false; });
+		await new Promise(r => setTimeout(r, 20));
+		expect(callCount).toBe(1);
+		// 关键：返回 false 视为发送未成功，缓冲不被清
+		expect(rl.__buffer).toHaveLength(2);
+		expect(rl.__buffer[0].text).toBe('a');
+		expect(rl.__buffer[1].text).toBe('b');
+
+		// 下次 setSender（成功 sender）应能把缓冲发出去
+		const sent = [];
+		rl.setSender((msg) => { sent.push(msg); });
+		await vi.waitFor(() => expect(rl.__buffer).toHaveLength(0));
+		expect(sent).toHaveLength(1);
+		expect(sent[0].logs.map((l) => l.text)).toEqual(['a', 'b']);
+	});
+
 	test('clearBuffer 清空缓冲区', () => {
 		const rl = new RemoteLog();
 		rl.log('a');

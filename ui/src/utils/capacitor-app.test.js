@@ -275,6 +275,7 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		// setupAppStateChange 注册了 appStateChange 监听，虽然无法直接获取回调引用，
 		// 但通过源码可知 console.log 已打印 "appStateChange listener registered"
 		// 表明 addListener 已被调用。覆盖率已包含注册代码路径。
+		// focusin 处理函数的可观察契约由 capacitor-app-browser.test.js 锁定。
 		window.removeEventListener('app:foreground', handler);
 	});
 

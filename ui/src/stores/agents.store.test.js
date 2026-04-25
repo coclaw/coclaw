@@ -267,6 +267,57 @@ describe('agents store', () => {
 		expect(store.byClaw['bot-1']).toBeUndefined();
 	});
 
+	// 飞行中 dedup 跨 remove/re-add 同 id：旧 promise 解析时不应污染新 entry，
+	// 新 loadAgents 必须能发起独立请求（不被 dedup 拦死）。
+	// 与 round-18 _probeInProgress 同一家族（module-level Map 在 remove 入口需对称清理）。
+	test('removeByClaw 期间清飞行中 dedup：同 id 重绑后新 loadAgents 走独立请求', async () => {
+		// deferred conn：第一次 agents.list 永不 resolve；用同样的 conn 模拟重绑后重新可用
+		let resolveOld;
+		const oldConn = {
+			request: vi.fn().mockImplementation((method) => {
+				if (method === 'agents.list') {
+					return new Promise((r) => { resolveOld = r; });
+				}
+				return Promise.resolve({ name: 'a' });
+			}),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		setConn('bot-1', oldConn);
+
+		const store = useAgentsStore();
+		const oldPromise = store.loadAgents('bot-1');
+		expect(oldConn.request).toHaveBeenCalledWith('agents.list', {});
+
+		// SSE claw.unbound → cleanupClawResources → agents.removeByClaw
+		store.removeByClaw('bot-1');
+		expect(store.byClaw['bot-1']).toBeUndefined();
+
+		// 同 id 立刻重绑：换一个 conn 模拟新 RTC
+		const newConn = mockConn([{ id: 'main', name: 'main' }], 'connected', {
+			main: { agentId: 'main', name: 'New' },
+		});
+		setConn('bot-1', newConn);
+
+		// 新 loadAgents 必须重新 issue（不被旧 dedup 拦死）
+		const newPromise = store.loadAgents('bot-1');
+		expect(newConn.request).toHaveBeenCalledWith('agents.list', {});
+		await newPromise;
+
+		// 新 entry 由新 conn 写入
+		expect(store.byClaw['bot-1']).toBeDefined();
+		expect(store.byClaw['bot-1'].agents).toHaveLength(1);
+		expect(store.byClaw['bot-1'].agents[0].resolvedIdentity?.name).toBe('New');
+
+		// 解析旧 promise：不应回写到新 entry（旧 entry 已被 removeByClaw 清掉）
+		resolveOld({ defaultId: 'main', agents: [{ id: 'old', name: 'old' }] });
+		await oldPromise;
+
+		// 新 entry 仍是新数据，不被旧 promise 污染
+		expect(store.byClaw['bot-1'].agents).toHaveLength(1);
+		expect(store.byClaw['bot-1'].agents[0].id).toBe('main');
+	});
+
 	// =====================================================================
 	// getAgentDisplay
 	// =====================================================================

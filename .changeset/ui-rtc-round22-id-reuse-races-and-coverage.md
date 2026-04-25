@@ -1,0 +1,43 @@
+---
+"@coclaw/ui": patch
+---
+
+Close one chat-store streamingMsgs-loss bug, three same-id reuse races across per-claw stores, one RTC microtask race in `request()`, one falsy-as-success bug in remote log flushing, and lock three previously-uncovered contracts. All bugs surfaced from a round-22 external-agent review (9 suggestions, 9 adopted).
+
+1. **`chat.store.js: sendMessage` accepted branch dropped run even when silent reload failed** — after `endRun` the run-promise then-chain unconditionally called `dropRun(runKey, runId)` after `await loadMessages({ silent: true })`. `loadMessages` swallows network/conn errors and returns `false`, so under any silent-reload failure the streamingMsgs the user just watched would be wiped while the final message had not been fetched. Fixed by only calling `dropRun` when `loadMessages` returned truthy. Recovery paths: (a) next `activate` / `__onConnReady` triggers another silent `loadMessages` — on success, the same `if (ok) dropRun` branch fires; (b) on continued failure, `agent-runs.store.js`'s 24h `POST_ACCEPT_TIMEOUT_MS` timer is the eventual safety net (already covered by an existing test).
+
+2. **`agents.store.js: removeByClaw` did not clear `_loadingByClaw` (in-flight dedup map)** — when `claw.unbound` triggered `cleanupClawResources` → `agents.removeByClaw`, only `byClaw[id]` was deleted. If a new claw with the same id was bound during the in-flight window, a fresh `loadAgents(id)` coalesced onto the *old* promise, which on resolve wrote onto a detached `entry` object — the new claw ended up with no agent data. Fixed by `_loadingByClaw.delete(String(clawId))` in `removeByClaw`, mirroring the round-18 `_probeInProgress` and round-20 `_rtcInitInProgress` symmetric cleanup pattern.
+
+3. **`sessions.store.js: removeSessionsByClawId` did not clear `_perClawLoading`** — identical pattern to fix 2. The `if (!clawsStore.byId[id])` guard at the end of `__doLoadForClaw` checks only that *some* claw exists at that id, not whether it is the *same instance* the fetch was started for. Without clearing the in-flight map, the new `loadSessionsForClaw` is dedup-coalesced onto the stale promise; when it resolves, the old fetch's results are written into the new claw's slot. Fixed by `_perClawLoading.delete(id)` in `removeSessionsByClawId`.
+
+4. **`topics.store.js: removeByClaw` did not clear `_perClawLoading`** — exact same shape as fix 3 (topics is parallel to sessions). Fixed identically.
+
+5. **`claw-connection.js: request → doSend` had a microtask race after `clearRtc`** — `waitReady → setRtc` synchronously resolves all waiters, and `doSend` enters as a microtask. If `clearRtc` runs in the same sync segment or an earlier microtask, `this.__rtc` becomes `null`. `doSend` then allocated id / pending entry / timer first and only afterwards dereferenced `this.__rtc.send(...)` → `TypeError`, escaping the `.then` chain as an unmapped rejection (NOT `RTC_LOST`). Fixed by re-checking `this.__rtc?.isReady` at the top of `doSend` before any allocation; on miss, reject with `RTC_LOST` using the same shape as the existing `clearRtc` reject path.
+
+6. **`remote-log.js: __flush` treated sender returning `false` as success** — `signaling-connection.js: __sendRaw` explicitly returns `false` when `__ws` is missing or not in `OPEN`, or when the synchronous `send()` call throws. The previous flush loop ignored the return value and immediately spliced the buffer, so in the narrow window between a `state==='connected'` signal and the WS actually breaking, a log batch was silently dropped. Fixed by capturing the sender return; if `=== false`, break the loop without splicing (preserving the buffer for the next `setSender(connected)` retry). `undefined` / `true` / any other non-false value is treated as success — no over-tightening for senders that don't return anything explicitly.
+
+Tests (9 new test groups, 13 new tests; baseline UI 3011 → final 3024; electron 152 unchanged; coverage stmts 98.43% / branches 93.1% / funcs 98.21% / lines 98.43%):
+
+- `chat.store.test.js` — pair: `accepted 后 silent loadMessages 失败：保留 run 与 streamingMsgs，不调 dropRun` and `accepted 后 silent loadMessages 成功：触发 dropRun`. Locks fix 1 from both directions; the failure-side test extends the wait to multiple microtasks + a macrotask after `sessions.get` is called, ensuring the then-chain settles past the `if (ok)` branch before assertions.
+- `agents.store.test.js` — `removeByClaw 期间清飞行中 dedup：同 id 重绑后新 loadAgents 走独立请求`: locks fix 2 by setting up a deferred RPC, calling `removeByClaw('a')`, then triggering `loadAgents('a')` again on a fresh conn — asserts the fresh conn's `request` is invoked (would fail if the in-flight dedup line were reverted).
+- `sessions.store.test.js` — `removeSessionsByClawId 期间清飞行中 dedup：同 id 重绑后新 loadForClaw 走独立请求`: locks fix 3 with the same shape as the agents test.
+- `topics.store.test.js` — `removeByClaw 期间清飞行中 dedup：同 id 重绑后新 loadForClaw 走独立请求`: locks fix 4 with the same shape.
+- `chat-store-manager.test.js` — `settling 状态（ended=true 但 streamingMsgs 非空）的 topic 仍被 LRU 淘汰（契约锁）`: locks the current LRU behavior under the settling window — since `runsStore.isRunning` only checks `!run.ended`, an ended-but-still-streaming topic is eligible for eviction. JSDoc cross-refs the chat.store accepted branch and notes this is a current-behavior lock, not a permanent contract.
+- `claw-connection.test.js` — pair: `setRtc resolve waiter 后 clearRtc，doSend 入口重核 → reject RTC_LOST 不泄漏 pending/timer` and `正常路径：waitReady 排队 → setRtc 后 doSend 仍能发送（行为锁）`: locks fix 5 from both directions; the race test asserts reject with `code: 'RTC_LOST'` AND no pending entry leaked AND `send` not called.
+- `remote-log.test.js` — `sender 返回 false 时不 splice，缓冲区保留供下次 flush`: locks fix 6 with content-level assertions on the preserved buffer entries; follow-up assertion confirms a working sender on the next setSender flushes successfully.
+- `capacitor-app-browser.test.js` (NEW file, 8 tests total) — split across three describes:
+  - 4 visibility-bridge tests (cold-start `visibilityState=visible/hidden`, desktop / Capacitor-native skip).
+  - 2 online/offline tests for the `wasOffline` gate: `未经过 offline 的 online 事件 → 不派发 network:online（冷启动 spurious 抑制）` and `先 offline 后 online → 派发 network:online + 写 remoteLog`.
+  - 2 indirect locks for `setupAppStateChange` focusin handler attachment + INPUT/DIV branch safety. (See backlog note below for why direct callback invocation of `appStateChange` was not implemented.)
+- `capacitor-app.test.js` — single-line cross-ref comment added to the existing `'前台恢复时派发 app:foreground'` test pointing to the new browser file's focusin contract; the test body itself is unchanged (out of scope).
+
+Review disposition (round 22, 9 suggestions from external agent):
+
+- **Adopted (9): 6 code fixes + 3 test-only adoptions** — fixes 1–6 above (each contributes both the code fix and its locking test groups) plus three pure test additions: chat-store-manager LRU settling lock, capacitor-app browser online/offline wasOffline gate, capacitor-app `setupAppStateChange` focusin handler indirect lock.
+- **Rejected (0)** — all 9 suggestions verified by parallel opus subagents against current code; no false positives.
+
+Backlog (deferred from review):
+
+- **`setupAppStateChange` direct callback capture** — original Test-only-3 plan was to capture the `appStateChange` callback via the `@capacitor/app` mock and invoke `cb({isActive:true/false})` to lock the foreground/background dispatch + remoteLog + focus-restore branches end-to-end. Substituted with focusin handler indirect lock because of an existing-known limitation: the second dynamic `import('@capacitor/app')` from inside `setupAppStateChange` resolves to a different proxy than the first import (used by `setupBackButton`), and the test mock factory only intercepts the first. The codebase already documents this at `capacitor-app.test.js` lines 18–21 (pre-existing comment). A separate cleanup pass should investigate `vi.doMock` between dynamic imports or factor the `App` reference out for test injection — both out of scope for round 22.
+
+**Scope note**: round 22 is the highest-yield round in the test-hardening series so far — 9 of 9 suggestions adopted (100%), 6 of which are code fixes (P1 severity each per external agent's classification). The cluster is "module-level Map / coalesce-promise leaks across same-id remove + re-add" (fixes 2/3/4) and "async chain crosses a state boundary the caller does not re-check" (fixes 1/5/6). All three families have been swept in earlier rounds for `claws.store.js` and `webrtc-connection.js`; this round extends the same sweep to per-claw sub-stores and to chat / claw-connection / remote-log layers.

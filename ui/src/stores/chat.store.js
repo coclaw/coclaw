@@ -567,10 +567,14 @@ export function createChatStore(storeKey, opts = {}) {
 					// cancel 路径下 cancelPromise 已 reject，但 runPromise 仍在等真实终态，此 then 接管收尾。
 					// dropRun 带 res.runId：loadMessages 期间用户若发新消息 register 同 runKey 的新 run，
 					// 旧挂钩的 dropRun 校验 runId 不匹配即跳过，避免误清新 run。
+					// silent loadMessages 失败时（网络/连接错误）不 dropRun：若此时清掉 streamingMsgs，
+					// 用户已收到的流式内容会消失且终态消息未拉到。后续收尾路径有两条：
+					// (a) 下次 activate / __onConnReady 再次触发 silent loadMessages，成功时走 if(ok) 分支 dropRun；
+					// (b) 持续失败时由 agent-runs.store 的 24h POST_ACCEPT_TIMEOUT_MS timer 兜底 dropRun。
 					runPromise.then(async (res) => {
 						if (res?.accepted) {
-							await this.loadMessages({ silent: true });
-							runsStore.dropRun(runKey, res.runId);
+							const ok = await this.loadMessages({ silent: true });
+							if (ok) runsStore.dropRun(runKey, res.runId);
 						}
 					}).catch((e) => {
 						console.debug('[chat] runPromise rejected (handled by outer catch):', e?.message);

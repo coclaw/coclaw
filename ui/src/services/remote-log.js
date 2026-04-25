@@ -49,12 +49,16 @@ class RemoteLog {
 		try {
 			while (this.__buffer.length > 0 && this.__sender) {
 				const batch = this.__buffer.slice(0, BATCH_SIZE);
+				let ret;
 				try {
-					this.__sender({ type: 'log', logs: batch });
-					this.__buffer.splice(0, batch.length);
+					ret = this.__sender({ type: 'log', logs: batch });
 				} catch {
 					break;
 				}
+				// sender 显式返回 false（如 WS 不可用 / send 内部失败但未 throw）→ 保留缓冲下次重试。
+				// undefined / true / 其它非 false 视为成功，避免对未声明返回值的 sender 过度收紧。
+				if (ret === false) break;
+				this.__buffer.splice(0, batch.length);
 				await new Promise(r => setTimeout(r, 0));
 			}
 		} finally {

@@ -28,6 +28,8 @@ export const useSessionsStore = defineStore('sessions', {
 		removeSessionsByClawId(clawId) {
 			const id = String(clawId ?? '');
 			this.items = this.items.filter((s) => String(s.clawId) !== id);
+			// 同步清飞行中 dedup：claw 同 id 重绑时新 loadForClaw 不应 coalesce 到老 promise
+			_perClawLoading.delete(id);
 		},
 		async loadAllSessions() {
 			// 已有加载中的请求，合流等待

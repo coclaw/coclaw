@@ -689,5 +689,41 @@ describe('topics store', () => {
 			// bot-keep 不受影响
 			expect(store.byId['t-keep']).toBeDefined();
 		});
+
+		// removeByClaw 必须对称清 _perClawLoading：否则 claw 同 id 重绑后
+		// 新 loadTopicsForClaw 被旧 dedup 拦死，新 conn 不会发起请求。
+		test('removeByClaw 期间清飞行中 dedup：同 id 重绑后新 loadForClaw 走独立请求', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			let resolveOld;
+			const oldConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveOld = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', oldConn);
+
+			const store = useTopicsStore();
+			const oldPromise = store.loadTopicsForClaw('bot-1');
+			expect(oldConn.request).toHaveBeenCalledTimes(1);
+
+			// 模拟 SSE claw.unbound：同步移除 + 立刻同 id 重绑
+			delete clawsStore.byId['bot-1'];
+			store.removeByClaw('bot-1');
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const newConn = mockConn({ topics: [{ topicId: 't-new', agentId: 'main', title: 'New', createdAt: 100 }] });
+			setConn('bot-1', newConn);
+
+			// 关键断言：新 loadForClaw 必须不被旧 dedup 拦死，发起独立请求
+			const newPromise = store.loadTopicsForClaw('bot-1');
+			expect(newConn.request).toHaveBeenCalledTimes(1);
+			await newPromise;
+			expect(store.byId['t-new']).toBeDefined();
+
+			// 解析旧 promise：让 promise 自然 settle
+			resolveOld({ topics: [{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 200 }] });
+			await oldPromise;
+		});
 	});
 });

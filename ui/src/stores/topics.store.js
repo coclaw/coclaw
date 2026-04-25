@@ -231,6 +231,8 @@ export const useTopicsStore = defineStore('topics', {
 			for (const [tid, topic] of Object.entries(this.byId)) {
 				if (String(topic.clawId) === id) delete this.byId[tid];
 			}
+			// 同步清飞行中 dedup：claw 同 id 重绑时新 loadForClaw 不应 coalesce 到老 promise
+			_perClawLoading.delete(id);
 		},
 
 		/**
