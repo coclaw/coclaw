@@ -90,7 +90,20 @@ export const chatStoreManager = {
 					continue;
 				}
 				console.debug('[chatStoreMgr] evict topic key=%s (lru=%d/%d)', key, topicLru.length, MAX_TOPIC_INSTANCES);
-				this.dispose(key);
+				// per-item try/catch：受害者 dispose 抛异常时不让它穿透到 get() 调用方，
+				// 否则新 topic 已加入 instances/topicLru、被淘汰者也已加入 LRU，但调用方拿到异常
+				try { this.dispose(key); }
+				catch (err) {
+					console.warn('[chatStoreMgr] evict dispose key=%s failed: %s', key, err?.message);
+					// dispose 抛异常时，dispose() 内部还没把 key 从 instances / topicLru 移除，
+					// 直接 break 会让 while-loop 反复挑同一个受害者 → 死循环。
+					// 这里硬清掉受害者的 LRU 与 instances 索引，让淘汰能继续推进；
+					// 同时兜底调一次 $dispose 释放 Pinia 订阅（store.dispose 抛之前 $dispose 还没跑）
+					try { store?.$dispose(); } catch {}
+					instances.delete(key);
+					const lruIdx = topicLru.indexOf(key);
+					if (lruIdx !== -1) topicLru.splice(lruIdx, 1);
+				}
 				evicted = true;
 				break;
 			}

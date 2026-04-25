@@ -741,5 +741,105 @@ describe('sessions store', () => {
 			resolveOld({ sessionId: 'sid-old' });
 			await oldPromise;
 		});
+
+		// 同 id 重绑：旧 loadSessionsForClaw 的 stale finally 不能把替换上去的新 promise
+		// 删掉，否则下一次同 id 调用 dedup 失效，会发起第三次 RPC
+		test('同 id 重绑：旧 loadSessionsForClaw 的 stale finally 不删替换 promise', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			let resolveOld;
+			const oldConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveOld = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', oldConn);
+
+			const store = useSessionsStore();
+			const oldPromise = store.loadSessionsForClaw('bot-1');
+			expect(oldConn.request).toHaveBeenCalledTimes(1);
+
+			// 重绑：清掉再加，并换 deferred newConn
+			delete clawsStore.byId['bot-1'];
+			store.removeSessionsByClawId('bot-1');
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			let resolveNew;
+			const newConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveNew = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', newConn);
+
+			// 第一次新 loadForClaw：发起新 RPC、新 promise 入 in-flight Map
+			const newPromise1 = store.loadSessionsForClaw('bot-1');
+			expect(newConn.request).toHaveBeenCalledTimes(1);
+
+			// 解析旧 promise，让 stale finally 跑完
+			resolveOld({ sessionId: 'sid-old' });
+			await oldPromise;
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// 关键：第三次同 id loadForClaw 应被新 promise dedup 拦下，不发起第三次 RPC
+			const newPromise2 = store.loadSessionsForClaw('bot-1');
+			expect(newConn.request).toHaveBeenCalledTimes(1);
+
+			// 收尾：把两个外层 promise 都 await 收完
+			resolveNew({ sessionId: 'sid-new' });
+			await newPromise1;
+			await newPromise2;
+		});
+
+		// __doLoadAll：fetch 期间 conn 消失（如 SSE claw.unbound 把 conn 同步置空），
+		// __fetchSessionsForClaw 拿到的 chat.history 都返回空 sessionId → 折算后是
+		// fulfilled 的空数组。如果被当成有效结果加进 queriedClawIds，合并环节会把
+		// 该 claw 的旧 sessions 一并清掉。
+		test('__doLoadAll：fetch 期间 conn 消失，已有 sessions 不被清空', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			// 预置一条 bot-1 的旧 session
+			const store = useSessionsStore();
+			store.setSessions([{ sessionId: 'sid-old', sessionKey: 'agent:main:main', clawId: 'bot-1', agentId: 'main' }]);
+
+			// chat.history 返回空 sessionId → __fetchSessionsForClaw 折算成 [] 的 fulfilled。
+			// 同时 request 被调用时同步把 mockConnections 中的 conn 抹掉，模拟
+			// RPC 在途期间 SSE claw.unbound 把 conn 清掉 → result-time getReadyConn() === null
+			const conn = {
+				request: vi.fn().mockImplementation(() => {
+					mockConnections.delete('bot-1');
+					return Promise.resolve({ sessionId: '' });
+				}),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			await store.loadAllSessions();
+
+			// 关键：result-time getReadyConn 复核应让该 claw 落到"未查询"列，
+			// 旧 sessions 被合并时保留下来
+			expect(store.items.find((s) => s.clawId === 'bot-1')?.sessionId).toBe('sid-old');
+		});
+
+		// 反向断言：result-time getReadyConn 复核不应误伤健康路径——
+		// conn 全程在线、远端真的没有 sessions 时，该 claw 仍落到 queriedClawIds，
+		// 合并时旧 sessions 应被清空（避免 Fix 6 把"真空"也当成"conn 消失"）
+		test('__doLoadAll：conn 健康但远端真空 sessions 时旧 sessions 仍被清空（反向断言）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const store = useSessionsStore();
+			store.setSessions([{ sessionId: 'sid-stale', sessionKey: 'agent:main:main', clawId: 'bot-1', agentId: 'main' }]);
+
+			// conn 全程在线，但所有 sessionKey 都返回空 sessionId
+			const conn = mockConn({});
+			setConn('bot-1', conn);
+
+			await store.loadAllSessions();
+
+			// 旧 sid-stale 应被清空——bot-1 在 queriedClawIds 中，合并时按"已查询"路径覆盖
+			expect(store.items.find((s) => s.clawId === 'bot-1')).toBeUndefined();
+		});
 	});
 });

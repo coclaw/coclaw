@@ -174,8 +174,8 @@ describe('initClawResources', () => {
 });
 
 describe('refreshClawResources', () => {
-	test('全部 per-claw fire-and-forget 并带 .catch', () => {
-		capture.hooks.refreshClawResources('bot-6');
+	test('全部 per-claw fire-and-forget 并带 .catch', async () => {
+		await capture.hooks.refreshClawResources('bot-6');
 
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-6');
 		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-6');
@@ -183,19 +183,57 @@ describe('refreshClawResources', () => {
 		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-6');
 	});
 
-	test('不调用全量加载接口', () => {
-		capture.hooks.refreshClawResources('bot-6');
+	test('不调用全量加载接口', async () => {
+		await capture.hooks.refreshClawResources('bot-6');
 		expect(mockLoadAllSessions).not.toHaveBeenCalled();
 		expect(mockLoadAllTopics).not.toHaveBeenCalled();
 	});
 
-	test('所有调用失败时不抛出异常', () => {
+	test('所有调用失败时不抛出异常', async () => {
 		mockLoadAgents.mockRejectedValueOnce(new Error('fail'));
 		mockLoadSessionsForClaw.mockRejectedValueOnce(new Error('fail'));
 		mockLoadTopicsForClaw.mockRejectedValueOnce(new Error('fail'));
 		mockLoadDashboard.mockRejectedValueOnce(new Error('fail'));
 
-		expect(() => capture.hooks.refreshClawResources('bot-6')).not.toThrow();
+		await expect(capture.hooks.refreshClawResources('bot-6')).resolves.toBeUndefined();
+	});
+
+	// 与 initClawResources 对齐：sessions/topics 必须在 agents 拿到之后再发起，
+	// 否则 sessions 用 ['main'] fallback 拉数据，漏掉断连期间新增的非 main agent
+	test('refreshClawResources：先 await loadAgents 再 fire-and-forget 其他三个', async () => {
+		// 让 loadAgents 返回 deferred，验证未 resolve 前其他三个不被调用
+		let resolveAgents;
+		mockLoadAgents.mockReturnValueOnce(new Promise((r) => { resolveAgents = r; }));
+
+		const p = capture.hooks.refreshClawResources('bot-7');
+		// 微任务 flush 一下，但 loadAgents 仍 pending
+		await Promise.resolve();
+		expect(mockLoadAgents).toHaveBeenCalledWith('bot-7');
+		expect(mockLoadSessionsForClaw).not.toHaveBeenCalled();
+		expect(mockLoadTopicsForClaw).not.toHaveBeenCalled();
+		expect(mockLoadDashboard).not.toHaveBeenCalled();
+
+		// 解析 loadAgents → 后三个被启动
+		resolveAgents();
+		await p;
+		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-7');
+		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-7');
+		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-7');
+	});
+
+	test('loadAgents reject 时其他三个仍 fire（catch 吞掉）', async () => {
+		let rejectAgents;
+		mockLoadAgents.mockReturnValueOnce(new Promise((_, r) => { rejectAgents = r; }));
+
+		const p = capture.hooks.refreshClawResources('bot-8');
+		await Promise.resolve();
+		expect(mockLoadSessionsForClaw).not.toHaveBeenCalled();
+
+		rejectAgents(new Error('agents boom'));
+		await p;
+		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-8');
+		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-8');
+		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-8');
 	});
 });
 

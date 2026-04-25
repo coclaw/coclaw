@@ -201,6 +201,40 @@ describe('chatStoreManager', () => {
 			chatStoreManager.get('topic:t10', { clawId: '1' });
 			expect(chatStoreManager.topicCount).toBe(10);
 		});
+
+		// disposeAll 已 per-item try/catch；__evictTopics 也要对齐，
+		// 否则受害者 dispose 抛异常会穿透到 get() 调用方
+		test('__evictTopics：受害者 dispose 抛异常被隔离，不影响新 topic 创建', () => {
+			// 按序创建 10 个 topic：LRU 最旧 = t0（不要再 touch 它）
+			const stores = [];
+			for (let i = 0; i < 10; i++) {
+				stores.push(chatStoreManager.get(`topic:t${i}`, { clawId: '1' }));
+			}
+			// 给 t0（淘汰目标）注入抛异常的 dispose
+			const victimStore = stores[0];
+			const origDispose = victimStore.dispose;
+			victimStore.dispose = () => { throw new Error('boom'); };
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			try {
+				// 创建第 11 个 topic → 触发 __evictTopics，目标是 t0（LRU 最旧）
+				expect(() => chatStoreManager.get('topic:t10', { clawId: '1' })).not.toThrow();
+				// 新 topic 已创建
+				const all = [...chatStoreManager.stores()];
+				const t10 = all.find((s) => s.sessionId === 't10');
+				expect(t10).toBeTruthy();
+				// 警告日志被记录，包含受害者 key（格式与 disposeAll 的 'dispose key=%s failed: %s' 对齐）
+				expect(warnSpy).toHaveBeenCalledWith(
+					expect.stringContaining('evict dispose key=%s failed: %s'),
+					'topic:t0',
+					expect.any(String),
+				);
+			}
+			finally {
+				victimStore.dispose = origDispose;
+				warnSpy.mockRestore();
+			}
+		});
 	});
 
 	// =====================================================================

@@ -136,10 +136,13 @@ export const useTopicsStore = defineStore('topics', {
 				console.debug('[topics] loadForClaw: skipped (no connected) clawId=%s', id);
 				return;
 			}
-			const promise = this.__doLoadForClaw(id, conn).finally(() => {
-				_perClawLoading.delete(id);
-			});
+			const promise = this.__doLoadForClaw(id, conn);
 			_perClawLoading.set(id, promise);
+			// 仅当 Map 当前条目仍是本 promise 时才清，避免 removeByClaw 后重入新建的
+			// 飞行 promise 被老 promise 的 finally 误删
+			promise.finally(() => {
+				if (_perClawLoading.get(id) === promise) _perClawLoading.delete(id);
+			});
 			return promise;
 		},
 		async __doLoadForClaw(id, conn) {

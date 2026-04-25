@@ -67,10 +67,18 @@ export const useSessionsStore = defineStore('sessions', {
 			);
 			// fetch 失败的 claw：从 queriedClawIds 移除，保留其旧 sessions
 			for (let i = 0; i < results.length; i++) {
+				const cid = String(connectedClaws[i].id);
 				if (results[i].status !== 'fulfilled') {
-					const failedId = String(connectedClaws[i].id);
-					queriedClawIds.delete(failedId);
-					console.warn('[sessions] claw sessions fetch failed clawId=%s:', failedId, results[i].reason);
+					queriedClawIds.delete(cid);
+					console.warn('[sessions] claw sessions fetch failed clawId=%s:', cid, results[i].reason);
+					continue;
+				}
+				// fetch 期间 conn 可能被 SSE claw.unbound 异步清掉，__fetchSessionsForClaw
+				// 早退返回 []。此时把它纳入 queriedClawIds 会导致后续合并环节把旧 sessions
+				// 一并清空，因此 result-time 重新核对一次 conn，已消失则跳过该 claw
+				if (!getReadyConn(cid)) {
+					queriedClawIds.delete(cid);
+					console.debug('[sessions] claw conn vanished during fetch clawId=%s', cid);
 				}
 			}
 			// 增量合并：保留未查询 claw 的已有 sessions，替换已查询 claw 的
@@ -118,10 +126,13 @@ export const useSessionsStore = defineStore('sessions', {
 				console.debug('[sessions] loadForClaw: skipped (no connected) clawId=%s', id);
 				return;
 			}
-			const promise = this.__doLoadForClaw(id).finally(() => {
-				_perClawLoading.delete(id);
-			});
+			const promise = this.__doLoadForClaw(id);
 			_perClawLoading.set(id, promise);
+			// 仅当 Map 当前条目仍是本 promise 时才清，避免老 promise 的 finally 把
+			// removeSessionsByClawId + 重入新建的飞行 promise 一起删掉
+			promise.finally(() => {
+				if (_perClawLoading.get(id) === promise) _perClawLoading.delete(id);
+			});
 			return promise;
 		},
 		async __doLoadForClaw(id) {

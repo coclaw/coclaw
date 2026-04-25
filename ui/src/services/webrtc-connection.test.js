@@ -1538,6 +1538,120 @@ describe('initRtc — RTC 建连', () => {
 			mockGet.mockRestore();
 		}
 	});
+
+	test('fallbackTimer fire 后晚到的 TURN creds 不调 rtc.connect 也不创建 orphan PC', async () => {
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+		const { httpClient } = await import('./http.js');
+		// 手工 deferred：模拟 TURN creds HTTP 长时间未返回
+		let resolveCreds;
+		const credsPromise = new Promise((res) => { resolveCreds = res; });
+		const mockGet = vi.spyOn(httpClient, 'get').mockReturnValue(credsPromise);
+
+		const clawConn = createMockBotConn();
+
+		try {
+			const p = initRtc('bot-late-1', clawConn);
+			// 推进到 fallbackTimer fire（默认 RTC_TRANSPORT_TIMEOUT_MS）
+			await vi.advanceTimersByTimeAsync(15_000);
+			const result = await p;
+			expect(result).toBe('failed');
+			expect(__getRtcInstance('bot-late-1')).toBeUndefined();
+			// clearRtc 在 fallbackTimer 路径里至少被调一次（rtc.close() 触发 onStateChange
+			// 也会触发 close 分支再清一次，是已有逻辑的重复保险，不影响晚到守卫的语义）
+			const clearCntAfterTimer = clawConn.clearRtc.mock.calls.length;
+			expect(clearCntAfterTimer).toBeGreaterThanOrEqual(1);
+			// 此时还未触发任何 PC 创建：__channels 为空（因为 connect 未被调用）
+			const pcCountBefore = pcInstances.length;
+			expect(pcCountBefore).toBe(0);
+			expect(mockSendSignaling).not.toHaveBeenCalledWith('bot-late-1', 'rtc:offer', expect.anything());
+
+			// 现在让 TURN creds 晚到
+			resolveCreds({ data: MOCK_TURN_CREDS });
+			await vi.advanceTimersByTimeAsync(0);
+			await Promise.resolve();
+
+			// 关键：晚到的 creds 不应再调 rtc.connect，因此不会有新 PC、不会发 rtc:offer
+			expect(pcInstances.length).toBe(0);
+			expect(mockSendSignaling).not.toHaveBeenCalledWith('bot-late-1', 'rtc:offer', expect.anything());
+			// 关键：clearRtc 调用次数没有再增加（晚到路径不再触发额外的 clear）
+			expect(clawConn.clearRtc.mock.calls.length).toBe(clearCntAfterTimer);
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+		}
+	});
+
+	test('外部 closeRtcForClaw 后晚到的 TURN creds 不调 rtc.connect', async () => {
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+		const { httpClient } = await import('./http.js');
+		let resolveCreds;
+		const credsPromise = new Promise((res) => { resolveCreds = res; });
+		const mockGet = vi.spyOn(httpClient, 'get').mockReturnValue(credsPromise);
+
+		const clawConn = createMockBotConn();
+
+		try {
+			const p = initRtc('bot-late-2', clawConn);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(__getRtcInstance('bot-late-2')).toBeTruthy();
+
+			// 外部主动 close（如 logout / unbind 等路径）
+			closeRtcForClaw('bot-late-2');
+			expect(__getRtcInstance('bot-late-2')).toBeUndefined();
+
+			const pcCountBefore = pcInstances.length;
+			const sigCallsBefore = mockSendSignaling.mock.calls.length;
+
+			// 让 TURN creds 晚到
+			resolveCreds({ data: MOCK_TURN_CREDS });
+			await vi.advanceTimersByTimeAsync(0);
+			await Promise.resolve();
+
+			// 没有新 PC、没有 rtc:offer 信令
+			expect(pcInstances.length).toBe(pcCountBefore);
+			expect(mockSendSignaling.mock.calls.length).toBe(sigCallsBefore);
+
+			// p 仍可走到 fallbackTimer 路径或直接由 onStateChange 关闭路径 settle，
+			// 这里推进时间确保 promise 不悬挂
+			await vi.advanceTimersByTimeAsync(15_000);
+			const result = await p;
+			expect(result).toBe('failed');
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+		}
+	});
+
+	test('TURN creds 在 fallbackTimer 之前正常 resolve 时仍调 rtc.connect 一次', async () => {
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+		const { httpClient } = await import('./http.js');
+		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
+
+		const clawConn = createMockBotConn();
+
+		try {
+			const p = initRtc('bot-happy', clawConn);
+			await vi.advanceTimersByTimeAsync(0);
+			// 守卫不破坏 happy path：connect 调用一次 → 创建一个 PC + 发出 rtc:offer
+			expect(pcInstances.length).toBe(1);
+			expect(mockSendSignaling).toHaveBeenCalledWith('bot-happy', 'rtc:offer', { sdp: 'mock-sdp-offer' });
+
+			const dc = MockRTCPeerConnection.lastInstance.__channels[0];
+			dc.readyState = 'open';
+			dc.onopen();
+			const result = await p;
+			expect(result).toBe('rtc');
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+		}
+	});
 });
 
 // --- DC 应用层保活 ---

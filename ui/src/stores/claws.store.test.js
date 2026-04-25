@@ -2408,7 +2408,7 @@ describe('__bridgeLifecycle 事件处理 — window lifecycle events', () => {
 });
 
 describe('__refreshIfStale', () => {
-	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 agents/sessions/topics/dashboard', () => {
+	test('断连时长 >= BRIEF_DISCONNECT_MS 时刷新 agents/sessions/topics/dashboard', async () => {
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -2424,6 +2424,10 @@ describe('__refreshIfStale', () => {
 		store.byId['20'].disconnectedAt = Date.now() - 35_000;
 
 		store.__refreshIfStale('20');
+		// refreshClawResources 现在是 async，先 await loadAgents 再 fire 其他三个，
+		// 这里跑几次微任务等 await 链推进到位
+		await Promise.resolve();
+		await Promise.resolve();
 
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('20');
@@ -2481,7 +2485,7 @@ describe('__refreshIfStale', () => {
 		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
 	});
 
-	test('{force:true} 绕过 BRIEF_DISCONNECT_MS 门槛（短 offline 也刷）', () => {
+	test('{force:true} 绕过 BRIEF_DISCONNECT_MS 门槛（短 offline 也刷）', async () => {
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -2497,6 +2501,9 @@ describe('__refreshIfStale', () => {
 		store.byId['24'].disconnectedAt = Date.now() - 2000; // 短于 BRIEF_DISCONNECT_MS
 
 		store.__refreshIfStale('24', { force: true });
+		// refreshClawResources 现在 async：等 await loadAgents 完成后再启动其他三个
+		await Promise.resolve();
+		await Promise.resolve();
 
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('24');
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('24');
@@ -3360,7 +3367,7 @@ describe('dcReady 响应式标记', () => {
 		expect(store.byId['1'].dcReady).toBe(false);
 	});
 
-	test('__rtcCallbacks: 被动恢复触发 __refreshIfStale', () => {
+	test('__rtcCallbacks: 被动恢复触发 __refreshIfStale', async () => {
 		const store = useClawsStore();
 		const agentsStore = useAgentsStore();
 		const sessionsStore = useSessionsStore();
@@ -3379,6 +3386,9 @@ describe('dcReady 响应式标记', () => {
 		cbs.onRtcStateChange('connected', null);
 		expect(store.byId['1'].dcReady).toBe(true);
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
+		// refreshClawResources 现在 async：要等 await loadAgents 完成 sessions 才会被调
+		await Promise.resolve();
+		await Promise.resolve();
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
 		expect(store.byId['1'].disconnectedAt).toBe(0);
 	});

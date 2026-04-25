@@ -136,7 +136,14 @@ export function initRtc(clawId, clawConn, callbacks = {}) {
 		};
 
 		httpClient.get('/api/v1/turn/creds')
-			.then((resp) => rtc.connect(resp.data))
+			.then((resp) => {
+				// TURN HTTP 在途期间，外部可能已通过 fallbackTimer/closeRtcForClaw 等
+				// 路径关掉 rtc 并把 Map 条目清掉。此时再调 rtc.connect 会用旧 clawConn
+				// 重建 PC、发出 'rtc:offer'，留下游离 PC，因此守住：已 settled 或已被
+				// 替换 / 移除的 rtc 一律不再触发 connect
+				if (settled || rtcInstances.get(clawId) !== rtc) return;
+				return rtc.connect(resp.data);
+			})
 			.catch((err) => {
 				if (!settle('failed')) return;
 				clearTimeout(fallbackTimer);

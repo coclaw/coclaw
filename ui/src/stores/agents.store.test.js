@@ -318,6 +318,66 @@ describe('agents store', () => {
 		expect(store.byClaw['bot-1'].agents[0].id).toBe('main');
 	});
 
+	// 同 id 重绑：旧 loadAgents 的 stale finally 不能把替换上去的新 promise 删掉，
+	// 否则下一次同 id 调用 dedup 失效，会发起第三次 RPC
+	test('同 id 重绑：旧 loadAgents 的 stale finally 不删替换 promise', async () => {
+		// 旧 conn：deferred agents.list
+		let resolveOld;
+		const oldConn = {
+			request: vi.fn().mockImplementation((method) => {
+				if (method === 'agents.list') {
+					return new Promise((r) => { resolveOld = r; });
+				}
+				return Promise.resolve({ name: 'a' });
+			}),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		setConn('bot-1', oldConn);
+
+		const store = useAgentsStore();
+		const oldPromise = store.loadAgents('bot-1');
+		expect(oldConn.request).toHaveBeenCalledWith('agents.list', {});
+
+		// 重绑：unbound + add → 准备新 conn（同 id），新 conn 也 deferred
+		store.removeByClaw('bot-1');
+		let resolveNew;
+		const newConn = {
+			request: vi.fn().mockImplementation((method) => {
+				if (method === 'agents.list') {
+					return new Promise((r) => { resolveNew = r; });
+				}
+				return Promise.resolve({ agentId: 'main', name: 'New' });
+			}),
+			on: vi.fn(),
+			off: vi.fn(),
+		};
+		setConn('bot-1', newConn);
+
+		// 新 loadAgents：第一次 → 发起新 RPC；in-flight Map 应记录新 promise
+		const newPromise1 = store.loadAgents('bot-1');
+		expect(newConn.request).toHaveBeenCalledWith('agents.list', {});
+		expect(newConn.request).toHaveBeenCalledTimes(1);
+
+		// 解析旧 promise，让它的 stale finally 跑完
+		resolveOld({ defaultId: 'main', agents: [] });
+		await oldPromise;
+		// 等微任务跑完，确保 stale finally 已经触发过
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// 关键：第三次 loadAgents 应被新 promise dedup 拦下，不应发起第三次 RPC
+		const newPromise2 = store.loadAgents('bot-1');
+		// 仍只发起过两次 agents.list（旧 + 新），没有第三次
+		expect(oldConn.request.mock.calls.filter(c => c[0] === 'agents.list')).toHaveLength(1);
+		expect(newConn.request.mock.calls.filter(c => c[0] === 'agents.list')).toHaveLength(1);
+
+		// 收尾：解析新 promise，避免悬挂；await 两个外层 promise 把所有微任务跑完
+		resolveNew({ defaultId: 'main', agents: [{ id: 'main', name: 'main' }] });
+		await newPromise1;
+		await newPromise2;
+	});
+
 	// =====================================================================
 	// getAgentDisplay
 	// =====================================================================

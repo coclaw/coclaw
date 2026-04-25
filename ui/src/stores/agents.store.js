@@ -154,7 +154,11 @@ export const useAgentsStore = defineStore('agents', {
 				}
 			})();
 			_loadingByClaw.set(id, p);
-			p.finally(() => _loadingByClaw.delete(id));
+			// 仅当 Map 当前条目仍是本 promise 时才删，否则会把 removeByClaw + 重入新建的
+			// 飞行中 promise 一并删掉，导致下一次同 id 调用不复用而是发起第三次 RPC
+			p.finally(() => {
+				if (_loadingByClaw.get(id) === p) _loadingByClaw.delete(id);
+			});
 			return p;
 		},
 

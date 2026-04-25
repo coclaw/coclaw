@@ -725,5 +725,55 @@ describe('topics store', () => {
 			resolveOld({ topics: [{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 200 }] });
 			await oldPromise;
 		});
+
+		// 同 id 重绑：旧 loadTopicsForClaw 的 stale finally 不能把替换上去的新 promise
+		// 删掉，否则下一次同 id 调用 dedup 失效，会发起第三次 RPC
+		test('同 id 重绑：旧 loadTopicsForClaw 的 stale finally 不删替换 promise', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			let resolveOld;
+			const oldConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveOld = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', oldConn);
+
+			const store = useTopicsStore();
+			const oldPromise = store.loadTopicsForClaw('bot-1');
+			expect(oldConn.request).toHaveBeenCalledTimes(1);
+
+			// 重绑：清掉再加，并换 deferred newConn
+			delete clawsStore.byId['bot-1'];
+			store.removeByClaw('bot-1');
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			let resolveNew;
+			const newConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveNew = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', newConn);
+
+			// 第一次新 loadForClaw：发起新 RPC、新 promise 入 in-flight Map
+			const newPromise1 = store.loadTopicsForClaw('bot-1');
+			expect(newConn.request).toHaveBeenCalledTimes(1);
+
+			// 解析旧 promise，让 stale finally 跑完
+			resolveOld({ topics: [] });
+			await oldPromise;
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// 关键：第三次同 id loadForClaw 应被新 promise dedup 拦下，不发起第三次 RPC
+			const newPromise2 = store.loadTopicsForClaw('bot-1');
+			expect(newConn.request).toHaveBeenCalledTimes(1);
+
+			// 收尾：把两个外层 promise 都 await 收完
+			resolveNew({ topics: [] });
+			await newPromise1;
+			await newPromise2;
+		});
 	});
 });
