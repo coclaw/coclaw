@@ -146,3 +146,42 @@
         3. grep `__restartEpoch` / `restartGen` / 现有 ICE restart offer 出站结构
         4. plan 阶段写出方案 → 用户拍板 → 实施
         5. plugin commit + UI commit 各自独立（双 changeset）
+
+## 发布前门禁 review 发现的非阻障项（2026-04-26）
+
+来源：8 路并行 review（4 codex + 4 后台 claude -p）。仅登记值得追踪的疑似 bug 和 backlog 跟踪丢失项；G2/G3/G1 的 nit（vite 配置选择 / changeset 标签错位 / refinement chain 等）不登记。
+
+23. **`__resumeOnline` 入口缺 `claw.online` 防御 gate（红线 3 纸面差）**
+    - 现状：红线 3 文档要求 5 处布点，`__resumeOnline` 入口当前只 gate 了 `_sigOffline`，没显式 gate `claw.online`
+    - 亲自核实：4 个调用方（`updateClawOnline` prev=false 分支、`updateClawOnline` 同值 + rtcPhase=failed、`applySnapshot` Phase 3 toResume、`__resumeAllClawsForSigOnline`）全部过滤了 online=true → offline claw 不会进入，运行时不触发问题
+    - 决策方向二选一：a) 补防御性 gate 落实红线 5 处布点；b) 修红线文档明确"`__resumeOnline` 入口由调用方契约保证 claw.online"
+
+24. **`topics.store.createTopic` 缺 post-await `byId` re-check（ghost-topic-on-removed-claw race）**
+    - 来源：commit 9ab962d round 24 backlog
+    - 现状：`createTopic` 在 await 期间 claw 被 removeClawById 时，return 后仍可能写入 ghost 条目。窄窗口
+    - 修法：post-await 加 `byId` re-check，被 evict 即放弃
+
+25. **`claw-connection.setRtc` non-ready-RTC defensive-net test 缺**
+    - 来源：commit 9ab962d round 24 backlog
+    - 现状：测试覆盖未锁住"setRtc 收到非 ready 状态 rtc 时不应被传播到 isReady"的契约
+    - 修法：补单元测试
+
+26. **`__ensureRtc` connected early-return 当 `rtc.state==='connected' && !rtc.isReady`**
+    - 来源：commit 54b609d round 20 backlog
+    - 现状：`__ensureRtc` early-return 看 state===connected，但 isReady=false 时 DC 实际不可用；窄窗口可能 short-circuit 错误判定
+    - 修法待定：可能改 early-return 条件 + 重 init；需深入 review
+
+27. **`setupAppStateChange` 直接回调捕获，测试注入需要清理**
+    - 来源：commit 665f0e7 round 22 backlog
+    - 现状：测试用 vi.doMock 注入有副作用残留风险；setupAppStateChange 直接捕获 App 引用而不是从工厂注入，单测覆盖被钳制
+    - 修法：factor App reference for test injection，或 vi.doMock 用法收紧
+
+28. **`isConnectingRtc` / `unreachableClaws` getter 语义在 sig offline + rtcPhase=building/recovering 期间不清晰**
+    - 来源：commit 4ae005e round 19 backlog（"P2-5"）
+    - 现状：sig offline 时 `rtcPhase` 可能仍是 building/recovering（pre-existing 残留），UI 看到的 isConnectingRtc / unreachableClaws 状态不直觉
+    - 决策与 SignalingBanner UX 工作捆绑，等 UX 推进时一并处理
+
+29. **`manualRetryUnreachable()` 不直接检查 `_sigOffline`（UX wart）**
+    - 来源：commit 68d9f99 round 18 backlog
+    - 现状：`manualRetryUnreachable` 是用户点"重试"按钮触发；sig 不通时仍会进入 retry 流程，看似无反应。UX 不友好
+    - 修法：UX 层面在 sig offline 时 disable 按钮 + 提示文案；或 `manualRetryUnreachable` 入口加 sig gate + 反馈
