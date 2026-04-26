@@ -8,6 +8,12 @@
  *   3) 事件流静默超 IDLE_THRESHOLD_MS 后启动长挂 agent.wait 拿到结果 → __pollOnce
  *   4) 任意 RPC 错误（DC 断、send 失败、wait 超时等异常）→ __onRpcFailed
  *
+ * **rpc grace 窗口**：信号 2/3 到达时不立即收尾，挂一个 RPC_GRACE_MS 计时器等信号 1（rpc）
+ * 二阶段 res。窗口内 rpc 来了 → 走 'rpc' 路径（上游同步 await 链保证 transcript 已写完）；
+ * 窗口耗尽 → 用先到的 'lifecycle' / 'wait' 降级。信号 4（failed）网络异常立刻收尾不等。
+ * 这把"等持久化"的逻辑收拢到源头，下游 chat.store 拿到 promise resolve 时数据已经写完，
+ * 不需要再做"是否有终态 assistant"的猜测校验，避免 fast follow-up 场景下把上一轮回答误判成本轮终态。
+ *
  * 任一信号触发 __endRun(reason)：标记 ended=true、停 watcher、唤醒 runAgent 的最终 promise。
  * chat.store 拿到 promise resolve 后 await loadMessages，再调 dropRun(runKey) 释放 streamingMsgs。
  *
@@ -15,6 +21,7 @@
  */
 import { defineStore } from 'pinia';
 import { applyAgentEvent } from '../utils/agent-stream.js';
+import { remoteLog } from '../services/remote-log.js';
 
 /**
  * post-acceptance 内存释放保险（24 小时）。
@@ -32,6 +39,13 @@ const WAIT_REQUEST_TIMEOUT_MS = WAIT_TIMEOUT_MS + 3_000;
 
 /** agent.wait 终态 status */
 const TERMINAL_WAIT_STATUSES = new Set(['ok', 'error']);
+
+/**
+ * 信号 2/3 到达后给信号 1（rpc 二阶段 res）的宽限时长（ms）。
+ * 上游 OpenClaw lifecycle:end emit 早于 transcript 写盘 + rpc 二阶段帧，
+ * 给 rpc 优先一窗口可以让大多数情况走 'rpc' 快路径（已写完）；窗口耗尽降级。
+ */
+export const RPC_GRACE_MS = 2_000;
 
 export const useAgentRunsStore = defineStore('agentRuns', {
 	state: () => ({
@@ -110,6 +124,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				__conn: conn,
 				__timer: null,
 				__watcher: null,
+				/** rpc grace pending 状态：{ reason, timer } | null */
+				__pendingEnd: null,
 			};
 			this.runs[runId] = run;
 			this.runKeyIndex[runKey] = runId;
@@ -283,19 +299,20 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 
 			const status = result?.status;
 			if (TERMINAL_WAIT_STATUSES.has(status)) {
-				this.__endRun(runId, 'wait');
+				// wait 终态也可能早于 rpc 二阶段，挂 grace 等 rpc
+				this.__schedulePendingEnd(runId, 'wait');
 				return;
 			}
 			if (status !== 'timeout') {
 				// 异常响应（无 status / 未知 status）—— 防御：按结束处理避免下一轮死循环
 				console.warn('[agentRuns] agent.wait unexpected result runId=%s', runId, result);
-				this.__endRun(runId, 'wait');
+				this.__schedulePendingEnd(runId, 'wait');
 				return;
 			}
 			// status === 'timeout'：靠 endedAt 间接区分
 			if (result?.endedAt) {
 				// run 已结束（abort / TTL 写入），按结束处理
-				this.__endRun(runId, 'wait');
+				this.__schedulePendingEnd(runId, 'wait');
 				return;
 			}
 			// 真超时（活跃）：立即下一轮
@@ -305,20 +322,54 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		__onRpcDone(runId) {
 			const run = this.runs[runId];
 			if (!run || run.ended) return;
+			// rpc 二阶段最权威——若已挂 grace pending 取消之，直接走 'rpc' 快路径
+			this.__clearPendingEnd(runId);
 			this.__endRun(runId, 'rpc');
 		},
 
 		__onLifecycleEnd(runId) {
 			const run = this.runs[runId];
 			if (!run || run.ended) return;
-			this.__endRun(runId, 'lifecycle');
+			// lifecycle 通常先于 rpc 二阶段；挂 grace 等 rpc，超时降级
+			this.__schedulePendingEnd(runId, 'lifecycle');
 		},
 
 		__onRpcFailed(runId, err) {
 			const run = this.runs[runId];
 			if (!run || run.ended) return;
 			console.debug('[agentRuns] rpc failed runId=%s err=%s', runId, err?.message);
+			// 网络异常：上游 rpc 二阶段已不可能再到，立即收尾不等 grace
+			this.__clearPendingEnd(runId);
 			this.__endRun(runId, 'failed');
+		},
+
+		/**
+		 * 挂 grace pending：等 RPC_GRACE_MS 内信号 1 到达；超时后按记下的 reason 收尾。
+		 * 已 pending 时不重复挂（先到的 reason 优先）。
+		 * @param {string} runId
+		 * @param {string} reason
+		 */
+		__schedulePendingEnd(runId, reason) {
+			const run = this.runs[runId];
+			if (!run || run.ended) return;
+			if (run.__pendingEnd) return;
+			const timer = setTimeout(() => {
+				const r = this.runs[runId];
+				if (!r || r.ended) return;
+				r.__pendingEnd = null;
+				// 诊断信号：grace 期满 rpc 二阶段仍未到。频率高时考虑调 RPC_GRACE_MS。
+				remoteLog(`agent.run.rpc-grace-elapsed runId=${runId} reason=${reason}`);
+				this.__endRun(runId, reason);
+			}, RPC_GRACE_MS);
+			run.__pendingEnd = { reason, timer };
+		},
+
+		/** 清掉 grace pending（rpc 抢先到达 / 已 endRun 等场景） */
+		__clearPendingEnd(runId) {
+			const run = this.runs[runId];
+			if (!run?.__pendingEnd) return;
+			clearTimeout(run.__pendingEnd.timer);
+			run.__pendingEnd = null;
 		},
 
 		/**
@@ -331,6 +382,11 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			if (!run || run.ended) return;
 			console.debug('[agentRuns] endRun runId=%s reason=%s', runId, reason);
 			run.ended = true;
+			// 防御性清 grace pending：覆盖 settle('manual') / __cleanupRun 等绕过 helper 的路径
+			if (run.__pendingEnd) {
+				clearTimeout(run.__pendingEnd.timer);
+				run.__pendingEnd = null;
+			}
 			if (run.__watcher?.idleTimer) {
 				clearTimeout(run.__watcher.idleTimer);
 				run.__watcher.idleTimer = null;

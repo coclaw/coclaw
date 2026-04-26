@@ -220,10 +220,11 @@ agent RPC 二阶段 res 帧   ──→ 此时 transcript 必已写完（强保�
 
 ### 2. 决策建议
 
-- **agent RPC 路径**：等"二阶段 res 帧"再拉 chat.history（最强保证、零延迟）。其他 endRun 信号（lifecycle / wait）若先到，意味着可能命中 transcript 半写窗口，需前置等待 + 重试 + 降级
+- **agent RPC 路径**：等"二阶段 res 帧"再拉 chat.history（最强保证、零延迟）。其他 endRun 信号（lifecycle / wait）若先到，意味着可能命中 transcript 半写窗口
+- **CoClaw 当前实现（rpc grace 收拢）**：lifecycle / wait 信号到达不立即收尾，挂 `RPC_GRACE_MS`（默认 2s）等二阶段 res 帧；窗口内 res 帧到达 → 走 'rpc' 路径（已写完）；窗口耗尽 → 用先到的 reason 降级。failed 路径（网络异常）跳过 grace 直接收尾。下游 `chat.store` 拿到 promise resolve 时数据已经写完，无需再做"是否写完"猜测校验，避免快速连发新消息时把上一轮回答误判成本轮终态
 - **chat.send 路径**（CoClaw 当前不走，仅参考）：等 `chat:final` ws 事件
 - **进程崩溃 / kill -9**：上述任一事件都收不到——这是唯一无法通过事件感知的情形，需要 `agent.wait` timeout 或 24h 兜底 timer 作为最后保险
-- **不要依赖 lifecycle:end payload 的 `stopReason`**：上游主路径不写。校验 stopReason 必须从 transcript 读，且把"缺失"当降级路径处理
+- **不要依赖 lifecycle:end payload 的 `stopReason`**：上游主路径不写。如需校验 stopReason 须从 transcript 读，且把"缺失"当降级路径处理
 
 ---
 

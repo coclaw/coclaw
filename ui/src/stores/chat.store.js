@@ -20,44 +20,9 @@ const MSG_PAGE_SIZE = 50;
 /** cancelSend accepted 分支的 tick 重试间隔（ms） */
 const CANCEL_TICK_MS = 500;
 
-/**
- * non-rpc endReason 路径下，等服务端 transcript 写盘的前置等待（ms）。
- * 上游 OpenClaw lifecycle:end 事件 emit 早于 gateway 的 transcript 写盘 await，
- * 此时立即拉 chat.history 会拿到缺 stopReason 的半成品，渲染为"任务未完成"。
- */
-const PERSIST_AWAIT_MS = 1000;
-
-/** 第一次拉仍无终态 stopReason 时，重试一次的间隔（ms） */
-const PERSIST_RETRY_AFTER_MS = 2000;
-
 /** DC/WS 断连相关的错误码 */
 const DISCONNECT_CODES = new Set(['WS_CLOSED', 'DC_NOT_READY', 'DC_CLOSED', 'RTC_SEND_FAILED', 'RTC_LOST', 'CONNECT_TIMEOUT']);
 function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
-
-/**
- * messages 中 anchor 之后是否存在带终态 stopReason 的 assistant 消息。
- * 用于判定服务端 transcript 是否已写完本次 run 的最终 assistant。
- * @param {object[]} messages
- * @param {string|null} anchorId
- * @returns {boolean}
- */
-function hasTerminalAssistantAfter(messages, anchorId) {
-	let anchorIdx = -1;
-	if (anchorId) {
-		for (let i = messages.length - 1; i >= 0; i--) {
-			if (messages[i]?.id === anchorId) { anchorIdx = i; break; }
-		}
-	}
-	for (let i = messages.length - 1; i > anchorIdx; i--) {
-		const m = messages[i];
-		if (m?.message?.role === 'assistant') {
-			const sr = m.message.stopReason;
-			return !!sr && sr !== 'toolUse';
-		}
-	}
-	return false;
-}
-
 
 /**
  * 创建 ChatStore 实例
@@ -601,7 +566,7 @@ export function createChatStore(storeKey, opts = {}) {
 					// cancel 路径下 cancelPromise 已 reject，但 runPromise 仍在等真实终态，此 then 接管收尾。
 					// dropRun 带 res.runId：loadMessages 期间用户若发新消息 register 同 runKey 的新 run，
 					// 旧挂钩的 dropRun 校验 runId 不匹配即跳过，避免误清新 run。
-					// 持久化等待 + 重试由 __awaitPersistAndDrop 处理，按 endReason 区分快慢路径。
+					// "等持久化"已收拢到源头 agent-runs.store 的 rpc grace 窗口，下游 await + drop 即可。
 					runPromise.then(async (res) => {
 						if (res?.accepted) {
 							await this.__awaitPersistAndDrop(res, runKey, runsStore);
@@ -1367,15 +1332,14 @@ export function createChatStore(storeKey, opts = {}) {
 			/**
 			 * accepted 后 endRun 信号到达：拉服务端 history 并释放 streamingMsgs 遮罩。
 			 *
-			 * 关键时序问题：上游 OpenClaw 4 路 endRun 信号"先到者赢"，'lifecycle' 通常先于 'rpc'
-			 * 到达，而 lifecycle:end 事件 emit 早于 gateway 写完 transcript 的 await。
-			 * 立即拉 chat.history 会拿到缺最终消息或缺 stopReason 的半成品，渲染为"任务未完成"。
-			 *
-			 * 修法：按 endReason 区分快慢路径。
-			 *   - 'rpc' 路径：上游同步串行 await 保证 transcript 已写完 → 立即拉，零延迟。
-			 *   - 其他路径：前置 sleep 给 gateway 写 transcript 的时间 → 拉并校验终态 stopReason
-			 *     → 缺则再等一次 → 仍缺降级 + remoteLog（罕见，对应上游持久化异常或 stopReason 缺失）。
-			 *
+			 * "等持久化"的逻辑在源头 agent-runs.store 的 rpc grace 窗口内已处理：
+			 *   - 'rpc' 路径：上游同步 await 链保证 transcript 已写完
+			 *   - 'lifecycle' / 'wait' 路径：源头已等满 RPC_GRACE_MS（默认 2s），transcript 大概率写完
+             *   - 'failed' 路径：网络异常，不再等
+             *
+			 * 因此本函数无需再做"是否已写完终态 assistant"的猜测校验——避免 fast follow-up 场景下
+			 * 把上一轮的最终回答误判成本轮终态而提前 drop。
+             *
 			 * silent loadMessages 失败时不 dropRun（沿用旧策略）：避免清掉 streamingMsgs 又
 			 * 拉不到终态消息。后续兜底：(a) 下次 activate / __onConnReady silent reload；
 			 * (b) agent-runs.store 的 POST_ACCEPT_TIMEOUT_MS 24h timer。
@@ -1385,38 +1349,8 @@ export function createChatStore(storeKey, opts = {}) {
 			 * @param {object} runsStore - useAgentRunsStore() 实例（来自调用方避免重复 lookup）
 			 */
 			async __awaitPersistAndDrop(res, runKey, runsStore) {
-				if (res.endReason === 'rpc') {
-					const ok = await this.loadMessages({ silent: true });
-					if (ok) runsStore.dropRun(runKey, res.runId);
-					return;
-				}
-
-				// 取 anchor 用于"是否已写完最终消息"判定。dropRun 之后 run entry 会消失，
-				// 所以必须在循环开始前快照（即使 sleep 期间被 superseded，dropRun 自带 runId 校验兜底）。
-				const anchorId = runsStore.getActiveRun(runKey)?.anchorMsgId ?? null;
-
-				await new Promise((r) => setTimeout(r, PERSIST_AWAIT_MS));
-				let ok = await this.loadMessages({ silent: true });
-				if (ok && hasTerminalAssistantAfter(this.messages, anchorId)) {
-					runsStore.dropRun(runKey, res.runId);
-					return;
-				}
-
-				if (ok) {
-					await new Promise((r) => setTimeout(r, PERSIST_RETRY_AFTER_MS));
-					ok = await this.loadMessages({ silent: true });
-				}
-
-				if (ok && hasTerminalAssistantAfter(this.messages, anchorId)) {
-					runsStore.dropRun(runKey, res.runId);
-					return;
-				}
-
-				if (ok) {
-					// 拉成功但仍无终态：上游 transcript 未及时写入或 stopReason 缺失，降级显示
-					remoteLog(`agent.run.persist-stale endReason=${res.endReason} runKey=${runKey} elapsed=3s`);
-					runsStore.dropRun(runKey, res.runId);
-				}
+				const ok = await this.loadMessages({ silent: true });
+				if (ok) runsStore.dropRun(runKey, res.runId);
 			},
 
 			__cleanupStreaming() {

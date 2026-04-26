@@ -2196,17 +2196,16 @@ describe('useChatStore', () => {
 		});
 
 		// =====================================================================
-		// __awaitPersistAndDrop endReason 区分（Bug 1 修复）
+		// __awaitPersistAndDrop 契约（方案 D：源头 grace + 下游统一行为）
 		//
-		// 上游 OpenClaw 4 路 endRun 信号"先到者赢"，'lifecycle' 通常先于 'rpc' 到达，
-		// 而 lifecycle:end emit 早于 gateway 写完 transcript。立即拉 chat.history 会
-		// 拿到缺 stopReason 的半成品，渲染为"任务未完成"。
-		//
-		// 'rpc' 路径有上游同步 await 强保证（transcript 已写完）→ 立即拉。
-		// 其他路径前置 sleep 1s + 重试 1 次（间隔 2s）+ 兜底降级 + remoteLog。
+		// "等持久化"已收拢到 agent-runs.store 的 rpc grace 窗口。无论 endReason
+		// 是 'rpc' / 'lifecycle' / 'wait' / 'failed'，下游本函数行为统一：
+		//   - loadMessages 一次 → 成功则 dropRun；失败则不 dropRun（兜底由 24h timer / activate reload 接管）
+		// 不再按 endReason 区分快慢路径、不再 sleep + 重试、不再 hasTerminalAssistantAfter 校验。
+		// 这避免了 fast follow-up 场景下把上一轮回答误判成本轮终态。
 		// =====================================================================
 
-		test('endReason=lifecycle + 第一次拉到带 stopReason：sleep 后 dropRun，无重试', async () => {
+		test('endReason=lifecycle 与 endReason=rpc 行为一致：loadMessages 一次 + dropRun，无 sleep/重试', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -2215,10 +2214,9 @@ describe('useChatStore', () => {
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-lc-ok' });
-					return new Promise(() => {}); // RPC pending；让 lifecycle 先赢
+					return new Promise(() => {}); // RPC pending；让 lifecycle 先赢但等 grace
 				}
 				if (method === 'sessions.get') {
-					// OC sessions.get 返回扁平消息，wrapOcMessages 会包成 { type, id, message }
 					return Promise.resolve({
 						messages: [
 							{ role: 'user', content: [{ type: 'text', text: 'hello' }], timestamp: 1000 },
@@ -2243,140 +2241,22 @@ describe('useChatStore', () => {
 			await vi.advanceTimersByTimeAsync(0); // 等 register
 			expect(runsStore.runs['run-lc-ok']).toBeTruthy();
 
-			// 模拟 lifecycle:end 先到 → endReason='lifecycle'
+			// 模拟 lifecycle:end 先到，挂 grace；推进 RPC_GRACE_MS 让源头降级 endRun('lifecycle')
 			runsStore.__onLifecycleEnd('run-lc-ok');
+			await vi.advanceTimersByTimeAsync(2000); // RPC_GRACE_MS
 			await sendPromise;
 
-			// __awaitPersistAndDrop 走非 rpc 分支，正在 sleep PERSIST_AWAIT_MS=1000
-			expect(conn.request.mock.calls.find((c) => c[0] === 'sessions.get')).toBeFalsy();
-
-			// 推进 1s 触发第一次拉
-			await vi.advanceTimersByTimeAsync(1000);
+			// 下游 loadMessages 一次（无前置 sleep）→ dropRun
 			await vi.waitFor(() => {
 				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-lc-ok');
 			});
-
-			// 只拉了一次（无重试）
 			const sessGetCalls = conn.request.mock.calls.filter((c) => c[0] === 'sessions.get');
 			expect(sessGetCalls.length).toBe(1);
-			// 未触发降级 remoteLog
+			// 不再有 persist-stale 降级 remoteLog（撤掉了）
 			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
 		});
 
-		test('endReason=lifecycle + 第一次无 stopReason、第二次有：重试一次成功', async () => {
-			vi.useFakeTimers();
-			const clawsStore = useClawsStore();
-			clawsStore.setClaws([{ id: '1', online: true }]);
-
-			let sessGetCount = 0;
-			const conn = mockConn();
-			conn.request.mockImplementation((method, params, options) => {
-				if (method === 'agent') {
-					options?.onAccepted?.({ runId: 'run-lc-retry' });
-					return new Promise(() => {});
-				}
-				if (method === 'sessions.get') {
-					sessGetCount++;
-					if (sessGetCount === 1) {
-						// 第一次拉：transcript 还没写完最终一条，最后一条是 user
-						return Promise.resolve({
-							messages: [
-								{ role: 'user', content: [{ type: 'text', text: 'hello' }], timestamp: 1000 },
-							],
-						});
-					}
-					// 第二次拉：transcript 已写完，含终态 assistant
-					return Promise.resolve({
-						messages: [
-							{ role: 'user', content: [{ type: 'text', text: 'hello' }], timestamp: 1000 },
-							{ role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn', timestamp: 2000 },
-						],
-					});
-				}
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
-				return Promise.resolve(null);
-			});
-			setConn('1', conn);
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.clawId = '1';
-			store.chatSessionKey = 'agent:main:main';
-
-			const runsStore = useAgentRunsStore();
-			const dropSpy = vi.spyOn(runsStore, 'dropRun');
-
-			const sendPromise = store.sendMessage('hello');
-			await vi.advanceTimersByTimeAsync(0);
-			runsStore.__onLifecycleEnd('run-lc-retry');
-			await sendPromise;
-
-			// 推进 1s → 第一次拉（无 stopReason）
-			await vi.advanceTimersByTimeAsync(1000);
-			await vi.waitFor(() => {
-				expect(sessGetCount).toBe(1);
-			});
-			expect(dropSpy).not.toHaveBeenCalled();
-
-			// 推进 2s → 第二次拉（含终态）
-			await vi.advanceTimersByTimeAsync(2000);
-			await vi.waitFor(() => {
-				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-lc-retry');
-			});
-			expect(sessGetCount).toBe(2);
-			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
-		});
-
-		test('endReason=lifecycle + 两次都无 stopReason：降级 remoteLog + 仍 dropRun', async () => {
-			vi.useFakeTimers();
-			const clawsStore = useClawsStore();
-			clawsStore.setClaws([{ id: '1', online: true }]);
-
-			const conn = mockConn();
-			conn.request.mockImplementation((method, params, options) => {
-				if (method === 'agent') {
-					options?.onAccepted?.({ runId: 'run-lc-stale' });
-					return new Promise(() => {});
-				}
-				if (method === 'sessions.get') {
-					// 始终缺最终 assistant
-					return Promise.resolve({
-						messages: [
-							{ role: 'user', content: [{ type: 'text', text: 'hello' }], timestamp: 1000 },
-						],
-					});
-				}
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
-				return Promise.resolve(null);
-			});
-			setConn('1', conn);
-
-			const store = useChatStore();
-			store.sessionId = 'sess-1';
-			store.clawId = '1';
-			store.chatSessionKey = 'agent:main:main';
-
-			const runsStore = useAgentRunsStore();
-			const dropSpy = vi.spyOn(runsStore, 'dropRun');
-
-			const sendPromise = store.sendMessage('hello');
-			await vi.advanceTimersByTimeAsync(0);
-			runsStore.__onLifecycleEnd('run-lc-stale');
-			await sendPromise;
-
-			// 推进 1s + 2s = 3s 走完两次拉
-			await vi.advanceTimersByTimeAsync(1000);
-			await vi.advanceTimersByTimeAsync(2000);
-			await vi.waitFor(() => {
-				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-lc-stale');
-			});
-
-			// 降级 remoteLog 被调用一次
-			const stale = remoteLogCalls.find((t) => t.includes('persist-stale'));
-			expect(stale).toMatch(/agent\.run\.persist-stale endReason=lifecycle/);
-		});
-
-		test('endReason=lifecycle + silent loadMessages 失败：不 dropRun 不 remoteLog', async () => {
+		test('endReason=lifecycle + silent loadMessages 失败：不 dropRun（等 24h / activate reload 兜底）', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -2404,16 +2284,14 @@ describe('useChatStore', () => {
 			const sendPromise = store.sendMessage('hello');
 			await vi.advanceTimersByTimeAsync(0);
 			runsStore.__onLifecycleEnd('run-lc-fail');
+			await vi.advanceTimersByTimeAsync(2000); // grace 满 → endRun('lifecycle')
 			await sendPromise;
 
-			// 推进充分时间走完 sleep + 拉（拉失败）
-			await vi.advanceTimersByTimeAsync(1000);
-			await vi.advanceTimersByTimeAsync(2000);
-			// 多排几次 microtask 让 then 链 settle（fake timer 下用 advanceTimersByTimeAsync(0)）
+			// 多排几次 microtask 让 then 链 settle
 			await vi.advanceTimersByTimeAsync(0);
 			await vi.advanceTimersByTimeAsync(0);
 
-			// loadMessages 反复失败 → 至少试过一次 sessions.get；不 dropRun，不 remoteLog 降级
+			// 至少试过一次 sessions.get；失败后不 dropRun
 			const sessGetCalls = conn.request.mock.calls.filter((c) => c[0] === 'sessions.get');
 			expect(sessGetCalls.length).toBeGreaterThanOrEqual(1);
 			expect(dropSpy).not.toHaveBeenCalled();
