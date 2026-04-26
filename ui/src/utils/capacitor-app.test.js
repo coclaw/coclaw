@@ -674,6 +674,10 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		// 2) 先到 offline networkStatusChange{connected:false, type:'none'} —— 修法前会涨计数挡掉 baseline 写入
 		// 3) getStatus resolve 写 'wifi' baseline
 		// 4) 真 wifi→cellular 切换：typeChanged 必须为 true
+		// 必须 resetModules：模块级 _lastConnectionType / _networkEventCount 跨测试共享，
+		// 前序用例残留的 baseline 会让本测在旧实现下也能 typeChanged=true，覆盖被稀释
+		vi.resetModules();
+		clearListeners();
 		let resolveGetStatus;
 		mockGetStatus.mockImplementationOnce(() => new Promise((r) => { resolveGetStatus = r; }));
 
