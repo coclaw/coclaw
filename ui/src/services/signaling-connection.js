@@ -63,6 +63,10 @@ export class SignalingConnection {
 		// OS 层 navigator.onLine=false 时暂停 WS 构造，仅用于日志去重
 		// （边沿触发：paused/resumed 各打一条，稳态静默）
 		this.__pausedOffline = false;
+		// Capacitor `@capacitor/network` 报过 connected 至少一次后 sticky 置 true，
+		// 用于 override navigator.onLine=false 误报（Android WebView 等场景）。
+		// session 边界 reset：disconnect() 清回 false。
+		this.__nativeOnline = false;
 
 		// 心跳
 		this.__hbInterval = null;
@@ -112,7 +116,12 @@ export class SignalingConnection {
 			window.addEventListener('app:foreground', this.__boundForegroundHandler);
 		}
 		if (typeof window !== 'undefined' && !this.__boundNetworkHandler) {
-			this.__boundNetworkHandler = (e) => this.__handleForegroundResume('network:online', e?.detail);
+			this.__boundNetworkHandler = (e) => {
+				// Capacitor 已经报过 connected → sticky 置 true，后续 __doConnect override
+				// navigator.onLine===false 的误报（Android 14 WebView / 厂商 ROM 偶发）
+				this.__nativeOnline = true;
+				this.__handleForegroundResume('network:online', e?.detail);
+			};
 			window.addEventListener('network:online', this.__boundNetworkHandler);
 		}
 		this.__doConnect();
@@ -172,6 +181,7 @@ export class SignalingConnection {
 		this.__clearReconnect();
 		this.__cleanup();
 		this.__pausedOffline = false;
+		this.__nativeOnline = false;
 		this.__setState('disconnected');
 	}
 
@@ -276,7 +286,8 @@ export class SignalingConnection {
 		// 退避节奏保留，仍排下一轮；`network:online` / `app:foreground` 能正常打断退避。
 		// 基线浏览器/WebView 对 navigator.onLine=false 的真 offline 判定可靠；
 		// 误报 false 时最差延后一个退避周期，不会永久卡住。
-		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+		// __nativeOnline override：Capacitor 已报过 connected 时忽略 navigator.onLine 误报。
+		if (typeof navigator !== 'undefined' && navigator.onLine === false && !this.__nativeOnline) {
 			if (!this.__pausedOffline) {
 				this.__pausedOffline = true;
 				console.debug('[SigConn] paused (offline)');

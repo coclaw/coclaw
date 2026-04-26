@@ -1153,6 +1153,44 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 		// 清理：navigator.onLine 由 afterEach 还原
 		conn.disconnect();
 	});
+
+	// __nativeOnline override：Capacitor 已报 connected 时忽略 navigator.onLine=false 误报
+	test('navigator.onLine=false + __nativeOnline=false → 仍 paused（既有行为）', () => {
+		setOnLine(false);
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		expect(conn.__nativeOnline).toBe(false);
+		expect(conn.__pausedOffline).toBe(true);
+		expect(MockWebSocket.lastInstance).toBeNull();
+		expect(conn.state).toBe('disconnected');
+	});
+
+	test('navigator.onLine=false + __nativeOnline=true（先派 network:online）→ 建 WS 不 paused', () => {
+		setOnLine(false);
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		// 先 paused：尚未收到 native 信号
+		expect(conn.__pausedOffline).toBe(true);
+		// Capacitor 信号到达：sticky 置 true，network:online handler 内
+		// __handleForegroundResume('network:online', ...) → disconnected 分支立即 reconnect
+		window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged: false } }));
+		expect(conn.__nativeOnline).toBe(true);
+		// __doConnect 走 override 分支：建 WS，进 connecting
+		expect(MockWebSocket.lastInstance).not.toBeNull();
+		expect(conn.state).toBe('connecting');
+		expect(conn.__pausedOffline).toBe(false);
+	});
+
+	test('disconnect() 重置 __nativeOnline，下一轮 session 不复用旧 sticky 值', () => {
+		setOnLine(true);
+		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
+		conn.connect();
+		// 触发 native 信号
+		window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged: false } }));
+		expect(conn.__nativeOnline).toBe(true);
+		conn.disconnect();
+		expect(conn.__nativeOnline).toBe(false);
+	});
 });
 
 describe('SignalingConnection – probe + network:online 互动', () => {
