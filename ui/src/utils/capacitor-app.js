@@ -281,8 +281,10 @@ function setupAppStateChange() {
 /** 上次已知的网络类型（仅 wifi/cellular 时更新） */
 let _lastConnectionType = null;
 
-/** 单调递增计数：每次 networkStatusChange 实时事件 fire 时 +1，用于 init 期间
- *  判定 getStatus 是否被实时事件抢先（值比对会因"恰巧同值"误判，故用计数） */
+/** 单调递增计数：仅当 networkStatusChange 实际写入 baseline (_lastConnectionType)
+ *  时 +1，用于 init 期间判定 getStatus 是否被实时事件抢先。
+ *  注意：offline / connectionType=='none' 事件不计入——它们不写 baseline，
+ *  若计入会让随后慢 getStatus 的合法 baseline 写入被错误拦截。 */
 let _networkEventCount = 0;
 
 /**
@@ -302,7 +304,6 @@ function setupNetworkListener() {
 	const eventCountBefore = _networkEventCount;
 	import('@capacitor/network').then(({ Network }) => {
 		Network.addListener('networkStatusChange', ({ connected, connectionType }) => {
-			_networkEventCount++;
 			const normalized = normalizeConnectionType(connectionType);
 			console.log('[capacitor] networkStatusChange: connected=%s type=%s', connected, connectionType);
 			remoteLog(`app.network connected=${connected} type=${connectionType}`);
@@ -312,7 +313,10 @@ function setupNetworkListener() {
 					typeChanged = true;
 					remoteLog(`app.network typeChanged ${_lastConnectionType}→${normalized}`);
 				}
-				if (normalized) _lastConnectionType = normalized;
+				if (normalized) {
+					_lastConnectionType = normalized;
+					_networkEventCount++; // 仅在真正写入 baseline 时涨计数
+				}
 				dispatchNetworkOnline(typeChanged);
 			}
 		});

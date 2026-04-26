@@ -668,6 +668,36 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		dispatchSpy.mockRestore();
 	});
 
+	test('setupNetworkListener: offline 实时事件不阻塞慢 getStatus 写 baseline，后续 wifi→cellular 切换 typeChanged=true', async () => {
+		// 三件事叠加场景（修法配方核心用例）：
+		// 1) getStatus 慢 resolve（pending）
+		// 2) 先到 offline networkStatusChange{connected:false, type:'none'} —— 修法前会涨计数挡掉 baseline 写入
+		// 3) getStatus resolve 写 'wifi' baseline
+		// 4) 真 wifi→cellular 切换：typeChanged 必须为 true
+		let resolveGetStatus;
+		mockGetStatus.mockImplementationOnce(() => new Promise((r) => { resolveGetStatus = r; }));
+
+		const mod = await import('./capacitor-app.js');
+		await mod.initCapacitorApp(mockRouter);
+		await flush();
+
+		// 先 fire offline 实时事件（修法前会让 _networkEventCount 涨）
+		networkListeners['networkStatusChange']({ connected: false, connectionType: 'none' });
+
+		// getStatus 慢 resolve 给出 wifi —— 修法后 baseline 必须被写入（counter 未涨）
+		resolveGetStatus({ connectionType: 'wifi' });
+		await flush();
+
+		// 真 wifi→cellular 切换：typeChanged 必须为 true
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+		mod.__flushNetworkDebounceForTest();
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+		expect(evt).toBeDefined();
+		expect(evt[0].detail.typeChanged).toBe(true);
+		dispatchSpy.mockRestore();
+	});
+
 	test('__cancelPendingNetworkDispatch: 丢弃 pending timer 且不派发（logout 清理语义）', async () => {
 		const mod = await import('./capacitor-app.js');
 		await mod.initCapacitorApp(mockRouter);
