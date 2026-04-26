@@ -910,7 +910,7 @@ export const useClawsStore = defineStore('claws', {
 					}
 				}).catch(() => {});
 			}
-			// refreshClawResources 现已 async（先 await loadAgents 再 fire-and-forget 其他三个）；
+			// refreshClawResources 现已 async（topics/dashboard 即时并发，sessions 等 loadAgents）；
 			// 内部各 load 已自带 .catch，外层 promise 实际不会 reject——这里 .catch 仅作 unhandled-rejection 兜底，
 			// 与上方 checkPluginVersion(...).catch 形态对齐
 			_lifecycle.refreshClawResources(id).catch(() => {});

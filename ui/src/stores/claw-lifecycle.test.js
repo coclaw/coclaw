@@ -198,42 +198,41 @@ describe('refreshClawResources', () => {
 		await expect(capture.hooks.refreshClawResources('bot-6')).resolves.toBeUndefined();
 	});
 
-	// 与 initClawResources 对齐：sessions/topics 必须在 agents 拿到之后再发起，
-	// 否则 sessions 用 ['main'] fallback 拉数据，漏掉断连期间新增的非 main agent
-	test('refreshClawResources：先 await loadAgents 再 fire-and-forget 其他三个', async () => {
-		// 让 loadAgents 返回 deferred，验证未 resolve 前其他三个不被调用
+	// agents 仅 gate sessions（避免 sessions 用 ['main'] fallback 漏新加的非 main agent）；
+	// topics（写死 agentId='main'）和 dashboard（自带内部 await loadAgents）与 agents 独立，
+	// 立即并发触发以省一跳 loadAgents RTT
+	test('refreshClawResources：topics/dashboard 不阻塞 agents，sessions 仍 gate 在 agents 之后', async () => {
 		let resolveAgents;
 		mockLoadAgents.mockReturnValueOnce(new Promise((r) => { resolveAgents = r; }));
 
 		const p = capture.hooks.refreshClawResources('bot-7');
-		// 微任务 flush 一下，但 loadAgents 仍 pending
+		// agents 仍 pending，但 topics/dashboard 已被同步触发
 		await Promise.resolve();
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-7');
+		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-7');
+		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-7');
+		// sessions 必须等 agents
 		expect(mockLoadSessionsForClaw).not.toHaveBeenCalled();
-		expect(mockLoadTopicsForClaw).not.toHaveBeenCalled();
-		expect(mockLoadDashboard).not.toHaveBeenCalled();
 
-		// 解析 loadAgents → 后三个被启动
 		resolveAgents();
 		await p;
 		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-7');
-		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-7');
-		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-7');
 	});
 
-	test('loadAgents reject 时其他三个仍 fire（catch 吞掉）', async () => {
+	test('refreshClawResources：loadAgents reject 时 sessions 仍 fire（catch 吞掉），topics/dashboard 已先发', async () => {
 		let rejectAgents;
 		mockLoadAgents.mockReturnValueOnce(new Promise((_, r) => { rejectAgents = r; }));
 
 		const p = capture.hooks.refreshClawResources('bot-8');
 		await Promise.resolve();
+		// topics/dashboard 不阻塞 agents reject
+		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-8');
+		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-8');
 		expect(mockLoadSessionsForClaw).not.toHaveBeenCalled();
 
 		rejectAgents(new Error('agents boom'));
 		await p;
 		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-8');
-		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-8');
-		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-8');
 	});
 });
 

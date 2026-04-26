@@ -61,16 +61,16 @@ async function initClawResources(id) {
 
 /**
  * RTC 长断连恢复后刷新该 claw 的子 store 数据（per-claw 局部刷新）
- * 与 initClawResources 对齐：先 await loadAgents 再 fire-and-forget 后三个，
- * 否则 sessions/topics 在 agents 还没回来前就启动，会按 fallback ['main'] 拉数据，
- * 漏掉断连期间新增的非 main agent 对应的 sessions
+ * 仅 sessions 真依赖 agents（fallback ['main'] 漏非 main agent），
+ * topics/dashboard 与 agents 独立，并发触发以省一跳 loadAgents RTT。
  * @param {string} id - clawId
  */
 async function refreshClawResources(id) {
-	await useAgentsStore().loadAgents(id).catch(() => {});
-	useSessionsStore().loadSessionsForClaw(id).catch(() => {});
+	const agentsPromise = useAgentsStore().loadAgents(id).catch(() => {});
 	useTopicsStore().loadTopicsForClaw(id).catch(() => {});
 	useDashboardStore().loadDashboard(id).catch(() => {});
+	await agentsPromise;
+	useSessionsStore().loadSessionsForClaw(id).catch(() => {});
 }
 
 /**
