@@ -1,5 +1,679 @@
 # @coclaw/ui
 
+## 0.17.5
+
+### Patch Changes
+
+- 39051af: fix(ui): wait for OpenClaw transcript persistence before dropping streaming overlay
+
+  Bug 1 surfaced as agent replies showing "task incomplete" until the user
+  left and re-entered the chat. Root cause is a timing race in the OpenClaw
+  gateway: the `lifecycle:end` event is emitted before the `await
+persistCliTurnTranscript` call that writes the final assistant message
+  to the session transcript file (which `chat.history` reads). UI had four
+  OR-gated `endRun` signals with first-wins semantics, and `lifecycle`
+  typically beat the `rpc` two-phase response. So the post-accepted
+  `runPromise.then(...)` hook tore down the streaming overlay and reloaded
+  chat history while the transcript was still mid-write — the latest
+  assistant lacked `stopReason`, `resultText` resolved to null, and the
+  component fell back to the "task incomplete" branch.
+
+  `chat.store` now distinguishes `endReason === 'rpc'` (upstream guarantees
+  transcript is already flushed at that point — async/await chain in
+  `agent-command.ts` runs persist before responding) from the rest. The
+  fast path drops the overlay immediately; other paths wait 1s, reload,
+  verify the latest assistant after the run anchor carries a non-`toolUse`
+  `stopReason`, then retry once after another 2s if still missing. If both
+  attempts come back without `stopReason`, the UI falls back to the legacy
+  behavior (drop overlay even though display will degrade) and emits a
+  single `agent.run.persist-stale` remote log so the rare upstream
+  persistence failures stay visible. Silent loadMessages failures still
+  preserve the overlay and rely on the existing 24h watchdog and
+  re-entry/reconnect reload paths.
+
+- ae58392: Lock in ChatPage `connReady` watcher contracts across claw/sig offline-online gating + RTC rebuild / ICE restart paths with a new regression suite (6 tests, no production-code changes).
+
+  ChatPage already reconciles messages after rebuild via its `connReady` watcher (`ChatPage.vue` `watch.connReady.handler` → `__onConnReady` → `chatStore.loadMessages({silent:true})`), driven purely by `claw.dcReady` flips. The prior test file covered the happy-path flips (online→true, first-mount, sending-skip, chatStore re-activate) but not the subtler invariants around the dual gate (claw presence / signaling WS) introduced across rounds 11-14 and now codified in `__handleClawGoOffline` / `__freezeAllClawsForSigOffline`. Those two gates deliberately leave `dcReady` / `rtcPhase` untouched (presence + environmental-fault are orthogonal to DC lifecycle — see `docs/architecture/communication-model.md` §5.5 / §5.5.1), so the UI's reconcile is meant to stay quiet across both gates and only react to the underlying DC state.
+
+  Added `describe('ChatPage recovery watchers')` at the bottom of `src/views/ChatPage.test.js`:
+
+  - **T1** — `claw.online=true→false` (via `updateClawOnline`) does not touch `dcReady`; `connReady` stays true and the silent-reload watcher does not re-fire. Locks "`__handleClawGoOffline` is presence-only".
+  - **T2** — After claw offline the DC eventually closes (`dcReady=false` / `rtcPhase='failed'`), `connReady` flips false, and when online returns with a new DC (`dcReady=true`) `loadMessages({silent:true})` is called exactly once. Full cycle via `dcReady` flip.
+  - **T3** — ICE restart with DC continuity: `rtcPhase` bounces `ready → restarting → ready` while `dcReady` stays true throughout; `connReady` stays true and no silent reload fires. Locks "short RTC jitter does not churn data" (per `claws.store.js` `__rtcCallbacks` state=`connected` wasDisconnected=false branch).
+  - **T4** — ICE restart that forces a DC rebuild: `dcReady` goes `true → false → true`; exactly one silent reload fires after the rebuild.
+  - **T5** — `__freezeAllClawsForSigOffline` leaves `dcReady` untouched (only invokes `__clearRetry` + `pauseRestart`); `connReady` stays true and no reload fires. Sets `clawsStore.fetched=true` explicitly so the freeze body actually executes (`setClaws` doesn't set `fetched`; the early-return at the top of the freeze action would otherwise make the assertion vacuous).
+  - **T6** — First mount during sig-offline with `dcReady=false` (`__fullInit` blocked by sig gate): `connReady` starts false and immediate watcher early-returns; once sig recovers and the full init completes (`dcReady=true`), the watcher fires `loadMessages()` (first-load path, non-silent).
+
+  Each test has ≥3 precise assertions (exact call counts + exact argument shapes where applicable, not just `toHaveBeenCalled`). No business-code or other-test-file changes. `pnpm test` UI: 2925 → 2931 passing, 0 skipped. `pnpm check`: 0 errors.
+
+- d10bbe4: fix(ui): unify claw id whitespace normalization across applySnapshot and addOrUpdateClaw
+
+  `__validateClawId` already trims and rejects empty / sentinel ids, but
+  `applySnapshot` was discarding the trimmed return value and using
+  `String(b.id)` as the `byId` key, so an id like `'  bot-1 '` from the
+  snapshot path landed under a different key than the same id arriving
+  through `addOrUpdateClaw`. Snapshot now consumes the validated id as both
+  the `byId` key and the `createClawState` input, and `addOrUpdateClaw` now
+  also passes the validated id into `createClawState` so `state.id` matches
+  the `byId` key on the insert path.
+
+- 4a05074: Decouple `dcReady` from `claw.online` presence. `dcReady` is now strictly a reactive mirror of the real DataChannel readyState (`rtc.isReady`); offline events no longer write it. Dashboard/agents/sessions/topics refresh on presence recovery is triggered explicitly by `__resumeOnline` (split by `rtc.state` into immediate vs after-rebuild), so pending RPCs are not fast-failed during offline and can resume via SCTP once ICE restart succeeds.
+
+  Also fixes two pre-existing issues: `dc.onclose` now escalates to `close({asFailed:true})` in both `restarting` and `connected` states (previously only `restarting`), so `store.dcReady` stays in sync with the real DC; `onRtcStateChange('connected')` clears `disconnectedAt` even on the `wasDisconnected=false` branch, preventing stale stamp accumulation across successive ICE restarts.
+
+- 30d5344: fix(ui): only bump network baseline counter when normalized type written
+
+  The Capacitor network listener bumped `_networkEventCount` on every event,
+  including offline (`connected:false, type:'none'`) ones. That counter is also
+  the gate that decides whether a slow `Network.getStatus()` may write the
+  initial `_lastConnectionType` baseline. So the cold-boot sequence
+  "offline event → slow getStatus resolves wifi → real wifi→cellular switch"
+  ended with `_lastConnectionType` still null, the cellular event computed
+  `typeChanged=false`, and the store layer skipped the ICE restart that should
+  have fired. Move the counter bump inside the `connected && normalized` branch
+  so only baseline-writing events count, leaving offline events out of the way.
+
+- 5417b9f: Gate RTC recovery actions on `claw.online`: when SSE reports the plugin as offline, pause the in-flight ICE restart (reset its 90s budget, keep the PC), cancel pending backoff retries, and skip probe/restart/rebuild attempts. When the plugin comes back online, resume via a fresh ICE restart if the PC was paused in `restarting`, otherwise rebuild from scratch. Avoids burning recovery budget while the plugin is known-unreachable, while still leveraging ICE restart's fast-path on return.
+- 8c87df5: fix(ui): parallelize refreshClawResources sub-loads, gate only sessions on agents
+
+  After RTC reconnect recovery, `refreshClawResources` used to await `loadAgents`
+  before firing topics, sessions, and dashboard. Only sessions actually depends
+  on the agent list (the fallback `['main']` would miss non-main agents added
+  during the disconnect window) — topics is hard-coded to `agentId='main'` and
+  dashboard runs its own internal `loadAgents`. Fire all three immediately and
+  keep the agents promise as a gate only for sessions, removing one round-trip
+  from every reconnect-recovery refresh.
+
+- 08678c6: Round 23 — 7 async-boundary / module-state-cleanup fixes + 11 new tests.
+
+  External-review-driven test hardening (round 23). Codex produced 14 candidate suggestions; 7 adopted as real bugs, 7 rejected (3 design-intent, 2 dead-code or already-covered, 2 unreachable-via-upstream-gate). Two reviewer subagents identified 4 non-blocking adoptions, all incorporated.
+
+  **Code fixes (7):**
+
+  1. `webrtc-connection.js:initRtc` — guard the late `httpClient.get('/api/v1/turn/creds').then(...)` chain. If the fallback timer fired (or `closeRtcForClaw` ran) **while** TURN was still pending, the close path cleared `rtcInstances[id]` + called `clawConn.clearRtc()` + settled `'failed'`, but the late `.then((resp) => rtc.connect(resp.data))` would still run on the (now closed) rtc, build a new PC, and emit a stray `rtc:offer` over signaling — an orphan PC not tracked by any store. Added `if (settled || rtcInstances.get(clawId) !== rtc) return;` at the `.then` entry. The `.catch` arm was already correct.
+
+  2. `agents.store.js:loadAgents` — the `finally(() => _loadingByClaw.delete(id))` after a stored in-flight promise unconditionally deleted the Map entry, even after `removeByClaw` cleared and re-bound a new claw with the same id and a NEW load was already stored. The stale finally would erase the NEW dedup entry, causing a third concurrent `loadAgents(id)` call to issue a third RPC instead of coalescing. Changed to `if (_loadingByClaw.get(id) === p) _loadingByClaw.delete(id)` (promise identity).
+
+  3. `sessions.store.js:loadSessionsForClaw` — same family as #2, applied to `_perClawLoading`.
+
+  4. `topics.store.js:loadTopicsForClaw` — same family as #2 / #3.
+
+  5. `claw-lifecycle.js:refreshClawResources` — was `function` firing all four loaders in parallel; `useSessionsStore().loadSessionsForClaw(id)` reads agents from `agentsStore.getAgentsByClaw(clawId)` and falls back to `['main']` when empty. On RTC reconnect refill, sessions for non-`main` agents added during the disconnect window were missed. Aligned with `initClawResources`: made `async`, `await loadAgents(id).catch(() => {})` first, then fire-and-forget the other three with `.catch(() => {})`. The single caller (`claws.store.js __refreshIfStale`) was updated to chain `.catch(() => {})` for unhandled-rejection symmetry with the adjacent `checkPluginVersion` chain.
+
+  6. `sessions.store.js:__doLoadAll` — `__fetchSessionsForClaw` returns `[]` on `getReadyConn(clawId)` null. If a claw's conn vanished mid-`Promise.allSettled` (e.g., synchronous SSE `claw.unbound` during the await tick), the fulfilled `[]` would leave the claw in `queriedClawIds` and the merge step would purge the claw's still-valid old sessions. Added a result-time `getReadyConn(cid)` re-check that drops the claw from `queriedClawIds` (preserving old sessions). The `getReadyConn(id)` early-return inside `__fetchSessionsForClaw` is unchanged.
+
+  7. `chat-store-manager.js:__evictTopics` — `dispose(key)` was called bare (unlike `disposeAll` which wraps each in try/catch). A throwing victim's `dispose` propagated up through `get(storeKey)` after the new entry had already been inserted in `instances` and `topicLru`. Added per-iteration try/catch. Because `dispose()` throwing leaves the victim still in `instances` and `topicLru`, the outer `while` would re-pick the same victim and infinite-loop, so the catch handler manually `instances.delete(key)` + `topicLru.splice(...)` to advance, plus a guarded `store?.$dispose()` to release Pinia subscriptions the original `dispose()` skipped. Warn log format `evict dispose key=%s failed: %s` aligned with `disposeAll`'s `dispose key=%s failed: %s` (kept `warn` level — eviction silently leaks state, so severity is higher than `disposeAll` which iterates all).
+
+  **Test changes (11 new tests, baseline 3024 → 3035; electron 152 unchanged; coverage gates green):**
+
+  - `webrtc-connection.test.js` — `initRtc — RTC 建连` describe (3 tests):
+    - `fallbackTimer fire 后晚到的 TURN creds 不调 rtc.connect 也不创建 orphan PC`
+    - `外部 closeRtcForClaw 后晚到的 TURN creds 不调 rtc.connect`
+    - `TURN creds 在 fallbackTimer 之前正常 resolve 时仍调 rtc.connect 一次` (reverse)
+  - `agents.store.test.js` — 同 id 重绑：旧 loadAgents 的 stale finally 不删替换 promise
+  - `sessions.store.test.js` — 同 id 重绑：旧 loadSessionsForClaw 的 stale finally 不删替换 promise
+  - `sessions.store.test.js` — `__doLoadAll：fetch 期间 conn 消失，已有 sessions 不被清空`
+  - `sessions.store.test.js` — `__doLoadAll：conn 健康但远端真空 sessions 时旧 sessions 仍被清空（反向断言）` (review-adopted reverse assertion)
+  - `topics.store.test.js` — 同 id 重绑：旧 loadTopicsForClaw 的 stale finally 不删替换 promise
+  - `claw-lifecycle.test.js` — `refreshClawResources：先 await loadAgents 再 fire-and-forget 其他三个`
+  - `claw-lifecycle.test.js` — `loadAgents reject 时其他三个仍 fire（catch 吞掉）`
+  - `chat-store-manager.test.js` — `__evictTopics：受害者 dispose 抛异常被隔离，不影响新 topic 创建`
+
+  Three pre-existing tests in `claws.store.test.js` (`__refreshIfStale` block) were bumped to `async` because Fix 5 changed `refreshClawResources` from sync to async; assertions unchanged, only added `await Promise.resolve()` flushes between trigger and assertion.
+
+  **Review disposition:**
+
+  Adopted (11): 7 code fixes + 4 test-only adoptions (1 reverse assertion + 3 from non-blocking review feedback: `claws.store.js` caller `.catch`, `__evictTopics` log format alignment, `__evictTopics` `$dispose` cleanup safety, `__evictTopics` `failed: %s` format).
+
+  Rejected (7): #1 `chat.store __reconcileMessages` (dead code, 0 production callers); #7 `topics __doLoadAll` index drift (synchronous filter, no async boundary); #9 `setupNetworkListener` offline cancel pending online (debounce intentionally absorbs flips); #10 initial `getStatus` race (microtask-level, consumers self-correct); #11 signaling `connect` timer (only login caller, timer cannot be pending); #12 `claw-connection __handleRpcResponse` callback throw (reassembler outer try/catch + RPC_TIMEOUT timer already provide isolation); #14 `__evictTopics` settling streamingMsgs eviction (already locked as 契约锁 test).
+
+  Backlog: none new this round.
+
+- e2d248b: fix(ui): collapse "wait for persistence" into agent-runs source via rpc grace window
+
+  The Bug 1 follow-up review surfaced a fast-follow-up regression in the
+  prior `chat.store` fix: when the user sent a second message inside the
+  3s persist-wait window of the first, the second run's
+  `hasTerminalAssistantAfter(messages, anchorId)` check could match the
+  first run's just-persisted final assistant (it sits after the second
+  run's anchor by construction) and prematurely drop the second overlay
+  before its transcript was flushed. Root cause: the predicate had no
+  runId/turn discriminator, so any terminal assistant after the anchor
+  counted.
+
+  Move the "wait for persistence" responsibility from `chat.store` (which
+  can't reliably distinguish runs) to the source state machine
+  (`agent-runs.store`), which has authoritative `runId` context. When
+  `lifecycle:end` or `agent.wait` terminal status arrives, we no longer
+  fire `__endRun` immediately — we schedule a `RPC_GRACE_MS` (default 2s)
+  pending and wait for the `rpc` two-phase response (the only signal that
+  guarantees transcript is already flushed via the upstream synchronous
+  await chain). If the `rpc` response arrives within the window, we clear
+  the pending and run finishes as `endReason='rpc'`. If the window
+  elapses, we fall back to the originally-recorded reason. The `failed`
+  signal (DC closed / RPC error) skips the grace and ends immediately
+  since the second-phase response can't possibly arrive.
+
+  `chat.store.__awaitPersistAndDrop` is simplified accordingly: the
+  endReason-based slow/fast path split, the 1s + 2s sleep + retry, the
+  `hasTerminalAssistantAfter` predicate, and the `agent.run.persist-stale`
+  fallback log are all removed. The function now does a single
+  `loadMessages → dropRun`, identical for every endReason. Silent
+  loadMessages failures still preserve the overlay (24h watchdog +
+  activate/reconnect reload still cover the rare double-failure case).
+
+  A diagnostic `agent.run.rpc-grace-elapsed runId=… reason=lifecycle|wait`
+  remoteLog is emitted when the grace timer expires without an `rpc`
+  signal — this replaces the removed `persist-stale` log so we retain the
+  ability to observe upstream rpc-2nd-phase delivery anomalies and tune
+  `RPC_GRACE_MS` if needed.
+
+  The fast follow-up bug is eliminated because the source-side grace
+  delays `runPromise` resolve by up to 2s, during which `isRunning`
+  remains true and the user cannot send a new message — the timing window
+  that produced the predicate confusion never opens. The user-visible
+  cost is at most a 2s extension of the "thinking" overlay on slow rpc
+  paths; when rpc arrives early (the common case) the grace clears
+  immediately and overlay teardown is unchanged.
+
+- 447b29e: RPC over DataChannel response timeout tuning for weak-network safety:
+
+  - `coclaw.info` (plugin version check): drop explicit 10s, fall back to default 30s — first-call path waits on plugin `waitForSessionsReady` and 10s was tight under slow-start conditions.
+  - Dashboard 7-call fan-out (`status` / `models.list` / `usage.cost` / `sessions.list` / `tts.status` / `channels.status` / `tools.catalog`): raise from default 30s to 180s — calls are `Promise.allSettled` in parallel, so the bump only changes the failure ceiling, not the happy-path latency; gives `tools.catalog` room for multi-agent responses.
+  - `chat.history` (both loadMessages sessionId lookup and per-agent sessions batch): raise from default 30s to 60s for weak-network headroom.
+  - `coclaw.topics.create` / `coclaw.topics.delete` / `coclaw.topics.update`: raise from default 30s to 60s — write operations benefit from extra margin to reduce client-timeout / server-committed state-drift windows.
+  - `coclaw.files.mkdir` / `coclaw.files.create`: add explicit 60s to align with `coclaw.files.list` / `coclaw.files.delete` in the same file; prior omission meant the mkdir→create upload sequence had half the headroom of list/delete.
+
+- 6d04df2: Three real bugs surfaced by an external review pass plus 6 test groups (17 new tests). Review covered 15 observations; after triage, 9 were adopted (3 code fixes + 5 test groups + 1 defensive contract lock); 5 were rejected, 1 was deferred to backlog.
+
+  - **`addOrUpdateClaw` weak id validation lets ghost ids through** (`claws.store.js:addOrUpdateClaw`) — The truthy check `if (!claw?.id) return;` accepts `{id: {}}`, `{id: []}`, `{id: 'null'}`, `{id: '[object Object]'}`, etc. After `String(claw.id)` runs, those become ghost ids that get written into `byId` and trigger `manager.connect(id)`, burning ICE/TURN credits and polluting the dashboard. The sister entry `applySnapshot` already filters these via a stricter rule, so SSE incremental events (`claw.bound`, `claw.nameUpdated`) bypassed the snapshot's protection. Fix: extract `__validateClawId` (rejects nullish/empty/whitespace, non-string/number, non-finite numbers, and the ghost literals `'null'`/`'undefined'`/`'[object Object]'`) and route both entries through it. `removeClawById` and `updateClawOnline` are intentionally not gated — the former is a no-op for unknown ids and the latter requires `byId[id]` lookup, so neither can create ghosts.
+
+  - **`__buildPeerConnection` has no abort guard across awaits** (`webrtc-connection.js:__buildPeerConnection`) — Three awaits (`ensureConnected`, `createOffer`, `setLocalDescription`) had no protection against an external `close()` arriving while pending. On late resolve the build continued: `setState('connecting')` revived state from `closed`, a fresh `PeerConnection` was created, and `rtc:offer` was sent on a logically-already-closed instance. On late reject (browser throwing `InvalidStateError` against a closed pc), the error propagated to `initRtc`'s `.then(rtc.connect).catch` and was misclassified as a real connection failure, triggering `clearRtc` and a redundant backoff. Fix: introduce `__closeEpoch` (incremented on every `close()`); `__buildPeerConnection` snapshots it before the first await and bails out after each await if the epoch changed or `__pc` was replaced. `createOffer` / `setLocalDescription` are wrapped in try/catch that swallows the error if the abort guard would fire (treats it as tail-of-old-build noise) but rethrows otherwise so genuine hardware/SDP failures still surface. The `__closeEpoch` and `__restartEpoch` are independent counters with non-overlapping use sites: the former only halts in-flight `connect()` builds, the latter only halts in-flight ICE restarts.
+
+  - **`close()` ordering causes synchronous `dc.onclose` re-entry** (`webrtc-connection.js:close`) — In real browsers, `pc.close()` synchronously fires `dc.onclose`. The original sequence was `sendSignaling('rtc:closed') → pc.close() → __pc=null → __rpcChannel=null → setState`, which meant the synchronous `dc.onclose` saw `__rpcChannel === dc` and `state === 'connected'` still both true, hit the unexpected-close branch, and re-entered `close({asFailed: true})` — sending `rtc:closed` a second time and flipping state through `'failed'` before the outer call overwrote it back to `'closed'`. Symptoms: duplicate `rtc:closed` signal noise on every clean teardown, and a one-frame `'failed'` blip in any state subscriber. Fix: move `__rpcChannel = null` before `pc.close()`. The synchronous re-entry now sees `__rpcChannel !== dc` and short-circuits cleanly. Since the dc.onclose path was the only place calling `__rejectAllPending` for the close case, `close()` now invokes a thin tolerant helper `__rejectClawConnPending` at the top level so pending RPCs still reject promptly. The helper falls back gracefully when test mocks lack the method; production `ClawConnection` always implements it.
+
+  Test changes (6 groups, 17 new tests; baseline 2947 → 2964 UI tests, all green):
+
+  - **`P0-4: connect 跨 await close 防护`** (`webrtc-connection.test.js`) — Three tests covering each await abort path. (a) `ensureConnected` pending → close → late resolve: asserts no new `PeerConnection` is created, no `rtc:offer` is sent, state stays `closed`, `__pc === null`. (b) `createOffer` pending → close → late resolve: asserts `setLocalDescription` is not called, no `rtc:offer` is sent. (c) `createOffer` pending → close → late reject `InvalidStateError`: asserts the `connect()` promise does not reject, no side effects propagate (`__pc === null`, no `rtc:offer`).
+  - **`P0-5: 主动 close 同步 dc.onclose 不重入`** (`webrtc-connection.test.js`) — Three tests using a mock `pc.close()` that synchronously fires `dc.onclose` to reproduce browser behavior. (a) `asFailed=false`: asserts `rtc:closed` is sent exactly once and final state is `'closed'` (not the transient `'failed'`). (b) `asFailed=true`: same assertions for the failure-tagged path. (c) Asserts `__rejectAllPending` is invoked exactly once from the top-level helper, proving the dc.onclose short-circuit doesn't drop pending RPC reject responsibility.
+  - **`P1-3: sig offline 重复 updateClawOnline 防回归`** (`claws.store.test.js`) — Mirrors the snapshot-side `P1-2` for the SSE incremental path. With `_sigOffline=true` and an uninitialized claw, three consecutive `updateClawOnline(id, true)` calls fire only one `__fullInit` (subsequent calls short-circuit on `claw.initialized=true` set synchronously) and zero `initRtc` calls (sig gate inside `__ensureRtc` blocks). Locks the contract that SSE replay storms during sig flapping don't induce N concurrent fullInits.
+  - **`network:online + typeChanged + _rtcInitInProgress` tail assertion** (`claws.store.test.js`) — Extended an existing test: after init resolves and `__ensureRtc`'s success path consumes the `_pendingTypeChangedRestartClaws` marker, a subsequent `sig disconnected → connected` cycle does _not_ upgrade `__resumeOnline` to `triggerRestart('online_resume')`. Locks the marker-lifecycle invariant against a stale-marker false-positive.
+  - **`P2-3: applySnapshot dup-id online conflict`** (`claws.store.test.js`) — Snapshot containing `[{id:'d1', online:false}, {id:'d1', online:true}]` against an existing `online:true` claw: asserts last-wins semantics (`online === true`), `__handleClawGoOffline` is not called (final online is true), and `__resumeOnline` is called exactly once thanks to Phase 3's `Set` dedup. Side note: Phase 1's `prevOnlineMap.set` reading `existing.online` after the prior iteration's `Object.assign` causes the dup-id path to compute `prev` from a mid-state value rather than the true pre-snapshot state — see backlog entry below.
+  - **`P2-3: malformed-only snapshot against non-empty byId`** (`claws.store.test.js`) — Defensive lock for the contract "all-malformed snapshot ≡ empty snapshot": with two existing claws, `applySnapshot([{id:null}, {id:'[object Object]'}])` clears `byId` to empty, calls `closeRtcForClaw` once per existing id, and invokes `manager.syncConnections([])` once. Test comment explicitly notes that flipping this to "preserve old state on all-malformed" requires an explicit product decision and a synchronized test update.
+  - **`P2-4: malformed addOrUpdateClaw id 防御`** (`claws.store.test.js`) — One test exercising 12 malformed shapes (`{id: {}}`, `{id: []}`, `{id: ['x']}`, `{id: null}`, `{id: 'null'}`, `{id: 'undefined'}`, `{id: '[object Object]'}`, `{id: '   '}`, `{id: ''}`, `{id: NaN}`, `{id: true}`) — all dropped, `byId` stays empty, `manager.connect` not called. One sanity test confirming legal string and numeric ids still upsert correctly.
+  - **File transfer mid-flight ICE restart** (`file-transfer.test.js`) — Three tests in `file-transfer – 跨 ICE restart 集成场景`: (a) download with DC already open and partial chunks received, restart succeeds (DC stays open) → transfer completes; (b) same setup but restart fails (DC closes) → reject `TRANSFER_INTERRUPTED`; (c) upload symmetric to (a).
+  - **Upload/post abort during sendChunks backpressure** (`file-transfer.test.js`) — Two tests covering the previously-uncovered "DC open + chunks already sent + buffer full + external abort" path. Asserts `ERR_CANCELED` rejection, DC `close()` is called, listeners are removed.
+
+  **Review disposition** (15 observations total):
+
+  _Rejected (5):_
+
+  - Old-generation signaling messages polluting new generation — already covered by `P0-3: stale rtc:answer/ice across rebuild` and the `rtc:restart-rejected` stale-state guard.
+  - Repeated `app:foreground` events with stale `_backgroundAt` — by design (probe path is idempotent and cheap; "stale bgAt always triggers probe" is the intended safety net for cases where the OS suspended without firing a `bg` event).
+  - Claw recovers online but signaling still offline — already covered by sig-gate tests; presence (`byId[id].online`) updates immediately while RTC recovery defers, and dashboard cache is replayed by `__resumeAllClawsForSigOnline` when sig returns.
+  - `signaling-connection.disconnect()` during offline `ensureConnected` wait — already covered by `__waitForConnected`'s `__intentionalClose` branch (existing `等待期间 disconnect → 立即 reject` test).
+  - Send/post operations gated by `claw.online` — by design (presence is decoupled from DC readiness; existing reverse assertions in `ChatPage.test.js` already lock this).
+
+  _Backlog (1):_
+
+  - `applySnapshot` Phase 1 `prevOnlineMap` reads `existing.online` _after_ the in-loop `Object.assign`, so dup-id snapshots compute `prev` from an intermediate value rather than the true pre-snapshot state. Side effect: `[mid online=false, final online=true]` dup-id path computes `prev=false→true` (one spurious `__resumeOnline`) instead of `prev=true→true` (no-op). Server contract does not produce dup-id snapshots, so production impact is zero, but the underlying logic is brittle. Deferred — fix should snapshot `prevOnlineMap` from the pre-Phase-1 byId state, paired with a test flip from "transition once" to "transition zero times". Locked by current test as a known quirk.
+
+  _Adopted (9):_ 3 code fixes + 5 test groups + 1 defensive lock, as documented above.
+
+- fa42501: Two RTC recovery fixes exposed by an external review pass over the previously-shipped `pauseRestart` double-gate (commit 68d9f99). The review surfaced 14 observations; after triage, 8 were adopted (2 real bugs + 6 test-only hardenings); 5 were rejected and 1 was deferred to the backlog.
+
+  - **`__attemptRestart` catch block ignores paused/epoch, closes PC after pauseRestart** (`webrtc-connection.js:__attemptRestart`) — The resolve path guards `createOffer`/`setLocalDescription` awaits with both `__restartPaused` and `__restartEpoch` checks, but the catch block only checks `state`. If `pauseRestart` fires while `createOffer`/SLD is in flight and the returned promise later rejects (either because the browser aborted the operation or due to an unrelated error), the catch runs `this.close({ asFailed: true })`, violating the "paused = PC preserved until explicit resume" contract. Symptomatic leaks: offline-intensive environments would see otherwise-paused claws occasionally transition to `failed` and require a full rebuild on resume. Fix: mirror the resolve-path guards — if `__restartPaused` is set or the epoch has rotated (`__clearRestartState` path), drop the reject as tail-of-old-epoch noise and keep the PC.
+
+  - **`online_resume` fails to revert `__restartPaused` when `ensureConnected` rejects** (`webrtc-connection.js:__attemptRestart`) — When an `online_resume` call arrives while signaling is still down, `__attemptRestart` clears `__restartPaused` at the entry and then awaits `sig.ensureConnected()`. If that await rejects (persistent sig down), the original handler just returned, leaving `__restartPaused=false`. Subsequent automatic paths (`__onIceFailed`, keepalive, periodic recovery) would then pass the gate and burn through `ICE_RESTART_TIMEOUT_MS` until the PC was force-closed as failed — directly contradicting the design intent that a paused PC be preserved indefinitely. Fix: if the entry was a resume-from-paused (`resumingFromPause===true`), the epoch has not rotated, and state is still `restarting`, revert `__restartPaused=true`, zero out `__restartStartTime` so the next `online_resume` restarts the time budget cleanly, and stop the restart timer + poll (mirroring `pauseRestart`'s shutdown) to eliminate stale-interval noise during the paused window.
+
+  Test hardening (6 groups, 7 new tests total; baseline 2936 → 2943 UI tests, all green):
+
+  - **`__ensureRtc` post-await `removed` bail** (`claws.store.test.js`) — Covers the third branch of the post-await recheck trio (`offline` / `sig_offline` already covered): deleting `store.byId[id]` mid-await triggers `closeRtcForClaw` + `conn.clearRtc` recovery, and the in-progress lock is cleared so re-adding the claw can re-fire `initRtc`.
+  - **`updateClawOnline` same-value idempotence** (`claws.store.test.js`) — Two new tests: (a) consecutive `updateClawOnline(id, false)` calls emit only one `claw.online` `remoteLog` and invoke `rtc.pauseRestart` only once; (b) consecutive `updateClawOnline(id, true)` with `initialized=true` does not repeatedly invoke `__resumeOnline`.
+  - **`ensureConnected` under offline gate** (`signaling-connection.test.js`) — With `navigator.onLine=false`, `ensureConnected({ timeoutMs: 3000 })` creates no `MockWebSocket`, sets `__pausedOffline=true`, and rejects when the timer elapses.
+  - **`network:online` preempts offline-retry timer** (`signaling-connection.test.js`) — Toggling offline→online + dispatching `network:online` clears `__reconnectTimer` and creates a new WebSocket immediately (no 40s wait); `sig.reconnect resumed` log is emitted exactly once.
+  - **ChatPage connReady steady-state chatStore switch** (`ChatPage.test.js`) — With `dcReady=true` stable, switching `chatStore` from A (with `loadMessages` stuck on a never-resolving promise) to B does not let the A pending call block B: B's `loadMessages` fires via `__onConnReady`'s deduplication logic.
+  - **`__resumeOnline` handles `rtc.state='closed'`** (`claws.store.test.js`) — Completes the state matrix for the rebuild branch (`null` / `failed` already covered): `closed` also takes the `_pendingForceRefreshOnRebuild.add` + `__ensureRtc` fallback path and does not trigger `triggerRestart`; force-refresh propagates through to loaders.
+
+  **Review disposition** (14 observations total):
+
+  _Rejected (5):_
+
+  - `addOrUpdateClaw` pre-`fetched` sig-gate interaction — both `__freezeAllClawsForSigOffline` and `__resumeAllClawsForSigOnline` early-return when `fetched=false`, so there is no code path that can touch a just-added claw during the pre-snapshot window.
+  - `network:online(typeChanged=true)` mid-`__ensureRtc` init — the `_pendingTypeChangedRestartClaws` accounting + `__resumeOnline` consumption is already covered by the existing `typeChanged cross-gate integration` describe block (per-claw isolation, paused consumption, post-await ordering).
+  - Symmetry between `__resumeOnline` rebuild and `__handleNetworkOnline` rebuild w.r.t. `_pendingForceRefreshOnRebuild` — deliberate design: `__handleNetworkOnline`'s failed/closed branch is guaranteed to have a stamped `disconnectedAt` (from `onRtcStateChange('failed')`) so gap-aware `__refreshIfStale` handles it, while `__resumeOnline`'s DC-continuous branch has no such stamp and needs the explicit force marker.
+  - Extra malformed-id types for snapshot filtering (boolean/Symbol/array/numeric 0) — already blocked by the single `typeof !== 'string' && typeof !== 'number'` line that is exhaustively exercised by existing `{}` / `null` / `undefined` test cases.
+  - `manualRetryUnreachable` not checking `_sigOffline` directly — already logged as a UX backlog item in the previous round (`ui-rtc-paused-gate-stale-signaling` changeset); the behavior is benign (backoff clears + remoteLog fires but `__ensureRtc` no-ops under the sig gate), the wart is visual-feedback only.
+
+  _Backlog (1):_
+
+  - `rtc:restart-rejected` protocol lacks a generation id, so a stale reject arriving while the new restart is still in the `restarting` state cannot be distinguished from a current-generation reject. This is a protocol-design question (UI connId + `__restartEpoch` routing vs. a dedicated attempt id) rather than a test-coverage gap; testing around the current ambiguity would just get invalidated by whichever design direction is chosen. Deferred pending that decision.
+
+  _Adopted (8):_ 2 code fixes + 6 test groups, as documented above.
+
+- 68d9f99: Harden the `pauseRestart` gate so it cannot be bypassed by stale ICE restart signaling (`rtc:answer` / `rtc:ice` / `rtc:restart-rejected`). The earlier implementation only gated _outgoing_ restart attempts (`__attemptRestart` entry), leaving the _incoming_ signaling path unguarded: once `pauseRestart()` had been called (by `__handleClawGoOffline` or `__freezeAllClawsForSigOffline`), three leak paths could still defeat the freeze:
+
+  1. **Late `rtc:answer`** — `__onSignaling` called `pcAtAnswer?.setRemoteDescription(...)` unconditionally. With a fresh remote SDP applied, ICE could complete naturally, `onconnectionstatechange('connected')` would then fire → `__clearRestartState()` → `__restartPaused` cleared + `__setState('connected')` + `__startKeepalive()`. The freeze was silently undone by the peer's callback.
+  2. **Late `rtc:ice`** — `__onSignaling` called `__pc?.addIceCandidate(...)` unconditionally. Same end result as (1): helps ICE complete and reach connected.
+  3. **Late `rtc:restart-rejected`** — the existing `if (this.__state !== 'restarting')` guard was insufficient because `pauseRestart()` deliberately leaves `__state === 'restarting'` (it only flips `__restartPaused=true` and bumps `__restartEpoch`). A stale reject from an older restart round would pass the guard and call `this.close({ asFailed: true })`, killing the PC, emitting `rtc:closed` to the plugin, and clearing `__restartPaused` via `__clearRestartState`.
+
+  Fix is a single guard at the top of `__onSignaling(msg)` — when `__restartPaused` is true, drop the message at debug level and return. All three branches (`rtc:answer` / `rtc:ice` / `rtc:restart-rejected`) are covered uniformly. Resume paths (`resumeRecovery` / `triggerRestart('online_resume')`) both clear `__restartPaused` before they issue new signaling, so new-generation messages are not affected. The existing stale-state guard inside `rtc:restart-rejected` is preserved (two independent staleness criteria: `state !== 'restarting'` vs `__restartPaused`). The `__restartEpoch` / `__clearRestartState` mechanism stays — it guards _in-flight awaits_ inside `__attemptRestart`, which is a different concern from entry-level signaling drops.
+
+  Updated `pauseRestart` JSDoc to document the two-sided gate (outgoing `__attemptRestart` entry + incoming `__onSignaling` entry).
+
+  Tests: added `describe('paused gate 抗迟到 signaling')` with 5 tests — three for `restarting + paused` (covering all three message types) and two for `connected + paused` (covering `answer` / `ice`; `restart-rejected` is already dropped by the independent stale-state guard in the connected case). Each test uses precise `toHaveBeenCalledTimes(0)` / state assertions (not just `.not.toHaveBeenCalled()`). All 245 tests in `webrtc-connection.test.js` pass; full `pnpm test`: 2931 → 2936 UI passing, 152 electron unchanged, 0 skipped.
+
+  Evaluated 15 test-gap suggestions from an external review in the process; this commit acts on the 2 that exposed real bugs (the stale signaling leaks above). The remaining 13 suggestions were verified as already covered, orthogonal design intent, or server-contract guarantees that don't warrant defensive tests — detailed rationale in the commit that introduced this changeset.
+
+  Out of scope (backlog): `manualRetryUnreachable()` does not check `_sigOffline` directly, which is a UX wart rather than a correctness bug — clicking "retry" while signaling is down produces a `claw.manualRetry` remote log and clears the backoff counter but does not initiate a rebuild (blocked by `__ensureRtc`'s sig gate). Deferred for a separate UX pass.
+
+- fd5aca4: One real recovery bug surfaced by an external review pass and 4 test groups (5 new tests, 2 reverse-assertion strengthenings). Review covered 12 observations; after triage, 6 were adopted (1 code fix + 5 test/doc improvements); 4 were rejected, 2 were deferred to backlog.
+
+  - **`__checkAndRecover` post-probe `failed`/`closed` path is silently dropped** (`claws.store.js:__checkAndRecover`) — When `probe()` rejects/times out and the PC has dropped to `failed`/`closed` _during_ the probe wait, the original code called `rtcAfter.triggerRestart('probe_failed')`. But `WebRtcConnection.triggerRestart` only enters `__attemptRestart` when `state === 'restarting' || 'connected'` and silently no-ops on `failed`/`closed` — recovery is dropped on the floor. The pre-probe path of the same function correctly routes `failed`/`closed` to a full `__ensureRtc` rebuild; the post-probe path was asymmetric. Symptom in production: a claw whose PC died during the brief probe window stays unreachable until the next `__checkAndRecover` tick (typically the next `app:foreground` event), incurring a multi-second user-visible gap on top of the probe timeout. Fix: mirror the pre-probe path — when `rtcAfter.state === 'failed' || 'closed'`, mark `rtcPhase = 'recovering'`, `__clearRetry`, and fire `__ensureRtc` rebuild. Other `rtcAfter` states (`restarting` / `idle` / `connecting`) keep the existing `triggerRestart('probe_failed')` path. The remoteLog now also carries `source=` for diagnostic continuity with the pre-probe log.
+
+  Test changes (4 groups, 5 new tests + 2 reverse-assertion strengthenings; baseline 2943 → 2947 UI tests, all green):
+
+  - **`__checkAndRecover` post-probe path symmetry** (`claws.store.test.js`) — Three previously-existing tests that locked the buggy `triggerRestart` behavior were rewritten to assert the correct rebuild behavior (`closeRtcForBot` + `initRtc` called, `triggerRestart` not called). One new test added (`probe 失败 + PC 变 restarting → triggerRestart('probe_failed')`) to keep the transient-state path covered against future regressions.
+  - **`addOrUpdateClaw` + `fetched=false` + sig disconnect** (`claws.store.test.js`) — Locks the design intent of `__freezeAllClawsForSigOffline`'s `!fetched` early-return: a claw added via `addOrUpdateClaw` before snapshot completes (so `fetched` is still false) is intentionally not paused on sig disconnect. Anchor for "filter logout / pre-snapshot sig noise events" semantics; if someone removes the gate, this test catches it.
+  - **SSE error / heartbeat timeout reverse assertions** (`use-claw-status-sse.test.js`) — Added 4 reverse assertions (`applySnapshot` / `updateClawOnline` / `addOrUpdateClaw` / `removeClawById` not called) to both the existing `should set connected=false on error` and `heartbeat timeout should restart SSE` tests. Locks the contract that SSE channel faults are a transport-level concern only; they must never be conflated with claw presence mutations.
+  - **ChatPage topic mode DC rebuild smoke** (`ChatPage.test.js`) — Topic-route mount with `topic:sess-1` chatStore (`topicMode === true`): on DC rebuild (dcReady false→true), exactly one silent `loadMessages({ silent: true })` fires and `__loadChatHistory` is not called. Mirrors the existing session-mode coverage and locks the topic branch of `__onConnReady`'s deduplication.
+  - **`applySnapshot` duplicate id last-wins** (`claws.store.test.js`) — Locks the contract that `applySnapshot([{id:'d1', ...}, {id:'d1', ...}])` produces a single `byId['d1']` entry with the second item's data, and that `manager.syncConnections` is called exactly once (not N times for N duplicates). Manager-level dedup is its own responsibility, asserted by its own tests.
+  - **`setClaws` JSDoc as test-only** (`claws.store.js`) — Added an `@internal Test-only.` JSDoc block above the `setClaws` action with a one-line warning: it bypasses the `fetched` gate and lifecycle side-effects, must not be used in production code paths. Documents an existing convention (the action has no production callers) without renaming.
+
+  **Review disposition** (12 observations total):
+
+  _Rejected (4):_
+
+  - `__resumeOnline` returns early when `_sigOffline` and skips dashboard sync — by design (presence and dashboard decouple under environmental fault; sig-resume path runs `__resumeAllClawsForSigOnline → __resumeOnline` to backfill). Already covered by existing test `__resumeOnline _sigOffline=true 入口早退`.
+  - Repeated `updateClawOnline(false)` idempotence — already covered by round 15 (commit `fa42501`).
+  - `__resumeOnline` when `initialized=true` but `getConn()` returns null — already covered by existing `conn 不存在 → 安全返回` test; the no-rebuild + no-force-refresh branch is by design (the conn-missing window is a teardown race; rebuild is left to the next resume tick rather than queueing a stale `_pendingForceRefreshOnRebuild` entry).
+  - Multi-claw freeze/resume isolation against per-claw exceptions — `pauseRestart` is pure assignment + timer-stop on stable RTC objects, cannot throw under any production-reachable state; robustness coverage value too low to justify the test mass.
+
+  _Backlog (2):_
+
+  - Files store cache (`useFilesStore.dirCache`) is not invalidated on rebuild via `refreshClawResources` — by design (lazy invalidation: `FileManagerPage` always force-refreshes `loadDir` on `connReady`, the cache is just a cross-page transition fallback). Worth noting in the lifecycle doc next time we touch it; not a test gap.
+  - `manualRetryUnreachable` under sig offline silently no-ops via downstream `__ensureRtc` gate — same UX wart already noted in round 15's backlog (`ui-rtc-paused-gate-stale-signaling` changeset). Deferred pending a UX redesign (button disabled state or toast); behavior is benign.
+
+  _Adopted (6):_ 1 code fix + 4 test groups + 1 doc, as documented above.
+
+- 4ae005e: Four real bugs surfaced by an external review pass plus 12 test groups (17 new tests). Review covered 22 observations; after triage, 12 were adopted (4 code fixes — each paired with a regression test group — and 8 test-only adoptions), 9 were rejected, 1 was deferred to backlog.
+
+  - **`removeClawById` leaks `_probeInProgress` guard across remove→re-add of the same id** (`claws.store.js:removeClawById`) — When `__checkAndRecover` had set `_probeInProgress.set(id, true)` and was awaiting `rtc.probe()`, a remove (manual delete or SSE-driven) followed by an immediate re-add of the same id (e.g. user re-binds a claw, or a snapshot reshuffles) would land the new claw object under the same id while the old probe was still pending. The next `__checkAndRecover` for the new claw bailed at the `_probeInProgress.get(id) → return` gate; even worse, the old probe could late-resolve and write success/failure decisions against a stale claw object. Fix: `removeClawById` now also calls `_probeInProgress.delete(id)`. The symmetric branch inside `applySnapshot` (where a snapshot drops a claw not in the new list) gets the same delete to keep both deletion entry points aligned.
+
+  - **`rtc:answer` setRemoteDescription `.then` lacks paused/pc-replace guard** (`webrtc-connection.js:__onSignaling`) — The `.then` chain after `pc.setRemoteDescription(...)` had no abort guard against `pauseRestart()` arriving (or PC being replaced) while the SDP set was in-flight. If pause happened mid-await, the resolve still fired `__remoteDescSet = true` and drained `__pendingCandidates` into `pc.addIceCandidate(...)`, advancing ICE on a logically-frozen connection. The synchronous `__onSignaling` paused-gate at the entry only catches signals that arrive _after_ `pauseRestart()` — it doesn't help signals already past the entry check. Fix: snapshot `pcAtAnswer` and check `this.__pc !== pcAtAnswer || this.__restartPaused` inside the `.then` body before the success branch runs. Late resolves are logged (`debug`, matching the entry-level paused gate) and dropped.
+
+  - **`updateClawOnline` same-value online + `rtcPhase=failed` had no rescue path** (`claws.store.js:updateClawOnline`) — `applySnapshot` Phase 3 already had a rescue rule (`claw.online && rtcPhase === 'failed' → toResume.add`) for the case where server-side restart killed local RTC but presence stayed `online=true`. The SSE incremental path (`updateClawOnline`) only fired `__resumeOnline` on `prev === false` transitions, so a server-emitted same-value `claw.status` update could leave a dead RTC unrecovered until either the next snapshot landed or app:foreground/network:online tickled `__checkAndRecover`. Fix: add the `else if (claw.rtcPhase === 'failed')` branch after the `prev === false` branch. The `__resumeOnline` entry guard (`_sigOffline` early-return) keeps the rescue safe under sig flap; idempotent re-entry is harmless.
+
+  - **`ChatPage.__onConnReady` doesn't roll back `__connReadyStore` guard on reject/mid-switch** (`ChatPage.vue:__onConnReady`) — The dedup guard (`if (this.__connReadyStore === this.chatStore) return`) was set _before_ the `await loadMessages()`. If `loadMessages` rejected (RPC error / timeout), the guard stayed pointed at the failed store. The narrow but real corner case: user navigates away to another chat then comes back to the same `chatStore` — guard still matched, dedup blocked the re-entry, and the chat never ran first-load again. Fix: wrap the reconcile + await + `$nextTick` block in `try/finally`. A `succeeded` boolean is set at the end of the try; the finally rolls back `__connReadyStore` to `null` if it didn't reach the success marker (covers reject _and_ mid-switch where `this.chatStore !== targetStore`). Refactor uses a local `targetStore` to avoid `this.chatStore` flipping mid-await. Existing semantics preserved: first-load awaits, subsequent loads stay fire-and-forget silent.
+
+  Test changes (12 groups, 17 new tests; baseline 2964 → 2983 UI tests, all green):
+
+  - **`removeClawById` \_probeInProgress cleanup** (`claws.store.test.js`) — Two tests. (a) White-box: probe pending → `_probeInProgress.has(id)` is `true` → `removeClawById(id)` → guard map is empty. Uses `__test__._probeInProgress` accessor. (b) End-to-end: probe pending → `removeClawById` → re-add same id with a fresh `conn` → second `__checkAndRecover` fires `probe` exactly once on the new rtc (would have been blocked by the stale guard before the fix). Asserts `closeRtcForBot` not invoked, proving the late-resolved old probe didn't trigger rebuild on the new claw.
+  - **P0-5 `rtc:answer` setRemoteDescription pause guard** (`webrtc-connection.test.js`, `paused gate 抗迟到 signaling` describe) — Two tests. (a) Manually controllable `setRemoteDescription` promise: drive into `restarting`, fire `rtc:answer`, `pauseRestart()`, then resolve the SDP — asserts `__remoteDescSet` stays `false`, `__pendingCandidates` is not drained, `addIceCandidate` is never called. (b) Sanity check: same setup minus the pause — assertions flip (drain happens, `__remoteDescSet=true`, `addIceCandidate` called once), proving the guard doesn't false-positive on the normal path.
+  - **P0-6 `online_resume` + `ensureConnected` rejection → revert to paused** (`webrtc-connection.test.js`, new `P0-6` describe) — Two tests covering the round-15 fix `fa42501`. (a) Drive to `restarting + paused`, `mockEnsureConnected.mockRejectedValueOnce`, `triggerRestart('online_resume')` → asserts `__restartPaused === true`, `__restartTimer === null`, `__restartPollTimer === null`, `__restartStartTime === 0`, no `rtc:offer` sent. (b) Sequential second call with `mockEnsureConnected.mockResolvedValueOnce` after the revert → `rtc:offer` with `iceRestart: true` is sent exactly once. Proves the from-paused restart path remains live.
+  - **P1-3 same-value online + rtcPhase=failed rescue** (`claws.store.test.js`, `updateClawOnline` describe) — Two tests. (a) `claw.online=true` + `rtcPhase='failed'` → `updateClawOnline(id, true)` → `__resumeOnline` invoked exactly once. (b) Control: same setup with `rtcPhase='ready'` → `__resumeOnline` not invoked (same-value healthy still idempotent).
+  - **P1-1 `__resumeOnline` idle / connecting branches** (`claws.store.test.js`, `__resumeOnline helper` describe) — Two tests mirroring the existing null/closed/failed cases: `rtc.state='idle'` and `rtc.state='connecting'` both route to the rebuild branch via `__ensureRtc` (`mockInitRtc` invoked). `triggerRestart` not called (proves both are not in the restart-paused branch).
+  - **P1-2 dashboard double-lock under sig offline** (`claws.store.test.js`, `sig gate (signaling WS 冻结闸)` describe) — One test exercising the full dashboard-online sync state machine across the two locks: claw offline (`syncDashboardOffline` writes `instance.online=false`) → sig offline (no dashboard side-effect) → same claw flipped `online=true` while sig still offline (`__resumeOnline` entry sig-gate early-returns; dashboard stays `false`) → sig recovers (`__resumeAllClawsForSigOnline` calls `__resumeOnline` for online claws → `syncDashboardOnline` writes `instance.online=true`). Catches any regression where one of the two gates becomes asymmetric.
+  - **P1-8 `__onConnReady` reject rollback + resolve no-rollback** (`ChatPage.test.js`, `recovery watchers` describe) — Two tests. (a) `mockRejectedValueOnce` + first-load (`__messagesLoaded=false`) → after reject, `__connReadyStore` is `null`; subsequent `__onConnReady()` invocation with `mockResolvedValueOnce` re-fires `loadMessages` (would have been deduped without the rollback). After success the guard re-points at the chatStore. (b) `mockResolvedValue` normal path → `__connReadyStore` ends pointed at the chatStore, second call deduped (`loadMessages` total stays at 1).
+  - **P1-6 `connReady` driven by agents fetched flip** (`ChatPage.test.js`, `recovery watchers` describe) — One test. Mounts with `dcReady=true` but `agents.byClaw['bot-1'].fetched=false` (empty list) → `connReady=false`, `loadMessages` not invoked. Then writes `agents.byClaw['bot-1'] = { agents: [...], fetched: true, ... }` → `agentVerified` flips → `connReady` flips false→true → `__onConnReady` fires `loadMessages` exactly once. Locks the contract that agent verification gates first-load just like dcReady does.
+  - **P1-9 `ensureConnected` resolve before timeout via online + network:online** (`signaling-connection.test.js`, `offline 闸` describe) — One test. `setOnLine(false)` + `ensureConnected({ timeoutMs: 10_000 })` (promise pending). Switch `setOnLine(true)` + dispatch `network:online` → new WS instance is created, `simulateOpen()` → promise resolves within 1s (well below 10s timeoutMs). Locks the offline-→-online fast path: ensureConnected pending callers are unblocked by the network:online handler's immediate-reconnect branch.
+  - **P1-10 probe in-flight + `network:online` typeChanged=true → `forceReconnect` once, no double-fire** (`signaling-connection.test.js`, new `probe + network:online 互动` describe) — One test. `makeConnected()` + `probe()` (probeTimer set) + `__handleForegroundResume('network:online', { typeChanged: true })` → `forceReconnect` spy called once, MockWebSocket count +1, `__probeTimer` cleared. Fast-forward 5s (well past the 2.5s probe timeout) → `forceReconnect` still called only once. Locks the contract that `forceReconnect` clears the stale probe timer so a separate probe-timeout-fire doesn't double-trigger reconnect.
+  - **P2-2 dashboard reload reject field semantics** (`dashboard.store.test.js`) — One test that locks the _current_ implementation behavior: `entry.instance` is unconditionally rebuilt as a fresh object on every `loadDashboard` call; reject fields get written as `null` (not preserved from the previous successful load). Test comment explicitly notes this is a behavior lock — if the product wants "preserve last-good value on transient RPC failure", both `dashboard.store.js` and this test must change together.
+  - **P2-3 `checkPluginVersion` default 30s timeout contract** (`plugin-version.test.js`) — Two tests. (a) Weak-network simulated by `mockConnError(new Error('RPC_TIMEOUT'))` → `checkPluginVersion` returns `{ ok: false, version: null, ... }` via the catch branch. (b) Static contract: `conn.request` is invoked with method `'coclaw.info'`, params `{}`, and **no third options arg** (i.e. `callArgs[2] === undefined`) — locking round-15's removal of the explicit 10s timeout in favor of conn.request's default.
+
+  **Review disposition** (22 observations total):
+
+  _Rejected (9):_
+
+  - P0-1 `typeChanged` + `_rtcInitInProgress` race — already covered by an existing test (`network:online + typeChanged + _rtcInitInProgress` integration in `claws.store.test.js`).
+  - P0-2 `connected` but DC not ready early-return — by design: `state=connected + isReady=false` is a transient gap covered by `dc.onopen` / `dc.onclose` event handlers; long DC inactivity triggers keepalive-driven restart.
+  - P0-4 old-`ClawConnection` event pollution in new claw — already covered by `G-03: _bridgedConns remove→re-add conn identity switch`.
+  - P0-7 `onRtcStateChange` + `claw.online=false` — by design: store writes truth so a subsequent `online=true` flip routes through the rebuild branch; retry layer already has its own offline gate.
+  - P1-4 `_pendingTypeChangedRestartClaws` cleared by `__ensureRtc` success path — already covered by the `network:online + typeChanged + _rtcInitInProgress completion` integration test.
+  - P1-5 `request` / `waitReady` budget burn under claw/sig offline — by design: ClawConnection layer doesn't observe sig state; gating is centralized at the store layer.
+  - P1-7 `connReady=false` chatStore switch — already covered: the `connReady` watcher's `!ready` branch explicitly resets `__connReadyStore=null`.
+  - P2-1 `postFile` across ICE restart — by design: `postFile` is a thin wrapper over `uploadFile` differing only in HTTP method, so no new test coverage adds value beyond the existing `uploadFile` mid-flight ICE restart suite.
+  - P2-4 SSE `app:foreground` + `network:online` throttle — already covered by `use-claw-status-sse.test.js`'s `restart 节流` describe.
+
+  _Backlog (1):_
+
+  - P2-5 `isConnectingRtc` / `unreachableClaws` getter semantics during `sig offline + rtcPhase=building/recovering` — UX-layer enhancement deferred until the global `SignalingBanner`-style indicator unifies sig-flap presentation. Same root cause as round-15's `manualRetryUnreachable` backlog entry. Locked by current behavior; no production impact (presence + dcReady remain authoritative for send-button enable/disable).
+
+  _Adopted (12):_ 4 code fixes (each paired with a regression test group) + 8 test-only adoptions, as documented above.
+
+- 23908c8: Test-only patch covering coverage gaps surfaced by an external review pass plus one documentation drift fix. Review covered 10 observations; after triage, 5 were adopted (4 test groups + 1 doc fix); 4 were rejected as already covered by existing test families; 1 was deferred (already-known UX backlog).
+
+  No code behavior changes; this round adds regression locks for branches that recent rounds left implicit.
+
+  Test changes (4 groups, 6 new tests; baseline 2983 → 2989 UI tests, all green; electron 152 unchanged):
+
+  - **`P0-4: setLocalDescription 跨 await close`** (`webrtc-connection.test.js`) — Two tests extending the round 17 P0-4 family to cover `__buildPeerConnection`'s third await. (a) `setLocalDescription` pending → `close()` → late resolve: asserts `pcInstances.length` unchanged, no `rtc:offer` sent, state stays `closed`, `__pc === null`. (b) `setLocalDescription` pending → `close()` → late reject `InvalidStateError`: asserts `connect()` promise does not reject (the SLD try/catch + epoch guard swallows the abort-tail noise) and no side effects propagate. With this round `__buildPeerConnection`'s three awaits (`ensureConnected`, `createOffer`, `setLocalDescription`) are all covered for both late-resolve and late-reject under close.
+
+  - **`typeChanged cross-gate: !initialized claw + Set 自动消费`** (`claws.store.test.js`) — One test in the existing `typeChanged cross-gate integration` describe. Locks the contract that `__resumeAllClawsForSigOnline`'s `!initialized` branch actively `_pendingTypeChangedRestartClaws.delete(id)` when running `__fullInit`. Three-stage construction: (1) sig down + `network:online typeChanged=true` records the !initialized claw into the Set; (2) sig up routes the claw through `__fullInit` (not `__resumeOnline`); (3) reverse-fact: a second sig cycle with no `network:online` and the claw now `connected+paused` runs `resumeRecovery` (would upgrade to `triggerRestart('online_resume')` if Set residue from stage 1 leaked through). If the explicit `_pendingTypeChangedRestartClaws.delete(id)` in the !initialized branch is removed, stage 3's reverse-fact assertion fires.
+
+  - **`G-01b: offline bail 残留清理`** (`claws.store.test.js`, in `_pendingForceRefreshOnRebuild bail 残留清理` describe — renamed from the previous `sig_offline bail` since it now covers both bail reasons) — One test mirroring the existing `sig_offline bail` test for the `offline` bail path. Covers: (a) rebuild starts → `_pendingForceRefreshOnRebuild.add('1')`; (b) `__ensureRtc` post-await sees `claw.online=false`, bails with `reason=offline`, sets `rtcPhase='failed'` and clears the Set; (c) a subsequent independent `__ensureRtc` rebuild sees the Set empty, runs with `force=false`, and `__refreshIfStale` short-circuits on the `gap<BRIEF_DISCONNECT_MS` gate (loaders not called, no `force_refresh=1` log line). Test comment explicitly notes the offline bail path does **not** restore the previous `disconnectedAt` (unlike `sig_offline`), so the gap-gate is what protects against spurious force-refresh — verified by an explicit `disconnectedAt > 0` assertion at stage 2.
+
+  - **`__onConnReady await 后 unmount/store 切走 guard`** (`ChatPage.test.js`) — Two tests locking the round 18 `try/finally + succeeded flag` rollback contract. (a) Component unmounts during `await loadMessages()`: late resolve hits the `__unmounted` guard, skips `__loadChatHistory`, finally rolls back `__connReadyStore = null`. (b) `chatStore` switches during `await loadMessages()`: late resolve hits the `this.chatStore !== targetStore` guard, skips `__loadChatHistory` on the old store, rolls back guard, and a subsequent re-entry on the original store proceeds normally (verifying the dedup guard does not lock out future entries on rollback).
+
+  Documentation:
+
+  - **`docs/designs/ice-restart-recovery.md`** — Updated §4.1 (`createDataChannel` row in "其他联动修改") and §6.7 (large-file upload during network switch) to reflect the current implementation: `createDataChannel()` is permitted during `restarting`, the new DC parks in `connecting` and opens itself once ICE is rebuilt; rejection only when `!__pc || state in {'closed','failed'}`. The previous "restarting 时返回 null" wording dated to before commit `9e24cbe fix(ui): allow file DC creation during ICE restart` and would have misled future review of the file-transfer recovery model.
+
+  **Review disposition** (10 observations):
+
+  _Adopted (5):_ 4 test groups + 1 doc fix, as documented above.
+
+  _Rejected (4):_
+
+  - `sig offline + 异步重复 updateClawOnline(id, true)` — already covered by `P1-3: sig offline 重复 updateClawOnline 防回归` (synchronous burst form); the proposed async-repeat path's only side effect is one fullInit log + one try/catch warn, with `__ensureRtc` sig gate blocking ICE/TURN. Not a coverage gap.
+  - `applySnapshot 在 _sigOffline=true 下的 online transition` — `true→false` is presence-only via `__handleClawGoOffline` (already covered by `online true→false + initialized → __handleClawGoOffline`); `false→true` is gated by `__resumeOnline` entry sig-gate (already covered by `SSE ordering: rtcPhase=failed no-op snapshot during sig offline → resume 被 sig gate 拦截`).
+  - `getReadyConn online/dcReady 解耦直接测试` — the helper's body reads only `byId[id]?.dcReady` and the connection table; existing `get-ready-conn.test.js` 5 cases never reference `online` (implicit independence assertion); a redundant explicit case adds no signal.
+  - `applySnapshot duplicate existing id + online 冲突` — already covered by `P2-3: applySnapshot dup-id online conflict` which locks last-write-wins online, single `__resumeOnline` call (Phase 3 Set dedup), and `__handleClawGoOffline` not called.
+
+  _Backlog (1):_
+
+  - `manualRetryUnreachable() 在 _sigOffline=true 时点击是 UX 假反馈` — already on the backlog from rounds 15-16 (button visible but `__ensureRtc` sig gate silently no-ops). Behavior is benign; will be addressed alongside the planned global SignalingBanner UX work, not as a standalone test addition.
+
+- 9f22e3b: Two round-6 external review fixes to the RTC recovery gate:
+
+  - `__resumeOnline` forceRestart skip condition was too broad. Round 5 skipped `__refreshIfStale` for **any** forceRestartOnConnected=true case, but that collapsed two scenarios that need different treatment: the "PC is connected/restarting → ICE restart keeps SCTP continuous → no refresh needed" case (correct to skip), and the "PC is failed/closed/null/idle/connecting → rebuild path → brand-new PC + brand-new SCTP" case (must refresh because the plugin may have replaced its process). The skip condition is now tightened to `canRefreshNow && forceRestartOnConnected`; the rebuild sub-case now correctly adds to `_pendingForceRefreshOnRebuild` and gets a force refresh when `__ensureRtc` succeeds. Without this, a claw that went offline then came back online on a replaced plugin process could leave UI data stale indefinitely.
+
+  - `__ensureRtc` gained a post-await gate recheck. The loop-head `online` and `_sigOffline` checks only cover "before `await initRtc`", but `initRtc` can take seconds (ICE gathering, DTLS handshake). If offline/sig_offline fires during that window, `__handleClawGoOffline` can only call `conn.rtc?.pauseRestart()` — and since `conn.rtc` is still `null` until `initRtc` resolves, the pause becomes a no-op. Without the recheck, the successful RTC then sails past the closed gate, sets `dcReady=true`, clears retry, and triggers refresh — violating the "budgets frozen while gate closed" invariant. The fix reuses the existing `bailedOut`/`bailReason` machinery so `closeRtcForClaw` + `conn.clearRtc` happen uniformly with the loop-internal bails. For `sig_offline` bail specifically, we snapshot `rtcPhase` before `closeRtcForClaw` and restore it after, because `closeRtcForClaw` → `rtc.close()` → `onStateChange('closed')` synchronously fires the store callback which would otherwise write `rtcPhase='failed'` — violating the "sig is an environmental fault, not a claw unreachable" intent and spuriously triggering the UI warn banner.
+
+  - Updated `communication-model.md` §5.5, `ice-restart-recovery.md` §6.5, and `state-recovery.md` to reflect the tightened skip condition and the new post-await recheck bullet. Added three unit tests: forceRestart + rebuild path goes through pending refresh; `__ensureRtc` post-await offline bails with rtcPhase=failed; post-await sig_offline bails without changing rtcPhase.
+
+- bfc9be9: Skip immediate refresh in `__resumeOnline` forceRestart branch to avoid wasting RPC on a failing ICE path, and tighten `addOrUpdateClaw` to refuse `online` overrides.
+
+  Two hardening fixes from external review round 5:
+
+  - `__resumeOnline` refresh dispatch refactored to three branches. When `forceRestartOnConnected` is true (typeChanged per-claw Set consumed or explicit opts), skip the immediate `__refreshIfStale({force:true})` entirely — the old ICE path is known to be failing (WiFi↔cellular IP change), so the RPC would only burn 30s of application-layer timeout on a dead SCTP path. ICE restart itself keeps SCTP continuous, and `onRtcStateChange('connected')`'s `wasDisconnected=false` branch already skips refresh by design, so there is nothing to recover after restart — by design, not a bug. Non-forceRestart `connected`/`restarting` still refresh immediately; rebuild paths still defer via `_pendingForceRefreshOnRebuild`.
+  - Introduce `GATED_FIELDS = new Set(['online'])` to explicitly reject `online` overrides from `addOrUpdateClaw`. Currently server `claw.bound` / `claw.nameUpdated` payloads do not carry `online`, but that is an implicit contract — UI-side `online` transitions must go through `updateClawOnline` / `applySnapshot`'s diff to trigger pause/resume/retry gate side-effects. `online` is deliberately **not** added to `RUNTIME_FIELDS`, because `applySnapshot` Phase 2 must let snapshot's authoritative `online` override `existing.online` for Phase 3's true↔false diff to work.
+  - Updated `docs/architecture/communication-model.md` §5.5, `docs/designs/ice-restart-recovery.md` §6.5, and `ui/docs/state-recovery.md` RTC 前台恢复策略 to reflect the three-branch refresh dispatch.
+  - Added two unit tests covering the new forceRestart skip path (immediate refresh bypassed, pending rebuild Set not polluted) and the `addOrUpdateClaw` online rejection.
+
+- 2989ed5: Fix signal loss in `connected + restartPaused + typeChanged` path introduced by the per-claw Set refactor.
+
+  `WebRtcConnection.__attemptRestart`'s paused gate only accepts `reason === 'online_resume'`; all other reasons (including `'network_type_changed'`) are dropped. The previous per-claw Set implementation unconditionally `delete`d the Set entry and called `triggerRestart('network_type_changed')` in `__handleNetworkOnline`'s main loop for any `connected + typeChanged` claw. When the claw was also paused, this combination produced a silent signal loss: the restart was dropped and the record keeping was cleared, so the subsequent `__resumeOnline` had no way to know it should force a restart.
+
+  - `__handleNetworkOnline` main loop's `connected + typeChanged` branch now splits on `rtc.restartPaused`: paused claws skip the `triggerRestart` call and preserve the Set entry, so the eventual `__resumeOnline` consumer upgrades the recovery to `triggerRestart('online_resume')` (the only reason that bypasses the paused gate). Non-paused claws behave as before (`delete` + `triggerRestart('network_type_changed')`).
+  - `__ensureRtc` success path now calls `_pendingTypeChangedRestartClaws.delete(id)` — rebuild produces a fresh ICE path, so any pending typeChanged bookkeeping on that claw is stale and should not cause a spurious `triggerRestart('online_resume')` on the next resume event. Symmetric with the existing cleanup in the `!initialized` branches and `applySnapshot` / `removeClawById`.
+  - Rewrite the round-2 self-review test that asserted the buggy `triggerRestart('network_type_changed')` behavior, and add a control-group test for the non-paused path.
+  - `docs/architecture/communication-model.md` §5.5.1: document the paused-branch defer rule and enumerate all Set cleanup sites for future reviewers.
+
+- 72eef19: RTC recovery path gating — post-review fixes:
+
+  - **Boot-race recovery**: when SSE snapshot arrives before the signaling WS handshake completes, `__fullInit` is blocked by the sig gate and `initialized` rolls back to `false`. On sig reconnect, `__resumeAllClawsForSigOnline` now re-runs `__fullInit` for online-but-uninitialized claws, replicating the `updateClawOnline` `!initialized` branch (previously the flow left the claw half-initialized).
+  - **typeChanged cross-gate bookkeeping**: `network:online(typeChanged=true)` no longer lost when sig is offline. A module-level `_pendingTypeChangedRestart` flag is set at `__handleNetworkOnline` entry and consumed by `__resumeAllClawsForSigOnline`, which escalates `connected+paused` claws to `triggerRestart('online_resume')` (previous behavior `resumeRecovery()` left stale ICE path after WiFi↔cellular switch → ~30s consent timeout before passive restart).
+  - `pauseRestart()` log text: drop `(claw offline)` qualifier — the function is now shared by both claw-offline and sig-offline freeze paths, and callers already log the reason.
+  - `ui/docs/state-recovery.md`: sync to current `__handleClawGoOffline` behavior (removes stale mention of clearing `dcReady` / stamping `disconnectedAt` — the `4a05074` principle is that presence does not pollute DC lifecycle).
+  - `docs/architecture/communication-model.md` §5.5.1: append mental-model paragraph reframing the signaling WS as an end-to-end reachability probe rather than a business dependency, plus a description of the `_pendingTypeChangedRestart` bookkeeping.
+
+- 45ee089: Three fixes from the 11th-round external review:
+
+  - **`resumeRecovery` immediate probe (P2 → latency win)** — `webrtc-connection.js` `resumeRecovery()` on the `connected + PC healthy` path previously called `__startKeepalive()`, which only schedules the next `__doKeepalive` after the full `DC_KEEPALIVE_INTERVAL_MS` (30s). If the underlying SCTP was already dead at resume time but `pc.connectionState` had not yet flipped to `failed`/`disconnected` (common during WiFi↔cellular switching or long background-suspension where ICE consent cadence lags), the UI would keep `dcReady=true` with a DC that silently drops outbound RPC — user-visible "send stalls" for 30-40s (30s interval + 10s probe timeout) until `__onIceFailed` finally fires. Round 10 only covered the case where the browser had already marked the PC dead; this round covers the intermediate window. New private method `__probeNow()` clears any pending keepalive timer, bumps `__keepaliveGen` to invalidate stale callbacks, and fires `__doKeepalive` immediately — reusing the existing `__onIceFailed` pipeline. Compresses the blackout window from 30-40s to ~1-3s (one probe timeout). `__state === 'connected'` guard inherited from round 10 still applies. `__probeNow` explicitly resets `__lastDcActivityAt = 0` to bypass the 20s activity-grace window — without that, short-pause scenarios (<20s) where DC inbound events have stopped updating the timestamp would let grace erroneously protect the failed probe and defer escalation, regressing the win to ~45s. Activity-grace is preserved for genuine SCTP-congestion cases, which never enter the paused state (so the reset has no side-effects on congestion detection).
+
+  - **`__resumeOnline` restores `dashboard.instance.online=true` (P1 user-visible stale state)** — `claws.store.js` `__handleClawGoOffline` calls `syncDashboardOffline(id)` which hard-writes `dashboardStore.byClaw[id].instance.online = false`. On DC-continuity resume paths (`connected`/`restarting`, i.e. most short network blips), `refreshClawResources` is never triggered (correctly — the "only rebuild refreshes" principle saves flow), so that `instance.online=false` persists indefinitely until an unrelated `app:foreground` or manual navigation to ManageClawsPage. The review's core insight: "symmetric with agents/topics" was the wrong justification — `MainList.vue`'s `clawListKey` watcher reacts on `online` flip independently of DC state, so agents/topics naturally refresh on DC-continuity resume; dashboard has no equivalent path. Minimal fix: new `syncDashboardOnline(id)` hook in `claw-lifecycle.js` (mirrors `syncDashboardOffline`), invoked unconditionally at `__resumeOnline` entry (after sig gate, before type-changed accounting consumption). Display-field sync only — does not refresh aggregate data, preserving "only rebuild refreshes" for RPC-heavy loads.
+
+  - **`updateClawOnline(true)` orders conn-lookup before `initialized=true`** — `claws.store.js:264-277` `updateClawOnline`'s `!initialized` branch historically set `claw.initialized = true` _before_ calling `useClawConnections().get(id)`, relying on the `if (conn)` guard to skip `__fullInit`. If the conn was not yet bridged (SSE event timing can in edge cases deliver `claw.online=true` before `addOrUpdateClaw`/`applySnapshot` bridges the conn), the claw would be stranded at `initialized=true + dcReady=false + no __fullInit fired` — the exact stranded-claw state class fixed in round 10 via the `applySnapshot` Phase 3 rescue. The other two rescue branches (`applySnapshot:362` and `__resumeAllClawsForSigOnline:623`) already use the correct order (lookup → null-guard → set). This reorders `updateClawOnline` to match, eliminating a fragile event-order dependency. Zero behavior change when conn is bridged (the common path).
+
+  Tests: two new/updated cases for `resumeRecovery` (immediate probe happy path with `probe-ack`; probe-timeout path upgrading to `__onIceFailed → triggerRestart`); two new cases in `updateClawOnline` (conn-missing → `initialized` stays false; DC-continuity resume → `instance.online` restored to true + aggregate data not refreshed).
+
+- ab2217b: Two fixes exposed by a test-coverage hardening pass on the RTC recovery gating module (following 11 earlier review rounds). Together with the associated test hardening, this pass increases the module's test count from 2845 to 2877 (+32 net tests, 0 skipped).
+
+  - **`__ensureRtc` bail 分支清 `_pendingForceRefreshOnRebuild` (P0 signal leak)** — `claws.store.js` `__ensureRtc` 的三种 bail 分支（`removed`/`offline`/`sig_offline`）此前仅 snapshot+restore `rtcPhase` 和 `disconnectedAt`，漏掉对 `_pendingForceRefreshOnRebuild` 的清理。`__resumeOnline` 走 rebuild 分支时会把 id 写入该 Set；一旦 `__ensureRtc` 在 post-await 阶段 bail（特别是 `sig_offline`），残留条目会被任何后续由**非 `__resumeOnline` 路径**触发的 `__ensureRtc` 成功分支消费——比如 `conn.__onTriggerReconnect` 直驱、retry timer 落地、`app:foreground` 的 `__checkAndRecover`、`manualRetryUnreachable` 按钮。结果：对一条通过 DC 延续自然恢复的健康 PC 误 `force_refresh=1`，打出冗余 agents/sessions/topics/dashboard 刷新流量。修法：在 `bailedOut` 条件块内加 `_pendingForceRefreshOnRebuild.delete(id)`，与成功分支 L933 消费处对称。三种 reason 都清（`removed` 兼顾清僵尸 id、`offline` 在下次 online→true 走 rebuild 时会 re-add、`sig_offline` 是核心漏网场景）。
+
+  - **`__resumeOnline` 把 `_pendingTypeChangedRestartClaws.delete` 延后到 conn 检查之后 (P1 signal loss + log drift)** — 原实现顺序：`syncDashboardOnline` → **`Set.delete(id)` 消费** → `const conn = manager.get(id)` → `if (!conn) return`。当 conn 在 sig 恢复瞬间恰好缺失（manager.disconnect 竞态 / rebridge 未完 / snapshot 删重建窗口）时，Set 条目已被消费但 `forceRestartOnConnected` 没处用，早退前也没归还信号——同一 sig cycle 内 typeChanged 记账永久丢失，下次 conn 回来再走 `__resumeOnline` 时 Set 已空，连带 `connected+paused` 分派降级为 `resumeRecovery`（轻量解冻，不发 ICE restart offer）。用户侧表现：WiFi↔ 蜂窝 IP 变化后 plugin 侧 DC 看似继续工作但旧 ICE 路径实际失效，需要等 30s keepalive 探测或下一次 typeChanged 事件才能恢复。修法：把 Set.delete 移到 `if (!conn) return` 之后，conn 缺失早退时 Set 条目保留供后续 resume 消费。`__resumeAllClawsForSigOnline` 的 `forceRestartCount` 日志仍按 `Set.has` 预计数（潜在数，非实发数），这是已知 trade-off，引入返回值改动面更大，暂不推进。
+
+  **Scope note**: This round was driven by a dedicated test-coverage pass (Phase A symmetric test + Phase B×4 store-level integration scenarios + Phase B+ ×7 targeted gap tests). G-01 / G-04 exposed real bugs and are fixed here. G-02 / G-05-B / G-05-C initially exposed apparent bugs but follow-up audit concluded they are either production-unreachable (G-02: `rtc.state='connecting'` only exists alongside `_rtcInitInProgress=true` and its success path L930 already clears the Set) or mock-induced false positives (G-05 B/C: test's `fakeRtc.close()` is no-op but real `WebRtcConnection.close()` synchronously fires `onRtcStateChange('closed')` → writes `rtcPhase='failed'`); those skip tests were removed rather than left as permanent `.skip` noise. G-07 confirmed a P2 log-storm under sig offline + repeated identical snapshots (Phase 3 rescue re-fires `__fullInit` per snapshot since entry sig gate returns before `_rtcInitInProgress.set`); no functional impact, test left as observation fixture.
+
+- df8c4d5: Three fixes exposed by a round-13 test-coverage hardening pass (following 12 earlier review rounds, driven by external-agent test suggestions). Together with the associated test hardening, this pass increases UI src test count from 2877 to 2915 (+38 net tests, 0 skipped).
+
+  - **`__resumeOnline` connected+paused 分支对 `resumeRecovery` 自升级后的 restarting 状态加 early-return (P0 PC-close-race)** — `claws.store.js:__resumeOnline` L710-724 的 connected+paused 分支先调 `rtc.resumeRecovery()` 然后无 return 地 fall through 到 L724 `this.__ensureRtc(id)`。当 `resumeRecovery` 因 `pc.connectionState='failed' | 'disconnected'` 内部升级为 `triggerRestart('online_resume')`（`webrtc-connection.js:1200-1208`），`__attemptRestart` 同步 `__setState('restarting')`（`webrtc-connection.js:1033-1037`），rtc.state 立即翻转。随后 `__ensureRtc` 的 early-return 条件 L839 只认 `rtc.state==='connected'`，`'restarting'` 不命中 → 继续跑到 L858 `closeRtcForClaw(id)` 把刚升级的 restart PC 关掉，强制 rebuild。后果：刚发出的 ICE restart offer 白烧（浪费 ICE/TURN 预算），DC 不延续（新 SCTP 丢 plugin 侧 buffer），恢复延迟数秒到十几秒。生产触发路径典型：WiFi→ 蜂窝 IP 变化让 pc.connectionState 翻 disconnected，随后 SSE online 或 sig online 触发 `__resumeOnline`。修法：`rtc.resumeRecovery()` 之后加 `if (rtc.state === 'restarting') return;`，与 L702-708 restarting+paused 分支的 return 对称。
+
+  - **`applySnapshot` Phase 3 rescue 入口加 `_sigOffline` 早退 (P2 log-storm)** — `claws.store.js:applySnapshot` 的 Phase 3 rescue 分支（对 online+!initialized claw 补跑 `__fullInit`）原本无 sig gate。sig offline 期间 SSE 仍能连推 snapshot（HTTP 通道），每次推同一份都会 fire `__fullInit`；`__ensureRtc` 入口的 sig gate 在 `_rtcInitInProgress.set` **之前** return（锁从未置位），内部双 gate 挡不住；`_rtcRetryState` 也因 `__fullInit` throw 早于 `__scheduleRetry` 路径，同样无法节流。结果：每次 snapshot 产出 `claw.fullInit` remoteLog + `fullInit (snapshot rescue) failed` warn 各一条，10 分钟断网可累积 40 条噪声。功能无影响（sig 恢复时 `__resumeAllClawsForSigOnline` 会补跑一次），但 P2 诊断日志噪声放大。修法：rescue 分支的 `if (claw?.online && !_rtcInitInProgress.get(id) && !_rtcRetryState.has(id))` 内部入口加 `if (_sigOffline) continue;`，与 `__ensureRtc` L823 对称；sig 恢复路径已覆盖首启竞态的合法 rescue 需求。
+
+  - **`applySnapshot` 入口过滤 malformed claw id (P2 ghost connections)** — `claws.store.js:applySnapshot` 原实现对 Phase 1 仅 `String(b.id ?? '')` + `!id continue` 过滤，Phase 2 `arr.map(b => String(b.id))` 无任何过滤。server 合约虽不下发坏 id，但 proxy 篡改 / 序列化错误时 `null` / `undefined` / `{}` / 非 string-number 类型会被硬转成 `"null"` / `"undefined"` / `"[object Object]"` 送进 `manager.syncConnections`，建真实 `ClawConnection` 实例（ghost 连接）—— 烧 ICE/TURN 预算 + UI 列表脏数据 + 持续失败日志噪声。修法：在 `applySnapshot` 入口统一过滤一次，产出 `validArr`（白名单 `typeof === 'string' | 'number'` 且非空、且 String 化不落入 `null/undefined/[object Object]` 黑名单），Phase 1/2/3 共用；数字 id 保留 round 12 已建立的容忍契约不变。发现有 drop 时打 warn + remoteLog `claw.snapshotMalformed dropped=N received=M`，帮助定位上游脏数据源。
+
+  **Scope note**: Round 13 was driven by external-agent test suggestions (P0×4 / P1×3 / P2×3 scenarios, E2E excluded). Of the 10 implemented scenarios, 7 found no bug (P0-2 pauseRestart during createOffer/SLD await, P0-3 stale rtc:answer/ice post-rebuild, P0-4 network:online multi-listener ordering, P1-1 probe during re-offline, P2-1 dashboard timeout assertions, P2-2 file transfer across ICE restart). The other three exposed real bugs; independent audit classified the first two as LOW risk (architectural-neutral one-liners) and the third (P2-3) as MEDIUM due to filter-contract edge decisions — user approved directly after confirming the change is pure filter + fallback with no architectural impact.
+
+- 4779478: Five fixes from the 10th-round deep review (covers both the internal multi-subagent audit and an external review report):
+
+  - **`applySnapshot` rescue for stranded `!initialized` claws (P1 user-visible stall)** — `claws.store.js` `applySnapshot` Phase 3 previously did `if (!claw?.initialized) continue`, which combined with `__bridgeConn`'s L458 short-circuit (`_bridgedConns` already holds the conn) to strand any claw that entered the map while offline (or had its initial `__fullInit` fail and roll back `initialized=false`). Subsequent snapshots would never re-fire `__fullInit`, and neither `__handleNetworkOnline` nor `__checkAndRecover` could recover it (both gate on `!initialized`/`!dcReady`). Only a fresh SSE `claw.status(true)` diff could unstick it — but the SSE reconnect path re-sends a full snapshot, not a diff. Phase 3 now has an explicit rescue branch that mirrors `__resumeAllClawsForSigOnline`'s `!initialized` handling: on `online=true && !initialized`, set `initialized=true`, fire `__fullInit(id, conn)` with catch-rollback. Double-gated against storm scenarios: skips when `_rtcInitInProgress` holds the lock (a prior rescue's `__ensureRtc` is still awaited) or when `_rtcRetryState.has(id)` (`__scheduleRetry` backoff is already queued) — otherwise repeated snapshots during pathological sig flap could drown `remoteLog` and bypass backoff throttling.
+
+  - **`resumeRecovery` detects a dead PC and upgrades to ICE restart** — `webrtc-connection.js` `resumeRecovery()` previously only cleared `__restartPaused` and restarted keepalive, assuming the PC was healthy. But if `pc.connectionState` already went `failed`/`disconnected` during the pause (the ICE-failed event was dropped by the paused gate at L975 with no marker), the UI's `__state='connected'` was stale — recovery relied on the next probe/keepalive cycle failing (30–40s). Resume now reads `this.__pc?.connectionState` at entry **when `__state === 'connected'`** and, on `failed`/`disconnected`, calls `triggerRestart('online_resume')` (the sole paused-gate whitelist reason) to fire an ICE restart immediately. The `__state === 'connected'` guard is deliberate: `restarting+paused` already has an explicit `triggerRestart('online_resume')` dispatch path via `__resumeOnline`; auto-upgrading on `restarting` entry would change `resumeRecovery` semantics for a scenario that no caller actually uses today.
+
+  - **Post-await bail also snapshots `disconnectedAt`** — `claws.store.js:__ensureRtc` sig_offline post-await bail previously only snapshot/restored `rtcPhase`. The `closeRtcForClaw` side-effect (`onRtcStateChange('closed')`) also writes `disconnectedAt=Date.now()`, which would then make the next sig-resume gap-aware refresh see a ~0ms gap and incorrectly skip the refresh. Now `disconnectedAt` is snapshot/restored alongside `rtcPhase` — consistent with the "sig is an environmental fault, do not pollute DC lifecycle/unreachable state" design intent.
+
+  - **Remove redundant `claw.dcReady=true` in `__fullInit`** — `claws.store.js:__fullInit` used to explicitly write `claw.dcReady=true` after `await __ensureRtc(id)`, but the RTC state machine already writes it via `__ensureRtc` success-path (L881) and `onRtcStateChange('connected')` (L700). The business-layer write violated the "only the RTC state machine writes `dcReady`" decoupling invariant (though it was idempotent). Removed.
+
+  - **Doc fix: `state-recovery.md` §7.x placeholder** — restored proper numbering (`§7.x` → `§7.2`, cascade-renumbered Deep Link → `§7.3`, Cold start → `§7.4`, KeepAlive → `§7.5`).
+
+  Tests: seven new/updated cases cover the `applySnapshot` rescue path (happy path, "conn not yet bridged" edge, `_rtcInitInProgress` short-circuit, `_rtcRetryState` short-circuit), the post-await bail `disconnectedAt` restore, and the `resumeRecovery` pc-state-failed/disconnected upgrade (two sub-cases). Existing "resumeRecovery no-op in restarting+paused" test gains an explicit "no offer sent" assertion to lock the new conservative `__state === 'connected'` guard against future regression.
+
+- 768aad8: RTC recovery — per-claw typeChanged restart bookkeeping:
+
+  - Replace module-level boolean `_pendingTypeChangedRestart` with per-claw Set `_pendingTypeChangedRestartClaws`. The boolean was consumed in a single spot (`__resumeAllClawsForSigOnline`), which missed two real-world paths where the typeChanged signal would be silently dropped:
+    - **sig online + claw offline + typeChanged**: main loop's `!claw.online continue` dropped the signal; subsequent `updateClawOnline(id, true)` default-resumed via `resumeRecovery()`, leaving the old (invalid) ICE path to hit ~30s consent timeout.
+    - **sig offline + typeChanged + sig resume while claw still offline**: the boolean was consumed at sig resume and the signal was lost; later claw-online would default-resume on stale ICE.
+  - `__handleNetworkOnline(typeChanged=true)` now records every claw that will NOT be immediately `triggerRestart`-ed by the main loop (offline / paused / restarting / failed / not initialized / sig offline). `__resumeOnline(id)` consumes the Set entry via `delete(id)` and treats a hit as `forceRestartOnConnected=true`.
+  - Consistency: clean Set entries at all claw-lifecycle exit or recovery points to prevent stale entries from causing spurious `triggerRestart('online_resume')` on already-healthy connections:
+    - `removeClawById` / `__resetClawStoreInternals` (logout) / `applySnapshot` cleanup loop
+    - `updateClawOnline` `!initialized` branch (full init = fresh ICE path)
+    - `__handleNetworkOnline` main loop success branches (`restarting → nudgeRestart`, `connected && typeChanged → triggerRestart('network_type_changed')`, `failed/closed → rebuild`)
+    - `__resumeAllClawsForSigOnline` `!initialized` branch
+  - `__resumeAllClawsForSigOnline` `force_restart` diagnostic counter moved to the `initialized` branch (the only path that actually consumes the Set via `__resumeOnline`), so `!initialized` claws no longer inflate the count.
+  - `docs/architecture/communication-model.md` §5.5.1: rewrite the typeChanged bookkeeping paragraph to describe the per-claw Set and list the three newly covered paths.
+  - `docs/designs/ice-restart-recovery.md` §6.5 and `ui/docs/state-recovery.md`: remove stale mentions of clearing `dcReady` / stamping `disconnectedAt` on offline (commit `4a05074` already made presence orthogonal to DC lifecycle; these doc lines had not been synced).
+
+- 5921398: Two round-7 external review fixes to the RTC recovery gate:
+
+  - `__resumeOnline` refresh rule simplified to a single clause: only PC rebuild triggers `force refresh`. All DC-continuous paths (`connected` / `restarting`, including the `forceRestartOnConnected` sub-case) now skip refresh uniformly. Rationale: as long as the PC is not rebuilt, the plugin-side DC send buffer survives ICE restart (SCTP persists); any rpc msg the plugin produced during the presence gap arrives naturally once ICE recovers. Only `rebuild` (failed / closed / idle / connecting / rtc=null) constructs a fresh SCTP — the old send buffer is lost and the plugin may have moved endpoints, so a force refresh is mandatory. Round 5/6 had a more complex three-way dispatch attempting to optimize the `forceRestart` case while keeping an "immediate refresh" clause for the non-forceRestart DC-continuous case — both of those cases collapse into the same rule now, removing one source of drift between `__resumeOnline` and the `wasDisconnected=false` branch of `onRtcStateChange('connected')` (which also does not refresh).
+
+  - `webrtc-connection.js` `onAppForeground` handler now early-returns when `__restartPaused=true`. Previously, if a claw was frozen via `pauseRestart()` (claw.offline or sig_offline gate closed) and the app was sent to background and returned, foreground handler would re-arm the disconnected timer and restart keepalive despite the gate being closed. That would drive probe RPCs that plugin cannot receive (eventually dropped by the paused gate when probe failure tries to escalate to `triggerRestart`), silently violating the "recovery budget frozen while gate is closed" model. Now foreground handler respects the pause flag; explicit `resumeRecovery()` or `triggerRestart('online_resume')` remains the only way to unpause keepalive/timer.
+
+  - Stale comments near `__bridgeConn` ("持续维护则不看 online") and `__checkAndRecover` ("不依赖 WS 指标") corrected to reflect the actual gate topology (both `claw.online` and `_sigOffline` now gate the maintenance paths).
+
+  - Removed the `__resumeOnline` fall-through `.then(() => loadDashboardForClaw(id))` link. Prior to round 7 this link was masked by the wider force-refresh; after the round 7 simplification it became visible as an asymmetry — dashboard was still being loaded on DC-continuous paths while agents/sessions/topics were not. It also caused a redundant second `loadDashboard(id)` call on the rebuild path (one from `.then`, one from `refreshClawResources` consumed via `_pendingForceRefreshOnRebuild`; absorbed by `dashboard.store`'s in-flight dedup guard but still a source of reader confusion). Dashboard is now refreshed exclusively through the `_pendingForceRefreshOnRebuild` consume point on rebuild success, symmetric with the other three loaders. The now-orphan `loadDashboardForClaw` hook and its lifecycle registration were removed as dead code.
+
+  - Updated `communication-model.md` §5.5, `ice-restart-recovery.md` §6.5, and `state-recovery.md` to match the rebuild-only refresh rule. Adjusted unit tests: DC-continuous paths (`connected` / `restarting+paused`) assert no refresh (including no dashboard load); new tests for `onAppForeground` paused guard covering both `PC disconnected` and `PC connected` post-background subcases.
+
+- bd394fc: Three round-8 external review fixes covering pre-existing and current-branch gaps:
+
+  - `webrtc-connection.js` `rtc:restart-rejected` handler now ignores the message unless the PC is currently in the `'restarting'` state. Rationale: the signaling `connId` is reused per claw (not per ICE restart generation); after a rebuild, the new `WebRtcConnection` instance's signaling listener still receives a late `rtc:restart-rejected` from the previous restart attempt. Without this guard the stale reject would call `close({ asFailed: true })` on the newly rebuilt PC, producing a spurious failed→rebuild cycle. The guard is UI-side only — no protocol change on plugin — and logs `rtc.restartRejectedStale` to remoteLog for diagnostics. This is a pre-existing gap (introduced with the ICE restart-first strategy in `db12a17`), surfaced by round-8 review; folded into this batch because the fix is small and self-contained.
+
+  - `claws.store.js` `__handleNetworkOnline` now wakes up claws stuck in `rtc=null` + (`rtcPhase='failed'` or `!dcReady`). Previously these were skipped by the `if (!rtc) continue` early-out. After retry exhaustion the backoff timer is still scheduled, so recovery eventually happens — but the next scheduled retry typically uses an already-stale ICE path (WiFi↔cellular just changed), so waiting for the backoff window to elapse is pure lost time. The new branch clears retry state, flips `rtcPhase='recovering'`, and calls `__ensureRtc(id)` directly, cutting the recovery delay on network transitions. Defensive: if `rtc=null` but `rtcPhase='ready'` and `dcReady=true` (an inconsistent combination that shouldn't exist), the handler still skips.
+
+  - `ui/docs/state-recovery.md` §7.x network debounce paragraph updated to describe the actual implementation (1200ms trailing-edge debounce with OR-aggregation on `typeChanged`) rather than the old 500ms leading-edge content-aware dedup. The code already has design-rationale comments in `src/utils/network-debounce.js`; this just re-syncs the doc.
+
+  Tests: three new `__handleNetworkOnline` cases covering `rt=null + rtcPhase=failed`, `rt=null + !dcReady + rtcPhase=recovering`, and the defensive skip branch; one new `rtc:restart-rejected` test asserting the stale-message guard preserves a connected PC. The existing `rtc=null → 跳过` test description was clarified to reflect that `!initialized` is the short-circuit in that specific scenario.
+
+- 54b609d: Close four RTC recovery edge cases around gate transitions on async / object-replacement boundaries, plus a defensive test-only addition for the offline gate retry steady state. All four fixes target the same family of symptoms — module-level state leaking past gate flips that happen during awaits, snapshot edges, or claw object identity changes.
+
+  1. **`applySnapshot` fetched=false→true edge with stale `_sigOffline`** — previously, when the SSE-driven `addOrUpdateClaw` + `__fullInit` path built a live RTC before the first `applySnapshot` arrived and signaling dropped during that window, `__freezeAllClawsForSigOffline` early-returned on `!this.fetched` (intentional noise filter). When `applySnapshot` later flipped `fetched=true`, no path re-evaluated `_sigOffline`, leaving the live RTC active while signaling was already dead. Fixed by adding an edge-triggered catch-up: if `prevFetched === false && _sigOffline === true`, call `__freezeAllClawsForSigOffline()` once after `this.fetched = true`. Logged as `claw.sigOfflineCatchup count=N`.
+
+  2. **`_rtcInitInProgress` leaking across remove + re-add same id** — `removeClawById` and `applySnapshot` Phase 1 cleanup already cleared `_probeInProgress` (round 18) but missed the symmetric `_rtcInitInProgress`. After remove, a new claw added with the same id had its `__ensureRtc` blocked at the entry lock until the in-flight old `await initRtc` resolved. When it did, the success path wrote `dcReady=true` / `rtcPhase='ready'` to the **new** claw object and consumed `_pendingForceRefreshOnRebuild` for the wrong instance. Fixed in two layers: (a) clear `_rtcInitInProgress.delete(id)` in `removeClawById` and the snapshot Phase 1 cleanup loop (symmetric with `_probeInProgress`); (b) capture `clawAtStart = this.byId[id]` before `await initRtc(...)` and add a new `'replaced'` post-await bail reason — when `cur !== clawAtStart`, only recycle the old conn's rtc (`closeRtcForClaw + conn.clearRtc`), do not write to the new claw's `rtcPhase` / `disconnectedAt`, and do not consume `_pendingForceRefreshOnRebuild` (the new claw enters its own Set entry via its own `__ensureRtc`). The `__ensureRtc` JSDoc now lists all four bail reasons (`removed` / `offline` / `sig_offline` / `replaced`) and their distinct semantics.
+
+  3. **`__checkAndRecover` post-`probe` gate recheck missing** — after `await rtc.probe(...)`, the function only checked `byId[id]` existence and `rtc.state`, not `_sigOffline` or `claw.online`. If signaling dropped or the claw turned offline during the probe wait (typically 5s), the function still wrote `rtcPhase='recovering'` and called `triggerRestart('probe_failed')` (which has no sig gate at the rtc layer and would push signaling to a dead WS). Fixed by adding the `_sigOffline / !claw.online` recheck right after the existing `if (alive || !this.byId[id]) return` early-out, with `claw.recover claw=${id} reason=${kind}_post_probe source=${source}` logging.
+
+  4. **`_pendingTypeChangedRestartClaws` early-consumed but `connected+!paused` path swallows the signal** — `__resumeOnline` consumed the Set entry at function entry and stored `forceRestartOnConnected=true`, but `forceRestartOnConnected` was only read inside the `connected + restartPaused` branch. When the new conn was `connected + !restartPaused` (typical scenario: `__handleNetworkOnline` records the per-claw flag while conn is missing or not yet initialized; later the conn becomes `connected + !paused`; sig comes back and triggers `__resumeAllClawsForSigOnline` → `__resumeOnline`), the entire paused branch was skipped, control fell through to `__ensureRtc`'s connected early-return, and the typeChanged signal was silently swallowed — the stale ICE path (built on the previous network) was never replaced. Fixed by switching to a "lookup, do not consume" mode at entry (`forceRestartOnConnected = forceRestartOnConnected || _pendingTypeChangedRestartClaws.has(id)`) and binding `_pendingTypeChangedRestartClaws.delete(id)` to each branch that actually fires `triggerRestart('online_resume')` (`restarting+paused`, `connected+paused+force`, and a new explicit upgrade branch for `connected+!paused+force`). The `restarting+!paused` path also gets a defensive `delete` (trusts the in-flight restart will use the new network). Doc sync in `docs/designs/ice-restart-recovery.md` documents the new lookup-vs-consume contract.
+
+  5. **Test-only**: cover the previously missing "already-connected → WS close → OS goes offline → multi-round retry steady state" path in `signaling-connection.test.js`'s `offline 闸` describe block. The existing tests in this group all started from "未连接 + offline"; this one verifies that after a connected WS drops and the OS subsequently goes offline, the reconnect loop emits exactly one `paused` log and stays silent (no `delay=` logs) across 10+ retry cycles.
+
+  Tests: `claws.store.test.js` UI test count 2989 → 3002 (+13 new tests across four `Round 20 Bug N` describe blocks plus the offline-gate steady-state test); electron 152 unchanged; `pnpm check` 0 errors / 2 pre-existing warnings unrelated to this change. One previously-existing test (`typeChanged cross-gate: rtcPhase=failed claw 记账消费后走 rebuild 分支`) was minimally adapted to await two microtasks to absorb the new "lookup-then-async-consume" timing of `_pendingTypeChangedRestartClaws` — assertion intent unchanged.
+
+  Review disposition (round 20, 11 suggestions from external agent):
+
+  - **Adopted (5): 4 code fixes + 1 test-only addition** — items 1, 2, 3, 4 above as code fixes; item 5 as test-only.
+  - **Rejected (6)**:
+    - `manualRetryUnreachable` while sig offline — already gated by `__ensureRtc` sig gate; sig recovery path takes over via `__resumeAllClawsForSigOnline`. UX wart was already filed in the prior round's backlog; not a correctness gap.
+    - `applySnapshot` dup-id with `final online=false + initialized=false + sig offline` extreme combo — Phase 3 `!initialized` rescue gate already short-circuits on `!claw.online`, no new branches engaged; existing dup-id last-wins / online conflict tests cover the meaningful semantics.
+    - `__bridgeConn`'s injected `__onTriggerReconnect` callback firing while sig/online gates are closed — gate enforcement is centralized at `__ensureRtc` entry; the callback path is already covered indirectly by the entry-gate test suite.
+    - `file-transfer.js` upload symmetric "DC open + partial chunks + close → TRANSFER_INTERRUPTED" branch — defensive symmetry add of low value; existing upload close-during-waitForUploadAccept and backpressure-then-abort cases cover the meaningful close paths.
+    - `ChatPage` silent reload promise reject — silent reload is fire-and-forget by design (`loadMessages({ silent: true })` is not awaited); the chat store's `doLoad` swallows errors and returns false. The `__connReadyStore` guard semantically tracks "first successful load"; silent reject reaching it would be by-design out-of-scope. The existing first-load reject rollback test already covers the meaningful case.
+    - `__ensureRtc` connected early-return when `state==='connected' && !isReady` — flagged as suspicious bug, but verified that this state is a transient window during DTLS+SCTP handshake (between PC ICE-connected and DC.onopen). Adding a force-rebuild here risks thrashing during normal handshake. Deferred to backlog for deeper investigation in a future round (per round-18 lesson on transient-state early-returns).
+  - **Backlog (1)**: `__ensureRtc` `state=connected + !isReady` corner — needs deeper analysis of whether `dc.onopen` reliably re-syncs `dcReady` via `__rtcCallbacks.onRtcStateChange` in all transient orderings, before deciding fix vs. lock-current-behavior test.
+
+- 36baa42: Close one ICE-restart staleness bug and lock several recovery contracts that were exercised at module level but lacked end-to-end test coverage.
+
+  1. **`__attemptRestart` skipped `sig.ensureConnected()` when `sig.state === 'connected'`** — the only `lastAliveAt > HB_TIMEOUT_MS → forceReconnect` staleness check lives inside `signaling-connection.js:ensureConnected`; `__sendRaw` and `sendSignaling` perform no freshness check. During a typeChanged window (Wi-Fi ↔ cellular) the underlying TCP can die silently while `sig.state` is still `'connected'` (heartbeat hasn't fired yet — up to 45s window). Under the previous early-skip, ICE restart pushed `rtc:offer` straight into the dead WebSocket. Fixed by removing the `sig.state !== 'connected'` early-skip — `__attemptRestart` now always `await sig.ensureConnected()`. The healthy-WS path inside `ensureConnected` is essentially free (one branch + return). All post-await guards (epoch / state / `__pc`) and the `resumingFromPause` revert path are preserved. The new flow-trace log line is at `debug` level (not `info`) since it now fires on every restart cycle; the two failure-branch logs stay `info`.
+
+  Tests (8 new groups, 9 new tests; baseline 3002 → final 3011):
+
+  - `webrtc-connection.test.js` — `triggerRestart from connected：始终 await ensureConnected（让陈旧 WS 检查有机会触发）`: locks fix 1 by asserting `mockEnsureConnected` is called exactly once even when `sig.state==='connected'`, and that `rtc:offer` is sent strictly after via `invocationCallOrder`.
+  - `webrtc-connection.test.js` — `dc.onerror 单独 fire 不动 state、不发 rtc:closed、不重建 PC`: locks the standalone-error log-only contract; reverse-asserts `state` / `__rpcChannel` / `__pc` / `__closed` / signaling / restart-timer all unchanged.
+  - `webrtc-connection.test.js` — `多 chunk 发送中 DC 关闭 → 整体 promise reject "DataChannel closed"，队列清空`: covers the previously uncovered `__enqueueSendMulti` rejection contract under DC close mid-flight; asserts `__sendQueue.length === 0` and `__rpcChannel === null` so no chunk leaks across rebuild.
+  - `webrtc-connection.test.js` — pair: `pauseRestart 后 createOffer reject → 不发 rtc:closed、保持 restarting + paused` and `pauseRestart 后 setLocalDescription reject → 不发 rtc:closed、保持 restarting + paused`: pair to round-15's resolve-side tests; covers the reject branch through the paused / epoch guard so a late reject does not get mis-treated as `failed` and does not push `rtc:closed`.
+  - `claws.store.test.js` — `sig offline + __fullInit rollback 之后再调一次 → 每次都重新尝试 fullInit (锁现状)`: locks current behavior under SSE storms — repeated `updateClawOnline(true)` calls each re-attempt full init after rollback. JSDoc notes this is a current-behavior lock, not a permanent contract.
+  - `claws.store.test.js` — `B4: 同一 id 在 snapshot 内出现两次 (true 后 false) → 锁当前 quirk: 触发 handleClawGoOffline，不触发 resumeOnline`: locks the known B4 `prevOnlineMap` post-assign quirk in the reverse direction; JSDoc references the B4 backlog so a future fix will rightly fail this test.
+  - `claws.store.test.js` — `sig offline + manualRetryUnreachable → ensureRtc 入口 sig gate 拦住、initRtc 不被调；sig 恢复后由 resumeOnline 接手`: locks the UX contract — manual retry while sig is offline clears the retry counter but does not call `initRtc`; sig recovery routes through `__resumeAllClawsForSigOnline` → `__resumeOnline` to re-engage.
+  - `ChatPage.test.js` — `contract: online=false + dcReady=true → 显示离线 banner 但 ChatInput 仍允许输入`: locks the product contract — `connReady` deliberately ignores `claw.online` so input stays enabled even when the offline banner is shown. JSDoc documents this is a product-contract lock.
+
+  Structural review-adoptions (correctness + design-consistency reviews each independently flagged):
+
+  - New `ICE restart: ensureConnected check reason=` log downgraded from `info` to `debug` — it now fires on every restart cycle and is a flow trace, not a noteworthy event; failure-branch logs stay `info`.
+  - Misleading comment in chunked-send test (referenced `rtc.close` which the test never invokes) replaced with the actually-checked invariant — `dc.onclose` synchronously nulls `__rpcChannel`.
+
+  Review disposition (round 21, 12 suggestions from external agent):
+
+  - **Adopted (8): 1 code fix + 7 test-only adoptions** — fix 1 above; the seven test groups for items 2/4/5/7/8/10/11. Item 1 contributes both the code fix and the locking test.
+  - **Rejected (4)**:
+    - `network:online(typeChanged=true)` cross-module integration test — made redundant by fix 1: `await sig.ensureConnected()` now acts as a synchronization point so subscriber-ordering between the claws-store and signaling-connection handlers can no longer race the offer through a stale WS. Existing per-module unit tests already cover the individual handlers.
+    - `__resumeOnline` when `conn` is missing — already covered by the `G-04` test (typeChanged Set entry preserved, `triggerRestart`/`resumeRecovery` not called, `conn.rtc` untouched). The dashboard-sync vs retry-state asymmetry is intentional (dashboard display sync must run regardless of conn; retry timer doesn't need clearing because nothing was started). Adding belt-and-suspenders assertions has marginal value.
+    - `__probeNow` "clear old keepalive timer" branch — structurally unreachable from real call sites: `__probeNow` is only called from `resumeRecovery`, which requires `__restartPaused === true`, and `pauseRestart` always synchronously clears `__keepaliveTimer`. The branch is a defensive guard against future call-site drift; testing it would require constructing an unreachable state.
+    - logout/reset during in-flight sig resume / `__ensureRtc` — algebraically covered by existing tests: `__resetClawStoreInternals` clearing `_pendingTypeChangedRestartClaws` / `_rtcInitInProgress` / `_pendingForceRefreshOnRebuild` / `_sigOffline` is locked in the typeChanged + reset describe blocks; `__ensureRtc` post-await `removed` / `replaced` bails are locked in the round-20 Bug 2 describe block. A composite timeline test would be documentation only.
+
+- 665f0e7: Close one chat-store streamingMsgs-loss bug, three same-id reuse races across per-claw stores, one RTC microtask race in `request()`, one falsy-as-success bug in remote log flushing, and lock three previously-uncovered contracts. All bugs surfaced from a round-22 external-agent review (9 suggestions, 9 adopted).
+
+  1. **`chat.store.js: sendMessage` accepted branch dropped run even when silent reload failed** — after `endRun` the run-promise then-chain unconditionally called `dropRun(runKey, runId)` after `await loadMessages({ silent: true })`. `loadMessages` swallows network/conn errors and returns `false`, so under any silent-reload failure the streamingMsgs the user just watched would be wiped while the final message had not been fetched. Fixed by only calling `dropRun` when `loadMessages` returned truthy. Recovery paths: (a) next `activate` / `__onConnReady` triggers another silent `loadMessages` — on success, the same `if (ok) dropRun` branch fires; (b) on continued failure, `agent-runs.store.js`'s 24h `POST_ACCEPT_TIMEOUT_MS` timer is the eventual safety net (already covered by an existing test).
+
+  2. **`agents.store.js: removeByClaw` did not clear `_loadingByClaw` (in-flight dedup map)** — when `claw.unbound` triggered `cleanupClawResources` → `agents.removeByClaw`, only `byClaw[id]` was deleted. If a new claw with the same id was bound during the in-flight window, a fresh `loadAgents(id)` coalesced onto the _old_ promise, which on resolve wrote onto a detached `entry` object — the new claw ended up with no agent data. Fixed by `_loadingByClaw.delete(String(clawId))` in `removeByClaw`, mirroring the round-18 `_probeInProgress` and round-20 `_rtcInitInProgress` symmetric cleanup pattern.
+
+  3. **`sessions.store.js: removeSessionsByClawId` did not clear `_perClawLoading`** — identical pattern to fix 2. The `if (!clawsStore.byId[id])` guard at the end of `__doLoadForClaw` checks only that _some_ claw exists at that id, not whether it is the _same instance_ the fetch was started for. Without clearing the in-flight map, the new `loadSessionsForClaw` is dedup-coalesced onto the stale promise; when it resolves, the old fetch's results are written into the new claw's slot. Fixed by `_perClawLoading.delete(id)` in `removeSessionsByClawId`.
+
+  4. **`topics.store.js: removeByClaw` did not clear `_perClawLoading`** — exact same shape as fix 3 (topics is parallel to sessions). Fixed identically.
+
+  5. **`claw-connection.js: request → doSend` had a microtask race after `clearRtc`** — `waitReady → setRtc` synchronously resolves all waiters, and `doSend` enters as a microtask. If `clearRtc` runs in the same sync segment or an earlier microtask, `this.__rtc` becomes `null`. `doSend` then allocated id / pending entry / timer first and only afterwards dereferenced `this.__rtc.send(...)` → `TypeError`, escaping the `.then` chain as an unmapped rejection (NOT `RTC_LOST`). Fixed by re-checking `this.__rtc?.isReady` at the top of `doSend` before any allocation; on miss, reject with `RTC_LOST` using the same shape as the existing `clearRtc` reject path.
+
+  6. **`remote-log.js: __flush` treated sender returning `false` as success** — `signaling-connection.js: __sendRaw` explicitly returns `false` when `__ws` is missing or not in `OPEN`, or when the synchronous `send()` call throws. The previous flush loop ignored the return value and immediately spliced the buffer, so in the narrow window between a `state==='connected'` signal and the WS actually breaking, a log batch was silently dropped. Fixed by capturing the sender return; if `=== false`, break the loop without splicing (preserving the buffer for the next `setSender(connected)` retry). `undefined` / `true` / any other non-false value is treated as success — no over-tightening for senders that don't return anything explicitly.
+
+  Tests (9 new test groups, 13 new tests; baseline UI 3011 → final 3024; electron 152 unchanged; coverage stmts 98.43% / branches 93.1% / funcs 98.21% / lines 98.43%):
+
+  - `chat.store.test.js` — pair: `accepted 后 silent loadMessages 失败：保留 run 与 streamingMsgs，不调 dropRun` and `accepted 后 silent loadMessages 成功：触发 dropRun`. Locks fix 1 from both directions; the failure-side test extends the wait to multiple microtasks + a macrotask after `sessions.get` is called, ensuring the then-chain settles past the `if (ok)` branch before assertions.
+  - `agents.store.test.js` — `removeByClaw 期间清飞行中 dedup：同 id 重绑后新 loadAgents 走独立请求`: locks fix 2 by setting up a deferred RPC, calling `removeByClaw('a')`, then triggering `loadAgents('a')` again on a fresh conn — asserts the fresh conn's `request` is invoked (would fail if the in-flight dedup line were reverted).
+  - `sessions.store.test.js` — `removeSessionsByClawId 期间清飞行中 dedup：同 id 重绑后新 loadForClaw 走独立请求`: locks fix 3 with the same shape as the agents test.
+  - `topics.store.test.js` — `removeByClaw 期间清飞行中 dedup：同 id 重绑后新 loadForClaw 走独立请求`: locks fix 4 with the same shape.
+  - `chat-store-manager.test.js` — `settling 状态（ended=true 但 streamingMsgs 非空）的 topic 仍被 LRU 淘汰（契约锁）`: locks the current LRU behavior under the settling window — since `runsStore.isRunning` only checks `!run.ended`, an ended-but-still-streaming topic is eligible for eviction. JSDoc cross-refs the chat.store accepted branch and notes this is a current-behavior lock, not a permanent contract.
+  - `claw-connection.test.js` — pair: `setRtc resolve waiter 后 clearRtc，doSend 入口重核 → reject RTC_LOST 不泄漏 pending/timer` and `正常路径：waitReady 排队 → setRtc 后 doSend 仍能发送（行为锁）`: locks fix 5 from both directions; the race test asserts reject with `code: 'RTC_LOST'` AND no pending entry leaked AND `send` not called.
+  - `remote-log.test.js` — `sender 返回 false 时不 splice，缓冲区保留供下次 flush`: locks fix 6 with content-level assertions on the preserved buffer entries; follow-up assertion confirms a working sender on the next setSender flushes successfully.
+  - `capacitor-app-browser.test.js` (NEW file, 8 tests total) — split across three describes:
+    - 4 visibility-bridge tests (cold-start `visibilityState=visible/hidden`, desktop / Capacitor-native skip).
+    - 2 online/offline tests for the `wasOffline` gate: `未经过 offline 的 online 事件 → 不派发 network:online（冷启动 spurious 抑制）` and `先 offline 后 online → 派发 network:online + 写 remoteLog`.
+    - 2 indirect locks for `setupAppStateChange` focusin handler attachment + INPUT/DIV branch safety. (See backlog note below for why direct callback invocation of `appStateChange` was not implemented.)
+  - `capacitor-app.test.js` — single-line cross-ref comment added to the existing `'前台恢复时派发 app:foreground'` test pointing to the new browser file's focusin contract; the test body itself is unchanged (out of scope).
+
+  Review disposition (round 22, 9 suggestions from external agent):
+
+  - **Adopted (9): 6 code fixes + 3 test-only adoptions** — fixes 1–6 above (each contributes both the code fix and its locking test groups) plus three pure test additions: chat-store-manager LRU settling lock, capacitor-app browser online/offline wasOffline gate, capacitor-app `setupAppStateChange` focusin handler indirect lock.
+  - **Rejected (0)** — all 9 suggestions verified by parallel opus subagents against current code; no false positives.
+
+  Backlog (deferred from review):
+
+  - **`setupAppStateChange` direct callback capture** — original Test-only-3 plan was to capture the `appStateChange` callback via the `@capacitor/app` mock and invoke `cb({isActive:true/false})` to lock the foreground/background dispatch + remoteLog + focus-restore branches end-to-end. Substituted with focusin handler indirect lock because of an existing-known limitation: the second dynamic `import('@capacitor/app')` from inside `setupAppStateChange` resolves to a different proxy than the first import (used by `setupBackButton`), and the test mock factory only intercepts the first. The codebase already documents this at `capacitor-app.test.js` lines 18–21 (pre-existing comment). A separate cleanup pass should investigate `vi.doMock` between dynamic imports or factor the `App` reference out for test injection — both out of scope for round 22.
+
+  **Scope note**: round 22 is the highest-yield round in the test-hardening series so far — 9 of 9 suggestions adopted (100%), 6 of which are code fixes (P1 severity each per external agent's classification). The cluster is "module-level Map / coalesce-promise leaks across same-id remove + re-add" (fixes 2/3/4) and "async chain crosses a state boundary the caller does not re-check" (fixes 1/5/6). All three families have been swept in earlier rounds for `claws.store.js` and `webrtc-connection.js`; this round extends the same sweep to per-claw sub-stores and to chat / claw-connection / remote-log layers.
+
+- 9ab962d: Five real bugs surfaced by an external review pass plus 7 test groups (19 new tests across UI + electron). Review covered 12 observations; after triage, 7 were adopted (5 code fixes + 2 test-only contract locks), 3 were rejected, 2 were deferred to backlog.
+
+  - **`topics.store.__doLoadAll` zip-mismatch when conn vanishes during sync loop** (`src/stores/topics.store.js:__doLoadAll`) — Tasks were generated by a `for` loop that called `getReadyConn(claw.id)` synchronously and `continue`-d on null. The resulting `Promise.allSettled` results array could be shorter than `connectedClaws`, and the post-await loop indexed failures by `connectedClaws[i].id` — so a failed result for B got blamed on A, and B stayed in `queriedClawIds` causing its old topics to be wiped on merge. Fix: replace the loop with `connectedClaws.map(...)` so results are length-aligned, return a `null` sentinel when sync `getReadyConn` is null, and add a result-time `getReadyConn(cid)` re-check to drop the claw from `queriedClawIds` when conn vanished mid-await. Mirrors the `sessions.store.__doLoadAll` shape that round 23 fixed — this closes the last instance in the per-claw async-fetch family. Family signal: cross-store in-flight aggregation where downstream `if (!conn) continue` skips alongside upstream `Promise.allSettled` zipped by input index.
+
+  - **`dashboard.store` in-flight Map asymmetric cleanup** (`src/stores/dashboard.store.js:loadDashboard,clearDashboard`) — The fourth (and last) per-claw store still missing the round-22/23 symmetric cleanup pair: (a) `loadDashboard.finally` did `_loadingByClaw.delete(id)` unconditionally, so an old promise's late finally would erase a NEW promise's dedup entry written after `clearDashboard + same-id rebind`; (b) `clearDashboard` only removed `byClaw[id]`, leaving the in-flight entry behind so a fresh `loadDashboard(id)` would coalesce onto the old promise (which then writes the previous claw's `instance` / `agents` into the new entry's slot). Fix: add the promise identity guard `if (_loadingByClaw.get(id) === p)` to the finally, and have `clearDashboard` synchronously delete the in-flight entry. The orphan-entry write that the old IIFE may still perform after `clearDashboard` lands on a closure-captured object that the store has already removed — invisible to consumers and GC-eligible (a clarifying comment was added at the entry-capture site to lock that contract for future maintainers).
+
+  - **`capacitor-app.setupNetworkListener` getStatus race overrides newer live event** (`src/utils/capacitor-app.js:setupNetworkListener`) — `Network.getStatus().then(...)` unconditionally wrote `_lastConnectionType = normalized` whenever it eventually resolved. If the user switched networks during the in-flight init (live `networkStatusChange` already wrote `_lastConnectionType=cellular`), a slow getStatus returning the prior `wifi` would overwrite back to wifi, and the next live wifi event would then be wrongly classified as `typeChanged=true` — triggering an unnecessary ICE-restart cycle. Fix: introduce module-scoped monotonic counter `_networkEventCount` (incremented on every `networkStatusChange` fire); `setupNetworkListener` snapshots `eventCountBefore` at entry, and the `getStatus().then` only writes the initial value when the counter still equals the snapshot (no live event ran during init). Counter (rather than value comparison) is required because a coincidentally-equal value (e.g. live event also wrote `wifi`) must still mark "live event won".
+
+  - **Three `setup*` functions silently dropped `import('@capacitor/app')` rejections** (`src/utils/capacitor-app.js:setupAppStateChange,setupDeepLink,setupBackButton`) — The dynamic imports for these three setup functions had no `.catch`. If `@capacitor/app` failed to load (native plugin missing in dev / partial-platform setup), the resulting unhandled rejection slipped past `initCapacitorApp`'s try/catch (which only catches sync throws, not deferred promise rejections), and all three listeners (foreground bridge / deep-link routing / Android back button) silently went unregistered. Fix: append `.catch((e) => console.warn(...))` to each, mirroring the existing pattern on `setupKeyboard` and `setupNetworkListener`. Family signal: sister functions inside the same module diverging on whether they `.catch` their dynamic imports.
+
+  - **`electron` IPC handlers had no protocol allowlist on `shell:openExternal` / `download:start`** (`electron/ipc-handlers.js:registerIpcHandlers`) — The shell's `setWindowOpenHandler` and `will-navigate` already restrict navigation to http/https, but renderer-initiated IPC calls bypassed that defense entirely: a compromised renderer (or developer mistake) could call `shell.openExternal('file:///etc/passwd')` and have the OS handle a local-file URI, or `download:start('file:///...')` and have Chromium treat a local file as a download source. Fix: add `isAllowedExternalProtocol(url)` helper (rejects non-string, non-http(s), and unparseable URLs) and gate both handlers through it; rejected calls log a warn and return undefined. The two-layer defense (window-open layer + IPC layer) now mirrors each other symmetrically. Family signal: defense-in-depth at one transport layer (navigation) but not the symmetric layer (IPC) for the same downstream sink.
+
+  Test changes (7 new test groups, 19 new tests across UI + electron; baseline 3035 → 3047 UI tests, 152 → 159 electron tests, all green):
+
+  - **`topics.store __doLoadAll zip alignment`** (`src/stores/topics.store.test.js`) — Three tests in a new `__doLoadAll zip alignment` describe block. (a) Sync conn vanish: A's conn removed before sync loop; asserts A's old topics survive, B's new topics are written, and A's RPC is never sent (`toHaveBeenCalledTimes(0)` strong lock). (b) Result-time vanish: SSE `claw.unbound` clears conn during in-flight RPC; asserts result-time `getReadyConn` re-check drops the claw from `queriedClawIds` so old topics are preserved on merge. (c) Reverse assertion: healthy conn + remote really empty topics still wipes old (so the guard doesn't over-reach into "real-empty" cases).
+
+  - **`dashboard.store` in-flight Map symmetry** (`src/stores/dashboard.store.test.js`) — Two tests. (a) `clearDashboard` synchronously clears the in-flight dedup entry; same-id rebind then issues an independent RPC batch (not coalesced onto the old deferred promise). (b) Stale finally identity check: an old `loadDashboard` that completes after `clearDashboard + same-id rebind + new loadDashboard` does NOT erase the new entry — verified by asserting a third same-id call still hits dedup (no extra RPC).
+
+  - **`capacitor-app setupNetworkListener` getStatus race** (`src/utils/capacitor-app.test.js`) — One test using `mockImplementationOnce` to keep `getStatus` deferred during init, then fires a live `wifi` event before resolving `getStatus(cellular)`; asserts the next live `wifi` event detects `typeChanged=false` (proving `_lastConnectionType` stayed at `wifi` and was not overwritten by the slow getStatus).
+
+  - **`parseDeepLinkPath` URL parsing branches** (`src/utils/capacitor-app.test.js`) — Four tests on the newly-exported pure function (extracted from `setupDeepLink` to bypass the known vitest dynamic-import mock limitation): `coclaw://chat/123 → /chat/123`, `coclaw:// → null` (root, no nav), `not a url → throws TypeError` (caller catches and warns), `coclaw://chat → /chat` (host-only no pathname).
+
+  - **Three `setup*` `.catch` source-pattern lock** (`src/utils/capacitor-app.test.js`) — One test using `node:fs` to grep the source for the three `import('@capacitor/app').then(...).catch((e) => console.warn('[capacitor] <name> setup failed:'...))` patterns. The test name explicitly notes "源码 pattern lock，非行为测试，仅防漏 .catch" so future readers don't mistake it for a behavioral test. Justification (in test comment): vitest's documented limitation that the second dynamic import of the same mocked module returns a different proxy makes a true reject-behavior test infeasible without restructuring the dynamic-import strategy.
+
+  - **`__enqueueSendMulti` fast-path partial throw** (`src/services/webrtc-connection.test.js`) — One test: forces 3-chunk fragmentation, lets `dc.send` throw on the 2nd chunk, asserts the entire promise rejects with the same error instance, `__sendQueue` stays empty (chunks weren't enqueued), `dc.send` was called exactly twice (`toHaveBeenCalledTimes(2)`), and `__rpcChannel` is unchanged. Distinguishes the fast-path sync-throw contract from the existing DC-close path that enqueues then `__rejectSendQueue`s.
+
+  - **`shell:openExternal` / `download:start` protocol allowlist** (`electron/ipc-handlers.test.js`) — Seven tests across the two channels. shell: passes http/https through, rejects `file://`, rejects `javascript:`, rejects malformed URL, rejects non-string input. download: passes https through (existing test reused), rejects `file://`, rejects malformed URL. Each rejection asserts both `not.toHaveBeenCalled` on the downstream Electron API and `logMock.warn` containing the channel-specific reject message. `logMock.warn.mockClear()` was added to the existing `beforeEach` to make this assertion stable for future tests too.
+
+  **Review disposition** (12 observations total):
+
+  _Rejected (3):_
+
+  - chat.store `activate()` re-entry while first activate is in-flight — appears to start a concurrent silent reload, but the silent path returns idempotent server data and `dropRun` is gated by `if (ok)` (round 22 fix), so the only observable effect is one extra `sessions.get` call. Existing test `重复调用 activate 时做静默刷新（不重复 init）` already locks the relevant invariant.
+  - `webrtc-connection.__attemptRestart` action when TURN credentials expired — `credRemain<0` is logged as a diagnostic field but intentionally not branched on. By design: TURN creds are refreshed only at `initRtc`/rebuild time; restart phase always uses the existing creds. Existing test `ICE restart offer 日志 credRemain 为负（凭证已过期）` already locks this behavior.
+  - `signaling-connection.releaseConnId` not checking `__sendRaw` return value — by design: client-side single-party release is the contract (server cleans up its own side on WS disconnect/timeout); waiting for server ack would risk client-side connId-slot leaks if WS is broken when release is called.
+
+  _Backlog (2):_
+
+  - `topics.store.createTopic` does not re-check `useClawsStore().byId[clawId]` after `await conn.request('coclaw.topics.create')`. If `removeByClaw` runs mid-await, a ghost topic is written to `byId` pointing at a now-removed claw. Self-healing path is clear (next `loadAllTopics` removes it via the `clawsStore.byId[bid]` check), so user-visible window is narrow (must navigate into the topic in the same frame as unbind). Different family from the per-claw fetch series — that one is "background fetch writes back stale data", this is "user-initiated create writes back". Deferred.
+  - `claw-connection.setRtc` accepting a non-ready RTC: caller-side `webrtc-connection.onReady = () => ... setRtc(rtc)` only fires when `dc.onopen` triggers (so `isReady === true` is guaranteed in production). The defensive non-ready branch only logs a warn and the downstream `request → doSend` re-checks `__rtc?.isReady` (round 22 fix) and rejects `RTC_LOST`. Adding a contract test only locks an unreachable defensive net. Deferred.
+
+  _Adopted (7):_ 5 code fixes + 2 test-only contract locks (UI `__enqueueSendMulti` fast-path partial throw + electron protocol allowlist), as documented above. Three deep-review structural recommendations were inlined: `dashboard.store` IIFE entry-capture comment, `electron/ipc-handlers.test.js` `logMock.warn.mockClear()` in beforeEach, and capacitor source-pattern lock test name annotation.
+
+- 1e9a3ef: Two small follow-up fixes from round-9 external review:
+
+  - `claws.store.js` `__handleNetworkOnline` `state === 'restarting'` branch now mirrors the `state === 'connected' && restartPaused` branch: when `rtc.restartPaused` is true, skip `nudgeRestart()` and preserve the `_pendingTypeChangedRestartClaws` entry for later `__resumeOnline` consumption (which upgrades to `triggerRestart('online_resume')` — the sole reason that passes the paused gate at `webrtc-connection.js:975`). Previously this branch would both `delete` the Set entry and call `nudgeRestart()`, which `__attemptRestart('nudge')` drops when paused — net effect: restart not sent AND typeChanged signal permanently lost. Reachability in practice is narrow (the paused=true invariant normally implies `claw.online=false` OR `_sigOffline=true`, both of which are gated earlier in `__handleNetworkOnline`), but the defensive symmetry with the connected+paused branch is worth ~5 lines and blocks any future ordering surprise. Logs `claw.typeChanged claw=<id> paused_restarting defer_to_resume` via remoteLog.
+
+  - `webrtc-connection.test.js` cleans up three `no-unused-vars` lint warnings (`dc`/`pc` destructured but never used) introduced by earlier edits at L2181/L2273/L2595.
+
+  Tests: one new test `"#2 round9: 主循环 restarting+paused + typeChanged 不发 nudgeRestart，Set 保留给 resume 消费"` asserts (a) `nudgeRestart`/`triggerRestart` not called on the `__handleNetworkOnline(true)` call, (b) after a subsequent sig down/up cycle, `__resumeOnline` consumes the preserved Set entry and fires `triggerRestart('online_resume')`.
+
+- 5fc37d5: Freeze all claws' ICE restart / rebuild budget when the signaling WS is not connected (electric elevator, airplane mode, WiFi drop, server restart, etc.). Introduces a second lock (`_sigOffline`) parallel to the existing `claw.online` lock: recovery actions resume only when both locks are open. Frozen state keeps the PC and clears the per-claw retry budget; on WS reconnect, online claws are dispatched through the existing `__resumeOnline` path (ICE restart / rebuild / noop by PC state).
+- 17b7ce9: fix(ui): override navigator.onLine in signaling \_\_doConnect when Capacitor reports online
+
+  Android WebView occasionally reports `navigator.onLine === false` even when the
+  device is connected. The signaling layer used to silently pause every recovery
+  path in that case, leaving `sig.state` stuck at `disconnected` until the OS flag
+  flipped back. Track a sticky `__nativeOnline` flag set whenever the
+  `@capacitor/network` bridge fires `network:online`, and let it override the
+  `navigator.onLine === false` gate so genuine connectivity is no longer masked
+  by an OS-side false negative. Reset on `disconnect()` for clean session
+  boundaries.
+
+- 09ec618: Silence signaling WS reconnect log storm when device is truly offline. During real offline (airplane mode / WiFi off / cable unplugged), the WS reconnect loop previously fired 4 `log` events per cycle (`sig.reconnect delay=...`, `sig.state disconnected→connecting`, `sig.close code=...`, `sig.state connecting→disconnected`); these were consumed by `remote-log.js` and piled into its 1000-entry buffer (sender inactive while offline, so the buffer churned shift/push continuously). Over 10 minutes of offline this produced ~80 log events.
+
+  Fix is a localized edge-triggered gate inside `SignalingConnection`:
+
+  - `__doConnect()` entry now checks `typeof navigator !== 'undefined' && navigator.onLine === false` and, if true, skips `new WebSocket`, emits `sig.reconnect paused offline` **once** (via `__pausedOffline` boolean), and schedules the next retry normally.
+  - `__scheduleReconnect()` omits the per-schedule `sig.reconnect delay=...` `log` event while `__pausedOffline` is set (offline steady-state is now silent on remote-log).
+  - When a subsequent `__doConnect()` sees `navigator.onLine` is no longer false, it flips the flag back and emits `sig.reconnect resumed` **once**, then proceeds to the normal `__setState('connecting')` + WebSocket construction path.
+  - `disconnect()` resets `__pausedOffline` so a fresh `connect()` while still offline will log a new `paused offline` entry.
+
+  The flag is **only** used for log deduplication — it does not gate any business logic. Existing reconnect cadence (1s → 2s → 4s → … → 30s exponential backoff) and the `network:online` / `app:foreground` wake-up paths are unchanged. Other modules are unaware.
+
+  Rationale for the strict `=== false` comparison: modern baseline browsers / WebViews (Chrome/Edge 90+, Safari 15+, Firefox 90+, Android WebView, iOS WKWebView, Electron) reliably report `navigator.onLine=false` for true offline scenarios. False-positive offline reports (browser says offline but network is actually up) are rare and the scheme is fault-tolerant — the retry backoff continues, and `network:online` / `app:foreground` events break the backoff on recovery regardless of the gate state; worst case is a one-retry-cycle delay.
+
+  Not done (deliberate scope limits): no `window 'offline'` / `'online'` event subscription, no changes to `remote-log.js`, no changes to `claws.store.js` or other business modules. The communication model is unaffected.
+
+  Steady-state validation: 10-minute true offline now produces exactly 2 `log` events (one `paused offline` entering + one `resumed` on recovery), down from ~80.
+
+  Tests: +10 unit tests in `signaling-connection.test.js` covering entry, steady-state silence, resume on flag flip, online/offline toggles, `disconnect` reset, the `navigator.onLine===undefined` fallback (regression guard against `!navigator.onLine` being introduced), and `forceReconnect()` behavior under offline. An `afterEach` cleanup bug was also fixed (jsdom `navigator.onLine` is a prototype-chain property, `getOwnPropertyDescriptor` returns `undefined`, and the previous restore path leaked `defineProperty`-set values into subsequent tests — now `delete`d in that case).
+
+- c9205b3: fix(ui): topics \_\_doLoadAll skips fulfilled results whose claw conn vanished mid-fetch
+
+  The first merge loop already preserves the old topics of any claw evicted
+  from `queriedClawIds` (sync conn-vanish or fetch failure or post-fetch
+  conn-vanish), but the second loop still walked every fulfilled result and
+  inserted its `topics`, so a claw whose conn vanished after the request
+  resolved would inject "ghost" topics into `byId` even though the claw is
+  gone from the store. Skip evicted-claw fulfilled results in the second
+  loop too, keeping the merge symmetric with the eviction set.
+
 ## 0.17.4
 
 ### Patch Changes
