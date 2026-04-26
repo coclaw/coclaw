@@ -111,6 +111,9 @@ export const useTopicsStore = defineStore('topics', {
 			}
 			for (const r of results) {
 				if (r.status !== 'fulfilled' || r.value === null) continue;
+				// 与第一个循环对称：fetch 后 conn 消失的 claw 已被从 queriedClawIds 剔除，
+				// 第一个循环走"保留旧 topics"分支；这里同时跳过其新结果，避免新旧 topics 混入幽灵
+				if (!queriedClawIds.has(r.value.clawId)) continue;
 				for (const topic of r.value.topics) {
 					newById[topic.topicId] = {
 						topicId: topic.topicId,

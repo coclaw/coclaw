@@ -839,6 +839,36 @@ describe('topics store', () => {
 			expect(store.byId['t-old']?.title).toBe('Old');
 		});
 
+		test('result-time conn vanish + fetched 含新 topics：新结果不写入（防幽灵 topics）', async () => {
+			// 与 'result-time conn vanish' 用例对称，但 fulfilled value 含**非空** topics：
+			// 修法前第二个合并循环会按 r.value 把这些"已剔除 claw 的新 topics"塞进 byId，
+			// 制造幽灵 topic（claw 已 unbound 仍出现在列表）；修法后跳过整条 result
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			const store = useTopicsStore();
+			store.byId = toById([{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 50, clawId: 'bot-1' }]);
+
+			const conn = {
+				request: vi.fn().mockImplementation(() => {
+					mockConnections.delete('bot-1');
+					return Promise.resolve({ topics: [
+						{ topicId: 't-ghost', agentId: 'main', title: 'Ghost', createdAt: 200 },
+					] });
+				}),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			await store.loadAllTopics();
+
+			// 旧 topic 保留
+			expect(store.byId['t-old']?.title).toBe('Old');
+			// 幽灵 topic 不应出现
+			expect(store.byId['t-ghost']).toBeUndefined();
+		});
+
 		test('反向断言：conn 健康但远端真空 topics 时，旧 topics 仍被清空', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
