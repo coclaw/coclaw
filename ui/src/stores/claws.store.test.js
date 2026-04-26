@@ -8349,6 +8349,46 @@ describe('P2-4: malformed addOrUpdateClaw id 防御', () => {
 	});
 });
 
+describe('claw id whitespace 归一化（applySnapshot 与 addOrUpdateClaw 一致）', () => {
+	// 修法前 applySnapshot 用 `String(b.id)` 作 byId 键，addOrUpdateClaw 用 `__validateClawId` 的
+	// trim 后 id 作 byId 键——同一个带空白 id 经两条入口产生不同的键，且 state.id 与键不一致。
+	// 修法后两条入口统一消费 trim 后的 id 作 byId 键 + createClawState 入参。
+
+	test('applySnapshot：带前后空白的 id 归一化为 trim 后字符串作为 byId 键 + state.id', () => {
+		const store = useClawsStore();
+		store.applySnapshot([{ id: '  bot-w1  ', name: 'W1', online: true }]);
+		expect(Object.keys(store.byId)).toEqual(['bot-w1']);
+		expect(store.byId['bot-w1'].id).toBe('bot-w1');
+		expect(store.byId['  bot-w1  ']).toBeUndefined();
+	});
+
+	test('addOrUpdateClaw：带前后空白的 id state.id 与 byId 键一致（均 trim 后）', () => {
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue({
+			on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		});
+		store.addOrUpdateClaw({ id: '  bot-w2  ', name: 'W2' });
+		expect(store.byId['bot-w2']).toBeDefined();
+		expect(store.byId['bot-w2'].id).toBe('bot-w2');
+	});
+
+	test('两条入口对同一个带空白 id 落同一 byId 键（addOrUpdateClaw 后 applySnapshot 不重复建条目）', () => {
+		const store = useClawsStore();
+		mockManager.get.mockReturnValue({
+			on: vi.fn(), off: vi.fn(), rtc: null, clearRtc: vi.fn(),
+			request: vi.fn().mockResolvedValue({}),
+		});
+		// 先经 addOrUpdateClaw 进入
+		store.addOrUpdateClaw({ id: '  bot-w3  ', name: 'W3' });
+		expect(Object.keys(store.byId)).toEqual(['bot-w3']);
+		// 再经 applySnapshot 走 update 分支：byId 键复用
+		store.applySnapshot([{ id: '  bot-w3  ', name: 'W3-renamed', online: false }]);
+		expect(Object.keys(store.byId)).toEqual(['bot-w3']);
+		expect(store.byId['bot-w3'].name).toBe('W3-renamed');
+	});
+});
+
 // -------- Round 20: 4 真 bug 修复对应测试 --------
 
 describe('Round 20 Bug 1: applySnapshot fetched=false→true 边沿在 sig offline 时补扫 freeze', () => {

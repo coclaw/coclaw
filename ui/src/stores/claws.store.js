@@ -281,7 +281,8 @@ export const useClawsStore = defineStore('claws', {
 					existing[k] = v;
 				}
 			} else {
-				this.byId[id] = createClawState(claw);
+				// 用 trim 后的 id 入 createClawState，避免 state.id 留下原始空白与 byId 键不一致
+				this.byId[id] = createClawState({ ...claw, id });
 			}
 			const manager = useClawConnections();
 			manager.connect(id);
@@ -356,12 +357,16 @@ export const useClawsStore = defineStore('claws', {
 		 */
 		applySnapshot(items) {
 			const arr = Array.isArray(items) ? items : [];
-			// 过滤 malformed id：复用 `__validateClawId` 与 `addOrUpdateClaw` 入口保持一致。
-			// server 合约不发 ghost id，仅为 proxy 篡改 / 序列化错误兜底——
-			// 不过滤会被 `arr.map(b => String(b.id))` 送进 syncConnections 建 ghost 连接，
-			// 烧 ICE/TURN 预算 + 脏列表
-			const validArr = arr.filter((b) => __validateClawId(b?.id) !== null);
-			const dropped = arr.length - validArr.length;
+			// 过滤 malformed id 并捕获 trim 后规范化 id：复用 `__validateClawId` 与
+			// `addOrUpdateClaw` 入口保持一致。server 合约不发 ghost id，仅为 proxy 篡改 /
+			// 序列化错误兜底——不过滤会被送进 syncConnections 建 ghost 连接，烧 ICE/TURN 预算 + 脏列表。
+			// 用 (b, id) pair 避免后续 `String(b.id)` 漏 trim，与 addOrUpdateClaw 路径对带空白 id 的归一化保持一致。
+			const validPairs = [];
+			for (const b of arr) {
+				const id = __validateClawId(b?.id);
+				if (id !== null) validPairs.push({ b, id });
+			}
+			const dropped = arr.length - validPairs.length;
 			if (dropped > 0) {
 				console.warn('[claws] snapshot dropped %d malformed id item(s)', dropped);
 				remoteLog(`claw.snapshotMalformed dropped=${dropped} received=${arr.length}`);
@@ -369,8 +374,7 @@ export const useClawsStore = defineStore('claws', {
 			const newById = {};
 			// Phase 1: 快照 apply 前先记录每个已有 claw 的 online 值，供 Phase 3 diff
 			const prevOnlineMap = new Map();
-			for (const b of validArr) {
-				const id = String(b.id);
+			for (const { b, id } of validPairs) {
 				const existing = this.byId[id];
 				if (existing) {
 					prevOnlineMap.set(id, existing.online);
@@ -401,7 +405,7 @@ export const useClawsStore = defineStore('claws', {
 			const prevFetched = this.fetched;
 			this.byId = newById;
 			this.fetched = true;
-			console.debug('[claws] snapshot applied %d claw(s)', validArr.length);
+			console.debug('[claws] snapshot applied %d claw(s)', validPairs.length);
 			remoteLog(`claw.snapshot count=${arr.length}`);
 
 			// fetched=false→true 的边沿补扫：sig 已 offline 但首次 snapshot 之前
@@ -413,7 +417,7 @@ export const useClawsStore = defineStore('claws', {
 				this.__freezeAllClawsForSigOffline();
 			}
 
-			const clawIds = validArr.map((b) => String(b.id));
+			const clawIds = validPairs.map(({ id }) => id);
 			const manager = useClawConnections();
 			manager.syncConnections(clawIds);
 			for (const id of clawIds) {
