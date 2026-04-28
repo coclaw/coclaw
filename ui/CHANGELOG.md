@@ -1,5 +1,11 @@
 # @coclaw/ui
 
+## 0.17.6
+
+### Patch Changes
+
+- 6b8bfef: fix(ui): use entry top-level timestamp for agent run duration so the "thought for ..." label includes the final reply's own generation time
+
 ## 0.17.5
 
 ### Patch Changes
