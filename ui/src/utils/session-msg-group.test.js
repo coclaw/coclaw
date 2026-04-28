@@ -387,6 +387,62 @@ describe('groupSessionMessages', () => {
 		expect(result[1].duration).toBeNull();
 	});
 
+	test('duration 优先用 entry 顶层 timestamp（ISO 字符串），覆盖最末段的输出耗时', () => {
+		// 模拟真实 OpenClaw 落库格式：
+		// - user message.timestamp = 1000ms
+		// - assistant message.timestamp = 1005ms（API 调用刚开始）
+		// - assistant entry.timestamp = "...01.500" → 1500ms（消息写完落盘）
+		// 旧逻辑会算成 5ms，新逻辑应得到 500ms
+		const a = assistantEntry('a1', { text: '回答', ts: 1005 });
+		a.timestamp = '1970-01-01T00:00:01.500Z';
+		const entries = [userEntry('u1', '你好', 1000), a];
+		const result = groupSessionMessages(entries);
+		expect(result[1].timestamp).toBe(1500);
+		expect(result[1].duration).toBe(500);
+	});
+
+	test('duration 在多轮工具调用中以最末 assistant entry 顶层 timestamp 为准', () => {
+		// 真实场景：user → assistant(tool_use) → toolResult → assistant(final)
+		// 仅最末段的"写完时刻"会算入 duration
+		const a1 = assistantEntry('a1', { stopReason: 'toolUse', toolCalls: [{ name: 'read_file' }], ts: 1010 });
+		a1.timestamp = '1970-01-01T00:00:08.000Z'; // 第一段写完
+		const tr = toolResultEntry('tr1', '文件内容', 8050);
+		tr.timestamp = '1970-01-01T00:00:08.100Z';
+		const a2 = assistantEntry('a2', { text: '基于读到的文件内容，结论是 X', ts: 8200 });
+		a2.timestamp = '1970-01-01T00:00:22.000Z'; // 最末段写完
+		const entries = [userEntry('u1', '看一下文件', 1000), a1, tr, a2];
+		const result = groupSessionMessages(entries);
+		expect(result[1].timestamp).toBe(22000);
+		expect(result[1].duration).toBe(21000);
+	});
+
+	test('entry 顶层 timestamp 为数字毫秒也能解析', () => {
+		const a = assistantEntry('a1', { text: 'ok', ts: 1005 });
+		a.timestamp = 1500;
+		const entries = [userEntry('u1', 'q', 1000), a];
+		const result = groupSessionMessages(entries);
+		expect(result[1].duration).toBe(500);
+	});
+
+	test('entry 顶层 timestamp 不可解析时回退到 message.timestamp', () => {
+		const a = assistantEntry('a1', { text: 'ok', ts: 2000 });
+		a.timestamp = 'not-a-date';
+		const entries = [userEntry('u1', 'q', 1000), a];
+		const result = groupSessionMessages(entries);
+		expect(result[1].duration).toBe(1000);
+	});
+
+	test('entry 顶层缺失 timestamp 时回退到 message.timestamp（兼容旧测试数据）', () => {
+		// 老的 assistantEntry 帮助函数不带顶层 timestamp
+		const entries = [
+			userEntry('u1', '你好', 5000),
+			assistantEntry('a1', { text: '嗨！', ts: 8000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].timestamp).toBe(8000);
+		expect(result[1].duration).toBe(3000);
+	});
+
 	test('user 消息提取 images', () => {
 		const entries = [
 			{

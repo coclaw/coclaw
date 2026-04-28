@@ -59,7 +59,7 @@ function groupSessionMessages(entries) {
 			if (!currentTask) {
 				currentTask = createBotTask(entry.id);
 			}
-			processAssistant(currentTask, msg);
+			processAssistant(currentTask, msg, entry);
 			currentTask._pending = currentTask._pending || !!entry._pending;
 			if (entry._streaming) {
 				currentTask.isStreaming = true;
@@ -120,8 +120,9 @@ function createBotTask(id) {
  * 处理 assistant 条目，更新 botTask。
  * @param {object} task
  * @param {object} msg
+ * @param {object} [entry] - 完整 JSONL 行，用于读取顶层 timestamp（落盘时刻）
  */
-function processAssistant(task, msg) {
+function processAssistant(task, msg, entry) {
 	const content = msg.content;
 	const blocks = normalizeBlocks(content);
 	const isFinal = !!msg.stopReason && msg.stopReason !== 'toolUse';
@@ -155,12 +156,28 @@ function processAssistant(task, msg) {
 	}
 
 	// 更新 model/timestamp（以最后一个 assistant 为准）
+	// 优先用顶层 timestamp（entry 落盘时刻 ≈ 消息真正写完）；fallback message.timestamp
+	// 区别：message.timestamp 是该消息开头发起的时刻，不含本段自己的生成耗时——
+	// 对最末段而言这会丢掉最终回复自己的输出耗时。
 	if (msg.model) {
 		task.model = msg.model;
 	}
-	if (msg.timestamp) {
-		task.timestamp = msg.timestamp;
+	const endMs = parseEntryTimestamp(entry) ?? msg.timestamp;
+	if (endMs) {
+		task.timestamp = endMs;
 	}
+}
+
+/** 解析 entry 顶层 timestamp 为 ms；支持 ISO 字符串与数字 */
+function parseEntryTimestamp(entry) {
+	const t = entry?.timestamp;
+	if (t == null) return null;
+	if (typeof t === 'number' && Number.isFinite(t)) return t;
+	if (typeof t === 'string') {
+		const ms = Date.parse(t);
+		return Number.isFinite(ms) ? ms : null;
+	}
+	return null;
 }
 
 /**
