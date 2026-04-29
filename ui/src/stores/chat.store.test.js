@@ -8,6 +8,7 @@ if (!URL.revokeObjectURL) URL.revokeObjectURL = () => {};
 import { createChatStore } from './chat.store.js';
 import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
 import { useClawsStore, __resetAwaitingConnIds as __resetClawStoreInternals } from './claws.store.js';
+import { groupSessionMessages } from '../utils/session-msg-group.js';
 
 // 兼容旧测试：创建默认空 session store，可手动设置状态字段
 // 同一 Pinia 实例中多次调用返回同一 store（与原 useChatStore 行为一致）
@@ -30,11 +31,15 @@ vi.mock('../services/claw-connection-manager.js', () => ({
 	__resetClawConnections: vi.fn(),
 }));
 
-vi.mock('../utils/file-helper.js', () => ({
-	chatFilesDir: vi.fn().mockReturnValue('.coclaw/chat-files/main/2026-03'),
-	topicFilesDir: vi.fn().mockReturnValue('.coclaw/topic-files/topic-1'),
-	buildAttachmentBlock: vi.fn().mockReturnValue('## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| .coclaw/chat-files/main/2026-03/photo-a3f1.jpg | 200.0 KB |'),
-}));
+vi.mock('../utils/file-helper.js', async (importOriginal) => {
+	const actual = await importOriginal();
+	return {
+		...actual,
+		chatFilesDir: vi.fn().mockReturnValue('.coclaw/chat-files/main/2026-03'),
+		topicFilesDir: vi.fn().mockReturnValue('.coclaw/topic-files/topic-1'),
+		buildAttachmentBlock: vi.fn().mockReturnValue('## coclaw-attachments 🗂\n\n| Path | Size |\n|------|------|\n| .coclaw/chat-files/main/2026-03/photo-a3f1.jpg | 200.0 KB |'),
+	};
+});
 
 vi.mock('../services/file-transfer.js', () => ({
 	postFile: vi.fn(),
@@ -3812,6 +3817,168 @@ describe('useChatStore', () => {
 
 			// settled run 不做任何操作
 			expect(runsStore.runs['run-x'].streamingMsgs).toHaveLength(1);
+		});
+
+		// run 进行中点刷新触发的流式占位错位回归保护：
+		// 调 stripLocalUserMsgs 后 anchor 应升级到 server 的 user 消息上；
+		// allMessages 据此把 optimisticClaw 插到新 user 之后，
+		// groupSessionMessages 才能把 _streaming 落到当前轮 botTask 上，
+		// 不再走 ChatMsgItem.vue v-else 分支显示"任务未完成"。
+		test('run 进行中刷新：stripLocalUserMsgs 后 streamingMsgs 落在当前轮 botTask 上', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			// loadMessages 拉到的服务器 transcript：上一轮完整 + 当前 user 已落盘 + 中间 assistant
+			const serverMsgs = [
+				{
+					type: 'message', id: 'oc-u-1',
+					message: { role: 'user', content: [{ type: 'text', text: '上一个问题' }], timestamp: 1000 },
+				},
+				{
+					type: 'message', id: 'oc-a-1',
+					timestamp: 2000,
+					message: {
+						role: 'assistant',
+						content: [{ type: 'text', text: '上一轮的回答' }],
+						stopReason: 'end_turn',
+						model: 'gpt-5',
+						timestamp: 2000,
+					},
+				},
+				{
+					type: 'message', id: 'oc-u-2',
+					message: { role: 'user', content: [{ type: 'text', text: '当前问题' }], timestamp: 10000 },
+				},
+				// 中间 assistant entry：仅 thinking 块，未输出最终文本
+				{
+					type: 'message', id: 'oc-a-2',
+					timestamp: 26000,
+					message: {
+						role: 'assistant',
+						content: [{ type: 'thinking', thinking: '思考中...' }],
+						stopReason: null,
+						model: 'MiniMax-M2.7',
+						timestamp: 26000,
+					},
+				},
+			];
+			store.messages = serverMsgs;
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-misplaced';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				// send 时锚点指向上一轮 assistant final
+				anchorMsgId: 'oc-a-1',
+				ended: false,
+				cancelled: false,
+				streamingMsgs: [
+					{
+						type: 'message', id: '__local_user_x',
+						_local: true,
+						message: { role: 'user', content: '当前问题', timestamp: 9000 },
+					},
+					{
+						type: 'message', id: '__local_claw_x',
+						_local: true, _streaming: true, _startTime: 9500,
+						message: { role: 'assistant', content: '', stopReason: null },
+					},
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			// 模拟 loadMessages 触发 __reconcileRunAfterLoad
+			runsStore.stripLocalUserMsgs(runKey, serverMsgs);
+
+			// 锚点应升级到 server 的 user 消息（oc-u-2）上
+			expect(runsStore.runs[runId].anchorMsgId).toBe('oc-u-2');
+
+			// allMessages 把 optimisticClaw 插到 oc-u-2 之后
+			const merged = store.allMessages;
+			expect(merged.map((m) => m.id)).toEqual([
+				'oc-u-1', 'oc-a-1', 'oc-u-2', '__local_claw_x', 'oc-a-2',
+			]);
+
+			const items = groupSessionMessages(merged);
+			const botTasks = items.filter((i) => i.type === 'botTask');
+			expect(botTasks).toHaveLength(2);
+
+			// 上一轮 botTask：完整 final，无流式标记
+			const [prevBot, currBot] = botTasks;
+			expect(prevBot.resultText).toBe('上一轮的回答');
+			expect(prevBot.isStreaming).toBe(false);
+
+			// 当前 botTask：optimisticClaw 落在这一组 → isStreaming=true → 不会渲染"任务未完成"
+			expect(currBot.isStreaming).toBe(true);
+		});
+
+		// 边界场景：activate 失败留下 messages=[] → send 时 anchorMsgId=null，
+		// 用户刷新成功拉回完整 transcript（含远古历史）。
+		// 此分支不能把 anchor 升到 server 第一条 user（那是远古），保持 null 走末尾追加。
+		test('无锚点 + 历史场景刷新：optimisticClaw 末尾追加，当前轮 botTask isStreaming=true', () => {
+			const store = useChatStore();
+			store.chatSessionKey = 'agent:main:main';
+
+			const serverMsgs = [
+				{ type: 'message', id: 'old-u', message: { role: 'user', content: '远古问题', timestamp: 1000 } },
+				{
+					type: 'message', id: 'old-a',
+					timestamp: 2000,
+					message: { role: 'assistant', content: [{ type: 'text', text: '远古回答' }], stopReason: 'end_turn', timestamp: 2000 },
+				},
+				{ type: 'message', id: 'curr-u', message: { role: 'user', content: '当前问题', timestamp: 8000 } },
+				{
+					type: 'message', id: 'curr-a-mid',
+					timestamp: 12000,
+					message: { role: 'assistant', content: [{ type: 'thinking', thinking: '思考中...' }], stopReason: null, model: 'gpt-5', timestamp: 12000 },
+				},
+			];
+			store.messages = serverMsgs;
+
+			const runsStore = useAgentRunsStore();
+			const runId = 'run-no-anchor-with-history';
+			const runKey = store.runKey;
+			runsStore.runs[runId] = {
+				runId,
+				runKey,
+				anchorMsgId: null, // activate 失败遗留
+				ended: false,
+				cancelled: false,
+				streamingMsgs: [
+					{
+						type: 'message', id: '__local_user_x',
+						_local: true,
+						message: { role: 'user', content: '当前问题' },
+					},
+					{
+						type: 'message', id: '__local_claw_x',
+						_local: true, _streaming: true,
+						message: { role: 'assistant', content: '', stopReason: null },
+					},
+				],
+			};
+			runsStore.runKeyIndex[runKey] = runId;
+
+			runsStore.stripLocalUserMsgs(runKey, serverMsgs);
+
+			// anchor 不被错误升级到 'old-u'
+			expect(runsStore.runs[runId].anchorMsgId).toBeNull();
+
+			// allMessages 走末尾追加：optimisticClaw 在 transcript 末尾
+			const merged = store.allMessages;
+			expect(merged.map((m) => m.id)).toEqual([
+				'old-u', 'old-a', 'curr-u', 'curr-a-mid', '__local_claw_x',
+			]);
+
+			const botTasks = groupSessionMessages(merged).filter((i) => i.type === 'botTask');
+			expect(botTasks).toHaveLength(2);
+			const [oldBot, currBot] = botTasks;
+			expect(oldBot.resultText).toBe('远古回答');
+			expect(oldBot.isStreaming).toBe(false);
+			// 当前 botTask：mid_assistant + optimisticClaw 都进这一组，_streaming 落到位
+			expect(currBot.isStreaming).toBe(true);
 		});
 	});
 

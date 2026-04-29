@@ -483,6 +483,134 @@ describe('useAgentRunsStore', () => {
 
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
+			// 锚点找不到时不升级；allMessages 会 fallback 到末尾追加
+			expect(store.runs['run-1'].anchorMsgId).toBe('anchor-gone');
+		});
+
+		test('strip 同时把 anchorMsgId 升级到 server 那条 user 消息', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = 'anchor-1';
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			const serverMsgs = [
+				{ id: 'old-1', message: { role: 'user', content: '旧消息' } },
+				{ id: 'anchor-1', message: { role: 'assistant', content: '旧回复' } },
+				{ id: 'new-user-1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+				{ id: 'new-asst-1', message: { role: 'assistant', content: '思考中...' } },
+			];
+
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
+
+			expect(store.runs['run-1'].anchorMsgId).toBe('new-user-1');
+		});
+
+		test('多条 user 消息时 anchor 升到锚点后第一条', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = 'anchor-1';
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			const serverMsgs = [
+				{ id: 'anchor-1', message: { role: 'assistant', content: '旧回复' } },
+				{ id: 'first-user', message: { role: 'user', content: '本次发送' } },
+				{ id: 'mid-asst', message: { role: 'assistant', content: '思考中...' } },
+				{ id: 'second-user', message: { role: 'user', content: '后续手动追加' } },
+			];
+
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
+
+			// 锚点应升到第一条匹配的 user，而非后续的 user
+			expect(store.runs['run-1'].anchorMsgId).toBe('first-user');
+		});
+
+		test('无锚点 → strip 但 anchor 保持 null（让 allMessages 走末尾追加）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = null;
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			const serverMsgs = [
+				{ id: 'first-user', message: { role: 'user', content: 'hi' } },
+				{ id: 'first-asst', message: { role: 'assistant', content: '回复中...' } },
+			];
+
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
+
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+			// 无锚点不能升级——既包含真正的"首条消息"，也可能是 activate 失败导致 messages=[]
+			// 时遗留的状态（此时 server 第一条 user 是远古历史，升级会错位）。
+			expect(store.runs['run-1'].anchorMsgId).toBeNull();
+		});
+
+		test('无锚点 + server 已有更老历史：strip 后 anchor 仍为 null，allMessages 末尾追加 → 当前轮 botTask isStreaming=true', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = null;
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: '当前发送' } },
+				{
+					id: 'b1', _local: true, _streaming: true,
+					message: { role: 'assistant', content: '', stopReason: null },
+				},
+			];
+			// 模拟 activate 失败 + 用户发消息 + 刷新成功 拉到的完整 transcript
+			const serverMsgs = [
+				{ type: 'message', id: 'old-u-1', message: { role: 'user', content: '远古问题', timestamp: 1000 } },
+				{
+					type: 'message', id: 'old-a-1',
+					timestamp: 2000,
+					message: { role: 'assistant', content: [{ type: 'text', text: '远古回答' }], stopReason: 'end_turn', timestamp: 2000 },
+				},
+				{ type: 'message', id: 'curr-u', message: { role: 'user', content: '当前发送', timestamp: 8000 } },
+				{
+					type: 'message', id: 'curr-a-mid',
+					timestamp: 12000,
+					message: { role: 'assistant', content: [{ type: 'thinking', thinking: '思考中...' }], stopReason: null, timestamp: 12000 },
+				},
+			];
+
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
+
+			// 关键不变量：anchor 保持 null，避免被错误升到 'old-u-1'
+			expect(store.runs['run-1'].anchorMsgId).toBeNull();
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+			expect(store.runs['run-1'].streamingMsgs[0].id).toBe('b1');
+		});
+
+		test('同 run 期内重复调用幂等：第二次早返回，anchor 不再变动', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.runs['run-1'].anchorMsgId = 'anchor-1';
+			store.runs['run-1'].streamingMsgs = [
+				{ id: 'u1', _local: true, message: { role: 'user', content: 'hi' } },
+				{ id: 'b1', _local: true, _streaming: true, message: { role: 'assistant', content: '' } },
+			];
+			const serverMsgs = [
+				{ id: 'anchor-1', message: { role: 'assistant', content: '旧回复' } },
+				{ id: 'new-user-1', message: { role: 'user', content: 'hi' } },
+			];
+
+			store.stripLocalUserMsgs('1::agent:main:main', serverMsgs);
+			expect(store.runs['run-1'].anchorMsgId).toBe('new-user-1');
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
+
+			// 第二次调用：streamingMsgs 已无 _local user → 早 return；anchor 与 streamingMsgs 都不变动
+			// 即便有人后续在 server 末尾追加更多 user 消息也不应再次推进 anchor
+			const refreshed = [
+				...serverMsgs,
+				{ id: 'asst-mid', message: { role: 'assistant', content: '思考中...' } },
+				{ id: 'unrelated-user', message: { role: 'user', content: 'race-追加' } },
+			];
+			store.stripLocalUserMsgs('1::agent:main:main', refreshed);
+			expect(store.runs['run-1'].anchorMsgId).toBe('new-user-1');
+			expect(store.runs['run-1'].streamingMsgs).toHaveLength(1);
 		});
 
 		test('无 _local user 消息时 streamingMsgs 不变', () => {

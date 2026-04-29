@@ -491,6 +491,9 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		/**
 		 * 去除 streamingMsgs 中的乐观 user 消息——基于锚点范围的存在性判断：
 		 * 仅当 server 数据在 anchorMsgId 之后已出现 user message 时才 strip。
+		 * 同时把 anchorMsgId 升级到 server 那条 user message 上，避免后续 allMessages
+		 * 把残留的 optimisticClaw 错位插到新 user 之前（→ groupSessionMessages 会让
+		 * 当前轮 botTask 缺失 _streaming 标记 → 渲染为"任务未完成"）。
 		 * @param {string} runKey
 		 * @param {object[]} serverMessages - loadMessages 返回的服务端消息
 		 */
@@ -503,7 +506,12 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 
 			const anchorId = run.anchorMsgId;
 			let serverHasUserMsg;
+			let firstUserAfterAnchor = null;
 			if (!anchorId) {
+				// 无锚点的两种语义：(a) 真正的"首条消息"；(b) register 前 messages=[]（如 activate 失败）。
+				// (a) 下 server 第一条 user 就是当次 user；(b) 下却是远古历史 user，升级会让
+				// optimisticClaw 锚到错位。这里不升级 anchor，由 allMessages 的"无 anchor → 末尾追加"
+				// 兜底分支（对 (a)(b) 都成立）渲染。
 				serverHasUserMsg = serverMessages.some((m) => m.message?.role === 'user');
 			} else {
 				let anchorIdx = -1;
@@ -511,9 +519,16 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 					if (serverMessages[i].id === anchorId) { anchorIdx = i; break; }
 				}
 				if (anchorIdx === -1) {
+					// 锚点被分页截断 → 视为已持久化；allMessages 因找不到 anchor 会 fallback 到末尾追加
 					serverHasUserMsg = true;
 				} else {
-					serverHasUserMsg = serverMessages.slice(anchorIdx + 1).some((m) => m.message?.role === 'user');
+					for (let i = anchorIdx + 1; i < serverMessages.length; i++) {
+						if (serverMessages[i].message?.role === 'user') {
+							firstUserAfterAnchor = serverMessages[i];
+							break;
+						}
+					}
+					serverHasUserMsg = !!firstUserAfterAnchor;
 				}
 			}
 			if (!serverHasUserMsg) return;
@@ -528,7 +543,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 						if (att.url) URL.revokeObjectURL(att.url);
 					}
 				}
-				this.runs[runId] = { ...run, streamingMsgs: filtered };
+				const nextAnchor = firstUserAfterAnchor?.id ?? anchorId;
+				this.runs[runId] = { ...run, streamingMsgs: filtered, anchorMsgId: nextAnchor };
 			}
 		},
 
