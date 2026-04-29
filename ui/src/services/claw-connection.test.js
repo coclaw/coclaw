@@ -485,7 +485,7 @@ describe('ClawConnection – request() 通过 DataChannel 发送', () => {
 		expect(sent.type).toBe('req');
 		expect(sent.method).toBe('ping.me');
 		expect(sent.params).toEqual({ x: 1 });
-		expect(sent.id).toMatch(/^ui-/);
+		expect(sent.id).toMatch(/^ui-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\d+$/);
 		conn.__onRtcMessage({ type: 'res', id: sent.id, ok: true, payload: { result: 42 } });
 		const res = await p;
 		expect(res).toEqual({ result: 42 });
@@ -514,6 +514,37 @@ describe('ClawConnection – request() 通过 DataChannel 发送', () => {
 		const id1 = mockRtc.send.mock.calls[0][0].id;
 		const id2 = mockRtc.send.mock.calls[1][0].id;
 		expect(id1).not.toBe(id2);
+	});
+
+	test('同一连接内多次发请求共用 uuid 前缀，counter 单调递增', () => {
+		const { conn, mockRtc } = makeRtcReady();
+		conn.request('a').catch(() => {});
+		conn.request('b').catch(() => {});
+		conn.request('c').catch(() => {});
+		const ids = mockRtc.send.mock.calls.map((c) => c[0].id);
+		const re = /^ui-([0-9a-f-]{36})-(\d+)$/;
+		const parsed = ids.map((id) => {
+			const m = re.exec(id);
+			expect(m).not.toBeNull();
+			return { uuid: m[1], counter: Number(m[2]) };
+		});
+		expect(parsed[0].uuid).toBe(parsed[1].uuid);
+		expect(parsed[1].uuid).toBe(parsed[2].uuid);
+		expect(parsed[1].counter).toBeGreaterThan(parsed[0].counter);
+		expect(parsed[2].counter).toBeGreaterThan(parsed[1].counter);
+	});
+
+	test('不同 ClawConnection 实例的 uuid 前缀不同（跨连接 reqId 唯一）', () => {
+		const a = makeRtcReady('botA');
+		const b = makeRtcReady('botB');
+		a.conn.request('m').catch(() => {});
+		b.conn.request('m').catch(() => {});
+		const re = /^ui-([0-9a-f-]{36})-\d+$/;
+		const uuidA = re.exec(a.mockRtc.send.mock.calls[0][0].id)?.[1];
+		const uuidB = re.exec(b.mockRtc.send.mock.calls[0][0].id)?.[1];
+		expect(uuidA).toBeTruthy();
+		expect(uuidB).toBeTruthy();
+		expect(uuidA).not.toBe(uuidB);
 	});
 
 	test('rtc.send() 失败时 reject RTC_SEND_FAILED', async () => {

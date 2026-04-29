@@ -43,6 +43,9 @@ export class ClawConnection {
 		// RPC pending
 		this.__pending = new Map();
 		this.__counter = 1;
+		// 每个 ClawConnection 实例共用一个 uuid 前缀，保证跨连接 reqId 唯一，
+		// 让插件端能按 reqId 把响应单播回发起方。详见 docs/designs/dc-rpc-response-unicast.md
+		this.__uuid = crypto.randomUUID();
 
 		// 事件监听
 		this.__listeners = new Map();
@@ -171,7 +174,7 @@ export class ClawConnection {
 				err.code = 'RTC_LOST';
 				return Promise.reject(err);
 			}
-			const id = `ui-${Date.now()}-${this.__counter++}`;
+			const id = `ui-${this.__uuid}-${this.__counter++}`;
 			return new Promise((resolve, reject) => {
 				const waiter = { resolve, reject, signal: null, onAbort: null };
 				if (options.onAccepted) waiter.onAccepted = options.onAccepted;

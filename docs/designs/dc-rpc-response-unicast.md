@@ -1,7 +1,8 @@
 ---
-status: 待实施
+status: UI Phase 1 已实施 / plugin Phase 2 待实施
 owner: UI + plugin/openclaw
 created: 2026-04-23
+updated: 2026-04-29
 ---
 
 # DC RPC 响应单播改造
@@ -141,18 +142,24 @@ const id = `ui-${Date.now()}-${this.__counter++}`;
 
 ### 4.1 id 生成规则
 
-文件：`ui/src/services/claw-connection.js:166`
+文件：`ui/src/services/claw-connection.js`
 
-- 现状：`ui-${Date.now()}-${counter}`（counter 是 `this.__counter++`，见
-  `claw-connection.js:45`）
-- 改为：`${uuid}-${counter}`
+- 旧格式：`ui-${Date.now()}-${counter}`（counter 是 `this.__counter++`）
+- 新格式：`ui-${uuid}-${counter}`
+  - `ui-` 前缀保留：与插件自发 RPC 的前缀（`coclaw-gw-*` / `coclaw-agent-*`，
+    事实 §2.6）形成统一命名约定，跨端日志可一眼识别请求来源。
   - `uuid`：`crypto.randomUUID()`，每个 ClawConnection 实例**构造时生成一次**保存到
-    `this.__uuid`，后续该连接的所有请求复用。
-  - `counter`：**沿用现有的 `this.__counter`**，逻辑不变，仅把前缀从
-    `ui-<毫秒时间戳>` 换成 UUID；调试时仍可通过 counter 识别同一连接内的请求顺序。
-- 分隔符用 `-`（事实 §2.1 的日志展示建议）。
+    `this.__uuid`，后续该连接的所有请求复用，保证跨连接 reqId 唯一。
+  - `counter`：**沿用现有的 `this.__counter`**，逻辑不变；调试时仍可通过 counter
+    识别同一连接内的请求顺序。
+- 分隔符用 `-`。
 
-示例：`550e8400-e29b-41d4-a716-446655440000-7`。
+示例：`ui-550e8400-e29b-41d4-a716-446655440000-7`。
+
+依赖说明：项目其他模块（`signaling-connection.js` 的 connId、`chat.store.js` 的
+idempotencyKey、`file-transfer.js` 等）已普遍使用 `crypto.randomUUID()`，无需引入
+`uuid` 依赖、也无需写 fallback——若浏览器不支持该 API，连 connId 都生成不出来，
+RPC 这一层做兼容是无意义的。
 
 实际改动：constructor 里加一行 `this.__uuid = crypto.randomUUID()`，`doSend` 里这
 一行改前缀。不动 counter、不动 `__pending` 结构、不动两阶段响应识别。
@@ -361,8 +368,8 @@ onSessionClose: (connId) => {
 
 | 路径 | 内容 |
 |------|------|
-| `ui/src/services/claw-connection.js:44-45, 166` | id 生成与 `__pending` Map |
-| `ui/src/services/claw-connection.js:250-296` | `__handleRpcResponse`（两阶段响应识别） |
+| `ui/src/services/claw-connection.js:44-48, 177` | id 生成与 `__pending` Map（含 `__uuid` 前缀） |
+| `ui/src/services/claw-connection.js:261-308` | `__handleRpcResponse`（两阶段响应识别） |
 
 ### 插件侧
 
