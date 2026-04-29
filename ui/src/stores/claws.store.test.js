@@ -3285,7 +3285,7 @@ describe('dcReady 响应式标记', () => {
 		expect(store.byId['1'].retryNextAt).toBe(0);
 	});
 
-	test('__rtcCallbacks: failed/closed 时 dcReady 置为 false，设置 disconnectedAt 和 rtcPhase', () => {
+	test('__rtcCallbacks: 被动 failed/closed（非主动 init 期间）→ dcReady=false + disconnectedAt + rtcPhase=failed', () => {
 		const store = useClawsStore();
 		store.applySnapshot([{ id: '1', name: 'A', online: true }]);
 		store.byId['1'].dcReady = true;
@@ -3305,6 +3305,60 @@ describe('dcReady 响应式标记', () => {
 		expect(store.byId['1'].dcReady).toBe(false);
 		expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
 		expect(store.byId['1'].rtcPhase).toBe('failed');
+	});
+
+	test('__rtcCallbacks: 主动 init 期间收到 closed/failed → 不覆盖 rtcPhase、不排重试，仅写 dcReady/disconnectedAt/peerTransport', async () => {
+		// 防止 spinner 在 rebuild 中途被同步 closed 回调误熄、UI 闪 unreachable 的关键修复。
+		// 触发条件：__ensureRtc 持 _rtcInitInProgress=true 期间，closeRtcForClaw 同步触发的
+		// onStateChange('closed') 或 await 中底层 fail 的回调，都不应把 phase 写回 'failed'。
+		const store = useClawsStore();
+		const fakeRtc = { state: 'connected', isReady: true, probe: vi.fn() };
+		const fakeConn = {
+			on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
+			rtc: fakeRtc, request: vi.fn().mockResolvedValue({}),
+		};
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.setClaws([{ id: '1', name: 'A', online: true }]);
+		store.byId['1'].initialized = true;
+		store.byId['1'].dcReady = true;
+		store.byId['1'].rtcPhase = 'ready';
+		store.byId['1'].rtcPeerTransportInfo = { candidateType: 'host' };
+		store.__bridgeConn('1');
+
+		// 让 initRtc 挂住 → __ensureRtc 持锁不返回，模拟 await 期间
+		let resolveInit;
+		mockInitRtc.mockImplementation(() => new Promise((r) => { resolveInit = r; }));
+		const p = store.__ensureRtc('1', { forceRebuild: true });
+
+		// 入口已写 phase='recovering'（forceRebuild 路径）
+		expect(store.byId['1'].rtcPhase).toBe('recovering');
+
+		// 主动 init 期间触发 closed 回调（模拟 closeRtcForClaw 同步 fire）
+		const cbs = store.__rtcCallbacks('1');
+		cbs.onRtcStateChange('closed', null);
+
+		// phase 不被覆盖，仍是入口设的 'recovering'（spinner 持续）
+		expect(store.byId['1'].rtcPhase).toBe('recovering');
+		// 但 dcReady、disconnectedAt、peerTransport 仍按真实状态写
+		expect(store.byId['1'].dcReady).toBe(false);
+		expect(store.byId['1'].disconnectedAt).toBeGreaterThan(0);
+		expect(store.byId['1'].rtcPeerTransportInfo).toBe(null);
+		// 重试不被排（phase 未到 failed，retryNextAt 维持 0）
+		expect(store.byId['1'].retryNextAt).toBe(0);
+
+		// 同样：主动 init 期间触发 failed 回调，phase 也不应被覆盖
+		store.byId['1'].rtcPhase = 'recovering';
+		cbs.onRtcStateChange('failed', null);
+		expect(store.byId['1'].rtcPhase).toBe('recovering');
+		expect(store.byId['1'].retryNextAt).toBe(0);
+
+		// 收尾：让 init 走"失败 → 收尾路径显式写 phase='failed' + 排重试"分支
+		resolveInit('failed');
+		await p;
+		// init 收尾后 _rtcInitInProgress 已释放，最终 phase=failed + retryNextAt > 0（被动语义恢复）
+		expect(store.byId['1'].rtcPhase).toBe('failed');
+		expect(store.byId['1'].retryNextAt).toBeGreaterThan(0);
 	});
 
 	test('__rtcCallbacks: failed/closed 时清空 rtcPeerTransportInfo（新连接会重新推送）', () => {

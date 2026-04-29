@@ -862,11 +862,15 @@ export const useClawsStore = defineStore('claws', {
 					} else if (state === 'failed' || state === 'closed') {
 						claw.dcReady = false;
 						claw.disconnectedAt = Date.now();
-						claw.rtcPhase = 'failed';
 						// plugin 侧 transport 信息失效；新连接建立后 plugin 会重新推送
 						claw.rtcPeerTransportInfo = null;
-						// 被动失败（非 __ensureRtc 主动管理）→ 启动退避重试
+						// _rtcInitInProgress=true：本次 close/fail 由 __ensureRtc 主动 init 触发
+						// （入口 closeRtcForClaw 同步回调，或 await 期间被外部 close）。
+						// 此时 phase 由 init 入口（'building'/'recovering'）和收尾路径（'ready'/'failed'）
+						// 独占管理，回调不写 phase 也不排重试，避免 rebuild 中途 phase 被同步回调
+						// 写回 'failed' 导致 spinner 误熄、UI 短暂闪 unreachable warning。
 						if (!_rtcInitInProgress.get(clawId)) {
+							claw.rtcPhase = 'failed';
 							this.__scheduleRetry(clawId);
 						}
 					}
@@ -1006,14 +1010,16 @@ export const useClawsStore = defineStore('claws', {
 						if (result === 'rtc') {
 							// 成功后门翻转：必须 close 已建出的 rtc。
 							// `closeRtcForClaw` 同步调 `rtc.close()` → `__setState('closed')` →
-							// 触发 `__rtcCallbacks.onRtcStateChange('closed')` → 写 `rtcPhase='failed'` +
-							// `disconnectedAt=Date.now()`。对 offline bail，这是期望语义（online→true
-							// 走 rebuild）；对 sig_offline bail，违反"sig 是环境故障，不污染 DC 生命周期
-							// 与 unreachable 标记"设计意图——rtcPhase 和 disconnectedAt 都需 snapshot + restore，
-							// 避免 sig 恢复后 gap-aware refresh 因虚假的 disconnectedAt 误判短断跳过刷新。
-							// removed bail 下 cur=null，不受影响。
-							// replaced bail 下 cur 是**新** claw 对象，不应被旧 await 的成功结果污染：
-							// 既不读 prevRtcPhase（旧值无意义）也不写新 claw 任何字段，仅纯回收旧 conn 的 rtc。
+							// 触发 `__rtcCallbacks.onRtcStateChange('closed')`：因 `_rtcInitInProgress=true`
+							// 命中 gate，回调不写 `rtcPhase`、不排重试，仅写 `dcReady=false` +
+							// `disconnectedAt=Date.now()` + 清 peerTransport。
+							// - offline bail：phase 由下方 bail 分支显式写 'failed'（online→true 走 rebuild）
+							// - sig_offline bail：disconnectedAt 仍需 snapshot + restore，避免 sig 恢复后
+							//   gap-aware refresh 因虚假的 stamp 误判短断跳过刷新。rtcPhase 因 gate 已不被
+							//   覆盖，restore 退化为 no-op，但保留以表达"不污染 phase"意图
+							// - removed bail：cur=null，不受影响
+							// - replaced bail：cur 是**新** claw 对象，不应被旧 await 的成功结果污染——
+							//   既不读 prevRtcPhase 也不显式 restore，仅纯回收旧 conn.rtc
 							if (postBailReason === 'replaced') {
 								closeRtcForClaw(id);
 								conn.clearRtc();
