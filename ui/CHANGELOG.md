@@ -1,5 +1,37 @@
 # @coclaw/ui
 
+## 0.18.0
+
+### Minor Changes
+
+- db9e3ab: Replace the PC rebuild retry budget from "3-attempt inner loop + 5-round exponential backoff (~93s total)" with a "5-minute time window + fixed 10s cooldown + single build per attempt" model. Drops exponential backoff entirely and removes the `MAX_BACKOFF_RETRIES` export (in favor of new `RETRY_WINDOW_MS` / `RETRY_COOLDOWN_MS`).
+
+  The previous model exhausted its budget within ~93s, while real openclaw gateway restarts often take 1–3 minutes. Affected claws ended up flagged as `unreachable` and required a manual retry. The new window-based budget rides the entire restart period at a steady 10s cadence and only gives up after 5 minutes of continuous failure.
+
+  `__ensureRtc`'s back-to-back inner loop is collapsed to a single build to honor the fixed-cooldown intent (back-to-back builds were also a contributor to the offer storms observed during gateway restarts). The post-await gate recheck now covers both success and failure paths, preserving the original "loop-second-iteration breaks on gate flip" semantics. UI labels (`ManageClawsPage` / `ChatPage`) and i18n strings drop the obsolete `{n}/{max}` retry counter format.
+
+### Patch Changes
+
+- 313fc69: Emit remote diagnostic logs at every agent run termination point. `__endRun` now reports `agent.run.end runId=... reason=...` for all 10 reasons (`rpc` / `lifecycle` / `wait` / `failed` / `timeout` / `manual` / `superseded` / `claw-removed` / `logout` / `cleanup`); `dropRun` reports `agent.run.drop` when streaming placeholders are actually released; `register` reports `agent.run.preempt` linking the new and old runId when a same-runKey old run is superseded. This closes the observability gap (signals 1, 3, 5, 6 previously emitted no remote log), so when "task incomplete" is misjudged we can pinpoint which path drove the run-end from server logs alone.
+- 508572e: Stop spurious "plugin outdated" toast on first message in a new topic. The previous design re-probed `coclaw.info` after RTC reconnect to re-confirm the plugin version, but a transient RPC reject (timeout / DC blip) was conflated with "plugin too old" and pinned the version flag with no recovery path. The watchdog is removed entirely; plugin version is now read from the `coclaw.info.updated` event the plugin already pushes, plus a best-effort `coclaw.info` fetch in `__fullInit` as a startup baseline (failures never alter `pluginInfo`).
+- e942e54: Fix `rtcPhase` being momentarily clobbered to `'failed'` during active RTC init.
+
+  `__ensureRtc`'s entry path sets `rtcPhase` to `'building'` / `'recovering'`, then synchronously calls `closeRtcForClaw()` to tear down the previous RTC. The synchronous teardown fires `onStateChange('closed')`, whose store callback unconditionally wrote `rtcPhase = 'failed'`, overwriting the entry value. Since `_rtcInitInProgress` was set, no retry was scheduled — leaving `rtcPhase='failed' && retryNextAt===0`, which `unreachableClaws` matches. The UI thus briefly flashed an unreachable warning during every PC rebuild before the final `'connected'` callback restored `'ready'`.
+
+  The fix tightens the existing `_rtcInitInProgress` guard so the `failed/closed` callback skips both `rtcPhase` writes **and** retry scheduling during active init. `dcReady`, `disconnectedAt`, and `rtcPeerTransportInfo` are still written (they reflect real DC state). Phase remains exclusively managed by `__ensureRtc`'s entry / completion / bail dispatch.
+
+  Three UI surfaces benefit without code changes — the existing `rtcPhase`-driven reactive state now stays accurate end-to-end:
+
+  - `MainList` mobile header: spinner stays on throughout rebuild instead of flashing unreachable warning
+  - `ChatPage` connection banner: shows `connRecovering` / `connBuilding` instead of briefly flashing `connRetryExhausted`
+  - `ManageClawsPage` connection dot: stays in connecting color instead of briefly flashing red
+
+- f8f83f0: Use a uuid-based prefix for DC RPC request ids so they are unique across `ClawConnection` instances.
+
+  Each `ClawConnection` now generates one `crypto.randomUUID()` at construction time and reuses it as the prefix for every RPC sent over its rpc DataChannel. The new id format is `ui-<uuid>-<counter>` (was `ui-<Date.now()>-<counter>`), where `counter` is still the per-connection monotonic sequence kept for log readability. Same-instance ids share the uuid; cross-instance ids never collide, even when multiple tabs open simultaneously and start their counters from 1.
+
+  This is Phase 1 of the unicast change documented in `docs/designs/dc-rpc-response-unicast.md`. Phase 2 will land in `@coclaw/openclaw-coclaw`, which will use the now-unique reqId to record `reqId → connId` and unicast gateway-forwarded RPC responses back to the originating peer instead of broadcasting them to every connected UI. Until that plugin change ships, behavior is unchanged on the wire — the plugin does not parse the id format, so old plugins remain fully compatible with the new UI.
+
 ## 0.17.7
 
 ### Patch Changes
