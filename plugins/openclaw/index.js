@@ -125,11 +125,34 @@ function respondError(respond, err) {
 function respondInvalid(respond, message) {
 	respond(false, undefined, { code: 'INVALID_INPUT', message });
 }
+/* c8 ignore stop */
+
 const plugin = {
 	id: 'openclaw-coclaw',
 	name: 'CoClaw',
 	description: 'OpenClaw CoClaw channel plugin for remote chat',
 	register(api) {
+		// 按 OpenClaw SDK 入口模式分叉（参照 defineChannelPluginEntry，见上游 plugin-sdk/core.ts 的
+		// defineChannelPluginEntry 实现 与 docs/plugins/sdk-entrypoints.md）：
+		// - cli-metadata 模式：仅声明根命令名供根 CLI 解析使用
+		// - 其他模式：注册 channel + CLI 元信息（discovery 下两者由 captured-registration 采集）
+		// - 仅 full 模式跑完整副作用（service / RPC / hook / command / managers / 磁盘 IO）
+		//
+		// 与上游 helper 的刻意偏差：上游 helper 在所有非 cli-metadata 模式下都调
+		// setRuntime?.(api.runtime)，但 discovery 传入的 api.runtime 是空对象 {}，每 14s
+		// 一次会把全局 runtime 单例擦掉。本实现把 setRuntime 严格限定在 full 模式，避免擦除。
+		const mode = api.registrationMode;
+		if (mode === 'cli-metadata') {
+			api.registerCli(registerCoclawCli, { commands: ['coclaw'] });
+			return;
+		}
+		api.registerChannel({ plugin: coclawChannelPlugin });
+		api.registerCli(registerCoclawCli, { commands: ['coclaw'] });
+		// 本插件 package.json 无 setupEntry，setup-only/setup-runtime 实际不会到达主 register；
+		// 保留兜底防御上游模型变化。`mode !== 'full'` 也覆盖 discovery（每 14s 一次）
+		if (mode !== 'full') return;
+
+		/* c8 ignore start */
 		setRuntime(api.runtime);
 		const logger = api?.logger ?? console;
 		installAbortRegistryDiag(logger);
@@ -144,8 +167,6 @@ const plugin = {
 		chatHistoryManager.load('main').catch((err) => {
 			logger.warn?.(`[coclaw] chat history manager load failed: ${String(err?.message ?? err)}`);
 		});
-
-		api.registerChannel({ plugin: coclawChannelPlugin });
 
 		// 追踪 chat 因 reset 产生的孤儿 session
 		if (typeof api.on === 'function') {
@@ -621,8 +642,6 @@ const plugin = {
 			start() { scheduler.start(); },
 			stop() { scheduler.stop(); },
 		});
-
-		api.registerCli(registerCoclawCli, { commands: ['coclaw'] });
 
 		api.registerCommand({
 			name: 'coclaw',

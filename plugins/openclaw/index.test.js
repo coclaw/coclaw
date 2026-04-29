@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 
 import plugin, { __resetPluginVersion } from './index.js';
 import { createMockServer } from './src/mock-server.helper.js';
-import { setRuntime } from './src/runtime.js';
+import { setRuntime, getRuntime } from './src/runtime.js';
 import { stopRealtimeBridge } from './src/realtime-bridge.js';
 import { __reset as __resetRemoteLogPlugin, __buffer as __remoteLogBuffer } from './src/remote-log.js';
 
@@ -20,9 +20,10 @@ after(async () => {
 	} catch { /* ndc 未安装则无需 cleanup */ }
 });
 
-/** 构造包含 runtime mock 的最小 api 对象 */
+/** 构造包含 runtime mock 的最小 api 对象（默认 full 模式，触发完整 register 副作用） */
 function createMockApi(handlers, extras = {}) {
 	return {
+		registrationMode: 'full',
 		pluginConfig: {},
 		runtime: {
 			config: { loadConfig: () => ({}) },
@@ -49,6 +50,7 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 
 	const serviceSpecs = [];
 	plugin.register({
+		registrationMode: 'full',
 		pluginConfig: {},
 		runtime: {
 			config: { loadConfig: () => ({}) },
@@ -398,6 +400,7 @@ test('command handler should cover help/unknown/error/success paths', async () =
 	const mock = await createMockServer();
 	try {
 		plugin.register({
+			registrationMode: 'full',
 			pluginConfig: { serverUrl: mock.baseUrl, defaultName: 'd1' },
 			logger: { warn() {}, error() {} },
 			registerChannel() {},
@@ -428,6 +431,7 @@ test('command handler should cover help/unknown/error/success paths', async () =
 		await fs.writeFile(corruptPath, '{bad', 'utf8');
 		const svcs = [];
 		plugin.register({
+			registrationMode: 'full',
 			pluginConfig: { serverUrl: mock.baseUrl },
 			logger: { warn() {}, error() {}, log() {} },
 			registerChannel() {},
@@ -974,4 +978,132 @@ test('coclaw.agent.abort skips remoteLog for invalid sessionId', () => {
 	});
 	const rel = __remoteLogBuffer.filter((r) => r.text.startsWith('abort.success') || r.text.startsWith('abort.not-supported'));
 	assert.equal(rel.length, 0);
+});
+
+// --- registrationMode 分叉：cli-metadata / discovery / setup-runtime / full ---
+
+/**
+ * 构造一个全 spy 的 api，记录每个 register* / on / setRuntime 的调用次数。
+ * 不传 runtime（discovery 真实形态就是 runtime={}），让 mode 分叉壳子在缺 runtime 时也能跑。
+ */
+function createSpyApi(mode) {
+	const calls = {
+		channel: 0,
+		cli: 0,
+		command: 0,
+		service: 0,
+		gatewayMethod: 0,
+		on: 0,
+	};
+	const handlers = new Map();
+	const api = {
+		registrationMode: mode,
+		pluginConfig: {},
+		runtime: {
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
+		},
+		logger: { info() {}, warn() {}, error() {}, log() {} },
+		registerChannel() { calls.channel += 1; },
+		registerCli() { calls.cli += 1; },
+		registerCommand() { calls.command += 1; },
+		registerService() { calls.service += 1; },
+		registerGatewayMethod(name, handler) { calls.gatewayMethod += 1; handlers.set(name, handler); },
+		on() { calls.on += 1; },
+	};
+	return { api, calls, handlers };
+}
+
+// 锁定"setRuntime 仅在 full 模式调用"刻意偏差行为：
+// 非 full 模式下 register 不应覆盖全局 runtime 单例，避免每 14s 一次的 discovery
+// 把空对象塞进单例。本助手在每个非 full case 起手将单例置为已知哨兵，register 后断言哨兵不变。
+const RUNTIME_SENTINEL = { __sentinel: 'discovery-must-not-overwrite' };
+
+test('register cli-metadata mode: only registers CLI commands, no other side effects', () => {
+	setRuntime(RUNTIME_SENTINEL);
+	const { api, calls, handlers } = createSpyApi('cli-metadata');
+	plugin.register(api);
+	assert.equal(calls.cli, 1);
+	assert.equal(calls.channel, 0);
+	assert.equal(calls.command, 0);
+	assert.equal(calls.service, 0);
+	assert.equal(calls.gatewayMethod, 0);
+	assert.equal(calls.on, 0);
+	assert.equal(handlers.size, 0);
+	// runtime 单例不被覆盖
+	assert.equal(getRuntime(), RUNTIME_SENTINEL);
+});
+
+test('register discovery mode: only registers channel + CLI, no full side effects', () => {
+	setRuntime(RUNTIME_SENTINEL);
+	const { api, calls, handlers } = createSpyApi('discovery');
+	plugin.register(api);
+	// 上游 helper 行为：discovery 模式下 channel + cli 都参与 capture
+	assert.equal(calls.channel, 1);
+	assert.equal(calls.cli, 1);
+	// full 模式专属副作用一律不应触发
+	assert.equal(calls.command, 0);
+	assert.equal(calls.service, 0);
+	assert.equal(calls.gatewayMethod, 0);
+	assert.equal(calls.on, 0);
+	assert.equal(handlers.size, 0);
+	// runtime 单例不被覆盖（这是与上游 helper 的刻意偏差）
+	assert.equal(getRuntime(), RUNTIME_SENTINEL);
+});
+
+test('register setup-runtime mode: defensive bottom branch, equivalent to discovery', () => {
+	// 本插件 package.json 无 setupEntry，setup-runtime 实际不会到此；
+	// 此 case 验证防御兜底行为正确（与 discovery 等价：只 capture，不跑 full）
+	setRuntime(RUNTIME_SENTINEL);
+	const { api, calls, handlers } = createSpyApi('setup-runtime');
+	plugin.register(api);
+	assert.equal(calls.channel, 1);
+	assert.equal(calls.cli, 1);
+	assert.equal(calls.command, 0);
+	assert.equal(calls.service, 0);
+	assert.equal(calls.gatewayMethod, 0);
+	assert.equal(calls.on, 0);
+	assert.equal(handlers.size, 0);
+	assert.equal(getRuntime(), RUNTIME_SENTINEL);
+});
+
+test('register full mode: all expected side effects fire with exact RPC method set', () => {
+	const { api, calls, handlers } = createSpyApi('full');
+	plugin.register(api);
+	assert.equal(calls.channel, 1);
+	assert.equal(calls.cli, 1);
+	assert.equal(calls.command, 1);
+	assert.equal(calls.service, 2);
+	// session_start hook 注册
+	assert.equal(calls.on, 1);
+	// 精确锁定 RPC 方法集合：增删 method 时强制更新本测试，防止静默回归
+	const expectedMethods = [
+		'coclaw.bind',
+		'coclaw.unbind',
+		'coclaw.enroll',
+		'nativeui.sessions.listAll',
+		'nativeui.sessions.get',
+		'coclaw.info',
+		'coclaw.info.get',
+		'coclaw.info.patch',
+		'coclaw.topics.create',
+		'coclaw.topics.list',
+		'coclaw.topics.get',
+		'coclaw.topics.getHistory',
+		'coclaw.topics.update',
+		'coclaw.topics.generateTitle',
+		'coclaw.topics.delete',
+		'coclaw.chatHistory.list',
+		'coclaw.sessions.getById',
+		'coclaw.agent.abort',
+		'coclaw.upgradeHealth',
+		'coclaw.files.list',
+		'coclaw.files.delete',
+		'coclaw.files.mkdir',
+		'coclaw.files.create',
+	];
+	for (const m of expectedMethods) {
+		assert.ok(handlers.has(m), `expected RPC method "${m}" to be registered`);
+	}
+	assert.equal(calls.gatewayMethod, expectedMethods.length, `gatewayMethod call count should equal expected method set size`);
 });

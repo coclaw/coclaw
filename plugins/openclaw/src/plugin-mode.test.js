@@ -28,6 +28,7 @@ test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 
 	let handler = null;
 	plugin.register({
+		registrationMode: 'full',
 		pluginConfig: {
 			serverUrl: mock.baseUrl,
 		},
