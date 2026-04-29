@@ -44,7 +44,8 @@ before(async () => {
 });
 
 after(async () => {
-	await prisma.expressSession.deleteMany().catch(() => {});
+	// 不清空整张 ExpressSession 表：并发跑测试时会把其他进程的会话一起干掉
+	// 测试自身写入的会话靠 expiresAt 自然过期回收
 	for (const userId of createdUserIds) {
 		await prisma.user.delete({
 			where: { id: userId },

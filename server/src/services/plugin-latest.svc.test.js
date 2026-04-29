@@ -131,23 +131,27 @@ test('startPolling: 立即发起一次并按间隔持续轮询', async () => {
 		fetchFromSource,
 	});
 
-	// 首发：等两个微任务轮结束足够
-	await new Promise((r) => setImmediate(r));
-	await new Promise((r) => setImmediate(r));
-	assert.ok(calls >= 2, `首发应并行调用两源，实际 ${calls}`);
+	// 首发：等到缓存被刷为 3.0.0（按缓存而非 calls 判定，避免计数已加但缓存未刷的竞态）
+	const initDeadline = Date.now() + 1000;
+	while (getLatestPluginVersion() !== '3.0.0' && Date.now() < initDeadline) {
+		await new Promise((r) => setTimeout(r, 5));
+	}
 	assert.equal(getLatestPluginVersion(), '3.0.0');
+	assert.ok(calls >= 2, `首发应并行调用两源，实际 ${calls}`);
 
-	// 轮询：等至少一次 interval 触发（确定性轮询至 calls >= 4）
+	// 切换源版本，等下一轮 interval 触发并把缓存刷成新值
+	// 慢机器上首轮 interval 可能赶在切换前就开火（仍返回 3.0.0），故只能按缓存值等
 	current = '3.1.0';
+	const callsBefore = calls;
 	const deadline = Date.now() + 1000;
-	while (calls < 4 && Date.now() < deadline) {
+	while (getLatestPluginVersion() !== '3.1.0' && Date.now() < deadline) {
 		await new Promise((r) => setTimeout(r, 5));
 	}
 	stopPolling();
 	clearTimeout(keepAlive);
 
-	assert.ok(calls >= 4, `interval 应触发二次 fetch，实际 ${calls}`);
 	assert.equal(getLatestPluginVersion(), '3.1.0');
+	assert.ok(calls > callsBefore, `interval 应触发新一轮 fetch，实际 ${calls} 起点 ${callsBefore}`);
 	__test.reset();
 });
 
