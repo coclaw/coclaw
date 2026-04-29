@@ -185,3 +185,29 @@
     - 来源：commit 68d9f99 round 18 backlog
     - 现状：`manualRetryUnreachable` 是用户点"重试"按钮触发；sig 不通时仍会进入 retry 流程，看似无反应。UX 不友好
     - 修法：UX 层面在 sig offline 时 disable 按钮 + 提示文案；或 `manualRetryUnreachable` 入口加 sig gate + 反馈
+
+## "刷新触发流式占位错位" fix 多维度 review 发现的预存问题（2026-04-30）
+
+**关联 commit**：`807c300` fix(ui): advance streaming anchor on strip to keep refresh-during-run grouping correct
+
+来源：第 1 + 第 2 轮 codex-rescue 多维度并行 review。这两条均**自 55212ea (2026-04-06) 引入 anchorMsgId 起就存在**，本次 fix 只解了"必现 refresh"主路径，未触及这两条；非阻塞登记。
+
+30. **`!anchorId` 分支误 strip：当 server 返回历史 user 但当次 user 尚未持久化时，optimisticUser 被错误清掉**
+    - 现状：`agent-runs.store.js` `stripLocalUserMsgs` 的 no-anchor 分支用 `serverMessages.some((m) => m.message?.role === 'user')` 判定 server 是否已持久化当次 user。但这条只检查"server 有任意 user 消息"，无法区分"老历史 user"和"当次 user"
+    - 复现路径（窄但真实）：activate 失败 → `this.messages=[]` → 用户 send（anchor 计算为 null）→ 用户立刻刷新（赶在 OpenClaw 持久化 curr_user 前）→ server 仅返回 `[old_user, old_a]` → `some(user)` 命中 old_user → optimisticUser 被 strip → optimisticClaw 末尾追加，merge 进 old_a 的 botTask → **用户刚发的消息从 UI 消失，老对话戴上"思考中"**
+    - 触发条件较窄：activate 必须先失败（少见），用户必须立即送消息且立即刷新（罕见）
+    - 修复方向：
+        - 方案 A：no-anchor 分支额外校验"server 那条 user 是否在锚点时间窗口之后"——但需要时间戳，且 anchor 是 id，不直接可比
+        - 方案 B：在 `register` 时若 `anchorMsgId=null` 且 `optimisticUser.timestamp` 已知，记录一个 `runStartTs`；no-anchor strip 时只接受 `timestamp >= runStartTs` 的 server user
+        - 方案 C：彻底改 anchor 语义为"时间戳锚点"而非"id 锚点"，规模较大
+    - 必须配套补 chat.store + agent-runs.store 单元测试（"no-anchor + server 仅有历史 user 无 curr_user"场景）
+
+31. **`run.ended` 与 `getActiveRun.settled` 语义错位窗口：ended-but-not-dropped 期间 allMessages 仍合并 streamingMsgs**
+    - 现状：`stripLocalUserMsgs` 用 `run.ended` 早 return（agent-runs.store.js:501）；但 `chat.store.js` `allMessages` getter（135-156）只调 `getActiveRun(runKey)`，不显式查 `run.ended`。`getActiveRun` 用 `!run.settled` 过滤——若 `ended=true` 但 `settled` 还没翻或 `dropRun` 还没跑完，会有窗口让陈旧 streamingMsgs 仍被渲染
+    - 触发条件：endRun 之后、dropRun 之前的微秒级窗口；`__awaitPersistAndDrop` silent loadMessages 失败时（按 §"Bug 1 修复 review 后续"#16，dropRun 永远不跑）会被放大成长期问题
+    - 修复方向：
+        - 方案 A：在 `getActiveRun` 中加 `&& !run.ended` 过滤
+        - 方案 B：`allMessages` getter 显式 `run.ended` 检查
+        - 方案 C：endRun 时同步清空 streamingMsgs（治本但耦合 endRun 与 UI 渲染）
+    - 与 §"Bug 1 修复 review 后续"#16（silent loadMessages 失败永挂）合并修最经济
+    - 必须配套补单元测试：`run.ended=true && run.settled=false` 时 allMessages 不应合并 streamingMsgs
