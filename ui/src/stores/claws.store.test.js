@@ -947,10 +947,10 @@ describe('applySnapshot', () => {
 		resolveInit('rtc');
 	});
 
-	test('applySnapshot 二次快照补救：_rtcRetryState 有条目时不重 fire（尊重 backoff 节流）', async () => {
-		// 防风暴 gate：前次 rescue 的 __ensureRtc 已耗尽轮循环排了 __scheduleRetry backoff，
-		// 此时二次 snapshot 到达又进 rescue，新 __fullInit → 新 __ensureRtc → 再排 retry（count++）
-		// 会打破 backoff 节流。修法：rescue 前查 `_rtcRetryState.has(id)`，有则跳过让 backoff 接管
+	test('applySnapshot 二次快照补救：_rtcRetryState 有条目时不重 fire（尊重窗口冷却）', async () => {
+		// 防风暴 gate：前次 rescue 的 __ensureRtc 失败已排了 __scheduleRetry 的 10s cooldown，
+		// 此时二次 snapshot 到达又进 rescue，新 __fullInit → 新 __ensureRtc → 立即再 build
+		// 会绕过冷却节流。修法：rescue 前查 `_rtcRetryState.has(id)`，有则跳过让 retry timer 接管
 		const store = useClawsStore();
 		const fakeConn = {
 			rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn(),
@@ -1248,12 +1248,12 @@ describe('WebRTC 集成', () => {
 		resolveInit('rtc');
 	});
 
-	test('__ensureRtc build 重试：首次超时后重试成功', async () => {
+	test('__ensureRtc 单次 build：首次失败后由 __scheduleRetry 接力', async () => {
 		const store = useClawsStore();
 		let callCount = 0;
 		mockInitRtc.mockImplementation(() => {
 			callCount++;
-			return Promise.resolve(callCount >= 2 ? 'rtc' : 'ws');
+			return Promise.resolve('ws');
 		});
 
 		const fakeConn = {
@@ -1266,9 +1266,14 @@ describe('WebRTC 集成', () => {
 		store.byId['80'].initialized = true;
 
 		store.updateClawOnline('80', true);
+		// 单次 build 模型：__ensureRtc 内部仅调 1 次 initRtc，失败后 fall through
+		// 到 __scheduleRetry 排 cooldown timer（10s），后续重试由 timer 接力，不在本测试范围
 		await vi.waitFor(() => {
-			expect(callCount).toBe(2); // 第 1 次 ws，第 2 次 rtc
+			expect(callCount).toBe(1);
 		});
+		// retry 状态应已被 schedule（rtcPhase=failed + retryNextAt > 0）
+		expect(store.byId['80'].rtcPhase).toBe('failed');
+		expect(store.byId['80'].retryNextAt).toBeGreaterThan(0);
 	});
 });
 
@@ -3530,7 +3535,10 @@ describe('运行时字段防御', () => {
 	});
 });
 
-describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
+describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
+	const COOLDOWN = 10_000;
+	const WINDOW = 5 * 60 * 1000;
+
 	beforeEach(() => {
 		vi.useFakeTimers();
 	});
@@ -3548,7 +3556,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		return fakeConn;
 	}
 
-	test('__ensureRtc 失败后安排退避 timer', async () => {
+	test('__ensureRtc 失败后排 10s cooldown timer', async () => {
 		const store = useClawsStore();
 		mockInitRtc.mockResolvedValue('failed');
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
@@ -3561,19 +3569,19 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		await store.__ensureRtc('50');
 
 		expect(store.byId['50'].rtcPhase).toBe('failed');
-		// retryCount / retryNextAt 应被写入
+		// retryCount / retryNextAt 应被写入（窗口内首次失败 → 10s 后再试）
 		expect(store.byId['50'].retryCount).toBe(1);
 		expect(store.byId['50'].retryNextAt).toBeGreaterThan(0);
-		// scheduleRetry 被调用 → timer 触发后 __ensureRtc 应被调用
+		// timer 触发后 __ensureRtc 应再次调 initRtc
 		mockInitRtc.mockClear();
 		mockInitRtc.mockResolvedValue('failed');
-		vi.advanceTimersByTime(3_000);
-		await Promise.resolve(); // 让 timer callback 执行
-		await Promise.resolve(); // 让 __ensureRtc 内的 await 链完成
+		vi.advanceTimersByTime(COOLDOWN);
+		await Promise.resolve();
+		await Promise.resolve();
 		expect(mockInitRtc).toHaveBeenCalled();
 	});
 
-	test('退避 timer 触发后重新调用 __ensureRtc', async () => {
+	test('cooldown timer 触发后重新调用 __ensureRtc', async () => {
 		const store = useClawsStore();
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -3587,13 +3595,13 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		mockInitRtc.mockClear();
 		mockInitRtc.mockResolvedValue('failed');
 
-		vi.advanceTimersByTime(3_000);
+		vi.advanceTimersByTime(COOLDOWN);
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(mockInitRtc).toHaveBeenCalled();
 	});
 
-	test('连续失败时退避延迟指数增长', () => {
+	test('连续失败时间隔均为 10s（无指数退避）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 
@@ -3610,11 +3618,11 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 
 		vi.restoreAllMocks();
 
-		// 延迟序列：3s, 6s, 12s, 24s, 48s
-		expect(delays).toEqual([3_000, 6_000, 12_000, 24_000, 48_000]);
+		// 全部固定 10s，不再指数增长
+		expect(delays).toEqual([COOLDOWN, COOLDOWN, COOLDOWN, COOLDOWN, COOLDOWN]);
 	});
 
-	test('__ensureRtc 成功时清除退避状态', async () => {
+	test('__ensureRtc 成功时清除窗口状态', async () => {
 		const store = useClawsStore();
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -3623,7 +3631,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		store.byId['50'].online = true;
 		store.byId['50'].initialized = true;
 		store.byId['50'].rtcPhase = 'failed';
-		// 模拟已有退避状态
+		// 模拟已有窗口
 		store.__scheduleRetry('50');
 
 		// 成功的 ensureRtc
@@ -3632,24 +3640,24 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 
 		// 后续不应有 timer 触发 __ensureRtc
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(300_000);
+		vi.advanceTimersByTime(WINDOW);
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('updateClawOnline(false) 清退避 retry 状态（offline 恢复动作按下暂停）', () => {
+	test('updateClawOnline(false) 清窗口（offline 恢复动作按下暂停）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 		store.__scheduleRetry('50');
-		expect(store.byId['50'].retryCount).toBeGreaterThan(0);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThan(0);
 
 		store.updateClawOnline('50', false);
 
-		// __handleClawGoOffline 会 __clearRetry：count 和 nextAt 归 0，timer 停
+		// __handleClawGoOffline 会 __clearRetry：retryCount 与 retryNextAt 归 0，timer 停
 		expect(store.byId['50'].retryCount).toBe(0);
 		expect(store.byId['50'].retryNextAt).toBe(0);
 	});
 
-	test('removeClawById 清除退避', () => {
+	test('removeClawById 清除窗口', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 		store.__scheduleRetry('50');
@@ -3657,7 +3665,7 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		store.removeClawById('50');
 
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(300_000);
+		vi.advanceTimersByTime(WINDOW);
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
@@ -3668,16 +3676,16 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		setupFailedBot(store);
 		store.removeClawById('50');
 
-		// 删除后再调 __scheduleRetry 应静默早退，不抛、不新建 retry state
+		// 删除后再调 __scheduleRetry 应静默早退，不抛、不新建窗口
 		expect(() => store.__scheduleRetry('50')).not.toThrow();
 
 		// timer 不应被排上
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(300_000);
+		vi.advanceTimersByTime(WINDOW);
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('外部事件（applySnapshot）重置退避计数', () => {
+	test('外部事件（applySnapshot 触发 __clearRetry）后窗口起点重置', async () => {
 		const store = useClawsStore();
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -3685,50 +3693,44 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		store.applySnapshot([{ id: '50', name: 'Bot', online: true }]);
 		store.byId['50'].initialized = true;
 		store.byId['50'].rtcPhase = 'failed';
+		mockInitRtc.mockResolvedValue('failed');
 
-		// 模拟已退避多次（count=5）
-		for (let i = 0; i < 5; i++) {
-			store.__scheduleRetry('50');
-		}
-
-		const delays = [];
-		const origSetTimeout = globalThis.setTimeout;
-		vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, delay) => {
-			delays.push(delay);
-			return origSetTimeout(fn, delay);
-		});
-
-		// applySnapshot 会 __clearRetry → 新的 __scheduleRetry 从 count=0 开始
-		store.byId['50'].rtcPhase = 'failed'; // 保持 failed 以触发 retry
-		store.__clearRetry('50');
+		// 第一次开窗：windowStartAt = T0
 		store.__scheduleRetry('50');
+		const firstWindowStart = store.byId['50'].retryNextAt - COOLDOWN;
+		// 推进接近窗口尾部
+		await vi.advanceTimersByTimeAsync(WINDOW - COOLDOWN);
+		// 外部 reset 重置窗口起点
+		store.__clearRetry('50');
+		store.byId['50'].rtcPhase = 'failed';
+		store.__scheduleRetry('50');
+		const secondWindowStart = store.byId['50'].retryNextAt - COOLDOWN;
+		// 新窗口起点应晚于第一次（证明窗口起点真的重置了）
+		expect(secondWindowStart).toBeGreaterThan(firstWindowStart);
 
-		vi.restoreAllMocks();
-		// 应回到初始延迟 3s
-		expect(delays[0]).toBe(3_000);
+		// 在新窗口内继续失败：跑过近一整个窗口仍能持续排 cooldown timer，不进 unreachable
+		await vi.advanceTimersByTimeAsync(WINDOW - 1);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThan(0);
 	});
 
-	test('最大次数（8）耗尽后不再安排', () => {
+	test('窗口超时后不再排 retry（进入 unreachable 语义）', async () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
+		mockInitRtc.mockResolvedValue('failed');
 
-		for (let i = 0; i < 8; i++) {
-			store.__scheduleRetry('50');
-		}
-
-		// 第 9 次不应安排
-		const _timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 		store.__scheduleRetry('50');
-		// setTimeout 可能被 vitest 内部调用，检查 mockInitRtc
-		vi.restoreAllMocks();
+		expect(store.byId['50'].retryNextAt).toBeGreaterThan(0);
 
-		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(600_000);
-		// 上面最后的 scheduleRetry（第 9 次）不应调度 __ensureRtc
-		// 但前 8 次有 timer 可能在此期间触发；由于 count 已达上限，最后不再调度
+		// 用 async timer 推进，让 cooldown timer 内的 __ensureRtc 失败 → 再次 __scheduleRetry，
+		// 持续排 cooldown 直到累计跨过窗口期；最后一次 __scheduleRetry 命中窗口超时分支
+		await vi.advanceTimersByTimeAsync(WINDOW + COOLDOWN);
+
+		expect(store.byId['50'].retryCount).toBe(0);
+		expect(store.byId['50'].retryNextAt).toBe(0);
+		expect(store.byId['50'].rtcPhase).toBe('failed');
 	});
 
-	test('被动失败（__rtcCallbacks）+ 非 _rtcInitInProgress 启动退避', async () => {
+	test('被动失败（__rtcCallbacks）+ 非 _rtcInitInProgress 启动窗口重试', async () => {
 		const store = useClawsStore();
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -3744,13 +3746,13 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(store.byId['50'].rtcPhase).toBe('failed');
 		mockInitRtc.mockClear();
 		mockInitRtc.mockResolvedValue('failed');
-		vi.advanceTimersByTime(3_000);
+		vi.advanceTimersByTime(COOLDOWN);
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(mockInitRtc).toHaveBeenCalled();
 	});
 
-	test('_rtcInitInProgress 时 __rtcCallbacks 不启动退避', async () => {
+	test('_rtcInitInProgress 时 __rtcCallbacks 不启动重试', async () => {
 		const store = useClawsStore();
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
 		mockManager.get.mockReturnValue(fakeConn);
@@ -3792,23 +3794,24 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		store.byId['50'].rtcPhase = 'ready';
 
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(3_000);
+		vi.advanceTimersByTime(COOLDOWN);
 		// __ensureRtc 不应被调用
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('__scheduleRetry 写入 retryCount / retryNextAt', () => {
+	test('__scheduleRetry 写入 retryCount / retryNextAt（每次按 cooldown 累加）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 
 		const before = Date.now();
 		store.__scheduleRetry('50');
 		expect(store.byId['50'].retryCount).toBe(1);
-		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 3_000);
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + COOLDOWN);
 
 		store.__scheduleRetry('50');
 		expect(store.byId['50'].retryCount).toBe(2);
-		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + 6_000);
+		// 第二次的 nextAt 仍是 now + cooldown（不是累加），因为 cooldown 固定
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + COOLDOWN);
 	});
 
 	test('__clearRetry 重置 retryCount / retryNextAt', () => {
@@ -3822,14 +3825,15 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(store.byId['50'].retryNextAt).toBe(0);
 	});
 
-	test('重试耗尽后 retryCount 归零', () => {
+	test('窗口超时后 state 被删除、retryNextAt 归零', async () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
+		mockInitRtc.mockResolvedValue('failed');
 
-		for (let i = 0; i < 6; i++) {
-			store.__scheduleRetry('50');
-		}
-		// 第 6 次超出 MAX_BACKOFF_RETRIES(5)，应归零
+		store.__scheduleRetry('50');
+		// 让 cooldown timer 逐次 fire，跑完整个窗口期；最后一次 __scheduleRetry 命中超时分支
+		await vi.advanceTimersByTimeAsync(WINDOW + COOLDOWN);
+
 		expect(store.byId['50'].retryCount).toBe(0);
 		expect(store.byId['50'].retryNextAt).toBe(0);
 	});
@@ -3842,11 +3846,11 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		delete store.byId['50'];
 
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(3_000);
+		vi.advanceTimersByTime(COOLDOWN);
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('__scheduleRetry 入口 gate：claw offline 时不排队退避', async () => {
+	test('__scheduleRetry 入口 gate：claw offline 时不排队', async () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 		store.byId['50'].online = false;
@@ -3858,12 +3862,12 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(store.byId['50'].retryNextAt).toBe(0);
 		// 就算时间推进也不会调 __ensureRtc
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(300_000);
+		vi.advanceTimersByTime(WINDOW);
 		await Promise.resolve();
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('退避序列完整验证（含 cap 到 RETRY_BACKOFF_MAX_MS）', () => {
+	test('窗口期内 cooldown 始终为 10s（不变）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 
@@ -3874,14 +3878,16 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 			return origSetTimeout(fn, delay);
 		});
 
-		for (let i = 0; i < 5; i++) {
+		// 在窗口期内多次失败
+		for (let i = 0; i < 10; i++) {
 			store.__scheduleRetry('50');
 		}
 
 		vi.restoreAllMocks();
 
-		// 3s, 6s, 12s, 24s, 48s
-		expect(delays).toEqual([3_000, 6_000, 12_000, 24_000, 48_000]);
+		// 全部 10s
+		expect(delays.every((d) => d === COOLDOWN)).toBe(true);
+		expect(delays.length).toBe(10);
 	});
 
 	test('clearRetry 后旧 timer callback 不再执行', () => {
@@ -3897,9 +3903,9 @@ describe('退避重试 (__scheduleRetry / __clearRetry)', () => {
 
 		// 推进时间使旧 timer 本应到期
 		mockInitRtc.mockClear();
-		vi.advanceTimersByTime(3_000);
+		vi.advanceTimersByTime(COOLDOWN);
 
-		// initRtc 不应被调用，退避状态仍为清空
+		// initRtc 不应被调用，窗口状态仍为清空
 		expect(mockInitRtc).not.toHaveBeenCalled();
 		expect(store.byId['50'].retryCount).toBe(0);
 		expect(store.byId['50'].retryNextAt).toBe(0);
@@ -4785,8 +4791,9 @@ describe('__resumeOnline helper', () => {
 		store.byId['A'].dcReady = false;
 		mockInitRtc.mockResolvedValue('failed'); // 让 __ensureRtc 失败 + add 残留
 		store.__resumeOnline('A');
+		// 单次 build：__ensureRtc 调 1 次 initRtc 失败 → __scheduleRetry，pendingForceRefresh 已 add
 		await vi.waitFor(() => {
-			expect(mockInitRtc).toHaveBeenCalledTimes(3);
+			expect(mockInitRtc).toHaveBeenCalledTimes(1);
 		});
 		// 此时 _pendingForceRefreshOnRebuild 里有 'A'
 		store.removeClawById('A');
@@ -4803,52 +4810,58 @@ describe('__resumeOnline helper', () => {
 		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
 	});
 
-	test('rebuild 路径：当前 __ensureRtc 失败、退避重试最终成功也能触发 force refresh', async () => {
-		const store = useClawsStore();
-		const agentsStore = useAgentsStore();
-		const sessionsStore = useSessionsStore();
-		vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
-		vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
-		vi.spyOn(useTopicsStore(), 'loadTopicsForClaw').mockResolvedValue();
-		vi.spyOn(useDashboardStore(), 'loadDashboard').mockResolvedValue();
+	test('rebuild 路径：当前 __ensureRtc 失败、窗口重试最终成功也能触发 force refresh', async () => {
+		vi.useFakeTimers();
+		try {
+			const store = useClawsStore();
+			const agentsStore = useAgentsStore();
+			const sessionsStore = useSessionsStore();
+			vi.spyOn(agentsStore, 'loadAgents').mockResolvedValue();
+			vi.spyOn(sessionsStore, 'loadSessionsForClaw').mockResolvedValue();
+			vi.spyOn(useTopicsStore(), 'loadTopicsForClaw').mockResolvedValue();
+			vi.spyOn(useDashboardStore(), 'loadDashboard').mockResolvedValue();
 
-		// 前 3 次（RTC_BUILD_MAX_RETRIES）失败，第 4 次（退避重试后）成功
-		let call = 0;
-		mockInitRtc.mockImplementation(() => {
-			call++;
-			return Promise.resolve(call >= 4 ? 'rtc' : 'failed');
-		});
+			// 第 1 次失败，第 2 次（cooldown 后）成功
+			let call = 0;
+			mockInitRtc.mockImplementation(() => {
+				call++;
+				return Promise.resolve(call >= 2 ? 'rtc' : 'failed');
+			});
 
-		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
-		mockManager.get.mockReturnValue(fakeConn);
+			const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+			mockManager.get.mockReturnValue(fakeConn);
 
-		store.setClaws([{ id: '1', online: true }]);
-		store.byId['1'].initialized = true;
-		store.byId['1'].dcReady = false;
+			store.setClaws([{ id: '1', online: true }]);
+			store.byId['1'].initialized = true;
+			store.byId['1'].dcReady = false;
 
-		// __resumeOnline rebuild 分支 → 标记 pendingForceRefresh；第一次 __ensureRtc 内部循环
-		// 3 次全失败 → __scheduleRetry 排退避
-		store.__resumeOnline('1');
+			// __resumeOnline rebuild 分支 → 标记 pendingForceRefresh；第一次 __ensureRtc 单次 build
+			// 失败 → __scheduleRetry 排 10s cooldown
+			store.__resumeOnline('1');
 
-		await vi.waitFor(() => {
-			expect(call).toBe(3);
-		});
-		// 第 3 次失败后 rtcPhase=failed；loader 尚未被调（dcReady 仍 false，且没成功）
-		expect(agentsStore.loadAgents).not.toHaveBeenCalled();
+			// 让首次 await 链走完（microtask flush，不动 fake timer）
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(call).toBe(1);
+			expect(agentsStore.loadAgents).not.toHaveBeenCalled();
 
-		// 触发退避重试（__scheduleRetry 内部 setTimeout → 第 4 次 initRtc → 'rtc'）
-		await vi.waitFor(() => {
-			expect(call).toBe(4);
-		}, { timeout: 10_000 });
+			// 推进 cooldown：__scheduleRetry timer fire → __ensureRtc → 第 2 次 initRtc → 'rtc'
+			await vi.advanceTimersByTimeAsync(10_000);
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(call).toBe(2);
 
-		// 退避成功：_pendingForceRefreshOnRebuild 仍有标记 → consume 触发 force refresh
-		await vi.waitFor(() => {
+			// 重试成功：_pendingForceRefreshOnRebuild 仍有标记 → consume 触发 force refresh
 			expect(agentsStore.loadAgents).toHaveBeenCalledWith('1');
-		});
-		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
-		expect(useTopicsStore().loadTopicsForClaw).toHaveBeenCalledWith('1');
-		// dashboard 也由 refreshClawResources 统一刷（P1.1/1.2 修法后唯一触发点）
-		expect(useDashboardStore().loadDashboard).toHaveBeenCalledWith('1');
+			expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
+			expect(useTopicsStore().loadTopicsForClaw).toHaveBeenCalledWith('1');
+			// dashboard 也由 refreshClawResources 统一刷（P1.1/1.2 修法后唯一触发点）
+			expect(useDashboardStore().loadDashboard).toHaveBeenCalledWith('1');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test('forceRestartOnConnected + connected+paused：走 triggerRestart 不刷（DC 延续）', async () => {
@@ -5540,6 +5553,28 @@ describe('sig gate (signaling WS 冻结闸)', () => {
 		await store.__ensureRtc('1');
 		expect(store.byId['1'].rtcPhase).toBe('failed');
 		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('reason=offline'));
+	});
+
+	test('__ensureRtc build 失败 + claw replaced：post-await 命中 replaced bail 分支', async () => {
+		const store = useClawsStore();
+		setupClaw(store, { rtcState: 'failed' });
+		store.byId['1'].rtcPhase = 'ready';
+		store.__bridgeLifecycle();
+
+		mockInitRtc.mockReset();
+		// build 失败 + byId[id] 被换成全新对象（replaced 场景：id 不变但实例不同）
+		mockInitRtc.mockImplementationOnce(async () => {
+			store.byId['1'] = { ...store.byId['1'], rtcPhase: 'idle' };
+			return 'failed';
+		});
+
+		await store.__ensureRtc('1');
+		// post-await 命中 replaced 分支：发出 reason=replaced 远程日志，
+		// 且不调 closeRtcForClaw / 不发 rtcFailed（这俩是真 build 失败的产物）
+		expect(mockRemoteLog).toHaveBeenCalledWith(expect.stringContaining('reason=replaced'));
+		expect(mockRemoteLog).not.toHaveBeenCalledWith(expect.stringContaining('claw.rtcFailed claw=1'));
+		// 注：rtcPhase 不在此处断言。替换后的 claw 仍可能被 onRtcStateChange callback 写到，
+		// 那是独立于 __ensureRtc 主流程的回调路径，不在本次变更范围。
 	});
 
 	test('__scheduleRetry 入口 _sigOffline=true 早退（retryCount 不变）', () => {

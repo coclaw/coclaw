@@ -309,7 +309,7 @@ export const ruMessages = {
 			rtcRelay: 'WebRTC: Ретрансляция',
 			rtcRelayProto: 'WebRTC: Ретрансляция · {protocol}',
 			rtcRelayBothSides: 'WebRTC: {browser} ↔ Ретрансляция ↔ {peer}',
-			rtcRetrying: 'WebRTC: ошибка подключения, попытка {n}/{max}…',
+			rtcRetrying: 'WebRTC: ошибка подключения, повтор…',
 			rtcRetryExhausted: 'WebRTC: ошибка подключения (попытки исчерпаны)',
 			detailTitle: 'Подробности',
 			localCandidate: 'Локальный кандидат',

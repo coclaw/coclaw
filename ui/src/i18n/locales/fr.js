@@ -309,7 +309,7 @@ export const frMessages = {
 			rtcRelay: 'WebRTC : Relais',
 			rtcRelayProto: 'WebRTC : Relais · {protocol}',
 			rtcRelayBothSides: 'WebRTC : {browser} ↔ Relais ↔ {peer}',
-			rtcRetrying: 'WebRTC : connexion échouée, nouvelle tentative {n}/{max}…',
+			rtcRetrying: 'WebRTC : connexion échouée, nouvelle tentative…',
 			rtcRetryExhausted: 'WebRTC : connexion échouée (tentatives épuisées)',
 			detailTitle: 'Détails',
 			localCandidate: 'Candidat local',

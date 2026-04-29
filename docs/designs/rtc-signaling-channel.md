@@ -498,10 +498,10 @@ WS 仅是信令通道，其断连不影响 DataChannel 可用性。bots.store �
 
 | 场景 | 处理 |
 |------|------|
-| RTC disconnected | 等待 ICE 自动恢复（10s 超时后 → setState('failed')，交由外层退避重试） |
-| RTC failed | 直接 setState('failed')；bots.store `__scheduleRetry` 退避重试（10s→120s 指数退避，最多 8 次，每次 `initRtc` 获取 fresh TURN 凭证），外部事件重置退避计数 |
+| RTC disconnected | 等待 ICE 自动恢复（10s 超时后 → setState('failed')，交由外层窗口重试） |
+| RTC failed | 直接 setState('failed')；claws.store `__scheduleRetry` 窗口重试（5 分钟窗口 + 固定 10s 冷却，每次 `initRtc` 获取 fresh TURN 凭证），外部事件重置窗口起点 |
 
-> **注**：ICE restart 已移除。werift 的实现不完整（详见 `docs/study/webrtc-connection-research.md`）。RTC failed 时由外层 bots.store 退避重试，每次获取 fresh TURN 凭证重建连接。
+> **注**：ICE restart 已移除。werift 的实现不完整（详见 `docs/study/webrtc-connection-research.md`）。RTC failed 时由外层 claws.store 窗口重试，每次获取 fresh TURN 凭证重建连接。
 
 ### 7.3 前台恢复（RTC 层）
 
@@ -513,7 +513,7 @@ network:online → __handleNetworkOnline(typeChanged)
   ├─ typeChanged=true → 直接 rebuild 所有 claw
   │     （WiFi↔蜂窝切换，旧 ICE 路径失效，ndc 不支持 ICE restart）
   ├─ typeChanged=false + PC failed/closed → 直接 rebuild
-  │     （加速长 offline 后恢复，避免等退避 timer）
+  │     （加速长 offline 后恢复，避免等重试 timer）
   └─ typeChanged=false + PC connected/disconnected → 跳过
         （ICE 在前台有自检测能力）
 
@@ -532,7 +532,7 @@ app:foreground（Capacitor / Electron / 移动浏览器桥接）
 **网络类型检测**：Capacitor Network plugin `connectionType` 仅区分 `wifi`/`cellular`/`none`/`unknown`。`_lastConnectionType` 仅在 `connected=true` 且类型为 `wifi`/`cellular` 时更新；`none`（offline）和 `unknown` 不更新，避免污染比较基线。
 
 **平台门控**：`app:foreground` 覆盖 Capacitor、Electron、移动浏览器（后者通过 `capacitor-app.js` 桥接 `document.visibilitychange`）。桌面浏览器不派发 `app:foreground`（WebRTC 在桌面后台持续运行，tab 切换不应触发重建）。
-主机休眠/待机 → TODO（现由被动恢复路径覆盖：PC disconnected 5s → setState('failed') → 外层退避重试）。
+主机休眠/待机 → TODO（现由被动恢复路径覆盖：PC disconnected 5s → setState('failed') → 外层窗口重试）。
 
 **待实施优化**：向 server 请求 UI 侧 IP 变化检测，作为网络类型变化检测的补充（覆盖 VPN 等 connectionType 不变但 IP 变化的场景）。
 
@@ -550,8 +550,8 @@ sendSignaling(botId, type, payload) → boolean
 
 | # | 场景 | 处理 |
 |---|------|------|
-| 1 | RTC disconnected | 等待 ICE 自动恢复（10s 后升级 → setState('failed')，交由外层退避重试） |
-| 2 | RTC failed | 直接 setState('failed')；bots.store `__scheduleRetry` 退避重试（10s→120s，最多 8 次，每次 `initRtc` 获取 fresh TURN 凭证），外部事件重置退避 |
+| 1 | RTC disconnected | 等待 ICE 自动恢复（10s 后升级 → setState('failed')，交由外层窗口重试） |
+| 2 | RTC failed | 直接 setState('failed')；claws.store `__scheduleRetry` 窗口重试（5 分钟窗口 + 固定 10s 冷却，每次 `initRtc` 获取 fresh TURN 凭证），外部事件重置窗口起点 |
 | 4 | 信令 WS 断开 | 自动重连；不影响 DC 可用性（dcReady 不变） |
 | 5 | 信令 WS 恢复 | 不触发 RTC 恢复（WS 与 DC 解耦） |
 | 6 | WS 断开但 RTC 仍 connected | RTC 不动，业务 RPC 通过 DC 继续工作 |
@@ -638,7 +638,7 @@ ensureConnected 仅用在**发送 offer 之前**（流程的发起点）：
 |---------|------|
 | RTC 对 WS 前台事件处理顺序的隐含依赖 | 消除 — ensureConnected 自判断 WS 新鲜度，无论 RTC handler 与 WS handler 的触发顺序如何，都不会把 offer 发给僵尸/卡死的 WS |
 | `verify` / `__lastVerifiedAt` / `VERIFY_COOLDOWN_MS` | 移除 — 新鲜度判断替代了 verify 的语义，cooldown 由 state 同步切换天然限流 |
-| `__onIceFailed` 的恢复决策 | 简化 — `setState('failed')`，由外层 claws.store 退避重试接管恢复 |
+| `__onIceFailed` 的恢复决策 | 简化 — `setState('failed')`，由外层 claws.store 窗口重试接管恢复 |
 | `__ensureRtc` 循环的 `sigConn.state !== 'connected'` bail-out | 移除 — `initRtc` 内部 await ensureConnected 自然阻塞或超时 |
 | sendSignaling 返回值处理 | 简化 — 由 ensureConnected 在上游保障 WS 可用，sendSignaling 返回值退化为防御性检查 |
 
@@ -670,7 +670,7 @@ WS 与 DC 状态已解耦。初始化/恢复触发机制：
 
 - **首次初始化**：`__bridgeConn` 直接触发 `__fullInit`（对 online + 未初始化的 bot），`ensureConnected()` 内部透明等待 WS 就绪
 - **前台/网络恢复**：window 的 `app:foreground` / `network:online` 事件 → `__checkAndRecover` / `__handleNetworkOnline` → DC probe / rebuild
-- **被动恢复**：WebRtcConnection 内部 disconnected 10s → setState('failed') → bots.store 退避重试
+- **被动恢复**：WebRtcConnection 内部 disconnected 10s → setState('failed') → claws.store 窗口重试
 - **bot 上线**：`updateBotOnline` → `__fullInit`（未初始化）或 `__ensureRtc`（已初始化）
 - **数据刷新**：`__refreshIfStale` 在 RTC 恢复后按断连间隔自动触发
 

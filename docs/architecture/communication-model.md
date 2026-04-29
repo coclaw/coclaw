@@ -174,7 +174,7 @@ DC open 后额外有一层 `READY_TIMEOUT_MS = 120s` 的守卫，等待 Plugin �
 - 文件传输的 `handle.cancel()` 向后兼容保留，内部等价于 `controller.abort()`
 - ERR_CANCELED 不在断连错误集合中（`DISCONNECT_CODES`），不会触发上层自动重试
 
-**为什么要覆盖整个等待周期**：底层 RTC 恢复最长可达 ~3 分钟（ICE restart 90s + rebuild 退避），应用层通过长 connectTimeout 加上 signal 主动取消来表达"是否继续等"，与 fetch 心智一致——调用方不关心下层在哪个恢复阶段。
+**为什么要覆盖整个等待周期**：底层 RTC 恢复可能持续若干分钟（ICE restart 90s + rebuild 窗口期），应用层 `connectTimeout` 默认覆盖典型 ICE restart 场景，更长等待由调用方通过 signal 主动取消表达——与 fetch 心智一致，调用方不关心下层在哪个恢复阶段。
 
 ---
 
@@ -237,7 +237,7 @@ idle → building → ready ⇄ recovering
 - 与 SSE 连接本身的存亡**无关**：SSE 断开/重连不会把所有 claw 刷成 offline
 - 与 DC 是否可用解耦：不参与 `dcReady` / `rtcPhase` 的直接赋值，也不作为"DC 通不通"的断言
 
-**为什么引入 online 门控（从"完全解耦"变为"恢复路径看 online"）**：WebRTC 已相当稳定（ICE restart 90s 预算内多能成，rebuild 兜底可靠），但 plugin 离线时，ICE restart offer 送过去没有 plugin 可接（server 无法 relay 到已断的 plugin），restart 预算必然白烧；退避重试也会在无接收方的情况下空转 5 轮。所以：**plugin 不在线的时间对 RTC 恢复而言是"时间停止"——所有预算、计数冻结，PC 保留，等 online 回来视为新一轮事件。**
+**为什么引入 online 门控（从"完全解耦"变为"恢复路径看 online"）**：WebRTC 已相当稳定（ICE restart 90s 预算内多能成，rebuild 兜底可靠），但 plugin 离线时，ICE restart offer 送过去没有 plugin 可接（server 无法 relay 到已断的 plugin），restart 预算必然白烧；窗口重试也会在无接收方的情况下空烧整个 5 分钟窗口。所以：**plugin 不在线的时间对 RTC 恢复而言是"时间停止"——所有预算、计数冻结，PC 保留，等 online 回来视为新一轮事件。**
 
 **SSE claw.online=false 时 UI 的动作**（由 `__handleClawGoOffline(id)` 统一封装）：
 
@@ -247,7 +247,7 @@ SSE claw.status {online:false}
   → claw.online = false   （仅更新展示字段；不写 dcReady/rtcPhase/disconnectedAt）
   → __handleClawGoOffline(id):
       1. _lifecycle.syncDashboardOffline(id)   （dashboard 展示层同步）
-      2. __clearRetry(id)   （取消排队中的退避重试定时器）
+      2. __clearRetry(id)   （取消排队中的窗口重试定时器，重置窗口起点）
       3. conn.rtc?.pauseRestart()   （按 state 暂停 UI 主动恢复动作）
 ```
 
@@ -278,7 +278,7 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
            此机制可靠覆盖：
              * `_rtcInitInProgress` 守卫下 __ensureRtc 早退（.then 立即 fire 但
                rebuild 未完成）
-             * 当前 __ensureRtc attempts 全失败、等退避重试多轮后最终成功
+             * 当前 __ensureRtc 单次 build 失败、等窗口重试某轮 cooldown 后最终成功
          - DC 延续路径（'connected' / 'restarting'，含 forceRestart=true 的 ICE
            restart 子场景）→ **不刷**。PC 没 rebuild、SCTP 延续时，plugin 侧缓冲
            的 rpc msg 会随 ICE 恢复自然送达 UI；主动 refresh 是冗余流量
@@ -307,12 +307,12 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 **`applySnapshot` 的三阶段 diff**：Phase 1 capture prev online → Phase 2 apply snapshot（覆盖字段）→ Phase 3 按 `online: true→false` / `false→true` / 未变但 `rtcPhase='failed'` 分派动作，覆盖 SSE 断连重连且 server 没发增量 `claw.status` 的场景。
 
 **online 门控的布点**：
-- `__ensureRtc` 入口 + 循环中途 + **await initRtc 之后** → offline 即 bail-out；`rtcPhase='failed'` 仅在 bailReason='offline' 时显式写，让后续 online→true 走 rebuild 分支
-- `__scheduleRetry` 入口 → offline 不排队退避
+- `__ensureRtc` 入口 + **await initRtc 之后** → offline 即 bail-out；`rtcPhase='failed'` 仅在 bailReason='offline' 时显式写，让后续 online→true 走 rebuild 分支
+- `__scheduleRetry` 入口 → offline 不排队重试
 - `__checkAndRecover` 入口 → offline 不 probe、不 restart
 - `__handleNetworkOnline` 循环内 → offline 的 claw 不参与 network 恢复路径
 
-**`__ensureRtc` 的 post-await recheck**：循环头检查 gate 只覆盖"`await initRtc` 之前"，但 `initRtc` 可能耗时数秒（ICE gathering / DTLS 握手）。期间若 offline / sig_offline 发生，`__handleClawGoOffline` 调 `conn.rtc?.pauseRestart()` 会空转——此时 `conn.rtc` 还是 `null`（`initRtc` 未 resolve）——成功 resolve 后若不再次 recheck，新建的 RTC 会越过关着的门继续运行。修法：`result === 'rtc'` 后、进入成功分支前检查 `byId[id]?.online && !_sigOffline`；失败则 `closeRtcForClaw` + `conn.clearRtc` + 走 bailedOut 分支（和循环内 bail 复用同一处理逻辑）。
+**`__ensureRtc` 的 post-await recheck**：入口检查 gate 只覆盖"`await initRtc` 之前"，但 `initRtc` 可能耗时数秒（ICE gathering / DTLS 握手）。期间若 offline / sig_offline 发生，`__handleClawGoOffline` 调 `conn.rtc?.pauseRestart()` 会空转——此时 `conn.rtc` 还是 `null`（`initRtc` 未 resolve）——成功 resolve 后若不再次 recheck，新建的 RTC 会越过关着的门继续运行。修法：`await initRtc` 解决后**无论 result 是 'rtc' 还是失败**都做一次 gate recheck，命中翻转则走 bailedOut 分支：`result === 'rtc'` 时同时 `closeRtcForClaw` + `conn.clearRtc`（sig_offline 还要 snapshot/restore phase 与 disconnectedAt 避免 close 触发的 'failed' 残留），失败时 rtc 没建起来无需 close，phase 由 bail 分支按 reason 处理。这条 recheck 同时承担了"build 失败 + 闸门翻转"的语义，避免误把环境故障算作 build 失败而排重试。
 
 **其他 online 消费点**：
 - 展示（banner、徽标、列表排序、操作可用性提示）：**允许**，UI 优先用 `online=false` 表示"离线"而非"连接失败"，即使 `rtcPhase='failed'`
@@ -321,7 +321,7 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 
 ### 5.5.1 信令 WS gate（第二把锁）
 
-`claw.online` 解决"plugin 有没有 online"。但**信令 WS（浏览器↔server）不通**的场景（电梯/地下车库/飞行模式/WiFi↔蜂窝瞬断/server 重启）下，ICE restart offer 送不出 server、rebuild 的 signaling 握手也送不出——与 plugin offline 对称，**所有 RTC 主动恢复动作都是空烧预算**。故引入第二把并列的锁 `_sigOffline`：信令 WS 不通时全局冻结所有 claw 的 ICE restart / rebuild / 退避计数。
+`claw.online` 解决"plugin 有没有 online"。但**信令 WS（浏览器↔server）不通**的场景（电梯/地下车库/飞行模式/WiFi↔蜂窝瞬断/server 重启）下，ICE restart offer 送不出 server、rebuild 的 signaling 握手也送不出——与 plugin offline 对称，**所有 RTC 主动恢复动作都是空烧预算**。故引入第二把并列的锁 `_sigOffline`：信令 WS 不通时全局冻结所有 claw 的 ICE restart / rebuild / 重试窗口。
 
 **信号源唯一**：`SignalingConnection.on('state', cb)` 事件。不用 `navigator.onLine`，不用 Capacitor Network 的 offline 分支。理由：
 - `navigator.onLine` 在桌面浏览器准确度低（VPN / 本地代理 / 局域网无网均可能误报 true/false）
@@ -337,8 +337,8 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 **两把锁独立、两把都开才恢复**。协调核心：`__resumeOnline` 入口 `if (_sigOffline) return`——任意一把锁关闭都阻断恢复动作；sig online handler 与 claw online 事件无论先后，最晚那次触发才真正执行 resume。
 
 **gate 布点**（与 online gate 平行的 5 处）：
-- `__ensureRtc` 入口 + 循环中途 → sig 不通即 bail-out；循环中途 bail `bailReason='sig_offline'`，**不**写 `rtcPhase='failed'`（sig 是环境故障，恢复后继续 rebuild，不应被标为 unreachable）
-- `__scheduleRetry` 入口 → sig 不通不排队退避
+- `__ensureRtc` 入口 + post-await recheck → sig 不通即 bail-out；bail `bailReason='sig_offline'` 时**不**写 `rtcPhase='failed'`（sig 是环境故障，恢复后继续 rebuild，不应被标为 unreachable）
+- `__scheduleRetry` 入口 → sig 不通不排队重试
 - `__checkAndRecover` 入口 → sig 不通不 probe、不 restart
 - `__handleNetworkOnline` 入口 → sig 不通时整个循环跳过
 - `__resumeOnline` 入口 → 两把锁协调核心

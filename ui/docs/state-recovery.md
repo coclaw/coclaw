@@ -103,7 +103,8 @@
   - ICE `disconnected` → 等待 ICE 自愈（5s 超时，`DISCONNECTED_TIMEOUT_MS`）
   - ICE restart（pion impl）→ 在现有 PC 上重新协商 ICE 层，DTLS/SCTP/DataChannel 保留。ICE check 失败后立即重试，总时间预算 90s（`ICE_RESTART_TIMEOUT_MS`），15s 安全网定时器补位（`ICE_RESTART_SAFETY_MS`）
   - Plugin 为 ndc/werift impl 时 → 立即收到 `rtc:restart-rejected`（reason=`impl_unsupported`）→ 跳过 restart，直接进入 rebuild
-  - Restart 超时或被 reject → `state = 'failed'` → store 退避重试 → full rebuild（获取新 TURN 凭证，新建 PeerConnection）
+  - Restart 超时或被 reject → `state = 'failed'` → store 窗口重试 → full rebuild（获取新 TURN 凭证，新建 PeerConnection）
+- **窗口重试预算**（`stores/claws.store.js` `__scheduleRetry`）：5 分钟时间窗口 + 固定 10s 冷却。失败首次开窗，窗口内每次失败排 10s 后再 build；窗口超时进 unreachable，等 SSE 恢复 / 用户手动重试。DC ready / 外部 reset（offline / sig offline / network online / manual / snapshot rescue）立即清窗。砍掉了原指数退避（1:1 关系不需要错峰，时间窗口本身就是能量上限）
 - **场景**：Web + Capacitor
 
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）
@@ -421,7 +422,7 @@
 RTC 恢复决策基于 PC 自身状态、DC probe 和两把正交的"全局闸"（`claw.online` SSE presence + `_sigOffline` 信令 WS 可达性）作为门控。**主真相源**：`docs/architecture/communication-model.md` §5.5 / §5.5.1。四个入口：
 
 - **SSE `claw.online=false`** → `__handleClawGoOffline`（暂停该 claw 的所有 RTC 主动恢复）：
-  - `syncDashboardOffline`（dashboard 展示层同步）+ `__clearRetry`（停退避定时器）+ `rtc.pauseRestart()`（停 restart timer / poll / keepalive；清预算字段；epoch++；置 `__restartPaused=true`）
+  - `syncDashboardOffline`（dashboard 展示层同步）+ `__clearRetry`（停窗口重试定时器、重置窗口起点）+ `rtc.pauseRestart()`（停 restart timer / poll / keepalive；清预算字段；epoch++；置 `__restartPaused=true`）
   - **不动 `dcReady` / `rtcPhase` / `disconnectedAt` / PC**：presence 与 DC 生命周期正交（commit `4a05074` 原则——详见通信模型 §5.5）
   - **不再** probe / triggerRestart：plugin 离线时这些动作必然无效，等 online 回来再动
 - **SSE `claw.online=true`（从 false 转来）** → `__resumeOnline`（按 PC 状态分派，仅 rebuild 触发 refresh）：

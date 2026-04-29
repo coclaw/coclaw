@@ -309,7 +309,7 @@ export const esMessages = {
 			rtcRelay: 'WebRTC: Retransmisión',
 			rtcRelayProto: 'WebRTC: Retransmisión · {protocol}',
 			rtcRelayBothSides: 'WebRTC: {browser} ↔ Retransmisión ↔ {peer}',
-			rtcRetrying: 'WebRTC: conexión fallida, reintento {n}/{max}…',
+			rtcRetrying: 'WebRTC: conexión fallida, reintentando…',
 			rtcRetryExhausted: 'WebRTC: conexión fallida (reintentos agotados)',
 			detailTitle: 'Detalles',
 			localCandidate: 'Candidato local',

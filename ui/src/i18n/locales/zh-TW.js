@@ -309,7 +309,7 @@ export const zhTWMessages = {
 			rtcRelay: 'WebRTC：中繼',
 			rtcRelayProto: 'WebRTC：中繼 · {protocol}',
 			rtcRelayBothSides: 'WebRTC：{browser} ↔ 中繼 ↔ {peer}',
-			rtcRetrying: 'WebRTC：連線失敗，第 {n}/{max} 次重試…',
+			rtcRetrying: 'WebRTC：連線失敗，重試中…',
 			rtcRetryExhausted: 'WebRTC：連線失敗（重試耗盡）',
 			detailTitle: '詳情',
 			localCandidate: '本地候選',

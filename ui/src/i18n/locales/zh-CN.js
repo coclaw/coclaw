@@ -309,7 +309,7 @@ export const zhCNMessages = {
 			rtcRelay: 'WebRTC：中继',
 			rtcRelayProto: 'WebRTC：中继 · {protocol}',
 			rtcRelayBothSides: 'WebRTC：{browser} ↔ 中继 ↔ {peer}',
-			rtcRetrying: 'WebRTC：连接失败，第 {n}/{max} 次重试…',
+			rtcRetrying: 'WebRTC：连接失败，重试中…',
 			rtcRetryExhausted: 'WebRTC：连接失败（重试耗尽）',
 			detailTitle: '详情',
 			localCandidate: '本地候选',

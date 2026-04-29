@@ -309,7 +309,7 @@ export const koMessages = {
 			rtcRelay: 'WebRTC: 릴레이',
 			rtcRelayProto: 'WebRTC: 릴레이 · {protocol}',
 			rtcRelayBothSides: 'WebRTC: {browser} ↔ 릴레이 ↔ {peer}',
-			rtcRetrying: 'WebRTC: 연결 실패, 재시도 {n}/{max}…',
+			rtcRetrying: 'WebRTC: 연결 실패, 재시도 중…',
 			rtcRetryExhausted: 'WebRTC: 연결 실패 (재시도 횟수 초과)',
 			detailTitle: '상세 정보',
 			localCandidate: '로컬 후보',

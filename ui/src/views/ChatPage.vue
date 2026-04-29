@@ -323,7 +323,7 @@ export default {
 			if (phase === 'building') return this.$t('chat.connBuilding');
 			if (phase === 'recovering') return this.$t('chat.connRecovering');
 			if (phase === 'failed') {
-				return claw.retryCount > 0
+				return claw.retryNextAt > 0
 					? this.$t('chat.connFailed')
 					: this.$t('chat.connRetryExhausted');
 			}

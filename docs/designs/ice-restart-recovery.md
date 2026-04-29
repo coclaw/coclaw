@@ -426,7 +426,7 @@ ICE failed → restarting → 周期重试 → WS 断了 → 发不出
 
 ```
 SSE claw.online=false → __handleClawGoOffline
-  → syncDashboardOffline（dashboard 层同步）+ __clearRetry（停退避定时器）+ rtc.pauseRestart()
+  → syncDashboardOffline（dashboard 层同步）+ __clearRetry（停重试定时器）+ rtc.pauseRestart()
     （停 restart timer/keepalive、清预算、epoch++、置 restartPaused；PC 不关）
   → 不动 dcReady / rtcPhase / disconnectedAt / PC（presence 与 DC 生命周期正交，commit 4a05074 原则）
   → 其余主动恢复（probe / rebuild / retry）在 online gate 下全部暂停

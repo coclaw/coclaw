@@ -309,7 +309,7 @@ export const ptMessages = {
 			rtcRelay: 'WebRTC: Relay',
 			rtcRelayProto: 'WebRTC: Relay · {protocol}',
 			rtcRelayBothSides: 'WebRTC: {browser} ↔ Relay ↔ {peer}',
-			rtcRetrying: 'WebRTC: conexão falhou, tentativa {n}/{max}…',
+			rtcRetrying: 'WebRTC: conexão falhou, tentando novamente…',
 			rtcRetryExhausted: 'WebRTC: conexão falhou (tentativas esgotadas)',
 			detailTitle: 'Detalhes',
 			localCandidate: 'Candidato local',

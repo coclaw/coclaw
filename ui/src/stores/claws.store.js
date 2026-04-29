@@ -80,14 +80,15 @@ let _sigOfflineAt = 0;
 const _pendingTypeChangedRestartClaws = new Set();
 
 /**
- * 两层重试结构：
- * - 内层：__ensureRtc 每次调用内部循环 RTC_BUILD_MAX_RETRIES 次 initRtc
- * - 外层：__scheduleRetry 指数退避，最多 MAX_BACKOFF_RETRIES 轮
- * 理论最大 initRtc 调用次数 = 3 × 5 = 15。
+ * RTC 重连预算：5 分钟时间窗口 + 固定 10s 冷却
+ * - 第一次失败开窗（windowStartAt = now）
+ * - 窗口内每次失败排 RETRY_COOLDOWN_MS 后再 build，狂试不限次
+ * - 窗口超时 → 标 unreachable，停手等用户手动重试 / SSE 恢复
+ * - DC ready / 外部 reset（offline / sig offline / network online / manual / snapshot rescue）均立即清窗
+ *
  * 实际中 SSE 快照、用户操作、前台恢复等外部事件也会触发重连，
- * 退避重试仅作为兜底机制。
+ * 窗口重试仅作为兜底机制。
  */
-const RTC_BUILD_MAX_RETRIES = 3;
 /** DC probe 超时 */
 const DC_PROBE_TIMEOUT_MS = 3_000;
 /**
@@ -96,13 +97,11 @@ const DC_PROBE_TIMEOUT_MS = 3_000;
  * ICE 层仍有 ~10s 裕量自恢复（约 2 次 consent check 机会）。
  */
 const SHORT_BACKGROUND_MS = 25_000;
-/** 退避重试：初始间隔 */
-const RETRY_BACKOFF_BASE_MS = 3_000;
-/** 退避重试：最大间隔 */
-const RETRY_BACKOFF_MAX_MS = 120_000;
-/** 退避重试：最大次数（兜底性质，外部事件通常更早触发重连） */
-export const MAX_BACKOFF_RETRIES = 5;
-/** 退避重试状态（clawId → { count: number, timer: number|null }） */
+/** 重连预算窗口：5 分钟内可不限次试，窗口外标 unreachable */
+export const RETRY_WINDOW_MS = 5 * 60 * 1000;
+/** 失败后固定冷却（避开 plugin 端 worker 残留与信令积压） */
+export const RETRY_COOLDOWN_MS = 10_000;
+/** 重试状态（clawId → { windowStartAt: number, timer: number|null }） */
 const _rtcRetryState = new Map();
 /** 运行时字段（server snapshot / SSE 事件不应覆盖） */
 const RUNTIME_FIELDS = new Set([
@@ -438,9 +437,9 @@ export const useClawsStore = defineStore('claws', {
 					// 双 gate 防风暴：
 					// - `_rtcInitInProgress`：前次 rescue 的 `__ensureRtc` 还在飞，重 fire 只会空转
 					//   并多打一条 `claw.fullInit` remoteLog，跳过
-					// - `_rtcRetryState`：`__ensureRtc` 已耗尽轮循环并排了 __scheduleRetry backoff，
-					//   重 fire 会绕过退避节流（新 fullInit 再包 __ensureRtc → 再排 retry 让 count++），
-					//   跳过让 backoff timer 自然接管
+					// - `_rtcRetryState`：`__ensureRtc` 失败已排了 __scheduleRetry 的窗口重试，
+					//   重 fire 会绕过 10s 冷却节流（新 fullInit 再包 __ensureRtc → 立即再 build），
+					//   跳过让 retry timer 自然接管
 					if (claw?.online && !_rtcInitInProgress.get(id) && !_rtcRetryState.has(id)) {
 						// sig offline 期间 __fullInit → __ensureRtc 的 sig gate (L820-823)
 						// 在 `_rtcInitInProgress.set` 之前早退，锁从不置位；每次 snapshot 都会
@@ -971,44 +970,41 @@ export const useClawsStore = defineStore('claws', {
 				closeRtcForClaw(id);
 				conn.clearRtc();
 
+				// 单次 build：失败由 __scheduleRetry 按固定冷却节奏接力（见 retry window 模型）。
+				// 这里不再背靠背烧多次 attempt——背靠背 build 中间无冷却，是过去 offer 风暴的源头之一。
 				let result = 'failed';
 				let bailedOut = false;
 				let bailReason = null;
-				for (let i = 0; i < RTC_BUILD_MAX_RETRIES; i++) {
-					if (!this.byId[id]) {
-						console.debug('[claws] ensureRtc: bail-out (claw removed) clawId=%s', id);
-						bailedOut = true;
-						bailReason = 'removed';
-						break;
-					}
-					// 中途翻 offline：立即停止继续烧 attempts
-					if (!this.byId[id].online) {
-						console.debug('[claws] ensureRtc: bail-out (claw offline mid-build) clawId=%s', id);
-						bailedOut = true;
-						bailReason = 'offline';
-						break;
-					}
-					// 中途 sig 掉线：停止继续烧 attempts，sig 回来时由 resume 路径重试
-					if (_sigOffline) {
-						console.debug('[claws] ensureRtc: bail-out (sig offline mid-build) clawId=%s', id);
-						bailedOut = true;
-						bailReason = 'sig_offline';
-						break;
-					}
+				if (!this.byId[id]) {
+					console.debug('[claws] ensureRtc: bail-out (claw removed) clawId=%s', id);
+					bailedOut = true;
+					bailReason = 'removed';
+				} else if (!this.byId[id].online) {
+					console.debug('[claws] ensureRtc: bail-out (claw offline pre-build) clawId=%s', id);
+					bailedOut = true;
+					bailReason = 'offline';
+				} else if (_sigOffline) {
+					console.debug('[claws] ensureRtc: bail-out (sig offline pre-build) clawId=%s', id);
+					bailedOut = true;
+					bailReason = 'sig_offline';
+				} else {
 					result = await initRtc(id, conn, this.__rtcCallbacks(id));
-					if (result === 'rtc') {
-						// post-await gate recheck：initRtc 期间 gate 可能翻转
-						// （offline handler 在此期间只能调 `conn.rtc?.pauseRestart()`，但
-						// initRtc 尚未 resolve 时 `conn.rtc=null`，pauseRestart 空转），
-						// 不补一次 recheck 则成功建成的 RTC 会越过关着的门，违反"门控关着预算冻结"
-						const cur = this.byId[id];
-						let postBailReason = null;
-						if (!cur) postBailReason = 'removed';
-						else if (cur !== clawAtStart) postBailReason = 'replaced';
-						else if (!cur.online) postBailReason = 'offline';
-						else if (_sigOffline) postBailReason = 'sig_offline';
-						if (postBailReason) {
-							console.debug('[claws] ensureRtc: post-await bail-out (%s) clawId=%s', postBailReason, id);
+					// post-await gate recheck：initRtc 期间 gate 可能翻转
+					// （offline handler 在此期间只能调 `conn.rtc?.pauseRestart()`，但
+					// initRtc 尚未 resolve 时 `conn.rtc=null`，pauseRestart 空转），
+					// 不补一次 recheck 则成功建成的 RTC 会越过关着的门，违反"门控关着预算冻结"。
+					// 失败路径同样要 recheck：build 失败 + 门翻转应走 bail（保持原"内层多轮循环
+					// 第二轮检查闸门 break"的语义），避免误把环境故障当 build 失败排重试或污染 phase。
+					const cur = this.byId[id];
+					let postBailReason = null;
+					if (!cur) postBailReason = 'removed';
+					else if (cur !== clawAtStart) postBailReason = 'replaced';
+					else if (!cur.online) postBailReason = 'offline';
+					else if (_sigOffline) postBailReason = 'sig_offline';
+					if (postBailReason) {
+						console.debug('[claws] ensureRtc: post-await bail-out (%s) clawId=%s', postBailReason, id);
+						if (result === 'rtc') {
+							// 成功后门翻转：必须 close 已建出的 rtc。
 							// `closeRtcForClaw` 同步调 `rtc.close()` → `__setState('closed')` →
 							// 触发 `__rtcCallbacks.onRtcStateChange('closed')` → 写 `rtcPhase='failed'` +
 							// `disconnectedAt=Date.now()`。对 offline bail，这是期望语义（online→true
@@ -1031,13 +1027,17 @@ export const useClawsStore = defineStore('claws', {
 									cur.disconnectedAt = prevDisconnectedAt;
 								}
 							}
-							bailedOut = true;
-							bailReason = postBailReason;
-							result = 'failed'; // 走 bailedOut 分支，不进入成功分支
 						}
-						break;
+						// 失败 + 门翻转：rtc 没建起来，无需再 close。phase 留给下方 bail 分支按 reason 处理：
+						// - sig_offline：bail 分支不改 phase，entry 写入的 'recovering'/'building' 保持
+						// - offline：bail 分支显式写 'failed'
+						// - removed/replaced：不动 store
+						bailedOut = true;
+						bailReason = postBailReason;
+						result = 'failed'; // 走 bailedOut 分支，不进入成功分支
+					} else if (result !== 'rtc') {
+						console.debug('[claws] ensureRtc: build failed clawId=%s', id);
 					}
-					console.debug('[claws] ensureRtc: build attempt %d/%d failed clawId=%s', i + 1, RTC_BUILD_MAX_RETRIES, id);
 				}
 
 				if (result === 'rtc') {
@@ -1065,7 +1065,7 @@ export const useClawsStore = defineStore('claws', {
 						const claw = this.byId[id];
 						if (claw) claw.rtcPhase = 'failed';
 					}
-					// bail = 本次 rebuild 意图作废，与成功分支 L933 对称清 pending force-refresh 标记。
+					// bail = 本次 rebuild 意图作废，与成功分支对称清 pending force-refresh 标记。
 					// 不清会导致后续由非 __resumeOnline 路径（timer/manualRetry/foreground）触发的
 					// __ensureRtc 成功分支 consume 残留条目，对 DC 延续的健康 PC 误 force_refresh。
 					// 例外：'replaced' 场景下 byId[id] 是**新** claw 对象，可能已通过自身的
@@ -1078,8 +1078,8 @@ export const useClawsStore = defineStore('claws', {
 				} else {
 					const claw = this.byId[id];
 					if (claw) claw.rtcPhase = 'failed';
-					console.warn('[claws] ensureRtc: all attempts exhausted, claw unreachable clawId=%s', id);
-					remoteLog(`claw.rtcFailed claw=${id} retries=${RTC_BUILD_MAX_RETRIES}`);
+					console.warn('[claws] ensureRtc: build failed, scheduling retry clawId=%s', id);
+					remoteLog(`claw.rtcFailed claw=${id}`);
 					this.__scheduleRetry(id);
 				}
 			} finally {
@@ -1145,41 +1145,53 @@ export const useClawsStore = defineStore('claws', {
 				});
 		},
 
-		/** 安排退避重试（__ensureRtc 失败或被动失败后调用） */
+		/**
+		 * 安排重试（__ensureRtc 失败或被动失败后调用）
+		 *
+		 * 窗口模型：第一次进入开窗 windowStartAt=now；窗口内每次失败排
+		 * RETRY_COOLDOWN_MS 后再 build；窗口超时后停手等用户手动重试。
+		 *
+		 * 边界：窗口剩余 < RETRY_COOLDOWN_MS 时仍按 cooldown 排定 timer，
+		 * 该 timer fire 时已过期 ≤ cooldown，对应 __ensureRtc 失败后下一轮
+		 * __scheduleRetry 命中 unreachable 分支退出。最坏情况是窗口过期后
+		 * 多发起 1 次 build，可接受。
+		 */
 		__scheduleRetry(id) {
 			const claw = this.byId[id];
 			if (!claw) return;
-			// sig gate：WS 不通时排退避无意义，sig 回来时由 resume 路径重试
+			// sig gate：WS 不通时排重试无意义，sig 回来时由 resume 路径重试
 			if (_sigOffline) return;
-			// online gate：offline 时不排队退避，online 回来由 __resumeOnline 分派
+			// online gate：offline 时不排队重试，online 回来由 __resumeOnline 分派
 			if (!claw.online) return;
+			const now = Date.now();
 			let state = _rtcRetryState.get(id);
 			if (!state) {
-				state = { count: 0, timer: null };
+				state = { windowStartAt: now, timer: null };
 				_rtcRetryState.set(id, state);
 			}
-			state.count++;
-			if (state.count > MAX_BACKOFF_RETRIES) {
-				console.warn('[claws] backoff retries exhausted (%d) clawId=%s', MAX_BACKOFF_RETRIES, id);
-				remoteLog(`claw.retryExhausted claw=${id} max=${MAX_BACKOFF_RETRIES}`);
+			const elapsed = now - state.windowStartAt;
+			if (elapsed >= RETRY_WINDOW_MS) {
+				console.warn('[claws] retry window exhausted (%dms) clawId=%s', RETRY_WINDOW_MS, id);
+				remoteLog(`claw.retryExhausted claw=${id} window=${RETRY_WINDOW_MS}ms`);
+				clearTimeout(state.timer);
 				_rtcRetryState.delete(id);
-				if (claw) { claw.retryCount = 0; claw.retryNextAt = 0; }
+				claw.retryCount = 0;
+				claw.retryNextAt = 0;
 				return;
 			}
-			const delay = Math.min(
-				RETRY_BACKOFF_BASE_MS * 2 ** (state.count - 1),
-				RETRY_BACKOFF_MAX_MS,
-			);
 			clearTimeout(state.timer);
-			if (claw) { claw.retryCount = state.count; claw.retryNextAt = Date.now() + delay; }
-			console.debug('[claws] scheduling backoff retry %d/%d in %dms clawId=%s',
-				state.count, MAX_BACKOFF_RETRIES, delay, id);
-			remoteLog(`claw.retryScheduled claw=${id} attempt=${state.count}/${MAX_BACKOFF_RETRIES} delay=${delay}ms`);
+			const delay = RETRY_COOLDOWN_MS;
+			const remaining = Math.max(0, RETRY_WINDOW_MS - elapsed);
+			claw.retryCount = (claw.retryCount || 0) + 1;
+			claw.retryNextAt = now + delay;
+			console.debug('[claws] scheduling retry in %dms (window remaining %dms) clawId=%s',
+				delay, remaining, id);
+			remoteLog(`claw.retryScheduled claw=${id} delay=${delay}ms window_remaining=${remaining}ms`);
 			state.timer = setTimeout(() => {
 				state.timer = null;
 				if (!this.byId[id] || this.byId[id]?.rtcPhase !== 'failed') {
 					this.__clearRetry(id);
-					// claw 被删 / 外部路径已恢复 RTC：本轮退避不再跑 __ensureRtc，
+					// claw 被删 / 外部路径已恢复 RTC：本轮重试不再跑 __ensureRtc，
 					// 悬挂的 pending force-refresh 标记显式清掉，避免极端时序下的永久残留
 					_pendingForceRefreshOnRebuild.delete(id);
 					return;
@@ -1188,7 +1200,7 @@ export const useClawsStore = defineStore('claws', {
 			}, delay);
 		},
 
-		/** 清除退避重试（成功 / claw 离线 / 外部事件重置时调用） */
+		/** 清除重试窗口（成功 / claw 离线 / 外部事件重置时调用） */
 		__clearRetry(id) {
 			const state = _rtcRetryState.get(id);
 			if (!state) return;

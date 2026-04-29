@@ -342,7 +342,7 @@ WebRTC ICE 层自动发送 STUN Binding Indication（约 15-30s 间隔），**�
 
 ### 8.2 RTC 连接恢复策略
 
-> **⚠ 已过时**：UI 侧 ICE restart 已移除（`webrtc-connection.js` 注释"ICE restart 已移除"）。RTC `failed` 直接由 `bots.store.__scheduleRetry` 退避重试（初始 10s，×2 增长，最大 120s，最多 8 次），不再使用 ICE restart。
+> **⚠ 已过时**：UI 侧 ICE restart 已移除（`webrtc-connection.js` 注释"ICE restart 已移除"）。RTC `failed` 直接由 `claws.store.__scheduleRetry` 走"5 分钟时间窗口 + 固定 10s 冷却"的窗口重试（实施细节以代码为准）。
 
 | 连接状态 | 处理方式 |
 |----------|---------|
@@ -387,14 +387,14 @@ WS 始终保持，职责：信令通道、业务交互（认证等）、Plugin-S
 
 ### 8.10 恢复策略汇总
 
-> **⚠ 部分已过时**：第 2-3 项 ICE restart 相关策略已不再使用，当前 RTC `failed` 直接走退避重试。
+> **⚠ 部分已过时**：第 2-3 项 ICE restart 相关策略已不再使用；窗口重试已替换原指数退避——以代码为准。
 
 | # | 场景 | 处理 |
 |---|------|------|
 | 1 | RTC `disconnected` | 等待 ICE 自动恢复（10s 超时后升级 failed） |
-| 2 | ~~RTC `failed`，信令 WS 在线~~ | ~~ICE restart（connId 不变，最多 5 次）~~ → 退避重试 full rebuild |
-| 3 | ~~ICE restart 耗尽~~ | ~~full rebuild（复用 connId，最多 3 次）~~ → 退避重试（10s→120s，最多 8 次） |
-| 4 | 退避重试耗尽 | reject 挂起请求（`RTC_LOST`），等下次 WS 重连重试 |
+| 2 | ~~RTC `failed`，信令 WS 在线~~ | ~~ICE restart（connId 不变，最多 5 次）~~ → 窗口重试 full rebuild |
+| 3 | ~~ICE restart 耗尽~~ | ~~full rebuild（复用 connId，最多 3 次）~~ → 窗口重试（5 分钟窗口 + 固定 10s 冷却） |
+| 4 | 窗口超时 | reject 挂起请求（`RTC_LOST`），等下次 WS 重连重试 |
 | 5 | 信令 WS 断开，RTC 仍 `connected` | RTC 不动，用户可继续交互 |
 | 6 | 信令 WS 重连，RTC 仍 `connected` | 跳过 initRtc，RTC 继续工作 |
 | 7 | 信令 WS 重连，RTC 已 `failed` | full rebuild（复用 connId） |

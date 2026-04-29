@@ -309,7 +309,7 @@ export const viMessages = {
 			rtcRelay: 'WebRTC: Relay',
 			rtcRelayProto: 'WebRTC: Relay · {protocol}',
 			rtcRelayBothSides: 'WebRTC: {browser} ↔ Relay ↔ {peer}',
-			rtcRetrying: 'WebRTC: kết nối thất bại, thử lại {n}/{max}…',
+			rtcRetrying: 'WebRTC: kết nối thất bại, đang thử lại…',
 			rtcRetryExhausted: 'WebRTC: kết nối thất bại (đã hết số lần thử)',
 			detailTitle: 'Chi tiết',
 			localCandidate: 'Ứng viên cục bộ',

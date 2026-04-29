@@ -309,7 +309,7 @@ export const jaMessages = {
 			rtcRelay: 'WebRTC：リレー',
 			rtcRelayProto: 'WebRTC：リレー · {protocol}',
 			rtcRelayBothSides: 'WebRTC：{browser} ↔ リレー ↔ {peer}',
-			rtcRetrying: 'WebRTC：接続失敗、再試行中 {n}/{max}…',
+			rtcRetrying: 'WebRTC：接続失敗、再試行中…',
 			rtcRetryExhausted: 'WebRTC：接続失敗（再試行の上限に達しました）',
 			detailTitle: '詳細',
 			localCandidate: 'ローカル候補',

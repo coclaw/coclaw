@@ -151,7 +151,7 @@
 import { useNotify } from '../composables/use-notify.js';
 import { unbindClawByUser } from '../services/claws.api.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
-import { useClawsStore, MAX_BACKOFF_RETRIES } from '../stores/claws.store.js';
+import { useClawsStore } from '../stores/claws.store.js';
 import { getReadyConn } from '../stores/get-ready-conn.js';
 import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
@@ -275,8 +275,8 @@ export default {
 			if (!claw) return '';
 			const phase = claw.rtcPhase;
 			if (phase === 'failed') {
-				if (claw.retryCount > 0) {
-					return this.$t('claws.conn.rtcRetrying', { n: claw.retryCount, max: MAX_BACKOFF_RETRIES });
+				if (claw.retryNextAt > 0) {
+					return this.$t('claws.conn.rtcRetrying');
 				}
 				return this.$t('claws.conn.rtcRetryExhausted');
 			}

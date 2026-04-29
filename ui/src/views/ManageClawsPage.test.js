@@ -34,7 +34,6 @@ vi.mock('../stores/get-ready-conn.js', () => ({
 }));
 
 vi.mock('../stores/claws.store.js', () => ({
-	MAX_BACKOFF_RETRIES: 8,
 	useClawsStore: () => ({
 		get items() { return mockBots; },
 		get byId() {
@@ -109,7 +108,7 @@ function createWrapper() {
 						'claws.conn.rtcBuilding': 'WebRTC: connecting…',
 						'claws.conn.rtcRecovering': 'WebRTC: recovering…',
 						'claws.conn.rtcRestarting': 'WebRTC: ICE restarting…',
-						'claws.conn.rtcRetrying': `WebRTC: connection failed, retry ${params?.n}/${params?.max}…`,
+						'claws.conn.rtcRetrying': 'WebRTC: connection failed, retrying…',
 						'claws.conn.rtcRetryExhausted': 'WebRTC: connection failed (retries exhausted)',
 						'claws.conn.rtcLan': 'WebRTC: LAN',
 						'claws.conn.rtcLanProto': `WebRTC: LAN · ${params?.protocol}`,
@@ -476,19 +475,16 @@ describe('connLabel', () => {
 		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: P2P');
 	});
 
-	test('rtcPhase=failed + retryCount>0 显示重试进度', async () => {
-		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'failed', retryCount: 3 }];
+	test('rtcPhase=failed + retryNextAt>0 显示重试中', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'failed', retryNextAt: Date.now() + 10_000 }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();
-		const text = wrapper.vm.connLabel('1');
-		expect(text).toContain('WebRTC');
-		expect(text).toContain('retry');
-		expect(text).toContain('3');
+		expect(wrapper.vm.connLabel('1')).toBe('WebRTC: connection failed, retrying…');
 	});
 
-	test('rtcPhase=failed + retryCount=0 显示重试耗尽', async () => {
-		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'failed', retryCount: 0 }];
+	test('rtcPhase=failed + retryNextAt=0 显示窗口耗尽', async () => {
+		mockBots = [{ id: '1', name: 'A', online: true, rtcPhase: 'failed', retryNextAt: 0 }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });
 		const wrapper = createWrapper();
 		await flushPromises();

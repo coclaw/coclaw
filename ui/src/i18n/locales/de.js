@@ -309,7 +309,7 @@ export const deMessages = {
 			rtcRelay: 'WebRTC: Relay',
 			rtcRelayProto: 'WebRTC: Relay · {protocol}',
 			rtcRelayBothSides: 'WebRTC: {browser} ↔ Relay ↔ {peer}',
-			rtcRetrying: 'WebRTC: Verbindung fehlgeschlagen, Versuch {n}/{max}…',
+			rtcRetrying: 'WebRTC: Verbindung fehlgeschlagen, wiederhole…',
 			rtcRetryExhausted: 'WebRTC: Verbindung fehlgeschlagen (alle Versuche aufgebraucht)',
 			detailTitle: 'Details',
 			localCandidate: 'Lokaler Kandidat',

@@ -309,7 +309,7 @@ export const hiMessages = {
 			rtcRelay: 'WebRTC: Relay',
 			rtcRelayProto: 'WebRTC: Relay · {protocol}',
 			rtcRelayBothSides: 'WebRTC: {browser} ↔ Relay ↔ {peer}',
-			rtcRetrying: 'WebRTC: कनेक्शन विफल, पुनः प्रयास {n}/{max}…',
+			rtcRetrying: 'WebRTC: कनेक्शन विफल, पुनः प्रयास हो रहा है…',
 			rtcRetryExhausted: 'WebRTC: कनेक्शन विफल (सभी पुनः प्रयास समाप्त)',
 			detailTitle: 'विवरण',
 			localCandidate: 'लोकल कैंडिडेट',
