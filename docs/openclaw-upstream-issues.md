@@ -22,6 +22,7 @@
 | [#66532](https://github.com/openclaw/openclaw/issues/66532) | Feature | Expose `abortEmbeddedPiRun` family on `api.runtime.agent` | Open | 2026-04-14 | 插件获取 abort 能力只能走侧门，同上 workaround |
 | [#66534](https://github.com/openclaw/openclaw/issues/66534) | Bug | `lifecycle:end` event payload missing `aborted` and `stopReason` on pi-embedded path | Open | 2026-04-14 | UI 无法从 lifecycle 事件本身区分 abort vs 正常完成；workaround：CoClaw UI 从 `agent()` RPC completion frame 的 `result.meta.aborted` 判定，见 `docs/designs/agent-run-cancellation.md` |
 | [#66535](https://github.com/openclaw/openclaw/issues/66535) | Bug | `/compact` command cannot be canceled while in progress | Open | 2026-04-14 | `/compact` 进行中无法中断；workaround：CoClaw UI 在 `/compact` 期间禁用取消按钮（`ChatInput.cancelDisabled` prop），见 `ui/src/components/ChatInput.vue` + `ui/src/views/ChatPage.vue` |
+| [#74325](https://github.com/openclaw/openclaw/issues/74325) | Bug | gateway restart blocks main thread for ~75s — `sidecars.channels` takes 45s, then a second ~28s freeze right after "gateway ready" | Open | 2026-04-29 | gateway 重启后 ~80 秒内插件无法服务；bridge 的 gateway WS 握手撞上 30s 超时被关闭后再退避 5s 重试；UI 端 DC 已通但常规 RPC 报 `gateway_not_ready`。暂无 workaround；插件侧可考虑加客户端握手超时与扩大 `__waitGatewayReady` 容忍 |
 
 ## 已提交 issues 组：Agent Run 取消相关
 
