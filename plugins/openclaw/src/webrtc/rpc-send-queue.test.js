@@ -39,9 +39,11 @@ function makeMockDc({ bufferedAmount = 0, readyState = 'open' } = {}) {
 
 function makeMockLogger() {
 	const warnings = [];
+	const infos = [];
 	return {
 		warnings,
-		info() {},
+		infos,
+		info(msg) { infos.push(String(msg)); },
 		warn(msg) { warnings.push(String(msg)); },
 		error() {},
 		debug() {},
@@ -224,7 +226,7 @@ test('send: queueBytes >= MAX_QUEUE_BYTES → drop 新消息，不影响已入�
 	const ok = q.send('{"small":true}');
 	assert.equal(ok, false);
 	assert.equal(q.droppedCount, 1);
-	assert.ok(logger.warnings.some(w => w.includes('queue-full')));
+	assert.ok(logger.warnings.some(w => w.includes('overflow-start')));
 	// overflow-start 应被触发
 	assert.equal(q.queueOverflowActive, true);
 	assert.ok(remoteLogBuffer.some(e => e.text.includes('rpc-queue.overflow-start')));
@@ -233,6 +235,60 @@ test('send: queueBytes >= MAX_QUEUE_BYTES → drop 新消息，不影响已入�
 	dc.bufferedAmount = 0;
 	q.onBufferedAmountLow();
 	assert.equal(dc.sent.length, 1);
+});
+
+test('send: overflow 持续期间多次 drop 只 warn 一次（避免 DC 卡死时刷屏）', () => {
+	resetRemoteLog();
+	const { logger, q } = makeQueue({}, { maxMessageSize: 65536 });
+	// 预置溢出（模拟 UI 离线 + ICE 失败 → DC 不 drain，队列卡满）
+	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES + 1));
+	q.queueBytes = MAX_QUEUE_BYTES + 1;
+
+	// 连续 100 次 drop，应只产生 1 次 overflow-start warn
+	for (let i = 0; i < 100; i += 1) q.send(`{"i":${i}}`);
+
+	const startWarns = logger.warnings.filter(w => w.includes('overflow-start'));
+	assert.equal(startWarns.length, 1, 'overflow-start warn should fire only once');
+	const startRemoteLogs = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.overflow-start'));
+	assert.equal(startRemoteLogs.length, 1, 'overflow-start remoteLog should fire only once');
+	// overflow-start 内容契约：携带触发瞬间的 queueBytes
+	assert.match(startWarns[0], /queueBytes=\d+/);
+	assert.match(startRemoteLogs[0].text, /queueBytes=\d+/);
+	// overflow 持续期间不应产生任何 overflow-end log（DC 没机会 drain）
+	assert.equal(logger.infos.filter(s => s.includes('overflow-end')).length, 0);
+	assert.equal(remoteLogBuffer.filter(e => e.text.includes('overflow-end')).length, 0);
+	// 但 dropped 计数仍累加
+	assert.equal(q.droppedCount, 100);
+});
+
+test('send: overflow 持续期间 single-msg-oversize 仍每次 warn（不被静默吞掉）', () => {
+	resetRemoteLog();
+	const { logger, q } = makeQueue({}, { maxMessageSize: 65536 });
+	// 预置溢出
+	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES + 1));
+	q.queueBytes = MAX_QUEUE_BYTES + 1;
+	// 先打一次 queue-full 进入 overflow 状态
+	q.send('{"trigger":1}');
+	assert.equal(q.queueOverflowActive, true);
+	const baselineWarns = logger.warnings.length;
+
+	// overflow 期间连续 3 条单条超大消息：每条都应 warn（应用 bug，不该被合并）
+	const huge = jsonOfBytes(MAX_SINGLE_MSG_BYTES + 100);
+	for (let i = 0; i < 3; i += 1) {
+		const ok = q.send(huge);
+		assert.equal(ok, false);
+	}
+	const oversizeWarns = logger.warnings
+		.slice(baselineWarns)
+		.filter(w => w.includes('single-msg-oversize'));
+	assert.equal(oversizeWarns.length, 3, 'single-msg-oversize warn must fire on every occurrence');
+	// 但 overflow 状态机不受影响（仍是 active，不需要再 emit start）
+	assert.equal(q.queueOverflowActive, true);
+	assert.equal(
+		remoteLogBuffer.filter(e => e.text.includes('overflow-start')).length,
+		1,
+		'single-msg-oversize must not retrigger overflow-start',
+	);
 });
 
 test('send: 单条消息在队列未满（queueBytes < MAX）但自身超过 MAX 时仍可入队（overshoot）', () => {
@@ -403,23 +459,33 @@ test('remoteLog: 首次进入溢出 → overflow-start 一次', () => {
 	assert.equal(startCount2, 1);
 });
 
-test('remoteLog: drain 排空至 < MAX → overflow-end 一次', () => {
+test('remoteLog: drain 排空至 < MAX → overflow-end 一次（warn+info+remoteLog 同步翻转，含累计 dropped）', () => {
 	resetRemoteLog();
-	const { dc, q } = makeQueue({}, { maxMessageSize: 100 });
-	// 制造 overflow：入队 > MAX 且触发 drop
+	const { dc, logger, q } = makeQueue({}, { maxMessageSize: 100 });
+	// 制造 overflow：入队 > MAX 且累加多次 drop
 	const bigChunk = Buffer.alloc(MAX_QUEUE_BYTES + 50);
 	q.queue.push(bigChunk);
 	q.queueBytes = bigChunk.length;
-	q.send('{"trigger":"drop"}'); // 引发 overflow-start
+	for (let i = 0; i < 5; i += 1) q.send(`{"drop":${i}}`); // 5 次 drop，仅首次 overflow-start
 	assert.equal(q.queueOverflowActive, true);
+	assert.equal(q.droppedCount, 5);
 
 	// drain 应把 bigChunk 发出，queueBytes 归 0，触发 overflow-end
 	dc.bufferedAmount = 0;
 	q.onBufferedAmountLow();
 	assertQueueInvariant(q, 'after drain: ');
 	assert.equal(q.queueOverflowActive, false);
-	const endCount = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.overflow-end')).length;
-	assert.equal(endCount, 1);
+
+	// remoteLog: overflow-end 一次，内容必须带累计 dropped/droppedBytes
+	const endLogs = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.overflow-end'));
+	assert.equal(endLogs.length, 1);
+	assert.match(endLogs[0].text, /dropped=5\b/);
+	assert.match(endLogs[0].text, /droppedBytes=\d+/);
+
+	// 本地 logger.info 与 remoteLog 同步翻转（一次），同样带累计字段
+	const infoEnds = logger.infos.filter(s => s.includes('overflow-end'));
+	assert.equal(infoEnds.length, 1);
+	assert.match(infoEnds[0], /dropped=5\b/);
 });
 
 test('remoteLog: overflow 循环（start → end → start 再次）状态机双向可翻转', () => {
@@ -624,7 +690,7 @@ test('边界：queueBytes === MAX_QUEUE_BYTES 时新消息被 drop', () => {
 	const ok = q.send('{"x":1}');
 	assert.equal(ok, false);
 	assert.equal(q.droppedCount, 1);
-	assert.ok(logger.warnings.some((w) => w.includes('queue-full')));
+	assert.ok(logger.warnings.some((w) => w.includes('overflow-start')));
 });
 
 test('边界：queueBytes = MAX_QUEUE_BYTES - 1 时新消息仍可入队', () => {

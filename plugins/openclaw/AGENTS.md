@@ -84,7 +84,7 @@ binary 解析由 pion-node 内部处理（`PION_IPC_BIN` env → npm 平台包 �
 
 - **阈值**：`DC_HIGH_WATER_MARK=1 MB`（暂停 fast-path/drain），`DC_LOW_WATER_MARK=256 KB`（`bufferedAmountLowThreshold` → `bufferedamountlow` 事件），`MAX_QUEUE_BYTES=10 MB`（软上限），`MAX_SINGLE_MSG_BYTES=50 MB`（硬上限，对齐 `dc-chunking.js` 的 `MAX_REASSEMBLY_BYTES`）。
 - **接受规则**：`queueBytes >= MAX_QUEUE_BYTES` 时 drop 新消息（允许之前单条溢出的背包尾巴自然消化）；`totalBytes > MAX_SINGLE_MSG_BYTES` 时直接 drop。
-- **drop 上报**：`logger.warn` 每次都记录（本地日志）；`remoteLog` 仅在"空→满"/"满→空"状态转换与 `close()` 汇总时触发，避免刷屏。
+- **drop 上报**：`logger`（warn/info）与 `remoteLog` 均仅在"空→满"/"满→空"状态翻转点打一次（overflow-end 携带累计 dropped/droppedBytes）；overflow 持续期间所有 queue-full drop 完全静默，只累加 `droppedCount`/`droppedBytes`，等下次状态翻转或 `close()` 汇总时一并上报。`single-msg-oversize` drop 不受 overflow 状态影响，每次照常 warn。
 - **API**：同步 fire-and-forget — `queue.send(jsonStr)` 返回 `true=accepted/false=dropped`，调用方可忽略返回值。
 - **生命周期**：`dc.onclose` 调 `queue.close()` + 置 `session.rpcSendQueue=null`；ICE restart 复用 DC 时队列自动保留并在 BAL 事件上恢复 drain。
 

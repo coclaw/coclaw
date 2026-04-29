@@ -83,11 +83,11 @@ export class RpcSendQueue {
 		if (this.queueBytes >= MAX_QUEUE_BYTES) {
 			this.droppedCount += 1;
 			this.droppedBytes += totalBytes;
-			this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] drop reason=queue-full size=${totalBytes} queueBytes=${this.queueBytes}`);
-			// 诊断日志：定位后台长时间占队的事件来源。需要时临时打开
-			// this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] dropped-payload ${jsonStr}`);
+			// 仅状态翻转点打 log（warn + remoteLog 各一次）；overflow 持续期间所有 drop 静默累加，
+			// 避免 UI 离线 + ICE 失败导致 DC 永远不 drain 时的日志刷屏
 			if (!this.queueOverflowActive) {
 				this.queueOverflowActive = true;
+				this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] overflow-start queueBytes=${this.queueBytes}`);
 				remoteLog(`rpc-queue.overflow-start${this.__tagSuffix()} queueBytes=${this.queueBytes}`);
 			}
 			return false;
@@ -173,9 +173,10 @@ export class RpcSendQueue {
 			}
 			this.queue.shift();
 			this.queueBytes -= chunk.length;
-			// 满 → 未满 状态转换
+			// 满 → 未满 状态转换：打一条带累计数的 log，与 overflow-start 对称
 			if (this.queueOverflowActive && this.queueBytes < MAX_QUEUE_BYTES) {
 				this.queueOverflowActive = false;
+				this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] overflow-end dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`);
 				remoteLog(`rpc-queue.overflow-end${this.__tagSuffix()} dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`);
 			}
 		}
