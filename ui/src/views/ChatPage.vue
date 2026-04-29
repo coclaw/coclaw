@@ -616,11 +616,6 @@ export default {
 				this.notify.error(this.$t('topic.createFailed'));
 				return;
 			}
-			// 插件版本过低时话题功能不可用
-			if (this.clawsStore.byId[String(clawId)]?.pluginVersionOk === false) {
-				this.notify.warning(this.$t('pluginUpgrade.outdated'));
-				return;
-			}
 
 			this.__creatingTopic = true;
 			const oldDraftKey = this.draftKey;
@@ -686,10 +681,6 @@ export default {
 		},
 
 		openFiles() {
-			if (this.clawsStore.byId[String(this.currentClawId)]?.pluginVersionOk === false) {
-				this.notify.warning(this.$t('pluginUpgrade.outdated'));
-				return;
-			}
 			this.$router.push({
 				name: 'files',
 				params: { clawId: this.currentClawId, agentId: this.currentAgentId },

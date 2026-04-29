@@ -323,9 +323,6 @@ export const enMessages = {
 		lastAlive: 'Last seen',
 		viewMore: 'View more ({n})',
 	},
-	pluginUpgrade: {
-		outdated: 'This Claw\'s plugin is outdated and some features may not work. Please run: openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: 'New topic',
 		createFailed: 'Failed to create topic',

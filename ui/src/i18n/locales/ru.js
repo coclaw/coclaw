@@ -323,9 +323,6 @@ export const ruMessages = {
 		lastAlive: 'Последняя активность',
 		viewMore: 'Показать ещё ({n})',
 	},
-	pluginUpgrade: {
-		outdated: 'Плагин этого Claw устарел, и некоторые функции могут не работать. Выполните: openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: 'Новая тема',
 		createFailed: 'Не удалось создать тему',

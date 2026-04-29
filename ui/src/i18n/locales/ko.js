@@ -323,9 +323,6 @@ export const koMessages = {
 		lastAlive: '마지막 확인',
 		viewMore: '더 보기 ({n})',
 	},
-	pluginUpgrade: {
-		outdated: '이 Claw의 플러그인이 오래되어 일부 기능이 작동하지 않을 수 있습니다. 다음 명령어를 실행하세요: openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: '새 주제',
 		createFailed: '주제 생성 실패',

@@ -352,9 +352,6 @@ test.describe('文件浏览器 @file', () => {
 	test('ChatPage header 有文件管理入口', async ({ page }) => {
 		const claw = await setup(page, test);
 
-		const pluginOk = await evalStore(page, 'claws', `return store.byId['${claw.clawId}']?.pluginVersionOk`);
-		test.skip(pluginOk === false, 'Plugin version outdated');
-
 		await page.goto(`/chat/${claw.clawId}/${claw.agentId}`);
 		await expect(page.getByRole('heading', { level: 1 }).last()).toBeVisible({ timeout: 15_000 });
 
@@ -369,9 +366,6 @@ test.describe('文件浏览器 @file', () => {
 
 	test('ManageClawsPage AgentCard 有文件管理入口', async ({ page }) => {
 		const claw = await setup(page, test);
-
-		const pluginOk = await evalStore(page, 'claws', `return store.byId['${claw.clawId}']?.pluginVersionOk`);
-		test.skip(pluginOk === false, 'Plugin version outdated');
 
 		await page.goto('/claws');
 		// 等待 AgentCard 渲染

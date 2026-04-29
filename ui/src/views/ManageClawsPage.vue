@@ -326,19 +326,12 @@ export default {
 			this.expandedDetails[id] = !this.expandedDetails[id];
 		},
 		goToFiles(clawId, agentId) {
-			if (this.clawsStore.byId[String(clawId)]?.pluginVersionOk === false) {
-				this.notify.warning(this.$t('pluginUpgrade.outdated'));
-				return;
-			}
 			this.$router.push({
 				name: 'files',
 				params: { clawId: String(clawId), agentId: String(agentId) },
 			});
 		},
 		goToAgent(clawId, agentId) {
-			if (this.clawsStore.byId[String(clawId)]?.pluginVersionOk === false) {
-				this.notify.warning(this.$t('pluginUpgrade.outdated'));
-			}
 			this.$router.push({
 				name: 'chat',
 				params: { clawId: String(clawId), agentId },

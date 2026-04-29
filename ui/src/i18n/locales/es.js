@@ -323,9 +323,6 @@ export const esMessages = {
 		lastAlive: 'Última vez visto',
 		viewMore: 'Ver más ({n})',
 	},
-	pluginUpgrade: {
-		outdated: 'El plugin de este Claw está desactualizado y algunas funciones pueden no funcionar. Por favor ejecuta: openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: 'Nuevo tema',
 		createFailed: 'Error al crear el tema',

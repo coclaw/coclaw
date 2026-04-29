@@ -323,9 +323,6 @@ export const viMessages = {
 		lastAlive: 'Hoạt động lần cuối',
 		viewMore: 'Xem thêm ({n})',
 	},
-	pluginUpgrade: {
-		outdated: 'Plugin của Claw này đã lỗi thời và một số tính năng có thể không hoạt động. Vui lòng chạy: openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: 'Chủ đề mới',
 		createFailed: 'Tạo chủ đề thất bại',

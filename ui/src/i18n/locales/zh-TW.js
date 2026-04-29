@@ -323,9 +323,6 @@ export const zhTWMessages = {
 		lastAlive: '最後上線',
 		viewMore: '查看更多（{n}）',
 	},
-	pluginUpgrade: {
-		outdated: '該 Claw 的插件版本過低，部分功能不可用。請執行：openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: '新話題',
 		createFailed: '建立話題失敗',

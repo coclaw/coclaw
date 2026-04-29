@@ -75,8 +75,8 @@ ClawState 结构：
 	dcReady: false,         // DataChannel 可用
 	// 初始化标记
 	initialized: false,     // 区分首次连接 vs 重连
-	// 插件
-	pluginVersionOk: null, pluginInfo: null, rtcTransportInfo: null,
+	// 插件信息（来自 plugin 主动推送的 coclaw.info.updated 事件 + __fullInit 启动兜底拉取）
+	pluginInfo: null, rtcTransportInfo: null,
 }
 ```
 

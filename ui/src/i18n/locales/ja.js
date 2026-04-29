@@ -323,9 +323,6 @@ export const jaMessages = {
 		lastAlive: '最終確認',
 		viewMore: 'さらに表示（{n}）',
 	},
-	pluginUpgrade: {
-		outdated: 'この Claw のプラグインが古いため、一部の機能が動作しない可能性があります。以下を実行してください：openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: '新しいトピック',
 		createFailed: 'トピックの作成に失敗しました',

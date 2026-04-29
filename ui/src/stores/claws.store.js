@@ -2,7 +2,6 @@ import { defineStore } from 'pinia';
 
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { BRIEF_DISCONNECT_MS } from '../services/claw-connection.js';
-import { checkPluginVersion } from '../utils/plugin-version.js';
 import { initRtc, closeRtcForClaw } from '../services/webrtc-connection.js';
 import { remoteLog } from '../services/remote-log.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
@@ -108,7 +107,7 @@ const _rtcRetryState = new Map();
 /** 运行时字段（server snapshot / SSE 事件不应覆盖） */
 const RUNTIME_FIELDS = new Set([
 	'dcReady', 'rtcPhase', 'lastAliveAt', 'disconnectedAt',
-	'initialized', 'pluginVersionOk', 'pluginInfo', 'rtcTransportInfo',
+	'initialized', 'pluginInfo', 'rtcTransportInfo',
 	'rtcPeerTransportInfo',
 	'retryCount', 'retryNextAt',
 ]);
@@ -197,8 +196,7 @@ function createClawState(claw) {
 		disconnectedAt: 0,
 		// 初始化标记（首次 vs 重连）
 		initialized: false,
-		// 插件状态（运行时写入）
-		pluginVersionOk: null,
+		// 插件信息（来自 plugin 主动推送的 coclaw.info.updated 事件）
 		pluginInfo: null,
 		rtcTransportInfo: null,
 		// plugin 本端 transport（含 relayProtocol），通过 coclaw.rtc.peerTransport 事件更新
@@ -587,13 +585,15 @@ export const useClawsStore = defineStore('claws', {
 				_lifecycle.dispatchAgentEvent(payload);
 			});
 
-			// event:coclaw.info.updated — claw 实例名变更（来自 plugin 广播）
+			// event:coclaw.info.updated — plugin 主动推送的实例信息（含版本号）
+			// patch 语义：仅更新 payload 中实际出现的字段，缺失字段保留原值
 			conn.on('event:coclaw.info.updated', (payload) => {
 				const claw = this.byId[id];
 				if (!claw) return;
 				if (!claw.pluginInfo) claw.pluginInfo = {};
 				if (payload?.name !== undefined) claw.pluginInfo.name = payload.name;
 				if (payload?.hostName !== undefined) claw.pluginInfo.hostName = payload.hostName;
+				if (payload?.pluginVersion !== undefined) claw.pluginInfo.version = payload.pluginVersion;
 			});
 
 			// event:coclaw.rtc.peerTransport — plugin 本端 ICE candidate 信息（含 relayProtocol）
@@ -903,20 +903,9 @@ export const useClawsStore = defineStore('claws', {
 			if (!force && gap < BRIEF_DISCONNECT_MS) return;
 			console.debug('[claws] reconnect%s gap=%dms → refresh stores clawId=%s',
 				force ? ' (force)' : '', gap, id);
-			// 刷新 pluginInfo（含 claw name）
-			const conn = useClawConnections().get(id);
-			if (conn) {
-				checkPluginVersion(conn).then((info) => {
-					const b = this.byId[id];
-					if (b) {
-						b.pluginVersionOk = info.ok;
-						b.pluginInfo = { version: info.version, clawVersion: info.clawVersion, name: info.name, hostName: info.hostName };
-					}
-				}).catch(() => {});
-			}
+			// pluginInfo 由 plugin 主动推送的 coclaw.info.updated 事件维护，不在此处主动拉取
 			// refreshClawResources 现已 async（topics/dashboard 即时并发，sessions 等 loadAgents）；
-			// 内部各 load 已自带 .catch，外层 promise 实际不会 reject——这里 .catch 仅作 unhandled-rejection 兜底，
-			// 与上方 checkPluginVersion(...).catch 形态对齐
+			// 内部各 load 已自带 .catch，外层 promise 实际不会 reject——这里 .catch 仅作 unhandled-rejection 兜底
 			_lifecycle.refreshClawResources(id).catch(() => {});
 		},
 
@@ -1099,8 +1088,11 @@ export const useClawsStore = defineStore('claws', {
 		},
 
 		/**
-		 * 首次连接初始化：建立 RTC → 版本检查 → 数据加载
-		 * 所有业务 RPC 通过 DC 发送，因此必须先等 RTC 就绪
+		 * 首次连接初始化：建立 RTC → 拉一次 pluginInfo 作启动兜底 → 数据加载
+		 * 所有业务 RPC 通过 DC 发送，因此必须先等 RTC 就绪。
+		 * pluginInfo 来源有两条互补路径：
+		 *   - 主动拉取（本函数 fire-and-forget）：UI 启动时确保拿到 plugin 信息快照（覆盖事件晚到/错过场景）
+		 *   - 事件推送（coclaw.info.updated）：plugin 主动通知信息变更（增量）
 		 */
 		async __fullInit(id, conn) {
 			remoteLog(`claw.fullInit claw=${id}`);
@@ -1114,18 +1106,43 @@ export const useClawsStore = defineStore('claws', {
 			await this.__ensureRtc(id);
 			if (!conn.rtc?.isReady) throw new Error('RTC not available');
 
-			// DC 就绪，后续 RPC 走 DataChannel
-			const info = await checkPluginVersion(conn);
-			if (claw) {
-				claw.pluginVersionOk = info.ok;
-				claw.pluginInfo = { version: info.version, clawVersion: info.clawVersion, name: info.name, hostName: info.hostName };
-			}
-			remoteLog(`claw.pluginVersion claw=${id} ok=${info.ok} v=${info.version || '?'}`);
-			if (!info.ok) {
-				console.warn('[claws] plugin version %s for clawId=%s', info.version ? 'outdated' : 'check failed (claw may be offline)', id);
-				if (!info.version) throw new Error('Claw is offline');
-			}
+			this.__loadPluginInfo(id);
+
 			await _lifecycle.initClawResources(id);
+		},
+
+		/**
+		 * 拉取一次 plugin 实例信息写入 store，fire-and-forget 模式。
+		 *
+		 * 仅做信息拉取，**不做版本判断**——失败时不写、不动 pluginInfo 现有值，
+		 * 不抛错也不影响 UI 任何拦截/初始化行为。这与 plugin 主动推送的
+		 * `coclaw.info.updated` 事件互补：事件覆盖运行时变更，本函数覆盖启动兜底。
+		 *
+		 * 失败原因（任意一种都不可作为"插件不可用"结论）：
+		 *   - 通道抖动 / RPC 超时 / DC 暂时不通
+		 *   - 老版本插件未实现该方法
+		 *   - 对端 plugin 在响应前重启
+		 * @param {string} id - clawId
+		 */
+		__loadPluginInfo(id) {
+			const conn = useClawConnections().get(id);
+			if (!conn) return;
+			conn.request('coclaw.info', {})
+				.then((info) => {
+					const claw = this.byId[id];
+					if (!claw) return;
+					// patch 语义：只覆盖响应中实际出现的字段
+					const next = { ...(claw.pluginInfo || {}) };
+					if (info?.version !== undefined) next.version = info.version;
+					if (info?.clawVersion !== undefined) next.clawVersion = info.clawVersion;
+					if (info?.name !== undefined) next.name = info.name;
+					if (info?.hostName !== undefined) next.hostName = info.hostName;
+					claw.pluginInfo = next;
+				})
+				.catch((err) => {
+					// 拉取失败时**不动** pluginInfo——已有值（来自事件推送或上次拉取）继续保留
+					console.debug('[claws] loadPluginInfo failed clawId=%s: %s', id, err?.message);
+				});
 		},
 
 		/** 安排退避重试（__ensureRtc 失败或被动失败后调用） */

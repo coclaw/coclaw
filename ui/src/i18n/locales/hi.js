@@ -323,9 +323,6 @@ export const hiMessages = {
 		lastAlive: 'अंतिम बार देखा गया',
 		viewMore: 'और देखें ({n})',
 	},
-	pluginUpgrade: {
-		outdated: 'इस Claw का प्लगिन पुराना है और कुछ फीचर काम नहीं कर सकते। कृपया चलाएं: openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: 'नया टॉपिक',
 		createFailed: 'टॉपिक बनाना विफल',

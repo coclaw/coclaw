@@ -323,9 +323,6 @@ export const deMessages = {
 		lastAlive: 'Zuletzt gesehen',
 		viewMore: 'Mehr anzeigen ({n})',
 	},
-	pluginUpgrade: {
-		outdated: 'Das Plugin dieses Claws ist veraltet und einige Funktionen funktionieren möglicherweise nicht. Bitte ausführen: openclaw plugins update openclaw-coclaw',
-	},
 	topic: {
 		newTopic: 'Neues Thema',
 		createFailed: 'Thema konnte nicht erstellt werden',

@@ -39,7 +39,7 @@ vi.mock('../stores/claws.store.js', () => ({
 		get items() { return mockBots; },
 		get byId() {
 			const map = {};
-			for (const b of mockBots) map[String(b.id)] = { ...b, pluginVersionOk: null, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: b.rtcTransportInfo ?? null, rtcPeerTransportInfo: b.rtcPeerTransportInfo ?? null, retryCount: b.retryCount ?? 0, retryNextAt: b.retryNextAt ?? 0 };
+			for (const b of mockBots) map[String(b.id)] = { ...b, rtcPhase: b.rtcPhase ?? 'idle', rtcTransportInfo: b.rtcTransportInfo ?? null, rtcPeerTransportInfo: b.rtcPeerTransportInfo ?? null, retryCount: b.retryCount ?? 0, retryNextAt: b.retryNextAt ?? 0 };
 			return map;
 		},
 		fetched: true, // SSE 快照已到达
