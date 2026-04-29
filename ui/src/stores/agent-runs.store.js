@@ -120,6 +120,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			// 清理同一 runKey 的旧 run——先 endRun 唤起 onEnd，避免旧 runAgent 的 finalPromise 泄漏
 			const oldRunId = this.runKeyIndex[runKey];
 			if (oldRunId && this.runs[oldRunId]) {
+				// 诊断信号：在 server 日志里串起新旧 run 的抢占关系
+				remoteLog(`agent.run.preempt runKey=${runKey} newRunId=${runId} oldRunId=${oldRunId}`);
 				this.__cleanupRun(oldRunId, 'superseded');
 			}
 
@@ -244,6 +246,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const runId = this.runKeyIndex[runKey];
 			if (!runId) return;
 			if (expectedRunId && runId !== expectedRunId) return;
+			// 诊断信号：streamingMsgs 占位真正释放的瞬间，对应用户看到 "任务未完成" 替换持久化条目
+			remoteLog(`agent.run.drop runKey=${runKey} runId=${runId}`);
 			this.__cleanupRun(runId);
 		},
 
@@ -391,12 +395,17 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		/**
 		 * 终结 run：标记 ended、停 watcher、唤醒 finalPromise；不释放 streamingMsgs（等 dropRun）
 		 * @param {string} runId
-		 * @param {string} reason - 'rpc' | 'lifecycle' | 'wait' | 'failed' | 'timeout' | 'manual'
+		 * @param {string} reason - 'rpc' | 'lifecycle' | 'wait' | 'failed' | 'timeout' |
+		 *   'manual' | 'superseded' | 'claw-removed' | 'logout' | 'cleanup'
 		 */
 		__endRun(runId, reason) {
 			const run = this.runs[runId];
 			if (!run || run.ended) return;
 			console.debug('[agentRuns] endRun runId=%s reason=%s', runId, reason);
+			// 诊断信号：所有 run 终结路径的统一上报点（rpc / lifecycle / wait / failed /
+			// timeout / manual / superseded / claw-removed / logout / cleanup）。
+			// 与 server 端 RTC/RPC 时间戳对齐用，定位"任务未完成"误判的根因路径
+			remoteLog(`agent.run.end runId=${runId} reason=${reason}`);
 			run.ended = true;
 			// 防御性清 grace pending：覆盖 settle('manual') / __cleanupRun 等绕过 helper 的路径
 			if (run.__pendingEnd) {

@@ -1125,6 +1125,166 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
+	// run 终结路径诊断 remoteLog（agent.run.end / agent.run.drop / agent.run.preempt）
+	// =====================================================================
+	// 所有判 run 结束的路径必须经 __endRun，统一在此打 'agent.run.end' 信号；
+	// dropRun 真正释放 streamingMsgs 时打 'agent.run.drop'；register 抢占同 runKey
+	// 旧 run 时打 'agent.run.preempt' 串起新旧 runId。覆盖目的是让服务端日志能定位
+	// "任务未完成" 误判走的是哪条结束路径。
+
+	describe('agent.run.end remoteLog', () => {
+		const findEnd = (runId, reason) => remoteLogCalls.find(
+			(t) => t === `agent.run.end runId=${runId} reason=${reason}`,
+		);
+
+		test('reason="rpc"：信号 1 RPC 二阶段 ok 到达', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			ctrl.finalResolve({ status: 'ok' });
+			await runPromise;
+			expect(findEnd('run-1', 'rpc')).toBeTruthy();
+		});
+
+		test('reason="lifecycle"：信号 2 grace 期满', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			vi.advanceTimersByTime(RPC_GRACE_MS);
+			expect(findEnd('run-1', 'lifecycle')).toBeTruthy();
+		});
+
+		test('reason="wait"：信号 3 agent.wait 终态 + grace 期满', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			ctrl.waitResolve({ status: 'ok' });
+			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
+			await runPromise;
+			expect(findEnd('run-1', 'wait')).toBeTruthy();
+		});
+
+		test('reason="failed"：信号 4 主 RPC reject', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			const err = new Error('dc closed');
+			err.code = 'DC_CLOSED';
+			ctrl.finalReject(err);
+			await runPromise;
+			expect(findEnd('run-1', 'failed')).toBeTruthy();
+		});
+
+		test('reason="timeout"：post-acceptance 24h 兜底', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			vi.advanceTimersByTime(POST_ACCEPT_TIMEOUT_MS);
+			expect(findEnd('run-1', 'timeout')).toBeTruthy();
+		});
+
+		test('reason="manual"：手动 settle', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settle('1::agent:main:main');
+			expect(findEnd('run-1', 'manual')).toBeTruthy();
+		});
+
+		test('reason="superseded"：同 runKey 旧 run 被新 run 抢占', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-old', runKey: 'k-same' });
+			registerRun(store, { runId: 'run-new', runKey: 'k-same' });
+			expect(findEnd('run-old', 'superseded')).toBeTruthy();
+		});
+
+		test('reason="claw-removed"：claw 被移除', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-1', clawId: '1' });
+			store.removeByClaw('1');
+			expect(findEnd('run-1', 'claw-removed')).toBeTruthy();
+		});
+
+		test('reason="logout"：resetAll 登出清理', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.resetAll();
+			expect(findEnd('run-1', 'logout')).toBeTruthy();
+		});
+
+		test('已 ended run 第二次 endRun 不重复打 log（去重）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			vi.advanceTimersByTime(RPC_GRACE_MS); // → endRun('lifecycle') 第一次打
+			const before = remoteLogCalls.filter((t) => t.startsWith('agent.run.end ')).length;
+
+			store.settle('1::agent:main:main'); // 已 ended，不应再走 __endRun
+
+			const after = remoteLogCalls.filter((t) => t.startsWith('agent.run.end ')).length;
+			expect(after).toBe(before);
+		});
+	});
+
+	describe('agent.run.drop remoteLog', () => {
+		test('真正清理时打 log（runKey + runId）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			vi.advanceTimersByTime(RPC_GRACE_MS);
+
+			store.dropRun('1::agent:main:main');
+
+			expect(remoteLogCalls).toContain('agent.run.drop runKey=1::agent:main:main runId=run-1');
+		});
+
+		test('runKey 不存在时不打 log', () => {
+			const store = useAgentRunsStore();
+			store.dropRun('nonexistent');
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.drop'))).toBeFalsy();
+		});
+
+		test('expectedRunId 不匹配时不打 log（防误清新 run 的同时也不污染日志）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-new', runKey: '1::agent:main:main' });
+			store.dropRun('1::agent:main:main', 'run-old');
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.drop'))).toBeFalsy();
+		});
+	});
+
+	describe('agent.run.preempt remoteLog', () => {
+		test('同 runKey 抢占时打 log（含新旧 runId）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-old', runKey: 'k-same' });
+			registerRun(store, { runId: 'run-new', runKey: 'k-same' });
+
+			expect(remoteLogCalls).toContain(
+				'agent.run.preempt runKey=k-same newRunId=run-new oldRunId=run-old',
+			);
+		});
+
+		test('register 全新 runKey 时不打 preempt log', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-1', runKey: 'k-fresh' });
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.preempt'))).toBeFalsy();
+		});
+	});
+
+	// =====================================================================
 	// rpc grace 边缘行为（方案 D 引入）
 	// =====================================================================
 
