@@ -840,7 +840,7 @@ describe('useAgentRunsStore', () => {
 			await runPromise;
 		});
 
-		test('agent.wait reject → endReason="failed"（信号 4）', async () => {
+		test('agent.wait reject → 立即下一轮 pollOnce（不判死，等真权威信号）', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -851,10 +851,109 @@ describe('useAgentRunsStore', () => {
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
 			vi.advanceTimersByTime(30_000);
-			const err = new Error('dc closed');
-			err.code = 'DC_CLOSED';
-			ctrl.waitReject(err);
+			expect(ctrl.waitCalls).toBe(1);
 
+			// wait reject（模拟 wall-clock 超时 / ICE restart 期间网络暂不通）
+			const err = new Error('rpc timeout');
+			err.code = 'RPC_TIMEOUT';
+			ctrl.waitReject(err);
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// 立即下一轮 pollOnce，run 仍 running
+			expect(ctrl.waitCalls).toBe(2);
+			expect(store.runs['run-1'].ended).toBe(false);
+			expect(store.isRunning('k1')).toBe(true);
+
+			// 后续 wait 拿到 ok → 正常收尾
+			ctrl.waitResolve({ status: 'ok' });
+			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
+			const result = await runPromise;
+			expect(result.endReason).toBe('wait');
+		});
+
+		test('agent.wait 连续 reject 后再 reject → 仍持续重试，不卡死', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+
+			// 连续 3 次 reject
+			for (let i = 1; i <= 3; i++) {
+				expect(ctrl.waitCalls).toBe(i);
+				const err = new Error('rpc timeout');
+				err.code = 'RPC_TIMEOUT';
+				ctrl.waitReject(err);
+				await Promise.resolve();
+				await Promise.resolve();
+			}
+			expect(ctrl.waitCalls).toBe(4);
+			expect(store.runs['run-1'].ended).toBe(false);
+
+			// 主 agent() RPC 用 timeout=0 仍 pending，最终 finalResolve 走信号 1
+			ctrl.finalResolve({ status: 'ok' });
+			const result = await runPromise;
+			expect(result.endReason).toBe('rpc');
+		});
+
+		test('主 RPC reject 与 wait reject 同步发生 → 主 RPC 先判死，wait catch 不触发新 pollOnce（hot loop 防御）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			expect(ctrl.waitCalls).toBe(1);
+
+			// 模拟 __rejectAllPending：同步 reject 两个 pending RPC（主 RPC 先注册先 reject）
+			const rpcErr = new Error('rtc lost');
+			rpcErr.code = 'RTC_LOST';
+			const waitErr = new Error('rtc lost');
+			waitErr.code = 'RTC_LOST';
+			ctrl.finalReject(rpcErr);
+			ctrl.waitReject(waitErr);
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('failed');
+			// wait catch 进入时主 RPC 已 endRun + cleanup → guard 拦截，不发起新一轮
+			expect(ctrl.waitCalls).toBe(1);
+		});
+
+		test('wait reject 期间主 agent() RPC reject → endReason="failed"（信号 4 兜底判死）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(30_000);
+			expect(ctrl.waitCalls).toBe(1);
+
+			// wait reject 不判死
+			const waitErr = new Error('rpc timeout');
+			waitErr.code = 'RPC_TIMEOUT';
+			ctrl.waitReject(waitErr);
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(store.runs['run-1'].ended).toBe(false);
+
+			// DC 物理死亡 → 主 RPC reject → __onRpcFailed → endRun('failed')
+			const rpcErr = new Error('rtc lost');
+			rpcErr.code = 'RTC_LOST';
+			ctrl.finalReject(rpcErr);
 			const result = await runPromise;
 			expect(result.endReason).toBe('failed');
 		});

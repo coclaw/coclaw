@@ -6,7 +6,20 @@
  *   1) 调用 runAgent 时 conn.request('agent', ...) 第二阶段 res 到达 → __onRpcDone
  *   2) event:agent lifecycle:end/error 事件 → __onLifecycleEnd（由 __dispatch 路由）
  *   3) 事件流静默超 IDLE_THRESHOLD_MS 后启动长挂 agent.wait 拿到结果 → __pollOnce
- *   4) 任意 RPC 错误（DC 断、send 失败、wait 超时等异常）→ __onRpcFailed
+ *   4) 主 agent() RPC 失败（DC 物理死亡 RTC_LOST/DC_CLOSED 等）→ __onRpcFailed
+ *
+ * **agent.wait 是探测 RPC，不承担判死责任**：wait 自身的 reject（包括 wall-clock
+ * 超时、ICE restart 期间网络暂不通）只代表"这次没问到"，按 timeout(无 endedAt) 语义
+ * 立即下一轮重试。run 真死的判断交给信号 4——主 agent() RPC 用 timeout=0（永不
+ * wall-clock 超时），它 reject 主要来自 DC 物理死亡（clearRtc → __rejectAllPending），
+ * 也包括服务端 ok:false 协议错误（罕见）；这些都是结束 run 的合理理由。
+ *
+ * **微任务顺序保证（不 hot loop）**：DC 物理死亡场景，主 agent() RPC 与 wait 几乎
+ * 同时被 __rejectAllPending（claw-connection.js）按 Map 插入顺序 reject。主 RPC
+ * 先注册先 reject，其 onRejected 微任务在 wait 的之前入队。同一 microtask cycle
+ * 内主 RPC 的 errCb 先跑 → __onRpcFailed → __endRun → run.ended=true（runs[runId]
+ * 条目此时仍存在，cleanup 由后续 dropRun 完成）；wait catch 跑时 r.ended 已为 true，
+ * guard 立即 return，不会触发新的 pollOnce 重试。
  *
  * **rpc grace 窗口**：信号 2/3 到达时不立即收尾，挂一个 RPC_GRACE_MS 计时器等信号 1（rpc）
  * 二阶段 res。窗口内 rpc 来了 → 走 'rpc' 路径（上游同步 await 链保证 transcript 已写完）；
@@ -266,8 +279,11 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		},
 
 		/**
-		 * 长挂 agent.wait 一次。运行端事件驱动，正常路径事件到达即 resolve；
-		 * 真超时（活跃）→ 立即下一轮；wait 失败 → endRun('failed')
+		 * 长挂 agent.wait 一次。运行端事件驱动，正常路径事件到达即 resolve。
+		 * - 真超时（活跃）→ 立即下一轮
+		 * - wait 自身 reject（wall-clock 超时 / ICE restart 期间网络暂不通）→ 按 timeout(无 endedAt)
+		 *   语义立即下一轮。下一轮的 conn.request 内部会经 waitReady 等 DC ready，自带节流。
+		 *   不在此处判死，因 DC 物理死亡由主 agent() RPC 的 __onRpcFailed 兜底（信号 4）。
 		 */
 		async __pollOnce(runId) {
 			const run = this.runs[runId];
@@ -288,8 +304,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				const r = this.runs[runId];
 				if (!r || r.ended) return;
 				r.__watcher.waitPending = false;
-				console.debug('[agentRuns] agent.wait failed runId=%s err=%s', runId, err?.message);
-				this.__endRun(runId, 'failed');
+				console.debug('[agentRuns] agent.wait reject runId=%s err=%s → retry', runId, err?.message);
+				this.__pollOnce(runId);
 				return;
 			}
 
@@ -431,8 +447,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		// ============================ 用户取消协调 ============================
 
 		/**
-		 * 用户取消（cancelSend 阶段 1）：标记 cancelled=true，watcher 仍跑等待真实终态信号
-		 * isRunning 立即 false（UI 恢复输入），streamingMsgs 保留显示直到 endRun + dropRun
+		 * 用户取消（cancelSend 阶段 1）：标记 cancelled=true，watcher 仍跑等真实终态信号。
+		 * 注意：isRunning 不会因此立即变 false（getter 只看 ended）；UI 在 cancelling 期间
+		 * 通过 chat.store 的 __cancelling 状态恢复输入框。streamingMsgs 保留显示直到
+		 * 真实终态信号到达 → endRun → chat.store loadMessages → dropRun 真正释放。
 		 * @param {string} runKey
 		 */
 		settleWithTransitionByKey(runKey) {

@@ -240,26 +240,38 @@ RPC `res` 帧和 `event:agent` 帧虽走同一条 DC，但在 OpenClaw gateway �
 
 "**RPC 是权威、事件是过程数据**"——对齐 HTTP/SSE 心智模型。HTTP 响应告诉你"结束了"，SSE 只是传进度。
 
-### 4.2 三路结束信号
+### 4.2 四路结束信号
 
-任一命中就 cleanup + 触发全量刷新（loadMessages）：
+前三路是设计目标的核心结束信号，第四路是 DC 物理死亡的兜底判死。任一命中就 cleanup + 触发全量刷新（loadMessages）：
 
 1. **第二次 RPC 响应**（最权威）—— agent() 的 `status: ok/error`；99% 正常 run 由此收尾
 2. **lifecycle:end 事件**（辅助）—— DC 上的 event；与信号 1 可能有先后
-3. **agent.wait 长挂唤醒**（兜底）—— 事件静默超阈值后启动的长挂查询
+3. **agent.wait 长挂唤醒**（探测）—— 事件静默超阈值后启动的长挂查询；只有"拿到正经回答"才用作判定，问询失败不算
+4. **主 agent() RPC 失败**（兜底判死）—— DC 物理死亡（PC 重建、`clearRtc`）时主 RPC 必然 reject；主 RPC 用 `timeout: 0` 不会因 wall-clock 超时 reject，所以它的 reject **主要来自 DC 物理死亡**（也包括服务端 ok:false 协议错误，罕见），是权威判死信号
+
+**判死责任划分**：信号 1/2 是正常路径；信号 3 拿到正经回答可触发收尾，但**自身 reject 不能判死**——因为 wait 带 wall-clock 33s 客户端超时（≥ 服务端 timeoutMs + margin），ICE restart 期间网络暂不通也会让它 reject，此时 run 实际还活着；信号 4 才是判死的唯一可靠源。
 
 ### 4.3 状态机
 
 ```
 [已注册 run]
-  ├─ 收到信号 1 或 2 → [已结束] → loadMessages + cleanup
+  ├─ 收到信号 1（RPC res ok/error）→ __endRun('rpc')（最权威，不挂 grace）→ loadMessages + cleanup
+  ├─ 收到信号 2（lifecycle:end）→ 挂 RPC_GRACE_MS pending 等信号 1
+  │     ├─ 窗口内信号 1 到达 → __endRun('rpc') → loadMessages + cleanup
+  │     └─ 窗口耗尽 → __endRun('lifecycle') → loadMessages + cleanup
+  ├─ 收到信号 4（主 RPC reject，DC 物理死亡 / ok:false）→ __endRun('failed')（不等 grace）→ loadMessages + cleanup
   └─ 事件静默超 30s → [长挂查询中]
-      ├─ agent.wait 返回 ok/error → [已结束] → loadMessages + cleanup
-      ├─ agent.wait 返回 timeout + 有 endedAt → [已结束]（abort）→ loadMessages + cleanup
-      ├─ agent.wait 返回 timeout（无 endedAt）
-      │    ├─ accepted 距今未超 10 min → 起下一轮长挂
-      │    └─ 超 10 min → [降级] → loadMessages 读 stopReason 兜底
-      └─ 期间收到信号 1 或 2 → [已结束]（长挂查询被打断 / 忽略）
+      ├─ agent.wait 返回 ok/error → 挂 grace 等信号 1（同上）→ __endRun('rpc'/'wait')
+      ├─ agent.wait 返回 timeout + 有 endedAt → 挂 grace → __endRun('rpc'/'wait')（abort 等）
+      ├─ agent.wait 返回 timeout（无 endedAt）→ 立即起下一轮长挂（不限重试次数）
+      ├─ agent.wait 自身 reject（wall-clock 超时 / ICE restart 期间网络暂不通）
+      │    → 等价于 timeout(无 endedAt)：立即起下一轮长挂
+      │      （conn.request 内部 waitReady 会等 DC ready 才发出，自带节流）
+      │      （DC 物理死亡时信号 4 与 wait 同步 reject；__rejectAllPending 按 Map
+      │      插入顺序遍历，主 RPC 先 reject、其 onRejected 微任务先入队，
+      │      __endRun 设 run.ended=true 在 wait catch 之前完成；wait 进 catch
+      │      时 r.ended 已为 true，guard 立即 return，不会触发新的 pollOnce）
+      └─ 期间收到信号 1 / 2 / 4 → [已结束]（长挂查询被打断 / 忽略）
 ```
 
 ### 4.4 关键参数
@@ -268,8 +280,10 @@ RPC `res` 帧和 `event:agent` 帧虽走同一条 DC，但在 OpenClaw gateway �
 |---|---|---|
 | idle 阈值 | 30 秒 | 保守值覆盖首 token 慢（§2.5 尾部 30-90s 的正常范围）|
 | agent.wait timeoutMs | 30_000 ms | 长挂不加压，服务端事件驱动（§2.1）|
-| 长挂失败后等待 | 立即再起一轮 | 服务端无压力，不需要间隔 |
-| TTL 降级阈值 | accepted 距今超 10 分钟 | §2.1 终态缓存 TTL 硬编码 |
+| agent.wait 客户端 timeout | 33_000 ms | 服务端 timeoutMs + 3s margin，避免提前掐断长挂 |
+| 长挂返回 timeout(活跃) 后等待 | 立即再起一轮 | 服务端无压力，不需要间隔 |
+| 长挂自身 reject 后等待 | 立即再起一轮 | 同上；conn.request 内部 waitReady 处理节流 |
+| 主 agent() RPC 客户端 timeout | 0（永不超时） | 保证它 reject 主要来自 DC 物理死亡（权威判死源），不会因 wall-clock 误判 |
 
 ### 4.5 改动清单
 
@@ -308,7 +322,6 @@ RPC `res` 帧和 `event:agent` 帧虽走同一条 DC，但在 OpenClaw gateway �
 - 三路信号各自单独命中能正确 settle（驱动 onRunEnd）
 - 三路信号任意两路先后命中 → 去重，只触发一次 loadMessages
 - 长挂查询返回各种 (status, endedAt) 组合的分支覆盖
-- TTL 超期触发降级读 stopReason
 - cancel 路径不被新 watcher 误伤
 - 快速连发消息：旧 run 的 watcher 在新 run 注册时作废
 - page unmount / chat 切换 / dispose 时 watcher 正确清理
@@ -342,11 +355,11 @@ E2E（选做）：
 
 1. **删除 TTL 降级分支**：原方案在 §4.3 状态机里设计了"长挂超 10 分钟未收到任何信号 → 读 stopReason 兜底"的降级路径。实际分析下来，OpenClaw 的 10 分钟 TTL 是已结束 run 的终态缓存时长，与 run 运行时长无关；正常路径 30s idle 启动长挂远早于 10 分钟，且 watcher 不限重试次数。极端组合（信号全丢 + 运行时间足够长到错过 10min）冷启动恢复即可。
 
-2. **新增第四路结束信号：DC 错误 = 结束**：原方案三路（RPC 第二阶段 / lifecycle:end / 长挂结果）只覆盖正常完成路径，对 gateway 重启等异常场景无法收尾（DC 断后老 runId 在 server 已不存在，事件流不会再来）。新增"任何 RPC 错误（DC 断、send 失败、wait 超时等）→ endRun('failed')"，让 UI 状态在数秒内与服务端对齐。代价是纯网络短抖（通常被 ICE restart 接住，不会真的断 DC）也会被一刀切判定为结束，重连后 loadMessages 会拉到正确状态，体验损失可接受。
+2. **新增第四路结束信号：主 agent() RPC 失败 = 结束**：原方案三路（RPC 第二阶段 / lifecycle:end / 长挂结果）只覆盖正常完成路径，对 gateway 重启等异常场景无法收尾（DC 断后老 runId 在 server 已不存在，事件流不会再来）。新增"主 agent() RPC reject（DC 物理死亡 RTC_LOST/DC_CLOSED 或服务端 ok:false）→ __onRpcFailed → endRun('failed')"，让 UI 状态在数秒内与服务端对齐。**注意**：探测性 agent.wait 的 reject 不算判死信号——它的 reject 可能来自 wall-clock 超时或 ICE restart 期间网络暂不通（运行中的真实场景），按"timeout 无 endedAt"语义重试即可（详见 §4.3）；判死责任完全交给主 RPC，主 RPC 用 timeout=0 永不 wall-clock 误判。
 
 3. **架构折衷方案 (a)**：把 agent run 的"发起 + 生命周期管理"完全收敛到 `agentRunsStore.runAgent(...)` action，chat.store 只管消息构造、UI sending 状态、cancel 协调。通用 `claw-connection.js` 不动（不扩展 onSettled 回调），两阶段 RPC 的细节封装在 runAgent 内部。
 
-4. **watcher 不感知 DC 状态**：依赖 RPC 错误信号（信号 4）自然冒泡，无需"sleep 重试 + 指数退避"的复杂逻辑。watcher 收到任何 wait 失败直接 endRun('failed')，conn.request 内部 waitReady 也只是底层透明逻辑。
+4. **watcher 不感知 DC 状态**：依赖主 RPC 错误信号（信号 4）自然冒泡，无需 watcher 主动检测 DC 状态。wait reject 走 timeout(无 endedAt) 语义重试；conn.request 内部 waitReady 处理 DC 重连节流，watcher 只需关心信号本身。
 
 **状态字段简化**：旧的 `settled / settling / settlingReason` 三字段简化为两个 boolean：
 - `cancelled` —— 用户已取消，watcher 仍跑等真实终态信号；不影响 isRunning（让 cancel coordination tick 能继续）
