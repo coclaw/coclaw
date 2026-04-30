@@ -928,6 +928,190 @@ test('回归: 小 string 入队的 queueBytes 用 UTF-8 字节核算（非 strin
 	assert.equal(dc.sent[0], multibyte);
 });
 
+// --- 白名单：agent run 类 RPC 响应在队列满时强行入队 ---
+
+test('白名单: 队列满 + agent res 帧（payload 顶层 runId）→ 强行入队，不计入 dropped，不触发 overflow-start', () => {
+	resetRemoteLog();
+	const { dc, logger, q } = makeQueue({ bufferedAmount: DC_HIGH_WATER_MARK }, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1024);
+	const baseBytes = q.queueBytes;
+	const frame = JSON.stringify({
+		type: 'res',
+		id: 7,
+		ok: true,
+		payload: { runId: 'r-1', status: 'ok', summary: 'done' },
+	});
+
+	const ok = q.send(frame);
+
+	assert.equal(ok, true, 'whitelist res frame must be accepted');
+	assert.equal(q.droppedCount, 0, 'whitelist passthrough must not increment droppedCount');
+	assert.equal(q.droppedBytes, 0);
+	assert.equal(q.queueOverflowActive, false, 'whitelist must not flip overflow state');
+	assert.ok(!logger.warnings.some((w) => w.includes('overflow-start')));
+	assert.ok(!remoteLogBuffer.some((e) => e.text.includes('overflow-start')));
+	assert.ok(q.queueBytes > baseBytes, 'whitelist message increases queueBytes (intentional overshoot)');
+	assert.ok(q.queueBytes > MAX_QUEUE_BYTES);
+	assertQueueInvariant(q, 'after whitelist enqueue: ');
+
+	// 白名单帧入队后保留 string 类型（UI reassembler 才能按完整消息派发，避免被当分片残片丢）
+	const tail = q.queue[q.queue.length - 1];
+	assert.equal(typeof tail.data, 'string');
+	assert.equal(tail.isString, true);
+	assert.equal(tail.data, frame);
+
+	// 后续非白名单消息照常 drop
+	const ok2 = q.send('{"chatter":1}');
+	assert.equal(ok2, false);
+	assert.equal(q.droppedCount, 1);
+	assert.equal(q.queueOverflowActive, true, 'first non-whitelist drop flips overflow');
+});
+
+test('白名单: 队列满 + agent.wait timeout 帧 → 强行入队，状态/日志不受影响', () => {
+	resetRemoteLog();
+	const { q, logger } = makeQueue({ bufferedAmount: DC_HIGH_WATER_MARK }, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+	const frame = JSON.stringify({
+		type: 'res',
+		id: 9,
+		ok: true,
+		payload: { runId: 'r-2', status: 'timeout' },
+	});
+	const ok = q.send(frame);
+	assert.equal(ok, true);
+	assert.equal(q.droppedCount, 0);
+	assert.equal(q.droppedBytes, 0);
+	assert.equal(q.queueOverflowActive, false);
+	assert.ok(!logger.warnings.some((w) => w.includes('overflow-start')));
+	assert.ok(!remoteLogBuffer.some((e) => e.text.includes('overflow-start')));
+});
+
+test('白名单: 队列满 + agent accepted 帧（phase-1）→ 强行入队，状态/日志不受影响', () => {
+	resetRemoteLog();
+	const { q, logger } = makeQueue({ bufferedAmount: DC_HIGH_WATER_MARK }, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+	const frame = JSON.stringify({
+		type: 'res',
+		id: 11,
+		ok: true,
+		payload: { runId: 'r-3', status: 'accepted', acceptedAt: 1700000000 },
+	});
+	const ok = q.send(frame);
+	assert.equal(ok, true);
+	assert.equal(q.droppedCount, 0);
+	assert.equal(q.droppedBytes, 0);
+	assert.equal(q.queueOverflowActive, false);
+	assert.ok(!logger.warnings.some((w) => w.includes('overflow-start')));
+	assert.ok(!remoteLogBuffer.some((e) => e.text.includes('overflow-start')));
+});
+
+test('白名单: 队列满 + 普通 res 帧（payload 无 runId）→ 仍 drop', () => {
+	resetRemoteLog();
+	const { q, logger } = makeQueue({}, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+	const frame = JSON.stringify({
+		type: 'res',
+		id: 13,
+		ok: true,
+		payload: { sessions: [{ id: 's1' }] },
+	});
+	const ok = q.send(frame);
+	assert.equal(ok, false);
+	assert.equal(q.droppedCount, 1);
+	assert.ok(logger.warnings.some((w) => w.includes('overflow-start')));
+});
+
+test('白名单: 队列满 + 非 res 帧（event 类型且嵌套 runId）→ 仍 drop', () => {
+	resetRemoteLog();
+	const { q } = makeQueue({}, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+	// event 帧即使携带 runId 也不豁免（仅放 res 类）
+	const frame = JSON.stringify({
+		type: 'event',
+		event: 'agent.delta',
+		payload: { runId: 'r-4', text: 'hi' },
+	});
+	const ok = q.send(frame);
+	assert.equal(ok, false);
+	assert.equal(q.droppedCount, 1);
+});
+
+test('白名单: 队列满 + payload 嵌套层 runId（顶层无）→ 不命中，仍 drop（防误命中）', () => {
+	resetRemoteLog();
+	const { q } = makeQueue({}, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+	// 顶层 payload 无 runId，仅嵌套内部出现，不应被识别
+	const frame = JSON.stringify({
+		type: 'res',
+		id: 15,
+		ok: true,
+		payload: { sessions: [{ runId: 'nested' }] },
+	});
+	const ok = q.send(frame);
+	assert.equal(ok, false);
+	assert.equal(q.droppedCount, 1);
+});
+
+test('白名单: 队列满 + JSON 解析失败的字符串 → 按非白名单 drop', () => {
+	resetRemoteLog();
+	const { q } = makeQueue({}, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+	const ok = q.send('{not json');
+	assert.equal(ok, false);
+	assert.equal(q.droppedCount, 1);
+});
+
+test('白名单: 单条超过 50MB 硬上限 → 仍 drop（白名单不豁免硬上限）', () => {
+	resetRemoteLog();
+	const { logger, q } = makeQueue({}, { maxMessageSize: 60 * 1024 * 1024 });
+	// 构造超过 50MB 的 res 帧（payload.runId 命中白名单条件）
+	const filler = 'x'.repeat(MAX_SINGLE_MSG_BYTES + 100);
+	const frame = JSON.stringify({
+		type: 'res',
+		id: 17,
+		ok: true,
+		payload: { runId: 'r-huge', status: 'ok', summary: filler },
+	});
+	const ok = q.send(frame);
+	assert.equal(ok, false, 'whitelist must not exempt hard cap');
+	assert.equal(q.droppedCount, 1);
+	assert.ok(logger.warnings.some((w) => w.includes('single-msg-oversize')));
+});
+
+test('白名单: 顶层 type !== res（如 type=req 含 runId）→ 不命中，仍 drop', () => {
+	resetRemoteLog();
+	const { q } = makeQueue({}, { maxMessageSize: 65536 });
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+	const frame = JSON.stringify({
+		type: 'req',
+		id: 21,
+		method: 'agent',
+		payload: { runId: 'r-req' },
+	});
+	const ok = q.send(frame);
+	assert.equal(ok, false);
+	assert.equal(q.droppedCount, 1);
+});
+
+test('白名单: payload 缺失或 runId 为 falsy 值 → 不命中，仍 drop', () => {
+	const cases = [
+		{ name: 'runId=null', payload: { runId: null, status: 'ok' } },
+		{ name: 'runId=undefined', payload: { status: 'ok' } },
+		{ name: 'runId=空字符串', payload: { runId: '', status: 'ok' } },
+		{ name: 'runId=0', payload: { runId: 0, status: 'ok' } },
+		{ name: 'payload=null', payload: null },
+	];
+	for (const { name, payload } of cases) {
+		resetRemoteLog();
+		const { q } = makeQueue({}, { maxMessageSize: 65536 });
+		injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
+		const frame = JSON.stringify({ type: 'res', id: 1, ok: true, payload });
+		const ok = q.send(frame);
+		assert.equal(ok, false, `${name} 应 drop`);
+		assert.equal(q.droppedCount, 1, `${name} droppedCount 应+1`);
+	}
+});
+
 // --- 常量 sanity ---
 
 test('常量值符合设计（DC_LOW_WATER < DC_HIGH_WATER < MAX_QUEUE < MAX_SINGLE_MSG）', () => {

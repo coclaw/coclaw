@@ -82,7 +82,10 @@ export class RpcSendQueue {
 		}
 
 		// 软上限：队列已积压到 MAX（允许之前单条溢出，但新消息从此开始拒绝）
-		if (this.queueBytes >= MAX_QUEUE_BYTES) {
+		// 白名单豁免：agent run 类 RPC 响应（顶层 type=res + payload.runId 顶层存在）
+		// 即使队列已满也强行入队，避免 UI 端因 phase-2 res 被 drop 而无法收到 run 终态。
+		// 仍受 50MB 单条硬上限约束（接收端重组上限，超过也无意义）。
+		if (this.queueBytes >= MAX_QUEUE_BYTES && !isAgentRunResponse(jsonStr)) {
 			this.droppedCount += 1;
 			this.droppedBytes += totalBytes;
 			// 仅状态翻转点打 log（warn + remoteLog 各一次）；overflow 持续期间所有 drop 静默累加，
@@ -187,5 +190,26 @@ export class RpcSendQueue {
 	/** @private */
 	__tagSuffix() {
 		return this.tag ? ` ${this.tag}` : '';
+	}
+}
+
+/**
+ * 判断一条 JSON 字符串是否为带 runId 的 RPC 响应（用于队列满时白名单豁免）。
+ *
+ * 命中条件（仅看顶层）：`type === 'res'` 且 `payload.runId` 为 truthy。
+ * 设计取舍：硬编码识别、不维护方法白名单表。该条件主要为覆盖 OpenClaw `agent` 二阶段 res
+ * 与 `agent.wait` 全部分支（accepted/ok/error/timeout/race/dedupe）；同时也会顺带豁免
+ * `chat.send` 等其他顶层带 `runId` 的响应——这类 rsp 极小，加白无副作用。
+ * 解析失败或不命中按非白名单处理。
+ *
+ * @param {string} jsonStr - 待发送的 RPC 帧 JSON 字符串
+ * @returns {boolean} 命中白名单返回 true；解析失败或不命中返回 false
+ */
+function isAgentRunResponse(jsonStr) {
+	try {
+		const parsed = JSON.parse(jsonStr);
+		return parsed?.type === 'res' && Boolean(parsed?.payload?.runId);
+	} catch {
+		return false;
 	}
 }
