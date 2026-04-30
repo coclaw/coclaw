@@ -8,6 +8,11 @@
  *   Byte 5+:  UTF-8 数据片段
  */
 
+import { remoteLog } from '../services/remote-log.js';
+
+/** orphan-chunk 远程日志限频窗口（同窗口内仅首条上报，其余累计到 suppressed） */
+export const ORPHAN_REMOTE_LOG_WINDOW_MS = 5_000;
+
 export const FLAG_BEGIN = 0x01;
 export const FLAG_MIDDLE = 0x00;
 export const FLAG_END = 0x02;
@@ -65,6 +70,24 @@ export function buildChunks(jsonStr, maxMessageSize, getNextMsgId) {
 export function createReassembler(onComplete) {
 	/** @type {Map<number, { chunks: Uint8Array[], totalBytes: number }>} */
 	const pending = new Map();
+	// orphan-chunk（非 BEGIN 但 pending 不存在）远程日志限频窗口状态。
+	// 这是 string 帧被错当 binary 帧时会大量踩到的分支，本地全量 console.warn 便于实时观察，
+	// remoteLog 限频避免对端上行风暴。
+	let lastOrphanRemoteAt = 0;
+	let orphanSuppressed = 0;
+
+	function reportOrphanChunk(flag, msgId) {
+		const flagName = flag === FLAG_END ? 'END' : (flag === FLAG_MIDDLE ? 'MIDDLE' : `0x${flag.toString(16)}`);
+		console.warn(`[dc-chunking] reassembler drop orphan-chunk flag=${flagName} msgId=${msgId}`);
+		const now = Date.now();
+		if (now - lastOrphanRemoteAt >= ORPHAN_REMOTE_LOG_WINDOW_MS) {
+			remoteLog(`reassembler.orphan flag=${flagName} msgId=${msgId} suppressed=${orphanSuppressed}`);
+			lastOrphanRemoteAt = now;
+			orphanSuppressed = 0;
+		} else {
+			orphanSuppressed += 1;
+		}
+	}
 
 	function feed(data) {
 		// string = 普通消息
@@ -75,22 +98,34 @@ export function createReassembler(onComplete) {
 
 		// binary = 分片 chunk
 		const buf = new Uint8Array(data);
-		if (buf.length < HEADER_SIZE) return;
+		if (buf.length < HEADER_SIZE) {
+			console.warn(`[dc-chunking] reassembler drop short-frame bytes=${buf.length}`);
+			return;
+		}
 
 		const flag = buf[0];
 		const msgId = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint32(1, false);
 		const payload = buf.subarray(HEADER_SIZE);
 
 		if (flag === FLAG_BEGIN) {
+			// 正常情况下 plugin 端 msgId 单调递增不重复；若已存在同 msgId 的 pending 旧 entry
+			// 说明对端可能重启了 msgId 计数或上一条消息分片未送完，按"新 BEGIN 覆盖旧"语义处理
+			if (pending.has(msgId)) {
+				console.warn(`[dc-chunking] reassembler drop begin-overwrite msgId=${msgId}`);
+			}
 			pending.set(msgId, { chunks: [payload], totalBytes: payload.length });
 			return;
 		}
 
 		const entry = pending.get(msgId);
-		if (!entry) return;
+		if (!entry) {
+			reportOrphanChunk(flag, msgId);
+			return;
+		}
 
 		entry.totalBytes += payload.length;
 		if (entry.totalBytes > MAX_REASSEMBLY_BYTES || entry.chunks.length >= MAX_CHUNKS_PER_MSG) {
+			console.warn(`[dc-chunking] reassembler drop oversize msgId=${msgId} totalBytes=${entry.totalBytes} chunks=${entry.chunks.length}`);
 			pending.delete(msgId);
 			return;
 		}

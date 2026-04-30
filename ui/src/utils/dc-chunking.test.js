@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
 	buildChunks,
 	createReassembler,
@@ -6,7 +6,9 @@ import {
 	FLAG_MIDDLE,
 	FLAG_END,
 	HEADER_SIZE,
+	ORPHAN_REMOTE_LOG_WINDOW_MS,
 } from './dc-chunking.js';
+import { __resetRemoteLog, useRemoteLog } from '../services/remote-log.js';
 
 describe('dc-chunking (UI 侧)', () => {
 	// --- buildChunks ---
@@ -94,6 +96,113 @@ describe('dc-chunking (UI 侧)', () => {
 		expect(received.length).toBe(2);
 		expect(received[0]).toBe('{"type":"event"}');
 		expect(received[1]).toBe(original);
+	});
+
+	// --- 静默 drop 分支可观测性 ---
+
+	describe('drop 分支日志', () => {
+		let warnSpy;
+		let remoteLogs;
+
+		beforeEach(() => {
+			warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			__resetRemoteLog();
+			remoteLogs = [];
+			useRemoteLog().setSender((msg) => {
+				for (const e of msg.logs) remoteLogs.push(e.text);
+			});
+		});
+
+		afterEach(() => {
+			warnSpy.mockRestore();
+			__resetRemoteLog();
+			vi.restoreAllMocks();
+		});
+
+		function makeChunk(flag, msgId, payload = '') {
+			const bytes = new TextEncoder().encode(payload);
+			const buf = new Uint8Array(HEADER_SIZE + bytes.length);
+			buf[0] = flag;
+			new DataView(buf.buffer).setUint32(1, msgId, false);
+			buf.set(bytes, HEADER_SIZE);
+			return buf.buffer;
+		}
+
+		async function flushRemote() {
+			// useRemoteLog 内部 setTimeout 0 batch；让 microtask + macrotask 都跑一遍
+			await new Promise((r) => setTimeout(r, 0));
+			await new Promise((r) => setTimeout(r, 0));
+		}
+
+		test('orphan chunk（非 BEGIN + pending miss）console.warn + remoteLog 各一条', async () => {
+			const r = createReassembler(() => {});
+			r.feed(makeChunk(FLAG_END, 42, 'tail'));
+
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			expect(warnSpy.mock.calls[0][0]).toMatch(/orphan-chunk flag=END msgId=42/);
+			await flushRemote();
+			expect(remoteLogs).toHaveLength(1);
+			expect(remoteLogs[0]).toMatch(/reassembler\.orphan flag=END msgId=42 suppressed=0/);
+		});
+
+		test('窗口期内连续 orphan：console.warn 每次都打，remoteLog 仅首条', async () => {
+			const nowSpy = vi.spyOn(Date, 'now');
+			const baseline = 1_000_000;
+			const r = createReassembler(() => {});
+
+			for (let i = 0; i < 3; i++) {
+				nowSpy.mockReturnValue(baseline + i * 100);
+				r.feed(makeChunk(FLAG_MIDDLE, 100 + i));
+			}
+
+			expect(warnSpy).toHaveBeenCalledTimes(3);
+			nowSpy.mockRestore();
+			await flushRemote();
+			expect(remoteLogs).toHaveLength(1);
+			expect(remoteLogs[0]).toMatch(/reassembler\.orphan/);
+			expect(remoteLogs[0]).toMatch(/suppressed=0/);
+		});
+
+		test('窗口耗尽后下一条 orphan 触发新 remoteLog 并带 suppressed 累计数', async () => {
+			const nowSpy = vi.spyOn(Date, 'now');
+			const baseline = 1_000_000;
+			nowSpy.mockReturnValue(baseline);
+			const r = createReassembler(() => {});
+
+			r.feed(makeChunk(FLAG_END, 1));
+			await flushRemote();
+			r.feed(makeChunk(FLAG_END, 2));
+			r.feed(makeChunk(FLAG_END, 3));
+			nowSpy.mockReturnValue(baseline + ORPHAN_REMOTE_LOG_WINDOW_MS + 1);
+			r.feed(makeChunk(FLAG_END, 4));
+
+			nowSpy.mockRestore();
+			await flushRemote();
+			expect(remoteLogs).toHaveLength(2);
+			expect(remoteLogs[0]).toMatch(/suppressed=0/);
+			expect(remoteLogs[1]).toMatch(/msgId=4 suppressed=2/);
+		});
+
+		test('short-frame 仅 console.warn 不触发 remoteLog', async () => {
+			const r = createReassembler(() => {});
+			r.feed(new Uint8Array(2).buffer);
+
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			expect(warnSpy.mock.calls[0][0]).toMatch(/short-frame bytes=2/);
+			await flushRemote();
+			expect(remoteLogs).toHaveLength(0);
+		});
+
+		test('begin-overwrite 仅 console.warn 不触发 remoteLog', async () => {
+			const r = createReassembler(() => {});
+			r.feed(makeChunk(FLAG_BEGIN, 7, 'a'));
+			r.feed(makeChunk(FLAG_BEGIN, 7, 'b'));
+
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			expect(warnSpy.mock.calls[0][0]).toMatch(/begin-overwrite msgId=7/);
+			await flushRemote();
+			expect(remoteLogs).toHaveLength(0);
+		});
 	});
 
 	test('reset 清空缓冲区', () => {
