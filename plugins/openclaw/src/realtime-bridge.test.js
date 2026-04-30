@@ -5,7 +5,7 @@ import os from 'node:os';
 import { after, test } from 'node:test';
 
 import { WebSocket as WsWebSocket } from 'ws';
-import { RealtimeBridge, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
+import { RealtimeBridge, classifyAgentLagStop, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -3585,4 +3585,206 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);
 	}
+});
+
+// --- agent run lag 探针 ---
+
+test('lag probe: __startLagProbe registers entry and logs lag.start', () => {
+	const logs = [];
+	const bridge = createBridge();
+	bridge.logger = {
+		info: (m) => logs.push({ level: 'info', m: String(m) }),
+		warn: (m) => logs.push({ level: 'warn', m: String(m) }),
+	};
+	bridge.__startLagProbe('rpc-1');
+	assert.equal(bridge.__agentLagProbes.size, 1);
+	assert.ok(bridge.__agentLagProbes.has('rpc-1'));
+	assert.ok(logs.some((l) => l.m === '[coclaw] lag.start id=rpc-1'));
+	// 同 id 重复启动 no-op
+	bridge.__startLagProbe('rpc-1');
+	assert.equal(bridge.__agentLagProbes.size, 1);
+	bridge.__clearAllLagProbes();
+});
+
+test('lag probe: __stopLagProbe removes entry, logs summary, and is idempotent', () => {
+	const logs = [];
+	const bridge = createBridge();
+	bridge.logger = {
+		info: (m) => logs.push({ level: 'info', m: String(m) }),
+		warn: (m) => logs.push({ level: 'warn', m: String(m) }),
+	};
+	bridge.__startLagProbe('rpc-2');
+	bridge.__stopLagProbe('rpc-2', 'ok');
+	assert.equal(bridge.__agentLagProbes.size, 0);
+	const summary = logs.find((l) => l.m.startsWith('[coclaw] lag.summary id=rpc-2'));
+	assert.ok(summary);
+	assert.match(summary.m, /reason=ok dur=\d+ms ticks=\d+ max=\d+ms over100=\d+ sumOver=\d+ms/);
+	// 不存在的 id no-op
+	assert.doesNotThrow(() => bridge.__stopLagProbe('nope', 'ok'));
+});
+
+test('lag probe: __clearAllLagProbes clears every in-flight entry', () => {
+	const bridge = createBridge();
+	bridge.logger = noopLogger();
+	bridge.__startLagProbe('a');
+	bridge.__startLagProbe('b');
+	bridge.__startLagProbe('c');
+	assert.equal(bridge.__agentLagProbes.size, 3);
+	bridge.__clearAllLagProbes();
+	assert.equal(bridge.__agentLagProbes.size, 0);
+});
+
+test('lag probe: interval callback spike branch is exception-safe (gateway must not crash)', () => {
+	// 把 setInterval / setTimeout / Date.now 都截下来，可手动制造 spike 触发条件。
+	const oldSetInterval = global.setInterval;
+	const oldSetTimeout = global.setTimeout;
+	const oldDateNow = Date.now;
+	let capturedIntervalFn = null;
+	global.setInterval = ((fn) => {
+		capturedIntervalFn = fn;
+		return { unref() {} };
+	});
+	global.setTimeout = ((_fn) => ({ unref() {} }));
+	let nowVal = 1000;
+	Date.now = () => nowVal;
+	try {
+		const bridge = createBridge();
+		bridge.logger = {
+			info() {},
+			warn: () => { throw new Error('logger broken'); },
+		};
+		bridge.__startLagProbe('rpc-x'); // lastTick = 1000
+		// 推进时钟使 lag = (now - lastTick) - period = (1500 - 1000) - 200 = 300 > threshold(100)
+		nowVal = 1500;
+		assert.ok(capturedIntervalFn);
+		// spike 分支会调用 logger.warn → 抛异常 → 应被 interval body 的 try/catch 吞掉
+		assert.doesNotThrow(() => capturedIntervalFn());
+		bridge.__clearAllLagProbes();
+	}
+	finally {
+		global.setInterval = oldSetInterval;
+		global.setTimeout = oldSetTimeout;
+		Date.now = oldDateNow;
+	}
+});
+
+test('lag probe: __startLagProbe is exception-safe when lag.start logger throws (must not bubble to caller)', () => {
+	const bridge = createBridge();
+	// 同一个 logger 同时让 info 抛 —— 模拟 __handleGatewayRequestFromDc 的 try 块里
+	// __startLagProbe 抛出会被误判为 send 失败的灾难场景。
+	bridge.logger = {
+		info: () => { throw new Error('info broken'); },
+		warn() {},
+	};
+	assert.doesNotThrow(() => bridge.__startLagProbe('rpc-z'));
+	// 但 Map 仍应记录该探针（清理路径才能找到它）
+	assert.equal(bridge.__agentLagProbes.has('rpc-z'), true);
+	bridge.__clearAllLagProbes();
+});
+
+test('lag probe: __stopLagProbe is exception-safe when summary logger throws', () => {
+	const bridge = createBridge();
+	bridge.logger = {
+		info: () => { throw new Error('info broken'); },
+		warn() {},
+	};
+	bridge.__startLagProbe('rpc-y');
+	assert.doesNotThrow(() => bridge.__stopLagProbe('rpc-y', 'ok'));
+	assert.equal(bridge.__agentLagProbes.size, 0);
+});
+
+test('classifyAgentLagStop: returns null for non-res / non-string id / accepted', () => {
+	assert.equal(classifyAgentLagStop({}), null, 'no type → null');
+	assert.equal(classifyAgentLagStop({ type: 'event', id: 'x' }), null, 'event → null');
+	assert.equal(classifyAgentLagStop({ type: 'res' }), null, 'no id → null');
+	assert.equal(classifyAgentLagStop({ type: 'res', id: 123 }), null, 'numeric id → null');
+	assert.equal(classifyAgentLagStop(null), null, 'null payload → null');
+	assert.equal(classifyAgentLagStop(undefined), null, 'undefined payload → null');
+	// accepted 是 phase-1 ack，不是终态
+	assert.equal(classifyAgentLagStop({ type: 'res', id: 'a', payload: { status: 'accepted' } }), null);
+});
+
+test('classifyAgentLagStop: returns reason for ok / error / ok=false-no-status', () => {
+	assert.equal(classifyAgentLagStop({ type: 'res', id: 'a', payload: { status: 'ok' } }), 'ok');
+	assert.equal(classifyAgentLagStop({ type: 'res', id: 'a', ok: false, payload: { status: 'error' } }), 'error');
+	// 参数校验失败：协议文档"特殊情况" — ok=false 且无 status 字段
+	assert.equal(classifyAgentLagStop({ type: 'res', id: 'a', ok: false, error: { code: 'INVALID_REQUEST' } }), 'error');
+	// 边界：res 且 ok=true 但无 status → 视为成功（防御性兜底）
+	assert.equal(classifyAgentLagStop({ type: 'res', id: 'a', ok: true }), 'ok');
+});
+
+test('lag probe: __handleGatewayRequestFromDc starts probe only for method="agent"', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.lagstart';
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n' } }) });
+		const connectReq = gateway.sent.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } }).find((m) => m?.method === 'connect');
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true }) });
+		await drainEnsureAllAgentSessions(gateway);
+		// gatewayReady=true 后调用 handler
+		await bridge.__handleGatewayRequestFromDc({ method: 'agent', id: 'agent-rpc-1', params: {} });
+		assert.equal(bridge.__agentLagProbes.has('agent-rpc-1'), true, 'agent method should start probe');
+		await bridge.__handleGatewayRequestFromDc({ method: 'sessions.list', id: 'sess-rpc-1', params: {} });
+		assert.equal(bridge.__agentLagProbes.has('sess-rpc-1'), false, 'non-agent method should NOT start probe');
+		bridge.__clearAllLagProbes();
+	}
+	finally {
+		await bridge.stop();
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		restoreHomedir(prevHome);
+	}
+});
+
+test('lag probe: gateway WS close clears all in-flight probes (no 60s wait)', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.lagtest';
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		// server WS open 才会触发 gateway WS 创建
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		assert.equal(gateway.url, 'ws://gw.lagtest');
+		gateway.readyState = 1;
+		// 不需要完成 connect 握手——close handler 在 ws 创建时就已注册
+		bridge.__startLagProbe('rpc-stuck-1');
+		bridge.__startLagProbe('rpc-stuck-2');
+		assert.equal(bridge.__agentLagProbes.size, 2);
+		gateway.emit('close', { code: 1006, reason: 'remote dropped' });
+		assert.equal(bridge.__agentLagProbes.size, 0, 'WS close handler should clear all in-flight probes');
+	}
+	finally {
+		await bridge.stop();
+		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		restoreHomedir(prevHome);
+	}
+});
+
+test('lag probe: bridge.stop() clears any residual probes', async () => {
+	const bridge = createBridge();
+	await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+	bridge.__startLagProbe('rpc-stop-1');
+	assert.equal(bridge.__agentLagProbes.size, 1);
+	await bridge.stop();
+	assert.equal(bridge.__agentLagProbes.size, 0);
 });

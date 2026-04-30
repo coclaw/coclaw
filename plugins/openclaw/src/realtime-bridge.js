@@ -29,6 +29,29 @@ const GATEWAY_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 20_000, 20_000];
 // 严格限定在"签名/设备/scope/协议"相关错误，避免对网络/内部错误做无意义的降级尝试。
 const GATEWAY_HANDSHAKE_FALLBACK_PATTERN = /signature|device|scope|protocol/i;
 
+// agent run 期间用的 event loop lag 探针参数：每 200ms 测一次主线程漂移，>100ms 视为 spike。
+// 上限 60s 兜底，正常会在 phase-2 终态时主动停。用于持续观测 OpenClaw gateway 主线程被同步代码阻塞。
+const LAG_PROBE_PERIOD_MS = 200;
+const LAG_PROBE_THRESHOLD_MS = 100;
+const LAG_PROBE_MAX_DURATION_MS = 60_000;
+
+/**
+ * 判断一个出方向 res payload 是否表示 agent RPC 进入 phase-2 终态。
+ * 终态 = res 帧 + status !== 'accepted'。覆盖三种情形：
+ * - status='ok'：成功
+ * - status='error'：执行失败
+ * - 参数校验失败：ok=false 且无 status（协议文档"特殊情况"）
+ *
+ * @param {object} payload - 待判断的消息
+ * @returns {string | null} 终态时返回 lag.summary 的 reason 字符串，否则 null
+ */
+export function classifyAgentLagStop(payload) {
+	if (payload?.type !== 'res' || typeof payload?.id !== 'string') return null;
+	const status = payload?.payload?.status;
+	if (status === 'accepted') return null;
+	return status ?? (payload.ok === false ? 'error' : 'ok');
+}
+
 function toServerWsUrl(baseUrl, token) {
 	const url = new URL(baseUrl);
 	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -124,6 +147,8 @@ export class RealtimeBridge {
 		this.__gatewayGaveUp = false;        // 重试次数耗尽 → 终态，不再自动尝试
 		this.__gatewayLegacyMode = false;    // 学到"本 gateway 不接受带 device 的 v3"
 		this.__gatewayLastReason = null;     // 最近一次失败原因（用于 gave-up 上报）
+		// agent RPC 进 in-flight 时建探针、phase-2 终态时移除：id -> { interval, timeout, stats }
+		this.__agentLagProbes = new Map();
 	}
 
 	__resolveWebSocket() {
@@ -761,6 +786,11 @@ export class RealtimeBridge {
 					&& (payload.event === 'health' || payload.event === 'tick')) {
 					return;
 				}
+				// agent RPC 进入 phase-2 终态时停 lag 探针（详见 classifyAgentLagStop）
+				const lagReason = classifyAgentLagStop(payload);
+				if (lagReason !== null) {
+					this.__stopLagProbe(payload.id, lagReason);
+				}
 				this.webrtcPeer?.broadcast(payload);
 			}
 		});
@@ -775,6 +805,9 @@ export class RealtimeBridge {
 				remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'}`);
 			}
 			this.logger.info?.(`[coclaw] gateway ws closed (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
+			// gateway WS 一断，正在跑的 agent RPC 不会再有 phase-2 res，主动结算所有 lag 探针，
+			// 避免它们空跑到 60s 兜底，期间还会持续打 spike 噪声。
+			this.__clearAllLagProbes();
 			if (this.gatewayWs === ws) {
 				this.gatewayWs = null;
 				this.gatewayReady = false;
@@ -880,6 +913,10 @@ export class RealtimeBridge {
 				method: payload.method,
 				params: payload.params ?? {},
 			}));
+			// 仅 agent RPC 启动 lag 探针（覆盖发送 → phase-2 终态全程）。
+			if (payload.method === 'agent') {
+				this.__startLagProbe(payload.id);
+			}
 		}
 		catch {
 			this.webrtcPeer?.broadcast({
@@ -900,6 +937,66 @@ export class RealtimeBridge {
 		}
 		clearTimeout(this.connectTimer);
 		this.connectTimer = null;
+	}
+
+	// agent run 期间监测 gateway 主线程是否被同步代码阻塞。
+	// 设计动机：上游 OpenClaw 同步路径上有重活（详见 docs/openclaw-upstream-issues.md），
+	// 修复前作为持续诊断信号保留——主线程一旦被同步阻塞，agent send 路径会出现几十秒的卡顿。
+	//
+	// 异常隔离：插件运行在 gateway 进程内，timer 回调任何同步抛出都会让进程崩溃
+	// （CLAUDE.md 第 123 行明确禁止全局异常兜底），因此 interval/timeout 回调都用 try/catch 局部包裹。
+	__startLagProbe(id) {
+		if (this.__agentLagProbes.has(id)) return;
+		let lastTick = Date.now();
+		const stats = { ticks: 0, max: 0, sumOver: 0, over: 0, startedAt: lastTick };
+		const interval = setInterval(() => {
+			try {
+				const now = Date.now();
+				const lag = now - lastTick - LAG_PROBE_PERIOD_MS;
+				lastTick = now;
+				stats.ticks += 1;
+				if (lag > stats.max) stats.max = lag;
+				if (lag > LAG_PROBE_THRESHOLD_MS) {
+					stats.over += 1;
+					stats.sumOver += lag;
+					this.logger.warn?.(`[coclaw] lag.spike id=${id} +${lag}ms`);
+				}
+			}
+			catch {
+				// 探针自身异常静默吞掉，避免拖垮 gateway。
+			}
+		}, LAG_PROBE_PERIOD_MS);
+		interval.unref?.();
+		const timeout = setTimeout(() => this.__stopLagProbe(id, 'timeout'), LAG_PROBE_MAX_DURATION_MS);
+		timeout.unref?.();
+		this.__agentLagProbes.set(id, { interval, timeout, stats });
+		// lag.start 日志即便抛异常也不能影响调用方（在 __handleGatewayRequestFromDc 的 try/catch 内，
+		// 抛出会被误判为 send 失败 → 错发 GATEWAY_SEND_FAILED）。
+		try { this.logger.info?.(`[coclaw] lag.start id=${id}`); }
+		catch { /* 诊断日志失败不影响主流程 */ }
+	}
+
+	__stopLagProbe(id, reason) {
+		const probe = this.__agentLagProbes.get(id);
+		if (!probe) return;
+		clearInterval(probe.interval);
+		clearTimeout(probe.timeout);
+		this.__agentLagProbes.delete(id);
+		try {
+			const stats = probe.stats;
+			const dur = Date.now() - stats.startedAt;
+			this.logger.info?.(`[coclaw] lag.summary id=${id} reason=${reason} dur=${dur}ms ticks=${stats.ticks} max=${stats.max}ms over100=${stats.over} sumOver=${stats.sumOver}ms`);
+		}
+		catch {
+			// summary 输出失败不应阻断后续 RPC 广播——清理已完成，吞掉异常即可。
+		}
+	}
+
+	__clearAllLagProbes() {
+		const ids = Array.from(this.__agentLagProbes.keys());
+		for (const id of ids) {
+			this.__stopLagProbe(id, 'cleanup');
+		}
 	}
 
 	__scheduleReconnect() {
@@ -1164,6 +1261,8 @@ export class RealtimeBridge {
 		setRemoteLogSender(null);
 		this.__clearServerHeartbeat();
 		this.__clearConnectTimer();
+		// stop() / refresh() 兜底回收 lag 探针的 timer，防 unref 仍残留。
+		this.__clearAllLagProbes();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
