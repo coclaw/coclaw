@@ -6,9 +6,11 @@ import {
 	FLAG_MIDDLE,
 	FLAG_END,
 	HEADER_SIZE,
+	MAX_CHUNKS_PER_MSG,
 	ORPHAN_REMOTE_LOG_WINDOW_MS,
 } from './dc-chunking.js';
 import { __resetRemoteLog, useRemoteLog } from '../services/remote-log.js';
+import { __resetSignalingConnection } from '../services/signaling-connection.js';
 
 describe('dc-chunking (UI 侧)', () => {
 	// --- buildChunks ---
@@ -115,6 +117,8 @@ describe('dc-chunking (UI 侧)', () => {
 
 		afterEach(() => {
 			warnSpy.mockRestore();
+			// 顺序：先 sigConn 后 remote-log，避免 sigConn disconnect 事件命中已 reset 的 remote-log 单例
+			__resetSignalingConnection();
 			__resetRemoteLog();
 			vi.restoreAllMocks();
 		});
@@ -191,6 +195,26 @@ describe('dc-chunking (UI 侧)', () => {
 			expect(warnSpy.mock.calls[0][0]).toMatch(/short-frame bytes=2/);
 			await flushRemote();
 			expect(remoteLogs).toHaveLength(0);
+		});
+
+		test('chunk 数超 MAX_CHUNKS_PER_MSG：警告 + 丢弃 pending', async () => {
+			const r = createReassembler(() => {});
+			r.feed(makeChunk(FLAG_BEGIN, 99, 'x'));
+			// BEGIN 已占 chunks[0]；再喂 (MAX-1) 个 MIDDLE 把 chunks 推到 MAX，第 MAX+1 次触发 cap
+			for (let i = 0; i < MAX_CHUNKS_PER_MSG - 1; i++) {
+				r.feed(makeChunk(FLAG_MIDDLE, 99, 'x'));
+			}
+			expect(warnSpy).toHaveBeenCalledTimes(0);
+			r.feed(makeChunk(FLAG_MIDDLE, 99, 'x'));
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			expect(warnSpy.mock.calls[0][0]).toMatch(/oversize msgId=99/);
+			// pending 已清，再喂 END 走 orphan 分支
+			r.feed(makeChunk(FLAG_END, 99, 'tail'));
+			expect(warnSpy.mock.calls.at(-1)[0]).toMatch(/orphan-chunk/);
+			await flushRemote();
+			// remoteLog 仅来自 orphan，不来自 oversize
+			expect(remoteLogs).toHaveLength(1);
+			expect(remoteLogs[0]).toMatch(/reassembler\.orphan/);
 		});
 
 		test('begin-overwrite 仅 console.warn 不触发 remoteLog', async () => {
