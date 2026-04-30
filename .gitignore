@@ -45,9 +45,10 @@ Thumbs.db
 **/.agents/settings.local.json
 # Claude Code runtime lock (scheduled tasks)
 **/scheduled_tasks.lock
-# Codex 工具在各 workspace 创建的 .codex 文件/个人目录均不入库；
-# 根 .codex/config.toml（MCP 配置）此前已 tracked，本规则只影响后续新增内容。
+# codex-rescue subagent 会在各 workspace 留下空 .codex 标记文件，不入库；
+# 但 .codex/ 目录（含根目录的 MCP 配置目录）任何位置都保留 tracked。
 .codex
+!.codex/
 
 # Local symlinks (developer-specific)
 openclaw-repo
