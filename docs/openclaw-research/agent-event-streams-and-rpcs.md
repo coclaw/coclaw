@@ -1,6 +1,6 @@
 # OpenClaw Agent 事件流、RPC 与持久化时序
 
-> 更新时间：2026-04-26
+> 更新时间：2026-05-01
 > 基于 OpenClaw 本地源码验证（`openclaw-repo/openclaw`）
 
 ---
@@ -221,7 +221,11 @@ agent RPC 二阶段 res 帧   ──→ 此时 transcript 必已写完（强保�
 ### 2. 决策建议
 
 - **agent RPC 路径**：等"二阶段 res 帧"再拉 chat.history（最强保证、零延迟）。其他 endRun 信号（lifecycle / wait）若先到，意味着可能命中 transcript 半写窗口
-- **CoClaw 当前实现（rpc grace 收拢）**：lifecycle / wait 信号到达不立即收尾，挂 `RPC_GRACE_MS`（默认 2s）等二阶段 res 帧；窗口内 res 帧到达 → 走 'rpc' 路径（已写完）；窗口耗尽 → 用先到的 reason 降级。failed 路径（网络异常）跳过 grace 直接收尾。下游 `chat.store` 拿到 promise resolve 时数据已经写完，无需再做"是否写完"猜测校验，避免快速连发新消息时把上一轮回答误判成本轮终态
+- **CoClaw 当前实现（阶段 1/2 现状）**：lifecycle:end 已**不在 endRun 信号链**（commit 62dfbbe 后拆除，原因详见 §八 lifecycle:end 多次 emit 行为）。endRun 三路信号：
+  1. **信号 1**：主 `agent` RPC 二阶段 res 帧（`status: ok/error`）→ `__onRpcDone` → endRun('rpc')，最权威
+  2. **信号 2**：事件流静默超 `IDLE_THRESHOLD_MS` 后 `agent.wait(timeoutMs=0)` 即时探测 → 拿到正经回答时 endRun('wait')。**阶段 2 实施中：`IDLE_THRESHOLD_MS` 暂存拉到 24h，本路径实质禁用**（详见 `docs/designs/agent-run-end-detection.md` §8）
+  3. **信号 3**：主 RPC reject（DC 物理死亡 / 服务端 ok:false）→ `__onRpcFailed` → endRun('failed')
+- **下游不依赖 wait 路径校验"transcript 是否写完"**：信号 1 由二阶段 res 帧驱动，源码层面 `await persistCliTurnTranscript` 已保证 transcript 写完（见 §四 §2）；信号 2 仅在阶段 2 之后由 plugin 专用查询 API 提供"已结束"语义后才会重新启用
 - **chat.send 路径**（CoClaw 当前不走，仅参考）：等 `chat:final` ws 事件
 - **进程崩溃 / kill -9**：上述任一事件都收不到——这是唯一无法通过事件感知的情形，需要 `agent.wait` timeout 或 24h 兜底 timer 作为最后保险
 - **不要依赖 lifecycle:end payload 的 `stopReason`**：上游主路径不写。如需校验 stopReason 须从 transcript 读，且把"缺失"当降级路径处理
@@ -239,3 +243,93 @@ OpenClaw 自带 webchat UI 的策略，CoClaw UI 不直接套用：
 3. 重载是原子替换 `chatMessages` 数组，避免闪烁
 
 **注意**：原生 UI 走的是 chat.send 路径，靠 `chat:final` 触发刷新；CoClaw UI 走 agent RPC 路径，要靠二阶段 res 帧而非 chat:final。
+
+---
+
+## 七、Res 帧协议事实（CoClaw 强依赖）
+
+CoClaw plugin 在 `realtime-bridge.js` 把网关 ws 收到的 res 帧透传 broadcast 给 UI DC。这条透传路径上的几个不可变协议事实：
+
+### 1. Res 帧无 method 字段
+
+OpenClaw JSON-RPC res 帧结构：`{ type: 'res', id, ok, payload }`，**没有 method 字段**。plugin 在透传时只能凭 `id` 关联，无法直接得知"这条 res 对应的 req method 是什么"。
+
+**实际后果**：plugin 端要识别"这条 res 是不是 agent run 类响应"必须靠 payload 内容特征（如顶层 runId），不能用 method 名。
+
+### 2. Payload 单层
+
+`respond(ok, payload, error, ?meta)` 第 2 参数是 res 帧的 `payload` 字段值——单层。plugin 端代码上下文里整帧变量也常叫 `payload`，所以代码会出现 `payload?.payload?.runId` 这种"双层"写法，但**协议上只有一层 payload**，是变量名重复造成的视觉假象。
+
+第 4 参数 meta 不进帧，仅供网关侧上下文使用（如审计日志），plugin / UI 都拿不到。
+
+### 3. agent / agent.wait 全部 respond 分支 payload 顶层都含 runId
+
+OpenClaw `agent.ts` 全部 6 个 respond 调用：
+
+| 来源 | payload 顶层 |
+|------|--------------|
+| `agent.ts:1118` (accepted phase-1) | `{ runId, status: "accepted", acceptedAt }` |
+| `agent.ts:354` (phase-2 ok) | `{ runId, status: "ok", summary, result }` |
+| `agent.ts:382` (phase-2 error) | `{ runId, status: "error", summary }` |
+| `agent.ts:1327` (wait dedupe 真终态) | `{ runId, status, startedAt, endedAt, error, stopReason, livenessState, yielded }` |
+| `agent.ts:1378` (wait timeout) | `{ runId, status: "timeout" }` |
+| `agent.ts:1384` (wait race 终态) | `{ runId, status, startedAt, endedAt, ... }` |
+
+注意 `agent.ts:1118` 写法 `respond(true, accepted, undefined, { runId })` —— 第 4 参数的 `{ runId }` 是 meta 不进帧，但第 2 参数 `accepted` 这个 object 顶层本身就有 `runId` 字段。
+
+`chat.send`（chat.ts:1968 / 2049 / 2063）顶层也含 runId（`{ runId, status: "in_flight"/"started" }`）。CoClaw UI 当前不走 chat.send 路径。
+
+### 4. 其他 RPC 顶层 res payload 不含 runId
+
+已扫 OpenClaw 全部 server-methods：`sessions.* / agents.* / topics.* / models.* / status / usage.cost / channels.status / coclaw.*`（CoClaw UI 实际在用的）res payload 顶层均无 runId。基于"payload 顶层有 runId"识别 agent run 类响应不会误命中。
+
+---
+
+## 八、lifecycle:end 一次 run 内会多次 emit
+
+OpenClaw 一次 agent run 期间 `lifecycle:end` 事件会被发出**多次**，下游不能凭它判终态：
+
+- **compaction-retry**：context 超限触发 `/compact` 后重启 run，重启前后各 emit 一次 lifecycle:end
+- **model-fallback**：当前模型不可用切换到 fallback 模型时，切换前后各 emit 一次
+
+**CoClaw 后果**：阶段 0 设计里"信号 2 lifecycle:end → 挂 RPC grace 等信号 1"会被中途 lifecycle:end 提前触发，phantom 收尾。
+
+**应对**：阶段 1（commit 62dfbbe）拆除 lifecycle:end 作为 endRun 信号源，下游不再监听 lifecycle:end；endRun 信号收敛为"主 RPC 二阶段 res / wait 探测 / 主 RPC reject"三路（详见 §五 §2）。
+
+**事实**：本节内容也记在内部 memory `reference_openclaw_multi_lifecycle_end.md`，OpenClaw 上游源码锚点见该 memory；CoClaw 设计层面的具体改动见 `docs/designs/agent-run-end-detection.md` §8.1。
+
+---
+
+## 九、agent.wait 内部 dedupe-first then race 与"两本本子失忆"
+
+### 1. 内部行为
+
+`agent.wait` 实现（`agent.ts:1297-1394`）分两关：
+
+- **第一关同步翻"真终态登记" dedupe**（`agent-wait-dedupe.ts:138 readTerminalSnapshotFromGatewayDedupe`）：命中即 return，不再看后面
+- **第二关 race**：dedupe 等待器 vs `waitForAgentJob`（`agent-job.ts:224-371`）。`timeoutMs=0` 时两条腿都同步短路（cache 命中 / dedupe 命中 / null），race 实际只能由 agent-job cache 决定胜负
+
+### 2. 两个 TTL
+
+| 数据源 | TTL | 锚点 |
+|---|---|---|
+| 终态登记（dedupe） | **5 分钟** | `server-constants.ts:26`，`server-maintenance.ts:84-97` 定时清扫 |
+| agent-job cache | **10 分钟** | `agent-job.ts:4`，懒清理 |
+
+agent-job cache 写入规则（`agent-job.ts:131-198`）：
+- end 不带 aborted → 立刻写 "ok"
+- end 带 aborted=true → 攥 15s（timeout retry grace）
+- error → 攥 15s（error retry grace）
+- 下一个 start → 清缓存 + 取消 grace
+
+### 3. 响应字段：dedupe 路径与 race 路径返回字段完全一致
+
+均为 `{ runId, status, startedAt, endedAt, error, stopReason, livenessState, yielded }`。客户端**无法从返回数据分辨来源**——这是为什么不能客户端选择"只信 dedupe"的关键。
+
+### 4. "两本本子失忆"假阴性
+
+run 实际已结束、距离结束已过 10 分钟时，两本本子都被清扫，后续 `wait(timeoutMs=0)` 必然返回 `status='timeout'` 且无 `endedAt`，**与"run 还在跑"无法分辨**。
+
+CoClaw 阶段 1 暴露此问题（详见 `docs/designs/agent-run-end-detection.md` §8.2），阶段 2 通过"plugin 加白名单 + UI 暂存禁用 wait 探测"绕开（§8.3），后续由 plugin 专用查询 API 终结（§8.4）。
+
+**事实**：本节内容也记在内部 memory `reference_openclaw_agent_wait_internals.md`。

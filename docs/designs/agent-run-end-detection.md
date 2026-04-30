@@ -1,7 +1,8 @@
 ---
-status: 已实施
+status: 演进中（阶段 2 实施中）
 owner: chat/topic agent run 结束判定重构
 created: 2026-04-16
+updated: 2026-05-01
 ---
 
 # Agent run 结束判定机制重构
@@ -493,3 +494,82 @@ runPromise.then(async (res) => {
 Run1 ended → `runPromise1.then` 启动 `loadMessages` A 飞行中；用户快速发 msg 2，run2 register 后快速 ended；`runPromise2.then` 的 `await loadMessages` 复用 A（`__silentLoadPromise` 守卫机制，`chat.store.js:202-209`）→ A 带回的是 run1 ended 时刻的数据，不含 run2 → `dropRun(run2)` 释放 streamingMsgs 后 UI 丢 run2 内容。
 
 实施前后都存在，不由本次设计引入，依赖后续 loadMessages 自愈（connReady/foreground/activate 任一触发即恢复）。严重性低于 §7.1，修复代价高（需要"loadMessages 发起时刻 vs run.endedAt"比较机制），建议保持现状。
+
+---
+
+## 8. 阶段 1/2 演进
+
+阶段 0/1 落地后，"信号 2 lifecycle:end → grace 等信号 1"路径暴露出新的不可靠性，触发两次设计修订。本节按时间顺序记录现状。
+
+### 8.1 阶段 1（commit 62dfbbe）：拆 lifecycle:end，引入 wait(0) 即时探测
+
+**触发**：上游核实 `lifecycle:end` 在一次 run 内会被 emit 多次（compaction-retry 退避后重启 run、model-fallback 切换模型时分别都会 emit 一次），且 payload 上也不携带 `stopReason`。下游不能凭它判终态——任何"挂 grace 等信号 1"的逻辑都可能被中途 lifecycle:end 提前触发。
+
+**改动**：
+- 拆除 `applyAgentEvent` 的 lifecycle 分支，不再返回 `settled` 字段；signature 从 `{changed, settled, error}` 缩为 `{changed, error}`
+- watcher 改为：事件流静默超 60s 后用 `agent.wait(timeoutMs=0)` 即时探测。三种返回值各自处理：
+  - 终态 `ok/error` 或 `timeout + endedAt` → 挂 RPC grace 等信号 1
+  - `timeout` 无 `endedAt`（活跃）→ 重 arm idleTimer 等下一个静默周期，**不递归**（防 wait(0) 即时返回的 tight loop）
+  - wait 自身 reject → 重 arm idleTimer
+- endRun 信号收敛为三路：信号 1（主 RPC 二阶段 res）/ 信号 2（idle 探测拿到正经回答）/ 信号 3（主 RPC reject 判死）
+- 主 RPC `timeout: 0` 永不 wall-clock 超时，确保 reject 主要来自 DC 物理死亡（信号 3 的判死可靠源）
+
+**为什么用 timeoutMs=0**：长挂 wait（30s）服务端不订阅 lifecycle 流，立刻返回 cache 快照不阻塞；改 0 与长挂语义等价但客户端实现更简洁、不需要 wall-clock 超时窗口配合。
+
+### 8.2 阶段 2 风险评估：wait(0) 的"两本本子失忆"假阴性
+
+实施后复盘暴露 wait(0) 路径的根本缺陷——**两本本子（dedupe 与 agent-job cache）双双过期窗口**：
+
+- 网关侧 `agent.wait` 回 ok/error/timeout 依赖两个数据源：
+  - 终态登记（dedupe）—— TTL **5 分钟**（`server-constants.ts`）
+  - agent-job cache —— TTL **10 分钟**（`agent-job.ts`）
+- 当 agent run 实际已结束、但**距离结束已过 10 分钟**（两本本子都被清扫），后续任何 `wait(timeoutMs=0)` 调用都会返回 `status='timeout'` 且无 `endedAt`，与"run 还在跑"无法分辨
+
+**致命场景**：用户启动 run 后切后台，plugin 完成时终态 RPC 响应被 DC 缓冲溢出抛弃 → 网关 dedupe 永远拿不到 plugin 的终态 → 10 分钟后两本本子都过期 → 用户切回前台 wait(0) 返回 timeout，UI 误判为"还在跑"，phantom run 持续到 24h 硬超时。
+
+### 8.3 阶段 2 定案：plugin 加白名单 + UI idle 间隔暂存禁用
+
+不引入 plugin 端新事件、不调整 UI 业务逻辑。两侧改动可独立并行实施。
+
+**plugin 端**：在 RpcSendQueue 软上限（10MB）drop 判定处增加白名单豁免——当待发送消息是"agent run 类 RPC 响应"时绕过软上限强行入队，仍受 50MB 单条硬上限约束。
+
+- 识别条件：`frame.type === 'res' && frame.payload?.runId` 顶层存在
+- 全部 6 个 OpenClaw `agent` / `agent.wait` respond 分支 payload 顶层都有 runId（accepted phase / phase-2 ok / phase-2 error / wait dedupe 真终态 / wait timeout / wait race 终态），单一条件覆盖全分支
+- 不会误命中 sessions / agents / topics / models / coclaw.* 等 RPC（res payload 顶层无 runId）
+- chat.send rsp 顶层也含 runId，加白无副作用（rsp 帧小、不会爆队列）
+- 硬编码识别，不维护白名单表，无状态
+
+**UI 端**：把 `IDLE_THRESHOLD_MS` 从 60s 暂存拉到 24h（直接复用同文件 `POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000`）。
+
+- agent run 一定在 24h 内通过信号 1 或信号 3 收尾，run 结束 `__endRun` 会清 idleTimer
+- 因此这个 24h 倒计时永远跑不到点，`__pollOnce` 实质不被调用，`agent.wait(timeoutMs=0)` 永不发出
+- `__pollOnce` 函数体、wait 三返回值分支、`waitPending` 字段、`TERMINAL_WAIT_STATUSES` 集合**全部原样保留**——后续替换为新 RPC 时直接复用
+- 在 `IDLE_THRESHOLD_MS` 定义处加注释解释暂存语义
+
+### 8.4 后续方向
+
+阶段 2 是过渡方案，不是终态。后续 plugin 端引入专用 "agent run end 查询 API"（不依赖 dedupe 5min TTL，由 plugin 自己跟踪 run 状态），UI 端改动最小：
+
+- `__pollOnce` 内 `conn.request('agent.wait', { runId, timeoutMs: 0 })` 替换为新 RPC
+- `IDLE_THRESHOLD_MS` 调回 60s，重新启用周期探测
+- `__pollOnce` 的三返回值分支语义按新 RPC 调整（"两本本子失忆"窗口在新 RPC 下不存在，timeout 分支可简化）
+
+### 8.5 失败场景明确接受
+
+- **plugin daemon 重启**：内存队列必丢（不引入持久化）
+- **DC 物理死亡 + 白名单消息在队列里没来得及发**：依赖信号 3（主 RPC reject）兜底
+- **网关侧 phase-2 res 永远不出**（如 RPC 被 preempt）：白名单救不了，UI 端 wait(0) 也已禁用——本期接受失败，等专用查询 API 上线后由新 RPC 解决
+
+### 8.6 关键源码锚点（阶段 2 实施时）
+
+UI 侧：
+- `ui/src/stores/agent-runs.store.js:55` — `POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000`（已存在常量）
+- `ui/src/stores/agent-runs.store.js:58` — `IDLE_THRESHOLD_MS`（待改 24h）
+- `ui/src/stores/agent-runs.store.js:275-283` — `__armIdleTimer`（不动）
+- `ui/src/stores/agent-runs.store.js:306-354` — `__pollOnce` 完整保留
+
+plugin 侧：
+- `plugins/openclaw/src/webrtc/rpc-send-queue.js:85-96` — 软上限 drop 判定（白名单豁免挂点）
+- `plugins/openclaw/src/webrtc/rpc-send-queue.js:77-82` — 硬上限 drop（不豁免，保持原逻辑）
+- `plugins/openclaw/src/webrtc/webrtc-peer.js:148-219` — ICE restart 不重建 PC/DC（队列实例存活的代码依据）
+- `plugins/openclaw/src/realtime-bridge.js:780-795` — 网关 ws → DC broadcast 透传链路
