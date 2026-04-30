@@ -7,7 +7,7 @@ vi.mock('../services/remote-log.js', () => ({
 	remoteLog: (text) => { remoteLogCalls.push(text); },
 }));
 
-import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS, RPC_GRACE_MS } from './agent-runs.store.js';
+import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS, RPC_GRACE_MS, IDLE_THRESHOLD_MS } from './agent-runs.store.js';
 
 // --- Helper ---
 
@@ -17,6 +17,21 @@ function mockConn(overrides = {}) {
 		request: vi.fn(),
 		...overrides,
 	};
+}
+
+/**
+ * 关闭 run 的 24h post-acceptance memory timer。
+ * IDLE_THRESHOLD_MS 当前等于 POST_ACCEPT_TIMEOUT_MS（24h 实质禁用 idle 探测），
+ * watcher 类测试推进 IDLE_THRESHOLD_MS 触发 __pollOnce 时会同时撞上 memory timer，
+ * memory timer 先注册先 fire 会把 idleTimer 提前清掉导致 wait(0) 不触发。
+ * watcher 用例的关注点是 idle 探测语义，不应被异常兜底干扰，统一在 fireAccepted 后调用。
+ */
+function relaxMemoryTimer(store, runId = 'run-1') {
+	const run = store.runs[runId];
+	if (run?.__timer) {
+		clearTimeout(run.__timer);
+		run.__timer = null;
+	}
 }
 
 function registerRun(store, overrides = {}) {
@@ -926,7 +941,7 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('watcher', () => {
-		test('idle 60s 后用 agent.wait(timeoutMs=0) 即时探测', async () => {
+		test('idle 阈值后用 agent.wait(timeoutMs=0) 即时探测', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -936,9 +951,10 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
+			relaxMemoryTimer(store);
 
 			expect(ctrl.waitCalls).toBe(0);
-			vi.advanceTimersByTime(60_000);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(1);
 			// 关键：服务端 timeoutMs=0 不订阅 lifecycle 流，避免被中间段污染
 			const waitArgs = ctrl.conn.request.mock.calls.find((c) => c[0] === 'agent.wait')[1];
@@ -958,7 +974,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			ctrl.waitResolve({ status: 'ok' });
 
 			// grace 满后才 endRun('wait')
@@ -977,7 +994,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			ctrl.waitResolve({ status: 'error' });
 
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
@@ -995,7 +1013,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			ctrl.waitResolve({ status: 'timeout', startedAt: 100, endedAt: 200 });
 
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
@@ -1013,7 +1032,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 
 			ctrl.waitResolve({ status: 'mystery' }); // 无效协议响应
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
@@ -1031,7 +1051,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(1);
 
 			ctrl.waitResolve({ status: 'timeout' });
@@ -1041,8 +1062,8 @@ describe('useAgentRunsStore', () => {
 			expect(ctrl.waitCalls).toBe(1);
 			expect(store.runs['run-1'].__watcher.idleTimer).toBeTruthy();
 
-			// 推进下一个 60s 周期才看到第 2 次探测
-			vi.advanceTimersByTime(60_000);
+			// 推进下一个 idle 周期才看到第 2 次探测
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(2);
 
 			ctrl.finalResolve({ status: 'ok' });
@@ -1059,7 +1080,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(1);
 
 			// wait reject（模拟 ICE restart 期间 RPC 超时）
@@ -1076,7 +1098,7 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1'].__watcher.idleTimer).toBeTruthy();
 
 			// 下一周期 wait 拿到 ok → 正常收尾
-			vi.advanceTimersByTime(60_000);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(2);
 			ctrl.waitResolve({ status: 'ok' });
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
@@ -1094,10 +1116,11 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
+			relaxMemoryTimer(store);
 
 			// 连续 3 个周期 reject
 			for (let i = 1; i <= 3; i++) {
-				vi.advanceTimersByTime(60_000);
+				vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 				expect(ctrl.waitCalls).toBe(i);
 				const err = new Error('rpc timeout');
 				err.code = 'RPC_TIMEOUT';
@@ -1123,7 +1146,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(1);
 
 			// 模拟 __rejectAllPending：同步 reject 两个 pending RPC（主 RPC 先注册先 reject）
@@ -1150,7 +1174,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(1);
 
 			// wait reject 不判死
@@ -1223,7 +1248,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(1);
 
 			// wait 终态先到 → 挂 grace
@@ -1252,7 +1278,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			expect(ctrl.waitCalls).toBe(1);
 
 			// wait 终态先到 → 挂 grace
@@ -1342,7 +1369,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 
 			// wait 终态先到 → 挂 grace（ended 仍 false）
 			ctrl.waitResolve({ status: 'ok' });
@@ -1396,7 +1424,8 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(60_000);
+			relaxMemoryTimer(store);
+			vi.advanceTimersByTime(IDLE_THRESHOLD_MS);
 			ctrl.waitResolve({ status: 'ok' });
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
 			await runPromise;

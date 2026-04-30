@@ -5,6 +5,8 @@
  * 三路结束信号：
  *   1) 调用 runAgent 时 conn.request('agent', ...) 第二阶段 res 到达 → __onRpcDone
  *   2) 事件流静默超 IDLE_THRESHOLD_MS 后用 agent.wait(timeoutMs=0) 即时探测 → __pollOnce
+ *      （当前 IDLE_THRESHOLD_MS 暂设为 24h，等于 run wall-clock TTL，实际不会触发；
+ *      代码骨架保留，待 plugin 端补"agent run 终态查询"新 RPC 后改回 60s）
  *   3) 主 agent() RPC 失败（DC 物理死亡 RTC_LOST/DC_CLOSED 等）→ __onRpcFailed
  *
  * **lifecycle:end 不再作为结束信号**：OpenClaw 上游一次完整 run 内会 emit 多次
@@ -54,8 +56,17 @@ import { remoteLog } from '../services/remote-log.js';
  */
 export const POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000;
 
-/** 事件流静默超过此时长，watcher 用 agent.wait(timeoutMs=0) 即时探测 run 状态 */
-const IDLE_THRESHOLD_MS = 60_000;
+/**
+ * 事件流静默超过此时长，watcher 用 agent.wait(timeoutMs=0) 即时探测 run 状态。
+ *
+ * **当前暂设为 24h（= run wall-clock TTL），实际不会触发**：wait(0) 路径有
+ * "两本本子失忆"假阴性风险（gateway dedupe 5min TTL + agent-job cache 10min TTL
+ * 双双过期窗口下 wait 反馈"还活着"，其实早结束）。一刀切把 idle timer 拉到 24h，
+ * agent run 会在此之前由信号 1（主 RPC 二阶段 res）或信号 3（DC 死）正常收尾，
+ * idleTimer 永远跑不到点。__pollOnce / wait(0) 调用 / 三返回值分支 / waitPending
+ * 全部代码原样保留，待 plugin 端补上"agent run 终态查询"新 RPC 后改回 60s 即可。
+ */
+export const IDLE_THRESHOLD_MS = POST_ACCEPT_TIMEOUT_MS;
 
 /** agent.wait 终态 status */
 const TERMINAL_WAIT_STATUSES = new Set(['ok', 'error']);
