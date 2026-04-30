@@ -226,7 +226,7 @@ agent RPC 二阶段 res 帧   ──→ 此时 transcript 必已写完（强保�
   2. **信号 2**：事件流静默超 `IDLE_THRESHOLD_MS` 后 `agent.wait(timeoutMs=0)` 即时探测 → 拿到正经回答时 endRun('wait')。**阶段 2 实施中：`IDLE_THRESHOLD_MS` 暂存拉到 24h，本路径实质禁用**（详见 `docs/designs/agent-run-end-detection.md` §8）
   3. **信号 3**：主 RPC reject（DC 物理死亡 / 服务端 ok:false）→ `__onRpcFailed` → endRun('failed')
 - **下游不依赖 wait 路径校验"transcript 是否写完"**：信号 1 由二阶段 res 帧驱动，源码层面 `await persistCliTurnTranscript` 已保证 transcript 写完（见 §四 §2）；信号 2 仅在阶段 2 之后由 plugin 专用查询 API 提供"已结束"语义后才会重新启用
-- **chat.send 路径**（CoClaw 当前不走，仅参考）：等 `chat:final` ws 事件
+- **chat.send 路径**：CoClaw UI 在斜杠命令路径调用 chat.send（`ui/src/stores/chat.store.js:928`），等 `chat:final` ws 事件判终态。本节的"agent run 终态检测"主线（信号 1/2/3）只覆盖 agent RPC 路径，chat.send 路径有自己的 `chat:final` 兜底，本节不重复处理
 - **进程崩溃 / kill -9**：上述任一事件都收不到——这是唯一无法通过事件感知的情形，需要 `agent.wait` timeout 或 24h 兜底 timer 作为最后保险
 - **不要依赖 lifecycle:end payload 的 `stopReason`**：上游主路径不写。如需校验 stopReason 须从 transcript 读，且把"缺失"当降级路径处理
 
@@ -242,7 +242,7 @@ OpenClaw 自带 webchat UI 的策略，CoClaw UI 不直接套用：
    - 如果没有 tool 事件 → 直接用 final 中附带的 message
 3. 重载是原子替换 `chatMessages` 数组，避免闪烁
 
-**注意**：原生 UI 走的是 chat.send 路径，靠 `chat:final` 触发刷新；CoClaw UI 走 agent RPC 路径，要靠二阶段 res 帧而非 chat:final。
+**注意**：原生 UI 全部走 chat.send 路径靠 `chat:final` 触发刷新；CoClaw UI **主对话** 走 agent RPC 路径靠二阶段 res 帧，**斜杠命令** 走 chat.send 路径靠 `chat:final` 事件——两条路径并存，互不影响。
 
 ---
 
@@ -277,11 +277,27 @@ OpenClaw `agent.ts` 全部 6 个 respond 调用：
 
 注意 `agent.ts:1118` 写法 `respond(true, accepted, undefined, { runId })` —— 第 4 参数的 `{ runId }` 是 meta 不进帧，但第 2 参数 `accepted` 这个 object 顶层本身就有 `runId` 字段。
 
-`chat.send`（chat.ts:1968 / 2049 / 2063）顶层也含 runId（`{ runId, status: "in_flight"/"started" }`）。CoClaw UI 当前不走 chat.send 路径。
+`chat.send`（chat.ts:1968 / 2049 / 2063）顶层也含 runId（`{ runId, status: "in_flight"/"started" }`）。**CoClaw UI 在斜杠命令路径调用 chat.send**（`ui/src/stores/chat.store.js:928`）—— 其响应会被白名单识别，属 false positive，但响应帧只有几十字节，加白只是让小帧在拥塞窗口优先送达，无负面影响。
 
-### 4. 其他 RPC 顶层 res payload 不含 runId
+### 4. 其他响应顶层含 runId 的方法（UI 不调）
 
-已扫 OpenClaw 全部 server-methods：`sessions.* / agents.* / topics.* / models.* / status / usage.cost / channels.status / coclaw.*`（CoClaw UI 实际在用的）res payload 顶层均无 runId。基于"payload 顶层有 runId"识别 agent run 类响应不会误命中。
+完整扫 OpenClaw server-methods 后，除 §3 列出的方法外，还有以下响应顶层带 runId 的方法。**CoClaw UI 均不调用**，故这些响应不会出现在 plugin send queue 里，不构成白名单 false positive 风险：
+
+| 方法 | 来源 | 说明 |
+|------|------|------|
+| `send` / `poll` | `send.ts:175-198`（`buildGatewayDeliveryPayload` 顶层第一字段就是 runId） | 出站投递 / 轮询，CoClaw UI 不用 |
+| `sessions.send` / `sessions.steer` | `sessions.ts:509-601`（`handleSessionSend` 透传 chat.send 的 payload，spread 后含顶层 runId） | CoClaw UI 不用 |
+
+### 5. UI 实际在用的 RPC 顶层均无 runId（除 chat.send 外）
+
+CoClaw UI 实际在用的 RPC：`agent` / `agent.wait` / `chat.send` / `chat.history` / `sessions.list` / `sessions.get` / `sessions.reset` / `agents.*` / `topics.*` / `models.*` / `status` / `usage.cost` / `channels.status` / `coclaw.*`。
+
+其中：
+- `agent` / `agent.wait` —— 期望被白名单识别（agent run 类响应，正是要保送的）
+- `chat.send` —— 被白名单识别属 false positive，但响应小且加白无害（详见 §3）
+- 其他全部响应顶层无 runId，**不会被白名单误识别**
+
+基于"payload 顶层有 runId"识别 agent run 类响应在 UI 实际链路上稳定，不会出现影响行为的误命中。
 
 ---
 

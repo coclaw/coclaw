@@ -128,9 +128,12 @@ frame.type === 'res' && frame.payload?.runId 顶层存在
 
 OpenClaw 上游事实（详见 [agent-event-streams-and-rpcs.md §七](../../../docs/openclaw-research/agent-event-streams-and-rpcs.md#七res-帧协议事实)）：
 
-- `agent` / `agent.wait` 全部 6 个 respond 分支 payload 顶层都含 runId
-- `chat.send` rsp 顶层也含 runId（CoClaw UI 不走此路径，加白也无害）
-- 其他 RPC（sessions / agents / topics / models / status / usage / channels / coclaw.*）res payload 顶层均无 runId
+- `agent` / `agent.wait` 全部 6 个 respond 分支 payload 顶层都含 runId（**期望被识别**，正是要保送的 agent run 响应）
+- `chat.send` rsp 顶层也含 runId。**CoClaw UI 在斜杠命令路径调用 chat.send**（`ui/src/stores/chat.store.js:928`），其响应会被识别属 false positive，但响应帧只有几十字节、加白只是让小帧优先送达，无负面影响
+- 还有几个方法的响应顶层含 runId 但 **CoClaw UI 不调**，因此不会出现在 send queue 里、不构成 false positive：
+  - `send` / `poll`（`send.ts buildGatewayDeliveryPayload` 顶层第一字段即 runId）
+  - `sessions.send` / `sessions.steer`（透传 chat.send 的 payload，spread 后含顶层 runId）
+- UI 实际在用的其他 RPC（`sessions.list` / `sessions.get` / `sessions.reset` / `chat.history` / `agents.*` / `topics.*` / `models.*` / `status` / `usage.cost` / `channels.status` / `coclaw.*`）res payload 顶层均无 runId，**不会被白名单误识别**
 
 ### 豁免行为
 

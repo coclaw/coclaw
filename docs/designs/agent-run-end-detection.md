@@ -536,7 +536,8 @@ Run1 ended → `runPromise1.then` 启动 `loadMessages` A 飞行中；用户快�
 - 识别条件：`frame.type === 'res' && frame.payload?.runId` 顶层存在
 - 全部 6 个 OpenClaw `agent` / `agent.wait` respond 分支 payload 顶层都有 runId（accepted phase / phase-2 ok / phase-2 error / wait dedupe 真终态 / wait timeout / wait race 终态），单一条件覆盖全分支
 - 不会误命中 sessions / agents / topics / models / coclaw.* 等 RPC（res payload 顶层无 runId）
-- chat.send rsp 顶层也含 runId，加白无副作用（rsp 帧小、不会爆队列）
+- chat.send rsp 顶层也含 runId，UI 通过斜杠命令路径在用（`chat.store.js:928`）；其响应被白名单识别属 false positive，但响应帧只有几十字节、加白只是优先送达，无负面影响
+- 另有 `send` / `poll` / `sessions.send` / `sessions.steer` 响应顶层带 runId，**UI 均不调用**，不构成 false positive
 - 硬编码识别，不维护白名单表，无状态
 
 **UI 端**：把 `IDLE_THRESHOLD_MS` 从 60s 暂存拉到 24h（直接复用同文件 `POST_ACCEPT_TIMEOUT_MS = 24 * 60 * 60_000`）。
