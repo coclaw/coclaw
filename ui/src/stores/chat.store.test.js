@@ -1086,6 +1086,8 @@ describe('useChatStore', () => {
 			expect(result.status).toBe('rejected');
 			expect(result.reason).toMatchObject({ code: 'PRE_ACCEPTANCE_TIMEOUT' });
 			expect(store.sending).toBe(false);
+			// 远程日志保证可观测：未来同类异常（含 wire 层丢包导致超时）能在远端被发现
+			expect(remoteLogCalls.find((t) => t.startsWith('chat.preAccept.error') && t.includes('code=PRE_ACCEPTANCE_TIMEOUT'))).toBeTruthy();
 		});
 
 		test('post-acceptance 24h 兜底：accepted 后 run 由 agent-runs.store 内 24h timer 清理', async () => {

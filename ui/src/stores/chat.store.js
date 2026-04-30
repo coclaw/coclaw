@@ -634,7 +634,10 @@ export function createChatStore(storeKey, opts = {}) {
 							this.__retried = false;
 						}
 					}
-					// pre-acceptance 其它错误：清理并抛
+					// pre-acceptance 其它错误：清理并抛。
+					// 远程日志这里很关键：超时（PRE_ACCEPTANCE_TIMEOUT）/wire 层丢包等都落到这里，
+					// 没这条 log 时一旦发生只能从 sending=false + 终止按钮消失反推，无从定位。
+					remoteLog(`chat.preAccept.error runKey=${this.runKey} code=${err?.code ?? 'unknown'} msg=${err?.message ?? ''}`);
 					this.__cleanupStreaming();
 					this.sending = false;
 					this.fileUploadState = null;

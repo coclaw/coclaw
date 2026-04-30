@@ -2567,7 +2567,7 @@ test('WebRtcPeer: probe-ack 绕过 RpcSendQueue（背压场景 + spy 双验证�
 	// 模拟 queue 处于 "满" 状态 + 高 bufferedAmount 的背压条件
 	const session = peer.__sessions.get('c_sq04');
 	const fakeBig = Buffer.alloc(11 * 1024 * 1024);
-	session.rpcSendQueue.queue.push(fakeBig);
+	session.rpcSendQueue.queue.push({ data: fakeBig, isString: false, bytes: fakeBig.length });
 	session.rpcSendQueue.queueBytes = fakeBig.length;
 	dc.bufferedAmount = 10 * 1024 * 1024; // 远超 HIGH，正常路径 drain 会被阻塞
 

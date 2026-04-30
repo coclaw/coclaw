@@ -41,7 +41,9 @@ export class RpcSendQueue {
 		this.logger = logger ?? console;
 		this.tag = tag ?? '';
 
-		/** @type {Buffer[]} chunks 或 Buffer 化的 string 消息 */
+		// 队列元素显式记录原始类型：drain 出口按 isString=true → string 帧，false → binary 帧。
+		// 早期实现统一存 Buffer，导致 string 帧被对端当分片残片静默丢弃
+		/** @type {{data: string|Buffer, isString: boolean, bytes: number}[]} */
 		this.queue = [];
 		this.queueBytes = 0;
 		this.closed = false;
@@ -106,9 +108,9 @@ export class RpcSendQueue {
 					return false;
 				}
 			}
-			const buf = Buffer.from(jsonStr, 'utf8');
-			this.queue.push(buf);
-			this.queueBytes += buf.length;
+			const bytes = Buffer.byteLength(jsonStr, 'utf8');
+			this.queue.push({ data: jsonStr, isString: true, bytes });
+			this.queueBytes += bytes;
 			return true;
 		}
 
@@ -130,7 +132,7 @@ export class RpcSendQueue {
 		}
 		// 剩余 chunk 原子性入队（保证同一消息分片连续，不被其他消息插入）
 		for (; i < chunks.length; i += 1) {
-			this.queue.push(chunks[i]);
+			this.queue.push({ data: chunks[i], isString: false, bytes: chunks[i].length });
 			this.queueBytes += chunks[i].length;
 		}
 		return true;
@@ -164,15 +166,15 @@ export class RpcSendQueue {
 		while (this.queue.length > 0
 			&& dc.readyState === 'open'
 			&& dc.bufferedAmount < DC_HIGH_WATER_MARK) {
-			const chunk = this.queue[0];
+			const item = this.queue[0];
 			try {
-				dc.send(chunk);
+				dc.send(item.data);
 			} catch (err) {
 				this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] drain send failed: ${err?.message}`);
 				return; // 保留队列，等 onclose 统一清理
 			}
 			this.queue.shift();
-			this.queueBytes -= chunk.length;
+			this.queueBytes -= item.bytes;
 			// 满 → 未满 状态转换：打一条带累计数的 log，与 overflow-start 对称
 			if (this.queueOverflowActive && this.queueBytes < MAX_QUEUE_BYTES) {
 				this.queueOverflowActive = false;

@@ -74,11 +74,21 @@ function jsonOfBytes(size) {
 }
 
 /**
- * Invariant 断言：queueBytes 必须等于 queue 中所有 chunk 长度之和
- * （字节统计通过加减维护，任何时刻偏离真值 = 实现 bug）
+ * Invariant 断言：从原始 data 重新推算真值字节数，而非信任 item.bytes 字段。
+ * 这样能同时检出两类 drift：(1) item.bytes 写错；(2) queueBytes 累加扣减写错。
  */
 function assertQueueInvariant(q, label = '') {
-	const actualBytes = q.queue.reduce((n, c) => n + c.length, 0);
+	let actualBytes = 0;
+	for (const item of q.queue) {
+		const trueBytes = item.isString
+			? Buffer.byteLength(item.data, 'utf8')
+			: item.data.length;
+		assert.equal(
+			item.bytes, trueBytes,
+			`${label}item.bytes drift: tracked=${item.bytes}, actual=${trueBytes}`,
+		);
+		actualBytes += trueBytes;
+	}
 	assert.equal(
 		q.queueBytes, actualBytes,
 		`${label}queueBytes drift: tracked=${q.queueBytes}, actual=${actualBytes}, queue.length=${q.queue.length}`,
@@ -86,6 +96,14 @@ function assertQueueInvariant(q, label = '') {
 	if (q.queue.length === 0) {
 		assert.equal(q.queueBytes, 0, `${label}queue empty but queueBytes=${q.queueBytes}`);
 	}
+}
+
+// 合成"队列已满"场景的测试辅助：直接注入一个占指定字节数的 binary item
+function injectBinaryItem(q, bytes) {
+	const buf = Buffer.alloc(bytes);
+	q.queue.push({ data: buf, isString: false, bytes });
+	q.queueBytes += bytes;
+	return buf;
 }
 
 // --- 构造器 ---
@@ -125,7 +143,7 @@ test('send: 大消息 fast-path 部分发送（顶到 HIGH 暂停），剩余入
 	assert.ok(q.queueBytes > 0);
 });
 
-test('send: 队列非空时，新消息的 chunks 全部入队（不插队），非分片消息以 Buffer 形式保存', () => {
+test('send: 队列非空时，新消息的 chunks 全部入队（不插队），非分片消息以 string 形式保留类型', () => {
 	resetRemoteLog();
 	const { dc, q } = makeQueue({}, { maxMessageSize: 100 });
 	// 先塞满使 fast-path 暂停
@@ -133,10 +151,11 @@ test('send: 队列非空时，新消息的 chunks 全部入队（不插队），
 	const first = '"first msg fits one chunk"';
 	q.send(first);
 	const queueLenAfterFirst = q.queue.length;
-	assert.equal(queueLenAfterFirst, 1, 'small non-chunked msg enqueues as 1 Buffer');
-	// 非分片消息入队必须是 Buffer（buildChunks 返回 null 时的分支）
-	assert.ok(Buffer.isBuffer(q.queue[0]), 'non-chunked msg must be Buffer-ified on enqueue');
-	assert.equal(q.queue[0].toString('utf8'), first, 'Buffer content matches original string');
+	assert.equal(queueLenAfterFirst, 1, 'small non-chunked msg enqueues as 1 item');
+	// 关键回归：非分片消息入队必须保留 string 类型（早期 bug 是被 Buffer 化导致 UI 当分片残片静默丢）
+	assert.equal(typeof q.queue[0].data, 'string', 'non-chunked msg must remain a string on enqueue');
+	assert.equal(q.queue[0].isString, true);
+	assert.equal(q.queue[0].data, first, 'string content matches original');
 	assert.equal(q.queueBytes, Buffer.byteLength(first, 'utf8'));
 	assertQueueInvariant(q, 'after first: ');
 
@@ -219,9 +238,7 @@ test('send: queueBytes >= MAX_QUEUE_BYTES → drop 新消息，不影响已入�
 	resetRemoteLog();
 	const { dc, logger, q } = makeQueue({}, { maxMessageSize: 65536 });
 	// 直接注入队列使其超过 MAX（模拟之前单条溢出场景）
-	const overshoot = Buffer.alloc(MAX_QUEUE_BYTES + 1024);
-	q.queue.push(overshoot);
-	q.queueBytes += overshoot.length;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1024);
 
 	const ok = q.send('{"small":true}');
 	assert.equal(ok, false);
@@ -241,8 +258,7 @@ test('send: overflow 持续期间多次 drop 只 warn 一次（避免 DC 卡死�
 	resetRemoteLog();
 	const { logger, q } = makeQueue({}, { maxMessageSize: 65536 });
 	// 预置溢出（模拟 UI 离线 + ICE 失败 → DC 不 drain，队列卡满）
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES + 1));
-	q.queueBytes = MAX_QUEUE_BYTES + 1;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
 
 	// 连续 100 次 drop，应只产生 1 次 overflow-start warn
 	for (let i = 0; i < 100; i += 1) q.send(`{"i":${i}}`);
@@ -265,8 +281,7 @@ test('send: overflow 持续期间 single-msg-oversize 仍每次 warn（不被静
 	resetRemoteLog();
 	const { logger, q } = makeQueue({}, { maxMessageSize: 65536 });
 	// 预置溢出
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES + 1));
-	q.queueBytes = MAX_QUEUE_BYTES + 1;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
 	// 先打一次 queue-full 进入 overflow 状态
 	q.send('{"trigger":1}');
 	assert.equal(q.queueOverflowActive, true);
@@ -403,6 +418,8 @@ test('FIFO 顺序：多条消息交错入队，chunks 按调用顺序输出', ()
 	for (let j = i; j < dc.sent.length; j += 1) {
 		assert.equal(dc.sent[j].readUInt32BE(1), secondMsgId);
 	}
+	// 全部输出必须是 binary 帧（Buffer），string 帧绝不会出现在分片消息中
+	for (const sent of dc.sent) assert.ok(Buffer.isBuffer(sent));
 });
 
 test('FIFO 顺序：非分片 + 分片消息混合，小消息不插队', () => {
@@ -410,12 +427,13 @@ test('FIFO 顺序：非分片 + 分片消息混合，小消息不插队', () => 
 	const { dc, q } = makeQueue({}, { maxMessageSize: 50 });
 	dc.bufferedAmount = DC_HIGH_WATER_MARK;
 
-	// 第一条：小消息不分片（入队为 Buffer，msgId 不会被 getNextMsgId 消费）
+	// 第一条：小消息不分片（入队保留 string 类型，msgId 不会被 getNextMsgId 消费）
 	const small = '"small"';
 	q.send(small);
 	const afterFirst = q.queue.length;
-	assert.equal(afterFirst, 1, 'small msg enqueued as a single Buffer');
-	assert.ok(Buffer.isBuffer(q.queue[0]), 'non-chunked msg is Buffer-ified on enqueue');
+	assert.equal(afterFirst, 1, 'small msg enqueued as a single item');
+	assert.equal(typeof q.queue[0].data, 'string', 'non-chunked msg keeps string type on enqueue');
+	assert.equal(q.queue[0].isString, true);
 	assertQueueInvariant(q, 'after small: ');
 
 	// 第二条：大消息分片
@@ -428,12 +446,14 @@ test('FIFO 顺序：非分片 + 分片消息混合，小消息不插队', () => 
 	dc.bufferedAmount = 0;
 	q.onBufferedAmountLow();
 	assertQueueInvariant(q, 'after drain: ');
-	// 第一个发送的必须是 small（Buffer 化的 string）
-	const firstDecoded = dc.sent[0].toString('utf8');
-	assert.equal(firstDecoded, small);
-	// 其余必是带 header 的分片 chunk（msgId 相同）
+	// 第一个发送的必须是原 string（关键回归：UI 端按 string 帧识别为完整消息）
+	assert.equal(typeof dc.sent[0], 'string', 'first emitted frame must be a string frame, not Buffer');
+	assert.equal(dc.sent[0], small);
+	// 其余必是带 header 的分片 chunk Buffer（msgId 相同）
+	assert.ok(Buffer.isBuffer(dc.sent[1]));
 	const bigMsgId = dc.sent[1].readUInt32BE(1);
 	for (let j = 2; j < dc.sent.length; j += 1) {
+		assert.ok(Buffer.isBuffer(dc.sent[j]));
 		assert.equal(dc.sent[j].readUInt32BE(1), bigMsgId, 'chunks of big msg share msgId');
 	}
 });
@@ -444,9 +464,7 @@ test('remoteLog: 首次进入溢出 → overflow-start 一次', () => {
 	resetRemoteLog();
 	const { q } = makeQueue({}, { maxMessageSize: 65536 });
 	// 预置溢出状态
-	const big = Buffer.alloc(MAX_QUEUE_BYTES + 1);
-	q.queue.push(big);
-	q.queueBytes += big.length;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
 
 	// 第一次 drop → overflow-start
 	q.send('{"a":1}');
@@ -463,9 +481,7 @@ test('remoteLog: drain 排空至 < MAX → overflow-end 一次（warn+info+remot
 	resetRemoteLog();
 	const { dc, logger, q } = makeQueue({}, { maxMessageSize: 100 });
 	// 制造 overflow：入队 > MAX 且累加多次 drop
-	const bigChunk = Buffer.alloc(MAX_QUEUE_BYTES + 50);
-	q.queue.push(bigChunk);
-	q.queueBytes = bigChunk.length;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 50);
 	for (let i = 0; i < 5; i += 1) q.send(`{"drop":${i}}`); // 5 次 drop，仅首次 overflow-start
 	assert.equal(q.queueOverflowActive, true);
 	assert.equal(q.droppedCount, 5);
@@ -493,9 +509,7 @@ test('remoteLog: overflow 循环（start → end → start 再次）状态机双
 	const { dc, q } = makeQueue({}, { maxMessageSize: 100 });
 
 	// 第一轮：制造溢出 → overflow-start
-	const bigChunk1 = Buffer.alloc(MAX_QUEUE_BYTES + 50);
-	q.queue.push(bigChunk1);
-	q.queueBytes = bigChunk1.length;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 50);
 	q.send('{"a":1}'); // drop，overflow-start #1
 	assert.equal(q.queueOverflowActive, true);
 	assert.equal(
@@ -514,9 +528,7 @@ test('remoteLog: overflow 循环（start → end → start 再次）状态机双
 	);
 
 	// 第二轮：再次制造溢出 → overflow-start #2（状态机应能再次翻转）
-	const bigChunk2 = Buffer.alloc(MAX_QUEUE_BYTES + 50);
-	q.queue.push(bigChunk2);
-	q.queueBytes = bigChunk2.length;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 50);
 	q.send('{"b":2}'); // drop，overflow-start #2
 	assert.equal(q.queueOverflowActive, true);
 	assert.equal(
@@ -530,8 +542,7 @@ test('remoteLog: close 汇总 stats（dropped > 0 或 residual > 0）', () => {
 	resetRemoteLog();
 	const { q } = makeQueue({}, { maxMessageSize: 65536 });
 	// 制造 drop
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES + 1));
-	q.queueBytes = MAX_QUEUE_BYTES + 1;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
 	q.send('{"x":1}');
 	q.close();
 	const closeLog = remoteLogBuffer.find(e => e.text.includes('rpc-queue.close'));
@@ -568,8 +579,7 @@ test('remoteLog: close 仅 drops > 0（无 residual）→ 汇总 log', () => {
 	resetRemoteLog();
 	const { dc, q } = makeQueue({}, { maxMessageSize: 100 });
 	// 制造 drop：queueBytes 溢出但手动清空 queue 后再 close
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES));
-	q.queueBytes = MAX_QUEUE_BYTES;
+	injectBinaryItem(q, MAX_QUEUE_BYTES);
 	q.send('{"drop":"me"}'); // 触发 drop
 	assert.equal(q.droppedCount, 1);
 
@@ -685,8 +695,7 @@ test('边界：queueBytes === MAX_QUEUE_BYTES 时新消息被 drop', () => {
 	resetRemoteLog();
 	const { logger, q } = makeQueue({}, { maxMessageSize: 65536 });
 	// 恰好等于 MAX
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES));
-	q.queueBytes = MAX_QUEUE_BYTES;
+	injectBinaryItem(q, MAX_QUEUE_BYTES);
 	const ok = q.send('{"x":1}');
 	assert.equal(ok, false);
 	assert.equal(q.droppedCount, 1);
@@ -696,8 +705,7 @@ test('边界：queueBytes === MAX_QUEUE_BYTES 时新消息被 drop', () => {
 test('边界：queueBytes = MAX_QUEUE_BYTES - 1 时新消息仍可入队', () => {
 	resetRemoteLog();
 	const { q } = makeQueue({ bufferedAmount: 2 * 1024 * 1024 }, { maxMessageSize: 65536 });
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES - 1));
-	q.queueBytes = MAX_QUEUE_BYTES - 1;
+	injectBinaryItem(q, MAX_QUEUE_BYTES - 1);
 	const ok = q.send('{"y":2}');
 	assert.equal(ok, true);
 	assert.equal(q.droppedCount, 0);
@@ -743,8 +751,7 @@ test('tag 为空时日志不含额外前缀（分支覆盖）', () => {
 		// 不传 tag
 	});
 	// 制造一次 drop
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES + 1));
-	q.queueBytes = MAX_QUEUE_BYTES + 1;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
 	q.send('{"x":1}');
 	// 日志中不应有 "conn="
 	assert.ok(logger.warnings.every(w => !w.includes('conn=')));
@@ -759,8 +766,7 @@ test('logger 缺失时 warn 不抛（?./?? fallback 分支）', () => {
 		getNextMsgId: nextMsgId,
 		logger: {}, // 无 warn 方法
 	});
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES + 1));
-	q.queueBytes = MAX_QUEUE_BYTES + 1;
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 1);
 	// 不应抛
 	assert.doesNotThrow(() => q.send('{"x":1}'));
 });
@@ -814,8 +820,7 @@ test('invariant: send/drain/drop/close 混合序列后 queueBytes 始终等于 c
 	assert.equal(q.queueBytes, 0);
 
 	// 步 6：注入饱和状态 + 一次 drop
-	q.queue.push(Buffer.alloc(MAX_QUEUE_BYTES));
-	q.queueBytes = MAX_QUEUE_BYTES;
+	injectBinaryItem(q, MAX_QUEUE_BYTES);
 	assertQueueInvariant(q, 'step6 synthetic full: ');
 	const ok = q.send('{"drop":"me"}');
 	assert.equal(ok, false);
@@ -857,6 +862,70 @@ test('invariant: fast-path 分片成功/失败路径后 queueBytes 与 queue 长
 	assertQueueInvariant(q, 'after failed drain: ');
 	// 首个 chunk 应仍在队首（没被 shift）
 	assert.equal(q.queue.length > 0, true);
+});
+
+// --- 回归：string 帧类型保留（早期 bug：被 Buffer 化导致 UI reassembler 当分片残片静默丢） ---
+
+test('回归: 队列非空时入队的小 JSON，drain 出口必须是 string 帧而非 Buffer', () => {
+	resetRemoteLog();
+	const { dc, q } = makeQueue({}, { maxMessageSize: 65536 });
+	// 让队列非空（强制走"非空入队"分支）：先塞一段二进制残片
+	injectBinaryItem(q, 1024);
+	const accepted = '{"runId":"r1","accepted":true}';
+	const ok = q.send(accepted);
+	assert.equal(ok, true);
+	// 入队 item 必须保留 string 类型
+	const queuedItem = q.queue[q.queue.length - 1];
+	assert.equal(typeof queuedItem.data, 'string');
+	assert.equal(queuedItem.isString, true);
+	assert.equal(queuedItem.bytes, Buffer.byteLength(accepted, 'utf8'));
+
+	// drain 出口验证：dc.send 收到的必须是 string，UI 端才会按完整消息派发
+	dc.bufferedAmount = 0;
+	q.onBufferedAmountLow();
+	assert.equal(q.queue.length, 0);
+	const stringFrames = dc.sent.filter((s) => typeof s === 'string');
+	assert.equal(stringFrames.length, 1, 'exactly one string frame drained');
+	assert.equal(stringFrames[0], accepted);
+});
+
+test('回归: bufferedAmount >= HIGH 时入队的小 JSON，drain 出口必须是 string 帧而非 Buffer', () => {
+	resetRemoteLog();
+	const { dc, q } = makeQueue({ bufferedAmount: DC_HIGH_WATER_MARK }, { maxMessageSize: 65536 });
+	const accepted = '{"runId":"r2","accepted":true}';
+	const ok = q.send(accepted);
+	assert.equal(ok, true);
+	// 因高水位被入队，不走 fast-path
+	assert.equal(dc.sent.length, 0);
+	assert.equal(q.queue.length, 1);
+	assert.equal(typeof q.queue[0].data, 'string');
+	assert.equal(q.queue[0].isString, true);
+
+	// 让 bufferedAmount 回落，drain
+	dc.bufferedAmount = 0;
+	q.onBufferedAmountLow();
+	assert.equal(dc.sent.length, 1);
+	assert.equal(typeof dc.sent[0], 'string', 'must drain as string frame, not Buffer');
+	assert.equal(dc.sent[0], accepted);
+});
+
+test('回归: 小 string 入队的 queueBytes 用 UTF-8 字节核算（非 string.length）', () => {
+	resetRemoteLog();
+	const { dc, q } = makeQueue({ bufferedAmount: DC_HIGH_WATER_MARK }, { maxMessageSize: 65536 });
+	// 含多字节字符：字符数 ≠ UTF-8 字节数
+	const multibyte = '"中文事件 emoji 🚀"';
+	const expectedBytes = Buffer.byteLength(multibyte, 'utf8');
+	assert.notEqual(expectedBytes, multibyte.length, 'sanity: char count != utf8 bytes');
+
+	q.send(multibyte);
+	assert.equal(q.queueBytes, expectedBytes);
+	assertQueueInvariant(q, 'utf8 bytes accounting: ');
+
+	// drain 后 bytes 归零
+	dc.bufferedAmount = 0;
+	q.onBufferedAmountLow();
+	assert.equal(q.queueBytes, 0);
+	assert.equal(dc.sent[0], multibyte);
 });
 
 // --- 常量 sanity ---
