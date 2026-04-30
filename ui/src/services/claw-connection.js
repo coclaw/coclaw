@@ -19,6 +19,15 @@ const TERMINAL_STATUSES = new Set(['ok', 'error']);
 // 导出常量供外部模块使用
 export { BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS };
 
+// 可选的 RPC trace：localStorage.rpcTrace='1' 时把入站/出站打到 console.debug。
+// 默认关，关闭路径上仅一次 try/catch + 一次 localStorage 读，开销极低。
+// 设计为开发期翻 console 用，不替代 remoteLog。
+const TRACE_PREFIX = '[rpc-trace]';
+function isRpcTraceEnabled() {
+	try { return globalThis.localStorage?.getItem?.('rpcTrace') === '1'; }
+	catch { return false; }
+}
+
 /** 构造与 axios CanceledError 对齐的取消错误（err.name='CanceledError', err.code='ERR_CANCELED'） */
 function makeAbortError() {
 	const err = new Error('request aborted');
@@ -52,6 +61,9 @@ export class ClawConnection {
 
 		/** @type {import('./webrtc-connection.js').WebRtcConnection | null} */
 		this.__rtc = null;
+
+		// trace 时间基准
+		this.__traceStartedAt = Date.now();
 
 		// 连接就绪等待队列
 		/** @type {{ resolve: Function, reject: Function, timer: number|null }[]} */
@@ -176,7 +188,7 @@ export class ClawConnection {
 			}
 			const id = `ui-${this.__uuid}-${this.__counter++}`;
 			return new Promise((resolve, reject) => {
-				const waiter = { resolve, reject, signal: null, onAbort: null };
+				const waiter = { resolve, reject, signal: null, onAbort: null, method };
 				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
 				if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
 				const timeoutMs = options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -208,7 +220,18 @@ export class ClawConnection {
 					signal.addEventListener('abort', waiter.onAbort, { once: true });
 				}
 				this.__pending.set(id, waiter);
-				this.__rtc.send({ type: 'req', id, method, params })
+				const wireReq = { type: 'req', id, method, params };
+				if (isRpcTraceEnabled()) {
+					try {
+						const rel = Date.now() - this.__traceStartedAt;
+						const bytes = JSON.stringify(wireReq).length;
+						console.debug(`${TRACE_PREFIX} +${rel}ms OUT req ${method} id=${id} bytes=${bytes}`);
+					}
+					catch {
+						// trace 是诊断辅助，序列化或 console 调用异常都不应阻断真实发送流程。
+					}
+				}
+				this.__rtc.send(wireReq)
 					.catch((sendErr) => {
 						if (!this.__pending.has(id)) return;
 						this.__pending.delete(id);
@@ -251,6 +274,25 @@ export class ClawConnection {
 
 	/** DataChannel 消息处理（由 WebRtcConnection 回调） */
 	__onRtcMessage(payload) {
+		if (isRpcTraceEnabled()) {
+			try {
+				const rel = Date.now() - this.__traceStartedAt;
+				let bytes = 0;
+				try { bytes = JSON.stringify(payload).length; } catch {}
+				if (payload.type === 'res' && payload.id) {
+					// 注意：此时 pending 还未删除（删除发生在下面 __handleRpcResponse 内），
+					// 所以这里能拿到当初发送时记录的 method。
+					const method = this.__pending.get(payload.id)?.method ?? '?';
+					const status = payload?.payload?.status ?? '-';
+					console.debug(`${TRACE_PREFIX} +${rel}ms IN  res ${method} id=${payload.id} ok=${payload.ok} status=${status} bytes=${bytes}`);
+				} else if (payload.type === 'event' && payload.event) {
+					console.debug(`${TRACE_PREFIX} +${rel}ms IN  event ${payload.event} bytes=${bytes}`);
+				}
+			}
+			catch {
+				// trace 块的任何异常都不应阻断 __handleRpcResponse / __handleEvent 调用。
+			}
+		}
 		if (payload.type === 'res' && payload.id) {
 			this.__handleRpcResponse(payload);
 		} else if (payload.type === 'event' && payload.event) {

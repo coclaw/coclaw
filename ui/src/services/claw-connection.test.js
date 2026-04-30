@@ -845,3 +845,93 @@ describe('ClawConnection – 常量导出', () => {
 		expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(120_000);
 	});
 });
+
+describe('ClawConnection – 可选 RPC trace (localStorage.rpcTrace)', () => {
+	let origLocalStorage;
+	let consoleDebugSpy;
+	beforeEach(() => {
+		vi.useFakeTimers();
+		origLocalStorage = globalThis.localStorage;
+		consoleDebugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+	});
+	afterEach(() => {
+		// 清掉模拟，恢复原 localStorage
+		globalThis.localStorage = origLocalStorage;
+		consoleDebugSpy.mockRestore();
+		vi.useRealTimers();
+	});
+
+	function mockLocalStorage(value) {
+		globalThis.localStorage = {
+			getItem: vi.fn().mockReturnValue(value),
+		};
+	}
+
+	test('rpcTrace 关时不输出 OUT/IN 日志', async () => {
+		mockLocalStorage(null); // 默认未设
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('ping', {});
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok' } });
+		await expect(p).resolves.toEqual({ status: 'ok' });
+		expect(consoleDebugSpy).not.toHaveBeenCalled();
+	});
+
+	test('rpcTrace=1 时 OUT req 走 console.debug', async () => {
+		mockLocalStorage('1');
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('echo', { x: 1 });
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok' } });
+		await p;
+		const outLine = consoleDebugSpy.mock.calls.map((c) => c[0]).find((m) => /OUT req echo/.test(m));
+		expect(outLine).toMatch(/^\[rpc-trace\] \+\d+ms OUT req echo id=ui-.+ bytes=\d+$/);
+	});
+
+	test('rpcTrace=1 时 IN res 走 console.debug 并能还原 method', async () => {
+		mockLocalStorage('1');
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('lookup', { k: 'v' });
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok', value: 42 } });
+		await p;
+		const inLine = consoleDebugSpy.mock.calls.map((c) => c[0]).find((m) => /IN  res lookup/.test(m));
+		expect(inLine).toMatch(/^\[rpc-trace\] \+\d+ms IN  res lookup id=ui-.+ ok=true status=ok bytes=\d+$/);
+	});
+
+	test('rpcTrace=1 时 IN event 走 console.debug', () => {
+		mockLocalStorage('1');
+		const { conn } = makeRtcReady();
+		conn.__onRtcMessage({ type: 'event', event: 'something.happened', payload: { foo: 1 } });
+		const eventLine = consoleDebugSpy.mock.calls.map((c) => c[0]).find((m) => /IN  event something.happened/.test(m));
+		expect(eventLine).toMatch(/^\[rpc-trace\] \+\d+ms IN  event something.happened bytes=\d+$/);
+	});
+
+	test('localStorage 抛异常时安全降级（视为关闭，不影响主流程）', async () => {
+		globalThis.localStorage = {
+			getItem: vi.fn(() => { throw new Error('quota'); }),
+		};
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('ping', {});
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok' } });
+		await expect(p).resolves.toEqual({ status: 'ok' });
+		expect(consoleDebugSpy).not.toHaveBeenCalled();
+	});
+
+	test('console.debug 抛异常不应阻断 RPC 处理', async () => {
+		mockLocalStorage('1');
+		consoleDebugSpy.mockImplementation(() => { throw new Error('console broken'); });
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('ping', {});
+		await vi.advanceTimersByTimeAsync(0);
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		// 即使 trace 块的 console.debug 抛异常，__handleRpcResponse 仍应被调用
+		expect(() => conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok', value: 'go' } })).not.toThrow();
+		await expect(p).resolves.toEqual({ status: 'ok', value: 'go' });
+	});
+});
