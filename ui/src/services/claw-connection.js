@@ -10,8 +10,10 @@ import { remoteLog } from './remote-log.js';
 
 /** 默认请求超时（发送后等待响应），0 表示永不超时 */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-/** 默认连接等待超时（等待 DC 就绪），覆盖底层 RTC ICE restart 90s 预算 */
-const DEFAULT_CONNECT_TIMEOUT_MS = 120_000;
+/** 默认连接等待超时（等待 DC 就绪）：覆盖一次 ICE restart 180s 预算 + 30s settled 余量。
+ *  仅作用于 DC 尚未 open 的 waitReady；DC open 后（含 ICE restart 期间，DC 仍 open）走 fast-path
+ *  立即 resolve，restart 期间发的 RPC 受各自 requestTimeout 约束，不再过 connectTimeout。 */
+const DEFAULT_CONNECT_TIMEOUT_MS = 210_000;
 /** 短暂抖动 vs 实质断连分界（reconnect gap < 此值跳过 refresh，避免短抖动后无意义全量刷新） */
 const BRIEF_DISCONNECT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['ok', 'error']);

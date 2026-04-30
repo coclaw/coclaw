@@ -80,9 +80,10 @@ let _sigOfflineAt = 0;
 const _pendingTypeChangedRestartClaws = new Set();
 
 /**
- * RTC 重连预算：5 分钟时间窗口 + 固定 10s 冷却
- * - 第一次失败开窗（windowStartAt = now）
- * - 窗口内每次失败排 RETRY_COOLDOWN_MS 后再 build，狂试不限次
+ * RTC 重连预算：5 分钟时间窗口 + 失败后 10s 冷却（首轮免冷却）
+ * - 第一次失败开窗（windowStartAt = now），首轮 build 立即起（delay = 0），让"刚进入循环"的
+ *   恢复路径不被节流拖慢——10s 是给"重复失败"用的减震，不是给首次恢复用的等待
+ * - 窗口内后续失败仍按 RETRY_COOLDOWN_MS 节流，避免快速失败循环耗资源
  * - 窗口超时 → 标 unreachable，停手等用户手动重试 / SSE 恢复
  * - DC ready / 外部 reset（offline / sig offline / network online / manual / snapshot rescue）均立即清窗
  *
@@ -437,8 +438,8 @@ export const useClawsStore = defineStore('claws', {
 					// 双 gate 防风暴：
 					// - `_rtcInitInProgress`：前次 rescue 的 `__ensureRtc` 还在飞，重 fire 只会空转
 					//   并多打一条 `claw.fullInit` remoteLog，跳过
-					// - `_rtcRetryState`：`__ensureRtc` 失败已排了 __scheduleRetry 的窗口重试，
-					//   重 fire 会绕过 10s 冷却节流（新 fullInit 再包 __ensureRtc → 立即再 build），
+					// - `_rtcRetryState`：`__ensureRtc` 失败已进入 __scheduleRetry 的窗口重试，
+					//   重 fire 会绕过冷却节流（新 fullInit 再包 __ensureRtc → 立即再 build），
 					//   跳过让 retry timer 自然接管
 					if (claw?.online && !_rtcInitInProgress.get(id) && !_rtcRetryState.has(id)) {
 						// sig offline 期间 __fullInit → __ensureRtc 的 sig gate (L820-823)
@@ -742,7 +743,7 @@ export const useClawsStore = defineStore('claws', {
 		 *   plugin 侧缓冲的 rpc msg 会随 ICE 恢复自然送达 UI，主动 refresh 是冗余流量
 		 *
 		 * 分派动作：
-		 * - `restarting` + paused → `triggerRestart('online_resume')`（复用 PC + 新 90s 预算）
+		 * - `restarting` + paused → `triggerRestart('online_resume')`（复用 PC + 新 180s 预算）
 		 * - `restarting` + 非 paused → 已在正常 restart 循环，不重入
 		 * - `connected` + paused → `resumeRecovery`（清 paused + 重启 keepalive；不发 ICE restart）
 		 *   - 例外：`forceRestartOnConnected=true`（如 typeChanged 记账命中）→ 升级为
@@ -1154,8 +1155,12 @@ export const useClawsStore = defineStore('claws', {
 		/**
 		 * 安排重试（__ensureRtc 失败或被动失败后调用）
 		 *
-		 * 窗口模型：第一次进入开窗 windowStartAt=now；窗口内每次失败排
+		 * 窗口模型：第一次进入开窗 windowStartAt=now；窗口内后续失败排
 		 * RETRY_COOLDOWN_MS 后再 build；窗口超时后停手等用户手动重试。
+		 *
+		 * 首轮免冷却：状态表里没条目即"首次进入循环"——立即起 build（delay=0）。
+		 * 状态表会在 build 成功 / 外部 reset / 窗口超时 时清空，因此每次重新进入
+		 * 循环都会享受这次免冷却。冷却仅作用于"建完又挂"的循环失败场景。
 		 *
 		 * 边界：窗口剩余 < RETRY_COOLDOWN_MS 时仍按 cooldown 排定 timer，
 		 * 该 timer fire 时已过期 ≤ cooldown，对应 __ensureRtc 失败后下一轮
@@ -1171,6 +1176,7 @@ export const useClawsStore = defineStore('claws', {
 			if (!claw.online) return;
 			const now = Date.now();
 			let state = _rtcRetryState.get(id);
+			const isFirstInLoop = !state;
 			if (!state) {
 				state = { windowStartAt: now, timer: null };
 				_rtcRetryState.set(id, state);
@@ -1186,7 +1192,8 @@ export const useClawsStore = defineStore('claws', {
 				return;
 			}
 			clearTimeout(state.timer);
-			const delay = RETRY_COOLDOWN_MS;
+			// 首轮 delay=0：进入循环时立即恢复，不被减震节流拖慢
+			const delay = isFirstInLoop ? 0 : RETRY_COOLDOWN_MS;
 			const remaining = Math.max(0, RETRY_WINDOW_MS - elapsed);
 			claw.retryCount = (claw.retryCount || 0) + 1;
 			claw.retryNextAt = now + delay;

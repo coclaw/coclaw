@@ -19,8 +19,9 @@ const HIGH_WATER_MARK = 262144;
 const LOW_WATER_MARK = 65536;
 /** 上传大小限制 1GB */
 const MAX_UPLOAD_SIZE = 1024 * 1024 * 1024;
-/** 等待 Plugin 首条响应的超时（DC open + Plugin 回复首条控制消息） */
-const READY_TIMEOUT_MS = 120_000;
+/** 等待 Plugin 首条响应的超时（DC open + Plugin 回复首条控制消息），对齐 ClawConnection.connectTimeout：
+ *  覆盖一次 ICE restart 180s 预算 + 30s 余量。 */
+const READY_TIMEOUT_MS = 210_000;
 
 /** 构造与 axios CanceledError 对齐的取消错误 */
 function makeAbortError(message) {

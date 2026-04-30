@@ -821,8 +821,8 @@ describe('uploadFile', () => {
 			dc.__open();
 			// 不发 { ok: true } ready 信号
 
-			// 推进 120s 触发 READY_TIMEOUT（READY_TIMEOUT_MS = 120s）
-			await vi.advanceTimersByTimeAsync(120_000);
+			// 推进 210s 触发 READY_TIMEOUT（READY_TIMEOUT_MS = 210s）
+			await vi.advanceTimersByTimeAsync(210_000);
 
 			const err = await resultPromise;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -1204,7 +1204,7 @@ describe('downloadFile — 超时守卫', () => {
 			dc.__open();
 			// 不发响应头，让超时触发
 
-			await vi.advanceTimersByTimeAsync(120_000);
+			await vi.advanceTimersByTimeAsync(210_000);
 
 			const err = await resultPromise;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -1226,7 +1226,7 @@ describe('downloadFile — 超时守卫', () => {
 			await vi.advanceTimersByTimeAsync(0); // tick: waitReady resolve
 			lastDC(); // DC 已创建但不调用 __open()
 
-			await vi.advanceTimersByTimeAsync(120_000);
+			await vi.advanceTimersByTimeAsync(210_000);
 
 			const err = await resultPromise;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -1410,7 +1410,7 @@ describe('uploadFile — 分支覆盖补充', () => {
 			dc.__open();
 			// 不发 ready，让超时触发
 			const p = handle.promise.catch((e) => e);
-			await vi.advanceTimersByTimeAsync(120_001);
+			await vi.advanceTimersByTimeAsync(210_001);
 
 			const err = await p;
 			expect(err).toBeInstanceOf(FileTransferError);
@@ -2254,9 +2254,9 @@ describe('postFile – AbortSignal 取消支持', () => {
 });
 
 describe('file-transfer – READY_TIMEOUT_MS 导出', () => {
-	test('READY_TIMEOUT_MS 为 120s（对齐 connectTimeout 恢复窗口）', async () => {
+	test('READY_TIMEOUT_MS 为 210s（对齐 connectTimeout 恢复窗口）', async () => {
 		const { READY_TIMEOUT_MS } = await import('./file-transfer.js');
-		expect(READY_TIMEOUT_MS).toBe(120_000);
+		expect(READY_TIMEOUT_MS).toBe(210_000);
 	});
 });
 

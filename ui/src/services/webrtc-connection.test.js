@@ -2853,8 +2853,8 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(rtc.__restartAttemptCount).toBe(1);
 		expect(rtc.__restartStartTime).toBeGreaterThan(0);
 
-		// 推进时间到预算耗尽（90s）
-		await vi.advanceTimersByTimeAsync(90_000);
+		// 推进时间到预算耗尽（180s）
+		await vi.advanceTimersByTimeAsync(180_000);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('failed');
 		expect(rtc.__restartAttemptCount).toBe(0);
@@ -3634,8 +3634,8 @@ describe('WebRtcConnection — ICE restart', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		await vi.advanceTimersByTimeAsync(0);
 
-		// 让 __attemptRestart 进入超时分支：把 startTime 推到 91s 前，且 dumpStats 的 getStats 挂住
-		rtc.__restartStartTime = Date.now() - 91_000;
+		// 让 __attemptRestart 进入超时分支：把 startTime 推到预算外（181s 前），且 dumpStats 的 getStats 挂住
+		rtc.__restartStartTime = Date.now() - 181_000;
 		pc.getStats = () => new Promise(() => {}); // 永不 resolve，依赖 500ms 兜底
 		rtc.nudgeRestart();
 		await vi.advanceTimersByTimeAsync(0); // 进入分支 → stopPoll/stopTimer → await Promise.race(...)
@@ -4852,7 +4852,7 @@ describe('WebRtcConnection — 失败路径资源清理', () => {
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
 		await vi.advanceTimersByTimeAsync(0);
-		await vi.advanceTimersByTimeAsync(90_000);
+		await vi.advanceTimersByTimeAsync(180_000);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(rtc.state).toBe('failed');
 
@@ -4881,7 +4881,7 @@ describe('WebRtcConnection — 失败路径资源清理', () => {
 		pc.connectionState = 'failed';
 		pc.onconnectionstatechange();
 		await vi.advanceTimersByTimeAsync(0);
-		await vi.advanceTimersByTimeAsync(90_000);
+		await vi.advanceTimersByTimeAsync(180_000);
 		await vi.advanceTimersByTimeAsync(0);
 
 		// 末尾状态应为 'failed'，不是 'closed'
@@ -5440,10 +5440,10 @@ describe('WebRtcConnection — 诊断日志补全', () => {
 		const { remoteLog } = await import('./remote-log.js');
 		remoteLog.mockClear();
 
-		// triggerRestart → 第一次 attempt 快速超时：手动把 __restartStartTime 设为 91s 前
+		// triggerRestart → 第一次 attempt 快速超时：手动把 __restartStartTime 设为预算外（181s 前）
 		rtc.triggerRestart('test');
 		await vi.advanceTimersByTimeAsync(0);
-		rtc.__restartStartTime = Date.now() - 91_000;
+		rtc.__restartStartTime = Date.now() - 181_000;
 		rtc.nudgeRestart();
 		await vi.advanceTimersByTimeAsync(0);
 
@@ -5462,7 +5462,7 @@ describe('WebRtcConnection — 诊断日志补全', () => {
 
 		rtc.triggerRestart('test');
 		await vi.advanceTimersByTimeAsync(0);
-		rtc.__restartStartTime = Date.now() - 91_000;
+		rtc.__restartStartTime = Date.now() - 181_000;
 		rtc.nudgeRestart();
 		// __attemptRestart 走到 Promise.race，等待 500ms 兜底
 		await vi.advanceTimersByTimeAsync(0);

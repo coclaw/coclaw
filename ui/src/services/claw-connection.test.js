@@ -243,10 +243,10 @@ describe('ClawConnection – waitReady()', () => {
 		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
 	});
 
-	test('默认 connectTimeout 为 120s（覆盖 ICE restart 90s 预算）', async () => {
+	test('默认 connectTimeout 为 210s（覆盖 ICE restart 180s 预算 + 重建缓冲）', async () => {
 		const conn = new ClawConnection('bot1');
 		const p = conn.waitReady();
-		vi.advanceTimersByTime(119_999);
+		vi.advanceTimersByTime(209_999);
 		expect(conn.__readyWaiters).toHaveLength(1);
 		vi.advanceTimersByTime(2);
 		await expect(p).rejects.toMatchObject({ code: 'CONNECT_TIMEOUT' });
@@ -841,8 +841,8 @@ describe('ClawConnection – 常量导出', () => {
 		expect(Number.isInteger(BRIEF_DISCONNECT_MS)).toBe(true);
 	});
 
-	test('DEFAULT_CONNECT_TIMEOUT_MS 为 120s', () => {
-		expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(120_000);
+	test('DEFAULT_CONNECT_TIMEOUT_MS 为 210s', () => {
+		expect(DEFAULT_CONNECT_TIMEOUT_MS).toBe(210_000);
 	});
 });
 

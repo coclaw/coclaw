@@ -101,10 +101,10 @@
 - **触发**：ICE `connectionState` 变为 `failed`；或前台恢复时 PC 处于 `disconnected`
 - **行为**：
   - ICE `disconnected` → 等待 ICE 自愈（5s 超时，`DISCONNECTED_TIMEOUT_MS`）
-  - ICE restart（pion impl）→ 在现有 PC 上重新协商 ICE 层，DTLS/SCTP/DataChannel 保留。ICE check 失败后立即重试，总时间预算 90s（`ICE_RESTART_TIMEOUT_MS`），15s 安全网定时器补位（`ICE_RESTART_SAFETY_MS`）
+  - ICE restart（pion impl）→ 在现有 PC 上重新协商 ICE 层，DTLS/SCTP/DataChannel 保留。ICE check 失败后立即重试，总时间预算 180s（`ICE_RESTART_TIMEOUT_MS`），15s 安全网定时器补位（`ICE_RESTART_SAFETY_MS`）
   - Plugin 为 ndc/werift impl 时 → 立即收到 `rtc:restart-rejected`（reason=`impl_unsupported`）→ 跳过 restart，直接进入 rebuild
   - Restart 超时或被 reject → `state = 'failed'` → store 窗口重试 → full rebuild（获取新 TURN 凭证，新建 PeerConnection）
-- **窗口重试预算**（`stores/claws.store.js` `__scheduleRetry`）：5 分钟时间窗口 + 固定 10s 冷却。失败首次开窗，窗口内每次失败排 10s 后再 build；窗口超时进 unreachable，等 SSE 恢复 / 用户手动重试。DC ready / 外部 reset（offline / sig offline / network online / manual / snapshot rescue）立即清窗。砍掉了原指数退避（1:1 关系不需要错峰，时间窗口本身就是能量上限）
+- **窗口重试预算**（`stores/claws.store.js` `__scheduleRetry`）：5 分钟时间窗口 + 失败后 10s 冷却（**首轮免冷却**）。首次进入循环开窗 + 立即 build（delay=0），让"刚进入恢复循环"的路径不被节流拖慢；窗口内后续失败排 10s 后再 build，避免快速失败死循环耗资源；窗口超时进 unreachable，等 SSE 恢复 / 用户手动重试。DC ready / 外部 reset（offline / sig offline / network online / manual / snapshot rescue）立即清窗——下次重新进循环又享受首轮免冷却。砍掉了原指数退避（1:1 关系不需要错峰，时间窗口本身就是能量上限）
 - **场景**：Web + Capacitor
 
 ### 2.5 RTC 大 payload 处理（DataChannel 分片）
@@ -112,7 +112,7 @@
 - **文件**：`services/webrtc-connection.js`、`utils/dc-chunking.js`
 - **机制**：DataChannel 通过分片（chunking）传输大 payload
 - **流控**：发送端 high water mark 1MB / low water mark 256KB，超限时暂停发送，`bufferedamountlow` 恢复
-- **DC 不可用**：`request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 120s，覆盖 ICE restart 90s 预算），不再直接 reject；调用方可通过 `options.signal` 主动放弃等待
+- **DC 不可用**：`request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 210s，覆盖一次 ICE restart 180s 预算 + 30s 余量），不再直接 reject；调用方可通过 `options.signal` 主动放弃等待。注意：DC open 后（含 ICE restart 期间）走 fast-path 立即 resolve，restart 期间发的 RPC 受各自 requestTimeout 约束
 - **场景**：Web + Capacitor
 
 ### 2.6 SSE 恢复
@@ -213,7 +213,7 @@
 
 - **文件**：`stores/chat.store.js`
 - **触发**：发送过程中 DC 断连（`isDisconnectError(err)`），且消息尚未被服务端 accepted，且未重试过
-- **行为**：递归调用 `sendMessage`（携带相同 idempotencyKey），内层 `request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 120s）
+- **行为**：递归调用 `sendMessage`（携带相同 idempotencyKey），内层 `request()` 通过 `waitReady()` 自动等待连接恢复（connectTimeout 默认 210s，仅在 DC 未 open 时排队）
 - **场景**：Web + Capacitor
 
 ### 4.2 accepted 消息 reconcile
@@ -430,7 +430,7 @@ RTC 恢复决策基于 PC 自身状态、DC probe 和两把正交的"全局闸"�
     - rebuild 路径（`failed`/`closed`/`idle`/`connecting`/rtc 为 null）→ add 到 `_pendingForceRefreshOnRebuild`，`__ensureRtc` 成功时消费并 force refresh。rebuild 建全新 PC + 全新 SCTP，plugin 侧旧 DC 发送 buffer 的 rpc msg 会丢、plugin 可能换端，必须主动刷
     - DC 延续路径（`connected` / `restarting`，含 forceRestart=true 的 ICE restart 子场景）→ **不刷**。PC 没 rebuild、SCTP 延续时，plugin 侧缓冲的 rpc msg 会随 ICE 恢复自然送达 UI；主动 refresh 是冗余流量
   - **PC 状态分派**：
-    - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 90s 预算
+    - `restarting`（pause 冻结而来）→ `rtc.triggerRestart('online_resume')`，firstTrigger 分支重采 ufragSnap，全新 180s 预算
     - `connected` + paused → 默认 `resumeRecovery`（清 paused + 立即 probe 一次，失败升级 `__onIceFailed`，把黑洞从 30-40s 压到 ~1-3s；`pc.connectionState` 已 failed/disconnected 则直接升级 `triggerRestart('online_resume')`）；forceRestart 命中时升级为 `triggerRestart('online_resume')`
     - `connected` + 非 paused → `__ensureRtc` 早退（不单独刷 dashboard，DC 延续场景对称不刷）
     - 其余 → `__ensureRtc` 全量 rebuild；rebuild 成功由 `_pendingForceRefreshOnRebuild` consume 统一刷 dashboard/agents/sessions/topics

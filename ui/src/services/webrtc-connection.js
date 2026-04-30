@@ -30,8 +30,11 @@ const SHORT_BACKGROUND_MS = 25_000;
  *  从挂起恢复后完成内部状态同步，不再指望 ICE 自愈 */
 const DISCONNECTED_TIMEOUT_RESUME_MS = 1_500;
 
-/** ICE restart 总时间预算：超过后放弃 restart → failed → store rebuild */
-const ICE_RESTART_TIMEOUT_MS = 90_000;
+/** ICE restart 总时间预算：超过后放弃 restart → failed → store rebuild。
+ *  3 分钟取值：弱网下 90s 不一定能凑出可用 candidate pair；底层 WebRTC（pion / 浏览器内置）
+ *  在 ICE 这层够靠谱，让 restart 多探一会儿（含 STUN/TURN 重协商、relay fallback）通常比
+ *  转 rebuild 更对症——rebuild 在同等链路条件下也未必更快（多一轮 DTLS+SCTP 握手）。 */
+const ICE_RESTART_TIMEOUT_MS = 180_000;
 /** ICE restart 安全网定时器间隔（覆盖 connectionState:failed 未触发的极端场景）。
  *  15s 取值：正常 offer→answer 往返应在 1-3s 完成；15s 仍远高于该水位，
  *  同时把 answer 丢失场景下的最坏恢复延迟压到 15s 内。 */

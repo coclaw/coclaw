@@ -3610,7 +3610,7 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 		return fakeConn;
 	}
 
-	test('__ensureRtc 失败后排 10s cooldown timer', async () => {
+	test('__ensureRtc 失败后排 retry timer（首轮立即起）', async () => {
 		const store = useClawsStore();
 		mockInitRtc.mockResolvedValue('failed');
 		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
@@ -3623,10 +3623,10 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 		await store.__ensureRtc('50');
 
 		expect(store.byId['50'].rtcPhase).toBe('failed');
-		// retryCount / retryNextAt 应被写入（窗口内首次失败 → 10s 后再试）
+		// retryCount / retryNextAt 应被写入（首轮 delay=0，retryNextAt ≈ now）
 		expect(store.byId['50'].retryCount).toBe(1);
 		expect(store.byId['50'].retryNextAt).toBeGreaterThan(0);
-		// timer 触发后 __ensureRtc 应再次调 initRtc
+		// timer 触发后 __ensureRtc 应再次调 initRtc（advanceTimers 一定能跨过首轮的 0ms）
 		mockInitRtc.mockClear();
 		mockInitRtc.mockResolvedValue('failed');
 		vi.advanceTimersByTime(COOLDOWN);
@@ -3655,7 +3655,7 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(mockInitRtc).toHaveBeenCalled();
 	});
 
-	test('连续失败时间隔均为 10s（无指数退避）', () => {
+	test('首轮 delay=0，后续固定 10s（无指数退避）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 
@@ -3672,8 +3672,75 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 
 		vi.restoreAllMocks();
 
-		// 全部固定 10s，不再指数增长
-		expect(delays).toEqual([COOLDOWN, COOLDOWN, COOLDOWN, COOLDOWN, COOLDOWN]);
+		// 首轮免冷却（进入循环时立即试一次）；后续固定 10s，不指数增长
+		expect(delays).toEqual([0, COOLDOWN, COOLDOWN, COOLDOWN, COOLDOWN]);
+	});
+
+	test('首轮 retryNextAt 等于现在（delay=0）', () => {
+		const store = useClawsStore();
+		setupFailedBot(store);
+
+		const before = Date.now();
+		store.__scheduleRetry('50');
+		const after = Date.now();
+
+		// retryNextAt 应落在首轮调用前后的窗口内（delay=0 → retryNextAt = now）
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before);
+		expect(store.byId['50'].retryNextAt).toBeLessThanOrEqual(after);
+	});
+
+	test('端到端：__ensureRtc 失败 → 首轮 0s timer fire → 二次失败排 10s', async () => {
+		const store = useClawsStore();
+		const fakeConn = { rtc: null, on: vi.fn(), off: vi.fn(), clearRtc: vi.fn() };
+		mockManager.get.mockReturnValue(fakeConn);
+
+		store.addOrUpdateClaw({ id: '50', name: 'Bot', online: false });
+		store.byId['50'].online = true;
+		store.byId['50'].initialized = true;
+
+		// 第一次 build 失败 → 进入循环 → __scheduleRetry 排首轮 0s timer
+		mockInitRtc.mockResolvedValue('failed');
+		await store.__ensureRtc('50');
+		expect(store.byId['50'].rtcPhase).toBe('failed');
+
+		// 推进 0ms：首轮 0s timer 应当 fire 并触发第二次 __ensureRtc
+		mockInitRtc.mockClear();
+		mockInitRtc.mockResolvedValue('failed');
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(mockInitRtc).toHaveBeenCalledTimes(1);
+
+		// 二次失败后再排 timer：retryNextAt 应跳到 now+COOLDOWN
+		// 推进 COOLDOWN-1ms 不应 fire，再推 1ms 应 fire
+		mockInitRtc.mockClear();
+		mockInitRtc.mockResolvedValue('failed');
+		await vi.advanceTimersByTimeAsync(COOLDOWN - 1);
+		expect(mockInitRtc).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(mockInitRtc).toHaveBeenCalledTimes(1);
+	});
+
+	test('clearRetry 后再次进入循环仍享受首轮免冷却', () => {
+		const store = useClawsStore();
+		setupFailedBot(store);
+
+		const delays = [];
+		const origSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, delay) => {
+			delays.push(delay);
+			return origSetTimeout(fn, delay);
+		});
+
+		store.__scheduleRetry('50');     // 首轮 → delay=0
+		store.__scheduleRetry('50');     // 第二轮 → 10s
+		store.__clearRetry('50');        // 外部清窗（如 dcReady / manualRetry）
+		store.__scheduleRetry('50');     // 重新进入循环 → 又是首轮 → delay=0
+
+		vi.restoreAllMocks();
+		expect(delays).toEqual([0, COOLDOWN, 0]);
 	});
 
 	test('__ensureRtc 成功时清除窗口状态', async () => {
@@ -3749,16 +3816,16 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 		store.byId['50'].rtcPhase = 'failed';
 		mockInitRtc.mockResolvedValue('failed');
 
-		// 第一次开窗：windowStartAt = T0
+		// 第一次开窗：windowStartAt 即调用时的 Date.now()
+		const firstWindowStart = Date.now();
 		store.__scheduleRetry('50');
-		const firstWindowStart = store.byId['50'].retryNextAt - COOLDOWN;
 		// 推进接近窗口尾部
 		await vi.advanceTimersByTimeAsync(WINDOW - COOLDOWN);
 		// 外部 reset 重置窗口起点
 		store.__clearRetry('50');
 		store.byId['50'].rtcPhase = 'failed';
+		const secondWindowStart = Date.now();
 		store.__scheduleRetry('50');
-		const secondWindowStart = store.byId['50'].retryNextAt - COOLDOWN;
 		// 新窗口起点应晚于第一次（证明窗口起点真的重置了）
 		expect(secondWindowStart).toBeGreaterThan(firstWindowStart);
 
@@ -3853,18 +3920,20 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('__scheduleRetry 写入 retryCount / retryNextAt（每次按 cooldown 累加）', () => {
+	test('__scheduleRetry 写入 retryCount / retryNextAt（首轮 0s + 后续 cooldown）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 
 		const before = Date.now();
 		store.__scheduleRetry('50');
 		expect(store.byId['50'].retryCount).toBe(1);
-		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + COOLDOWN);
+		// 首轮 delay=0，retryNextAt ≈ now（在 [before, before+1s] 区间内）
+		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before);
+		expect(store.byId['50'].retryNextAt).toBeLessThan(before + COOLDOWN);
 
 		store.__scheduleRetry('50');
 		expect(store.byId['50'].retryCount).toBe(2);
-		// 第二次的 nextAt 仍是 now + cooldown（不是累加），因为 cooldown 固定
+		// 第二次起按 cooldown 排
 		expect(store.byId['50'].retryNextAt).toBeGreaterThanOrEqual(before + COOLDOWN);
 	});
 
@@ -3921,7 +3990,7 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 		expect(mockInitRtc).not.toHaveBeenCalled();
 	});
 
-	test('窗口期内 cooldown 始终为 10s（不变）', () => {
+	test('窗口期内 cooldown 首轮 0s + 后续始终 10s（不变）', () => {
 		const store = useClawsStore();
 		setupFailedBot(store);
 
@@ -3939,9 +4008,10 @@ describe('窗口重试 (__scheduleRetry / __clearRetry)', () => {
 
 		vi.restoreAllMocks();
 
-		// 全部 10s
-		expect(delays.every((d) => d === COOLDOWN)).toBe(true);
 		expect(delays.length).toBe(10);
+		// 首轮 0，后续都是 cooldown
+		expect(delays[0]).toBe(0);
+		expect(delays.slice(1).every((d) => d === COOLDOWN)).toBe(true);
 	});
 
 	test('clearRetry 后旧 timer callback 不再执行', () => {

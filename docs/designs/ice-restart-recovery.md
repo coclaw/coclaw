@@ -104,7 +104,7 @@ idle → building → ready ⇄ restarting
 1. 守卫：!pc || state=closed → return
 2. 同步 setState('restarting')（仅首次，确保状态立即可观测）
 3. 首次进入时记录 __restartStartTime
-4. 时间预算检查：Date.now() - startTime >= ICE_RESTART_TIMEOUT_MS(90s) → 放弃 → setState('failed')
+4. 时间预算检查：Date.now() - startTime >= ICE_RESTART_TIMEOUT_MS(180s) → 放弃 → setState('failed')
 5. 确保安全网定时器运行（ICE_RESTART_SAFETY_MS=15s，覆盖 failed 未触发的极端场景）
 6. 信令 WS 不可用 → 跳过本次 offer（安全网定时器或 nudge 会再来）
 7. 并发防护：__restartInFlight → return（防止 timer 与 immediate retry 产生并发 createOffer）
@@ -130,7 +130,7 @@ if (state === 'connected') → __attemptRestart(reason)
 
 #### restart 成功判定（事件 + stats poll 双路径）
 
-`onconnectionstatechange === 'connected'` 是主判据，但在"旧 pair 还活着、restart 完成"场景下，Chromium 对 `connectionState` 的认定是"存在 nominated+succeeded 的 selected pair 即 connected"——restart 只是换了 pair，state 自始至终不离开 connected，事件永不触发。UI 会卡在 restarting 直到 90s 时间预算耗尽，最终走 rebuild（期间 MainList spinner 一直转）。
+`onconnectionstatechange === 'connected'` 是主判据，但在"旧 pair 还活着、restart 完成"场景下，Chromium 对 `connectionState` 的认定是"存在 nominated+succeeded 的 selected pair 即 connected"——restart 只是换了 pair，state 自始至终不离开 connected，事件永不触发。UI 会卡在 restarting 直到 180s 时间预算耗尽，最终走 rebuild（期间 MainList spinner 一直转）。
 
 解法：与事件路径并行跑一条 **stats 轮询路径**，先到先算。
 
@@ -199,7 +199,7 @@ __onSignaling(msg):
 - 停 keepalive / restart-timer / restart-poll
 - **清 `__disconnectedTimer`**（防止后台 fire 后走 `__onIceFailed → __attemptRestart`：
   `setLocalDescription` 换掉 ICE creds → 原 pair 再不可能自愈；`__restartStartTime`
-  被记成后台时刻，前台恢复后命中"时间预算 90s 耗尽 → close asFailed → rebuild"坏路径）
+  被记成后台时刻，前台恢复后命中"时间预算 180s 耗尽 → close asFailed → rebuild"坏路径）
 - 记录 `__backgroundAt = Date.now()`
 
 `__onAppForeground`：
@@ -237,7 +237,7 @@ RTC 走到 `__attemptRestart` 也不会把 restart offer 发给一条僵尸或�
 
 #### 兼容兜底
 
-时间预算兜底（`ICE_RESTART_TIMEOUT_MS = 90s`）：从首次进入 restarting 起计时，90s 内如果既无连通、也无 `rtc:restart-rejected` 响应，则放弃 restart → `__setState('failed')` → store rebuild。覆盖旧版 plugin 不支持 `rtc:restart-rejected` 的场景。ICE check 失败后立即重试（不等安全网 timer），约可容纳 2-3 次 ICE check 尝试（每次 ~30s 超时）。
+时间预算兜底（`ICE_RESTART_TIMEOUT_MS = 180s`）：从首次进入 restarting 起计时，180s 内如果既无连通、也无 `rtc:restart-rejected` 响应，则放弃 restart → `__setState('failed')` → store rebuild。覆盖旧版 plugin 不支持 `rtc:restart-rejected` 的场景，并给弱网下多轮 STUN/TURN 重协商留够时间——pion + 浏览器内置在 ICE 这层够靠谱，给得长不会"白等"，rebuild 同条件下也快不到哪去。ICE check 失败后立即重试（不等安全网 timer），约可容纳 5-6 次 ICE check 尝试（每次 ~30s 超时）。
 
 ### 4.2 UI: claws.store（`ui/src/stores/claws.store.js`）
 
@@ -442,7 +442,7 @@ SSE claw.online=true → __resumeOnline（按 PC 状态分派，仅 rebuild 触�
     自然送达 UI；主动 refresh 是冗余流量
 
   PC 状态分派：
-  - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 90s 预算
+  - restarting（从 pause 冻结）→ triggerRestart('online_resume') 复用 PC，全新 180s 预算
   - connected + paused → 默认 resumeRecovery（清 paused + 立即发一次 probe 探测 SCTP 活性；
     probe 失败 → __onIceFailed → ICE restart；probe 成功 → 继续正常保活周期；
     pc.connectionState 已 failed/disconnected → 直接升级 triggerRestart('online_resume')）；
@@ -498,7 +498,7 @@ WS 断 + ICE 断 → restarting → 周期重试 → WS 不通
 
 ### 旧版 Plugin（不支持 `rtc:restart-rejected`）
 
-收到 restart offer 后 fall through 创建新 PC → 回 answer → DTLS fingerprint 不匹配 → UI 侧 ICE check 失败 → 立即重试 → 时间预算耗尽（90s）→ `__setState('failed')` → rebuild。
+收到 restart offer 后 fall through 创建新 PC → 回 answer → DTLS fingerprint 不匹配 → UI 侧 ICE check 失败 → 立即重试 → 时间预算耗尽（180s）→ `__setState('failed')` → rebuild。
 
 ### 旧版 Server（不识别 `rtc:restart-rejected`）
 

@@ -132,7 +132,7 @@ ClawConnection ══ DC "rpc" (持久) ═════════════�
 
 ### 4.1 connectTimeout（连接等待超时）
 
-- 默认：**120s**（`DEFAULT_CONNECT_TIMEOUT_MS`）—— 覆盖底层 RTC 一次 ICE restart 90s 预算 + 余量
+- 默认：**210s**（`DEFAULT_CONNECT_TIMEOUT_MS`）—— 覆盖一次 ICE restart 180s 预算 + 30s 余量；仅在 DC 未 open 时排队（DC open 后走 fast-path）
 - 触发条件：调用 `request()` 时 DC 尚未就绪
 - 超时错误码：`CONNECT_TIMEOUT`
 - 快速路径：DC 已就绪时跳过，直接进入发送阶段
@@ -163,7 +163,7 @@ ClawConnection ══ DC "rpc" (持久) ═════════════�
 
 文件二进制传输（`downloadFile`/`uploadFile`/`postFile`）使用 `waitReady()` 确保连接就绪后创建临时 DataChannel，传输阶段不设置超时——文件大小不可预知，且 DC 断开会自然终止传输。
 
-DC open 后额外有一层 `READY_TIMEOUT_MS = 120s` 的守卫，等待 Plugin 回复首条控制消息（响应头或 ready 信号）。
+DC open 后额外有一层 `READY_TIMEOUT_MS = 210s` 的守卫，等待 Plugin 回复首条控制消息（响应头或 ready 信号）。
 
 ### 4.5 请求取消（AbortSignal）
 
@@ -174,7 +174,7 @@ DC open 后额外有一层 `READY_TIMEOUT_MS = 120s` 的守卫，等待 Plugin �
 - 文件传输的 `handle.cancel()` 向后兼容保留，内部等价于 `controller.abort()`
 - ERR_CANCELED 不在断连错误集合中（`DISCONNECT_CODES`），不会触发上层自动重试
 
-**为什么要覆盖整个等待周期**：底层 RTC 恢复可能持续若干分钟（ICE restart 90s + rebuild 窗口期），应用层 `connectTimeout` 默认覆盖典型 ICE restart 场景，更长等待由调用方通过 signal 主动取消表达——与 fetch 心智一致，调用方不关心下层在哪个恢复阶段。
+**为什么要覆盖整个等待周期**：底层 RTC 恢复可能持续若干分钟（ICE restart 180s + rebuild 窗口期），应用层 `connectTimeout` 默认覆盖典型 ICE restart 场景，更长等待由调用方通过 signal 主动取消表达——与 fetch 心智一致，调用方不关心下层在哪个恢复阶段。
 
 ---
 
@@ -237,7 +237,7 @@ idle → building → ready ⇄ recovering
 - 与 SSE 连接本身的存亡**无关**：SSE 断开/重连不会把所有 claw 刷成 offline
 - 与 DC 是否可用解耦：不参与 `dcReady` / `rtcPhase` 的直接赋值，也不作为"DC 通不通"的断言
 
-**为什么引入 online 门控（从"完全解耦"变为"恢复路径看 online"）**：WebRTC 已相当稳定（ICE restart 90s 预算内多能成，rebuild 兜底可靠），但 plugin 离线时，ICE restart offer 送过去没有 plugin 可接（server 无法 relay 到已断的 plugin），restart 预算必然白烧；窗口重试也会在无接收方的情况下空烧整个 5 分钟窗口。所以：**plugin 不在线的时间对 RTC 恢复而言是"时间停止"——所有预算、计数冻结，PC 保留，等 online 回来视为新一轮事件。**
+**为什么引入 online 门控（从"完全解耦"变为"恢复路径看 online"）**：WebRTC 已相当稳定（ICE restart 180s 预算内多能成，rebuild 兜底可靠），但 plugin 离线时，ICE restart offer 送过去没有 plugin 可接（server 无法 relay 到已断的 plugin），restart 预算必然白烧；窗口重试也会在无接收方的情况下空烧整个 5 分钟窗口。所以：**plugin 不在线的时间对 RTC 恢复而言是"时间停止"——所有预算、计数冻结，PC 保留，等 online 回来视为新一轮事件。**
 
 **SSE claw.online=false 时 UI 的动作**（由 `__handleClawGoOffline(id)` 统一封装）：
 
@@ -284,7 +284,7 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
            的 rpc msg 会随 ICE 恢复自然送达 UI；主动 refresh 是冗余流量
       4. 按 rtc.state 分派动作：
          - 'restarting' + restartPaused → rtc.triggerRestart('online_resume')
-           （复用 PC + 全新 90s 预算；paused gate 仅此路径可穿过）
+           （复用 PC + 全新 180s 预算；paused gate 仅此路径可穿过）
          - 'restarting' + 非 paused → 已在正常 restart 循环，不重入
          - 'connected' + restartPaused → 默认 rtc.resumeRecovery()（清 paused +
            立即发一次 probe 探测 SCTP 活性，不等完整 30s keepalive 周期；probe 失败
