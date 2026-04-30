@@ -1,9 +1,0 @@
----
-"@coclaw/ui": patch
----
-
-Tune RTC recovery budgets to better tolerate weak networks while shortening visible outages on plugin restart:
-
-- Bump `ICE_RESTART_TIMEOUT_MS` from 90s to **180s**. Underlying WebRTC stacks (browser-builtin and pion) are reliable in the ICE layer; giving restart more time to gather candidates / fall back to TURN relay is usually more effective than abandoning to a full PC rebuild — the rebuild path needs the same network capacity plus an extra DTLS+SCTP handshake, so it is generally not faster under weak-network conditions.
-- Skip the 10s retry cooldown for the **first** rebuild in a recovery loop (`__scheduleRetry` in `claws.store.js`). The 10s damping is intended for repeated build-fails-immediately loops, not for the first attempt to recover after `failed` — applying it on entry adds avoidable latency on every plugin restart / gateway redeploy. Subsequent retries within the loop still cool down at 10s as before. Note: on SSE same-online rescue overlapping an in-progress retry loop, the next retry can also be 0s (the `_rtcRetryState` table is cleared by rescue, so the next entry is treated as a new first round); SSE snapshots are not high-frequency and the practical impact is bounded to one extra immediate build per rescue.
-- Bump `DEFAULT_CONNECT_TIMEOUT_MS` (claw-connection `waitReady`) and `READY_TIMEOUT_MS` (file-transfer first-frame wait) from 120s to **210s**, preserving the prior buffer over the ICE restart budget so that application-level RPCs and file transfers do not time out while RTC is still legitimately recovering. Caveat: `waitReady` only covers the case where the DataChannel is not yet open; once open (including during ICE restart, which keeps DC open), requests bypass `connectTimeout` and are bounded by their own `requestTimeout` — this is unchanged from prior behavior, just made explicit in the comments.

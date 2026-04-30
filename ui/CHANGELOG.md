@@ -1,5 +1,43 @@
 # @coclaw/ui
 
+## 0.18.2
+
+### Patch Changes
+
+- 62dfbbe: Drop `lifecycle:end` as an agent-run termination signal; switch the watcher probe to `agent.wait(timeoutMs=0)`.
+
+  Fixes a recurring "task incomplete + stop button gone but agent still running" symptom. OpenClaw emits multiple `lifecycle:end` events within a single completed run (compaction-retry, model-fallback, live-model-switch); the payload has no field that distinguishes a mid-run end from the true terminal one. Treating the first as terminal caused premature `endRun`, after which the dispatch entry guard silently dropped every subsequent streaming event.
+
+  Changes:
+
+  - `applyAgentEvent` (`utils/agent-stream.js`) no longer flags lifecycle events as `settled`. Lifecycle events are now side-effect-free; the dispatcher treats them like normal stream traffic, refreshing the idle timer.
+  - `agent-runs.store.js` removes `__onLifecycleEnd` and the lifecycle branch from `__dispatch`. End-of-run determination now relies on three signals: RPC second-phase response, `agent.wait(timeoutMs=0)` probe, and main RPC reject (DC physical death).
+  - The watcher's `__pollOnce` now calls `agent.wait` with `timeoutMs=0` so the server returns immediately without subscribing to the lifecycle stream. A `status='timeout'` with no `endedAt` re-arms the idle timer (now 60s) instead of recursing — this prevents a tight loop now that the probe returns immediately.
+
+  Residual exposure: the `agent.wait(0)` agent-job cache hit can still be transiently polluted by a mid-run lifecycle:end during the brief window before the next phase=start (compaction-retry 5–15s, model-fallback / live-switch <1s). A follow-up plugin-side registry of finalized runs based on the RPC response frame will close that window.
+
+- f0f3280: Tune RTC recovery budgets to better tolerate weak networks while shortening visible outages on plugin restart:
+
+  - Bump `ICE_RESTART_TIMEOUT_MS` from 90s to **180s**. Underlying WebRTC stacks (browser-builtin and pion) are reliable in the ICE layer; giving restart more time to gather candidates / fall back to TURN relay is usually more effective than abandoning to a full PC rebuild — the rebuild path needs the same network capacity plus an extra DTLS+SCTP handshake, so it is generally not faster under weak-network conditions.
+  - Skip the 10s retry cooldown for the **first** rebuild in a recovery loop (`__scheduleRetry` in `claws.store.js`). The 10s damping is intended for repeated build-fails-immediately loops, not for the first attempt to recover after `failed` — applying it on entry adds avoidable latency on every plugin restart / gateway redeploy. Subsequent retries within the loop still cool down at 10s as before. Note: on SSE same-online rescue overlapping an in-progress retry loop, the next retry can also be 0s (the `_rtcRetryState` table is cleared by rescue, so the next entry is treated as a new first round); SSE snapshots are not high-frequency and the practical impact is bounded to one extra immediate build per rescue.
+  - Bump `DEFAULT_CONNECT_TIMEOUT_MS` (claw-connection `waitReady`) and `READY_TIMEOUT_MS` (file-transfer first-frame wait) from 120s to **210s**, preserving the prior buffer over the ICE restart budget so that application-level RPCs and file transfers do not time out while RTC is still legitimately recovering. Caveat: `waitReady` only covers the case where the DataChannel is not yet open; once open (including during ICE restart, which keeps DC open), requests bypass `connectTimeout` and are bounded by their own `requestTimeout` — this is unchanged from prior behavior, just made explicit in the comments.
+
+- 19e9498: chore(ui): add chat.preAccept.error remoteLog at the pre-acceptance catch-all branch
+
+  Surfaces wire-layer drops (e.g. silent JSON frame coercion that was just fixed
+  on the plugin side) in remote diagnostics instead of silently failing past the
+  user-facing 180 s timeout. Pairs with the plugin-side `RpcSendQueue` string
+  type-preservation fix.
+
+- c850bac: Add observability for DataChannel reassembler silent-drop branches: warn locally on every drop (orphan-chunk / short-frame / begin-overwrite / oversize), and emit a rate-limited remoteLog (5s window with suppressed counter) for orphan chunks — the branch a string→binary frame mistype lands on, so future similar incidents can be pinpointed within minutes instead of requiring deep investigation.
+- 9bc6ddf: Widen agent-run idle threshold to 24h to disable `agent.wait(timeoutMs=0)` probing.
+
+  The `agent.wait(0)` watcher path has a "two-cache forgetting" false-negative risk: when the gateway dedupe cache (5min TTL) and the agent-job cache (10min TTL) have both expired, `wait(0)` returns "still alive" for a run that has actually ended, leaving the run stuck on the UI side. Stretching `IDLE_THRESHOLD_MS` from 60s to 24h (= the run wall-clock TTL) makes the idle timer effectively unreachable: every run will already have ended via signal 1 (main RPC second-phase response) or signal 3 (DC death) well before that point. Run-end determination therefore relies entirely on signals 1 and 3 in this stage.
+
+  `__pollOnce`, the `agent.wait(timeoutMs=0)` call, the three-branch return handling, `waitPending`, and `TERMINAL_WAIT_STATUSES` are all kept verbatim so the watcher skeleton can be repointed to a future plugin-side "agent-run terminal-status" RPC by simply restoring the threshold to 60s.
+
+  Residual exposure: when the gateway-side phase-2 `res` is dropped or pre-empted and the data channel stays alive, the run cannot be settled in this stage. A follow-up plugin-side whitelist that exempts agent-run RPC responses from the send-queue soft-cap drop closes the dropped-frame branch; the pre-empted-RPC branch will be addressed by the future terminal-status RPC.
+
 ## 0.18.1
 
 ### Patch Changes
