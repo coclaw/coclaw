@@ -1,2 +1,5 @@
 # Electron build output
 dist-electron/
+
+# Local agent scratch
+tmp/
