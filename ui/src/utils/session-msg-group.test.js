@@ -655,6 +655,90 @@ describe('groupSessionMessages', () => {
 		expect(result[1].isStreaming).toBe(false);
 		expect(result[1].startTime).toBeNull();
 	});
+
+	// "任务未完成" 兜底渲染条件复现
+	// 用户报 bug 截图：终止按钮已消逝（run.ended=true）+ 显示"任务未完成"
+	// 触发链路：endRun → __awaitPersistAndDrop → loadMessages 成功 → dropRun 释放 streamingMsgs
+	// → 之后 allMessages 只剩 server transcript（_streaming 标记是 UI 自家加的，server 拉来的永远没有）
+	// → 若 OpenClaw 这一轮没产出 final assistant text → botTask isStreaming=false + resultText=null
+	// → ChatMsgItem v-else 分支命中 → 显示"任务未完成"
+	describe('"任务未完成" 渲染条件复现（dropRun 后 server transcript 加载场景）', () => {
+		test('OpenClaw 调 tool 后未接 final assistant：botTask 命中 v-else 渲染条件', () => {
+			// 模拟 dropRun 后 loadMessages 拉到的 server JSONL：
+			// 模型调了 tool、有 toolResult，但之后没有 stopReason=stop 的 final assistant text
+			const entries = [
+				userEntry('u1', '帮我查一下', 1000),
+				assistantEntry('a1', {
+					thinking: '让我调用工具',
+					toolCalls: [{ name: 'check' }],
+					stopReason: 'toolUse',
+					ts: 2000,
+				}),
+				toolResultEntry('tr1', '查询结果：xxx', 3000),
+				// 关键：transcript 在此结束，没有最终 assistant text
+			];
+			const result = groupSessionMessages(entries);
+			const botTask = result.find((it) => it.type === 'botTask');
+
+			// ChatMsgItem.vue v-else 分支命中条件：!isStreaming && !resultText
+			expect(botTask.isStreaming).toBe(false);
+			expect(botTask.resultText).toBeNull();
+		});
+
+		test('assistant 仅含 thinking 块（无 text 块）：同样命中 v-else', () => {
+			// 模型只输出 thinking 没接 text，stopReason 已是终态但没文本可显示
+			const entries = [
+				userEntry('u1', 'hello', 1000),
+				assistantEntry('a1', {
+					thinking: '思考中但没产出回答',
+					stopReason: 'stop',
+					ts: 2000,
+				}),
+			];
+			const result = groupSessionMessages(entries);
+			const botTask = result.find((it) => it.type === 'botTask');
+
+			expect(botTask.isStreaming).toBe(false);
+			expect(botTask.resultText).toBeNull();
+		});
+
+		test('NO_REPLY 静默回复被过滤后：botTask 同样命中 v-else', () => {
+			// 模型输出 NO_REPLY 被 SILENT_REPLY_PATTERN 过滤（agent-stream.js:7）
+			// 走的是 streaming 路径，但下一次 loadMessages 后 server transcript 也保留 NO_REPLY 文本
+			// processAssistant 不过滤静默回复（过滤只发生在 applyAgentEvent 流式期间）
+			// → 实际渲染时若 _streaming 已剥离（dropRun 后），botTask.resultText 会是 'NO_REPLY'
+			// 但更典型的场景是 model 直接给空 text — 用空字符串模拟
+			const entries = [
+				userEntry('u1', '继续', 1000),
+				assistantEntry('a1', {
+					text: '',  // 空 text 块
+					stopReason: 'stop',
+					ts: 2000,
+				}),
+			];
+			const result = groupSessionMessages(entries);
+			const botTask = result.find((it) => it.type === 'botTask');
+
+			expect(botTask.isStreaming).toBe(false);
+			expect(botTask.resultText).toBeFalsy();  // null 或 ''
+		});
+
+		test('对照组：含 final text 的正常 assistant 不命中 v-else', () => {
+			const entries = [
+				userEntry('u1', '问', 1000),
+				assistantEntry('a1', {
+					thinking: '想想',
+					text: '答案在这',
+					stopReason: 'stop',
+					ts: 2000,
+				}),
+			];
+			const result = groupSessionMessages(entries);
+			const botTask = result.find((it) => it.type === 'botTask');
+
+			expect(botTask.resultText).toBe('答案在这');
+		});
+	});
 });
 
 describe('stripOcPrefixes', () => {
