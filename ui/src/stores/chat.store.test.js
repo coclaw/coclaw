@@ -697,7 +697,7 @@ describe('useChatStore', () => {
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-no-settle' });
-					// 模拟 lifecycle:end 尚未到达
+					// 模拟终态信号尚未到达，靠 RPC res 抢先收尾
 					return Promise.resolve({ status: 'ok' });
 				}
 				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
@@ -2206,13 +2206,13 @@ describe('useChatStore', () => {
 		// __awaitPersistAndDrop 契约（方案 D：源头 grace + 下游统一行为）
 		//
 		// "等持久化"已收拢到 agent-runs.store 的 rpc grace 窗口。无论 endReason
-		// 是 'rpc' / 'lifecycle' / 'wait' / 'failed'，下游本函数行为统一：
+		// 是 'rpc' / 'wait' / 'failed'，下游本函数行为统一：
 		//   - loadMessages 一次 → 成功则 dropRun；失败则不 dropRun（兜底由 24h timer / activate reload 接管）
 		// 不再按 endReason 区分快慢路径、不再 sleep + 重试、不再 hasTerminalAssistantAfter 校验。
 		// 这避免了 fast follow-up 场景下把上一轮回答误判成本轮终态。
 		// =====================================================================
 
-		test('endReason=lifecycle 与 endReason=rpc 行为一致：loadMessages 一次 + dropRun，无 sleep/重试', async () => {
+		test('endReason=wait 与 endReason=rpc 行为一致：loadMessages 一次 + dropRun，无 sleep/重试', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -2221,7 +2221,7 @@ describe('useChatStore', () => {
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-lc-ok' });
-					return new Promise(() => {}); // RPC pending；让 lifecycle 先赢但等 grace
+					return new Promise(() => {}); // RPC pending；让 wait 先赢但等 grace
 				}
 				if (method === 'sessions.get') {
 					return Promise.resolve({
@@ -2248,8 +2248,8 @@ describe('useChatStore', () => {
 			await vi.advanceTimersByTimeAsync(0); // 等 register
 			expect(runsStore.runs['run-lc-ok']).toBeTruthy();
 
-			// 模拟 lifecycle:end 先到，挂 grace；推进 RPC_GRACE_MS 让源头降级 endRun('lifecycle')
-			runsStore.__onLifecycleEnd('run-lc-ok');
+			// 模拟 wait 终态先到，挂 grace；推进 RPC_GRACE_MS 让源头降级 endRun('wait')
+			runsStore.__schedulePendingEnd('run-lc-ok', 'wait');
 			await vi.advanceTimersByTimeAsync(2000); // RPC_GRACE_MS
 			await sendPromise;
 
@@ -2263,7 +2263,7 @@ describe('useChatStore', () => {
 			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
 		});
 
-		test('endReason=lifecycle + silent loadMessages 失败：不 dropRun（等 24h / activate reload 兜底）', async () => {
+		test('endReason=wait + silent loadMessages 失败：不 dropRun（等 24h / activate reload 兜底）', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -2290,8 +2290,8 @@ describe('useChatStore', () => {
 
 			const sendPromise = store.sendMessage('hello');
 			await vi.advanceTimersByTimeAsync(0);
-			runsStore.__onLifecycleEnd('run-lc-fail');
-			await vi.advanceTimersByTimeAsync(2000); // grace 满 → endRun('lifecycle')
+			runsStore.__schedulePendingEnd('run-lc-fail', 'wait');
+			await vi.advanceTimersByTimeAsync(2000); // grace 满 → endRun('wait')
 			await sendPromise;
 
 			// 多排几次 microtask 让 then 链 settle
@@ -2720,7 +2720,7 @@ describe('useChatStore', () => {
 
 			store.cancelSend();
 
-			// cancelSend 不立即 reconcile（等 lifecycle:end 驱动）
+			// cancelSend 不立即 reconcile（等真终态信号 rpc/wait/failed 驱动）
 			expect(reconcileSpy).not.toHaveBeenCalled();
 			// cancelPromise 未被 reject；cancelSend accepted 分支显式 nullify 槽位
 			expect(rejectSpy).not.toHaveBeenCalled();
@@ -2947,7 +2947,7 @@ describe('useChatStore', () => {
 			mockConnections.clear();
 
 			expect(store.cancelSend()).toBeNull();
-			// run 仍进入 settling(cancel)，等待 lifecycle:end 或 24h fallback
+			// run 仍进入 settling(cancel)，等待 rpc/wait/failed 终态或 24h fallback
 			const runsStore = useAgentRunsStore();
 			const run = runsStore.getActiveRun(store.runKey);
 			expect(run?.cancelled).toBe(true);
@@ -3140,7 +3140,7 @@ describe('useChatStore', () => {
 			// 首次 tick：miss + 调度重试
 			await Promise.resolve(); await Promise.resolve();
 			expect(store.isCancelling).toBe(true);
-			// 模拟 run 自然结束（lifecycle:end 到达清理了 agentRunsStore）
+			// 模拟 run 自然结束（rpc/wait 终态信号到达清理了 agentRunsStore）
 			const runsStore = useAgentRunsStore();
 			runsStore.settle(store.runKey);
 			// 下一个 tick 检测 isRunning=false → 立即 resolve run-ended

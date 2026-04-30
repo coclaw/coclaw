@@ -252,52 +252,87 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1'].streamingMsgs).toHaveLength(2);
 		});
 
-		test('lifecycle:end → 挂 grace pending，grace 满后 endRun(lifecycle)，entry 保留', () => {
+		test('lifecycle:end → 不挂 grace、不 endRun，仅刷新 idleTimer（OpenClaw 一次 run 内会 emit 多次中间段）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
+			const t0 = store.runs['run-1'].__watcher.idleTimer;
 
+			vi.advanceTimersByTime(5_000);
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
 
-			// grace 期间 ended 仍为 false，pending 已挂
-			let run = store.runs['run-1'];
+			const run = store.runs['run-1'];
 			expect(run).toBeTruthy();
 			expect(run.ended).toBe(false);
-			expect(run.__pendingEnd).toBeTruthy();
-			expect(run.__pendingEnd.reason).toBe('lifecycle');
-			expect(store.isRunning('1::agent:main:main')).toBe(true);
-
-			// 推进 RPC_GRACE_MS：grace 到期 → endRun('lifecycle')
-			vi.advanceTimersByTime(RPC_GRACE_MS);
-			run = store.runs['run-1'];
-			expect(run.ended).toBe(true);
 			expect(run.__pendingEnd).toBeNull();
-			// entry 保留（streamingMsgs 仍可见，等 chat.store 调 dropRun）
-			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
-			expect(store.isRunning('1::agent:main:main')).toBe(false);
+			expect(run.lastEventAt).toBeGreaterThan(0);
+			expect(run.__watcher.idleTimer).not.toBe(t0);
+			expect(store.isRunning('1::agent:main:main')).toBe(true);
 		});
 
-		test('lifecycle:error 同样挂 grace；grace 满后 ended', () => {
+		test('lifecycle:error → 同样不 endRun，仅刷新 idleTimer', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'error' } });
-			expect(store.runs['run-1'].ended).toBe(false);
-			expect(store.runs['run-1'].__pendingEnd?.reason).toBe('lifecycle');
 
-			vi.advanceTimersByTime(RPC_GRACE_MS);
-			expect(store.runs['run-1'].ended).toBe(true);
+			expect(store.runs['run-1'].ended).toBe(false);
+			expect(store.runs['run-1'].__pendingEnd).toBeNull();
+			expect(store.isRunning('1::agent:main:main')).toBe(true);
 		});
 
 		test('已 ended 的 run 后续事件被忽略（无更新、无重复 endRun）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			vi.advanceTimersByTime(RPC_GRACE_MS); // grace 满 → ended=true
+			// 用 settle('manual') 直接驱动 ended（绕过 watcher 路径）
+			store.__endRun('run-1', 'manual');
+			expect(store.runs['run-1'].ended).toBe(true);
 			const lastEventAt = store.runs['run-1'].lastEventAt;
 
 			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'late' } });
 
 			expect(store.runs['run-1'].lastEventAt).toBe(lastEventAt);
+		});
+
+		// 用户报 bug 的核心回归：
+		// "终止按钮已消逝 + 用户刷新还能看到任务继续执行步骤并最终完成"
+		//
+		// 真因：lifecycle:end 不可靠——OpenClaw 一次 run 内会 emit 多次（compaction-retry /
+		// model-fallback / live-switch），payload 无字段可区分中间段 vs 真终态。旧实现把第一个
+		// 当真终态导致提前 endRun、后续事件被 __dispatch 入口的 ended guard 丢弃。
+		// 阶段 1 修复：lifecycle 不再驱动 endRun，仅当普通流量；终态信号靠 RPC 二阶段 res 收尾。
+		test('BUG 回归屏障：lifecycle:end 后续事件仍被应用，run 保持 running，最终 RPC 收尾', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			const runKey = '1::agent:main:main';
+
+			// 前置：plugin 已推过几个正常 streaming 事件
+			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: '让我想想' } });
+			expect(store.isRunning(runKey)).toBe(true);
+			const lengthAfterStep0 = store.runs['run-1'].streamingMsgs.length;
+
+			// step 1：上游 emit 第一个中间段 lifecycle:end（compaction-retry 等）
+			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			vi.advanceTimersByTime(RPC_GRACE_MS); // 即使过了 grace，仍然不 endRun
+
+			// 关键：UI 端 run 仍 running，终止按钮还在
+			expect(store.runs['run-1'].ended).toBe(false);
+			expect(store.isRunning(runKey)).toBe(true);
+			expect(store.runs['run-1'].__pendingEnd).toBeNull();
+
+			// step 2：OpenClaw 继续推下一段——事件被正常应用而非丢弃
+			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: '继续推一段' } });
+			store.__dispatch({ runId: 'run-1', stream: 'tool', data: { phase: 'start', name: 'check' } });
+			store.__dispatch({ runId: 'run-1', stream: 'tool', data: { phase: 'result', result: '成功' } });
+
+			// 硬断言"后续事件被处理"：tool start 写入了 toolCall block，tool result 插入了 toolResult + 新 assistant 占位
+			const msgs = store.runs['run-1'].streamingMsgs;
+			expect(msgs.length).toBeGreaterThan(lengthAfterStep0);
+			const toolResult = msgs.find((m) => m._local && m.message?.role === 'toolResult');
+			expect(toolResult).toBeTruthy();
+			const allToolCalls = msgs.flatMap((m) => Array.isArray(m.message?.content) ? m.message.content : [])
+				.filter((b) => b.type === 'toolCall' && b.name === 'check');
+			expect(allToolCalls.length).toBeGreaterThan(0);
+			expect(store.isRunning(runKey)).toBe(true);
 		});
 	});
 
@@ -352,7 +387,7 @@ describe('useAgentRunsStore', () => {
 			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
 		});
 
-		test('cancel 后 lifecycle:end → grace 满后 endRun(lifecycle)，cancelled 与 ended 共存', () => {
+		test('cancel 后 lifecycle:end → 仍不 endRun（与 cancelled 无关；终态等 rpc/wait/failed）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 			store.settleWithTransitionByKey('1::agent:main:main');
@@ -362,7 +397,8 @@ describe('useAgentRunsStore', () => {
 
 			const run = store.runs['run-1'];
 			expect(run.cancelled).toBe(true);
-			expect(run.ended).toBe(true);
+			expect(run.ended).toBe(false);
+			expect(run.__pendingEnd).toBeNull();
 		});
 
 		test('cancel 后服务端仍推送 content 事件 → streamingMsgs 继续更新', () => {
@@ -840,7 +876,7 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 
-		test('信号 4：accepted 后 RPC reject → endReason="failed"', async () => {
+		test('信号 3：accepted 后 RPC reject → endReason="failed"', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -890,7 +926,7 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('watcher', () => {
-		test('idle 30s 后启动长挂 agent.wait', async () => {
+		test('idle 60s 后用 agent.wait(timeoutMs=0) 即时探测', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -902,14 +938,17 @@ describe('useAgentRunsStore', () => {
 			ctrl.fireAccepted({ runId: 'run-1' });
 
 			expect(ctrl.waitCalls).toBe(0);
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
 			expect(ctrl.waitCalls).toBe(1);
+			// 关键：服务端 timeoutMs=0 不订阅 lifecycle 流，避免被中间段污染
+			const waitArgs = ctrl.conn.request.mock.calls.find((c) => c[0] === 'agent.wait')[1];
+			expect(waitArgs.timeoutMs).toBe(0);
 
 			ctrl.finalResolve({ status: 'ok' });
 			await runPromise;
 		});
 
-		test('agent.wait 返回 ok → 挂 grace；grace 满后 endReason="wait"', async () => {
+		test('agent.wait 返回 ok（命中 dedupe / agent-job cache）→ 挂 grace；grace 满后 endReason="wait"', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -919,7 +958,7 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
 			ctrl.waitResolve({ status: 'ok' });
 
 			// grace 满后才 endRun('wait')
@@ -928,7 +967,7 @@ describe('useAgentRunsStore', () => {
 			expect(result.endReason).toBe('wait');
 		});
 
-		test('agent.wait timeout + endedAt → 挂 grace；grace 满后 endReason="wait"（abort）', async () => {
+		test('agent.wait 返回 error → 同样挂 grace；grace 满后 endReason="wait"', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -938,7 +977,25 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
+			ctrl.waitResolve({ status: 'error' });
+
+			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
+			const result = await runPromise;
+			expect(result.endReason).toBe('wait');
+		});
+
+		test('agent.wait timeout + endedAt → 挂 grace；grace 满后 endReason="wait"（abort/TTL 写入）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(60_000);
 			ctrl.waitResolve({ status: 'timeout', startedAt: 100, endedAt: 200 });
 
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
@@ -946,7 +1003,7 @@ describe('useAgentRunsStore', () => {
 			expect(result.endReason).toBe('wait');
 		});
 
-		test('agent.wait timeout 无 endedAt → 立即下一轮 pollOnce', async () => {
+		test('agent.wait 返回未知 status（防御分支）→ 按结束处理挂 grace，避免死循环', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -956,19 +1013,43 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
+
+			ctrl.waitResolve({ status: 'mystery' }); // 无效协议响应
+			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
+			const result = await runPromise;
+			expect(result.endReason).toBe('wait');
+		});
+
+		test('agent.wait timeout 无 endedAt（run 仍活跃）→ 重 arm idleTimer，不递归（tight loop 防御）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(60_000);
 			expect(ctrl.waitCalls).toBe(1);
 
 			ctrl.waitResolve({ status: 'timeout' });
 			await Promise.resolve();
 			await Promise.resolve();
+			// 关键：wait(0) 即时返回，若递归调用就是 tight loop。必须等下一个 idle 周期
+			expect(ctrl.waitCalls).toBe(1);
+			expect(store.runs['run-1'].__watcher.idleTimer).toBeTruthy();
+
+			// 推进下一个 60s 周期才看到第 2 次探测
+			vi.advanceTimersByTime(60_000);
 			expect(ctrl.waitCalls).toBe(2);
 
 			ctrl.finalResolve({ status: 'ok' });
 			await runPromise;
 		});
 
-		test('agent.wait reject → 立即下一轮 pollOnce（不判死，等真权威信号）', async () => {
+		test('agent.wait reject → 重 arm idleTimer 等下一周期（不判死，等真权威信号）', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -978,29 +1059,32 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
 			expect(ctrl.waitCalls).toBe(1);
 
-			// wait reject（模拟 wall-clock 超时 / ICE restart 期间网络暂不通）
+			// wait reject（模拟 ICE restart 期间 RPC 超时）
 			const err = new Error('rpc timeout');
 			err.code = 'RPC_TIMEOUT';
 			ctrl.waitReject(err);
 			await Promise.resolve();
 			await Promise.resolve();
 
-			// 立即下一轮 pollOnce，run 仍 running
-			expect(ctrl.waitCalls).toBe(2);
+			// 不立即下一轮，run 仍 running，idleTimer 已重 arm
+			expect(ctrl.waitCalls).toBe(1);
 			expect(store.runs['run-1'].ended).toBe(false);
 			expect(store.isRunning('k1')).toBe(true);
+			expect(store.runs['run-1'].__watcher.idleTimer).toBeTruthy();
 
-			// 后续 wait 拿到 ok → 正常收尾
+			// 下一周期 wait 拿到 ok → 正常收尾
+			vi.advanceTimersByTime(60_000);
+			expect(ctrl.waitCalls).toBe(2);
 			ctrl.waitResolve({ status: 'ok' });
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
 			const result = await runPromise;
 			expect(result.endReason).toBe('wait');
 		});
 
-		test('agent.wait 连续 reject 后再 reject → 仍持续重试，不卡死', async () => {
+		test('agent.wait 连续 reject → 持续按 idle 周期重试，不卡死', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1010,10 +1094,10 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
 
-			// 连续 3 次 reject
+			// 连续 3 个周期 reject
 			for (let i = 1; i <= 3; i++) {
+				vi.advanceTimersByTime(60_000);
 				expect(ctrl.waitCalls).toBe(i);
 				const err = new Error('rpc timeout');
 				err.code = 'RPC_TIMEOUT';
@@ -1021,7 +1105,6 @@ describe('useAgentRunsStore', () => {
 				await Promise.resolve();
 				await Promise.resolve();
 			}
-			expect(ctrl.waitCalls).toBe(4);
 			expect(store.runs['run-1'].ended).toBe(false);
 
 			// 主 agent() RPC 用 timeout=0 仍 pending，最终 finalResolve 走信号 1
@@ -1040,7 +1123,7 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
 			expect(ctrl.waitCalls).toBe(1);
 
 			// 模拟 __rejectAllPending：同步 reject 两个 pending RPC（主 RPC 先注册先 reject）
@@ -1057,7 +1140,7 @@ describe('useAgentRunsStore', () => {
 			expect(ctrl.waitCalls).toBe(1);
 		});
 
-		test('wait reject 期间主 agent() RPC reject → endReason="failed"（信号 4 兜底判死）', async () => {
+		test('wait reject 期间主 agent() RPC reject → endReason="failed"（信号 3 兜底判死）', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1067,7 +1150,7 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
 			expect(ctrl.waitCalls).toBe(1);
 
 			// wait reject 不判死
@@ -1086,7 +1169,7 @@ describe('useAgentRunsStore', () => {
 			expect(result.endReason).toBe('failed');
 		});
 
-		test('事件流活跃时 idleTimer 被持续重置（不触发长挂）', async () => {
+		test('事件流活跃时 idleTimer 被持续重置（不触发探测）', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1097,17 +1180,17 @@ describe('useAgentRunsStore', () => {
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
 
-			// 推 25s + assistant 事件 + 推 25s → 事件流活跃，无长挂
-			vi.advanceTimersByTime(25_000);
+			// 推 50s + assistant 事件 + 推 50s → 事件流活跃，无 wait 探测
+			vi.advanceTimersByTime(50_000);
 			store.__dispatch({ runId: 'run-1', stream: 'assistant', data: { text: 'hi' } });
-			vi.advanceTimersByTime(25_000);
+			vi.advanceTimersByTime(50_000);
 			expect(ctrl.waitCalls).toBe(0);
 
 			ctrl.finalResolve({ status: 'ok' });
 			await runPromise;
 		});
 
-		test('polling 期间 lifecycle:end 到达 + grace 内 rpc 不到 → endReason="lifecycle"，飞行 wait 被忽略', async () => {
+		test('lifecycle 事件期间 idleTimer 被持续重置（不再驱动 endRun，仅刷新静默计时）', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1117,25 +1200,20 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
-			expect(ctrl.waitCalls).toBe(1);
 
-			// lifecycle 先到 → 挂 grace
+			// 推 50s + 中间段 lifecycle:end + 推 50s → 仍未触发探测
+			vi.advanceTimersByTime(50_000);
 			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			vi.advanceTimersByTime(50_000);
+			expect(ctrl.waitCalls).toBe(0);
 			expect(store.runs['run-1'].ended).toBe(false);
-			expect(store.runs['run-1'].__pendingEnd?.reason).toBe('lifecycle');
+			expect(store.runs['run-1'].__pendingEnd).toBeNull();
 
-			// 推进 grace（rpc 仍未到）→ 降级 endRun('lifecycle')
-			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
-			const result = await runPromise;
-			expect(result.endReason).toBe('lifecycle');
-
-			// 此后 rpc res / wait 才 resolve，应被忽略（run.ended）
 			ctrl.finalResolve({ status: 'ok' });
-			ctrl.waitResolve({ status: 'ok' });
+			await runPromise;
 		});
 
-		test('polling 期间 lifecycle:end 到达 + grace 内 RPC ok 到达 → endReason="rpc"（rpc 优先）', async () => {
+		test('polling 期间 wait 终态先到 + grace 内 rpc 不到 → endReason="wait"', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1145,20 +1223,48 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
 			expect(ctrl.waitCalls).toBe(1);
 
-			// lifecycle 先到 → 挂 grace
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			expect(store.runs['run-1'].__pendingEnd?.reason).toBe('lifecycle');
+			// wait 终态先到 → 挂 grace
+			ctrl.waitResolve({ status: 'ok' });
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(store.runs['run-1'].ended).toBe(false);
+			expect(store.runs['run-1'].__pendingEnd?.reason).toBe('wait');
+
+			// 推进 grace（rpc 仍未到）→ 降级 endRun('wait')
+			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
+			const result = await runPromise;
+			expect(result.endReason).toBe('wait');
+
+			// 此后 rpc res 才 resolve，应被忽略（run.ended）
+			ctrl.finalResolve({ status: 'ok' });
+		});
+
+		test('polling 期间 wait 终态先到 + grace 内 RPC ok 到达 → endReason="rpc"（rpc 优先）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(60_000);
+			expect(ctrl.waitCalls).toBe(1);
+
+			// wait 终态先到 → 挂 grace
+			ctrl.waitResolve({ status: 'ok' });
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(store.runs['run-1'].__pendingEnd?.reason).toBe('wait');
 
 			// grace 期间 RPC ok 到达 → 清 grace + 走 'rpc' 路径
 			ctrl.finalResolve({ status: 'ok' });
 			const result = await runPromise;
 			expect(result.endReason).toBe('rpc');
-
-			// 飞行 wait 后到，被忽略
-			ctrl.waitResolve({ status: 'ok' });
 		});
 	});
 
@@ -1171,8 +1277,7 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			vi.advanceTimersByTime(RPC_GRACE_MS); // grace 满 → endRun('lifecycle')
+			store.__endRun('run-1', 'wait');
 			// endRun 后 entry 仍在
 			expect(store.runs['run-1']).toBeTruthy();
 			expect(store.runs['run-1'].ended).toBe(true);
@@ -1216,7 +1321,7 @@ describe('useAgentRunsStore', () => {
 		test('expectedRunId 匹配时正常清理', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.__endRun('run-1', 'wait');
 			store.dropRun('1::agent:main:main', 'run-1');
 			expect(store.runs['run-1']).toBeUndefined();
 		});
@@ -1227,7 +1332,7 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('信号去重', () => {
-		test('lifecycle:end + grace 内 RPC ok 到达 → endRun 只触发一次，endReason="rpc"（rpc 优先）', async () => {
+		test('wait 终态 + grace 内 RPC ok 到达 → endRun 只触发一次，endReason="rpc"（rpc 优先）', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1237,11 +1342,14 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
+			vi.advanceTimersByTime(60_000);
 
-			// lifecycle 先到 → 挂 grace（ended 仍 false）
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			// wait 终态先到 → 挂 grace（ended 仍 false）
+			ctrl.waitResolve({ status: 'ok' });
+			await Promise.resolve();
+			await Promise.resolve();
 			expect(store.runs['run-1'].ended).toBe(false);
-			expect(store.runs['run-1'].__pendingEnd?.reason).toBe('lifecycle');
+			expect(store.runs['run-1'].__pendingEnd?.reason).toBe('wait');
 
 			// grace 期间 RPC res 到达 → 清 grace + endRun('rpc')，endRun 只触发一次
 			ctrl.finalResolve({ status: 'ok' });
@@ -1279,15 +1387,7 @@ describe('useAgentRunsStore', () => {
 			expect(findEnd('run-1', 'rpc')).toBeTruthy();
 		});
 
-		test('reason="lifecycle"：信号 2 grace 期满', () => {
-			const store = useAgentRunsStore();
-			registerRun(store);
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			vi.advanceTimersByTime(RPC_GRACE_MS);
-			expect(findEnd('run-1', 'lifecycle')).toBeTruthy();
-		});
-
-		test('reason="wait"：信号 3 agent.wait 终态 + grace 期满', async () => {
+		test('reason="wait"：信号 2 agent.wait(0) 终态 + grace 期满', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 			const runPromise = store.runAgent({
@@ -1296,14 +1396,14 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			vi.advanceTimersByTime(30_000);
+			vi.advanceTimersByTime(60_000);
 			ctrl.waitResolve({ status: 'ok' });
 			await vi.advanceTimersByTimeAsync(RPC_GRACE_MS);
 			await runPromise;
 			expect(findEnd('run-1', 'wait')).toBeTruthy();
 		});
 
-		test('reason="failed"：信号 4 主 RPC reject', async () => {
+		test('reason="failed"：信号 3 主 RPC reject', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 			const runPromise = store.runAgent({
@@ -1357,8 +1457,7 @@ describe('useAgentRunsStore', () => {
 		test('已 ended run 第二次 endRun 不重复打 log（去重）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			vi.advanceTimersByTime(RPC_GRACE_MS); // → endRun('lifecycle') 第一次打
+			store.__endRun('run-1', 'wait'); // 第一次打
 			const before = remoteLogCalls.filter((t) => t.startsWith('agent.run.end ')).length;
 
 			store.settle('1::agent:main:main'); // 已 ended，不应再走 __endRun
@@ -1372,8 +1471,7 @@ describe('useAgentRunsStore', () => {
 		test('真正清理时打 log（runKey + runId）', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
-			vi.advanceTimersByTime(RPC_GRACE_MS);
+			store.__endRun('run-1', 'wait');
 
 			store.dropRun('1::agent:main:main');
 
@@ -1417,7 +1515,7 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('rpc grace', () => {
-		test('failed 路径（信号 4）跳过 grace，立即 endRun', async () => {
+		test('failed 路径（信号 3）跳过 grace，立即 endRun', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1443,15 +1541,15 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			// 第一次：lifecycle 挂 grace
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			// 第一次：wait 挂 grace
+			store.__schedulePendingEnd('run-1', 'wait');
 			const firstTimer = store.runs['run-1'].__pendingEnd?.timer;
 			expect(firstTimer).toBeTruthy();
 
-			// 第二次：再次 dispatch lifecycle，pending 不应被替换
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			// 第二次：再次 schedule，pending 不应被替换
+			store.__schedulePendingEnd('run-1', 'wait');
 			expect(store.runs['run-1'].__pendingEnd?.timer).toBe(firstTimer);
-			expect(store.runs['run-1'].__pendingEnd.reason).toBe('lifecycle');
+			expect(store.runs['run-1'].__pendingEnd.reason).toBe('wait');
 		});
 
 		test('grace 期间 settle("manual") 清 pending timer，不泄漏', () => {
@@ -1459,7 +1557,7 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 
 			// 挂 grace
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.__schedulePendingEnd('run-1', 'wait');
 			expect(store.runs['run-1'].__pendingEnd).toBeTruthy();
 
 			// settle('manual') 触发 cleanup → endRun → 清 pending
@@ -1475,20 +1573,20 @@ describe('useAgentRunsStore', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.__schedulePendingEnd('run-1', 'wait');
 			expect(remoteLogCalls.find((t) => t.includes('rpc-grace-elapsed'))).toBeFalsy();
 
 			vi.advanceTimersByTime(RPC_GRACE_MS);
 
 			const elapsed = remoteLogCalls.find((t) => t.includes('rpc-grace-elapsed'));
-			expect(elapsed).toMatch(/agent\.run\.rpc-grace-elapsed runId=run-1 reason=lifecycle/);
+			expect(elapsed).toMatch(/agent\.run\.rpc-grace-elapsed runId=run-1 reason=wait/);
 		});
 
 		test('grace 内 rpc 抢先到达 → 不打诊断 remoteLog', () => {
 			const store = useAgentRunsStore();
 			registerRun(store);
 
-			store.__dispatch({ runId: 'run-1', stream: 'lifecycle', data: { phase: 'end' } });
+			store.__schedulePendingEnd('run-1', 'wait');
 			// rpc 抢先（grace 满前）
 			store.__onRpcDone('run-1');
 

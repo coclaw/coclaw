@@ -531,7 +531,7 @@ export function createChatStore(storeKey, opts = {}) {
 					const runsStore = useAgentRunsStore();
 					const runKey = this.runKey;
 
-					// 发起 agent run（内部封装两阶段 RPC + watcher 四路结束信号）
+					// 发起 agent run（内部封装两阶段 RPC + watcher 三路终态信号 rpc/wait/failed）
 					const runPromise = runsStore.runAgent({
 						conn,
 						clawId: this.clawId,
@@ -688,7 +688,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 *   重试直到：
 			 *     - RPC 返回 ok=true（immediate hit）
 			 *     - RPC 返回 not-supported（侧门缺失，静默降级）
-			 *     - run 自然结束（isRunning 变 false，lifecycle:end / completion / reconcile 驱动）
+			 *     - run 自然结束（isRunning 变 false，rpc/wait/failed 等真终态信号驱动）
 			 *   期间 isCancelling=true，UI 禁用 STOP 按钮防止重复触发；无 TTL——协调生命期等于 run 生命期。
 			 *
 			 * @returns {Promise<object> | null} accepted 分支且有可用 sid/conn 时返回协调 promise，
@@ -1337,7 +1337,7 @@ export function createChatStore(storeKey, opts = {}) {
 			 *
 			 * "等持久化"的逻辑在源头 agent-runs.store 的 rpc grace 窗口内已处理：
 			 *   - 'rpc' 路径：上游同步 await 链保证 transcript 已写完
-			 *   - 'lifecycle' / 'wait' 路径：源头已等满 RPC_GRACE_MS（默认 2s），transcript 大概率写完
+			 *   - 'wait' 路径：源头已等满 RPC_GRACE_MS（默认 2s），transcript 大概率写完
              *   - 'failed' 路径：网络异常，不再等
              *
 			 * 因此本函数无需再做"是否已写完终态 assistant"的猜测校验——避免 fast follow-up 场景下

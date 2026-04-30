@@ -29,7 +29,6 @@ describe('applyAgentEvent', () => {
 		expect(textBlock?.text).toBe('hello world');
 		expect(entry.message.stopReason).toBe('stop');
 		expect(result.changed).toBe(true);
-		expect(result.settled).toBe(false);
 	});
 
 	test('assistant stream：过滤 NO_REPLY 静默回复', () => {
@@ -142,21 +141,29 @@ describe('applyAgentEvent', () => {
 		expect(thinkingBlocks[0].thinking).toBe('更新思考');
 	});
 
-	test('lifecycle end：返回 settled=true', () => {
+	// lifecycle:end / lifecycle:error 不再产生任何副作用——上游一次 run 内会 emit 多次
+	// 中间段 lifecycle:end，把它当终态会导致提前 endRun + 后续事件丢失。终态判定全部走
+	// store 端的 RPC 二阶段 res / agent.wait(0) 探测 / 主 RPC reject。
+	test('lifecycle end：无副作用（不改 msgs，不返回 settled）', () => {
 		const msgs = makeStreamingMsgs();
+		const before = JSON.stringify(msgs);
 		const result = applyAgentEvent(msgs, { stream: 'lifecycle', data: { phase: 'end' } });
 
-		expect(result.settled).toBe(true);
+		expect(result.changed).toBe(false);
 		expect(result.error).toBe(false);
-		expect(result.changed).toBe(true);
+		expect(result.settled).toBeUndefined();
+		expect(JSON.stringify(msgs)).toBe(before);
 	});
 
-	test('lifecycle error：返回 settled=true, error=true', () => {
+	test('lifecycle error：无副作用（不改 msgs，不返回 settled）', () => {
 		const msgs = makeStreamingMsgs();
+		const before = JSON.stringify(msgs);
 		const result = applyAgentEvent(msgs, { stream: 'lifecycle', data: { phase: 'error' } });
 
-		expect(result.settled).toBe(true);
-		expect(result.error).toBe(true);
+		expect(result.changed).toBe(false);
+		expect(result.error).toBe(false);
+		expect(result.settled).toBeUndefined();
+		expect(JSON.stringify(msgs)).toBe(before);
 	});
 
 	test('ensureContentArray：非空字符串 content 被转换为 text block 数组', () => {
@@ -182,6 +189,5 @@ describe('applyAgentEvent', () => {
 		const result = applyAgentEvent(msgs, { stream: 'unknown', data: {} });
 
 		expect(result.changed).toBe(false);
-		expect(result.settled).toBe(false);
 	});
 });

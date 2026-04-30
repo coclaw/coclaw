@@ -33,13 +33,19 @@ function ensureContentArray(entry) {
 
 /**
  * 将 agent 流式事件应用到消息数组
+ *
+ * 注意：lifecycle 事件不再产生任何副作用（不写消息、不标终态）。OpenClaw 上游
+ * 一次完整 run 内会 emit 多次 lifecycle:end（compaction-retry / model-fallback /
+ * live-switch），无字段可区分中间段 vs 真终态；终态判定由 agent-runs.store 的
+ * RPC 二阶段 res、agent.wait(timeoutMs=0) 探测、主 RPC reject 共同负责。
+ *
  * @param {object[]} msgs - 消息数组（原地修改）
  * @param {object} payload - event:agent payload
- * @returns {{ changed: boolean, settled: boolean, error: boolean }}
+ * @returns {{ changed: boolean, error: boolean }}
  */
 export function applyAgentEvent(msgs, payload) {
 	const { stream, data } = payload;
-	const result = { changed: false, settled: false, error: false };
+	const result = { changed: false, error: false };
 
 	if (stream === 'assistant' && data?.text != null) {
 		const entry = findStreamingBotEntry(msgs);
@@ -109,17 +115,7 @@ export function applyAgentEvent(msgs, payload) {
 			result.changed = true;
 		}
 	}
-	else if (stream === 'lifecycle') {
-		if (data?.phase === 'end') {
-			result.settled = true;
-			result.changed = true;
-		}
-		else if (data?.phase === 'error') {
-			result.settled = true;
-			result.error = true;
-			result.changed = true;
-		}
-	}
+	// lifecycle 事件无副作用：不可靠的终态信号，由 store 端用其他信号判定
 
 	return result;
 }
