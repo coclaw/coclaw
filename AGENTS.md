@@ -192,20 +192,12 @@ General Instructions
 
 OpenClaw 是较新的项目，且处于快速迭代阶段，训练数据中未包含其最新细节。请务必通过"阅读源码"和"查阅文档"来获取准确信息。
 
-### 文档与源码
-
-CoClaw 项目（尤其是 `openclaw-plugins/tunnel`）与 OpenClaw 生态紧密结合。需要时，请查阅已同步到本地目录 `./openclaw-repo/openclaw` 中的 OpenClaw 仓库内容（文档和/或源码），该目录下的内容与本地安装和运行的 OpenClaw 版本一致。
+CoClaw 项目（尤其是 `plugins/openclaw`）与 OpenClaw 生态紧密结合。需要时，查阅已同步到仓库根下的 `openclaw-repo/` 中的 OpenClaw 仓库内容，该目录下的内容与本地安装和运行的 OpenClaw 版本基本一致。
 
 OpenClaw 网络资源：
 - Source: https://github.com/openclaw/openclaw
 - Community: https://discord.com/invite/clawd
 
-需要了解 OpenClaw 行为、命令、配置或架构时，优先查阅本地文档。诊断问题时尽量自行运行 `openclaw status`；仅在无权限时（如沙箱环境）才请用户协助。
-
-### OpenClaw CLI
-
-OpenClaw 通过子命令控制，禁止编造不存在的命令。管理 Gateway 守护进程：
+OpenClaw 通过子命令控制和管理 Gateway 守护进程：
 - `openclaw gateway status`
 - `openclaw gateway start / stop / restart`
-
-不确定时，请用户运行 `openclaw help` 或 `openclaw gateway --help` 并粘贴输出。
