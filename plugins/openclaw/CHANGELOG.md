@@ -1,5 +1,46 @@
 # @coclaw/openclaw-coclaw
 
+## 0.17.8
+
+### Patch Changes
+
+- feat(plugin): add agent run main-thread lag probe
+
+  Observability-only addition. While an `agent` RPC is in-flight, the realtime
+  bridge runs an event-loop lag probe every 200 ms and logs a `lag.spike` warn
+  whenever the wakeup drift exceeds 100 ms. On phase-2 termination (`status` !==
+  `accepted`, or a validation-failure `ok=false`) it emits a `lag.summary` info
+  line with attempts, max lag, count of >100 ms ticks, and total over-budget
+  milliseconds. The probe is started after the gateway WS send succeeds and
+  stopped via the outgoing `res` stream, with a 60 s hard backstop and explicit
+  cleanup on WS close, `bridge.stop()`, and `bridge.refresh()`.
+
+  Motivation: upstream OpenClaw has known synchronous work on the gateway main
+  thread (see `docs/openclaw-upstream-issues.md`) that occasionally produces
+  multi-second send-path stalls. Until those upstream fixes land, this probe
+  gives us a continuous, per-run diagnostic signal so we can correlate user
+  reports with actual main-thread blockage.
+
+  No product behavior changes. All timer callbacks are wrapped in `try/catch`
+  to honor the plugin-process "no global exception fallbacks" rule, and timers
+  are `unref()`-ed so the probe never keeps the process alive.
+
+- 2957e15: fix(plugin): preserve string type in rpc send queue to prevent silent drop on UI side
+
+  The plugin-side `RpcSendQueue` previously coerced non-chunked JSON strings into
+  `Buffer` when enqueuing under back-pressure (queue non-empty or
+  `bufferedAmount >= 1 MB`). On drain, those messages went out as binary frames
+  (SCTP PPID 53), but the UI reassembler treats binary frames strictly as chunked
+  fragments — the JSON's first byte (`{` = 0x7B) doesn't match BEGIN/MIDDLE/END
+  flags, so the frame was silently dropped at the UI. Symptoms: agent runs
+  appeared stuck on "task not finished" while the plugin run was still progressing
+  in the background, with no `agent.run.*` remote log because UI never registered
+  the run.
+
+  The queue now records each item as `{ data, isString, bytes }` and lets
+  `dc.send` dispatch the original type at drain time. Strings go out as string
+  frames (PPID 51), binary chunks remain binary. Byte accounting is unchanged.
+
 ## 0.17.7
 
 ### Patch Changes
