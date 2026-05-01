@@ -1,11 +1,22 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from 'vitest';
+
+// platform.js 在 file-helper.js 顶部静态 import；用 hoisted state + getter 模拟可切换的 isCapacitorApp
+const platformState = vi.hoisted(() => ({ isCapacitorApp: false }));
+vi.mock('./platform.js', () => ({
+	get isCapacitorApp() { return platformState.isCapacitorApp; },
+	get isElectronApp() { return false; },
+	get isTauriApp() { return false; },
+	get isNativeShell() { return platformState.isCapacitorApp; },
+	get isDesktop() { return !platformState.isCapacitorApp; },
+}));
+
 import {
 	fileToBase64, formatFileSize, formatFileBlob,
 	isImageByExt, chatFilesDir, topicFilesDir,
 	buildAttachmentBlock, parseAttachmentBlock,
 	validateCoclawPath, extractCoclawFileRefs,
-	saveUrlAsFile,
-	// saveBlobToFile / __nativeShareFile 在测试中通过 dynamic import 获取（需 vi.doMock）
+	saveUrlAsFile, saveBlobToFile,
+	// __nativeShareFile 在测试中通过 dynamic import 获取（需 vi.doMock @capacitor/*）
 } from './file-helper.js';
 
 const origCreateObjectURL = URL.createObjectURL;
@@ -422,13 +433,11 @@ describe('saveBlobToFile', () => {
 	afterEach(() => {
 		URL.createObjectURL = origCreate;
 		URL.revokeObjectURL = origRevokeObjectURL;
+		platformState.isCapacitorApp = false;
 		vi.restoreAllMocks();
 	});
 
 	test('Web 环境：创建 <a download> 触发浏览器下载', async () => {
-		// mock platform 为 web
-		vi.doMock('./platform.js', () => ({ isCapacitorApp: false }));
-
 		const mockA = { href: '', download: '', click: vi.fn() };
 		const origCreateElement = document.createElement.bind(document);
 		vi.spyOn(document, 'createElement').mockImplementation((tag) =>
@@ -438,9 +447,7 @@ describe('saveBlobToFile', () => {
 		vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
 
 		const blob = new Blob(['hello'], { type: 'text/plain' });
-		// 重新 import 使 doMock 生效
-		const { saveBlobToFile: save } = await import('./file-helper.js');
-		await save(blob, 'test.txt');
+		await saveBlobToFile(blob, 'test.txt');
 
 		expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
 		expect(mockA.download).toBe('test.txt');
@@ -450,7 +457,7 @@ describe('saveBlobToFile', () => {
 	});
 
 	test('Capacitor 环境：调用 __nativeShareFile', async () => {
-		vi.doMock('./platform.js', () => ({ isCapacitorApp: true }));
+		platformState.isCapacitorApp = true;
 		vi.doMock('@capacitor/filesystem', () => ({
 			Filesystem: {
 				writeFile: vi.fn().mockResolvedValue({ uri: 'file:///cache/test.txt' }),
@@ -464,8 +471,7 @@ describe('saveBlobToFile', () => {
 		}));
 
 		const blob = new Blob(['hello']);
-		const { saveBlobToFile: save } = await import('./file-helper.js');
-		await save(blob, 'test.txt');
+		await saveBlobToFile(blob, 'test.txt');
 
 		const { Filesystem } = await import('@capacitor/filesystem');
 		const { Share } = await import('@capacitor/share');

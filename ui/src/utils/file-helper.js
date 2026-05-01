@@ -1,4 +1,5 @@
 import { findCoclawMarkdownLinks } from '../services/coclaw-file.js';
+import { isCapacitorApp } from './platform.js';
 
 /**
  * 将 File/Blob 读取为纯 base64 字符串（不含 data-url 前缀）
@@ -153,7 +154,6 @@ export function extractCoclawFileRefs(text) {
  * @param {string} filename
  */
 export async function saveBlobToFile(blob, filename) {
-	const { isCapacitorApp } = await import('./platform.js');
 	if (isCapacitorApp) {
 		await __nativeShareFile(blob, filename);
 		return;
