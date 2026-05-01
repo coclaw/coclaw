@@ -15,12 +15,40 @@ export function __resetSessionsInternals() {
 	_perClawLoading.clear();
 }
 
+/**
+ * @typedef {object} SessionItem
+ * @property {string} sessionId - 该 chat 当前 live session 的 sessionId（agent:<id>:main）；bump-only 占位为 ''
+ * @property {string} sessionKey - 始终是 live key 'agent:<agentId>:main'
+ * @property {string} clawId
+ * @property {string} agentId
+ * @property {number|null} updatedAt - 来自 sessions.list 的最近活动时间（server 真相，毫秒）
+ *   取该 agent 名下所有 sessions（key 以 'agent:<agentId>:' 开头）的 max(updatedAt)
+ * @property {number|null} bumpedAt - 本地乐观活动时间（毫秒）
+ *   sendMessage / sendSlashCommand 入口写 Date.now()；sessions.list 不碰
+ */
+
 export const useSessionsStore = defineStore('sessions', {
 	state: () => ({
-		/** @type {{ sessionId: string, sessionKey: string, clawId: string, agentId: string }[]} */
+		/** @type {SessionItem[]} */
 		items: [],
 		loading: false,
 	}),
+	getters: {
+		/**
+		 * 取某个 chat 的"最近活动时间"，供 MainList 排序使用。
+		 * = max(updatedAt, bumpedAt)；都缺失返回 0（落底部）。
+		 * @returns {(clawId: string, agentId: string) => number}
+		 */
+		getActivity: (state) => (clawId, agentId) => {
+			const id = String(clawId);
+			for (const s of state.items) {
+				if (s.clawId === id && s.agentId === agentId) {
+					return Math.max(s.updatedAt ?? 0, s.bumpedAt ?? 0);
+				}
+			}
+			return 0;
+		},
+	},
 	actions: {
 		setSessions(items) {
 			this.items = Array.isArray(items) ? items : [];
@@ -30,6 +58,41 @@ export const useSessionsStore = defineStore('sessions', {
 			this.items = this.items.filter((s) => String(s.clawId) !== id);
 			// 同步清飞行中 dedup：claw 同 id 重绑时新 loadForClaw 不应 coalesce 到老 promise
 			_perClawLoading.delete(id);
+		},
+		/**
+		 * 本地乐观活动标记。sendMessage / sendSlashCommand 入口调用，让 MainList
+		 * 立刻把该 agent 浮顶（不等下一次 sessions.list 拉到 server updatedAt）。
+		 *
+		 * 不存在对应 item 时 upsert 一条占位（典型场景：全新 agent，第一条消息发出时
+		 * sessions.list 上还没记录）；下次 sessions.list 回来会原地补上 sessionId/updatedAt，
+		 * bumpedAt 不被覆盖。
+		 *
+		 * @param {string} clawId
+		 * @param {string} agentId
+		 * @param {number} [ts] - 默认 Date.now()
+		 */
+		bumpActivity(clawId, agentId, ts = Date.now()) {
+			if (!clawId || !agentId) return;
+			const id = String(clawId);
+			const sessionKey = `agent:${agentId}:main`;
+			const idx = this.items.findIndex((s) => s.clawId === id && s.agentId === agentId);
+			if (idx >= 0) {
+				const next = [...this.items];
+				next[idx] = { ...next[idx], bumpedAt: ts };
+				this.items = next;
+			} else {
+				this.items = [
+					...this.items,
+					{
+						sessionId: '',
+						sessionKey,
+						clawId: id,
+						agentId,
+						updatedAt: null,
+						bumpedAt: ts,
+					},
+				];
+			}
 		},
 		async loadAllSessions() {
 			// 已有加载中的请求，合流等待
@@ -81,31 +144,13 @@ export const useSessionsStore = defineStore('sessions', {
 					console.debug('[sessions] claw conn vanished during fetch clawId=%s', cid);
 				}
 			}
-			// 增量合并：保留未查询 claw 的已有 sessions，替换已查询 claw 的
-			const seen = new Set();
-			const merged = [];
-			for (const item of this.items) {
-				const bid = String(item.clawId);
-				// 跳过本次查询范围内的（用新结果替换）和已不存在的 claw
-				if (queriedClawIds.has(bid) || !clawsStore.byId[bid]) continue;
-				const key = `${bid}:${item.sessionKey}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(item);
-				}
-			}
-			for (const r of results) {
-				if (r.status !== 'fulfilled') continue;
-				for (const item of r.value) {
-					const key = `${item.clawId}:${item.sessionKey}`;
-					if (!seen.has(key)) {
-						seen.add(key);
-						merged.push(item);
-					}
-				}
-			}
-			this.items = merged;
-			console.debug('[sessions] loadAll: merged %d session(s) (queried %d claw(s))', merged.length, queriedClawIds.size);
+			this.items = mergeFetchResults({
+				prevItems: this.items,
+				results,
+				queriedClawIds,
+				clawsById: clawsStore.byId,
+			});
+			console.debug('[sessions] loadAll: merged %d session(s) (queried %d claw(s))', this.items.length, queriedClawIds.size);
 		},
 		/**
 		 * 按 claw 加载 sessions。专为 per-claw 触发场景（DC 重连恢复 / 首次 init），
@@ -152,28 +197,20 @@ export const useSessionsStore = defineStore('sessions', {
 				console.debug('[sessions] loadForClaw: claw removed during fetch clawId=%s', id);
 				return;
 			}
-			const seen = new Set();
-			const merged = [];
-			for (const old of this.items) {
-				const bid = String(old.clawId);
-				if (bid === id) continue; // 当前 claw 的旧记录用新结果替换
-				if (!clawsStore.byId[bid]) continue; // 顺手清理已不存在的 claw
-				const key = `${bid}:${old.sessionKey}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(old);
-				}
-			}
-			for (const item of items) {
-				const key = `${item.clawId}:${item.sessionKey}`;
-				if (!seen.has(key)) {
-					seen.add(key);
-					merged.push(item);
-				}
-			}
-			this.items = merged;
+			this.items = mergeFetchResults({
+				prevItems: this.items,
+				results: [{ status: 'fulfilled', value: items }],
+				queriedClawIds: new Set([id]),
+				clawsById: clawsStore.byId,
+			});
 			console.debug('[sessions] loadForClaw: merged %d session(s) clawId=%s', items.length, id);
 		},
+		/**
+		 * 拉取指定 claw 的 sessions：一次 sessions.list RPC 拿全部，按 agent 切片。
+		 * 每个 agent 一项 SessionItem，updatedAt 取该 agent 名下所有 session 的 max。
+		 * @param {string} clawId
+		 * @returns {Promise<SessionItem[]>}
+		 */
 		async __fetchSessionsForClaw(clawId) {
 			const conn = getReadyConn(clawId);
 			if (!conn) return [];
@@ -183,28 +220,96 @@ export const useSessionsStore = defineStore('sessions', {
 			// 若 agentsStore 未加载完成，fallback 到 ['main']
 			const agentIds = agents.length ? agents.map((a) => a.id) : ['main'];
 
-			const results = await Promise.allSettled(
-				agentIds.map(async (agentId) => {
-					const sessionKey = `agent:${agentId}:main`;
-					const hist = await conn.request('chat.history', {
-						sessionKey,
-						limit: 1,
-					}, { timeout: 60_000 });
-					return {
-						sessionId: hist?.sessionId ?? '',
-						sessionKey,
-						clawId: String(clawId),
-						agentId,
-					};
-				}),
-			);
+			// 不在此处吞 RPC 错误：让外层 Promise.allSettled 看到 rejected 状态，
+			// 合并环节按"未查询"路径保留旧条目（与 chat.history 时代的语义一致）
+			const result = await conn.request('sessions.list', {}, { timeout: 60_000 });
+			const sessionList = Array.isArray(result?.sessions) ? result.sessions : [];
 
+			const id = String(clawId);
 			const items = [];
-			for (const r of results) {
-				if (r.status !== 'fulfilled' || !r.value.sessionId) continue;
-				items.push(r.value);
+			for (const agentId of agentIds) {
+				const prefix = `agent:${agentId}:`;
+				const liveKey = `agent:${agentId}:main`;
+				let sessionId = '';
+				let maxUpdatedAt = 0;
+				for (const s of sessionList) {
+					if (typeof s?.key !== 'string' || !s.key.startsWith(prefix)) continue;
+					if (s.key === liveKey && typeof s.sessionId === 'string' && s.sessionId) {
+						sessionId = s.sessionId;
+					}
+					if (typeof s.updatedAt === 'number' && s.updatedAt > maxUpdatedAt) {
+						maxUpdatedAt = s.updatedAt;
+					}
+				}
+				// 该 agent 完全无 session 痕迹 → 不创建 item（让 MainList fallback 到 0 落底部）
+				if (!sessionId && !maxUpdatedAt) continue;
+				items.push({
+					sessionId,
+					sessionKey: liveKey,
+					clawId: id,
+					agentId,
+					updatedAt: maxUpdatedAt || null,
+					bumpedAt: null,
+				});
 			}
 			return items;
 		},
 	},
 });
+
+/**
+ * 合并 sessions.list 拉回结果：保留未查询 claw 旧条目；查询过的 claw 用新结果替换，
+ * 但每条 item 保留 oldByChatKey 中的 bumpedAt（sessions.list 看不到本地乐观标记）。
+ *
+ * "已查询 claw 中 server 没返回但本地有 bumpedAt 的 chat" 也保留——典型场景：
+ * 用户刚发完消息走 bumpActivity，sessions.list 同时在飞，server 还没把消息写盘到
+ * sessions store，新结果里没这条；不保留 bumpedAt 会让该 agent 在列表里掉下去。
+ *
+ * @param {object} args
+ * @param {SessionItem[]} args.prevItems
+ * @param {PromiseSettledResult<SessionItem[]>[]} args.results
+ * @param {Set<string>} args.queriedClawIds
+ * @param {Record<string, object>} args.clawsById - clawsStore.byId（用于清理已不存在的 claw 旧条目）
+ * @returns {SessionItem[]}
+ */
+function mergeFetchResults({ prevItems, results, queriedClawIds, clawsById }) {
+	const oldByChatKey = new Map();
+	for (const s of prevItems) {
+		oldByChatKey.set(`${s.clawId}:${s.agentId}`, s);
+	}
+	const newChatKeys = new Set();
+	const merged = [];
+
+	// 保留未查询 claw 的旧条目（顺手清理 clawsStore 中已不存在的 claw）
+	for (const s of prevItems) {
+		const bid = String(s.clawId);
+		if (queriedClawIds.has(bid) || !clawsById[bid]) continue;
+		merged.push(s);
+	}
+
+	// 新条目：合入查询结果，复用旧 bumpedAt
+	for (const r of results) {
+		if (r.status !== 'fulfilled') continue;
+		for (const item of r.value) {
+			const chatKey = `${item.clawId}:${item.agentId}`;
+			newChatKeys.add(chatKey);
+			const old = oldByChatKey.get(chatKey);
+			merged.push(old?.bumpedAt
+				? { ...item, bumpedAt: old.bumpedAt }
+				: item);
+		}
+	}
+
+	// 已查询 claw 中"server 没返回但本地有 bumpedAt"的 chat：保留为 bump-only 占位
+	// （server 真相已清零，但乐观浮顶不掉）
+	for (const s of prevItems) {
+		const bid = String(s.clawId);
+		if (!queriedClawIds.has(bid)) continue;
+		const chatKey = `${s.clawId}:${s.agentId}`;
+		if (newChatKeys.has(chatKey)) continue;
+		if (!s.bumpedAt) continue;
+		merged.push({ ...s, sessionId: '', updatedAt: null });
+	}
+
+	return merged;
+}

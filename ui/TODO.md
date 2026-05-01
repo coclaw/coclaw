@@ -212,6 +212,17 @@
     - 与 §"Bug 1 修复 review 后续"#16（silent loadMessages 失败永挂）合并修最经济
     - 必须配套补单元测试：`run.ended=true && run.settled=false` 时 allMessages 不应合并 streamingMsgs
 
+## MainList agent 排序 deep-review 发现的预存问题（2026-05-01）
+
+来源：MainList 排序 + 标签改造 deep-review。第 1 轮 codex-rescue 并发维度报告。该问题**自 sessions.store 引入 `_loadingPromise` / `_perClawLoading` 合流以来就存在**，本次重写（`chat.history` → `sessions.list`）只是沿用原合流模式，未触发但暴露出来。
+
+33. **`_loadingPromise` 老 promise 的 stale finally 在 logout/同 id 重绑窗口可能误清替换 promise**
+    - 现状：`sessions.store.js:121` 的 `_loadingPromise = null` 是**无条件清**，没有像 `_perClawLoading.set` 那样的"仅当 Map 当前条目仍是本 promise 时才清"identity guard
+    - 时序：旧 `loadAllSessions()` 在飞 → logout 触发 `__resetSessionsInternals` 清内部状态 → 新 `loadAllSessions()` 写入新 promise → 旧 finally 跑到 `_loadingPromise = null` → 把替换 promise 也清了 → 下一次同时刻并发的 `loadAllSessions()` 不再合流，发起独立 RPC
+    - 实际影响：极窄窗口 + 仅多发一次 RPC，无功能性故障
+    - 修法：参照 `_perClawLoading.finally` 的 identity 比较模式：`if (_loadingPromise === p) _loadingPromise = null`
+    - 非阻塞
+
 ## claws.store notify 重构 deep-review 后续（2026-05-01）
 
 32. **`useNotify()` 在 Vue 非 setup 上下文调用，dev 模式可能触发 inject 警告**

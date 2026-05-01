@@ -58,7 +58,7 @@
 				</RouterLink>
 		</nav>
 
-		<!-- Group 2: Agent 列表 -->
+		<!-- Group 2: Agent 列表（按最近活动逆序，平面跨 claw 混排） -->
 		<nav class="mt-3 space-y-0 px-2">
 			<RouterLink
 				v-for="item in agentItems"
@@ -72,7 +72,7 @@
 					<img
 						v-if="item.avatarUrl"
 						:src="item.avatarUrl"
-						:alt="item.label"
+						:alt="item.agentName"
 						class="size-6 rounded-md object-cover"
 					/>
 					<span
@@ -82,7 +82,7 @@
 					<img
 						v-else
 						:src="defaultClawAvatar"
-						:alt="item.label"
+						:alt="item.agentName"
 						class="size-6 rounded-md object-cover"
 					/>
 					<span
@@ -90,7 +90,15 @@
 						:class="item.online ? 'bg-success' : 'bg-neutral'"
 					/>
 				</span>
-				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+				<!-- label：单 claw 仅 agent 名；多 claw 时 agent@claw，'@' 永不缩、两段可 truncate；
+				     '@' 与 clawName 用 text-muted 弱化（次级信息） -->
+				<span class="flex min-w-0 flex-1 items-baseline">
+					<span class="truncate min-w-0">{{ item.agentName }}</span>
+					<template v-if="item.clawName">
+						<span class="shrink-0 text-muted">@</span>
+						<span class="truncate min-w-0 text-muted">{{ item.clawName }}</span>
+					</template>
+				</span>
 			</RouterLink>
 		</nav>
 
@@ -139,6 +147,7 @@
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { useEnvStore } from '../stores/env.store.js';
+import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 import TopicItemActions from './TopicItemActions.vue';
 import defaultClawAvatar from '../assets/claw-avatars/openclaw.svg';
@@ -173,6 +182,7 @@ export default {
 			agentsStore: null,
 			clawsStore: null,
 			envStore: null,
+			sessionsStore: null,
 			topicsStore: null,
 		};
 	},
@@ -227,6 +237,9 @@ export default {
 		agentItems() {
 			const bots = this.clawsStore?.items ?? [];
 			const display = this.agentsStore?.getAgentDisplay;
+			const sessions = this.sessionsStore;
+			// 仅在多 claw 时给 label 加 @clawName 后缀，单 claw 不冗余
+			const useClawSuffix = bots.length >= 2;
 			const result = [];
 			for (const b of bots) {
 				const agents = this.agentsStore?.getAgentsByClaw(b.id) ?? [];
@@ -234,29 +247,40 @@ export default {
 					// agents 已加载：展开为详细列表
 					for (const agent of agents) {
 						const d = display?.(b.id, agent.id) ?? {};
+						const agentName = d.name || agent.id;
+						// 默认 agent 无 identity 时，agentDisplay 会把 agentName fallback 到 clawName，
+						// 多 claw 拼接会出现 "Alpha@Alpha" 重复——同名时丢掉后缀，单段呈现即可
+						let clawName = useClawSuffix ? (b.name || 'OpenClaw') : null;
+						if (clawName && clawName === agentName) clawName = null;
 						result.push({
 							id: `${b.id}:${agent.id}`,
-							label: d.name || agent.id,
+							agentName,
+							clawName,
 							avatarUrl: d.avatarUrl,
 							emoji: d.emoji,
 							online: Boolean(b.online),
 							active: this.activeAgentKey === `${b.id}:${agent.id}`,
 							to: { name: 'chat', params: { clawId: String(b.id), agentId: agent.id } },
+							activity: sessions?.getActivity(b.id, agent.id) ?? 0,
 						});
 					}
 				} else {
-					// agents 未加载（离线/连接中）：以 claw 身份兜底
+					// agents 未加载（离线/连接中）：以 claw 身份兜底（label 单段、无 @）
 					result.push({
 						id: b.id,
-						label: b.name || 'OpenClaw',
+						agentName: b.name || 'OpenClaw',
+						clawName: null,
 						avatarUrl: null,
 						emoji: null,
 						online: Boolean(b.online),
 						active: this.activeAgentKey === `${b.id}:main`,
 						to: { name: 'chat', params: { clawId: String(b.id), agentId: 'main' } },
+						activity: sessions?.getActivity(b.id, 'main') ?? 0,
 					});
 				}
 			}
+			// 按 activity 降序排（ES2019 stable sort 保留 0 活动条目的自然顺序）
+			result.sort((a, b) => b.activity - a.activity);
 			return result;
 		},
 		topicItems() {
@@ -288,15 +312,28 @@ export default {
 		this.agentsStore = useAgentsStore();
 		this.clawsStore = useClawsStore();
 		this.envStore = useEnvStore();
+		this.sessionsStore = useSessionsStore();
 		this.topicsStore = useTopicsStore();
 		this.loadAllData();
 	},
 	watch: {
-		/** claw 列表变化（增删/上线状态）时刷新 agents 和 topics */
+		/** claw 列表变化（增删/上线状态）时刷新 agents / topics / sessions */
 		clawListKey: {
-			handler() {
-				this.agentsStore?.loadAllAgents();
-				this.topicsStore.loadAllTopics();
+			async handler() {
+				// sessions 拉取后按 agent 切片依赖 agents 已加载，必须先 await agents 再触发 sessions；
+				// 否则非 main agent 的 updatedAt 会暂时丢失，列表里这些 agent 暂时落底部直到下次刷新。
+				// agents 失败用 try/catch 兜底，让 sessions / topics 仍能独立刷新（agents.loadAllAgents
+				// 内部已 Promise.allSettled 单 claw 失败不抛，但调用链上其它意外仍可能抛——防御性 catch）
+				try {
+					await this.agentsStore?.loadAllAgents();
+				}
+				catch (err) {
+					console.debug('[MainList] watcher loadAllAgents failed: %s', err?.message);
+				}
+				await Promise.all([
+					this.topicsStore.loadAllTopics(),
+					this.sessionsStore?.loadAllSessions(),
+				]);
 			},
 		},
 	},
@@ -315,8 +352,18 @@ export default {
 					);
 				});
 			}
-			await this.agentsStore?.loadAllAgents();
-			await this.topicsStore.loadAllTopics();
+			// agents 必须先加载完，sessions 拉取时才能按 agentId 切片；
+			// 与 watcher 一致用 try/catch 兜底，防止 agents 抛错连带跳过 sessions/topics
+			try {
+				await this.agentsStore?.loadAllAgents();
+			}
+			catch (err) {
+				console.debug('[MainList] loadAllData loadAllAgents failed: %s', err?.message);
+			}
+			await Promise.all([
+				this.topicsStore.loadAllTopics(),
+				this.sessionsStore?.loadAllSessions(),
+			]);
 		},
 		onManualRetry() {
 			this.clawsStore?.manualRetryUnreachable();

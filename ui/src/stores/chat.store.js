@@ -12,6 +12,7 @@ import { postFile } from '../services/file-transfer.js';
 import { chatFilesDir, topicFilesDir, buildAttachmentBlock } from '../utils/file-helper.js';
 import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
+import { useSessionsStore } from './sessions.store.js';
 import { getReadyConn } from './get-ready-conn.js';
 import { remoteLog } from '../services/remote-log.js';
 
@@ -517,9 +518,15 @@ export function createChatStore(storeKey, opts = {}) {
 					const timeoutPromise = new Promise((_, reject) => { timeoutReject = reject; });
 					const cancelPromise = new Promise((_, reject) => { this.__cancelReject = reject; });
 
+					// pre-acceptance 闭包级失效标记：超时后置 true，让迟到的 onAccepted（runAgent
+					// 内部 conn.request timeout=0 永不超时，server 真返回 accepted 时仍会触发回调）
+					// 不再有任何副作用——否则会留下"幻影 bump"和被错误覆盖的 sending/__accepted 状态
+					let preAcceptInvalidated = false;
+
 					// pre-acceptance 超时（accepted 之前；accepted 后由 agent-runs.store 内 24h 内存释放保险接管）
 					this.__streamingTimer = setTimeout(() => {
 						if (!this.__accepted) {
+							preAcceptInvalidated = true;
 							this.__cleanupStreaming();
 							this.sending = false;
 							const err = new Error('pre-acceptance timeout');
@@ -541,10 +548,23 @@ export function createChatStore(storeKey, opts = {}) {
 						optimisticMsgs,
 						anchorMsgId,
 						onAccepted: (payload) => {
+							// 本次 send 已被 pre-accept 超时作废，迟到的 accepted 不应再有任何副作用
+							if (preAcceptInvalidated) {
+								console.debug('[chat] late onAccepted after pre-accept timeout, ignoring');
+								return;
+							}
 							const runId = payload?.runId ?? null;
 							console.debug('[chat] agent accepted runId=%s', runId);
 							this.__accepted = true;
 							this.streamingRunId = runId;
+							// 本地"乐观活动"标记：服务端已 accept run → 让 MainList agent 列表立刻浮顶
+							// （不等下一次 sessions.list）。放在 onAccepted 而非 sendMessage 入口，避免
+							// pre-acceptance 失败时留下"幻影 bump"——chat 实际没跑但 agent 在列表里浮顶。
+							// 已点 STOP（__pendingCancelIntent）的也不 bump：用户决定取消 → 不留浮顶痕迹。
+							// 仅 chat 模式（topic 不在 agent 列表里）。
+							if (!this.topicMode && !this.__pendingCancelIntent) {
+								useSessionsStore().bumpActivity(this.clawId, this.__resolveAgentId());
+							}
 							// 清 pre-acceptance timer；post-accept 由 agent-runs.store 内的 24h 兜底接管
 							if (this.__streamingTimer) clearTimeout(this.__streamingTimer);
 							this.__streamingTimer = null;
@@ -935,6 +955,8 @@ export function createChatStore(storeKey, opts = {}) {
 						idempotencyKey,
 					});
 					// chat.send 已成功送达并返回 runId（语义等价于 agent() 的 onAccepted）
+					// 本地"乐观活动"标记：仅在 server 真正 accept 后才 bump，避免 pre-acceptance 失败留下幻影 bump
+					useSessionsStore().bumpActivity(this.clawId, this.__resolveAgentId());
 					// → 清 _pending 让本地 user 消息显示出真实命令文本
 					let changed = false;
 					for (const m of this.messages) {

@@ -8,6 +8,7 @@ if (!URL.revokeObjectURL) URL.revokeObjectURL = () => {};
 import { createChatStore } from './chat.store.js';
 import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
 import { useClawsStore, __resetAwaitingConnIds as __resetClawStoreInternals } from './claws.store.js';
+import { useSessionsStore } from './sessions.store.js';
 import { groupSessionMessages } from '../utils/session-msg-group.js';
 
 // 兼容旧测试：创建默认空 session store，可手动设置状态字段
@@ -2422,6 +2423,223 @@ describe('useChatStore', () => {
 			resolveFirst({ entry: { sessionId: 'sess-new' } });
 			expect(await p1).toBe('sess-new');
 			expect(store.resetting).toBe(false);
+		});
+	});
+
+	// =====================================================================
+	// bumpActivity（让 MainList 立刻浮顶）
+	// =====================================================================
+
+	describe('bump on send', () => {
+		test('chat 模式 sendMessage 入口给 sessionsStore 写 bumpedAt', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, _params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'r-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 's' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const before = Date.now();
+			await store.sendMessage('hi');
+			const after = Date.now();
+
+			const sessionsStore = useSessionsStore();
+			const item = sessionsStore.items.find((s) => s.clawId === '1' && s.agentId === 'main');
+			expect(item).toBeTruthy();
+			expect(item.bumpedAt).toBeGreaterThanOrEqual(before);
+			expect(item.bumpedAt).toBeLessThanOrEqual(after);
+		});
+
+		test('topic 模式 sendMessage 不 bump（topic 不在 agent 列表）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, _params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'r-1' });
+					return Promise.resolve({ status: 'ok' });
+				}
+				if (method === 'coclaw.sessions.getById') return Promise.resolve({ messages: [] });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = createChatStore('topic:t-1', { clawId: '1', agentId: 'main' });
+			const sessionsStore = useSessionsStore();
+			const spy = vi.spyOn(sessionsStore, 'bumpActivity');
+
+			await store.sendMessage('topic msg');
+
+			// 强断言：bumpActivity 完全没被调用（length 0 在 storeKey 解析失败时也成立，会假阳性）
+			expect(spy).not.toHaveBeenCalled();
+		});
+
+		test('pre-acceptance 失败（断连等）不留下幻影 bumpedAt', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			// agent RPC reject 模拟 pre-acceptance 失败（DC 断、连接超时等）
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return Promise.reject(Object.assign(new Error('disconnect'), { code: 'DC_CLOSED' }));
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			// 关掉自动重试以确保走失败路径
+			store.__retried = true;
+
+			await expect(store.sendMessage('hi')).rejects.toBeTruthy();
+
+			const sessionsStore = useSessionsStore();
+			const item = sessionsStore.items.find((s) => s.clawId === '1' && s.agentId === 'main');
+			// 没 accepted → 不应有任何 bump 痕迹
+			expect(item).toBeUndefined();
+		});
+
+		test('sendSlashCommand 在 chat.send 成功后才 bump', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({ runId: 'slash-1', status: 'started' });
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const before = Date.now();
+			const p = store.sendSlashCommand('/help');
+			// 让 chat.send 的 mockResolvedValue microtask 跑完，bumpActivity 才会触发
+			await Promise.resolve();
+			await Promise.resolve();
+			const after = Date.now();
+
+			const sessionsStore = useSessionsStore();
+			const item = sessionsStore.items.find((s) => s.clawId === '1' && s.agentId === 'main');
+			expect(item).toBeTruthy();
+			expect(item.bumpedAt).toBeGreaterThanOrEqual(before);
+			expect(item.bumpedAt).toBeLessThanOrEqual(after);
+
+			// 收尾：触发 final 事件让 promise 自然 settle
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
+		});
+
+		test('sendSlashCommand chat.send 失败不留下 bumpedAt', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockRejectedValue(Object.assign(new Error('boom'), { code: 'WS_CLOSED' }));
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await expect(store.sendSlashCommand('/help')).rejects.toBeTruthy();
+
+			const sessionsStore = useSessionsStore();
+			expect(sessionsStore.items).toHaveLength(0);
+		});
+
+		test('pre-accept 超时后迟到的 onAccepted 不再触发 bump（preAcceptInvalidated 守卫）', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let capturedOnAccepted;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, _params, options) => {
+				if (method === 'agent') {
+					// 捕获 onAccepted 但不立即触发——模拟 server 长时间没回 accepted
+					capturedOnAccepted = options?.onAccepted;
+					return new Promise(() => {}); // 永不 settle，配合超时路径
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 's' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// 触发 sendMessage（不 await：超时会 reject）
+			const sendP = store.sendMessage('hi').catch(() => {});
+
+			// 推进 180s 触发 pre-acceptance 超时
+			await vi.advanceTimersByTimeAsync(180_001);
+			// 此时 sendMessage 已 reject 走 catch 清理了
+			await sendP;
+
+			// 后到的 accepted 来了：迟到回调被守卫挡住
+			expect(capturedOnAccepted).toBeTypeOf('function');
+			capturedOnAccepted({ runId: 'late-r-1' });
+
+			const sessionsStore = useSessionsStore();
+			expect(sessionsStore.items).toHaveLength(0);
+			vi.useRealTimers();
+		});
+
+		test('用户在 pre-accept 期间点 STOP，accepted 到达后不 bump（cancelIntent 守卫）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let capturedOnAccepted;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, _params, options) => {
+				if (method === 'agent') {
+					capturedOnAccepted = options?.onAccepted;
+					return new Promise(() => {});
+				}
+				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 's' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// fire-and-forget：sendMessage 在测试场景下无法自然 settle（runPromise / timeout / cancel 都不到），
+			// 我们只关心 onAccepted 触发后的同步状态，不需要等 sendMessage resolve。
+			// .catch 兜底 unhandled rejection（store 实例的 dispose 在测试 afterEach 触发时会让 promise 走 cancelReject）
+			const _sendP = store.sendMessage('hi').catch(() => {});
+			void _sendP;
+			await Promise.resolve();
+			// 用户点 STOP（pre-accept 阶段，仅挂起 cancel 意图）
+			store.cancelSend();
+			expect(store.__pendingCancelIntent).toBe(true);
+
+			// accepted 到达
+			expect(capturedOnAccepted).toBeTypeOf('function');
+			capturedOnAccepted({ runId: 'r-cancel' });
+
+			const sessionsStore = useSessionsStore();
+			// 用户已决定取消 → 不应该浮顶
+			expect(sessionsStore.items).toHaveLength(0);
 		});
 	});
 

@@ -4,7 +4,9 @@ import { mount } from '@vue/test-utils';
 import { vi, afterEach } from 'vitest';
 
 import MainList from './MainList.vue';
+import { useAgentsStore } from '../stores/agents.store.js';
 import { useClawsStore } from '../stores/claws.store.js';
+import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
 
 function toById(items) {
@@ -532,4 +534,199 @@ test('点击告警按钮触发 manualRetryUnreachable', async () => {
 	await findWarnBtn(wrapper).trigger('click');
 
 	expect(spy).toHaveBeenCalledTimes(1);
+});
+
+// --- Agent items：label 拼装 / 排序 / 多 claw 行为 ---
+
+/** 在 agentsStore 内手填 agent 列表，避开 RPC 路径 */
+function seedAgents(clawId, agents, defaultId = 'main') {
+	const agentsStore = useAgentsStore();
+	agentsStore.byClaw[String(clawId)] = {
+		agents: agents.map((a) => (typeof a === 'string' ? { id: a } : a)),
+		defaultId,
+		loading: false,
+		fetched: true,
+	};
+}
+
+test('单 claw：label 仅显示 agentName，无 @clawName 后缀', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'MyClaw', online: true }]);
+	seedAgents('b1', [{ id: 'main', resolvedIdentity: { name: 'Helper' } }]);
+	await wrapper.vm.$nextTick();
+
+	const items = wrapper.vm.agentItems;
+	expect(items).toHaveLength(1);
+	expect(items[0].agentName).toBe('Helper');
+	expect(items[0].clawName).toBeNull();
+});
+
+test('多 claw：label 拼成 agentName + @clawName', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([
+		{ id: 'b1', name: 'Alpha', online: true },
+		{ id: 'b2', name: 'Beta', online: true },
+	]);
+	seedAgents('b1', [{ id: 'main', resolvedIdentity: { name: 'Helper' } }]);
+	seedAgents('b2', [{ id: 'main', resolvedIdentity: { name: 'Helper' } }]);
+	await wrapper.vm.$nextTick();
+
+	const items = wrapper.vm.agentItems;
+	expect(items).toHaveLength(2);
+	const it1 = items.find((i) => i.id === 'b1:main');
+	expect(it1.agentName).toBe('Helper');
+	expect(it1.clawName).toBe('Alpha');
+});
+
+test('多 claw：当 agentName 与 clawName 同名时丢弃后缀，避免 "Alpha@Alpha"', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([
+		{ id: 'b1', name: 'Alpha', online: true },
+		{ id: 'b2', name: 'Beta', online: true },
+	]);
+	// 默认 agent 无 identity → agentDisplay 会让 agentName fallback 到 clawName
+	seedAgents('b1', ['main']);
+	seedAgents('b2', ['main']);
+	await wrapper.vm.$nextTick();
+
+	const items = wrapper.vm.agentItems;
+	const it1 = items.find((i) => i.id === 'b1:main');
+	expect(it1.agentName).toBe('Alpha');
+	expect(it1.clawName).toBeNull();
+});
+
+test('agent 列表跨 claw 平面混排（不再按 claw 分组）', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([
+		{ id: 'b1', name: 'Alpha', online: true },
+		{ id: 'b2', name: 'Beta', online: true },
+	]);
+	seedAgents('b1', ['main']);
+	seedAgents('b2', ['main']);
+	const sessionsStore = useSessionsStore();
+	// 让 b2:main 比 b1:main 更新 → 应排在 b1:main 之前
+	sessionsStore.setSessions([
+		{ sessionId: 'sa', sessionKey: 'agent:main:main', clawId: 'b1', agentId: 'main', updatedAt: 100, bumpedAt: null },
+		{ sessionId: 'sb', sessionKey: 'agent:main:main', clawId: 'b2', agentId: 'main', updatedAt: 999, bumpedAt: null },
+	]);
+	await wrapper.vm.$nextTick();
+
+	const items = wrapper.vm.agentItems;
+	expect(items.map((i) => i.id)).toEqual(['b2:main', 'b1:main']);
+});
+
+test('agentItems 按 max(updatedAt, bumpedAt) 降序排', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'B1', online: true }]);
+	seedAgents('b1', ['alpha', 'beta', 'gamma']);
+	useSessionsStore().setSessions([
+		{ sessionId: 's1', sessionKey: 'agent:alpha:main', clawId: 'b1', agentId: 'alpha', updatedAt: 100, bumpedAt: 5000 },
+		{ sessionId: 's2', sessionKey: 'agent:beta:main', clawId: 'b1', agentId: 'beta', updatedAt: 8000, bumpedAt: null },
+		{ sessionId: 's3', sessionKey: 'agent:gamma:main', clawId: 'b1', agentId: 'gamma', updatedAt: null, bumpedAt: 3000 },
+	]);
+	await wrapper.vm.$nextTick();
+
+	const items = wrapper.vm.agentItems;
+	// 排序：beta(8000) > alpha(5000) > gamma(3000)
+	expect(items.map((i) => i.id)).toEqual(['b1:beta', 'b1:alpha', 'b1:gamma']);
+});
+
+test('无活动的 agent 落底部，按 agents.list 自然顺序兜底', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'B1', online: true }]);
+	// 自然顺序：first → second → third
+	seedAgents('b1', ['first', 'second', 'third']);
+	// 只 second 有活动；first / third 都 0 → 应保持声明顺序在底部
+	useSessionsStore().setSessions([
+		{ sessionId: 's', sessionKey: 'agent:second:main', clawId: 'b1', agentId: 'second', updatedAt: 1, bumpedAt: null },
+	]);
+	await wrapper.vm.$nextTick();
+
+	const items = wrapper.vm.agentItems;
+	expect(items.map((i) => i.id)).toEqual(['b1:second', 'b1:first', 'b1:third']);
+});
+
+test('fallback：claw 未连/未加载 agents 时仍显示一个条目（label 单段、无 @）', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([
+		{ id: 'b1', name: 'Alpha', online: true },
+		{ id: 'b2', name: 'Beta', online: false }, // 离线，未 seed agents
+	]);
+	seedAgents('b1', ['main']);
+	await wrapper.vm.$nextTick();
+
+	const fallback = wrapper.vm.agentItems.find((i) => i.id === 'b2');
+	expect(fallback).toBeTruthy();
+	expect(fallback.agentName).toBe('Beta');
+	expect(fallback.clawName).toBeNull();
+});
+
+test('label DOM：多 claw 时渲染 agent + @ + claw 三段，"@" 用 shrink-0', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([
+		{ id: 'b1', name: 'Alpha', online: true },
+		{ id: 'b2', name: 'Beta', online: true },
+	]);
+	// 用 identity 给 agent 一个独立显示名，避免与 clawName 重复被去重
+	seedAgents('b1', [{ id: 'main', resolvedIdentity: { name: 'Helper' } }]);
+	seedAgents('b2', [{ id: 'main', resolvedIdentity: { name: 'Helper' } }]);
+	await wrapper.vm.$nextTick();
+
+	// 第二个 nav 是 agent 列表（Group 2）
+	const agentNav = wrapper.findAll('nav').at(1);
+	const links = agentNav.findAll('a');
+	expect(links.length).toBe(2);
+
+	// 每个 link 的 label 容器内应有：agent span + '@' span + claw span
+	for (const link of links) {
+		const labelHost = link.find('span.flex.flex-1');
+		expect(labelHost.exists()).toBe(true);
+		const segments = labelHost.findAll('span');
+		// segments 包含 labelHost 自身吗？findAll 不含 root
+		// 期望 3 段：agent / @ / claw
+		expect(segments.length).toBe(3);
+		// '@' 段拥有 shrink-0
+		const atSeg = segments.find((s) => s.text() === '@');
+		expect(atSeg).toBeTruthy();
+		expect(atSeg.classes()).toContain('shrink-0');
+		// '@' 用 text-muted 弱化
+		expect(atSeg.classes()).toContain('text-muted');
+		// agent / claw 段都带 truncate
+		const truncated = segments.filter((s) => s.classes().includes('truncate'));
+		expect(truncated.length).toBe(2);
+		// clawName 段（最后一个 truncate）也带 text-muted；agentName 不带
+		const agentSeg = segments[0];
+		const clawSeg = segments[2];
+		expect(agentSeg.classes()).not.toContain('text-muted');
+		expect(clawSeg.classes()).toContain('text-muted');
+	}
+});
+
+test('label DOM：单 claw 时不渲染 "@" 段', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'Solo', online: true }]);
+	seedAgents('b1', ['main']);
+	await wrapper.vm.$nextTick();
+
+	const agentNav = wrapper.findAll('nav').at(1);
+	const link = agentNav.find('a');
+	expect(link.text()).not.toContain('@');
 });
