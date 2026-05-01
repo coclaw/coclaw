@@ -1,5 +1,52 @@
 # @coclaw/ui
 
+## 0.19.0
+
+### Minor Changes
+
+- f201b0a: feat(ui): order MainList agents by recent activity and add @claw suffix
+
+  Agent items in `MainList` are now ordered by their most recent chat activity (descending), with no-activity agents at the bottom in their natural `agents.list` order. Activity comes from two sources merged at sort time: `updatedAt` from `sessions.list` (server truth) and a local `bumpedAt` written at the moment the user calls `sendMessage` / `sendSlashCommand`, so a freshly-active chat floats to the top instantly without waiting for the next `sessions.list` refresh.
+
+  When the user has 2+ claws, agent labels now render as `agentName@clawName` to disambiguate; with a single claw the label stays just `agentName`. The `@` separator never truncates while both `agentName` and `clawName` segments truncate independently when space is tight. To avoid `Alpha@Alpha` duplication when the default agent has no identity (its display name falls back to the claw name), the suffix is dropped when the two would be identical.
+
+  Internally, `sessions.store` switched its data source from `chat.history` (one RPC per agent) to `sessions.list` (one RPC per claw), and item shape gained `updatedAt` and `bumpedAt` fields with a new `bumpActivity(clawId, agentId)` action and `getActivity` getter. Sessions are now grouped from the live list by `agent:<agentId>:` key prefix so orphan sessions count toward the chat's activity too.
+
+### Patch Changes
+
+- ecaddb8: fix(ui): align ChatInput buttons with disabled textarea by removing inline-flex line-box
+
+  The middle wrapper around the chat textarea was a plain block `<div>`. Since the Nuxt UI `UTextarea` root renders as `inline-flex`, the wrapper treated it as inline content and reserved a line box whose height includes the half-leading below the inline element's baseline, making the wrapper render about 5px taller than its child. With the form using `items-end`, the left/right 40px icon buttons looked vertically misaligned with the input box during the loading window when the textarea is disabled.
+
+  Adding `flex` to the middle wrapper makes it a flex container, which does not produce a line box for its children, so its height collapses to the actual `UTextarea` root height (40px) and the columns line up regardless of disabled state.
+
+- 1db595f: refactor(ui): switch claws.store notify to hook injection to avoid dynamic import
+
+  Replace the lazy `import()` of `useNotify` / `i18n` inside `claws.store.js` with a small DI hook (`__registerNotifyHooks`) that mirrors the existing `__registerClawLifecycleHooks` pattern. The store no longer transitively pulls `@nuxt/ui/composables` — whose barrel exposes `#imports` (Node subpath imports) and breaks tests that don't load `@nuxt/ui/vite`. A new `notify-hook-bridge.js` is imported once at app startup to wire the real `useNotify().warning` and `i18n.global.t` implementations. No user-visible behavior change.
+
+- 7aab177: refactor(ui): replace dynamic `import('./platform.js')` in `saveBlobToFile` with a static top-level import
+
+  `utils/platform.js` only reads window globals and has no platform-conditional dependency to defer, so the dynamic import was a leftover style. Aligns with the workspace rule of avoiding dynamic `import()` (capacitor/electron conditional loading remains the only exception). Tests switch from `vi.doMock` + dynamic import to a hoisted state object + getter mock so `isCapacitorApp` can still flip per case. No user-visible behavior change.
+
+- c4c8ad7: refactor(ui): wire notifier from App.vue setup to silence dev `inject` warning
+
+  Previously `notify-hook-bridge.js` auto-registered on import and its hook called `useNotify()` lazily — i.e. inside the remote callback (`onRtcUnrecoverable`, far from any Vue setup). `capacitor-app.js` `handleShareReceived` had the same shape, calling `useNotify()` directly inside the share callback. Vue dev mode emits `inject() can only be used inside setup() or functional components` for both. Production builds are unaffected (the toast state is a plugin-level singleton with a graceful fallback), but the warning is dev-console noise.
+
+  Switch to explicit wiring:
+
+  - `notify-hook-bridge.js` exports `wireNotifyHooks(notifier)` (registers the store hook + remembers the notifier) and `getSharedNotifier()` (null-able accessor for non-setup callbacks).
+  - `App.vue` `setup()` calls `wireNotifyHooks(notify)` once, reusing the `useNotify()` it already invokes for `setGlobalErrorNotify`. This is the single legitimate-timing call.
+  - `main.js` drops the side-effect `import './stores/notify-hook-bridge.js';` (replaced by the explicit `wireNotifyHooks` invocation in App.vue setup).
+  - `capacitor-app.js` `handleShareReceived` uses `getSharedNotifier()?.info(...)` instead of calling `useNotify()` itself; the optional-chain handles the (impossible-in-prod) pre-wire window.
+
+  Behavior is identical: same toast color presets, durations, titles. `wireNotifyHooks` runs synchronously inside `app.mount()`, well before `initCapacitorApp()` and any RTC connection establishment, so callbacks never see a `null` shared notifier in practice.
+
+- e430cb3: fix(ui): notify user when ICE restart budget exhausts with active runs, and rename pre-accept diag logs
+
+  When ICE restart's 180s budget is exhausted and the WebRTC connection is about to be torn down for a rebuild, surface a one-shot toast (only when at least one agent run is still active for that claw) so users learn their tasks may be affected instead of silently seeing "task incomplete" later. Cold-start init failures and other `close({asFailed:true})` paths intentionally do not trigger this notification.
+
+  Also rename pre-acceptance diagnostic remote logs to land under the `agent.run.*` namespace, replacing the previous `chat.preAccept.error` (which collided semantically with the `chat.send` RPC method). New events: `rtc.unrecoverable`, `agent.run.registered`, `agent.run.preaccept-failed`, `agent.run.norun`, `agent.run.send-cancelled`, `agent.run.upload-cancelled`, `agent.run.send-retry`, `agent.run.send-failed`, plus per-pending `conn.rejectPending.detail` lines so future "task incomplete" reports can be located in the send path.
+
 ## 0.18.2
 
 ### Patch Changes

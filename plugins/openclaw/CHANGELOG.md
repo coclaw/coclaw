@@ -1,5 +1,26 @@
 # @coclaw/openclaw-coclaw
 
+## 0.18.0
+
+### Minor Changes
+
+- b032f9d: feat(plugin): unicast DC RPC responses to the originating UI
+
+  Plugin now keeps a `reqId → connId` routing table for UI-forwarded DC RPC requests. When the gateway responds, the plugin sends the response only to the originating UI PC instead of broadcasting to all connected PCs. Falls back to broadcast when the mapping is missing (collision, old UI, upstream introducing a new intermediate status, etc.), so no response is ever lost. Includes a 24h TTL and an hourly sweep to clear stale entries; resets the table on gateway WS close.
+
+### Patch Changes
+
+- e1c1949: fix(plugin): drop duplicate `[pion-ipc]` prefix from local logger output
+
+  `pion-node` SDK already prepends `[pion-ipc] ` to every message handed to its logger callback. The plugin was wrapping that string with another `[pion-ipc] ` prefix, producing gateway log lines like `[pion-ipc] [pion-ipc] [stderr] ...`. Forward the SDK message verbatim so each line carries a single prefix.
+
+- c5d0227: fix(plugin): make rpc send queue a total function and correct single-msg cap accounting
+
+  - Catch `buildChunks` exception inside `RpcSendQueue.send` so a malformed peer SDP (`maxMessageSize <= header`) cannot crash the gateway.
+  - Compare `MAX_SINGLE_MSG_BYTES` against payload bytes instead of frame bytes (which include 5-byte chunk headers), so a payload at the 50 MB receiver cap is no longer falsely dropped.
+  - Wrap all `logger.*` and `remoteLog` calls in safe helpers and validate the input is a string, so `send`/`__drain`/`onBufferedAmountLow` are guaranteed not to throw under any input or downstream-logger fault.
+  - Remove the now-redundant `try/catch` around `q.send` in `webrtc-peer.broadcast`/`sendTo`/files `sendFn`, harden the three `JSON.stringify` call sites against cyclic/BigInt payloads, and propagate the `q.send` return value in `sendTo`.
+
 ## 0.17.9
 
 ### Patch Changes
