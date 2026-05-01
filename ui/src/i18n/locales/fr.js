@@ -8,6 +8,9 @@ export const frMessages = {
 		failed: 'Échec',
 		featureComingSoon: 'Cette fonctionnalité arrive bientôt, restez à l\'écoute',
 	},
+	notify: {
+		rtcUnrecoverable: 'Connexion à {clawName} perdue. {n} tâche(s) peuvent être affectées.',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Ajouter une Claw',

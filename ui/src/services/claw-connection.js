@@ -362,6 +362,10 @@ export class ClawConnection {
 	__rejectAllPending(message, code = 'DC_CLOSED') {
 		if (this.__pending.size) {
 			remoteLog(`conn.rejectPending claw=${this.clawId} count=${this.__pending.size} code=${code}`);
+			// 逐条记录被 reject 的请求 method + reqId，定位"哪条 sendMessage 链路被这次 DC close 打断"
+			for (const [reqId, waiter] of this.__pending) {
+				remoteLog(`conn.rejectPending.detail claw=${this.clawId} method=${waiter.method ?? '?'} reqId=${reqId}`);
+			}
 		}
 		for (const waiter of this.__pending.values()) {
 			this.__cleanupWaiter(waiter);

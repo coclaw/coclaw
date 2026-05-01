@@ -135,6 +135,9 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 */
 		register(runId, { clawId, runKey, topicMode, conn, streamingMsgs = [], anchorMsgId = null }) {
 			console.debug('[agentRuns] register runId=%s runKey=%s clawId=%s', runId, runKey, clawId);
+			// 诊断信号：标记某条 run 真的进了 store 注册表（与 agent.run.end 配对，定位"任务未完成"
+			// 类问题时，这两条同时缺失即意味 run 从未 register 过——根因在 sendMessage pre-accept 链路）
+			remoteLog(`agent.run.registered runId=${runId} runKey=${runKey} clawId=${clawId}`);
 
 			// 清理同一 runKey 的旧 run——先 endRun 唤起 onEnd，避免旧 runAgent 的 finalPromise 泄漏
 			const oldRunId = this.runKeyIndex[runKey];
@@ -234,6 +237,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 						this.__onRpcDone(registeredRunId, rpcResult);
 					} else {
 						// 极罕见：RPC 直接返回 ok=true 但未 accepted
+						remoteLog(`agent.run.norun runKey=${runKey}`);
 						finalResolve({ runId: null, accepted: false, endReason: 'norun' });
 					}
 				},
@@ -242,7 +246,9 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 						// 信号 3：accepted 后 RPC reject
 						this.__onRpcFailed(registeredRunId, err);
 					} else {
-						// pre-acceptance 错误
+						// pre-acceptance 错误：register 之前 RPC 就挂了，无 agent.run.end 配对。
+						// 单独打这条让此前的"零 endRun"盲区被点亮（chat.store sendMessage 不再重复打）
+						remoteLog(`agent.run.preaccept-failed runKey=${runKey} code=${err?.code ?? 'unknown'} msg=${err?.message ?? ''}`);
 						preAcceptError = err;
 						finalResolve(null);
 					}

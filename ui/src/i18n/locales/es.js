@@ -8,6 +8,9 @@ export const esMessages = {
 		failed: 'Error',
 		featureComingSoon: 'Esta función estará disponible próximamente, ¡estate atento!',
 	},
+	notify: {
+		rtcUnrecoverable: 'Se perdió la conexión con {clawName}. {n} tarea(s) pueden verse afectadas.',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Agregar Claw',

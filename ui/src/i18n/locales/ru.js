@@ -8,6 +8,9 @@ export const ruMessages = {
 		failed: 'Ошибка',
 		featureComingSoon: 'Эта функция скоро появится, следите за обновлениями',
 	},
+	notify: {
+		rtcUnrecoverable: 'Соединение с {clawName} прервано. Затронутых задач: {n}.',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Добавить Claw',

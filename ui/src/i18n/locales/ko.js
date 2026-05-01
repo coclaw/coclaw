@@ -8,6 +8,9 @@ export const koMessages = {
 		failed: '실패',
 		featureComingSoon: '이 기능은 곧 제공될 예정입니다. 기대해 주세요',
 	},
+	notify: {
+		rtcUnrecoverable: '{clawName}와(과)의 연결이 끊겼습니다. {n}개의 작업에 영향이 있을 수 있습니다',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Claw 추가',

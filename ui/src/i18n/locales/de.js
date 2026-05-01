@@ -8,6 +8,9 @@ export const deMessages = {
 		failed: 'Fehlgeschlagen',
 		featureComingSoon: 'Diese Funktion kommt bald, bleib gespannt',
 	},
+	notify: {
+		rtcUnrecoverable: 'Verbindung zu {clawName} verloren. {n} Aufgabe(n) könnten betroffen sein.',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Claw hinzufügen',

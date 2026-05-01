@@ -1087,7 +1087,9 @@ describe('useChatStore', () => {
 			expect(result.reason).toMatchObject({ code: 'PRE_ACCEPTANCE_TIMEOUT' });
 			expect(store.sending).toBe(false);
 			// 远程日志保证可观测：未来同类异常（含 wire 层丢包导致超时）能在远端被发现
-			expect(remoteLogCalls.find((t) => t.startsWith('chat.preAccept.error') && t.includes('code=PRE_ACCEPTANCE_TIMEOUT'))).toBeTruthy();
+			// PRE_ACCEPTANCE_TIMEOUT 是本层 180s 看门狗触发，runAgent 的主 RPC（timeout=0）
+			// 此时仍在后台，不会立刻打 agent.run.preaccept-failed；本层留 agent.run.send-failed 作兜底
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.send-failed') && t.includes('code=PRE_ACCEPTANCE_TIMEOUT'))).toBeTruthy();
 		});
 
 		test('post-acceptance 24h 兜底：accepted 后 run 由 agent-runs.store 内 24h timer 清理', async () => {
@@ -2066,6 +2068,8 @@ describe('useChatStore', () => {
 
 			expect(result.accepted).toBe(true);
 			// 纯文本不触发 onFileUploaded，但关键是不报错
+			// 诊断信号：第一次失败的断连分支应打 agent.run.send-retry
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.send-retry') && t.includes('code=DC_CLOSED'))).toBeTruthy();
 		});
 
 		test('取消发送（上传阶段）：无本地消息、清理 fileUploadState', async () => {
@@ -2105,6 +2109,8 @@ describe('useChatStore', () => {
 			// 上传阶段取消：不应有本地消息（乐观消息尚未创建）
 			expect(store.messages.some((m) => m._local)).toBe(false);
 			expect(store.fileUploadState).toBeNull();
+			// 诊断信号：上传被取消的分支应打 agent.run.upload-cancelled
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.upload-cancelled'))).toBeTruthy();
 		});
 
 		// event:agent 监听器已由 clawsStore.__bridgeConn 集中管理
@@ -3513,6 +3519,34 @@ describe('useChatStore', () => {
 			expect(store.messages).toHaveLength(1);
 			expect(store.clawId).toBe('1');
 			expect(store.chatSessionKey).toBe('agent:main:main');
+		});
+
+		test('cleanup 在 in-flight sendMessage 上触发 USER_CANCELLED → 打 agent.run.send-cancelled', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			// 让 agent RPC 永远 pending —— 让 sendMessage 卡在 Promise.race 等 cancelPromise 触发
+			conn.request.mockImplementation((method) => {
+				if (method === 'agent') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const sendPromise = store.sendMessage('hello');
+			// 等到 __cancelReject 已就位
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+
+			// cleanup 路径：触发 __cancelReject(USER_CANCELLED) → catch 走 send-cancelled 分支
+			store.cleanup();
+			const result = await sendPromise;
+			expect(result).toEqual({ accepted: false });
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.send-cancelled') && t.includes('accepted=false'))).toBeTruthy();
 		});
 	});
 

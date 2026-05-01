@@ -601,6 +601,7 @@ export function createChatStore(storeKey, opts = {}) {
 
 					// 文件上传被取消（cancelSend 在上传阶段触发）：视同用户取消
 					if (err?.code === 'ERR_CANCELED' && !this.__accepted) {
+						remoteLog(`agent.run.upload-cancelled runKey=${this.runKey}`);
 						this.sending = false;
 						this.fileUploadState = null;
 						this.__removeLocalEntries();
@@ -608,6 +609,7 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 					// 用户主动取消
 					if (err?.code === 'USER_CANCELLED') {
+						remoteLog(`agent.run.send-cancelled runKey=${this.runKey} accepted=${this.__accepted}`);
 						this.sending = false;
 						if (this.__streamingTimer) {
 							clearTimeout(this.__streamingTimer);
@@ -622,6 +624,7 @@ export function createChatStore(storeKey, opts = {}) {
 					// 断连且尚未 accepted：自动重试一次（内层 request() 会等待连接恢复）
 					if (isDisconnectError(err) && !this.__accepted && !this.__retried) {
 						console.debug('[chat] dc closed before accepted, retrying sendMessage');
+						remoteLog(`agent.run.send-retry runKey=${this.runKey} code=${err?.code}`);
 						this.__cleanupStreaming();
 						this.sending = false;
 						this.__retried = true;
@@ -634,10 +637,11 @@ export function createChatStore(storeKey, opts = {}) {
 							this.__retried = false;
 						}
 					}
-					// pre-acceptance 其它错误：清理并抛。
-					// 远程日志这里很关键：超时（PRE_ACCEPTANCE_TIMEOUT）/wire 层丢包等都落到这里，
-					// 没这条 log 时一旦发生只能从 sending=false + 终止按钮消失反推，无从定位。
-					remoteLog(`chat.preAccept.error runKey=${this.runKey} code=${err?.code ?? 'unknown'} msg=${err?.message ?? ''}`);
+					// pre-acceptance 其它错误（PRE_ACCEPTANCE_TIMEOUT、retry 也失败的 isDisconnectError、
+					// 未知错误）：清理并抛。注意 PRE_ACCEPTANCE_TIMEOUT 是本层 180s 看门狗触发，
+					// 此时 runAgent 内的主 RPC（timeout=0）仍在后台挂着，
+					// 不会立刻触发 agent-runs.store 的 agent.run.preaccept-failed，所以这条 log 必须留
+					remoteLog(`agent.run.send-failed runKey=${this.runKey} code=${err?.code ?? 'unknown'} msg=${err?.message ?? ''}`);
 					this.__cleanupStreaming();
 					this.sending = false;
 					this.fileUploadState = null;

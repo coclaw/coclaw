@@ -1544,6 +1544,39 @@ describe('initRtc — RTC 建连', () => {
 		}
 	});
 
+	test('initRtc 把 callbacks.onRtcUnrecoverable 接入到 rtc 实例上', async () => {
+		const origRTC = globalThis.RTCPeerConnection;
+		globalThis.RTCPeerConnection = MockRTCPeerConnection;
+		const { httpClient } = await import('./http.js');
+		const mockGet = vi.spyOn(httpClient, 'get').mockResolvedValue({ data: MOCK_TURN_CREDS });
+
+		const clawConn = createMockBotConn();
+		const onRtcUnrecoverable = vi.fn();
+
+		try {
+			const p = initRtc('bot-wire', clawConn, { onRtcUnrecoverable });
+			await vi.advanceTimersByTimeAsync(0);
+			const rtc = __getRtcInstance('bot-wire');
+			expect(rtc.onUnrecoverable).toBe(onRtcUnrecoverable);
+
+			// 不传 callback 时应回退为 null（向后兼容）
+			rtc.close();
+			await p.catch(() => {});
+
+			const clawConn2 = createMockBotConn();
+			const p2 = initRtc('bot-wire2', clawConn2);
+			await vi.advanceTimersByTimeAsync(0);
+			const rtc2 = __getRtcInstance('bot-wire2');
+			expect(rtc2.onUnrecoverable).toBeNull();
+			rtc2.close();
+			await p2.catch(() => {});
+		}
+		finally {
+			globalThis.RTCPeerConnection = origRTC;
+			mockGet.mockRestore();
+		}
+	});
+
 	test('connect 期间 rtc 被 close(asFailed) → resolve failed 且从 rtcInstances 移除', async () => {
 		const origRTC = globalThis.RTCPeerConnection;
 		globalThis.RTCPeerConnection = MockRTCPeerConnection;
@@ -2864,6 +2897,98 @@ describe('WebRtcConnection — ICE restart', () => {
 		expect(rtc.__rpcChannel).toBeNull();
 		expect(mockSendSignaling).toHaveBeenCalledWith('bot1', 'rtc:closed');
 
+		rtc.close();
+	});
+
+	test('时间预算耗尽 → 打 rtc.unrecoverable 诊断信号 + 触发 onUnrecoverable 回调（一次）', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const onUnrecoverable = vi.fn();
+
+		const { rtc, pc } = await setupConnectedRtc();
+		// 把回调挂到 rtc 实例上（生产路径走 initRtc 的 callbacks.onRtcUnrecoverable）
+		rtc.onUnrecoverable = onUnrecoverable;
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+
+		await vi.advanceTimersByTimeAsync(180_000);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('failed');
+
+		const calls = remoteLog.mock.calls.map((c) => String(c[0]));
+		expect(calls.some((t) => t.startsWith('rtc.unrecoverable') && t.includes('claw=bot1'))).toBe(true);
+		expect(onUnrecoverable).toHaveBeenCalledTimes(1);
+
+		rtc.close();
+	});
+
+	test('其它 close({asFailed:true}) 路径（dc.onclose / init 超时等）不触发 onUnrecoverable', async () => {
+		const onUnrecoverable = vi.fn();
+		const { rtc } = await setupConnectedRtc();
+		rtc.onUnrecoverable = onUnrecoverable;
+
+		// 直接走 close({asFailed:true}) 通用路径——不应触发 unrecoverable hook（此 hook 仅 ICE 预算耗尽专用）
+		rtc.close({ asFailed: true });
+		expect(rtc.state).toBe('failed');
+		expect(onUnrecoverable).not.toHaveBeenCalled();
+	});
+
+	test('预算耗尽 await 期间被 pauseRestart 冻结 → 不触发 onUnrecoverable + 不 close', async () => {
+		const onUnrecoverable = vi.fn();
+		const { rtc, pc } = await setupConnectedRtc();
+		rtc.onUnrecoverable = onUnrecoverable;
+
+		// 进入 restarting + 装作 startTime 已超预算（避开真实推进 180s + 多轮 safety timer 串扰）
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(rtc.state).toBe('restarting');
+		rtc.__restartStartTime = Date.now() - 200_000;
+
+		// 直接进入 budget exhaust 分支；__attemptRestart 内部 await Promise.race(dumpStats, sleep 500)
+		// 同步段执行到 await 后即把控制权交还给当前 task
+		const attemptPromise = rtc.__attemptRestart('budget-exhaust-test');
+		// 此时 attempt 处于 await 中；epoch 仍为 entry epoch
+		const epochBefore = rtc.__restartEpoch;
+
+		// 同步 pauseRestart：递增 epoch + 标记 paused，但保留 __state='restarting'
+		rtc.pauseRestart();
+		expect(rtc.__restartPaused).toBe(true);
+		expect(rtc.__restartEpoch).toBe(epochBefore + 1);
+		expect(rtc.state).toBe('restarting');
+
+		// 让 await 完成（500ms sleep 或 dumpStats 任一胜出 → 微任务 flush）
+		await vi.advanceTimersByTimeAsync(500);
+		await attemptPromise;
+
+		// guard 应拦下：不打 hook、不 close（state 仍为 restarting，留给后续 resume）
+		expect(onUnrecoverable).not.toHaveBeenCalled();
+		expect(rtc.state).toBe('restarting');
+
+		rtc.close();
+	});
+
+	test('rtc.unrecoverable hook 抛异常时被 catch + close 仍正常进行', async () => {
+		const onUnrecoverable = vi.fn(() => { throw new Error('hook boom'); });
+		const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const { rtc, pc } = await setupConnectedRtc();
+		rtc.onUnrecoverable = onUnrecoverable;
+
+		pc.connectionState = 'failed';
+		pc.onconnectionstatechange();
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(180_000);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(onUnrecoverable).toHaveBeenCalledTimes(1);
+		// hook 抛错被 try/catch 吞掉，close({asFailed:true}) 仍执行 → state=failed
+		expect(rtc.state).toBe('failed');
+		expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('onUnrecoverable hook err'), expect.any(Error));
+
+		consoleSpy.mockRestore();
 		rtc.close();
 	});
 

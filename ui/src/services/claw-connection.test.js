@@ -668,6 +668,38 @@ describe('ClawConnection – __rejectAllPending', () => {
 		await expect(p2).rejects.toMatchObject({ code: 'TEST_CODE' });
 		expect(conn.__pending.size).toBe(0);
 	});
+
+	test('每条 pending 单独打 conn.rejectPending.detail（含 method + reqId）', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const { conn } = makeRtcReady();
+		const p1 = conn.request('foo');
+		const p2 = conn.request('bar');
+		p1.catch(() => {}); p2.catch(() => {});
+
+		conn.__rejectAllPending('rtc lost', 'DC_CLOSED');
+
+		const calls = remoteLog.mock.calls.map((c) => String(c[0]));
+		expect(calls).toContain('conn.rejectPending claw=bot1 count=2 code=DC_CLOSED');
+		// detail 行须含 method、reqId（reqId 形如 ui-<uuid>-<seq>），用 regex 锚定，避免有人未来误删 reqId 字段
+		const detailRe = /^conn\.rejectPending\.detail claw=bot1 method=(foo|bar) reqId=ui-[0-9a-f-]+-\d+$/;
+		const details = calls.filter((t) => t.startsWith('conn.rejectPending.detail'));
+		expect(details).toHaveLength(2);
+		for (const d of details) expect(d).toMatch(detailRe);
+		// 确保 method 两个值都覆盖到
+		expect(details.some((t) => t.includes('method=foo'))).toBe(true);
+		expect(details.some((t) => t.includes('method=bar'))).toBe(true);
+	});
+
+	test('__rejectAllPending 空 pending 时不打 detail', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const { conn } = makeRtcReady();
+		conn.__rejectAllPending('no-op', 'DC_CLOSED');
+
+		const calls = remoteLog.mock.calls.map((c) => String(c[0]));
+		expect(calls.some((t) => t.startsWith('conn.rejectPending'))).toBe(false);
+	});
 });
 
 describe('ClawConnection – waitReady() 取消支持 (AbortSignal)', () => {

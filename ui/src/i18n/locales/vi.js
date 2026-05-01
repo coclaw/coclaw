@@ -8,6 +8,9 @@ export const viMessages = {
 		failed: 'Thất bại',
 		featureComingSoon: 'Tính năng này sắp ra mắt, hãy đón chờ',
 	},
+	notify: {
+		rtcUnrecoverable: 'Mất kết nối với {clawName}. {n} tác vụ có thể bị ảnh hưởng.',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Thêm Claw',

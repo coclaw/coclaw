@@ -8,6 +8,9 @@ export const jaMessages = {
 		failed: '失敗しました',
 		featureComingSoon: 'この機能は近日公開予定です。お楽しみに',
 	},
+	notify: {
+		rtcUnrecoverable: '「{clawName}」との接続が切断されました。{n} 件のタスクに影響が出る可能性があります',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Clawを追加',

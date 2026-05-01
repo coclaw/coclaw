@@ -85,6 +85,7 @@ const RTC_TRANSPORT_TIMEOUT_MS = 15_000;
  * @param {import('./claw-connection.js').ClawConnection} clawConn
  * @param {object} [callbacks]
  * @param {(state: string, transportInfo: object|null) => void} [callbacks.onRtcStateChange] - RTC 状态变更
+ * @param {() => void} [callbacks.onRtcUnrecoverable] - ICE restart 预算耗尽、即将 PC rebuild 时触发一次（窄于 state==='failed'，仅覆盖此路径，用于 UI 通知用户连接已彻底中断）
  * @returns {Promise<'rtc'|'failed'>}
  */
 export function initRtc(clawId, clawConn, callbacks = {}) {
@@ -120,6 +121,11 @@ export function initRtc(clawId, clawConn, callbacks = {}) {
 			clearTimeout(fallbackTimer);
 			clawConn.setRtc(rtc);
 		};
+
+		// 仅在 ICE restart 180s 预算耗尽、即将 PC rebuild 时触发一次（rtc.unrecoverable）。
+		// 比 state==='failed' 窄：init 超时 / dc.onclose / createOffer 异常等其他 close-as-failed
+		// 路径不进此回调，避免冷启动重连场景反复弹 notify。
+		rtc.onUnrecoverable = callbacks.onRtcUnrecoverable ?? null;
 
 		// 状态变更 → 通知调用方
 		rtc.onStateChange = () => {
@@ -266,6 +272,8 @@ export class WebRtcConnection {
 		this.onStateChange = null;
 		/** @type {function|null} DataChannel 可用回调（通知外部传输选择） */
 		this.onReady = null;
+		/** @type {function|null} ICE restart 预算耗尽即将 close({asFailed:true}) 时触发一次（窄于 state==='failed'） */
+		this.onUnrecoverable = null;
 	}
 
 	/** @private 重置本地 candidate 类型计数器 */
@@ -1136,6 +1144,19 @@ export class WebRtcConnection {
 			// 500ms 窗内已完成的在途 poll tick 可能已把 state 切到 connected（且清过 restart
 			// 状态）；此时不应再 close({asFailed:true}) 把合法的 connected 覆盖成 failed
 			if (this.__state !== 'restarting') return;
+			// 500ms await 期间可能被 pauseRestart 冻结（sig offline / claw offline），
+			// 它递增 epoch 但保留 __state='restarting' 留给 resume；此处必须用 epoch + paused
+			// 守门，避免越过 pause 屏障调 onUnrecoverable + close({asFailed:true})
+			if (this.__restartPaused || this.__restartEpoch !== epochAtEntry) {
+				this.__log('debug', 'restart-timeout dropped (paused/epoch)');
+				return;
+			}
+			// 诊断信号 + UI notify hook：仅在真正放弃 restart、即将 PC rebuild 时触发一次。
+			// 选这里而不是 close({asFailed:true}) 全集，是为了避开冷启动 init 超时、dc.onclose、
+			// createOffer 异常等其他 asFailed 路径——那些场景下 PC 从未连过，没必要打扰用户
+			remoteLog(`rtc.unrecoverable claw=${this.clawId} attempts=${this.__restartAttemptCount}`);
+			try { this.onUnrecoverable?.(); }
+			catch (e) { console.error('[rtc] onUnrecoverable hook err:', e); }
 			this.close({ asFailed: true });
 			return;
 		}

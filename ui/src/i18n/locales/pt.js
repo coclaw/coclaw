@@ -8,6 +8,9 @@ export const ptMessages = {
 		failed: 'Falhou',
 		featureComingSoon: 'Esta funcionalidade está em breve, fique ligado',
 	},
+	notify: {
+		rtcUnrecoverable: 'Conexão com {clawName} perdida. {n} tarefa(s) podem ser afetadas.',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Adicionar Claw',

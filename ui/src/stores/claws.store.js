@@ -5,6 +5,23 @@ import { BRIEF_DISCONNECT_MS } from '../services/claw-connection.js';
 import { initRtc, closeRtcForClaw } from '../services/webrtc-connection.js';
 import { remoteLog } from '../services/remote-log.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
+import { useAgentRunsStore } from './agent-runs.store.js';
+
+// useNotify / i18n 故意走"懒"路径——它们走 @nuxt/ui 的 useToast 桶口，
+// 桶口会把所有 composable 都拉进来（含 useResizable 那种依赖 '#imports' 的）。
+// 直接 import 会让所有 transitively 引到 claws.store 的测试套件都炸——
+// 而 onRtcUnrecoverable 是低频回调，懒加载完全够用。
+let _notifier = null;
+let _i18nMod = null;
+async function getNotifyDeps() {
+	if (!_notifier || !_i18nMod) {
+		[_notifier, _i18nMod] = await Promise.all([
+			import('../composables/use-notify.js'),
+			import('../i18n/index.js'),
+		]);
+	}
+	return { useNotify: _notifier.useNotify, i18n: _i18nMod.i18n };
+}
 
 // claw 生命周期回调（由 claw-lifecycle.js 注册，避免静态循环依赖）
 const _lifecycle = {
@@ -835,6 +852,29 @@ export const useClawsStore = defineStore('claws', {
 		/** 构建 RTC 回调（store 侧状态同步） */
 		__rtcCallbacks(clawId) {
 			return {
+				// ICE restart 180s 预算耗尽、即将 PC rebuild 时触发一次。
+				// 仅当该 claw 上仍有未结束的 agent run 时才 notify——否则连接断了再连上用户无感，
+				// 弹提示反而是无意义打扰；rtc.unrecoverable remoteLog 已独立打过，分析侧不丢信号
+				onRtcUnrecoverable: async () => {
+					const claw = this.byId[clawId];
+					if (!claw) return;
+					const runs = useAgentRunsStore().runs;
+					let activeCount = 0;
+					for (const r of Object.values(runs)) {
+						if (r.clawId === clawId && !r.ended) activeCount++;
+					}
+					if (activeCount === 0) return;
+					const clawName = claw.name || clawId;
+					try {
+						const { useNotify, i18n } = await getNotifyDeps();
+						useNotify().warning({
+							title: i18n.global.t('notify.rtcUnrecoverable', { clawName, n: activeCount }),
+						});
+					}
+					catch (err) {
+						console.error('[claws] onRtcUnrecoverable notify failed:', err);
+					}
+				},
 				onRtcStateChange: (state, transportInfo) => {
 					const claw = this.byId[clawId];
 					if (!claw) return;

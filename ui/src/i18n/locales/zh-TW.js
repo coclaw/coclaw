@@ -8,6 +8,9 @@ export const zhTWMessages = {
 		failed: '失敗',
 		featureComingSoon: '功能建設中，敬請關注',
 	},
+	notify: {
+		rtcUnrecoverable: '與「{clawName}」的連線已中斷，{n} 個任務可能受影響',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: '新增 Claw',

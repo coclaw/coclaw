@@ -8,6 +8,9 @@ export const hiMessages = {
 		failed: 'विफल',
 		featureComingSoon: 'यह फीचर जल्द आने वाला है, बने रहें',
 	},
+	notify: {
+		rtcUnrecoverable: '{clawName} से कनेक्शन टूट गया। {n} कार्य प्रभावित हो सकते हैं।',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Claw जोड़ें',

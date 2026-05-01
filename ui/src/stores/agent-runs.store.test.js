@@ -183,6 +183,58 @@ describe('useAgentRunsStore', () => {
 
 			expect(conn.on).not.toHaveBeenCalled();
 		});
+
+		test('注册时打 agent.run.registered 诊断信号（含 runId/runKey/clawId）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store, { runId: 'run-X', runKey: 'k-X', clawId: 'cl-X' });
+
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.registered'))).toBe(
+				'agent.run.registered runId=run-X runKey=k-X clawId=cl-X',
+			);
+		});
+	});
+
+	// =====================================================================
+	// runAgent — pre-acceptance 诊断信号
+	// =====================================================================
+
+	describe('runAgent pre-acceptance', () => {
+		test('preAcceptError 分支打 agent.run.preaccept-failed（带 code/msg）', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+			const promise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k-pre', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			// 不触发 onAccepted，直接 reject 主 RPC（模拟 DC 断 / RTC_LOST）
+			const err = new Error('connection closed');
+			err.code = 'DC_CLOSED';
+			ctrl.finalReject(err);
+
+			await expect(promise).rejects.toMatchObject({ code: 'DC_CLOSED' });
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.preaccept-failed'))).toBe(
+				'agent.run.preaccept-failed runKey=k-pre code=DC_CLOSED msg=connection closed',
+			);
+		});
+
+		test('norun 分支（RPC ok=true 但未 accepted）打 agent.run.norun', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+			const promise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k-norun', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			// 直接 resolve 主 RPC，不触发 onAccepted —— 极罕见的 norun 路径
+			ctrl.finalResolve({ status: 'ok' });
+
+			const result = await promise;
+			expect(result).toEqual({ runId: null, accepted: false, endReason: 'norun' });
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.norun'))).toBe(
+				'agent.run.norun runKey=k-norun',
+			);
+		});
 	});
 
 	// =====================================================================

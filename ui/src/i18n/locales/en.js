@@ -8,6 +8,9 @@ export const enMessages = {
 		failed: 'Failed',
 		featureComingSoon: 'This feature is coming soon, stay tuned',
 	},
+	notify: {
+		rtcUnrecoverable: 'Connection to {clawName} lost. {n} task(s) may be affected.',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Add Claw',

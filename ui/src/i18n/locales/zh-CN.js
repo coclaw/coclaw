@@ -8,6 +8,9 @@ export const zhCNMessages = {
 		failed: '失败',
 		featureComingSoon: '功能建设中，敬请关注',
 	},
+	notify: {
+		rtcUnrecoverable: '与「{clawName}」的连接已中断，{n} 个任务可能受影响',
+	},
 	layout: {
 		productName: 'CoClaw',
 		addClaw: '添加 Claw',
