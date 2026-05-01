@@ -10,6 +10,15 @@
  * - close()：DC 关闭时调用，清空队列并汇总 drop 统计
  *
  * 不做：Promise 送达保证；单条消息硬上限内的背压；自动重试。
+ *
+ * 契约（重要，修改 send/__drain/onBufferedAmountLow 时务必维持）：
+ * send/__drain/onBufferedAmountLow 必须是「总函数」——任何分支都不得抛异常给调用方。
+ * 这是上游（webrtc-peer 的 broadcast/sendTo/files sendFn）能去掉 try/catch 的前提。
+ * 队列内部所有外部调用（buildChunks、dc.send、logger.*、remoteLog 等）都必须就地保护，
+ * 失败转化为 dropped 计数 / 静默吞掉，返回 false。日志输出统一走 __safeWarn / __safeInfo /
+ * __safeRemoteLog，避免外部传入的 logger 实现自身抛异常时破坏契约。
+ * 入参防御：jsonStr 必须是 string；非 string 直接 drop，避免 Buffer.byteLength 抛 TypeError。
+ * 仅构造器允许抛（参数校验，初始化期），运行期入口都不允许。
  */
 
 import { buildChunks } from './dc-chunking.js';
@@ -64,20 +73,44 @@ export class RpcSendQueue {
 	send(jsonStr) {
 		if (this.closed || this.dc.readyState !== 'open') return false;
 
+		// 入参防御：契约要求 jsonStr 是 string；非 string 直接 drop（避免 Buffer.byteLength 抛 TypeError）
+		if (typeof jsonStr !== 'string') {
+			this.droppedCount += 1;
+			this.__safeWarn(`drop reason=non-string-input type=${typeof jsonStr}`);
+			return false;
+		}
+
 		// 诊断日志：打印每次入队的事件，跟踪 gateway 还会推哪些事件
 		// 需要时临时打开，平时保持注释避免日志噪音
-		// this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] send-payload ${jsonStr}`);
+		// this.__safeInfo(`send-payload ${jsonStr}`);
 
-		const chunks = buildChunks(jsonStr, this.maxMessageSize, this.getNextMsgId);
-		const totalBytes = chunks
-			? chunks.reduce((n, c) => n + c.length, 0)
-			: Buffer.byteLength(jsonStr, 'utf8');
+		// payload 字节：UTF-8 实际字节数，与对端 reassembly 上限同口径
+		const payloadBytes = Buffer.byteLength(jsonStr, 'utf8');
 
-		// 硬上限：单条超限
-		if (totalBytes > MAX_SINGLE_MSG_BYTES) {
+		// 分片：异常需在 send 内吃掉，避免抛回 gateway 主循环（plugin 硬约束）
+		let chunks;
+		try {
+			chunks = buildChunks(jsonStr, this.maxMessageSize, this.getNextMsgId);
+		} catch (err) {
 			this.droppedCount += 1;
-			this.droppedBytes += totalBytes;
-			this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] drop reason=single-msg-oversize size=${totalBytes} cap=${MAX_SINGLE_MSG_BYTES}`);
+			this.droppedBytes += payloadBytes;
+			const errMsg = err?.message ?? String(err);
+			this.__safeWarn(`drop reason=build-chunks-failed size=${payloadBytes} maxMessageSize=${this.maxMessageSize} err=${errMsg}`);
+			this.__safeRemoteLog(`rpc-queue.build-chunks-failed${this.__tagSuffix()} size=${payloadBytes} maxMessageSize=${this.maxMessageSize} err=${errMsg}`);
+			return false;
+		}
+
+		// 帧字节：含 5 字节 header 的实际网络字节，用于队列核算
+		const frameBytes = chunks
+			? chunks.reduce((n, c) => n + c.length, 0)
+			: payloadBytes;
+
+		// 硬上限：单条超限——按 payload 字节判断，对齐对端 reassembly payload 上限
+		// （帧字节因 header 累计可能在 payload 恰好不超时被误判 drop）
+		if (payloadBytes > MAX_SINGLE_MSG_BYTES) {
+			this.droppedCount += 1;
+			this.droppedBytes += frameBytes;
+			this.__safeWarn(`drop reason=single-msg-oversize size=${payloadBytes} cap=${MAX_SINGLE_MSG_BYTES}`);
 			return false;
 		}
 
@@ -87,13 +120,13 @@ export class RpcSendQueue {
 		// 仍受 50MB 单条硬上限约束（接收端重组上限，超过也无意义）。
 		if (this.queueBytes >= MAX_QUEUE_BYTES && !isAgentRunResponse(jsonStr)) {
 			this.droppedCount += 1;
-			this.droppedBytes += totalBytes;
+			this.droppedBytes += frameBytes;
 			// 仅状态翻转点打 log（warn + remoteLog 各一次）；overflow 持续期间所有 drop 静默累加，
 			// 避免 UI 离线 + ICE 失败导致 DC 永远不 drain 时的日志刷屏
 			if (!this.queueOverflowActive) {
 				this.queueOverflowActive = true;
-				this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] overflow-start queueBytes=${this.queueBytes}`);
-				remoteLog(`rpc-queue.overflow-start${this.__tagSuffix()} queueBytes=${this.queueBytes}`);
+				this.__safeWarn(`overflow-start queueBytes=${this.queueBytes}`);
+				this.__safeRemoteLog(`rpc-queue.overflow-start${this.__tagSuffix()} queueBytes=${this.queueBytes}`);
 			}
 			return false;
 		}
@@ -107,7 +140,7 @@ export class RpcSendQueue {
 					this.dc.send(jsonStr);
 					return true;
 				} catch (err) {
-					this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] fast-path send failed: ${err?.message}`);
+					this.__safeWarn(`fast-path send failed: ${err?.message}`);
 					return false;
 				}
 			}
@@ -128,7 +161,7 @@ export class RpcSendQueue {
 					this.dc.send(chunks[i]);
 					i += 1;
 				} catch (err) {
-					this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] fast-path send failed at chunk ${i}/${chunks.length}: ${err?.message}`);
+					this.__safeWarn(`fast-path send failed at chunk ${i}/${chunks.length}: ${err?.message}`);
 					return false;
 				}
 			}
@@ -158,7 +191,7 @@ export class RpcSendQueue {
 		this.queueBytes = 0;
 		this.queueOverflowActive = false;
 		if (this.droppedCount > 0 || residual > 0) {
-			remoteLog(`rpc-queue.close${this.__tagSuffix()} dropped=${this.droppedCount} droppedBytes=${this.droppedBytes} residualChunks=${residual} residualBytes=${residualBytes}`);
+			this.__safeRemoteLog(`rpc-queue.close${this.__tagSuffix()} dropped=${this.droppedCount} droppedBytes=${this.droppedBytes} residualChunks=${residual} residualBytes=${residualBytes}`);
 		}
 	}
 
@@ -173,7 +206,7 @@ export class RpcSendQueue {
 			try {
 				dc.send(item.data);
 			} catch (err) {
-				this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] drain send failed: ${err?.message}`);
+				this.__safeWarn(`drain send failed: ${err?.message}`);
 				return; // 保留队列，等 onclose 统一清理
 			}
 			this.queue.shift();
@@ -181,8 +214,8 @@ export class RpcSendQueue {
 			// 满 → 未满 状态转换：打一条带累计数的 log，与 overflow-start 对称
 			if (this.queueOverflowActive && this.queueBytes < MAX_QUEUE_BYTES) {
 				this.queueOverflowActive = false;
-				this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] overflow-end dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`);
-				remoteLog(`rpc-queue.overflow-end${this.__tagSuffix()} dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`);
+				this.__safeInfo(`overflow-end dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`);
+				this.__safeRemoteLog(`rpc-queue.overflow-end${this.__tagSuffix()} dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`);
 			}
 		}
 	}
@@ -190,6 +223,24 @@ export class RpcSendQueue {
 	/** @private */
 	__tagSuffix() {
 		return this.tag ? ` ${this.tag}` : '';
+	}
+
+	/**
+	 * @private logger.warn 安全包装：吃掉 logger 自身抛的异常，保护 send/__drain 的 no-throw 契约
+	 * @param {string} msg
+	 */
+	__safeWarn(msg) {
+		try { this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] ${msg}`); } catch { /* logger 自身坏了也不能让 send 抛 */ }
+	}
+
+	/** @private 同 __safeWarn，info 级别 */
+	__safeInfo(msg) {
+		try { this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] ${msg}`); } catch { /* logger 自身坏了也不能让 send 抛 */ }
+	}
+
+	/** @private remoteLog 安全包装：吃掉 remoteLog 自身抛的异常 */
+	__safeRemoteLog(text) {
+		try { remoteLog(text); } catch { /* remoteLog 通道坏了也不能让 send 抛 */ }
 	}
 }
 

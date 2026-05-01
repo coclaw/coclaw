@@ -110,39 +110,44 @@ export class WebRtcPeer {
 
 	/** 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 RpcSendQueue 流控） */
 	broadcast(payload) {
-		const jsonStr = JSON.stringify(payload);
-		for (const [connId, session] of this.__sessions) {
+		let jsonStr;
+		try {
+			jsonStr = JSON.stringify(payload);
+		} catch (err) {
+			// 循环引用 / BigInt 等导致 stringify 抛——记日志后整条丢弃，不冒到 gateway
+			this.__logDebug(`broadcast stringify failed: ${err?.message}`);
+			return;
+		}
+		if (typeof jsonStr !== 'string') return; // payload 是 undefined/symbol 时 stringify 返回 undefined
+		for (const session of this.__sessions.values()) {
 			const q = session.rpcSendQueue;
 			if (q && session.rpcChannel?.readyState === 'open') {
-				try {
-					q.send(jsonStr);
-				} catch (err) {
-					// buildChunks 抛（maxMessageSize 配置错）等罕见情况
-					this.__logDebug(`[${connId}] broadcast send failed: ${err.message}`);
-				}
+				q.send(jsonStr);
 			}
 		}
 	}
 
 	/**
 	 * 向指定 connId 的 rpc DC 单播一个 JSON 帧（不走 server 中转）。
-	 * 若 session/DC 未就绪返回 false，由调用方决定是否重试。
+	 * 若 session/DC 未就绪或被发送队列拒收（队列满等）返回 false，由调用方决定是否重试。
 	 * @param {string} connId
 	 * @param {object} payload - 完整的 JSON 帧（通常是 { type: 'event', event, payload }）
-	 * @returns {boolean} true=已入队发送，false=未能发送（session 不存在 / DC 未 open）
+	 * @returns {boolean} true=已入队发送；false=session 不存在 / DC 未 open / payload 不可序列化 / 发送队列拒收
 	 */
 	sendTo(connId, payload) {
 		const session = this.__sessions.get(connId);
 		if (!session) return false;
 		const q = session.rpcSendQueue;
 		if (!q || session.rpcChannel?.readyState !== 'open') return false;
+		let jsonStr;
 		try {
-			q.send(JSON.stringify(payload));
-			return true;
+			jsonStr = JSON.stringify(payload);
 		} catch (err) {
-			this.__logDebug(`[${connId}] sendTo failed: ${err.message}`);
+			this.__logDebug(`[${connId}] sendTo stringify failed: ${err?.message}`);
 			return false;
 		}
+		if (typeof jsonStr !== 'string') return false;
+		return q.send(jsonStr);
 	}
 
 	async __handleOffer(msg) {
@@ -520,11 +525,15 @@ export class WebRtcPeer {
 				if (payload.method?.startsWith('coclaw.files.') && this.__onFileRpc) {
 					const sess = this.__sessions.get(connId);
 					const sendFn = (response) => {
+						let jsonStr;
 						try {
-							sess?.rpcSendQueue?.send(JSON.stringify(response));
+							jsonStr = JSON.stringify(response);
 						} catch (err) {
-							this.__logDebug(`[${connId}] sendFn failed: ${err.message}`);
+							this.__logDebug(`[${connId}] file sendFn stringify failed: ${err?.message}`);
+							return;
 						}
+						if (typeof jsonStr !== 'string') return;
+						sess?.rpcSendQueue?.send(jsonStr);
 					};
 					this.__onFileRpc(payload, sendFn, connId);
 				} else {

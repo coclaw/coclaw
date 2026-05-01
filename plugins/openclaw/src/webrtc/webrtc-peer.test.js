@@ -1106,7 +1106,7 @@ test('WebRtcPeer: sendTo 在 rpcChannel 未 open 时返回 false', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo 在 send 抛异常时返回 false', async () => {
+test('WebRtcPeer: sendTo 透传 q.send 返回值（队列满等场景下应返回 false）', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -1114,15 +1114,92 @@ test('WebRtcPeer: sendTo 在 send 抛异常时返回 false', async () => {
 		PeerConnection: PC,
 		impl: 'ndc',
 	});
-	await peer.handleSignaling(makeOffer('c_s20'));
-	const dc = makeMockRpcDc({ send: () => { throw new Error('boom'); } });
+	await peer.handleSignaling(makeOffer('c_s_pass'));
+	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
-	// RpcSendQueue 吞了异常返回 true（参考 rpc-send-queue 实现），sendTo 依旧返回 true
-	// 这里直接替换 rpcSendQueue 验证 sendTo 错误路径
-	const session = peer.__sessions.get('c_s20');
-	session.rpcSendQueue.send = () => { throw new Error('queue fail'); };
-	assert.equal(peer.sendTo('c_s20', { type: 'event' }), false);
+	// monkey-patch q.send 返回 false 模拟"队列满 / drop"
+	const session = peer.__sessions.get('c_s_pass');
+	session.rpcSendQueue.send = () => false;
+	assert.equal(peer.sendTo('c_s_pass', { type: 'event' }), false, 'sendTo 必须透传 q.send 的 false 返回');
+	await peer.closeAll();
+});
 
+test('WebRtcPeer: broadcast 遇到 JSON.stringify 抛（循环引用）→ 不抛，整条丢弃', async () => {
+	const PC = MockPCFactory();
+	const debugMsgs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_s_circ'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	const circ = { type: 'event' };
+	circ.self = circ;
+	assert.doesNotThrow(() => peer.broadcast(circ));
+	assert.equal(sent.length, 0);
+	assert.ok(debugMsgs.some((m) => m.includes('broadcast stringify failed')));
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo 遇到 JSON.stringify 抛（循环引用）→ 返回 false，不抛', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_s_circ2'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	const circ = { type: 'event' };
+	circ.self = circ;
+	let ok;
+	assert.doesNotThrow(() => { ok = peer.sendTo('c_s_circ2', circ); });
+	assert.equal(ok, false);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: files sendFn 遇到 JSON.stringify 抛（循环引用）→ 不抛', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onFileRpc: (payload, sendFn) => {
+			const circ = { type: 'res', id: payload.id };
+			circ.self = circ;
+			sendFn(circ);
+		},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_s_circ3'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	assert.doesNotThrow(() => {
+		dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'tcir', method: 'coclaw.files.list', params: {} }) });
+	});
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast 收到 undefined payload（stringify 返回 undefined）→ 静默丢弃', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_s_undef'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	assert.doesNotThrow(() => peer.broadcast(undefined));
+	assert.equal(sent.length, 0);
 	await peer.closeAll();
 });
 
@@ -2515,35 +2592,35 @@ test('WebRtcPeer: dc.onclose 关闭 RpcSendQueue，之后 broadcast 不再 send'
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 遇到 buildChunks 抛异常时 logDebug 但不崩', async () => {
+test('WebRtcPeer: broadcast 遇到 buildChunks 异常被 RpcSendQueue 吃掉 → 不抛、warn 上报、不崩', async () => {
 	const PC = MockPCFactory();
-	const debugMsgs = [];
+	const warnMsgs = [];
 	const peer = new WebRtcPeer({
 		onSend: () => {},
-		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		logger: { info: () => {}, warn: (m) => warnMsgs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
 		impl: 'ndc',
 	});
-	// 过小的 maxMessageSize 让 buildChunks 抛（chunkPayloadSize <= 0）
+	// 过小的 maxMessageSize 让 buildChunks 抛（chunkPayloadSize <= 0），但抛点已下沉到 RpcSendQueue.send 内部
 	await peer.handleSignaling(makeOffer('c_sq_throw_b', 'v=0\r\na=max-message-size:3\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
 
-	// payload > 3 bytes → 触发分片路径 → buildChunks 抛
-	peer.broadcast({ type: 'res', data: 'hello world' });
-	assert.ok(debugMsgs.some((m) => m.includes('broadcast send failed')));
+	// payload > 3 bytes → 触发分片路径；RpcSendQueue 内部 catch，broadcast 不应抛
+	assert.doesNotThrow(() => peer.broadcast({ type: 'res', data: 'hello world' }));
+	assert.ok(warnMsgs.some((m) => m.includes('build-chunks-failed')), 'RpcSendQueue 应 warn build-chunks-failed');
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: files sendFn 遇到 buildChunks 抛异常时 logDebug 但不崩', async () => {
+test('WebRtcPeer: files sendFn 遇到 buildChunks 异常被 RpcSendQueue 吃掉 → 不抛、warn 上报、不崩', async () => {
 	const PC = MockPCFactory();
-	const debugMsgs = [];
+	const warnMsgs = [];
 	const peer = new WebRtcPeer({
 		onSend: () => {},
 		onFileRpc: (payload, sendFn) => {
 			sendFn({ type: 'res', id: payload.id, data: 'hello world' });
 		},
-		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		logger: { info: () => {}, warn: (m) => warnMsgs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
 		impl: 'ndc',
 	});
@@ -2551,8 +2628,11 @@ test('WebRtcPeer: files sendFn 遇到 buildChunks 抛异常时 logDebug 但不�
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
 
-	dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'tfz', method: 'coclaw.files.list', params: {} }) });
-	assert.ok(debugMsgs.some((m) => m.includes('sendFn failed')));
+	// onmessage 派发 → onFileRpc 同步调用 sendFn → q.send 内部 catch；不应抛回 onmessage
+	assert.doesNotThrow(() => {
+		dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'tfz', method: 'coclaw.files.list', params: {} }) });
+	});
+	assert.ok(warnMsgs.some((m) => m.includes('build-chunks-failed')), 'RpcSendQueue 应 warn build-chunks-failed');
 	await peer.closeAll();
 });
 

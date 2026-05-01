@@ -598,14 +598,43 @@ test('remoteLog: close 仅 drops > 0（无 residual）→ 汇总 log', () => {
 
 // --- edge ---
 
-test('buildChunks 抛异常时透传给调用方（maxMessageSize 太小）', () => {
+test('buildChunks 抛异常被 send 内部捕获 → 返回 false，warn + remoteLog 上报，dropped 计数累加', () => {
 	resetRemoteLog();
-	const { q } = makeQueue({}, { maxMessageSize: HEADER_SIZE });
-	// 超过 maxMessageSize 才会触发 chunking 路径 → 抛
-	assert.throws(
-		() => q.send(jsonOfBytes(100)),
-		/too small/,
+	const { dc, logger, q } = makeQueue({}, { maxMessageSize: HEADER_SIZE });
+	// maxMessageSize == HEADER_SIZE 使 chunkPayloadSize=0，buildChunks 内部 throw
+	const payload = jsonOfBytes(100);
+	let ok;
+	assert.doesNotThrow(() => { ok = q.send(payload); }, 'send 必须吃掉 buildChunks 异常，不能抛回 gateway');
+	assert.equal(ok, false);
+	assert.equal(dc.sent.length, 0);
+	assert.equal(q.queue.length, 0);
+	assert.equal(q.droppedCount, 1);
+	assert.equal(q.droppedBytes, Buffer.byteLength(payload, 'utf8'));
+	assert.ok(logger.warnings.some(w => w.includes('build-chunks-failed')));
+	assert.ok(logger.warnings.some(w => /err=.*too small/.test(w)));
+	assert.ok(remoteLogBuffer.some(e => e.text.includes('rpc-queue.build-chunks-failed')));
+	// 配置错误不应触发 overflow 状态机
+	assert.equal(q.queueOverflowActive, false);
+});
+
+test('分片路径单条上限按 payload 字节判断（payload 不超但帧字节累计超 → 不应误判 drop）', () => {
+	resetRemoteLog();
+	// payload = MAX_SINGLE_MSG_BYTES 恰好等于上限；maxMessageSize=65536 → ~800 chunks，
+	// 帧字节 ≈ 50 MB + 4 KB > 上限。旧实现按 frameBytes 比会误 drop，修复后按 payloadBytes 比应入队。
+	// bufferedAmount=HIGH 让所有 chunks 直接走入队，避免 fast-path 实发 50 MB 数据。
+	const { logger, q } = makeQueue(
+		{ bufferedAmount: DC_HIGH_WATER_MARK },
+		{ maxMessageSize: 65536 },
 	);
+	const payload = jsonOfBytes(MAX_SINGLE_MSG_BYTES);
+	const ok = q.send(payload);
+	assert.equal(ok, true, 'payload 恰好等于上限应入队，不能因 header 累计而误判');
+	assert.equal(q.droppedCount, 0);
+	// queueBytes 累计的是帧字节（含 header），应大于 payload 字节
+	assert.ok(q.queueBytes > MAX_SINGLE_MSG_BYTES, 'queueBytes 用帧字节核算，含 header 后超过 payload 上限');
+	assert.ok(!logger.warnings.some(w => w.includes('single-msg-oversize')));
+	// 立即 close 释放占用
+	q.close();
 });
 
 test('fast-path 首次 dc.send 抛异常 → 剩余 chunks 不入队，返回 false（分片路径）', () => {
@@ -781,6 +810,50 @@ test('未传 logger 时 fallback 到 console', () => {
 		// 不传 logger
 	});
 	assert.equal(q.logger, console);
+});
+
+test('契约: logger.warn 自身抛异常时 send 不抛（safe wrapper 兜底）', () => {
+	resetRemoteLog();
+	const dc = makeMockDc();
+	const evilLogger = {
+		warn: () => { throw new Error('logger broken'); },
+		info: () => { throw new Error('logger broken'); },
+		error: () => {},
+		debug: () => {},
+	};
+	const q = new RpcSendQueue({
+		dc,
+		maxMessageSize: HEADER_SIZE, // 触发 buildChunks 抛 → 进入 build-chunks-failed 分支 → 调 logger.warn
+		getNextMsgId: nextMsgId,
+		logger: evilLogger,
+	});
+	// build-chunks-failed 路径
+	let ok;
+	assert.doesNotThrow(() => { ok = q.send(jsonOfBytes(100)); });
+	assert.equal(ok, false);
+	assert.equal(q.droppedCount, 1);
+	q.close();
+});
+
+test('契约: 非 string 入参（Buffer/null/undefined/对象）→ drop 返回 false，不调用 Buffer.byteLength', () => {
+	resetRemoteLog();
+	const cases = [
+		{ name: 'Buffer', value: Buffer.from('not a string') },
+		{ name: 'null', value: null },
+		{ name: 'undefined', value: undefined },
+		{ name: 'object', value: { a: 1 } },
+		{ name: 'number', value: 42 },
+	];
+	for (const { name, value } of cases) {
+		const { logger, q } = makeQueue();
+		const ok = q.send(value);
+		assert.equal(ok, false, `${name}: 应 drop`);
+		assert.equal(q.droppedCount, 1, `${name}: droppedCount 应+1`);
+		assert.ok(
+			logger.warnings.some(w => w.includes('non-string-input')),
+			`${name}: 应 warn non-string-input`,
+		);
+	}
 });
 
 // --- 字节一致性（invariant）贯穿场景 ---
