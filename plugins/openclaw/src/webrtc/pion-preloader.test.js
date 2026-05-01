@@ -287,6 +287,46 @@ test('preloadPion: logger 回调双打——严重事件本地 error，其他本
 	assert.equal(warnCalls.length, 0);
 });
 
+test('preloadPion: 转发 SDK 已带 [pion-ipc] 前缀的 msg 时不重复加前缀', async () => {
+	let capturedOpts;
+	class CapturePionIpc extends MockPionIpc {
+		constructor(opts = {}) {
+			super(opts);
+			capturedOpts = opts;
+		}
+	}
+	const infoCalls = [];
+	const errorCalls = [];
+	const localLogger = {
+		info: (msg) => infoCalls.push(msg),
+		warn: () => {},
+		error: (msg) => errorCalls.push(msg),
+	};
+	const { deps } = successDeps({
+		logger: localLogger,
+		dynamicImport: async () => ({
+			PionIpc: CapturePionIpc,
+			RTCPeerConnection: MockRTCPeerConnection,
+		}),
+	});
+	const result = await preloadPion(deps);
+	assert.notEqual(result, null);
+
+	// 模拟 SDK 真实行为：传给 logger 的 msg 已带 [pion-ipc] 前缀
+	capturedOpts.logger('[pion-ipc] spawning /path/to/bin');
+	capturedOpts.logger('[pion-ipc] dc error pcId=abc ctx=send err=request timeout: dc.send (id=15)');
+
+	// 本地 logger 收到的内容应保持单一前缀，不出现 [pion-ipc] [pion-ipc]
+	for (const line of [...infoCalls, ...errorCalls]) {
+		assert.ok(
+			!line.includes('[pion-ipc] [pion-ipc]'),
+			`localLogger 收到重复前缀: ${line}`,
+		);
+	}
+	assert.ok(infoCalls.some((l) => l === '[pion-ipc] spawning /path/to/bin'));
+	assert.ok(errorCalls.some((l) => l.startsWith('[pion-ipc] dc error')));
+});
+
 test('preloadPion: 不传 logger 时不抛，remoteLog 仍按原逻辑走', async () => {
 	let capturedOpts;
 	class CapturePionIpc extends MockPionIpc {

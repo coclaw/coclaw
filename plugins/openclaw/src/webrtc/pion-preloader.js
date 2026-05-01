@@ -49,13 +49,14 @@ export async function preloadPion(deps = {}) {
 		// 启动 IPC 进程（内部会 ping 验证就绪，binary 由 pion-node 自动解析）
 		// logger 回调双打：始终走 remoteLog；同时送本地 logger，严重事件（IPC 超时、orphan 响应）
 		// 升级到 error 级别，便于本地调试时一眼可见；其他运维类消息走 info。
+		// pion-node SDK 已在 msg 中加 [pion-ipc] 前缀，此处不再重复
 		ipc = new PionIpc({
 			logger: (msg) => {
 				log(`pion.ipc ${msg}`);
 				if (SEVERE_LOG_PATTERN.test(msg)) {
-					localLogger?.error?.(`[pion-ipc] ${msg}`);
+					localLogger?.error?.(msg);
 				} else {
-					localLogger?.info?.(`[pion-ipc] ${msg}`);
+					localLogger?.info?.(msg);
 				}
 			},
 			timeout: ipcRequestTimeout,
