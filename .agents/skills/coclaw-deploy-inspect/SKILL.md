@@ -7,6 +7,18 @@ description: SSH 到 CoClaw 部署机，获取 server/coturn 等容器日志（s
 
 目的：**只读**地从部署机读出诊断所需的一切，不改任何状态。动手前先默认 read-only；需要 restart/exec 写操作必须先与用户确认。
 
+## 持续沉淀（先看这条）
+
+排查中产出的**方法论、决策树、命名空间约定、可重用脚本**，结束前主动落进本 skill——避免下次同类问题再从零研究。
+
+- **方法论 / 决策树 / 案例** → 写到 `docs/<topic>.md`，在本文档末尾"参考文档"建索引（按需加载）
+- **新事件约定 / 字段语义** → 加到 `docs/remote-log-namespace.md`
+- **可复用流程** → 写成 `scripts/*.sh`，命令式封装，戒律写进脚本注释
+
+衡量标准：**"如果今天的方法论丢失了，明天遇到同类问题是否要白手起家？"** —— 是 → 还没沉淀够。
+
+排查时若识别到一个**通用模式**或**新命名空间**，先落沉淀再走，避免漏埋。
+
 ## 1. 目标主机
 
 - 默认 `im.coclaw.net`。**用户明示其他主机**（自部署）时优先使用用户给的。
@@ -69,9 +81,13 @@ ssh <host> 'cat /tmp/srv_u.log'
 
 ### 常见事件关键词（直接 grep）
 
-- **RTC 生命周期**：`sig.state`、`sig.resume`、`restart.trigger`、`ICE restart succeeded`、`stats.pre-restart`、`stats.post-restart-success`、`plugin-probe`、`claw.recover`、`rtc.state`、`rtc.iceState`、`rtc.dump`、`connectionState:`、`iceState:`
-- **RPC 异常**：`rpc.timeout`、`rpc-queue.overflow-start`、`rpc-queue.overflow-end`、`rpc-queue.close`、`drop reason=queue-full`、`drop reason=single-msg-oversize`
-- **前后台/网络**：`app.stateChange`、`app.network`、`sig.resume source=app:foreground elapsed=<ms>`
+完整命名空间字典见 [docs/remote-log-namespace.md](docs/remote-log-namespace.md)。下面只列高频起点：
+
+- **RTC 生命周期**：`sig.state`、`sig.resume`、`restart.trigger`、`ICE restart succeeded`、`rtc.unrecoverable`、`rtc.state`、`rtc.dump`
+- **Agent run**：`agent.run.registered` / `.preaccept-failed` / `.send-cancelled` / `.send-retry` / `.send-failed` / `.end reason=…`
+- **DC/RPC 拒绝**：`conn.rejectPending` / `conn.rejectPending.detail`
+- **RPC 队列异常**：`rpc.timeout`、`rpc-queue.overflow-start` / `.overflow-end` / `.close`、`drop reason=queue-full` / `single-msg-oversize`
+- **前后台 / 网络**：`app.stateChange`、`app.network`、`sig.resume source=app:foreground elapsed=<ms>`
 - **SSE**：`sse.connected`、`sse disconnected`、`claw.snapshot`
 - **文件**：`file.dl.start`/`progress`/`ok`、`dc.received`
 - **诊断**：`coclaw.diag`、`embedded.activeRuns.set/delete`
@@ -127,4 +143,28 @@ ssh <host> "LC_ALL=C grep -aE '<USER_ID>|<CLAW_ID>|<CONN_ID>' /tmp/srv.log > /tm
 ssh <host> 'cat /tmp/srv_e.log'
 ```
 
-剩下的就是读日志讲故事。
+`(b)` + `(c)` 已封装成 `scripts/fetch-and-filter.sh`：
+
+```bash
+.claude/skills/coclaw-deploy-inspect/scripts/fetch-and-filter.sh <host> <since> [<regex>]
+# 示例：./fetch-and-filter.sh im.coclaw.net 30m 'c_7fd224ff|143579687452'
+```
+
+剩下的就是读日志讲故事——按现象选 playbook（见下方"参考文档"）。
+
+## 10. 参考文档（按需加载）
+
+按当前排查现象按需展开对应文档：
+
+| 文档 | 适用场景 |
+|---|---|
+| [docs/diagnosis-playbook.md](docs/diagnosis-playbook.md) | 按用户描述的现象（"任务未完成"、"断了又恢复"等）找诊断决策树和 grep 模板 |
+| [docs/remote-log-namespace.md](docs/remote-log-namespace.md) | 看到陌生 `<模块>.<事件>` 时查含义、字段、触发位置；新加事件也补到这里 |
+
+## 11. 脚本目录
+
+`scripts/` 下沉淀的可复用流程：
+
+- `fetch-and-filter.sh` — 远端落盘 + 按 regex 过滤 + 拉回本地 stdout（封装第 9 节模板）
+
+新沉淀脚本时遵循 `scripts/fetch-and-filter.sh` 的注释风格（顶部用法 + 参数 + 戒律）。
