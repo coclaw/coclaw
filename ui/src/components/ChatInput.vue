@@ -97,8 +97,8 @@
 				/>
 			</div>
 
-			<!-- 中间输入区 -->
-			<div class="min-w-0 flex-1">
+			<!-- 中间输入区：flex 避免块级容器对 inline-flex 子元素产生幽灵行盒（基线下方 leading 多撑约 5px） -->
+			<div class="flex min-w-0 flex-1">
 				<!-- 桌面录音波形 -->
 				<div
 					v-if="isDesktopRecording"

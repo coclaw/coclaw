@@ -106,6 +106,16 @@ describe('ChatInput', () => {
 		expect(wrapper.vm.canSend).toBe(true);
 	});
 
+	test('middle wrapper uses flex to avoid inline-flex phantom line-box', () => {
+		// 防回归：中间输入区父容器若退化为普通块级 div，UTextarea root 的 inline-flex
+		// 会让浏览器按行盒规则给它留基线下方 leading（约 5px），导致 disabled 状态下
+		// 输入框比左右 40px 按钮高一截，items-end 底端对齐后顶端错位。
+		const wrapper = createWrapper({ modelValue: '' });
+		const middle = wrapper.find('form > div.flex-1');
+		expect(middle.exists()).toBe(true);
+		expect(middle.classes()).toContain('flex');
+	});
+
 	test('Enter on desktop triggers send', async () => {
 		const wrapper = createWrapper({ modelValue: 'hello' });
 		const textarea = wrapper.find('textarea');
