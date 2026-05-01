@@ -79,13 +79,11 @@ vi.mock('@capacitor/network', () => ({
 	},
 }));
 
-vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({
-		info: mockNotifyInfo,
-		success: vi.fn(),
-		warning: vi.fn(),
-		error: vi.fn(),
-	}),
+// capacitor-app.js 现在通过 notify-hook-bridge.getSharedNotifier() 取启动期 wire 好的 notifier；
+// 这里 mock 该入口返回 sharedNotifierState.current；用例可临时改 null 测兜底路径。
+const sharedNotifierState = vi.hoisted(() => ({ current: null }));
+vi.mock('../stores/notify-hook-bridge.js', () => ({
+	getSharedNotifier: () => sharedNotifierState.current,
 }));
 vi.mock('../i18n/index.js', () => ({
 	i18n: {
@@ -111,6 +109,13 @@ function resetMocks() {
 	mockSplashHide.mockResolvedValue();
 	mockCheckPending.mockResolvedValue({});
 	mockClearFiles.mockResolvedValue();
+	// 默认有效 notifier；个别用例可临时改 null 测兜底
+	sharedNotifierState.current = {
+		info: mockNotifyInfo,
+		success: vi.fn(),
+		warning: vi.fn(),
+		error: vi.fn(),
+	};
 }
 
 function createMockRouter(meta = {}) {
@@ -838,6 +843,19 @@ describe('ShareIntent', () => {
 			files: [{ path: '/cache/share_intent/1_img.png', name: 'img.png', mimeType: 'image/png', size: 1024 }],
 		});
 		await vi.waitFor(() => { expect(mockNotifyInfo).toHaveBeenCalled(); });
+		expect(mockClearFiles).toHaveBeenCalledOnce();
+	});
+
+	test('热启动：getSharedNotifier 返回 null 时静默不抛，仍清理文件', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		sharedNotifierState.current = null;
+		mockShareListeners.shareReceived({
+			type: 'file',
+			files: [{ path: '/cache/share_intent/2_img.png', name: 'img.png', mimeType: 'image/png' }],
+		});
+		await flush();
+		expect(mockNotifyInfo).not.toHaveBeenCalled();
 		expect(mockClearFiles).toHaveBeenCalledOnce();
 	});
 });

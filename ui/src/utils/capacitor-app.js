@@ -9,7 +9,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { hasOpenDialog, closeCurrentDialog } from './dialog-history.js';
 import { remoteLog } from '../services/remote-log.js';
 import { i18n } from '../i18n/index.js';
-import { useNotify } from '../composables/use-notify.js';
+import { getSharedNotifier } from '../stores/notify-hook-bridge.js';
 import { isMobileOs } from './platform.js';
 import { dispatchNetworkOnline } from './network-debounce.js';
 
@@ -226,8 +226,8 @@ async function handleShareReceived(data) {
 	console.log('[capacitor] share received: type=%s', data.type, data);
 
 	// TODO (#159): 替换为实际的 Agent 选择 → 路由跳转 → 内容填充
-	const notify = useNotify();
-	notify.info({ title: i18n.global.t('common.featureComingSoon'), duration: 4000 });
+	// 用启动期 wire 好的 shared notifier，避免在非 setup 时机调 useNotify() 触发 inject 警告
+	getSharedNotifier()?.info({ title: i18n.global.t('common.featureComingSoon'), duration: 4000 });
 
 	// 清理原生层临时文件
 	if (data.type === 'file') {
