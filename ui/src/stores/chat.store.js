@@ -955,8 +955,11 @@ export function createChatStore(storeKey, opts = {}) {
 						idempotencyKey,
 					});
 					// chat.send 已成功送达并返回 runId（语义等价于 agent() 的 onAccepted）
-					// 本地"乐观活动"标记：仅在 server 真正 accept 后才 bump，避免 pre-acceptance 失败留下幻影 bump
-					useSessionsStore().bumpActivity(this.clawId, this.__resolveAgentId());
+					// 本地"乐观活动"标记：仅在 server 真正 accept 后才 bump，避免 pre-acceptance 失败留下幻影 bump。
+					// 与 sendMessage onAccepted 保持对称——topic 模式不在 agent 列表里，不浮顶
+					if (!this.topicMode) {
+						useSessionsStore().bumpActivity(this.clawId, this.__resolveAgentId());
+					}
 					// → 清 _pending 让本地 user 消息显示出真实命令文本
 					let changed = false;
 					for (const m of this.messages) {

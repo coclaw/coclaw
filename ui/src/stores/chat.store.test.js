@@ -2562,6 +2562,32 @@ describe('useChatStore', () => {
 			expect(sessionsStore.items).toHaveLength(0);
 		});
 
+		test('topic 模式 sendSlashCommand 不 bump（与 sendMessage 对称）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({ runId: 'slash-topic', status: 'started' });
+			setConn('1', conn);
+
+			const store = createChatStore('topic:t-1', { clawId: '1', agentId: 'main' });
+			const sessionsStore = useSessionsStore();
+			const spy = vi.spyOn(sessionsStore, 'bumpActivity');
+
+			const p = store.sendSlashCommand('/help');
+			// 让 chat.send 的 mockResolvedValue microtask 跑完
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// 强断言：bumpActivity 完全没被调用（topicMode 守卫生效）
+			expect(spy).not.toHaveBeenCalled();
+
+			// 收尾：触发 final 事件让 promise 自然 settle
+			const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+			handler({ runId: store.__slashCommandRunId, state: 'final' });
+			await p;
+		});
+
 		test('pre-accept 超时后迟到的 onAccepted 不再触发 bump（preAcceptInvalidated 守卫）', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();

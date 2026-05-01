@@ -223,3 +223,36 @@
     - 修法：参照 `_perClawLoading.finally` 的 identity 比较模式：`if (_loadingPromise === p) _loadingPromise = null`
     - 非阻塞
 
+## MainList 排序 deep-review 第 2 轮发现的预存问题（2026-05-01）
+
+来源：commit f201b0a 上的第 2 轮 deep-review（5 路并行 codex-rescue + 1 opus 重派）。下列条目均与 f201b0a 改动无关，本次 review 中浮出。
+
+34. **`agent-runs.store.runAgent` register 早于 chat 层 onAccepted → 极迟到 accepted 后产生 split-brain**
+    - 来源：commit `44e3bf3` 引入 runAgent 抽象时即存在
+    - 现状：`agent-runs.store.js:209-228` 内 onAccepted handler 先 `register(runId, ...)` + `__startWatcher`，再调 chat 层 onAccepted；chat 层 pre-accept 180s 超时（`chat.store.js:527`）已触发 → catch 已跑 → `preAcceptInvalidated=true` 短路 chat 层 onAccepted；但此时 agent-runs 已注册了真实 run，watcher 已起，`allMessages` getter 仍会把 streamingMsgs 合进 UI
+    - 触发条件极窄：server 在 180s 后才 accept；通常 DC 早 reject 了
+    - 实际影响：用户看到一条挂着的"流式消息"但 chat 层不知道存在；按 STOP 走 pre-accept 分支（设 `__pendingCancelIntent`），无 onAccepted 消费，UI 卡在 cancelling 状态直到自然终结或刷新
+    - 修法方向：runAgent 的 onAccepted 在调外部 onAccepted 之前等其返回 sentinel，或外层加"chat 层已认定 pre-accept 失败 → 立刻 unregister run + abort RPC"通道
+    - 配合 §"Bug 1 修复 review 后续" 的 #16 / #17 一并思考
+
+35. **`loadAllSessions` 与 `loadSessionsForClaw` 同 claw 同时飞行可互相覆盖**
+    - 现状：两套 dedup（`_loadingPromise` vs `_perClawLoading`）独立，同 claw 可有两个 in-flight fetch；`mergeFetchResults` 的"已查询 claw"路径直接以 fetch 结果替换（`sessions.store.js:291-299`），后完成的覆盖先完成的
+    - 触发条件：用户切 claw 引发 per-claw 拉取与全量拉取叠加，且 fetch 完成顺序与发起顺序倒置
+    - 实际影响：极短窗口的旧数据覆盖新数据；下次任意 sessions.list 触发即修正
+    - 修法方向：两套 dedup 共用一个 (clawId → in-flight) 注册表，或合并环节按 fetch 发起时间戳决策
+
+36. **claw 解绑后短时同 id 重绑期间，旧 fetch 结果可污染新 claw**
+    - 现状：`removeSessionsByClawId` 清 `_perClawLoading` 但不清全局 `_loadingPromise`；旧 `loadAllSessions` 飞行中 → claw 解绑后短时同 id 重绑 → `mergeFetchResults` 的 `clawsById[bid]` 校验通过（新 claw 在）→ 旧数据被写入新 claw 空间
+    - 触发条件：极窄；需在飞行中 + 同 id 重绑 + clawsById 已有新 claw 实例
+    - 修法方向：`__doLoadAll` 的 results 处理环节加 claw 实例 identity 比对（不仅看 byId 是否有 entry，也看是不是同一个 claw 对象）；或 removeSessionsByClawId 同步给一个 epoch，旧 fetch 结果按 epoch 丢弃
+
+37. **slash 命令期间点 STOP 留下 `__pendingCancelIntent` 残留 → `isCancelling` getter 误亮**
+    - 现状：sendSlashCommand 期间 `sending=true` → STOP 按钮可见可点；`cancelSend` 走 pre-accept 分支（chat.store.js:781-789）设 `__pendingCancelIntent=true` 后返回 null。slash 路径既无 onAccepted 来消费这条 intent，`__cleanupSlashCommand`（line 1080-1094）和 slash catch 块也都不清；intent 残留到下次 sendMessage / sendSlashCommand 入口的 `__clearCancelling('superseded')` 才清掉
+    - 实际影响：用户感知"点了 STOP 没反应"，且 slash 自然结束后期间 `isCancelling` 仍为 true（依赖 `__pendingCancelIntent`，line 168-170），可能影响其它依赖 getter 的 UI 反馈
+    - 修法方向：a) UI 在 slash 期间 disable STOP 按钮（chatStore.__slashCommandType 非空时）；或 b) `__cleanupSlashCommand` 同步清 `__pendingCancelIntent`（slash 不可被服务端取消，intent 没有意义）
+
+38. **`getActivity` 在 MainList 排序中 O(A×S) 线性扫描**
+    - 现状：`sessions.store.js:42-50` `getActivity` 对每个 (clawId, agentId) 全量遍历 items；MainList 的 `agentItems` computed（`MainList.vue:264, 278`）对每个 agent 调一次，最坏 O(A×S + A log A)
+    - 实际影响：几十条 item 内可忽略；多 claw 多 session 长期使用后可能延迟 MainList 渲染
+    - 修法方向：sessions.store 内维护 `Map<clawId:agentId, item>`，getActivity O(1) 命中
+
