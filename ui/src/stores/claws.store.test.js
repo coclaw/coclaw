@@ -27,26 +27,9 @@ vi.mock('../services/webrtc-connection.js', () => ({
 	closeRtcForClaw: (...args) => mockCloseRtcForBot(...args),
 }));
 
-// mock useNotify —— 捕获 onRtcUnrecoverable 触发的 toast 调用
+// notify hook 捕获器 —— claws.store 通过 __registerNotifyHooks 接收 notify / t 实现
 const mockNotifyWarning = vi.fn();
-vi.mock('../composables/use-notify.js', () => ({
-	useNotify: () => ({
-		success: vi.fn(),
-		info: vi.fn(),
-		warning: (...args) => mockNotifyWarning(...args),
-		error: vi.fn(),
-	}),
-}));
-
-// mock i18n —— 直接回 key:params 字符串便于断言（不引入真实 vue-i18n 实例）
-vi.mock('../i18n/index.js', () => ({
-	i18n: {
-		global: {
-			t: (key, params) => `${key}|${JSON.stringify(params ?? {})}`,
-		},
-	},
-	DEFAULT_LOCALE: 'en',
-}));
+const mockTranslate = (key, params) => `${key}|${JSON.stringify(params ?? {})}`;
 
 // mock signaling-connection（sig gate 测试所需；默认 connected，个别用例覆盖）
 let __mockSigState = 'connected';
@@ -73,7 +56,7 @@ vi.mock('../services/signaling-connection.js', () => ({
 
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
-import { useClawsStore, __resetAwaitingConnIds, __test__ as __clawsTest } from './claws.store.js';
+import { useClawsStore, __resetAwaitingConnIds, __test__ as __clawsTest, __registerNotifyHooks } from './claws.store.js';
 import { getReadyConn } from './get-ready-conn.js';
 import { useDashboardStore } from './dashboard.store.js';
 import { useSessionsStore } from './sessions.store.js';
@@ -93,6 +76,7 @@ beforeEach(() => {
 	__mockSig.off.mockClear();
 	__resetAwaitingConnIds();
 	mockNotifyWarning.mockClear();
+	__registerNotifyHooks({ notify: mockNotifyWarning, t: mockTranslate });
 });
 
 describe('setClaws', () => {
@@ -3185,7 +3169,7 @@ describe('rtcPhase 生命周期', () => {
 });
 
 describe('ICE restart store 交互', () => {
-	test('__rtcCallbacks.onRtcUnrecoverable: 有未结束 run 时 notify warning（带 clawName + n）', async () => {
+	test('__rtcCallbacks.onRtcUnrecoverable: 有未结束 run 时 notify warning（带 clawName + n）', () => {
 		const store = useClawsStore();
 		store.applySnapshot([{ id: '7', name: 'KnowledgeExpert', online: true }]);
 		const runsStore = useAgentRunsStore();
@@ -3198,7 +3182,7 @@ describe('ICE restart store 交互', () => {
 		};
 
 		const cbs = store.__rtcCallbacks('7');
-		await cbs.onRtcUnrecoverable();
+		cbs.onRtcUnrecoverable();
 
 		expect(mockNotifyWarning).toHaveBeenCalledTimes(1);
 		const arg = mockNotifyWarning.mock.calls[0][0];
@@ -3207,7 +3191,7 @@ describe('ICE restart store 交互', () => {
 		expect(arg.title).toContain('"n":2');
 	});
 
-	test('__rtcCallbacks.onRtcUnrecoverable: 无未结束 run 时不打扰用户', async () => {
+	test('__rtcCallbacks.onRtcUnrecoverable: 无未结束 run 时不打扰用户', () => {
 		const store = useClawsStore();
 		store.applySnapshot([{ id: '7', name: 'KnowledgeExpert', online: true }]);
 		const runsStore = useAgentRunsStore();
@@ -3217,30 +3201,63 @@ describe('ICE restart store 交互', () => {
 		};
 
 		const cbs = store.__rtcCallbacks('7');
-		await cbs.onRtcUnrecoverable();
+		cbs.onRtcUnrecoverable();
 
 		expect(mockNotifyWarning).not.toHaveBeenCalled();
 	});
 
-	test('__rtcCallbacks.onRtcUnrecoverable: claw 已被移除 → 静默 no-op', async () => {
+	test('__rtcCallbacks.onRtcUnrecoverable: claw 已被移除 → 静默 no-op', () => {
 		const store = useClawsStore();
 		// 不调 applySnapshot，byId 中无 'gone' 这个 claw
 		const cbs = store.__rtcCallbacks('gone');
-		await expect(cbs.onRtcUnrecoverable()).resolves.toBeUndefined();
+		expect(cbs.onRtcUnrecoverable()).toBeUndefined();
 		expect(mockNotifyWarning).not.toHaveBeenCalled();
 	});
 
-	test('__rtcCallbacks.onRtcUnrecoverable: 无 name 时回退到 clawId 显示', async () => {
+	test('__rtcCallbacks.onRtcUnrecoverable: 无 name 时回退到 clawId 显示', () => {
 		const store = useClawsStore();
 		store.applySnapshot([{ id: 'noname', online: true }]);
 		const runsStore = useAgentRunsStore();
 		runsStore.runs = { 'r1': { runId: 'r1', clawId: 'noname', ended: false } };
 
 		const cbs = store.__rtcCallbacks('noname');
-		await cbs.onRtcUnrecoverable();
+		cbs.onRtcUnrecoverable();
 
 		expect(mockNotifyWarning).toHaveBeenCalledTimes(1);
 		expect(mockNotifyWarning.mock.calls[0][0].title).toContain('"clawName":"noname"');
+	});
+
+	// partial 注入：__registerNotifyHooks 用 Object.assign 合并，未传字段保留前值
+	test('__registerNotifyHooks: 只注入 notify，t 保留前值', () => {
+		const customT = vi.fn((key, params) => `prev-t|${key}|${JSON.stringify(params ?? {})}`);
+		__registerNotifyHooks({ notify: mockNotifyWarning, t: customT });
+		const newNotify = vi.fn();
+		__registerNotifyHooks({ notify: newNotify });
+
+		const store = useClawsStore();
+		store.applySnapshot([{ id: 'p1', name: 'partial', online: true }]);
+		useAgentRunsStore().runs = { 'r1': { runId: 'r1', clawId: 'p1', ended: false } };
+		store.__rtcCallbacks('p1').onRtcUnrecoverable();
+
+		expect(newNotify).toHaveBeenCalledTimes(1);
+		expect(customT).toHaveBeenCalledTimes(1);
+		expect(newNotify.mock.calls[0][0].title).toContain('prev-t|notify.rtcUnrecoverable');
+	});
+
+	test('__registerNotifyHooks: 只注入 t，notify 保留前值', () => {
+		const prevNotify = vi.fn();
+		__registerNotifyHooks({ notify: prevNotify, t: mockTranslate });
+		const newT = vi.fn(() => 'new-t-output');
+		__registerNotifyHooks({ t: newT });
+
+		const store = useClawsStore();
+		store.applySnapshot([{ id: 'p2', name: 'partial2', online: true }]);
+		useAgentRunsStore().runs = { 'r1': { runId: 'r1', clawId: 'p2', ended: false } };
+		store.__rtcCallbacks('p2').onRtcUnrecoverable();
+
+		expect(prevNotify).toHaveBeenCalledTimes(1);
+		expect(newT).toHaveBeenCalledTimes(1);
+		expect(prevNotify.mock.calls[0][0].title).toBe('new-t-output');
 	});
 
 	test('__rtcCallbacks: restarting 设置 rtcPhase 和 disconnectedAt', () => {

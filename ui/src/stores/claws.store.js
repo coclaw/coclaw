@@ -7,20 +7,15 @@ import { remoteLog } from '../services/remote-log.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
 import { useAgentRunsStore } from './agent-runs.store.js';
 
-// useNotify / i18n 故意走"懒"路径——它们走 @nuxt/ui 的 useToast 桶口，
-// 桶口会把所有 composable 都拉进来（含 useResizable 那种依赖 '#imports' 的）。
-// 直接 import 会让所有 transitively 引到 claws.store 的测试套件都炸——
-// 而 onRtcUnrecoverable 是低频回调，懒加载完全够用。
-let _notifier = null;
-let _i18nMod = null;
-async function getNotifyDeps() {
-	if (!_notifier || !_i18nMod) {
-		[_notifier, _i18nMod] = await Promise.all([
-			import('../composables/use-notify.js'),
-			import('../i18n/index.js'),
-		]);
-	}
-	return { useNotify: _notifier.useNotify, i18n: _i18nMod.i18n };
+// notify / i18n 钩子：由启动期通过 __registerNotifyHooks 注入实际实现
+// （store 不直接 import use-notify / i18n，避免 @nuxt/ui 桶口的 #imports 把测试链路拖炸）
+const _notifyHooks = {
+	notify: () => {}, // 默认 no-op
+	t: (key) => key, // 默认回显 key
+};
+/** @param {Partial<typeof _notifyHooks>} hooks */
+export function __registerNotifyHooks(hooks) {
+	Object.assign(_notifyHooks, hooks);
 }
 
 // claw 生命周期回调（由 claw-lifecycle.js 注册，避免静态循环依赖）
@@ -855,7 +850,7 @@ export const useClawsStore = defineStore('claws', {
 				// ICE restart 180s 预算耗尽、即将 PC rebuild 时触发一次。
 				// 仅当该 claw 上仍有未结束的 agent run 时才 notify——否则连接断了再连上用户无感，
 				// 弹提示反而是无意义打扰；rtc.unrecoverable remoteLog 已独立打过，分析侧不丢信号
-				onRtcUnrecoverable: async () => {
+				onRtcUnrecoverable: () => {
 					const claw = this.byId[clawId];
 					if (!claw) return;
 					const runs = useAgentRunsStore().runs;
@@ -865,15 +860,9 @@ export const useClawsStore = defineStore('claws', {
 					}
 					if (activeCount === 0) return;
 					const clawName = claw.name || clawId;
-					try {
-						const { useNotify, i18n } = await getNotifyDeps();
-						useNotify().warning({
-							title: i18n.global.t('notify.rtcUnrecoverable', { clawName, n: activeCount }),
-						});
-					}
-					catch (err) {
-						console.error('[claws] onRtcUnrecoverable notify failed:', err);
-					}
+					_notifyHooks.notify({
+						title: _notifyHooks.t('notify.rtcUnrecoverable', { clawName, n: activeCount }),
+					});
 				},
 				onRtcStateChange: (state, transportInfo) => {
 					const claw = this.byId[clawId];

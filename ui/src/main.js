@@ -12,6 +12,7 @@ import { initElectronApp } from './utils/electron-app.js';
 import { startUpdateCheck } from './services/app-update.js';
 import { useDraftStore } from './stores/draft.store.js';
 import './stores/claw-lifecycle.js'; // 注册 claw 生命周期回调（须在 claws.store action 被调用前）
+import './stores/notify-hook-bridge.js'; // 注入真实 notify / i18n（须在 onRtcUnrecoverable 触发前）
 import 'highlight.js/styles/vs2015.css';
 import './assets/main.css';
 import './assets/markdown.scss';

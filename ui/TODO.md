@@ -211,3 +211,22 @@
         - 方案 C：endRun 时同步清空 streamingMsgs（治本但耦合 endRun 与 UI 渲染）
     - 与 §"Bug 1 修复 review 后续"#16（silent loadMessages 失败永挂）合并修最经济
     - 必须配套补单元测试：`run.ended=true && run.settled=false` 时 allMessages 不应合并 streamingMsgs
+
+## 杂项动态 import 清理（2026-05-01）
+
+来源：处理 `claws.store` notify 动态 import 时全仓盘查，发现一条历史遗留。
+
+32. **`utils/file-helper.js:156` `await import('./platform.js')` 可改为静态 import**
+    - 现状：`saveBlobToFile` 内部 `const { isCapacitorApp } = await import('./platform.js');` 是动态 import
+    - 问题：`platform.js` 自身只读 `window.electronAPI` / `window.Capacitor` / `window.__TAURI_INTERNALS__` 等全局，没有"按平台条件加载某依赖"的诉求，没必要懒加载；属于历史顺手写法
+    - UI 工作区原则上不允许动态 import（capacitor 等条件加载依赖除外），这条不属于例外
+    - 修复方向：改为顶部 `import { isCapacitorApp } from './platform.js';`，确认无循环依赖后跑 `pnpm verify`
+    - 非阻塞，下次接触 `file-helper` 时顺手处理
+
+33. **`useNotify()` 在 Vue 非 setup 上下文调用，dev 模式可能触发 inject 警告**
+    - 来源：claws.store notify hook 重构后 deep-review（codex-rescue 模块加载维度）
+    - 现状：`useNotify()` 内部调 `useToast()`，后者用 Vue `inject()` 拿全局 toast 状态。从非 Vue setup 上下文（如 `claws.store` 的 RTC 回调、`utils/capacitor-app.js:229` 的 `initCapacitorApp`）调用时，dev 模式 Vue 会抱怨"inject() can only be used inside setup() or functional components"
+    - 实际影响：Nuxt UI toast state 是模块级 singleton，inject 失败也有 fallback，**生产构建无影响、运行不会崩**；只是 dev 控制台噪声
+    - 不是本次重构引入：重构前后 `useNotify()` 都是同一时机调，旧代码通过 `try/catch` 把潜在抛出兜了；新代码默认 hook 是 `() => {}` 也不会让警告影响功能
+    - 修复方向（如未来想根治）：让 `App.vue` 的 setup() 一次性 `const notify = useNotify()`，把这个具体对象通过 hook 注入到底层；或干脆把 toast 调用收敛到 view 层（不让 store/util 直接 notify）
+    - 非阻塞
