@@ -5,7 +5,7 @@ import os from 'node:os';
 import { after, test } from 'node:test';
 
 import { WebSocket as WsWebSocket } from 'ws';
-import { RealtimeBridge, classifyAgentLagStop, ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
+import { RealtimeBridge, classifyAgentLagStop, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -3787,4 +3787,380 @@ test('lag probe: bridge.stop() clears any residual probes', async () => {
 	assert.equal(bridge.__agentLagProbes.size, 1);
 	await bridge.stop();
 	assert.equal(bridge.__agentLagProbes.size, 0);
+});
+
+// --- isFinalResMsg 单测 ---
+
+test('isFinalResMsg: accepted is intermediate', () => {
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', payload: { status: 'accepted' } }), false);
+});
+
+test('isFinalResMsg: ok / error / started / in_flight are final', () => {
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', payload: { status: 'ok' } }), true);
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', payload: { status: 'error' } }), true);
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', payload: { status: 'started' } }), true);
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', payload: { status: 'in_flight' } }), true);
+});
+
+test('isFinalResMsg: missing status is final (covers ok/false-without-status fallback)', () => {
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', payload: {} }), true);
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', ok: false }), true);
+});
+
+test('isFinalResMsg: non-res / null / undefined / non-object payload returns false', () => {
+	assert.equal(isFinalResMsg({ type: 'event', event: 'agent' }), false);
+	assert.equal(isFinalResMsg(null), false);
+	assert.equal(isFinalResMsg(undefined), false);
+	assert.equal(isFinalResMsg({ type: 'res', id: 'x', payload: null }), true);
+});
+
+// --- DC RPC 单播路由表测试 ---
+
+/**
+ * 构造一个已连接 server + 已就绪 gateway + 已创建 webrtcPeer 的 bridge。
+ * 返回 { bridge, server, gwWs, prevHome }。调用方需在 finally 中 bridge.stop()。
+ */
+async function setupBridgeWithGateway(rtcConnId = 'c_dc') {
+	const ctx = await setupConnectedBridge();
+	const { bridge, server } = ctx;
+	server.emit('message', {
+		data: JSON.stringify({
+			type: 'rtc:offer',
+			fromConnId: rtcConnId,
+			payload: { sdp: 'sdp' },
+		}),
+	});
+	await new Promise((r) => setTimeout(r, 50));
+	const gwWs = FakeWebSocket.instances.find((ws) => ws !== server);
+	gwWs.readyState = 1;
+	bridge.gatewayReady = true;
+	bridge.gatewayWs = gwWs;
+	return { ...ctx, gwWs };
+}
+
+test('dc unicast: terminal res hits sendTo, broadcast not called, mapping cleared', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_uc1');
+	try {
+		const sentTo = [];
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => {
+			sentTo.push({ connId, payload });
+			return true;
+		};
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-uuid-1', method: 'sessions.list', params: {} },
+			'c_uc1'
+		);
+		assert.ok(bridge.__dcPendingRequests.has('ui-uuid-1'), 'mapping should be written after send');
+
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-uuid-1', ok: true, payload: { status: 'ok', items: [] } }),
+		});
+
+		assert.equal(sentTo.length, 1, 'sendTo should be called once');
+		assert.equal(sentTo[0].connId, 'c_uc1');
+		assert.equal(sentTo[0].payload.id, 'ui-uuid-1');
+		assert.equal(broadcasted.length, 0, 'broadcast must not be called for unicast hit');
+		assert.equal(bridge.__dcPendingRequests.has('ui-uuid-1'), false, 'mapping cleared on terminal');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: agent two-stage keeps mapping on accepted, clears on terminal', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_agent');
+	try {
+		const sentTo = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push({ connId, payload }); return true; };
+		bridge.webrtcPeer.broadcast = () => { throw new Error('broadcast should not be called'); };
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-agent-1', method: 'agent', params: { input: 'hi' } },
+			'c_agent'
+		);
+		// accepted 阶段：保留映射
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-agent-1', ok: true, payload: { status: 'accepted', runId: 'r1' } }),
+		});
+		assert.equal(sentTo.length, 1);
+		assert.equal(sentTo[0].payload.payload.status, 'accepted');
+		assert.equal(bridge.__dcPendingRequests.has('ui-agent-1'), true, 'mapping kept on accepted');
+
+		// 终态：清映射
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-agent-1', ok: true, payload: { status: 'ok', result: 'done' } }),
+		});
+		assert.equal(sentTo.length, 2);
+		assert.equal(bridge.__dcPendingRequests.has('ui-agent-1'), false, 'mapping cleared on terminal');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: approval two-stage follows same accepted/terminal pattern', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_apv');
+	try {
+		const sentTo = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push(payload); return true; };
+		bridge.webrtcPeer.broadcast = () => { throw new Error('broadcast should not be called'); };
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-apv-1', method: 'exec.approval.request', params: {} },
+			'c_apv'
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-apv-1', ok: true, payload: { status: 'accepted' } }),
+		});
+		assert.equal(bridge.__dcPendingRequests.has('ui-apv-1'), true, 'kept on accepted');
+
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-apv-1', ok: true, payload: { status: 'ok', decision: 'approved' } }),
+		});
+		assert.equal(sentTo.length, 2);
+		assert.equal(bridge.__dcPendingRequests.has('ui-apv-1'), false);
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: chat.send single-frame status="started" clears immediately', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chat');
+	try {
+		const sentTo = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push(payload); return true; };
+		bridge.webrtcPeer.broadcast = () => { throw new Error('broadcast should not be called'); };
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-chat-1', method: 'chat.send', params: {} },
+			'c_chat'
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-chat-1', ok: true, payload: { status: 'started' } }),
+		});
+		assert.equal(sentTo.length, 1, 'sendTo called once');
+		assert.equal(bridge.__dcPendingRequests.has('ui-chat-1'), false, 'cleared immediately on started (non-accepted)');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: single-stage RPC clears mapping on response', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_single');
+	try {
+		const sentTo = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push(payload); return true; };
+		bridge.webrtcPeer.broadcast = () => { throw new Error('broadcast should not be called'); };
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-resolve-1', method: 'sessions.resolve', params: {} },
+			'c_single'
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-resolve-1', ok: true, payload: { status: 'ok', key: 'k' } }),
+		});
+		assert.equal(sentTo.length, 1);
+		assert.equal(bridge.__dcPendingRequests.has('ui-resolve-1'), false);
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: collision deletes prior entry and warns', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_col1');
+	try {
+		const warns = [];
+		bridge.logger = { ...bridge.logger, warn: (m) => warns.push(String(m)) };
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-dup', method: 'sessions.list', params: {} },
+			'c_col1'
+		);
+		assert.equal(bridge.__dcPendingRequests.get('ui-dup').connId, 'c_col1');
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-dup', method: 'sessions.list', params: {} },
+			'c_col2'
+		);
+		assert.ok(warns.some((m) => m.includes('duplicate dc reqId')), 'should warn on collision');
+		assert.equal(bridge.__dcPendingRequests.get('ui-dup').connId, 'c_col2', 'mapping replaced with new connId');
+
+		// 模拟旧响应到来：命中走单播分支（按 connId='c_col2' 发），符合"删旧后再写入新"语义
+		const sentTo = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push({ connId, payload }); return true; };
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-dup', ok: true, payload: { status: 'ok' } }),
+		});
+		assert.equal(sentTo.length, 1);
+		assert.equal(sentTo[0].connId, 'c_col2');
+		assert.equal(bridge.__dcPendingRequests.has('ui-dup'), false);
+		// gwWs 变量被使用，避免 lint 告警
+		assert.ok(gwWs);
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: GATEWAY_OFFLINE keeps broadcast and writes no mapping', async () => {
+	const { bridge, prevHome } = await setupBridgeWithGateway('c_off');
+	try {
+		// 重置 gateway 为未就绪
+		bridge.gatewayReady = false;
+		bridge.gatewayWs = null;
+
+		const broadcasted = [];
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+		bridge.webrtcPeer.sendTo = () => { throw new Error('sendTo should not be called'); };
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-off-1', method: 'sessions.list', params: {} },
+			'c_off'
+		);
+		const offlineBC = broadcasted.find((p) => p.error?.code === 'GATEWAY_OFFLINE');
+		assert.ok(offlineBC, 'OFFLINE should still be broadcast');
+		assert.equal(bridge.__dcPendingRequests.size, 0, 'mapping not written for OFFLINE');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: GATEWAY_SEND_FAILED clears mapping then broadcasts', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_sfail');
+	try {
+		const broadcasted = [];
+		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
+		bridge.webrtcPeer.sendTo = () => true;
+		gwWs.send = () => { throw new Error('send failed'); };
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-sfail-1', method: 'sessions.list', params: {} },
+			'c_sfail'
+		);
+		const failBC = broadcasted.find((p) => p.error?.code === 'GATEWAY_SEND_FAILED');
+		assert.ok(failBC, 'SEND_FAILED should be broadcast');
+		assert.equal(bridge.__dcPendingRequests.has('ui-sfail-1'), false, 'mapping cleared on send failure');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: gateway ws close clears entire pending table', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_close1');
+	try {
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-c-1', method: 'sessions.list', params: {} },
+			'c_close1'
+		);
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-c-2', method: 'sessions.list', params: {} },
+			'c_close1'
+		);
+		assert.equal(bridge.__dcPendingRequests.size, 2);
+
+		gwWs.emit('close', { code: 1006, reason: 'remote dropped' });
+		assert.equal(bridge.__dcPendingRequests.size, 0, 'all entries cleared on ws close');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: sendTo failure logs debug, no broadcast fallback', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_und');
+	try {
+		const debugs = [];
+		bridge.logger = { ...bridge.logger, debug: (m) => debugs.push(String(m)) };
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = () => false;
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-und-1', method: 'sessions.list', params: {} },
+			'c_und'
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-und-1', ok: true, payload: { status: 'ok' } }),
+		});
+		assert.ok(debugs.some((m) => m.includes('dc res undeliverable') && m.includes('ui-und-1')));
+		assert.equal(broadcasted.length, 0, 'must not fall back to broadcast');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: unmatched res falls back to broadcast', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_unmatch');
+	try {
+		const sentTo = [];
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push(payload); return true; };
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
+
+		// 直接发 res，未事先建立 mapping
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-orphan-1', ok: true, payload: { status: 'ok' } }),
+		});
+		assert.equal(sentTo.length, 0);
+		assert.equal(broadcasted.length, 1, 'unmatched res falls back to broadcast');
+		assert.equal(broadcasted[0].id, 'ui-orphan-1');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('dc unicast: TTL scan clears expired entries and warns', async () => {
+	const dir = await writeCfg({ token: 'rtc-tok', serverUrl: 'https://server.local' });
+	const prevHome = saveHomedir();
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+
+	const warns = [];
+	const logger = {
+		info() {}, debug() {},
+		warn: (m) => warns.push(String(m)),
+	};
+	const bridge = new RealtimeBridge({
+		WebSocket: FakeWebSocket,
+		resolveGatewayAuthToken: () => '',
+		preloadPion: noopPreloadPion,
+		preloadNdc: noopPreloadNdc,
+		gatewayReadyTimeoutMs: 50,
+		dcReqTtlMs: 30,   // 30ms TTL
+		dcReqScanMs: 20,  // 20ms 扫描
+	});
+	FakeWebSocket.instances.length = 0;
+	try {
+		await bridge.start({ logger, pluginConfig: {} });
+		// 注入一条已过期条目（写入时已早于 now）
+		bridge.__dcPendingRequests.set('ui-exp-1', { connId: 'c_exp', expireAt: Date.now() - 1000 });
+		// 注入一条未过期条目
+		bridge.__dcPendingRequests.set('ui-fresh-1', { connId: 'c_exp', expireAt: Date.now() + 60_000 });
+
+		// 等待至少一次扫描
+		await new Promise((r) => setTimeout(r, 80));
+
+		assert.equal(bridge.__dcPendingRequests.has('ui-exp-1'), false, 'expired entry cleared');
+		assert.equal(bridge.__dcPendingRequests.has('ui-fresh-1'), true, 'fresh entry kept');
+		assert.ok(warns.some((m) => m.includes('dc pending entries expired') && m.includes('count=1')),
+			'should warn on cleanup');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
 });

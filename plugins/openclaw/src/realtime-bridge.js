@@ -35,6 +35,13 @@ const LAG_PROBE_PERIOD_MS = 200;
 const LAG_PROBE_THRESHOLD_MS = 100;
 const LAG_PROBE_MAX_DURATION_MS = 60_000;
 
+// UI 转发 RPC 路由表条目的最大存活时间（24h）。
+// 选 24h 的理由：agent run 极端可达数小时甚至更久；正常 RPC 在终态触达前已自然清除；
+// 24h 足够覆盖几乎所有真实场景，且条目内存压力可忽略（百量级 × 几十字节）。
+const DC_REQ_TTL_MS = 24 * 60 * 60 * 1000;
+// 整表周期扫描间隔（1h）。条目存留误差 0~1h，对内存压力毫无影响。
+const DC_REQ_SCAN_MS = 60 * 60 * 1000;
+
 /**
  * 判断一个出方向 res payload 是否表示 agent RPC 进入 phase-2 终态。
  * 终态 = res 帧 + status !== 'accepted'。覆盖三种情形：
@@ -50,6 +57,19 @@ export function classifyAgentLagStop(payload) {
 	const status = payload?.payload?.status;
 	if (status === 'accepted') return null;
 	return status ?? (payload.ok === false ? 'error' : 'ok');
+}
+
+/**
+ * 判断一个 res 帧是否为终态（不会再有后续同 id 帧跟随）。
+ * 与 OpenClaw 上游 gateway/client.ts 的 `expectFinal && status === "accepted"` 判据严格镜像：
+ * 仅当 payload.status==='accepted' 时为中间态，其他一切（含无 status 字段）均为终态。
+ * 见 docs/designs/dc-rpc-response-unicast.md §2.8。
+ *
+ * @param {object} frame - 待判断的 gateway res 帧
+ * @returns {boolean}
+ */
+export function isFinalResMsg(frame) {
+	return frame?.type === 'res' && frame?.payload?.status !== 'accepted';
 }
 
 function toServerWsUrl(baseUrl, token) {
@@ -108,6 +128,8 @@ export class RealtimeBridge {
 	 * @param {Function} [deps.resolveGatewayAuthToken] - 获取 gateway 认证 token
 	 * @param {Function} [deps.loadDeviceIdentity] - 加载设备身份
 	 * @param {number} [deps.gatewayReadyTimeoutMs] - __waitGatewayReady 默认超时（测试可注入短值）
+	 * @param {number} [deps.dcReqTtlMs] - UI 转发 RPC 路由表条目 TTL（测试可注入短值）
+	 * @param {number} [deps.dcReqScanMs] - UI 转发 RPC 路由表周期扫描间隔（测试可注入短值）
 	 */
 	constructor(deps = {}) {
 		this.__readConfig = deps.readConfig ?? readConfig;
@@ -119,6 +141,8 @@ export class RealtimeBridge {
 		this.__preloadNdc = deps.preloadNdc ?? null;
 		this.__WebSocket = deps.WebSocket; // undefined=使用 ws 包, null=禁用（测试用）, 其他=自定义实现
 		this.__gatewayReadyTimeoutMs = deps.gatewayReadyTimeoutMs ?? 1500;
+		this.__dcReqTtlMs = deps.dcReqTtlMs ?? DC_REQ_TTL_MS;
+		this.__dcReqScanMs = deps.dcReqScanMs ?? DC_REQ_SCAN_MS;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -149,6 +173,10 @@ export class RealtimeBridge {
 		this.__gatewayLastReason = null;     // 最近一次失败原因（用于 gave-up 上报）
 		// agent RPC 进 in-flight 时建探针、phase-2 终态时移除：id -> { interval, timeout, stats }
 		this.__agentLagProbes = new Map();
+		// UI 转发 RPC 路由表：reqId -> { connId, expireAt }
+		// 用于 res 帧按发起方单播；查不到时回退广播兜底（兼容旧 UI / 撞号 / 上游新增中间态字符串等）
+		this.__dcPendingRequests = new Map();
+		this.__dcPendingScanTimer = null;
 	}
 
 	__resolveWebSocket() {
@@ -253,6 +281,8 @@ export class RealtimeBridge {
 			settle({ ok: false, error: 'gateway_closed' });
 		}
 		this.gatewayPendingRequests.clear();
+		// 清空 UI 转发 RPC 路由表：gateway 已断，不会再有响应回来；不主动通知 UI，由 UI 30/60s 超时兜底
+		this.__dcPendingRequests.clear();
 	}
 
 	/** 懒加载 WebRtcPeer（promise 锁防并发重复创建） */
@@ -273,8 +303,8 @@ export class RealtimeBridge {
 		this.__fileHandler.scheduleTmpCleanup(() => this.__listAgentWorkspaces());
 		this.webrtcPeer = new WebRtcPeer({
 			onSend: (msg) => this.__forwardToServer(msg),
-			onRequest: (dcPayload) => {
-				this.__handleGatewayRequestFromDc(dcPayload)
+			onRequest: (dcPayload, connId) => {
+				this.__handleGatewayRequestFromDc(dcPayload, connId)
 					.catch((err) => this.logger.warn?.(`[coclaw] dc request handler error: ${err?.message}`));
 			},
 			onFileRpc: (payload, sendFn) => {
@@ -778,7 +808,7 @@ export class RealtimeBridge {
 				return;
 			}
 			if (payload.type === 'res' || payload.type === 'event') {
-				// 过滤 gateway 的管理层广播事件，这些对 WebChat / plugin 客户端无意义：
+				// (a) 过滤 gateway 的管理层广播事件，这些对 WebChat / plugin 客户端无意义：
 				// - health: 全量状态快照（~3KB, ~60s 一次 + RPC 触发），给 Admin UI 的监控仪表盘用
 				// - tick: gateway WS 保活心跳（30s 一次），UI 隔着 DC 不需要，DC 自己有 probe 机制
 				// 不转发可避免后台时 rpc DC 队列被灌满。上游支持按需订阅前先在插件侧拦截。
@@ -786,11 +816,31 @@ export class RealtimeBridge {
 					&& (payload.event === 'health' || payload.event === 'tick')) {
 					return;
 				}
-				// agent RPC 进入 phase-2 终态时停 lag 探针（详见 classifyAgentLagStop）
+				// (b) agent RPC 进入 phase-2 终态时停 lag 探针（必须放在 (c) 单播分支之前，
+				// 避免命中后探针不停导致 60s 兜底 + 噪声日志）
 				const lagReason = classifyAgentLagStop(payload);
 				if (lagReason !== null) {
 					this.__stopLagProbe(payload.id, lagReason);
 				}
+				// (c) UI 转发 RPC 的 res 单播：按 reqId 查路由表，命中则定向 sendTo
+				if (payload.type === 'res' && typeof payload.id === 'string') {
+					const info = this.__dcPendingRequests.get(payload.id);
+					if (info) {
+						// 终态才清条目；accepted 类中间态保留等下一帧
+						if (isFinalResMsg(payload)) {
+							this.__dcPendingRequests.delete(payload.id);
+						}
+						const delivered = this.webrtcPeer?.sendTo(info.connId, payload);
+						if (!delivered) {
+							// PC 已断 / DC 未 open / 队列拒收：本地 log 丢弃，不退回广播
+							this.__logDebug(
+								`dc res undeliverable: id=${payload.id} connId=${info.connId}`
+							);
+						}
+						return;
+					}
+				}
+				// (d) 兜底广播：覆盖 event 类型 / 映射未命中场景
 				this.webrtcPeer?.broadcast(payload);
 			}
 		});
@@ -818,6 +868,8 @@ export class RealtimeBridge {
 				settle({ ok: false, error: 'gateway_closed' });
 			}
 			this.gatewayPendingRequests.clear();
+			// 同步清空 UI 转发 RPC 路由表（同 __closeGatewayWs 语义）
+			this.__dcPendingRequests.clear();
 			// 调度下一次尝试：仅在 bridge 仍活着、未 gave-up、server WS 健康时；
 			// 其他场景（如 bridge stop、server WS 已断）由上游流程兜底，不参与 gateway 重试。
 			if (this.started && !this.__gatewayGaveUp
@@ -890,9 +942,10 @@ export class RealtimeBridge {
 		});
 	}
 
-	async __handleGatewayRequestFromDc(payload) {
+	async __handleGatewayRequestFromDc(payload, connId) {
 		const ready = await this.__waitGatewayReady();
 		if (!ready || !this.gatewayWs || this.gatewayWs.readyState !== 1) {
+			// OFFLINE 路径在写映射前触发，无脏映射；保留广播语义（属系统状态公告）
 			this.__logDebug(`gateway req drop (offline): id=${payload.id} method=${payload.method}`);
 			this.webrtcPeer?.broadcast({
 				type: 'res',
@@ -905,23 +958,41 @@ export class RealtimeBridge {
 			});
 			return;
 		}
+		// 撞号检测：UUID 全唯一时极小概率，但旧 UI 跨 tab 或 UI bug 可能触发。
+		// 删旧条目让旧响应未来走广播兜底，不主动回错给旧发起方（可能已断）
+		const id = payload.id;
+		if (typeof id === 'string' && this.__dcPendingRequests.has(id)) {
+			this.logger.warn?.(`[coclaw] duplicate dc reqId, dropping previous mapping: id=${id}`);
+			this.__dcPendingRequests.delete(id);
+		}
+		// 写映射：必须在 ready 通过后、send 之前；缺 connId 时退化为旧广播行为
+		if (typeof id === 'string' && connId) {
+			this.__dcPendingRequests.set(id, {
+				connId,
+				expireAt: Date.now() + this.__dcReqTtlMs,
+			});
+		}
 		try {
-			this.__logDebug(`gateway req -> id=${payload.id} method=${payload.method}`);
+			this.__logDebug(`gateway req -> id=${id} method=${payload.method}`);
 			this.gatewayWs.send(JSON.stringify({
 				type: 'req',
-				id: payload.id,
+				id,
 				method: payload.method,
 				params: payload.params ?? {},
 			}));
 			// 仅 agent RPC 启动 lag 探针（覆盖发送 → phase-2 终态全程）。
 			if (payload.method === 'agent') {
-				this.__startLagProbe(payload.id);
+				this.__startLagProbe(id);
 			}
 		}
 		catch {
+			// SEND_FAILED：撤回映射后广播错误响应
+			if (typeof id === 'string') {
+				this.__dcPendingRequests.delete(id);
+			}
 			this.webrtcPeer?.broadcast({
 				type: 'res',
-				id: payload.id,
+				id,
 				ok: false,
 				error: {
 					code: 'GATEWAY_SEND_FAILED',
@@ -1231,6 +1302,29 @@ export class RealtimeBridge {
 		this.logger.info?.(`[coclaw] WebRTC impl: ${implLabel}`);
 		this.logger.info?.(`[coclaw] ${this.__buildEnvLine()}`);
 		remoteLog('bridge.started');
+		// 启动 UI 转发 RPC 路由表周期扫描：1h 间隔扫描 24h 过期条目，避免长程 RPC 残留。
+		// try/catch 兜底：插件运行在 gateway 进程内，timer 回调任何同步抛出都会让进程崩溃
+		// （CLAUDE.md 禁止全局异常兜底），与 __startLagProbe 的实现保持一致。
+		this.__dcPendingScanTimer = setInterval(() => {
+			try {
+				const now = Date.now();
+				let cleaned = 0;
+				for (const [id, info] of this.__dcPendingRequests) {
+					if (info.expireAt <= now) {
+						this.__dcPendingRequests.delete(id);
+						cleaned++;
+					}
+				}
+				if (cleaned > 0) {
+					this.logger.warn?.(`[coclaw] dc pending entries expired: count=${cleaned}`);
+				}
+			}
+			/* c8 ignore next 3 -- 防御性兜底，正常路径下 Map ops + logger.warn 不抛 */
+			catch {
+				// 扫描器自身异常静默吞掉，避免拖垮 gateway。
+			}
+		}, this.__dcReqScanMs);
+		this.__dcPendingScanTimer.unref?.();
 		await this.__connectIfNeeded();
 	}
 
@@ -1276,6 +1370,11 @@ export class RealtimeBridge {
 		this.__gatewayGaveUp = false;
 		this.__gatewayLegacyMode = false;
 		this.__gatewayLastReason = null;
+		// 停止 UI 转发 RPC 路由表的周期扫描
+		if (this.__dcPendingScanTimer) {
+			clearInterval(this.__dcPendingScanTimer);
+			this.__dcPendingScanTimer = null;
+		}
 		this.__closeGatewayWs();
 		if (this.webrtcPeer) {
 			await this.webrtcPeer.closeAll().catch(() => {});
