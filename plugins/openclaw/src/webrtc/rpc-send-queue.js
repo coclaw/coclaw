@@ -238,9 +238,14 @@ export class RpcSendQueue {
 		try { this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] ${msg}`); } catch { /* logger 自身坏了也不能让 send 抛 */ }
 	}
 
-	/** @private remoteLog 安全包装：吃掉 remoteLog 自身抛的异常 */
+	/**
+	 * @private remoteLog 安全包装。
+	 * 当前 `remoteLog` 实现同步路径仅做数组操作 + flush().catch()，不抛异常，本 catch 块覆盖率因此为 0。
+	 * 保留 try/catch 是为了让"send 不抛"契约不依赖 remoteLog 模块的具体实现——如果未来 remoteLog
+	 * 内部加入可能抛的同步路径（如序列化、外部 sink 注入），此 wrapper 仍能兜底。
+	 */
 	__safeRemoteLog(text) {
-		try { remoteLog(text); } catch { /* remoteLog 通道坏了也不能让 send 抛 */ }
+		try { remoteLog(text); } catch { /* 未来防御：见上方注释 */ }
 	}
 }
 

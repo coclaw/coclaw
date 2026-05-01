@@ -778,9 +778,9 @@ export class WebRtcPeer {
 	}
 
 	__logDebug(message) {
-		if (typeof this.logger?.debug === 'function') {
-			this.logger.debug(`${this.__rtcTag} ${message}`);
-		}
+		if (typeof this.logger?.debug !== 'function') return;
+		try { this.logger.debug(`${this.__rtcTag} ${message}`); }
+		catch { /* 上层（broadcast / sendTo / sendFn 等的 stringify catch）依赖 __logDebug 不抛 */ }
 	}
 }
 

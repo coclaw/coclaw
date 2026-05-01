@@ -1164,7 +1164,7 @@ test('WebRtcPeer: sendTo 遇到 JSON.stringify 抛（循环引用）→ 返回 f
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: files sendFn 遇到 JSON.stringify 抛（循环引用）→ 不抛', async () => {
+test('WebRtcPeer: files sendFn 遇到 JSON.stringify 抛（循环引用）→ 不抛，且不发任何坏数据', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -1178,11 +1178,13 @@ test('WebRtcPeer: files sendFn 遇到 JSON.stringify 抛（循环引用）→ �
 		impl: 'ndc',
 	});
 	await peer.handleSignaling(makeOffer('c_s_circ3'));
-	const dc = makeMockRpcDc();
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
 	PC.instances[0].ondatachannel({ channel: dc });
 	assert.doesNotThrow(() => {
 		dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'tcir', method: 'coclaw.files.list', params: {} }) });
 	});
+	assert.equal(sent.length, 0, 'stringify 失败时不应有任何 dc.send 发出');
 	await peer.closeAll();
 });
 
@@ -1277,6 +1279,39 @@ test('WebRtcPeer: pion — onselectedcandidatepairchange 触发 __sendPeerTransp
 	const evts = frames.filter((f) => f.event === 'coclaw.rtc.peerTransport');
 	assert.equal(evts.length, 1);
 	assert.equal(evts[0].payload.relayProtocol, 'udp');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: pion — __sendPeerTransport sendTo 队列拒收（返回 false）→ 回滚签名以便下次重试', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_pt_drop'));
+	const pc = PC.instances[0];
+	pc.selectedCandidatePair = {
+		local: { type: 'relay', address: '1.1.1.1', port: 1, protocol: 'udp', relayProtocol: 'tcp' },
+		remote: { type: 'host', address: '2.2.2.2', port: 2, protocol: 'udp' },
+	};
+	const dc = makeMockRpcDc();
+	pc.ondatachannel({ channel: dc });
+	dc.onopen();
+	await flushMicrotasks();
+
+	// dc.onopen 已经发过一次（签名记下），先清空让 onselectedcandidatepairchange 走完整路径
+	const session = peer.__sessions.get('c_pt_drop');
+	assert.notEqual(session.__lastPeerTransportSig, null, 'dc.onopen 应已记下签名');
+	session.__lastPeerTransportSig = null;
+	// 让队列拒收（模拟 q.send 因队列满返回 false）
+	session.rpcSendQueue.send = () => false;
+	pc.onselectedcandidatepairchange();
+	await flushMicrotasks();
+	// 签名应被回滚为 null，下次相同 pair 变化时可重发
+	assert.equal(session.__lastPeerTransportSig, null, 'sendTo 返回 false 时签名应被回滚');
 
 	await peer.closeAll();
 });

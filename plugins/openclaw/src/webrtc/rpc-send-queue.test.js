@@ -835,6 +835,31 @@ test('契约: logger.warn 自身抛异常时 send 不抛（safe wrapper 兜底�
 	q.close();
 });
 
+test('契约: __safeInfo 在 logger.info 抛时不传染（drain overflow-end 路径）', () => {
+	resetRemoteLog();
+	const dc = makeMockDc();
+	const evilLogger = {
+		warn: () => {},
+		info: () => { throw new Error('logger.info broken'); },
+		error: () => {},
+		debug: () => {},
+	};
+	const q = new RpcSendQueue({
+		dc,
+		maxMessageSize: 65536,
+		getNextMsgId: nextMsgId,
+		logger: evilLogger,
+	});
+	// 制造 overflow-start 后，drain 触发 overflow-end → 命中 __safeInfo
+	injectBinaryItem(q, MAX_QUEUE_BYTES + 50);
+	q.send('{"x":1}'); // 触发 overflow-start
+	assert.equal(q.queueOverflowActive, true);
+	dc.bufferedAmount = 0;
+	assert.doesNotThrow(() => q.onBufferedAmountLow(), 'overflow-end 路径中 logger.info 抛不应传染到 drain');
+	assert.equal(q.queueOverflowActive, false);
+});
+
+
 test('契约: 非 string 入参（Buffer/null/undefined/对象）→ drop 返回 false，不调用 Buffer.byteLength', () => {
 	resetRemoteLog();
 	const cases = [
