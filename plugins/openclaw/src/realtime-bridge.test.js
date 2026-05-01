@@ -4095,6 +4095,8 @@ test('dc unicast: sendTo failure logs debug, no broadcast fallback', async () =>
 		gwWs.emit('message', {
 			data: JSON.stringify({ type: 'res', id: 'ui-und-1', ok: true, payload: { status: 'ok' } }),
 		});
+		// 阶段 1 后 ws.message listener 是 async（await sendTo），需要 flush 微任务
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
 		assert.ok(debugs.some((m) => m.includes('dc res undeliverable') && m.includes('ui-und-1')));
 		assert.equal(broadcasted.length, 0, 'must not fall back to broadcast');
 	} finally {

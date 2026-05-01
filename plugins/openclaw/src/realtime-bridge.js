@@ -727,7 +727,7 @@ export class RealtimeBridge {
 		let wasReady = false;               // 本 WS 曾经握手成功（区分"握手失败"与"成功后断开"）
 		let lastChallengeNonce = '';        // 最近一次 challenge 的 nonce，legacy 回退时复用
 
-		ws.addEventListener('message', (event) => {
+		ws.addEventListener('message', async (event) => {
 			let payload = null;
 			try {
 				payload = JSON.parse(String(event.data ?? '{}'));
@@ -830,7 +830,8 @@ export class RealtimeBridge {
 						if (isFinalResMsg(payload)) {
 							this.__dcPendingRequests.delete(payload.id);
 						}
-						const delivered = this.webrtcPeer?.sendTo(info.connId, payload);
+						// sendTo 阶段 1 改为 async（admission 决策 await）；外层 listener 已是 async
+						const delivered = await this.webrtcPeer?.sendTo(info.connId, payload);
 						if (!delivered) {
 							// PC 已断 / DC 未 open / 队列拒收：本地 log 丢弃，不退回广播
 							this.__logDebug(

@@ -1,5 +1,7 @@
 import { createReassembler } from './dc-chunking.js';
-import { RpcSendQueue, DC_LOW_WATER_MARK } from './rpc-send-queue.js';
+import { MemoryQueue } from '../utils/memory-queue.js';
+import { RpcDcSender, DC_LOW_WATER_MARK } from './rpc-dc-sender.js';
+import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
 
 // 单个 session 内 file DC 历史快照的容量上限（满后按 FIFO 淘汰最老条目）。
@@ -41,7 +43,7 @@ export class WebRtcPeer {
 		this.__PeerConnection = PeerConnection;
 		this.__impl = impl ?? null;
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
-		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcSendQueue: RpcSendQueue|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
+		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
 	}
 
@@ -81,11 +83,15 @@ export class WebRtcPeer {
 			session.__pluginProbeInFlight = null;
 		}
 		this.__sessions.delete(connId);
-		// 显式关闭 rpc 发送队列：dc.onclose 路径中 `sessions.get(connId)` 已返回 undefined 而短路，
-		// 此处不主动 close 会丢失 drop 汇总 remoteLog 诊断
-		if (session.rpcSendQueue) {
-			session.rpcSendQueue.close();
-			session.rpcSendQueue = null;
+		// 显式关闭 rpc 链路：dc.onclose 路径中 `sessions.get(connId)` 已返回 undefined 而短路，
+		// 此处不主动 close 会丢失 drop 汇总 remoteLog 诊断 + consumeLoop 泄漏
+		if (session.rpcDcSender || session.rpcQueue) {
+			session.rpcDcSender?.close();
+			await session.rpcQueue?.destroy();
+			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => {});
+			session.rpcDcSender = null;
+			session.rpcQueue = null;
+			session.rpcConsumeLoop = null;
 			session.rpcChannel = null;
 		}
 		// 先 detach 事件，防止 pc.close() 异步触发 onconnectionstatechange 删除新 session
@@ -108,7 +114,7 @@ export class WebRtcPeer {
 		await Promise.all(closing);
 	}
 
-	/** 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 RpcSendQueue 流控） */
+	/** 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 MemoryQueue + RpcDcSender 流控） */
 	broadcast(payload) {
 		let jsonStr;
 		try {
@@ -120,9 +126,14 @@ export class WebRtcPeer {
 		}
 		if (typeof jsonStr !== 'string') return; // payload 是 undefined/symbol 时 stringify 返回 undefined
 		for (const session of this.__sessions.values()) {
-			const q = session.rpcSendQueue;
+			const q = session.rpcQueue;
 			if (q && session.rpcChannel?.readyState === 'open') {
-				q.send(jsonStr);
+				// fire-and-forget：admission 决策返回 boolean Promise，broadcast 不关心结果；
+				// 内部异常（mutex 等极冷路径）catch 防 unhandled rejection
+				q.enqueue(jsonStr).catch((err) => {
+					/* c8 ignore next -- enqueue 仅在 mutex 异常等极冷路径 reject；类型校验已由调用方完成 */
+					this.__logDebug(`broadcast enqueue error: ${err?.message}`);
+				});
 			}
 		}
 	}
@@ -130,14 +141,18 @@ export class WebRtcPeer {
 	/**
 	 * 向指定 connId 的 rpc DC 单播一个 JSON 帧（不走 server 中转）。
 	 * 若 session/DC 未就绪或被发送队列拒收（队列满等）返回 false，由调用方决定是否重试。
+	 *
+	 * 阶段 1 改造：enqueue 是 async（mutex 内 admission 决策），sendTo 也变 async；调用方
+	 * 已在 async 上下文（realtime-bridge.js 的 ws.message handler），增加 `await` 即可。
+	 *
 	 * @param {string} connId
 	 * @param {object} payload - 完整的 JSON 帧（通常是 { type: 'event', event, payload }）
-	 * @returns {boolean} true=已入队发送；false=session 不存在 / DC 未 open / payload 不可序列化 / 发送队列拒收
+	 * @returns {Promise<boolean>} true=已入队发送；false=session 不存在 / DC 未 open / payload 不可序列化 / 发送队列拒收
 	 */
-	sendTo(connId, payload) {
+	async sendTo(connId, payload) {
 		const session = this.__sessions.get(connId);
 		if (!session) return false;
-		const q = session.rpcSendQueue;
+		const q = session.rpcQueue;
 		if (!q || session.rpcChannel?.readyState !== 'open') return false;
 		let jsonStr;
 		try {
@@ -147,7 +162,7 @@ export class WebRtcPeer {
 			return false;
 		}
 		if (typeof jsonStr !== 'string') return false;
-		return q.send(jsonStr);
+		return await q.enqueue(jsonStr);
 	}
 
 	async __handleOffer(msg) {
@@ -180,12 +195,13 @@ export class WebRtcPeer {
 				this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
 				try {
 					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
-					// 重协商 SDP 可能变更 a=max-message-size，同步刷新 queue 分片阈值；
-					// queue 中已入队的 chunks 按旧值分片保留，新消息用新值
+					// 重协商 SDP 可能变更 a=max-message-size，同步刷新 sender 分片阈值；
+					// queue 存的是完整字符串（buildChunks 在 sender.send 内同步完成），
+					// 已开始分片的当前消息用旧 size，下一条消息用新 size
 					const newMMS = this.__resolveMaxMessageSize(existing.pc, msg.payload.sdp);
 					if (newMMS !== existing.remoteMaxMessageSize) {
 						existing.remoteMaxMessageSize = newMMS;
-						if (existing.rpcSendQueue) existing.rpcSendQueue.maxMessageSize = newMMS;
+						if (existing.rpcDcSender) existing.rpcDcSender.maxMessageSize = newMMS;
 					}
 					const answer = await existing.pc.createAnswer();
 					await existing.pc.setLocalDescription(answer);
@@ -268,7 +284,7 @@ export class WebRtcPeer {
 
 		const remoteMaxMessageSize = this.__resolveMaxMessageSize(pc, msg.payload.sdp);
 
-		const session = { pc, rpcChannel: null, rpcSendQueue: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
+		const session = { pc, rpcChannel: null, rpcQueue: null, rpcDcSender: null, rpcConsumeLoop: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
 		this.__sessions.set(connId, session);
 
 		// ICE candidate → 发给 UI，并统计各类型 candidate 数量
@@ -420,7 +436,7 @@ export class WebRtcPeer {
 				}
 				// ICE restart 或初次选中都会触发；让出一次 CPU 后再单播 transport 信息。
 				// 签名去重保证 pair 不变时不会重复发送。
-				queueMicrotask(() => this.__sendPeerTransport(connId));
+				queueMicrotask(() => { this.__sendPeerTransport(connId).catch(() => {}); });
 			};
 		}
 
@@ -487,28 +503,62 @@ export class WebRtcPeer {
 	}
 
 	__setupDataChannel(connId, dc) {
-		// rpc DC 发送流控：每条 rpc DC 绑定一个 RpcSendQueue，广播与 files RPC 响应均经此出口
+		// rpc DC 发送流控：MemoryQueue（admission + 边沿日志）+ RpcDcSender（分片 + 背压）
+		// 通过消费循环串起来。广播 / sendTo / files sendFn 都向 queue.enqueue，sender 从 queue 拉
 		const session = this.__sessions.get(connId);
 		if (session && dc.label === 'rpc') {
 			if ('bufferedAmountLowThreshold' in dc) {
 				dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
 			}
-			session.rpcSendQueue = new RpcSendQueue({
+			const queue = new MemoryQueue({
+				id: connId,
+				bypassAdmission: isAgentRunResponse,
+				logger: this.logger,
+				tag: `conn=${connId}`,
+			});
+			const sender = new RpcDcSender({
 				dc,
 				maxMessageSize: session.remoteMaxMessageSize,
 				getNextMsgId: () => session.nextMsgId++,
 				logger: this.logger,
 				tag: `conn=${connId}`,
 			});
+			session.rpcQueue = queue;
+			session.rpcDcSender = sender;
 			dc.onbufferedamountlow = () => {
-				session.rpcSendQueue?.onBufferedAmountLow();
+				session.rpcDcSender?.onBufferedAmountLow();
 			};
+			// 起消费循环：从 queue 拉一条 → await sender.send()。sender close 时循环 break。
+			// finally 兜底关闭：覆盖 dc.send 中途抛错 / 异常退出场景——dc.onclose 不一定会及时
+			// 触发清理（如 readyState 短暂 open 但 send 失败），主动 close+destroy 避免 queue/sender
+			// 残留导致后续 broadcast 入队后无人消费。两个 close/destroy 都幂等。
+			session.rpcConsumeLoop = (async () => {
+				try {
+					for await (const str of queue) {
+						try {
+							await sender.send(str);
+						} catch (err) {
+							if (err.code === 'SENDER_CLOSED') break;
+							// safe-wrap：logger.warn 自身抛不能让消费循环挂掉
+							try { this.logger.warn?.(`${this.__rtcTag} [${connId}] rpc-dc.send-failed code=${err.code} size=${str.length}`); }
+							/* c8 ignore next -- logger 自身抛是极冷防御路径 */
+							catch { /* swallow */ }
+						}
+					}
+				} finally {
+					sender.close();
+					await queue.destroy().catch(() => {});
+				}
+			})();
+			// unhandled rejection 防御：循环 promise 自身极少抛（仅 iterator 实现 bug），但
+			// 一旦逃逸为 unhandled rejection 会让 plugin/gateway 进程退出
+			session.rpcConsumeLoop.catch(() => {});
 		}
 
 		const reassembler = createReassembler((jsonStr) => {
 			const payload = JSON.parse(jsonStr);
 			// DC 探测：立即回复，不走 gateway
-			// 故意绕过 RpcSendQueue：probe-ack 仅用于测量传输层（SCTP/DTLS）健康，
+			// 故意绕过 MemoryQueue + RpcDcSender：probe-ack 仅用于测量传输层（SCTP/DTLS）健康，
 			// 走 queue 会把应用层积压压力错误地映射到"DC 不通"上。
 			if (payload.type === 'probe') {
 				try { dc.send(JSON.stringify({ type: 'probe-ack' })); }
@@ -533,7 +583,12 @@ export class WebRtcPeer {
 							return;
 						}
 						if (typeof jsonStr !== 'string') return;
-						sess?.rpcSendQueue?.send(jsonStr);
+						// fire-and-forget：files sendFn 历史是 sync void 接口，保留语义；
+						// admission 决策内部消化，失败由 overflow 状态机/close 汇总统一上报
+						sess?.rpcQueue?.enqueue(jsonStr).catch((err) => {
+							/* c8 ignore next -- enqueue 仅在 mutex 异常等极冷路径 reject */
+							this.__logDebug(`[${connId}] file sendFn enqueue error: ${err?.message}`);
+						});
 					};
 					this.__onFileRpc(payload, sendFn, connId);
 				} else {
@@ -551,7 +606,7 @@ export class WebRtcPeer {
 			// queueMicrotask 让出一次 CPU：确保 pion 侧 selectedCandidatePair setter 已 assign，
 			// 同时避免在 onopen 同步栈里触发可能的重入。
 			if (dc.label === 'rpc') {
-				queueMicrotask(() => this.__sendPeerTransport(connId));
+				queueMicrotask(() => { this.__sendPeerTransport(connId).catch(() => {}); });
 			}
 		};
 		dc.onclose = () => {
@@ -560,8 +615,13 @@ export class WebRtcPeer {
 			reassembler.reset();
 			const sess = this.__sessions.get(connId);
 			if (sess && dc.label === 'rpc') {
-				sess.rpcSendQueue?.close();
-				sess.rpcSendQueue = null;
+				// dc.onclose 是 sync 回调，不能 await consumeLoop。仅触发 close + destroy；
+				// consumeLoop 通过 sender.close → SENDER_CLOSED → break + queue.destroy → done 自然退出
+				sess.rpcDcSender?.close();
+				sess.rpcQueue?.destroy().catch(() => {});
+				sess.rpcDcSender = null;
+				sess.rpcQueue = null;
+				sess.rpcConsumeLoop = null;
 				sess.rpcChannel = null;
 			}
 		};
@@ -586,9 +646,12 @@ export class WebRtcPeer {
 	__dumpSessionState(connId, session, state) {
 		const rpcState = session.rpcChannel?.readyState ?? 'none';
 		const fileSummary = this.__summarizeFileChannels(session.fileChannels);
-		const q = session.rpcSendQueue;
+		const q = session.rpcQueue;
 		const queueInfo = q
-			? `queueLen=${q.queue.length} queueBytes=${q.queueBytes} dropped=${q.droppedCount}`
+			? (() => {
+				const s = q.stats();
+				return `queueLen=${s.memCount} queueBytes=${s.memBytes} dropped=${s.droppedCount}`;
+			})()
 			: 'queue=none';
 		this.__remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
 		this.logger.info?.(`${this.__rtcTag} [${connId}] dump state=${state} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=${fileSummary}`);
@@ -668,7 +731,7 @@ export class WebRtcPeer {
 	 *
 	 * @param {string} connId
 	 */
-	__sendPeerTransport(connId) {
+	async __sendPeerTransport(connId) {
 		const session = this.__sessions.get(connId);
 		if (!session) return;
 		const local = session.pc?.selectedCandidatePair?.local;
@@ -683,13 +746,14 @@ export class WebRtcPeer {
 		const sig = `${payload.candidateType}|${payload.protocol}|${payload.relayProtocol ?? ''}`;
 		if (session.__lastPeerTransportSig === sig) return;
 		session.__lastPeerTransportSig = sig;
-		const ok = this.sendTo(connId, {
+		// sendTo 阶段 1 改 async：await admission 决策结果
+		const ok = await this.sendTo(connId, {
 			type: 'event',
 			event: 'coclaw.rtc.peerTransport',
 			payload,
 		});
 		if (!ok) {
-			// DC 尚未 open，回滚签名以便 dc.onopen 再次触发时重发
+			// DC 尚未 open / 队列拒收：回滚签名以便 dc.onopen 再次触发时重发
 			session.__lastPeerTransportSig = null;
 			return;
 		}
@@ -699,7 +763,7 @@ export class WebRtcPeer {
 	/**
 	 * 主动探针：在 rpc DC 上发一个 plugin-probe，期待 UI 回 plugin-probe-ack。
 	 * 用于区分"pion 报告 connected 但 UI 其实没收到数据"与"UI 真的收到了但没记录事件"。
-	 * 绕过 RpcSendQueue（与 probe-ack 对称），仅测量传输层，不受应用层积压影响。
+	 * 绕过 MemoryQueue + RpcDcSender（与 probe-ack 对称），仅测量传输层，不受应用层积压影响。
 	 * 同一 session 同时只保留一条 in-flight 探针；超时仅打日志，不影响业务恢复。
 	 */
 	__sendPluginProbe(connId) {

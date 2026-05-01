@@ -57,7 +57,7 @@ export function buildChunks(jsonStr, maxMessageSize, getNextMsgId) {
 
 /**
  * 按需分片并发送消息（薄包装：buildChunks + dc.send）
- * 注意：无应用层流控；生产路径请使用 RpcSendQueue
+ * 注意：无应用层流控；生产路径请使用 MemoryQueue + RpcDcSender
  * @param {object} dc - DataChannel
  * @param {string} jsonStr - 已序列化的 JSON 字符串
  * @param {number} maxMessageSize - 对端声明的 maxMessageSize
