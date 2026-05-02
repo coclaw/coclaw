@@ -2677,6 +2677,34 @@ test('WebRtcPeer: dc.onclose 关闭 sender + 销毁 queue，之后 broadcast 不
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: dc.send 持续抛 → consumeLoop 自身退出后清空 session 三字段（finally 防御）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_sq_finally'));
+	// dc 一直 open 但 send 抛 → sender 包成 SENDER_CLOSED → loop break → finally
+	// 此场景下 dc.onclose 不会自动触发（dc.readyState 仍 'open'），fields 是否清完全靠 finally 防御
+	const dc = makeMockRpcDc({ send: () => { throw new Error('persistent dc.send error'); } });
+	PC.instances[0].ondatachannel({ channel: dc });
+
+	const session = peer.__sessions.get('c_sq_finally');
+	assert.ok(session.rpcQueue);
+	assert.ok(session.rpcDcSender);
+	assert.ok(session.rpcConsumeLoop);
+
+	peer.broadcast({ type: 'event', event: 'trigger' });
+	await flushAsync();
+	// finally 防御兜底：dc 仍 'open' 没触发 dc.onclose，三字段应由 loop 自身的 finally 清空
+	assert.equal(session.rpcQueue, null);
+	assert.equal(session.rpcDcSender, null);
+	assert.equal(session.rpcConsumeLoop, null);
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: broadcast 遇到 buildChunks 异常 → 不抛、消费循环 warn 上报后继续', async () => {
 	const PC = MockPCFactory();
 	const warnMsgs = [];

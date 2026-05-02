@@ -162,7 +162,13 @@ export class WebRtcPeer {
 			return false;
 		}
 		if (typeof jsonStr !== 'string') return false;
-		return await q.enqueue(jsonStr);
+		try {
+			return await q.enqueue(jsonStr);
+		} catch (err) {
+			/* c8 ignore next 3 -- enqueue 仅在 mutex 异常等极冷路径 reject；与 broadcast/file sendFn 对称 */
+			this.__logDebug(`[${connId}] sendTo enqueue error: ${err?.message}`);
+			return false;
+		}
 	}
 
 	async __handleOffer(msg) {
@@ -548,6 +554,15 @@ export class WebRtcPeer {
 				} finally {
 					sender.close();
 					await queue.destroy().catch(() => {});
+					// 防御性清字段：若 loop 因 sender 内部错误自行退出（dc.onclose / closeByConnId
+					// 都不是触发方），三字段会暂留非 null 直到 dc.onclose 最终到达。期间 producer
+					// 看到非 null 会以为通道活着——虽然 enqueue 安全返 false，但减少误导窗口。
+					// 身份比对避免误清"dc.onclose 已先清掉、并被新一轮 setup 装入新实例"的字段。
+					if (session.rpcQueue === queue) {
+						session.rpcQueue = null;
+						session.rpcDcSender = null;
+						session.rpcConsumeLoop = null;
+					}
 				}
 			})();
 			// unhandled rejection 防御：循环 promise 自身极少抛（仅 iterator 实现 bug），但
