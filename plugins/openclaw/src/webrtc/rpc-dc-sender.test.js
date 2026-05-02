@@ -478,3 +478,35 @@ test('readyState 飞升 closing 期间 dc.send 抛 → SENDER_CLOSED', async () 
 	// 前 2 个 chunk 成功
 	assert.equal(dc.sent.length, 2);
 });
+
+// --- 边界：BAL waiter 阻塞期间 dc 进 closing（sender.closed 未设）+ BAL 唤醒后 dc.send 抛 ---
+
+test('BAL 阻塞期间 dc 进 closing → BAL 唤醒后 dc.send 抛 InvalidStateError → 兜底为 SENDER_CLOSED', async () => {
+	resetRemoteLog();
+	// dc 顶到高水位，sender 进入 BAL waiter 阻塞
+	const { dc, sender } = makeSender({ bufferedAmount: DC_HIGH_WATER_MARK + 1 });
+	const sendPromise = sender.send('"hi"');
+	await flushMicrotasks();
+	assert.equal(sender.balWaiters.length, 1, 'sender 应卡在 BAL waiter');
+
+	// 模拟 dc 在 BAL 阻塞期间进入 closing，但 dc.onclose 还没触发 → sender.closed 仍是 false
+	// BAL 触发 → __sendOne 重检 closed=false → 调 dc.send → 因 readyState='closing' 抛
+	dc.bufferedAmount = 0;
+	dc.readyState = 'closing';
+	const origSend = dc.send;
+	dc.send = function (data) {
+		throw new Error('InvalidStateError: dc not open');
+	};
+
+	sender.onBufferedAmountLow();
+
+	await assert.rejects(
+		sendPromise,
+		(err) => err.code === 'SENDER_CLOSED',
+	);
+	// 兜底路径走通：sender.closed 仍为 false（dc.onclose 才会调 close()），但 send 已 reject
+	assert.equal(sender.closed, false);
+	assert.equal(dc.sent.length, 0);
+	// 防 lint：origSend 引用已捕获，确认 mock 替换前后未污染
+	assert.notEqual(dc.send, origSend);
+});
