@@ -670,25 +670,44 @@ test('waitForClaimAndSave should retry on PENDING then resolve on BOUND', async 
 	assert.equal(callCount, 2);
 });
 
-test('waitForClaimAndSave should retry on 408 timeout error', async () => {
+test('waitForClaimAndSave: server 408 CLAIM_TIMEOUT 视为终态过期，立即抛错', async () => {
+	let callCount = 0;
+	const mockWait = async () => {
+		callCount += 1;
+		const err = new Error('timeout');
+		err.response = { status: 408, data: { code: 'CLAIM_TIMEOUT', message: 'Claim code expired' } };
+		throw err;
+	};
+	const mockWrite = async () => {};
+
+	await assert.rejects(
+		() => waitForClaimAndSave(
+			{ serverUrl: 'http://127.0.0.1:8000', code: 'c3', waitToken: 'wt' },
+			{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
+		),
+		/claim code expired/,
+	);
+	assert.equal(callCount, 1, '不应 retry');
+});
+
+test('waitForClaimAndSave: 没有 CLAIM_TIMEOUT body 的 408 仍当瞬态错误重试', async () => {
 	let callCount = 0;
 	const mockWait = async () => {
 		callCount += 1;
 		if (callCount === 1) {
-			const err = new Error('timeout');
-			err.response = { status: 408 };
+			const err = new Error('408');
+			err.response = { status: 408, data: null };
 			throw err;
 		}
-		return { clawId: 'b101', token: 'tk-101' };
+		return { clawId: 'b101b', token: 'tk-101b' };
 	};
 	const mockWrite = async () => {};
 
 	const result = await waitForClaimAndSave(
-		{ serverUrl: 'http://127.0.0.1:8000', code: 'c3', waitToken: 'wt' },
+		{ serverUrl: 'http://127.0.0.1:8000', code: 'c3b', waitToken: 'wt' },
 		{ waitClaimCode: mockWait, writeCfg: mockWrite, retryDelayMs: 0 },
 	);
-
-	assert.equal(result.clawId, 'b101');
+	assert.equal(result.clawId, 'b101b');
 	assert.equal(callCount, 2);
 });
 

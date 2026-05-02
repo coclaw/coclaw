@@ -140,7 +140,12 @@ export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }
 			if (err?.response?.status === 404) {
 				throw new Error('claim code not found or expired');
 			}
-			// 其他所有错误（HTTP 408/500、网络超时、TimeoutError 等）延迟后重试，
+			// server 408 + CLAIM_TIMEOUT body 表示 claim 在 server 端已过期，与 404 同列终态；
+			// 没有 CLAIM_TIMEOUT body 的 408（极少见）保持瞬态错误重试
+			if (err?.response?.status === 408 && err.response?.data?.code === 'CLAIM_TIMEOUT') {
+				throw new Error('claim code expired');
+			}
+			// 其他所有错误（HTTP 500、网络超时、TimeoutError 等）延迟后重试，
 			// 确保后台等待不会因瞬时故障而终止
 			await new Promise((r) => setTimeout(r, retryDelayMs));
 			continue;
