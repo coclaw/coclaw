@@ -119,6 +119,27 @@ test('send: 大消息分片 → 全部 chunk 顺序发出', async () => {
 	for (const s of dc.sent) assert.equal(s.readUInt32BE(1), msgId);
 });
 
+test('send: payload byteLen 恰好等于 maxMessageSize → fast-path 单 string 帧（边界不分片）', async () => {
+	resetRemoteLog();
+	const { dc, sender } = makeSender({}, { maxMessageSize: 100 });
+	const payload = jsonOfBytes(100);
+	await sender.send(payload);
+	// 锁定边界：== maxMessageSize 走不分片路径，dc.send 收到原始 string 一次
+	assert.equal(dc.sent.length, 1);
+	assert.equal(typeof dc.sent[0], 'string');
+	assert.equal(dc.sent[0], payload);
+});
+
+test('send: payload byteLen = maxMessageSize + 1 → 分片帧 Buffer（边界翻转）', async () => {
+	resetRemoteLog();
+	const { dc, sender } = makeSender({}, { maxMessageSize: 100 });
+	const payload = jsonOfBytes(101);
+	await sender.send(payload);
+	// 锁定边界：> maxMessageSize 走分片路径，dc.send 全部收到 Buffer
+	assert.ok(dc.sent.length >= 2);
+	for (const s of dc.sent) assert.ok(Buffer.isBuffer(s));
+});
+
 test('send: bufferedAmount 顶到 HIGH → 阻塞，BAL 唤醒后继续', async () => {
 	resetRemoteLog();
 	const { dc, sender } = makeSender({ bufferedAmount: DC_HIGH_WATER_MARK }, { maxMessageSize: 1000 });
