@@ -1182,6 +1182,122 @@ test('coclaw.agent.abort skips remoteLog for invalid sessionId', () => {
 	assert.equal(rel.length, 0);
 });
 
+// --- coclaw.agent.abort heuristic gone fallback (Phase B) ---
+
+test('coclaw.agent.abort upgrades not-found to gone when both duration gates met', () => {
+	__resetRemoteLogPlugin();
+	const handlers = new Map();
+	const infos = [];
+	const logger = { info: (m) => infos.push(m), warn() {}, error() {}, log() {} };
+	plugin.register(createMockApi(handlers, { logger }));
+	let out = null;
+	withStubbedEmbeddedRunState({ activeRuns: new Map() }, () => {
+		handlers.get('coclaw.agent.abort')({
+			params: { sessionId: 'sid-gone', runDuration: 3 * 60 * 1000, abortDuration: 60 * 1000 },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+	});
+	assert.equal(out.ok, true);
+	assert.deepEqual(out.payload, { ok: false, reason: 'gone' });
+	const rel = __remoteLogBuffer.filter((r) => r.text.startsWith('abort.gone'));
+	assert.equal(rel.length, 1);
+	assert.equal(rel[0].text, 'abort.gone sid=sid-gone runDur=180000 abortDur=60000');
+	assert.ok(infos.some((m) => /result sessionId=sid-gone ok=false reason=gone/.test(m)));
+});
+
+test('coclaw.agent.abort stays not-found when only run gate met (abort gate shy)', () => {
+	__resetRemoteLogPlugin();
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let out = null;
+	withStubbedEmbeddedRunState({ activeRuns: new Map() }, () => {
+		handlers.get('coclaw.agent.abort')({
+			params: { sessionId: 'sid-half', runDuration: 5 * 60 * 1000, abortDuration: 30 * 1000 },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+	});
+	assert.equal(out.ok, true);
+	assert.deepEqual(out.payload, { ok: false, reason: 'not-found' });
+	// not-found 仍走静默路径——单闸命中不应升格、不应噪音上报
+	const rel = __remoteLogBuffer.filter((r) => /sid-half/.test(r.text));
+	assert.equal(rel.length, 0);
+});
+
+test('coclaw.agent.abort stays not-found when old UI omits durations (backward compat)', () => {
+	__resetRemoteLogPlugin();
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let out = null;
+	withStubbedEmbeddedRunState({ activeRuns: new Map() }, () => {
+		handlers.get('coclaw.agent.abort')({
+			params: { sessionId: 'sid-old' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+	});
+	assert.equal(out.ok, true);
+	assert.deepEqual(out.payload, { ok: false, reason: 'not-found' });
+	const rel = __remoteLogBuffer.filter((r) => /sid-old/.test(r.text));
+	assert.equal(rel.length, 0);
+});
+
+test('coclaw.agent.abort treats non-numeric durations as undefined (no leak into log)', () => {
+	__resetRemoteLogPlugin();
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	let out = null;
+	withStubbedEmbeddedRunState({ activeRuns: new Map() }, () => {
+		handlers.get('coclaw.agent.abort')({
+			// 模拟旧 UI 误传字符串 / 中间件改写：handler 必须当作 undefined 处理而非 NaN 或字面值
+			params: { sessionId: 'sid-bad', runDuration: '3min', abortDuration: null },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+	});
+	assert.equal(out.ok, true);
+	assert.deepEqual(out.payload, { ok: false, reason: 'not-found' });
+	// 非数字 durations 不应升格 → 不应有 abort.gone 字符串污染（防止 'runDur=null' / 'runDur=NaN' 之类脏值进 remoteLog）
+	const rel = __remoteLogBuffer.filter((r) => /sid-bad/.test(r.text));
+	assert.equal(rel.length, 0);
+});
+
+test('coclaw.agent.abort cross-tick progression: stays not-found until both gates met then upgrades to gone', () => {
+	__resetRemoteLogPlugin();
+	const handlers = new Map();
+	const infos = [];
+	const logger = { info: (m) => infos.push(m), warn() {}, error() {}, log() {} };
+	plugin.register(createMockApi(handlers, { logger }));
+	const handler = handlers.get('coclaw.agent.abort');
+	// 模拟 UI 持续 500ms tick：sessionId 始终未注册（注册空窗），runDuration / abortDuration 单调增长
+	const ticks = [
+		{ runDuration: 0, abortDuration: 0 },                // t=0
+		{ runDuration: 30 * 1000, abortDuration: 30 * 1000 },// t=30s 双闸都未达
+		{ runDuration: 3 * 60 * 1000, abortDuration: 30 * 1000 }, // t=3min run 达 abort 未达
+		{ runDuration: 4 * 60 * 1000, abortDuration: 60 * 1000 }, // 双闸都达 → 升格 gone
+	];
+	const outs = [];
+	withStubbedEmbeddedRunState({ activeRuns: new Map() }, () => {
+		for (const t of ticks) {
+			let out = null;
+			handler({
+				params: { sessionId: 'sid-progress', ...t },
+				respond(ok, payload, error) { out = { ok, payload, error }; },
+			});
+			outs.push(out);
+		}
+	});
+	// 前 3 tick 都是 not-found，最后一 tick 升格 gone
+	assert.deepEqual(outs[0].payload, { ok: false, reason: 'not-found' });
+	assert.deepEqual(outs[1].payload, { ok: false, reason: 'not-found' });
+	assert.deepEqual(outs[2].payload, { ok: false, reason: 'not-found' });
+	assert.deepEqual(outs[3].payload, { ok: false, reason: 'gone' });
+	// 升格前 plugin 静默（not-found 不打 info / remoteLog），升格那一刻打 1 条 abort.gone
+	const goneRel = __remoteLogBuffer.filter((r) => r.text.startsWith('abort.gone'));
+	assert.equal(goneRel.length, 1);
+	assert.equal(goneRel[0].text, 'abort.gone sid=sid-progress runDur=240000 abortDur=60000');
+	const goneInfos = infos.filter((m) => /sid-progress/.test(m));
+	assert.equal(goneInfos.length, 1);
+	assert.match(goneInfos[0], /reason=gone/);
+});
+
 // --- registrationMode 分叉：cli-metadata / discovery / setup-runtime / full ---
 
 /**

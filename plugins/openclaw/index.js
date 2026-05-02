@@ -14,6 +14,7 @@ import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
 import { createFileHandler } from './src/file-manager/handler.js';
 import { abortAgentRun } from './src/agent-abort.js';
+import { decideCancelResponse } from './src/agent-cancel-heuristic.js';
 import { remoteLog } from './src/remote-log.js';
 
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
@@ -587,6 +588,8 @@ const plugin = {
 		// 取消正在执行的 embedded agent run（通过 OpenClaw 全局 symbol 侧门）
 		// 侧门不存在 / sessionId 未注册 / handle.abort 抛异常时返回 { ok:false, reason } —— UI 静默降级
 		// UI 可能在 OpenClaw 注册 sessionId 前点 STOP（注册空窗期），此时返回 not-found；UI 会按 500ms 间隔重试。
+		// UI 自 v0.20 起额外透传 runDuration / abortDuration（墙钟差，毫秒）供启发判定：
+		// 侧门返 not-found 但双闸都达阈值时升格为 gone，告知 UI 主动收尾。旧 UI 不传时退化为透传 not-found。
 		api.registerGatewayMethod('coclaw.agent.abort', ({ params, respond }) => {
 			try {
 				const sessionId = params?.sessionId;
@@ -595,7 +598,10 @@ const plugin = {
 					respondInvalid(respond, 'sessionId is required');
 					return;
 				}
-				const result = abortAgentRun(sessionId);
+				const abortResult = abortAgentRun(sessionId);
+				const runDuration = typeof params?.runDuration === 'number' ? params.runDuration : undefined;
+				const abortDuration = typeof params?.abortDuration === 'number' ? params.abortDuration : undefined;
+				const result = decideCancelResponse(abortResult, { runDuration, abortDuration });
 				// not-found 是 UI 重试期常态（注册空窗），不打日志避免噪音；其余分支保留 info
 				if (result.reason !== 'not-found') {
 					logger.info?.(`[coclaw.agent.abort] result sessionId=${sessionId} ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}${result.error ? ` error=${result.error}` : ''}`);
@@ -606,6 +612,10 @@ const plugin = {
 				else if (result.reason === 'not-supported') {
 					// 侧门缺失或 handle shape 变化：OpenClaw 升级契约变更的早期信号
 					remoteLog(`abort.not-supported sid=${sessionId}`);
+				}
+				else if (result.reason === 'gone') {
+					// 启发升格：双闸均达阈值，把 not-found 升格为 gone，让 UI 主动 settleByCancel
+					remoteLog(`abort.gone sid=${sessionId} runDur=${runDuration} abortDur=${abortDuration}`);
 				}
 				respond(true, result);
 			}
