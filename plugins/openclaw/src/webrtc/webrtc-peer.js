@@ -66,6 +66,20 @@ export class WebRtcPeer {
 	async closeByConnId(connId) {
 		const session = this.__sessions.get(connId);
 		if (!session) return;
+		// 先 detach 所有 PC 事件，再做后续 await 链。两个目的：
+		// 1. 防止 pc.close() 异步触发 onconnectionstatechange 误删 connId 复用后的新 session
+		// 2. RPC 清理含 await（queue.destroy + consumeLoop），期间若旧 PC 还有滞后回调
+		//    （某些 WebRTC 实现 close 后仍投递事件），可能通过 Map.get(connId) 拿到新 session 误操作
+		//    特别是 ondatachannel：晚到的 channel 会被 __setupDataChannel 装到新 session
+		session.pc.onconnectionstatechange = null;
+		session.pc.onicecandidate = null;
+		session.pc.ondatachannel = null;
+		if ('onselectedcandidatepairchange' in session.pc) {
+			session.pc.onselectedcandidatepairchange = null;
+		}
+		if ('oniceconnectionstatechange' in session.pc) {
+			session.pc.oniceconnectionstatechange = null;
+		}
 		// 清理 failed TTL 定时器
 		if (session.__failedTimer) {
 			clearTimeout(session.__failedTimer);
@@ -93,15 +107,6 @@ export class WebRtcPeer {
 			session.rpcQueue = null;
 			session.rpcConsumeLoop = null;
 			session.rpcChannel = null;
-		}
-		// 先 detach 事件，防止 pc.close() 异步触发 onconnectionstatechange 删除新 session
-		session.pc.onconnectionstatechange = null;
-		session.pc.onicecandidate = null;
-		if ('onselectedcandidatepairchange' in session.pc) {
-			session.pc.onselectedcandidatepairchange = null;
-		}
-		if ('oniceconnectionstatechange' in session.pc) {
-			session.pc.oniceconnectionstatechange = null;
 		}
 		await session.pc.close();
 		this.__remoteLog(`rtc.closed conn=${connId}`);
@@ -513,6 +518,16 @@ export class WebRtcPeer {
 		// 通过消费循环串起来。广播 / sendTo / files sendFn 都向 queue.enqueue，sender 从 queue 拉
 		const session = this.__sessions.get(connId);
 		if (session && dc.label === 'rpc') {
+			// 防御：罕见情况下 session 已有旧三件套（UI 重建 rpc DC 等），先 close + destroy 旧实例。
+			// 否则旧 consumeLoop 会永挂在旧 queue iterator 上不退出，孤儿 sender 持有旧 dc 引用，
+			// 导致内存泄漏。新三件套在下面赋值后 finally 的 identity guard 会保护 OLD loop 不误清新字段。
+			if (session.rpcDcSender || session.rpcQueue) {
+				session.rpcDcSender?.close();
+				// fire-and-forget：__setupDataChannel 是 sync，不能 await；sender.close 已 reject
+				// 所有 BAL waiter，旧 loop 在 microtask 内 SENDER_CLOSED break 进入 finally
+				session.rpcQueue?.destroy().catch(() => { /* c8 ignore next -- 极冷防御 */ });
+				session.rpcConsumeLoop?.catch?.(() => { /* c8 ignore next -- 极冷防御 */ });
+			}
 			if ('bufferedAmountLowThreshold' in dc) {
 				dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
 			}

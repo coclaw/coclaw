@@ -2677,6 +2677,44 @@ test('WebRtcPeer: dc.onclose 关闭 sender + 销毁 queue，之后 broadcast 不
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: 同 session 第二条 rpc DC → 旧三件套被 close + destroy（防御 UI 重建场景）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_rebuild'));
+	const dc1 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc1 });
+
+	const session = peer.__sessions.get('c_rebuild');
+	const oldQueue = session.rpcQueue;
+	const oldSender = session.rpcDcSender;
+	const oldLoop = session.rpcConsumeLoop;
+	assert.ok(oldQueue && oldSender && oldLoop);
+
+	// 模拟 UI 重建 rpc DC：ondatachannel 再来一条 'rpc' label
+	const dc2 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc2 });
+	await flushAsync();
+
+	// 旧三件套应被关闭 / 销毁；新三件套已就位且与旧的不同实例
+	assert.equal(oldSender.closed, true, '旧 sender 应被 close');
+	assert.equal(oldQueue.destroyed, true, '旧 queue 应被 destroy');
+	assert.notEqual(session.rpcQueue, oldQueue, '新 queue 实例已替换');
+	assert.notEqual(session.rpcDcSender, oldSender, '新 sender 实例已替换');
+	assert.notEqual(session.rpcConsumeLoop, oldLoop, '新 consumeLoop 实例已替换');
+	// 旧 loop 应因 SENDER_CLOSED break 退出（finally identity guard 检查 session.rpcQueue===oldQueue
+	// 失败，不会清新字段）
+	await oldLoop;
+	assert.ok(session.rpcQueue, '旧 loop 退出后新 queue 仍在');
+	assert.ok(session.rpcDcSender, '旧 loop 退出后新 sender 仍在');
+
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: dc.send 持续抛 → consumeLoop 自身退出后清空 session 三字段（finally 防御）', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({

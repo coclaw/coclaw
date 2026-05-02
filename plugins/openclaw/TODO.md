@@ -127,6 +127,44 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**（不修）：覆盖前先 close 旧三件套；或在 ondatachannel 内拒绝重复 rpc label。需结合 dc.onclose race（已记录）一起评估。
 
+## __setupDataChannel 装配代码无 try/catch（防御性，不修）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
+**关联**：webrtc-peer.js __setupDataChannel
+
+**问题**：MemoryQueue / RpcDcSender 构造抛出会留下半装配状态——例如 connId 含非法字符会让 MemoryQueue 抛 TypeError，此时 session.rpcQueue 未赋值但 dc 事件 handlers 已设。
+
+**当前实现**：构造抛点在实践中触发不到——connId 由 UI 生成 `c_${UUID}` 格式总是满足 ID_RE；dc 是 ondatachannel 参数永不为 null。
+
+**修复方向**（不修）：包 try/catch 在 `if (session && dc.label === 'rpc')` 段内，失败时 warn + return 不赋值任何字段。属纯防御。
+
+## ICE restart 跨 await 不重验 session 在 Map（预存）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
+**关联**：webrtc-peer.js __handleOffer ICE restart 分支
+
+**问题**：ICE restart 路径含多次 await（setRemoteDescription / createAnswer / setLocalDescription），但每次 await 后没有重验 `this.__sessions.get(connId) === existing`。若中途另一路径删除/替换 session（closeAll / __evictOldestFailed / 第二轮 offer），旧 continuation 仍会更新已无效的 session。
+
+**修复方向**（不修）：每个 await 后加 `if (this.__sessions.get(connId) !== existing) return;`。预存问题，本次重构未引入也未扩大。
+
+## closeAll 用 Promise.all 无 per-session catch（预存）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
+**关联**：webrtc-peer.js closeAll
+
+**问题**：`Promise.all(closing)` 任一 closeByConnId reject 整体 reject。其余 session 仍会跑（Promise.all 不中断已启动的），但调用方拿到 rejection。
+
+**修复方向**（不修）：用 `Promise.allSettled` 或 `closing.map(p => p.catch(...))`。预存。
+
+## __sendPeerTransport 失败后无重试调度（预存）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
+**关联**：webrtc-peer.js __sendPeerTransport
+
+**问题**：sendTo 返回 false 时回滚 sig 允许重试，但重试依赖下次 dc.onopen 或 onselectedcandidatepairchange 事件。若 pair 已稳定、DC 已 open 过、此后这些事件不再触发，transport info 永远不重发。
+
+**修复方向**（不修）：sendTo 失败后挂一个延迟重试，或在 onbufferedamountlow 恢复时检查 sig 为 null 再发。预存——sendTo 改 async 不引入新问题，仅在原本就失败的场景下不重试。
+
 ## 阶段 2 切换 FBQ 的 checklist（不止"一行 import 改"）
 
 **发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
