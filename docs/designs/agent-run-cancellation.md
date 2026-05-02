@@ -1,17 +1,28 @@
 # Agent Run 取消：分阶段实施方案
 
-> **状态**：阶段 1、2、2.5、2.6 已完成；阶段 3 上游 issues 已提交（#66531 / #66532 / #66534 / #66535，2026-04-14），等待维护者反馈；合并后按末尾"CoClaw 侧适配路径"表渐进迁移
+> **状态**：阶段 1、2、2.5、2.6、2.7、2.8 已完成；阶段 3 上游 issues 已提交（#66531 / #66532 / #66534 / #66535，2026-04-14），等待维护者反馈；合并后按末尾"CoClaw 侧适配路径"表渐进迁移
 > **创建时间**：2026-04-14
 > 阶段 1 commits：`5d3d97e` docs + `2bd7f3a` fix(ui)
 > 阶段 2 commits：`3d21a5e` feat(plugin) + `17cc790` feat(ui)
 > 阶段 2.5：UI 主导的 cancel 协调状态机（500ms 重试无 TTL）+ 插件诊断 patch 产品化 + remoteLog 触点（2026-04-15 实施完成）
 > 阶段 2.6：pre-accept 窗口点取消的"假取消"bug 修复——挂起取消意图 + onAccepted 转交 accepted 分支（2026-04-17）
+> 阶段 2.7：UI 容错强化 round 2——gone / not-supported 分支 try/catch + cancelGoneHint 文案修正（2026-05-02 commit `2ed71c7`）
+> 阶段 2.8：plugin 启发式 gone fallback——侧门返 not-found 时按双时长闸门升格 gone（2026-05-02 commit `e0b4212`）
 > **调研依据**：[`docs/openclaw-research/agent-run-cancellation.md`](../openclaw-research/agent-run-cancellation.md)（见 §6.7 注册时序空窗期）
 > **上游遗留问题**：[`docs/openclaw-upstream-issues.md`](../openclaw-upstream-issues.md) "待提交：Agent Run 取消相关"章节
 
 ## 背景（3 行摘要）
 
 当前 `cancelSend` 立即销毁前端 streamingMsgs，导致 main-agent-chat / topic 的用户气泡消逝；且 OpenClaw 底层 agent run 仍在跑，完成后结果不刷新。根因是 `cancelSend` 用了 `settle()` 硬清理、**且没有向服务端发真正的取消信号**——而 OpenClaw 上游既无 `agent.abort` RPC 也未在 `api.runtime.agent` 暴露 abort 接口。唯一的底层真取消能力是 `abortEmbeddedPiRun(sessionId)`，可通过 `globalThis[Symbol.for("openclaw.embeddedRunState")]` 侧门访问（自 OpenClaw `v2026.3.12` 起可用）。
+
+## 取消的双重身份（重要）
+
+随着方案推进，取消逐渐承担了**两个不同性质的职责**，本文档后续阶段都建立在这个认知上：
+
+1. **用户特性**（阶段 1 / 2 / 2.5 / 2.6 / 2.7 的主要动机）——用户点 STOP 想终止当前 agent run，UI + plugin 协同发真终止信号、清状态、给反馈。
+2. **"假跑"兜底**（阶段 2.8 的核心动机）——所谓"假跑"，指 UI 以为 run 还在跑（按钮显 STOP / 气泡显示思考中 / `isRunning(runKey)` 为 true），但**实际后端这个 run 已经结束 / 丢失 / 从来没注册成功**，UI 永远等不到 `lifecycle:end` 把它解开。这种状态下用户能感知到的唯一动作就是"点 STOP"——所以取消通道也成了假跑的最终救援路径。
+
+阶段 2.8 引入的"启发式 gone fallback"就是这个第二职责的产物：plugin 端在侧门返 `not-found` 且 UI 等得够久时，主动把响应升格为 `gone`，让 UI 强制 settle 当前 run、把按钮还给用户。这种升格**是有意接受误判的**——宁可让一个其实还活着的 run 在后台跑完再被 ended guard 静默吃掉，也不要让用户卡在假跑里出不来。
 
 ---
 
@@ -409,6 +420,207 @@ export function abortAgentRun(sessionId) {
 
 ---
 
+## 阶段 2.7：UI 容错强化 + 文案修正（2026-05-02）
+
+### 背景
+
+阶段 2.5 的 cancel 协调状态机里，`gone` / `not-supported` 两个终态分支会调用 `runsStore.settleByCancel(...)` + `getSharedNotifier()?.info/warning(...)` + `i18n.global.t(...)` 三件事，然后才 `resolveFn(...)`。这串调用全部裸在 tick 异步函数体内——任意一个抛异常（注入的 notifier 实现 bug / 未来 i18n 切 strict 模式 / DI 桥未初始化等），后续语句被跳过，**`resolveFn` 永远不被调用，coord promise 永挂**。后果不是单次取消失败那么简单：`cancelSend` 的"幂等返已有 promise"路径（[`chat.store.js:752-754`](../../ui/src/stores/chat.store.js)）会让后续 cancelSend 拿到僵尸 promise，整个会话的取消按钮永久死锁。
+
+同时 deep-review 维度 3 发现 `chat.cancelGoneHint` 文案过强——"the result will appear later" / "结果将稍后显示"暗示自动刷新，但实际 UI 在 gone 路径只触发**一次** `loadMessages`（`__awaitPersistAndDrop`），之后不会自动 refresh。文案与实际行为不符。
+
+### 变更清单
+
+#### 2.7.1 `ui/src/stores/chat.store.js`
+
+`gone` 分支（`:925-949`）和 `not-supported` 分支（`:951-971`）改成：
+
+```
+cleanup();                                 // 状态机先清，与异常解耦
+try {
+  runsStore.settleByCancel(runKey, ...);
+  getSharedNotifier()?.info({ title, description });
+}
+catch (e) {
+  console.warn('[chat] cancelSend gone post-settle hook threw:', e?.message);
+}
+resolveFn({ ok: false, reason: 'gone' }); // 一定调到
+return;
+```
+
+**关键不变量**：
+- `cleanup()` 在 try 之外、`resolveFn` 在 catch 之外——状态机一定先清空、coord promise 一定 resolve；中间副作用是否成功只影响"用户能不能看到 toast"，不影响"取消按钮能否再次点击"
+- catch 块**只 console.warn 不 remoteLog**——这是契约容错（理论上不该抛），打到本地 logger 足够诊断；上 remoteLog 反而可能放大影响范围
+
+#### 2.7.2 12 个 i18n locale 的 `chat.cancelGoneHint`
+
+| 旧文案（隐含自动刷新） | 新文案（提示用户主动检查） |
+|---|---|
+| en: "...the result will appear later." | "If it is still running in the background, you can check back later." |
+| zh-CN: "...结果将稍后显示。" | "如仍在后台运行，可稍后回来查看。" |
+| zh-TW: "...結果將稍後顯示。" | "如仍在背景執行，可稍後回來查看。" |
+| 其余 9 个语言（es / hi / ko / de / vi / pt / ja / fr / ru）同步对齐 | 同语义 |
+
+### 关键决策
+
+1. **为什么 try 外放 cleanup**：状态机里的 `__cancelling` 字段一旦清空，幂等路径就走"建立新协调"分支（不是返回旧 promise）。即使 settle/notify 抛、resolveFn 仍 resolve，外层 coord promise 的消费者最坏拿到一个 stale 的 ok=false 结果，不会卡死。
+2. **为什么 catch 只 console.warn 不抛 / 不 remoteLog**：抛会 propagate 回 tick 异步链路，与"resolveFn 一定调到"的契约自相矛盾；remoteLog 在生产侧 nuxt useNotify / vue-i18n 默认不抛的前提下应当几乎不触发，频繁 remoteLog 反而是噪音。
+3. **为什么不延伸到 `immediate` / `run-ended` 分支**：这两个分支没有 notify 调用（`immediate` 只 console.info + remoteLog；`run-ended` 同），抛点窗口只有 `cleanup` 自身——`cleanup` 是同步赋值 null + clearTimeout，不会抛。
+
+### TDD 复现
+
+P1 复现测试（`ui/src/stores/chat.store.test.js` 内）：mock `notifier.info` 抛 `Error('toast crash')` → 触发 gone 分支 → 在挂 `process.on('unhandledRejection')` 隔离的环境下断言 coord promise 仍 resolve、`outcome.reason === 'gone'`。S1 场景测试：gone settle 后立刻新 sendMessage 不被破坏（关键技巧：阻塞 `sessions.get` 让 `__awaitPersistAndDrop` 中的 loadMessages 不完成，验证 register 内部 `__cleanupRun(oldRunId, 'superseded')` 路径能接管清理）。
+
+### 实施提交
+
+- 单一 commit `2ed71c7`：`fix(ui): harden cancel coordination notify hooks and soften gone hint`
+- changeset `cancel-heuristic-ui-r2.md`（patch 级）
+
+---
+
+## 阶段 2.8：plugin 启发式 gone fallback（2026-05-02）
+
+### 背景：取消作为"假跑"兜底
+
+本阶段的定位是**取消的第二职责**——参见文档头部"取消的双重身份"小节。当 run 实际已经结束 / 丢失 / 从未注册成功，但 UI 收不到 `lifecycle:end`，会卡在"假跑"状态里：按钮显 STOP、`isRunning(runKey)` 为 true、用户除了点 STOP 没有其它动作可做。可问题是——侧门 abort 这一刻也是 `not-found`（因为 run 在 `activeRuns` 里本来就没有），UI 拿到 `not-found` 后按阶段 2.5 的设计是"继续 500ms tick 等"，**于是用户的 STOP 也卡在等里头**。需要一个机制让 plugin 在合适时机告诉 UI"别等了，这个 run 大概率已经死了"。
+
+假跑的几条产生路径：
+
+- 上游 `lifecycle:end` 在某些边界场景（compaction-retry / model-fallback）会 emit 多次，UI 不能凭它一次性判终态——需要配合 `agent.wait` 才能确认；如果配合的请求没送到 / 没回来，UI 就停在那
+- DC 闪断 / 网络丢包让 completion frame / lifecycle:end 没送达
+- `agent.wait` 内部有两套有限 TTL 的状态簿（活跃 5min / 已完成 10min），超时被驱逐后 `wait(0)` 与"run 还在跑"返回的形态难以区分
+
+阶段 2.7 解决的是"settle 自身炸"（异常路径），本阶段解决的是"settle 永远等不到"（信号缺失）。两者一起把"用户点 STOP 后协调流程能走到终点"这个契约补完整。
+
+### 设计要点
+
+**核心思路**：plugin 端有一个独立观察角度——侧门 `activeRuns.get(sid)` 返 undefined 的"miss"包含两层语义：
+1. 注册空窗（合法 not-found）：UI 应继续 tick
+2. run 实际已结束/丢失但终态未送达 UI（病态 not-found）：UI 应主动收尾
+
+单凭 plugin 自己看不出区别。但 UI 知道两个有用的墙钟时长：
+
+- `runDuration`：从 `onAccepted` 到现在
+- `abortDuration`：从首次 STOP 到现在
+
+UI 把这两个时长**透传**给 plugin，plugin 用"双闸"启发判定：`runDuration ≥ 3min && abortDuration ≥ 1min` 且侧门返 not-found 时，把响应**升格为 `gone`**——告知 UI 主动 settleByCancel + 提示用户。
+
+阈值偏保守，宁可让 UI 多 tick 几次也不误升格。
+
+### 决策节点
+
+1. ✅ **协议增量字段放在 RPC params，不放 channel 元数据**：`coclaw.agent.abort` 加 `runDuration` / `abortDuration`，对旧 plugin 无副作用（多余字段被忽略），对旧 UI 也无副作用（不发即 plugin 看到 undefined）。
+2. ✅ **judgment 逻辑放 plugin 端不放 UI 端**：UI 已经在做协调状态机的复杂工作，再加阈值判定会让状态机膨胀；plugin 拿到全部信号后用纯函数决策更内聚。
+3. ✅ **阈值常量硬编码不暴露配置**：3min / 1min 是基于 OpenClaw 当前观察 + 保守 buffer 选定，调阈值需要仔细的工程判断，不应通过插件 config 让用户随意调。后续如有强需求再按阶段 4 处理。
+4. ✅ **判定逻辑提取成独立纯函数**：`agent-cancel-heuristic.js` 单独成模块，零 I/O 零 side effect，便于单测覆盖判定矩阵的每一个 case。
+5. ✅ **handler 端做 `typeof === 'number'` 归一化、heuristic 内做 `Number.isFinite` 拒收**：双层职责不重叠——handler 把 string/null 归一化为 undefined（避免 remoteLog 字符串里出现 `runDur=null`），heuristic 拒收 NaN/Infinity（即使 caller 直传也不误升格）。
+
+### 变更清单
+
+#### 2.8.1 新文件 `plugins/openclaw/src/agent-cancel-heuristic.js`
+
+```
+export const RUN_DURATION_GONE_THRESHOLD_MS = 3 * 60 * 1000;
+export const ABORT_DURATION_GONE_THRESHOLD_MS = 60 * 1000;
+
+export function decideCancelResponse(abortResult, ctx) {
+  if (abortResult.ok) return abortResult;                  // 透传 ok=true
+  if (abortResult.reason !== 'not-found') return abortResult; // 透传 not-supported / abort-threw 等
+  const runHit   = ...&& runDur   >= RUN_DURATION_GONE_THRESHOLD_MS;
+  const abortHit = ...&& abortDur >= ABORT_DURATION_GONE_THRESHOLD_MS;
+  if (runHit && abortHit) return { ok: false, reason: 'gone' }; // 升格
+  return abortResult;                                       // 透传 not-found
+}
+```
+
+#### 2.8.2 `plugins/openclaw/index.js` `coclaw.agent.abort` handler
+
+```
+const abortResult = abortAgentRun(sessionId);
+const runDuration   = typeof params?.runDuration   === 'number' ? params.runDuration   : undefined;
+const abortDuration = typeof params?.abortDuration === 'number' ? params.abortDuration : undefined;
+const result = decideCancelResponse(abortResult, { runDuration, abortDuration });
+// ...既有 logger.info / abort.success / abort.not-supported 触点保留
+else if (result.reason === 'gone') {
+  remoteLog(`abort.gone sid=${sessionId} runDur=${runDuration} abortDur=${abortDuration}`);
+}
+respond(true, result);
+```
+
+#### 2.8.3 UI 侧已有支持（阶段 2.5/2.6 落地时已就位）
+
+- `ui/src/stores/chat.store.js:888-894` — tick 内每次实算 `now - acceptedAt` / `now - startedAt` 透传
+- `ui/src/stores/chat.store.js:925-949` — `gone` 分支已在阶段 2.5 实现（含阶段 2.7 的 try/catch 容错）
+
+### 判定矩阵
+
+| `abortResult.ok` | `abortResult.reason` | runDur ≥ 3min | abortDur ≥ 1min | 输出 |
+|---|---|---|---|---|
+| true | — | — | — | `{ok:true}` |
+| false | `not-supported` | — | — | `{ok:false, reason:'not-supported'}` |
+| false | `not-found` | ✓ | ✓ | `{ok:false, reason:'gone'}`（升格） |
+| false | `not-found` | 其它任意组合（含 undefined）| | `{ok:false, reason:'not-found'}`（保持） |
+| false | `abort-threw` | — | — | `{ok:false, reason:'abort-threw', error}`（透传，不参与启发） |
+
+### 协议向后兼容
+
+- **新 plugin + 旧 UI**：UI 不发 `runDuration` / `abortDuration` → handler `typeof === 'number'` 都不命中 → ctx 字段全 undefined → heuristic 双闸永远不命中 → 保持透传 `not-found`，行为与升级前完全一致
+- **旧 plugin + 新 UI**：UI 多发的两个字段被旧 plugin 忽略 → 旧 plugin 仍只调 `abortAgentRun` 直接 `respond(true, result)` → UI 收到 `not-found` 继续 tick，无任何 throw / 协议错配
+
+### 边界场景
+
+| # | 场景 | 处理 |
+|---|---|---|
+| 1 | 用户取消 short-running run（< 3min） | runDuration 永远 < 3min，永远不升格——必须等真终态信号或自然 run-ended |
+| 2 | 用户取消 long-running run，侧门正常 hit | RPC 返回 ok=true，根本不进 not-found 分支，与启发无关 |
+| 3 | run 跑超 3min，UI 刚点 STOP | abortDuration 远 < 1min，单闸不命中，保持 not-found 继续 tick |
+| 4 | run 跑超 3min + STOP 等超 1min + 侧门仍 not-found | 双闸命中，升格 gone，UI 主动 settleByCancel |
+| 5 | run 实际已结束但 UI tick 还没看到 isRunning=false | 双闸条件如满足则升格 gone（误判），UI settle 后续 lifecycle:end 到达被 ended guard 静默吃掉，无副作用 |
+| 6 | 旧 UI 不传 duration | 永远 not-found，行为退化为阶段 2.5 |
+| 7 | UI 误传字符串 / null / NaN / Infinity | handler typeof + heuristic isFinite 双层守卫归一化为 undefined，永远不升格 |
+
+### 关键设计决策
+
+1. **为什么阈值不开放配置**：阈值是基于 OpenClaw `lifecycle:end` 的 5min TTL（`agent.wait` 内部）反推的——3min run + 1min abort 等于 4min wall-clock，留 1min 余量给"边界 race"。开放配置会让用户调到不安全区间，带来更多 false-positive。
+2. **为什么 abort-threw 不参与启发**：`abort-threw` 是侧门真的炸了（OpenClaw 内部状态损坏），UI 应当原样收到 reason 后继续 tick 重试——这与 not-found 的"信息不足"语义不同。
+3. **`not-found` 升格为 `gone` 是有意的"误判允许"**：双闸是基于墙钟时间的启发，原理上无法 100% 分辨"还在跑"vs"已结束"。允许误判的成本：UI settle 一个其实还在后台跑的 run，气泡进入"已完成"状态；后续 server 若仍把 lifecycle:end 送到 UI，被 `__dispatch` 入口的 ended guard 静默吃掉。**用户感知是"取消生效"——不是"取消失败 + 神秘后台跑完"。**
+4. **handler 升格 gone 时打 remoteLog**：单次取消最多触发一次（升格后 UI cleanup 退出 tick），不会形成洪水；同时是"启发判定准确性"的关键诊断信号。
+
+### 测试覆盖
+
+**插件单元** `plugins/openclaw/src/agent-cancel-heuristic.test.js`（13 个 case）：
+- 阈值常量值断言
+- ok 透传 / not-supported 透传 / abort-threw 透传（含 error 字段）
+- not-found 双闸都达 → 升格 gone
+- not-found 单闸命中（两个方向各一）→ 保持 not-found
+- not-found 双闸都未达 → 保持 not-found
+- 旧 UI ctx 缺 duration / ctx 完全缺失 → 保持 not-found
+- 非数字 duration（string / null / NaN / Infinity）→ 保持 not-found
+
+**插件集成** `plugins/openclaw/index.test.js`（5 个新 case）：
+- 双闸都达升格 gone（payload + abort.gone remoteLog + logger.info 三重断言）
+- 单闸命中保持 not-found（payload + remoteLog 静默）
+- 旧 UI 不传 duration（payload + remoteLog 静默）
+- 非数字 duration 处理（payload + remoteLog 不出现脏字面值）
+- **多 tick 进展场景**：同一 sessionId 顺序发 4 个 tick，前 3 双闸未达保持 not-found（plugin 静默），第 4 个双闸达升格 gone（打 1 条 abort.gone）——验证生产中真实的 cancel 旅程
+
+**总覆盖率**：plugin 工作区 lines/funcs/stmts 100%、branches ≥95%；新模块 100/100/100/100。
+
+### deep-review 摘要
+
+4 路并行（3 路 codex-rescue + 1 路 opus 接替失败维度），结论：
+- **真问题 1**（codex 测试场景维度）：缺 multi-tick 进展场景测试 → 已补
+- **真问题 2**（codex 综合维度）：handler 对 `abort-threw` 每次 500ms tick 都打 logger.info，违反噪音控制 → 核实为 pre-existing（阶段 2.5 的 logger 判定逻辑就有），按 deep-review skill 记入 `plugins/openclaw/TODO.md` 不在本阶段修
+- **opus 接替维度**：双层 number 守卫（handler typeof + heuristic isFinite）核实为有意分工不冗余；handler try/catch 兜底完整无新引入异常路径
+- **未采纳**的建议：`above-threshold` 测试（分支覆盖性质）、mirror one-gate handler 集成测试（heuristic 单元测试已覆盖两个方向）、`runDur` → `runDurMs` 字段命名（与 UI 侧 `cancel.gone` 对称，cosmetic 不在本轮范围）
+
+### 实施提交
+
+- 单一 commit `e0b4212`：`feat(plugin): heuristic gone fallback for coclaw.agent.abort`
+- changeset `cancel-heuristic-plugin.md`（minor 级——新增能力 + 新增协议字段语义）
+- 预存问题 TODO 条目：`plugins/openclaw/TODO.md` "coclaw.agent.abort 对 abort-threw 每 tick 都打 logger.info（噪音，预存）"
+
+---
+
 ## 阶段 3：上游 issues（长期去侧门化）
 
 ### 四条上游 issue（已提交）
@@ -454,8 +666,11 @@ UI 解除 /compact 取消禁用
 2. ✅ 阶段 2.1-2.2：插件 `agent-abort.js` + `coclaw.agent.abort` RPC（commit `3d21a5e`）
 3. ✅ 阶段 2.3-2.5：UI 集成 RPC + `/compact` 禁用（commit `17cc790`）
 4. ✅ 阶段 2.5：UI 主导的 cancel 协调状态机（500ms 重试，无 TTL）+ 插件 patch 产品化 + remoteLog 触点（2026-04-15）
-5. ✅ 阶段 3：通过 `openclaw-issue` skill 提交 4 条上游 issue —— #66531 / #66532（feature）、#66534 / #66535（bug），2026-04-14
-6. ⏳ 逐步迁移：等待上游合并后按下方"适配路径"表渐进迁移（定期通过 `openclaw-issue` skill 的"定期跟进"流程检查状态）
+5. ✅ 阶段 2.6：pre-accept 取消假取消修复——挂意图 + onAccepted 转交（2026-04-17）
+6. ✅ 阶段 2.7：UI 容错强化 round 2——gone / not-supported 分支 try/catch + cancelGoneHint 文案修正（2026-05-02 commit `2ed71c7`）
+7. ✅ 阶段 2.8：plugin 启发式 gone fallback——双时长闸门把 not-found 升格 gone（2026-05-02 commit `e0b4212`）
+8. ✅ 阶段 3：通过 `openclaw-issue` skill 提交 4 条上游 issue —— #66531 / #66532（feature）、#66534 / #66535（bug），2026-04-14
+9. ⏳ 逐步迁移：等待上游合并后按下方"适配路径"表渐进迁移（定期通过 `openclaw-issue` skill 的"定期跟进"流程检查状态）
 
 ---
 
@@ -463,10 +678,12 @@ UI 解除 /compact 取消禁用
 
 ### CoClaw 端（本仓库）
 
-- `ui/src/stores/chat.store.js:662-691` — `cancelSend`（阶段 1 主战场）
-- `ui/src/stores/agent-runs.store.js:121-128` — `settle`；`:157-168` — `__settleWithTransition`（需暴露）
-- `ui/src/stores/chat.store.js:693-848` — `sendSlashCommand` + `__onChatEvent`（阶段 2.4 `/compact` 禁用位点的参考）
-- `plugins/openclaw/index.js` — 插件入口（阶段 2.2 注册 RPC）
+- `ui/src/stores/chat.store.js` — `cancelSend` + `__startCancelCoordination` + `gone` / `not-supported` 终态分支（阶段 1 / 2.5 / 2.7 主战场，行号随重构变动以代码为准）
+- `ui/src/stores/agent-runs.store.js` — `settle` / `settleByCancel` / `__settleWithTransition`（settle/transition API）
+- `ui/src/i18n/locales/*.js` — `chat.cancelGone` + `chat.cancelGoneHint` + `chat.cancelNotSupported` + `chat.upgradeOpenClawHint`（阶段 2.7 文案修正后语义为"check back later"）
+- `plugins/openclaw/index.js` — 插件入口 + `coclaw.agent.abort` handler（阶段 2.2 / 2.8）
+- `plugins/openclaw/src/agent-abort.js` — 侧门 abort 实际入口（阶段 2.1）
+- `plugins/openclaw/src/agent-cancel-heuristic.js` — 启发判定纯函数 + 阈值常量（阶段 2.8 新增）
 - `plugins/openclaw/package.json` — 无 OpenClaw 版本 pin（阶段 2 feature detection 必需）
 
 ### OpenClaw 端（仅参考，不修改）
