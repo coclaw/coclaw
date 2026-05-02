@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { WebRtcPeer, FAILED_SESSION_TTL_MS, MAX_SESSIONS } from './webrtc-peer.js';
-import { DC_LOW_WATER_MARK } from './rpc-dc-sender.js';
+import { DC_HIGH_WATER_MARK, DC_LOW_WATER_MARK } from './rpc-dc-sender.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 
 /**
@@ -2711,6 +2711,47 @@ test('WebRtcPeer: 同 session 第二条 rpc DC → 旧三件套被 close + destr
 	await oldLoop;
 	assert.ok(session.rpcQueue, '旧 loop 退出后新 queue 仍在');
 	assert.ok(session.rpcDcSender, '旧 loop 退出后新 sender 仍在');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 旧 dc.onbufferedamountlow 在新 sender 阻塞期间迟到 → 不应错唤醒新 sender', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_bal_late'));
+	const dc1 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc1 });
+	await flushAsync();
+
+	// 同 session rebuild：新 dc bufferedAmount 顶到高水位，新 sender 一发就阻塞
+	const sentDc2 = [];
+	const dc2 = makeMockRpcDc({
+		bufferedAmount: DC_HIGH_WATER_MARK + 1,
+		send: (d) => sentDc2.push(d),
+	});
+	PC.instances[0].ondatachannel({ channel: dc2 });
+	await flushAsync();
+
+	const session = peer.__sessions.get('c_bal_late');
+	const newSender = session.rpcDcSender;
+
+	// 让新 sender 进 BAL waiter
+	peer.broadcast({ type: 'event', event: 'x' });
+	await flushAsync();
+	assert.equal(newSender.balWaiters.length, 1, '新 sender 应卡在 BAL');
+	assert.equal(sentDc2.length, 0, '高水位时新 dc 不应发送');
+
+	// 旧 dc1.onbufferedamountlow 迟到触发：闭包若读 session.rpcDcSender 就会唤醒新 sender
+	dc1.onbufferedamountlow();
+	await flushAsync();
+
+	assert.equal(newSender.balWaiters.length, 1, '旧 dc1 BAL 不应唤醒新 sender');
+	assert.equal(sentDc2.length, 0, '新 dc 仍应阻塞在高水位');
 
 	await peer.closeAll();
 });

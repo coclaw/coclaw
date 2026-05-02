@@ -546,8 +546,12 @@ export class WebRtcPeer {
 			});
 			session.rpcQueue = queue;
 			session.rpcDcSender = sender;
+			// 闭包捕获本次 sender 局部引用，而不是读 session.rpcDcSender 字段。
+			// 同 session rebuild 后字段会指向新 sender，旧 dc 的 BAL 滞后事件若读字段
+			// 会错唤醒新 sender；捕获局部引用后旧 dc 触发 BAL 调的是已 close 的旧 sender，
+			// onBufferedAmountLow 在 splice 空 waiter 数组上无副作用
 			dc.onbufferedamountlow = () => {
-				session.rpcDcSender?.onBufferedAmountLow();
+				sender.onBufferedAmountLow();
 			};
 			// 起消费循环：从 queue 拉一条 → await sender.send()。sender close 时循环 break。
 			// finally 兜底关闭：覆盖 dc.send 中途抛错 / 异常退出场景——dc.onclose 不一定会及时
