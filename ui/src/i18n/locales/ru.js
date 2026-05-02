@@ -399,7 +399,7 @@ export const ruMessages = {
 		upgradeOpenClawHint: 'Возможно, потребуется обновить OpenClaw. Попросите OpenClaw обновиться самостоятельно или выполните: npm install -g openclaw',
 		cancelNotSupported: 'Текущая версия OpenClaw не может отменить работающего агента. Выполнение продолжится в фоновом режиме.',
 		cancelGone: 'Выполнение, по-видимому, завершено',
-		cancelGoneHint: 'Если оно всё ещё выполняется в фоновом режиме, результат появится позже.',
+		cancelGoneHint: 'Если оно всё ещё выполняется в фоновом режиме, вы можете вернуться позже и проверить.',
 		clawThinking: 'Думает',
 		thinkingFor: 'Думал {time}',
 		refresh: 'Обновить',

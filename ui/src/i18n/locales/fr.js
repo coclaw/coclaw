@@ -399,7 +399,7 @@ export const frMessages = {
 		upgradeOpenClawHint: 'Vous devrez peut-être mettre à jour OpenClaw. Demandez à OpenClaw de se mettre à jour lui-même, ou exécutez : npm install -g openclaw',
 		cancelNotSupported: 'Cette version d\'OpenClaw ne peut pas annuler l\'agent en cours. L\'exécution continuera en arrière-plan.',
 		cancelGone: 'L\'exécution semble terminée',
-		cancelGoneHint: 'Si elle continue en arrière-plan, le résultat apparaîtra plus tard.',
+		cancelGoneHint: 'Si elle continue en arrière-plan, vous pourrez revenir vérifier plus tard.',
 		clawThinking: 'Réflexion',
 		thinkingFor: 'Réflexion {time}',
 		refresh: 'Actualiser',

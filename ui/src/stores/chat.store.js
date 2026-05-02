@@ -932,11 +932,19 @@ export function createChatStore(storeKey, opts = {}) {
 						console.info('[chat] cancelSend done: gone sid=%s ticks=%d', sid, me.tickSeq);
 						remoteLog(`cancel.gone sid=${sid} ticks=${me.tickSeq} runDur=${params.runDuration} abortDur=${params.abortDuration}`);
 						cleanup();
-						runsStore.settleByCancel(runKey, 'cancel-gone');
-						getSharedNotifier()?.info({
-							title: i18n.global.t('chat.cancelGone'),
-							description: i18n.global.t('chat.cancelGoneHint'),
-						});
+						// settle + notify 包 try/catch：notify/i18n 任一抛不阻断 resolveFn，
+						// 否则 coord promise 永挂会让后续 cancelSend 拿到僵尸 promise（chat.store 内
+						// __cancelling 已在 cleanup 时清空，但已挂 .then 的调用方仍受影响）
+						try {
+							runsStore.settleByCancel(runKey, 'cancel-gone');
+							getSharedNotifier()?.info({
+								title: i18n.global.t('chat.cancelGone'),
+								description: i18n.global.t('chat.cancelGoneHint'),
+							});
+						}
+						catch (e) {
+							console.warn('[chat] cancelSend gone post-settle hook threw:', e?.message);
+						}
 						resolveFn({ ok: false, reason: 'gone' });
 						return;
 					}
@@ -947,11 +955,17 @@ export function createChatStore(storeKey, opts = {}) {
 						console.info('[chat] cancelSend done: not-supported sid=%s', sid);
 						remoteLog(`cancel.not-supported sid=${sid}`);
 						cleanup();
-						runsStore.settleByCancel(runKey, 'cancel-not-supported');
-						getSharedNotifier()?.warning({
-							title: i18n.global.t('chat.cancelNotSupported'),
-							description: i18n.global.t('chat.upgradeOpenClawHint'),
-						});
+						// 同 gone 分支的容错合约：notify/i18n 抛不阻断 resolveFn
+						try {
+							runsStore.settleByCancel(runKey, 'cancel-not-supported');
+							getSharedNotifier()?.warning({
+								title: i18n.global.t('chat.cancelNotSupported'),
+								description: i18n.global.t('chat.upgradeOpenClawHint'),
+							});
+						}
+						catch (e) {
+							console.warn('[chat] cancelSend not-supported post-settle hook threw:', e?.message);
+						}
 						resolveFn({ ok: false, reason: 'not-supported' });
 						return;
 					}

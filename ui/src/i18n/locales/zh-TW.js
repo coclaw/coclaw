@@ -399,7 +399,7 @@ export const zhTWMessages = {
 		upgradeOpenClawHint: '可能需要升級 OpenClaw，請讓 OpenClaw 自行升級或執行：npm install -g openclaw',
 		cancelNotSupported: '目前 OpenClaw 版本無法取消執行中的 agent，它將繼續在背景執行。',
 		cancelGone: '任務似乎已結束',
-		cancelGoneHint: '如仍在背景執行，結果將稍後顯示。',
+		cancelGoneHint: '如仍在背景執行，可稍後回來查看。',
 		clawThinking: '思考中',
 		thinkingFor: '思考中 {time}',
 		refresh: '重新整理',

@@ -399,7 +399,7 @@ export const ptMessages = {
 		upgradeOpenClawHint: 'Talvez seja necessário atualizar o OpenClaw. Peça ao OpenClaw para se atualizar, ou execute: npm install -g openclaw',
 		cancelNotSupported: 'Esta versão do OpenClaw não pode cancelar o agente em execução. A execução continuará em segundo plano.',
 		cancelGone: 'A execução parece ter terminado',
-		cancelGoneHint: 'Se ainda estiver rodando em segundo plano, o resultado aparecerá mais tarde.',
+		cancelGoneHint: 'Se ainda estiver rodando em segundo plano, você pode voltar para verificar mais tarde.',
 		clawThinking: 'Pensando',
 		thinkingFor: 'Pensando {time}',
 		refresh: 'Atualizar',

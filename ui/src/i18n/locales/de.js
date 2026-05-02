@@ -399,7 +399,7 @@ export const deMessages = {
 		upgradeOpenClawHint: 'Möglicherweise muss OpenClaw aktualisiert werden. Bitte OpenClaw, sich selbst zu aktualisieren, oder ausführen: npm install -g openclaw',
 		cancelNotSupported: 'Diese OpenClaw-Version kann den laufenden Agenten nicht abbrechen. Die Ausführung wird im Hintergrund fortgesetzt.',
 		cancelGone: 'Ausführung scheint beendet zu sein',
-		cancelGoneHint: 'Falls sie weiterhin im Hintergrund läuft, erscheint das Ergebnis später.',
+		cancelGoneHint: 'Falls sie weiterhin im Hintergrund läuft, kannst du später noch einmal vorbeischauen.',
 		clawThinking: 'Denkt nach',
 		thinkingFor: 'Denkt {time}',
 		refresh: 'Aktualisieren',

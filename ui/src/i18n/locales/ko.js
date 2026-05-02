@@ -399,7 +399,7 @@ export const koMessages = {
 		upgradeOpenClawHint: 'OpenClaw를 업그레이드해야 할 수 있습니다. OpenClaw에게 자체 업그레이드를 요청하거나 npm install -g openclaw를 실행하세요',
 		cancelNotSupported: '현재 OpenClaw 버전은 실행 중인 에이전트를 취소할 수 없습니다. 백그라운드에서 계속 실행됩니다.',
 		cancelGone: '실행이 종료된 것으로 보입니다',
-		cancelGoneHint: '백그라운드에서 계속 실행 중이라면 결과가 나중에 표시됩니다.',
+		cancelGoneHint: '백그라운드에서 계속 실행 중이라면 나중에 다시 확인해 주세요.',
 		clawThinking: '생각 중',
 		thinkingFor: '{time} 동안 생각 중',
 		refresh: '새로고침',

@@ -3576,6 +3576,140 @@ describe('useChatStore', () => {
 			});
 		});
 
+		test('accepted 后取消：notifier.info 抛异常时 coord promise 仍应 resolve（防御性合约）', async () => {
+			// 复现 review 提的真问题候选：gone 分支当前实现是 cleanup → settleByCancel → notify → resolveFn。
+			// 若 notify（或其参数 i18n.t）抛同步异常，async tick 内未 catch → tick 的隐式 promise reject →
+			// resolveFn 永不被调，coord promise 永挂。真实 nuxt useNotify / vue-i18n 在常规配置下不抛，
+			// 但 mockImplementation 的 throw 等价于"未来 i18n 切 strict 或 toast 实现引入 bug"的边界。
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			// 隔离 unhandled rejection（tick 函数 reject 会冒到 process）
+			const unhandled = [];
+			const handler = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', handler);
+
+			try {
+				mockNotifier.info.mockImplementation(() => { throw new Error('toast crash'); });
+
+				const conn = mockConn();
+				conn.request.mockImplementation((method, params, options) => {
+					if (method === 'agent') {
+						options?.onAccepted?.({ runId: 'run-p1' });
+						return new Promise(() => {});
+					}
+					if (method === 'coclaw.agent.abort') {
+						return Promise.resolve({ ok: false, reason: 'gone' });
+					}
+					return Promise.resolve(null);
+				});
+				setConn('1', conn);
+
+				const store = useChatStore();
+				store.clawId = '1';
+				store.chatSessionKey = 'agent:main:main';
+				store.sessionId = 'sess-p1';
+
+				store.sendMessage('hi');
+				await Promise.resolve();
+
+				const p = store.cancelSend();
+				let outcome = null;
+				p.then((v) => { outcome = v; }, (e) => { outcome = { __rejected: e }; });
+
+				// 让 tick 跑完：abort RPC resolve + notify 同步抛 + 后续微任务
+				await vi.runAllTimersAsync();
+				await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+
+				// 防御性合约：notify 抛后 coord promise 仍应 resolve 为 gone
+				// 当前代码：outcome 仍为 null（resolveFn 永不被调）→ 测试失败 → 暴露 bug
+				expect(outcome).toEqual({ ok: false, reason: 'gone' });
+
+				store.cleanup();
+			}
+			finally {
+				process.removeListener('unhandledRejection', handler);
+			}
+		});
+
+		test('accepted 后取消：gone settle 后立即新 sendMessage 不被破坏（端到端用户场景）', async () => {
+			// 用户场景：plugin 启发判定 gone（可能是误判）→ UI 主动 settleByCancel + 弹 toast →
+			// 用户立即继续发新消息。
+			//
+			// 关键不变式：
+			// 1) gone settle 触发 __endRun → 老 run.ended=true，但 runKeyIndex 在自然 cleanup
+			//    链（runPromise.then → loadMessages → dropRun）跑完前可能仍指向老 runId。
+			// 2) 不论自然 cleanup 是否已完成，新 sendMessage 都应能正常 accept 并切换 runKeyIndex
+			//    到新 runId。本测试用阻塞 sessions.get 来定格"自然 cleanup 尚未跑完"的中间窗口，
+			//    强制 register 路径自带的 __cleanupRun(oldRunId, 'superseded') 接管老 entry。
+			// 3) 新 run isRunning=true，老 runId 不再存在。
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let acceptedCount = 0;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					acceptedCount += 1;
+					const runId = `run-s1-${acceptedCount}`;
+					options?.onAccepted?.({ runId });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					return Promise.resolve({ ok: false, reason: 'gone' });
+				}
+				// 关键：阻塞 sessions.get 让 __awaitPersistAndDrop 中的 loadMessages 不完成 →
+				// dropRun 不会被自然路径调到 → 强制 register 内部的清理路径接管
+				if (method === 'sessions.get') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-s1';
+
+			// 第一次发送
+			store.sendMessage('first message').catch(() => {});
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+			expect(acceptedCount).toBe(1);
+
+			const runsStore = useAgentRunsStore();
+			const runKey = store.runKey;
+			expect(runsStore.runKeyIndex[runKey]).toBe('run-s1-1');
+			expect(runsStore.isRunning(runKey)).toBe(true);
+
+			// cancel + plugin 返 gone
+			const p1 = store.cancelSend();
+			await expect(p1).resolves.toEqual({ ok: false, reason: 'gone' });
+
+			// gone settle 后核心断言：本地 run 已 ended（用户从感官上"已结束"）
+			expect(runsStore.runs['run-s1-1']?.ended).toBe(true);
+			expect(runsStore.isRunning(runKey)).toBe(false);
+			// runKeyIndex 此时仍指向老 runId（自然 cleanup 链被 sessions.get 阻塞挡住）
+			expect(runsStore.runKeyIndex[runKey]).toBe('run-s1-1');
+
+			// 用户立即发新消息：__clearCancelling('superseded') + 新 runAgent →
+			// register('run-s1-2') 内部触发 __cleanupRun(老 runId, 'superseded') → runKeyIndex 切换
+			store.sendMessage('second message').catch(() => {});
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// 新 send 应被 server accept，runKeyIndex 切到新 runId，新 run 在跑
+			expect(acceptedCount).toBe(2);
+			expect(runsStore.runKeyIndex[runKey]).toBe('run-s1-2');
+			expect(runsStore.isRunning(runKey)).toBe(true);
+
+			// 老 runId 应被 register 路径的 __cleanupRun 移除（不再存在于 runs 表）
+			expect(runsStore.runs['run-s1-1']).toBeUndefined();
+
+			store.cleanup();
+		});
+
 		test('accepted 后取消：abort RPC 入参携带 runDuration / abortDuration（每 tick 实算墙钟差）', async () => {
 			vi.useFakeTimers({ now: 1_000_000 });
 			const clawsStore = useClawsStore();
