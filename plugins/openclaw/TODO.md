@@ -491,3 +491,54 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **影响**：仅测试注入同步 throw 的非常规 mock 时才触发；生产路径完全安全。
 
 **为什么 TODO**：避免过度设计——抽 try/catch helper 替换 3 处仅是为了"防御一种本不该发生的测试输入"。等真实场景需要时再统一改。
+
+## G 阶段（2026-05-02）deep-review 发现且不修
+
+### enroll cancel 不通知 server，mobile 后到 claim 留孤儿 claw（H, 本次引入）
+
+**发现**：G 阶段 deep-review 维度 1（codex-rescue）。
+**锚点**：`plugins/openclaw/index.js:208-216` `cancelActiveEnroll`、`plugins/openclaw/src/common/claw-binding.js:120-189` `waitForClaimAndSave`
+
+**问题**：`cancelActiveEnroll()` 只在 plugin 端 abort 长轮询，不通知 server 失效 claim code。如果取消之后 mobile 端在 claim code 30 分钟过期之前还是 claim 上去，server 创建 claw + token 但 plugin 不再轮询取它 → server 留下死记录。`df7ec73` 的回滚只覆盖"长轮询返回 BOUND 之后、writeCfg 之前 abort 到达"窗口，覆盖不到"abort 之后才 claim"窗口。
+
+**实际影响**：server DB 长尾死记录直到自然过期/server 自己清理；plugin 端业务无感；user-facing 影响极小。
+
+**为什么 TODO**：origin/main 没有 cancelActiveEnroll，enroll 长轮询不会被中途取消，mobile 任何时候 claim 都有人取——所以是本次引入的 regression，但 user-facing 影响小。修法 A（server 加 invalidate-claim-code RPC）跨工作区；修法 B（plugin 端保留终态 watcher）增加复杂度。属 H2/H3 同家族，待统一规划 bind/enroll 状态机锁时一并处理。
+
+### server message handler await 后未重验 sock identity（M，预存）
+
+**发现**：G 阶段 deep-review 维度 3（codex-rescue）。
+**锚点**：`plugins/openclaw/src/realtime-bridge.js:1213-1220` `rtc:` 分支 `await __webrtcPeerReady` + `await webrtcPeer.handleSignaling`
+
+**问题**：入口 1197 行有 stale guard，但 1213-1220 两次 await 期间 `serverWs` 可能被 close handler 设 null 或换成新 sock。await 返回后会用旧消息内容调用当前 webrtcPeer。webrtcPeer 自身有大量 identity guard 兜底，实际穿透概率低。
+
+**修复方向**：每次 await 后重验 `this.serverWs === sock && !this.intentionallyClosed`。
+
+**为什么 TODO**：预存、穿透概率低、webrtcPeer 内部 guard 已兜底。
+
+### webrtc-peer 几处 handler 缺 stale guard（L，预存）
+
+**发现**：G 阶段 deep-review 维度 2（codex-rescue）。
+
+| 锚点 | 缺什么 |
+|---|---|
+| `webrtc-peer.js:388` `pc.onconnectionstatechange` | guard 在打日志之前应该挪到 logger 之前 |
+| `webrtc-peer.js:671` `dc.onopen` | 没 stale DC guard，旧 DC open 仍会调 `__sendPeerTransport` |
+| `webrtc-peer.js:705` `dc.onmessage` | handler 入口没有 stale DC guard（reassembler callback 内部已 guard，但 stale 数据仍喂进 reassembler.feed） |
+| `webrtc-peer.js:700` `dc.onerror` | 没 stale guard |
+
+**影响**：均 Low——日志噪音 / 老 reassembler 状态被无害修改。核心数据通道已经被 reassembler callback 的 identity guard（`4120b02`）兜住。
+
+**修复方向**：每个 handler 入口加 `if (sess?.rpcChannel !== dc) return;` 或 PC 同款 guard。
+
+**为什么 TODO**：预存边角，整体 stale-guard 体系已经正确兜住关键路径。
+
+### G 阶段其它 Low 条目
+
+- **斜杠命令 bind 在校验 code 之前调 cancelActiveEnroll**（`index.js:696` 附近，本次引入）：无效 code 也会先取消 enroll。修法：先校验 positionals[0] 再 doBind。
+- **activeEnrollAbort 提前 set**（`index.js:306`，预存）：`enrollClaw()` 同步抛错时 controller 残留。修法：成功后再 set 或 catch 中清。
+- **gateway message listener catch 内 logger 抛形成 unhandled rejection**（`realtime-bridge.js:860`，本次引入 `f983017`）：嵌套 try/catch 即可。
+- **非法 DC gateway 请求带合法 id 时仍 broadcast 错误响应**（`realtime-bridge.js:966-984`，本次引入 `c545128`）：可改 unicast 当 connId 已知。
+- **测试覆盖小缺口**（本次引入）：`dfdc277` 的 stale-PC 测试只覆盖 `onselectedcandidatepairchange`，未覆盖 `onicecandidate` / `onicegatheringstatechange`；`webrtc-peer.js:173` `sendTo` 的 enqueue-throw catch 路径未测。
+
+**为什么 TODO**：均不影响发版正确性，待后续清理批次统一处理。
