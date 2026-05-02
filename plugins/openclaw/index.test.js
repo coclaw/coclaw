@@ -383,6 +383,92 @@ test('gateway methods respond and catch errors', async () => {
 	assert.equal(invalidOut.error?.message, 'topicId required');
 });
 
+test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = process.env.HOME;
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-cancel-enroll-'));
+	process.env.OPENCLAW_STATE_DIR = dir;
+	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
+	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
+	process.env.HOME = nodePath.join(dir, 'home');
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+	setRuntime(null);
+
+	// waitDelayMs=10000：claim-codes/wait 不会在测试期间返回，确保 activeEnrollAbort 一直保留
+	const mock = await createMockServer({ waitDelayMs: 10_000 });
+	const infoLogs = [];
+	const handlers = new Map();
+	plugin.register({
+		registrationMode: 'full',
+		pluginConfig: { serverUrl: mock.baseUrl },
+		logger: {
+			info(msg) { infoLogs.push(String(msg)); },
+			warn() {},
+			error() {},
+		},
+		registerChannel() {},
+		registerCli() {},
+		registerService() {},
+		registerCommand() {},
+		registerGatewayMethod(name, handler) { handlers.set(name, handler); },
+	});
+
+	try {
+		// 1) enroll → 立即返回 code，后台 wait 因 mock 延迟而挂起
+		await new Promise((resolve) => {
+			handlers.get('coclaw.enroll')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+		assert.equal(
+			infoLogs.some((l) => l.includes('cancelling active enroll')),
+			false,
+			'enroll 自身不应触发 cancel（无前置）',
+		);
+
+		// 2) bind 进入应取消该 enroll
+		await new Promise((resolve) => {
+			handlers.get('coclaw.bind')({
+				params: { code: '12345678', serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+		assert.equal(
+			infoLogs.filter((l) => l.includes('cancelling active enroll')).length,
+			1,
+			'bind 应取消进行中的 enroll',
+		);
+
+		// 3) 再发起 enroll，然后 unbind 也应取消之
+		await new Promise((resolve) => {
+			handlers.get('coclaw.enroll')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+		await new Promise((resolve) => {
+			handlers.get('coclaw.unbind')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+		assert.equal(
+			infoLogs.filter((l) => l.includes('cancelling active enroll')).length,
+			2,
+			'unbind 应取消进行中的 enroll',
+		);
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true }).catch(() => {});
+		process.chdir(prevCwd);
+		if (prevHome === undefined) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		await mock.close();
+	}
+});
+
 test('command handler should cover help/unknown/error/success paths', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = process.env.HOME;

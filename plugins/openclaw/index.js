@@ -200,9 +200,27 @@ const plugin = {
 			},
 		});
 
+		// enroll 并发控制：同一时刻只允许一个活跃 enroll。
+		// 声明前置以便 doBind/doUnbind 入口可调用 cancelActiveEnroll；
+		// .finally 仍在 enroll 自身的回调里把 activeEnrollAbort 置 null。
+		let activeEnrollAbort = null;
+
+		function cancelActiveEnroll() {
+			if (activeEnrollAbort) {
+				logger.info?.('[coclaw] cancelling active enroll');
+				activeEnrollAbort.abort();
+				// 立即清 ref：避免后续 cancelActiveEnroll 对同一已 abort 的 controller 重复 log；
+				// 原 enroll 自己的 .finally 仍负责本身分支的兜底清理（按 ref 相等判断）
+				activeEnrollAbort = null;
+			}
+		}
+
 		// --- bind/unbind 共享逻辑（RPC handler + 斜杠命令共用） ---
 
 		async function doBind({ code, serverUrl }) {
+			// 显式 bind 必须取消进行中的 enroll：否则 enroll 后到的 token 走 partial-failure
+			// rollback 路径前可能仍写入旧 config，污染刚 bind 完的本地状态
+			cancelActiveEnroll();
 			await stopRealtimeBridge();
 			let result;
 			try {
@@ -223,6 +241,8 @@ const plugin = {
 		}
 
 		async function doUnbind({ serverUrl }) {
+			// unbind 同样取消进行中的 enroll，避免 server 解绑后 enroll token 又写回本地
+			cancelActiveEnroll();
 			const result = await unbindClaw({
 				serverUrl: serverUrl ?? api.pluginConfig?.serverUrl,
 			});
@@ -264,15 +284,10 @@ const plugin = {
 			}
 		});
 
-		// enroll 并发控制：同一时刻只允许一个活跃 enroll
-		let activeEnrollAbort = null;
-
 		api.registerGatewayMethod('coclaw.enroll', async ({ params, respond }) => {
 			try {
-				// 取消前一个 enroll
-				if (activeEnrollAbort) {
-					activeEnrollAbort.abort();
-				}
+				// 取消前一个 enroll（与 doBind/doUnbind 共享 helper）
+				cancelActiveEnroll();
 				const abortController = new AbortController();
 				activeEnrollAbort = abortController;
 
@@ -663,10 +678,8 @@ const plugin = {
 					}
 
 					if (action === 'enroll') {
-						// 并发控制：取消前一个 enroll（与 RPC 路径共享）
-						if (activeEnrollAbort) {
-							activeEnrollAbort.abort();
-						}
+						// 并发控制：取消前一个 enroll（与 RPC 路径共享 helper）
+						cancelActiveEnroll();
 						const abortController = new AbortController();
 						activeEnrollAbort = abortController;
 

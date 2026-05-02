@@ -1,6 +1,6 @@
 import http from 'node:http';
 
-export async function createMockServer({ unbindStatus } = {}) {
+export async function createMockServer({ unbindStatus, waitDelayMs = 0 } = {}) {
 	const state = {
 		bound: false,
 		token: 'mock-token-1',
@@ -37,12 +37,23 @@ export async function createMockServer({ unbindStatus } = {}) {
 		}
 
 		if (req.method === 'POST' && req.url === '/api/v1/claws/claim-codes/wait') {
-			// 模拟立即返回 BOUND
-			res.writeHead(200, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({
-				clawId: state.clawId,
-				token: state.token,
-			}));
+			// 默认立即返回 BOUND；waitDelayMs > 0 时延迟，便于测试 enroll 后台等待期间的 race
+			const respondBound = () => {
+				if (res.writableEnded) return;
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({
+					clawId: state.clawId,
+					token: state.token,
+				}));
+			};
+			if (waitDelayMs > 0) {
+				const timer = setTimeout(respondBound, waitDelayMs);
+				timer.unref?.();
+				req.on('close', () => clearTimeout(timer));
+			}
+			else {
+				respondBound();
+			}
 			return;
 		}
 
