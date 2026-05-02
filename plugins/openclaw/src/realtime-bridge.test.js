@@ -840,6 +840,40 @@ test('RealtimeBridge: stale server socket 迟到的 message 不应重置当前 s
 	}
 });
 
+test('RealtimeBridge: stale gateway ws 迟到的 connect.challenge 不应触发握手发送', async () => {
+	// 与 server sock 已加的 stale guard 对称：旧 gateway ws 关闭后若仍有迟到的 connect.challenge，
+	// __sendGatewayConnectRequest 会写 this.gatewayConnectReqId，污染当前 gateway ws 的握手状态
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gw1 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gw1.readyState = 1;
+		gw1.emit('open', {});
+		// 第一次 challenge：gw1 应正常发出 connect-request
+		gw1.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const gw1SentAfterFirst = gw1.sent.length;
+		assert.ok(gw1SentAfterFirst >= 1, 'gw1 should send connect-request on first challenge');
+
+		// 模拟 gateway ws 已被新实例替换（无需真起新 ws，只需让 this.gatewayWs !== gw1）
+		const sentinel = { __dummy: true };
+		bridge.gatewayWs = sentinel;
+
+		// 旧 gw1 迟到一个 connect.challenge：guard 应阻止任何后续工作
+		gw1.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n2' } }) });
+		assert.equal(gw1.sent.length, gw1SentAfterFirst, 'stale gw1 challenge 不应再触发 connect-request 发送');
+		assert.equal(bridge.gatewayWs, sentinel, 'this.gatewayWs 不应被旧 ws 的 challenge handler 改写');
+	}
+	finally {
+		await bridge.stop();
+	}
+});
+
 test('__handleGatewayRequestFromDc: 缺 id/method 不向 gateway 转发，含 id 时回 INVALID_REQUEST', async () => {
 	FakeWebSocket.instances.length = 0;
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });

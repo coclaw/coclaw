@@ -734,6 +734,13 @@ export class RealtimeBridge {
 		// 等路径若抛错必须在此兜底。
 		ws.addEventListener('message', (event) => {
 			(async () => {
+				// stale guard：与 server sock open/message 已加的 guard 对称。
+				// 旧 gateway ws 关闭后若仍有迟到的 message（connect.challenge / res / event），
+				// 处理路径会写 this.gatewayConnectReqId / this.gatewayReady / 转发 res 等共享状态，
+				// 污染当前 ws 的握手或路由
+				if (this.gatewayWs !== ws) {
+					return;
+				}
 				let payload = null;
 				try {
 					payload = JSON.parse(String(event.data ?? '{}'));
