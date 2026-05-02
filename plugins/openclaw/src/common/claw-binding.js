@@ -118,7 +118,12 @@ export async function enrollClaw({ serverUrl }, deps = {}) {
 }
 
 export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }, deps = {}) {
-	const { waitClaimCode = waitClaimCodeOnServer, writeCfg = writeConfig, retryDelayMs = 2000 } = deps;
+	const {
+		waitClaimCode = waitClaimCodeOnServer,
+		writeCfg = writeConfig,
+		unbindServer = unbindWithServer,
+		retryDelayMs = 2000,
+	} = deps;
 	const baseUrl = resolveServerUrl(serverUrl);
 
 	// 循环长轮询，直到成功或超时
@@ -143,12 +148,22 @@ export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }
 
 		// 已认领
 		if (data?.clawId && data?.token) {
-			await writeCfg({
-				serverUrl: baseUrl,
-				clawId: data.clawId,
-				token: data.token,
-				boundAt: new Date().toISOString(),
-			});
+			try {
+				await writeCfg({
+					serverUrl: baseUrl,
+					clawId: data.clawId,
+					token: data.token,
+					boundAt: new Date().toISOString(),
+				});
+			}
+			catch (writeErr) {
+				// 与 bindClaw 对称：本地写失败 → 回滚 server 端，避免孤儿 claw
+				await unbindServer({ baseUrl, token: data.token }).catch(() => {});
+				const wrapped = new Error(`enroll succeeded on server but local write failed: ${writeErr.message}`);
+				wrapped.code = 'BIND_LOCAL_WRITE_FAILED';
+				wrapped.cause = writeErr;
+				throw wrapped;
+			}
 			return { clawId: data.clawId };
 		}
 

@@ -598,6 +598,60 @@ test('waitForClaimAndSave should save config on BOUND response', async () => {
 	assert.ok(savedCfg.boundAt);
 });
 
+test('waitForClaimAndSave should roll back server-side claw when local writeCfg fails (no orphan)', async () => {
+	const mockWait = async () => ({ clawId: 'b-erb', token: 't-erb' });
+	const unbindCalls = [];
+	const mockUnbind = async (params) => { unbindCalls.push(params); };
+
+	await assert.rejects(
+		() => waitForClaimAndSave(
+			{ serverUrl: 'http://127.0.0.1:8000', code: 'c-rb', waitToken: 'wt' },
+			{
+				waitClaimCode: mockWait,
+				writeCfg: async () => { throw new Error('disk full'); },
+				unbindServer: mockUnbind,
+				retryDelayMs: 0,
+			},
+		),
+		(err) => {
+			assert.equal(err.code, 'BIND_LOCAL_WRITE_FAILED');
+			assert.match(err.message, /disk full/);
+			return true;
+		},
+	);
+
+	assert.equal(unbindCalls.length, 1);
+	assert.equal(unbindCalls[0].baseUrl, 'http://127.0.0.1:8000');
+	assert.equal(unbindCalls[0].token, 't-erb');
+});
+
+test('waitForClaimAndSave should still surface original write error when rollback also fails', async () => {
+	const mockWait = async () => ({ clawId: 'b-erb2', token: 't-erb2' });
+	const unbindCalls = [];
+
+	await assert.rejects(
+		() => waitForClaimAndSave(
+			{ serverUrl: 'http://127.0.0.1:8000', code: 'c-rb2', waitToken: 'wt' },
+			{
+				waitClaimCode: mockWait,
+				writeCfg: async () => { throw new Error('disk full'); },
+				unbindServer: async (params) => {
+					unbindCalls.push(params);
+					throw new Error('rollback network fail');
+				},
+				retryDelayMs: 0,
+			},
+		),
+		(err) => {
+			assert.equal(err.code, 'BIND_LOCAL_WRITE_FAILED');
+			assert.match(err.message, /disk full/);
+			return true;
+		},
+	);
+
+	assert.equal(unbindCalls.length, 1);
+});
+
 test('waitForClaimAndSave should retry on PENDING then resolve on BOUND', async () => {
 	let callCount = 0;
 	const mockWait = async () => {
