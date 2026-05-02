@@ -240,6 +240,33 @@ test('pipeline: buildChunks 失败下条仍能跑（循环不退出）', async (
 	await shutdown(p);
 });
 
+// --- oversize（sender 后置拒） + loop 续跑 ---
+
+test('pipeline: oversize 经 bypass 入队后被 sender 抛 MESSAGE_OVERSIZED → 单条丢弃，loop 续跑下条', async () => {
+	resetRemoteLog();
+	// bypassAdmission 让超 memBudget 的消息也能入队，验证 admission 漏过去后由 sender 单条上限兜底
+	const p = await makePipeline({
+		memBudget: 1024,
+		bypassAdmission: () => true,
+		autoStart: false,
+	});
+	// 单条 > MAX_SINGLE_MSG_BYTES (50 MB)
+	const oversize = '"' + 'x'.repeat(50 * 1024 * 1024 + 1) + '"';
+	await p.queue.enqueue(oversize);
+	await p.queue.enqueue('"recovered"');
+
+	p.consumeLoop = p.startConsumer();
+	await flush();
+
+	// 第一条 oversize 触发 sender MESSAGE_OVERSIZED → loop warn + 续跑
+	const oversizeWarns = p.logger.warnings.filter((w) => w.includes('rpc-dc.send-failed code=MESSAGE_OVERSIZED'));
+	assert.equal(oversizeWarns.length, 1);
+	// 下一条正常消息正常到达
+	assert.ok(p.dc.sent.includes('"recovered"'));
+
+	await shutdown(p);
+});
+
 // --- destroy queue 期间在 BAL 阻塞中的 send 不影响循环退出 ---
 
 test('pipeline: destroy queue 时 sender 仍在 BAL 阻塞 → 等 sender close 后循环干净退出', async () => {
