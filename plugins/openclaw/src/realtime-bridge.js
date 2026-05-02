@@ -727,123 +727,130 @@ export class RealtimeBridge {
 		let wasReady = false;               // 本 WS 曾经握手成功（区分"握手失败"与"成功后断开"）
 		let lastChallengeNonce = '';        // 最近一次 challenge 的 nonce，legacy 回退时复用
 
-		ws.addEventListener('message', async (event) => {
-			let payload = null;
-			try {
-				payload = JSON.parse(String(event.data ?? '{}'));
-			}
-			catch {
-				return;
-			}
-			if (!payload || typeof payload !== 'object') {
-				return;
-			}
-			if (payload.type === 'event' && payload.event === 'connect.challenge') {
-				const nonce = payload?.payload?.nonce ?? '';
-				lastChallengeNonce = nonce;
-				this.__logDebug(`gateway event <- connect.challenge legacyMode=${this.__gatewayLegacyMode}`);
-				// 已经学到此 gateway 是 legacy（上一条 WS 回退过）→ 直接发 legacy 握手
-				if (this.__gatewayLegacyMode) {
-					pendingLegacyAttempted = true;
-					this.__sendGatewayConnectRequest(ws, nonce, { legacy: true });
+		// 注意：listener 用 sync wrapper + IIFE.catch 形式，避免 async listener 抛出的
+		// promise 变 unhandledRejection 击穿 gateway 进程。await sendTo / settle / broadcast
+		// 等路径若抛错必须在此兜底。
+		ws.addEventListener('message', (event) => {
+			(async () => {
+				let payload = null;
+				try {
+					payload = JSON.parse(String(event.data ?? '{}'));
 				}
-				else {
-					this.__sendGatewayConnectRequest(ws, nonce);
+				catch {
+					return;
 				}
-				return;
-			}
-			if (payload.type === 'res' && this.gatewayConnectReqId && payload.id === this.gatewayConnectReqId) {
-				if (payload.ok === true) {
-					this.gatewayReady = true;
-					wasReady = true;
-					this.__gatewayAttempts = 0; // 成功握手 → 重置失败计数，让后续瞬态断开有完整重试预算
-					remoteLog('ws.connected peer=gateway');
-					this.__logDebug(`gateway connect ok <- id=${payload.id}`);
-					this.gatewayConnectReqId = null;
-					this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
-					this.__pushInstanceInfo();
+				if (!payload || typeof payload !== 'object') {
+					return;
 				}
-				else {
-					const reason = payload?.error?.message ?? 'unknown';
-					// v3 → legacy 同 WS 回退：仅在签名/协议相关错误、且本 WS 尚未尝试 legacy 时触发
-					const shouldFallback =
+				if (payload.type === 'event' && payload.event === 'connect.challenge') {
+					const nonce = payload?.payload?.nonce ?? '';
+					lastChallengeNonce = nonce;
+					this.__logDebug(`gateway event <- connect.challenge legacyMode=${this.__gatewayLegacyMode}`);
+					// 已经学到此 gateway 是 legacy（上一条 WS 回退过）→ 直接发 legacy 握手
+					if (this.__gatewayLegacyMode) {
+						pendingLegacyAttempted = true;
+						this.__sendGatewayConnectRequest(ws, nonce, { legacy: true });
+					}
+					else {
+						this.__sendGatewayConnectRequest(ws, nonce);
+					}
+					return;
+				}
+				if (payload.type === 'res' && this.gatewayConnectReqId && payload.id === this.gatewayConnectReqId) {
+					if (payload.ok === true) {
+						this.gatewayReady = true;
+						wasReady = true;
+						this.__gatewayAttempts = 0; // 成功握手 → 重置失败计数，让后续瞬态断开有完整重试预算
+						remoteLog('ws.connected peer=gateway');
+						this.__logDebug(`gateway connect ok <- id=${payload.id}`);
+						this.gatewayConnectReqId = null;
+						this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
+						this.__pushInstanceInfo();
+					}
+					else {
+						const reason = payload?.error?.message ?? 'unknown';
+						// v3 → legacy 同 WS 回退：仅在签名/协议相关错误、且本 WS 尚未尝试 legacy 时触发
+						const shouldFallback =
 						!pendingLegacyAttempted
 						&& !this.__gatewayLegacyMode
 						&& GATEWAY_HANDSHAKE_FALLBACK_PATTERN.test(reason);
-					if (shouldFallback) {
-						pendingLegacyAttempted = true;
-						this.__gatewayLegacyMode = true;
-						// v3 的失败原因已由这条 remoteLog 单独上报，不写入 __gatewayLastReason；
-						// 后者保持"最后一次真正失败的原因"语义，供 gave-up 时使用。
-						remoteLog(`gateway.handshake.fallback v3→legacy reason=${reason}`);
-						this.logger.info?.(`[coclaw] gateway v3 handshake failed (${reason}), falling back to legacy`);
-						this.__sendGatewayConnectRequest(ws, lastChallengeNonce, { legacy: true });
-						return;
+						if (shouldFallback) {
+							pendingLegacyAttempted = true;
+							this.__gatewayLegacyMode = true;
+							// v3 的失败原因已由这条 remoteLog 单独上报，不写入 __gatewayLastReason；
+							// 后者保持"最后一次真正失败的原因"语义，供 gave-up 时使用。
+							remoteLog(`gateway.handshake.fallback v3→legacy reason=${reason}`);
+							this.logger.info?.(`[coclaw] gateway v3 handshake failed (${reason}), falling back to legacy`);
+							this.__sendGatewayConnectRequest(ws, lastChallengeNonce, { legacy: true });
+							return;
+						}
+						this.gatewayReady = false;
+						this.gatewayConnectReqId = null;
+						connectFailReported = true;
+						this.__gatewayLastReason = reason;
+						remoteLog(`ws.connect-failed peer=gateway msg=${reason}`);
+						this.logger.warn?.(`[coclaw] gateway connect failed: ${reason}`);
+						try { ws.close(1008, 'gateway_connect_failed'); }
+						/* c8 ignore next */
+						catch {}
 					}
-					this.gatewayReady = false;
-					this.gatewayConnectReqId = null;
-					connectFailReported = true;
-					this.__gatewayLastReason = reason;
-					remoteLog(`ws.connect-failed peer=gateway msg=${reason}`);
-					this.logger.warn?.(`[coclaw] gateway connect failed: ${reason}`);
-					try { ws.close(1008, 'gateway_connect_failed'); }
-					/* c8 ignore next */
-					catch {}
-				}
-				return;
-			}
-			if (payload.type === 'res' && typeof payload.id === 'string') {
-				const settle = this.gatewayPendingRequests.get(payload.id);
-				if (settle) {
-					settle({
-						ok: payload.ok === true,
-						response: payload,
-						error: payload?.error?.message ?? payload?.error?.code,
-					});
 					return;
 				}
-			}
-			/* c8 ignore next 3 -- connect 完成前的消息过滤 */
-			if (!this.gatewayReady) {
-				return;
-			}
-			if (payload.type === 'res' || payload.type === 'event') {
+				if (payload.type === 'res' && typeof payload.id === 'string') {
+					const settle = this.gatewayPendingRequests.get(payload.id);
+					if (settle) {
+						settle({
+							ok: payload.ok === true,
+							response: payload,
+							error: payload?.error?.message ?? payload?.error?.code,
+						});
+						return;
+					}
+				}
+				/* c8 ignore next 3 -- connect 完成前的消息过滤 */
+				if (!this.gatewayReady) {
+					return;
+				}
+				if (payload.type === 'res' || payload.type === 'event') {
 				// (a) 过滤 gateway 的管理层广播事件，这些对 WebChat / plugin 客户端无意义：
 				// - health: 全量状态快照（~3KB, ~60s 一次 + RPC 触发），给 Admin UI 的监控仪表盘用
 				// - tick: gateway WS 保活心跳（30s 一次），UI 隔着 DC 不需要，DC 自己有 probe 机制
 				// 不转发可避免后台时 rpc DC 队列被灌满。上游支持按需订阅前先在插件侧拦截。
-				if (payload.type === 'event'
+					if (payload.type === 'event'
 					&& (payload.event === 'health' || payload.event === 'tick')) {
-					return;
-				}
-				// (b) agent RPC 进入 phase-2 终态时停 lag 探针（必须放在 (c) 单播分支之前，
-				// 避免命中后探针不停导致 60s 兜底 + 噪声日志）
-				const lagReason = classifyAgentLagStop(payload);
-				if (lagReason !== null) {
-					this.__stopLagProbe(payload.id, lagReason);
-				}
-				// (c) UI 转发 RPC 的 res 单播：按 reqId 查路由表，命中则定向 sendTo
-				if (payload.type === 'res' && typeof payload.id === 'string') {
-					const info = this.__dcPendingRequests.get(payload.id);
-					if (info) {
-						// 终态才清条目；accepted 类中间态保留等下一帧
-						if (isFinalResMsg(payload)) {
-							this.__dcPendingRequests.delete(payload.id);
-						}
-						// sendTo 阶段 1 改为 async（admission 决策 await）；外层 listener 已是 async
-						const delivered = await this.webrtcPeer?.sendTo(info.connId, payload);
-						if (!delivered) {
-							// PC 已断 / DC 未 open / 队列拒收：本地 log 丢弃，不退回广播
-							this.__logDebug(
-								`dc res undeliverable: id=${payload.id} connId=${info.connId}`
-							);
-						}
 						return;
 					}
+					// (b) agent RPC 进入 phase-2 终态时停 lag 探针（必须放在 (c) 单播分支之前，
+					// 避免命中后探针不停导致 60s 兜底 + 噪声日志）
+					const lagReason = classifyAgentLagStop(payload);
+					if (lagReason !== null) {
+						this.__stopLagProbe(payload.id, lagReason);
+					}
+					// (c) UI 转发 RPC 的 res 单播：按 reqId 查路由表，命中则定向 sendTo
+					if (payload.type === 'res' && typeof payload.id === 'string') {
+						const info = this.__dcPendingRequests.get(payload.id);
+						if (info) {
+						// 终态才清条目；accepted 类中间态保留等下一帧
+							if (isFinalResMsg(payload)) {
+								this.__dcPendingRequests.delete(payload.id);
+							}
+							// sendTo 阶段 1 改为 async（admission 决策 await）；外层 listener 已是 async
+							const delivered = await this.webrtcPeer?.sendTo(info.connId, payload);
+							if (!delivered) {
+							// PC 已断 / DC 未 open / 队列拒收：本地 log 丢弃，不退回广播
+								this.__logDebug(
+									`dc res undeliverable: id=${payload.id} connId=${info.connId}`
+								);
+							}
+							return;
+						}
+					}
+					// (d) 兜底广播：覆盖 event 类型 / 映射未命中场景
+					this.webrtcPeer?.broadcast(payload);
 				}
-				// (d) 兜底广播：覆盖 event 类型 / 映射未命中场景
-				this.webrtcPeer?.broadcast(payload);
-			}
+			})().catch((err) => {
+				this.logger.warn?.(`[coclaw] gateway ws message handler error: ${err?.message ?? err}`);
+			});
 		});
 
 		ws.addEventListener('open', () => {

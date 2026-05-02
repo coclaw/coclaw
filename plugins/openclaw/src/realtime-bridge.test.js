@@ -4166,3 +4166,39 @@ test('dc unicast: TTL scan clears expired entries and warns', async () => {
 		restoreHomedir(prevHome);
 	}
 });
+
+// --- 顶层 try/catch：sendTo 抛错不能让 listener 变 unhandledRejection 击穿 gateway ---
+
+test('gateway ws message handler: sendTo 抛错时 listener 不产生 unhandledRejection', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_throw');
+	const origListeners = process.listeners('unhandledRejection');
+	process.removeAllListeners('unhandledRejection');
+	const unhandled = [];
+	const captureUnhandled = (reason) => unhandled.push(reason);
+	process.on('unhandledRejection', captureUnhandled);
+	try {
+		// sendTo 抛错（async reject）—— 模拟 webrtcPeer 内部异常路径
+		bridge.webrtcPeer.sendTo = async () => { throw new Error('boom from sendTo'); };
+		bridge.webrtcPeer.broadcast = () => {};
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-throw-1', method: 'sessions.list', params: {} },
+			'c_throw',
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-throw-1', ok: true, payload: { status: 'ok' } }),
+		});
+
+		// 等待 microtasks + unhandledRejection event 派发
+		for (let i = 0; i < 15; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		// 关键：listener 顶层 try/catch 必须把 sendTo 的 reject 吃掉
+		const leaked = unhandled.filter((e) => /boom from sendTo/.test(String(e?.message ?? e)));
+		assert.equal(leaked.length, 0, `unhandledRejection leaked: ${leaked.map((e) => e?.message).join(', ')}`);
+	} finally {
+		process.removeListener('unhandledRejection', captureUnhandled);
+		for (const l of origListeners) process.on('unhandledRejection', l);
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
