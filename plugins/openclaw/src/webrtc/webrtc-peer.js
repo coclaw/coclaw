@@ -456,6 +456,11 @@ export class WebRtcPeer {
 
 		// 监听 UI 创建的 DataChannel
 		pc.ondatachannel = ({ channel }) => {
+			// pc identity guard：旧 PC 在 closeByConnId 之后微任务里仍可能投递 ondatachannel
+			// （属性置 null 不阻止已 dispatch 的回调）；此时 connId 可能已被新 session 复用，
+			// 旧 channel 必须被忽略，否则会进 __setupDataChannel 把旧 dc 装到新 session
+			const cur = this.__sessions.get(connId);
+			if (!cur || cur.pc !== pc) return;
 			this.__remoteLog(`dc.received conn=${connId} label=${channel.label}`);
 			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${channel.label}" received`);
 			if (channel.label === 'rpc') {

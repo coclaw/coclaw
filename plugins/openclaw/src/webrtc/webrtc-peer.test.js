@@ -2715,6 +2715,48 @@ test('WebRtcPeer: 同 session 第二条 rpc DC → 旧三件套被 close + destr
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: connId 复用后旧 PC 的 ondatachannel 微任务迟到 → pc identity guard 防止污染新 session', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_reuse'));
+	const oldPc = PC.instances[0];
+	// 捕获旧 ondatachannel handler 引用：模拟"事件已 dispatch 但回调未执行"的微任务窗口；
+	// closeByConnId 把 pc.ondatachannel = null 不能阻止已 queue 的 callback
+	const staleOndatachannel = oldPc.ondatachannel;
+	assert.equal(typeof staleOndatachannel, 'function');
+
+	await peer.closeByConnId('c_reuse');
+
+	// 同 connId 复用，建立新 session
+	await peer.handleSignaling(makeOffer('c_reuse'));
+	const newPc = PC.instances[1];
+	const newDc = makeMockRpcDc();
+	newPc.ondatachannel({ channel: newDc });
+	await flushAsync();
+	const session = peer.__sessions.get('c_reuse');
+	assert.equal(session.rpcChannel, newDc, 'baseline: 新 dc 装入新 session');
+	const newQueue = session.rpcQueue;
+	const newSender = session.rpcDcSender;
+
+	// 模拟旧 PC 的 ondatachannel 微任务迟到投递：闭包内 session 仍是旧 session 引用，
+	// 调 __setupDataChannel(connId, staleDc) 进去后 Map.get(connId) 拿到的是新 session
+	const staleDc = makeMockRpcDc();
+	staleOndatachannel({ channel: staleDc });
+	await flushAsync();
+
+	// pc identity guard 必须把 staleDc 拒于门外，不污染新 session
+	assert.equal(session.rpcChannel, newDc, '新 session.rpcChannel 不应被旧 dc 替换');
+	assert.equal(session.rpcQueue, newQueue, '新 queue 不应被旧 ondatachannel 触发的 setup 替换');
+	assert.equal(session.rpcDcSender, newSender, '新 sender 不应被旧 ondatachannel 触发的 setup 替换');
+
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: 旧 dc.onbufferedamountlow 在新 sender 阻塞期间迟到 → 不应错唤醒新 sender', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
