@@ -775,6 +775,89 @@ test('RealtimeBridge should handle stale socket close after refresh', async () =
 	}
 });
 
+test('RealtimeBridge: stale server socket 迟到的 open 不应再注入 sender / 启心跳', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const infoLogs = [];
+	const bridge = createBridge();
+	const customLogger = { warn() {}, info(msg) { infoLogs.push(String(msg)); }, debug() {} };
+	try {
+		await bridge.start({ logger: customLogger, pluginConfig: {} });
+		const oldServer = FakeWebSocket.instances[0];
+		oldServer.readyState = 1;
+		oldServer.emit('open', {});
+		const connectedCountAfterFirst = infoLogs.filter((l) => l.includes('realtime bridge connected')).length;
+		assert.equal(connectedCountAfterFirst, 1);
+
+		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
+		await bridge.refresh();
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		newServer.readyState = 1;
+		newServer.emit('open', {});
+		const connectedCountAfterRefresh = infoLogs.filter((l) => l.includes('realtime bridge connected')).length;
+		assert.equal(connectedCountAfterRefresh, 2);
+
+		// 旧 sock 迟到的 open：guard 应阻止任何后续工作
+		oldServer.emit('open', {});
+		const connectedCountAfterStale = infoLogs.filter((l) => l.includes('realtime bridge connected')).length;
+		assert.equal(connectedCountAfterStale, 2, 'stale open 不应再触发 connected 日志');
+		assert.equal(bridge.serverWs, newServer);
+	}
+	finally {
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge: stale server socket 迟到的 message 不应重置当前 sock 的 hb timeout', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const oldServer = FakeWebSocket.instances[0];
+		oldServer.readyState = 1;
+		oldServer.emit('open', {});
+
+		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
+		await bridge.refresh();
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		newServer.readyState = 1;
+		newServer.emit('open', {});
+
+		// spy __resetServerHbTimeout：旧 sock emit message 后 spy 不应被调
+		let resetCalls = 0;
+		const orig = bridge.__resetServerHbTimeout.bind(bridge);
+		bridge.__resetServerHbTimeout = (sock) => { resetCalls += 1; return orig(sock); };
+
+		oldServer.emit('message', { data: '{}' });
+		assert.equal(resetCalls, 0, 'stale message 不应触发 __resetServerHbTimeout');
+
+		newServer.emit('message', { data: '{}' });
+		assert.equal(resetCalls, 1, 'current sock message 仍应触发 __resetServerHbTimeout');
+	}
+	finally {
+		await bridge.stop();
+	}
+});
+
+test('RealtimeBridge: __closeGatewayWs 主动关闭时立即清 lag probe', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		bridge.__startLagProbe('rid-test-1');
+		bridge.__startLagProbe('rid-test-2');
+		assert.equal(bridge.__agentLagProbes.size, 2);
+
+		bridge.__closeGatewayWs();
+		assert.equal(bridge.__agentLagProbes.size, 0, '__closeGatewayWs 应立即清掉所有 lag probe');
+	}
+	finally {
+		await bridge.stop();
+	}
+});
+
 test('RealtimeBridge should ignore error on stale socket', async () => {
 	FakeWebSocket.instances.length = 0;
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });

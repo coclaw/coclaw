@@ -265,6 +265,8 @@ export class RealtimeBridge {
 			this.__gatewayRetryTimer = null;
 		}
 		this.__gatewayAttempts = 0;
+		// 主动关闭时立即清 lag probe，不依赖 close 事件回调时序，避免 close 事件延迟期间 probe 误报
+		this.__clearAllLagProbes();
 		if (!this.gatewayWs) {
 			return;
 		}
@@ -1141,6 +1143,11 @@ export class RealtimeBridge {
 		this.connectTimer.unref?.();
 
 		sock.addEventListener('open', () => {
+			// 旧 sock 迟到的 open 不应接管当前会话：避免在 reconnect 后旧 sock 再注入 sender / 重置心跳，
+			// 对称于 close handler 的 sock !== this.serverWs guard
+			if (this.serverWs !== sock || this.intentionallyClosed) {
+				return;
+			}
 			this.__clearConnectTimer();
 			this.logger.info?.(`[coclaw] realtime bridge connected: ${maskedTarget}`);
 			remoteLog('ws.connected peer=server');
@@ -1157,6 +1164,10 @@ export class RealtimeBridge {
 		});
 
 		sock.addEventListener('message', async (event) => {
+			// 旧 sock 迟到的 message 不应重置当前 sock 的心跳节奏；同 open 路径处理
+			if (this.serverWs !== sock || this.intentionallyClosed) {
+				return;
+			}
 			this.__resetServerHbTimeout(sock);
 			try {
 				const payload = JSON.parse(String(event.data ?? '{}'));
