@@ -2536,6 +2536,37 @@ test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: rpc DC dc.onmessage 旧 DC 迟到的 req 不污染新 session（identity guard）', async () => {
+	// 与 dc.onclose 的 identity guard 对称：DC 重建后，旧 dc 的 reassembler 回调可能仍在 microtask
+	// 队列里待派发；进入 req 分支前必须核身份，否则旧请求会注入 __onRequest（或 enqueue 到新 rpcQueue）
+	const PC = MockPCFactory();
+	const requests = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onRequest: (payload, connId) => requests.push({ payload, connId }),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_h1guard'));
+	const dc1 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc1 });
+
+	const session = peer.__sessions.get('c_h1guard');
+	assert.equal(session.rpcChannel, dc1);
+
+	// 模拟 DC 重建：rpcChannel 已被新 dc2 覆盖（这里只换 rpcChannel 字段，不真正起新 setup）
+	const dc2 = makeMockRpcDc();
+	session.rpcChannel = dc2;
+
+	// 旧 dc1 现在派发 message 事件（reassembler.feed 直接交付完整 string）
+	const reqPayload = JSON.stringify({ type: 'req', id: 'r1', method: 'gateway.foo', params: {} });
+	dc1.onmessage({ data: reqPayload });
+
+	assert.equal(requests.length, 0, '旧 DC 的迟到 req 不应进入 __onRequest');
+	await peer.closeAll();
+});
+
 // --- MemoryQueue + RpcDcSender 集成（阶段 1 替换原 RpcSendQueue 集成）---
 
 test('WebRtcPeer: 建立 rpc DC 时创建 MemoryQueue + RpcDcSender 并设置 bufferedAmountLowThreshold', async () => {

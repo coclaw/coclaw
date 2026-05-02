@@ -619,6 +619,14 @@ export class WebRtcPeer {
 
 		const reassembler = createReassembler((jsonStr) => {
 			const payload = JSON.parse(jsonStr);
+			// identity guard：与 dc.onclose 的 identity guard 对称（line ~682）。
+			// DC 重建后旧 dc 的 message event 仍可能在 microtask 队列里派发；若不核身份，旧请求会
+			// 注入 __onRequest 或 enqueue 到新 rpcQueue。session 已删除时（rpcChannel===null 或
+			// sess undefined）也按 stale 处理，避免向已清空的 session 注入消息。
+			const sess = this.__sessions.get(connId);
+			if (!sess || sess.rpcChannel !== dc) {
+				return;
+			}
 			// DC 探测：立即回复，不走 gateway
 			// 故意绕过 MemoryQueue + RpcDcSender：probe-ack 仅用于测量传输层（SCTP/DTLS）健康，
 			// 走 queue 会把应用层积压压力错误地映射到"DC 不通"上。
@@ -635,7 +643,6 @@ export class WebRtcPeer {
 			if (payload.type === 'req') {
 				// coclaw.files.* 方法本地处理，不转发 gateway
 				if (payload.method?.startsWith('coclaw.files.') && this.__onFileRpc) {
-					const sess = this.__sessions.get(connId);
 					const sendFn = (response) => {
 						let jsonStr;
 						try {
