@@ -186,9 +186,9 @@ RPC `res` 帧和 `event:agent` 帧虽走同一条 DC，但在 OpenClaw gateway �
 
 ### 3.1 两阶段 RPC 的底层封装
 
-**统一封装在底层**：`ui/src/services/claw-connection.js:136-171` 的 `request(method, params, options)` 通过"是否传入 `options.onAccepted`"区分单/两阶段：
+**统一封装在底层**：`ui/src/services/claw-connection.js` 的 `request(method, params, options)` 通过"是否传入 `options.onAccepted`"区分单/两阶段：
 - 无 onAccepted → 任何 ok=true 直接 resolve（单阶段）
-- 有 onAccepted → accepted 状态调回调保留 waiter，TERMINAL_STATUSES（`ok` / `error`）才 resolve（两阶段）
+- 有 onAccepted → `status === 'accepted'` 调回调保留 waiter；其余一切 ok=true 视为终态 resolve（"非 accepted 即终态"，与上游 `client.ts` / plugin `isFinalResMsg` 镜像，详见 `docs/designs/dc-rpc-response-unicast.md` §5.1）
 
 **全仓库两阶段调用只有一处**：`ui/src/stores/chat.store.js:525` 的 `conn.request('agent', ...)`。其他 30+ 个 RPC 调用均为单阶段。
 

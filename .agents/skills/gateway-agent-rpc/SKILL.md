@@ -18,16 +18,14 @@ UI <──res── {status: "ok"/"error", ...}     ← Phase 2: Final（终态�
 
 ## Status 判定规则
 
-**终态（明确）：**
-- `status === "ok"` -> resolve（agent 成功完成）
-- `status === "error"` -> reject（agent 执行失败）
+判据采用 **"非 `accepted` 即终态"**，与上游 `gateway/client.ts` 的 `expectFinal && status === "accepted"`、plugin 端 `isFinalResMsg` 三方镜像（详见
+`docs/designs/dc-rpc-response-unicast.md` §5.1）。
 
-**已知中间态：**
-- `status === "accepted"` -> 跳过，继续等待终态
+- `status === "accepted"`（且传了 `onAccepted`）→ 中间态，调回调，保留 waiter 等下一帧
+- `ok === false` → reject（调用层失败）
+- 其他一切 `ok === true`（含 `"ok"` / `"error"` / `"timeout"` / 上游未来新增的任何 status）→ resolve 透传 `payload`
 
-**未知状态（既非终态也非已知中间态）：**
-- 调用 `onUnknownStatus` 回调（如有提供）
-- 暴露问题，便于排查
+注意：业务层错误是通过 `payload.status === "error"` + `ok === true` 表达的（reject 由调用方按 payload 内容自决），**不是**底层 RPC reject。
 
 ## 前端关键实现：`ClawConnection`
 
@@ -38,9 +36,6 @@ const result = await conn.request('agent', agentParams, {
   timeout: 0,              // agent 长任务，不设 RPC 超时
   onAccepted: (payload) => {
     // payload.runId 可用于匹配后续 streaming 事件
-  },
-  onUnknownStatus: (status, payload) => {
-    // 处理未知中间态
   },
 });
 ```
@@ -55,15 +50,10 @@ const result = await conn.request('agent', agentParams, {
      是 -> reject(error)，移除 waiter
   3. 有 onAccepted 且 payload.status === "accepted"?
      是 -> 调用 onAccepted(payload)，保留 waiter（继续等终态）
-  4. 无 onAccepted（非两阶段调用）且 ok === true?
-     是 -> resolve，移除 waiter
-  5. payload.status 是终态（"ok" / "error"）?
-     是 -> resolve/reject，移除 waiter
-  6. 以上都不满足（未知中间态）?
-     -> 调用 onUnknownStatus，保留 waiter
+  4. 其余 ok === true?
+     -> resolve(payload)，移除 waiter
+        (覆盖：单阶段任何 ok=true / 两阶段除 accepted 外的任何 status)
 ```
-
-终态判定常量：`TERMINAL_STATUSES = new Set(['ok', 'error'])`
 
 ## 调用端：chat.store.js
 
@@ -77,7 +67,6 @@ conn.request('agent', agentParams, {
     // 替换 pre-acceptance 180s 计时器为 post-acceptance 30min 计时器
     // 将 streaming 生命周期移交 agentRunsStore
   },
-  onUnknownStatus: (status, payload) => { /* error log */ },
 })
 ```
 
