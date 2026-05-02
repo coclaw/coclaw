@@ -789,6 +789,30 @@ test('waitForClaimAndSave should throw on aborted signal', async () => {
 	);
 });
 
+test('waitForClaimAndSave: signal 在 await waitClaimCode 期间 abort + token 后到，仍不落盘并回滚 server', async () => {
+	const ac = new AbortController();
+	const writeCalls = [];
+	const unbindCalls = [];
+	// long-poll 期间 abort，再返回 BOUND 数据
+	const mockWait = async () => {
+		ac.abort();
+		return { clawId: 'b-late', token: 'tk-late' };
+	};
+	const mockWrite = async (cfg) => { writeCalls.push(cfg); };
+	const mockUnbind = async (args) => { unbindCalls.push(args); };
+
+	await assert.rejects(
+		() => waitForClaimAndSave(
+			{ serverUrl: 'http://127.0.0.1:8000', code: 'c-mid-abort', waitToken: 'wt', signal: ac.signal },
+			{ waitClaimCode: mockWait, writeCfg: mockWrite, unbindServer: mockUnbind, retryDelayMs: 0 },
+		),
+		/enroll cancelled/,
+	);
+	assert.equal(writeCalls.length, 0, '不应写本地 config');
+	assert.equal(unbindCalls.length, 1, '应回滚 server token');
+	assert.equal(unbindCalls[0].token, 'tk-late');
+});
+
 test('waitForClaimAndSave should throw on 404 error', async () => {
 	const mockWait = async () => {
 		const err = new Error('not found');

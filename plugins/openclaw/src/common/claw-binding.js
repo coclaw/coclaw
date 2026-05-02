@@ -153,6 +153,12 @@ export async function waitForClaimAndSave({ serverUrl, code, waitToken, signal }
 
 		// 已认领
 		if (data?.clawId && data?.token) {
+			// long-poll 期间 abort 到达 → 此时 server 已发 token，与 D bug D-3 #4 同模式：
+			// 不能落盘旧 token（会污染新 enroll/bind 的本地状态），同时回滚 server 端避免孤儿
+			if (signal?.aborted) {
+				await unbindServer({ baseUrl, token: data.token }).catch(() => {});
+				throw new Error('enroll cancelled');
+			}
 			try {
 				await writeCfg({
 					serverUrl: baseUrl,
