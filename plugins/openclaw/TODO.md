@@ -313,3 +313,82 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - 选项 C：保持现状（lifecycle:end 走 broadcast，UI 端需自己有兜底超时）
 
 需先确认 UI 是否依赖 lifecycle:end 判定 run 结束 + 队列满频率。
+
+## D 阶段记 TODO 不修的预存问题
+
+### dc-chunking BEGIN-without-END pending Map 无总量上限
+
+**发现日期**：2026-05-02（D 阶段 dim 4）
+**关联**：plugins/openclaw/src/webrtc/dc-chunking.js createReassembler
+
+**问题**：`pending` Map 没有总条目数 / 总字节数上限。peer 持续发送不同 msgId 的 FLAG_BEGIN 但不发 FLAG_END，每个 entry 都留在 Map 中（每个 1 chunk）。`MAX_REASSEMBLY_BYTES`/`MAX_CHUNKS_PER_MSG` 是单条消息粒度，跨条不护。
+
+**影响**：理论上可被恶意 peer DoS 撑爆 reassembler 内存。但 CoClaw 的 DC 对端是受信 UI（不是公网随便接入），peer 关闭时 reassembler GC 释放。实际风险低。
+
+**修复方向**：加 pending 总条数上限（如 100）+ 总字节数上限，或加 entry 级超时（首次 chunk 后 N 秒内无 END 则丢弃）。需要决策超时窗口（OpenClaw run 单条消息可能 > 60s）。
+
+### dc-chunking msgId uint32 溢出未 wrap
+
+**发现日期**：2026-05-02（D 阶段 dim 4）
+**关联**：plugins/openclaw/src/webrtc/webrtc-peer.js session.nextMsgId++ + dc-chunking.js writeUInt32BE
+
+**问题**：`session.nextMsgId++` 是无界整数，超过 `0xFFFFFFFF` 后 `writeUInt32BE` 抛 RangeError，该 session 此后所有分片发送失败。
+
+**影响**：单条 session 需累计发送 ≥ 4×10⁹ 条分片消息才触发 — 实际不可达（DC 寿命有限）。
+
+**修复方向**：`(session.nextMsgId + 1) >>> 0` 或显式模 0x100000000。
+
+### webrtc-peer ICE restart 不刷新 TURN iceServers config
+
+**发现日期**：2026-05-02（D 阶段 dim 2）
+**关联**：plugins/openclaw/src/webrtc/webrtc-peer.js:185-244 __handleOffer ICE restart 分支
+
+**问题**：ICE restart 时 `msg.turnCreds` 仅用于打 `credRemain` 日志，旧 PC 的 ICE config（含 TURN 凭证）没有更新。如果 TURN 凭证在通话中途过期，restart 后的 relay 候选用旧凭证失败。
+
+**影响**：高 — 长通话过程跨 TURN 凭证 TTL 边界时，relay-only 路径恢复失败，UI 需全量 rebuild。但 TURN 凭证 TTL 一般较长（小时级），实际触发概率低。
+
+**修复方向**：在 setRemoteDescription 之前调 `existing.pc.setConfiguration({ iceServers: rebuiltFromTurnCreds })`。需先验证 pion-node 与 werift 的 setConfiguration 实现一致性。
+
+### pion preload 缺并发合并保护
+
+**发现日期**：2026-05-02（D 阶段 dim 2）
+**关联**：plugins/openclaw/src/webrtc/pion-preloader.js + realtime-bridge.js 调用点
+
+**问题**：bridge 重启或多次直接调用 `preloadPion()` 时，每次都独立构造并启动新 `PionIpc` 实例，没有 in-flight Promise 合并。
+
+**影响**：可能并发 spawn 多个 pion-ipc Go 子进程；被覆盖的那次 preload 结果没有 cleanup 归属。bridge 正常生命周期下不触发。
+
+**修复方向**：`preloadPion` 内维护 in-flight Promise 引用，重入直接返回同一 Promise。
+
+### ndc-preloader 残留路径产生误导日志
+
+**发现日期**：2026-05-02（D 阶段 dim 2）
+**关联**：plugins/openclaw/src/webrtc/ndc-preloader.js + realtime-bridge.js 调用点
+
+**问题**：pion 不可用时 bridge 仍调 `preloadNdc()`，但 `node-datachannel` npm 依赖已摘除，`require.resolve('node-datachannel')` 走入 `reason=unexpected` 分支，日志显示 ndc "unexpected 失败"，干扰排错。
+
+**影响**：仅日志噪音，不影响 fallback 到 werift 的实际路径。
+
+**修复方向**：删除 ndc-preloader.js 模块 + 调用点，让 fallback 直接走 werift。或 ndc 路径检测到包不存在时降级为 info。
+
+### claw-binding 并发 bind/unbind R-M-W 跨调用竞态
+
+**发现日期**：2026-05-02（D 阶段 dim 7）
+**关联**：plugins/openclaw/src/common/claw-binding.js bindClaw / unbindClaw
+
+**问题**：`bindingsMutex` 仅保护 config.js 的 writeConfig/clearConfig 内部 R-M-W；不保护 claw-binding 层的"读 → server 调用 → 写"完整序列。两个 CLI 进程或同时调用 RPC `coclaw.bind` 与 `coclaw.unbind` 时存在竞态。
+
+**影响**：CLI 用户连按或脚本并发触发的边角场景。gateway 单进程 RPC 通常串行处理同名 method。
+
+**修复方向**：跨模块暴露 mutex（claw-binding 持有自己的 mutex 包覆整个 bindClaw/unbindClaw），或文件级 advisory lock。
+
+### unbindClaw 已解绑时返回 NOT_BOUND 而非幂等成功
+
+**发现日期**：2026-05-02（D 阶段 dim 7）
+**关联**：plugins/openclaw/src/common/claw-binding.js:160-164
+
+**问题**：unbindClaw 在本地 config.token 缺失时抛 `NOT_BOUND` 错误。脚本重试 / 用户连按 unbind 被当成失败。
+
+**影响**：低 — 行为缺陷，非 bug。CLI 输出不友好。
+
+**修复方向**：改为 `return { clawId: null, alreadyUnbound: true }`。需检查所有调用方对返回值的依赖。
