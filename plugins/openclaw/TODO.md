@@ -382,6 +382,17 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：跨模块暴露 mutex（claw-binding 持有自己的 mutex 包覆整个 bindClaw/unbindClaw），或文件级 advisory lock。
 
+### BIND_LOCAL_WRITE_FAILED 错误码同时用于 bind 与 enroll 场景
+
+**发现日期**：2026-05-02（D 阶段 round-3 review）
+**关联**：plugins/openclaw/src/common/claw-binding.js bindClaw 81 + waitForClaimAndSave 163
+
+**问题**：bindClaw 与 enroll 的 waitForClaimAndSave 都用同一错误码 `BIND_LOCAL_WRITE_FAILED` 标记本地写失败 + server 已发 token 的回滚场景。语义略不准（enroll 路径名为"BIND_..."），且未来若调用方需按场景做差异化处理（如 UI 展示 enroll 还是 bind 的失败信息），无法区分。
+
+**影响**：当前 plugin index.js 中两个调用点都是 `.catch(err) → logger.warn`，不依赖 code 分支，运行时无问题。
+
+**修复方向**：把 enroll 路径的错误码改为 `ENROLL_LOCAL_WRITE_FAILED`；或抽 `LOCAL_WRITE_FAILED` 共享码 + 用 message 区分。等到调用方需要差异化处理时再改。
+
 ### unbindClaw 已解绑时返回 NOT_BOUND 而非幂等成功
 
 **发现日期**：2026-05-02（D 阶段 dim 7）
