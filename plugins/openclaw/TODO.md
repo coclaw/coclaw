@@ -466,6 +466,21 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **为什么 TODO**：跨 bind/unbind/enroll 三条路径的操作互斥需要统一 op generation 计数器或全局 mutex，属于跨模块状态机锁。round-1 的 `cancelActiveEnroll` 已解决主要单方向 race；剩余双向竞态留待统一规划 lifecycle 时一并修。
 
+**Compact 后复盘（2026-05-02）**：经 origin/main 与 HEAD 对比，此问题在 origin/main（未引入 `cancelActiveEnroll` 之前）就已存在——bind/unbind 入口本就完全不感知活跃 enroll，并发即互踩。本次 `bd6dd61` / `df7ec73` 仅是缩窄了 race 窗口（入口主动取消旧 enroll + waitClaimCode 后多一次 abort 检查），并非引入或放大。属预存问题，发版前不修。
+
+### waitForClaimAndSave writeCfg 期间 abort 信号无回滚（H3）
+
+**发现**：F 阶段 deep-review compact 后 H2/H3 联合复盘（2026-05-02）。
+**锚点**：`plugins/openclaw/src/common/claw-binding.js:155-180` `waitForClaimAndSave` 内 BOUND 数据分支
+
+**问题**：`df7ec73` 在 `waitClaimCode` 返回后、`writeCfg` 开始前加了 `if (signal?.aborted)` 检查 + 服务端 token 回滚。但该检查只覆盖"abort 信号在 await waitClaimCode 期间到达"这一窗口；若 abort 在 `await writeCfg` 进行中或写完之后到达，本地 token 已经落盘，没有任何回滚路径。
+
+**影响**：与 H2 同等结果——本地写入了"应被取消的 enroll"的 token，bridge 后续用错误身份连服务端。可恢复（用户重新 bind）。
+
+**为什么 TODO**：单独修这一个窗口仍治不彻底（H2 未解、bind/bind 也未保护），需要与 H2 一起用 mutex 或 op generation 统一改造，属跨模块状态机锁，6-8 小时工作量 + 关键路径风险。
+
+**Compact 后复盘（2026-05-02）**：origin/main 的 `waitForClaimAndSave` 完全没有 abort 检查，落盘动作直接发生——比当前 HEAD 的窗口更宽。本次仅是收紧、不是引入或放大，属预存问题。
+
 ### claw-binding rollback `.catch(()=>{})` 不防同步 throw
 
 **发现**：E 阶段 round-2 复查（codex-rescue Low）。
