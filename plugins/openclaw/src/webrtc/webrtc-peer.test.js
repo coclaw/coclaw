@@ -147,6 +147,51 @@ test('WebRtcPeer: TURN 凭证正确构建 iceServers', async () => {
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: 畸形 turnCreds.urls (undefined) 降级 host-only 不抛错', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	// turnCreds 存在但 urls 字段缺失
+	const turnCreds = { username: 'u', credential: 'c' };
+	await peer.handleSignaling(makeOffer('c_malformed_undef', 'sdp', turnCreds));
+
+	assert.equal(PC.instances.length, 1);
+	assert.deepEqual(PC.instances[0].__constructorArgs.iceServers, []);
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:answer');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 畸形 turnCreds.urls (字符串而非数组) 不被逐字符展开', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	// urls 是单 string（而非 string 数组）
+	const turnCreds = { urls: 'turn:example.com:3478', username: 'u', credential: 'c' };
+	await peer.handleSignaling(makeOffer('c_malformed_str', 'sdp', turnCreds));
+
+	assert.equal(PC.instances.length, 1);
+	// 不应被字符串迭代逐字符 (t/u/r/n/...) 展开为多个 iceServers
+	assert.deepEqual(PC.instances[0].__constructorArgs.iceServers, []);
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:answer');
+
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: 无 turnCreds 时 iceServers 为空', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({

@@ -272,13 +272,20 @@ export class WebRtcPeer {
 		const iceServers = [];
 		if (msg.turnCreds) {
 			const { urls, username, credential } = msg.turnCreds;
-			for (const url of urls) {
-				const server = { urls: url };
-				if (url.startsWith('turn:') || url.startsWith('turns:')) {
-					server.username = username;
-					server.credential = credential;
+			// 防御：urls 必须是 string 数组；非数组（含 undefined / 单 string）跳过，
+			// 避免 for-of undefined 抛错或单 string 被字符级迭代成无效 iceServers
+			if (Array.isArray(urls)) {
+				for (const url of urls) {
+					if (typeof url !== 'string') continue;
+					const server = { urls: url };
+					if (url.startsWith('turn:') || url.startsWith('turns:')) {
+						server.username = username;
+						server.credential = credential;
+					}
+					iceServers.push(server);
 				}
-				iceServers.push(server);
+			} else {
+				this.logger.warn?.(`${this.__rtcTag} ignored malformed turnCreds.urls (expected string[], got ${typeof urls})`);
 			}
 		}
 
