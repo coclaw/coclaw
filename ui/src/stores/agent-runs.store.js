@@ -227,9 +227,6 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 						catch (e) { console.error('[agentRuns] onAccepted callback err:', e); }
 					}
 				},
-				onUnknownStatus: (status, payload) => {
-					console.error('[agentRuns] unknown agent rpc status=%s', status, payload);
-				},
 			}).then(
 				(rpcResult) => {
 					if (registeredRunId) {

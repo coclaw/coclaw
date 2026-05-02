@@ -584,14 +584,41 @@ describe('ClawConnection – request() 两阶段 (onAccepted)', () => {
 		expect(res.status).toBe('error');
 	});
 
-	test('未知中间态调用 onUnknownStatus', async () => {
+	// REPRO + 修复回归（阶段 2.10）：OpenClaw 2026.4.29 把"被 abort 的 run"二阶段 res 改成
+	// status='timeout'。旧白名单 {'ok','error'} 不识别 → waiter 永挂 → run 状态机卡死。
+	// 现按"非 accepted 即终态"语义统一处理（与上游 client.ts / plugin isFinalResMsg 镜像）。
+	test('终态 status=timeout（OpenClaw aborted run 回包）resolve 透传 payload', async () => {
 		const { conn, mockRtc } = makeRtcReady();
-		const onUnknown = vi.fn();
-		conn.request('slow.op', {}, { onAccepted: vi.fn(), onUnknownStatus: onUnknown });
+		const p = conn.request('agent', {}, { onAccepted: vi.fn() });
 		const reqId = mockRtc.send.mock.calls[0][0].id;
-		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'processing' } });
-		await Promise.resolve();
-		expect(onUnknown).toHaveBeenCalledWith('processing', { status: 'processing' });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted', runId: 'r1' } });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: {
+			status: 'timeout', runId: 'r1', summary: 'aborted', stopReason: 'stop',
+		} });
+		const res = await p;
+		expect(res).toEqual({ status: 'timeout', runId: 'r1', summary: 'aborted', stopReason: 'stop' });
+	});
+
+	test('两阶段任何非 accepted 的陌生 status 也视为终态 resolve（与 isFinalResMsg 镜像）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('slow.op', {}, { onAccepted: vi.fn() });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted' } });
+		// 上游未来若新增中间态字符串而 UI 未及时同步：被当成终态 resolve 透传，不丢响应
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'whatever-future', detail: 42 } });
+		const res = await p;
+		expect(res).toEqual({ status: 'whatever-future', detail: 42 });
+	});
+
+	test('两阶段终态后 pending 已清，撞号兜底不再二次 resolve（防内存泄漏）', async () => {
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('slow.op', {}, { onAccepted: vi.fn() });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted' } });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'timeout' } });
+		await p;
+		// 旧 unknown 分支不删 pending → 内存泄漏 + 重复回调风险；新实现走终态路径必须清 pending
+		expect(conn.__pending.size).toBe(0);
 	});
 });
 

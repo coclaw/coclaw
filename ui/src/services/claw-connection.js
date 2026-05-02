@@ -16,7 +16,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 210_000;
 /** 短暂抖动 vs 实质断连分界（reconnect gap < 此值跳过 refresh，避免短抖动后无意义全量刷新） */
 const BRIEF_DISCONNECT_MS = 30_000;
-const TERMINAL_STATUSES = new Set(['ok', 'error']);
 
 // 导出常量供外部模块使用
 export { BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS };
@@ -167,7 +166,6 @@ export class ClawConnection {
 	 * @param {object} [params]
 	 * @param {object} [options]
 	 * @param {(payload: object) => void} [options.onAccepted] - 两阶段模式回调
-	 * @param {(status: string, payload: object) => void} [options.onUnknownStatus]
 	 * @param {number} [options.timeout] - 请求超时 ms（0 = 永不超时），默认 30s
 	 * @param {number} [options.connectTimeout] - 连接等待超时 ms，默认 DEFAULT_CONNECT_TIMEOUT_MS
 	 * @param {AbortSignal} [options.signal] - 可选取消信号，覆盖 waitReady 排队 + pending 两段；abort → reject ERR_CANCELED
@@ -192,7 +190,6 @@ export class ClawConnection {
 			return new Promise((resolve, reject) => {
 				const waiter = { resolve, reject, signal: null, onAbort: null, method };
 				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
-				if (options.onUnknownStatus) waiter.onUnknownStatus = options.onUnknownStatus;
 				const timeoutMs = options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS;
 				if (timeoutMs > 0) {
 					waiter.timer = setTimeout(() => {
@@ -322,33 +319,21 @@ export class ClawConnection {
 
 		const status = payload.payload?.status;
 
-		// 两阶段 accepted
+		// 两阶段中间态：仅 status === 'accepted' 表示"还有后续帧跟随"。
+		// 与上游 gateway/client.ts 的 `expectFinal && status === "accepted"` 严格镜像，
+		// 也与 plugin 端 isFinalResMsg 保持一致（见 docs/designs/dc-rpc-response-unicast.md §5.1）。
 		if (waiter.onAccepted && status === 'accepted') {
 			waiter.onAccepted(payload.payload);
 			return;
 		}
 
-		// 非两阶段：任何 ok=true 直接 resolve
-		if (!waiter.onAccepted) {
-			this.__pending.delete(payload.id);
-			this.__cleanupWaiter(waiter);
-			waiter.resolve(payload.payload ?? {});
-			return;
-		}
-
-		// 两阶段终态
-		if (TERMINAL_STATUSES.has(status)) {
-			this.__pending.delete(payload.id);
-			this.__cleanupWaiter(waiter);
-			waiter.resolve(payload.payload ?? {});
-			return;
-		}
-
-		// 未知中间态
-		console.error('[ClawConn] unknown intermediate status=%s id=%s', status, payload.id);
-		if (waiter.onUnknownStatus) {
-			waiter.onUnknownStatus(status, payload.payload);
-		}
+		// 其余 ok=true 一律视为终态：
+		// - 单阶段（无 onAccepted）：任何 ok=true 即终态
+		// - 两阶段：除 accepted 外的任何 status（'ok' / 'error' / 'timeout' /
+		//   上游未来新增的任何字符串）都不会再有后续帧，提前清条目并 resolve 透传
+		this.__pending.delete(payload.id);
+		this.__cleanupWaiter(waiter);
+		waiter.resolve(payload.payload ?? {});
 	}
 
 	/** 清理 waiter 上的 timer 和 abort listener（resolve/reject 任一出口调用） */
