@@ -4164,6 +4164,22 @@ test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）',
 	assert.equal(pc.oniceconnectionstatechange, null, 'handler detached after close');
 });
 
+test('WebRtcPeer: closeByConnId onicegatheringstatechange detach（pion PC）', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_gather_det'));
+	const pc = PC.instances[0];
+	assert.equal(typeof pc.onicegatheringstatechange, 'function', 'handler installed before close');
+
+	await peer.closeByConnId('c_gather_det');
+	assert.equal(pc.onicegatheringstatechange, null, 'handler detached after close');
+});
+
 test('WebRtcPeer: pion icegatheringstatechange=complete flushes gather diag (host addrs included)', async () => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();

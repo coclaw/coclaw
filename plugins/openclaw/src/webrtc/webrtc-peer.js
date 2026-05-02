@@ -80,6 +80,9 @@ export class WebRtcPeer {
 		if ('oniceconnectionstatechange' in session.pc) {
 			session.pc.oniceconnectionstatechange = null;
 		}
+		if ('onicegatheringstatechange' in session.pc) {
+			session.pc.onicegatheringstatechange = null;
+		}
 		// 清理 failed TTL 定时器
 		if (session.__failedTimer) {
 			clearTimeout(session.__failedTimer);
