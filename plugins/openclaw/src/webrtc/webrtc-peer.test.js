@@ -2715,6 +2715,47 @@ test('WebRtcPeer: 同 session 第二条 rpc DC → 旧三件套被 close + destr
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: 旧 dc.onclose 在新三件套就位后迟到 → identity guard 防止误清新三件套', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_dc1_late'));
+	const dc1 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc1 });
+	await flushAsync();
+
+	// 第二条 rpc DC 替换三件套（UI 重建 rpc DC 场景）
+	const dc2 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc2 });
+	await flushAsync();
+
+	const session = peer.__sessions.get('c_dc1_late');
+	const newQueue = session.rpcQueue;
+	const newSender = session.rpcDcSender;
+	const newLoop = session.rpcConsumeLoop;
+	assert.ok(newQueue && newSender && newLoop);
+	assert.equal(session.rpcChannel, dc2);
+
+	// 模拟旧 dc1.onclose 在新三件套就位后才到达（WebRTC 实现可能延迟投递 close 事件）
+	dc1.readyState = 'closed';
+	dc1.onclose();
+	await flushAsync();
+
+	// identity guard 必须按 sess.rpcChannel === dc 判定，否则旧 dc 错清新三件套
+	assert.equal(session.rpcQueue, newQueue, '旧 dc1.onclose 不应清新 queue');
+	assert.equal(session.rpcDcSender, newSender, '旧 dc1.onclose 不应清新 sender');
+	assert.equal(session.rpcConsumeLoop, newLoop, '旧 dc1.onclose 不应清新 loop');
+	assert.equal(session.rpcChannel, dc2, '旧 dc1.onclose 不应清 rpcChannel');
+	assert.equal(newSender.closed, false, '新 sender 不应被 close');
+	assert.equal(newQueue.destroyed, false, '新 queue 不应被 destroy');
+
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: dc.send 持续抛 → consumeLoop 自身退出后清空 session 三字段（finally 防御）', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({

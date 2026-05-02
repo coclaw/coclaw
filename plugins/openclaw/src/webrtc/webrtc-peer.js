@@ -644,7 +644,10 @@ export class WebRtcPeer {
 			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" closed`);
 			reassembler.reset();
 			const sess = this.__sessions.get(connId);
-			if (sess && dc.label === 'rpc') {
+			// identity guard：仅当 sess.rpcChannel 仍是这个 dc 时才清三件套。
+			// 同 session 重建（UI 重建 rpc DC）后，旧 dc 的 onclose 可能滞后到达，此时
+			// session 已挂上新三件套；若不核身份，旧 dc 的 onclose 会瞬间杀死新链路
+			if (sess && dc.label === 'rpc' && sess.rpcChannel === dc) {
 				// dc.onclose 是 sync 回调，不能 await consumeLoop。仅触发 close + destroy；
 				// consumeLoop 通过 sender.close → SENDER_CLOSED → break + queue.destroy → done 自然退出
 				sess.rpcDcSender?.close();
