@@ -840,6 +840,46 @@ test('RealtimeBridge: stale server socket 迟到的 message 不应重置当前 s
 	}
 });
 
+test('__handleGatewayRequestFromDc: 缺 id/method 不向 gateway 转发，含 id 时回 INVALID_REQUEST', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const bridge = createBridge();
+	const broadcasted = [];
+	const sentToGateway = [];
+	bridge.webrtcPeer = {
+		broadcast: (p) => broadcasted.push(p),
+		destroy: () => {},
+		closeAll: () => Promise.resolve(),
+	};
+	bridge.gatewayWs = { readyState: 1, send: (m) => sentToGateway.push(m), close: () => {} };
+	bridge.gatewayReady = true;
+
+	// 缺 id + 缺 method → drop + warn，不转发，不 broadcast
+	await bridge.__handleGatewayRequestFromDc({}, 'connA');
+	assert.equal(sentToGateway.length, 0);
+	assert.equal(broadcasted.length, 0);
+
+	// 有合法 id 但 method 缺失 → broadcast INVALID_REQUEST，不转发
+	await bridge.__handleGatewayRequestFromDc({ id: 'req-1' }, 'connA');
+	assert.equal(sentToGateway.length, 0);
+	const inv = broadcasted.find((p) => p.error?.code === 'INVALID_REQUEST');
+	assert.ok(inv, 'should broadcast INVALID_REQUEST when id is valid but method is missing');
+	assert.equal(inv.id, 'req-1');
+
+	// id 是数字（非 string）→ drop，不 broadcast
+	const broadcastsBefore = broadcasted.length;
+	await bridge.__handleGatewayRequestFromDc({ id: 123, method: 'm' }, 'connA');
+	assert.equal(sentToGateway.length, 0);
+	assert.equal(broadcasted.length, broadcastsBefore);
+
+	// 合法 id + method → 正常转发到 gateway
+	await bridge.__handleGatewayRequestFromDc({ id: 'req-ok', method: 'agents.list' }, 'connA');
+	assert.equal(sentToGateway.length, 1);
+	const sent = JSON.parse(sentToGateway[0]);
+	assert.equal(sent.id, 'req-ok');
+	assert.equal(sent.method, 'agents.list');
+});
+
 test('RealtimeBridge: __closeGatewayWs 主动关闭时立即清 lag probe', async () => {
 	FakeWebSocket.instances.length = 0;
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });

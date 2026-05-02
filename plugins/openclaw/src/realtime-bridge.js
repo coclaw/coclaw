@@ -953,6 +953,24 @@ export class RealtimeBridge {
 	}
 
 	async __handleGatewayRequestFromDc(payload, connId) {
+		// 入口校验：peer 可能发出残缺 / 类型错误的帧；不应向 gateway 转发 id/method 缺失的请求
+		const hasValidId = typeof payload?.id === 'string' && payload.id.length > 0;
+		const hasValidMethod = typeof payload?.method === 'string' && payload.method.length > 0;
+		if (!hasValidId || !hasValidMethod) {
+			this.logger.warn?.(
+				`[coclaw] dc gateway req invalid: id=${typeof payload?.id} method=${typeof payload?.method}`,
+			);
+			// 有合法 id 时回 INVALID_REQUEST 让发起方尽快放弃等待；id 不合法时只能 drop
+			if (hasValidId) {
+				this.webrtcPeer?.broadcast({
+					type: 'res',
+					id: payload.id,
+					ok: false,
+					error: { code: 'INVALID_REQUEST', message: 'missing or invalid id/method' },
+				});
+			}
+			return;
+		}
 		const ready = await this.__waitGatewayReady();
 		if (!ready || !this.gatewayWs || this.gatewayWs.readyState !== 1) {
 			// OFFLINE 路径在写映射前触发，无脏映射；保留广播语义（属系统状态公告）
