@@ -542,3 +542,23 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - **测试覆盖小缺口**（本次引入）：`dfdc277` 的 stale-PC 测试只覆盖 `onselectedcandidatepairchange`，未覆盖 `onicecandidate` / `onicegatheringstatechange`；`webrtc-peer.js:173` `sendTo` 的 enqueue-throw catch 路径未测。
 
 **为什么 TODO**：均不影响发版正确性，待后续清理批次统一处理。
+
+### atomic-write 系统断电场景的 fsync 加固（M，预存）
+
+**发现**：G 阶段 deep-review 维度 4（codex-rescue）。
+**锚点**：`plugins/openclaw/src/utils/atomic-write.js`（`atomicWriteFile` 与 `atomicWriteFileSync`）
+
+**问题**：当前实现是 `writeFile(tmp) → rename`，rename 是原子 syscall，能防"进程崩溃"。但系统级断电（kernel panic / 拔电）下，tmp 文件的数据可能还在内核 buffer 没刷到磁盘，rename 完成但目标文件读到 0 字节或旧数据。同理父目录的 rename 元数据也可能未持久化。
+
+**影响**：device-identity 私钥、settings、bindings、auto-upgrade state/lock/log 都过这条路；理论上系统断电后可能丢失最近一次写入。但这些数据全部可恢复（重新 bind / 重新生成 deviceId），且 plugin 跑在用户机器上，真"硬断电"极少发生。
+
+**为什么 TODO（不修）**：曾尝试在 7fac52e 加 fsync(tmp) + fsync(父目录)，后回滚（ebffc1d）。原因：
+- 价值低 —— 保护极罕见、可恢复场景
+- 风险高 —— `tmpFh.sync()` 在某些环境（特殊 FS、网络存储、Windows 路径）可能抛错，未做 best-effort 兜底；atomic-write 抛错会让 auto-upgrade lock / state 写不下去，引入比原问题更危险的 regression
+- 测试覆盖不足 —— 没法在普通文件系统上模拟"系统断电"
+
+**修复方向（未来若做）**：
+- fsync(tmp) 包成 best-effort try/catch + warn，失败不传播给 caller
+- fsync 父目录已经是 best-effort（Windows 不支持 dir fd）
+- 给 auto-upgrade 路径加专项测试覆盖 fsync 抛错场景
+- 单独发一个补丁版本（不与 release 节奏混在一起）
