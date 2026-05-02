@@ -2,4 +2,4 @@
 '@coclaw/openclaw-coclaw': patch
 ---
 
-Fix: `waitForClaimAndSave` 把 server 408 + `CLAIM_TIMEOUT` 视为终态过期错误，立即抛 `claim code expired` 退出循环。原先所有非 404 错误（含 server 已过期的 408）都被当作瞬态错误重试，导致后台 enroll 在 claim code 永久失效后仍每 2s 轮询，永远占住 `activeEnrollAbort` 槽位。
+Fix: `waitForClaimAndSave` treats server `408 + CLAIM_TIMEOUT` as a terminal expired state and throws `claim code expired` immediately. Previously every non-404 error (including the server's own 408 expiration response) was treated as transient and retried, so a background enroll would keep polling every 2s after the claim code was permanently invalid and never release the `activeEnrollAbort` slot.
