@@ -1,5 +1,28 @@
 # @coclaw/ui
 
+## 0.20.0
+
+### Minor Changes
+
+- 01087d6: Cancel coordination now passes `runDuration` / `abortDuration` (ms) in `coclaw.agent.abort` RPC params, enabling plugin-side heuristic cancel resolution. Adds the new terminal reason `gone` and changes how an existing reason is handled:
+
+  - `gone` (new) — plugin heuristically determined the run has ended; UI proactively settles the local run via new `agentRunsStore.settleByCancel` action and shows an info toast.
+  - `not-supported` (existing reason, behavior changed) — UI now also proactively settles the local run (previously only stopped the tick loop), letting the user resume sending immediately.
+
+  Both toasts (info for `gone`, warning for `not-supported`) are triggered from the store via `getSharedNotifier`, so the handoff path (pre-accept STOP → onAccepted internal cancelSend) also gets feedback.
+
+  Backward compatible with older plugins that ignore the new fields and keep returning `not-found` (UI continues retry until natural end).
+
+### Patch Changes
+
+- 2ed71c7: Round 2 hardening for cancel coordination heuristic fallback:
+  - Wrap `settleByCancel` + notify + i18n calls in `gone` and `not-supported` branches with try/catch so a thrown notify (e.g., future i18n strict mode or toast impl regression) cannot leave the coordination promise hanging.
+  - Soften `chat.cancelGoneHint` wording across all 12 locales: replace the implicit auto-appear promise ("the result will appear later") with a check-back-later phrasing that better reflects actual UI behavior (no automatic refresh after settle).
+- dd970a1: Keep STOP button disabled until run truly ends. Previously, when cancel coordination resolved early via the immediate-hit path, `__cancelling` was cleared but the run could still be in flight (cancelled=true, ended=false), letting the STOP button appear active again. Now `isCancelling` getter falls back to `cancelled && !ended` so the button stays disabled (with loader icon) for the full lifetime of the run, decoupling "should we keep sending abort RPCs" from "are we in cancel state".
+- 6e41b3e: Treat any non-`accepted` two-phase RPC status as terminal, mirroring upstream OpenClaw `gateway/client.ts` and the plugin's `isFinalResMsg`. Previously the UI used a hardcoded whitelist (`{'ok','error'}`); when OpenClaw 2026.4.29 began returning `status='timeout'` for aborted runs, the unknown-status branch silently dropped the response — the agent RPC promise hung forever, the run state machine froze (cancelled=true / ended=false), and the STOP button stayed permanently disabled.
+
+  `__handleRpcResponse` now resolves on any `ok=true` frame whose status isn't `accepted`, transparently passing the payload (including `timeout`, `error`, `ok`, and any future status string) to the caller. The `onUnknownStatus` option is removed since the unknown branch no longer exists; this also eliminates the prior memory-leak risk where the unknown path didn't clean up `__pending`.
+
 ## 0.19.0
 
 ### Minor Changes
