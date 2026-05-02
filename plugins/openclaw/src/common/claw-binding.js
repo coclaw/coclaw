@@ -63,12 +63,25 @@ export async function bindClaw({ code, serverUrl }, deps = {}) {
 		throw new Error('invalid bind response');
 	}
 
-	await writeCfg({
-		serverUrl: baseUrl,
-		clawId: data.clawId,
-		token: data.token,
-		boundAt: new Date().toISOString(),
-	});
+	try {
+		await writeCfg({
+			serverUrl: baseUrl,
+			clawId: data.clawId,
+			token: data.token,
+			boundAt: new Date().toISOString(),
+		});
+	}
+	catch (writeErr) {
+		// 本地 writeCfg 失败 → 回滚 server 端，避免产生孤儿 claw（与 unbind 强制不容错的红线对称）
+		await unbindServer({ baseUrl, token: data.token }).catch(() => {
+			// 回滚失败不掩盖原因；用户根据原始 writeErr.message 排查，
+			// server 端孤儿可通过下次 enroll/bind 时 401/404/410 再清理
+		});
+		const wrapped = new Error(`bind succeeded on server but local write failed: ${writeErr.message}`);
+		wrapped.code = 'BIND_LOCAL_WRITE_FAILED';
+		wrapped.cause = writeErr;
+		throw wrapped;
+	}
 
 	return {
 		clawId: data.clawId,

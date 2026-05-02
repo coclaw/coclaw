@@ -327,6 +327,87 @@ test('bindClaw should rebind without serverUrl in old config (skip server unbind
 	}
 });
 
+test('bindClaw should roll back server-side claw when local writeCfg fails (no orphan)', async () => {
+	await setupDir('coclaw-bind-rollback-');
+
+	const server = await withServer(async (req, res) => {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ clawId: 'b-rb', token: 't-rb', rebound: false }));
+			return;
+		}
+		res.writeHead(404).end();
+	});
+
+	const unbindCalls = [];
+	try {
+		await assert.rejects(
+			() => bindClaw(
+				{ code: 'newcode', serverUrl: server.baseUrl },
+				{
+					writeCfg: async () => { throw new Error('disk full'); },
+					unbindServer: async (params) => { unbindCalls.push(params); },
+				},
+			),
+			(err) => {
+				assert.equal(err.code, 'BIND_LOCAL_WRITE_FAILED');
+				assert.match(err.message, /disk full/);
+				return true;
+			},
+		);
+
+		// 验证回滚：server 端 unbind 被调用一次，且使用新 token
+		assert.equal(unbindCalls.length, 1);
+		assert.equal(unbindCalls[0].baseUrl, server.baseUrl);
+		assert.equal(unbindCalls[0].token, 't-rb');
+	}
+	finally {
+		await server.close();
+	}
+});
+
+test('bindClaw should still surface original write error when rollback also fails', async () => {
+	await setupDir('coclaw-bind-rollback-fail-');
+
+	const server = await withServer(async (req, res) => {
+		if (req.method === 'POST' && req.url === '/api/v1/claws/bind') {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ clawId: 'b-rb', token: 't-rb', rebound: false }));
+			return;
+		}
+		res.writeHead(404).end();
+	});
+
+	const unbindCalls = [];
+	try {
+		await assert.rejects(
+			() => bindClaw(
+				{ code: 'newcode', serverUrl: server.baseUrl },
+				{
+					writeCfg: async () => { throw new Error('disk full'); },
+					unbindServer: async (params) => {
+						unbindCalls.push(params);
+						throw new Error('rollback network fail');
+					},
+				},
+			),
+			(err) => {
+				// 仍应抛出原始 write 错误（rollback 失败不掩盖根因）
+				assert.equal(err.code, 'BIND_LOCAL_WRITE_FAILED');
+				assert.match(err.message, /disk full/);
+				return true;
+			},
+		);
+
+		// 仍应尝试过 rollback
+		assert.equal(unbindCalls.length, 1);
+		assert.equal(unbindCalls[0].token, 't-rb');
+	}
+	finally {
+		await server.close();
+	}
+});
+
 test('unbindClaw should throw NOT_BOUND when no token', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
