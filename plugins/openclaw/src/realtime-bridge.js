@@ -867,19 +867,23 @@ export class RealtimeBridge {
 		});
 		ws.addEventListener('close', (ev) => {
 			// 握手失败路径已经打过 ws.connect-failed，这里抑制重复的 disconnected 日志；
-			// 成功后的意外断开、握手途中的异常断开仍按原样上报。
+			// 成功后的意外断开、握手途中的异常断开仍按原样上报。per-WS log 用闭包局部
+			// connectFailReported，无需身份校验
 			if (!connectFailReported) {
 				remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'}`);
 			}
 			this.logger.info?.(`[coclaw] gateway ws closed (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
+			// stale guard：旧 ws 的迟到 close 不应清新 ws 的 lag probes / pending requests / DC 路由 /
+			// 也不应触发新一轮重试调度。非当前 ws → 直接早返，仅留 per-WS 日志。
+			if (this.gatewayWs !== ws) {
+				return;
+			}
 			// gateway WS 一断，正在跑的 agent RPC 不会再有 phase-2 res，主动结算所有 lag 探针，
 			// 避免它们空跑到 60s 兜底，期间还会持续打 spike 噪声。
 			this.__clearAllLagProbes();
-			if (this.gatewayWs === ws) {
-				this.gatewayWs = null;
-				this.gatewayReady = false;
-				this.gatewayConnectReqId = null;
-			}
+			this.gatewayWs = null;
+			this.gatewayReady = false;
+			this.gatewayConnectReqId = null;
 			/* c8 ignore next 3 -- gateway 意外断开时结算未完成 RPC，避免等超时 */
 			for (const [, settle] of this.gatewayPendingRequests) {
 				settle({ ok: false, error: 'gateway_closed' });

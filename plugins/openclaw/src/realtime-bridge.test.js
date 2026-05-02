@@ -840,6 +840,46 @@ test('RealtimeBridge: stale server socket 迟到的 message 不应重置当前 s
 	}
 });
 
+test('RealtimeBridge: stale gateway ws close 不应清新 ws 的 lag probes / pending requests', async () => {
+	// __clearAllLagProbes / gatewayPendingRequests / __dcPendingRequests 都是 per-bridge 共享状态。
+	// 旧 ws 的 close 事件若跑在现有 stale guard (this.gatewayWs === ws) 块外，会清掉新 ws 的状态
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		const gw1 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gw1.readyState = 1;
+		gw1.emit('open', {});
+
+		// 模拟 gateway ws 已被新实例替换，并预置一些"新 ws 的状态"
+		const sentinel = { __dummy: true };
+		bridge.gatewayWs = sentinel;
+		bridge.gatewayPendingRequests.set('p1', () => {});
+		bridge.__dcPendingRequests.set('d1', { connId: 'c1' });
+
+		let lagClearCalls = 0;
+		const origClearLag = bridge.__clearAllLagProbes.bind(bridge);
+		bridge.__clearAllLagProbes = () => { lagClearCalls += 1; return origClearLag(); };
+
+		// 旧 gw1 迟到的 close：guard 应阻止清理新 ws 的状态
+		gw1.readyState = 3;
+		gw1.emit('close', { code: 1006, reason: 'stale' });
+		await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(lagClearCalls, 0, 'stale close 不应触发 __clearAllLagProbes');
+		assert.equal(bridge.gatewayPendingRequests.size, 1, '新 ws 的 pending request 不应被清');
+		assert.equal(bridge.__dcPendingRequests.size, 1, '新 ws 的 DC RPC 路由不应被清');
+		assert.equal(bridge.gatewayWs, sentinel, 'this.gatewayWs 不应被旧 ws close 清空');
+	}
+	finally {
+		await bridge.stop();
+	}
+});
+
 test('RealtimeBridge: stale server sock close 不应清当前 sock 的 heartbeat / connect timer', async () => {
 	// __clearServerHeartbeat / __clearConnectTimer 都是 per-bridge 全局单槽，旧 sock 的 close
 	// 事件若跑在 stale guard 前会清掉新 sock 的 heartbeat
