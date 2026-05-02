@@ -494,7 +494,7 @@ test('BAL 阻塞期间 dc 进 closing → BAL 唤醒后 dc.send 抛 InvalidState
 	dc.bufferedAmount = 0;
 	dc.readyState = 'closing';
 	const origSend = dc.send;
-	dc.send = function (data) {
+	dc.send = function (_data) {
 		throw new Error('InvalidStateError: dc not open');
 	};
 
