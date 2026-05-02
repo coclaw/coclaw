@@ -147,17 +147,28 @@ test('WebRtcPeer: TURN 凭证正确构建 iceServers', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 畸形 turnCreds.urls (undefined) 降级 host-only 不抛错', async () => {
+function warnCapturingLogger() {
+	const warnings = [];
+	return {
+		warnings,
+		info: () => {},
+		warn: (msg) => { warnings.push(String(msg)); },
+		error: () => {},
+		debug: () => {},
+	};
+}
+
+test('WebRtcPeer: 畸形 turnCreds.urls (undefined) 降级 host-only + warn', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
+	const logger = warnCapturingLogger();
 	const peer = new WebRtcPeer({
 		onSend: (msg) => sent.push(msg),
-		logger: silentLogger(),
+		logger,
 		PeerConnection: PC,
 		impl: 'ndc',
 	});
 
-	// turnCreds 存在但 urls 字段缺失
 	const turnCreds = { username: 'u', credential: 'c' };
 	await peer.handleSignaling(makeOffer('c_malformed_undef', 'sdp', turnCreds));
 
@@ -165,29 +176,55 @@ test('WebRtcPeer: 畸形 turnCreds.urls (undefined) 降级 host-only 不抛错',
 	assert.deepEqual(PC.instances[0].__constructorArgs.iceServers, []);
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].type, 'rtc:answer');
+	assert.ok(logger.warnings.some((w) => w.includes('malformed turnCreds.urls')), 'expected malformed-urls warn');
 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 畸形 turnCreds.urls (字符串而非数组) 不被逐字符展开', async () => {
+test('WebRtcPeer: 畸形 turnCreds.urls (字符串) 不被逐字符展开 + warn', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
+	const logger = warnCapturingLogger();
 	const peer = new WebRtcPeer({
 		onSend: (msg) => sent.push(msg),
+		logger,
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	const turnCreds = { urls: 'turn:example.com:3478', username: 'u', credential: 'c' };
+	await peer.handleSignaling(makeOffer('c_malformed_str', 'sdp', turnCreds));
+
+	assert.equal(PC.instances.length, 1);
+	assert.deepEqual(PC.instances[0].__constructorArgs.iceServers, []);
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:answer');
+	assert.ok(logger.warnings.some((w) => w.includes('malformed turnCreds.urls')), 'expected malformed-urls warn');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: turnCreds.urls 数组内非字符串元素被跳过', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
 		impl: 'ndc',
 	});
 
-	// urls 是单 string（而非 string 数组）
-	const turnCreds = { urls: 'turn:example.com:3478', username: 'u', credential: 'c' };
-	await peer.handleSignaling(makeOffer('c_malformed_str', 'sdp', turnCreds));
+	const turnCreds = {
+		urls: ['turn:ok.example.com:3478', null, 42, 'turns:ok.example.com:443'],
+		username: 'u',
+		credential: 'c',
+	};
+	await peer.handleSignaling(makeOffer('c_mixed_urls', 'sdp', turnCreds));
 
-	assert.equal(PC.instances.length, 1);
-	// 不应被字符串迭代逐字符 (t/u/r/n/...) 展开为多个 iceServers
-	assert.deepEqual(PC.instances[0].__constructorArgs.iceServers, []);
-	assert.equal(sent.length, 1);
-	assert.equal(sent[0].type, 'rtc:answer');
+	const args = PC.instances[0].__constructorArgs;
+	// null 和 number 被跳过，仅保留两个合法 string
+	assert.equal(args.iceServers.length, 2);
+	assert.equal(args.iceServers[0].urls, 'turn:ok.example.com:3478');
+	assert.equal(args.iceServers[1].urls, 'turns:ok.example.com:443');
 
 	await peer.closeAll();
 });

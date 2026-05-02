@@ -549,12 +549,30 @@ test('createReassembler: 未知 flag chunk 不污染 pending entry', () => {
 	assert.ok(logger.warnings.some((w) => w.includes('unknown flag')));
 });
 
-test('createReassembler: 超大 string 帧丢弃（receiver 侧 50MB 防护）', () => {
+test('createReassembler: 超大 string 帧丢弃（receiver 侧 50MB 防护，纯 ASCII）', () => {
 	const logger = silentLogger();
 	const received = [];
 	const r = createReassembler((s) => received.push(s), { logger });
 
 	const huge = 'x'.repeat(MAX_REASSEMBLY_BYTES + 1);
+	r.feed(huge);
+
+	assert.equal(received.length, 0);
+	assert.ok(logger.warnings.some((w) => w.includes('exceeded')));
+});
+
+test('createReassembler: 多字节 string 按 byteLength 而非 .length 拒绝', () => {
+	const logger = silentLogger();
+	const received = [];
+	const r = createReassembler((s) => received.push(s), { logger });
+
+	// CJK 字符 UTF-8 为 3 字节、UTF-16 为 1 code unit。构造 length<上限 但 byteLength>上限 的串。
+	const cjkCount = Math.ceil(MAX_REASSEMBLY_BYTES / 3) + 1;
+	const huge = '一'.repeat(cjkCount);
+	// 前置不变量：用 .length 判断会通过、用 byteLength 判断会拒绝
+	assert.ok(huge.length < MAX_REASSEMBLY_BYTES, 'precondition: length < cap');
+	assert.ok(Buffer.byteLength(huge, 'utf8') > MAX_REASSEMBLY_BYTES, 'precondition: byteLength > cap');
+
 	r.feed(huge);
 
 	assert.equal(received.length, 0);

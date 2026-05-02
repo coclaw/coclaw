@@ -98,9 +98,12 @@ export function createReassembler(onComplete, opts = {}) {
 	function feed(data) {
 		// string = 普通消息，直接交付
 		if (typeof data === 'string') {
-			// 边界保护：peer 可能发送超过单条消息硬上限的字符串（绕过 sender 端 50MB 检查）
-			if (data.length > MAX_REASSEMBLY_BYTES) {
-				logger?.warn?.(`[dc-chunking] string frame exceeded ${MAX_REASSEMBLY_BYTES} bytes, discarding`);
+			// 边界保护：peer 可能发送超过单条消息硬上限的字符串（绕过 sender 端 50MB 检查）。
+			// 注意必须用 byteLength 而非 .length —— 后者是 UTF-16 code unit 数，CJK 字符
+			// 1 char = 1 unit 但 UTF-8 占 3 byte，按 .length 比较会让多字节内容绕过上限近 3 倍。
+			const byteLen = Buffer.byteLength(data, 'utf8');
+			if (byteLen > MAX_REASSEMBLY_BYTES) {
+				logger?.warn?.(`[dc-chunking] string frame exceeded ${MAX_REASSEMBLY_BYTES} bytes (got ${byteLen}), discarding`);
 				return;
 			}
 			onComplete(data);
