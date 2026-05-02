@@ -37,6 +37,7 @@ class MemoryQueue {
 	 * @param {object} opts
 	 * @param {string} opts.id - 队列标识（仅用于日志 tag/路径校验对齐 FBQ）
 	 * @param {number} [opts.memBudget=10MB] - 内存软上限；queueBytes >= memBudget 且非 bypass 时新消息 drop
+	 * @param {number} [opts.maxMessageBytes=Infinity] - 单条硬上限；超过即 drop（bypass 也不豁免）
 	 * @param {(reason: string, size: number) => void} [opts.onDrop] - 拒入队回调
 	 * @param {{ warn?: Function, info?: Function, error?: Function }} [opts.logger=console]
 	 * @param {(jsonStr: string) => boolean} [opts.bypassAdmission] - 白名单谓词，命中则 admission 豁免
@@ -46,6 +47,7 @@ class MemoryQueue {
 		const {
 			id,
 			memBudget = DEFAULT_MEM_BUDGET,
+			maxMessageBytes = Infinity,
 			onDrop,
 			logger,
 			bypassAdmission,
@@ -59,9 +61,14 @@ class MemoryQueue {
 		if (!Number.isFinite(memBudget) || memBudget <= 0) {
 			throw new TypeError('memBudget must be a finite positive number');
 		}
+		// Infinity 也合法；只挡 NaN / 非数字 / 非正数
+		if (maxMessageBytes !== Infinity && (!Number.isFinite(maxMessageBytes) || maxMessageBytes <= 0)) {
+			throw new TypeError('maxMessageBytes must be Infinity or a finite positive number');
+		}
 
 		this.id = id;
 		this.memBudget = memBudget;
+		this.maxMessageBytes = maxMessageBytes;
 		this.onDrop = onDrop;
 		this.logger = logger ?? console;
 		this.bypassAdmission = typeof bypassAdmission === 'function' ? bypassAdmission : null;
@@ -113,6 +120,16 @@ class MemoryQueue {
 			if (typeof jsonStr !== 'string') throw new TypeError('jsonStr must be a string');
 
 			const size = Buffer.byteLength(jsonStr, 'utf8');
+
+			// per-message 硬上限：bypass 也不豁免。对齐 sender 端 MAX_SINGLE_MSG_BYTES 检查，
+			// 避免大帧先入队再被 sender 拒，导致 memBytes 异常膨胀（特别是 sender 阻塞期间）。
+			if (size > this.maxMessageBytes) {
+				this.droppedCount += 1;
+				this.droppedBytes += size;
+				this.__dispatchDrop('oversize', size);
+				this.__safeWarn(`drop reason=oversize size=${size} cap=${this.maxMessageBytes}`);
+				return false;
+			}
 
 			// admission：与原 RpcSendQueue 行为对齐——按当前已积压字节判断（不含本条 size），
 			// 允许"单条 overshoot"：上一条消息把 queueBytes 顶到 < MAX 但 >= MAX 之间任一值时

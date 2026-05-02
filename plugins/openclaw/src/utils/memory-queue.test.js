@@ -24,6 +24,7 @@ async function makeQ(opts = {}) {
 	const q = new MemoryQueue({
 		id: opts.id ?? 'T',
 		memBudget: opts.memBudget,
+		maxMessageBytes: opts.maxMessageBytes,
 		onDrop: opts.onDrop,
 		logger,
 		bypassAdmission: opts.bypassAdmission,
@@ -651,4 +652,71 @@ test('safe wrapper: remoteLog 即便抛也不传染（防御性）', async () =>
 	await q.enqueue('{"x":1}');
 	// 行为正常即通过
 	assert.equal(q.droppedCount, 1);
+});
+
+// --- per-message hard cap：bypass 也不豁免 ---
+
+test('maxMessageBytes: 超 cap 的帧直接 drop，不入队', async () => {
+	resetRemoteLog();
+	const onDrops = [];
+	const { q } = await makeQ({
+		memBudget: 10000,
+		maxMessageBytes: 100,
+		onDrop: (reason, size) => onDrops.push({ reason, size }),
+	});
+	const ok = await q.enqueue(jsonOfBytes(120));
+	assert.equal(ok, false);
+	assert.equal(q.memBytes, 0);
+	assert.equal(q.stats().memCount, 0);
+	assert.equal(q.droppedCount, 1);
+	assert.equal(q.droppedBytes, 120);
+	assert.equal(onDrops.length, 1);
+	assert.equal(onDrops[0].reason, 'oversize');
+	assert.equal(onDrops[0].size, 120);
+});
+
+test('maxMessageBytes: bypass 命中也无法豁免（与 sender 端 50MB 硬上限对齐）', async () => {
+	resetRemoteLog();
+	const onDrops = [];
+	const { q } = await makeQ({
+		memBudget: 10000,
+		maxMessageBytes: 100,
+		bypassAdmission: () => true,  // 全部豁免 admission
+		onDrop: (reason, size) => onDrops.push({ reason, size }),
+	});
+	const ok = await q.enqueue(jsonOfBytes(120));
+	// 关键：bypass 即使命中，超 cap 仍被 drop，避免 memBytes 异常膨胀
+	assert.equal(ok, false);
+	assert.equal(q.memBytes, 0);
+	assert.equal(onDrops[0].reason, 'oversize');
+});
+
+test('maxMessageBytes: 默认 Infinity → 任意大小都接受（兼容老调用方）', async () => {
+	resetRemoteLog();
+	const { q } = await makeQ({ memBudget: 10000 });
+	const ok = await q.enqueue(jsonOfBytes(5000));
+	assert.equal(ok, true);
+	assert.equal(q.memBytes, 5000);
+});
+
+test('maxMessageBytes: 边界值（=cap 入队，>cap drop）', async () => {
+	resetRemoteLog();
+	const { q } = await makeQ({ memBudget: 10000, maxMessageBytes: 100 });
+	assert.equal(await q.enqueue(jsonOfBytes(100)), true);
+	assert.equal(await q.enqueue(jsonOfBytes(101)), false);
+});
+
+test('maxMessageBytes: 非 finite 正数 → 抛 TypeError', () => {
+	assert.throws(
+		() => new MemoryQueue({ id: 'T', memBudget: 100, maxMessageBytes: -1 }),
+		TypeError,
+	);
+	assert.throws(
+		() => new MemoryQueue({ id: 'T', memBudget: 100, maxMessageBytes: 0 }),
+		TypeError,
+	);
+	assert.throws(
+		() => new MemoryQueue({ id: 'T', memBudget: 100, maxMessageBytes: NaN }),
+		TypeError,
+	);
 });

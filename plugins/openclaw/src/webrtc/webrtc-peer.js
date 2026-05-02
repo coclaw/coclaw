@@ -1,6 +1,6 @@
 import { createReassembler } from './dc-chunking.js';
 import { MemoryQueue } from '../utils/memory-queue.js';
-import { RpcDcSender, DC_LOW_WATER_MARK } from './rpc-dc-sender.js';
+import { RpcDcSender, DC_LOW_WATER_MARK, MAX_SINGLE_MSG_BYTES } from './rpc-dc-sender.js';
 import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
 
@@ -553,6 +553,7 @@ export class WebRtcPeer {
 			}
 			const queue = new MemoryQueue({
 				id: connId,
+				maxMessageBytes: MAX_SINGLE_MSG_BYTES,
 				bypassAdmission: isAgentRunResponse,
 				logger: this.logger,
 				tag: `conn=${connId}`,
