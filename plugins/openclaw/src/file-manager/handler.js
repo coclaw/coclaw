@@ -216,7 +216,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			throw e;
 		}
 		if (stat.isDirectory()) {
-			if (params?.force) {
+			if (params?.force === true) {
 				await _rm(resolved, { recursive: true, force: true });
 			} else {
 				try {

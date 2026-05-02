@@ -369,6 +369,31 @@ test('deleteFile: force 递归删除非空目录', async () => {
 	}
 });
 
+test('deleteFile: 非 boolean true 的 truthy force 不触发递归删除', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.mkdir(nodePath.join(dir, 'notempty'));
+		await fs.writeFile(nodePath.join(dir, 'notempty', 'child.txt'), 'x');
+
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		// 字符串 'false' / 数字 1 等非 boolean true 都不应触发 recursive: true
+		for (const force of ['false', 1, 'yes', {}]) {
+			await assert.rejects(
+				() => handler.__deleteFile({ path: 'notempty', force }),
+				(err) => err.code === 'NOT_EMPTY',
+				`force=${JSON.stringify(force)} 应被严格拒绝为非 force 模式`,
+			);
+		}
+		// 子文件仍在
+		await fs.access(nodePath.join(dir, 'notempty', 'child.txt'));
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('deleteFile: force 对文件也正常删除', async () => {
 	const dir = await makeTmpDir();
 	try {
