@@ -403,3 +403,54 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **影响**：低 — 行为缺陷，非 bug。CLI 输出不友好。
 
 **修复方向**：改为 `return { clawId: null, alreadyUnbound: true }`。需检查所有调用方对返回值的依赖。
+
+## E 阶段（2026-05-02）跨模块 / 复杂改动 TODO
+
+### restartRealtimeBridge / stopRealtimeBridge 缺串行化保护
+
+**发现**：E1 codex-rescue 维度 1。
+**锚点**：`plugins/openclaw/src/realtime-bridge.js:1438`（restartRealtimeBridge）/ `:1454`（stopRealtimeBridge）
+
+**问题**：两次 restart 并发交错时，先创建的 bridge 被新引用覆盖，后续 stop 只停当前 singleton，旧 bridge 已 start 但引用丢失，无法清理。
+
+**修复方向**：给 singleton 生命周期加 mutex / promise queue，串行化 restart/stop。
+
+**为什么 TODO**：跨模块状态机锁，需整体设计 lifecycle 管理；现有测试只覆盖顺序 restart，需新增并发场景测试。
+
+### bind/unbind 在缺 serverUrl 但有 token 时静默跳过远端解绑
+
+**发现**：E1 codex-rescue 维度 1。
+**锚点**：`plugins/openclaw/src/common/claw-binding.js:37`（`bindClaw`）/ `:195`（`unbindClaw`）
+
+**问题**：legacy 或手动写入的 `bindings.json` 中存在 `{ token, clawId }` 但无 `serverUrl` 时，本地照样清理但远端不解绑，违反 unbind "强制不容错"契约的精神（实际 server 还有孤儿 claw）。
+
+**为什么 TODO**：是否保留兼容旧格式属于设计决策（用户场景待确认）。需先和用户对齐：`serverUrl` 缺失时是直接报错，还是兜底用 default url。
+
+### gateway pre-handshake send-fail 不入退避重试
+
+**发现**：E2 codex-rescue。
+**锚点**：`plugins/openclaw/src/realtime-bridge.js:669-672`（`__sendGatewayConnectRequest` catch）
+
+**问题**：握手 connect 请求 send 抛错时只 warn + 清 reqId，未关 ws、未调 `__onGatewayAttemptFailed`，握手前 close handler 又被 `wasReady||connectFailReported` 守卫拦下，最终不入退避。
+
+**为什么 TODO**：触发面极窄（ws send 在 OPEN 状态抛错少见）；改动需要谨慎覆盖握手三态机。先放一放，等真实环境观察到该路径触发再修。
+
+### agentId 非字符串静默 fallback 'main'（多个 RPC handler）
+
+**发现**：E3 codex-rescue。
+**锚点**：`plugins/openclaw/index.js:323/393/516/541`、`plugins/openclaw/src/file-manager/handler.js:197`
+
+**问题**：所有用 `params?.agentId?.trim?.() || 'main'` 的 handler 在 `agentId` 是数字 / 对象等非字符串值时静默 fallback `main`，可能让操作落到错误 workspace。
+
+**修复方向**：抽 `normalizeAgentId(params)` helper：`undefined` / 空字符串才默认 `main`，其他非字符串值抛 `INVALID_INPUT`。
+
+**为什么 TODO**：跨多 handler 一致性变更；需规划好统一 helper 后再批量替换并补测试。
+
+### transport-adapter / message-model timestamp 静默回填
+
+**发现**：E5 codex-rescue。
+**锚点**：`plugins/openclaw/src/message-model.js:20-22`（normalizeInboundEnvelope）/ `:54-56`（buildOutboundEnvelope）
+
+**问题**：present-but-invalid 的 `timestamp`（如 ISO 字符串）被替换为 `Date.now()`，原始时间语义丢失。
+
+**为什么 TODO**：transport-adapter / message-model 当前仅被单测引用，未接生产路径；改动牵涉协议约定（要否兼容 ISO），等启用前再统一修。
