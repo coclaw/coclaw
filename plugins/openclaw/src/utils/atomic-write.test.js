@@ -4,7 +4,8 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { atomicWriteFile, atomicWriteJsonFile } from './atomic-write.js';
+import nodeFs from 'node:fs';
+import { atomicWriteFile, atomicWriteJsonFile, atomicWriteFileSync } from './atomic-write.js';
 
 async function makeTmpDir(prefix = 'coclaw-atomic-') {
 	return await fs.mkdtemp(nodePath.join(os.tmpdir(), prefix));
@@ -258,4 +259,48 @@ test('atomicWriteJsonFile 多次并发写入不产生损坏 JSON', async () => {
 	// 无 .tmp 残留
 	const files = await fs.readdir(dir);
 	assert.equal(files.length, 1);
+});
+
+// --- atomicWriteFileSync ---
+
+test('atomicWriteFileSync 写入文本并正确读回', async () => {
+	const dir = await makeTmpDir();
+	const filePath = nodePath.join(dir, 'sync.txt');
+	atomicWriteFileSync(filePath, 'hello-sync');
+	assert.equal(nodeFs.readFileSync(filePath, 'utf8'), 'hello-sync');
+});
+
+test('atomicWriteFileSync 自动创建父目录', async () => {
+	const dir = await makeTmpDir();
+	const filePath = nodePath.join(dir, 'a', 'b', 'c.txt');
+	atomicWriteFileSync(filePath, 'deep');
+	assert.equal(nodeFs.readFileSync(filePath, 'utf8'), 'deep');
+});
+
+test('atomicWriteFileSync 写入失败时不损坏已有文件且不留 tmp', async () => {
+	const dir = await makeTmpDir();
+	const filePath = nodePath.join(dir, 'sync-safe.txt');
+	atomicWriteFileSync(filePath, 'original');
+
+	// 用已存在目录的路径触发 rename 失败
+	const blockDir = nodePath.join(dir, 'sync-block');
+	nodeFs.mkdirSync(blockDir);
+	assert.throws(() => atomicWriteFileSync(blockDir, 'bad'));
+
+	// 原文件保留
+	assert.equal(nodeFs.readFileSync(filePath, 'utf8'), 'original');
+
+	// 无 .tmp 残留
+	const files = nodeFs.readdirSync(dir);
+	const tmpLeft = files.filter((f) => f.endsWith('.tmp'));
+	assert.equal(tmpLeft.length, 0);
+});
+
+test('atomicWriteFileSync 设置 dirMode', async () => {
+	const dir = await makeTmpDir();
+	const filePath = nodePath.join(dir, 'newdir', 'sync.txt');
+	atomicWriteFileSync(filePath, 'data', { dirMode: 0o700 });
+	const stat = nodeFs.statSync(nodePath.dirname(filePath));
+	// 仅 owner 可访问
+	assert.equal((stat.mode & 0o777) & 0o077, 0);
 });

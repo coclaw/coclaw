@@ -7,6 +7,7 @@
 
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
+import nodeFs from 'node:fs';
 import nodePath from 'node:path';
 
 /**
@@ -60,4 +61,39 @@ async function atomicWriteJsonFile(filePath, value, opts) {
 	await atomicWriteFile(filePath, text, opts);
 }
 
-export { atomicWriteFile, atomicWriteJsonFile };
+/**
+ * 同步版 atomicWriteFile：仅供 device-identity 等启动期同步路径使用，
+ * 行为与 atomicWriteFile 等价（write-to-tmp + rename + finally cleanup）。
+ *
+ * @param {string} filePath - 目标文件路径
+ * @param {string | Buffer} content - 文件内容
+ * @param {object} [opts]
+ * @param {number} [opts.mode=0o600] - 文件权限
+ * @param {number} [opts.dirMode] - 父目录权限
+ * @param {string} [opts.encoding='utf8'] - 写入编码
+ */
+function atomicWriteFileSync(filePath, content, opts) {
+	const mode = opts?.mode ?? 0o600;
+	const encoding = opts?.encoding ?? 'utf8';
+	const mkdirOpts = { recursive: true };
+	if (opts?.dirMode != null) {
+		mkdirOpts.mode = opts.dirMode;
+	}
+
+	nodeFs.mkdirSync(nodePath.dirname(filePath), mkdirOpts);
+
+	const tmp = `${filePath}.${randomUUID()}.tmp`;
+	try {
+		nodeFs.writeFileSync(tmp, content, { encoding, mode });
+		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
+		try { nodeFs.chmodSync(tmp, mode); } catch { /* ignore */ }
+		nodeFs.renameSync(tmp, filePath);
+		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
+		try { nodeFs.chmodSync(filePath, mode); } catch { /* ignore */ }
+	} finally {
+		// 确保临时文件不残留（rename 成功后 tmp 已不存在，rmSync force=true 会无声忽略）
+		try { nodeFs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+	}
+}
+
+export { atomicWriteFile, atomicWriteJsonFile, atomicWriteFileSync };

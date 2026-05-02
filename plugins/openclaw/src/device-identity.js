@@ -4,6 +4,7 @@ import os from 'node:os';
 import nodePath from 'node:path';
 
 import { getRuntime } from './runtime.js';
+import { atomicWriteFileSync } from './utils/atomic-write.js';
 
 const CHANNEL_ID = 'coclaw';
 const IDENTITY_FILENAME = 'device-identity.json';
@@ -107,9 +108,7 @@ export function loadOrCreateDeviceIdentity(filePath) {
 				const derivedId = fingerprintPublicKey(parsed.publicKeyPem);
 				if (derivedId && derivedId !== parsed.deviceId) {
 					const updated = { ...parsed, deviceId: derivedId };
-					fs.writeFileSync(fp, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
-					/* c8 ignore next -- best-effort chmod */
-					try { fs.chmodSync(fp, 0o600); } catch { /* best-effort */ }
+					atomicWriteFileSync(fp, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
 					return { deviceId: derivedId, publicKeyPem: parsed.publicKeyPem, privateKeyPem: parsed.privateKeyPem };
 				}
 				return { deviceId: parsed.deviceId, publicKeyPem: parsed.publicKeyPem, privateKeyPem: parsed.privateKeyPem };
@@ -123,7 +122,6 @@ export function loadOrCreateDeviceIdentity(filePath) {
 	}
 
 	const identity = generateIdentity();
-	fs.mkdirSync(nodePath.dirname(fp), { recursive: true });
 	const stored = {
 		version: 1,
 		deviceId: identity.deviceId,
@@ -131,9 +129,7 @@ export function loadOrCreateDeviceIdentity(filePath) {
 		privateKeyPem: identity.privateKeyPem,
 		createdAtMs: Date.now(),
 	};
-	fs.writeFileSync(fp, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 });
-	/* c8 ignore next -- best-effort chmod */
-	try { fs.chmodSync(fp, 0o600); } catch { /* best-effort */ }
+	atomicWriteFileSync(fp, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 });
 	return identity;
 }
 
