@@ -14,7 +14,9 @@ import { wrapOcMessages } from '../utils/message-normalize.js';
 import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS } from './agent-runs.store.js';
 import { useSessionsStore } from './sessions.store.js';
 import { getReadyConn } from './get-ready-conn.js';
+import { getSharedNotifier } from './notify-hook-bridge.js';
 import { remoteLog } from '../services/remote-log.js';
+import { i18n } from '../i18n/index.js';
 
 const MSG_PAGE_SIZE = 50;
 
@@ -87,6 +89,15 @@ export function createChatStore(storeKey, opts = {}) {
 			__messagesLoaded: false,
 			__streamingTimer: null,
 			__accepted: false,
+			/**
+			 * onAccepted 翻 __accepted=true 的瞬间记录的墙钟时间（ms）。
+			 * cancel 协调每 tick 用 `Date.now() - __acceptedAt` 实算 runDuration 透传给 plugin
+			 * 启发式判定，不要用其它派生量估算（避免 setTimeout 调度漂移失真）。
+			 * 仅 sendMessage 入口复位为 0；`cleanup()` 不复位（页面 unmount 时若后台还有 run
+			 * 在跑，未来恢复时仍需此基准——目前虽未利用此点，先保持保守）。
+			 * @type {number}
+			 */
+			__acceptedAt: 0,
 			__cancelReject: null,
 			__retried: false,
 
@@ -102,7 +113,8 @@ export function createChatStore(storeKey, opts = {}) {
 			/**
 			 * 取消协调状态：accepted 后用户点 STOP 时建立，直到 run 结束或 RPC 达成终态清除。
 			 * 存在期间 isCancelling=true，UI 将 STOP 按钮禁用以防重复触发。
-			 * @type {{ sid: string, promise: Promise<object>, resolve: Function, tickTimer: ReturnType<typeof setTimeout>|null, tickSeq: number } | null}
+			 * `startedAt` 用于每 tick 实算 abortDuration 透传给 plugin 启发判定。
+			 * @type {{ sid: string, promise: Promise<object>, resolve: Function, tickTimer: ReturnType<typeof setTimeout>|null, tickSeq: number, startedAt: number } | null}
 			 */
 			__cancelling: null,
 
@@ -438,6 +450,7 @@ export function createChatStore(storeKey, opts = {}) {
 				this.sending = true;
 				this.streamingRunId = null;
 				this.__accepted = false;
+				this.__acceptedAt = 0;
 
 				const hasFiles = files?.length > 0;
 				const idempotencyKey = __idempotencyKey || crypto.randomUUID();
@@ -556,6 +569,7 @@ export function createChatStore(storeKey, opts = {}) {
 							const runId = payload?.runId ?? null;
 							console.debug('[chat] agent accepted runId=%s', runId);
 							this.__accepted = true;
+							this.__acceptedAt = Date.now();
 							this.streamingRunId = runId;
 							// 本地"乐观活动"标记：服务端已 accept run → 让 MainList agent 列表立刻浮顶
 							// （不等下一次 sessions.list）。放在 onAccepted 而非 sendMessage 入口，避免
@@ -711,14 +725,18 @@ export function createChatStore(storeKey, opts = {}) {
 			 *   建立 __cancelling 协调状态，按 CANCEL_TICK_MS 间隔发 coclaw.agent.abort RPC
 			 *   重试直到：
 			 *     - RPC 返回 ok=true（immediate hit）
-			 *     - RPC 返回 not-supported（侧门缺失，静默降级）
+			 *     - RPC 返回 'gone'（plugin 启发判定 run 已结束 → 主动 settleByCancel + 弹 info toast）
+			 *     - RPC 返回 'not-supported'（侧门缺失 → 主动 settleByCancel + 弹 warning toast）
 			 *     - run 自然结束（isRunning 变 false，rpc/wait/failed 等真终态信号驱动）
 			 *   期间 isCancelling=true，UI 禁用 STOP 按钮防止重复触发；无 TTL——协调生命期等于 run 生命期。
 			 *
 			 * @returns {Promise<object> | null} accepted 分支且有可用 sid/conn 时返回协调 promise，
 			 *   resolve 为：
 			 *     - `{ ok: true, aborted: 'immediate' }` RPC 成功 abort
+			 *     - `{ ok: false, reason: 'gone' }` plugin 启发判定 run 大概率已结束
+			 *       （UI 已主动 settleByCancel 收尾本地 run；后台真实状态未知，可能仍在跑）
 			 *     - `{ ok: false, reason: 'not-supported' }` 侧门缺失
+			 *       （UI 已主动 settleByCancel 收尾本地 run；OpenClaw 接口已变更）
 			 *     - `{ ok: false, reason: 'run-ended' }` run 已自然结束
 			 *     - `{ ok: false, reason: 'superseded' }` 用户发起了新的 send，
 			 *       旧取消意图被自身行为超越（chatStore.__clearCancelling('superseded')）
@@ -815,7 +833,10 @@ export function createChatStore(storeKey, opts = {}) {
 			},
 
 			/**
-			 * 建立并驱动 cancel 协调任务（accepted 分支的 tick 重试循环）
+			 * 建立并驱动 cancel 协调任务（accepted 分支的 tick 重试循环）。tick 入参附带
+			 * `runDuration` / `abortDuration`（墙钟差，ms）供 plugin 启发判定。终态分支：
+			 * `immediate` / `gone` / `not-supported` / `run-ended` / `superseded`。详见 `cancelSend` JSDoc。
+			 * `gone` / `not-supported` 走 store 内部 getSharedNotifier 弹 toast（让 handoff 路径也能 toast）。
 			 * @param {string} sid - sessionId（用于 abort RPC + 标识协调任务）
 			 * @param {object} conn - ClawConnection 实例，已由调用方确保存在
 			 * @returns {Promise<object>}
@@ -824,6 +845,9 @@ export function createChatStore(storeKey, opts = {}) {
 				let resolveFn;
 				const promise = new Promise((r) => { resolveFn = r; });
 				const runKey = this.runKey;
+				// runDuration 时间基点：onAccepted 翻 __accepted=true 的瞬间。__acceptedAt
+				// 一定 >0（cancelSend 入口已 gate this.__accepted=true，onAccepted 同步双置）。
+				const acceptedAt = this.__acceptedAt;
 				// 唯一 id（Symbol，原始值经 Pinia reactive 解引用后仍 ===）。
 				// 防御：若 await 期间发生 __clearCancelling('superseded') + 新 cancelSend2 →
 				// `this.__cancelling` 被替换为新对象；老 tick 用 id 比对发现不再属于自己即退出，
@@ -831,7 +855,13 @@ export function createChatStore(storeKey, opts = {}) {
 				// 注：不能用 `this.__cancelling === me` 因 Pinia reactive 把 me 包成 Proxy，
 				// proxy !== 原对象。
 				const myId = Symbol('cancel');
-				const me = { sid, promise, resolve: resolveFn, tickTimer: null, tickSeq: 0, id: myId };
+				const me = {
+					sid, promise, resolve: resolveFn, tickTimer: null, tickSeq: 0, id: myId,
+					// abortDuration 时间基点：协调任务建立瞬间。每 tick 用 Date.now() - startedAt
+					// 实算墙钟差透传给 plugin 启发判定，不要用 tickSeq * CANCEL_TICK_MS 估算
+					// （setTimeout 调度漂移会失真，特别是 RPC await 串行化拖长间隔时）。
+					startedAt: Date.now(),
+				};
 				this.__cancelling = me;
 				remoteLog(`cancel.start sid=${sid}`);
 
@@ -854,9 +884,17 @@ export function createChatStore(storeKey, opts = {}) {
 						return;
 					}
 					me.tickSeq += 1;
+					const now = Date.now();
+					// 透传给 plugin 的启发判定上下文：runDuration / abortDuration 都是墙钟差。
+					// 旧版 plugin 不识别这两个字段会原样透传 not-found，UI 继续重试，行为兼容。
+					const params = {
+						sessionId: sid,
+						runDuration: Math.max(0, now - acceptedAt),
+						abortDuration: Math.max(0, now - me.startedAt),
+					};
 					let result;
 					try {
-						result = await conn.request('coclaw.agent.abort', { sessionId: sid });
+						result = await conn.request('coclaw.agent.abort', params);
 					} catch {
 						// WS 闪断 / 其它 RPC 错误：继续重试，由 run-ended/immediate 路径终止
 						if (!isMine()) return;
@@ -871,10 +909,49 @@ export function createChatStore(storeKey, opts = {}) {
 						resolveFn({ ok: true, aborted: 'immediate' });
 						return;
 					}
+					// 终态收尾前重检 isRunning：若 await 期间 run 已自然结束（rpc/wait/failed
+					// 终态信号到达），降级走 run-ended 静默路径，避免 settleByCancel 重复打日志
+					// + 给用户多一个 gone toast。仅对 gone/not-supported 这两个会主动收尾的分支生效。
+					if ((result?.reason === 'gone' || result?.reason === 'not-supported')
+							&& !runsStore.isRunning(runKey)) {
+						console.info('[chat] cancelSend done: run-ended (post-await fallback) sid=%s rawReason=%s', sid, result.reason);
+						// 用独立事件名 cancel.run-ended-fallback（不复用 cancel.run-ended 前缀）
+						// 避免日志消费方按前缀聚合时把 race 兜底路径误归到普通 run-ended 路径
+						remoteLog(`cancel.run-ended-fallback sid=${sid} rawReason=${result.reason}`);
+						cleanup();
+						resolveFn({ ok: false, reason: 'run-ended' });
+						return;
+					}
+					if (result?.reason === 'gone') {
+						// plugin 启发判定（双闸 runDuration ≥ 阈值 + abortDuration ≥ 阈值）认为 run
+						// 大概率已结束。允许误判：UI 主动 settleByCancel 收尾本地 run，让用户回到可发送
+						// 状态；后台若仍在跑，后续 event 会被 __dispatch 入口的 ended guard 全部丢弃。
+						// notify 走 store（getSharedNotifier）而非 ChatPage：handoff 路径
+						// （pre-accept 挂意图 → onAccepted 内部调 cancelSend）下 ChatPage 的 .then
+						// 不在调用链上，只有放在 store 里 toast 才能可靠触发。
+						console.info('[chat] cancelSend done: gone sid=%s ticks=%d', sid, me.tickSeq);
+						remoteLog(`cancel.gone sid=${sid} ticks=${me.tickSeq} runDur=${params.runDuration} abortDur=${params.abortDuration}`);
+						cleanup();
+						runsStore.settleByCancel(runKey, 'cancel-gone');
+						getSharedNotifier()?.info({
+							title: i18n.global.t('chat.cancelGone'),
+							description: i18n.global.t('chat.cancelGoneHint'),
+						});
+						resolveFn({ ok: false, reason: 'gone' });
+						return;
+					}
 					if (result?.reason === 'not-supported') {
+						// plugin 上游侧门（embeddedRunState）不存在，无法主动 abort。UI 主动收尾让
+						// 用户能继续发新消息；run 后台仍可能在跑（与 'gone' 风险一致）。
+						// notify 同 gone 分支：走 store，handoff 路径下也能 toast。
 						console.info('[chat] cancelSend done: not-supported sid=%s', sid);
 						remoteLog(`cancel.not-supported sid=${sid}`);
 						cleanup();
+						runsStore.settleByCancel(runKey, 'cancel-not-supported');
+						getSharedNotifier()?.warning({
+							title: i18n.global.t('chat.cancelNotSupported'),
+							description: i18n.global.t('chat.upgradeOpenClawHint'),
+						});
 						resolveFn({ ok: false, reason: 'not-supported' });
 						return;
 					}

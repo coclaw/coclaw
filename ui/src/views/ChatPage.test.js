@@ -704,65 +704,29 @@ describe('ChatPage cancel and cleanup', () => {
 		expect(cancelSpy).toHaveBeenCalled();
 	});
 
-	test('onCancelSend: cancelSend 返回 null 时不 notify', async () => {
+	// onCancelSend 已不看 cancelSend 返回值（toast 全部移到 chat.store 内部 getSharedNotifier，
+	// 见 chat.store.test.js 的 gone/not-supported 用例）。这里只用一个守卫覆盖所有返回形态：
+	// null（pre-accept 各种返 null 路径）/ {ok:true}（immediate）/ {ok:false, reason:...}（任何 reason）
+	// → ChatPage 都不应主动 notify。
+	test.each([
+		[null, 'pre-accept null'],
+		[Promise.resolve({ ok: true }), 'immediate'],
+		[Promise.resolve({ ok: false, reason: 'gone' }), 'gone (toast in store)'],
+		[Promise.resolve({ ok: false, reason: 'not-supported' }), 'not-supported (toast in store)'],
+		[Promise.resolve({ ok: false, reason: 'run-ended' }), 'run-ended silent'],
+		[Promise.resolve({ ok: false, reason: 'superseded' }), 'superseded silent'],
+	])('onCancelSend: ChatPage 不主动 notify（cancelSend → %s）', async (returnValue, _desc) => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
-		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(null);
+		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(returnValue);
 		await flushPromises();
 
 		wrapper.vm.onCancelSend();
 		await flushPromises();
 
-		expect(mockNotify.warning).not.toHaveBeenCalled();
-		expect(mockNotify.error).not.toHaveBeenCalled();
-	});
-
-	test('onCancelSend: ok=true 时不 notify', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(Promise.resolve({ ok: true }));
-		await flushPromises();
-
-		wrapper.vm.onCancelSend();
-		await flushPromises();
-
-		expect(mockNotify.warning).not.toHaveBeenCalled();
-		expect(mockNotify.error).not.toHaveBeenCalled();
-	});
-
-	test('onCancelSend: reason=not-supported → notify warning 提示升级 OpenClaw', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
-			Promise.resolve({ ok: false, reason: 'not-supported' }),
-		);
-		await flushPromises();
-
-		wrapper.vm.onCancelSend();
-		await flushPromises();
-
-		expect(mockNotify.warning).toHaveBeenCalledWith({
-			title: 'Cancel not supported',
-			description: 'Upgrade OpenClaw',
-		});
-		expect(mockNotify.error).not.toHaveBeenCalled();
-	});
-
-	test('onCancelSend: reason=run-ended 静默（用户点 STOP 但 run 先自然结束）', async () => {
-		const wrapper = createWrapper();
-		setupAgents();
-		const chatStore = getChatStore();
-		vi.spyOn(chatStore, 'cancelSend').mockReturnValue(
-			Promise.resolve({ ok: false, reason: 'run-ended' }),
-		);
-		await flushPromises();
-
-		wrapper.vm.onCancelSend();
-		await flushPromises();
-
+		expect(mockNotify.success).not.toHaveBeenCalled();
+		expect(mockNotify.info).not.toHaveBeenCalled();
 		expect(mockNotify.warning).not.toHaveBeenCalled();
 		expect(mockNotify.error).not.toHaveBeenCalled();
 	});

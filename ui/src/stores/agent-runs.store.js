@@ -420,7 +420,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 * 终结 run：标记 ended、停 watcher、唤醒 finalPromise；不释放 streamingMsgs（等 dropRun）
 		 * @param {string} runId
 		 * @param {string} reason - 'rpc' | 'wait' | 'failed' | 'timeout' |
-		 *   'manual' | 'superseded' | 'claw-removed' | 'logout' | 'cleanup'
+		 *   'manual' | 'superseded' | 'claw-removed' | 'logout' | 'cleanup' |
+		 *   'cancel-gone' | 'cancel-not-supported'
 		 */
 		__endRun(runId, reason) {
 			const run = this.runs[runId];
@@ -506,6 +507,29 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				this.__endRun(runId, 'manual');
 			}
 			this.__cleanupRun(runId);
+		},
+
+		/**
+		 * 由用户 cancel 协调（chat.store __startCancelCoordination）外部驱动主动收尾 run，
+		 * 不调用 __cleanupRun——后者会从 runKeyIndex 删 entry，导致后续 loadMessages
+		 * + dropRun(runKey, runId) 校验失败而无法释放 streamingMsgs。endRun 后让自然
+		 * 路径（runPromise.then → loadMessages → dropRun）继续把 entry 真正释放。
+		 *
+		 * 用于两类启发式终态：
+		 * - 'cancel-gone'：plugin 在 not-found + 双闸（runDuration ≥ 3min, abortDuration ≥ 1min）
+		 *   都满足时启发判定 run 已结束（允许误判，详见 plugins/openclaw 的 agent-cancel-heuristic.js）
+		 * - 'cancel-not-supported'：OpenClaw 侧门（embeddedRunState）不存在；plugin 已无法
+		 *   主动 abort，UI 主动收尾 run 让用户回到可发送状态（run 仍可能在后台跑）
+		 *
+		 * @param {string} runKey
+		 * @param {'cancel-gone' | 'cancel-not-supported'} reason
+		 */
+		settleByCancel(runKey, reason) {
+			const runId = this.runKeyIndex[runKey];
+			if (!runId) return;
+			const run = this.runs[runId];
+			if (!run || run.ended) return;
+			this.__endRun(runId, reason);
 		},
 
 		// ============================ 数据维护 ============================

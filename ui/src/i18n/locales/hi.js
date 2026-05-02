@@ -398,6 +398,8 @@ export const hiMessages = {
 		scrollUpForMore: '↑ पहले के संदेशों के लिए ऊपर स्क्रॉल करें',
 		upgradeOpenClawHint: 'आपको OpenClaw अपग्रेड करने की जरूरत हो सकती है। OpenClaw से खुद को अपग्रेड करने के लिए कहें, या चलाएं: npm install -g openclaw',
 		cancelNotSupported: 'यह OpenClaw संस्करण चल रहे agent को रद्द नहीं कर सकता। यह पृष्ठभूमि में चलता रहेगा।',
+		cancelGone: 'कार्य समाप्त हो चुका लगता है',
+		cancelGoneHint: 'यदि यह अभी भी पृष्ठभूमि में चल रहा है, तो परिणाम बाद में दिखाई देगा।',
 		clawThinking: 'सोच रहा है',
 		thinkingFor: '{time} सोच रहा है',
 		refresh: 'रिफ्रेश',

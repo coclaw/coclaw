@@ -398,6 +398,8 @@ export const deMessages = {
 		scrollUpForMore: '↑ Nach oben scrollen für frühere Nachrichten',
 		upgradeOpenClawHint: 'Möglicherweise muss OpenClaw aktualisiert werden. Bitte OpenClaw, sich selbst zu aktualisieren, oder ausführen: npm install -g openclaw',
 		cancelNotSupported: 'Diese OpenClaw-Version kann den laufenden Agenten nicht abbrechen. Die Ausführung wird im Hintergrund fortgesetzt.',
+		cancelGone: 'Ausführung scheint beendet zu sein',
+		cancelGoneHint: 'Falls sie weiterhin im Hintergrund läuft, erscheint das Ergebnis später.',
 		clawThinking: 'Denkt nach',
 		thinkingFor: 'Denkt {time}',
 		refresh: 'Aktualisieren',

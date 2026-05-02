@@ -740,22 +740,11 @@ export default {
 
 		onCancelSend() {
 			console.info('[chat] onCancelSend clicked');
-			const pending = this.chatStore?.cancelSend();
-			if (!pending) return;
-			// cancelSend 协调任务：终态为 immediate / not-supported / run-ended / superseded
-			// 新状态机下 rpc-error / abort-threw / not-found 内部消化重试，不再透出给调用方
-			pending.then((result) => {
-				console.info('[chat] cancelSend result', result);
-				if (!result || result.ok) return;
-				if (result.reason === 'not-supported') {
-					this.notify.warning({
-						title: this.$t('chat.cancelNotSupported'),
-						description: this.$t('chat.upgradeOpenClawHint'),
-					});
-				}
-				// run-ended：用户点了 STOP 但 run 先自然结束，静默（体感与取消成功一致）
-				// superseded：用户发起新 send 超越了旧取消意图，静默
-			});
+			// cancelSend 协调任务的终态 toast（gone / not-supported）由 store 内部走
+			// getSharedNotifier 触发，handoff 路径（pre-accept 挂意图 → onAccepted 内部
+			// 调 cancelSend）也能可靠 toast。本侧仅触发取消并打日志即可。
+			// cancelSend 协议永不 reject，无 .catch 也无 unhandled rejection 风险。
+			this.chatStore?.cancelSend();
 		},
 
 		// --- 拖拽上传 ---

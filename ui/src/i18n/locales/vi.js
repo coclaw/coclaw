@@ -398,6 +398,8 @@ export const viMessages = {
 		scrollUpForMore: '↑ Cuộn lên để xem tin nhắn cũ hơn',
 		upgradeOpenClawHint: 'Bạn có thể cần nâng cấp OpenClaw. Yêu cầu OpenClaw tự nâng cấp, hoặc chạy: npm install -g openclaw',
 		cancelNotSupported: 'Phiên bản OpenClaw hiện tại không thể hủy agent đang chạy. Nó sẽ tiếp tục chạy ở nền.',
+		cancelGone: 'Tác vụ dường như đã kết thúc',
+		cancelGoneHint: 'Nếu nó vẫn đang chạy ở nền, kết quả sẽ xuất hiện sau.',
 		clawThinking: 'Đang suy nghĩ',
 		thinkingFor: 'Đang suy nghĩ {time}',
 		refresh: 'Làm mới',

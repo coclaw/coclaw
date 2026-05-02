@@ -498,6 +498,72 @@ describe('useAgentRunsStore', () => {
 	});
 
 	// =====================================================================
+	// settleByCancel（cancel 协调启发终态主动收尾，不清 runKeyIndex）
+	// =====================================================================
+
+	describe('settleByCancel', () => {
+		test('cancel-gone 走 __endRun + 保留 entry（runKeyIndex 不清，等 dropRun 释放）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.settleByCancel('1::agent:main:main', 'cancel-gone');
+
+			const run = store.runs['run-1'];
+			expect(run).toBeTruthy();
+			// ended 已置；entry 仍在内存里，runKeyIndex 仍指向同一 runId
+			expect(run.ended).toBe(true);
+			expect(store.runKeyIndex['1::agent:main:main']).toBe('run-1');
+			// __endRun 已停 idleTimer + post-accept timer
+			expect(run.__watcher?.idleTimer).toBeNull();
+			expect(run.__timer).toBeNull();
+			// agent.run.end 上报 reason=cancel-gone
+			expect(remoteLogCalls).toContain('agent.run.end runId=run-1 reason=cancel-gone');
+		});
+
+		test('cancel-not-supported 走 __endRun，agent.run.end 上报 reason=cancel-not-supported', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.settleByCancel('1::agent:main:main', 'cancel-not-supported');
+
+			expect(store.runs['run-1'].ended).toBe(true);
+			expect(remoteLogCalls).toContain('agent.run.end runId=run-1 reason=cancel-not-supported');
+		});
+
+		test('runKey 不存在时 no-op（不抛错、不上报）', () => {
+			const store = useAgentRunsStore();
+			expect(() => store.settleByCancel('nonexistent', 'cancel-gone')).not.toThrow();
+			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.end'))).toBeFalsy();
+		});
+
+		test('已 ended 时 no-op（避免重复 endRun + 重复 remoteLog）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.__endRun('run-1', 'rpc');
+			const before = remoteLogCalls.filter((t) => t.startsWith('agent.run.end')).length;
+
+			store.settleByCancel('1::agent:main:main', 'cancel-gone');
+
+			const after = remoteLogCalls.filter((t) => t.startsWith('agent.run.end')).length;
+			expect(after).toBe(before);
+		});
+
+		test('settleByCancel 后调 dropRun(runKey, runId) 仍能正确释放（runKeyIndex 没被破坏）', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.settleByCancel('1::agent:main:main', 'cancel-gone');
+			expect(store.runs['run-1']).toBeTruthy();
+
+			// 关键：__cleanupRun 没有提前清 runKeyIndex，dropRun 的 runId 校验通过 → 真正释放
+			store.dropRun('1::agent:main:main', 'run-1');
+
+			expect(store.runs['run-1']).toBeUndefined();
+			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
+		});
+	});
+
+	// =====================================================================
 	// stripLocalUserMsgs
 	// =====================================================================
 
@@ -1533,6 +1599,20 @@ describe('useAgentRunsStore', () => {
 			registerRun(store);
 			store.resetAll();
 			expect(findEnd('run-1', 'logout')).toBeTruthy();
+		});
+
+		test('reason="cancel-gone"：cancel 协调启发判定 run 已结束', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settleByCancel('1::agent:main:main', 'cancel-gone');
+			expect(findEnd('run-1', 'cancel-gone')).toBeTruthy();
+		});
+
+		test('reason="cancel-not-supported"：plugin 侧门缺失，UI 主动收尾', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+			store.settleByCancel('1::agent:main:main', 'cancel-not-supported');
+			expect(findEnd('run-1', 'cancel-not-supported')).toBeTruthy();
 		});
 
 		test('已 ended run 第二次 endRun 不重复打 log（去重）', () => {

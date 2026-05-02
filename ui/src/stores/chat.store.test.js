@@ -56,6 +56,23 @@ vi.mock('../services/remote-log.js', () => ({
 	remoteLog: (text) => { remoteLogCalls.push(text); },
 }));
 
+// chat.store 通过 getSharedNotifier 在 cancel gone / not-supported 时弹 toast——
+// 测试中 stub 一个可观察的 notifier，断言调用方法 + 入参
+const mockNotifier = {
+	success: vi.fn(),
+	info: vi.fn(),
+	warning: vi.fn(),
+	error: vi.fn(),
+};
+vi.mock('./notify-hook-bridge.js', () => ({
+	getSharedNotifier: () => mockNotifier,
+}));
+
+// i18n 也在 chat.store 内被 cancel 提示分支引用——stub 成回显 key 即可，避免拉真实 vue-i18n
+vi.mock('../i18n/index.js', () => ({
+	i18n: { global: { t: (key) => key } },
+}));
+
 // --- Helper ---
 
 function mockConn(overrides = {}) {
@@ -2789,7 +2806,11 @@ describe('useChatStore', () => {
 			await vi.waitFor(() => {
 				const abortCalls = conn.request.mock.calls.filter(c => c[0] === 'coclaw.agent.abort');
 				expect(abortCalls.length).toBeGreaterThan(0);
-				expect(abortCalls[0][1]).toEqual({ sessionId: 'sess-handoff' });
+				expect(abortCalls[0][1]).toEqual({
+					sessionId: 'sess-handoff',
+					runDuration: expect.any(Number),
+					abortDuration: expect.any(Number),
+				});
 			});
 			// run 已进入 settling(cancel) 状态
 			const runsStore = useAgentRunsStore();
@@ -2987,8 +3008,12 @@ describe('useChatStore', () => {
 			// isRunning 仍为 true（run 未 settled），所以 isSending 仍为 true，输入框依然禁用
 			expect(runsStore.isRunning(runKey)).toBe(true);
 			expect(store.isSending).toBe(true);
-			// 插件侧门 RPC 被触发，sessionId 用 store.sessionId
-			expect(conn.request).toHaveBeenCalledWith('coclaw.agent.abort', { sessionId: 'sess-1' });
+			// 插件侧门 RPC 被触发，sessionId 用 store.sessionId；duration 字段类型校验
+			expect(conn.request).toHaveBeenCalledWith('coclaw.agent.abort', {
+				sessionId: 'sess-1',
+				runDuration: expect.any(Number),
+				abortDuration: expect.any(Number),
+			});
 		});
 
 		test('accepted 后取消 chat 模式：sessionId 为空时退回 currentSessionId', async () => {
@@ -3018,7 +3043,11 @@ describe('useChatStore', () => {
 
 			store.cancelSend();
 
-			expect(conn.request).toHaveBeenCalledWith('coclaw.agent.abort', { sessionId: 'cur-sess-42' });
+			expect(conn.request).toHaveBeenCalledWith('coclaw.agent.abort', {
+				sessionId: 'cur-sess-42',
+				runDuration: expect.any(Number),
+				abortDuration: expect.any(Number),
+			});
 		});
 
 		test('accepted 后取消：sessionId 与 currentSessionId 均不可知时跳过 abort RPC', async () => {
@@ -3325,7 +3354,7 @@ describe('useChatStore', () => {
 			expect(store.__cancelling).toBeNull();
 		});
 
-		test('accepted 后取消：not-supported 立即静默降级，不重试', async () => {
+		test('accepted 后取消：not-supported 立即收尾本地 run + 不重试', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -3360,6 +3389,298 @@ describe('useChatStore', () => {
 			expect(abortCalls).toBe(1);
 			expect(store.__cancelling).toBeNull();
 			expect(remoteLogCalls).toContain('cancel.not-supported sid=sess-ns');
+			// 关键：UI 主动 settleByCancel('cancel-not-supported')，本地 run 已 endRun
+			const runsStore = useAgentRunsStore();
+			expect(runsStore.isRunning(store.runKey)).toBe(false);
+			expect(remoteLogCalls).toContain('agent.run.end runId=run-ns reason=cancel-not-supported');
+			// store 通过 getSharedNotifier 弹 warning toast（不再由 ChatPage 触发——为了 handoff 路径）
+			expect(mockNotifier.warning).toHaveBeenCalledWith({
+				title: 'chat.cancelNotSupported',
+				description: 'chat.upgradeOpenClawHint',
+			});
+		});
+
+		test('accepted 后取消：plugin 返回 gone（启发判定 run 已结束）→ 主动 settleByCancel + 不重试', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCalls = 0;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-gone' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCalls++;
+					return Promise.resolve({ ok: false, reason: 'gone' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-gone';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			await expect(p).resolves.toEqual({ ok: false, reason: 'gone' });
+			// 不重试
+			await vi.advanceTimersByTimeAsync(500);
+			expect(abortCalls).toBe(1);
+			expect(store.__cancelling).toBeNull();
+			// UI 主动 settleByCancel('cancel-gone')，本地 run 已 endRun
+			const runsStore = useAgentRunsStore();
+			expect(runsStore.isRunning(store.runKey)).toBe(false);
+			expect(remoteLogCalls).toContain('agent.run.end runId=run-gone reason=cancel-gone');
+			// cancel.gone remoteLog 携带 ticks + 两个 duration 字段
+			const goneLog = remoteLogCalls.find((t) => t.startsWith('cancel.gone sid=sess-gone'));
+			expect(goneLog).toBeTruthy();
+			expect(goneLog).toContain('ticks=1');
+			expect(goneLog).toMatch(/runDur=\d+/);
+			expect(goneLog).toMatch(/abortDur=\d+/);
+			// store 通过 getSharedNotifier 弹 info toast（不再由 ChatPage 触发——为了 handoff 路径）
+			expect(mockNotifier.info).toHaveBeenCalledWith({
+				title: 'chat.cancelGone',
+				description: 'chat.cancelGoneHint',
+			});
+		});
+
+		test('accepted 后取消：post-await isRunning 守卫 — RPC 飞行中 run 自然结束 + plugin 返 gone → 降级 run-ended，不弹 toast、不再 settleByCancel', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			// abort RPC 用可控的 promise，让我们先模拟 run 自然结束、再让 RPC 返回 gone
+			let resolveAbort;
+			const abortPromise = new Promise((r) => { resolveAbort = r; });
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-race' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') return abortPromise;
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-race';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+
+			const p = store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+			// abort RPC 在飞，tick 阻塞。这时 run 自然结束（模拟 rpc/wait 终态信号到达）
+			const runsStore = useAgentRunsStore();
+			runsStore.settle(store.runKey);
+			// 现在让 RPC 终于返 gone — post-await 守卫应识别 run 已 ended，降级走 run-ended
+			resolveAbort({ ok: false, reason: 'gone' });
+			await expect(p).resolves.toEqual({ ok: false, reason: 'run-ended' });
+			// 守卫上报 fallback 信号
+			expect(remoteLogCalls.some((t) => t === 'cancel.run-ended-fallback sid=sess-race rawReason=gone')).toBe(true);
+			// 不应弹 gone toast
+			expect(mockNotifier.info).not.toHaveBeenCalled();
+			// 不应有第二次 'agent.run.end' 上报（第一次是 settle('manual') 触发）
+			const endCalls = remoteLogCalls.filter((t) => t.startsWith('agent.run.end runId=run-race'));
+			expect(endCalls).toHaveLength(1);
+			expect(endCalls[0]).toContain('reason=manual');
+		});
+
+		test('accepted 后取消：handoff 路径（pre-accept STOP → onAccepted 内部 cancelSend）下 gone toast 仍能弹', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let triggerOnAccepted;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					triggerOnAccepted = () => options?.onAccepted?.({ runId: 'run-handoff-gone' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') return Promise.resolve({ ok: false, reason: 'gone' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-handoff-gone';
+
+			store.sendMessage('hi');
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+
+			// 用户在 accepted 前点 STOP → 挂意图（cancelSend 返 null）
+			expect(store.cancelSend()).toBeNull();
+			expect(store.__pendingCancelIntent).toBe(true);
+
+			// onAccepted 触发 → handoff 内部自调 cancelSend → 走 accepted 分支 → 收到 gone
+			triggerOnAccepted();
+			// 等 handoff cancelSend 的协调跑完
+			await vi.waitFor(() => expect(mockNotifier.info).toHaveBeenCalled());
+
+			// 关键证据：toast 通过 store 内部 getSharedNotifier 触发，handoff 路径下也能 toast
+			expect(mockNotifier.info).toHaveBeenCalledWith({
+				title: 'chat.cancelGone',
+				description: 'chat.cancelGoneHint',
+			});
+		});
+
+		test('accepted 后取消：handoff 路径下 not-supported toast 也能弹（与 gone 对称）', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let triggerOnAccepted;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					triggerOnAccepted = () => options?.onAccepted?.({ runId: 'run-handoff-ns' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') return Promise.resolve({ ok: false, reason: 'not-supported' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-handoff-ns';
+
+			store.sendMessage('hi');
+			await vi.waitFor(() => expect(store.__cancelReject).not.toBeNull());
+
+			// 用户在 accepted 前点 STOP → 挂意图（cancelSend 返 null）
+			expect(store.cancelSend()).toBeNull();
+			expect(store.__pendingCancelIntent).toBe(true);
+
+			// onAccepted 触发 → handoff 内部自调 cancelSend → 走 accepted 分支 → 收到 not-supported
+			triggerOnAccepted();
+			await vi.waitFor(() => expect(mockNotifier.warning).toHaveBeenCalled());
+
+			expect(mockNotifier.warning).toHaveBeenCalledWith({
+				title: 'chat.cancelNotSupported',
+				description: 'chat.upgradeOpenClawHint',
+			});
+		});
+
+		test('accepted 后取消：abort RPC 入参携带 runDuration / abortDuration（每 tick 实算墙钟差）', async () => {
+			vi.useFakeTimers({ now: 1_000_000 });
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const abortCallParams = [];
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-dur' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCallParams.push(params);
+					// 始终 not-found，让 tick 反复跑
+					return Promise.resolve({ ok: false, reason: 'not-found' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-dur';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+			// onAccepted 已同步触发，__acceptedAt = 1_000_000
+			expect(store.__acceptedAt).toBe(1_000_000);
+
+			// 模拟 accepted → 60s 后用户点 STOP
+			await vi.advanceTimersByTimeAsync(60_000); // now = 1_060_000
+			store.cancelSend();
+			await Promise.resolve(); await Promise.resolve();
+
+			// 第 1 次 tick：runDur = 60s, abortDur = 0（cancelStartAt = 1_060_000）
+			expect(abortCallParams).toHaveLength(1);
+			expect(abortCallParams[0]).toEqual({
+				sessionId: 'sess-dur',
+				runDuration: 60_000,
+				abortDuration: 0,
+			});
+
+			// CANCEL_TICK_MS=500 后第 2 次 tick：runDur=60.5s, abortDur=0.5s
+			await vi.advanceTimersByTimeAsync(500); // now = 1_060_500
+			await Promise.resolve();
+			expect(abortCallParams).toHaveLength(2);
+			expect(abortCallParams[1].runDuration).toBe(60_500);
+			expect(abortCallParams[1].abortDuration).toBe(500);
+
+			store.cleanup();
+		});
+
+		test('accepted 后取消：abortDuration 用墙钟差（非 tickSeq*CANCEL_TICK_MS 估算）', async () => {
+			// 这个测试用"延迟 RPC + 非整数推进"撑开 tick 间隔，验证 abortDuration 是
+			// 真正的 Date.now() 墙钟差。若实现误用 me.tickSeq * CANCEL_TICK_MS，
+			// 第 2 次 tick 的 abortDuration 会是 1000（=2*500）而非 800（=300+500），测试失败。
+			vi.useFakeTimers({ now: 2_000_000 });
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const abortCallParams = [];
+			const abortResolvers = [];
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-skew' });
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCallParams.push(params);
+					return new Promise((resolve) => { abortResolvers.push(resolve); });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-skew';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+			store.cancelSend(); // cancelStartAt = 2_000_000
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortCallParams).toHaveLength(1);
+			expect(abortCallParams[0].abortDuration).toBe(0);
+
+			// 推进 300ms（系统时间 2_000_300），让 RPC 滞后才返回
+			await vi.advanceTimersByTimeAsync(300);
+			abortResolvers[0]({ ok: false, reason: 'not-found' });
+			await Promise.resolve(); await Promise.resolve();
+			// tick1 完成，下一个 tickTimer 调度在 2_000_300 + 500 = 2_000_800
+
+			// 推进 500ms（系统时间到 2_000_800）→ tick2 触发，Date.now() = 2_000_800
+			await vi.advanceTimersByTimeAsync(500);
+			await Promise.resolve(); await Promise.resolve();
+			expect(abortCallParams).toHaveLength(2);
+			// 关键断言：800（300 RPC 延迟 + 500 调度间隔）而非 1000（2 * CANCEL_TICK_MS）
+			expect(abortCallParams[1].abortDuration).toBe(800);
+			expect(abortCallParams[1].runDuration).toBe(800);
+
+			store.cleanup();
 		});
 
 		test('accepted 后取消：run 在 tick 之间自然结束 → resolve {ok:false, reason:run-ended}', async () => {
