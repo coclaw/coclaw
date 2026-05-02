@@ -4544,3 +4544,224 @@ test('WebRtcPeer: pion impl without pc.getSctpStats method skips rtc.sctp gracef
 
 	await peer.closeAll();
 });
+
+// --- 阶段 1 场景补强（review 后由测试钉死实现行为） ---
+
+test('WebRtcPeer: 同 session broadcast + sendTo + sendFn 同 tick 调用 → 三条均到达 dc.sent', async () => {
+	const PC = MockPCFactory();
+	let capturedSendFn = null;
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		onFileRpc: (payload, sendFn) => { capturedSendFn = sendFn; },
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_concurrent'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	// 通过 file RPC req 触发 onFileRpc 暴露 sendFn 闭包
+	dc.onmessage({ data: JSON.stringify({ type: 'req', id: 'r1', method: 'coclaw.files.list', params: {} }) });
+	await flushAsync();
+	assert.equal(typeof capturedSendFn, 'function');
+
+	// 同 tick 三个 producer 并发入队
+	peer.broadcast({ type: 'event', from: 'broadcast' });
+	const sendToP = peer.sendTo('c_concurrent', { type: 'event', from: 'sendTo' });
+	capturedSendFn({ type: 'res', id: 'r1', from: 'sendFn' });
+
+	const delivered = await sendToP;
+	await flushAsync();
+
+	assert.equal(delivered, true);
+	const parsed = sent.map((s) => JSON.parse(s));
+	const froms = parsed.map((p) => p.from).filter(Boolean);
+	assert.equal(froms.length, 3, '三条 producer 消息全部到达 dc');
+	assert.ok(froms.includes('broadcast'));
+	assert.ok(froms.includes('sendTo'));
+	assert.ok(froms.includes('sendFn'));
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: loop self-exit 后 dc.onclose 才到达 → 幂等清理 rpcChannel', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_self_exit_then_close'));
+	// dc 仍 'open' 但 send 抛 → loop SENDER_CLOSED break → finally 清三字段（不动 rpcChannel）
+	const dc = makeMockRpcDc({ send: () => { throw new Error('persistent'); } });
+	PC.instances[0].ondatachannel({ channel: dc });
+	const session = peer.__sessions.get('c_self_exit_then_close');
+	peer.broadcast({ type: 'event', x: 1 });
+	await flushAsync();
+
+	// loop self-exit 后三字段已 null，rpcChannel 仍指向 dc（finally 不清它）
+	assert.equal(session.rpcQueue, null);
+	assert.equal(session.rpcDcSender, null);
+	assert.equal(session.rpcConsumeLoop, null);
+	assert.equal(session.rpcChannel, dc);
+
+	// 现在 dc.onclose 到达：identity guard 通过（rpcChannel===dc），进入清理分支但三字段已 null
+	// （幂等无副作用），同时把 rpcChannel 清空
+	dc.readyState = 'closed';
+	dc.onclose();
+	assert.equal(session.rpcQueue, null);
+	assert.equal(session.rpcDcSender, null);
+	assert.equal(session.rpcConsumeLoop, null);
+	assert.equal(session.rpcChannel, null);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: closeByConnId 时 sender 阻塞 BAL → balWaiter 全 reject + 三件套全 null', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_close_with_bal'));
+	const dc = makeMockRpcDc({ bufferedAmount: DC_HIGH_WATER_MARK + 1 });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+	const session = peer.__sessions.get('c_close_with_bal');
+	const sender = session.rpcDcSender;
+
+	// 入队后 sender 进入 BAL waiter
+	peer.broadcast({ type: 'event', x: 1 });
+	await flushAsync();
+	assert.equal(sender.balWaiters.length, 1);
+
+	await peer.closeByConnId('c_close_with_bal');
+
+	// sender.close() reject 所有 waiter，waiters 数组清空
+	assert.equal(sender.balWaiters.length, 0);
+	assert.equal(sender.closed, true);
+	// closeByConnId 显式清三件套
+	assert.equal(session.rpcQueue, null);
+	assert.equal(session.rpcDcSender, null);
+	assert.equal(session.rpcConsumeLoop, null);
+	assert.equal(session.rpcChannel, null);
+	// session 已从 Map 删除
+	assert.equal(peer.__sessions.has('c_close_with_bal'), false);
+});
+
+test('WebRtcPeer: closeAll 多 session → 每 session 三件套全 null + 6 PC handler 全 detach（pion）', async () => {
+	const PC = PionMockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_all_a'));
+	await peer.handleSignaling(makeOffer('c_all_b'));
+	const sessA = peer.__sessions.get('c_all_a');
+	const sessB = peer.__sessions.get('c_all_b');
+	const dcA = makeMockRpcDc();
+	const dcB = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dcA });
+	PC.instances[1].ondatachannel({ channel: dcB });
+	await flushAsync();
+
+	const pcA = sessA.pc;
+	const pcB = sessB.pc;
+	assert.ok(sessA.rpcQueue && sessB.rpcQueue);
+
+	await peer.closeAll();
+
+	// Map 清空
+	assert.equal(peer.__sessions.size, 0);
+	// 每个 session 三件套 + rpcChannel 全 null
+	for (const sess of [sessA, sessB]) {
+		assert.equal(sess.rpcQueue, null);
+		assert.equal(sess.rpcDcSender, null);
+		assert.equal(sess.rpcConsumeLoop, null);
+		assert.equal(sess.rpcChannel, null);
+	}
+	// 每个 PC 6 个 handler 全 detach（含 round 4 + bug 3 补的 onicegatheringstatechange）
+	for (const pc of [pcA, pcB]) {
+		assert.equal(pc.onconnectionstatechange, null);
+		assert.equal(pc.onicecandidate, null);
+		assert.equal(pc.ondatachannel, null);
+		assert.equal(pc.onselectedcandidatepairchange, null);
+		assert.equal(pc.oniceconnectionstatechange ?? null, null);
+		assert.equal(pc.onicegatheringstatechange, null);
+	}
+});
+
+test('WebRtcPeer: broadcast 一路 queue 满 drop 不影响另一路 dc 正常 send', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_full'));
+	await peer.handleSignaling(makeOffer('c_ok'));
+	const sentFull = [];
+	const sentOk = [];
+	// session A 高水位：sender 阻塞，queue 会积压
+	const dcFull = makeMockRpcDc({
+		bufferedAmount: DC_HIGH_WATER_MARK + 1,
+		send: (d) => sentFull.push(d),
+	});
+	const dcOk = makeMockRpcDc({ send: (d) => sentOk.push(d) });
+	PC.instances[0].ondatachannel({ channel: dcFull });
+	PC.instances[1].ondatachannel({ channel: dcOk });
+	await flushAsync();
+
+	const sessFull = peer.__sessions.get('c_full');
+	// 直接锁 memBytes 到 memBudget，模拟 sessionA queue 已积压到顶。这种状态在真实运行中
+	// 由 sender 阻塞 + 上游持续 enqueue 累积形成；测试里直接锁字段更可控
+	sessFull.rpcQueue.memBytes = sessFull.rpcQueue.memBudget;
+
+	// broadcast 一条小消息：sessionA admission 拒（memBytes ≥ memBudget），sessionB 正常 send
+	peer.broadcast({ type: 'event', tag: 'small' });
+	await flushAsync();
+
+	assert.ok(sessFull.rpcQueue.stats().droppedCount >= 1, 'sessionA queue 应 drop small msg');
+	assert.equal(sentOk.length, 1, 'sessionB 不受影响');
+	assert.equal(JSON.parse(sentOk[0]).tag, 'small');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo 入队 true 但 sender 后置 BUILD_CHUNKS_FAILED → 本条 warn 丢失，状态保持', async () => {
+	const PC = MockPCFactory();
+	const warnings = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: (m) => warnings.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	// SDP 强制 maxMessageSize=3（< HEADER_SIZE 5），任意 payload buildChunks 都抛
+	await peer.handleSignaling(makeOffer('c_post_fail', 'v=0\r\na=max-message-size:3\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	const delivered = await peer.sendTo('c_post_fail', { type: 'event', x: 'y' });
+	assert.equal(delivered, true, 'sendTo 仅承诺入队成功');
+	await flushAsync();
+
+	// loop catch BUILD_CHUNKS_FAILED → warn，本条不发；session 三件套保持
+	assert.ok(warnings.some((m) => m.includes('rpc-dc.send-failed code=BUILD_CHUNKS_FAILED')));
+	const session = peer.__sessions.get('c_post_fail');
+	assert.ok(session.rpcQueue);
+	assert.ok(session.rpcDcSender);
+	assert.ok(session.rpcConsumeLoop);
+
+	await peer.closeAll();
+});
