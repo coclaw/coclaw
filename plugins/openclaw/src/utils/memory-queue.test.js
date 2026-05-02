@@ -387,6 +387,22 @@ test('iterator: destroy 后已挂 waiter 收到 done', async () => {
 	assert.equal(r.done, true);
 });
 
+test('iterator: destroy 同时唤醒多个 pending waiter，每个收到 done', async () => {
+	const { q } = await makeQ();
+	// 验证 destroy 把 waiters 数组完整清空：实际生产场景同 queue 仅一个 consumer，
+	// 此处构造 2 个并发 waiter 是为锁定不变量"destroy 后 waiters.length===0 且每个 promise 都 resolve done"
+	const it1 = q[Symbol.asyncIterator]();
+	const it2 = q[Symbol.asyncIterator]();
+	const p1 = it1.next();
+	const p2 = it2.next();
+	await waitForWaiter(q, 2);
+	await q.destroy();
+	const [r1, r2] = await Promise.all([p1, p2]);
+	assert.equal(r1.done, true);
+	assert.equal(r2.done, true);
+	assert.equal(q.waiters.length, 0);
+});
+
 test('iterator: destroy 之后再 next 立刻返回 done（无积压）', async () => {
 	const { q } = await makeQ();
 	await q.destroy();
@@ -462,6 +478,34 @@ test('destroy: dropped > 0 时输出 close 汇总', async () => {
 	assert.ok(closeLog);
 	assert.ok(closeLog.text.includes('dropped=1'));
 	assert.ok(closeLog.text.includes('residualChunks=0'));
+});
+
+test('destroy: 跨多轮 overflow 的 droppedCount 累计 → close 汇总取全程总数', async () => {
+	resetRemoteLog();
+	const { q } = await makeQ({ memBudget: 100 });
+	const it = q[Symbol.asyncIterator]();
+
+	// 第 1 轮 overflow：填满 → drop 1 条
+	await q.enqueue(jsonOfBytes(120));  // memBytes ≥ memBudget
+	const r1 = await q.enqueue('{"a":1}');
+	assert.equal(r1, false, '第 1 轮 drop');
+	assert.equal(q.droppedCount, 1);
+
+	// 出列让 memBytes 降到 0 → overflow-end 翻转，但 droppedCount 不重置
+	await it.next();
+	assert.equal(q.queueOverflowActive, false);
+	assert.equal(q.droppedCount, 1);
+
+	// 第 2 轮 overflow：再次填满 → drop 2 条
+	await q.enqueue(jsonOfBytes(120));
+	assert.equal((await q.enqueue('{"b":2}')), false);
+	assert.equal((await q.enqueue('{"c":3}')), false);
+	assert.equal(q.droppedCount, 3);
+
+	await q.destroy();
+	const closeLog = remoteLogBuffer.find(e => e.text.includes('rpc-queue.close'));
+	assert.ok(closeLog);
+	assert.match(closeLog.text, /dropped=3\b/);
 });
 
 test('destroy: residual > 0 时输出 close 汇总', async () => {
