@@ -176,9 +176,21 @@ export function createChatStore(storeKey, opts = {}) {
 			busy() {
 				return this.sending || this.uploadingFiles || this.resetting;
 			},
-			/** 取消协调任务是否正在进行（含 pre-accept 挂起意图 + accepted 后协调两阶段） */
+			/**
+			 * 取消协调任务是否正在进行（含 pre-accept 挂起意图 + accepted 后协调两阶段）。
+			 *
+			 * 兜底：协调任务以 immediate hit 方式提前 cleanup 后 __cancelling 已置 null，但服务端
+			 * run 真终态信号尚未到达（run.cancelled=true && !run.ended）时，按钮仍应保持 disable
+			 * + loader icon。这一兜底跟"是否还要继续发 abort RPC"是两个维度——协调 promise
+			 * 可以早于 run 真 ended 提前 resolve，UI 的"取消中"展示由此 getter 兜底。
+			 *
+			 * 注：getActiveRun 在 dropRun 之后返回 null，新一轮 run register 之后返回新 run（cancelled=false），
+			 * 都会让此分支自然翻 false，不会跨 run 误判。
+			 */
 			isCancelling() {
-				return !!this.__cancelling || this.__pendingCancelIntent;
+				if (this.__cancelling || this.__pendingCancelIntent) return true;
+				const run = useAgentRunsStore().getActiveRun(this.runKey);
+				return !!(run?.cancelled && !run?.ended);
 			},
 			/**
 			 * 是否有 loadMessages 正在进行（silent 或非 silent 任一路径）
@@ -728,7 +740,9 @@ export function createChatStore(storeKey, opts = {}) {
 			 *     - RPC 返回 'gone'（plugin 启发判定 run 已结束 → 主动 settleByCancel + 弹 info toast）
 			 *     - RPC 返回 'not-supported'（侧门缺失 → 主动 settleByCancel + 弹 warning toast）
 			 *     - run 自然结束（isRunning 变 false，rpc/wait/failed 等真终态信号驱动）
-			 *   期间 isCancelling=true，UI 禁用 STOP 按钮防止重复触发；无 TTL——协调生命期等于 run 生命期。
+			 *   期间 isCancelling=true，UI 禁用 STOP 按钮 + 换 loader icon；无 TTL——协调生命期 ≡ run 生命期。
+			 *   设计意图：用户取消后按钮不消失也不可点，直到 run 真正 ended——这一契约由 isCancelling
+			 *   getter 的"cancelled && !ended"兜底承担，与协调 promise 是否已 resolve 解耦。
 			 *
 			 * @returns {Promise<object> | null} accepted 分支且有可用 sid/conn 时返回协调 promise，
 			 *   resolve 为：

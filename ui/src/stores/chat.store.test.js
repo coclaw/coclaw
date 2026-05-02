@@ -3277,6 +3277,86 @@ describe('useChatStore', () => {
 			expect(abortCallCount).toBe(1);
 		});
 
+		// REPRO + 修复回归：精确对应 devTools 截图里的"按钮假活"现场——
+		//   1) 发消息 accepted → user 点 STOP → 协调以 immediate 收尾、__cancelling 清空
+		//   2) 上游回包 res.status='timeout'（unknown），ClawConnection 静默丢弃（另案处理）
+		//   3) 此时 run 仍 cancelled=true / ended=false ——
+		//      旧实现：isCancelling 翻 false → 按钮可点 → 点了被守卫吞
+		//      新实现：isCancelling getter 兜底（cancelled && !ended）→ 按钮持续 disable
+		//   4) run 真终态信号到达后，isCancelling 才翻 false
+		test('cancel 协调以 immediate 收尾后，run 未 ended 期间 isCancelling 仍 true（按钮持续 disable）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let abortCalls = 0;
+			let agentReject;
+			let capturedOnUnknownStatus;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-stuck' });
+					capturedOnUnknownStatus = options?.onUnknownStatus;
+					// 模拟真实 ClawConnection 行为：未知 status 时 waiter 永挂——
+					// 这是 OpenClaw timeout-status 另案 bug，本测试不修，仅验证 UI 在此前提下仍能稳住
+					return new Promise((_, rej) => { agentReject = rej; });
+				}
+				if (method === 'coclaw.agent.abort') {
+					abortCalls++;
+					return Promise.resolve({ ok: true });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.sessionId = 'sess-stuck';
+
+			store.sendMessage('hi');
+			await Promise.resolve();
+			expect(store.__accepted).toBe(true);
+			expect(store.isCancelling).toBe(false);
+
+			// 第 1 步：用户点 STOP → 协调首 tick 拿到 ok=true → done immediate
+			const p1 = store.cancelSend();
+			await expect(p1).resolves.toEqual({ ok: true, aborted: 'immediate' });
+			expect(store.__cancelling).toBeNull();
+			expect(abortCalls).toBe(1);
+
+			// 第 2 步：上游 agent RPC 二阶段 res（status='timeout'）落 unknown 分支被丢弃
+			// （这是另案 bug，本测试不修；这里只是模拟真实场景下"终态信号未到"的状态）
+			capturedOnUnknownStatus?.('timeout', {
+				runId: 'run-stuck',
+				status: 'timeout',
+				summary: 'aborted',
+				stopReason: 'stop',
+				result: { meta: { aborted: true, completion: { stopReason: 'stop' } } },
+			});
+			await Promise.resolve(); await Promise.resolve();
+
+			// 第 3 步：run 仍 cancelled=true / ended=false（终态信号未驱动收尾）
+			const runsStore = useAgentRunsStore();
+			const stuckRun = runsStore.getActiveRun(store.runKey);
+			expect(stuckRun?.cancelled).toBe(true);
+			expect(stuckRun?.ended).toBe(false);
+			expect(runsStore.isRunning(store.runKey)).toBe(true);
+
+			// 关键回归断言：__cancelling 已清，但 isCancelling 兜底仍 true
+			// → ChatInput 的 cancelDisabled 保持 true → 按钮 disable + loader icon 不变
+			// → 用户根本没机会触发"二次 STOP 被守卫吞"那条路径
+			expect(store.__cancelling).toBeNull();
+			expect(store.isCancelling, '按钮应继续 disable 直到 run.ended=true').toBe(true);
+
+			// 第 4 步：模拟 run 真终态到达（例如未来 timeout-status 另案修了之后）
+			// → run.ended=true → isCancelling 自然翻 false
+			runsStore.settle(store.runKey);
+			expect(store.isCancelling).toBe(false);
+
+			// 防止悬挂 agent RPC 影响后续测试
+			agentReject?.(new Error('test cleanup'));
+		});
+
 		test('accepted 后取消：hit 立即返回 {ok:true, aborted:immediate}，清除 __cancelling', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -3304,7 +3384,9 @@ describe('useChatStore', () => {
 			expect(store.isCancelling).toBe(true);
 			await expect(p).resolves.toEqual({ ok: true, aborted: 'immediate' });
 			expect(store.__cancelling).toBeNull();
-			expect(store.isCancelling).toBe(false);
+			// __cancelling 已清，但 isCancelling 兜底（cancelled && !ended）保持 true
+			// 直到 run 真终态信号到达——与"按钮 disable + loader icon 不消失"契约对齐
+			expect(store.isCancelling).toBe(true);
 			expect(remoteLogCalls).toContain('cancel.start sid=sess-hit');
 			// ticks=1 是关键证据：tick 头 isRunning 检查通过后立即 RPC，第一次就 hit
 			expect(remoteLogCalls).toContain('cancel.immediate sid=sess-hit ticks=1');
