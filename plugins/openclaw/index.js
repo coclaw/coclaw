@@ -257,8 +257,9 @@ const plugin = {
 					respondInvalid(respond, 'code must be a non-empty string');
 					return;
 				}
-				if (params?.serverUrl !== undefined && typeof params.serverUrl !== 'string') {
-					respondInvalid(respond, 'serverUrl must be a string');
+				if (params?.serverUrl !== undefined
+					&& (typeof params.serverUrl !== 'string' || params.serverUrl.length === 0)) {
+					respondInvalid(respond, 'serverUrl must be a non-empty string');
 					return;
 				}
 				const result = await doBind({
@@ -280,8 +281,9 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.unbind', async ({ params, respond }) => {
 			try {
-				if (params?.serverUrl !== undefined && typeof params.serverUrl !== 'string') {
-					respondInvalid(respond, 'serverUrl must be a string');
+				if (params?.serverUrl !== undefined
+					&& (typeof params.serverUrl !== 'string' || params.serverUrl.length === 0)) {
+					respondInvalid(respond, 'serverUrl must be a non-empty string');
 					return;
 				}
 				const result = await doUnbind({ serverUrl: params?.serverUrl });
@@ -294,8 +296,9 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.enroll', async ({ params, respond }) => {
 			try {
-				if (params?.serverUrl !== undefined && typeof params.serverUrl !== 'string') {
-					respondInvalid(respond, 'serverUrl must be a string');
+				if (params?.serverUrl !== undefined
+					&& (typeof params.serverUrl !== 'string' || params.serverUrl.length === 0)) {
+					respondInvalid(respond, 'serverUrl must be a non-empty string');
 					return;
 				}
 				// 取消前一个 enroll（与 doBind/doUnbind 共享 helper）

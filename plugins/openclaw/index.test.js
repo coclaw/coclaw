@@ -399,7 +399,7 @@ test('gateway methods respond and catch errors', async () => {
 	});
 	assert.equal(bindOut2.ok, false);
 	assert.equal(bindOut2.error?.code, 'INVALID_INPUT');
-	assert.equal(bindOut2.error?.message, 'serverUrl must be a string');
+	assert.equal(bindOut2.error?.message, 'serverUrl must be a non-empty string');
 
 	let unbindOut = null;
 	await handlers.get('coclaw.unbind')({
@@ -416,6 +416,36 @@ test('gateway methods respond and catch errors', async () => {
 	});
 	assert.equal(enrollOut.ok, false);
 	assert.equal(enrollOut.error?.code, 'INVALID_INPUT');
+
+	// coclaw.bind / coclaw.unbind / coclaw.enroll 拒绝空字符串 serverUrl：
+	// 否则 "" 通过 typeof 校验，?? 不回退（"" 非 nullish），最终 unbindClaw 内
+	// `if (baseUrl)` 为 false → 跳过 server 端解绑 → 清本地 config → 孤儿 bot
+	let bindEmptyOut = null;
+	await handlers.get('coclaw.bind')({
+		params: { code: 'abc', serverUrl: '' },
+		respond(ok, payload, error) { bindEmptyOut = { ok, payload, error }; },
+	});
+	assert.equal(bindEmptyOut.ok, false);
+	assert.equal(bindEmptyOut.error?.code, 'INVALID_INPUT');
+	assert.equal(bindEmptyOut.error?.message, 'serverUrl must be a non-empty string');
+
+	let unbindEmptyOut = null;
+	await handlers.get('coclaw.unbind')({
+		params: { serverUrl: '' },
+		respond(ok, payload, error) { unbindEmptyOut = { ok, payload, error }; },
+	});
+	assert.equal(unbindEmptyOut.ok, false);
+	assert.equal(unbindEmptyOut.error?.code, 'INVALID_INPUT');
+	assert.equal(unbindEmptyOut.error?.message, 'serverUrl must be a non-empty string');
+
+	let enrollEmptyOut = null;
+	await handlers.get('coclaw.enroll')({
+		params: { serverUrl: '' },
+		respond(ok, payload, error) { enrollEmptyOut = { ok, payload, error }; },
+	});
+	assert.equal(enrollEmptyOut.ok, false);
+	assert.equal(enrollEmptyOut.error?.code, 'INVALID_INPUT');
+	assert.equal(enrollEmptyOut.error?.message, 'serverUrl must be a non-empty string');
 
 	// coclaw.topics.update：不存在的 topic 应返回 NOT_FOUND（而非 INTERNAL_ERROR）
 	let topicUpdOut = null;
