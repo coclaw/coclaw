@@ -44,10 +44,12 @@ const DC_REQ_SCAN_MS = 60 * 60 * 1000;
 
 /**
  * 判断一个出方向 res payload 是否表示 agent RPC 进入 phase-2 终态。
- * 终态 = res 帧 + status !== 'accepted'。覆盖三种情形：
+ * 终态 = res 帧 + status !== 'accepted'。OpenClaw 上游可能下发的终态 status：
  * - status='ok'：成功
  * - status='error'：执行失败
+ * - status='timeout'：上游 agent.wait 等待 runId 终态超时（含 dedupe 命中的 timeout 快照）
  * - 参数校验失败：ok=false 且无 status（协议文档"特殊情况"）
+ * 仅做兜底分类，不再追求枚举完备——上游若新增其他 non-accepted status，原样作为 reason 返回。
  *
  * @param {object} payload - 待判断的消息
  * @returns {string | null} 终态时返回 lag.summary 的 reason 字符串，否则 null
@@ -383,7 +385,8 @@ export class RealtimeBridge {
 	 * 两阶段 agent RPC：发送请求后等待 accepted 再等待最终响应。
 	 * agent() RPC 返回两次响应（同一 id）：
 	 *   1. { status: "accepted", runId }
-	 *   2. { status: "ok", result: { payloads: [{ text }] } }
+	 *   2. 终态帧，status 取值见 classifyAgentLagStop 注释（ok/error/timeout/参数校验失败）；
+	 *      其中 status='ok' 时附带 result.payloads，其余分支可能没有 result。
 	 *
 	 * @param {string} method - RPC 方法名（通常为 'agent'）
 	 * @param {object} params - RPC 参数
