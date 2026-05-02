@@ -121,8 +121,13 @@ class RpcDcSender {
 
 	async __sendOne(payload) {
 		await this.__waitForRoom();
-		// 唤醒后再次检查（close 与 BAL 可能竞争；close 已经 reject 走不到这里，但 readyState
-		// 可能在等 BAL 期间变化——dc.send 抛 InvalidStateError 会被下面 catch 捕获）
+		// BAL 与 close 的窄缝：BAL 触发时 onBufferedAmountLow 已 splice 走 waiter 并 resolve；
+		// 若紧接着 close() 介入，splice 看到空数组、无 waiter 可 reject，唤醒后的 continuation
+		// 仍会跑到这里。重检 closed 以保 "closed 后不再写 dc" 的不变量；readyState 变化交由
+		// dc.send 抛 InvalidStateError 时下面 catch 捕获兜底。
+		if (this.closed) {
+			throw makeErr('SENDER_CLOSED', 'sender closed during BAL wait');
+		}
 		try {
 			this.dc.send(payload);
 		} catch (err) {

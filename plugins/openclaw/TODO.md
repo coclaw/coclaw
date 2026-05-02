@@ -76,3 +76,66 @@
 - bypassAdmission 集成测试增强：断言被丢的非白名单帧确实没到 dc.sent
 - realtime-bridge.test.js:4098 的 5x setTimeout(0) flush 改成更确定的同步等待方式
 
+## oversize 与 queue-full 的 drop 分类翻面（行为微变，不修）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
+**关联**：memory-queue.js / rpc-dc-sender.js
+
+**背景**：原 RpcSendQueue.send 的检查顺序是 buildChunks → oversize → admission，所以一条既超 50MB 又恰好队列满的消息总是先报 `single-msg-oversize`（warn 级 + 计入 dropped）。新架构里 admission 在 enqueue 阶段做、oversize 在 sender 阶段做，如果队列已经满了，oversize 消息会被 admission 当 queue-full 在 overflow 期间静默丢，永远走不到 sender 的 oversize 检查；如果队列空，oversize 在 sender 抛 warn 但**不计入 droppedCount**。
+
+**影响**：诊断性下降。oversize（应用 bug 性质）原本有清晰的独立 warn，现在可能被 queue-full 静默吞掉；close 汇总数字也少了 sender 端的 build-fail/oversize 那部分。
+
+**修复方向**（不修）：在 enqueue 入口加一道 oversize 预判（破坏 MemoryQueue 与 FBQ 的纯容器语义），或让 sender 在抛 oversize/build-fail 时回调 queue 的 drop 计数器（增加耦合）。当前接受现状——>50MB 消息属应用 bug 路径，触发条件极窄。
+
+## 日志前缀变更：sender 侧 warn 从 [rpc-queue] 改为 [rpc-dc-sender]（行为微变，不修）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
+**关联**：rpc-dc-sender.js __safeWarn
+
+**问题**：原 RpcSendQueue 内的所有 warn 都带 `[rpc-queue tag=]` 前缀。重构后：
+- MemoryQueue 仍用 `[rpc-queue ...]`（overflow-start / overflow-end / onDrop-threw）
+- RpcDcSender 用 `[rpc-dc-sender ...]`（drop reason=single-msg-oversize / build-chunks-failed / dc.send failed）
+- consumeLoop 用 `${rtcTag} [${connId}] rpc-dc.send-failed code=...`
+
+dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-failed`（remoteLog 事件名），但 warn 前缀的连带变化未列。
+
+**影响**：监控/告警如按 `[rpc-queue]` 子串过滤会漏掉 sender 侧的 oversize/build-fail/dc.send-fail。
+
+**修复方向**（不修）：保持现状（split 模块本身就是这次重构的目的）；如有监控告警需迁移，更新过滤条件即可。
+
+## dump 文本 queueLen 数字含义改变（行为微变，不修）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
+**关联**：webrtc-peer.js __dumpSessionState
+
+**问题**：dump 字面 `queueLen=N` 保留，但 N 的含义变了。
+- 老 RpcSendQueue 的 `q.queue.length` 计入"非分片 JSON 字符串"+"分片消息的每个 chunk"。一条 100MB 消息分片后会贡献几万条
+- 新 MemoryQueue 的 `stats().memCount` 计入"完整 JSON 字符串"。同一条 100MB 消息只贡献 1 条；分片在 sender 端按需做，不进 queue
+
+**影响**：人工读 dump 时对队列压力的直觉判断会偏差。但 queueBytes 仍可作为压力的真实信号。
+
+**修复方向**（不修）：等阶段 2 切 FBQ 时一并重审 dump 字段语义；也可考虑改名为 `queueMsgs=` 以提示语义。
+
+## 同 session 第二条 rpc DC 覆盖三件套未关旧实例（cold path，不修）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
+**关联**：webrtc-peer.js __setupDataChannel
+
+**问题**：`__setupDataChannel` 没有先 close 旧 rpcDcSender / destroy 旧 rpcQueue / await 旧 rpcConsumeLoop 就直接覆盖三个 session 字段。如果同 session 的 ondatachannel 又收到一条 `rpc` label 的 DC（UI 重建 DC），旧三件套变孤儿——consumeLoop 仍在 await 旧 queue 的 iterator，sender 仍持有旧 dc 引用。
+
+**影响**：理论上的资源泄漏 + BAL 回调通过 `session.rpcDcSender` 动态取，新旧实例混用风险。但 UI 当前不会在同 PC 上重建 rpc DC，且 ICE restart 不重建 DC——属预防性问题。
+
+**修复方向**（不修）：覆盖前先 close 旧三件套；或在 ondatachannel 内拒绝重复 rpc label。需结合 dc.onclose race（已记录）一起评估。
+
+## 阶段 2 切换 FBQ 的 checklist（不止"一行 import 改"）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
+**关联**：阶段 2 计划
+
+**问题**：dump 提到"几乎一行 import 改"。深度核对后发现实际需要协调改动至少 4 处：
+1. **MemoryQueue 与 FBQ 的构造参数不同**：FBQ 需 `dir`、可选 `diskCap`，MemoryQueue 没有；webrtc-peer.js 的 new 处需补
+2. **`__setupDataChannel` 当前 sync**：阶段 2 加 `await q.init()` 后函数变 async；调用方 `pc.ondatachannel`（line ~449）也需相应改造
+3. **`__dumpSessionState` 读 `stats().droppedCount`**：FBQ 的 stats 不暴露此字段，会输出 `dropped=undefined`。需阶段 2 统一 stats 形态或在 dump 处 fallback
+4. **RpcSendQueue 时代的 sender 侧 drop 是否需要重新对齐 close 汇总**：见上方 "oversize 与 queue-full" 条目
+
+**修复方向**（不修，只记录）：阶段 2 启动时把这些点列成 checklist，避免临到切换才发现。

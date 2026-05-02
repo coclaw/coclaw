@@ -261,6 +261,22 @@ test('close: 多个并发阻塞 send 全部 reject', async () => {
 	await assert.rejects(p2, (err) => err.code === 'SENDER_CLOSED');
 });
 
+test('close: BAL 唤醒与 close 竞速 → continuation 重检 closed 不再写 dc', async () => {
+	resetRemoteLog();
+	const { dc, sender } = makeSender({ bufferedAmount: DC_HIGH_WATER_MARK });
+	const p = sender.send('{"x":1}');
+	await flushMicrotasks();
+	assert.equal(sender.balWaiters.length, 1);
+
+	// 模拟窄缝：BAL 先 splice 走 waiter 并 resolve（sync），紧接着 close（balWaiters 已空，
+	// close 看不到 waiter 不 reject）。此时 continuation 尚未执行；唤醒后应重检 closed
+	// 并抛 SENDER_CLOSED，避免在标记 closed 后又写一帧到 dc。
+	sender.onBufferedAmountLow();
+	sender.close();
+	await assert.rejects(p, (err) => err.code === 'SENDER_CLOSED');
+	assert.equal(dc.__sendCount, 0);
+});
+
 test('close: 幂等', () => {
 	const { sender } = makeSender();
 	sender.close();
