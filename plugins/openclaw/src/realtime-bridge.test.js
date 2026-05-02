@@ -840,6 +840,42 @@ test('RealtimeBridge: stale server socket 迟到的 message 不应重置当前 s
 	}
 });
 
+test('RealtimeBridge: stale server sock close 不应清当前 sock 的 heartbeat / connect timer', async () => {
+	// __clearServerHeartbeat / __clearConnectTimer 都是 per-bridge 全局单槽，旧 sock 的 close
+	// 事件若跑在 stale guard 前会清掉新 sock 的 heartbeat
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const oldServer = FakeWebSocket.instances[0];
+		oldServer.readyState = 1;
+		oldServer.emit('open', {});
+
+		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
+		await bridge.refresh();
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		newServer.readyState = 1;
+		newServer.emit('open', {});
+
+		// spy __clearServerHeartbeat：旧 sock close 后不应被调（guard 会早返回）
+		let clearCalls = 0;
+		const origClear = bridge.__clearServerHeartbeat.bind(bridge);
+		bridge.__clearServerHeartbeat = () => { clearCalls += 1; return origClear(); };
+
+		// 模拟旧 sock 迟到的 close：不影响新 sock 的 timer
+		oldServer.readyState = 3;
+		oldServer.emit('close', { code: 1006, reason: 'stale' });
+		await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(clearCalls, 0, 'stale close 不应触发 __clearServerHeartbeat');
+		assert.equal(bridge.serverWs, newServer, '当前 serverWs 不应被旧 sock close 改写');
+	}
+	finally {
+		await bridge.stop();
+	}
+});
+
 test('RealtimeBridge: stale gateway ws 迟到的 connect.challenge 不应触发握手发送', async () => {
 	// 与 server sock 已加的 stale guard 对称：旧 gateway ws 关闭后若仍有迟到的 connect.challenge，
 	// __sendGatewayConnectRequest 会写 this.gatewayConnectReqId，污染当前 gateway ws 的握手状态

@@ -1227,12 +1227,14 @@ export class RealtimeBridge {
 		});
 
 		sock.addEventListener('close', async (event) => {
-			this.__clearServerHeartbeat();
-			this.__clearConnectTimer();
-			// 若 serverWs 已指向新实例（如 refresh 后），跳过旧 sock 的清理
+			// 若 serverWs 已指向新实例（如 refresh 后），跳过旧 sock 的清理。
+			// __clearServerHeartbeat / __clearConnectTimer 都是 per-bridge 全局单槽，
+			// 旧 sock close 若跑在 guard 前会清掉新 sock 的 heartbeat
 			if (this.serverWs !== null && this.serverWs !== sock) {
 				return;
 			}
+			this.__clearServerHeartbeat();
+			this.__clearConnectTimer();
 			setRemoteLogSender(null);
 			const wasIntentional = this.intentionallyClosed;
 			this.serverWs = null;
