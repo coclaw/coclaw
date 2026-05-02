@@ -358,7 +358,8 @@ test('gateway methods respond and catch errors', async () => {
 	});
 	assert.equal(getOut.ok, false);
 	assert.equal(getOut.payload, undefined);
-	assert.equal(typeof getOut.error?.message, 'string');
+	assert.equal(getOut.error?.code, 'INVALID_INPUT');
+	assert.equal(getOut.error?.message, 'sessionId required');
 
 	let getOut2 = null;
 	handlers.get('nativeui.sessions.get')({
@@ -368,6 +369,62 @@ test('gateway methods respond and catch errors', async () => {
 		},
 	});
 	assert.equal(getOut2.ok, false);
+	assert.equal(getOut2.error?.code, 'INVALID_INPUT');
+
+	// 空字符串 / 仅空白 也走 INVALID_INPUT（防 manager 抛 INTERNAL_ERROR）
+	let getOut3 = null;
+	handlers.get('nativeui.sessions.get')({
+		params: { sessionId: '   ' },
+		respond(ok, payload, error) {
+			getOut3 = { ok, payload, error };
+		},
+	});
+	assert.equal(getOut3.ok, false);
+	assert.equal(getOut3.error?.code, 'INVALID_INPUT');
+
+	// coclaw.bind / coclaw.unbind / coclaw.enroll 类型校验
+	let bindOut = null;
+	await handlers.get('coclaw.bind')({
+		params: { code: 12345 },
+		respond(ok, payload, error) { bindOut = { ok, payload, error }; },
+	});
+	assert.equal(bindOut.ok, false);
+	assert.equal(bindOut.error?.code, 'INVALID_INPUT');
+	assert.equal(bindOut.error?.message, 'code must be a non-empty string');
+
+	let bindOut2 = null;
+	await handlers.get('coclaw.bind')({
+		params: { code: 'abc', serverUrl: 123 },
+		respond(ok, payload, error) { bindOut2 = { ok, payload, error }; },
+	});
+	assert.equal(bindOut2.ok, false);
+	assert.equal(bindOut2.error?.code, 'INVALID_INPUT');
+	assert.equal(bindOut2.error?.message, 'serverUrl must be a string');
+
+	let unbindOut = null;
+	await handlers.get('coclaw.unbind')({
+		params: { serverUrl: 123 },
+		respond(ok, payload, error) { unbindOut = { ok, payload, error }; },
+	});
+	assert.equal(unbindOut.ok, false);
+	assert.equal(unbindOut.error?.code, 'INVALID_INPUT');
+
+	let enrollOut = null;
+	await handlers.get('coclaw.enroll')({
+		params: { serverUrl: {} },
+		respond(ok, payload, error) { enrollOut = { ok, payload, error }; },
+	});
+	assert.equal(enrollOut.ok, false);
+	assert.equal(enrollOut.error?.code, 'INVALID_INPUT');
+
+	// coclaw.topics.update：不存在的 topic 应返回 NOT_FOUND（而非 INTERNAL_ERROR）
+	let topicUpdOut = null;
+	await handlers.get('coclaw.topics.update')({
+		params: { topicId: 'topic-does-not-exist', changes: { title: 'x' } },
+		respond(ok, payload, error) { topicUpdOut = { ok, payload, error }; },
+	});
+	assert.equal(topicUpdOut.ok, false);
+	assert.equal(topicUpdOut.error?.code, 'NOT_FOUND');
 
 	// respondInvalid 覆盖：参数校验分支
 	let invalidOut = null;

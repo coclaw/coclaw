@@ -253,8 +253,12 @@ const plugin = {
 		api.registerGatewayMethod('coclaw.bind', async ({ params, respond }) => {
 			try {
 				const code = params?.code;
-				if (!code) {
-					respondInvalid(respond, 'code is required');
+				if (typeof code !== 'string' || code.length === 0) {
+					respondInvalid(respond, 'code must be a non-empty string');
+					return;
+				}
+				if (params?.serverUrl !== undefined && typeof params.serverUrl !== 'string') {
+					respondInvalid(respond, 'serverUrl must be a string');
 					return;
 				}
 				const result = await doBind({
@@ -276,6 +280,10 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.unbind', async ({ params, respond }) => {
 			try {
+				if (params?.serverUrl !== undefined && typeof params.serverUrl !== 'string') {
+					respondInvalid(respond, 'serverUrl must be a string');
+					return;
+				}
 				const result = await doUnbind({ serverUrl: params?.serverUrl });
 				respond(true, { status: { clawId: result.clawId } });
 			}
@@ -286,6 +294,10 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.enroll', async ({ params, respond }) => {
 			try {
+				if (params?.serverUrl !== undefined && typeof params.serverUrl !== 'string') {
+					respondInvalid(respond, 'serverUrl must be a string');
+					return;
+				}
 				// 取消前一个 enroll（与 doBind/doUnbind 共享 helper）
 				cancelActiveEnroll();
 				const abortController = new AbortController();
@@ -348,6 +360,11 @@ const plugin = {
 
 		api.registerGatewayMethod('nativeui.sessions.get', ({ params, respond }) => {
 			try {
+				const sessionId = params?.sessionId;
+				if (typeof sessionId !== 'string' || sessionId.trim().length === 0) {
+					respondInvalid(respond, 'sessionId required');
+					return;
+				}
 				respond(true, manager.get(params ?? {}));
 			}
 			catch (err) {
@@ -478,12 +495,14 @@ const plugin = {
 					respondInvalid(respond, 'No valid change field provided (supported: title)');
 					return;
 				}
-				await topicManager.updateTitle({ topicId, title: changes.title });
-				const { topic } = topicManager.get({ topicId });
-				if (!topic) {
-					respondInvalid(respond, `Topic not found: ${topicId}`);
+				// 先检查 topic 是否存在：避免 updateTitle 内部 throw 后被 respondError 错报为 INTERNAL_ERROR
+				const existing = topicManager.get({ topicId })?.topic;
+				if (!existing) {
+					respond(false, undefined, { code: 'NOT_FOUND', message: `Topic not found: ${topicId}` });
 					return;
 				}
+				await topicManager.updateTitle({ topicId, title: changes.title });
+				const { topic } = topicManager.get({ topicId });
 				respond(true, { topic });
 			}
 			catch (err) {
