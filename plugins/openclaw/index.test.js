@@ -447,6 +447,35 @@ test('gateway methods respond and catch errors', async () => {
 	assert.equal(enrollEmptyOut.error?.code, 'INVALID_INPUT');
 	assert.equal(enrollEmptyOut.error?.message, 'serverUrl must be a non-empty string');
 
+	// 纯空白 serverUrl 同样拒绝：否则 "   " 通过 length 校验、落到 new URL() 抛
+	// Invalid URL → 用户看到 INTERNAL_ERROR 而不是 INVALID_INPUT
+	let bindWsOut = null;
+	await handlers.get('coclaw.bind')({
+		params: { code: 'abc', serverUrl: '   ' },
+		respond(ok, payload, error) { bindWsOut = { ok, payload, error }; },
+	});
+	assert.equal(bindWsOut.ok, false);
+	assert.equal(bindWsOut.error?.code, 'INVALID_INPUT');
+	assert.equal(bindWsOut.error?.message, 'serverUrl must be a non-empty string');
+
+	let unbindWsOut = null;
+	await handlers.get('coclaw.unbind')({
+		params: { serverUrl: '\t\n ' },
+		respond(ok, payload, error) { unbindWsOut = { ok, payload, error }; },
+	});
+	assert.equal(unbindWsOut.ok, false);
+	assert.equal(unbindWsOut.error?.code, 'INVALID_INPUT');
+	assert.equal(unbindWsOut.error?.message, 'serverUrl must be a non-empty string');
+
+	let enrollWsOut = null;
+	await handlers.get('coclaw.enroll')({
+		params: { serverUrl: '  ' },
+		respond(ok, payload, error) { enrollWsOut = { ok, payload, error }; },
+	});
+	assert.equal(enrollWsOut.ok, false);
+	assert.equal(enrollWsOut.error?.code, 'INVALID_INPUT');
+	assert.equal(enrollWsOut.error?.message, 'serverUrl must be a non-empty string');
+
 	// coclaw.topics.update：不存在的 topic 应返回 NOT_FOUND（而非 INTERNAL_ERROR）
 	let topicUpdOut = null;
 	await handlers.get('coclaw.topics.update')({

@@ -258,7 +258,7 @@ const plugin = {
 					return;
 				}
 				if (params?.serverUrl !== undefined
-					&& (typeof params.serverUrl !== 'string' || params.serverUrl.length === 0)) {
+					&& (typeof params.serverUrl !== 'string' || params.serverUrl.trim().length === 0)) {
 					respondInvalid(respond, 'serverUrl must be a non-empty string');
 					return;
 				}
@@ -282,7 +282,7 @@ const plugin = {
 		api.registerGatewayMethod('coclaw.unbind', async ({ params, respond }) => {
 			try {
 				if (params?.serverUrl !== undefined
-					&& (typeof params.serverUrl !== 'string' || params.serverUrl.length === 0)) {
+					&& (typeof params.serverUrl !== 'string' || params.serverUrl.trim().length === 0)) {
 					respondInvalid(respond, 'serverUrl must be a non-empty string');
 					return;
 				}
@@ -297,7 +297,7 @@ const plugin = {
 		api.registerGatewayMethod('coclaw.enroll', async ({ params, respond }) => {
 			try {
 				if (params?.serverUrl !== undefined
-					&& (typeof params.serverUrl !== 'string' || params.serverUrl.length === 0)) {
+					&& (typeof params.serverUrl !== 'string' || params.serverUrl.trim().length === 0)) {
 					respondInvalid(respond, 'serverUrl must be a non-empty string');
 					return;
 				}
