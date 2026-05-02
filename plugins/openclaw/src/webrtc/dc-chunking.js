@@ -39,6 +39,11 @@ export function buildChunks(jsonStr, maxMessageSize, getNextMsgId) {
 
 	const msgId = getNextMsgId();
 	const totalChunks = Math.ceil(fullBytes.byteLength / chunkPayloadSize);
+	// 边界保护：极小 maxMessageSize 下数学上可能产生 > MAX_CHUNKS_PER_MSG 的 chunk 数量；
+	// 接收端会在第 MAX_CHUNKS_PER_MSG+1 块拒绝，整条消息将无法重组。早拒避免无效发送。
+	if (totalChunks > MAX_CHUNKS_PER_MSG) {
+		throw new Error(`message of ${fullBytes.byteLength} bytes with maxMessageSize=${maxMessageSize} would produce ${totalChunks} chunks, exceeds ${MAX_CHUNKS_PER_MSG}`);
+	}
 	const chunks = new Array(totalChunks);
 
 	for (let i = 0; i < totalChunks; i++) {
@@ -93,6 +98,11 @@ export function createReassembler(onComplete, opts = {}) {
 	function feed(data) {
 		// string = 普通消息，直接交付
 		if (typeof data === 'string') {
+			// 边界保护：peer 可能发送超过单条消息硬上限的字符串（绕过 sender 端 50MB 检查）
+			if (data.length > MAX_REASSEMBLY_BYTES) {
+				logger?.warn?.(`[dc-chunking] string frame exceeded ${MAX_REASSEMBLY_BYTES} bytes, discarding`);
+				return;
+			}
 			onComplete(data);
 			return;
 		}
@@ -107,6 +117,12 @@ export function createReassembler(onComplete, opts = {}) {
 		const flag = buf[0];
 		const msgId = buf.readUInt32BE(1);
 		const payload = buf.subarray(HEADER_SIZE);
+
+		// 未知 flag 直接拒绝，避免污染同 msgId 的 pending entry
+		if (flag !== FLAG_BEGIN && flag !== FLAG_MIDDLE && flag !== FLAG_END) {
+			logger?.warn?.(`[dc-chunking] unknown flag 0x${flag.toString(16)} for msgId=${msgId}, discarding`);
+			return;
+		}
 
 		if (flag === FLAG_BEGIN) {
 			// 若已有同 msgId 的未完成重组，丢弃旧的

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+	buildChunks,
 	chunkAndSend,
 	createReassembler,
 	FLAG_BEGIN,
@@ -511,4 +512,61 @@ test('集成: 分片消息中夹杂不分片消息，全部正确交付', () => 
 	assert.equal(received.length, 2);
 	assert.equal(received[0], small);
 	assert.equal(received[1], large);
+});
+
+// --- 边界防护：未知 flag / 超大 string 帧 / 极小帧切片溢出 ---
+
+test('createReassembler: 未知 flag chunk 不污染 pending entry', () => {
+	const logger = silentLogger();
+	const received = [];
+	const r = createReassembler((s) => received.push(s), { logger });
+	const msgId = 100;
+
+	// BEGIN
+	const begin = Buffer.allocUnsafe(HEADER_SIZE + 4);
+	begin[0] = FLAG_BEGIN;
+	begin.writeUInt32BE(msgId, 1);
+	begin.write('OKAY', HEADER_SIZE);
+	r.feed(begin);
+
+	// 未知 flag (0x05) — 当前实现会把 payload 当 MIDDLE 累计进 chunks
+	const bogus = Buffer.allocUnsafe(HEADER_SIZE + 5);
+	bogus[0] = 0x05;
+	bogus.writeUInt32BE(msgId, 1);
+	bogus.write('TRASH', HEADER_SIZE);
+	r.feed(bogus);
+
+	// END
+	const end = Buffer.allocUnsafe(HEADER_SIZE + 3);
+	end[0] = FLAG_END;
+	end.writeUInt32BE(msgId, 1);
+	end.write('END', HEADER_SIZE);
+	r.feed(end);
+
+	assert.equal(received.length, 1);
+	// 未知 flag 数据不应混入重组结果
+	assert.equal(received[0], 'OKAY' + 'END');
+	assert.ok(logger.warnings.some((w) => w.includes('unknown flag')));
+});
+
+test('createReassembler: 超大 string 帧丢弃（receiver 侧 50MB 防护）', () => {
+	const logger = silentLogger();
+	const received = [];
+	const r = createReassembler((s) => received.push(s), { logger });
+
+	const huge = 'x'.repeat(MAX_REASSEMBLY_BYTES + 1);
+	r.feed(huge);
+
+	assert.equal(received.length, 0);
+	assert.ok(logger.warnings.some((w) => w.includes('exceeded')));
+});
+
+test('buildChunks: 极小 maxMessageSize 致 totalChunks 超 MAX_CHUNKS_PER_MSG → 拒发', () => {
+	// chunkPayloadSize = 1 byte/chunk，消息 10001 字节 → 10001 chunks > 10000
+	const tinyMax = HEADER_SIZE + 1;
+	const huge = 'a'.repeat(MAX_CHUNKS_PER_MSG + 1);
+	assert.throws(
+		() => buildChunks(huge, tinyMax, () => 1),
+		/chunks,? exceeds/i,
+	);
 });
