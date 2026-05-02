@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import nodePath from 'node:path';
 import os from 'node:os';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 
 import nodeFs from 'node:fs';
 import { atomicWriteFile, atomicWriteJsonFile, atomicWriteFileSync } from './atomic-write.js';
@@ -294,6 +294,60 @@ test('atomicWriteFileSync 写入失败时不损坏已有文件且不留 tmp', as
 	const files = nodeFs.readdirSync(dir);
 	const tmpLeft = files.filter((f) => f.endsWith('.tmp'));
 	assert.equal(tmpLeft.length, 0);
+});
+
+// --- fsync 持久化保证 ---
+
+test('atomicWriteFile 在 rename 前后调用 fsync（tmp 数据 + 父目录）', async () => {
+	const dir = await makeTmpDir();
+	const filePath = nodePath.join(dir, 'fsync.txt');
+
+	const syncCalls = [];
+	const origOpen = fs.open;
+	mock.method(fs, 'open', async (path, ...rest) => {
+		const fh = await origOpen.call(fs, path, ...rest);
+		const origSync = fh.sync.bind(fh);
+		fh.sync = async () => {
+			syncCalls.push(path);
+			return origSync();
+		};
+		return fh;
+	});
+
+	try {
+		await atomicWriteFile(filePath, 'persistent');
+	}
+	finally {
+		mock.restoreAll();
+	}
+
+	// 至少 fsync 一次 tmp（数据落盘）和一次父目录（rename 元数据落盘）
+	const tmpSyncs = syncCalls.filter((p) => p.startsWith(filePath) && p.endsWith('.tmp'));
+	assert.equal(tmpSyncs.length, 1, `expected 1 tmp fsync, got ${tmpSyncs.length}`);
+	const dirSyncs = syncCalls.filter((p) => p === dir);
+	assert.equal(dirSyncs.length, 1, `expected 1 parent dir fsync, got ${dirSyncs.length}`);
+});
+
+test('atomicWriteFileSync 在 rename 前后调用 fsyncSync（tmp 数据 + 父目录）', async () => {
+	const dir = await makeTmpDir();
+	const filePath = nodePath.join(dir, 'fsync-sync.txt');
+
+	const fsyncCalls = [];
+	const origFsyncSync = nodeFs.fsyncSync;
+	mock.method(nodeFs, 'fsyncSync', (fd) => {
+		fsyncCalls.push(fd);
+		return origFsyncSync(fd);
+	});
+
+	try {
+		atomicWriteFileSync(filePath, 'persistent-sync');
+	}
+	finally {
+		mock.restoreAll();
+	}
+
+	// 一次 tmp、一次父目录，总计 2 次
+	assert.equal(fsyncCalls.length, 2, `expected 2 fsyncSync calls, got ${fsyncCalls.length}`);
 });
 
 test('atomicWriteFileSync 设置 dirMode', async () => {

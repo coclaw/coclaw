@@ -37,9 +37,20 @@ async function atomicWriteFile(filePath, content, opts) {
 		// best-effort chmod（部分平台 writeFile 的 mode 可能不生效）
 		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
 		try { await fs.chmod(tmp, mode); } catch { /* ignore */ }
+		// fsync tmp：确保数据真正落盘后再 rename。系统断电场景下，仅 writeFile 后
+		// 内核 buffer 可能还没刷到磁盘，rename 完成但文件内容是 0 字节 / 旧数据
+		const tmpFh = await fs.open(tmp, 'r+');
+		try { await tmpFh.sync(); } finally { await tmpFh.close(); }
 		await fs.rename(tmp, filePath);
 		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
 		try { await fs.chmod(filePath, mode); } catch { /* ignore */ }
+		// fsync 父目录持久化 rename 自身：POSIX 下保证 rename 元数据落盘
+		/* c8 ignore start -- 父目录 fsync 在 Windows / 异常文件系统上忽略 */
+		try {
+			const dirFh = await fs.open(nodePath.dirname(filePath), 'r');
+			try { await dirFh.sync(); } finally { await dirFh.close(); }
+		} catch { /* Windows / 非 POSIX 文件系统忽略 */ }
+		/* c8 ignore stop */
 	} finally {
 		// 确保临时文件不残留
 		await fs.rm(tmp, { force: true }).catch(() => {});
@@ -87,9 +98,18 @@ function atomicWriteFileSync(filePath, content, opts) {
 		nodeFs.writeFileSync(tmp, content, { encoding, mode });
 		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
 		try { nodeFs.chmodSync(tmp, mode); } catch { /* ignore */ }
+		// fsync tmp：与 async 版同理，确保数据真正落盘后再 rename
+		const tmpFd = nodeFs.openSync(tmp, 'r+');
+		try { nodeFs.fsyncSync(tmpFd); } finally { nodeFs.closeSync(tmpFd); }
 		nodeFs.renameSync(tmp, filePath);
 		/* c8 ignore next -- chmod 在正常文件系统上不会失败 */
 		try { nodeFs.chmodSync(filePath, mode); } catch { /* ignore */ }
+		/* c8 ignore start -- 父目录 fsync 在 Windows / 异常文件系统上忽略 */
+		try {
+			const dirFd = nodeFs.openSync(nodePath.dirname(filePath), 'r');
+			try { nodeFs.fsyncSync(dirFd); } finally { nodeFs.closeSync(dirFd); }
+		} catch { /* Windows / 非 POSIX 文件系统忽略 */ }
+		/* c8 ignore stop */
 	} finally {
 		// 确保临时文件不残留（rename 成功后 tmp 已不存在，rmSync force=true 会无声忽略）
 		try { nodeFs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
