@@ -454,3 +454,25 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **问题**：present-but-invalid 的 `timestamp`（如 ISO 字符串）被替换为 `Date.now()`，原始时间语义丢失。
 
 **为什么 TODO**：transport-adapter / message-model 当前仅被单测引用，未接生产路径；改动牵涉协议约定（要否兼容 ISO），等启用前再统一修。
+
+### bind 进行中可被新 enroll 插入覆盖 config
+
+**发现**：E 阶段 round-2 复查（codex-rescue High）。
+**锚点**：`plugins/openclaw/index.js`（doBind / cancelActiveEnroll / coclaw.enroll handler）、`plugins/openclaw/src/common/claw-binding.js`（enrollClaw / waitForClaimAndSave）
+
+**问题**：`bind` 在取消 enroll A 后立即把 `activeEnrollAbort` 置 null，自身仍在 `await bindClaw` 期间不会阻挡新进来的 enroll B；B 进入时 `enrollClaw` 仅检查"已持久化 config 是否 token"——bind 还没 writeCfg 完成，B 通过检查并最终也写一次 token。两条路径写 config 顺序不确定，可能产生 enroll-vs-bind config 覆盖。
+
+**影响**：用户连续操作（先 enroll、再 bind）极少触发；自动化 / 多客户端并发更可能命中。当前 round-1 已修了 bind/unbind 主动 cancel enroll，但反向"bind 进行中拒绝新 enroll"未做。
+
+**为什么 TODO**：跨 bind/unbind/enroll 三条路径的操作互斥需要统一 op generation 计数器或全局 mutex，属于跨模块状态机锁。round-1 的 `cancelActiveEnroll` 已解决主要单方向 race；剩余双向竞态留待统一规划 lifecycle 时一并修。
+
+### claw-binding rollback `.catch(()=>{})` 不防同步 throw
+
+**发现**：E 阶段 round-2 复查（codex-rescue Low）。
+**锚点**：`plugins/openclaw/src/common/claw-binding.js:76`、`:161`、`:173` 三处 `await unbindServer(...).catch(() => {})`
+
+**问题**：`unbindServer`（axios 风格 async 函数）正常生产路径绝不会同步 throw，所以 `.catch()` 挂得正确。但若测试注入同步 throw 的 mock，`.catch()` 还没挂上 unhandled rejection 已逃逸。
+
+**影响**：仅测试注入同步 throw 的非常规 mock 时才触发；生产路径完全安全。
+
+**为什么 TODO**：避免过度设计——抽 try/catch helper 替换 3 处仅是为了"防御一种本不该发生的测试输入"。等真实场景需要时再统一改。
