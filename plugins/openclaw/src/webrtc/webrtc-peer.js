@@ -317,6 +317,11 @@ export class WebRtcPeer {
 			hostAddrs.length = 0;
 		};
 		pc.onicecandidate = ({ candidate }) => {
+			// pc identity guard：旧 PC 在 closeByConnId 之后微任务里仍可能投递 onicecandidate
+			// （属性置 null 不阻止已 dispatch 的回调）；此时 connId 可能已被新 session 复用，
+			// 旧 candidate 不应转发给 UI，否则 UI 会把旧 PC 的 candidate 加到新 PC 上
+			const cur = this.__sessions.get(connId);
+			if (!cur || cur.pc !== pc) return;
 			if (!candidate) {
 				// 浏览器路径：gathering 完成通过 null candidate 通知
 				flushGatherDiag();
@@ -349,6 +354,9 @@ export class WebRtcPeer {
 		// gathering→ 重置 flag 支持 ICE restart；complete→ flush 汇总
 		if ('onicegatheringstatechange' in pc) {
 			pc.onicegatheringstatechange = () => {
+				// pc identity guard：与其他 handler 对称，旧 PC 微任务迟到不污染新 session 的 gather diag
+				const cur = this.__sessions.get(connId);
+				if (!cur || cur.pc !== pc) return;
 				const state = pc.iceGatheringState;
 				if (state === 'gathering') {
 					gatheringEmitted = false;
@@ -444,6 +452,10 @@ export class WebRtcPeer {
 		// pion: 选中的 candidate pair 通过独立事件上报
 		if ('onselectedcandidatepairchange' in pc) {
 			pc.onselectedcandidatepairchange = () => {
+				// pc identity guard：旧 PC 的迟到回调会用旧 pc.selectedCandidatePair 数据
+				// + 闭包 connId 拼出"旧 pair + 新 connId"的混合日志，并往 UI 转发过时 transport
+				const cur = this.__sessions.get(connId);
+				if (!cur || cur.pc !== pc) return;
 				const pair = pc.selectedCandidatePair;
 				if (pair) {
 					this.__logNominatedPair(connId, pair);

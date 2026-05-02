@@ -4765,3 +4765,52 @@ test('WebRtcPeer: sendTo 入队 true 但 sender 后置 BUILD_CHUNKS_FAILED → �
 
 	await peer.closeAll();
 });
+
+// --- B 阶段补强 ---
+
+test('WebRtcPeer: connId 复用后旧 PC 的 onselectedcandidatepairchange 微任务迟到 → pc identity guard 防止用旧 pair 数据打过时日志/转发过时 transport', async () => {
+	resetRemoteLog();
+	const PC = PionMockPCFactory();
+	const sent = [];
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_pair_reuse'));
+	const oldPc = PC.instances[0];
+	const stalePairChange = oldPc.onselectedcandidatepairchange;
+	assert.equal(typeof stalePairChange, 'function');
+
+	// 给旧 PC 留下一份特征 pair（用于识别"旧 pc 数据 + 新 connId 上下文"的混合输出）
+	oldPc.selectedCandidatePair = {
+		local: { type: 'srflx', address: 'OLD-LOCAL', port: 11111, protocol: 'udp' },
+		remote: { type: 'host', address: 'OLD-REMOTE', port: 22222, protocol: 'udp' },
+	};
+
+	await peer.closeByConnId('c_pair_reuse');
+
+	// 同 connId 复用，建立新 session
+	await peer.handleSignaling(makeOffer('c_pair_reuse'));
+	const newPc = PC.instances[1];
+	assert.notEqual(newPc, oldPc);
+
+	// 模拟旧 PC 的 onselectedcandidatepairchange 微任务迟到投递（detach 不阻止已 dispatch 的 callback）
+	stalePairChange();
+	await flushAsync();
+
+	// 不应输出含 OLD-LOCAL 的 rtc.ice-nominated（pc identity guard 应直接拒掉）
+	const staleNominated = remoteLogBuffer.find((e) =>
+		e.text.includes('rtc.ice-nominated') && e.text.includes('OLD-LOCAL')
+	);
+	assert.equal(staleNominated, undefined, '旧 pc 的 pair 数据不应被打入新 connId 上下文的日志');
+
+	// 旧 pair 的 transport 也不应被转发给 UI（peer.peerTransport sentTo 走真实路径，但 pair 数据来自旧 pc）
+	const stalePeerTransport = sent.find((m) =>
+		m?.payload?.event === 'coclaw.rtc.peerTransport' && m?.toConnId === 'c_pair_reuse'
+	);
+	assert.equal(stalePeerTransport, undefined, '旧 pc 的 transport 不应被转发');
+
+	await peer.closeAll();
+});
