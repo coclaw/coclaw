@@ -88,13 +88,10 @@
 
 ### 疑似 bug
 
-16. **silent loadMessages 连续失败时"思考中"遮罩永久挂着（预存，非本次引入）**
-    - 现状：`__awaitPersistAndDrop` 在 `ok=false` 时直接 return，不调 `dropRun`。设计上想靠 24h timer / `activate` / `__onConnReady` 兜底，但都不成立——`__endRun` 触发时 24h timer 已被清掉（`agent-runs.store.js:338-341`）；`activate` 和 `__onConnReady` 的 silent reload 直接调 `loadMessages`，不走 `__awaitPersistAndDrop`，所以永远不会再 `dropRun`。结果：网络抖一下 → 那条消息的"思考中"会一直挂着，直到刷新页面或换 claw。`chat.store.js` 旧代码也是同样行为，本次只是把错的注释沿用过来
-    - 触发条件较窄：必须 lifecycle/wait/failed 等事件已收到（说明 DC 通的），紧接着发的 silent reload 又恰好失败两次
-    - 修复方向（codex 给的两个方案）：
-        - 方案 A：在 `ok=false` 分支挂一个 30s 重试 timer，retry 成功走正常 drop，retry 仍失败再打 remoteLog + 强制 drop
-        - 方案 B：在 `activate` / `__onConnReady` 的 silent reload 成功后补一个 `dropEndedRunIfTerminal(runKey, runId)` reconcile 路径
-    - 必须配套补单元测试
+16. **streaming overlay 永久残留 bug（DC 失联场景）** — 详见 [`ui/docs/streaming-overlay-stuck-bug.md`](docs/streaming-overlay-stuck-bug.md)
+    - 触发条件极窄（≥3 分钟持续网络故障 + ICE restart 预算耗尽），用户能通过发新消息自愈，**暂不修复**
+    - 文档涵盖：完整链路、关键事实核实（assistant 增量流是 cumulative、microtask 原子窗口）、4 个修法方案及影响面、源码锚点速查
+    - 原 #31（`run.ended` 与 streamingMsgs 合并语义错位）属同一 bug 不同侧面，已合并入文档
 
 17. **'rpc' 快通道遇到上游 persist 静默吞错时无诊断信号**
     - 现状：上游 `agent-command.ts:1130-1134`、`:1553-1557` 的 `persistCliTurnTranscript` / `persistAcpTurnTranscript` 用 `try/catch` 吞掉异常后继续 `respond(true, "ok")`。CoClaw UI 的 'rpc' 快通道（`chat.store.js:1388-1392`）拿到 res 帧后立即 `loadMessages` + `dropRun`，不校验 `hasTerminalAssistantAfter`。极罕见情况下用户会看到"任务未完成"且无 remoteLog
@@ -202,15 +199,7 @@
         - 方案 C：彻底改 anchor 语义为"时间戳锚点"而非"id 锚点"，规模较大
     - 必须配套补 chat.store + agent-runs.store 单元测试（"no-anchor + server 仅有历史 user 无 curr_user"场景）
 
-31. **`run.ended` 与 `getActiveRun.settled` 语义错位窗口：ended-but-not-dropped 期间 allMessages 仍合并 streamingMsgs**
-    - 现状：`stripLocalUserMsgs` 用 `run.ended` 早 return（agent-runs.store.js:501）；但 `chat.store.js` `allMessages` getter（135-156）只调 `getActiveRun(runKey)`，不显式查 `run.ended`。`getActiveRun` 用 `!run.settled` 过滤——若 `ended=true` 但 `settled` 还没翻或 `dropRun` 还没跑完，会有窗口让陈旧 streamingMsgs 仍被渲染
-    - 触发条件：endRun 之后、dropRun 之前的微秒级窗口；`__awaitPersistAndDrop` silent loadMessages 失败时（按 §"Bug 1 修复 review 后续"#16，dropRun 永远不跑）会被放大成长期问题
-    - 修复方向：
-        - 方案 A：在 `getActiveRun` 中加 `&& !run.ended` 过滤
-        - 方案 B：`allMessages` getter 显式 `run.ended` 检查
-        - 方案 C：endRun 时同步清空 streamingMsgs（治本但耦合 endRun 与 UI 渲染）
-    - 与 §"Bug 1 修复 review 后续"#16（silent loadMessages 失败永挂）合并修最经济
-    - 必须配套补单元测试：`run.ended=true && run.settled=false` 时 allMessages 不应合并 streamingMsgs
+31. **`run.ended` 与 streamingMsgs 合并语义错位** — 已并入 #16，详见 [`ui/docs/streaming-overlay-stuck-bug.md`](docs/streaming-overlay-stuck-bug.md)
 
 ## MainList agent 排序 deep-review 发现的预存问题（2026-05-01）
 
