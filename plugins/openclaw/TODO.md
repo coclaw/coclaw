@@ -199,3 +199,117 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **影响**：file RPC 内部已执行完毕但 response 被 queue-full 或 teardown 静默丢，UI 端只能等超时。预存——阶段 1 之前 sendFn 同样不暴露 boolean。
 
 **修复方向**：sendFn 改返回 Promise<boolean>（或同步返回 enqueue 结果），file-manager handler 在 false 时打 `file.rpc.response-undeliverable` 日志或走重试。需斟酌签名变更对 file-manager 的影响。
+
+## device-identity.js 用 sync 裸 fs.writeFileSync（预存）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 C 阶段全局裸写扫描）
+**关联**：plugins/openclaw/src/device-identity.js:110, 134
+
+**问题**：`loadOrCreateDeviceIdentity` 的两处 `fs.writeFileSync(fp, ...)` 没有 atomic 保护，写入过程中崩溃会留下损坏的设备身份文件（含设备私钥）。下次启动 JSON.parse 失败 → regen 新身份 → 用户需要重新 enroll。
+
+**影响**：极小概率但后果严重——用户看到的是"设备掉线，需重新绑定"。auto-upgrade 已修了 async 路径，sync 路径还差一个。
+
+**修复方向**：在 `utils/atomic-write.js` 加一个 `atomicWriteFileSync`（write tmp + renameSync 模式），device-identity 两处替换。需评估 sync 上下文性能（设备身份初始化阶段无瓶颈）。
+
+## auto-upgrade state read-modify-write 缺跨进程互斥（预存）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 C 阶段维度 3）
+**关联**：plugins/openclaw/src/auto-upgrade/state.js（addSkippedVersion / updateLastCheck / updateLastUpgrade）+ updater.js（__reportLastUpgradeResult）
+
+**问题**：parent (gateway) 和 worker (独立进程) 都会 read-modify-write `upgrade-state.json`。CLAUDE.md 强约束 "read-modify-write 必须 mutex"，但进程内 mutex 跨进程无效。当前靠 `isLocked` 守门挡住绝大多数并发（worker 跑期间 parent skip check），但极小窗口（worker spawn 与 lock 写入之间、stale lock 强制清理时）仍有理论丢字段风险。
+
+**影响**：实测从未发生——窗口极窄、最坏后果是 lastCheck/lastUpgrade 丢一次记录、自然恢复。无数据损坏（atomic 写已保证）。
+
+**修复方向**：用文件级 advisory lock（如 `proper-lockfile` 或 flock）保护 read-modify-write 段。改动跨进程协议，影响面大；当前接受现状，标 TODO 提示长尾。
+
+## chat-history 缓存热身后 JSON 损坏吞异常保留旧缓存（预存）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 C 阶段维度 4）
+**关联**：plugins/openclaw/src/chat-history-manager/manager.js:156-170 `__reloadFromDisk`
+
+**问题**：cache 已热身后，磁盘文件被截断/损坏 → JSON.parse 抛 → catch 静默吞 → cache 保留旧数据。下次 list 返回过期数据；下次 recordArchived 把过期数据写回磁盘（用旧条目覆盖磁盘上的损坏内容——倒是恢复了）。
+
+**影响**：list 暂时返回旧数据；写回时实际上修复了磁盘。对最终一致性无伤，但 list 短窗内不一致。
+
+**修复方向**：`__reloadFromDisk` 区分 ENOENT（正常首次）vs JSON parse 失败（应重置为 emptyStore）。当前实现是 best-effort 兜底——可接受。
+
+## topic-manager copyTranscript 用 fs.copyFile（非 atomic，预存）
+
+**发现日期**：2026-05-02（rpc-dc-stage1 C 阶段维度 4）
+**关联**：plugins/openclaw/src/topic-manager/manager.js:219-224
+
+**问题**：`copyTranscript` 用 `fs.copyFile(src, dst)` 复制 jsonl 到目标路径。复制中途进程崩溃会留下半截文件，消费方读到损坏内容。
+
+**影响**：极小概率（topic transcript 体积通常 < 1MB，copy 几乎瞬时完成）；最坏情况是 transcript 被截断。用户重试导出/导入即恢复。
+
+**修复方向**：先 cp 到 `dst.<uuid>.tmp` 再 renameSync 到 dst（POSIX rename 原子）；或在复制完成后 fsync。
+
+## bridge async listener 其他真隐患（C 阶段维度 1）
+
+**发现日期**：2026-05-02
+**关联**：realtime-bridge.js
+
+| # | 锚点 | 问题 | 修向 |
+|---|---|---|---|
+| 1 | 826-834 | terminal res 的 `__dcPendingRequests.delete` 在 `await sendTo` 之前发生；await 期间若同 id 第二帧到来（理论上 server 不会重发），会走广播兜底而非单播 | delete 移到 await 之后 |
+| 2 | 978 附近 `__handleGatewayRequestFromDc` | payload.method 不存在时，`JSON.stringify({ method: undefined })` 字段会被省略，gateway 拒绝/路由空 method | 入口校验 typeof method === 'string'，不合则返回 INVALID_REQUEST |
+| 3 | 963-968 撞号处理 | 撞 reqId 时只删旧 entry，不通知旧发起方；旧响应会变广播被其他 connId 看到（潜在信息泄漏） | 撞号时也向旧 connId 发 DUPLICATE_REQUEST_ID 错误帧 |
+
+**影响**：低概率边角，#2/#3 与 server 协议契约相关，需要确认是否真会触发。当前 listener 顶层 catch 已挡住主要爆炸路径，这三条收益小、改动有耦合，先记 TODO。
+
+## file-manager handler 8 项预存问题（C 阶段维度 2）
+
+**发现日期**：2026-05-02
+**关联**：plugins/openclaw/src/file-manager/handler.js
+
+| # | 锚点 | 问题 |
+|---|---|---|
+| 1 | 49-51, 247-249, 277-279, 602-618 | validatePath 不解析父目录 symlink，可越权写到 workspace 外（PATH_DENIED 漏判） |
+| 2 | 121-129, 196-235, 253-280 | delete/create 先做文件操作再发 RPC 响应；响应丢失时副作用已发生，UI 重试会得到 NOT_FOUND/ALREADY_EXISTS |
+| 3 | 320-349, 744-805 | file DC 只有"请求前 30s"超时，传输期 idle 不超时，半上传 tmp 文件可永久挂住 |
+| 4 | 894-900, 503-506, 737-738 | sendError 不 await dc.close → 错误 JSON 可能在 close 前丢失 |
+| 5 | 463-485 | GET 背压 low 事件早于 pausedNow=true 触发 → 永久卡 pause |
+| 6 | 647-689, 744-779 | PUT/POST 接收侧 pendingQueue 无上限，慢磁盘下可被远端打满至 1GB → OOM |
+| 7 | 629-635, 764-765, 799-800, 813-814, 836 | tmp 文件 unlink 失败无重试 → 残留磁盘 |
+| 8 | 277-280, 136-140 | createFile 用 writeFile('') 直写最终路径，抛错时空文件留下 |
+
+**影响**：均属预存边角，与 rpc DC 重构无关。
+
+**修复方向**：每条独立修；建议优先级 1（安全） > 6（OOM 风险） > 4（错误响应丢失） > 其他。
+
+## auto-upgrade worker 9 项预存问题（C 阶段维度 3）
+
+**发现日期**：2026-05-02
+**关联**：plugins/openclaw/src/auto-upgrade/
+
+| # | 锚点 | 问题 | 严重度 |
+|---|---|---|---|
+| 1 | worker.js:121-191, updater.js:65-97, worker-backup.js:42-56 | kill -9/OOM 在备份后 + 替换文件期间发生 → stale lock 清理只删锁不恢复备份 → 残破插件 + 残留 .bak | Critical |
+| 2 | worker-backup.js:52-56 | restore 先删 pluginDir 再 rename .bak → 中途崩溃整个插件目录消失 | High |
+| 3 | worker.js:208-219 | restore 失败 + fallback install 失败 仍记录 result='rollback'（误导监控） | High |
+| 4 | updater-spawn.js:45-66, updater.js:309-322 | child.pid undefined 时仍写 lock；async error/exit 未识别 | High |
+| 5 | updater-check.js:63-77, worker-verify.js:24-38 | 自定义 semver 不支持 prerelease ordering / build metadata | Medium |
+| 6 | updater-spawn.js:52-55 | worker stdio 被忽略，致命错误丢失 | Medium |
+| 7 | worker-backup.js:22-34 | 备份无 checksum/manifest，损坏备份会被信任性 restore | Medium |
+| 8 | updater-check.js:35-55 | 初次 check 不走 registry fallback，主 registry 故障即无更新 | Low |
+| 9 | updater.js:17-25 | LOCK_TTL_MS 110min 接近 worker 最坏耗时，未来若超时矩阵增长，stale 清理可能起并行 worker | Low |
+
+**影响**：均属预存边角。auto-upgrade 是 gateway 启动稳定性关键链路，1/2/3 风险较高。
+
+**修复方向**：1/2 需要重设计 backup → 用 swap 模式；3 状态机加 rollback_failed；其他逐项处理。
+
+## agent-run-response bypass 是否扩展到 lifecycle:end（产品决策待定）
+
+**发现日期**：2026-05-02
+**关联**：plugins/openclaw/src/webrtc/agent-run-response.js
+
+**问题**：当前 `isAgentRunResponse` 只命中 `type='res' + payload.runId`。OpenClaw 一次 agent run 会 emit 多次 lifecycle:end（compaction-retry / model-fallback / final），这些是 type='event' 帧，不命中白名单。队列满时 lifecycle:end 全 drop，UI 可能看不到运行结束信号导致"任务永远进行中"。
+
+**影响**：严重时用户感知任务卡死，需手动取消。但仅在队列满（10MB 软上限）的极端拥塞场景触发。
+
+**修复方向（待决策）**：
+- 选项 A：扩展白名单命中 `type='event' + event='lifecycle:end' + payload.runId`
+- 选项 B：让 producer 显式标记需 bypass 的帧（语义更清晰）
+- 选项 C：保持现状（lifecycle:end 走 broadcast，UI 端需自己有兜底超时）
+
+需先确认 UI 是否依赖 lifecycle:end 判定 run 结束 + 队列满频率。
