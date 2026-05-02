@@ -69,7 +69,7 @@ binary 解析由 pion-node 内部处理（`PION_IPC_BIN` env → npm 平台包 �
 
 ### 两条 DataChannel 路径的分片策略
 
-- **rpc DC**（`label="rpc"`）：使用 `dc-chunking.js` 的 `buildChunks` / `createReassembler` 做应用层分片和重组；生产路径统一经由 `rpc-send-queue.js` 的 `RpcSendQueue` 发送（含流控，详见下节）。分片阈值取自远端 SDP 的 `a=max-message-size`（`webrtc-peer.js` 解析）。
+- **rpc DC**（`label="rpc"`）：使用 `dc-chunking.js` 的 `buildChunks` / `createReassembler` 做应用层分片和重组；生产路径统一经由 `MemoryQueue` + `RpcDcSender` 的两段式管道（含流控，详见下节）。分片阈值取自远端 SDP 的 `a=max-message-size`（`webrtc-peer.js` 解析）。
 - **file DC**（`label="file:<transferId>"`）：不经过 `dc-chunking`。每个文件传输使用独立的专用 DataChannel，由 `file-manager/handler.js` 实现流式传输 + 背压控制，不需要 JSON 消息的分片/重组。
 
 ### 维护约束
@@ -78,15 +78,18 @@ binary 解析由 pion-node 内部处理（`PION_IPC_BIN` env → npm 平台包 �
 - 若未来升级 WebRTC 库版本，需重新验证其 `send()` 对超限消息的行为是否变更。
 - 分片协议格式（5 字节头：1 flag + 4 msgId BE）需与 UI 端保持一致，变更须双端同步。
 
-## rpc DC 发送流控（RpcSendQueue）
+## rpc DC 发送流控（MemoryQueue + RpcDcSender）
 
-`src/webrtc/rpc-send-queue.js` 为每条 rpc DC 提供一个 `RpcSendQueue` 实例，绑定在 `session.rpcSendQueue`。生产路径 `broadcast()` 与 files RPC 的 `sendFn` 统一经此出口；probe-ack 故意绕过以独立测量传输层健康。
+阶段 1 重构后，rpc DC 发送链路被拆成两段式管道：每条 rpc DC 同时持有一个 `MemoryQueue`（绑定 `session.rpcQueue`）和一个 `RpcDcSender`（绑定 `session.rpcDcSender`），中间由后台 `consumeLoop`（绑定 `session.rpcConsumeLoop`）串起来。生产路径 `broadcast()` 与 files RPC 的 `sendFn` 统一经此出口；probe-ack 故意绕过以独立测量传输层健康。
 
-- **阈值**：`DC_HIGH_WATER_MARK=1 MB`（暂停 fast-path/drain），`DC_LOW_WATER_MARK=256 KB`（`bufferedAmountLowThreshold` → `bufferedamountlow` 事件），`MAX_QUEUE_BYTES=10 MB`（软上限），`MAX_SINGLE_MSG_BYTES=50 MB`（硬上限，对齐 `dc-chunking.js` 的 `MAX_REASSEMBLY_BYTES`）。
-- **接受规则**：`queueBytes >= MAX_QUEUE_BYTES` 时 drop 新消息（允许之前单条溢出的背包尾巴自然消化）；`totalBytes > MAX_SINGLE_MSG_BYTES` 时直接 drop。
-- **drop 上报**：`logger`（warn/info）与 `remoteLog` 均仅在"空→满"/"满→空"状态翻转点打一次（overflow-end 携带累计 dropped/droppedBytes）；overflow 持续期间所有 queue-full drop 完全静默，只累加 `droppedCount`/`droppedBytes`，等下次状态翻转或 `close()` 汇总时一并上报。`single-msg-oversize` drop 不受 overflow 状态影响，每次照常 warn。
-- **API**：同步 fire-and-forget — `queue.send(jsonStr)` 返回 `true=accepted/false=dropped`，调用方可忽略返回值。
-- **生命周期**：`dc.onclose` 调 `queue.close()` + 置 `session.rpcSendQueue=null`；ICE restart 复用 DC 时队列自动保留并在 BAL 事件上恢复 drain。
+- **MemoryQueue**（`src/utils/memory-queue.js`）：纯内存的 FBQ-API 兼容容器，对外暴露 `enqueue(jsonStr): boolean`（accepted=true/dropped=false）+ async iterator + `destroy()`，承担 admission（`memBudget=10 MB` 软上限 + 单条 50 MB 硬上限）、bypassAdmission 白名单（agentRunResponse）、drop 计数与边沿日志。
+- **RpcDcSender**（`src/webrtc/rpc-dc-sender.js`）：DC 紧贴的阻塞式发送器，对外暴露 `await send(jsonStr): void`，内部按 `MAX_SINGLE_MSG_BYTES=50 MB` 校验、`buildChunks` 分片、每个 chunk 前 `await __waitForRoom`（`bufferedAmount < HIGH_WATER_MARK=1 MB` 立即放行；`LOW_WATER_MARK=256 KB` 触发 `bufferedamountlow`）。失败抛 `SENDER_CLOSED / MESSAGE_OVERSIZED / BUILD_CHUNKS_FAILED` 三种错误码。
+- **consumeLoop**：`for await (const str of session.rpcQueue) await session.rpcDcSender.send(str)`。`SENDER_CLOSED` 退出循环；其它错误 warn 后继续下一条。
+- **drop 上报**：`logger`（warn/info）与 `remoteLog` 均仅在"空→满"/"满→空"状态翻转点打一次（overflow-end 携带累计 dropped/droppedBytes）；overflow 持续期间所有 queue-full drop 完全静默，只累加 `droppedCount`/`droppedBytes`，等下次状态翻转或 `destroy()` 汇总时一并上报。sender 端 `MESSAGE_OVERSIZED` / `BUILD_CHUNKS_FAILED` drop 不计入 queue 的 droppedCount，每次单独 warn。
+- **API（生产路径）**：`broadcast()` 内部对每个 session 调 `rpcQueue.enqueue(...).catch(...)` fire-and-forget；`sendTo(connId, payload): Promise<boolean>` 透传 admission 决策。
+- **生命周期**：`dc.onclose` 走 `closeByConnId` 串行 close 旧三件套（sender close → queue destroy → consumeLoop await）；ICE restart 复用 DC 时三件套自动保留，仅热更新 `maxMessageSize`。
+
+下一阶段（FBQ）：把 `MemoryQueue` 替换为 `FileBackedQueue`（`src/utils/file-backed-queue.js`）以支持磁盘 GB 级回退，几乎一行 import 改（具体 checklist 见 TODO.md "阶段 2 切换 FBQ" 条目）。
 
 ## Gateway RPC 方法命名
 
