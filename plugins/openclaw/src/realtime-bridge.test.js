@@ -4169,6 +4169,35 @@ test('dc unicast: TTL scan clears expired entries and warns', async () => {
 
 // --- 顶层 try/catch：sendTo 抛错不能让 listener 变 unhandledRejection 击穿 gateway ---
 
+test('gateway ws message handler: broadcast 抛错时 listener 不产生 unhandledRejection', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_bcast_throw');
+	const origListeners = process.listeners('unhandledRejection');
+	process.removeAllListeners('unhandledRejection');
+	const unhandled = [];
+	const captureUnhandled = (reason) => unhandled.push(reason);
+	process.on('unhandledRejection', captureUnhandled);
+	try {
+		// broadcast 抛错（unmatched res 路径走 (d) 兜底广播）
+		bridge.webrtcPeer.broadcast = () => { throw new Error('boom from broadcast'); };
+		bridge.webrtcPeer.sendTo = async () => true;
+
+		// 不预先注册 mapping → 走 unmatched res → broadcast 兜底
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-bcast-1', ok: true, payload: { status: 'ok' } }),
+		});
+
+		for (let i = 0; i < 15; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		const leaked = unhandled.filter((e) => /boom from broadcast/.test(String(e?.message ?? e)));
+		assert.equal(leaked.length, 0, `unhandledRejection leaked: ${leaked.map((e) => e?.message).join(', ')}`);
+	} finally {
+		process.removeListener('unhandledRejection', captureUnhandled);
+		for (const l of origListeners) process.on('unhandledRejection', l);
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
 test('gateway ws message handler: sendTo 抛错时 listener 不产生 unhandledRejection', async () => {
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_throw');
 	const origListeners = process.listeners('unhandledRejection');

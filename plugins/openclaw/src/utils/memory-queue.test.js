@@ -719,4 +719,9 @@ test('maxMessageBytes: 非 finite 正数 → 抛 TypeError', () => {
 		() => new MemoryQueue({ id: 'T', memBudget: 100, maxMessageBytes: NaN }),
 		TypeError,
 	);
+	// -Infinity 被 !Number.isFinite 拦截
+	assert.throws(
+		() => new MemoryQueue({ id: 'T', memBudget: 100, maxMessageBytes: -Infinity }),
+		TypeError,
+	);
 });
