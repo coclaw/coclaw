@@ -12,6 +12,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 
 import { getRuntime } from '../runtime.js';
+import { atomicWriteFile } from '../utils/atomic-write.js';
 
 const CHANNEL_ID = 'coclaw';
 const STATE_FILENAME = 'upgrade-state.json';
@@ -61,8 +62,7 @@ export async function readState() {
  */
 export async function writeState(state) {
 	const filePath = getStatePath();
-	await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
-	await fs.writeFile(filePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+	await atomicWriteFile(filePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 /**
@@ -119,7 +119,8 @@ async function trimLog(filePath) {
 		const lines = content.split('\n').filter(Boolean);
 		if (lines.length <= LOG_MAX_LINES) return;
 		const kept = lines.slice(-LOG_KEEP_LINES);
-		await fs.writeFile(filePath, `${kept.join('\n')}\n`, 'utf8');
+		// 整文件覆写走 atomic：truncate-then-write 中途崩溃会清空整个 log
+		await atomicWriteFile(filePath, `${kept.join('\n')}\n`);
 	}
 	catch {
 		// 截断失败不影响主流程

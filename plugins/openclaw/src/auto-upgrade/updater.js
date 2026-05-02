@@ -6,6 +6,7 @@ import { spawnUpgradeWorker } from './updater-spawn.js';
 import { readState, resolveStateDir, writeState } from './state.js';
 import { getRuntime } from '../runtime.js';
 import { remoteLog } from '../remote-log.js';
+import { atomicWriteFile } from '../utils/atomic-write.js';
 
 // 首次检查延迟较长：失败时由 worker 触发 gateway restart，scheduler 重启后会重新计时；
 // 60 分钟基线（实际随机 60-120 分钟）能把"失败→重启→再次检查"的循环周期拉长，
@@ -102,11 +103,9 @@ export async function isUpgradeLocked(opts) {
  */
 export async function writeUpgradeLock(pid) {
 	const lockPath = getLockPath();
-	await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
-	await fs.writeFile(
+	await atomicWriteFile(
 		lockPath,
 		`${JSON.stringify({ pid, ts: new Date().toISOString() })}\n`,
-		'utf8',
 	);
 }
 

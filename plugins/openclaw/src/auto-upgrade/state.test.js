@@ -406,10 +406,11 @@ test('trimLog 内部异常被静默捕获，不影响 appendLog', async () => {
 		await fs.writeFile(logPath, preLines.join('\n') + '\n', 'utf8');
 
 		// mock fs.writeFile 在 trimLog 写回时抛异常
+		// trimLog 改 atomic 后写入路径是 `${logPath}.${uuid}.tmp`，不再等于 logPath
 		const origWriteFile = fs.writeFile;
 		mock.method(fs, 'writeFile', async (...args) => {
-			// trimLog 调用 writeFile 时使 logPath 为参数
-			if (args[0] === logPath) {
+			const target = args[0];
+			if (typeof target === 'string' && target.startsWith(logPath)) {
 				throw new Error('mock write failure');
 			}
 			return origWriteFile.apply(fs, args);
@@ -425,6 +426,49 @@ test('trimLog 内部异常被静默捕获，不影响 appendLog', async () => {
 		const lines = raw.trim().split('\n');
 		// 原 201 行 + 追加的 1 行 = 202（因为 trimLog 失败未截断）
 		assert.equal(lines.length, 202);
+	}
+	finally {
+		mock.restoreAll();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+// --- atomic 写保护：写入中途失败不损坏原文件 ---
+
+test('writeState 写入中途崩溃保留原 state 文件（atomic 保护）', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		const statePath = getStatePath();
+		// 先写入合法 state
+		await writeState({ a: 1, b: 'keep' });
+		assert.deepEqual(JSON.parse(await fs.readFile(statePath, 'utf8')), { a: 1, b: 'keep' });
+
+		// 模拟"裸 fs.writeFile O_TRUNC 后 write syscall 失败"的真实损坏场景：
+		// 拦截对 statePath 的直接写入，先 truncate 再抛错（复刻裸路径行为）。
+		// atomic 写到 statePath.tmp 时也注入失败（统一磁盘问题），但不 truncate 原文件。
+		const origWriteFile = fs.writeFile;
+		mock.method(fs, 'writeFile', async (target, ...rest) => {
+			if (target === statePath) {
+				await fs.truncate(target, 0);
+				throw new Error('mid-syscall fail');
+			}
+			if (typeof target === 'string' && target.startsWith(`${statePath}.`)) {
+				throw new Error('mid-syscall fail');
+			}
+			return origWriteFile(target, ...rest);
+		});
+
+		await assert.rejects(() => writeState({ a: 999 }));
+
+		mock.restoreAll();
+
+		// 关键断言：原文件应保持完整可读
+		// 修前（裸 fs.writeFile）：truncate 已发生 + write 抛 → 文件被清空 → JSON.parse 抛
+		// 修后（atomic）：fs.writeFile(tmp) 抛 → rename 未发生 → 原文件未动
+		const raw = await fs.readFile(statePath, 'utf8');
+		assert.deepEqual(JSON.parse(raw), { a: 1, b: 'keep' });
 	}
 	finally {
 		mock.restoreAll();
