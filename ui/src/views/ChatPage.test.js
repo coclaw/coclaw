@@ -1553,6 +1553,42 @@ describe('ChatPage scroll', () => {
 		});
 	});
 
+	// --- __loadMoreHistory ---
+	describe('__loadMoreHistory', () => {
+		test('完成后不再从 finally 主动 scrollToBottom（用户上翻读历史）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const chatStore = wrapper.vm.chatStore;
+			if (!chatStore) return;
+
+			// hasMoreMessages 路径走通：loadOlderMessages 直接返回 true，跳过 conn
+			chatStore.hasMoreMessages = true;
+			chatStore.loadOlderMessages = vi.fn().mockResolvedValue(true);
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 2000, configurable: true, writable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			// 用户上翻读历史的状态
+			wrapper.vm.userScrolledUp = true;
+
+			const scrollSpy = vi.spyOn(wrapper.vm, 'scrollToBottom');
+
+			await wrapper.vm.__loadMoreHistory();
+			await flushPromises();
+			await new Promise(r => requestAnimationFrame(r));
+
+			expect(chatStore.loadOlderMessages).toHaveBeenCalled();
+			// finally 不应再触发 scrollToBottom，否则刚翻出来的历史会被推走
+			expect(scrollSpy).not.toHaveBeenCalled();
+		});
+	});
+
 	// --- 拖拽上传 ---
 	test('dragover 设置 dragging=true', async () => {
 		const wrapper = createWrapper();

@@ -368,6 +368,8 @@ export function createChatStore(storeKey, opts = {}) {
 						limit: newLimit,
 					}, { timeout: 120_000 });
 					const flatMsgs = Array.isArray(result?.messages) ? result.messages : [];
+					console.debug('[chat] loadOlderMessages raw messages sessionKey=%s count=%d %o',
+						this.chatSessionKey, flatMsgs.length, flatMsgs);
 					const wrapped = wrapOcMessages(flatMsgs);
 
 					// 仅保留 streaming 中的 claw 占位；用户乐观消息已被服务端持久化
@@ -1410,7 +1412,8 @@ export function createChatStore(storeKey, opts = {}) {
 						agentId,
 					}, { timeout: 120_000 });
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
-					console.debug('[chat] loadNextHistory: loaded %d messages for session %s', msgs.length, entry.sessionId);
+					console.debug('[chat] loadNextHistory raw messages sessionId=%s count=%d %o',
+						entry.sessionId, msgs.length, msgs);
 
 					this.historySegments = [
 						{ sessionId: entry.sessionId, archivedAt: entry.archivedAt, messages: msgs },

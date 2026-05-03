@@ -1010,9 +1010,6 @@ export default {
 				}
 			} finally {
 				this.__loadingHistory = false;
-				// 历史加载期间若有实时消息到达，其 scrollToBottom 被阻止了，
-				// 此处补偿：若用户本就在底部附近则滚到底部
-				this.$nextTick(() => this.scrollToBottom());
 			}
 		},
 	},
