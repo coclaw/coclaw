@@ -947,6 +947,206 @@ describe('groupSessionMessages — 系统块剥离（systemNote）', () => {
 		expect(botTask.isStreaming).toBe(true);
 		expect(botTask.startTime).toBe(1200);
 	});
+
+	// ---- 边界 / 边角覆盖补强 ----
+
+	test('content 为字符串：HEARTBEAT_OK 仍识别为 systemNote', () => {
+		// 真实 OpenClaw transcript 中 message.content 也可能是 string 而非 array
+		const entries = [
+			userEntry('u1', 'tick', 1000),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: 'HEARTBEAT_OK',
+					stopReason: 'endTurn',
+					model: 'claude-3',
+					timestamp: 2000,
+				},
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1]).toMatchObject({ type: 'systemNote', source: 'heartbeat', text: 'HEARTBEAT_OK' });
+	});
+
+	test('content 为字符串：NO_REPLY 仍识别为 systemNote', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: 'NO_REPLY',
+					stopReason: 'endTurn',
+					model: 'claude-3',
+					timestamp: 2000,
+				},
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1]).toMatchObject({ type: 'systemNote', source: 'noReply' });
+	});
+
+	test('inject 但 content 为字符串：仍识别（仅看 provider）', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: 'string-content inject',
+					provider: 'openclaw',
+					model: 'gateway-injected',
+					timestamp: 2000,
+				},
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1]).toMatchObject({
+			type: 'systemNote',
+			source: 'inject',
+			text: 'string-content inject',
+			model: 'gateway-injected',
+		});
+	});
+
+	test('inject 但 content 为 null：仍识别、text 为空字符串', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: null,
+					provider: 'openclaw',
+					model: 'gateway-injected',
+					timestamp: 2000,
+				},
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1]).toMatchObject({ type: 'systemNote', source: 'inject', text: '' });
+	});
+
+	test('inject 但 content 为空数组：仍识别、text 为空字符串', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: [],
+					provider: 'openclaw',
+					model: 'delivery-mirror',
+					timestamp: 2000,
+				},
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1]).toMatchObject({ type: 'systemNote', source: 'inject', text: '' });
+	});
+
+	test('inject 缺 model 字段：systemNote.model 为 null', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: [{ type: 'text', text: 'inject without model' }],
+					provider: 'openclaw',
+					timestamp: 2000,
+				},
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1]).toMatchObject({ type: 'systemNote', source: 'inject', model: null });
+	});
+
+	test('大小写敏感：heartbeat_ok / no_reply 小写不命中', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			assistantEntry('a1', { text: 'heartbeat_ok', ts: 1100 }),
+			userEntry('u2', 'q2', 2000),
+			assistantEntry('a2', { text: 'no_reply', ts: 2100 }),
+		];
+		const result = groupSessionMessages(entries);
+		// 小写不命中 systemNote → 仍走 botTask
+		expect(result.map((it) => it.type)).toEqual(['user', 'botTask', 'user', 'botTask']);
+		expect(result[1].resultText).toBe('heartbeat_ok');
+		expect(result[3].resultText).toBe('no_reply');
+	});
+
+	test('trim 容错：换行/制表符包裹的 HEARTBEAT_OK / NO_REPLY 命中', () => {
+		const entries = [
+			userEntry('u1', 'tick', 1000),
+			assistantEntry('a1', { text: '\nHEARTBEAT_OK\n', ts: 1100 }),
+			userEntry('u2', 'q2', 2000),
+			assistantEntry('a2', { text: '\t  NO_REPLY  \t', ts: 2100 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result.map((it) => it.type)).toEqual(['user', 'systemNote', 'user', 'systemNote']);
+		expect(result[1].source).toBe('heartbeat');
+		expect(result[3].source).toBe('noReply');
+	});
+
+	test('流首部 systemNote（无前置 user）：仍正确输出', () => {
+		// 历史 segment 加载时第一条可能就是 inject（user 在更早的 segment 里）
+		const entries = [
+			injectAssistantEntry('inj1', { text: 'leading inject', ts: 1000 }),
+			userEntry('u1', 'q', 2000),
+			assistantEntry('a1', { text: '回复', ts: 3000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result.map((it) => it.type)).toEqual(['systemNote', 'user', 'botTask']);
+		expect(result[0].text).toBe('leading inject');
+	});
+
+	test('botTask 中断（无 final）+ systemNote 紧贴下一段：systemNote 不串段', () => {
+		// user → toolUse → toolResult → 下一 user 之前来一条 systemNote
+		// 期望：第一段 botTask 的 resultText 为 null + 第二段 systemNote 不混入第一段 botTask
+		const entries = [
+			userEntry('u1', '开始', 1000),
+			assistantEntry('a1', {
+				toolCalls: [{ name: 'do' }],
+				stopReason: 'toolUse',
+				ts: 2000,
+			}),
+			toolResultEntry('tr1', '处理中', 2500),
+			injectAssistantEntry('inj1', { text: 'inject between segments', ts: 3000 }),
+			userEntry('u2', '换话题', 4000),
+			assistantEntry('a2', { text: '新回复', ts: 5000 }),
+		];
+		const result = groupSessionMessages(entries);
+		// 第一段：user + systemNote(在 botTask 前) + 中断的 botTask
+		// 第二段：user + 新 botTask
+		expect(result.map((it) => it.type)).toEqual(['user', 'systemNote', 'botTask', 'user', 'botTask']);
+		expect(result[1].text).toBe('inject between segments');
+		expect(result[2].resultText).toBeNull();
+		expect(result[2].steps).toEqual([
+			{ kind: 'toolCall', name: 'do' },
+			{ kind: 'toolResult', text: '处理中' },
+		]);
+		expect(result[4].resultText).toBe('新回复');
+	});
+
+	test('flushSegment 在末尾仅有 pendingSystemNotes、无 botTask：仍输出 systemNote', () => {
+		// 流末尾只有 user + 多条 inject，无 botTask
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			injectAssistantEntry('inj1', { text: 'note1', ts: 1100 }),
+			injectAssistantEntry('inj2', { text: 'note2', ts: 1200 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result.map((it) => it.type)).toEqual(['user', 'systemNote', 'systemNote']);
+		expect(result.some((it) => it.type === 'botTask')).toBe(false);
+	});
 });
 
 describe('stripOcPrefixes', () => {
