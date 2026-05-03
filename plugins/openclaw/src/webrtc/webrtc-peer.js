@@ -743,7 +743,10 @@ export class WebRtcPeer {
 		const queueInfo = q
 			? (() => {
 				const s = q.stats();
-				return `queueLen=${s.memCount} queueBytes=${s.memBytes} dropped=${s.droppedCount}`;
+				// memCount 沿用历史 token 名 queueLen（不改名）；其余 5 个 stats 字段保持
+				// 与 stats() 内部同名输出。Phase A 阶段 4 个磁盘字段恒为 0/false，是给
+				// Phase B 切 FBQ 留形状的占位。
+				return `queueLen=${s.memCount} queueBytes=${s.memBytes} diskBytes=${s.diskBytes} writtenBytes=${s.writtenBytes} spilled=${s.spilled} fsBroken=${s.fsBroken} dropped=${s.droppedCount} droppedBytes=${s.droppedBytes}`;
 			})()
 			: 'queue=none';
 		this.__remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);

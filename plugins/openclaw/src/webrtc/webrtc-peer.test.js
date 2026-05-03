@@ -736,7 +736,10 @@ test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC �
 	assert.match(dump.text, /closed:1/);
 	assert.ok(!/file:def/.test(dump.text), 'closed DC labels should not be listed');
 	// queue 诊断字段：有 rpc DC 则显示 queue 状态（ondatachannel 的 rpc 分支创建了 queue）
-	assert.match(dump.text, /queueLen=\d+ queueBytes=\d+ dropped=\d+/);
+	// Phase A2：6 字段 stats（memCount/memBytes/diskBytes/writtenBytes/spilled/fsBroken）+ droppedCount/droppedBytes
+	assert.match(dump.text, /queueLen=\d+ queueBytes=\d+ diskBytes=\d+ writtenBytes=\d+ spilled=(?:true|false) fsBroken=(?:true|false) dropped=\d+ droppedBytes=\d+/);
+	// MemoryQueue 阶段 4 个磁盘字段恒为 0/false（给 Phase B 留形状）
+	assert.match(dump.text, /diskBytes=0 writtenBytes=0 spilled=false fsBroken=false/);
 
 	// failed 保留 session 以支持 ICE restart
 	assert.ok(peer.__sessions.has('c_dump1'));
@@ -5199,6 +5202,52 @@ test('WebRtcPeer: 同 connId 重建走 await session.rpcQueue.destroy() → 旧 
 	} finally {
 		m.restore();
 	}
+
+	await peer.closeAll();
+});
+
+// --- Phase A2：__dumpSessionState 暴露 6 字段 stats + droppedCount/Bytes ---
+
+test('WebRtcPeer A2: dump 把 stats() 6 字段（含磁盘字段）和 droppedCount/droppedBytes 全部格式化输出', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_dump_a2'));
+	const pc = PC.instances[0];
+	pc.ondatachannel({ channel: makeMockRpcDc() });
+	await flushAsync();
+
+	const session = peer.__sessions.get('c_dump_a2');
+	assert.ok(session.rpcQueue, 'queue 已就位');
+	// 模拟 Phase B 形态：stats 返回非零的磁盘字段，验证 dump 不丢字段且取值正确。
+	// spilled / fsBroken 取不同布尔值，避免字段对调时测试仍绿
+	session.rpcQueue.stats = () => ({
+		memCount: 3,
+		memBytes: 4096,
+		diskBytes: 8192,
+		writtenBytes: 16384,
+		spilled: true,
+		fsBroken: false,
+		droppedCount: 7,
+		droppedBytes: 1024,
+		queueOverflowActive: true,
+	});
+
+	pc.connectionState = 'failed';
+	pc.onconnectionstatechange();
+
+	const dump = remoteLogBuffer.find((e) => /rtc\.dump/.test(e.text) && /conn=c_dump_a2/.test(e.text));
+	assert.ok(dump);
+	// 顺序：queueLen → queueBytes → diskBytes → writtenBytes → spilled → fsBroken → dropped → droppedBytes
+	assert.match(
+		dump.text,
+		/queueLen=3 queueBytes=4096 diskBytes=8192 writtenBytes=16384 spilled=true fsBroken=false dropped=7 droppedBytes=1024/,
+	);
 
 	await peer.closeAll();
 });
