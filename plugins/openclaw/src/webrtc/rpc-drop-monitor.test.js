@@ -411,6 +411,74 @@ test('maybeEmitOverflowEnd: stats=null/undefined 安全跳过（防御性，无�
 
 // --- logger 缺方法防御 ---
 
+test('多实例独立：不同 connId 各自累计 / log / summarize 完全隔离（移动端 5-8 并发 DC 场景）', () => {
+	// 真实生产环境：移动端同时持有多条 rpc DC（5-8 个并发），各自独立的 monitor
+	// 实例不能 cross-pollute 计数 / 日志 / summarize 结果——闭包工厂模型应天然支持
+	resetRemoteLog();
+	const lgA = makeMockLogger();
+	const lgB = makeMockLogger();
+	const lgC = makeMockLogger();
+	const mA = createRpcDropMonitor({ connId: 'CONN-A', logger: lgA });
+	const mB = createRpcDropMonitor({ connId: 'CONN-B', logger: lgB });
+	const mC = createRpcDropMonitor({ connId: 'CONN-C', logger: lgC });
+
+	// 三个 monitor 各自独立 onDrop 不同 reason / size：
+	// A: queue-full ×1 + oversize ×1
+	// B: queue-full ×2（持续期，仅首次 log）
+	// C: fs-error ×1
+	mA.onDrop('queue-full', 100);
+	mB.onDrop('queue-full', 200);
+	mB.onDrop('queue-full', 300);
+	mC.onDrop('fs-error', 50, { code: 'ENOSPC' });
+	mA.onDrop('oversize', 30);
+
+	// 计数独立
+	const sA = mA.getStats();
+	const sB = mB.getStats();
+	const sC = mC.getStats();
+	assert.equal(sA.dropCount, 2);
+	assert.equal(sA.dropBytes, 130);
+	assert.equal(sA.fsBroken, false);
+	assert.equal(sB.dropCount, 2);
+	assert.equal(sB.dropBytes, 500);
+	assert.equal(sB.fsBroken, false);
+	assert.equal(sC.dropCount, 1);
+	assert.equal(sC.dropBytes, 50);
+	assert.equal(sC.fsBroken, true);
+
+	// log 输出按 connId 区分；不互相串
+	for (const w of lgA.warnings) assert.match(w, /conn=CONN-A/);
+	for (const w of lgB.warnings) assert.match(w, /conn=CONN-B/);
+	for (const w of lgC.warnings) assert.match(w, /conn=CONN-C/);
+	assert.equal(lgA.warnings.some((w) => /CONN-(B|C)/.test(w)), false);
+	assert.equal(lgB.warnings.some((w) => /CONN-(A|C)/.test(w)), false);
+	assert.equal(lgC.warnings.some((w) => /CONN-(A|B)/.test(w)), false);
+
+	// remoteLog 中三条 connId 都应出现，互不污染
+	const aLogs = remoteLogBuffer.filter((e) => e.text.includes('conn=CONN-A'));
+	const bLogs = remoteLogBuffer.filter((e) => e.text.includes('conn=CONN-B'));
+	const cLogs = remoteLogBuffer.filter((e) => e.text.includes('conn=CONN-C'));
+	assert.ok(aLogs.length >= 1);
+	assert.ok(bLogs.length >= 1);
+	assert.ok(cLogs.length >= 1);
+
+	// summarize 独立 emit；各自带自己的 connId / dropCount / dropBytes
+	const cleanResidual = { memCount: 0, memBytes: 0, diskBytes: 0, writtenBytes: 0, spilled: false, fsBroken: false };
+	mA.summarize(cleanResidual);
+	mB.summarize(cleanResidual);
+	mC.summarize(cleanResidual);
+
+	const closeLogs = remoteLogBuffer.filter((e) => e.text.includes('rpc-queue.close'));
+	assert.equal(closeLogs.length, 3, 'three monitors should each emit a distinct close summary');
+	const closeA = closeLogs.find((e) => e.text.includes('conn=CONN-A'));
+	const closeB = closeLogs.find((e) => e.text.includes('conn=CONN-B'));
+	const closeC = closeLogs.find((e) => e.text.includes('conn=CONN-C'));
+	assert.ok(closeA && closeB && closeC, 'each connId should have its own close summary');
+	assert.match(closeA.text, /dropped=2 droppedBytes=130/);
+	assert.match(closeB.text, /dropped=2 droppedBytes=500/);
+	assert.match(closeC.text, /dropped=1 droppedBytes=50/);
+});
+
 test('logger 缺 warn / info: onDrop / maybeEmitOverflowEnd 不抛', () => {
 	const partialLogger = {};
 	const { monitor } = makeMonitor({ logger: partialLogger });

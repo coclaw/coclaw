@@ -459,6 +459,29 @@ test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成', asy
 	assert.equal(q.destroyed, true);
 });
 
+test('destroy 先排队、enqueue 后排队：mutex FIFO + destroyed 短路 → enqueue 拿到锁返 false', async () => {
+	// 关键 race 不变量：destroy 与 enqueue 同 tick 并发，destroy 先入 mutex 队列时——
+	// destroy 的 mutex callback 先 fire（设 destroyed=true），enqueue 的 mutex callback
+	// 后跑（看到 destroyed=true 直接返 false）。验证 mutex FIFO + destroyed short-circuit
+	// 联合保护。这条窗口在 webrtc-peer 同 connId 重建路径上是 A1 引入的真实并发场景。
+	const droppedReasons = [];
+	const q = new MemoryQueue({
+		id: 'race',
+		onDrop: (reason) => { droppedReasons.push(reason); },
+	});
+	await q.init();
+
+	// 同 tick 并发：destroy 先调用，先进 mutex 队列；enqueue 后调用，排第二
+	const destroyP = q.destroy();
+	const enqueueP = q.enqueue('"after-destroy-pending"');
+
+	const [, ok] = await Promise.all([destroyP, enqueueP]);
+	assert.equal(ok, false, 'enqueue must return false (destroyed short-circuit)');
+	assert.equal(q.destroyed, true);
+	// destroyed 短路是 silent drop——队列已死，不需要 noisy onDrop（连接清理的正常副作用）
+	assert.deepEqual(droppedReasons, [], 'destroyed-short-circuit must not fire onDrop');
+});
+
 test('destroy(onBeforeClear): 第二次 destroy 是 no-op，不 fire callback', async () => {
 	// destroy 自身幂等保证 onBeforeClear 仅 fire 一次（与 monitor 内部 summarized flag 互为兜底）
 	const { q } = await makeQ();

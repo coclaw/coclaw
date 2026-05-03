@@ -235,6 +235,56 @@ test('measureDiskCap should fall back to 1GB on missing statfs (Node <18.15)', a
 	assert.match(logger.warnings[0], /rpc-queues statfs failed/);
 });
 
+test('measureDiskCap should fall back to 1GB on non-finite statfs fields', async () => {
+	// 真实生产环境（容器、网络挂载、特殊文件系统）下 statfs 偶有返回非 number 字段
+	// 的情况；Number(NaN/undefined) * Number(_) = NaN，未防御会让 __diskCap = NaN
+	const logger = silentLogger();
+	const cases = [
+		{ bavail: NaN, bsize: 4096 },
+		{ bavail: undefined, bsize: 4096 },
+		{ bavail: 1024, bsize: NaN },
+		{ bavail: 1024, bsize: undefined },
+		{}, // 完全缺字段
+	];
+	for (const ret of cases) {
+		const cap = await measureDiskCap('/tmp/x', { logger, fsOps: { statfs: async () => ret } });
+		assert.equal(cap, ONE_GB, `non-finite fields ${JSON.stringify(ret)} should fall back to 1GB`);
+	}
+	// 每条非 finite case 都应 warn 一次
+	assert.equal(logger.warnings.length, cases.length);
+	for (const w of logger.warnings) {
+		assert.match(w, /rpc-queues statfs failed/);
+	}
+});
+
+test('measureDiskCap should fall back to 1GB on negative free (bavail<0)', async () => {
+	// 防御性：负值理论上不应出现，但若出现 floor(neg*0.5) 落到 64MB 会比"假装磁盘有空间"更危险
+	const logger = silentLogger();
+	const cap = await measureDiskCap('/tmp/x', { logger, fsOps: { statfs: async () => ({ bavail: -1, bsize: 4096 }) } });
+	assert.equal(cap, ONE_GB);
+	assert.equal(logger.warnings.length, 1);
+});
+
+test('cleanupResiduals should not throw when dir is non-string (nodePath.join defense, "never throws" red line)', async () => {
+	// 生产路径 dir 永远是 string（bridge 传 nodePath.join 结果），但若未来重构误传非 string，
+	// nodePath.join(non-string, name) 会抛 TypeError——必须 catch 兜住，不破"模块永不抛"红线。
+	// 本测试用 fsOps stub 让 mkdir/readdir 不抛，强制流程进入 nodePath.join 路径。
+	const fsOps = {
+		mkdir: async () => {},
+		readdir: async () => ['a.jsonl'],
+		unlink: async () => {},
+	};
+	for (const badDir of [null, undefined, 123, {}, []]) {
+		const logger = silentLogger();
+		await assert.doesNotReject(
+			() => cleanupResiduals(badDir, { logger, fsOps }),
+			`cleanupResiduals(${JSON.stringify(badDir)}) should not throw`,
+		);
+		// 每条非 string dir 在 nodePath.join 路径都应 warn
+		assert.ok(logger.warnings.length >= 1, `should warn at least once for dir=${badDir}`);
+	}
+});
+
 test('measureDiskCap should default fsOps to fs.promises and return positive int <=1GB', async () => {
 	const root = await makeTmpDir();
 	try {

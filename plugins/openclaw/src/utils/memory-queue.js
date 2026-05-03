@@ -102,6 +102,9 @@ class MemoryQueue {
 
 	/**
 	 * 入队一条字符串。
+	 * - destroyed → 直接返回 false（**silent 短路**，**不触发 onDrop**）。设计意图：destroyed
+	 *   意味着对应连接已死/正在清理，丢弃是正确清理副作用，不需要 noisy 日志。loud-on-loss
+	 *   红线只对"连接活着但拒收"场景生效（oversize / queue-full）。
 	 * - 单条 size > maxMessageBytes（bypass 也不豁免）→ onDrop('oversize', size) + 返回 false
 	 * - 队列满（memBytes >= memBudget）且未命中 bypassAdmission → onDrop('queue-full', size) + 返回 false
 	 * - 否则入队 + 返回 true（包括"单条 overshoot"：当前 memBytes < memBudget，但本条很大）
@@ -113,6 +116,7 @@ class MemoryQueue {
 	 */
 	async enqueue(jsonStr) {
 		return await this.mutex.withLock(async () => {
+			// destroyed 短路：silent，不调 onDrop。详见上方 JSDoc。
 			if (this.destroyed) return false;
 			if (typeof jsonStr !== 'string') throw new TypeError('jsonStr must be a string');
 

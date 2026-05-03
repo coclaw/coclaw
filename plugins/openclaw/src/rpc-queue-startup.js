@@ -60,8 +60,11 @@ export async function cleanupResiduals(dir, { logger, fsOps = fs } = {}) {
 			continue;
 		}
 		if (!name.endsWith('.jsonl')) continue;
-		const p = nodePath.join(dir, name);
+		// nodePath.join 与 unlink 共享同一 try/catch：dir 若误传非 string（生产路径不会，
+		// 但 typeof readdir 防御已挡 name 那一头），nodePath.join(dir, name) 会抛 TypeError，
+		// 必须落在同一个 catch 里兜住才不破"模块永不抛"红线。
 		try {
+			const p = nodePath.join(dir, name);
 			await fsOps.unlink(p);
 		}
 		catch (err) {
@@ -82,6 +85,14 @@ export async function measureDiskCap(dir, { logger, fsOps = fs } = {}) {
 	try {
 		const st = await fsOps.statfs(dir);
 		const free = Number(st.bavail) * Number(st.bsize);
+		// 真实生产环境（容器、网络挂载、ENOSYS 走 catch 之外的怪环境）下 statfs 偶有
+		// 返回非 number / NaN / 负数字段的情况；Number(NaN/undefined) 乘任何东西都是 NaN，
+		// floor(NaN * 0.5) = NaN，max/min 链路也会冒泡 NaN——不防御会让 __diskCap 为 NaN。
+		if (!Number.isFinite(free) || free < 0) {
+			/* c8 ignore next -- ?./?? fallback */
+			logger?.warn?.(`[coclaw] rpc-queues statfs failed (non-finite, fallback 1GB): bavail=${st?.bavail} bsize=${st?.bsize}`);
+			return ONE_GB;
+		}
 		return Math.min(ONE_GB, Math.max(SIXTY_FOUR_MB, Math.floor(free * 0.5)));
 	}
 	catch (err) {
