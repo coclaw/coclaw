@@ -94,35 +94,42 @@ test('onDrop queue-full 重复: 计数器累加，仅首次 log（持续期间�
 
 // --- onDrop: oversize ---
 
-test('onDrop oversize: 每次独立 warn，不改 overflowActive', () => {
+test('onDrop oversize: 每次独立 warn 含 conn+size，不改 overflowActive', () => {
 	const { monitor, logger } = makeMonitor({ connId: 'connOv' });
-	monitor.onDrop('oversize', 70 * 1024 * 1024);
-	monitor.onDrop('oversize', 80 * 1024 * 1024);
+	const size1 = 70 * 1024 * 1024;
+	const size2 = 80 * 1024 * 1024;
+	monitor.onDrop('oversize', size1);
+	monitor.onDrop('oversize', size2);
 	const s = monitor.getStats();
 	assert.equal(s.overflowActive, false);
 	assert.equal(s.dropCount, 2);
-	assert.equal(s.dropBytes, 70 * 1024 * 1024 + 80 * 1024 * 1024);
+	assert.equal(s.dropBytes, size1 + size2);
 	assert.equal(s.lastReason, 'oversize');
 	const overWarns = logger.warnings.filter(w => w.includes('oversize'));
 	assert.equal(overWarns.length, 2, 'oversize warn fires per call');
 	assert.ok(overWarns.every(w => w.includes('conn=connOv')));
+	assert.ok(overWarns[0].includes(`size=${size1}`));
+	assert.ok(overWarns[1].includes(`size=${size2}`));
 });
 
 // --- onDrop: fs-error ---
 
-test('onDrop fs-error 首次: fsBroken=true + warn 含 errno（来自 err.code）', () => {
-	const { monitor, logger } = makeMonitor();
+test('onDrop fs-error 首次: fsBroken=true + warn/remoteLog 含 conn+errno+msg', () => {
+	const { monitor, logger } = makeMonitor({ connId: 'connFs' });
 	monitor.onDrop('fs-error', 512, { code: 'ENOSPC', message: 'no space left on device' });
 	const s = monitor.getStats();
 	assert.equal(s.fsBroken, true);
 	assert.equal(s.dropCount, 1);
 	const fsWarns = logger.warnings.filter(w => w.includes('fs-broken'));
 	assert.equal(fsWarns.length, 1);
+	assert.ok(fsWarns[0].includes('conn=connFs'));
 	assert.ok(fsWarns[0].includes('errno=ENOSPC'));
 	assert.ok(fsWarns[0].includes('no space left on device'));
 	const rl = remoteLogBuffer.find(e => e.text.includes('rpc-queue.fs-broken'));
 	assert.ok(rl);
+	assert.match(rl.text, /conn=connFs/);
 	assert.match(rl.text, /errno=ENOSPC/);
+	assert.match(rl.text, /no space left on device/);
 });
 
 test('onDrop fs-error 无 err 参: errno=UNKNOWN', () => {
@@ -148,7 +155,7 @@ test('onDrop fs-error 重复: fsBroken 维持 true，仅首次 log（sticky）',
 
 // --- onDrop: disk-cap ---
 
-test('onDrop disk-cap 首次: overflowActive=true + remoteLog（与 queue-full 边沿对称）', () => {
+test('onDrop disk-cap 首次: overflowActive=true + warn/remoteLog 含 conn+size（与 queue-full 边沿对称）', () => {
 	const { monitor, logger } = makeMonitor({ connId: 'connDC' });
 	monitor.onDrop('disk-cap', 4096);
 	const s = monitor.getStats();
@@ -160,6 +167,8 @@ test('onDrop disk-cap 首次: overflowActive=true + remoteLog（与 queue-full �
 	assert.match(startRemote.text, /size=4096/);
 	const startWarns = logger.warnings.filter(w => w.includes('disk-cap-start'));
 	assert.equal(startWarns.length, 1);
+	assert.ok(startWarns[0].includes('conn=connDC'));
+	assert.ok(startWarns[0].includes('size=4096'));
 });
 
 test('onDrop disk-cap 重复: overflowActive 维持，仅首次 log', () => {
@@ -256,7 +265,7 @@ test('summarize(residual): dropCount>0 → emit close 含全部 token；幂等',
 	const { monitor } = makeMonitor({ connId: 'connClose' });
 	monitor.onDrop('queue-full', 1024);
 	monitor.onDrop('queue-full', 512);
-	monitor.summarize({ memCount: 3, memBytes: 700 });
+	monitor.summarize({ memCount: 3, memBytes: 700, diskBytes: 0, writtenBytes: 0 });
 	const closes = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
 	assert.equal(closes.length, 1);
 	const t = closes[0].text;
@@ -265,12 +274,46 @@ test('summarize(residual): dropCount>0 → emit close 含全部 token；幂等',
 	assert.match(t, /droppedBytes=1536/);
 	assert.match(t, /residualChunks=3/);
 	assert.match(t, /residualBytes=700/);
+	assert.match(t, /residualDiskBytes=0/);
+	assert.match(t, /residualWrittenBytes=0/);
 	assert.match(t, /fsBroken=false/);
 	assert.match(t, /lastReason=queue-full/);
 	// 幂等
 	monitor.summarize({ memCount: 99, memBytes: 9999 });
 	const closes2 = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
 	assert.equal(closes2.length, 1, 'second summarize is no-op');
+});
+
+test('summarize: dropCount>0 但 overflowActive=false（仅 oversize drop）→ 仍 emit', () => {
+	// 单独验"dropCount>0"分支不被 overflowActive 短路（C-1）
+	const { monitor } = makeMonitor({ connId: 'connOnlyDrops' });
+	monitor.onDrop('oversize', 70 * 1024 * 1024);
+	monitor.onDrop('oversize', 80 * 1024 * 1024);
+	assert.equal(monitor.getStats().overflowActive, false, 'oversize 不改 overflowActive');
+	assert.ok(monitor.getStats().dropCount > 0);
+	monitor.summarize();
+	const closes = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
+	assert.equal(closes.length, 1);
+	assert.match(closes[0].text, /dropped=2/);
+	assert.match(closes[0].text, /lastReason=oversize/);
+});
+
+test('summarize(residual diskBytes>0): 即使无 mem 残留也 emit（FBQ 阶段诊断完整性，D-2 修复）', () => {
+	const { monitor } = makeMonitor({ connId: 'connDisk' });
+	monitor.summarize({ memCount: 0, memBytes: 0, diskBytes: 4096, writtenBytes: 0 });
+	const closes = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
+	assert.equal(closes.length, 1);
+	assert.match(closes[0].text, /residualDiskBytes=4096/);
+	assert.match(closes[0].text, /residualWrittenBytes=0/);
+	assert.match(closes[0].text, /residualChunks=0/);
+});
+
+test('summarize(residual writtenBytes>0): 即使无其它残留也 emit', () => {
+	const { monitor } = makeMonitor();
+	monitor.summarize({ memCount: 0, memBytes: 0, diskBytes: 0, writtenBytes: 8192 });
+	const closes = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
+	assert.equal(closes.length, 1);
+	assert.match(closes[0].text, /residualWrittenBytes=8192/);
 });
 
 test('summarize(): 干净状态（无 drop / 无 residual / 无 fsBroken）→ 不 emit', () => {
@@ -287,6 +330,8 @@ test('summarize(): 默认参数 residualStats=undefined 也可调', () => {
 	assert.equal(closes.length, 1);
 	assert.match(closes[0].text, /residualChunks=0/);
 	assert.match(closes[0].text, /residualBytes=0/);
+	assert.match(closes[0].text, /residualDiskBytes=0/);
+	assert.match(closes[0].text, /residualWrittenBytes=0/);
 });
 
 test('summarize(residual): 仅有残留无 drop → 也 emit（残留是异常状态）', () => {
@@ -312,33 +357,38 @@ test('summarize(): 仅 fsBroken → emit', () => {
 
 // --- 防御性包装 ---
 
-test('logger.warn 抛: onDrop 不传染（queue-full 边沿）', () => {
+test('logger.warn 抛: onDrop 不传染（queue-full 边沿）+ 验证 warn 真的被调', () => {
+	let warnCalls = 0;
 	const throwingLogger = {
-		warn: () => { throw new Error('logger boom'); },
+		warn: () => { warnCalls += 1; throw new Error('logger boom'); },
 		info: () => {},
 		error: () => {},
 	};
 	const { monitor } = makeMonitor({ logger: throwingLogger });
 	assert.doesNotThrow(() => monitor.onDrop('queue-full', 100));
+	assert.equal(warnCalls, 1, 'logger.warn 必须被调一次');
 	assert.equal(monitor.getStats().overflowActive, true);
 	assert.equal(monitor.getStats().dropCount, 1);
 });
 
-test('logger.warn 抛: onDrop oversize 不传染', () => {
+test('logger.warn 抛: onDrop oversize 不传染 + 验证 warn 被调', () => {
+	let warnCalls = 0;
 	const throwingLogger = {
-		warn: () => { throw new Error('boom'); },
+		warn: () => { warnCalls += 1; throw new Error('boom'); },
 		info: () => {},
 		error: () => {},
 	};
 	const { monitor } = makeMonitor({ logger: throwingLogger });
 	assert.doesNotThrow(() => monitor.onDrop('oversize', 100));
+	assert.equal(warnCalls, 1);
 	assert.equal(monitor.getStats().dropCount, 1);
 });
 
-test('logger.info 抛: maybeEmitOverflowEnd 不传染', () => {
+test('logger.info 抛: maybeEmitOverflowEnd 不传染 + 验证 info 被调', () => {
+	let infoCalls = 0;
 	const throwingLogger = {
 		warn: () => {},
-		info: () => { throw new Error('boom'); },
+		info: () => { infoCalls += 1; throw new Error('boom'); },
 		error: () => {},
 	};
 	const { monitor } = makeMonitor({ logger: throwingLogger });
@@ -346,7 +396,17 @@ test('logger.info 抛: maybeEmitOverflowEnd 不传染', () => {
 	assert.doesNotThrow(() => {
 		monitor.maybeEmitOverflowEnd({ memCount: 0, memBytes: 0, writtenBytes: 0 });
 	});
+	assert.equal(infoCalls, 1, 'logger.info 必须被调一次');
 	assert.equal(monitor.getStats().overflowActive, false, 'state still flips even if logger throws');
+});
+
+test('maybeEmitOverflowEnd: stats=null/undefined 安全跳过（防御性，无未捕获 TypeError）', () => {
+	const { monitor } = makeMonitor();
+	monitor.onDrop('queue-full', 100);
+	assert.doesNotThrow(() => monitor.maybeEmitOverflowEnd(null));
+	assert.doesNotThrow(() => monitor.maybeEmitOverflowEnd(undefined));
+	// 仍处于 active（未翻转）
+	assert.equal(monitor.getStats().overflowActive, true);
 });
 
 // --- logger 缺方法防御 ---

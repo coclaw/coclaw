@@ -203,15 +203,18 @@ test('overshoot: queueBytes < memBudget 但单条 size 大于 memBudget → 仍�
 	assert.equal(ok2, false);
 });
 
-test('admission: 持续期间多次 drop 都触发 onDrop（内部不去重）', async () => {
+test('admission: 持续期间多次 drop 都触发 onDrop（内部不去重）+ size 准确', async () => {
 	const drops = [];
 	const { q } = await makeQ({ memBudget: 100, onDrop: (r, s) => drops.push({ r, s }) });
 	await q.enqueue(jsonOfBytes(120));
 	for (let i = 0; i < 100; i += 1) {
-		await q.enqueue(`{"i":${i}}`);
+		const msg = `{"i":${i}}`;
+		await q.enqueue(msg);
+		// onDrop size 必须等于消息字节数
+		assert.equal(drops[i].r, 'queue-full');
+		assert.equal(drops[i].s, Buffer.byteLength(msg, 'utf8'));
 	}
 	assert.equal(drops.length, 100);
-	assert.ok(drops.every(d => d.r === 'queue-full'));
 });
 
 // --- bypassAdmission 白名单 ---
@@ -413,6 +416,56 @@ test('destroy: 无日志输出（诊断职责已外移到 monitor）', async () 
 	await q.destroy();
 	assert.equal(logger.warnings.length, 0);
 	assert.equal(logger.infos.length, 0);
+});
+
+test('destroy(onBeforeClear): mutex 内拿原子残留快照，能看到 in-flight enqueue', async () => {
+	// 修复 D-Finding 1：sync 调 q.stats() 看不到 in-flight 入队（mutex 排队），
+	// 但 destroy(callback) 在 mutex 内 fire callback，能看到所有已排队的 enqueue
+	const { q } = await makeQ();
+	// in-flight: enqueue 不 await，立刻同步调 destroy
+	const enqueuePromise = q.enqueue('"in-flight"').catch(() => {});
+	let snapshot = null;
+	const destroyPromise = q.destroy((residual) => { snapshot = residual; });
+	await enqueuePromise;
+	await destroyPromise;
+	assert.ok(snapshot, 'onBeforeClear 必须 fire');
+	assert.equal(snapshot.memCount, 1, '应当看到 in-flight 入队的消息');
+	assert.equal(snapshot.memBytes, Buffer.byteLength('"in-flight"', 'utf8'));
+	// 6 字段形态对齐 FBQ
+	assert.equal(snapshot.diskBytes, 0);
+	assert.equal(snapshot.writtenBytes, 0);
+	assert.equal(snapshot.spilled, false);
+	assert.equal(snapshot.fsBroken, false);
+});
+
+test('destroy(onBeforeClear): 无 in-flight 时残留为 0', async () => {
+	const { q } = await makeQ();
+	let snapshot = null;
+	await q.destroy((residual) => { snapshot = residual; });
+	assert.deepEqual(snapshot, {
+		memCount: 0,
+		memBytes: 0,
+		diskBytes: 0,
+		writtenBytes: 0,
+		spilled: false,
+		fsBroken: false,
+	});
+});
+
+test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成', async () => {
+	const { q } = await makeQ();
+	await q.enqueue('"x"');
+	await assert.doesNotReject(q.destroy(() => { throw new Error('callback boom'); }));
+	assert.equal(q.destroyed, true);
+});
+
+test('destroy(onBeforeClear): 第二次 destroy 是 no-op，不 fire callback', async () => {
+	// destroy 自身幂等保证 onBeforeClear 仅 fire 一次（与 monitor 内部 summarized flag 互为兜底）
+	const { q } = await makeQ();
+	let calls = 0;
+	await q.destroy(() => { calls += 1; });
+	await q.destroy(() => { calls += 1; });
+	assert.equal(calls, 1);
 });
 
 test('clear: 重置 mem，保留实例可用', async () => {

@@ -22,7 +22,13 @@
  *   warn / remoteLog: rpc-queue.fs-broken       conn=X errno=X msg=  (fs-error，sticky)
  *   warn:             [rpc-queue conn=X] oversize size=N             (每条独立)
  *   info / remoteLog: rpc-queue.overflow-end    conn=X dropped=N droppedBytes=M
- *   remoteLog:        rpc-queue.close           conn=X dropped=N droppedBytes=M residualChunks=K residualBytes=L fsBroken=bool lastReason=str
+ *   remoteLog:        rpc-queue.close           conn=X dropped=N droppedBytes=M
+ *                                               residualChunks=K residualBytes=L
+ *                                               residualDiskBytes=X residualWrittenBytes=Y
+ *                                               fsBroken=bool lastReason=str
+ *
+ * close 日志含两组 disk token（residualDiskBytes/residualWrittenBytes）是为 FBQ 阶段
+ * 诊断完整性预留——B-stage1 阶段它们恒 0；B-stage2 切到 FileBackedQueue 时承载磁盘残留信息。
  */
 
 import { remoteLog } from '../remote-log.js';
@@ -34,7 +40,7 @@ import { remoteLog } from '../remote-log.js';
  * @returns {{
  *   onDrop: (reason: string, size: number, err?: { code?: string, message?: string }) => void,
  *   maybeEmitOverflowEnd: (stats: { memCount: number, writtenBytes: number }) => void,
- *   summarize: (residualStats?: { memCount?: number, memBytes?: number }) => void,
+ *   summarize: (residualStats?: { memCount?: number, memBytes?: number, diskBytes?: number, writtenBytes?: number }) => void,
  *   getStats: () => { dropCount: number, dropBytes: number, overflowActive: boolean, fsBroken: boolean, lastReason: string|null },
  * }}
  */
@@ -105,6 +111,7 @@ export function createRpcDropMonitor({ connId, logger }) {
 
 	function maybeEmitOverflowEnd(stats) {
 		if (!overflowActive) return;
+		if (!stats) return; // 防御：调用方应传 queue.stats()，但 stats 为 null/undefined 时安全跳过
 		if (stats.memCount === 0 && stats.writtenBytes === 0) {
 			overflowActive = false;
 			safeInfo(`overflow-end dropped=${dropCount} droppedBytes=${dropBytes}`);
@@ -118,11 +125,15 @@ export function createRpcDropMonitor({ connId, logger }) {
 
 		const residualChunks = residualStats?.memCount ?? 0;
 		const residualBytes = residualStats?.memBytes ?? 0;
-		const hasAnomaly = overflowActive || fsBroken || dropCount > 0 || residualChunks > 0;
+		const residualDiskBytes = residualStats?.diskBytes ?? 0;
+		const residualWrittenBytes = residualStats?.writtenBytes ?? 0;
+		const hasAnomaly = overflowActive || fsBroken || dropCount > 0
+			|| residualChunks > 0 || residualDiskBytes > 0 || residualWrittenBytes > 0;
 		if (hasAnomaly) {
 			safeRemoteLog(
 				`rpc-queue.close conn=${connId} dropped=${dropCount} droppedBytes=${dropBytes}`
 				+ ` residualChunks=${residualChunks} residualBytes=${residualBytes}`
+				+ ` residualDiskBytes=${residualDiskBytes} residualWrittenBytes=${residualWrittenBytes}`
 				+ ` fsBroken=${fsBroken} lastReason=${lastReason ?? 'none'}`,
 			);
 		}

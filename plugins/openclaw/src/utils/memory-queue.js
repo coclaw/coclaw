@@ -173,11 +173,32 @@ class MemoryQueue {
 	/**
 	 * 关闭队列：唤醒所有 waiter（让 iterator 返回 done）。幂等。
 	 * 不输出汇总日志：close 汇总职责由调用方注入的 monitor.summarize 处理。
+	 *
+	 * @param {(residual: { memCount: number, memBytes: number, diskBytes: number, writtenBytes: number, spilled: boolean, fsBroken: boolean }) => void} [onBeforeClear]
+	 *   可选回调（**必须为同步函数**）：在 mutex 内、清空 memQueue **之前**触发，参数是销毁时刻的残留快照。
+	 *   存在意义：mutex 保证 in-flight enqueue 已落地（broadcast 是 fire-and-forget），调用方
+	 *   sync 调 `queue.stats()` 读不到 in-flight 入队的消息；改用此回调可拿到原子准确的残留快照。
+	 *   回调同步抛错被 swallow，不影响 destroy 完成。
+	 *   **注意**：返回 Promise 的异步回调其 rejection 不会被捕获——仅设计为 sync 钩子。
 	 */
-	async destroy() {
+	async destroy(onBeforeClear) {
 		return await this.mutex.withLock(async () => {
 			if (this.destroyed) return;
 			this.destroyed = true;
+
+			// 在 mutex 内、清空之前快照残留：保证看到所有已入队的消息（含 in-flight）
+			if (typeof onBeforeClear === 'function') {
+				const residual = {
+					memCount: this.memQueue.length - this.head,
+					memBytes: this.memBytes,
+					diskBytes: 0,
+					writtenBytes: 0,
+					spilled: false,
+					fsBroken: false,
+				};
+				try { onBeforeClear(residual); }
+				catch { /* 回调自身抛是调用方的 bug；不能传染给 destroy 契约 */ }
+			}
 
 			// 唤醒所有等待者，让它们在下一轮循环看到 destroyed 并返回 done
 			const toWake = this.waiters.splice(0);

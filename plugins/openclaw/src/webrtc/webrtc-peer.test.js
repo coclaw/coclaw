@@ -2653,6 +2653,7 @@ test('WebRtcPeer: ICE restart 保留 queue/sender 实例与积压', async () => 
 	const session = peer.__sessions.get('c_sq_icr');
 	const queueBefore = session.rpcQueue;
 	const senderBefore = session.rpcDcSender;
+	const monitorBefore = session.rpcDropMonitor;
 
 	// 让 queue 堆积消息：bufferedAmount 顶到 HIGH，sender 阻塞在第 1 条 chunk；多条消息排在
 	// queue 中等待。架构差异：原 RpcSendQueue 把所有 chunks 缓在 queue 内；新架构以"完整消息"
@@ -2673,9 +2674,10 @@ test('WebRtcPeer: ICE restart 保留 queue/sender 实例与积压', async () => 
 		payload: { sdp: 'v=0\r\na=max-message-size:100\r\n', iceRestart: true },
 	});
 
-	// queue/sender 实例都应保持不变（设计要点：ICE restart 不触发 DC close）
+	// queue/sender/monitor 实例都应保持不变（设计要点：ICE restart 不触发 DC close）
 	assert.equal(session.rpcQueue, queueBefore, 'same queue instance preserved');
 	assert.equal(session.rpcDcSender, senderBefore, 'same sender instance preserved');
+	assert.equal(session.rpcDropMonitor, monitorBefore, 'same monitor instance preserved');
 	assert.equal(queueBefore.destroyed, false);
 	assert.equal(senderBefore.closed, false);
 	assert.equal(queueBefore.stats().memCount, memCountBefore, 'queue residual preserved across ICE restart');
@@ -5266,47 +5268,38 @@ test('WebRtcPeer dump: 6 字段来自 queue.stats()，dropped/droppedBytes 来�
 
 // --- Phase B-stage1: monitor wiring 生命周期 ---
 
-test('WebRtcPeer monitor: dc.onclose 中 summarize 在 queue.destroy 之前调用', async () => {
+test('WebRtcPeer monitor: dc.onclose 走 destroy onBeforeClear 钩子原子拿残留快照（含 in-flight enqueue）', async () => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
-	await peer.handleSignaling(makeOffer('c_mon_close'));
+	await peer.handleSignaling(makeOffer('c_mon_close', 'v=0\r\na=max-message-size:100\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
 	await flushAsync();
 
 	const session = peer.__sessions.get('c_mon_close');
-	const queue = session.rpcQueue;
 	const monitor = session.rpcDropMonitor;
+	const calls = [];
+	const orig = monitor.summarize;
+	monitor.summarize = (residual) => { calls.push(residual); return orig.call(monitor, residual); };
 
-	const orderLog = [];
-	const origSummarize = monitor.summarize;
-	monitor.summarize = (residual) => {
-		orderLog.push({ kind: 'summarize', destroyed: queue.destroyed, residualMemCount: residual?.memCount });
-		return origSummarize.call(monitor, residual);
-	};
-	const origDestroy = queue.destroy.bind(queue);
-	queue.destroy = async () => {
-		orderLog.push({ kind: 'destroy', destroyed: queue.destroyed });
-		return await origDestroy();
-	};
-
-	// 触发 dc.onclose
+	// 制造背压：sender 阻塞 + 多条积压
+	dc.bufferedAmount = 1024 * 1024;
+	for (let i = 0; i < 3; i += 1) peer.broadcast({ type: 'res', n: i });
+	// **race 关键**：紧接着同 tick 再来一条 broadcast（in-flight，未拿到 mutex）
+	peer.broadcast({ type: 'res', n: 999 });
+	// 立刻同步触发 dc.onclose（不 flushAsync）
 	dc.readyState = 'closed';
 	dc.onclose();
+	// 三件套字段同步路径已清空（field 失访 → monRef 闭包仍持引用）
+	assert.equal(session.rpcDropMonitor, null);
+	assert.equal(session.rpcQueue, null);
+	// 等异步 destroy 完成（onBeforeClear 在 mutex 内 fire）
 	await flushAsync();
 
-	const summarizeIdx = orderLog.findIndex((x) => x.kind === 'summarize');
-	const destroyIdx = orderLog.findIndex((x) => x.kind === 'destroy');
-	assert.ok(summarizeIdx >= 0, 'summarize 应被调用');
-	assert.ok(destroyIdx >= 0, 'destroy 应被调用');
-	assert.ok(summarizeIdx < destroyIdx, 'summarize 必须在 destroy 之前');
-	assert.equal(orderLog[summarizeIdx].destroyed, false, 'summarize 时 queue 还未 destroyed');
-	// 三件套字段应清空
-	assert.equal(session.rpcQueue, null);
-	assert.equal(session.rpcDcSender, null);
-	assert.equal(session.rpcConsumeLoop, null);
-	assert.equal(session.rpcDropMonitor, null);
+	assert.ok(calls.length >= 1, 'monitor.summarize 通过 destroy 回调被调');
+	// 修复 D-Finding 1：onBeforeClear 在 mutex 内拿快照，能看到所有 in-flight enqueue
+	assert.ok(calls[0]?.memCount >= 4, `onBeforeClear 必须看到全部入队消息（含 in-flight），got ${calls[0]?.memCount}`);
 
 	await peer.closeAll();
 });
@@ -5352,8 +5345,8 @@ test('WebRtcPeer monitor: 同 connId 重建走 await destroy 路径，旧 monito
 	oldMonitor.summarize = (r) => { summCalls.push(r); return orig.call(oldMonitor, r); };
 
 	// 同 connId 二次 ondatachannel：触发旧三件套清理 + 新实例创建
+	// pc.ondatachannel 内部会在 sync 段把 session.rpcChannel 切到 dc2，不需要测试手动赋值
 	const dc2 = makeMockRpcDc();
-	session.rpcChannel = dc2; // 让重建路径的旧三件套清理分支走到（rpcChannel 已切换）
 	PC.instances[0].ondatachannel({ channel: dc2 });
 	await flushAsync();
 
@@ -5369,7 +5362,7 @@ test('WebRtcPeer monitor: 同 connId 重建走 await destroy 路径，旧 monito
 	await peer.closeAll();
 });
 
-test('WebRtcPeer monitor: consumeLoop finally 触发 summarize（与 dc.onclose 双调用幂等）', async () => {
+test('WebRtcPeer monitor: dc.onclose + consumeLoop finally 都调 destroy(callback)，destroy 幂等保证 onBeforeClear 仅一次', async () => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
@@ -5383,15 +5376,16 @@ test('WebRtcPeer monitor: consumeLoop finally 触发 summarize（与 dc.onclose 
 	const orig = monitor.summarize;
 	monitor.summarize = (r) => { calls.push(r); return orig.call(monitor, r); };
 
-	// 触发 dc.onclose（同步路径调一次 summarize；consumeLoop finally 也会调一次）
+	// 触发 dc.onclose（同步路径走 destroy(callback)，consumeLoop finally 也走 destroy(callback)）
 	dc.readyState = 'closed';
 	dc.onclose();
 	await flushAsync();
 
-	assert.ok(calls.length >= 2, '至少 dc.onclose + consumeLoop finally 各一次');
-	// 但 monitor 内部 summarized flag 保证只 emit 一条 close remoteLog
+	// destroy 自身幂等（this.destroyed 短路），第二次调 onBeforeClear 不再 fire
+	assert.equal(calls.length, 1, 'destroy 幂等：onBeforeClear 仅 fire 一次');
+	// monitor 内部 summarized flag 也兜底（即使外部直调 monitor.summarize 第二次也 no-op）
 	const closes = remoteLogBuffer.filter((e) => /rpc-queue\.close/.test(e.text));
-	assert.equal(closes.length, 0, 'no drops, no residual → no close emit (idempotent + clean state)');
+	assert.equal(closes.length, 0, 'no drops, no residual → no close emit');
 
 	await peer.closeAll();
 });
@@ -5410,6 +5404,7 @@ test('WebRtcPeer monitor: stale-init 路径不挂载 monitor（blockInit + close
 		const session = peer.__sessions.get('c_mon_stale');
 		// init 阻塞中：三件套（含 monitor）都还未挂
 		assert.equal(session.rpcDropMonitor, null, 'init 完成前 monitor 不挂');
+		assert.equal(m.initCalls.length, 1, 'queue.init 必须被调用且尚未完成');
 
 		// 闯入 closeByConnId → session 从 Map 删除
 		const closing = peer.closeByConnId('c_mon_stale');
@@ -5418,6 +5413,11 @@ test('WebRtcPeer monitor: stale-init 路径不挂载 monitor（blockInit + close
 		// 释放 init → setup 走 stale 分支退出，monitor 不挂
 		m.releaseInitAt(0);
 		await closing;
+
+		// 即使 init 释放后 setup 走完 stale 分支，session.rpcDropMonitor 始终保持 null
+		// （session 已从 Map 删除，但闭包还能引用 session 对象）
+		assert.equal(session.rpcDropMonitor, null, 'stale 分支退出后 monitor 仍不挂');
+		assert.equal(session.rpcQueue, null, 'stale 分支退出后 queue 仍不挂');
 
 		assert.equal(peer.__sessions.has('c_mon_stale'), false, 'session 已被删除');
 	} finally {

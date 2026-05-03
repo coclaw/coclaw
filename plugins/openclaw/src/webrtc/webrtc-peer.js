@@ -103,11 +103,12 @@ export class WebRtcPeer {
 		this.__sessions.delete(connId);
 		// 显式关闭 rpc 链路：dc.onclose 路径中 `sessions.get(connId)` 已返回 undefined 而短路，
 		// 此处不主动 close 会丢失 drop 汇总 remoteLog 诊断 + consumeLoop 泄漏。
-		// summarize 必须在 queue.destroy 之前调用——destroy 后 memQueue 被清空，残留显示为 0。
+		// summarize 走 destroy 的 onBeforeClear 钩子在 mutex 内拿原子快照——同步读 stats 看不到
+		// 还在 mutex 队列里的 in-flight enqueue（broadcast 是 fire-and-forget，会与 close 并发）。
 		if (session.rpcDcSender || session.rpcQueue) {
 			session.rpcDcSender?.close();
-			try { session.rpcDropMonitor?.summarize(session.rpcQueue?.stats()); } catch { /* monitor 内部已 try/catch */ }
-			await session.rpcQueue?.destroy();
+			const monRef = session.rpcDropMonitor;
+			await session.rpcQueue?.destroy((residual) => { monRef?.summarize(residual); });
 			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => {});
 			session.rpcDcSender = null;
 			session.rpcQueue = null;
@@ -550,8 +551,9 @@ export class WebRtcPeer {
 	}
 
 	async __setupDataChannel(connId, dc) {
-		// rpc DC 发送流控：MemoryQueue（admission + 边沿日志）+ RpcDcSender（分片 + 背压）
-		// 通过消费循环串起来。广播 / sendTo / files sendFn 都向 queue.enqueue，sender 从 queue 拉
+		// rpc DC 发送流控：MemoryQueue（admission + bypass 白名单）+ rpc-drop-monitor
+		// （边沿日志 / 累计 / 汇总）+ RpcDcSender（分片 + 背压），通过消费循环串起来。
+		// 广播 / sendTo / files sendFn 都向 queue.enqueue，sender 从 queue 拉。
 		const session = this.__sessions.get(connId);
 
 		// === 同步部分（首个 await 前）：wire dc handlers ===
@@ -630,11 +632,14 @@ export class WebRtcPeer {
 			if (sess && dc.label === 'rpc' && sess.rpcChannel === dc) {
 				// dc.onclose 是 sync 回调，不能 await consumeLoop。仅触发 close + destroy；
 				// consumeLoop 通过 sender.close → SENDER_CLOSED → break + queue.destroy → done 自然退出。
-				// summarize 必须在 queue.destroy 之前调——destroy 后 memQueue 被清空，残留为 0；
-				// monitor 内部 summarized flag 保证幂等（consumeLoop finally 也会再调一次）
+				// summarize 走 destroy 的 onBeforeClear 钩子：mutex 内拿原子残留快照，规避同步读
+				// stats 看不到 in-flight broadcast 的 race（monitor 内 summarized flag 保证幂等，
+				// consumeLoop finally 触发的二次 summarize 是 no-op）。
+				// monRef 闭包捕获是关键：dc.onclose sync 段会立即清 sess.rpcDropMonitor 字段，
+				// 但 destroy 是 fire-and-forget，回调在 mutex 异步内才 fire 时字段已 null。
 				sess.rpcDcSender?.close();
-				try { sess.rpcDropMonitor?.summarize(sess.rpcQueue?.stats()); } catch { /* monitor 内部已 try/catch */ }
-				sess.rpcQueue?.destroy().catch(() => {});
+				const monRef = sess.rpcDropMonitor;
+				sess.rpcQueue?.destroy((residual) => { monRef?.summarize(residual); }).catch(() => {});
 				sess.rpcDcSender = null;
 				sess.rpcQueue = null;
 				sess.rpcConsumeLoop = null;
@@ -659,13 +664,12 @@ export class WebRtcPeer {
 
 		// === 异步部分：rpc 三件套（队列 / 发送器 / 消费循环）+ monitor + 身份守卫 ===
 		// 罕见：session 已有旧三件套（UI 重建 rpc DC 等）。先 await close + destroy 旧实例
-		// 再造新实例，避免新旧 queue/sender 在同一 session 上并存。await 的目的是让旧实例
-		// 完整收尾（FBQ 阶段对应底层 fs 残留清理），MemoryQueue 阶段 destroy 是 sync 完成。
-		// summarize 必须在 destroy 之前调，否则残留快照拿到 0。
+		// 再造新实例，避免新旧 queue/sender 在同一 session 上并存。summarize 走 destroy 的
+		// onBeforeClear 钩子，确保拿到原子残留快照（in-flight enqueue 已落地）。
 		if (session.rpcDcSender || session.rpcQueue) {
 			session.rpcDcSender?.close();
-			try { session.rpcDropMonitor?.summarize(session.rpcQueue?.stats()); } catch { /* monitor 内部已 try/catch */ }
-			if (session.rpcQueue) await session.rpcQueue.destroy();
+			const oldMonitor = session.rpcDropMonitor;
+			if (session.rpcQueue) await session.rpcQueue.destroy((residual) => { oldMonitor?.summarize(residual); });
 			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => { /* c8 ignore next -- 极冷防御 */ });
 			session.rpcDropMonitor = null;
 		}
@@ -723,7 +727,8 @@ export class WebRtcPeer {
 					try {
 						await sender.send(str);
 						// 出列即过 monitor 检查"满→未满"翻转。stats 浅读 + 5 标量比对，O(1)。
-						try { monitor.maybeEmitOverflowEnd(queue.stats()); } catch { /* c8 ignore next -- monitor 内部已 try/catch */ }
+						// monitor 内部 logger/remoteLog 已 safe wrap，不会抛。
+						monitor.maybeEmitOverflowEnd(queue.stats());
 					} catch (err) {
 						if (err.code === 'SENDER_CLOSED') break;
 						// safe-wrap：logger.warn 自身抛不能让消费循环挂掉
@@ -734,8 +739,9 @@ export class WebRtcPeer {
 				}
 			} finally {
 				sender.close();
-				try { monitor.summarize(queue.stats()); } catch { /* c8 ignore next -- monitor 内部已 try/catch */ }
-				await queue.destroy().catch(() => {});
+				// summarize 走 destroy 的 onBeforeClear 钩子：在 mutex 内拿原子残留快照。
+				// 与 dc.onclose / closeByConnId 的二次 summarize 由 monitor 的 summarized flag 兜底幂等。
+				await queue.destroy((residual) => { monitor.summarize(residual); }).catch(() => {});
 				// 防御性清字段：若 loop 因 sender 内部错误自行退出（dc.onclose / closeByConnId
 				// 都不是触发方），字段会暂留非 null 直到 dc.onclose 最终到达。期间 producer
 				// 看到非 null 会以为通道活着——虽然 enqueue 安全返 false，但减少误导窗口。
@@ -767,6 +773,9 @@ export class WebRtcPeer {
 				// memCount 沿用历史 token 名 queueLen（不改名）；queue.stats() 6 个字段（含 4 个
 				// 磁盘字段，MemoryQueue 阶段恒 0/false）+ monitor.getStats() 提供 dropCount/dropBytes。
 				// 输出文本 8 token 字节级保持与现行格式一致。
+				// monitor 与 queue 在 setupDataChannel 末尾同 tick 装载，q 真值时 monitor 必定也存在；
+				// `?? { ... }` 是防御性兜底，结构上不可达。
+				/* c8 ignore next -- monitor 与 queue 同 tick 装载，?? fallback 不可达 */
 				const m = session.rpcDropMonitor?.getStats() ?? { dropCount: 0, dropBytes: 0 };
 				return `queueLen=${s.memCount} queueBytes=${s.memBytes} diskBytes=${s.diskBytes} writtenBytes=${s.writtenBytes} spilled=${s.spilled} fsBroken=${s.fsBroken} dropped=${m.dropCount} droppedBytes=${m.dropBytes}`;
 			})()
