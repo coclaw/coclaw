@@ -585,3 +585,32 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - 仅在 `result.reason` 与 lastReason 不同时打 info / remoteLog
 - 或者更简单：把 `abort-threw` 也加入静默列表（与 not-found 同级），损失部分诊断价值换取噪音控制
 - 同时考虑 UI 侧是否要给 abort-threw 加重试次数上限（dump 第三段提到的"过度重试"风险）
+
+## A1 异步装配引入的"handler 已挂、字段未挂"理论窗口（Phase B 切 FBQ 时一并补 warn）
+
+**发现日期**：2026-05-03（rpc-dc Phase A1+A2 deep-review）
+**关联**：`plugins/openclaw/src/webrtc/webrtc-peer.js` `__setupDataChannel`
+
+**问题**：Phase A1 把 `__setupDataChannel` 改 async 后，handler 顺序倒过来——A1 之前是"先做三件套（赋字段）后挂 handlers"，A1 之后是"先挂 handlers 后 await queue.init() 才赋字段"。结果：dc.onopen / dc.onmessage 在 await init() 期间触发时，`session.rpcQueue` 还是 null，下游有两条 silent drop 路径：
+1. **file sendFn** `sess?.rpcQueue?.enqueue(...)` 在 rpcQueue 为 null 时 short-circuit 返回 undefined，没有任何 log，违反"丢消息必须 loud 可观测"红线
+2. **dc.onopen → __sendPeerTransport** 在 init 期触发时 sendTo 返回 false，peer-transport 诊断信息丢失，没有 retry
+
+**MemoryQueue 阶段为什么不触发**：MemoryQueue.init() 是 async no-op（仅消耗 1 microtask），dc.onopen / dc.onmessage 由 SCTP 握手异步触发（native ms 级），microtask 必然在 SCTP 完成之前 resolve。实测 race 窗口宽度 ≈ 0。
+
+**Phase B 切 FBQ 时为什么会成为现实**：FBQ.init() 做 fs.rm + createWriteStream，可能数 ms 到数十 ms，与 SCTP 握手时间重叠，理论窗口 → 现实窗口。
+
+**修复方向（Phase B 时一并做）**：
+- file sendFn 加 null check + warn 日志（`rpcQueue not ready, dropped file response`）
+- __sendPeerTransport 在 sendTo 返回 false 时打 warn 或一次性 retry（peer-transport 是诊断信息，丢失影响小）
+- 等 Phase B 引入 RpcDropMonitor 后，把这两条 silent drop 也作为 reason 上报
+
+## Fire-and-forget `.catch()` 内 logger.warn 自身可能抛 unhandled rejection（项目通用模式，不修）
+
+**发现日期**：2026-05-03（同上 deep-review）
+**关联**：`plugins/openclaw/src/webrtc/webrtc-peer.js:489-491`（A1 新加），项目里大量 `this.logger.warn?.(...)` 调用
+
+**问题**：A1 把 `pc.ondatachannel` 改 fire-and-forget，`.catch()` 内调 `this.logger.warn?.(...)` 没有 try/catch 包。如果 logger 实例本身抛错，这个 .catch 返回的 Promise reject 进 unhandled rejection。
+
+**为什么不修**：项目里大量 `logger.warn?.(...)` 调用都没用 try/catch 包，单独包此一处不合理；应在项目层面统一决策（要么所有 logger 调用都包 try/catch，要么接受 logger 自身抛是极冷防御路径）。pino logger 内部错误处理很完备，实际触发概率近零。
+
+**修复方向（项目层面若决策）**：考虑导出统一的 `safeWarn(logger, msg)` helper，所有 fire-and-forget 链路统一调用。

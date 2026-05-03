@@ -483,8 +483,13 @@ export class WebRtcPeer {
 			this.__remoteLog(`dc.received conn=${connId} label=${channel.label}`);
 			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${channel.label}" received`);
 			if (channel.label === 'rpc') {
+				// rpcChannel 在 sync 路径赋值，作为 setup 内身份重核的依据；setup 本身改 async
+				// 后变 fire-and-forget（WebRTC 实现的 ondatachannel 是 sync 回调，不能 await）
 				session.rpcChannel = channel;
-				this.__setupDataChannel(connId, channel);
+				this.__setupDataChannel(connId, channel).catch((err) => {
+					/* c8 ignore next 2 -- setup 内部已经 try/catch 所有 await；此处仅防御性兜底 */
+					this.logger.warn?.(`${this.__rtcTag} [${connId}] __setupDataChannel error: ${err?.message}`);
+				});
 			} else if (channel.label.startsWith('file:')) {
 				// 跟踪 file DC 用于诊断 dump：保留全量历史以便排查"传输到一半挂掉"场景，
 				// 但用 FIFO 上限避免长会话内无界增长
@@ -540,86 +545,18 @@ export class WebRtcPeer {
 		}
 	}
 
-	__setupDataChannel(connId, dc) {
+	async __setupDataChannel(connId, dc) {
 		// rpc DC 发送流控：MemoryQueue（admission + 边沿日志）+ RpcDcSender（分片 + 背压）
 		// 通过消费循环串起来。广播 / sendTo / files sendFn 都向 queue.enqueue，sender 从 queue 拉
 		const session = this.__sessions.get(connId);
-		if (session && dc.label === 'rpc') {
-			// 防御：罕见情况下 session 已有旧三件套（UI 重建 rpc DC 等），先 close + destroy 旧实例。
-			// 否则旧 consumeLoop 会永挂在旧 queue iterator 上不退出，孤儿 sender 持有旧 dc 引用，
-			// 导致内存泄漏。新三件套在下面赋值后 finally 的 identity guard 会保护 OLD loop 不误清新字段。
-			if (session.rpcDcSender || session.rpcQueue) {
-				session.rpcDcSender?.close();
-				// fire-and-forget：__setupDataChannel 是 sync，不能 await；sender.close 已 reject
-				// 所有 BAL waiter，旧 loop 在 microtask 内 SENDER_CLOSED break 进入 finally
-				session.rpcQueue?.destroy().catch(() => { /* c8 ignore next -- 极冷防御 */ });
-				session.rpcConsumeLoop?.catch?.(() => { /* c8 ignore next -- 极冷防御 */ });
-			}
-			if ('bufferedAmountLowThreshold' in dc) {
-				dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
-			}
-			const queue = new MemoryQueue({
-				id: connId,
-				maxMessageBytes: MAX_SINGLE_MSG_BYTES,
-				bypassAdmission: isAgentRunResponse,
-				logger: this.logger,
-				tag: `conn=${connId}`,
-			});
-			const sender = new RpcDcSender({
-				dc,
-				maxMessageSize: session.remoteMaxMessageSize,
-				getNextMsgId: () => session.nextMsgId++,
-				logger: this.logger,
-				tag: `conn=${connId}`,
-			});
-			session.rpcQueue = queue;
-			session.rpcDcSender = sender;
-			// 闭包捕获本次 sender 局部引用，而不是读 session.rpcDcSender 字段。
-			// 同 session rebuild 后字段会指向新 sender，旧 dc 的 BAL 滞后事件若读字段
-			// 会错唤醒新 sender；捕获局部引用后旧 dc 触发 BAL 调的是已 close 的旧 sender，
-			// onBufferedAmountLow 在 splice 空 waiter 数组上无副作用
-			dc.onbufferedamountlow = () => {
-				sender.onBufferedAmountLow();
-			};
-			// 起消费循环：从 queue 拉一条 → await sender.send()。sender close 时循环 break。
-			// finally 兜底关闭：覆盖 dc.send 中途抛错 / 异常退出场景——dc.onclose 不一定会及时
-			// 触发清理（如 readyState 短暂 open 但 send 失败），主动 close+destroy 避免 queue/sender
-			// 残留导致后续 broadcast 入队后无人消费。两个 close/destroy 都幂等。
-			session.rpcConsumeLoop = (async () => {
-				try {
-					for await (const str of queue) {
-						try {
-							await sender.send(str);
-						} catch (err) {
-							if (err.code === 'SENDER_CLOSED') break;
-							// safe-wrap：logger.warn 自身抛不能让消费循环挂掉
-							try { this.logger.warn?.(`${this.__rtcTag} [${connId}] rpc-dc.send-failed code=${err.code} size=${str.length}`); }
-							/* c8 ignore next -- logger 自身抛是极冷防御路径 */
-							catch { /* swallow */ }
-						}
-					}
-				} finally {
-					sender.close();
-					await queue.destroy().catch(() => {});
-					// 防御性清字段：若 loop 因 sender 内部错误自行退出（dc.onclose / closeByConnId
-					// 都不是触发方），三字段会暂留非 null 直到 dc.onclose 最终到达。期间 producer
-					// 看到非 null 会以为通道活着——虽然 enqueue 安全返 false，但减少误导窗口。
-					// 身份比对避免误清"dc.onclose 已先清掉、并被新一轮 setup 装入新实例"的字段。
-					if (session.rpcQueue === queue) {
-						session.rpcQueue = null;
-						session.rpcDcSender = null;
-						session.rpcConsumeLoop = null;
-					}
-				}
-			})();
-			// unhandled rejection 防御：循环 promise 自身极少抛（仅 iterator 实现 bug），但
-			// 一旦逃逸为 unhandled rejection 会让 plugin/gateway 进程退出
-			session.rpcConsumeLoop.catch(() => {});
-		}
 
+		// === 同步部分（首个 await 前）：wire dc handlers ===
+		// reassembler / dc.onopen / dc.onclose / dc.onerror / dc.onmessage 必须在 async fn 的
+		// 同步部分 wire 完成；ondatachannel 是 WebRTC 实现的 sync 回调，调方调用后立即可能 dispatch
+		// 消息，handler 不能等 init 完才挂。stale dc 上的事件由 handler 内身份守卫吸收。
 		const reassembler = createReassembler((jsonStr) => {
 			const payload = JSON.parse(jsonStr);
-			// identity guard：与 dc.onclose 的 identity guard 对称（line ~682）。
+			// identity guard：与 dc.onclose 的 identity guard 对称。
 			// DC 重建后旧 dc 的 message event 仍可能在 microtask 队列里派发；若不核身份，旧请求会
 			// 注入 __onRequest 或 enqueue 到新 rpcQueue。session 已删除时（rpcChannel===null 或
 			// sess undefined）也按 stale 处理，避免向已清空的 session 注入消息。
@@ -709,6 +646,90 @@ export class WebRtcPeer {
 				this.logger.warn?.(`${this.__rtcTag} [${connId}] DC message error: ${err.message}`);
 			}
 		};
+
+		if (!session || dc.label !== 'rpc') return;
+
+		// === 异步部分：rpc 三件套（队列 / 发送器 / 消费循环）+ 身份守卫 ===
+		// 罕见：session 已有旧三件套（UI 重建 rpc DC 等）。先 await close + destroy 旧实例
+		// 再造新实例，避免新旧 queue/sender 在同一 session 上并存。await 的目的是让旧实例
+		// 完整收尾（FBQ 阶段对应底层 fs 残留清理），MemoryQueue 阶段 destroy 是 sync 完成。
+		if (session.rpcDcSender || session.rpcQueue) {
+			session.rpcDcSender?.close();
+			if (session.rpcQueue) await session.rpcQueue.destroy();
+			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => { /* c8 ignore next -- 极冷防御 */ });
+		}
+		// 构造 queue 并 await init。MemoryQueue.init 是 no-op；保留 await 占位，FBQ 阶段
+		// init 承担 fs 残留清理。await 期间可能发生 closeByConnId / 同 connId 二次 ondatachannel，
+		// 因此后面必须身份重核才能赋 session 字段。
+		const queue = new MemoryQueue({
+			id: connId,
+			maxMessageBytes: MAX_SINGLE_MSG_BYTES,
+			bypassAdmission: isAgentRunResponse,
+			logger: this.logger,
+			tag: `conn=${connId}`,
+		});
+		await queue.init();
+		// 身份重核：init 期间 session 可能被 closeByConnId 从 Map 删除，或被同 connId 二次
+		// ondatachannel 把 rpcChannel 替换成新 dc。任一不再成立都视为 stale，destroy queue 后
+		// 直接退出，绝不污染 session 三件套字段。
+		const sessAfter = this.__sessions.get(connId);
+		if (sessAfter !== session || session.rpcChannel !== dc) {
+			await queue.destroy();
+			return;
+		}
+		if ('bufferedAmountLowThreshold' in dc) {
+			dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
+		}
+		const sender = new RpcDcSender({
+			dc,
+			maxMessageSize: session.remoteMaxMessageSize,
+			getNextMsgId: () => session.nextMsgId++,
+			logger: this.logger,
+			tag: `conn=${connId}`,
+		});
+		session.rpcQueue = queue;
+		session.rpcDcSender = sender;
+		// 闭包捕获本次 sender 局部引用，而不是读 session.rpcDcSender 字段。
+		// 同 session rebuild 后字段会指向新 sender，旧 dc 的 BAL 滞后事件若读字段
+		// 会错唤醒新 sender；捕获局部引用后旧 dc 触发 BAL 调的是已 close 的旧 sender，
+		// onBufferedAmountLow 在 splice 空 waiter 数组上无副作用
+		dc.onbufferedamountlow = () => {
+			sender.onBufferedAmountLow();
+		};
+		// 起消费循环：从 queue 拉一条 → await sender.send()。sender close 时循环 break。
+		// finally 兜底关闭：覆盖 dc.send 中途抛错 / 异常退出场景——dc.onclose 不一定会及时
+		// 触发清理（如 readyState 短暂 open 但 send 失败），主动 close+destroy 避免 queue/sender
+		// 残留导致后续 broadcast 入队后无人消费。两个 close/destroy 都幂等。
+		session.rpcConsumeLoop = (async () => {
+			try {
+				for await (const str of queue) {
+					try {
+						await sender.send(str);
+					} catch (err) {
+						if (err.code === 'SENDER_CLOSED') break;
+						// safe-wrap：logger.warn 自身抛不能让消费循环挂掉
+						try { this.logger.warn?.(`${this.__rtcTag} [${connId}] rpc-dc.send-failed code=${err.code} size=${str.length}`); }
+						/* c8 ignore next -- logger 自身抛是极冷防御路径 */
+						catch { /* swallow */ }
+					}
+				}
+			} finally {
+				sender.close();
+				await queue.destroy().catch(() => {});
+				// 防御性清字段：若 loop 因 sender 内部错误自行退出（dc.onclose / closeByConnId
+				// 都不是触发方），三字段会暂留非 null 直到 dc.onclose 最终到达。期间 producer
+				// 看到非 null 会以为通道活着——虽然 enqueue 安全返 false，但减少误导窗口。
+				// 身份比对避免误清"dc.onclose 已先清掉、并被新一轮 setup 装入新实例"的字段。
+				if (session.rpcQueue === queue) {
+					session.rpcQueue = null;
+					session.rpcDcSender = null;
+					session.rpcConsumeLoop = null;
+				}
+			}
+		})();
+		// unhandled rejection 防御：循环 promise 自身极少抛（仅 iterator 实现 bug），但
+		// 一旦逃逸为 unhandled rejection 会让 plugin/gateway 进程退出
+		session.rpcConsumeLoop.catch(() => {});
 	}
 
 	/**
