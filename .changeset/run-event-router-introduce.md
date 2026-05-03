@@ -1,0 +1,5 @@
+---
+'@coclaw/openclaw-coclaw': patch
+---
+
+Introduce `RunEventRouter` class (`src/webrtc/run-event-router.js`) providing runId → connId routing infrastructure for agent event unicasting. The router exposes `register(runId, connId, reqId)` / `unregister(runId, reqId)` / `lookup(runId)` / `clear()` plus lifecycle methods `init()` / `destroy()`. Write strategy is "first-writer-wins" — same reqId only refreshes `expireAt` while connId is locked to the original; different reqId is logged at `debug` and skipped (defends against `agent.wait` attach scenarios stealing the route). Delete strategy requires `entry.reqId === input reqId` to avoid cross-RPC misdeletion when other RPCs (e.g. `chat.send`) carry an unrelated runId in their res payload. The 1h scan timer evicts entries past the 24h TTL, with try/catch and `unref()` so callback throws cannot crash the gateway process and the timer never holds the process open. Behavior unchanged at runtime — module not yet referenced by `realtime-bridge.js` or any other consumer; integration is staged separately.
