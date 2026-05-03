@@ -1,5 +1,16 @@
 # @coclaw/ui
 
+## 0.21.0
+
+### Minor Changes
+
+- 55d3999: Group OpenClaw system-injected and silent-ack messages (HEARTBEAT_OK / NO_REPLY) into independent lightweight system notes instead of folding them into the agent-run card. botTask boundaries are preserved; system notes appear above the botTask of the same user turn.
+
+### Patch Changes
+
+- 3d86f33: Fix chat history scroll-up jumping to bottom and add raw-content debug logs for history loading. The compensatory `scrollToBottom` in `__loadMoreHistory`'s `finally` relied on `userScrolledUp` to gate the scroll, but that signal misclassified intent in two real scenarios — short conversations where `userScrolledUp` is always `false`, and post-restore positions near the bottom where the async scroll event flips the flag — so the just-loaded history got pushed off-screen. Removing the compensation lets the existing `chatMessages` watcher and `ResizeObserver` handle scroll-to-bottom for normal paths (image load, streaming chunks, soft keyboard), while autoFill still lands at bottom via natural `scrollTop` clamping. `loadOlderMessages` and `loadNextHistorySession` now both emit `console.debug` raw-content dumps in the same shape as `loadMessages`, so historical session content is inspectable locally.
+- ba3bf63: Scope chat input attachments per chat/topic to prevent cross-context leak. Pending attachments now belong to the chat/topic store rather than the shared ChatInput instance, so switching to another chat/topic no longer shows the previous chat's attachments. New-topic sends `promote` to a fresh topic store with attachment references shared so users see no visual interruption while sending.
+
 ## 0.20.0
 
 ### Minor Changes

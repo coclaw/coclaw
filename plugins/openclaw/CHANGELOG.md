@@ -1,5 +1,12 @@
 # @coclaw/openclaw-coclaw
 
+## 0.19.1
+
+### Patch Changes
+
+- 0eb56f4: Expand `__dumpSessionState` queue diagnostics in webrtc-peer to surface six `MemoryQueue.stats()` fields (`memCount`/`memBytes`/`diskBytes`/`writtenBytes`/`spilled`/`fsBroken`) alongside the existing `droppedCount`/`droppedBytes`. The historical `queueLen` token is preserved as the `memCount` rendering; the four disk-related fields are constant zero/false on top of `MemoryQueue` and reserve the dump shape for the upcoming `FileBackedQueue` swap, when they will start carrying real values without requiring downstream parser changes.
+- af9b6e6: Tighten rpc DataChannel setup timing in webrtc-peer: `__setupDataChannel` is now async, awaits `queue.init()` before assigning the session triplet (queue/sender/consumeLoop), and re-checks identity (session still in map and `rpcChannel` still this dc) so concurrent `closeByConnId` or same-connId rebuilds during the init window cannot leave half-wired state. Same-connId rebuild also awaits the old `queue.destroy()` before constructing the new one. DC handlers (reassembler / onopen / onclose / onerror / onmessage) remain wired in the synchronous prologue so external code can dispatch dc events immediately. Behavior preserved with `MemoryQueue` (init is a no-op); the await + identity guard reserve the contract for the upcoming `FileBackedQueue` swap.
+
 ## 0.19.0
 
 ### Minor Changes
