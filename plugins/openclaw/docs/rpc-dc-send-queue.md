@@ -8,26 +8,30 @@
 
 插件运行在 OpenClaw gateway 进程内，向每条 rpc DC 推送的 JSON 帧（gateway 广播事件、agent RPC 响应、文件 RPC 响应等）若不做应用层流控，遇到对端拥塞或 ICE restart 期间会迅速堆积导致 OOM。
 
-阶段 1 把发送链路拆成**两段式管道**：
+阶段 1 把发送链路拆成**两段式管道**，并在 B-stage1 把 drop 诊断从队列剥离到外置监视器：
 
 ```
 producer ─enqueue(jsonStr)─► MemoryQueue ─consumeLoop─► RpcDcSender ─dc.send─► DataChannel ─SCTP─► UI
-                            (admission +              (HWM/LWM 流控 +
-                             drop 状态机)              分片协议)
+                              │  (admission)              (HWM/LWM 流控 +
+                              │                            分片协议)
+                              └─onDrop─► RpcDropMonitor
+                                         (drop 状态机 + close 汇总)
 ```
 
-每条 rpc DC 同时持有一个 MemoryQueue 和一个 RpcDcSender；中间由后台 `consumeLoop` 串起来。三件套绑定在 session 上：
+每条 rpc DC 同时持有一个 MemoryQueue、一个 RpcDcSender、一个 RpcDropMonitor；中间由后台 `consumeLoop` 串起来。四件套绑定在 session 上：
 
 - `session.rpcQueue` — MemoryQueue 实例
 - `session.rpcDcSender` — RpcDcSender 实例
 - `session.rpcConsumeLoop` — 消费循环 Promise
+- `session.rpcDropMonitor` — RpcDropMonitor 实例（drop 边沿状态机 + close 汇总）
 
 生产路径（`broadcast()` / files RPC `sendFn`）统一经此出口；只有 probe-ack 故意绕过（见下文）。
 
 **职责切分**：
-- MemoryQueue：admission（10 MB 软上限）+ 单条硬上限校验 + bypass 白名单 + drop 计数。**不知道 DC 是什么。**
+- MemoryQueue：admission（10 MB 软上限）+ 单条硬上限校验 + bypass 白名单 + 6 字段 stats。**纯业务无关容器，不输出任何日志/累计**——drop 事件经 `onDrop(reason, size)` 回调外抛。
 - RpcDcSender：分片（buildChunks）+ HWM/LWM 背压 + 错误协议。**不知道队列是什么。**
-- consumeLoop：把两边接起来，处理 sender 关闭后的退出。
+- RpcDropMonitor：消费 `onDrop` 事件 → 边沿状态机（overflow-start/end / disk-cap-start / fs-broken sticky / oversize / 未知）+ dropCount/dropBytes 累计 + close 汇总。**不知道队列内部结构。**
+- consumeLoop：把队列和 sender 接起来，出列后调 `monitor.maybeEmitOverflowEnd(queue.stats())` 检查"满→空"翻转，处理 sender 关闭后的退出。
 
 ## 为什么必须自建应用层分片
 
@@ -197,8 +201,9 @@ session.rpcConsumeLoop = (async () => {
     }
   } finally {
     sender.close();
-    monitor.summarize(queue.stats());
-    await queue.destroy().catch(() => {});
+    // summarize 走 destroy 的 onBeforeClear 同步钩子：在 mutex 内拿原子残留快照（含
+    // in-flight broadcast 在 mutex 中排队的 enqueue），规避 sync `queue.stats()` 读漏
+    await queue.destroy((residual) => monitor.summarize(residual)).catch(() => {});
   }
 })();
 
@@ -238,14 +243,18 @@ await session.rpcConsumeLoop;
 
 ## 与 FileBackedQueue 的关系
 
-`MemoryQueue` 是 MB 级 DC 背压队列；`FileBackedQueue`（FBQ，详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）是 GB 级长尾文件回退队列。两者**接口完全对齐**——`enqueue / __nextIter / destroy / clear / stats` 6 字段全一致——下一阶段 FBQ 切换几乎是一行 import 改：
+`MemoryQueue` 是 MB 级 DC 背压队列；`FileBackedQueue`（FBQ，详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）是 GB 级长尾文件回退队列。两者**接口完全对齐**——`enqueue / __nextIter / destroy / clear / stats` 6 字段全一致——下一阶段 FBQ 切换在 webrtc-peer 装配处仅需一行 import 改：
 
 ```js
 - new MemoryQueue({ id, memBudget, ... })
-+ new FileBackedQueue({ id, memBudget, dataDir, ... })
++ new FileBackedQueue({ id, memBudget, dataDir, diskCap, ... })
 ```
 
-切换后 FBQ 接管"长时间后台 / ICE 恢复"等慢消化场景的积压，sender 行为不变。具体 checklist 见 `../TODO.md` "阶段 2 切换 FBQ" 条目。
+切换后 FBQ 接管"长时间后台 / ICE 恢复"等慢消化场景的积压，sender 行为不变。
+
+> **B-stage1 plan-2 prep 已就位**：`bridge.start()` 启动期已添加 `rpc-queues/` 残留清理 + `fs.statfs` 一次性 `diskCap` 测量，结果暂存到 `bridge.__diskCap`（B-stage1 不消费）。B-stage2 切换 FBQ 时 webrtc-peer 通过运行时桥取值传入 `diskCap`（路径 TBD：`runtime` getter 或构造 deps 注入）——除"一行 import 改"外另需此处接线。
+
+具体 checklist 见 `../TODO.md` "阶段 2 切换 FBQ" 条目。
 
 ## 失败场景与接受边界
 

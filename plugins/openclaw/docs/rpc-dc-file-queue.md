@@ -466,15 +466,15 @@ dc.onclose = () => {
 10. **FS 错误降级（关键回归）**：异步 `writeStream.on('error')` 后，即使"未成功落盘任何字节"场景下，consumer 也不会卡死；后续溢出 enqueue drop `fs-error`；`fsBroken=true`
 11. **head 指针压缩**：大量 mem enqueue+消费后 `memQueue.length` 收敛，不线性增长
 
-### 集成层（待实施）
+### 集成层
 
-12. **启动清理**：bridge.start 后残留 `*.jsonl` 被清；非 jsonl 文件不动；单文件 unlink 失败被 warn 跳过、不阻断 start
-13. **diskCap 自适应**：mock `fs.statfs` 各分支（充裕 / 紧张 / 抛错回退）；下限 64 MB / 上限 1 GB / `free × 50%` 三段
-14. **`RpcDcSender` 重构后单元**：分片、fast-path、`bufferedAmount` 背压；阻塞式 `send()` 在 `bufferedamountlow` 触发后恢复；`close()` 让等待中的 `send()` 抛 `SENDER_CLOSED`（waiter 主动 reject）；单条 oversize 抛 `MESSAGE_OVERSIZED`
-15. **消费循环退出**：`fbq.destroy()` 让 `for-await` 自然结束；`sender.close()` 让正在 await `bufferedamountlow` 的 `send` 立刻返回；DC close handler 同时调两个的顺序 swap 测试（先 sender.close 再 fbq.destroy / 反之）
-16. **`onDrop` wrapper 边沿状态机**：`disk-cap-start/end` / `fs-broken` / `fs-error-summary` 在持续 drop 期间静默累加，仅边沿点上报
-17. **完整链路集成**：producer → FBQ → 消费循环 → `RpcDcSender` → DC，FIFO 不变量；ICE restart 期间 FBQ 内容保留
-18. **bridge restart 触发清理 + 重建队列**
+12. **启动清理**（B-stage1 plan-2 ✅ 已实施 `src/rpc-queue-startup.test.js`）：bridge.start 后残留 `*.jsonl` 被清；非 jsonl 文件不动；单文件 unlink 失败被 warn 跳过、不阻断 start
+13. **diskCap 自适应**（B-stage1 plan-2 ✅ 已实施 `src/rpc-queue-startup.test.js`）：mock `fs.statfs` 各分支（充裕 / 紧张 / 抛错回退）；下限 64 MB / 上限 1 GB / `free × 50%` 三段
+14. **`RpcDcSender` 重构后单元**（B-stage2 待实施）：分片、fast-path、`bufferedAmount` 背压；阻塞式 `send()` 在 `bufferedamountlow` 触发后恢复；`close()` 让等待中的 `send()` 抛 `SENDER_CLOSED`（waiter 主动 reject）；单条 oversize 抛 `MESSAGE_OVERSIZED`
+15. **消费循环退出**（B-stage2 待实施）：`fbq.destroy()` 让 `for-await` 自然结束；`sender.close()` 让正在 await `bufferedamountlow` 的 `send` 立刻返回；DC close handler 同时调两个的顺序 swap 测试（先 sender.close 再 fbq.destroy / 反之）
+16. **`onDrop` wrapper 边沿状态机**（B-stage1 plan-1 ✅ 已实施 `src/webrtc/rpc-drop-monitor.test.js`，FBQ 切换后会扩展 `disk-cap-start/end` 与 `fs-broken` 触发路径）：`disk-cap-start/end` / `fs-broken` / `fs-error-summary` 在持续 drop 期间静默累加，仅边沿点上报
+17. **完整链路集成**（B-stage2 待实施）：producer → FBQ → 消费循环 → `RpcDcSender` → DC，FIFO 不变量；ICE restart 期间 FBQ 内容保留
+18. **bridge restart 触发清理 + 重建队列**（B-stage2 待实施）
 
 ### E2E 回归点
 
