@@ -190,6 +190,8 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 
 ### 启动残留清理
 
+> 状态：B-stage1 plan-2 已实施。落点 `bridge.start()` 内 `this.started=true` 之后、`__preloadWebrtc()` 之前；封装在 `src/rpc-queue-startup.js` 的 `cleanupResiduals()`。MemoryQueue 阶段队列无残留可清，bridge.start 仍完整调用以便 B-stage2 切 FBQ 时路径已稳定。
+
 **落点**：`coclaw-realtime-bridge` service 的 `start()` 开头。
 
 `start()` 自身按 async 顺序 await（清理完才进 RTC 准备）；远早于"第一次 rpc DC 建立"——后者要等 gateway WS 握手 + server 配对 UI + ICE 协商，链路最少几百 ms。bridge restart（unbind/bind 来回切）会再清一次，顺带覆盖账户切换后的旧残留。**不需要同步 fs**。
@@ -210,6 +212,9 @@ filter *.jsonl    // 白名单，禁止一锅端整目录
 - CLI 上下文不会触发清理（plugin register 在 `mode !== 'full'` 时提前 return），天然规避 CLI ↔ gateway 并发竞争
 
 ### diskCap 自适应
+
+> 状态：B-stage1 plan-2 已实施。封装在 `src/rpc-queue-startup.js` 的 `measureDiskCap()`，结果存到 `bridge.__diskCap`。**B-stage1 阶段挂钩但暂不消费**——B-stage2 切 FBQ 时由 webrtc-peer 通过运行时桥取值（路径 TBD，候选：`runtime.coclaw.getDiskCap()` getter 或 webrtc-peer 构造 deps 注入）。
+> Node 18.15+ 才有 `fs.statfs`；老 Node（含老 18.x）走 catch 路径回退固定 1 GB——已通过 `measureDiskCap should fall back to 1GB on missing statfs` 单测验证。
 
 启动清理完成后，对 `rpc-queues/` 目录做一次 `fs.statfs`（Node 20+），按可用空间动态计算每条 DC 的 `diskCap`：
 

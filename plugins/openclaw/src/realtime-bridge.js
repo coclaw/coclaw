@@ -3,7 +3,8 @@ import os from 'node:os';
 import nodePath from 'node:path';
 import { WebSocket as WsWebSocket } from 'ws';
 
-import { clearConfig, getBindingsPath, readConfig } from './config.js';
+import { CHANNEL_ID, clearConfig, getBindingsPath, readConfig, resolveStateDir } from './config.js';
+import { cleanupResiduals as defaultCleanupResiduals, measureDiskCap as defaultMeasureDiskCap } from './rpc-queue-startup.js';
 import { getHostName, readSettings } from './settings.js';
 import {
 	loadOrCreateDeviceIdentity,
@@ -145,6 +146,9 @@ export class RealtimeBridge {
 		this.__gatewayReadyTimeoutMs = deps.gatewayReadyTimeoutMs ?? 1500;
 		this.__dcReqTtlMs = deps.dcReqTtlMs ?? DC_REQ_TTL_MS;
 		this.__dcReqScanMs = deps.dcReqScanMs ?? DC_REQ_SCAN_MS;
+		// rpc-queues/ 启动期预热钩子（B-stage1 plan-2）。仅供测试覆盖错误分支注入；生产路径走默认。
+		this.__cleanupRpcQueueResiduals = deps.cleanupRpcQueueResiduals ?? defaultCleanupResiduals;
+		this.__measureRpcQueueDiskCap = deps.measureRpcQueueDiskCap ?? defaultMeasureDiskCap;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -179,6 +183,8 @@ export class RealtimeBridge {
 		// 用于 res 帧按发起方单播；查不到时回退广播兜底（兼容旧 UI / 撞号 / 上游新增中间态字符串等）
 		this.__dcPendingRequests = new Map();
 		this.__dcPendingScanTimer = null;
+		// rpc DC 文件回退队列的磁盘容量（B-stage1 plan-2 探测，B-stage2 才消费）
+		this.__diskCap = null;
 	}
 
 	__resolveWebSocket() {
@@ -1336,6 +1342,12 @@ export class RealtimeBridge {
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
 		this.started = true;
+		// rpc DC 文件回退队列的启动期预热（B-stage1 plan-2）：清残留 *.jsonl + 探测磁盘容量。
+		// 远早于第一条 rpc DC 建立（dump 设计）；__diskCap 暂存供 B-stage2 切 FBQ 时取用。
+		// 两步均永不抛——不能让 fs 错把 bridge.start 卡死。
+		const queueDir = nodePath.join(resolveStateDir(), CHANNEL_ID, 'rpc-queues');
+		await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
+		this.__diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
 		// 先完成 WebRTC 实现加载，再建立连接，避免 UI 发来 offer 时 RTC 包未就绪
 		// 优先级：pion → ndc → werift → none
 		const preloadResult = await this.__preloadWebrtc();

@@ -94,6 +94,7 @@ MemoryQueue 自身**不打日志、不计数**——它通过 `onDrop(reason, si
 - overflow 持续期间所有 queue-full drop **完全静默**，只累加 `droppedCount` / `droppedBytes`
 - "满→空"翻转打 `overflow-end` 携带累计 dropped 数字
 - close 时若仍有 dropped 累计或 residual，统一 remoteLog 一次 `rpc-queue.close`
+- `rpc-queue.close` 字段 8 项：`dropped` / `droppedBytes` / `residualChunks` / `residualBytes` / `residualDiskBytes` / `residualWrittenBytes` / `fsBroken` / `lastReason`。后四项为 B-stage2 切 FBQ 后才会非零/非默认，B-stage1 阶段恒 `0/0/false/<最后一次 drop reason>`，**字段位预留是为了 monitor 模块在 B-stage2 切换时无需再改**
 
 **为什么静默积累**：UI 离线 + ICE 失败 + DC 长时间不 drain 的场景，队列每秒可能被网关事件灌满 drop，逐条上报会刷屏远程日志。状态翻转点上报既能定位故障窗口，又能控制日志体积。
 
@@ -210,8 +211,11 @@ session.rpcQueue.enqueue(jsonStr).catch(/* ... */);
 
 // 关闭顺序（dc.onclose / closeByConnId 触发）
 sender.close();
-monitor.summarize(queue.stats());
-await queue.destroy();
+// destroy 的 onBeforeClear 是同步钩子——由 destroy 在自己的 mutex 内 fire，参数是
+// 销毁时刻的残留快照（含 in-flight broadcast 在 mutex 中排队的 enqueue）。
+// 用同步钩子是为修复 race：之前 `summarize(queue.stats())` 同步读看不到 mutex-queued enqueue。
+// 异步 callback 的 rejection 不会被捕获——webrtc-peer 当前所有调用方都是同步函数。
+await queue.destroy((residual) => monitor.summarize(residual)).catch(() => {});
 await session.rpcConsumeLoop;
 ```
 

@@ -3454,6 +3454,9 @@ test('RealtimeBridge start() aborts if stop() called during preload (race protec
 	let resolvePreload;
 	const bridge = createBridge({
 		preloadNdc: () => new Promise((resolve) => { resolvePreload = resolve; }),
+		// 跳过 plan-2 fs 预热，避免拖慢到 setTimeout(0) 也未到达 preload 阶段
+		cleanupRpcQueueResiduals: async () => {},
+		measureRpcQueueDiskCap: async () => 0,
 	});
 
 	try {
@@ -3483,6 +3486,9 @@ test('RealtimeBridge start() aborts with pion cleanup when stop() during pion pr
 	let resolvePion;
 	const bridge = createBridge({
 		preloadPion: () => new Promise((resolve) => { resolvePion = resolve; }),
+		// 跳过 plan-2 fs 预热，避免拖慢到 setTimeout(0) 也未到达 preload 阶段
+		cleanupRpcQueueResiduals: async () => {},
+		measureRpcQueueDiskCap: async () => 0,
 	});
 
 	try {
@@ -4462,5 +4468,55 @@ test('gateway ws message handler: sendTo 抛错时 listener 不产生 unhandledR
 		for (const l of origListeners) process.on('unhandledRejection', l);
 		await bridge.stop();
 		restoreHomedir(prevHome);
+	}
+});
+
+// --- B-stage1 plan-2: rpc-queues/ 启动期预热 ---
+
+test('bridge.start should create rpc-queues/ dir under state dir', async () => {
+	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const queueDir = nodePath.join(dir, 'coclaw', 'rpc-queues');
+		const st = await fs.stat(queueDir);
+		assert.equal(st.isDirectory(), true);
+	} finally {
+		await bridge.stop();
+	}
+});
+
+test('bridge.start should remove pre-existing *.jsonl residuals in rpc-queues/', async () => {
+	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
+	const queueDir = nodePath.join(dir, 'coclaw', 'rpc-queues');
+	await fs.mkdir(queueDir, { recursive: true });
+	await fs.writeFile(nodePath.join(queueDir, 'old.jsonl'), 'x', 'utf8');
+	await fs.writeFile(nodePath.join(queueDir, 'keep.txt'), 'preserve', 'utf8');
+
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const remaining = (await fs.readdir(queueDir)).sort();
+		assert.deepEqual(remaining, ['keep.txt']);
+	} finally {
+		await bridge.stop();
+	}
+});
+
+test('bridge.start should populate __diskCap from injected measure stub', async () => {
+	await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
+	let measureCalls = 0;
+	let cleanupCalls = 0;
+	const bridge = createBridge({
+		measureRpcQueueDiskCap: async () => { measureCalls += 1; return 12345; },
+		cleanupRpcQueueResiduals: async () => { cleanupCalls += 1; },
+	});
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		assert.equal(bridge.__diskCap, 12345, 'should take stub return value');
+		assert.equal(measureCalls, 1, 'measure stub should be called exactly once');
+		assert.equal(cleanupCalls, 1, 'cleanup stub should be called exactly once');
+	} finally {
+		await bridge.stop();
 	}
 });
