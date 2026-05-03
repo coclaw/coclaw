@@ -58,6 +58,7 @@ OpenClaw 平台机制研究，用于指导 CoClaw 集成。
 - [核心架构](openclaw-research/core-architecture.md) — 三层模型、Channel、Session 机制
 - [Gateway 协议](openclaw-research/gateway-protocols.md) — RPC 协议、队列/流式、Transcript
 - [Agent 事件流](openclaw-research/agent-event-streams-and-rpcs.md) — Agent 流式事件类型
+- [Transcript 消息分类](openclaw-research/transcript-message-taxonomy.md) — JSONL 各类消息识别字段与服务端过滤行为
 - [Agent 身份 API](openclaw-research/agent-identity-api.md) — Agent 名称/头像数据源
 - [文件传输机制](openclaw-research/file-transfer-mechanisms.md) — OpenClaw 原生文件传输
 - [集成要点](openclaw-research/integration-notes.md) — 已知限制与集成经验
