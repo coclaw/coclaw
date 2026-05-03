@@ -975,6 +975,10 @@ export default {
 				// 优先加载当前 session 内的更早消息
 				if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
 					const el = this.$refs.scrollContainer;
+					// 入口快照 scrollTop + scrollHeight：恢复时用绝对赋值盖住浏览器锚定
+					// （Chrome/Edge/Firefox 的 overflow-anchor:auto 会在 prepend 后自动调整 scrollTop，
+					// 用 += 会双倍位移把用户撞到底）
+					const prevScrollTop = el?.scrollTop ?? 0;
 					const prevHeight = el?.scrollHeight ?? 0;
 					const loaded = await this.chatStore.loadOlderMessages();
 					// await 后 chatStore 可能因路由变化变为 null
@@ -982,7 +986,7 @@ export default {
 					if (loaded && el) {
 						this.$nextTick(() => {
 							const newHeight = el.scrollHeight;
-							el.scrollTop += (newHeight - prevHeight);
+							el.scrollTop = prevScrollTop + (newHeight - prevHeight);
 						});
 					}
 					return;
@@ -995,6 +999,7 @@ export default {
 					return;
 				}
 				const el = this.$refs.scrollContainer;
+				const prevScrollTop = el?.scrollTop ?? 0;
 				const prevHeight = el?.scrollHeight ?? 0;
 				const loaded = await this.chatStore.loadNextHistorySession();
 				// await 后 chatStore 可能因路由变化变为 null
@@ -1002,7 +1007,7 @@ export default {
 				if (loaded && el) {
 					this.$nextTick(() => {
 						const newHeight = el.scrollHeight;
-						el.scrollTop += (newHeight - prevHeight);
+						el.scrollTop = prevScrollTop + (newHeight - prevHeight);
 					});
 				}
 				if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {

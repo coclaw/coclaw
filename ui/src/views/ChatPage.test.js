@@ -1587,6 +1587,40 @@ describe('ChatPage scroll', () => {
 			// finally 不应再触发 scrollToBottom，否则刚翻出来的历史会被推走
 			expect(scrollSpy).not.toHaveBeenCalled();
 		});
+
+		test('位置恢复用绝对赋值，盖住浏览器锚定带来的双倍位移', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const chatStore = wrapper.vm.chatStore;
+			if (!chatStore) return;
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+
+			// 入口快照状态：scrollTop=100, scrollHeight=1000
+			Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, configurable: true, writable: true });
+			Object.defineProperty(scrollContainer, 'scrollTop', { value: 100, configurable: true, writable: true });
+			Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, configurable: true });
+
+			chatStore.hasMoreMessages = true;
+			// 模拟浏览器 overflow-anchor:auto 的行为：await 期间把 scrollTop 调到 500（即 prepend 后的"自动锚定"值）
+			// 同时把 scrollHeight 增大到 2000（模拟新历史已 prepend）
+			chatStore.loadOlderMessages = vi.fn().mockImplementation(async () => {
+				Object.defineProperty(scrollContainer, 'scrollHeight', { value: 2000, configurable: true, writable: true });
+				scrollContainer.scrollTop = 500;
+				return true;
+			});
+
+			wrapper.vm.userScrolledUp = true;
+
+			await wrapper.vm.__loadMoreHistory();
+			await flushPromises();
+
+			// 期望：用入口快照 prevScrollTop(100) + diff(2000-1000) = 1100
+			// 而不是 += 写法下被锚定后的 500 + 1000 = 1500（双倍过头）
+			expect(scrollContainer.scrollTop).toBe(1100);
+		});
 	});
 
 	// --- 拖拽上传 ---
