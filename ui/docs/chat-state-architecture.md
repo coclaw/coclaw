@@ -92,21 +92,30 @@ ClawState 结构：
 `stores/chat-store-manager.js`
 
 - `get(storeKey, opts)` 惰性创建 ChatStore 实例
-- storeKey 格式：`session:${clawId}:${agentId}` 或 `topic:${sessionId}`
-- Chat 实例不淘汰（数量有限，包含历史 segments 等有价值缓存）
-- Topic 实例 LRU 淘汰：上限 `MAX_TOPIC_INSTANCES = 10`，淘汰最久未用且无活跃 run 的实例
+- storeKey 三种形式：
+  - `session:${clawId}:${agentId}`：chat 模式（与 OpenClaw `agent:${agentId}:main` sessionKey 一一对应）
+  - `topic:${sessionId}`：已发送过消息、有持久化 sessionId 的 topic
+  - `new-topic:${clawId}:${agentId}`：用户进了"新建话题"页但还没发出第一条消息的草稿位
+- LRU 淘汰策略（产品决策，非技术约束）：
+  - **chat 实例不淘汰**：数量受限于用户绑定的 claw + agent 组合数；含历史 segments 等有价值缓存
+  - **topic 实例 LRU 淘汰**：上限 `MAX_TOPIC_INSTANCES = 10`，淘汰最久未用且无活跃 run 的实例
+  - **new-topic 实例不淘汰**：每个 (clawId, agentId) 组合至多一份草稿位，实际累积量 ≤ 用户访问过的组合数（数十量级）。淘汰收益小，但风险是误清用户精心准备的未发附件——所以选择不参与 LRU，靠登出时的 `disposeAll` 兜底
+- `promoteToTopic(newTopicKey, topicId, opts)`：用户在 new-topic 页发出第一条消息时的转正流程——建新 `topic:` store，把 inputFiles 数组**引用共享**到新 store（视觉无中断），调用方在 `router.replace` 后调返回的 `commit()` 切断旧引用并 dispose 旧 new-topic store
 
 ### ChatStore — per-chat/topic 消息状态
 
 `stores/chat.store.js`，由 `createChatStore(storeKey, opts)` 工厂创建。
 
 **关键 state**：
-- Identity（创建时固定）：`clawId`、`topicMode`、`chatSessionKey`、`sessionId`、`topicAgentId`
+- Identity（创建时固定）：`clawId`、`topicMode`、`newTopicMode`、`chatSessionKey`、`sessionId`、`topicAgentId`
 - 消息：`messages`、`currentSessionId`
 - UI：`loading`、`sending`、`errorText`、`streamingRunId`、`resetting`
 - 分页：`hasMoreMessages`、`messagesLoading`
 - 历史懒加载：`historySessionIds`、`historySegments`、`historyLoading`、`historyExhausted`
 - 文件上传：`uploadingFiles`、`uploadProgress`
+- 输入区附件：`inputFiles`（per chat/topic 隔离，避免 ChatInput 单实例跨上下文串台）
+
+**newTopicMode 行为**：`storeKey.startsWith('new-topic:')` 时为 true。`activate` 短路（不发任何 RPC、不加载消息），仅承载 `inputFiles`；`promoteToTopic` 通过引用共享将 `inputFiles` 转移到正式 topic store。
 
 **关键 getters**：
 - `allMessages`：合并 `messages` + `agentRunsStore.getActiveRun(runKey).streamingMsgs`
