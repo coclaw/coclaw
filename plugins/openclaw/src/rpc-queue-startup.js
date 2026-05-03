@@ -53,6 +53,12 @@ export async function cleanupResiduals(dir, { logger, fsOps = fs } = {}) {
 	}
 
 	for (const name of names) {
+		// readdir 默认返回 string[]，但若调用方注入 Buffer/Dirent 风格 mock，name.endsWith
+		// 会抛出冲过"模块永不抛"红线。生产路径不会触发——纯防御。
+		if (typeof name !== 'string') {
+			logger?.warn?.(`[coclaw] rpc-queues unexpected non-string entry: ${typeof name}`);
+			continue;
+		}
 		if (!name.endsWith('.jsonl')) continue;
 		const p = nodePath.join(dir, name);
 		try {

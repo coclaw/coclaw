@@ -4473,7 +4473,7 @@ test('gateway ws message handler: sendTo 抛错时 listener 不产生 unhandledR
 
 // --- B-stage1 plan-2: rpc-queues/ 启动期预热 ---
 
-test('bridge.start should create rpc-queues/ dir under state dir', async () => {
+test('bridge.start should create rpc-queues/ dir + set __diskCap to a number via default path', async () => {
 	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	const bridge = createBridge();
 	try {
@@ -4481,30 +4481,35 @@ test('bridge.start should create rpc-queues/ dir under state dir', async () => {
 		const queueDir = nodePath.join(dir, 'coclaw', 'rpc-queues');
 		const st = await fs.stat(queueDir);
 		assert.equal(st.isDirectory(), true);
+		// 默认路径（不注入 stub）也应把 __diskCap 设为正整数——证明 measure 被真调用
+		assert.equal(typeof bridge.__diskCap, 'number');
+		assert.ok(bridge.__diskCap > 0);
 	} finally {
 		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test('bridge.start should remove pre-existing *.jsonl residuals in rpc-queues/', async () => {
+test('bridge.start should remove pre-existing *.jsonl residuals + preserve non-jsonl files', async () => {
 	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
-	const queueDir = nodePath.join(dir, 'coclaw', 'rpc-queues');
-	await fs.mkdir(queueDir, { recursive: true });
-	await fs.writeFile(nodePath.join(queueDir, 'old.jsonl'), 'x', 'utf8');
-	await fs.writeFile(nodePath.join(queueDir, 'keep.txt'), 'preserve', 'utf8');
-
 	const bridge = createBridge();
 	try {
+		const queueDir = nodePath.join(dir, 'coclaw', 'rpc-queues');
+		await fs.mkdir(queueDir, { recursive: true });
+		await fs.writeFile(nodePath.join(queueDir, 'old.jsonl'), 'x', 'utf8');
+		await fs.writeFile(nodePath.join(queueDir, 'keep.txt'), 'preserve', 'utf8');
+
 		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
 		const remaining = (await fs.readdir(queueDir)).sort();
 		assert.deepEqual(remaining, ['keep.txt']);
 	} finally {
 		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
 test('bridge.start should populate __diskCap from injected measure stub', async () => {
-	await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
+	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	let measureCalls = 0;
 	let cleanupCalls = 0;
 	const bridge = createBridge({
@@ -4518,5 +4523,52 @@ test('bridge.start should populate __diskCap from injected measure stub', async 
 		assert.equal(cleanupCalls, 1, 'cleanup stub should be called exactly once');
 	} finally {
 		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('bridge.start should swallow startup-prep failures (cleanup stub throws)', async () => {
+	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
+	const warns = [];
+	const logger = { warn: (m) => warns.push(String(m)), info() {}, debug() {} };
+	// 模拟 prep 块内任何同步/异步抛错（典型路径：runtime 注入的 resolveStateDir 抛）
+	const bridge = createBridge({
+		cleanupRpcQueueResiduals: async () => { throw new Error('boom-prep'); },
+	});
+	try {
+		await bridge.start({ logger, pluginConfig: {} });
+		assert.equal(bridge.started, true, 'start should complete despite prep failure');
+		assert.equal(bridge.__diskCap, null, '__diskCap should remain null on prep failure');
+		assert.ok(
+			warns.some((w) => w.includes('rpc-queues startup prep failed')),
+			'should warn about startup prep failure',
+		);
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('bridge.start should skip preload when stop() races during cleanup/measure', async () => {
+	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
+	let preloadPionCalled = false;
+	let preloadNdcCalled = false;
+	const bridge = createBridge({
+		preloadPion: async () => { preloadPionCalled = true; return null; },
+		preloadNdc: async () => { preloadNdcCalled = true; return { PeerConnection: null, cleanup: null, impl: 'none' }; },
+		// cleanup 异步——在它 await 期间手动设 started=false 模拟 stop()
+		cleanupRpcQueueResiduals: async (_d, { logger: lg }) => {
+			bridge.started = false; // 模拟 stop 在 cleanup 期间触发
+			lg?.info?.('cleanup running');
+		},
+		measureRpcQueueDiskCap: async () => 999,
+	});
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		// race 守卫应在 measure 之后、preload 之前 return
+		assert.equal(preloadPionCalled, false, 'preloadPion should NOT be called after race guard');
+		assert.equal(preloadNdcCalled, false, 'preloadNdc should NOT be called after race guard');
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 });

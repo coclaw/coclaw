@@ -586,6 +586,26 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - 或者更简单：把 `abort-threw` 也加入静默列表（与 not-found 同级），损失部分诊断价值换取噪音控制
 - 同时考虑 UI 侧是否要给 abort-threw 加重试次数上限（dump 第三段提到的"过度重试"风险）
 
+## race 测试标题与实现失配（PRE-EXISTING，Phase B-stage1 plan-2 deep-review 顺手抓出，不修）
+
+**发现日期**：2026-05-03（rpc-queue-startup deep-review dim C）
+**关联**：`plugins/openclaw/src/realtime-bridge.test.js:3451` / `:3498`
+
+**问题**：两个测试标题写 "stop() called during preload (race protection)" / "stop() during pion preload"，但实现只手动 `bridge.started = false`，没真调 `bridge.stop()`。覆盖了"flag 已变 false"分支，但没走 stop 生命周期副作用（如清 timers / 关 ws）。
+
+**为什么不修**：本次（plan-2）只是顺手注入了 stub 跳过 plan-2 fs 预热，没动这两条测试的语义；标题与实现失配是 plan-1 之前就存在的问题。
+
+**修复方向**：要么把标题改为 "started=false during preload"（轻），要么把实现改为真调 `await bridge.stop()`（更重，但更覆盖到生命周期副作用）。
+
+## setupDir() 全局污染 process.env / runtime（PRE-EXISTING，记录）
+
+**发现日期**：2026-05-03（rpc-queue-startup deep-review dim C）
+**关联**：`plugins/openclaw/src/realtime-bridge.test.js:65`
+
+**问题**：`setupDir()` helper 修改 `process.env.OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` / 删除 `COCLAW_TUNNEL_CONFIG_PATH`、调用 `setRuntime(null)`，但没有成对 restore；当前靠每个用例重设维持稳定，未来新增用例容易踩污染。
+
+**修复方向**：helper 返回 restore fn，或抽 envSnapshot/restore 工具集中处理。属于测试基础设施层面，需要批量重构现有所有调用点。
+
 ## A1 异步装配引入的"handler 已挂、字段未挂"理论窗口（Phase B 切 FBQ 时一并补 warn）
 
 **发现日期**：2026-05-03（rpc-dc Phase A1+A2 deep-review）

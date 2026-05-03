@@ -101,6 +101,22 @@ test('cleanupResiduals should warn and return when readdir throws', async () => 
 	assert.match(logger.warnings[0], /boom-readdir/);
 });
 
+test('cleanupResiduals should skip non-string entries (Buffer/Dirent defensive)', async () => {
+	// 生产路径 readdir() 默认返回 string[]，但若调用方注入 mock 返回 Buffer / Dirent，
+	// 入口 typeof 防御应跳过并 warn，不抛
+	const logger = silentLogger();
+	const unlinked = [];
+	const fsOps = {
+		mkdir: async () => {},
+		readdir: async () => [Buffer.from('a.jsonl'), 'b.jsonl', { name: 'c.jsonl' }],
+		unlink: async (p) => { unlinked.push(nodePath.basename(p)); },
+	};
+	await assert.doesNotReject(() => cleanupResiduals('/tmp/x', { logger, fsOps }));
+	assert.deepEqual(unlinked, ['b.jsonl'], 'only string entry b.jsonl should be unlinked');
+	const nonStringWarns = logger.warnings.filter((w) => w.includes('unexpected non-string entry'));
+	assert.equal(nonStringWarns.length, 2, 'Buffer and Dirent-shaped entries should each warn');
+});
+
 test('cleanupResiduals should warn and continue on individual unlink failure', async () => {
 	const logger = silentLogger();
 	const unlinked = [];

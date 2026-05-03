@@ -1344,10 +1344,21 @@ export class RealtimeBridge {
 		this.started = true;
 		// rpc DC 文件回退队列的启动期预热（B-stage1 plan-2）：清残留 *.jsonl + 探测磁盘容量。
 		// 远早于第一条 rpc DC 建立（dump 设计）；__diskCap 暂存供 B-stage2 切 FBQ 时取用。
-		// 两步均永不抛——不能让 fs 错把 bridge.start 卡死。
-		const queueDir = nodePath.join(resolveStateDir(), CHANNEL_ID, 'rpc-queues');
-		await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
-		this.__diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
+		// 整块包 try/catch：cleanup/measure 自身不抛，但 resolveStateDir() 同步可能抛（runtime
+		// 注入的 resolver 自抛 / homedir 异常）；任何异常都不能把 bridge.start 卡死。
+		try {
+			const queueDir = nodePath.join(resolveStateDir(), CHANNEL_ID, 'rpc-queues');
+			await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
+			this.__diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
+		}
+		/* c8 ignore next 4 -- 防御性兜底：模块自身已 never-throw，仅 resolveStateDir 同步抛会进入 */
+		catch (err) {
+			this.logger.warn?.(`[coclaw] rpc-queues startup prep failed (skipped): ${err?.message ?? err}`);
+			this.__diskCap = null;
+		}
+		// race 守卫：cleanup/measure 期间若 stop() 已执行，不应再启动 native WebRTC 进程。
+		// preload 后还有一道 started 检查兜底（含 pion cleanup），这里先挡住一次无意义的 preload。
+		if (!this.started) return;
 		// 先完成 WebRTC 实现加载，再建立连接，避免 UI 发来 offer 时 RTC 包未就绪
 		// 优先级：pion → ndc → werift → none
 		const preloadResult = await this.__preloadWebrtc();

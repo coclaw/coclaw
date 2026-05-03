@@ -216,7 +216,7 @@ filter *.jsonl    // 白名单，禁止一锅端整目录
 > 状态：B-stage1 plan-2 已实施。封装在 `src/rpc-queue-startup.js` 的 `measureDiskCap()`，结果存到 `bridge.__diskCap`。**B-stage1 阶段挂钩但暂不消费**——B-stage2 切 FBQ 时由 webrtc-peer 通过运行时桥取值（路径 TBD，候选：`runtime.coclaw.getDiskCap()` getter 或 webrtc-peer 构造 deps 注入）。
 > Node 18.15+ 才有 `fs.statfs`；老 Node（含老 18.x）走 catch 路径回退固定 1 GB——已通过 `measureDiskCap should fall back to 1GB on missing statfs` 单测验证。
 
-启动清理完成后，对 `rpc-queues/` 目录做一次 `fs.statfs`（Node 20+），按可用空间动态计算每条 DC 的 `diskCap`：
+启动清理完成后，对 `rpc-queues/` 目录做一次 `fs.statfs`（Node 18.15+ 提供，目标运行环境为 Node 20+），按可用空间动态计算每条 DC 的 `diskCap`：
 
 ```js
 diskCap = min(1 GB, max(64 MB, free × 50%))
@@ -232,7 +232,7 @@ diskCap = min(1 GB, max(64 MB, free × 50%))
 
 **只查一次**：避免 enqueue 热路径承担 syscall。运行期完全不查盘。
 
-**跨平台**（Node 20+ 的 `fs.statfs`）：
+**跨平台**（`fs.statfs`，Node 18.15+ 提供）：
 
 | 平台 | 实现 | 备注 |
 |------|------|------|

@@ -94,7 +94,7 @@ MemoryQueue 自身**不打日志、不计数**——它通过 `onDrop(reason, si
 - overflow 持续期间所有 queue-full drop **完全静默**，只累加 `droppedCount` / `droppedBytes`
 - "满→空"翻转打 `overflow-end` 携带累计 dropped 数字
 - close 时若仍有 dropped 累计或 residual，统一 remoteLog 一次 `rpc-queue.close`
-- `rpc-queue.close` 字段 8 项：`dropped` / `droppedBytes` / `residualChunks` / `residualBytes` / `residualDiskBytes` / `residualWrittenBytes` / `fsBroken` / `lastReason`。后四项为 B-stage2 切 FBQ 后才会非零/非默认，B-stage1 阶段恒 `0/0/false/<最后一次 drop reason>`，**字段位预留是为了 monitor 模块在 B-stage2 切换时无需再改**
+- `rpc-queue.close` 字段 8 项：`dropped` / `droppedBytes` / `residualChunks` / `residualBytes` / `residualDiskBytes` / `residualWrittenBytes` / `fsBroken` / `lastReason`。其中 `dropped/droppedBytes/lastReason` 在 B-stage1 阶段已生效（任何 drop 都会更新）；`residualDiskBytes/residualWrittenBytes/fsBroken` 是 B-stage2 切 FBQ 后才会非零/非默认（B-stage1 阶段恒 `0/0/false`）。**字段位预留是为了 monitor 模块在 B-stage2 切换时无需再改**
 
 **为什么静默积累**：UI 离线 + ICE 失败 + DC 长时间不 drain 的场景，队列每秒可能被网关事件灌满 drop，逐条上报会刷屏远程日志。状态翻转点上报既能定位故障窗口，又能控制日志体积。
 
