@@ -256,14 +256,47 @@
     - 修法：dialog 打开时单独 `URL.createObjectURL(f.file)` 自建副本，关闭时自 revoke；外部 `f.url` 仅用于缩略图列表渲染
     - 设计 dump 已标注本项可同期顺手修，未在本次范围内
 
-40. **`__handleNewTopicSend` 中 router.replace 失败时 promote 状态半提交**
-    - 现状：`ChatPage.vue:640-679` promote 已让 `newStore.inputFiles === oldStore.inputFiles`（同源），若 `router.replace` 抛错（如 router guard 取消），catch 走 `targetStore.clearInputFiles + restoreFiles(files)`，oldStore 视图能恢复附件（同源数组被重建），但 newStore 未通过 commit 释放
-    - 触发条件极窄：router guard 抛错 + 用户超过 10 个活跃 topic 同时触发 LRU 淘汰 newStore → newStore.dispose revoke 已转移的图片 url → oldStore 视图裂图
-    - 实际影响：极罕见（router.replace 在测试环境难复现失败；一般 UX 路径不会出错）
-    - 修法方向：catch 中检测 promote 已发生但 router.replace 失败 → 主动 `chatStoreManager.dispose(topic:${topicId})` 释放 newStore，并把 inputFiles 引用回切到 oldStore 独有数组（避免同源被误 revoke）
+40. **`__handleNewTopicSend` 中 router.replace 失败时 oldStore 视图破图**
+    - 现状：`ChatPage.vue:640-684` promote 之后 `newStore.inputFiles === oldStore.inputFiles`（同源数组）。若 `router.replace` 抛错（如 router guard 取消），catch 路径上 `targetStore` 已被赋值为 newStore，会调 `targetStore.clearInputFiles()`：循环 revoke 共享数组里所有图片 url 后再 `this.inputFiles = []`（重指向空数组）。但 oldStore.inputFiles 仍指向原数组（含已 revoke 的 url），ChatInput 看的是 oldStore，所有图片立即破图
+    - 触发条件：仅 router.replace 抛错就足够（不需要 LRU 同时触发）。router guard 抛 false / next(false) / 守卫 throw 都算
+    - 修法方向：catch 中检测 promote 已发生但 router.replace 失败 → 切断同源（先把 newStore.inputFiles 重指向独有空数组，再 dispose newStoreKey），然后在 oldStore 上做 clear+restoreFiles
+    - 实际影响：本项目当前 router 配置下 replace 抛错的场景有限，但只要触发就视觉很差
 
 41. **new-topic store 不入 LRU**
     - 现状：`chat-store-manager.js:33` get 仅对 `storeKey.startsWith('topic:')` 入 LRU。`new-topic:` 前缀不淘汰
     - 实际影响：极小——每个 (clawId, agentId) 组合最多一个 new-topic store；用户访问过的组合数 ≤ 数十量级；登出 disposeAll 兜底
     - 与设计 dump 偏离：dump 原写"new-topic 也入 topic LRU"，实现与之不一致；已在 chat-store-manager.js:33 处加注释说明保留当前行为的理由。如未来用户反馈附件累积内存压力，再考虑加主动淘汰
+
+## 输入区附件 per-chat/topic 隔离 deep-review 第 2 轮发现的非阻塞项（2026-05-03）
+
+来源：第二轮 4 路并发 codex-rescue review。本批未发现真必修业务问题（仅 2 处文档/注释偏差当场修复）；下列为发现的边角与预存问题，登记备查。
+
+42. **`chatStoreManager.dispose()` 部分失败时 instances/topicLru 残留**
+    - 现状：`chat-store-manager.js:86-95` `store.dispose()` 或 `$dispose()` 抛异常时，下面的 `instances.delete()` + `topicLru.splice()` 都跑不到，受害者会留在两个索引里
+    - 已有部分缓解：`__evictTopics`（chat-store-manager.js:140-151）外层有 try/catch + 兜底硬清，但仅覆盖 LRU 淘汰路径；其它调用方（`commit()` 内的 dispose、`disposeAll`）未兜底
+    - 预存问题：本次修复未改 `dispose()` 函数体；该问题在 ba3bf63 之前就存在
+    - 修法方向：把 `instances.delete()` + `topicLru.splice()` 放进 finally，分别对 `store.dispose()` / `$dispose()` 各包 try/catch
+
+43. **`promoteToTopic` 内部抛错时新建的 newStore 泄漏**
+    - 现状：`chat-store-manager.js:62-83` 中 `this.get(newStoreKey, opts)` 已 instances.set 新 store；若后续 `newStore.activate({skipLoad:true})` 或 `inputFiles` 赋值抛异常，promote 函数抛出后 ChatPage catch 里 `targetStore` 仍是 null，无法 dispose 这个泄漏的 newStore
+    - 现实概率：极低——`activate({skipLoad:true})` 是同步且短路的，正常路径不抛
+    - 实际影响：泄漏 1 个 topic store + 其 inputFiles 中的 ObjectURL，登出 disposeAll 兜底
+    - 修法方向：promoteToTopic 内部 try/catch，失败时 dispose(newStoreKey) 后 rethrow
+
+44. **`__handleNewTopicSend` 各 await 后未检查组件已卸载**
+    - 现状：`ChatPage.vue:626-684` 用户在 createTopic / router.replace / sendMessage 任一 await 期间返回 /topics 列表，函数仍继续跑——createTopic resolve 后 promote + router.replace 会强行把用户从 /topics 拽回到 topic chat 页面
+    - 现实概率：用户点发送后毫秒级返回（如手机 back swipe）才能触发
+    - 这是 Vue Options API + async router 的通用模式问题，不仅限于本次修复，但本次新增 router.replace 让它更明显
+    - 修法方向：beforeUnmount 设 `this.__unmounted = true`，每个 await 后早返回 + 已发起的 newStore 主动 dispose
+
+45. **`saveBlobToFile` 异常路径未 revoke ObjectURL**
+    - 现状：`src/utils/file-helper.js:156-169` Web 端创建 ObjectURL 后 a.click → removeChild → revoke 是直链；中间任一步抛异常会跳过 revokeObjectURL
+    - 预存问题：本次修复未触及该函数
+    - 修法：用 try/finally 包住 DOM 操作部分，确保 revokeObjectURL 一定跑
+
+46. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验**
+    - 现状：`ChatInput.vue:449-460` 录音文件直接 `chatStore.addFiles([item])`，跳过了 `addFiles` 入口的 MAX_UPLOAD_SIZE 检查
+    - 实际影响：录音受 MAX_RECORD_DURATION + audioBitsPerSecond 双重限制，理论上限约 1.2MB，远低于 1GB 上限，不会触发
+    - 设计偏差：与"MAX_UPLOAD_SIZE 是唯一入口"不变量略有出入，但实际无害
+    - 修法（可选）：让 `procRecordedVoice` 改走 `this.addFiles([file])` 而非直接调 store，恢复唯一入口
 

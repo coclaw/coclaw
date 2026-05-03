@@ -511,6 +511,15 @@ describe('ChatInput', () => {
 		expect(wrapper.vm.recorderStatus).toBe('IDLE');
 	});
 
+	test('procRecordedVoice 在 chatStore 为 null 时静默 no-op（不抛、不通知）', () => {
+		const wrapper = createWrapper({ chatStore: null });
+		const blob = new Blob(['voice'], { type: 'audio/webm' });
+		expect(() => wrapper.vm.procRecordedVoice(blob, 3000)).not.toThrow();
+		// 状态仍复位、不触发 notify
+		expect(wrapper.vm.recorderStatus).toBe('IDLE');
+		expect(mockNotify.error).not.toHaveBeenCalled();
+	});
+
 	test('beforeUnmount 不调 chatStore.clearInputFiles（附件归 store 所有）', () => {
 		const chatStore = createMockChatStore();
 		chatStore.inputFiles.push({ id: 'a', name: 'a.txt', url: null });
@@ -519,6 +528,27 @@ describe('ChatInput', () => {
 		expect(chatStore.clearInputFiles).not.toHaveBeenCalled();
 		// 附件仍然保留在 store 中
 		expect(chatStore.inputFiles).toHaveLength(1);
+	});
+
+	test('同一 chatStore 切走再切回（unmount + 重 mount）后附件仍可见', async () => {
+		const chatStore = createMockChatStore();
+		chatStore.inputFiles.push(
+			{ id: 'a', isImg: true, url: 'blob:a', name: 'a.png', label: '1 KB' },
+			{ id: 'b', isImg: false, url: null, name: 'b.txt', ext: 'txt', label: '1 KB' },
+		);
+		const w1 = createWrapper({ chatStore });
+		await w1.vm.$nextTick();
+		expect(w1.findAll('img')).toHaveLength(1);
+		expect(w1.text()).toContain('b.txt');
+		w1.unmount();
+		// store 持续存活，inputFiles 没被清
+		expect(chatStore.inputFiles).toHaveLength(2);
+		// 用同一 store 再 mount —— 模拟用户切到 /topics 又切回
+		const w2 = createWrapper({ chatStore });
+		await w2.vm.$nextTick();
+		expect(w2.vm.inputFiles).toHaveLength(2);
+		expect(w2.findAll('img')).toHaveLength(1);
+		expect(w2.text()).toContain('b.txt');
 	});
 
 	// --- fileUploadState 相关 ---

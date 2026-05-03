@@ -422,7 +422,8 @@ export default {
 		chatStore() {
 			if (this.isNewTopic) {
 				if (!this.newTopicClawId) return null;
-				// new-topic 也走 chatStoreManager 维护，与 topic 共享 LRU；inputFiles 随 store 走
+				// new-topic store 由 chatStoreManager 维护但不入 LRU（每个 claw/agent 组合最多一个，
+				// 量级 ≤ 数十；登出 disposeAll 兜底）；inputFiles 随 store 走
 				return chatStoreManager.get(
 					`new-topic:${this.newTopicClawId}:${this.newTopicAgentId}`,
 					{ clawId: this.newTopicClawId, agentId: this.newTopicAgentId },

@@ -4482,6 +4482,9 @@ describe('useChatStore', () => {
 			expect(store.inputFiles).toHaveLength(1);
 			// 关键断言：spread 的 stale url 必须被显式覆盖为 null，避免模板渲染破图
 			expect(store.inputFiles[0].url).toBeNull();
+			// 同时其它字段（特别是 isImg）必须保留，否则模板分支判断会出错
+			expect(store.inputFiles[0].isImg).toBe(true);
+			expect(store.inputFiles[0].name).toBe('a.png');
 			expect(URL.createObjectURL).not.toHaveBeenCalled();
 		});
 

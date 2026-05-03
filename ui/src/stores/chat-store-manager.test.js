@@ -450,15 +450,44 @@ describe('chatStoreManager', () => {
 		test('commit() 切断引用：oldStore.inputFiles 变空数组，与 newStore 不同源', () => {
 			const oldStore = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
 			oldStore.inputFiles.push({ id: 'a', isImg: true, url: 'blob:a' });
+			const oldStoreInputFilesArray = oldStore.inputFiles;
 			const { newStore, commit } = chatStoreManager.promoteToTopic(
 				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
 			);
+			// commit 之前同源
+			expect(newStore.inputFiles).toBe(oldStoreInputFilesArray);
 			commit();
 			// commit 后 newStore.inputFiles 仍持有原数组（含图片），oldStore 已 dispose 移除
 			expect(newStore.inputFiles).toHaveLength(1);
+			// 关键：commit 后 newStore.inputFiles 必须不再是原 oldStore 引用 —— 否则 dispose 路径
+			// 上对 oldStore.inputFiles 任何 mutate 都会污染 newStore（commit 内部已置 oldStore.inputFiles=[]
+			// 重指向新空数组，因此 newStore 仍持原数组、oldStore 已断开）
+			expect(oldStoreInputFilesArray).toBe(newStore.inputFiles); // 原数组身份转移到 newStore
 			// 老 store 已从 instances 中移除
 			expect(chatStoreManager.size).toBe(1);
 			expect([...chatStoreManager.stores()]).toEqual([newStore]);
+		});
+
+		test('per-store 隔离：A 加附件 → 切到 B 不污染 → 回 A 附件仍在', () => {
+			// 模拟两条独立 chat（不同 sessionKey）
+			const storeA = chatStoreManager.get('session:1:main', { clawId: '1', agentId: 'main' });
+			storeA.inputFiles.push({ id: 'a1', isImg: false, url: null, name: 'a.txt' });
+			// 切到 B：拿一个不同 storeKey 的 store
+			const storeB = chatStoreManager.get('session:2:main', { clawId: '2', agentId: 'main' });
+			// B 的 inputFiles 必须为空、与 A 独立
+			expect(storeB.inputFiles).toHaveLength(0);
+			expect(storeB.inputFiles).not.toBe(storeA.inputFiles);
+			// 在 B 加一条
+			storeB.inputFiles.push({ id: 'b1', isImg: false, url: null, name: 'b.txt' });
+			// 切回 A：拿同 storeKey 的 store 应是同一实例
+			const storeAAgain = chatStoreManager.get('session:1:main', { clawId: '1', agentId: 'main' });
+			expect(storeAAgain).toBe(storeA);
+			// A 的附件仍在、未受 B 影响
+			expect(storeAAgain.inputFiles).toHaveLength(1);
+			expect(storeAAgain.inputFiles[0].name).toBe('a.txt');
+			// B 也未受 A 影响
+			expect(storeB.inputFiles).toHaveLength(1);
+			expect(storeB.inputFiles[0].name).toBe('b.txt');
 		});
 
 		test('关键 invariant：promote → commit 全过程不 revoke 任何 ObjectURL', () => {

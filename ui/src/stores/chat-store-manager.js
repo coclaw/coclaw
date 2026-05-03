@@ -15,7 +15,7 @@ const topicLru = [];
 export const chatStoreManager = {
 	/**
 	 * 获取或创建 chat store 实例
-	 * @param {string} storeKey - 'session:${clawId}:${agentId}' 或 'topic:${sessionId}'
+	 * @param {string} storeKey - 'session:${clawId}:${agentId}' / 'topic:${sessionId}' / 'new-topic:${clawId}:${agentId}'
 	 * @param {object} [opts] - 首次创建时需要
 	 * @param {string} [opts.clawId]
 	 * @param {string} [opts.agentId]

@@ -826,7 +826,7 @@ describe('ChatPage new topic', () => {
 	// targetStore 锁定：用户在 await 期间切走，回退仍打回入口 store
 	// =====================================================================
 
-	test('onSendMessage 入口快照 targetStore：sendMessage 失败时回退打回入口 store（不污染当前 chatStore）', async () => {
+	test('targetStore 锁定：sendMessage 失败时回退路径只触达入口 store，不污染同期存在的其它 store', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const entryStore = getChatStore('bot-1', 'main');
@@ -838,11 +838,7 @@ describe('ChatPage new topic', () => {
 		const otherClearSpy = vi.spyOn(otherStore, 'clearInputFiles');
 		const otherRestoreSpy = vi.spyOn(otherStore, 'restoreFiles');
 
-		// 让 entryStore.sendMessage 在 await 期间用户切走（chatStore computed 被替换）
-		vi.spyOn(entryStore, 'sendMessage').mockImplementation(async () => {
-			// 模拟用户切走：本测试简化为切到 bot-2（不真切路由，仅断言回退打回入口）
-			return { accepted: false };
-		});
+		vi.spyOn(entryStore, 'sendMessage').mockResolvedValue({ accepted: false });
 		await flushPromises();
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });
@@ -850,11 +846,88 @@ describe('ChatPage new topic', () => {
 		input.vm.$emit('send', { text: 'hi', files });
 		await flushPromises();
 
-		// 入口 store 收到回退；其它 store 不被波及
+		// 入口 store 收到回退；otherStore 完全未被触达 —— 即使源码改坏写成 $refs.chatInput.xxx
+		// 之类拿当前 chatStore 的写法，回退也会路由错误，本测试能拦下来
 		expect(entryClearSpy).toHaveBeenCalled();
 		expect(entryRestoreSpy).toHaveBeenCalledWith(files);
 		expect(otherClearSpy).not.toHaveBeenCalled();
 		expect(otherRestoreSpy).not.toHaveBeenCalled();
+	});
+
+	test('sendMessage 在 commit() 之后才发起（new-topic 流程的步骤顺序）', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		vi.spyOn(topicsStore, 'createTopic').mockResolvedValue('new-topic-uuid');
+		await flushPromises();
+
+		mockRouter.replace.mockImplementation(() => Promise.resolve());
+		const disposeSpy = vi.spyOn(chatStoreManager, 'dispose');
+
+		const origGet = chatStoreManager.get.bind(chatStoreManager);
+		let newStoreSendSpy;
+		vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+			const s = origGet(key, opts);
+			if (key === 'topic:new-topic-uuid' && !newStoreSendSpy) {
+				newStoreSendSpy = vi.spyOn(s, 'sendMessage').mockResolvedValue({ accepted: true });
+			}
+			return s;
+		});
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hello', files: [] });
+		await flushPromises();
+
+		// 关键：sendMessage 必须在 commit（即 dispose 老 new-topic store）之后调用，
+		// 否则旧 store 仍持引用、ChatInput 视觉一致性等假设全废
+		const disposeIdx = disposeSpy.mock.invocationCallOrder[0];
+		const sendIdx = newStoreSendSpy.mock.invocationCallOrder[0];
+		expect(disposeIdx).toBeLessThan(sendIdx);
+	});
+
+	test('__creatingTopic 守卫：promote 完成 + send 失败回退后用户立即再次发送应能进入', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		vi.spyOn(topicsStore, 'createTopic').mockResolvedValue('new-topic-uuid');
+		mockRouter.replace.mockImplementation(() => Promise.resolve());
+		await flushPromises();
+
+		// 第一次发送：promote 成功 + sendMessage 返回 accepted=false
+		const origGet = chatStoreManager.get.bind(chatStoreManager);
+		let newStoreSendSpy;
+		vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+			const s = origGet(key, opts);
+			if (key === 'topic:new-topic-uuid' && !newStoreSendSpy) {
+				newStoreSendSpy = vi.spyOn(s, 'sendMessage').mockResolvedValue({ accepted: false });
+			}
+			return s;
+		});
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'first', files: [] });
+		await flushPromises();
+
+		// 第一次发送已完整结束（createTopic + send 都跑过）
+		expect(topicsStore.createTopic).toHaveBeenCalledTimes(1);
+		expect(newStoreSendSpy).toHaveBeenCalledTimes(1);
+
+		// 用户再点一次发送 —— 守卫应放行（不被 __creatingTopic=true 永久卡住）。
+		// 本测试 mock 不切换 $route，所以仍走 new-topic 分支并再走一次 promote；
+		// 关键断言是 createTopic 第二次能被调用 → 守卫已恢复
+		input.vm.$emit('send', { text: 'second', files: [] });
+		await flushPromises();
+		expect(topicsStore.createTopic).toHaveBeenCalledTimes(2);
 	});
 });
 

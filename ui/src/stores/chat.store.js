@@ -29,7 +29,7 @@ function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
 
 /**
  * 创建 ChatStore 实例
- * @param {string} storeKey - 如 'session:1:main' 或 'topic:uuid'
+ * @param {string} storeKey - 如 'session:1:main' / 'topic:uuid' / 'new-topic:1:main'
  * @param {object} [opts]
  * @param {string} [opts.clawId]
  * @param {string} [opts.agentId]
