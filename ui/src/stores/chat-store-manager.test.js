@@ -409,4 +409,126 @@ describe('chatStoreManager', () => {
 			expect(runsStore.runKeyIndex[b.runKey]).toBe('run-b');
 		});
 	});
+
+	// =====================================================================
+	// promoteToTopic（new-topic store 转正为正式 topic store）
+	// =====================================================================
+
+	describe('promoteToTopic', () => {
+		beforeEach(() => {
+			URL.createObjectURL = vi.fn(() => 'blob:mock');
+			URL.revokeObjectURL = vi.fn();
+		});
+
+		test('基本路径：新 topic store 创建并 activate（skipLoad），返回 newStore + commit', () => {
+			const oldStore = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			const { newStore, commit } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			expect(newStore).toBeTruthy();
+			expect(newStore.topicMode).toBe(true);
+			expect(newStore.sessionId).toBe('topic-uuid-1');
+			expect(newStore.__messagesLoaded).toBe(true);
+			// commit 之前 oldStore 仍存在
+			expect(chatStoreManager.size).toBe(2);
+			expect(typeof commit).toBe('function');
+			// 老 store 引用还在（commit 之前不能 dispose）
+			expect(oldStore).toBeTruthy();
+		});
+
+		test('inputFiles 引用共享：promote 后 newStore.inputFiles === oldStore.inputFiles', () => {
+			const oldStore = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			oldStore.inputFiles.push({ id: 'a', isImg: true, url: 'blob:a' });
+			const { newStore } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			// 关键：同源数组，promote 期间 ChatInput 视觉不中断
+			expect(newStore.inputFiles).toBe(oldStore.inputFiles);
+			expect(newStore.inputFiles).toHaveLength(1);
+		});
+
+		test('commit() 切断引用：oldStore.inputFiles 变空数组，与 newStore 不同源', () => {
+			const oldStore = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			oldStore.inputFiles.push({ id: 'a', isImg: true, url: 'blob:a' });
+			const { newStore, commit } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			commit();
+			// commit 后 newStore.inputFiles 仍持有原数组（含图片），oldStore 已 dispose 移除
+			expect(newStore.inputFiles).toHaveLength(1);
+			// 老 store 已从 instances 中移除
+			expect(chatStoreManager.size).toBe(1);
+			expect([...chatStoreManager.stores()]).toEqual([newStore]);
+		});
+
+		test('关键 invariant：promote → commit 全过程不 revoke 任何 ObjectURL', () => {
+			const oldStore = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			oldStore.inputFiles.push({ id: 'img', isImg: true, url: 'blob:transferred' });
+			const { commit } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			commit();
+			// 已转移的图片 URL 不能被 revoke —— 它仍在 newStore.inputFiles 中
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+		});
+
+		test('Pinia _s 释放：commit 后再次 get 同 newTopicKey 得到全新干净实例', () => {
+			const oldStore = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			oldStore.inputFiles.push({ id: 'a', isImg: false, url: null });
+			const { commit } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			commit();
+			// 用户再次进入同一 new-topic 路由（如重新创建另一个 topic）
+			const fresh = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			// 必须是全新实例 —— 不能命中已 dispose 的旧实例
+			expect(fresh).not.toBe(oldStore);
+			expect(fresh.inputFiles).toHaveLength(0);
+		});
+
+		test('旧 new-topic store 不存在时 promoteToTopic 仍工作（commit 是 no-op）', () => {
+			// 用户没先进 new-topic 页就直接调（防御性场景）
+			const { newStore, commit } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			expect(newStore).toBeTruthy();
+			expect(newStore.inputFiles).toHaveLength(0);
+			expect(() => commit()).not.toThrow();
+			// 仍只有新 topic store
+			expect(chatStoreManager.size).toBe(1);
+		});
+
+		test('opts 透传到新 topic store：clawId / agentId 正确赋值', () => {
+			const { newStore } = chatStoreManager.promoteToTopic(
+				'new-topic:7:bot', 'topic-uuid-9', { clawId: '7', agentId: 'bot' },
+			);
+			expect(newStore.clawId).toBe('7');
+			expect(newStore.topicAgentId).toBe('bot');
+			expect(newStore.runKey).toBe('topic-uuid-9');
+		});
+
+		test('promote 后新 topic store 进入 LRU（与普通 topic 一视同仁）', () => {
+			chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			const { commit } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			commit();
+			// 新 topic 入 LRU
+			expect(chatStoreManager.topicCount).toBe(1);
+		});
+
+		test('promote 时若新 topic store 已存在（罕见竞态），复用并仍能通过 commit 收尾', () => {
+			// 提前埋一个同 topicId 的 store（模拟某种异常状态）
+			const preExisting = chatStoreManager.get('topic:topic-uuid-1', { clawId: '1', agentId: 'main' });
+			const oldStore = chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			oldStore.inputFiles.push({ id: 'a', isImg: false, url: null });
+			const { newStore, commit } = chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			);
+			expect(newStore).toBe(preExisting);
+			// inputFiles 仍被覆盖为 oldStore 的引用
+			expect(newStore.inputFiles).toBe(oldStore.inputFiles);
+			expect(() => commit()).not.toThrow();
+		});
+	});
 });

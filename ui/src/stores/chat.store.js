@@ -37,10 +37,13 @@ function isDisconnectError(err) { return DISCONNECT_CODES.has(err?.code); }
  */
 export function createChatStore(storeKey, opts = {}) {
 	const topicMode = storeKey.startsWith('topic:');
+	const newTopicMode = storeKey.startsWith('new-topic:');
 	const clawId = String(opts.clawId || '');
 	const agentId = opts.agentId || 'main';
 	const sessionId = topicMode ? storeKey.slice('topic:'.length) : '';
-	const chatSessionKey = topicMode ? '' : `agent:${agentId}:main`;
+	// new-topic 模式不参与 chat sessionKey / agent run 体系（activate 短路、不发 RPC）。
+	// chatSessionKey 留空避免 getter / __loadChatHistory 等路径误把它当成普通 chat。
+	const chatSessionKey = topicMode || newTopicMode ? '' : `agent:${agentId}:main`;
 	const topicAgentId = topicMode ? agentId : '';
 
 	const useStore = defineStore(`chat-${storeKey}`, {
@@ -48,9 +51,14 @@ export function createChatStore(storeKey, opts = {}) {
 			// Identity（创建后不变）
 			clawId,
 			topicMode,
+			newTopicMode,
 			chatSessionKey,
 			sessionId,
 			topicAgentId,
+
+			// 输入区附件（per-chat/topic 隔离，避免共享 ChatInput 实例时跨上下文串台）
+			/** @type {Array<{ id: string, isImg: boolean, isVoice: boolean, label: string, name: string, ext: string, bytes: number, file: File|Blob, url: string|null }>} */
+			inputFiles: [],
 
 			// Messages
 			messages: [],
@@ -209,6 +217,12 @@ export function createChatStore(storeKey, opts = {}) {
 			async activate({ skipLoad = false } = {}) {
 				if (!this.__initialized) {
 					this.__initialized = true;
+					// new-topic 模式：无消息、无 sessionKey，不触发任何 RPC，标记已加载即可。
+					// promote 后会建立新的 topic store 接管，本 store 仅承载 inputFiles。
+					if (this.newTopicMode) {
+						this.__messagesLoaded = true;
+						return;
+					}
 					if (!this.clawId || skipLoad) return;
 
 					const conn = getReadyConn(this.clawId);
@@ -1201,6 +1215,64 @@ export function createChatStore(storeKey, opts = {}) {
 				this.__slashCommandReject = null;
 			},
 
+			// --- 输入区附件管理 ---
+
+			/**
+			 * 追加附件到 inputFiles。
+			 * 调用方需事先完成大小校验与 formatFileBlob 包装（保留在 ChatInput 入口，
+			 * 避免 store 直接 import use-notify）。
+			 * @param {object[]} files - 已 formatFileBlob 包装的文件对象
+			 */
+			addFiles(files) {
+				if (!files?.length) return;
+				for (const f of files) this.inputFiles.push(f);
+			},
+			/**
+			 * 按下标移除（点 X 按钮）
+			 * @param {number} idx
+			 */
+			removeInputFile(idx) {
+				const removed = this.inputFiles.splice(idx, 1);
+				if (removed[0]?.url) URL.revokeObjectURL(removed[0].url);
+			},
+			/**
+			 * 按文件 id 移除（上传成功逐个移除）
+			 * @param {string} id
+			 */
+			removeFileById(id) {
+				const idx = this.inputFiles.findIndex((f) => f.id === id);
+				if (idx === -1) return;
+				const [removed] = this.inputFiles.splice(idx, 1);
+				if (removed?.url) URL.revokeObjectURL(removed.url);
+			},
+			/** 清空 inputFiles，对图片释放 ObjectURL */
+			clearInputFiles() {
+				for (const f of this.inputFiles) {
+					if (f.url) URL.revokeObjectURL(f.url);
+				}
+				this.inputFiles = [];
+			},
+			/**
+			 * 失败回退：把已发送的文件恢复到 inputFiles。
+			 * 图片重建 ObjectURL（旧 URL 已在上传 onFileUploaded 回调里 revoke）；
+			 * 非图片直接复用。
+			 *
+			 * 注意：spread `{ ...f }` 会把可能已被 revoke 的 stale `f.url` 一并带入。
+			 * 必须对图片显式重赋值 url（即使 f.file 为 null 也把 url 置 null，
+			 * 避免模板渲染破图）。
+			 * @param {object[]} files
+			 */
+			restoreFiles(files) {
+				if (!files?.length) return;
+				for (const f of files) {
+					const restored = { ...f };
+					if (f.isImg) {
+						restored.url = f.file ? URL.createObjectURL(f.file) : null;
+					}
+					this.inputFiles.push(restored);
+				}
+			},
+
 			/**
 			 * 页面离开时清理发送状态（不销毁数据，store 持续存活）
 			 */
@@ -1247,10 +1319,18 @@ export function createChatStore(storeKey, opts = {}) {
 
 			/**
 			 * 实例被淘汰时的完整清理（由 chatStoreManager.dispose 调用）
+			 *
+			 * 注意 inputFiles 的 ObjectURL 释放须放在 dispose 而非 cleanup —— cleanup 在 ChatPage
+			 * unmount 时也会被调，而切到 /topics 列表是预期保留附件的场景，cleanup 不能丢。
+			 * 真正销毁 store（chatStoreManager.dispose / disposeAll）才走到本路径，此时附件随 store 一起释放。
 			 */
 			dispose() {
 				console.debug('[chat] dispose topicMode=%s runKey=%s', this.topicMode, this.runKey);
 				this.cleanup();
+				for (const f of this.inputFiles) {
+					if (f.url) URL.revokeObjectURL(f.url);
+				}
+				this.inputFiles = [];
 			},
 
 			// --- 历史懒加载 ---

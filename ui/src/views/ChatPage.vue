@@ -128,6 +128,7 @@
 			v-if="isTopicRoute || isNewTopic || !!routeClawId"
 			ref="chatInput"
 			v-model="inputText"
+			:chat-store="chatStore"
 			:sending="chatStore?.isSending ?? false"
 			:file-upload-state="chatStore?.fileUploadState ?? null"
 			:disabled="inputLocked || (isNewTopic ? (!newTopicReady || __creatingTopic) : (isTopicRoute ? (!currentSessionId || isLoadingChat) : (!routeClawId || isLoadingChat)))"
@@ -416,10 +417,17 @@ export default {
 
 		/**
 		 * 当前路由对应的 chat store 实例
-		 * 返回 null 表示尚未就绪（新 topic / topic 数据未加载 / 无 clawId）
+		 * 返回 null 表示尚未就绪（topic 数据未加载 / 无 clawId / new-topic 缺 query 参数）
 		 */
 		chatStore() {
-			if (this.isNewTopic) return null;
+			if (this.isNewTopic) {
+				if (!this.newTopicClawId) return null;
+				// new-topic 也走 chatStoreManager 维护，与 topic 共享 LRU；inputFiles 随 store 走
+				return chatStoreManager.get(
+					`new-topic:${this.newTopicClawId}:${this.newTopicAgentId}`,
+					{ clawId: this.newTopicClawId, agentId: this.newTopicAgentId },
+				);
+			}
 			if (this.isTopicRoute) {
 				const sid = this.currentSessionId;
 				if (!sid) return null;
@@ -542,6 +550,9 @@ export default {
 	methods: {
 		async onSendMessage({ text, files }) {
 			if ((!text && !files?.length) || this.chatStore?.isSending) return;
+			// new-topic 模式 chatStore.isSending=false（无 run），单独防重入：
+			// 用户在 createTopic / router.replace await 期间快速双击会进两次
+			if (this.__creatingTopic) return;
 
 			// 新建 topic 流程
 			if (this.isNewTopic) {
@@ -552,6 +563,9 @@ export default {
 			if (!this.isTopicRoute && !this.routeClawId) return;
 			if (this.isTopicRoute && !this.currentSessionId) return;
 
+			// 入口快照 targetStore：失败回退路径要打回这里，
+			// 防止用户在 await 期间切走再回退把附件灌到错的 chat/topic
+			const targetStore = this.chatStore;
 			const savedText = this.inputText;
 			const draftKey = this.draftKey;
 			this.inputText = '';
@@ -559,14 +573,14 @@ export default {
 			this.scrollToBottom();
 
 			try {
-				const result = await this.chatStore.sendMessage(text, files, {
-					onFileUploaded: (f) => this.$refs.chatInput?.removeFileById(f.id),
+				const result = await targetStore.sendMessage(text, files, {
+					onFileUploaded: (f) => targetStore.removeFileById(f.id),
 				});
 				if (!result.accepted) {
-					// 用闭包 draftKey 恢复，组件可能已 unmount
+					// 用闭包 draftKey + targetStore 恢复，组件可能已 unmount 或路由已切换
 					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
-					this.$refs.chatInput?.clearInputFiles();
-					this.$refs.chatInput?.restoreFiles(files);
+					targetStore.clearInputFiles();
+					targetStore.restoreFiles(files);
 				}
 				else {
 					this.__tryGenerateTitle();
@@ -576,10 +590,10 @@ export default {
 				// 根据 err.code 映射友好文案
 				const errMsg = this.__sendErrorMessage(err);
 				this.notify.error(errMsg);
-				if (!this.chatStore?.__accepted) {
+				if (!targetStore.__accepted) {
 					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
-					this.$refs.chatInput?.clearInputFiles();
-					this.$refs.chatInput?.restoreFiles(files);
+					targetStore.clearInputFiles();
+					targetStore.restoreFiles(files);
 				}
 			}
 		},
@@ -619,34 +633,38 @@ export default {
 
 			this.__creatingTopic = true;
 			const oldDraftKey = this.draftKey;
+			const newTopicKey = `new-topic:${clawId}:${agentId}`;
 			let newDraftKey = '';
+			let targetStore = null;
 			try {
 				// 1. 创建 topic
 				const topicId = await this.topicsStore.createTopic(clawId, agentId);
-				// 2. 获取（创建）store 并跳过消息加载
-				const store = chatStoreManager.get(`topic:${topicId}`, { clawId, agentId });
-				store.activate({ skipLoad: true });
-				// 新 topic 无历史消息，直接标记已加载，
-				// 避免 connReady watcher 触发 first-load 路径与 sendMessage 竞态
-				store.__messagesLoaded = true;
+				// 2. promote：建新 topic store，把 inputFiles 引用共享过去
+				const { newStore, commit } = chatStoreManager.promoteToTopic(
+					newTopicKey, topicId, { clawId, agentId },
+				);
+				targetStore = newStore;
 				// 3. 切换路由
 				await this.$router.replace({ name: 'topics-chat', params: { sessionId: topicId } });
-				// 4. 解除抑制
+				// 4. router.replace 之后再 commit：切断旧引用 + dispose 旧 new-topic store。
+				// 顺序非常重要——commit 早于 router.replace 会让 ChatPage chatStore computed
+				// 仍指向 oldStore 时触发 dispose，ChatInput 一个 tick 看到空数组
+				commit();
+				// 5. 解除抑制
 				this.__creatingTopic = false;
-				// 5. 清空旧草稿并发送消息
+				// 6. 清空旧草稿并发送消息
 				if (oldDraftKey) this.draftStore.clearDraft(oldDraftKey);
 				this.inputText = '';
 				newDraftKey = this.draftKey;
 				this.userScrolledUp = false;
 				this.scrollToBottom();
-				if (!this.chatStore) return;
-				const result = await this.chatStore.sendMessage(text, files, {
-					onFileUploaded: (f) => this.$refs.chatInput?.removeFileById(f.id),
+				const result = await targetStore.sendMessage(text, files, {
+					onFileUploaded: (f) => targetStore.removeFileById(f.id),
 				});
 				if (!result.accepted) {
 					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
-					this.$refs.chatInput?.clearInputFiles();
-					this.$refs.chatInput?.restoreFiles(files);
+					targetStore.clearInputFiles();
+					targetStore.restoreFiles(files);
 				}
 				else {
 					this.__tryGenerateTitle();
@@ -656,10 +674,11 @@ export default {
 				this.__creatingTopic = false;
 				const errMsg = this.__sendErrorMessage(err);
 				this.notify.error(errMsg);
-				if (!this.chatStore?.__accepted) {
+				// targetStore 可能是 null（promote 失败前），也可能是 newStore（promote 成功但 send 失败）
+				if (!targetStore?.__accepted) {
 					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);
-					this.$refs.chatInput?.clearInputFiles();
-					this.$refs.chatInput?.restoreFiles(files);
+					targetStore?.clearInputFiles();
+					targetStore?.restoreFiles(files);
 				}
 			}
 		},

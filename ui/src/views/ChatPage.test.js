@@ -17,20 +17,15 @@ vi.mock('../components/ChatMsgItem.vue', () => ({
 		template: '<div class="msg-stub">{{ item.id }}</div>',
 	},
 }));
-const mockRestoreFiles = vi.fn();
-const mockClearInputFiles = vi.fn();
-const mockRemoveFileById = vi.fn();
 const mockAddFiles = vi.fn();
 vi.mock('../components/ChatInput.vue', () => ({
 	default: {
 		name: 'ChatInput',
-		props: ['modelValue', 'sending', 'disabled', 'cancelDisabled', 'cancelling'],
+		props: ['modelValue', 'chatStore', 'sending', 'fileUploadState', 'disabled', 'cancelDisabled', 'cancelling'],
 		emits: ['update:modelValue', 'send', 'cancel'],
 		template: '<div class="input-stub"><slot name="prepend" /></div>',
 		methods: {
-			restoreFiles: (...args) => mockRestoreFiles(...args),
-			clearInputFiles: (...args) => mockClearInputFiles(...args),
-			removeFileById: (...args) => mockRemoveFileById(...args),
+			// drop 仍走 chatInput.addFiles 入口（ChatInput 内部再调 chatStore.addFiles）
 			addFiles: (...args) => mockAddFiles(...args),
 		},
 	},
@@ -407,10 +402,11 @@ describe('ChatPage send message', () => {
 		expect(wrapper.vm.inputText).toBe('');
 	});
 
-	test('onFileUploaded 回调调用 chatInput.removeFileById', async () => {
+	test('onFileUploaded 回调走 chatStore.removeFileById（targetStore 锁定）', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
+		const removeSpy = vi.spyOn(chatStore, 'removeFileById');
 		// sendMessage 在执行过程中调用 onFileUploaded
 		vi.spyOn(chatStore, 'sendMessage').mockImplementation(async (_text, _files, opts) => {
 			opts?.onFileUploaded?.({ id: 'f1' });
@@ -423,15 +419,17 @@ describe('ChatPage send message', () => {
 		input.vm.$emit('send', { text: 'hi', files: [{ id: 'f1' }, { id: 'f2' }] });
 		await flushPromises();
 
-		expect(mockRemoveFileById).toHaveBeenCalledTimes(2);
-		expect(mockRemoveFileById).toHaveBeenCalledWith('f1');
-		expect(mockRemoveFileById).toHaveBeenCalledWith('f2');
+		expect(removeSpy).toHaveBeenCalledTimes(2);
+		expect(removeSpy).toHaveBeenCalledWith('f1');
+		expect(removeSpy).toHaveBeenCalledWith('f2');
 	});
 
-	test('发送失败时恢复输入框文本和文件', async () => {
+	test('发送失败时通过 targetStore 恢复输入框文本和文件', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
+		const clearSpy = vi.spyOn(chatStore, 'clearInputFiles');
+		const restoreSpy = vi.spyOn(chatStore, 'restoreFiles');
 		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({ accepted: false });
 		await flushPromises();
 
@@ -442,15 +440,17 @@ describe('ChatPage send message', () => {
 		await flushPromises();
 
 		expect(wrapper.vm.inputText).toBe('hello');
-		expect(mockClearInputFiles).toHaveBeenCalled();
-		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
+		expect(clearSpy).toHaveBeenCalled();
+		expect(restoreSpy).toHaveBeenCalledWith(files);
 	});
 
-	test('发送异常时恢复输入框和文件并显示友好 notify（未知错误）', async () => {
+	test('发送异常时通过 targetStore 恢复输入框和文件并显示友好 notify（未知错误）', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
 		const chatStore = getChatStore();
 		chatStore.__accepted = false;
+		const clearSpy = vi.spyOn(chatStore, 'clearInputFiles');
+		const restoreSpy = vi.spyOn(chatStore, 'restoreFiles');
 		vi.spyOn(chatStore, 'sendMessage').mockRejectedValue(new Error('fail'));
 		await flushPromises();
 
@@ -463,8 +463,8 @@ describe('ChatPage send message', () => {
 		expect(wrapper.vm.inputText).toBe('hello');
 		// 未知错误码 → 通用友好文案
 		expect(mockNotify.error).toHaveBeenCalledWith('Something went wrong');
-		expect(mockClearInputFiles).toHaveBeenCalled();
-		expect(mockRestoreFiles).toHaveBeenCalledWith(files);
+		expect(clearSpy).toHaveBeenCalled();
+		expect(restoreSpy).toHaveBeenCalledWith(files);
 	});
 
 	test('发送异常但 __accepted 为 true 时不恢复输入框', async () => {
@@ -681,6 +681,180 @@ describe('ChatPage new topic', () => {
 		const wrapper = createWrapper({ agentId: 'tester' });
 		await flushPromises();
 		expect(wrapper.vm.showNewTopicBtn).toBe(false);
+	});
+
+	// =====================================================================
+	// new-topic 路由：chatStore computed 返回 new-topic store + promote 流程
+	// =====================================================================
+
+	test('isNewTopic 路由 + 有 newTopicClawId 时 chatStore 返回 new-topic store（非 null）', async () => {
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		await flushPromises();
+		expect(wrapper.vm.chatStore).not.toBeNull();
+		expect(wrapper.vm.chatStore.newTopicMode).toBe(true);
+	});
+
+	test('isNewTopic 路由 + 缺 claw query 时 chatStore 返回 null', async () => {
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { agent: 'main' }, // 没有 claw
+		});
+		await flushPromises();
+		expect(wrapper.vm.chatStore).toBeNull();
+	});
+
+	test('new-topic 上选附件 → __handleNewTopicSend 走 promote：router.replace 后 commit + sendMessage 在 newStore', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		// createTopic resolve 一个 topicId
+		vi.spyOn(topicsStore, 'createTopic').mockResolvedValue('new-topic-uuid');
+		await flushPromises();
+
+		// 老 new-topic store + 一个图片附件
+		const oldStore = wrapper.vm.chatStore;
+		oldStore.inputFiles.push({ id: 'a', isImg: true, url: 'blob:a', file: new Blob(['x']), name: 'a.png' });
+
+		// 记录调用顺序，断言 router.replace 在 dispose 之前
+		mockRouter.replace.mockImplementation(() => Promise.resolve());
+		const promoteSpy = vi.spyOn(chatStoreManager, 'promoteToTopic');
+		const disposeSpy = vi.spyOn(chatStoreManager, 'dispose');
+
+		// 准备 sendMessage 在新 topic store 上的 spy。
+		// 由于 promoteToTopic 内部会创建新 store，spy 必须先在 chat-store-manager 的 get 上挂钩
+		const origGet = chatStoreManager.get.bind(chatStoreManager);
+		let newStoreSendSpy;
+		vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+			const s = origGet(key, opts);
+			if (key === 'topic:new-topic-uuid' && !newStoreSendSpy) {
+				newStoreSendSpy = vi.spyOn(s, 'sendMessage').mockResolvedValue({ accepted: true });
+			}
+			return s;
+		});
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hello', files: [...oldStore.inputFiles] });
+		await flushPromises();
+
+		// promote 被调用
+		expect(promoteSpy).toHaveBeenCalledWith(
+			'new-topic:bot-1:main', 'new-topic-uuid', { clawId: 'bot-1', agentId: 'main' },
+		);
+		// router.replace 被调用
+		expect(mockRouter.replace).toHaveBeenCalled();
+		// dispose 被调用（commit() 内部）
+		expect(disposeSpy).toHaveBeenCalledWith('new-topic:bot-1:main');
+		// sendMessage 在 newStore 上发起（不在老 store）
+		expect(newStoreSendSpy).toHaveBeenCalled();
+		// router.replace 调用顺序在 dispose 之前
+		const replaceIdx = mockRouter.replace.mock.invocationCallOrder[0];
+		const disposeIdx = disposeSpy.mock.invocationCallOrder[0];
+		expect(replaceIdx).toBeLessThan(disposeIdx);
+	});
+
+	test('new-topic 重入防护：__creatingTopic=true 时再次触发 onSendMessage 直接 no-op（防双击双发）', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		// createTopic 永远 pending，模拟 await 期间用户再次点发送
+		const createSpy = vi.spyOn(topicsStore, 'createTopic')
+			.mockImplementation(() => new Promise(() => {}));
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+		expect(createSpy).toHaveBeenCalledTimes(1);
+
+		// 第二次触发应被入口的 __creatingTopic 守卫拦截：createTopic 不应再发起一次
+		input.vm.$emit('send', { text: 'second', files: [] });
+		await flushPromises();
+		expect(createSpy).toHaveBeenCalledTimes(1);
+	});
+
+	test('new-topic 发送失败：失败回退走 newStore（targetStore 锁定，不走 ChatInput $refs）', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		vi.spyOn(topicsStore, 'createTopic').mockResolvedValue('new-topic-uuid');
+		await flushPromises();
+
+		// 让新 topic store 的 sendMessage 返回 accepted=false
+		const origGet = chatStoreManager.get.bind(chatStoreManager);
+		let newStoreClearSpy, newStoreRestoreSpy;
+		vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+			const s = origGet(key, opts);
+			if (key === 'topic:new-topic-uuid') {
+				vi.spyOn(s, 'sendMessage').mockResolvedValue({ accepted: false });
+				newStoreClearSpy = vi.spyOn(s, 'clearInputFiles');
+				newStoreRestoreSpy = vi.spyOn(s, 'restoreFiles');
+			}
+			return s;
+		});
+
+		const files = [{ id: 'a', isImg: false, url: null }];
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files });
+		await flushPromises();
+
+		// 失败回退在 newStore 上（不在 ChatInput 上）
+		expect(newStoreClearSpy).toHaveBeenCalled();
+		expect(newStoreRestoreSpy).toHaveBeenCalledWith(files);
+	});
+
+	// =====================================================================
+	// targetStore 锁定：用户在 await 期间切走，回退仍打回入口 store
+	// =====================================================================
+
+	test('onSendMessage 入口快照 targetStore：sendMessage 失败时回退打回入口 store（不污染当前 chatStore）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const entryStore = getChatStore('bot-1', 'main');
+		const otherStore = chatStoreManager.get(
+			'session:bot-2:main', { clawId: 'bot-2', agentId: 'main' },
+		);
+		const entryClearSpy = vi.spyOn(entryStore, 'clearInputFiles');
+		const entryRestoreSpy = vi.spyOn(entryStore, 'restoreFiles');
+		const otherClearSpy = vi.spyOn(otherStore, 'clearInputFiles');
+		const otherRestoreSpy = vi.spyOn(otherStore, 'restoreFiles');
+
+		// 让 entryStore.sendMessage 在 await 期间用户切走（chatStore computed 被替换）
+		vi.spyOn(entryStore, 'sendMessage').mockImplementation(async () => {
+			// 模拟用户切走：本测试简化为切到 bot-2（不真切路由，仅断言回退打回入口）
+			return { accepted: false };
+		});
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		const files = [{ id: 'a', isImg: false, url: null }];
+		input.vm.$emit('send', { text: 'hi', files });
+		await flushPromises();
+
+		// 入口 store 收到回退；其它 store 不被波及
+		expect(entryClearSpy).toHaveBeenCalled();
+		expect(entryRestoreSpy).toHaveBeenCalledWith(files);
+		expect(otherClearSpy).not.toHaveBeenCalled();
+		expect(otherRestoreSpy).not.toHaveBeenCalled();
 	});
 });
 

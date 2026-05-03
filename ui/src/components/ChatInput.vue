@@ -236,6 +236,15 @@ export default {
 			type: String,
 			default: '',
 		},
+		/**
+		 * 当前路由对应的 chat store 实例（per-chat/topic）。
+		 * inputFiles 与文件相关 actions 都从这里读写，避免 ChatInput 单例跨上下文串台。
+		 * null 表示尚未就绪（如 new-topic 缺 query 参数），ChatInput 仍可渲染但 addFiles 早返回。
+		 */
+		chatStore: {
+			type: Object,
+			default: null,
+		},
 		sending: {
 			type: Boolean,
 			default: false,
@@ -266,7 +275,6 @@ export default {
 	data() {
 		return {
 			inputMode: 'keyboard',
-			inputFiles: [],
 			// 桌面录音
 			recorderStatus: 'IDLE',
 			voiceRecorder: null,
@@ -280,6 +288,13 @@ export default {
 		};
 	},
 	computed: {
+		/**
+		 * 输入区附件列表（来自 chatStore.inputFiles）。
+		 * chatStore 为 null 时返回空数组，模板对 `inputFiles` 的引用形式保持不变。
+		 */
+		inputFiles() {
+			return this.chatStore?.inputFiles ?? [];
+		},
 		isTouchDevice() {
 			// Capacitor 原生壳：直接判定为触屏设备
 			if (this.envStore.isNative) return true;
@@ -306,7 +321,8 @@ export default {
 	},
 	beforeUnmount() {
 		this.$el.removeEventListener('paste', this.__onPaste);
-		this.clearInputFiles();
+		// 不清空 inputFiles —— 附件归 chatStore 所有，切走（如进 /topics 列表）后切回应保留。
+		// store 真正销毁（chatStoreManager.dispose）时由 chat.store.dispose 释放 ObjectURL。
 		if (this.voiceRecorder) {
 			this.voiceRecorder.destroy();
 			this.voiceRecorder = null;
@@ -344,16 +360,22 @@ export default {
 			// 重置 input 以允许再次选择同一文件
 			evt.target.value = '';
 		},
-		/** 外部（如拖拽）添加文件的公共入口 */
+		/**
+		 * 外部（如拖拽 / paste / 选文件）添加文件的公共入口。
+		 * MAX_UPLOAD_SIZE 校验保留在此处（store 不直接 import use-notify）；
+		 * 包装为 formatFileBlob 后再交给 chatStore 落库。
+		 */
 		addFiles(files) {
-			if (!files?.length) return;
+			if (!files?.length || !this.chatStore) return;
+			const valid = [];
 			for (const file of files) {
 				if (file.size > MAX_UPLOAD_SIZE) {
 					this.notify.error(this.$t('files.fileTooLarge', { name: file.name }));
 					continue;
 				}
-				this.inputFiles.push(formatFileBlob(file));
+				valid.push(formatFileBlob(file));
 			}
+			if (valid.length) this.chatStore.addFiles(valid);
 		},
 		/** 粘贴事件：提取剪贴板中的文件，仅有文件时阻止默认行为 */
 		__onPaste(e) {
@@ -371,36 +393,9 @@ export default {
 				this.addFiles(files);
 			}
 		},
+		/** 模板 X 按钮：移除指定下标的附件（store 内 revoke ObjectURL） */
 		removeInputFile(idx) {
-			const removed = this.inputFiles.splice(idx, 1);
-			if (removed[0]?.url) {
-				URL.revokeObjectURL(removed[0].url);
-			}
-		},
-		/** 按文件 id 移除（上传成功后由父组件调用） */
-		removeFileById(id) {
-			const idx = this.inputFiles.findIndex((f) => f.id === id);
-			if (idx === -1) return;
-			const [removed] = this.inputFiles.splice(idx, 1);
-			if (removed?.url) URL.revokeObjectURL(removed.url);
-		},
-		clearInputFiles() {
-			for (const f of this.inputFiles) {
-				if (f.url) URL.revokeObjectURL(f.url);
-			}
-			this.inputFiles = [];
-		},
-		/** 恢复之前发送的文件（发送失败回退时由父组件调用） */
-		restoreFiles(files) {
-			if (!files?.length) return;
-			for (const f of files) {
-				const restored = { ...f };
-				// 重建图片预览 URL（原 URL 可能已在 removeFileById 时释放）
-				if (f.isImg && f.file) {
-					restored.url = URL.createObjectURL(f.file);
-				}
-				this.inputFiles.push(restored);
-			}
+			this.chatStore?.removeInputFile(idx);
 		},
 		/** 查询文件上传状态 */
 		__fileStatus(id) {
@@ -460,7 +455,7 @@ export default {
 			const item = formatFileBlob(file);
 			item.isVoice = true;
 			item.durationMs = durationMs || null;
-			this.inputFiles.push(item);
+			this.chatStore?.addFiles([item]);
 			this.recorderStatus = 'IDLE';
 		},
 

@@ -245,3 +245,25 @@
     - 实际影响：几十条 item 内可忽略；多 claw 多 session 长期使用后可能延迟 MainList 渲染
     - 修法方向：sessions.store 内维护 `Map<clawId:agentId, item>`，getActivity O(1) 命中
 
+## 输入区附件 per-chat/topic 隔离（方案 A''）deep-review 发现的非阻塞项（2026-05-03）
+
+来源：4 路并行 codex-rescue review（3 路按维度切分 + 1 路综合）。本批主要 bug 已在同 commit 修复，下列为相关边角与预存问题。
+
+39. **ImgViewDialog 直接复用 store 的 ObjectURL，store dispose 期间预览会裂图**
+    - 现状：`ChatInput.vue:476-480` `previewImg(f)` 把 `f.url` 拷到 `previewImgSrc` 显示。若 LRU 淘汰 / 登出 / promote dispose 触发 `chat.store.dispose` revoke 该图片 url，dialog 仍持引用，浏览器看到 `blob:` 但实际无效，图裂
+    - 触发：用户预览着图 + 同时触发 store dispose（10+ topics 时 LRU、登出、promote 流程）
+    - 与本次方案的关系：附件归 store 管后，store dispose 路径增加，命中概率放大；但 dialog 与 store 解耦的修复是独立工作
+    - 修法：dialog 打开时单独 `URL.createObjectURL(f.file)` 自建副本，关闭时自 revoke；外部 `f.url` 仅用于缩略图列表渲染
+    - 设计 dump 已标注本项可同期顺手修，未在本次范围内
+
+40. **`__handleNewTopicSend` 中 router.replace 失败时 promote 状态半提交**
+    - 现状：`ChatPage.vue:640-679` promote 已让 `newStore.inputFiles === oldStore.inputFiles`（同源），若 `router.replace` 抛错（如 router guard 取消），catch 走 `targetStore.clearInputFiles + restoreFiles(files)`，oldStore 视图能恢复附件（同源数组被重建），但 newStore 未通过 commit 释放
+    - 触发条件极窄：router guard 抛错 + 用户超过 10 个活跃 topic 同时触发 LRU 淘汰 newStore → newStore.dispose revoke 已转移的图片 url → oldStore 视图裂图
+    - 实际影响：极罕见（router.replace 在测试环境难复现失败；一般 UX 路径不会出错）
+    - 修法方向：catch 中检测 promote 已发生但 router.replace 失败 → 主动 `chatStoreManager.dispose(topic:${topicId})` 释放 newStore，并把 inputFiles 引用回切到 oldStore 独有数组（避免同源被误 revoke）
+
+41. **new-topic store 不入 LRU**
+    - 现状：`chat-store-manager.js:33` get 仅对 `storeKey.startsWith('topic:')` 入 LRU。`new-topic:` 前缀不淘汰
+    - 实际影响：极小——每个 (clawId, agentId) 组合最多一个 new-topic store；用户访问过的组合数 ≤ 数十量级；登出 disposeAll 兜底
+    - 与设计 dump 偏离：dump 原写"new-topic 也入 topic LRU"，实现与之不一致；已在 chat-store-manager.js:33 处加注释说明保留当前行为的理由。如未来用户反馈附件累积内存压力，再考虑加主动淘汰
+

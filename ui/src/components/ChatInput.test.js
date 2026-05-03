@@ -1,7 +1,45 @@
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
+import { reactive } from 'vue';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import ChatInput from './ChatInput.vue';
+
+/**
+ * 构造 mock chatStore：提供 reactive inputFiles + 5 个方法，模拟真实 chat.store actions。
+ * addFiles 把传入的 file 包装对象 push 进 inputFiles，让模板能基于 inputFiles 渲染附件预览。
+ */
+function createMockChatStore() {
+	const store = reactive({
+		inputFiles: [],
+		addFiles: vi.fn((files) => {
+			for (const f of files) store.inputFiles.push(f);
+		}),
+		removeInputFile: vi.fn((idx) => {
+			const removed = store.inputFiles.splice(idx, 1);
+			if (removed[0]?.url) URL.revokeObjectURL(removed[0].url);
+		}),
+		removeFileById: vi.fn((id) => {
+			const idx = store.inputFiles.findIndex((f) => f.id === id);
+			if (idx === -1) return;
+			const [removed] = store.inputFiles.splice(idx, 1);
+			if (removed?.url) URL.revokeObjectURL(removed.url);
+		}),
+		clearInputFiles: vi.fn(() => {
+			for (const f of store.inputFiles) {
+				if (f.url) URL.revokeObjectURL(f.url);
+			}
+			store.inputFiles.length = 0;
+		}),
+		restoreFiles: vi.fn((files) => {
+			for (const f of files) {
+				const restored = { ...f };
+				if (f.isImg && f.file) restored.url = URL.createObjectURL(f.file);
+				store.inputFiles.push(restored);
+			}
+		}),
+	});
+	return store;
+}
 
 const mockNotify = {
 	success: vi.fn(),
@@ -51,12 +89,16 @@ const UIconStub = {
 };
 
 function createWrapper(props = {}) {
+	// 用 'in' 判定是否显式传入 chatStore（含 null）：?? 会让显式 null 也被替换为 mock，
+	// 让"chatStore=null 不崩"测试假阳性
+	const chatStore = 'chatStore' in props ? props.chatStore : createMockChatStore();
 	return mount(ChatInput, {
 		props: {
 			modelValue: '',
 			sending: false,
 			disabled: false,
 			...props,
+			chatStore,
 		},
 		global: {
 			plugins: [createPinia()],
@@ -101,8 +143,20 @@ describe('ChatInput', () => {
 	});
 
 	test('canSend returns true when inputFiles has items', () => {
-		const wrapper = createWrapper({ modelValue: '' });
-		wrapper.vm.inputFiles = [{ id: '1', name: 'test.txt', isImg: false }];
+		const chatStore = createMockChatStore();
+		chatStore.inputFiles.push({ id: '1', name: 'test.txt', isImg: false });
+		const wrapper = createWrapper({ modelValue: '', chatStore });
+		expect(wrapper.vm.canSend).toBe(true);
+	});
+
+	test('canSend returns false when chatStore is null and no text', () => {
+		const wrapper = createWrapper({ modelValue: '', chatStore: null });
+		expect(wrapper.vm.canSend).toBe(false);
+		// 仍可基于文本发送
+	});
+
+	test('canSend returns true when chatStore is null but text is non-empty', () => {
+		const wrapper = createWrapper({ modelValue: 'hi', chatStore: null });
 		expect(wrapper.vm.canSend).toBe(true);
 	});
 
@@ -258,10 +312,11 @@ describe('ChatInput', () => {
 	});
 
 	test('submit 后 inputFiles 保留（由上传过程逐个移除）', () => {
-		const wrapper = createWrapper({ modelValue: 'hi' });
-		wrapper.vm.inputFiles = [{ id: '1', name: 'a.txt', isImg: false, url: null }];
+		const chatStore = createMockChatStore();
+		chatStore.inputFiles.push({ id: '1', name: 'a.txt', isImg: false, url: null });
+		const wrapper = createWrapper({ modelValue: 'hi', chatStore });
 		wrapper.vm.onSubmit();
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
+		expect(chatStore.inputFiles).toHaveLength(1);
 	});
 
 	test('does not send when text is empty and no files', () => {
@@ -272,15 +327,15 @@ describe('ChatInput', () => {
 
 	// --- Phase 2: 文件上传 ---
 	test('file preview area renders when inputFiles is not empty', async () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		expect(wrapper.findAll('img')).toHaveLength(0);
 
-		await wrapper.setData({
-			inputFiles: [
-				{ id: 'a', isImg: true, url: 'blob:img', name: 'photo.png', label: '1.2 KB' },
-				{ id: 'b', isImg: false, url: null, name: 'doc.pdf', label: '3.4 MB' },
-			],
-		});
+		chatStore.inputFiles.push(
+			{ id: 'a', isImg: true, url: 'blob:img', name: 'photo.png', label: '1.2 KB' },
+			{ id: 'b', isImg: false, url: null, name: 'doc.pdf', label: '3.4 MB' },
+		);
+		await wrapper.vm.$nextTick();
 
 		// 图片缩略图
 		expect(wrapper.findAll('img')).toHaveLength(1);
@@ -289,47 +344,27 @@ describe('ChatInput', () => {
 		expect(wrapper.text()).toContain('doc.pdf');
 	});
 
-	test('removeInputFile removes the correct file', async () => {
+	test('removeInputFile 委托到 chatStore 并 revoke 对应 ObjectURL', async () => {
 		const origRevoke = URL.revokeObjectURL;
 		URL.revokeObjectURL = vi.fn();
-		const wrapper = createWrapper();
-		await wrapper.setData({
-			inputFiles: [
-				{ id: 'a', isImg: true, url: 'blob:a', name: 'a.png' },
-				{ id: 'b', isImg: false, url: null, name: 'b.txt' },
-			],
-		});
+		const chatStore = createMockChatStore();
+		chatStore.inputFiles.push(
+			{ id: 'a', isImg: true, url: 'blob:a', name: 'a.png' },
+			{ id: 'b', isImg: false, url: null, name: 'b.txt' },
+		);
+		const wrapper = createWrapper({ chatStore });
 
 		wrapper.vm.removeInputFile(0);
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
-		expect(wrapper.vm.inputFiles[0].id).toBe('b');
+		expect(chatStore.removeInputFile).toHaveBeenCalledWith(0);
+		expect(chatStore.inputFiles).toHaveLength(1);
+		expect(chatStore.inputFiles[0].id).toBe('b');
 		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
 		URL.revokeObjectURL = origRevoke;
 	});
 
-	test('removeFileById 按 id 移除正确的文件', async () => {
-		const origRevoke = URL.revokeObjectURL;
-		URL.revokeObjectURL = vi.fn();
-		const wrapper = createWrapper();
-		await wrapper.setData({
-			inputFiles: [
-				{ id: 'a', isImg: true, url: 'blob:a', name: 'a.png' },
-				{ id: 'b', isImg: false, url: null, name: 'b.txt' },
-			],
-		});
-
-		wrapper.vm.removeFileById('a');
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
-		expect(wrapper.vm.inputFiles[0].id).toBe('b');
-		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
-		URL.revokeObjectURL = origRevoke;
-	});
-
-	test('removeFileById 传入不存在的 id 时不报错', () => {
-		const wrapper = createWrapper();
-		wrapper.vm.inputFiles = [{ id: 'x', name: 'x.txt', url: null }];
-		wrapper.vm.removeFileById('nonexistent');
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
+	test('removeInputFile 在 chatStore 为 null 时不抛错', () => {
+		const wrapper = createWrapper({ chatStore: null });
+		expect(() => wrapper.vm.removeInputFile(0)).not.toThrow();
 	});
 
 	test('file preview area hidden when inputFiles is empty', () => {
@@ -339,26 +374,37 @@ describe('ChatInput', () => {
 	});
 
 	// --- addFiles / 粘贴 / 拖拽入口 ---
-	test('addFiles adds files to inputFiles via formatFileBlob', () => {
-		const wrapper = createWrapper();
+	test('addFiles 调用 chatStore.addFiles 并经 formatFileBlob 包装', () => {
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		const file1 = new File(['a'], 'a.txt', { type: 'text/plain' });
 		const file2 = new File(['b'], 'b.png', { type: 'image/png' });
 		wrapper.vm.addFiles([file1, file2]);
-		expect(wrapper.vm.inputFiles).toHaveLength(2);
-		expect(wrapper.vm.inputFiles[0].name).toBe('a.txt');
-		expect(wrapper.vm.inputFiles[1].name).toBe('b.png');
+		expect(chatStore.addFiles).toHaveBeenCalledOnce();
+		expect(chatStore.inputFiles).toHaveLength(2);
+		expect(chatStore.inputFiles[0].name).toBe('a.txt');
+		expect(chatStore.inputFiles[1].name).toBe('b.png');
+	});
+
+	test('addFiles 在 chatStore 为 null 时静默 no-op', () => {
+		const wrapper = createWrapper({ chatStore: null });
+		const file = new File(['x'], 'x.txt', { type: 'text/plain' });
+		expect(() => wrapper.vm.addFiles([file])).not.toThrow();
 	});
 
 	test('addFiles ignores empty or null input', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		wrapper.vm.addFiles([]);
-		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		expect(chatStore.inputFiles).toHaveLength(0);
 		wrapper.vm.addFiles(null);
-		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		expect(chatStore.inputFiles).toHaveLength(0);
+		expect(chatStore.addFiles).not.toHaveBeenCalled();
 	});
 
 	test('__onPaste extracts files from clipboardData and prevents default', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		const file = new File(['x'], 'clip.png', { type: 'image/png' });
 		const evt = {
 			preventDefault: vi.fn(),
@@ -370,12 +416,13 @@ describe('ChatInput', () => {
 		};
 		wrapper.vm.__onPaste(evt);
 		expect(evt.preventDefault).toHaveBeenCalled();
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
-		expect(wrapper.vm.inputFiles[0].name).toBe('clip.png');
+		expect(chatStore.inputFiles).toHaveLength(1);
+		expect(chatStore.inputFiles[0].name).toBe('clip.png');
 	});
 
 	test('__onPaste does not prevent default when clipboard has no files', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		const evt = {
 			preventDefault: vi.fn(),
 			clipboardData: {
@@ -386,30 +433,33 @@ describe('ChatInput', () => {
 		};
 		wrapper.vm.__onPaste(evt);
 		expect(evt.preventDefault).not.toHaveBeenCalled();
-		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		expect(chatStore.inputFiles).toHaveLength(0);
 	});
 
 	test('__onPaste handles empty clipboardData gracefully', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		const evt = {
 			preventDefault: vi.fn(),
 			clipboardData: { items: [] },
 		};
 		wrapper.vm.__onPaste(evt);
 		expect(evt.preventDefault).not.toHaveBeenCalled();
-		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		expect(chatStore.inputFiles).toHaveLength(0);
 	});
 
 	test('__onPaste handles null clipboardData gracefully', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		const evt = { preventDefault: vi.fn(), clipboardData: null };
 		wrapper.vm.__onPaste(evt);
 		expect(evt.preventDefault).not.toHaveBeenCalled();
-		expect(wrapper.vm.inputFiles).toHaveLength(0);
+		expect(chatStore.inputFiles).toHaveLength(0);
 	});
 
 	test('__onPaste with mixed text+file items only extracts files', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		const file = new File(['img'], 'pic.png', { type: 'image/png' });
 		const evt = {
 			preventDefault: vi.fn(),
@@ -422,29 +472,53 @@ describe('ChatInput', () => {
 		};
 		wrapper.vm.__onPaste(evt);
 		expect(evt.preventDefault).toHaveBeenCalled();
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
-		expect(wrapper.vm.inputFiles[0].name).toBe('pic.png');
+		expect(chatStore.inputFiles).toHaveLength(1);
+		expect(chatStore.inputFiles[0].name).toBe('pic.png');
 	});
 
 	test('addFiles rejects files exceeding MAX_UPLOAD_SIZE', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		// MAX_UPLOAD_SIZE mocked to 1 MB
 		const big = new File([new ArrayBuffer(1024 * 1024 + 1)], 'big.bin', { type: 'application/octet-stream' });
 		const small = new File(['ok'], 'small.txt', { type: 'text/plain' });
 		wrapper.vm.addFiles([big, small]);
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
-		expect(wrapper.vm.inputFiles[0].name).toBe('small.txt');
+		expect(chatStore.inputFiles).toHaveLength(1);
+		expect(chatStore.inputFiles[0].name).toBe('small.txt');
 		expect(mockNotify.error).toHaveBeenCalled();
 	});
 
 	test('onFilesSelected delegates to addFiles', () => {
-		const wrapper = createWrapper();
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
 		const file = new File(['x'], 'sel.txt', { type: 'text/plain' });
 		const evt = { target: { files: [file], value: 'C:\\fake\\sel.txt' } };
 		wrapper.vm.onFilesSelected(evt);
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
-		expect(wrapper.vm.inputFiles[0].name).toBe('sel.txt');
+		expect(chatStore.inputFiles).toHaveLength(1);
+		expect(chatStore.inputFiles[0].name).toBe('sel.txt');
 		expect(evt.target.value).toBe('');
+	});
+
+	test('procRecordedVoice 通过 chatStore.addFiles 写入 voice 附件', () => {
+		const chatStore = createMockChatStore();
+		const wrapper = createWrapper({ chatStore });
+		const blob = new Blob(['voice'], { type: 'audio/webm' });
+		wrapper.vm.procRecordedVoice(blob, 3000);
+		expect(chatStore.addFiles).toHaveBeenCalledOnce();
+		expect(chatStore.inputFiles).toHaveLength(1);
+		expect(chatStore.inputFiles[0].isVoice).toBe(true);
+		expect(chatStore.inputFiles[0].durationMs).toBe(3000);
+		expect(wrapper.vm.recorderStatus).toBe('IDLE');
+	});
+
+	test('beforeUnmount 不调 chatStore.clearInputFiles（附件归 store 所有）', () => {
+		const chatStore = createMockChatStore();
+		chatStore.inputFiles.push({ id: 'a', name: 'a.txt', url: null });
+		const wrapper = createWrapper({ chatStore });
+		wrapper.unmount();
+		expect(chatStore.clearInputFiles).not.toHaveBeenCalled();
+		// 附件仍然保留在 store 中
+		expect(chatStore.inputFiles).toHaveLength(1);
 	});
 
 	// --- fileUploadState 相关 ---
@@ -465,41 +539,18 @@ describe('ChatInput', () => {
 	});
 
 	test('上传中的文件卡片显示进度覆层且隐藏移除按钮', async () => {
+		const chatStore = createMockChatStore();
+		chatStore.inputFiles.push({ id: 'a', isImg: false, name: 'a.txt', url: null, ext: 'txt', label: '1 KB' });
 		const wrapper = createWrapper({
+			chatStore,
 			fileUploadState: { a: { status: 'uploading', progress: 0.6 } },
 		});
-		await wrapper.setData({
-			inputFiles: [{ id: 'a', isImg: false, name: 'a.txt', url: null, ext: 'txt', label: '1 KB' }],
-		});
+		await wrapper.vm.$nextTick();
 		// 进度覆层
 		expect(wrapper.text()).toContain('60%');
 		// 移除按钮不渲染（v-if="!__fileStatus(f.id)"）
 		const removeBtn = wrapper.findAll('button').filter((b) => b.text().includes('i-lucide-x'));
 		expect(removeBtn).toHaveLength(0);
-	});
-
-	test('restoreFiles 保留 remotePath 字段', () => {
-		const wrapper = createWrapper();
-		const blob = new Blob(['data']);
-		wrapper.vm.restoreFiles([
-			{ id: 'f1', name: 'a.txt', isImg: false, file: blob, remotePath: '/remote/a.txt' },
-		]);
-		expect(wrapper.vm.inputFiles).toHaveLength(1);
-		expect(wrapper.vm.inputFiles[0].remotePath).toBe('/remote/a.txt');
-	});
-
-	test('clearInputFiles 释放所有 blob URL 并清空数组', () => {
-		const origRevoke = URL.revokeObjectURL;
-		URL.revokeObjectURL = vi.fn();
-		const wrapper = createWrapper();
-		wrapper.vm.inputFiles = [
-			{ id: 'a', url: 'blob:a' },
-			{ id: 'b', url: 'blob:b' },
-		];
-		wrapper.vm.clearInputFiles();
-		expect(wrapper.vm.inputFiles).toHaveLength(0);
-		expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
-		URL.revokeObjectURL = origRevoke;
 	});
 
 	test('sending 时添加文件按钮仍可用（accepted 后允许准备下次消息附件）', () => {

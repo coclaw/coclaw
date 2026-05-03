@@ -4361,7 +4361,217 @@ describe('useChatStore', () => {
 		});
 	});
 
-	// __onAgentEvent 相关测试已迁移到 agent-stream.test.js 和 agent-runs.store.test.js
+	// =====================================================================
+	// inputFiles 管理（per-chat/topic 隔离的输入区附件）
+	// =====================================================================
+
+	describe('inputFiles', () => {
+		beforeEach(() => {
+			// jsdom 不提供 createObjectURL/revokeObjectURL —— 用 vi.fn 拦截以便断言
+			URL.createObjectURL = vi.fn(() => `blob:mock-${Math.random()}`);
+			URL.revokeObjectURL = vi.fn();
+		});
+
+		test('默认 inputFiles 为空', () => {
+			const store = useChatStore();
+			expect(store.inputFiles).toEqual([]);
+		});
+
+		test('addFiles 追加文件，不做大小校验（校验留在 ChatInput 入口）', () => {
+			const store = useChatStore();
+			store.addFiles([
+				{ id: 'a', isImg: false, name: 'a.txt', url: null },
+				{ id: 'b', isImg: true, name: 'b.png', url: 'blob:b' },
+			]);
+			expect(store.inputFiles).toHaveLength(2);
+			expect(store.inputFiles[0].id).toBe('a');
+			expect(store.inputFiles[1].id).toBe('b');
+		});
+
+		test('addFiles 空入参 / null 静默 no-op', () => {
+			const store = useChatStore();
+			store.addFiles([]);
+			store.addFiles(null);
+			store.addFiles(undefined);
+			expect(store.inputFiles).toHaveLength(0);
+		});
+
+		test('addFiles 重复同 id 不去重（UI 显示两份）', () => {
+			const store = useChatStore();
+			const f = { id: 'a', isImg: false, url: null };
+			store.addFiles([f]);
+			store.addFiles([f]);
+			expect(store.inputFiles).toHaveLength(2);
+		});
+
+		test('removeInputFile(idx) 对图片调 revoke 并 splice', () => {
+			const store = useChatStore();
+			store.inputFiles.push(
+				{ id: 'a', isImg: true, url: 'blob:a' },
+				{ id: 'b', isImg: false, url: null },
+			);
+			store.removeInputFile(0);
+			expect(store.inputFiles).toHaveLength(1);
+			expect(store.inputFiles[0].id).toBe('b');
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
+		});
+
+		test('removeInputFile 非图片（url=null）不调 revoke', () => {
+			const store = useChatStore();
+			store.inputFiles.push({ id: 'a', isImg: false, url: null });
+			store.removeInputFile(0);
+			expect(store.inputFiles).toHaveLength(0);
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+		});
+
+		test('removeFileById 找到目标 → revoke + splice', () => {
+			const store = useChatStore();
+			store.inputFiles.push(
+				{ id: 'a', isImg: true, url: 'blob:a' },
+				{ id: 'b', isImg: false, url: null },
+			);
+			store.removeFileById('a');
+			expect(store.inputFiles).toHaveLength(1);
+			expect(store.inputFiles[0].id).toBe('b');
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
+		});
+
+		test('removeFileById 不存在的 id 静默 no-op', () => {
+			const store = useChatStore();
+			store.inputFiles.push({ id: 'x', url: null });
+			store.removeFileById('nonexistent');
+			expect(store.inputFiles).toHaveLength(1);
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+		});
+
+		test('clearInputFiles 仅对 url 非空的（图片）revoke 并清空数组', () => {
+			const store = useChatStore();
+			store.inputFiles.push(
+				{ id: 'a', isImg: true, url: 'blob:a' },
+				{ id: 'b', isImg: false, url: null },
+				{ id: 'c', isImg: true, url: 'blob:c' },
+			);
+			store.clearInputFiles();
+			expect(store.inputFiles).toHaveLength(0);
+			expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:c');
+		});
+
+		test('restoreFiles 对图片重建 ObjectURL，非图片不重建，保留其它字段', () => {
+			const store = useChatStore();
+			const blob = new Blob(['data']);
+			store.restoreFiles([
+				{ id: 'a', isImg: true, file: blob, name: 'a.png' },
+				{ id: 'b', isImg: false, file: null, name: 'b.txt', remotePath: '/r/b.txt' },
+			]);
+			expect(store.inputFiles).toHaveLength(2);
+			expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+			expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+			expect(store.inputFiles[0].url).toMatch(/^blob:mock-/);
+			expect(store.inputFiles[1].url).toBeUndefined();
+			// 非图片字段透传（remotePath 是上传缓存，不能丢）
+			expect(store.inputFiles[1].remotePath).toBe('/r/b.txt');
+		});
+
+		test('restoreFiles isImg=true 但 file=null 时显式置 url=null（不带入 stale url）', () => {
+			const store = useChatStore();
+			// 模拟上传 onFileUploaded 已 revoke 过原 url 的场景：f.url 是 stale 字符串
+			const stale = { id: 'a', isImg: true, file: null, url: 'blob:already-revoked', name: 'a.png' };
+			expect(() => store.restoreFiles([stale])).not.toThrow();
+			expect(store.inputFiles).toHaveLength(1);
+			// 关键断言：spread 的 stale url 必须被显式覆盖为 null，避免模板渲染破图
+			expect(store.inputFiles[0].url).toBeNull();
+			expect(URL.createObjectURL).not.toHaveBeenCalled();
+		});
+
+		test('restoreFiles 非图片不动 url 字段（保留原值或 null）', () => {
+			const store = useChatStore();
+			store.restoreFiles([{ id: 'a', isImg: false, name: 'a.txt', url: null }]);
+			expect(store.inputFiles[0].url).toBeNull();
+			expect(URL.createObjectURL).not.toHaveBeenCalled();
+		});
+
+		test('restoreFiles 空入参 / null 静默 no-op', () => {
+			const store = useChatStore();
+			store.restoreFiles([]);
+			store.restoreFiles(null);
+			expect(store.inputFiles).toHaveLength(0);
+		});
+
+		test('dispose 仅 revoke 图片（url 非空）的 ObjectURL', () => {
+			const store = useChatStore();
+			store.inputFiles.push(
+				{ id: 'a', isImg: true, url: 'blob:a' },
+				{ id: 'b', isVoice: true, url: null }, // voice 没 url
+				{ id: 'c', isImg: false, url: null },
+			);
+			store.dispose();
+			expect(store.inputFiles).toHaveLength(0);
+			expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+			expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a');
+		});
+
+		test('dispose 在 inputFiles 为空时不抛异常', () => {
+			const store = useChatStore();
+			expect(() => store.dispose()).not.toThrow();
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+		});
+
+		test('promote 后老 store dispose 不 revoke 已转移的 ObjectURL（关键 invariant）', () => {
+			// 模拟 promoteToTopic 行为：先把 oldStore.inputFiles = []（切断引用），再 dispose
+			const oldStore = createChatStore('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			const transferred = [{ id: 'img', isImg: true, url: 'blob:transferred' }];
+			oldStore.inputFiles = transferred;
+			// commit() 时第一步：切断引用
+			oldStore.inputFiles = [];
+			// 第二步：dispose
+			oldStore.dispose();
+			// transferred 引用的图片 URL 不能被 revoke —— 它已经归新 topic store 所有
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+		});
+	});
+
+	// =====================================================================
+	// newTopicMode（new-topic:* storeKey 的特殊行为）
+	// =====================================================================
+
+	describe('newTopicMode', () => {
+		test('newTopicMode 标志根据 storeKey 前缀计算', () => {
+			const newTopic = createChatStore('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			const session = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
+			const topic = createChatStore('topic:t1', { clawId: '1', agentId: 'main' });
+			expect(newTopic.newTopicMode).toBe(true);
+			expect(session.newTopicMode).toBe(false);
+			expect(topic.newTopicMode).toBe(false);
+		});
+
+		test('newTopicMode 下 chatSessionKey 留空（避免 getter 误把它当普通 chat）', () => {
+			const store = createChatStore('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			expect(store.chatSessionKey).toBe('');
+			expect(store.topicMode).toBe(false);
+			expect(store.sessionId).toBe('');
+		});
+
+		test('newTopicMode 下 activate 不触发任何 RPC（短路返回）', async () => {
+			const conn = mockConn();
+			setConn('1', conn);
+
+			const store = createChatStore('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			await store.activate();
+
+			expect(conn.request).not.toHaveBeenCalled();
+			expect(store.__initialized).toBe(true);
+			expect(store.__messagesLoaded).toBe(true);
+			expect(store.loading).toBe(false);
+		});
+
+		test('newTopicMode 下 inputFiles 仍可正常读写', () => {
+			const store = createChatStore('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			store.addFiles([{ id: 'a', isImg: false, url: null }]);
+			expect(store.inputFiles).toHaveLength(1);
+		});
+	});
 
 	describe('__reconcileMessages', () => {
 		test('连接不存在时返回 false', async () => {
