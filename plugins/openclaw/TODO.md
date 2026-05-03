@@ -634,3 +634,18 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **为什么不修**：项目里大量 `logger.warn?.(...)` 调用都没用 try/catch 包，单独包此一处不合理；应在项目层面统一决策（要么所有 logger 调用都包 try/catch，要么接受 logger 自身抛是极冷防御路径）。pino logger 内部错误处理很完备，实际触发概率近零。
 
 **修复方向（项目层面若决策）**：考虑导出统一的 `safeWarn(logger, msg)` helper，所有 fire-and-forget 链路统一调用。
+
+## 同 connId 重建期旧队列 destroy 挂起时广播路径（B-stage2 集成测试）
+
+**发现日期**：2026-05-03（rpc-dc Phase B 综合 deep-review，路 4 主动挖掘 P0 #1）
+**关联**：`plugins/openclaw/src/webrtc/webrtc-peer.js`（同 connId ondatachannel 二次触发路径）
+
+**场景**：同一个 connId 在 ICE restart 失败回退或网络抖动时短时间内 close + ondatachannel 重建，第一个实例还在 `await session.rpcQueue.destroy()` 期间，外部 `broadcast()` 触发。`session.rpcQueue` 字段还指向旧 queue（`closeByConnId` / `dc.onclose` 的清字段路径在 destroy 完成后才执行），broadcast 的 enqueue 落到旧 queue。
+
+**B-stage1 行为**：旧 queue 已在 mutex 内设 `destroyed=true`；旧 queue 的 enqueue 拿到 mutex 后短路返 false（silent drop），不抛、不死锁、不撞新通道。已通过 plan-1 round-2 的 in-flight-broadcast 测试 + 本轮（综合 deep-review Step 2）的 destroy/enqueue 反序 race 测试覆盖了这一路 mutex + destroyed 短路联合保护。
+
+**为什么完整集成层测试推到 B-stage2**：webrtc-peer 集成测试需要 mock pion DC、伪造同 connId 二次握手、控制异步 destroy 挂起的时序，~50-100 行测试代码。B-stage1 阶段 destroy 是几十 microsec 级（MemoryQueue 无 fs 操作），窗口几乎不存在；价值边际有限。**B-stage2 切 FBQ 后** destroy 要清磁盘文件，时间从 microsec 拉到数十甚至数百 ms，窗口才"足够宽到值得集成测试"。
+
+**修复方向**（B-stage2 切 FBQ 时）：
+- 加 webrtc-peer 集成测试覆盖"同 connId 重建期旧 queue 仍在 await destroy"窗口的 broadcast 行为
+- 评估是否需要在 webrtc-peer 层面提前清 `session.rpcQueue` 字段（在 await destroy 之前），让新 broadcast 拿到 null queue → 走 file sendFn null check 那条 silent-drop-with-warn 路径（与上文 A1 异步装配 TODO 一并处理）
