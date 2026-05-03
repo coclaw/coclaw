@@ -1,18 +1,19 @@
 /**
  * 纯内存版 FBQ-API 兼容容器
  *
- * 阶段 1 用作 RpcDcSender 的前置缓冲，替换原 `RpcSendQueue` 中的"容器层"职责（admission +
- * overflow 边沿状态机 + close 汇总）。阶段 2 再把本模块替换为 `FileBackedQueue`，因接口对齐，
- * 替换近乎一行 import 改动。
+ * 阶段 1 用作 RpcDcSender 的前置缓冲，与 `FileBackedQueue` 接口对齐。阶段 2 单点平替，
+ * webrtc-peer 仅一行 `new` 改写。
  *
  * 与 FBQ 的差异：
  * - 不引入 fs；`diskBytes / writtenBytes` 永为 0，`spilled / fsBroken` 永为 false
- * - admission 仅基于 `memBudget`；命中 `bypassAdmission(jsonStr)` 时即使队列满也接收（保留
- *   `RpcSendQueue` 的 agent run 白名单豁免行为）
- * - 内部携带 overflow-start/-end 边沿状态机和 close 汇总日志（搬自原 `RpcSendQueue`）
+ * - admission 仅基于 `memBudget`；命中 `bypassAdmission(jsonStr)` 时即使队列满也接收
  *
- * 契约：`enqueue / __nextIter / destroy / clear` 内部任何分支都不得因 logger / remoteLog / onDrop /
- * bypassAdmission 自身抛而传染调用方——所有外部调用均经过 safe wrapper（try/catch）。
+ * 容器纯净化（B-stage1）：本模块不承担诊断职责（边沿日志、累计、汇总），仅通过
+ * `onDrop(reason, size)` 回调把丢弃事件外抛，由调用方（rpc-drop-monitor 等）统一
+ * 处理日志输出。容器与诊断解耦后 MemoryQueue ≡ FBQ minus 磁盘语义。
+ *
+ * 契约：`enqueue / __nextIter / destroy / clear` 内部任何分支都不得因 onDrop /
+ * bypassAdmission 自身抛而传染调用方——所有外部回调均经过 try/catch 包裹。
  *
  * 使用方式（消费侧）：
  * ```js
@@ -21,7 +22,6 @@
  * 调用 `queue.destroy()` 后 iterator 在下一轮返回 `{ done: true }`。
  */
 
-import { remoteLog } from '../remote-log.js';
 import { createMutex } from './mutex.js';
 
 /** 默认内存预算：与原 RpcSendQueue 的 MAX_QUEUE_BYTES 对齐 */
@@ -85,11 +85,6 @@ class MemoryQueue {
 		this.destroyed = false;
 		this.waiters = [];
 		this.mutex = createMutex();
-
-		// drop 统计 + overflow 边沿状态机
-		this.droppedCount = 0;
-		this.droppedBytes = 0;
-		this.queueOverflowActive = false;
 	}
 
 	/**
@@ -107,9 +102,11 @@ class MemoryQueue {
 
 	/**
 	 * 入队一条字符串。
-	 * - 队列满（memBytes >= memBudget）且未命中 bypassAdmission → onDrop + 返回 false
-	 *   首次进入溢出态打 overflow-start（warn + remoteLog），持续期间静默累加
+	 * - 单条 size > maxMessageBytes（bypass 也不豁免）→ onDrop('oversize', size) + 返回 false
+	 * - 队列满（memBytes >= memBudget）且未命中 bypassAdmission → onDrop('queue-full', size) + 返回 false
 	 * - 否则入队 + 返回 true（包括"单条 overshoot"：当前 memBytes < memBudget，但本条很大）
+	 *
+	 * 不输出任何日志/累计：诊断职责由调用方注入的 onDrop 处理。
 	 *
 	 * @param {string} jsonStr
 	 * @returns {Promise<boolean>}
@@ -124,10 +121,7 @@ class MemoryQueue {
 			// per-message 硬上限：bypass 也不豁免。对齐 sender 端 MAX_SINGLE_MSG_BYTES 检查，
 			// 避免大帧先入队再被 sender 拒，导致 memBytes 异常膨胀（特别是 sender 阻塞期间）。
 			if (size > this.maxMessageBytes) {
-				this.droppedCount += 1;
-				this.droppedBytes += size;
 				this.__dispatchDrop('oversize', size);
-				this.__safeWarn(`drop reason=oversize size=${size} cap=${this.maxMessageBytes}`);
 				return false;
 			}
 
@@ -135,15 +129,7 @@ class MemoryQueue {
 			// 允许"单条 overshoot"：上一条消息把 queueBytes 顶到 < MAX 但 >= MAX 之间任一值时
 			// 仍能入队；下一次再有非白名单消息才会被 drop。
 			if (this.memBytes >= this.memBudget && !this.__isBypass(jsonStr)) {
-				this.droppedCount += 1;
-				this.droppedBytes += size;
 				this.__dispatchDrop('queue-full', size);
-				// 仅状态翻转点打 log，避免 DC 卡死时刷屏
-				if (!this.queueOverflowActive) {
-					this.queueOverflowActive = true;
-					this.__safeWarn(`overflow-start queueBytes=${this.memBytes}`);
-					this.__safeRemoteLog(`rpc-queue.overflow-start${this.__tagSuffix()} queueBytes=${this.memBytes}`);
-				}
 				return false;
 			}
 
@@ -155,11 +141,10 @@ class MemoryQueue {
 	}
 
 	/**
-	 * 当前快照，用于诊断 dump。形态与 FBQ 对齐 + 阶段 1 私有诊断字段。
+	 * 当前快照，用于诊断 dump。形态与 FBQ 完全对齐（6 字段）。
 	 * @returns {{
 	 *   memCount: number, memBytes: number, diskBytes: number, writtenBytes: number,
-	 *   spilled: boolean, fsBroken: boolean,
-	 *   droppedCount: number, droppedBytes: number, queueOverflowActive: boolean
+	 *   spilled: boolean, fsBroken: boolean
 	 * }}
 	 */
 	stats() {
@@ -170,14 +155,11 @@ class MemoryQueue {
 			writtenBytes: 0,
 			spilled: false,
 			fsBroken: false,
-			droppedCount: this.droppedCount,
-			droppedBytes: this.droppedBytes,
-			queueOverflowActive: this.queueOverflowActive,
 		};
 	}
 
 	/**
-	 * 清空数据但保留实例可用，重置 drop 统计与 overflow 状态。
+	 * 清空数据但保留实例可用。
 	 */
 	async clear() {
 		return await this.mutex.withLock(async () => {
@@ -185,22 +167,17 @@ class MemoryQueue {
 			this.memQueue = [];
 			this.head = 0;
 			this.memBytes = 0;
-			this.droppedCount = 0;
-			this.droppedBytes = 0;
-			this.queueOverflowActive = false;
 		});
 	}
 
 	/**
-	 * 关闭队列：唤醒所有 waiter（让 iterator 返回 done）、汇总 drop/residual log。幂等。
+	 * 关闭队列：唤醒所有 waiter（让 iterator 返回 done）。幂等。
+	 * 不输出汇总日志：close 汇总职责由调用方注入的 monitor.summarize 处理。
 	 */
 	async destroy() {
 		return await this.mutex.withLock(async () => {
 			if (this.destroyed) return;
 			this.destroyed = true;
-
-			const residual = this.memQueue.length - this.head;
-			const residualBytes = this.memBytes;
 
 			// 唤醒所有等待者，让它们在下一轮循环看到 destroyed 并返回 done
 			const toWake = this.waiters.splice(0);
@@ -209,12 +186,6 @@ class MemoryQueue {
 			this.memQueue = [];
 			this.head = 0;
 			this.memBytes = 0;
-
-			if (this.droppedCount > 0 || residual > 0) {
-				this.__safeRemoteLog(
-					`rpc-queue.close${this.__tagSuffix()} dropped=${this.droppedCount} droppedBytes=${this.droppedBytes} residualChunks=${residual} residualBytes=${residualBytes}`,
-				);
-			}
 		});
 	}
 
@@ -243,14 +214,6 @@ class MemoryQueue {
 						this.head = 0;
 					}
 
-					// 满 → 未满 状态翻转：与 overflow-start 对称，含累计 dropped
-					if (this.queueOverflowActive && this.memBytes < this.memBudget) {
-						this.queueOverflowActive = false;
-						this.__safeInfo(`overflow-end dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`);
-						this.__safeRemoteLog(
-							`rpc-queue.overflow-end${this.__tagSuffix()} dropped=${this.droppedCount} droppedBytes=${this.droppedBytes}`,
-						);
-					}
 					return { value: item, done: false };
 				}
 				if (this.destroyed) return { done: true, value: undefined };
@@ -296,14 +259,6 @@ class MemoryQueue {
 
 	__safeWarn(msg) {
 		try { this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] ${msg}`); } catch { /* logger 自身坏了也不能让 enqueue 抛 */ }
-	}
-
-	__safeInfo(msg) {
-		try { this.logger.info?.(`[rpc-queue${this.__tagSuffix()}] ${msg}`); } catch { /* logger 自身坏了也不能让 enqueue/__nextIter 抛 */ }
-	}
-
-	__safeRemoteLog(text) {
-		try { remoteLog(text); } catch { /* 防御性：remoteLog 当前同步路径不抛，未来若变化此 wrapper 兜底 */ }
 	}
 }
 
