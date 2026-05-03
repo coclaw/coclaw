@@ -180,9 +180,21 @@ function processAssistant(task, msg, entry) {
 		if (block.type === 'thinking' && block.thinking) {
 			task.steps.push({ kind: 'thinking', text: block.thinking });
 		} else if (block.type === 'toolCall') {
-			task.steps.push({ kind: 'toolCall', name: block.name ?? 'unknown' });
+			// 直播路径（agent-stream.js）写出的 block：字段名沿用 OpenClaw 流式协议（toolCallId/args）
+			task.steps.push({
+				kind: 'toolCall',
+				name: block.name ?? 'unknown',
+				toolCallId: block.toolCallId,
+				args: block.args,
+			});
 		} else if (block.type === 'tool_use') {
-			task.steps.push({ kind: 'toolCall', name: block.name ?? 'unknown' });
+			// 回放路径（OpenClaw JSONL 持久化）：Anthropic 标准命名 id/input → 归一化为 toolCallId/args
+			task.steps.push({
+				kind: 'toolCall',
+				name: block.name ?? 'unknown',
+				toolCallId: block.id,
+				args: block.input,
+			});
 		} else if (block.type === 'text' && block.text) {
 			if (isFinal) {
 				// text blocks 在最终消息中为 resultText
@@ -232,7 +244,12 @@ function parseEntryTimestamp(entry) {
 function processToolResult(task, msg) {
 	const text = extractTextContent(msg.content);
 	if (text) {
-		task.steps.push({ kind: 'toolResult', text });
+		task.steps.push({
+			kind: 'toolResult',
+			text,
+			toolCallId: msg.toolCallId,
+			isError: msg.isError,
+		});
 	}
 	const imgs = extractImages(msg.content);
 	if (imgs.length) {

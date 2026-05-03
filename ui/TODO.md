@@ -300,3 +300,22 @@
     - 设计偏差：与"MAX_UPLOAD_SIZE 是唯一入口"不变量略有出入，但实际无害
     - 修法（可选）：让 `procRecordedVoice` 改走 `this.addFiles([file])` 而非直接调 store，恢复唯一入口
 
+## toolCall 数据已留住，渲染 + 配对 + 增量结果待补（2026-05-03）
+
+**背景**：本次只补齐了"数据层不阉割"——直播路径（`agent-stream.js`）和回放路径（`session-msg-group.js`）现在都把 `toolCallId` / `args`（`tool_use.input` 归一化）、toolResult 的 `toolCallId` / `isError` 透传到 step。但渲染层完全没动，下面三件事共用同一份"按 `toolCallId` 索引到原 toolCall step"的能力，登记后续一并设计落地。
+
+47. **toolCall step 加可展开折叠区，展示 args + 完整 toolResult**
+    - 现状：`ChatMsgItem.vue:130-134` 只画工具名 pill；toolResult 走另一条 step，受 `max-h-32` 限制
+    - 修法：toolCall step 默认收起，点击展开看入参（pretty-printed JSON）+ 配对的 toolResult 完整内容；UX 设计时考虑 args 体积（长 bash 命令不刷屏）
+
+48. **toolCall ↔ toolResult 按 `toolCallId` 显式配对**
+    - 现状：`session-msg-group.js` 的 `processToolResult` 把 toolResult 直接 push 到 `currentTask.steps` 末尾，纯按 JSONL 出现顺序堆叠；`agent-stream.js` 直播路径同样按事件顺序排
+    - 触发：现代模型并发发起多个 tool_use 块（同一 assistant message content 数组里有多个 tool_use），结果按各自跑完速度回包，顺序倒置时配对错乱
+    - 修法：分组器收 toolResult 时按 `msg.toolCallId` 找对应 toolCall step 挂上去；找不到再 fallback 到末尾。直播路径同步加按 id 索引
+    - 数据层已就绪（step 已带 `toolCallId`），就差查找逻辑
+
+49. **`phase: 'update'` 流式工具增量结果接住**
+    - 现状：`agent-stream.js` 没有 `phase === 'update'` 分支，partialResult 整段被吞
+    - 触发：长跑工具（bash 长命令、大文件操作）会一边跑一边推 partial
+    - 修法：按 `toolCallId` 找回对应 toolCall step（与 #48 共用索引），把 `partialResult` 累计到 step 上的某字段；渲染时优先显示最新 partial，result 到来后替换为终态
+

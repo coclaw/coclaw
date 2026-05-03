@@ -20,7 +20,13 @@ function assistantEntry(id, { text = null, thinking = null, toolCalls = [], stop
 		content.push({ type: 'thinking', thinking });
 	}
 	for (const tc of toolCalls) {
-		content.push({ type: 'toolCall', id: tc.id ?? 'call_1', name: tc.name });
+		// 直播 block 字段名：toolCallId/args（与 agent-stream.js 一致）
+		content.push({
+			type: 'toolCall',
+			toolCallId: tc.toolCallId ?? tc.id ?? 'call_1',
+			name: tc.name,
+			args: tc.args,
+		});
 	}
 	if (text) {
 		content.push({ type: 'text', text });
@@ -155,11 +161,11 @@ describe('groupSessionMessages', () => {
 		// 中间步骤
 		expect(task.steps).toEqual([
 			{ kind: 'thinking', text: '需要查询' },
-			{ kind: 'toolCall', name: 'search' },
-			{ kind: 'toolResult', text: '搜索结果：xxx' },
+			{ kind: 'toolCall', name: 'search', toolCallId: 'call_1' },
+			{ kind: 'toolResult', text: '搜索结果：xxx', toolCallId: 'call_1', isError: false },
 			{ kind: 'thinking', text: '还需要确认' },
-			{ kind: 'toolCall', name: 'verify' },
-			{ kind: 'toolResult', text: '确认结果：ok' },
+			{ kind: 'toolCall', name: 'verify', toolCallId: 'call_1' },
+			{ kind: 'toolResult', text: '确认结果：ok', toolCallId: 'call_1', isError: false },
 		]);
 	});
 
@@ -569,7 +575,7 @@ describe('groupSessionMessages', () => {
 		];
 		const result = groupSessionMessages(entries);
 		expect(result[1].resultText).toBe('最终输出被截断...');
-		expect(result[1].steps).toContainEqual({ kind: 'toolCall', name: 'process' });
+		expect(result[1].steps).toContainEqual({ kind: 'toolCall', name: 'process', toolCallId: 'call_1' });
 	});
 
 	test('tool_use block type 也被识别', () => {
@@ -592,7 +598,135 @@ describe('groupSessionMessages', () => {
 
 		const result = groupSessionMessages(entries);
 		const task = result[1];
-		expect(task.steps).toContainEqual({ kind: 'toolCall', name: 'my_tool' });
+		expect(task.steps).toContainEqual({ kind: 'toolCall', name: 'my_tool', toolCallId: 'tu_1' });
+	});
+
+	test('tool_use block 的 input 映射为 step.args、id 映射为 toolCallId', () => {
+		const entries = [
+			userEntry('u1', '问题'),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: [{
+						type: 'tool_use',
+						name: 'shell',
+						id: 'tu_42',
+						input: { command: 'ls -la', cwd: '/tmp' },
+					}],
+					stopReason: 'toolUse',
+					model: 'test',
+					timestamp: 1000,
+				},
+			},
+			toolResultEntry('tr1', '文件列表'),
+			assistantEntry('a2', { text: '完成' }),
+		];
+
+		const result = groupSessionMessages(entries);
+		const task = result[1];
+		expect(task.steps).toContainEqual({
+			kind: 'toolCall',
+			name: 'shell',
+			toolCallId: 'tu_42',
+			args: { command: 'ls -la', cwd: '/tmp' },
+		});
+	});
+
+	test('toolCall block（直播写入）的 toolCallId/args 透传到 step', () => {
+		const entries = [
+			userEntry('u1', '问题'),
+			assistantEntry('a1', {
+				toolCalls: [{
+					toolCallId: 'call_xyz',
+					name: 'http',
+					args: { url: 'https://example.com' },
+				}],
+				stopReason: 'toolUse',
+			}),
+			toolResultEntry('tr1', '响应'),
+			assistantEntry('a2', { text: '完成' }),
+		];
+
+		const result = groupSessionMessages(entries);
+		const task = result[1];
+		expect(task.steps).toContainEqual({
+			kind: 'toolCall',
+			name: 'http',
+			toolCallId: 'call_xyz',
+			args: { url: 'https://example.com' },
+		});
+	});
+
+	test('同一 assistant message 多个并发 tool_use：每个 step 独立透传 toolCallId/args', () => {
+		// 现代模型并发场景：一次 assistant turn 里同时发起多个 tool_use 块
+		// 数据层必须为每个块产生独立 step、各自带正确的 toolCallId/args
+		// 这是后续按 toolCallId 配对 toolResult（TODO #48）的数据前提
+		const entries = [
+			userEntry('u1', '查 A 和 B'),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					content: [
+						{ type: 'tool_use', name: 'lookup', id: 'tu_A', input: { key: 'A' } },
+						{ type: 'tool_use', name: 'lookup', id: 'tu_B', input: { key: 'B' } },
+					],
+					stopReason: 'toolUse',
+					model: 'test',
+					timestamp: 1000,
+				},
+			},
+		];
+
+		const result = groupSessionMessages(entries);
+		const task = result[1];
+		const toolCallSteps = task.steps.filter((s) => s.kind === 'toolCall');
+		expect(toolCallSteps).toHaveLength(2);
+		expect(toolCallSteps[0]).toEqual({
+			kind: 'toolCall',
+			name: 'lookup',
+			toolCallId: 'tu_A',
+			args: { key: 'A' },
+		});
+		expect(toolCallSteps[1]).toEqual({
+			kind: 'toolCall',
+			name: 'lookup',
+			toolCallId: 'tu_B',
+			args: { key: 'B' },
+		});
+	});
+
+	test('toolResult 的 toolCallId/isError 透传到 step', () => {
+		const entries = [
+			userEntry('u1', '问题'),
+			assistantEntry('a1', {
+				toolCalls: [{ toolCallId: 'call_err', name: 'fail_tool' }],
+				stopReason: 'toolUse',
+			}),
+			{
+				type: 'message',
+				id: 'tr_err',
+				message: {
+					role: 'toolResult',
+					toolCallId: 'call_err',
+					content: [{ type: 'text', text: '出错了' }],
+					isError: true,
+				},
+			},
+			assistantEntry('a2', { text: '已知失败' }),
+		];
+
+		const result = groupSessionMessages(entries);
+		const task = result[1];
+		expect(task.steps).toContainEqual({
+			kind: 'toolResult',
+			text: '出错了',
+			toolCallId: 'call_err',
+			isError: true,
+		});
 	});
 
 	test('_streaming 条目标记传递到 botTask.isStreaming', () => {
@@ -804,8 +938,8 @@ describe('groupSessionMessages — 系统块剥离（systemNote）', () => {
 		expect(botTask.resultText).toBe('处理完成');
 		expect(botTask.steps).toEqual([
 			{ kind: 'thinking', text: '调工具' },
-			{ kind: 'toolCall', name: 'do' },
-			{ kind: 'toolResult', text: '结果' },
+			{ kind: 'toolCall', name: 'do', toolCallId: 'call_1' },
+			{ kind: 'toolResult', text: '结果', toolCallId: 'call_1', isError: false },
 		]);
 	});
 
@@ -1130,8 +1264,8 @@ describe('groupSessionMessages — 系统块剥离（systemNote）', () => {
 		expect(result[1].text).toBe('inject between segments');
 		expect(result[2].resultText).toBeNull();
 		expect(result[2].steps).toEqual([
-			{ kind: 'toolCall', name: 'do' },
-			{ kind: 'toolResult', text: '处理中' },
+			{ kind: 'toolCall', name: 'do', toolCallId: 'call_1' },
+			{ kind: 'toolResult', text: '处理中', toolCallId: 'call_1', isError: false },
 		]);
 		expect(result[4].resultText).toBe('新回复');
 	});

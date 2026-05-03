@@ -60,7 +60,12 @@ export function applyAgentEvent(msgs, payload) {
 			const entry = findStreamingBotEntry(msgs);
 			if (entry) {
 				const content = ensureContentArray(entry);
-				content.push({ type: 'toolCall', name: data.name ?? 'unknown' });
+				content.push({
+					type: 'toolCall',
+					name: data.name ?? 'unknown',
+					toolCallId: data.toolCallId,
+					args: data.args,
+				});
 				entry.message.stopReason = 'toolUse';
 				result.changed = true;
 			}
@@ -77,7 +82,14 @@ export function applyAgentEvent(msgs, payload) {
 					id: `__local_tr_${Date.now()}`,
 					_local: true,
 					_streaming: true,
-					message: { role: 'toolResult', content: text },
+					message: {
+						role: 'toolResult',
+						content: text,
+						toolCallId: data.toolCallId,
+						name: data.name,
+						isError: data.isError,
+						meta: data.meta,
+					},
 				},
 				{
 					type: 'message',

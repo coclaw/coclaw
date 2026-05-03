@@ -80,6 +80,25 @@ describe('applyAgentEvent', () => {
 		expect(result.changed).toBe(true);
 	});
 
+	test('tool stream start：toolCallId/args 透传到 toolCall block', () => {
+		const msgs = makeStreamingMsgs();
+		applyAgentEvent(msgs, { stream: 'tool', data: {
+			phase: 'start',
+			name: 'shell',
+			toolCallId: 'call_42',
+			args: { command: 'ls -la', cwd: '/tmp' },
+		} });
+
+		const entry = msgs.find((m) => m._streaming && m.message.role === 'assistant');
+		const block = entry.message.content.find((b) => b.type === 'toolCall');
+		expect(block).toEqual({
+			type: 'toolCall',
+			name: 'shell',
+			toolCallId: 'call_42',
+			args: { command: 'ls -la', cwd: '/tmp' },
+		});
+	});
+
 	test('tool stream result：追加 toolResult 和新 streaming bot 条目', () => {
 		const msgs = makeStreamingMsgs();
 		applyAgentEvent(msgs, { stream: 'tool', data: { phase: 'result', result: 'search result text' } });
@@ -116,6 +135,28 @@ describe('applyAgentEvent', () => {
 
 		const newBotEntry = msgs[msgs.length - 1];
 		expect(newBotEntry._startTime).toBe(1000);
+	});
+
+	test('tool stream result：toolCallId/name/isError/meta 透传到 toolResult message', () => {
+		const msgs = makeStreamingMsgs();
+		applyAgentEvent(msgs, { stream: 'tool', data: {
+			phase: 'result',
+			name: 'shell',
+			toolCallId: 'call_42',
+			isError: true,
+			meta: { kind: 'exec', exitCode: 1 },
+			result: 'permission denied',
+		} });
+
+		const trEntry = msgs.find((m) => m.message?.role === 'toolResult');
+		expect(trEntry.message).toEqual({
+			role: 'toolResult',
+			content: 'permission denied',
+			toolCallId: 'call_42',
+			name: 'shell',
+			isError: true,
+			meta: { kind: 'exec', exitCode: 1 },
+		});
 	});
 
 	test('thinking stream：追加 thinking block', () => {
