@@ -1126,7 +1126,7 @@ describe('FileManagerPage', () => {
 			const files = [{ name: 'cached.txt', type: 'file' }];
 			mockListFiles.mockResolvedValue({ files });
 
-			const wrapper = mountPage();
+			mountPage();
 			await flushPromises();
 
 			const store = useFilesStore();

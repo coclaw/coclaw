@@ -133,7 +133,7 @@ function createWrapper(opts = {}) {
 		global: {
 			plugins: [pinia],
 			mocks: {
-				$t: (key, p) => {
+				$t: (key) => {
 					return i18nMap[key] ?? key;
 				},
 				$route: {

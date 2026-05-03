@@ -458,26 +458,25 @@ describe('saveBlobToFile', () => {
 
 	test('Capacitor 环境：调用 __nativeShareFile', async () => {
 		platformState.isCapacitorApp = true;
+		// 在工厂闭包外创建 spy，避免工厂被多次调用时返回不同 spy 实例导致断言失真
+		const writeFileSpy = vi.fn().mockResolvedValue({ uri: 'file:///cache/test.txt' });
+		const deleteFileSpy = vi.fn().mockResolvedValue();
+		const rmdirSpy = vi.fn().mockResolvedValue();
+		const shareSpy = vi.fn().mockResolvedValue();
 		vi.doMock('@capacitor/filesystem', () => ({
-			Filesystem: {
-				writeFile: vi.fn().mockResolvedValue({ uri: 'file:///cache/test.txt' }),
-				deleteFile: vi.fn().mockResolvedValue(),
-				rmdir: vi.fn().mockResolvedValue(),
-			},
+			Filesystem: { writeFile: writeFileSpy, deleteFile: deleteFileSpy, rmdir: rmdirSpy },
 			Directory: { Cache: 'CACHE' },
 		}));
 		vi.doMock('@capacitor/share', () => ({
-			Share: { share: vi.fn().mockResolvedValue() },
+			Share: { share: shareSpy },
 		}));
 
 		const blob = new Blob(['hello']);
 		await saveBlobToFile(blob, 'test.txt');
 
-		const { Filesystem } = await import('@capacitor/filesystem');
-		const { Share } = await import('@capacitor/share');
-		expect(Filesystem.writeFile).toHaveBeenCalledOnce();
-		expect(Share.share).toHaveBeenCalledWith({ files: ['file:///cache/test.txt'] });
-		expect(Filesystem.deleteFile).toHaveBeenCalledOnce();
+		expect(writeFileSpy).toHaveBeenCalledOnce();
+		expect(shareSpy).toHaveBeenCalledWith({ files: ['file:///cache/test.txt'] });
+		expect(deleteFileSpy).toHaveBeenCalledOnce();
 	});
 });
 

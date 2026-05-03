@@ -365,7 +365,7 @@ test.describe('文件浏览器 @file', () => {
 	});
 
 	test('ManageClawsPage AgentCard 有文件管理入口', async ({ page }) => {
-		const claw = await setup(page, test);
+		await setup(page, test);
 
 		await page.goto('/claws');
 		// 等待 AgentCard 渲染
