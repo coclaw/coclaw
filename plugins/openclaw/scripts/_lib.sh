@@ -8,28 +8,33 @@ BINDINGS_FILE="$HOME/.openclaw/coclaw/bindings.json"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+# OpenClaw 2026.5 起把安装记录从 openclaw.json 的 plugins.installs 搬到了
+# ~/.openclaw/plugins/installs.json 的 installRecords，且明确标记前者为 transient
+# 不再持久化，所以模式判断必须读这本新账。
+INSTALL_RECORDS_FILE="$HOME/.openclaw/plugins/installs.json"
 
 # 检测当前安装模式
 # 返回: link | npm | archive | none
 # 注意: OpenClaw --link 安装实际记录 source="path"，此函数通过
 #       比较 sourcePath 与 installPath 是否相同来判断是否为 link 模式。
 get_install_mode() {
-	if [[ ! -f "$OPENCLAW_CONFIG" ]]; then
+	if [[ ! -f "$INSTALL_RECORDS_FILE" ]]; then
 		echo "none"
 		return
 	fi
 	local result
 	result=$(node -e "
-		const c = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG', 'utf8'));
-		const r = c?.plugins?.installs?.['$PLUGIN_ID'];
-		if (!r) { console.log('none'); process.exit(); }
-		if (r.source === 'path') {
-			const same = r.sourcePath && r.installPath && r.sourcePath === r.installPath;
-			console.log(same ? 'link' : 'link:mismatch');
-		} else {
-			console.log(r.source ?? 'none');
-		}
+		try {
+			const c = JSON.parse(require('fs').readFileSync('$INSTALL_RECORDS_FILE', 'utf8'));
+			const r = c?.installRecords?.['$PLUGIN_ID'];
+			if (!r) { console.log('none'); process.exit(); }
+			if (r.source === 'path') {
+				const same = r.sourcePath && r.installPath && r.sourcePath === r.installPath;
+				console.log(same ? 'link' : 'link:mismatch');
+			} else {
+				console.log(r.source ?? 'none');
+			}
+		} catch (e) { console.log('none'); }
 	" 2>/dev/null) || true
 	if [[ "$result" == "link:mismatch" ]]; then
 		echo "[ERROR] source=path 但 sourcePath !== installPath，安装状态异常" >&2
@@ -42,14 +47,16 @@ get_install_mode() {
 
 # 获取已安装的版本号
 get_installed_version() {
-	if [[ ! -f "$OPENCLAW_CONFIG" ]]; then
+	if [[ ! -f "$INSTALL_RECORDS_FILE" ]]; then
 		echo ""
 		return
 	fi
 	node -e "
-		const c = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG', 'utf8'));
-		const r = c?.plugins?.installs?.['$PLUGIN_ID'];
-		console.log(r?.version ?? '');
+		try {
+			const c = JSON.parse(require('fs').readFileSync('$INSTALL_RECORDS_FILE', 'utf8'));
+			const r = c?.installRecords?.['$PLUGIN_ID'];
+			console.log(r?.version ?? '');
+		} catch (e) { console.log(''); }
 	" 2>/dev/null || true
 }
 
@@ -62,7 +69,8 @@ ensure_uninstalled() {
 		return 0
 	fi
 	echo "[INFO] 当前安装模式: $mode，执行卸载..."
-	openclaw plugins uninstall "$PLUGIN_ID" || true
+	# --force 跳过交互确认；脚本环境没有 stdin tty。
+	openclaw plugins uninstall --force "$PLUGIN_ID" || true
 	# 清理可能残留的 extensions 目录
 	local ext_dir="$HOME/.openclaw/extensions/$PLUGIN_ID"
 	if [[ -d "$ext_dir" ]]; then

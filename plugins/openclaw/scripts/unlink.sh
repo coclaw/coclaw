@@ -19,8 +19,8 @@ if [[ "$mode" != "link" ]]; then
 	exit 1
 fi
 
-echo "[STEP] openclaw plugins uninstall $PLUGIN_ID"
-openclaw plugins uninstall "$PLUGIN_ID"
+echo "[STEP] openclaw plugins uninstall --force $PLUGIN_ID"
+openclaw plugins uninstall --force "$PLUGIN_ID"
 
 echo ""
 echo "[DONE] link 模式已卸载（gateway 将自动重启）"

@@ -83,24 +83,27 @@ fi
 # Step 6: 恢复到原始安装模式
 echo ""
 echo "[STEP] 恢复到原始安装模式: $ORIGINAL_MODE"
-ensure_uninstalled
 
 case "$ORIGINAL_MODE" in
 	link)
-		echo "[SUB] 恢复 link 模式"
-		openclaw plugins install --link "$PLUGIN_DIR"
+		# 不能直接 openclaw plugins install --link "$PLUGIN_DIR"：pnpm workspace
+		# 的依赖 symlink 会被安全扫描拒掉。link.sh 内部用 stage 目录绕开。
+		# link.sh 自己会处理"先卸载再装"的状态切换，无需此处 ensure_uninstalled。
+		echo "[SUB] 恢复 link 模式（走 link.sh）"
+		bash "$SCRIPT_DIR/link.sh"
 		;;
 	npm)
+		ensure_uninstalled
 		echo "[SUB] 恢复 npm 模式"
 		openclaw plugins install "$PKG_NAME"
+		wait_gateway_restart
+		verify_install
 		;;
 	*)
+		ensure_uninstalled
 		echo "[INFO] 原始状态为 $ORIGINAL_MODE，不恢复安装"
 		;;
 esac
-
-wait_gateway_restart
-verify_install
 
 echo ""
 echo "[DONE] 预发布验证完成，已恢复到 $ORIGINAL_MODE 模式"

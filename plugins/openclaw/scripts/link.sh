@@ -32,23 +32,17 @@ build_stage() {
 		rm -f "$self_ref"
 	fi
 
-	# 把 src/ 和 vendor/ 换成回指真源目录的 symlink，保留“改代码 → restart gateway”热更新。
+	# 把 src/ 换成回指真源目录的 symlink，保留“改代码 → restart gateway”热更新。
 	#
-	# 为什么仅这两个目录：
+	# 为什么仅 src/：
 	#   OpenClaw discovery 对以下三类文件做 realpath-in-root 检查，symlink 外指会被拒：
 	#     · 入口 index.js（checkSourceEscapesRoot）
 	#     · package.json / openclaw.plugin.json（openBoundaryFileSync → boundary-path.ts）
 	#   这三个必须保留 deploy 产出的真文件拷贝。src/ 下的模块仅被 Node runtime
 	#   require 加载（自动跟随 symlink），不经过任何 boundary 检查。
 	#   所以 src/ 用 symlink 既能热更新，又不触发拦截。
-	local src_paths=(src vendor)
-	local p
-	for p in "${src_paths[@]}"; do
-		if [[ -e "$PLUGIN_DIR/$p" || -L "$PLUGIN_DIR/$p" ]]; then
-			rm -rf "$STAGE_DIR/$p"
-			ln -s "$PLUGIN_DIR/$p" "$STAGE_DIR/$p"
-		fi
-	done
+	rm -rf "$STAGE_DIR/src"
+	ln -s "$PLUGIN_DIR/src" "$STAGE_DIR/src"
 
 	# 核对：node_modules 里不允许再有指向 stage 外的 symlink，
 	# 一旦 pnpm 布局变更引入新的外指会立即暴露。
@@ -72,12 +66,9 @@ echo "=== 切换到 link 开发模式 ==="
 
 mode=$(get_install_mode)
 
-if [[ "$mode" == "link" ]]; then
-	echo "[INFO] 已处于 link 模式，无需操作"
-	echo "[HINT] 代码更新后只需: openclaw gateway restart"
-	exit 0
-fi
-
+# 不论当前是 link/npm/archive 哪种模式都先卸载，再重建 stage 重装。
+# 不为"已是 link"做早退：用户主动跑 link 通常是因为改了 manifest/依赖
+# 想刷新 stage（纯 src 改动只需 gateway restart，不应跑 link）。
 if [[ "$mode" != "none" ]]; then
 	echo "[INFO] 当前为 $mode 模式，先卸载..."
 	ensure_uninstalled
@@ -93,4 +84,5 @@ verify_install
 
 echo ""
 echo "[DONE] 已切换到 link 开发模式（stage: $STAGE_DIR）"
-echo "[HINT] 代码更新后只需: openclaw gateway restart"
+echo "[HINT] 改 src/** 后只需: openclaw gateway restart"
+echo "[HINT] 改 package.json / openclaw.plugin.json / 依赖后再跑: pnpm run link"
