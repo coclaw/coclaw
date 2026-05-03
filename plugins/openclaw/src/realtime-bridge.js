@@ -1344,15 +1344,16 @@ export class RealtimeBridge {
 		this.started = true;
 		// rpc DC 文件回退队列的启动期预热（B-stage1 plan-2）：清残留 *.jsonl + 探测磁盘容量。
 		// 远早于第一条 rpc DC 建立（dump 设计）；__diskCap 暂存供 B-stage2 切 FBQ 时取用。
-		// 整块包 try/catch：cleanup/measure 自身不抛，但 resolveStateDir() 同步可能抛（runtime
-		// 注入的 resolver 自抛 / homedir 异常）；任何异常都不能把 bridge.start 卡死。
+		// 整块包 try/catch：模块自身不抛，但仍可能进入 catch 的路径——resolveStateDir() 同步抛
+		// （runtime 注入的 resolver 自抛 / homedir 异常）/ nodePath.join 参数异常 / 测试注入的
+		// stub 抛错。任何路径都不能把 bridge.start 卡死。
 		try {
 			const queueDir = nodePath.join(resolveStateDir(), CHANNEL_ID, 'rpc-queues');
 			await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
 			this.__diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
 		}
-		/* c8 ignore next 4 -- 防御性兜底：模块自身已 never-throw，仅 resolveStateDir 同步抛会进入 */
 		catch (err) {
+			/* c8 ignore next -- ?./?? fallback：err 总是 Error，logger.warn 总存在 */
 			this.logger.warn?.(`[coclaw] rpc-queues startup prep failed (skipped): ${err?.message ?? err}`);
 			this.__diskCap = null;
 		}

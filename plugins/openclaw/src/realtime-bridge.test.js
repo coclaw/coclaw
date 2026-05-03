@@ -4531,7 +4531,8 @@ test('bridge.start should swallow startup-prep failures (cleanup stub throws)', 
 	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	const warns = [];
 	const logger = { warn: (m) => warns.push(String(m)), info() {}, debug() {} };
-	// 模拟 prep 块内任何同步/异步抛错（典型路径：runtime 注入的 resolveStateDir 抛）
+	// 覆盖 prep try/catch 的 awaited rejection 路径——同 catch 也兜 resolveStateDir() / nodePath.join
+	// 同步抛，但本用例直接验证 cleanup/measure 自身 reject 时 bridge.start 不被卡死。
 	const bridge = createBridge({
 		cleanupRpcQueueResiduals: async () => { throw new Error('boom-prep'); },
 	});

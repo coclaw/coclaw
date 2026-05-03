@@ -232,7 +232,7 @@ diskCap = min(1 GB, max(64 MB, free × 50%))
 
 **只查一次**：避免 enqueue 热路径承担 syscall。运行期完全不查盘。
 
-**跨平台**（`fs.statfs`，Node 18.15+ 提供）：
+**跨平台**（`fs.statfs`，Node 18.15+ 提供，目标运行环境为 Node 20+）：
 
 | 平台 | 实现 | 备注 |
 |------|------|------|
