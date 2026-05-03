@@ -1,163 +1,94 @@
 # CoClaw OpenClaw 插件开发约定
 
 > 适用范围：`coclaw/plugins/openclaw` 及其子目录。
-> 本文件仅写相对上级 `coclaw/AGENTS.md` 与 `coclaw/plugins/AGENTS.md` 的增量规则。
+> 本文件是相对 `coclaw/CLAUDE.md`、`coclaw/plugins/CLAUDE.md` 的增量。仅写**硬约束**和**topic→doc 索引**——
+> 详细背景、设计决策、机制原理一律下沉到 `docs/`，按需阅读。
 
-## pion-ipc / pion-node
+## 起点
 
-插件依赖 `@coclaw/pion-node`（npm 包），由 CoClaw 自行维护。本地仓库：
-- **pion-ipc**（Go）：`~/.openclaw/workspace/pion-ipc`（GitHub: `coclaw/pion-ipc`）
-- **pion-node**（JS SDK）：`~/.openclaw/workspace/pion-node`（GitHub: `coclaw/pion-node`）
+不熟悉本插件时**先读 [`docs/architecture.md`](docs/architecture.md)**——一份地图：模块→职责映射、通信拓扑、状态文件清单。
 
-binary 解析由 pion-node 内部处理（`PION_IPC_BIN` env → npm 平台包 → PATH），插件不参与。
+## 硬约束（写代码前必读）
 
-## WebRTC 实现路径
+### 绑定/设置存储
 
-- 主力实现为 **pion**，pion 加载失败时回退到 **werift**。
-- `ndc`（node-datachannel）的代码路径（`src/webrtc/ndc-preloader.js`）仍保留，但 npm 依赖和 vendor 预编译包已于 2026-04-19 摘除 —— 运行时必然走 fallback 到 werift。此段属过渡期残留，待整体清理时与 werift 一并移除。
-- **后续行为分析、设计决策、资源模型（如 coturn TURN 占用）均只考虑 pion**，不必再为 ndc/werift 做额外评估或兼容设计。
+- 绑定信息存 `~/.openclaw/coclaw/bindings.json`（structure: `{ default: { serverUrl, clawId, token, boundAt } }`）；插件设置存同目录 `settings.json`（含 claw name 等）。
+- **禁止**写入 `openclaw.json` 的 `channels.coclaw` 或 `plugins.entries.*.config`。**Why:** 卸载插件后这些节点残留会让 OpenClaw schema 验证失败、gateway 起不来。
+- `config.js` / `settings.js` 是这两个文件的**唯一读写入口**。其它模块直接动文件 = bug。
+- env `COCLAW_SERVER_URL` 可运行时覆盖 serverUrl，不影响存储。
 
-## 绑定信息存储
+### 文件 I/O 安全
 
-- 绑定信息存储在 **`~/.openclaw/coclaw/bindings.json`**（通过 `resolveStateDir()` + channel ID 组合路径），**不存储在 `openclaw.json` 中**。
-- 这是为了避免卸载插件后 `channels.coclaw` 节点残留导致 OpenClaw gateway 无法启动。
-- 文件结构为以 account ID 为 key 的对象，当前只使用 `default`：
-  ```json
-  {
-    "default": {
-      "serverUrl": "https://...",
-      "clawId": "claw-xxx",
-      "token": "token-xxx",
-      "boundAt": "2026-03-04T..."
-    }
-  }
-  ```
-- 禁止将绑定信息写入 `openclaw.json` 的 `channels.coclaw` 或 `plugins.entries.openclaw-coclaw.config`。
-- `config.js` 是读写绑定信息的唯一入口，禁止在其他模块中直接操作 bindings 文件。
-- `settings.js` 是读写插件设置（claw name 等）的唯一入口，存储于同目录的 `settings.json`。设置独立于绑定信息，解绑后重新绑定不会丢失。
-- 环境变量 `COCLAW_SERVER_URL` 可覆盖 serverUrl（运行时覆盖，不影响存储）。
+- **禁止裸 `fs.writeFile`**——写自管文件必走 `atomicWriteFile` / `atomicWriteJsonFile`（`src/utils/atomic-write.js`）。**Why:** 写一半崩溃会留半截文件。
+- read-modify-write **必须加锁**——同一文件的读→改→写在同一个 `mutex.withLock()` 内（`src/utils/mutex.js`，每文件独立 mutex 实例）。
+- 纯只读可不加锁（最多读到略旧快照）。
+- `withLock(...)` 返回的 Promise 若不 await，**必须 `.catch()`**——unhandled rejection 会带垮 gateway。
+- **禁止嵌套同把锁**（`withLock(fn)` 内再调同一 mutex 的 `withLock` 死锁）。
+- fn 应尽量短，长持锁阻后续。
 
-## Logger 规范
+### Logger / remoteLog
 
-- OpenClaw gateway 提供的 logger 是 pino 风格，有 `.info()` / `.warn()` / `.error()`，**没有 `.log()` 方法**。
-- 插件代码中所有日志调用必须使用 `.info?.()` / `.warn?.()` / `.error?.()` 等带可选链的调用，**禁止使用 `.log()`**，也禁止将 logger 当函数直接调用（如 `logger('msg')`）。
-- 可选链 `?.()` 确保即使 logger 缺少某方法或 logger 本身为 undefined，也不会抛异常中断正常流程。
+- gateway 注入的 logger 是 pino 风格：只有 `.info() / .warn() / .error()`，**没有 `.log()`**。
+- 调用一律用可选链：`logger.info?.(...)` / `logger.warn?.(...)` / `logger.error?.(...)`。**Why:** logger 缺方法或本身为 undefined 时不抛异常中断流程。
+- **禁止** `logger('msg')`（不是函数）/ `logger.log(...)`（不存在）。
+- `remoteLog(text)`（`src/remote-log.js`）：关键诊断推送 server。格式 `<模块>.<事件> key=value`。仅关键事件，**禁止高频**。
+- **禁止在 auto-upgrade worker 进程中调 remoteLog**——worker 是独立 spawn 子进程，无 bridge 连接。
 
-## remoteLog 远程日志
+### Gateway RPC handler
 
-- `remoteLog(text)` 函数（`src/remote-log.js`）用于将重要诊断信息推送到 CoClaw server
-- 使用规则与 ui 侧一致（仅关键事件，禁止高频日志），格式：`<模块>.<事件> key=value`
-- **禁止在 auto-upgrade worker 进程中使用**：worker 是独立 spawn 的子进程，没有 bridge 连接
+- error 响应统一走 `common/errors.js` helper：异常 `respondError(respond, err)`、参数校验失败 `respondInvalid(respond, msg)`。**Why:** 直接 `respond(false, { error })` 是旧格式，下游解析不到结构化错误。
+- 所有 handler 必须 `try/catch`。
+- 新方法用 `coclaw.` 前缀。命名/Scope/历史方法详见 [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md)。
 
-## 文件 I/O 安全规范
+### Hook / RPC 双实例陷阱（`--link` 安装模式）
 
-- **禁止裸 `fs.writeFile`**：写入插件自管文件时，必须使用 `atomicWriteFile` 或 `atomicWriteJsonFile`（`src/utils/atomic-write.js`），防止写入过程中崩溃导致文件损坏。
-- **read-modify-write 必须加锁**：对同一文件的读取→修改→写回操作必须在同一个 `mutex.withLock()` 内完成（`src/utils/mutex.js`）。每个需要保护的文件应有独立的 mutex 实例，由使用侧创建和管理。
-- **纯只读可不加锁**：仅读取、不基于结果做写入决策时，可以不加锁（最多读到略旧快照）。
-- **fire-and-forget 必须 `.catch()`**：对 `withLock()` 返回的 Promise 若不 await，必须 `.catch()` 防止 unhandled rejection 导致 gateway 崩溃。
-- **禁止嵌套同一把锁**：在 `withLock(fn)` 的 fn 内再调同一个 mutex 的 `withLock` 会死锁。
-- **fn 应尽量短**：长时间持锁会阻塞后续操作。
+- `api.on()` 注册的 hook 与 `api.registerGatewayMethod()` 注册的 RPC handler **可能跑在不同 ESM 模块实例中**，即使同一进程、同一 `register()` 调用。原因：symlink 让 ESM 模块缓存按 URL 命中不同副本。
+- **后果**：闭包捕获的对象（如 Manager 实例）看似同一个，**实际是两份独立内存拷贝**。Hook 改的 `__cache` 在 RPC handler 看不到。
+- **应对**：跨 hook/RPC 共享的状态**不能依赖纯内存缓存**，必须经磁盘中转——读取侧每次从磁盘 reload。现有 `topic-manager` / `chat-history-manager` 是这套：lazy load + per-write atomic + `__cache.has(agentId) || await load()` 兜底；`session-manager` 是另一套——纯读时扫描 OpenClaw 的 `sessions.json` + JSONL，不写不缓存。
+- `api.on` 在某些上下文（CLI mock API）可能不存在，注册时加 `typeof api.on === 'function'` 守卫。
 
-## DataChannel 应用层分片/重组
+### Service / register 副作用边界
 
-插件通过 WebRTC DataChannel 传输 JSON-RPC 消息和文件数据。DataChannel 底层基于 SCTP，但**两个 WebRTC 库均不提供透明的应用层大消息分片**，因此插件自建了分片/重组协议（`src/webrtc/dc-chunking.js`）。
+- `realtime-bridge` 和 `auto-upgrade` scheduler **必须通过 `api.registerService()` 注册**，**禁止在 `register()` 直接启动**。**Why:** `register()` 在 CLI 上下文（`plugins install/uninstall`）也会被调用，直启会创建 WebSocket / 定时器导致进程退不出。
+- `register()` 必须区分 `api.registrationMode`：`cli-metadata` 只 registerCli；其它非 `full` 模式（含 discovery，每 14s 一次）early return；只有 `full` 才能 `setRuntime` / 启 service / 注册 RPC。
 
-### 为什么不能依赖库的 SCTP 分片
+### bind / unbind 共享层
 
-- **node-datachannel**（主力）：`send()` 直通 libdatachannel 原生层。消息超过远端 SDP 声明的 `a=max-message-size` 时，libdatachannel 直接抛异常。SCTP 传输层的分片（将一条 SCTP 消息拆成多个 IP 包）是透明的，但 `max-message-size` 是应用层硬上限——超过即拒绝，不会自动切分。
-- **werift**（回退）：SCTP 层确实按 1200 字节自动分片并透明重组，`send()` 可传任意大小消息。但它在 SDP 中声明 `max-message-size: 65536`，远端（浏览器或 node-datachannel）会按此限制拒收超大消息。即使 werift 侧不报错，远端仍会丢弃。
+- bind / unbind / enroll 的 CLI 是**瘦 CLI**：参数解析 → `callGatewayMethod` RPC → 展示结果。核心逻辑在 gateway 内 RPC handler。
+- 所有 bind/unbind 核心逻辑集中在 `common/claw-binding.js`：RPC handler 与 `/coclaw bind` 斜杠命令共享 `doBind` / `doUnbind`。
+- **禁止在 CLI 进程直接操作 `bindings.json`**——只走 RPC，让 gateway 统一管理 bridge 生命周期。
+- **unbind 是强制操作**（非 best-effort）：server 不可达时 unbind 失败、不清本地 config，避免孤儿 bot。server 返回 401/404/410 视为 bot 已不存在，允许继续。
 
-### 两条 DataChannel 路径的分片策略
+### Plugin 自发事件 patch 语义
 
-- **rpc DC**（`label="rpc"`）：使用 `dc-chunking.js` 的 `buildChunks` / `createReassembler` 做应用层分片和重组；生产路径统一经由 `MemoryQueue` + `RpcDcSender` 的两段式管道（含流控，详见下节）。分片阈值取自远端 SDP 的 `a=max-message-size`（`webrtc-peer.js` 解析）。
-- **file DC**（`label="file:<transferId>"`）：不经过 `dc-chunking`。每个文件传输使用独立的专用 DataChannel，由 `file-manager/handler.js` 实现流式传输 + 背压控制，不需要 JSON 消息的分片/重组。
+- `broadcastPluginEvent(event, payload)`（`realtime-bridge.js` 导出）payload 按 **patch 语义**处理：server / UI 仅更新 payload 中实际出现的字段（`Object.hasOwn` 判定），缺失字段保留原值。
+- **禁止 missing-as-null**——`coclaw.info.patch` handler 只发 `{ name, hostName }`，若 server 把缺失的 `pluginVersion` / `agentModels` 当 null 会清空 admin 仪表盘。
+- 事件清单与字段约定见 [`docs/plugin-events.md`](docs/plugin-events.md)。
 
-### 维护约束
+### 测试覆盖率门槛
 
-- `dc-chunking.js` 是必要组件，不可删除或替换为库内置能力——当前两个库均无此能力。
-- 若未来升级 WebRTC 库版本，需重新验证其 `send()` 对超限消息的行为是否变更。
-- 分片协议格式（5 字节头：1 flag + 4 msgId BE）需与 UI 端保持一致，变更须双端同步。
+- lines 100% / functions 100% / statements 100% / branches 95%。
+- 未达标禁止安装到 gateway。
 
-## rpc DC 发送流控（MemoryQueue + RpcDcSender）
+## topic → doc 索引
 
-阶段 1 重构后，rpc DC 发送链路被拆成两段式管道：每条 rpc DC 同时持有一个 `MemoryQueue`（绑定 `session.rpcQueue`）和一个 `RpcDcSender`（绑定 `session.rpcDcSender`），中间由后台 `consumeLoop`（绑定 `session.rpcConsumeLoop`）串起来。生产路径 `broadcast()` 与 files RPC 的 `sendFn` 统一经此出口；probe-ack 故意绕过以独立测量传输层健康。
+按需打开下面这些；不要默认全读。
 
-- **MemoryQueue**（`src/utils/memory-queue.js`）：纯内存的 FBQ-API 兼容容器，对外暴露 `enqueue(jsonStr): boolean`（accepted=true/dropped=false）+ async iterator + `destroy()`，承担 admission（`memBudget=10 MB` 软上限 + 单条 50 MB 硬上限）、bypassAdmission 白名单（agentRunResponse）、drop 计数与边沿日志。
-- **RpcDcSender**（`src/webrtc/rpc-dc-sender.js`）：DC 紧贴的阻塞式发送器，对外暴露 `await send(jsonStr): void`，内部按 `MAX_SINGLE_MSG_BYTES=50 MB` 校验、`buildChunks` 分片、每个 chunk 前 `await __waitForRoom`（`bufferedAmount < HIGH_WATER_MARK=1 MB` 立即放行；`LOW_WATER_MARK=256 KB` 触发 `bufferedamountlow`）。失败抛 `SENDER_CLOSED / MESSAGE_OVERSIZED / BUILD_CHUNKS_FAILED` 三种错误码。
-- **consumeLoop**：`for await (const str of session.rpcQueue) await session.rpcDcSender.send(str)`。`SENDER_CLOSED` 退出循环；其它错误 warn 后继续下一条。
-- **drop 上报**：`logger`（warn/info）与 `remoteLog` 均仅在"空→满"/"满→空"状态翻转点打一次（overflow-end 携带累计 dropped/droppedBytes）；overflow 持续期间所有 queue-full drop 完全静默，只累加 `droppedCount`/`droppedBytes`，等下次状态翻转或 `destroy()` 汇总时一并上报。sender 端 `MESSAGE_OVERSIZED` / `BUILD_CHUNKS_FAILED` drop 不计入 queue 的 droppedCount，每次单独 warn。
-- **API（生产路径）**：`broadcast()` 内部对每个 session 调 `rpcQueue.enqueue(...).catch(...)` fire-and-forget；`sendTo(connId, payload): Promise<boolean>` 透传 admission 决策。
-- **生命周期**：`dc.onclose` 走 `closeByConnId` 串行 close 旧三件套（sender close → queue destroy → consumeLoop await）；ICE restart 复用 DC 时三件套自动保留，仅热更新 `maxMessageSize`。
+| 触发场景 | doc |
+|---|---|
+| 不熟悉本插件 / 想看模块边界与数据流 | [`docs/architecture.md`](docs/architecture.md) |
+| 加新 RPC method / 处理 scope / 双实例陷阱细节 | [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md) |
+| 加新 plugin 自发事件 / 事件 patch 语义细节 | [`docs/plugin-events.md`](docs/plugin-events.md) |
+| 改 rpc DC 流控、分片、admission、白名单、ICE restart 行为 | [`docs/rpc-dc-send-queue.md`](docs/rpc-dc-send-queue.md) |
+| 切磁盘回退队列 (FBQ) 准备工作 | [`docs/rpc-dc-file-queue.md`](docs/rpc-dc-file-queue.md) |
+| 改 WebRTC 实现选择 / 看 ndc-preloader 的命名困惑 / 评估清理死代码 | [`docs/webrtc-impl-strategy.md`](docs/webrtc-impl-strategy.md) |
+| 升级 `@coclaw/pion-node` / 调试 pion-ipc 问题 | [`docs/pion-integration.md`](docs/pion-integration.md) |
+| 本地开发安装 / link↔npm 切换 / 安装坑 | [`docs/local-plugin-update-sop.md`](docs/local-plugin-update-sop.md) |
+| 自动升级机制 / 锁文件 / worker 行为 | [`docs/auto-upgrade.md`](docs/auto-upgrade.md) |
+| 文件 I/O atomic write 设计 | [`docs/atomic-file-ops.md`](docs/atomic-file-ops.md) |
+| OpenClaw plugin 安装/卸载机制 | [`docs/openclaw-plugin-management.md`](docs/openclaw-plugin-management.md) |
+| 设备身份相关待办 | [`docs/device-identity-todo.md`](docs/device-identity-todo.md) |
 
-下一阶段（FBQ）：把 `MemoryQueue` 替换为 `FileBackedQueue`（`src/utils/file-backed-queue.js`）以支持磁盘 GB 级回退，几乎一行 import 改（具体 checklist 见 TODO.md "阶段 2 切换 FBQ" 条目）。
+## TODO
 
-## Gateway RPC 方法命名
-
-- OpenClaw 将方法名视为**扁平字符串 key**（无命名空间路由），"." 仅为约定分隔符，无特殊语义。唯一硬约束：不能为空、不能与已注册方法重名。
-- 新注册的方法统一使用 **`coclaw.`** 前缀（符合 OpenClaw 官方约定 `pluginId.action`）。
-- 历史方法 `nativeui.sessions.listAll` / `nativeui.sessions.get` 暂保留以兼容。
-
-### Scope 与权限
-
-- OpenClaw 对每个 gateway method 有 scope 分类（`method-scopes.ts`）。**未被分类的方法（包括所有插件注册的方法）默认要求 `operator.admin` scope**。
-- 当前所有调用路径均持有 `operator.admin`：
-  - bridge 自身的 gateway WS 连接（`realtime-bridge.js` 中显式声明 `scopes: ['operator.admin']`）
-  - CLI `openclaw gateway call`（默认使用 `CLI_DEFAULT_OPERATOR_SCOPES`，含 `operator.admin`）
-  - gateway 内部 synthetic client（含 `operator.admin`）
-- 因此当前无 scope 问题。但若未来需要支持非 admin scope 的调用者直接调用插件方法，需向 OpenClaw 的 `METHOD_SCOPE_GROUPS` 表注册所需 scope，否则会被 fallback 到 admin 拦截。
-- **已知设计特征**：bridge 以自身 `operator.admin` 身份转发 CoClaw server 发来的所有请求，server 实质拥有 admin 级 gateway 权限（设计预期，server 是受信方）。
-
-## Hook 与 Gateway Method 的模块实例隔离
-
-- OpenClaw 在 `--link` 安装模式下，`api.on()` 注册的 hook 回调和 `api.registerGatewayMethod()` 注册的 RPC handler **可能运行在不同的 ESM 模块实例中**（即使同一进程、同一 `register()` 调用）。原因是 symlink 导致 ESM 模块缓存命中不同 URL。
-- **后果**：hook 和 RPC handler 闭包捕获的对象（如 Manager 实例）看似同一个，实际是两份独立的内存拷贝。hook 修改的内存状态对 RPC handler 不可见。
-- **应对**：需要跨 hook/RPC 共享的状态，不能依赖纯内存缓存，必须通过磁盘文件中转。读取侧（如 RPC handler）每次调用前从磁盘重载。
-- `api.on()` 在某些调用上下文（如 CLI 模式的 mock API）中可能不存在，注册时须加 `typeof api.on === 'function'` 防御。
-
-## 约束
-
-- bind/unbind/enroll 的 CLI 命令均为瘦 CLI：仅做参数解析 → `callGatewayMethod` RPC → 结果展示。核心逻辑在 gateway 内的 RPC handler 中执行。
-- 所有 bind/unbind 核心逻辑必须集中在共享层（`common/claw-binding.js`），RPC handler 与斜杠命令 handler 共享同一内部函数（`doBind`/`doUnbind`）。
-- gateway methods（`coclaw.bind` / `coclaw.unbind` / `coclaw.enroll` / `coclaw.upgradeHealth` / `coclaw.info` / `coclaw.info.get` / `coclaw.info.patch` / `nativeui.sessions.listAll/get` / `coclaw.topics.*` / `coclaw.chatHistory.list` / `coclaw.sessions.getById` / `coclaw.files.list` / `coclaw.files.delete` / `coclaw.files.mkdir` / `coclaw.files.create`）仅由本插件提供，禁止重复注册同名方法。
-- gateway method 错误响应格式：`respond(false, undefined, { code, message })`。使用 `respondError(respond, err)` 处理异常，`respondInvalid(respond, message)` 处理参数校验失败。禁止使用旧格式 `respond(false, { error })`。
-- realtime bridge（`coclaw-realtime-bridge`）和 auto-upgrade scheduler（`coclaw-auto-upgrade`）必须通过 `api.registerService()` 注册为 gateway service，**禁止在 `register()` 中直接启动**。原因：`register()` 在 CLI 上下文（如 `openclaw plugins install/uninstall`）也会被调用，直接启动会创建 WebSocket 连接或定时器导致进程无法退出。
-- CLI bind/unbind 通过 gateway RPC（`coclaw.bind`/`coclaw.unbind`）执行，gateway 内部管理 bridge 生命周期，**禁止在 CLI 进程中直接操作 `bindings.json`**。
-- unbind 是强制操作（非 best-effort）：server 不可达时 unbind 失败，不清理本地 config，避免产生孤儿 bot。server 返回 401/404/410 视为 bot 已不存在，允许继续。
-- 插件运行在 gateway 进程中，严禁引入全局异常兜底（如 `process.on('uncaughtException'/'unhandledRejection')`）。
-
-## Plugin 自发事件
-
-插件可通过 `broadcastPluginEvent(event, payload)`（`realtime-bridge.js` 导出）向 server 和所有已连接的 UI DC 广播事件。事件帧格式与 gateway 事件一致：`{ type: 'event', event, payload }`。
-
-当前注册的事件：
-
-| 事件名 | 触发时机 | payload（patch 语义） |
-|--------|---------|---------|
-| `coclaw.info.updated` | gateway connect 成功后 / `coclaw.info.patch` 修改 name 后 | 任意字段子集：`name?`、`hostName?`、`pluginVersion?`、`agentModels?` |
-
-**Payload 按 patch 语义处理（重要）**：
-
-- Server 端仅更新 payload 中实际出现的字段（`Object.hasOwn` 判定），缺失字段保留 DB 原值
-- **禁止**让 server 按"missing-as-null"处理——`coclaw.info.patch` handler 只发 `{ name, hostName }` 来改名，若 server 把缺失的 pluginVersion/agentModels 当作 null 会错误清空 admin 仪表盘展示的插件信息
-- Plugin 可自由决定每次广播带哪些字段：
-  - `__pushInstanceInfo()`（bridge connect 后）发全量 4 字段
-  - `coclaw.info.patch` handler 发 `{ name, hostName }`（hostName 必带，供 server 做 name 列回退）
-  - 未来若需增量字段（如采集到 pluginVersion 变更）可只发该字段
-- Server 收到 `coclaw.info.updated` 后持久化变更字段，不转发给 UI WS
-- UI 通过 DC 直接收到事件，更新 `pluginInfo.*` 的对应字段
-
-## 测试门禁
-
-覆盖率阈值：lines 100%、functions 100%、branches 95%、statements 100%。覆盖率未通过，禁止安装到 gateway。
-
-### 执行约束
-
-- `pnpm test` **禁止以后台模式执行**，必须前台运行并设置充足超时（≥ 120s）
-- 发起新一轮测试前，必须确认上一轮已结束；若超时，先 `ps aux | grep -E 'node.*test|vitest'` 检查并 kill 残留进程，再重试
-- 禁止并发启动多个 test runner——并发执行会因资源竞争导致进程堆积、主机卡顿
-
-## 本地更新
-
-- 本地开发采用 `plugins install --link` 一次性接入；后续代码更新只需 `openclaw gateway restart`
-- 避免把 `uninstall + 删除 extensions + reinstall` 作为日常流程
-- 详细流程与故障恢复见：`plugins/openclaw/docs/local-plugin-update-sop.md`
+预存问题列在 [`TODO.md`](TODO.md)。改动相关代码前先 grep 一下，避免重复发现。

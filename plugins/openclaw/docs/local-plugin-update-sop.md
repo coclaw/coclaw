@@ -108,9 +108,28 @@ OpenClaw gateway 通过 chokidar 监听 `openclaw.json`。`plugins.*` 路径的�
 
 详见 `docs/openclaw-plugin-management.md`。
 
+## 已知坑位
+
+### 手动删除 extensions 目录会让 openclaw.json 配置失效（2026-02-28）
+
+**症状**：先 `rm -rf ~/.openclaw/extensions/openclaw-coclaw` 再 `openclaw plugins install <path>`，gateway 启动告警或失败。
+
+**原因**：`openclaw.json` 中 `plugins.load.paths` 仍引用已被删除的目录路径，gateway 启动时会按这条路径去解析 plugin，路径不存在 → 配置无效。OpenClaw plugins install 改写配置的逻辑不会主动检查并修复"指向已不存在路径的旧 entry"。
+
+**正确顺序**（任何场景不要手动删 extensions/<id> 目录）：
+
+```bash
+openclaw plugins install <path>      # 让 OpenClaw 统一改写配置
+openclaw gateway restart             # 应用新配置
+openclaw gateway status              # 确认 channel 已加载
+openclaw plugins doctor              # 二次校验
+```
+
+**若已经手动删了**：先同步从 `~/.openclaw/openclaw.json` 移除 `plugins.load.paths` 中对应条目和 `plugins.entries.openclaw-coclaw`，再重启 gateway，最后才能重新 install。
+
 ## 注意事项
 
 - 插件代码在 gateway 进程内执行，语法错误会导致 gateway 启动失败
 - 代码更新不会立即生效，需 restart gateway
 - 不要把"反复 uninstall + install"作为日常流程
-- 不要手动删除 `~/.openclaw/extensions/` 目录后不校验 config 就重启
+- 不要手动删除 `~/.openclaw/extensions/` 目录后不校验 config 就重启（详见上节）
