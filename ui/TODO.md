@@ -300,13 +300,3 @@
     - 设计偏差：与"MAX_UPLOAD_SIZE 是唯一入口"不变量略有出入，但实际无害
     - 修法（可选）：让 `procRecordedVoice` 改走 `this.addFiles([file])` 而非直接调 store，恢复唯一入口
 
-## 系统块剥离 边界覆盖补强（2026-05-03）
-
-来源：补强 systemNote 边界场景测试时发现，与本次系统块剥离改动无关。
-
-47. **`file-helper.test.js` "Capacitor 环境：调用 __nativeShareFile" 稳定失败**
-    - 现状：`src/utils/file-helper.test.js:478` 断言 `Filesystem.writeFile` 被调用一次，实际 0 次。`saveBlobToFile` 在 Capacitor 环境下应走 `__nativeShareFile` 路径，但测试中 mock 链路未生效
-    - 复现：`pnpm vitest run src/utils/file-helper.test.js` 单独运行也失败（与本次系统块剥离改动无关）
-    - 修法方向：检查 mock 顺序、或 `isCapacitorApp()` 判定在测试环境下的行为变化；可能与近期 capacitor 相关改动有关
-    - 影响：测试失败但不阻塞业务功能；同一文件其它 60 个 test 通过
-
