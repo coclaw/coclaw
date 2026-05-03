@@ -2598,9 +2598,15 @@ test('WebRtcPeer: 建立 rpc DC 时创建 MemoryQueue + RpcDcSender 并设置 bu
 	const session = peer.__sessions.get('c_sq01');
 	assert.ok(session.rpcQueue, 'rpcQueue should be created');
 	assert.ok(session.rpcDcSender, 'rpcDcSender should be created');
+	assert.ok(session.rpcDropMonitor, 'rpcDropMonitor should be created');
 	assert.ok(session.rpcConsumeLoop instanceof Promise, 'rpcConsumeLoop should be a Promise');
 	assert.equal(dc.bufferedAmountLowThreshold, DC_LOW_WATER_MARK, 'LOW_WATER_MARK should be set on DC');
 	assert.equal(typeof dc.onbufferedamountlow, 'function', 'onbufferedamountlow should be wired');
+	// monitor 4 个方法都到位
+	assert.equal(typeof session.rpcDropMonitor.onDrop, 'function');
+	assert.equal(typeof session.rpcDropMonitor.maybeEmitOverflowEnd, 'function');
+	assert.equal(typeof session.rpcDropMonitor.summarize, 'function');
+	assert.equal(typeof session.rpcDropMonitor.getStats, 'function');
 	await peer.closeAll();
 });
 
@@ -4875,7 +4881,7 @@ test('WebRtcPeer: broadcast 一路 queue 满 drop 不影响另一路 dc 正常 s
 	peer.broadcast({ type: 'event', tag: 'small' });
 	await flushAsync();
 
-	assert.ok(sessFull.rpcQueue.stats().droppedCount >= 1, 'sessionA queue 应 drop small msg');
+	assert.ok(sessFull.rpcDropMonitor.getStats().dropCount >= 1, 'sessionA monitor 应记录 drop');
 	assert.equal(sentOk.length, 1, 'sessionB 不受影响');
 	assert.equal(JSON.parse(sentOk[0]).tag, 'small');
 
@@ -5206,9 +5212,9 @@ test('WebRtcPeer: 同 connId 重建走 await session.rpcQueue.destroy() → 旧 
 	await peer.closeAll();
 });
 
-// --- Phase A2：__dumpSessionState 暴露 6 字段 stats + droppedCount/Bytes ---
+// --- Phase A2/B-stage1：__dumpSessionState 来源拆分（queue 6 字段 + monitor 2 字段） ---
 
-test('WebRtcPeer A2: dump 把 stats() 6 字段（含磁盘字段）和 droppedCount/droppedBytes 全部格式化输出', async () => {
+test('WebRtcPeer dump: 6 字段来自 queue.stats()，dropped/droppedBytes 来自 monitor.getStats()', async () => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -5224,8 +5230,10 @@ test('WebRtcPeer A2: dump 把 stats() 6 字段（含磁盘字段）和 droppedCo
 
 	const session = peer.__sessions.get('c_dump_a2');
 	assert.ok(session.rpcQueue, 'queue 已就位');
-	// 模拟 Phase B 形态：stats 返回非零的磁盘字段，验证 dump 不丢字段且取值正确。
-	// spilled / fsBroken 取不同布尔值，避免字段对调时测试仍绿
+	assert.ok(session.rpcDropMonitor, 'monitor 已就位');
+	// 模拟 Phase B 形态：queue.stats 返回非零的磁盘字段（B-stage1 阶段实际恒 0/false，
+	// 这里 mock 是为锁定 dump 不丢字段的契约）；monitor.getStats 返回非零累计。
+	// spilled / fsBroken 取不同布尔值，避免字段对调时测试仍绿。
 	session.rpcQueue.stats = () => ({
 		memCount: 3,
 		memBytes: 4096,
@@ -5233,9 +5241,13 @@ test('WebRtcPeer A2: dump 把 stats() 6 字段（含磁盘字段）和 droppedCo
 		writtenBytes: 16384,
 		spilled: true,
 		fsBroken: false,
-		droppedCount: 7,
-		droppedBytes: 1024,
-		queueOverflowActive: true,
+	});
+	session.rpcDropMonitor.getStats = () => ({
+		dropCount: 7,
+		dropBytes: 1024,
+		overflowActive: true,
+		fsBroken: false,
+		lastReason: 'queue-full',
 	});
 
 	pc.connectionState = 'failed';
@@ -5248,6 +5260,187 @@ test('WebRtcPeer A2: dump 把 stats() 6 字段（含磁盘字段）和 droppedCo
 		dump.text,
 		/queueLen=3 queueBytes=4096 diskBytes=8192 writtenBytes=16384 spilled=true fsBroken=false dropped=7 droppedBytes=1024/,
 	);
+
+	await peer.closeAll();
+});
+
+// --- Phase B-stage1: monitor wiring 生命周期 ---
+
+test('WebRtcPeer monitor: dc.onclose 中 summarize 在 queue.destroy 之前调用', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mon_close'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	const session = peer.__sessions.get('c_mon_close');
+	const queue = session.rpcQueue;
+	const monitor = session.rpcDropMonitor;
+
+	const orderLog = [];
+	const origSummarize = monitor.summarize;
+	monitor.summarize = (residual) => {
+		orderLog.push({ kind: 'summarize', destroyed: queue.destroyed, residualMemCount: residual?.memCount });
+		return origSummarize.call(monitor, residual);
+	};
+	const origDestroy = queue.destroy.bind(queue);
+	queue.destroy = async () => {
+		orderLog.push({ kind: 'destroy', destroyed: queue.destroyed });
+		return await origDestroy();
+	};
+
+	// 触发 dc.onclose
+	dc.readyState = 'closed';
+	dc.onclose();
+	await flushAsync();
+
+	const summarizeIdx = orderLog.findIndex((x) => x.kind === 'summarize');
+	const destroyIdx = orderLog.findIndex((x) => x.kind === 'destroy');
+	assert.ok(summarizeIdx >= 0, 'summarize 应被调用');
+	assert.ok(destroyIdx >= 0, 'destroy 应被调用');
+	assert.ok(summarizeIdx < destroyIdx, 'summarize 必须在 destroy 之前');
+	assert.equal(orderLog[summarizeIdx].destroyed, false, 'summarize 时 queue 还未 destroyed');
+	// 三件套字段应清空
+	assert.equal(session.rpcQueue, null);
+	assert.equal(session.rpcDcSender, null);
+	assert.equal(session.rpcConsumeLoop, null);
+	assert.equal(session.rpcDropMonitor, null);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer monitor: closeByConnId 路径调 monitor.summarize 把残留传入', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mon_cbc', 'v=0\r\na=max-message-size:100\r\n'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+	const session = peer.__sessions.get('c_mon_cbc');
+	const monitor = session.rpcDropMonitor;
+	const calls = [];
+	const orig = monitor.summarize;
+	monitor.summarize = (r) => { calls.push(r); return orig.call(monitor, r); };
+
+	// 制造残留
+	dc.bufferedAmount = 1024 * 1024;
+	for (let i = 0; i < 3; i += 1) peer.broadcast({ type: 'res', n: i });
+	await flushAsync();
+
+	await peer.closeByConnId('c_mon_cbc');
+	assert.ok(calls.length >= 1, 'monitor.summarize 至少被调用一次');
+	// 第一次调用必须带 queue.stats() 残留快照
+	assert.ok(typeof calls[0]?.memCount === 'number');
+	assert.ok(calls[0].memCount > 0, 'closeByConnId 时残留 memCount > 0');
+});
+
+test('WebRtcPeer monitor: 同 connId 重建走 await destroy 路径，旧 monitor 先 summarize 再被新实例替换', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mon_rebuild'));
+	const dc1 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc1 });
+	await flushAsync();
+	const session = peer.__sessions.get('c_mon_rebuild');
+	const oldMonitor = session.rpcDropMonitor;
+	const summCalls = [];
+	const orig = oldMonitor.summarize;
+	oldMonitor.summarize = (r) => { summCalls.push(r); return orig.call(oldMonitor, r); };
+
+	// 同 connId 二次 ondatachannel：触发旧三件套清理 + 新实例创建
+	const dc2 = makeMockRpcDc();
+	session.rpcChannel = dc2; // 让重建路径的旧三件套清理分支走到（rpcChannel 已切换）
+	PC.instances[0].ondatachannel({ channel: dc2 });
+	await flushAsync();
+
+	const newMonitor = session.rpcDropMonitor;
+	assert.ok(newMonitor, '新 monitor 已挂');
+	assert.notEqual(newMonitor, oldMonitor, '新 monitor 是新实例');
+	// 旧 monitor.summarize 至少被调一次（重建清理路径调一次，旧 consumeLoop finally 也会再调一次，
+	// 内部 summarized flag 保证只 emit 一条 close log）
+	assert.ok(summCalls.length >= 1, '旧 monitor.summarize 至少被调一次');
+	const closes = remoteLogBuffer.filter((e) => /rpc-queue\.close/.test(e.text));
+	assert.ok(closes.length <= 1, '幂等：close log 最多一条');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer monitor: consumeLoop finally 触发 summarize（与 dc.onclose 双调用幂等）', async () => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mon_loop'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+	const session = peer.__sessions.get('c_mon_loop');
+	const monitor = session.rpcDropMonitor;
+	const calls = [];
+	const orig = monitor.summarize;
+	monitor.summarize = (r) => { calls.push(r); return orig.call(monitor, r); };
+
+	// 触发 dc.onclose（同步路径调一次 summarize；consumeLoop finally 也会调一次）
+	dc.readyState = 'closed';
+	dc.onclose();
+	await flushAsync();
+
+	assert.ok(calls.length >= 2, '至少 dc.onclose + consumeLoop finally 各一次');
+	// 但 monitor 内部 summarized flag 保证只 emit 一条 close remoteLog
+	const closes = remoteLogBuffer.filter((e) => /rpc-queue\.close/.test(e.text));
+	assert.equal(closes.length, 0, 'no drops, no residual → no close emit (idempotent + clean state)');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer monitor: stale-init 路径不挂载 monitor（blockInit + closeByConnId 释放）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mon_stale'));
+
+	const m = withQueueLifecycleMock({ blockInit: true });
+	try {
+		const dc = makeMockRpcDc();
+		PC.instances[0].ondatachannel({ channel: dc });
+		await flushAsync();
+
+		const session = peer.__sessions.get('c_mon_stale');
+		// init 阻塞中：三件套（含 monitor）都还未挂
+		assert.equal(session.rpcDropMonitor, null, 'init 完成前 monitor 不挂');
+
+		// 闯入 closeByConnId → session 从 Map 删除
+		const closing = peer.closeByConnId('c_mon_stale');
+		await flushAsync();
+
+		// 释放 init → setup 走 stale 分支退出，monitor 不挂
+		m.releaseInitAt(0);
+		await closing;
+
+		assert.equal(peer.__sessions.has('c_mon_stale'), false, 'session 已被删除');
+	} finally {
+		m.restore();
+	}
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer monitor: dc 关闭后 session.rpcDropMonitor === null', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	await peer.handleSignaling(makeOffer('c_mon_null'));
+	const dc = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+	const session = peer.__sessions.get('c_mon_null');
+	assert.ok(session.rpcDropMonitor);
+
+	dc.readyState = 'closed';
+	dc.onclose();
+	await flushAsync();
+	assert.equal(session.rpcDropMonitor, null);
 
 	await peer.closeAll();
 });

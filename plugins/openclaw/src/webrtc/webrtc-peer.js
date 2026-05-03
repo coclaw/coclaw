@@ -1,6 +1,7 @@
 import { createReassembler } from './dc-chunking.js';
 import { MemoryQueue } from '../utils/memory-queue.js';
 import { RpcDcSender, DC_LOW_WATER_MARK, MAX_SINGLE_MSG_BYTES } from './rpc-dc-sender.js';
+import { createRpcDropMonitor } from './rpc-drop-monitor.js';
 import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
 
@@ -43,7 +44,7 @@ export class WebRtcPeer {
 		this.__PeerConnection = PeerConnection;
 		this.__impl = impl ?? null;
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
-		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
+		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, rpcDropMonitor: object|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
 	}
 
@@ -101,14 +102,17 @@ export class WebRtcPeer {
 		}
 		this.__sessions.delete(connId);
 		// 显式关闭 rpc 链路：dc.onclose 路径中 `sessions.get(connId)` 已返回 undefined 而短路，
-		// 此处不主动 close 会丢失 drop 汇总 remoteLog 诊断 + consumeLoop 泄漏
+		// 此处不主动 close 会丢失 drop 汇总 remoteLog 诊断 + consumeLoop 泄漏。
+		// summarize 必须在 queue.destroy 之前调用——destroy 后 memQueue 被清空，残留显示为 0。
 		if (session.rpcDcSender || session.rpcQueue) {
 			session.rpcDcSender?.close();
+			try { session.rpcDropMonitor?.summarize(session.rpcQueue?.stats()); } catch { /* monitor 内部已 try/catch */ }
 			await session.rpcQueue?.destroy();
 			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => {});
 			session.rpcDcSender = null;
 			session.rpcQueue = null;
 			session.rpcConsumeLoop = null;
+			session.rpcDropMonitor = null;
 			session.rpcChannel = null;
 		}
 		await session.pc.close();
@@ -305,7 +309,7 @@ export class WebRtcPeer {
 
 		const remoteMaxMessageSize = this.__resolveMaxMessageSize(pc, msg.payload.sdp);
 
-		const session = { pc, rpcChannel: null, rpcQueue: null, rpcDcSender: null, rpcConsumeLoop: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
+		const session = { pc, rpcChannel: null, rpcQueue: null, rpcDcSender: null, rpcConsumeLoop: null, rpcDropMonitor: null, fileChannels: new Set(), remoteMaxMessageSize, nextMsgId: 1 };
 		this.__sessions.set(connId, session);
 
 		// ICE candidate → 发给 UI，并统计各类型 candidate 数量
@@ -625,12 +629,16 @@ export class WebRtcPeer {
 			// session 已挂上新三件套；若不核身份，旧 dc 的 onclose 会瞬间杀死新链路
 			if (sess && dc.label === 'rpc' && sess.rpcChannel === dc) {
 				// dc.onclose 是 sync 回调，不能 await consumeLoop。仅触发 close + destroy；
-				// consumeLoop 通过 sender.close → SENDER_CLOSED → break + queue.destroy → done 自然退出
+				// consumeLoop 通过 sender.close → SENDER_CLOSED → break + queue.destroy → done 自然退出。
+				// summarize 必须在 queue.destroy 之前调——destroy 后 memQueue 被清空，残留为 0；
+				// monitor 内部 summarized flag 保证幂等（consumeLoop finally 也会再调一次）
 				sess.rpcDcSender?.close();
+				try { sess.rpcDropMonitor?.summarize(sess.rpcQueue?.stats()); } catch { /* monitor 内部已 try/catch */ }
 				sess.rpcQueue?.destroy().catch(() => {});
 				sess.rpcDcSender = null;
 				sess.rpcQueue = null;
 				sess.rpcConsumeLoop = null;
+				sess.rpcDropMonitor = null;
 				sess.rpcChannel = null;
 			}
 		};
@@ -649,15 +657,21 @@ export class WebRtcPeer {
 
 		if (!session || dc.label !== 'rpc') return;
 
-		// === 异步部分：rpc 三件套（队列 / 发送器 / 消费循环）+ 身份守卫 ===
+		// === 异步部分：rpc 三件套（队列 / 发送器 / 消费循环）+ monitor + 身份守卫 ===
 		// 罕见：session 已有旧三件套（UI 重建 rpc DC 等）。先 await close + destroy 旧实例
 		// 再造新实例，避免新旧 queue/sender 在同一 session 上并存。await 的目的是让旧实例
 		// 完整收尾（FBQ 阶段对应底层 fs 残留清理），MemoryQueue 阶段 destroy 是 sync 完成。
+		// summarize 必须在 destroy 之前调，否则残留快照拿到 0。
 		if (session.rpcDcSender || session.rpcQueue) {
 			session.rpcDcSender?.close();
+			try { session.rpcDropMonitor?.summarize(session.rpcQueue?.stats()); } catch { /* monitor 内部已 try/catch */ }
 			if (session.rpcQueue) await session.rpcQueue.destroy();
 			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => { /* c8 ignore next -- 极冷防御 */ });
+			session.rpcDropMonitor = null;
 		}
+		// 创建 monitor。必须在 new MemoryQueue 之前——MemoryQueue 的 onDrop 接 monitor.onDrop。
+		// monitor 是局部变量，stale 路径下函数返回后自然 GC，不挂 session 字段（无 drop 可汇总）。
+		const monitor = createRpcDropMonitor({ connId, logger: this.logger });
 		// 构造 queue 并 await init。MemoryQueue.init 是 no-op；保留 await 占位，FBQ 阶段
 		// init 承担 fs 残留清理。await 期间可能发生 closeByConnId / 同 connId 二次 ondatachannel，
 		// 因此后面必须身份重核才能赋 session 字段。
@@ -665,13 +679,14 @@ export class WebRtcPeer {
 			id: connId,
 			maxMessageBytes: MAX_SINGLE_MSG_BYTES,
 			bypassAdmission: isAgentRunResponse,
+			onDrop: monitor.onDrop,
 			logger: this.logger,
 			tag: `conn=${connId}`,
 		});
 		await queue.init();
 		// 身份重核：init 期间 session 可能被 closeByConnId 从 Map 删除，或被同 connId 二次
 		// ondatachannel 把 rpcChannel 替换成新 dc。任一不再成立都视为 stale，destroy queue 后
-		// 直接退出，绝不污染 session 三件套字段。
+		// 直接退出，绝不污染 session 三件套字段。monitor 自然 GC，无需 summarize（无 drop）。
 		const sessAfter = this.__sessions.get(connId);
 		if (sessAfter !== session || session.rpcChannel !== dc) {
 			await queue.destroy();
@@ -689,6 +704,7 @@ export class WebRtcPeer {
 		});
 		session.rpcQueue = queue;
 		session.rpcDcSender = sender;
+		session.rpcDropMonitor = monitor;
 		// 闭包捕获本次 sender 局部引用，而不是读 session.rpcDcSender 字段。
 		// 同 session rebuild 后字段会指向新 sender，旧 dc 的 BAL 滞后事件若读字段
 		// 会错唤醒新 sender；捕获局部引用后旧 dc 触发 BAL 调的是已 close 的旧 sender，
@@ -700,11 +716,14 @@ export class WebRtcPeer {
 		// finally 兜底关闭：覆盖 dc.send 中途抛错 / 异常退出场景——dc.onclose 不一定会及时
 		// 触发清理（如 readyState 短暂 open 但 send 失败），主动 close+destroy 避免 queue/sender
 		// 残留导致后续 broadcast 入队后无人消费。两个 close/destroy 都幂等。
+		// monitor.summarize 也是幂等的——dc.onclose 同步路径可能已先调过一次。
 		session.rpcConsumeLoop = (async () => {
 			try {
 				for await (const str of queue) {
 					try {
 						await sender.send(str);
+						// 出列即过 monitor 检查"满→未满"翻转。stats 浅读 + 5 标量比对，O(1)。
+						try { monitor.maybeEmitOverflowEnd(queue.stats()); } catch { /* c8 ignore next -- monitor 内部已 try/catch */ }
 					} catch (err) {
 						if (err.code === 'SENDER_CLOSED') break;
 						// safe-wrap：logger.warn 自身抛不能让消费循环挂掉
@@ -715,15 +734,17 @@ export class WebRtcPeer {
 				}
 			} finally {
 				sender.close();
+				try { monitor.summarize(queue.stats()); } catch { /* c8 ignore next -- monitor 内部已 try/catch */ }
 				await queue.destroy().catch(() => {});
 				// 防御性清字段：若 loop 因 sender 内部错误自行退出（dc.onclose / closeByConnId
-				// 都不是触发方），三字段会暂留非 null 直到 dc.onclose 最终到达。期间 producer
+				// 都不是触发方），字段会暂留非 null 直到 dc.onclose 最终到达。期间 producer
 				// 看到非 null 会以为通道活着——虽然 enqueue 安全返 false，但减少误导窗口。
 				// 身份比对避免误清"dc.onclose 已先清掉、并被新一轮 setup 装入新实例"的字段。
 				if (session.rpcQueue === queue) {
 					session.rpcQueue = null;
 					session.rpcDcSender = null;
 					session.rpcConsumeLoop = null;
+					session.rpcDropMonitor = null;
 				}
 			}
 		})();
@@ -743,10 +764,11 @@ export class WebRtcPeer {
 		const queueInfo = q
 			? (() => {
 				const s = q.stats();
-				// memCount 沿用历史 token 名 queueLen（不改名）；其余 5 个 stats 字段保持
-				// 与 stats() 内部同名输出。Phase A 阶段 4 个磁盘字段恒为 0/false，是给
-				// Phase B 切 FBQ 留形状的占位。
-				return `queueLen=${s.memCount} queueBytes=${s.memBytes} diskBytes=${s.diskBytes} writtenBytes=${s.writtenBytes} spilled=${s.spilled} fsBroken=${s.fsBroken} dropped=${s.droppedCount} droppedBytes=${s.droppedBytes}`;
+				// memCount 沿用历史 token 名 queueLen（不改名）；queue.stats() 6 个字段（含 4 个
+				// 磁盘字段，MemoryQueue 阶段恒 0/false）+ monitor.getStats() 提供 dropCount/dropBytes。
+				// 输出文本 8 token 字节级保持与现行格式一致。
+				const m = session.rpcDropMonitor?.getStats() ?? { dropCount: 0, dropBytes: 0 };
+				return `queueLen=${s.memCount} queueBytes=${s.memBytes} diskBytes=${s.diskBytes} writtenBytes=${s.writtenBytes} spilled=${s.spilled} fsBroken=${s.fsBroken} dropped=${m.dropCount} droppedBytes=${m.dropBytes}`;
 			})()
 			: 'queue=none';
 		this.__remoteLog(`rtc.dump conn=${connId} state=${state} sessions=${this.__sessions.size} rpc=${rpcState} ${queueInfo} fileCount=${session.fileChannels.size} files=[${fileSummary}]`);
