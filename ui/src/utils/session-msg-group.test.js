@@ -323,31 +323,35 @@ describe('groupSessionMessages', () => {
 		expect(result[0].textContent).toBe('测试');
 	});
 
-	test('过滤 assistant 的 NO_REPLY 静默回复', () => {
+	test('NO_REPLY 静默回复独立成 systemNote、不创建 botTask', () => {
 		const entries = [
 			userEntry('u1', '你好', 1000),
 			assistantEntry('a1', { text: 'NO_REPLY', ts: 2000 }),
 		];
 		const result = groupSessionMessages(entries);
 		expect(result).toHaveLength(2);
-		expect(result[1].resultText).toBeNull();
+		expect(result[0].type).toBe('user');
+		expect(result[1]).toMatchObject({ type: 'systemNote', source: 'noReply', model: null });
+		expect(result.some((it) => it.type === 'botTask')).toBe(false);
 	});
 
-	test('过滤带空白的 NO_REPLY 静默回复', () => {
+	test('带空白的 NO_REPLY 仍命中 systemNote', () => {
 		const entries = [
 			userEntry('u1', '你好', 1000),
 			assistantEntry('a1', { text: '  NO_REPLY  ', ts: 2000 }),
 		];
 		const result = groupSessionMessages(entries);
-		expect(result[1].resultText).toBeNull();
+		expect(result[1].type).toBe('systemNote');
+		expect(result[1].source).toBe('noReply');
 	});
 
-	test('不过滤包含 NO_REPLY 的正常文本', () => {
+	test('不命中包含 NO_REPLY 的正常文本（仍走 botTask）', () => {
 		const entries = [
 			userEntry('u1', '你好', 1000),
 			assistantEntry('a1', { text: 'The agent said NO_REPLY to indicate silence', ts: 2000 }),
 		];
 		const result = groupSessionMessages(entries);
+		expect(result[1].type).toBe('botTask');
 		expect(result[1].resultText).toBe('The agent said NO_REPLY to indicate silence');
 	});
 
@@ -702,12 +706,9 @@ describe('groupSessionMessages', () => {
 			expect(botTask.resultText).toBeNull();
 		});
 
-		test('NO_REPLY 静默回复被过滤后：botTask 同样命中 v-else', () => {
-			// 模型输出 NO_REPLY 被 SILENT_REPLY_PATTERN 过滤（agent-stream.js:7）
-			// 走的是 streaming 路径，但下一次 loadMessages 后 server transcript 也保留 NO_REPLY 文本
-			// processAssistant 不过滤静默回复（过滤只发生在 applyAgentEvent 流式期间）
-			// → 实际渲染时若 _streaming 已剥离（dropRun 后），botTask.resultText 会是 'NO_REPLY'
-			// 但更典型的场景是 model 直接给空 text — 用空字符串模拟
+		test('assistant 仅含空 text 块：botTask 同样命中 v-else', () => {
+			// 模型在终态时给出空字符串文本，botTask 创建但 resultText 为空
+			// 注：NO_REPLY 现在已独立成 systemNote 不会进 botTask（见上方 systemNote 测试）
 			const entries = [
 				userEntry('u1', '继续', 1000),
 				assistantEntry('a1', {
@@ -738,6 +739,213 @@ describe('groupSessionMessages', () => {
 
 			expect(botTask.resultText).toBe('答案在这');
 		});
+	});
+});
+
+describe('groupSessionMessages — 系统块剥离（systemNote）', () => {
+	function injectAssistantEntry(id, { text = '', model = 'gateway-injected', ts = null, entryTs = null } = {}) {
+		const entry = {
+			type: 'message',
+			id,
+			message: {
+				role: 'assistant',
+				content: [{ type: 'text', text }],
+				provider: 'openclaw',
+				model,
+				stopReason: 'endTurn',
+				timestamp: ts,
+			},
+		};
+		if (entryTs != null) entry.timestamp = entryTs;
+		return entry;
+	}
+
+	test('inject 紧跟 user：独立成 systemNote、不创建 botTask', () => {
+		const entries = [
+			userEntry('u1', '你好', 1000),
+			injectAssistantEntry('a1', { text: '✅ New session started.', model: 'delivery-mirror', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result).toHaveLength(2);
+		expect(result[0].type).toBe('user');
+		expect(result[1]).toMatchObject({
+			type: 'systemNote',
+			id: 'a1',
+			text: '✅ New session started.',
+			source: 'inject',
+			model: 'delivery-mirror',
+			timestamp: 2000,
+		});
+		expect(result.some((it) => it.type === 'botTask')).toBe(false);
+	});
+
+	test('inject 夹在 botTask 中间：botTask 不拆分、systemNote 前置', () => {
+		const entries = [
+			userEntry('u1', '帮我处理', 1000),
+			assistantEntry('a1', {
+				thinking: '调工具',
+				toolCalls: [{ name: 'do' }],
+				stopReason: 'toolUse',
+				ts: 2000,
+			}),
+			toolResultEntry('tr1', '结果', 2500),
+			injectAssistantEntry('inj1', { text: '⚙️ Compaction skipped: ratio too small', ts: 3000 }),
+			assistantEntry('a2', { text: '处理完成', ts: 4000 }),
+		];
+		const result = groupSessionMessages(entries);
+		// 顺序：user → systemNote → botTask
+		expect(result.map((it) => it.type)).toEqual(['user', 'systemNote', 'botTask']);
+		const systemNote = result[1];
+		const botTask = result[2];
+		expect(systemNote.text).toBe('⚙️ Compaction skipped: ratio too small');
+		expect(systemNote.source).toBe('inject');
+		// botTask 仍合并 a1 + tr1 + a2 步骤、resultText 为最终
+		expect(botTask.id).toBe('a1');
+		expect(botTask.resultText).toBe('处理完成');
+		expect(botTask.steps).toEqual([
+			{ kind: 'thinking', text: '调工具' },
+			{ kind: 'toolCall', name: 'do' },
+			{ kind: 'toolResult', text: '结果' },
+		]);
+	});
+
+	test('HEARTBEAT_OK 整段精确匹配 → systemNote', () => {
+		const entries = [
+			userEntry('u1', 'tick', 1000),
+			assistantEntry('a1', { text: 'HEARTBEAT_OK', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result).toHaveLength(2);
+		expect(result[1]).toMatchObject({
+			type: 'systemNote',
+			source: 'heartbeat',
+			text: 'HEARTBEAT_OK',
+			model: null,
+		});
+		expect(result.some((it) => it.type === 'botTask')).toBe(false);
+	});
+
+	test('包含 HEARTBEAT_OK 但非整段不命中（仍走 botTask）', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			assistantEntry('a1', { text: 'My answer is HEARTBEAT_OK and more.', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].type).toBe('botTask');
+		expect(result[1].resultText).toBe('My answer is HEARTBEAT_OK and more.');
+	});
+
+	test('provider 非 openclaw 即使 model 名字像 delivery-mirror 也不命中 inject', () => {
+		// 防御：识别只看 provider，不看 model 字面量
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			{
+				type: 'message',
+				id: 'a1',
+				message: {
+					role: 'assistant',
+					provider: 'anthropic',
+					model: 'delivery-mirror',  // 即使名字相同，provider 不对就不识别
+					content: [{ type: 'text', text: 'real reply' }],
+					stopReason: 'endTurn',
+					timestamp: 2000,
+				},
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].type).toBe('botTask');
+		expect(result[1].resultText).toBe('real reply');
+	});
+
+	test('多个系统块同段：保 entry 序、统一前置', () => {
+		const entries = [
+			userEntry('u1', '问题', 1000),
+			injectAssistantEntry('inj1', { text: 'inject A', ts: 1100 }),
+			assistantEntry('a1', { text: 'NO_REPLY', ts: 1200 }),
+			injectAssistantEntry('inj2', { text: 'inject B', model: 'delivery-mirror', ts: 1300 }),
+			assistantEntry('a2', { text: '最终回复', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result.map((it) => it.type)).toEqual(['user', 'systemNote', 'systemNote', 'systemNote', 'botTask']);
+		expect(result[1].id).toBe('inj1');
+		expect(result[2].id).toBe('a1');
+		expect(result[2].source).toBe('noReply');
+		expect(result[3].id).toBe('inj2');
+		expect(result[3].source).toBe('inject');
+		expect(result[4].resultText).toBe('最终回复');
+	});
+
+	test('delivery-mirror 子类同样视作 inject、不维护 model 白名单', () => {
+		const entries = [
+			userEntry('u1', '问', 1000),
+			injectAssistantEntry('a1', { text: '🔁 Replayed', model: 'delivery-mirror', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1]).toMatchObject({ type: 'systemNote', source: 'inject', model: 'delivery-mirror' });
+	});
+
+	test('未来未知的 inject model 也命中（仅看 provider）', () => {
+		const entries = [
+			userEntry('u1', '问', 1000),
+			injectAssistantEntry('a1', { text: 'future', model: 'some-future-injected', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].source).toBe('inject');
+		expect(result[1].model).toBe('some-future-injected');
+	});
+
+	test('段内仅 inject 而无后续 assistant：不创建空 botTask', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			injectAssistantEntry('a1', { text: 'note', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result).toHaveLength(2);
+		expect(result.some((it) => it.type === 'botTask')).toBe(false);
+	});
+
+	test('多段切换：每段 systemNotes 隔离、不串段', () => {
+		const entries = [
+			userEntry('u1', '第一段', 1000),
+			injectAssistantEntry('inj1', { text: 'note1', ts: 1100 }),
+			assistantEntry('a1', { text: '回复一', ts: 2000 }),
+			userEntry('u2', '第二段', 3000),
+			injectAssistantEntry('inj2', { text: 'note2', ts: 3100 }),
+			assistantEntry('a2', { text: '回复二', ts: 4000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result.map((it) => it.type)).toEqual([
+			'user', 'systemNote', 'botTask',
+			'user', 'systemNote', 'botTask',
+		]);
+		expect(result[1].text).toBe('note1');
+		expect(result[4].text).toBe('note2');
+	});
+
+	test('systemNote 里 [[reply_to_current]] 标签也被 strip', () => {
+		const entries = [
+			userEntry('u1', 'q', 1000),
+			injectAssistantEntry('a1', { text: '[[reply_to_current]] 系统注入正文', ts: 2000 }),
+		];
+		const result = groupSessionMessages(entries);
+		expect(result[1].text).toBe('系统注入正文');
+	});
+
+	test('systemNote 不影响流式 botTask 的 isStreaming/startTime', () => {
+		const entries = [
+			userEntry('u1', '问', 1000),
+			injectAssistantEntry('inj1', { text: 'inject', ts: 1100 }),
+			{
+				...assistantEntry('a1', { text: '回答中', stopReason: 'stop', ts: 1500 }),
+				_streaming: true,
+				_startTime: 1200,
+			},
+		];
+		const result = groupSessionMessages(entries);
+		expect(result.map((it) => it.type)).toEqual(['user', 'systemNote', 'botTask']);
+		const botTask = result[2];
+		expect(botTask.isStreaming).toBe(true);
+		expect(botTask.startTime).toBe(1200);
 	});
 });
 

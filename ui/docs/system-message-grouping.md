@@ -1,9 +1,9 @@
 # 系统消息独立成块（系统块剥离）
 
 > 创建时间：2026-05-03
-> 状态：草案（待实施）
+> 状态：已实施（2026-05-03）
 > 研究基础：`docs/openclaw-research/transcript-message-taxonomy.md`
-> 影响范围：`ui` 工作区——`src/utils/session-msg-group.js` + `src/views/ChatPage.vue`
+> 影响范围：`ui` 工作区——`src/utils/session-msg-group.js` + `src/views/ChatPage.vue` + `src/utils/agent-stream.js`
 
 ---
 

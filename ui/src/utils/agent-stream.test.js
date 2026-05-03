@@ -31,31 +31,29 @@ describe('applyAgentEvent', () => {
 		expect(result.changed).toBe(true);
 	});
 
-	test('assistant stream：过滤 NO_REPLY 静默回复', () => {
+	test('assistant stream：NO_REPLY 文本被原样写入，由分组器识别为 systemNote', () => {
 		const msgs = makeStreamingMsgs();
 		const result = applyAgentEvent(msgs, { stream: 'assistant', data: { text: 'NO_REPLY' } });
 
 		const entry = msgs.find((m) => m._streaming && m.message.role === 'assistant');
-		const textBlocks = Array.isArray(entry.message.content)
-			? entry.message.content.filter((b) => b.type === 'text')
-			: [];
-		expect(textBlocks).toHaveLength(0);
+		const textBlock = Array.isArray(entry.message.content)
+			? entry.message.content.find((b) => b.type === 'text')
+			: null;
+		expect(textBlock?.text).toBe('NO_REPLY');
 		expect(entry.message.stopReason).toBe('stop');
 		expect(result.changed).toBe(true);
 	});
 
-	test('assistant stream：过滤带空白的 NO_REPLY', () => {
+	test('assistant stream：HEARTBEAT_OK 文本被原样写入', () => {
 		const msgs = makeStreamingMsgs();
-		applyAgentEvent(msgs, { stream: 'assistant', data: { text: '  NO_REPLY  ' } });
+		applyAgentEvent(msgs, { stream: 'assistant', data: { text: 'HEARTBEAT_OK' } });
 
 		const entry = msgs.find((m) => m._streaming && m.message.role === 'assistant');
-		const textBlocks = Array.isArray(entry.message.content)
-			? entry.message.content.filter((b) => b.type === 'text')
-			: [];
-		expect(textBlocks).toHaveLength(0);
+		const textBlock = entry.message.content.find((b) => b.type === 'text');
+		expect(textBlock?.text).toBe('HEARTBEAT_OK');
 	});
 
-	test('assistant stream：不过滤包含 NO_REPLY 的正常文本', () => {
+	test('assistant stream：包含 NO_REPLY 的正常文本被原样写入', () => {
 		const msgs = makeStreamingMsgs();
 		applyAgentEvent(msgs, { stream: 'assistant', data: { text: 'The agent said NO_REPLY here' } });
 

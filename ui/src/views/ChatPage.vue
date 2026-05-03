@@ -112,6 +112,18 @@
 							<span v-if="formatSeparatorLabel(item)" class="text-xs text-muted whitespace-nowrap">{{ formatSeparatorLabel(item) }}</span>
 							<div class="flex-1 border-t border-dashed border-muted" />
 						</div>
+						<!-- 系统块（OpenClaw 注入 / HEARTBEAT_OK / NO_REPLY 等非自然对话消息） -->
+						<div v-else-if="item.type === 'systemNote'" data-testid="system-note" class="px-3 py-2 sm:px-4">
+							<div class="rounded-lg bg-elevated px-3 py-2 text-sm text-dimmed">
+								<div class="whitespace-pre-wrap break-words">{{ item.text }}</div>
+								<div v-if="item.timestamp || (item.source === 'inject' && item.model)" class="mt-1 flex items-center justify-end gap-2 text-xs">
+									<span v-if="item.timestamp">{{ formatSysNoteTime(item.timestamp) }}</span>
+									<span v-if="item.source === 'inject' && item.model" class="rounded bg-muted/60 px-1.5 py-0.5 text-toned">
+										{{ item.model }}
+									</span>
+								</div>
+							</div>
+						</div>
 						<ChatMsgItem
 							v-else
 							:item="item"
@@ -879,6 +891,16 @@ export default {
 		formatSeparatorLabel(item) {
 			if (!item.archivedAt) return '';
 			return this.__formatDateTime(item.archivedAt);
+		},
+
+		/** systemNote 时间标签：HH:MM 与 ChatMsgItem.formattedTime 一致 */
+		formatSysNoteTime(ts) {
+			if (!ts) return '';
+			const d = new Date(ts);
+			if (isNaN(d.getTime())) return '';
+			const hh = String(d.getHours()).padStart(2, '0');
+			const mi = String(d.getMinutes()).padStart(2, '0');
+			return `${hh}:${mi}`;
 		},
 		__formatDateTime(ts) {
 			try {

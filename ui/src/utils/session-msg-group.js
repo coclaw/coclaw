@@ -6,7 +6,9 @@ import { parseAttachmentBlock, isImageByExt, isVoiceByExt, extractCoclawFileRefs
  * 分组规则：
  * - 跳过 type !== 'message' 的条目
  * - role=user → push user item，结束当前 botTask
- * - role=assistant / role=toolResult → 归入当前 botTask
+ * - role=assistant 命中系统块识别（provider===openclaw 或整段 HEARTBEAT_OK/NO_REPLY）→ 暂存到本段 systemNotes
+ * - role=assistant 其它 / role=toolResult → 归入当前 botTask
+ * - 段切换或末尾 flush 时按 systemNotes... + botTask 顺序输出，systemNote 始终前置
  *
  * @param {object[]} entries - 原始 JSONL 条目
  * @returns {object[]} 分组后的 chat items
@@ -14,7 +16,21 @@ import { parseAttachmentBlock, isImageByExt, isVoiceByExt, extractCoclawFileRefs
 function groupSessionMessages(entries) {
 	const items = [];
 	let currentTask = null;
+	let pendingSystemNotes = [];
 	let lastUserTs = null;
+
+	const flushSegment = () => {
+		// 系统块统一前置：先 push systemNotes，再 push botTask
+		if (pendingSystemNotes.length) {
+			items.push(...pendingSystemNotes);
+			pendingSystemNotes = [];
+		}
+		if (currentTask) {
+			__finalizeBotTask(currentTask, lastUserTs);
+			items.push(currentTask);
+			currentTask = null;
+		}
+	};
 
 	for (const entry of entries) {
 		if (entry.type !== 'message' || !entry.message) {
@@ -25,12 +41,7 @@ function groupSessionMessages(entries) {
 		const role = msg.role;
 
 		if (role === 'user') {
-			// 结束当前 botTask
-			if (currentTask) {
-				__finalizeBotTask(currentTask, lastUserTs);
-				items.push(currentTask);
-				currentTask = null;
-			}
+			flushSegment();
 
 			lastUserTs = msg.timestamp ?? null;
 			let textContent = stripOcPrefixes(extractTextContent(msg.content), 'user');
@@ -56,6 +67,11 @@ function groupSessionMessages(entries) {
 				_pending: !!entry._pending,
 			});
 		} else if (role === 'assistant') {
+			const sysSource = isSystemAssistantEntry(msg);
+			if (sysSource) {
+				pendingSystemNotes.push(buildSystemNote(entry, msg, sysSource));
+				continue;
+			}
 			if (!currentTask) {
 				currentTask = createBotTask(entry.id);
 			}
@@ -78,13 +94,46 @@ function groupSessionMessages(entries) {
 		}
 	}
 
-	// 末尾未结束的 botTask
-	if (currentTask) {
-		__finalizeBotTask(currentTask, lastUserTs);
-		items.push(currentTask);
-	}
+	// 末尾未结束的 systemNotes / botTask
+	flushSegment();
 
 	return items;
+}
+
+/**
+ * 判断 assistant message 是否为"系统块"——非自然对话，需独立成 systemNote 而非并入 botTask。
+ * 见 docs/openclaw-research/transcript-message-taxonomy.md 第四、五节。
+ * @param {object} msg - JSONL message 子对象（已确保 role === 'assistant'）
+ * @returns {'inject'|'heartbeat'|'noReply'|null}
+ */
+function isSystemAssistantEntry(msg) {
+	if (!msg || msg.role !== 'assistant') return null;
+	// 1) OpenClaw 注入：provider 唯一稳定判据，不依赖 model 白名单
+	if (msg.provider === 'openclaw') return 'inject';
+	// 2) 心跳 / 静默 ack：模型对系统注入 prompt 的真实回复，整段精确匹配
+	const text = extractTextContent(msg.content);
+	const trimmed = text.trim();
+	if (trimmed === 'HEARTBEAT_OK') return 'heartbeat';
+	if (trimmed === 'NO_REPLY') return 'noReply';
+	return null;
+}
+
+/**
+ * 构造 systemNote 渲染项。
+ * @param {object} entry - 完整 JSONL 行
+ * @param {object} msg - message 子对象
+ * @param {'inject'|'heartbeat'|'noReply'} source
+ */
+function buildSystemNote(entry, msg, source) {
+	const text = stripOcPrefixes(extractTextContent(msg.content), 'assistant');
+	return {
+		type: 'systemNote',
+		id: entry.id,
+		text,
+		model: source === 'inject' ? (msg.model ?? null) : null,
+		timestamp: parseEntryTimestamp(entry) ?? msg.timestamp ?? null,
+		source,
+	};
 }
 
 /** 计算 botTask duration（ms）+ 提取 coclaw-file 附件 */
@@ -148,11 +197,6 @@ function processAssistant(task, msg, entry) {
 				task.steps.push({ kind: 'thinking', text: block.text });
 			}
 		}
-	}
-
-	// 静默回复过滤：resultText 匹配 NO_REPLY 时清除
-	if (task.resultText && SILENT_REPLY_PATTERN.test(task.resultText)) {
-		task.resultText = null;
 	}
 
 	// 更新 model/timestamp（以最后一个 assistant 为准）
@@ -243,9 +287,6 @@ function extractImages(content) {
 		.filter((b) => b.type === 'image' && b.data)
 		.map((b) => ({ data: b.data, mimeType: b.mimeType }));
 }
-
-// Agent 静默回复标记（Agent 判断无需回复时输出，不应展示给用户）
-const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 
 // OpenClaw gateway 注入的 inbound metadata 头部（Conversation info / Sender / Thread starter 等）
 // 格式：<Label> (untrusted...):```json {...} ```\n\n
