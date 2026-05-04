@@ -4406,6 +4406,318 @@ test('dc unicast: TTL scan clears expired entries and warns', async () => {
 	}
 });
 
+// --- runId → connId 路由表（agent event 单播）集成测试 ---
+
+test('run-event-routes: res accepted with runId writes route', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re1');
+	try {
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-re-1', method: 'agent', params: {} },
+			'c_re1'
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-re-1', ok: true, payload: { status: 'accepted', runId: 'run-A' } }),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(bridge.__runEventRoutes.lookup('run-A'), 'c_re1', 'route added on accepted');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: res non-accepted with runId removes route', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re2');
+	try {
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-re-2', method: 'agent', params: {} },
+			'c_re2'
+		);
+		// accepted 写入
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-re-2', ok: true, payload: { status: 'accepted', runId: 'run-B' } }),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+		assert.equal(bridge.__runEventRoutes.lookup('run-B'), 'c_re2');
+
+		// 终态 res（非 accepted）→ 删除
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-re-2', ok: true, payload: { status: 'ok', runId: 'run-B' } }),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+		assert.equal(bridge.__runEventRoutes.lookup('run-B'), undefined, 'route removed on terminal');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: event:agent hits unicast by runId', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re3');
+	try {
+		const sentTo = [];
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push({ connId, payload }); return true; };
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
+
+		bridge.__runEventRoutes.add('run-C', 'c_re3', 'ui-re-3');
+
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'agent',
+				payload: { runId: 'run-C', stream: 'reasoning', seq: 1, data: {} },
+			}),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(sentTo.length, 1, 'unicast hit');
+		assert.equal(sentTo[0].connId, 'c_re3');
+		assert.equal(sentTo[0].payload.payload.runId, 'run-C');
+		assert.equal(broadcasted.length, 0, 'no fallback broadcast on hit');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: event:agent miss falls back to broadcast', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re4');
+	try {
+		const sentTo = [];
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push({ connId, payload }); return true; };
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
+
+		// 不预先注册 → miss
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'agent',
+				payload: { runId: 'run-D-orphan', stream: 'reasoning', seq: 1, data: {} },
+			}),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(sentTo.length, 0, 'no unicast');
+		assert.equal(broadcasted.length, 1, 'fallback broadcast');
+		assert.equal(broadcasted[0].payload.runId, 'run-D-orphan');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: gateway ws close clears all route entries', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re5');
+	try {
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		bridge.__runEventRoutes.add('run-E1', 'c_re5', 'r1');
+		bridge.__runEventRoutes.add('run-E2', 'c_re5', 'r2');
+		assert.equal(bridge.__runEventRoutes.__entries.size, 2);
+
+		gwWs.emit('close', { code: 1006, reason: 'remote dropped' });
+		assert.equal(bridge.__runEventRoutes.__entries.size, 0, 'entries cleared on ws close');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: stop destroys the route table', async () => {
+	const { bridge, prevHome } = await setupBridgeWithGateway('c_re6');
+	try {
+		const routes = bridge.__runEventRoutes;
+		assert.ok(routes, 'routes should be initialized after start');
+		assert.equal(routes.__destroyed, false);
+
+		await bridge.stop();
+		assert.equal(routes.__destroyed, true, 'destroy called on stop');
+		assert.equal(bridge.__runEventRoutes, null, 'field nulled after stop');
+	} finally {
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: same runId from different reqId does not overwrite (first-writer-wins)', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re7a');
+	try {
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		// 首发：c_re7a 拿走路由
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-re-7a', method: 'agent', params: {} },
+			'c_re7a'
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-re-7a', ok: true, payload: { status: 'accepted', runId: 'run-shared' } }),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+		assert.equal(bridge.__runEventRoutes.lookup('run-shared'), 'c_re7a');
+
+		// attach：另一个 conn 通过 agent.wait 等同 runId，又来一条 accepted（不同 reqId）
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-re-7b', method: 'agent.wait', params: { runId: 'run-shared' } },
+			'c_re7b'
+		);
+		gwWs.emit('message', {
+			data: JSON.stringify({ type: 'res', id: 'ui-re-7b', ok: true, payload: { status: 'accepted', runId: 'run-shared' } }),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(bridge.__runEventRoutes.lookup('run-shared'), 'c_re7a', 'route locked to first writer');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: lookup hit but sendTo fails drops event without broadcast fallback', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re8');
+	try {
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = () => false;  // 模拟 PC 死 / DC 拒收
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
+
+		bridge.__runEventRoutes.add('run-H', 'c_re8', 'r-h');
+
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'agent',
+				payload: { runId: 'run-H', stream: 'reasoning', seq: 1, data: {} },
+			}),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(broadcasted.length, 0, 'sendTo failure must NOT fall back to broadcast');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: event:agent without runId falls back to broadcast', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re_norunid');
+	try {
+		const sentTo = [];
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push({ connId, payload }); return true; };
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
+
+		// runId 缺失 → 不进 (c2)，走 (d) 兜底
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'agent',
+				payload: { stream: 'reasoning', seq: 1, data: {} },
+			}),
+		});
+		// runId 是非 string（数字）→ 同样不进 (c2)
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'agent',
+				payload: { runId: 12345, stream: 'reasoning', seq: 1, data: {} },
+			}),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(sentTo.length, 0, '无 runId / runId 非 string 不应单播');
+		assert.equal(broadcasted.length, 2, '两条都应走兜底广播');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: __closeGatewayWs() (server-disconnect path) clears route entries', async () => {
+	// server WS 断开等场景会直接调 __closeGatewayWs，独立于 ws close handler 清表路径。
+	const { bridge, prevHome } = await setupBridgeWithGateway('c_re_closegw');
+	try {
+		bridge.__runEventRoutes.add('run-X', 'c_re_closegw', 'r-x');
+		assert.equal(bridge.__runEventRoutes.__entries.size, 1);
+
+		bridge.__closeGatewayWs();
+		assert.equal(bridge.__runEventRoutes.__entries.size, 0, '__closeGatewayWs 内的清表接线点应生效');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: stop then start recreates route table; new instance accepts new entries', async () => {
+	const { bridge, prevHome } = await setupBridgeWithGateway('c_re_refresh');
+	try {
+		const oldRoutes = bridge.__runEventRoutes;
+		oldRoutes.add('run-old', 'c_re_refresh', 'r-old');
+		assert.equal(oldRoutes.lookup('run-old'), 'c_re_refresh');
+
+		// stop 销毁旧实例 + 字段置 null
+		await bridge.stop();
+		assert.equal(oldRoutes.__destroyed, true);
+		assert.equal(bridge.__runEventRoutes, null);
+
+		// start 应重建新实例（refresh 流程的核心约束）
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		assert.ok(bridge.__runEventRoutes, 'start 后新建路由表');
+		assert.notEqual(bridge.__runEventRoutes, oldRoutes, '应是新实例不是旧的');
+		assert.equal(bridge.__runEventRoutes.__destroyed, false, '新实例不应处于 destroyed 态');
+
+		// 新实例可正常 add / lookup
+		bridge.__runEventRoutes.add('run-new', 'c_new', 'r-new');
+		assert.equal(bridge.__runEventRoutes.lookup('run-new'), 'c_new');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('run-event-routes: event:agent unicast sendTo throws — caught by listener, no unhandledRejection, no broadcast fallback', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re_throw');
+	const origListeners = process.listeners('unhandledRejection');
+	process.removeAllListeners('unhandledRejection');
+	const unhandled = [];
+	const captureUnhandled = (reason) => unhandled.push(reason);
+	process.on('unhandledRejection', captureUnhandled);
+	try {
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = async () => { throw new Error('boom from c2 sendTo'); };
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
+
+		bridge.__runEventRoutes.add('run-throw', 'c_re_throw', 'r-throw');
+
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'agent',
+				payload: { runId: 'run-throw', stream: 'reasoning', seq: 1, data: {} },
+			}),
+		});
+
+		for (let i = 0; i < 15; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		const leaked = unhandled.filter((e) => /boom from c2 sendTo/.test(String(e?.message ?? e)));
+		assert.equal(leaked.length, 0, `unhandledRejection leaked: ${leaked.map((e) => e?.message).join(', ')}`);
+		assert.equal(broadcasted.length, 0, 'sendTo throw 不应触发兜底广播');
+	} finally {
+		process.removeListener('unhandledRejection', captureUnhandled);
+		for (const l of origListeners) process.on('unhandledRejection', l);
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
 // --- 顶层 try/catch：sendTo 抛错不能让 listener 变 unhandledRejection 击穿 gateway ---
 
 test('gateway ws message handler: broadcast 抛错时 listener 不产生 unhandledRejection', async () => {

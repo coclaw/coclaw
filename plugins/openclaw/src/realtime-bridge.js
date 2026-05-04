@@ -16,6 +16,7 @@ import { getRuntime } from './runtime.js';
 import { setSender as setRemoteLogSender, remoteLog } from './remote-log.js';
 import { getPluginVersion } from './plugin-version.js';
 import { getPlatformInfoLine } from './platform-info.js';
+import { RunEventRoutes, DEFAULT_TTL_MS as RUN_EVENT_DEFAULT_TTL_MS, DEFAULT_SCAN_MS as RUN_EVENT_DEFAULT_SCAN_MS } from './rpc-routing/run-event-routes.js';
 
 const DEFAULT_GATEWAY_WS_URL = `ws://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT || '18789'}`;
 const RECONNECT_MS = 10_000;
@@ -133,6 +134,8 @@ export class RealtimeBridge {
 	 * @param {number} [deps.gatewayReadyTimeoutMs] - __waitGatewayReady 默认超时（测试可注入短值）
 	 * @param {number} [deps.dcReqTtlMs] - UI 转发 RPC 路由表条目 TTL（测试可注入短值）
 	 * @param {number} [deps.dcReqScanMs] - UI 转发 RPC 路由表周期扫描间隔（测试可注入短值）
+	 * @param {number} [deps.runEventRoutesTtlMs] - runId → connId 路由表条目 TTL（测试可注入短值）
+	 * @param {number} [deps.runEventRoutesScanMs] - runId → connId 路由表周期扫描间隔（测试可注入短值）
 	 */
 	constructor(deps = {}) {
 		this.__readConfig = deps.readConfig ?? readConfig;
@@ -146,6 +149,8 @@ export class RealtimeBridge {
 		this.__gatewayReadyTimeoutMs = deps.gatewayReadyTimeoutMs ?? 1500;
 		this.__dcReqTtlMs = deps.dcReqTtlMs ?? DC_REQ_TTL_MS;
 		this.__dcReqScanMs = deps.dcReqScanMs ?? DC_REQ_SCAN_MS;
+		this.__runEventRoutesTtlMs = deps.runEventRoutesTtlMs ?? RUN_EVENT_DEFAULT_TTL_MS;
+		this.__runEventRoutesScanMs = deps.runEventRoutesScanMs ?? RUN_EVENT_DEFAULT_SCAN_MS;
 		// rpc-queues/ 启动期预热钩子（B-stage1 plan-2）。仅供测试覆盖错误分支注入；生产路径走默认。
 		this.__cleanupRpcQueueResiduals = deps.cleanupRpcQueueResiduals ?? defaultCleanupResiduals;
 		this.__measureRpcQueueDiskCap = deps.measureRpcQueueDiskCap ?? defaultMeasureDiskCap;
@@ -183,6 +188,9 @@ export class RealtimeBridge {
 		// 用于 res 帧按发起方单播；查不到时回退广播兜底（兼容旧 UI / 撞号 / 上游新增中间态字符串等）
 		this.__dcPendingRequests = new Map();
 		this.__dcPendingScanTimer = null;
+		// runId → connId 路由表：用于 event:agent 帧按发起方单播。
+		// 实例延迟到 start() 真 logger 到位时再 new；stop() destroy 后置 null。
+		this.__runEventRoutes = null;
 		// rpc DC 文件回退队列的磁盘容量（B-stage1 plan-2 探测，B-stage2 才消费）
 		this.__diskCap = null;
 	}
@@ -293,6 +301,8 @@ export class RealtimeBridge {
 		this.gatewayPendingRequests.clear();
 		// 清空 UI 转发 RPC 路由表：gateway 已断，不会再有响应回来；不主动通知 UI，由 UI 30/60s 超时兜底
 		this.__dcPendingRequests.clear();
+		// 同步清空 runId 路由表（gateway 已断，不会再有 event:agent 推过来）
+		this.__runEventRoutes?.clear();
 	}
 
 	/** 懒加载 WebRtcPeer（promise 锁防并发重复创建） */
@@ -848,7 +858,20 @@ export class RealtimeBridge {
 					if (payload.type === 'res' && typeof payload.id === 'string') {
 						const info = this.__dcPendingRequests.get(payload.id);
 						if (info) {
-						// 终态才清条目；accepted 类中间态保留等下一帧
+							// runId 路由表维护：accepted 时 add（首发优先），非 accepted 时 remove。
+							// 写入要求 reqId 表命中以拿 connId；删除嵌在 reqId 命中分支内——
+							// 因 reqId 表 miss 意味着写入也未发生过（设计上等价 no-op），
+							// 极端错位（reqId 表先 TTL 过期、runId 表条目仍存）由 24h TTL 兜底。
+							const runId = payload.payload?.runId;
+							if (typeof runId === 'string' && runId) {
+								if (payload.payload?.status === 'accepted') {
+									this.__runEventRoutes?.add(runId, info.connId, payload.id);
+								}
+								else {
+									this.__runEventRoutes?.remove(runId, payload.id);
+								}
+							}
+							// 终态才清条目；accepted 类中间态保留等下一帧
 							if (isFinalResMsg(payload)) {
 								this.__dcPendingRequests.delete(payload.id);
 							}
@@ -861,6 +884,18 @@ export class RealtimeBridge {
 								);
 							}
 							return;
+						}
+					}
+					// (c2) agent event 按 runId 单播：命中即送达，不退兜底广播；miss 走 (d) 兜底
+					if (payload.type === 'event' && payload.event === 'agent') {
+						const runId = payload.payload?.runId;
+						if (typeof runId === 'string' && runId) {
+							const connId = this.__runEventRoutes?.lookup(runId);
+							if (connId !== undefined) {
+								// sendTo 失败不打 log（PC 状态翻转日志已足够，drop 是正确语义）
+								await this.webrtcPeer?.sendTo(connId, payload);
+								return;
+							}
 						}
 					}
 					// (d) 兜底广播：覆盖 event 类型 / 映射未命中场景
@@ -900,6 +935,8 @@ export class RealtimeBridge {
 			this.gatewayPendingRequests.clear();
 			// 同步清空 UI 转发 RPC 路由表（同 __closeGatewayWs 语义）
 			this.__dcPendingRequests.clear();
+			// 同步清空 runId 路由表（gateway 已断，不会再有 event:agent 推过来）
+			this.__runEventRoutes?.clear();
 			// 调度下一次尝试：仅在 bridge 仍活着、未 gave-up、server WS 健康时；
 			// 其他场景（如 bridge stop、server WS 已断）由上游流程兜底，不参与 gateway 重试。
 			if (this.started && !this.__gatewayGaveUp
@@ -1402,6 +1439,13 @@ export class RealtimeBridge {
 			}
 		}, this.__dcReqScanMs);
 		this.__dcPendingScanTimer.unref?.();
+		// 启动 runId → connId 路由表（agent event 单播）。延迟到 start 才 new，确保拿到真 logger。
+		this.__runEventRoutes = new RunEventRoutes({
+			logger: this.logger,
+			ttlMs: this.__runEventRoutesTtlMs,
+			scanMs: this.__runEventRoutesScanMs,
+		});
+		this.__runEventRoutes.init();
 		await this.__connectIfNeeded();
 	}
 
@@ -1451,6 +1495,11 @@ export class RealtimeBridge {
 		if (this.__dcPendingScanTimer) {
 			clearInterval(this.__dcPendingScanTimer);
 			this.__dcPendingScanTimer = null;
+		}
+		// 销毁 runId 路由表（停 timer + clear + 标 destroyed）；refresh 时会重建
+		if (this.__runEventRoutes) {
+			this.__runEventRoutes.destroy();
+			this.__runEventRoutes = null;
 		}
 		this.__closeGatewayWs();
 		if (this.webrtcPeer) {
