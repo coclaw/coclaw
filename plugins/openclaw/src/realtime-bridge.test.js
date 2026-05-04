@@ -4548,11 +4548,15 @@ test('run-event-routes: stop destroys the route table', async () => {
 	}
 });
 
-test('run-event-routes: same runId from different reqId does not overwrite (first-writer-wins)', async () => {
+test('run-event-routes: same runId from different reqId does not overwrite, event still routed to first writer', async () => {
+	// 端到端守住 dump 决策点 3 的核心防御：attach（agent.wait 用同 runId）来抢路由时，
+	// 路由表锁定首发；后续 event:agent 必须送给首发 conn，不送给 attach 方，也不退兜底广播。
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re7a');
 	try {
-		bridge.webrtcPeer.sendTo = () => true;
-		bridge.webrtcPeer.broadcast = () => {};
+		const sentTo = [];
+		const broadcasted = [];
+		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push({ connId, payload }); return true; };
+		bridge.webrtcPeer.broadcast = (p) => broadcasted.push(p);
 
 		// 首发：c_re7a 拿走路由
 		await bridge.__handleGatewayRequestFromDc(
@@ -4576,6 +4580,26 @@ test('run-event-routes: same runId from different reqId does not overwrite (firs
 		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
 
 		assert.equal(bridge.__runEventRoutes.lookup('run-shared'), 'c_re7a', 'route locked to first writer');
+
+		// 清掉前两次 res accepted 的 sendTo 记录，只看后续 event 的去向
+		const sentToBaseline = sentTo.length;
+		const broadcastedBaseline = broadcasted.length;
+
+		// agent event 推到 bridge：必须 unicast 给首发 c_re7a，不送 c_re7b，也不广播
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'agent',
+				payload: { runId: 'run-shared', stream: 'reasoning', seq: 1, data: {} },
+			}),
+		});
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		const eventSends = sentTo.slice(sentToBaseline);
+		assert.equal(eventSends.length, 1, 'event 应仅 unicast 一次');
+		assert.equal(eventSends[0].connId, 'c_re7a', 'event 必须送给首发 conn');
+		assert.notEqual(eventSends[0].connId, 'c_re7b', 'event 绝不送给 attach 方');
+		assert.equal(broadcasted.length, broadcastedBaseline, 'event 不应触发兜底广播');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
