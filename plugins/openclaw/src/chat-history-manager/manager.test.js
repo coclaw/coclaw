@@ -15,7 +15,7 @@ async function setupManager(tmpDir, extraOpts = {}) {
 	const rootDir = nodePath.join(tmpDir, 'agents');
 	await fs.mkdir(nodePath.join(rootDir, 'main', 'sessions'), { recursive: true });
 	const mgr = new ChatHistoryManager({
-		rootDir,
+		resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'),
 		logger: silentLogger,
 		...extraOpts,
 	});
@@ -231,7 +231,7 @@ test('list - 未 load 的 agentId 会先从磁盘加载', async () => {
 			version: 1,
 			'agent:lazy:main': [{ sessionId: 'from-disk', archivedAt: 1000 }],
 		}));
-		const mgr = new ChatHistoryManager({ rootDir, logger: silentLogger });
+		const mgr = new ChatHistoryManager({ resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'), logger: silentLogger });
 		// 不调用 load，直接 list，应从磁盘加载
 		const { history } = await mgr.list({ agentId: 'lazy', sessionKey: 'agent:lazy:main' });
 		assert.equal(history.length, 1);
@@ -246,7 +246,7 @@ test('recordArchived - 未 load 的 agentId 自动从磁盘加载（不抛错）
 	try {
 		const rootDir = nodePath.join(tmpDir, 'agents');
 		await fs.mkdir(nodePath.join(rootDir, 'lazy', 'sessions'), { recursive: true });
-		const mgr = new ChatHistoryManager({ rootDir, logger: silentLogger });
+		const mgr = new ChatHistoryManager({ resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'), logger: silentLogger });
 		// 不调用 load，直接 recordArchived
 		await mgr.recordArchived({ agentId: 'lazy', sessionKey: 'agent:lazy:main', sessionId: 'sid-1' });
 		const { history } = await mgr.list({ agentId: 'lazy', sessionKey: 'agent:lazy:main' });
@@ -262,7 +262,7 @@ test('list - 未 load 且无磁盘文件时初始化空数据', async () => {
 	try {
 		const rootDir = nodePath.join(tmpDir, 'agents');
 		await fs.mkdir(nodePath.join(rootDir, 'empty-agent', 'sessions'), { recursive: true });
-		const mgr = new ChatHistoryManager({ rootDir, logger: silentLogger });
+		const mgr = new ChatHistoryManager({ resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'), logger: silentLogger });
 		// 不 load，直接 list
 		const { history } = await mgr.list({ agentId: 'empty-agent', sessionKey: 'agent:empty-agent:main' });
 		assert.deepStrictEqual(history, []);
@@ -291,7 +291,7 @@ test('多 agentId 隔离', async () => {
 		const rootDir = nodePath.join(tmpDir, 'agents');
 		await fs.mkdir(nodePath.join(rootDir, 'main', 'sessions'), { recursive: true });
 		await fs.mkdir(nodePath.join(rootDir, 'tester', 'sessions'), { recursive: true });
-		const mgr = new ChatHistoryManager({ rootDir, logger: silentLogger });
+		const mgr = new ChatHistoryManager({ resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'), logger: silentLogger });
 		await mgr.load('main');
 		await mgr.load('tester');
 		await mgr.recordArchived({ agentId: 'main', sessionKey: 'agent:main:main', sessionId: 'sid-m' });
@@ -423,5 +423,29 @@ test('list() 在 recordArchived 写盘期间覆写缓存不导致数据丢失', 
 		assert.ok(ids.includes('sid-B'), 'sid-B should be present');
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// === 默认构造（不注入 resolveSessionsDir）端到端 ===
+test('默认构造：通过 setRuntime 端到端落盘到 <state-dir>/agents/main/sessions/', async () => {
+	const { setRuntime } = await import('../runtime.js');
+	const tmpStateDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'chat-hist-rt-'));
+	try {
+		setRuntime({ state: { resolveStateDir: () => tmpStateDir } });
+		await fs.mkdir(nodePath.join(tmpStateDir, 'agents', 'main', 'sessions'), { recursive: true });
+
+		const mgr = new ChatHistoryManager({ logger: silentLogger });
+		await mgr.load('main');
+		await mgr.recordArchived({ agentId: 'main', sessionKey: 'agent:main:main', sessionId: 'orphan-1' });
+
+		const expectedFile = nodePath.join(tmpStateDir, 'agents', 'main', 'sessions', 'coclaw-chat-history.json');
+		const raw = await fs.readFile(expectedFile, 'utf8');
+		const parsed = JSON.parse(raw);
+		assert.equal(parsed.version, 1);
+		assert.equal(parsed['agent:main:main'].length, 1);
+		assert.equal(parsed['agent:main:main'][0].sessionId, 'orphan-1');
+	} finally {
+		setRuntime(null);
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
 	}
 });

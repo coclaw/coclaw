@@ -12,10 +12,20 @@
 
 ### 绑定/设置存储
 
-- 绑定信息存 `~/.openclaw/coclaw/bindings.json`（structure: `{ default: { serverUrl, clawId, token, boundAt } }`）；插件设置存同目录 `settings.json`（含 claw name 等）。
+- 绑定信息存 `<state-dir>/coclaw/bindings.json`（structure: `{ default: { serverUrl, clawId, token, boundAt } }`）；插件设置存同目录 `settings.json`（含 claw name 等）。`<state-dir>` 由 OpenClaw 决定（默认 `~/.openclaw`，但用户可通过环境变量、CLI flag、profile 覆盖到任意位置）。
 - **禁止**写入 `openclaw.json` 的 `channels.coclaw` 或 `plugins.entries.*.config`。**Why:** 卸载插件后这些节点残留会让 OpenClaw schema 验证失败、gateway 起不来。
 - `config.js` / `settings.js` 是这两个文件的**唯一读写入口**。其它模块直接动文件 = bug。
 - env `COCLAW_SERVER_URL` 可运行时覆盖 serverUrl，不影响存储。
+
+### State / sessions 路径解析
+
+- `src/claw-paths.js` 是路径解析的**唯一入口**。所有 `state-dir` / sessions 相关路径计算必须经它。
+- **禁止**手拼 `os.homedir() + '.openclaw'` 或 `~/.openclaw`。**Why:** OpenClaw 推荐用户级安装但允许自定义 state-dir（系统级安装、多 profile、容器、`OPENCLAW_STATE_DIR`），手拼必然在非默认部署下错位。
+- **禁止**直接 `import { resolveStateDir } from '@openclaw/plugin-sdk/state-paths'`。**Why:** 这条 SDK 子路径在 2026-03-16 才公开，比 runtime 注入版（2026-02-19）晚一个月；统一走 runtime 注入更兼容。
+- **禁止**在 gateway 主进程读 `OPENCLAW_STATE_DIR` 环境变量来推 state-dir。**Why:** runtime 注入的 `resolveStateDir` 内部已经处理了 env / profile / CLI flag 全部组合，外面再读会产生分叉来源。
+- 例外：`auto-upgrade/state.js` 因被 worker 子进程共用（worker 没 runtime），保留独立的 env 兜底——不要"统一"它。
+- 读 OpenClaw 自家 sessions 数据（sessions.json / 单条 transcript JSONL）必须走 `claw-paths.js` 的 `sessionStorePath` / `sessionTranscriptPath`。**Why:** state-dir 不一定是 `~/.openclaw`，手拼必然在系统级安装/多 profile/容器场景下错位。
+- 当前 `claw-paths.js` 调上游 helper 时不传 `store` 配置和 sessions-index `entry`，目标永远是 OpenClaw 默认的 `<state-dir>/agents/<agentId>/sessions/...` 布局；honoring `agents.<id>.store` / `entry.sessionFile` 覆盖是 follow-up（见 `TODO.md`）。
 
 ### 文件 I/O 安全
 

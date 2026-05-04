@@ -1,27 +1,16 @@
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import nodePath from 'node:path';
 
-import { getRuntime } from './runtime.js';
+import { CHANNEL_ID, pluginDir } from './claw-paths.js';
 import { atomicWriteJsonFile } from './utils/atomic-write.js';
 import { createMutex } from './utils/mutex.js';
 
 export const DEFAULT_ACCOUNT_ID = 'default';
-export const CHANNEL_ID = 'coclaw';
+export { CHANNEL_ID };
 const BINDINGS_FILENAME = 'bindings.json';
 
-export function resolveStateDir() {
-	const rt = getRuntime();
-	if (rt?.state?.resolveStateDir) {
-		return rt.state.resolveStateDir();
-	}
-	return process.env.OPENCLAW_STATE_DIR
-		? nodePath.resolve(process.env.OPENCLAW_STATE_DIR)
-		: nodePath.join(os.homedir(), '.openclaw');
-}
-
 export function getBindingsPath() {
-	return nodePath.join(resolveStateDir(), CHANNEL_ID, BINDINGS_FILENAME);
+	return nodePath.join(pluginDir(), BINDINGS_FILENAME);
 }
 
 function toRecord(value) {

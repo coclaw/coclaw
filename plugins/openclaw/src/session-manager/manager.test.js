@@ -27,7 +27,7 @@ test('listAll should dedup by sessionId and prioritize live over reset', async (
 	await fs.writeFile(nodePath.join(sessionsDir, 's5.jsonl.delete.2026-02-26T12-50-04.126Z'), '{"role":"assistant"}\n', 'utf8');
 	await fs.writeFile(nodePath.join(sessionsDir, 'sessions.json'), JSON.stringify({ key1: { sessionId: 's1' } }), 'utf8');
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	assert.equal(res.total, 3);
 	assert.equal(res.items.length > 0, true);
@@ -67,7 +67,7 @@ test('listAll should derive title from first user text and truncate long text', 
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const t1 = res.items.find((it) => it.sessionId === 't1');
 	const t2 = res.items.find((it) => it.sessionId === 't2');
@@ -133,7 +133,7 @@ test('deriveTitle should strip OC-injected prefixes and suffixes', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const byId = (id) => res.items.find((it) => it.sessionId === id);
 
@@ -237,7 +237,7 @@ test('deriveTitle should handle cron Current time line and tail instruction', as
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const byId = (id) => res.items.find((it) => it.sessionId === id);
 
@@ -298,7 +298,7 @@ test('deriveTitle should strip trailing Untrusted context block', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const byId = (id) => res.items.find((it) => it.sessionId === id);
 
@@ -315,7 +315,7 @@ test('get should prioritize live transcript over reset and guard missing session
 	await fs.writeFile(nodePath.join(sessionsDir, 'x1.jsonl.reset.2026-02-26T12-50-04.126Z'), '{"from":"reset-new"}\nnot-json\n', 'utf8');
 	await fs.writeFile(nodePath.join(sessionsDir, 'x1.jsonl.reset.2026-02-25T12-50-04.126Z'), '{"from":"reset-old"}\n', 'utf8');
 	const warns = [];
-	const manager = createSessionManager({ rootDir: root, logger: { warn: (msg) => warns.push(String(msg)) } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn: (msg) => warns.push(String(msg)) } });
 	const res = manager.get({ sessionId: 'x1', limit: 10, cursor: 0 });
 	assert.equal(res.total, 1);
 	assert.equal(res.messages.length, 1);
@@ -336,7 +336,7 @@ test('get should prioritize live transcript over reset and guard missing session
 
 test('listAll/get should normalize bad inputs and missing dirs', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 
 	const list = manager.listAll({
 		agentId: ' ',
@@ -378,7 +378,7 @@ test('listAll should include indexed sessions without transcript files', async (
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 
 	assert.equal(res.total, 2);
@@ -405,7 +405,7 @@ test('get should handle CRLF line endings in JSONL files', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.get({ sessionId: 'crlf' });
 	assert.equal(res.total, 2);
 	assert.equal(res.messages[0].type, 'message');
@@ -424,7 +424,7 @@ test('listAll should derive title from CRLF line ending files', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const item = res.items.find((it) => it.sessionId === 'crlf2');
 	assert.equal(item?.derivedTitle, 'CRLF title test');
@@ -448,7 +448,7 @@ test('getById - 返回完整 JSONL 行级结构', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.getById({ sessionId: 'g1' });
 	assert.equal(res.messages.length, 2);
 	// 返回完整行，含 type、id、message
@@ -464,14 +464,14 @@ test('getById - 返回完整 JSONL 行级结构', async () => {
 test('getById - 文件不存在返回空消息', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
 	await fs.mkdir(nodePath.join(root, 'main', 'sessions'), { recursive: true });
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.getById({ sessionId: 'nonexistent' });
 	assert.deepStrictEqual(res, { messages: [] });
 });
 
 test('getById - 缺少 sessionId 抛出错误', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	assert.throws(() => manager.getById({}), /sessionId required/);
 });
 
@@ -486,7 +486,7 @@ test('getById - limit 限制返回最后 N 条', async () => {
 	}
 	await fs.writeFile(nodePath.join(sessionsDir, 'g2.jsonl'), lines.join('\n') + '\n', 'utf8');
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.getById({ sessionId: 'g2', limit: 3 });
 	assert.equal(res.messages.length, 3);
 	// 取最后 3 条，返回完整行
@@ -512,7 +512,7 @@ test('getById - 跳过无效 message 行', async () => {
 	);
 
 	const warns = [];
-	const manager = createSessionManager({ rootDir: root, logger: { warn: (msg) => warns.push(msg) } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn: (msg) => warns.push(msg) } });
 	const res = manager.getById({ sessionId: 'g3' });
 	assert.equal(res.messages.length, 2);
 	assert.equal(res.messages[0].message.content, 'ok');
@@ -531,7 +531,7 @@ test('getById - fallback 到 reset 文件', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.getById({ sessionId: 'g4' });
 	assert.equal(res.messages.length, 1);
 	assert.equal(res.messages[0].message.content, 'from reset');
@@ -548,7 +548,7 @@ test('getById - CRLF 换行正确解析', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.getById({ sessionId: 'g5' });
 	assert.equal(res.messages.length, 2);
 	assert.equal(res.messages[0].message.content, 'crlf');
@@ -565,7 +565,7 @@ test('getById - agentId 参数正确路由', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	// 默认 agentId=main，找不到
 	const empty = manager.getById({ sessionId: 'g6' });
 	assert.deepStrictEqual(empty, { messages: [] });
@@ -593,7 +593,7 @@ test('listAll - 同一 sessionId 多个 reset 文件按 mtime 选最新', async 
 	await fs.utimes(oldFile, oldTime, oldTime);
 	await fs.utimes(newFile, newTime, newTime);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const item = res.items.find((it) => it.sessionId === 'dup');
 	assert.ok(item);
@@ -616,7 +616,7 @@ test('listAll - 超长无空格文本截断', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const item = res.items.find((it) => it.sessionId === 'nospace');
 	assert.ok(item?.derivedTitle);
@@ -644,7 +644,7 @@ test('listAll - content 数组全为非 text 类型时无标题', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const item = res.items.find((it) => it.sessionId === 'notext');
 	assert.ok(item);
@@ -663,7 +663,7 @@ test('listAll - title 解析遇 bad json 行时发出警告', async () => {
 	);
 
 	const warns = [];
-	const manager = createSessionManager({ rootDir: root, logger: { warn: (msg) => warns.push(msg) } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn: (msg) => warns.push(msg) } });
 	const res = manager.listAll({});
 	const item = res.items.find((it) => it.sessionId === 'badjson');
 	assert.equal(item?.derivedTitle, 'ok');
@@ -687,7 +687,7 @@ test('listAll - .jsonl.bak 文件被跳过', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	assert.equal(res.total, 1);
 	assert.equal(res.items[0].sessionId, 'ok1');
@@ -715,8 +715,42 @@ test('listAll - 混合 content 类型数组取首个 text', async () => {
 		'utf8',
 	);
 
-	const manager = createSessionManager({ rootDir: root, logger: { warn() {} } });
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = manager.listAll({});
 	const item = res.items.find((it) => it.sessionId === 'mix');
 	assert.equal(item?.derivedTitle, 'actual title');
+});
+
+// === 默认构造（不注入 resolver）通过 setRuntime 端到端 ===
+test('默认构造：通过 setRuntime 走 claw-paths 默认布局解析路径', async () => {
+	const { setRuntime } = await import('../runtime.js');
+	const tmpStateDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-rt-'));
+	try {
+		setRuntime({ state: { resolveStateDir: () => tmpStateDir } });
+		const sessionsDir = nodePath.join(tmpStateDir, 'agents', 'main', 'sessions');
+		await fs.mkdir(sessionsDir, { recursive: true });
+		await fs.writeFile(
+			nodePath.join(sessionsDir, 'sessions.json'),
+			JSON.stringify({ k1: { sessionId: 'rt1' } }),
+			'utf8',
+		);
+		await fs.writeFile(
+			nodePath.join(sessionsDir, 'rt1.jsonl'),
+			'{"type":"message","message":{"role":"user","content":[{"type":"text","text":"runtime path lookup"}]}}\n',
+			'utf8',
+		);
+
+		const manager = createSessionManager({ logger: { warn() {} } });
+		const list = manager.listAll({});
+		const found = list.items.find((it) => it.sessionId === 'rt1');
+		assert.ok(found, 'should resolve sessions via runtime-injected state-dir');
+		assert.equal(found.indexed, true);
+		assert.equal(found.derivedTitle, 'runtime path lookup');
+
+		const detail = manager.get({ sessionId: 'rt1' });
+		assert.equal(detail.total, 1);
+	} finally {
+		setRuntime(null);
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
 });

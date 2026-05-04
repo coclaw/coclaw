@@ -26,6 +26,7 @@ function createMockApi(handlers, extras = {}) {
 		registrationMode: 'full',
 		pluginConfig: {},
 		runtime: {
+			state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 			config: { loadConfig: () => ({}) },
 			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
 		},
@@ -53,6 +54,7 @@ test('plugin register should register channel/command/cli/gateway methods', () =
 		registrationMode: 'full',
 		pluginConfig: {},
 		runtime: {
+			state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 			config: { loadConfig: () => ({}) },
 			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
 		},
@@ -110,6 +112,7 @@ test('coclaw.info should return version and clawVersion', async () => {
 	const MOCK_CLAW_VERSION = '2026.3.14';
 	plugin.register(createMockApi(handlers, {
 		runtime: {
+			state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 			version: MOCK_CLAW_VERSION,
 			config: { loadConfig: () => ({}) },
 			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
@@ -156,6 +159,7 @@ test('coclaw.info should omit clawVersion when runtime.version is unknown', asyn
 	const handlers = new Map();
 	plugin.register(createMockApi(handlers, {
 		runtime: {
+			state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 			version: 'unknown',
 			config: { loadConfig: () => ({}) },
 			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
@@ -503,13 +507,12 @@ test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async (
 	const prevCwd = process.cwd();
 	const prevHome = process.env.HOME;
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-cancel-enroll-'));
-	process.env.OPENCLAW_STATE_DIR = dir;
 	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
 	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
 	process.env.HOME = nodePath.join(dir, 'home');
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
-	setRuntime(null);
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	// waitDelayMs=10000：claim-codes/wait 不会在测试期间返回，确保 activeEnrollAbort 一直保留
 	const mock = await createMockServer({ waitDelayMs: 10_000 });
@@ -518,6 +521,7 @@ test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async (
 	plugin.register({
 		registrationMode: 'full',
 		pluginConfig: { serverUrl: mock.baseUrl },
+		runtime: { state: { resolveStateDir: () => dir } },
 		logger: {
 			info(msg) { infoLogs.push(String(msg)); },
 			warn() {},
@@ -589,11 +593,10 @@ test('command handler should cover help/unknown/error/success paths', async () =
 	const prevCwd = process.cwd();
 	const prevHome = process.env.HOME;
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-index-'));
-	process.env.OPENCLAW_STATE_DIR = dir;
 	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
 	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
 	delete process.env.COCLAW_TUNNEL_CONFIG_PATH;
-	setRuntime(null);
+	setRuntime({ state: { resolveStateDir: () => dir } });
 	process.env.HOME = nodePath.join(dir, 'home');
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
@@ -604,6 +607,7 @@ test('command handler should cover help/unknown/error/success paths', async () =
 		plugin.register({
 			registrationMode: 'full',
 			pluginConfig: { serverUrl: mock.baseUrl, defaultName: 'd1' },
+			runtime: { state: { resolveStateDir: () => dir } },
 			logger: { warn() {}, error() {} },
 			registerChannel() {},
 			registerCli() {},
@@ -635,6 +639,7 @@ test('command handler should cover help/unknown/error/success paths', async () =
 		plugin.register({
 			registrationMode: 'full',
 			pluginConfig: { serverUrl: mock.baseUrl },
+			runtime: { state: { resolveStateDir: () => dir } },
 			logger: { warn() {}, error() {}, log() {} },
 			registerChannel() {},
 			registerCli() {},
@@ -667,6 +672,7 @@ test('coclaw.files.list via gateway method', async () => {
 		const handlers = new Map();
 		plugin.register(createMockApi(handlers, {
 			runtime: {
+				state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 				config: { loadConfig: () => ({}) },
 				agent: { resolveAgentWorkspaceDir: () => dir },
 			},
@@ -693,6 +699,7 @@ test('coclaw.files.mkdir via gateway method', async () => {
 		const handlers = new Map();
 		plugin.register(createMockApi(handlers, {
 			runtime: {
+				state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 				config: { loadConfig: () => ({}) },
 				agent: { resolveAgentWorkspaceDir: () => dir },
 			},
@@ -717,6 +724,7 @@ test('coclaw.files.create via gateway method', async () => {
 		const handlers = new Map();
 		plugin.register(createMockApi(handlers, {
 			runtime: {
+				state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 				config: { loadConfig: () => ({}) },
 				agent: { resolveAgentWorkspaceDir: () => dir },
 			},
@@ -743,6 +751,7 @@ test('coclaw.files.delete via gateway method', async () => {
 		const handlers = new Map();
 		plugin.register(createMockApi(handlers, {
 			runtime: {
+				state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 				config: { loadConfig: () => ({}) },
 				agent: { resolveAgentWorkspaceDir: () => dir },
 			},
@@ -764,6 +773,7 @@ test('coclaw.files.* gateway methods handle errors', async () => {
 	const handlers = new Map();
 	plugin.register(createMockApi(handlers, {
 		runtime: {
+			state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 			config: { loadConfig: () => ({}) },
 			agent: { resolveAgentWorkspaceDir: () => '/nonexistent/workspace' },
 		},
@@ -1318,6 +1328,7 @@ function createSpyApi(mode) {
 		registrationMode: mode,
 		pluginConfig: {},
 		runtime: {
+			state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
 			config: { loadConfig: () => ({}) },
 			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
 		},

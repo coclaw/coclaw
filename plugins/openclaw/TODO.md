@@ -649,3 +649,63 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **修复方向**（B-stage2 切 FBQ 时）：
 - 加 webrtc-peer 集成测试覆盖"同 connId 重建期旧 queue 仍在 await destroy"窗口的 broadcast 行为
 - 评估是否需要在 webrtc-peer 层面提前清 `session.rpcQueue` 字段（在 await destroy 之前），让新 broadcast 拿到 null queue → 走 file sendFn null check 那条 silent-drop-with-warn 路径（与上文 A1 异步装配 TODO 一并处理）
+
+## claw-paths runtime 改造遗留（2026-05-05 deep-review 抓出，预存）
+
+### session-manager 不传 entry.sessionFile（PRE-EXISTING）
+
+**发现日期**：2026-05-05（claw-paths-unify deep-review）
+**锚点**：`plugins/openclaw/src/session-manager/manager.js:283-288` `resolveTranscriptFile`
+
+**问题**：调 `resolveTranscriptPath(sessionId, agentId)` 时第三参数 `entry` 始终不传。OpenClaw 上游 `resolveSessionFilePath(sid, entry, opts)` 会先用 `entry.sessionFile` 字段决定 transcript 文件名，再回退到 `<sid>.jsonl`。当用户 / OpenClaw 把 `sessions.json` 索引里的 `sessionFile` 改名（reset 重命名、自定义命名）时，我们永远只看默认名，会读到空。
+
+**为什么 PRE-EXISTING**：claw-paths runtime 改造前的旧代码 `nodePath.join(dir, '${sessionId}.jsonl')` 同样不感知 entry，本次重构未引入也未扩大。
+
+**修复方向**：从 `readIndex(agentId)` 拿到 `entry`，传给 `resolveTranscriptPath` 第三参数。
+
+### 上游 agents.<id>.store 自定义配置不被支持（PRE-EXISTING）
+
+**发现日期**：2026-05-05
+**锚点**：`plugins/openclaw/src/claw-paths.js:48-54` `sessionStorePath`
+
+**问题**：调上游 `runtime.agent.session.resolveStorePath(undefined, { agentId })` 时 `store` 参数始终传 `undefined`，上游收到 undefined 走默认布局，agent 配置的 `agents.<id>.store` 自定义路径（绝对路径 / `{agentId}` 模板）被无视。
+
+**为什么 PRE-EXISTING**：旧代码也没读 OpenClaw 配置；本次只是把"目标永远是默认布局"显式化、文档化。
+
+**修复方向**：在 plugin runtime 拿 agent 配置（如 `runtime.config.loadConfig()?.agents?.[agentId]?.store`），传给 helper。需先核对 OpenClaw 暴露 agent 配置的稳定 API。
+
+### chat-history-manager:39 c8 ignore 注释不准（PRE-EXISTING）
+
+**锚点**：`plugins/openclaw/src/chat-history-manager/manager.js:39`
+
+**问题**：注释说"测试始终注入"，实际测试不注入 `readFile` / `writeJsonFile`，走默认路径。当前 ignore 实际掩盖的是"truthy-LHS 那侧分支没有覆盖"。要么补一个注入 mock 的测试覆盖 LHS 分支，要么删掉 readFile/writeJsonFile 这两个 DI 注入点（生产+测试都不用）。
+
+### setHomedir 测试 mock 大量变成"死 mock"（PRE-EXISTING 噪音）
+
+**锚点**：`plugins/openclaw/src/realtime-bridge.test.js`、`src/common/claw-binding.test.js`、`src/plugin-mode.test.js`（共上百处 setHomedir 调用）
+
+**问题**：claw-paths runtime 改造后生产代码不再读 `os.homedir()`，但测试里仍大量 `setHomedir(...)`。多数实例已是 mock 一个生产代码不再读取的全局 —— 噪音 + 误导。auto-upgrade worker 路径仍读 homedir，那部分 mock 仍有效。
+
+**修复方向**：逐个排查，仅保留 auto-upgrade worker fallback 测试场景的 setHomedir，其余移除。需小心不破现有断言。
+
+### bridge.start 后续路径未抓 pluginDir 抛错（防御性，预存）
+
+**锚点**：`plugins/openclaw/src/realtime-bridge.js:1442` `await this.__connectIfNeeded()`
+
+**问题**：`start()` 顶部 rpc-queues 启动期块用 try/catch 抓了 pluginDir 抛错，但同一函数后段 `__connectIfNeeded` → `getBindingsPath` → `pluginDir()` 链路没有 catch。生产中 runtime 必然已注入，pluginDir 不会抛——纯防御。
+
+**修复方向**：把 `await this.__connectIfNeeded()` 也包进 try/catch + warn。或者干脆 fail-loud：runtime 缺失就让 service 注册整体失败。
+
+### auto-upgrade vs claw-paths 部分注入不对称（防御性，本次新引入但不可达）
+
+**锚点**：`plugins/openclaw/src/auto-upgrade/state.js:23-30` vs `src/claw-paths.js:24-29`
+
+**问题**：runtime 是非空对象但 `runtime.state` 缺失这种"部分注入"形态下，claw-paths.js 抛错而 auto-upgrade/state.js 静默 fallback env/homedir，同一进程可能写到不同 state-dir。生产路径不可达（index.js 只在 full mode 调 setRuntime + 上游 runtime 形态固定），属防御性。
+
+**修复方向**：auto-upgrade/state.js 加守卫——发现 runtime 对象存在但 .state.resolveStateDir 缺失时，与 claw-paths.js 行为对齐（抛错或委托给 clawStateDir）。
+
+### session-manager 散落 c8 ignore 多条可补测（PRE-EXISTING 噪音）
+
+**锚点**：`plugins/openclaw/src/session-manager/manager.js` 行 55 / 133 / 138 / 170 / 176 / 183 / 189 / 193 / 250 / 339
+
+**问题**：多处裸 `c8 ignore next` 或简单 `?? fallback` 注释覆盖了可测的默认构造、malformed 内容、无效 index 条目、分页边界等分支。逐条补针对性测试可摘 ignore；与本次 claw-paths 改造无直接关系。

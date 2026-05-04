@@ -8,7 +8,7 @@ import { getHostName, readSettings, writeName } from './settings.js';
 import { setRuntime } from './runtime.js';
 
 function resetEnv() {
-	delete process.env.OPENCLAW_STATE_DIR;
+	setRuntime(null);
 	setRuntime(null);
 }
 
@@ -23,7 +23,7 @@ function settingsPath(stateDir) {
 test('readSettings should return empty object when file does not exist', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const settings = await readSettings();
 	assert.deepEqual(settings, {});
@@ -32,7 +32,7 @@ test('readSettings should return empty object when file does not exist', async (
 test('writeName should persist name and readSettings should return it', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	await writeName('My PC');
 	const settings = await readSettings();
@@ -46,7 +46,7 @@ test('writeName should persist name and readSettings should return it', async ()
 test('writeName should trim whitespace', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	await writeName('  hello world  ');
 	const settings = await readSettings();
@@ -56,7 +56,7 @@ test('writeName should trim whitespace', async () => {
 test('writeName with null should clear name field', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	await writeName('My PC');
 	await writeName(null);
@@ -72,7 +72,7 @@ test('writeName with null should clear name field', async () => {
 test('writeName with empty string should clear name field', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	await writeName('My PC');
 	await writeName('');
@@ -84,7 +84,7 @@ test('writeName with empty string should clear name field', async () => {
 test('writeName with whitespace-only string should clear name field', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	await writeName('My PC');
 	await writeName('   ');
@@ -96,7 +96,7 @@ test('writeName with whitespace-only string should clear name field', async () =
 test('writeName should reject name exceeding 63 characters', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const longName = 'a'.repeat(64);
 	await assert.rejects(() => writeName(longName), /maximum length/);
@@ -105,7 +105,7 @@ test('writeName should reject name exceeding 63 characters', async () => {
 test('writeName should accept name of exactly 63 characters', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const name63 = 'a'.repeat(63);
 	await writeName(name63);
@@ -117,7 +117,7 @@ test('writeName should accept name of exactly 63 characters', async () => {
 test('writeName should preserve other fields in settings.json', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	// 预写入包含其他字段的文件
 	const sp = settingsPath(dir);
@@ -134,7 +134,7 @@ test('writeName should preserve other fields in settings.json', async () => {
 test('readSettings should handle corrupt file gracefully', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const sp = settingsPath(dir);
 	await fs.mkdir(nodePath.dirname(sp), { recursive: true });
@@ -156,7 +156,7 @@ test('readSettings should handle corrupt file gracefully', async () => {
 test('readSettings should treat empty file as empty object', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const sp = settingsPath(dir);
 	await fs.mkdir(nodePath.dirname(sp), { recursive: true });
@@ -169,7 +169,7 @@ test('readSettings should treat empty file as empty object', async () => {
 test('readSettings should return empty object when file contains array', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const sp = settingsPath(dir);
 	await fs.mkdir(nodePath.dirname(sp), { recursive: true });
@@ -182,7 +182,7 @@ test('readSettings should return empty object when file contains array', async (
 test('writeName should handle settings.json containing array', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const sp = settingsPath(dir);
 	await fs.mkdir(nodePath.dirname(sp), { recursive: true });
@@ -198,7 +198,7 @@ test('writeName should handle settings.json containing array', async () => {
 test('writeName should handle settings.json containing null', async () => {
 	resetEnv();
 	const dir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = dir;
+	setRuntime({ state: { resolveStateDir: () => dir } });
 
 	const sp = settingsPath(dir);
 	await fs.mkdir(nodePath.dirname(sp), { recursive: true });

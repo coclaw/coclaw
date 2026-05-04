@@ -39,7 +39,10 @@
   "openclaw": {
     "extensions": [
       "./index.js"
-    ]
+    ],
+    "install": {
+      "minHostVersion": ">=2026.2.19"
+    }
   },
   "scripts": {
     "build": "echo 'No build step needed (pure ES modules)'",

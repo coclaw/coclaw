@@ -1,9 +1,8 @@
-import fs from 'node:fs';
-import os from 'node:os';
 import nodePath from 'node:path';
 import { WebSocket as WsWebSocket } from 'ws';
 
-import { CHANNEL_ID, clearConfig, getBindingsPath, readConfig, resolveStateDir } from './config.js';
+import { pluginDir } from './claw-paths.js';
+import { clearConfig, getBindingsPath, readConfig } from './config.js';
 import { cleanupResiduals as defaultCleanupResiduals, measureDiskCap as defaultMeasureDiskCap } from './rpc-queue-startup.js';
 import { getHostName, readSettings } from './settings.js';
 import {
@@ -89,24 +88,18 @@ function maskUrlToken(url) {
 	return url.replace(/([?&]token=)[^&]+/, '$1***');
 }
 
-/* c8 ignore start -- 仅在未注入 resolveGatewayAuthToken 时使用，依赖 runtime/env/文件系统 */
-function defaultResolveGatewayAuthToken() {
+// 仅在未注入 resolveGatewayAuthToken 时使用，依赖 runtime / 环境变量
+export function defaultResolveGatewayAuthToken() {
 	const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 	if (envToken) {
 		return envToken;
 	}
 	try {
 		const rt = getRuntime();
-		if (rt?.config?.loadConfig) {
-			const cfg = rt.config.loadConfig();
-			const token = cfg?.gateway?.auth?.token;
-			return typeof token === 'string' && token.trim() ? token.trim() : '';
+		if (!rt?.config?.loadConfig) {
+			return '';
 		}
-		const cfgPath = process.env.OPENCLAW_CONFIG_PATH
-			? nodePath.resolve(process.env.OPENCLAW_CONFIG_PATH)
-			: nodePath.join(os.homedir(), '.openclaw', 'openclaw.json');
-		const raw = fs.readFileSync(cfgPath, 'utf8');
-		const cfg = JSON.parse(raw);
+		const cfg = rt.config.loadConfig();
 		const token = cfg?.gateway?.auth?.token;
 		return typeof token === 'string' && token.trim() ? token.trim() : '';
 	}
@@ -115,7 +108,6 @@ function defaultResolveGatewayAuthToken() {
 		return '';
 	}
 }
-/* c8 ignore stop */
 
 /**
  * WebSocket 桥接器：CoClaw server ↔ OpenClaw gateway
@@ -1381,11 +1373,11 @@ export class RealtimeBridge {
 		this.started = true;
 		// rpc DC 文件回退队列的启动期预热（B-stage1 plan-2）：清残留 *.jsonl + 探测磁盘容量。
 		// 远早于第一条 rpc DC 建立（dump 设计）；__diskCap 暂存供 B-stage2 切 FBQ 时取用。
-		// 整块包 try/catch：模块自身不抛，但仍可能进入 catch 的路径——resolveStateDir() 同步抛
-		// （runtime 注入的 resolver 自抛 / homedir 异常）/ nodePath.join 参数异常 / 测试注入的
-		// stub 抛错。任何路径都不能把 bridge.start 卡死。
+		// 整块包 try/catch：模块自身不抛，但仍可能进入 catch 的路径——pluginDir() 同步抛
+		// （runtime 未注入 / nodePath.join 参数异常 / 测试注入的 stub 抛错）。任何路径都不能把
+		// bridge.start 卡死。
 		try {
-			const queueDir = nodePath.join(resolveStateDir(), CHANNEL_ID, 'rpc-queues');
+			const queueDir = nodePath.join(pluginDir(), 'rpc-queues');
 			await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
 			this.__diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
 		}

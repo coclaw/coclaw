@@ -1,12 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import nodePath from 'node:path';
 
-import { getRuntime } from './runtime.js';
+import { pluginDir } from './claw-paths.js';
 import { atomicWriteFileSync } from './utils/atomic-write.js';
 
-const CHANNEL_ID = 'coclaw';
 const IDENTITY_FILENAME = 'device-identity.json';
 
 // Ed25519 SPKI 前缀（固定 12 字节），公钥裸字节从 SPKI DER 中截取
@@ -27,22 +25,12 @@ function normalizeMetadataForAuth(value) {
 	return trimmed ? toLowerAscii(trimmed) : '';
 }
 
-function resolveStateDir() {
-	const rt = getRuntime();
-	if (rt?.state?.resolveStateDir) {
-		return rt.state.resolveStateDir();
-	}
-	return process.env.OPENCLAW_STATE_DIR
-		? nodePath.resolve(process.env.OPENCLAW_STATE_DIR)
-		: nodePath.join(os.homedir(), '.openclaw');
-}
-
 /**
  * 获取身份文件路径
  * @returns {string}
  */
 export function getIdentityPath() {
-	return nodePath.join(resolveStateDir(), CHANNEL_ID, IDENTITY_FILENAME);
+	return nodePath.join(pluginDir(), IDENTITY_FILENAME);
 }
 
 /**
@@ -89,7 +77,7 @@ function generateIdentity() {
  * 加载或创建设备身份（Ed25519 密钥对）
  *
  * 存储格式与 OpenClaw device-identity.ts 保持一致。
- * @param {string} [filePath] - 自定义路径，默认 ~/.openclaw/coclaw/device-identity.json
+ * @param {string} [filePath] - 自定义路径，默认 &lt;state-dir&gt;/coclaw/device-identity.json
  * @returns {{ deviceId: string, publicKeyPem: string, privateKeyPem: string }}
  */
 export function loadOrCreateDeviceIdentity(filePath) {

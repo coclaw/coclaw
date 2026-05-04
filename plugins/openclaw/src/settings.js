@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import nodePath from 'node:path';
 
-import { resolveStateDir, CHANNEL_ID } from './config.js';
+import { pluginDir } from './claw-paths.js';
 import { atomicWriteJsonFile } from './utils/atomic-write.js';
 import { createMutex } from './utils/mutex.js';
 
@@ -12,7 +12,7 @@ export const MAX_NAME_LENGTH = 63;
 const settingsMutex = createMutex();
 
 function getSettingsPath() {
-	return nodePath.join(resolveStateDir(), CHANNEL_ID, SETTINGS_FILENAME);
+	return nodePath.join(pluginDir(), SETTINGS_FILENAME);
 }
 
 async function readJsonSafe(filePath) {

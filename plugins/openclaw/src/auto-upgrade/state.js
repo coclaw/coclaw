@@ -1,10 +1,10 @@
 /**
  * state.js — upgrade-state.json 与 upgrade-log.jsonl 读写
  *
- * 状态文件存储在 OpenClaw state 目录下（~/.openclaw/coclaw/），
- * 与 bindings.json 共享同一目录。路径解析优先级：
+ * 例外：本文件 gateway 主进程与 auto-upgrade worker 子进程共用，worker 没 runtime
+ * 注入，故保留独立的双轨解析（不走 claw-paths.js）：
  * 1. runtime.state.resolveStateDir()（gateway 进程内）
- * 2. OPENCLAW_STATE_DIR 环境变量（worker 进程，由 spawner 传入）
+ * 2. OPENCLAW_STATE_DIR 环境变量（worker 子进程，由 spawner 传入）
  * 3. ~/.openclaw（兜底默认值）
  */
 import fs from 'node:fs/promises';

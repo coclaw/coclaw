@@ -199,30 +199,12 @@ test('getIdentityPath 使用 runtime resolveStateDir', () => {
 	}
 });
 
-test('getIdentityPath 使用 OPENCLAW_STATE_DIR', () => {
+test('getIdentityPath 在 runtime 缺失时抛错', () => {
 	const prev = setRuntime(null);
-	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	try {
-		process.env.OPENCLAW_STATE_DIR = '/env/state';
-		const p = getIdentityPath();
-		assert.equal(p, nodePath.join('/env/state', 'coclaw', 'device-identity.json'));
+		assert.throws(() => getIdentityPath(), /runtime not injected/);
 	}
 	finally {
-		process.env.OPENCLAW_STATE_DIR = origEnv;
-		setRuntime(prev);
-	}
-});
-
-test('getIdentityPath 默认回退 ~/.openclaw', () => {
-	const prev = setRuntime(null);
-	const origEnv = process.env.OPENCLAW_STATE_DIR;
-	try {
-		delete process.env.OPENCLAW_STATE_DIR;
-		const p = getIdentityPath();
-		assert.equal(p, nodePath.join(os.homedir(), '.openclaw', 'coclaw', 'device-identity.json'));
-	}
-	finally {
-		if (origEnv !== undefined) process.env.OPENCLAW_STATE_DIR = origEnv;
 		setRuntime(prev);
 	}
 });

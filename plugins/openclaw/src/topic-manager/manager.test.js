@@ -13,7 +13,7 @@ async function setupManager(tmpDir, extraOpts = {}) {
 	const rootDir = nodePath.join(tmpDir, 'agents');
 	await fs.mkdir(nodePath.join(rootDir, 'main', 'sessions'), { recursive: true });
 	const mgr = new TopicManager({
-		rootDir,
+		resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'),
 		logger: { info() {}, warn() {}, error() {} },
 		...extraOpts,
 	});
@@ -510,7 +510,7 @@ test('多 agentId 隔离', async () => {
 		await fs.mkdir(nodePath.join(rootDir, 'main', 'sessions'), { recursive: true });
 		await fs.mkdir(nodePath.join(rootDir, 'agent2', 'sessions'), { recursive: true });
 		const mgr = new TopicManager({
-			rootDir,
+			resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'),
 			logger: { info() {}, warn() {}, error() {} },
 		});
 		await mgr.load('main');
@@ -521,5 +521,32 @@ test('多 agentId 隔离', async () => {
 		assert.equal(mgr.list({ agentId: 'agent2' }).topics.length, 1);
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// === 默认构造（不注入 resolveSessionsDir）端到端 ===
+// 验证：通过 setRuntime 注入 state.resolveStateDir，TopicManager 不传 opts 时
+// 走 claw-paths.agentSessionsDir → 文件落到 <state-dir>/agents/<id>/sessions/coclaw-topics.json
+
+test('默认构造：通过 setRuntime 端到端落盘到 <state-dir>/agents/main/sessions/', async () => {
+	const { setRuntime } = await import('../runtime.js');
+	const tmpStateDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'topic-mgr-rt-'));
+	try {
+		setRuntime({ state: { resolveStateDir: () => tmpStateDir } });
+		// 必要的目录由生产代码 atomicWriteJsonFile 之前创建——这里手动准备父目录
+		await fs.mkdir(nodePath.join(tmpStateDir, 'agents', 'main', 'sessions'), { recursive: true });
+
+		const mgr = new TopicManager({ logger: { info() {}, warn() {}, error() {} } });
+		await mgr.load('main');
+		const { topicId } = await mgr.create({ agentId: 'main' });
+
+		const expectedFile = nodePath.join(tmpStateDir, 'agents', 'main', 'sessions', 'coclaw-topics.json');
+		const raw = await fs.readFile(expectedFile, 'utf8');
+		const parsed = JSON.parse(raw);
+		assert.equal(parsed.topics.length, 1);
+		assert.equal(parsed.topics[0].topicId, topicId);
+	} finally {
+		setRuntime(null);
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
 	}
 });

@@ -15,11 +15,10 @@ test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-tunnel-plugin-'));
-	process.env.OPENCLAW_STATE_DIR = dir;
 	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
 	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
 	delete process.env.COCLAW_TUNNEL_CONFIG_PATH;
-	setRuntime(null);
+	setRuntime({ state: { resolveStateDir: () => dir } });
 	setHomedir(nodePath.join(dir, 'home'));
 	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
@@ -32,6 +31,7 @@ test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 		pluginConfig: {
 			serverUrl: mock.baseUrl,
 		},
+		runtime: { state: { resolveStateDir: () => dir } },
 		logger: { warn() {}, error() {} },
 		registerChannel() {},
 		registerCli() {},

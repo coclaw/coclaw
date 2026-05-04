@@ -21,11 +21,10 @@ async function withServer(handler) {
 
 async function setupDir(prefix) {
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), prefix));
-	process.env.OPENCLAW_STATE_DIR = dir;
 	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
 	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
 	delete process.env.COCLAW_TUNNEL_CONFIG_PATH;
-	setRuntime(null);
+	setRuntime({ state: { resolveStateDir: () => dir } });
 	return dir;
 }
 

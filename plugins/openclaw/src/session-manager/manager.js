@@ -1,6 +1,7 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import nodePath from 'node:path';
+
+import { agentSessionsDir, sessionStorePath, sessionTranscriptPath } from '../claw-paths.js';
 
 const DERIVED_TITLE_MAX_LEN = 60;
 
@@ -172,18 +173,22 @@ function deriveTitle(filePath, logger) {
 }
 
 export function createSessionManager(options = {}) {
-	const rootDir = options.rootDir ?? nodePath.join(os.homedir(), '.openclaw', 'agents');
 	/* c8 ignore next */
 	const logger = options.logger ?? console;
+	const resolveSessionsDir = options.resolveSessionsDir ?? agentSessionsDir;
+	const resolveStorePath = options.resolveStorePath ?? sessionStorePath;
+	const resolveTranscriptPath = options.resolveTranscriptPath ?? sessionTranscriptPath;
 
 	function sessionsDir(agentId = 'main') {
 		/* c8 ignore next */
 		const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'main';
-		return nodePath.join(rootDir, aid, 'sessions');
+		return resolveSessionsDir(aid);
 	}
 
 	function readIndex(agentId = 'main') {
-		const file = nodePath.join(sessionsDir(agentId), 'sessions.json');
+		/* c8 ignore next */
+		const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'main';
+		const file = resolveStorePath(aid);
 		const data = readJsonSafe(file, {});
 		/* c8 ignore next */
 		if (!data || typeof data !== 'object') return {};
@@ -279,7 +284,7 @@ export function createSessionManager(options = {}) {
 		const dir = sessionsDir(agentId);
 		// live 文件优先：同一 sessionId 可能同时存在 live 和 reset 文件
 		// （OpenClaw reset 后复用 sessionId），live 代表当前活跃 transcript
-		const livePath = nodePath.join(dir, `${sessionId}.jsonl`);
+		const livePath = resolveTranscriptPath(sessionId, agentId);
 		if (fs.existsSync(livePath)) {
 			return livePath;
 		}

@@ -5,7 +5,7 @@ import os from 'node:os';
 import { after, test } from 'node:test';
 
 import { WebSocket as WsWebSocket } from 'ws';
-import { RealtimeBridge, classifyAgentLagStop, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
+import { RealtimeBridge, classifyAgentLagStop, defaultResolveGatewayAuthToken, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -64,11 +64,10 @@ class FakeWebSocket {
 
 async function setupDir(prefix) {
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), prefix));
-	process.env.OPENCLAW_STATE_DIR = dir;
 	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
 	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
 	delete process.env.COCLAW_TUNNEL_CONFIG_PATH;
-	setRuntime(null);
+	setRuntime({ state: { resolveStateDir: () => dir } });
 	return dir;
 }
 
@@ -4907,5 +4906,85 @@ test('bridge.start should skip preload when stop() races during cleanup/measure'
 		assert.equal(preloadNdcCalled, false, 'preloadNdc should NOT be called after race guard');
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+// === defaultResolveGatewayAuthToken ===
+
+test('defaultResolveGatewayAuthToken: env OPENCLAW_GATEWAY_TOKEN 优先', () => {
+	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
+	process.env.OPENCLAW_GATEWAY_TOKEN = '  env-token-1  ';
+	setRuntime({
+		state: { resolveStateDir: () => '/tmp' },
+		config: { loadConfig: () => ({ gateway: { auth: { token: 'rt-token' } } }) },
+	});
+	try {
+		assert.equal(defaultResolveGatewayAuthToken(), 'env-token-1');
+	} finally {
+		if (prevEnv === undefined) delete process.env.OPENCLAW_GATEWAY_TOKEN;
+		else process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		setRuntime(null);
+	}
+});
+
+test('defaultResolveGatewayAuthToken: env 空 + runtime 缺 config.loadConfig 返回空', () => {
+	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
+	delete process.env.OPENCLAW_GATEWAY_TOKEN;
+	setRuntime({ state: { resolveStateDir: () => '/tmp' } });
+	try {
+		assert.equal(defaultResolveGatewayAuthToken(), '');
+	} finally {
+		if (prevEnv !== undefined) process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		setRuntime(null);
+	}
+});
+
+test('defaultResolveGatewayAuthToken: env 空 + runtime config.loadConfig 返回 token', () => {
+	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
+	delete process.env.OPENCLAW_GATEWAY_TOKEN;
+	setRuntime({
+		state: { resolveStateDir: () => '/tmp' },
+		config: { loadConfig: () => ({ gateway: { auth: { token: '  rt-token  ' } } }) },
+	});
+	try {
+		assert.equal(defaultResolveGatewayAuthToken(), 'rt-token');
+	} finally {
+		if (prevEnv !== undefined) process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		setRuntime(null);
+	}
+});
+
+test('defaultResolveGatewayAuthToken: runtime config.loadConfig 无 token 返回空', () => {
+	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
+	delete process.env.OPENCLAW_GATEWAY_TOKEN;
+	setRuntime({
+		state: { resolveStateDir: () => '/tmp' },
+		config: { loadConfig: () => ({ gateway: { auth: { token: '   ' } } }) },
+	});
+	try {
+		assert.equal(defaultResolveGatewayAuthToken(), '');
+	} finally {
+		if (prevEnv !== undefined) process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		setRuntime(null);
+	}
+});
+
+test('defaultResolveGatewayAuthToken: loadConfig 抛错时静默返回空', () => {
+	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
+	delete process.env.OPENCLAW_GATEWAY_TOKEN;
+	const prevWarn = console.warn;
+	let warned = false;
+	console.warn = () => { warned = true; };
+	setRuntime({
+		state: { resolveStateDir: () => '/tmp' },
+		config: { loadConfig: () => { throw new Error('boom'); } },
+	});
+	try {
+		assert.equal(defaultResolveGatewayAuthToken(), '');
+		assert.equal(warned, true, 'should warn on loadConfig throw');
+	} finally {
+		if (prevEnv !== undefined) process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		console.warn = prevWarn;
+		setRuntime(null);
 	}
 });

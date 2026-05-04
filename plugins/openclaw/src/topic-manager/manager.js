@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+import { agentSessionsDir } from '../claw-paths.js';
 import { atomicWriteJsonFile } from '../utils/atomic-write.js';
 import { createMutex } from '../utils/mutex.js';
 
@@ -21,16 +21,15 @@ function emptyStore() {
 export class TopicManager {
 	/**
 	 * @param {object} [opts]
-	 * @param {string} [opts.rootDir] - agents 根目录，默认 ~/.openclaw/agents
 	 * @param {object} [opts.logger]
+	 * @param {Function} [opts.resolveSessionsDir] - 测试注入：自定义 sessions 目录解析
 	 * @param {Function} [opts.readFile] - 测试注入
 	 * @param {Function} [opts.writeJsonFile] - 测试注入
 	 * @param {Function} [opts.unlinkFile] - 测试注入
 	 * @param {Function} [opts.copyFile] - 测试注入
 	 */
 	constructor(opts = {}) {
-		/* c8 ignore next 6 -- ?? fallback：测试始终注入 */
-		this.__rootDir = opts.rootDir ?? nodePath.join(os.homedir(), '.openclaw', 'agents');
+		this.__resolveSessionsDir = opts.resolveSessionsDir ?? agentSessionsDir;
 		this.__logger = opts.logger ?? console;
 		this.__readFile = opts.readFile ?? fs.readFile;
 		this.__writeJsonFile = opts.writeJsonFile ?? atomicWriteJsonFile;
@@ -45,7 +44,7 @@ export class TopicManager {
 	}
 
 	__sessionsDir(agentId) {
-		return nodePath.join(this.__rootDir, agentId, 'sessions');
+		return this.__resolveSessionsDir(agentId);
 	}
 
 	__topicsFilePath(agentId) {
