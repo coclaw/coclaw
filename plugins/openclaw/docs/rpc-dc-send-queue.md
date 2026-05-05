@@ -1,26 +1,26 @@
-# rpc DC 发送管道（MemoryQueue + RpcDcSender + dc-chunking）
+# rpc DC 发送管道（FileBackedQueue / MemoryQueue + RpcDcSender + dc-chunking）
 
-> 状态：阶段 1 已实施（`MemoryQueue` 内存版 + `RpcDcSender` 阻塞式发送器）。FBQ 切换待实施。
-> 对应代码：`src/utils/memory-queue.js` / `src/webrtc/rpc-dc-sender.js` / `src/webrtc/dc-chunking.js`。
-> 关联：[rpc-dc-file-queue.md](./rpc-dc-file-queue.md)（FileBackedQueue 长尾文件回退队列设计）。
+> 状态：B-stage2 已实施。**`FileBackedQueue`（FBQ）是默认生产路径**；`MemoryQueue` 保留为接口对齐参考 + dev/test/紧急回退路径。两者接口完全镜像，装配点单点切换。
+> 对应代码：`src/utils/file-backed-queue.js` / `src/utils/memory-queue.js` / `src/webrtc/rpc-dc-sender.js` / `src/webrtc/dc-chunking.js`。
+> 关联：[rpc-dc-file-queue.md](./rpc-dc-file-queue.md)（FBQ 文件回退队列设计 + B-stage2 集成决策）。
 
 ## 背景与定位
 
 插件运行在 OpenClaw gateway 进程内，向每条 rpc DC 推送的 JSON 帧（gateway 广播事件、agent RPC 响应、文件 RPC 响应等）若不做应用层流控，遇到对端拥塞或 ICE restart 期间会迅速堆积导致 OOM。
 
-阶段 1 把发送链路拆成**两段式管道**，并在 B-stage1 把 drop 诊断从队列剥离到外置监视器：
+发送链路是**两段式管道**，drop 诊断从队列剥离到外置监视器：
 
 ```
-producer ─enqueue(jsonStr)─► MemoryQueue ─consumeLoop─► RpcDcSender ─dc.send─► DataChannel ─SCTP─► UI
-                              │  (admission)              (HWM/LWM 流控 +
-                              │                            分片协议)
-                              └─onDrop─► RpcDropMonitor
-                                         (drop 状态机 + close 汇总)
+producer ─enqueue(jsonStr)─► Queue ─consumeLoop─► RpcDcSender ─dc.send─► DataChannel ─SCTP─► UI
+                             │  (admission +     (HWM/LWM 流控 +
+                             │   bypass 白名单)   分片协议)
+                             └─onDrop(reason,size,err?)─► RpcDropMonitor
+                                                          (drop 状态机 + close 汇总)
 ```
 
-每条 rpc DC 同时持有一个 MemoryQueue、一个 RpcDcSender、一个 RpcDropMonitor；中间由后台 `consumeLoop` 串起来。四件套绑定在 session 上：
+`Queue` 是抽象，运行时由 `FileBackedQueue`（默认）或 `MemoryQueue`（降级 / 紧急回退）实例化——两者接口完全镜像，装配点单点切换（见下文"队列实现选择"）。每条 rpc DC 同时持有一个 Queue、一个 RpcDcSender、一个 RpcDropMonitor；中间由后台 `consumeLoop` 串起来。四件套绑定在 session 上：
 
-- `session.rpcQueue` — MemoryQueue 实例
+- `session.rpcQueue` — Queue 实例（FBQ 默认 / MemoryQueue 降级）
 - `session.rpcDcSender` — RpcDcSender 实例
 - `session.rpcConsumeLoop` — 消费循环 Promise
 - `session.rpcDropMonitor` — RpcDropMonitor 实例（drop 边沿状态机 + close 汇总）
@@ -28,9 +28,9 @@ producer ─enqueue(jsonStr)─► MemoryQueue ─consumeLoop─► RpcDcSender 
 生产路径（`broadcast()` / files RPC `sendFn`）统一经此出口；只有 probe-ack 故意绕过（见下文）。
 
 **职责切分**：
-- MemoryQueue：admission（10 MB 软上限）+ 单条硬上限校验 + bypass 白名单 + 6 字段 stats。**纯业务无关容器，不输出任何日志/累计**——drop 事件经 `onDrop(reason, size)` 回调外抛。
+- Queue：admission（容量上限 + 单条硬上限）+ bypass 白名单 + 6 字段 stats。**纯业务无关容器，不输出任何日志/累计**——drop 事件经 `onDrop(reason, size, err?)` 回调外抛。FBQ 与 MemoryQueue 共用此契约，差异仅在物理存储（mem vs mem+disk）和容量数量级（10 MB 软上限 vs 10 MB mem + 1 GB disk 硬上限）。详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md) 的"接口红线"章节。
 - RpcDcSender：分片（buildChunks）+ HWM/LWM 背压 + 错误协议。**不知道队列是什么。**
-- RpcDropMonitor：消费 `onDrop` 事件 → 边沿状态机（overflow-start/end / disk-cap-start / fs-broken sticky / oversize / 未知）+ dropCount/dropBytes 累计 + close 汇总。**不知道队列内部结构。**
+- RpcDropMonitor：消费 `onDrop` 事件 → 边沿状态机（overflow-start/end / disk-cap-start / fs-broken sticky / oversize / 未知）+ dropCount/dropBytes 累计 + close 汇总。**不知道队列内部结构。**`fs-error` reason 的第三参 `err` 透传给 monitor，让运维拿到真实 errno（红线 2 "丢失 / 延迟必须 loud 可观测" 的关键证据）。
 - consumeLoop：把队列和 sender 接起来，出列后调 `monitor.maybeEmitOverflowEnd(queue.stats())` 检查"满→空"翻转，处理 sender 关闭后的退出。
 
 ## 为什么必须自建应用层分片
@@ -158,26 +158,75 @@ PC 真正重建（非 ICE restart 路径）时 `dc.onclose` 触发 → `closeByC
 
 ## probe-ack 故意绕过
 
-probe 消息（用于测量传输层 SCTP/DTLS 健康）不走 MemoryQueue + RpcDcSender，**直接 `dc.send`**。
+probe 消息（用于测量传输层 SCTP/DTLS 健康）不走 Queue + RpcDcSender，**直接 `dc.send`**。
 
 理由：probe 用于测量传输层健康，走应用层 queue 会把队列积压压力错误映射到"DC 不通"上。白名单逻辑也不影响这条独立路径。
+
+## 队列实现选择（B-stage2）
+
+装配点通过**模块级常量**单点切换，运行时再叠一层降级守卫：
+
+```
+模块级常量 RPC_QUEUE_IMPL = 'fbq' (默认) | 'mem'
+   ↓
+运行时叠加：useFbq = (RPC_QUEUE_IMPL === 'fbq') && !!queueDir
+   ↓
+实例化：new FileBackedQueue({ ... }) 或 new MemoryQueue({ ... })
+```
+
+### 为什么是这种"开关 + 守卫"双层结构
+
+- **模块级开关（紧急回退）**：FBQ 突发故障时改一行常量 `'fbq' → 'mem'` 即可全量切回 MemoryQueue，避免要回滚 PR 的压力
+- **运行时降级（自愈）**：bridge 启动期的"队列目录准备"（残留清理 + diskCap 测量，详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）若失败则 `queueDir` 留 null，每次新装配 session 自动降级到 MemoryQueue——**FBQ 路径永不阻塞 webrtc 装配**
+- **不进 env / 不进 plugin config**：任意可热更的开关都意味着运行时多分支，复杂度收益不匹配。模块级常量改完发新版即可，部署成本可接受
+
+### 装配诊断
+
+每个 session 装配成功后**仅**打一次本地 info + 一次 remoteLog `rtc.queue-impl conn=… impl=fbq|mem [fallback=queue-dir-null]`：
+
+- 频率与连接频率挂钩，符合 remoteLog 红线（不高频）
+- 让运维拿"实际跑哪种 queue"，而不是依赖代码常量推断——尤其是 fbq 静默降级到 mem 的场景
+- log 在 stale 守卫之后才打——只对真正生效的 session 计数，被同 connId 二次 ondatachannel / closeByConnId 拒绝的 stale 装配不打 log
+
+### MemoryQueue 留作可切回路径的产品价值
+
+切到 FBQ 后 MemoryQueue 不是死代码：
+
+- **紧急回退路径**：模块级常量改 `'mem'` 一行回退到 plan-2 之前的内存实现
+- **运行时自动降级目标**：queueDir 不可用时自动使用，不阻塞装配
+- **dev/test 简化**：本地开发省启动期 fs prep，单元测试不需要构造 tmp 目录
+- **接口对齐参考**：MemoryQueue 模块仍保持 100% 覆盖，作为 FBQ 接口契约的"镜像证人"——FBQ 任何接口偏移都能被 MemoryQueue 同款测试覆盖发现
 
 ## 生产路径 API
 
 > 实际装配代码见 `webrtc-peer.js __setupDataChannel`。下面是骨架，省略了身份重核 / 闭包局部引用 / `bufferedAmountLowThreshold` 设置等细节。
 
 ```js
-// 三件套创建（webrtc-peer.js __setupDataChannel 内）
+// 四件套创建（webrtc-peer.js __setupDataChannel 内）
 const monitor = createRpcDropMonitor({ connId, logger });
-const queue = new MemoryQueue({
-  id: connId,
-  maxMessageBytes: MAX_SINGLE_MSG_BYTES,    // 单条 50MB 硬上限
-  bypassAdmission: isAgentRunResponse,
-  onDrop: monitor.onDrop,                   // monitor 接管 drop 状态机
-  logger,
-  tag: `conn=${connId}`,
-});
-await queue.init();                          // FBQ 切换后承担 fs 残留清理；MemoryQueue 是 no-op
+
+// queue 实例选择：FBQ 默认；queueDir 不可用时降级 mem
+const useFbq = RPC_QUEUE_IMPL === 'fbq' && !!queueDir;
+const queue = useFbq
+  ? new FileBackedQueue({
+      id: `${connId}-${Date.now()}-${randomUUID().slice(0,8)}`,  // 唯一后缀 → 同 connId race 物理隔离
+      dir: queueDir,
+      memBudget: 10 * 1024 * 1024,           // 10 MB mem 软上限（与 plan-2 之前 MemoryQueue 默认对齐）
+      diskCap: getDiskCap?.() ?? ONE_GB,     // 启动期测得 / 未测得兜底 1GB
+      maxMessageBytes: MAX_SINGLE_MSG_BYTES, // 单条 50 MB 硬上限（与 sender 端对齐 + bypass 也不豁免）
+      bypassAdmission: isAgentRunResponse,
+      onDrop: monitor.onDrop,
+      logger,
+    })
+  : new MemoryQueue({
+      id: connId,
+      maxMessageBytes: MAX_SINGLE_MSG_BYTES,
+      bypassAdmission: isAgentRunResponse,
+      onDrop: monitor.onDrop,
+      logger,
+      tag: `conn=${connId}`,
+    });
+await queue.init();                          // FBQ 承担 fs 残留清理；MemoryQueue 是 no-op
 const sender = new RpcDcSender({
   dc,
   maxMessageSize: session.remoteMaxMessageSize,
@@ -228,39 +277,53 @@ await session.rpcConsumeLoop;
 
 | 内容 | 位置 |
 |------|------|
-| `MemoryQueue` 实现 | `src/utils/memory-queue.js` |
+| `FileBackedQueue` 实现（生产路径默认） | `src/utils/file-backed-queue.js` |
+| `MemoryQueue` 实现（接口对齐参考 + 紧急回退） | `src/utils/memory-queue.js` |
 | `RpcDcSender` 实现 | `src/webrtc/rpc-dc-sender.js` |
 | 分片协议（buildChunks / createReassembler） | `src/webrtc/dc-chunking.js` |
-| 三件套创建 | `src/webrtc/webrtc-peer.js __setupDataChannel` |
-| 三件套关闭（`closeByConnId`） | `src/webrtc/webrtc-peer.js closeByConnId` |
+| 队列实现选择（`RPC_QUEUE_IMPL` 常量 + 装配点） | `src/webrtc/webrtc-peer.js __setupDataChannel` |
+| 四件套关闭（`closeByConnId`） | `src/webrtc/webrtc-peer.js closeByConnId` |
 | ICE restart 不重建 PC/DC | `src/webrtc/webrtc-peer.js __handleOffer` ICE restart 分支 |
 | `broadcast()` 出口 | `src/webrtc/webrtc-peer.js broadcast` |
 | `sendTo()` 单播出口 | `src/webrtc/webrtc-peer.js sendTo` |
 | files RPC sendFn 出口 | `src/webrtc/webrtc-peer.js __setupDataChannel` 内 onFileRpc 回调 |
 | 网关 ws → DC broadcast 透传 | `src/realtime-bridge.js` 内 onmessage broadcast 路径 |
+| 启动期 queueDir 准备（`cleanupResiduals` + `measureDiskCap`） | `src/realtime-bridge.js bridge.start()` + `src/rpc-queue-startup.js` |
 | agent run 响应识别 | `src/webrtc/agent-run-response.js` |
-| drop 状态机 | `src/webrtc/rpc-drop-monitor.js` |
+| drop 状态机（含 fs-error errno 透传） | `src/webrtc/rpc-drop-monitor.js` |
 
 ## 与 FileBackedQueue 的关系
 
-`MemoryQueue` 是 MB 级 DC 背压队列；`FileBackedQueue`（FBQ，详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）是 GB 级长尾文件回退队列。两者**接口完全对齐**——`enqueue / __nextIter / destroy / clear / stats` 6 字段全一致——下一阶段 FBQ 切换在 webrtc-peer 装配处仅需一行 import 改：
+`MemoryQueue` 是 10 MB 级 DC 背压队列；`FileBackedQueue` 是 10 MB mem + 1 GB disk 的长尾文件回退队列（详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）。B-stage2 切换后 FBQ 是默认生产路径，**接管"长时间后台 / ICE 恢复"等慢消化场景的积压**；sender 行为不变。
 
-```js
-- new MemoryQueue({ id, memBudget, ... })
-+ new FileBackedQueue({ id, memBudget, dataDir, diskCap, ... })
-```
+两者接口完全镜像——同名构造选项（`memBudget` / `maxMessageBytes` / `bypassAdmission` / `onDrop` / `logger`）+ 同名实例方法（`init / enqueue / [Symbol.asyncIterator] / stats / clear / destroy`）+ `stats()` 同款 6 字段——webrtc-peer 装配点的 `consumeLoop` / 4 处 `destroy(onBeforeClear)` / `enqueue` 调用对实例类型不可知（"鸭子类型"）。这是为何"模块级常量切回 mem"是真正一行的原因。
 
-切换后 FBQ 接管"长时间后台 / ICE 恢复"等慢消化场景的积压，sender 行为不变。
+## race 处理总览
 
-> **B-stage1 plan-2 prep 已就位**：`bridge.start()` 启动期已添加 `rpc-queues/` 残留清理 + `fs.statfs` 一次性 `diskCap` 测量，结果暂存到 `bridge.__diskCap`（B-stage1 不消费）。B-stage2 切换 FBQ 时 webrtc-peer 通过运行时桥取值传入 `diskCap`（路径 TBD：`runtime` getter 或构造 deps 注入）——除"一行 import 改"外另需此处接线。
+队列演进过程中沉淀了两个 race 修复，分别由不同模块承担。
 
-具体 checklist 见 `../TODO.md` "阶段 2 切换 FBQ" 条目。
+### race A：`monitor.summarize` 看不到 in-flight enqueue
+
+**触发**：`broadcast()` / `sendTo()` 是 fire-and-forget 异步入队（mutex withLock）；DC close 同步路径调 `monitor.summarize(queue.stats())` 时，mutex 队列里可能仍有未拿锁的 enqueue Promise——同步读 `queue.stats()` 看不到这些 in-flight 消息。
+
+**修复**：把 `summarize` 从同步读 stats 改为走 `queue.destroy(onBeforeClear)` 同步钩子——destroy 在自己的 mutex 内 fire 钩子，参数是销毁时刻的原子残留快照。所有 in-flight enqueue 要么已落地（被快照看到 → summarize 计数），要么还没拿锁（destroyed=true 短路返回 false → silent drop，连接清理的正常副作用）。
+
+### race B：同 connId 重建期 destroy / init 文件竞争（FBQ 独有）
+
+**触发**：webrtc-peer 在 `closeByConnId` 内先 `__sessions.delete(connId)`、再 `await rpcQueue.destroy(...)`——`delete-first` 顺序不能改（让 dc.onclose 路径短路）。这意味着在 destroy 进行中（数十~数百 ms 的 fs.rm + close stream），同 connId 的新 offer 到达后会进入新装配路径，看不到旧实例。MemoryQueue 时代 destroy 是 microsec 级看不见；切磁盘后窗口暴露——如果新旧 FBQ 用相同文件名，两个实例并发 IO 同一文件。
+
+**修复（决策 4，方案 A）**：FBQ 实例 id 加唯一后缀 `${connId}-${ts}-<uuid8>`，物理文件名不同，新旧实例完全隔离。残留由 bridge 启动期 `cleanupResiduals` 统一扫掉（白名单 `*.jsonl`）。
+
+**为什么不用 webrtc-peer 内部 mutex（备选 B）/ pendingClose Map（备选 C）**：备选都要入侵 4-5 处信令路径（含 ICE restart），过度设计；FBQ 文件层物理隔离改动 1 行、零信令路径侵入，与"最小切换"红线一致。
+
+详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md) 的"同 connId race 隔离设计"章节。
 
 ## 失败场景与接受边界
 
-- **plugin 进程重启**：当前 MemoryQueue 内存数据必丢，不引入持久化（FBQ 切换后磁盘部分跨重启幸存）
-- **DC 物理死亡 + 队列内消息未发完**：close 汇总 remoteLog 后丢弃；UI 端依赖主 RPC reject（信号 3）兜底感知
-- **白名单消息让 queueBytes 持续增长**：理论上无界（每条都豁免软上限），但实际由 gateway 广播频率和 agent run 数量自然封顶；硬上限 50 MB 仍约束单条；监控 remoteLog 中的 admission-bypass 信号即可
+- **plugin 进程重启**：FBQ 文件由 bridge 启动期 `cleanupResiduals` 统一扫掉（白名单 `*.jsonl`，含同 connId race 唯一后缀残留）。**不做跨进程持久化**——对端 PC 已失效，陈旧消息送到新对端无意义
+- **DC 物理死亡 + 队列内消息未发完**：close 汇总 remoteLog 后丢弃；UI 端依赖主 RPC reject 信号兜底感知
+- **bridge 启动期 queueDir 准备失败**：fbq 路径自动降级到 MemoryQueue，单 session 装配日志带 `fallback=queue-dir-null` 标记；plugin 在"残废模式"运行（rpc 路径 mem-only，10 MB 软上限），运维通过装配日志感知
+- **白名单消息让 queueBytes 持续增长**：白名单豁免容量层但仍受单条 50 MB 硬上限约束（红线 3：bypass 仅豁免容量层 admission，不豁免单条上限 / 物理 IO 失败）；FBQ 路径下 1 GB diskCap 是真正硬上限
 
 ## 死代码备注
 
