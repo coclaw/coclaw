@@ -38,11 +38,33 @@ OpenClaw 2026-04-10 起的安装时安全扫描（PR #63891）会拒绝 `node_mo
 openclaw gateway restart
 ```
 
-`src/**` 是 symlink，改完重启即可。**改以下任一项都需要重跑 `pnpm run link` 重建 stage**：
+`src/` 整目录是 symlink，**改 / 新增 / 删除 / 重命名 `src/**/*.js` 都只需 restart gateway**——symlink 自动跟随，新文件也对 Node `import` 立即可见。
+
+**改以下任一项都需要重跑 `pnpm run link` 重建 stage**（这些文件在 stage 里是 `pnpm deploy` 时的真文件拷贝，不会跟随源码）：
 - `package.json`（无论是 deps 还是版本号）
 - `openclaw.plugin.json`
 - `index.js`
 - 工作区内 `@coclaw/pion-node` 等依赖升级
+
+**完全不用动**：`*.test.js` / `docs/` / `README.md` / `LICENSE` 改动不影响 runtime。
+
+### 调试日志在哪看（两个常见坑）
+
+**坑 1：`console.log/error` 不进 file log。**
+
+OpenClaw 的 file logger（`/tmp/openclaw/openclaw-*.log`）只收 `logger.*` 调用的输出。`console.*` 走 stdout/stderr，被 systemd 收到 journal——只能用 `journalctl --user -u openclaw-gateway` 看。本地调试用 `logger.error?.(...)` 比 `console.*` 省事。
+
+**坑 2：`logger?.error?.(...)` 加在注入之前会被可选链静默吞。**
+
+注入了真 logger 才有值。常见错位：
+- 模块顶层（import 之后、任何函数定义之前）——此时根本没 logger 在作用域里
+- class 构造器里 `this.logger` 还是 `console` 的兜底（直到 `start()` 才接上真 logger）
+
+加在以下位置肯定生效：
+- `register(api)` 函数体内（`api.logger` 已注入）
+- 任何会被实际调用的实例方法 / handler / 回调里（此时 `this.logger` 已是真 logger）
+
+要快速验证 stage 是否跟随源码，找一行**已经稳定出现在 file log 里**的 `logger.info?.(...)`，紧挨着加一行 `logger.error?.('=== probe ===')`，restart 后 grep file log 即可。
 
 ### link 模式下的配置状态
 
