@@ -858,17 +858,17 @@ export class RealtimeBridge {
 							if (typeof runId === 'string' && runId) {
 								if (payload.payload?.status === 'accepted') {
 									this.__runEventRoutes?.add(runId, info.connId, payload.id);
-									this.logger.info?.(`[run-event-route] add runId=${runId} connId=${info.connId} reqId=${payload.id}`);
+									this.logger.debug?.(`[run-event-route] add runId=${runId} connId=${info.connId} reqId=${payload.id}`);
 								}
 								else {
 									this.__runEventRoutes?.remove(runId, payload.id);
-									this.logger.info?.(`[run-event-route] remove runId=${runId} reqId=${payload.id}`);
+									this.logger.debug?.(`[run-event-route] remove runId=${runId} reqId=${payload.id}`);
 								}
 							}
 							// 终态才清条目；accepted 类中间态保留等下一帧
 							if (isFinalResMsg(payload)) {
 								this.__dcPendingRequests.delete(payload.id);
-								this.logger.info?.(`[rpc-res-route] remove reqId=${payload.id} reason=final-res`);
+								this.logger.debug?.(`[rpc-res-route] remove reqId=${payload.id} reason=final-res`);
 							}
 							/* c8 ignore next -- TODO: 2026-5-20 后删除 */
 							this.logger.debug?.(`[rpc-res-route] hit unicast reqId=${payload.id} connId=${info.connId}`);
@@ -897,12 +897,9 @@ export class RealtimeBridge {
 								await this.webrtcPeer?.sendTo(connId, payload);
 								return;
 							}
-							/* c8 ignore next -- TODO: 2026-5-20 后删除 */
-							this.logger.debug?.(`[run-event-route] miss broadcast runId=${runId}`);
-						} else {
-							/* c8 ignore next -- TODO: 2026-5-20 后删除 */
-							this.logger.debug?.('[run-event-route] miss broadcast (no runId in payload)');
 						}
+						/* c8 ignore next -- TODO: 2026-5-20 后删除 */
+						this.logger.debug?.(`[run-event-route] miss broadcast runId=${runId ?? '<missing>'}`);
 					}
 					// (d) 兜底广播：覆盖 event 类型 / 映射未命中场景
 					this.webrtcPeer?.broadcast(payload);
@@ -1062,7 +1059,7 @@ export class RealtimeBridge {
 				connId,
 				expireAt: Date.now() + this.__dcReqTtlMs,
 			});
-			this.logger.info?.(`[rpc-res-route] add reqId=${id} connId=${connId}`);
+			this.logger.debug?.(`[rpc-res-route] add reqId=${id} connId=${connId}`);
 		}
 		try {
 			this.__logDebug(`gateway req -> id=${id} method=${payload.method}`);
@@ -1081,7 +1078,7 @@ export class RealtimeBridge {
 			// SEND_FAILED：撤回映射后广播错误响应
 			if (typeof id === 'string') {
 				this.__dcPendingRequests.delete(id);
-				this.logger.info?.(`[rpc-res-route] remove reqId=${id} reason=send-failed`);
+				this.logger.debug?.(`[rpc-res-route] remove reqId=${id} reason=send-failed`);
 			}
 			this.webrtcPeer?.broadcast({
 				type: 'res',
