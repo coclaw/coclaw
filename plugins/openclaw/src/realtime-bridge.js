@@ -858,20 +858,20 @@ export class RealtimeBridge {
 							if (typeof runId === 'string' && runId) {
 								if (payload.payload?.status === 'accepted') {
 									this.__runEventRoutes?.add(runId, info.connId, payload.id);
-									this.logger.debug?.(`[run-event-route] add runId=${runId} connId=${info.connId} reqId=${payload.id}`);
+									this.logger.debug?.(`[coclaw/run-event-route] add runId=${runId} connId=${info.connId} reqId=${payload.id}`);
 								}
 								else {
 									this.__runEventRoutes?.remove(runId, payload.id);
-									this.logger.debug?.(`[run-event-route] remove runId=${runId} reqId=${payload.id}`);
+									this.logger.debug?.(`[coclaw/run-event-route] remove runId=${runId} reqId=${payload.id}`);
 								}
 							}
 							// 终态才清条目；accepted 类中间态保留等下一帧
 							if (isFinalResMsg(payload)) {
 								this.__dcPendingRequests.delete(payload.id);
-								this.logger.debug?.(`[rpc-res-route] remove reqId=${payload.id} reason=final-res`);
+								this.logger.debug?.(`[coclaw/rpc-res-route] remove reqId=${payload.id} reason=final-res`);
 							}
-							/* c8 ignore next -- TODO: 2026-5-20 后删除 */
-							this.logger.debug?.(`[rpc-res-route] hit unicast reqId=${payload.id} connId=${info.connId}`);
+							/* c8 ignore next -- TODO: 2026-05-20 后删除 */
+							this.logger.debug?.(`[coclaw/rpc-res-route] hit, reqId=${payload.id} → connId=${info.connId}`);
 							// sendTo 阶段 1 改为 async（admission 决策 await）；外层 listener 已是 async
 							const delivered = await this.webrtcPeer?.sendTo(info.connId, payload);
 							if (!delivered) {
@@ -882,8 +882,8 @@ export class RealtimeBridge {
 							}
 							return;
 						}
-						/* c8 ignore next -- TODO: 2026-5-20 后删除 */
-						this.logger.debug?.(`[rpc-res-route] miss broadcast reqId=${payload.id}`);
+						/* c8 ignore next -- TODO: 2026-05-20 后删除 */
+						this.logger.debug?.(`[coclaw/rpc-res-route] miss, broadcast, reqId=${payload.id}`);
 					}
 					// (c2) agent event 按 runId 单播：命中即送达，不退兜底广播；miss 走 (d) 兜底
 					if (payload.type === 'event' && payload.event === 'agent') {
@@ -891,15 +891,15 @@ export class RealtimeBridge {
 						if (typeof runId === 'string' && runId) {
 							const connId = this.__runEventRoutes?.lookup(runId);
 							if (connId !== undefined) {
-								/* c8 ignore next -- TODO: 2026-5-20 后删除 */
-								this.logger.debug?.(`[run-event-route] hit unicast runId=${runId} connId=${connId}`);
+								/* c8 ignore next -- TODO: 2026-05-20 后删除 */
+								this.logger.debug?.(`[coclaw/run-event-route] hit, runId=${runId} → connId=${connId}`);
 								// sendTo 失败不打 log（PC 状态翻转日志已足够，drop 是正确语义）
 								await this.webrtcPeer?.sendTo(connId, payload);
 								return;
 							}
 						}
-						/* c8 ignore next -- TODO: 2026-5-20 后删除 */
-						this.logger.debug?.(`[run-event-route] miss broadcast runId=${runId ?? '<missing>'}`);
+						/* c8 ignore next -- TODO: 2026-05-20 后删除 */
+						this.logger.debug?.(`[coclaw/run-event-route] miss, broadcast, runId=${runId ?? '<missing>'}`);
 					}
 					// (d) 兜底广播：覆盖 event 类型 / 映射未命中场景
 					this.webrtcPeer?.broadcast(payload);
@@ -1059,7 +1059,7 @@ export class RealtimeBridge {
 				connId,
 				expireAt: Date.now() + this.__dcReqTtlMs,
 			});
-			this.logger.debug?.(`[rpc-res-route] add reqId=${id} connId=${connId}`);
+			this.logger.debug?.(`[coclaw/rpc-res-route] add reqId=${id} connId=${connId}`);
 		}
 		try {
 			this.__logDebug(`gateway req -> id=${id} method=${payload.method}`);
@@ -1079,7 +1079,7 @@ export class RealtimeBridge {
 			if (typeof id === 'string') {
 				const removed = this.__dcPendingRequests.delete(id);
 				if (removed) {
-					this.logger.debug?.(`[rpc-res-route] remove reqId=${id} reason=send-failed`);
+					this.logger.debug?.(`[coclaw/rpc-res-route] remove reqId=${id} reason=send-failed`);
 				}
 			}
 			this.webrtcPeer?.broadcast({
