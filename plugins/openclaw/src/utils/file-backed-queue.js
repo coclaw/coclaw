@@ -37,6 +37,7 @@ class FileBackedQueue {
 	 * @param {number} [opts.diskCap=1GB] - 磁盘+内存总字节数硬上限（含 `\n`）
 	 * @param {(reason: string, size: number) => void} [opts.onDrop] - 拒入队时的回调
 	 * @param {{ warn?: Function, info?: Function, error?: Function }} [opts.logger=console]
+	 * @param {(jsonStr: string) => boolean} [opts.bypassAdmission] - 白名单谓词，命中则容量层 admission 豁免（与 MemoryQueue 同义）
 	 */
 	constructor(opts) {
 		const {
@@ -46,6 +47,7 @@ class FileBackedQueue {
 			diskCap = DEFAULT_DISK_CAP,
 			onDrop,
 			logger = console,
+			bypassAdmission,
 		} = opts ?? {};
 
 		if (!dir || typeof dir !== 'string') throw new TypeError('dir is required');
@@ -68,6 +70,8 @@ class FileBackedQueue {
 		this.diskCap = diskCap;
 		this.onDrop = onDrop;
 		this.logger = logger;
+		// 非函数（含 undefined / null / 字符串等）一律收编为 null，保持向后兼容
+		this.bypassAdmission = typeof bypassAdmission === 'function' ? bypassAdmission : null;
 
 		this.filePath = nodePath.join(dir, `${id}.jsonl`);
 
@@ -133,7 +137,9 @@ class FileBackedQueue {
 			// admission：按物理占用（mem + 已写文件总字节，含 \n）判定，保证 diskCap 是真正的硬上限。
 			// 用 writtenBytes（不减 readOffset）的含义：文件前缀已读但未被 __dropFile 回收前仍算占用。
 			// 代价：持续背压下消费者还没追到写端时新消息可能被 drop，直到完全 drain 触发 __dropFile 重置。
-			if (this.memBytes + this.writtenBytes + size + 1 > this.diskCap) {
+			// bypassAdmission 命中时容量层豁免（与 MemoryQueue 一致）：白名单消息可越过 diskCap 入队，
+			// 实际占用可能短暂超 diskCap——这是红线 3 的明确预期。物理 IO 失败仍会按 fs-error drop。
+			if (this.memBytes + this.writtenBytes + size + 1 > this.diskCap && !this.__isBypass(jsonStr)) {
 				this.__dispatchDrop('disk-cap', size);
 				return false;
 			}
@@ -315,6 +321,16 @@ class FileBackedQueue {
 			this.logger?.warn?.('fbq.onDrop threw', err);
 		}
 		this.logger?.warn?.('fbq.drop', { reason, size });
+	}
+
+	__isBypass(jsonStr) {
+		if (!this.bypassAdmission) return false;
+		try {
+			return Boolean(this.bypassAdmission(jsonStr));
+		} catch {
+			// 谓词自身抛 → 视为非白名单（最安全的回退；保守 drop 而非误入队）
+			return false;
+		}
 	}
 
 	async __openWriteStream() {

@@ -374,6 +374,117 @@ test('onDrop that throws does not break enqueue', async () => {
 	await q.destroy();
 });
 
+// --- bypass admission ---
+
+test('bypass admission: predicate hits, enqueue accepted past diskCap; onDrop not invoked', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	// 与 line 282 同基线（memBudget=2 / diskCap=5）：'aa' mem + 'bb' spill 后 'c' 触顶
+	// 现加 bypassAdmission 永真 → 'c' 应被接受、不触发 onDrop
+	const q = await makeQ({
+		dir, id: 'bypass-hit',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: () => true,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	assert.equal(await q.enqueue('aa'), true);
+	assert.equal(await q.enqueue('bb'), true);
+	assert.equal(await q.enqueue('c'), true);
+	assert.deepEqual(drops, []);
+	await q.destroy();
+});
+
+test('bypass admission: non-bypass traffic still drops, bypass traffic accepted on same instance', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	// 谓词按内容选择性放行：包含 'pass' 的视为白名单
+	const q = await makeQ({
+		dir, id: 'bypass-mixed',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: (s) => s.includes('pass'),
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	assert.equal(await q.enqueue('aa'), true);
+	assert.equal(await q.enqueue('bb'), true);
+	// 非白名单触顶 → drop
+	assert.equal(await q.enqueue('c'), false);
+	assert.deepEqual(drops, [{ reason: 'disk-cap', size: 1 }]);
+	// 同实例上的白名单仍可越过 diskCap 入队
+	assert.equal(await q.enqueue('pass'), true);
+	assert.deepEqual(drops, [{ reason: 'disk-cap', size: 1 }]);
+	await q.destroy();
+});
+
+test('bypass admission: predicate throws → conservative drop (treated as non-bypass)', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'bypass-throw',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: () => { throw new Error('predicate bug'); },
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	assert.equal(await q.enqueue('aa'), true);
+	assert.equal(await q.enqueue('bb'), true);
+	// 谓词抛错 → 视为非白名单 → 仍走 disk-cap drop（不入队、不污染 enqueue 契约）
+	assert.equal(await q.enqueue('c'), false);
+	assert.deepEqual(drops, [{ reason: 'disk-cap', size: 1 }]);
+	await q.destroy();
+});
+
+test('bypass admission: non-function values treated as absent (backward compatible)', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	// 传字符串/null/undefined 都等同于不传：行为退化到默认 admission
+	const q = await makeQ({
+		dir, id: 'bypass-nonfn',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: 'not-a-function',
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	assert.equal(await q.enqueue('aa'), true);
+	assert.equal(await q.enqueue('bb'), true);
+	assert.equal(await q.enqueue('c'), false);
+	assert.deepEqual(drops, [{ reason: 'disk-cap', size: 1 }]);
+	await q.destroy();
+});
+
+test('bypass admission: over-cap message is consumable end-to-end (no buried-in-queue)', async () => {
+	const dir = await makeTmpDir();
+	const q = await makeQ({
+		dir, id: 'bypass-deliver',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: () => true,
+	});
+	assert.equal(await q.enqueue('aa'), true); // mem
+	assert.equal(await q.enqueue('bb'), true); // spill
+	// bypass 命中越过 diskCap：不仅 enqueue 返 true，后续也必须能被消费出来
+	assert.equal(await q.enqueue('cc'), true);
+	const seen = [];
+	const iter = q[Symbol.asyncIterator]();
+	for (let i = 0; i < 3; i++) seen.push((await iter.next()).value);
+	assert.deepEqual(seen, ['aa', 'bb', 'cc']);
+	await q.destroy();
+});
+
+test('bypass admission does NOT exempt physical IO failure (fsBroken still drops as fs-error)', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'bypass-fserr',
+		memBudget: 2, diskCap: 1024,
+		bypassAdmission: () => true,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	// 人为模拟磁盘已坏（与 line 545 同款）：bypass 命中的 spill 消息仍走 fs-error 路径
+	q.fsBroken = true;
+	assert.equal(await q.enqueue('aa'), true); // mem 首条仍可入队（safety valve）
+	// 第二条触发 spill；fsBroken 已粘性 → drop('fs-error')，bypass 不豁免
+	assert.equal(await q.enqueue('bb'), false);
+	assert.deepEqual(drops, [{ reason: 'fs-error', size: 2 }]);
+	await q.destroy();
+});
+
 // --- asyncIterator waiting ---
 
 test('asyncIterator waits for enqueue then delivers', async () => {
