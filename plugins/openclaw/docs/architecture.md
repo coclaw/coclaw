@@ -82,6 +82,7 @@ CoClaw OpenClaw 插件运行在 **OpenClaw gateway 进程内**，把"远端 CoCl
 | `webrtc/agent-run-response.js` | 识别 agent run 类 RPC 响应，给 admission 白名单用 |
 | `webrtc/rpc-drop-monitor.js` | drop 计数 + 翻转点上报 |
 | `webrtc/pion-preloader.js` | pion-node SDK 初始化（主力实现） |
+| `rpc-routing/run-event-routes.js` | runId → connId 路由表，`event:agent` 帧按发起方 DC 单播。详见 `rpc-routing.md` |
 | `webrtc/ndc-preloader.js` | 历史路径，依赖已摘除，运行不命中（待清理） |
 | `utils/atomic-write.js` | atomic 写文件：write to tmp → rename。所有插件文件 IO 必走 |
 | `utils/mutex.js` | per-file 互斥锁（read-modify-write 必加锁） |
