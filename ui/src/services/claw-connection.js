@@ -328,6 +328,14 @@ export class ClawConnection {
 		// 与上游 gateway/client.ts 的 `expectFinal && status === "accepted"` 严格镜像，
 		// 也与 plugin 端 isFinalResMsg 保持一致（见 docs/designs/dc-rpc-response-unicast.md §5.1）。
 		if (waiter.onAccepted && status === 'accepted') {
+			// 协议保证每个 reqId 只发 1 次 accepted。重复 accepted 不应发生；
+			// 兜底吞掉避免重复副作用（刷新时间戳 / 覆盖 watcher 等），同时上报便于感知上游行为变更
+			if (waiter.__acceptedSeen) {
+				console.warn('[ClawConn] duplicate accepted res ignored id=%s clawId=%s method=%s', payload.id, this.clawId, waiter.method ?? '?');
+				remoteLog(`rpc.accepted.duplicate claw=${this.clawId} method=${waiter.method ?? '?'} reqId=${payload.id}`);
+				return;
+			}
+			waiter.__acceptedSeen = true;
 			waiter.onAccepted(payload.payload);
 			return;
 		}

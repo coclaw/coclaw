@@ -620,6 +620,59 @@ describe('ClawConnection – request() 两阶段 (onAccepted)', () => {
 		// 旧 unknown 分支不删 pending → 内存泄漏 + 重复回调风险；新实现走终态路径必须清 pending
 		expect(conn.__pending.size).toBe(0);
 	});
+
+	// 防御：协议保证同 reqId 仅发 1 次 accepted；若上游行为变更或异常导致重复，
+	// UI 必须吞掉避免重复副作用（chat.store onAccepted 会刷 acceptedAt、覆盖 watcher 等），并上报
+	test('同 reqId 重复 accepted：onAccepted 只调一次，吞掉并 remoteLog 上报', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const { conn, mockRtc } = makeRtcReady('bot1');
+		const onAccepted = vi.fn();
+		const p = conn.request('agent', {}, { onAccepted });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted', runId: 'r1' } });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted', runId: 'r1' } });
+		expect(onAccepted).toHaveBeenCalledTimes(1);
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+		expect(warnSpy.mock.calls[0][0]).toContain('duplicate accepted');
+		expect(remoteLog).toHaveBeenCalledTimes(1);
+		expect(remoteLog.mock.calls[0][0]).toContain('rpc.accepted.duplicate');
+		expect(remoteLog.mock.calls[0][0]).toContain(`reqId=${reqId}`);
+
+		// 终态仍能正常 resolve，pending 正常清理
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok', data: 1 } });
+		const res = await p;
+		expect(res).toEqual({ status: 'ok', data: 1 });
+		expect(conn.__pending.size).toBe(0);
+
+		warnSpy.mockRestore();
+	});
+
+	// 终态后迟到的 accepted 走"已无 pending 条目"分支（unmatched warn），不应被新 dedupe 路径触达
+	test('终态后再来 accepted：走 unmatched 路径，不触发 duplicate dedupe', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const { conn, mockRtc } = makeRtcReady('bot1');
+		const onAccepted = vi.fn();
+		const p = conn.request('agent', {}, { onAccepted });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted', runId: 'r1' } });
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'ok' } });
+		await p;
+		// 终态已清 pending，再来一条 accepted 应走 __handleRpcResponse 顶部的 "unmatched rpc response" 分支
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: true, payload: { status: 'accepted', runId: 'r1' } });
+		expect(onAccepted).toHaveBeenCalledTimes(1);
+		const dupCalls = remoteLog.mock.calls.filter(c => String(c[0]).includes('rpc.accepted.duplicate'));
+		expect(dupCalls).toHaveLength(0);
+
+		warnSpy.mockRestore();
+	});
 });
 
 describe('ClawConnection – 事件系统', () => {
