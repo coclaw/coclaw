@@ -861,6 +861,168 @@ test('fsBroken is sticky: after FS error, overflow enqueue keeps dropping', asyn
 	await q.destroy();
 });
 
+// --- fs-error errno passthrough (B-stage2 B7) ---
+
+test('fs-error drop carries err via onDrop third arg (mkdir path); err is sticky on subsequent drops', async () => {
+	const base = await makeTmpDir();
+	const blocker = nodePath.join(base, 'blocker');
+	await fs.writeFile(blocker, 'not-a-dir');
+	const dir = nodePath.join(blocker, 'sub'); // mkdir(sub) on file 'blocker' 会 ENOTDIR
+	const drops = [];
+	const q = new FileBackedQueue({
+		dir, id: 'mkf-err',
+		memBudget: 1,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+		logger: silentLogger(),
+	});
+	await q.init();
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill → mkdir fails
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'fs-error');
+	assert.ok(drops[0].err instanceof Error);
+	assert.ok(typeof drops[0].err.message === 'string' && drops[0].err.message.length > 0);
+
+	// 第二轮 enqueue 走 fsBroken 粘性短路：仍应携带粘性 err
+	await q.enqueue('cc');
+	assert.equal(drops.length, 2);
+	assert.ok(drops[1].err instanceof Error);
+	assert.equal(drops[1].err.message, drops[0].err.message);
+});
+
+test('fs-error drop carries simulated err (writeStream emit error path)', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'werr-err',
+		memBudget: 1,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+	});
+	await q.enqueue('aa');
+	await q.enqueue('bb'); // spill, opens stream
+	const simulated = new Error('simulated stream error');
+	q.writeStream.emit('error', simulated);
+	// 让异步 mutex 排队的 __handleFsError 跑完
+	await new Promise((resolve) => setImmediate(resolve));
+	// 下一轮 enqueue 走 fsBroken 短路
+	await q.enqueue('cc');
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'fs-error');
+	assert.equal(drops[0].err, simulated);
+	await q.destroy();
+});
+
+test('fs-error drop carries simulated err (write cb error path)', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'wcb-err',
+		memBudget: 1,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+	});
+	await q.enqueue('aa');
+	await q.enqueue('bb'); // spill, opens stream
+	const simulated = new Error('cb err');
+	q.writeStream.write = (_data, cb) => { cb(simulated); };
+	await q.enqueue('cc');
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'fs-error');
+	assert.equal(drops[0].err, simulated);
+	await q.destroy();
+});
+
+test('non-fs-error drops do not carry err on onDrop third arg', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'cap-noerr',
+		memBudget: 2, diskCap: 5,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+	});
+	await q.enqueue('aa');
+	await q.enqueue('bb');
+	await q.enqueue('c'); // disk-cap drop
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'disk-cap');
+	assert.equal(drops[0].err, undefined);
+	await q.destroy();
+});
+
+test('refill stat error caches err to lastFsErr (drop passthrough covered by other tests)', async () => {
+	// refill 路径产生 err 后由 __handleFsError 缓存到 lastFsErr 是关键证据。
+	// 从 lastFsErr 到 onDrop 第三参的透传链路由 writeStream/write-cb/clear 测试覆盖。
+	const dir = await makeTmpDir();
+	const q = await makeQ({ dir, id: 'rstat-err', memBudget: 1 });
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill: 'bb\n' on disk
+	const iter = q[Symbol.asyncIterator]();
+	assert.equal((await iter.next()).value, 'aa');
+	// 外部删文件让 refill 的 stat ENOENT
+	await fs.rm(nodePath.join(dir, 'rstat-err.jsonl'), { force: true });
+	const pending = iter.next();
+	await waitForWaiter(q);
+	assert.equal(q.stats().fsBroken, true);
+	assert.ok(q.lastFsErr instanceof Error);
+	assert.ok(typeof q.lastFsErr.message === 'string' && q.lastFsErr.message.length > 0);
+	await q.destroy();
+	await pending;
+});
+
+test('lastFsErr is sticky: first err wins, subsequent fs errors do not overwrite', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'sticky-first',
+		memBudget: 1,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+	});
+	await q.enqueue('aa');
+	await q.enqueue('bb');
+	const firstErr = new Error('first-err');
+	q.writeStream.emit('error', firstErr);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(q.lastFsErr, firstErr);
+
+	// 重复触发 __handleFsError 时（fsBroken 已置）应早返回、不覆盖 lastFsErr
+	await q.mutex.withLock(() => q.__handleFsError(new Error('second-err')));
+	assert.equal(q.lastFsErr, firstErr); // 仍是第一个 err
+
+	// 走 fsBroken 短路的 enqueue 拿到的也是第一个 err
+	await q.enqueue('cc');
+	assert.equal(drops.at(-1).err, firstErr);
+	await q.destroy();
+});
+
+test('clear resets lastFsErr; no stale err leaks into next fs-error', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'clr-lastfs',
+		memBudget: 1,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+	});
+	await q.enqueue('aa');
+	await q.enqueue('bb'); // spill, opens stream
+	const firstErr = new Error('first');
+	q.writeStream.emit('error', firstErr);
+	await new Promise((resolve) => setImmediate(resolve));
+	await q.enqueue('cc'); // 拿粘性 firstErr
+	assert.equal(drops.at(-1).err, firstErr);
+
+	// clear 应同时重置 fsBroken 和 lastFsErr，确保旧 err 不漏到下一轮
+	await q.clear();
+	assert.equal(q.lastFsErr, null);
+
+	// 模拟无新 err 来源的 fs-error 路径（人为粘性）：onDrop 第三参应为 null（lastFsErr 已被 clear）
+	q.fsBroken = true;
+	await q.enqueue('dd'); // mem 首条 safety valve
+	await q.enqueue('ee'); // spill → fsBroken 短路 → drop with lastFsErr
+	assert.equal(drops.at(-1).reason, 'fs-error');
+	assert.notEqual(drops.at(-1).err, firstErr);
+	assert.equal(drops.at(-1).err, null);
+	await q.destroy();
+});
+
 // --- head pointer compaction ---
 
 test('head pointer compacts on drain; memQueue array size bounded', async () => {

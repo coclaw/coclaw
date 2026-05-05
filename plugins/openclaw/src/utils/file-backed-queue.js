@@ -35,7 +35,7 @@ class FileBackedQueue {
 	 * @param {string} opts.id - 队列标识，字符集受限，防路径穿越
 	 * @param {number} [opts.memBudget=8MB] - 内存持有字节数上限
 	 * @param {number} [opts.diskCap=1GB] - 磁盘+内存总字节数硬上限（含 `\n`）
-	 * @param {(reason: string, size: number) => void} [opts.onDrop] - 拒入队时的回调
+	 * @param {(reason: string, size: number, err?: Error) => void} [opts.onDrop] - 拒入队时的回调；'fs-error' 传底层 err，其它 reason 第三参为 undefined
 	 * @param {{ warn?: Function, info?: Function, error?: Function }} [opts.logger=console]
 	 * @param {(jsonStr: string) => boolean} [opts.bypassAdmission] - 白名单谓词，命中则容量层 admission 豁免（与 MemoryQueue 同义）
 	 */
@@ -87,6 +87,9 @@ class FileBackedQueue {
 		this.fsBroken = false;    // 粘性：一旦 FS 出错，不再尝试 reopen
 		this.writeStream = null;
 		this.writeErr = null;
+		// 粘性最新 fs 错误：__handleFsError 在 mutex 内缓存；后续走 fsBroken 短路的 enqueue 通过
+		// __dispatchDrop 第三参把 err 透传给 onDrop，让 monitor / 运维拿到具体 errno
+		this.lastFsErr = null;
 		this.waiters = [];
 		this.mutex = createMutex();
 	}
@@ -156,9 +159,10 @@ class FileBackedQueue {
 				}
 			}
 
-			// 溢出路径：FS 已破直接 drop，不再尝试 reopen
+			// 溢出路径：FS 已破直接 drop，不再尝试 reopen。lastFsErr 由 __handleFsError 已粘性置好，
+			// 把它透传给 onDrop 第三参——红线 2 "丢失/延迟必须 loud 可观测" 要求把 errno 抬出去
 			if (this.fsBroken) {
-				this.__dispatchDrop('fs-error', size);
+				this.__dispatchDrop('fs-error', size, this.lastFsErr);
 				return false;
 			}
 
@@ -166,7 +170,7 @@ class FileBackedQueue {
 				await this.__openWriteStream();
 				if (this.writeErr) {
 					const err = this.writeErr;
-					this.__dispatchDrop('fs-error', size);
+					this.__dispatchDrop('fs-error', size, err);
 					// 前置 mkdir/rm 失败也进入粘性降级：与 stream 'error' 路径语义一致，
 					// 避免后续每次 overflow 都重试同一个持续性 FS 故障。
 					await this.__handleFsError(err);
@@ -182,7 +186,7 @@ class FileBackedQueue {
 				return true;
 			} catch (err) {
 				this.logger?.warn?.('fbq.enqueue fs-error', err);
-				this.__dispatchDrop('fs-error', size);
+				this.__dispatchDrop('fs-error', size, err);
 				// 直接在当前锁内触发粘性降级：真实 Node stream 下 cb err 通常也会 emit 'error'
 				// （监听器会另外排一次 handleFsError，但 fsBroken 已置 → no-op）；测试里的 monkey-patch
 				// 只触发 cb、不发 'error'，这里主动降级保证行为一致。
@@ -229,6 +233,7 @@ class FileBackedQueue {
 			this.spilled = false;
 			this.fsBroken = false;
 			this.writeErr = null;
+			this.lastFsErr = null;
 		});
 	}
 
@@ -258,6 +263,7 @@ class FileBackedQueue {
 			this.writtenBytes = 0;
 			this.readOffset = 0;
 			this.spilled = false;
+			this.lastFsErr = null;
 		});
 	}
 
@@ -313,14 +319,14 @@ class FileBackedQueue {
 		for (const w of toWake) w.resolve();
 	}
 
-	__dispatchDrop(reason, size) {
+	__dispatchDrop(reason, size, err) {
 		try {
-			this.onDrop?.(reason, size);
-		} catch (err) {
+			this.onDrop?.(reason, size, err);
+		} catch (cbErr) {
 			/* c8 ignore next 2 -- onDrop throwing is caller's bug */
-			this.logger?.warn?.('fbq.onDrop threw', err);
+			this.logger?.warn?.('fbq.onDrop threw', cbErr);
 		}
-		this.logger?.warn?.('fbq.drop', { reason, size });
+		this.logger?.warn?.('fbq.drop', { reason, size, err: err?.message });
 	}
 
 	__isBypass(jsonStr) {
@@ -389,10 +395,11 @@ class FileBackedQueue {
 		});
 	}
 
-	// mutex 内调用：FS 错误粘性降级
-	async __handleFsError(_err) {
+	// mutex 内调用：FS 错误粘性降级。err 缓存到 lastFsErr 供后续 fsBroken 短路 enqueue 透传给 onDrop
+	async __handleFsError(err) {
 		if (this.destroyed || this.fsBroken) return;
 		this.fsBroken = true;
+		this.lastFsErr = err;
 		await this.__closeWriteStream();
 		try {
 			await fs.rm(this.filePath, { force: true });
