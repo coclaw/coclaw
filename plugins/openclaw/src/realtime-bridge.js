@@ -1077,8 +1077,10 @@ export class RealtimeBridge {
 		catch {
 			// SEND_FAILED：撤回映射后广播错误响应
 			if (typeof id === 'string') {
-				this.__dcPendingRequests.delete(id);
-				this.logger.debug?.(`[rpc-res-route] remove reqId=${id} reason=send-failed`);
+				const removed = this.__dcPendingRequests.delete(id);
+				if (removed) {
+					this.logger.debug?.(`[rpc-res-route] remove reqId=${id} reason=send-failed`);
+				}
 			}
 			this.webrtcPeer?.broadcast({
 				type: 'res',
