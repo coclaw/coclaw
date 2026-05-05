@@ -239,11 +239,26 @@ class FileBackedQueue {
 
 	/**
 	 * 停写、关 FD、删文件、结束所有迭代器。幂等。
+	 *
+	 * @param {(residual: { memCount: number, memBytes: number, diskBytes: number, writtenBytes: number, spilled: boolean, fsBroken: boolean }) => void} [onBeforeClear]
+	 *   可选回调（**必须为同步函数**）：在 mutex 内、清空字段 / 关流 / 删文件**之前**触发，
+	 *   参数是销毁时刻的 6 字段残留快照。存在意义：mutex 保证 in-flight enqueue 已落地；调用方
+	 *   sync 调 `queue.stats()` 看不到 in-flight 入队的消息，改用此回调可拿原子准确的残留快照。
+	 *   回调同步抛错被 swallow，不影响 destroy 完成。
+	 *   **注意**：返回 Promise 的异步回调其 rejection 不会被捕获——仅设计为 sync 钩子（与 MemoryQueue 一致）。
 	 */
-	async destroy() {
+	async destroy(onBeforeClear) {
 		return await this.mutex.withLock(async () => {
 			if (this.destroyed) return;
 			this.destroyed = true;
+
+			// 在 mutex 内、清空 / 关流 / 删文件之前快照 6 字段残留：mutex 保证看到所有已入队的消息（含 in-flight）；
+			// 异步 IO 清理（__closeWriteStream / fs.rm）会改 spilled/writtenBytes，所以快照必须先抓
+			if (typeof onBeforeClear === 'function') {
+				const residual = this.stats();
+				try { onBeforeClear(residual); }
+				catch { /* 回调自身抛是调用方的 bug；不能传染给 destroy 契约 */ }
+			}
 
 			// 唤醒所有等待者，让它们在下一轮循环中看到 destroyed 并返回 done
 			const toWake = this.waiters.splice(0);

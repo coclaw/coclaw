@@ -546,6 +546,89 @@ test('destroy with spilled data closes stream and removes file', async () => {
 	await assert.rejects(() => fs.stat(nodePath.join(dir, 'dst4.jsonl')));
 });
 
+// --- destroy onBeforeClear (B-stage2 B8) ---
+
+test('destroy(onBeforeClear): mutex 内拿原子残留快照，能看到 in-flight enqueue', async () => {
+	// 与 MemoryQueue 同款契约（webrtc-peer 4 处清理点依赖此原子快照）：
+	// sync 调 q.stats() 看不到 in-flight 入队（mutex 排队），destroy(callback) 在 mutex 内 fire
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-snap', memBudget: 1024 });
+	const enqueuePromise = q.enqueue('"in-flight"').catch(() => {});
+	let snapshot = null;
+	const destroyPromise = q.destroy((residual) => { snapshot = residual; });
+	await enqueuePromise;
+	await destroyPromise;
+	assert.ok(snapshot, 'onBeforeClear 必须 fire');
+	assert.equal(snapshot.memCount, 1, '应当看到 in-flight 入队的消息');
+	assert.equal(snapshot.memBytes, Buffer.byteLength('"in-flight"', 'utf8'));
+	// 6 字段形态对齐 MemoryQueue
+	assert.equal(snapshot.diskBytes, 0);
+	assert.equal(snapshot.writtenBytes, 0);
+	assert.equal(snapshot.spilled, false);
+	assert.equal(snapshot.fsBroken, false);
+});
+
+test('destroy(onBeforeClear): 6 字段反映真实磁盘状态（spilled / writtenBytes / diskBytes 非零）', async () => {
+	// 关键差异 vs MemoryQueue：FBQ 的 6 字段在快照里反映真实磁盘状态，而不是恒 0
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-disk', memBudget: 1 });
+	await q.enqueue('aa'); // mem
+	await q.enqueue('bb'); // spill: 'bb\n' = 3 bytes
+	await q.enqueue('cc'); // spill: 'cc\n' = 3 bytes
+	let snapshot = null;
+	await q.destroy((residual) => { snapshot = residual; });
+	assert.ok(snapshot);
+	// 内存里仍有 'aa' 没被消费；disk 上有 'bb\n' + 'cc\n' = 6 bytes
+	assert.equal(snapshot.memCount, 1);
+	assert.equal(snapshot.memBytes, 2);
+	assert.equal(snapshot.spilled, true);
+	assert.equal(snapshot.writtenBytes, 6);
+	assert.equal(snapshot.diskBytes, 6);
+	assert.equal(snapshot.fsBroken, false);
+});
+
+test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成', async () => {
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-throw' });
+	await q.enqueue('x');
+	await assert.doesNotReject(q.destroy(() => { throw new Error('callback boom'); }));
+	assert.equal(q.destroyed, true);
+});
+
+test('destroy(onBeforeClear): 第二次 destroy 是 no-op，不 fire callback', async () => {
+	// destroy 自身幂等保证 onBeforeClear 仅 fire 一次（与 monitor.summarized flag 互为兜底）
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-idem' });
+	let calls = 0;
+	await q.destroy(() => { calls += 1; });
+	await q.destroy(() => { calls += 1; });
+	assert.equal(calls, 1);
+});
+
+test('destroy() 不传 callback 时行为不变（向后兼容）', async () => {
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-nocb', memBudget: 1 });
+	await q.enqueue('aa');
+	await q.enqueue('bb'); // spill
+	// 不传 callback 应与 B8 之前行为完全一致：destroy 完成、文件被删
+	await assert.doesNotReject(q.destroy());
+	assert.equal(q.destroyed, true);
+});
+
+test('destroy 先排队、enqueue 后排队：mutex FIFO + destroyed 短路 → enqueue 拿到锁返 false', async () => {
+	// 关键 race 不变量（对齐 MemoryQueue 同款测试）：destroy 与 enqueue 同 tick 并发，destroy 先入
+	// mutex 队列时——destroy 的 mutex callback 先 fire（设 destroyed=true），enqueue 的 mutex callback
+	// 后跑（看到 destroyed=true 直接返 false）。这条窗口在 webrtc-peer 同 connId 重建路径上是真实并发场景。
+	const droppedReasons = [];
+	const q = await makeQ({
+		dir: await makeTmpDir(), id: 'dst-race',
+		onDrop: (reason) => { droppedReasons.push(reason); },
+	});
+	// 同 tick 并发：destroy 先调用，先进 mutex 队列；enqueue 后调用，排第二
+	const destroyP = q.destroy();
+	const enqueueP = q.enqueue('"after-destroy-pending"');
+	const [, ok] = await Promise.all([destroyP, enqueueP]);
+	assert.equal(ok, false, 'enqueue must return false (destroyed short-circuit)');
+	assert.equal(q.destroyed, true);
+	// destroyed 短路是 silent drop——队列已死，不需要 noisy onDrop（连接清理的正常副作用）
+	assert.deepEqual(droppedReasons, [], 'destroyed-short-circuit must not fire onDrop');
+});
+
 // --- clear ---
 
 test('clear empties in-memory state, instance still usable', async () => {
