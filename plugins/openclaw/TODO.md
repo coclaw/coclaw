@@ -721,3 +721,17 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **B9b 后的状态**：fbq 模式 id = `${connId}-${ts}-${uuid8}`，仍以 connId 开头，问题无变化（PRE-EXISTING，与 B9b 无关）。
 
 **修复方向**：要么在装配点 sanitize（`connId.replace(/[^A-Za-z0-9._-]/g, '_')`），要么明示文档化 server↔plugin 的 connId 字符集契约（`^[A-Za-z0-9._-]+$`）。当前 server 实际生成 `c_<digits>` 形态，符合契约——B9b 不修，仅在装配点加注释提示。
+
+### sendPeerTransport 签名回滚后无重发触发器（PRE-EXISTING）
+
+**发现日期**：2026-05-06（B-stage2 B10 deep-review 抓出）
+
+**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.js:905-932`（`__sendPeerTransport`）+ `:635-644`（`dc.onopen` queueMicrotask 调用点）
+
+**问题**：`__sendPeerTransport` 在 sendTo 失败时回滚 `__lastPeerTransportSig` 并注释"以便 dc.onopen 再次触发时重发"，但 `dc.onopen` 在 dc 生命周期内只触发一次——没有任何机制让它"再次触发"。失败后该 session 的 peer-transport 信息（candidate type / protocol / relay protocol）永久不会上报到 UI 诊断。
+
+**触发条件**：dc.onopen 触发时 `session.rpcQueue` 尚未就绪——`sendTo` line 190 检查 `if (!q || ...) return false`。MemoryQueue 时代 `init()` 是异步 no-op-but-callable（plan-1 round-2 引入），微秒级完成；切到 FBQ 后 `init()` 包含 mkdir + readdir + cleanupResiduals + open writeStream，时间窗从 microtask 级放大到数十毫秒级。**B-stage2 B9b 让 PRE-EXISTING bug 从理论暴露变成实际易复现**，但 race 本身在 plan-1 round-2 引入 `init()` 后就已存在。
+
+**影响**：仅 UI 诊断信息（peer transport 信号）丢失，不影响 RPC 业务。
+
+**修复方向**：装配 rpcQueue 后主动调一次 `__sendPeerTransport(connId)`（条件：`session.pc.selectedCandidatePair` 已 nominate 完成），或在 sendTo 失败回滚 sig 后注册一个"等 rpcQueue 就绪重试"的钩子。

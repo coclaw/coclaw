@@ -485,6 +485,67 @@ test('bypass admission does NOT exempt physical IO failure (fsBroken still drops
 	await q.destroy();
 });
 
+// --- maxMessageBytes 单条上限（接口对齐 MemoryQueue；与 sender 端 MAX_SINGLE_MSG_BYTES 同义）---
+
+test('maxMessageBytes: single oversized message is dropped with reason=oversize', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'mmb-over',
+		memBudget: 1024, diskCap: 4096, maxMessageBytes: 4,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	assert.equal(await q.enqueue('abcde'), false); // 5 > 4
+	assert.deepEqual(drops, [{ reason: 'oversize', size: 5 }]);
+	assert.equal(q.stats().memCount, 0);
+	await q.destroy();
+});
+
+test('maxMessageBytes: bypass does NOT exempt oversize (red-line: bypass 仅豁免容量层)', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'mmb-bypass',
+		memBudget: 1024, diskCap: 4096, maxMessageBytes: 4,
+		bypassAdmission: () => true,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	assert.equal(await q.enqueue('abcde'), false);
+	assert.deepEqual(drops, [{ reason: 'oversize', size: 5 }]);
+	await q.destroy();
+});
+
+test('maxMessageBytes: equal-to-cap message is accepted', async () => {
+	const dir = await makeTmpDir();
+	const q = await makeQ({
+		dir, id: 'mmb-eq',
+		memBudget: 1024, diskCap: 4096, maxMessageBytes: 5,
+	});
+	assert.equal(await q.enqueue('abcde'), true);
+	assert.equal(q.stats().memCount, 1);
+	await q.destroy();
+});
+
+test('maxMessageBytes defaults to Infinity (backward-compatible)', async () => {
+	const dir = await makeTmpDir();
+	const q = await makeQ({ dir, id: 'mmb-def' });
+	assert.equal(q.maxMessageBytes, Infinity);
+	const huge = 'x'.repeat(64 * 1024);
+	assert.equal(await q.enqueue(huge), true);
+	await q.destroy();
+});
+
+test('constructor rejects non-finite or non-positive maxMessageBytes', () => {
+	const base = { dir: '/tmp/whatever', id: 'mmb-bad', logger: silentLogger() };
+	for (const bad of [NaN, -Infinity, 0, -1, '1', null]) {
+		assert.throws(
+			() => new FileBackedQueue({ ...base, maxMessageBytes: bad }),
+			/maxMessageBytes must be Infinity or a finite positive number/,
+			`expected rejection for maxMessageBytes=${String(bad)}`,
+		);
+	}
+});
+
 // --- asyncIterator waiting ---
 
 test('asyncIterator waits for enqueue then delivers', async () => {
@@ -585,7 +646,7 @@ test('destroy(onBeforeClear): 6 字段反映真实磁盘状态（spilled / writt
 	assert.equal(snapshot.fsBroken, false);
 });
 
-test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成', async () => {
+test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成（silent swallow，与 MemoryQueue 镜像）', async () => {
 	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-throw' });
 	await q.enqueue('x');
 	await assert.doesNotReject(q.destroy(() => { throw new Error('callback boom'); }));

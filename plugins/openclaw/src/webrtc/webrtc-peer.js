@@ -572,8 +572,8 @@ export class WebRtcPeer {
 	}
 
 	async __setupDataChannel(connId, dc) {
-		// rpc DC 发送流控：MemoryQueue（admission + bypass 白名单）+ rpc-drop-monitor
-		// （边沿日志 / 累计 / 汇总）+ RpcDcSender（分片 + 背压），通过消费循环串起来。
+		// rpc DC 发送流控：Queue（FileBackedQueue 默认 / MemoryQueue 降级；admission + bypass 白名单）
+		// + rpc-drop-monitor（边沿日志 / 累计 / 汇总）+ RpcDcSender（分片 + 背压），通过消费循环串起来。
 		// 广播 / sendTo / files sendFn 都向 queue.enqueue，sender 从 queue 拉。
 		const session = this.__sessions.get(connId);
 
@@ -712,6 +712,7 @@ export class WebRtcPeer {
 				dir: this.__queueDir,
 				memBudget: RPC_QUEUE_MEM_BUDGET,
 				diskCap: this.__getDiskCap?.() ?? ONE_GB,
+				maxMessageBytes: MAX_SINGLE_MSG_BYTES,
 				bypassAdmission: isAgentRunResponse,
 				onDrop: monitor.onDrop,
 				logger: this.logger,
@@ -727,11 +728,6 @@ export class WebRtcPeer {
 		// FBQ.init 承担 fs 残留清理（含同 connId 唯一后缀文件，不会撞旧实例）；MemoryQueue.init 是 no-op。
 		// await 期间可能发生 closeByConnId / 同 connId 二次 ondatachannel，因此后面必须身份重核才能赋字段。
 		await queue.init();
-		// 装配后日志：让运维侧看到该 session 实际跑哪种 queue（特别是 fbq 降级到 mem 的场景）。
-		// 单 session 只打一次，频率与连接频率挂钩——符合 remoteLog 红线（不高频）。
-		const queueImpl = useFbq ? 'fbq' : 'mem';
-		this.logger.info?.(`${this.__rtcTag} [${connId}] rpc queue impl=${queueImpl}${fbqFallback ? ' (fallback: queueDir unavailable)' : ''}`);
-		this.__remoteLog(`rtc.queue-impl conn=${connId} impl=${queueImpl}${fbqFallback ? ' fallback=queue-dir-null' : ''}`);
 		// 身份重核：init 期间 session 可能被 closeByConnId 从 Map 删除，或被同 connId 二次
 		// ondatachannel 把 rpcChannel 替换成新 dc。任一不再成立都视为 stale，destroy queue 后
 		// 直接退出，绝不污染 session 三件套字段。monitor 自然 GC，无需 summarize（无 drop）。
@@ -740,6 +736,12 @@ export class WebRtcPeer {
 			await queue.destroy();
 			return;
 		}
+		// 装配成功后日志：让运维侧看到该 session 实际跑哪种 queue（特别是 fbq 降级到 mem 的场景）。
+		// 放在 stale 守卫之后——只对真正生效的 session 打 log，避免 stale 装配虚报一次。
+		// 单 session 只打一次，频率与连接频率挂钩——符合 remoteLog 红线（不高频）。
+		const queueImpl = useFbq ? 'fbq' : 'mem';
+		this.logger.info?.(`${this.__rtcTag} [${connId}] rpc queue impl=${queueImpl}${fbqFallback ? ' (fallback: queueDir unavailable)' : ''}`);
+		this.__remoteLog(`rtc.queue-impl conn=${connId} impl=${queueImpl}${fbqFallback ? ' fallback=queue-dir-null' : ''}`);
 		if ('bufferedAmountLowThreshold' in dc) {
 			dc.bufferedAmountLowThreshold = DC_LOW_WATER_MARK;
 		}

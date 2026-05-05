@@ -35,6 +35,7 @@ class FileBackedQueue {
 	 * @param {string} opts.id - 队列标识，字符集受限，防路径穿越
 	 * @param {number} [opts.memBudget=8MB] - 内存持有字节数上限
 	 * @param {number} [opts.diskCap=1GB] - 磁盘+内存总字节数硬上限（含 `\n`）
+	 * @param {number} [opts.maxMessageBytes=Infinity] - 单条硬上限；超过即 drop（bypass 也不豁免）
 	 * @param {(reason: string, size: number, err?: Error) => void} [opts.onDrop] - 拒入队时的回调；'fs-error' 传底层 err，其它 reason 第三参为 undefined
 	 * @param {{ warn?: Function, info?: Function, error?: Function }} [opts.logger=console]
 	 * @param {(jsonStr: string) => boolean} [opts.bypassAdmission] - 白名单谓词，命中则容量层 admission 豁免（与 MemoryQueue 同义）
@@ -45,6 +46,7 @@ class FileBackedQueue {
 			id,
 			memBudget = DEFAULT_MEM_BUDGET,
 			diskCap = DEFAULT_DISK_CAP,
+			maxMessageBytes = Infinity,
 			onDrop,
 			logger = console,
 			bypassAdmission,
@@ -63,11 +65,15 @@ class FileBackedQueue {
 		if (!Number.isFinite(diskCap) || diskCap <= 0) {
 			throw new TypeError('diskCap must be a finite positive number');
 		}
+		if (maxMessageBytes !== Infinity && (!Number.isFinite(maxMessageBytes) || maxMessageBytes <= 0)) {
+			throw new TypeError('maxMessageBytes must be Infinity or a finite positive number');
+		}
 
 		this.dir = dir;
 		this.id = id;
 		this.memBudget = memBudget;
 		this.diskCap = diskCap;
+		this.maxMessageBytes = maxMessageBytes;
 		this.onDrop = onDrop;
 		this.logger = logger;
 		// 非函数（含 undefined / null / 字符串等）一律收编为 null，保持向后兼容
@@ -136,6 +142,14 @@ class FileBackedQueue {
 			if (typeof jsonStr !== 'string') throw new TypeError('jsonStr must be a string');
 
 			const size = Buffer.byteLength(jsonStr, 'utf8');
+
+			// per-message 硬上限：bypass 也不豁免（红线 3：bypass 仅豁免容量层 admission）。
+			// 与 sender 端 MAX_SINGLE_MSG_BYTES 检查对齐——避免大帧先入队再被 sender 拒，
+			// 导致 backlog 异常膨胀且 oversize 不进 monitor 账（loud-on-loss）。
+			if (size > this.maxMessageBytes) {
+				this.__dispatchDrop('oversize', size);
+				return false;
+			}
 
 			// admission：按物理占用（mem + 已写文件总字节，含 \n）判定，保证 diskCap 是真正的硬上限。
 			// 用 writtenBytes（不减 readOffset）的含义：文件前缀已读但未被 __dropFile 回收前仍算占用。
@@ -257,7 +271,7 @@ class FileBackedQueue {
 			if (typeof onBeforeClear === 'function') {
 				const residual = this.stats();
 				try { onBeforeClear(residual); }
-				catch { /* 回调自身抛是调用方的 bug；不能传染给 destroy 契约 */ }
+				catch { /* 回调自身抛是调用方的 bug；不能传染给 destroy 契约（与 MemoryQueue silent gotcha 镜像）*/ }
 			}
 
 			// 唤醒所有等待者，让它们在下一轮循环中看到 destroyed 并返回 done
@@ -418,9 +432,9 @@ class FileBackedQueue {
 		await this.__closeWriteStream();
 		try {
 			await fs.rm(this.filePath, { force: true });
-		} catch (err) {
+		} catch (rmErr) {
 			/* c8 ignore next 2 -- rm with force rarely fails */
-			this.logger?.warn?.('fbq.handleFsError rm error', err);
+			this.logger?.warn?.('fbq.handleFsError rm error', rmErr);
 		}
 		this.spilled = false;
 		this.writtenBytes = 0;

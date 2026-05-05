@@ -162,6 +162,10 @@ test('WebRtcPeer: rpc DC 装配默认走 FBQ 路径（带 queueDir）；id 含�
 	const session = peer.__sessions.get('c_fbq');
 	assert.ok(session.rpcQueue instanceof FileBackedQueue, 'queue should be FileBackedQueue');
 	assert.match(session.rpcQueue.id, /^c_fbq-\d+-[a-f0-9]{8}$/, 'id should have unique suffix');
+	// 容量参数：装配点把 getDiskCap() 结果与 RPC_QUEUE_MEM_BUDGET / MAX_SINGLE_MSG_BYTES 显式喂给 FBQ
+	assert.equal(session.rpcQueue.diskCap, 100 * 1024 * 1024, 'diskCap should come from getDiskCap()');
+	assert.equal(session.rpcQueue.memBudget, 10 * 1024 * 1024, 'memBudget should be RPC_QUEUE_MEM_BUDGET (10MB)');
+	assert.equal(session.rpcQueue.maxMessageBytes, 50 * 1024 * 1024, 'maxMessageBytes should be MAX_SINGLE_MSG_BYTES (50MB)');
 	assert.ok(logs.some((l) => l.includes('rpc queue impl=fbq')), 'local info log should mention impl=fbq');
 	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc.queue-impl conn=c_fbq impl=fbq')), 'remoteLog should record impl=fbq');
 	await peer.closeAll();
@@ -203,6 +207,7 @@ test('WebRtcPeer: queueDir 为 null 时降级到 MemoryQueue；log 含 fallback 
 	const session = peer.__sessions.get('c_mem');
 	assert.ok(session.rpcQueue instanceof MemoryQueue, 'queue should fallback to MemoryQueue');
 	assert.equal(session.rpcQueue.id, 'c_mem', 'mem mode keeps connId as id (no unique suffix)');
+	assert.equal(session.rpcQueue.maxMessageBytes, 50 * 1024 * 1024, 'mem fallback also enforces MAX_SINGLE_MSG_BYTES');
 	assert.ok(logs.some((l) => l.includes('impl=mem') && l.includes('fallback')), 'local log should mention fallback');
 	assert.ok(remoteLogBuffer.some((e) => e.text.includes('impl=mem fallback=queue-dir-null')), 'remoteLog should record fallback');
 	await peer.closeAll();
