@@ -21,13 +21,18 @@ const BRIEF_DISCONNECT_MS = 30_000;
 export { BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS };
 
 // 可选的 RPC trace：localStorage.rpcTrace='1' 时把入站/出站打到 console.debug。
-// 默认关，关闭路径上仅一次 try/catch + 一次 localStorage 读，开销极低。
-// 设计为开发期翻 console 用，不替代 remoteLog。
+// 模块加载时读一次缓存到 rpcTraceEnabled，热路径只读布尔变量，避免在
+// agent run 流式入站事件高频段反复触发 localStorage 同步访问（Capacitor
+// Android WebView 上尤其慢）。调试期改完 localStorage 后在 Console 调用
+// __refreshRpcTrace() 即可生效，无需刷新页面。
 const TRACE_PREFIX = '[rpc-trace]';
-function isRpcTraceEnabled() {
-	try { return globalThis.localStorage?.getItem?.('rpcTrace') === '1'; }
-	catch { return false; }
+let rpcTraceEnabled = false;
+function refreshRpcTrace() {
+	try { rpcTraceEnabled = globalThis.localStorage?.getItem?.('rpcTrace') === '1'; }
+	catch { rpcTraceEnabled = false; }
 }
+refreshRpcTrace();
+if (typeof globalThis !== 'undefined') globalThis.__refreshRpcTrace = refreshRpcTrace;
 
 /** 构造与 axios CanceledError 对齐的取消错误（err.name='CanceledError', err.code='ERR_CANCELED'） */
 function makeAbortError() {
@@ -220,7 +225,7 @@ export class ClawConnection {
 				}
 				this.__pending.set(id, waiter);
 				const wireReq = { type: 'req', id, method, params };
-				if (isRpcTraceEnabled()) {
+				if (rpcTraceEnabled) {
 					try {
 						const rel = Date.now() - this.__traceStartedAt;
 						const bytes = JSON.stringify(wireReq).length;
@@ -273,7 +278,7 @@ export class ClawConnection {
 
 	/** DataChannel 消息处理（由 WebRtcConnection 回调） */
 	__onRtcMessage(payload) {
-		if (isRpcTraceEnabled()) {
+		if (rpcTraceEnabled) {
 			try {
 				const rel = Date.now() - this.__traceStartedAt;
 				let bytes = 0;

@@ -916,6 +916,7 @@ describe('ClawConnection – 可选 RPC trace (localStorage.rpcTrace)', () => {
 	afterEach(() => {
 		// 清掉模拟，恢复原 localStorage
 		globalThis.localStorage = origLocalStorage;
+		globalThis.__refreshRpcTrace?.();
 		consoleDebugSpy.mockRestore();
 		vi.useRealTimers();
 	});
@@ -924,6 +925,8 @@ describe('ClawConnection – 可选 RPC trace (localStorage.rpcTrace)', () => {
 		globalThis.localStorage = {
 			getItem: vi.fn().mockReturnValue(value),
 		};
+		// 模块加载时已读过一次 localStorage，这里改完后需要主动刷新缓存
+		globalThis.__refreshRpcTrace();
 	}
 
 	test('rpcTrace 关时不输出 OUT/IN 日志', async () => {
@@ -973,6 +976,8 @@ describe('ClawConnection – 可选 RPC trace (localStorage.rpcTrace)', () => {
 		globalThis.localStorage = {
 			getItem: vi.fn(() => { throw new Error('quota'); }),
 		};
+		// 走一次 refresh 让缓存路径真实经过 throw 分支
+		globalThis.__refreshRpcTrace();
 		const { conn, mockRtc } = makeRtcReady();
 		const p = conn.request('ping', {});
 		await vi.advanceTimersByTimeAsync(0);
