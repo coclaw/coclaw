@@ -95,6 +95,26 @@ test('WebRtcPeer: constructor throws when PeerConnection is not provided', () =>
 	);
 });
 
+test('WebRtcPeer: constructor stores getDiskCap deps for B-stage2 FBQ swap', () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		PeerConnection: PC,
+		getDiskCap: () => 1024 * 1024,
+	});
+	assert.equal(typeof peer.__getDiskCap, 'function');
+	assert.equal(peer.__getDiskCap(), 1024 * 1024);
+});
+
+test('WebRtcPeer: constructor accepts no getDiskCap and stores null (backward compat)', () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC });
+	assert.equal(peer.__getDiskCap, null);
+	// 非函数（如字符串）也应 coerce 到 null
+	const peer2 = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, getDiskCap: 'not-a-fn' });
+	assert.equal(peer2.__getDiskCap, null);
+});
+
 test('WebRtcPeer: offer → answer 流程', async () => {
 	const sent = [];
 	const PC = MockPCFactory();

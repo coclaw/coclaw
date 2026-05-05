@@ -31,8 +31,10 @@ export class WebRtcPeer {
 	 * @param {object} [opts.logger] - pino 风格 logger
 	 * @param {function} opts.PeerConnection - RTCPeerConnection 构造函数（由 ndc-preloader 提供）
 	 * @param {string} [opts.impl] - WebRTC 实现标识（pion / ndc / werift）
+	 * @param {() => (number|null)} [opts.getDiskCap] - 启动期测得的 diskCap 字节数；prep 失败返 null。
+	 *   B9b 切 FBQ 时取（webrtc-peer 装配 FBQ 处兜底成 1GB）；本步暂存不消费。
 	 */
-	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection, impl }) {
+	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection, impl, getDiskCap }) {
 		if (!PeerConnection) {
 			throw new Error('PeerConnection constructor is required');
 		}
@@ -43,6 +45,8 @@ export class WebRtcPeer {
 		this.logger = logger ?? console;
 		this.__PeerConnection = PeerConnection;
 		this.__impl = impl ?? null;
+		// 非函数（含 undefined / null / 字符串等）一律收编为 null，B9b 调用时再做 null 兜底
+		this.__getDiskCap = typeof getDiskCap === 'function' ? getDiskCap : null;
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
 		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, rpcDropMonitor: object|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();

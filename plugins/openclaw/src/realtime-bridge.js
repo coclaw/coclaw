@@ -329,6 +329,8 @@ export class RealtimeBridge {
 			PeerConnection,
 			impl: this.__ndcPreloadResult?.impl,
 			logger: this.logger,
+			// B9a plumbing：webrtc-peer 暂存；B9b 切 FBQ 时在装配点取（null 兜底 1GB）
+			getDiskCap: () => this.__diskCap,
 		});
 	}
 	/* c8 ignore stop */
