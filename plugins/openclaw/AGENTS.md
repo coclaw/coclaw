@@ -1,7 +1,7 @@
 # CoClaw OpenClaw 插件开发约定
 
 > 适用范围：`coclaw/plugins/openclaw` 及其子目录。
-> 本文件是相对 `coclaw/CLAUDE.md`、`coclaw/plugins/CLAUDE.md` 的增量。仅写**硬约束**和**topic→doc 索引**——
+> 本文件是相对 `coclaw/CLAUDE.md` 的增量。仅写**硬约束**和**topic→doc 索引**——
 > 详细背景、设计决策、机制原理一律下沉到 `docs/`，按需阅读。
 
 ## 起点
@@ -79,6 +79,12 @@
 
 - lines 100% / functions 100% / statements 100% / branches 95%。
 - 未达标禁止安装到 gateway。
+
+### 插件标识与安装
+
+- 命名分四级且固定：npm 包 `@coclaw/openclaw-coclaw`、Plugin ID `openclaw-coclaw`（用于 `plugins.entries` / `plugins.installs` / `openclaw.plugin.json` 的 `id`，去 scope 后与 npm 包名一致避免 idHint mismatch）、Channel ID `coclaw`（channel 注册 / 消息路由 / state 子目录）、Command 名 `coclaw`（CLI `openclaw coclaw bind` / IM `/coclaw bind`）。改命名时同步检查 `openclaw.plugin.json` / `package.json` / `~/.openclaw/openclaw.json`，改完跑 `openclaw plugins doctor` + `plugins list` + `gateway status` 验证。
+- Plugin id 三处必须严格对齐：`openclaw.plugin.json` 的 `id` ↔ 代码 `plugin.id` ↔ `~/.openclaw/openclaw.json` 的 `plugins.entries` key。`openclaw.plugin.json` 必须提供 `configSchema`（即使空对象 schema）。
+- 安装/替换正确顺序：`openclaw plugins install <path>` → `openclaw gateway restart` → `openclaw gateway status` + `openclaw plugins doctor` 校验。**禁止**先手删 `<state-dir>/extensions/<plugin-id>` 再装。**Why:** `openclaw.json` 仍引用该 path 时，gateway 配置失效会启动告警/失败。若必须手删目录，先同步移除 `plugins.load.paths` 与对应 `plugins.entries`，再重启 gateway。
 
 ## topic → doc 索引
 
