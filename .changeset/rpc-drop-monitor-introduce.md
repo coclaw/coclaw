@@ -1,5 +1,0 @@
----
-'@coclaw/openclaw-coclaw': patch
----
-
-Introduce `rpc-drop-monitor` factory module (`src/webrtc/rpc-drop-monitor.js`) carrying the rpc DC drop diagnostics responsibility outside of the queue container. The module accepts `onDrop(reason, size, err?)` events and produces edge-state warn/info/remoteLog (overflow-start/overflow-end/disk-cap-start/fs-broken/oversize/close), accumulates dropCount/dropBytes counters, and emits a close summary via `summarize(residualStats?)`. `maybeEmitOverflowEnd` debounces the active→inactive transition until both the in-memory and on-disk buffers are drained (candidate-A debouncing). All logger and remoteLog calls are defensively wrapped, so userland callbacks throwing cannot poison the producer. This is the first step of B-stage1 toward decoupling diagnostics from the queue container; subsequent commits will slim `MemoryQueue` and wire the monitor into `WebRtcPeer` session lifecycle. Behavior unchanged at runtime — module not yet referenced by any consumer.

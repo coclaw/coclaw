@@ -1,5 +1,28 @@
 # @coclaw/ui
 
+## 0.21.2
+
+### Patch Changes
+
+- c7957e8: Stop AddClawPage from long-polling `POST /api/v1/claws/binding-codes/wait`. The page now consumes the global `claw-status-stream` SSE channel that AuthedLayout already keeps open: it captures a baseline of current claw ids (after `clawsStore.fetched=true`, i.e. SSE has delivered at least one snapshot) and watches a scalar `newClawId` computed (avoids deep-watch on `clawsStore.byId`); the watcher fires on the first id appearing outside baseline — covering both the live `claw.bound` event and the snapshot delivered after SSE reconnect.
+
+  This fixes a 404 storm after server restart: the server keeps binding wait state in memory, so a restart wiped it and the wait endpoint started returning `404 BINDING_NOT_FOUND` for any in-flight code. The previous loop only treated `BINDING_TIMEOUT` (HTTP 408) as terminal, so a 404 fell into the catch and immediately retried with no backoff — the client spammed the endpoint at single-digit-millisecond intervals until the binding code's natural deadline.
+
+  Removed the now-unused `waitBindingCode` export from `services/claws.api.js` and the corresponding tests. The server-side `/binding-codes/wait` endpoint is left untouched for backward compatibility with older clients.
+
+  Documents the new flow in `docs/architecture/bot-binding-and-auth.md`. Logs two pre-existing follow-ups uncovered during deep review: AddClawPage has no in-flight guard for concurrent `startBinding` calls, and `captureBaseline` will block indefinitely if SSE never delivers a snapshot (only manifests when the broader app is also broken). A separate `server/TODO.md` entry tracks the SSE handler's snapshot-then-register race that can drop a `claw.bound` event in a tens-of-milliseconds window during reconnect.
+
+- 5d34ce4: Cache `localStorage.rpcTrace` flag once at module load instead of reading it on every RPC send / inbound DC message. During an active agent run the inbound event stream can run hot (hundreds/sec), and synchronous `localStorage.getItem` is noticeably slower in Capacitor Android WebView than in V8 desktop — the per-message read added avoidable jitter on the hot path.
+
+  The cached value lives in a module-private `rpcTraceEnabled` boolean. To re-read after toggling `localStorage.rpcTrace` in DevTools without a page reload, call `__refreshRpcTrace()` from the Console.
+
+- b80a4a2: Preserve full toolCall / toolResult data through the live and replay paths so the renderer (when it grows args/pairing UI) has everything it needs:
+
+  - **Live (`agent-stream.js`)**: `phase: 'start'` toolCall block now carries `toolCallId` and `args` in addition to `name`. `phase: 'result'` toolResult message now carries `toolCallId`, `name`, `isError`, and `meta` alongside the existing text content.
+  - **Replay (`session-msg-group.js`)**: the `tool_use` block's Anthropic-standard `id` / `input` are mapped to `toolCallId` / `args` when projected to a step (so step shape is uniform across both paths). The `toolCall` block (CoClaw streaming format) keeps its `toolCallId` / `args`. `processToolResult` now passes through `toolCallId` and `isError` to the toolResult step.
+
+  No rendering change — the chat message component still only paints the tool name pill. The data is now preserved end-to-end so a follow-up renderer pass (args expansion, toolCallId-based pairing for parallel tool calls, partial-result streaming) can land without re-touching the data layer. See `ui/TODO.md` items #47–#49 for the rendering backlog.
+
 ## 0.21.1
 
 ### Patch Changes
