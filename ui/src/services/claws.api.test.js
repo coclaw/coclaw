@@ -16,7 +16,6 @@ import {
 	createBindingCode,
 	listClaws,
 	unbindClawByUser,
-	waitBindingCode,
 } from './claws.api.js';
 
 describe('bots api', () => {
@@ -84,37 +83,6 @@ describe('bots api', () => {
 		expect(result.code).toBe('X1');
 		expect(result.expiresAt).toBeNull();
 		expect(result.waitToken).toBe('');
-	});
-
-	// waitBindingCode
-	test('waitBindingCode 应 POST 带 code/waitToken 并返回结果', async () => {
-		mockedHttp.post.mockResolvedValue({
-			data: { code: 'BINDING_SUCCESS', claw: { id: 'bot1' } },
-		});
-
-		const result = await waitBindingCode('ABC123', 'tok');
-
-		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/claws/binding-codes/wait', {
-			code: 'ABC123',
-			waitToken: 'tok',
-		});
-		expect(result).toEqual({ code: 'BINDING_SUCCESS', claw: { id: 'bot1' } });
-	});
-
-	test('waitBindingCode 在 data 缺失时应使用默认值', async () => {
-		mockedHttp.post.mockResolvedValue({ data: null });
-
-		const result = await waitBindingCode('ABC123', 'tok');
-
-		expect(result).toEqual({ code: 'BINDING_PENDING', claw: null });
-	});
-
-	test('waitBindingCode 在 data.claw 缺失时 claw 应为 null', async () => {
-		mockedHttp.post.mockResolvedValue({ data: { code: 'BINDING_PENDING' } });
-
-		const result = await waitBindingCode('ABC123', 'tok');
-
-		expect(result.claw).toBeNull();
 	});
 
 	// cancelBindingCode

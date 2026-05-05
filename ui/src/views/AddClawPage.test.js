@@ -1,8 +1,9 @@
-import { createPinia } from 'pinia';
+import { createPinia, setActivePinia } from 'pinia';
 import { mount, flushPromises } from '@vue/test-utils';
 import { vi } from 'vitest';
 
 import AddClawPage from './AddClawPage.vue';
+import { useClawsStore } from '../stores/claws.store.js';
 
 const mockCreateBindingCode = vi.fn().mockResolvedValue({
 	code: '12345678',
@@ -10,15 +11,11 @@ const mockCreateBindingCode = vi.fn().mockResolvedValue({
 	waitToken: 'tok_test',
 });
 
-// 默认返回永不 resolve 的 Promise，模拟 long-polling 等待中
-// 若立即 resolve 非 SUCCESS 值，会造成 while 循环紧密迭代 → OOM
-const mockWaitBindingCode = vi.fn().mockReturnValue(new Promise(() => {}));
 const mockCancelBindingCode = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../services/claws.api.js', () => ({
 	listClaws: vi.fn().mockResolvedValue([]),
 	createBindingCode: (...args) => mockCreateBindingCode(...args),
-	waitBindingCode: (...args) => mockWaitBindingCode(...args),
 	cancelBindingCode: (...args) => mockCancelBindingCode(...args),
 }));
 
@@ -52,10 +49,20 @@ const i18nMap = {
 	'claws.expired': '已过期，请点击"重新开始"',
 };
 
-function createWrapper(overrides = {}) {
-	return mount(AddClawPage, {
+// 进 setup 前 fetched=true，模拟"全局 SSE 已经至少推过一次 claw 快照"。
+// 否则 captureBaseline 会一直阻塞在 fetched 翻 true 的 watcher 上，createBindingCode 永不执行。
+function createWrapper({ initialClaws = [], routerPush = vi.fn(), ...overrides } = {}) {
+	const pinia = createPinia();
+	setActivePinia(pinia);
+	const clawsStore = useClawsStore();
+	clawsStore.byId = {};
+	for (const c of initialClaws) {
+		clawsStore.byId[String(c.id)] = { ...c, id: String(c.id) };
+	}
+	clawsStore.fetched = true;
+	const wrapper = mount(AddClawPage, {
 		global: {
-			plugins: [createPinia()],
+			plugins: [pinia],
 			stubs: {
 				UButton: UButtonStub,
 				UIcon: { props: ['name'], template: '<span />' },
@@ -70,11 +77,12 @@ function createWrapper(overrides = {}) {
 					}
 					return i18nMap[key] ?? key;
 				},
-				$router: { push: vi.fn() },
+				$router: { push: routerPush },
 				...overrides,
 			},
 		},
 	});
+	return { wrapper, clawsStore, routerPush };
 }
 
 beforeEach(() => {
@@ -83,7 +91,6 @@ beforeEach(() => {
 		expiresAt: new Date(Date.now() + 300_000).toISOString(),
 		waitToken: 'tok_test',
 	});
-	mockWaitBindingCode.mockReset().mockReturnValue(new Promise(() => {}));
 	mockCancelBindingCode.mockReset().mockResolvedValue(undefined);
 	mockNotify.success.mockReset();
 	mockNotify.error.mockReset();
@@ -91,7 +98,7 @@ beforeEach(() => {
 });
 
 test('should auto-generate binding code on mount and show two methods', async () => {
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	expect(mockCreateBindingCode).toHaveBeenCalled();
@@ -101,7 +108,7 @@ test('should auto-generate binding code on mount and show two methods', async ()
 });
 
 test('should show chat prompt with binding code', async () => {
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	const pres = wrapper.findAll('pre');
@@ -110,7 +117,7 @@ test('should show chat prompt with binding code', async () => {
 });
 
 test('should show shell command with install and bind', async () => {
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	const pres = wrapper.findAll('pre');
@@ -119,7 +126,7 @@ test('should show shell command with install and bind', async () => {
 
 test('should show loading state before code is ready', async () => {
 	mockCreateBindingCode.mockReturnValueOnce(new Promise(() => {}));
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('正在准备，请稍候…');
@@ -130,7 +137,7 @@ test('should show error state and retry button on failure and log warning', asyn
 	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 	const err = new Error('network error');
 	mockCreateBindingCode.mockRejectedValueOnce(err);
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('network error');
@@ -140,7 +147,7 @@ test('should show error state and retry button on failure and log warning', asyn
 });
 
 test('should show copy buttons as text buttons', async () => {
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	const buttons = wrapper.findAll('button');
@@ -154,7 +161,7 @@ test('should hide content and show expired message when countdown reaches zero',
 		expiresAt: new Date(Date.now() - 1000).toISOString(), // 已过期
 		waitToken: 'tok_exp',
 	});
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('已过期，请点击"重新开始"');
@@ -163,7 +170,7 @@ test('should hide content and show expired message when countdown reaches zero',
 });
 
 test('should NOT cancel binding code on unmount (let it expire naturally)', async () => {
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.vm.bindingCode).toBe('12345678');
@@ -173,7 +180,7 @@ test('should NOT cancel binding code on unmount (let it expire naturally)', asyn
 });
 
 test('should cancel old binding code when restarting', async () => {
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.vm.bindingCode).toBe('12345678');
@@ -191,7 +198,7 @@ test('should cancel old binding code when restarting', async () => {
 
 test('should not call cancelBindingCode on unmount when no code exists', async () => {
 	mockCreateBindingCode.mockRejectedValueOnce(new Error('fail'));
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	wrapper.unmount();
@@ -199,8 +206,111 @@ test('should not call cancelBindingCode on unmount when no code exists', async (
 });
 
 test('should show semicolon hint below shell command', async () => {
-	const wrapper = createWrapper();
+	const { wrapper } = createWrapper();
 	await flushPromises();
 
 	expect(wrapper.text()).toContain('如果手动输入，请注意两条命令之间用分号（;）分隔');
+});
+
+test('should navigate to /claws when a new claw appears in the store (SSE claw.bound)', async () => {
+	const { wrapper, clawsStore, routerPush } = createWrapper();
+	await flushPromises();
+
+	// 模拟 SSE claw.bound 写入 store
+	clawsStore.byId.b1 = { id: 'b1', name: 'NewClaw' };
+	await flushPromises();
+
+	expect(routerPush).toHaveBeenCalledWith('/claws');
+	expect(wrapper.vm.bindingCode).toBe('');
+});
+
+test('should not navigate when an existing claw is already present at baseline', async () => {
+	const { routerPush } = createWrapper({ initialClaws: [{ id: 'existing1', name: 'Old' }] });
+	await flushPromises();
+
+	expect(routerPush).not.toHaveBeenCalled();
+});
+
+test('should navigate when a new claw appears after existing baseline', async () => {
+	const { clawsStore, routerPush } = createWrapper({ initialClaws: [{ id: 'existing1' }] });
+	await flushPromises();
+
+	clawsStore.byId.b2 = { id: 'b2', name: 'NewlyBound' };
+	await flushPromises();
+
+	expect(routerPush).toHaveBeenCalledWith('/claws');
+});
+
+test('should not navigate twice when newClawId actually changes after success (navigated guard)', async () => {
+	const { clawsStore, routerPush } = createWrapper();
+	await flushPromises();
+
+	// 首次新增 → newClawId 由 null → 'b1'，watcher 触发跳转
+	clawsStore.byId.b1 = { id: 'b1' };
+	await flushPromises();
+	expect(routerPush).toHaveBeenCalledTimes(1);
+
+	// 模拟 SSE 重连推 snapshot：byId 整体替换，b1 不在，新增 b2
+	// → newClawId 由 'b1' → 'b2'，watcher 再次触发；navigated 守卫拦下不重复跳转
+	clawsStore.byId = { b2: { id: 'b2' } };
+	await flushPromises();
+	expect(routerPush).toHaveBeenCalledTimes(1);
+});
+
+test('should navigate when new claw arrives via snapshot replacement (SSE reconnect path)', async () => {
+	const { clawsStore, routerPush } = createWrapper({ initialClaws: [{ id: 'existing1' }] });
+	await flushPromises();
+
+	// 模拟 SSE 重连后 applySnapshot 整体替换 byId（不是局部 mutate）
+	clawsStore.byId = {
+		existing1: { id: 'existing1' },
+		newOne: { id: 'newOne' },
+	};
+	await flushPromises();
+
+	expect(routerPush).toHaveBeenCalledWith('/claws');
+});
+
+test('should defer baseline capture until store.fetched flips true', async () => {
+	const pinia = createPinia();
+	setActivePinia(pinia);
+	const clawsStore = useClawsStore();
+	clawsStore.byId = { existing1: { id: 'existing1' } };
+	clawsStore.fetched = false; // SSE 还没推第一份 snapshot
+	const routerPush = vi.fn();
+	const wrapper = mount(AddClawPage, {
+		global: {
+			plugins: [pinia],
+			stubs: {
+				UButton: UButtonStub,
+				UIcon: { props: ['name'], template: '<span />' },
+			},
+			mocks: {
+				$t: (key, params) => {
+					if (key === 'claws.expiryLeft') return `有效期剩余 ${params?.time ?? ''}`;
+					return i18nMap[key] ?? key;
+				},
+				$router: { push: routerPush },
+			},
+		},
+	});
+	await flushPromises();
+
+	// fetched=false 期间 baseline 没捕到，createBindingCode 也未调用
+	expect(mockCreateBindingCode).not.toHaveBeenCalled();
+	expect(wrapper.vm.baselineClawIds).toBeNull();
+
+	// fetched 翻 true → captureBaseline 解锁，开始走后续流程
+	clawsStore.fetched = true;
+	await flushPromises();
+
+	expect(mockCreateBindingCode).toHaveBeenCalled();
+	expect(wrapper.vm.baselineClawIds).toBeInstanceOf(Set);
+	// existing1 已纳入 baseline，不应触发跳转
+	expect(routerPush).not.toHaveBeenCalled();
+
+	// 正向断言：baseline 之后冒出的新 claw 仍能正常触发跳转
+	clawsStore.byId.new1 = { id: 'new1' };
+	await flushPromises();
+	expect(routerPush).toHaveBeenCalledWith('/claws');
 });

@@ -114,7 +114,7 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import { useNotify } from '../composables/use-notify.js';
-import { cancelBindingCode, createBindingCode, waitBindingCode } from '../services/claws.api.js';
+import { cancelBindingCode, createBindingCode } from '../services/claws.api.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { openExternalUrl } from '../utils/external-url.js';
 import { writeClipboardText } from '../utils/clipboard.js';
@@ -139,11 +139,13 @@ export default {
 			bindingExpiresAt: null,
 			countdownMs: 0,
 			countdownTimer: null,
-			waitLoopRunning: false,
-			waitCancelled: false,
 			clawsStore: null,
 			copiedKey: '',
 			copiedTimer: null,
+			// 进页面时记下当前 claw id 集合作为 baseline；之后列表里冒出新 id 即视为本次绑定成功。
+			// null 时 watcher 不工作（baseline 还没捕到，避免空集合把已有 claw 误判成"新增"）
+			baselineClawIds: null,
+			navigated: false,
 		};
 	},
 	computed: {
@@ -169,6 +171,25 @@ export default {
 		shellCommandText() {
 			return `openclaw plugins install @coclaw/openclaw-coclaw ; openclaw coclaw bind ${this.bindingCode}${this.serverSuffix}`;
 		},
+		// 收窄到 scalar：返回 baseline 之外的第一个 claw id 或 null。
+		// 仅依赖 byId 的 keys（Vue 3 reactive ownKeys trap），避免 deep watch。
+		newClawId() {
+			if (!this.baselineClawIds || !this.clawsStore) return null;
+			for (const id of Object.keys(this.clawsStore.byId)) {
+				if (!this.baselineClawIds.has(id)) return id;
+			}
+			return null;
+		},
+	},
+	watch: {
+		// claw 列表里冒出 baseline 之外的 id（来自 SSE claw.bound 或重连后的 snapshot）→ 视为本次绑定成功
+		newClawId(id) {
+			if (!id || this.navigated) return;
+			this.navigated = true;
+			this.bindingCode = '';
+			this.stopCountdown();
+			this.$router.push('/claws');
+		},
 	},
 	mounted() {
 		this.clawsStore = useClawsStore();
@@ -176,8 +197,6 @@ export default {
 	},
 	beforeUnmount() {
 		this.stopCountdown();
-		this.waitCancelled = true;
-		this.waitLoopRunning = false;
 		clearTimeout(this.copiedTimer);
 		// 不主动删码，让其自然过期；用户离开后码仍可被 CLI 使用
 	},
@@ -202,17 +221,15 @@ export default {
 			this.bindingCode = '';
 			this.bindingExpiresAt = null;
 			this.countdownMs = 0;
-			this.waitCancelled = true;
-			this.waitLoopRunning = false;
+			this.navigated = false;
+			this.baselineClawIds = null; // 重置期 disarm watcher，等 baseline 重新捕到再 arm
 			this.stopCountdown();
 			try {
+				await this.captureBaseline();
 				const data = await createBindingCode();
 				this.bindingCode = data.code;
 				this.bindingExpiresAt = data.expiresAt;
 				this.startCountdown();
-				this.waitCancelled = false;
-				this.waitLoopRunning = true;
-				this.waitBindingLoop(data.code, data.waitToken, data.expiresAt);
 			}
 			catch (err) {
 				console.warn('[AddClawPage] startBinding failed:', err);
@@ -223,6 +240,24 @@ export default {
 				this.loading = false;
 			}
 		},
+		// 等到全局 SSE 至少推过一次 claw 快照（store.fetched=true）后再记 baseline，
+		// 否则可能用空集合作底，把列表里"原本就有"的 claw 误判成"刚绑成功"。
+		async captureBaseline() {
+			if (!this.clawsStore.fetched) {
+				await new Promise((resolve) => {
+					const stop = this.$watch(
+						() => this.clawsStore.fetched,
+						(v) => {
+							if (v) {
+								stop();
+								resolve();
+							}
+						},
+					);
+				});
+			}
+			this.baselineClawIds = new Set(Object.keys(this.clawsStore.byId));
+		},
 		startCountdown() {
 			this.stopCountdown();
 			if (!this.bindingExpiresAt) return;
@@ -231,8 +266,6 @@ export default {
 				this.countdownMs = Math.max(0, target - Date.now());
 				if (this.countdownMs <= 0) {
 					this.stopCountdown();
-					this.waitCancelled = true;
-					this.waitLoopRunning = false;
 					this.notify.warning(this.$t('claws.expired'));
 				}
 			};
@@ -244,28 +277,6 @@ export default {
 				clearInterval(this.countdownTimer);
 				this.countdownTimer = null;
 			}
-		},
-		async waitBindingLoop(code, waitToken, expiresAt) {
-			const deadline = new Date(expiresAt).getTime();
-			while (!this.waitCancelled && this.waitLoopRunning && Date.now() < deadline) {
-				try {
-					const result = await waitBindingCode(code, waitToken);
-					if (this.waitCancelled || !this.waitLoopRunning) return;
-					if (result.code === 'BINDING_SUCCESS') {
-						this.clawsStore?.addOrUpdateClaw(result.claw);
-						this.bindingCode = '';
-						this.stopCountdown();
-						this.$router.push('/claws');
-						return;
-					}
-				}
-				catch (err) {
-					if (this.waitCancelled || !this.waitLoopRunning) return;
-					if (err?.response?.data?.code === 'BINDING_TIMEOUT') return;
-					console.debug('[add-claw] bind wait error:', err?.message);
-				}
-			}
-			this.waitLoopRunning = false;
 		},
 		openCloudDeploy() {
 			openExternalUrl(CLOUD_DEPLOY_URL);

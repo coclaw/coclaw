@@ -14,17 +14,6 @@ export async function createBindingCode() {
 	};
 }
 
-export async function waitBindingCode(code, waitToken) {
-	const res = await client.post('/api/v1/claws/binding-codes/wait', {
-		code,
-		waitToken,
-	});
-	return {
-		code: res.data?.code ?? 'BINDING_PENDING',
-		claw: res.data?.claw ?? null,
-	};
-}
-
 export async function cancelBindingCode(code) {
 	await client.delete(`/api/v1/claws/binding-codes/${code}`);
 }

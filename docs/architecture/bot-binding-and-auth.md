@@ -23,7 +23,7 @@
 
 1.  用户登录 CoClaw App，进入"添加 Claw"页面。
 2.  `POST /api/v1/bots/binding-codes` 生成 8 位绑定码（默认有效期 30 分钟，`BINDING_CODE_EXPIRE_MINUTES` 可配），关联当前用户。
-3.  UI 进入长轮询等待（`POST /api/v1/bots/binding-codes/wait`，25s 超时轮询）。
+3.  UI 不主动轮询，复用全局 `claw-status-stream` SSE 通道：进页面时以当前 `clawsStore.byId`（在 `clawsStore.fetched=true` 后捕获）为 baseline，监听 `claw.bound` 事件或 SSE 重连后的 snapshot 增量；列表中冒出 baseline 之外的新 claw id 即视为绑定成功并跳转。`POST /api/v1/bots/binding-codes/wait` 端点保留供旧客户端兼容，但当前 UI 不再调用。
 
 **第二阶段：执行绑定（CLI 端）**
 
@@ -35,7 +35,7 @@
 
 1.  验证绑定码存在且未过期，删除已用绑定码（用完即焚）。
 2.  创建 `Bot` 记录（Snowflake ID），生成 Access Token（CUID2），仅存储 `SHA-256(token)` 到 `tokenHash BINARY(32)`。
-3.  唤醒长轮询等待者 + SSE 推送 `bot.bound` 事件。
+3.  唤醒残留的长轮询等待者（兼容路径）+ SSE 推送 `claw.bound` / `bot.bound` 事件——UI 走 SSE 路径感知绑定完成。
 4.  返回 `{ botId, token }` 给 Plugin。
 
 **第四阶段：配置写入与连接建立**

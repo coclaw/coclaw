@@ -319,3 +319,16 @@
     - 触发：长跑工具（bash 长命令、大文件操作）会一边跑一边推 partial
     - 修法：按 `toolCallId` 找回对应 toolCall step（与 #48 共用索引），把 `partialResult` 累计到 step 上的某字段；渲染时优先显示最新 partial，result 到来后替换为终态
 
+
+
+## AddClawPage SSE 改造遗留（2026-05-05 deep review 发现）
+
+50. **`AddClawPage.startBinding` 无 in-flight guard，重复点击可能并发两次创建绑定码**
+    - 现状：`startBinding` 没有"上一次还没结束就忽略本次"的开关；用户快速双击"重新开始"会派出两次 `createBindingCode`，后到的响应会覆盖先到的 `bindingCode`，先到的码变孤儿（仍然在服务端有效，直至自然过期）
+    - 注意：本问题在改造前的轮询版本同样存在，本次 SSE 改造未引入也未放大；归类为预存
+    - 修法（可选）：加 `inflight` 标志或 generation token 序列化两次调用；或简单地按钮 `disabled` 直到上次完成
+
+51. **`AddClawPage.captureBaseline` 无超时，SSE 始终未连通时页面永久卡 "preparing"**
+    - 现状：进页面后 `captureBaseline` 等 `clawsStore.fetched` 翻 true 才放行；若 SSE 永远不连通（极少：服务端可达但 SSE 路由挂掉），spinner 永远不消失
+    - 现实影响低：SSE 是整个 authed 区域的命脉，SSE 死意味着 claws 列表/状态/解绑通知都不工作，用户感知到的不是"加 Claw 卡住"而是"整个 app 都不对劲"
+    - 修法（可选）：加几秒超时，超时 → 走 loadError 错误态展示 retry 按钮；或者直接 fallback 到 `listClaws()` 一次拿底子
