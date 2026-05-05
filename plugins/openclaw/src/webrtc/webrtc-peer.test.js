@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import nodePath from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
 
 import { WebRtcPeer, FAILED_SESSION_TTL_MS, MAX_SESSIONS } from './webrtc-peer.js';
 import { DC_HIGH_WATER_MARK, DC_LOW_WATER_MARK } from './rpc-dc-sender.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 import { MemoryQueue } from '../utils/memory-queue.js';
+import { FileBackedQueue } from '../utils/file-backed-queue.js';
 
 /**
  * 阶段 1 改造后：broadcast / sendFn enqueue 是 async fire-and-forget；消费循环异步从队列拉
@@ -113,6 +117,95 @@ test('WebRtcPeer: constructor accepts no getDiskCap and stores null (backward co
 	// 非函数（如字符串）也应 coerce 到 null
 	const peer2 = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, getDiskCap: 'not-a-fn' });
 	assert.equal(peer2.__getDiskCap, null);
+});
+
+test('WebRtcPeer: constructor stores queueDir; non-string / empty coerced to null', () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, queueDir: '/tmp/x' });
+	assert.equal(peer.__queueDir, '/tmp/x');
+	const peer2 = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, queueDir: '' });
+	assert.equal(peer2.__queueDir, null);
+	const peer3 = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, queueDir: 123 });
+	assert.equal(peer3.__queueDir, null);
+});
+
+// --- B9b: rpc DC queue impl swap (FBQ default, MemoryQueue fallback) ---
+
+async function setupRpcDcSession({ peer, connId, dc }) {
+	await peer.handleSignaling(makeOffer(connId));
+	const pc = peer.__sessions.get(connId).pc;
+	pc.ondatachannel({ channel: dc });
+	dc.onopen?.();
+	// __setupDataChannel 是 async fire-and-forget；轮询直到 rpc 三件套就绪（FBQ.init 涉及 fs IO 时序不稳）
+	const start = Date.now();
+	while (Date.now() - start < 1000) {
+		const sess = peer.__sessions.get(connId);
+		if (sess?.rpcQueue && sess?.rpcDcSender) return;
+		await new Promise((r) => setImmediate(r));
+	}
+	throw new Error(`setupRpcDcSession timed out waiting for rpc queue (connId=${connId})`);
+}
+
+test('WebRtcPeer: rpc DC 装配默认走 FBQ 路径（带 queueDir）；id 含唯一后缀', async () => {
+	resetRemoteLog();
+	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-fbq-'));
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+		getDiskCap: () => 100 * 1024 * 1024,
+		queueDir: tmpDir,
+	});
+	await setupRpcDcSession({ peer, connId: 'c_fbq', dc: makeMockRpcDc() });
+	const session = peer.__sessions.get('c_fbq');
+	assert.ok(session.rpcQueue instanceof FileBackedQueue, 'queue should be FileBackedQueue');
+	assert.match(session.rpcQueue.id, /^c_fbq-\d+-[a-f0-9]{8}$/, 'id should have unique suffix');
+	assert.ok(logs.some((l) => l.includes('rpc queue impl=fbq')), 'local info log should mention impl=fbq');
+	assert.ok(remoteLogBuffer.some((e) => e.text.includes('rtc.queue-impl conn=c_fbq impl=fbq')), 'remoteLog should record impl=fbq');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（race 隔离）', async () => {
+	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-race-'));
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+		queueDir: tmpDir,
+	});
+	await setupRpcDcSession({ peer, connId: 'c_dup', dc: makeMockRpcDc() });
+	const id1 = peer.__sessions.get('c_dup').rpcQueue.id;
+	const fp1 = peer.__sessions.get('c_dup').rpcQueue.filePath;
+	// 关连接、再开一次同 connId（模拟 UI 重发 offer）
+	await peer.closeByConnId('c_dup');
+	await setupRpcDcSession({ peer, connId: 'c_dup', dc: makeMockRpcDc() });
+	const id2 = peer.__sessions.get('c_dup').rpcQueue.id;
+	const fp2 = peer.__sessions.get('c_dup').rpcQueue.filePath;
+	assert.notEqual(id1, id2, 'second FBQ instance should have a different id');
+	assert.notEqual(fp1, fp2, 'second FBQ instance should target a different file path');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: queueDir 为 null 时降级到 MemoryQueue；log 含 fallback 标记', async () => {
+	resetRemoteLog();
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+		// 不传 queueDir → 装配点强制降级
+	});
+	await setupRpcDcSession({ peer, connId: 'c_mem', dc: makeMockRpcDc() });
+	const session = peer.__sessions.get('c_mem');
+	assert.ok(session.rpcQueue instanceof MemoryQueue, 'queue should fallback to MemoryQueue');
+	assert.equal(session.rpcQueue.id, 'c_mem', 'mem mode keeps connId as id (no unique suffix)');
+	assert.ok(logs.some((l) => l.includes('impl=mem') && l.includes('fallback')), 'local log should mention fallback');
+	assert.ok(remoteLogBuffer.some((e) => e.text.includes('impl=mem fallback=queue-dir-null')), 'remoteLog should record fallback');
+	await peer.closeAll();
 });
 
 test('WebRtcPeer: offer → answer 流程', async () => {

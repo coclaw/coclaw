@@ -183,8 +183,11 @@ export class RealtimeBridge {
 		// runId → connId 路由表：用于 event:agent 帧按发起方单播。
 		// 实例延迟到 start() 真 logger 到位时再 new；stop() destroy 后置 null。
 		this.__runEventRoutes = null;
-		// rpc DC 文件回退队列的磁盘容量（B-stage1 plan-2 探测，B-stage2 才消费）
+		// rpc DC 文件回退队列的磁盘容量（B-stage1 plan-2 探测，B9b 在装配 FBQ 时取）
 		this.__diskCap = null;
+		// rpc DC 文件回退队列根目录（B-stage1 plan-2 已 cleanupResiduals 过；B9b 装配 FBQ 时取）。
+		// prep 失败时 null → webrtc-peer 装配点自动降级到 MemoryQueue
+		this.__queueDir = null;
 	}
 
 	__resolveWebSocket() {
@@ -329,8 +332,10 @@ export class RealtimeBridge {
 			PeerConnection,
 			impl: this.__ndcPreloadResult?.impl,
 			logger: this.logger,
-			// B9a plumbing：webrtc-peer 暂存；B9b 切 FBQ 时在装配点取（null 兜底 1GB）
+			// B9b：webrtc-peer 装配 FBQ 时取 disk 容量 + 队列根目录；
+			// __queueDir 为 null 时（plan-2 prep 失败）自动降级到 MemoryQueue
 			getDiskCap: () => this.__diskCap,
+			queueDir: this.__queueDir,
 		});
 	}
 	/* c8 ignore stop */
@@ -1397,11 +1402,15 @@ export class RealtimeBridge {
 			const queueDir = nodePath.join(pluginDir(), 'rpc-queues');
 			await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
 			this.__diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
+			// 只有 cleanupResiduals 成功 + measureDiskCap 完成后才暴露 queueDir 给 webrtc 装配；
+			// 任一抛错都让 __queueDir 留 null，下游自动降级到 MemoryQueue
+			this.__queueDir = queueDir;
 		}
 		catch (err) {
 			/* c8 ignore next -- ?./?? fallback：err 总是 Error，logger.warn 总存在 */
 			this.logger.warn?.(`[coclaw] rpc-queues startup prep failed (skipped): ${err?.message ?? err}`);
 			this.__diskCap = null;
+			this.__queueDir = null;
 		}
 		// race 守卫：cleanup/measure 期间若 stop() 已执行，不应再启动 native WebRTC 进程。
 		// preload 后还有一道 started 检查兜底（含 pion cleanup），这里先挡住一次无意义的 preload。

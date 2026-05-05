@@ -1,9 +1,23 @@
+import { randomUUID } from 'node:crypto';
+
 import { createReassembler } from './dc-chunking.js';
 import { MemoryQueue } from '../utils/memory-queue.js';
+import { FileBackedQueue } from '../utils/file-backed-queue.js';
 import { RpcDcSender, DC_LOW_WATER_MARK, MAX_SINGLE_MSG_BYTES } from './rpc-dc-sender.js';
 import { createRpcDropMonitor } from './rpc-drop-monitor.js';
 import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
+
+// rpc DC 发送队列实现选择（B-stage2 B9b）。
+// - 'fbq'：FileBackedQueue（默认 / 生产路径）—— 长时间后台 / ICE 恢复等慢消化场景溢出到磁盘
+// - 'mem'：MemoryQueue（dev / test / 紧急回退）—— 不碰 fs，溢出即 drop
+// 当 queueDir 不可用（bridge 启动期 plan-2 prep 失败）时自动降级到 'mem'，避免阻塞 webrtc 装配。
+// 将来可升级为 env 变量 / plugin 配置项；现阶段单点常量切换。
+const RPC_QUEUE_IMPL = 'fbq';
+
+// FBQ 装配兜底：bridge 启动期 measureDiskCap 失败 → __diskCap=null → 这里兜底 1GB
+const ONE_GB = 1024 * 1024 * 1024;
+const RPC_QUEUE_MEM_BUDGET = 10 * 1024 * 1024;
 
 // 单个 session 内 file DC 历史快照的容量上限（满后按 FIFO 淘汰最老条目）。
 // 用于诊断 dump：过大会撑爆 remoteLog 单帧，20 足以覆盖典型多文件传输会话。
@@ -32,9 +46,10 @@ export class WebRtcPeer {
 	 * @param {function} opts.PeerConnection - RTCPeerConnection 构造函数（由 ndc-preloader 提供）
 	 * @param {string} [opts.impl] - WebRTC 实现标识（pion / ndc / werift）
 	 * @param {() => (number|null)} [opts.getDiskCap] - 启动期测得的 diskCap 字节数；prep 失败返 null。
-	 *   B9b 切 FBQ 时取（webrtc-peer 装配 FBQ 处兜底成 1GB）；本步暂存不消费。
+	 *   FBQ 装配时取（兜底 1GB）；MemoryQueue 装配不消费。
+	 * @param {string} [opts.queueDir] - rpc DC 队列文件目录（FBQ 模式所需）；空 / 非字符串时降级到 MemoryQueue
 	 */
-	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection, impl, getDiskCap }) {
+	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection, impl, getDiskCap, queueDir }) {
 		if (!PeerConnection) {
 			throw new Error('PeerConnection constructor is required');
 		}
@@ -45,8 +60,10 @@ export class WebRtcPeer {
 		this.logger = logger ?? console;
 		this.__PeerConnection = PeerConnection;
 		this.__impl = impl ?? null;
-		// 非函数（含 undefined / null / 字符串等）一律收编为 null，B9b 调用时再做 null 兜底
+		// 非函数（含 undefined / null / 字符串等）一律收编为 null，调用时再做 null 兜底
 		this.__getDiskCap = typeof getDiskCap === 'function' ? getDiskCap : null;
+		// FBQ 文件根目录；非字符串 / 空字符串 → null → 装配时自动降级到 MemoryQueue
+		this.__queueDir = typeof queueDir === 'string' && queueDir.length > 0 ? queueDir : null;
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
 		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, rpcDropMonitor: object|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
@@ -677,21 +694,44 @@ export class WebRtcPeer {
 			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => { /* c8 ignore next -- 极冷防御 */ });
 			session.rpcDropMonitor = null;
 		}
-		// 创建 monitor。必须在 new MemoryQueue 之前——MemoryQueue 的 onDrop 接 monitor.onDrop。
+		// 创建 monitor。必须在 new Queue 之前——Queue 的 onDrop 接 monitor.onDrop。
 		// monitor 是局部变量，stale 路径下函数返回后自然 GC，不挂 session 字段（无 drop 可汇总）。
 		const monitor = createRpcDropMonitor({ connId, logger: this.logger });
-		// 构造 queue 并 await init。MemoryQueue.init 是 no-op；保留 await 占位，FBQ 阶段
-		// init 承担 fs 残留清理。await 期间可能发生 closeByConnId / 同 connId 二次 ondatachannel，
-		// 因此后面必须身份重核才能赋 session 字段。
-		const queue = new MemoryQueue({
-			id: connId,
-			maxMessageBytes: MAX_SINGLE_MSG_BYTES,
-			bypassAdmission: isAgentRunResponse,
-			onDrop: monitor.onDrop,
-			logger: this.logger,
-			tag: `conn=${connId}`,
-		});
+
+		// queue 实例选择（B-stage2 B9b）：默认 FBQ；queueDir 不可用时降级到 mem，避免阻塞装配。
+		// 同 connId race 隔离（决策 4）：FBQ id 加唯一后缀 ${connId}-${ts}-${nonce}，
+		// 让新旧实例文件名物理不同，destroy/init 期间互不踩踏。MemoryQueue 不碰 fs，无此需求。
+		// connId 字符集（PRE-EXISTING 契约）：上游 server 分配 connId 形如 `c_<digits>`；
+		// FBQ / MemoryQueue 共用 `^[A-Za-z0-9._-]+$` 校验。若 server 将来引入特殊字符，
+		// queue 构造会抛 TypeError，由 __setupDataChannel 的 .catch 兜底 warn——非 B9b 引入。
+		const useFbq = RPC_QUEUE_IMPL === 'fbq' && !!this.__queueDir;
+		const fbqFallback = !useFbq && RPC_QUEUE_IMPL === 'fbq';
+		const queue = useFbq
+			? new FileBackedQueue({
+				id: `${connId}-${Date.now()}-${randomUUID().slice(0, 8)}`,
+				dir: this.__queueDir,
+				memBudget: RPC_QUEUE_MEM_BUDGET,
+				diskCap: this.__getDiskCap?.() ?? ONE_GB,
+				bypassAdmission: isAgentRunResponse,
+				onDrop: monitor.onDrop,
+				logger: this.logger,
+			})
+			: new MemoryQueue({
+				id: connId,
+				maxMessageBytes: MAX_SINGLE_MSG_BYTES,
+				bypassAdmission: isAgentRunResponse,
+				onDrop: monitor.onDrop,
+				logger: this.logger,
+				tag: `conn=${connId}`,
+			});
+		// FBQ.init 承担 fs 残留清理（含同 connId 唯一后缀文件，不会撞旧实例）；MemoryQueue.init 是 no-op。
+		// await 期间可能发生 closeByConnId / 同 connId 二次 ondatachannel，因此后面必须身份重核才能赋字段。
 		await queue.init();
+		// 装配后日志：让运维侧看到该 session 实际跑哪种 queue（特别是 fbq 降级到 mem 的场景）。
+		// 单 session 只打一次，频率与连接频率挂钩——符合 remoteLog 红线（不高频）。
+		const queueImpl = useFbq ? 'fbq' : 'mem';
+		this.logger.info?.(`${this.__rtcTag} [${connId}] rpc queue impl=${queueImpl}${fbqFallback ? ' (fallback: queueDir unavailable)' : ''}`);
+		this.__remoteLog(`rtc.queue-impl conn=${connId} impl=${queueImpl}${fbqFallback ? ' fallback=queue-dir-null' : ''}`);
 		// 身份重核：init 期间 session 可能被 closeByConnId 从 Map 删除，或被同 connId 二次
 		// ondatachannel 把 rpcChannel 替换成新 dc。任一不再成立都视为 stale，destroy queue 后
 		// 直接退出，绝不污染 session 三件套字段。monitor 自然 GC，无需 summarize（无 drop）。

@@ -709,3 +709,15 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **锚点**：`plugins/openclaw/src/session-manager/manager.js` 行 55 / 133 / 138 / 170 / 176 / 183 / 189 / 193 / 250 / 339
 
 **问题**：多处裸 `c8 ignore next` 或简单 `?? fallback` 注释覆盖了可测的默认构造、malformed 内容、无效 index 条目、分页边界等分支。逐条补针对性测试可摘 ignore；与本次 claw-paths 改造无直接关系。
+
+### connId 字符集隐式契约：含特殊字符时 rpc 队列构造抛错（PRE-EXISTING）
+
+**发现日期**：2026-05-05（B-stage2 B9b codex round-1 抓出）
+
+**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.js` 装配点 + `src/utils/file-backed-queue.js:25` / `src/utils/memory-queue.js:30`（共用 `^[A-Za-z0-9._-]+$` 校验）
+
+**问题**：FBQ 与 MemoryQueue 都对构造 `id` 做字符集校验（防路径穿越）。webrtc-peer 装配 queue 时把 server 分配的 connId 直接 / 拼接进 id。若上游 server 改变 connId 格式引入特殊字符（如 `:` `/`），queue 构造会抛 TypeError，被 `__setupDataChannel.catch` 兜底 warn，但 session.rpcQueue 留 null → 该连接的 rpc 路径残废。
+
+**B9b 后的状态**：fbq 模式 id = `${connId}-${ts}-${uuid8}`，仍以 connId 开头，问题无变化（PRE-EXISTING，与 B9b 无关）。
+
+**修复方向**：要么在装配点 sanitize（`connId.replace(/[^A-Za-z0-9._-]/g, '_')`），要么明示文档化 server↔plugin 的 connId 字符集契约（`^[A-Za-z0-9._-]+$`）。当前 server 实际生成 `c_<digits>` 形态，符合契约——B9b 不修，仅在装配点加注释提示。
