@@ -20,6 +20,7 @@ async function makeTmpDir() {
 // 模拟 DataChannel
 function createMockDC(label = 'file:test-id') {
 	const sent = [];
+	const sendWaiters = [];
 	const dc = {
 		label,
 		readyState: 'open',
@@ -30,11 +31,56 @@ function createMockDC(label = 'file:test-id') {
 		onopen: null,
 		onerror: null,
 		onbufferedamountlow: null,
-		send(data) { sent.push(data); },
+		send(data) {
+			sent.push(data);
+			// 唤醒等待者：每次 send 后检查所有 pending predicate
+			for (let i = sendWaiters.length - 1; i >= 0; i--) {
+				try {
+					if (sendWaiters[i].pred(sent)) {
+						sendWaiters[i].resolve();
+						sendWaiters.splice(i, 1);
+					}
+				}
+				catch (err) {
+					sendWaiters[i].reject(err);
+					sendWaiters.splice(i, 1);
+				}
+			}
+		},
 		close() { dc.readyState = 'closed'; dc.onclose?.(); },
 		__sent: sent,
+		// 等到 predicate(sent) 为真；hook 在 send() 上做事件驱动唤醒
+		__waitForSent(pred, { timeoutMs = 1000 } = {}) {
+			if (pred(sent)) return Promise.resolve();
+			return new Promise((resolve, reject) => {
+				const timer = setTimeout(() => {
+					const idx = sendWaiters.findIndex(w => w.resolve === resolve);
+					if (idx >= 0) sendWaiters.splice(idx, 1);
+					reject(new Error(`__waitForSent timeout after ${timeoutMs}ms`));
+				}, timeoutMs);
+				sendWaiters.push({
+					pred,
+					resolve: () => { clearTimeout(timer); resolve(); },
+					reject: (err) => { clearTimeout(timer); reject(err); },
+				});
+			});
+		},
 	};
 	return dc;
+}
+
+// 通用"等到条件成立"，1ms 微秒级轮询。给那些没有"send 事件"信号的等待用
+// （比如等 handler 内部异步 setup 完成把 dc.onerror 装上、等 remoteLog 落条目、
+// 等临时文件落盘清理等需要 fs 检查的场景）。predicate 可同步或返回 Promise
+async function waitFor(predicate, { timeoutMs = 1000, pollMs = 1, label = '' } = {}) {
+	const deadline = Date.now() + timeoutMs;
+	while (true) {
+		if (await predicate()) return;
+		if (Date.now() > deadline) {
+			throw new Error(`waitFor timeout (${timeoutMs}ms)${label ? ': ' + label : ''}`);
+		}
+		await new Promise((r) => setTimeout(r, pollMs));
+	}
 }
 
 // --- validatePath ---
@@ -615,8 +661,8 @@ test('handleFileChannel GET: 成功下载文件', async () => {
 		// 发送 read 请求
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'main', path: 'download.txt' }) });
 
-		// 等待处理完成
-		await new Promise((r) => setTimeout(r, 200));
+		// 等到完成确认（带 bytes 的最终消息）
+		await dc.__waitForSent((sent) => sent.some((s) => typeof s === 'string' && JSON.parse(s).bytes !== undefined));
 
 		// 检查发送的消息：响应头 + binary chunks + 完成确认
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
@@ -651,7 +697,7 @@ test('handleFileChannel GET: 文件不存在', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'main', path: 'nope.txt' }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -673,7 +719,7 @@ test('handleFileChannel GET: 目录不能 read', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'adir' }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -694,7 +740,7 @@ test('handleFileChannel GET: 路径穿越被拒绝', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: '../../../etc/passwd' }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -713,7 +759,7 @@ test('handleFileChannel GET: workspace 解析失败', async () => {
 	handler.handleFileChannel(dc);
 
 	dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'bad', path: 'x' }) });
-	await new Promise((r) => setTimeout(r, 100));
+	await dc.__waitForSent((sent) => sent.length > 0);
 
 	const msg = JSON.parse(dc.__sent[0]);
 	assert.equal(msg.ok, false);
@@ -734,7 +780,7 @@ test('handleFileChannel GET: stat 非 ENOENT 错误', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'x.txt' }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -762,7 +808,7 @@ test('handleFileChannel GET: 非普通文件被拒绝', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'device' }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -795,7 +841,7 @@ test('handleFileChannel GET: 读取流错误', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'err.txt' }) });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => typeof s === 'string' && JSON.parse(s).ok === false));
 
 		const errors = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s)).filter((m) => m.ok === false);
 		assert.ok(errors.length > 0);
@@ -834,7 +880,7 @@ test('handleFileChannel GET: bufferedAmount 触发流控暂停', async () => {
 
 		handler.handleFileChannel(dc);
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', agentId: 'main', path: 'flow.txt' }) });
-		await new Promise((r) => setTimeout(r, 500));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const completion = strings.find((s) => s.ok === true && s.bytes !== undefined);
@@ -872,7 +918,7 @@ test('handleFileChannel GET: 诊断 — bufferedamountlow 在未 pause 时触发
 
 		handler.handleFileChannel(dc);
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'short.txt' }) });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		// 应正常完成传输
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
@@ -909,7 +955,8 @@ test('handleFileChannel GET: DC 关闭中止流', async () => {
 
 		handler.handleFileChannel(dc);
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'big.txt' }) });
-		await new Promise((r) => setTimeout(r, 200));
+		// 等到 header + 至少一块 chunk 都发完（第 2 次 send 时 mock 会关 DC）
+		await waitFor(() => sendCount >= 2);
 
 		// 不应崩溃
 		assert.ok(sendCount >= 2);
@@ -931,7 +978,8 @@ test('handleFileChannel GET: 响应头发送失败时安静退出', async () => 
 
 		handler.handleFileChannel(dc);
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'f.txt' }) });
-		await new Promise((r) => setTimeout(r, 100));
+		// dc.send 直接抛错，没有真正进入 __sent；只能等一段固定时间确认未崩溃
+		await new Promise((r) => setTimeout(r, 30));
 		// 不应崩溃
 	} finally {
 		await fs.rm(dir, { recursive: true });
@@ -953,7 +1001,7 @@ test('handleFileChannel PUT: 成功上传文件', async () => {
 
 		// 发送 write 请求
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', agentId: 'main', path: 'upload.txt', size: content.length }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 检查就绪信号
 		const ready = JSON.parse(dc.__sent[0]);
@@ -964,7 +1012,7 @@ test('handleFileChannel PUT: 成功上传文件', async () => {
 		// 发送完成信号
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
 
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		// 检查写入结果
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
@@ -992,11 +1040,11 @@ test('handleFileChannel PUT: 自动创建中间目录', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'a/b/c.txt', size: content.length }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		const written = await fs.readFile(nodePath.join(dir, 'a', 'b', 'c.txt'));
 		assert.equal(written.toString(), 'deep');
@@ -1016,7 +1064,7 @@ test('handleFileChannel PUT: 大小超限被拒绝', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'big.bin', size: 2_000_000_000 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -1037,7 +1085,7 @@ test('handleFileChannel PUT: size 不合法被拒绝', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'x.txt', size: -1 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -1058,12 +1106,12 @@ test('handleFileChannel PUT: size mismatch 被拒绝', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'mis.txt', size: 100 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 发送 5 字节，但声明 100
 		dc.onmessage({ data: Buffer.from('hello') });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: 5 }) });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { return JSON.parse(s).ok === false; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const errMsg = strings.find((s) => s.ok === false);
@@ -1090,10 +1138,10 @@ test('handleFileChannel PUT: 接收字节数超限 → SIZE_EXCEEDED', async () 
 
 		// 声明 10 字节，实际发送超出
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'over.txt', size: 10 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: Buffer.alloc(20, 'x') });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { return JSON.parse(s).ok === false; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const errMsg = strings.find((s) => s.ok === false);
@@ -1115,11 +1163,14 @@ test('handleFileChannel PUT: DC 取消（未收到 done）→ 清理临时文件
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'cancel.txt', size: 100 }) });
+		// 等 ws.open 完成（不仅是 ready ack），否则 chunk dispatch 与 ws 打开的竞态
+		// 会让最终的 safeUnlink 无法稳定清理掉刚被创建出来的 tmp 文件
 		await new Promise((r) => setTimeout(r, 50));
 
 		dc.onmessage({ data: Buffer.from('partial') });
 		// 不发 done，直接关闭 DC
 		dc.close();
+		// safeUnlink 是 fire-and-forget，需给磁盘清理留点时间
 		await new Promise((r) => setTimeout(r, 200));
 
 		// 确认临时文件被清理
@@ -1139,7 +1190,7 @@ test('handleFileChannel PUT: workspace 解析失败', async () => {
 	handler.handleFileChannel(dc);
 
 	dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'x', size: 5 }) });
-	await new Promise((r) => setTimeout(r, 100));
+	await dc.__waitForSent((sent) => sent.length > 0);
 
 	const msg = JSON.parse(dc.__sent[0]);
 	assert.equal(msg.ok, false);
@@ -1160,7 +1211,7 @@ test('handleFileChannel PUT: mkdir 失败', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'fail/x.txt', size: 5 }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -1184,7 +1235,7 @@ test('handleFileChannel PUT: createWriteStream 失败', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'x.txt', size: 5 }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -1210,6 +1261,7 @@ test('handleFileChannel PUT: 就绪信号发送失败时清理', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'y.txt', size: 5 }) });
+		// 第一次 send 直接抛错，没有真正进入 __sent；ws 异步打开 + safeUnlink 需要时间
 		await new Promise((r) => setTimeout(r, 100));
 
 		// 确认临时文件被清理
@@ -1244,10 +1296,10 @@ test('handleFileChannel PUT: WriteStream 错误触发 WRITE_FAILED', async () =>
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'ws-err.txt', size: 10 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: Buffer.from('1234567890') });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { return JSON.parse(s).ok === false; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const errMsg = strings.find((s) => s.ok === false);
@@ -1282,10 +1334,10 @@ test('handleFileChannel PUT: WriteStream ENOSPC 错误触发 DISK_FULL', async (
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'nospc.txt', size: 10 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: Buffer.from('1234567890') });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { return JSON.parse(s).ok === false; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const errMsg = strings.find((s) => s.ok === false);
@@ -1313,9 +1365,9 @@ test('handleFileChannel PUT: WriteStream 错误无 code 时用 message', async (
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'nocode.txt', size: 5 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 		dc.onmessage({ data: Buffer.from('hello') });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { return JSON.parse(s).ok === false; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const errMsg = strings.find((s) => s.ok === false);
@@ -1337,7 +1389,7 @@ test('handleFileChannel PUT: DC 在 ws.end 回调期间已关闭', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'race.txt', size: 5 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: Buffer.from('hello') });
 		// 模拟 DC 在发完成信号后立即关闭
@@ -1365,7 +1417,7 @@ test('handleFileChannel: 无效 JSON 请求', async () => {
 	handler.handleFileChannel(dc);
 
 	dc.onmessage({ data: 'not-json' });
-	await new Promise((r) => setTimeout(r, 50));
+	await dc.__waitForSent((sent) => sent.length > 0);
 
 	const msg = JSON.parse(dc.__sent[0]);
 	assert.equal(msg.ok, false);
@@ -1381,7 +1433,7 @@ test('handleFileChannel: 未知方法', async () => {
 	handler.handleFileChannel(dc);
 
 	dc.onmessage({ data: JSON.stringify({ method: 'PATCH' }) });
-	await new Promise((r) => setTimeout(r, 50));
+	await dc.__waitForSent((sent) => sent.length > 0);
 
 	const msg = JSON.parse(dc.__sent[0]);
 	assert.equal(msg.ok, false);
@@ -1433,7 +1485,7 @@ test('handleFileChannel: 第二条 string 消息被忽略', async () => {
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'x.txt' }) });
 		// 第二条请求应被忽略
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'x.txt' }) });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 只应有一组 read 响应
 		const headers = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s)).filter((m) => m.name === 'x.txt');
@@ -1594,7 +1646,7 @@ test('handleFileChannel PUT: done 消息中无效 JSON 被忽略', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'z.txt', size: 5 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 发 binary
 		dc.onmessage({ data: Buffer.from('hello') });
@@ -1630,11 +1682,11 @@ test('handleFileChannel PUT: rename 失败时记录警告并清理临时文件',
 
 		const content = Buffer.from('renametest');
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'ren.txt', size: content.length }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
-		await new Promise((r) => setTimeout(r, 300));
+		await waitFor(() => warns.some((w) => w.includes('rename failed')));
 
 		assert.ok(warns.some((w) => w.includes('rename failed')));
 	} finally {
@@ -1664,7 +1716,7 @@ test('handleFileChannel PUT: 结果发送失败不崩溃', async () => {
 
 		const content = Buffer.from('abc');
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'sf.txt', size: content.length }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
@@ -1716,7 +1768,7 @@ test('handleFileChannel PUT: SIZE_EXCEEDED 后 drainLoop 不崩溃', async () =>
 
 		// 声明 size=10 但发送 20 字节（分两个 chunk）
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'exceed.txt', size: 10 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 第一个 chunk 入队并触发 drainLoop（通过 setImmediate）
 		dc.onmessage({ data: Buffer.alloc(5, 'a') });
@@ -1724,7 +1776,7 @@ test('handleFileChannel PUT: SIZE_EXCEEDED 后 drainLoop 不崩溃', async () =>
 		dc.onmessage({ data: Buffer.alloc(6, 'b') });
 
 		// 等待 drainLoop 的 setImmediate 执行（ws 已被 destroy，不应崩溃）
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === false && o.error?.code; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const errMsg = strings.find((s) => s.error?.code === 'SIZE_EXCEEDED');
@@ -1756,13 +1808,13 @@ test('handleFileChannel PUT: drainLoop 中 ws.write 抛异常不崩溃', async (
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'throw.txt', size: 10 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: Buffer.alloc(5, 'x') });
 		dc.onmessage({ data: Buffer.alloc(5, 'y') });
 
-		// 等待 drainLoop 执行并处理异常
-		await new Promise((r) => setTimeout(r, 300));
+		// 等到 drainLoop 尝试两次 write（第二次抛错），证明异常路径已走过
+		await waitFor(() => writeCount >= 2);
 		// 不应崩溃 gateway
 	} finally {
 		await fs.rm(dir, { recursive: true });
@@ -2033,7 +2085,7 @@ test('handleFileChannel POST: 成功上传附件', async () => {
 			fileName: 'photo.jpg',
 			size: content.length,
 		}) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 检查就绪信号
 		const ready = JSON.parse(dc.__sent[0]);
@@ -2042,7 +2094,7 @@ test('handleFileChannel POST: 成功上传附件', async () => {
 		// 发送 binary 数据
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
-		await new Promise((r) => setTimeout(r, 300));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		// 检查写入结果
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
@@ -2075,7 +2127,7 @@ test('handleFileChannel POST: 缺少 fileName 返回错误', async () => {
 			path: '.coclaw/chat-files/main',
 			size: 100,
 		}) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -2094,7 +2146,7 @@ test('handleFileChannel POST: workspace 解析失败', async () => {
 	handler.handleFileChannel(dc);
 
 	dc.onmessage({ data: JSON.stringify({ method: 'POST', path: 'dir', fileName: 'x.txt', size: 5 }) });
-	await new Promise((r) => setTimeout(r, 100));
+	await dc.__waitForSent((sent) => sent.length > 0);
 
 	const msg = JSON.parse(dc.__sent[0]);
 	assert.equal(msg.ok, false);
@@ -2115,7 +2167,7 @@ test('handleFileChannel POST: 集合目录 mkdir 失败', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'POST', path: 'fail-dir', fileName: 'x.txt', size: 5 }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -2136,7 +2188,7 @@ test('handleFileChannel POST: size 超限被拒绝', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'POST', path: 'dir', fileName: 'big.bin', size: 2_000_000_000 }) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const msg = JSON.parse(dc.__sent[0]);
 		assert.equal(msg.ok, false);
@@ -2163,11 +2215,11 @@ test('handleFileChannel POST: topic-files 路径', async () => {
 			fileName: 'report.pdf',
 			size: content.length,
 		}) });
-		await new Promise((r) => setTimeout(r, 100));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
-		await new Promise((r) => setTimeout(r, 300));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
@@ -2191,14 +2243,14 @@ test('handleFileChannel PUT: size=0 空文件上传', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'empty.txt', size: 0 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		const ready = JSON.parse(dc.__sent[0]);
 		assert.equal(ready.ok, true);
 
 		// 不发送 binary 数据，直接发送 done
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: 0 }) });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
@@ -2221,10 +2273,10 @@ test('handleFileChannel PUT: connId 参数传递到 remoteLog', async () => {
 		handler.handleFileChannel(dc, 'c_test123');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'conn.txt', size: content.length }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
-		await new Promise((r) => setTimeout(r, 200));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
@@ -2267,13 +2319,13 @@ test('handleFileChannel PUT: 大文件触发进度日志和背压计数', async 
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'big.bin', size: totalSize }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		for (let i = 0; i < totalChunks; i++) {
 			dc.onmessage({ data: chunk });
 		}
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: totalSize }) });
-		await new Promise((r) => setTimeout(r, 500));
+		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === true && o.bytes !== undefined; } catch { return false; } }));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const result = strings.find((s) => s.ok === true && s.bytes !== undefined);
@@ -2329,12 +2381,11 @@ test('handleFileChannel GET: dc.onerror 中断流并记录诊断', async () => {
 		handler.handleFileChannel(dc, 'c_dl');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'big.bin' }) });
-		// 等 handleGet 走到设置 dc.onerror 之后
-		await new Promise((r) => setTimeout(r, 30));
-
+		// 等 handleGet 进入 streaming 阶段（start 日志落了说明 GET 专属的 dc.onerror 已替换掉通用的）
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.dl\.start/.test(e.text) && /id=dl-err/.test(e.text)));
 		assert.ok(typeof dc.onerror === 'function', 'onerror should be set by handleGet');
 		dc.onerror(new Error('io: closed pipe'));
-		await new Promise((r) => setTimeout(r, 20));
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.dl\.fail/.test(e.text) && /reason=dc-error/.test(e.text) && /id=dl-err/.test(e.text)));
 
 		const failLog = remoteLogBuffer.find((e) => /file\.dl\.fail/.test(e.text)
 			&& /reason=dc-error/.test(e.text)
@@ -2368,7 +2419,8 @@ test('handleFileChannel GET: 进度日志按 25/50/75% 触发', async () => {
 		handler.handleFileChannel(dc, 'c_prog');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'prog.bin' }) });
-		await new Promise((r) => setTimeout(r, 100));
+		// 等到 dl.ok 落（说明 4 块全发完，3 个 progress 日志也都已记录）
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.dl\.ok/.test(e.text) && /id=dl-prog/.test(e.text)));
 
 		const progLogs = remoteLogBuffer.filter((e) => /file\.dl\.progress/.test(e.text) && /id=dl-prog/.test(e.text));
 		assert.equal(progLogs.length, 3, `expected 3 progress logs, got ${progLogs.length}: ${JSON.stringify(progLogs.map((e) => e.text))}`);
@@ -2406,7 +2458,7 @@ test('handleFileChannel GET: read stream 错误记录诊断', async () => {
 		handler.handleFileChannel(dc, 'c_rd');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'r.txt' }) });
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => remoteLogBuffer.length > 0);
 
 		const failLog = remoteLogBuffer.find((e) => /file\.dl\.fail/.test(e.text)
 			&& /reason=read-error/.test(e.text)
@@ -2430,15 +2482,17 @@ test('handleFileChannel PUT: dc.onerror 中断上传并清理临时文件', asyn
 
 		// 启动一个上传
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'up.txt', size: 1024 }) });
-		await new Promise((r) => setTimeout(r, 20));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 写入一些数据
 		dc.onmessage({ data: Buffer.alloc(256, 0x44) });
+		// 给 ws 异步打开 + drainLoop 写入留点时间，避免 dc.onerror 与 ws 打开竞态
 		await new Promise((r) => setTimeout(r, 20));
 
 		// 触发 pion 异步 send 错误
 		dc.onerror(new Error('io: closed pipe'));
-		await new Promise((r) => setTimeout(r, 50));
+		// 等到 fail 日志落，证明 onerror 处理路径已完整执行
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.up\.fail/.test(e.text) && /id=up-err/.test(e.text)));
 
 		// 临时文件应已清理（不应有 .tmp.* 文件残留）
 		const entries = await fs.readdir(dir);
@@ -2486,11 +2540,11 @@ test('handleFileChannel PUT: dc.onerror → ws.destroy 触发 ws.on(error) 不�
 		handler.handleFileChannel(dc, 'c_upws');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'u.txt', size: 256 }) });
-		await new Promise((r) => setTimeout(r, 20));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		// 触发 dc.onerror，这会调用 ws.destroy()，进而触发 ws.on('error')
 		dc.onerror(new Error('io: closed pipe'));
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.up\.fail/.test(e.text) && /id=upws-err/.test(e.text)));
 
 		const failLogs = remoteLogBuffer.filter((e) => /file\.up\.fail/.test(e.text) && /id=upws-err/.test(e.text));
 		// 关键：只有 dc-error 一条 fail 日志，ws.on('error') 因 wsError=true 早 return，不再追加
@@ -2513,11 +2567,11 @@ test('handleFileChannel PUT: dc.onerror 在已关闭/已错误状态下幂等', 
 		handler.handleFileChannel(dc, 'c_idem');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'i.txt', size: 100 }) });
-		await new Promise((r) => setTimeout(r, 20));
+		await dc.__waitForSent((sent) => sent.length > 0);
 
 		dc.onerror(new Error('first'));
 		dc.onerror(new Error('second'));
-		await new Promise((r) => setTimeout(r, 30));
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.up\.fail/.test(e.text) && /reason=dc-error/.test(e.text) && /id=idem/.test(e.text)));
 
 		const failLogs = remoteLogBuffer.filter((e) => /file\.up\.fail/.test(e.text)
 			&& /reason=dc-error/.test(e.text)
@@ -2554,8 +2608,8 @@ test('handleFileChannel GET: 成功路径必须 await dc.close()（回归保护�
 
 		handler.handleFileChannel(dc, 'c_await');
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'await.txt' }) });
-		// 等足够时间：read + close 50ms 延迟 + remoteLog
-		await new Promise((r) => setTimeout(r, 200));
+		// 等到 file.dl.ok 落条目（说明 await dc.close() 已收尾）
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.dl\.ok/.test(e.text) && /id=await-close/.test(e.text)));
 
 		const okLog = remoteLogBuffer.find((e) => /file\.dl\.ok/.test(e.text) && /id=await-close/.test(e.text));
 		assert.ok(okLog, `expected file.dl.ok log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
@@ -2591,10 +2645,10 @@ test('handleFileChannel PUT: 成功路径必须 await dc.close()（回归保护�
 
 		handler.handleFileChannel(dc, 'c_await_up');
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'up-await.txt', size: content.length }) });
-		await new Promise((r) => setTimeout(r, 30));
+		await dc.__waitForSent((sent) => sent.length > 0);
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
-		await new Promise((r) => setTimeout(r, 250));
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.up\.ok/.test(e.text) && /id=await-up/.test(e.text)));
 
 		const okLog = remoteLogBuffer.find((e) => /file\.up\.ok/.test(e.text) && /id=await-up/.test(e.text));
 		assert.ok(okLog, `expected file.up.ok log, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`);
@@ -2620,7 +2674,8 @@ test('handleFileChannel GET: dc.onerror 在已关闭后幂等', async () => {
 		handler.handleFileChannel(dc, 'c_gidem');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'g.txt' }) });
-		await new Promise((r) => setTimeout(r, 50));
+		// 等到下载完成（dl.ok 日志落了）
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.dl\.ok/.test(e.text) && /id=gidem/.test(e.text)));
 
 		// 文件已传完，后续 onerror 应被忽略（dcClosed=true 后由 close 走流程）
 		dc.onerror(new Error('late'));
