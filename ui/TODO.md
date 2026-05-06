@@ -365,3 +365,47 @@
     - 触发条件极窄：切走 → 切回同 store → 期间用户主动再下拉 → 旧加载比新加载更晚醒来；本次修法前后表现一致（旧版本同样错），不是本次引入
     - 修法方向：把 store identity 比对换成 per-call token：`__loadMoreHistory` 入口 bump `__loadToken`，await 后比对 token，finally 也只在 token 匹配时清锁；可彻底覆盖"切走切回 / 同 store 多次重入"等所有路径
     - 本次只补到"切走 → 不动新视图 + 不误清新锁"层面（占绝大多数真实场景）；token 改造留待后续
+
+## vitest 测试速度优化 deep-review 发现的预存问题（2026-05-06）
+
+来源：fake-timer 改造 + jsdom→node 环境分流后的多维度 deep review。下列条目均为预存（不由本次优化引入），本次未修。
+
+53. **`src/router/index.js:140-213` 顶层访问 `localStorage`/`window` 无守卫**
+    - 现状：router 在模块顶层调用 `createWebHistory()`、读 `localStorage`、读 `window`，无 `typeof` 守卫
+    - 影响：现有 router 测试通过 mock `vue-router` 和 platform 绕开了崩溃路径；但一旦有新的 node-env 测试直接 import router 且不 mock，模块加载阶段就会崩
+    - 修法方向：在 router 内的 browser-only 初始化位置加 `typeof window !== 'undefined'` 守卫；或保持 router 测试只走 jsdom
+
+54. **`agents.store.test.js:28-37` / `agent-runs.store.test.js:72-88` mock 沉默吞 unknown RPC method**
+    - 现状：`mockConn` / `mockTwoPhaseConn` 对未在 case 中显式列举的 RPC 方法返回 `Promise.resolve(null)` / `{}`
+    - 影响：production 若新增了 unexpected RPC 调用，测试不会 fail；断言只覆盖"必须打的方法"，没覆盖"不该打的方法"
+    - 修法方向：mock 对 unknown method 主动 throw，让用例显式 opt-in 期望的调用面
+
+55. **`use-user-dialogs.test.js:23-34` 不断言 `overlay.create` 的 component 参数**
+    - 现状：测试只 capture `overlay.create` 的 component/options 但不断言传入的是哪个组件
+    - 影响：production 若把 profile/settings overlay 用错了组件，所有 open/close 断言仍会通过
+    - 修法方向：assert `overlay.create` 调用时第一个参数等于 `UserProfileDialog` / `UserSettingsDialog`，options 含 `{ destroyOnClose: false }`
+
+56. **`capacitor-app.test.js` 三个 network-debounce 用例普遍用 `.find()` 弱断言模式**
+    - 现状：所有用例用 `mock.calls.find(predicate)` toBeTruthy/toBeUndefined，未断言精确 `times` / `order` / payload 全字段
+    - 影响：production 若发出额外的 `network:online` 事件、或把 `count=N` 之外的字段乱写，测试不会 fail
+    - 修法方向：改用 `toHaveBeenCalledTimes(N)` + `toHaveBeenCalledWith({ detail: { typeChanged: ..., ... } })` 显式断言
+
+57. **vitest 缺全局 fakeTimers reset 配置**
+    - 现状：`vitest.config.js` 没设 `fakeTimers` 全局配置；用 fake timer 的用例靠各自 `try/finally` 或 `afterEach(vi.useRealTimers)` 还原
+    - 影响：极端路径（worker crash、SIGKILL）下 finally 没跑会让 fake timer 残留到下一个用例，产生迷惑性的时序失败
+    - 修法方向：在 `vitest.config.js` 加全局 fakeTimers 配置或 `clearMocks/restoreMocks: true` 等保险
+
+58. **`src/services/file-helper.js` 浏览器下载 anchor 路径未被任何 unit test 覆盖**
+    - 现状：`saveBlobToFile` 在 files.store 测试里被 mock 掉，jsdom 下的 anchor download 路径没有针对性 unit test
+    - 影响：anchor 创建逻辑回归不被 catch；目前只能靠 e2e 兜底
+    - 修法方向：单独给 `saveBlobToFile` 写一组 jsdom 环境下的 unit test，覆盖 success / cleanup 分支
+
+59. **`src/utils/dialog-history.js` 浏览器 history listener 路径未被任何 unit test 覆盖**
+    - 现状：`use-user-dialogs.test.js` 直接 mock 了整个 `dialog-history.js`，浏览器 popstate / pushState 行为没有 unit test
+    - 影响：dialog history 状态机回归不被 catch
+    - 修法方向：单独给 `dialog-history.js` 写一组 jsdom 环境下的 unit test，覆盖 push / pop / current 状态切换
+
+60. **`src/services/signaling-connection.js` lifecycle listener 注册被 node-env 测试默默跳过**
+    - 现状：source 用 `typeof window !== 'undefined'` 守卫，jsdom 下注册 `app:foreground` / `network:online` listener，node 下跳过
+    - 影响：`remote-log.test.js` 切到 node 后这两个 listener 不再被注册，但测试只断言 flush 行为不断言 listener，所以 pass。这条 listener 路径在 unit 层失去覆盖
+    - 修法方向：要么 `remote-log.test.js` 切回 jsdom；要么单独给 signaling-connection 的 lifecycle listener 注册路径写一组 jsdom 测试
