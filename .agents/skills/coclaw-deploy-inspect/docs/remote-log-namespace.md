@@ -71,4 +71,5 @@ UI / plugin 通过 `remoteLog(text)` 把关键事件汇到 server。每条形如
 - value 含空格时不加引号，直接放行尾（grep 用 `\w+=` 分隔）
 - `runKey` 是 `<chatKey>:<sessionId>` 拼成的串
 - `claw=<X>` 中 X 通常是 clawId 短码，全链路稳定
-- `c_<uuid>` 是 PeerConnection 稳定 ID，**跨 ICE restart 不变**，关联键首选
+- `c_<uuid>` 是 PeerConnection 稳定 ID。**同一 SPA 实例内跨 ICE restart / PC 重建都不变**（代码注释见 `ui/src/services/webrtc-connection.js` 注释 "connId 按 claw 复用、不按 restart 代际"），是关联键首选。会清掉它的入口位于 `signaling-connection.js`（搜 `__connIds.delete` / `__connIds.clear`）和 `claw-connection.js` 的 disconnect 路径——上次梳理时是登出 / claw 被快照剔除 / 信令 WS 主动 disconnect / 收到 server 推送的 `rtc:closed` 这四条；如果哪天发现实际行为对不上这清单，先怀疑代码新增了清理路径，核实后回头更新本条。
+	因为这些入口都不会被前后台切换 / 网络抖动触发，所以**同一只 claw 在窗口里 connId 换过 N 次，可以读作 N 次 SPA 软重启（移动端 WebView 被 OS 回收）**。详细判定见 `docs/diagnosis-playbook.md` "SPA 软重启识别"。脚本：`scripts/connid-timeline.sh`

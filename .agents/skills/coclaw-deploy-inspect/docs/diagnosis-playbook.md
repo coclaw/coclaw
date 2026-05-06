@@ -74,8 +74,51 @@ reason 详细取值见 `ui/src/stores/agent-runs.store.js` 中 `endRun`。
 │           reason=wait       → wait(0) 探测命中终态
 │           reason=timeout / superseded / cleanup / claw-removed / logout → 各自外部路径
 │
-└── 同时 grep rtc.unrecoverable 看是否 RTC 彻底失联过
+├── 同时 grep rtc.unrecoverable 看是否 RTC 彻底失联过
+│
+└── 移动端用户、且窗口里有"前后台反复切"的迹象 → 跑下面的"SPA 软重启识别"
+        → 若该 run 期间该 claw 的 connId 换过，run 在内存里直接被刷掉是
+          "零 endRun + 已思考/任务未完成"画面的最干净解释（不依赖日志被吞）
 ```
+
+---
+
+## SPA 软重启识别（移动端 WebView 被 OS 回收）
+
+**适用情境**：移动端用户报"任务未完成"或"状态错乱"，日志里能看到大量 `app.stateChange active=true/false`、`sse.error`、`claw.fullInit` 出现在持续运行不该出现的时刻。这一类现象常见的两个候选——① WebView 被回收、SPA 被刷过；② 某些诊断 remoteLog 被信令 WS 切换瞬间吞掉——光看 fullInit/snapshot 这些信号往往分不清。
+
+### 思路：拿 connId 当 SPA 刷页代际计数器
+
+connId 在持续运行的 SPA 里**对单个 claw 是稳定的**（PC 重建、信令 WS 自动重连、前后台切换都不会让它变），只有少数清理入口才会清掉它（具体路径以 `docs/remote-log-namespace.md` 的 connId 字段说明为准——情况清单可能随代码演化）。所以**同一只 claw 的 connId 变了 N 次，基本等价于 SPA 被刷过 N 次**，而且这条信号比 `claw.fullInit` 干净（fullInit 触发路径多，单看难分辨；connId 路径少）。
+
+```bash
+# 1) 把窗口拉到本地（已有本地文件可跳）
+./scripts/fetch-and-filter.sh <host> <since> '<USER_ID>|<CLAW_ID>' > tmp/diag-window.log
+
+# 2) 抽 connId 时间线
+./scripts/connid-timeline.sh tmp/diag-window.log <CLAW_ID>
+```
+
+输出形如：
+
+```
+2026-05-05T14:45:57Z  →  2026-05-05T15:18:38Z  (32m41s)  c_734c75c0
+2026-05-05T15:18:38Z  →  2026-05-05T15:20:31Z  ( 1m53s)  c_3af8e466
+2026-05-05T15:20:31Z  →  2026-05-05T15:35:26Z  (14m55s)  c_36796c0d
+2026-05-05T15:35:27Z  →  2026-05-05T16:06:36Z  (31m09s)  c_ac81b01c
+```
+
+把 run 注册时刻、用户截图时刻、问题感知时刻分别对到段上就能讲清"用户那一刻看到的 SPA 已经是第几代"。
+
+### 几条互相印证的组合
+
+- `agent.run.end` 0 命中 + connId 换过：典型"软重启吃掉状态"，运行时正常清理路径根本没机会跑；
+- `agent.run.end` 0 命中 + connId 没换过：方向不在 SPA 重启，回头看日志丢失 / plugin / server 路径；
+- 同一段内（connId 没变）出现 `claw.fullInit`：通常是 fullInit catch 回滚后的再次重试，与重启无关。
+
+### 自检 hook（写给未来的你）
+
+这条 playbook 站在两个前提上：① "connId 在持续 SPA 内稳定"；② 它的清理入口数量有限。哪天你发现某次窗口里出现"持续 SPA 但 connId 还是变了"——别强行套用本 playbook 的结论，回头读 `signaling-connection.js` 和 `webrtc-connection.js`，多半是新增了清理路径。把新发现写回 `docs/remote-log-namespace.md` 的 connId 条目。
 
 ---
 

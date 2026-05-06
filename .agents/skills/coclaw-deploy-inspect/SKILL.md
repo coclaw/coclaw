@@ -150,6 +150,20 @@ ssh <host> 'cat /tmp/srv_e.log'
 # 示例：./fetch-and-filter.sh im.coclaw.net 30m 'c_7fd224ff|143579687452'
 ```
 
+### 落到本地多次复用比反复 ssh 划算
+
+跨度比较大、或要做多维度横向对照时，可以考虑先把窗口拉一份到本地，之后所有 grep 直接对本地文件。`fetch-and-filter.sh` 在传 regex 时把过滤结果 `cat` 到 stdout，重定向即可：
+
+```bash
+./scripts/fetch-and-filter.sh im.coclaw.net 24h '<USER_ID>|<RUN_ID>|<CLAW_A>|<CLAW_B>' \
+	> tmp/diag-window.log
+
+LC_ALL=C grep -aE 'agent\.run\.|conn\.rejectPending' tmp/diag-window.log
+LC_ALL=C grep -aE 'claw\.fullInit|claw\.online'      tmp/diag-window.log
+```
+
+什么时候值得预先落地，按手感判断——大致看排查会涉及多少个独立维度、要不要反复横向对照。窗口小、单条线索追到底的简单排查，直接 stdout 看就够了。
+
 剩下的就是读日志讲故事——按现象选 playbook（见下方"参考文档"）。
 
 ## 10. 参考文档（按需加载）
@@ -166,5 +180,6 @@ ssh <host> 'cat /tmp/srv_e.log'
 `scripts/` 下沉淀的可复用流程：
 
 - `fetch-and-filter.sh` — 远端落盘 + 按 regex 过滤 + 拉回本地 stdout（封装第 9 节模板）
+- `connid-timeline.sh` — 从本地日志抽取某只 claw 的 connId 时间线，**用于检测 SPA 是否被刷过**（移动端 WebView 软重启）。详见 `docs/diagnosis-playbook.md` 的"SPA 软重启识别"小节
 
 新沉淀脚本时遵循 `scripts/fetch-and-filter.sh` 的注释风格（顶部用法 + 参数 + 戒律）。
