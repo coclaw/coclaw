@@ -1,6 +1,6 @@
 # rpc DC 文件回退发送队列（FileBackedQueue）
 
-> 状态：B-stage2 已实施。FBQ 是 rpc DC 默认生产路径；`MemoryQueue` 保留为接口对齐参考 + 紧急回退路径（详见 [rpc-dc-send-queue.md](./rpc-dc-send-queue.md) "队列实现选择"）。
+> 状态：B-stage2 已实施。**当前生产默认 `MemoryQueue`**（FBQ 未充分本地验证前的紧急回退）；FBQ 装配路径在代码 + 测试中保留，模块级常量翻一行即可激活。详见 [rpc-dc-send-queue.md](./rpc-dc-send-queue.md) "队列实现选择"。
 > 创建：2026-04-20
 > 关键里程碑：plan-1（监视器外置） → plan-2（启动期 prep） → B-stage2（单点平替 FBQ）。详见末尾"演进史"章节。
 
@@ -542,7 +542,7 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
 15. **消费循环退出** ✅（`src/webrtc/webrtc-peer.test.js`）：`fbq.destroy()` 让 `for-await` 自然结束；`sender.close()` 让正在 await `bufferedamountlow` 的 `send` 立刻返回
 16. **`onDrop` wrapper 边沿状态机** ✅（`src/webrtc/rpc-drop-monitor.test.js`）：`disk-cap-start/end` / `fs-broken` / `fs-error-summary` 在持续 drop 期间静默累加，仅边沿点上报；`fs-error` reason 透传 `err` 第三参（B-stage2 已激活）
 17. **B-stage2 关键测试** ✅：
-    - 装配点队列实现选择：默认走 fbq + queueDir 不可用降级 mem + 装配日志含 fallback 标记
+    - 装配点队列实现选择：模块常量切换（当前 mem；'fbq' 模式 + queueDir 不可用自动降级 mem + 装配日志含 fallback 标记）+ 测试通过 `rpcQueueImpl` 构造选项覆盖
     - 同 connId 重建：两个 FBQ 实例 id / filePath 物理不同（race 隔离）
     - destroy onBeforeClear 同步钩子：mutex 内拿原子残留快照（含 in-flight enqueue），与 monitor.summarize 集成
     - bypassAdmission 完整边界：命中 / 谓词抛错保守 / 非函数 coerce / fsBroken 仍 drop（不豁免物理 IO 失败）
@@ -620,7 +620,7 @@ plugins/openclaw/src/realtime-bridge.js  # bridge.start 开头加启动清理 + 
 把 webrtc-peer 装配点的 `new MemoryQueue` 替换为 `new FileBackedQueue`，配套 plan-1 监视器接口扩展（`onDrop` 第三参 `err` 激活）+ plan-2 prep 接线（`getDiskCap` deps + `queueDir` 注入）：
 
 - **FBQ 接口扩展**：加 `bypassAdmission`（与 MemoryQueue 镜像）+ `lastFsErr` sticky 缓存 + `onDrop(reason, size, err?)` 第三参 + `destroy(onBeforeClear)` 同步钩子 + `maxMessageBytes` 单条硬上限
-- **webrtc-peer 装配点**：模块级常量 `RPC_QUEUE_IMPL = 'fbq'` 单点切换 + `useFbq` 运行时降级守卫 + 装配诊断日志
+- **webrtc-peer 装配点**：模块级常量 `RPC_QUEUE_IMPL`（B-stage2 切换为 `'fbq'`，紧急回退期间临时为 `'mem'`）+ 构造选项 `rpcQueueImpl` 测试覆盖 + `useFbq` 运行时降级守卫 + 装配诊断日志
 - **同 connId race 隔离**：FBQ id 加唯一后缀 `${connId}-${ts}-<uuid8>` 物理隔离
 - **MemoryQueue 保留为可切回路径**：模块级开关一行回退 + queueDir 不可用自动降级 + dev/test 简化 + 接口对齐镜像
 

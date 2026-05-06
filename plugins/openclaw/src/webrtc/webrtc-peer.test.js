@@ -129,7 +129,7 @@ test('WebRtcPeer: constructor stores queueDir; non-string / empty coerced to nul
 	assert.equal(peer3.__queueDir, null);
 });
 
-// --- B9b: rpc DC queue impl swap (FBQ default, MemoryQueue fallback) ---
+// --- B9b: rpc DC queue impl swap (生产当前默认 MemoryQueue；测试通过 rpcQueueImpl='fbq' 显式覆盖 FBQ 路径) ---
 
 async function setupRpcDcSession({ peer, connId, dc }) {
 	await peer.handleSignaling(makeOffer(connId));
@@ -146,7 +146,8 @@ async function setupRpcDcSession({ peer, connId, dc }) {
 	throw new Error(`setupRpcDcSession timed out waiting for rpc queue (connId=${connId})`);
 }
 
-test('WebRtcPeer: rpc DC 装配默认走 FBQ 路径（带 queueDir）；id 含唯一后缀', async () => {
+test('WebRtcPeer: rpc DC 装配走 FBQ 路径（带 queueDir + rpcQueueImpl=fbq）；id 含唯一后缀', async () => {
+	// 生产默认 RPC_QUEUE_IMPL='mem'；本测试显式 override 为 'fbq' 以覆盖 FBQ 装配路径
 	resetRemoteLog();
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-fbq-'));
 	const logs = [];
@@ -157,6 +158,7 @@ test('WebRtcPeer: rpc DC 装配默认走 FBQ 路径（带 queueDir）；id 含�
 		impl: 'ndc',
 		getDiskCap: () => 100 * 1024 * 1024,
 		queueDir: tmpDir,
+		rpcQueueImpl: 'fbq',
 	});
 	await setupRpcDcSession({ peer, connId: 'c_fbq', dc: makeMockRpcDc() });
 	const session = peer.__sessions.get('c_fbq');
@@ -171,7 +173,7 @@ test('WebRtcPeer: rpc DC 装配默认走 FBQ 路径（带 queueDir）；id 含�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（race 隔离）', async () => {
+test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（race 隔离；rpcQueueImpl=fbq）', async () => {
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-race-'));
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -179,6 +181,7 @@ test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（r
 		PeerConnection: MockPCFactory(),
 		impl: 'ndc',
 		queueDir: tmpDir,
+		rpcQueueImpl: 'fbq',
 	});
 	await setupRpcDcSession({ peer, connId: 'c_dup', dc: makeMockRpcDc() });
 	const id1 = peer.__sessions.get('c_dup').rpcQueue.id;
@@ -193,7 +196,9 @@ test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（r
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: queueDir 为 null 时降级到 MemoryQueue；log 含 fallback 标记', async () => {
+test('WebRtcPeer: rpcQueueImpl=fbq + queueDir 为 null → 降级到 MemoryQueue；log 含 fallback 标记', async () => {
+	// fbq 模式 + 无 queueDir → 装配点降级。生产默认 'mem' 不会进 fallback 分支，
+	// 测试 override 为 'fbq' 覆盖该降级路径。
 	resetRemoteLog();
 	const logs = [];
 	const peer = new WebRtcPeer({
@@ -201,6 +206,7 @@ test('WebRtcPeer: queueDir 为 null 时降级到 MemoryQueue；log 含 fallback 
 		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: MockPCFactory(),
 		impl: 'ndc',
+		rpcQueueImpl: 'fbq',
 		// 不传 queueDir → 装配点强制降级
 	});
 	await setupRpcDcSession({ peer, connId: 'c_mem', dc: makeMockRpcDc() });
@@ -210,6 +216,35 @@ test('WebRtcPeer: queueDir 为 null 时降级到 MemoryQueue；log 含 fallback 
 	assert.equal(session.rpcQueue.maxMessageBytes, 50 * 1024 * 1024, 'mem fallback also enforces MAX_SINGLE_MSG_BYTES');
 	assert.ok(logs.some((l) => l.includes('impl=mem') && l.includes('fallback')), 'local log should mention fallback');
 	assert.ok(remoteLogBuffer.some((e) => e.text.includes('impl=mem fallback=queue-dir-null')), 'remoteLog should record fallback');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）→ MemoryQueue，即使带 queueDir 也不走 FBQ', async () => {
+	// 紧急回退到 'mem' 后的关键 invariant：默认装配走 MemoryQueue；
+	// queueDir 非空也不会激活 FBQ；log 不含 fallback 标记（不是降级，是配置选项）。
+	resetRemoteLog();
+	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-prod-mem-'));
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+		queueDir: tmpDir,
+		// 不传 rpcQueueImpl → 取模块默认（生产 'mem'）
+	});
+	await setupRpcDcSession({ peer, connId: 'c_prod', dc: makeMockRpcDc() });
+	const session = peer.__sessions.get('c_prod');
+	assert.ok(session.rpcQueue instanceof MemoryQueue, 'production default should be MemoryQueue');
+	assert.ok(!(session.rpcQueue instanceof FileBackedQueue), 'production default should NOT be FBQ');
+	assert.equal(session.rpcQueue.id, 'c_prod', 'mem mode uses connId directly (no unique suffix)');
+	assert.equal(session.rpcQueue.maxMessageBytes, 50 * 1024 * 1024, 'maxMessageBytes wired through');
+	assert.ok(logs.some((l) => l.includes('rpc queue impl=mem')), 'log should mention impl=mem');
+	assert.ok(!logs.some((l) => l.includes('fallback')), 'log should NOT contain fallback marker (mem is configured, not degraded)');
+	assert.ok(
+		remoteLogBuffer.some((e) => e.text.includes('rtc.queue-impl conn=c_prod impl=mem') && !e.text.includes('fallback')),
+		'remoteLog should record impl=mem without fallback suffix',
+	);
 	await peer.closeAll();
 });
 

@@ -9,11 +9,11 @@ import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
 
 // rpc DC 发送队列实现选择（B-stage2 B9b）。
-// - 'fbq'：FileBackedQueue（默认 / 生产路径）—— 长时间后台 / ICE 恢复等慢消化场景溢出到磁盘
-// - 'mem'：MemoryQueue（dev / test / 紧急回退）—— 不碰 fs，溢出即 drop
-// 当 queueDir 不可用（bridge 启动期 plan-2 prep 失败）时自动降级到 'mem'，避免阻塞 webrtc 装配。
-// 将来可升级为 env 变量 / plugin 配置项；现阶段单点常量切换。
-const RPC_QUEUE_IMPL = 'fbq';
+// - 'mem'：MemoryQueue（当前生产默认）—— 不碰 fs，溢出即 drop；FBQ 未充分本地验证前先用此模式发布
+// - 'fbq'：FileBackedQueue —— 长时间后台 / ICE 恢复等慢消化场景溢出到磁盘
+// 当 'fbq' 但 queueDir 不可用（bridge 启动期 plan-2 prep 失败）时自动降级到 'mem'，避免阻塞 webrtc 装配。
+// 单点常量；构造时可通过 `rpcQueueImpl` opt 覆盖（测试用）。生产侧改回 'fbq' 只需翻这一行。
+const RPC_QUEUE_IMPL = 'mem';
 
 // FBQ 装配兜底：bridge 启动期 measureDiskCap 失败 → __diskCap=null → 这里兜底 1GB
 const ONE_GB = 1024 * 1024 * 1024;
@@ -48,8 +48,10 @@ export class WebRtcPeer {
 	 * @param {() => (number|null)} [opts.getDiskCap] - 启动期测得的 diskCap 字节数；prep 失败返 null。
 	 *   FBQ 装配时取（兜底 1GB）；MemoryQueue 装配不消费。
 	 * @param {string} [opts.queueDir] - rpc DC 队列文件目录（FBQ 模式所需）；空 / 非字符串时降级到 MemoryQueue
+	 * @param {'fbq'|'mem'} [opts.rpcQueueImpl] - rpc 队列实现选择，默认取模块级 RPC_QUEUE_IMPL；
+	 *   测试用——生产路径走默认即可
 	 */
-	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection, impl, getDiskCap, queueDir }) {
+	constructor({ onSend, onRequest, onFileRpc, onFileChannel, logger, PeerConnection, impl, getDiskCap, queueDir, rpcQueueImpl }) {
 		if (!PeerConnection) {
 			throw new Error('PeerConnection constructor is required');
 		}
@@ -64,6 +66,8 @@ export class WebRtcPeer {
 		this.__getDiskCap = typeof getDiskCap === 'function' ? getDiskCap : null;
 		// FBQ 文件根目录；非字符串 / 空字符串 → null → 装配时自动降级到 MemoryQueue
 		this.__queueDir = typeof queueDir === 'string' && queueDir.length > 0 ? queueDir : null;
+		// 队列实现选择：测试可显式覆盖；非 'fbq'/'mem' 一律收编为模块默认，避免误用
+		this.__rpcQueueImpl = (rpcQueueImpl === 'fbq' || rpcQueueImpl === 'mem') ? rpcQueueImpl : RPC_QUEUE_IMPL;
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
 		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, rpcDropMonitor: object|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
@@ -698,14 +702,15 @@ export class WebRtcPeer {
 		// monitor 是局部变量，stale 路径下函数返回后自然 GC，不挂 session 字段（无 drop 可汇总）。
 		const monitor = createRpcDropMonitor({ connId, logger: this.logger });
 
-		// queue 实例选择（B-stage2 B9b）：默认 FBQ；queueDir 不可用时降级到 mem，避免阻塞装配。
+		// queue 实例选择（B-stage2 B9b）：默认取模块级 RPC_QUEUE_IMPL（当前 'mem'）；
+		// 'fbq' 模式下若 queueDir 不可用则降级到 mem，避免阻塞装配。
 		// 同 connId race 隔离（决策 4）：FBQ id 加唯一后缀 ${connId}-${ts}-${nonce}，
 		// 让新旧实例文件名物理不同，destroy/init 期间互不踩踏。MemoryQueue 不碰 fs，无此需求。
 		// connId 字符集（PRE-EXISTING 契约）：上游 server 分配 connId 形如 `c_<digits>`；
 		// FBQ / MemoryQueue 共用 `^[A-Za-z0-9._-]+$` 校验。若 server 将来引入特殊字符，
 		// queue 构造会抛 TypeError，由 __setupDataChannel 的 .catch 兜底 warn——非 B9b 引入。
-		const useFbq = RPC_QUEUE_IMPL === 'fbq' && !!this.__queueDir;
-		const fbqFallback = !useFbq && RPC_QUEUE_IMPL === 'fbq';
+		const useFbq = this.__rpcQueueImpl === 'fbq' && !!this.__queueDir;
+		const fbqFallback = !useFbq && this.__rpcQueueImpl === 'fbq';
 		const queue = useFbq
 			? new FileBackedQueue({
 				id: `${connId}-${Date.now()}-${randomUUID().slice(0, 8)}`,

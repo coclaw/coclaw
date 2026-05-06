@@ -1,6 +1,6 @@
 # rpc DC 发送管道（FileBackedQueue / MemoryQueue + RpcDcSender + dc-chunking）
 
-> 状态：B-stage2 已实施。**`FileBackedQueue`（FBQ）是默认生产路径**；`MemoryQueue` 保留为接口对齐参考 + dev/test/紧急回退路径。两者接口完全镜像，装配点单点切换。
+> 状态：B-stage2 已实施。**当前生产默认 `MemoryQueue`**（FBQ 未充分本地验证前的紧急回退）；`FileBackedQueue`（FBQ）保留装配路径，模块级常量翻一行即可激活。两者接口完全镜像，装配点单点切换。
 > 对应代码：`src/utils/file-backed-queue.js` / `src/utils/memory-queue.js` / `src/webrtc/rpc-dc-sender.js` / `src/webrtc/dc-chunking.js`。
 > 关联：[rpc-dc-file-queue.md](./rpc-dc-file-queue.md)（FBQ 文件回退队列设计 + B-stage2 集成决策）。
 
@@ -20,7 +20,7 @@ producer ─enqueue(jsonStr)─► Queue ─consumeLoop─► RpcDcSender ─dc.
 
 `Queue` 是抽象，运行时由 `FileBackedQueue`（默认）或 `MemoryQueue`（降级 / 紧急回退）实例化——两者接口完全镜像，装配点单点切换（见下文"队列实现选择"）。每条 rpc DC 同时持有一个 Queue、一个 RpcDcSender、一个 RpcDropMonitor；中间由后台 `consumeLoop` 串起来。四件套绑定在 session 上：
 
-- `session.rpcQueue` — Queue 实例（FBQ 默认 / MemoryQueue 降级）
+- `session.rpcQueue` — Queue 实例（当前生产 MemoryQueue；FBQ 路径保留）
 - `session.rpcDcSender` — RpcDcSender 实例
 - `session.rpcConsumeLoop` — 消费循环 Promise
 - `session.rpcDropMonitor` — RpcDropMonitor 实例（drop 边沿状态机 + close 汇总）
@@ -167,16 +167,18 @@ probe 消息（用于测量传输层 SCTP/DTLS 健康）不走 Queue + RpcDcSend
 装配点通过**模块级常量**单点切换，运行时再叠一层降级守卫：
 
 ```
-模块级常量 RPC_QUEUE_IMPL = 'fbq' (默认) | 'mem'
+模块级常量 RPC_QUEUE_IMPL = 'mem' (当前生产默认) | 'fbq'
    ↓
 运行时叠加：useFbq = (RPC_QUEUE_IMPL === 'fbq') && !!queueDir
    ↓
 实例化：new FileBackedQueue({ ... }) 或 new MemoryQueue({ ... })
 ```
 
+> 当前默认 `'mem'` 是紧急回退状态——FBQ 在生产环境未充分验证前先用 MemoryQueue 模式发布。代码 + 测试都保留 FBQ 装配路径（测试通过 `rpcQueueImpl: 'fbq'` 构造选项显式覆盖），重启 FBQ 模式只需翻这一行常量。
+
 ### 为什么是这种"开关 + 守卫"双层结构
 
-- **模块级开关（紧急回退）**：FBQ 突发故障时改一行常量 `'fbq' → 'mem'` 即可全量切回 MemoryQueue，避免要回滚 PR 的压力
+- **模块级开关（紧急回退）**：FBQ 突发故障时改一行常量 `'fbq' → 'mem'` 即可全量切回 MemoryQueue，避免要回滚 PR 的压力（已用过一次：FBQ 生产前预防性回退）
 - **运行时降级（自愈）**：bridge 启动期的"队列目录准备"（残留清理 + diskCap 测量，详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）若失败则 `queueDir` 留 null，每次新装配 session 自动降级到 MemoryQueue——**FBQ 路径永不阻塞 webrtc 装配**
 - **不进 env / 不进 plugin config**：任意可热更的开关都意味着运行时多分支，复杂度收益不匹配。模块级常量改完发新版即可，部署成本可接受
 
@@ -205,8 +207,8 @@ probe 消息（用于测量传输层 SCTP/DTLS 健康）不走 Queue + RpcDcSend
 // 四件套创建（webrtc-peer.js __setupDataChannel 内）
 const monitor = createRpcDropMonitor({ connId, logger });
 
-// queue 实例选择：FBQ 默认；queueDir 不可用时降级 mem
-const useFbq = RPC_QUEUE_IMPL === 'fbq' && !!queueDir;
+// queue 实例选择：当前默认 mem；'fbq' 模式 + queueDir 可用 → FBQ；'fbq' + queueDir null → 降级 mem
+const useFbq = this.__rpcQueueImpl === 'fbq' && !!queueDir;
 const queue = useFbq
   ? new FileBackedQueue({
       id: `${connId}-${Date.now()}-${randomUUID().slice(0,8)}`,  // 唯一后缀 → 同 connId race 物理隔离
@@ -294,7 +296,7 @@ await session.rpcConsumeLoop;
 
 ## 与 FileBackedQueue 的关系
 
-`MemoryQueue` 是 10 MB 级 DC 背压队列；`FileBackedQueue` 是 10 MB mem + 1 GB disk 的长尾文件回退队列（详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）。B-stage2 切换后 FBQ 是默认生产路径，**接管"长时间后台 / ICE 恢复"等慢消化场景的积压**；sender 行为不变。
+`MemoryQueue` 是 10 MB 级 DC 背压队列；`FileBackedQueue` 是 10 MB mem + 1 GB disk 的长尾文件回退队列（详见 [rpc-dc-file-queue.md](./rpc-dc-file-queue.md)）。B-stage2 让装配点支持单点切换；FBQ 充分验证后将接管"长时间后台 / ICE 恢复"等慢消化场景的积压（当前回退到 mem，FBQ 路径已 wired 但未默认启用）；sender 行为不变。
 
 两者接口完全镜像——同名构造选项（`memBudget` / `maxMessageBytes` / `bypassAdmission` / `onDrop` / `logger`）+ 同名实例方法（`init / enqueue / [Symbol.asyncIterator] / stats / clear / destroy`）+ `stats()` 同款 6 字段——webrtc-peer 装配点的 `consumeLoop` / 4 处 `destroy(onBeforeClear)` / `enqueue` 调用对实例类型不可知（"鸭子类型"）。这是为何"模块级常量切回 mem"是真正一行的原因。
 
