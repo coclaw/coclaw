@@ -2273,7 +2273,7 @@ describe('useChatStore', () => {
 		//
 		// "等持久化"已收拢到 agent-runs.store 的 rpc grace 窗口。无论 endReason
 		// 是 'rpc' / 'wait' / 'failed'，下游本函数行为统一：
-		//   - loadMessages 一次 → 成功则 dropRun；失败则不 dropRun（兜底由 24h timer / activate reload 接管）
+		//   - loadMessages 一次 → 成功则 dropRun；失败则不 dropRun（streamingMsgs 残留至下次 chat 重建时自愈，详见 TODO.md #2）
 		// 不再按 endReason 区分快慢路径、不再 sleep + 重试、不再 hasTerminalAssistantAfter 校验。
 		// 这避免了 fast follow-up 场景下把上一轮回答误判成本轮终态。
 		// =====================================================================
@@ -2329,7 +2329,7 @@ describe('useChatStore', () => {
 			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
 		});
 
-		test('endReason=wait + silent loadMessages 失败：不 dropRun（等 24h / activate reload 兜底）', async () => {
+		test('endReason=wait + silent loadMessages 失败：不 dropRun（streamingMsgs 残留至下次 chat 重建自愈，TODO #2）', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -2583,6 +2583,215 @@ describe('useChatStore', () => {
 			// 收尾：统一 reject 所有挂起的 chat.history（外部 reload + force load 各一条）
 			for (const r of chatHistoryRejects) r(new Error('cleanup'));
 			await externalReload;
+		});
+
+		// 翻历史 + force 路径写 messages 的并发竞争（TODO #3 第 5 轮 review 补）：
+		// 用户向上翻历史（loadOlderMessages 拉更长列表）与 run 终态 force 路径同时落地，
+		// 谁后写谁覆盖前一个的 messages。验证最终列表仍包含本 run 的回复——前提是
+		// loadOlderMessages 拉的"更长 N 条"本来就含本 run 终态消息（server 端的事）。
+		// 若未来 loadOlderMessages 的 localMsgs 过滤逻辑变化导致丢数据，本测试会 fail。
+		test('翻历史 + force 路径并发写 messages：loadOlderMessages 后落地仍保留本 run 的回复', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentReject = null;
+			let olderSessResolve = null;
+			let forceSessResolve = null;
+			let sessGetCallCount = 0;
+			const chatHistoryRejects = [];
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-older' });
+					return new Promise((_, reject) => { agentReject = reject; });
+				}
+				if (method === 'sessions.get') {
+					sessGetCallCount++;
+					// 第 1 次 = loadOlderMessages（先发起）；第 2 次 = force 路径
+					if (sessGetCallCount === 1) {
+						return new Promise((res) => { olderSessResolve = res; });
+					}
+					return new Promise((res) => { forceSessResolve = res; });
+				}
+				if (method === 'chat.history') {
+					return new Promise((_, reject) => { chatHistoryRejects.push(reject); });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			// 让 loadOlderMessages 能进入 RPC 路径（绕过 hasMoreMessages 守卫）
+			store.__loadedMsgLimit = 50;
+			store.hasMoreMessages = true;
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			// 1. 起 sendMessage 让 run register 起来
+			const sendPromise = store.sendMessage('q');
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(runsStore.runs['run-older']).toBeTruthy();
+
+			// 2. 用户向上翻历史 → loadOlderMessages 发出 sessions.get（pending）
+			const olderPromise = store.loadOlderMessages();
+			await vi.waitFor(() => { expect(olderSessResolve).not.toBeNull(); });
+
+			// 3. run 终态 → __awaitPersistAndDrop 触发 force 路径 sessions.get（pending）
+			const err = new Error('rtc lost');
+			err.code = 'DC_CLOSED';
+			agentReject(err);
+			await sendPromise;
+			await vi.waitFor(() => { expect(forceSessResolve).not.toBeNull(); });
+
+			// 4. 让 force 路径先 resolve（fresh + hook 触发 dropRun）
+			forceSessResolve({
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1000 },
+					{ role: 'assistant', content: [{ type: 'text', text: 'a' }], stopReason: 'end_turn', timestamp: 2000 },
+				],
+			});
+			await vi.waitFor(() => {
+				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-older');
+			});
+
+			// 5. loadOlderMessages 后 resolve（更长 N 条，仍含本 run 的 q/a）
+			olderSessResolve({
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'old-q' }], timestamp: 100 },
+					{ role: 'assistant', content: [{ type: 'text', text: 'old-a' }], timestamp: 200 },
+					{ role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1000 },
+					{ role: 'assistant', content: [{ type: 'text', text: 'a' }], stopReason: 'end_turn', timestamp: 2000 },
+				],
+			});
+			await olderPromise;
+
+			// 6. 最终 messages 仍含本 run 的 'a'（loadOlderMessages 后写不丢数据）
+			const hasFinalAssistant = store.messages.some(m =>
+				m.message?.role === 'assistant' && m.message?.content?.[0]?.text === 'a'
+			);
+			expect(hasFinalAssistant).toBe(true);
+
+			// 收尾：reject 挂起的 chat.history
+			for (const r of chatHistoryRejects) r(new Error('cleanup'));
+		});
+
+		// force 路径错误流（第 5 轮 review 补）：
+		// run 终态触发 force 路径，sessions.get 失败 → hook 不触发 + ok=false → dropRun 不调，
+		// run 仍存活、streamingMsgs 残留（等下次 chat 重建自愈，详见 TODO.md #2）。
+		// 与现有 'endReason=wait + silent loadMessages 失败' 测试覆盖的是非 force 路径，
+		// 本条专门覆盖 force 路径下的错误流不会误删消息。
+		test('force 路径 sessions.get 失败：不调 dropRun，run 仍存活', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentReject = null;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-fail' });
+					return new Promise((_, reject) => { agentReject = reject; });
+				}
+				if (method === 'sessions.get') {
+					return Promise.reject(new Error('network down'));
+				}
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			const sendPromise = store.sendMessage('q');
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(runsStore.runs['run-fail']).toBeTruthy();
+
+			const err = new Error('rtc lost');
+			err.code = 'DC_CLOSED';
+			agentReject(err);
+			await sendPromise;
+
+			// 等 force 路径的 sessions.get 已发出（且已失败 settle）
+			await vi.waitFor(() => {
+				expect(conn.request.mock.calls.some(c => c[0] === 'sessions.get')).toBe(true);
+			});
+			// 给 then/catch 链跑完
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// sessions.get 失败 → 既无 hook 触发也无 ok=true 兜底 → dropRun 不被调
+			expect(dropSpy).not.toHaveBeenCalled();
+			// run 仍存活（streamingMsgs 残留，TODO #2 已记录的预存缺陷）
+			expect(runsStore.getActiveRun(store.runKey)).not.toBeNull();
+		});
+
+		// topic 模式 force 路径仍能 dropRun（第 5 轮 review 补）：
+		// topic 模式 run 终态：__awaitPersistAndDrop force 路径走 __loadTopicMessages，
+		// topic 没有 chat.history 也不走 onMessagesPersisted hook，但应通过 ok=true 兜底
+		// 调 dropRun 释放 streamingMsgs。验证 topic 与 chat 模式行为对齐。
+		test('topic 模式 force 路径仍能 dropRun：__loadTopicMessages 成功后走 ok=true 兜底', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentReject = null;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-topic' });
+					return new Promise((_, reject) => { agentReject = reject; });
+				}
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({
+						messages: [
+							{ role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1000 },
+							{ role: 'assistant', content: [{ type: 'text', text: 'a' }], stopReason: 'end_turn', timestamp: 2000 },
+						],
+					});
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = createChatStore('topic:t-bubble', { clawId: '1', agentId: 'main' });
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			const sendPromise = store.sendMessage('q');
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(runsStore.runs['run-topic']).toBeTruthy();
+
+			const err = new Error('rtc lost');
+			err.code = 'DC_CLOSED';
+			agentReject(err);
+			await sendPromise;
+
+			// topic 模式无 hook，但走 ok=true 兜底路径仍调 dropRun
+			await vi.waitFor(() => {
+				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-topic');
+			});
+			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
+
+			// 走 topic 路径：用 coclaw.sessions.getById，不走 sessions.get / chat.history
+			const topicLoadCalls = conn.request.mock.calls.filter(c => c[0] === 'coclaw.sessions.getById');
+			expect(topicLoadCalls.length).toBeGreaterThanOrEqual(1);
+			const chatModeCalls = conn.request.mock.calls.filter(
+				c => c[0] === 'sessions.get' || c[0] === 'chat.history'
+			);
+			expect(chatModeCalls.length).toBe(0);
 		});
 	});
 

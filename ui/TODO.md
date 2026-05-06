@@ -23,6 +23,7 @@
    - 现状：第三轮加的 `force: true` 让 `__awaitPersistAndDrop` 绕过飞行守卫起独立 `doLoad`。两个 force load（fast-follow 双 run 终态）或一个 force load + 一个非 force silent reload 同时在飞时，sessions.get 返回顺序乱序的话，靠后的 `this.messages = ...` 写动作会覆盖更新的快照，短暂复现 stale-A vanish。
    - 触发条件：要求两个 sessions.get 阶段的 RPC 乱序到秒级以上（同条信令通道、同时段、回程顺序倒置）——实际几乎不可能。最坏后果是临时 vanish，下次任意 `loadMessages` 自愈。
    - 修复方向：给 force load 加 `__forceSeq` 序号，写 `this.messages` 前检查"自己是不是最新"——被 superseded 的不写 messages 但仍 fire 自身 hook（保 dropRun 不漏）。第三轮没加是因为权衡后认为"加了引入的状态机比解决的问题更复杂"。如果未来线上观察到该症状再加。
+   - **第五轮 review 补**：`loadOlderMessages`（向上翻历史）也是同类竞争者，写 `this.messages = [...wrapped, ...localMsgs]` 与 force 路径写不互斥。触发条件比 #3 主项还窄（用户必须正在翻历史 + run 终态恰好同时落地），且实际后果比 stale-A vanish 更轻（`loadOlderMessages` 拉的是更长的最新 N 条，本来就含本 run 终态消息）。如果未来 #3 主项实施 `__forceSeq` 防覆盖，应把 `loadOlderMessages` 写 `this.messages` 也纳入同套保护。
 
 ## ProgressRing 后续优化
 
