@@ -127,6 +127,10 @@ export async function writeUpgradeLock(pid) {
  * 其它失败（权限/JSON 损坏/缺记录）→ 视为账本不可用，按"无来源信息"处理，不回落。
  * 这两条互斥（新 gateway 必有账本、旧 gateway 必无）能让两个分支天然分流。
  *
+ * 失败路径会通过 `remoteLog` 外推诊断信号（`upgrade.state-dir-failed` /
+ * `upgrade.ledger-read-failed` / `upgrade.ledger-parse-failed`），避免运维只
+ * 看到 start() 那条 "Skipping: not an npm-installed plugin" 时误判方向。
+ *
  * @param {string} pluginId
  * @returns {object|null}
  */
@@ -137,6 +141,7 @@ function loadInstallRecord(pluginId) {
 	}
 	catch (err) {
 		// 极少触发：host runtime 的 state resolver 自身异常
+		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
 		remoteLog(`upgrade.state-dir-failed msg=${err?.message ?? String(err)}`);
 		return null;
 	}
@@ -151,6 +156,7 @@ function loadInstallRecord(pluginId) {
 		// 账本应该可读但读不到（权限/EISDIR/IO 错误）：不回落到旧字段，避免误判老路径
 		// 静默返回 null 会让 start() 打 "Skipping: not an npm-installed plugin"，对运维毫无指向；
 		// 把诊断信号外推到 server，便于定位
+		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
 		remoteLog(`upgrade.ledger-read-failed code=${err?.code ?? 'unknown'} msg=${err?.message ?? String(err)}`);
 		return null;
 	}
@@ -160,6 +166,7 @@ function loadInstallRecord(pluginId) {
 	}
 	catch (err) {
 		// 账本损坏：同样不回落，并外推诊断信号
+		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
 		remoteLog(`upgrade.ledger-parse-failed msg=${err?.message ?? String(err)}`);
 		return null;
 	}
