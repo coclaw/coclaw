@@ -5,7 +5,7 @@ import nodePath from 'node:path';
 import { checkForUpdate } from './updater-check.js';
 import { spawnUpgradeWorker } from './updater-spawn.js';
 import { readState, resolveStateDir, writeState } from './state.js';
-import { getRuntime } from '../runtime.js';
+import { getClawConfig } from '../claw-config.js';
 import { remoteLog } from '../remote-log.js';
 import { atomicWriteFile } from '../utils/atomic-write.js';
 
@@ -179,10 +179,8 @@ function loadInstallRecord(pluginId) {
  * @returns {object|null}
  */
 function loadInstallRecordFromLegacyConfig(pluginId) {
-	const rt = getRuntime();
-	if (!rt?.config?.loadConfig) return null;
 	try {
-		const config = rt.config.loadConfig();
+		const config = getClawConfig();
 		return config?.plugins?.installs?.[pluginId] ?? null;
 	}
 	catch {

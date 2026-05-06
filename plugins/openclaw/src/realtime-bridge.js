@@ -1,6 +1,7 @@
 import nodePath from 'node:path';
 import { WebSocket as WsWebSocket } from 'ws';
 
+import { getClawConfig } from './claw-config.js';
 import { pluginDir } from './claw-paths.js';
 import { clearConfig, getBindingsPath, readConfig } from './config.js';
 import { cleanupResiduals as defaultCleanupResiduals, measureDiskCap as defaultMeasureDiskCap } from './rpc-queue-startup.js';
@@ -95,11 +96,7 @@ export function defaultResolveGatewayAuthToken() {
 		return envToken;
 	}
 	try {
-		const rt = getRuntime();
-		if (!rt?.config?.loadConfig) {
-			return '';
-		}
-		const cfg = rt.config.loadConfig();
+		const cfg = getClawConfig();
 		const token = cfg?.gateway?.auth?.token;
 		return typeof token === 'string' && token.trim() ? token.trim() : '';
 	}

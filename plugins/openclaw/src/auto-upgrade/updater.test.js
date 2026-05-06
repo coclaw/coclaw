@@ -122,7 +122,7 @@ test('shouldSkipAutoUpgrade - loadConfig 抛异常时返回 true（跳过）', (
 	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
 });
 
-test('shouldSkipAutoUpgrade - config.loadConfig 不存在时返回 true（跳过）', () => {
+test('shouldSkipAutoUpgrade - config.current 与 config.loadConfig 都不存在时返回 true（跳过）', () => {
 	resetEnv();
 	setRuntime({ config: {} });
 	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
@@ -183,7 +183,7 @@ test('getPluginInstallPath - loadConfig 抛异常时返回 null', () => {
 	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
 });
 
-test('getPluginInstallPath - config.loadConfig 不存在时返回 null', () => {
+test('getPluginInstallPath - config.current 与 config.loadConfig 都不存在时返回 null', () => {
 	resetEnv();
 	setRuntime({ config: {} });
 	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);

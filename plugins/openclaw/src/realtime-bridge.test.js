@@ -4927,7 +4927,7 @@ test('defaultResolveGatewayAuthToken: env OPENCLAW_GATEWAY_TOKEN 优先', () => 
 	}
 });
 
-test('defaultResolveGatewayAuthToken: env 空 + runtime 缺 config.loadConfig 返回空', () => {
+test('defaultResolveGatewayAuthToken: env 空 + runtime 缺 config.current 与 config.loadConfig 返回空', () => {
 	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
 	delete process.env.OPENCLAW_GATEWAY_TOKEN;
 	setRuntime({ state: { resolveStateDir: () => '/tmp' } });
