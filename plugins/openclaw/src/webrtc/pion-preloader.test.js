@@ -192,12 +192,9 @@ test('preloadPion: ipc 已启动后意外异常时关闭 Go 进程', async () =>
 		async stop() { stopCalled = true; }
 	}
 	const logs = [];
-	let callCount = 0;
 	const throwingLog = (text) => {
 		logs.push(text);
-		callCount++;
-		// 第 N 次调用抛异常（模拟 'pion.loaded' log 失败）
-		// 前几次是 'pion.preload'、'pion.ipc ...' 等，最后一次是 'pion.loaded'
+		// 'pion.loaded' 是 ipc.start() 成功后的最后一条日志，让它抛错模拟成功后路径异常
 		if (text === 'pion.loaded') {
 			throw new Error('log broke');
 		}
