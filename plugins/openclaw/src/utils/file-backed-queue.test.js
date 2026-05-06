@@ -467,21 +467,53 @@ test('bypass admission: over-cap message is consumable end-to-end (no buried-in-
 	await q.destroy();
 });
 
-test('bypass admission does NOT exempt physical IO failure (fsBroken still drops as fs-error)', async () => {
+test('bypass admission does NOT exempt physical IO failure (mkdir path)', async () => {
+	// 红线 3 真实意图：bypass 不豁免实际写入失败那一刻——而非 fsBroken 之后所有 mem-满 都叫 fs-error。
+	// 这里用 ENOTDIR 真触发 mkdir 失败：'bb' 走 spill 真试图开流，开流失败 → drop('fs-error')。
+	const base = await makeTmpDir();
+	const blocker = nodePath.join(base, 'blocker');
+	await fs.writeFile(blocker, 'not-a-dir');
+	const dir = nodePath.join(blocker, 'sub'); // mkdir(sub) on file 'blocker' 会 ENOTDIR
+	const drops = [];
+	const q = new FileBackedQueue({
+		dir, id: 'bypass-mkfail',
+		memBudget: 1, // 小到一条就满，强迫第二条走 spill
+		bypassAdmission: () => true,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+		logger: silentLogger(),
+	});
+	await q.init();
+	assert.equal(await q.enqueue('aa'), true); // mem 首条
+	// 第二条会让 cost 超 memBudget → 走 spill → mkdir 失败 → drop fs-error，bypass 不救
+	assert.equal(await q.enqueue('bb'), false);
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'fs-error');
+	assert.ok(drops[0].err instanceof Error);
+	assert.equal(q.stats().fsBroken, true);
+});
+
+test('bypass admission overshoots memBudget under fsBroken (degraded mem-only mode mirrors MemoryQueue)', async () => {
+	// 红线 3 边界：fsBroken 粘性后 spill 不可用，mem 桶就是事实容量层。
+	// 此时 bypass 命中的消息应允许 overshoot 入队（与 MemoryQueue 同义），
+	// 而不是因 mem-满 fall through 到 fsBroken 短路被报 fs-error 丢掉。
 	const dir = await makeTmpDir();
 	const drops = [];
 	const q = await makeQ({
-		dir, id: 'bypass-fserr',
+		dir, id: 'fsb-bypass-overshoot',
 		memBudget: 2, diskCap: 1024,
 		bypassAdmission: () => true,
 		onDrop: (reason, size) => drops.push({ reason, size }),
 	});
-	// 人为模拟磁盘已坏（与 line 545 同款）：bypass 命中的 spill 消息仍走 fs-error 路径
-	q.fsBroken = true;
-	assert.equal(await q.enqueue('aa'), true); // mem 首条仍可入队（safety valve）
-	// 第二条触发 spill；fsBroken 已粘性 → drop('fs-error')，bypass 不豁免
-	assert.equal(await q.enqueue('bb'), false);
-	assert.deepEqual(drops, [{ reason: 'fs-error', size: 2 }]);
+	q.fsBroken = true; // 人为粘性，模拟降级模式
+	assert.equal(await q.enqueue('aa'), true); // mem 首条 safety valve
+	// 第二条会让 cost 超 memBudget；fsBroken=true → 当前实现 fall through 到短路 drop fs-error
+	// 修复后：bypass 命中应 overshoot 入队，不丢、不调 onDrop
+	assert.equal(await q.enqueue('bb'), true, 'bypass should overshoot mem budget under fsBroken');
+	assert.deepEqual(drops, [], 'bypass-overshoot should not invoke onDrop');
+	// 两条都应能消费出来
+	const iter = q[Symbol.asyncIterator]();
+	assert.equal((await iter.next()).value, 'aa');
+	assert.equal((await iter.next()).value, 'bb');
 	await q.destroy();
 });
 

@@ -71,7 +71,7 @@ class FileBackedQueue {
     memBudget,         // 内存持有字节数上限（默认 8 MB；webrtc-peer 装配时显式传 10 MB）
     diskCap,           // mem + disk 总字节数硬上限（默认 1 GB）
     maxMessageBytes,   // 单条硬上限（默认 Infinity；webrtc-peer 装配时显式传 50 MB）
-    bypassAdmission,   // 谓词，命中则容量层 admission 豁免（不豁免 oversize / 物理 IO 失败）
+    bypassAdmission,   // 谓词，命中则容量层 admission 豁免（含 fsBroken 降级模式 mem 桶；不豁免 oversize / 实际写入失败）
     onDrop,            // (reason, size, err?) => void —— 'fs-error' 透传底层 err
     logger,
   })
@@ -121,9 +121,15 @@ class FileBackedQueue {
 
 ### 3. bypassAdmission 仅豁免容量层 admission
 
-白名单只豁免 `memBytes + writtenBytes + size > diskCap` 这条容量短路；**不豁免**单条上限（oversize）、**不豁免**物理 IO 失败（fsBroken）。
+白名单豁免容量层约束：
+- 健康路径：`memBytes + writtenBytes + size > diskCap`（hard cap）
+- fsBroken 降级模式：mem 桶满（spill 不可用时 mem 桶就是事实容量层，与 MemoryQueue 镜像；只针对 bypass 命中消息 overshoot，非 bypass 仍走 fs-error 短路）
 
-理由：单条上限对应接收端重组上限（DC 帧硬限），白名单消息超 50 MB 也无法被对端重组——豁免毫无意义；物理 IO 失败是硬故障，强行入队会让 backlog 假装存在但永远发不出去。
+**不豁免**：
+- 单条上限（oversize）
+- 实际写入 IO 失败那一刻（mkdir 失败 / writeStream emit error / write callback err）
+
+理由：单条上限对应接收端重组上限（DC 帧硬限），白名单消息超 50 MB 也无法被对端重组——豁免毫无意义；实际写入失败是硬故障当下，强行入队会让 backlog 假装存在但永远发不出去。但 fsBroken 粘性后 spill 已永久不可用，再让 mem 桶满也算"物理 IO 失败"会让降级 FBQ 与 MemoryQueue 行为不等价、破坏"白名单消息保关键路径"的承诺。
 
 ### 4. agent run 类响应识别条件硬编码
 
@@ -545,7 +551,7 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
     - 装配点队列实现选择：模块常量切换（当前 mem；'fbq' 模式 + queueDir 不可用自动降级 mem + 装配日志含 fallback 标记）+ 测试通过 `rpcQueueImpl` 构造选项覆盖
     - 同 connId 重建：两个 FBQ 实例 id / filePath 物理不同（race 隔离）
     - destroy onBeforeClear 同步钩子：mutex 内拿原子残留快照（含 in-flight enqueue），与 monitor.summarize 集成
-    - bypassAdmission 完整边界：命中 / 谓词抛错保守 / 非函数 coerce / fsBroken 仍 drop（不豁免物理 IO 失败）
+    - bypassAdmission 完整边界：命中 / 谓词抛错保守 / 非函数 coerce / 实际 IO 写入失败（mkdir 路径）仍 drop / fsBroken 降级模式下 overshoot mem 桶（与 MemoryQueue 镜像）
     - fs-error errno 透传：mkdir / writeStream error / write cb / refill stat 各路径都把底层 err 传到 onDrop 第三参；lastFsErr sticky（first wins）；clear / destroy 重置
 
 ### E2E 回归点

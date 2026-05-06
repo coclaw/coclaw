@@ -165,7 +165,12 @@ class FileBackedQueue {
 			if (!this.spilled) {
 				const pendingCount = this.memQueue.length - this.head;
 				const cost = this.memBytes + pendingCount * ENTRY_OVERHEAD + size + ENTRY_OVERHEAD;
-				if (pendingCount === 0 || cost <= this.memBudget) {
+				const memFits = pendingCount === 0 || cost <= this.memBudget;
+				// fsBroken 降级模式：spill 不可用 → mem 桶就是事实上的容量层。
+				// 此时 bypass 命中允许 overshoot（与 MemoryQueue 镜像），保白名单消息不被误报 fs-error。
+				// 健康路径下 mem 满仍走 spill（不在此处豁免），避免 mem 无界增长违背 spill 设计目标。
+				const bypassOvershoot = !memFits && this.fsBroken && this.__isBypass(jsonStr);
+				if (memFits || bypassOvershoot) {
 					this.memQueue.push(jsonStr);
 					this.memBytes += size;
 					this.__wakeOne();
