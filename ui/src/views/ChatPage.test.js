@@ -1807,6 +1807,59 @@ describe('ChatPage scroll', () => {
 			// scrollToBottom 会被这个残留 true 拦下来。
 			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
 		});
+
+		test('__creatingTopic 期间 watcher 早退 → 仍要清 __loadingHistory（避免锁卡 true）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			expect(storeA).toBeTruthy();
+
+			// 模拟旧 chat 一次历史加载在飞行
+			wrapper.vm.$data.__loadingHistory = true;
+			// 模拟新建 topic 流程进行中（__handleNewTopicSend 期间）
+			wrapper.vm.$data.__creatingTopic = true;
+
+			// 触发 chatStore watcher 模拟 promote 后 router.replace 引发的 store 切换。
+			// 注意 `this` 必须用 wrapper.vm.$.proxy（Vue 3 内部 publicInstance 代理），
+			// 不能用 wrapper.vm（test-utils 包装层的代理把 __ 前缀 data 读为 undefined：
+			// runtime-core 在 ctx 上对 reserved prefix 不 defineProperty，test-utils 的
+			// vm proxy 又只走 ctx 通道）——否则 watcher 内 this.__creatingTopic 永远是
+			// undefined，早退分支根本走不到。
+			const storeB = { activate: vi.fn() };
+			const watcher = wrapper.vm.$options.watch.chatStore;
+			watcher.handler.call(wrapper.vm.$.proxy, storeB, storeA);
+
+			// 即便 watcher 因 __creatingTopic 早退跳过 store.activate()，
+			// __loadingHistory 也应被清掉，否则旧 await 醒来 finally 因 store 不等
+			// 也不清锁，锁永远卡 true，新页面再下拉永远进不去。
+			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
+			expect(storeB.activate).not.toHaveBeenCalled();
+
+			wrapper.vm.$data.__creatingTopic = false;
+		});
+
+		test('chatStore 切换时清 __pullStartY/__pullDist（mid-touch 切 chat 不让旧手势误触发加载）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			expect(storeA).toBeTruthy();
+
+			// 模拟用户在 chat A 上 mid-touch：起点已记录、已 pull 过阈值，但还没释放
+			wrapper.vm.__pullStartY = 100;
+			wrapper.vm.__pullDist = 200;
+
+			// 触发 chatStore watcher 模拟程序化切到 chat B（实例不重建）
+			const storeB = { activate: vi.fn() };
+			const watcher = wrapper.vm.$options.watch.chatStore;
+			watcher.handler.call(wrapper.vm, storeB, storeA);
+
+			// 切走后旧手势状态应被清掉，否则若用户随后在新 chat 上释放手指，
+			// __onPullEnd 会用旧 dist=200 触发新 chat 的 __loadMoreHistory
+			expect(wrapper.vm.__pullStartY).toBeNull();
+			expect(wrapper.vm.__pullDist).toBe(0);
+		});
 	});
 
 	// --- 触屏下拉加载历史 ---

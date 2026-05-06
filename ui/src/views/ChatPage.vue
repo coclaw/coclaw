@@ -483,16 +483,23 @@ export default {
 		chatStore: {
 			immediate: true,
 			handler(store, prevStore) {
+				// chat 真切了就要清掉与上一个 chat 关联的 transient 状态——必须在
+				// __creatingTopic 早退之前，因为：
+				// 1. __loadMoreHistory 的 finally 已改为身份比对，不再兜底清锁；
+				//    若 watcher 也跳过清锁（__creatingTopic 早退路径），旧 await 醒来
+				//    finally 因 store 不等也不清，锁就永远卡 true。
+				// 2. mid-touch 切换时旧手势的 startY/Dist 留在实例上，松手时 __onPullEnd
+				//    会用旧 dist 在新 chat 上误触发 __loadMoreHistory。
+				if (store !== prevStore) {
+					this.__loadingHistory = false;
+					this.__pullStartY = null;
+					this.__pullDist = 0;
+				}
 				if (this.__creatingTopic) return;
 				if (store && store !== prevStore) {
 					this.showNoMoreHint = false;
 					this.userScrolledUp = false;
 					this.__scrollReady = false;
-					// 切到新 chat 那一刻，旧 chat 残留的历史加载锁逻辑上跟当前页面已无关；
-					// 不清零会拦下新 chat __onConnReady 之后的 scrollToBottom（首次加载后
-					// 不自动到底）。旧 await 醒来时 __loadMoreHistory 内部的 store 比对会
-					// 早退、不会再动 DOM。
-					this.__loadingHistory = false;
 					store.activate();
 					// connReady 可能已经为 true 但 watcher 不会触发（值未变）
 					// 显式调用确保消息加载和 scrollToBottom 正确执行
