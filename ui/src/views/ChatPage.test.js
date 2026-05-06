@@ -1817,6 +1817,9 @@ describe('ChatPage scroll', () => {
 
 			// 模拟旧 chat 一次历史加载在飞行
 			wrapper.vm.$data.__loadingHistory = true;
+			// 模拟同时手指还按着 mid-touch（已过阈值但未释放），前置清块应一并清掉
+			wrapper.vm.__pullStartY = 100;
+			wrapper.vm.__pullDist = 200;
 			// 模拟新建 topic 流程进行中（__handleNewTopicSend 期间）
 			wrapper.vm.$data.__creatingTopic = true;
 
@@ -1834,6 +1837,9 @@ describe('ChatPage scroll', () => {
 			// __loadingHistory 也应被清掉，否则旧 await 醒来 finally 因 store 不等
 			// 也不清锁，锁永远卡 true，新页面再下拉永远进不去。
 			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
+			// 前置清块承诺三变量都清——__creatingTopic 早退路径下 pull 状态也不能漏
+			expect(wrapper.vm.__pullStartY).toBeNull();
+			expect(wrapper.vm.__pullDist).toBe(0);
 			expect(storeB.activate).not.toHaveBeenCalled();
 
 			wrapper.vm.$data.__creatingTopic = false;
