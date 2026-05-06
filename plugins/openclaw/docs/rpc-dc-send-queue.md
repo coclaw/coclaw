@@ -18,7 +18,7 @@ producer ─enqueue(jsonStr)─► Queue ─consumeLoop─► RpcDcSender ─dc.
                                                           (drop 状态机 + close 汇总)
 ```
 
-`Queue` 是抽象，运行时由 `FileBackedQueue`（默认）或 `MemoryQueue`（降级 / 紧急回退）实例化——两者接口完全镜像，装配点单点切换（见下文"队列实现选择"）。每条 rpc DC 同时持有一个 Queue、一个 RpcDcSender、一个 RpcDropMonitor；中间由后台 `consumeLoop` 串起来。四件套绑定在 session 上：
+`Queue` 是抽象，运行时由 `MemoryQueue`（当前生产默认）或 `FileBackedQueue`（保留路径，待充分验证后切回为默认）实例化——两者接口完全镜像，装配点单点切换（见下文"队列实现选择"）。每条 rpc DC 同时持有一个 Queue、一个 RpcDcSender、一个 RpcDropMonitor；中间由后台 `consumeLoop` 串起来。四件套绑定在 session 上：
 
 - `session.rpcQueue` — Queue 实例（当前生产 MemoryQueue；FBQ 路径保留）
 - `session.rpcDcSender` — RpcDcSender 实例
@@ -325,7 +325,7 @@ await session.rpcConsumeLoop;
 - **plugin 进程重启**：FBQ 文件由 bridge 启动期 `cleanupResiduals` 统一扫掉（白名单 `*.jsonl`，含同 connId race 唯一后缀残留）。**不做跨进程持久化**——对端 PC 已失效，陈旧消息送到新对端无意义
 - **DC 物理死亡 + 队列内消息未发完**：close 汇总 remoteLog 后丢弃；UI 端依赖主 RPC reject 信号兜底感知
 - **bridge 启动期 queueDir 准备失败**：fbq 路径自动降级到 MemoryQueue，单 session 装配日志带 `fallback=queue-dir-null` 标记；plugin 在"残废模式"运行（rpc 路径 mem-only，10 MB 软上限），运维通过装配日志感知
-- **白名单消息让 queueBytes 持续增长**：白名单豁免容量层但仍受单条 50 MB 硬上限约束（红线 3：bypass 仅豁免容量层 admission——含 fsBroken 降级模式 mem 桶；不豁免单条上限 / 实际写入失败那一刻）；FBQ 健康路径下 1 GB diskCap 是真正硬上限，fsBroken 降级后 mem 桶事实上接管容量层但白名单可 overshoot（与 MemoryQueue 镜像）
+- **白名单消息让 queueBytes 持续增长**：白名单豁免容量层但仍受单条 50 MB 硬上限约束（红线 3：bypass 仅豁免容量层 admission——含 fsBroken 降级模式 mem 桶；不豁免单条上限 / 实际写入失败那一刻）；FBQ 健康路径下 1 GB diskCap 对**非 bypass 流量**是真正硬上限（bypass 命中可 overshoot），fsBroken 降级后 mem 桶事实上接管容量层但白名单可 overshoot（与 MemoryQueue 镜像）
 
 ## 死代码备注
 

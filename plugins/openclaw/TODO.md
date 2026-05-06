@@ -828,3 +828,21 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **风险**：在极慢 CI（高并发、低 IO）下，这些固定毫秒数可能不足，引入 flake；时长又都很短（10–50ms），实际影响概率低。
 
 **修复方向**：逐条评估能否引入 mock hook（如 hook ws.destroy / hook safeUnlink / hook dc.close）让它们也变事件驱动；做不到的保留固定 sleep 但给出明确的"等的是什么"注释。
+
+## 2026-05-07 FBQ bypass-overshoot round 2 deep-review 抓出的预存问题
+
+### webrtc-peer.test 的 flushAsync 依赖固定圈数 setImmediate（PRE-EXISTING）
+
+**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.test.js:19` 的 `flushAsync` helper
+
+**问题**：当前实现是固定圈数 `setImmediate`，consumeLoop 或 setup 内部任何位置多一个 `await` 都可能让相关测试假通过或假失败。
+
+**修复方向**：改成轮询具体可观测条件（如 `until queue.memBytes === 0` / `until session.rpcDcSender.flushed === true`）或等待事件 Promise，而非固定 tick 数。
+
+### 部分 peer/session 测试缺 `t.after()` 清理（PRE-EXISTING）
+
+**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.test.js` 多处构造 `peer` / 注入 `setupRpcDcSession` 但只在主路径调 `peer.closeAll()`；异常分支里 `closeAll` 可能被跳过。
+
+**问题**：测试间可能泄漏 unref 定时器或 sender flush 回调；目前没有触发明显的 cross-test 干扰，但符合"测试本身可靠性"的隐患。
+
+**修复方向**：每个创建 peer 的 test 用 `t.after(async () => { await peer.closeAll(); })` 统一兜底，无论主路径分支如何均能关闭。

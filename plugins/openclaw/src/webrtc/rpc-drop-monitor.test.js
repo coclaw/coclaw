@@ -355,6 +355,33 @@ test('summarize(): 仅 fsBroken → emit', () => {
 	assert.match(closes[0].text, /lastReason=fs-error/);
 });
 
+test('summarize(residual.fsBroken=true): onDrop 从未触发 fs-error 也应 emit close 含 fsBroken=true（FBQ bypass-overshoot 场景兜底）', () => {
+	// FBQ 真坏的几条路径（writeStream emit error 异步 / refill stat err / 全程仅 bypass 命中走 mem-overshoot）
+	// 可让 queue.fsBroken=true 但 monitor 永不收 onDrop('fs-error')。close 时透 residualStats.fsBroken
+	// 让运维侧仍能在 close 日志看到队列降级了。
+	const { monitor } = makeMonitor({ connId: 'connSilentFsBroken' });
+	// 注意：此 monitor 全程未触发 fs-error onDrop，内部 fsBroken 标量保持 false
+	assert.equal(monitor.getStats().fsBroken, false);
+	monitor.summarize({ memCount: 0, memBytes: 0, diskBytes: 0, writtenBytes: 0, fsBroken: true });
+	const closes = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
+	assert.equal(closes.length, 1);
+	assert.match(closes[0].text, /fsBroken=true/);
+	assert.match(closes[0].text, /conn=connSilentFsBroken/);
+});
+
+test('summarize: residual.fsBroken=true + onDrop 已触发 fs-error → 仅 emit 一次 close 含 fsBroken=true（双源同源不重复）', () => {
+	// 现实场景：onDrop('fs-error') 已让 monitor 内部 fsBroken=true；queue.stats() 也会回 fsBroken=true。
+	// summarize 同时拿到两个来源（都为 true），应只发一次 close，且 fsBroken 字段为 true（不重复 emit）。
+	const { monitor } = makeMonitor({ connId: 'connBothFsBroken' });
+	monitor.onDrop('fs-error', 256, { code: 'ENOSPC', message: 'disk full' });
+	assert.equal(monitor.getStats().fsBroken, true);
+	monitor.summarize({ memCount: 0, memBytes: 0, diskBytes: 0, writtenBytes: 0, fsBroken: true });
+	const closes = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
+	assert.equal(closes.length, 1, 'close 仅发一次');
+	assert.match(closes[0].text, /fsBroken=true/);
+	assert.match(closes[0].text, /conn=connBothFsBroken/);
+});
+
 // --- 防御性包装 ---
 
 test('logger.warn 抛: onDrop 不传染（queue-full 边沿）+ 验证 warn 真的被调', () => {

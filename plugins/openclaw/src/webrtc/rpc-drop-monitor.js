@@ -40,7 +40,7 @@ import { remoteLog } from '../remote-log.js';
  * @returns {{
  *   onDrop: (reason: string, size: number, err?: { code?: string, message?: string }) => void,
  *   maybeEmitOverflowEnd: (stats: { memCount: number, writtenBytes: number }) => void,
- *   summarize: (residualStats?: { memCount?: number, memBytes?: number, diskBytes?: number, writtenBytes?: number }) => void,
+ *   summarize: (residualStats?: { memCount?: number, memBytes?: number, diskBytes?: number, writtenBytes?: number, fsBroken?: boolean }) => void,
  *   getStats: () => { dropCount: number, dropBytes: number, overflowActive: boolean, fsBroken: boolean, lastReason: string|null },
  * }}
  */
@@ -127,14 +127,18 @@ export function createRpcDropMonitor({ connId, logger }) {
 		const residualBytes = residualStats?.memBytes ?? 0;
 		const residualDiskBytes = residualStats?.diskBytes ?? 0;
 		const residualWrittenBytes = residualStats?.writtenBytes ?? 0;
-		const hasAnomaly = overflowActive || fsBroken || dropCount > 0
+		// 队列实际 fsBroken 状态：FBQ 经异步路径（writeStream emit error / refill stat err / bypass overshoot 全程仅 mem）可让 fsBroken=true 而 monitor 从未收到 onDrop('fs-error')。
+		// 这里用 residualStats.fsBroken 兜住，让 close 日志反映队列真实降级状态，避免运维侧只能从内部 fsBroken 标量看到"没坏"的假象。
+		const residualFsBroken = residualStats?.fsBroken === true;
+		const effectiveFsBroken = fsBroken || residualFsBroken;
+		const hasAnomaly = overflowActive || effectiveFsBroken || dropCount > 0
 			|| residualChunks > 0 || residualDiskBytes > 0 || residualWrittenBytes > 0;
 		if (hasAnomaly) {
 			safeRemoteLog(
 				`rpc-queue.close conn=${connId} dropped=${dropCount} droppedBytes=${dropBytes}`
 				+ ` residualChunks=${residualChunks} residualBytes=${residualBytes}`
 				+ ` residualDiskBytes=${residualDiskBytes} residualWrittenBytes=${residualWrittenBytes}`
-				+ ` fsBroken=${fsBroken} lastReason=${lastReason ?? 'none'}`,
+				+ ` fsBroken=${effectiveFsBroken} lastReason=${lastReason ?? 'none'}`,
 			);
 		}
 		overflowActive = false;

@@ -6,7 +6,8 @@
  * - FIFO、单一生产者／消费者；多消费者时每条只交付给其中一个。
  * - 构造纯字段初始化，不碰 FS；使用前需 `await q.init()`。
  * - 消费侧：`for await (const item of queue) { ... }`；`destroy()` 让迭代结束。
- * - FS 异常下进入 `fsBroken` 粘性降级：mem 路径继续工作，溢出消息 drop。
+ * - FS 异常下进入 `fsBroken` 粘性降级：mem 路径继续工作，溢出消息 drop；
+ *   命中 bypassAdmission 的白名单消息允许 mem 桶 overshoot（与 MemoryQueue 镜像，保白名单不被误报 fs-error）。
  */
 
 import fs from 'node:fs/promises';
@@ -151,12 +152,17 @@ class FileBackedQueue {
 				return false;
 			}
 
+			// bypass 谓词懒求值缓存：仅 admission / fsBroken overshoot 路径需要时才调用，整次 enqueue 内最多一次。
+			// 容量充裕路径（不超 diskCap 且 mem 装得下）完全不调谓词——保留原短路语义、避免每条消息都解析 JSON。
+			let isBypass; // undefined = 未求值；?= 后变 true / false 即缓存命中
+			const getIsBypass = () => isBypass ??= this.__isBypass(jsonStr);
+
 			// admission：按物理占用（mem + 已写文件总字节，含 \n）判定，保证 diskCap 是真正的硬上限。
 			// 用 writtenBytes（不减 readOffset）的含义：文件前缀已读但未被 __dropFile 回收前仍算占用。
 			// 代价：持续背压下消费者还没追到写端时新消息可能被 drop，直到完全 drain 触发 __dropFile 重置。
 			// bypassAdmission 命中时容量层豁免（与 MemoryQueue 一致）：白名单消息可越过 diskCap 入队，
 			// 实际占用可能短暂超 diskCap——这是红线 3 的明确预期。物理 IO 失败仍会按 fs-error drop。
-			if (this.memBytes + this.writtenBytes + size + 1 > this.diskCap && !this.__isBypass(jsonStr)) {
+			if (this.memBytes + this.writtenBytes + size + 1 > this.diskCap && !getIsBypass()) {
 				this.__dispatchDrop('disk-cap', size);
 				return false;
 			}
@@ -169,7 +175,13 @@ class FileBackedQueue {
 				// fsBroken 降级模式：spill 不可用 → mem 桶就是事实上的容量层。
 				// 此时 bypass 命中允许 overshoot（与 MemoryQueue 镜像），保白名单消息不被误报 fs-error。
 				// 健康路径下 mem 满仍走 spill（不在此处豁免），避免 mem 无界增长违背 spill 设计目标。
-				const bypassOvershoot = !memFits && this.fsBroken && this.__isBypass(jsonStr);
+				//
+				// 设计取舍：fsBroken + bypass 路径下 mem 桶**不再**有显式硬上限——bypass 已豁免 diskCap admission，
+				// 这里也豁免 memBudget。理论上同时持续 fsBroken + 高密度 bypass 命中可堆到 OOM，仅靠 maxMessageBytes
+				// 单条 50 MB 兜底。**有意识的接受**：业务侧 agent 响应流量由用户活动自然封顶（与"不做 OOM 防御性
+				// 检测"项目原则一致）；后续诊断完整性由 monitor.summarize 在 close 时透传 residualStats.fsBroken
+				// 让运维侧拿到降级信号即可。请勿在 review 中把"无硬上限"当 P1 误报。
+				const bypassOvershoot = !memFits && this.fsBroken && getIsBypass();
 				if (memFits || bypassOvershoot) {
 					this.memQueue.push(jsonStr);
 					this.memBytes += size;

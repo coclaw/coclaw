@@ -1,0 +1,10 @@
+---
+'@coclaw/openclaw-coclaw': patch
+---
+
+Tighten the FBQ bypass-overshoot fix after multi-round deep-review:
+
+- `RpcDropMonitor.summarize()` now reads `residualStats.fsBroken` and surfaces `fsBroken=true` in the `rpc-queue.close` log even when no `onDrop('fs-error')` was ever delivered. Without this, the bypass-overshoot path (and other async fs-error paths) could silently flip the queue into degraded mode while the close-log claimed `fsBroken=false`, hiding the degradation from operators.
+- `FileBackedQueue.enqueue()` now memoizes the `bypassAdmission` predicate lazily — the predicate is invoked at most once per `enqueue()`, only when the admission or the fsBroken-overshoot branch actually needs the verdict. The uncongested fast path (under-`diskCap` and mem fits) now skips the predicate entirely, restoring the short-circuit semantics that the previous round-2 fix had inadvertently dropped by eagerly evaluating the predicate on every enqueue. Behavior on contended paths is unchanged; the cached result keeps the admission and overshoot branches consistent even when the predicate is non-idempotent.
+- New regression tests pin: predicate is lazy on the uncongested path; predicate invokes exactly once on the admission-hit and overshoot-hit paths; monitor close emits `fsBroken=true` when only `residualStats.fsBroken` carries the signal; monitor close emits exactly once when both the internal `fs-error` onDrop and `residualStats.fsBroken` agree; `isAgentRunResponse` rejects JSON arrays / non-`res` types with `runId` / `null` input. The `destroy(onBeforeClear)` synchronous-contract tests for both queues are rewritten to use a thenable awaited-flag instead of a 200ms wall-clock race.
+- Docs (`rpc-dc-file-queue.md` / `rpc-dc-send-queue.md`) are synced with the corrected red-line-3 boundary: bypass exempts the capacity layer including the fsBroken degraded mem tier, but never the per-message size cap nor the actual write-IO failure. The current production default (`MemoryQueue`) and the FBQ "reserved path until fully validated" framing are restated to match the post-rollback state.

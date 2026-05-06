@@ -167,9 +167,10 @@ FBQ id 加唯一后缀 `${connId}-${ts}-<uuid8>`，物理文件名隔离。**不
 ### 入队
 
 ```
-admission：若 memBytes + writtenBytes + len(jsonStr) + 1 > diskCap
+admission：若 memBytes + writtenBytes + len(jsonStr) + 1 > diskCap 且 !bypass
   → 拒绝，onDrop('disk-cap', size)，返回 false
-  （writtenBytes 是本次生命周期累计已写字节，在完全 drain 或 FS 降级时重置为 0）
+  （writtenBytes 是本次生命周期累计已写字节，在完全 drain 或 FS 降级时重置为 0
+   bypass 命中跳过容量层判定，继续往下走；但仍受单条 maxMessageBytes 与实际写入失败约束）
 
 if (!spilled) {
   if (pendingCount === 0 或 mem 容量够容纳本条)
@@ -177,6 +178,10 @@ if (!spilled) {
 }
 
 若上一步没进 mem：
+  // mem 桶满但 fsBroken 已粘性 + 本条是 bypass 命中：允许 overshoot 入队（与 MemoryQueue 镜像；
+  // spill 不可用时 mem 桶事实上接管容量层，白名单消息不应被误报 fs-error）。本条不调 onDrop。
+  if (fsBroken && bypass)
+    → 入内存队列（overshoot 越过 memBudget），返回 true
   if (fsBroken)
     → 拒绝，onDrop('fs-error', size)，返回 false   // 粘性降级，不再尝试 reopen
   if (!spilled)
@@ -197,7 +202,7 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 
 ### 不变量
 
-- `memBytes + writtenBytes + (size + 1) ≤ diskCap`（含待入条目的 `\n`；以物理占用为准）
+- `memBytes + writtenBytes + (size + 1) ≤ diskCap`（含待入条目的 `\n`；以物理占用为准；**仅适用于非 bypass 流量**，bypass 命中消息可越过 diskCap 入队，详见红线 3）
 - `writtenBytes` 只在完全 drain（`__dropFile`）或 FS 降级（`__handleFsError`）时重置为 0
 - `diskBytes === writtenBytes - readOffset`（暴露给消费者的 backlog 指标，派生值）
 - `spilled === true ⟺ 文件存在且有未消费字节`
@@ -215,7 +220,7 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 - **写侧 `write` 回调 err**：enqueue 的 catch 块直接调用（覆盖 monkey-patch / cb 不 emit error 的路径）；
 - **读侧 `stat` / 读流错误**（外部删文件、权限丢失等）：refill 的 catch 块调用，避免 `spilled=true / fsBroken=false` 的悬空态让消费者永久挂 waiter。
 
-- 此后溢出路径的 enqueue 全部 `drop('fs-error')`，不再尝试 reopen；
+- 此后溢出路径的 enqueue 全部 `drop('fs-error')`，不再尝试 reopen；**例外**：bypass 命中消息走 mem-overshoot 入队（红线 3，与 MemoryQueue 降级镜像），不调 `onDrop`；
 - 内存路径仍然可用，已在 mem 的消息继续交付；
 - 上层应在感知降级后 destroy + 重建队列（或调 `clear()` 手动恢复尝试）；
 - 粘性设计的理由：瞬时 FS 错误在 Node 环境下常指向系统性问题（fd 耗尽、磁盘满、权限变化），静默重试风暴只会掩盖根因。
@@ -298,11 +303,11 @@ diskCap = min(1 GB, max(64 MB, free × 50%))
 
 ### 磁盘真打满的兜底
 
-**集成层不在运行期做任何 statfs / 剩余空间检查**。完全依赖 FBQ 自身已有的 `__handleFsError`（`file-backed-queue.js:377`）：写入失败（包括 ENOSPC）触发后
+**集成层不在运行期做任何 statfs / 剩余空间检查**。完全依赖 FBQ 自身已有的 `__handleFsError`（`file-backed-queue.js`）：写入失败（包括 ENOSPC）触发后
 
 1. 立刻关闭写流
 2. `fs.rm` 删除当前队列文件 → **磁盘空间瞬间释放**
-3. 进 `fsBroken` 粘性降级；后续溢出 enqueue 全部 drop
+3. 进 `fsBroken` 粘性降级；后续非 bypass 溢出 enqueue 全部 drop（bypass 命中消息走 mem-overshoot，红线 3）
 
 为什么不加预防式检查：
 
@@ -314,7 +319,7 @@ diskCap = min(1 GB, max(64 MB, free × 50%))
 
 ### onDrop 风暴防护
 
-FBQ 的两类 drop 都可能持续高频：`disk-cap`（盘到顶后每条新消息都 drop 一次）、`fs-error`（进 `fsBroken` 后每次溢出都 drop）。如果 `onDrop` 直接 `remoteLog`，长时间后台 + 大量推送的场景下能把 remoteLog 通道刷爆。
+FBQ 的两类 drop 都可能持续高频：`disk-cap`（盘到顶后每条新消息都 drop 一次）、`fs-error`（进 `fsBroken` 后每条非 bypass 溢出都 drop；bypass 命中消息走 mem-overshoot 不进此路径）。如果 `onDrop` 直接 `remoteLog`，长时间后台 + 大量推送的场景下能把 remoteLog 通道刷爆。
 
 **对齐 `RpcSendQueue` 现有风格**——空→满 / 满→空 状态翻转点打一次，期间静默累加。**实现位置：集成层包一层 `onDrop` wrapper，FBQ 模块本身保持业务无关**。每条 DC 一个 wrapper 实例，状态独立。
 
@@ -537,7 +542,7 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
 7. **clear 语义**：清空后实例仍可继续 enqueue；文件删除；`fsBroken` 复位
 8. **id 校验**：`..`、`/`、`\`、`\0`、空格等非法字符在构造期抛 `TypeError`
 9. **init 幂等**：重复 `init()` 无副作用；`init` 前调用 `enqueue` 抛 `queue not initialized`
-10. **FS 错误降级（关键回归）**：异步 `writeStream.on('error')` 后，即使"未成功落盘任何字节"场景下，consumer 也不会卡死；后续溢出 enqueue drop `fs-error`；`fsBroken=true`
+10. **FS 错误降级（关键回归）**：异步 `writeStream.on('error')` 后，即使"未成功落盘任何字节"场景下，consumer 也不会卡死；后续非 bypass 溢出 enqueue drop `fs-error`；bypass 命中消息走 mem-overshoot 入队（红线 3）；`fsBroken=true`
 11. **head 指针压缩**：大量 mem enqueue+消费后 `memQueue.length` 收敛，不线性增长
 
 ### 集成层

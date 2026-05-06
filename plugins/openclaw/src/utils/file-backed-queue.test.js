@@ -467,9 +467,63 @@ test('bypass admission: over-cap message is consumable end-to-end (no buried-in-
 	await q.destroy();
 });
 
-test('bypass admission does NOT exempt physical IO failure (mkdir path)', async () => {
-	// 红线 3 真实意图：bypass 不豁免实际写入失败那一刻——而非 fsBroken 之后所有 mem-满 都叫 fs-error。
-	// 这里用 ENOTDIR 真触发 mkdir 失败：'bb' 走 spill 真试图开流，开流失败 → drop('fs-error')。
+test('bypass admission: predicate is lazy — uncongested path does not invoke the predicate', async () => {
+	const dir = await makeTmpDir();
+	let calls = 0;
+	const q = await makeQ({
+		dir, id: 'bypass-lazy-uncongested',
+		memBudget: 100, diskCap: 1000, // 容量充裕：admission 不超 + fsBroken=false → 两条求值路径都被左短路
+		bypassAdmission: () => { calls += 1; return true; },
+	});
+	// 多条入队即使触发 spill（每条带 64B overhead），admission 与 overshoot 谓词位置都被左短路 → 不应求值
+	for (let i = 0; i < 5; i++) {
+		assert.equal(await q.enqueue(`m${i}`), true);
+	}
+	assert.equal(calls, 0, '容量充裕路径下谓词不应被求值');
+	await q.destroy();
+});
+
+test('bypass admission: predicate cached per enqueue — admission hit invokes once', async () => {
+	const dir = await makeTmpDir();
+	let calls = 0;
+	// 复用 diskCap 触顶基线（memBudget=2 / diskCap=5）：'aa' mem + 'bb' spill 后第三条触顶
+	const q = await makeQ({
+		dir, id: 'bypass-lazy-admission',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: () => { calls += 1; return true; },
+	});
+	assert.equal(await q.enqueue('aa'), true);
+	assert.equal(await q.enqueue('bb'), true);
+	assert.equal(calls, 0, '前两条容量充裕，谓词不应被调');
+	// 第三条：admission 命中（diskCap 超）+ bypass → 谓词调一次
+	assert.equal(await q.enqueue('c'), true);
+	assert.equal(calls, 1, 'admission 命中路径下谓词应仅调用一次');
+	await q.destroy();
+});
+
+test('bypass admission: predicate cached per enqueue — overshoot hit invokes once', async () => {
+	const dir = await makeTmpDir();
+	let calls = 0;
+	// diskCap 充裕（admission 不会触顶）+ 人工 fsBroken + 小 memBudget → 第二条进 overshoot 路径
+	const q = await makeQ({
+		dir, id: 'bypass-lazy-overshoot',
+		memBudget: 1, diskCap: 1000,
+		bypassAdmission: () => { calls += 1; return true; },
+	});
+	q.fsBroken = true;
+	assert.equal(await q.enqueue('a'), true); // 首条 pendingCount=0 → memFits 短路
+	assert.equal(calls, 0);
+	// 第二条：mem 满（memBudget=1）+ fsBroken 粘性 → bypassOvershoot 命中 → 谓词调一次
+	assert.equal(await q.enqueue('b'), true);
+	assert.equal(calls, 1, 'overshoot 命中路径下谓词应仅调用一次');
+	await q.destroy();
+});
+
+test('bypass admission does NOT exempt physical IO failure (mkdir path); subsequent bypass overshoots mem (real-fsBroken end-to-end)', async () => {
+	// 双重 invariant 端到端测试：
+	//  1) 实际 IO 写入失败那一刻 bypass 不豁免（红线 3 真实意图）
+	//  2) 写入失败让 __handleFsError 真粘性置 fsBroken 后，再来的 bypass 命中消息走 mem-overshoot 入队
+	//     → 覆盖"真实 IO 失败 → 真 fsBroken → bypass overshoot"端到端，避免人工注入 fsBroken=true 的差异
 	const base = await makeTmpDir();
 	const blocker = nodePath.join(base, 'blocker');
 	await fs.writeFile(blocker, 'not-a-dir');
@@ -484,12 +538,20 @@ test('bypass admission does NOT exempt physical IO failure (mkdir path)', async 
 	});
 	await q.init();
 	assert.equal(await q.enqueue('aa'), true); // mem 首条
-	// 第二条会让 cost 超 memBudget → 走 spill → mkdir 失败 → drop fs-error，bypass 不救
+	// 第二条让 cost 超 memBudget → 走 spill → mkdir 失败 → drop fs-error；bypass 不救
 	assert.equal(await q.enqueue('bb'), false);
 	assert.equal(drops.length, 1);
 	assert.equal(drops[0].reason, 'fs-error');
 	assert.ok(drops[0].err instanceof Error);
 	assert.equal(q.stats().fsBroken, true);
+	// fsBroken 真粘性后（__handleFsError 走完，spilled=false / writtenBytes=0 / lastFsErr 已粘）：
+	// 再来一条 bypass 命中消息——mem 仍满（pendingCount=1）→ memFits=false → bypassOvershoot=true → 入队
+	assert.equal(await q.enqueue('cc'), true, 'real-fsBroken 后 bypass 应 overshoot mem');
+	assert.equal(drops.length, 1, 'overshoot 不应调 onDrop');
+	// 端到端：两条 mem 内消息都能被消费出来
+	const iter = q[Symbol.asyncIterator]();
+	assert.equal((await iter.next()).value, 'aa');
+	assert.equal((await iter.next()).value, 'cc');
 });
 
 test('bypass admission overshoots memBudget under fsBroken (degraded mem-only mode mirrors MemoryQueue)', async () => {
@@ -687,20 +749,19 @@ test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成（sil
 
 test('destroy(onBeforeClear): 同步钩子契约——destroy 不 await 异步 callback（防 try/catch 改成 await catch 破坏 destroy 契约）', async () => {
 	// 红线 5：onBeforeClear 是同步钩子；返回 Promise 时 rejection 不被捕获是 silent gotcha。
-	// pin 方法：传一个永不 resolve 的 callback——如果将来有人把 try { onBeforeClear() } 改成 try { await onBeforeClear() }，destroy 会挂死，本测试通过 200ms 超时把它抓出来。
+	// pin 方法：返回 thenable，但 destroy 不 await 时 then 永不被调；若将来有人把 try { onBeforeClear() }
+	// 改成 try { await onBeforeClear() }，await 会触发 thenable.then() → awaited=true → 测试红。
+	// 无 timing 依赖、无残留 Promise。
 	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-async-noawait' });
 	let cbInvoked = false;
+	let awaited = false;
 	const cb = () => {
 		cbInvoked = true;
-		return new Promise(() => { /* 故意永不 resolve */ });
+		return { then(resolve) { awaited = true; resolve(); } };
 	};
-	const destroyP = q.destroy(cb);
-	const winner = await Promise.race([
-		destroyP.then(() => 'destroy-resolved'),
-		new Promise((r) => setTimeout(() => r('timeout'), 200)),
-	]);
-	assert.equal(winner, 'destroy-resolved', 'destroy 必须同步调用 onBeforeClear，不能 await 它');
+	await q.destroy(cb);
 	assert.equal(cbInvoked, true, 'callback 应被调用');
+	assert.equal(awaited, false, 'destroy 必须同步调用 onBeforeClear，不能 await thenable');
 	assert.equal(q.destroyed, true);
 });
 

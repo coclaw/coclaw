@@ -461,20 +461,18 @@ test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成', asy
 
 test('destroy(onBeforeClear): 同步钩子契约——destroy 不 await 异步 callback（防 try/catch 改成 await catch 破坏 destroy 契约）', async () => {
 	// onBeforeClear 是同步钩子；返回 Promise 时 rejection 不被捕获是 silent gotcha（与 FBQ 镜像）。
-	// pin 方法：传一个永不 resolve 的 callback——若将来有人把同步调用改成 await，destroy 会挂死。
+	// pin 方法：返回 thenable；destroy 不 await 时 then 永不被调；若改成 await，await 会触发 thenable.then()。
+	// 无 timing 依赖、无残留 Promise。
 	const { q } = await makeQ();
 	let cbInvoked = false;
+	let awaited = false;
 	const cb = () => {
 		cbInvoked = true;
-		return new Promise(() => { /* 故意永不 resolve */ });
+		return { then(resolve) { awaited = true; resolve(); } };
 	};
-	const destroyP = q.destroy(cb);
-	const winner = await Promise.race([
-		destroyP.then(() => 'destroy-resolved'),
-		new Promise((r) => setTimeout(() => r('timeout'), 200)),
-	]);
-	assert.equal(winner, 'destroy-resolved', 'destroy 必须同步调用 onBeforeClear，不能 await 它');
+	await q.destroy(cb);
 	assert.equal(cbInvoked, true, 'callback 应被调用');
+	assert.equal(awaited, false, 'destroy 必须同步调用 onBeforeClear，不能 await thenable');
 	assert.equal(q.destroyed, true);
 });
 

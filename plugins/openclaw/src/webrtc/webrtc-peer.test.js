@@ -264,6 +264,34 @@ test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem �
 	await peer.closeAll();
 });
 
+test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 agent 响应不命中（mem 默认路径）', async () => {
+	// 引用相等 pin 的互补测：直接调装配后的谓词，验证装配产物语义正确。
+	// 即便将来有人把 bypassAdmission: isAgentRunResponse 改成等价 lambda 包装让上面引用相等测红，
+	// 本测试仍能从语义上确保 agent 响应被识别、非 agent 响应不被识别。
+	// 用谓词直调而非端到端 admission：避免 consumeLoop 边消费边入队让 mem 永不达 budget 的 race。
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+	});
+	await setupRpcDcSession({ peer, connId: 'c_bypass_behave_mem', dc: makeMockRpcDc() });
+	const queue = peer.__sessions.get('c_bypass_behave_mem').rpcQueue;
+	const agentRes = JSON.stringify({ type: 'res', payload: { runId: 'r-xyz' } });
+	const nonAgentRes = JSON.stringify({ type: 'res', payload: { ok: true } });
+	assert.equal(queue.bypassAdmission(agentRes), true, 'agent run res 应被识别为白名单');
+	assert.equal(queue.bypassAdmission(nonAgentRes), false, '无 runId 的 res 不应被识别');
+	assert.equal(queue.bypassAdmission('not-a-json'), false, '非 JSON 输入应保守 false');
+	// 边界：JSON 解析得到数组而非对象（顶层 type 字段访问 undefined 应保守 false，不抛错）
+	assert.equal(queue.bypassAdmission(JSON.stringify(['res', { runId: 'r' }])), false, '解析为数组应保守 false');
+	// 边界：有 runId 但 type 不是 'res'（lifecycle event 等带 runId 的帧不应被识别为响应）
+	const eventWithRunId = JSON.stringify({ type: 'event', payload: { runId: 'r-xyz' } });
+	assert.equal(queue.bypassAdmission(eventWithRunId), false, 'type 非 res 不应命中（红线 4：谓词只识 res 帧）');
+	// 边界：null 输入（JSON.parse(null) 实际把 null 强转字符串 "null" 解析为 JS null → null?.type 为 undefined → false）
+	assert.equal(queue.bypassAdmission(null), false, 'null 输入应保守 false');
+	await peer.closeAll();
+});
+
 test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（fbq 路径）', async () => {
 	// 同上，但覆盖 FBQ 装配分支——FBQ 切回生产默认时本测试保证 bypass 仍连着
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-bypass-pin-fbq-'));
