@@ -119,6 +119,28 @@ function createBridge(overrides = {}) {
 }
 
 /**
+ * 轮询等待条件成立。用于替代固定 setTimeout sleep——只等到下一步 assert
+ * 真正所需的状态出现，避免无谓的等待时间。
+ * @param {() => (boolean|Promise<boolean>)} pred - 条件函数；返回真即结束等待
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=1000] - 总超时；超时抛错让用例快速失败
+ * @param {number} [opts.intervalMs=1] - 轮询间隔
+ * @param {string} [opts.label] - 超时报错信息中的标签，便于排查
+ */
+async function waitFor(pred, opts = {}) {
+	const timeoutMs = opts.timeoutMs ?? 1000;
+	const intervalMs = opts.intervalMs ?? 1;
+	const start = Date.now();
+	for (;;) {
+		if (await pred()) return;
+		if (Date.now() - start > timeoutMs) {
+			throw new Error(`waitFor timeout after ${timeoutMs}ms${opts.label ? ` (${opts.label})` : ''}`);
+		}
+		await new Promise((r) => setTimeout(r, intervalMs));
+	}
+}
+
+/**
  * 消化 gateway connect 成功后并发的后台流量：
  * - __ensureAllAgentSessions 发出的 agents.list + sessions.resolve
  * - __pushInstanceInfo → __collectAgentModels 发出的 agents.list（不影响主流程）
@@ -602,15 +624,16 @@ test('RealtimeBridge ensureAgentSession should NOT reset on resolve timeout', as
 
 		await drainEnsureAllAgentSessions(gateway);
 
-		// 手动调用并让 resolve 超时（ref 一个 timer 保持事件循环活跃）
-		const keepAlive = setTimeout(() => {}, 5000);
+		// 直接桩掉 __gatewayRpc，让 resolve 立即返回 timeout——避免等真 2s 定时器。
+		// 端到端的 __gatewayRpc 超时路径在 __gatewayAgentRpc 用例里另有覆盖。
+		const sentBefore = gateway.sent.length;
+		bridge.__gatewayRpc = async () => ({ ok: false, error: 'timeout' });
 		const result = await bridge.ensureAgentSession('timeout-agent');
-		clearTimeout(keepAlive);
 		assert.equal(result.ok, false);
 		assert.equal(result.error, 'timeout');
 
-		// 不应发送 sessions.reset
-		const resetReqRaw = gateway.sent.find((s) => String(s).includes('sessions.reset') && String(s).includes('timeout-agent'));
+		// 不应发送 sessions.reset（比对 stub 后新增的发送）
+		const resetReqRaw = gateway.sent.slice(sentBefore).find((s) => String(s).includes('sessions.reset') && String(s).includes('timeout-agent'));
 		assert.equal(resetReqRaw, undefined, 'should NOT send sessions.reset on timeout');
 	}
 	finally {
@@ -2719,7 +2742,7 @@ test('RealtimeBridge should lazily create WebRtcPeer on first rtc: message', asy
 				payload: { sdp: 'mock-offer-sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 
 		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created');
 	} finally {
@@ -2738,7 +2761,7 @@ test('RealtimeBridge should forward rtc:answer via __forwardToServer', async () 
 				payload: { sdp: 'offer-sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => server.sent.some((s) => String(s).includes('rtc:answer')), { label: 'rtc:answer forwarded' });
 
 		// WebRtcPeer 的 onSend 会调用 __forwardToServer → server.send
 		const answerMsg = server.sent.find((s) => String(s).includes('rtc:answer'));
@@ -2762,7 +2785,7 @@ test('RealtimeBridge should not create new WebRtcPeer on subsequent rtc: message
 				payload: { sdp: 'sdp1' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => server.sent.some((s) => String(s).includes('"toConnId":"c_dup1"')), { label: 'first answer sent' });
 		const firstPeer = bridge.webrtcPeer;
 
 		server.emit('message', {
@@ -2772,7 +2795,7 @@ test('RealtimeBridge should not create new WebRtcPeer on subsequent rtc: message
 				payload: { sdp: 'sdp2' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => server.sent.some((s) => String(s).includes('"toConnId":"c_dup2"')), { label: 'second answer sent' });
 
 		assert.equal(bridge.webrtcPeer, firstPeer, 'should reuse same WebRtcPeer instance');
 	} finally {
@@ -2792,7 +2815,7 @@ test('RealtimeBridge should dispatch rtc:ice to WebRtcPeer', async () => {
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => server.sent.some((s) => String(s).includes('"toConnId":"c_ice1"')), { label: 'answer for c_ice1' });
 
 		// 发 ICE
 		server.emit('message', {
@@ -2802,9 +2825,9 @@ test('RealtimeBridge should dispatch rtc:ice to WebRtcPeer', async () => {
 				payload: { candidate: 'cand1', sdpMid: '0', sdpMLineIndex: 0 },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		// ICE 不抛即通过；让 handleSignaling 的微任务跑完
+		for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
 
-		// 不抛异常即通过
 		assert.ok(bridge.webrtcPeer);
 	} finally {
 		await bridge.stop();
@@ -2823,17 +2846,18 @@ test('RealtimeBridge should dispatch rtc:ready and rtc:closed to WebRtcPeer', as
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => server.sent.some((s) => String(s).includes('"toConnId":"c_lc1"')), { label: 'answer for c_lc1' });
 
 		server.emit('message', {
 			data: JSON.stringify({ type: 'rtc:ready', fromConnId: 'c_lc1' }),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => logs.some((l) => String(l).includes('rtc:ready')), { label: 'rtc:ready logged' });
 
 		server.emit('message', {
 			data: JSON.stringify({ type: 'rtc:closed', fromConnId: 'c_lc1' }),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		// rtc:closed 走 closeByConnId → 等 session 从 __sessions 移除
+		await waitFor(() => !bridge.webrtcPeer?.__sessions?.has?.('c_lc1'), { label: 'session removed on closed' });
 
 		assert.ok(logs.some((l) => String(l).includes('rtc:ready')));
 	} finally {
@@ -2853,9 +2877,8 @@ test('RealtimeBridge should handle rtc: signaling error gracefully', async () =>
 				payload: {},
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => logs.some((l) => String(l).includes('signaling error')), { label: 'signaling error logged' });
 
-		// 应该被 catch 住，不崩溃，日志中有 signaling error
 		assert.ok(logs.some((l) => String(l).includes('signaling error')));
 	} finally {
 		await bridge.stop();
@@ -2873,12 +2896,11 @@ test('RealtimeBridge should cleanup webrtcPeer on serverWs close', async () => {
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
-		assert.notEqual(bridge.webrtcPeer, null);
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 
 		// 模拟 serverWs close
 		server.emit('close', { code: 1000, reason: 'normal' });
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer === null, { label: 'webrtcPeer cleaned' });
 
 		assert.equal(bridge.webrtcPeer, null, 'webrtcPeer should be cleaned up on ws close');
 	} finally {
@@ -2898,15 +2920,14 @@ test('RealtimeBridge rtc: messages should not interfere with rpc.req handling', 
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 
-		// 再发 rpc.req（应正常处理，不受 rtc 影响）
+		// 再发 rpc.req（未识别消息被静默忽略，只需确认不崩溃）
 		server.emit('message', {
 			data: JSON.stringify({ type: 'rpc.req', id: 'rpc-1', method: 'test.method', params: {} }),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
 
-		// 未识别的消息类型被静默忽略，只需确认不崩溃
 		assert.ok(true);
 	} finally {
 		await bridge.stop();
@@ -2924,7 +2945,7 @@ test('RealtimeBridge stop() should cleanup webrtcPeer explicitly', async () => {
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 		assert.notEqual(bridge.webrtcPeer, null);
 
 		await bridge.stop();
@@ -2945,7 +2966,7 @@ test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequest
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 		assert.notEqual(bridge.webrtcPeer, null);
 
 		// 验证 onRequest 已注册
@@ -2959,8 +2980,8 @@ test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequest
 		const reqPayload = { type: 'req', id: 'ui-dc-1', method: 'agent', params: { text: 'hi' } };
 		bridge.webrtcPeer.__onRequest(reqPayload, 'c_req1');
 
-		// 等待 __waitGatewayReady 超时（已注入 50ms）+ 处理完成
-		await new Promise((r) => setTimeout(r, 100));
+		// 等待 __waitGatewayReady 超时（已注入 50ms）→ broadcast GATEWAY_OFFLINE
+		await waitFor(() => broadcasted.some((p) => p.type === 'res' && p.id === 'ui-dc-1' && p.error?.code === 'GATEWAY_OFFLINE'), { label: 'GATEWAY_OFFLINE broadcast', timeoutMs: 2000 });
 
 		// gateway 未连接，应产生 GATEWAY_OFFLINE 错误响应 → broadcast to DC（不再发 server WS）
 		const offlineBC = broadcasted.find((p) => p.type === 'res' && p.id === 'ui-dc-1' && p.error?.code === 'GATEWAY_OFFLINE');
@@ -2988,7 +3009,7 @@ test('RealtimeBridge gateway res/event should broadcast to webrtcPeer', async ()
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 
 		// 追踪 broadcast 调用
 		const broadcasted = [];
@@ -3032,7 +3053,7 @@ test('RealtimeBridge gateway health/tick events are filtered (not forwarded to D
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 
 		const broadcasted = [];
 		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
@@ -3068,7 +3089,7 @@ test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer (DC pa
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 
 		// 追踪 broadcast 调用
 		const broadcasted = [];
@@ -3097,7 +3118,7 @@ test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer (D
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
 
 		// 追踪 broadcast 调用
 		const broadcasted = [];
@@ -3143,7 +3164,7 @@ test('RealtimeBridge concurrent rtc: messages should share single WebRtcPeer ini
 				payload: { candidate: 'candidate-1', sdpMid: '0', sdpMLineIndex: 0 },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 100));
+		await waitFor(() => bridge.webrtcPeer?.__sessions?.get?.('c_race'), { label: 'session for c_race' });
 
 		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created');
 		// ice 应被同一个 webrtcPeer 实例处理（session 存在）
@@ -3172,7 +3193,7 @@ test('RealtimeBridge __webrtcPeerReady should reset on init failure for retry', 
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => failCount > 0 && bridge.__webrtcPeerReady === null, { label: 'init failure cleared lock' });
 
 		assert.equal(failCount, 1);
 		assert.equal(bridge.webrtcPeer, null);
@@ -3188,7 +3209,7 @@ test('RealtimeBridge __webrtcPeerReady should reset on init failure for retry', 
 				payload: { sdp: 'retry-sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created on retry' });
 
 		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created on retry');
 	} finally {
@@ -3207,11 +3228,11 @@ test('RealtimeBridge cleanup should reset __webrtcPeerReady', async () => {
 				payload: { sdp: 'sdp' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.__webrtcPeerReady !== null && bridge.webrtcPeer !== null, { label: '__webrtcPeerReady set' });
 		assert.notEqual(bridge.__webrtcPeerReady, null);
 
 		server.emit('close', { code: 1000, reason: 'normal' });
-		await new Promise((r) => setTimeout(r, 50));
+		await waitFor(() => bridge.webrtcPeer === null && bridge.__webrtcPeerReady === null, { label: '__webrtcPeerReady cleared' });
 
 		assert.equal(bridge.webrtcPeer, null);
 		assert.equal(bridge.__webrtcPeerReady, null, 'promise lock should be cleared on ws close');
@@ -3237,8 +3258,15 @@ test('RealtimeBridge should wire remote-log sender on open and flush buffered lo
 		const server = FakeWebSocket.instances[0];
 		server.readyState = 1;
 		server.emit('open', {});
-		// flush 是异步的
-		await new Promise((r) => setTimeout(r, 50));
+		// flush 是异步的——等到 buffered 'before-connect' 真正落到 server.sent
+		// 注意：open 后会发若干其他 log（ws.connected/coclaw.env 等），不能只等"任意 log"——
+		// 那些其他 log 先到时 buffered 'before-connect' 仍在 buffer 里
+		await waitFor(() => remoteLogBuffer.length === 0 && server.sent.some((s) => {
+			try {
+				const p = JSON.parse(s);
+				return p?.type === 'log' && Array.isArray(p?.logs) && p.logs.some((l) => l.text === 'before-connect');
+			} catch { return false; }
+		}), { label: 'before-connect flushed' });
 
 		// 应通过 server WS 发送缓冲的日志
 		const logMsg = server.sent.find((s) => {
@@ -4068,7 +4096,7 @@ async function setupBridgeWithGateway(rtcConnId = 'c_dc') {
 			payload: { sdp: 'sdp' },
 		}),
 	});
-	await new Promise((r) => setTimeout(r, 50));
+	await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created in setupBridgeWithGateway' });
 	const gwWs = FakeWebSocket.instances.find((ws) => ws !== server);
 	gwWs.readyState = 1;
 	bridge.gatewayReady = true;
@@ -4392,8 +4420,8 @@ test('dc unicast: TTL scan clears expired entries and warns', async () => {
 		// 注入一条未过期条目
 		bridge.__dcPendingRequests.set('ui-fresh-1', { connId: 'c_exp', expireAt: Date.now() + 60_000 });
 
-		// 等待至少一次扫描
-		await new Promise((r) => setTimeout(r, 80));
+		// 等待扫描清掉过期条目
+		await waitFor(() => !bridge.__dcPendingRequests.has('ui-exp-1'), { label: 'TTL scan cleared expired' });
 
 		assert.equal(bridge.__dcPendingRequests.has('ui-exp-1'), false, 'expired entry cleared');
 		assert.equal(bridge.__dcPendingRequests.has('ui-fresh-1'), true, 'fresh entry kept');
