@@ -9,11 +9,11 @@ import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
 
 // rpc DC 发送队列实现选择（B-stage2 B9b）。
-// - 'mem'：MemoryQueue（当前生产默认）—— 不碰 fs，溢出即 drop；FBQ 未充分本地验证前先用此模式发布
-// - 'fbq'：FileBackedQueue —— 长时间后台 / ICE 恢复等慢消化场景溢出到磁盘
+// - 'fbq'：FileBackedQueue（当前生产默认）—— 长时间后台 / ICE 恢复等慢消化场景溢出到磁盘
+// - 'mem'：MemoryQueue —— 不碰 fs，溢出即 drop（紧急回退用，0.20.1~0.20.2 期间临时启用）
 // 当 'fbq' 但 queueDir 不可用（bridge 启动期 plan-2 prep 失败）时自动降级到 'mem'，避免阻塞 webrtc 装配。
-// 单点常量；构造时可通过 `rpcQueueImpl` opt 覆盖（测试用）。生产侧改回 'fbq' 只需翻这一行。
-const RPC_QUEUE_IMPL = 'mem';
+// 单点常量；构造时可通过 `rpcQueueImpl` opt 覆盖（测试用）。紧急回退到 'mem' 只需翻这一行。
+const RPC_QUEUE_IMPL = 'fbq';
 
 // FBQ 装配兜底：bridge 启动期 measureDiskCap 失败 → __diskCap=null → 这里兜底 1GB
 const ONE_GB = 1024 * 1024 * 1024;
@@ -702,7 +702,7 @@ export class WebRtcPeer {
 		// monitor 是局部变量，stale 路径下函数返回后自然 GC，不挂 session 字段（无 drop 可汇总）。
 		const monitor = createRpcDropMonitor({ connId, logger: this.logger });
 
-		// queue 实例选择（B-stage2 B9b）：默认取模块级 RPC_QUEUE_IMPL（当前 'mem'）；
+		// queue 实例选择（B-stage2 B9b）：默认取模块级 RPC_QUEUE_IMPL（当前 'fbq'）；
 		// 'fbq' 模式下若 queueDir 不可用则降级到 mem，避免阻塞装配。
 		// 同 connId race 隔离（决策 4）：FBQ id 加唯一后缀 ${connId}-${ts}-${nonce}，
 		// 让新旧实例文件名物理不同，destroy/init 期间互不踩踏。MemoryQueue 不碰 fs，无此需求。
@@ -822,7 +822,7 @@ export class WebRtcPeer {
 			? (() => {
 				const s = q.stats();
 				// memCount 沿用历史 token 名 queueLen（不改名）；queue.stats() 6 个字段（含 4 个
-				// 磁盘字段，MemoryQueue 阶段恒 0/false）+ monitor.getStats() 提供 dropCount/dropBytes。
+				// 磁盘字段，MemoryQueue 路径下恒 0/false）+ monitor.getStats() 提供 dropCount/dropBytes。
 				// 输出文本 8 token 字节级保持与现行格式一致。
 				// monitor 与 queue 在 setupDataChannel 末尾同 tick 装载，q 真值时 monitor 必定也存在；
 				// `?? { ... }` 是防御性兜底，结构上不可达。

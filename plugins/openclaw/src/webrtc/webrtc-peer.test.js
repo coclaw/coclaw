@@ -130,7 +130,7 @@ test('WebRtcPeer: constructor stores queueDir; non-string / empty coerced to nul
 	assert.equal(peer3.__queueDir, null);
 });
 
-// --- B9b: rpc DC queue impl swap (生产当前默认 MemoryQueue；测试通过 rpcQueueImpl='fbq' 显式覆盖 FBQ 路径) ---
+// --- B9b: rpc DC queue impl swap (生产当前默认 FileBackedQueue；测试通过 rpcQueueImpl='mem' / 不传 queueDir 显式覆盖 mem / fallback 路径) ---
 
 async function setupRpcDcSession({ peer, connId, dc }) {
 	await peer.handleSignaling(makeOffer(connId));
@@ -148,7 +148,7 @@ async function setupRpcDcSession({ peer, connId, dc }) {
 }
 
 test('WebRtcPeer: rpc DC 装配走 FBQ 路径（带 queueDir + rpcQueueImpl=fbq）；id 含唯一后缀', async () => {
-	// 生产默认 RPC_QUEUE_IMPL='mem'；本测试显式 override 为 'fbq' 以覆盖 FBQ 装配路径
+	// FBQ 已是生产默认；本测试同时显式传 rpcQueueImpl='fbq'，让覆盖 FBQ 装配路径不依赖默认值变化
 	resetRemoteLog();
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-fbq-'));
 	const logs = [];
@@ -198,8 +198,8 @@ test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（r
 });
 
 test('WebRtcPeer: rpcQueueImpl=fbq + queueDir 为 null → 降级到 MemoryQueue；log 含 fallback 标记', async () => {
-	// fbq 模式 + 无 queueDir → 装配点降级。生产默认 'mem' 不会进 fallback 分支，
-	// 测试 override 为 'fbq' 覆盖该降级路径。
+	// fbq 模式 + 无 queueDir → 装配点降级。FBQ 已是生产默认，测试同时显式传 'fbq'
+	// 让该降级路径覆盖不依赖默认值变化。
 	resetRemoteLog();
 	const logs = [];
 	const peer = new WebRtcPeer({
@@ -220,11 +220,11 @@ test('WebRtcPeer: rpcQueueImpl=fbq + queueDir 为 null → 降级到 MemoryQueue
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）→ MemoryQueue，即使带 queueDir 也不走 FBQ', async () => {
-	// 紧急回退到 'mem' 后的关键 invariant：默认装配走 MemoryQueue；
-	// queueDir 非空也不会激活 FBQ；log 不含 fallback 标记（不是降级，是配置选项）。
+test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）+ queueDir → FileBackedQueue', async () => {
+	// FBQ 切回生产默认后的关键 invariant：默认装配走 FileBackedQueue（带 queueDir 时）；
+	// log 不含 fallback 标记（FBQ 真正激活，不是降级）。
 	resetRemoteLog();
-	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-prod-mem-'));
+	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-prod-fbq-'));
 	const logs = [];
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -232,31 +232,34 @@ test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）→ MemoryQueue，即使�
 		PeerConnection: MockPCFactory(),
 		impl: 'ndc',
 		queueDir: tmpDir,
-		// 不传 rpcQueueImpl → 取模块默认（生产 'mem'）
+		getDiskCap: () => 100 * 1024 * 1024,
+		// 不传 rpcQueueImpl → 取模块默认（生产 'fbq'）
 	});
 	await setupRpcDcSession({ peer, connId: 'c_prod', dc: makeMockRpcDc() });
 	const session = peer.__sessions.get('c_prod');
-	assert.ok(session.rpcQueue instanceof MemoryQueue, 'production default should be MemoryQueue');
-	assert.ok(!(session.rpcQueue instanceof FileBackedQueue), 'production default should NOT be FBQ');
-	assert.equal(session.rpcQueue.id, 'c_prod', 'mem mode uses connId directly (no unique suffix)');
+	assert.ok(session.rpcQueue instanceof FileBackedQueue, 'production default should be FileBackedQueue');
+	assert.ok(!(session.rpcQueue instanceof MemoryQueue), 'production default should NOT be MemoryQueue');
+	assert.match(session.rpcQueue.id, /^c_prod-\d+-[a-f0-9]{8}$/, 'fbq id should have unique suffix');
 	assert.equal(session.rpcQueue.maxMessageBytes, 50 * 1024 * 1024, 'maxMessageBytes wired through');
-	assert.ok(logs.some((l) => l.includes('rpc queue impl=mem')), 'log should mention impl=mem');
-	assert.ok(!logs.some((l) => l.includes('fallback')), 'log should NOT contain fallback marker (mem is configured, not degraded)');
+	assert.ok(logs.some((l) => l.includes('rpc queue impl=fbq')), 'log should mention impl=fbq');
+	assert.ok(!logs.some((l) => l.includes('fallback')), 'log should NOT contain fallback marker (fbq is configured, not degraded)');
 	assert.ok(
-		remoteLogBuffer.some((e) => e.text.includes('rtc.queue-impl conn=c_prod impl=mem') && !e.text.includes('fallback')),
-		'remoteLog should record impl=mem without fallback suffix',
+		remoteLogBuffer.some((e) => e.text.includes('rtc.queue-impl conn=c_prod impl=fbq') && !e.text.includes('fallback')),
+		'remoteLog should record impl=fbq without fallback suffix',
 	);
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem 默认路径）', async () => {
+test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem 路径，explicit override）', async () => {
 	// 红线 3 装配点连接 pin：若装配代码漏传 bypassAdmission，agent 响应会被 capacity 层 drop。
 	// 引用相等而非行为测：直接确认装配点把模块导出的 isAgentRunResponse 喂给了 queue.bypassAdmission。
+	// 显式传 rpcQueueImpl='mem' 走 mem 装配分支，与下面 fbq explicit 测形成两路对照。
 	const peer = new WebRtcPeer({
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
 		impl: 'ndc',
+		rpcQueueImpl: 'mem',
 	});
 	await setupRpcDcSession({ peer, connId: 'c_bypass_pin_mem', dc: makeMockRpcDc() });
 	const session = peer.__sessions.get('c_bypass_pin_mem');
@@ -264,7 +267,7 @@ test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem �
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 agent 响应不命中（mem 默认路径）', async () => {
+test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 agent 响应不命中（mem 路径，explicit override）', async () => {
 	// 引用相等 pin 的互补测：直接调装配后的谓词，验证装配产物语义正确。
 	// 即便将来有人把 bypassAdmission: isAgentRunResponse 改成等价 lambda 包装让上面引用相等测红，
 	// 本测试仍能从语义上确保 agent 响应被识别、非 agent 响应不被识别。
@@ -274,6 +277,7 @@ test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 a
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
 		impl: 'ndc',
+		rpcQueueImpl: 'mem',
 	});
 	await setupRpcDcSession({ peer, connId: 'c_bypass_behave_mem', dc: makeMockRpcDc() });
 	const queue = peer.__sessions.get('c_bypass_behave_mem').rpcQueue;
@@ -293,7 +297,7 @@ test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 a
 });
 
 test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（fbq 路径）', async () => {
-	// 同上，但覆盖 FBQ 装配分支——FBQ 切回生产默认时本测试保证 bypass 仍连着
+	// 同上，但显式覆盖 FBQ 装配分支——保留与 mem 默认路径并行的 explicit pin，让两条路径独立
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-bypass-pin-fbq-'));
 	const peer = new WebRtcPeer({
 		onSend: () => {},
