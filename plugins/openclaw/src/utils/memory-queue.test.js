@@ -459,6 +459,25 @@ test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成', asy
 	assert.equal(q.destroyed, true);
 });
 
+test('destroy(onBeforeClear): 同步钩子契约——destroy 不 await 异步 callback（防 try/catch 改成 await catch 破坏 destroy 契约）', async () => {
+	// onBeforeClear 是同步钩子；返回 Promise 时 rejection 不被捕获是 silent gotcha（与 FBQ 镜像）。
+	// pin 方法：传一个永不 resolve 的 callback——若将来有人把同步调用改成 await，destroy 会挂死。
+	const { q } = await makeQ();
+	let cbInvoked = false;
+	const cb = () => {
+		cbInvoked = true;
+		return new Promise(() => { /* 故意永不 resolve */ });
+	};
+	const destroyP = q.destroy(cb);
+	const winner = await Promise.race([
+		destroyP.then(() => 'destroy-resolved'),
+		new Promise((r) => setTimeout(() => r('timeout'), 200)),
+	]);
+	assert.equal(winner, 'destroy-resolved', 'destroy 必须同步调用 onBeforeClear，不能 await 它');
+	assert.equal(cbInvoked, true, 'callback 应被调用');
+	assert.equal(q.destroyed, true);
+});
+
 test('destroy 先排队、enqueue 后排队：mutex FIFO + destroyed 短路 → enqueue 拿到锁返 false', async () => {
 	// 关键 race 不变量：destroy 与 enqueue 同 tick 并发，destroy 先入 mutex 队列时——
 	// destroy 的 mutex callback 先 fire（设 destroyed=true），enqueue 的 mutex callback

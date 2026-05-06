@@ -9,6 +9,7 @@ import { DC_HIGH_WATER_MARK, DC_LOW_WATER_MARK } from './rpc-dc-sender.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
 import { MemoryQueue } from '../utils/memory-queue.js';
 import { FileBackedQueue } from '../utils/file-backed-queue.js';
+import { isAgentRunResponse } from './agent-run-response.js';
 
 /**
  * 阶段 1 改造后：broadcast / sendFn enqueue 是 async fire-and-forget；消费循环异步从队列拉
@@ -245,6 +246,40 @@ test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）→ MemoryQueue，即使�
 		remoteLogBuffer.some((e) => e.text.includes('rtc.queue-impl conn=c_prod impl=mem') && !e.text.includes('fallback')),
 		'remoteLog should record impl=mem without fallback suffix',
 	);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem 默认路径）', async () => {
+	// 红线 3 装配点连接 pin：若装配代码漏传 bypassAdmission，agent 响应会被 capacity 层 drop。
+	// 引用相等而非行为测：直接确认装配点把模块导出的 isAgentRunResponse 喂给了 queue.bypassAdmission。
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+	});
+	await setupRpcDcSession({ peer, connId: 'c_bypass_pin_mem', dc: makeMockRpcDc() });
+	const session = peer.__sessions.get('c_bypass_pin_mem');
+	assert.equal(session.rpcQueue.bypassAdmission, isAgentRunResponse, '装配点必须把 isAgentRunResponse 接到 bypassAdmission');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（fbq 路径）', async () => {
+	// 同上，但覆盖 FBQ 装配分支——FBQ 切回生产默认时本测试保证 bypass 仍连着
+	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-bypass-pin-fbq-'));
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+		queueDir: tmpDir,
+		rpcQueueImpl: 'fbq',
+		getDiskCap: () => 100 * 1024 * 1024,
+	});
+	await setupRpcDcSession({ peer, connId: 'c_bypass_pin_fbq', dc: makeMockRpcDc() });
+	const session = peer.__sessions.get('c_bypass_pin_fbq');
+	assert.ok(session.rpcQueue instanceof FileBackedQueue);
+	assert.equal(session.rpcQueue.bypassAdmission, isAgentRunResponse, 'FBQ 路径也必须把 isAgentRunResponse 接到 bypassAdmission');
 	await peer.closeAll();
 });
 
@@ -5234,6 +5269,46 @@ test('WebRtcPeer: q.init() 期间 closeByConnId → setup 走 stale 路径 destr
 		assert.equal(session.rpcQueue, null);
 		assert.equal(session.rpcDcSender, null);
 		assert.equal(session.rpcConsumeLoop, null);
+	} finally {
+		m.restore();
+	}
+});
+
+test('WebRtcPeer: stale 装配路径不打 rpc queue impl 日志（B10 修复 invariant pin）', async () => {
+	// 装配身份重核失败时，函数 destroy queue 后直接 return，绝不应再 emit local info `rpc queue impl=...`
+	// 或 remoteLog `rtc.queue-impl ...`——否则运维侧会以为有连接成功装配，被装配虚报误导。
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const logs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_stale_log'));
+
+	const m = withQueueLifecycleMock({ blockInit: true });
+	try {
+		const dc = makeMockRpcDc();
+		PC.instances[0].ondatachannel({ channel: dc });
+		await flushAsync();
+		// init blocked 期间发起 close → session 从 Map 删除
+		const closeP = peer.closeByConnId('c_stale_log');
+		await flushAsync();
+		// 释放 init → setup 走 stale 分支：destroy queue + return，不应打 impl 日志
+		m.releaseInitAt(0);
+		await closeP;
+		await flushAsync();
+
+		assert.ok(
+			!logs.some((l) => typeof l === 'string' && l.includes('rpc queue impl=')),
+			'stale 路径不应打 local info rpc queue impl 日志',
+		);
+		assert.ok(
+			!remoteLogBuffer.some((e) => e.text.includes('rtc.queue-impl conn=c_stale_log')),
+			'stale 路径不应打 remoteLog rtc.queue-impl',
+		);
 	} finally {
 		m.restore();
 	}

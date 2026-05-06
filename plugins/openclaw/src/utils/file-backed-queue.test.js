@@ -685,6 +685,25 @@ test('destroy(onBeforeClear): callback 自身抛被吞，destroy 仍完成（sil
 	assert.equal(q.destroyed, true);
 });
 
+test('destroy(onBeforeClear): 同步钩子契约——destroy 不 await 异步 callback（防 try/catch 改成 await catch 破坏 destroy 契约）', async () => {
+	// 红线 5：onBeforeClear 是同步钩子；返回 Promise 时 rejection 不被捕获是 silent gotcha。
+	// pin 方法：传一个永不 resolve 的 callback——如果将来有人把 try { onBeforeClear() } 改成 try { await onBeforeClear() }，destroy 会挂死，本测试通过 200ms 超时把它抓出来。
+	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-async-noawait' });
+	let cbInvoked = false;
+	const cb = () => {
+		cbInvoked = true;
+		return new Promise(() => { /* 故意永不 resolve */ });
+	};
+	const destroyP = q.destroy(cb);
+	const winner = await Promise.race([
+		destroyP.then(() => 'destroy-resolved'),
+		new Promise((r) => setTimeout(() => r('timeout'), 200)),
+	]);
+	assert.equal(winner, 'destroy-resolved', 'destroy 必须同步调用 onBeforeClear，不能 await 它');
+	assert.equal(cbInvoked, true, 'callback 应被调用');
+	assert.equal(q.destroyed, true);
+});
+
 test('destroy(onBeforeClear): 第二次 destroy 是 no-op，不 fire callback', async () => {
 	// destroy 自身幂等保证 onBeforeClear 仅 fire 一次（与 monitor.summarized flag 互为兜底）
 	const q = await makeQ({ dir: await makeTmpDir(), id: 'dst-idem' });
