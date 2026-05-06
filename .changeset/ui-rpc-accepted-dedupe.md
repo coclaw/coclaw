@@ -1,5 +1,0 @@
----
-'@coclaw/ui': patch
----
-
-Defensive dedupe of duplicate `accepted` RPC frames in `ClawConnection.__handleRpcResponse`. The OpenClaw gateway protocol guarantees each agent RPC reqId only emits one `accepted` ack frame followed by one final res frame, but this guarantee lives entirely upstream. If a future protocol change or upstream bug ever delivers a second `accepted` on the same reqId, the existing UI handler would re-fire `onAccepted` side effects (refresh `__acceptedAt`, overwrite the agent run watcher, re-register in `agentRunsStore`, re-trigger `bumpActivity`, etc.). The new branch sets `waiter.__acceptedSeen` on the first ack and short-circuits any subsequent duplicate with `console.warn` plus `remoteLog('rpc.accepted.duplicate ...')` so the change is observable rather than silent. No effect on first-accepted handling, single-phase RPCs, final-frame resolution, timeout, or abort paths.
