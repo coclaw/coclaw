@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import nodeFs from 'node:fs';
 import nodePath from 'node:path';
 
 import { checkForUpdate } from './updater-check.js';
@@ -7,6 +8,10 @@ import { readState, resolveStateDir, writeState } from './state.js';
 import { getRuntime } from '../runtime.js';
 import { remoteLog } from '../remote-log.js';
 import { atomicWriteFile } from '../utils/atomic-write.js';
+
+// OpenClaw ≥ 2026.4.25 起把插件安装记录从 openclaw.json 的 plugins.installs
+// 迁移到独立账本文件，并在 loadConfig() 返回前剥掉 plugins.installs。
+const INSTALLS_LEDGER_RELATIVE_PATH = nodePath.join('plugins', 'installs.json');
 
 // 首次检查延迟较长：失败时由 worker 触发 gateway restart，scheduler 重启后会重新计时；
 // 60 分钟基线（实际随机 60-120 分钟）能把"失败→重启→再次检查"的循环周期拉长，
@@ -110,6 +115,75 @@ export async function writeUpgradeLock(pid) {
 }
 
 /**
+ * 读取本插件的安装记录（兼容新旧 OpenClaw 契约）
+ *
+ * - 新版（OpenClaw ≥ 2026.4.25）：账本文件 `<state-dir>/plugins/installs.json`
+ *   下的 `installRecords[pluginId]` 是来源真相；`loadConfig()` 返回的对象里
+ *   `plugins.installs` 已被剥离。
+ * - 旧版（OpenClaw ≤ 2026.4.24）：账本文件不存在，
+ *   `loadConfig().plugins.installs[pluginId]` 是来源真相。
+ *
+ * 兼容策略：先尝试账本文件；ENOENT（文件不存在）→ 回落到旧字段；
+ * 其它失败（权限/JSON 损坏/缺记录）→ 视为账本不可用，按"无来源信息"处理，不回落。
+ * 这两条互斥（新 gateway 必有账本、旧 gateway 必无）能让两个分支天然分流。
+ *
+ * @param {string} pluginId
+ * @returns {object|null}
+ */
+function loadInstallRecord(pluginId) {
+	let ledgerPath;
+	try {
+		ledgerPath = nodePath.join(resolveStateDir(), INSTALLS_LEDGER_RELATIVE_PATH);
+	}
+	catch (err) {
+		// 极少触发：host runtime 的 state resolver 自身异常
+		remoteLog(`upgrade.state-dir-failed msg=${err?.message ?? String(err)}`);
+		return null;
+	}
+	let raw;
+	try {
+		raw = nodeFs.readFileSync(ledgerPath, 'utf8');
+	}
+	catch (err) {
+		if (err?.code === 'ENOENT') {
+			return loadInstallRecordFromLegacyConfig(pluginId);
+		}
+		// 账本应该可读但读不到（权限/EISDIR/IO 错误）：不回落到旧字段，避免误判老路径
+		// 静默返回 null 会让 start() 打 "Skipping: not an npm-installed plugin"，对运维毫无指向；
+		// 把诊断信号外推到 server，便于定位
+		remoteLog(`upgrade.ledger-read-failed code=${err?.code ?? 'unknown'} msg=${err?.message ?? String(err)}`);
+		return null;
+	}
+	let parsed;
+	try {
+		parsed = JSON.parse(raw);
+	}
+	catch (err) {
+		// 账本损坏：同样不回落，并外推诊断信号
+		remoteLog(`upgrade.ledger-parse-failed msg=${err?.message ?? String(err)}`);
+		return null;
+	}
+	return parsed?.installRecords?.[pluginId] ?? null;
+}
+
+/**
+ * 旧版 OpenClaw（≤ 2026.4.24）账本路径：openclaw.json 的 plugins.installs。
+ * @param {string} pluginId
+ * @returns {object|null}
+ */
+function loadInstallRecordFromLegacyConfig(pluginId) {
+	const rt = getRuntime();
+	if (!rt?.config?.loadConfig) return null;
+	try {
+		const config = rt.config.loadConfig();
+		return config?.plugins?.installs?.[pluginId] ?? null;
+	}
+	catch {
+		return null;
+	}
+}
+
+/**
  * 判断是否应跳过自动升级
  *
  * `openclaw plugins update` 仅对 source === "npm" 的安装生效。
@@ -122,16 +196,7 @@ export async function writeUpgradeLock(pid) {
  * @returns {boolean} true 表示应跳过自动升级
  */
 export function shouldSkipAutoUpgrade(pluginId) {
-	const rt = getRuntime();
-	if (!rt?.config?.loadConfig) return true;
-	try {
-		const config = rt.config.loadConfig();
-		const installInfo = config?.plugins?.installs?.[pluginId];
-		return installInfo?.source !== 'npm';
-	}
-	catch {
-		return true;
-	}
+	return loadInstallRecord(pluginId)?.source !== 'npm';
 }
 
 /**
@@ -140,15 +205,7 @@ export function shouldSkipAutoUpgrade(pluginId) {
  * @returns {string|null}
  */
 export function getPluginInstallPath(pluginId) {
-	const rt = getRuntime();
-	if (!rt?.config?.loadConfig) return null;
-	try {
-		const config = rt.config.loadConfig();
-		return config?.plugins?.installs?.[pluginId]?.installPath ?? null;
-	}
-	catch {
-		return null;
-	}
+	return loadInstallRecord(pluginId)?.installPath ?? null;
 }
 
 /**

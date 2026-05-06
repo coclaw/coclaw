@@ -734,4 +734,36 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **影响**：仅 UI 诊断信息（peer transport 信号）丢失，不影响 RPC 业务。
 
+## 跟踪 OpenClaw 上游契约演进对 auto-upgrade 的影响
+
+**发现日期**：2026-05-06
+
+**背景**：自动升级链路跨"gateway 进程内 spawner"和"detached worker 子进程"两段，对 OpenClaw 的依赖面分成两块。任何一块的契约变更都可能让自动升级整体失效或误回滚，需统一跟踪。
+
+### 1. 账本格式（spawner 端依赖，已发生过事故）
+
+**锚点**：`plugins/openclaw/src/auto-upgrade/updater.js` 的 `loadInstallRecord` / `INSTALLS_LEDGER_RELATIVE_PATH`
+
+OpenClaw 2026.4.25 把插件安装记录从 `openclaw.json` 的 `plugins.installs` 迁移到独立账本 `<state-dir>/plugins/installs.json`（key `installRecords[<pluginId>]`），并在 `loadConfig()` 返回前剥掉老字段——这次 0.19.2 → 0.20.0 升不动就是这条契约变更触发的。当前 `loadInstallRecord` 硬编码新路径与字段名，新旧 gateway 兼容靠"账本不存在 → 回落到 loadConfig"互斥分流。
+
+**风险**：上游若再搬家（路径/文件名/字段名变更）或 strip 行为收紧（连兜底字段都不返）会让自动升级再次失效。SDK 侧已有 `loadInstalledPluginIndexInstallRecordsSync` helper（`src/plugins/installed-plugin-index-record-reader.ts`），但需要插件先依赖 `@openclaw/plugin-sdk`，且该 helper 的最低 host 版本高于当前插件 `minHostVersion`。
+
+**应对**：升级 OpenClaw 时关注 `src/plugins/installed-plugin-index-store-path.ts` / `installed-plugin-index-record-reader.ts` 是否变更；若 SDK 公开 install records helper 且最低 host 版本可接受，考虑切换到 SDK API。
+
+### 2. CLI 契约（worker 端依赖，目前未踩坑）
+
+worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--pluginDir` 传入），全程靠子进程调 `openclaw` CLI，因此对 CLI 行为强耦合：
+
+| 调用 | 锚点 | 失败后果 |
+|---|---|---|
+| `openclaw plugins update <id>` | `worker.js:52` | 升级直接失败 → 回滚（不 skipVersion，按瞬态） |
+| `openclaw plugins uninstall <id>` + `plugins install <pkg>@<ver>` | `worker.js:89/95` | 备份恢复失败时无兜底回滚 |
+| `openclaw gateway restart` | `worker-verify.js:80` | 验证前 gateway 不被主动重启，依赖 watcher 自恢复 |
+| `openclaw gateway call <method> --json` | `worker-verify.js:114` | 见下条 |
+| `--json` 输出 = RPC result 原值（无 envelope） | 同上 | 若上游加 `{ok,result}` 包装，`JSON.parse(output).version` 取到 undefined → 一直 missing-version → 验证超时 → 误判为"新版本坏掉"并 skipVersion + 回滚 |
+
+**风险等级**：CLI 子命令名长期稳定（CHANGELOG 没出现过重命名），但 `--json` 输出包装是历史相对短的接口，`docs/auto-upgrade.md` 里也标了"`coclaw.upgradeHealth` 返回格式 → 待定"。
+
+**应对**：升级 OpenClaw 时关注 `src/cli/gateway-cli/call.ts` 与 `plugins-*.ts` 是否变更子命令名/参数 schema/输出格式；尤其留意 `gateway call --json` 是否加 envelope。如确实加包装，worker-verify 的解析需相应放开（兼容两种形态）。
+
 **修复方向**：装配 rpcQueue 后主动调一次 `__sendPeerTransport(connId)`（条件：`session.pc.selectedCandidatePair` 已 nominate 完成），或在 sendTo 失败回滚 sig 后注册一个"等 rpcQueue 就绪重试"的钩子。

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import nodeFs from 'node:fs';
 import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
@@ -25,9 +26,33 @@ async function makeTmpDir(prefix = 'coclaw-sched-') {
 	return await fs.mkdtemp(nodePath.join(os.tmpdir(), prefix));
 }
 
+// resetEnv 创建的临时 state-dir 累积引用，进程退出时统一清掉，避免每个测试残留空目录
+const __isolatedStateDirs = [];
+process.on('exit', () => {
+	for (const dir of __isolatedStateDirs) {
+		try { nodeFs.rmSync(dir, { recursive: true, force: true }); } catch {}
+	}
+});
+
+/**
+ * 重置 runtime + state-dir。
+ * 默认把 OPENCLAW_STATE_DIR 指向新建的临时空目录，确保 loadInstallRecord 走
+ * "账本不存在 → 回落到 loadConfig" 路径，避免误读到机器上真实
+ * `~/.openclaw/plugins/installs.json`（与本地 OpenClaw 共用 state-dir）。
+ */
 function resetEnv() {
-	delete process.env.OPENCLAW_STATE_DIR;
 	setRuntime(null);
+	const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'coclaw-sched-iso-'));
+	__isolatedStateDirs.push(dir);
+	process.env.OPENCLAW_STATE_DIR = dir;
+}
+
+/** 在指定 state-dir 写入新版账本文件。 */
+function writeInstallsLedger(stateDir, installRecords) {
+	const ledgerPath = nodePath.join(stateDir, 'plugins', 'installs.json');
+	nodeFs.mkdirSync(nodePath.dirname(ledgerPath), { recursive: true });
+	nodeFs.writeFileSync(ledgerPath, JSON.stringify({ version: 1, installRecords }), 'utf8');
+	return ledgerPath;
 }
 
 /** 创建模拟 runtime */
@@ -182,6 +207,110 @@ test('getPluginInstallPath - loadConfig 返回 null 时返回 null', () => {
 		},
 	});
 	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
+});
+
+// --- 新账本路径（OpenClaw ≥ 2026.4.25）：installs.json 是真相 ---
+
+test('新账本 - source=npm 时 shouldSkip=false 且能拿到 installPath', () => {
+	resetEnv();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	writeInstallsLedger(dir, {
+		[TEST_PLUGIN_ID]: { source: 'npm', installPath: '/opt/pkg/test-plugin', version: '1.0.0' },
+	});
+	// runtime 不需要设置：新版 gateway 下 loadConfig 拿不到 plugins.installs，账本是唯一来源
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), false);
+	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), '/opt/pkg/test-plugin');
+});
+
+test('新账本 - source=path（link 模式）时 shouldSkip=true', () => {
+	resetEnv();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	writeInstallsLedger(dir, {
+		[TEST_PLUGIN_ID]: { source: 'path', installPath: '/opt/local/test-plugin' },
+	});
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+});
+
+test('新账本 - source=archive 时 shouldSkip=true', () => {
+	resetEnv();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	writeInstallsLedger(dir, {
+		[TEST_PLUGIN_ID]: { source: 'archive', installPath: '/opt/tar/test-plugin' },
+	});
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+});
+
+test('新账本 - 账本里没有本插件时 shouldSkip=true，且不回落到 loadConfig 老字段', () => {
+	resetEnv();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	// 账本存在但只列了别的插件
+	writeInstallsLedger(dir, {
+		'some-other-plugin': { source: 'npm', installPath: '/opt/other' },
+	});
+	// 老字段里就算有 npm 安装记录也不能被用，否则会在新 gateway 下错判
+	setRuntime(makeRuntime({ source: 'npm', installPath: '/should/not/be/used' }));
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
+});
+
+test('新账本 - JSON 损坏时 shouldSkip=true、不回落，并 remoteLog 诊断信号', () => {
+	resetEnv();
+	resetRemoteLog();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	const ledgerPath = nodePath.join(dir, 'plugins', 'installs.json');
+	nodeFs.mkdirSync(nodePath.dirname(ledgerPath), { recursive: true });
+	nodeFs.writeFileSync(ledgerPath, '{not valid json', 'utf8');
+	setRuntime(makeRuntime({ source: 'npm', installPath: '/should/not/be/used' }));
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
+	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.ledger-parse-failed')));
+});
+
+test('新账本 - installRecords 字段不是对象时 shouldSkip=true', () => {
+	resetEnv();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	const ledgerPath = nodePath.join(dir, 'plugins', 'installs.json');
+	nodeFs.mkdirSync(nodePath.dirname(ledgerPath), { recursive: true });
+	nodeFs.writeFileSync(ledgerPath, JSON.stringify({ version: 1, installRecords: null }), 'utf8');
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
+});
+
+test('新账本 - 读取失败（非 ENOENT）时 shouldSkip=true、不回落，并 remoteLog 诊断信号', () => {
+	resetEnv();
+	resetRemoteLog();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	const ledgerDir = nodePath.join(dir, 'plugins');
+	const ledgerPath = nodePath.join(ledgerDir, 'installs.json');
+	nodeFs.mkdirSync(ledgerDir, { recursive: true });
+	// 用目录占位 ledgerPath：readFileSync 会抛 EISDIR（不是 ENOENT）
+	nodeFs.mkdirSync(ledgerPath, { recursive: true });
+	setRuntime(makeRuntime({ source: 'npm', installPath: '/should/not/be/used' }));
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
+	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.ledger-read-failed code=EISDIR')));
+});
+
+test('新账本 - 账本里有插件但 installPath 缺失时 getPluginInstallPath=null', () => {
+	resetEnv();
+	const dir = process.env.OPENCLAW_STATE_DIR;
+	writeInstallsLedger(dir, {
+		[TEST_PLUGIN_ID]: { source: 'npm', version: '1.0.0' }, // 故意不写 installPath
+	});
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), false);
+	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
+});
+
+test('shouldSkipAutoUpgrade - resolveStateDir 抛异常时返回 true、不传播，并 remoteLog 诊断信号', () => {
+	resetEnv();
+	resetRemoteLog();
+	setRuntime({
+		state: { resolveStateDir: () => { throw new Error('boom'); } },
+	});
+	assert.doesNotThrow(() => shouldSkipAutoUpgrade(TEST_PLUGIN_ID));
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
+	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.state-dir-failed')));
 });
 
 // --- AutoUpgradeScheduler: constructor ---
@@ -776,6 +905,7 @@ test('getLockPath 使用 runtime.state.resolveStateDir', () => {
 
 test('getLockPath 默认回退到 ~/.openclaw', () => {
 	resetEnv();
+	delete process.env.OPENCLAW_STATE_DIR;
 	const p = getLockPath();
 	assert.equal(p, nodePath.join(os.homedir(), '.openclaw', 'coclaw', 'upgrade.lock'));
 });
