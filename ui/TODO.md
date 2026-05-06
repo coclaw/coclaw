@@ -2,6 +2,22 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## chat.store loadMessages 周边的预存问题
+
+**发现日期**：2026-05-06
+**关联 commit**：fix(ui): decouple dropRun from auxiliary chat.history (双气泡 bug fix)
+
+来源：双气泡 bug 修复时的 deep-review。两条与本次修复主题相关但**修复前后行为一致**的预存问题，单独追踪。
+
+1. **`/new` / `/reset` 后 `chat.history` 失败导致 historySegments 归档丢失**
+   - 现状：`chat.store.js:1133-1149` 在斜杠命令 final 分支拍照 `prevSessionId` 然后 silent reload，归档判定靠 `this.currentSessionId !== prevSessionId`。如果 `chat.history` 在 reload 中失败，`currentSessionId` 保留旧值，条件 false negative，旧消息**不进归档**——而 `sessions.get` 已经把消息从 `this.messages` 换成新 session，旧消息相当于丢失（用户切回历史看不到）。修复前后行为一致（旧代码 `chat.history` reject 时 `currentSessionId` 也保留旧值）。
+   - 修复方向：归档判定改用 `prevMessages.length > 0 && (this.currentSessionId !== prevSessionId || chat.history 失败)` 兜底；或者 final 分支调 `loadMessages({ silent: true })` 之后**强制刷一次** `chat.history`（不依赖外层 reload）。
+
+2. **`sessions.get` 自身失败时 `dropRun` 跳过，可能留下"思考中"单气泡卡死**
+   - 现状：`chat.store.js:1595-1602` `__awaitPersistAndDrop` 内 `loadMessages` 失败（含 `sessions.get` reject）保留旧策略不 `dropRun`——避免清掉 `streamingMsgs` 又拉不到终态消息。但事故场景下若 DC 一直没恢复，`streamingMsgs` 留到 `POST_ACCEPT_TIMEOUT_MS=24h` 兜底才清，期间 UI 显示"思考中 X 分 Y 秒"单气泡。
+   - 修复方向：增加一个更短的 fallback timer（比如 5 分钟）：`loadMessages` 失败后挂一个 retry timer，若仍失败再 `dropRun`。或借 `agent.run.end reason=failed` 信号源直接 `dropRun`（与 `endReason='rpc'/'wait'` 区别处理）。
+   - 注：与本次双气泡 bug 是相邻问题（ghost 渲染另一个变体），但修复策略不同。
+
 ## ProgressRing 后续优化
 
 **发现日期**：2026-04-14

@@ -250,8 +250,12 @@ export function createChatStore(storeKey, opts = {}) {
 			 * 加载当前 session 的消息
 			 * @param {object} [opts]
 			 * @param {boolean} [opts.silent] - 静默刷新，不设 loading 状态
+			 * @param {() => void} [opts.onMessagesPersisted] - sessions.get 成功 + this.messages 落地
+			 *   后立即同步触发；用于让 __awaitPersistAndDrop 在主数据已就位时立刻 dropRun，
+			 *   不等之后阻塞的辅助 RPC（chat.history 慢 reject / 60s timeout 的事故路径下，
+			 *   这是双气泡可见窗口 vs 单 RTT 窗口的差别）
 			 */
-			async loadMessages({ silent = false, limit: limitOverride } = {}) {
+			async loadMessages({ silent = false, limit: limitOverride, onMessagesPersisted } = {}) {
 				// 飞行中守卫：复用已有请求，防止 activate() + connReady watcher 同时触发
 				if (silent && this.__silentLoadPromise) {
 					console.debug('[chat] loadMessages: silent in-flight guard hit, reusing promise');
@@ -317,12 +321,32 @@ export function createChatStore(storeKey, opts = {}) {
 						// 重连后 reconcile：检查并 settle 僵尸 run / 完成 settling 过渡
 						this.__reconcileRunAfterLoad(this.messages);
 
-						// 获取当前 sessionId（用于历史上翻）
-						const hist = await conn.request('chat.history', {
-							sessionKey: this.chatSessionKey,
-							limit: 1,
-						}, { timeout: 60_000 });
-						this.currentSessionId = hist?.sessionId ?? null;
+						// 主数据（this.messages）已就位 → 同步触发 hook，让上游
+						// __awaitPersistAndDrop 立刻 dropRun。**不能等 chat.history**：
+						// DC 抖动事故路径下它可能长时间挂起（最长 60s timeout），那段窗口内
+						// streamingMsgs 与 server 持久化消息并存会被 allMessages 合并成
+						// 双气泡（"思考中" + "已思考" 同时存在）。hook 同步抛错仅 warn，
+						// 不污染 ok 返回值。
+						if (onMessagesPersisted) {
+							try { onMessagesPersisted(); }
+							catch (hookErr) {
+								console.warn('[chat] onMessagesPersisted hook err:', hookErr?.message);
+							}
+						}
+
+						// 获取当前 sessionId（仅用于历史上翻定位）。这是辅助性 RPC，
+						// DC 抖动等非致命错误下失败时保留 currentSessionId 旧值即可，
+						// 不影响 ok 返回。
+						try {
+							const hist = await conn.request('chat.history', {
+								sessionKey: this.chatSessionKey,
+								limit: 1,
+							}, { timeout: 60_000 });
+							this.currentSessionId = hist?.sessionId ?? null;
+						}
+						catch (histErr) {
+							console.warn('[chat] chat.history failed (non-fatal): %s', histErr?.message);
+						}
 
 						return true;
 					}
@@ -1564,12 +1588,24 @@ export function createChatStore(storeKey, opts = {}) {
 			 * 拉不到终态消息。后续兜底：(a) 下次 activate / __onConnReady silent reload；
 			 * (b) agent-runs.store 的 POST_ACCEPT_TIMEOUT_MS 24h timer。
 			 *
+			 * dropRun 同时走两条路径，互为兜底：
+			 *   - **主路径**：onMessagesPersisted hook 在 sessions.get 主数据落地时同步触发——
+			 *     事故路径下 chat.history 可能慢挂起最长 60s，hook 让 dropRun 在主数据
+			 *     就位的一瞬间就跑，把双气泡可见窗口压回单 RTT。
+			 *   - **兜底**：ok=true 时再调一次。覆盖飞行中守卫复用同一 promise 的场景
+			 *     （上游已有 silent reload 在跑时本调用直接 return 旧 promise，doLoad 不再
+			 *     跑、本调用提供的 hook 永不触发）。
+			 *   - **幂等性**：dropRun 内 `runKeyIndex[runKey]` 已删时直接 return，重复调安全。
+			 *
 			 * @param {{ runId: string, accepted: boolean, endReason: string }} res
 			 * @param {string} runKey
 			 * @param {object} runsStore - useAgentRunsStore() 实例（来自调用方避免重复 lookup）
 			 */
 			async __awaitPersistAndDrop(res, runKey, runsStore) {
-				const ok = await this.loadMessages({ silent: true });
+				const ok = await this.loadMessages({
+					silent: true,
+					onMessagesPersisted: () => runsStore.dropRun(runKey, res.runId),
+				});
 				if (ok) runsStore.dropRun(runKey, res.runId);
 			},
 

@@ -465,6 +465,43 @@ describe('useChatStore', () => {
 				sessionKey: 'agent:ops:main',
 			}), { timeout: 60_000 });
 		});
+
+		// chat.history 是辅助 RPC（仅取 currentSessionId 用于历史上翻），它的失败
+		// 不应反向阻挡 sessions.get 已成功拉到的消息更新。否则上游 __awaitPersistAndDrop
+		// 拿到的 ok=false 会让 dropRun 跳过，streamingMsgs 永远卡死 →
+		// allMessages 把 streamingMsgs 与 server 持久化消息并列渲染成两个气泡。
+		test('chat.history 失败时 loadMessages 仍返回 true，sessions.get 数据已生效', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'sessions.get') {
+					return Promise.resolve({ messages: [{ role: 'user', content: 'persisted' }] });
+				}
+				if (method === 'chat.history') {
+					const err = new Error('DC_CLOSED');
+					err.code = 'DC_CLOSED';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.currentSessionId = 'prev-sess';
+
+			const ok = await store.loadMessages({ silent: true });
+
+			expect(ok).toBe(true);
+			expect(store.messages).toHaveLength(1);
+			expect(store.messages[0]).toMatchObject({ message: { role: 'user', content: 'persisted' } });
+			// chat.history 失败时 currentSessionId 保持旧值（不重置为 null）
+			expect(store.currentSessionId).toBe('prev-sess');
+		});
 	});
 
 	// =====================================================================
@@ -1721,10 +1758,12 @@ describe('useChatStore', () => {
 
 			const runsStore = useAgentRunsStore();
 			const conn = mockConn();
+			// agent RPC pending：让 run 不进入终态，streamingMsgs 不会被 dropRun 释放，
+			// 测试可以观察到 register 之后的 _pending 标记状态
 			conn.request.mockImplementation((method, params, options) => {
 				if (method === 'agent') {
 					options?.onAccepted?.({ runId: 'run-p' });
-					return Promise.resolve({ status: 'ok' });
+					return new Promise(() => {});
 				}
 				if (method === 'sessions.get') return Promise.resolve({ messages: [] });
 				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
@@ -1737,7 +1776,10 @@ describe('useChatStore', () => {
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 
-			await store.sendMessage('hello');
+			void store.sendMessage('hello');
+			// 等 register + onAccepted 完成
+			await Promise.resolve();
+			await Promise.resolve();
 			// onAccepted 后 streamingMsgs 中的消息 _pending 应为 false
 			const run = Object.values(runsStore.runs)[0];
 			expect(run).toBeTruthy();
@@ -2328,6 +2370,197 @@ describe('useChatStore', () => {
 			expect(dropSpy).not.toHaveBeenCalled();
 			expect(runsStore.getActiveRun(store.runKey)).not.toBeNull();
 			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
+		});
+
+		// 双气泡 bug 回归：DC 抖动时 chat.history（取 currentSessionId 的辅助 RPC）失败，
+		// 不应反向阻挡 sessions.get 已经成功拉到的服务端消息覆盖 + dropRun 释放
+		// streamingMsgs。否则 streamingMsgs 与 server 持久化消息会同时被合并，
+		// groupSessionMessages 因 streamingMsgs 内残留的 optimisticUser 把"流式 assistant"
+		// 与"持久化 assistant"切成两个独立 botTask（截图症状："思考中" + "已思考" 并存）。
+		test('endReason=failed + sessions.get 成功 + chat.history 失败：仍 dropRun（chat.history 是辅助 RPC）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentReject = null;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-2bot' });
+					return new Promise((_, reject) => { agentReject = reject; });
+				}
+				if (method === 'sessions.get') {
+					return Promise.resolve({
+						messages: [
+							{ role: 'user', content: [{ type: 'text', text: 'ok' }], timestamp: 1000 },
+							{ role: 'assistant', content: [{ type: 'text', text: 'final' }], stopReason: 'end_turn', timestamp: 2000, model: 'mini-m2' },
+						],
+					});
+				}
+				if (method === 'chat.history') {
+					const err = new Error('DC_CLOSED');
+					err.code = 'DC_CLOSED';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			const sendPromise = store.sendMessage('ok');
+			// 等 onAccepted + register 完成（注册时 streamingMsgs 已含 optimistic user/claw）
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(runsStore.runs['run-2bot']).toBeTruthy();
+
+			// 模拟 DC 死：主 RPC reject → __onRpcFailed → __endRun('failed')
+			const err = new Error('rtc lost');
+			err.code = 'DC_CLOSED';
+			agentReject(err);
+			await sendPromise;
+
+			// 等 runPromise.then → __awaitPersistAndDrop → loadMessages 链路 settle
+			await vi.waitFor(() => {
+				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-2bot');
+			});
+
+			// streamingMsgs 已释放：getActiveRun 返回 null
+			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
+			// allMessages 不再含 streamingMsgs；groupSessionMessages 只输出一个 botTask
+			const grouped = groupSessionMessages(store.allMessages);
+			const botTasks = grouped.filter((i) => i.type === 'botTask');
+			expect(botTasks).toHaveLength(1);
+		});
+
+		// 双气泡 bug 慢挂起变体：DC 抖动事故路径下 chat.history 不一定立即 reject，
+		// 也可能挂起到 60s timeout 才返回。dropRun 必须在 sessions.get 主数据落地的
+		// 一瞬间就触发，不能等 chat.history——否则双气泡可见窗口最长 60s。
+		test('endReason=failed + sessions.get 成功 + chat.history 挂起：sessions.get 落地后立即 dropRun（不等 chat.history）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentReject = null;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-hang' });
+					return new Promise((_, reject) => { agentReject = reject; });
+				}
+				if (method === 'sessions.get') {
+					return Promise.resolve({
+						messages: [
+							{ role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1000 },
+							{ role: 'assistant', content: [{ type: 'text', text: 'a' }], stopReason: 'end_turn', timestamp: 2000 },
+						],
+					});
+				}
+				if (method === 'chat.history') {
+					// 挂起：永不 resolve / reject——模拟事故路径下 chat.history 慢挂起到 timeout
+					return new Promise(() => {});
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			const sendPromise = store.sendMessage('q');
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(runsStore.runs['run-hang']).toBeTruthy();
+
+			const err = new Error('rtc lost');
+			err.code = 'DC_CLOSED';
+			agentReject(err);
+			await sendPromise;
+
+			// dropRun 必须在 chat.history 仍挂起时就被调用——hook 在 sessions.get 落地时同步触发
+			await vi.waitFor(() => {
+				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-hang');
+			});
+			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
+
+			// chat.history 仍挂起：__silentLoadPromise 还没 settle
+			expect(store.__silentLoadPromise).not.toBeNull();
+		});
+
+		// 飞行守卫复用：上游已有 silent reload 在飞行时，__awaitPersistAndDrop 调
+		// loadMessages 会直接 return 旧 promise，本调用提供的 onMessagesPersisted hook
+		// 不会被触发（A 的 doLoad 已跑过、B 的 doLoad 不再跑）。此时 dropRun 必须
+		// 由 ok=true 路径兜底，否则 streamingMsgs 会卡住。
+		test('飞行守卫复用：hook 不触发时 ok 路径 dropRun 兜底', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentReject = null;
+			let resolveSessionsGet = null;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-guard' });
+					return new Promise((_, reject) => { agentReject = reject; });
+				}
+				if (method === 'sessions.get') {
+					return new Promise((res) => { resolveSessionsGet = res; });
+				}
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			// 1. 先启动一个外部的 silent reload（不带 hook）—— 模拟 connReady watcher / activate re-entry
+			const externalReload = store.loadMessages({ silent: true });
+			await Promise.resolve();
+			expect(store.__silentLoadPromise).not.toBeNull();
+
+			// 2. 启动 sendMessage + 触发 run 终态
+			const sendPromise = store.sendMessage('q');
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(runsStore.runs['run-guard']).toBeTruthy();
+			const err = new Error('rtc lost');
+			err.code = 'DC_CLOSED';
+			agentReject(err);
+			await sendPromise;
+
+			// 此时 __awaitPersistAndDrop 内的 loadMessages 会命中飞行守卫复用 externalReload
+			// 的 promise，B 的 hook 不会被调用——dropRun 不应该已经被调过
+			expect(dropSpy).not.toHaveBeenCalled();
+
+			// 3. 让外部 reload 完成：sessions.get resolve（A 没 hook 不调 dropRun）→ chat.history resolve
+			resolveSessionsGet({
+				messages: [
+					{ role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1000 },
+					{ role: 'assistant', content: [{ type: 'text', text: 'a' }], stopReason: 'end_turn', timestamp: 2000 },
+				],
+			});
+			await externalReload;
+
+			// 4. ok=true 路径兜底：dropRun 终于被调
+			await vi.waitFor(() => {
+				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-guard');
+			});
+			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
 		});
 	});
 
