@@ -618,31 +618,41 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		await flush();
 
 		remoteLog.mockClear();
-		// 连发 3 次 → 派发时 count=3
-		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
-		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
-		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
-		// merged 日志在 setTimeout 回调内输出；flush helper 绕过 setTimeout，
-		// 所以用真实计时器推进窗口
-		await new Promise((r) => setTimeout(r, 1500));
-		const mergedCall = remoteLog.mock.calls.find((c) => /app\.network merged count=3/.test(c[0]));
-		expect(mergedCall).toBeTruthy();
+		// merged 日志在 setTimeout 回调内输出；__flushNetworkDebounceForTest 绕过 setTimeout 不会触发 merged 分支，
+		// 所以用 fake timers 推进 debounce 窗口，让真实回调执行。
+		vi.useFakeTimers();
+		try {
+			// 连发 3 次 → 派发时 count=3
+			networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+			networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+			networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+			await vi.advanceTimersByTimeAsync(1500);
+			const mergedCall = remoteLog.mock.calls.find((c) => /app\.network merged count=3/.test(c[0]));
+			expect(mergedCall).toBeTruthy();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
-	test('setupNetworkListener: debounce 窗口到期后自动派发（真实计时器）', async () => {
+	test('setupNetworkListener: debounce 窗口到期后自动派发', async () => {
 		const mod = await import('./capacitor-app.js');
 		await mod.initCapacitorApp(mockRouter);
 		await flush();
 
 		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
-		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
-		// 还没到窗口，不应派发
-		expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeUndefined();
-		// 等待窗口超时
-		await new Promise((r) => setTimeout(r, 1500));
-		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
-		expect(evt).toBeTruthy();
-		dispatchSpy.mockRestore();
+		vi.useFakeTimers();
+		try {
+			networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
+			// 还没到窗口，不应派发
+			expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeUndefined();
+			// 推进窗口超时
+			await vi.advanceTimersByTimeAsync(1500);
+			const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online');
+			expect(evt).toBeTruthy();
+		} finally {
+			vi.useRealTimers();
+			dispatchSpy.mockRestore();
+		}
 	});
 
 	test('setupNetworkListener: getStatus 慢返回不覆盖已被实时事件写过的 _lastConnectionType', async () => {
@@ -713,13 +723,18 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		await flush();
 
 		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
-		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
-		// 立即取消（模拟 logout 清理链）
-		mod.__cancelPendingNetworkDispatch();
-		// 等待原窗口应到期的时点，确认 timer 已真的被清掉，不会迟到派发
-		await new Promise((r) => setTimeout(r, 1500));
-		expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeUndefined();
-		dispatchSpy.mockRestore();
+		vi.useFakeTimers();
+		try {
+			networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
+			// 立即取消（模拟 logout 清理链）
+			mod.__cancelPendingNetworkDispatch();
+			// 推进至原窗口应到期的时点，确认 timer 已真的被清掉，不会迟到派发
+			await vi.advanceTimersByTimeAsync(1500);
+			expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'network:online')).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+			dispatchSpy.mockRestore();
+		}
 	});
 
 	// --- SplashScreen ---
