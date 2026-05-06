@@ -50,13 +50,13 @@ function createMockDC(label = 'file:test-id') {
 		close() { dc.readyState = 'closed'; dc.onclose?.(); },
 		__sent: sent,
 		// 等到 predicate(sent) 为真；hook 在 send() 上做事件驱动唤醒
-		__waitForSent(pred, { timeoutMs = 1000 } = {}) {
+		__waitForSent(pred, { timeoutMs = 1000, label = '' } = {}) {
 			if (pred(sent)) return Promise.resolve();
 			return new Promise((resolve, reject) => {
 				const timer = setTimeout(() => {
 					const idx = sendWaiters.findIndex(w => w.resolve === resolve);
 					if (idx >= 0) sendWaiters.splice(idx, 1);
-					reject(new Error(`__waitForSent timeout after ${timeoutMs}ms`));
+					reject(new Error(`__waitForSent timeout (${timeoutMs}ms)${label ? ': ' + label : ''}`));
 				}, timeoutMs);
 				sendWaiters.push({
 					pred,
@@ -974,12 +974,13 @@ test('handleFileChannel GET: 响应头发送失败时安静退出', async () => 
 			logger: silentLogger(),
 		});
 		const dc = createMockDC();
-		dc.send = () => { throw new Error('DC closed'); };
+		let sendAttempted = 0;
+		dc.send = () => { sendAttempted++; throw new Error('DC closed'); };
 
 		handler.handleFileChannel(dc);
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'f.txt' }) });
-		// dc.send 直接抛错，没有真正进入 __sent；只能等一段固定时间确认未崩溃
-		await new Promise((r) => setTimeout(r, 30));
+		// 等到 dc.send 至少被尝试一次（同步抛错），证明 GET 路径已走到发送阶段
+		await waitFor(() => sendAttempted >= 1, { label: 'dc.send attempted on GET' });
 		// 不应崩溃
 	} finally {
 		await fs.rm(dir, { recursive: true });
@@ -1118,9 +1119,11 @@ test('handleFileChannel PUT: size mismatch 被拒绝', async () => {
 		assert.ok(errMsg);
 		assert.equal(errMsg.error.code, 'WRITE_FAILED');
 
-		// 确认临时文件被清理
-		const files = await fs.readdir(dir);
-		assert.ok(!files.some((f) => f.includes('.tmp.')));
+		// 确认临时文件被清理（safeUnlink 是 fire-and-forget，需轮询等其完成）
+		await waitFor(async () => {
+			const files = await fs.readdir(dir);
+			return !files.some((f) => f.includes('.tmp.'));
+		}, { label: 'tmp file cleaned after size-mismatch' });
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -1772,11 +1775,15 @@ test('handleFileChannel PUT: SIZE_EXCEEDED 后 drainLoop 不崩溃', async () =>
 
 		// 第一个 chunk 入队并触发 drainLoop（通过 setImmediate）
 		dc.onmessage({ data: Buffer.alloc(5, 'a') });
-		// 第二个 chunk 触发 SIZE_EXCEEDED → ws.destroy()
+		// 第二个 chunk 触发 SIZE_EXCEEDED → ws.destroy()（同步发出 error 帧）
 		dc.onmessage({ data: Buffer.alloc(6, 'b') });
 
-		// 等待 drainLoop 的 setImmediate 执行（ws 已被 destroy，不应崩溃）
+		// 等到 SIZE_EXCEEDED error 帧已发出
 		await dc.__waitForSent((sent) => sent.some((s) => { try { const o = JSON.parse(s); return o.ok === false && o.error?.code; } catch { return false; } }));
+		// flush setImmediate 队列两次，让前一个 chunk 排好的 drainLoop 真正跑过
+		// wsError 早返路径——这才是本用例要保护的"drain after destroy 不崩溃"分支
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
 
 		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
 		const errMsg = strings.find((s) => s.error?.code === 'SIZE_EXCEEDED');
@@ -2458,7 +2465,10 @@ test('handleFileChannel GET: read stream 错误记录诊断', async () => {
 		handler.handleFileChannel(dc, 'c_rd');
 
 		dc.onmessage({ data: JSON.stringify({ method: 'GET', path: 'r.txt' }) });
-		await waitFor(() => remoteLogBuffer.length > 0);
+		// 直接等 fail 日志出现——避免被前置的 file.dl.start 抢先唤醒
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.dl\.fail/.test(e.text)
+			&& /reason=read-error/.test(e.text)
+			&& /id=rd-err/.test(e.text)));
 
 		const failLog = remoteLogBuffer.find((e) => /file\.dl\.fail/.test(e.text)
 			&& /reason=read-error/.test(e.text)
@@ -2491,8 +2501,13 @@ test('handleFileChannel PUT: dc.onerror 中断上传并清理临时文件', asyn
 
 		// 触发 pion 异步 send 错误
 		dc.onerror(new Error('io: closed pipe'));
-		// 等到 fail 日志落，证明 onerror 处理路径已完整执行
-		await waitFor(() => remoteLogBuffer.some((e) => /file\.up\.fail/.test(e.text) && /id=up-err/.test(e.text)));
+		// 等到 fail 日志落 + 临时文件清理完成（safeUnlink 是 fire-and-forget，需轮询确认）
+		await waitFor(async () => {
+			const hasFail = remoteLogBuffer.some((e) => /file\.up\.fail/.test(e.text) && /id=up-err/.test(e.text));
+			if (!hasFail) return false;
+			const entries = await fs.readdir(dir);
+			return !entries.some((n) => /\.tmp\./.test(n));
+		}, { label: 'up.fail logged and tmp file cleaned' });
 
 		// 临时文件应已清理（不应有 .tmp.* 文件残留）
 		const entries = await fs.readdir(dir);

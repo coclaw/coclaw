@@ -797,3 +797,34 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 `eab42c5` 把 auto-upgrade legacy 路径与 gateway auth-token 解析都收口到 `getClawConfig()`，但 file-handler 这处 callsite 没跟上，仍直接调 `loadConfig`。在 OpenClaw 2026.4.27+ 上会触发 deprecation 警告，不破功能。
 
 **修复方向**：改用 `getClawConfig()`（`src/claw-config.js`）；仅一行替换 + import 即可。下次顺手收口。
+
+## 2026-05-06 deep-review（file-manager test setTimeout→waitFor 改造）抓出的预存问题
+
+### __gatewayRpc 真 setTimeout 触发 settle 路径丢失端到端测试覆盖
+
+**锚点**：`plugins/openclaw/src/realtime-bridge.js:379` 的 `setTimeout(() => settle({ ok: false, error: 'timeout' }), timeoutMs)`
+
+**背景**：b106430 把 `ensureAgentSession should NOT reset on resolve timeout` 用例 stub 掉了 `__gatewayRpc`（避免等真 2s 定时器），节省 ~2s。后果：`__gatewayRpc` 自身的真 setTimeout 触发 settle 行为不再有用例端到端验证。
+
+**注意**：c8 line coverage 仍 100%（setTimeout 注册行通过其他路径被执行；arrow function body 也算 covered）。但**真 timer fire → settle('timeout') → clearTimeout → delete pendingRequest** 的端到端行为没专门用例。`__gatewayAgentRpc` 是另一套独立实现，不复用 `__gatewayRpc`。
+
+**修复尝试记录**：本次 review 试过补一条直测用例（`bridge.__gatewayRpc('any.method', {}, { timeoutMs: 10 })`），但 bridge.start() 后即使调 `drainEnsureAllAgentSessions` 也会让 event loop 残留 pending promise（连续两次报 `'Promise resolution is still pending but the event loop has already resolved'` + `cancelledByParent` 级联取消后续 ~140 个用例），暂未找到稳定 setup。已撤回。
+
+**修复方向**：考虑直接 mock 一个 bridge 实例，手工设置 `gatewayWs` / `gatewayReady` 等内部状态，绕过 `bridge.start()` 的全套副作用；或拦截 `setTimeout`（参考 `RealtimeBridge should handle connect timeout` 的 timer 拦截 pattern）让 setTimeout 立即触发。
+
+### handler.test.js 多处保留固定 sleep，等的是"不崩溃" / fire-and-forget 清理路径（PRE-EXISTING）
+
+**锚点**：`plugins/openclaw/src/file-manager/handler.test.js` 中以下行保留 `await new Promise((r) => setTimeout(r, X))`：
+
+- 约 line 1168、1174 — DC 取消用例：等 onclose / 临时文件清理
+- 约 line 1265 — 等 ws.write callback 触发后的 done 处理
+- 约 line 1399 — 等 createWriteStream 错误同步抛后的清理
+- 约 line 1655、1659 — 等 dc.close 后续异步动作 / 等"未消息态"窗口
+- 约 line 1723、1747、1751 — 上传过程中的多步同步状态翻转
+- 约 line 2490 — 等 ws 异步 open + drainLoop 写入，避免 dc.onerror 与 ws.open 竞态
+
+**特点**：这些等待普遍是"等几个 tick 让异步链路 / fire-and-forget 副作用走完"，没有正向完成信号可挂 predicate。本次 setTimeout→waitFor 大改造没动它们。
+
+**风险**：在极慢 CI（高并发、低 IO）下，这些固定毫秒数可能不足，引入 flake；时长又都很短（10–50ms），实际影响概率低。
+
+**修复方向**：逐条评估能否引入 mock hook（如 hook ws.destroy / hook safeUnlink / hook dc.close）让它们也变事件驱动；做不到的保留固定 sleep 但给出明确的"等的是什么"注释。
