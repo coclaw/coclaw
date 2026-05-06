@@ -488,6 +488,11 @@ export default {
 					this.showNoMoreHint = false;
 					this.userScrolledUp = false;
 					this.__scrollReady = false;
+					// 切到新 chat 那一刻，旧 chat 残留的历史加载锁逻辑上跟当前页面已无关；
+					// 不清零会拦下新 chat __onConnReady 之后的 scrollToBottom（首次加载后
+					// 不自动到底）。旧 await 醒来时 __loadMoreHistory 内部的 store 比对会
+					// 早退、不会再动 DOM。
+					this.__loadingHistory = false;
 					store.activate();
 					// connReady 可能已经为 true 但 watcher 不会触发（值未变）
 					// 显式调用确保消息加载和 scrollToBottom 正确执行
@@ -540,6 +545,18 @@ export default {
 		if (sc) this.__resizeOb.observe(sc);
 		if (content) this.__resizeOb.observe(content);
 
+		// 触屏下拉加载更早历史：内容没溢出时浏览器不发滚动事件，scroll/wheel 那条路在
+		// 这一刻是哑的；触摸事件不依赖"能不能滚"，所以补一条独立的入口。
+		// 仅在按下时已经在最顶才接管，下拉超过阈值且抬起触发 __loadMoreHistory。
+		if (sc) {
+			sc.addEventListener('touchstart', this.__onPullStart, { passive: true });
+			sc.addEventListener('touchmove', this.__onPullMove, { passive: true });
+			sc.addEventListener('touchend', this.__onPullEnd, { passive: true });
+			// touchcancel 表示手势被系统中断（来电、多任务、被其他元素接管），
+			// 应当作 abort 处理，仅重置跟踪状态、不触发加载
+			sc.addEventListener('touchcancel', this.__onPullCancel, { passive: true });
+		}
+
 		// 拖拽上传
 		const root = this.$refs.chatRoot;
 		if (root) {
@@ -553,6 +570,13 @@ export default {
 		this.unsuppressPullRefresh();
 		this.chatStore?.cleanup();
 		this.__resizeOb?.disconnect();
+		const sc = this.$refs.scrollContainer;
+		if (sc) {
+			sc.removeEventListener('touchstart', this.__onPullStart);
+			sc.removeEventListener('touchmove', this.__onPullMove);
+			sc.removeEventListener('touchend', this.__onPullEnd);
+			sc.removeEventListener('touchcancel', this.__onPullCancel);
+		}
 		const root = this.$refs.chatRoot;
 		if (root) {
 			root.removeEventListener('dragover', this.__onDragOver);
@@ -959,6 +983,40 @@ export default {
 			}
 		},
 
+		__onPullStart(e) {
+			if (this.isTopicRoute) return;
+			const el = this.$refs.scrollContainer;
+			if (!el) return;
+			// 仅在已经在最顶才进入跟踪；其余情况让浏览器照常滚动
+			if (el.scrollTop > 0) {
+				this.__pullStartY = null;
+				return;
+			}
+			const t = e.touches?.[0];
+			if (!t) return;
+			this.__pullStartY = t.clientY;
+		},
+		__onPullMove(e) {
+			if (this.__pullStartY == null) return;
+			const t = e.touches?.[0];
+			if (!t) return;
+			this.__pullDist = t.clientY - this.__pullStartY;
+		},
+		__onPullEnd() {
+			const dist = this.__pullDist || 0;
+			this.__pullStartY = null;
+			this.__pullDist = 0;
+			// 60px 与 use-pull-refresh 的视觉阈值一致，不外暴指示器、纯触发动作
+			if (dist >= 60 && !this.isTopicRoute) {
+				this.__loadMoreHistory();
+			}
+		},
+		__onPullCancel() {
+			// 仅重置跟踪状态；中断的手势不当作完成
+			this.__pullStartY = null;
+			this.__pullDist = 0;
+		},
+
 		/** 消息加载后若内容不足以填满容器，主动加载历史 */
 		__autoFillHistory() {
 			if (this.isTopicRoute) return;
@@ -970,21 +1028,25 @@ export default {
 
 		async __loadMoreHistory() {
 			if (!this.chatStore || this.__loadingHistory) return;
+			// 入口快照 store 引用：await 醒来后 chatStore 可能已切到别的 chat。
+			// 弱 guard "!this.chatStore" 形同虚设（getter 永远 truthy），必须身份比对。
+			const targetStore = this.chatStore;
 			this.__loadingHistory = true;
 			try {
 				// 优先加载当前 session 内的更早消息
-				if (this.chatStore.hasMoreMessages && !this.chatStore.messagesLoading) {
+				if (targetStore.hasMoreMessages && !targetStore.messagesLoading) {
 					const el = this.$refs.scrollContainer;
 					// 入口快照 scrollTop + scrollHeight：恢复时用绝对赋值盖住浏览器锚定
 					// （Chrome/Edge/Firefox 的 overflow-anchor:auto 会在 prepend 后自动调整 scrollTop，
 					// 用 += 会双倍位移把用户撞到底）
 					const prevScrollTop = el?.scrollTop ?? 0;
 					const prevHeight = el?.scrollHeight ?? 0;
-					const loaded = await this.chatStore.loadOlderMessages();
-					// await 后 chatStore 可能因路由变化变为 null
-					if (!this.chatStore) return;
+					const loaded = await targetStore.loadOlderMessages();
+					// await 后 chatStore 已切走 / 组件已卸载 → 不再动 DOM
+					if (this.__unmounted || this.chatStore !== targetStore) return;
 					if (loaded && el) {
 						this.$nextTick(() => {
+							if (this.__unmounted || this.chatStore !== targetStore) return;
 							const newHeight = el.scrollHeight;
 							el.scrollTop = prevScrollTop + (newHeight - prevHeight);
 						});
@@ -992,8 +1054,8 @@ export default {
 					return;
 				}
 
-				if (this.chatStore.historyExhausted || this.chatStore.historyLoading) {
-					if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
+				if (targetStore.historyExhausted || targetStore.historyLoading) {
+					if (targetStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
 						this.showNoMoreHint = true;
 					}
 					return;
@@ -1001,20 +1063,26 @@ export default {
 				const el = this.$refs.scrollContainer;
 				const prevScrollTop = el?.scrollTop ?? 0;
 				const prevHeight = el?.scrollHeight ?? 0;
-				const loaded = await this.chatStore.loadNextHistorySession();
-				// await 后 chatStore 可能因路由变化变为 null
-				if (!this.chatStore) return;
+				const loaded = await targetStore.loadNextHistorySession();
+				if (this.__unmounted || this.chatStore !== targetStore) return;
 				if (loaded && el) {
 					this.$nextTick(() => {
+						if (this.__unmounted || this.chatStore !== targetStore) return;
 						const newHeight = el.scrollHeight;
 						el.scrollTop = prevScrollTop + (newHeight - prevHeight);
 					});
 				}
-				if (this.chatStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
+				if (targetStore.historyExhausted && !this.isTopicRoute && this.userScrolledUp) {
 					this.showNoMoreHint = true;
 				}
 			} finally {
-				this.__loadingHistory = false;
+				// 只有"当前仍是发起这次加载的那个 store"才回收锁。
+				// 切走的情况：watcher 已提前清零；如果新 chat 期间又触发了新加载，
+				// 锁可能已被新加载置 true，这里若无条件清会把新加载的锁误清掉
+				// 导致后续可能双发。__unmounted 同理：实例已卸载就别再写状态。
+				if (!this.__unmounted && this.chatStore === targetStore) {
+					this.__loadingHistory = false;
+				}
 			}
 		},
 	},

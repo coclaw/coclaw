@@ -1621,6 +1621,329 @@ describe('ChatPage scroll', () => {
 			// 而不是 += 写法下被锚定后的 500 + 1000 = 1500（双倍过头）
 			expect(scrollContainer.scrollTop).toBe(1100);
 		});
+
+		test('await loadOlderMessages 期间 chatStore 切走 → 不基于旧测量值改 scrollTop', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			if (!storeA) return;
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, configurable: true, writable: true });
+			Object.defineProperty(scrollContainer, 'scrollTop', { value: 100, configurable: true, writable: true });
+			Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, configurable: true });
+
+			storeA.hasMoreMessages = true;
+			let resolveLoad;
+			storeA.loadOlderMessages = vi.fn().mockReturnValue(new Promise((r) => { resolveLoad = r; }));
+
+			const p = wrapper.vm.__loadMoreHistory();
+			// 推进到 await loadOlderMessages（targetStore 已捕获为 A）
+			await Promise.resolve();
+
+			// 切到 storeB：mock chatStore getter
+			const storeB = { hasMoreMessages: false, messagesLoading: false, historyExhausted: true, historyLoading: false };
+			const getSpy = vi.spyOn(wrapper.vm, 'chatStore', 'get').mockReturnValue(storeB);
+
+			// 模拟 prepend 后高度变化
+			Object.defineProperty(scrollContainer, 'scrollHeight', { value: 2000, configurable: true, writable: true });
+			resolveLoad(true);
+			await p;
+			await flushPromises();
+			await new Promise((r) => requestAnimationFrame(r));
+
+			// 切走后，旧 await 醒来不应基于旧测量值（prev 100 + diff 1000 = 1100）改新视图的 scrollTop
+			expect(scrollContainer.scrollTop).toBe(100);
+
+			getSpy.mockRestore();
+		});
+
+		test('A 加载中切到 B → B 也加载 → A 醒来 finally 不应清掉 B 的锁', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			if (!storeA) return;
+
+			storeA.hasMoreMessages = true;
+			let resolveA;
+			storeA.loadOlderMessages = vi.fn().mockReturnValue(new Promise((r) => { resolveA = r; }));
+
+			// A 触发加载，await 飞行中，锁 = true
+			const pA = wrapper.vm.__loadMoreHistory();
+			await Promise.resolve();
+			expect(wrapper.vm.$data.__loadingHistory).toBe(true);
+
+			// 切到 B：watcher 提前清锁，再用 mock getter 把 chatStore 替换为 B
+			const storeB = {
+				hasMoreMessages: true,
+				messagesLoading: false,
+				historyExhausted: false,
+				historyLoading: false,
+				activate: vi.fn(),
+			};
+			const watcher = wrapper.vm.$options.watch.chatStore;
+			watcher.handler.call(wrapper.vm, storeB, storeA);
+			const getSpy = vi.spyOn(wrapper.vm, 'chatStore', 'get').mockReturnValue(storeB);
+			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
+
+			// B 发起新加载，锁回到 true（这是修法要保护的状态）
+			let resolveB;
+			storeB.loadOlderMessages = vi.fn().mockReturnValue(new Promise((r) => { resolveB = r; }));
+			const pB = wrapper.vm.__loadMoreHistory();
+			await Promise.resolve();
+			expect(wrapper.vm.$data.__loadingHistory).toBe(true);
+
+			// A 醒来：race guard 早退，finally 看 store 不一致 → 不应清 B 的锁
+			resolveA(true);
+			await pA;
+			await flushPromises();
+			expect(wrapper.vm.$data.__loadingHistory).toBe(true);
+
+			// B 完成时正常清锁
+			resolveB(true);
+			await pB;
+			await flushPromises();
+			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
+
+			getSpy.mockRestore();
+		});
+
+		test('await loadOlderMessages 期间组件已卸载 → 不动 DOM', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			if (!storeA) return;
+
+			const sc = wrapper.vm.$refs.scrollContainer;
+			if (!sc) return;
+			Object.defineProperty(sc, 'scrollHeight', { value: 1000, configurable: true, writable: true });
+			Object.defineProperty(sc, 'scrollTop', { value: 100, configurable: true, writable: true });
+			Object.defineProperty(sc, 'clientHeight', { value: 500, configurable: true });
+
+			storeA.hasMoreMessages = true;
+			let resolveLoad;
+			storeA.loadOlderMessages = vi.fn().mockReturnValue(new Promise((r) => { resolveLoad = r; }));
+
+			const p = wrapper.vm.__loadMoreHistory();
+			await Promise.resolve();
+
+			// 模拟组件已卸载
+			wrapper.vm.__unmounted = true;
+
+			Object.defineProperty(sc, 'scrollHeight', { value: 2000, configurable: true, writable: true });
+			resolveLoad(true);
+			await p;
+			await flushPromises();
+			await new Promise((r) => requestAnimationFrame(r));
+
+			// unmount 后不应改 scrollTop
+			expect(sc.scrollTop).toBe(100);
+		});
+
+		test('await loadNextHistorySession 期间 chatStore 切走 → 不基于旧测量值改 scrollTop', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			if (!storeA) return;
+
+			const sc = wrapper.vm.$refs.scrollContainer;
+			if (!sc) return;
+			Object.defineProperty(sc, 'scrollHeight', { value: 1000, configurable: true, writable: true });
+			Object.defineProperty(sc, 'scrollTop', { value: 100, configurable: true, writable: true });
+			Object.defineProperty(sc, 'clientHeight', { value: 500, configurable: true });
+
+			// 走第二条分支：当前 session 内无更多消息，跨 session 拉历史
+			storeA.hasMoreMessages = false;
+			storeA.messagesLoading = false;
+			storeA.historyExhausted = false;
+			storeA.historyLoading = false;
+			let resolveLoad;
+			storeA.loadNextHistorySession = vi.fn().mockReturnValue(new Promise((r) => { resolveLoad = r; }));
+
+			const p = wrapper.vm.__loadMoreHistory();
+			await Promise.resolve();
+
+			const storeB = { hasMoreMessages: false, messagesLoading: false, historyExhausted: true, historyLoading: false };
+			const getSpy = vi.spyOn(wrapper.vm, 'chatStore', 'get').mockReturnValue(storeB);
+
+			Object.defineProperty(sc, 'scrollHeight', { value: 2000, configurable: true, writable: true });
+			resolveLoad(true);
+			await p;
+			await flushPromises();
+			await new Promise((r) => requestAnimationFrame(r));
+
+			expect(sc.scrollTop).toBe(100);
+
+			getSpy.mockRestore();
+		});
+
+		test('chatStore 切换时清 __loadingHistory（避免阻塞新 chat scrollToBottom）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			expect(storeA).toBeTruthy();
+
+			// __loadingHistory 在 data() 中以 `__` 前缀声明，Vue 3 把首次访问的 access
+			// type 缓存为 OTHER，导致代理上读取返回 undefined（写仍能落到 $data）。
+			// 因此外部观察必须经 $data 看真值。详见 Vue 源 isReservedPrefix 警告。
+			// 模拟旧 chat 历史加载仍在飞行（__loadingHistory 还没回到 false）
+			wrapper.vm.$data.__loadingHistory = true;
+			expect(wrapper.vm.$data.__loadingHistory).toBe(true);
+
+			// 直接调用 chatStore watcher 的 handler 模拟切换到另一 store。
+			// storeB 用最小桩，仅满足 watcher body 内 store.activate() 调用；
+			// connReady=false 时不会进入 __onConnReady。
+			const storeB = { activate: vi.fn() };
+			const watcher = wrapper.vm.$options.watch.chatStore;
+			watcher.handler.call(wrapper.vm, storeB, storeA);
+
+			// 切走那一刻，旧加载逻辑上跟当前页面无关；标志要清零，否则新 chat 的
+			// scrollToBottom 会被这个残留 true 拦下来。
+			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
+		});
+	});
+
+	// --- 触屏下拉加载历史 ---
+	describe('touch-pull load history', () => {
+		function makeTouchEvent(type, clientY) {
+			const e = new Event(type, { bubbles: true, cancelable: true });
+			Object.defineProperty(e, 'touches', { value: [{ clientY }] });
+			Object.defineProperty(e, 'targetTouches', { value: [{ clientY }] });
+			return e;
+		}
+
+		test('内容未溢出时下拉超过阈值触发 __loadMoreHistory', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			// 内容刚好等于容器（无溢出）→ 现有 onScroll/onWheel 路径在触屏上发不出
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 500, configurable: true, writable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			const loadMoreSpy = vi.spyOn(wrapper.vm, '__loadMoreHistory').mockResolvedValue(undefined);
+
+			scrollContainer.dispatchEvent(makeTouchEvent('touchstart', 100));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchmove', 200)); // 下拉 100px
+			scrollContainer.dispatchEvent(makeTouchEvent('touchend', 200));
+
+			expect(loadMoreSpy).toHaveBeenCalled();
+		});
+
+		test('按下时不在最顶（scrollTop>0）→ 让浏览器照常处理，不触发加载', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 2000, configurable: true, writable: true },
+				scrollTop: { value: 500, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			const loadMoreSpy = vi.spyOn(wrapper.vm, '__loadMoreHistory').mockResolvedValue(undefined);
+
+			scrollContainer.dispatchEvent(makeTouchEvent('touchstart', 100));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchmove', 200));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchend', 200));
+
+			expect(loadMoreSpy).not.toHaveBeenCalled();
+		});
+
+		test('在最顶但下拉未过阈值 → 不触发加载', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 500, configurable: true, writable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			const loadMoreSpy = vi.spyOn(wrapper.vm, '__loadMoreHistory').mockResolvedValue(undefined);
+
+			scrollContainer.dispatchEvent(makeTouchEvent('touchstart', 100));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchmove', 130)); // 仅下拉 30px，未过阈值
+			scrollContainer.dispatchEvent(makeTouchEvent('touchend', 130));
+
+			expect(loadMoreSpy).not.toHaveBeenCalled();
+		});
+
+		test('topic 路由下不触发（与现有 __loadMoreHistory 入口约束一致）', async () => {
+			const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'topic-1' });
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 500, configurable: true, writable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			const loadMoreSpy = vi.spyOn(wrapper.vm, '__loadMoreHistory').mockResolvedValue(undefined);
+
+			scrollContainer.dispatchEvent(makeTouchEvent('touchstart', 100));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchmove', 200));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchend', 200));
+
+			expect(loadMoreSpy).not.toHaveBeenCalled();
+		});
+
+		test('下拉刚好等于 60px 阈值 → 触发加载（边界）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 500, configurable: true, writable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			const loadMoreSpy = vi.spyOn(wrapper.vm, '__loadMoreHistory').mockResolvedValue(undefined);
+
+			scrollContainer.dispatchEvent(makeTouchEvent('touchstart', 100));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchmove', 160)); // 刚好 60px
+			scrollContainer.dispatchEvent(makeTouchEvent('touchend', 160));
+
+			expect(loadMoreSpy).toHaveBeenCalled();
+		});
+
+		test('touchcancel 即使下拉超过阈值也不触发加载（手势被中断当作 abort）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const scrollContainer = wrapper.vm.$refs.scrollContainer;
+			if (!scrollContainer) return;
+			Object.defineProperties(scrollContainer, {
+				scrollHeight: { value: 500, configurable: true, writable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+
+			const loadMoreSpy = vi.spyOn(wrapper.vm, '__loadMoreHistory').mockResolvedValue(undefined);
+
+			scrollContainer.dispatchEvent(makeTouchEvent('touchstart', 100));
+			scrollContainer.dispatchEvent(makeTouchEvent('touchmove', 200)); // 远超 60px 阈值
+			scrollContainer.dispatchEvent(makeTouchEvent('touchcancel', 200));
+
+			expect(loadMoreSpy).not.toHaveBeenCalled();
+		});
 	});
 
 	// --- 拖拽上传 ---
