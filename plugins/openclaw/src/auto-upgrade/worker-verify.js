@@ -43,6 +43,13 @@ const HEALTH_POLL_INTERVAL_MS = 3_000;
 // 及插件 bootstrap，合计 30~60s 常见；5 分钟给足余量
 const HEALTH_TOTAL_TIMEOUT_MS = 5 * 60 * 1000;
 
+// 单调时钟（毫秒，整数）。轮询超时只关心"流逝"，必须避开 Date.now() 的墙钟
+// 跳变（NTP 同步、host suspend/resume、WSL2 vmtime sync）—— 这些跳变会让
+// loop 误以为已经超时而提前退出
+function monoNowMs() {
+	return Number(process.hrtime.bigint() / 1_000_000n);
+}
+
 /**
  * 执行命令并返回 stdout；错误对象附带 stderr 以便诊断
  * @param {string} cmd
@@ -149,12 +156,12 @@ export async function pollUpgradeHealth(toVersion, opts) {
 	const totalTimeout = opts?.totalTimeoutMs ?? HEALTH_TOTAL_TIMEOUT_MS;
 	/* c8 ignore next -- ?? fallback */
 	const pollInterval = opts?.pollIntervalMs ?? HEALTH_POLL_INTERVAL_MS;
-	const start = Date.now();
+	const start = monoNowMs();
 	let attempts = 0;
 	let lastReason = '';
 	let lastVersion = '';
 
-	while (Date.now() - start < totalTimeout) {
+	while (monoNowMs() - start < totalTimeout) {
 		attempts += 1;
 		const result = await callUpgradeHealthOnce(opts);
 		if (result.ok) {
@@ -164,7 +171,7 @@ export async function pollUpgradeHealth(toVersion, opts) {
 					ok: true,
 					version: result.version,
 					attempts,
-					elapsedMs: Date.now() - start,
+					elapsedMs: monoNowMs() - start,
 				};
 			}
 			lastVersion = result.version;
@@ -174,14 +181,14 @@ export async function pollUpgradeHealth(toVersion, opts) {
 			lastReason = result.reason;
 		}
 		// 剩余时间不足以再等一个 interval 就直接退出，避免最后一次毫无意义的 sleep
-		if (Date.now() - start + pollInterval >= totalTimeout) break;
+		if (monoNowMs() - start + pollInterval >= totalTimeout) break;
 		await sleep(pollInterval);
 	}
 
 	return {
 		ok: false,
 		attempts,
-		elapsedMs: Date.now() - start,
+		elapsedMs: monoNowMs() - start,
 		lastReason,
 		lastVersion,
 	};

@@ -1,0 +1,5 @@
+---
+'@coclaw/openclaw-coclaw': patch
+---
+
+Fix a flaky "post-upgrade health verification" failure where `pollUpgradeHealth` would occasionally report `ok: false` after just one attempt with a tiny duration, even though the upgrade had succeeded. Root cause: the polling loop measured elapsed time with `Date.now()` (wall clock), so any forward jump of the system clock during the loop — NTP step adjustment, host suspend/resume, WSL2 vmtime sync, container time domain change — would make the loop think the total timeout had been exceeded and break out after the first attempt. Switched the loop's elapsed-time calculation to a monotonic clock based on `process.hrtime.bigint()`, which is guaranteed wall-clock-independent on Linux/macOS/Windows. The reported `elapsedMs` field stays integer milliseconds with the same units as before. Beyond fixing the test flake, this also closes a real production bug where a wall-clock jump during the 5-minute health-check window would falsely roll back a successful upgrade. Added a regression test that monkey-patches `Date.now` to jump forward and confirms the function still completes correctly.

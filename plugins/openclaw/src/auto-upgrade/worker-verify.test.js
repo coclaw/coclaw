@@ -265,6 +265,36 @@ test('pollUpgradeHealth — 版本不匹配后恢复为匹配', async () => {
 	assert.equal(result.attempts, 2);
 });
 
+test('pollUpgradeHealth — 墙钟跳变不影响超时判定（使用单调时钟）', async () => {
+	// 回归测试：早期实现用 Date.now() 算 elapsed，墙钟在 NTP 同步 / WSL2 host
+	// resume 时偶发跳前数百毫秒，会让 break 提前触发，attempts=1 即退出失败。
+	// 此用例把 Date.now 临时改为"第 3 次调用跳前 480ms"，模拟该场景；
+	// 修复后函数走单调时钟，跳变不会影响其判定，仍能正常进入 iter 2 命中目标版本。
+	const realNow = Date.now;
+	let nCalls = 0;
+	Date.now = () => {
+		nCalls += 1;
+		const t = realNow.call(Date);
+		// 第 3 次调用恰好对应 iter 1 末尾的"剩余预算"判断
+		if (nCalls === 3) return t + 480;
+		return t;
+	};
+	let calls = 0;
+	const execFileFn = createExecFileFn(() => {
+		calls += 1;
+		if (calls === 1) return { stdout: JSON.stringify({ version: '0.9.0' }) };
+		return { stdout: JSON.stringify({ version: '1.0.0' }) };
+	});
+	try {
+		const result = await pollUpgradeHealth('1.0.0', { execFileFn, totalTimeoutMs: 500, pollIntervalMs: 20 });
+		assert.equal(result.ok, true);
+		assert.equal(result.attempts, 2);
+	}
+	finally {
+		Date.now = realNow;
+	}
+});
+
 test('pollUpgradeHealth — pollIntervalMs >= totalTimeoutMs 时仅探测一次', async () => {
 	let calls = 0;
 	const execFileFn = createExecFileFn(() => {
