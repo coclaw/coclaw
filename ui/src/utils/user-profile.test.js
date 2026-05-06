@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, test } from 'vitest';
 
 import { getUserAuthTypeLabel, getUserDisplayName, getUserLoginName } from './user-profile.js';

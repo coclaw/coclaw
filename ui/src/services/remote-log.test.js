@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, test, expect, vi, afterEach } from 'vitest';
 import {
 	RemoteLog, useRemoteLog, remoteLog, __resetRemoteLog,

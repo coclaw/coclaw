@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ClawConnection, BRIEF_DISCONNECT_MS, DEFAULT_CONNECT_TIMEOUT_MS } from './claw-connection.js';
 

@@ -16,7 +16,7 @@ config.global.stubs = {
 };
 
 afterEach(() => {
-	// 保持测试之间状态隔离
-	localStorage.clear();
-	sessionStorage.clear();
+	// 保持测试之间状态隔离；node 环境下没有这俩全局，需要守卫
+	if (typeof localStorage !== 'undefined') localStorage.clear();
+	if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
 });

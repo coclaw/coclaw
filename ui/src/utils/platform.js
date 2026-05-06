@@ -8,14 +8,17 @@
  * 注意：此模块不依赖 capacitor-app.js，避免 Tauri/Web 环境加载 @capacitor/core
  */
 
+// 浏览器下 globalThis === window；node/SSR/单测的 node 环境下没有 window，回退到 globalThis 以避免 import 时崩
+const _g = typeof window !== 'undefined' ? window : globalThis;
+
 /** 是否运行在桌面壳子（Electron）中 */
-export const isElectronApp = !!window.electronAPI;
+export const isElectronApp = !!_g.electronAPI;
 
 /** 是否运行在桌面壳子（Tauri，保留待用）中 */
-export const isTauriApp = '__TAURI_INTERNALS__' in window;
+export const isTauriApp = '__TAURI_INTERNALS__' in _g;
 
 /** 是否运行在移动壳子（Capacitor）中 */
-export const isCapacitorApp = !!window.Capacitor?.isNativePlatform();
+export const isCapacitorApp = !!_g.Capacitor?.isNativePlatform();
 
 /** 是否运行在任何原生壳子中 */
 export const isNativeShell = isCapacitorApp || isElectronApp || isTauriApp;

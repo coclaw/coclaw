@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { test, expect, describe, vi, beforeEach } from 'vitest';
 
 let botsById = {};

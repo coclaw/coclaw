@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { test, expect, describe, vi, beforeEach } from 'vitest';
 
 // 捕获 store 注册的 hooks（vi.hoisted 确保在 vi.mock 提升后仍可访问）

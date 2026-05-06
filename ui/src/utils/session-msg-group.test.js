@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { test, expect, describe } from 'vitest';
 import { groupSessionMessages, stripOcPrefixes, cleanDerivedTitle } from './session-msg-group.js';
 

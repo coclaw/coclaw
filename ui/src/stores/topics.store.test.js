@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 

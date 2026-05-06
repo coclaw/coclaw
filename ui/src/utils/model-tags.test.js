@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, test, expect } from 'vitest';
 import { generateModelTags, PROVIDER_NAMES } from './model-tags.js';
 
