@@ -13,10 +13,16 @@
    - 现状：`chat.store.js:1133-1149` 在斜杠命令 final 分支拍照 `prevSessionId` 然后 silent reload，归档判定靠 `this.currentSessionId !== prevSessionId`。如果 `chat.history` 在 reload 中失败，`currentSessionId` 保留旧值，条件 false negative，旧消息**不进归档**——而 `sessions.get` 已经把消息从 `this.messages` 换成新 session，旧消息相当于丢失（用户切回历史看不到）。修复前后行为一致（旧代码 `chat.history` reject 时 `currentSessionId` 也保留旧值）。
    - 修复方向：归档判定改用 `prevMessages.length > 0 && (this.currentSessionId !== prevSessionId || chat.history 失败)` 兜底；或者 final 分支调 `loadMessages({ silent: true })` 之后**强制刷一次** `chat.history`（不依赖外层 reload）。
 
-2. **`sessions.get` 自身失败时 `dropRun` 跳过，可能留下"思考中"单气泡卡死**
-   - 现状：`chat.store.js:1595-1602` `__awaitPersistAndDrop` 内 `loadMessages` 失败（含 `sessions.get` reject）保留旧策略不 `dropRun`——避免清掉 `streamingMsgs` 又拉不到终态消息。但事故场景下若 DC 一直没恢复，`streamingMsgs` 留到 `POST_ACCEPT_TIMEOUT_MS=24h` 兜底才清，期间 UI 显示"思考中 X 分 Y 秒"单气泡。
+2. **`sessions.get` 自身失败时 `dropRun` 跳过，"思考中"单气泡永久 orphan**
+   - 现状：`chat.store.js` `__awaitPersistAndDrop` 内 `loadMessages` 失败（含 `sessions.get` reject）保留旧策略不 `dropRun`——避免清掉 `streamingMsgs` 又拉不到终态消息。
+   - **关键事实（第三轮 review 核实）**：`__endRun`（`agent-runs.store.js:441-444`）已经清掉了 `run.__timer`（`POST_ACCEPT_TIMEOUT_MS=24h` 兜底）。之后任何 silent reload 触发 `__reconcileRunAfterLoad → stripLocalUserMsgs` 时又因 `run.ended=true` 早返回（`agent-runs.store.js:547`），不动 `streamingMsgs`。结论：**`sessions.get` 失败时 streamingMsgs 永久 orphan，直到 chat 销毁/重建**，不是"24h 后自愈"。
    - 修复方向：增加一个更短的 fallback timer（比如 5 分钟）：`loadMessages` 失败后挂一个 retry timer，若仍失败再 `dropRun`。或借 `agent.run.end reason=failed` 信号源直接 `dropRun`（与 `endReason='rpc'/'wait'` 区别处理）。
    - 注：与本次双气泡 bug 是相邻问题（ghost 渲染另一个变体），但修复策略不同。
+
+3. **多个 `loadMessages` 并发写 `this.messages` 时的乱序覆盖（force 路径残留）**
+   - 现状：第三轮加的 `force: true` 让 `__awaitPersistAndDrop` 绕过飞行守卫起独立 `doLoad`。两个 force load（fast-follow 双 run 终态）或一个 force load + 一个非 force silent reload 同时在飞时，sessions.get 返回顺序乱序的话，靠后的 `this.messages = ...` 写动作会覆盖更新的快照，短暂复现 stale-A vanish。
+   - 触发条件：要求两个 sessions.get 阶段的 RPC 乱序到秒级以上（同条信令通道、同时段、回程顺序倒置）——实际几乎不可能。最坏后果是临时 vanish，下次任意 `loadMessages` 自愈。
+   - 修复方向：给 force load 加 `__forceSeq` 序号，写 `this.messages` 前检查"自己是不是最新"——被 superseded 的不写 messages 但仍 fire 自身 hook（保 dropRun 不漏）。第三轮没加是因为权衡后认为"加了引入的状态机比解决的问题更复杂"。如果未来线上观察到该症状再加。
 
 ## ProgressRing 后续优化
 

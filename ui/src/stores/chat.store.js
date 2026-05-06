@@ -134,8 +134,6 @@ export function createChatStore(storeKey, opts = {}) {
 			__slashCommandResolve: null,
 			__slashCommandReject: null,
 			__silentLoadPromise: null,
-			__silentMessagesPersisted: false,
-			__silentPendingHooks: null,
 			__loadPromise: null,
 			__historyListPromise: null,
 		}),
@@ -256,40 +254,38 @@ export function createChatStore(storeKey, opts = {}) {
 			 *   后立即同步触发；用于让 __awaitPersistAndDrop 在主数据已就位时立刻 dropRun，
 			 *   不等之后阻塞的辅助 RPC（chat.history 慢 reject / 60s timeout 的事故路径下，
 			 *   这是双气泡可见窗口 vs 单 RTT 窗口的差别）
+			 * @param {boolean} [opts.force] - 绕过飞行守卫，独立跑一次 doLoad。__awaitPersistAndDrop
+			 *   专用：终态触发的载入必须拿到与本次 run 状态对齐的 fresh sessions.get，
+			 *   不能复用其他来源（activate / connReady / onRefresh）可能 stale 的快照——
+			 *   否则 hook 同步触发 dropRun 时基于 stale messages 删 streamingMsgs，
+			 *   会让本次 run 的回复整段消失（直到下次 reload 自愈）。force 路径不参与
+			 *   `__silentLoadPromise` / `__loadPromise` 体系
 			 */
-			async loadMessages({ silent = false, limit: limitOverride, onMessagesPersisted } = {}) {
+			async loadMessages({ silent = false, limit: limitOverride, onMessagesPersisted, force = false } = {}) {
 				// 飞行中守卫：复用已有请求，防止 activate() + connReady watcher 同时触发。
-				// 复用时仍要让 B 的 hook 落地——否则 A 卡在 chat.history 期间（最长 60s
-				// timeout），B 的 dropRun 要等 A 整体 settle，双气泡可见窗口可达 60s。
-				//   - A 已写完 messages：立即同步触发 B 的 hook
-				//   - A 还在 sessions.get：把 B 的 hook 排队，等 A 写完时批量触发
-				if (silent && this.__silentLoadPromise) {
-					console.debug('[chat] loadMessages: silent in-flight guard hit, reusing promise');
-					if (onMessagesPersisted) {
-						if (this.__silentMessagesPersisted) {
-							try { onMessagesPersisted(); }
-							catch (hookErr) {
-								console.warn('[chat] onMessagesPersisted hook err:', hookErr?.message);
-							}
-						} else {
-							(this.__silentPendingHooks ||= []).push(onMessagesPersisted);
-						}
+				// force 路径不参与守卫——它需要拿与触发方 run 状态对齐的快照。
+				if (!force) {
+					if (silent && this.__silentLoadPromise) {
+						console.debug('[chat] loadMessages: silent in-flight guard hit, reusing promise');
+						return this.__silentLoadPromise;
 					}
-					return this.__silentLoadPromise;
-				}
-				if (!silent && this.__loadPromise) {
-					console.debug('[chat] loadMessages: in-flight guard hit, reusing promise');
-					return this.__loadPromise;
+					if (!silent && this.__loadPromise) {
+						console.debug('[chat] loadMessages: in-flight guard hit, reusing promise');
+						return this.__loadPromise;
+					}
 				}
 
 				if (this.topicMode) {
 					const p = this.__loadTopicMessages({ silent });
-					if (silent) {
-						this.__silentLoadPromise = p;
-						p.finally(() => { this.__silentLoadPromise = null; });
-					} else {
-						this.__loadPromise = p;
-						p.finally(() => { this.__loadPromise = null; });
+					// force 路径在 topic 模式下也独立、不参与守卫体系，与 chat 模式语义保持一致
+					if (!force) {
+						if (silent) {
+							this.__silentLoadPromise = p;
+							p.finally(() => { this.__silentLoadPromise = null; });
+						} else {
+							this.__loadPromise = p;
+							p.finally(() => { this.__loadPromise = null; });
+						}
 					}
 					return p;
 				}
@@ -343,22 +339,10 @@ export function createChatStore(storeKey, opts = {}) {
 						// streamingMsgs 与 server 持久化消息并存会被 allMessages 合并成
 						// 双气泡（"思考中" + "已思考" 同时存在）。hook 同步抛错仅 warn，
 						// 不污染 ok 返回值。
-						if (silent) this.__silentMessagesPersisted = true;
 						if (onMessagesPersisted) {
 							try { onMessagesPersisted(); }
 							catch (hookErr) {
 								console.warn('[chat] onMessagesPersisted hook err:', hookErr?.message);
-							}
-						}
-						// 飞行守卫期间累积的后到 hook（B/C/...）批量触发
-						if (silent && this.__silentPendingHooks) {
-							const queued = this.__silentPendingHooks;
-							this.__silentPendingHooks = null;
-							for (const h of queued) {
-								try { h(); }
-								catch (hookErr) {
-									console.warn('[chat] queued onMessagesPersisted hook err:', hookErr?.message);
-								}
 							}
 						}
 
@@ -391,16 +375,14 @@ export function createChatStore(storeKey, opts = {}) {
 					}
 				};
 				const p = doLoad();
-				if (silent) {
-					this.__silentLoadPromise = p;
-					p.finally(() => {
-						this.__silentLoadPromise = null;
-						this.__silentMessagesPersisted = false;
-						this.__silentPendingHooks = null;
-					});
-				} else {
-					this.__loadPromise = p;
-					p.finally(() => { this.__loadPromise = null; });
+				if (!force) {
+					if (silent) {
+						this.__silentLoadPromise = p;
+						p.finally(() => { this.__silentLoadPromise = null; });
+					} else {
+						this.__loadPromise = p;
+						p.finally(() => { this.__loadPromise = null; });
+					}
 				}
 				return p;
 			},
@@ -1617,17 +1599,23 @@ export function createChatStore(storeKey, opts = {}) {
 			 * 把上一轮的最终回答误判成本轮终态而提前 drop。
              *
 			 * silent loadMessages 失败时不 dropRun（沿用旧策略）：避免清掉 streamingMsgs 又
-			 * 拉不到终态消息。后续兜底：(a) 下次 activate / __onConnReady silent reload；
-			 * (b) agent-runs.store 的 POST_ACCEPT_TIMEOUT_MS 24h timer。
+			 * 拉不到终态消息。下次 activate / __onConnReady silent reload 成功才会
+			 * 重新走 reconcile 路径——但 stripLocalUserMsgs 在 run.ended=true 时早返回，
+			 * 不动 streamingMsgs；__endRun 已清掉 POST_ACCEPT_TIMEOUT_MS 24h 兜底定时器。
+			 * 等于 sessions.get 失败时本 run 的 streamingMsgs 永久 orphan（直到 chat 重建）。
+			 * 这是预存缺陷，详见 TODO.md 第 2 条。
 			 *
-			 * dropRun 同时走两条路径，互为兜底：
+			 * **必须用 force 路径**：终态触发的载入必须拿到与本次 run 状态对齐的 fresh
+			 * sessions.get。如果复用 activate / connReady / onRefresh 起的 silent reload，
+			 * 那个 reload 的 sessions.get 可能在本 run 出现之前就发出去了（A 的快照不含
+			 * 本 run 的回复），hook 同步触发 dropRun 时会基于 stale messages 删 streamingMsgs，
+			 * 让本 run 的回复整段消失。force 路径独立跑一次 doLoad，自带新鲜快照。
+			 *
+			 * dropRun 走两条路径互为兜底：
 			 *   - **主路径**：onMessagesPersisted hook 在 sessions.get 主数据落地时同步触发——
-			 *     事故路径下 chat.history 可能慢挂起最长 60s，hook 让 dropRun 在主数据
-			 *     就位的一瞬间就跑，把双气泡可见窗口压回单 RTT。飞行守卫复用同一 promise
-			 *     时，loadMessages 内部把 hook 排队（A 还在 sessions.get）或立即触发
-			 *     （A 已过 sessions.get），保证后到的调用方也能拿到这个时刻。
-			 *   - **兜底**：ok=true 时再调一次。覆盖罕见边角（如 hook 函数本身抛错被吞），
-			 *     dropRun 幂等所以重复调安全。
+			 *     chat.history 可能慢挂起最长 60s，hook 让 dropRun 在主数据就位的一瞬间
+			 *     就跑，把双气泡可见窗口压回单 RTT。
+			 *   - **兜底**：ok=true 时再调一次。覆盖罕见边角（如 hook 函数本身抛错被吞）。
 			 *   - **幂等性**：dropRun 内 `runKeyIndex[runKey]` 已删时直接 return，重复调安全。
 			 *
 			 * @param {{ runId: string, accepted: boolean, endReason: string }} res
@@ -1637,6 +1625,7 @@ export function createChatStore(storeKey, opts = {}) {
 			async __awaitPersistAndDrop(res, runKey, runsStore) {
 				const ok = await this.loadMessages({
 					silent: true,
+					force: true,
 					onMessagesPersisted: () => runsStore.dropRun(runKey, res.runId),
 				});
 				if (ok) runsStore.dropRun(runKey, res.runId);
