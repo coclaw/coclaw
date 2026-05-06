@@ -1,5 +1,74 @@
 # @coclaw/openclaw-coclaw
 
+## 0.20.1
+
+> Released as a patch (special case): the auto-upgrade ledger fix is the only runtime-behaviour change shipped to users in this cycle. The FBQ swap recorded under `Minor Changes` was rolled back to `MemoryQueue` in the same release, so the net production queue impl is unchanged from 0.20.0. FBQ will become the default again only when a future release flips `RPC_QUEUE_IMPL` back to `'fbq'`.
+
+### Minor Changes
+
+- 6cd7f1c: Swap the per-session WebRTC RPC send queue from `MemoryQueue` to `FileBackedQueue` (B-stage2 B9b). Selection is gated by a single module-level constant `RPC_QUEUE_IMPL` in `webrtc-peer.js`; the default is `'fbq'`, and `'mem'` remains a one-line revert path for dev / test / emergency rollback.
+
+  When the queue dir is unavailable (the bridge's startup `cleanupResiduals` / `measureDiskCap` prep failed), the assembly automatically falls back to `MemoryQueue` for that session — the `'fbq'` path never blocks `webrtc` setup. Each FBQ session id is suffixed with `${Date.now()}-<uuid8>` so concurrent same-`connId` rebuilds (e.g. ICE restart failure → new offer landing during the previous instance's `await destroy`) target physically different `*.jsonl` files and never race on disk IO. Startup `cleanupResiduals` already whitelists `*.jsonl`, so suffixed leftovers are reclaimed at next start.
+
+  Each session's chosen impl is logged locally (`info`) and pushed via `remoteLog` (`rtc.queue-impl conn=… impl=fbq|mem [fallback=queue-dir-null]`) once on assembly so operators can see the actual runtime behaviour, including silent fallbacks. The four queue cleanup sites in `WebRtcPeer` are unchanged thanks to B6/B7/B8 already aligning the FBQ contract.
+
+### Patch Changes
+
+- 728f824: Fix auto-upgrade detection on OpenClaw 2026.4.25+ hosts. The host now strips
+  `plugins.installs` from `loadConfig()` and persists the source-of-truth in a
+  managed ledger at `<state-dir>/plugins/installs.json`, so the previous
+  `loadConfig().plugins.installs[pluginId]` lookup always saw `undefined` —
+  `shouldSkipAutoUpgrade` returned `true` on every check and the scheduler never
+  spawned the upgrade worker. The plugin now reads the install record from the
+  new ledger first and only falls back to the legacy `plugins.installs` field
+  when the ledger file is absent (ENOENT), keeping compatibility with hosts
+  ≤ 2026.4.24. Read-side errors other than ENOENT (permissions / corrupt JSON /
+  missing pluginId) are treated as "no install info" rather than falling back,
+  to avoid misclassifying a freshly-migrated host. These error paths now emit
+  `remoteLog` diagnostics (`upgrade.ledger-read-failed`,
+  `upgrade.ledger-parse-failed`, `upgrade.state-dir-failed`) so a corrupted or
+  unreadable ledger surfaces a triageable signal instead of a silent
+  "Skipping: not an npm-installed plugin" message.
+- eab42c5: Centralize OpenClaw runtime config access behind a single host-adapter helper
+  (`getClawConfig` in `src/claw-config.js`) and prefer the new `config.current()`
+  API over the deprecated `config.loadConfig()`. OpenClaw v2026.4.27+ ships the
+  new accessor and emits a one-time `runtime-config-load-write` deprecation
+  warning the first time `loadConfig()` is called; both APIs return the same
+  `getRuntimeConfig()` snapshot, so the switch is purely about avoiding the
+  warning while staying
+  compatible with hosts ≤ v2026.4.26 (which only have `loadConfig`). Two
+  callsites — gateway auth-token resolution and the legacy install-record
+  fallback in auto-upgrade — now go through the helper instead of touching
+  `runtime.config` directly, so future host-API churn lands in one place.
+- ffde43c: Fold the rpc DC send queue design docs into a B-stage2-complete shape. `rpc-dc-send-queue.md` no longer reads "FBQ swap pending" — the pipeline diagram now treats the queue slot as an abstract `Queue` filled by `FileBackedQueue` (default) or `MemoryQueue` (degraded / emergency revert), and a new "queue impl selection" section explains the dual-layer guard (module-level constant + runtime queueDir-availability check), the assembly-time `rtc.queue-impl` log convention, and why `MemoryQueue` is intentionally kept as an interface-mirror reference instead of being deleted. A new "race handling overview" section catalogs the two queue races the design has accumulated (plan-1's `monitor.summarize` vs in-flight enqueue, B-stage2's same-connId destroy/init file collision) and points to where each is solved.
+
+  `rpc-dc-file-queue.md` switches from a Stage-2 design proposal to the FBQ-as-default-production-path reference. A new "interface red-lines" section anchors the seven cross-implementation invariants both queue implementations must respect (business-agnostic container, loud-on-loss + destroyed-silent, bypass exempts capacity layer only, agent-run predicate not extended to lifecycle:end, sync-only destroy hook, deps-injected diskCap, FBQ-side same-connId unique-suffix isolation). A new "same-connId race isolation design" section records why option A (unique filename suffix) was chosen over the per-connId mutex / pendingClose Map alternatives. A new "queueDir unavailable degradation" section explains the assemble-never-blocked invariant. The integration-layer test list switches from "B-stage2 待实施" markers to "✅ 已实施" with concrete test-file pointers. A new "evolution history" appendix records each phase's motivation (RpcSendQueue → plan-1 monitor extraction → plan-2 startup prep → B-stage2 single-point swap) and the explicit design trade-offs taken (race handling, MemoryQueue retention, diskCap injection, sync hook contract, predicate scope).
+
+  No code changes — design docs only.
+
+- 099f430: Add `bypassAdmission` option to `FileBackedQueue`, mirroring `MemoryQueue` semantics: callers may inject a predicate that exempts whitelisted messages from the `diskCap` admission check. Capacity-layer exemption only — physical IO failures (`fsBroken`) still drop with `'fs-error'`, even for whitelisted messages. The predicate is invoked under try/catch; an exception is treated as non-bypass (conservative drop). Non-function values are coerced to no-op for backward compatibility. Prepares the queue for B-stage2 swap into the WebRTC RPC send path so agent-run responses can survive sustained backpressure that would otherwise hit `diskCap`.
+- 4de117a: Add optional synchronous `onBeforeClear` hook to `FileBackedQueue.destroy`, mirroring `MemoryQueue.destroy`. The hook fires inside the destroy mutex — after `destroyed = true` but before stream close / file removal / state reset — and receives an atomic 6-field residual snapshot (`memCount`, `memBytes`, `diskBytes`, `writtenBytes`, `spilled`, `fsBroken`) reflecting the real disk state. In-flight enqueues that won the mutex race ahead of destroy are reflected in the snapshot; enqueues that queue up behind destroy short-circuit on `destroyed = true` and return false (silent drop). Synchronous throws inside the callback are swallowed; if the callback returns a Promise, its rejection is unhandled (not awaited) — by design, matching the MemoryQueue contract: callers must pass a synchronous function. Lets `WebRtcPeer` keep its 4 `destroy((residual) => monitor.summarize(residual))` call sites unchanged after the B-stage2 swap to FBQ.
+- 8898c54: Pass underlying error through `FileBackedQueue.onDrop` for `'fs-error'` drops. `__handleFsError` now caches the error in `this.lastFsErr`; subsequent enqueues that hit the sticky `fsBroken` short-circuit forward the cached error to `onDrop(reason, size, err?)` so the drop monitor (and operators) see the actual errno / message instead of an opaque drop. `clear()` and `destroy()` reset `lastFsErr`. Non-`fs-error` drops (e.g. `'disk-cap'`) still pass `undefined` for the third arg, matching the existing monitor contract from plan-1 round-2.
+- a776d0a: Harden B-stage2 after deep-review. The B9b cut from `MemoryQueue` to `FileBackedQueue` accidentally dropped the `maxMessageBytes: MAX_SINGLE_MSG_BYTES` admission that `MemoryQueue` had been enforcing — single frames > 50 MB could enter the FBQ backlog and only get rejected later inside `RpcDcSender` (with `MESSAGE_OVERSIZED`), bypassing the `onDrop('oversize', size)` loud-on-loss accounting that the rpc-drop-monitor relies on, and letting `bypassAdmission` whitelist traffic skip even the `diskCap` ceiling.
+
+  `FileBackedQueue` now mirrors `MemoryQueue` exactly: optional `maxMessageBytes` constructor option (default `Infinity`), validated as `Infinity` or finite positive, enforced before the disk-cap admission and before the bypass predicate (so whitelisted messages do **not** escape the per-message hard cap, matching red-line 3). The webrtc-peer assembly site explicitly passes `maxMessageBytes: MAX_SINGLE_MSG_BYTES` to FBQ so the FBQ path now drops oversize frames at enqueue time with `reason: 'oversize'`, just like the legacy `MemoryQueue` path.
+
+  Three smaller follow-throughs from the same review pass:
+
+  - The `rpc queue impl=…` info log + `rtc.queue-impl` remoteLog now fire **after** the stale-identity guard, so stale assemblies that destroy and exit do not emit a misleading "fbq" line.
+  - `__setupDataChannel`'s opening comment and the FBQ `__handleFsError` inner `catch` binding (`rmErr`) are updated so they no longer reference the old `MemoryQueue`-only world / shadow the outer `err` parameter.
+  - B9b's default-fbq and mem-fallback tests now assert on the actual `diskCap` / `memBudget` / `maxMessageBytes` values, so a wiring mistake at the assembly site is detectable.
+
+  Also records a PRE-EXISTING TODO entry (`sendPeerTransport sig` rollback has no re-trigger) caught during the review — the race exists since plan-1 round-2 introduced async `MemoryQueue.init()`, but the FBQ swap stretches the window from microsecond-level to tens-of-milliseconds, making the bug far easier to hit. Diagnostic-only impact (peer-transport candidate info missing in the UI), not RPC business; deferred out-of-scope.
+
+- 3e274a7: Roll back the rpc DC send queue default from `FileBackedQueue` (FBQ) back to `MemoryQueue` for the next emergency npm release. The B-stage2 swap (B9b) made FBQ the production default, but FBQ has not been validated end-to-end in real-world deployments — and an unrelated OpenClaw upgrade has broken auto-upgrade, so we need to ship a release fast without also shipping an under-tested queue change. The module-level constant `RPC_QUEUE_IMPL` in `src/webrtc/webrtc-peer.js` now reads `'mem'` instead of `'fbq'`; flipping it back to `'fbq'` is the one-line revert path the design always called out.
+
+  To preserve coverage of the FBQ assembly path (so we can flip back safely later), `WebRtcPeer` now accepts an optional `rpcQueueImpl: 'fbq' | 'mem'` constructor option. Production code does not pass it (so the module default applies); tests that need to exercise the FBQ branch (`rpc DC 装配走 FBQ 路径` / `同 connId 重建 race 隔离` / `queueDir 为 null 时降级到 MemoryQueue`) explicitly pass `rpcQueueImpl: 'fbq'`. Invalid values (anything other than the two literal strings) silently fall back to the module default. A new test pins the production-default invariant: when `rpcQueueImpl` is omitted, the queue is `MemoryQueue` even when `queueDir` is provided, and the assembly log emits `impl=mem` without the `fallback=` suffix.
+
+  Docs (`rpc-dc-send-queue.md`, `rpc-dc-file-queue.md`) updated to reflect the temporary `'mem'` default — the FBQ design and assembly path stay documented as the long-term direction, just gated on more validation. No bridge or queue-module changes; the FBQ infrastructure (cleanupResiduals, measureDiskCap, `__queueDir`, `__diskCap`) keeps running at startup so re-enabling FBQ remains a one-line flip.
+
+- 8b63de7: Plumbing for B-stage2 FBQ swap: `WebRtcPeer` constructor accepts a `getDiskCap` function dep and stores it as `__getDiskCap` (non-functions coerce to `null` for backward compat). `RealtimeBridge.__initWebrtcPeer` wires `() => this.__diskCap` into the constructor — bridge measured the disk cap once at startup (Phase B-stage1 plan-2), and B9b will read it via this getter when it instantiates `FileBackedQueue` per session. The getter is stored only; nothing consumes it yet, so behavior is unchanged.
+
 ## 0.20.0
 
 ### Minor Changes
