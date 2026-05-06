@@ -2496,11 +2496,10 @@ describe('useChatStore', () => {
 			expect(store.__silentLoadPromise).not.toBeNull();
 		});
 
-		// 飞行守卫复用：上游已有 silent reload 在飞行时，__awaitPersistAndDrop 调
-		// loadMessages 会直接 return 旧 promise，本调用提供的 onMessagesPersisted hook
-		// 不会被触发（A 的 doLoad 已跑过、B 的 doLoad 不再跑）。此时 dropRun 必须
-		// 由 ok=true 路径兜底，否则 streamingMsgs 会卡住。
-		test('飞行守卫复用：hook 不触发时 ok 路径 dropRun 兜底', async () => {
+		// 飞行守卫复用 + 后到 hook 排队：B 进来时 A 的 sessions.get 还没 resolve，
+		// B 的 hook 排进 __silentPendingHooks 队列；A 的 sessions.get 落地时批量触发——
+		// dropRun 不需要等 A 的 chat.history 完成。
+		test('飞行守卫复用：A sessions.get 待 resolve 时 B 的 hook 排队，A 落地时批量触发 dropRun', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -2515,7 +2514,8 @@ describe('useChatStore', () => {
 				if (method === 'sessions.get') {
 					return new Promise((res) => { resolveSessionsGet = res; });
 				}
-				if (method === 'chat.history') return Promise.resolve({ sessionId: 'cur' });
+				// chat.history 永挂起：模拟事故路径，验证 dropRun 不靠 ok 路径兜底
+				if (method === 'chat.history') return new Promise(() => {});
 				return Promise.resolve(null);
 			});
 			setConn('1', conn);
@@ -2528,10 +2528,11 @@ describe('useChatStore', () => {
 			const runsStore = useAgentRunsStore();
 			const dropSpy = vi.spyOn(runsStore, 'dropRun');
 
-			// 1. 先启动一个外部的 silent reload（不带 hook）—— 模拟 connReady watcher / activate re-entry
+			// 1. 先启动外部 silent reload（不带 hook）—— 模拟 connReady watcher / activate re-entry
 			const externalReload = store.loadMessages({ silent: true });
 			await Promise.resolve();
 			expect(store.__silentLoadPromise).not.toBeNull();
+			expect(store.__silentMessagesPersisted).toBe(false);
 
 			// 2. 启动 sendMessage + 触发 run 终态
 			const sendPromise = store.sendMessage('q');
@@ -2543,24 +2544,94 @@ describe('useChatStore', () => {
 			agentReject(err);
 			await sendPromise;
 
-			// 此时 __awaitPersistAndDrop 内的 loadMessages 会命中飞行守卫复用 externalReload
-			// 的 promise，B 的 hook 不会被调用——dropRun 不应该已经被调过
+			// __awaitPersistAndDrop 命中飞行守卫，hook 入队等 A 的 sessions.get 落地
+			expect(store.__silentPendingHooks?.length).toBe(1);
 			expect(dropSpy).not.toHaveBeenCalled();
 
-			// 3. 让外部 reload 完成：sessions.get resolve（A 没 hook 不调 dropRun）→ chat.history resolve
+			// 3. 让 A 的 sessions.get resolve —— 队列即时排空
 			resolveSessionsGet({
 				messages: [
 					{ role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1000 },
 					{ role: 'assistant', content: [{ type: 'text', text: 'a' }], stopReason: 'end_turn', timestamp: 2000 },
 				],
 			});
-			await externalReload;
 
-			// 4. ok=true 路径兜底：dropRun 终于被调
 			await vi.waitFor(() => {
 				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-guard');
 			});
 			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
+			expect(store.__silentPendingHooks).toBeNull();
+
+			// chat.history 仍挂起：A 的 promise 还没 settle，dropRun 已经先跑了——
+			// 证明走的是 hook 路径，不是 ok 路径；sessions.get 只调了一次说明 B 没跑独立 doLoad
+			expect(store.__silentLoadPromise).not.toBeNull();
+			const sessionsGetCalls = conn.request.mock.calls.filter(c => c[0] === 'sessions.get');
+			expect(sessionsGetCalls).toHaveLength(1);
+			void externalReload;
+		});
+
+		// 飞行守卫复用 + 后到 hook 即时触发：B 进来时 A 已过 sessions.get 阶段（卡在
+		// chat.history），__silentMessagesPersisted=true，B 的 hook 同步立即触发——
+		// 这是修复前 60s 双气泡窗口所在的场景。
+		test('飞行守卫复用：A 已过 sessions.get 卡 chat.history 时 B 的 hook 立即触发 dropRun', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let agentReject = null;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-late' });
+					return new Promise((_, reject) => { agentReject = reject; });
+				}
+				if (method === 'sessions.get') {
+					return Promise.resolve({
+						messages: [
+							{ role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1000 },
+							{ role: 'assistant', content: [{ type: 'text', text: 'a' }], stopReason: 'end_turn', timestamp: 2000 },
+						],
+					});
+				}
+				// chat.history 永挂起
+				if (method === 'chat.history') return new Promise(() => {});
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			// 1. 启动外部 silent reload（不带 hook）并等到 A 已过 sessions.get
+			const externalReload = store.loadMessages({ silent: true });
+			await vi.waitFor(() => {
+				expect(store.__silentMessagesPersisted).toBe(true);
+			});
+			// 此时 A 还在 chat.history await（永挂起）
+			expect(store.__silentLoadPromise).not.toBeNull();
+
+			// 2. 启动 sendMessage + 触发 run 终态——B 的 hook 同步立即触发
+			const sendPromise = store.sendMessage('q');
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(runsStore.runs['run-late']).toBeTruthy();
+			const err = new Error('rtc lost');
+			err.code = 'DC_CLOSED';
+			agentReject(err);
+			await sendPromise;
+
+			// dropRun 立即被调（hook 同步触发，不需要等 chat.history）
+			expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-late');
+			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
+			expect(store.__silentLoadPromise).not.toBeNull();
+			// sessions.get 只调了一次说明 B 没跑独立 doLoad，复用了 A 的 in-flight
+			const sessionsGetCalls = conn.request.mock.calls.filter(c => c[0] === 'sessions.get');
+			expect(sessionsGetCalls).toHaveLength(1);
+			void externalReload;
 		});
 	});
 
