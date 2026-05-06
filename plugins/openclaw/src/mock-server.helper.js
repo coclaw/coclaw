@@ -87,6 +87,11 @@ export async function createMockServer({ unbindStatus, waitDelayMs = 0 } = {}) {
 	return {
 		baseUrl,
 		state,
-		close: () => new Promise((resolve) => server.close(resolve)),
+		// 强制关掉所有 keep-alive 连接，否则 server.close() 会等 undici 客户端
+		// 的连接保活超时（数秒），让用例 finally 莫名其妙拖慢
+		close: () => new Promise((resolve) => {
+			server.closeAllConnections?.();
+			server.close(resolve);
+		}),
 	};
 }
