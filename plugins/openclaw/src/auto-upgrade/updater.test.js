@@ -378,6 +378,60 @@ test('start - 非 npm 安装时跳过调度', () => {
 	assert.equal(s.__initialTimer, null);
 });
 
+test('start - host 在 Nix mode 时跳过调度并 remoteLog', () => {
+	resetEnv();
+	resetRemoteLog();
+	const logger = silentLogger();
+	const shouldSkipCalls = [];
+	const s = new AutoUpgradeScheduler({
+		pluginId: TEST_PLUGIN_ID,
+		logger,
+		opts: {
+			isNixModeFn: () => true,
+			shouldSkipFn: () => { shouldSkipCalls.push(1); return false; },
+			initialDelayMs: 10,
+		},
+	});
+
+	s.start();
+
+	assert.equal(s.__running, false);
+	assert.ok(logger.infos.some(m => m.includes('Nix mode')));
+	assert.equal(s.__initialTimer, null);
+	// Nix mode 必须在 shouldSkip 之前短路，否则会浪费一次账本读取
+	assert.equal(shouldSkipCalls.length, 0);
+	// 上推 server 用于事后定位用户反馈
+	assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.nix-mode-skip'));
+});
+
+test('start - 不提供 isNixModeFn 时使用默认 isNixMode（OPENCLAW_NIX_MODE=1）', () => {
+	resetEnv();
+	resetRemoteLog();
+	const prev = process.env.OPENCLAW_NIX_MODE;
+	process.env.OPENCLAW_NIX_MODE = '1';
+	try {
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				shouldSkipFn: () => false,
+				initialDelayMs: 10,
+			},
+		});
+
+		s.start();
+
+		assert.equal(s.__running, false);
+		assert.ok(logger.infos.some(m => m.includes('Nix mode')));
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.nix-mode-skip'));
+	}
+	finally {
+		if (prev === undefined) delete process.env.OPENCLAW_NIX_MODE;
+		else process.env.OPENCLAW_NIX_MODE = prev;
+	}
+});
+
 // --- start: 正常启动 ---
 
 test('start - 正常启动后设置 __running 和 timer', async () => {

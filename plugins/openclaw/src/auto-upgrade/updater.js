@@ -205,6 +205,21 @@ export function shouldSkipAutoUpgrade(pluginId) {
 }
 
 /**
+ * 判断 host 是否运行在 Nix mode。
+ *
+ * OpenClaw ≥ 2026.5 在 `openclaw plugins {update,install,uninstall,...}` 入口加了
+ * `assertConfigWriteAllowedInCurrentMode()` 守门：当 `OPENCLAW_NIX_MODE=1` 时直接抛
+ * `NixModeConfigMutationError`（code `OPENCLAW_NIX_MODE_CONFIG_IMMUTABLE`），因为
+ * 这类用户的 openclaw.json 由 Nix 当 immutable 资产管，运行时改了下次 Nix 重建会被刷回。
+ * 自动升级在这种环境下毫无意义且会污染日志，scheduler 启动前直接退出即可。
+ *
+ * @returns {boolean}
+ */
+export function isNixMode() {
+	return process.env.OPENCLAW_NIX_MODE === '1';
+}
+
+/**
  * 获取插件安装路径
  * @param {string} pluginId
  * @returns {string|null}
@@ -239,6 +254,7 @@ export class AutoUpgradeScheduler {
 	 * @param {Function} [params.opts.execFileFn]
 	 * @param {Function} [params.opts.spawnFn]
 	 * @param {Function} [params.opts.shouldSkipFn]
+	 * @param {Function} [params.opts.isNixModeFn]
 	 * @param {Function} [params.opts.getPluginInstallPathFn]
 	 */
 	constructor(params) {
@@ -256,6 +272,17 @@ export class AutoUpgradeScheduler {
 
 		if (!this.__pluginId) {
 			this.__logger.warn?.('[auto-upgrade] Skipping: pluginId not provided');
+			this.__running = false;
+			return;
+		}
+
+		const isNix = this.__opts.isNixModeFn ?? isNixMode;
+		if (isNix()) {
+			// 上推到 server：用户向我们反馈"自动升级没动"时，可凭 server 端 remote log
+			// 直接定位到 Nix mode 跳过路径，不必再回滚问"你是不是 nix-openclaw 装的"。
+			// scheduler.start() 每次 gateway 启动只调一次，量级低、不会刷屏。
+			remoteLog('upgrade.nix-mode-skip');
+			this.__logger.info?.('[auto-upgrade] Skipping: host is in Nix mode (config is immutable)');
 			this.__running = false;
 			return;
 		}
