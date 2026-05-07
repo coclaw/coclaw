@@ -75,6 +75,22 @@
 			</div>
 		</header>
 
+		<!-- 触屏下拉加载历史指示器（仅移动端） -->
+		<div
+			v-show="pullIndicatorVisible"
+			data-testid="pull-indicator"
+			class="pointer-events-none fixed left-1/2 z-50 -translate-x-1/2 md:hidden"
+			:style="pullIndicatorStyle"
+		>
+			<div class="flex size-8 items-center justify-center rounded-full bg-elevated shadow-md">
+				<UIcon
+					:name="pullIndicatorPastThreshold ? 'i-lucide-refresh-cw' : 'i-lucide-arrow-down'"
+					class="size-4 text-dimmed"
+					:class="{ 'animate-spin': pullIndicatorSpinning }"
+				/>
+			</div>
+		</div>
+
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
 		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto" @scroll="onScroll" @wheel="onWheel">
 			<div ref="scrollContent" class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
@@ -224,6 +240,13 @@ export default {
 			__scrollReady: false,
 			// 刷新按钮本地状态（用户发起刷新到完成的窗口）
 			refreshing: false,
+			// 触屏下拉距离（px，可为负）—— 当前手指相对起点的位移，驱动指示器视觉。
+			// 触发加载在 __onPullEnd 里判定 dist>=60，向上滑（负值）不触发
+			pullDistance: 0,
+			// 标记本次进行中的加载是否由触屏下拉手势触发；
+			// 仅它为 true 时显示指示器，避免 onScroll/onWheel/__autoFillHistory 等
+			// 非手势路径触发 __loadingHistory 时也意外亮起指示器
+			__pullGestureLoading: false,
 		};
 	},
 	computed: {
@@ -477,6 +500,34 @@ export default {
 			items.push(...current);
 			return items;
 		},
+		/** 触屏下拉指示器是否显示：拉动中，或手势触发的加载进行中 */
+		pullIndicatorVisible() {
+			return this.pullDistance > 0 || this.__pullGestureLoading;
+		},
+		/** 是否进入"过阈值/加载中"形态——决定图标切到刷新形态 */
+		pullIndicatorPastThreshold() {
+			return this.pullDistance >= 60 || this.__pullGestureLoading;
+		},
+		/** 是否旋转——仅在加载真正进行时转，避免拉过阈值就转给人"已在加载"错觉 */
+		pullIndicatorSpinning() {
+			return this.__pullGestureLoading;
+		},
+		/** 指示器位置 / 透明度 / 过渡：跟手时无过渡；释放或加载时定在阈值并淡入。
+		 *  视觉位置 clamp 到 [0,100]，避免拉到很远时图标飞到屏幕中部 */
+		pullIndicatorStyle() {
+			const releasing = this.pullDistance === 0;
+			const visualDist = Math.min(Math.max(this.pullDistance, 0), 100);
+			// 加载中且已松手 → 定在阈值位置（60-8）；否则按 clamp 后的视觉距离跟手
+			const dist = this.__pullGestureLoading && releasing ? 60 : visualDist;
+			const visualOpacity = this.__pullGestureLoading
+				? 1
+				: Math.min(visualDist / 60, 1);
+			return {
+				top: `calc(var(--safe-area-inset-top) + ${dist - 8}px)`,
+				opacity: visualOpacity,
+				transition: releasing ? 'all 0.2s ease-out' : 'none',
+			};
+		},
 	},
 	watch: {
 		/** chatStore 变化时激活（首次 init 或重新进入时 refresh） */
@@ -492,8 +543,9 @@ export default {
 				//    会用旧 dist 在新 chat 上误触发 __loadMoreHistory。
 				if (store !== prevStore) {
 					this.__loadingHistory = false;
+					this.__pullGestureLoading = false;
 					this.__pullStartY = null;
-					this.__pullDist = 0;
+					this.pullDistance = 0;
 				}
 				if (this.__creatingTopic) return;
 				if (store && store !== prevStore) {
@@ -1030,21 +1082,22 @@ export default {
 			if (this.__pullStartY == null) return;
 			const t = e.touches?.[0];
 			if (!t) return;
-			this.__pullDist = t.clientY - this.__pullStartY;
+			this.pullDistance = t.clientY - this.__pullStartY;
 		},
 		__onPullEnd() {
-			const dist = this.__pullDist || 0;
+			const dist = this.pullDistance || 0;
 			this.__pullStartY = null;
-			this.__pullDist = 0;
-			// 60px 与 use-pull-refresh 的视觉阈值一致，不外暴指示器、纯触发动作
+			this.pullDistance = 0;
+			// 下拉≥60px 才触发；阈值与 use-pull-refresh 视觉阈值一致；向上滑（dist 负值）不触发
 			if (dist >= 60 && !this.isTopicRoute) {
-				this.__loadMoreHistory();
+				// 标记为手势触发的加载——指示器仅响应这种路径
+				this.__loadMoreHistory(true);
 			}
 		},
 		__onPullCancel() {
 			// 仅重置跟踪状态；中断的手势不当作完成
 			this.__pullStartY = null;
-			this.__pullDist = 0;
+			this.pullDistance = 0;
 		},
 
 		/** 消息加载后若内容不足以填满容器，主动加载历史 */
@@ -1056,12 +1109,13 @@ export default {
 			}
 		},
 
-		async __loadMoreHistory() {
+		async __loadMoreHistory(fromPullGesture = false) {
 			if (!this.chatStore || this.__loadingHistory) return;
 			// 入口快照 store 引用：await 醒来后 chatStore 可能已切到别的 chat。
 			// 弱 guard "!this.chatStore" 形同虚设（getter 永远 truthy），必须身份比对。
 			const targetStore = this.chatStore;
 			this.__loadingHistory = true;
+			if (fromPullGesture) this.__pullGestureLoading = true;
 			try {
 				// 优先加载当前 session 内的更早消息
 				if (targetStore.hasMoreMessages && !targetStore.messagesLoading) {
@@ -1112,6 +1166,8 @@ export default {
 				// 导致后续可能双发。__unmounted 同理：实例已卸载就别再写状态。
 				if (!this.__unmounted && this.chatStore === targetStore) {
 					this.__loadingHistory = false;
+					// 同步清掉手势加载标志：本次加载结束 → 指示器隐藏
+					this.__pullGestureLoading = false;
 				}
 			}
 		},

@@ -2044,7 +2044,7 @@ describe('ChatPage scroll', () => {
 			wrapper.vm.$data.__loadingHistory = true;
 			// 模拟同时手指还按着 mid-touch（已过阈值但未释放），前置清块应一并清掉
 			wrapper.vm.__pullStartY = 100;
-			wrapper.vm.__pullDist = 200;
+			wrapper.vm.pullDistance = 200;
 			// 模拟新建 topic 流程进行中（__handleNewTopicSend 期间）
 			wrapper.vm.$data.__creatingTopic = true;
 
@@ -2064,13 +2064,13 @@ describe('ChatPage scroll', () => {
 			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
 			// 前置清块承诺三变量都清——__creatingTopic 早退路径下 pull 状态也不能漏
 			expect(wrapper.vm.__pullStartY).toBeNull();
-			expect(wrapper.vm.__pullDist).toBe(0);
+			expect(wrapper.vm.pullDistance).toBe(0);
 			expect(storeB.activate).not.toHaveBeenCalled();
 
 			wrapper.vm.$data.__creatingTopic = false;
 		});
 
-		test('chatStore 切换时清 __pullStartY/__pullDist（mid-touch 切 chat 不让旧手势误触发加载）', async () => {
+		test('chatStore 切换时清 __pullStartY/pullDistance（mid-touch 切 chat 不让旧手势误触发加载）', async () => {
 			const wrapper = createWrapper();
 			await flushPromises();
 
@@ -2079,7 +2079,7 @@ describe('ChatPage scroll', () => {
 
 			// 模拟用户在 chat A 上 mid-touch：起点已记录、已 pull 过阈值，但还没释放
 			wrapper.vm.__pullStartY = 100;
-			wrapper.vm.__pullDist = 200;
+			wrapper.vm.pullDistance = 200;
 
 			// 触发 chatStore watcher 模拟程序化切到 chat B（实例不重建）
 			const storeB = { activate: vi.fn() };
@@ -2089,7 +2089,7 @@ describe('ChatPage scroll', () => {
 			// 切走后旧手势状态应被清掉，否则若用户随后在新 chat 上释放手指，
 			// __onPullEnd 会用旧 dist=200 触发新 chat 的 __loadMoreHistory
 			expect(wrapper.vm.__pullStartY).toBeNull();
-			expect(wrapper.vm.__pullDist).toBe(0);
+			expect(wrapper.vm.pullDistance).toBe(0);
 		});
 	});
 
@@ -2227,6 +2227,197 @@ describe('ChatPage scroll', () => {
 			scrollContainer.dispatchEvent(makeTouchEvent('touchcancel', 200));
 
 			expect(loadMoreSpy).not.toHaveBeenCalled();
+		});
+	});
+
+	// --- 触屏下拉指示器视觉 ---
+	describe('touch-pull indicator visual', () => {
+		test('未拉动且未加载时指示器隐藏（v-show 实际生效），图标默认为 arrow-down', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+			expect(wrapper.vm.pullIndicatorVisible).toBe(false);
+			// v-show 真的把节点 display:none 了，否则承诺没接到模板
+			const indicator = wrapper.find('[data-testid="pull-indicator"]');
+			expect(indicator.exists()).toBe(true);
+			expect(indicator.element.style.display).toBe('none');
+			// 默认图标是 arrow-down（未过阈值形态）
+			expect(indicator.html()).toContain('i-lucide-arrow-down');
+			expect(indicator.html()).not.toContain('i-lucide-refresh-cw');
+		});
+
+		test('拉动中指示器显示且 opacity 随距离线性增长', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+			wrapper.vm.pullDistance = 30;
+			await wrapper.vm.$nextTick();
+			expect(wrapper.vm.pullIndicatorVisible).toBe(true);
+			// v-show 已让节点可见
+			const indicator = wrapper.find('[data-testid="pull-indicator"]');
+			expect(indicator.element.style.display).not.toBe('none');
+			// 30/60 = 0.5
+			expect(wrapper.vm.pullIndicatorStyle.opacity).toBeCloseTo(0.5, 5);
+			// 未过阈值
+			expect(wrapper.vm.pullIndicatorPastThreshold).toBe(false);
+		});
+
+		test('过阈值切换为 past-threshold 形态（图标切到 refresh-cw，但未旋转）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+			wrapper.vm.pullDistance = 60;
+			await wrapper.vm.$nextTick();
+			expect(wrapper.vm.pullIndicatorPastThreshold).toBe(true);
+			// 已饱和到 1
+			expect(wrapper.vm.pullIndicatorStyle.opacity).toBe(1);
+			// 仅过阈值（手指还在屏幕上），不该旋转——避免误导"已在加载"
+			expect(wrapper.vm.pullIndicatorSpinning).toBe(false);
+			const indicator = wrapper.find('[data-testid="pull-indicator"]');
+			// DOM 上图标 name 真切到了 refresh-cw（验证模板 :name 绑定接线）
+			expect(indicator.html()).toContain('i-lucide-refresh-cw');
+			expect(indicator.html()).not.toContain('i-lucide-arrow-down');
+			// DOM 上 animate-spin class 不该挂上
+			expect(indicator.html()).not.toContain('animate-spin');
+		});
+
+		test('手势加载中：pullDistance=0 + __pullGestureLoading=true → 指示器仍显示、定位到阈值并旋转', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+			wrapper.vm.pullDistance = 0;
+			wrapper.vm.$data.__pullGestureLoading = true;
+			await wrapper.vm.$nextTick();
+
+			expect(wrapper.vm.pullIndicatorVisible).toBe(true);
+			expect(wrapper.vm.pullIndicatorPastThreshold).toBe(true);
+			expect(wrapper.vm.pullIndicatorSpinning).toBe(true);
+			// 加载中定在阈值位置 (60-8=52)
+			expect(wrapper.vm.pullIndicatorStyle.top).toContain('52px');
+			expect(wrapper.vm.pullIndicatorStyle.opacity).toBe(1);
+			// 释放回弹用 transition，加载中 pullDistance=0 也算 releasing
+			expect(wrapper.vm.pullIndicatorStyle.transition).toContain('0.2s');
+			const indicator = wrapper.find('[data-testid="pull-indicator"]');
+			// DOM 上 animate-spin class 必须挂上
+			expect(indicator.html()).toContain('animate-spin');
+			// 验证模板 :style 真把 computed 接到了 element.style（top/opacity/transition）
+			// jsdom 不解析 calc()，element.style.top 仍以原始字符串保留
+			expect(indicator.element.style.top).toContain('52px');
+			expect(indicator.element.style.opacity).toBe('1');
+			expect(indicator.element.style.transition).toContain('0.2s');
+		});
+
+		test('拉动过程中无 transition（避免跟手卡顿）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+			wrapper.vm.pullDistance = 40;
+			expect(wrapper.vm.pullIndicatorStyle.transition).toBe('none');
+		});
+
+		test('负距离（用户向上滑）→ 指示器隐藏，opacity 不为负', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+			wrapper.vm.pullDistance = -20;
+			expect(wrapper.vm.pullIndicatorVisible).toBe(false);
+			expect(wrapper.vm.pullIndicatorStyle.opacity).toBe(0);
+
+			// 但 __pullGestureLoading 一旦为真，即便此时 pullDistance 仍是负数
+			// 也应保持显示（loading 分支独立维持可见性）
+			wrapper.vm.$data.__pullGestureLoading = true;
+			expect(wrapper.vm.pullIndicatorVisible).toBe(true);
+		});
+
+		test('视觉位置 clamp 到 100px：拉到 200px 也不会飞到屏幕中部', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+			wrapper.vm.pullDistance = 200;
+			// top 应是 safe + (100 - 8) = safe + 92px，而不是 safe + 192px
+			expect(wrapper.vm.pullIndicatorStyle.top).toContain('92px');
+			expect(wrapper.vm.pullIndicatorStyle.top).not.toContain('192px');
+			// opacity 仍饱和 1（200/60 ≥ 1，clamp 后等价）
+			expect(wrapper.vm.pullIndicatorStyle.opacity).toBe(1);
+			// 触发判定看 raw 值（>=60）—— 由 __onPullEnd 验证，此处只查视觉
+		});
+
+		test('非手势触发的加载（__loadingHistory=true 但 __pullGestureLoading=false）不亮指示器', async () => {
+			// 模拟 onScroll/onWheel/__autoFillHistory 路径触发的加载：
+			// 通用加载锁置 true，但手势标志保持 false
+			const wrapper = createWrapper();
+			await flushPromises();
+			wrapper.vm.$data.__loadingHistory = true;
+			wrapper.vm.$data.__pullGestureLoading = false;
+			await wrapper.vm.$nextTick();
+
+			expect(wrapper.vm.pullIndicatorVisible).toBe(false);
+			expect(wrapper.find('[data-testid="pull-indicator"]').element.style.display).toBe('none');
+		});
+
+		test('手势触发的加载完成后自动清 __pullGestureLoading（指示器隐藏，loadOlderMessages 真被调用）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const store = wrapper.vm.chatStore;
+			// 桩出 hasMoreMessages + loadOlderMessages，让 __loadMoreHistory 走"当前 session 内"分支
+			Object.defineProperty(store, 'hasMoreMessages', { value: true, configurable: true });
+			Object.defineProperty(store, 'messagesLoading', { value: false, configurable: true });
+			store.loadOlderMessages = vi.fn().mockResolvedValue(true);
+
+			// 模拟手势触发：dist>=60 → __onPullEnd 调 __loadMoreHistory(true)
+			wrapper.vm.pullDistance = 80;
+			wrapper.vm.__onPullEnd();
+			// 入口同步置 true
+			expect(wrapper.vm.$data.__pullGestureLoading).toBe(true);
+
+			// 等加载 promise + finally 运行
+			await flushPromises();
+			await wrapper.vm.$nextTick();
+
+			// 加载结束后标志被回收
+			expect(wrapper.vm.$data.__pullGestureLoading).toBe(false);
+			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
+			// 加载真的发生了，而非空跑（避免"flag 来回切但什么都没做"的退化实现也通过）
+			expect(store.loadOlderMessages).toHaveBeenCalled();
+			// 终态：DOM 上指示器隐藏（v-show display:none）
+			expect(wrapper.find('[data-testid="pull-indicator"]').element.style.display).toBe('none');
+		});
+
+		test('非手势调 __loadMoreHistory()（不传参数）→ __pullGestureLoading 始终不被置 true', async () => {
+			// 因果链验证：onScroll/onWheel/__autoFillHistory 共用 __loadMoreHistory()，
+			// 默认参数 fromPullGesture=false 不应误开手势加载标志
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const store = wrapper.vm.chatStore;
+			Object.defineProperty(store, 'hasMoreMessages', { value: true, configurable: true });
+			Object.defineProperty(store, 'messagesLoading', { value: false, configurable: true });
+			store.loadOlderMessages = vi.fn().mockResolvedValue(true);
+
+			// 不传参数（模拟 onScroll/onWheel/__autoFillHistory 路径）
+			const promise = wrapper.vm.__loadMoreHistory();
+			// 入口同步阶段——通用锁会被置 true，但手势锁绝不能被置 true
+			expect(wrapper.vm.$data.__loadingHistory).toBe(true);
+			expect(wrapper.vm.$data.__pullGestureLoading).toBe(false);
+
+			await promise;
+			await wrapper.vm.$nextTick();
+
+			// 加载真的发生且通用锁回收，手势锁全程为 false
+			expect(store.loadOlderMessages).toHaveBeenCalled();
+			expect(wrapper.vm.$data.__loadingHistory).toBe(false);
+			expect(wrapper.vm.$data.__pullGestureLoading).toBe(false);
+			// 整段过程中指示器从未显示
+			expect(wrapper.find('[data-testid="pull-indicator"]').element.style.display).toBe('none');
+		});
+
+		test('chatStore 切换时清 __pullGestureLoading（避免切走后指示器残留）', async () => {
+			const wrapper = createWrapper();
+			await flushPromises();
+
+			const storeA = wrapper.vm.chatStore;
+			wrapper.vm.$data.__pullGestureLoading = true;
+			expect(wrapper.vm.$data.__pullGestureLoading).toBe(true);
+
+			const storeB = { activate: vi.fn() };
+			const watcher = wrapper.vm.$options.watch.chatStore;
+			watcher.handler.call(wrapper.vm, storeB, storeA);
+
+			expect(wrapper.vm.$data.__pullGestureLoading).toBe(false);
 		});
 	});
 
