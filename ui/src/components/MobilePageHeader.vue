@@ -8,7 +8,9 @@
 			icon="i-lucide-arrow-left"
 			@click="goBack"
 		/>
-		<h1 class="min-w-0 truncate text-base font-medium">{{ title }}</h1>
+		<h1 class="min-w-0 truncate text-base font-medium">
+			<slot>{{ title }}</slot>
+		</h1>
 		<div class="ml-auto flex shrink-0 items-center">
 			<slot name="actions" />
 		</div>

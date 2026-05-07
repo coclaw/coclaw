@@ -7,7 +7,7 @@ vi.mock('../components/MobilePageHeader.vue', () => ({
 	default: {
 		name: 'MobilePageHeader',
 		props: ['title'],
-		template: '<div class="mph-stub">{{ title }}<slot name="actions" /></div>',
+		template: '<div class="mph-stub"><div class="mph-title"><slot>{{ title }}</slot></div><slot name="actions" /></div>',
 	},
 }));
 vi.mock('../components/ChatMsgItem.vue', () => ({
@@ -258,6 +258,84 @@ describe('ChatPage', () => {
 		await flushPromises();
 
 		expect(wrapper.vm.chatTitle).toBe('');
+	});
+
+	test('headerLabel 单 claw 时不带 @clawName 后缀', async () => {
+		const wrapper = createWrapper();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'OnlyClaw', online: true }]);
+		setupAgents('bot-1', 'main');
+		await flushPromises();
+
+		expect(wrapper.vm.headerLabel).toEqual({ agent: expect.any(String), claw: null });
+		expect(wrapper.vm.headerLabel.claw).toBeNull();
+	});
+
+	test('headerLabel 多 claw 时带 @clawName 后缀', async () => {
+		const wrapper = createWrapper();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
+			{ id: 'bot-1', name: 'Alpha', online: true },
+			{ id: 'bot-2', name: 'Beta', online: true },
+		]);
+		const agentsStore = useAgentsStore();
+		agentsStore.byClaw['bot-1'] = {
+			agents: [{ id: 'main', identity: { name: 'Helper' } }],
+			defaultId: 'main',
+			loading: false,
+			fetched: true,
+		};
+		await flushPromises();
+
+		expect(wrapper.vm.headerLabel).toEqual({ agent: 'Helper', claw: 'Alpha' });
+	});
+
+	test('headerLabel 多 claw 但 agent 名与 claw 名相同时丢掉后缀', async () => {
+		const wrapper = createWrapper();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
+			{ id: 'bot-1', name: 'Alpha', online: true },
+			{ id: 'bot-2', name: 'Beta', online: true },
+		]);
+		// 默认 agent 无 identity 时，agentDisplay 把 name fallback 到 claw 名
+		setupAgents('bot-1', 'main');
+		await flushPromises();
+
+		expect(wrapper.vm.headerLabel.claw).toBeNull();
+	});
+
+	test('headerLabel topic 路由下返回 null', async () => {
+		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'new' });
+		await flushPromises();
+
+		expect(wrapper.vm.headerLabel).toBeNull();
+	});
+
+	test('header 多 claw 渲染 agent 与 dim @clawName', async () => {
+		const wrapper = createWrapper();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([
+			{ id: 'bot-1', name: 'Alpha', online: true },
+			{ id: 'bot-2', name: 'Beta', online: true },
+		]);
+		const agentsStore = useAgentsStore();
+		agentsStore.byClaw['bot-1'] = {
+			agents: [{ id: 'main', identity: { name: 'Helper' } }],
+			defaultId: 'main',
+			loading: false,
+			fetched: true,
+		};
+		await flushPromises();
+
+		// 桌面 header：truncate 容器内含主名 + dim 后缀
+		const desktopH1 = wrapper.find('header h1');
+		expect(desktopH1.exists()).toBe(true);
+		expect(desktopH1.classes()).toContain('truncate');
+		expect(desktopH1.text()).toContain('Helper');
+		expect(desktopH1.text()).toContain('@Alpha');
+		const dim = desktopH1.find('span.text-dimmed');
+		expect(dim.exists()).toBe(true);
+		expect(dim.text()).toBe('@Alpha');
 	});
 
 	test('显示 bot 离线提示', async () => {

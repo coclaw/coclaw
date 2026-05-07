@@ -8,6 +8,10 @@
 	-->
 	<div ref="chatRoot" data-testid="chat-root" class="relative flex flex-col overflow-hidden" :class="chatRootClasses">
 		<MobilePageHeader :title="chatTitle">
+			<template v-if="headerLabel" #default>
+				<span>{{ headerLabel.agent }}</span>
+				<span v-if="headerLabel.claw" class="text-dimmed">@{{ headerLabel.claw }}</span>
+			</template>
 			<template #actions>
 				<UButton
 					data-testid="btn-refresh-mobile"
@@ -41,7 +45,13 @@
 			</template>
 		</MobilePageHeader>
 		<header class="z-10 hidden shrink-0 min-h-12 items-center justify-between border-b border-default bg-elevated pl-4 pr-1 lg:pl-5 lg:pr-2 py-1 md:flex">
-			<h1 class="text-base">{{ chatTitle }}</h1>
+			<h1 class="min-w-0 flex-1 truncate text-base">
+				<template v-if="headerLabel">
+					<span>{{ headerLabel.agent }}</span>
+					<span v-if="headerLabel.claw" class="text-dimmed">@{{ headerLabel.claw }}</span>
+				</template>
+				<template v-else>{{ chatTitle }}</template>
+			</h1>
 			<div class="flex items-center">
 				<UButton
 					data-testid="btn-refresh-desktop"
@@ -389,6 +399,22 @@ export default {
 			const agentId = this.currentAgentId;
 			if (!clawId || !agentId) return { name: 'Agent', avatarUrl: null, emoji: null };
 			return this.agentsStore.getAgentDisplay(clawId, agentId);
+		},
+		/**
+		 * chat 模式下 header 的结构化 label：{ agent, claw }
+		 * - topic / new-topic / 无 clawId 时返回 null（header 走 chatTitle 字符串路径）
+		 * - 单 claw 不带 @ 后缀，多 claw 才带（与 MainList 策略一致）
+		 * - agent 名与 claw 名相同时丢掉后缀（避免 "Alpha@Alpha" 重复）
+		 */
+		headerLabel() {
+			if (this.isNewTopic || this.isTopicRoute) return null;
+			if (!this.routeClawId) return null;
+			const agent = this.agentDisplay?.name || 'Agent';
+			const allClaws = this.clawsStore?.items ?? [];
+			if (allClaws.length < 2) return { agent, claw: null };
+			const claw = this.clawsStore?.byId?.[this.currentClawId]?.name || 'OpenClaw';
+			if (claw === agent) return { agent, claw: null };
+			return { agent, claw };
 		},
 		/** 斜杠命令菜单仅在 chat 模式（非 topic）且有 sessionKey 时显示 */
 		showSlashMenu() {
