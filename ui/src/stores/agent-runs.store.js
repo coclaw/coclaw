@@ -380,8 +380,9 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 * 级失败终态，这里加一道防御：未来上游漏发 ok=false 时不会被静默吞掉。
 		 *
 		 * 取消（cancel）路径下 plugin 端有时会在 ok=true 终态里反映成 status='timeout' +
-		 * summary='aborted'（上游 plugin 端测试已记录的形态）。run.cancelled=true 时不视为
-		 * 失败，按正常 'rpc' 收尾，避免给用户弹"运行失败"。
+		 * summary='aborted'（上游 plugin 端测试已记录的形态），罕见竞态下也可能是 status='error'
+		 * （plugin 内部异常 + 取消同时发生）。run.cancelled=true 时两种业务级失败均不视为失败，
+		 * 按正常 'rpc' 收尾，避免给用户弹"运行失败"。
 		 *
 		 * @param {string} runId
 		 * @param {object} [rpcResult] - 二阶段 payload（{ runId, status, summary?, error? }）
