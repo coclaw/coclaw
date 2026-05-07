@@ -864,3 +864,40 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 - 在 session 上加 `rpcSetupInProgress` promise marker
 - setup 进入装配段前先 `await session.rpcSetupInProgress`，再开始自己的 teardown-then-build
 - setup 完成时清 marker
+
+### `__handleFsError` 不 emit `onSpillEnd` → monitor `spillActive` 永远 true
+
+**发现日期**：2026-05-08（发版 0.21.0 前最终兜底 deep-review 由 codex-rescue 实例 5 surface）
+
+**锚点**：
+- `plugins/openclaw/src/utils/file-backed-queue.js:478-495` `__handleFsError` 内 `this.spilled = false` 后没调 `__dispatchSpillEnd`
+- `plugins/openclaw/src/utils/file-backed-queue.js:284` `clear()` 内 `wasSpilled` snapshot 后调 `__dispatchSpillEnd`（A2 修法），但读的是已被 `__handleFsError` 清掉的 `spilled` 字段——若先经 `__handleFsError` 再 `clear()`，`wasSpilled=false`，不再 dispatch
+- `plugins/openclaw/src/webrtc/rpc-drop-monitor.js:131` `onSpillStart` 幂等守卫（`spillActive=true` 时直接 return）
+
+**问题**：FS 故障粘性降级路径上，`__handleFsError` 把 `spilled` 翻 false 但**不通知 monitor**。monitor 的 `spillActive` 仍是 true。后续若调 `clear()` 也救不回（snapshot 看到 `wasSpilled=false`）。结果：monitor 的 `spillActive` 永远卡在 true，下一次"真实"`onSpillStart` 被幂等守卫吃掉。
+
+**当前不触发**：webrtc 路径下 FBQ 实例不调 `clear()`（peer 重建走 `destroy` 不走 `clear`），所以这条契约破坏不会被触发。但破坏了 FBQ ↔ monitor 的公共状态契约——一旦未来有路径在 FS 降级后调 `clear()` 恢复，monitor 状态机就错乱。
+
+**修复方向**（如未来真触发再做）：
+- `__handleFsError` 在 `this.spilled = false` 之后立即 `__dispatchSpillEnd(0)`（drainedBytes=0 因为 FS 故障删档不算 drain）
+- 或者让 `clear()` 不依赖 `wasSpilled` 直接无条件 dispatch（但会破坏"未 spilled 时 emit onSpillEnd 是 bug"语义）
+- 推荐前者——故障删档明确语义为"spill 中断"，与 drain/clear 的"spill 自然结束"并列
+
+### 装配段 `new FileBackedQueue()` / `init()` 抛错时的静默缝隙
+
+**发现日期**：2026-05-08（发版 0.21.0 前最终兜底 deep-review 由 codex-rescue 实例 4 surface）
+
+**锚点**：
+- `plugins/openclaw/src/webrtc/webrtc-peer.js:518` ondatachannel sync 段已经把 `session.rpcChannel` 切到新 dc（`readyState='open'`）
+- `plugins/openclaw/src/webrtc/webrtc-peer.js:694-715` 装配段 sync nullify 四字段 + await 旧 destroy
+- `plugins/openclaw/src/webrtc/webrtc-peer.js:727-754` 创建新 monitor / `new FileBackedQueue(...)` / `await queue.init()` / wire sender / consume loop —— **整段无局部 try/catch fallback**
+- `plugins/openclaw/src/webrtc/webrtc-peer.js:519` 最外层 `__setupDataChannel(...).catch(...)`（fire-and-forget catch）
+
+**问题**：装配段 nullify 之后若 `new FileBackedQueue()` 构造校验抛（`memBudget` / `diskCap` / `maxMessageBytes` 非有限正数）或 `init()` 抛（`fs.mkdir` 异常路径），异常被最外层 catch 兜住——此时 `session.rpcChannel=新 dc` 但 `rpcQueue=null` / `rpcDcSender=null` / 等四字段全 null。新消息进 broadcast 看 `rpcQueue=null` skip，**新 dc 开着但没有 queue 后端**，静默丢消息。
+
+**当前不触发**：FBQ 构造校验抛只在 `getDiskCap()` 返回非有限正数时触发（misconfiguration / startup prep timeout 后 `__diskCap=null` 走 MemoryQueue 分支，不走 FBQ）。`init()` 的 `fs.mkdir` 在权限/磁盘异常下可能抛，但前置 `__measureRpcQueueDiskCap` 已 `statfs` 过，多数环境下不会再失败。
+
+**修复方向**（如未来真触发再做）：
+- 装配段 try/catch 包整段创建逻辑，catch 里 fallback 到 MemoryQueue（与 startup prep timeout 降级路径对齐），并 `logger.warn?.(...)` 记录
+- 或者 catch 里保持四字段 null（已是该状态），但加 warn log 让运维侧看到"新 dc 装配失败"
+- 推荐前者——保住 dc 可用性比"无 queue 静默"更对齐用户预期

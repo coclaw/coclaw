@@ -177,11 +177,14 @@ FBQ id 加唯一后缀 `${connId}-${ts}-<uuid8>`，物理文件名隔离。**不
 0. destroyed → silent return false（不调 onDrop；连接清理路径正常副作用）
 1. size > maxMessageBytes → onDrop('oversize', size)，返回 false（bypass 不豁免）
 
-2. admission（disk-cap）：若 memBytes + writtenBytes ≥ diskCap 且 !bypass
+2. admission（disk-cap）：若 !fsBroken && memBytes + writtenBytes ≥ diskCap 且 !bypass
    → onDrop('disk-cap', size, { memBytes, writtenBytes, diskCap })，返回 false
    （writtenBytes 是本次生命周期累计已写字节，drain 完成或 FS 降级时重置为 0
     bypass 命中跳过容量层判定继续往下走；本步允许 single overshoot——当前 < diskCap 时
-    再大的一条都收，下一条才 drop）
+    再大的一条都收，下一条才 drop
+    fsBroken 守卫：粘性降级后 disk-cap 检查跳过，让下面的 fs-error 短路赢——
+    此时 mem 桶接管容量层，writtenBytes 已重置为 0，根因是 FS 故障而非容量；
+    详见红线 3 fsBroken+bypass overshoot 边界）
 
 3. mem 路径（!spilled 时）：
    - memFits = (memBytes < memBudget)                              // current ≥ threshold + single overshoot
@@ -342,8 +345,8 @@ FBQ 的两类 drop 都可能持续高频：`disk-cap`（盘到顶后每条新消
 | 后续 `fs-error` drop | **静默累加** |
 | `oversize` drop | 每次独立 warn（应用 bug 性质，不属容量压力） |
 | FBQ `spilled` false→true（onSpillStart） | 边沿：`rpc-queue.spill-start conn=X`，info + remoteLog |
-| FBQ `spilled` true→false（onSpillEnd，仅 drain 路径） | 边沿：`rpc-queue.spill-end conn=X drainedBytes=N`，info + remoteLog |
-| DC close / queue destroy 收尾 | 兜底：`rpc-queue.close conn=X dropped=… residualChunks=… residualWrittenBytes=… fsBroken=… lastReason=…`（仅在 anomaly 时打） |
+| FBQ `spilled` true→false（onSpillEnd，drain 路径 + `clear()` 路径都触发；故障删档 / `destroy` 不调） | 边沿：`rpc-queue.spill-end conn=X drainedBytes=N`，info + remoteLog |
+| DC close / queue destroy 收尾 | 兜底：`rpc-queue.close conn=X dropped=… droppedBytes=… residualChunks=… residualBytes=… residualDiskBytes=… residualWrittenBytes=… fsBroken=… spillActive=… lastReason=…`（仅在 anomaly 时打；`spillActive=true` 表示 destroy 时仍处于 spill 中段未走完 drain） |
 
 #### "恢复"判定 = 队列彻底空
 

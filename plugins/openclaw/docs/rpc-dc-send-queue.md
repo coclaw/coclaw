@@ -103,7 +103,7 @@ drop 来源有两类，分别由不同组件上报，**不要混淆**：
 - "满→空"翻转打 `overflow-end` 携带累计 dropped 数字
 - `disk-cap` 第三参展开 `memBytes` / `writtenBytes` / `diskCap` 三分量到 log，让运维直接看到谁顶到 cap（而非误读为"文件满了"）
 - close 时若仍有 dropped 累计或 residual，统一 remoteLog 一次 `rpc-queue.close`
-- `rpc-queue.close` 字段 8 项：`dropped` / `droppedBytes` / `residualChunks` / `residualBytes` / `residualDiskBytes` / `residualWrittenBytes` / `fsBroken` / `lastReason`。MemoryQueue 路径下后三项恒 `0/0/false`；FBQ 路径下承载磁盘残留 + 降级状态
+- `rpc-queue.close` 字段 9 项：`dropped` / `droppedBytes` / `residualChunks` / `residualBytes` / `residualDiskBytes` / `residualWrittenBytes` / `fsBroken` / `spillActive` / `lastReason`（`lastReason` 无 drop 时为 `none`）。MemoryQueue 路径下 `residualDiskBytes` / `residualWrittenBytes` / `fsBroken` / `spillActive` 恒 `0/0/false/false`；FBQ 路径下承载磁盘残留 + 降级状态（`spillActive=true` 表示 destroy 时仍处于 spilled 中段，未走完 drain）
 
 **为什么静默积累**：UI 离线 + ICE 失败 + DC 长时间不 drain 的场景，队列每秒可能被网关事件灌满 drop，逐条上报会刷屏远程日志。状态翻转点上报既能定位故障窗口，又能控制日志体积。
 
@@ -112,7 +112,7 @@ drop 来源有两类，分别由不同组件上报，**不要混淆**：
 `onSpillStart()` / `onSpillEnd(drainedBytes)` 是文件层翻转信号，与 admission drop 是不同维度：
 
 - `spill-start`：FBQ `spilled` 翻转 false→true（首次创建文件落盘），监视器打 info + remoteLog
-- `spill-end`：FBQ `spilled` 翻转 true→false（drain 完成、`__dropFile` 删文件），打 info + remoteLog 含累计 `drainedBytes`
+- `spill-end`：FBQ `spilled` 翻转 true→false 时打 info + remoteLog 含累计 `drainedBytes`；触发路径有两条——drain 完成（`__dropFile` 删文件）+ `clear()`（与 `__dropFile` 对称，wasSpilled snapshot 后调）
 - 故障删档（`__handleFsError` 内的 `fs.rm`）/ 清理离场（`destroy`）**不**调 `onSpillEnd`，由 `fs-broken` / `close` 信号各自承载，避免语义混淆
 - 监视器内置幂等：`spillActive` flag 让重复 active 不重 emit、未 active 时调 `onSpillEnd` 静默
 - 边沿触发，不刷屏：mobile 端长时间后台再恢复的典型场景每条 DC 仅打两条（一上一下）
@@ -160,7 +160,7 @@ OpenClaw 上游事实：
 - **绕过容量层**：白名单消息直接入队，越过 MemoryQueue 的 `memBytes >= memBudget` / FBQ 的 `memBytes + writtenBytes >= diskCap`
 - **FBQ fsBroken 降级模式额外豁免 mem 桶**：spill 不可用时 mem 桶事实上接管容量层，bypass 命中允许 overshoot 入队（与 MemoryQueue 镜像，保白名单不被误报 fs-error）
 - **仍受单条硬上限约束**：`oversize` 检查对 bypass 也不豁免（接收端重组上限固定 50 MB，超了无意义）
-- **仍受 IO 失败约束**：FBQ 的 `fs-error` 在物理写失败那一刻仍 drop（mkdir / writeStream emit error / write callback err），bypass 不豁免
+- **仍受 IO 失败约束**：FBQ 的 `fs-error` 在物理写失败时仍 drop，bypass 不豁免——具体路径见上方 `### admission drop` 表 `fs-error` 行：mkdir / write callback err 同步直接 drop；writeStream emit error 异步路径仅置 `fsBroken`，由后续非 bypass enqueue 进 fsBroken 短路 drop 才报 `fs-error`
 - **不计入 droppedCount/droppedBytes**：白名单绕过容量层时不算 drop
 - **不影响 overflow 状态翻转**：状态翻转仍基于容量阈值判定；白名单消息让占用进一步增长是有意设计
 
