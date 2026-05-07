@@ -639,6 +639,40 @@ describe('ChatPage send message', () => {
 		});
 	});
 
+	// 锁住全局 toast 设计 contract：用户切走 / unmount 后 sendMessage 落地仍弹失败 toast，
+	// 不 crash。失败感知不应因用户离开页面而丢失。如果未来要改为 unmount 后 suppress，
+	// 必须有意识地推翻这个测试，避免无声变更。
+	test('unmount 后 sendMessage resolve：仍弹失败 toast，不 crash（全局 toast contract）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		let resolveSend;
+		vi.spyOn(chatStore, 'sendMessage').mockImplementation(
+			() => new Promise((resolve) => { resolveSend = resolve; }),
+		);
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		// send 已发出，promise 仍 pending；立即 unmount 模拟用户切走
+		wrapper.unmount();
+
+		// unmount 后才 resolve 失败结果
+		resolveSend({
+			accepted: true,
+			endReason: 'failed',
+			errorMessage: 'FailoverError: late resolve',
+		});
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith({
+			title: 'Agent run failed',
+			description: 'FailoverError: late resolve',
+		});
+	});
+
 	test('空文本和空文件时不发送', async () => {
 		const wrapper = createWrapper();
 		setupAgents();

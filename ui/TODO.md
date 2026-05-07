@@ -446,3 +446,20 @@
     - 现状：`agent-runs.store.js:404` 与 `chat.store.js:1133` 的 `String(raw)` 兜底能保证 toast 不丢 description，但若 `summary`/`error` 是 object（协议偏离），用户看到的是 `[object Object]` 而非可读内容
     - 触发条件：当前 OpenClaw `chat.ts` / `agent.ts` 的 error/summary 都是 string，不会触发
     - 修复方向：换 JSON.stringify 兜底（含循环引用 try/catch），让协议偏离时至少给出 raw JSON 而非 `[object Object]`。属"可读性增强"，非阻塞
+
+## 测试场景补强 review 中发现的预存 / UX 增强项（2026-05-07）
+
+**发现日期**：2026-05-07
+**关联 commit**：c2a3e46 "fix(ui): silence error toast when user cancels and upstream returns error"（测试场景补强 deep-review）
+
+73. **chat 切换期间 in-flight sendMessage resolve → `__tryGenerateTitle` 落到错的 chat**
+    - 来源：2026-03-17 引入 Topic 管理 feature 时模式就存在，与 bc13c96 / c2a3e46 无关，是预存 bug
+    - 现状：`ChatPage.vue:754` `__tryGenerateTitle` 用 `this.chatStore`，未走入口快照 `targetStore`。用户在 chat A 上发送、await 期间切到 chat B（也是 topic），sendMessage 落地后 generateTitle 被基于 chat B 的 topicId/messages 触发
+    - 影响：chat B 可能还没 send 过任何消息，让 LLM 给空 chat 起标题，结果是垃圾或失败
+    - 修复方向：`__tryGenerateTitle(targetStore = this.chatStore)`，两处调用点（`ChatPage.vue:631`、`:737`）显式传入 `targetStore`；同时把 `!this.isTopicRoute` guard 改为 `!targetStore?.topicMode`（topicMode 是 store 属性，与当前路由无关）
+    - 测试：chat 切换期间 sendMessage resolve → generateTitle 调用 with targetStore 的 topicId/clawId
+
+74. **失败 toast 文案 generic（无 chat 来源）→ unmount/chat 切换后用户难判归属**
+    - 现状：`ChatPage.vue:651` `__notifyRunFailed` 弹 `chat.errRunFailed`（"Agent run failed"），不带 chat / topic 名称。用户在 chat A 上 send 后切到 chat B，sendMessage 落地弹的 toast 看起来像 chat B 的失败
+    - 影响：UX 困惑，用户难定位失败来源；尤其多 chat / 多 topic 并发使用场景
+    - 修复方向：toast description 前缀加 chat / topic 名称（如 `[Topic 标题] FailoverError: ...`）；或 toast 加 "Open" 按钮跳回 source chat。属 i18n + UX 改造，需统一其它失败 toast（如 `__sendErrorMessage`）一起规划
