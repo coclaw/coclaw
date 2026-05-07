@@ -4692,7 +4692,7 @@ test('run-event-routes: event:agent without runId falls back to broadcast', asyn
 	}
 });
 
-test('run-event-routes: __closeGatewayWs() (server-disconnect path) clears route entries', async () => {
+test('run-event-routes: __closeGatewayWs() (local-close path) clears route entries', async () => {
 	// server WS 断开等场景会直接调 __closeGatewayWs，独立于 ws close handler 清表路径。
 	const { bridge, prevHome } = await setupBridgeWithGateway('c_re_closegw');
 	try {
@@ -5014,5 +5014,66 @@ test('defaultResolveGatewayAuthToken: loadConfig 抛错时静默返回空', () =
 		if (prevEnv !== undefined) process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
 		console.warn = prevWarn;
 		setRuntime(null);
+	}
+});
+
+// --- gateway ws close: plugin-initiated vs peer-initiated branches ---
+
+test('gateway ws close: plugin-initiated emits ws.local-close and "by plugin" log', async () => {
+	resetRemoteLog();
+	const { bridge, server, logs, prevHome } = await setupBridgeWithGateway('c_close_plugin');
+	try {
+		// 主动关本地 gateway ws（典型场景：server WS 失效时 plugin 主动收线）
+		bridge.__closeGatewayWs();
+		await new Promise((r) => setTimeout(r, 0));
+
+		assert.ok(
+			logs.some((m) => String(m).includes('gateway ws closed by plugin') && String(m).includes('reason=local-close')),
+			'logger should report plugin-initiated close with local-close reason'
+		);
+
+		const texts = collectRemoteLogTexts(server);
+		assert.ok(
+			texts.some((t) => t.startsWith('ws.local-close') && t.includes('peer=gateway') && t.includes('reason=local-close')),
+			'remoteLog should be ws.local-close peer=gateway reason=local-close'
+		);
+		assert.ok(
+			!texts.some((t) => t.startsWith('ws.disconnected') && t.includes('peer=gateway')),
+			'plugin-initiated close should not emit ws.disconnected'
+		);
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('gateway ws close: peer-initiated emits ws.disconnected with code/reason and "by peer" log', async () => {
+	resetRemoteLog();
+	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_close_peer');
+	try {
+		// 模拟对端关闭：直接 emit close，不走 plugin 主动 close 路径，未设 __closedByPlugin
+		gwWs.readyState = 3;
+		gwWs.emit('close', { code: 1006, reason: 'abnormal' });
+		await new Promise((r) => setTimeout(r, 0));
+
+		assert.ok(
+			logs.some((m) => String(m).includes('gateway ws closed by peer') && String(m).includes('code=1006') && String(m).includes('reason=abnormal')),
+			'logger should report peer-initiated close with code/reason'
+		);
+
+		const texts = collectRemoteLogTexts(server);
+		assert.ok(
+			texts.some((t) => t.startsWith('ws.disconnected') && t.includes('peer=gateway') && t.includes('code=1006') && t.includes('reason=abnormal')),
+			'remoteLog should be ws.disconnected peer=gateway code=1006 reason=abnormal'
+		);
+		assert.ok(
+			!texts.some((t) => t.startsWith('ws.local-close') && t.includes('peer=gateway')),
+			'peer-initiated close should not emit ws.local-close'
+		);
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
 	}
 });

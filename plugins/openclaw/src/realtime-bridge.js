@@ -279,7 +279,8 @@ export class RealtimeBridge {
 			return;
 		}
 		try {
-			this.gatewayWs.close(1000, 'server-disconnect');
+			this.gatewayWs.__closedByPlugin = true;
+			this.gatewayWs.close(1000, 'local-close');
 		}
 		/* c8 ignore next */
 		catch {}
@@ -814,7 +815,10 @@ export class RealtimeBridge {
 						this.__gatewayLastReason = reason;
 						remoteLog(`ws.connect-failed peer=gateway msg=${reason}`);
 						this.logger.warn?.(`[coclaw] gateway connect failed: ${reason}`);
-						try { ws.close(1008, 'gateway_connect_failed'); }
+						try {
+							ws.__closedByPlugin = true;
+							ws.close(1008, 'gateway_connect_failed');
+						}
 						/* c8 ignore next */
 						catch {}
 					}
@@ -917,13 +921,27 @@ export class RealtimeBridge {
 			this.__logDebug('gateway ws open, waiting for connect.challenge');
 		});
 		ws.addEventListener('close', (ev) => {
-			// 握手失败路径已经打过 ws.connect-failed，这里抑制重复的 disconnected 日志；
-			// 成功后的意外断开、握手途中的异常断开仍按原样上报。per-WS log 用闭包局部
-			// connectFailReported，无需身份校验
+			// 区分本端 plugin 主动关闭与对端 OpenClaw gateway 关闭：日志/远程上报用不同事件名，
+			// 避免读 log 时把"plugin 自己关"误读成"对端断开"（reason 字段全在我们自定义）；
+			// server 仍可从 remoteLog 频次发现 local-close 循环异常。
+			const closedByPlugin = ws.__closedByPlugin === true;
+			// 握手失败路径已经打过 ws.connect-failed，这里抑制重复的远程上报；
+			// 其它分支（成功后掉线 / 握手中异常断开 / plugin 主动关闭）按原样上报。per-WS log 用
+			// 闭包局部 connectFailReported，无需身份校验
 			if (!connectFailReported) {
-				remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'}`);
+				if (closedByPlugin) {
+					remoteLog(`ws.local-close peer=gateway reason=${ev?.reason ?? 'n/a'}`);
+				}
+				else {
+					remoteLog(`ws.disconnected peer=gateway code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'}`);
+				}
 			}
-			this.logger.info?.(`[coclaw] gateway ws closed (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
+			if (closedByPlugin) {
+				this.logger.info?.(`[coclaw] gateway ws closed by plugin (reason=${ev?.reason ?? 'n/a'})`);
+			}
+			else {
+				this.logger.info?.(`[coclaw] gateway ws closed by peer (code=${ev?.code ?? '?'} reason=${ev?.reason ?? 'n/a'})`);
+			}
 			// stale guard：旧 ws 的迟到 close 不应清新 ws 的 lag probes / pending requests / DC 路由 /
 			// 也不应触发新一轮重试调度。非当前 ws → 直接早返，仅留 per-WS 日志。
 			if (this.gatewayWs !== ws) {
@@ -965,7 +983,10 @@ export class RealtimeBridge {
 			this.logger.warn?.(`[coclaw] gateway ws error: ${String(err?.message ?? err)}`);
 			// 防御 ws 库在某些错误下只 emit error 不跟随 close 的情况：主动关闭让 close handler
 			// 接管清理和重试调度，避免 gatewayWs 引用卡在僵尸状态阻塞后续 __ensureGatewayConnection。
-			try { ws.close(1011, 'ws_error'); }
+			try {
+				ws.__closedByPlugin = true;
+				ws.close(1011, 'ws_error');
+			}
 			/* c8 ignore next */
 			catch {}
 		});
