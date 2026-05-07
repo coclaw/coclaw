@@ -385,6 +385,7 @@ export const frMessages = {
 		errTransferFailed: 'Échec du transfert de fichier. Veuillez réessayer.',
 		errFileTooLarge: 'Le fichier est trop volumineux pour être envoyé.',
 		errUnknown: 'Une erreur s\'est produite. Veuillez réessayer plus tard.',
+		errRunFailed: 'Échec de l\'exécution de l\'agent',
 		connecting: 'Connexion à la Claw…',
 		connBuilding: 'Établissement de la connexion…',
 		connRecovering: 'Reconnexion…',

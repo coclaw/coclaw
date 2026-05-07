@@ -385,6 +385,7 @@ export const hiMessages = {
 		errTransferFailed: 'फ़ाइल ट्रांसफर विफल। कृपया फिर से प्रयास करें।',
 		errFileTooLarge: 'फ़ाइल भेजने के लिए बहुत बड़ी है।',
 		errUnknown: 'कुछ गलत हो गया। कृपया बाद में पुनः प्रयास करें।',
+		errRunFailed: 'एजेंट चलाने में विफल',
 		connecting: 'Claw से कनेक्ट हो रहा है…',
 		connBuilding: 'कनेक्शन स्थापित हो रहा है…',
 		connRecovering: 'पुनः कनेक्ट हो रहा है…',

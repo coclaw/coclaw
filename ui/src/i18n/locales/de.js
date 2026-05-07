@@ -385,6 +385,7 @@ export const deMessages = {
 		errTransferFailed: 'Dateiübertragung fehlgeschlagen. Bitte versuche es erneut.',
 		errFileTooLarge: 'Datei ist zu groß zum Senden.',
 		errUnknown: 'Etwas ist schiefgelaufen. Bitte später erneut versuchen.',
+		errRunFailed: 'Agent-Ausführung fehlgeschlagen',
 		connecting: 'Verbinde mit Claw…',
 		connBuilding: 'Verbindung wird aufgebaut…',
 		connRecovering: 'Verbindung wird wiederhergestellt…',

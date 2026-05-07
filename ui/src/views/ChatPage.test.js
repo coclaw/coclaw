@@ -99,6 +99,7 @@ const i18nMap = {
 	'chat.errWsSendFailed': 'Send failed (ws)',
 	'chat.errRtcSendFailed': 'Send failed (rtc)',
 	'chat.errUnknown': 'Something went wrong',
+	'chat.errRunFailed': 'Agent run failed',
 	'chat.cancelNotSupported': 'Cancel not supported',
 	'chat.upgradeOpenClawHint': 'Upgrade OpenClaw',
 };
@@ -484,6 +485,134 @@ describe('ChatPage send message', () => {
 
 		// __accepted 为 true 时不恢复
 		expect(wrapper.vm.inputText).toBe('');
+	});
+
+	test('accepted 后失败 (endReason=failed)：notify error 含原始错误信息（OpenClaw 报模型不可用场景）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({
+			accepted: true,
+			endReason: 'failed',
+			errorMessage: 'FailoverError: No API key found for provider "openai"',
+		});
+		await flushPromises();
+
+		wrapper.vm.inputText = 'hello';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hello', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith({
+			title: 'Agent run failed',
+			description: 'FailoverError: No API key found for provider "openai"',
+		});
+		// 失败但已 accepted 不恢复输入框（与方案约定一致）
+		expect(wrapper.vm.inputText).toBe('');
+	});
+
+	test('accepted 后业务级 timeout (endReason=rpc-timeout)：notify error 含 errorMessage', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({
+			accepted: true,
+			endReason: 'rpc-timeout',
+			errorMessage: 'wait timed out',
+		});
+		await flushPromises();
+
+		wrapper.vm.inputText = 'hi';
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith({
+			title: 'Agent run failed',
+			description: 'wait timed out',
+		});
+	});
+
+	test('accepted 后正常成功 (endReason=rpc)：不 notify', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({
+			accepted: true,
+			endReason: 'rpc',
+			errorMessage: null,
+		});
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).not.toHaveBeenCalled();
+	});
+
+	test('错误信息长度截断 + 取首行：取首行去 stack，超 200 字符截断为 197 + "..."', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		const longMsg = 'FailoverError: model unavailable\n    at provider.js:123\n    at runAgent.js:456';
+		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({
+			accepted: true,
+			endReason: 'failed',
+			errorMessage: longMsg,
+		});
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'x', files: [] });
+		await flushPromises();
+
+		const callArg = mockNotify.error.mock.calls.at(-1)[0];
+		expect(callArg.description).toBe('FailoverError: model unavailable');
+		expect(callArg.description).not.toMatch(/\n/);
+	});
+
+	test('错误信息超 200 字符时截断为 197 + "..."（不在边界 120）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		const longLine = 'X'.repeat(250);
+		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({
+			accepted: true,
+			endReason: 'failed',
+			errorMessage: longLine,
+		});
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'x', files: [] });
+		await flushPromises();
+
+		const callArg = mockNotify.error.mock.calls.at(-1)[0];
+		expect(callArg.description.length).toBe(200);
+		expect(callArg.description.endsWith('...')).toBe(true);
+		expect(callArg.description.slice(0, 197)).toBe('X'.repeat(197));
+	});
+
+	test('errorMessage 缺失时仍弹 notify，但不带 description', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({
+			accepted: true,
+			endReason: 'failed',
+			errorMessage: null,
+		});
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'x', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith({
+			title: 'Agent run failed',
+			description: undefined,
+		});
 	});
 
 	test('空文本和空文件时不发送', async () => {

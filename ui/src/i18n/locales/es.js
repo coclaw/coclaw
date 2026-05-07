@@ -385,6 +385,7 @@ export const esMessages = {
 		errTransferFailed: 'Error en la transferencia de archivo. Por favor intenta de nuevo.',
 		errFileTooLarge: 'El archivo es demasiado grande para enviarlo.',
 		errUnknown: 'Algo salió mal. Por favor intenta más tarde.',
+		errRunFailed: 'Error en la ejecución del agente',
 		connecting: 'Conectando al Claw…',
 		connBuilding: 'Estableciendo conexión…',
 		connRecovering: 'Reconectando…',

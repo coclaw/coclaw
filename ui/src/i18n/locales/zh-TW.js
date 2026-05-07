@@ -385,6 +385,7 @@ export const zhTWMessages = {
 		errTransferFailed: '檔案傳輸失敗，請重試',
 		errFileTooLarge: '檔案過大，無法傳送',
 		errUnknown: '傳送遇到問題，請稍後重試',
+		errRunFailed: 'Agent 執行失敗',
 		connecting: '正在連線 Claw…',
 		connBuilding: '正在建立連線…',
 		connRecovering: '正在恢復連線…',

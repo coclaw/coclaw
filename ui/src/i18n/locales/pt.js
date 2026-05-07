@@ -385,6 +385,7 @@ export const ptMessages = {
 		errTransferFailed: 'Falha na transferência de arquivo. Por favor, tente novamente.',
 		errFileTooLarge: 'O arquivo é grande demais para enviar.',
 		errUnknown: 'Algo deu errado. Por favor, tente novamente mais tarde.',
+		errRunFailed: 'Falha na execução do agente',
 		connecting: 'Conectando ao Claw…',
 		connBuilding: 'Estabelecendo conexão…',
 		connRecovering: 'Reconectando…',

@@ -149,7 +149,7 @@ describe('useAgentRunsStore', () => {
 			registerRun(store, { runId: 'run-new', runKey: 'k-same', clawId: '1' });
 
 			const result = await runPromise;
-			expect(result).toEqual({ runId: 'run-old', accepted: true, endReason: 'superseded' });
+			expect(result).toEqual({ runId: 'run-old', accepted: true, endReason: 'superseded', errorMessage: null });
 			expect(store.runs['run-old']).toBeUndefined();
 			expect(store.runs['run-new']).toBeTruthy();
 		});
@@ -231,7 +231,7 @@ describe('useAgentRunsStore', () => {
 			ctrl.finalResolve({ status: 'ok' });
 
 			const result = await promise;
-			expect(result).toEqual({ runId: null, accepted: false, endReason: 'norun' });
+			expect(result).toEqual({ runId: null, accepted: false, endReason: 'norun', errorMessage: null });
 			expect(remoteLogCalls.find((t) => t.startsWith('agent.run.norun'))).toBe(
 				'agent.run.norun runKey=k-norun',
 			);
@@ -939,7 +939,7 @@ describe('useAgentRunsStore', () => {
 			store.removeByClaw('1');
 
 			const result = await runPromise;
-			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'claw-removed' });
+			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'claw-removed', errorMessage: null });
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 	});
@@ -949,7 +949,7 @@ describe('useAgentRunsStore', () => {
 	// =====================================================================
 
 	describe('runAgent', () => {
-		test('信号 1：RPC 第二阶段 ok → endReason="rpc"', async () => {
+		test('信号 1：RPC 第二阶段 ok → endReason="rpc" + errorMessage=null', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -973,11 +973,11 @@ describe('useAgentRunsStore', () => {
 			ctrl.finalResolve({ status: 'ok' });
 
 			const result = await runPromise;
-			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'rpc' });
+			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'rpc', errorMessage: null });
 			expect(store.runs['run-1'].ended).toBe(true);
 		});
 
-		test('信号 1：RPC 第二阶段 error → endReason="rpc"', async () => {
+		test('信号 1：RPC 第二阶段 status="error" → endReason="failed" + errorMessage 取自 summary（业务级失败防御）', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -987,10 +987,83 @@ describe('useAgentRunsStore', () => {
 			});
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
-			ctrl.finalResolve({ status: 'error', error: { message: 'agent failed' } });
+			ctrl.finalResolve({ status: 'error', summary: 'FailoverError: model unavailable' });
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('failed');
+			expect(result.errorMessage).toBe('FailoverError: model unavailable');
+		});
+
+		test('信号 1：status="error" 但 summary 缺失 → errorMessage 回退到 error 字段', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			ctrl.finalResolve({ status: 'error', error: 'agent.wait error string' });
+
+			const result = await runPromise;
+			expect(result.errorMessage).toBe('agent.wait error string');
+		});
+
+		test('信号 1：RPC 第二阶段 status="timeout" + 未 cancelled → endReason="rpc-timeout" 携 errorMessage', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			ctrl.finalResolve({ status: 'timeout', summary: 'wait timed out' });
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('rpc-timeout');
+			expect(result.errorMessage).toBe('wait timed out');
+		});
+
+		test('信号 1：status="error" 且 summary 为 object（协议偏离）→ stringify 兜底', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			// 协议偏离：summary 是 object 而非 string
+			ctrl.finalResolve({ status: 'error', summary: { code: 'X', message: 'oops' } });
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('failed');
+			// 不丢成 undefined：String(obj) → '[object Object]'
+			expect(typeof result.errorMessage).toBe('string');
+			expect(result.errorMessage).toBe('[object Object]');
+		});
+
+		test('信号 1：status="timeout" 但 run.cancelled=true（取消路径）→ endReason="rpc"，不弹错', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			// 模拟用户取消：标记 cancelled=true
+			store.runs['run-1'].cancelled = true;
+			ctrl.finalResolve({ status: 'timeout', summary: 'aborted' });
 
 			const result = await runPromise;
 			expect(result.endReason).toBe('rpc');
+			expect(result.errorMessage).toBeNull();
 		});
 
 		test('pre-acceptance 错误（DC 断）→ runAgent reject，未 register', async () => {
@@ -1010,7 +1083,7 @@ describe('useAgentRunsStore', () => {
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 
-		test('信号 3：accepted 后 RPC reject → endReason="failed"', async () => {
+		test('信号 3：accepted 后 RPC reject → endReason="failed" + errorMessage 取自 err.message', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
 
@@ -1021,13 +1094,40 @@ describe('useAgentRunsStore', () => {
 			await Promise.resolve();
 			ctrl.fireAccepted({ runId: 'run-1' });
 
-			const err = new Error('dc closed');
-			err.code = 'DC_CLOSED';
+			const err = new Error('FailoverError: No API key found for provider "openai"');
+			err.code = 'UNAVAILABLE';
 			ctrl.finalReject(err);
 
 			const result = await runPromise;
-			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'failed' });
+			expect(result).toEqual({
+				runId: 'run-1',
+				accepted: true,
+				endReason: 'failed',
+				errorMessage: 'FailoverError: No API key found for provider "openai"',
+			});
 			expect(store.runs['run-1'].ended).toBe(true);
+		});
+
+		test('信号 3：accepted 后 RPC reject + run.cancelled=true（取消路径）→ endReason="rpc"，不报失败', async () => {
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+
+			store.runs['run-1'].cancelled = true;
+			const err = new Error('cancelled');
+			err.code = 'CANCELLED';
+			ctrl.finalReject(err);
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('rpc');
+			expect(result.errorMessage).toBeNull();
+			expect(store.runs['run-1'].__endError).toBeNull();
 		});
 
 		test('onAccepted 钩子在 register 之后被调用', async () => {
@@ -1842,7 +1942,7 @@ describe('useAgentRunsStore', () => {
 			store.resetAll();
 
 			const result = await runPromise;
-			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'logout' });
+			expect(result).toEqual({ runId: 'run-1', accepted: true, endReason: 'logout', errorMessage: null });
 			expect(store.runs['run-1']).toBeUndefined();
 		});
 

@@ -409,3 +409,40 @@
     - 现状：source 用 `typeof window !== 'undefined'` 守卫，jsdom 下注册 `app:foreground` / `network:online` listener，node 下跳过
     - 影响：`remote-log.test.js` 切到 node 后这两个 listener 不再被注册，但测试只断言 flush 行为不断言 listener，所以 pass。这条 listener 路径在 unit 层失去覆盖
     - 修法方向：要么 `remote-log.test.js` 切回 jsdom；要么单独给 signaling-connection 的 lifecycle listener 注册路径写一组 jsdom 测试
+
+## 一阶段 RPC 调用方对 ok=true+payload.status='error' 的协议演进保险（2026-05-07）
+
+**发现日期**：2026-05-07
+**关联 commit**：fix(ui): notify on accepted-then-failed agent run（"模型不可用静默失败" 修复）
+
+来源：本次"agent run accepted 后失败静默吞掉"修复时，调研 + codex-rescue 评估出的同类潜在 bug。OpenClaw 协议允许一阶段 RPC 下发 `ok=true + payload.status='error'/'timeout'`（业务级失败终态），但 UI 当前 `conn.request` 一律 resolve，让消费者直接当成功处理。
+
+**当前实测不会触发**：上游 `agent` 主 RPC 是"双保险"（同时下发 `ok=false + payload.status='error'`），其它 OpenClaw 上游 method 大概率也是同样的设计风格。本次只在 `__onRpcDone` 里加了防御性分支，覆盖 `agent` 单点。下面这些是"协议未来演进或上游漏发 ok=false 时" UI 才会踩到的潜在隐患——影响是消费者把 status='error' 当成"空结果"静默处理。
+
+修复方向：调用点 resolve 后增加 `if (result?.status === 'error') throw new Error(...)` 或类似分支；或者后续重构 `conn.request` 加白名单机制（仅对真正依赖 status 的 method 如 `agent.wait` 保留 resolve 语义）。
+
+61. **`chat.history`** — `chat.store.js:353`。status='error' 时 `currentSessionId` 被静默置空，影响后续历史加载和 sid 比较判定
+62. **`sessions.get`** — `chat.store.js:314, 404`。status='error' 视为空成功，会把已有 messages 清空
+63. **`sessions.list`** — `sessions.store.js:225`、`dashboard.store.js:190`。status='error' 让会话列表/dashboard 数据归零
+64. **`coclaw.chatHistory.list`** — `chat.store.js:1389`。status='error' 截断/清空历史分页
+65. **`coclaw.sessions.getById`** — `chat.store.js:460, 1448`。status='error' 把 topic 消息清空
+66. **`coclaw.topics.list/delete`** — `topics.store.js:81/206`。delete 只校验 `result.ok`，status='error' 下会误删本地 topic
+67. **`coclaw.files.*`** — `services/file-transfer.js:85/99/110/121`。列表和写操作都不校验 payload 中的错误状态
+68. **`coclaw.info.patch`** — `views/ManageClawsPage.vue:393`。重命名在任何 resolved payload 后都乐观应用
+69. **`agents.list`** — `agents.store.js:128`。status='error' 把 agent 列表标为"已加载但为空"
+
+**关联 deep design**：可考虑由 `claw-connection.js` 在协议层加 status 识别 + 通过 method 白名单豁免（`agent.wait` 必须保留），把这套逻辑收拢到一处而非散布在各调用点。
+
+70. **`agent` run 取消 (cancellation) 与"自然完成"语义混淆**
+    - 现状：上游对"用户取消"走 `ok=true + payload.status='ok' + result.meta.aborted=true`（见 openclaw-repo `agent.ts:330` 用 `result?.meta?.aborted` 判断）。UI 当前 `__onRpcDone` 走 `endReason='rpc'` 不读 meta.aborted，"用户主动取消"和"自然完成"被混为一谈
+    - 影响：诊断日志、analytics、UI 状态展示无法区分两类终态
+    - 修复方向：`__onRpcDone` 读 `rpcResult.result?.meta?.aborted`，true → endReason='rpc-aborted'；ChatPage 不 notify 但日志区分
+
+71. **`coclaw.agent.abort` 用 `result.ok` 当业务标记**
+    - 现状：与协议层 `ok` 同名不同义（前者是插件本地业务返回，后者是 RPC 协议层，已被 ClawConnection 解包）。心智模型容易混
+    - 修复方向：建议改字段名为 `succeeded` / `accepted` 之类，避免与协议层 `ok` 重名
+
+72. **协议偏离时 error/summary 是 object 形态显示成 `[object Object]`**
+    - 现状：`agent-runs.store.js:404` 与 `chat.store.js:1133` 的 `String(raw)` 兜底能保证 toast 不丢 description，但若 `summary`/`error` 是 object（协议偏离），用户看到的是 `[object Object]` 而非可读内容
+    - 触发条件：当前 OpenClaw `chat.ts` / `agent.ts` 的 error/summary 都是 string，不会触发
+    - 修复方向：换 JSON.stringify 兜底（含循环引用 try/catch），让协议偏离时至少给出 raw JSON 而非 `[object Object]`。属"可读性增强"，非阻塞

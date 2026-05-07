@@ -163,6 +163,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				__watcher: null,
 				/** rpc grace pending 状态：{ reason, timer } | null */
 				__pendingEnd: null,
+				/** 失败终态错误描述：__onRpcFailed 或 __onRpcDone(status='error'/'timeout') 时填，由 __endRun 透出给 onEnd */
+				__endError: null,
 			};
 			this.runs[runId] = run;
 			this.runKeyIndex[runKey] = runId;
@@ -181,8 +183,12 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 * 发起 agent run：发 RPC、accepted 时 register、维护 watcher、返回最终 promise
 		 *
 		 * 返回 promise 的语义：
-		 *   - resolve `{ runId, accepted: true, endReason }` —— accepted 后任何路径都 resolve
-		 *     endReason ∈ 'rpc'(信号1) | 'wait'(信号2) | 'failed'(信号3) | 'timeout'(24h 兜底)
+		 *   - resolve `{ runId, accepted: true, endReason, errorMessage }` —— accepted 后任何路径都 resolve
+		 *     endReason ∈ 'rpc'(信号1 成功) | 'wait'(信号2) | 'failed'(信号3 / 业务级 status='error')
+		 *       | 'rpc-timeout'(业务级 status='timeout', 不与 24h 兜底 'timeout' 混淆)
+		 *       | 'timeout'(24h 内存兜底) | 'manual'/'superseded'/...
+		 *     errorMessage — 仅 'failed' / 'rpc-timeout' 携带（取自 RPC reject 的 err.message
+		 *       或 rpcResult.summary / .error），其它情况为 null
 		 *   - reject —— pre-acceptance 阶段错误（DC 断、连接超时、参数校验失败、用户取消）
 		 *
 		 * @param {object} opts
@@ -194,7 +200,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		 * @param {object[]} [opts.optimisticMsgs] - 注册时的乐观流式消息
 		 * @param {string|null} [opts.anchorMsgId]
 		 * @param {(payload: object) => void} [opts.onAccepted] - accepted 瞬间的 UI 钩子（在 register 之后触发）
-		 * @returns {Promise<{ runId: string, accepted: boolean, endReason: string }>}
+		 * @returns {Promise<{ runId: string, accepted: boolean, endReason: string, errorMessage: string|null }>}
 		 */
 		async runAgent({ conn, clawId, runKey, topicMode, agentParams, optimisticMsgs = [], anchorMsgId = null, onAccepted }) {
 			let registeredRunId = null;
@@ -218,8 +224,8 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 					// 把 final hook 挂到 watcher，由 __endRun 唤醒
 					const run = this.runs[runId];
 					if (run?.__watcher) {
-						run.__watcher.onEnd = (reason) => {
-							finalResolve({ runId, accepted: true, endReason: reason });
+						run.__watcher.onEnd = (reason, errorMessage) => {
+							finalResolve({ runId, accepted: true, endReason: reason, errorMessage: errorMessage ?? null });
 						};
 					}
 					if (onAccepted) {
@@ -235,7 +241,7 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 					} else {
 						// 极罕见：RPC 直接返回 ok=true 但未 accepted
 						remoteLog(`agent.run.norun runKey=${runKey}`);
-						finalResolve({ runId: null, accepted: false, endReason: 'norun' });
+						finalResolve({ runId: null, accepted: false, endReason: 'norun', errorMessage: null });
 					}
 				},
 				(err) => {
@@ -367,11 +373,40 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			this.__armIdleTimer(runId);
 		},
 
-		__onRpcDone(runId) {
+		/**
+		 * 信号 1：主 agent() RPC 二阶段 res 到达。
+		 * 上游 OpenClaw `agent` 失败时实际走 ok=false（→ __onRpcFailed），ok=true 路径
+		 * 几乎只对应成功；但协议允许 ok=true + payload.status='error'/'timeout' 作为业务
+		 * 级失败终态，这里加一道防御：未来上游漏发 ok=false 时不会被静默吞掉。
+		 *
+		 * 取消（cancel）路径下 plugin 端有时会在 ok=true 终态里反映成 status='timeout' +
+		 * summary='aborted'（上游 plugin 端测试已记录的形态）。run.cancelled=true 时不视为
+		 * 失败，按正常 'rpc' 收尾，避免给用户弹"运行失败"。
+		 *
+		 * @param {string} runId
+		 * @param {object} [rpcResult] - 二阶段 payload（{ runId, status, summary?, error? }）
+		 */
+		__onRpcDone(runId, rpcResult) {
 			const run = this.runs[runId];
 			if (!run || run.ended) return;
-			// rpc 二阶段最权威——若已挂 grace pending 取消之，直接走 'rpc' 快路径
+			// rpc 二阶段最权威——若已挂 grace pending 取消之
 			this.__clearPendingEnd(runId);
+
+			const status = rpcResult?.status;
+			const isFailed = status === 'error';
+			const isTimeout = status === 'timeout' && !run.cancelled;
+			if (isFailed || isTimeout) {
+				// stringify 兜底：协议偏离时 summary/error 可能是 object（如 { code, message }），
+				// 不强制成字符串会让 ChatPage 截断逻辑判 typeof !== 'string' 直接丢掉 description。
+				const raw = rpcResult?.summary ?? rpcResult?.error;
+				const errMsg = (typeof raw === 'string' && raw)
+					? raw
+					: (raw != null ? String(raw) : `RPC status=${status}`);
+				run.__endError = errMsg;
+				console.debug('[agentRuns] rpc done with status=%s runId=%s msg=%s', status, runId, errMsg);
+				this.__endRun(runId, isFailed ? 'failed' : 'rpc-timeout');
+				return;
+			}
 			this.__endRun(runId, 'rpc');
 		},
 
@@ -381,6 +416,12 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			console.debug('[agentRuns] rpc failed runId=%s err=%s', runId, err?.message);
 			// 网络异常：上游 rpc 二阶段已不可能再到，立即收尾不等 grace
 			this.__clearPendingEnd(runId);
+			// 取消路径下 reject 不算失败（用户主动行为），按 'rpc' 终态收尾，避免误报失败 toast
+			if (run.cancelled) {
+				this.__endRun(runId, 'rpc');
+				return;
+			}
+			run.__endError = err?.message || 'rpc failed';
 			this.__endRun(runId, 'failed');
 		},
 
@@ -416,16 +457,17 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 		/**
 		 * 终结 run：标记 ended、停 watcher、唤醒 finalPromise；不释放 streamingMsgs（等 dropRun）
 		 * @param {string} runId
-		 * @param {string} reason - 'rpc' | 'wait' | 'failed' | 'timeout' |
+		 * @param {string} reason - 'rpc' | 'wait' | 'failed' | 'rpc-timeout' | 'timeout' |
 		 *   'manual' | 'superseded' | 'claw-removed' | 'logout' | 'cleanup' |
 		 *   'cancel-gone' | 'cancel-not-supported'
+		 *   ('failed'/'rpc-timeout' 携带 run.__endError；'timeout' 仅用于 24h 兜底，不携错误信息)
 		 */
 		__endRun(runId, reason) {
 			const run = this.runs[runId];
 			if (!run || run.ended) return;
 			console.debug('[agentRuns] endRun runId=%s reason=%s', runId, reason);
 			// 诊断信号：所有 run 终结路径的统一上报点（rpc / wait / failed /
-			// timeout / manual / superseded / claw-removed / logout / cleanup）。
+			// rpc-timeout / timeout / manual / superseded / claw-removed / logout / cleanup）。
 			// 与 server 端 RTC/RPC 时间戳对齐用，定位"任务未完成"误判的根因路径
 			remoteLog(`agent.run.end runId=${runId} reason=${reason}`);
 			run.ended = true;
@@ -443,11 +485,12 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 				run.__timer = null;
 			}
 			const onEnd = run.__watcher?.onEnd;
+			const errorMessage = run.__endError ?? null;
 			if (run.__watcher) run.__watcher.onEnd = null;
 			// 触发响应式更新（让 isRunning getter 通知 UI）
 			this.runs[runId] = { ...run };
 			if (onEnd) {
-				try { onEnd(reason); }
+				try { onEnd(reason, errorMessage); }
 				catch (e) { console.error('[agentRuns] onEnd hook err:', e); }
 			}
 		},

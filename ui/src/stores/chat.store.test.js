@@ -669,7 +669,7 @@ describe('useChatStore', () => {
 
 			// request 仍然被调用（等待逻辑在 ClawConnection 层处理，这里是 mock）
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toEqual({ accepted: true, endReason: 'rpc', errorMessage: null });
 		});
 
 		test('topic 模式下 sessionId 为空时返回 { accepted: false }', async () => {
@@ -1190,7 +1190,7 @@ describe('useChatStore', () => {
 			expect(runsStore.isRunning(store.runKey)).toBe(false);
 		});
 
-		test('accepted 后 WS_CLOSED：runAgent 接管收尾，sendMessage 返回 { accepted: true }', async () => {
+		test('accepted 后 WS_CLOSED：runAgent 接管收尾，sendMessage 返回 accepted=true 并透出 endReason+errorMessage', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -1212,7 +1212,61 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toEqual({ accepted: true, endReason: 'failed', errorMessage: 'ws closed' });
+		});
+
+		test('accepted 后模型不可用（FailoverError）：sendMessage 透出 endReason="failed" + 原始错误信息（让 ChatPage 可以 notify）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			const failoverMsg = 'FailoverError: No API key found for provider "openai"';
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-fail' });
+					// server 端 ok=false → ClawConnection reject 为带 message+code 的 Error
+					const err = new Error(failoverMsg);
+					err.code = 'UNAVAILABLE';
+					return Promise.reject(err);
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result.accepted).toBe(true);
+			expect(result.endReason).toBe('failed');
+			expect(result.errorMessage).toBe(failoverMsg);
+		});
+
+		test('accepted 后业务级 status="error"（防御 ok=true 漏发协议）：sendMessage 透出 endReason="failed"', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-biz-err' });
+					return Promise.resolve({ runId: 'run-biz-err', status: 'error', summary: 'business level fail' });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const result = await store.sendMessage('hello');
+			expect(result.accepted).toBe(true);
+			expect(result.endReason).toBe('failed');
+			expect(result.errorMessage).toBe('business level fail');
 		});
 
 		test('WS_CLOSED 且未 accepted 时等待重连后自动重试一次', async () => {
@@ -1247,7 +1301,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toEqual({ accepted: true, endReason: 'rpc', errorMessage: null });
 			expect(callCount).toBe(2);
 		});
 
@@ -1281,7 +1335,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 			expect(callCount).toBe(2);
 		});
 
@@ -1428,7 +1482,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 			expect(store.sending).toBe(false);
 		});
 
@@ -1465,7 +1519,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toEqual({ accepted: true, endReason: 'rpc', errorMessage: null });
 			expect(callCount).toBe(2);
 		});
 
@@ -1494,7 +1548,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 			expect(store.sending).toBe(false);
 		});
 
@@ -1546,7 +1600,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 		});
 
 		test('RTC_LOST + accepted 时立即优雅返回 { accepted: true }', async () => {
@@ -1573,7 +1627,7 @@ describe('useChatStore', () => {
 
 			// 不再等待重连，立即返回
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 		});
 
 		test('RTC_LOST + 未 accepted + 重试再次 RTC_LOST 不无限循环', async () => {
@@ -1634,7 +1688,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 			expect(callCount).toBe(2);
 		});
 
@@ -1660,7 +1714,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 		});
 
 		test('cleanup 在 reconnect-wait 期间不会触发二次 rejection', async () => {
@@ -1688,7 +1742,7 @@ describe('useChatStore', () => {
 			store.chatSessionKey = 'agent:main:main';
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 
 			// sendMessage 返回后 cleanup 不应触发任何 rejection
 			expect(store.__cancelReject).toBeNull();
@@ -2210,7 +2264,7 @@ describe('useChatStore', () => {
 			const dropSpy = vi.spyOn(runsStore, 'dropRun');
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 
 			// 等待 runPromise.then 链跑完 if 判断：仅等 sessions.get 被调不够（catch + return false +
 			// then continuation 仍在 microtask 队列里）。挂额外 spy 在 runPromise.then 之后的
@@ -2258,7 +2312,7 @@ describe('useChatStore', () => {
 			const dropSpy = vi.spyOn(runsStore, 'dropRun');
 
 			const result = await store.sendMessage('hello');
-			expect(result).toEqual({ accepted: true });
+			expect(result).toMatchObject({ accepted: true });
 
 			// loadMessages 成功后 dropRun 被调用一次（带 expectedRunId）
 			await vi.waitFor(() => {
@@ -6053,6 +6107,59 @@ describe('useChatStore', () => {
 			expect(conn.on).not.toHaveBeenCalled();
 			expect(conn.request).not.toHaveBeenCalled();
 			expect(store.sending).toBe(false);
+		});
+
+		// 协议演进保险：上游 chat.send 失败一般走 ok=false（→ catch），但协议允许
+		// ok=true + payload.status='error'。当前修复让 resolve 后立即识别 status='error'，
+		// 避免 spinner 卡到 slashTimeout（5min~24h）才超时清理。
+		test('chat.send resolve 但 payload.status="error" → 立即清理 + reject（不等 event timeout）', async () => {
+			conn.request.mockResolvedValue({
+				runId: 'r-bad',
+				status: 'error',
+				error: 'slash command rejected by server',
+			});
+
+			await expect(store.sendSlashCommand('/help')).rejects.toMatchObject({
+				code: 'SLASH_CMD_REJECTED',
+				message: 'slash command rejected by server',
+			});
+			expect(store.sending).toBe(false);
+			expect(store.messages.length).toBe(0);
+			// event:chat 监听已注销
+			expect(conn.off).toHaveBeenCalledWith('event:chat', expect.any(Function));
+		});
+
+		// 协议演进保险：当前 chat.ts 未见 status='timeout' 分支，但保留兜底，防上游新增
+		// 超时反馈而 UI 静默卡死（spinner 卡到 5min~24h slashTimeout）。
+		test('chat.send resolve 但 payload.status="timeout" → 立即清理 + reject（不等 event timeout）', async () => {
+			conn.request.mockResolvedValue({
+				runId: 'r-tmo',
+				status: 'timeout',
+				summary: 'upstream timeout',
+			});
+
+			await expect(store.sendSlashCommand('/help')).rejects.toMatchObject({
+				code: 'SLASH_CMD_REJECTED',
+				message: 'upstream timeout',
+			});
+			expect(store.sending).toBe(false);
+			expect(store.messages.length).toBe(0);
+			expect(conn.off).toHaveBeenCalledWith('event:chat', expect.any(Function));
+		});
+
+		// P3 防御：error 字段是 object 形态（协议偏离）时不丢失信息，stringify 兜底
+		// （非字符串 → String() 兜底，至少不会丢成 undefined description）
+		test('chat.send resolve status="error" 且 error 为 object → stringify 后透出', async () => {
+			conn.request.mockResolvedValue({
+				runId: 'r-obj',
+				status: 'error',
+				error: { code: 'X', message: 'oops' },
+			});
+
+			await expect(store.sendSlashCommand('/help')).rejects.toMatchObject({
+				code: 'SLASH_CMD_REJECTED',
+				message: '[object Object]',
+			});
 		});
 
 		// 与 sendMessage 一致：accepted（chat.send resolve）前，乐观 user 消息带

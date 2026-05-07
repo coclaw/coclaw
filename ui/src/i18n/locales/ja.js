@@ -385,6 +385,7 @@ export const jaMessages = {
 		errTransferFailed: 'ファイル転送に失敗しました。再度お試しください。',
 		errFileTooLarge: 'ファイルが大きすぎて送信できません。',
 		errUnknown: '問題が発生しました。後でもう一度お試しください。',
+		errRunFailed: 'Agent の実行に失敗しました',
 		connecting: 'Claw に接続中…',
 		connBuilding: '接続を確立中…',
 		connRecovering: '再接続中…',

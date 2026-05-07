@@ -627,6 +627,7 @@ export default {
 					targetStore.restoreFiles(files);
 				}
 				else {
+					this.__notifyRunFailed(result);
 					this.__tryGenerateTitle();
 				}
 			}
@@ -640,6 +641,27 @@ export default {
 					targetStore.restoreFiles(files);
 				}
 			}
+		},
+
+		/**
+		 * accepted 后失败终态（模型不可用、上游执行失败、业务级 timeout）— 弹错误 toast。
+		 * description 用 OpenClaw 原始错误文案，截断 + 取首行避免 stack-like 噪音。
+		 * @param {{ endReason?: string, errorMessage?: string|null }} result
+		 */
+		__notifyRunFailed(result) {
+			if (result?.endReason !== 'failed' && result?.endReason !== 'rpc-timeout') return;
+			this.notify.error({
+				title: this.$t('chat.errRunFailed'),
+				description: this.__formatRunErrorMessage(result.errorMessage),
+			});
+		},
+
+		/** 错误文案截断：取首行 + 限 200 字符（覆盖典型 FailoverError ~240 字符的实质提示部分） */
+		__formatRunErrorMessage(msg) {
+			if (!msg || typeof msg !== 'string') return undefined;
+			const firstLine = msg.split('\n')[0].trim();
+			if (!firstLine) return undefined;
+			return firstLine.length > 200 ? `${firstLine.slice(0, 197)}...` : firstLine;
 		},
 
 		/** 根据 err.code 返回用户友好的错误消息 */
@@ -711,6 +733,7 @@ export default {
 					targetStore.restoreFiles(files);
 				}
 				else {
+					this.__notifyRunFailed(result);
 					this.__tryGenerateTitle();
 				}
 			}

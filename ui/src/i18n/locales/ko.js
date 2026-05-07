@@ -385,6 +385,7 @@ export const koMessages = {
 		errTransferFailed: '파일 전송 실패. 다시 시도해 주세요.',
 		errFileTooLarge: '파일이 너무 커서 전송할 수 없습니다.',
 		errUnknown: '오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+		errRunFailed: 'Agent 실행 실패',
 		connecting: 'Claw에 연결 중…',
 		connBuilding: '연결 구성 중…',
 		connRecovering: '재연결 중…',

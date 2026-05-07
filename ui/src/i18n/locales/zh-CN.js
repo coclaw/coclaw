@@ -385,6 +385,7 @@ export const zhCNMessages = {
 		errTransferFailed: '文件传输失败，请重试',
 		errFileTooLarge: '文件过大，无法发送',
 		errUnknown: '发送遇到问题，请稍后重试',
+		errRunFailed: 'Agent 运行失败',
 		connecting: '正在连接 Claw…',
 		connBuilding: '正在建立连接…',
 		connRecovering: '正在恢复连接…',

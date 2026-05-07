@@ -690,9 +690,15 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__removeLocalEntries();
 						return { accepted: false };
 					}
-					// final.endReason 内部保留（用于 debug/未来扩展），不对外暴露
+					// 失败终态（accepted 后 RPC reject / 上游下发 ok=true+status='error'/'timeout'）
+					// 透出给调用方（ChatPage）做用户级 notify。endReason 'failed'/'rpc-timeout'
+					// 携带 errorMessage（OpenClaw 原始错误文案）；其它 endReason 不携带。
 					console.debug('[chat] sendMessage done endReason=%s', final?.endReason);
-					return { accepted: true };
+					return {
+						accepted: true,
+						endReason: final?.endReason ?? null,
+						errorMessage: final?.errorMessage ?? null,
+					};
 				}
 				catch (err) {
 					this.__cancelReject = null;
@@ -1108,11 +1114,30 @@ export function createChatStore(storeKey, opts = {}) {
 				}, slashTimeout);
 
 				try {
-					await conn.request('chat.send', {
+					const result = await conn.request('chat.send', {
 						sessionKey: this.chatSessionKey,
 						message: command,
 						idempotencyKey,
 					});
+					// 业务级失败防御：上游 chat.send 失败一般走 ok=false（→ catch），但协议
+					// 允许 ok=true + payload.status='error'（见 chat.ts:2588）。不防御的话
+					// spinner 会卡到 slashTimeout（5min ~ 24h）才超时清理，体感静默失败。
+					// status='timeout' 是协议演进保险：当前 chat.ts 未见此分支，但保留兜底，
+					// 防上游新增超时反馈而 UI 静默卡死。
+					if (result?.status === 'error' || result?.status === 'timeout') {
+						const reject = this.__slashCommandReject;
+						this.__cleanupSlashCommand(conn);
+						this.__removeLocalMessages();
+						const rawMsg = result?.summary ?? result?.error ?? result?.errorMessage;
+						const errMsg = (typeof rawMsg === 'string' && rawMsg)
+							? rawMsg
+							: (rawMsg != null ? String(rawMsg) : `chat.send ${result.status}`);
+						const err = new Error(errMsg);
+						err.code = 'SLASH_CMD_REJECTED';
+						if (reject) reject(err);
+						else throw err;
+						return settlePromise;
+					}
 					// chat.send 已成功送达并返回 runId（语义等价于 agent() 的 onAccepted）
 					// 本地"乐观活动"标记：仅在 server 真正 accept 后才 bump，避免 pre-acceptance 失败留下幻影 bump。
 					// 与 sendMessage onAccepted 保持对称——topic 模式不在 agent 列表里，不浮顶
