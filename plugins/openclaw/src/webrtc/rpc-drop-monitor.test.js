@@ -290,6 +290,32 @@ test('summarize(residual): dropCount>0 → emit close 含全部 token；幂等',
 	assert.equal(closes2.length, 1, 'second summarize is no-op');
 });
 
+test('summarize: 本地 log 镜像 close 与 remoteLog 同字段（开发者主要看本地 log）', () => {
+	// close 信号同时走 logger.warn（本地）+ remoteLog（server）。本地用 tagged 格式 `[rpc-queue conn=X] close ...`，
+	// remote 用 dotted 格式 `rpc-queue.close conn=X ...`，字段顺序与值完全一致便于对齐 grep。
+	const { monitor, logger } = makeMonitor({ connId: 'connLocalMirror' });
+	monitor.onDrop('queue-full', 2048);
+	monitor.summarize({ memCount: 1, memBytes: 100, diskBytes: 200, writtenBytes: 300 });
+	const localCloses = logger.warnings.filter(w => w.includes('] close '));
+	assert.equal(localCloses.length, 1, '本地 log 应 emit 一次');
+	const t = localCloses[0];
+	assert.match(t, /\[rpc-queue conn=connLocalMirror\] close /);
+	assert.match(t, /dropped=1 droppedBytes=2048/);
+	assert.match(t, /residualChunks=1 residualBytes=100/);
+	assert.match(t, /residualDiskBytes=200 residualWrittenBytes=300/);
+	assert.match(t, /fsBroken=false spillActive=false/);
+	assert.match(t, /lastReason=queue-full/);
+	// 幂等：第二次 summarize 不再发本地 log
+	monitor.summarize();
+	assert.equal(logger.warnings.filter(w => w.includes('] close ')).length, 1, 'second summarize 不重复 emit 本地');
+});
+
+test('summarize: 干净状态不发本地 log（anomaly-only，与 remoteLog 同步）', () => {
+	const { monitor, logger } = makeMonitor();
+	monitor.summarize();
+	assert.equal(logger.warnings.filter(w => w.includes('] close ')).length, 0);
+});
+
 test('summarize: dropCount>0 但 overflowActive=false（仅 oversize drop）→ 仍 emit', () => {
 	// 单独验"dropCount>0"分支不被 overflowActive 短路（C-1）
 	const { monitor } = makeMonitor({ connId: 'connOnlyDrops' });

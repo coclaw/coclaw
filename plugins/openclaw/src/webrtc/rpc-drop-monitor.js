@@ -26,10 +26,11 @@
  *   info / remoteLog: rpc-queue.overflow-end    conn=X dropped=N droppedBytes=M
  *   info / remoteLog: rpc-queue.spill-start     conn=X                       (FBQ 文件创建)
  *   info / remoteLog: rpc-queue.spill-end       conn=X drainedBytes=N        (FBQ 文件 drain 删除)
- *   remoteLog:        rpc-queue.close           conn=X dropped=N droppedBytes=M
+ *   warn / remoteLog: rpc-queue.close           conn=X dropped=N droppedBytes=M
  *                                               residualChunks=K residualBytes=L
  *                                               residualDiskBytes=X residualWrittenBytes=Y
  *                                               fsBroken=bool spillActive=bool lastReason=str
+ *                                                                            (anomaly-only；本地 log 与 remoteLog 同字段)
  *
  * spill-start / spill-end 是文件级状态翻转信号：边沿触发，FBQ 在 spilled false→true / true→false
  * 时通过 onSpillStart / onSpillEnd 钩子回调。与 disk-cap-start 是不同维度的事件——
@@ -171,13 +172,16 @@ export function createRpcDropMonitor({ connId, logger }) {
 		const hasAnomaly = overflowActive || spillActive || effectiveFsBroken || dropCount > 0
 			|| residualChunks > 0 || residualDiskBytes > 0 || residualWrittenBytes > 0;
 		if (hasAnomaly) {
-			safeRemoteLog(
-				`rpc-queue.close conn=${connId} dropped=${dropCount} droppedBytes=${dropBytes}`
+			// 字段表（顺序与 remoteLog 完全一致，便于 server / 本地 log 对齐 grep）
+			const fields = `dropped=${dropCount} droppedBytes=${dropBytes}`
 				+ ` residualChunks=${residualChunks} residualBytes=${residualBytes}`
 				+ ` residualDiskBytes=${residualDiskBytes} residualWrittenBytes=${residualWrittenBytes}`
 				+ ` fsBroken=${effectiveFsBroken} spillActive=${spillActive}`
-				+ ` lastReason=${lastReason ?? 'none'}`,
-			);
+				+ ` lastReason=${lastReason ?? 'none'}`;
+			// 本地 log 镜像：close 是 session 收尾的异常汇总，开发者主要看本地 log 排查。
+			// 与 overflow-start/disk-cap-start/fs-broken 同级别用 warn——只有 anomaly 时才发。
+			safeWarn(`close ${fields}`);
+			safeRemoteLog(`rpc-queue.close conn=${connId} ${fields}`);
 		}
 		overflowActive = false;
 	}
