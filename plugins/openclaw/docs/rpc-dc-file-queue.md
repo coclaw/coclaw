@@ -1,12 +1,12 @@
 # rpc DC 文件回退发送队列（FileBackedQueue）
 
-> 状态：B-stage2 已实施。**当前生产默认 `MemoryQueue`**（FBQ 未充分本地验证前的紧急回退）；FBQ 装配路径在代码 + 测试中保留，模块级常量翻一行即可激活。详见 [rpc-dc-send-queue.md](./rpc-dc-send-queue.md) "队列实现选择"。
+> 状态：B-stage2 已实施，**生产默认运行 FBQ**；MemoryQueue 保留作为紧急回退路径与运行时降级目标，模块级常量翻一行即可切回。详见 [rpc-dc-send-queue.md](./rpc-dc-send-queue.md) "队列实现选择"。
 > 创建：2026-04-20
-> 关键里程碑：plan-1（监视器外置） → plan-2（启动期 prep） → B-stage2（单点平替 FBQ）。详见末尾"演进史"章节。
+> 关键里程碑：plan-1（监视器外置） → plan-2（启动期 prep） → B-stage2（单点平替 FBQ） → multi-端压测后的诊断信号补丁与 admission 风格对齐 MemoryQueue。详见末尾"演进史"章节。
 
 ## 背景与动机
 
-插件向 rpc DC 发送消息时，通过 `src/webrtc/rpc-send-queue.js` 的 `RpcSendQueue` 做应用层流控。当前 `RpcSendQueue` 有 10 MB 软上限（`MAX_QUEUE_BYTES`），超过时新消息被 drop。
+> 重构前：插件通过 `src/webrtc/rpc-send-queue.js` 的 `RpcSendQueue` 做应用层流控。该模块有 10 MB 软上限（`MAX_QUEUE_BYTES`），超过时新消息被 drop。本章节描述重构前的限制——文件本身已被 plan-1 / B-stage2 拆解为 `rpc-dc-sender.js` + `memory-queue.js` + `file-backed-queue.js`。
 
 随着对 **ICE restart 保持/恢复连接** 的依赖加深，积压场景会更频繁：
 
@@ -14,7 +14,7 @@
 - ICE restart 期间 DC 可用但对端不可达
 - 10 MB 对于一次较长的后台窗口很容易被打满，之后全部丢弃
 
-目标：引入一个**按 rpc DC 粒度**的文件回退队列，把积压从"内存 10 MB 软上限"扩展到"磁盘 GB 级硬上限"，让大多数后台/ICE 恢复场景不再丢消息。
+目标：引入一个**按 rpc DC 粒度**的文件回退队列，把积压从"内存 10 MB 阈值"扩展到"磁盘 GB 级阈值"，让大多数后台/ICE 恢复场景不再丢消息。
 
 ## 定位与方案总览
 
@@ -22,7 +22,7 @@
 
 ```
 producer → fbq.enqueue(str) → [for await of fbq] → await sender.send(str) → DC
-                              (mem 8MB → disk 1GB)   (分片 + DC bufferedAmount 背压)
+                              (mem 10MB → disk 1GB)  (分片 + DC bufferedAmount 背压)
 ```
 
 各组件分工：
@@ -68,11 +68,13 @@ await sender.send(str)       // ≈ 阻塞式 socket.write()
 class FileBackedQueue {
   constructor({
     dir, id,
-    memBudget,         // 内存持有字节数上限（默认 8 MB；webrtc-peer 装配时显式传 10 MB）
-    diskCap,           // mem + disk 总字节数硬上限（默认 1 GB）
+    memBudget,         // mem 桶阈值（默认 8 MB；webrtc-peer 装配时显式传 10 MB）；按 current ≥ threshold 判定，允许 single overshoot
+    diskCap,           // mem + 已写文件总占用阈值（默认 1 GB）；同 current ≥ threshold + single overshoot；非文件 size 上限
     maxMessageBytes,   // 单条硬上限（默认 Infinity；webrtc-peer 装配时显式传 50 MB）
     bypassAdmission,   // 谓词，命中则容量层 admission 豁免（含 fsBroken 降级模式 mem 桶；不豁免 oversize / 实际写入失败）
-    onDrop,            // (reason, size, err?) => void —— 'fs-error' 透传底层 err
+    onDrop,            // (reason, size, err?) => void —— 'fs-error' 第三参传底层 err；'disk-cap' 第三参传 { memBytes, writtenBytes, diskCap } 分量
+    onSpillStart,      // () => void —— 文件创建（spilled false→true）边沿触发；故障删档不调
+    onSpillEnd,        // (drainedBytes) => void —— 文件 drain 删除（spilled true→false）边沿触发；故障删档/destroy 不调
     logger,
   })
 
@@ -92,11 +94,13 @@ class FileBackedQueue {
 |------|------|------|
 | `dir` | 队列文件根目录 | 无默认，调用方提供 |
 | `id` | 队列标识，用作文件名；字符集受限 `[A-Za-z0-9._-]+`，非 `.` `..` | 无默认 |
-| `memBudget` | 内存持有字节数上限（软性，含 64B/条对象开销近似）；必须是有限正数 | 8 MB |
-| `diskCap` | mem + disk 总字节数硬上限（含分隔 `\n`）；必须是有限正数 | 1 GB |
+| `memBudget` | mem 桶阈值（按 `current ≥ threshold` 判定，允许 single overshoot）；必须是有限正数 | 8 MB |
+| `diskCap` | mem + 已写文件总占用阈值（按 `current ≥ threshold` 判定，允许 single overshoot）；非文件 size 硬上限；必须是有限正数 | 1 GB |
 | `maxMessageBytes` | 单条字节硬上限；超过即 drop（bypass 也不豁免）；必须是 `Infinity` 或有限正数 | `Infinity` |
 | `bypassAdmission` | 白名单谓词 `(jsonStr) => boolean`，命中则容量层 admission 豁免；非函数收编为 null | 无 |
-| `onDrop` | 拒入队回调 `(reason, size, err?) => void`；仅 `'fs-error'` reason 透传第三参 err | 仅 warn |
+| `onDrop` | 拒入队回调 `(reason, size, err?) => void`；`'fs-error'` 第三参传 err，`'disk-cap'` 第三参传 `{ memBytes, writtenBytes, diskCap }` 分量；其它 reason 第三参 undefined | 无 |
+| `onSpillStart` | 文件创建边沿钩子 `() => void`，`spilled` false→true 时调一次；非函数等价 no-op | 无 |
+| `onSpillEnd` | 文件 drain 删除边沿钩子 `(drainedBytes: number) => void`，`spilled` true→false 时调一次；故障删档 / destroy 不调 | 无 |
 | `logger` | pino 风格 logger | `console` |
 
 `memBudget` / `diskCap` / `maxMessageBytes` 在构造时 fail-fast：`Number.isFinite` 且 `> 0`，否则抛 `TypeError`（`maxMessageBytes` 额外允许 `Infinity`）。此约束避免 `NaN` 等退化值让 admission `>` 比较恒假、变相绕过硬上限。
@@ -105,7 +109,10 @@ class FileBackedQueue {
 
 ## 接口红线（B-stage2 稳定契约）
 
-下面 7 条是**跨实现细节稳定的契约**，FBQ 与 MemoryQueue 共同遵守，未来重构都不应破坏：
+下面 7 条是**跨实现细节稳定的契约**，FBQ 与 MemoryQueue 共同遵守，未来重构都不应破坏。
+
+> **admission 决策风格统一**：FBQ 与 MemoryQueue 的 admission 决策都按 `current ≥ threshold` 判定（mem 用 `memBytes >= memBudget`、FBQ disk-cap 用 `memBytes + writtenBytes >= diskCap`），允许 single overshoot——当前总占用 < 阈值时再大的一条都收，下一条才会 drop。这让两实现的语义分叉只剩"物理存储是否带 disk 中转"+ "是否有 fsBroken 降级路径"两点；admission **不区分**两实现。
+> 容量诊断完整性由监视器承担：`disk-cap` reason 第三参传 `{ memBytes, writtenBytes, diskCap }` 让 disk-cap-start log 展开三分量；`fs-error` 第三参传底层 err 透传 errno；spill 边沿信号让运维知道"何时开始用磁盘 / 何时 drain 完"。
 
 ### 1. 业务无关容器
 
@@ -122,8 +129,8 @@ class FileBackedQueue {
 ### 3. bypassAdmission 仅豁免容量层 admission
 
 白名单豁免容量层约束：
-- 健康路径：`memBytes + writtenBytes + size > diskCap`（hard cap）
-- fsBroken 降级模式：mem 桶满（spill 不可用时 mem 桶就是事实容量层，与 MemoryQueue 镜像；只针对 bypass 命中消息 overshoot，非 bypass 仍走 fs-error 短路）
+- 健康路径：`memBytes + writtenBytes >= diskCap`（阈值 + single overshoot；与 MemoryQueue admission 风格统一）
+- fsBroken 降级模式：mem 桶满（spill 不可用时 mem 桶就是事实容量层，与 MemoryQueue 镜像；只针对 bypass 命中消息 overshoot，非 bypass 仍走 fs-error 短路）。注意：fsBroken 时 disk-cap admission 会被守卫跳过（让 fsBroken 短路赢），保 fs-error 诊断准确
 
 **不豁免**：
 - 单条上限（oversize）
@@ -167,29 +174,28 @@ FBQ id 加唯一后缀 `${connId}-${ts}-<uuid8>`，物理文件名隔离。**不
 ### 入队
 
 ```
-admission：若 memBytes + writtenBytes + len(jsonStr) + 1 > diskCap 且 !bypass
-  → 拒绝，onDrop('disk-cap', size)，返回 false
-  （writtenBytes 是本次生命周期累计已写字节，在完全 drain 或 FS 降级时重置为 0
-   bypass 命中跳过容量层判定，继续往下走；但仍受单条 maxMessageBytes 与实际写入失败约束）
+0. destroyed → silent return false（不调 onDrop；连接清理路径正常副作用）
+1. size > maxMessageBytes → onDrop('oversize', size)，返回 false（bypass 不豁免）
 
-if (!spilled) {
-  if (pendingCount === 0 或 mem 容量够容纳本条)
-    → 进内存队列   // safety valve：队列全空时首条无论多大都收，避免超大消息进退两难
-}
+2. admission（disk-cap）：若 memBytes + writtenBytes ≥ diskCap 且 !bypass
+   → onDrop('disk-cap', size, { memBytes, writtenBytes, diskCap })，返回 false
+   （writtenBytes 是本次生命周期累计已写字节，drain 完成或 FS 降级时重置为 0
+    bypass 命中跳过容量层判定继续往下走；本步允许 single overshoot——当前 < diskCap 时
+    再大的一条都收，下一条才 drop）
 
-若上一步没进 mem：
-  // mem 桶满但 fsBroken 已粘性 + 本条是 bypass 命中：允许 overshoot 入队（与 MemoryQueue 镜像；
-  // spill 不可用时 mem 桶事实上接管容量层，白名单消息不应被误报 fs-error）。本条不调 onDrop。
-  if (fsBroken && bypass)
-    → 入内存队列（overshoot 越过 memBudget），返回 true
-  if (fsBroken)
-    → 拒绝，onDrop('fs-error', size)，返回 false   // 粘性降级，不再尝试 reopen
-  if (!spilled)
-    → 创建/打开文件；进入 spilled 状态
-  追加到文件尾；失败则 onDrop('fs-error', size)
+3. mem 路径（!spilled 时）：
+   - memFits = (memBytes < memBudget)                              // current ≥ threshold + single overshoot
+   - bypassOvershoot = !memFits && fsBroken && bypass              // 降级模式 mem 桶接管容量层时白名单豁免
+   - 若 memFits 或 bypassOvershoot → 入 memQueue，返回 true
+
+4. spill 路径：
+   - 若 fsBroken && !bypass → onDrop('fs-error', size, lastFsErr)，返回 false   // 粘性降级，不再尝试 reopen
+   - 若 !spilled → __openWriteStream（含 mkdir + 残留清理）；失败 → onDrop('fs-error', size, err) + __handleFsError，返回 false
+   - 设 spilled=true（首次翻转 false→true，触发 onSpillStart 边沿信号）
+   - 追加到文件尾；失败 → onDrop('fs-error', size, err) + __handleFsError，返回 false
 ```
 
-mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 RSS 远超账面。
+mem 与 disk 阈值都以 payload 字节数（disk-cap 含 `\n` 分隔字节）记账，与 MemoryQueue admission 风格一致；不再扣 metadata overhead。
 
 ### 出队 / 消费
 
@@ -197,19 +203,20 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 从内存头取一条交给消费者
 取完后若 spilled 且内存有空间 → 异步 refill：
   从文件当前读 offset 流式读入若干行，推入内存，直到 memBudget 或 EOF
-若 refill 读到 EOF 且读 offset 已追上写端 → 关文件、删文件，回到未溢出状态
+  refill 内停止判定与 admission 对齐：current ≥ memBudget 时停（首条 single overshoot 后才停）
+若 refill 读到 EOF 且读 offset 已追上写端 → __dropFile（关文件、删文件、回到未溢出状态，触发 onSpillEnd(drainedBytes)）
 ```
 
 ### 不变量
 
-- `memBytes + writtenBytes + (size + 1) ≤ diskCap`（含待入条目的 `\n`；以物理占用为准；**仅适用于非 bypass 流量**，bypass 命中消息可越过 diskCap 入队，详见红线 3）
+- `memBytes + writtenBytes ≤ diskCap` 在**非 bypass、非 single overshoot** 流量下持续成立；允许 single overshoot——前一条入队后总占用可短暂越过 diskCap，再大的下一条才会 drop（与 MemoryQueue 镜像）。bypass 命中消息可越过 diskCap 入队，详见红线 3
 - `writtenBytes` 只在完全 drain（`__dropFile`）或 FS 降级（`__handleFsError`）时重置为 0
 - `diskBytes === writtenBytes - readOffset`（暴露给消费者的 backlog 指标，派生值）
 - `spilled === true ⟺ 文件存在且有未消费字节`
 - 所有 enqueue/dequeue/fs-error 清理均通过同一个 mutex 串行化，避免状态半截
 - 崩溃导致的半截尾行：refill 时识别并丢弃，不影响前面
 
-**diskCap 语义**：硬上限指的是**物理文件 + 内存的总占用**，而不是 backlog（未消费字节）。代价是：持续背压场景下即便消费者在追赶，只要消费者还没追上写端触发 `__dropFile` 重置，admission 就持续以"已写总量"判定，可能 drop 部分新消息。这是有意选择，保证 diskCap 是真正的"磁盘不会超过这个数"。
+**diskCap 语义**：阈值指的是**物理文件 + 内存的总占用**，而不是 backlog（未消费字节）；非 bypass 流量允许 single overshoot，bypass 命中可越过阈值。文件实际峰值约为 `diskCap - memBudget`——`disk-cap-start` log 不要误读为"文件满了"。代价是：持续背压场景下即便消费者在追赶，只要消费者还没追上写端触发 `__dropFile` 重置，admission 就持续以"已写总量"判定，可能 drop 部分新消息。这是有意选择，保证 diskCap 是真正的"磁盘 + 内存不会显著超过这个数"。
 
 ### FS 错误降级
 
@@ -242,11 +249,11 @@ mem 容量判定包含 64B/条的对象开销估算，避免小消息洪水下 R
 
 ### 队列文件存储位置
 
-`FileBackedQueue` 的 `id` 用 `connId`（必须匹配 `[A-Za-z0-9._-]+`——UUID 形式天然满足），目录定为 `~/.openclaw/coclaw/rpc-queues/`：
+`FileBackedQueue` 的 `id` 形如 `${connId}-${Date.now()}-<uuid8>`（必须匹配 `[A-Za-z0-9._-]+`，时间戳 + uuid 后缀解决同 connId race 见下文"同 connId race 隔离设计"）；目录在装配时由 bridge 注入，路径基于 `pluginDir()` 解析：
 
 - 走 `resolveStateDir() + CHANNEL_ID + 子目录` 约定，与 `bindings.json` 同根
 - 复数命名 `rpc-queues/`，与既有 `chat-files/` / `topic-files/` 风格一致
-- 一条 rpc DC 对应一个文件，路径形如 `~/.openclaw/coclaw/rpc-queues/{connId}.jsonl`
+- 一条 rpc DC 对应一个文件，**默认部署**下路径形如 `~/.openclaw/coclaw/rpc-queues/{connId}-{ts}-{uuid8}.jsonl`；state-dir 可经 `OPENCLAW_STATE_DIR` 等 OpenClaw 机制覆盖到任意位置（详见根 CLAUDE.md "OPENCLAW 状态目录"约束）
 
 不再多套一层 `queues/rpc/`——眼下只有一种队列，YAGNI。
 
@@ -321,32 +328,37 @@ diskCap = min(1 GB, max(64 MB, free × 50%))
 
 FBQ 的两类 drop 都可能持续高频：`disk-cap`（盘到顶后每条新消息都 drop 一次）、`fs-error`（进 `fsBroken` 后每条非 bypass 溢出都 drop；bypass 命中消息走 mem-overshoot 不进此路径）。如果 `onDrop` 直接 `remoteLog`，长时间后台 + 大量推送的场景下能把 remoteLog 通道刷爆。
 
-**对齐 `RpcSendQueue` 现有风格**——空→满 / 满→空 状态翻转点打一次，期间静默累加。**实现位置：集成层包一层 `onDrop` wrapper，FBQ 模块本身保持业务无关**。每条 DC 一个 wrapper 实例，状态独立。
+**对齐 MemoryQueue 风格**——空→满 / 满→空 状态翻转点打一次，期间静默累加。**实现位置：监视器（`rpc-drop-monitor.js`）包消费 `onDrop` / `onSpillStart` / `onSpillEnd`，FBQ 模块本身保持业务无关、不打日志**。每条 DC 一个 monitor 实例，状态独立。
 
 #### 上报状态机
 
 | 事件 | 上报时机 |
 |------|---------|
-| 第一次 `disk-cap` drop | 边沿：`fbq.disk-cap-start connId=X` |
-| 持续 `disk-cap` drop | **静默累加** `droppedCount` / `droppedBytes` |
-| **队列彻底清空**（`memCount === 0 && writtenBytes === 0`）且仍处于 disk-cap 命中状态 | 边沿：`fbq.disk-cap-end connId=X count=N bytes=M`，清零累计 |
-| DC close / queue destroy 时仍处于 disk-cap 命中 | 兜底：同上格式打一次 summary |
-| 第一次 `fs-error` drop（首次进 `fsBroken`） | `fbq.fs-broken connId=X` |
+| 第一次 `queue-full` drop（MemoryQueue 路径） | 边沿：`rpc-queue.overflow-start conn=X queueBytes=N` |
+| 第一次 `disk-cap` drop（FBQ 路径） | 边沿：`rpc-queue.disk-cap-start conn=X size=N memBytes=M writtenBytes=W diskCap=D`（三分量展开） |
+| 持续 `queue-full` / `disk-cap` drop | **静默累加** `droppedCount` / `droppedBytes` |
+| **队列彻底清空**（`memCount === 0 && writtenBytes === 0`）且仍处于 overflow 命中 | 边沿：`rpc-queue.overflow-end conn=X dropped=N droppedBytes=M`，清零累计 |
+| 第一次 `fs-error` drop（首次进 `fsBroken`） | 边沿：`rpc-queue.fs-broken conn=X errno=X msg=…` |
 | 后续 `fs-error` drop | **静默累加** |
-| destroy / clear（复位 `fsBroken`） | `fbq.fs-error-summary connId=X count=N bytes=M` |
+| `oversize` drop | 每次独立 warn（应用 bug 性质，不属容量压力） |
+| FBQ `spilled` false→true（onSpillStart） | 边沿：`rpc-queue.spill-start conn=X`，info + remoteLog |
+| FBQ `spilled` true→false（onSpillEnd，仅 drain 路径） | 边沿：`rpc-queue.spill-end conn=X drainedBytes=N`，info + remoteLog |
+| DC close / queue destroy 收尾 | 兜底：`rpc-queue.close conn=X dropped=… residualChunks=… residualWrittenBytes=… fsBroken=… lastReason=…`（仅在 anomaly 时打） |
 
 #### "恢复"判定 = 队列彻底空
 
-判定 `disk-cap-end` 边沿的条件取**最严格**的"队列空"——`memCount === 0 && writtenBytes === 0`（mem 和盘上未消费部分都为 0）。
+判定 `overflow-end` 边沿（涵盖 queue-full / disk-cap 两类容量层 admission drop）的条件取**最严格**的"队列空"——`memCount === 0 && writtenBytes === 0`（mem 和盘上未消费部分都为 0）。监视器内部 `disk-cap` 与 `queue-full` 共享同一个 `overflowActive` 标量，end 翻转时统一打 `overflow-end`；不再单独打 `disk-cap-end`。
 
 为什么这是抗抖动 + 抗刷屏的最优解：
 
-- **抖动几乎不可能触发**：要让 wrapper 在运行期反复打 start/end，必须经历"彻底清空 → 重新积压满 1 GB（diskCap）"。这是几分钟级的循环，不可能"每秒抖几次"
-- **临界稳态下不刷屏**：贴边界工作（队列卡在 95% 高位反复 admission）时永远不满足"彻底空"——`disk-cap-end` 不打、新 drop 静默累加，刷屏被根除
+- **抖动几乎不可能触发**：要让监视器在运行期反复打 start/end，必须经历"彻底清空 → 重新积压满 1 GB（diskCap）"。这是几分钟级的循环，不可能"每秒抖几次"
+- **临界稳态下不刷屏**：贴边界工作（队列卡在 95% 高位反复 admission）时永远不满足"彻底空"——`overflow-end` 不打、新 drop 静默累加，刷屏被根除
 - **没漏告警**：start 已通知运维异常出现；中间 admission 偶尔通过的小消息 enqueue 成功不会有新 drop（不刷屏），运维通过"start 之后没有新 drop 日志"也能间接判断已恢复
 - **运行期及时性**：rpc DC 长生命周期内（ICE restart 不 close）队列彻底闲下来过一次就能打 end，不必拖到 DC close
 
 > 候选其他方案（"第一次 enqueue 成功"翻转 / spilled 翻 false 翻转 / 仅 close 时 summary）在抖动概率、实现复杂度、信号及时性三者上都不如本方案——评估过程见提交历史。
+
+> 与 `spill-end` 的区分：`spill-end` 是文件层翻转（FBQ `spilled` true→false，drain 完成）信号，独立于 admission 状态机；即使没有任何 disk-cap drop，正常 mem 满转盘 → drain 完毕也会打 `spill-end`。
 
 #### 其它
 
@@ -435,18 +447,9 @@ dc.onclose = () => {
 - `fbq.destroy()` 返回 `{ done: true }` 而非抛错——符合 ECMAScript `for-await` 协议（Node Stream / Web ReadableStream 主流"关闭"语义）；FBQ 的真正异常路径靠 `fsBroken` 状态表达，不混在 destroy 里
 - 不在循环里手写 `if (closed) break`——退出由两条上游各自的"关闭信号"驱动，循环代码内部只负责区分"sender 死"与"业务单条失败"
 
-### 生产者改造
+### 生产者改造（已落地）
 
-| 调用点 | 现状 | 改造后 |
-|--------|------|--------|
-| `webrtc-peer.js:112-125` `broadcast()` | `rpcSendQueue.send(jsonStr)` 同步 | `fbq.enqueue(jsonStr).catch(...)` fire-and-forget |
-| `webrtc-peer.js:134-146` `sendTo()` | 同上 | 同上 |
-| `webrtc-peer.js:520-528` files RPC `sendFn` | 同上 | 同上 |
-| `realtime-bridge.js:780-795` gateway ws → DC 透传 | 同上 | 同上 |
-| `webrtc-peer.js:508-511` probe-ack | `dc.send(...)` 直发 | **保持不变，旁路** |
-
-- `enqueue()` 返回 Promise，按 fire-and-forget 处理，必须 `.catch()`（符合插件 CLAUDE.md 规范）
-- **probe-ack 路径继续旁路**：不经 FBQ、不经 sender，直接 `dc.send()`，保留"仅测量传输层健康"语义
+所有 producer 出口统一走 `fbq.enqueue(jsonStr).catch(...)` fire-and-forget——`broadcast()` / `sendTo()` / files RPC `sendFn` / gateway ws → DC 透传四条路径都已切换。**probe-ack 例外**：直接 `dc.send(...)`，旁路 FBQ 与 sender，保留"仅测量传输层健康"语义。`enqueue()` 返回 Promise，必须 `.catch()`（符合插件 CLAUDE.md 规范）。具体调用点 grep `rpcQueue.enqueue` / `dc.send` 即可，本表不再列具体行号——仓库每次 commit 都会让具体 line 漂移，但语义稳定。
 
 ### 生命周期对齐
 
@@ -503,7 +506,7 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
 
 **装配诊断**：每个 session 装配成功后**仅打一次** local info + remoteLog `rtc.queue-impl conn=… impl=fbq|mem [fallback=queue-dir-null]`，让运维拿到运行时实际路径（特别是静默降级到 mem 的场景）。频率与连接频率挂钩，不刷屏。
 
-**为何不阻塞装配**：plugin 整体可用性优先于 fbq 单点最优——磁盘异常时 plugin 仍能用 mem 模式处理 RPC（10 MB 软上限），让 UI 通信不至于因 fs 问题完全瘫痪。运维通过装配日志感知"残废模式"，再决策修复磁盘。
+**为何不阻塞装配**：plugin 整体可用性优先于 fbq 单点最优——磁盘异常时 plugin 仍能用 mem 模式处理 RPC（10 MB mem 阈值），让 UI 通信不至于因 fs 问题完全瘫痪。运维通过装配日志感知"残废模式"，再决策修复磁盘。
 
 ## 相邻隐患（保留观察项）
 
@@ -523,8 +526,8 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
 
 ## 默认参数依据
 
-- **`memBudget = 8 MB`**：模型 B 下 FBQ 是唯一应用层缓冲，8 MB/连接的内存占用对绝大多数瞬时积压足够；超了再走磁盘。
-- **`diskCap = 1 GB`**（构造时按 `min(1 GB, max(64 MB, free × 50%))` 自适应取下限）：对一条 rpc DC 的长尾积压足够；移动设备/服务器均不会因此逼近存储上限。
+- **`memBudget = 8 MB` 默认 / 装配点 10 MB**：模型 B 下 FBQ 是唯一应用层缓冲，10 MB/连接的内存占用对绝大多数瞬时积压足够；超了再走磁盘。admission 用 `memBytes >= memBudget` 判定，允许 single overshoot——首条 overshoot 让队列更宽容，后续按阈值收紧。
+- **`diskCap = 1 GB`**（构造时按 `min(1 GB, max(64 MB, free × 50%))` 自适应取下限）：对一条 rpc DC 的长尾积压足够；移动设备/服务器均不会因此逼近存储上限。同样允许 single overshoot；语义为 `mem + writtenBytes` 总占用阈值，不是文件 size 上限。
 - **无 lowWaterMark**：队列头从内存弹，尾往文件追加，没有"抖动"风险，refill 由单次 dequeue 触发即可，不需要双阈值。
 
 ## 测试
@@ -544,6 +547,9 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
 9. **init 幂等**：重复 `init()` 无副作用；`init` 前调用 `enqueue` 抛 `queue not initialized`
 10. **FS 错误降级（关键回归）**：异步 `writeStream.on('error')` 后，即使"未成功落盘任何字节"场景下，consumer 也不会卡死；后续非 bypass 溢出 enqueue drop `fs-error`；bypass 命中消息走 mem-overshoot 入队（红线 3）；`fsBroken=true`
 11. **head 指针压缩**：大量 mem enqueue+消费后 `memQueue.length` 收敛，不线性增长
+12. **admission 风格对齐 MemoryQueue**：disk-cap / mem 入口 / refill 反向量控三处都按 `current ≥ threshold` 判定，allow single overshoot；首条 overshoot 越过阈值后下一条 drop
+13. **spill 边沿钩子**：`spilled` 翻转 false→true 时调 `onSpillStart`，true→false（drain）时调 `onSpillEnd(drainedBytes)`；故障删档（`__handleFsError`）/ destroy 路径不调；钩子抛错被 swallow，不传染 enqueue 契约
+14. **disk-cap 第三参分量**：`onDrop('disk-cap', size, err)` 的 err 是 `{ memBytes, writtenBytes, diskCap }`；监视器 disk-cap-start log 展开三分量
 
 ### 集成层
 
@@ -551,9 +557,9 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
 13. **diskCap 自适应** ✅（`src/rpc-queue-startup.test.js`）：mock `fs.statfs` 各分支（充裕 / 紧张 / 抛错回退）；下限 64 MB / 上限 1 GB / `free × 50%` 三段
 14. **`RpcDcSender` 单元** ✅（`src/webrtc/rpc-dc-sender.test.js`）：分片、fast-path、`bufferedAmount` 背压；阻塞式 `send()` 在 `bufferedamountlow` 触发后恢复；`close()` 让等待中的 `send()` 抛 `SENDER_CLOSED`（waiter 主动 reject）；单条 oversize 抛 `MESSAGE_OVERSIZED`
 15. **消费循环退出** ✅（`src/webrtc/webrtc-peer.test.js`）：`fbq.destroy()` 让 `for-await` 自然结束；`sender.close()` 让正在 await `bufferedamountlow` 的 `send` 立刻返回
-16. **`onDrop` wrapper 边沿状态机** ✅（`src/webrtc/rpc-drop-monitor.test.js`）：`disk-cap-start/end` / `fs-broken` / `fs-error-summary` 在持续 drop 期间静默累加，仅边沿点上报；`fs-error` reason 透传 `err` 第三参（B-stage2 已激活）
+16. **监视器边沿状态机** ✅（`src/webrtc/rpc-drop-monitor.test.js`）：`disk-cap-start` / `overflow-start` / `overflow-end`（共享 overflowActive） / `fs-broken sticky` / `oversize` 每条独立、`spill-start` / `spill-end` 边沿幂等；持续 drop 期间静默累加，仅边沿点上报；`fs-error` 透传 `err` 第三参 errno、`disk-cap` 透传 `{memBytes, writtenBytes, diskCap}` 三分量；close 兜底 `rpc-queue.close` 在 anomaly 时单条 remoteLog
 17. **B-stage2 关键测试** ✅：
-    - 装配点队列实现选择：模块常量切换（当前 mem；'fbq' 模式 + queueDir 不可用自动降级 mem + 装配日志含 fallback 标记）+ 测试通过 `rpcQueueImpl` 构造选项覆盖
+    - 装配点队列实现选择：模块常量切换（当前 fbq；'fbq' 模式 + queueDir 不可用自动降级 mem + 装配日志含 fallback 标记）+ 测试通过 `rpcQueueImpl` 构造选项覆盖
     - 同 connId 重建：两个 FBQ 实例 id / filePath 物理不同（race 隔离）
     - destroy onBeforeClear 同步钩子：mutex 内拿原子残留快照（含 in-flight enqueue），与 monitor.summarize 集成
     - bypassAdmission 完整边界：命中 / 谓词抛错保守 / 非函数 coerce / 实际 IO 写入失败（mkdir 路径）仍 drop / fsBroken 降级模式下 overshoot mem 桶（与 MemoryQueue 镜像）
@@ -642,3 +648,23 @@ plugins/openclaw/src/realtime-bridge.js  # bridge.start 开头加启动清理 + 
 - **取舍 3：diskCap 注入路径走 runtime getter 还是 deps?** 选 deps 注入——决策 6，可在测试中 mock 各分支
 - **取舍 4：destroy onBeforeClear 异步钩子要不要支持?** 否——决策 5 限定同步钩子，与 MemoryQueue 完全镜像，async rejection 不被捕获是 silent gotcha
 - **取舍 5：bypassAdmission 是否扩到 lifecycle:end?** 否——红线 4，OpenClaw 一次 run 多次 emit lifecycle:end 会破坏白名单语义
+
+### 阶段 4：multi-端压测后的诊断信号补丁与 admission 对齐 MemoryQueue
+
+FBQ 切到生产默认后做 multi-端真实压测（手机端 PC + 计算机端 PC 同时跑），发现三个诊断盲点：
+
+1. **drain 后文件删除无 log**：用户观察到 jsonl 文件创建 / size 增长 / 手机回前台后文件消失，但 gateway log 既无本地也无 remote 体现"何时删了" → spill 边沿信号缺失，运维无法判断"是真的 drain 完了还是被 fs-broken 删了"。
+2. **`fbq.drop` 刷屏**：FBQ 内每条 drop 都直接 `logger.warn?.('fbq.drop', ...)`，破坏了 plan-1 敲定的"诊断 log 全归监视器（含状态翻转去抖）"契约——长时间后台 + 大量 drop 让本地 + remote 双重刷屏。
+3. **`disk-cap` 命名误读**：`disk-cap` reason 容易被误读为"磁盘文件 1MB 写满了"，实际语义是 `mem + writtenBytes` 总占用顶到 diskCap 阈值，文件实际峰值约为 `diskCap - memBudget`。
+
+**配套改造**：
+
+- 监视器加 `onSpillStart()` / `onSpillEnd(drainedBytes)` 接口，FBQ 在 `spilled` 边沿翻转时调；`spill-start` / `spill-end` 信号本地 info + remoteLog 双发；故障删档（`__handleFsError`）/ 清理离场（`destroy`）不调，由 fs-broken / close 信号各自承载。
+- 删 FBQ 内 `fbq.drop` 那行 warn——诊断职责完全交给监视器（与 plan-1 MemoryQueue 时代敲定的契约对齐）。
+- `disk-cap` 第三参从 undefined 改为传 `{ memBytes, writtenBytes, diskCap }` 分量；监视器 `disk-cap-start` log 展开三分量，让运维直接看到谁顶到 cap。
+
+**顺手对齐 admission 风格**：FBQ 原 admission 用 `current + new > threshold` 风格，与 MemoryQueue 的 `current ≥ threshold + single overshoot` 不同。这次趁势对齐——三处 admission（disk-cap / mem 入口 / refill 反向量控）改为 `current ≥ threshold` 风格、允许 single overshoot；删除 `ENTRY_OVERHEAD` 常量（MemoryQueue 不算 metadata overhead，FBQ 也不再算）。
+
+**为何对齐**：admission 决策风格统一让两实现的语义分叉收敛到只剩"物理存储"+"fsBroken 降级路径"两点；测试用例 / 红线说明 / 压测预期都更易心智建模。代价是 single overshoot 让首条入队后短暂越过阈值——业务侧可接受（多一块数据没有问题，红线 3 兜底单条 50 MB）。
+
+**为何不动 MemoryQueue → FBQ 切换决策**：本阶段是 FBQ 切换后的诊断补强 + 风格收敛，没有改变"FBQ 默认接管 + MemoryQueue 兜底"的产品定位。

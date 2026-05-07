@@ -165,19 +165,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**（不修）：sendTo 失败后挂一个延迟重试，或在 onbufferedamountlow 恢复时检查 sig 为 null 再发。预存——sendTo 改 async 不引入新问题，仅在原本就失败的场景下不重试。
 
-## 阶段 2 切换 FBQ 的 checklist（不止"一行 import 改"）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
-**关联**：阶段 2 计划
-
-**问题**：dump 提到"几乎一行 import 改"。深度核对后发现实际需要协调改动至少 4 处：
-1. **MemoryQueue 与 FBQ 的构造参数不同**：FBQ 需 `dir`、可选 `diskCap`，MemoryQueue 没有；webrtc-peer.js 的 new 处需补
-2. **`__setupDataChannel` 当前 sync**：阶段 2 加 `await q.init()` 后函数变 async；调用方 `pc.ondatachannel`（line ~449）也需相应改造
-3. **`__dumpSessionState` 读 `stats().droppedCount`**：FBQ 的 stats 不暴露此字段，会输出 `dropped=undefined`。需阶段 2 统一 stats 形态或在 dump 处 fallback
-4. **RpcSendQueue 时代的 sender 侧 drop 是否需要重新对齐 close 汇总**：见上方 "oversize 与 queue-full" 条目
-
-**修复方向**（不修，只记录）：阶段 2 启动时把这些点列成 checklist，避免临到切换才发现。
-
 ## bridge 不被通知 conn 关闭 → server 侧 pending request map 残留（预存）
 
 **发现日期**：2026-05-02（rpc-dc-stage1 deep-review B 阶段维度 2 集成路径）
@@ -635,21 +622,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向（项目层面若决策）**：考虑导出统一的 `safeWarn(logger, msg)` helper，所有 fire-and-forget 链路统一调用。
 
-## 同 connId 重建期旧队列 destroy 挂起时广播路径（B-stage2 集成测试）
-
-**发现日期**：2026-05-03（rpc-dc Phase B 综合 deep-review，路 4 主动挖掘 P0 #1）
-**关联**：`plugins/openclaw/src/webrtc/webrtc-peer.js`（同 connId ondatachannel 二次触发路径）
-
-**场景**：同一个 connId 在 ICE restart 失败回退或网络抖动时短时间内 close + ondatachannel 重建，第一个实例还在 `await session.rpcQueue.destroy()` 期间，外部 `broadcast()` 触发。`session.rpcQueue` 字段还指向旧 queue（`closeByConnId` / `dc.onclose` 的清字段路径在 destroy 完成后才执行），broadcast 的 enqueue 落到旧 queue。
-
-**B-stage1 行为**：旧 queue 已在 mutex 内设 `destroyed=true`；旧 queue 的 enqueue 拿到 mutex 后短路返 false（silent drop），不抛、不死锁、不撞新通道。已通过 plan-1 round-2 的 in-flight-broadcast 测试 + 本轮（综合 deep-review Step 2）的 destroy/enqueue 反序 race 测试覆盖了这一路 mutex + destroyed 短路联合保护。
-
-**为什么完整集成层测试推到 B-stage2**：webrtc-peer 集成测试需要 mock pion DC、伪造同 connId 二次握手、控制异步 destroy 挂起的时序，~50-100 行测试代码。B-stage1 阶段 destroy 是几十 microsec 级（MemoryQueue 无 fs 操作），窗口几乎不存在；价值边际有限。**B-stage2 切 FBQ 后** destroy 要清磁盘文件，时间从 microsec 拉到数十甚至数百 ms，窗口才"足够宽到值得集成测试"。
-
-**修复方向**（B-stage2 切 FBQ 时）：
-- 加 webrtc-peer 集成测试覆盖"同 connId 重建期旧 queue 仍在 await destroy"窗口的 broadcast 行为
-- 评估是否需要在 webrtc-peer 层面提前清 `session.rpcQueue` 字段（在 await destroy 之前），让新 broadcast 拿到 null queue → 走 file sendFn null check 那条 silent-drop-with-warn 路径（与上文 A1 异步装配 TODO 一并处理）
-
 ## claw-paths runtime 改造遗留（2026-05-05 deep-review 抓出，预存）
 
 ### session-manager 不传 entry.sessionFile（PRE-EXISTING）
@@ -846,3 +818,24 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **问题**：测试间可能泄漏 unref 定时器或 sender flush 回调；目前没有触发明显的 cross-test 干扰，但符合"测试本身可靠性"的隐患。
 
 **修复方向**：每个创建 peer 的 test 用 `t.after(async () => { await peer.closeAll(); })` 统一兜底，无论主路径分支如何均能关闭。
+
+## 2026-05-07 FBQ 本机实测中发现的诊断盲点
+
+### FBQ / monitor 都未统计 bypass overshoot 的次数与字节数
+
+**发现日期**：2026-05-07（FBQ 本机实测 A 场景，跑 agent run 看不到 bypass 路径流量量级）
+
+**锚点**：
+- `plugins/openclaw/src/utils/file-backed-queue.js:184-190` bypass overshoot 入队路径无任何计数
+- `plugins/openclaw/src/utils/file-backed-queue.js` `stats()` 只返回 memCount / memBytes / diskBytes / writtenBytes / spilled / fsBroken
+- `plugins/openclaw/src/webrtc/rpc-drop-monitor.js` `getStats()` 当前返回 dropCount / dropBytes / overflowActive / spillActive / fsBroken / lastReason，仍然没有 bypass 计数
+
+**问题**：degraded 模式下 bypass overshoot 是"豁免 admission 但没存账"的路径，运维侧无法知道它救了多少帧。健康路径下也无法区分入队的是 bypass 流量还是普通流量。close-log 的 `residualChunks` 只是关闭瞬间快照，算不上累计统计。
+
+**影响**：bypass overshoot 是 round 1 修复的核心特殊路径，但缺乏正向流量观测——只能间接通过"`fsBroken=true` 但 `dropped=0` / `lastReason!=fs-error`"等组合推断曾经走过。一旦 bypass 流量持续大、mem 桶接近无界（红线 3 设计取舍接受 OOM 风险），运维只能看 RSS 增长后果，看不到原因。
+
+**修复方向**：
+- FBQ `enqueue` 增加 `__bypassEnqueueCount` / `__bypassEnqueueBytes` 累计字段，stats() 透出
+- 可选：进一步细分 `__bypassOvershootCount`（仅 overshoot 路径触发）vs 普通 bypass 入队（memFits=true 时也豁免 diskCap admission，算 bypass 但不是 overshoot）
+- monitor 不必参与（monitor 是 drop 视角，bypass 不是 drop）；bypass 统计放 FBQ 自身 stats 即可
+- close-log 加 bypass 累计字段（与 dropped / residual 并列），让降级期间的 bypass 救援量级可观测

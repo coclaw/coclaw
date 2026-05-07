@@ -97,7 +97,7 @@
 | 加新 plugin 自发事件 / 事件 patch 语义细节 | [`docs/plugin-events.md`](docs/plugin-events.md) |
 | 改 rpc DC 流控、分片、admission、白名单、ICE restart 行为 | [`docs/rpc-dc-send-queue.md`](docs/rpc-dc-send-queue.md) |
 | 改/新增 res 帧或 event:agent 帧的路由分发 / 评估抽 reqId 表 | [`docs/rpc-routing.md`](docs/rpc-routing.md) |
-| 切磁盘回退队列 (FBQ) 准备工作 | [`docs/rpc-dc-file-queue.md`](docs/rpc-dc-file-queue.md) |
+| FBQ 设计 / admission 公式 / spill 边沿信号 / fsBroken 降级语义 | [`docs/rpc-dc-file-queue.md`](docs/rpc-dc-file-queue.md) |
 | 改 WebRTC 实现选择 / 看 ndc-preloader 的命名困惑 / 评估清理死代码 | [`docs/webrtc-impl-strategy.md`](docs/webrtc-impl-strategy.md) |
 | 升级 `@coclaw/pion-node` / 调试 pion-ipc 问题 | [`docs/pion-integration.md`](docs/pion-integration.md) |
 | 本地开发安装 / link↔npm 切换 / 安装坑 | [`docs/local-plugin-update-sop.md`](docs/local-plugin-update-sop.md) |
