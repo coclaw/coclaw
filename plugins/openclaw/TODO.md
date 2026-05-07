@@ -839,3 +839,28 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 - 可选：进一步细分 `__bypassOvershootCount`（仅 overshoot 路径触发）vs 普通 bypass 入队（memFits=true 时也豁免 diskCap admission，算 bypass 但不是 overshoot）
 - monitor 不必参与（monitor 是 drop 视角，bypass 不是 drop）；bypass 统计放 FBQ 自身 stats 即可
 - close-log 加 bypass 累计字段（与 dropped / residual 并列），让降级期间的 bypass 救援量级可观测
+
+## 2026-05-08 FBQ/MemoryQueue 收口 deep-review 发现的预存问题
+
+### 同 connId 多次 ondatachannel 并发 setup race
+
+**发现日期**：2026-05-08（收口 deep-review 期间 codex-rescue 对 P1 装配段 nullify 修法做事前副作用评估时 surface）
+
+**锚点**：
+- `plugins/openclaw/src/webrtc/webrtc-peer.js:519` `__setupDataChannel` 是 fire-and-forget 调用（ondatachannel 回调 sync 段无法 await）
+- `plugins/openclaw/src/webrtc/webrtc-peer.js:694-708` 装配段开头检查 `session.rpcDcSender || session.rpcQueue` 决定是否清旧实例
+
+**问题**：sync nullify 修法把四字段先置 null 再 await 旧 destroy。**race**：第二次 ondatachannel 在 setup1 还没跑完时同 connId 又来一次（极罕见，但理论上 UI/Server 不正确实现可触发）：
+- setup1 进入装配段，sync nullify 四字段，await 旧 destroy（卡在 mutex 异步）
+- 同 tick setup2 触发 ondatachannel sync 段（rpcChannel 又被覆盖一次到第三个 dc）
+- setup2 进装配段看 `session.rpcDcSender || session.rpcQueue` —— 都已 null（被 setup1 清空）→ 跳过整段清旧分支
+- setup2 直接走"创建新 monitor + new Queue + queue.init() + ..."—— 与 setup1 await destroy 后将创建的新 queue 并存
+
+**影响**：两个 setup 的 consumeLoop 同时跑，两个 queue 同时 wire 到 session，最后赋值的覆盖前一个，前一个泄漏。生产中没有已知触发场景（UI 不会在第一次 rpc DC 还没关闭时就发起第二次）。
+
+**说明**：此 race 在 sync nullify 修法**之前**也已存在（旧代码下 setup2 也会进入 await destroy 但 destroy 内 fast-return，结果仍是双 setup 覆盖赋值）；nullify 不是引入根因，只是窗口更明显。codex 建议在 session 上挂 `rpcSetupInProgress` Promise，让后到 setup await 它——但这是引入新协调机制，违反"避免过度设计"原则。
+
+**修复方向**（如未来真触发再做）：
+- 在 session 上加 `rpcSetupInProgress` promise marker
+- setup 进入装配段前先 `await session.rpcSetupInProgress`，再开始自己的 teardown-then-build
+- setup 完成时清 marker

@@ -94,7 +94,7 @@ drop 来源有两类，分别由不同组件上报，**不要混淆**：
 | `oversize` | 单条超 `maxMessageBytes` 硬上限 | ❌ 不豁免 | FBQ + MemoryQueue |
 | `queue-full` | `memBytes >= memBudget` 且非 bypass | ✅ 豁免（容量层） | MemoryQueue（mem 桶满即 drop） |
 | `disk-cap` | `memBytes + writtenBytes >= diskCap` 且非 bypass | ✅ 豁免（容量层） | FBQ（mem + 已写文件总占用顶到 diskCap） |
-| `fs-error` | spill 路径 IO 失败（writeStream emit / write cb / mkdir / refill stat） | ❌ 不豁免（IO 失败那一刻） | FBQ 独有；首次进 fsBroken 后续仅累加 |
+| `fs-error` | spill 路径 IO 失败（write cb / mkdir / refill stat 同步路径直接 drop；writeStream emit error 异步路径仅置 `fsBroken`，由后续非 bypass enqueue 进 fsBroken 短路 drop 才报 `fs-error`） | ❌ 不豁免（IO 失败那一刻） | FBQ 独有；首次进 fsBroken 后续仅累加 |
 
 队列容器自身**不打日志、不计数**——通过 `onDrop(reason, size, err?)` 回调把事件外抛，由 `rpc-drop-monitor.js`（调用方注入）做边沿触发的状态机：
 

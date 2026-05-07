@@ -100,7 +100,7 @@ class FileBackedQueue {
 | `bypassAdmission` | 白名单谓词 `(jsonStr) => boolean`，命中则容量层 admission 豁免；非函数收编为 null | 无 |
 | `onDrop` | 拒入队回调 `(reason, size, err?) => void`；`'fs-error'` 第三参传 err，`'disk-cap'` 第三参传 `{ memBytes, writtenBytes, diskCap }` 分量；其它 reason 第三参 undefined | 无 |
 | `onSpillStart` | 文件创建边沿钩子 `() => void`，`spilled` false→true 时调一次；非函数等价 no-op | 无 |
-| `onSpillEnd` | 文件 drain 删除边沿钩子 `(drainedBytes: number) => void`，`spilled` true→false 时调一次；故障删档 / destroy 不调 | 无 |
+| `onSpillEnd` | 文件 drain 删除边沿钩子 `(drainedBytes: number) => void`，`spilled` true→false 时调一次（`drain` 路径 + `clear()` 路径都触发；故障删档 / `destroy` 不调） | 无 |
 | `logger` | pino 风格 logger | `console` |
 
 `memBudget` / `diskCap` / `maxMessageBytes` 在构造时 fail-fast：`Number.isFinite` 且 `> 0`，否则抛 `TypeError`（`maxMessageBytes` 额外允许 `Infinity`）。此约束避免 `NaN` 等退化值让 admission `>` 比较恒假、变相绕过硬上限。
@@ -337,7 +337,7 @@ FBQ 的两类 drop 都可能持续高频：`disk-cap`（盘到顶后每条新消
 | 第一次 `queue-full` drop（MemoryQueue 路径） | 边沿：`rpc-queue.overflow-start conn=X queueBytes=N` |
 | 第一次 `disk-cap` drop（FBQ 路径） | 边沿：`rpc-queue.disk-cap-start conn=X size=N memBytes=M writtenBytes=W diskCap=D`（三分量展开） |
 | 持续 `queue-full` / `disk-cap` drop | **静默累加** `droppedCount` / `droppedBytes` |
-| **队列彻底清空**（`memCount === 0 && writtenBytes === 0`）且仍处于 overflow 命中 | 边沿：`rpc-queue.overflow-end conn=X dropped=N droppedBytes=M`，清零累计 |
+| **队列彻底清空**（`memCount === 0 && writtenBytes === 0`）且仍处于 overflow 命中 | 边沿：`rpc-queue.overflow-end conn=X dropped=N droppedBytes=M`；`dropped`/`droppedBytes` 为 monitor 生命周期累计（不清零，下一次 overflow 周期继续累加，由 `rpc-queue.close` 汇总收口） |
 | 第一次 `fs-error` drop（首次进 `fsBroken`） | 边沿：`rpc-queue.fs-broken conn=X errno=X msg=…` |
 | 后续 `fs-error` drop | **静默累加** |
 | `oversize` drop | 每次独立 warn（应用 bug 性质，不属容量压力） |
