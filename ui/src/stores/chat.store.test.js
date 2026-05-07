@@ -6162,6 +6162,34 @@ describe('useChatStore', () => {
 			});
 		});
 
+		// B2：用户高频场景——slash 命令失败后立即重发，期望生成全新 idempotencyKey，
+		// 不复用旧 key（防止服务端按旧 key 去重命中而吞掉重发）
+		test('status="error" reject 后用户重发：生成新 idempotencyKey，不复用旧 key', async () => {
+			conn.request.mockResolvedValue({
+				runId: 'r-bad',
+				status: 'error',
+				error: 'first attempt rejected',
+			});
+			await expect(store.sendSlashCommand('/help')).rejects.toMatchObject({
+				code: 'SLASH_CMD_REJECTED',
+			});
+			const firstKey = conn.request.mock.calls.at(-1)[1].idempotencyKey;
+			expect(firstKey).toBeTruthy();
+
+			// 重发：第二次也失败（保持简单，验证 key 行为即可）
+			conn.request.mockResolvedValue({
+				runId: 'r-bad-2',
+				status: 'error',
+				error: 'second attempt rejected',
+			});
+			await expect(store.sendSlashCommand('/help')).rejects.toMatchObject({
+				code: 'SLASH_CMD_REJECTED',
+			});
+			const secondKey = conn.request.mock.calls.at(-1)[1].idempotencyKey;
+			expect(secondKey).toBeTruthy();
+			expect(secondKey).not.toBe(firstKey);
+		});
+
 		// 与 sendMessage 一致：accepted（chat.send resolve）前，乐观 user 消息带
 		// _pending=true，ChatMsgItem 渲染为 spinner 占位、不显示命令文本；
 		// chat.send 成功返回后清 _pending，bubble 才呈现真实命令文本。

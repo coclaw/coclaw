@@ -594,6 +594,30 @@ describe('ChatPage send message', () => {
 		expect(callArg.description.slice(0, 197)).toBe('X'.repeat(197));
 	});
 
+	test('__formatRunErrorMessage 边界值：199/200 原样、201 截断、首行全空白返回 undefined', async () => {
+		// C1：off-by-one 边界 + blank-only 首行
+		const wrapper = createWrapper();
+		await flushPromises();
+		const fn = wrapper.vm.__formatRunErrorMessage;
+		// 199 字符：原样
+		expect(fn('A'.repeat(199))).toBe('A'.repeat(199));
+		// 200 字符：原样（边界等号不截）
+		expect(fn('B'.repeat(200))).toBe('B'.repeat(200));
+		// 201 字符：截断
+		const r201 = fn('C'.repeat(201));
+		expect(r201.length).toBe(200);
+		expect(r201).toBe('C'.repeat(197) + '...');
+		// 首行只有空白：trim 后空 → undefined
+		expect(fn('   \t  ')).toBeUndefined();
+		// 整段只有换行/空白
+		expect(fn('\n\n   \n')).toBeUndefined();
+		// 空字符串 / null / undefined / 非字符串
+		expect(fn('')).toBeUndefined();
+		expect(fn(null)).toBeUndefined();
+		expect(fn(undefined)).toBeUndefined();
+		expect(fn(123)).toBeUndefined();
+	});
+
 	test('errorMessage 缺失时仍弹 notify，但不带 description', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
@@ -949,6 +973,44 @@ describe('ChatPage new topic', () => {
 		// 失败回退在 newStore 上（不在 ChatInput 上）
 		expect(newStoreClearSpy).toHaveBeenCalled();
 		expect(newStoreRestoreSpy).toHaveBeenCalledWith(files);
+	});
+
+	// B5：topic 创建后 accepted-then-failed 的 toast 路径——
+	// 与普通 sendMessage 路径走同一个 __notifyRunFailed，但 __handleNewTopicSend 是独立分支，
+	// 加 protect-against-regression 测试避免后续重构把 toast 调用从 topic 分支漏掉
+	test('new-topic accepted 后失败 (endReason=failed)：notify error 含 errorMessage', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		vi.spyOn(topicsStore, 'createTopic').mockResolvedValue('new-topic-uuid');
+		await flushPromises();
+
+		const origGet = chatStoreManager.get.bind(chatStoreManager);
+		vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+			const s = origGet(key, opts);
+			if (key === 'topic:new-topic-uuid') {
+				vi.spyOn(s, 'sendMessage').mockResolvedValue({
+					accepted: true,
+					endReason: 'failed',
+					errorMessage: 'FailoverError: model unavailable',
+				});
+			}
+			return s;
+		});
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith({
+			title: 'Agent run failed',
+			description: 'FailoverError: model unavailable',
+		});
 	});
 
 	// =====================================================================

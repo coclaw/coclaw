@@ -393,7 +393,9 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			this.__clearPendingEnd(runId);
 
 			const status = rpcResult?.status;
-			const isFailed = status === 'error';
+			// 取消路径下不论上游回 error 还是 timeout，都按 'rpc' 静默收尾——
+			// 用户已主动取消，不应再追打失败 toast；error/timeout 两种业务级失败语义对称
+			const isFailed = status === 'error' && !run.cancelled;
 			const isTimeout = status === 'timeout' && !run.cancelled;
 			if (isFailed || isTimeout) {
 				// stringify 兜底：协议偏离时 summary/error 可能是 object（如 { code, message }），

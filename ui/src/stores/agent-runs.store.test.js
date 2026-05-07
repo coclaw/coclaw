@@ -1066,6 +1066,27 @@ describe('useAgentRunsStore', () => {
 			expect(result.errorMessage).toBeNull();
 		});
 
+		test('信号 1：status="error" 但 run.cancelled=true（取消路径）→ endReason="rpc"，与 timeout 取消语义对称', async () => {
+			// A3：用户取消时上游恰好回 status="error"（plugin 内部异常 + 取消 race），
+			// 应与 status="timeout" 取消路径同样静默收尾，不报错误 toast
+			const store = useAgentRunsStore();
+			const ctrl = mockTwoPhaseConn();
+
+			const runPromise = store.runAgent({
+				conn: ctrl.conn, clawId: '1', runKey: 'k1', topicMode: false,
+				agentParams: {}, optimisticMsgs: [],
+			});
+			await Promise.resolve();
+			ctrl.fireAccepted({ runId: 'run-1' });
+			store.runs['run-1'].cancelled = true;
+			ctrl.finalResolve({ status: 'error', summary: 'plugin internal error' });
+
+			const result = await runPromise;
+			expect(result.endReason).toBe('rpc');
+			expect(result.errorMessage).toBeNull();
+			expect(store.runs['run-1'].__endError).toBeNull();
+		});
+
 		test('pre-acceptance 错误（DC 断）→ runAgent reject，未 register', async () => {
 			const store = useAgentRunsStore();
 			const ctrl = mockTwoPhaseConn();
