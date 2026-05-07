@@ -60,46 +60,55 @@
 
 		<!-- Group 2: Agent 列表（按最近活动逆序，平面跨 claw 混排） -->
 		<nav class="mt-3 space-y-0 px-2">
-			<RouterLink
+			<div
 				v-for="item in agentItems"
 				:key="item.id"
-				:to="item.to"
-				class="group flex h-11 items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
+				class="group flex h-11 items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
 				:class="item.active ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
-				<span class="relative shrink-0">
-					<img
-						v-if="item.avatarUrl"
-						:src="item.avatarUrl"
-						:alt="item.agentName"
-						class="size-6 rounded-md object-cover"
-					/>
-					<span
-						v-else-if="item.emoji"
-						class="size-6 rounded-md bg-accented flex items-center justify-center text-sm leading-none"
-					>{{ item.emoji }}</span>
-					<img
-						v-else
-						:src="defaultClawAvatar"
-						:alt="item.agentName"
-						class="size-6 rounded-md object-cover"
-					/>
-					<span
-						class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-default"
-						:class="item.online ? 'bg-success' : 'bg-neutral'"
-					/>
-				</span>
-				<!-- label：单 claw 仅 agent 名；多 claw 时 agent@claw，'@' 永不缩、两段可 truncate；
-				     '@' 与 clawName 用 text-muted 弱化（次级信息） -->
-				<span class="flex min-w-0 flex-1 items-baseline">
-					<span class="truncate min-w-0">{{ item.agentName }}</span>
-					<template v-if="item.clawName">
-						<span class="shrink-0 text-muted">@</span>
-						<span class="truncate min-w-0 text-muted">{{ item.clawName }}</span>
-					</template>
-				</span>
-			</RouterLink>
+				<RouterLink
+					:to="item.to"
+					class="flex min-w-0 flex-1 items-center gap-3 px-2 py-1"
+				>
+					<span class="relative shrink-0">
+						<img
+							v-if="item.avatarUrl"
+							:src="item.avatarUrl"
+							:alt="item.agentName"
+							class="size-6 rounded-md object-cover"
+						/>
+						<span
+							v-else-if="item.emoji"
+							class="size-6 rounded-md bg-accented flex items-center justify-center text-sm leading-none"
+						>{{ item.emoji }}</span>
+						<img
+							v-else
+							:src="defaultClawAvatar"
+							:alt="item.agentName"
+							class="size-6 rounded-md object-cover"
+						/>
+						<span
+							class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-default"
+							:class="item.online ? 'bg-success' : 'bg-neutral'"
+						/>
+					</span>
+					<!-- label：单 claw 仅 agent 名；多 claw 时 agent@claw，'@' 永不缩、两段可 truncate；
+					     '@' 与 clawName 用 text-muted 弱化（次级信息） -->
+					<span class="flex min-w-0 flex-1 items-baseline">
+						<span class="truncate min-w-0">{{ item.agentName }}</span>
+						<template v-if="item.clawName">
+							<span class="shrink-0 text-muted">@</span>
+							<span class="truncate min-w-0 text-muted">{{ item.clawName }}</span>
+						</template>
+					</span>
+				</RouterLink>
+				<AgentItemActions
+					class="agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+					:claw-id="item.clawId"
+					:agent-id="item.agentId"
+				/>
+			</div>
 		</nav>
 
 		<!-- Group 3: Topic 列表 -->
@@ -149,6 +158,7 @@ import { useClawsStore } from '../stores/claws.store.js';
 import { useEnvStore } from '../stores/env.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
+import AgentItemActions from './AgentItemActions.vue';
 import TopicItemActions from './TopicItemActions.vue';
 import defaultClawAvatar from '../assets/claw-avatars/openclaw.svg';
 import logoSrc from '../assets/coclaw-logo.jpg';
@@ -163,7 +173,7 @@ function toTopicLabel(topic, t) {
 
 export default {
 	name: 'MainList',
-	components: { TopicItemActions },
+	components: { AgentItemActions, TopicItemActions },
 	props: {
 		currentPath: {
 			type: String,
@@ -254,6 +264,8 @@ export default {
 						if (clawName && clawName === agentName) clawName = null;
 						result.push({
 							id: `${b.id}:${agent.id}`,
+							clawId: String(b.id),
+							agentId: agent.id,
 							agentName,
 							clawName,
 							avatarUrl: d.avatarUrl,
@@ -268,6 +280,8 @@ export default {
 					// agents 未加载（离线/连接中）：以 claw 身份兜底（label 单段、无 @）
 					result.push({
 						id: b.id,
+						clawId: String(b.id),
+						agentId: 'main',
 						agentName: b.name || 'OpenClaw',
 						clawName: null,
 						avatarUrl: null,
@@ -388,7 +402,8 @@ export default {
 <style scoped>
 /* 触屏设备无 hover，操作按钮始终可见 */
 @media (hover: none) {
-	.topic-actions {
+	.topic-actions,
+	.agent-actions {
 		opacity: 1;
 	}
 }

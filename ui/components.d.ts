@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AdminNavTabs: typeof import('./src/components/AdminNavTabs.vue')['default']
     AgentCard: typeof import('./src/components/AgentCard.vue')['default']
+    AgentItemActions: typeof import('./src/components/AgentItemActions.vue')['default']
     ChatAudio: typeof import('./src/components/ChatAudio.vue')['default']
     ChatFile: typeof import('./src/components/ChatFile.vue')['default']
     ChatImg: typeof import('./src/components/ChatImg.vue')['default']

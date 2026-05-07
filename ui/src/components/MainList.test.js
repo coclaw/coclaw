@@ -34,6 +34,10 @@ vi.mock('./TopicItemActions.vue', () => ({
 	default: { name: 'TopicItemActions', template: '<div class="topic-actions-stub" />', props: ['topicId', 'clawId', 'title'] },
 }));
 
+vi.mock('./AgentItemActions.vue', () => ({
+	default: { name: 'AgentItemActions', template: '<div class="agent-actions-stub" />', props: ['clawId', 'agentId'] },
+}));
+
 vi.mock('../services/claw-connection-manager.js', () => ({
 	useClawConnections: () => ({
 		get: vi.fn(),
@@ -81,6 +85,7 @@ function createWrapper(props = {}) {
 				UIcon: UIconStub,
 				UButton: UButtonStub,
 				TopicItemActions: { template: '<div class="topic-actions-stub" />' },
+				AgentItemActions: { template: '<div class="agent-actions-stub" />' },
 			},
 			mocks: {
 				$t: (key) => {
@@ -260,7 +265,7 @@ test('agent item should NOT be active on topic route', async () => {
 		props: { currentPath: '/topics/t-uuid' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' } },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addClaw': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'topics-chat', params: { sessionId: 't-uuid' }, query: {} },
@@ -286,7 +291,7 @@ test('agent item should be active on main session route', async () => {
 		props: { currentPath: '/chat/b1/main' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' } },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addClaw': '添加机器人', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'chat', params: { clawId: 'b1', agentId: 'main' }, query: {} },
@@ -729,4 +734,53 @@ test('label DOM：单 claw 时不渲染 "@" 段', async () => {
 	const agentNav = wrapper.findAll('nav').at(1);
 	const link = agentNav.find('a');
 	expect(link.text()).not.toContain('@');
+});
+
+// --- AgentItemActions 集成契约 ---
+
+test('agentItems 暴露 clawId/agentId 字段供 actions 组件使用：在线分支用真实 agent.id', async () => {
+	// 钉死：未来若有人重构 computed 但忘了带这两个字段，AgentItemActions 会拿到 undefined props
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'Alpha', online: true }]);
+	seedAgents('b1', [{ id: 'helper-2', resolvedIdentity: { name: 'H2' } }]);
+	await wrapper.vm.$nextTick();
+
+	const item = wrapper.vm.agentItems.find((i) => i.id === 'b1:helper-2');
+	expect(item.clawId).toBe('b1');
+	expect(item.agentId).toBe('helper-2');
+});
+
+test('agentItems 暴露 clawId/agentId 字段供 actions 组件使用：fallback 分支硬编码 main', async () => {
+	// 钉死 fallback 契约：claw 未连/未加载 agents 时，actions 用 'main' 兜底（与 RouterLink 路由保持一致）
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'Offline', online: false }]);
+	// 不 seed agents → 走 fallback 分支
+	await wrapper.vm.$nextTick();
+
+	const item = wrapper.vm.agentItems[0];
+	expect(item.id).toBe('b1');
+	expect(item.clawId).toBe('b1');
+	expect(item.agentId).toBe('main');
+});
+
+test('AgentItemActions 渲染为 RouterLink 的 sibling，不能嵌套在 RouterLink 内', async () => {
+	// 钉死结构性不变量：嵌套进去会导致点 actions 触发行级导航（用户感知 = "点菜单按钮还跳转了"）
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'Solo', online: true }]);
+	seedAgents('b1', ['main']);
+	await wrapper.vm.$nextTick();
+
+	const agentNav = wrapper.findAll('nav').at(1);
+	const link = agentNav.find('a');
+	const stub = agentNav.find('.agent-actions-stub');
+	expect(link.exists()).toBe(true);
+	expect(stub.exists()).toBe(true);
+	// 关键：actions stub 不在 link 子树里
+	expect(link.find('.agent-actions-stub').exists()).toBe(false);
 });
