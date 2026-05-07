@@ -282,6 +282,7 @@ test('summarize(residual): dropCount>0 → emit close 含全部 token；幂等',
 	assert.match(t, /residualDiskBytes=0/);
 	assert.match(t, /residualWrittenBytes=0/);
 	assert.match(t, /fsBroken=false/);
+	assert.match(t, /spillActive=false/);
 	assert.match(t, /lastReason=queue-full/);
 	// 幂等
 	monitor.summarize({ memCount: 99, memBytes: 9999 });
@@ -372,6 +373,55 @@ test('summarize(residual.fsBroken=true): onDrop 从未触发 fs-error 也应 emi
 	assert.equal(closes.length, 1);
 	assert.match(closes[0].text, /fsBroken=true/);
 	assert.match(closes[0].text, /conn=connSilentFsBroken/);
+});
+
+test('summarize: spillActive=true 单独触发 anomaly close（spill 文件没 drain 完就 close）', () => {
+	// FBQ 物理文件创建后 onSpillStart 已 fire，未 drain 完就 destroy（onSpillEnd 不调）。
+	// 通常 residualWrittenBytes/residualDiskBytes>0 也会触发 anomaly，但本用例验证 spillActive
+	// 单独纳入 anomaly 信号——避免日后 stats 路径漂移让"以 spill 状态结束"静默。
+	const { monitor } = makeMonitor({ connId: 'connSpillEnd' });
+	monitor.onSpillStart();
+	assert.equal(monitor.getStats().spillActive, true);
+	resetRemoteLog(); // 清掉 spill-start 单独验 close
+	monitor.summarize();
+	const closes = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close'));
+	assert.equal(closes.length, 1, 'spillActive=true 应触发 anomaly close');
+	assert.match(closes[0].text, /spillActive=true/);
+	assert.match(closes[0].text, /conn=connSpillEnd/);
+});
+
+test('summarize: 仅 spill-start 触发后立即 spill-end → spillActive=false → 干净状态不 emit', () => {
+	// 反向 invariant：完整 spill 周期（spill-start → spill-end）后 spillActive 复位，
+	// 干净 summarize 不应仅因"曾经 spill 过"就 emit。
+	const { monitor } = makeMonitor();
+	monitor.onSpillStart();
+	monitor.onSpillEnd(1000);
+	assert.equal(monitor.getStats().spillActive, false);
+	resetRemoteLog();
+	monitor.summarize();
+	assert.equal(remoteLogBuffer.filter(e => e.text.includes('rpc-queue.close')).length, 0);
+});
+
+test('overflow + spill 同时 active：两 flag 完全独立，互不影响（getStats 同时返回 true）', () => {
+	// 两条边沿状态机的独立性 invariant pin：queue-full/disk-cap 走 overflowActive，
+	// spill-start/spill-end 走 spillActive。两边逻辑分离，状态翻转不互相干扰。
+	const { monitor } = makeMonitor();
+	// 先触发 overflow（queue-full 边沿）
+	monitor.onDrop('queue-full', 1024);
+	assert.equal(monitor.getStats().overflowActive, true);
+	assert.equal(monitor.getStats().spillActive, false);
+	// 叠加 spill-start
+	monitor.onSpillStart();
+	assert.equal(monitor.getStats().overflowActive, true, 'spill-start 不应碰 overflowActive');
+	assert.equal(monitor.getStats().spillActive, true);
+	// spill-end 单方面复位 spillActive，不动 overflowActive
+	monitor.onSpillEnd(2048);
+	assert.equal(monitor.getStats().overflowActive, true, 'spill-end 不应碰 overflowActive');
+	assert.equal(monitor.getStats().spillActive, false);
+	// overflow-end 单方面复位 overflowActive
+	monitor.maybeEmitOverflowEnd({ memCount: 0, memBytes: 0, writtenBytes: 0 });
+	assert.equal(monitor.getStats().overflowActive, false);
+	assert.equal(monitor.getStats().spillActive, false);
 });
 
 test('summarize: residual.fsBroken=true + onDrop 已触发 fs-error → 仅 emit 一次 close 含 fsBroken=true（双源同源不重复）', () => {

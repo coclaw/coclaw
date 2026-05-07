@@ -1416,13 +1416,33 @@ export class RealtimeBridge {
 		// 整块包 try/catch：模块自身不抛，但仍可能进入 catch 的路径——pluginDir() 同步抛
 		// （runtime 未注入 / nodePath.join 参数异常 / 测试注入的 stub 抛错）。任何路径都不能把
 		// bridge.start 卡死。
+		// 10s timeout 兜底：cleanup/measure 内部已永不抛（仅 warn + fallback），但 fs hang
+		// 场景（NFS / 网络挂载 / 磁盘卡）下 fs.promises 调用不返回，整段会卡死；超时让 catch
+		// 兜底降级到 MemoryQueue，bridge 至少能起来。
+		// race 闭合：prep 改成纯返回值，timeout 赢时 catch 显式赋 null；不在 IIFE 内部 mutate
+		// `this.__diskCap`，避免后台 prep 晚到把降级状态又覆盖回非 null。
 		try {
 			const queueDir = nodePath.join(pluginDir(), 'rpc-queues');
-			await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
-			this.__diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
-			// 只有 cleanupResiduals 成功 + measureDiskCap 完成后才暴露 queueDir 给 webrtc 装配；
-			// 任一抛错都让 __queueDir 留 null，下游自动降级到 MemoryQueue
-			this.__queueDir = queueDir;
+			const prepPromise = (async () => {
+				await this.__cleanupRpcQueueResiduals(queueDir, { logger: this.logger });
+				const diskCap = await this.__measureRpcQueueDiskCap(queueDir, { logger: this.logger });
+				return { queueDir, diskCap };
+			})();
+			let timeoutId;
+			const timeoutPromise = new Promise((_, reject) => {
+				timeoutId = setTimeout(() => reject(new Error('rpc-queues startup prep timeout (10s)')), 10000);
+				timeoutId.unref?.();
+			});
+			let result;
+			try {
+				result = await Promise.race([prepPromise, timeoutPromise]);
+			}
+			finally {
+				clearTimeout(timeoutId);
+			}
+			// race 赢后才赋字段：保证 __diskCap / __queueDir 同时一致
+			this.__diskCap = result.diskCap;
+			this.__queueDir = result.queueDir;
 		}
 		catch (err) {
 			/* c8 ignore next -- ?./?? fallback：err 总是 Error，logger.warn 总存在 */

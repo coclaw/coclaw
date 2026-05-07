@@ -664,7 +664,10 @@ export class WebRtcPeer {
 				// 但 destroy 是 fire-and-forget，回调在 mutex 异步内才 fire 时字段已 null。
 				sess.rpcDcSender?.close();
 				const monRef = sess.rpcDropMonitor;
-				sess.rpcQueue?.destroy((residual) => { monRef?.summarize(residual); }).catch(() => {});
+				sess.rpcQueue?.destroy((residual) => { monRef?.summarize(residual); }).catch((err) => {
+					/* c8 ignore next 2 -- destroy 在生产路径稳定（mutex 内异常极冷），仅诊断兜底 */
+					this.logger.warn?.(`${this.__rtcTag} [${connId}] rpc queue destroy failed in dc.onclose: ${err?.message ?? err}`);
+				});
 				sess.rpcDcSender = null;
 				sess.rpcQueue = null;
 				sess.rpcConsumeLoop = null;
@@ -691,12 +694,24 @@ export class WebRtcPeer {
 		// 罕见：session 已有旧三件套（UI 重建 rpc DC 等）。先 await close + destroy 旧实例
 		// 再造新实例，避免新旧 queue/sender 在同一 session 上并存。summarize 走 destroy 的
 		// onBeforeClear 钩子，确保拿到原子残留快照（in-flight enqueue 已落地）。
+		//
+		// race 闭合：先**同步**捕获旧引用 + 把四个字段置 null，再 await 旧实例 destroy。
+		// 否则 sync ondatachannel 已把 rpcChannel 切到新 dc（readyState='open'），但 rpcQueue
+		// 等字段保留到 await destroy 完成；这窗口里 broadcast / sendTo 看到 "rpcQueue=旧 +
+		// rpcChannel=新 dc open" 会把消息塞进即将销毁的旧 queue。sync nullify 后窗口里 broadcast
+		// 看到 rpcQueue=null 跳过（与"通道未就绪"等价）。
 		if (session.rpcDcSender || session.rpcQueue) {
-			session.rpcDcSender?.close();
+			const oldSender = session.rpcDcSender;
+			const oldQueue = session.rpcQueue;
+			const oldLoop = session.rpcConsumeLoop;
 			const oldMonitor = session.rpcDropMonitor;
-			if (session.rpcQueue) await session.rpcQueue.destroy((residual) => { oldMonitor?.summarize(residual); });
-			if (session.rpcConsumeLoop) await session.rpcConsumeLoop.catch(() => { /* c8 ignore next -- 极冷防御 */ });
+			session.rpcDcSender = null;
+			session.rpcQueue = null;
+			session.rpcConsumeLoop = null;
 			session.rpcDropMonitor = null;
+			oldSender?.close();
+			if (oldQueue) await oldQueue.destroy((residual) => { oldMonitor?.summarize(residual); });
+			if (oldLoop) await oldLoop.catch(() => { /* c8 ignore next -- 极冷防御 */ });
 		}
 		// 创建 monitor。必须在 new Queue 之前——Queue 的 onDrop 接 monitor.onDrop。
 		// monitor 是局部变量，stale 路径下函数返回后自然 GC，不挂 session 字段（无 drop 可汇总）。

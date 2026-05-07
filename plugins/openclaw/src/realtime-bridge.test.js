@@ -4913,6 +4913,40 @@ test('bridge.start should swallow startup-prep failures (cleanup stub throws)', 
 	}
 });
 
+test('bridge.start should bail out via 10s timeout if rpc-queues prep hangs', async (t) => {
+	// fs hang 兜底（NFS / 网络挂载）：cleanup 永不 resolve 时，10s timeout 让 catch 兜底降级
+	// 到 MemoryQueue（__queueDir / __diskCap 留 null），bridge 至少能起来。
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
+	const warns = [];
+	const logger = { warn: (m) => warns.push(String(m)), info() {}, debug() {} };
+	const bridge = createBridge({
+		// hang 模拟：永不 resolve（不 reject 也不 resolve）
+		cleanupRpcQueueResiduals: () => new Promise(() => {}),
+		measureRpcQueueDiskCap: async () => 12345, // 不会被调到（cleanup 卡住）
+		// preload 注入 stub 避免 default 路径起 native ndc / pion
+		preloadPion: async () => null,
+		preloadNdc: async () => ({ PeerConnection: null, cleanup: null, impl: 'none' }),
+	});
+	try {
+		const startPromise = bridge.start({ logger, pluginConfig: {} });
+		// 让 microtask 跑一轮，进 prep 内部 await cleanup
+		await new Promise((r) => setImmediate(r));
+		// fake timer 推进到 10s 触发 timeout reject
+		t.mock.timers.tick(10000);
+		await startPromise;
+		assert.equal(bridge.__diskCap, null, 'timeout 后 __diskCap 应留 null（自动降级）');
+		assert.equal(bridge.__queueDir, null, 'timeout 后 __queueDir 应留 null（自动降级）');
+		assert.ok(
+			warns.some((w) => w.includes('rpc-queues startup prep failed') && w.includes('timeout')),
+			'timeout 应通过 catch warn 一次',
+		);
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
 test('bridge.start should skip preload when stop() races during cleanup/measure', async () => {
 	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	let preloadPionCalled = false;

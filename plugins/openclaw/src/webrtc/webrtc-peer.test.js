@@ -5190,14 +5190,16 @@ test('WebRtcPeer: connId 复用后旧 PC 的 onselectedcandidatepairchange 微�
 
 // --- Phase A1：__setupDataChannel async + identity guard ---
 
-function withQueueLifecycleMock({ blockInit = false, blockDestroy = false } = {}) {
-	const origInit = MemoryQueue.prototype.init;
-	const origDestroy = MemoryQueue.prototype.destroy;
+function withQueueLifecycleMock({ blockInit = false, blockDestroy = false, target = MemoryQueue } = {}) {
+	// target=MemoryQueue 是默认（mem 路径装配）；FBQ 路径装配可传 target=FileBackedQueue
+	// 镜像同一份 stale init / blockDestroy 不变量验证。
+	const origInit = target.prototype.init;
+	const origDestroy = target.prototype.destroy;
 	const initCalls = [];
 	const destroyCalls = [];
 
 	if (blockInit) {
-		MemoryQueue.prototype.init = async function () {
+		target.prototype.init = async function () {
 			let resolve;
 			const p = new Promise((r) => { resolve = r; });
 			initCalls.push({ queue: this, resolve, p });
@@ -5205,7 +5207,7 @@ function withQueueLifecycleMock({ blockInit = false, blockDestroy = false } = {}
 		};
 	}
 	if (blockDestroy) {
-		MemoryQueue.prototype.destroy = async function () {
+		target.prototype.destroy = async function () {
 			// 已 destroyed 的 queue 走 fast path，避免重入（如 loop.finally 又 destroy 一次）
 			// 死锁——只首次销毁需要测试控制
 			if (this.destroyed) return await origDestroy.call(this);
@@ -5222,8 +5224,8 @@ function withQueueLifecycleMock({ blockInit = false, blockDestroy = false } = {}
 		releaseInitAt(idx) { initCalls[idx].resolve(); },
 		releaseDestroyAt(idx) { destroyCalls[idx].resolve(); },
 		restore() {
-			MemoryQueue.prototype.init = origInit;
-			MemoryQueue.prototype.destroy = origDestroy;
+			target.prototype.init = origInit;
+			target.prototype.destroy = origDestroy;
 		},
 	};
 }
@@ -5264,6 +5266,52 @@ test('WebRtcPeer: __setupDataChannel 在 q.init() 期间不挂 session 三件套
 	}
 
 	await peer.closeAll();
+});
+
+test('WebRtcPeer (FBQ 镜像): __setupDataChannel 在 FBQ.init() 期间不挂 session 三件套', async () => {
+	// FBQ 镜像用例：生产默认走 FBQ 装配（webrtc-peer.js:712），mem 路径上的 stale init
+	// 不变量同样要在 FBQ 路径成立。直接 patch FileBackedQueue.prototype，避免装配点
+	// 行为分叉时漏测。
+	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-fbq-init-'));
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+		queueDir: tmpDir,
+		rpcQueueImpl: 'fbq',
+	});
+	try {
+		await peer.handleSignaling(makeOffer('c_fbq_init'));
+
+		const m = withQueueLifecycleMock({ blockInit: true, target: FileBackedQueue });
+		try {
+			const dc = makeMockRpcDc();
+			PC.instances[0].ondatachannel({ channel: dc });
+			await flushAsync();
+
+			const session = peer.__sessions.get('c_fbq_init');
+			assert.equal(session.rpcChannel, dc);
+			assert.equal(session.rpcQueue, null, 'FBQ.init 完成前 rpcQueue 必须 null');
+			assert.equal(session.rpcDcSender, null, 'FBQ.init 完成前 rpcDcSender 必须 null');
+			assert.equal(session.rpcConsumeLoop, null, 'FBQ.init 完成前 rpcConsumeLoop 必须 null');
+			assert.equal(m.initCalls.length, 1, 'FBQ.init 必须被调用且尚未完成');
+			assert.ok(m.initCalls[0].queue instanceof FileBackedQueue, '装配点确实走 FBQ 路径');
+
+			m.releaseInitAt(0);
+			await flushAsync();
+			assert.ok(session.rpcQueue instanceof FileBackedQueue);
+			assert.ok(session.rpcDcSender);
+			assert.ok(session.rpcConsumeLoop);
+		} finally {
+			m.restore();
+		}
+
+		await peer.closeAll();
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
 });
 
 test('WebRtcPeer: q.init() 期间 closeByConnId → setup 走 stale 路径 destroy queue 不挂字段', async () => {
@@ -5452,21 +5500,73 @@ test('WebRtcPeer: 同 connId 重建走 await session.rpcQueue.destroy() → 旧 
 		const queue1 = session.rpcQueue;
 		assert.ok(queue1, 'baseline: queue1 已就位');
 
-		// 第二条 dc 触发"清理旧三件套"分支：sender1.close(sync) + await queue1.destroy()
+		// 第二条 dc 触发"清理旧三件套"分支：sync nullify 四字段 + await queue1.destroy()
 		const dc2 = makeMockRpcDc();
 		PC.instances[0].ondatachannel({ channel: dc2 });
 		await flushAsync();
 
-		// await destroy → setup2 卡住 → queue2 尚未构造 → session.rpcQueue 仍是 queue1
-		// 旧 fire-and-forget 实现下 setup2 已同步替换 session.rpcQueue 为 queue2，断言会失败
+		// await destroy → setup2 卡住 → queue2 尚未构造；race 闭合后 session.rpcQueue
+		// 在装配段开头被同步置 null（让 broadcast/sendTo 看不到旧 queue 误入消息），
+		// 直到 destroy 完成才赋新 queue。旧 fire-and-forget 实现下 session.rpcQueue 还是 queue1。
 		assert.equal(m.destroyCalls.length, 1, 'destroy mock 必须被调用一次');
-		assert.equal(session.rpcQueue, queue1, 'queue2 不应在旧 destroy 完成前构造');
+		assert.equal(session.rpcQueue, null, 'queue2 不应在旧 destroy 完成前赋字段；race 窗口里 rpcQueue 应为 null');
+		assert.equal(session.rpcDcSender, null, 'rpcDcSender 同步置 null');
+		assert.equal(session.rpcConsumeLoop, null, 'rpcConsumeLoop 同步置 null');
+		assert.equal(session.rpcDropMonitor, null, 'rpcDropMonitor 同步置 null');
 
 		// 释放 destroy → setup2 继续，构造 queue2 并赋字段
 		m.releaseDestroyAt(0);
 		await flushAsync();
 		assert.notEqual(session.rpcQueue, queue1, 'queue2 已替换 queue1');
 		assert.ok(session.rpcQueue, 'queue2 已就位');
+	} finally {
+		m.restore();
+	}
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 同 connId 重建期 broadcast/sendTo 不进入旧 queue（race 闭合）', async () => {
+	// race：sync ondatachannel 已切 rpcChannel 到新 dc（readyState='open'），但旧 rpcQueue
+	// 字段保留到 await destroy 完成。修前 broadcast / sendTo 在该窗口会塞进即将销毁的旧 queue
+	// → 消息丢失。修后 sync nullify 把字段先置 null，broadcast 跳过 / sendTo 返回 false。
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_rebuild_race'));
+
+	const m = withQueueLifecycleMock({ blockDestroy: true });
+	try {
+		const dc1 = makeMockRpcDc();
+		PC.instances[0].ondatachannel({ channel: dc1 });
+		await flushAsync();
+		const session = peer.__sessions.get('c_rebuild_race');
+		const queue1 = session.rpcQueue;
+		assert.ok(queue1, 'baseline: queue1 已就位');
+		const memCountBefore = queue1.stats().memCount;
+
+		// dc2 触发清理旧三件套分支；await destroy 卡住，setup2 挂起在 race 窗口里
+		const dc2 = makeMockRpcDc();
+		PC.instances[0].ondatachannel({ channel: dc2 });
+		await flushAsync();
+		assert.equal(m.destroyCalls.length, 1, 'destroy mock 已被调用且卡住');
+
+		// race 窗口：rpcChannel=dc2(open) + rpcQueue 应为 null（修后）
+		peer.broadcast({ type: 'event', event: 'race_msg' });
+		const ok = await peer.sendTo('c_rebuild_race', { type: 'event', event: 'race_msg2' });
+
+		assert.equal(ok, false, 'sendTo 在 race 窗口应返回 false（rpcQueue=null）');
+		assert.equal(queue1.stats().memCount, memCountBefore, '旧 queue 不应接收 race 窗口里的消息');
+
+		// 释放 destroy → setup2 继续；旧 queue 进 mutex 后 destroyed=true，新 queue 已就位
+		m.releaseDestroyAt(0);
+		await flushAsync();
+		assert.notEqual(session.rpcQueue, queue1, '新 queue 已替换');
+		assert.ok(session.rpcQueue, '新 queue 已就位');
 	} finally {
 		m.restore();
 	}

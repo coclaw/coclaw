@@ -29,7 +29,7 @@
  *   remoteLog:        rpc-queue.close           conn=X dropped=N droppedBytes=M
  *                                               residualChunks=K residualBytes=L
  *                                               residualDiskBytes=X residualWrittenBytes=Y
- *                                               fsBroken=bool lastReason=str
+ *                                               fsBroken=bool spillActive=bool lastReason=str
  *
  * spill-start / spill-end 是文件级状态翻转信号：边沿触发，FBQ 在 spilled false→true / true→false
  * 时通过 onSpillStart / onSpillEnd 钩子回调。与 disk-cap-start 是不同维度的事件——
@@ -165,14 +165,18 @@ export function createRpcDropMonitor({ connId, logger }) {
 		// 这里用 residualStats.fsBroken 兜住，让 close 日志反映队列真实降级状态，避免运维侧只能从内部 fsBroken 标量看到"没坏"的假象。
 		const residualFsBroken = residualStats?.fsBroken === true;
 		const effectiveFsBroken = fsBroken || residualFsBroken;
-		const hasAnomaly = overflowActive || effectiveFsBroken || dropCount > 0
+		// spillActive 也作为 anomaly 信号：destroy 时 spill 文件没 drain 完（onSpillEnd 没触发）
+		// 通常会让 residualWrittenBytes/residualDiskBytes>0 间接触发 close 日志，但显式纳入
+		// spillActive 避免日后 stats 路径漂移（如延迟清空）让"以 spill 状态结束"静默
+		const hasAnomaly = overflowActive || spillActive || effectiveFsBroken || dropCount > 0
 			|| residualChunks > 0 || residualDiskBytes > 0 || residualWrittenBytes > 0;
 		if (hasAnomaly) {
 			safeRemoteLog(
 				`rpc-queue.close conn=${connId} dropped=${dropCount} droppedBytes=${dropBytes}`
 				+ ` residualChunks=${residualChunks} residualBytes=${residualBytes}`
 				+ ` residualDiskBytes=${residualDiskBytes} residualWrittenBytes=${residualWrittenBytes}`
-				+ ` fsBroken=${effectiveFsBroken} lastReason=${lastReason ?? 'none'}`,
+				+ ` fsBroken=${effectiveFsBroken} spillActive=${spillActive}`
+				+ ` lastReason=${lastReason ?? 'none'}`,
 			);
 		}
 		overflowActive = false;
