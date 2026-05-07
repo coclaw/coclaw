@@ -7,7 +7,8 @@
  *
  * 设计要点：
  * - 工厂函数 + 闭包，不是 class（与项目其它工具模块一致）
- * - 5 个内部标量 + 1 个 idempotent flag 跟踪状态
+ * - 6 个内部状态标量（dropCount / dropBytes / overflowActive / spillActive / fsBroken / lastReason）
+ *   + 1 个 idempotent flag（summarized）跟踪状态
  * - logger / remoteLog 调用一律 try/catch 包裹，自身抛不传染调用方
  * - maybeEmitOverflowEnd 反抖动（候选 A）：仅当 memCount===0 && writtenBytes===0 才翻转
  *   B-stage1 阶段 writtenBytes 恒 0（MemoryQueue），等价 memCount===0
@@ -17,18 +18,26 @@
  * overflow-start 的 queueBytes token：现行取 memBytes，本模块取被拒消息 size，
  * 因为监视器不持队列深度——属可接受漂移）：
  *
- *   warn / remoteLog: rpc-queue.overflow-start conn=X queueBytes=N  (queue-full)
- *   warn / remoteLog: rpc-queue.disk-cap-start  conn=X size=N        (disk-cap)
- *   warn / remoteLog: rpc-queue.fs-broken       conn=X errno=X msg=  (fs-error，sticky)
- *   warn:             [rpc-queue conn=X] oversize size=N             (每条独立)
+ *   warn / remoteLog: rpc-queue.overflow-start conn=X queueBytes=N            (queue-full)
+ *   warn / remoteLog: rpc-queue.disk-cap-start  conn=X size=N memBytes=M
+ *                                               writtenBytes=W diskCap=D     (disk-cap)
+ *   warn / remoteLog: rpc-queue.fs-broken       conn=X errno=X msg=          (fs-error，sticky)
+ *   warn:             [rpc-queue conn=X] oversize size=N                     (每条独立)
  *   info / remoteLog: rpc-queue.overflow-end    conn=X dropped=N droppedBytes=M
+ *   info / remoteLog: rpc-queue.spill-start     conn=X                       (FBQ 文件创建)
+ *   info / remoteLog: rpc-queue.spill-end       conn=X drainedBytes=N        (FBQ 文件 drain 删除)
  *   remoteLog:        rpc-queue.close           conn=X dropped=N droppedBytes=M
  *                                               residualChunks=K residualBytes=L
  *                                               residualDiskBytes=X residualWrittenBytes=Y
  *                                               fsBroken=bool lastReason=str
  *
+ * spill-start / spill-end 是文件级状态翻转信号：边沿触发，FBQ 在 spilled false→true / true→false
+ * 时通过 onSpillStart / onSpillEnd 钩子回调。与 disk-cap-start 是不同维度的事件——
+ * disk-cap-start 表示 admission 拒收（队列总占用顶到阈值），spill-start 表示物理文件被创建。
+ * MemoryQueue 不调这两个钩子，纯内存路径下不会有 spill 信号。
+ *
  * close 日志含两组 disk token（residualDiskBytes/residualWrittenBytes）是为 FBQ 阶段
- * 诊断完整性预留——B-stage1 阶段它们恒 0；B-stage2 切到 FileBackedQueue 时承载磁盘残留信息。
+ * 诊断完整性预留——MemoryQueue 路径下它们恒 0；FBQ 路径下承载磁盘残留信息。
  */
 
 import { remoteLog } from '../remote-log.js';
@@ -38,16 +47,19 @@ import { remoteLog } from '../remote-log.js';
  * @param {string} opts.connId - 连接 ID，用于日志 conn=${connId} token
  * @param {{ warn?: Function, info?: Function, error?: Function }} opts.logger
  * @returns {{
- *   onDrop: (reason: string, size: number, err?: { code?: string, message?: string }) => void,
+ *   onDrop: (reason: string, size: number, err?: { code?: string, message?: string, memBytes?: number, writtenBytes?: number, diskCap?: number }) => void,
+ *   onSpillStart: () => void,
+ *   onSpillEnd: (drainedBytes: number) => void,
  *   maybeEmitOverflowEnd: (stats: { memCount: number, writtenBytes: number }) => void,
  *   summarize: (residualStats?: { memCount?: number, memBytes?: number, diskBytes?: number, writtenBytes?: number, fsBroken?: boolean }) => void,
- *   getStats: () => { dropCount: number, dropBytes: number, overflowActive: boolean, fsBroken: boolean, lastReason: string|null },
+ *   getStats: () => { dropCount: number, dropBytes: number, overflowActive: boolean, fsBroken: boolean, lastReason: string|null, spillActive: boolean },
  * }}
  */
 export function createRpcDropMonitor({ connId, logger }) {
 	let dropCount = 0;
 	let dropBytes = 0;
 	let overflowActive = false;
+	let spillActive = false; // 文件层翻转标志：FBQ 物理文件存在时 true，drain 删除时 false
 	let fsBroken = false; // sticky：一旦 true 不复位
 	let lastReason = null;
 	let summarized = false; // summarize 幂等 flag
@@ -86,8 +98,13 @@ export function createRpcDropMonitor({ connId, logger }) {
 		if (reason === 'disk-cap') {
 			if (!overflowActive) {
 				overflowActive = true;
-				safeWarn(`disk-cap-start size=${size}`);
-				safeRemoteLog(`rpc-queue.disk-cap-start conn=${connId} size=${size}`);
+				// 把 mem/written/cap 三个分量都带上：disk-cap 不是"文件满了"语义，
+				// 是 mem+writtenBytes 总占用顶到 diskCap 阈值，分量让运维能直接看到谁顶到 cap。
+				const memBytes = err?.memBytes ?? 0;
+				const writtenBytes = err?.writtenBytes ?? 0;
+				const diskCap = err?.diskCap ?? 0;
+				safeWarn(`disk-cap-start size=${size} memBytes=${memBytes} writtenBytes=${writtenBytes} diskCap=${diskCap}`);
+				safeRemoteLog(`rpc-queue.disk-cap-start conn=${connId} size=${size} memBytes=${memBytes} writtenBytes=${writtenBytes} diskCap=${diskCap}`);
 			}
 			return;
 		}
@@ -107,6 +124,23 @@ export function createRpcDropMonitor({ connId, logger }) {
 			return;
 		}
 		// 未知 reason：仅累加，无 log（防御性）
+	}
+
+	// 文件创建：FBQ spilled 翻转 false→true 时调一次。边沿触发，幂等（重复 active 不重 emit）。
+	function onSpillStart() {
+		if (spillActive) return;
+		spillActive = true;
+		safeInfo('spill-start');
+		safeRemoteLog(`rpc-queue.spill-start conn=${connId}`);
+	}
+
+	// 文件删除（drain 完成）：FBQ spilled 翻转 true→false 时调一次。drainedBytes = __dropFile 前的 writtenBytes。
+	// 故障删档（__handleFsError 内的 fs.rm）由 fs-broken 信号承载，不复用此钩子。
+	function onSpillEnd(drainedBytes) {
+		if (!spillActive) return;
+		spillActive = false;
+		safeInfo(`spill-end drainedBytes=${drainedBytes}`);
+		safeRemoteLog(`rpc-queue.spill-end conn=${connId} drainedBytes=${drainedBytes}`);
 	}
 
 	function maybeEmitOverflowEnd(stats) {
@@ -149,10 +183,11 @@ export function createRpcDropMonitor({ connId, logger }) {
 			dropCount,
 			dropBytes,
 			overflowActive,
+			spillActive,
 			fsBroken,
 			lastReason,
 		};
 	}
 
-	return { onDrop, maybeEmitOverflowEnd, summarize, getStats };
+	return { onDrop, onSpillStart, onSpillEnd, maybeEmitOverflowEnd, summarize, getStats };
 }

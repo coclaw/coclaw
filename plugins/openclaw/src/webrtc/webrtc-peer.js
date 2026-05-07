@@ -152,7 +152,7 @@ export class WebRtcPeer {
 		await Promise.all(closing);
 	}
 
-	/** 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 MemoryQueue + RpcDcSender 流控） */
+	/** 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 FBQ/MemoryQueue + RpcDcSender 流控） */
 	broadcast(payload) {
 		let jsonStr;
 		try {
@@ -716,10 +716,14 @@ export class WebRtcPeer {
 				id: `${connId}-${Date.now()}-${randomUUID().slice(0, 8)}`,
 				dir: this.__queueDir,
 				memBudget: RPC_QUEUE_MEM_BUDGET,
+				// diskCap 是 mem + 已写文件累计字节（writtenBytes）的总占用阈值，不是单纯文件 size
+				// 上限——因此文件实际峰值约为 diskCap - memBudget；详见 docs/rpc-dc-file-queue.md
 				diskCap: this.__getDiskCap?.() ?? ONE_GB,
 				maxMessageBytes: MAX_SINGLE_MSG_BYTES,
 				bypassAdmission: isAgentRunResponse,
 				onDrop: monitor.onDrop,
+				onSpillStart: monitor.onSpillStart,
+				onSpillEnd: monitor.onSpillEnd,
 				logger: this.logger,
 			})
 			: new MemoryQueue({

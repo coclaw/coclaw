@@ -1,0 +1,13 @@
+---
+'@coclaw/openclaw-coclaw': minor
+---
+
+Round out FBQ after the multi-end stress test and a follow-up deep-review:
+
+- Align admission decision style with `MemoryQueue` across all three positions (disk-cap admission, mem entry, refill stop condition): `current >= threshold` with single overshoot. The `ENTRY_OVERHEAD` constant is removed so neither implementation accounts for metadata overhead. This collapses the FBQ↔MemoryQueue semantic divergence to just "physical storage" + "fsBroken degraded path"; admission decisions are now identical.
+- Add `onSpillStart()` / `onSpillEnd(drainedBytes)` edge hooks on `FileBackedQueue`. The rpc drop monitor wires them through with edge-debounced local + remote logs and a `spillActive` flag in `getStats`. Field tests showed jsonl files appearing and draining without any log signal, leaving operators unable to distinguish "drain finished" from "fs-broken deleted it".
+- `onDrop('disk-cap', size, ...)` now passes `{ memBytes, writtenBytes, diskCap }` as the third arg; the monitor expands all three components in the `disk-cap-start` log. The `disk-cap` reason name was being misread as "the on-disk file is full" when its actual semantics is "mem + writtenBytes total occupancy hit threshold".
+- Stop the `fbq.drop` warn spam: `__dispatchDrop` no longer logs locally — diagnostics flow exclusively through the monitor (which already does edge-debounced state-machine logging), restoring the contract `MemoryQueue` established.
+- Enforce fsBroken precedence over disk-cap admission. A `!this.fsBroken` guard on the disk-cap check ensures non-bypass messages in the degraded mem-only mode drop with reason `fs-error` (carrying `lastFsErr`) instead of `disk-cap`, matching red-line 3 in `docs/rpc-dc-file-queue.md`. The previous behavior could mislead operators when persistent bypass overshoots pushed mem past the diskCap threshold.
+- `clear()` now mirrors `__dropFile()`: snapshot `wasSpilled` and `drainedBytes` before resetting state, then dispatch `onSpillEnd` if the queue was spilled. Without this, the monitor's `spillActive` flag would stay stuck after `clear()` and silently swallow the next real `spill-start` signal.
+- Tighten boundary tests: true single-overshoot first message (size > threshold), refill per-step stop condition pinned via `readOffset` progression, lazy bypass predicate exercised on a real spill path, logger-throw with `spillActive` state-flip assertion, partial `disk-cap` payload fallback, exhaustive monitor method count via `Object.keys.length`. Three dispatch-site tests pin that `__handleFsError` and `destroy` do NOT invoke `onSpillEnd` (those signals are covered by `fs-broken` and the close summary respectively).

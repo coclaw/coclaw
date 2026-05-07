@@ -20,9 +20,6 @@ import { createMutex } from './mutex.js';
 const DEFAULT_MEM_BUDGET = 8 * 1024 * 1024;
 const DEFAULT_DISK_CAP = 1024 * 1024 * 1024;
 
-// JS 对象开销估算（string header + array slot 等），仅用于 admission 决策不影响 memBytes 报告
-const ENTRY_OVERHEAD = 64;
-
 // id 字符集：UUID / 字母数字 / 点 / 下划线 / 减号，且不能是 "." 或 ".."
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 
@@ -34,10 +31,12 @@ class FileBackedQueue {
 	 * @param {object} opts
 	 * @param {string} opts.dir - 队列文件根目录
 	 * @param {string} opts.id - 队列标识，字符集受限，防路径穿越
-	 * @param {number} [opts.memBudget=8MB] - 内存持有字节数上限
-	 * @param {number} [opts.diskCap=1GB] - 磁盘+内存总字节数硬上限（含 `\n`）
+	 * @param {number} [opts.memBudget=8MB] - mem 桶阈值（按 current ≥ threshold 判定，允许 single overshoot）
+	 * @param {number} [opts.diskCap=1GB] - mem + 已写文件累计字节总占用阈值（含 `\n`）；按 current ≥ threshold + single overshoot；非文件 size 硬上限
 	 * @param {number} [opts.maxMessageBytes=Infinity] - 单条硬上限；超过即 drop（bypass 也不豁免）
-	 * @param {(reason: string, size: number, err?: Error) => void} [opts.onDrop] - 拒入队时的回调；'fs-error' 传底层 err，其它 reason 第三参为 undefined
+	 * @param {(reason: string, size: number, err?: Error|object) => void} [opts.onDrop] - 拒入队时的回调；'fs-error' 第三参传底层 err；'disk-cap' 第三参传 { memBytes, writtenBytes, diskCap } 分量；其它 reason 第三参为 undefined
+	 * @param {() => void} [opts.onSpillStart] - 文件创建（spilled false→true）回调，边沿触发
+	 * @param {(drainedBytes: number) => void} [opts.onSpillEnd] - 文件 drain 删除（spilled true→false）回调，边沿触发；故障删档不触发
 	 * @param {{ warn?: Function, info?: Function, error?: Function }} [opts.logger=console]
 	 * @param {(jsonStr: string) => boolean} [opts.bypassAdmission] - 白名单谓词，命中则容量层 admission 豁免（与 MemoryQueue 同义）
 	 */
@@ -49,6 +48,8 @@ class FileBackedQueue {
 			diskCap = DEFAULT_DISK_CAP,
 			maxMessageBytes = Infinity,
 			onDrop,
+			onSpillStart,
+			onSpillEnd,
 			logger = console,
 			bypassAdmission,
 		} = opts ?? {};
@@ -76,6 +77,8 @@ class FileBackedQueue {
 		this.diskCap = diskCap;
 		this.maxMessageBytes = maxMessageBytes;
 		this.onDrop = onDrop;
+		this.onSpillStart = onSpillStart;
+		this.onSpillEnd = onSpillEnd;
 		this.logger = logger;
 		// 非函数（含 undefined / null / 字符串等）一律收编为 null，保持向后兼容
 		this.bypassAdmission = typeof bypassAdmission === 'function' ? bypassAdmission : null;
@@ -157,21 +160,28 @@ class FileBackedQueue {
 			let isBypass; // undefined = 未求值；?= 后变 true / false 即缓存命中
 			const getIsBypass = () => isBypass ??= this.__isBypass(jsonStr);
 
-			// admission：按物理占用（mem + 已写文件总字节，含 \n）判定，保证 diskCap 是真正的硬上限。
-			// 用 writtenBytes（不减 readOffset）的含义：文件前缀已读但未被 __dropFile 回收前仍算占用。
-			// 代价：持续背压下消费者还没追到写端时新消息可能被 drop，直到完全 drain 触发 __dropFile 重置。
-			// bypassAdmission 命中时容量层豁免（与 MemoryQueue 一致）：白名单消息可越过 diskCap 入队，
-			// 实际占用可能短暂超 diskCap——这是红线 3 的明确预期。物理 IO 失败仍会按 fs-error drop。
-			if (this.memBytes + this.writtenBytes + size + 1 > this.diskCap && !getIsBypass()) {
-				this.__dispatchDrop('disk-cap', size);
+			// admission：与 MemoryQueue 一致——按 current ≥ threshold 判定，允许 single overshoot。
+			// diskCap 语义：mem + 已写文件累计字节（writtenBytes 不减 readOffset，文件前缀已读但未
+			// __dropFile 回收前仍计入）的总占用阈值；不是单纯文件 size 上限，所以文件实际峰值约为
+			// diskCap - memBudget。允许 single overshoot：当前总占用 < diskCap 时再大的一条都收，
+			// 下一条才会 drop——与 MemoryQueue 单条 overshoot 行为对齐，简化两实现的语义分叉。
+			// bypass 命中时容量层豁免（红线 3）：白名单消息越过 diskCap 入队，物理 IO 失败仍按 fs-error drop。
+			// fsBroken 守卫：粘性降级后 spill 永远不可用、writtenBytes 已重置为 0；mem 桶可能因
+			// 持续 bypass overshoot 推过 diskCap，但此时再来的非 bypass 消息根因是 fs 已坏（而非"容量"），
+			// 必须让下面的 fsBroken 短路赢、报 fs-error 带 lastFsErr，运维才能看到正确的诊断信号。
+			if (!this.fsBroken && this.memBytes + this.writtenBytes >= this.diskCap && !getIsBypass()) {
+				// 第三参传分量，让监视器在 disk-cap-start log 里把 mem / written / cap 都展开
+				this.__dispatchDrop('disk-cap', size, {
+					memBytes: this.memBytes,
+					writtenBytes: this.writtenBytes,
+					diskCap: this.diskCap,
+				});
 				return false;
 			}
 
-			// 内存路径：未溢出且 admission 通过（考虑 overhead；首条无论多大都收）
+			// 内存路径：与 MemoryQueue 一致——memBytes < memBudget 即接受（含 single overshoot）
 			if (!this.spilled) {
-				const pendingCount = this.memQueue.length - this.head;
-				const cost = this.memBytes + pendingCount * ENTRY_OVERHEAD + size + ENTRY_OVERHEAD;
-				const memFits = pendingCount === 0 || cost <= this.memBudget;
+				const memFits = this.memBytes < this.memBudget;
 				// fsBroken 降级模式：spill 不可用 → mem 桶就是事实上的容量层。
 				// 此时 bypass 命中允许 overshoot（与 MemoryQueue 镜像），保白名单消息不被误报 fs-error。
 				// 健康路径下 mem 满仍走 spill（不在此处豁免），避免 mem 无界增长违背 spill 设计目标。
@@ -208,6 +218,8 @@ class FileBackedQueue {
 					return false;
 				}
 				this.spilled = true;
+				// 文件层翻转 false→true：边沿信号，让监视器记录"开始用磁盘"
+				this.__dispatchSpillStart();
 			}
 
 			try {
@@ -249,6 +261,10 @@ class FileBackedQueue {
 	async clear() {
 		return await this.mutex.withLock(async () => {
 			if (this.destroyed) return;
+			// 与 __dropFile 对称：在重置 spilled 前抓快照，wasSpilled 时配对调 onSpillEnd，
+			// 让监视器 spillActive 复位；否则下一轮真实 spill-start 会被监视器幂等吞掉
+			const drainedBytes = this.writtenBytes;
+			const wasSpilled = this.spilled;
 			await this.__closeWriteStream();
 			try {
 				await fs.rm(this.filePath, { force: true });
@@ -265,6 +281,7 @@ class FileBackedQueue {
 			this.fsBroken = false;
 			this.writeErr = null;
 			this.lastFsErr = null;
+			if (wasSpilled) this.__dispatchSpillEnd(drainedBytes);
 		});
 	}
 
@@ -365,6 +382,7 @@ class FileBackedQueue {
 		for (const w of toWake) w.resolve();
 	}
 
+	// 与 MemoryQueue 一致：诊断职责完全交给注入的 onDrop（监视器做边沿去抖 + 状态翻转 log）
 	__dispatchDrop(reason, size, err) {
 		try {
 			this.onDrop?.(reason, size, err);
@@ -372,7 +390,22 @@ class FileBackedQueue {
 			/* c8 ignore next 2 -- onDrop throwing is caller's bug */
 			this.logger?.warn?.('fbq.onDrop threw', cbErr);
 		}
-		this.logger?.warn?.('fbq.drop', { reason, size, err: err?.message });
+	}
+
+	__dispatchSpillStart() {
+		try { this.onSpillStart?.(); }
+		catch (cbErr) {
+			/* c8 ignore next 2 -- onSpillStart throwing is caller's bug */
+			this.logger?.warn?.('fbq.onSpillStart threw', cbErr);
+		}
+	}
+
+	__dispatchSpillEnd(drainedBytes) {
+		try { this.onSpillEnd?.(drainedBytes); }
+		catch (cbErr) {
+			/* c8 ignore next 2 -- onSpillEnd throwing is caller's bug */
+			this.logger?.warn?.('fbq.onSpillEnd threw', cbErr);
+		}
 	}
 
 	__isBypass(jsonStr) {
@@ -487,8 +520,7 @@ class FileBackedQueue {
 		let cumPayload = 0;   // 仅 payload
 		let stoppedAtEof = true;
 
-		const pendingCount = this.memQueue.length - this.head;
-		const baseCost = this.memBytes + pendingCount * ENTRY_OVERHEAD;
+		const baseBytes = this.memBytes;
 
 		const stream = createReadStream(this.filePath, {
 			start: this.readOffset,
@@ -499,9 +531,9 @@ class FileBackedQueue {
 		try {
 			for await (const line of rl) {
 				const sz = Buffer.byteLength(line, 'utf8');
-				// overhead 一致性：admission 侧已用 overhead，refill 侧同步考虑
-				const newLinesCost = newLines.length * ENTRY_OVERHEAD;
-				if (newLines.length > 0 && baseCost + cumPayload + newLinesCost + sz + ENTRY_OVERHEAD > this.memBudget) {
+				// 与 admission 一致（current ≥ threshold）：当前 mem 总字节 ≥ memBudget 时停止，
+				// 允许首条 single overshoot；后续若仍超阈值再停。
+				if (newLines.length > 0 && baseBytes + cumPayload >= this.memBudget) {
 					stoppedAtEof = false;
 					break;
 				}
@@ -548,6 +580,9 @@ class FileBackedQueue {
 	}
 
 	async __dropFile() {
+		// 抓 drainedBytes 在重置前——让监视器拿到"删除时这文件累计写入了多少字节"
+		const drainedBytes = this.writtenBytes;
+		const wasSpilled = this.spilled;
 		await this.__closeWriteStream();
 		try {
 			await fs.rm(this.filePath, { force: true });
@@ -559,6 +594,9 @@ class FileBackedQueue {
 		this.writtenBytes = 0;
 		this.readOffset = 0;
 		this.writeErr = null;
+		// 文件层翻转 true→false：仅 drain 路径调 spill-end；故障删档（__handleFsError）/
+		// 清理离场（destroy）不调，由 fs-broken / close 信号各自承载，避免语义混淆
+		if (wasSpilled) this.__dispatchSpillEnd(drainedBytes);
 	}
 }
 

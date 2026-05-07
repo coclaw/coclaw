@@ -225,11 +225,42 @@ test('enqueue empty string works', async () => {
 
 // --- spill + refill ---
 
+test('first message can overshoot memBudget (single overshoot semantics)', async () => {
+	// 红线：admission 按 current ≥ threshold + single overshoot——首条入队前 memBytes=0 < memBudget，
+	// size>memBudget 的首条也必须接受；下一条才看阈值。回归到 size>memBudget 拒接的实现会被这条抓住。
+	const dir = await makeTmpDir();
+	const q = await makeQ({ dir, id: 'overshoot-mem', memBudget: 2 });
+	assert.equal(await q.enqueue('xxx'), true, 'first message size>memBudget must be accepted');
+	assert.equal(q.stats().memBytes, 3);
+	assert.equal(q.stats().spilled, false);
+	// 下一条: mb=3≥2 → 必须走 spill, 不再进 mem
+	assert.equal(await q.enqueue('y'), true);
+	assert.equal(q.stats().spilled, true);
+	await q.destroy();
+});
+
+test('first message can overshoot diskCap (single overshoot semantics)', async () => {
+	// diskCap 同款 single overshoot：首条 size 即使大于 diskCap 也接受（mb+wb=0<阈值）。
+	const dir = await makeTmpDir();
+	const drops = [];
+	const q = await makeQ({
+		dir, id: 'overshoot-disk',
+		memBudget: 100, diskCap: 2,
+		onDrop: (reason, size) => drops.push({ reason, size }),
+	});
+	assert.equal(await q.enqueue('xxx'), true, 'first message size>diskCap must be accepted (mb=0<2)');
+	// 下一条: mb(3)+wb(0)=3≥2 → drop disk-cap
+	assert.equal(await q.enqueue('y'), false);
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'disk-cap');
+	await q.destroy();
+});
+
 test('enqueue spills to disk when memBudget exceeded', async () => {
 	const dir = await makeTmpDir();
-	const q = await makeQ({ dir, id: 'spill', memBudget: 3 });
-	assert.equal(await q.enqueue('aa'), true); // 首条无论多大都入 mem（safety valve）
-	assert.equal(await q.enqueue('bb'), true); // 2+2+overhead 超 budget → spill
+	const q = await makeQ({ dir, id: 'spill', memBudget: 2 });
+	assert.equal(await q.enqueue('aa'), true); // mb=0<2 → mem (single overshoot)，mb=2
+	assert.equal(await q.enqueue('bb'), true); // mb=2≥2 → memFits=false → spill
 	const s = q.stats();
 	assert.equal(s.spilled, true);
 	assert.equal(s.memCount, 1);
@@ -260,20 +291,102 @@ test('FIFO preserved across spill and refill, file removed on drain', async () =
 	await q.destroy();
 });
 
-test('refill respects memBudget (partial fill, stays spilled)', async () => {
+test('refill respects memBudget (partial fill, stays spilled, per-step stop)', async () => {
+	// 每条 33 字节 payload；memBudget=33 让首条 single overshoot 进 mem，其余 spill。
+	// refill 反向量控（current ≥ memBudget 停）使每次 refill 仅取 1 条到 mem，分批回填。
+	// per-step 断言（readOffset 单调推进 34→68→102）pin 住"每次仅取 1 条"——
+	// 一个 eager-fill 的实现（refill 一次性灌全部 3 条）会保持 FIFO 但破坏内存控制，
+	// 仅断言最终 FIFO 抓不到该回归。
 	const dir = await makeTmpDir();
-	// 用较大 budget 精细控制：每条 32 字节 payload，overhead 64 → 每条"成本" 96
-	// budget 200 能装 2 条（96*2=192 ≤ 200），第三条 96*3=288 > 200 → 需要分批
 	const payload = 'x'.repeat(32);
-	const q = await makeQ({ dir, id: 'partial', memBudget: 200 });
+	const q = await makeQ({ dir, id: 'partial', memBudget: 33 });
 	for (let i = 0; i < 4; i++) assert.equal(await q.enqueue(payload + i), true);
 	assert.equal(q.stats().spilled, true);
+	assert.equal(q.writtenBytes, 102, 'wb = 3 × (32 + 1)');
+	assert.equal(q.readOffset, 0);
 
 	const iter = q[Symbol.asyncIterator]();
-	const out = [];
-	for (let i = 0; i < 4; i++) out.push((await iter.next()).value);
-	assert.deepEqual(out, [payload + 0, payload + 1, payload + 2, payload + 3]);
+	// next #1：从 mem 取首条；尚未触发 refill
+	assert.equal((await iter.next()).value, payload + '0');
+	assert.equal(q.readOffset, 0, 'no refill yet (mem 还有过去的内容)');
+	// next #2：mem 空 → refill 取 1 条（current ≥ 33 即停）→ shift
+	assert.equal((await iter.next()).value, payload + '1');
+	assert.equal(q.readOffset, 34, 'refill 单次仅取 1 条 (single overshoot stop)');
+	// next #3：再 refill 1 条
+	assert.equal((await iter.next()).value, payload + '2');
+	assert.equal(q.readOffset, 68);
+	// next #4：refill 取最后 1 条 + 触发 __dropFile 重置
+	assert.equal((await iter.next()).value, payload + '3');
 	assert.equal(q.stats().spilled, false);
+	assert.equal(q.writtenBytes, 0, '__dropFile 重置 writtenBytes');
+	await q.destroy();
+});
+
+// --- spill 边沿钩子（FBQ→monitor 联通）---
+
+test('spill hooks: onSpillStart fires once at false→true; onSpillEnd at drain with drainedBytes', async () => {
+	// 边沿契约：FBQ 内部翻转 spilled false→true 时调一次 onSpillStart；
+	// drain 完成（__dropFile 真删文件）时调一次 onSpillEnd 带 drainedBytes（重置前快照）。
+	// 多个 spill 周期（drain 后再 spill）应再次触发 start/end，幂等只在监视器内部去重。
+	const dir = await makeTmpDir();
+	const calls = [];
+	const q = await makeQ({
+		dir, id: 'spill-hook-edge',
+		memBudget: 1, diskCap: 1024,
+		onSpillStart: () => calls.push('start'),
+		onSpillEnd: (n) => calls.push(`end:${n}`),
+	});
+	// 第一个 spill 周期
+	assert.equal(await q.enqueue('a'), true);  // mem (single overshoot, mb=1)
+	assert.equal(await q.enqueue('b'), true);  // spill 触发 start
+	assert.equal(await q.enqueue('c'), true);  // 仍 spilled，append 不再触发 start
+	assert.deepEqual(calls, ['start']);
+	// drain 全部 → 触发 end with drainedBytes='b\n'+'c\n'=4
+	const iter = q[Symbol.asyncIterator]();
+	const out = [];
+	for (let i = 0; i < 3; i++) out.push((await iter.next()).value);
+	assert.deepEqual(out, ['a', 'b', 'c']);
+	assert.equal(q.stats().spilled, false);
+	assert.deepEqual(calls, ['start', 'end:4']);
+	// 第二个 spill 周期：再次触发 start
+	assert.equal(await q.enqueue('d'), true);  // mem
+	assert.equal(await q.enqueue('e'), true);  // spill 第二次 start
+	assert.deepEqual(calls, ['start', 'end:4', 'start']);
+	await q.destroy();
+});
+
+test('spill hooks: destroy does NOT dispatch onSpillEnd', async () => {
+	// destroy 是清理离场路径，由 close 汇总信号承载，不应再调 onSpillEnd 让监视器误以为 drain 完成。
+	const dir = await makeTmpDir();
+	const calls = [];
+	const q = await makeQ({
+		dir, id: 'spill-destroy-no-end',
+		memBudget: 1, diskCap: 1024,
+		onSpillEnd: (n) => calls.push(n),
+	});
+	assert.equal(await q.enqueue('a'), true);
+	assert.equal(await q.enqueue('b'), true);  // spill
+	assert.equal(q.stats().spilled, true);
+	await q.destroy();
+	assert.deepEqual(calls, [], 'destroy must not invoke onSpillEnd (close summary covers it)');
+});
+
+test('spill hooks: __handleFsError does NOT dispatch onSpillEnd', async () => {
+	// 故障删档（write callback err 触发 __handleFsError）由 fs-broken 信号承载，不应混入 spill-end。
+	const dir = await makeTmpDir();
+	const calls = [];
+	const q = await makeQ({
+		dir, id: 'spill-fsbroken-no-end',
+		memBudget: 1, diskCap: 1024,
+		onSpillEnd: (n) => calls.push(n),
+	});
+	assert.equal(await q.enqueue('a'), true); // mem
+	assert.equal(await q.enqueue('b'), true); // spill
+	// monkey-patch write 让 callback err，复制 __handleFsError 触发路径
+	q.writeStream.write = (chunk, cb) => cb(new Error('synthetic write fail'));
+	assert.equal(await q.enqueue('c'), false);
+	assert.equal(q.stats().fsBroken, true);
+	assert.deepEqual(calls, [], '__handleFsError must not invoke onSpillEnd');
 	await q.destroy();
 });
 
@@ -282,23 +395,24 @@ test('refill respects memBudget (partial fill, stays spilled)', async () => {
 test('enqueue rejected when exceeding diskCap; onDrop receives disk-cap', async () => {
 	const dir = await makeTmpDir();
 	const drops = [];
-	// memBudget=2 让 'bb' 溢出；diskCap=5（2+3='bb\n'）塞满后再入一条就触顶
-	// memBytes=2 + writtenBytes=3 + new.size+1(=2) = 7 > 5 → drop
+	// admission 风格：current ≥ threshold（与 MemoryQueue 一致），允许 single overshoot。
+	// memBudget=2: 'aa' 进 mem (mb=0<2 OK 落地为 overshoot)，'bb' mem 满走 spill (wb=3)；
+	// diskCap=5: 'c' admission mb(2)+wb(3) = 5 ≥ 5 → drop
 	const q = await makeQ({
 		dir, id: 'cap',
 		memBudget: 2, diskCap: 5,
 		onDrop: (reason, size) => drops.push({ reason, size }),
 	});
-	assert.equal(await q.enqueue('aa'), true); // mem (first item)
+	assert.equal(await q.enqueue('aa'), true); // mem (single overshoot)
 	assert.equal(await q.enqueue('bb'), true); // spill, disk 3 bytes (含 \n)
-	assert.equal(await q.enqueue('c'), false); // 2+3+2 > 5 → drop
+	assert.equal(await q.enqueue('c'), false); // mb(2)+wb(3)=5 ≥ 5 → drop
 	assert.deepEqual(drops, [{ reason: 'disk-cap', size: 1 }]);
 	await q.destroy();
 });
 
-test('diskCap caps physical file size, not just backlog; recovers after full drain', async () => {
+test('diskCap caps total occupancy (mem+writtenBytes), not just backlog; recovers after full drain', async () => {
 	// 关键回归：producer/consumer 持续交错、readOffset 追不上 writtenBytes 时，
-	// 物理文件仍然不会无界增长；admission 基于 writtenBytes 保证 diskCap 是硬上限。
+	// 物理文件仍然不会无界增长；admission 基于 mem+writtenBytes 总占用保证 diskCap 是阈值（允许 single overshoot）。
 	const dir = await makeTmpDir();
 	const drops = [];
 	const q = await makeQ({
@@ -307,10 +421,10 @@ test('diskCap caps physical file size, not just backlog; recovers after full dra
 		onDrop: (reason, size) => drops.push({ reason, size }),
 	});
 
-	// enqueue 5 条 'a'：第 1 条进 mem（safety valve），后 4 条 spill，每条含 \n=2 字节
-	// 入队后 memBytes=1, writtenBytes=8
-	for (let i = 0; i < 5; i++) assert.equal(await q.enqueue('a'), true);
-	// 下一条 admission：1 + 8 + 1 + 1 = 11 > 10 → drop
+	// enqueue 6 条 'a'：第 1 条进 mem（mb=0<1 → overshoot, mb=1），后 5 条 spill（每条含 \n=2 字节）
+	// 入队后 memBytes=1, writtenBytes=10
+	for (let i = 0; i < 6; i++) assert.equal(await q.enqueue('a'), true);
+	// 第 7 条 admission：mb(1)+wb(10) = 11 ≥ 10 → drop
 	assert.equal(await q.enqueue('a'), false);
 	assert.equal(drops.length, 1);
 
@@ -318,12 +432,10 @@ test('diskCap caps physical file size, not just backlog; recovers after full dra
 	const iter = q[Symbol.asyncIterator]();
 	assert.equal((await iter.next()).value, 'a');
 
-	// 消费者继续读：refill 把 1 条从 disk 取到 mem，然后 shift。writtenBytes 仍不变（未触发 __dropFile）
+	// 消费者继续读：refill 把 1 条从 disk 取到 mem (single overshoot)，然后 shift。writtenBytes 仍不变（未触发 __dropFile）
 	assert.equal((await iter.next()).value, 'a');
 
-	// 此刻 memBytes 接近 0、writtenBytes 仍 8（还没 drain 完）；admission：0+8+1+1=10 不>10 → accept
-	// 这恰好卡在上限；再塞一条会变 0+10+1+1=12 > 10
-	assert.equal(await q.enqueue('a'), true);
+	// 此刻 memBytes 接近 0、writtenBytes 仍 10；admission：0+10 ≥ 10 → drop
 	assert.equal(await q.enqueue('a'), false);
 	assert.equal(drops.length, 2);
 
@@ -368,9 +480,11 @@ test('onDrop that throws does not break enqueue', async () => {
 		memBudget: 2, diskCap: 1,
 		onDrop: () => { throw new Error('onDrop bug'); },
 	});
-	// 'a' admission: mem+disk+size+1 = 0+0+1+1 = 2 > diskCap(1) → drop；onDrop 抛错被 catch
-	assert.equal(await q.enqueue('a'), false);
+	// 'a' admission: 0+0=0<1 → 进 mem (single overshoot)，mb=1
+	assert.equal(await q.enqueue('a'), true);
+	// 'b' admission: mb(1)+wb(0)=1 ≥ 1 → drop disk-cap；onDrop 抛错被 catch 不传染 enqueue 契约
 	assert.equal(await q.enqueue('b'), false);
+	assert.equal(await q.enqueue('c'), false);
 	await q.destroy();
 });
 
@@ -467,7 +581,7 @@ test('bypass admission: over-cap message is consumable end-to-end (no buried-in-
 	await q.destroy();
 });
 
-test('bypass admission: predicate is lazy — uncongested path does not invoke the predicate', async () => {
+test('bypass admission: predicate is lazy — uncongested mem path does not invoke the predicate', async () => {
 	const dir = await makeTmpDir();
 	let calls = 0;
 	const q = await makeQ({
@@ -475,11 +589,30 @@ test('bypass admission: predicate is lazy — uncongested path does not invoke t
 		memBudget: 100, diskCap: 1000, // 容量充裕：admission 不超 + fsBroken=false → 两条求值路径都被左短路
 		bypassAdmission: () => { calls += 1; return true; },
 	});
-	// 多条入队即使触发 spill（每条带 64B overhead），admission 与 overshoot 谓词位置都被左短路 → 不应求值
+	// 全在 mem 路径（5×2B=10B 远不触发 spill），admission 与 fsBroken-overshoot 谓词位置都被左短路
 	for (let i = 0; i < 5; i++) {
 		assert.equal(await q.enqueue(`m${i}`), true);
 	}
+	assert.equal(q.stats().spilled, false, 'this case stays in mem');
 	assert.equal(calls, 0, '容量充裕路径下谓词不应被求值');
+	await q.destroy();
+});
+
+test('bypass admission: predicate is lazy — healthy spill path does not invoke the predicate', async () => {
+	// 健康路径下 mem 满转 spill 不需要查 bypass 谓词（写盘 OK 即接受）；
+	// 谓词仅在 admission 命中（disk-cap 拒收）或 fsBroken-overshoot（mem 桶接管容量层）才被求值。
+	const dir = await makeTmpDir();
+	let calls = 0;
+	const q = await makeQ({
+		dir, id: 'bypass-lazy-spill',
+		memBudget: 1, diskCap: 1000, // mem 极小但 disk 充裕：每条都触发 spill 但 admission 不顶
+		bypassAdmission: () => { calls += 1; return true; },
+	});
+	for (let i = 0; i < 4; i++) {
+		assert.equal(await q.enqueue(`x${i}`), true);
+	}
+	assert.equal(q.stats().spilled, true, 'this case truly exercises the spill path');
+	assert.equal(calls, 0, 'spill 路径下谓词不应被求值');
 	await q.destroy();
 });
 
@@ -498,6 +631,32 @@ test('bypass admission: predicate cached per enqueue — admission hit invokes o
 	// 第三条：admission 命中（diskCap 超）+ bypass → 谓词调一次
 	assert.equal(await q.enqueue('c'), true);
 	assert.equal(calls, 1, 'admission 命中路径下谓词应仅调用一次');
+	await q.destroy();
+});
+
+test('bypass admission: fsBroken short-circuits disk-cap admission without invoking the predicate', async () => {
+	// A1 修复后的 lazy 契约：fsBroken=true 时 disk-cap admission 守卫让 :172 整体短路，
+	// bypass 谓词在该位置不被调用（仅 :194 mem-overshoot 路径会调）。
+	// 这条 pin 当前行为；日后若改回"让 bypass 在 fsBroken 模式下也参与 disk-cap 决策"会触红。
+	const dir = await makeTmpDir();
+	let calls = 0;
+	const q = await makeQ({
+		dir, id: 'bypass-fsbroken-no-eval',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: () => { calls += 1; return true; },
+	});
+	q.fsBroken = true;
+	// 'aa' size=2 首条 single overshoot 进 mem (memFits=true，不调谓词)，calls=0
+	// 'bb' size=2 mem 满 + fsBroken + bypass → bypassOvershoot，调谓词 1 次，calls=1
+	// 'cc' size=2 同上，calls=2；此后 mb(6) >= diskCap(5)
+	assert.equal(await q.enqueue('aa'), true);
+	assert.equal(await q.enqueue('bb'), true);
+	assert.equal(await q.enqueue('cc'), true);
+	assert.equal(calls, 2);
+	// 'dd' admission 命中（mb+wb=6 >= 5）但 fsBroken=true → :172 短路不调谓词；
+	// 仅 :194 overshoot 路径调谓词一次（不再像 fsBroken=false 时被 admission 多调一次）
+	assert.equal(await q.enqueue('dd'), true);
+	assert.equal(calls, 3, 'admission 命中但 fsBroken 守卫赢 → 谓词仅在 overshoot 路径调用一次');
 	await q.destroy();
 });
 
@@ -567,15 +726,48 @@ test('bypass admission overshoots memBudget under fsBroken (degraded mem-only mo
 		onDrop: (reason, size) => drops.push({ reason, size }),
 	});
 	q.fsBroken = true; // 人为粘性，模拟降级模式
-	assert.equal(await q.enqueue('aa'), true); // mem 首条 safety valve
-	// 第二条会让 cost 超 memBudget；fsBroken=true → 当前实现 fall through 到短路 drop fs-error
-	// 修复后：bypass 命中应 overshoot 入队，不丢、不调 onDrop
+	assert.equal(await q.enqueue('aa'), true); // mem 首条 single overshoot
+	// 第二条 cost 超 memBudget；fsBroken=true + bypass 命中 → bypassOvershoot 路径入 mem，不丢、不调 onDrop
 	assert.equal(await q.enqueue('bb'), true, 'bypass should overshoot mem budget under fsBroken');
 	assert.deepEqual(drops, [], 'bypass-overshoot should not invoke onDrop');
 	// 两条都应能消费出来
 	const iter = q[Symbol.asyncIterator]();
 	assert.equal((await iter.next()).value, 'aa');
 	assert.equal((await iter.next()).value, 'bb');
+	await q.destroy();
+});
+
+test('fsBroken short-circuit beats disk-cap admission for non-bypass (drops as fs-error, not disk-cap)', async () => {
+	// 红线 3 边界：fsBroken 粘性后 spill 永远不可用；持续 bypass overshoot 把 mem 推过 diskCap
+	// 阈值后，非 bypass 消息进来，admission 不应抢先报 disk-cap（该 reason 让运维误以为是容量问题，
+	// 掩盖 fs 已坏的根因）。预期：drop reason='fs-error' 并带 lastFsErr。
+	const dir = await makeTmpDir();
+	const drops = [];
+	let bypassFlag = true;
+	const q = await makeQ({
+		dir, id: 'fsb-disk-cap-precedence',
+		memBudget: 2, diskCap: 5,
+		bypassAdmission: () => bypassFlag,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+	});
+	const fakeErr = new Error('synthetic fs failure');
+	fakeErr.code = 'ENOSPC';
+	q.fsBroken = true;
+	q.lastFsErr = fakeErr;
+	// 通过 bypass overshoot 把 mem 推到 ≥ diskCap
+	// 'aa' 首条 single overshoot: mb(0)<2 → mem, mb=2
+	// 'bb' bypass overshoot: !memFits(2≥2) && fsBroken && bypass → mem, mb=4
+	// 'cc' bypass overshoot: 同上, mb=6（≥ diskCap=5）
+	assert.equal(await q.enqueue('aa'), true);
+	assert.equal(await q.enqueue('bb'), true);
+	assert.equal(await q.enqueue('cc'), true);
+	assert.deepEqual(drops, [], 'bypass overshoots should not drop');
+	// 现在 mem 已超 diskCap；非 bypass 消息进来：fsBroken 短路必须赢
+	bypassFlag = false;
+	assert.equal(await q.enqueue('dd'), false);
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'fs-error', 'non-bypass under fsBroken must drop as fs-error, not disk-cap');
+	assert.equal(drops[0].err, fakeErr, 'fs-error drop carries lastFsErr');
 	await q.destroy();
 });
 
@@ -844,6 +1036,44 @@ test('clear after destroy is a no-op', async () => {
 	const q = await makeQ({ dir: await makeTmpDir(), id: 'clr3' });
 	await q.destroy();
 	await q.clear(); // should not throw
+});
+
+test('clear dispatches onSpillEnd when wasSpilled (monitor spillActive resync)', async () => {
+	// 与 __dropFile 对称：clear() 让 spilled 翻 true→false 时也应调 onSpillEnd，
+	// 否则监视器的 spillActive 永久卡住，下一轮真实 spill-start 被吞。
+	const dir = await makeTmpDir();
+	const calls = [];
+	const q = await makeQ({
+		dir, id: 'clear-spill-end',
+		memBudget: 1, diskCap: 1024,
+		onSpillStart: () => calls.push({ kind: 'start' }),
+		onSpillEnd: (drainedBytes) => calls.push({ kind: 'end', drainedBytes }),
+	});
+	assert.equal(await q.enqueue('a'), true);  // mem (single overshoot, mb=1)
+	assert.equal(await q.enqueue('b'), true);  // spill (wb=2)
+	assert.equal(q.stats().spilled, true);
+	await q.clear();
+	assert.equal(q.stats().spilled, false);
+	assert.deepEqual(calls, [
+		{ kind: 'start' },
+		{ kind: 'end', drainedBytes: 2 },
+	]);
+	await q.destroy();
+});
+
+test('clear does NOT dispatch onSpillEnd when not spilled', async () => {
+	const dir = await makeTmpDir();
+	const calls = [];
+	const q = await makeQ({
+		dir, id: 'clear-no-spill',
+		memBudget: 100, diskCap: 1024,
+		onSpillEnd: (drainedBytes) => calls.push({ drainedBytes }),
+	});
+	assert.equal(await q.enqueue('a'), true); // 全在 mem
+	assert.equal(q.stats().spilled, false);
+	await q.clear();
+	assert.deepEqual(calls, [], 'clear with no spill should not dispatch onSpillEnd');
+	await q.destroy();
 });
 
 // --- partial tail (defensive) ---
@@ -1187,20 +1417,36 @@ test('fs-error drop carries simulated err (write cb error path)', async () => {
 	await q.destroy();
 });
 
-test('non-fs-error drops do not carry err on onDrop third arg', async () => {
+test('oversize drop does not carry err on onDrop third arg', async () => {
 	const dir = await makeTmpDir();
 	const drops = [];
 	const q = await makeQ({
-		dir, id: 'cap-noerr',
+		dir, id: 'oversize-noerr',
+		memBudget: 100, diskCap: 1000, maxMessageBytes: 1,
+		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
+	});
+	await q.enqueue('aa'); // size=2 > maxMessageBytes(1) → oversize drop
+	assert.equal(drops.length, 1);
+	assert.equal(drops[0].reason, 'oversize');
+	assert.equal(drops[0].err, undefined);
+	await q.destroy();
+});
+
+test('disk-cap drop carries memBytes/writtenBytes/diskCap components on onDrop third arg', async () => {
+	const dir = await makeTmpDir();
+	const drops = [];
+	// 监视器侧 disk-cap-start log 用这三个分量替换原"size only"——区分"队列总占用顶到阈值"vs"文件满"
+	const q = await makeQ({
+		dir, id: 'cap-components',
 		memBudget: 2, diskCap: 5,
 		onDrop: (reason, size, err) => drops.push({ reason, size, err }),
 	});
-	await q.enqueue('aa');
-	await q.enqueue('bb');
-	await q.enqueue('c'); // disk-cap drop
+	await q.enqueue('aa'); // mem (overshoot)
+	await q.enqueue('bb'); // spill, wb=3
+	await q.enqueue('c'); // mb(2)+wb(3)=5 ≥ 5 → drop
 	assert.equal(drops.length, 1);
 	assert.equal(drops[0].reason, 'disk-cap');
-	assert.equal(drops[0].err, undefined);
+	assert.deepEqual(drops[0].err, { memBytes: 2, writtenBytes: 3, diskCap: 5 });
 	await q.destroy();
 });
 

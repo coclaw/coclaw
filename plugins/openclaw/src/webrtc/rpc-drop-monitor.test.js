@@ -31,21 +31,26 @@ function makeMonitor(opts = {}) {
 
 // --- 工厂返回的 API 形态 ---
 
-test('createRpcDropMonitor: 返回 4 个方法', () => {
+test('createRpcDropMonitor: 精确返回 6 个方法（pin 数量，防 API 加项时漏改测试）', () => {
 	const { monitor } = makeMonitor();
+	const keys = Object.keys(monitor);
+	assert.equal(keys.length, 6, `expected exactly 6 methods, got ${keys.length}: ${keys.join(',')}`);
 	assert.equal(typeof monitor.onDrop, 'function');
+	assert.equal(typeof monitor.onSpillStart, 'function');
+	assert.equal(typeof monitor.onSpillEnd, 'function');
 	assert.equal(typeof monitor.maybeEmitOverflowEnd, 'function');
 	assert.equal(typeof monitor.summarize, 'function');
 	assert.equal(typeof monitor.getStats, 'function');
 });
 
-test('getStats 初始: dropCount=0, dropBytes=0, overflowActive=false, fsBroken=false, lastReason=null', () => {
+test('getStats 初始: dropCount=0, dropBytes=0, overflowActive=false, spillActive=false, fsBroken=false, lastReason=null', () => {
 	const { monitor } = makeMonitor();
 	const s = monitor.getStats();
 	assert.deepEqual(s, {
 		dropCount: 0,
 		dropBytes: 0,
 		overflowActive: false,
+		spillActive: false,
 		fsBroken: false,
 		lastReason: null,
 	});
@@ -513,4 +518,98 @@ test('logger 缺 warn / info: onDrop / maybeEmitOverflowEnd 不抛', () => {
 	assert.doesNotThrow(() => monitor.onDrop('oversize', 200));
 	assert.doesNotThrow(() => monitor.onDrop('fs-error', 300, { code: 'ENOSPC' }));
 	assert.doesNotThrow(() => monitor.maybeEmitOverflowEnd({ memCount: 0, memBytes: 0, writtenBytes: 0 }));
+	assert.doesNotThrow(() => monitor.onSpillStart());
+	assert.doesNotThrow(() => monitor.onSpillEnd(1024));
+});
+
+// --- onSpillStart / onSpillEnd ---
+
+test('onSpillStart: 边沿触发，info + remoteLog 各发一次；重复调用幂等', () => {
+	const { monitor, logger } = makeMonitor();
+	monitor.onSpillStart();
+	monitor.onSpillStart(); // 幂等：已 active 时跳过
+	const startInfos = logger.infos.filter(m => m.includes('spill-start'));
+	assert.equal(startInfos.length, 1);
+	assert.match(startInfos[0], /\[rpc-queue conn=C1\] spill-start/);
+	const startRemote = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.spill-start'));
+	assert.equal(startRemote.length, 1);
+	assert.equal(startRemote[0].text, 'rpc-queue.spill-start conn=C1');
+	assert.equal(monitor.getStats().spillActive, true);
+});
+
+test('onSpillEnd: 边沿触发，drainedBytes 出现在 info + remoteLog；未 active 时静默', () => {
+	const { monitor, logger } = makeMonitor();
+	monitor.onSpillEnd(1234); // 未 active：no-op
+	assert.equal(logger.infos.filter(m => m.includes('spill-end')).length, 0);
+	assert.equal(remoteLogBuffer.filter(e => e.text.includes('spill-end')).length, 0);
+
+	monitor.onSpillStart();
+	monitor.onSpillEnd(2048);
+	monitor.onSpillEnd(9999); // 幂等：已非 active
+	const endInfos = logger.infos.filter(m => m.includes('spill-end'));
+	assert.equal(endInfos.length, 1);
+	assert.match(endInfos[0], /spill-end drainedBytes=2048/);
+	const endRemote = remoteLogBuffer.filter(e => e.text.includes('rpc-queue.spill-end'));
+	assert.equal(endRemote.length, 1);
+	assert.equal(endRemote[0].text, 'rpc-queue.spill-end conn=C1 drainedBytes=2048');
+	assert.equal(monitor.getStats().spillActive, false);
+});
+
+test('onSpillStart / onSpillEnd 多轮翻转：每对边沿都 emit', () => {
+	const { monitor, logger } = makeMonitor();
+	monitor.onSpillStart();
+	monitor.onSpillEnd(100);
+	monitor.onSpillStart();
+	monitor.onSpillEnd(200);
+	const startCount = logger.infos.filter(m => m.includes('spill-start')).length;
+	const endCount = logger.infos.filter(m => m.includes('spill-end')).length;
+	assert.equal(startCount, 2);
+	assert.equal(endCount, 2);
+	const ends = logger.infos.filter(m => m.includes('spill-end'));
+	assert.match(ends[0], /drainedBytes=100/);
+	assert.match(ends[1], /drainedBytes=200/);
+});
+
+test('logger.info 抛: onSpillStart / onSpillEnd 不传染，状态仍正确翻转', () => {
+	// 紧化断言：仅"不抛"会被 no-op handler 同等满足；这里要求 spillActive 在 throw 后仍正确翻转，
+	// 防止"日志失败也连带状态机失败"的回归。
+	const throwingLogger = {
+		warn() {},
+		info() { throw new Error('logger info bug'); },
+		error() {},
+	};
+	const { monitor } = makeMonitor({ logger: throwingLogger });
+	assert.doesNotThrow(() => monitor.onSpillStart());
+	assert.equal(monitor.getStats().spillActive, true, 'spillActive 应该翻转，即使 logger 抛错');
+	assert.doesNotThrow(() => monitor.onSpillEnd(500));
+	assert.equal(monitor.getStats().spillActive, false, 'spillActive 应该复位，即使 logger 抛错');
+});
+
+// --- disk-cap-start 分量展开 ---
+
+test('onDrop disk-cap: 第三参带 memBytes/writtenBytes/diskCap 时展开到 log', () => {
+	const { monitor, logger } = makeMonitor();
+	monitor.onDrop('disk-cap', 100, { memBytes: 50, writtenBytes: 200, diskCap: 256 });
+	const startWarn = logger.warnings.find(m => m.includes('disk-cap-start'));
+	assert.match(startWarn, /size=100 memBytes=50 writtenBytes=200 diskCap=256/);
+	const startRemote = remoteLogBuffer.find(e => e.text.includes('rpc-queue.disk-cap-start'));
+	assert.equal(
+		startRemote.text,
+		'rpc-queue.disk-cap-start conn=C1 size=100 memBytes=50 writtenBytes=200 diskCap=256',
+	);
+});
+
+test('onDrop disk-cap: 第三参缺失时分量降为 0（向后兼容）', () => {
+	const { monitor, logger } = makeMonitor();
+	monitor.onDrop('disk-cap', 50); // 未传第三参（FBQ 早期版本兼容路径）
+	const startWarn = logger.warnings.find(m => m.includes('disk-cap-start'));
+	assert.match(startWarn, /size=50 memBytes=0 writtenBytes=0 diskCap=0/);
+});
+
+test('onDrop disk-cap: 第三参部分字段缺失时仅缺失分量降为 0', () => {
+	// 单独 pin 每个 ?? 0 fallback：仅 memBytes 提供时 writtenBytes / diskCap 各自降为 0、不污染已提供字段
+	const { monitor, logger } = makeMonitor();
+	monitor.onDrop('disk-cap', 50, { memBytes: 77 });
+	const startWarn = logger.warnings.find(m => m.includes('disk-cap-start'));
+	assert.match(startWarn, /size=50 memBytes=77 writtenBytes=0 diskCap=0/);
 });
