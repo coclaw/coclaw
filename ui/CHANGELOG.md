@@ -1,5 +1,58 @@
 # @coclaw/ui
 
+## 0.22.0
+
+### Minor Changes
+
+- ecf1281: feat(ui): add context menu to agent items in MainList
+
+  Each agent row in the MainList sidebar now exposes a right-side "…" button (hover-reveal on desktop, always-visible on touch devices) that opens a popover with two entries:
+
+  - **Chat** — navigates to the agent's main chat (equivalent to clicking the row itself).
+  - **Files** — opens the file manager for that agent (a third entry alongside the existing entries on the chat page header and `/claws`).
+
+  Style and interaction model mirror the existing `TopicItemActions` so both lists share one visual language. The menu stays available regardless of claw online/offline state — downstream pages (`ChatPage`, `FileManagerPage`) already handle their own connectivity fallbacks.
+
+- d8fe91a: ChatPage: add visual indicator for touch pull-to-load-history.
+
+  Before this change, the touch pull-down gesture for loading older history was
+  working but completely silent — no on-screen feedback while pulling. This adds
+  a small circular overlay indicator (mobile-only) that follows the finger,
+  fades in as the pull approaches the 60px threshold, switches to a refresh
+  icon past the threshold, and spins while the gesture-triggered load is in
+  flight. The visual is gated to gesture-triggered loads only — non-gesture
+  load paths (auto-fill, scroll-to-top, wheel) intentionally do not light it
+  up.
+
+  The trigger logic, race-hardening guards in the history loader, watcher
+  state cleanup on chat switch, and scrollTop restoration are all unchanged.
+
+### Patch Changes
+
+- bc13c96: fix(ui): notify on accepted-then-failed agent run
+
+  When the configured OpenClaw model is unavailable (e.g. `FailoverError`), the upstream `agent` RPC is accepted then fails with `ok=false + payload.status='error'`. The UI was treating "accepted" as success and dropping the error message, leaving the user with a silent failure (no toast, no input restore).
+
+  Pipe the original error all the way to a user-facing toast:
+
+  - `agent-runs.store.js` — surface `__endError` for the failed run; `__onRpcDone` recognizes business-level `status='error'` (and `'timeout'` when not cancelled) so a stray `ok=true + status='error'` won't be silently swallowed; `__onRpcFailed` ends a cancelled run with `'rpc'` (not `'failed'`) so user-cancel + transport reject doesn't fire a false-positive error toast.
+  - `chat.store.js` — `sendMessage` now returns `{ accepted, endReason, errorMessage }`; `sendSlashCommand` rejects immediately on `status='error' || 'timeout'` instead of waiting up to 24h for the slash timeout.
+  - `ChatPage.vue` — when `endReason ∈ {'failed','rpc-timeout'}` show a toast with the original first-line error truncated to 200 chars.
+  - i18n × 12 — adds `chat.errRunFailed`.
+  - A new `endReason='rpc-timeout'` keeps the 24h memory-fallback `'timeout'` distinct from upstream business-level timeout.
+
+- c2a3e46: fix(ui): silence error toast when user cancels and upstream returns status='error'
+
+  `__onRpcDone` in `agent-runs.store.js` previously gated only `status='timeout'` on `!run.cancelled` but not `status='error'`. When a user cancelled an in-flight run and the upstream happened to return `status='error'` (e.g., plugin internal exception racing with cancel), the run was wrongly ended with `'failed'` and produced a false-positive error toast. Aligns the cancellation guard symmetrically across both error and timeout business statuses — both now silently end with `'rpc'` when cancelled.
+
+- a94cd7c: perf(ui): split vitest test environment per file to skip jsdom for pure-logic suites
+
+  Annotate 32 pure-logic test files (utils / validators / services / stores / composables that don't touch the DOM) with `// @vitest-environment node` so they skip jsdom initialization. Cumulative jsdom environment startup across workers drops from ~53s to ~30s, and `pnpm test` wall-clock drops by ~5s.
+
+  Side fix in `src/utils/platform.js`: replace bare top-level `window` reads with a `globalThis` fallback so the module can be imported in non-browser environments (test workers running under the node environment) without crashing. Production builds run under a browser where `window === globalThis`, so the runtime behavior is identical — this is purely a non-browser-import compatibility patch.
+
+  Also harden `vitest.setup.js`'s `localStorage` / `sessionStorage` cleanup with `typeof` guards so the shared setup doesn't throw under the node environment.
+
 ## 0.21.3
 
 ### Patch Changes
