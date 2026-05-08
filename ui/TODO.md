@@ -463,3 +463,48 @@
     - 现状：`ChatPage.vue:651` `__notifyRunFailed` 弹 `chat.errRunFailed`（"Agent run failed"），不带 chat / topic 名称。用户在 chat A 上 send 后切到 chat B，sendMessage 落地弹的 toast 看起来像 chat B 的失败
     - 影响：UX 困惑，用户难定位失败来源；尤其多 chat / 多 topic 并发使用场景
     - 修复方向：toast description 前缀加 chat / topic 名称（如 `[Topic 标题] FailoverError: ...`）；或 toast 加 "Open" 按钮跳回 source chat。属 i18n + UX 改造，需统一其它失败 toast（如 `__sendErrorMessage`）一起规划
+
+## agent run 终态后 streamingMsgs 接管策略缺陷（X4 课题，2026-05-08）
+
+**发现日期**：2026-05-08
+**关联会话**：`tmp/agent-run-fail-notify-deep-review--clear-dump.md`
+**关联 fix（止血）**：X1 修法 — `loadMessages` 成功路径加 ended-run dropRun 兜底（解决占位永久残留 / "思考中"赖着不走的现象）
+
+来源：RTC 真断 → "思考中"占位卡死 bug 的修法定位过程。X1 止血方案落地后 UI 行为已正常（占位最终会被 server 持久化版本接管，状态变"已思考 X 秒"），但 X1 本身吃一个**根本性的时序赌博**，需作为单独课题彻底修。
+
+### 问题本质
+
+`run.streamingMsgs` 当前是 partial reply 的"前台显示载体"——`dropRun` 一调，UI 上的内容立刻消失。X1 / register 抢占 / codex 候选 2（直接 dropRun）都共享这个特性：**让位给 server 持久化版本**。
+
+如果 server 这边还**没**把这次 run 的内容落到 sessions（典型场景：RTC 真断时 plugin 那边 run 仍在跑、还没 lifecycle:end → 没机会做 final flush；或 plugin 那边的 sessions 持久化对 partial 内容根本不会保存），那么 `dropRun` 就是单方面把内容**清空**——partial reply 消失，"已思考 X 秒"也无从体现。
+
+X1 已经把窗口缩到最小（至少等 reload 成功），但没消除这个赌博。
+
+### 触发场景（X1 落地后仍存在）
+
+- RTC 真断后 PC 重建成功 → `loadMessages` 拉到 server 数据（**不含**这次 run 的 partial reply，因为 plugin 没机会落库）→ X1 dropRun 老占位 → 屏幕上 partial reply 消失
+- `loadMessages` 期间用户发新消息 → `register` 走"新 run 抢占老 run"路径 → `__cleanupRun` 清掉老 streamingMsgs → 同样依赖 plugin 是否已落库才能保住 partial reply
+
+### 修复方向（X4）
+
+把"占位"和"成品"分两层：
+
+- run 终态那一刻**不**直接删 streamingMsgs，而是把 `_streaming=true` 翻成"已冻结"标记 → UI 立刻显示成"已思考 X 秒 + 已收到的内容"，按钮消失（`isRunning` 仍翻 false）→ 用户感知"完成了，内容定格在这里"
+- 等 `loadMessages` 成功 **且** server 数据里**含**这条 run 的产物（按 `anchorMsgId` / 时序匹配）→ 才用 server 版本替换冻结版本，平滑过渡
+- 如果 server 始终不收录（plugin 端因 RTC 真断没机会落库）→ 冻结版本永远留在屏幕上，partial reply **绝不丢**
+
+### 影响面
+
+X4 触及面比 X1 广，需要重新评估：
+- `streamingMsgs` 的语义（从"流式占位"扩展为"流式占位 + 终态冻结快照"）
+- `allMessages` 的 merge 规则（冻结快照如何与 server 持久化版本去重 / 替换）
+- "何时算被 server 接管成功可以丢冻结版本"的精确判定（依赖 `anchorMsgId`、可能还需要 plugin 侧给 run 的产物加显式 marker）
+- `register` 的"新 run 抢占老 run"路径是否需要保留冻结版本（理论上应该保留——抢占不该丢老 run 的内容）
+
+实施前需派 codex-rescue 做副作用评估。
+
+### 暂缓理由
+
+- X1 止血已让"思考中赖着不走"这个最显眼的现象消失，UX 主问题解决
+- partial reply 丢失的概率取决于 plugin 持久化时序，实际线上发生频率待观察
+- 改面较大、需协调 plugin 侧 anchor 协议，作为独立课题排期更合适

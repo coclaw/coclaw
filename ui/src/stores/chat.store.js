@@ -346,6 +346,22 @@ export function createChatStore(storeKey, opts = {}) {
 							}
 						}
 
+						// 兜底清孤儿占位：覆盖 RTC 真断后 __awaitPersistAndDrop 链上
+						// fast-fail（getReadyConn null）+ PC 重建后 connReady watcher 触发
+						// 的 silent reload 不传 hook 这条路径——run.ended=true 但 dropRun
+						// 没人调，streamingMsgs 永久 orphan。__cleanupRun 已删 entry 时
+						// dropRun 内 runKeyIndex 早返回，重复调安全（idempotent）。
+						// 用 expectedRunId 防误清：loadMessages 期间用户发新消息 register
+						// 抢占老 run，新 run.ended=false → if 不成立；万一极端竞态命中，
+						// dropRun 内 runId !== expectedRunId 二次校验也会拦下。
+						// partial reply 让位风险（plugin 未落库时 dropRun 直接清空内容）
+						// 见 TODO.md "X4 课题"，此为单独课题处理。
+						const runsStore = useAgentRunsStore();
+						const orphanRun = runsStore.getActiveRun(this.runKey);
+						if (orphanRun?.ended) {
+							runsStore.dropRun(this.runKey, orphanRun.runId);
+						}
+
 						// 获取当前 sessionId（仅用于历史上翻定位）。这是辅助性 RPC，
 						// DC 抖动等非致命错误下失败时保留 currentSessionId 旧值即可，
 						// 不影响 ok 返回。
@@ -472,6 +488,14 @@ export function createChatStore(storeKey, opts = {}) {
 
 					// 重连后 reconcile
 					this.__reconcileRunAfterLoad(this.messages);
+
+					// 兜底清孤儿占位（同主分支 loadMessages，topic 模式下 hook 不触发，
+					// 全靠这条兜底覆盖 RTC 真断后 ended run 的 streamingMsgs 释放）。
+					const runsStore = useAgentRunsStore();
+					const orphanRun = runsStore.getActiveRun(this.runKey);
+					if (orphanRun?.ended) {
+						runsStore.dropRun(this.runKey, orphanRun.runId);
+					}
 
 					return true;
 				}

@@ -81,6 +81,7 @@ import ChatPage from './ChatPage.vue';
 import { chatStoreManager } from '../stores/chat-store-manager.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { useAgentsStore } from '../stores/agents.store.js';
+import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 
 /** 获取 ChatPage 内部使用的 store 实例（与组件使用同一个 manager） */
 function getChatStore(clawId = 'bot-1', agentId = 'main') {
@@ -715,6 +716,160 @@ describe('ChatPage send message', () => {
 			title: 'Agent run failed',
 			description: undefined,
 		});
+	});
+
+	/**
+	 * 共用 setup：模拟 accepted run 期间 RTC 真断的终态。
+	 *   1. accepted 瞬间 register 一条 run，带流式占位（_streaming=true）
+	 *   2. RPC reject 触发 __onRpcFailed → __endError='rtc failed' → __endRun('failed')
+	 *   3. dropRun **不被调用**（成因：__awaitPersistAndDrop 的 silent loadMessages 在 DC 刚断时
+	 *      拿不到东西，兜底没调 dropRun → streamingMsgs 永久 orphan，见 chat.store.js:1626-1631）
+	 *   4. sendMessage promise resolve `{accepted:true, endReason:'failed', errorMessage:'rtc failed'}`
+	 */
+	function setupRtcBrokenAcceptedRun() {
+		const wrapper = createWrapper();
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		setupAgents();
+		const chatStore = getChatStore();
+		const agentRunsStore = useAgentRunsStore();
+
+		vi.spyOn(chatStore, 'sendMessage').mockImplementation(async () => {
+			const runId = 'red-run-1';
+			const optimisticClaw = {
+				type: 'message',
+				id: '__local_claw_red',
+				_local: true,
+				_pending: true,
+				_streaming: true,
+				_startTime: Date.now(),
+				message: { role: 'assistant', content: '', stopReason: null },
+			};
+			agentRunsStore.register(runId, {
+				clawId: 'bot-1',
+				runKey: chatStore.runKey,
+				topicMode: false,
+				conn: { request: vi.fn() },
+				streamingMsgs: [optimisticClaw],
+				anchorMsgId: null,
+			});
+			agentRunsStore.runs[runId].__endError = 'rtc failed';
+			agentRunsStore.__endRun(runId, 'failed');
+			return { accepted: true, endReason: 'failed', errorMessage: 'rtc failed' };
+		});
+		return { wrapper, chatStore, agentRunsStore };
+	}
+
+	// 健康现状 lock：accepted run RTC 真断后，失败 toast 必须弹 + "终止"按钮必须消失。
+	// 这两条当前已成立（toast 由 bc13c96 暴露的设计意图，sending=false 由 run.ended=true 推出）。
+	// 单独 lock 是为了不被下面 [red] 测试的 `.fails` 包络吞掉。
+	test('accepted run RTC 真断：失败 toast 弹出 + 终止按钮消失（健康现状）', async () => {
+		const { wrapper } = setupRtcBrokenAcceptedRun();
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		expect(mockNotify.error).toHaveBeenCalledWith({
+			title: 'Agent run failed',
+			description: 'rtc failed',
+		});
+		// isSending 翻 false → ChatInput 收到 sending=false → 终止按钮消失
+		expect(input.props('sending')).toBe(false);
+	});
+
+	// [red] sendMessage 直接 mock 路径下，"思考中"占位赖着不走的现象。
+	// 此红测**不会**被 X1 修法变绿——因为它 mock sendMessage 后根本没走 loadMessages
+	// 链路（X1 兜底点在 loadMessages 成功路径里）。它锁的是 streamingMsgs 当前作为
+	// "前台显示载体"的根本设计——在 plugin 未及时持久化的极端场景下 partial reply
+	// 让位失败 → 占位丢内容。这正是 TODO.md "X4 课题" 处理的方向。
+	// X4 落地后此测试应变绿，届时摘掉 .fails 升级为常规 test。
+	test.fails('[red] accepted run RTC 真断后 streamingMsgs 占位应被释放（X4 课题，X1 不修复）', async () => {
+		const { wrapper, chatStore } = setupRtcBrokenAcceptedRun();
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		const orphan = chatStore.allMessages.find((m) => m._streaming === true);
+		expect(orphan).toBeUndefined();
+	});
+
+	// 钉死 stripLocalUserMsgs 自身行为：对 ended run 早返回，既不动 streaming claw 占位
+	// 也不调 dropRun。**X1 修法不动这条函数语义**——X1 加的是 loadMessages 成功路径上
+	// 的兜底，与 stripLocalUserMsgs 互不影响。本测试是对 stripLocalUserMsgs 函数行为的约束
+	// （防止未来误改），不是对"自然恢复机制"的论断（X1 落地后自然恢复机制已存在）。
+	test('stripLocalUserMsgs 对 ended run 早返回：既不清 streaming claw 占位也不调 dropRun', async () => {
+		const { wrapper, chatStore, agentRunsStore } = setupRtcBrokenAcceptedRun();
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		const before = chatStore.allMessages.find((m) => m._streaming === true);
+		expect(before).toBeDefined();
+
+		const dropSpy = vi.spyOn(agentRunsStore, 'dropRun');
+
+		const fakeServerMsgs = [
+			{ type: 'message', id: 'srv-1', message: { role: 'user', content: 'hi', timestamp: Date.now() } },
+			{ type: 'message', id: 'srv-2', message: { role: 'assistant', content: 'partial reply', timestamp: Date.now() } },
+		];
+		agentRunsStore.stripLocalUserMsgs(chatStore.runKey, fakeServerMsgs);
+
+		const after = chatStore.allMessages.find((m) => m._streaming === true);
+		expect(after).toBeDefined();
+		expect(dropSpy).not.toHaveBeenCalled();
+	});
+
+	// X1 修法路径覆盖：ended 但未 drop 的孤儿 run，下次成功 loadMessages 时被释放。
+	// 模拟"sendMessage 那一刻 fast-fail（DC 刚断）→ PC 重建后 connReady watcher
+	// 触发 silent reload 成功"的事实链：connReady 翻 true 让 ChatPage 触发 loadMessages，
+	// 内部走 sessions.get 成功 → reconcile → X1 兜底 dropRun → 占位释放。
+	test('X1 兜底：ended orphan run 在下次 loadMessages 成功后被释放', async () => {
+		const { wrapper, chatStore, agentRunsStore } = setupRtcBrokenAcceptedRun();
+		await flushPromises();
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		// 前置：占位此刻仍在（X1 还没机会跑）
+		const before = chatStore.allMessages.find((m) => m._streaming === true);
+		expect(before).toBeDefined();
+		const runKey = chatStore.runKey;
+		expect(agentRunsStore.getActiveRun(runKey)).toBeTruthy();
+
+		// 模拟 PC 重建后 silent reload 成功路径：直接调 loadMessages，
+		// stub 内部 sessions.get / chat.history 让 doLoad 走通。runKey 与 chatSessionKey
+		// 在测试 setup 下分别是 'bot-1::agent:main:main' 与 'agent:main:main'。
+		const sessionsGetResult = {
+			messages: [
+				{ id: 'srv-u-1', role: 'user', content: 'hi', timestamp: Date.now() },
+				{ id: 'srv-a-1', role: 'assistant', content: 'partial reply', timestamp: Date.now() },
+			],
+		};
+		const chatHistoryResult = { sessionId: 'sess-1' };
+		const fakeConn = {
+			request: vi.fn().mockImplementation((method) => {
+				if (method === 'sessions.get') return Promise.resolve(sessionsGetResult);
+				if (method === 'chat.history') return Promise.resolve(chatHistoryResult);
+				return Promise.reject(new Error(`unexpected RPC ${method}`));
+			}),
+		};
+		const getReadyConnMod = await import('../stores/get-ready-conn.js');
+		vi.spyOn(getReadyConnMod, 'getReadyConn').mockReturnValue(fakeConn);
+
+		const ok = await chatStore.loadMessages({ silent: true, force: true });
+		expect(ok).toBe(true);
+
+		// 钉死：X1 触发 dropRun → entry 已删 → 占位释放
+		expect(agentRunsStore.getActiveRun(runKey)).toBeNull();
+		const after = chatStore.allMessages.find((m) => m._streaming === true);
+		expect(after).toBeUndefined();
 	});
 
 	// 锁住全局 toast 设计 contract：用户切走 / unmount 后 sendMessage 落地仍弹失败 toast，
