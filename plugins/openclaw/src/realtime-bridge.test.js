@@ -4735,6 +4735,37 @@ test('dc unicast: GATEWAY_SEND_FAILED clears mapping then broadcasts', async () 
 	}
 });
 
+test('dc unicast: stop() 显式清空 P2P pending table（与 __runEventRoutes 同契约）', async () => {
+	// 对称契约：内线 ws close 不再清表（4738 已覆盖），但显式销毁路径（stop / refresh）
+	// 必须把表清干净，避免 refresh 后留下指向旧 connId 的孤儿条目。
+	// 与 5115 test('run-event-routes: __closeGatewayWs() 不再清路由表；stop() 才清') 对称。
+	const { bridge, prevHome } = await setupBridgeWithGateway('c_dcstop');
+	try {
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-stop-1', method: 'sessions.list', params: {} },
+			'c_dcstop'
+		);
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-stop-2', method: 'sessions.list', params: {} },
+			'c_dcstop'
+		);
+		assert.equal(bridge.__dcPendingRequests.size, 2);
+
+		bridge.__closeGatewayWs();
+		assert.equal(bridge.__dcPendingRequests.size, 2,
+			'__closeGatewayWs 不再清 P2P pending（解耦后由 TTL / stop 兜底）');
+
+		await bridge.stop();
+		assert.equal(bridge.__dcPendingRequests.size, 0,
+			'stop() 必须显式清表，避免 refresh 后孤儿条目');
+	} finally {
+		restoreHomedir(prevHome);
+	}
+});
+
 test('dc unicast: gateway ws close 不再清空 P2P pending table（三线独立）', async () => {
 	// 新契约：内线翻转不再级联清 P2P 路由表，避免 DC RPC 在内线瞬态抖动时被误清；
 	// 已发出去的请求等 UI 30/60s 超时兜底；条目最终由 24h TTL 扫描器或显式 stop() 回收。
