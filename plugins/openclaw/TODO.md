@@ -918,3 +918,20 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 - 装配段 try/catch 包整段创建逻辑，catch 里 fallback 到 MemoryQueue（与 startup prep timeout 降级路径对齐），并 `logger.warn?.(...)` 记录
 - 或者 catch 里保持四字段 null（已是该状态），但加 warn log 让运维侧看到"新 dc 装配失败"
 - 推荐前者——保住 dc 可用性比"无 queue 静默"更对齐用户预期
+
+## __pushInstanceInfo 失败回 agentModels=null 会清空 admin 仪表盘的 agent 列表
+
+**发现日期**：2026-05-09（Round 2 step 2 deep-review 由 general-purpose subagent surface）
+
+**锚点**：
+- `plugins/openclaw/src/realtime-bridge.js:523-541` `__pushInstanceInfo` 主体
+- `plugins/openclaw/src/realtime-bridge.js:547-563` `__collectAgentModels` 失败回 `null`
+- `plugins/openclaw/docs/plugin-events.md` 关于 `coclaw.info.updated` 字段 patch 语义的描述
+
+**问题**：`__pushInstanceInfo` 调 `__collectAgentModels` 失败时 payload 显式带 `agentModels: null` 推到 server。按 patch 语义出现的字段会更新（含 null），server / admin 据此覆写——也就是 admin 上 agent 列表会被 null 清空一次。`agents.list` 撞 3s timeout 或 gateway 高负载时就可能触发。
+
+**当前不致命**：内线恢复后下一次 push 会用真实数据再覆盖回来，但 admin UI 短暂闪烁。step 2 让外线 reconnect 也补推一次，触发面比 step 1 之前略大但不显著。
+
+**修复方向**：`__collectAgentModels` 失败时 omit `agentModels` 字段（不要传 null），按 patch 语义保留旧值；或 server 端对 `agentModels === null` 单独不覆盖。
+
+**预存问题**：step 2 之前 connect-ok 那次推送也一样会触发，本次未顺手修。

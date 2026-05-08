@@ -4135,6 +4135,116 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 	}
 });
 
+// step 2 — 推送拆两路：外线 open 时若内线已就绪也补推一次 instance info
+test('RealtimeBridge sock.open should re-push instance info when gateway already ready (inner-then-outer)', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+
+	try {
+		await restartRealtimeBridge({
+			logger: noopLogger(),
+			pluginConfig: {},
+			__deps: {
+				WebSocket: FakeWebSocket,
+				resolveGatewayAuthToken: () => '',
+				preloadPion: noopPreloadPion,
+				preloadNdc: noopPreloadNdc,
+				gatewayReadyTimeoutMs: 50,
+			},
+		});
+		const server = FakeWebSocket.instances[0];
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		// 关键：外线 server 不 open（保持 readyState=0），先让内线握手成功
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		// 消化第一轮 agents.list（内线 connect-ok 触发的 __pushInstanceInfo），
+		// 此时 broadcastPluginEvent 在 server 路径会因 server.readyState=0 直接 drop。
+		await drainEnsureAllAgentSessions(gateway);
+
+		const earlyEvents = server.sent
+			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
+			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
+		assert.equal(earlyEvents.length, 0, 'server 未 open 时第一次 push 应被 __forwardToServer drop');
+
+		// 现在外线 open：sock.open 看到 gatewayReady=true，应主动补推一次
+		server.readyState = 1;
+		server.emit('open', {});
+
+		// 补推会再发一轮 agents.list（__collectAgentModels），消化它
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		await drainEnsureAllAgentSessions(gateway);
+
+		const lateEvents = server.sent
+			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
+			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
+		assert.ok(lateEvents.length >= 1, 'server open 后应观察到补推的 coclaw.info.updated');
+		const payload = lateEvents[lateEvents.length - 1].payload;
+		assert.ok('name' in payload && 'hostName' in payload && 'pluginVersion' in payload && 'agentModels' in payload);
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true });
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		restoreHomedir(prevHome);
+	}
+});
+
+// step 2 — 反向门控：外线 open 但内线未就绪时不触发 push（避免发不全的 info）
+test('RealtimeBridge sock.open should NOT push instance info when gateway not ready', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+
+	try {
+		await restartRealtimeBridge({
+			logger: noopLogger(),
+			pluginConfig: {},
+			__deps: {
+				WebSocket: FakeWebSocket,
+				resolveGatewayAuthToken: () => '',
+				preloadPion: noopPreloadPion,
+				preloadNdc: noopPreloadNdc,
+				gatewayReadyTimeoutMs: 50,
+			},
+		});
+		const server = FakeWebSocket.instances[0];
+		// 内线不 open（gatewayReady 保持 false），仅 open 外线
+		server.readyState = 1;
+		server.emit('open', {});
+
+		// 等若干 microtask + 一段实际时间（50ms），确保 sock.open handler 即便夹杂 await
+		// 也已完整跑完——否则反向断言可能误判（"还没跑到"被当成"没跑"）。
+		for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+		await new Promise((r) => setTimeout(r, 50));
+
+		const events = server.sent
+			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
+			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
+		assert.equal(events.length, 0, 'gatewayReady=false 时 sock.open 不应触发 __pushInstanceInfo');
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true });
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		restoreHomedir(prevHome);
+	}
+});
+
 // --- agent run lag 探针 ---
 
 test('lag probe: __startLagProbe registers entry and logs lag.start', () => {

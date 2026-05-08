@@ -1264,6 +1264,14 @@ export class RealtimeBridge {
 			this.__startServerHeartbeat(sock);
 			// 不再在外线 open 时触发内线建连：内线由 start() 主动启动并自带重试。
 			// 此处仅做外线就绪相关的工作，保持外/内/P2P 三条线各自独立。
+			// 但若内线已就绪：补推一次 instance info——三线独立后，内线可能先于外线就绪，
+			// 内线 connect-ok 时那次 broadcastPluginEvent 因外线未就绪在 server 路径会 drop，
+			// 需外线 open 时再推一次让 server / admin 仪表盘看到本插件信息。
+			// 门控 gatewayReady：__pushInstanceInfo 内 agentModels 走 agents.list RPC 依赖内线，
+			// 内线没就绪发出去字段缺失会污染 admin 显示。
+			if (this.gatewayReady) {
+				this.__pushInstanceInfo();
+			}
 		});
 
 		sock.addEventListener('message', async (event) => {
