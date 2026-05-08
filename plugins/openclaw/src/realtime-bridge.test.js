@@ -4136,6 +4136,7 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 });
 
 // step 2 — 推送拆两路：外线 open 时若内线已就绪也补推一次 instance info
+// 用 prototype spy 直接计 __pushInstanceInfo 调用次数，从根上规避"等不够时长导致假通过"。
 test('RealtimeBridge sock.open should re-push instance info when gateway already ready (inner-then-outer)', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevHome = saveHomedir();
@@ -4145,6 +4146,13 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+
+	const origPush = RealtimeBridge.prototype.__pushInstanceInfo;
+	let pushCalls = 0;
+	RealtimeBridge.prototype.__pushInstanceInfo = function patchedPush() {
+		pushCalls++;
+		return origPush.call(this);
+	};
 
 	try {
 		await restartRealtimeBridge({
@@ -4171,6 +4179,7 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 		// 此时 broadcastPluginEvent 在 server 路径会因 server.readyState=0 直接 drop。
 		await drainEnsureAllAgentSessions(gateway);
 
+		assert.equal(pushCalls, 1, '内线 connect-ok 应触发一次 __pushInstanceInfo');
 		const earlyEvents = server.sent
 			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
 			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
@@ -4184,15 +4193,21 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 		await drainEnsureAllAgentSessions(gateway);
 
+		assert.equal(pushCalls, 2, '外线 open 看到 gatewayReady=true 应再触发一次 __pushInstanceInfo');
 		const lateEvents = server.sent
 			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
 			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
 		assert.ok(lateEvents.length >= 1, 'server open 后应观察到补推的 coclaw.info.updated');
 		const payload = lateEvents[lateEvents.length - 1].payload;
 		assert.ok('name' in payload && 'hostName' in payload && 'pluginVersion' in payload && 'agentModels' in payload);
+		// 深度断言：__collectAgentModels 走通时 agentModels 是数组（drain helper 返回 main 一项），
+		// 防 agentModels=null 也通过的退化情形。
+		assert.ok(Array.isArray(payload.agentModels), 'agentModels 应是数组（agents.list 走通）');
+		assert.equal(payload.agentModels.length, 1, 'drain helper 返回 1 个 agent');
 	}
 	finally {
 		await stopRealtimeBridge({ forceCleanup: true });
+		RealtimeBridge.prototype.__pushInstanceInfo = origPush;
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);
@@ -4200,6 +4215,8 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 });
 
 // step 2 — 反向门控：外线 open 但内线未就绪时不触发 push（避免发不全的 info）
+// 用 prototype spy 直接断言 __pushInstanceInfo 没被调用，避免依赖时序等待——守卫坏掉时
+// __waitGatewayReady 要等 3s 才超时返回，靠 setTimeout(50) 等 broadcast 出现等不到。
 test('RealtimeBridge sock.open should NOT push instance info when gateway not ready', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevHome = saveHomedir();
@@ -4209,6 +4226,13 @@ test('RealtimeBridge sock.open should NOT push instance info when gateway not re
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+
+	const origPush = RealtimeBridge.prototype.__pushInstanceInfo;
+	let pushCalls = 0;
+	RealtimeBridge.prototype.__pushInstanceInfo = function patchedPush() {
+		pushCalls++;
+		return origPush.call(this);
+	};
 
 	try {
 		await restartRealtimeBridge({
@@ -4227,18 +4251,14 @@ test('RealtimeBridge sock.open should NOT push instance info when gateway not re
 		server.readyState = 1;
 		server.emit('open', {});
 
-		// 等若干 microtask + 一段实际时间（50ms），确保 sock.open handler 即便夹杂 await
-		// 也已完整跑完——否则反向断言可能误判（"还没跑到"被当成"没跑"）。
-		for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
-		await new Promise((r) => setTimeout(r, 50));
+		// 给 sock.open 同步 + 微任务一次完整跑完的机会（不依赖等到 broadcast 出现）
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 
-		const events = server.sent
-			.map((s) => { try { return JSON.parse(String(s)); } catch { return null; } })
-			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
-		assert.equal(events.length, 0, 'gatewayReady=false 时 sock.open 不应触发 __pushInstanceInfo');
+		assert.equal(pushCalls, 0, 'gatewayReady=false 时 sock.open 不应调用 __pushInstanceInfo');
 	}
 	finally {
 		await stopRealtimeBridge({ forceCleanup: true });
+		RealtimeBridge.prototype.__pushInstanceInfo = origPush;
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);

@@ -22,7 +22,7 @@ bridge 未启动（singleton 为 null）时 silently no-op——register 阶段�
 
 | 事件名 | 触发时机 | payload 字段 |
 |---|---|---|
-| `coclaw.info.updated` | <ul><li>gateway connect 成功后由 `__pushInstanceInfo()` 调一次（全量 4 字段）</li><li>`coclaw.info.patch` handler 改名成功后（仅 name + hostName）</li></ul> | `name?: string \| null` <br> `hostName?: string` <br> `pluginVersion?: string` <br> `agentModels?: Array<{id, name, model}> \| null` |
+| `coclaw.info.updated` | <ul><li>gateway connect 成功后由 `__pushInstanceInfo()` 调一次（全量 4 字段）</li><li>外线 server WS open 时若内线 `gatewayReady` 已 true 也补推一次（三线独立后内线可能先于外线就绪，第一次 push 在 server 路径被 drop）</li><li>`coclaw.info.patch` handler 改名成功后（仅 name + hostName）</li></ul> | `name?: string \| null` <br> `hostName?: string` <br> `pluginVersion?: string` <br> `agentModels?: Array<{id, name, model}> \| null` |
 
 新增事件时在这张表里加一行 + 在 `realtime-bridge.js` 顶部 export `broadcastPluginEvent` 调用点列出来。
 

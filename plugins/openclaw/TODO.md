@@ -930,8 +930,39 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **问题**：`__pushInstanceInfo` 调 `__collectAgentModels` 失败时 payload 显式带 `agentModels: null` 推到 server。按 patch 语义出现的字段会更新（含 null），server / admin 据此覆写——也就是 admin 上 agent 列表会被 null 清空一次。`agents.list` 撞 3s timeout 或 gateway 高负载时就可能触发。
 
-**当前不致命**：内线恢复后下一次 push 会用真实数据再覆盖回来，但 admin UI 短暂闪烁。step 2 让外线 reconnect 也补推一次，触发面比 step 1 之前略大但不显著。
+**当前不致命**：admin 上 agent 列表会被 null 覆盖，下次主动重推（gateway connect-ok / 外线 open 补推）才会用真实数据再覆盖回来——`agents.list` 单次 timeout 不会自动重试，admin 在两次 reconnect 之间会一直显示空列表。step 2 让外线 reconnect 也补推一次，触发面比 step 1 之前略大。
 
 **修复方向**：`__collectAgentModels` 失败时 omit `agentModels` 字段（不要传 null），按 patch 语义保留旧值；或 server 端对 `agentModels === null` 单独不覆盖。
 
 **预存问题**：step 2 之前 connect-ok 那次推送也一样会触发，本次未顺手修。
+
+## gateway WS transport-level error 握手前发生时重试调度静默卡死
+
+**发现日期**：2026-05-09（Round 2 step 2 deep-review 由 codex-rescue 综合实例 surface）
+
+**锚点**：
+- `plugins/openclaw/src/realtime-bridge.js:975-987` `ws.addEventListener('error', ...)` handler — 仅打日志 + 主动 close，没有标"connect-failed"
+- `plugins/openclaw/src/realtime-bridge.js:963-973` close handler 重试调度的判定 `if (this.started && !this.__gatewayGaveUp && (wasReady || connectFailReported))`
+- `connectFailReported` 仅在 `:812` 设置 true（v3 握手 res 的协议错误分支）
+
+**问题**：gateway WS 在握手前发生 transport-level error（连接被拒、DNS 失败等）时，error handler 主动 ws.close(1011)，但 `connectFailReported` 没人设 true、`wasReady` 也是 false。close handler 的重试调度判定两个条件都不满足 → **静默不重试**，gatewayWs 卡在 null，新一轮 `__ensureGatewayConnection` 也不会自动调度。bridge 看似活着但内线永久断。
+
+**当前不易触发**：本机 OpenClaw gateway 是同进程嵌入，本地 WS 连接极少 transport error。但 IPC over WS / 容器化场景下可能撞到。
+
+**修复方向**：error handler 内主动设 `connectFailReported = true` + `__gatewayLastReason = 'ws_error'`，让 close handler 走重试路径；或独立调用 `__onGatewayAttemptFailed('ws-error')`。
+
+**预存问题**：step 1 之前就存在（step 1 仅移除了外线 gate `serverWs && serverWs.readyState === 1`），不是 Round 2 引入，但 Round 2 让内线独立后这个长尾问题会更显眼（外线无法兜底重启内线了）。
+
+## docs/rpc-routing.md 与 step 1 实际行为不一致
+
+**发现日期**：2026-05-09（Round 2 step 2 deep-review surface）
+
+**锚点**：
+- `plugins/openclaw/docs/rpc-routing.md:62` 写"网关 ws close（含手动调 `__closeGatewayWs` / ws 自己 close handler）| `clear()`，timer 留着"
+- 实际 step 1 已改为：网关 ws close 不再清 P2P 路由表（`__dcPendingRequests` / `__runEventRoutes`）；只有显式销毁路径（`bridge.stop()` / `refresh()`）才 clear
+
+**问题**：文档与代码语义不符，跟着文档实现的人会以为"网关掉线就清表"，实际 step 1 后两者已独立。
+
+**修复方向**：把"网关 ws close → clear()"那行改成"`bridge.stop()` / `refresh()` → `destroy()`/`clear()`；网关 ws close handler 仅清 lag probes 和 gateway pending RPC，不清路由表"。
+
+**预存问题**：step 1 漏改文档，本次顺手发现，不修。
