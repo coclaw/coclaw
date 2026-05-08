@@ -13,7 +13,7 @@ import { register as registerSignalRoute, __test as signalTest } from './rtc-sig
 const { uiSockets, clawSockets, uiTickets, pendingOffline, CLAW_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onClawMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineClawSocket, resolveClawRpcPending, rejectAllClawRpcPending, broadcastToUi, authenticateClawRequest } = __test;
 const { routes: signalRoutes } = signalTest;
 
-const MAX_MISS = 4;
+const MAX_MISS = 3;
 
 test('clawPingTick: isAlive=true → action=ok, missCount 重置为 0', () => {
 	const result = clawPingTick({ isAlive: true, missCount: 3, bufferedAmount: 0 }, MAX_MISS);

@@ -666,7 +666,7 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 				clawStatusEmitter.emit('status', { clawId, online: true });
 				ws.on('message', (raw) => onClawMessage(clawId, ws, raw));
 				// WS 协议级心跳：检测半开连接（仅 claw 侧）
-				// 45s 间隔，连续 4 次 miss（~180s）才 terminate，与 plugin 侧对齐
+				// 45s 间隔，连续 3 次 miss（~135s）才 terminate，与 plugin 侧对齐
 				ws.__isAlive = true;
 				ws.__pingMissCount = 0;
 				ws.on('pong', () => {
@@ -674,7 +674,7 @@ export function attachClawWsHub(httpServer, { sessionMiddleware } = {}) {
 					ws.__pingMissCount = 0;
 				});
 				const CLAW_PING_INTERVAL_MS = 45_000;
-				const CLAW_PING_MAX_MISS = 4;
+				const CLAW_PING_MAX_MISS = 3;
 				const clawPingInterval = setInterval(() => {
 					const tick = clawPingTick({
 						isAlive: ws.__isAlive,
