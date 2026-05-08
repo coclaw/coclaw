@@ -265,16 +265,11 @@ export class RealtimeBridge {
 	}
 
 	__closeGatewayWs() {
-		// 当 server WS 失效主动关闭 gateway 时，取消任何 pending 重试定时器、把连续失败计数归零：
-		// 新 server 会话应从新预算开始重试 gateway，避免旧会话的零散失败累计吞掉未来的重试机会。
-		// 不清 __gatewayGaveUp / __gatewayLegacyMode —— 那是跨会话的终态/学习，只由 stop() 复位。
-		if (this.__gatewayRetryTimer) {
-			clearTimeout(this.__gatewayRetryTimer);
-			this.__gatewayRetryTimer = null;
-		}
-		this.__gatewayAttempts = 0;
-		// 主动关闭时立即清 lag probe，不依赖 close 事件回调时序，避免 close 事件延迟期间 probe 误报
-		this.__clearAllLagProbes();
+		// 仅由显式销毁路径（stop / refresh）调用：职责单一——关闭当前 gateway WS 实例 +
+		// 结算未完成的 gateway RPC。retry timer / attempts 由 stop() 复位；lag probes 由 stop()
+		// 显式 __clearAllLagProbes 兜底（ws close 事件异步触发，期间 gatewayWs 已被这里置 null，
+		// 走 stale guard 早返不再清理）；P2P 路由表（__dcPendingRequests / __runEventRoutes）
+		// 已不再随内线翻转清理，stop() 会显式 clear / destroy。
 		if (!this.gatewayWs) {
 			return;
 		}
@@ -292,10 +287,6 @@ export class RealtimeBridge {
 			settle({ ok: false, error: 'gateway_closed' });
 		}
 		this.gatewayPendingRequests.clear();
-		// 清空 UI 转发 RPC 路由表：gateway 已断，不会再有响应回来；不主动通知 UI，由 UI 30/60s 超时兜底
-		this.__dcPendingRequests.clear();
-		// 同步清空 runId 路由表（gateway 已断，不会再有 event:agent 推过来）
-		this.__runEventRoutes?.clear();
 	}
 
 	/** 懒加载 WebRtcPeer（promise 锁防并发重复创建） */
@@ -731,11 +722,13 @@ export class RealtimeBridge {
 		if (this.__gatewayGaveUp || this.__gatewayRetryTimer) {
 			return;
 		}
-		if (this.gatewayWs || !this.serverWs || this.serverWs.readyState !== 1) {
+		// 外/内/P2P 三条线各自独立：内线（plugin↔本机 gateway）的建连节奏不再看外线脸色。
+		// 外线断不影响这里启动，外线即便没起来也允许内线先跑（DC RPC 仍能通过 P2P 直达）。
+		if (this.gatewayWs) {
 			return;
 		}
 		const WebSocketCtor = this.__resolveWebSocket();
-		/* c8 ignore next 3 -- 已在 __connectIfNeeded 中守卫 */
+		/* c8 ignore next 3 -- WebSocketCtor=null 仅测试注入下出现，生产路径 ws 库总能解析 */
 		if (!WebSocketCtor) {
 			return;
 		}
@@ -963,14 +956,11 @@ export class RealtimeBridge {
 				settle({ ok: false, error: 'gateway_closed' });
 			}
 			this.gatewayPendingRequests.clear();
-			// 同步清空 UI 转发 RPC 路由表（同 __closeGatewayWs 语义）
-			this.__dcPendingRequests.clear();
-			// 同步清空 runId 路由表（gateway 已断，不会再有 event:agent 推过来）
-			this.__runEventRoutes?.clear();
-			// 调度下一次尝试：仅在 bridge 仍活着、未 gave-up、server WS 健康时；
-			// 其他场景（如 bridge stop、server WS 已断）由上游流程兜底，不参与 gateway 重试。
+			// P2P 路由表（__dcPendingRequests / __runEventRoutes）不在这里清：
+			// 内线翻转不应级联影响 P2P。已发出去的 RPC 在 UI 侧 30/60s 超时兜底；
+			// 路由表条目由 start() 启动的周期扫描器（24h TTL）回收，stop() 时显式 clear。
+			// 调度下一次尝试：仅在 bridge 仍活着、未 gave-up 时；不再看外线脸色（外/内独立重试）。
 			if (this.started && !this.__gatewayGaveUp
-				&& this.serverWs && this.serverWs.readyState === 1
 				&& (wasReady || connectFailReported)) {
 				if (wasReady) {
 					// 之前握成功过，视为瞬态掉线 → 重置计数，让新一轮拿到完整重试预算
@@ -1246,7 +1236,7 @@ export class RealtimeBridge {
 			this.logger.warn?.(`[coclaw] realtime bridge connect timeout, will retry: ${maskedTarget}`);
 			remoteLog('ws.connect-timeout peer=server');
 			this.serverWs = null;
-			this.__closeGatewayWs();
+			// 外线超时不级联关内线/清 P2P 路由：三条线各自独立。
 			this.__scheduleReconnect();
 			try { sock.close(4000, 'connect_timeout'); }
 			/* c8 ignore next */
@@ -1272,7 +1262,8 @@ export class RealtimeBridge {
 			// __buildEnvLine 内部所有读取均为缓存值，无 native syscall。
 			remoteLog(this.__buildEnvLine());
 			this.__startServerHeartbeat(sock);
-			this.__ensureGatewayConnection();
+			// 不再在外线 open 时触发内线建连：内线由 start() 主动启动并自带重试。
+			// 此处仅做外线就绪相关的工作，保持外/内/P2P 三条线各自独立。
 		});
 
 		sock.addEventListener('message', async (event) => {
@@ -1326,7 +1317,9 @@ export class RealtimeBridge {
 			const wasIntentional = this.intentionallyClosed;
 			this.serverWs = null;
 			this.intentionallyClosed = false;
-			this.__closeGatewayWs();
+			// 外线 close 不再级联关内线/清 P2P 路由：内线（plugin↔本机 gateway）与 P2P
+			// 与外线（plugin↔远端 server）解耦，各自独立维护生命周期。auth-close 分支
+			// （下方）是唯一允许级联 PC/fileHandler/token 的路径，因为 plugin 已失资格。
 
 			// auth-close (4001/4003) 语义是 plugin 失去服务资格，必须连同 PC/fileHandler 一起清；
 			// 其它 close code（含 4000 心跳超时、1006 abnormal、1011 等）视为信令通道瞬态不通，
@@ -1375,7 +1368,7 @@ export class RealtimeBridge {
 			/* c8 ignore next -- ?./?? fallback */
 			this.logger.warn?.(`[coclaw] realtime bridge error, will retry in ${RECONNECT_MS}ms: ${String(err?.message ?? err)}`);
 			this.serverWs = null;
-			this.__closeGatewayWs();
+			// 外线 error 不级联关内线/清 P2P 路由：三条线各自独立。
 			this.__scheduleReconnect();
 			try { sock.close(4000, 'connect_error'); }
 			/* c8 ignore next */
@@ -1512,7 +1505,11 @@ export class RealtimeBridge {
 			scanMs: this.__runEventRoutesScanMs,
 		});
 		this.__runEventRoutes.init();
+		// 外线（plugin↔远端 server）先发起 connectIfNeeded：仅创建 WebSocket 即返回，不阻塞内线。
 		await this.__connectIfNeeded();
+		// 三条线各自独立启动：内线（plugin↔本机 gateway）由 start() 主动触发，
+		// 不再依附于外线 open。即便外线建连失败/未配置 token，内线仍能起来支撑 DC RPC。
+		this.__ensureGatewayConnection();
 	}
 
 	/**
@@ -1543,6 +1540,8 @@ export class RealtimeBridge {
 		this.__clearServerHeartbeat();
 		this.__clearConnectTimer();
 		// stop() / refresh() 兜底回收 lag 探针的 timer，防 unref 仍残留。
+		// 顺序依赖：必须早于下方 __closeGatewayWs；后者会立刻把 gatewayWs 置 null，
+		// 异步触发的 close 事件会被 stale guard 早返而无法走到 __clearAllLagProbes。
 		this.__clearAllLagProbes();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
@@ -1567,6 +1566,9 @@ export class RealtimeBridge {
 			this.__runEventRoutes.destroy();
 			this.__runEventRoutes = null;
 		}
+		// stop / refresh 是显式销毁路径：P2P 路由表不再随内线翻转清理（动作 5），
+		// 但显式销毁时必须清干净，避免 refresh 后留下指向旧 connId 的孤儿条目。
+		this.__dcPendingRequests.clear();
 		this.__closeGatewayWs();
 		if (this.webrtcPeer) {
 			await this.webrtcPeer.closeAll().catch(() => {});

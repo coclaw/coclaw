@@ -316,14 +316,14 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		// 模拟 bind 后 token 更新
 		await writeConfig({ token: 't2', serverUrl: 'https://server.local' });
 
-		// refresh 会先关闭旧连接再用新 token 创建新 server ws
+		// refresh 会先关闭旧连接再创建新 server ws + 新 gateway ws；
+		// 新设计下 start() 主动启动内线，instances 末尾是 gateway，倒数第二个是 server。
 		await bridge.refresh();
 		assert.equal(initialServer.readyState, 3, 'initial server should be closed after refresh');
-		const server = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		const server = FakeWebSocket.instances[FakeWebSocket.instances.length - 2];
 		assert.equal(server.url.startsWith('wss://server.local/api/v1/claws/stream'), true);
 		assert.equal(server.url.includes('token=t2'), true, 'new connection should use updated token');
 		assert.equal(server !== initialServer, true, 'should be a different WebSocket instance');
-		// open 后 ensureGatewayConnection 创建 gateway ws
 		server.readyState = 1;
 		server.emit('open', {});
 		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
@@ -402,7 +402,8 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -525,7 +526,8 @@ test('RealtimeBridge should ensure all agent sessions after gateway connect', as
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -588,7 +590,8 @@ test('RealtimeBridge ensureAgentSession should create session when not found', a
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -638,7 +641,8 @@ test('RealtimeBridge ensureAgentSession should NOT reset on resolve timeout', as
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -722,7 +726,8 @@ test('RealtimeBridge should handle gateway connect failure', async () => {
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -762,7 +767,8 @@ test('RealtimeBridge should handle gateway connect send failure and log warning'
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -778,10 +784,11 @@ test('RealtimeBridge should handle stale socket close after refresh', async () =
 		oldServer.readyState = 1;
 		oldServer.emit('open', {});
 
-		// refresh 创建新连接
+		// refresh 创建新连接（新 server + 新 gateway 各一个）
 		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
 		await bridge.refresh();
-		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		// 新设计下 start() 主动建内线，instances 末尾是 gateway，倒数第二个是 server
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 2];
 		assert.equal(newServer !== oldServer, true);
 
 		// 旧 socket 的 close 事件触发（stale socket），bridge 应忽略
@@ -813,7 +820,8 @@ test('RealtimeBridge: stale server socket 迟到的 open 不应再注入 sender 
 
 		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
 		await bridge.refresh();
-		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		// 新设计下 start() 主动建内线，instances 末尾是 gateway，倒数第二个是 server
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 2];
 		newServer.readyState = 1;
 		newServer.emit('open', {});
 		const connectedCountAfterRefresh = infoLogs.filter((l) => l.includes('realtime bridge connected')).length;
@@ -842,7 +850,8 @@ test('RealtimeBridge: stale server socket 迟到的 message 不应重置当前 s
 
 		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
 		await bridge.refresh();
-		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		// 新设计下 start() 主动建内线，instances 末尾是 gateway，倒数第二个是 server
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 2];
 		newServer.readyState = 1;
 		newServer.emit('open', {});
 
@@ -916,7 +925,8 @@ test('RealtimeBridge: stale server sock close 不应清当前 sock 的 heartbeat
 
 		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
 		await bridge.refresh();
-		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		// 新设计下 start() 主动建内线，instances 末尾是 gateway，倒数第二个是 server
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 2];
 		newServer.readyState = 1;
 		newServer.emit('open', {});
 
@@ -1042,7 +1052,8 @@ test('RealtimeBridge should ignore error on stale socket', async () => {
 		// refresh 后 oldServer 不再是当前 serverWs
 		await writeConfig({ token: 't2', serverUrl: 'http://server.local' });
 		await bridge.refresh();
-		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		// 新设计下 start() 主动建内线，instances 末尾是 gateway，倒数第二个是 server
+		const newServer = FakeWebSocket.instances[FakeWebSocket.instances.length - 2];
 
 		// 旧 socket error 应被忽略
 		for (const fn of oldServer.listeners.get('error') ?? []) {
@@ -1095,7 +1106,8 @@ test('RealtimeBridge waitGatewayReady should handle ws reference change (DC path
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -1152,7 +1164,8 @@ test('RealtimeBridge ensureAgentSession should handle sessions.reset failure', a
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -1201,7 +1214,8 @@ test('RealtimeBridge ensureAgentSession should default to main when agentId is e
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -1258,7 +1272,8 @@ test('RealtimeBridge __ensureAllAgentSessions should fallback to main when agent
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
@@ -2273,7 +2288,9 @@ test('__onGatewayAttemptFailed is a no-op when bridge is stopped', async () => {
 	assert.equal(bridge.__gatewayRetryTimer, null);
 });
 
-test('__closeGatewayWs cancels pending retry timer and resets attempts', async () => {
+test('外线 close 不再级联清 gateway retry timer / attempts（三线独立）', async () => {
+	// 新契约：外/内/P2P 三条线各自独立。外线（plugin↔server）翻转不再清内线的累积失败状态，
+	// 让新一轮外线会话不会"误重置"内线的退避节奏；内线状态只由 stop() 显式复位。
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -2285,9 +2302,9 @@ test('__closeGatewayWs cancels pending retry timer and resets attempts', async (
 	const t = captureTimers();
 	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
 	try {
-		const { gateway } = await bootGatewayWithChallenge(bridge);
+		const { server, gateway } = await bootGatewayWithChallenge(bridge);
 		const req = lastConnectReq(gateway);
-		// 先让握手失败，让 __onGatewayAttemptFailed 调度出一个 retry timer
+		// 先让握手失败，调度出一个 retry timer + attempts++
 		gateway.emit('message', { data: JSON.stringify({
 			type: 'res', id: req.id, ok: false, error: { message: 'auth failed' },
 		}) });
@@ -2295,13 +2312,20 @@ test('__closeGatewayWs cancels pending retry timer and resets attempts', async (
 		assert.ok(scheduled, 'retry timer should exist');
 		assert.equal(bridge.__gatewayAttempts, 1);
 
-		// 模拟 server WS 失效：__closeGatewayWs 应取消 retry timer 并归零 attempts
-		bridge.__closeGatewayWs();
-		assert.equal(scheduled.__cancelled, true, 'retry timer should be cancelled');
+		// 模拟外线（server WS）非 auth-close 翻转：新设计下不应级联清内线状态。
+		// 注：captureTimers 下 setTimeout 不真跑，故不能用 setTimeout 来 yield；close handler
+		// 非 auth 分支整体同步（无 await），server.emit('close') 后状态已就绪，可直接断言。
+		server.readyState = 3;
+		server.emit('close', { code: 1006, reason: 'abnormal' });
+		assert.equal(scheduled.__cancelled, false, '外线 close 不应取消内线 retry timer');
+		assert.equal(bridge.__gatewayRetryTimer, scheduled, 'retry timer 实例应保持');
+		assert.equal(bridge.__gatewayAttempts, 1, 'attempts 应跨外线翻转保留');
+
+		// 显式 stop() 才会清这些（refresh 内部走相同复位）
+		await bridge.stop();
+		assert.equal(scheduled.__cancelled, true, 'stop() 才清 retry timer');
 		assert.equal(bridge.__gatewayRetryTimer, null);
-		assert.equal(bridge.__gatewayAttempts, 0,
-			'attempts reset so new server session starts with fresh retry budget');
-		// __gatewayGaveUp / __gatewayLegacyMode 保留——只由 stop() 复位（设计意图）
+		assert.equal(bridge.__gatewayAttempts, 0);
 		assert.equal(bridge.__gatewayGaveUp, false);
 		assert.equal(bridge.__gatewayLegacyMode, false);
 	}
@@ -2974,6 +2998,67 @@ test('RealtimeBridge should keep webrtcPeer on serverWs internal-error close (10
 	}
 });
 
+test('auth-close 也不级联关 gateway WS（仅卸 PC + fileHandler + token）', async () => {
+	// 不变量补充：auth-close (4001/4003) 是唯一允许级联到 P2P 的路径，但仅卸 PC/fileHandler/token；
+	// gateway WS（内线）作为本机连接不受外线鉴权状态影响，应保持原引用。
+	const { bridge, server, gwWs, prevHome } = await setupBridgeWithGateway('c_auth_keep_gw');
+	try {
+		const gwBefore = bridge.gatewayWs;
+		const peerBefore = bridge.webrtcPeer;
+		assert.ok(peerBefore, 'precondition: webrtcPeer must exist before auth-close');
+
+		server.emit('close', { code: 4001, reason: 'unauthorized' });
+		await waitFor(() => bridge.webrtcPeer === null, { label: 'webrtcPeer cleaned on auth-close' });
+
+		assert.equal(bridge.gatewayWs, gwBefore, 'auth-close 不应关 gateway WS（内线独立）');
+		assert.equal(gwBefore, gwWs, 'gateway WS 引用未变');
+		// fileHandler 在 auth-close 内被清；webrtcPeer 也已清（上面 waitFor 验证过）
+		assert.equal(bridge.__fileHandler, null, 'auth-close 仍应清 fileHandler');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('外死内活：server WS 非 auth-close 后 gateway WS 实例与就绪态保持，DC RPC 仍可达 gateway（核心收益）', async () => {
+	// 本次重构核心场景：外线（server WS）瞬态翻转不应级联关掉内线，
+	// DC RPC 通过 P2P → plugin → gateway 路径在外线断开窗口期仍能服务。
+	const { bridge, server, gwWs, prevHome } = await setupBridgeWithGateway('c_outer_dead');
+	try {
+		bridge.webrtcPeer.sendTo = () => true;
+		bridge.webrtcPeer.broadcast = () => {};
+
+		const gwBefore = bridge.gatewayWs;
+		const peerBefore = bridge.webrtcPeer;
+		const fhBefore = bridge.__fileHandler;
+
+		// 模拟外线非 auth-close（4000/1006/1011 任一）
+		server.emit('close', { code: 1006, reason: 'abnormal' });
+		for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+
+		assert.equal(bridge.gatewayWs, gwBefore, '外线 close 不应替换 gateway WS 实例');
+		assert.equal(bridge.gatewayReady, true, 'gatewayReady 应跨外线翻转保持');
+		assert.equal(bridge.webrtcPeer, peerBefore, 'webrtcPeer 应跨外线翻转保持');
+		assert.equal(bridge.__fileHandler, fhBefore, 'fileHandler 应跨外线翻转保持');
+
+		// 在外线断开窗口期发起一条 DC RPC，应仍能写路由表 + 抵达 gateway
+		const sentBefore = gwWs.sent.length;
+		await bridge.__handleGatewayRequestFromDc(
+			{ id: 'ui-after-outer-down', method: 'sessions.list', params: {} },
+			'c_outer_dead'
+		);
+		assert.ok(bridge.__dcPendingRequests.has('ui-after-outer-down'),
+			'DC RPC 路由表应在外线断时仍能写入');
+		assert.ok(gwWs.sent.length > sentBefore, '请求应已抵达 gateway WS');
+		const lastSent = JSON.parse(String(gwWs.sent[gwWs.sent.length - 1]));
+		assert.equal(lastSent.id, 'ui-after-outer-down');
+		assert.equal(lastSent.method, 'sessions.list');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
 test('RealtimeBridge retained webrtcPeer should still process new rtc:offer signaling after non-auth close', async () => {
 	const { bridge, server, prevHome } = await setupConnectedBridge();
 	try {
@@ -3027,6 +3112,9 @@ test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4001) and
 
 		server.emit('close', { code: 4001, reason: 'unauthorized' });
 		await waitFor(() => bridge.webrtcPeer === null, { label: 'webrtcPeer cleaned on auth-close' });
+		// auth-close 内 webrtcPeer 置 null 与 __clearTokenLocal 之间存在一段 await 链，
+		// 显式等 token 清完再读，避免微任务时序差异（旧设计下被 __closeGatewayWs 的 await 链顺带同步过）。
+		await waitFor(async () => (await readConfig()).token === undefined, { label: 'token cleared on auth-close' });
 
 		assert.equal(closeAllCalls, 1, 'auth-close should invoke closeAll on retained peer');
 		assert.equal(bridge.webrtcPeer, null, 'auth-close should still cleanup webrtcPeer');
@@ -3057,6 +3145,8 @@ test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4003 forb
 
 		server.emit('close', { code: 4003, reason: 'forbidden' });
 		await waitFor(() => bridge.webrtcPeer === null, { label: 'webrtcPeer cleaned on 4003 close' });
+		// 4003 同 4001：webrtcPeer 置 null 与 token 清理之间有 await 链
+		await waitFor(async () => (await readConfig()).token === undefined, { label: 'token cleared on 4003 close' });
 
 		assert.equal(closeAllCalls, 1, '4003 should invoke closeAll on retained peer');
 		assert.equal(bridge.webrtcPeer, null);
@@ -3963,7 +4053,8 @@ test('RealtimeBridge __pushInstanceInfo should broadcast full info payload after
 	}
 	finally {
 		await stopRealtimeBridge({ forceCleanup: true });
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);
 	}
 });
@@ -4038,7 +4129,8 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 	}
 	finally {
 		await stopRealtimeBridge({ forceCleanup: true });
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);
 	}
 });
@@ -4199,7 +4291,8 @@ test('lag probe: __handleGatewayRequestFromDc starts probe only for method="agen
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);
 	}
 });
@@ -4231,7 +4324,8 @@ test('lag probe: gateway WS close clears all in-flight probes (no 60s wait)', as
 	}
 	finally {
 		await bridge.stop();
-		process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		restoreHomedir(prevHome);
 	}
 });
@@ -4511,7 +4605,9 @@ test('dc unicast: GATEWAY_SEND_FAILED clears mapping then broadcasts', async () 
 	}
 });
 
-test('dc unicast: gateway ws close clears entire pending table', async () => {
+test('dc unicast: gateway ws close 不再清空 P2P pending table（三线独立）', async () => {
+	// 新契约：内线翻转不再级联清 P2P 路由表，避免 DC RPC 在内线瞬态抖动时被误清；
+	// 已发出去的请求等 UI 30/60s 超时兜底；条目最终由 24h TTL 扫描器或显式 stop() 回收。
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_close1');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
@@ -4528,7 +4624,8 @@ test('dc unicast: gateway ws close clears entire pending table', async () => {
 		assert.equal(bridge.__dcPendingRequests.size, 2);
 
 		gwWs.emit('close', { code: 1006, reason: 'remote dropped' });
-		assert.equal(bridge.__dcPendingRequests.size, 0, 'all entries cleared on ws close');
+		assert.equal(bridge.__dcPendingRequests.size, 2,
+			'gateway ws close 不应清 P2P pending（解耦后由 TTL / stop 兜底）');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
@@ -4732,7 +4829,9 @@ test('run-event-routes: event:agent miss falls back to broadcast', async () => {
 	}
 });
 
-test('run-event-routes: gateway ws close clears all route entries', async () => {
+test('run-event-routes: gateway ws close 不再清路由表条目（三线独立）', async () => {
+	// 新契约：内线翻转不再级联清 runId→connId 路由表，避免内线瞬态抖动时误清。
+	// 路由表条目最终由 TTL 扫描器（默认 24h）或显式 stop()/destroy 回收。
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re5');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
@@ -4743,7 +4842,8 @@ test('run-event-routes: gateway ws close clears all route entries', async () => 
 		assert.equal(bridge.__runEventRoutes.__entries.size, 2);
 
 		gwWs.emit('close', { code: 1006, reason: 'remote dropped' });
-		assert.equal(bridge.__runEventRoutes.__entries.size, 0, 'entries cleared on ws close');
+		assert.equal(bridge.__runEventRoutes.__entries.size, 2,
+			'gateway ws close 不应清路由表（解耦后由 TTL / stop 兜底）');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
@@ -4882,17 +4982,23 @@ test('run-event-routes: event:agent without runId falls back to broadcast', asyn
 	}
 });
 
-test('run-event-routes: __closeGatewayWs() (local-close path) clears route entries', async () => {
-	// server WS 断开等场景会直接调 __closeGatewayWs，独立于 ws close handler 清表路径。
+test('run-event-routes: __closeGatewayWs() 不再清路由表；stop() 才清', async () => {
+	// 新契约：__closeGatewayWs 仅由显式销毁路径（stop/refresh）调用，自身不再清 P2P 路由。
+	// 路由表的清理责任已上移到 stop() 显式 clear，避免内线瞬态翻转误清。
 	const { bridge, prevHome } = await setupBridgeWithGateway('c_re_closegw');
 	try {
 		bridge.__runEventRoutes.add('run-X', 'c_re_closegw', 'r-x');
 		assert.equal(bridge.__runEventRoutes.__entries.size, 1);
 
 		bridge.__closeGatewayWs();
-		assert.equal(bridge.__runEventRoutes.__entries.size, 0, '__closeGatewayWs 内的清表接线点应生效');
-	} finally {
+		assert.equal(bridge.__runEventRoutes.__entries.size, 1,
+			'__closeGatewayWs 不再清路由表（已下沉到 stop()）');
+
+		// stop 时显式清（实际由 routes.destroy() 完成 clear + 标记 destroyed）
 		await bridge.stop();
+		// 注意 stop 后 __runEventRoutes 被置 null，不能直接读 __entries.size
+		assert.equal(bridge.__runEventRoutes, null, 'stop 后路由表实例置 null');
+	} finally {
 		restoreHomedir(prevHome);
 	}
 });

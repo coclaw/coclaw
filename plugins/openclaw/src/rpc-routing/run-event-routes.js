@@ -14,7 +14,8 @@
  * - timer 必须 unref()——避免 hold 进程退出
  *
  * 与 reqId 路由表（realtime-bridge.js __dcPendingRequests）保持行为对齐：
- * 对 PC 关闭不做联动清理，TTL 兜底；网关 WS 断开走 clear()。
+ * 对 PC 关闭和网关 WS 翻转都不做联动清理（外/内/P2P 三线独立），TTL 兜底；
+ * 仅显式销毁路径（bridge.stop / refresh）会通过 destroy() 清表。
  */
 
 /** 路由条目最大存活时间（24h），与 reqId 表对齐 */
