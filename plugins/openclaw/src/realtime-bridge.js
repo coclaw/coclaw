@@ -23,7 +23,7 @@ const RECONNECT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 const SERVER_HB_PING_MS = 25_000;
 const SERVER_HB_TIMEOUT_MS = 45_000;
-const SERVER_HB_MAX_MISS = 4; // 连续 4 次无响应才断连（~3 分钟）
+const SERVER_HB_MAX_MISS = 3; // 连续 3 次无响应才断连（~135s）。上游主线程 spike 实测最坏 ~89.5s（issue #75069），余量 ~1.5x
 // gateway 握手失败的指数退避表：每个元素是"上一次失败"之后、"下一次尝试"之前的等待时间。
 // 最多 5 次重试（加上首次尝试共 6 次），全部失败后进入 gave-up 终态，不再自动尝试。
 const GATEWAY_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 20_000, 20_000];
@@ -338,16 +338,21 @@ export class RealtimeBridge {
 	}
 	/* c8 ignore stop */
 
-	/* c8 ignore next 7 -- 防御性检查，serverWs 通常在调用时可用 */
 	__forwardToServer(payload) {
 		if (!this.serverWs || this.serverWs.readyState !== 1) {
+			// WS 断窗口期 onSend 调用：webrtcPeer 异步回调（trickle ICE candidate、SDP 应答等）
+			// 本身没有 queue/rollback 机制，丢失对 plugin 端 PC 状态机不致命——UI 端 sig.state
+			// 恢复后会主动触发新一轮 ICE restart，重发完整 candidate set 与 SDP。仅记本地 log
+			// 便于事后排查；TODO 跟进完整方案（queue / rollback connId）。
+			this.logger.warn?.(`[coclaw] forward dropped: ws not ready (type=${payload?.type ?? 'unknown'})`);
 			return;
 		}
 		try {
 			this.serverWs.send(JSON.stringify(payload));
 		}
-		/* c8 ignore next */
-		catch {}
+		catch (e) {
+			this.logger.warn?.(`[coclaw] forward send failed (type=${payload?.type ?? 'unknown'}): ${e?.message ?? e}`);
+		}
 	}
 
 	__nextGatewayReqId(prefix = 'coclaw-rpc') {
@@ -1322,19 +1327,23 @@ export class RealtimeBridge {
 			this.serverWs = null;
 			this.intentionallyClosed = false;
 			this.__closeGatewayWs();
-			if (this.webrtcPeer) {
-				try { await this.webrtcPeer.closeAll(); }
-				/* c8 ignore next 3 -- 防御性兜底，werift close 异常时不可崩溃 gateway */
-				catch (e) { this.logger.warn?.(`[coclaw/rtc] closeAll failed: ${e?.message}`); }
-				this.webrtcPeer = null;
-				this.__webrtcPeerReady = null;
-			}
-			if (this.__fileHandler) {
-				this.__fileHandler.cancelCleanup();
-				this.__fileHandler = null;
-			}
 
-			if (event?.code === 4001 || event?.code === 4003) {
+			// auth-close (4001/4003) 语义是 plugin 失去服务资格，必须连同 PC/fileHandler 一起清；
+			// 其它 close code（含 4000 心跳超时、1006 abnormal、1011 等）视为信令通道瞬态不通，
+			// 保留 webrtcPeer / fileHandler 实例供重连后复用，避免雪崩式 PC 重建。
+			const isAuthClose = event?.code === 4001 || event?.code === 4003;
+			if (isAuthClose) {
+				if (this.webrtcPeer) {
+					try { await this.webrtcPeer.closeAll(); }
+					/* c8 ignore next 3 -- 防御性兜底，werift close 异常时不可崩溃 gateway */
+					catch (e) { this.logger.warn?.(`[coclaw/rtc] closeAll failed: ${e?.message}`); }
+					this.webrtcPeer = null;
+					this.__webrtcPeerReady = null;
+				}
+				if (this.__fileHandler) {
+					this.__fileHandler.cancelCleanup();
+					this.__fileHandler = null;
+				}
 				remoteLog(`ws.auth-close peer=server code=${event.code}`);
 				this.logger.warn?.(`[coclaw] server ws auth-close (code=${event.code}), clearing local token`);
 				try {
@@ -1348,8 +1357,9 @@ export class RealtimeBridge {
 			}
 
 			if (!wasIntentional) {
-				remoteLog(`ws.disconnected peer=server code=${event?.code ?? 'unknown'} reason=${event?.reason ?? 'n/a'}`);
-				this.logger.warn?.(`[coclaw] realtime bridge closed (${event?.code ?? 'unknown'}: ${event?.reason ?? 'n/a'}), will retry in ${RECONNECT_MS}ms`);
+				const sessionCount = this.webrtcPeer?.__sessions?.size ?? 0;
+				remoteLog(`ws.disconnected peer=server code=${event?.code ?? 'unknown'} reason=${event?.reason ?? 'n/a'} keep-pc=true sessions=${sessionCount}`);
+				this.logger.warn?.(`[coclaw] realtime bridge closed (${event?.code ?? 'unknown'}: ${event?.reason ?? 'n/a'}), will retry in ${RECONNECT_MS}ms (keep-pc, sessions=${sessionCount})`);
 				this.__scheduleReconnect();
 			}
 		});

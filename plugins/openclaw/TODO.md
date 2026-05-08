@@ -1,20 +1,37 @@
 # Plugin TODO
 
-## Bridge WS 断连不应 closeAll 所有 WebRTC session
+## __forwardToServer 在 WS 断窗口期静默/丢信令的完整方案
 
-**发现日期**：2026-04-14
-**关联 commit**：fix(plugin): fix PionIpc listener leak and add failed session cleanup
+**发现日期**：2026-05-08（codex-rescue review WS-PC 解耦方案时识别）
+**关联 commit**：fix(plugin): keep WebRTC sessions across server WS reconnect; tighten heartbeat miss limit to 3
 
-**问题**：`realtime-bridge.js` 在 server WS 断连时调用 `webrtcPeer.closeAll()`，销毁所有 WebRTC PeerConnection。但 WebRTC 数据通道（P2P via TURN）独立于信令通道，现有 PC 在 server WS 短暂断连期间仍可正常工作。`closeAll` 导致不必要的连接中断。
+**问题**：`realtime-bridge.js` `__forwardToServer` 在 `serverWs` 不可用或 `send` 抛异常时，仅记本地 log 后丢弃 payload。WS 断窗口期 webrtcPeer 异步回调（trickle ICE candidate、`handleSignaling` 几个 await 之间触发的 `rtc:answer` / `rtc:restart-rejected` 等，ICE restart 应答与初次应答都走 `rtc:answer`）会被丢。
 
-**影响**：server 重启或网络抖动时，所有 UI 的 WebRTC 连接被强制断开，用户需重新建连。
+**为什么本次未一并修**：丢失对 plugin 端 PC 状态机不致命——UI 端 sig.state 恢复后会主动触发新一轮 ICE restart，重发完整 candidate set 与 SDP；plugin 端因保留了 webrtcPeer，新一轮 restart 直接走 `restartIce` 续上，不需要 rebuild。当前是观察项不是阻塞项。
 
-**修复方向**：移除 WS 断连时的 `closeAll` 调用，依赖 per-connId 的 TTL timer 和 queue length 机制自然回收不再活跃的 session。需注意：
-- WS 重连后信令路由恢复，现有 PC 应能继续使用
-- 如果 server WS 长时间断开，PC 最终会因 ICE 失败进入 failed → TTL 回收
-- 需评估是否有依赖 `closeAll` 重置状态的其他逻辑
+**修复方向**：要么在断窗口期 queue 待发信令、重连后批量补发；要么在 SDP-bearing 信令发送失败时把对应 connId 标记为 failed，让下一轮 ICE restart 自然重启该 connId。需评估对端（UI / server）契约。
 
-**风险**：直接移除可能引入其他问题（如 bridge 重连后状态不一致），需谨慎评估。
+## MAX_SESSIONS=10 不是硬上限（all-active 时 evict 失败仍创建新 session）
+
+**发现日期**：2026-05-08（codex-rescue review WS-PC 解耦方案时识别）
+**关联**：`webrtc-peer.js` `__evictOldestFailed`
+
+**问题**：`createSession` 撞 `MAX_SESSIONS` 时仅尝试淘汰 `connectionState === 'failed'` 的 session；若所有 session 都还活着（disconnected / checking / connected），evict 返回 false 但仍继续创建新 session。
+
+**影响**：极端场景下 sessions 数会超过 10。常见路径不会触发（CoClaw UI rebuild 复用 connId、不增 session 数；多设备并发也罕见超 10）。WS-PC 解耦后 PC 跨重连保留，理论上窗口稍长但实战影响小。
+
+**修复方向**：达到上限时拒绝新 offer 回 `rtc:offer-rejected reason=max_sessions`，或加 LRU 强制淘汰。
+
+## Lazy init race：close handler 撞 `__webrtcPeerReady` pending
+
+**发现日期**：2026-05-08（codex-rescue review 时识别）
+**关联**：`realtime-bridge.js` close handler 4001/4003 分支与 `__initWebrtcPeer`
+
+**问题**：4001/4003 destructive close 用 `if (this.webrtcPeer)` 判空跳过 closeAll；若此时 `__webrtcPeerReady` 仍 pending（lazy init 进行中），close handler 不会清理；稍后 init 完成把 webrtcPeer/fileHandler 赋上去，绕过清理留下无主实例。
+
+**影响**：仅 4001/4003 路径（plugin 失资格 + 不重连），形成 leak 直到 plugin 重启或 stop()；不会影响新 sock 的服务（4001/4003 后无重连）。本次解耦方案未放大此 race。
+
+**修复方向**：在 4001/4003 入口先 `await this.__webrtcPeerReady?.catch(()=>{})`，再走清理；或引入 generation token，pending init 在完成时检查 token 是否仍有效。
 
 ## DC onclose 与 closeByConnId 的 race（旧 DC onclose 晚到误清理新 session）
 

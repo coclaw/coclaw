@@ -1407,20 +1407,20 @@ test('RealtimeBridge server heartbeat should tolerate consecutive misses before 
 		const hbTimeout = timeouts.find((t) => t.__ms === 45_000);
 		assert.ok(hbTimeout, 'should have heartbeat timeout at 45s');
 
-		// 第 1~3 次 miss：不应关闭 socket，应补发 ping 并调度下一轮
-		for (let i = 1; i <= 3; i++) {
+		// 第 1~2 次 miss：不应关闭 socket，应补发 ping 并调度下一轮
+		for (let i = 1; i <= 2; i++) {
 			const latestTimeout = timeouts[timeouts.length - 1];
 			latestTimeout.__fn();
 			assert.equal(server.readyState, 1, `miss ${i}: socket should still be open`);
-			assert.ok(debugs.some((x) => x.includes(`heartbeat miss ${i}/4`)), `miss ${i}: should log miss`);
+			assert.ok(debugs.some((x) => x.includes(`heartbeat miss ${i}/3`)), `miss ${i}: should log miss`);
 			// 应补发 ping
 			assert.ok(server.sent.some((x) => String(x).includes('"type":"ping"')), `miss ${i}: should send compensatory ping`);
 		}
 
-		// 第 4 次 miss：应关闭 socket
+		// 第 3 次 miss：应关闭 socket
 		const lastTimeout = timeouts[timeouts.length - 1];
 		lastTimeout.__fn();
-		assert.ok(warns.some((x) => x.includes('heartbeat timeout') && x.includes('4 consecutive misses')), 'should log final timeout');
+		assert.ok(warns.some((x) => x.includes('heartbeat timeout') && x.includes('3 consecutive misses')), 'should log final timeout');
 		assert.equal(server.readyState, 3, 'socket should be closed after max misses');
 	}
 	finally {
@@ -1550,13 +1550,13 @@ test('RealtimeBridge heartbeat timeout should not crash when close throws', asyn
 		server.readyState = 1;
 		server.emit('open', {});
 
-		// 触发前 3 次 miss（不关闭），然后第 4 次触发 close
-		for (let i = 0; i < 3; i++) {
+		// 触发前 2 次 miss（不关闭），然后第 3 次触发 close
+		for (let i = 0; i < 2; i++) {
 			const t = timeouts[timeouts.length - 1];
 			t.__fn();
 		}
 
-		// 第 4 次 miss 时 close 抛异常不应 crash
+		// 第 3 次 miss 时 close 抛异常不应 crash
 		server.throwOnClose = true;
 		const lastTimeout = timeouts[timeouts.length - 1];
 		assert.doesNotThrow(() => lastTimeout.__fn());
@@ -2886,24 +2886,214 @@ test('RealtimeBridge should handle rtc: signaling error gracefully', async () =>
 	}
 });
 
-test('RealtimeBridge should cleanup webrtcPeer on serverWs close', async () => {
+test('RealtimeBridge should keep webrtcPeer on serverWs non-auth close (4000 heartbeat timeout)', async () => {
+	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_keep',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
+		const peerBeforeClose = bridge.webrtcPeer;
+		const fileHandlerBeforeClose = bridge.__fileHandler;
+		// 替换 __scheduleReconnect 为 spy，避免真起 10s timer + 验证调度发生
+		let reconnectCalls = 0;
+		bridge.__scheduleReconnect = () => { reconnectCalls += 1; };
+
+		// 非 auth-close（如心跳超时 4000、abnormal 1006）应保留 webrtcPeer / fileHandler
+		server.emit('close', { code: 4000, reason: 'heartbeat_timeout' });
+		// 让 close handler 跑完
+		for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+
+		assert.equal(bridge.webrtcPeer, peerBeforeClose, 'webrtcPeer should be retained across non-auth ws close');
+		assert.equal(bridge.__fileHandler, fileHandlerBeforeClose, 'fileHandler should be retained across non-auth ws close');
+		assert.equal(reconnectCalls, 1, 'should schedule reconnect on non-auth close');
+		assert.ok(logs.some((x) => String(x).includes('keep-pc')), 'should log keep-pc on non-auth disconnect');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should keep webrtcPeer on serverWs abnormal close (1006)', async () => {
 	const { bridge, server, prevHome } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
 				type: 'rtc:offer',
-				fromConnId: 'c_cleanup',
+				fromConnId: 'c_keep_abnormal',
 				payload: { sdp: 'sdp' },
 			}),
 		});
 		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
+		const peerBeforeClose = bridge.webrtcPeer;
+		const fileHandlerBeforeClose = bridge.__fileHandler;
+		let reconnectCalls = 0;
+		bridge.__scheduleReconnect = () => { reconnectCalls += 1; };
 
-		// 模拟 serverWs close
-		server.emit('close', { code: 1000, reason: 'normal' });
-		await waitFor(() => bridge.webrtcPeer === null, { label: 'webrtcPeer cleaned' });
+		server.emit('close', { code: 1006, reason: 'abnormal' });
+		for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
 
-		assert.equal(bridge.webrtcPeer, null, 'webrtcPeer should be cleaned up on ws close');
+		assert.equal(bridge.webrtcPeer, peerBeforeClose, 'webrtcPeer should be retained across abnormal close');
+		assert.equal(bridge.__fileHandler, fileHandlerBeforeClose, 'fileHandler should be retained across abnormal close');
+		assert.equal(reconnectCalls, 1, 'should schedule reconnect on abnormal close');
 	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should keep webrtcPeer on serverWs internal-error close (1011)', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_keep_1011',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
+		const peerBeforeClose = bridge.webrtcPeer;
+		const fileHandlerBeforeClose = bridge.__fileHandler;
+		let reconnectCalls = 0;
+		bridge.__scheduleReconnect = () => { reconnectCalls += 1; };
+
+		server.emit('close', { code: 1011, reason: 'server_internal_error' });
+		for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+
+		assert.equal(bridge.webrtcPeer, peerBeforeClose, 'webrtcPeer should be retained across 1011 close');
+		assert.equal(bridge.__fileHandler, fileHandlerBeforeClose, 'fileHandler should be retained across 1011 close');
+		assert.equal(reconnectCalls, 1, 'should schedule reconnect on 1011 close');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge retained webrtcPeer should still process new rtc:offer signaling after non-auth close', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_first',
+				payload: { sdp: 'sdp-first' },
+			}),
+		});
+		await waitFor(() => bridge.webrtcPeer !== null && bridge.webrtcPeer.__sessions?.has?.('c_first'), { label: 'first session created' });
+		const peerBeforeClose = bridge.webrtcPeer;
+		bridge.__scheduleReconnect = () => {};
+
+		// 非 auth-close → keep-PC
+		server.emit('close', { code: 4000, reason: 'heartbeat_timeout' });
+		for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+		assert.equal(bridge.webrtcPeer, peerBeforeClose, 'peer must be retained');
+
+		// 直接驱动保留下来的 peer 处理一个新 offer，验证它不是僵尸：
+		// signaling 内部不依赖 serverWs 实例（forwardToServer 在调用瞬间读 this.serverWs），
+		// 只要 peer 仍可处理 handleSignaling、新 session 能被装配，重连后的复用就有保障。
+		await bridge.webrtcPeer.handleSignaling({
+			type: 'rtc:offer',
+			fromConnId: 'c_second',
+			payload: { sdp: 'sdp-second' },
+		});
+		assert.ok(bridge.webrtcPeer.__sessions?.has?.('c_second'), 'retained peer should accept new session post-close');
+		assert.ok(bridge.webrtcPeer.__sessions?.has?.('c_first'), 'first session must still exist');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4001) and clear local token', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_authclose',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
+		const peerBeforeClose = bridge.webrtcPeer;
+		let closeAllCalls = 0;
+		const origCloseAll = peerBeforeClose.closeAll.bind(peerBeforeClose);
+		peerBeforeClose.closeAll = async () => { closeAllCalls += 1; return origCloseAll(); };
+
+		server.emit('close', { code: 4001, reason: 'unauthorized' });
+		await waitFor(() => bridge.webrtcPeer === null, { label: 'webrtcPeer cleaned on auth-close' });
+
+		assert.equal(closeAllCalls, 1, 'auth-close should invoke closeAll on retained peer');
+		assert.equal(bridge.webrtcPeer, null, 'auth-close should still cleanup webrtcPeer');
+		assert.equal(bridge.__fileHandler, null, 'auth-close should still cleanup fileHandler');
+		const cfgAfter = await readConfig();
+		assert.equal(cfgAfter.token, undefined, 'auth-close should clear local token');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4003 forbidden) and clear local token', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	try {
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_authclose_4003',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
+		const peerBeforeClose = bridge.webrtcPeer;
+		let closeAllCalls = 0;
+		const origCloseAll = peerBeforeClose.closeAll.bind(peerBeforeClose);
+		peerBeforeClose.closeAll = async () => { closeAllCalls += 1; return origCloseAll(); };
+
+		server.emit('close', { code: 4003, reason: 'forbidden' });
+		await waitFor(() => bridge.webrtcPeer === null, { label: 'webrtcPeer cleaned on 4003 close' });
+
+		assert.equal(closeAllCalls, 1, '4003 should invoke closeAll on retained peer');
+		assert.equal(bridge.webrtcPeer, null);
+		assert.equal(bridge.__fileHandler, null);
+		const cfgAfter = await readConfig();
+		assert.equal(cfgAfter.token, undefined, '4003 should clear local token');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge __forwardToServer should log when ws not ready', async () => {
+	const { bridge, prevHome } = await setupConnectedBridge();
+	const warns = [];
+	bridge.logger = { info: () => {}, warn: (m) => warns.push(String(m)), debug: () => {}, error: () => {} };
+	try {
+		// 模拟 ws 处于断开状态
+		bridge.serverWs = null;
+		bridge.__forwardToServer({ type: 'rtc:answer', payload: {} });
+		assert.ok(warns.some((x) => x.includes('forward dropped') && x.includes('rtc:answer')), 'should warn on drop with payload type');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('RealtimeBridge __forwardToServer should log when ws send throws', async () => {
+	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const warns = [];
+	bridge.logger = { info: () => {}, warn: (m) => warns.push(String(m)), debug: () => {}, error: () => {} };
+	try {
+		server.throwOnSend = true;
+		bridge.__forwardToServer({ type: 'rtc:answer', payload: {} });
+		assert.ok(warns.some((x) => x.includes('forward send failed') && x.includes('rtc:answer')), 'should warn on send throw with payload type');
+	} finally {
+		server.throwOnSend = false;
 		await bridge.stop();
 		restoreHomedir(prevHome);
 	}
@@ -3218,7 +3408,7 @@ test('RealtimeBridge __webrtcPeerReady should reset on init failure for retry', 
 	}
 });
 
-test('RealtimeBridge cleanup should reset __webrtcPeerReady', async () => {
+test('RealtimeBridge auth-close should reset __webrtcPeerReady', async () => {
 	const { bridge, server, prevHome } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
@@ -3231,11 +3421,11 @@ test('RealtimeBridge cleanup should reset __webrtcPeerReady', async () => {
 		await waitFor(() => bridge.__webrtcPeerReady !== null && bridge.webrtcPeer !== null, { label: '__webrtcPeerReady set' });
 		assert.notEqual(bridge.__webrtcPeerReady, null);
 
-		server.emit('close', { code: 1000, reason: 'normal' });
+		server.emit('close', { code: 4001, reason: 'unauthorized' });
 		await waitFor(() => bridge.webrtcPeer === null && bridge.__webrtcPeerReady === null, { label: '__webrtcPeerReady cleared' });
 
 		assert.equal(bridge.webrtcPeer, null);
-		assert.equal(bridge.__webrtcPeerReady, null, 'promise lock should be cleared on ws close');
+		assert.equal(bridge.__webrtcPeerReady, null, 'promise lock should be cleared on auth-close');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
