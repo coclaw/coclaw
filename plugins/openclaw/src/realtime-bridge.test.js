@@ -2260,6 +2260,77 @@ test('gateway retry exhausts after 9 attempts and enters gave-up state', async (
 	}
 });
 
+test('gateway handshake startup-race recovery: first fails, 1s retry succeeds', async () => {
+	// 前置档退避表（[1s, 1.5s, 1.5s, 1.5s, ...]）的真实部署目标场景：
+	// gateway server 启动期 sidecars 还没就绪 → 首次握手收到
+	// "gateway starting; retry shortly" → 1s 后第二次重试落进 server 已就绪窗口 → 成功。
+	// 这是该退避表设计要解决的最常见场景，需端到端验证一遍。
+	FakeWebSocket.instances.length = 0;
+	resetRemoteLog();
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	// 阶段一用 captureTimers 锁定 retry 调度并立即触发；阶段二恢复真定时器
+	// 让握手成功路径里的 __ensureAllAgentSessions / drain 走原生异步 tick。
+	const t = captureTimers();
+	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
+	let gw2;
+	try {
+		// 首次握手：模拟 server 启动期回 UNAVAILABLE
+		const { gateway: gw1 } = await bootGatewayWithChallenge(bridge);
+		const req1 = lastConnectReq(gw1);
+		gw1.emit('message', { data: JSON.stringify({
+			type: 'res', id: req1.id, ok: false,
+			error: { code: 'UNAVAILABLE', message: 'gateway starting; retry shortly', retryAfterMs: 500 },
+		}) });
+		assert.equal(bridge.gatewayReady, false);
+		assert.equal(bridge.__gatewayAttempts, 1);
+		assert.equal(bridge.__gatewayGaveUp, false);
+		// 前置档：第一次重试 1s 后调度
+		const retryTimer = t.timers.find((x) => !x.__cancelled && !x.__fired && x.__ms === 1_000);
+		assert.ok(retryTimer, 'first retry scheduled at 1s (front-loaded)');
+
+		// 触发重试：新 WS 实例同步创建
+		assert.equal(t.fireFirstRetryTimer(), true, 'retry timer fires');
+		gw2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		assert.notEqual(gw2, gw1, 'retry creates a new gateway WS');
+
+		// 切回真定时器：后续握手成功 + drain 都走原生 setTimeout
+		t.restore();
+		gw2.readyState = 1;
+		gw2.emit('open', {});
+		gw2.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n2' } }) });
+		const req2 = lastConnectReq(gw2);
+		gw2.emit('message', { data: JSON.stringify({ type: 'res', id: req2.id, ok: true, payload: {} }) });
+		await drainEnsureAllAgentSessions(gw2);
+
+		// bridge 进入健康态，attempts 归零（"成功握手 → 重置失败计数"），无 gave-up
+		assert.equal(bridge.gatewayReady, true, 'bridge healthy after retry succeeds');
+		assert.equal(bridge.__gatewayAttempts, 0, 'attempts reset on successful handshake');
+		assert.equal(bridge.__gatewayGaveUp, false);
+		assert.equal(bridge.__gatewayRetryTimer, null, 'no further retry scheduled after success');
+
+		// remoteLog 应有：第一次失败 + 第二次成功
+		const server = FakeWebSocket.instances[0];
+		const logs = collectRemoteLogTexts(server);
+		assert.equal(
+			logs.filter((m) => /ws\.connect-failed peer=gateway/.test(m)).length, 1,
+			'exactly one connect-failed before recovery',
+		);
+		assert.ok(logs.some((m) => m === 'ws.connected peer=gateway'), 'connected log emitted on success');
+	}
+	finally {
+		t.restore();
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
 test('__waitGatewayReady returns false when gateway has given up', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
