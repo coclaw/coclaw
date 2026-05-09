@@ -186,27 +186,6 @@ export function saveUrlAsFile(url, filename) {
 	document.body.removeChild(a);
 }
 
-// 用户主动取消分享面板的消息关键词白名单（覆盖鸿蒙/Android/iOS 多语言）
-// 仅纳入高确信度的"取消/驳回"语义，避免吞掉真失败（如 abort/error/failed 等模糊词）
-const USER_CANCEL_KEYWORDS = [
-	'cancel',           // canceled / cancelled
-	'取消',             // 中文
-	'キャンセル',       // 日文
-	'dismiss',          // dismissed by user
-	'user declined',
-	'user aborted',
-];
-
-/**
- * 判断分享报错是否为"用户主动取消"
- * @param {unknown} err
- * @returns {boolean}
- */
-function __isUserCancellation(err) {
-	const msg = String(err?.message || '').toLowerCase();
-	return USER_CANCEL_KEYWORDS.some((kw) => msg.includes(kw));
-}
-
 /**
  * Capacitor 原生：写临时文件 → 分享 → 清理
  * @param {Blob} blob
@@ -230,8 +209,8 @@ async function __nativeShareFile(blob, filename) {
 	try {
 		await Share.share({ files: [uri] });
 	} catch (err) {
-		// 用户主动取消分享面板时不向上传播（多平台/多语言消息见 USER_CANCEL_KEYWORDS）
-		if (!__isUserCancellation(err)) throw err;
+		// 用户取消分享面板时 Capacitor 会 reject "Share canceled"，属正常操作不向上传播
+		if (!/cancel/i.test(err?.message)) throw err;
 	} finally {
 		await Filesystem.deleteFile({ path: cachePath, directory: Directory.Cache })
 			.catch((err) => console.warn('[saveBlobToFile] cache cleanup failed:', err));
