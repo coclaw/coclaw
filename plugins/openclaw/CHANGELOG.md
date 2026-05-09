@@ -1,5 +1,38 @@
 # @coclaw/openclaw-coclaw
 
+## 0.21.2
+
+### Patch Changes
+
+- 2d7e257: fix(plugin): decouple server WS / gateway WS / WebRTC P2P lifecycles (step 1: pure decoupling)
+
+  Round 2 refactor for the realtime bridge. The three connections — external (plugin↔CoClaw server WS), internal (plugin↔local OpenClaw gateway WS), and P2P (WebRTC PC + DC routing tables) — are now lifecycle-independent.
+
+  Server WS non-auth-close (4000 / 1006 / 1011 etc.) no longer cascades to closing the gateway WS, clearing `__dcPendingRequests`, clearing `__runEventRoutes`, or canceling gateway retry/attempts. Auth-close (4001 / 4003) still tears down PC + fileHandler + token (plugin loses operating right) but no longer cascades to the gateway WS.
+
+  This is pure decoupling — no new behavior added. The push-splitting (action 3 in the plan) lands separately in step 2.
+
+- d1dceaa: fix(plugin): re-push instance info on outer line up when inner line already ready (step 2)
+
+  Round 2 step 2 follow-up to the three-line decoupling. Previously `__pushInstanceInfo` was triggered only on inner line (gateway WS) connect-ok. After step 1 the inner line can become ready before the outer line (CoClaw server WS) — that first broadcast then drops on the server path because `__forwardToServer` rejects sends while the outer line is still down.
+
+  This change adds a guarded re-push at outer line `sock.open`: when `gatewayReady === true` we call `__pushInstanceInfo` again so the server / admin dashboard sees the plugin's `name / hostName / pluginVersion / agentModels` as soon as the outer line comes up. The guard is essential — `__pushInstanceInfo` collects `agentModels` via the gateway `agents.list` RPC, so pushing while inner line is down would emit incomplete data.
+
+  Naming note: this is "re-push" semantics, not a true split — the inner-line trigger remains in place. The "splitting" framing in the step 1 changeset was approximate.
+
+- cc0eb36: chore(plugin): promote inner-line handshake logs from debug to info
+
+  Promote four plugin↔gateway WebSocket handshake milestones from `debug` to `info` so they survive the default log level (which usually filters out debug):
+
+  - `[coclaw] gateway ws open, waiting for connect.challenge`
+  - `[coclaw] gateway event <- connect.challenge legacyMode=...`
+  - `[coclaw] gateway connect request -> id=...`
+  - `[coclaw] gateway connect ok <- id=...`
+
+  These are first-class lifecycle events for the inner line and align with the existing outer-line `[coclaw] realtime bridge connected: ...` (also `info`). Previously they only showed up under verbose logging, making it harder to diagnose handshake races (e.g. plugin startup colliding with `gateway starting; retry shortly`). Higher-volume RPC routing logs (`rpc-res-route` / `run-event-route`) remain `debug`.
+
+  No behavior change.
+
 ## 0.21.1
 
 ### Patch Changes
