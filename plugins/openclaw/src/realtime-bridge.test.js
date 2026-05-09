@@ -2137,9 +2137,9 @@ test('v3 handshake non-signature failure does NOT trigger legacy and schedules r
 		assert.equal(gateway.readyState, 3, 'gateway ws closed after non-recoverable failure');
 		assert.equal(bridge.__gatewayLegacyMode, false, 'legacy mode NOT set on non-signature failure');
 		assert.equal(bridge.__gatewayAttempts, 1, 'one failure counted');
-		// 下一次尝试已调度（delay[0]=5s）
-		const retryTimer = t.timers.find((x) => !x.__cancelled && x.__ms === 5_000);
-		assert.ok(retryTimer, 'a 5s retry timer should be scheduled');
+		// 下一次尝试已调度（delay[0]=1s，前置档加快启动期重试）
+		const retryTimer = t.timers.find((x) => !x.__cancelled && x.__ms === 1_000);
+		assert.ok(retryTimer, 'a 1s retry timer should be scheduled');
 
 		const logs = collectRemoteLogTexts(server);
 		assert.ok(logs.some((m) => /ws\.connect-failed peer=gateway msg=auth failed/.test(m)));
@@ -2183,7 +2183,7 @@ test('learned legacy mode sends legacy handshake on subsequent WS challenge', as
 		assert.equal(gw1.readyState, 3);
 		assert.equal(bridge.__gatewayLegacyMode, true);
 
-		// 触发第一个重试定时器（5s），进入第二条 WS
+		// 触发第一个重试定时器（1s，前置档），进入第二条 WS
 		assert.equal(t.fireFirstRetryTimer(), true, 'first retry timer fired');
 		const gw2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 		assert.notEqual(gw2, gw1);
@@ -2202,7 +2202,7 @@ test('learned legacy mode sends legacy handshake on subsequent WS challenge', as
 	}
 });
 
-test('gateway retry exhausts after 5 attempts and enters gave-up state', async () => {
+test('gateway retry exhausts after 9 attempts and enters gave-up state', async () => {
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
@@ -2221,9 +2221,9 @@ test('gateway retry exhausts after 5 attempts and enters gave-up state', async (
 		gw0.emit('message', { data: JSON.stringify({ type: 'res', id: req0.id, ok: false, error: { message: 'auth failed' } }) });
 		assert.equal(bridge.__gatewayAttempts, 1);
 
-		// 5 次重试，每次都失败
+		// 9 次重试，每次都失败
 		const instancesBefore = [gw0];
-		for (let i = 0; i < 5; i++) {
+		for (let i = 0; i < 9; i++) {
 			assert.equal(t.fireFirstRetryTimer(), true, `retry #${i + 1} timer fired`);
 			const gw = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 			assert.ok(!instancesBefore.includes(gw), `retry #${i + 1} should create a new WS`);
@@ -2235,8 +2235,8 @@ test('gateway retry exhausts after 5 attempts and enters gave-up state', async (
 			gw.emit('message', { data: JSON.stringify({ type: 'res', id: req.id, ok: false, error: { message: 'auth failed' } }) });
 		}
 
-		// 第 6 次失败（5 次重试用完） → gave-up
-		assert.equal(bridge.__gatewayAttempts, 6);
+		// 第 10 次失败（9 次重试用完） → gave-up
+		assert.equal(bridge.__gatewayAttempts, 10);
 		assert.equal(bridge.__gatewayGaveUp, true);
 		assert.equal(bridge.__gatewayRetryTimer, null, 'no further timer scheduled after gave-up');
 
@@ -2248,9 +2248,9 @@ test('gateway retry exhausts after 5 attempts and enters gave-up state', async (
 		// remoteLog 有一条 gave-up
 		const server = FakeWebSocket.instances[0];
 		const logs = collectRemoteLogTexts(server);
-		assert.ok(logs.some((m) => /gateway\.handshake\.gave-up attempts=6 lastReason=auth failed/.test(m)));
-		// 刷屏治理：在这 6 次尝试中 ws.connect-failed 应该恰好 6 条
-		assert.equal(logs.filter((m) => /ws\.connect-failed peer=gateway/.test(m)).length, 6);
+		assert.ok(logs.some((m) => /gateway\.handshake\.gave-up attempts=10 lastReason=auth failed/.test(m)));
+		// 刷屏治理：在这 10 次尝试中 ws.connect-failed 应该恰好 10 条
+		assert.equal(logs.filter((m) => /ws\.connect-failed peer=gateway/.test(m)).length, 10);
 	}
 	finally {
 		t.restore();
@@ -2318,8 +2318,8 @@ test('gateway disconnection after successful handshake reschedules with fresh re
 			}
 			// wasReady=true → attempts 被重置为 0，然后 __onGatewayAttemptFailed 递增到 1
 			assert.equal(bridge.__gatewayAttempts, 1);
-			const retryTimer = t.timers.find((x) => !x.__cancelled && x.__ms === 5_000);
-			assert.ok(retryTimer, 'should schedule retry with fresh 5s delay');
+			const retryTimer = t.timers.find((x) => !x.__cancelled && x.__ms === 1_000);
+			assert.ok(retryTimer, 'should schedule retry with fresh 1s delay');
 			// 成功后断开应打 disconnected 日志（connectFailReported=false）
 			const server = FakeWebSocket.instances[0];
 			const logs = collectRemoteLogTexts(server);
@@ -2400,7 +2400,7 @@ test('外线 close 不再级联清 gateway retry timer / attempts（三线独立
 		gateway.emit('message', { data: JSON.stringify({
 			type: 'res', id: req.id, ok: false, error: { message: 'auth failed' },
 		}) });
-		const scheduled = t.timers.find((x) => !x.__cancelled && x.__ms === 5_000);
+		const scheduled = t.timers.find((x) => !x.__cancelled && x.__ms === 1_000);
 		assert.ok(scheduled, 'retry timer should exist');
 		assert.equal(bridge.__gatewayAttempts, 1);
 
