@@ -15,6 +15,7 @@ import { clawRouter } from './routes/claw.route.js';
 import { infoRouter } from './routes/info.route.js';
 import { turnRouter } from './routes/turn.route.js';
 import { userRouter } from './routes/user.route.js';
+import { webAgentRouter } from './routes/web-agent.route.js';
 
 setupPassport();
 
@@ -98,6 +99,7 @@ export function createApp() {
 	app.use('/api/v1/claws', clawRouter);
 	app.use('/api/v1/claws', clawBotRouter);
 	app.use('/api/v1/turn', turnRouter);
+	app.use('/api/v1/web-agents', webAgentRouter);
 
 	app.use(globalErrorHandler);
 

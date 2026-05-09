@@ -31,6 +31,8 @@ model User {
   externalAuths			ExternalAuth[]
 	userSetting				UserSetting?
 	claws							Claw[]
+	webAgents					WebAgent[]
+	webAgentClicks		WebAgentClick[]
 
   @@index([createdAt])
 }
@@ -152,6 +154,40 @@ model ClawClaimCode {
 	expiresAt			DateTime
 
 	@@index([expiresAt])
+}
+
+// Web Agent 条目（系统预置 + 将来用户自建）
+model WebAgent {
+	id					Int @id @default(autoincrement()) @db.UnsignedInt
+
+	userId			BigInt? @db.UnsignedBigInt // NULL 表示系统预置；非 NULL 表某用户自建（第一版不开放）
+	user				User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+	slug				String? @db.VarChar(63) @unique // 仅预置使用，作为 syncPresets 稳定 key 与图标资源 key
+	name				String @db.VarChar(128)
+	url					String @db.VarChar(255)
+	sort				Int? @db.UnsignedInt // 仅预置使用，决定收纳顺序
+
+	createdAt		DateTime @default(now())
+	updatedAt		DateTime @default(now()) @updatedAt
+
+	clicks			WebAgentClick[]
+
+	@@index([userId])
+}
+
+// 用户对某 Web Agent 的点击聚合（per-user × per-WebAgent 一行）
+model WebAgentClick {
+	userId				BigInt @db.UnsignedBigInt
+	webAgentId		Int @db.UnsignedInt
+	user					User @relation(fields: [userId], references: [id], onDelete: Cascade)
+	webAgent			WebAgent @relation(fields: [webAgentId], references: [id], onDelete: Cascade)
+
+	clickCount		Int @default(0) @db.UnsignedInt
+	lastClickedAt	DateTime @default(now())
+
+	@@id([userId, webAgentId])
+	@@index([userId, lastClickedAt(sort: Desc)])
 }
 
 // express-session 持久化存储

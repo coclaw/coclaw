@@ -1,0 +1,424 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+	syncPresets,
+	findAllForUser,
+	findVisibleAgentId,
+	incrementClick,
+} from './web-agent.repo.js';
+
+// 简易 MySQL/Prisma 模拟：模型 webAgent + webAgentClick 记忆数据，按 slug 唯一约束模拟
+function makeFakeDb() {
+	const state = {
+		agents: [],          // {id, userId, slug, name, url, sort}
+		clicks: [],          // {userId, webAgentId, clickCount, lastClickedAt}
+		nextId: 1,
+	};
+	const trace = { calls: [] };
+
+	function findAgentBySlug(slug) {
+		return state.agents.find(a => a.slug === slug) ?? null;
+	}
+
+	function deleteAgent(id) {
+		// 级联清空对应 click 记录
+		state.agents = state.agents.filter(a => a.id !== id);
+		state.clicks = state.clicks.filter(c => c.webAgentId !== id);
+	}
+
+	const db = {
+		webAgent: {
+			deleteMany: async (args) => {
+				trace.calls.push({ method: 'webAgent.deleteMany', args });
+				const where = args?.where ?? {};
+				const remove = state.agents.filter((a) => {
+					if (where.userId !== undefined && a.userId !== where.userId) return false;
+					if (where.slug?.notIn) {
+						return !where.slug.notIn.includes(a.slug);
+					}
+					return true;
+				});
+				for (const a of remove) {
+					deleteAgent(a.id);
+				}
+				return { count: remove.length };
+			},
+			upsert: async (args) => {
+				trace.calls.push({ method: 'webAgent.upsert', args });
+				const slug = args.where.slug;
+				const existing = findAgentBySlug(slug);
+				if (existing) {
+					Object.assign(existing, args.update);
+					return existing;
+				}
+				const created = {
+					id: state.nextId++,
+					userId: args.create.userId ?? null,
+					slug: args.create.slug,
+					name: args.create.name,
+					url: args.create.url,
+					sort: args.create.sort ?? null,
+				};
+				state.agents.push(created);
+				return created;
+			},
+			findMany: async (args) => {
+				trace.calls.push({ method: 'webAgent.findMany', args });
+				const where = args.where;
+				const includeClicks = args.include?.clicks;
+				return state.agents
+					.filter((a) => {
+						const ors = where?.OR ?? [];
+						if (ors.length === 0) return true;
+						return ors.some((cond) => {
+							if (cond.userId === null) return a.userId === null;
+							if (cond.userId !== undefined) return a.userId === cond.userId;
+							return false;
+						});
+					})
+					.map(a => ({
+						...a,
+						clicks: includeClicks
+							? state.clicks
+								.filter(c => c.webAgentId === a.id && c.userId === includeClicks.where.userId)
+								.map(c => ({ lastClickedAt: c.lastClickedAt }))
+							: undefined,
+					}));
+			},
+			findFirst: async (args) => {
+				trace.calls.push({ method: 'webAgent.findFirst', args });
+				const id = args.where.id;
+				const ors = args.where.OR ?? [];
+				const found = state.agents.find((a) => {
+					if (a.id !== id) return false;
+					if (ors.length === 0) return true;
+					return ors.some((cond) => {
+						if (cond.userId === null) return a.userId === null;
+						if (cond.userId !== undefined) return a.userId === cond.userId;
+						return false;
+					});
+				});
+				if (!found) return null;
+				return { id: found.id };
+			},
+		},
+		webAgentClick: {
+			upsert: async (args) => {
+				trace.calls.push({ method: 'webAgentClick.upsert', args });
+				const { userId, webAgentId } = args.where.userId_webAgentId;
+				const existing = state.clicks.find(c => c.userId === userId && c.webAgentId === webAgentId);
+				if (existing) {
+					if (args.update.clickCount?.increment) {
+						existing.clickCount += args.update.clickCount.increment;
+					}
+					if (args.update.lastClickedAt) {
+						existing.lastClickedAt = args.update.lastClickedAt;
+					}
+					return existing;
+				}
+				const created = {
+					userId,
+					webAgentId,
+					clickCount: args.create.clickCount ?? 0,
+					lastClickedAt: args.create.lastClickedAt ?? new Date(),
+				};
+				state.clicks.push(created);
+				return created;
+			},
+		},
+	};
+
+	return { db, state, trace };
+}
+
+// 直接注入预置数据（绕过 syncPresets，便于测试 findAllForUser）
+function seedAgent(state, agent) {
+	state.agents.push({
+		id: state.nextId++,
+		userId: null,
+		slug: null,
+		name: '',
+		url: '',
+		sort: null,
+		...agent,
+	});
+}
+
+function seedClick(state, click) {
+	state.clicks.push({
+		clickCount: 1,
+		lastClickedAt: new Date(),
+		...click,
+	});
+}
+
+// ------- syncPresets -------
+
+test('syncPresets: 空 DB 时 upsert 全部预置', async () => {
+	const { db, state, trace } = makeFakeDb();
+	const presets = [
+		{ slug: 'a', name: 'A', url: 'https://a/', sort: 1 },
+		{ slug: 'b', name: 'B', url: 'https://b/', sort: 2 },
+	];
+
+	await syncPresets({ presets, db });
+
+	assert.equal(state.agents.length, 2);
+	const slugs = state.agents.map(a => a.slug).sort();
+	assert.deepEqual(slugs, ['a', 'b']);
+	for (const a of state.agents) {
+		assert.equal(a.userId, null);
+	}
+	// 调用顺序：先 deleteMany 后 upsert 序列
+	assert.equal(trace.calls[0].method, 'webAgent.deleteMany');
+	assert.equal(trace.calls[1].method, 'webAgent.upsert');
+});
+
+test('syncPresets: 跑两次结果一致（idempotent）', async () => {
+	const { db, state } = makeFakeDb();
+	const presets = [
+		{ slug: 'a', name: 'A', url: 'https://a/', sort: 1 },
+		{ slug: 'b', name: 'B', url: 'https://b/', sort: 2 },
+	];
+
+	await syncPresets({ presets, db });
+	const ids1 = state.agents.map(a => a.id).sort();
+	await syncPresets({ presets, db });
+	const ids2 = state.agents.map(a => a.id).sort();
+
+	assert.deepEqual(ids1, ids2);
+	assert.equal(state.agents.length, 2);
+});
+
+test('syncPresets: 已有 DB 项的 name/url/sort 改动会被 update', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'old name', url: 'https://old/', sort: 9 });
+
+	await syncPresets({
+		presets: [{ slug: 'a', name: 'new name', url: 'https://new/', sort: 1 }],
+		db,
+	});
+
+	const agent = state.agents.find(x => x.slug === 'a');
+	assert.equal(agent.name, 'new name');
+	assert.equal(agent.url, 'https://new/');
+	assert.equal(agent.sort, 1);
+});
+
+test('syncPresets: 从清单移除某条 → DB 中该条与其点击记录被级联清空', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	seedAgent(state, { slug: 'b', name: 'B', url: 'https://b/', sort: 2 });
+	const bId = state.agents.find(a => a.slug === 'b').id;
+	seedClick(state, { userId: 100n, webAgentId: bId });
+	seedClick(state, { userId: 101n, webAgentId: bId });
+
+	await syncPresets({
+		presets: [{ slug: 'a', name: 'A', url: 'https://a/', sort: 1 }],
+		db,
+	});
+
+	assert.deepEqual(state.agents.map(a => a.slug), ['a']);
+	// b 的点击记录已被级联清空
+	assert.equal(state.clicks.filter(c => c.webAgentId === bId).length, 0);
+});
+
+test('syncPresets: 不会误删用户自建（userId IS NOT NULL）的条目', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	seedAgent(state, { userId: 200n, slug: null, name: 'My GPT', url: 'https://my/', sort: null });
+
+	await syncPresets({
+		presets: [{ slug: 'a', name: 'A', url: 'https://a/', sort: 1 }],
+		db,
+	});
+
+	const userBuilt = state.agents.find(a => a.userId === 200n);
+	assert.ok(userBuilt, 'user-built agent should remain');
+	assert.equal(userBuilt.name, 'My GPT');
+});
+
+test('syncPresets: 重复 slug 抛错（在删除/upsert 前 fail-fast）', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'kept', name: 'X', url: 'https://x/', sort: 0 });
+	const presets = [
+		{ slug: 'a', name: 'A', url: 'https://a/', sort: 1 },
+		{ slug: 'a', name: 'B', url: 'https://b/', sort: 2 },
+	];
+
+	await assert.rejects(
+		() => syncPresets({ presets, db }),
+		/duplicate preset slug: a/,
+	);
+	// fail-fast：DB 状态未变
+	assert.equal(state.agents.length, 1);
+	assert.equal(state.agents[0].slug, 'kept');
+});
+
+test('syncPresets: 字段缺失抛错（fail-fast）', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'kept', name: 'X', url: 'https://x/', sort: 0 });
+
+	await assert.rejects(
+		() => syncPresets({
+			presets: [{ slug: 'a', name: 'A', sort: 1 }], // 缺 url
+			db,
+		}),
+		/invalid preset/,
+	);
+	assert.equal(state.agents.length, 1);
+});
+
+test('syncPresets: 默认参数（无 args）使用模块 PRESETS 与单例 prisma — 触发 deleteMany 被注入 db 拒绝', async () => {
+	// 验证 default-arg 分支：传 db 但不传 presets
+	const { db, state } = makeFakeDb();
+	await syncPresets({ db });
+	// 默认 PRESETS 共 5 项
+	assert.equal(state.agents.length, 5);
+});
+
+test('syncPresets: presets=[] 时清空所有预置且保留用户自建', async () => {
+	// 全下架边界：清单清空 = 所有预置被删除（含级联清空 click），但用户自建条目不受影响
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	seedAgent(state, { slug: 'b', name: 'B', url: 'https://b/', sort: 2 });
+	seedAgent(state, { userId: 200n, slug: null, name: 'My', url: 'https://m/', sort: null });
+	const aId = state.agents.find(a => a.slug === 'a').id;
+	seedClick(state, { userId: 100n, webAgentId: aId });
+
+	await syncPresets({ presets: [], db });
+
+	// 预置全清空，含级联清空 click
+	assert.equal(state.agents.filter(a => a.userId === null).length, 0);
+	assert.equal(state.clicks.filter(c => c.webAgentId === aId).length, 0);
+	// 用户自建保留
+	const userBuilt = state.agents.find(a => a.userId === 200n);
+	assert.ok(userBuilt, 'user-built agent should remain');
+	assert.equal(userBuilt.name, 'My');
+});
+
+// ------- findAllForUser -------
+
+test('findAllForUser: 返回预置 + 该用户自建，含未点过的 lastClickedAt=null', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	seedAgent(state, { slug: 'b', name: 'B', url: 'https://b/', sort: 2 });
+	seedAgent(state, { userId: 200n, slug: null, name: 'Mine', url: 'https://m/', sort: null });
+	seedAgent(state, { userId: 201n, slug: null, name: 'NotMine', url: 'https://n/', sort: null });
+
+	const items = await findAllForUser(200n, db);
+
+	const slugs = items.map(i => i.slug ?? `mine:${i.name}`).sort();
+	assert.deepEqual(slugs, ['a', 'b', 'mine:Mine']);
+	for (const i of items) {
+		assert.equal(i.lastClickedAt, null);
+	}
+});
+
+test('findAllForUser: 点过的项 lastClickedAt 来自 clicks[0]', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	const aId = state.agents[0].id;
+	const clickedAt = new Date('2026-05-01T10:00:00Z');
+	seedClick(state, { userId: 100n, webAgentId: aId, lastClickedAt: clickedAt });
+
+	const items = await findAllForUser(100n, db);
+
+	assert.equal(items.length, 1);
+	assert.equal(items[0].slug, 'a');
+	assert.equal(items[0].lastClickedAt.getTime(), clickedAt.getTime());
+});
+
+test('findAllForUser: 别人的点击记录不会泄露到当前用户的结果', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	const aId = state.agents[0].id;
+	seedClick(state, { userId: 999n, webAgentId: aId, lastClickedAt: new Date('2026-05-01') });
+
+	const items = await findAllForUser(100n, db);
+
+	assert.equal(items.length, 1);
+	assert.equal(items[0].lastClickedAt, null);
+});
+
+test('findAllForUser: 字段顺序与设计一致（id/slug/name/url/sort/lastClickedAt）', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+
+	const items = await findAllForUser(100n, db);
+
+	assert.deepEqual(Object.keys(items[0]), ['id', 'slug', 'name', 'url', 'sort', 'lastClickedAt']);
+});
+
+// ------- findVisibleAgentId -------
+
+test('findVisibleAgentId: 命中预置返回 id', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	const id = state.agents[0].id;
+
+	const got = await findVisibleAgentId({ userId: 100n, webAgentId: id }, db);
+	assert.equal(got, id);
+});
+
+test('findVisibleAgentId: 命中当前用户自建返回 id', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { userId: 100n, slug: null, name: 'Mine', url: 'https://m/', sort: null });
+	const id = state.agents[0].id;
+
+	const got = await findVisibleAgentId({ userId: 100n, webAgentId: id }, db);
+	assert.equal(got, id);
+});
+
+test('findVisibleAgentId: 命中别人自建返回 null', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { userId: 999n, slug: null, name: 'NotMine', url: 'https://n/', sort: null });
+	const id = state.agents[0].id;
+
+	const got = await findVisibleAgentId({ userId: 100n, webAgentId: id }, db);
+	assert.equal(got, null);
+});
+
+test('findVisibleAgentId: 不存在 id 返回 null', async () => {
+	const { db } = makeFakeDb();
+	const got = await findVisibleAgentId({ userId: 100n, webAgentId: 9999 }, db);
+	assert.equal(got, null);
+});
+
+// ------- incrementClick -------
+
+test('incrementClick: 首次点击 create clickCount=1', async () => {
+	const { db, state } = makeFakeDb();
+
+	await incrementClick({ userId: 100n, webAgentId: 1 }, db);
+
+	assert.equal(state.clicks.length, 1);
+	assert.equal(state.clicks[0].clickCount, 1);
+	assert.equal(state.clicks[0].userId, 100n);
+	assert.equal(state.clicks[0].webAgentId, 1);
+});
+
+test('incrementClick: 重复点击 increment clickCount + 刷新 lastClickedAt', async () => {
+	const { db, state } = makeFakeDb();
+	seedClick(state, {
+		userId: 100n,
+		webAgentId: 1,
+		clickCount: 5,
+		lastClickedAt: new Date('2026-01-01T00:00:00Z'),
+	});
+
+	const newAt = new Date('2026-05-01T10:00:00Z');
+	await incrementClick({ userId: 100n, webAgentId: 1, now: newAt }, db);
+
+	assert.equal(state.clicks.length, 1);
+	assert.equal(state.clicks[0].clickCount, 6);
+	assert.equal(state.clicks[0].lastClickedAt.getTime(), newAt.getTime());
+});
+
+test('incrementClick: where 使用复合主键 userId_webAgentId 拼接', async () => {
+	const { db, trace } = makeFakeDb();
+	await incrementClick({ userId: 100n, webAgentId: 1 }, db);
+	const upsertCall = trace.calls.find(c => c.method === 'webAgentClick.upsert');
+	assert.deepEqual(upsertCall.args.where.userId_webAgentId, { userId: 100n, webAgentId: 1 });
+});

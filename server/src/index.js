@@ -2,4 +2,7 @@ import 'dotenv/config';
 
 import { startServer } from './server.js';
 
-startServer();
+startServer().catch((err) => {
+	console.error('[coclaw/server] failed to start:', err);
+	process.exit(1);
+});
