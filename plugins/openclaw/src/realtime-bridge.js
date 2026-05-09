@@ -25,11 +25,17 @@ const SERVER_HB_PING_MS = 25_000;
 const SERVER_HB_TIMEOUT_MS = 45_000;
 const SERVER_HB_MAX_MISS = 3; // 连续 3 次无响应才断连（~135s）。上游主线程 spike 实测最坏 ~89.5s（issue #75069），余量 ~1.5x
 // gateway 握手失败的指数退避表：每个元素是"上一次失败"之后、"下一次尝试"之前的等待时间。
-// 最多 9 次重试（加上首次尝试共 10 次），全部失败后进入 gave-up 终态，不再自动尝试。
-// 表前置 4 档（1s + 3×1.5s）专门压低"server 启动期 sidecars 还没就绪"场景下的等待——
-// server 推荐 retryAfterMs=500，前 4 档已远超过；首次握手失败后大概率第 2 次就成功。
+// 最多 N 次重试（N=length；加上首次尝试共 N+1 次），全部失败后进入 gave-up 终态，
+// 终态后必须 stop+start 才能恢复（无运行期自动复活）——所以预算要够覆盖慢启动场景。
+// 表前置 4 档（1s + 3×1.5s）专门压低"server 启动期 sidecars 还没就绪"窗口（推荐
+// retryAfterMs=500）；尾段 9 × 20s 把总预算拉到 ~200s（>3 分钟），覆盖 profile 初始化、
+// 笔记本刚开机磁盘忙、pion 子进程首次 spawn 等慢启动场景，避免误判"放弃"。
 // export 是为了让测试 helper 通过同一份常量识别 retry timer，避免硬编码副本与生产代码漂移。
-export const GATEWAY_RETRY_DELAYS_MS = [1_000, 1_500, 1_500, 1_500, 5_000, 10_000, 20_000, 20_000, 20_000];
+export const GATEWAY_RETRY_DELAYS_MS = [
+	1_000, 1_500, 1_500, 1_500,
+	5_000, 10_000,
+	20_000, 20_000, 20_000, 20_000, 20_000, 20_000, 20_000, 20_000, 20_000,
+];
 // v3 握手失败时，只有错误消息匹配此正则才回退到不带 device 的 legacy 握手。
 // 严格限定在"签名/设备/scope/协议"相关错误，避免对网络/内部错误做无意义的降级尝试。
 const GATEWAY_HANDSHAKE_FALLBACK_PATTERN = /signature|device|scope|protocol/i;

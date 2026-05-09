@@ -2202,7 +2202,11 @@ test('learned legacy mode sends legacy handshake on subsequent WS challenge', as
 	}
 });
 
-test('gateway retry exhausts after 9 attempts and enters gave-up state', async () => {
+test('gateway retry exhausts after all configured attempts and enters gave-up state', async () => {
+	// 重试上限 = GATEWAY_RETRY_DELAYS_MS.length；首发失败 + N 次重试 = N+1 次尝试都失败 → gave-up。
+	// 这里全程通过常量长度断言，预算调整时本测试不需要随之改动。
+	const retryCount = GATEWAY_RETRY_DELAYS_MS.length;
+	const totalAttempts = retryCount + 1;
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
@@ -2221,9 +2225,9 @@ test('gateway retry exhausts after 9 attempts and enters gave-up state', async (
 		gw0.emit('message', { data: JSON.stringify({ type: 'res', id: req0.id, ok: false, error: { message: 'auth failed' } }) });
 		assert.equal(bridge.__gatewayAttempts, 1);
 
-		// 9 次重试，每次都失败
+		// 配置中的全部重试，每次都失败
 		const instancesBefore = [gw0];
-		for (let i = 0; i < 9; i++) {
+		for (let i = 0; i < retryCount; i++) {
 			assert.equal(t.fireFirstRetryTimer(), true, `retry #${i + 1} timer fired`);
 			const gw = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 			assert.ok(!instancesBefore.includes(gw), `retry #${i + 1} should create a new WS`);
@@ -2235,8 +2239,8 @@ test('gateway retry exhausts after 9 attempts and enters gave-up state', async (
 			gw.emit('message', { data: JSON.stringify({ type: 'res', id: req.id, ok: false, error: { message: 'auth failed' } }) });
 		}
 
-		// 第 10 次失败（9 次重试用完） → gave-up
-		assert.equal(bridge.__gatewayAttempts, 10);
+		// 全部失败 → gave-up
+		assert.equal(bridge.__gatewayAttempts, totalAttempts);
 		assert.equal(bridge.__gatewayGaveUp, true);
 		assert.equal(bridge.__gatewayRetryTimer, null, 'no further timer scheduled after gave-up');
 
@@ -2248,9 +2252,10 @@ test('gateway retry exhausts after 9 attempts and enters gave-up state', async (
 		// remoteLog 有一条 gave-up
 		const server = FakeWebSocket.instances[0];
 		const logs = collectRemoteLogTexts(server);
-		assert.ok(logs.some((m) => /gateway\.handshake\.gave-up attempts=10 lastReason=auth failed/.test(m)));
-		// 刷屏治理：在这 10 次尝试中 ws.connect-failed 应该恰好 10 条
-		assert.equal(logs.filter((m) => /ws\.connect-failed peer=gateway/.test(m)).length, 10);
+		const gaveUpRe = new RegExp(`gateway\\.handshake\\.gave-up attempts=${totalAttempts} lastReason=auth failed`);
+		assert.ok(logs.some((m) => gaveUpRe.test(m)), `expected gave-up log with attempts=${totalAttempts}`);
+		// 刷屏治理：所有尝试中 ws.connect-failed 应该恰好等于尝试次数
+		assert.equal(logs.filter((m) => /ws\.connect-failed peer=gateway/.test(m)).length, totalAttempts);
 	}
 	finally {
 		t.restore();
