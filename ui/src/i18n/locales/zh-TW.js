@@ -473,8 +473,15 @@ export const zhTWMessages = {
 		backToAuthPrototype: '返回認證原型',
 	},
 	webAgents: {
-		title: '網頁智慧助手',
-		entryName: '網頁智慧助手',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: '暫無可用項目',
+		vendors: {
+			deepseek: '深度求索',
+			doubao: '字節跳動',
+			qwen: '阿里巴巴',
+			kimi: '月之暗面',
+			yuanbao: '騰訊',
+		},
 	},
 };

@@ -473,8 +473,15 @@ export const jaMessages = {
 		backToAuthPrototype: '認証プロトタイプに戻る',
 	},
 	webAgents: {
-		title: 'Web エージェント',
-		entryName: 'Web エージェント',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: '利用可能な項目はありません',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

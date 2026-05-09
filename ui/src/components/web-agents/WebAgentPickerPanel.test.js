@@ -32,7 +32,7 @@ function createWrapper(options = {}) {
 		global: {
 			plugins: [pinia],
 			stubs: { UIcon: UIconStub, UButton: UButtonStub },
-			mocks: { $t: (k) => k },
+			mocks: { $t: (k) => k, $te: () => false },
 		},
 		...options,
 	});
@@ -56,7 +56,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -77,7 +77,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -99,7 +99,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -122,7 +122,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -147,7 +147,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -175,7 +175,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -201,7 +201,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -229,7 +229,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -258,7 +258,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -289,7 +289,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
@@ -315,12 +315,136 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 
 		expect(wrapper.find('[data-testid="web-agent-picker-loading"]').exists()).toBe(true);
 		expect(wrapper.find('[data-testid="web-agent-picker-error"]').exists()).toBe(false);
+	});
+
+	test('item 右侧两端对齐显示 i18n 厂商名（slug 命中 webAgents.vendors.<slug>）', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.loading = false;
+		store.items = [
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: null },
+		];
+
+		const vendorTable = { 'webAgents.vendors.deepseek': '深度求索' };
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: {
+					$t: (k) => vendorTable[k] ?? k,
+					$te: (k) => k in vendorTable,
+				},
+			},
+		});
+
+		const vendor = wrapper.find('[data-testid="web-agent-item-vendor"]');
+		expect(vendor.exists()).toBe(true);
+		expect(vendor.text()).toBe('深度求索');
+	});
+
+	test('item 厂商名：slug 未在 vendors map 命中时不渲染（避免回退成键名）', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.loading = false;
+		store.items = [
+			{ id: 9, slug: 'unknown-brand', name: 'X', url: 'u', sort: 9, lastClickedAt: null },
+		];
+
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: { $t: (k) => k, $te: () => false },
+			},
+		});
+
+		expect(wrapper.find('[data-testid="web-agent-item-vendor"]').exists()).toBe(false);
+	});
+
+	test('item 厂商名极端长名时也参与截断（truncate + min-w-0，无 shrink-0）', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.loading = false;
+		store.items = [
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: null },
+		];
+
+		const vendorTable = { 'webAgents.vendors.deepseek': 'A Very Long Vendor Name That Should Truncate' };
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: {
+					$t: (k) => vendorTable[k] ?? k,
+					$te: (k) => k in vendorTable,
+				},
+			},
+		});
+
+		const vendor = wrapper.find('[data-testid="web-agent-item-vendor"]');
+		expect(vendor.exists()).toBe(true);
+		const cls = vendor.classes();
+		expect(cls).toContain('truncate');
+		expect(cls).toContain('min-w-0');
+		expect(cls).not.toContain('shrink-0');
+	});
+
+	test('item 厂商名：自建项 slug=null 不渲染厂商', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.loading = false;
+		store.items = [
+			{ id: 42, slug: null, name: 'My Site', url: 'u', sort: null, lastClickedAt: null },
+		];
+
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				// 即使 $te 一律返回 true，slug=null 也不应触发 vendor 查询
+				mocks: { $t: () => '不该出现', $te: () => true },
+			},
+		});
+
+		expect(wrapper.find('[data-testid="web-agent-item-vendor"]').exists()).toBe(false);
+	});
+
+	test('item 容器用 -mx-3 抵消 dialog body 横向 padding，让 icon 与 title 纵向对齐', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.loading = false;
+		store.items = [
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: null },
+		];
+
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: { $t: (k) => k, $te: () => false },
+			},
+		});
+
+		const item = wrapper.find('[data-testid="web-agent-item-deepseek"]');
+		// 视觉对齐契约：负 margin 必须存在；同时保留 cursor-pointer 让 hover 出现手型
+		expect(item.classes()).toContain('-mx-3');
+		expect(item.classes()).toContain('cursor-pointer');
 	});
 
 	test('item 图标和 fallback UIcon 均为装饰性，不会被屏幕阅读器重复读出', () => {
@@ -337,7 +461,7 @@ describe('WebAgentPickerPanel', () => {
 			global: {
 				plugins: [pinia],
 				stubs: { UIcon: UIconStub, UButton: UButtonStub },
-				mocks: { $t: (k) => k },
+				mocks: { $t: (k) => k, $te: () => false },
 			},
 		});
 

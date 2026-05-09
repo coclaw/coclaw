@@ -473,8 +473,15 @@ export const frMessages = {
 		backToAuthPrototype: 'Retour au prototype d\'authentification',
 	},
 	webAgents: {
-		title: 'Agent Web',
-		entryName: 'Agent Web',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: 'Aucun élément disponible',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

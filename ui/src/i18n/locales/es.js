@@ -473,8 +473,15 @@ export const esMessages = {
 		backToAuthPrototype: 'Volver al prototipo de autenticación',
 	},
 	webAgents: {
-		title: 'Agente Web',
-		entryName: 'Agente Web',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: 'No hay elementos disponibles',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

@@ -43,26 +43,13 @@
 			</div>
 		</header>
 
-		<!-- Group 0: Web Agent 顶部固定入口（永远显示） -->
-		<nav class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
-			<button
-				type="button"
-				data-testid="web-agent-entry"
-				class="group flex h-11 w-full items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
-				@click="onOpenWebAgentPicker"
-			>
-				<UIcon name="i-lucide-globe" class="size-6 text-dimmed" />
-				<span class="min-w-0 flex-1 truncate">{{ $t('webAgents.entryName') }}</span>
-			</button>
-		</nav>
-
 		<!-- Group 1: 机器人操作入口 -->
-		<nav v-if="clawActionItems.length" class="mt-3 space-y-0 px-2">
+		<nav v-if="clawActionItems.length" class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
 				<RouterLink
 					v-for="item in clawActionItems"
 					:key="item.id"
 					:to="item.to"
-					class="group flex h-11 items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
+					class="group flex h-11 cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
 					:class="resolvePath(item.to) === currentPath ? 'bg-accented text-highlighted' : ''"
 					role="listitem"
 				>
@@ -76,7 +63,7 @@
 			<div
 				v-for="item in agentItems"
 				:key="item.id"
-				class="group flex h-11 items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
+				class="group flex h-11 cursor-pointer items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
 				:class="item.active ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
@@ -124,18 +111,23 @@
 			</div>
 		</nav>
 
-		<!-- Web Agents：用户点过的最近条目（按 lastClickedAt DESC），夹在 OC Agents 与 Topics 之间；空时不渲染容器 -->
-		<nav
-			v-if="recentWebAgents.length"
-			data-testid="web-agent-section-recent"
-			class="mt-3 space-y-0 px-2"
-		>
+		<!-- Web Agents 分组：固定入口 + 用户点过的最近条目（按 lastClickedAt DESC） -->
+		<nav data-testid="web-agent-section" class="mt-3 space-y-0 px-2">
+			<button
+				type="button"
+				data-testid="web-agent-entry"
+				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
+				@click="onOpenWebAgentPicker"
+			>
+				<UIcon name="i-lucide-globe" class="size-6 text-teal-500" />
+				<span class="min-w-0 flex-1 truncate">{{ $t('webAgents.entryName') }}</span>
+			</button>
 			<button
 				v-for="item in recentWebAgents"
 				:key="item.id"
 				type="button"
 				:data-testid="`web-agent-recent-${item.slug ?? 'custom-' + item.id}`"
-				class="group flex h-11 w-full items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
+				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
 				@click="onClickRecentWebAgent(item)"
 			>
 				<img
@@ -160,7 +152,7 @@
 			<div
 				v-for="item in topicItems"
 				:key="item.id"
-				class="group flex h-11 items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
+				class="group flex h-11 cursor-pointer items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
 				:class="resolvePath(item.to) === currentPath ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
@@ -211,16 +203,19 @@ import logoSrc from '../assets/coclaw-logo.jpg';
 import { isCapacitorApp } from '../utils/platform.js';
 import { openExternalUrl } from '../utils/external-url.js';
 
-// 与 WebAgentPickerPanel 一致的 eager glob：slug → 静态资源 URL
-const webAgentIconModules = import.meta.glob('../assets/web-agents/*.svg', {
+// 与 WebAgentPickerPanel 一致的 eager glob：slug → 静态资源 URL（svg/png 共享）
+const webAgentIconModules = import.meta.glob('../assets/web-agents/*.{svg,png}', {
 	eager: true,
 	query: '?url',
 	import: 'default',
 });
 const webAgentIconBySlug = {};
 for (const [path, url] of Object.entries(webAgentIconModules)) {
-	const slug = path.match(/\/([^/]+)\.svg$/)?.[1];
-	if (slug) webAgentIconBySlug[slug] = url;
+	const m = path.match(/\/([^/]+)\.(svg|png)$/);
+	if (!m) continue;
+	const [, slug, ext] = m;
+	if (webAgentIconBySlug[slug] && ext === 'png') continue;
+	webAgentIconBySlug[slug] = url;
 }
 
 function toTopicLabel(topic, t) {

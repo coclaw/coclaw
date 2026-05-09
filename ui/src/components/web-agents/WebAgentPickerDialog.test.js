@@ -30,7 +30,8 @@ const UModalStub = {
 	template: `<div
 		class="u-modal-stub"
 		:data-fullscreen="String(fullscreen)"
-		:data-has-ui="ui ? 'true' : 'false'"
+		:data-ui-body="ui?.body ?? ''"
+		:data-ui-header="ui?.header ?? ''"
 		:data-title="title"
 		:data-description="description"
 	>
@@ -55,18 +56,30 @@ describe('WebAgentPickerDialog', () => {
 		vi.clearAllMocks();
 	});
 
-	test('ltMd=true 时 fullscreen=true 并应用 safeAreaUi', () => {
+	test('ltMd=true 时 fullscreen=true，body 上紧 pt-3、下留 pb-4 并双断点同步带 safe-area-inset-bottom 兜底', () => {
 		const wrapper = mountDialog({ ltMd: true });
 		const modal = wrapper.find('.u-modal-stub');
 		expect(modal.attributes('data-fullscreen')).toBe('true');
-		expect(modal.attributes('data-has-ui')).toBe('true');
+		const body = modal.attributes('data-ui-body');
+		expect(body).toContain('pt-3');
+		expect(body).toContain('sm:pt-3');
+		// pb 地板值 1rem (= pb-4)，含 home indicator 设备时撑到 safe-area；必须双断点写以避开 sm:p-6 的覆盖
+		expect(body).toContain('pb-[max(1rem,var(--safe-area-inset-bottom))]');
+		expect(body).toContain('sm:pb-[max(1rem,var(--safe-area-inset-bottom))]');
+		expect(modal.attributes('data-ui-header')).toContain('var(--safe-area-inset-top)');
 	});
 
-	test('桌面端 (ltMd=false) fullscreen=false 且不应用 safeAreaUi', () => {
+	test('桌面端 (ltMd=false) fullscreen=false，body 上紧 pt-3、下留 pb-4，不再带 safe-area', () => {
 		const wrapper = mountDialog({ ltMd: false });
 		const modal = wrapper.find('.u-modal-stub');
 		expect(modal.attributes('data-fullscreen')).toBe('false');
-		expect(modal.attributes('data-has-ui')).toBe('false');
+		const body = modal.attributes('data-ui-body');
+		expect(body).toContain('pt-3');
+		expect(body).toContain('sm:pt-3');
+		expect(body).toContain('pb-4');
+		expect(body).toContain('sm:pb-4');
+		expect(body).not.toContain('safe-area-inset');
+		expect(modal.attributes('data-ui-header')).toBe('');
 	});
 
 	test('open 从 true → false 时调用 popDialogState', async () => {

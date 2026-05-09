@@ -1,5 +1,5 @@
 <template>
-	<div data-testid="web-agent-picker-panel" class="grid gap-1 py-1">
+	<div data-testid="web-agent-picker-panel" class="grid gap-1">
 		<!-- loading 占位（首次加载且 items 为空） -->
 		<div
 			v-if="store.loading && !store.items.length"
@@ -29,12 +29,12 @@
 			{{ $t('webAgents.empty') }}
 		</div>
 
-		<!-- 列表 -->
+		<!-- 列表：用 -mx-3 抵消 px-3，让 icon 左缘与 dialog title 纵向对齐 -->
 		<button
 			v-for="item in list"
 			:key="item.id"
 			type="button"
-			class="flex h-12 items-center gap-3 rounded-lg px-3 text-left text-sm text-default transition-colors hover:bg-accented/80"
+			class="-mx-3 flex h-12 cursor-pointer items-center gap-3 rounded-lg px-3 text-left text-sm text-default transition-colors hover:bg-accented/80"
 			:data-testid="`web-agent-item-${item.slug ?? 'custom-' + item.id}`"
 			@click="onSelect(item)"
 		>
@@ -52,6 +52,12 @@
 				class="size-7 shrink-0 text-dimmed"
 			/>
 			<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
+			<!-- vendor 极端长名场景下也参与截断；不写 shrink-0，让 flex 默认 shrink:1 生效 -->
+			<span
+				v-if="vendorFor(item.slug)"
+				class="min-w-0 truncate text-xs text-muted"
+				data-testid="web-agent-item-vendor"
+			>{{ vendorFor(item.slug) }}</span>
 		</button>
 	</div>
 </template>
@@ -60,17 +66,21 @@
 import { useWebAgentsStore } from '../../stores/web-agents.store.js';
 import { openExternalUrl } from '../../utils/external-url.js';
 
-// 预置图标资源由 S3 落地：assets/web-agents/<slug>.svg
-// 这里用 eager glob，资源就绪后无需改组件即可拾取
-const iconModules = import.meta.glob('../../assets/web-agents/*.svg', {
+// 预置图标资源由 assets/web-agents/<slug>.{svg,png} 提供，eager glob 拾取
+// 部分品牌官方只发 PNG（如 kimi/yuanbao 用 favicon），SVG 优先；混用同 slug 时 SVG 胜出
+const iconModules = import.meta.glob('../../assets/web-agents/*.{svg,png}', {
 	eager: true,
 	query: '?url',
 	import: 'default',
 });
 const iconBySlug = {};
 for (const [path, url] of Object.entries(iconModules)) {
-	const slug = path.match(/\/([^/]+)\.svg$/)?.[1];
-	if (slug) iconBySlug[slug] = url;
+	const m = path.match(/\/([^/]+)\.(svg|png)$/);
+	if (!m) continue;
+	const [, slug, ext] = m;
+	// 同 slug 同时存在 svg/png 时让 svg 胜出（矢量优先）
+	if (iconBySlug[slug] && ext === 'png') continue;
+	iconBySlug[slug] = url;
 }
 
 // UModal 关闭动画通常 200ms 内完成；用 300ms 兜底覆盖，避免 destroyOnClose:false 期间重复点击
@@ -103,6 +113,12 @@ export default {
 		iconFor(slug) {
 			if (!slug) return null;
 			return iconBySlug[slug] ?? null;
+		},
+		vendorFor(slug) {
+			if (!slug) return '';
+			const key = `webAgents.vendors.${slug}`;
+			// 未在该 locale 下声明的 slug 不显示厂商，避免回退成键名
+			return this.$te(key) ? this.$t(key) : '';
 		},
 		onSelect(item) {
 			// 防双击：dialog 关闭动画期间 Panel 仍挂载，第二次点击会再开一个浏览器 tab

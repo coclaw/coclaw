@@ -476,5 +476,12 @@ export const enMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'No items available',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

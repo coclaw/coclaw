@@ -473,8 +473,15 @@ export const deMessages = {
 		backToAuthPrototype: 'Zurück zum Auth Prototype',
 	},
 	webAgents: {
-		title: 'Web-Agent',
-		entryName: 'Web-Agent',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: 'Keine Einträge verfügbar',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

@@ -473,8 +473,15 @@ export const ruMessages = {
 		backToAuthPrototype: 'Назад к прототипу авторизации',
 	},
 	webAgents: {
-		title: 'Веб-агент',
-		entryName: 'Веб-агент',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: 'Нет доступных элементов',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

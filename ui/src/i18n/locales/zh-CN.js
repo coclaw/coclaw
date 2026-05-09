@@ -473,8 +473,15 @@ export const zhCNMessages = {
 		backToAuthPrototype: '返回认证原型',
 	},
 	webAgents: {
-		title: '网页智能助手',
-		entryName: '网页智能助手',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: '暂无可用项',
+		vendors: {
+			deepseek: '深度求索',
+			doubao: '字节跳动',
+			qwen: '阿里巴巴',
+			kimi: '月之暗面',
+			yuanbao: '腾讯',
+		},
 	},
 };

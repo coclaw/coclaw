@@ -82,10 +82,10 @@ test('Web Agent：点击某项 → window.open 被调用 + dialog 关闭 + 最�
 	// MainList 最近使用分组出现 DeepSeek 且位于第一位（最新点击 → top）
 	// 此断言对历史数据残留鲁棒：即使 test 用户从前次跑残留有其它 click 记录，
 	// 本次新点击会让 DeepSeek 的 lastClickedAt 严格大于历史值，必排在最前
-	const recentSection = page.getByTestId('web-agent-section-recent');
+	const recentSection = page.getByTestId('web-agent-section');
 	await expect(recentSection).toBeVisible({ timeout: 10_000 });
 	const orderedRecentIds = await page.evaluate(() => {
-		const root = document.querySelector('[data-testid="web-agent-section-recent"]');
+		const root = document.querySelector('[data-testid="web-agent-section"]');
 		if (!root) return [];
 		return Array.from(root.querySelectorAll('[data-testid^="web-agent-recent-"]'))
 			.map((n) => n.getAttribute('data-testid'));
@@ -148,7 +148,7 @@ test('Web Agent：先后点不同条目 → 最近分组按最新点击在前 @u
 
 	// 最近分组 [Doubao, Yuanbao]——最新的在前；可能还有更老的历史项排在后面，OK
 	const orderedRecentIds = await page.evaluate(() => {
-		const root = document.querySelector('[data-testid="web-agent-section-recent"]');
+		const root = document.querySelector('[data-testid="web-agent-section"]');
 		if (!root) return [];
 		return Array.from(root.querySelectorAll('[data-testid^="web-agent-recent-"]'))
 			.map((n) => n.getAttribute('data-testid'));

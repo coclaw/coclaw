@@ -473,8 +473,15 @@ export const ptMessages = {
 		backToAuthPrototype: 'Voltar ao Protótipo de Autenticação',
 	},
 	webAgents: {
-		title: 'Agente Web',
-		entryName: 'Agente Web',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: 'Nenhum item disponível',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

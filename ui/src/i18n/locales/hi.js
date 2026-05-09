@@ -473,8 +473,15 @@ export const hiMessages = {
 		backToAuthPrototype: 'Auth प्रोटोटाइप पर वापस जाएं',
 	},
 	webAgents: {
-		title: 'वेब एजेंट',
-		entryName: 'वेब एजेंट',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: 'कोई आइटम उपलब्ध नहीं',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

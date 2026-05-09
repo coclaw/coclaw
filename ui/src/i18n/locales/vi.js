@@ -476,5 +476,12 @@ export const viMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'Không có mục nào',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };

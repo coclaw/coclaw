@@ -473,8 +473,15 @@ export const koMessages = {
 		backToAuthPrototype: '인증 프로토타입으로 돌아가기',
 	},
 	webAgents: {
-		title: '웹 에이전트',
-		entryName: '웹 에이전트',
+		title: 'Web Agent',
+		entryName: 'Web Agent',
 		empty: '사용 가능한 항목이 없습니다',
+		vendors: {
+			deepseek: 'DeepSeek',
+			doubao: 'ByteDance',
+			qwen: 'Alibaba',
+			kimi: 'Moonshot',
+			yuanbao: 'Tencent',
+		},
 	},
 };
