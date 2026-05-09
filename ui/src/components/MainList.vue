@@ -119,7 +119,7 @@
 				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
 				@click="onOpenWebAgentPicker"
 			>
-				<UIcon name="i-lucide-globe" class="size-6 text-teal-500" />
+				<UIcon name="i-lucide-globe" class="size-6 text-teal-600" />
 				<span class="min-w-0 flex-1 truncate">{{ $t('webAgents.entryName') }}</span>
 			</button>
 			<button
