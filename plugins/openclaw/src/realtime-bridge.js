@@ -1639,28 +1639,11 @@ let singleton = null;
  * @param {{ logger, pluginConfig }} opts
  */
 export async function restartRealtimeBridge(opts) {
-	const deps = opts?.__deps; // 仅测试用
-	// 启动守门：拿不到 gateway token 即跳过整个 bridge。
-	// 主进程 token 在 service.start 入口必有值（上游 boot 顺序保障 setRuntimeConfigSnapshot
-	// 在 startPluginServices 之前完成）；非主进程（discovery 副进程等）走到此处时 token
-	// 通常为空，跳过即可灭掉残留 connect → token_missing 噪声。
-	// 顺序：先解析 token，token 缺失直接 return 不动现有 singleton——避免临时 resolver
-	// 失败（cfg IO 抖动 / 测试注入抛错）误把一个健康运行中的 bridge 关掉。
-	const resolveToken = deps?.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
-	let token = '';
-	try { token = resolveToken() ?? ''; }
-	catch (err) {
-		opts?.logger?.warn?.(`[coclaw] gateway token resolver threw: ${String(err?.message ?? err)}`);
-		token = '';
-	}
-	if (!token) {
-		opts?.logger?.info?.('[coclaw] no gateway token resolved; skipping realtime bridge');
-		return;
-	}
 	if (singleton) {
 		await singleton.stop();
 		singleton = null;
 	}
+	const deps = opts?.__deps; // 仅测试用
 	singleton = new RealtimeBridge(deps);
 	await singleton.start(opts);
 }
