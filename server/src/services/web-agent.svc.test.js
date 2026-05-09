@@ -21,15 +21,21 @@ test('recordClick: 不可见时返 false 且不调 incrementClick', async () => 
 
 test('recordClick: 可见时返 true 且调 incrementClick 透传 userId/webAgentId', async () => {
 	let incrementArgs = null;
+	let incrementCallCount = 0;
 	const ok = await recordClick(
 		{ userId: 100n, webAgentId: 7 },
 		{
 			findVisibleAgentIdImpl: async () => 7,
-			incrementClickImpl: async (args) => { incrementArgs = args; },
+			incrementClickImpl: async (args) => {
+				incrementCallCount += 1;
+				incrementArgs = args;
+			},
 		},
 	);
 	assert.equal(ok, true);
 	assert.deepEqual(incrementArgs, { userId: 100n, webAgentId: 7 });
+	// 防止同一次成功记录里 increment 被多次调用（实测点击数会失真）
+	assert.equal(incrementCallCount, 1);
 });
 
 test('recordClick: incrementClick 抛错时透传出去（不静默吞）', async () => {

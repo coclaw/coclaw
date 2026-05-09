@@ -81,6 +81,16 @@ test('parseWebAgentId: UnsignedInt 上界（4294967295）接受、超出拒绝',
 	assert.equal(parseWebAgentId('99999999999999999999'), null);
 });
 
+test('parseWebAgentId: 前导零 "0001" 接受并规范化为 1', () => {
+	// 这是当前正则 [0-9]+ 的语义：前导零不算非法。锁住该行为以防未来收紧时静默回归
+	assert.equal(parseWebAgentId('0001'), 1);
+});
+
+test('parseWebAgentId: 全角数字（１２３）拒绝', () => {
+	// [0-9] 仅匹配 ASCII 0-9；正则若被改宽（如 \d 含 Unicode 数字）会让此用例失败
+	assert.equal(parseWebAgentId('１２３'), null);
+});
+
 // ---- listWebAgentsHandler ----
 
 test('listWebAgentsHandler: 未登录 → 401', async () => {
@@ -106,6 +116,16 @@ test('listWebAgentsHandler: 登录后正常返回 items', async () => {
 	});
 	assert.equal(res.statusCode, 200);
 	assert.deepEqual(res.body.items, items);
+	// 锁住响应 root 仅 items 一个 key——防止未来手滑添加无意义的 meta 字段
+	assert.deepEqual(Object.keys(res.body), ['items']);
+});
+
+test('listWebAgentsHandler: 401 / 异常 等错误响应均含非空 message 字段', async () => {
+	// 401
+	const res1 = createRes();
+	await listWebAgentsHandler(unauthedReq(), res1, () => {});
+	assert.equal(typeof res1.body.message, 'string');
+	assert.ok(res1.body.message.length > 0);
 });
 
 test('listWebAgentsHandler: 异常走 next(err)', async () => {
@@ -169,6 +189,30 @@ test('recordClickHandler: 可见 → 204 No Content', async () => {
 	assert.equal(res.statusCode, 204);
 	assert.equal(res.ended, true);
 	assert.deepEqual(receivedArgs, { userId: 7n, webAgentId: 7 });
+	// 204 必须无 body（不能误调 res.json）
+	assert.equal(res.body, null);
+});
+
+test('recordClickHandler: 401 / 400 / 404 错误响应均含非空 code + message', async () => {
+	// 401
+	const res401 = createRes();
+	await recordClickHandler(unauthedReq({ params: { id: '1' } }), res401, () => {});
+	assert.equal(res401.body.code, 'UNAUTHORIZED');
+	assert.ok(typeof res401.body.message === 'string' && res401.body.message.length > 0);
+
+	// 400
+	const res400 = createRes();
+	await recordClickHandler(authedReq({ params: { id: 'abc' } }), res400, () => {});
+	assert.equal(res400.body.code, 'INVALID_INPUT');
+	assert.ok(typeof res400.body.message === 'string' && res400.body.message.length > 0);
+
+	// 404
+	const res404 = createRes();
+	await recordClickHandler(authedReq({ params: { id: '7' } }), res404, () => {}, {
+		recordClickImpl: async () => false,
+	});
+	assert.equal(res404.body.code, 'WEB_AGENT_NOT_FOUND');
+	assert.ok(typeof res404.body.message === 'string' && res404.body.message.length > 0);
 });
 
 test('recordClickHandler: service 抛错走 next(err)', async () => {

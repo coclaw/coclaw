@@ -422,3 +422,158 @@ test('incrementClick: where 使用复合主键 userId_webAgentId 拼接', async 
 	const upsertCall = trace.calls.find(c => c.method === 'webAgentClick.upsert');
 	assert.deepEqual(upsertCall.args.where.userId_webAgentId, { userId: 100n, webAgentId: 1 });
 });
+
+test('incrementClick: 连续 3 次后 clickCount=3、lastClickedAt 取最后一次', async () => {
+	const { db, state } = makeFakeDb();
+	const t1 = new Date('2026-05-09T10:00:00Z');
+	const t2 = new Date('2026-05-09T10:01:00Z');
+	const t3 = new Date('2026-05-09T10:02:00Z');
+
+	await incrementClick({ userId: 100n, webAgentId: 1, now: t1 }, db);
+	await incrementClick({ userId: 100n, webAgentId: 1, now: t2 }, db);
+	await incrementClick({ userId: 100n, webAgentId: 1, now: t3 }, db);
+
+	assert.equal(state.clicks.length, 1);
+	assert.equal(state.clicks[0].clickCount, 3);
+	assert.equal(state.clicks[0].lastClickedAt.getTime(), t3.getTime());
+});
+
+// ------- scenario: 真实用户流（共享 fake DB 串测，验证多函数协作的端到端语义） -------
+
+test('scenario: 用户首次 GET → 5 项预置全 lastClickedAt=null', async () => {
+	// 模拟 server 启动 syncPresets + 新用户首次 GET
+	const { db } = makeFakeDb();
+	await syncPresets({ db });
+
+	const items = await findAllForUser(100n, db);
+
+	assert.equal(items.length, 5);
+	for (const i of items) {
+		assert.equal(i.lastClickedAt, null);
+	}
+});
+
+test('scenario: 点击 deepseek 后 GET → 仅该项 lastClickedAt 非 null，其它仍 null', async () => {
+	const { db } = makeFakeDb();
+	await syncPresets({ db });
+
+	// 找到 deepseek 的 id
+	const before = await findAllForUser(100n, db);
+	const deepseek = before.find(i => i.slug === 'deepseek');
+	assert.ok(deepseek);
+
+	const t = new Date('2026-05-09T10:00:00Z');
+	await incrementClick({ userId: 100n, webAgentId: deepseek.id, now: t }, db);
+
+	const after = await findAllForUser(100n, db);
+	for (const i of after) {
+		if (i.slug === 'deepseek') {
+			assert.equal(i.lastClickedAt.getTime(), t.getTime());
+		}
+		else {
+			assert.equal(i.lastClickedAt, null);
+		}
+	}
+});
+
+test('scenario: 用户 A 点击 → 用户 B 的视图完全不变', async () => {
+	const { db } = makeFakeDb();
+	await syncPresets({ db });
+	const items = await findAllForUser(100n, db); // 任意用户都拿得到预置 id 列表
+	const target = items[0];
+
+	await incrementClick({ userId: 100n, webAgentId: target.id }, db);
+
+	const aView = await findAllForUser(100n, db);
+	const bView = await findAllForUser(200n, db);
+	assert.ok(aView.find(i => i.id === target.id).lastClickedAt != null, 'A should see updated lastClickedAt');
+	for (const i of bView) {
+		assert.equal(i.lastClickedAt, null, `B should not see A's clicks (${i.slug})`);
+	}
+});
+
+test('scenario: 用户 A 自建对用户 B 完全不可见', async () => {
+	const { db, state } = makeFakeDb();
+	await syncPresets({ db });
+	// A 自建一条
+	seedAgent(state, { userId: 100n, slug: null, name: 'A custom', url: 'https://a-custom/', sort: null });
+
+	const aView = await findAllForUser(100n, db);
+	const bView = await findAllForUser(200n, db);
+
+	assert.equal(aView.length, 6);
+	assert.ok(aView.find(i => i.name === 'A custom'));
+	assert.equal(bView.length, 5);
+	assert.equal(bView.find(i => i.name === 'A custom'), undefined);
+});
+
+test('scenario: 移除某 preset 后再次出现同 slug → 新 row 新 id，原 click 已被级联清空', async () => {
+	const { db, state } = makeFakeDb();
+	const v1 = [
+		{ slug: 'a', name: 'A v1', url: 'https://a/', sort: 1 },
+		{ slug: 'b', name: 'B v1', url: 'https://b/', sort: 2 },
+	];
+	await syncPresets({ presets: v1, db });
+	const aIdV1 = state.agents.find(a => a.slug === 'a').id;
+	await incrementClick({ userId: 100n, webAgentId: aIdV1 }, db);
+
+	// 第二轮：移除 a（顺便保留 b 排除"全清"路径的干扰）
+	const v2 = [{ slug: 'b', name: 'B v1', url: 'https://b/', sort: 2 }];
+	await syncPresets({ presets: v2, db });
+	assert.equal(state.agents.find(a => a.slug === 'a'), undefined);
+	// 级联清空验证
+	assert.equal(state.clicks.length, 0);
+
+	// 第三轮：又把 a 加回来
+	const v3 = [
+		{ slug: 'a', name: 'A v3', url: 'https://a-new/', sort: 9 },
+		{ slug: 'b', name: 'B v1', url: 'https://b/', sort: 2 },
+	];
+	await syncPresets({ presets: v3, db });
+	const aRow = state.agents.find(a => a.slug === 'a');
+	assert.ok(aRow);
+	// 新 id（fake DB 自增不复用）
+	assert.notEqual(aRow.id, aIdV1);
+	assert.equal(aRow.name, 'A v3');
+	assert.equal(aRow.url, 'https://a-new/');
+	// 原 click 没"复活"——属于已清空状态
+	assert.equal(state.clicks.length, 0);
+
+	// 用户重新点击 → 从 1 开始
+	await incrementClick({ userId: 100n, webAgentId: aRow.id }, db);
+	assert.equal(state.clicks[0].clickCount, 1);
+	assert.equal(state.clicks[0].webAgentId, aRow.id);
+});
+
+test('scenario: syncPresets 改了 preset name/url 但保留已存在的 click 历史', async () => {
+	const { db, state } = makeFakeDb();
+	const v1 = [{ slug: 'a', name: 'A v1', url: 'https://a/', sort: 1 }];
+	await syncPresets({ presets: v1, db });
+	const aId = state.agents.find(a => a.slug === 'a').id;
+	const t = new Date('2026-05-09T10:00:00Z');
+	await incrementClick({ userId: 100n, webAgentId: aId, now: t }, db);
+	assert.equal(state.clicks.length, 1);
+
+	// 同 slug，改了 name + url + sort
+	const v2 = [{ slug: 'a', name: 'A v2', url: 'https://a-new/', sort: 99 }];
+	await syncPresets({ presets: v2, db });
+
+	// 同一 row（id 不变）
+	const aRowAfter = state.agents.find(a => a.slug === 'a');
+	assert.equal(aRowAfter.id, aId);
+	assert.equal(aRowAfter.name, 'A v2');
+	assert.equal(aRowAfter.url, 'https://a-new/');
+	assert.equal(aRowAfter.sort, 99);
+
+	// click 行整数无变化
+	assert.equal(state.clicks.length, 1);
+	assert.equal(state.clicks[0].clickCount, 1);
+	assert.equal(state.clicks[0].lastClickedAt.getTime(), t.getTime());
+
+	// 用户 GET 看到新 name/url 但 lastClickedAt 仍是旧时间
+	const items = await findAllForUser(100n, db);
+	const aItem = items.find(i => i.slug === 'a');
+	assert.equal(aItem.name, 'A v2');
+	assert.equal(aItem.url, 'https://a-new/');
+	assert.equal(aItem.lastClickedAt.getTime(), t.getTime());
+});
