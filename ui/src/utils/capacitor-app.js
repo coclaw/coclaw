@@ -176,6 +176,11 @@ function setupKeyboard() {
 				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 			}
 		});
+		// 键盘收起后清理保存的输入框引用，避免 appStateChange 前台恢复时
+		// 误把已收起的键盘焦点重新拉起（issue #243）
+		Keyboard.addListener('keyboardDidHide', () => {
+			_lastFocusedInput = null;
+		});
 		console.log('[capacitor] Keyboard listener registered');
 	}).catch((e) => console.warn('[capacitor] Keyboard setup failed:', e));
 }
@@ -256,6 +261,11 @@ function setupAppStateChange() {
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
 			remoteLog(`app.stateChange active=${isActive}`);
 			if (isActive) {
+				// 切回前台时主动收一次软键盘兜底：Android/鸿蒙下从其他 App 切回，
+				// WebView 偶尔残留键盘占位空白且无法手动收起（issue #243）
+				import('@capacitor/keyboard')
+					.then(({ Keyboard }) => Keyboard.hide())
+					.catch(() => {});
 				// 恢复后台切换前的焦点（Android WebView 进后台时系统会收起键盘）
 				const el = _lastFocusedInput;
 				if (el) {

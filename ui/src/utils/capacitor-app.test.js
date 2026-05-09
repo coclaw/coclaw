@@ -22,6 +22,7 @@ const mockSplashHide = vi.hoisted(() => vi.fn().mockResolvedValue());
 const backButtonCb = vi.hoisted(() => ({ fn: null }));
 const networkListeners = vi.hoisted(() => ({}));
 const keyboardListeners = vi.hoisted(() => ({}));
+const mockKeyboardHide = vi.hoisted(() => vi.fn().mockResolvedValue());
 
 vi.mock('@capacitor/core', () => ({
 	Capacitor: {
@@ -57,12 +58,17 @@ vi.mock('@capacitor/status-bar', () => ({
 	Style: { Dark: 'DARK', Light: 'LIGHT' },
 }));
 vi.mock('@capacitor/keyboard', () => ({
-	Keyboard: { addListener: (event, cb) => { keyboardListeners[event] = cb; } },
+	Keyboard: {
+		addListener: (event, cb) => { keyboardListeners[event] = cb; },
+		hide: mockKeyboardHide,
+	},
 }));
 vi.mock('@capacitor/app', () => ({
 	App: {
 		addListener: (event, cb) => {
-			// 仅第一次 import 调用（setupBackButton）能到达此处
+			// 仅第一次 import 调用（setupBackButton）能到达此处；
+			// appStateChange / appUrlOpen 受 vitest 动态 import 限制无法直接捕获，
+			// 见 capacitor-app-browser.test.js 注释（131-136 行）
 			if (event === 'backButton') backButtonCb.fn = cb;
 		},
 		minimizeApp: mockMinimizeApp,
@@ -252,6 +258,13 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		Object.defineProperty(document, 'activeElement', { value: document.body, configurable: true });
 	});
 
+	test('setupKeyboard: 注册 keyboardDidHide 监听（issue #243：键盘收起后清理状态）', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+		expect(keyboardListeners['keyboardDidHide']).toBeDefined();
+	});
+
 	test('setupKeyboard: keyboardDidShow 时对非输入元素不调用 scrollIntoView', async () => {
 		const { initCapacitorApp } = await import('./capacitor-app.js');
 		await initCapacitorApp(mockRouter);
@@ -282,6 +295,23 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		// 表明 addListener 已被调用。覆盖率已包含注册代码路径。
 		// focusin 处理函数的可观察契约由 capacitor-app-browser.test.js 锁定。
 		window.removeEventListener('app:foreground', handler);
+	});
+
+	// vitest 动态 import 限制使 appStateChange 回调无法直接捕获（详见 capacitor-app-browser.test.js
+	// 第 131-136 行注释）。issue #243 关心的"切回前台主动收键盘"契约用源码 pattern lock：
+	// 必须在 isActive=true 分支体内出现 `Keyboard.hide()` 调用，且 import 路径有 .catch 兜底
+	test('setupAppStateChange: isActive=true 分支调用 Keyboard.hide（issue #243 源码 pattern lock）', async () => {
+		const fs = await import('node:fs');
+		const path = await import('node:path');
+		const url = await import('node:url');
+		const here = path.dirname(url.fileURLToPath(import.meta.url));
+		const src = fs.readFileSync(path.join(here, 'capacitor-app.js'), 'utf8');
+		// 截取 setupAppStateChange 函数体内 isActive=true 分支区段
+		const fnMatch = src.match(/function setupAppStateChange\(\)[\s\S]*?\n\}/);
+		expect(fnMatch).toBeTruthy();
+		const body = fnMatch[0];
+		// isActive=true 分支必须出现 Keyboard.hide() 调用（容忍 await/await? 或 .then/.catch）
+		expect(body).toMatch(/if\s*\(\s*isActive\s*\)[\s\S]*Keyboard\.hide\s*\(/);
 	});
 
 	// 三个 setup* 函数（appStateChange / deepLink / backButton）的动态 import 必须各自
