@@ -196,9 +196,10 @@ test('__resolveWebSocket should return custom impl when deps.WebSocket is provid
 test('singleton API should no-op for missing token and restart/stop should be safe', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
+	const __deps = { resolveGatewayAuthToken: () => 'tkn' };
 	try {
-		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
-		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } });
+		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' }, __deps });
+		await restartRealtimeBridge({ logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' }, __deps });
 		await stopRealtimeBridge();
 		const cfg = await readConfig();
 		assert.equal(cfg.token, '');
@@ -213,7 +214,11 @@ test('restartRealtimeBridge should re-create singleton after stop (bind regressi
 	const logger = noopLogger();
 	try {
 		// 模拟 bind 流程：restart → stop → restart
-		const opts = { logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } };
+		const opts = {
+			logger,
+			pluginConfig: { serverUrl: 'http://127.0.0.1:1' },
+			__deps: { resolveGatewayAuthToken: () => 'tkn' },
+		};
 		await restartRealtimeBridge(opts);
 		await stopRealtimeBridge();
 		// stop 后 singleton 为 null，restart 应重新创建
@@ -230,7 +235,11 @@ test('stopRealtimeBridge({ forceCleanup: true }) should call __ndcCleanup', asyn
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
 	try {
-		const opts = { logger, pluginConfig: { serverUrl: 'http://127.0.0.1:1' } };
+		const opts = {
+			logger,
+			pluginConfig: { serverUrl: 'http://127.0.0.1:1' },
+			__deps: { resolveGatewayAuthToken: () => 'tkn' },
+		};
 		await restartRealtimeBridge(opts);
 		// restartRealtimeBridge 后 singleton 的 __ndcCleanup 取决于 preload 结果
 		// （可能为 null 或真实 cleanup）。再次 stop 并 forceCleanup 应不抛异常。
@@ -252,7 +261,7 @@ test('restartRealtimeBridge should replace existing singleton when already runni
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
 	try {
-		const opts = { logger, pluginConfig: {} };
+		const opts = { logger, pluginConfig: {}, __deps: { resolveGatewayAuthToken: () => 'tkn' } };
 		await restartRealtimeBridge(opts);
 		// 再次 restart 不应报错，应正常替换
 		await restartRealtimeBridge(opts);
@@ -269,8 +278,56 @@ test('singleton API should log warning when token exists but serverUrl is missin
 	const warns = [];
 	const logger = { warn: (m) => warns.push(String(m)), info() {} };
 	try {
-		await restartRealtimeBridge({ logger, pluginConfig: {} });
+		await restartRealtimeBridge({
+			logger,
+			pluginConfig: {},
+			__deps: { resolveGatewayAuthToken: () => 'tkn' },
+		});
 		assert.equal(warns.some((x) => x.includes('missing serverUrl')), true);
+	}
+	finally {
+		await stopRealtimeBridge();
+	}
+});
+
+test('restartRealtimeBridge should skip bridge creation and log info when no gateway token', async () => {
+	await writeCfg({ token: '' });
+	const infos = [];
+	const logger = { warn() {}, info: (m) => infos.push(String(m)), debug() {} };
+	try {
+		await restartRealtimeBridge({
+			logger,
+			pluginConfig: {},
+			__deps: { resolveGatewayAuthToken: () => '' },
+		});
+		// singleton 未创建：bridge_not_started
+		const result = await ensureAgentSession('main');
+		assert.equal(result.ok, false);
+		assert.equal(result.error, 'bridge_not_started');
+		assert.equal(
+			infos.some((m) => m.includes('no gateway token resolved') && m.includes('skipping realtime bridge')),
+			true,
+			'should log info about skipping bridge'
+		);
+	}
+	finally {
+		await stopRealtimeBridge();
+	}
+});
+
+test('restartRealtimeBridge should skip bridge creation when token resolver throws', async () => {
+	await writeCfg({ token: '' });
+	const infos = [];
+	const logger = { warn() {}, info: (m) => infos.push(String(m)), debug() {} };
+	try {
+		await restartRealtimeBridge({
+			logger,
+			pluginConfig: {},
+			__deps: { resolveGatewayAuthToken: () => { throw new Error('boom'); } },
+		});
+		const result = await ensureAgentSession('main');
+		assert.equal(result.error, 'bridge_not_started');
+		assert.equal(infos.some((m) => m.includes('skipping realtime bridge')), true);
 	}
 	finally {
 		await stopRealtimeBridge();
@@ -1290,7 +1347,11 @@ test('singleton ensureAgentSession should return error when bridge not started',
 test('singleton ensureAgentSession should delegate to bridge instance', async () => {
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
 	try {
-		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
+		await restartRealtimeBridge({
+			logger: noopLogger(),
+			pluginConfig: {},
+			__deps: { resolveGatewayAuthToken: () => 'tkn' },
+		});
 		// bridge 已启动但 gateway 未就绪，ensure 应返回 gateway_not_ready
 		const result = await ensureAgentSession('main');
 		assert.equal(result.ok, false);
@@ -1311,7 +1372,7 @@ test('waitForSessionsReady should await __ensureSessionsPromise after gateway co
 	FakeWebSocket.instances.length = 0;
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
 	try {
-		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {}, __deps: { WebSocket: FakeWebSocket } });
+		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {}, __deps: { WebSocket: FakeWebSocket, resolveGatewayAuthToken: () => 'tkn' } });
 		const server = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 		server.readyState = 1;
 		server.emit('open', {});
@@ -2691,7 +2752,11 @@ test('singleton gatewayAgentRpc should return error when bridge not started', as
 test('singleton gatewayAgentRpc should delegate to bridge instance', async () => {
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
 	try {
-		await restartRealtimeBridge({ logger: noopLogger(), pluginConfig: {} });
+		await restartRealtimeBridge({
+			logger: noopLogger(),
+			pluginConfig: {},
+			__deps: { resolveGatewayAuthToken: () => 'tkn' },
+		});
 		// bridge 已启动但 gateway 未就绪
 		const result = await gatewayAgentRpc('agent', {}, { acceptTimeoutMs: 50, timeoutMs: 100 });
 		assert.equal(result.ok, false);
@@ -4011,7 +4076,7 @@ test('RealtimeBridge __pushInstanceInfo should broadcast full info payload after
 			pluginConfig: {},
 			__deps: {
 				WebSocket: FakeWebSocket,
-				resolveGatewayAuthToken: () => '',
+				resolveGatewayAuthToken: () => 'tkn',
 				preloadPion: noopPreloadPion,
 				preloadNdc: noopPreloadNdc,
 				gatewayReadyTimeoutMs: 50,
@@ -4075,7 +4140,7 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 			pluginConfig: {},
 			__deps: {
 				WebSocket: FakeWebSocket,
-				resolveGatewayAuthToken: () => '',
+				resolveGatewayAuthToken: () => 'tkn',
 				preloadPion: noopPreloadPion,
 				preloadNdc: noopPreloadNdc,
 				gatewayReadyTimeoutMs: 50,
@@ -4160,7 +4225,7 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 			pluginConfig: {},
 			__deps: {
 				WebSocket: FakeWebSocket,
-				resolveGatewayAuthToken: () => '',
+				resolveGatewayAuthToken: () => 'tkn',
 				preloadPion: noopPreloadPion,
 				preloadNdc: noopPreloadNdc,
 				gatewayReadyTimeoutMs: 50,
@@ -4240,7 +4305,7 @@ test('RealtimeBridge sock.open should NOT push instance info when gateway not re
 			pluginConfig: {},
 			__deps: {
 				WebSocket: FakeWebSocket,
-				resolveGatewayAuthToken: () => '',
+				resolveGatewayAuthToken: () => 'tkn',
 				preloadPion: noopPreloadPion,
 				preloadNdc: noopPreloadNdc,
 				gatewayReadyTimeoutMs: 50,
@@ -5430,7 +5495,7 @@ test('bridge.start should skip preload when stop() races during cleanup/measure'
 
 // === defaultResolveGatewayAuthToken ===
 
-test('defaultResolveGatewayAuthToken: env OPENCLAW_GATEWAY_TOKEN 优先', () => {
+test('defaultResolveGatewayAuthToken: config.gateway.auth.token 优先于 env', () => {
 	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
 	process.env.OPENCLAW_GATEWAY_TOKEN = '  env-token-1  ';
 	setRuntime({
@@ -5438,10 +5503,47 @@ test('defaultResolveGatewayAuthToken: env OPENCLAW_GATEWAY_TOKEN 优先', () => 
 		config: { loadConfig: () => ({ gateway: { auth: { token: 'rt-token' } } }) },
 	});
 	try {
+		assert.equal(defaultResolveGatewayAuthToken(), 'rt-token');
+	} finally {
+		if (prevEnv === undefined) delete process.env.OPENCLAW_GATEWAY_TOKEN;
+		else process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		setRuntime(null);
+	}
+});
+
+test('defaultResolveGatewayAuthToken: env-only 场景兜底（cfg 无 token）', () => {
+	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
+	process.env.OPENCLAW_GATEWAY_TOKEN = '  env-token-1  ';
+	setRuntime({
+		state: { resolveStateDir: () => '/tmp' },
+		config: { loadConfig: () => ({ gateway: { auth: {} } }) },
+	});
+	try {
 		assert.equal(defaultResolveGatewayAuthToken(), 'env-token-1');
 	} finally {
 		if (prevEnv === undefined) delete process.env.OPENCLAW_GATEWAY_TOKEN;
 		else process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		setRuntime(null);
+	}
+});
+
+test('defaultResolveGatewayAuthToken: cfg 抛错时回退到 env 兜底', () => {
+	const prevEnv = process.env.OPENCLAW_GATEWAY_TOKEN;
+	process.env.OPENCLAW_GATEWAY_TOKEN = 'env-fallback';
+	const prevWarn = console.warn;
+	let warned = false;
+	console.warn = () => { warned = true; };
+	setRuntime({
+		state: { resolveStateDir: () => '/tmp' },
+		config: { loadConfig: () => { throw new Error('boom'); } },
+	});
+	try {
+		assert.equal(defaultResolveGatewayAuthToken(), 'env-fallback');
+		assert.equal(warned, true, 'should warn on loadConfig throw');
+	} finally {
+		if (prevEnv === undefined) delete process.env.OPENCLAW_GATEWAY_TOKEN;
+		else process.env.OPENCLAW_GATEWAY_TOKEN = prevEnv;
+		console.warn = prevWarn;
 		setRuntime(null);
 	}
 });

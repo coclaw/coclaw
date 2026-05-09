@@ -639,7 +639,11 @@ test('command handler should cover help/unknown/error/success paths', async () =
 		plugin.register({
 			registrationMode: 'full',
 			pluginConfig: { serverUrl: mock.baseUrl },
-			runtime: { state: { resolveStateDir: () => dir } },
+			runtime: {
+				state: { resolveStateDir: () => dir },
+				// gateway token 必有：service.start 入口会守门，无 token 直接跳过 bridge
+				config: { current: () => ({ gateway: { auth: { token: 'gw-test' } } }) },
+			},
 			logger: { warn() {}, error() {}, log() {} },
 			registerChannel() {},
 			registerCli() {},

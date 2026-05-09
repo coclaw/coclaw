@@ -90,20 +90,26 @@ function maskUrlToken(url) {
 }
 
 // 仅在未注入 resolveGatewayAuthToken 时使用，依赖 runtime / 环境变量
+// 优先级：config.gateway.auth.token > env OPENCLAW_GATEWAY_TOKEN
+// 与上游 server 的 auth-surface-resolution 同方向：config 主、env 兜底。
+// env 路径保留是为 ensureGatewayStartupAuth 的 env-only 边角（token 由 env 提供时
+// 上游不会写回 cfg），cfg 读不到时仍能拿到正确 token。
 export function defaultResolveGatewayAuthToken() {
+	try {
+		const cfg = getClawConfig();
+		const token = cfg?.gateway?.auth?.token;
+		if (typeof token === 'string' && token.trim()) {
+			return token.trim();
+		}
+	}
+	catch (err) {
+		console.warn?.(`[coclaw] resolve gateway auth token failed: ${String(err?.message ?? err)}`);
+	}
 	const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 	if (envToken) {
 		return envToken;
 	}
-	try {
-		const cfg = getClawConfig();
-		const token = cfg?.gateway?.auth?.token;
-		return typeof token === 'string' && token.trim() ? token.trim() : '';
-	}
-	catch (err) {
-		console.warn?.(`[coclaw] resolve gateway auth token failed: ${String(err?.message ?? err)}`);
-		return '';
-	}
+	return '';
 }
 
 /**
@@ -1629,6 +1635,18 @@ export async function restartRealtimeBridge(opts) {
 		singleton = null;
 	}
 	const deps = opts?.__deps; // 仅测试用
+	// 启动守门：拿不到 gateway token 即跳过整个 bridge。
+	// 主进程 token 在 service.start 入口必有值（上游 boot 顺序保障 setRuntimeConfigSnapshot
+	// 在 startPluginServices 之前完成）；非主进程（discovery 副进程等）走到此处时 token
+	// 通常为空，跳过即可灭掉残留 connect → token_missing 噪声。
+	const resolveToken = deps?.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
+	let token = '';
+	try { token = resolveToken() ?? ''; }
+	catch { token = ''; }
+	if (!token) {
+		opts?.logger?.info?.('[coclaw] no gateway token resolved; skipping realtime bridge');
+		return;
+	}
 	singleton = new RealtimeBridge(deps);
 	await singleton.start(opts);
 }
