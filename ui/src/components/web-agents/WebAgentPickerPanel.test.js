@@ -214,6 +214,92 @@ describe('WebAgentPickerPanel', () => {
 		warnSpy.mockRestore();
 	});
 
+	test('双击同一个 item：仅触发一次 recordClick / openExternalUrl / selected', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.recordClick = vi.fn();
+		store.loading = false;
+		store.items = [
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'https://x.test/', sort: 1, lastClickedAt: null },
+		];
+
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: { $t: (k) => k },
+			},
+		});
+
+		const btn = wrapper.find('[data-testid="web-agent-item-deepseek"]');
+		await btn.trigger('click');
+		await btn.trigger('click');
+
+		expect(store.recordClick).toHaveBeenCalledTimes(1);
+		expect(openExternalUrlMock).toHaveBeenCalledTimes(1);
+		expect(wrapper.emitted('selected')).toHaveLength(1);
+	});
+
+	test('防抖窗口结束后允许再次选择（重新打开 dialog 后用户能正常点击）', async () => {
+		vi.useFakeTimers();
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.recordClick = vi.fn();
+		store.loading = false;
+		store.items = [
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: null },
+		];
+
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: { $t: (k) => k },
+			},
+		});
+
+		const btn = wrapper.find('[data-testid="web-agent-item-deepseek"]');
+		await btn.trigger('click');
+		expect(store.recordClick).toHaveBeenCalledTimes(1);
+
+		// 推进过防抖窗口
+		vi.advanceTimersByTime(400);
+		await wrapper.vm.$nextTick();
+
+		await btn.trigger('click');
+		expect(store.recordClick).toHaveBeenCalledTimes(2);
+	});
+
+	test('items 非空时背景刷新（loading=true）不显示 loading 占位且列表仍可见可点', async () => {
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn().mockResolvedValue();
+		store.recordClick = vi.fn();
+		store.loading = true;
+		store.items = [
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z' },
+		];
+
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: { $t: (k) => k },
+			},
+		});
+
+		expect(wrapper.find('[data-testid="web-agent-picker-loading"]').exists()).toBe(false);
+		const item = wrapper.find('[data-testid="web-agent-item-deepseek"]');
+		expect(item.exists()).toBe(true);
+		await item.trigger('click');
+		expect(store.recordClick).toHaveBeenCalledWith(1);
+	});
+
 	test('item 图标和 fallback UIcon 均为装饰性，不会被屏幕阅读器重复读出', () => {
 		const pinia = createPinia();
 		setActivePinia(pinia);

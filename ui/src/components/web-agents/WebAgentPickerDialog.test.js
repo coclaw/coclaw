@@ -100,6 +100,15 @@ describe('WebAgentPickerDialog', () => {
 		expect(modal.attributes('data-description')).toBe(' ');
 	});
 
+	test('UModal 触发 after:leave 时 Dialog 透传给外部（用于动画/焦点收尾）', async () => {
+		const wrapper = mountDialog({ open: true });
+		const modal = wrapper.findComponent(UModalStub);
+		modal.vm.$emit('after:leave');
+		await wrapper.vm.$nextTick();
+		expect(wrapper.emitted('after:leave')).toBeTruthy();
+		expect(wrapper.emitted('after:leave')).toHaveLength(1);
+	});
+
 	test('UModal 触发 update:open 时透传到外部', async () => {
 		const wrapper = mountDialog({ open: true });
 		const modal = wrapper.findComponent(UModalStub);

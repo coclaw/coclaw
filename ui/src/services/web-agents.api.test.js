@@ -51,4 +51,9 @@ describe('web-agents api', () => {
 		mockedHttp.post.mockRejectedValue(err);
 		await expect(recordWebAgentClick(9)).rejects.toThrow('boom');
 	});
+
+	test('listWebAgents 网络错误透传 reject（确保上层 store 能捕获）', async () => {
+		mockedHttp.get.mockRejectedValue(new Error('Network Error'));
+		await expect(listWebAgents()).rejects.toThrow('Network Error');
+	});
 });

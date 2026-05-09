@@ -73,11 +73,19 @@ for (const [path, url] of Object.entries(iconModules)) {
 	if (slug) iconBySlug[slug] = url;
 }
 
+// UModal 关闭动画通常 200ms 内完成；用 300ms 兜底覆盖，避免 destroyOnClose:false 期间重复点击
+const SELECT_GUARD_MS = 300;
+
 export default {
 	name: 'WebAgentPickerPanel',
 	emits: ['selected'],
 	setup() {
 		return { store: useWebAgentsStore() };
+	},
+	data() {
+		return {
+			selecting: false,
+		};
 	},
 	computed: {
 		list() {
@@ -85,8 +93,11 @@ export default {
 		},
 	},
 	mounted() {
-		// 首次进入对话框时兜底加载（store loadAll 内部 in-flight 去重）
+		// 首次进入对话框时兜底加载（store loadAll 内部 in-flight 去重 + loaded 短路）
 		this.store.loadAll();
+	},
+	beforeUnmount() {
+		if (this.__selectTimer) clearTimeout(this.__selectTimer);
 	},
 	methods: {
 		iconFor(slug) {
@@ -94,6 +105,15 @@ export default {
 			return iconBySlug[slug] ?? null;
 		},
 		onSelect(item) {
+			// 防双击：dialog 关闭动画期间 Panel 仍挂载，第二次点击会再开一个浏览器 tab
+			if (this.selecting) return;
+			this.selecting = true;
+			if (this.__selectTimer) clearTimeout(this.__selectTimer);
+			this.__selectTimer = setTimeout(() => {
+				this.selecting = false;
+				this.__selectTimer = null;
+			}, SELECT_GUARD_MS);
+
 			this.store.recordClick(item.id);
 			// fire-and-forget：openExternalUrl 内部已兜底，但仍 catch 防止极端环境抛错冒泡
 			Promise.resolve(openExternalUrl(item.url)).catch((err) => {

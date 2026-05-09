@@ -95,6 +95,40 @@ describe('web-agents store', () => {
 		expect(store.loaded).toBe(false);
 	});
 
+	test('真实竞态：loadAll 在飞中 + 用户点击 → 服务器旧响应不覆盖本地乐观时间戳', async () => {
+		mockedApi.recordWebAgentClick.mockResolvedValue();
+		// 预置 items（首次 loadAll 已成功，loaded=true）
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: null },
+		];
+		store.loaded = true;
+		// 触发"重试"路径以绕过 loaded 短路
+		store.error = new Error('previous fail');
+
+		// 用一个手控 promise 让 loadAll 卡在飞中
+		let resolveServer;
+		mockedApi.listWebAgents.mockImplementation(() => new Promise((r) => { resolveServer = r; }));
+
+		const inFlight = store.loadAll();
+
+		// 用户点击：recordClick 写入乐观时间戳
+		store.recordClick(1);
+		const optimistic = store.items[0].lastClickedAt;
+		expect(optimistic).toBeTruthy();
+
+		// 服务器旧响应到达：未记录这次点击，lastClickedAt 仍为 null
+		resolveServer([
+			{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: null },
+		]);
+		await inFlight;
+
+		// merge 取 max → 乐观值幸存
+		expect(store.items[0].lastClickedAt).toBe(optimistic);
+		expect(store.error).toBeNull();
+		expect(store.loaded).toBe(true);
+	});
+
 	test('loadAll merge 取 lastClickedAt 较大值，旧响应到达不覆盖乐观时间戳', async () => {
 		const store = useWebAgentsStore();
 		// 模拟"用户已点过 + 本地乐观时间戳"的状态
