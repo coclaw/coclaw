@@ -59,5 +59,7 @@ declare module 'vue' {
     UTable: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Table.vue')['default']
     UTabs: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Tabs.vue')['default']
     UTextarea: typeof import('./../node_modules/.pnpm/@nuxt+ui@4.5.1_@capacitor+preferences@8.0.1_@capacitor+core@8.2.0__@tiptap+extensions@3_f9bc48cac36df351d5434a3fce31bfc4/node_modules/@nuxt/ui/dist/runtime/components/Textarea.vue')['default']
+    WebAgentPickerDialog: typeof import('./src/components/web-agents/WebAgentPickerDialog.vue')['default']
+    WebAgentPickerPanel: typeof import('./src/components/web-agents/WebAgentPickerPanel.vue')['default']
   }
 }
