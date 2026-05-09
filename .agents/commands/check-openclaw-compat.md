@@ -130,6 +130,17 @@ baseline-checked-at: 2026-05-07
 - 上游锚点：上游 grep `Symbol.for("openclaw\.` / `embeddedRunState` / `activeRuns`
 - 风险等级：**高** —— 这类 patch 点上游永远不会发 deprecation 警告，悄悄改了我们就摸不到
 
+### J. plugin register 模式枚举值
+
+- **历史踩点（前瞻类）**：`api.registrationMode` 已经历过 `cli-metadata` / `discovery` / `full` 几代，未来还可能再加（如 `setup-only` / `setup-runtime` / 健康检查 / dry-run / 热重载）。我方 `index.js:135-156` 当前是**排除式白名单**——`cli-metadata` 单独走、`mode !== 'full'` early return、其余模式都注册 channel + CLI 但不起 service / RPC。任何上游新增模式都会落进"非 cli-metadata 非 full"的中间分支，跑了 channel/CLI 注册却**没起 bridge / 没装 RPC handler**，形成半残注册：channel 在但桥接没起、命令显出来但 RPC 不在
+- 检查：
+  - `api.registrationMode` 上游枚举是否新增值（grep `registrationMode` / `RegistrationMode` 类型/枚举定义）
+  - 新模式的语义（是否预期触发 service / RPC / hook）；半残注册是否会被上游健康检查识别为故障
+  - 我方 `index.js` 的 mode 分叉是否还能容纳新模式而不出半残
+- 上游锚点：`openclaw-repo/src/plugins/runtime/registration.ts` 或对应 register 入口；类型定义文件中 `registrationMode` 字符串字面量的并集
+- 修复方向（命中时）：把分叉改成**已知模式白名单**——未知模式默认 noop + warn，避免把副作用注册半截
+- 风险等级：**中** —— 上游加新模式不一定有 deprecation，半残注册的症状（channel 在但 RPC 找不到）排查链条较长
+
 ## 工作流
 
 1. **解析参数**：
@@ -186,6 +197,8 @@ OpenClaw 上游兼容性扫描报告
   F. CLI               [...]
   G. openclaw.json     [...]
   H. sessions          [...]
+  I. 全局 Symbol       [...]
+  J. registrationMode  [...]
 
 ─ 新发现的踩坑模式（若有）
   X. <新类别> <说明>

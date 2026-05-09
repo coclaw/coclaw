@@ -999,6 +999,107 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **预存问题**：非 plugin 自身 bug，不在本仓库修；plugin 作为下游观察者跟踪上游修复。
 
+## 自动升级与 OpenClaw 插件 hub 形成双源（hub 上线前必须决策）
+
+**发现日期**：2026-05-09（pre-hub release 设计 review）
+
+**锚点**：
+- `src/auto-upgrade/updater.js:269` `scheduler.start()`
+- `src/auto-upgrade/updater.js:218-220` 唯一 opt-out（`OPENCLAW_NIX_MODE=1`）
+- `docs/auto-upgrade.md` 立项动机段落：上游当时无 plugin hub
+
+**问题**：插件每小时自检 npm + spawn worker 改 `openclaw.json` + 触发 gateway restart，这套是在"OpenClaw 没有 plugin hub"前提下设计的。发到 hub 上线后，hub 自己也管版本（清单、签名、灰度、回滚），plugin 还自带升级逻辑就形成两个升级源：hub 装 v0.21、plugin 半小时后又自己升到 v0.22；用户在 hub 端禁掉某版本，半夜 plugin 又把它装回来；hub 想灰度时 plugin 越权改 `openclaw.json`。当前唯一 opt-out 盯的是 nix 环境，识别不到 hub 装机。
+
+**触发场景**：hub 接管插件分发；用户在 hub 端禁用/锁定某版本；多设备同步要求版本一致；企业管理员锁版本。
+
+**修复方向**：
+- 默认行为改为 opt-in（设置开关或 env），hub 装机路径下默认关；npm 直装可保留默认开
+- 现有 `source==='npm'` 判定不足以区分"hub 装"vs"npm 直装"，需要 OpenClaw 上游补 install source 字段（`hub` / `npm` / `path` / `archive`）
+- 这是发布到 hub 前的**前提级决策**——保留 / 让位 / 改 opt-in 必须先选一条，不是发布后小修
+
+**严重度**：Block release（双源会在 hub 上线第一天就打架）
+
+## 大文件上传接收侧无内存上限（最坏可打崩 gateway）
+
+**发现日期**：2026-05-09（pre-hub release 设计 review）
+
+**锚点**：
+- `src/file-manager/handler.js:648-778` `receiveUpload` 内 `pendingQueue.push()`
+- push 前无长度 / 字节水位检查；仅在 error / abort 路径清空
+
+**问题**：UI 经独立 file DC 上传时，进来的二进制块先入内存队列 `pendingQueue`、再由 `drainLoop` 异步刷盘。声明上限 1GB，但中间无内存水位封口——磁盘慢/卡盘时队列持续堆积，最坏打爆 gateway 进程内存把整个 OpenClaw 拖崩。
+
+**触发场景**：公网用户群里慢盘 / WSL / 杀毒扫描插一脚 / 老硬件并不罕见，撞概率不低；不需要恶意构造。
+
+**修复方向**：
+- 给 `pendingQueue` 加内存字节水位（HWM/LWM）：超 HWM 暂停 ack DC 数据帧、磁盘追上后再放行
+- 与 UI 端约定一套"接收侧反压"信令帧（当前 file DC 没有这一层）
+- 极端时直接拒绝继续接收（reason=receiver-busy）让 UI 重试
+
+**严重度**：Block release（公网用户群有真实概率把 gateway 打崩）
+
+## realtime-bridge 是 1700 行的上帝模块
+
+**发现日期**：2026-05-09（pre-hub release 设计 review）
+
+**锚点**：
+- `src/realtime-bridge.js`（1693 行，单 class `RealtimeBridge`）
+- 同时承载：双 WS 桥接 + WebRTC 信令路由 + 设备握手 v3 + server/gateway 双心跳 + 退避重连状态机 + agent run lag 探针 + 插件事件广播 + UI→gateway 请求路由表 + run-event 路由表 + rpc-queue 启动期清理钩子 + bind 后 token 撤销
+
+**问题**：单类承载十多组互不相关的状态字段，后果有三：1）改一处牵动其他状态机——TODO 中 listener-async / restart 串行化 / pre-handshake send-fail / connect-timer / lazy init race 等多条都源自此模块；2）任何子系统的测试都要先把整套 mock 起来；3）后来人理解成本高，docs 必须额外写"双 WS"+"三种连接状态"+"三张路由表"才能讲清。是模块边界过粗的设计债。
+
+**触发场景**：每次需要在 bridge 内修 bug 都暴露。
+
+**修复方向**：
+- 发布前最低线：明确划分"哪些函数是导出的稳定 API、哪些是内部"——避免 hub 版被外部依赖把内部细节锁死
+- 中期：切出 2 个能独立测的子模块（gateway-ws 握手机 + lag-probe / WebRTC 信令路由器）
+- 越拖代码越粘合越难拆；当前测试覆盖率已稳，是动手好窗口
+
+**严重度**：Should fix（不阻塞发布，但是长期负担）
+
+## 占位/已停用代码会随 npm 包发到 hub
+
+**发现日期**：2026-05-09（pre-hub release 设计 review）
+
+**锚点**：
+- `src/webrtc/ndc-preloader.js`（旧 node-datachannel 路径，依赖已摘除，运行不命中）
+- `src/transport-adapter.js` + `src/message-model.js`（"未来通过 channel outbound 收发消息"的预留适配层，主路径不经过）
+- `src/channel-plugin.js:42-51` `outbound.sendText` 占位 + `status.defaultRuntime.running: true` 写死
+- `package.json` `files` 字段为 `src/**/*.js`，会把上述一并发到 npm
+
+**问题**：
+1. 包体增大、装机时间略长
+2. OpenClaw 未来给 channel outbound 加 schema 校验时，这些占位会变成噪音报错源
+3. `outbound.sendText` 返回 `coclaw-${Date.now()}` 形式 messageId——上游真接通那天会被识别为"成功投递但不可追溯"，比明确的 `not-implemented` 错误更难排查
+4. `status.defaultRuntime.running: true` 写死，admin 看到永远绿、掩盖 bridge 真实状态
+
+**修复方向**：
+- 删 `webrtc/ndc-preloader.js`、`transport-adapter.js`、`message-model.js` 及对应测试（`docs/architecture.md:172-178` 已标"别花时间读"）
+- `channel-plugin.js` 保留但 `sendText` 改成显式 throw `not-implemented`（含 error code）
+- `status.defaultRuntime.running` 接到 bridge 实状态（singleton 启动且 server WS alive）
+
+**严重度**：Should fix（hub 发布前清干净一波，避免噪音随包扩散）
+
+## `--link` 双实例陷阱在桥接层与其它 module-level 单例上未系统排查
+
+**发现日期**：2026-05-09（pre-hub release 设计 review）
+
+**锚点**：
+- `docs/gateway-method-conventions.md:66-93`（双实例陷阱原理说明）
+- `src/realtime-bridge.js` module-level `let singleton`
+- `src/runtime.js` 单例、`src/plugin-version.js` 缓存等其他 module-level 状态点
+
+**问题**：CLAUDE.md 已明确 `--link` 模式下 hook 与 RPC handler 跑在不同 ESM 实例。`topic-manager` / `chat-history-manager` 已用"磁盘中转"覆盖，但 `realtime-bridge` 自己是 module-level singleton——hook 路径与 RPC 路径分别 import 时会拿到两个 singleton。当前没出事是因为没人在 hook 里调 bridge 导出函数；**没有显式的隔离审查清单**，"现在没用就没问题"在公网发布版本里风险不可控。
+
+**触发场景**：未来给 plugin 加新 hook（`session_start` / `resume` / `lifecycle:end` / 任意 `api.on`）时调用 bridge 模块导出函数。
+
+**修复方向**：
+- 把所有 module-level 单例（`singleton` / `runtime` / 缓存）盘一遍标"link-safe / link-unsafe"清单
+- link-unsafe 的导出函数加注释提示"不要在 hook 路径调用"
+- 或把所有跨 hook/RPC 共享状态强制走"磁盘中转"模式
+
+**严重度**：Should fix（埋雷，日后加 hook 时容易踩）
+
 ## `RealtimeBridge should handle rpc/unbound/close/send-fail branches` 偶发 flake
 
 **发现日期**：2026-05-09（扩 retry 预算 + 测试改 length 表达式时观察到）
