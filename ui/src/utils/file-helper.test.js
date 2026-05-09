@@ -634,4 +634,50 @@ describe('__nativeShareFile', () => {
 		// 'hello' → base64 = 'aGVsbG8='
 		expect(writeArgs.data).toBe('aGVsbG8=');
 	});
+
+	// 多平台/多语言 "用户主动取消" 边界（issue #233：鸿蒙下 reject message 与英文 cancel 不一致导致误判失败）
+	describe('用户取消识别（白名单）', () => {
+		const userCancelMessages = [
+			'Share canceled',
+			'Share cancelled by user',
+			'用户取消',
+			'用户已取消分享',
+			'キャンセルされました',
+			'User dismissed share sheet',
+			'Dismissed',
+			'User declined to share',
+			'User aborted operation',
+		];
+
+		for (const msg of userCancelMessages) {
+			test(`静默吞掉：${msg}`, async () => {
+				shareMock.mockRejectedValue(new Error(msg));
+				const blob = new Blob(['data']);
+				const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+				await expect(nativeShare(blob, 'cancel.txt')).resolves.toBeUndefined();
+				expect(deleteFileMock).toHaveBeenCalledOnce();
+				expect(rmdirMock).toHaveBeenCalledOnce();
+			});
+		}
+
+		const realFailureMessages = [
+			'Share plugin unavailable',
+			'Filesystem write failed: ENOSPC',
+			'Network error',
+			'Permission denied',
+		];
+
+		for (const msg of realFailureMessages) {
+			test(`照常抛出：${msg}`, async () => {
+				shareMock.mockRejectedValue(new Error(msg));
+				const blob = new Blob(['data']);
+				const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+
+				await expect(nativeShare(blob, 'fail.txt')).rejects.toThrow(msg);
+				expect(deleteFileMock).toHaveBeenCalledOnce();
+				expect(rmdirMock).toHaveBeenCalledOnce();
+			});
+		}
+	});
 });
