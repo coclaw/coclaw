@@ -209,8 +209,12 @@ async function __nativeShareFile(blob, filename) {
 	try {
 		await Share.share({ files: [uri] });
 	} catch (err) {
-		// 用户取消分享面板时 Capacitor 会 reject "Share canceled"，属正常操作不向上传播
-		if (!/cancel/i.test(err?.message)) throw err;
+		// Capacitor Share 三端在用户取消分享面板时的 reject 都没有结构化标识可识别
+		// （iOS/Android 仅 message="Share canceled"，Web 走 DOMException AbortError 但
+		//  桥接到 JS 后形态不一致；详见 #233 调研）。用户取消是常见操作，不该挂"失败"
+		// 红标；其他系统层 share 错误（插件未注册/Intent 异常等）极罕见且用户重试
+		// 也救不了，同样不向上传播。文件已写入 cache，finally 会清理。
+		console.warn('[saveBlobToFile] share dialog dismissed:', err?.message ?? err);
 	} finally {
 		await Filesystem.deleteFile({ path: cachePath, directory: Directory.Cache })
 			.catch((err) => console.warn('[saveBlobToFile] cache cleanup failed:', err));

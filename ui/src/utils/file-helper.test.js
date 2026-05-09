@@ -554,31 +554,41 @@ describe('__nativeShareFile', () => {
 		});
 	});
 
-	test('用户取消分享面板时静默处理，不向上抛出', async () => {
-		shareMock.mockRejectedValue(new Error('Share canceled'));
+	test('share 失败时一律静默处理（用户取消是常见情形，三端无结构化标识可区分；issue #233）', async () => {
+		// 三端 Share API 在用户取消和系统层失败时的 reject 都没有结构化标识可靠区分，
+		// 任何按 message 关键词匹配都是反模式。这里把"任何 message"的 share 异常都
+		// 锁定为不向上抛——用户取消不该挂红标，系统层错误（插件未注册/Intent 异常）
+		// 用户重试也救不了，同样吞掉避免误导。文件已写入 cache，finally 仍会清理。
+		const cases = [
+			new Error('Share canceled'),       // Android/iOS 用户取消的 message
+			new Error('Share plugin unavailable'), // 假想的系统层错误 message
+			new Error(''),                     // 空 message
+			Object.assign(new Error('whatever'), { name: 'AbortError' }), // Web 形态
+			'string-error',                    // 非 Error 抛出
+		];
 
-		const blob = new Blob(['data']);
-		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-		// 不应抛出
-		await expect(nativeShare(blob, 'cancel.txt')).resolves.toBeUndefined();
+		for (const err of cases) {
+			shareMock.mockReset().mockRejectedValueOnce(err);
+			deleteFileMock.mockClear();
+			rmdirMock.mockClear();
 
-		// 仍应清理临时文件
-		expect(deleteFileMock).toHaveBeenCalledOnce();
-		expect(rmdirMock).toHaveBeenCalledOnce();
-	});
+			const blob = new Blob(['data']);
+			const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
 
-	test('非取消的分享错误仍向上抛出，且清理临时文件', async () => {
-		shareMock.mockRejectedValue(new Error('Share plugin unavailable'));
+			await expect(nativeShare(blob, 't.txt')).resolves.toBeUndefined();
+			expect(deleteFileMock).toHaveBeenCalledOnce();
+			expect(rmdirMock).toHaveBeenCalledOnce();
+		}
 
-		const blob = new Blob(['data']);
-		const { __nativeShareFile: nativeShare } = await import('./file-helper.js');
+		// 每次 share 失败都应留下诊断日志（不依赖 err.message 内容）
+		const dismissalWarns = warnSpy.mock.calls.filter(
+			(c) => typeof c[0] === 'string' && c[0].includes('share dialog dismissed'),
+		);
+		expect(dismissalWarns).toHaveLength(cases.length);
 
-		await expect(nativeShare(blob, 'fail.txt')).rejects.toThrow('Share plugin unavailable');
-
-		// 即使 share 失败，cleanup 仍应执行
-		expect(deleteFileMock).toHaveBeenCalledOnce();
-		expect(rmdirMock).toHaveBeenCalledOnce();
+		warnSpy.mockRestore();
 	});
 
 	test('deleteFile 失败时输出警告但不抛出', async () => {
