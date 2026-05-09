@@ -908,6 +908,75 @@ test('点击最近项 → 真实 store 乐观更新使该项立刻置顶（不�
 	expect(__webAgentsApiMock.recordWebAgentClick).toHaveBeenCalledWith(1);
 });
 
+test('Web Agents 最近使用分组：用户自建（slug=null）项 fallback 走 web-agent-recent-custom-${id} 与 UIcon', async () => {
+	// 钉死预留路径：将来 v2 用户自建 Web Agent 没有 slug，fallback testid + 默认 globe icon 必须仍然能用
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 42, slug: null, name: 'My Agent', url: 'https://example.test/', sort: null, lastClickedAt: '2026-05-05T10:00:00Z' },
+	];
+	await wrapper.vm.$nextTick();
+
+	const item = wrapper.find('[data-testid="web-agent-recent-custom-42"]');
+	expect(item.exists()).toBe(true);
+	// 没 slug 时不应渲染 <img>，应 fallback 到 UIcon stub（UIconStub 把 name 透传为 attr）
+	expect(item.find('img').exists()).toBe(false);
+	const fallbackIcon = item.find('[name="i-lucide-globe"]');
+	expect(fallbackIcon.exists()).toBe(true);
+});
+
+test('Web Agents 最近使用分组：openExternalUrl 拒绝时被 catch，无 unhandled rejection', async () => {
+	__openExternalUrlMock.mockClear();
+	__openExternalUrlMock.mockRejectedValueOnce(new Error('popup blocked'));
+	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', sort: 1, lastClickedAt: '2026-05-05T10:00:00Z' },
+	];
+	await wrapper.vm.$nextTick();
+
+	await wrapper.find('[data-testid="web-agent-recent-deepseek"]').trigger('click');
+	// 等微任务消化 fire-and-forget 的 catch
+	await new Promise((r) => setTimeout(r, 0));
+
+	expect(__openExternalUrlMock).toHaveBeenCalled();
+	expect(warnSpy).toHaveBeenCalled();
+	warnSpy.mockRestore();
+});
+
+test('MainList 分组顺序：OC Agents → Web Agents 最近 → Topics（DOM 顺序写死）', async () => {
+	// 钉死设计：用户对侧边栏空间感的依赖建立在固定排序之上，回归后用户会"找不到东西在哪"
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'Solo', online: true }]);
+	useTopicsStore().byId = toById([
+		{ topicId: 't1', agentId: 'main', title: 'Topic A', createdAt: 100, clawId: 'b1' },
+	]);
+	const webAgentsStore = useWebAgentsStore();
+	webAgentsStore.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: '2026-05-05T10:00:00Z' },
+	];
+	await wrapper.vm.$nextTick();
+
+	const html = wrapper.html();
+	const idxAgent = html.indexOf('agent-actions-stub');
+	const idxRecent = html.indexOf('data-testid="web-agent-section-recent"');
+	const idxTopic = html.indexOf('topic-actions-stub');
+	expect(idxAgent).toBeGreaterThan(-1);
+	expect(idxRecent).toBeGreaterThan(-1);
+	expect(idxTopic).toBeGreaterThan(-1);
+	// 顺序：agents < recent < topics
+	expect(idxAgent).toBeLessThan(idxRecent);
+	expect(idxRecent).toBeLessThan(idxTopic);
+});
+
 test('mounted 时调用 webAgentsStore.loadAll()', async () => {
 	const pinia = createPinia();
 	setActivePinia(pinia);

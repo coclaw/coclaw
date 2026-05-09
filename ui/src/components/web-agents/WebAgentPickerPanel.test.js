@@ -300,6 +300,29 @@ describe('WebAgentPickerPanel', () => {
 		expect(store.recordClick).toHaveBeenCalledWith(1);
 	});
 
+	test('retry 时 loading 必盖过陈旧 error（loading=true && error≠null && items=[]）', async () => {
+		// 用户场景：第一次 loadAll 失败，点 retry 进入 loading；UI 必须立即切到 loading，
+		// 否则用户会以为 retry 没生效（错误占位还停留）
+		const pinia = createPinia();
+		setActivePinia(pinia);
+		const store = useWebAgentsStore();
+		store.loadAll = vi.fn(() => new Promise(() => {})); // 永久 pending 模拟 retry in-flight
+		store.loading = true;
+		store.error = new Error('previous-failure');
+		store.items = [];
+
+		const wrapper = mount(WebAgentPickerPanel, {
+			global: {
+				plugins: [pinia],
+				stubs: { UIcon: UIconStub, UButton: UButtonStub },
+				mocks: { $t: (k) => k },
+			},
+		});
+
+		expect(wrapper.find('[data-testid="web-agent-picker-loading"]').exists()).toBe(true);
+		expect(wrapper.find('[data-testid="web-agent-picker-error"]').exists()).toBe(false);
+	});
+
 	test('item 图标和 fallback UIcon 均为装饰性，不会被屏幕阅读器重复读出', () => {
 		const pinia = createPinia();
 		setActivePinia(pinia);
