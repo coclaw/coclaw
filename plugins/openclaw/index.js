@@ -5,6 +5,7 @@ import { notBound, bindOk, unbindOk, claimCodeCreated } from './src/common/messa
 import { coclawChannelPlugin } from './src/channel-plugin.js';
 import { ensureAgentSession, gatewayAgentRpc, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady, broadcastPluginEvent } from './src/realtime-bridge.js';
 import { getHostName, readSettings, writeName, MAX_NAME_LENGTH } from './src/settings.js';
+import { readConfig } from './src/config.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
 import { TopicManager } from './src/topic-manager/manager.js';
@@ -157,6 +158,13 @@ const plugin = {
 		setRuntime(api.runtime);
 		const logger = api?.logger ?? console;
 		installAbortRegistryDiag(logger);
+
+		// 未 bind 时打条提示，便于 hub 装机用户看到下一步动作
+		readConfig().then((cfg) => {
+			if (!cfg?.token) {
+				logger.info?.('[coclaw] not bound — run `openclaw coclaw enroll` to connect to CoClaw');
+			}
+		}).catch(() => {});
 		const manager = createSessionManager({ logger });
 		const topicManager = new TopicManager({ logger });
 		const chatHistoryManager = new ChatHistoryManager({ logger });
