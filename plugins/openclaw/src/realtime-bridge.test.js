@@ -460,11 +460,17 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		assert.equal(logs.some((x) => String(x).includes('parse failed')), true);
 
 		// 未识别消息在任何状态下都被忽略
+		// 不能用 server.sent.length 判断：同一条 WS 也在 drain remote-log 批次，会让总数偶发 ±1
 		gateway.readyState = 0;
-		const serverSentBeforeOffline = server.sent.length;
 		server.emit('message', { data: JSON.stringify({ type: 'rpc.req', id: '3', method: 'm3' }) });
 		await new Promise((r) => setTimeout(r, 100));
-		assert.equal(server.sent.length, serverSentBeforeOffline, 'unrecognized message should be ignored regardless of gateway state');
+		const hasFrameForId3 = server.sent.some((s) => {
+			try {
+				const m = JSON.parse(String(s));
+				return m && m.id === '3';
+			} catch { return false; }
+		});
+		assert.equal(hasFrameForId3, false, 'unrecognized message should be ignored regardless of gateway state');
 
 		// claw.unbound branch (no clawId in payload — clears config)
 		server.emit('message', { data: JSON.stringify({ type: 'claw.unbound', reason: 'x' }) });

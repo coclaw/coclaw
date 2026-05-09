@@ -1099,14 +1099,3 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 - 或把所有跨 hook/RPC 共享状态强制走"磁盘中转"模式
 
 **严重度**：Should fix（埋雷，日后加 hook 时容易踩）
-
-## `RealtimeBridge should handle rpc/unbound/close/send-fail branches` 偶发 flake
-
-**发现日期**：2026-05-09（扩 retry 预算 + 测试改 length 表达式时观察到）
-**锚点**：`src/realtime-bridge.test.js:382-489`
-
-**问题**：测试在第 466 行用 `await new Promise((r) => setTimeout(r, 100));` 等待异步路径稳定后，断言 `server.sent.length` 没增长。`remote-log.js` 的 `flush()` 是 `BATCH_SIZE=20` + `setTimeout(0)` 切批的异步过程，若先前测试积累的 buffer 尚未 drain 完，100ms 内会有新批次落到 `server.sent`，导致断言 4 vs 3 这种 ±1 抖动。单独跑 / 第二次跑稳定通过。
-
-**修复方向**：测试入口加 `resetRemoteLog()` 隔离前序测试残留；或断言改成"对 rpc.req 的响应（特定 method/id 的 frame）数量不变"，避免依赖总长度。
-
-**严重度**：Low（不阻塞，重跑即过；但偶尔会让 CI 假失败）。
