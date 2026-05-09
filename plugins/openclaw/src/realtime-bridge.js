@@ -651,7 +651,7 @@ export class RealtimeBridge {
 		// 用 rpcSeq 保证 ID 唯一，避免 v3→legacy 同毫秒内两次调用产生相同 id
 		this.gatewayRpcSeq += 1;
 		this.gatewayConnectReqId = `coclaw-connect-${Date.now()}-${this.gatewayRpcSeq}`;
-		this.__logDebug(`gateway connect request -> id=${this.gatewayConnectReqId} legacy=${legacy}`);
+		this.logger.info?.(`[coclaw] gateway connect request -> id=${this.gatewayConnectReqId} legacy=${legacy}`);
 		try {
 			const authToken = this.__resolveGatewayAuthToken();
 			const params = {
@@ -768,7 +768,7 @@ export class RealtimeBridge {
 				if (payload.type === 'event' && payload.event === 'connect.challenge') {
 					const nonce = payload?.payload?.nonce ?? '';
 					lastChallengeNonce = nonce;
-					this.__logDebug(`gateway event <- connect.challenge legacyMode=${this.__gatewayLegacyMode}`);
+					this.logger.info?.(`[coclaw] gateway event <- connect.challenge legacyMode=${this.__gatewayLegacyMode}`);
 					// 已经学到此 gateway 是 legacy（上一条 WS 回退过）→ 直接发 legacy 握手
 					if (this.__gatewayLegacyMode) {
 						pendingLegacyAttempted = true;
@@ -785,7 +785,7 @@ export class RealtimeBridge {
 						wasReady = true;
 						this.__gatewayAttempts = 0; // 成功握手 → 重置失败计数，让后续瞬态断开有完整重试预算
 						remoteLog('ws.connected peer=gateway');
-						this.__logDebug(`gateway connect ok <- id=${payload.id}`);
+						this.logger.info?.(`[coclaw] gateway connect ok <- id=${payload.id}`);
 						this.gatewayConnectReqId = null;
 						this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
 						this.__pushInstanceInfo();
@@ -916,7 +916,7 @@ export class RealtimeBridge {
 		});
 
 		ws.addEventListener('open', () => {
-			this.__logDebug('gateway ws open, waiting for connect.challenge');
+			this.logger.info?.('[coclaw] gateway ws open, waiting for connect.challenge');
 		});
 		ws.addEventListener('close', (ev) => {
 			// 区分本端 plugin 主动关闭与对端 OpenClaw gateway 关闭：日志/远程上报用不同事件名，

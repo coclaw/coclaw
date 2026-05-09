@@ -966,3 +966,35 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **修复方向**：把"网关 ws close → clear()"那行改成"`bridge.stop()` / `refresh()` → `destroy()`/`clear()`；网关 ws close handler 仅清 lag probes 和 gateway pending RPC，不清路由表"。
 
 **预存问题**：step 1 漏改文档，本次顺手发现，不修。
+
+## pion-ipc SIGTERM 退出码 + watchdog 误打 schedule restart 噪声
+
+**发现日期**：2026-05-09（Round 2 系统级测试 gateway 重启日志分析）
+
+**锚点**：
+- `@coclaw/pion-ipc`（Go 二进制）SIGTERM 处理路径 + exit code 决定逻辑
+- `node_modules/.../@coclaw/pion-node@0.3.0/src/pion-ipc.js:308` `_handleProcessExit` / line 329 `_scheduleRestart`
+- gateway 重启时 plugin stop hook 与 OS 进程组信号传播的时序
+
+**现象**：gateway 收到 SIGTERM 重启时，gateway 日志会出现这一串噪声：
+- `[pion-ipc] [stderr] received signal, shutting down signal:15`
+- `[pion-ipc] [stderr] ERROR service exited with error: context canceled`
+- `[pion-ipc] process exited code=1 signal=null`
+- `[pion-ipc] watchdog: restart #1 in 200ms`
+
+但 watchdog 计划的 200ms 重启实际不会发生——plugin stop 路径稍后调到的 `ipc.stop()` 会把 `_stopped/_intentionalStop` 标记上并清掉 `_restartTimer`。
+
+**根因层次**：
+- OS 把 SIGTERM 群发给整个进程组 → pion-ipc Go 子进程**先于** plugin stop hook 调到 `ipc.stop()` 之前被杀
+- Go 端把 `context.Canceled` 当 ERROR 返回主进程并 exit code=1（应当 exit 0）
+- pion-node 的 `_handleProcessExit` 看到 `_intentionalStop=false`（plugin 还没来得及调 stop），按崩溃路径 schedule watchdog restart 并打 log
+- 紧跟 plugin stop 调到 `ipc.stop()`，把 watchdog 拆掉，**实际没有真重启**
+
+**影响**：仅日志噪声，不影响功能。但容易让分析者误判为异常退出 + 真重启。
+
+**修复方向**（不在 plugin 层）：
+- **首选 · pion-ipc Go**：SIGTERM 路径走优雅退出，把 `context.Canceled` 视为已知关闭原因，exit 0；不要打 ERROR 级 service 退出 log
+- **备选 · pion-node**：spawn pion-ipc 时放进独立进程组（`detached: true` / 设 `setpgid`），避免 OS SIGTERM 群发波及子进程，由 pion-node 主动按节奏 stop
+- plugin 层无更优解——已在 stop hook 内 await `ipc.stop()`，无法更早抢救（被 OpenClaw gateway shutdown 触发时机决定）
+
+**预存问题**：非 plugin 自身 bug，不在本仓库修；plugin 作为下游观察者跟踪上游修复。
