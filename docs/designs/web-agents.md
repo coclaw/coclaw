@@ -202,13 +202,13 @@ model User {
 export const PRESETS = [
 	{ slug: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/',    sort: 1 },
 	{ slug: 'doubao',   name: '豆包',     url: 'https://www.doubao.com/chat/',  sort: 2 },
-	{ slug: 'qwen',     name: '千问',     url: 'https://chat.qwen.ai/',         sort: 3 },
-	{ slug: 'kimi',     name: 'Kimi',     url: 'https://kimi.com/',             sort: 4 },
+	{ slug: 'qwen',     name: '千问',     url: 'https://www.qianwen.com/',      sort: 3 },
+	{ slug: 'kimi',     name: 'Kimi',     url: 'https://www.kimi.com/',         sort: 4 },
 	{ slug: 'yuanbao',  name: '元宝',     url: 'https://yuanbao.tencent.com/',  sort: 5 },
 ];
 ```
 
-> 5 个 URL **待用户最后确认**——尤其千问（chat.qwen.ai 是更名后的新域名）和 Kimi（kimi.com 是 moonshot.cn 旗下新域名）。
+> 5 个 URL 已最终确认（2026-05-09）：千问选用国内版 `www.qianwen.com`（中文界面，原 `tongyi.aliyun.com` 收敛后的新主域）；Kimi 选用统一主域 `www.kimi.com`，原 `kimi.moonshot.cn` 已 302 跳转至此。海外的豆包对应品牌为独立的 Cici/Dola，不归类到本预置。
 
 ### Server 启动时双向同步
 

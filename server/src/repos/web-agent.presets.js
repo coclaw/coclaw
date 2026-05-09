@@ -3,8 +3,8 @@
 export const PRESETS = [
 	{ slug: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/',   sort: 1 },
 	{ slug: 'doubao',   name: '豆包',     url: 'https://www.doubao.com/chat/',  sort: 2 },
-	{ slug: 'qwen',     name: '千问',     url: 'https://chat.qwen.ai/',         sort: 3 },
-	{ slug: 'kimi',     name: 'Kimi',     url: 'https://kimi.com/',             sort: 4 },
+	{ slug: 'qwen',     name: '千问',     url: 'https://www.qianwen.com/',      sort: 3 },
+	{ slug: 'kimi',     name: 'Kimi',     url: 'https://www.kimi.com/',         sort: 4 },
 	{ slug: 'yuanbao',  name: '元宝',     url: 'https://yuanbao.tencent.com/',  sort: 5 },
 ];
 
