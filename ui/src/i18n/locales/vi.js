@@ -7,6 +7,9 @@ export const viMessages = {
 		copyFailed: 'Sao chép thất bại',
 		failed: 'Thất bại',
 		featureComingSoon: 'Tính năng này sắp ra mắt, hãy đón chờ',
+		loading: 'Đang tải…',
+		loadFailed: 'Tải thất bại',
+		retry: 'Thử lại',
 	},
 	notify: {
 		rtcUnrecoverable: 'Mất kết nối với {clawName}. {n} tác vụ có thể bị ảnh hưởng.',
@@ -468,5 +471,10 @@ export const viMessages = {
 		ready: 'Sẵn sàng',
 		clickedTimes: 'Đã nhấn {count} lần',
 		backToAuthPrototype: 'Quay lại nguyên mẫu xác thực',
+	},
+	webAgents: {
+		title: 'Web Agent',
+		entryName: 'Web Agent',
+		empty: 'Không có mục nào',
 	},
 };

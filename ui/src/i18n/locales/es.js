@@ -7,6 +7,9 @@ export const esMessages = {
 		copyFailed: 'Error al copiar',
 		failed: 'Error',
 		featureComingSoon: 'Esta función estará disponible próximamente, ¡estate atento!',
+		loading: 'Cargando…',
+		loadFailed: 'Error al cargar',
+		retry: 'Reintentar',
 	},
 	notify: {
 		rtcUnrecoverable: 'Se perdió la conexión con {clawName}. {n} tarea(s) pueden verse afectadas.',
@@ -468,5 +471,10 @@ export const esMessages = {
 		ready: 'Listo',
 		clickedTimes: 'Clic {count} veces',
 		backToAuthPrototype: 'Volver al prototipo de autenticación',
+	},
+	webAgents: {
+		title: 'Agente Web',
+		entryName: 'Agente Web',
+		empty: 'No hay elementos disponibles',
 	},
 };

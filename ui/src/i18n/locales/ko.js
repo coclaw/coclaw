@@ -7,6 +7,9 @@ export const koMessages = {
 		copyFailed: '복사 실패',
 		failed: '실패',
 		featureComingSoon: '이 기능은 곧 제공될 예정입니다. 기대해 주세요',
+		loading: '불러오는 중…',
+		loadFailed: '불러오기 실패',
+		retry: '다시 시도',
 	},
 	notify: {
 		rtcUnrecoverable: '{clawName}와(과)의 연결이 끊겼습니다. {n}개의 작업에 영향이 있을 수 있습니다',
@@ -468,5 +471,10 @@ export const koMessages = {
 		ready: '준비됨',
 		clickedTimes: '{count}번 클릭됨',
 		backToAuthPrototype: '인증 프로토타입으로 돌아가기',
+	},
+	webAgents: {
+		title: '웹 에이전트',
+		entryName: '웹 에이전트',
+		empty: '사용 가능한 항목이 없습니다',
 	},
 };

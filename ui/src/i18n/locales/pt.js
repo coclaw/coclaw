@@ -7,6 +7,9 @@ export const ptMessages = {
 		copyFailed: 'Falha ao copiar',
 		failed: 'Falhou',
 		featureComingSoon: 'Esta funcionalidade está em breve, fique ligado',
+		loading: 'Carregando…',
+		loadFailed: 'Falha ao carregar',
+		retry: 'Tentar novamente',
 	},
 	notify: {
 		rtcUnrecoverable: 'Conexão com {clawName} perdida. {n} tarefa(s) podem ser afetadas.',
@@ -468,5 +471,10 @@ export const ptMessages = {
 		ready: 'Pronto',
 		clickedTimes: 'Clicado {count} vezes',
 		backToAuthPrototype: 'Voltar ao Protótipo de Autenticação',
+	},
+	webAgents: {
+		title: 'Agente Web',
+		entryName: 'Agente Web',
+		empty: 'Nenhum item disponível',
 	},
 };

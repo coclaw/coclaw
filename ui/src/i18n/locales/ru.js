@@ -7,6 +7,9 @@ export const ruMessages = {
 		copyFailed: 'Ошибка копирования',
 		failed: 'Ошибка',
 		featureComingSoon: 'Эта функция скоро появится, следите за обновлениями',
+		loading: 'Загрузка…',
+		loadFailed: 'Ошибка загрузки',
+		retry: 'Повторить',
 	},
 	notify: {
 		rtcUnrecoverable: 'Соединение с {clawName} прервано. Затронутых задач: {n}.',
@@ -468,5 +471,10 @@ export const ruMessages = {
 		ready: 'Готово',
 		clickedTimes: 'Нажато {count} раз',
 		backToAuthPrototype: 'Назад к прототипу авторизации',
+	},
+	webAgents: {
+		title: 'Веб-агент',
+		entryName: 'Веб-агент',
+		empty: 'Нет доступных элементов',
 	},
 };

@@ -7,6 +7,9 @@ export const frMessages = {
 		copyFailed: 'Échec de la copie',
 		failed: 'Échec',
 		featureComingSoon: 'Cette fonctionnalité arrive bientôt, restez à l\'écoute',
+		loading: 'Chargement…',
+		loadFailed: 'Échec du chargement',
+		retry: 'Réessayer',
 	},
 	notify: {
 		rtcUnrecoverable: 'Connexion à {clawName} perdue. {n} tâche(s) peuvent être affectées.',
@@ -468,5 +471,10 @@ export const frMessages = {
 		ready: 'Prêt',
 		clickedTimes: 'Cliqué {count} fois',
 		backToAuthPrototype: 'Retour au prototype d\'authentification',
+	},
+	webAgents: {
+		title: 'Agent Web',
+		entryName: 'Agent Web',
+		empty: 'Aucun élément disponible',
 	},
 };

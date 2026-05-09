@@ -3,11 +3,32 @@ import { createPinia, setActivePinia } from 'pinia';
 import { mount } from '@vue/test-utils';
 import { vi, afterEach } from 'vitest';
 
+// MainList 现在通过 useWebAgentDialogs 间接依赖 @nuxt/ui 的 useOverlay；测试环境内没有
+// UApp 上下文，必须 mock 掉，否则 mount 时抛错。同时 mock 掉外部跳转工具，避免污染。
+const __openPickerDialogMock = vi.hoisted(() => vi.fn());
+vi.mock('../composables/use-web-agent-dialogs.js', () => ({
+	useWebAgentDialogs: () => ({ openPickerDialog: __openPickerDialogMock }),
+}));
+const __openExternalUrlMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('../utils/external-url.js', () => ({
+	openExternalUrl: __openExternalUrlMock,
+}));
+
+// MainList mounted 时调用 webAgentsStore.loadAll()。它走 axios，环境里没有真实 server，
+// 不 mock 会让所有 MainList 测试输出 "GET /api/v1/web-agents → 401" 噪音；mock 掉让 store
+// 静默拿到空列表即可
+const __webAgentsApiMock = vi.hoisted(() => ({
+	listWebAgents: vi.fn().mockResolvedValue([]),
+	recordWebAgentClick: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../services/web-agents.api.js', () => __webAgentsApiMock);
+
 import MainList from './MainList.vue';
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
+import { useWebAgentsStore } from '../stores/web-agents.store.js';
 
 function toById(items) {
 	const byId = {};
@@ -135,8 +156,9 @@ test('should show only add-claw in Group 1 on narrow screen (default)', async ()
 
 	expect(wrapper.text()).toContain('添加机器人');
 	expect(wrapper.text()).not.toContain('管理机器人');
-	// Group 1 nav 在窄屏下有 mt-3
-	const group1Nav = wrapper.findAll('nav').at(0);
+	// Group 0 = Web Agent 入口；Group 1 = clawActionItems。Group 1 现在永远在 Group 0 之下，
+	// 始终保留 mt-3 间距
+	const group1Nav = wrapper.findAll('nav').at(1);
 	expect(group1Nav.classes()).toContain('mt-3');
 });
 
@@ -146,9 +168,11 @@ test('should show add-claw and manage-bots in Group 1 when scrollable (sidebar)'
 
 	expect(wrapper.text()).toContain('添加机器人');
 	expect(wrapper.text()).toContain('管理机器人');
-	// Group 1 nav 在侧边栏下无 mt-3
-	const group1Nav = wrapper.findAll('nav').at(0);
-	expect(group1Nav.classes()).not.toContain('mt-3');
+	// 侧边栏下 Group 0 hug 顶部（无 mt-3），Group 1 仍带 mt-3 与 Group 0 留出间距
+	const group0Nav = wrapper.findAll('nav').at(0);
+	expect(group0Nav.classes()).not.toContain('mt-3');
+	const group1Nav = wrapper.findAll('nav').at(1);
+	expect(group1Nav.classes()).toContain('mt-3');
 });
 
 test('should not show label text or empty state text when lists are empty', async () => {
@@ -320,7 +344,8 @@ test('topic icon should show agent initial when no avatar', async () => {
 	]);
 	await wrapper.vm.$nextTick();
 
-	const topicNav = wrapper.findAll('nav').at(2); // Group 3
+	// Group 0=Web Agent 入口, 1=clawActions, 2=agents, 3=topics（无最近 Web Agent 时）
+	const topicNav = wrapper.findAll('nav').at(3); // Group 3
 	const icon = topicNav.find('.rounded-full');
 	// agent display name defaults to agentId 'main' → initial 'M'
 	expect(icon.text()).toBe('M');
@@ -693,8 +718,8 @@ test('label DOM：多 claw 时渲染 agent + @ + claw 三段，"@" 用 shrink-0'
 	seedAgents('b2', [{ id: 'main', resolvedIdentity: { name: 'Helper' } }]);
 	await wrapper.vm.$nextTick();
 
-	// 第二个 nav 是 agent 列表（Group 2）
-	const agentNav = wrapper.findAll('nav').at(1);
+	// nav 顺序：0=Web Agent 入口, 1=clawActions, 2=agents
+	const agentNav = wrapper.findAll('nav').at(2);
 	const links = agentNav.findAll('a');
 	expect(links.length).toBe(2);
 
@@ -731,7 +756,7 @@ test('label DOM：单 claw 时不渲染 "@" 段', async () => {
 	seedAgents('b1', ['main']);
 	await wrapper.vm.$nextTick();
 
-	const agentNav = wrapper.findAll('nav').at(1);
+	const agentNav = wrapper.findAll('nav').at(2);
 	const link = agentNav.find('a');
 	expect(link.text()).not.toContain('@');
 });
@@ -776,11 +801,139 @@ test('AgentItemActions 渲染为 RouterLink 的 sibling，不能嵌套在 Router
 	seedAgents('b1', ['main']);
 	await wrapper.vm.$nextTick();
 
-	const agentNav = wrapper.findAll('nav').at(1);
+	const agentNav = wrapper.findAll('nav').at(2);
 	const link = agentNav.find('a');
 	const stub = agentNav.find('.agent-actions-stub');
 	expect(link.exists()).toBe(true);
 	expect(stub.exists()).toBe(true);
 	// 关键：actions stub 不在 link 子树里
 	expect(link.find('.agent-actions-stub').exists()).toBe(false);
+});
+
+// --- Web Agent 顶部入口与最近使用分组 ---
+
+test('Web Agent entry：永远渲染在顶部，点击触发 openPickerDialog', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const entry = wrapper.find('[data-testid="web-agent-entry"]');
+	expect(entry.exists()).toBe(true);
+	// nav[0] 即 Web Agent 入口所在的 nav
+	const group0 = wrapper.findAll('nav').at(0);
+	expect(group0.find('[data-testid="web-agent-entry"]').exists()).toBe(true);
+
+	__openPickerDialogMock.mockClear();
+	await entry.trigger('click');
+	expect(__openPickerDialogMock).toHaveBeenCalledTimes(1);
+});
+
+test('Web Agents 最近使用分组：lastClickedAt 全为 null 时不渲染容器', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: null },
+		{ id: 2, slug: 'doubao', name: '豆包', url: 'u', sort: 2, lastClickedAt: null },
+	];
+	await wrapper.vm.$nextTick();
+
+	expect(wrapper.find('[data-testid="web-agent-section-recent"]').exists()).toBe(false);
+});
+
+test('Web Agents 最近使用分组：按 lastClickedAt DESC 渲染并暴露 web-agent-recent-${slug}', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u1', sort: 1, lastClickedAt: '2026-05-01T10:00:00Z' },
+		{ id: 2, slug: 'doubao', name: '豆包', url: 'u2', sort: 2, lastClickedAt: '2026-05-03T10:00:00Z' },
+		{ id: 3, slug: 'qwen', name: '千问', url: 'u3', sort: 3, lastClickedAt: null },
+	];
+	await wrapper.vm.$nextTick();
+
+	const section = wrapper.find('[data-testid="web-agent-section-recent"]');
+	expect(section.exists()).toBe(true);
+	const items = section.findAll('button');
+	expect(items.length).toBe(2);
+	expect(items[0].attributes('data-testid')).toBe('web-agent-recent-doubao');
+	expect(items[1].attributes('data-testid')).toBe('web-agent-recent-deepseek');
+});
+
+test('Web Agents 最近使用分组：点击触发 recordClick + openExternalUrl', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 7, slug: 'kimi', name: 'Kimi', url: 'https://www.kimi.com/', sort: 4, lastClickedAt: '2026-05-05T10:00:00Z' },
+	];
+	const recordSpy = vi.spyOn(store, 'recordClick').mockImplementation(() => {});
+	await wrapper.vm.$nextTick();
+
+	__openExternalUrlMock.mockClear();
+	const item = wrapper.find('[data-testid="web-agent-recent-kimi"]');
+	expect(item.exists()).toBe(true);
+	await item.trigger('click');
+
+	expect(recordSpy).toHaveBeenCalledWith(7);
+	expect(__openExternalUrlMock).toHaveBeenCalledWith('https://www.kimi.com/');
+});
+
+test('点击最近项 → 真实 store 乐观更新使该项立刻置顶（不依赖网络）', async () => {
+	// 全链路验证：点击 → recordClick 写本地 lastClickedAt → recentlyClicked 重排 → DOM 顺序变化
+	__webAgentsApiMock.recordWebAgentClick.mockClear();
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u1', sort: 1, lastClickedAt: '2026-05-01T10:00:00Z' },
+		{ id: 2, slug: 'doubao', name: '豆包', url: 'u2', sort: 2, lastClickedAt: '2026-05-03T10:00:00Z' },
+	];
+	await wrapper.vm.$nextTick();
+
+	// 初始顺序：豆包（2026-05-03）领先 DeepSeek（2026-05-01）
+	let order = wrapper.findAll('[data-testid^="web-agent-recent-"]').map((b) => b.attributes('data-testid'));
+	expect(order).toEqual(['web-agent-recent-doubao', 'web-agent-recent-deepseek']);
+
+	// 点 DeepSeek → store.recordClick 走真实路径写新 lastClickedAt（值为 new Date().toISOString()，必 > 历史）
+	await wrapper.find('[data-testid="web-agent-recent-deepseek"]').trigger('click');
+	await wrapper.vm.$nextTick();
+
+	order = wrapper.findAll('[data-testid^="web-agent-recent-"]').map((b) => b.attributes('data-testid'));
+	expect(order[0]).toBe('web-agent-recent-deepseek');
+	// fire-and-forget 也确实把 POST 委托给了 api 层
+	expect(__webAgentsApiMock.recordWebAgentClick).toHaveBeenCalledWith(1);
+});
+
+test('mounted 时调用 webAgentsStore.loadAll()', async () => {
+	const pinia = createPinia();
+	setActivePinia(pinia);
+	// 提前装好 spy，挂载时即可拦截
+	const store = useWebAgentsStore();
+	const spy = vi.spyOn(store, 'loadAll').mockResolvedValue();
+
+	mount(MainList, {
+		props: { currentPath: '/topics' },
+		global: {
+			plugins: [pinia],
+			stubs: {
+				RouterLink: RouterLinkStub,
+				UIcon: UIconStub,
+				UButton: UButtonStub,
+				TopicItemActions: { template: '<div />' },
+				AgentItemActions: { template: '<div />' },
+			},
+			mocks: {
+				$t: (k) => k,
+				$route: { name: 'topics', params: {}, query: {} },
+				$router: { resolve: (to) => ({ path: typeof to === 'string' ? to : '/' }) },
+			},
+		},
+	});
+	await vi.dynamicImportSettled();
+
+	expect(spy).toHaveBeenCalled();
 });

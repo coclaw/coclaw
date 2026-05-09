@@ -7,6 +7,9 @@ export const deMessages = {
 		copyFailed: 'Kopieren fehlgeschlagen',
 		failed: 'Fehlgeschlagen',
 		featureComingSoon: 'Diese Funktion kommt bald, bleib gespannt',
+		loading: 'Wird geladen…',
+		loadFailed: 'Laden fehlgeschlagen',
+		retry: 'Wiederholen',
 	},
 	notify: {
 		rtcUnrecoverable: 'Verbindung zu {clawName} verloren. {n} Aufgabe(n) könnten betroffen sein.',
@@ -468,5 +471,10 @@ export const deMessages = {
 		ready: 'Bereit',
 		clickedTimes: '{count} mal geklickt',
 		backToAuthPrototype: 'Zurück zum Auth Prototype',
+	},
+	webAgents: {
+		title: 'Web-Agent',
+		entryName: 'Web-Agent',
+		empty: 'Keine Einträge verfügbar',
 	},
 };

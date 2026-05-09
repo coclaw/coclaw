@@ -7,6 +7,9 @@ export const zhCNMessages = {
 		copyFailed: '复制失败',
 		failed: '失败',
 		featureComingSoon: '功能建设中，敬请关注',
+		loading: '加载中…',
+		loadFailed: '加载失败',
+		retry: '重试',
 	},
 	notify: {
 		rtcUnrecoverable: '与「{clawName}」的连接已中断，{n} 个任务可能受影响',
@@ -468,5 +471,10 @@ export const zhCNMessages = {
 		ready: '就绪',
 		clickedTimes: '点击了 {count} 次',
 		backToAuthPrototype: '返回认证原型',
+	},
+	webAgents: {
+		title: '网页智能助手',
+		entryName: '网页智能助手',
+		empty: '暂无可用项',
 	},
 };

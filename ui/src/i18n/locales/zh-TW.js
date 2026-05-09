@@ -7,6 +7,9 @@ export const zhTWMessages = {
 		copyFailed: '複製失敗',
 		failed: '失敗',
 		featureComingSoon: '功能建設中，敬請關注',
+		loading: '載入中…',
+		loadFailed: '載入失敗',
+		retry: '重試',
 	},
 	notify: {
 		rtcUnrecoverable: '與「{clawName}」的連線已中斷，{n} 個任務可能受影響',
@@ -468,5 +471,10 @@ export const zhTWMessages = {
 		ready: '就緒',
 		clickedTimes: '點擊了 {count} 次',
 		backToAuthPrototype: '返回認證原型',
+	},
+	webAgents: {
+		title: '網頁智慧助手',
+		entryName: '網頁智慧助手',
+		empty: '暫無可用項目',
 	},
 };

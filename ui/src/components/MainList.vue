@@ -43,8 +43,21 @@
 			</div>
 		</header>
 
+		<!-- Group 0: Web Agent 顶部固定入口（永远显示） -->
+		<nav class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
+			<button
+				type="button"
+				data-testid="web-agent-entry"
+				class="group flex h-11 w-full items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
+				@click="onOpenWebAgentPicker"
+			>
+				<UIcon name="i-lucide-globe" class="size-6 text-dimmed" />
+				<span class="min-w-0 flex-1 truncate">{{ $t('webAgents.entryName') }}</span>
+			</button>
+		</nav>
+
 		<!-- Group 1: 机器人操作入口 -->
-		<nav v-if="clawActionItems.length" class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
+		<nav v-if="clawActionItems.length" class="mt-3 space-y-0 px-2">
 				<RouterLink
 					v-for="item in clawActionItems"
 					:key="item.id"
@@ -111,6 +124,37 @@
 			</div>
 		</nav>
 
+		<!-- Web Agents：用户点过的最近条目（按 lastClickedAt DESC），夹在 OC Agents 与 Topics 之间；空时不渲染容器 -->
+		<nav
+			v-if="recentWebAgents.length"
+			data-testid="web-agent-section-recent"
+			class="mt-3 space-y-0 px-2"
+		>
+			<button
+				v-for="item in recentWebAgents"
+				:key="item.id"
+				type="button"
+				:data-testid="`web-agent-recent-${item.slug ?? 'custom-' + item.id}`"
+				class="group flex h-11 w-full items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
+				@click="onClickRecentWebAgent(item)"
+			>
+				<img
+					v-if="webAgentIconFor(item.slug)"
+					:src="webAgentIconFor(item.slug)"
+					alt=""
+					aria-hidden="true"
+					class="size-6 shrink-0 rounded-md object-cover"
+				/>
+				<UIcon
+					v-else
+					name="i-lucide-globe"
+					aria-hidden="true"
+					class="size-6 shrink-0 text-dimmed"
+				/>
+				<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
+			</button>
+		</nav>
+
 		<!-- Group 3: Topic 列表 -->
 		<nav class="mt-3 space-y-0 px-2 pb-4">
 			<div
@@ -158,11 +202,26 @@ import { useClawsStore } from '../stores/claws.store.js';
 import { useEnvStore } from '../stores/env.store.js';
 import { useSessionsStore } from '../stores/sessions.store.js';
 import { useTopicsStore } from '../stores/topics.store.js';
+import { useWebAgentsStore } from '../stores/web-agents.store.js';
+import { useWebAgentDialogs } from '../composables/use-web-agent-dialogs.js';
 import AgentItemActions from './AgentItemActions.vue';
 import TopicItemActions from './TopicItemActions.vue';
 import defaultClawAvatar from '../assets/claw-avatars/openclaw.svg';
 import logoSrc from '../assets/coclaw-logo.jpg';
 import { isCapacitorApp } from '../utils/platform.js';
+import { openExternalUrl } from '../utils/external-url.js';
+
+// 与 WebAgentPickerPanel 一致的 eager glob：slug → 静态资源 URL
+const webAgentIconModules = import.meta.glob('../assets/web-agents/*.svg', {
+	eager: true,
+	query: '?url',
+	import: 'default',
+});
+const webAgentIconBySlug = {};
+for (const [path, url] of Object.entries(webAgentIconModules)) {
+	const slug = path.match(/\/([^/]+)\.svg$/)?.[1];
+	if (slug) webAgentIconBySlug[slug] = url;
+}
 
 function toTopicLabel(topic, t) {
 	if (typeof topic?.title === 'string' && topic.title.trim()) {
@@ -185,6 +244,11 @@ export default {
 			default: false,
 		},
 	},
+	setup() {
+		// composable 必须在 setup 内调用以拿到当前组件的 overlay context
+		const { openPickerDialog } = useWebAgentDialogs();
+		return { openPickerDialog };
+	},
 	data() {
 		return {
 			defaultClawAvatar,
@@ -194,6 +258,7 @@ export default {
 			envStore: null,
 			sessionsStore: null,
 			topicsStore: null,
+			webAgentsStore: null,
 		};
 	},
 	computed: {
@@ -297,6 +362,9 @@ export default {
 			result.sort((a, b) => b.activity - a.activity);
 			return result;
 		},
+		recentWebAgents() {
+			return this.webAgentsStore?.recentlyClicked ?? [];
+		},
 		topicItems() {
 			const items = this.topicsStore?.items ?? [];
 			const display = this.agentsStore?.getAgentDisplay;
@@ -328,7 +396,10 @@ export default {
 		this.envStore = useEnvStore();
 		this.sessionsStore = useSessionsStore();
 		this.topicsStore = useTopicsStore();
+		this.webAgentsStore = useWebAgentsStore();
 		this.loadAllData();
+		// Web Agents 列表与上面 5 个 store 解耦，单独 fire-and-forget 加载
+		this.webAgentsStore.loadAll();
 	},
 	watch: {
 		/** claw 列表变化（增删/上线状态）时刷新 agents / topics / sessions */
@@ -381,6 +452,19 @@ export default {
 		},
 		onManualRetry() {
 			this.clawsStore?.manualRetryUnreachable();
+		},
+		onOpenWebAgentPicker() {
+			this.openPickerDialog();
+		},
+		webAgentIconFor(slug) {
+			if (!slug) return null;
+			return webAgentIconBySlug[slug] ?? null;
+		},
+		onClickRecentWebAgent(item) {
+			this.webAgentsStore?.recordClick(item.id);
+			Promise.resolve(openExternalUrl(item.url)).catch((err) => {
+				console.warn('[MainList] openExternalUrl failed:', err?.message ?? err);
+			});
 		},
 		onTopicDeleted(topicId) {
 			// 兜底：桌面端侧边栏始终挂载，若正在查看被删除的 topic 则跳转默认路由

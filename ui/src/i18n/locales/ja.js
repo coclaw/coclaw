@@ -7,6 +7,9 @@ export const jaMessages = {
 		copyFailed: 'コピーに失敗しました',
 		failed: '失敗しました',
 		featureComingSoon: 'この機能は近日公開予定です。お楽しみに',
+		loading: '読み込み中…',
+		loadFailed: '読み込みに失敗しました',
+		retry: '再試行',
 	},
 	notify: {
 		rtcUnrecoverable: '「{clawName}」との接続が切断されました。{n} 件のタスクに影響が出る可能性があります',
@@ -468,5 +471,10 @@ export const jaMessages = {
 		ready: '準備完了',
 		clickedTimes: '{count} 回クリックされました',
 		backToAuthPrototype: '認証プロトタイプに戻る',
+	},
+	webAgents: {
+		title: 'Web エージェント',
+		entryName: 'Web エージェント',
+		empty: '利用可能な項目はありません',
 	},
 };

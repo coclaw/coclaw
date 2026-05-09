@@ -7,6 +7,9 @@ export const hiMessages = {
 		copyFailed: 'कॉपी विफल',
 		failed: 'विफल',
 		featureComingSoon: 'यह फीचर जल्द आने वाला है, बने रहें',
+		loading: 'लोड हो रहा है…',
+		loadFailed: 'लोड करने में विफल',
+		retry: 'पुनः प्रयास करें',
 	},
 	notify: {
 		rtcUnrecoverable: '{clawName} से कनेक्शन टूट गया। {n} कार्य प्रभावित हो सकते हैं।',
@@ -468,5 +471,10 @@ export const hiMessages = {
 		ready: 'तैयार',
 		clickedTimes: '{count} बार क्लिक किया',
 		backToAuthPrototype: 'Auth प्रोटोटाइप पर वापस जाएं',
+	},
+	webAgents: {
+		title: 'वेब एजेंट',
+		entryName: 'वेब एजेंट',
+		empty: 'कोई आइटम उपलब्ध नहीं',
 	},
 };

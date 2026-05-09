@@ -8,7 +8,9 @@
 		@after:leave="$emit('after:leave')"
 	>
 		<template #body>
-			<WebAgentPickerPanel @selected="onSelected" />
+			<div data-testid="web-agent-picker-dialog">
+				<WebAgentPickerPanel @selected="onSelected" />
+			</div>
 		</template>
 	</UModal>
 </template>

@@ -7,6 +7,9 @@ export const enMessages = {
 		copyFailed: 'Copy failed',
 		failed: 'Failed',
 		featureComingSoon: 'This feature is coming soon, stay tuned',
+		loading: 'Loading…',
+		loadFailed: 'Failed to load',
+		retry: 'Retry',
 	},
 	notify: {
 		rtcUnrecoverable: 'Connection to {clawName} lost. {n} task(s) may be affected.',
@@ -468,5 +471,10 @@ export const enMessages = {
 		ready: 'Ready',
 		clickedTimes: 'Clicked {count} times',
 		backToAuthPrototype: 'Back to Auth Prototype',
+	},
+	webAgents: {
+		title: 'Web Agent',
+		entryName: 'Web Agent',
+		empty: 'No items available',
 	},
 };
