@@ -247,9 +247,7 @@ export class RealtimeBridge {
 	}
 
 	__resolveGatewayWsUrl() {
-		return this.pluginConfig?.gatewayWsUrl
-			?? process.env.COCLAW_GATEWAY_WS_URL
-			?? DEFAULT_GATEWAY_WS_URL;
+		return process.env.COCLAW_GATEWAY_WS_URL ?? DEFAULT_GATEWAY_WS_URL;
 	}
 
 	async __clearTokenLocal(unboundClawId) {

@@ -11,9 +11,6 @@
     "properties": {
       "serverUrl": {
         "type": "string"
-      },
-      "gatewayWsUrl": {
-        "type": "string"
       }
     }
   }
