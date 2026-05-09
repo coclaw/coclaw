@@ -5,7 +5,7 @@ import os from 'node:os';
 import { after, test } from 'node:test';
 
 import { WebSocket as WsWebSocket } from 'ws';
-import { RealtimeBridge, classifyAgentLagStop, defaultResolveGatewayAuthToken, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
+import { GATEWAY_RETRY_DELAYS_MS, RealtimeBridge, classifyAgentLagStop, defaultResolveGatewayAuthToken, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -193,7 +193,7 @@ test('__resolveWebSocket should return custom impl when deps.WebSocket is provid
 
 // --- 单例便捷 API 测试 ---
 
-test('singleton API should no-op for missing token and restart/stop should be safe', async () => {
+test('singleton API should no-op for missing binding token and restart/stop should be safe', async () => {
 	await writeCfg({ token: '' });
 	const logger = noopLogger();
 	const __deps = { resolveGatewayAuthToken: () => 'tkn' };
@@ -315,10 +315,11 @@ test('restartRealtimeBridge should skip bridge creation and log info when no gat
 	}
 });
 
-test('restartRealtimeBridge should skip bridge creation when token resolver throws', async () => {
+test('restartRealtimeBridge should skip bridge creation and warn when token resolver throws', async () => {
 	await writeCfg({ token: '' });
 	const infos = [];
-	const logger = { warn() {}, info: (m) => infos.push(String(m)), debug() {} };
+	const warns = [];
+	const logger = { warn: (m) => warns.push(String(m)), info: (m) => infos.push(String(m)), debug() {} };
 	try {
 		await restartRealtimeBridge({
 			logger,
@@ -328,6 +329,38 @@ test('restartRealtimeBridge should skip bridge creation when token resolver thro
 		const result = await ensureAgentSession('main');
 		assert.equal(result.error, 'bridge_not_started');
 		assert.equal(infos.some((m) => m.includes('skipping realtime bridge')), true);
+		// resolver 抛错必须留下日志，避免静默吞异常违反 plugins/openclaw 强约束
+		assert.equal(
+			warns.some((m) => m.includes('gateway token resolver threw') && m.includes('boom')),
+			true,
+			'should warn with resolver error message',
+		);
+	}
+	finally {
+		await stopRealtimeBridge();
+	}
+});
+
+test('restartRealtimeBridge should keep existing singleton when resolver returns empty later', async () => {
+	// 顺序契约：先解析 token 再决定是否拆 singleton，避免 resolver 临时失败误把健康 bridge 关掉。
+	await writeCfg({ token: '' });
+	const logger = noopLogger();
+	let resolved = 'tkn';
+	const opts = {
+		logger,
+		pluginConfig: { serverUrl: 'http://127.0.0.1:1' },
+		__deps: { resolveGatewayAuthToken: () => resolved },
+	};
+	try {
+		await restartRealtimeBridge(opts);
+		const first = await ensureAgentSession('main');
+		assert.notEqual(first.error, 'bridge_not_started', 'first restart should create bridge');
+
+		// 第二次 restart 时 resolver 返回空：现有 singleton 必须保留，不被无谓拆掉
+		resolved = '';
+		await restartRealtimeBridge(opts);
+		const second = await ensureAgentSession('main');
+		assert.notEqual(second.error, 'bridge_not_started', 'existing singleton should be preserved');
 	}
 	finally {
 		await stopRealtimeBridge();
@@ -1913,12 +1946,10 @@ const FAKE_DEVICE_IDENTITY = {
 	privateKeyPem: '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJYc25BaxT+DkFPCYoNeX0a5Vtv3VPJ+o9iEHcuh3+G6\n-----END PRIVATE KEY-----\n',
 };
 
-const GATEWAY_RETRY_DELAYS = [5_000, 10_000, 20_000, 20_000, 20_000];
-
 /**
  * 替换 global.setTimeout / clearTimeout，捕获 setTimeout 回调以便测试手动触发。
  * restore() 必须在测试 finally 中调用。fireFirstRetryTimer() 触发当前最早的未取消、未触发的
- * retry 定时器（只识别 GATEWAY_RETRY_DELAYS 中的延时值），返回 true/false 表示是否有可触发。
+ * retry 定时器（只识别 GATEWAY_RETRY_DELAYS_MS 中的延时值），返回 true/false 表示是否有可触发。
  */
 function captureTimers() {
 	const realSetTimeout = global.setTimeout;
@@ -1941,7 +1972,7 @@ function captureTimers() {
 			global.clearTimeout = realClearTimeout;
 		},
 		fireFirstRetryTimer() {
-			const t = timers.find((x) => !x.__cancelled && !x.__fired && GATEWAY_RETRY_DELAYS.includes(x.__ms));
+			const t = timers.find((x) => !x.__cancelled && !x.__fired && GATEWAY_RETRY_DELAYS_MS.includes(x.__ms));
 			if (!t) return false;
 			t.__fired = true;
 			t.__fn();

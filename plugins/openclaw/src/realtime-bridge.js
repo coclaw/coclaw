@@ -26,7 +26,8 @@ const SERVER_HB_TIMEOUT_MS = 45_000;
 const SERVER_HB_MAX_MISS = 3; // 连续 3 次无响应才断连（~135s）。上游主线程 spike 实测最坏 ~89.5s（issue #75069），余量 ~1.5x
 // gateway 握手失败的指数退避表：每个元素是"上一次失败"之后、"下一次尝试"之前的等待时间。
 // 最多 5 次重试（加上首次尝试共 6 次），全部失败后进入 gave-up 终态，不再自动尝试。
-const GATEWAY_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 20_000, 20_000];
+// export 是为了让测试 helper 通过同一份常量识别 retry timer，避免硬编码副本与生产代码漂移。
+export const GATEWAY_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 20_000, 20_000];
 // v3 握手失败时，只有错误消息匹配此正则才回退到不带 device 的 legacy 握手。
 // 严格限定在"签名/设备/scope/协议"相关错误，避免对网络/内部错误做无意义的降级尝试。
 const GATEWAY_HANDSHAKE_FALLBACK_PATTERN = /signature|device|scope|protocol/i;
@@ -1630,22 +1631,27 @@ let singleton = null;
  * @param {{ logger, pluginConfig }} opts
  */
 export async function restartRealtimeBridge(opts) {
-	if (singleton) {
-		await singleton.stop();
-		singleton = null;
-	}
 	const deps = opts?.__deps; // 仅测试用
 	// 启动守门：拿不到 gateway token 即跳过整个 bridge。
 	// 主进程 token 在 service.start 入口必有值（上游 boot 顺序保障 setRuntimeConfigSnapshot
 	// 在 startPluginServices 之前完成）；非主进程（discovery 副进程等）走到此处时 token
 	// 通常为空，跳过即可灭掉残留 connect → token_missing 噪声。
+	// 顺序：先解析 token，token 缺失直接 return 不动现有 singleton——避免临时 resolver
+	// 失败（cfg IO 抖动 / 测试注入抛错）误把一个健康运行中的 bridge 关掉。
 	const resolveToken = deps?.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
 	let token = '';
 	try { token = resolveToken() ?? ''; }
-	catch { token = ''; }
+	catch (err) {
+		opts?.logger?.warn?.(`[coclaw] gateway token resolver threw: ${String(err?.message ?? err)}`);
+		token = '';
+	}
 	if (!token) {
 		opts?.logger?.info?.('[coclaw] no gateway token resolved; skipping realtime bridge');
 		return;
+	}
+	if (singleton) {
+		await singleton.stop();
+		singleton = null;
 	}
 	singleton = new RealtimeBridge(deps);
 	await singleton.start(opts);
