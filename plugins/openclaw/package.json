@@ -1,6 +1,6 @@
 {
   "name": "@coclaw/openclaw-coclaw",
-  "version": "0.21.2",
+  "version": "0.21.3",
   "type": "module",
   "license": "Apache-2.0",
   "description": "OpenClaw CoClaw channel plugin for remote chat. Run `openclaw coclaw enroll` after install to connect to CoClaw.",

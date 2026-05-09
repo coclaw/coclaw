@@ -1,5 +1,28 @@
 # @coclaw/ui
 
+## 0.23.0
+
+### Minor Changes
+
+- 0b06f45: feat(ui): add web-agents api/store/composable/dialog scaffolding
+
+  Introduces the front-end pieces for the public-AI Web Agent feature: REST client (`services/web-agents.api.js`), Pinia store with optimistic-update merge (`stores/web-agents.store.js`), function-style picker dialog composable (`composables/use-web-agent-dialogs.js`), and the dialog/panel components (`components/web-agents/WebAgentPickerDialog.vue`, `WebAgentPickerPanel.vue`). MainList wiring, i18n, svg icons and E2E tests follow in subsequent commits.
+
+### Patch Changes
+
+- 5fbebaf: Fix residual blank keyboard area on Android/HarmonyOS after returning from background (#243). `setupKeyboard` now subscribes to `keyboardDidHide` to clear the saved focused-input reference, and `setupAppStateChange` proactively calls `Keyboard.hide()` when the app returns to the foreground so the WebView viewport is restored even if the OS leaves stale keyboard padding.
+- 5b5e706: Replace fragile error-message string matching in `__nativeShareFile` with an unconditional swallow plus a single diagnostic `console.warn`. The previous `/cancel/i.test(err?.message)` regex was a non-portable anti-pattern: Capacitor Share has no structured marker that distinguishes "user cancelled" from other share-stage errors across iOS / Android / HarmonyOS / Web. An audit of every reject path in the three platform implementations found no scenario where surfacing a share-stage error to the download-task state machine would help the user — once `Share.share` is reached the file has already been written to cache (and `finally` cleans it up), and the rare non-cancellation rejections (target app glitches, `FileProvider` misconfig, programmer-only validation errors) are either unactionable for the user or impossible to trigger from CoClaw's call-site. Real download / cache-write failures still surface as `failed` because they happen before the `Share.share` try-block.
+- 90c7ce8: fix(ui): polish Web Agent UI — official brand icons, hover cursor, vendor labels, layout tweaks
+
+  - Use each product's official brand icon (Doubao avatar / Qwen sparkle / Yuanbao green-circle / Kimi dark square) sourced from each vendor's homepage favicons; DeepSeek keeps its existing SVG. Asset glob now accepts both `.svg` and `.png` so PNG-only brands can ship at-source; SVG wins when both formats exist for the same slug.
+  - Lock the Web Agent label to "Web Agent" across all 12 locales (no translation).
+  - Add `cursor-pointer` to MainList claw/agent/topic/web-agent rows and to picker dialog items so hover feedback is consistent.
+  - Merge the standalone Web Agent entry button into the recent web-agents nav as its first item; one section instead of two.
+  - Tint the Web Agent entry's globe icon to `text-teal-600`, a tone close to the CoClaw logo line color but muted enough not to pop on a light sidebar (was `text-dimmed`).
+  - Tighten picker item left/right padding via `-mx-3` so the icon's first character aligns vertically with the dialog title.
+  - Tighten picker dialog body vertical padding to `pt-3 pb-4` (was `p-4 sm:p-6`); on mobile the bottom uses `max(1rem, env(safe-area-inset-bottom))` so the home-indicator clearance is preserved without losing the desktop floor. The `sm:` breakpoint is overridden explicitly so Nuxt UI's default `sm:p-6` cannot reintroduce extra padding above 640px width.
+  - Show the vendor name (e.g. 深度求索 / ByteDance) on the right side of each picker item; vendor span uses `min-w-0 truncate` so it also participates in truncation when both the agent name and vendor are long, instead of forcing the agent name to absorb all the shrinkage.
+
 ## 0.22.2
 
 ### Patch Changes

@@ -1,5 +1,0 @@
----
-"@coclaw/ui": patch
----
-
-Replace fragile error-message string matching in `__nativeShareFile` with an unconditional swallow plus a single diagnostic `console.warn`. The previous `/cancel/i.test(err?.message)` regex was a non-portable anti-pattern: Capacitor Share has no structured marker that distinguishes "user cancelled" from other share-stage errors across iOS / Android / HarmonyOS / Web. An audit of every reject path in the three platform implementations found no scenario where surfacing a share-stage error to the download-task state machine would help the user — once `Share.share` is reached the file has already been written to cache (and `finally` cleans it up), and the rare non-cancellation rejections (target app glitches, `FileProvider` misconfig, programmer-only validation errors) are either unactionable for the user or impossible to trigger from CoClaw's call-site. Real download / cache-write failures still surface as `failed` because they happen before the `Share.share` try-block.
