@@ -1,19 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#0d9488" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-	<!-- Antennae -->
-	<path d="M10 5c-1.2-1.5-2.5-2.5-4-2.8"/>
-	<path d="M14 5c1.2-1.5 2.5-2.5 4-2.8"/>
-	<!-- Body with split tail -->
-	<path d="M12 5c-3.5 0-5.2 2.8-5.2 6 0 2.5 1.2 4.7 2.5 5.7V19h1.3l.3-1.8c.7.2 1.5.2 2.2 0l.3 1.8H14.7v-2.3c1.3-1 2.5-3.2 2.5-5.7 0-3.2-1.7-6-5.2-6Z"/>
-	<!-- Body segments -->
-	<path d="M8 11h8"/>
-	<path d="M8.5 13.5h7"/>
-	<!-- Eyes -->
-	<circle cx="10.3" cy="8.7" r="0.55" fill="#0d9488" stroke="none"/>
-	<circle cx="13.7" cy="8.7" r="0.55" fill="#0d9488" stroke="none"/>
-	<!-- Left claw -->
-	<path d="M7 10.5c-2 0-4 1-4 2.5 0 1 .9 1.5 1.9 1.2"/>
-	<path d="M3.5 12.3l1.9.5"/>
-	<!-- Right claw -->
-	<path d="M17 10.5c2 0 4 1 4 2.5 0 1-.9 1.5-1.9 1.2"/>
-	<path d="M20.5 12.3l-1.9.5"/>
+<svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="lobster-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff4d4d"/>
+      <stop offset="100%" stop-color="#991b1b"/>
+    </linearGradient>
+  </defs>
+  <!-- Body -->
+  <path d="M60 10 C30 10 15 35 15 55 C15 75 30 95 45 100 L45 110 L55 110 L55 100 C55 100 60 102 65 100 L65 110 L75 110 L75 100 C90 95 105 75 105 55 C105 35 90 10 60 10Z" fill="url(#lobster-gradient)"/>
+  <!-- Left Claw -->
+  <path d="M20 45 C5 40 0 50 5 60 C10 70 20 65 25 55 C28 48 25 45 20 45Z" fill="url(#lobster-gradient)"/>
+  <!-- Right Claw -->
+  <path d="M100 45 C115 40 120 50 115 60 C110 70 100 65 95 55 C92 48 95 45 100 45Z" fill="url(#lobster-gradient)"/>
+  <!-- Antenna -->
+  <path d="M45 15 Q35 5 30 8" stroke="#ff4d4d" stroke-width="3" stroke-linecap="round"/>
+  <path d="M75 15 Q85 5 90 8" stroke="#ff4d4d" stroke-width="3" stroke-linecap="round"/>
+  <!-- Eyes -->
+  <circle cx="45" cy="35" r="6" fill="#050810"/>
+  <circle cx="75" cy="35" r="6" fill="#050810"/>
+  <circle cx="46" cy="34" r="2.5" fill="#00e5cc"/>
+  <circle cx="76" cy="34" r="2.5" fill="#00e5cc"/>
+  <!-- Add badge: teal-600 circle with white plus, bottom-right, flush with viewBox edges (color matches Add Web Agent globe icon text-teal-600) -->
+  <circle cx="94" cy="94" r="26" fill="#0d9488"/>
+  <line x1="82" y1="94" x2="106" y2="94" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <line x1="94" y1="82" x2="94" y2="106" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
 </svg>
