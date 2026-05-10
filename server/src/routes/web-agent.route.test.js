@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
 	listWebAgentsHandler,
 	recordClickHandler,
+	hideWebAgentHandler,
 	parseWebAgentId,
 } from './web-agent.route.js';
 
@@ -231,6 +232,109 @@ test('recordClickHandler: req.params 缺失 → 400 INVALID_INPUT（不抛异常
 	const req = authedReq();
 	const res = createRes();
 	await recordClickHandler(req, res, () => {});
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+// ---- hideWebAgentHandler ----
+
+test('hideWebAgentHandler: 未登录 → 401', async () => {
+	const req = unauthedReq({ params: { id: '1' } });
+	const res = createRes();
+	await hideWebAgentHandler(req, res, () => {});
+	assert.equal(res.statusCode, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+test('hideWebAgentHandler: id 非法 → 400 INVALID_INPUT', async () => {
+	const req = authedReq({ params: { id: 'abc' } });
+	const res = createRes();
+	await hideWebAgentHandler(req, res, () => {});
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('hideWebAgentHandler: id=0 → 400 INVALID_INPUT', async () => {
+	const req = authedReq({ params: { id: '0' } });
+	const res = createRes();
+	await hideWebAgentHandler(req, res, () => {});
+	assert.equal(res.statusCode, 400);
+	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+test('hideWebAgentHandler: 不可见 / 用户从未点击 → 404 WEB_AGENT_NOT_FOUND', async () => {
+	const req = authedReq({ params: { id: '99' } });
+	const res = createRes();
+	await hideWebAgentHandler(req, res, () => {}, {
+		hideImpl: async () => false,
+	});
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'WEB_AGENT_NOT_FOUND');
+});
+
+test('hideWebAgentHandler: 成功 → 204 No Content，透传 userId/webAgentId', async () => {
+	const req = authedReq({ params: { id: '7' } });
+	const res = createRes();
+	let receivedArgs = null;
+	await hideWebAgentHandler(req, res, () => {}, {
+		hideImpl: async (args) => {
+			receivedArgs = args;
+			return true;
+		},
+	});
+	assert.equal(res.statusCode, 204);
+	assert.equal(res.ended, true);
+	assert.deepEqual(receivedArgs, { userId: 7n, webAgentId: 7 });
+	// 204 必须无 body
+	assert.equal(res.body, null);
+});
+
+test('hideWebAgentHandler: 幂等 — 同样的请求连续两次都返 204', async () => {
+	const req = authedReq({ params: { id: '7' } });
+	const res1 = createRes();
+	const res2 = createRes();
+	const hideImpl = async () => true;
+	await hideWebAgentHandler(req, res1, () => {}, { hideImpl });
+	await hideWebAgentHandler(req, res2, () => {}, { hideImpl });
+	assert.equal(res1.statusCode, 204);
+	assert.equal(res2.statusCode, 204);
+});
+
+test('hideWebAgentHandler: 401 / 400 / 404 错误响应均含非空 code + message', async () => {
+	const res401 = createRes();
+	await hideWebAgentHandler(unauthedReq({ params: { id: '1' } }), res401, () => {});
+	assert.equal(res401.body.code, 'UNAUTHORIZED');
+	assert.ok(typeof res401.body.message === 'string' && res401.body.message.length > 0);
+
+	const res400 = createRes();
+	await hideWebAgentHandler(authedReq({ params: { id: 'abc' } }), res400, () => {});
+	assert.equal(res400.body.code, 'INVALID_INPUT');
+	assert.ok(typeof res400.body.message === 'string' && res400.body.message.length > 0);
+
+	const res404 = createRes();
+	await hideWebAgentHandler(authedReq({ params: { id: '7' } }), res404, () => {}, {
+		hideImpl: async () => false,
+	});
+	assert.equal(res404.body.code, 'WEB_AGENT_NOT_FOUND');
+	assert.ok(typeof res404.body.message === 'string' && res404.body.message.length > 0);
+});
+
+test('hideWebAgentHandler: service 抛错走 next(err)', async () => {
+	const req = authedReq({ params: { id: '7' } });
+	const res = createRes();
+	let nextErr = null;
+	const expected = new Error('boom');
+	await hideWebAgentHandler(req, res, (err) => { nextErr = err; }, {
+		hideImpl: async () => { throw expected; },
+	});
+	assert.equal(nextErr, expected);
+	assert.equal(res.statusCode, null);
+});
+
+test('hideWebAgentHandler: req.params 缺失 → 400 INVALID_INPUT（不抛异常）', async () => {
+	const req = authedReq();
+	const res = createRes();
+	await hideWebAgentHandler(req, res, () => {});
 	assert.equal(res.statusCode, 400);
 	assert.equal(res.body.code, 'INVALID_INPUT');
 });

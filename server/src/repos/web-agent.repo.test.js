@@ -6,13 +6,14 @@ import {
 	findAllForUser,
 	findVisibleAgentId,
 	incrementClick,
+	setHiddenNow,
 } from './web-agent.repo.js';
 
 // 简易 MySQL/Prisma 模拟：模型 webAgent + webAgentClick 记忆数据，按 slug 唯一约束模拟
 function makeFakeDb() {
 	const state = {
 		agents: [],          // {id, userId, slug, name, url, sort}
-		clicks: [],          // {userId, webAgentId, clickCount, lastClickedAt}
+		clicks: [],          // {userId, webAgentId, clickCount, lastClickedAt, hiddenAt}
 		nextId: 1,
 	};
 	const trace = { calls: [] };
@@ -82,7 +83,7 @@ function makeFakeDb() {
 						clicks: includeClicks
 							? state.clicks
 								.filter(c => c.webAgentId === a.id && c.userId === includeClicks.where.userId)
-								.map(c => ({ lastClickedAt: c.lastClickedAt }))
+								.map(c => ({ lastClickedAt: c.lastClickedAt, hiddenAt: c.hiddenAt ?? null }))
 							: undefined,
 					}));
 			},
@@ -115,6 +116,9 @@ function makeFakeDb() {
 					if (args.update.lastClickedAt) {
 						existing.lastClickedAt = args.update.lastClickedAt;
 					}
+					if (Object.prototype.hasOwnProperty.call(args.update, 'hiddenAt')) {
+						existing.hiddenAt = args.update.hiddenAt;
+					}
 					return existing;
 				}
 				const created = {
@@ -122,9 +126,25 @@ function makeFakeDb() {
 					webAgentId,
 					clickCount: args.create.clickCount ?? 0,
 					lastClickedAt: args.create.lastClickedAt ?? new Date(),
+					hiddenAt: args.create.hiddenAt ?? null,
 				};
 				state.clicks.push(created);
 				return created;
+			},
+			updateMany: async (args) => {
+				trace.calls.push({ method: 'webAgentClick.updateMany', args });
+				const where = args?.where ?? {};
+				const matched = state.clicks.filter((c) => {
+					if (where.userId !== undefined && c.userId !== where.userId) return false;
+					if (where.webAgentId !== undefined && c.webAgentId !== where.webAgentId) return false;
+					return true;
+				});
+				for (const c of matched) {
+					if (Object.prototype.hasOwnProperty.call(args.data, 'hiddenAt')) {
+						c.hiddenAt = args.data.hiddenAt;
+					}
+				}
+				return { count: matched.length };
 			},
 		},
 	};
@@ -149,6 +169,7 @@ function seedClick(state, click) {
 	state.clicks.push({
 		clickCount: 1,
 		lastClickedAt: new Date(),
+		hiddenAt: null,
 		...click,
 	});
 }
@@ -342,13 +363,33 @@ test('findAllForUser: 别人的点击记录不会泄露到当前用户的结果'
 	assert.equal(items[0].lastClickedAt, null);
 });
 
-test('findAllForUser: 字段顺序与设计一致（id/slug/name/url/sort/lastClickedAt）', async () => {
+test('findAllForUser: 字段顺序与设计一致（id/slug/name/url/sort/lastClickedAt/hiddenAt）', async () => {
 	const { db, state } = makeFakeDb();
 	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
 
 	const items = await findAllForUser(100n, db);
 
-	assert.deepEqual(Object.keys(items[0]), ['id', 'slug', 'name', 'url', 'sort', 'lastClickedAt']);
+	assert.deepEqual(Object.keys(items[0]), ['id', 'slug', 'name', 'url', 'sort', 'lastClickedAt', 'hiddenAt']);
+});
+
+test('findAllForUser: hiddenAt 三态 — 没点过=null、点过未藏=null、点过已藏=Date', async () => {
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 }); // 没点过
+	seedAgent(state, { slug: 'b', name: 'B', url: 'https://b/', sort: 2 }); // 点过未藏
+	seedAgent(state, { slug: 'c', name: 'C', url: 'https://c/', sort: 3 }); // 点过已藏
+	const aId = state.agents.find(x => x.slug === 'a').id;
+	const bId = state.agents.find(x => x.slug === 'b').id;
+	const cId = state.agents.find(x => x.slug === 'c').id;
+	seedClick(state, { userId: 100n, webAgentId: bId });
+	const hiddenAt = new Date('2026-05-09T08:00:00Z');
+	seedClick(state, { userId: 100n, webAgentId: cId, hiddenAt });
+
+	const items = await findAllForUser(100n, db);
+
+	const byId = Object.fromEntries(items.map(i => [i.id, i]));
+	assert.equal(byId[aId].hiddenAt, null);
+	assert.equal(byId[bId].hiddenAt, null);
+	assert.equal(byId[cId].hiddenAt.getTime(), hiddenAt.getTime());
 });
 
 // ------- findVisibleAgentId -------
@@ -423,6 +464,31 @@ test('incrementClick: where 使用复合主键 userId_webAgentId 拼接', async 
 	assert.deepEqual(upsertCall.args.where.userId_webAgentId, { userId: 100n, webAgentId: 1 });
 });
 
+test('incrementClick: 已隐藏的行再次点击会清空 hiddenAt（"再点取消隐藏"）', async () => {
+	const { db, state } = makeFakeDb();
+	seedClick(state, {
+		userId: 100n,
+		webAgentId: 1,
+		clickCount: 3,
+		lastClickedAt: new Date('2026-04-01T00:00:00Z'),
+		hiddenAt: new Date('2026-05-01T00:00:00Z'),
+	});
+
+	const newAt = new Date('2026-05-09T10:00:00Z');
+	await incrementClick({ userId: 100n, webAgentId: 1, now: newAt }, db);
+
+	assert.equal(state.clicks[0].clickCount, 4);
+	assert.equal(state.clicks[0].lastClickedAt.getTime(), newAt.getTime());
+	assert.equal(state.clicks[0].hiddenAt, null);
+});
+
+test('incrementClick: 首次点击 create 分支 hiddenAt 默认 null', async () => {
+	const { db, state } = makeFakeDb();
+	await incrementClick({ userId: 100n, webAgentId: 1 }, db);
+	assert.equal(state.clicks.length, 1);
+	assert.equal(state.clicks[0].hiddenAt, null);
+});
+
 test('incrementClick: 连续 3 次后 clickCount=3、lastClickedAt 取最后一次', async () => {
 	const { db, state } = makeFakeDb();
 	const t1 = new Date('2026-05-09T10:00:00Z');
@@ -436,6 +502,58 @@ test('incrementClick: 连续 3 次后 clickCount=3、lastClickedAt 取最后一�
 	assert.equal(state.clicks.length, 1);
 	assert.equal(state.clicks[0].clickCount, 3);
 	assert.equal(state.clicks[0].lastClickedAt.getTime(), t3.getTime());
+});
+
+// ------- setHiddenNow -------
+
+test('setHiddenNow: 命中现有 click 行刷 hiddenAt 并返回 1', async () => {
+	const { db, state } = makeFakeDb();
+	seedClick(state, { userId: 100n, webAgentId: 1, clickCount: 2 });
+
+	const t = new Date('2026-05-09T10:00:00Z');
+	const affected = await setHiddenNow({ userId: 100n, webAgentId: 1, now: t }, db);
+
+	assert.equal(affected, 1);
+	assert.equal(state.clicks[0].hiddenAt.getTime(), t.getTime());
+	// 不影响其它字段
+	assert.equal(state.clicks[0].clickCount, 2);
+});
+
+test('setHiddenNow: 不存在的 click 行返回 0，不会凭空 INSERT', async () => {
+	const { db, state } = makeFakeDb();
+	const affected = await setHiddenNow({ userId: 100n, webAgentId: 1 }, db);
+	assert.equal(affected, 0);
+	assert.equal(state.clicks.length, 0);
+});
+
+test('setHiddenNow: 重复隐藏 → 每次刷成最新时间，幂等', async () => {
+	const { db, state } = makeFakeDb();
+	seedClick(state, { userId: 100n, webAgentId: 1 });
+	const t1 = new Date('2026-05-01T00:00:00Z');
+	const t2 = new Date('2026-05-09T10:00:00Z');
+
+	const a1 = await setHiddenNow({ userId: 100n, webAgentId: 1, now: t1 }, db);
+	const a2 = await setHiddenNow({ userId: 100n, webAgentId: 1, now: t2 }, db);
+
+	assert.equal(a1, 1);
+	assert.equal(a2, 1);
+	assert.equal(state.clicks[0].hiddenAt.getTime(), t2.getTime());
+});
+
+test('setHiddenNow: where 仅命中当前 (userId, webAgentId) 一行，不殃及别人或别的 Agent', async () => {
+	const { db, state } = makeFakeDb();
+	seedClick(state, { userId: 100n, webAgentId: 1 });
+	seedClick(state, { userId: 100n, webAgentId: 2 }); // 同人不同 agent
+	seedClick(state, { userId: 200n, webAgentId: 1 }); // 同 agent 不同人
+
+	await setHiddenNow({ userId: 100n, webAgentId: 1 }, db);
+
+	const r1 = state.clicks.find(c => c.userId === 100n && c.webAgentId === 1);
+	const r2 = state.clicks.find(c => c.userId === 100n && c.webAgentId === 2);
+	const r3 = state.clicks.find(c => c.userId === 200n && c.webAgentId === 1);
+	assert.ok(r1.hiddenAt instanceof Date);
+	assert.equal(r2.hiddenAt, null);
+	assert.equal(r3.hiddenAt, null);
 });
 
 // ------- scenario: 真实用户流（共享 fake DB 串测，验证多函数协作的端到端语义） -------
@@ -543,6 +661,35 @@ test('scenario: 移除某 preset 后再次出现同 slug → 新 row 新 id，�
 	await incrementClick({ userId: 100n, webAgentId: aRow.id }, db);
 	assert.equal(state.clicks[0].clickCount, 1);
 	assert.equal(state.clicks[0].webAgentId, aRow.id);
+});
+
+test('scenario: 用户点击 → 隐藏 → 再点击 → hiddenAt 自动清空（端到端"再点取消隐藏"）', async () => {
+	const { db } = makeFakeDb();
+	await syncPresets({ db });
+
+	const before = await findAllForUser(100n, db);
+	const target = before.find(i => i.slug === 'deepseek');
+	assert.ok(target);
+
+	// 1) 第一次点击
+	await incrementClick({ userId: 100n, webAgentId: target.id, now: new Date('2026-05-09T09:00:00Z') }, db);
+	let view = await findAllForUser(100n, db);
+	assert.equal(view.find(i => i.id === target.id).hiddenAt, null);
+
+	// 2) 隐藏
+	const hideAt = new Date('2026-05-09T09:30:00Z');
+	const affected = await setHiddenNow({ userId: 100n, webAgentId: target.id, now: hideAt }, db);
+	assert.equal(affected, 1);
+	view = await findAllForUser(100n, db);
+	assert.equal(view.find(i => i.id === target.id).hiddenAt.getTime(), hideAt.getTime());
+
+	// 3) 再次点击 → hiddenAt 被清空
+	const reclickAt = new Date('2026-05-09T10:00:00Z');
+	await incrementClick({ userId: 100n, webAgentId: target.id, now: reclickAt }, db);
+	view = await findAllForUser(100n, db);
+	const after = view.find(i => i.id === target.id);
+	assert.equal(after.hiddenAt, null);
+	assert.equal(after.lastClickedAt.getTime(), reclickAt.getTime());
 });
 
 test('scenario: syncPresets 改了 preset name/url 但保留已存在的 click 历史', async () => {

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
 import { findAllForUser } from '../repos/web-agent.repo.js';
-import { recordClick } from '../services/web-agent.svc.js';
+import { hide, recordClick } from '../services/web-agent.svc.js';
 
 export const webAgentRouter = Router();
 
@@ -81,5 +81,42 @@ export async function recordClickHandler(req, res, next, deps = {}) {
 	}
 }
 
+// POST /api/v1/web-agents/:id/hide — 将该 Agent 从当前用户的最近列表移除
+export async function hideWebAgentHandler(req, res, next, deps = {}) {
+	if (!requireSession(req, res)) {
+		return;
+	}
+
+	const { hideImpl = hide } = deps;
+
+	const webAgentId = parseWebAgentId(req.params?.id);
+	if (webAgentId == null) {
+		res.status(400).json({
+			code: 'INVALID_INPUT',
+			message: 'id must be a positive integer',
+		});
+		return;
+	}
+
+	try {
+		const ok = await hideImpl({
+			userId: req.user.id,
+			webAgentId,
+		});
+		if (!ok) {
+			res.status(404).json({
+				code: 'WEB_AGENT_NOT_FOUND',
+				message: 'web agent not visible',
+			});
+			return;
+		}
+		res.status(204).end();
+	}
+	catch (err) {
+		next(err);
+	}
+}
+
 webAgentRouter.get('/', listWebAgentsHandler);
 webAgentRouter.post('/:id/click', recordClickHandler);
+webAgentRouter.post('/:id/hide', hideWebAgentHandler);

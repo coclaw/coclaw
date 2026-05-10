@@ -28,7 +28,7 @@ export async function syncPresets({ presets = PRESETS, db = prisma } = {}) {
 }
 
 /**
- * 返回当前用户可见的全部 Web Agent（系统预置 + 该用户自建）+ 该用户的 lastClickedAt
+ * 返回当前用户可见的全部 Web Agent（系统预置 + 该用户自建）+ 该用户的 lastClickedAt / hiddenAt
  * @param {bigint} userId
  */
 export async function findAllForUser(userId, db = prisma) {
@@ -42,7 +42,7 @@ export async function findAllForUser(userId, db = prisma) {
 		include: {
 			clicks: {
 				where: { userId },
-				select: { lastClickedAt: true },
+				select: { lastClickedAt: true, hiddenAt: true },
 			},
 		},
 	});
@@ -53,6 +53,7 @@ export async function findAllForUser(userId, db = prisma) {
 		url: a.url,
 		sort: a.sort,
 		lastClickedAt: a.clicks[0]?.lastClickedAt ?? null,
+		hiddenAt: a.clicks[0]?.hiddenAt ?? null,
 	}));
 }
 
@@ -75,8 +76,9 @@ export async function findVisibleAgentId({ userId, webAgentId }, db = prisma) {
 }
 
 /**
- * 累加一次点击：clickCount += 1、lastClickedAt = now
+ * 累加一次点击：clickCount += 1、lastClickedAt = now、hiddenAt 清空
  * 复合主键 upsert 的 where key 是 `userId_webAgentId`（prisma 自动 camelCase 拼接）
+ * 再次点击会自动取消之前的"从最近列表移除"：update 分支显式将 hiddenAt 写为 null
  */
 export async function incrementClick({ userId, webAgentId, now = new Date() }, db = prisma) {
 	return db.webAgentClick.upsert({
@@ -84,6 +86,7 @@ export async function incrementClick({ userId, webAgentId, now = new Date() }, d
 		update: {
 			clickCount: { increment: 1 },
 			lastClickedAt: now,
+			hiddenAt: null,
 		},
 		create: {
 			userId,
@@ -92,4 +95,16 @@ export async function incrementClick({ userId, webAgentId, now = new Date() }, d
 			lastClickedAt: now,
 		},
 	});
+}
+
+/**
+ * 将 hiddenAt 标记为现在时刻；不存在的点击记录不会凭空 INSERT
+ * @returns 受影响的行数（0 表示该用户从未点击过此 Agent）
+ */
+export async function setHiddenNow({ userId, webAgentId, now = new Date() }, db = prisma) {
+	const result = await db.webAgentClick.updateMany({
+		where: { userId, webAgentId },
+		data: { hiddenAt: now },
+	});
+	return result.count;
 }

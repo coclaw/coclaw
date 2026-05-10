@@ -176,7 +176,7 @@ model WebAgent {
 	@@index([userId])
 }
 
-// 用户对某 Web Agent 的点击聚合（per-user × per-WebAgent 一行）
+// 用户对某 Web Agent 的个人状态（per-user × per-WebAgent 一行）：点击账 + 隐藏状态 + 未来可能的其他偏好
 model WebAgentClick {
 	userId				BigInt @db.UnsignedBigInt
 	webAgentId		Int @db.UnsignedInt
@@ -185,6 +185,7 @@ model WebAgentClick {
 
 	clickCount		Int @default(0) @db.UnsignedInt
 	lastClickedAt	DateTime @default(now())
+	hiddenAt			DateTime? // 用户从最近列表隐藏该 Agent 的时间戳；NULL=未隐藏；再次点击时自动清空
 
 	@@id([userId, webAgentId])
 	@@index([userId, lastClickedAt(sort: Desc)])
