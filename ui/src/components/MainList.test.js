@@ -941,6 +941,109 @@ test('MainList scrollable 模式分组顺序：topActions → mixedAgents → to
 	expect(idxTopic).toBeLessThan(idxBottomAdd);
 });
 
+// --- 真实使用场景：reactive 更新 / 空首屏 / 调用顺序 ---
+
+test('全空首屏：0 claw / 0 web agent / 0 topic 时只剩两个底部添加入口', async () => {
+	// 新用户首屏：列表里不应"漏出"任何来历不明的条目，只剩两个 add 按钮。
+	const wrapper = createWrapper({ scrollable: true });
+	await vi.dynamicImportSettled();
+
+	expect(wrapper.vm.mixedAgentItems).toEqual([]);
+	expect(wrapper.vm.topicItems).toEqual([]);
+	expect(wrapper.findAll('.web-agent-actions-stub')).toHaveLength(0);
+	expect(wrapper.findAll('.agent-actions-stub')).toHaveLength(0);
+	expect(wrapper.findAll('.topic-actions-stub')).toHaveLength(0);
+
+	const bottomIds = wrapper.findAll('[data-testid^="bottom-action-"]').map((b) => b.attributes('data-testid'));
+	expect(bottomIds).toEqual(['bottom-action-add-claw', 'bottom-action-add-web-agent']);
+});
+
+test('hide 后 mixedAgentItems 立刻不再包含该项（reactive 更新）', async () => {
+	// 用户在三点菜单里 hide 一个 web agent，行应立刻消失，无需重新加载。
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: '2026-05-05T10:00:00Z', hiddenAt: null },
+		{ id: 2, slug: 'doubao', name: '豆包', url: 'u', sort: 2, lastClickedAt: '2026-05-04T10:00:00Z', hiddenAt: null },
+	];
+	await wrapper.vm.$nextTick();
+	expect(wrapper.vm.mixedAgentItems.map((i) => i.id)).toEqual(['web:1', 'web:2']);
+
+	store.items[0].hiddenAt = '2026-05-05T11:00:00Z';
+	await wrapper.vm.$nextTick();
+	expect(wrapper.vm.mixedAgentItems.map((i) => i.id)).toEqual(['web:2']);
+
+	// 取消隐藏后应重新出现（cross-device unhide 推到本地 store 等价场景）
+	store.items[0].hiddenAt = null;
+	await wrapper.vm.$nextTick();
+	expect(wrapper.vm.mixedAgentItems.map((i) => i.id)).toEqual(['web:1', 'web:2']);
+});
+
+test('cross-device sync：另一台设备点击的新 lastClickedAt 同步到本地后列表立刻重排', async () => {
+	// device A 点击某 agent → server 推送给 device B → store.items 被更新 → MainList 立即重排。
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: '2026-05-01T10:00:00Z', hiddenAt: null },
+		{ id: 2, slug: 'doubao', name: '豆包', url: 'u', sort: 2, lastClickedAt: '2026-05-03T10:00:00Z', hiddenAt: null },
+	];
+	await wrapper.vm.$nextTick();
+	expect(wrapper.vm.mixedAgentItems.map((i) => i.id)).toEqual(['web:2', 'web:1']);
+
+	// 模拟 server 推过来的更新：deepseek 在另一台设备被点过，时间戳更新成最新
+	store.items[0].lastClickedAt = '2026-05-09T10:00:00Z';
+	await wrapper.vm.$nextTick();
+	expect(wrapper.vm.mixedAgentItems.map((i) => i.id)).toEqual(['web:1', 'web:2']);
+});
+
+test('点击 web agent：recordClick 在 openExternalUrl 之前；外链失败也保留 record（业务规则）', async () => {
+	// 业务决策：用户点了就算"最近使用"，即使外链打开失败（弹窗被拦/链接坏）也照样置顶，
+	// 否则用户下次回来找不到刚点过的 agent 会困惑。钉死调用顺序防止将来被改成 open 成功才 record。
+	__openExternalUrlMock.mockReset();
+	const callOrder = [];
+	__openExternalUrlMock.mockImplementation(() => { callOrder.push('open'); return Promise.reject(new Error('popup blocked')); });
+	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 7, slug: 'kimi', name: 'Kimi', url: 'https://www.kimi.com/', sort: 4, lastClickedAt: '2026-05-05T10:00:00Z', hiddenAt: null },
+	];
+	const recordSpy = vi.spyOn(store, 'recordClick').mockImplementation(() => callOrder.push('record'));
+	await wrapper.vm.$nextTick();
+
+	await wrapper.find('[data-testid="web-agent-recent-kimi"]').trigger('click');
+	await new Promise((r) => setTimeout(r, 0));
+
+	expect(callOrder).toEqual(['record', 'open']);
+	expect(recordSpy).toHaveBeenCalledWith(7);
+	expect(warnSpy).toHaveBeenCalled();
+	warnSpy.mockRestore();
+});
+
+test('cap header 下拉菜单：点击 add-web-agent 后 capAddMenuOpen 也复位（与 add-claw 一致）', async () => {
+	// add-claw 关闭分支已有专项测试，此用例补 add-web-agent 分支，避免将来 onAddAction
+	// 内部分支被改成"先 if return 才 close"时漏关菜单。
+	__mockIsCapacitorApp = true;
+	__openPickerDialogMock.mockClear();
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+	await wrapper.vm.$nextTick();
+
+	wrapper.vm.capAddMenuOpen = true;
+	await wrapper.vm.$nextTick();
+	await wrapper.find('[data-testid="cap-header-add-add-web-agent"]').trigger('click');
+	expect(wrapper.vm.capAddMenuOpen).toBe(false);
+	expect(__openPickerDialogMock).toHaveBeenCalledTimes(1);
+});
+
 // --- mounted lifecycle ---
 
 test('mounted 时调用 webAgentsStore.loadAll()', async () => {

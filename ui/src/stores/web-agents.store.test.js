@@ -383,4 +383,77 @@ describe('web-agents store', () => {
 		expect(store.items[0].hiddenAt).toBeNull();
 		expect(store.items[0].lastClickedAt).toBe('2026-05-09T00:00:00Z');
 	});
+
+	test('hide 上报失败后下次 loadAll 不应让 server 旧数据覆盖本地乐观隐藏', async () => {
+		// 场景：用户在本设备 hide → 上报失败（断网/服务端 5xx）→ 本地保持隐藏。
+		// 下次 loadAll 拿到 server 旧数据（hiddenAt=null），merge 必须保住更晚的本地 hide，
+		// 否则用户会看到 hide 操作"凭空消失"。
+		mockedApi.listWebAgents.mockResolvedValueOnce([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+		]);
+		mockedApi.hideWebAgent.mockRejectedValueOnce(new Error('network down'));
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const store = useWebAgentsStore();
+		await store.loadAll();
+		store.hide(1);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(store.items[0].hiddenAt).not.toBeNull();
+		const optimisticHide = store.items[0].hiddenAt;
+
+		// 模拟下一次 loadAll 拿到 server 旧数据
+		store.loaded = false;
+		mockedApi.listWebAgents.mockResolvedValueOnce([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+		]);
+		await store.loadAll();
+
+		expect(store.items[0].hiddenAt).toBe(optimisticHide);
+		warnSpy.mockRestore();
+	});
+
+	test('recordClick 上报失败后下次 loadAll 不应让 server 旧数据覆盖本地乐观点击', async () => {
+		// 镜像场景：本地 click 上报失败但本地 lastClickedAt 已乐观推进。
+		// 下次 loadAll 拿到 server 旧 lastClickedAt（甚至 null），merge 必须保住更晚的本地点击，
+		// 否则用户会看到刚点过的项排序回退、且若 server 有旧 hide 还会"复活"。
+		mockedApi.listWebAgents.mockResolvedValueOnce([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: null, hiddenAt: '2026-04-01T00:00:00Z' },
+		]);
+		mockedApi.recordWebAgentClick.mockRejectedValueOnce(new Error('500'));
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const store = useWebAgentsStore();
+		await store.loadAll();
+		store.recordClick(1);
+		await new Promise((r) => setTimeout(r, 0));
+		const optimisticClick = store.items[0].lastClickedAt;
+		expect(optimisticClick).not.toBeNull();
+		expect(store.items[0].hiddenAt).toBeNull(); // 乐观点击同步清掉本地 hide
+
+		// 下一次 loadAll 拿到 server 仍旧 hide、无 click
+		store.loaded = false;
+		mockedApi.listWebAgents.mockResolvedValueOnce([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: null, hiddenAt: '2026-04-01T00:00:00Z' },
+		]);
+		await store.loadAll();
+
+		expect(store.items[0].lastClickedAt).toBe(optimisticClick);
+		expect(store.items[0].hiddenAt).toBeNull();
+		warnSpy.mockRestore();
+	});
+
+	test('merge 边界：当 hiddenAt 与 lastClickedAt 时间戳完全相等时，click 胜出（hiddenAt 被清）', async () => {
+		// 同一时刻在 device A 隐藏、device B 点击，server 收到时两个事件时间戳可能落到同一刻。
+		// 产品规则：相等时 click 胜出（用户最后想看到该 agent），实现的 `<=` 边界已体现这点，
+		// 钉死防止将来被改成 `<` 偷偷反转语义。
+		const sameTs = '2026-05-05T12:00:00.000Z';
+		mockedApi.listWebAgents.mockResolvedValueOnce([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: sameTs, hiddenAt: sameTs },
+		]);
+		const store = useWebAgentsStore();
+		await store.loadAll();
+
+		expect(store.items[0].lastClickedAt).toBe(sameTs);
+		expect(store.items[0].hiddenAt).toBeNull();
+	});
 });
