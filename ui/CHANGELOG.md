@@ -1,5 +1,31 @@
 # @coclaw/ui
 
+## 0.24.0
+
+### Minor Changes
+
+- a81f4e4: feat(ui): restructure MainList — mixed agent list and dedicated "Add Claw / Add Web Agent" entries
+
+  MainList layout reorganized following PM feedback:
+
+  - Claw agents and recently used Web Agents are now merged into a single list, sorted by last-used time descending. The previous standalone "Web Agents" group with its globe entry is removed.
+  - A persistent bottom actions group renders "Add Claw" and "Add Web Agent" so first-time users see both onboarding entries even when the list above is empty.
+  - The Capacitor narrow-screen header `+` button becomes a dropdown menu exposing the same two actions.
+  - Desktop sidebar's avatar pop-up menu and mobile "Me" tab menu both gain "Add Claw" and "Add Web Agent" items below "About".
+  - Desktop sidebar top group keeps "My Claws" as a single dedicated entry (kept as a primary navigation target).
+
+  A new single-color stroke SVG `add-claw.svg` (teal-600) is introduced for the "Add Claw" entry icon, paired with the existing globe icon for "Add Web Agent" so both actions are visually consistent.
+
+- 1f1edc3: feat(ui): add hide-from-recent action on Web Agents list
+
+  Each item in the MainList "Web Agents" group now has a kebab-menu "Remove from list" action. Clicking it instantly removes the item from the recent list (no toast, no confirmation) and persists `hiddenAt` server-side. Re-clicking the same agent from the picker automatically un-hides it. Store gains a `hide(id)` action with optimistic update; `recordClick` now also clears local `hiddenAt`; `loadAll` merge uses `lastClickedAt` as a freshness anchor so stale list responses cannot resurrect a just-cleared `hiddenAt` nor overwrite a just-fired `hide`.
+
+### Patch Changes
+
+- e94e834: fix(ui): web-agents merge now lets server unhide propagate cross-device
+
+  The previous `loadAll` merge took the max of local and server `hiddenAt`, which silently dropped a `null` returned by the server. If user A hid an agent on this device and user A (or another tab/device) later re-opened the same agent from the picker — the server cleared `hiddenAt` and pushed `lastClickedAt` — but this device kept the stale local `hiddenAt`, so the agent stayed hidden forever locally. Merge now picks the candidate hide time and drops it whenever it isn't strictly newer than the merged `lastClickedAt`, mirroring the server semantics that any click clears any prior hide.
+
 ## 0.23.0
 
 ### Minor Changes
