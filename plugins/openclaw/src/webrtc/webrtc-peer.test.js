@@ -5804,3 +5804,581 @@ test('WebRtcPeer monitor: dc 关闭后 session.rpcDropMonitor === null', async (
 
 	await peer.closeAll();
 });
+
+// --- per-connId offer mutex 串行化 + close-during-lock 身份重核 ---
+
+/**
+ * 用 manual-resolve 把 setRemoteDescription / createAnswer / setLocalDescription 卡住，
+ * 配合 awaitNTicks 打开窗口模拟 close-during-lock 与并发 offer。
+ */
+function makeControllablePc(initial = {}) {
+	const gates = {
+		setRemoteDescription: [],
+		createAnswer: [],
+		setLocalDescription: [],
+	};
+	const pc = createMockPC();
+	Object.assign(pc, initial);
+	pc.setRemoteDescription = async (desc) => {
+		pc.__lastRemoteSdp = desc.sdp;
+		await new Promise((resolve) => gates.setRemoteDescription.push(resolve));
+	};
+	pc.createAnswer = async () => {
+		await new Promise((resolve) => gates.createAnswer.push(resolve));
+		return { sdp: `answer-for:${pc.__lastRemoteSdp ?? '?'}` };
+	};
+	pc.setLocalDescription = async (desc) => {
+		pc.__lastLocalSdp = desc.sdp;
+		await new Promise((resolve) => gates.setLocalDescription.push(resolve));
+	};
+	pc.__gates = gates;
+	pc.__release = (name) => {
+		const fn = gates[name].shift();
+		if (fn) fn();
+	};
+	pc.__pending = (name) => gates[name].length;
+	return pc;
+}
+
+test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条胜出）', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 建立初始 session（首次 offer 走默认 mock，不卡）
+	await peer.handleSignaling(makeOffer('c_mu01'));
+	assert.equal(PC.instances.length, 1);
+
+	// 把现有 PC 替换为可控 mock，session 字段同步指向新 pc
+	const ctrl = makeControllablePc();
+	const session = peer.__sessions.get('c_mu01');
+	session.pc = ctrl;
+	sent.length = 0;
+
+	// 几乎同时投递两条 ICE restart offer：A、B
+	const pA = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu01',
+		payload: { sdp: 'sdp-A', iceRestart: true },
+	});
+	const pB = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu01',
+		payload: { sdp: 'sdp-B', iceRestart: true },
+	});
+
+	await flushAsync();
+	// A 进入 setRemoteDescription，B 在 mutex 队列里阻塞
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'A should be at setRemoteDescription, B blocked on mutex');
+
+	// 放行 A 的三连
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	ctrl.__release('setLocalDescription');
+	await pA;
+
+	// A 的 answer 已发；放行 A 后 B 在下一波微任务中进入 setRemoteDescription（lastRemoteSdp
+	// 被 B 的 sync 段覆盖为 sdp-B 是预期，因此这里只断言 sent[0] 来自 A）
+	assert.ok(sent.length >= 1);
+	assert.equal(sent[0].type, 'rtc:answer');
+	assert.match(sent[0].payload.sdp, /sdp-A/, `expected A's answer first, got ${sent[0].payload.sdp}`);
+
+	await flushAsync();
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'B should now be at setRemoteDescription');
+
+	// 放行 B 的三连
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	ctrl.__release('setLocalDescription');
+	await pB;
+
+	// 两条 answer 顺序与 offer 顺序一致：A then B
+	assert.equal(sent.length, 2);
+	assert.equal(sent[1].type, 'rtc:answer');
+	assert.match(sent[1].payload.sdp, /sdp-B/);
+	// 最后一条胜出：PC 凭据 = B
+	assert.equal(ctrl.__lastRemoteSdp, 'sdp-B', 'last-write-wins: PC remote = B');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 中途 closeByConnId → setRemoteDescription 后身份重核命中', async () => {
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: { ...silentLogger(), info: (m) => logs.push(m) },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu02'));
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu02').pc = ctrl;
+	sent.length = 0;
+	logs.length = 0;
+
+	const p = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu02',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await flushAsync();
+	// fn 在 gate 1（setRemoteDescription 的 await）阻塞中。先 close 让 session 飞走，
+	// 再放 gate → fn 唤醒、撞上 setRemoteDescription 后的身份重核
+	await peer.closeByConnId('c_mu02');
+	ctrl.__release('setRemoteDescription');
+	await p;
+
+	// 不发 stale rtc:answer
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
+	// 不发 restart-rejected（catch 也不应触发，正常路径走 abort）
+	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0);
+	// logger.info 中应有 abort 字样
+	assert.ok(logs.some((m) => /aborted: session changed after setRemoteDescription/.test(m)),
+		`expected abort log for setRemoteDescription, got: ${JSON.stringify(logs)}`);
+});
+
+test('WebRtcPeer: ICE restart 中途 closeByConnId → createAnswer 后身份重核命中', async () => {
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: { ...silentLogger(), info: (m) => logs.push(m) },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu03'));
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu03').pc = ctrl;
+	sent.length = 0;
+	logs.length = 0;
+
+	const p = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu03',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await flushAsync();
+	// 放掉 gate 1，fn 通过 setRemoteDescription 后的重核（session 还在）→ 进入 gate 2
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	// 此刻 fn 阻塞在 createAnswer 的 await：close 让 session 飞走，再放 gate 2
+	await peer.closeByConnId('c_mu03');
+	ctrl.__release('createAnswer');
+	await p;
+
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
+	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0);
+	assert.ok(logs.some((m) => /aborted: session changed after createAnswer/.test(m)),
+		`expected abort log for createAnswer, got: ${JSON.stringify(logs)}`);
+});
+
+test('WebRtcPeer: ICE restart 中途 closeByConnId → setLocalDescription 后身份重核命中', async () => {
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: { ...silentLogger(), info: (m) => logs.push(m) },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu04'));
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu04').pc = ctrl;
+	sent.length = 0;
+	logs.length = 0;
+
+	const p = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu04',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await flushAsync();
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	// 此刻 fn 阻塞在 setLocalDescription 的 await：close 让 session 飞走，再放 gate 3
+	await peer.closeByConnId('c_mu04');
+	ctrl.__release('setLocalDescription');
+	await p;
+
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
+	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0);
+	assert.ok(logs.some((m) => /aborted: session changed after setLocalDescription/.test(m)),
+		`expected abort log for setLocalDescription, got: ${JSON.stringify(logs)}`);
+});
+
+test('WebRtcPeer: ICE restart catch 入口身份重核命中（错误 + session 已换）', async () => {
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: { ...silentLogger(), info: (m) => logs.push(m) },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu05'));
+	const session = peer.__sessions.get('c_mu05');
+	// 让 setRemoteDescription 在 await 期间被外部 closeByConnId 抢先，同时也抛错
+	let resolveClose;
+	const closeStarted = new Promise((r) => { resolveClose = r; });
+	session.pc.setRemoteDescription = async () => {
+		// 标记 fn 进入；等外部把 session 换掉再抛错
+		resolveClose();
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		throw new Error('PC closed mid-flight');
+	};
+	sent.length = 0;
+	logs.length = 0;
+
+	const p = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu05',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await closeStarted;
+	// 此时 setRemoteDescription await 中、还未抛 → 关掉 session
+	await peer.closeByConnId('c_mu05');
+	await p;
+
+	// catch 入口身份重核命中：不发 restart-rejected
+	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0);
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
+	assert.ok(logs.some((m) => /ICE restart error after session change \(suppressed\)/.test(m)),
+		`expected catch-entry suppressed log, got: ${JSON.stringify(logs)}`);
+	// session 已被外部 close，catch 路径不应再调 closeByConnId（已经是 no-op，但避免噪声日志）
+	// 通过 rtc.closed remoteLog 数量验证：第一条来自外部 close，无第二条
+	const closedLogs = remoteLogBuffer.filter((e) => /^rtc\.closed conn=c_mu05/.test(e.text));
+	assert.equal(closedLogs.length, 1, `expected exactly one rtc.closed (no double close), got: ${JSON.stringify(closedLogs.map((e) => e.text))}`);
+});
+
+test('WebRtcPeer: closeByConnId 后 __offerMutexes 键被 delete（mutex 池清理）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu06'));
+	// __handleOffer lazy-create 了 mutex 键
+	assert.ok(peer.__offerMutexes.has('c_mu06'), 'mutex 键应在首次 offer 后存在');
+	const firstMutex = peer.__offerMutexes.get('c_mu06');
+
+	await peer.closeByConnId('c_mu06');
+	assert.equal(peer.__offerMutexes.has('c_mu06'), false, 'closeByConnId 后 mutex 键被 delete');
+
+	// 同 connId 再次 offer → lazy create 新 mutex 实例
+	await peer.handleSignaling(makeOffer('c_mu06'));
+	assert.ok(peer.__offerMutexes.has('c_mu06'), 'mutex 键应在再次 offer 后重新创建');
+	assert.notEqual(peer.__offerMutexes.get('c_mu06'), firstMutex, '应是新 mutex 实例（不是旧引用）');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 不同 connId 的 ICE restart 互不阻塞（mutex per-connId 隔离）', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu_A'));
+	await peer.handleSignaling(makeOffer('c_mu_B'));
+	const ctrlA = makeControllablePc();
+	const ctrlB = makeControllablePc();
+	peer.__sessions.get('c_mu_A').pc = ctrlA;
+	peer.__sessions.get('c_mu_B').pc = ctrlB;
+	sent.length = 0;
+
+	// A、B 两个 connId 各发一条 ICE restart：互不应阻塞
+	const pA = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_A',
+		payload: { sdp: 'sdp-A', iceRestart: true },
+	});
+	const pB = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_B',
+		payload: { sdp: 'sdp-B', iceRestart: true },
+	});
+	await flushAsync();
+	// 两个 PC 都应在 setRemoteDescription 上等待（并行）
+	assert.equal(ctrlA.__pending('setRemoteDescription'), 1);
+	assert.equal(ctrlB.__pending('setRemoteDescription'), 1);
+
+	// 先放 B 完成，验证 A 不被 B 阻塞
+	ctrlB.__release('setRemoteDescription');
+	await flushAsync();
+	ctrlB.__release('createAnswer');
+	await flushAsync();
+	ctrlB.__release('setLocalDescription');
+	await pB;
+
+	ctrlA.__release('setRemoteDescription');
+	await flushAsync();
+	ctrlA.__release('createAnswer');
+	await flushAsync();
+	ctrlA.__release('setLocalDescription');
+	await pA;
+
+	const answers = sent.filter((m) => m.type === 'rtc:answer');
+	assert.equal(answers.length, 2);
+	// B 的 answer 先到（虽然 A 先发）—— 验证不同 connId 互不阻塞
+	assert.equal(answers[0].toConnId, 'c_mu_B');
+	assert.equal(answers[1].toConnId, 'c_mu_A');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 进行中收到 rtc:closed → 身份重核兜住，不发 stale answer', async () => {
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: { ...silentLogger(), info: (m) => logs.push(m) },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu_rc'));
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu_rc').pc = ctrl;
+	sent.length = 0;
+	logs.length = 0;
+
+	const p = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_rc',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await flushAsync();
+	// 模拟 server 转发 UI 主动 rtc:closed 信号 —— handleSignaling 直接路由到 closeByConnId
+	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_mu_rc' });
+	ctrl.__release('setRemoteDescription');
+	await p;
+
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0, 'no stale answer');
+	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0, 'no restart-rejected');
+	assert.ok(logs.some((m) => /aborted: session changed after setRemoteDescription/.test(m)),
+		`expected abort log, got: ${JSON.stringify(logs)}`);
+});
+
+test('WebRtcPeer: ICE restart 进行中 closeAll 触发 → 身份重核兜住', async () => {
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: { ...silentLogger(), info: (m) => logs.push(m) },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu_ca'));
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu_ca').pc = ctrl;
+	sent.length = 0;
+	logs.length = 0;
+
+	const p = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_ca',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await flushAsync();
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	// fn 在 createAnswer 等待中：模拟 gateway 退出/重启时的 closeAll
+	const closeAllPromise = peer.closeAll();
+	ctrl.__release('createAnswer');
+	await closeAllPromise;
+	await p;
+
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0, 'no stale answer after closeAll');
+	assert.ok(logs.some((m) => /aborted: session changed/.test(m)),
+		`expected abort log, got: ${JSON.stringify(logs)}`);
+});
+
+test('WebRtcPeer: failed → TTL 触发 closeByConnId 与 ICE restart in-flight 交叠 → 身份重核兜住', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: { ...silentLogger(), info: (m) => logs.push(m) },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu_ttl'));
+	const realPc = PC.instances[0];
+	// 进入 failed 启动 12h TTL timer
+	realPc.connectionState = 'failed';
+	realPc.onconnectionstatechange();
+	assert.ok(peer.__sessions.get('c_mu_ttl').__failedTimer);
+
+	// 现在用可控 PC 替换，模拟 ICE restart 协商中
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu_ttl').pc = ctrl;
+	sent.length = 0;
+	logs.length = 0;
+
+	const p = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_ttl',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await flushAsync();
+	// 注意：__handleOfferLocked 进入 ICE restart 路径会清 __failedTimer（260-264 行）
+	// 所以模拟 TTL 在 restart 启动前到期：直接调 closeByConnId 模拟更晚到的 timer 兜底
+	await peer.closeByConnId('c_mu_ttl');
+	ctrl.__release('setRemoteDescription');
+	await p;
+	t.mock.timers.reset();
+
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
+	assert.ok(logs.some((m) => /aborted: session changed/.test(m)));
+});
+
+test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 mutex 串行（验证 mutex 包整个 __handleOffer）', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 用工厂但替换 PC 实现：让首次 offer 创建可控 PC，可卡住三连
+	const ctrl = makeControllablePc();
+	const PC2 = function () { PC.instances.push(ctrl); return ctrl; };
+	PC2.instances = PC.instances;
+	const peer2 = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC2,
+		impl: 'pion',
+	});
+
+	// A：首次 offer，会创建新 PC 并进三连
+	const pA = peer2.handleSignaling(makeOffer('c_mu_seq', 'first-sdp'));
+	await flushAsync();
+	// A 应在 setRemoteDescription gate 上
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1);
+
+	// B：ICE restart 紧随，应被 mutex 阻塞排队
+	const pB = peer2.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_seq',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	await flushAsync();
+	// B 仍未触碰 PC（mutex 排队）
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'B should still be queued, not at gate');
+
+	// 放行 A 的三连
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	ctrl.__release('setLocalDescription');
+	await pA;
+
+	// A 完成；B 现在应进入 ICE restart 三连
+	await flushAsync();
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'B now at setRemoteDescription');
+
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	ctrl.__release('setLocalDescription');
+	await pB;
+
+	// 两个 answer，顺序 A→B
+	const answers = sent.filter((m) => m.type === 'rtc:answer');
+	assert.equal(answers.length, 2);
+	assert.equal(answers[0].toConnId, 'c_mu_seq');
+	assert.match(answers[0].payload.sdp, /first-sdp/);
+	assert.match(answers[1].payload.sdp, /restart-sdp/);
+});
+
+test('WebRtcPeer: no-session ICE restart 后 mutex 键被 finally 清理（防泄漏）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 直接发 ICE restart 给一个从未建过 session 的 connId → 走 no-session 分支
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_leak',
+		payload: { sdp: 'sdp', iceRestart: true },
+	});
+
+	// finally 应识别"session 不存在"并清掉 lazy-create 的 mutex
+	assert.equal(peer.__offerMutexes.has('c_mu_leak'), false, 'no-session restart 后 mutex 不应泄漏');
+});
+
+test('WebRtcPeer: 首次 offer 抛错后 mutex 键被 finally 清理（防泄漏）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 让首次 offer 在 setRemoteDescription 抛错（PC 构造后 setRemoteDescription 失败）
+	const origPC = PC;
+	const FailingPC = function (opts) {
+		const pc = origPC(opts);
+		pc.setRemoteDescription = async () => { throw new Error('SDP rejected'); };
+		return pc;
+	};
+	FailingPC.instances = PC.instances;
+	const peer2 = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: FailingPC,
+		impl: 'pion',
+	});
+
+	await assert.rejects(
+		peer2.handleSignaling(makeOffer('c_mu_throw')),
+		/SDP rejected/,
+	);
+	// session 已被 catch 删除；mutex 也应被 finally 清理
+	assert.equal(peer2.__sessions.has('c_mu_throw'), false);
+	assert.equal(peer2.__offerMutexes.has('c_mu_throw'), false, 'first-offer 抛错后 mutex 不应泄漏');
+});

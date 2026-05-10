@@ -7,6 +7,7 @@ import { RpcDcSender, DC_LOW_WATER_MARK, MAX_SINGLE_MSG_BYTES } from './rpc-dc-s
 import { createRpcDropMonitor } from './rpc-drop-monitor.js';
 import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
+import { createMutex } from '../utils/mutex.js';
 
 // rpc DC 发送队列实现选择（B-stage2 B9b）。
 // - 'fbq'：FileBackedQueue（当前生产默认）—— 长时间后台 / ICE 恢复等慢消化场景溢出到磁盘
@@ -71,6 +72,11 @@ export class WebRtcPeer {
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
 		/** @type {Map<string, { pc: object, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, rpcDropMonitor: object|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
+		// per-connId offer mutex：串行化同 connId 的 __handleOffer 调用，防止两条 ICE restart
+		// offer 几乎同时到达时三连 await 中间被并发 offer 重入触发 pion 状态机
+		// InvalidModificationError。lazy 创建，closeByConnId 末尾 delete 释放。
+		/** @type {Map<string, ReturnType<typeof createMutex>>} */
+		this.__offerMutexes = new Map();
 	}
 
 	/** 处理来自 Server 转发的信令消息 */
@@ -142,6 +148,11 @@ export class WebRtcPeer {
 			session.rpcChannel = null;
 		}
 		await session.pc.close();
+		// 清理 per-connId offer mutex 键，避免长 session 切换累积。
+		// 注意：__handleOffer 内部 mutex 引用是闭包，已在 mu.withLock 内拿到；
+		// 此处 delete 只影响 Map 键，不影响排队中的 fn 执行；后续同 connId 新 offer
+		// 走 lazy create 路径建新 mutex（旧 mutex 队列若仍有 fn 也能跑完）。
+		this.__offerMutexes.delete(connId);
 		this.__remoteLog(`rtc.closed conn=${connId}`);
 		this.logger.info?.(`${this.__rtcTag} [${connId}] closed`);
 	}
@@ -211,6 +222,32 @@ export class WebRtcPeer {
 
 	async __handleOffer(msg) {
 		const connId = msg.fromConnId;
+		// per-connId mutex 串行化：同 connId 几乎同时到达多条 offer（典型场景：UI 多入口
+		// nudgeRestart 在数百毫秒内连发两条 ICE restart）时，把整段三连 await + sendSignaling
+		// 串成 N 轮，最后一条胜出（plugin PC 凭据 = 最后一条 offer 凭据 = UI 当前凭据）。
+		// 不串行化时三连 await 中间被并发 offer 重入会触发 pion InvalidModificationError。
+		// 包**整个** __handleOffer：既覆盖 ICE restart 路径（复用现有 PC）也覆盖首次 offer 路径
+		// （创建新 PC + 触发 closeByConnId 清场），后者若不在锁内会与紧随的 ICE restart 踩。
+		let mu = this.__offerMutexes.get(connId);
+		if (!mu) {
+			mu = createMutex();
+			this.__offerMutexes.set(connId, mu);
+		}
+		try {
+			return await mu.withLock(() => this.__handleOfferLocked(msg));
+		} finally {
+			// 兜底清理：no-session ICE restart（无 session 直接 reject 返回）和首次 offer 抛错
+			// 不会经过 closeByConnId 路径，mutex 键会留在 Map 里。退出时 session 仍不存在 →
+			// 该 connId 后续不会再有 offer（server-alloc connId 一次性使用），回收 mutex 防止泄漏。
+			// 比对引用：避免错删别的 fn 新创/复用的 mutex（mutex split race 下并发的 fn 可能用了 M2）。
+			if (!this.__sessions.has(connId) && this.__offerMutexes.get(connId) === mu) {
+				this.__offerMutexes.delete(connId);
+			}
+		}
+	}
+
+	async __handleOfferLocked(msg) {
+		const connId = msg.fromConnId;
 		const isIceRestart = !!msg.payload?.iceRestart;
 		const credRemain = this.__credRemainSec(msg.turnCreds);
 		const credRemainStr = credRemain ?? 'none';
@@ -239,6 +276,14 @@ export class WebRtcPeer {
 				this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
 				try {
 					await existing.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
+					// 身份重核：close-during-lock 路径（rtc:closed / connectionState=closed|failed-TTL /
+					// closeAll）不走 offer mutex，可能在三连 await 中间删掉 session。命中即丢弃后续动作，
+					// 不发 stale rtc:answer。logger.info 仅本地诊断，不上 remoteLog（closeByConnId 触发方
+					// 自带 rtc.closed / rtc.state 等远程日志，server 端能从那侧还原"PC 哪一刻死了"）。
+					if (this.__sessions.get(connId) !== existing) {
+						this.logger.info?.(`${this.__rtcTag} [${connId}] ICE restart aborted: session changed after setRemoteDescription`);
+						return;
+					}
 					// 重协商 SDP 可能变更 a=max-message-size，同步刷新 sender 分片阈值；
 					// queue 存的是完整字符串（buildChunks 在 sender.send 内同步完成），
 					// 已开始分片的当前消息用旧 size，下一条消息用新 size
@@ -248,7 +293,15 @@ export class WebRtcPeer {
 						if (existing.rpcDcSender) existing.rpcDcSender.maxMessageSize = newMMS;
 					}
 					const answer = await existing.pc.createAnswer();
+					if (this.__sessions.get(connId) !== existing) {
+						this.logger.info?.(`${this.__rtcTag} [${connId}] ICE restart aborted: session changed after createAnswer`);
+						return;
+					}
 					await existing.pc.setLocalDescription(answer);
+					if (this.__sessions.get(connId) !== existing) {
+						this.logger.info?.(`${this.__rtcTag} [${connId}] ICE restart aborted: session changed after setLocalDescription`);
+						return;
+					}
 					this.__onSend({
 						type: 'rtc:answer',
 						toConnId: connId,
@@ -258,6 +311,13 @@ export class WebRtcPeer {
 					this.logger.info?.(`${this.__rtcTag} ICE restart answer sent to ${connId}`);
 					return;
 				} catch (err) {
+					// 身份重核：session 已被中途关掉时 catch 收到的 err 是"PC 已 close"残响，
+					// 不应再发 stale restart-rejected（用户会看到误报失败），也不重复调 closeByConnId
+					// （session 已删，再调是 no-op 但徒增 rtc.closed 日志噪声）。
+					if (this.__sessions.get(connId) !== existing) {
+						this.logger.info?.(`${this.__rtcTag} [${connId}] ICE restart error after session change (suppressed): ${err?.message}`);
+						return;
+					}
 					// ICE restart 协商失败 → reject，不 fall through
 					this.__remoteLog(`rtc.ice-restart-failed conn=${connId} credRemain=${credRemainStr}`);
 					this.logger.warn?.(`${this.__rtcTag} ICE restart failed for ${connId}: ${err?.message}`);

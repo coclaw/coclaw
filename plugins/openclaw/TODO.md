@@ -1099,3 +1099,37 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 - 或把所有跨 hook/RPC 共享状态强制走"磁盘中转"模式
 
 **严重度**：Should fix（埋雷，日后加 hook 时容易踩）
+
+## 首次 offer 路径成功分支无 close-during-lock 身份重核
+
+**发现日期**：2026-05-10（ICE restart 并发竞态修复 deep-review 识别）
+**关联**：`webrtc-peer.js` `__handleOfferLocked` 首次 offer 路径（约 585-597 行 `try { setRemote/createAnswer/setLocal → __onSend rtc:answer }`）
+
+**问题**：ICE restart 路径 4 处身份重核已上线（修 N 条并发 restart offer 撞 pion 状态机），但首次 offer 路径成功分支三段 `await` 之间没有同样的 `this.__sessions.get(connId) === session` 守卫。close-during-lock 路径（`rtc:closed` 信令、`onconnectionstatechange` 进 closed/failed-TTL、`closeAll`）不走 offer mutex，可在三段 await 中段把 session 删掉，但 fn 仍会发出 `rtc:answer`。
+
+**为什么本次未一并修**：本 PR 范围聚焦 ICE restart 并发竞态（生产 12/320 user-facing notify）。首次 offer 路径无身份重核是 pre-existing（mutex 前后行为一致）；首次 offer 通常发生在 connId 全新建立时，与 close-during-lock 路径交叠概率远低于 ICE restart 路径。
+
+**修复方向**：
+- 在 `webrtc-peer.js:587-589` 三段 `await` 之间和 `__onSend` 之前加 `if (this.__sessions.get(connId) !== session || session.pc !== pc) return` 重核
+- catch 块（598-609 行）已有 `if (cur && cur.pc === pc)` 守卫，仅成功分支需要补
+- 同步补单测覆盖：rtc:closed / closeAll / onconnectionstatechange-closed 在首次 offer 三段 await 期间触发
+
+**严重度**：Low-Medium（罕见时序，无明确生产 incident，但发出 stale answer 会让 UI 端走错状态）
+
+## ICE restart 并发场景下 mutex map 与持有 fn 的 split race（边界）
+
+**发现日期**：2026-05-10（ICE restart 并发竞态修复 deep-review 识别）
+**关联**：`webrtc-peer.js` `closeByConnId` 末尾 `__offerMutexes.delete` + `__handleOffer` 入口 lazy create
+
+**问题**：当 `__handleOfferLocked` 内部触发 `closeByConnId`（restart-failed catch / 首次 offer 替换旧 session 路径）时，`closeByConnId` 同步 delete 了 mutex Map 键，但调用方仍持有 mutex 并继续后续逻辑。此时新到 offer 会 lazy-create 第二个 mutex 并发跑，破坏 "per-connId 全程 FIFO" 的语义边界。
+
+**为什么本次未一并修**：
+- 该 race 仅在内部触发 closeByConnId 的窗口存在；用户实际痛点（两条 ICE restart offer 几乎同时到达）走的是 ICE restart 成功分支或 catch-without-close 路径，不触发此 race
+- 修法（mutex 引用计数 / 闭包内 await 释放后再 delete）成本不小，与边界严重度不匹配
+- 当前行为不弱于 pre-mutex（pre-mutex 全无序列化，post-mutex 只在该窗口可能并发）
+
+**修复方向**：
+- 方案 1：mutex 引用计数。lazy create 时 ref++、`withLock` finally ref--；`closeByConnId` 不直接 delete，由 ref 归零的最后一个 fn 在 finally 内 delete
+- 方案 2：把 `closeByConnId` 在 `__handleOfferLocked` 内的调用改成 fire-and-forget 的 cleanup（不阻塞当前 fn 完成），让 mutex 释放和 map 删除时序解耦
+
+**严重度**：Low（理论 race，无生产 incident；ICE restart 主链路成功率应保持 ≥97%）
