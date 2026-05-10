@@ -1116,20 +1116,29 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **严重度**：Low-Medium（罕见时序，无明确生产 incident，但发出 stale answer 会让 UI 端走错状态）
 
-## ICE restart 并发场景下 mutex map 与持有 fn 的 split race（边界）
+## ICE restart 内部触发 closeByConnId 时的 mutex split race（边界）
 
 **发现日期**：2026-05-10（ICE restart 并发竞态修复 deep-review 识别）
 **关联**：`webrtc-peer.js` `closeByConnId` 末尾 `__offerMutexes.delete` + `__handleOffer` 入口 lazy create
 
 **问题**：当 `__handleOfferLocked` 内部触发 `closeByConnId`（restart-failed catch / 首次 offer 替换旧 session 路径）时，`closeByConnId` 同步 delete 了 mutex Map 键，但调用方仍持有 mutex 并继续后续逻辑。此时新到 offer 会 lazy-create 第二个 mutex 并发跑，破坏 "per-connId 全程 FIFO" 的语义边界。
 
+**已闭合的窗口**：
+- 2026-05-11 简化：mutex 生命期严格对齐 session（no-session ICE restart 前置 reject 不进 mutex；首次 offer catch 同步删 mutex；废除 finally 兜底删除）。废除 finally 后"fn 退出 finally 时删 mutex"这条 split race 触发路径关闭。
+
+**残留窗口**（仅以下两条）：
+- 路径 A：ICE restart 协商失败 → catch 内调 closeByConnId（webrtc-peer.js:347 附近）
+- 路径 B：首次 offer 检测到旧 session → 调 closeByConnId 后继续创建新 PC（webrtc-peer.js:341-342）
+
 **为什么本次未一并修**：
-- 该 race 仅在内部触发 closeByConnId 的窗口存在；用户实际痛点（两条 ICE restart offer 几乎同时到达）走的是 ICE restart 成功分支或 catch-without-close 路径，不触发此 race
+- 用户实际痛点（两条 ICE restart offer 几乎同时到达）走 ICE restart 成功分支，不触发任何残留窗口
+- 路径 A 仅在协商真失败时触发（mutex 已经把并发 offer 串成功了，路径 A 出现率极低）
+- 路径 B 需要同 connId 重发首次 offer，server-alloc connId 一次性使用，几乎不出现
 - 修法（mutex 引用计数 / 闭包内 await 释放后再 delete）成本不小，与边界严重度不匹配
-- 当前行为不弱于 pre-mutex（pre-mutex 全无序列化，post-mutex 只在该窗口可能并发）
 
 **修复方向**：
 - 方案 1：mutex 引用计数。lazy create 时 ref++、`withLock` finally ref--；`closeByConnId` 不直接 delete，由 ref 归零的最后一个 fn 在 finally 内 delete
 - 方案 2：把 `closeByConnId` 在 `__handleOfferLocked` 内的调用改成 fire-and-forget 的 cleanup（不阻塞当前 fn 完成），让 mutex 释放和 map 删除时序解耦
+- 方案 3：把 mutex 装进 sessions Map value 包装器（`Map<connId, { session, offerMutex }>`），mutex 与 entry 同寿，物理上不可能 split。变更面 30-50 处
 
 **严重度**：Low（理论 race，无生产 incident；ICE restart 主链路成功率应保持 ≥97%）

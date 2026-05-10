@@ -6330,27 +6330,87 @@ test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 mutex 串行（验证 m
 	assert.match(answers[1].payload.sdp, /restart-sdp/);
 });
 
-test('WebRtcPeer: no-session ICE restart 后 mutex 键被 finally 清理（防泄漏）', async () => {
+test('WebRtcPeer: 排队中的 ICE restart 在 withLock 期间 session 被删 → 兜底走 no-session reject', async () => {
+	// 场景：A 进 mutex 卡在 setRemoteDescription，B 在 mutex 队列里等候；
+	// 期间外部 rtc:closed 删 session（前置检查 sessions.has 已通过，B 已进入 mutex）；
+	// A 释放后命中身份重核 abort；B 跑到 __handleOfferLocked 时 session 已不在 →
+	// 触发 354-362 行的 no-session 兜底分支（不是入口前置 reject 路径）。
+	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
-		onSend: () => {},
+		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
 		impl: 'pion',
 	});
 
-	// 直接发 ICE restart 给一个从未建过 session 的 connId → 走 no-session 分支
+	await peer.handleSignaling(makeOffer('c_mu_qrc'));
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu_qrc').pc = ctrl;
+	sent.length = 0;
+
+	// A 进 mutex（卡 setRemoteDescription gate）
+	const pA = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_qrc',
+		payload: { sdp: 'sdp-A', iceRestart: true },
+	});
+	await flushAsync();
+
+	// B 进 mutex 排队（前置 sessions.has 仍为 true，所以会 lazy-create/reuse mutex）
+	const pB = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_qrc',
+		payload: { sdp: 'sdp-B', iceRestart: true },
+	});
+	await flushAsync();
+
+	// 外部 rtc:closed → closeByConnId 删 session + 删 mutex map 键
+	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_mu_qrc' });
+
+	// 放行 A 的三连：A 命中身份重核 abort（session 已变）
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	ctrl.__release('setLocalDescription');
+	await pA;
+
+	// B 接力跑：__handleOfferLocked 入口 sessions.get(connId)=undefined → no-session 兜底
+	await pB;
+
+	const answers = sent.filter((m) => m.type === 'rtc:answer');
+	const rejects = sent.filter((m) => m.type === 'rtc:restart-rejected');
+	assert.equal(answers.length, 0, 'A aborted, B no-session reject — no rtc:answer');
+	assert.equal(rejects.length, 1, 'B sends one no_session reject');
+	assert.equal(rejects[0].payload.reason, 'no_session');
+});
+
+test('WebRtcPeer: no-session ICE restart 不创建 mutex 实例（生命期对齐 session）', async () => {
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 直接发 ICE restart 给一个从未建过 session 的 connId → 走 no-session 前置 reject
 	await peer.handleSignaling({
 		type: 'rtc:offer',
 		fromConnId: 'c_mu_leak',
 		payload: { sdp: 'sdp', iceRestart: true },
 	});
 
-	// finally 应识别"session 不存在"并清掉 lazy-create 的 mutex
-	assert.equal(peer.__offerMutexes.has('c_mu_leak'), false, 'no-session restart 后 mutex 不应泄漏');
+	// 该路径不进 mutex —— mutex map 始终没有该键（不是 lazy create + 兜底删，而是根本没创建）
+	assert.equal(peer.__offerMutexes.has('c_mu_leak'), false, 'no-session restart 不应 lazy-create mutex');
+	// reject 信号正常发出
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].type, 'rtc:restart-rejected');
+	assert.equal(sent[0].payload.reason, 'no_session');
 });
 
-test('WebRtcPeer: 首次 offer 抛错后 mutex 键被 finally 清理（防泄漏）', async () => {
+test('WebRtcPeer: 首次 offer 抛错后 catch 同步删 mutex（生命期对齐 session）', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},

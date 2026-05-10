@@ -148,10 +148,14 @@ export class WebRtcPeer {
 			session.rpcChannel = null;
 		}
 		await session.pc.close();
-		// 清理 per-connId offer mutex 键，避免长 session 切换累积。
-		// 注意：__handleOffer 内部 mutex 引用是闭包，已在 mu.withLock 内拿到；
+		// 清理 per-connId offer mutex 键：mutex 生命期与 session 生命期一一对应，
+		// session 销毁时 mutex 同步销毁（详见 __handleOffer 注释）。
+		// 注意：__handleOffer 内部 mutex 引用是闭包已在 mu.withLock 内拿到；
 		// 此处 delete 只影响 Map 键，不影响排队中的 fn 执行；后续同 connId 新 offer
 		// 走 lazy create 路径建新 mutex（旧 mutex 队列若仍有 fn 也能跑完）。
+		// 已知边界：当 closeByConnId 是从 __handleOfferLocked 内部触发时（restart-failed catch
+		// 或首次 offer 替换旧 session），fn 仍持有 mutex；此期间新 offer 进来会创建 M2
+		// 与 M1 并发——split race 在 TODO.md 追踪，不在本修法范围闭合。
 		this.__offerMutexes.delete(connId);
 		this.__remoteLog(`rtc.closed conn=${connId}`);
 		this.logger.info?.(`${this.__rtcTag} [${connId}] closed`);
@@ -222,28 +226,42 @@ export class WebRtcPeer {
 
 	async __handleOffer(msg) {
 		const connId = msg.fromConnId;
+		const isIceRestart = !!msg.payload?.iceRestart;
+
+		// no-session ICE restart 不需要串行化：直接 reject，不进 mutex。
+		// 设计意图：mutex 生命期严格对齐 session（仅在有 session 时存在），
+		// 短命路径不为它建/拆 mutex。同时该路径本身就是"无 session 立即 reject"的语义，
+		// 没有任何可序列化的状态。
+		if (isIceRestart && !this.__sessions.has(connId)) {
+			const credRemain = this.__credRemainSec(msg.turnCreds);
+			const credRemainStr = credRemain ?? 'none';
+			this.__remoteLog(`rtc.ice-restart-no-session conn=${connId} credRemain=${credRemainStr}`);
+			this.logger.warn?.(`${this.__rtcTag} ICE restart from ${connId} but no session, rejecting`);
+			this.__onSend({
+				type: 'rtc:restart-rejected',
+				toConnId: connId,
+				payload: { reason: 'no_session' },
+			});
+			return;
+		}
+
 		// per-connId mutex 串行化：同 connId 几乎同时到达多条 offer（典型场景：UI 多入口
 		// nudgeRestart 在数百毫秒内连发两条 ICE restart）时，把整段三连 await + sendSignaling
 		// 串成 N 轮，最后一条胜出（plugin PC 凭据 = 最后一条 offer 凭据 = UI 当前凭据）。
 		// 不串行化时三连 await 中间被并发 offer 重入会触发 pion InvalidModificationError。
-		// 包**整个** __handleOffer：既覆盖 ICE restart 路径（复用现有 PC）也覆盖首次 offer 路径
-		// （创建新 PC + 触发 closeByConnId 清场），后者若不在锁内会与紧随的 ICE restart 踩。
+		// 包**整个** __handleOfferLocked：既覆盖 ICE restart 路径（复用现有 PC）也覆盖首次
+		// offer 路径（创建新 PC + 触发 closeByConnId 清场），后者若不在锁内会与紧随的 ICE
+		// restart 踩。
+		// mutex 生命期 = session 生命期：与 session 一一成对管理。删除点在两处（且仅两处）：
+		// 1) closeByConnId（覆盖所有正常 close 路径：rtc:closed / state-change / TTL / closeAll）
+		// 2) __handleOfferLocked 首次 offer 的 catch（catch 手工删 session 时同步删 mutex）
+		// 任何新增 session 删除点必须配套删除 mutex 键，否则会泄漏。
 		let mu = this.__offerMutexes.get(connId);
 		if (!mu) {
 			mu = createMutex();
 			this.__offerMutexes.set(connId, mu);
 		}
-		try {
-			return await mu.withLock(() => this.__handleOfferLocked(msg));
-		} finally {
-			// 兜底清理：no-session ICE restart（无 session 直接 reject 返回）和首次 offer 抛错
-			// 不会经过 closeByConnId 路径，mutex 键会留在 Map 里。退出时 session 仍不存在 →
-			// 该 connId 后续不会再有 offer（server-alloc connId 一次性使用），回收 mutex 防止泄漏。
-			// 比对引用：避免错删别的 fn 新创/复用的 mutex（mutex split race 下并发的 fn 可能用了 M2）。
-			if (!this.__sessions.has(connId) && this.__offerMutexes.get(connId) === mu) {
-				this.__offerMutexes.delete(connId);
-			}
-		}
+		return mu.withLock(() => this.__handleOfferLocked(msg));
 	}
 
 	async __handleOfferLocked(msg) {
@@ -606,7 +624,7 @@ export class WebRtcPeer {
 			this.__remoteLog(`rtc.answer conn=${connId}`);
 			this.logger.info?.(`${this.__rtcTag} answer sent to ${connId}`);
 		} catch (err) {
-			// SDP 协商失败 → 清理已入 Map 的 session，避免泄漏
+			// SDP 协商失败 → 清理已入 Map 的 session + mutex，避免泄漏
 			const cur = this.__sessions.get(connId);
 			if (cur && cur.pc === pc) {
 				if (cur.__failedTimer) {
@@ -615,6 +633,10 @@ export class WebRtcPeer {
 				}
 				this.__sessions.delete(connId);
 			}
+			// 同步清 mutex 键，保持 mutex 与 session 生命期一致。本 fn 即将 throw 退出，
+			// fn 仍持有的 mutex 实例引用会自然 GC；删 map 键防后续 offer 误用残留键
+			// （split race 边界仍在 TODO 中追踪，不在此修法范围）。
+			this.__offerMutexes.delete(connId);
 			await pc.close().catch(() => {});
 			throw err;
 		}
