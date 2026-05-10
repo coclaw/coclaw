@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import express from 'express';
+import request from 'supertest';
+
 import {
 	listWebAgentsHandler,
 	recordClickHandler,
 	hideWebAgentHandler,
 	parseWebAgentId,
+	webAgentRouter,
 } from './web-agent.route.js';
 
 function createRes() {
@@ -119,6 +123,37 @@ test('listWebAgentsHandler: 登录后正常返回 items', async () => {
 	assert.deepEqual(res.body.items, items);
 	// 锁住响应 root 仅 items 一个 key——防止未来手滑添加无意义的 meta 字段
 	assert.deepEqual(Object.keys(res.body), ['items']);
+});
+
+test('listWebAgentsHandler: lastClickedAt / hiddenAt 经 JSON 序列化后是 ISO 字符串或 null（前端时序合并依赖）', async () => {
+	// res.body 是 JS 对象（拿到 Date 对象），但实际过线时会被 JSON.stringify 序列化
+	// 前端把 ISO 字符串与本地乐观时间戳做时序比较；若 server 哪天误把 Date 包成 { value, at } 之类
+	// 序列化后形态会变，前端比较静默失败。这里走一遍 stringify 锁住实际过线形态
+	const req = authedReq();
+	const res = createRes();
+	const items = [
+		// 三态：没点过 / 点过未藏 / 点过已藏
+		{ id: 1, slug: 'a', name: 'A', url: 'https://a/', sort: 1, lastClickedAt: null, hiddenAt: null },
+		{ id: 2, slug: 'b', name: 'B', url: 'https://b/', sort: 2, lastClickedAt: new Date('2026-05-01T10:00:00Z'), hiddenAt: null },
+		{ id: 3, slug: 'c', name: 'C', url: 'https://c/', sort: 3, lastClickedAt: new Date('2026-05-02T10:00:00Z'), hiddenAt: new Date('2026-05-02T11:00:00Z') },
+	];
+	await listWebAgentsHandler(req, res, () => {}, {
+		findAllForUserImpl: async () => items,
+	});
+
+	const wire = JSON.parse(JSON.stringify(res.body));
+	const [a, b, c] = wire.items;
+	// null 透传
+	assert.equal(a.lastClickedAt, null);
+	assert.equal(a.hiddenAt, null);
+	// Date → ISO 字符串（不是 {} 也不是 undefined）
+	assert.equal(typeof b.lastClickedAt, 'string');
+	assert.equal(b.lastClickedAt, '2026-05-01T10:00:00.000Z');
+	assert.equal(b.hiddenAt, null);
+	assert.equal(typeof c.lastClickedAt, 'string');
+	assert.equal(c.lastClickedAt, '2026-05-02T10:00:00.000Z');
+	assert.equal(typeof c.hiddenAt, 'string');
+	assert.equal(c.hiddenAt, '2026-05-02T11:00:00.000Z');
 });
 
 test('listWebAgentsHandler: 401 / 异常 等错误响应均含非空 message 字段', async () => {
@@ -337,4 +372,179 @@ test('hideWebAgentHandler: req.params 缺失 → 400 INVALID_INPUT（不抛异�
 	await hideWebAgentHandler(req, res, () => {});
 	assert.equal(res.statusCode, 400);
 	assert.equal(res.body.code, 'INVALID_INPUT');
+});
+
+// ---- 跨 handler scenario：用同一份 fake state 跑主流程 ----
+
+// 单调递增 clock，确保两次 click 的 lastClickedAt 严格大于上次（不依赖 wall clock）
+function makeFakeStore() {
+	const agents = [{ id: 7, slug: 'a', name: 'A', url: 'https://a/', sort: 1 }];
+	const clicks = new Map(); // key=`${userId}|${webAgentId}` → {clickCount, lastClickedAt, hiddenAt}
+	let clock = Date.parse('2026-05-09T08:00:00Z');
+	const tick = () => new Date(++clock);
+	const key = (u, w) => `${u}|${w}`;
+
+	return {
+		findAllForUserImpl: async (userId) => agents.map((a) => {
+			const c = clicks.get(key(userId, a.id));
+			return {
+				id: a.id,
+				slug: a.slug,
+				name: a.name,
+				url: a.url,
+				sort: a.sort,
+				lastClickedAt: c?.lastClickedAt ?? null,
+				hiddenAt: c?.hiddenAt ?? null,
+			};
+		}),
+		recordClickImpl: async ({ userId, webAgentId }) => {
+			if (!agents.some(a => a.id === webAgentId)) return false;
+			const k = key(userId, webAgentId);
+			const cur = clicks.get(k);
+			if (cur) {
+				cur.clickCount += 1;
+				cur.lastClickedAt = tick();
+				cur.hiddenAt = null;
+			}
+			else {
+				clicks.set(k, { clickCount: 1, lastClickedAt: tick(), hiddenAt: null });
+			}
+			return true;
+		},
+		hideImpl: async ({ userId, webAgentId }) => {
+			if (!agents.some(a => a.id === webAgentId)) return false;
+			const cur = clicks.get(key(userId, webAgentId));
+			if (!cur) return false;
+			cur.hiddenAt = tick();
+			return true;
+		},
+	};
+}
+
+test('scenario: route 层 list→click→list→hide→list→click→list 主流程闭合（同一 fake state 串三 handler）', async () => {
+	// 验证三个 handler 在同一 state 下协作的契约：list 形态在每步后正确反映
+	const store = makeFakeStore();
+	const id = '7';
+	const findAllDeps = { findAllForUserImpl: store.findAllForUserImpl };
+	const clickDeps = { recordClickImpl: store.recordClickImpl };
+	const hideDeps = { hideImpl: store.hideImpl };
+
+	async function getList() {
+		const res = createRes();
+		await listWebAgentsHandler(authedReq(), res, () => {}, findAllDeps);
+		assert.equal(res.statusCode, 200);
+		return res.body.items[0];
+	}
+
+	// step 1: list 初始 — 都是 null
+	let item = await getList();
+	assert.equal(item.lastClickedAt, null);
+	assert.equal(item.hiddenAt, null);
+
+	// step 2: click → 204
+	let res = createRes();
+	await recordClickHandler(authedReq({ params: { id } }), res, () => {}, clickDeps);
+	assert.equal(res.statusCode, 204);
+
+	// step 3: list → lastClickedAt 非空、hiddenAt 仍 null
+	item = await getList();
+	assert.ok(item.lastClickedAt instanceof Date);
+	assert.equal(item.hiddenAt, null);
+	const firstClickAt = item.lastClickedAt;
+
+	// step 4: hide → 204
+	res = createRes();
+	await hideWebAgentHandler(authedReq({ params: { id } }), res, () => {}, hideDeps);
+	assert.equal(res.statusCode, 204);
+
+	// step 5: list → hiddenAt 非空、lastClickedAt 不变
+	item = await getList();
+	assert.ok(item.hiddenAt instanceof Date);
+	assert.equal(item.lastClickedAt.getTime(), firstClickAt.getTime());
+	const hideAt = item.hiddenAt;
+
+	// step 6: 再次 click → 204（自动取消隐藏）
+	res = createRes();
+	await recordClickHandler(authedReq({ params: { id } }), res, () => {}, clickDeps);
+	assert.equal(res.statusCode, 204);
+
+	// step 7: list → hiddenAt 清空、lastClickedAt 严格大于上次
+	item = await getList();
+	assert.equal(item.hiddenAt, null);
+	assert.ok(item.lastClickedAt.getTime() > hideAt.getTime());
+});
+
+test('scenario: route 层 hide 一个用户从未点击过的 agent → 404（service false 真打到 store）', async () => {
+	// 防 mock 写错时被误掩盖：用 fake store 真跑 hideImpl 的"可见但 click 行不存在"分支
+	const store = makeFakeStore();
+	const res = createRes();
+	await hideWebAgentHandler(authedReq({ params: { id: '7' } }), res, () => {}, {
+		hideImpl: store.hideImpl,
+	});
+	assert.equal(res.statusCode, 404);
+	assert.equal(res.body.code, 'WEB_AGENT_NOT_FOUND');
+});
+
+// ---- supertest 兜底：用真 webAgentRouter 验证 method/path/Content-Type ----
+//
+// 全部用未登录请求（不会触达 service，所以不需要 mock prisma）；
+// 防 method 误改（POST→GET）、mount 路径手滑、错误响应 Content-Type 漂移这类
+// handler 单测无法覆盖的 HTTP 表层回归
+
+function makeUnauthedApp() {
+	const app = express();
+	app.use(express.json());
+	// 真 webAgentRouter；未登录请求会被 requireSession 在 handler 入口拦截，不会调 service
+	app.use('/api/v1/web-agents', webAgentRouter);
+	return app;
+}
+
+test('routing: GET /api/v1/web-agents/:id/hide → 404（仅 POST 注册了 /:id/hide）', async () => {
+	const res = await request(makeUnauthedApp()).get('/api/v1/web-agents/1/hide');
+	assert.equal(res.status, 404);
+});
+
+test('routing: GET /api/v1/web-agents/:id/click → 404（仅 POST 注册了 /:id/click）', async () => {
+	const res = await request(makeUnauthedApp()).get('/api/v1/web-agents/1/click');
+	assert.equal(res.status, 404);
+});
+
+test('routing: PUT /api/v1/web-agents/:id/hide → 404（不接受其它 method）', async () => {
+	const res = await request(makeUnauthedApp()).put('/api/v1/web-agents/1/hide');
+	assert.equal(res.status, 404);
+});
+
+test('routing: GET /api/v1/web-agents/unknown-path → 404', async () => {
+	const res = await request(makeUnauthedApp()).get('/api/v1/web-agents/foo/bar/baz');
+	assert.equal(res.status, 404);
+});
+
+test('routing: 未登录 GET /api/v1/web-agents → 401 application/json + code/message', async () => {
+	const res = await request(makeUnauthedApp()).get('/api/v1/web-agents');
+	assert.equal(res.status, 401);
+	assert.match(res.headers['content-type'] ?? '', /application\/json/);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+	assert.ok(typeof res.body.message === 'string' && res.body.message.length > 0);
+});
+
+test('routing: 未登录 POST /api/v1/web-agents/:id/click → 401 application/json + code/message', async () => {
+	const res = await request(makeUnauthedApp()).post('/api/v1/web-agents/1/click');
+	assert.equal(res.status, 401);
+	assert.match(res.headers['content-type'] ?? '', /application\/json/);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+	assert.ok(typeof res.body.message === 'string' && res.body.message.length > 0);
+});
+
+test('routing: 未登录 POST /api/v1/web-agents/:id/hide → 401 application/json + code/message', async () => {
+	const res = await request(makeUnauthedApp()).post('/api/v1/web-agents/1/hide');
+	assert.equal(res.status, 401);
+	assert.match(res.headers['content-type'] ?? '', /application\/json/);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
+	assert.ok(typeof res.body.message === 'string' && res.body.message.length > 0);
+});
+
+test('routing: 未登录 POST 即使 id 非法也优先返 401（401 在 400 前）', async () => {
+	const res = await request(makeUnauthedApp()).post('/api/v1/web-agents/abc/hide');
+	assert.equal(res.status, 401);
+	assert.equal(res.body.code, 'UNAUTHORIZED');
 });

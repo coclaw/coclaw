@@ -245,6 +245,22 @@ test('syncPresets: 从清单移除某条 → DB 中该条与其点击记录被�
 	assert.equal(state.clicks.filter(c => c.webAgentId === bId).length, 0);
 });
 
+test('syncPresets: 下架 preset 时已隐藏（hiddenAt 非空）的 click 同样被级联清空', async () => {
+	// 防止"软下架"未来悄悄替换"硬下架"——hiddenAt 残留会让某用户在 preset 复活时显示为已隐藏
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'gone', name: 'Gone', url: 'https://gone/', sort: 1 });
+	const goneId = state.agents.find(a => a.slug === 'gone').id;
+	seedClick(state, { userId: 100n, webAgentId: goneId, hiddenAt: null });
+	seedClick(state, { userId: 200n, webAgentId: goneId, hiddenAt: new Date('2026-05-09T08:00:00Z') });
+	seedClick(state, { userId: 300n, webAgentId: goneId, hiddenAt: new Date('2026-05-09T09:00:00Z') });
+
+	await syncPresets({ presets: [], db });
+
+	assert.equal(state.agents.length, 0);
+	// 未隐藏 / 已隐藏两类 click 都被清，没有任何残留
+	assert.equal(state.clicks.filter(c => c.webAgentId === goneId).length, 0);
+});
+
 test('syncPresets: 不会误删用户自建（userId IS NOT NULL）的条目', async () => {
 	const { db, state } = makeFakeDb();
 	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
@@ -690,6 +706,97 @@ test('scenario: 用户点击 → 隐藏 → 再点击 → hiddenAt 自动清空�
 	const after = view.find(i => i.id === target.id);
 	assert.equal(after.hiddenAt, null);
 	assert.equal(after.lastClickedAt.getTime(), reclickAt.getTime());
+	// 取消隐藏时 lastClickedAt 必须刷新到 hide 时间之后；防止"清 hiddenAt 漏刷点击时间"导致排序错乱
+	assert.ok(after.lastClickedAt.getTime() > hideAt.getTime());
+});
+
+test('scenario: findAllForUser 混合形态 — 预置点过未藏 + 预置已藏 + 自建未点 + 预置没点过', async () => {
+	// 真实活跃用户的 GET 形态：一次性把四类 item 串起来锁形状
+	const { db, state } = makeFakeDb();
+	const presets = [
+		{ slug: 'clicked', name: 'Clicked', url: 'https://c/', sort: 1 },
+		{ slug: 'hidden', name: 'Hidden', url: 'https://h/', sort: 2 },
+		{ slug: 'untouched', name: 'Untouched', url: 'https://u/', sort: 3 },
+	];
+	await syncPresets({ presets, db });
+	// 用户自建一条（slug=null、sort=null、未点过）
+	seedAgent(state, { userId: 100n, slug: null, name: 'Mine', url: 'https://m/', sort: null });
+
+	const clickedId = state.agents.find(a => a.slug === 'clicked').id;
+	const hiddenId = state.agents.find(a => a.slug === 'hidden').id;
+	const clickedAt = new Date('2026-05-09T08:00:00Z');
+	const hiddenClickedAt = new Date('2026-05-09T09:00:00Z');
+	const hiddenAt = new Date('2026-05-09T09:30:00Z');
+	await incrementClick({ userId: 100n, webAgentId: clickedId, now: clickedAt }, db);
+	await incrementClick({ userId: 100n, webAgentId: hiddenId, now: hiddenClickedAt }, db);
+	await setHiddenNow({ userId: 100n, webAgentId: hiddenId, now: hiddenAt }, db);
+
+	const items = await findAllForUser(100n, db);
+
+	assert.equal(items.length, 4);
+	const bySlug = Object.fromEntries(items.filter(i => i.slug != null).map(i => [i.slug, i]));
+	const mine = items.find(i => i.slug == null);
+
+	// 预置点过未藏
+	assert.equal(bySlug.clicked.lastClickedAt.getTime(), clickedAt.getTime());
+	assert.equal(bySlug.clicked.hiddenAt, null);
+	assert.equal(bySlug.clicked.sort, 1);
+	// 预置已藏
+	assert.equal(bySlug.hidden.lastClickedAt.getTime(), hiddenClickedAt.getTime());
+	assert.equal(bySlug.hidden.hiddenAt.getTime(), hiddenAt.getTime());
+	assert.equal(bySlug.hidden.sort, 2);
+	// 预置没点过
+	assert.equal(bySlug.untouched.lastClickedAt, null);
+	assert.equal(bySlug.untouched.hiddenAt, null);
+	assert.equal(bySlug.untouched.sort, 3);
+	// 用户自建未点过：slug/sort 都是 null，没点过两个时间都是 null
+	assert.ok(mine, 'user-built agent should be present');
+	assert.equal(mine.slug, null);
+	assert.equal(mine.sort, null);
+	assert.equal(mine.name, 'Mine');
+	assert.equal(mine.lastClickedAt, null);
+	assert.equal(mine.hiddenAt, null);
+});
+
+test('scenario: 用户 A 的 hide 不影响用户 B 的视图 / 隐藏时间戳', async () => {
+	// dump 明确：repo 单元层已锁"不殃及别人"，scenario 层再串一次端到端，挡跨用户写穿
+	const { db } = makeFakeDb();
+	await syncPresets({ db });
+	const before = await findAllForUser(100n, db);
+	const target = before.find(i => i.slug === 'deepseek');
+	assert.ok(target);
+
+	// A 点击 → A 隐藏（时间戳 t1）
+	const aClickAt = new Date('2026-05-09T08:00:00Z');
+	const aHideAt = new Date('2026-05-09T08:30:00Z');
+	await incrementClick({ userId: 100n, webAgentId: target.id, now: aClickAt }, db);
+	const aHideAffected = await setHiddenNow({ userId: 100n, webAgentId: target.id, now: aHideAt }, db);
+	assert.equal(aHideAffected, 1);
+
+	// B 还没动过 → B 视图里该项 hiddenAt 仍 null、lastClickedAt 仍 null
+	let bView = await findAllForUser(200n, db);
+	let bItem = bView.find(i => i.id === target.id);
+	assert.equal(bItem.hiddenAt, null);
+	assert.equal(bItem.lastClickedAt, null);
+
+	// B 自己点击 + 隐藏（晚于 A 的时间）
+	const bClickAt = new Date('2026-05-09T10:00:00Z');
+	const bHideAt = new Date('2026-05-09T10:30:00Z');
+	await incrementClick({ userId: 200n, webAgentId: target.id, now: bClickAt }, db);
+	const bHideAffected = await setHiddenNow({ userId: 200n, webAgentId: target.id, now: bHideAt }, db);
+	assert.equal(bHideAffected, 1);
+
+	// A 的状态没被 B 的 hide 写穿：仍是 A 自己设的 t1
+	const aView = await findAllForUser(100n, db);
+	const aItem = aView.find(i => i.id === target.id);
+	assert.equal(aItem.hiddenAt.getTime(), aHideAt.getTime());
+	assert.equal(aItem.lastClickedAt.getTime(), aClickAt.getTime());
+
+	// B 看到的也是自己的时间戳，不是 A 的
+	bView = await findAllForUser(200n, db);
+	bItem = bView.find(i => i.id === target.id);
+	assert.equal(bItem.hiddenAt.getTime(), bHideAt.getTime());
+	assert.equal(bItem.lastClickedAt.getTime(), bClickAt.getTime());
 });
 
 test('scenario: syncPresets 改了 preset name/url 但保留已存在的 click 历史', async () => {
