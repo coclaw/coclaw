@@ -20,6 +20,7 @@ vi.mock('../utils/external-url.js', () => ({
 const __webAgentsApiMock = vi.hoisted(() => ({
 	listWebAgents: vi.fn().mockResolvedValue([]),
 	recordWebAgentClick: vi.fn().mockResolvedValue(undefined),
+	hideWebAgent: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../services/web-agents.api.js', () => __webAgentsApiMock);
 
@@ -57,6 +58,10 @@ vi.mock('./TopicItemActions.vue', () => ({
 
 vi.mock('./AgentItemActions.vue', () => ({
 	default: { name: 'AgentItemActions', template: '<div class="agent-actions-stub" />', props: ['clawId', 'agentId'] },
+}));
+
+vi.mock('./WebAgentItemActions.vue', () => ({
+	default: { name: 'WebAgentItemActions', template: '<div class="web-agent-actions-stub" />', props: ['webAgentId'] },
 }));
 
 vi.mock('../services/claw-connection-manager.js', () => ({
@@ -107,6 +112,7 @@ function createWrapper(props = {}) {
 				UButton: UButtonStub,
 				TopicItemActions: { template: '<div class="topic-actions-stub" />' },
 				AgentItemActions: { template: '<div class="agent-actions-stub" />' },
+				WebAgentItemActions: { template: '<div class="web-agent-actions-stub" />' },
 			},
 			mocks: {
 				$t: (key) => {
@@ -916,6 +922,36 @@ test('点击最近项 → 真实 store 乐观更新使该项立刻置顶（不�
 	expect(__webAgentsApiMock.recordWebAgentClick).toHaveBeenCalledWith(1);
 });
 
+test('Web Agents 最近使用分组：每条 recent 项渲染尾部 actions 占位（hover 显隐由 group-hover class 驱动）', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: '2026-05-01T10:00:00Z', hiddenAt: null },
+		{ id: 2, slug: 'doubao', name: '豆包', url: 'u', sort: 2, lastClickedAt: '2026-05-03T10:00:00Z', hiddenAt: null },
+	];
+	await wrapper.vm.$nextTick();
+
+	const actionStubs = wrapper.findAll('.web-agent-actions-stub');
+	expect(actionStubs.length).toBe(2);
+});
+
+test('Web Agents 最近使用分组：hiddenAt != null 的条目不渲染', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	const store = useWebAgentsStore();
+	store.items = [
+		{ id: 1, slug: 'deepseek', name: 'DeepSeek', url: 'u', sort: 1, lastClickedAt: '2026-05-01T10:00:00Z', hiddenAt: null },
+		{ id: 2, slug: 'doubao', name: '豆包', url: 'u', sort: 2, lastClickedAt: '2026-05-03T10:00:00Z', hiddenAt: '2026-05-03T11:00:00Z' },
+	];
+	await wrapper.vm.$nextTick();
+
+	const ids = wrapper.findAll('[data-testid^="web-agent-recent-"]').map((b) => b.attributes('data-testid'));
+	expect(ids).toEqual(['web-agent-recent-deepseek']);
+});
+
 test('Web Agents 最近使用分组：用户自建（slug=null）项 fallback 走 web-agent-recent-custom-${id} 与 UIcon', async () => {
 	// 钉死预留路径：将来 v2 用户自建 Web Agent 没有 slug，fallback testid + 默认 globe icon 必须仍然能用
 	const wrapper = createWrapper();
@@ -1002,6 +1038,7 @@ test('mounted 时调用 webAgentsStore.loadAll()', async () => {
 				UButton: UButtonStub,
 				TopicItemActions: { template: '<div />' },
 				AgentItemActions: { template: '<div />' },
+				WebAgentItemActions: { template: '<div />' },
 			},
 			mocks: {
 				$t: (k) => k,

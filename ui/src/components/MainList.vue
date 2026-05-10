@@ -122,29 +122,37 @@
 				<UIcon name="i-lucide-globe" class="size-6 text-teal-600" />
 				<span class="min-w-0 flex-1 truncate">{{ $t('webAgents.entryName') }}</span>
 			</button>
-			<button
+			<div
 				v-for="item in recentWebAgents"
 				:key="item.id"
-				type="button"
-				:data-testid="`web-agent-recent-${item.slug ?? 'custom-' + item.id}`"
-				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
-				@click="onClickRecentWebAgent(item)"
+				class="group flex h-11 cursor-pointer items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
 			>
-				<img
-					v-if="webAgentIconFor(item.slug)"
-					:src="webAgentIconFor(item.slug)"
-					alt=""
-					aria-hidden="true"
-					class="size-6 shrink-0 rounded-md object-cover"
+				<button
+					type="button"
+					:data-testid="`web-agent-recent-${item.slug ?? 'custom-' + item.id}`"
+					class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-2 py-1 text-left"
+					@click="onClickRecentWebAgent(item)"
+				>
+					<img
+						v-if="webAgentIconFor(item.slug)"
+						:src="webAgentIconFor(item.slug)"
+						alt=""
+						aria-hidden="true"
+						class="size-6 shrink-0 rounded-md object-cover"
+					/>
+					<UIcon
+						v-else
+						name="i-lucide-globe"
+						aria-hidden="true"
+						class="size-6 shrink-0 text-dimmed"
+					/>
+					<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
+				</button>
+				<WebAgentItemActions
+					class="web-agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+					:web-agent-id="item.id"
 				/>
-				<UIcon
-					v-else
-					name="i-lucide-globe"
-					aria-hidden="true"
-					class="size-6 shrink-0 text-dimmed"
-				/>
-				<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
-			</button>
+			</div>
 		</nav>
 
 		<!-- Group 3: Topic 列表 -->
@@ -198,6 +206,7 @@ import { useWebAgentsStore } from '../stores/web-agents.store.js';
 import { useWebAgentDialogs } from '../composables/use-web-agent-dialogs.js';
 import AgentItemActions from './AgentItemActions.vue';
 import TopicItemActions from './TopicItemActions.vue';
+import WebAgentItemActions from './WebAgentItemActions.vue';
 import defaultClawAvatar from '../assets/claw-avatars/openclaw.svg';
 import logoSrc from '../assets/coclaw-logo.jpg';
 import { isCapacitorApp } from '../utils/platform.js';
@@ -227,7 +236,7 @@ function toTopicLabel(topic, t) {
 
 export default {
 	name: 'MainList',
-	components: { AgentItemActions, TopicItemActions },
+	components: { AgentItemActions, TopicItemActions, WebAgentItemActions },
 	props: {
 		currentPath: {
 			type: String,
@@ -482,7 +491,8 @@ export default {
 /* 触屏设备无 hover，操作按钮始终可见 */
 @media (hover: none) {
 	.topic-actions,
-	.agent-actions {
+	.agent-actions,
+	.web-agent-actions {
 		opacity: 1;
 	}
 }

@@ -476,6 +476,7 @@ export const frMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'Aucun élément disponible',
+		removeFromRecent: 'Retirer de la liste',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

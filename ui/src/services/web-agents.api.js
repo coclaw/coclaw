@@ -8,3 +8,7 @@ export async function listWebAgents() {
 export async function recordWebAgentClick(id) {
 	await client.post(`/api/v1/web-agents/${id}/click`);
 }
+
+export async function hideWebAgent(id) {
+	await client.post(`/api/v1/web-agents/${id}/hide`);
+}

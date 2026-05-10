@@ -476,6 +476,7 @@ export const ptMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'Nenhum item disponível',
+		removeFromRecent: 'Remover da lista',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

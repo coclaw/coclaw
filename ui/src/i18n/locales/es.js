@@ -476,6 +476,7 @@ export const esMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'No hay elementos disponibles',
+		removeFromRecent: 'Eliminar de la lista',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

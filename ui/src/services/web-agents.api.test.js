@@ -10,7 +10,7 @@ vi.mock('./http.js', () => ({
 	httpClient: mockedHttp,
 }));
 
-import { listWebAgents, recordWebAgentClick } from './web-agents.api.js';
+import { hideWebAgent, listWebAgents, recordWebAgentClick } from './web-agents.api.js';
 
 describe('web-agents api', () => {
 	beforeEach(() => {
@@ -55,5 +55,16 @@ describe('web-agents api', () => {
 	test('listWebAgents 网络错误透传 reject（确保上层 store 能捕获）', async () => {
 		mockedHttp.get.mockRejectedValue(new Error('Network Error'));
 		await expect(listWebAgents()).rejects.toThrow('Network Error');
+	});
+
+	test('hideWebAgent 应 POST 到 /:id/hide', async () => {
+		mockedHttp.post.mockResolvedValue({ status: 204 });
+		await hideWebAgent(11);
+		expect(mockedHttp.post).toHaveBeenCalledWith('/api/v1/web-agents/11/hide');
+	});
+
+	test('hideWebAgent 失败时透传 reject', async () => {
+		mockedHttp.post.mockRejectedValue(new Error('boom'));
+		await expect(hideWebAgent(12)).rejects.toThrow('boom');
 	});
 });

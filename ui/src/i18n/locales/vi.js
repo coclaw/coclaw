@@ -476,6 +476,7 @@ export const viMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'Không có mục nào',
+		removeFromRecent: 'Xóa khỏi danh sách',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

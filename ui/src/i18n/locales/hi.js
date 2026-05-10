@@ -476,6 +476,7 @@ export const hiMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'कोई आइटम उपलब्ध नहीं',
+		removeFromRecent: 'सूची से हटाएं',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

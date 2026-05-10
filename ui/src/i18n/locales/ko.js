@@ -476,6 +476,7 @@ export const koMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: '사용 가능한 항목이 없습니다',
+		removeFromRecent: '목록에서 제거',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

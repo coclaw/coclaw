@@ -476,6 +476,7 @@ export const ruMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'Нет доступных элементов',
+		removeFromRecent: 'Удалить из списка',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

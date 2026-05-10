@@ -476,6 +476,7 @@ export const deMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'Keine Einträge verfügbar',
+		removeFromRecent: 'Aus der Liste entfernen',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

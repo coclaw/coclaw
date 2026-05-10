@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 const mockedApi = vi.hoisted(() => ({
 	listWebAgents: vi.fn(),
 	recordWebAgentClick: vi.fn(),
+	hideWebAgent: vi.fn(),
 }));
 
 vi.mock('../services/web-agents.api.js', () => mockedApi);
@@ -231,13 +232,137 @@ describe('web-agents store', () => {
 	test('recentlyClicked: 过滤未点过 + 按 lastClickedAt 降序', () => {
 		const store = useWebAgentsStore();
 		store.items = [
-			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z' },
-			{ id: 2, slug: 'b', name: 'B', url: 'u', sort: 2, lastClickedAt: null },
-			{ id: 3, slug: 'c', name: 'C', url: 'u', sort: 3, lastClickedAt: '2026-05-08T00:00:00Z' },
-			{ id: 4, slug: 'd', name: 'D', url: 'u', sort: 4, lastClickedAt: '2026-05-05T00:00:00Z' },
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+			{ id: 2, slug: 'b', name: 'B', url: 'u', sort: 2, lastClickedAt: null, hiddenAt: null },
+			{ id: 3, slug: 'c', name: 'C', url: 'u', sort: 3, lastClickedAt: '2026-05-08T00:00:00Z', hiddenAt: null },
+			{ id: 4, slug: 'd', name: 'D', url: 'u', sort: 4, lastClickedAt: '2026-05-05T00:00:00Z', hiddenAt: null },
 		];
 
 		const ordered = store.recentlyClicked.map((i) => i.slug);
 		expect(ordered).toEqual(['c', 'd', 'a']);
+	});
+
+	test('recentlyClicked: 过滤已隐藏的条目（hiddenAt != null）', () => {
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+			{ id: 2, slug: 'b', name: 'B', url: 'u', sort: 2, lastClickedAt: '2026-05-09T00:00:00Z', hiddenAt: '2026-05-09T01:00:00Z' },
+			{ id: 3, slug: 'c', name: 'C', url: 'u', sort: 3, lastClickedAt: '2026-05-08T00:00:00Z', hiddenAt: null },
+		];
+
+		const ordered = store.recentlyClicked.map((i) => i.slug);
+		expect(ordered).toEqual(['c', 'a']);
+	});
+
+	test('hide: 本地乐观把 hiddenAt 标为现在 + fire-and-forget POST', () => {
+		mockedApi.hideWebAgent.mockResolvedValue();
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 5, slug: 's', name: 'S', url: 'u', sort: 5, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+		];
+
+		store.hide(5);
+
+		expect(store.items[0].hiddenAt).toBeTruthy();
+		expect(mockedApi.hideWebAgent).toHaveBeenCalledWith(5);
+	});
+
+	test('hide: id 不在 items 时不抛错（仍发请求）', () => {
+		mockedApi.hideWebAgent.mockResolvedValue();
+		const store = useWebAgentsStore();
+		store.items = [{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: null, hiddenAt: null }];
+
+		expect(() => store.hide(999)).not.toThrow();
+		expect(mockedApi.hideWebAgent).toHaveBeenCalledWith(999);
+	});
+
+	test('hide: 上报失败被 catch，不产生 unhandled rejection', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockedApi.hideWebAgent.mockRejectedValue(new Error('net down'));
+
+		const store = useWebAgentsStore();
+		store.items = [{ id: 6, slug: 's', name: 'S', url: 'u', sort: 6, lastClickedAt: null, hiddenAt: null }];
+		store.hide(6);
+
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(warnSpy).toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
+	test('recordClick: 同步把 hiddenAt 清成 null（再点取消隐藏）', () => {
+		mockedApi.recordWebAgentClick.mockResolvedValue();
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 7, slug: 'k', name: 'K', url: 'u', sort: 4, lastClickedAt: '2026-04-01T00:00:00Z', hiddenAt: '2026-05-09T00:00:00Z' },
+		];
+
+		store.recordClick(7);
+
+		expect(store.items[0].lastClickedAt).toBeTruthy();
+		expect(store.items[0].hiddenAt).toBeNull();
+	});
+
+	test('loadAll merge：本地刚 hide 后旧响应到达不应覆盖 hiddenAt', async () => {
+		const store = useWebAgentsStore();
+		const optimisticHide = '2026-05-09T12:00:00.000Z';
+		store.items = [
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: optimisticHide },
+		];
+		// 服务器旧响应：尚未处理 hide，hiddenAt=null
+		mockedApi.listWebAgents.mockResolvedValue([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+		]);
+		await store.loadAll();
+
+		expect(store.items[0].hiddenAt).toBe(optimisticHide);
+	});
+
+	test('loadAll merge：本地刚 recordClick（清 hiddenAt + 推 lastClickedAt）后旧响应到达不应复活 hiddenAt', async () => {
+		const store = useWebAgentsStore();
+		const optimisticClick = '2026-05-09T12:00:00.000Z';
+		// 本地 lastClickedAt 比服务器新（recordClick 已 fire 但服务器尚未确认）
+		store.items = [
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: optimisticClick, hiddenAt: null },
+		];
+		mockedApi.listWebAgents.mockResolvedValue([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-04-01T00:00:00Z', hiddenAt: '2026-04-15T00:00:00Z' },
+		]);
+		await store.loadAll();
+
+		expect(store.items[0].hiddenAt).toBeNull();
+		expect(store.items[0].lastClickedAt).toBe(optimisticClick);
+	});
+
+	test('loadAll merge：服务器更新（lastClickedAt 更新且 hiddenAt 服务器写入）应胜出本地', async () => {
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-04-01T00:00:00Z', hiddenAt: null },
+		];
+		mockedApi.listWebAgents.mockResolvedValue([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: '2026-05-01T01:00:00Z' },
+		]);
+		await store.loadAll();
+
+		expect(store.items[0].hiddenAt).toBe('2026-05-01T01:00:00Z');
+		expect(store.items[0].lastClickedAt).toBe('2026-05-01T00:00:00Z');
+	});
+
+	test('loadAll merge：新增条目时 hiddenAt 直接落服务器值（无 prev）', async () => {
+		const store = useWebAgentsStore();
+		mockedApi.listWebAgents.mockResolvedValue([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, hiddenAt: '2026-05-01T00:00:00Z' },
+		]);
+		await store.loadAll();
+		expect(store.items[0].hiddenAt).toBe('2026-05-01T00:00:00Z');
+	});
+
+	test('loadAll merge：服务器响应未带 hiddenAt 字段时回落 null', async () => {
+		const store = useWebAgentsStore();
+		mockedApi.listWebAgents.mockResolvedValue([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1 },
+		]);
+		await store.loadAll();
+		expect(store.items[0].hiddenAt).toBeNull();
 	});
 });

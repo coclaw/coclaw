@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 
-import { listWebAgents, recordWebAgentClick } from '../services/web-agents.api.js';
+import { hideWebAgent, listWebAgents, recordWebAgentClick } from '../services/web-agents.api.js';
 
 let _loadingPromise = null;
 
@@ -10,20 +10,32 @@ export function __resetWebAgentsInternals() {
 }
 
 /**
- * 取较大的 lastClickedAt：null 视为无值
+ * 取较大的时间戳：null 视为无值
  * @param {string|Date|null|undefined} a
  * @param {string|Date|null|undefined} b
  * @returns {string|Date|null}
  */
-function maxLastClickedAt(a, b) {
+function maxTimestamp(a, b) {
 	if (a == null) return b ?? null;
 	if (b == null) return a;
 	return new Date(a) >= new Date(b) ? a : b;
 }
 
+/**
+ * 判断本地 lastClickedAt 是否严格新于服务器值——意味着本地有未传播的 recordClick，
+ * 此时本地 hiddenAt（recordClick 已清成 null）应胜出服务器旧值
+ */
+function isLocalClickAhead(prev, server) {
+	const p = prev?.lastClickedAt;
+	const s = server?.lastClickedAt;
+	if (p == null) return false;
+	if (s == null) return true;
+	return new Date(p) > new Date(s);
+}
+
 export const useWebAgentsStore = defineStore('webAgents', {
 	state: () => ({
-		/** @type {{ id: number, slug: string|null, name: string, url: string, sort: number|null, lastClickedAt: string|Date|null }[]} */
+		/** @type {{ id: number, slug: string|null, name: string, url: string, sort: number|null, lastClickedAt: string|Date|null, hiddenAt: string|Date|null }[]} */
 		items: [],
 		loaded: false,
 		loading: false,
@@ -44,12 +56,12 @@ export const useWebAgentsStore = defineStore('webAgents', {
 			});
 		},
 		/**
-		 * MainList Web Agents 分组用：过滤已点过的，按最近点击降序
+		 * MainList Web Agents 分组用：过滤已点过且未隐藏的，按最近点击降序
 		 * @returns {object[]}
 		 */
 		recentlyClicked(state) {
 			return state.items
-				.filter((a) => a.lastClickedAt != null)
+				.filter((a) => a.lastClickedAt != null && a.hiddenAt == null)
 				.sort((a, b) => new Date(b.lastClickedAt) - new Date(a.lastClickedAt));
 		},
 	},
@@ -63,15 +75,23 @@ export const useWebAgentsStore = defineStore('webAgents', {
 			_loadingPromise = (async () => {
 				try {
 					const fetched = await listWebAgents();
-					// merge：旧 items 的 lastClickedAt 与服务器返回值取较大值，
-					// 避免 loadAll 旧响应在 recordClick 之后到达时覆盖乐观更新
+					// merge：用本地 prev 与服务器值合并，避免 loadAll 旧响应在 recordClick / hide
+					// 之后到达时覆盖乐观更新
 					const oldById = new Map(this.items.map((it) => [it.id, it]));
 					this.items = fetched.map((it) => {
 						const prev = oldById.get(it.id);
-						return {
-							...it,
-							lastClickedAt: prev ? maxLastClickedAt(prev.lastClickedAt, it.lastClickedAt) : (it.lastClickedAt ?? null),
-						};
+						const lastClickedAt = prev
+							? maxTimestamp(prev.lastClickedAt, it.lastClickedAt)
+							: (it.lastClickedAt ?? null);
+						// 本地 click 比服务器新 → recordClick 已清空 hiddenAt，本地胜
+						// 否则 → max-merge 保护本地刚 fire 的 hide
+						let hiddenAt;
+						if (prev && isLocalClickAhead(prev, it)) {
+							hiddenAt = prev.hiddenAt ?? null;
+						} else {
+							hiddenAt = maxTimestamp(prev?.hiddenAt, it.hiddenAt);
+						}
+						return { ...it, lastClickedAt, hiddenAt };
 					});
 					this.loaded = true;
 				}
@@ -93,15 +113,31 @@ export const useWebAgentsStore = defineStore('webAgents', {
 
 		/**
 		 * 记录一次点击：本地乐观更新 + fire-and-forget 上报
+		 * 同步把 hiddenAt 清成 null（再点取消隐藏，与服务器最终状态对齐）
 		 * @param {number} id
 		 */
 		recordClick(id) {
 			const item = this.items.find((it) => it.id === id);
 			if (item) {
 				item.lastClickedAt = new Date().toISOString();
+				item.hiddenAt = null;
 			}
 			recordWebAgentClick(id).catch((err) => {
 				console.warn('[web-agents] recordClick failed id=%s:', id, err?.message ?? err);
+			});
+		},
+
+		/**
+		 * 从最近列表移除：本地乐观把 hiddenAt 标为现在 + fire-and-forget 上报
+		 * @param {number} id
+		 */
+		hide(id) {
+			const item = this.items.find((it) => it.id === id);
+			if (item) {
+				item.hiddenAt = new Date().toISOString();
+			}
+			hideWebAgent(id).catch((err) => {
+				console.warn('[web-agents] hide failed id=%s:', id, err?.message ?? err);
 			});
 		},
 	},

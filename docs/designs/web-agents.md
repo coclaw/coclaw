@@ -147,7 +147,7 @@ model WebAgent {
 	@@index([userId])
 }
 
-// 用户对某 Web Agent 的点击聚合（per-user × per-WebAgent 一行）
+// 用户对某 Web Agent 的个人状态（per-user × per-WebAgent 一行）：点击账 + 隐藏状态 + 未来可能的其他偏好
 model WebAgentClick {
 	userId				BigInt @db.UnsignedBigInt
 	webAgentId		Int @db.UnsignedInt
@@ -156,6 +156,7 @@ model WebAgentClick {
 
 	clickCount		Int @default(0) @db.UnsignedInt
 	lastClickedAt	DateTime @default(now())
+	hiddenAt			DateTime? // 用户从最近列表隐藏该 Agent 的时间戳；NULL=未隐藏；再次点击时自动清空
 
 	@@id([userId, webAgentId])
 	@@index([userId, lastClickedAt(sort: Desc)])
@@ -184,8 +185,11 @@ model User {
 - `WebAgent.url` `@db.VarChar(255)`——常规 URL 长度上限
 - **不加 `enabled / locked / disabledAt` 字段**——预置清单是代码常量，下架直接改代码 + 重启即可（`syncPresets` 会主动删 DB 里清单外的项）；用户自建第一版不存在；未来真有"软下架"运营治理需求再加（trivial migration）
 - `WebAgent.id` 用自增 `Int UnsignedInt`：与 `ExternalAuth`/`ExpressSession` 等"辅助实体"风格一致；预置仅 5 条、用户自建未来也到不了几十万规模，UnsignedInt（~42 亿）远远够用，无需 Snowflake 的全局/分布式属性
-- `WebAgentClick` 是聚合表（不是事件流）。每个 (userId, webAgentId) 仅一行，每次点击 `upsert` 时 `clickCount += 1`、`lastClickedAt = now`
-- 索引 `(userId, lastClickedAt DESC)` 用于加速 MainList 的 Web Agents 分组查询
+- `WebAgentClick` 是用户对某 Web Agent 的个人状态聚合（不是事件流）。每个 (userId, webAgentId) 仅一行，承载点击账（`clickCount` / `lastClickedAt`） + 隐藏状态（`hiddenAt`）；未来若新增其它"用户对该 Agent 的偏好"也归入此表
+- 表名沿用历史 `WebAgentClick`：考虑过 `UserWebAgent` / `WebAgentStat` / `WebAgentUsage` 等，但 `userId` 字面与 `WebAgent.userId`（自建归属）撞车，"Stat / Usage" 又把语义锁回单一维度；保留 `WebAgentClick` 不做表重命名迁移，靠表头注释拓宽语义
+- `hiddenAt` 选 nullable `DateTime` 而非 boolean：与项目现有命名节奏（`lastClickedAt` / `lastSeenAt` / `lastLoginAt`）一致，同样存储成本顺手记下"何时隐藏"，将来若需排查/扩展无需再迁库；NULL = 未隐藏。重复隐藏幂等（每次刷成 `now`），不刻意保留"最早隐藏"信息
+- 索引 `(userId, lastClickedAt DESC)` 用于加速 MainList 的 Web Agents 分组查询；`hiddenAt` 不建索引——前端按用户视角过滤的 list 规模天然有限（预置 5 项 + 未来用户自建），全列扫描成本可忽略
+- 每次点击 `upsert` 的 `update` 分支同时把 `hiddenAt` 置为 `null`——这是"再次点击自动取消隐藏"的实现位置，前端不需要单独发请求；`create` 分支不显式设值（默认 NULL）
 - `onDelete: Cascade` 的两条路径：
 	- 删用户 → 自动清该用户的 WebAgent 自建条目 + 该用户所有点击记录
 	- 删 WebAgent → 自动清该 Web Agent 的所有点击记录（被 `syncPresets` 下架时触发）
@@ -280,8 +284,9 @@ REST 前缀：`/api/v1/web-agents`
 
 | Method | Path | 用途 | 鉴权 |
 |--------|------|------|------|
-| GET | `/api/v1/web-agents` | 获取预置 + 当前用户自建（将来）的 Web Agent 列表，附带当前用户 lastClickedAt | 必须登录，否则 401 |
-| POST | `/api/v1/web-agents/:id/click` | 上报一次点击（fire-and-forget） | 必须登录，否则 401 |
+| GET | `/api/v1/web-agents` | 获取预置 + 当前用户自建（将来）的 Web Agent 列表，附带当前用户 lastClickedAt / hiddenAt | 必须登录，否则 401 |
+| POST | `/api/v1/web-agents/:id/click` | 上报一次点击（fire-and-forget），同时清空该 Agent 的 hiddenAt | 必须登录，否则 401 |
+| POST | `/api/v1/web-agents/:id/hide` | 将该 Agent 从当前用户的最近列表隐藏（设置 hiddenAt = now） | 必须登录，否则 401 |
 
 均走项目现有的 session 中间件鉴权（参考 `claw.route.js` 等）。
 
@@ -300,7 +305,8 @@ REST 前缀：`/api/v1/web-agents`
 			"name": "DeepSeek",
 			"url": "https://chat.deepseek.com/",
 			"sort": 1,
-			"lastClickedAt": "2026-05-08T14:23:11.000Z"
+			"lastClickedAt": "2026-05-08T14:23:11.000Z",
+			"hiddenAt": null
 		},
 		{
 			"id": 2,
@@ -308,7 +314,8 @@ REST 前缀：`/api/v1/web-agents`
 			"name": "豆包",
 			"url": "https://www.doubao.com/chat/",
 			"sort": 2,
-			"lastClickedAt": null
+			"lastClickedAt": null,
+			"hiddenAt": null
 		}
 	]
 }
@@ -329,7 +336,7 @@ export async function findAllForUser(userId) {
 		include: {
 			clicks: {
 				where: { userId },
-				select: { lastClickedAt: true },
+				select: { lastClickedAt: true, hiddenAt: true },
 			},
 		},
 	});
@@ -340,14 +347,15 @@ export async function findAllForUser(userId) {
 		url: a.url,
 		sort: a.sort,
 		lastClickedAt: a.clicks[0]?.lastClickedAt ?? null,
+		hiddenAt: a.clicks[0]?.hiddenAt ?? null,
 	}));
 }
 ```
 
 UI 侧分两种用法：
 
-- **选择对话框**：按 `sort ASC` 排序（v1 全是预置，sort 都非空；将来用户自建按 `(sort 是否为 null, sort, id)` 在前端 JS 排序，避免 prisma 不支持 NULLS LAST 的麻烦——id 自增等价 createdAt FIFO）
-- **MainList Web Agents 分组**：过滤 `lastClickedAt != null`，按 `lastClickedAt DESC` 排序
+- **选择对话框**：按 `sort ASC` 排序（v1 全是预置，sort 都非空；将来用户自建按 `(sort 是否为 null, sort, id)` 在前端 JS 排序，避免 prisma 不支持 NULLS LAST 的麻烦——id 自增等价 createdAt FIFO）。**选择对话框不读 `hiddenAt`**——隐藏只影响 MainList 列表，picker 永远展示全部可见 Agent
+- **MainList Web Agents 分组**：过滤 `lastClickedAt != null && hiddenAt == null`，按 `lastClickedAt DESC` 排序
 
 ### POST /api/v1/web-agents/:id/click
 
@@ -372,36 +380,56 @@ export async function recordClick(userId, webAgentId) {
 	});
 	if (!agent) return false;
 
+	// 注意：update 分支显式将 hiddenAt 置为 null —— "再点取消隐藏"的实现位置
 	await prisma.webAgentClick.upsert({
 		where: { userId_webAgentId: { userId, webAgentId } },
-		update: { clickCount: { increment: 1 }, lastClickedAt: new Date() },
+		update: { clickCount: { increment: 1 }, lastClickedAt: new Date(), hiddenAt: null },
 		create: { userId, webAgentId, clickCount: 1 },
 	});
 	return true;
 }
 ```
 
-route handler 配套（含 `:id` 校验）：
+### POST /api/v1/web-agents/:id/hide
+
+请求 body：无
+响应：`204 No Content`（成功）/ `404 Not Found`（id 对当前用户不可见，或当前用户从未点击过该 Agent）/ `401`（未登录）
+
+将该 Agent 从当前用户的最近列表移除（不删数据，仅设 `hiddenAt = now`）。重复隐藏幂等。
+
+```js
+// server/src/services/web-agent.svc.js
+// 返回 true = 已隐藏；false = 不可见或从未点击过（路由层映射 404）
+export async function hide({ userId, webAgentId }) {
+	const id = await findVisibleAgentId({ userId, webAgentId });
+	if (id == null) return false;
+	const affected = await setHiddenNow({ userId, webAgentId });
+	return affected > 0;
+}
+
+// server/src/repos/web-agent.repo.js
+// updateMany：命中 0 行不会凭空 INSERT，由 svc 转 false → route 转 404
+export async function setHiddenNow({ userId, webAgentId, now = new Date() }) {
+	const result = await prisma.webAgentClick.updateMany({
+		where: { userId, webAgentId },
+		data: { hiddenAt: now },
+	});
+	return result.count;
+}
+```
+
+route handler 与 click 同型（`requireSession` + `parseWebAgentId` + 401/400/404/204）：
 
 ```js
 // server/src/routes/web-agent.route.js
-router.post('/:id/click', requireAuth, async (req, res) => {
-	const id = parseWebAgentId(req.params.id);
-	if (id == null) {
-		res.status(400).json({ code: 'INVALID_INPUT', message: 'id must be a positive integer' });
-		return;
-	}
-	const ok = await recordClick(req.user.id, id);
-	if (!ok) {
-		res.status(404).json({ code: 'WEB_AGENT_NOT_FOUND', message: 'web agent not visible' });
-		return;
-	}
-	res.status(204).end();
-});
+router.post('/:id/click', recordClickHandler);
+router.post('/:id/hide', hideWebAgentHandler);
 
 function parseWebAgentId(raw) {
+	if (typeof raw !== 'string') return null;
+	if (!/^[0-9]+$/.test(raw)) return null;
 	const n = Number(raw);
-	if (!Number.isInteger(n) || n <= 0) return null;
+	if (!Number.isInteger(n) || n <= 0 || n > 4294967295) return null;
 	return n;
 }
 ```
@@ -409,9 +437,11 @@ function parseWebAgentId(raw) {
 注意点：
 
 - prisma 复合主键 upsert 的 `where` 字段名是 `userId_webAgentId`（自动 camelCase 拼接），实施时不要手写错
-- `:id` 必须 parse + 校验为正整数（非法 → 400 INVALID_INPUT），与现有路由（如 `claw-bot.route.js`）一致
-- UI 不等响应——上报失败不影响跳转
+- `:id` 必须 parse + 校验为正整数且不超 UnsignedInt 上界（非法 → 400 INVALID_INPUT），与现有路由（如 `claw-bot.route.js`）一致
+- UI click 不等响应——上报失败不影响跳转
+- UI hide 也是 fire-and-forget：本地立即把对应 item 的 `hiddenAt` 标成 `new Date().toISOString()`，请求失败仅 `console.warn`
 - **并发首次点击的 P2002 已知容忍**：fire-and-forget 场景偶发"两端首次同时点同一条"会让 prisma upsert 走双 create 路径触发主键冲突，本期不处理（产品上极少发生，丢一次记录可接受）
+- hide 使用 `updateMany` 而非 `update`：命中 0 行返回 `{ count: 0 }`，避免对从未点击过的 Agent 凭空 INSERT 一行只为承载 hiddenAt
 
 ---
 
@@ -423,6 +453,7 @@ function parseWebAgentId(raw) {
 ui/src/
 	components/
 		MainList.vue                              ← 现有文件，新增顶部 "Web Agent" 入口 + Web Agents 分组渲染
+		WebAgentItemActions.vue                   ← Web Agents 分组内 recent 项的尾部三点菜单（仅一项"移除"）
 		web-agents/
 			WebAgentPickerDialog.vue              ← 对话框壳（UModal + fullscreen 切换）
 			WebAgentPickerPanel.vue               ← 对话框内容（5 项列表）
@@ -446,7 +477,7 @@ ui/src/
 ```js
 export const useWebAgentsStore = defineStore('webAgents', {
 	state: () => ({
-		items: [],          // [{ id, slug, name, url, sort, lastClickedAt }]
+		items: [],          // [{ id, slug, name, url, sort, lastClickedAt, hiddenAt }]
 		loaded: false,
 	}),
 	getters: {
@@ -459,18 +490,22 @@ export const useWebAgentsStore = defineStore('webAgents', {
 				return a.id - b.id;
 			});
 		},
-		// MainList Web Agents 分组用：过滤已点过的，按最近点击降序
+		// MainList Web Agents 分组用：过滤已点过且未隐藏的，按最近点击降序
 		recentlyClicked(state) {
 			return state.items
-				.filter(a => a.lastClickedAt != null)
+				.filter(a => a.lastClickedAt != null && a.hiddenAt == null)
 				.sort((a, b) => new Date(b.lastClickedAt) - new Date(a.lastClickedAt));
 		},
 	},
 	actions: {
 		async loadAll() { /* GET /api/v1/web-agents，merge 时取 lastClickedAt 较大值，避免覆盖刚发生的乐观更新 */ },
 		recordClick(id) {
-			// 1. 立即本地乐观更新 lastClickedAt = new Date()，让 MainList 即时刷新顺序
+			// 1. 立即本地乐观更新 lastClickedAt = new Date()，并把 hiddenAt 清成 null（再点取消隐藏，与服务器最终状态对齐）
 			// 2. fire-and-forget POST，.catch(err => log) 避免 unhandled rejection
+		},
+		hide(id) {
+			// 1. 立即本地乐观把 hiddenAt 标为 new Date()，让 MainList 该项即时消失
+			// 2. fire-and-forget POST /api/v1/web-agents/:id/hide，.catch(err => log)
 		},
 	},
 });
@@ -479,8 +514,11 @@ export const useWebAgentsStore = defineStore('webAgents', {
 注意点：
 
 - store 名 `useWebAgentsStore`、文件 `web-agents.store.js`、Pinia id `webAgents` —— 全部复数，与现有 `useAgentsStore`/`useClawsStore`/`useTopicsStore` 命名风格一致
-- `loadAll` merge 时取 `lastClickedAt` 较大值——避免 loadAll 旧响应在 recordClick 之后到达时覆盖乐观时间戳
-- `recordClick` 必须 catch fire-and-forget Promise，避免 unhandled rejection 噪音
+- `loadAll` merge 时取 `lastClickedAt` 较大值——避免 loadAll 旧响应在 recordClick / hide 之后到达时覆盖乐观时间戳
+- `hiddenAt` 合并采用"以 lastClickedAt 为时序锚":
+	- 若本地 `lastClickedAt` 严格新于服务器 → 本地 `hiddenAt`（已被 recordClick 清成 null）胜出
+	- 否则 → 取 `max(prev.hiddenAt, server.hiddenAt)`，保护本地刚 fire 的 `hide()` 不被旧响应复活
+- `recordClick`/`hide` 必须 catch fire-and-forget Promise，避免 unhandled rejection 噪音
 
 ### loadAll 触发时机与加载状态
 
@@ -573,6 +611,15 @@ setup() {
 
 不走 `router.push`，避免引入无意义的 URL 状态。
 
+### 隐藏交互（Web Agents 分组）
+
+Web Agents 分组的 recent 项支持用户主动隐藏，结构和交互完全照搬 OC Agents / Topics 行：
+
+- 行结构：外层 `<div class="group flex h-11 items-center …">`，内层左半段 `<button>`（承担点击 + `data-testid="web-agent-recent-${slug ?? 'custom-' + id}"`），尾部挂 `<WebAgentItemActions :web-agent-id>` —— 与 `AgentItemActions` / `TopicItemActions` 同款 `opacity-0 group-hover:opacity-100` 显隐
+- 触屏环境（`@media (hover: none)`）通过 `.web-agent-actions` 选择器把 actions 强制可见（`opacity: 1`），与 `.topic-actions` / `.agent-actions` 一同维护
+- `WebAgentItemActions.vue` 与 `TopicItemActions.vue` 同骨架：UPopover + 三点 `i-lucide-ellipsis` 触发器，菜单仅一项"移除"（`i-lucide-x` + `webAgents.removeFromRecent`）。点击调用 `useWebAgentsStore().hide(id)`
+- **不发 toast、不弹二次确认**：项瞬间消失即用户能感知的反馈；数据没真删（picker 仍能调出来），不触发"破坏性"心智模型。符合项目规范"用户能直接感知不必 notify"
+
 ### i18n key
 
 12 个语言文件（`de.js / en.js / es.js / fr.js / hi.js / ja.js / ko.js / pt.js / ru.js / vi.js / zh-CN.js / zh-TW.js`）全部同步新增：
@@ -582,6 +629,7 @@ webAgents: {
 	title: 'Web Agent',                   // 对话框标题
 	entryName: 'Web Agent',               // MainList 顶部入口名称
 	empty: '...',                          // 空态兜底（理论上预置非空时不触发）
+	removeFromRecent: '...',               // 三点菜单"移除"项（中文：从列表移除）
 }
 ```
 
@@ -687,6 +735,17 @@ app.use('/api/v1/web-agents', webAgentRouter);
 - `PRESETS` 含空字段 → throw
 - syncPresets 不会误删 `userId IS NOT NULL` 的用户自建条目
 - `findAllForUser` 返回当前用户的预置 + 自建，含 lastClickedAt（点过/未点过两种 case）
+- `findAllForUser` 返回值含 hiddenAt（没点过 / 点过未藏 / 点过已藏 三态）
+- `incrementClick` 对已隐藏的行清空 hiddenAt（"再点取消隐藏"回归测试）
+- `setHiddenNow` 命中现有 click 行刷 hiddenAt 并返回 1；不存在的 click 行返回 0 且不凭空 INSERT；重复隐藏幂等
+- `setHiddenNow` where 仅命中当前 (userId, webAgentId) 一行，不殃及别人或别的 Agent
+
+`server/src/services/web-agent.svc.test.js`：
+
+- `hide` 不可见时返 false 且不调 setHiddenNow
+- `hide` 可见但用户从未点击过该 Agent → setHiddenNow 命中 0 行 → 返 false
+- `hide` 可见且 click 行存在 → 返 true 且调 setHiddenNow 透传 userId/webAgentId
+- `hide` setHiddenNow 抛错时透传出去（不静默吞）
 
 `server/src/routes/web-agent.route.test.js`：
 
@@ -696,6 +755,7 @@ app.use('/api/v1/web-agents', webAgentRouter);
 - POST `/click` 不可见 ID（不存在 / 别人的自建条目）→ 404
 - POST `/click` 首次 → create 记录、clickCount=1
 - POST `/click` 重复 → increment 计数 + 刷新 lastClickedAt
+- POST `/hide` 未登录 → 401；id 非法/缺失 → 400；不可见或从未点击 → 404；成功 → 204；幂等再调一次仍 204
 
 覆盖率门槛：≥90%。
 
@@ -704,10 +764,14 @@ app.use('/api/v1/web-agents', webAgentRouter);
 `stores/web-agents.store.test.js`：
 
 - `recordClick` 后本地 lastClickedAt 立即更新，`recentlyClicked` 排序生效
+- `recordClick` 同步把 hiddenAt 清成 null（再点取消隐藏）
 - `loadAll` 后到达的旧响应不会覆盖更新的 lastClickedAt（merge 取 max）
-- `recordClick` 上报失败时 catch 兜底，不抛 unhandled rejection
+- `loadAll` 旧响应不会覆盖本地刚 `hide()` 的 hiddenAt（hide 后到达旧响应仍保留乐观值）
+- `loadAll` 旧响应不会复活本地刚通过 `recordClick` 清掉的 hiddenAt（lastClickedAt 时序锚）
+- `recordClick` / `hide` 上报失败时 catch 兜底，不抛 unhandled rejection
 - `pickerList` 按 sort 排序正确（NULL 排最后）
-- `recentlyClicked` 过滤 + 排序正确
+- `recentlyClicked` 过滤未点过 / 已隐藏的项 + 排序正确
+- `hide(id)` 立即把对应 item 的 hiddenAt 标为 now，并 fire-and-forget POST `/api/v1/web-agents/:id/hide`
 
 `composables/use-web-agent-dialogs.test.js`：
 
@@ -725,6 +789,8 @@ app.use('/api/v1/web-agents', webAgentRouter);
 - `WebAgentPickerDialog` 在 ltMd 时 `:fullscreen=true`、桌面端 false
 - `WebAgentPickerDialog` watch open 从 true → false 时调 `popDialogState`（即 Capacitor 硬件返回键关闭路径）
 - `WebAgentPickerDialog` 安全区 `safeAreaUi` 仅在 ltMd 时应用
+- `WebAgentItemActions` 渲染三点 trigger + 单一菜单项"移除"，点击调 `useWebAgentsStore().hide(id)` 并关闭菜单
+- `MainList` Web Agents 分组每条 recent 项渲染尾部 actions 占位；`hiddenAt != null` 的条目不渲染
 
 覆盖率门槛：branches ≥90%、其余 ≥95%。
 
@@ -736,6 +802,8 @@ app.use('/api/v1/web-agents', webAgentRouter);
 - Dialog 内容：5 个预置项按既定顺序 DeepSeek / 豆包 / 千问 / Kimi / 元宝（`data-testid="web-agent-item-${slug}"`）
 - 点击某预置 → 触发外部跳转上报 + 关 dialog + MainList 中 Web Agents 分组出现该项在顶部
 - 重新进入 dialog → list 顺序仍为 sort 顺序（不被点击行为影响）
+- MainList Web Agents 分组某 recent 项 → 点击尾部三点 → 菜单出现"移除" → 点击 → 该项立即从分组消失
+- 重新打开 picker → 点击同一项 → 关 picker → 该项又出现在 Web Agents 分组顶部（再次点击自动取消隐藏）
 
 #### data-testid 列表
 

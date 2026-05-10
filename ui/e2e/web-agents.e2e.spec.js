@@ -32,6 +32,16 @@ async function getOpenedUrls(page) {
 	return page.evaluate(() => window.__openedUrls || []);
 }
 
+/**
+ * 桌面默认视口（>md）下 MainList 同时挂在 <aside class="md:flex">（DesktopSidebar）和 <main>（TopicsPage），
+ * 两份 DOM 都带相同 data-testid，page.getByTestId 会撞 strict-mode 报错。
+ * 用 <main> 作 scope 一致定位 MainList 内的项。Picker dialog / menu 走 UModal/UPopover teleport 到 body，
+ * 保持 page 级查询。详见 ui/TODO.md "Web Agent E2E 在桌面视口下 strict-mode 重复定位"。
+ */
+function mainScope(page) {
+	return page.getByRole('main');
+}
+
 test('Web Agent：顶部入口打开 picker dialog 并按 sort 顺序展示 5 项 @ui', async ({ page }) => {
 	test.setTimeout(45_000);
 	await stubWindowOpen(page);
@@ -39,7 +49,7 @@ test('Web Agent：顶部入口打开 picker dialog 并按 sort 顺序展示 5 �
 	await page.goto('/topics');
 
 	// 顶部入口可见可点
-	const entry = page.getByTestId('web-agent-entry');
+	const entry = mainScope(page).getByTestId('web-agent-entry');
 	await expect(entry).toBeVisible({ timeout: 10_000 });
 	await entry.click();
 
@@ -53,7 +63,8 @@ test('Web Agent：顶部入口打开 picker dialog 并按 sort 顺序展示 5 �
 
 	// 顺序断言：按 DOM 顺序枚举 testid 应等于预期
 	const orderedTestIds = await page.evaluate(() => {
-		const nodes = document.querySelectorAll('[data-testid^="web-agent-item-"]');
+		// 排除 panel 内子元素 web-agent-item-vendor —— 那是行内 vendor 标签的 testid，不算列表项本身
+		const nodes = document.querySelectorAll('[data-testid^="web-agent-item-"]:not([data-testid="web-agent-item-vendor"])');
 		return Array.from(nodes).map((n) => n.getAttribute('data-testid'));
 	});
 	expect(orderedTestIds).toEqual(PRESET_SLUGS_IN_SORT_ORDER.map((s) => `web-agent-item-${s}`));
@@ -65,7 +76,7 @@ test('Web Agent：点击某项 → window.open 被调用 + dialog 关闭 + 最�
 	await login(page);
 	await page.goto('/topics');
 
-	await page.getByTestId('web-agent-entry').click();
+	await mainScope(page).getByTestId('web-agent-entry').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible({ timeout: 5_000 });
 
 	// 点 DeepSeek
@@ -82,10 +93,10 @@ test('Web Agent：点击某项 → window.open 被调用 + dialog 关闭 + 最�
 	// MainList 最近使用分组出现 DeepSeek 且位于第一位（最新点击 → top）
 	// 此断言对历史数据残留鲁棒：即使 test 用户从前次跑残留有其它 click 记录，
 	// 本次新点击会让 DeepSeek 的 lastClickedAt 严格大于历史值，必排在最前
-	const recentSection = page.getByTestId('web-agent-section');
+	const recentSection = mainScope(page).getByTestId('web-agent-section');
 	await expect(recentSection).toBeVisible({ timeout: 10_000 });
 	const orderedRecentIds = await page.evaluate(() => {
-		const root = document.querySelector('[data-testid="web-agent-section"]');
+		const root = document.querySelector('main [data-testid="web-agent-section"]');
 		if (!root) return [];
 		return Array.from(root.querySelectorAll('[data-testid^="web-agent-recent-"]'))
 			.map((n) => n.getAttribute('data-testid'));
@@ -103,17 +114,17 @@ test('Web Agent：从最近分组直接点跳转（不经 dialog 路径）@ui', 
 	await page.goto('/topics');
 
 	// 先从 dialog 点过 Qwen，让最近分组里出现它
-	await page.getByTestId('web-agent-entry').click();
+	await mainScope(page).getByTestId('web-agent-entry').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible({ timeout: 5_000 });
 	await page.getByTestId('web-agent-item-qwen').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).not.toBeVisible({ timeout: 5_000 });
-	await expect(page.getByTestId('web-agent-recent-qwen')).toBeVisible({ timeout: 10_000 });
+	await expect(mainScope(page).getByTestId('web-agent-recent-qwen')).toBeVisible({ timeout: 10_000 });
 
 	// 清掉前面 dialog 路径捕获的 URL，便于之后只看最近分组路径的产物
 	const beforeCount = await page.evaluate(() => window.__openedUrls.length);
 
-	// 直接点最近分组里的 Qwen
-	await page.getByTestId('web-agent-recent-qwen').click();
+	// 直接点最近分组里的 Qwen（scope 到 main，避开 sidebar 重复 DOM）
+	await mainScope(page).getByTestId('web-agent-recent-qwen').click();
 
 	const opened = await getOpenedUrls(page);
 	expect(opened.length).toBe(beforeCount + 1);
@@ -131,24 +142,24 @@ test('Web Agent：先后点不同条目 → 最近分组按最新点击在前 @u
 	await page.goto('/topics');
 
 	// 第一次点 Yuanbao
-	await page.getByTestId('web-agent-entry').click();
+	await mainScope(page).getByTestId('web-agent-entry').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible();
 	await page.getByTestId('web-agent-item-yuanbao').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).not.toBeVisible({ timeout: 5_000 });
-	await expect(page.getByTestId('web-agent-recent-yuanbao')).toBeVisible({ timeout: 10_000 });
+	await expect(mainScope(page).getByTestId('web-agent-recent-yuanbao')).toBeVisible({ timeout: 10_000 });
 
 	// 等至少 1ms，避免相邻点击的 lastClickedAt 撞到同一毫秒
 	await page.waitForTimeout(20);
 
 	// 第二次点 Doubao
-	await page.getByTestId('web-agent-entry').click();
+	await mainScope(page).getByTestId('web-agent-entry').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible();
 	await page.getByTestId('web-agent-item-doubao').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).not.toBeVisible({ timeout: 5_000 });
 
 	// 最近分组 [Doubao, Yuanbao]——最新的在前；可能还有更老的历史项排在后面，OK
 	const orderedRecentIds = await page.evaluate(() => {
-		const root = document.querySelector('[data-testid="web-agent-section"]');
+		const root = document.querySelector('main [data-testid="web-agent-section"]');
 		if (!root) return [];
 		return Array.from(root.querySelectorAll('[data-testid^="web-agent-recent-"]'))
 			.map((n) => n.getAttribute('data-testid'));
@@ -176,7 +187,7 @@ test('Web Agent：5 个预置点击后跳的 URL 各自正确 @ui', async ({ pag
 	};
 
 	for (const [slug, domain] of Object.entries(expectedDomains)) {
-		await page.getByTestId('web-agent-entry').click();
+		await mainScope(page).getByTestId('web-agent-entry').click();
 		await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible({ timeout: 5_000 });
 		await page.getByTestId(`web-agent-item-${slug}`).click();
 		await expect(page.getByTestId('web-agent-picker-dialog')).not.toBeVisible({ timeout: 5_000 });
@@ -187,6 +198,45 @@ test('Web Agent：5 个预置点击后跳的 URL 各自正确 @ui', async ({ pag
 	}
 });
 
+test('Web Agent：从最近分组点尾部三点 → 移除 → 该项立刻消失；再次点击 picker 中同项 → 又出现 @ui', async ({ page }) => {
+	// 钉死设计契约：hide 立即从最近分组消失（无确认对话框、无 toast）；
+	// 再次点击 picker 中同项触发 server 端"再点取消隐藏"，最近分组重新出现该项
+	test.setTimeout(60_000);
+	await stubWindowOpen(page);
+	await login(page);
+	await page.goto('/topics');
+
+	// 1. 先让 Kimi 进入最近分组
+	await mainScope(page).getByTestId('web-agent-entry').click();
+	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible({ timeout: 5_000 });
+	await page.getByTestId('web-agent-item-kimi').click();
+	await expect(page.getByTestId('web-agent-picker-dialog')).not.toBeVisible({ timeout: 5_000 });
+	const kimiRecent = mainScope(page).getByTestId('web-agent-recent-kimi');
+	await expect(kimiRecent).toBeVisible({ timeout: 10_000 });
+
+	// 2. 找到该 recent 行的尾部三点按钮（用相对定位绕过 webAgentId 不可知；scope 到 main 避开 sidebar 重复）
+	const kimiRow = mainScope(page).locator('div:has(> [data-testid="web-agent-recent-kimi"])');
+	const kebab = kimiRow.locator('[data-testid^="web-agent-actions-trigger-"]');
+	await expect(kebab).toHaveCount(1);
+	// 触屏 hover 显隐：直接 click，CSS opacity-0 不影响事件分发
+	await kebab.click();
+
+	// 3. 菜单"移除"项出现并点击
+	const removeBtn = page.locator('[data-testid^="web-agent-actions-remove-"]');
+	await expect(removeBtn).toBeVisible({ timeout: 5_000 });
+	await removeBtn.click();
+
+	// 4. Kimi 立刻从最近分组消失
+	await expect(mainScope(page).getByTestId('web-agent-recent-kimi')).not.toBeVisible({ timeout: 5_000 });
+
+	// 5. 重新打开 picker 点 Kimi → 服务端 "再点取消隐藏" → 最近分组又出现
+	await mainScope(page).getByTestId('web-agent-entry').click();
+	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible({ timeout: 5_000 });
+	await page.getByTestId('web-agent-item-kimi').click();
+	await expect(page.getByTestId('web-agent-picker-dialog')).not.toBeVisible({ timeout: 5_000 });
+	await expect(mainScope(page).getByTestId('web-agent-recent-kimi')).toBeVisible({ timeout: 10_000 });
+});
+
 test('Web Agent：重新打开 picker dialog 后顺序仍按 sort（不被点击行为影响）@ui', async ({ page }) => {
 	test.setTimeout(45_000);
 	await stubWindowOpen(page);
@@ -194,17 +244,18 @@ test('Web Agent：重新打开 picker dialog 后顺序仍按 sort（不被点击
 	await page.goto('/topics');
 
 	// 第一次：点 Kimi
-	await page.getByTestId('web-agent-entry').click();
+	await mainScope(page).getByTestId('web-agent-entry').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible();
 	await page.getByTestId('web-agent-item-kimi').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).not.toBeVisible({ timeout: 5_000 });
 
 	// 第二次打开
-	await page.getByTestId('web-agent-entry').click();
+	await mainScope(page).getByTestId('web-agent-entry').click();
 	await expect(page.getByTestId('web-agent-picker-dialog')).toBeVisible();
 
 	const orderedTestIds = await page.evaluate(() => {
-		const nodes = document.querySelectorAll('[data-testid^="web-agent-item-"]');
+		// 排除 panel 内子元素 web-agent-item-vendor —— 那是行内 vendor 标签的 testid，不算列表项本身
+		const nodes = document.querySelectorAll('[data-testid^="web-agent-item-"]:not([data-testid="web-agent-item-vendor"])');
 		return Array.from(nodes).map((n) => n.getAttribute('data-testid'));
 	});
 	expect(orderedTestIds).toEqual(PRESET_SLUGS_IN_SORT_ORDER.map((s) => `web-agent-item-${s}`));

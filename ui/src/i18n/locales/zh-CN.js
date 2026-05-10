@@ -476,6 +476,7 @@ export const zhCNMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: '暂无可用项',
+		removeFromRecent: '从列表移除',
 		vendors: {
 			deepseek: '深度求索',
 			doubao: '字节跳动',

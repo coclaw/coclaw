@@ -476,6 +476,7 @@ export const enMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: 'No items available',
+		removeFromRecent: 'Remove from list',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',

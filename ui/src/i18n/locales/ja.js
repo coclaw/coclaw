@@ -476,6 +476,7 @@ export const jaMessages = {
 		title: 'Web Agent',
 		entryName: 'Web Agent',
 		empty: '利用可能な項目はありません',
+		removeFromRecent: 'リストから削除',
 		vendors: {
 			deepseek: 'DeepSeek',
 			doubao: 'ByteDance',
