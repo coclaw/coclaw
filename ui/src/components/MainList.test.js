@@ -133,6 +133,7 @@ function createWrapper(props = {}) {
 					const map = {
 						'layout.addClaw': '添加 Claw',
 						'layout.addWebAgent': '添加 Web Agent',
+						'layout.addEntry': '添加',
 						'layout.manageClaws': '我的 Claw',
 						'layout.productName': 'CoClaw',
 						'layout.rtcConnecting': '正在连接',
@@ -282,6 +283,36 @@ test('cap header 下拉菜单：点击"添加 Web Agent" → openPickerDialog', 
 
 	await wrapper.find('[data-testid="cap-header-add-add-web-agent"]').trigger('click');
 	expect(__openPickerDialogMock).toHaveBeenCalledTimes(1);
+});
+
+test('cap header + 按钮 a11y：aria-haspopup=menu，aria-expanded 跟随 capAddMenuOpen', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+	await wrapper.vm.$nextTick();
+
+	const trigger = wrapper.find('[data-testid="cap-header-add-trigger"]');
+	expect(trigger.attributes('aria-haspopup')).toBe('menu');
+	expect(trigger.attributes('aria-label')).toBe('添加');
+	expect(trigger.attributes('aria-expanded')).toBe('false');
+
+	wrapper.vm.capAddMenuOpen = true;
+	await wrapper.vm.$nextTick();
+	expect(wrapper.find('[data-testid="cap-header-add-trigger"]').attributes('aria-expanded')).toBe('true');
+});
+
+test('cap header 下拉菜单：点击菜单项后 capAddMenuOpen 自动复位为 false', async () => {
+	__mockIsCapacitorApp = true;
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+	wrapper.vm.envStore = { screen: { ltMd: ref(true) } };
+	await wrapper.vm.$nextTick();
+
+	wrapper.vm.capAddMenuOpen = true;
+	await wrapper.vm.$nextTick();
+	await wrapper.find('[data-testid="cap-header-add-add-claw"]').trigger('click');
+	expect(wrapper.vm.capAddMenuOpen).toBe(false);
 });
 
 // --- RTC 连接状态图标 ---

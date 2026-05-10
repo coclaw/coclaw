@@ -18,6 +18,7 @@ export const zhCNMessages = {
 		productName: 'CoClaw',
 		addClaw: '添加 Claw',
 		addWebAgent: '添加 Web Agent',
+		addEntry: '添加',
 		manageClaws: '我的 Claw',
 		rtcConnecting: '正在连接 Claw…',
 		rtcUnreachable: '部分 Claw 无法连接，点击重试',
@@ -475,7 +476,6 @@ export const zhCNMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: '暂无可用项',
 		removeFromRecent: '从列表移除',
 		vendors: {

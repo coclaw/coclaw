@@ -42,20 +42,23 @@
 							variant="ghost"
 							class="cc-icon-btn-lg"
 							data-testid="cap-header-add-trigger"
-							:aria-label="$t('layout.addClaw')"
+							:aria-label="$t('layout.addEntry')"
+							aria-haspopup="menu"
+							:aria-expanded="capAddMenuOpen"
 						/>
 						<template #content>
-							<div class="flex max-w-60 flex-col py-1">
+							<div class="flex max-w-60 flex-col py-1" role="menu">
 								<button
 									v-for="item in addActionItems"
 									:key="item.id"
 									type="button"
+									role="menuitem"
 									:data-testid="`cap-header-add-${item.id}`"
 									class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 									@click="onAddAction(item.id)"
 								>
-									<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-[18px] shrink-0" :class="item.iconClass" />
-									<img v-else :src="item.icon" :alt="item.label" class="size-[18px] shrink-0" />
+									<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-[18px] shrink-0" :class="item.iconClass" aria-hidden="true" />
+									<img v-else :src="item.icon" alt="" aria-hidden="true" class="size-[18px] shrink-0" />
 									<span class="truncate">{{ item.label }}</span>
 								</button>
 							</div>

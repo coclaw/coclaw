@@ -18,6 +18,7 @@ export const ptMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Adicionar Claw',
 		addWebAgent: 'Adicionar Web Agent',
+		addEntry: 'Adicionar',
 		manageClaws: 'Meus Claws',
 		rtcConnecting: 'Conectando aos Claws…',
 		rtcUnreachable: 'Alguns Claws inacessíveis. Toque para tentar novamente.',
@@ -475,7 +476,6 @@ export const ptMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: 'Nenhum item disponível',
 		removeFromRecent: 'Remover da lista',
 		vendors: {

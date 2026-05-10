@@ -18,6 +18,7 @@ export const enMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Add Claw',
 		addWebAgent: 'Add Web Agent',
+		addEntry: 'Add',
 		manageClaws: 'My Claws',
 		rtcConnecting: 'Connecting to Claws…',
 		rtcUnreachable: 'Some Claws unreachable. Tap to retry.',
@@ -475,7 +476,6 @@ export const enMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: 'No items available',
 		removeFromRecent: 'Remove from list',
 		vendors: {

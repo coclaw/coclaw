@@ -18,6 +18,7 @@ export const hiMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Claw जोड़ें',
 		addWebAgent: 'Web Agent जोड़ें',
+		addEntry: 'जोड़ें',
 		manageClaws: 'मेरे Claws',
 		rtcConnecting: 'Claws से कनेक्ट हो रहा है…',
 		rtcUnreachable: 'कुछ Claws तक पहुंच नहीं है। पुनः प्रयास के लिए टैप करें।',
@@ -475,7 +476,6 @@ export const hiMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: 'कोई आइटम उपलब्ध नहीं',
 		removeFromRecent: 'सूची से हटाएं',
 		vendors: {

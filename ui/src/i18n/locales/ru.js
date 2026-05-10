@@ -18,6 +18,7 @@ export const ruMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Добавить Claw',
 		addWebAgent: 'Добавить Web Agent',
+		addEntry: 'Добавить',
 		manageClaws: 'Мои Claws',
 		rtcConnecting: 'Подключение к Claw…',
 		rtcUnreachable: 'Некоторые Claw недоступны. Нажмите для повтора.',
@@ -475,7 +476,6 @@ export const ruMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: 'Нет доступных элементов',
 		removeFromRecent: 'Удалить из списка',
 		vendors: {

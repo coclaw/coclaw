@@ -18,6 +18,7 @@ export const koMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Claw 추가',
 		addWebAgent: 'Web Agent 추가',
+		addEntry: '추가',
 		manageClaws: '내 Claw',
 		rtcConnecting: 'Claw에 연결 중…',
 		rtcUnreachable: '일부 Claw에 연결할 수 없습니다. 탭하여 재시도',
@@ -475,7 +476,6 @@ export const koMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: '사용 가능한 항목이 없습니다',
 		removeFromRecent: '목록에서 제거',
 		vendors: {

@@ -18,6 +18,7 @@ export const deMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Claw hinzufügen',
 		addWebAgent: 'Web Agent hinzufügen',
+		addEntry: 'Hinzufügen',
 		manageClaws: 'Meine Claws',
 		rtcConnecting: 'Verbinde mit Claws…',
 		rtcUnreachable: 'Einige Claws nicht erreichbar. Zum Wiederholen tippen.',
@@ -475,7 +476,6 @@ export const deMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: 'Keine Einträge verfügbar',
 		removeFromRecent: 'Aus der Liste entfernen',
 		vendors: {

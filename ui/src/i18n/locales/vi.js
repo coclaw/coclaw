@@ -18,6 +18,7 @@ export const viMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Thêm Claw',
 		addWebAgent: 'Thêm Web Agent',
+		addEntry: 'Thêm',
 		manageClaws: 'Claws của tôi',
 		rtcConnecting: 'Đang kết nối với Claw…',
 		rtcUnreachable: 'Một số Claw không kết nối được. Nhấn để thử lại.',
@@ -475,7 +476,6 @@ export const viMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: 'Không có mục nào',
 		removeFromRecent: 'Xóa khỏi danh sách',
 		vendors: {

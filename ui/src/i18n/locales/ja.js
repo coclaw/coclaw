@@ -18,6 +18,7 @@ export const jaMessages = {
 		productName: 'CoClaw',
 		addClaw: 'Clawを追加',
 		addWebAgent: 'Web Agent を追加',
+		addEntry: '追加',
 		manageClaws: 'マイ Claws',
 		rtcConnecting: 'Claw に接続中…',
 		rtcUnreachable: '一部の Claw に接続できません。タップして再試行',
@@ -475,7 +476,6 @@ export const jaMessages = {
 	},
 	webAgents: {
 		title: 'Web Agent',
-		entryName: 'Web Agent',
 		empty: '利用可能な項目はありません',
 		removeFromRecent: 'リストから削除',
 		vendors: {
