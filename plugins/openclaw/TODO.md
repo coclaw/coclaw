@@ -1100,21 +1100,21 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **严重度**：Should fix（埋雷，日后加 hook 时容易踩）
 
-## 首次 offer 路径成功分支无 close-during-lock 身份重核
+## 首次 offer 路径成功分支无 close-during-lock 身份重核（已知边角）
 
-**发现日期**：2026-05-10（ICE restart 并发竞态修复 deep-review 识别）
-**关联**：`webrtc-peer.js` `__handleOfferLocked` 首次 offer 路径（约 585-597 行 `try { setRemote/createAnswer/setLocal → __onSend rtc:answer }`）
+**发现日期**：2026-05-10（ICE restart 并发竞态修复 deep-review-1 识别；2026-05-11 deep-review-2 评估降级为已知边角）
+**关联**：`webrtc-peer.js` 首次 offer 路径 try 块（当前约 614-625 行）三段 await 之间无 `__sessions.get(connId) === session` 守卫
 
-**问题**：ICE restart 路径 4 处身份重核已上线（修 N 条并发 restart offer 撞 pion 状态机），但首次 offer 路径成功分支三段 `await` 之间没有同样的 `this.__sessions.get(connId) === session` 守卫。close-during-lock 路径（`rtc:closed` 信令、`onconnectionstatechange` 进 closed/failed-TTL、`closeAll`）不走 offer mutex，可在三段 await 中段把 session 删掉，但 fn 仍会发出 `rtc:answer`。
+**触发条件**（需同时凑齐）：
+- 首次 offer 走入 try 段（已 sessions.set），停在三段 await 中段——典型窗口仅毫秒级
+- 期间外部触发 closeByConnId 删 session：仅 rtc:closed 信令或 closeAll 两条路径活（PC 刚创建未握手，connectionState 不可能进 closed/failed，所以 onconnectionstatechange / TTL 路径不可达）
 
-**为什么本次未一并修**：本 PR 范围聚焦 ICE restart 并发竞态（生产 12/320 user-facing notify）。首次 offer 路径无身份重核是 pre-existing（mutex 前后行为一致）；首次 offer 通常发生在 connId 全新建立时，与 close-during-lock 路径交叠概率远低于 ICE restart 路径。
+**影响**：发 stale rtc:answer 给 UI；UI 走 setRemoteDescription + ICE flow，最终 ICE 必失败（plugin PC 已关）→ 等价于"连接没建上，重连一次"。**新建未生效连接，不破坏既有连接**——与 ICE restart 路径的高危特性不同。无生产 incident 观测。
 
-**修复方向**：
-- 在 `webrtc-peer.js:587-589` 三段 `await` 之间和 `__onSend` 之前加 `if (this.__sessions.get(connId) !== session || session.pc !== pc) return` 重核
-- catch 块（598-609 行）已有 `if (cur && cur.pc === pc)` 守卫，仅成功分支需要补
-- 同步补单测覆盖：rtc:closed / closeAll / onconnectionstatechange-closed 在首次 offer 三段 await 期间触发
+**修复方向**（如未来观测到首次连接成功率异常再考虑）：
+- 三段 await 之间加 `if (this.__sessions.get(connId) !== session || session.pc !== pc) return` 重核
 
-**严重度**：Low-Medium（罕见时序，无明确生产 incident，但发出 stale answer 会让 UI 端走错状态）
+**严重度**：Low（边角时序，触发概率比 ICE restart 路径低几个数量级，且无破坏现有连接的风险）
 
 ## ICE restart 内部触发 closeByConnId 时的 mutex split race（边界）
 
