@@ -17,6 +17,7 @@ export const ruMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Добавить Claw',
+		addWebAgent: 'Добавить Web Agent',
 		manageClaws: 'Мои Claws',
 		rtcConnecting: 'Подключение к Claw…',
 		rtcUnreachable: 'Некоторые Claw недоступны. Нажмите для повтора.',

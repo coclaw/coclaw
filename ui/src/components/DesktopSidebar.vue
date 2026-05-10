@@ -57,6 +57,7 @@
 import MainList from './MainList.vue';
 import { getUserMenuItems } from '../constants/layout.data.js';
 import { useUserDialogs } from '../composables/use-user-dialogs.js';
+import { useWebAgentDialogs } from '../composables/use-web-agent-dialogs.js';
 import { getUserDisplayName } from '../utils/user-profile.js';
 import { useUiStore } from '../stores/ui.store.js';
 import logoSrc from '../assets/coclaw-logo.jpg';
@@ -80,6 +81,7 @@ export default {
 	setup() {
 		return {
 			userDialogs: useUserDialogs(),
+			webAgentDialogs: useWebAgentDialogs(),
 			uiStore: useUiStore(),
 		};
 	},
@@ -110,6 +112,14 @@ export default {
 			}
 			if (itemId === 'about') {
 				this.$router.push('/about');
+				return;
+			}
+			if (itemId === 'add-claw') {
+				this.$router.push('/claws/add');
+				return;
+			}
+			if (itemId === 'add-web-agent') {
+				this.webAgentDialogs.openPickerDialog();
 				return;
 			}
 			if (itemId === 'settings') {

@@ -17,6 +17,7 @@ export const ptMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Adicionar Claw',
+		addWebAgent: 'Adicionar Web Agent',
 		manageClaws: 'Meus Claws',
 		rtcConnecting: 'Conectando aos Claws…',
 		rtcUnreachable: 'Alguns Claws inacessíveis. Toque para tentar novamente.',

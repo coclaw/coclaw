@@ -17,6 +17,7 @@ export const deMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Claw hinzufügen',
+		addWebAgent: 'Web Agent hinzufügen',
 		manageClaws: 'Meine Claws',
 		rtcConnecting: 'Verbinde mit Claws…',
 		rtcUnreachable: 'Einige Claws nicht erreichbar. Zum Wiederholen tippen.',

@@ -3,6 +3,8 @@ import openclawIcon from '../assets/claw-avatars/openclaw.svg';
 export function getUserMenuItems(t, { isAdmin = false } = {}) {
 	const items = [
 		{ id: 'about', label: t('layout.menu.about'), icon: 'i-lucide-home' },
+		{ id: 'add-claw', label: t('layout.addClaw'), icon: 'i-lucide-plus', separator: true },
+		{ id: 'add-web-agent', label: t('layout.addWebAgent'), icon: 'i-lucide-plus' },
 		{ id: 'settings', label: t('layout.menu.settings'), icon: 'i-lucide-settings', separator: true },
 		{ id: 'profile', label: t('layout.menu.profile'), icon: 'i-lucide-user-round' },
 	];

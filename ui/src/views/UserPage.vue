@@ -33,6 +33,7 @@
 <script>
 import { getUserMenuItems } from '../constants/layout.data.js';
 import { useUserDialogs } from '../composables/use-user-dialogs.js';
+import { useWebAgentDialogs } from '../composables/use-web-agent-dialogs.js';
 import { useAuthStore } from '../stores/auth.store.js';
 import { getUserDisplayName, getUserLoginName } from '../utils/user-profile.js';
 
@@ -42,6 +43,7 @@ export default {
 		return {
 			authStore: useAuthStore(),
 			userDialogs: useUserDialogs(),
+			webAgentDialogs: useWebAgentDialogs(),
 		};
 	},
 	computed: {
@@ -72,6 +74,14 @@ export default {
 			}
 			if (itemId === 'about') {
 				this.$router.push('/about');
+				return;
+			}
+			if (itemId === 'add-claw') {
+				this.$router.push('/claws/add');
+				return;
+			}
+			if (itemId === 'add-web-agent') {
+				this.webAgentDialogs.openPickerDialog();
 				return;
 			}
 			if (itemId === 'settings') {

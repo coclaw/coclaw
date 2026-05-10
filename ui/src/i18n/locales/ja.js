@@ -17,6 +17,7 @@ export const jaMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Clawを追加',
+		addWebAgent: 'Web Agent を追加',
 		manageClaws: 'マイ Claws',
 		rtcConnecting: 'Claw に接続中…',
 		rtcUnreachable: '一部の Claw に接続できません。タップして再試行',

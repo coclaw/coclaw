@@ -17,6 +17,7 @@ export const zhTWMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: '新增 Claw',
+		addWebAgent: '新增 Web Agent',
 		manageClaws: '我的 Claw',
 		rtcConnecting: '正在連線 Claw…',
 		rtcUnreachable: '部分 Claw 無法連線，點擊重試',

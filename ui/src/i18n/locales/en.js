@@ -17,6 +17,7 @@ export const enMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Add Claw',
+		addWebAgent: 'Add Web Agent',
 		manageClaws: 'My Claws',
 		rtcConnecting: 'Connecting to Claws…',
 		rtcUnreachable: 'Some Claws unreachable. Tap to retry.',

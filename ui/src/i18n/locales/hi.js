@@ -17,6 +17,7 @@ export const hiMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Claw जोड़ें',
+		addWebAgent: 'Web Agent जोड़ें',
 		manageClaws: 'मेरे Claws',
 		rtcConnecting: 'Claws से कनेक्ट हो रहा है…',
 		rtcUnreachable: 'कुछ Claws तक पहुंच नहीं है। पुनः प्रयास के लिए टैप करें।',

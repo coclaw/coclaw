@@ -542,3 +542,15 @@ X4 触及面比 X1 广，需要重新评估：
     - 触发条件：用户先 hide 再立即从 picker 点开同一 agent，且两次请求的 server 处理顺序与发起顺序倒置；窗口在 RTT 量级（毫秒级）。用户可点 picker 再点该 agent 一次自愈
     - 修法方向：a) store 内对同一 id 的 hide/click 串行（promise chain per id）；b) 或在 POST 里带客户端时间戳，server 比较时间戳决定胜出
     - 影响小、触发极窄，登记跟踪
+
+## 下拉菜单与列表项 trigger 菜单统一迁到 UDropdownMenu
+
+**发现日期**：2026-05-10
+**关联讨论**：MainList 重组（添加 Claw / 添加 Web Agent 入口三处铺设）
+
+来源：本轮 MainList 重组讨论中确认，窄屏 capacitor header 的 `+` 改下拉菜单时，沿用了项目现有 "MainList 三点菜单同款样式" 即 `UPopover + 自绘列表`（如 `TopicItemActions.vue` / `AgentItemActions.vue` / `WebAgentItemActions.vue`）。这套实现先于 Nuxt UI 4 `UDropdownMenu` 引入，本质就是下拉菜单，应统一迁移。
+
+- 现状涉及位置（至少）：`TopicItemActions.vue`、`AgentItemActions.vue`、`WebAgentItemActions.vue`，以及本轮新增的窄屏 header `+` 下拉
+- 修复方向：统一替换为 `UDropdownMenu`（参考 `nuxt-ui` skill 中的标准用法），保持现有 a11y / 键盘 / 移动端可点击区域等行为不退化
+- 收益：a11y 现成（焦点管理、roving tabindex、`role="menu"`）；样式集中由全局 `appConfig` 控；本地不再各自维护 `UPopover` 自绘 hack
+- 本次不动，避免与 MainList 重组叠加风险

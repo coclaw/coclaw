@@ -3,12 +3,12 @@
 		class="min-h-0 flex-1"
 		:class="scrollable ? 'overflow-auto overscroll-contain scrollbar-hide' : 'overflow-hidden'"
 	>
-		<!-- Capacitor header：logo + 名称 + RTC 连接状态 + 添加按钮 -->
+		<!-- Capacitor header：logo + 名称 + RTC 连接状态 + 添加按钮（下拉菜单） -->
 		<header v-if="showCapHeader" class="sticky top-0 z-10 flex items-center gap-2 border-b border-default bg-default pl-3.5 pr-1 py-[3px] md:hidden">
 			<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 			<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
 			<div class="flex shrink-0 items-center">
-				<!-- RTC 建连/恢复中：loading 状态的 refresh 按钮（样式对齐 ChatPage header 的 refresh 按钮，由 Nuxt UI 内部把 icon 替换为 spinner） -->
+				<!-- RTC 建连/恢复中：loading 状态的 refresh 按钮 -->
 				<UButton
 					v-if="showRtcConnecting"
 					icon="i-lucide-refresh-cw"
@@ -21,7 +21,7 @@
 					:loading="true"
 					:disabled="true"
 				/>
-				<!-- RTC 退避耗尽：warning 色 refresh 按钮，点击触发手动重试 -->
+				<!-- RTC 退避耗尽：warning 色 refresh 按钮 -->
 				<UButton
 					v-else-if="hasUnreachableClaws"
 					icon="i-lucide-refresh-cw"
@@ -33,130 +33,136 @@
 					:aria-label="$t('layout.rtcUnreachable')"
 					@click="onManualRetry"
 				/>
-				<UButton
-					icon="i-lucide-plus"
-					color="primary"
-					variant="ghost"
-					class="cc-icon-btn-lg"
-					@click="$router.push('/claws/add')"
-				/>
+				<!-- 添加按钮：下拉菜单（添加 Claw / 添加 Web Agent） -->
+				<div class="relative">
+					<UPopover v-model:open="capAddMenuOpen" :content="{ side: 'bottom', align: 'end' }">
+						<UButton
+							icon="i-lucide-plus"
+							color="primary"
+							variant="ghost"
+							class="cc-icon-btn-lg"
+							data-testid="cap-header-add-trigger"
+							:aria-label="$t('layout.addClaw')"
+						/>
+						<template #content>
+							<div class="flex max-w-60 flex-col py-1">
+								<button
+									v-for="item in addActionItems"
+									:key="item.id"
+									type="button"
+									:data-testid="`cap-header-add-${item.id}`"
+									class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
+									@click="onAddAction(item.id)"
+								>
+									<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-[18px] shrink-0" :class="item.iconClass" />
+									<img v-else :src="item.icon" :alt="item.label" class="size-[18px] shrink-0" />
+									<span class="truncate">{{ item.label }}</span>
+								</button>
+							</div>
+						</template>
+					</UPopover>
+				</div>
 			</div>
 		</header>
 
-		<!-- Group 1: 机器人操作入口 -->
-		<nav v-if="clawActionItems.length" class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
-				<RouterLink
-					v-for="item in clawActionItems"
-					:key="item.id"
-					:to="item.to"
-					class="group flex h-11 cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
-					:class="resolvePath(item.to) === currentPath ? 'bg-accented text-highlighted' : ''"
-					role="listitem"
-				>
-					<UIcon :name="item.icon" class="size-6 text-dimmed" />
-					<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
-				</RouterLink>
-		</nav>
-
-		<!-- Group 2: Agent 列表（按最近活动逆序，平面跨 claw 混排） -->
-		<nav class="mt-3 space-y-0 px-2">
-			<div
-				v-for="item in agentItems"
+		<!-- Group 1: 我的 Claw（顶部，仅桌面侧边栏） -->
+		<nav v-if="topActionItems.length" class="space-y-0 px-2" :class="scrollable ? '' : 'mt-3'">
+			<RouterLink
+				v-for="item in topActionItems"
 				:key="item.id"
-				class="group flex h-11 cursor-pointer items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
-				:class="item.active ? 'bg-accented text-highlighted' : ''"
+				:to="item.to"
+				class="group flex h-11 cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
+				:class="resolvePath(item.to) === currentPath ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
-				<RouterLink
-					:to="item.to"
-					class="flex min-w-0 flex-1 items-center gap-3 px-2 py-1"
-				>
-					<span class="relative shrink-0">
-						<img
-							v-if="item.avatarUrl"
-							:src="item.avatarUrl"
-							:alt="item.agentName"
-							class="size-6 rounded-md object-cover"
-						/>
-						<span
-							v-else-if="item.emoji"
-							class="size-6 rounded-md bg-accented flex items-center justify-center text-sm leading-none"
-						>{{ item.emoji }}</span>
-						<img
-							v-else
-							:src="defaultClawAvatar"
-							:alt="item.agentName"
-							class="size-6 rounded-md object-cover"
-						/>
-						<span
-							class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-default"
-							:class="item.online ? 'bg-success' : 'bg-neutral'"
-						/>
-					</span>
-					<!-- label：单 claw 仅 agent 名；多 claw 时 agent@claw，'@' 永不缩、两段可 truncate；
-					     '@' 与 clawName 用 text-muted 弱化（次级信息） -->
-					<span class="flex min-w-0 flex-1 items-baseline">
-						<span class="truncate min-w-0">{{ item.agentName }}</span>
-						<template v-if="item.clawName">
-							<span class="shrink-0 text-muted">@</span>
-							<span class="truncate min-w-0 text-muted">{{ item.clawName }}</span>
-						</template>
-					</span>
-				</RouterLink>
-				<AgentItemActions
-					class="agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
-					:claw-id="item.clawId"
-					:agent-id="item.agentId"
-				/>
-			</div>
+				<UIcon :name="item.icon" class="size-6 text-dimmed" />
+				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+			</RouterLink>
 		</nav>
 
-		<!-- Web Agents 分组：固定入口 + 用户点过的最近条目（按 lastClickedAt DESC） -->
-		<nav data-testid="web-agent-section" class="mt-3 space-y-0 px-2">
-			<button
-				type="button"
-				data-testid="web-agent-entry"
-				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
-				@click="onOpenWebAgentPicker"
-			>
-				<UIcon name="i-lucide-globe" class="size-6 text-teal-600" />
-				<span class="min-w-0 flex-1 truncate">{{ $t('webAgents.entryName') }}</span>
-			</button>
+		<!-- Group 2: Agent 列表（claw agent + 已点 web agent 混排，按 last used 倒排） -->
+		<nav class="mt-3 space-y-0 px-2">
 			<div
-				v-for="item in recentWebAgents"
+				v-for="item in mixedAgentItems"
 				:key="item.id"
 				class="group flex h-11 cursor-pointer items-center rounded-lg text-sm text-default transition-colors hover:bg-accented/80"
+				:class="item.type === 'claw' && item.active ? 'bg-accented text-highlighted' : ''"
+				role="listitem"
 			>
-				<button
-					type="button"
-					:data-testid="`web-agent-recent-${item.slug ?? 'custom-' + item.id}`"
-					class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-2 py-1 text-left"
-					@click="onClickRecentWebAgent(item)"
-				>
-					<img
-						v-if="webAgentIconFor(item.slug)"
-						:src="webAgentIconFor(item.slug)"
-						alt=""
-						aria-hidden="true"
-						class="size-6 shrink-0 rounded-md object-cover"
+				<template v-if="item.type === 'claw'">
+					<RouterLink
+						:to="item.to"
+						class="flex min-w-0 flex-1 items-center gap-3 px-2 py-1"
+					>
+						<span class="relative shrink-0">
+							<img
+								v-if="item.avatarUrl"
+								:src="item.avatarUrl"
+								:alt="item.agentName"
+								class="size-6 rounded-md object-cover"
+							/>
+							<span
+								v-else-if="item.emoji"
+								class="size-6 rounded-md bg-accented flex items-center justify-center text-sm leading-none"
+							>{{ item.emoji }}</span>
+							<img
+								v-else
+								:src="defaultClawAvatar"
+								:alt="item.agentName"
+								class="size-6 rounded-md object-cover"
+							/>
+							<span
+								class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-default"
+								:class="item.online ? 'bg-success' : 'bg-neutral'"
+							/>
+						</span>
+						<!-- label：单 claw 仅 agent 名；多 claw 时 agent@claw -->
+						<span class="flex min-w-0 flex-1 items-baseline">
+							<span class="truncate min-w-0">{{ item.agentName }}</span>
+							<template v-if="item.clawName">
+								<span class="shrink-0 text-muted">@</span>
+								<span class="truncate min-w-0 text-muted">{{ item.clawName }}</span>
+							</template>
+						</span>
+					</RouterLink>
+					<AgentItemActions
+						class="agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+						:claw-id="item.clawId"
+						:agent-id="item.agentId"
 					/>
-					<UIcon
-						v-else
-						name="i-lucide-globe"
-						aria-hidden="true"
-						class="size-6 shrink-0 text-dimmed"
+				</template>
+				<template v-else>
+					<button
+						type="button"
+						:data-testid="`web-agent-recent-${item.slug ?? 'custom-' + item.webId}`"
+						class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-2 py-1 text-left"
+						@click="onClickRecentWebAgent(item)"
+					>
+						<img
+							v-if="webAgentIconFor(item.slug)"
+							:src="webAgentIconFor(item.slug)"
+							alt=""
+							aria-hidden="true"
+							class="size-6 shrink-0 rounded-md object-cover"
+						/>
+						<UIcon
+							v-else
+							name="i-lucide-globe"
+							aria-hidden="true"
+							class="size-6 shrink-0 text-dimmed"
+						/>
+						<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
+					</button>
+					<WebAgentItemActions
+						class="web-agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+						:web-agent-id="item.webId"
 					/>
-					<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
-				</button>
-				<WebAgentItemActions
-					class="web-agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
-					:web-agent-id="item.id"
-				/>
+				</template>
 			</div>
 		</nav>
 
 		<!-- Group 3: Topic 列表 -->
-		<nav class="mt-3 space-y-0 px-2 pb-4">
+		<nav class="mt-3 space-y-0 px-2">
 			<div
 				v-for="item in topicItems"
 				:key="item.id"
@@ -193,6 +199,22 @@
 				/>
 			</div>
 		</nav>
+
+		<!-- Group 4: 底部 actions（添加 Claw / 添加 Web Agent，常驻） -->
+		<nav class="mt-3 space-y-0 px-2 pb-4">
+			<button
+				v-for="item in addActionItems"
+				:key="item.id"
+				type="button"
+				:data-testid="`bottom-action-${item.id}`"
+				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
+				@click="onAddAction(item.id)"
+			>
+				<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-6" :class="item.iconClass" />
+				<img v-else :src="item.icon" :alt="item.label" class="size-6" />
+				<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+			</button>
+		</nav>
 	</div>
 </template>
 
@@ -208,6 +230,7 @@ import AgentItemActions from './AgentItemActions.vue';
 import TopicItemActions from './TopicItemActions.vue';
 import WebAgentItemActions from './WebAgentItemActions.vue';
 import defaultClawAvatar from '../assets/claw-avatars/openclaw.svg';
+import addClawIcon from '../assets/add-claw.svg';
 import logoSrc from '../assets/coclaw-logo.jpg';
 import { isCapacitorApp } from '../utils/platform.js';
 import { openExternalUrl } from '../utils/external-url.js';
@@ -256,7 +279,9 @@ export default {
 	data() {
 		return {
 			defaultClawAvatar,
+			addClawIcon,
 			logoSrc,
+			capAddMenuOpen: false,
 			agentsStore: null,
 			clawsStore: null,
 			envStore: null,
@@ -295,31 +320,28 @@ export default {
 				.map((b) => `${b.id}:${b.online}:${b.dcReady}`)
 				.join(',');
 		},
-		clawActionItems() {
-			// Capacitor 无侧边栏模式：header 已有"+"按钮，仅用户无 claw 时显示引导项
-			if (this.showCapHeader) {
-				if (!this.clawsStore?.fetched || this.clawsStore.items.length > 0) {
-					return [];
-				}
-				return [
-					{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: 'i-lucide-plus', to: '/claws/add' },
-				];
-			}
-			const items = [
-				{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: 'i-lucide-plus', to: '/claws/add' },
+		/** 顶部组：仅桌面侧边栏显示"我的 Claw"（manage 入口）；其它场景留空 */
+		topActionItems() {
+			if (!this.scrollable) return [];
+			return [
+				{ id: 'manage-claws', label: this.$t('layout.manageClaws'), icon: 'i-lucide-settings', to: '/claws' },
 			];
-			if (this.scrollable) {
-				items.push({ id: 'manage-bots', label: this.$t('layout.manageClaws'), icon: 'i-lucide-settings', to: '/claws' });
-			}
-			return items;
 		},
-		agentItems() {
+		/** 底部组 + capacitor header 下拉菜单共用：添加 Claw / 添加 Web Agent */
+		addActionItems() {
+			return [
+				{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: this.addClawIcon, iconType: 'svg' },
+				{ id: 'add-web-agent', label: this.$t('layout.addWebAgent'), icon: 'i-lucide-globe', iconType: 'lucide', iconClass: 'text-teal-600' },
+			];
+		},
+		/** Agent 列表：claw agents + 用户点过的 web agents 混排，按 last used 倒排 */
+		mixedAgentItems() {
+			const items = [];
 			const bots = this.clawsStore?.items ?? [];
 			const display = this.agentsStore?.getAgentDisplay;
 			const sessions = this.sessionsStore;
 			// 仅在多 claw 时给 label 加 @clawName 后缀，单 claw 不冗余
 			const useClawSuffix = bots.length >= 2;
-			const result = [];
 			for (const b of bots) {
 				const agents = this.agentsStore?.getAgentsByClaw(b.id) ?? [];
 				if (agents.length) {
@@ -327,12 +349,12 @@ export default {
 					for (const agent of agents) {
 						const d = display?.(b.id, agent.id) ?? {};
 						const agentName = d.name || agent.id;
-						// 默认 agent 无 identity 时，agentDisplay 会把 agentName fallback 到 clawName，
-						// 多 claw 拼接会出现 "Alpha@Alpha" 重复——同名时丢掉后缀，单段呈现即可
+						// 默认 agent 无 identity 时同名场景丢掉 @ 后缀
 						let clawName = useClawSuffix ? (b.name || 'OpenClaw') : null;
 						if (clawName && clawName === agentName) clawName = null;
-						result.push({
-							id: `${b.id}:${agent.id}`,
+						items.push({
+							id: `claw:${b.id}:${agent.id}`,
+							type: 'claw',
 							clawId: String(b.id),
 							agentId: agent.id,
 							agentName,
@@ -346,9 +368,10 @@ export default {
 						});
 					}
 				} else {
-					// agents 未加载（离线/连接中）：以 claw 身份兜底（label 单段、无 @）
-					result.push({
-						id: b.id,
+					// agents 未加载（离线/连接中）：以 claw 身份兜底
+					items.push({
+						id: `claw:${b.id}:main`,
+						type: 'claw',
 						clawId: String(b.id),
 						agentId: 'main',
 						agentName: b.name || 'OpenClaw',
@@ -362,12 +385,21 @@ export default {
 					});
 				}
 			}
-			// 按 activity 降序排（ES2019 stable sort 保留 0 活动条目的自然顺序）
-			result.sort((a, b) => b.activity - a.activity);
-			return result;
-		},
-		recentWebAgents() {
-			return this.webAgentsStore?.recentlyClicked ?? [];
+			const webAgents = this.webAgentsStore?.recentlyClicked ?? [];
+			for (const w of webAgents) {
+				items.push({
+					id: `web:${w.id}`,
+					type: 'web',
+					webId: w.id,
+					slug: w.slug ?? null,
+					name: w.name,
+					url: w.url,
+					activity: w.lastClickedAt ? new Date(w.lastClickedAt).getTime() : 0,
+				});
+			}
+			// 按 last used 时间倒排（ES2019 stable sort 保留 0 活动条目自然顺序）
+			items.sort((a, b) => b.activity - a.activity);
+			return items;
 		},
 		topicItems() {
 			const items = this.topicsStore?.items ?? [];
@@ -409,10 +441,7 @@ export default {
 		/** claw 列表变化（增删/上线状态）时刷新 agents / topics / sessions */
 		clawListKey: {
 			async handler() {
-				// sessions 拉取后按 agent 切片依赖 agents 已加载，必须先 await agents 再触发 sessions；
-				// 否则非 main agent 的 updatedAt 会暂时丢失，列表里这些 agent 暂时落底部直到下次刷新。
-				// agents 失败用 try/catch 兜底，让 sessions / topics 仍能独立刷新（agents.loadAllAgents
-				// 内部已 Promise.allSettled 单 claw 失败不抛，但调用链上其它意外仍可能抛——防御性 catch）
+				// sessions 拉取后按 agent 切片依赖 agents 已加载，必须先 await agents 再触发 sessions
 				try {
 					await this.agentsStore?.loadAllAgents();
 				}
@@ -441,8 +470,7 @@ export default {
 					);
 				});
 			}
-			// agents 必须先加载完，sessions 拉取时才能按 agentId 切片；
-			// 与 watcher 一致用 try/catch 兜底，防止 agents 抛错连带跳过 sessions/topics
+			// agents 必须先加载完，sessions 拉取时才能按 agentId 切片
 			try {
 				await this.agentsStore?.loadAllAgents();
 			}
@@ -457,15 +485,22 @@ export default {
 		onManualRetry() {
 			this.clawsStore?.manualRetryUnreachable();
 		},
-		onOpenWebAgentPicker() {
-			this.openPickerDialog();
+		onAddAction(itemId) {
+			this.capAddMenuOpen = false;
+			if (itemId === 'add-claw') {
+				this.$router.push('/claws/add');
+				return;
+			}
+			if (itemId === 'add-web-agent') {
+				this.openPickerDialog();
+			}
 		},
 		webAgentIconFor(slug) {
 			if (!slug) return null;
 			return webAgentIconBySlug[slug] ?? null;
 		},
 		onClickRecentWebAgent(item) {
-			this.webAgentsStore?.recordClick(item.id);
+			this.webAgentsStore?.recordClick(item.webId);
 			Promise.resolve(openExternalUrl(item.url)).catch((err) => {
 				console.warn('[MainList] openExternalUrl failed:', err?.message ?? err);
 			});

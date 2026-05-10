@@ -17,6 +17,7 @@ export const viMessages = {
 	layout: {
 		productName: 'CoClaw',
 		addClaw: 'Thêm Claw',
+		addWebAgent: 'Thêm Web Agent',
 		manageClaws: 'Claws của tôi',
 		rtcConnecting: 'Đang kết nối với Claw…',
 		rtcUnreachable: 'Một số Claw không kết nối được. Nhấn để thử lại.',
