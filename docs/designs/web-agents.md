@@ -814,6 +814,8 @@ app.use('/api/v1/web-agents', webAgentRouter);
 - `web-agent-item-${slug}` —— dialog 内每条预置项（slug = `deepseek` / `doubao` / `qwen` / `kimi` / `yuanbao`）
 - `web-agent-recent-${slug}` —— MainList Web Agents 分组中的已点过项
 - `web-agent-section-recent` —— Web Agents 分组容器（用于断言"无最近点击时不渲染"）
+- `web-agent-actions-trigger-${id}` —— 已点过项尾部三点菜单 trigger
+- `web-agent-actions-remove-${id}` —— 三点菜单内"移除"项
 
 #### 外部跳转的 stub 方式
 

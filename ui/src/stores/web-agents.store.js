@@ -21,18 +21,6 @@ function maxTimestamp(a, b) {
 	return new Date(a) >= new Date(b) ? a : b;
 }
 
-/**
- * 判断本地 lastClickedAt 是否严格新于服务器值——意味着本地有未传播的 recordClick，
- * 此时本地 hiddenAt（recordClick 已清成 null）应胜出服务器旧值
- */
-function isLocalClickAhead(prev, server) {
-	const p = prev?.lastClickedAt;
-	const s = server?.lastClickedAt;
-	if (p == null) return false;
-	if (s == null) return true;
-	return new Date(p) > new Date(s);
-}
-
 export const useWebAgentsStore = defineStore('webAgents', {
 	state: () => ({
 		/** @type {{ id: number, slug: string|null, name: string, url: string, sort: number|null, lastClickedAt: string|Date|null, hiddenAt: string|Date|null }[]} */
@@ -76,20 +64,23 @@ export const useWebAgentsStore = defineStore('webAgents', {
 				try {
 					const fetched = await listWebAgents();
 					// merge：用本地 prev 与服务器值合并，避免 loadAll 旧响应在 recordClick / hide
-					// 之后到达时覆盖乐观更新
+					// 之后到达时覆盖乐观更新。
+					// hiddenAt 语义：click 事件总会清掉 hiddenAt，hide 事件总会写入 hiddenAt。
+					// 所以"现在是否处于隐藏态"取决于 max(local hide, server hide) 与 max(local click, server click)
+					// 哪个更晚——晚的那个事件代表用户最后的意图：
+					//   - 最晚 hide 严格晚于最晚 click → 还在隐藏
+					//   - 否则 → 一次更晚的 click 已经把 hide 清了，回到可见
 					const oldById = new Map(this.items.map((it) => [it.id, it]));
 					this.items = fetched.map((it) => {
 						const prev = oldById.get(it.id);
 						const lastClickedAt = prev
 							? maxTimestamp(prev.lastClickedAt, it.lastClickedAt)
 							: (it.lastClickedAt ?? null);
-						// 本地 click 比服务器新 → recordClick 已清空 hiddenAt，本地胜
-						// 否则 → max-merge 保护本地刚 fire 的 hide
-						let hiddenAt;
-						if (prev && isLocalClickAhead(prev, it)) {
-							hiddenAt = prev.hiddenAt ?? null;
-						} else {
-							hiddenAt = maxTimestamp(prev?.hiddenAt, it.hiddenAt);
+						const candidateHide = maxTimestamp(prev?.hiddenAt, it.hiddenAt);
+						let hiddenAt = candidateHide ?? null;
+						if (hiddenAt != null && lastClickedAt != null
+							&& new Date(hiddenAt) <= new Date(lastClickedAt)) {
+							hiddenAt = null;
 						}
 						return { ...it, lastClickedAt, hiddenAt };
 					});

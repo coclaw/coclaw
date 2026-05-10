@@ -365,4 +365,22 @@ describe('web-agents store', () => {
 		await store.loadAll();
 		expect(store.items[0].hiddenAt).toBeNull();
 	});
+
+	test('loadAll merge：另一设备 click 已清 server hiddenAt → 本地 stale hiddenAt 不应永久阻挡显示', async () => {
+		// 场景：用户曾在本设备 hide → 本地 hiddenAt 非空；之后另一台设备从 picker 点开同一 agent，
+		// server 的 incrementClick upsert 把 hiddenAt 清成 null 并推进 lastClickedAt。
+		// loadAll 拉到 server 最新值时，本地 stale hiddenAt 必须让位（否则用户在 A 设备取消隐藏，
+		// B 设备会永远看不到该 agent 重现）。
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: '2026-05-02T00:00:00Z' },
+		];
+		mockedApi.listWebAgents.mockResolvedValue([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-09T00:00:00Z', hiddenAt: null },
+		]);
+		await store.loadAll();
+
+		expect(store.items[0].hiddenAt).toBeNull();
+		expect(store.items[0].lastClickedAt).toBe('2026-05-09T00:00:00Z');
+	});
 });

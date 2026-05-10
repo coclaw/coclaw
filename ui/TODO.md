@@ -526,3 +526,19 @@ X4 触及面比 X1 广，需要重新评估：
 当前临时方案（选项 B）已落地；未来若新 E2E 仍踩坑可考虑切到 A。
 
 附带发现（同一 commit 一并止血）：`WebAgentPickerPanel.vue` 在每个 picker 行内的 vendor 标签上挂了 `data-testid="web-agent-item-vendor"`（同名固定 testid，全列表共享）。两处用 `[data-testid^="web-agent-item-"]` 前缀枚举行 testid 的断言因此把 vendor 子元素也匹配进来，期望 5 个变成期望 10 个。已通过 `:not([data-testid="web-agent-item-vendor"])` 在 querySelector 排除。彻底方案是给 vendor span 改一个不和 `web-agent-item-*` 命名空间冲突的 testid（如 `web-agent-row-vendor`），但那需要 panel 改动，留作后续。
+
+## Web Agent hide-from-recent deep-review 发现的非阻塞项（2026-05-10）
+
+来源：commit `1f1edc3 feat(ui): add hide-from-recent action on Web Agents list` 的 4 路并行 codex-rescue review。下列条目本次未修，登记跟踪。
+
+75. **MainList 行内 actions trigger 在键盘 Tab 焦点上不可见（预存模式问题）**
+    - 现状：`MainList.vue:107` `.agent-actions`、:152 `.web-agent-actions`、:188 `.topic-actions` 均用 `opacity-0 group-hover:opacity-100`。键盘 Tab 焦点落到 trigger 按钮时按钮仍 opacity=0 不可见，仅鼠标悬浮 + 触屏 always-visible 路径覆盖
+    - 影响：a11y 不友好；键盘用户看不到当前焦点位置
+    - 预存：自 `AgentItemActions` / `TopicItemActions` 引入即如此，本 commit 新加的 `WebAgentItemActions` 沿用同一模式，未引入也未放大问题
+    - 修法方向：给三个 actions 类一并加 `focus-within:opacity-100` / `group-focus-within:opacity-100`（或在 `<style scoped>` 的 hover-none media query 旁加 `:focus-within` 规则）
+
+76. **`recordClick` 与 `hide` 并发 fire-and-forget POST 请求乱序到达 server 时数据库与本地不一致**
+    - 现状：`web-agents.store.js:128` `recordClick`、:142 `hide` 各自走 fire-and-forget POST，无串行或乐观时间戳协议；如果 hide 先 fire、click 后 fire，但 server 收到顺序倒置（click 先到、hide 后到），server 最终状态是 hidden；本地 lastClickedAt 比 server 新，新的 merge 规则会信任更晚的 click 让本地显示为可见，但下次任何客户端 loadAll 看到的是隐藏
+    - 触发条件：用户先 hide 再立即从 picker 点开同一 agent，且两次请求的 server 处理顺序与发起顺序倒置；窗口在 RTT 量级（毫秒级）。用户可点 picker 再点该 agent 一次自愈
+    - 修法方向：a) store 内对同一 id 的 hide/click 串行（promise chain per id）；b) 或在 POST 里带客户端时间戳，server 比较时间戳决定胜出
+    - 影响小、触发极窄，登记跟踪
