@@ -1126,14 +1126,16 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **已闭合的窗口**：
 - 2026-05-11 简化：mutex 生命期严格对齐 session（no-session ICE restart 前置 reject 不进 mutex；首次 offer catch 同步删 mutex；废除 finally 兜底删除）。废除 finally 后"fn 退出 finally 时删 mutex"这条 split race 触发路径关闭。
 
-**残留窗口**（仅以下两条）：
+**残留窗口**（以下三条）：
 - 路径 A：ICE restart 协商失败 → catch 内调 closeByConnId（webrtc-peer.js:347 附近）
 - 路径 B：首次 offer 检测到旧 session → 调 closeByConnId 后继续创建新 PC（webrtc-peer.js:341-342）
+- 路径 C（2026-05-11 deep-review-2 补记，外部触发变体）：外部 `closeByConnId`（rtc:closed handler / connectionState=closed | failed-TTL / closeAll）已同步删 sessions 但 await 链未跑完时（queue.destroy / pc.close()），同 connId 新首次 offer 进来 lazy-create 时仍能拿到旧 mutex（map 末尾 delete 还没跑），新 fn 在旧 mutex 上跑完且 sessions.set 之后，旧 closeByConnId 末尾才 `__offerMutexes.delete(connId)`——后续再来的 offer 见 map 无 mutex 建 M2，与仍可能在 M1 队列里的 fn 并发。本质与路径 A/B 同根（mutex.delete 与 mutex 实际使用周期解耦）。
 
 **为什么本次未一并修**：
 - 用户实际痛点（两条 ICE restart offer 几乎同时到达）走 ICE restart 成功分支，不触发任何残留窗口
 - 路径 A 仅在协商真失败时触发（mutex 已经把并发 offer 串成功了，路径 A 出现率极低）
 - 路径 B 需要同 connId 重发首次 offer，server-alloc connId 一次性使用，几乎不出现
+- 路径 C 需要外部 close 还在 await 链中、同 connId 同时来新首次 offer + 紧随后续 offer，三事件叠加才出现 split；server-alloc connId 一次性使用极大地削弱了第二个事件的概率
 - 修法（mutex 引用计数 / 闭包内 await 释放后再 delete）成本不小，与边界严重度不匹配
 
 **修复方向**：

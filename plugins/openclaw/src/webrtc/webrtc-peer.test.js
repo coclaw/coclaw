@@ -5817,21 +5817,31 @@ function makeControllablePc(initial = {}) {
 		createAnswer: [],
 		setLocalDescription: [],
 	};
+	// 调用计数器：用于"持锁期间下一条 offer 完全没触碰 PC"的反向断言（A 项）
+	const calls = {
+		setRemoteDescription: 0,
+		createAnswer: 0,
+		setLocalDescription: 0,
+	};
 	const pc = createMockPC();
 	Object.assign(pc, initial);
 	pc.setRemoteDescription = async (desc) => {
+		calls.setRemoteDescription += 1;
 		pc.__lastRemoteSdp = desc.sdp;
 		await new Promise((resolve) => gates.setRemoteDescription.push(resolve));
 	};
 	pc.createAnswer = async () => {
+		calls.createAnswer += 1;
 		await new Promise((resolve) => gates.createAnswer.push(resolve));
 		return { sdp: `answer-for:${pc.__lastRemoteSdp ?? '?'}` };
 	};
 	pc.setLocalDescription = async (desc) => {
+		calls.setLocalDescription += 1;
 		pc.__lastLocalSdp = desc.sdp;
 		await new Promise((resolve) => gates.setLocalDescription.push(resolve));
 	};
 	pc.__gates = gates;
+	pc.__calls = calls;
 	pc.__release = (name) => {
 		const fn = gates[name].shift();
 		if (fn) fn();
@@ -5873,14 +5883,27 @@ test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条�
 	});
 
 	await flushAsync();
-	// A 进入 setRemoteDescription，B 在 mutex 队列里阻塞
+	// A 进入 setRemoteDescription，B 在 mutex 队列里阻塞——逐节点反向断言：
+	// B 完全没触碰 PC 任一方法（不光是 sent 顺序对，PC 调用本身也应被锁住）
 	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'A should be at setRemoteDescription, B blocked on mutex');
+	assert.equal(ctrl.__calls.setRemoteDescription, 1, 'only A reached setRemoteDescription');
+	assert.equal(ctrl.__calls.createAnswer, 0, 'B should not reach createAnswer while A holds mutex');
+	assert.equal(ctrl.__calls.setLocalDescription, 0, 'B should not reach setLocalDescription while A holds mutex');
 
-	// 放行 A 的三连
+	// 放行 A 的 setRemoteDescription → 进 createAnswer
 	ctrl.__release('setRemoteDescription');
 	await flushAsync();
+	assert.equal(ctrl.__calls.createAnswer, 1, 'A reached createAnswer; B still blocked');
+	assert.equal(ctrl.__calls.setRemoteDescription, 1, 'B still cannot touch setRemoteDescription');
+	assert.equal(ctrl.__calls.setLocalDescription, 0, 'B still cannot touch setLocalDescription');
+
+	// 放行 A 的 createAnswer → 进 setLocalDescription
 	ctrl.__release('createAnswer');
 	await flushAsync();
+	assert.equal(ctrl.__calls.setLocalDescription, 1, 'A reached setLocalDescription; B still blocked');
+	assert.equal(ctrl.__calls.setRemoteDescription, 1, 'B still cannot touch setRemoteDescription');
+
+	// 放行 A 的 setLocalDescription → A 完成
 	ctrl.__release('setLocalDescription');
 	await pA;
 
@@ -5907,6 +5930,86 @@ test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条�
 	assert.match(sent[1].payload.sdp, /sdp-B/);
 	// 最后一条胜出：PC 凭据 = B
 	assert.equal(ctrl.__lastRemoteSdp, 'sdp-B', 'last-write-wins: PC remote = B');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 同 connId 三条 ICE restart offer 严格 FIFO（最后一条胜出）', async () => {
+	// UI 端 __restartInFlight 限制 N≤3；线上 N=3 真实出现，单独锁住"三条都被串行"行为
+	// 防止 mutex 链式接龙错误地把第三条与前面并行
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_mu_n3'));
+	const ctrl = makeControllablePc();
+	peer.__sessions.get('c_mu_n3').pc = ctrl;
+	sent.length = 0;
+
+	const pA = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_n3',
+		payload: { sdp: 'sdp-A', iceRestart: true },
+	});
+	const pB = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_n3',
+		payload: { sdp: 'sdp-B', iceRestart: true },
+	});
+	const pC = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_mu_n3',
+		payload: { sdp: 'sdp-C', iceRestart: true },
+	});
+
+	await flushAsync();
+	// A 持锁；B、C 都还没触碰 PC（mutex 队列里串行排队，不是并发）
+	assert.equal(ctrl.__calls.setRemoteDescription, 1, 'only A reached setRemoteDescription');
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1);
+
+	// 跑完 A：放三连
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	ctrl.__release('setLocalDescription');
+	await pA;
+	await flushAsync();
+
+	// B 接力：A 跑完后 B 进 setRemoteDescription，C 仍在排队
+	assert.equal(ctrl.__calls.setRemoteDescription, 2, 'B reached setRemoteDescription after A');
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1);
+
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	ctrl.__release('setLocalDescription');
+	await pB;
+	await flushAsync();
+
+	// C 接力
+	assert.equal(ctrl.__calls.setRemoteDescription, 3, 'C reached setRemoteDescription after B');
+
+	ctrl.__release('setRemoteDescription');
+	await flushAsync();
+	ctrl.__release('createAnswer');
+	await flushAsync();
+	ctrl.__release('setLocalDescription');
+	await pC;
+
+	// 三条 answer，顺序 A→B→C；最终凭据 = C
+	const answers = sent.filter((m) => m.type === 'rtc:answer');
+	assert.equal(answers.length, 3);
+	assert.match(answers[0].payload.sdp, /sdp-A/);
+	assert.match(answers[1].payload.sdp, /sdp-B/);
+	assert.match(answers[2].payload.sdp, /sdp-C/);
+	assert.equal(ctrl.__lastRemoteSdp, 'sdp-C', 'last-write-wins: PC remote = C');
 
 	await peer.closeAll();
 });
@@ -5939,6 +6042,9 @@ test('WebRtcPeer: ICE restart 中途 closeByConnId → setRemoteDescription 后�
 	await peer.closeByConnId('c_mu02');
 	ctrl.__release('setRemoteDescription');
 	await p;
+	// G 项：负向 send 断言前 flush，吃掉 onSend 可能被推迟到下一微任务的窗口；
+	// 防止"实施把 onSend 改成 setImmediate"这类变化让断言静默通过
+	await flushAsync();
 
 	// 不发 stale rtc:answer
 	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
@@ -5979,6 +6085,7 @@ test('WebRtcPeer: ICE restart 中途 closeByConnId → createAnswer 后身份重
 	await peer.closeByConnId('c_mu03');
 	ctrl.__release('createAnswer');
 	await p;
+	await flushAsync(); // G 项：负向 send 断言前 flush
 
 	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
 	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0);
@@ -6017,6 +6124,7 @@ test('WebRtcPeer: ICE restart 中途 closeByConnId → setLocalDescription 后�
 	await peer.closeByConnId('c_mu04');
 	ctrl.__release('setLocalDescription');
 	await p;
+	await flushAsync(); // G 项：负向 send 断言前 flush
 
 	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
 	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0);
@@ -6035,16 +6143,21 @@ test('WebRtcPeer: ICE restart catch 入口身份重核命中（错误 + session 
 		impl: 'pion',
 	});
 
+	// F 项：测试开头 reset remoteLogBuffer，避免被先行测试的 c_mu05 之外条目污染
+	// （现在唯一过滤是 connId，hermetic 性强化）
+	resetRemoteLog();
+
 	await peer.handleSignaling(makeOffer('c_mu05'));
 	const session = peer.__sessions.get('c_mu05');
-	// 让 setRemoteDescription 在 await 期间被外部 closeByConnId 抢先，同时也抛错
-	let resolveClose;
-	const closeStarted = new Promise((r) => { resolveClose = r; });
+	// B 项：用 throwGate 确定性触发，与其他 3 个 abort 测试 gate 风格一致；
+	// 不再依赖 setImmediate ×2 的隐式时序
+	let entered;
+	const enteredP = new Promise((r) => { entered = r; });
+	let triggerThrow;
+	const throwGate = new Promise((r) => { triggerThrow = r; });
 	session.pc.setRemoteDescription = async () => {
-		// 标记 fn 进入；等外部把 session 换掉再抛错
-		resolveClose();
-		await new Promise((r) => setImmediate(r));
-		await new Promise((r) => setImmediate(r));
+		entered();
+		await throwGate;
 		throw new Error('PC closed mid-flight');
 	};
 	sent.length = 0;
@@ -6055,10 +6168,14 @@ test('WebRtcPeer: ICE restart catch 入口身份重核命中（错误 + session 
 		fromConnId: 'c_mu05',
 		payload: { sdp: 'restart-sdp', iceRestart: true },
 	});
-	await closeStarted;
-	// 此时 setRemoteDescription await 中、还未抛 → 关掉 session
+	await enteredP;
+	// 此时 setRemoteDescription 卡在 throwGate 上 → 关掉 session 让身份变化
 	await peer.closeByConnId('c_mu05');
+	// 触发抛错，fn 走 catch → 命中身份重核 suppress 路径
+	triggerThrow();
 	await p;
+	// G 项：负向 send 断言前 flush，吃掉 onSend 微任务窗口
+	await flushAsync();
 
 	// catch 入口身份重核命中：不发 restart-rejected
 	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0);
@@ -6181,6 +6298,7 @@ test('WebRtcPeer: ICE restart 进行中收到 rtc:closed → 身份重核兜住�
 	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_mu_rc' });
 	ctrl.__release('setRemoteDescription');
 	await p;
+	await flushAsync(); // G 项：负向 send 断言前 flush
 
 	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0, 'no stale answer');
 	assert.equal(sent.filter((m) => m.type === 'rtc:restart-rejected').length, 0, 'no restart-rejected');
@@ -6215,9 +6333,20 @@ test('WebRtcPeer: ICE restart 进行中 closeAll 触发 → 身份重核兜住',
 	await flushAsync();
 	// fn 在 createAnswer 等待中：模拟 gateway 退出/重启时的 closeAll
 	const closeAllPromise = peer.closeAll();
-	ctrl.__release('createAnswer');
+
+	// D 项反向断言：closeAll 不等 in-flight handleOffer。closeAll 内部只 await closeByConnId，
+	// 不与 offer mutex 关联——fn 仍卡在 createAnswer gate 上时 closeAll 应已 resolve。
+	let pSettled = false;
+	p.then(() => { pSettled = true; }, () => { pSettled = true; });
 	await closeAllPromise;
+	await flushAsync();
+	assert.equal(pSettled, false, 'closeAll should resolve while in-flight handleOffer is still parked');
+	assert.equal(ctrl.__pending('createAnswer'), 1, 'fn still parked at createAnswer gate after closeAll');
+
+	// 现在放行 createAnswer，让 fn 进入 createAnswer 后的身份重核 abort 路径
+	ctrl.__release('createAnswer');
 	await p;
+	await flushAsync(); // G 项：负向 send 断言前 flush
 
 	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0, 'no stale answer after closeAll');
 	assert.ok(logs.some((m) => /aborted: session changed/.test(m)),
@@ -6260,6 +6389,7 @@ test('WebRtcPeer: failed → TTL 触发 closeByConnId 与 ICE restart in-flight 
 	await peer.closeByConnId('c_mu_ttl');
 	ctrl.__release('setRemoteDescription');
 	await p;
+	await flushAsync(); // G 项：负向 send 断言前 flush
 	t.mock.timers.reset();
 
 	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0);
