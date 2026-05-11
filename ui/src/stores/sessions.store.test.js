@@ -600,28 +600,33 @@ describe('sessions store', () => {
 			await oldPromise;
 		});
 
-		test('__doLoadAll：fetch 期间 conn 消失，不清空旧 sessions', async () => {
+		// 跨入口合流：loadAllSessions 内部对每个 claw 调 loadSessionsForClaw，与外部直接
+		// 调 loadSessionsForClaw 共享同一份 _perClawLoading 飞行缓存，并发时只发一次 RPC
+		test('跨入口并发：loadAllSessions 与 loadSessionsForClaw 同 claw 合流到一次 RPC', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
-			const store = useSessionsStore();
-			store.setSessions([{
-				sessionId: 'sid-old', sessionKey: 'agent:main:main',
-				clawId: 'bot-1', agentId: 'main', updatedAt: 100, bumpedAt: null,
-			}]);
 
-			// sessions.list 返回空 + 同步抹掉 conn → result-time getReadyConn 复核应跳过该 claw
+			let resolveReq;
 			const conn = {
-				request: vi.fn().mockImplementation(() => {
-					mockConnections.delete('bot-1');
-					return Promise.resolve({ sessions: [] });
-				}),
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
 				on: vi.fn(),
 				off: vi.fn(),
 			};
 			setConn('bot-1', conn);
 
-			await store.loadAllSessions();
-			expect(store.items.find((s) => s.clawId === 'bot-1')?.sessionId).toBe('sid-old');
+			const store = useSessionsStore();
+			// 先发起 loadAllSessions，再发起 loadSessionsForClaw（同 claw）
+			const allPromise = store.loadAllSessions();
+			const perClawPromise = store.loadSessionsForClaw('bot-1');
+
+			// 关键断言：两个入口应共享 _perClawLoading，conn.request 只被调一次
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			resolveReq({ sessions: [row('agent:main:main', 'sid-1', 1000)] });
+			await Promise.all([allPromise, perClawPromise]);
+
+			expect(store.items).toHaveLength(1);
+			expect(store.items[0].sessionId).toBe('sid-1');
 		});
 	});
 });

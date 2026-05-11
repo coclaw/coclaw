@@ -122,35 +122,19 @@ export const useSessionsStore = defineStore('sessions', {
 				this.loading = false;
 			}
 		},
+		// 合流到 per-claw 入口：与 loadSessionsForClaw 共享 _perClawLoading 飞行缓存，
+		// 消除"全量拉 vs 按 claw 拉"两套缓存互不感知导致的重复 sessions.list RPC
 		async __doLoadAll(connectedClaws) {
-			const queriedClawIds = new Set(connectedClaws.map((b) => String(b.id)));
-			const clawsStore = useClawsStore();
 			const results = await Promise.allSettled(
-				connectedClaws.map((claw) => this.__fetchSessionsForClaw(claw.id)),
+				connectedClaws.map((claw) => this.loadSessionsForClaw(claw.id)),
 			);
-			// fetch 失败的 claw：从 queriedClawIds 移除，保留其旧 sessions
+			// fetch 失败由 __doLoadForClaw 内部 catch + warn；这里捕获更外层的异常
+			// （如 mergeFetchResults 抛错），避免被 allSettled 静默吞掉
 			for (let i = 0; i < results.length; i++) {
-				const cid = String(connectedClaws[i].id);
-				if (results[i].status !== 'fulfilled') {
-					queriedClawIds.delete(cid);
-					console.warn('[sessions] claw sessions fetch failed clawId=%s:', cid, results[i].reason);
-					continue;
-				}
-				// fetch 期间 conn 可能被 SSE claw.unbound 异步清掉，__fetchSessionsForClaw
-				// 早退返回 []。此时把它纳入 queriedClawIds 会导致后续合并环节把旧 sessions
-				// 一并清空，因此 result-time 重新核对一次 conn，已消失则跳过该 claw
-				if (!getReadyConn(cid)) {
-					queriedClawIds.delete(cid);
-					console.debug('[sessions] claw conn vanished during fetch clawId=%s', cid);
+				if (results[i].status === 'rejected') {
+					console.warn('[sessions] loadAll: per-claw load rejected clawId=%s:', connectedClaws[i].id, results[i].reason);
 				}
 			}
-			this.items = mergeFetchResults({
-				prevItems: this.items,
-				results,
-				queriedClawIds,
-				clawsById: clawsStore.byId,
-			});
-			console.debug('[sessions] loadAll: merged %d session(s) (queried %d claw(s))', this.items.length, queriedClawIds.size);
 		},
 		/**
 		 * 按 claw 加载 sessions。专为 per-claw 触发场景（DC 重连恢复 / 首次 init），

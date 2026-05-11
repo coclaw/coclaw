@@ -778,18 +778,15 @@ describe('topics store', () => {
 		});
 	});
 
-	// __doLoadAll：tasks 必须与 connectedClaws 长度严格对齐；同步 conn 消失（getReadyConn 返 null）
-	// 的 claw 不能让 results 数组比 connectedClaws 短，否则后续按 i 索引会把"失败 result"
-	// 错位归因到错误的 claw，导致旧 topics 被误清
-	describe('__doLoadAll zip alignment', () => {
-		test('同步 conn 消失的 claw 用 null sentinel 占位，旧 topics 保留且不错位', async () => {
+	describe('loadAllTopics edge cases', () => {
+		test('同步 conn 消失的 claw 不发请求，旧 topics 保留', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([
 				{ id: 'bot-A', name: 'A', online: true },
 				{ id: 'bot-B', name: 'B', online: true },
 			]);
 
-			// bot-A 进入 setClaws 后立刻把 conn 抹掉：getReadyConn(A) 在 sync 阶段返 null
+			// bot-A 进入 setClaws 后立刻把 conn 抹掉：getReadyConn(A) 在 connectedClaws filter 时返 null
 			const connA = mockConn({ topics: [] });
 			setConn('bot-A', connA);
 			mockConnections.delete('bot-A');
@@ -804,7 +801,7 @@ describe('topics store', () => {
 
 			await store.loadAllTopics();
 
-			// 关键：A 旧 topic 必须保留（同步 conn 消失从 queriedClawIds 删除，合并不替换）
+			// 关键：A 旧 topic 必须保留（A 不在 connectedClaws，loadTopicsForClaw 不触发）
 			expect(store.byId['t-A-old']?.title).toBe('A old');
 			// B 新 topic 写入
 			expect(store.byId['t-B-new']?.title).toBe('B new');
@@ -813,64 +810,7 @@ describe('topics store', () => {
 			expect(connB.request).toHaveBeenCalledTimes(1);
 		});
 
-		test('result-time conn vanish：fetch 完成后 conn 消失，旧 topics 保留', async () => {
-			const clawsStore = useClawsStore();
-			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
-
-			// 预置 bot-1 的旧 topic
-			const store = useTopicsStore();
-			store.byId = toById([{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 50, clawId: 'bot-1' }]);
-
-			// request 在途同步把 mockConnections 抹掉，模拟 SSE claw.unbound
-			// 在 RPC 在途期间清掉 conn → result-time getReadyConn() === null
-			const conn = {
-				request: vi.fn().mockImplementation(() => {
-					mockConnections.delete('bot-1');
-					return Promise.resolve({ topics: [] });
-				}),
-				on: vi.fn(),
-				off: vi.fn(),
-			};
-			setConn('bot-1', conn);
-
-			await store.loadAllTopics();
-
-			// 关键：result-time getReadyConn 复核应让该 claw 落到"未查询"列，
-			// 旧 topic 在合并时保留，不被空 topics 数组覆盖
-			expect(store.byId['t-old']?.title).toBe('Old');
-		});
-
-		test('result-time conn vanish + fetched 含新 topics：新结果不写入（防幽灵 topics）', async () => {
-			// 与 'result-time conn vanish' 用例对称，但 fulfilled value 含**非空** topics：
-			// 修法前第二个合并循环会按 r.value 把这些"已剔除 claw 的新 topics"塞进 byId，
-			// 制造幽灵 topic（claw 已 unbound 仍出现在列表）；修法后跳过整条 result
-			const clawsStore = useClawsStore();
-			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
-
-			const store = useTopicsStore();
-			store.byId = toById([{ topicId: 't-old', agentId: 'main', title: 'Old', createdAt: 50, clawId: 'bot-1' }]);
-
-			const conn = {
-				request: vi.fn().mockImplementation(() => {
-					mockConnections.delete('bot-1');
-					return Promise.resolve({ topics: [
-						{ topicId: 't-ghost', agentId: 'main', title: 'Ghost', createdAt: 200 },
-					] });
-				}),
-				on: vi.fn(),
-				off: vi.fn(),
-			};
-			setConn('bot-1', conn);
-
-			await store.loadAllTopics();
-
-			// 旧 topic 保留
-			expect(store.byId['t-old']?.title).toBe('Old');
-			// 幽灵 topic 不应出现
-			expect(store.byId['t-ghost']).toBeUndefined();
-		});
-
-		test('反向断言：conn 健康但远端真空 topics 时，旧 topics 仍被清空', async () => {
+		test('conn 健康但远端真空 topics 时，旧 topics 被清空', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
 
@@ -884,8 +824,37 @@ describe('topics store', () => {
 
 			await store.loadAllTopics();
 
-			// 旧 t-stale 应被清空——bot-1 在 queriedClawIds 中，合并按"已查询"覆盖
+			// 旧 t-stale 应被清空——loadTopicsForClaw 拿到空 topics 后替换该 claw 的旧数据
 			expect(store.byId['t-stale']).toBeUndefined();
+		});
+
+		// 跨入口合流：loadAllTopics 内部对每个 claw 调 loadTopicsForClaw，与外部直接
+		// 调 loadTopicsForClaw 共享同一份 _perClawLoading 飞行缓存，并发时只发一次 RPC
+		test('跨入口并发：loadAllTopics 与 loadTopicsForClaw 同 claw 合流到一次 RPC', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			let resolveReq;
+			const conn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			const store = useTopicsStore();
+			// 先发起 loadAllTopics，再发起 loadTopicsForClaw（同 claw）
+			const allPromise = store.loadAllTopics();
+			const perClawPromise = store.loadTopicsForClaw('bot-1');
+
+			// 关键断言：两个入口应共享 _perClawLoading，conn.request 只被调一次
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			resolveReq({ topics: [{ topicId: 't1', agentId: 'main', title: 'T1', createdAt: 100 }] });
+			await Promise.all([allPromise, perClawPromise]);
+
+			expect(store.items).toHaveLength(1);
+			expect(store.byId['t1'].title).toBe('T1');
 		});
 	});
 });

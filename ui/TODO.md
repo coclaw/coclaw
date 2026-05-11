@@ -247,11 +247,9 @@
     - 修法方向：runAgent 的 onAccepted 在调外部 onAccepted 之前等其返回 sentinel，或外层加"chat 层已认定 pre-accept 失败 → 立刻 unregister run + abort RPC"通道
     - 配合 §"Bug 1 修复 review 后续" 的 #16 / #17 一并思考
 
-35. **`loadAllSessions` 与 `loadSessionsForClaw` 同 claw 同时飞行可互相覆盖**
-    - 现状：两套 dedup（`_loadingPromise` vs `_perClawLoading`）独立，同 claw 可有两个 in-flight fetch；`mergeFetchResults` 的"已查询 claw"路径直接以 fetch 结果替换（`sessions.store.js:291-299`），后完成的覆盖先完成的
-    - 触发条件：用户切 claw 引发 per-claw 拉取与全量拉取叠加，且 fetch 完成顺序与发起顺序倒置
-    - 实际影响：极短窗口的旧数据覆盖新数据；下次任意 sessions.list 触发即修正
-    - 修法方向：两套 dedup 共用一个 (clawId → in-flight) 注册表，或合并环节按 fetch 发起时间戳决策
+35. **`loadAllSessions` 与 `loadSessionsForClaw` 同 claw 同时飞行可互相覆盖** — ✅ 2026-05-11 已解决
+    - 解决方案：`loadAllSessions.__doLoadAll` 改为对每个 claw 调 `loadSessionsForClaw`，两个入口共享 `_perClawLoading` 飞行缓存；同时 `loadAllTopics` 同对称改造。详见 commit "refactor(ui): merge sessions/topics load paths via per-claw in-flight cache"
+    - 原描述：两套 dedup（`_loadingPromise` vs `_perClawLoading`）独立，同 claw 可有两个 in-flight fetch；`mergeFetchResults` 的"已查询 claw"路径直接以 fetch 结果替换，后完成的覆盖先完成的
 
 36. **claw 解绑后短时同 id 重绑期间，旧 fetch 结果可污染新 claw**
     - 现状：`removeSessionsByClawId` 清 `_perClawLoading` 但不清全局 `_loadingPromise`；旧 `loadAllSessions` 飞行中 → claw 解绑后短时同 id 重绑 → `mergeFetchResults` 的 `clawsById[bid]` 校验通过（新 claw 在）→ 旧数据被写入新 claw 空间

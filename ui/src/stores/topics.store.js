@@ -67,65 +67,19 @@ export const useTopicsStore = defineStore('topics', {
 			}
 		},
 
+		// 合流到 per-claw 入口：与 loadTopicsForClaw 共享 _perClawLoading 飞行缓存，
+		// 消除"全量拉 vs 按 claw 拉"两套缓存互不感知导致的重复 coclaw.topics.list RPC
 		async __doLoadAll(connectedClaws) {
-			const clawsStore = useClawsStore();
-			const queriedClawIds = new Set(connectedClaws.map((b) => String(b.id)));
-			// 用 map 让 results 长度严格等于 connectedClaws 长度，避免 zip 错位：
-			// 同步 conn 消失的 claw 用 null sentinel 占位，由后面 result-time 处理统一剔除
 			const results = await Promise.allSettled(
-				connectedClaws.map((claw) => {
-					const cid = String(claw.id);
-					const conn = getReadyConn(cid);
-					if (!conn) return Promise.resolve(null);
-					// 当前版本只支持 main agent 的 topic（受限于 OpenClaw agent 路由机制）
-					return conn.request('coclaw.topics.list', { agentId: 'main' }, { timeout: 60_000 })
-						.then((res) => ({
-							topics: Array.isArray(res?.topics) ? res.topics : [],
-							clawId: cid,
-						}));
-				}),
+				connectedClaws.map((claw) => this.loadTopicsForClaw(claw.id)),
 			);
-			// fetch 失败的 claw：从 queriedClawIds 移除，保留其旧 topics
+			// fetch 失败由 __doLoadForClaw 内部 catch + warn；这里捕获更外层的异常
+			// （如 newById 合并抛错），避免被 allSettled 静默吞掉
 			for (let i = 0; i < results.length; i++) {
-				const cid = String(connectedClaws[i].id);
-				if (results[i].status !== 'fulfilled') {
-					queriedClawIds.delete(cid);
-					console.warn('[topics] claw topics fetch failed clawId=%s:', cid, results[i].reason);
-					continue;
-				}
-				// fetch 期间或刚完成时 conn 可能被 SSE claw.unbound 异步清掉（同步早退返 null，
-				// 或事后消失）。此时把它纳入 queriedClawIds 会导致后续合并环节把旧 topics
-				// 一并清空，因此 result-time 重新核对一次 conn，已消失则跳过该 claw
-				if (results[i].value === null || !getReadyConn(cid)) {
-					queriedClawIds.delete(cid);
-					console.debug('[topics] claw conn vanished during fetch clawId=%s', cid);
+				if (results[i].status === 'rejected') {
+					console.warn('[topics] loadAll: per-claw load rejected clawId=%s:', connectedClaws[i].id, results[i].reason);
 				}
 			}
-			// 增量合并：保留未查询 claw 的已有 topics，替换已查询 claw 的
-			const newById = {};
-			for (const [tid, topic] of Object.entries(this.byId)) {
-				const bid = String(topic.clawId);
-				// 跳过本次查询范围内的（用新结果替换）和已不存在的 claw
-				if (queriedClawIds.has(bid) || !clawsStore.byId[bid]) continue;
-				newById[tid] = topic;
-			}
-			for (const r of results) {
-				if (r.status !== 'fulfilled' || r.value === null) continue;
-				// 与第一个循环对称：fetch 后 conn 消失的 claw 已被从 queriedClawIds 剔除，
-				// 第一个循环走"保留旧 topics"分支；这里同时跳过其新结果，避免新旧 topics 混入幽灵
-				if (!queriedClawIds.has(r.value.clawId)) continue;
-				for (const topic of r.value.topics) {
-					newById[topic.topicId] = {
-						topicId: topic.topicId,
-						agentId: topic.agentId,
-						title: topic.title ?? null,
-						createdAt: topic.createdAt ?? 0,
-						clawId: r.value.clawId,
-					};
-				}
-			}
-			this.byId = newById;
-			console.debug('[topics] loadAll: merged %d topic(s) (queried %d claw(s))', Object.keys(newById).length, queriedClawIds.size);
 		},
 
 		/**
