@@ -1158,3 +1158,16 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **修复方向**：反向流式读取——从文件末尾按 chunk 读，每个 chunk 内拆行，只 parse 到累计够 limit 条 message 行就停。可用 `fs.createReadStream({ start, end })` 或多次 `filehandle.read` 配 buffer。需评估 CRLF/UTF-8 多字节边界处理。
 
 **严重度**：Low（仅大 transcript 场景才感知；plugin 主路径 UI 用 `coclaw.sessions.getById` 拉历史时一次性渲染需求确实就是要最后 N 条）
+
+## `gateway-method-conventions.md` 的 `respondInvalid` 错误码与代码不一致（预存）
+
+**发现日期**：2026-05-11（session-manager 异步化 deep-review 时 codex-rescue 综合实例核出）
+**关联**：`docs/gateway-method-conventions.md:30`、`src/common/errors.js:2`
+
+**问题**：约定文档写 `respondInvalid(respond, message)` 的 `code` 固定为 `INVALID_ARGS`，但实际 helper（`common/errors.js`）发出的 code 是 `INVALID_INPUT`。两边自 2026-05 起就不一致；下游消费者（server / UI）实际上都对接 `INVALID_INPUT`，所以是文档落后于代码。
+
+**为什么本次未一并修**：与本轮 session-manager 异步化无关，属预存 doc 漂移；按"review 抓出的预存问题不顺手修"规则记入。
+
+**修复方向**：把 doc 文案改成 `INVALID_INPUT`；顺便扫一下 `src/common/errors.js` 其它常量是否也存在 doc 漂移。
+
+**严重度**：Low（仅影响阅读约定文档时的预期，运行时行为没问题）

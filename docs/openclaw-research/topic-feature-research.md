@@ -385,7 +385,7 @@ api.on('session_start', async (event, context) => {
 - 纯文本截取，**非 AI 生成**
 - 通过 `sessions.list({ includeDerivedTitles: true })` 暴露
 
-CoClaw 插件的 `session-manager/manager.js` 中 `deriveTitle()` 实现了相同逻辑。
+CoClaw 早期插件曾在 `session-manager/manager.js` 内实现过对等的 `deriveTitle()`，2026-05-11 后移除——chat-history/topic 标题流已取代该派生路径，无活消费者。
 
 ### 2. agent() 的 extraSystemPrompt
 

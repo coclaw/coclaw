@@ -136,7 +136,7 @@ UI 实际遇到的 `role` 仅 `user` / `assistant` / `toolResult` / `system`。
 | heartbeat tick | 内容是 heartbeat prompt（`Read HEARTBEAT.md...`） | `auto-reply/heartbeat.ts:15` |
 | 入站 metadata 头部 | `<Label> (untrusted...):\n\`\`\`json\n...\n\`\`\`\n\n` 等多种装饰 | `auto-reply/reply/inbound-meta.ts` |
 
-CoClaw 已通过 `cleanDerivedTitle` / `stripOcPrefixes` 处理大部分文本前缀，但仍有遗漏（见第八节）。
+CoClaw 通过 `stripOcPrefixes` 处理大部分文本前缀（前缀清理的早期实现 `cleanDerivedTitle` 已于 2026-05-11 随 derivedTitle 一并移除），但仍有遗漏（见第八节）。
 
 ---
 
