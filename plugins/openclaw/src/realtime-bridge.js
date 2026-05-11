@@ -768,9 +768,13 @@ export class RealtimeBridge {
 				if (this.gatewayWs !== ws) {
 					return;
 				}
+				// rawData 保留供转发链路（res 单播 / agent event 单播 / 兜底广播）透传：
+				// 跳过 webrtcPeer.broadcast/sendTo 内部的重新 stringify，省掉对大 payload
+				// （如 agent.run.event 含大 tool_result）的重复序列化主线程阻塞。
+				const rawData = String(event.data ?? '{}');
 				let payload = null;
 				try {
-					payload = JSON.parse(String(event.data ?? '{}'));
+					payload = JSON.parse(rawData);
 				}
 				catch {
 					return;
@@ -892,7 +896,9 @@ export class RealtimeBridge {
 							/* c8 ignore next -- TODO: 2026-05-20 后删除 */
 							this.logger.debug?.(`[coclaw/rpc-res-route] hit, reqId=${payload.id} → connId=${info.connId}`);
 							// sendTo 阶段 1 改为 async（admission 决策 await）；外层 listener 已是 async
-							const delivered = await this.webrtcPeer?.sendTo(info.connId, payload);
+							// 透传 rawData 跳过重新 stringify：gateway → plugin → DC 转发链路上的大 payload
+							// （如 agent.run.event 含大 tool_result）省掉一次主线程序列化阻塞。
+							const delivered = await this.webrtcPeer?.sendTo(info.connId, payload, rawData);
 							if (!delivered) {
 							// PC 已断 / DC 未 open / 队列拒收：本地 log 丢弃，不退回广播
 								this.__logDebug(
@@ -913,7 +919,8 @@ export class RealtimeBridge {
 								/* c8 ignore next -- TODO: 2026-05-20 后删除 */
 								this.logger.debug?.(`[coclaw/run-event-route] hit, runId=${runId} → connId=${connId}`);
 								// sendTo 失败不打 log（PC 状态翻转日志已足够，drop 是正确语义）
-								await this.webrtcPeer?.sendTo(connId, payload);
+								// 透传 rawData 跳过重新 stringify：agent event payload 可能很大（如 tool_result）
+								await this.webrtcPeer?.sendTo(connId, payload, rawData);
 								return;
 							}
 						}
@@ -921,7 +928,8 @@ export class RealtimeBridge {
 						this.logger.debug?.(`[coclaw/run-event-route] miss, broadcast, runId=${runId ?? '<missing>'}`);
 					}
 					// (d) 兜底广播：覆盖 event 类型 / 映射未命中场景
-					this.webrtcPeer?.broadcast(payload);
+					// 透传 rawData 跳过重新 stringify：agent event 兜底广播同样可能很大
+					this.webrtcPeer?.broadcast(payload, rawData);
 				}
 			})().catch((err) => {
 				this.logger.warn?.(`[coclaw] gateway ws message handler error: ${err?.message ?? err}`);

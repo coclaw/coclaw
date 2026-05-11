@@ -188,17 +188,17 @@ export class WebRtcPeer {
 		await session.pc.close();
 	}
 
-	/** 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 FBQ/MemoryQueue + RpcDcSender 流控） */
-	broadcast(payload) {
-		let jsonStr;
-		try {
-			jsonStr = JSON.stringify(payload);
-		} catch (err) {
-			// 循环引用 / BigInt 等导致 stringify 抛——记日志后整条丢弃，不冒到 gateway
-			this.__logDebug(`broadcast stringify failed: ${err?.message}`);
-			return;
-		}
-		if (typeof jsonStr !== 'string') return; // payload 是 undefined/symbol 时 stringify 返回 undefined
+	/**
+	 * 向所有已打开的 rpcChannel 广播（大消息自动分片，经由 FBQ/MemoryQueue + RpcDcSender 流控）。
+	 * @param {object} payload - 完整的 JSON 帧
+	 * @param {string} [rawStr] - 已序列化字符串旁路：非空字符串且不含字面 \n/\r 时直接透传，
+	 *                            跳过 stringify；含换行或类型不符时回退到 JSON.stringify(payload)。
+	 *                            用于 gateway WS → DC 转发链路，省掉对大 payload（如 agent.run.event
+	 *                            含大 tool_result / compaction summary）的主线程重复序列化阻塞。
+	 */
+	broadcast(payload, rawStr) {
+		const jsonStr = this.__resolveJsonStr(payload, rawStr, 'broadcast');
+		if (jsonStr === null) return;
 		for (const session of this.__sessions.values()) {
 			const q = session.rpcQueue;
 			if (q && session.rpcChannel?.readyState === 'open') {
@@ -221,27 +221,56 @@ export class WebRtcPeer {
 	 *
 	 * @param {string} connId
 	 * @param {object} payload - 完整的 JSON 帧（通常是 { type: 'event', event, payload }）
+	 * @param {string} [rawStr] - 已序列化字符串旁路：语义同 broadcast 的 rawStr 参数
 	 * @returns {Promise<boolean>} true=已入队发送；false=session 不存在 / DC 未 open / payload 不可序列化 / 发送队列拒收
 	 */
-	async sendTo(connId, payload) {
+	async sendTo(connId, payload, rawStr) {
 		const session = this.__sessions.get(connId);
 		if (!session) return false;
 		const q = session.rpcQueue;
 		if (!q || session.rpcChannel?.readyState !== 'open') return false;
-		let jsonStr;
-		try {
-			jsonStr = JSON.stringify(payload);
-		} catch (err) {
-			this.__logDebug(`[${connId}] sendTo stringify failed: ${err?.message}`);
-			return false;
-		}
-		if (typeof jsonStr !== 'string') return false;
+		const jsonStr = this.__resolveJsonStr(payload, rawStr, `[${connId}] sendTo`);
+		if (jsonStr === null) return false;
 		try {
 			return await q.enqueue(jsonStr);
 		} catch (err) {
 			/* c8 ignore next 3 -- enqueue 仅在 mutex 异常等极冷路径 reject；与 broadcast/file sendFn 对称 */
 			this.__logDebug(`[${connId}] sendTo enqueue error: ${err?.message}`);
 			return false;
+		}
+	}
+
+	/**
+	 * 把 (payload, rawStr) 归一为可入队的 JSON 字符串。
+	 * 直通条件：rawStr 为非空字符串且不含字面 \n/\r。
+	 * 回退路径：含换行或类型不符时走 JSON.stringify(payload)；并对 stringify 抛 / 返非字符串做防御。
+	 *
+	 * 为何排除字面换行：rpcQueue 的 FBQ 实现在溢出到磁盘时按 JSONL 格式（rec + '\n'）追加，
+	 * 用 readline 回填——若入队字符串内含字面 \n/\r 会切坏 spill 文件。旧 stringify 路径输出
+	 * 紧凑无换行天然满足；新 raw 直通必须保持同等强度的入队不变量。
+	 *
+	 * @param {object} payload
+	 * @param {string} [rawStr]
+	 * @param {string} tag - 日志前缀（broadcast / [connId] sendTo）
+	 * @returns {string | null} 可入队的 JSON 字符串；null 表示丢弃（stringify 抛 / 返非字符串）
+	 */
+	__resolveJsonStr(payload, rawStr, tag) {
+		if (typeof rawStr === 'string' && rawStr.length > 0) {
+			if (!rawStr.includes('\n') && !rawStr.includes('\r')) {
+				return rawStr;
+			}
+			// 含换行 → 走 stringify 重做归一化（保 FBQ JSONL 行约束）
+			this.__logDebug(`${tag} rawStr fallback: contains newline`);
+		}
+		try {
+			const jsonStr = JSON.stringify(payload);
+			// payload 是 undefined/symbol 时 stringify 返回 undefined
+			if (typeof jsonStr !== 'string') return null;
+			return jsonStr;
+		} catch (err) {
+			// 循环引用 / BigInt 等导致 stringify 抛——记日志后整条丢弃，不冒到 gateway
+			this.__logDebug(`${tag} stringify failed: ${err?.message}`);
+			return null;
 		}
 	}
 

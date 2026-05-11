@@ -5100,6 +5100,116 @@ test('run-event-routes: event:agent miss falls back to broadcast', async () => {
 	}
 });
 
+test('gateway forward: agent event 单播命中时把 rawData 作第 3 参传给 sendTo（跳过重新 stringify）', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_1');
+	try {
+		const calls = [];
+		bridge.webrtcPeer.sendTo = (connId, payload, rawStr) => {
+			calls.push({ connId, payload, rawStr });
+			return true;
+		};
+		bridge.webrtcPeer.broadcast = () => { throw new Error('should not broadcast on route hit'); };
+
+		bridge.__runEventRoutes.add('run-raw-1', 'c_raw_fwd_1', 'ui-raw-1');
+
+		// 故意构造非紧凑（多余空格）字符串：JSON.parse 仍可解析、
+		// 若代码意外重新 stringify(parsed) 输出会是无空格紧凑形，与 fixture 不等 → 测试红。
+		const eventStr = '{ "type": "event",  "event": "agent",  "payload": { "runId": "run-raw-1", "data": { "big": "xxxxxxxxxx" } } }';
+		gwWs.emit('message', { data: eventStr });
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].connId, 'c_raw_fwd_1');
+		assert.equal(typeof calls[0].rawStr, 'string', 'rawStr 必须以字符串传入');
+		assert.equal(calls[0].rawStr, eventStr, 'rawStr 必须是 gateway 原始字符串（含原始空格），不能是重新 stringify 的产物');
+		assert.notEqual(calls[0].rawStr, JSON.stringify(calls[0].payload),
+			'rawStr 与 stringify(payload) 必须不等，否则证据不足以证伪重新 stringify 退化');
+		assert.equal(calls[0].payload.payload.runId, 'run-raw-1', 'payload 仍是 parsed 对象');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('gateway forward: agent event 兜底广播时把 rawData 作第 2 参传给 broadcast', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_2');
+	try {
+		const calls = [];
+		bridge.webrtcPeer.broadcast = (payload, rawStr) => { calls.push({ payload, rawStr }); };
+		bridge.webrtcPeer.sendTo = () => { throw new Error('should not unicast on miss'); };
+
+		// 不写路由 → miss → 兜底广播。fixture 用非紧凑形式锁住 rawData 透传
+		const eventStr = '{ "type": "event",  "event": "agent",  "payload": { "runId": "run-raw-orphan" } }';
+		gwWs.emit('message', { data: eventStr });
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].rawStr, eventStr, 'broadcast 必须收到原始字符串');
+		assert.notEqual(calls[0].rawStr, JSON.stringify(calls[0].payload),
+			'rawStr 与 stringify(payload) 必须不等，否则证据不足以证伪重新 stringify 退化');
+		assert.equal(calls[0].payload.payload.runId, 'run-raw-orphan');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('gateway forward: res 单播命中（__dcPendingRequests）时把 rawData 作第 3 参传给 sendTo', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_3');
+	try {
+		const calls = [];
+		bridge.webrtcPeer.sendTo = (connId, payload, rawStr) => {
+			calls.push({ connId, payload, rawStr });
+			return true;
+		};
+		bridge.webrtcPeer.broadcast = () => { throw new Error('should not broadcast on res route hit'); };
+
+		// 写 reqId → connId 路由
+		bridge.__dcPendingRequests.set('ui-raw-r1', {
+			connId: 'c_raw_fwd_3',
+			expireAt: Date.now() + 60_000,
+		});
+
+		// fixture 用非紧凑形式锁住 rawData 透传
+		const resStr = '{ "type": "res",  "id": "ui-raw-r1",  "ok": true,  "payload": { "status": "ok", "runId": "run-raw-r1" } }';
+		gwWs.emit('message', { data: resStr });
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].connId, 'c_raw_fwd_3');
+		assert.equal(calls[0].rawStr, resStr, 'sendTo 必须收到 res 的原始字符串');
+		assert.notEqual(calls[0].rawStr, JSON.stringify(calls[0].payload),
+			'rawStr 与 stringify(payload) 必须不等，否则证据不足以证伪重新 stringify 退化');
+		assert.equal(calls[0].payload.id, 'ui-raw-r1');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('gateway forward: res 帧无 __dcPendingRequests 命中时回退兜底广播并透传 rawData', async () => {
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_4');
+	try {
+		const calls = [];
+		bridge.webrtcPeer.broadcast = (payload, rawStr) => { calls.push({ payload, rawStr }); };
+		bridge.webrtcPeer.sendTo = () => { throw new Error('should not unicast on res miss'); };
+
+		// 不写 __dcPendingRequests → res miss → 走 (d) 兜底广播
+		const resStr = '{ "type": "res",  "id": "ui-orphan-res",  "ok": true,  "payload": { "status": "ok" } }';
+		gwWs.emit('message', { data: resStr });
+		for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].rawStr, resStr, 'res miss 兜底广播必须收到原始字符串');
+		assert.notEqual(calls[0].rawStr, JSON.stringify(calls[0].payload),
+			'rawStr 与 stringify(payload) 必须不等');
+		assert.equal(calls[0].payload.id, 'ui-orphan-res');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
 test('run-event-routes: gateway ws close 不再清路由表条目（三线独立）', async () => {
 	// 新契约：内线翻转不再级联清 runId→connId 路由表，避免内线瞬态抖动时误清。
 	// 路由表条目最终由 TTL 扫描器（默认 24h）或显式 stop()/destroy 回收。

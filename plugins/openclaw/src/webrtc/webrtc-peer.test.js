@@ -1532,6 +1532,289 @@ test('WebRtcPeer: broadcast 收到 undefined payload（stringify 返回 undefine
 	await peer.closeAll();
 });
 
+// --- broadcast / sendTo rawStr 旁路（跳过 stringify）---
+
+test('WebRtcPeer: broadcast(payload, rawStr) 用 rawStr 直通，跳过 stringify', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_b1'));
+	await peer.handleSignaling(makeOffer('c_raw_b2'));
+
+	const sent = { c_raw_b1: [], c_raw_b2: [] };
+	const dc1 = makeMockRpcDc({ send: (d) => sent.c_raw_b1.push(d) });
+	const dc2 = makeMockRpcDc({ send: (d) => sent.c_raw_b2.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc1 });
+	PC.instances[1].ondatachannel({ channel: dc2 });
+	await flushAsync();
+
+	// 关键证据：rawStr 与 payload 故意构造成 stringify(payload) 不等的形式（多空白）。
+	// 实际转发到 dc 的必须是 rawStr 原值，证明没有走 JSON.stringify(payload) 这条路。
+	const payload = { type: 'event', event: 'agent', payload: { runId: 'r1' } };
+	const rawStr = '{"type":"event","event":"agent","payload":{"runId":"r1","extra":"only-in-raw"}}';
+	peer.broadcast(payload, rawStr);
+	await flushAsync();
+
+	assert.equal(sent.c_raw_b1.length, 1);
+	assert.equal(sent.c_raw_b1[0], rawStr, 'dc 必须收到 rawStr 而非 stringify(payload)');
+	assert.equal(sent.c_raw_b2.length, 1);
+	assert.equal(sent.c_raw_b2[0], rawStr);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast(payload) 不传 rawStr 时仍走 stringify（兼容旧调用）', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_b3'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	const payload = { type: 'event', event: 'agent', payload: { runId: 'r2' } };
+	peer.broadcast(payload);
+	await flushAsync();
+
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0], JSON.stringify(payload), '未传 rawStr 时回退到 stringify');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast rawStr 非字符串或空串 → 回退 stringify(payload)', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_b4'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	const payload = { type: 'event', event: 'agent' };
+	peer.broadcast(payload, undefined);
+	peer.broadcast(payload, '');
+	peer.broadcast(payload, null);
+	peer.broadcast(payload, 42);
+	await flushAsync();
+
+	const expected = JSON.stringify(payload);
+	assert.equal(sent.length, 4, '四次调用都应回退到 stringify 路径');
+	for (const s of sent) assert.equal(s, expected);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo(connId, payload, rawStr) 用 rawStr 直通，跳过 stringify', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_s1'));
+	await peer.handleSignaling(makeOffer('c_raw_s2'));
+
+	const sent = { c_raw_s1: [], c_raw_s2: [] };
+	const dc1 = makeMockRpcDc({ send: (d) => sent.c_raw_s1.push(d) });
+	const dc2 = makeMockRpcDc({ send: (d) => sent.c_raw_s2.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc1 });
+	PC.instances[1].ondatachannel({ channel: dc2 });
+	await flushAsync();
+
+	const payload = { type: 'res', id: 'r-abc', payload: { runId: 'run-xyz', status: 'ok' } };
+	const rawStr = '{"type":"res","id":"r-abc","payload":{"runId":"run-xyz","status":"ok","extra":"only-in-raw"}}';
+	const ok = await peer.sendTo('c_raw_s1', payload, rawStr);
+	assert.equal(ok, true);
+	await flushAsync();
+	assert.equal(sent.c_raw_s1.length, 1);
+	assert.equal(sent.c_raw_s1[0], rawStr, 'dc 必须收到 rawStr 而非 stringify(payload)');
+	assert.equal(sent.c_raw_s2.length, 0, '不发给其他 session');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo rawStr 直通时仍遵循 session/DC 未就绪 → false', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	assert.equal(await peer.sendTo('nonexistent', { type: 'event' }, '{"x":1}'), false);
+
+	await peer.handleSignaling(makeOffer('c_raw_s3'));
+	assert.equal(await peer.sendTo('c_raw_s3', { type: 'event' }, '{"x":1}'), false);
+
+	const dc = makeMockRpcDc({ readyState: 'connecting' });
+	PC.instances[0].ondatachannel({ channel: dc });
+	assert.equal(await peer.sendTo('c_raw_s3', { type: 'event' }, '{"x":1}'), false);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo rawStr 非字符串或空串 → 回退 stringify(payload)', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_s4'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	const payload = { type: 'res', id: 'r-1' };
+	const expected = JSON.stringify(payload);
+	assert.equal(await peer.sendTo('c_raw_s4', payload, undefined), true);
+	assert.equal(await peer.sendTo('c_raw_s4', payload, ''), true);
+	assert.equal(await peer.sendTo('c_raw_s4', payload, null), true);
+	assert.equal(await peer.sendTo('c_raw_s4', payload, 42), true);
+	await flushAsync();
+	assert.equal(sent.length, 4);
+	for (const s of sent) assert.equal(s, expected);
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast rawStr 直通时即便 payload 含循环引用也不抛（不调 stringify）', async () => {
+	const PC = MockPCFactory();
+	const debugMsgs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_b5'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	// 关键：payload 自引用环，stringify 会抛。rawStr 直通必须完全绕开它。
+	const payload = { type: 'event' };
+	payload.self = payload;
+	const rawStr = '{"type":"event","event":"agent","payload":{"runId":"r-circ"}}';
+	assert.doesNotThrow(() => peer.broadcast(payload, rawStr));
+	await flushAsync();
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0], rawStr);
+	assert.equal(debugMsgs.filter((m) => m.includes('stringify failed')).length, 0,
+		'rawStr 直通路径不应触发 stringify failed 日志');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo rawStr 直通时即便 payload 含循环引用也不抛（不调 stringify）', async () => {
+	const PC = MockPCFactory();
+	const debugMsgs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_s_circ'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	const payload = { type: 'res' };
+	payload.self = payload;
+	const rawStr = '{"type":"res","id":"r-1","payload":{"runId":"run-circ"}}';
+	let ok;
+	await assert.doesNotReject(async () => { ok = await peer.sendTo('c_raw_s_circ', payload, rawStr); });
+	assert.equal(ok, true);
+	await flushAsync();
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0], rawStr);
+	assert.equal(debugMsgs.filter((m) => m.includes('stringify failed')).length, 0,
+		'rawStr 直通路径不应触发 stringify failed 日志');
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: broadcast rawStr 含字面 \\n 时回退 stringify(payload)（保 FBQ JSONL 行约束）', async () => {
+	const PC = MockPCFactory();
+	const debugMsgs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_nl_b'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	// rawStr 含字面 \n（合法 JSON 也允许 string value 之间的 whitespace）。
+	// FBQ 默认实现把记录用 \n 拼成 JSONL，含字面换行会切坏 spill 文件——
+	// 必须回退到 stringify(payload) 走归一化。
+	const payload = { type: 'event', event: 'agent', payload: { runId: 'r-nl' } };
+	const rawWithLF = '{\n  "type": "event",\n  "event": "agent"\n}';
+	peer.broadcast(payload, rawWithLF);
+	await flushAsync();
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0], JSON.stringify(payload), '应回退到 stringify(payload)，不直传含换行的 rawStr');
+	assert.ok(debugMsgs.some((m) => m.includes('rawStr fallback: contains newline')),
+		'回退应有 debug 日志');
+
+	// CR 单独也应触发回退
+	debugMsgs.length = 0;
+	sent.length = 0;
+	const rawWithCR = '{"type":"event"\r,"event":"agent"}';
+	peer.broadcast(payload, rawWithCR);
+	await flushAsync();
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0], JSON.stringify(payload));
+	assert.ok(debugMsgs.some((m) => m.includes('rawStr fallback: contains newline')));
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo rawStr 含字面 \\n 时回退 stringify(payload)', async () => {
+	const PC = MockPCFactory();
+	const debugMsgs = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_raw_nl_s'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync();
+
+	const payload = { type: 'res', id: 'r-nl' };
+	const rawWithLF = '{"type":"res",\n"id":"r-nl"}';
+	const ok = await peer.sendTo('c_raw_nl_s', payload, rawWithLF);
+	assert.equal(ok, true);
+	await flushAsync();
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0], JSON.stringify(payload));
+	assert.ok(debugMsgs.some((m) => m.includes('rawStr fallback: contains newline')));
+	await peer.closeAll();
+});
+
 // --- __sendPeerTransport & 触发点 ---
 
 /** 轮等微任务：queueMicrotask 入队的回调 + 阶段 1 后 sendTo 的 async 链路 */
