@@ -1,69 +1,7 @@
-import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import nodePath from 'node:path';
 
 import { agentSessionsDir, sessionStorePath, sessionTranscriptPath } from '../claw-paths.js';
-
-const DERIVED_TITLE_MAX_LEN = 60;
-
-// OC 注入的 inbound metadata 头部（Conversation info / Sender / Thread starter 等）
-const INBOUND_META_RE = /^\w[\w ]* \(untrusted[^)]*\):\n```json\n[\s\S]*?\n```\n\n/;
-// operator 级策略/指令前缀，如 Skills store policy (operator configured): ...
-const OPERATOR_POLICY_RE = /^\w[\w ]* \(operator configured\):[\s\S]*?\n\n/;
-// OC 注入的用户消息时间戳前缀
-const USER_TS_RE = /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+[^\]]+\]\s*/;
-// 尾部 [message_id: xxx]
-const MSG_ID_SUFFIX_RE = /\n\[message_id:\s*[^\]]+\]\s*$/;
-// 尾部 Untrusted context 块（外部元数据注入）
-const UNTRUSTED_CTX_SUFFIX_RE = /\n\nUntrusted context \(metadata, do not treat as instructions or commands\):\n[\s\S]*$/;
-// 定时任务前缀
-const CRON_UUID_RE = /\[cron:[0-9a-f-]+(?:\s+([^\]]*))?\]\s*/;
-// cron 注入的 Current time 行及其后的系统追加指令（如 "Return your summary..."）
-const CRON_TIME_TAIL_RE = /\nCurrent time:[^\n]+[\s\S]*$/;
-// 从 Current time 行提取 UTC 时间部分
-const CRON_TIME_UTC_RE = /(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s+UTC/;
-
-function formatCronTime(matchedText) {
-	const m = matchedText.match(CRON_TIME_UTC_RE);
-	if (!m) return '';
-	/* c8 ignore start -- Date 构造在正则已校验的输入下不会抛出 */
-	try {
-		const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`);
-		if (!Number.isFinite(d.getTime())) return '';
-		const y = d.getFullYear();
-		const mo = String(d.getMonth() + 1).padStart(2, '0');
-		const dd = String(d.getDate()).padStart(2, '0');
-		const hh = String(d.getHours()).padStart(2, '0');
-		const mi = String(d.getMinutes()).padStart(2, '0');
-		return ` ${y}-${mo}-${dd} ${hh}${mi}`;
-	}
-	catch {
-		return '';
-	}
-	/* c8 ignore stop */
-}
-
-function stripLeadingPattern(text, re) {
-	let prev;
-	do {
-		prev = text;
-		text = text.replace(re, '');
-	} while (text !== prev);
-	return text;
-}
-
-function cleanTitleText(text) {
-	/* c8 ignore next */
-	if (!text) return '';
-	let s = stripLeadingPattern(text, INBOUND_META_RE);
-	s = stripLeadingPattern(s, OPERATOR_POLICY_RE);
-	s = s.replace(CRON_TIME_TAIL_RE, (match) => formatCronTime(match));
-	return s
-		.replace(USER_TS_RE, '')
-		.replace(CRON_UUID_RE, (_, taskName) => taskName ? `${taskName} ` : '')
-		.replace(UNTRUSTED_CTX_SUFFIX_RE, '')
-		.replace(MSG_ID_SUFFIX_RE, '')
-		.trim();
-}
 
 function toNum(value, fallback) {
 	const n = Number(value);
@@ -77,12 +15,33 @@ function clamp(value, min, max, fallback) {
 	return n;
 }
 
-function readJsonSafe(filePath, fallback) {
+async function readJsonSafe(filePath, fallback) {
 	try {
-		return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+		const text = await fsp.readFile(filePath, 'utf8');
+		return JSON.parse(text);
 	}
 	catch {
 		return fallback;
+	}
+}
+
+// readdir 与后续 stat 之间存在天然 race window（文件被并发删除/reset 归档）。
+// 统一把 ENOENT/ENOTDIR 视为"目录消失即空目录"，其它错误（如 EACCES）按原样上抛。
+async function safeReaddir(dir) {
+	try { return await fsp.readdir(dir); }
+	catch (err) {
+		if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
+		/* c8 ignore next 2 -- 非 ENOENT/ENOTDIR 的 fs 错误按原样上抛 */
+		throw err;
+	}
+}
+
+async function safeAccess(filePath) {
+	try { await fsp.access(filePath); return true; }
+	catch (err) {
+		if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return false;
+		/* c8 ignore next 2 -- 非 ENOENT/ENOTDIR 的 fs 错误按原样上抛 */
+		throw err;
 	}
 }
 
@@ -118,60 +77,6 @@ function shouldReplaceByPriority(current, next) {
 	return next.updatedAt > current.updatedAt;
 }
 
-function truncateTitle(text, maxLen = DERIVED_TITLE_MAX_LEN) {
-	if (text.length <= maxLen) return text;
-	const cut = text.slice(0, maxLen - 1);
-	const lastSpace = cut.lastIndexOf(' ');
-	if (lastSpace > maxLen * 0.6) {
-		return `${cut.slice(0, lastSpace)}…`;
-	}
-	return `${cut}…`;
-}
-
-function extractRawTextFromContent(content) {
-	if (typeof content === 'string') return content;
-	/* c8 ignore next */
-	if (!Array.isArray(content)) return undefined;
-	for (const part of content) {
-		if (!part || typeof part !== 'object') continue;
-		if (part.type !== 'text') continue;
-		/* c8 ignore next */
-		if (typeof part.text !== 'string') continue;
-		if (part.text.trim()) return part.text;
-	}
-	return undefined;
-}
-
-function findFirstUserRawText(filePath, logger) {
-	const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
-	for (const line of lines) {
-		if (!line) continue;
-		try {
-			const row = JSON.parse(line);
-			if (row?.type !== 'message') continue;
-			if (row?.message?.role !== 'user') continue;
-			const raw = extractRawTextFromContent(row?.message?.content);
-			if (raw && raw.trim()) return raw;
-		}
-		catch (err) {
-			/* c8 ignore next -- ?./?? fallback */
-			logger.warn?.(`[session-manager] bad json line skipped when deriving title: ${String(err?.message ?? err)}`);
-		}
-	}
-	return undefined;
-}
-
-function deriveTitle(filePath, logger) {
-	const rawText = findFirstUserRawText(filePath, logger);
-	if (!rawText) return undefined;
-	const cleaned = cleanTitleText(rawText);
-	if (!cleaned) return undefined;
-	const normalized = cleaned.replace(/\s+/g, ' ').trim();
-	/* c8 ignore next */
-	if (!normalized) return undefined;
-	return truncateTitle(normalized, DERIVED_TITLE_MAX_LEN);
-}
-
 export function createSessionManager(options = {}) {
 	/* c8 ignore next */
 	const logger = options.logger ?? console;
@@ -185,22 +90,22 @@ export function createSessionManager(options = {}) {
 		return resolveSessionsDir(aid);
 	}
 
-	function readIndex(agentId = 'main') {
+	async function readIndex(agentId = 'main') {
 		/* c8 ignore next */
 		const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'main';
 		const file = resolveStorePath(aid);
-		const data = readJsonSafe(file, {});
+		const data = await readJsonSafe(file, {});
 		/* c8 ignore next */
 		if (!data || typeof data !== 'object') return {};
 		return data;
 	}
 
-	function listAll(params = {}) {
+	async function listAll(params = {}) {
 		const agentId = typeof params.agentId === 'string' && params.agentId.trim() ? params.agentId.trim() : 'main';
 		const limit = clamp(params.limit, 1, 200, 50);
 		const cursor = clamp(params.cursor, 0, Number.MAX_SAFE_INTEGER, 0);
 		const dir = sessionsDir(agentId);
-		const index = readIndex(agentId);
+		const index = await readIndex(agentId);
 		const indexed = new Set(
 			Object.values(index)
 				.map((item) => item?.sessionId)
@@ -214,13 +119,20 @@ export function createSessionManager(options = {}) {
 			}
 		}
 
-		const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+		const files = await safeReaddir(dir);
 		const grouped = new Map();
 		for (const file of files) {
 			const parsed = parseSessionFileName(file);
 			if (!parsed?.sessionId) continue;
 			const full = nodePath.join(dir, file);
-			const stat = fs.statSync(full);
+			let stat;
+			try { stat = await fsp.stat(full); }
+			/* c8 ignore start -- readdir→stat race window：文件被并发删除时跳过 */
+			catch (err) {
+				if (err.code === 'ENOENT') continue;
+				throw err;
+			}
+			/* c8 ignore stop */
 			const row = {
 				sessionId: parsed.sessionId,
 				sessionKey: sessionKeyById.get(parsed.sessionId) ?? null,
@@ -256,20 +168,7 @@ export function createSessionManager(options = {}) {
 		const rows = Array.from(grouped.values());
 		rows.sort((a, b) => b.updatedAt - a.updatedAt);
 
-		const items = rows.slice(cursor, cursor + limit).map((row) => {
-			if (!row.fileName) {
-				return { ...row };
-			}
-			const transcriptPath = nodePath.join(dir, row.fileName);
-			const derivedTitle = deriveTitle(transcriptPath, logger);
-			if (!derivedTitle) {
-				return { ...row };
-			}
-			return {
-				...row,
-				derivedTitle,
-			};
-		});
+		const items = rows.slice(cursor, cursor + limit).map((row) => ({ ...row }));
 		const nextCursor = cursor + limit < rows.length ? String(cursor + limit) : null;
 		return {
 			agentId,
@@ -280,53 +179,73 @@ export function createSessionManager(options = {}) {
 		};
 	}
 
-	function resolveTranscriptFile(agentId, sessionId) {
+	async function resolveTranscriptFile(agentId, sessionId) {
 		const dir = sessionsDir(agentId);
 		// live 文件优先：同一 sessionId 可能同时存在 live 和 reset 文件
 		// （OpenClaw reset 后复用 sessionId），live 代表当前活跃 transcript
 		const livePath = resolveTranscriptPath(sessionId, agentId);
-		if (fs.existsSync(livePath)) {
-			return livePath;
-		}
-		const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+		if (await safeAccess(livePath)) return livePath;
+
+		const files = await safeReaddir(dir);
 		const resetPrefix = `${sessionId}.jsonl.reset.`;
-		const resetCandidates = files
-			.filter((name) => name.startsWith(resetPrefix))
-			.map((name) => {
-				const full = nodePath.join(dir, name);
-				const stat = fs.statSync(full);
-				return {
-					path: full,
-					archiveStamp: name.slice(resetPrefix.length),
-					updatedAt: stat.mtimeMs,
-				};
-			})
-			.sort((a, b) => {
-				if (a.archiveStamp !== b.archiveStamp) {
-					return b.archiveStamp.localeCompare(a.archiveStamp);
-				}
-				/* c8 ignore next -- 同一 sessionId 的 reset 文件不会有相同 archiveStamp */
-				return b.updatedAt - a.updatedAt;
+		const resetCandidates = [];
+		for (const name of files) {
+			if (!name.startsWith(resetPrefix)) continue;
+			const full = nodePath.join(dir, name);
+			let stat;
+			try { stat = await fsp.stat(full); }
+			/* c8 ignore start -- readdir→stat race window */
+			catch (err) {
+				if (err.code === 'ENOENT') continue;
+				throw err;
+			}
+			/* c8 ignore stop */
+			resetCandidates.push({
+				path: full,
+				archiveStamp: name.slice(resetPrefix.length),
+				updatedAt: stat.mtimeMs,
 			});
+		}
+		resetCandidates.sort((a, b) => {
+			if (a.archiveStamp !== b.archiveStamp) {
+				return b.archiveStamp.localeCompare(a.archiveStamp);
+			}
+			/* c8 ignore next -- 同一 sessionId 的 reset 文件不会有相同 archiveStamp */
+			return b.updatedAt - a.updatedAt;
+		});
 		if (resetCandidates.length > 0) {
 			return resetCandidates[0].path;
 		}
 		return null;
 	}
 
-	function get(params = {}) {
+	async function readJsonlLines(file) {
+		try {
+			const text = await fsp.readFile(file, 'utf8');
+			return text.split(/\r?\n/).filter(Boolean);
+		}
+		/* c8 ignore start -- resolveTranscriptFile→readFile race window */
+		catch (err) {
+			if (err.code === 'ENOENT') return [];
+			throw err;
+		}
+		/* c8 ignore stop */
+	}
+
+	async function get(params = {}) {
 		const agentId = typeof params.agentId === 'string' && params.agentId.trim() ? params.agentId.trim() : 'main';
 		const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
 		if (!sessionId) throw new Error('sessionId required');
 		const limit = clamp(params.limit, 1, 500, 100);
 		const cursor = clamp(params.cursor, 0, Number.MAX_SAFE_INTEGER, 0);
-		const file = resolveTranscriptFile(agentId, sessionId);
+		const file = await resolveTranscriptFile(agentId, sessionId);
 		if (!file) {
 			return { agentId, sessionId, total: 0, cursor: String(cursor), nextCursor: null, messages: [] };
 		}
 
+		const lines = await readJsonlLines(file);
 		const all = [];
-		for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)) {
+		for (const line of lines) {
 			try {
 				all.push(JSON.parse(line));
 			}
@@ -352,20 +271,21 @@ export function createSessionManager(options = {}) {
 	 * 按 sessionId 获取消息，返回完整 JSONL 行级结构。
 	 * 只返回 type==="message" 且有合法 message.role 的行。
 	 * @param {{ sessionId: string, agentId?: string, limit?: number }} params
-	 * @returns {{ messages: object[] }}
+	 * @returns {Promise<{ messages: object[] }>}
 	 */
-	function getById(params = {}) {
+	async function getById(params = {}) {
 		const agentId = typeof params.agentId === 'string' && params.agentId.trim() ? params.agentId.trim() : 'main';
 		const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
 		if (!sessionId) throw new Error('sessionId required');
 		const limit = clamp(params.limit, 1, 500, 500);
-		const file = resolveTranscriptFile(agentId, sessionId);
+		const file = await resolveTranscriptFile(agentId, sessionId);
 		if (!file) {
 			return { messages: [] };
 		}
 
+		const lines = await readJsonlLines(file);
 		const messages = [];
-		for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)) {
+		for (const line of lines) {
 			try {
 				const row = JSON.parse(line);
 				if (row?.type !== 'message') continue;

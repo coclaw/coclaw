@@ -363,21 +363,21 @@ const plugin = {
 				// best-effort ensure：失败不阻断 listAll
 				try { await ensureAgentSession(agentId); }
 				catch {}
-				respond(true, manager.listAll(params ?? {}));
+				respond(true, await manager.listAll(params ?? {}));
 			}
 			catch (err) {
 				respondError(respond, err);
 			}
 		});
 
-		api.registerGatewayMethod('nativeui.sessions.get', ({ params, respond }) => {
+		api.registerGatewayMethod('nativeui.sessions.get', async ({ params, respond }) => {
 			try {
 				const sessionId = params?.sessionId;
 				if (typeof sessionId !== 'string' || sessionId.trim().length === 0) {
 					respondInvalid(respond, 'sessionId required');
 					return;
 				}
-				respond(true, manager.get(params ?? {}));
+				respond(true, await manager.get(params ?? {}));
 			}
 			catch (err) {
 				respondError(respond, err);
@@ -474,7 +474,7 @@ const plugin = {
 			}
 		});
 
-		api.registerGatewayMethod('coclaw.topics.getHistory', ({ params, respond }) => {
+		api.registerGatewayMethod('coclaw.topics.getHistory', async ({ params, respond }) => {
 			try {
 				const topicId = params?.topicId?.trim?.();
 				if (!topicId) {
@@ -483,7 +483,7 @@ const plugin = {
 				}
 				const agentId = params?.agentId?.trim?.() || 'main';
 				// 直接复用 session-manager 的 get()，topicId 即 sessionId
-				respond(true, manager.get({ agentId, sessionId: topicId }));
+				respond(true, await manager.get({ agentId, sessionId: topicId }));
 			}
 			catch (err) {
 				respondError(respond, err);
@@ -577,7 +577,7 @@ const plugin = {
 		});
 
 		// TODO: coclaw.topics.getHistory 未来可废弃，UI 改用 coclaw.sessions.getById
-		api.registerGatewayMethod('coclaw.sessions.getById', ({ params, respond }) => {
+		api.registerGatewayMethod('coclaw.sessions.getById', async ({ params, respond }) => {
 			try {
 				const sessionId = params?.sessionId?.trim?.();
 				if (!sessionId) {
@@ -586,7 +586,7 @@ const plugin = {
 				}
 				const agentId = params?.agentId?.trim?.() || 'main';
 				const limit = params?.limit;
-				respond(true, manager.getById({ agentId, sessionId, limit }));
+				respond(true, await manager.getById({ agentId, sessionId, limit }));
 			}
 			catch (err) {
 				respondError(respond, err);
