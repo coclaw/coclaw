@@ -88,7 +88,16 @@ export class WebRtcPeer {
 			this.__logDebug(`${msg.type} from ${connId}`);
 			if (msg.type === 'rtc:closed') {
 				const session = this.__sessions.get(connId);
-				if (session) await this.closeByConnId(connId, session);
+				if (session) {
+					try {
+						await this.closeByConnId(connId, session);
+					} catch (err) {
+						// 本地补一条细分 warn，让 outer signaling-error 之外多一条可定位的 close 失败信号；
+						// 仍 rethrow 让 realtime-bridge 的 message handler outer catch 兜底（不让 gateway 崩）。
+						this.logger.warn?.(`${this.__rtcTag} [${connId}] closeByConnId failed on rtc:closed: ${err?.message}`);
+						throw err;
+					}
+				}
 			}
 		}
 	}

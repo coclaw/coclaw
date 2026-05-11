@@ -7328,3 +7328,97 @@ test('WebRtcPeer: MAX_SESSIONS 溢出时 evict 的 closeByConnId 阻塞 → 新 
 
 	await peer.closeAll();
 });
+
+// --- a145aa6 follow-up 第 7-9 项 pin 测试 ---
+// 在 codex-rescue 前提扫描确认下：
+//   7. rtc:closed 路径 closeByConnId 抛错（pc.close 异常等）→ 修法是本地补一条细分 warn + rethrow，
+//      让 outer realtime-bridge 的 rtc.signaling-error 之外多一条 close 失败定位信号。
+//   9. closeAll 进入 await Promise.all 后并发建立的新 session 不在快照里 —— 预存语义；
+//      新 session 的 onconnectionstatechange handler 仍 wire，自然 failed 后 12h TTL 兜底回收。
+
+test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错 → 本地 warn 细分日志 + rethrow 到上层（不被同函数吞）', async () => {
+	// 钉死第 7 项修法：handleSignaling 内裸 await closeByConnId 外加 try/catch + warn + throw。
+	// 任何把 try/catch 改成静默 swallow 的 regression 会让 outer signaling-error 失去具体 close 失败信号。
+	const PC = MockPCFactory();
+	const warns = [];
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: {
+			info: () => {},
+			warn: (msg) => warns.push(msg),
+			error: () => {},
+			debug: () => {},
+		},
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_close_throw'));
+	const session = peer.__sessions.get('c_close_throw');
+	session.pc.close = async () => { throw new Error('mock pc.close failed'); };
+
+	// rtc:closed 触发 closeByConnId → finalize 内 pc.close 抛 → 期待 handleSignaling 也 reject 同一个 err
+	await assert.rejects(
+		peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_close_throw' }),
+		/mock pc\.close failed/,
+		'handleSignaling 把 closeByConnId 抛的错继续向上传到调用者（outer realtime-bridge 兜底）',
+	);
+
+	// 钉死细分 warn 内容（connId + 原始 message 都要在）
+	assert.ok(
+		warns.some((m) => /closeByConnId failed on rtc:closed/.test(m) && /c_close_throw/.test(m) && /mock pc\.close failed/.test(m)),
+		`预期看到细分 close 失败 warn，实际 warns: ${JSON.stringify(warns)}`,
+	);
+});
+
+test('WebRtcPeer: closeAll 同步快照之后落地的新 session 不被本次 closeAll 关闭 + onconnectionstatechange 兜底链路存活', async () => {
+	// 钉死第 9 项预存语义：closeAll 内 `[...values()].map(...)` 是同步快照；
+	// 进入 Promise.all 等待后，并发 message handler 落地的新 session 不在快照里。
+	// 如未来想把 closeAll 改成 while-loop drain，这条测试会红 → 看到注释知道是已知边界、非 regression。
+	resetRemoteLog();
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 建 sessionA
+	await peer.handleSignaling(makeOffer('c_snap_a'));
+	const sessionA = peer.__sessions.get('c_snap_a');
+	assert.ok(sessionA);
+
+	// 卡住 sessionA 的 pc.close → 让 closeAll 内 Promise.all 停在 await 阶段
+	let releaseAClose;
+	const aCloseGate = new Promise((resolve) => { releaseAClose = resolve; });
+	let pcAClosed = false;
+	sessionA.pc.close = async () => { await aCloseGate; pcAClosed = true; };
+
+	// 启动 closeAll（不 await）—— 同步段快照即刻完成，sessionA 被加入 closing 列表并进入 finalize
+	const closeAllPromise = peer.closeAll();
+	await flushAsync();
+
+	// 验证 closeAll 同步段已对 sessionA 完成 detach + delete，正卡在 pc.close await 上
+	assert.equal(peer.__sessions.has('c_snap_a'), false, 'sessionA 在 closeAll 同步段后已从表里删');
+	assert.equal(pcAClosed, false, 'sessionA 的 pc.close 仍卡在 gate（closeAll 卡在 Promise.all）');
+
+	// 并发：落地 sessionB（模拟 message handler 已过 sock guard，sessionB 在 closeAll 快照之后才入表）
+	await peer.handleSignaling(makeOffer('c_snap_b'));
+	const sessionB = peer.__sessions.get('c_snap_b');
+	assert.ok(sessionB, 'sessionB 入表（即便 closeAll 还在 await Promise.all）');
+
+	// 放行 sessionA → closeAll 完成
+	releaseAClose();
+	await closeAllPromise;
+	assert.equal(pcAClosed, true, 'sessionA 已收尾');
+
+	// 钉死预存行为：sessionB 不在 closeAll 的同步快照里，**仍留在表中**
+	assert.ok(peer.__sessions.has('c_snap_b'), '快照之后落地的 sessionB 不被本次 closeAll 关闭');
+
+	// 兜底链路验证：sessionB 的 onconnectionstatechange handler 仍 wire（不是 null）
+	// → 自然进入 failed 时能启动 __failedTimer，12h TTL 后 closeByConnId 回收资源
+	assert.equal(typeof sessionB.pc.onconnectionstatechange, 'function', 'sessionB 的 onconnectionstatechange handler 仍可 fire（兜底链路存活）');
+
+	await peer.closeAll();
+});
