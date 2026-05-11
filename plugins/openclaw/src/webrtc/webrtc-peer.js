@@ -88,16 +88,7 @@ export class WebRtcPeer {
 			this.__logDebug(`${msg.type} from ${connId}`);
 			if (msg.type === 'rtc:closed') {
 				const session = this.__sessions.get(connId);
-				if (session) {
-					try {
-						await this.closeByConnId(connId, session);
-					} catch (err) {
-						// 本地补一条细分 warn，让 outer signaling-error 之外多一条可定位的 close 失败信号；
-						// 仍 rethrow 让 realtime-bridge 的 message handler outer catch 兜底（不让 gateway 崩）。
-						this.logger.warn?.(`${this.__rtcTag} [${connId}] closeByConnId failed on rtc:closed: ${err?.message}`);
-						throw err;
-					}
-				}
+				if (session) await this.closeByConnId(connId, session);
 			}
 		}
 	}
@@ -124,10 +115,20 @@ export class WebRtcPeer {
 		this.logger.info?.(`${this.__rtcTag} [${connId}] closed`);
 	}
 
-	/** 关闭所有 PeerConnection */
+	/**
+	 * 关闭所有 PeerConnection。每轮快照表内当前所有 session 并发关闭，
+	 * 表非空就继续 drain——若 closeAll await Promise.all 期间另一条 message handler
+	 * 已过 sock guard 并落地新 session（auth-close / stop 窄缝），下一轮把它收掉，
+	 * 结构性消除"快照漏掉新 session"的 race，不必依赖 12h failed-TTL 兜底。
+	 *
+	 * 终止条件：调用方（realtime-bridge auth-close / stop）已先关 server WS，
+	 * 不会再有新 rtc:offer 涌入，drain 至多一两轮就达表空。
+	 */
 	async closeAll() {
-		const closing = [...this.__sessions.values()].map((s) => this.closeByConnId(s.connId, s));
-		await Promise.all(closing);
+		while (this.__sessions.size > 0) {
+			const closing = [...this.__sessions.values()].map((s) => this.closeByConnId(s.connId, s));
+			await Promise.all(closing);
+		}
 	}
 
 	/**

@@ -1310,8 +1310,12 @@ export class RealtimeBridge {
 						await this.__webrtcPeerReady;
 						await this.webrtcPeer.handleSignaling(payload);
 					} catch (err) {
-						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found): ${err?.message}`);
-						remoteLog(`rtc.signaling-error msg=${err?.message}`);
+						// type / conn 字段细分定位：让 server 端日志能直接区分 offer / closed / ice 路径，
+						// 不必再靠 msg 字符串猜 close 失败还是 offer 失败
+						const sigType = payload?.type ?? 'unknown';
+						const sigConn = payload?.fromConnId ?? payload?.toConnId ?? 'unknown';
+						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found) type=${sigType} conn=${sigConn}: ${err?.message}`);
+						remoteLog(`rtc.signaling-error type=${sigType} conn=${sigConn} msg=${err?.message}`);
 					}
 					return;
 				}

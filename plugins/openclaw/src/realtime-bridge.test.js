@@ -2991,7 +2991,8 @@ test('RealtimeBridge should dispatch rtc:ready and rtc:closed to WebRtcPeer', as
 	}
 });
 
-test('RealtimeBridge should handle rtc: signaling error gracefully', async () => {
+test('RealtimeBridge should handle rtc: signaling error gracefully with type+conn fields in log and remoteLog', async () => {
+	resetRemoteLog();
 	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
 	try {
 		// 发送一个会导致错误的 rtc:offer（无 payload.sdp）
@@ -3004,7 +3005,15 @@ test('RealtimeBridge should handle rtc: signaling error gracefully', async () =>
 		});
 		await waitFor(() => logs.some((l) => String(l).includes('signaling error')), { label: 'signaling error logged' });
 
-		assert.ok(logs.some((l) => String(l).includes('signaling error')));
+		// 钉死 outer catch 携带 type / conn 细分字段（替代旧的"通用 signaling error"行）：
+		// 让 server 端运维不必靠 err.message 字符串猜路径，直接看 type=、conn=
+		// 正则用 \b 边界，避免 `type=rtc:offer-x` / `conn=c_err_x` 等子串误满足
+		assert.ok(logs.some((l) => /signaling error/.test(String(l)) && /\btype=rtc:offer\b/.test(String(l)) && /\bconn=c_err\b/.test(String(l))),
+			`expected signaling error log with type + conn fields, got: ${JSON.stringify(logs)}`);
+
+		const remoteTexts = collectRemoteLogTexts(server);
+		assert.ok(remoteTexts.some((t) => /^rtc\.signaling-error /.test(t) && /\btype=rtc:offer\b/.test(t) && /\bconn=c_err\b/.test(t)),
+			`expected remoteLog rtc.signaling-error with type + conn fields, got: ${JSON.stringify(remoteTexts)}`);
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
