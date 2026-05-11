@@ -2,6 +2,7 @@ import fsp from 'node:fs/promises';
 import nodePath from 'node:path';
 
 import { agentSessionsDir, sessionStorePath, sessionTranscriptPath } from '../claw-paths.js';
+import { iterTextLines } from '../utils/text-line-stream.js';
 
 function toNum(value, fallback) {
 	const n = Number(value);
@@ -219,14 +220,15 @@ export function createSessionManager(options = {}) {
 		return null;
 	}
 
-	async function readJsonlLines(file) {
+	// 读 transcript 全文；不存在视为空字符串。返回原始文本，由调用方走 iterTextLines
+	// 流式扫描 + 解析，避免大文件 split 一次性卡 event loop。
+	async function readTranscriptText(file) {
 		try {
-			const text = await fsp.readFile(file, 'utf8');
-			return text.split(/\r?\n/).filter(Boolean);
+			return await fsp.readFile(file, 'utf8');
 		}
 		/* c8 ignore start -- resolveTranscriptFile→readFile race window */
 		catch (err) {
-			if (err.code === 'ENOENT') return [];
+			if (err.code === 'ENOENT') return '';
 			throw err;
 		}
 		/* c8 ignore stop */
@@ -243,9 +245,9 @@ export function createSessionManager(options = {}) {
 			return { agentId, sessionId, total: 0, cursor: String(cursor), nextCursor: null, messages: [] };
 		}
 
-		const lines = await readJsonlLines(file);
+		const text = await readTranscriptText(file);
 		const all = [];
-		for (const line of lines) {
+		for await (const line of iterTextLines(text)) {
 			try {
 				all.push(JSON.parse(line));
 			}
@@ -283,9 +285,9 @@ export function createSessionManager(options = {}) {
 			return { messages: [] };
 		}
 
-		const lines = await readJsonlLines(file);
+		const text = await readTranscriptText(file);
 		const messages = [];
-		for (const line of lines) {
+		for await (const line of iterTextLines(text)) {
 			try {
 				const row = JSON.parse(line);
 				if (row?.type !== 'message') continue;

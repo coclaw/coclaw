@@ -404,6 +404,39 @@ test('listAll/get - sessions 目录路径上有文件挡路时返回空（ENOTDI
 	assert.equal(got.total, 0);
 });
 
+// === 跨 yield 阈值的大 transcript 不丢消息 ===
+test('get/getById - 跨越 yield 阈值的大 transcript 完整解析', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	// 默认 yieldEvery=100；造 350 行确保至少跨 3 次让出边界
+	const ROW_COUNT = 350;
+	const rows = [];
+	for (let i = 0; i < ROW_COUNT; i++) {
+		const role = i % 2 === 0 ? 'user' : 'assistant';
+		rows.push(JSON.stringify({ type: 'message', message: { role, content: `c${i}` } }));
+	}
+	await fs.writeFile(nodePath.join(sessionsDir, 'big.jsonl'), `${rows.join('\n')}\n`, 'utf8');
+
+	const manager = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+
+	const detail = await manager.get({ sessionId: 'big', limit: 500 });
+	assert.equal(detail.total, ROW_COUNT);
+	assert.equal(detail.messages[0].message.content, 'c0');
+	assert.equal(detail.messages[ROW_COUNT - 1].message.content, `c${ROW_COUNT - 1}`);
+
+	const tail = await manager.getById({ sessionId: 'big', limit: 500 });
+	assert.equal(tail.messages.length, ROW_COUNT);
+	assert.equal(tail.messages[0].message.content, 'c0');
+	assert.equal(tail.messages[ROW_COUNT - 1].message.content, `c${ROW_COUNT - 1}`);
+});
+
 // === 默认构造（不注入 resolver）通过 setRuntime 端到端 ===
 test('默认构造：通过 setRuntime 走 claw-paths 默认布局解析路径', async () => {
 	const { setRuntime } = await import('../runtime.js');
