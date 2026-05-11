@@ -1,5 +1,0 @@
----
-"@coclaw/openclaw-coclaw": patch
----
-
-Skip the redundant JSON.stringify on the gateway WS → plugin → DC forward path to remove a recurring main-thread CPU burst. Inbound `event:agent` frames carrying multi-MB tool_result / compaction-summary payloads previously paid one `JSON.parse` on the WS handler entry plus another `JSON.stringify` inside `webrtcPeer.broadcast` / `sendTo` before being chunked and sent — the second pass was a 30–100ms synchronous block per big frame that stalled RTC keepalives, RPC delivery, and PC events. `broadcast(payload, rawStr?)` and `sendTo(connId, payload, rawStr?)` now accept an optional pre-serialized string and pass it straight to the rpcQueue when the gateway WS handler already has it; the three forward exits (rpc-res unicast / agent-event unicast / fallback broadcast) wire the original `event.data` through. Existing call sites that build small frames in code (error responses, plugin-probe, broadcastPluginEvent) are unchanged. The raw fastpath rejects strings containing literal `\n`/`\r` and falls back to stringify so the FBQ JSONL spill format stays intact even if upstream ever sends pretty-printed JSON.

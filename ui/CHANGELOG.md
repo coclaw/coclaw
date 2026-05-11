@@ -1,5 +1,22 @@
 # @coclaw/ui
 
+## 0.24.1
+
+### Patch Changes
+
+- 42de9b3: Eliminate duplicate `sessions.list` RPC on first screen. Dashboard no longer fetches its own copy; it now reads raw session metadata from `sessions.store` via a new `getRawSessionsForClaw(clawId, { force })` action, which keeps a per-claw raw cache alongside the existing folded `SessionItem[]` (same fetch, same lifecycle — written only after the claw still exists post-fetch; preserved on failure for visual continuity with `MainList`).
+
+  `loadDashboard(clawId, { force })` gains a `force` flag so reconnect-recovery (`refreshClawResources`) and explicit user refresh (entering `ManageClawsPage`, `app:foreground` after the 60s freshness gate) bypass the cache and re-pull through `sessions.store`. To make `force` actually guarantee a fresh fetch, both `dashboard.store._loadingByClaw` and `sessions.store._perClawLoading` now track per-flight `{ p, force }`: a `force: true` caller that lands on a non-force in-flight request chains after it and starts a new round, instead of being silently coalesced into the older flight; two `force: true` callers still coalesce, as do any non-force callers (any running fetch is fresh enough for them).
+
+  The dashboard's own per-claw in-flight guard is retained for the remaining 5+N RPCs (`status` / `models.list` / `usage.cost` / `tts.status` / `channels.status` / `tools.catalog × agents`).
+
+- 3fc569f: Eliminate the last duplicate first-screen RPC pair (`agent.identity.get` and `tools.catalog`) caused by `MainList`'s `clawListKey` watcher firing when `dcReady` flips `false→true`. The DC-ready transition already triggers `claw-lifecycle.__fullInit → initClawResources`, which fully owns first-screen loading. The watcher's `dcReady` axis was a redundant second trigger that arrived milliseconds later — after the in-flight dedup map in the per-claw caches had already cleared, so duplicate RPCs slipped through.
+
+  `clawListKey` now keys only on `id` and `online`. The watcher still fires on claw membership changes and online-state flips (covering new-claw bind, claw removal, presence toggles in either direction), which are not handled by the lifecycle path. The accepted trade-off: lifecycle loaders silently swallow errors (tracked separately in `ui/TODO.md`), so first-screen loading no longer has an opportunistic retry via the watcher when lifecycle fails. Independently fixing that silent-catch is the right path; relying on watcher-as-fallback is not.
+
+- 05fd123: Merge `loadAllSessions` / `loadAllTopics` with their per-claw counterparts so that both entry points share the same `_perClawLoading` in-flight cache. Concurrent first-screen triggers (init / refresh / MainList watcher) no longer fire duplicate `sessions.list` and `coclaw.topics.list` RPCs against the gateway for the same claw. `_loadingPromise` is kept as an outer fast-path for back-to-back `loadAll*` callers.
+- cecbbe4: Remove dead `cleanDerivedTitle` helper and its supporting regex/format helpers from `session-msg-group.js`. The plugin no longer emits the `derivedTitle` field on session list responses (it was an early prototype, the chat-history/topic title flow superseded it), and no production UI code imports `cleanDerivedTitle`. Drops ~120 lines of source and ~110 lines of tests.
+
 ## 0.24.0
 
 ### Minor Changes
