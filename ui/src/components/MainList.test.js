@@ -1076,3 +1076,170 @@ test('mounted 时调用 webAgentsStore.loadAll()', async () => {
 
 	expect(spy).toHaveBeenCalled();
 });
+
+// --- clawListKey watcher：触发维度 ---
+
+/**
+ * mounted() 的 loadAllData() 会在 SSE 快照到达前阻塞，不会调用三套 loadAll；spy 在 mount 后安装
+ * 不会捕获到挂载阶段的调用，因此后续断言的调用次数即 watcher 实际触发次数。
+ */
+async function setupWatcherWrapper() {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+	await wrapper.vm.$nextTick();
+	const agentsStore = wrapper.vm.agentsStore;
+	const topicsStore = wrapper.vm.topicsStore;
+	const sessionsStore = wrapper.vm.sessionsStore;
+	const agentsSpy = vi.spyOn(agentsStore, 'loadAllAgents').mockResolvedValue();
+	const topicsSpy = vi.spyOn(topicsStore, 'loadAllTopics').mockResolvedValue();
+	const sessionsSpy = vi.spyOn(sessionsStore, 'loadAllSessions').mockResolvedValue();
+	return { wrapper, agentsSpy, topicsSpy, sessionsSpy };
+}
+
+test('clawListKey watcher：claw 新增（items 长度变化）触发 agents/topics/sessions 重载', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	expect(agentsSpy).toHaveBeenCalledTimes(1);
+	expect(topicsSpy).toHaveBeenCalledTimes(1);
+	expect(sessionsSpy).toHaveBeenCalledTimes(1);
+});
+
+test('clawListKey watcher：claw online false→true 触发重载', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: false }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+	agentsSpy.mockClear();
+	topicsSpy.mockClear();
+	sessionsSpy.mockClear();
+
+	clawsStore.byId['b1'].online = true;
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	expect(agentsSpy).toHaveBeenCalledTimes(1);
+	expect(topicsSpy).toHaveBeenCalledTimes(1);
+	expect(sessionsSpy).toHaveBeenCalledTimes(1);
+});
+
+test('clawListKey watcher：claw online true→false 同样触发重载（下线后清理本地视图）', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+	agentsSpy.mockClear();
+	topicsSpy.mockClear();
+	sessionsSpy.mockClear();
+
+	clawsStore.byId['b1'].online = false;
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	expect(agentsSpy).toHaveBeenCalledTimes(1);
+	expect(topicsSpy).toHaveBeenCalledTimes(1);
+	expect(sessionsSpy).toHaveBeenCalledTimes(1);
+});
+
+test('clawListKey watcher：dcReady false→true 不再触发重载（首屏由 lifecycle 接管，避免重复 RPC）', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+	agentsSpy.mockClear();
+	topicsSpy.mockClear();
+	sessionsSpy.mockClear();
+
+	clawsStore.byId['b1'].dcReady = true;
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	expect(agentsSpy).not.toHaveBeenCalled();
+	expect(topicsSpy).not.toHaveBeenCalled();
+	expect(sessionsSpy).not.toHaveBeenCalled();
+});
+
+test('clawListKey watcher：claw 删除（items 长度变化）触发重载', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([
+		{ id: 'b1', name: 'Bot1', online: true },
+		{ id: 'b2', name: 'Bot2', online: true },
+	]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+	agentsSpy.mockClear();
+	topicsSpy.mockClear();
+	sessionsSpy.mockClear();
+
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot1', online: true }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	expect(agentsSpy).toHaveBeenCalledTimes(1);
+	expect(topicsSpy).toHaveBeenCalledTimes(1);
+	expect(sessionsSpy).toHaveBeenCalledTimes(1);
+});
+
+test('clawListKey watcher：agents 必须先完成，topics/sessions 才能开跑（agents 阻塞时两者均不调用）', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+
+	let agentsResolve;
+	agentsSpy.mockImplementation(() => new Promise((resolve) => { agentsResolve = resolve; }));
+
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	// agents 还未 resolve 时 topics/sessions 不应被调
+	expect(agentsSpy).toHaveBeenCalledTimes(1);
+	expect(topicsSpy).not.toHaveBeenCalled();
+	expect(sessionsSpy).not.toHaveBeenCalled();
+
+	agentsResolve();
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+	expect(topicsSpy).toHaveBeenCalledTimes(1);
+	expect(sessionsSpy).toHaveBeenCalledTimes(1);
+});
+
+test('clawListKey watcher：topics 与 sessions 并发起跑（不是串行 await，topics 挂起时 sessions 也已被调）', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+
+	// topics 永远挂起：若 handler 写成 `await topics; await sessions`，sessions 永远不会被调用
+	topicsSpy.mockImplementation(() => new Promise(() => {}));
+
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	expect(agentsSpy).toHaveBeenCalledTimes(1);
+	expect(topicsSpy).toHaveBeenCalledTimes(1);
+	// 并发起跑的核心断言：topics 还挂着，sessions 也已被启动
+	expect(sessionsSpy).toHaveBeenCalledTimes(1);
+});
+
+test('clawListKey watcher：loadAllAgents 抛错时 topics/sessions 仍被调（try/catch 保护）', async () => {
+	const { wrapper, agentsSpy, topicsSpy, sessionsSpy } = await setupWatcherWrapper();
+	const clawsStore = useClawsStore();
+	agentsSpy.mockRejectedValueOnce(new Error('boom'));
+
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+	await wrapper.vm.$nextTick();
+
+	expect(agentsSpy).toHaveBeenCalledTimes(1);
+	expect(topicsSpy).toHaveBeenCalledTimes(1);
+	expect(sessionsSpy).toHaveBeenCalledTimes(1);
+});

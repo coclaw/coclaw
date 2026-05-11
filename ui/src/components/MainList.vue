@@ -317,10 +317,13 @@ export default {
 			}
 			return '';
 		},
-		/** 跟踪 claw 增删/上线/连接就绪变化，触发 agents 和 topics 重新加载 */
+		/**
+		 * 跟踪 claw 增删/上线变化，触发 agents、topics、sessions 重新加载
+		 * 不含 dcReady：DC 就绪后的首屏加载由 claw-lifecycle 的 __fullInit 负责，避免与本 watcher 重复并发首屏 RPC
+		 */
 		clawListKey() {
 			return (this.clawsStore?.items ?? [])
-				.map((b) => `${b.id}:${b.online}:${b.dcReady}`)
+				.map((b) => `${b.id}:${b.online}`)
 				.join(',');
 		},
 		/** 顶部组：仅桌面侧边栏显示"我的 Claw"（manage 入口）；其它场景留空 */
