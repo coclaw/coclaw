@@ -1113,3 +1113,44 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **修复方向**：把 doc 文案改成 `INVALID_INPUT`；顺便扫一下 `src/common/errors.js` 其它常量是否也存在 doc 漂移。
 
 **严重度**：Low（仅影响阅读约定文档时的预期，运行时行为没问题）
+
+## sessions RPC handler 层缺独立测试（预存）
+
+**发现日期**：2026-05-11（session-manager streaming jsonl deep-review）
+**关联**：`src/index.js` 内 `coclaw.sessions.getById` / `nativeui.sessions.get` / `nativeui.sessions.listAll` 注册处
+
+**问题**：当前 manager 层（`src/session-manager/manager.js`）有完整单测，但 plugin 通过 `registerGatewayMethod` 暴露给 server / UI 的 RPC handler 入口只验证了"已注册"，没覆盖：成功路径返回结构、参数缺失走 `respondInvalid`、manager 抛错时走 `respondError` 的 wrapping 行为。
+
+**为什么本次未一并修**：与本次 streaming 改动无关；handler 层缺口在 manager 改造之前就存在，属预存测试缺口。
+
+**修复方向**：在 `src/index.test.js` 或独立 `src/session-rpc.test.js` 内通过 `registerGatewayMethod` spy 调用各 handler，三类路径各覆盖一条。
+
+**严重度**：Low（manager 层断言已经把核心行为锁住；handler 是薄包装，回归概率低）
+
+## session-manager 既有测试断言不严（预存）
+
+**发现日期**：2026-05-11（session-manager streaming jsonl deep-review）
+**关联**：`src/session-manager/manager.test.js` 的 `getById - limit 限制返回最后 N 条`、`listAll/get should normalize bad inputs and missing dirs`
+
+**问题**：
+- `getById limit` 用例只断言首尾两条 message 的 content，中间消息错位/重复无法被发现。
+- `normalize bad inputs` 用例靠超大 cursor 让 get 直接返回空页，旧 split 路径与新流式路径都会 pass，并未真正验证解析结果。
+
+**为什么本次未一并修**：本次 streaming 用例已加完整顺序断言保护新路径；这两个既有用例的弱断言是 streaming 之前就有的，属预存。
+
+**修复方向**：把首尾断言扩展为遍历所有 message 内容核对；`normalize` 用例增加一条"正常 cursor + 解析后内容正向核对"的断言。
+
+**严重度**：Low（manager 层主流程已被新增的"跨 yield 阈值"用例 + 既有 CRLF 用例覆盖，弱断言用例属补强项）
+
+## await 让出窗口下 connId 复用 → response 投递到新 session（预存架构问题）
+
+**发现日期**：2026-05-11（session-manager streaming jsonl deep-review，codex-rescue R2 抓出）
+**关联**：`src/realtime-bridge.js:1091`（`__dcPendingRequests.set`）、`src/realtime-bridge.js:895`（`sendTo` 投递）、memory `feedback_async_orphan_operation_pattern`
+
+**问题**：UI 转发 RPC 路由表 `__dcPendingRequests` 只记 `reqId -> connId`。任何 RPC handler 内部 await 让出（含本次每 100 行的 setImmediate、旧的 `await fsp.readFile` 等）期间，同一 `connId` 可能被一个新建的 WebRTC session 复用——handler 跑完调 `sendTo(connId, payload)` 时会把旧请求的 response 投到新 session 的 DC。极端窗口里可能造成"答非所问"。
+
+**为什么本次未一并修**：本次 streaming 改动**不放大风险量级**——旧 `readFile` 已经创造让出窗口；让出频率从"1 次/调用"提到"N 次/调用"但单次窗口仍是毫秒级，总暴露面积≈总耗时基本不变。问题本质是路由表缺 session 代数（generation）/ session 替换时未清表，是架构层预存问题。memory 已有 async-orphan 模式记录但治本方案未定。
+
+**修复方向**：路由表存请求时同时记录"session 代数"标识；`sendTo` 前对比当前映射的 session 是否仍是发请求时那个，不匹配直接丢弃。或在 connId 对应 session 关闭/替换时主动清空该 connId 下所有 pending reqId。
+
+**严重度**：Low（窗口窄、复用条件苛刻；但要根治需要架构层改动，纳入 async-orphan 治本方案讨论）

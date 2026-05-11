@@ -428,13 +428,18 @@ test('get/getById - 跨越 yield 阈值的大 transcript 完整解析', async ()
 
 	const detail = await manager.get({ sessionId: 'big', limit: 500 });
 	assert.equal(detail.total, ROW_COUNT);
-	assert.equal(detail.messages[0].message.content, 'c0');
-	assert.equal(detail.messages[ROW_COUNT - 1].message.content, `c${ROW_COUNT - 1}`);
+	assert.equal(detail.messages.length, ROW_COUNT);
+	// 完整顺序断言——让出穿插下任何 reorder/dup/skip 都立即暴露
+	for (let i = 0; i < ROW_COUNT; i++) {
+		assert.equal(detail.messages[i].message.content, `c${i}`, `get: row ${i} content mismatch`);
+		assert.equal(detail.messages[i].message.role, i % 2 === 0 ? 'user' : 'assistant', `get: row ${i} role mismatch`);
+	}
 
 	const tail = await manager.getById({ sessionId: 'big', limit: 500 });
 	assert.equal(tail.messages.length, ROW_COUNT);
-	assert.equal(tail.messages[0].message.content, 'c0');
-	assert.equal(tail.messages[ROW_COUNT - 1].message.content, `c${ROW_COUNT - 1}`);
+	for (let i = 0; i < ROW_COUNT; i++) {
+		assert.equal(tail.messages[i].message.content, `c${i}`, `getById: row ${i} content mismatch`);
+	}
 });
 
 // === 默认构造（不注入 resolver）通过 setRuntime 端到端 ===

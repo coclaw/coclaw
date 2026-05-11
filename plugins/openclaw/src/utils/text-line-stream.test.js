@@ -93,8 +93,60 @@ test('iterTextLines: handles consecutive CRLF correctly', async () => {
 	assert.deepEqual(out, ['a', 'b']);
 });
 
+test('iterTextLines: trailing isolated \\r is preserved (no LF terminator)', async () => {
+	// 与旧 split(/\r?\n/) 行为对齐：末尾段没有 LF 时不剥 \r
+	// 旧 split('a\\r') => ['a\\r']，旧 split('\\r') => ['\\r']
+	assert.deepEqual(await collect('a\r'), ['a\r']);
+	assert.deepEqual(await collect('\r'), ['\r']);
+	// 中间正常 \n + 末尾段 \r：第二行的 \r 必须保留
+	assert.deepEqual(await collect('a\nb\r'), ['a', 'b\r']);
+});
+
 test('iterTextLines: large text with yieldEvery=1 still produces correct output', async () => {
 	const text = 'x\ny\nz\n';
 	const out = await collect(text, { yieldEvery: 1 });
 	assert.deepEqual(out, ['x', 'y', 'z']);
+});
+
+test('iterTextLines: multi-MB single line with no newline emits intact', async () => {
+	// 真实场景：用户粘贴一大段文本到对话，单行可能数 MB
+	const huge = 'x'.repeat(5 * 1024 * 1024);
+	const out = await collect(huge);
+	assert.equal(out.length, 1);
+	assert.equal(out[0].length, huge.length);
+	assert.equal(out[0], huge);
+});
+
+test('iterTextLines: line count just below yieldEvery (99) never yields', async () => {
+	// 紧贴下边界：能咬住"边界判断从 % === 0 滑成 >= yieldEvery"这类回归
+	const lines = [];
+	for (let i = 0; i < 99; i++) lines.push(`r${i}`);
+	const text = lines.join('\n') + '\n';
+
+	let count = 0;
+	const orig = global.setImmediate;
+	global.setImmediate = (fn, ...args) => { count++; return orig(fn, ...args); };
+	try {
+		const out = await collect(text, { yieldEvery: 100 });
+		assert.deepEqual(out, lines);
+		assert.equal(count, 0);
+	}
+	finally { global.setImmediate = orig; }
+});
+
+test('iterTextLines: line count exactly equals yieldEvery yields once', async () => {
+	const lines = [];
+	for (let i = 0; i < 100; i++) lines.push(`r${i}`);
+	const text = lines.join('\n') + '\n';
+
+	let count = 0;
+	const orig = global.setImmediate;
+	global.setImmediate = (fn, ...args) => { count++; return orig(fn, ...args); };
+	try {
+		const out = await collect(text, { yieldEvery: 100 });
+		assert.deepEqual(out, lines);
+		// 第 100 行处理后命中边界让出一次；第 101 行起没有了
+		assert.equal(count, 1);
+	}
+	finally { global.setImmediate = orig; }
 });
