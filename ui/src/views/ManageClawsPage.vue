@@ -354,8 +354,10 @@ export default {
 						);
 					});
 				}
+				// 进入管理页 / app:foreground 重刷：外层 60s 节流已过，意图就是要拉最新数据；
+				// force=true 让 dashboard 走强刷新，避免读到 sessions.store 上次缓存的旧 raw
 				await Promise.allSettled(
-					this.claws.map(claw => this.dashboardStore.loadDashboard(String(claw.id)))
+					this.claws.map(claw => this.dashboardStore.loadDashboard(String(claw.id), { force: true }))
 				);
 				this.__lastLoadedAt = Date.now();
 			}

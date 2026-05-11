@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { useDashboardStore, __test__ } from './dashboard.store.js';
+import { __resetSessionsInternals, useSessionsStore } from './sessions.store.js';
 
 const {
 	buildChannelList,
@@ -282,6 +283,10 @@ describe('dashboard store', () => {
 		setActivePinia(createPinia());
 		mockConnections.clear();
 		_loadingByClaw.clear();
+		// sessions.store 是真依赖（dashboard 通过 useSessionsStore 调用 getRawSessionsForClaw）
+		// 必须清掉 sessions.store 模块级 _perClawLoading / _rawByClaw / _loadingPromise，
+		// 避免上一个测试的 raw 缓存被本测试命中（getRawSessionsForClaw 跳过 RPC）
+		__resetSessionsInternals();
 		vi.clearAllMocks();
 	});
 
@@ -573,7 +578,7 @@ describe('dashboard store', () => {
 		expect(statusCalls).toHaveLength(1);
 	});
 
-	test('所有 dashboard RPC 请求都带 180s timeout 选项（弱网超时防御）', async () => {
+	test('所有 dashboard 直接发起的 RPC 请求都带 180s timeout 选项（弱网超时防御）', async () => {
 		const clawsStore = useClawsStore();
 		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -596,12 +601,11 @@ describe('dashboard store', () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
 
-		// 期望的 7 种方法都被调用，且每次都带 timeout: 180_000
+		// dashboard 直接发起的 6 种方法（sessions.list 已下放给 sessionsStore，单独验证）
 		const expectedMethods = [
 			'status',
 			'models.list',
 			'usage.cost',
-			'sessions.list',
 			'tts.status',
 			'channels.status',
 			'tools.catalog',
@@ -617,15 +621,21 @@ describe('dashboard store', () => {
 			}
 		}
 
-		// 总 call 数精确等于 7（每个方法各一次，1 个 agent）
+		// dashboard 直接发的总 call 数精确等于 6（5 + tools.catalog × 1 agent）
 		const dashCalls = dashConn.request.mock.calls.filter(([m]) => expectedMethods.includes(m));
-		expect(dashCalls).toHaveLength(7);
+		expect(dashCalls).toHaveLength(6);
 
 		// 关键参数也同时校验（确保不是空 params 而 options 偷跑）
 		const usageCostCall = dashConn.request.mock.calls.find(([m]) => m === 'usage.cost');
 		expect(usageCostCall[1]).toEqual({ mode: 'month' });
 		const channelsCall = dashConn.request.mock.calls.find(([m]) => m === 'channels.status');
 		expect(channelsCall[1]).toEqual({ probe: false });
+
+		// sessions.list 由 sessionsStore.getRawSessionsForClaw 间接发起，
+		// timeout 是 sessions.store 自己的 60_000（不是 dashboard 的 180_000）
+		const sessionsCalls = dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list');
+		expect(sessionsCalls).toHaveLength(1);
+		expect(sessionsCalls[0][2]).toMatchObject({ timeout: 60_000 });
 	});
 
 	test('tools.catalog 在多 agent 场景下每次调用都带 180s timeout', async () => {
@@ -669,8 +679,8 @@ describe('dashboard store', () => {
 		}
 		expect(seenAgentIds).toEqual(new Set(['main', 'ops', 'research']));
 
-		// 基础 6 个 RPC 也仍然各带 timeout
-		for (const method of ['status', 'models.list', 'usage.cost', 'sessions.list', 'tts.status', 'channels.status']) {
+		// 基础 5 个 RPC 也仍然各带 timeout（sessions.list 已下放给 sessionsStore）
+		for (const method of ['status', 'models.list', 'usage.cost', 'tts.status', 'channels.status']) {
 			const call = dashConn.request.mock.calls.find(([m]) => m === method);
 			expect(call).toBeDefined();
 			expect(call[2]).toMatchObject({ timeout: 180_000 });
@@ -764,6 +774,9 @@ describe('dashboard store', () => {
 	// 与 agents/sessions/topics 三 store 对称：clearDashboard 必须同步清飞行中 dedup
 	// Map，避免同 id 重绑后新 loadDashboard 命中 dedup 拿到旧 promise（旧 promise
 	// 完成后写到 byClaw 的是旧 claw 的实例信息）
+	// 注：生产路径 cleanupClawResources 同时调 clearDashboard + removeSessionsByClawId
+	// （见 claw-lifecycle.js），测试也需模拟该编排——dashboard 走 sessionsStore 取 raw 后，
+	// 单独清 dashboard dedup 无法解开 sessions 那边的 inflight 锁
 	test('clearDashboard 同步清飞行中 dedup：同 id 重绑后新 loadDashboard 走独立请求', async () => {
 		const clawsStore = useClawsStore();
 		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
@@ -782,14 +795,16 @@ describe('dashboard store', () => {
 		setConn('bot-1', oldConn);
 
 		const store = useDashboardStore();
+		const sessionsStore = useSessionsStore();
 		// fire-and-forget：不取 promise（IIFE 永不 settle 是预期，由 GC 兜底）
 		store.loadDashboard('bot-1');
 		expect(_loadingByClaw.has('bot-1')).toBe(true);
 		// 至少触发了首批 RPC
 		expect(oldConn.request).toHaveBeenCalled();
 
-		// 清除 + 同 id 重绑：飞行中 dedup 必须被清掉
+		// 清除 + 同 id 重绑：飞行中 dedup 必须被清掉（同时模拟 cleanupClawResources 的完整动作）
 		store.clearDashboard('bot-1');
+		sessionsStore.removeSessionsByClawId('bot-1');
 		expect(_loadingByClaw.has('bot-1')).toBe(false);
 
 		// 重新挂 conn 用一个立即 resolve 的新对象，模拟同 id 新 claw
@@ -863,5 +878,219 @@ describe('dashboard store', () => {
 		// 第二次同 id loadDashboard：被新 promise dedup 拦下，不发起新一批 RPC
 		store.loadDashboard('bot-1');
 		expect(newConn.request.mock.calls.length).toBe(newCallsAfter1);
+	});
+
+	// sessions raw 走 sessionsStore：消除 dashboard 与 sessions.store 各发一次 sessions.list 的重复 RPC
+	describe('sessions raw 走 sessionsStore（消除 sessions.list 重复 RPC）', () => {
+		test('loadDashboard 不直接发起 sessions.list（仅由 sessionsStore 代发一次）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [{ key: 'agent:main:main', totalTokens: 100, updatedAt: '2026-01-01T00:00:00Z' }] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			// sessions.list 总计仅一次（由 sessionsStore 发，timeout 60s）
+			const sessionsCalls = dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list');
+			expect(sessionsCalls).toHaveLength(1);
+			expect(sessionsCalls[0][2]).toMatchObject({ timeout: 60_000 });
+
+			// dashboard 统计仍由 raw 数据驱动
+			expect(store.byClaw['bot-1'].agents[0].totalTokens).toBe(100);
+		});
+
+		test('第二次 loadDashboard（无 force）复用 sessionsStore raw 缓存：sessions.list 不重发', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+			const sessionsCallsAfter1 = dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list').length;
+			expect(sessionsCallsAfter1).toBe(1);
+
+			// 第二次默认 force=false：sessions.list 不重发（命中 sessionsStore raw 缓存）
+			await store.loadDashboard('bot-1');
+			const sessionsCallsAfter2 = dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list').length;
+			expect(sessionsCallsAfter2).toBe(1);
+		});
+
+		test('force=true 透传到 sessionsStore → 重新拉取 sessions.list', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(1);
+
+			// force=true：sessions.list 应被重新调用
+			await store.loadDashboard('bot-1', { force: true });
+			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(2);
+		});
+
+		test('force=true 进入时若当前飞行非 force：等其完成后启动新一轮（不被合流吞掉）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			// dashConn 的 sessions.list 用 deferred resolver，便于精确控制飞行时序
+			let resolveSessions;
+			const sessionsPromise = new Promise((r) => { resolveSessions = r; });
+			const dashConn = {
+				request: vi.fn().mockImplementation((method) => {
+					if (method === 'sessions.list') return sessionsPromise;
+					return Promise.resolve({});
+				}),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			// 第一次（非 force）：进入飞行
+			const p1 = store.loadDashboard('bot-1');
+			// 第二次（force=true）：当前飞行非 force，应等其完成再启动新一轮
+			const p2 = store.loadDashboard('bot-1', { force: true });
+
+			// 此时第一次飞行还没完，sessions.list 已发一次（第一次的）
+			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(1);
+
+			// 完成第一次飞行
+			resolveSessions({ sessions: [] });
+			await p1;
+
+			// 第二次 force 应启动新一轮：sessions.list 再被调一次
+			// 注：新一轮的 sessions.list 也是 deferred（共享同一个 sessionsPromise，已 resolve），所以会立即完成
+			await p2;
+			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(2);
+		});
+
+		test('dashboard + sessionsStore 同 claw 并发：只发一次 sessions.list（最核心设计点）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			// sessions raw 用 ISO 字符串 updatedAt（gateway 返回的真实格式，dashboard.stats 用 new Date 解析），
+			// 同时给 live key 配 sessionId + 一条 orphan 条目带 numeric updatedAt 让 SessionItem 折叠也通过
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [
+					{ key: 'agent:main:main', sessionId: 'sid-live', totalTokens: 42, updatedAt: '2026-01-01T00:00:00Z' },
+					{ key: 'agent:main:sess-orph', sessionId: 'sid-orph', totalTokens: 8, updatedAt: 1730_000_000_000 },
+				] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			const sessionsStore = useSessionsStore();
+			// 同一 claw 上 dashboard 与 sessions.store 同时触发：模拟 lifecycle initClawResources
+			// 顺序（sessions → dashboard 并发，fire-and-forget）
+			await Promise.all([
+				sessionsStore.loadSessionsForClaw('bot-1'),
+				store.loadDashboard('bot-1'),
+			]);
+
+			// 核心联合断言：sessions.list 总计只被 dashConn 调用一次
+			const sessionsCalls = dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list');
+			expect(sessionsCalls).toHaveLength(1);
+
+			// dashboard 拿到正确统计（说明 raw 真的流到了 dashboard：42 + 8 = 50）
+			expect(store.byClaw['bot-1'].agents[0].totalTokens).toBe(50);
+			expect(store.byClaw['bot-1'].agents[0].activeSessions).toBe(2);
+			// sessions.store 也写入了对应 SessionItem（live key sessionId + max numeric updatedAt）
+			const item = sessionsStore.items.find((s) => s.clawId === 'bot-1');
+			expect(item).toBeDefined();
+			expect(item.sessionId).toBe('sid-live');
+			expect(item.updatedAt).toBe(1730_000_000_000);
+		});
+
+		test('force=true 并发：合流到同一 force 飞行（不重复触发）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			const p1 = store.loadDashboard('bot-1', { force: true });
+			const p2 = store.loadDashboard('bot-1', { force: true });
+
+			await Promise.all([p1, p2]);
+
+			// 两个并发 force 调用合流到同一飞行：sessions.list 只调一次
+			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(1);
+		});
 	});
 });

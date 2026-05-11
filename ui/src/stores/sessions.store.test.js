@@ -629,4 +629,379 @@ describe('sessions store', () => {
 			expect(store.items[0].sessionId).toBe('sid-1');
 		});
 	});
+
+	// raw 缓存 / getRawSessionsForClaw：dashboard 经此入口取原始元数据，
+	// 与业务列表（SessionItem）共享一次 fetch 与同生命周期
+	describe('getRawSessionsForClaw / raw 缓存', () => {
+		test('首次调用：无缓存 → 触发 sessions.list 并返回 raw 数组', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const rawRows = [
+				row('agent:main:main', 'sid-1', 1000),
+				row('agent:main:sess-orph', 'sid-2', 2000),
+			];
+			const conn = mockConn(rawRows);
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			const raw = await store.getRawSessionsForClaw('bot-1');
+
+			expect(conn.request).toHaveBeenCalledTimes(1);
+			expect(conn.request).toHaveBeenCalledWith('sessions.list', {}, { timeout: 60_000 });
+			expect(raw).toEqual(rawRows);
+		});
+
+		test('已有缓存 + 无 force → 直接返回缓存，不重发 RPC', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const rawRows = [row('agent:main:main', 'sid-1', 1000)];
+			const conn = mockConn(rawRows);
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.getRawSessionsForClaw('bot-1');
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			const raw2 = await store.getRawSessionsForClaw('bot-1');
+			expect(conn.request).toHaveBeenCalledTimes(1); // 仍是 1，不重发
+			expect(raw2).toEqual(rawRows);
+		});
+
+		test('已有缓存 + force=true → 重新拉取并更新缓存', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn([row('agent:main:main', 'sid-1', 1000)]);
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.getRawSessionsForClaw('bot-1');
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			conn.request.mockResolvedValue({
+				sessions: [row('agent:main:main', 'sid-new', 2000)],
+			});
+			const raw2 = await store.getRawSessionsForClaw('bot-1', { force: true });
+			expect(conn.request).toHaveBeenCalledTimes(2); // force 触发了重拉
+			expect(raw2).toEqual([row('agent:main:main', 'sid-new', 2000)]);
+		});
+
+		test('非 force 调用合流到非 force 飞行：只发一次 RPC', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			let resolveReq;
+			const conn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			// 先启动 loadSessionsForClaw（非 force 飞行），再并发非 force getRaw
+			const loadPromise = store.loadSessionsForClaw('bot-1');
+			const rawPromise = store.getRawSessionsForClaw('bot-1');
+
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			resolveReq({ sessions: [row('agent:main:main', 'sid-1', 1000)] });
+			const [, raw] = await Promise.all([loadPromise, rawPromise]);
+
+			expect(raw).toEqual([row('agent:main:main', 'sid-1', 1000)]);
+		});
+
+		test('force 调用看到非 force 飞行：等其完成后启动新一轮（不被合流吞掉）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			let resolveFirst;
+			let resolveSecond;
+			const conn = {
+				request: vi.fn()
+					.mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }))
+					.mockImplementationOnce(() => new Promise((r) => { resolveSecond = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			// 启动非 force 飞行（不 await）
+			const nonForcePromise = store.loadSessionsForClaw('bot-1');
+			// force=true 进入：当前飞行非 force，不能合流，应等其完成再启动新一轮
+			const forcePromise = store.getRawSessionsForClaw('bot-1', { force: true });
+
+			// 此刻只发了第一次 RPC，第二次（force 触发的）还没启动
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			// 完成第一次飞行：force 调用等到结果后启动第二次 RPC
+			resolveFirst({ sessions: [row('agent:main:main', 'sid-old', 1000)] });
+			await nonForcePromise;
+			// 让 microtask 队列跑完，force 的"chain after"应已触发第二次 RPC
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(conn.request).toHaveBeenCalledTimes(2);
+
+			// 完成第二次：force 拿到新 raw
+			resolveSecond({ sessions: [row('agent:main:main', 'sid-new', 2000)] });
+			const raw = await forcePromise;
+			expect(raw).toEqual([row('agent:main:main', 'sid-new', 2000)]);
+		});
+
+		test('多个并发 force 调用合流到同一份 force 飞行（只发一次 RPC）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			let resolveReq;
+			const conn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			const p1 = store.getRawSessionsForClaw('bot-1', { force: true });
+			const p2 = store.getRawSessionsForClaw('bot-1', { force: true });
+
+			// force 之间合流，conn.request 只被调一次
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			resolveReq({ sessions: [row('agent:main:main', 'sid-1', 1000)] });
+			const [raw1, raw2] = await Promise.all([p1, p2]);
+
+			expect(raw1).toEqual([row('agent:main:main', 'sid-1', 1000)]);
+			expect(raw2).toEqual([row('agent:main:main', 'sid-1', 1000)]);
+		});
+
+		test('非 force 调用合流到 force 飞行（拿新数据，单次 RPC）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+
+			let resolveReq;
+			const conn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			// 启动 force 飞行
+			const forcePromise = store.getRawSessionsForClaw('bot-1', { force: true });
+			// 紧跟非 force 调用：合流（force 已经在拉新数据，非 force 跟着即可）
+			const nonForcePromise = store.getRawSessionsForClaw('bot-1');
+
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			resolveReq({ sessions: [row('agent:main:main', 'sid-1', 1000)] });
+			const [forced, nonForced] = await Promise.all([forcePromise, nonForcePromise]);
+
+			expect(forced).toEqual([row('agent:main:main', 'sid-1', 1000)]);
+			expect(nonForced).toEqual([row('agent:main:main', 'sid-1', 1000)]);
+		});
+
+		test('fetch 失败时 raw 保留旧值（与 SessionItem 同生命周期）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn([row('agent:main:main', 'sid-1', 1000)]);
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			// 第一次成功
+			await store.getRawSessionsForClaw('bot-1');
+			expect(store.items.find((s) => s.clawId === 'bot-1').sessionId).toBe('sid-1');
+
+			// 第二次 reject：raw 和 SessionItem 都保留旧值
+			conn.request.mockRejectedValueOnce(new Error('boom'));
+			const raw2 = await store.getRawSessionsForClaw('bot-1', { force: true });
+
+			// raw 保留第一次的旧值
+			expect(raw2).toEqual([row('agent:main:main', 'sid-1', 1000)]);
+			// SessionItem 也保留旧值（mergeFetchResults 失败路径）
+			expect(store.items.find((s) => s.clawId === 'bot-1').sessionId).toBe('sid-1');
+		});
+
+		test('fetch 失败且无旧缓存：返回空数组（首次连接失败的合理表现）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = {
+				request: vi.fn().mockRejectedValue(new Error('boom')),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			const raw = await store.getRawSessionsForClaw('bot-1');
+			expect(raw).toEqual([]);
+		});
+
+		test('无 ready conn：返回空数组，不写 raw', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: false }]);
+			const conn = mockConn([row('agent:main:main', 'sid-1', 1)]);
+			setConn('bot-1', conn, { dcReady: false });
+
+			const store = useSessionsStore();
+			const raw = await store.getRawSessionsForClaw('bot-1');
+			expect(raw).toEqual([]);
+			expect(conn.request).not.toHaveBeenCalled();
+		});
+
+		test('removeSessionsByClawId 清 raw 缓存：下次 getRaw 触发重拉', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn([row('agent:main:main', 'sid-1', 1000)]);
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.getRawSessionsForClaw('bot-1');
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			// removeSessionsByClawId 应清 raw（SessionItem + raw 同生命周期）
+			store.removeSessionsByClawId('bot-1');
+
+			// 同 id 重新 setConn，下次 getRaw 应触发新 fetch
+			conn.request.mockClear();
+			await store.getRawSessionsForClaw('bot-1');
+			expect(conn.request).toHaveBeenCalledTimes(1); // 缓存已清 → 重拉
+		});
+
+		test('__resetSessionsInternals 清 raw 缓存：下次 getRaw 触发重拉', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn([row('agent:main:main', 'sid-1', 1000)]);
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.getRawSessionsForClaw('bot-1');
+			expect(conn.request).toHaveBeenCalledTimes(1);
+
+			__resetSessionsInternals();
+
+			conn.request.mockClear();
+			await store.getRawSessionsForClaw('bot-1');
+			expect(conn.request).toHaveBeenCalledTimes(1); // raw 已清 → 重拉
+		});
+
+		test('fetch 期间 claw 被移除：raw 不被回填（与 SessionItem 一致）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B', online: true }]);
+			let resolveReq;
+			const conn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveReq = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			const inflight = store.getRawSessionsForClaw('bot-1');
+
+			// fetch 期间移除 claw
+			delete clawsStore.byId['bot-1'];
+			store.removeSessionsByClawId('bot-1');
+
+			resolveReq({ sessions: [row('agent:main:main', 'sid-late', 1)] });
+			const raw = await inflight;
+
+			// raw 不被回填到已移除 claw
+			expect(raw).toEqual([]);
+			// SessionItem 也未写入
+			expect(store.items.find((s) => s.clawId === 'bot-1')).toBeUndefined();
+		});
+
+		// 联合断言：成功路径下 raw 与 SessionItem 在同一次 fetch 后一起更新（同生同死的正面验证）
+		test('成功路径联合：raw 与 SessionItem 在同一次 force refresh 后一起更新到新值', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B1', online: true }]);
+			const conn = mockConn([row('agent:main:main', 'sid-old', 1000)]);
+			setConn('bot-1', conn);
+
+			const store = useSessionsStore();
+			await store.getRawSessionsForClaw('bot-1');
+			expect(store.items.find((s) => s.clawId === 'bot-1').sessionId).toBe('sid-old');
+			expect((await store.getRawSessionsForClaw('bot-1'))[0].sessionId).toBe('sid-old');
+
+			// 改 mock 返回新数据，走 force 重拉
+			conn.request.mockResolvedValue({
+				sessions: [row('agent:main:main', 'sid-new', 2000)],
+			});
+			const newRaw = await store.getRawSessionsForClaw('bot-1', { force: true });
+
+			// raw 和 SessionItem 一起更新到新值
+			expect(newRaw[0].sessionId).toBe('sid-new');
+			expect(newRaw[0].updatedAt).toBe(2000);
+			expect(store.items.find((s) => s.clawId === 'bot-1').sessionId).toBe('sid-new');
+			expect(store.items.find((s) => s.clawId === 'bot-1').updatedAt).toBe(2000);
+		});
+
+		// 同 id 重绑场景下，飞行 dedup 的 finally 身份检查（_perClawLoading.get(id)?.p === promise）
+		// 保证旧 finally 不擦掉新 entry，新调用走独立请求。
+		// 注：本测试只锁住"飞行 dedup 不串"——旧 fetch 完成后写入 raw 时是否被旧数据污染，
+		// 受现有"写入身份不验证"预存问题影响（见 ui/TODO.md #3），本测试不断言 raw 内容。
+		test('同 id 重绑 + 旧请求延迟 resolve：新调用走独立请求（飞行 dedup 不串）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B-old', online: true }]);
+
+			let resolveOld;
+			const oldConn = {
+				request: vi.fn().mockImplementation(() => new Promise((r) => { resolveOld = r; })),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', oldConn);
+
+			const store = useSessionsStore();
+			const oldInflight = store.getRawSessionsForClaw('bot-1');
+			expect(oldConn.request).toHaveBeenCalledTimes(1);
+
+			// claw 被移除（cleanupClawResources 一次性调用）
+			delete clawsStore.byId['bot-1'];
+			store.removeSessionsByClawId('bot-1');
+
+			// 同 id 重绑新 claw，立即拉新数据
+			clawsStore.setClaws([{ id: 'bot-1', name: 'B-new', online: true }]);
+			const newConn = mockConn([row('agent:main:main', 'sid-new', 5000)]);
+			setConn('bot-1', newConn);
+			const newRaw = await store.getRawSessionsForClaw('bot-1', { force: true });
+
+			// 新调用走独立请求（不被旧 dedup 命中）
+			expect(newConn.request).toHaveBeenCalledTimes(1);
+			expect(newRaw).toEqual([row('agent:main:main', 'sid-new', 5000)]);
+
+			// 旧 fetch 即使后续延迟 resolve，旧 finally 也不能擦掉新 entry
+			// （只要 _perClawLoading 仍指向新 entry / 已空，dedup 状态就稳定）
+			resolveOld({ sessions: [row('agent:main:main', 'sid-old', 1000)] });
+			await oldInflight;
+		});
+
+		// 多 claw 首屏联合：N 只 claw 各发恰好 1 次 sessions.list（不是 N²、不是 0）
+		test('多 claw 首屏 getRawSessionsForClaw：N 只 claw 各发恰好 1 次', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([
+				{ id: 'bot-1', name: 'B1', online: true },
+				{ id: 'bot-2', name: 'B2', online: true },
+				{ id: 'bot-3', name: 'B3', online: true },
+			]);
+
+			const conn1 = mockConn([row('agent:main:main', 'sid-1', 1)]);
+			const conn2 = mockConn([row('agent:main:main', 'sid-2', 2)]);
+			const conn3 = mockConn([row('agent:main:main', 'sid-3', 3)]);
+			setConn('bot-1', conn1);
+			setConn('bot-2', conn2);
+			setConn('bot-3', conn3);
+
+			const store = useSessionsStore();
+			await Promise.all([
+				store.getRawSessionsForClaw('bot-1'),
+				store.getRawSessionsForClaw('bot-2'),
+				store.getRawSessionsForClaw('bot-3'),
+			]);
+
+			expect(conn1.request).toHaveBeenCalledTimes(1);
+			expect(conn2.request).toHaveBeenCalledTimes(1);
+			expect(conn3.request).toHaveBeenCalledTimes(1);
+		});
+	});
 });

@@ -8,11 +8,18 @@ import { getReadyConn } from './get-ready-conn.js';
 let _loadingPromise = null;
 /** per-claw 加载合流（clawId → Promise），与全量 _loadingPromise 互不干扰 */
 const _perClawLoading = new Map();
+/**
+ * per-claw 原始 sessions 元数据缓存（clawId → GatewaySessionRow[]）
+ * dashboard 经 getRawSessionsForClaw 读取，与 SessionItem 同生命周期：
+ * fetch 通过 claw 合法性检查后才写入；fetch 失败保留旧值，与业务列表风格一致
+ */
+const _rawByClaw = new Map();
 
 /** 重置模块级状态（logout / 测试） */
 export function __resetSessionsInternals() {
 	_loadingPromise = null;
 	_perClawLoading.clear();
+	_rawByClaw.clear();
 }
 
 /**
@@ -58,6 +65,8 @@ export const useSessionsStore = defineStore('sessions', {
 			this.items = this.items.filter((s) => String(s.clawId) !== id);
 			// 同步清飞行中 dedup：claw 同 id 重绑时新 loadForClaw 不应 coalesce 到老 promise
 			_perClawLoading.delete(id);
+			// 同步清 raw 缓存：与 SessionItem 同生命周期，避免老 raw 残留到下次同 id 重绑
+			_rawByClaw.delete(id);
 		},
 		/**
 		 * 本地乐观活动标记。sendMessage / sendSlashCommand 入口调用，让 MainList
@@ -139,35 +148,48 @@ export const useSessionsStore = defineStore('sessions', {
 		/**
 		 * 按 claw 加载 sessions。专为 per-claw 触发场景（DC 重连恢复 / 首次 init），
 		 * 避免 loadAllSessions() 在多 claw 错峰恢复时的 N² RPC 放大。
-		 * - 同 claw 并发调用合流到同一 promise
+		 * - 同 claw 并发调用合流到同一 promise（force/非 force 语义见下）
 		 * - 仅替换该 claw 的 sessions，其他 claw 的旧数据保留
 		 * - fetch 失败保留旧 sessions（不清空）
+		 *
+		 * force 合流策略（与 dashboard.store loadDashboard 对称，保证 force 语义不被吞）：
+		 * - force=true 看到非 force 飞行：等其完成后启动新一轮（确保拿到新拉取的 raw）
+		 * - force=true 看到 force 飞行：合流（同样要新数据，复用即可）
+		 * - 非 force 看到任何飞行：合流（任何正在跑的拉取都足以满足 freshness）
 		 * @param {string} clawId
+		 * @param {{ force?: boolean }} [opts] - force=true 时 getRawSessionsForClaw / 重连恢复链路要求新鲜数据
 		 */
-		async loadSessionsForClaw(clawId) {
+		async loadSessionsForClaw(clawId, { force = false } = {}) {
 			const id = String(clawId);
 			const inflight = _perClawLoading.get(id);
 			if (inflight) {
+				if (force && !inflight.force) {
+					// force 调用不能合流到非 force 飞行——拿到的可能是 force 前已在跑的旧拉取
+					console.debug('[sessions] loadForClaw: force chained after non-force inflight clawId=%s', id);
+					return inflight.p
+						.catch(() => {})
+						.then(() => this.loadSessionsForClaw(id, { force: true }));
+				}
 				console.debug('[sessions] loadForClaw: coalesced clawId=%s', id);
-				return inflight;
+				return inflight.p;
 			}
 			if (!getReadyConn(id)) {
 				console.debug('[sessions] loadForClaw: skipped (no connected) clawId=%s', id);
 				return;
 			}
 			const promise = this.__doLoadForClaw(id);
-			_perClawLoading.set(id, promise);
+			_perClawLoading.set(id, { p: promise, force });
 			// 仅当 Map 当前条目仍是本 promise 时才清，避免老 promise 的 finally 把
 			// removeSessionsByClawId + 重入新建的飞行 promise 一起删掉
 			promise.finally(() => {
-				if (_perClawLoading.get(id) === promise) _perClawLoading.delete(id);
+				if (_perClawLoading.get(id)?.p === promise) _perClawLoading.delete(id);
 			});
 			return promise;
 		},
 		async __doLoadForClaw(id) {
-			let items;
+			let raw, items;
 			try {
-				items = await this.__fetchSessionsForClaw(id);
+				({ raw, items } = await this.__fetchSessionsForClaw(id));
 			}
 			catch (err) {
 				// 防御：__fetchSessionsForClaw 当前不会抛，万一未来改动抛了也保留旧数据
@@ -176,11 +198,13 @@ export const useSessionsStore = defineStore('sessions', {
 			}
 			const clawsStore = useClawsStore();
 			// fetch 期间 claw 可能被 SSE claw.unbound 移除（cleanupClawResources 已同步清空）
-			// → 此时不能把刚拉到的 sessions 写回，否则成为"幽灵数据"
+			// → 此时不能把刚拉到的 sessions 写回，否则成为"幽灵数据"；raw 也同样不能写
 			if (!clawsStore.byId[id]) {
 				console.debug('[sessions] loadForClaw: claw removed during fetch clawId=%s', id);
 				return;
 			}
+			// 通过合法性检查后，raw 与 SessionItem 同步写入；两者同生命周期，避免 dashboard 拿到的 raw 与业务列表脱钩
+			_rawByClaw.set(id, raw);
 			this.items = mergeFetchResults({
 				prevItems: this.items,
 				results: [{ status: 'fulfilled', value: items }],
@@ -190,14 +214,31 @@ export const useSessionsStore = defineStore('sessions', {
 			console.debug('[sessions] loadForClaw: merged %d session(s) clawId=%s', items.length, id);
 		},
 		/**
-		 * 拉取指定 claw 的 sessions：一次 sessions.list RPC 拿全部，按 agent 切片。
-		 * 每个 agent 一项 SessionItem，updatedAt 取该 agent 名下所有 session 的 max。
+		 * 取指定 claw 的原始 sessions 元数据数组（dashboard 用于计算 totalTokens / activeSessions / lastActivity）
+		 * - 命中 raw 缓存 + 无飞行 + 非 force → 直接复用，不发 RPC
+		 * - 其他情况委托给 loadSessionsForClaw（含 force 飞行识别，见 loadSessionsForClaw 注释）
+		 * - 失败保留旧值（与 SessionItem 同生命周期）：fetch 抛错或 claw 移除时 raw 不更新
 		 * @param {string} clawId
-		 * @returns {Promise<SessionItem[]>}
+		 * @param {{ force?: boolean }} [opts]
+		 * @returns {Promise<object[]>}
+		 */
+		async getRawSessionsForClaw(clawId, { force = false } = {}) {
+			const id = String(clawId);
+			if (!force && _rawByClaw.has(id) && !_perClawLoading.has(id)) {
+				return _rawByClaw.get(id);
+			}
+			await this.loadSessionsForClaw(id, { force });
+			return _rawByClaw.get(id) ?? [];
+		},
+		/**
+		 * 拉取指定 claw 的 sessions：一次 sessions.list RPC 拿全部，按 agent 切片。
+		 * 同时返回原始元数据（raw）供 dashboard 计算统计；折叠后的 items 作为 SessionItem 用于业务列表。
+		 * @param {string} clawId
+		 * @returns {Promise<{ raw: object[], items: SessionItem[] }>}
 		 */
 		async __fetchSessionsForClaw(clawId) {
 			const conn = getReadyConn(clawId);
-			if (!conn) return [];
+			if (!conn) return { raw: [], items: [] };
 
 			const agentsStore = useAgentsStore();
 			const agents = agentsStore.getAgentsByClaw(clawId);
@@ -236,7 +277,7 @@ export const useSessionsStore = defineStore('sessions', {
 					bumpedAt: null,
 				});
 			}
-			return items;
+			return { raw: sessionList, items };
 		},
 	},
 });

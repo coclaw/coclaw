@@ -175,13 +175,15 @@ describe('initClawResources', () => {
 });
 
 describe('refreshClawResources', () => {
-	test('全部 per-claw fire-and-forget 并带 .catch', async () => {
+	test('全部 per-claw fire-and-forget 并带 .catch；dashboard 走 force=true（重连恢复语义）', async () => {
 		await capture.hooks.refreshClawResources('bot-6');
 
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-6');
 		expect(mockLoadSessionsForClaw).toHaveBeenCalledWith('bot-6');
 		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-6');
-		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-6');
+		// dashboard 比 sessions 先动手 → force=true 让 dashboard 等 sessions 重新拉取最新 raw，
+		// 避免读到刷新前的旧统计数据
+		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-6', { force: true });
 	});
 
 	test('不调用全量加载接口', async () => {
@@ -211,7 +213,7 @@ describe('refreshClawResources', () => {
 		await Promise.resolve();
 		expect(mockLoadAgents).toHaveBeenCalledWith('bot-7');
 		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-7');
-		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-7');
+		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-7', { force: true });
 		// sessions 必须等 agents
 		expect(mockLoadSessionsForClaw).not.toHaveBeenCalled();
 
@@ -228,7 +230,7 @@ describe('refreshClawResources', () => {
 		await Promise.resolve();
 		// topics/dashboard 不阻塞 agents reject
 		expect(mockLoadTopicsForClaw).toHaveBeenCalledWith('bot-8');
-		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-8');
+		expect(mockLoadDashboard).toHaveBeenCalledWith('bot-8', { force: true });
 		expect(mockLoadSessionsForClaw).not.toHaveBeenCalled();
 
 		rejectAgents(new Error('agents boom'));

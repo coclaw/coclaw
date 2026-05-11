@@ -68,7 +68,10 @@ async function initClawResources(id) {
 async function refreshClawResources(id) {
 	const agentsPromise = useAgentsStore().loadAgents(id).catch(() => {});
 	useTopicsStore().loadTopicsForClaw(id).catch(() => {});
-	useDashboardStore().loadDashboard(id).catch(() => {});
+	// refresh 链路下 dashboard 比 sessions 先动手（dashboard 不依赖 agents，
+	// sessions 必须 await agents 后才发），force=true 让 dashboard 等 sessions
+	// 那边重新拉取最新 raw，避免读到刷新前的旧统计数据
+	useDashboardStore().loadDashboard(id, { force: true }).catch(() => {});
 	await agentsPromise;
 	useSessionsStore().loadSessionsForClaw(id).catch(() => {});
 }

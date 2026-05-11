@@ -2,6 +2,25 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## sessions.list dedup deep-review 发现的预存问题
+
+**发现日期**：2026-05-11
+**关联 commit**：refactor(ui): share sessions raw via sessions.store between dashboard and MainList
+
+来源：dashboard / sessions.store 合流改造的深度 review，4 个 codex-rescue 实例核实出的与本次改动无直接因果的预存问题。
+
+1. **`claw-lifecycle.js` 中的 fire-and-forget `.catch(() => {})` 静默吞错**
+   - 现状：`claw-lifecycle.js:57-59` `initClawResources` 与 `:70-74` `refreshClawResources` 内多处 `.catch(() => {})` 把 loader（sessions/topics/dashboard/agents）的 reject 静默吞掉。任一 loader 意外 reject 没有任何日志可查，是个诊断盲区。
+   - 修复方向：把 `.catch(() => {})` 改成 `.catch((err) => { console.warn('[lifecycle] loadX failed clawId=%s:', id, err); })` 之类的薄包装，保留 fire-and-forget 语义同时留下排查痕迹。
+
+2. **`__fetchSessionsForClaw` 的过时注释**
+   - 现状：`sessions.store.js:240-241` 注释说"不在此处吞 RPC 错误：让外层 Promise.allSettled 看到 rejected 状态，合并环节按'未查询'路径保留旧条目"。但 `__doLoadForClaw` 已经 catch 了 fetch 错误（`:181-185`），外层 `loadAllSessions` 的 `Promise.allSettled` 永远看不到 rejected 状态——注释与实际行为不符。
+   - 修复方向：把注释改成"`__fetchSessionsForClaw` 本身不吞错（抛给 `__doLoadForClaw`），由 `__doLoadForClaw` 统一 catch + warn + 保留旧值"，与现实对齐。
+
+3. **同 id 重绑场景下旧 fetch 写入身份不验证**
+   - 现状：`__doLoadForClaw` 只检查 `clawsStore.byId[id]` 是否存在，不验证是不是同一个 claw 实例。极端时序：claw A 被解绑、同 id 立刻重绑成 claw B，期间 A 的旧 fetch 跑完后会看到 `byId[id]` 存在（指向 B）就把 A 的 raw（以及 SessionItem）写给 B。日常使用几乎不可能触发，但属于已知风险。
+   - 修复方向：fetch 启动时记录一个 fingerprint（比如 conn 引用或 claw 的随机 id），写入前与当前 fingerprint 比对；不一致则丢弃。需要先核实业务上有没有可用的 fingerprint。
+
 ## chat.store loadMessages 周边的预存问题
 
 **发现日期**：2026-05-06

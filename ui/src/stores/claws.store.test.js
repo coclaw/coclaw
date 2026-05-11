@@ -2452,7 +2452,7 @@ describe('__refreshIfStale', () => {
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('20');
 		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('20');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('20');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('20', { force: true });
 		// disconnectedAt 被重置
 		expect(store.byId['20'].disconnectedAt).toBe(0);
 	});
@@ -2528,7 +2528,7 @@ describe('__refreshIfStale', () => {
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('24');
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('24');
 		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('24');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('24');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('24', { force: true });
 		expect(store.byId['24'].disconnectedAt).toBe(0);
 	});
 
@@ -2588,7 +2588,7 @@ describe('__ensureRtc 后通过 __refreshIfStale 刷新', () => {
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('20');
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('20');
 		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('20');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('20');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('20', { force: true });
 	});
 
 	test('RTC 重建成功 + 短暂断连 → 不刷新', async () => {
@@ -4884,7 +4884,7 @@ describe('__resumeOnline helper', () => {
 		// 所有 4 个 loader 都要调（rebuild 后 dcReady=true → getReadyConn 不 gate）
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
 		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1', { force: true });
 	});
 
 	test('connected 分支：DC 延续场景不刷（plugin 侧 rpc msg 会随 ICE 恢复自然送达）', () => {
@@ -4990,7 +4990,7 @@ describe('__resumeOnline helper', () => {
 		});
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
 		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1', { force: true });
 	});
 
 	test('removeClawById / applySnapshot 删 claw / __resetClawStoreInternals 会清 pending force-refresh 标记', async () => {
@@ -5079,7 +5079,7 @@ describe('__resumeOnline helper', () => {
 			expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
 			expect(useTopicsStore().loadTopicsForClaw).toHaveBeenCalledWith('1');
 			// dashboard 也由 refreshClawResources 统一刷（P1.1/1.2 修法后唯一触发点）
-			expect(useDashboardStore().loadDashboard).toHaveBeenCalledWith('1');
+			expect(useDashboardStore().loadDashboard).toHaveBeenCalledWith('1', { force: true });
 		} finally {
 			vi.useRealTimers();
 		}
@@ -5217,7 +5217,7 @@ describe('__resumeOnline helper', () => {
 		});
 		expect(sessionsStore.loadSessionsForClaw).toHaveBeenCalledWith('1');
 		expect(topicsStore.loadTopicsForClaw).toHaveBeenCalledWith('1');
-		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1');
+		expect(dashboardStore.loadDashboard).toHaveBeenCalledWith('1', { force: true });
 	});
 });
 

@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { useClawsStore } from './claws.store.js';
 import { getReadyConn } from './get-ready-conn.js';
 import { useAgentsStore } from './agents.store.js';
+import { useSessionsStore } from './sessions.store.js';
 import { mapToolsToCapabilities } from '../utils/capability-map.js';
 import { generateModelTags } from '../utils/model-tags.js';
 
@@ -144,12 +145,23 @@ export const useDashboardStore = defineStore('dashboard', {
 		 * 加载指定 claw 的完整 dashboard 数据
 		 * 通过 WS RPC 并行调用多个 gateway 方法，聚合结果
 		 * @param {string} clawId
+		 * @param {{ force?: boolean }} [opts] - force=true 时强制重拉 sessions raw（重连恢复 / 用户主动刷新场景），
+		 *   不影响其他 dashboard RPC；force 调用进入时若当前飞行非 force，会等其完成再启动新一轮，避免被合流吞掉
 		 */
-		async loadDashboard(clawId) {
+		async loadDashboard(clawId, { force = false } = {}) {
 			const id = String(clawId);
 
 			// 飞行中守卫：同一 claw 的并发调用复用已有 promise
-			if (_loadingByClaw.has(id)) return _loadingByClaw.get(id);
+			// 例外：当前飞行非 force、新调用是 force → 等当前飞行结束再启动新一轮（force 不被合流吞掉）
+			const inflight = _loadingByClaw.get(id);
+			if (inflight) {
+				if (force && !inflight.force) {
+					return inflight.p
+						.catch(() => {})
+						.then(() => this.loadDashboard(id, { force: true }));
+				}
+				return inflight.p;
+			}
 
 			const conn = getReadyConn(id);
 			if (!conn) return;
@@ -174,34 +186,41 @@ export const useDashboardStore = defineStore('dashboard', {
 					}
 					const agentList = agentsStore.getAgentsByClaw(id);
 
+					// sessions raw 改走 sessionsStore：与业务列表共享 _perClawLoading 飞行合流，
+					// 消除 dashboard 与 sessions.store 在首屏各发一次 sessions.list 的重复 RPC
+					const sessionsStore = useSessionsStore();
+
 					// 并行调用所有 RPC（allSettled 部分失败不影响整体）
 					const [
 						statusResult,
 						modelsResult,
 						usageCostResult,
-						sessionsResult,
 						ttsResult,
 						channelsResult,
+						sessionRawResult,
 						...toolResults
 					] = await Promise.allSettled([
 						conn.request('status', {}, { timeout: 180_000 }),
 						conn.request('models.list', {}, { timeout: 180_000 }),
 						conn.request('usage.cost', { mode: 'month' }, { timeout: 180_000 }),
-						conn.request('sessions.list', {}, { timeout: 180_000 }),
 						conn.request('tts.status', {}, { timeout: 180_000 }),
 						conn.request('channels.status', { probe: false }, { timeout: 180_000 }),
+						sessionsStore.getRawSessionsForClaw(id, { force }),
 						...agentList.map(agent =>
 							conn.request('tools.catalog', { agentId: agent.id }, { timeout: 180_000 })
 						),
 					]);
 
-					// 解包结果（失败的返回 null）
+					// 解包结果（失败的返回 null / 空数组）
 					const status = statusResult.status === 'fulfilled' ? statusResult.value : null;
 					const models = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
 					const usageCost = usageCostResult.status === 'fulfilled' ? usageCostResult.value : null;
-					const sessions = sessionsResult.status === 'fulfilled' ? sessionsResult.value : null;
 					const tts = ttsResult.status === 'fulfilled' ? ttsResult.value : null;
 					const channels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
+					// getRawSessionsForClaw 内部已吞错，理论上不会 rejected；rejected 时兜底为空数组
+					const sessionRawList = sessionRawResult.status === 'fulfilled' && Array.isArray(sessionRawResult.value)
+						? sessionRawResult.value
+						: [];
 
 					// 构建实例总览
 					const clawsStore = useClawsStore();
@@ -221,7 +240,6 @@ export const useDashboardStore = defineStore('dashboard', {
 
 					// 构建 agent 卡片数据
 					const modelCatalog = Array.isArray(models?.models) ? models.models : [];
-					const sessionList = Array.isArray(sessions?.sessions) ? sessions.sessions : [];
 					const ttsEnabled = tts?.enabled === true;
 
 					entry.agents = agentList.map((agent, index) => {
@@ -235,7 +253,7 @@ export const useDashboardStore = defineStore('dashboard', {
 						// 多 agent 不同模型场景下会显示错误。Phase 2 改为通过
 						// agent.identity.get 获取 per-agent 模型配置。
 						const currentModel = findCurrentModel(status?.model, modelCatalog);
-						const agentSessions = filterSessionsByAgent(sessionList, agent.id);
+						const agentSessions = filterSessionsByAgent(sessionRawList, agent.id);
 						const sessionStats = computeSessionStats(agentSessions);
 						const display = agentsStore.getAgentDisplay(id, agent.id);
 
@@ -261,12 +279,12 @@ export const useDashboardStore = defineStore('dashboard', {
 					entry.loading = false;
 				}
 			})();
-			_loadingByClaw.set(id, p);
+			_loadingByClaw.set(id, { p, force });
 			// 确保飞行中守卫在 promise 结束后清理（即使 IIFE 同步完成也不遗漏）；
 			// 仅当 Map 当前条目仍是本 promise 时才清，避免老 promise 的 finally
 			// 把 clearDashboard 后重入新建的飞行 promise 一起删掉
 			p.finally(() => {
-				if (_loadingByClaw.get(id) === p) _loadingByClaw.delete(id);
+				if (_loadingByClaw.get(id)?.p === p) _loadingByClaw.delete(id);
 			});
 			return p;
 		},

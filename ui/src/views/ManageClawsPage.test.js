@@ -202,12 +202,12 @@ describe('ManageClawsPage', () => {
 		expect(wrapper.find('[data-testid="claw-99"]').exists()).toBe(true);
 	});
 
-	test('mounted 时加载 dashboard', async () => {
+	test('mounted 时加载 dashboard（force=true：外层 60s 节流放行后，意图就是拉最新数据）', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		createWrapper();
 		await flushPromises();
 
-		expect(mockLoadDashboard).toHaveBeenCalledWith('1');
+		expect(mockLoadDashboard).toHaveBeenCalledWith('1', { force: true });
 	});
 
 	test('app:foreground 时重新加载 dashboard', async () => {
