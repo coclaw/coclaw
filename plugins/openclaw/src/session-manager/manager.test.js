@@ -352,6 +352,42 @@ test('listAll - 分页 nextCursor 在剩余条目时返回字符串', async () =
 	assert.equal(res.total, 3);
 	assert.equal(res.items.length, 2);
 	assert.equal(res.nextCursor, '2');
+
+	// follow-through 第二页：传入上一页的 nextCursor，应只剩 1 条且 nextCursor=null
+	const res2 = await manager.listAll({ limit: 2, cursor: Number(res.nextCursor) });
+	assert.equal(res2.total, 3);
+	assert.equal(res2.items.length, 1);
+	assert.equal(res2.nextCursor, null);
+});
+
+test('get - 文件存在但全为空行时返回 total=0', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 只有空行/换行，不含任何 JSON 行
+	await fs.writeFile(nodePath.join(sessionsDir, 'empty.jsonl'), '\n\n\n', 'utf8');
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.get({ sessionId: 'empty' });
+	assert.equal(res.total, 0);
+	assert.equal(res.messages.length, 0);
+	assert.equal(res.nextCursor, null);
+});
+
+test('listAll - sessions.json 内容损坏时静默回退，目录扫描仍工作', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 故意写入非法 JSON
+	await fs.writeFile(nodePath.join(sessionsDir, 'sessions.json'), 'not-json-at-all{{{', 'utf8');
+	await fs.writeFile(nodePath.join(sessionsDir, 'ok.jsonl'), '{"x":1}\n', 'utf8');
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.listAll({});
+	// 索引解析失败回退为 {}，但目录里的 transcript 仍被列出
+	assert.equal(res.total, 1);
+	assert.equal(res.items[0].sessionId, 'ok');
+	assert.equal(res.items[0].indexed, false);
 });
 
 test('listAll/get - sessions 目录路径上有文件挡路时返回空（ENOTDIR）', async () => {
