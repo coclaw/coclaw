@@ -10,7 +10,6 @@ import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remot
 import { MemoryQueue } from '../utils/memory-queue.js';
 import { FileBackedQueue } from '../utils/file-backed-queue.js';
 import { isAgentRunResponse } from './agent-run-response.js';
-import { createMutex } from '../utils/mutex.js';
 
 /**
  * 阶段 1 改造后：broadcast / sendFn enqueue 是 async fire-and-forget；消费循环异步从队列拉
@@ -2121,6 +2120,7 @@ test('WebRtcPeer: __logDebug 无 debug 方法时不报错', async () => {
 });
 
 test('WebRtcPeer: SDP 协商失败时清理 session', async () => {
+	resetRemoteLog();
 	// 使用 function 声明以支持 new 调用
 	function FailPC() {
 		const pc = createMockPC();
@@ -2134,15 +2134,20 @@ test('WebRtcPeer: SDP 协商失败时清理 session', async () => {
 		impl: 'ndc',
 	});
 
-	await assert.rejects(
-		() => peer.handleSignaling(makeOffer('c_sdp_fail')),
-		{ message: 'invalid SDP' },
-	);
+	// per-connId FIFO drain 内 catch + remoteLog；caller `await` 看到的是 clean resolve。
+	// __handleOffer 的 first-offer catch 仍负责 closeByConnId 清表，然后 rethrow 抛进 drain。
+	await peer.handleSignaling(makeOffer('c_sdp_fail'));
 	// session 应已被清理
 	assert.equal(peer.__sessions.has('c_sdp_fail'), false);
+	// drain 转 remoteLog 留痕（rtc.signaling-error 是唯一错误日志通道）
+	assert.ok(
+		remoteLogBuffer.some((e) => /rtc\.signaling-error type=rtc:offer conn=c_sdp_fail msg=invalid SDP/.test(e.text)),
+		`expected rtc.signaling-error remoteLog, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`,
+	);
 });
 
 test('WebRtcPeer: createAnswer 失败时清理 session', async () => {
+	resetRemoteLog();
 	function FailPC() {
 		const pc = createMockPC();
 		pc.createAnswer = async () => { throw new Error('answer failed'); };
@@ -2155,11 +2160,12 @@ test('WebRtcPeer: createAnswer 失败时清理 session', async () => {
 		impl: 'ndc',
 	});
 
-	await assert.rejects(
-		() => peer.handleSignaling(makeOffer('c_ans_fail')),
-		{ message: 'answer failed' },
-	);
+	await peer.handleSignaling(makeOffer('c_ans_fail'));
 	assert.equal(peer.__sessions.has('c_ans_fail'), false);
+	assert.ok(
+		remoteLogBuffer.some((e) => /rtc\.signaling-error type=rtc:offer conn=c_ans_fail msg=answer failed/.test(e.text)),
+		`expected rtc.signaling-error remoteLog, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`,
+	);
 });
 
 test('WebRtcPeer: 默认 logger 为 console', () => {
@@ -2767,7 +2773,7 @@ test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', asy
 
 	// 手动替换 session 中的 pc（模拟竞态后的状态）
 	const fakePc = createMockPC();
-	peer.__sessions.set('c_race03', { pc: fakePc, connId: 'c_race03', offerMutex: createMutex(), rpcChannel: null });
+	peer.__sessions.set('c_race03', { pc: fakePc, connId: 'c_race03', rpcChannel: null });
 
 	// 旧 pc 的 handler 触发 failed
 	pc.connectionState = 'failed';
@@ -2781,6 +2787,7 @@ test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', asy
 });
 
 test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
+	resetRemoteLog();
 	const PC = MockPCFactory();
 	let callCount = 0;
 	function ConditionalFailPC(opts) {
@@ -2805,13 +2812,14 @@ test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
 	await peer.handleSignaling(makeOffer('c_race04'));
 	assert.ok(peer.__sessions.has('c_race04'));
 
-	// 第二次同一 connId 但 SDP 失败
-	await assert.rejects(
-		() => peer.handleSignaling(makeOffer('c_race04')),
-		{ message: 'SDP fail' },
-	);
-	// session 应被清理（第二个 PC 失败）
+	// 第二次同一 connId 但 SDP 失败：错误在 drain 内 catch + remoteLog，caller 不感知
+	await peer.handleSignaling(makeOffer('c_race04'));
+	// session 应被清理（第二个 PC 失败 → first-offer catch 内 closeByConnId）
 	assert.equal(peer.__sessions.has('c_race04'), false);
+	assert.ok(
+		remoteLogBuffer.some((e) => /rtc\.signaling-error type=rtc:offer conn=c_race04 msg=SDP fail/.test(e.text)),
+		`expected rtc.signaling-error remoteLog, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`,
+	);
 });
 
 // --- DataChannel 分片/重组测试 ---
@@ -4344,11 +4352,8 @@ test('WebRtcPeer: SDP 协商期间 PC 进入 failed 后协商失败 → catch �
 		impl: 'pion',
 	});
 
-	await assert.rejects(
-		() => peer.handleSignaling(makeOffer('c_sdp_timer')),
-		{ message: 'IPC process exited' },
-	);
-	// session 应已被 catch 块清理
+	await peer.handleSignaling(makeOffer('c_sdp_timer'));
+	// session 应已被 catch 块清理（drain 内吞错；first-offer catch 仍走 closeByConnId）
 	assert.ok(!peer.__sessions.has('c_sdp_timer'));
 
 	// TTL 到期后不应有副作用（timer 已在 catch 中清理）
@@ -6089,7 +6094,7 @@ test('WebRtcPeer monitor: dc 关闭后 session.rpcDropMonitor === null', async (
 	await peer.closeAll();
 });
 
-// --- per-connId offer mutex 串行化 + close-during-lock 身份重核 ---
+// --- per-connId 信令 FIFO 串行化 + close-during-await 身份重核 ---
 
 /**
  * 用 manual-resolve 把 setRemoteDescription / createAnswer / setLocalDescription 卡住，
@@ -6167,17 +6172,17 @@ test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条�
 	});
 
 	await flushAsync();
-	// A 进入 setRemoteDescription，B 在 mutex 队列里阻塞——逐节点反向断言：
-	// B 完全没触碰 PC 任一方法（不光是 sent 顺序对，PC 调用本身也应被锁住）
-	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'A should be at setRemoteDescription, B blocked on mutex');
+	// A 进入 setRemoteDescription，B 在信令 FIFO 队列里阻塞——逐节点反向断言：
+	// B 完全没触碰 PC 任一方法（不光是 sent 顺序对，PC 调用本身也应被串行化）
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'A should be at setRemoteDescription, B queued in FIFO');
 	assert.equal(ctrl.__calls.setRemoteDescription, 1, 'only A reached setRemoteDescription');
-	assert.equal(ctrl.__calls.createAnswer, 0, 'B should not reach createAnswer while A holds mutex');
-	assert.equal(ctrl.__calls.setLocalDescription, 0, 'B should not reach setLocalDescription while A holds mutex');
+	assert.equal(ctrl.__calls.createAnswer, 0, 'B should not reach createAnswer while A drain in flight');
+	assert.equal(ctrl.__calls.setLocalDescription, 0, 'B should not reach setLocalDescription while A drain in flight');
 
 	// 放行 A 的 setRemoteDescription → 进 createAnswer
 	ctrl.__release('setRemoteDescription');
 	await flushAsync();
-	assert.equal(ctrl.__calls.createAnswer, 1, 'A reached createAnswer; B still blocked');
+	assert.equal(ctrl.__calls.createAnswer, 1, 'A reached createAnswer; B still queued');
 	assert.equal(ctrl.__calls.setRemoteDescription, 1, 'B still cannot touch setRemoteDescription');
 	assert.equal(ctrl.__calls.setLocalDescription, 0, 'B still cannot touch setLocalDescription');
 
@@ -6220,7 +6225,7 @@ test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条�
 
 test('WebRtcPeer: 同 connId 三条 ICE restart offer 严格 FIFO（最后一条胜出）', async () => {
 	// UI 端 __restartInFlight 限制 N≤3；线上 N=3 真实出现，单独锁住"三条都被串行"行为
-	// 防止 mutex 链式接龙错误地把第三条与前面并行
+	// 防止 FIFO drain 错误地把第三条与前面并行
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -6252,7 +6257,7 @@ test('WebRtcPeer: 同 connId 三条 ICE restart offer 严格 FIFO（最后一条
 	});
 
 	await flushAsync();
-	// A 持锁；B、C 都还没触碰 PC（mutex 队列里串行排队，不是并发）
+	// A 在 drain 内；B、C 都还没触碰 PC（FIFO 队列里串行排队，不是并发）
 	assert.equal(ctrl.__calls.setRemoteDescription, 1, 'only A reached setRemoteDescription');
 	assert.equal(ctrl.__pending('setRemoteDescription'), 1);
 
@@ -6472,7 +6477,10 @@ test('WebRtcPeer: ICE restart catch 入口身份重核命中（错误 + session 
 	assert.equal(closedLogs.length, 1, `expected exactly one rtc.closed (no double close), got: ${JSON.stringify(closedLogs.map((e) => e.text))}`);
 });
 
-test('WebRtcPeer: session 销毁后 offerMutex 随 session GC；新 session 持新 mutex 实例', async () => {
+test('WebRtcPeer: __signalingQueues drain 跑空后自删 entry；下条同 connId 重建', async () => {
+	// 旧 offerMutex 跟 session 一一同寿；新设计把信令队列与 session 解耦——队列在 drain 跑空后
+	// 自删 entry，下条消息进来时按需重建。session 清理路径（closeByConnId / closeAll）完全不动
+	// 队列。这里钉死生命周期：建/删/重建的可见状态。
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -6482,26 +6490,26 @@ test('WebRtcPeer: session 销毁后 offerMutex 随 session GC；新 session 持�
 	});
 
 	await peer.handleSignaling(makeOffer('c_mu06'));
-	// session 字段含 offerMutex，与 session 同寿
+	// drain 跑完 offer 后 entry 已被 finally 自删
+	assert.equal(peer.__signalingQueues.has('c_mu06'), false, 'drain 跑空后 __signalingQueues 自删 entry');
 	const firstSession = peer.__sessions.get('c_mu06');
-	assert.ok(firstSession?.offerMutex, '首次 offer 后 session.offerMutex 应存在');
-	const firstMutex = firstSession.offerMutex;
 
 	await peer.closeByConnId('c_mu06', firstSession);
-	// session 删除后，整个 session 引用 + offerMutex 一并随 GC
 	assert.equal(peer.__sessions.has('c_mu06'), false, 'closeByConnId 后 session 被删');
+	// session 清理路径不触碰 __signalingQueues（仍为空，未被错误重建）
+	assert.equal(peer.__signalingQueues.has('c_mu06'), false, 'closeByConnId 不触碰信令队列');
 
-	// 同 connId 再次 offer → 建新 session，新 offerMutex 实例
+	// 同 connId 再次 offer → drain 重建 entry，跑完再次自删
 	await peer.handleSignaling(makeOffer('c_mu06'));
 	const secondSession = peer.__sessions.get('c_mu06');
-	assert.ok(secondSession?.offerMutex, '再次 offer 后 session.offerMutex 应存在');
+	assert.ok(secondSession, '再次 offer 后 session 应已建好');
 	assert.notEqual(secondSession, firstSession, '应是新 session 实例');
-	assert.notEqual(secondSession.offerMutex, firstMutex, 'offerMutex 应是新实例（不是旧引用）');
+	assert.equal(peer.__signalingQueues.has('c_mu06'), false, 'drain 跑空后队列 entry 再次自删');
 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 不同 connId 的 ICE restart 互不阻塞（mutex per-connId 隔离）', async () => {
+test('WebRtcPeer: 不同 connId 的 ICE restart 互不阻塞（per-connId 信令队列隔离）', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -6582,8 +6590,11 @@ test('WebRtcPeer: ICE restart 进行中收到 rtc:closed → 身份重核兜住�
 		payload: { sdp: 'restart-sdp', iceRestart: true },
 	});
 	await flushAsync();
-	// 模拟 server 转发 UI 主动 rtc:closed 信号 —— handleSignaling 直接路由到 closeByConnId
-	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_mu_rc' });
+	// per-connId FIFO 下 rtc:closed 信令会排队到 in-flight offer 之后；用外部
+	// closeByConnId 模拟"close 来自队列外"的路径（connectionState=closed / failed-TTL
+	// 触发都走这条，与本测试要钉死的"in-flight 期间外部 close"语义一致）。
+	const sess = peer.__sessions.get('c_mu_rc');
+	await peer.closeByConnId('c_mu_rc', sess);
 	ctrl.__release('setRemoteDescription');
 	await p;
 	await flushAsync(); // G 项：负向 send 断言前 flush
@@ -6623,7 +6634,7 @@ test('WebRtcPeer: ICE restart 进行中 closeAll 触发 → 身份重核兜住',
 	const closeAllPromise = peer.closeAll();
 
 	// D 项反向断言：closeAll 不等 in-flight handleOffer。closeAll 内部只 await closeByConnId，
-	// 不与 offer mutex 关联——fn 仍卡在 createAnswer gate 上时 closeAll 应已 resolve。
+	// 不等 in-flight drain——fn 仍卡在 createAnswer gate 上时 closeAll 应已 resolve。
 	let pSettled = false;
 	p.then(() => { pSettled = true; }, () => { pSettled = true; });
 	await closeAllPromise;
@@ -6684,7 +6695,7 @@ test('WebRtcPeer: failed → TTL 触发 closeByConnId 与 ICE restart in-flight 
 	assert.ok(logs.some((m) => /aborted: session changed/.test(m)));
 });
 
-test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 mutex 串行（验证 mutex 包整个 __handleOffer）', async () => {
+test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 FIFO drain 串行（验证 drain 串行整个 __handleOffer）', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -6711,14 +6722,14 @@ test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 mutex 串行（验证 m
 	// A 应在 setRemoteDescription gate 上
 	assert.equal(ctrl.__pending('setRemoteDescription'), 1);
 
-	// B：ICE restart 紧随，应被 mutex 阻塞排队
+	// B：ICE restart 紧随，应被 FIFO drain 阻塞排队
 	const pB = peer2.handleSignaling({
 		type: 'rtc:offer',
 		fromConnId: 'c_mu_seq',
 		payload: { sdp: 'restart-sdp', iceRestart: true },
 	});
 	await flushAsync();
-	// B 仍未触碰 PC（mutex 排队）
+	// B 仍未触碰 PC（FIFO 排队）
 	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'B should still be queued, not at gate');
 
 	// 放行 A 的三连
@@ -6748,12 +6759,13 @@ test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 mutex 串行（验证 m
 	assert.match(answers[1].payload.sdp, /restart-sdp/);
 });
 
-test('WebRtcPeer: 排队中的 ICE restart 在 withLock 期间 session 被删 → A/B 均身份重核静默 abort', async () => {
-	// 场景（mutex 聚合进 session 后的新形态）：A 进 mutex 卡在 setRemoteDescription，B 在
-	// 同一 session.offerMutex 队列里；期间外部 rtc:closed 同步删除 session 引用并 await
-	// pc.close。释放 A 的三连 await → A 命中身份重核 abort；B 上场后用同一 captured session
-	// 也调 setRemoteDescription，三连 await 释放后同样命中身份重核 abort。两者都不发 stale
-	// rtc:answer 也不再走老设计中"锁内 no-session reject"分支（结构上已消失）。
+test('WebRtcPeer: 排队中的 ICE restart 在 in-flight 期间 session 被外部删 → A 静默 abort，B 走 no_session reject', async () => {
+	// 场景（per-connId FIFO 后的新形态）：A 在 drain 内卡 setRemoteDescription gate；B 在
+	// __signalingQueues 排队（drain 暂未取）；这时**外部** closeByConnId（不走信令队列，
+	// 如 connectionState=failed-TTL / closeAll 触发）同步删除 session。
+	// 释放 A 的 SRD → A 第一段身份重核命中（sessions.get → undefined）→ 静默 abort。
+	// drain 推进到 B：B 入 __handleOffer 时已无 session → 走"no-session ICE restart"前置
+	// reject 分支，输出 rtc:restart-rejected reason=no_session。两者都不发 stale rtc:answer。
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
@@ -6766,11 +6778,12 @@ test('WebRtcPeer: 排队中的 ICE restart 在 withLock 期间 session 被删 �
 
 	await peer.handleSignaling(makeOffer('c_mu_qrc'));
 	const ctrl = makeControllablePc();
-	peer.__sessions.get('c_mu_qrc').pc = ctrl;
+	const session = peer.__sessions.get('c_mu_qrc');
+	session.pc = ctrl;
 	sent.length = 0;
 	logs.length = 0;
 
-	// A 进 mutex（卡 setRemoteDescription gate）
+	// A 进 drain 卡 SRD gate
 	const pA = peer.handleSignaling({
 		type: 'rtc:offer',
 		fromConnId: 'c_mu_qrc',
@@ -6778,7 +6791,7 @@ test('WebRtcPeer: 排队中的 ICE restart 在 withLock 期间 session 被删 �
 	});
 	await flushAsync();
 
-	// B 在同一 session.offerMutex 上排队（sync gate 此时 sessions.has 仍 true，复用同一 session）
+	// B 在 __signalingQueues 排队（drain 尚未取）
 	const pB = peer.handleSignaling({
 		type: 'rtc:offer',
 		fromConnId: 'c_mu_qrc',
@@ -6786,28 +6799,29 @@ test('WebRtcPeer: 排队中的 ICE restart 在 withLock 期间 session 被删 �
 	});
 	await flushAsync();
 
-	// 外部 rtc:closed → closeByConnId 同步删 sessions 表项（pc.close 在 controllable mock 上立即 resolve）
-	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_mu_qrc' });
+	// 外部 closeByConnId（绕过信令队列）同步删 sessions 表项
+	await peer.closeByConnId('c_mu_qrc', session);
 
-	// 放行 A：A 第一段 await 后身份重核命中（sessions.get → undefined）→ 静默 return
+	// 放行 A 的 SRD → A 第一段身份重核命中 → 静默 return
 	ctrl.__release('setRemoteDescription');
 	await pA;
 
-	// B 接力进锁：再次调 setRemoteDescription 推一个新 gate；释放后 B 也命中身份重核静默 abort
-	await flushAsync();
-	ctrl.__release('setRemoteDescription');
+	// drain 推进到 B：B 走 no-session ICE restart reject 分支（不触碰 PC）
 	await pB;
 
 	const answers = sent.filter((m) => m.type === 'rtc:answer');
 	const rejects = sent.filter((m) => m.type === 'rtc:restart-rejected');
-	assert.equal(answers.length, 0, 'A/B 均 abort，无 rtc:answer');
-	assert.equal(rejects.length, 0, '新设计无锁内 no-session reject 分支，不应发 restart-rejected');
-	// 双方 abort 日志都应可见（用于诊断）
-	const abortLogs = logs.filter((m) => /ICE restart aborted: session changed after setRemoteDescription/.test(m));
-	assert.equal(abortLogs.length, 2, 'A 与 B 各产生一条 abort 日志');
+	assert.equal(answers.length, 0, 'A/B 均无 rtc:answer');
+	assert.equal(rejects.length, 1, 'B 走 no-session reject 路径');
+	assert.equal(rejects[0].payload.reason, 'no_session');
+	// A 的 abort 日志
+	assert.ok(
+		logs.some((m) => /ICE restart aborted: session changed after setRemoteDescription/.test(m)),
+		`expected A abort log, got: ${JSON.stringify(logs)}`,
+	);
 });
 
-test('WebRtcPeer: no-session ICE restart 不创建 session（mutex 与 session 一一同寿）', async () => {
+test('WebRtcPeer: no-session ICE restart 不创建 session（前置 reject 直返）', async () => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
@@ -6824,7 +6838,7 @@ test('WebRtcPeer: no-session ICE restart 不创建 session（mutex 与 session �
 		payload: { sdp: 'sdp', iceRestart: true },
 	});
 
-	// 该路径根本不建 session（也就不存在 session.offerMutex）
+	// 该路径根本不建 session
 	assert.equal(peer.__sessions.has('c_mu_leak'), false, 'no-session restart 不应建 session');
 	// reject 信号正常发出
 	assert.equal(sent.length, 1);
@@ -6832,7 +6846,8 @@ test('WebRtcPeer: no-session ICE restart 不创建 session（mutex 与 session �
 	assert.equal(sent[0].payload.reason, 'no_session');
 });
 
-test('WebRtcPeer: 首次 offer 抛错后 catch 同步清 session（offerMutex 随 session GC）', async () => {
+test('WebRtcPeer: 首次 offer 抛错后 catch 同步清 session（drain 内 catch + remoteLog）', async () => {
+	resetRemoteLog();
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -6856,12 +6871,14 @@ test('WebRtcPeer: 首次 offer 抛错后 catch 同步清 session（offerMutex �
 		impl: 'pion',
 	});
 
-	await assert.rejects(
-		peer2.handleSignaling(makeOffer('c_mu_throw')),
-		/SDP rejected/,
-	);
-	// session 已被 catch 通过 closeByConnId 删除；offerMutex 随 session 一同 GC，无残留可言
+	// drain 内 per-item catch 吞错；caller 不再 reject。错误统一走 rtc.signaling-error remoteLog。
+	await peer2.handleSignaling(makeOffer('c_mu_throw'));
+	// session 已被 first-offer catch 通过 closeByConnId 删除
 	assert.equal(peer2.__sessions.has('c_mu_throw'), false);
+	assert.ok(
+		remoteLogBuffer.some((e) => /rtc\.signaling-error type=rtc:offer conn=c_mu_throw msg=SDP rejected/.test(e.text)),
+		`expected rtc.signaling-error remoteLog, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`,
+	);
 });
 
 // ============================================================================
@@ -6893,15 +6910,17 @@ test('WebRtcPeer: 首次 offer setRemoteDescription 后 session 被替换 → �
 		impl: 'pion',
 	});
 
-	// 首次 offer：sync gate 建 session1 入表，进锁后卡在 setRemoteDescription
+	// 首次 offer：sync gate 建 session1 入表，drain 进 SDP 三段 await 后卡在 setRemoteDescription
 	const pFirst = peer.handleSignaling(makeOffer('c_fo01'));
 	await flushAsync();
 
 	const session1 = peer.__sessions.get('c_fo01');
 	assert.ok(session1, 'session1 应已建好');
 
-	// 外部 rtc:closed 同步删表 + fire-and-forget pc.close
-	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_fo01' });
+	// 用外部 closeByConnId 模拟"close 来自信令队列外"的路径（rtc:closed via FIFO 会
+	// 排队到 in-flight offer 之后导致死锁；外部 close 路径——connectionState=closed /
+	// failed-TTL / closeAll——绕过队列，模拟此处更贴近线上行为）
+	await peer.closeByConnId('c_fo01', session1);
 	assert.equal(peer.__sessions.has('c_fo01'), false, '外部 close 后 session 从表中删除');
 
 	// 放行 setRemoteDescription → 身份重核命中（sessions.get → undefined）→ 静默 return
@@ -6945,8 +6964,8 @@ test('WebRtcPeer: 首次 offer createAnswer 后 session 被替换 → 身份重�
 	ctrl.__release('setRemoteDescription');
 	await flushAsync();
 
-	// 此时身份重核第一关已过；外部 close 删 session
-	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_fo02' });
+	// 此时身份重核第一关已过；用外部 closeByConnId 删 session（绕过 FIFO 队列）
+	await peer.closeByConnId('c_fo02', peer.__sessions.get('c_fo02'));
 
 	// 放行 createAnswer → 第二段身份重核命中
 	ctrl.__release('createAnswer');
@@ -6990,8 +7009,8 @@ test('WebRtcPeer: 首次 offer setLocalDescription 后 session 被替换 → 身
 	ctrl.__release('createAnswer');
 	await flushAsync();
 
-	// 外部 close 在 setLocalDescription 前删 session
-	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_fo03' });
+	// 外部 close（绕过 FIFO 队列）在 setLocalDescription 前删 session
+	await peer.closeByConnId('c_fo03', peer.__sessions.get('c_fo03'));
 	ctrl.__release('setLocalDescription');
 	await pFirst;
 
@@ -7034,8 +7053,8 @@ test('WebRtcPeer: 首次 offer 中抛错且 session 已被替换 → catch 身�
 	const pFirst = peer.handleSignaling(makeOffer('c_fo04'));
 	await flushAsync();
 
-	// 外部 close 删 session（在 setRemoteDescription 抛错前）
-	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_fo04' });
+	// 外部 close（绕过 FIFO 队列）删 session（在 setRemoteDescription 抛错前）
+	await peer.closeByConnId('c_fo04', peer.__sessions.get('c_fo04'));
 
 	// 放行 setRemoteDescription → 它抛 'PC has been closed' → catch 入口身份重核命中 suppress
 	ctrl.__release('setRemoteDescription');
@@ -7078,7 +7097,6 @@ test('WebRtcPeer: 非 ICE 重发到现有 session 走 sync gate 五件事原子�
 	const session2 = peer.__sessions.get('c_replace');
 	assert.ok(session2, 'session2 已建好');
 	assert.notEqual(session2, session1, '应是新 session 实例（不复用 session1）');
-	assert.notEqual(session2.offerMutex, session1.offerMutex, '新 session 持新 offerMutex');
 
 	// 旧 pc fire-and-forget 已被 finalize（mock pc.close 同步触发我们的 spy）
 	await flushAsync();
@@ -7149,7 +7167,7 @@ test('WebRtcPeer: closeByConnId expectedSession 不匹配当前表项 → 身份
 	await peer.handleSignaling(makeOffer('c_guard'));
 	const session1 = peer.__sessions.get('c_guard');
 	// 同步替换：__sessions 指向另一个对象
-	const fakeSession = { pc: createMockPC(), connId: 'c_guard', offerMutex: createMutex() };
+	const fakeSession = { pc: createMockPC(), connId: 'c_guard' };
 	peer.__sessions.set('c_guard', fakeSession);
 	// 用 session1（已不在表里）调 closeByConnId → 身份守卫早返回，fakeSession 不动
 	await peer.closeByConnId('c_guard', session1);
@@ -7159,9 +7177,12 @@ test('WebRtcPeer: closeByConnId expectedSession 不匹配当前表项 → 身份
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: fn1 仍持 session1 锁 + 非 ICE fn2 触发 sync gate 替换 → fn1 resume 后身份重核静默 abort（不发 stale rtc:answer）', async () => {
-	// 真正高风险场景：fn1 卡在 setRemoteDescription，fn2 同步段五件事替换 session1 入新 session2，
-	// fn2 在 session2.offerMutex 上正常完成发 answer。fn1 await resolve 后身份重核命中（sessions.get=session2 !== session1）→ 静默 abort。
+test('WebRtcPeer: fn1 in-flight 期间外部替换 sessions 表项 → fn1 resume 后身份重核静默 abort（不发 stale rtc:answer）', async () => {
+	// 钉死的不变量：fn1 卡在 SDP 三段 await 时，sessions[connId] 被替换成另一对象后，
+	// fn1 await resolve 后第一段身份重核命中（sessions.get !== session）→ 静默 return。
+	// per-connId FIFO 后同 connId 第二条 offer 不会与 fn1 并发——但 sessions 表的"被替换"
+	// 仍可能由外部路径触发（test 用直接 __sessions.set 模拟，覆盖未来若有 sync 段额外
+	// 替换分支也能被这条契约抓住）。
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
@@ -7184,39 +7205,31 @@ test('WebRtcPeer: fn1 仍持 session1 锁 + 非 ICE fn2 触发 sync gate 替换 
 		impl: 'pion',
 	});
 
-	// fn1 = 首次 offer 进锁，卡在 setRemoteDescription
+	// fn1 = 首次 offer 进 drain，卡在 setRemoteDescription
 	const pFn1 = peer.handleSignaling(makeOffer('c_replace_busy', 'sdp-1'));
 	await flushAsync();
 	const session1 = peer.__sessions.get('c_replace_busy');
 	assert.equal(session1.pc, ctrl, 'session1 持 ctrl');
 	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'fn1 卡在 setRemoteDescription gate');
 
-	// fn2 = 同 connId 非 ICE 重发；sync gate 同步段五件事替换 session1 → session2，
-	// 然后在 session2.offerMutex 上跑 SDP（session2.pc 是默认 mock，立即 resolve）
-	await peer.handleSignaling(makeOffer('c_replace_busy', 'sdp-2'));
+	// 模拟 sessions 表被外部替换（非 ICE replacement / 未来可能的 sync 替换分支均归此类）
+	const fakeSession2 = { pc: createMockPC(), connId: 'c_replace_busy' };
+	peer.__sessions.set('c_replace_busy', fakeSession2);
 
-	const session2 = peer.__sessions.get('c_replace_busy');
-	assert.ok(session2, 'session2 已建好');
-	assert.notEqual(session2, session1, '应是新 session');
-	assert.notEqual(session2.offerMutex, session1.offerMutex, '新 session 持新 offerMutex');
-
-	// 此时已发出 1 条 rtc:answer（来自 session2）
-	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 1, 'session2 发出 rtc:answer');
-
-	// 放行 fn1 的 setRemoteDescription → fn1 第一段身份重核 sessions.get=session2 !== session1 → 静默 return
+	// 放行 fn1 的 setRemoteDescription → fn1 第一段身份重核 sessions.get=fakeSession2 !== session1 → 静默 return
 	ctrl.__release('setRemoteDescription');
 	await pFn1;
 	await flushAsync();
 
-	// fn1 不应发出第二条 rtc:answer
-	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 1, 'fn1 静默 abort，不发 stale rtc:answer');
-	// abort log 印出
+	// fn1 不应发出任何 rtc:answer
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0, 'fn1 静默 abort，不发 stale rtc:answer');
 	assert.ok(
 		logs.some((m) => /first offer aborted: session changed after setRemoteDescription/.test(m)),
 		`expected fn1 abort log, got: ${JSON.stringify(logs)}`,
 	);
 
-	await peer.closeAll();
+	// 收尾：把 fakeSession2 替换回来避免泄漏（fakeSession2 没真的 PC 资源）
+	peer.__sessions.delete('c_replace_busy');
 });
 
 test('WebRtcPeer: sync gate 非 ICE 替换是真 fire-and-forget（旧 pc.close 阻塞期间不阻塞新 session SDP 完成）', async () => {
@@ -7365,14 +7378,16 @@ test('WebRtcPeer: sync gate 内 __createSession 抛错 → 旧 session 已收尾
 	const origClose1 = session1.pc.close.bind(session1.pc);
 	session1.pc.close = async () => { pc1Closed = true; await origClose1(); };
 
-	// 同 connId 非 ICE 重发：sync gate 五件事前 4 件正常执行，第 5 件 __createSession 抛错
-	await assert.rejects(
-		() => peer.handleSignaling(makeOffer('c_throw', 'sdp-2')),
-		/mock construct failure/,
-		'__createSession 抛错应传播到 handleSignaling 调用方',
-	);
+	// 同 connId 非 ICE 重发：sync gate 五件事前 4 件正常执行，第 5 件 __createSession 抛错。
+	// 错误冒到 __handleSignalingMsg → drain 内 per-item catch + remoteLog；caller 不感知。
+	resetRemoteLog();
+	await peer.handleSignaling(makeOffer('c_throw', 'sdp-2'));
 	// 让 fire-and-forget finalize 跑完
 	await flushAsync();
+	assert.ok(
+		remoteLogBuffer.some((e) => /rtc\.signaling-error type=rtc:offer conn=c_throw msg=mock construct failure/.test(e.text)),
+		`expected rtc.signaling-error remoteLog, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`,
+	);
 
 	// 表里 c_throw 为空（旧 session 已删，新 session 未建成）
 	assert.equal(peer.__sessions.has('c_throw'), false, '抛错后表里 c_throw 应为空');
@@ -7486,7 +7501,6 @@ test('WebRtcPeer: closeByConnId 身份守卫不匹配 → fakeSession 的 pc.clo
 	const fakeSession = {
 		pc: fakePc,
 		connId: 'c_guard2',
-		offerMutex: createMutex(),
 		__failedTimer: fakeTimer,
 	};
 	peer.__sessions.set('c_guard2', fakeSession);
@@ -7650,10 +7664,12 @@ test('WebRtcPeer: closeByConnId 同步段（detach + clear + delete）在第一�
 	await closeAllPromise;
 });
 
-test('WebRtcPeer: closeAll while-drain 把"首轮 await 期间落地的新 session"也关掉，兜底链路验证：sessionB 失败时 __failedTimer 启动', async () => {
-	// 钉死 while-drain 契约（替代旧的"快照漏掉、靠 12h TTL 兜底"语义）：
-	// (a) closeAll 首轮 await 期间另一条 handleSignaling 建好的 sessionB，被第二轮 drain 关掉
-	// (b) 触发 sessionB.connectionState='failed'，断言 __failedTimer 实际被启动（兜底链路活的硬证）
+test('WebRtcPeer: closeAll 期间到达的新 offer 被 __stopping 拦下，不再创建孤儿 session', async () => {
+	// 钉死新设计契约（替代旧 while-drain 兜底"snapshot 漏掉新 session"的语义）：
+	// closeAll 入口立即置 __stopping=true，期间新到的 rtc:offer 经 drain 顶端的关停门禁
+	// + __handleOffer 入口的关停门禁双重拦截，根本不会落地新 session——结构性消除"孤儿
+	// session"问题。while-loop 兜底依然存在（sessions 表里 snapshot 漏掉的极端竞态），
+	// 但产线路径不再依赖它。
 	resetRemoteLog();
 	const sent = [];
 	const PC = MockPCFactory();
@@ -7675,40 +7691,36 @@ test('WebRtcPeer: closeAll while-drain 把"首轮 await 期间落地的新 sessi
 	let pcAClosed = false;
 	sessionA.pc.close = async () => { await aCloseGate; pcAClosed = true; };
 
-	// 启动 closeAll（不 await）—— 首轮同步段对 sessionA detach + delete + 进入 finalize 卡 gate
+	sent.length = 0; // sessionA 建立时已发过 answer，从这里开始计数 closeAll 后的副作用
+
+	// 启动 closeAll（不 await）—— 首轮同步段对 sessionA detach + delete + 进入 finalize 卡 gate；
+	// 同时 __stopping = true 立即置位
 	const closeAllPromise = peer.closeAll();
 	await flushAsync();
+	assert.equal(peer.__stopping, true, 'closeAll 入口立即置 __stopping=true');
 	assert.equal(peer.__sessions.has('c_drain_a'), false, 'sessionA 同步段后已删');
 	assert.equal(pcAClosed, false, 'sessionA 的 pc.close 仍卡在 gate（closeAll 卡在首轮 Promise.all）');
 
-	// 并发：落地 sessionB（模拟 message handler 已过 sock guard 落地的新 offer）
+	// 并发：闯入新 offer——drain 顶端 __stopping 检查 + __handleOffer 入口 __stopping 检查
+	// 双重拦截，根本不应建 session
 	await peer.handleSignaling(makeOffer('c_drain_b'));
-	const sessionB = peer.__sessions.get('c_drain_b');
-	assert.ok(sessionB, 'sessionB 已入表（closeAll 首轮 await 期间）');
+	assert.equal(peer.__sessions.has('c_drain_b'), false, '__stopping 期间新 offer 被拦下，不创建新 session');
+	assert.equal(sent.filter((m) => m.type === 'rtc:answer').length, 0, 'closeAll 后不发 answer');
 
-	// 兜底链路硬证：触发前先证明 __failedTimer 尚未设置（防"预置非 null 值"被 truthy 检查误满足）；
-	// 再触发 connectionState='failed' → 断言 __failedTimer 被启动（仅断言 handler 是 function 太弱，
-	// 空 handler 也能过；触发后看 timer 才证明 TTL 兜底链路活）。
-	assert.equal(sessionB.__failedTimer ?? null, null, 'sessionB 触发 failed 之前 __failedTimer 应未设置');
-	sessionB.pc.connectionState = 'failed';
-	sessionB.pc.onconnectionstatechange();
-	assert.ok(sessionB.__failedTimer, 'sessionB 进入 failed 时 __failedTimer 被启动（兜底链路活）');
-
-	// 放行 sessionA → 首轮 Promise.all 完成 → while-loop 第二轮再扫，把 sessionB 也关掉
+	// 放行 sessionA → 首轮 Promise.all 完成 → while-loop 退出（sessions 表空）
 	releaseAClose();
 	await closeAllPromise;
 	assert.equal(pcAClosed, true, 'sessionA 已收尾');
-
-	// 关键断言：sessionB 也被第二轮 drain 关闭（不再"残留 + 等 12h TTL"）
-	assert.equal(peer.__sessions.has('c_drain_b'), false, 'sessionB 被 while-drain 的第二轮关闭');
-	// drain 清理过程中应已 detach + clear timer，__failedTimer 在 __clearSessionSyncState 内被清掉
-	assert.equal(sessionB.__failedTimer, null, 'sessionB 的 __failedTimer 已被清（同步段 clear）');
+	assert.equal(peer.__sessions.size, 0, 'closeAll 后 sessions 表已空');
 });
 
-test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错冒到 handleSignaling 调用方（不被同函数吞，让 realtime-bridge outer catch 拿到 type=rtc:closed）', async () => {
-	// 钉死"rtc:closed 抛错上抛"契约：handleSignaling 内裸 await，错误必须冒到调用方。
-	// outer realtime-bridge.js 的 try/catch 会接住并打 type=rtc:closed conn=... msg=... 日志和 remoteLog。
-	// 若未来在 rtc:closed 分支内被人误加静默 catch / swallow，这条测试会红。
+test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错由 drain 内 catch + rtc.signaling-error remoteLog', async () => {
+	// 钉死"rtc:closed 抛错落地"契约：信令队列内 catch 全部错误，统一通过
+	// rtc.signaling-error remoteLog 输出诊断；caller `await handleSignaling` 看到的是
+	// clean resolve（旧契约是上抛到 realtime-bridge outer catch；现在 outer catch 仅兜
+	// 早期 init 错误，per-item 错误集中在 drain）。若 drain 误把 closeByConnId 抛错
+	// 路径"无声吞掉"（既没日志也没 remoteLog），这条测试会红。
+	resetRemoteLog();
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -7720,9 +7732,464 @@ test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错冒到 handleSignalin
 	const session = peer.__sessions.get('c_close_throw');
 	session.pc.close = async () => { throw new Error('mock pc.close failed'); };
 
-	await assert.rejects(
-		peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_close_throw' }),
-		/mock pc\.close failed/,
-		'handleSignaling 把 closeByConnId 抛的错继续上抛（outer realtime-bridge 兜底）',
+	await peer.handleSignaling({ type: 'rtc:closed', fromConnId: 'c_close_throw' });
+	assert.ok(
+		remoteLogBuffer.some((e) => /rtc\.signaling-error type=rtc:closed conn=c_close_throw msg=mock pc\.close failed/.test(e.text)),
+		`expected rtc.signaling-error remoteLog for rtc:closed throw, got: ${JSON.stringify(remoteLogBuffer.map((e) => e.text))}`,
 	);
+});
+
+// ============================================================================
+// per-connId 信令 FIFO 串行化新增测试
+// ============================================================================
+
+test('WebRtcPeer: 冷启动 1 offer + 5 ICE 并发到达 → drain 保证 SRD 完整 resolve 后才开始 addIceCandidate', async () => {
+	// 钉死本次修法核心：跨消息的 pion-ipc 字节序。冷启动时 ws 几乎同时到达 1 offer + 5 ICE，
+	// 旧 offerMutex 设计在 SRD 前多了 await prev 微任务跳板让 ICE 抢跑 → pion "remote
+	// description is not set"。FIFO drain 后所有 ICE 必在 SRD **完成** 之后才被调用。
+	// 注意：仅记录 SRD 调用入口不足以证明问题已修——下游 pion 端"IPC 写入完成"才是关键。
+	// 这里通过让 SRD mock 在 await 后再 push 'SRD_DONE' 模拟"SRD 实际写完"，断言所有
+	// 'ICE' 标记都在 'SRD_DONE' 之后。
+	const order = [];
+	const PC = MockPCFactory();
+	const ctrl = createMockPC();
+	ctrl.setRemoteDescription = async () => {
+		order.push('SRD_START');
+		// 模拟 pion IPC 的异步往返延迟（实际场景 3-15ms）
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		order.push('SRD_DONE');
+	};
+	ctrl.addIceCandidate = async () => {
+		order.push('ICE');
+	};
+	let used = false;
+	const PCFactory = function (opts) {
+		if (!used) {
+			used = true;
+			ctrl.__constructorArgs = opts;
+			PC.instances.push(ctrl);
+			return ctrl;
+		}
+		return PC(opts);
+	};
+	PCFactory.instances = PC.instances;
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PCFactory,
+		impl: 'pion',
+	});
+
+	// 并发投递（不 await）：offer 先，ICE 紧随
+	const pOffer = peer.handleSignaling(makeOffer('c_cold'));
+	const pIces = [];
+	for (let i = 0; i < 5; i += 1) {
+		pIces.push(peer.handleSignaling({
+			type: 'rtc:ice',
+			fromConnId: 'c_cold',
+			payload: { candidate: `cand-${i}`, sdpMid: '0', sdpMLineIndex: 0 },
+		}));
+	}
+	await Promise.all([pOffer, ...pIces]);
+
+	// 关键断言：所有 ICE 必须在 SRD_DONE 之后
+	const srdDoneIdx = order.indexOf('SRD_DONE');
+	assert.ok(srdDoneIdx >= 0, `expected SRD_DONE in order: ${JSON.stringify(order)}`);
+	for (let i = 0; i < order.length; i += 1) {
+		if (order[i] === 'ICE') {
+			assert.ok(i > srdDoneIdx, `ICE at idx=${i} should follow SRD_DONE at idx=${srdDoneIdx}: ${JSON.stringify(order)}`);
+		}
+	}
+	// 5 个 ICE 全部到达（无丢候选）
+	assert.equal(order.filter((s) => s === 'ICE').length, 5, '所有 ICE 候选都被处理');
+});
+
+test('WebRtcPeer: ICE-restart offer + 后续 trickle ICE 并发 → 所有 ICE 在 restart SRD 完成后才处理', async () => {
+	// 真实 UI restart 路径：UI 发完 iceRestart offer 后会继续 trickle ICE 候选。
+	// 与冷启动测试对称——但这次 session 已存在，走 ICE restart 分支（不替换 session）。
+	// 旧 mutex 设计同样的 microtask 跳板会让 trickle ICE 抢在 SRD 之前到 pion；
+	// FIFO drain 必须保证 restart 三段 SDP 完成后才开始 addIceCandidate。
+	const order = [];
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 先建初始 session
+	await peer.handleSignaling(makeOffer('c_restart_trickle'));
+	const session = peer.__sessions.get('c_restart_trickle');
+	// 改造 PC：仪表 SRD/createAnswer/setLocalDescription/addIceCandidate
+	session.pc.setRemoteDescription = async () => {
+		order.push('SRD_START');
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		order.push('SRD_DONE');
+	};
+	session.pc.createAnswer = async () => {
+		order.push('CA');
+		return { sdp: 'answer' };
+	};
+	session.pc.setLocalDescription = async () => {
+		order.push('SLD_START');
+		await new Promise((r) => setImmediate(r));
+		order.push('SLD_DONE');
+	};
+	session.pc.addIceCandidate = async () => {
+		order.push('ICE');
+	};
+
+	// 并发投递：1 ICE-restart offer + 5 trickle ICE
+	const pRestart = peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_restart_trickle',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+	const pIces = [];
+	for (let i = 0; i < 5; i += 1) {
+		pIces.push(peer.handleSignaling({
+			type: 'rtc:ice',
+			fromConnId: 'c_restart_trickle',
+			payload: { candidate: `cand-${i}`, sdpMid: '0', sdpMLineIndex: 0 },
+		}));
+	}
+	await Promise.all([pRestart, ...pIces]);
+
+	// 关键不变量：所有 ICE 必须在 restart 三段 SDP 完整结束后（SLD_DONE 之后）才发，
+	// 不只是在 SRD 之后——drain 是按 msg 串行，下一条 ICE msg 在 offer msg 的 handler 完全
+	// 返回后才被 shift 出队列；offer handler 的三段 await（SRD/CA/SLD）全部跑完才返回。
+	const sldDoneIdx = order.indexOf('SLD_DONE');
+	assert.ok(sldDoneIdx >= 0, 'SLD_DONE 必须发生');
+	for (let i = 0; i < order.length; i += 1) {
+		if (order[i] === 'ICE') {
+			assert.ok(i > sldDoneIdx, `ICE at idx=${i} should follow restart SLD_DONE at idx=${sldDoneIdx}: ${JSON.stringify(order)}`);
+		}
+	}
+	assert.equal(order.filter((s) => s === 'ICE').length, 5, 'trickle ICE 全部被处理');
+});
+
+test('WebRtcPeer: __signalingQueues 跨 connId 隔离（A 卡 gate 不阻塞 B）', async () => {
+	// 关键不变量：__signalingQueues 是 per-connId，不同 connId 各自一条 drain，互不阻塞。
+	const PC = MockPCFactory();
+	const ctrlA = makeControllablePc();
+	const ctrlB = createMockPC();
+	let aUsed = false;
+	let bUsed = false;
+	const PCFactory = function (opts) {
+		if (!aUsed) { aUsed = true; PC.instances.push(ctrlA); return ctrlA; }
+		if (!bUsed) { bUsed = true; PC.instances.push(ctrlB); return ctrlB; }
+		return PC(opts);
+	};
+	PCFactory.instances = PC.instances;
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PCFactory,
+		impl: 'pion',
+	});
+
+	// A 卡在 SRD gate
+	const pA = peer.handleSignaling(makeOffer('c_iso_a'));
+	await flushAsync();
+	assert.equal(ctrlA.__pending('setRemoteDescription'), 1, 'A 在 SRD gate');
+
+	// B 同时投递；不同 connId，应不被 A 阻塞，能跑完
+	await peer.handleSignaling(makeOffer('c_iso_b'));
+	assert.ok(peer.__sessions.has('c_iso_b'), 'B 在 A 卡住期间已完成 SDP 协商');
+
+	// 收尾：依次放行 A 的三段 await（必须每段在 drain 推进到下一 gate 后再 release，
+	// 否则 release 在 push resolver 之前是 no-op，gate 仍卡死）
+	ctrlA.__release('setRemoteDescription');
+	await flushAsync();
+	ctrlA.__release('createAnswer');
+	await flushAsync();
+	ctrlA.__release('setLocalDescription');
+	await pA;
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: closeAll 期间排队 ICE 与 offer 全部被 __stopping 丢弃', async () => {
+	// 钉死 drain 顶端 __stopping 门禁：closeAll 触发后再排队进来的信令（offer / ICE / rtc:closed）
+	// 在 drain 下一轮迭代被丢弃；caller `await handleSignaling` 仍正常 resolve 不悬挂。
+	const PC = MockPCFactory();
+	const ctrl = makeControllablePc();
+	let used = false;
+	const PCFactory = function (opts) {
+		if (!used) { used = true; PC.instances.push(ctrl); return ctrl; }
+		return PC(opts);
+	};
+	PCFactory.instances = PC.instances;
+	let iceCalled = false;
+	ctrl.addIceCandidate = async () => { iceCalled = true; };
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PCFactory,
+		impl: 'pion',
+	});
+
+	// 建 sessionA，卡 SRD gate
+	const pA = peer.handleSignaling(makeOffer('c_stop_q'));
+	await flushAsync();
+	assert.equal(ctrl.__pending('setRemoteDescription'), 1, 'sessionA 卡 SRD gate');
+
+	// 排队 ICE + offer（drain 还在跑 A，不会立刻处理）
+	const pIce = peer.handleSignaling({
+		type: 'rtc:ice',
+		fromConnId: 'c_stop_q',
+		payload: { candidate: 'cand', sdpMid: '0', sdpMLineIndex: 0 },
+	});
+	const pNewOffer = peer.handleSignaling(makeOffer('c_stop_new'));
+
+	// 跟踪 doneCb fire 时序：__stopping 分支必须 fire 排队 item 的 doneCb，否则 caller 永挂
+	let pIceSettled = false;
+	let pNewOfferSettled = false;
+	pIce.then(() => { pIceSettled = true; }, () => { pIceSettled = true; });
+	pNewOffer.then(() => { pNewOfferSettled = true; }, () => { pNewOfferSettled = true; });
+
+	// 入队后 PCFactory 调用次数：sessionA 占 1 次（ctrl）
+	const pcInstanceCountBeforeStop = PCFactory.instances.length;
+
+	// 触发 closeAll：__stopping=true；A 的 in-flight 通过身份重核兜住，B/C 在 drain 下一轮被丢弃
+	peer.closeAll();
+	await flushAsync();
+
+	// 放行 A
+	ctrl.__release('setRemoteDescription');
+	ctrl.__release('createAnswer');
+	ctrl.__release('setLocalDescription');
+	await Promise.all([pA, pIce, pNewOffer]);
+
+	// 直接钉死 __stopping 分支：排队 item 必须被丢弃（handler 没跑过），doneCb 必须仍 fire。
+	// 1) 排队的 ICE 没被 pion 处理（drain 顶端 __stopping 命中先 break）
+	assert.equal(iceCalled, false, '__stopping 期间排队 ICE 未被 addIceCandidate 处理');
+	// 2) 排队的新 offer 的 handler 根本没跑——若它跑了，会通过 PCFactory 创建新 PC，instances 增加
+	assert.equal(PCFactory.instances.length, pcInstanceCountBeforeStop,
+		'__stopping 期间排队的新 offer handler 未被执行（PCFactory 没被再次调用）');
+	// 3) doneCb 必须 fire，caller `await handleSignaling` 不能永挂
+	assert.equal(pIceSettled, true, '排队 ICE 的 caller Promise 必须 settle（doneCb fire）');
+	assert.equal(pNewOfferSettled, true, '排队新 offer 的 caller Promise 必须 settle（doneCb fire）');
+	// 4) drain 跑空后 queue entry 被清理
+	assert.equal(peer.__signalingQueues.has('c_stop_q'), false, 'c_stop_q drain 跑空后 entry 自删');
+	assert.equal(peer.__signalingQueues.has('c_stop_new'), false, 'c_stop_new drain 跑空后 entry 自删');
+});
+
+test('WebRtcPeer: drain 内单条信令处理抛错后能正常处理下一条', async () => {
+	// drain 的 per-item catch 保证单条信令出错不阻断后续。模拟 pion IPC 抛 reject。
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	let callCount = 0;
+	function ConditionalFailPC(opts) {
+		callCount += 1;
+		const pc = createMockPC();
+		pc.__constructorArgs = opts;
+		// 第一个 PC 的 setRemoteDescription 抛错
+		if (callCount === 1) {
+			pc.setRemoteDescription = async () => { throw new Error('pion IPC reject'); };
+		}
+		PC.instances.push(pc);
+		return pc;
+	}
+	ConditionalFailPC.instances = PC.instances;
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: ConditionalFailPC,
+		impl: 'pion',
+	});
+
+	// 第一条：失败
+	await peer.handleSignaling(makeOffer('c_recover_a'));
+	assert.equal(peer.__sessions.has('c_recover_a'), false, '失败 session 应被清理');
+	assert.ok(
+		remoteLogBuffer.some((e) => /rtc\.signaling-error type=rtc:offer conn=c_recover_a msg=pion IPC reject/.test(e.text)),
+		'失败转 remoteLog',
+	);
+
+	// 第二条：drain 仍能正常工作（不同 connId，独立队列；同 connId 旧 entry 已自删，可重建）
+	await peer.handleSignaling(makeOffer('c_recover_b'));
+	assert.ok(peer.__sessions.has('c_recover_b'), 'drain 能处理下一条');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: drain 跑空后 __signalingQueues entry 自删；下条同 connId 重建', async () => {
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_qclean'));
+	// drain 跑空后 entry 已自删
+	assert.equal(peer.__signalingQueues.has('c_qclean'), false, '首次 drain 跑空后 entry 自删');
+
+	await peer.handleSignaling(makeOffer('c_qclean'));
+	assert.equal(peer.__signalingQueues.has('c_qclean'), false, '再次 drain 跑空后 entry 自删');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: drain per-item catch 内 logger 与 __remoteLog 自身抛错不阻断后续 doneCb / 不带垮 gateway', async () => {
+	// 钉死强约束（CoClaw plugin "异常必须被捕获，不许带垮 gateway" + caller `await
+	// handleSignaling` 不许永挂）：drain 处理一条信令出错时，per-item catch 内调
+	// logger.warn 与 __remoteLog；若**两条调用都自身抛错**（极端情形：logger 实现 bug
+	// + remoteLog 实现 bug 同时叠加），仍不应让异常冒出 per-item catch——否则后续排队
+	// 的同 connId 消息 doneCb 永不 fire，caller 永挂；drain 自身的 fire-and-forget
+	// Promise 也会变 unhandled rejection。
+	//
+	// 实现细节：catch 内 logger.warn 与 __remoteLog 各自独立 try/catch；这个测试覆盖
+	// 两条都抛的最坏情形，间接钉死"两条独立 try/catch"的设计——任一条吞不住都让本测试 hang。
+	function FailingPC() {
+		const pc = createMockPC();
+		// 让本条 offer 失败，触发 per-item catch
+		pc.setRemoteDescription = async () => { throw new Error('SDP fail'); };
+		return pc;
+	}
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		// logger.warn 自己抛错；error 兜底也抛错（极端情况）
+		logger: {
+			info: () => {},
+			warn: () => { throw new Error('logger.warn intentionally throws'); },
+			error: () => { throw new Error('logger.error intentionally throws'); },
+			debug: () => {},
+		},
+		PeerConnection: FailingPC,
+		impl: 'pion',
+	});
+	// 仅让 per-item catch 内的 __remoteLog（消息前缀固定为 'rtc.signaling-error'）抛错，覆盖
+	// 第二条独立 try/catch；其它 __remoteLog 调用（如 'rtc.offer'）保持正常，避免测试因
+	// 不相关代码路径偏离目的。
+	peer.__remoteLog = (msg) => {
+		if (typeof msg === 'string' && msg.startsWith('rtc.signaling-error')) {
+			throw new Error('__remoteLog intentionally throws');
+		}
+	};
+
+	// 同 connId 两条 offer 入队；第一条触发 SDP fail → per-item catch → logger.warn 抛错
+	// 验证：第一条 doneCb 仍 fire（不悬挂）+ drain 继续处理第二条 + 第二条也正常 resolve
+	const p1 = peer.handleSignaling(makeOffer('c_log_throw'));
+	const p2 = peer.handleSignaling(makeOffer('c_log_throw'));
+
+	let p1Settled = false;
+	let p2Settled = false;
+	p1.then(() => { p1Settled = true; }, () => { p1Settled = true; });
+	p2.then(() => { p2Settled = true; }, () => { p2Settled = true; });
+
+	// 用 Promise.race 加 timeout 兜底防"测试 hang 死等"
+	const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('handleSignaling 悬挂超时（drain logger 抛错让 doneCb 失火）')), 2000));
+	timeout.catch(() => {}); // 防 unhandled rejection
+	await Promise.race([Promise.all([p1, p2]), timeout]).catch((err) => {
+		throw err; // 让测试 fail 给出清晰原因
+	});
+
+	assert.equal(p1Settled, true, 'p1 resolver 应已 fire');
+	assert.equal(p2Settled, true, 'p2 resolver 应已 fire（drain 没因 logger 抛错而退出）');
+});
+
+test('WebRtcPeer: 同 tick 多次 handleSignaling 同 connId → drain 只激活一次（state.running 同步置位）', async () => {
+	// 通过公共 API（handleSignaling）真正复现产线并发路径：同 tick 内多次 enqueue 同
+	// connId，drain 入口的 `if (state.running) return;` 同步检查应让只有第一条 enqueue
+	// 启动真实 drain，后续 enqueue 走 push + 由当前 drain 顺序消化——不会双开 drain。
+	const PC = MockPCFactory();
+	const peer = new WebRtcPeer({
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	// 直接计数"实际消费 drain（穿过 running guard）"和"活跃 drain 峰值"——而不是仅入口调用次数。
+	// 入口次数等于 3 只能说明 enqueue 触发了 3 次 __drainSignaling，无法证明 drain 循环没双开；
+	// 这里用 wrap 在调原 drain 之前 snapshot state.running：running===false 才算"实际消费"，
+	// 同时维护 activeDrains / maxConcurrent 来直接钉死"最多 1 条活跃 drain"。
+	let realDrainEntries = 0;
+	let noopDrainEntries = 0;
+	let activeDrains = 0;
+	let maxConcurrentDrains = 0;
+	const origDrain = peer.__drainSignaling.bind(peer);
+	peer.__drainSignaling = async (connId, state) => {
+		if (state.running) {
+			noopDrainEntries += 1;
+			return origDrain(connId, state); // running guard 命中，立即 return
+		}
+		realDrainEntries += 1;
+		activeDrains += 1;
+		if (activeDrains > maxConcurrentDrains) maxConcurrentDrains = activeDrains;
+		try {
+			return await origDrain(connId, state);
+		} finally {
+			activeDrains -= 1;
+		}
+	};
+
+	// 同 tick 投递 3 条同 connId offer——每次入队都会调一次 __drainSignaling
+	// 但只有第一条会真正进入 while 循环，后两条因 running=true 早返回
+	const ps = [
+		peer.handleSignaling(makeOffer('c_concurrent_enqueue', 'sdp-1')),
+		peer.handleSignaling(makeOffer('c_concurrent_enqueue', 'sdp-2')),
+		peer.handleSignaling(makeOffer('c_concurrent_enqueue', 'sdp-3')),
+	];
+	await Promise.all(ps);
+
+	// 真正能钉死"drain 循环没双开"的两条断言：
+	// 1) realDrainEntries === 1：只有第一条 enqueue 实际穿过 running guard 进入消费循环
+	// 2) maxConcurrentDrains === 1：同一时刻最多只有一条活跃 drain
+	// noopDrainEntries === 2 顺带钉死另两条 enqueue 都命中 running guard 早返回
+	assert.equal(realDrainEntries, 1, '只有一条 drain 实际穿过 running guard 进入消费循环');
+	assert.equal(noopDrainEntries, 2, '另两条 enqueue 调 __drainSignaling 都命中 running guard 早返回');
+	assert.equal(maxConcurrentDrains, 1, '任意时刻最多只有一条活跃 drain');
+	// 所有 3 条都已正常 drain（drain 循环没双开 / 没遗漏，FIFO 把 3 条顺序消费完）
+	assert.equal(peer.__signalingQueues.has('c_concurrent_enqueue'), false, 'drain 跑空后 entry 自删');
+	assert.ok(peer.__sessions.has('c_concurrent_enqueue'), '最后一条 sdp-3 的 session 存活在表里');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: FIFO 新语义——同 connId 两条非 ICE offer 严格 FIFO，各自产 answer（去除 last-wins）', async () => {
+	// 旧 offerMutex 设计下：concurrent 两条非 ICE offer，sync 段把 session 替换两次，
+	// 第一条 mutex 排队进锁时 session 已经是第二条的 session，identity reverify 静默 abort，
+	// 最终只有"最后一条胜出"，发 1 条 answer。
+	// 新 FIFO drain 下：两条信令严格 FIFO，第一条完整处理后第二条才开始；两条都建立各
+	// 自的 session（第二条触发 sync 替换），两条都正常发出 answer，顺序与 offer 一致。
+	// 属于刻意接受的语义变更——UI 端 setRemoteDescription 失败已 try/catch，不会引起回归。
+	const sent = [];
+	const PC = MockPCFactory();
+	// 让 createAnswer 把 lastRemoteSdp 写进 answer.sdp，使 sent 顺序与 offer 顺序可核对
+	function ProbeAnswerPC(_opts) {
+		const pc = createMockPC();
+		pc.__lastRemoteSdp = null;
+		pc.setRemoteDescription = async (desc) => { pc.__lastRemoteSdp = desc.sdp; };
+		pc.createAnswer = async () => ({ sdp: `answer-for:${pc.__lastRemoteSdp}` });
+		PC.instances.push(pc);
+		return pc;
+	}
+	ProbeAnswerPC.instances = PC.instances;
+	const peer = new WebRtcPeer({
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: ProbeAnswerPC,
+		impl: 'pion',
+	});
+
+	const p1 = peer.handleSignaling(makeOffer('c_fifo', 'sdp-1'));
+	const p2 = peer.handleSignaling(makeOffer('c_fifo', 'sdp-2'));
+	await Promise.all([p1, p2]);
+
+	const answers = sent.filter((m) => m.type === 'rtc:answer');
+	assert.equal(answers.length, 2, '两条 offer 各自发出 answer（FIFO 串行而非 last-wins）');
+	// 顺序断言：first answer 对应 sdp-1，second answer 对应 sdp-2
+	assert.match(answers[0].payload.sdp, /answer-for:sdp-1/, `第一条 answer 应对应 sdp-1: ${answers[0].payload.sdp}`);
+	assert.match(answers[1].payload.sdp, /answer-for:sdp-2/, `第二条 answer 应对应 sdp-2: ${answers[1].payload.sdp}`);
+	// 同 connId 非 ICE-restart 第二条 offer 走"同步段五件事"路径——必须创建新 PC（旧 PC 已 detach + delete）。
+	// 这里钉死 PC 实例数=2，防止"两条 offer 都打到同一 PC + __lastRemoteSdp 被覆盖也能蒙过顺序断言"的脆弱场景。
+	assert.equal(PC.instances.length, 2, '同 connId 双 offer 应各自创建新 PC（5 件事原子替换）');
+
+	await peer.closeAll();
 });

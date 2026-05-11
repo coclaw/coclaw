@@ -1318,8 +1318,10 @@ export class RealtimeBridge {
 						await this.__webrtcPeerReady;
 						await this.webrtcPeer.handleSignaling(payload);
 					} catch (err) {
-						// type / conn 字段细分定位：让 server 端日志能直接区分 offer / closed / ice 路径，
-						// 不必再靠 msg 字符串猜 close 失败还是 offer 失败
+						// 现在 handleSignaling 内 drain 自己 catch + 转 rtc.signaling-error remoteLog 不
+						// 抛出，这层 catch 只会兜到 __initWebrtcPeer() 失败（peer 未就绪）。type/conn
+						// 字段保留是为了 server 端日志区分发生位置——init 路径下 type/conn 仍来自当前
+						// 信令消息，与 drain 内的同名日志做区分主要看 msg 文本。
 						const sigType = payload?.type ?? 'unknown';
 						const sigConn = payload?.fromConnId ?? payload?.toConnId ?? 'unknown';
 						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found) type=${sigType} conn=${sigConn}: ${err?.message}`);

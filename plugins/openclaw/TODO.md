@@ -1154,3 +1154,33 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **修复方向**：路由表存请求时同时记录"session 代数"标识；`sendTo` 前对比当前映射的 session 是否仍是发请求时那个，不匹配直接丢弃。或在 connId 对应 session 关闭/替换时主动清空该 connId 下所有 pending reqId。
 
 **严重度**：Low（窗口窄、复用条件苛刻；但要根治需要架构层改动，纳入 async-orphan 治本方案讨论）
+
+## 调查 pion / pion-ipc 是否 FIFO 公平（与"P2P 时通时不通"长期未解问题挂钩）
+
+**发现日期**：2026-05-11（信令串行化 per-connId deep-review，F 节"未验证前提"立项）
+**关联**：`@coclaw/pion-node` Go 端 `peerconnection.go` 的 mu 类型与 pion-ipc Go 端请求分发；本次修法仅保证 plugin 侧 IPC 字节序正确，Go 端 mu 是否公平未验证
+
+**问题**：plugin 侧把外线信令改为 per-connId FIFO drain 后，setRemoteDescription 必先于 addIceCandidate 写进 pion-ipc——但 Go 端 PC 的 mu 是否 FIFO 公平、能否保证先收到的请求先拿锁，未做独立验证。如果 Go 端 mu 非严格 FIFO，plugin 侧再怎么保证 IPC 顺序也防不住偶发候选被丢；这条不确定性可能与用户长期观察到的"同样两端网络 P2P 时通时不通"挂钩。
+
+**为什么本次未一并修**：本次 plugin 侧修法已经把冷启动撞墙概率从"几乎必现"压到"几乎不会发生"，trickle ICE 也让后续候选有恢复机会。Go 端验证属上游研究项，需要单独立项。
+
+**修复方向**：
+- 写 Go 端最小复现：单 PC 上交错发 100 个 addIceCandidate + 1 个 setRemoteDescription，统计失败率分布与失败候选位置
+- 读 `peerconnection.go` 的 mu 类型（sync.Mutex / sync.RWMutex）与 lock 时机
+- 看 pion-ipc Go 端是 per-request goroutine 还是 single-goroutine FIFO 分发
+- 若发现非 FIFO，向上游提 issue 或考虑在 Go 端加排队层
+
+**严重度**：Medium-Low（plugin 侧已大幅减少触发概率；若上游确实非 FIFO，长期 P2P 不稳定问题可能由它驱动，但难复现）
+
+## webrtc-peer.test.js 2390 既有弱断言（预存）
+
+**发现日期**：2026-05-11（信令串行化 per-connId deep-review，codex 测试 review 抓出 H1）
+**关联**：`webrtc-peer.test.js` "ICE restart 复用现有 PC" 测试，line ~2390
+
+**问题**：测试断言 `firstPc.setRemoteDescription.__called === undefined`——mock PC 从未定义 `__called` 属性，恒为 `undefined`，等于 `assert.equal(undefined, undefined)`，恒真。即便 SRD 完全没被调用也能通过。
+
+**为什么本次未一并修**：与本次信令串行化无直接关系；该断言在 mutex-时代就已经是无效断言，属预存测试缺口。
+
+**修复方向**：把 mock 的 `setRemoteDescription` 改成包装版（如 `mock.fn()` / 计数 wrapper），断言调用次数大于 0；或断言"setRemoteDescription 收到了 ICE-restart offer 的 sdp"等真实可验证的副作用。
+
+**严重度**：Low（测试整体场景已被旁路断言覆盖——`PC.instances.length === 1`、`sent[0].type === 'rtc:answer'` 等仍保护核心行为）

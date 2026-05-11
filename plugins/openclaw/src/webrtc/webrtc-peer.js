@@ -7,7 +7,6 @@ import { RpcDcSender, DC_LOW_WATER_MARK, MAX_SINGLE_MSG_BYTES } from './rpc-dc-s
 import { createRpcDropMonitor } from './rpc-drop-monitor.js';
 import { isAgentRunResponse } from './agent-run-response.js';
 import { remoteLog } from '../remote-log.js';
-import { createMutex } from '../utils/mutex.js';
 
 // rpc DC 发送队列实现选择（B-stage2 B9b）。
 // - 'fbq'：FileBackedQueue（当前生产默认）—— 长时间后台 / ICE 恢复等慢消化场景溢出到磁盘
@@ -70,15 +69,121 @@ export class WebRtcPeer {
 		// 队列实现选择：测试可显式覆盖；非 'fbq'/'mem' 一律收编为模块默认，避免误用
 		this.__rpcQueueImpl = (rpcQueueImpl === 'fbq' || rpcQueueImpl === 'mem') ? rpcQueueImpl : RPC_QUEUE_IMPL;
 		this.__rtcTag = impl ? `[coclaw/rtc:${impl}]` : '[coclaw/rtc]';
-		// session 内置 offerMutex（串行化同 connId 的 SDP 协商）+ connId（fire-and-forget
-		// 清理与 closeAll 共享标识）。mutex 与 session 一一同寿：session 创建时初始化，
-		// session GC 时随 session 一起回收，物理上不可能与 session 生命期错位。
-		/** @type {Map<string, { pc: object, connId: string, offerMutex: ReturnType<typeof createMutex>, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, rpcDropMonitor: object|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
+		/** @type {Map<string, { pc: object, connId: string, rpcChannel: object|null, rpcQueue: MemoryQueue|null, rpcDcSender: RpcDcSender|null, rpcConsumeLoop: Promise<void>|null, rpcDropMonitor: object|null, fileChannels: Set, remoteMaxMessageSize: number, nextMsgId: number }>} */
 		this.__sessions = new Map();
+		// per-connId 信令串行化队列：把外线 ws 信令处理改成"按 connId 维护 FIFO 队列"，
+		// 消息按到达顺序串行处理。替换原 offerMutex 方案——后者的 await prev 微任务跳板
+		// 会让 setRemoteDescription 的 IPC 字节序被推到紧随而至的 ICE 候选之后，导致冷
+		// 启动时部分 ICE 候选撞"remote description is not set"被 pion 丢弃。
+		//
+		// 队列与 sessions 生命周期完全解耦：closeByConnId / closeAll / failed-TTL 等 session
+		// 清理路径不动 __signalingQueues；唯一删除路径是 drain 跑空后自删 entry，下条同
+		// connId 消息进来再按需重建。
+		/** @type {Map<string, { queue: Array<{ msg: object, doneCb: () => void }>, running: boolean }>} */
+		this.__signalingQueues = new Map();
+		// 关停门禁：closeAll 入口立即置 true，后续 drain / __handleOffer 在 await 边界看到
+		// __stopping 即放弃后续动作，避免在 plugin 关停期间继续新建/响应 PC。
+		this.__stopping = false;
 	}
 
-	/** 处理来自 Server 转发的信令消息 */
+	/**
+	 * 处理来自 Server 转发的信令消息。
+	 *
+	 * 入队即调度，每条消息附带 doneCb；caller `await handleSignaling(msg)` 会等本条 msg
+	 * 真正 drain 完毕（含错误被 drain 内 catch 转 remoteLog 的情形）才回。错误不再冒到
+	 * 调用方——`rtc.signaling-error` remoteLog 是单一来源，由 drain 的 per-item catch 输出。
+	 *
+	 * 同 connId 的多条消息严格 FIFO；不同 connId 互不阻塞（每个 connId 自己一条 drain
+	 * 微任务链）。冷启动 1 offer + 5 ICE 并发投递时，drain 保证 SRD 完整跑完后再发 ICE
+	 * 的 addIceCandidate，避免 pion 端"remote description is not set"丢候选。
+	 */
 	async handleSignaling(msg) {
+		const connId = msg?.fromConnId ?? msg?.toConnId;
+		if (!connId) return;
+		return new Promise((resolve) => {
+			this.__enqueueSignaling(connId, msg, resolve);
+		});
+	}
+
+	__enqueueSignaling(connId, msg, doneCb) {
+		let state = this.__signalingQueues.get(connId);
+		if (!state) {
+			state = { queue: [], running: false };
+			this.__signalingQueues.set(connId, state);
+		}
+		state.queue.push({ msg, doneCb });
+		// fire-and-forget 触发 drain；running flag 保证只有第一条入队的 caller 启动真实 drain，
+		// 后续入队的 caller 走 push + 由当前 drain 顺序消化。drain 自身用 try/finally 兜底，
+		// per-item 诊断调用也都包了 try/catch；这里再加一层 .catch() 兜 unhandled rejection
+		// 的极冷防御——CoClaw plugin 强约束要求"不许带垮 gateway"。
+		this.__drainSignaling(connId, state).catch((err) => {
+			/* c8 ignore start -- drain 内部 try/finally + per-item try/catch 已覆盖；此 catch 仅极冷防御 */
+			try {
+				this.logger.error?.(`${this.__rtcTag} __drainSignaling unhandled error conn=${connId}: ${err?.message ?? err}`);
+			} catch {
+				/* swallow */
+			}
+			/* c8 ignore stop */
+		});
+	}
+
+	async __drainSignaling(connId, state) {
+		if (state.running) return;
+		// 同步置位：入口到首次 await 之间不能让步，否则同 tick 内多次 enqueue 会双开 drain。
+		state.running = true;
+		try {
+			while (state.queue.length > 0) {
+				// 关停门禁：closeAll 已置位时，剩余信令全部丢弃但仍 fire 每条 doneCb，
+				// 防止 caller `await handleSignaling` 悬挂（队列在 finally 内删除 entry）。
+				if (this.__stopping) {
+					for (const item of state.queue) {
+						/* c8 ignore next 2 -- doneCb 是构造时塞入的 Promise resolver，理论上不抛；try 仅极冷防御 */
+						try { item.doneCb?.(); } catch { /* swallow */ }
+					}
+					state.queue.length = 0;
+					break;
+				}
+				const item = state.queue.shift();
+				try {
+					await this.__handleSignalingMsg(item.msg);
+				} catch (err) {
+					// 单条信令出错不打断 drain；与 realtime-bridge 原 outer catch 的诊断格式对齐。
+					// 诊断调用各自 try/catch：若 logger / remoteLog 自身抛错（极冷），不能让异常
+					// 冒出 per-item catch 阻断后续 doneCb fire（CoClaw plugin "不许带垮 gateway"
+					// 强约束 + 防止 caller `await handleSignaling` 永挂）。
+					const t = item.msg?.type ?? 'unknown';
+					/* c8 ignore next 2 -- 诊断 wrap 是极冷防御，注入的 logger 不抛 */
+					try { this.logger.warn?.(`${this.__rtcTag} signaling error type=${t} conn=${connId}: ${err?.message}`); } catch { /* swallow */ }
+					/* c8 ignore next 2 -- 同上 */
+					try { this.__remoteLog(`rtc.signaling-error type=${t} conn=${connId} msg=${err?.message}`); } catch { /* swallow */ }
+				} finally {
+					// 始终 fire doneCb（即便 await 抛错或 logger 自身抛错），caller 不悬挂。
+					/* c8 ignore next 2 -- 同上，doneCb 是 Promise resolver；try 仅极冷防御 */
+					try { item.doneCb?.(); } catch { /* swallow */ }
+				}
+			}
+		} finally {
+			state.running = false;
+			if (state.queue.length === 0) {
+				// 同 connId 旧 entry 可能在 drain 期间被替换；仅当 map 仍指向本 state 时才删，
+				// 避免误删新 entry。
+				if (this.__signalingQueues.get(connId) === state) {
+					this.__signalingQueues.delete(connId);
+				}
+				/* c8 ignore start -- 防御性兜底；正常控制流 while 退出时 queue.length 必为 0 */
+			} else {
+				// 契约违反：while 条件按 length>0 进，__stopping 分支 break 前会 length=0，
+				// 正常退出意味着 queue 已空——理论不可达。不主动重启 drain（running 已落 false，
+				// 下条 enqueue 自然 kick off 消化残留），保留 entry 以便后续 drain 继续处理。
+				this.logger.error?.(`${this.__rtcTag} __drainSignaling exited with non-empty queue conn=${connId} len=${state.queue.length}`);
+				this.__remoteLog(`drain.contract-violation conn=${connId} len=${state.queue.length}`);
+			}
+			/* c8 ignore stop */
+		}
+	}
+
+	/** 单条信令的 type→handler 分发（drain 内部调用，外部测试可直接复用 handleSignaling） */
+	async __handleSignalingMsg(msg) {
 		const connId = msg.fromConnId ?? msg.toConnId;
 		if (msg.type === 'rtc:offer') {
 			await this.__handleOffer(msg);
@@ -125,6 +230,11 @@ export class WebRtcPeer {
 	 * 不会再有新 rtc:offer 涌入，drain 至多一两轮就达表空。
 	 */
 	async closeAll() {
+		// 关停门禁：drain 与 __handleOffer 看到 __stopping 后立刻放弃后续动作，
+		// 配合 while-drain 兜底"snapshot 漏掉新 session"竞态。__stopping 一旦置 true
+		// 不再重置——本插件 closeAll 调用方（auth-close / 析构）均紧跟 webrtcPeer = null，
+		// 下次复用会建新实例从 false 起。
+		this.__stopping = true;
 		while (this.__sessions.size > 0) {
 			const closing = [...this.__sessions.values()].map((s) => this.closeByConnId(s.connId, s));
 			await Promise.all(closing);
@@ -275,10 +385,15 @@ export class WebRtcPeer {
 	}
 
 	async __handleOffer(msg) {
+		// 关停门禁：closeAll 已置 __stopping 后任何 offer 都不再创建 session 或回 answer，
+		// 与 drain 顶端的 __stopping 检查互为冗余（drain 抢先一步，但 __handleOffer 入口
+		// 这条是"今天每条无害不代表明天加副作用还无害"的稳健补丁）。
+		if (this.__stopping) return;
+
 		const connId = msg.fromConnId;
 		const isIceRestart = !!msg.payload?.iceRestart;
 
-		// no-session ICE restart：立即 reject，不进 mutex / 不建 session。
+		// no-session ICE restart：立即 reject，不建 session。
 		if (isIceRestart && !this.__sessions.has(connId)) {
 			const credRemain = this.__credRemainSec(msg.turnCreds);
 			const credRemainStr = credRemain ?? 'none';
@@ -319,21 +434,17 @@ export class WebRtcPeer {
 			session = this.__createSession(msg, connId);
 		}
 
-		// per-session offer mutex 串行化 SDP 协商：同 connId 几乎同时到达多条 ICE restart
-		// 时把三连 await + sendSignaling 串成 N 轮，最后一条胜出（PC 凭据 = 最后一条 offer
-		// 凭据 = UI 当前凭据）。非 ICE 路径走过五件事后这里只剩一个新 session 在跑，等价
-		// 直接调用——mutex 不增成本。mutex 与 session 一一同寿：session GC 时一并回收。
-		return session.offerMutex.withLock(() => this.__handleOfferLocked(msg, session));
-	}
-
-	/**
-	 * 锁内 SDP 协商三段 await。入参 session 必须由调用方（sync gate）持有引用，
-	 * 锁内**不再** sessions.get(connId) 拿 session 主引用——只对比 `=== session` 做身份重核。
-	 * ICE restart / 首次 offer 两条分支：协商失败时若身份仍匹配则 closeByConnId 清理。
-	 */
-	async __handleOfferLocked(msg, session) {
-		const connId = msg.fromConnId;
-		const isIceRestart = !!msg.payload?.iceRestart;
+		// SDP 协商：原 __handleOfferLocked 主体直接嵌入，删除 offerMutex.withLock 包裹。
+		// per-connId FIFO drain 已保证同 connId 信令串行；mutex.withLock 的 await prev
+		// microtask 让步即是冷启动 ICE 候选撞 SRD 未设的根因，移除后顺序恢复："offer→ICE→ICE..."
+		// 的 ws 到达顺序在 pion-ipc 端被原样保留。
+		//
+		// 三段 await 间的身份重核仍保留：可在 await 中途删 session 的路径只剩"不走信令
+		// 队列"那几条——connectionState=closed/failed-TTL 同步触发 closeByConnId、
+		// closeAll 外线调用、闭包别处直接调 closeByConnId。rtc:closed 现在走 FIFO drain，
+		// 不会在同 connId 三段 await 间插入；最多排在 offer 后面、offer 完成发出 answer
+		// 后才被处理（UI 端 setRemoteDescription 已 try/catch，stale answer 无回归）。
+		// 命中身份重核即丢弃后续动作，不发 stale rtc:answer。
 		const credRemain = this.__credRemainSec(msg.turnCreds);
 		const credRemainStr = credRemain ?? 'none';
 
@@ -358,10 +469,11 @@ export class WebRtcPeer {
 			this.logger.info?.(`${this.__rtcTag} ICE restart offer from ${connId}, renegotiating`);
 			try {
 				await session.pc.setRemoteDescription({ type: 'offer', sdp: msg.payload.sdp });
-				// 身份重核：close-during-lock 路径（rtc:closed / connectionState=closed|failed-TTL /
-				// closeAll）不走 offer mutex，可能在三连 await 中间删掉 session。命中即丢弃后续动作，
-				// 不发 stale rtc:answer。logger.info 仅本地诊断，不上 remoteLog（closeByConnId 触发方
-				// 自带 rtc.closed / rtc.state 等远程日志，server 端能从那侧还原"PC 哪一刻死了"）。
+				// 身份重核：能在三连 await 中间删 session 的路径都不走信令队列——
+				// connectionState=closed/failed-TTL 同步触发 closeByConnId、closeAll 外线调用、
+				// 闭包别处直调 closeByConnId。命中即丢弃后续动作，不发 stale rtc:answer。
+				// logger.info 仅本地诊断，不上 remoteLog（closeByConnId 触发方自带 rtc.closed /
+				// rtc.state 等远程日志，server 端能从那侧还原"PC 哪一刻死了"）。
 				if (this.__sessions.get(connId) !== session) {
 					this.logger.info?.(`${this.__rtcTag} [${connId}] ICE restart aborted: session changed after setRemoteDescription`);
 					return;
@@ -505,7 +617,6 @@ export class WebRtcPeer {
 		const session = {
 			pc,
 			connId,
-			offerMutex: createMutex(),
 			rpcChannel: null,
 			rpcQueue: null,
 			rpcDcSender: null,

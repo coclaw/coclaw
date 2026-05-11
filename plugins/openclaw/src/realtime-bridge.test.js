@@ -3005,8 +3005,10 @@ test('RealtimeBridge should handle rtc: signaling error gracefully with type+con
 		});
 		await waitFor(() => logs.some((l) => String(l).includes('signaling error')), { label: 'signaling error logged' });
 
-		// 钉死 outer catch 携带 type / conn 细分字段（替代旧的"通用 signaling error"行）：
+		// 钉死 signaling-error 日志携带 type / conn 细分字段（替代旧的"通用 signaling error"行）：
 		// 让 server 端运维不必靠 err.message 字符串猜路径，直接看 type=、conn=
+		// 当前实际来源是 webrtc-peer drain 的 per-item catch（同格式）；bridge 外层 catch
+		// 现在只兜 __initWebrtcPeer() 失败，handleSignaling 自身不再抛
 		// 正则用 \b 边界，避免 `type=rtc:offer-x` / `conn=c_err_x` 等子串误满足
 		assert.ok(logs.some((l) => /signaling error/.test(String(l)) && /\btype=rtc:offer\b/.test(String(l)) && /\bconn=c_err\b/.test(String(l))),
 			`expected signaling error log with type + conn fields, got: ${JSON.stringify(logs)}`);
