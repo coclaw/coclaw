@@ -131,6 +131,14 @@ export async function writeUpgradeLock(pid) {
  * `upgrade.ledger-read-failed` / `upgrade.ledger-parse-failed`），避免运维只
  * 看到 start() 那条 "Skipping: not an npm-installed plugin" 时误判方向。
  *
+ * 注：内部 `readFileSync` 为同步 IO，**有意保留**——只在升级周期决策时读一次
+ * 账本（整个进程生命周期通常一锤子）。改 async 必须沿 `shouldSkipAutoUpgrade`
+ * 等调用链向上传播，收益不抵成本。
+ *
+ * 另：OpenClaw plugin SDK 当前未暴露查询 installRecords 的 API，只能直接读
+ * `<state-dir>/plugins/installs.json`（与上游 `manifest-metadata-scan` 等
+ * 内部模块同源做法）。如果上游后续开放官方接口，可切换并删除直读分支。
+ *
  * @param {string} pluginId
  * @returns {object|null}
  */

@@ -77,6 +77,13 @@ function generateIdentity() {
  * 加载或创建设备身份（Ed25519 密钥对）
  *
  * 存储格式与 OpenClaw device-identity.ts 保持一致。
+ *
+ * 注：本函数及内部 `fs.existsSync` / `readFileSync` / `generateKeyPairSync` /
+ * `atomicWriteFileSync` 均为同步 IO，**有意保留**——本路径只在 plugin↔本机
+ * gateway 首次握手时命中一次（后续走 realtime-bridge 的内存缓存），属于"启动期
+ * 一锤子"。改 async 必须把握手链路也 async 化，复杂度全长在握手那条线上，收益
+ * 不抵成本。重新评估前请先确认调用频率确实发生了变化。
+ *
  * @param {string} [filePath] - 自定义路径，默认 &lt;state-dir&gt;/coclaw/device-identity.json
  * @returns {{ deviceId: string, publicKeyPem: string, privateKeyPem: string }}
  */
