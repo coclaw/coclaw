@@ -1144,3 +1144,17 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 - 方案 3：把 mutex 装进 sessions Map value 包装器（`Map<connId, { session, offerMutex }>`），mutex 与 entry 同寿，物理上不可能 split。变更面 30-50 处
 
 **严重度**：Low（理论 race，无生产 incident；ICE restart 主链路成功率应保持 ≥97%）
+
+
+## getById 大 transcript 反向流式读 + 早停（async 化后剩下的 CPU 阻塞）
+
+**发现日期**：2026-05-11（codex-rescue review session-manager 异步化方案时识别）
+**关联**：`src/session-manager/manager.js` `getById` / `get`
+
+**问题**：session-manager 异步化后 fs 物理 IO 不再卡 event loop，但 `getById` 仍是 readFile 全文 → `split(/\r?\n/)` → 逐行 JSON.parse 的同步链。transcript 50MB+ 时 readFile 后的 split + parse 仍会一次性占用主线程几百毫秒到秒级。getById 默认 `limit=500` 只取最后 N 条，整文件读+解析其实是浪费。
+
+**为什么本次未一并修**：本轮目标是去掉无谓的同步 IO 阻塞（每次 listAll 50 次 readFileSync），那一类已彻底消除。getById 的大文件 parse 是该 RPC 固有的功能性成本，性质不同；流式优化是单独的优化项，不属于"修同步阻塞"范畴。
+
+**修复方向**：反向流式读取——从文件末尾按 chunk 读，每个 chunk 内拆行，只 parse 到累计够 limit 条 message 行就停。可用 `fs.createReadStream({ start, end })` 或多次 `filehandle.read` 配 buffer。需评估 CRLF/UTF-8 多字节边界处理。
+
+**严重度**：Low（仅大 transcript 场景才感知；plugin 主路径 UI 用 `coclaw.sessions.getById` 拉历史时一次性渲染需求确实就是要最后 N 条）
