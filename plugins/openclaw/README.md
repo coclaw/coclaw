@@ -92,7 +92,7 @@ pnpm run release:versions                  # 显示所有已发布版本
 | `coclaw.files.delete` | 删除工作区文件/目录 |
 | `coclaw.files.mkdir` | 创建工作区目录 |
 | `coclaw.files.create` | 创建空文件 |
-| `nativeui.sessions.listAll` | 列出所有 session（分页 + 标题推导） |
+| `nativeui.sessions.listAll` | 列出所有 session（分页） |
 | `nativeui.sessions.get` | 获取 session 原始 JSONL 行（分页） |
 
 ## Gateway Services

@@ -12,12 +12,9 @@
 - 排除 deleted 归档 transcript：`<sessionId>.jsonl.deleted.<timestamp>`（兼容排除 `.jsonl.delete.<timestamp>`）
 - 按 `sessionId` 去重：同 id 存在多文件时仅返回一条，**优先 `live`，其次 `reset`**（`live` 代表当前活跃 transcript）
 - 合并 `sessions.json` 中已索引但无 transcript 文件的 session（`indexed: true`，无 `size`/`updatedAt`）
-- 返回项包含 `sessionId`、`sessionKey`、`indexed`、`size`、`updatedAt`、`derivedTitle`
+- 返回项包含 `sessionId`、`sessionKey`、`indexed`、`archiveType`、`fileName`、`size`、`updatedAt`
 - 支持 cursor 分页（`cursor`、`nextCursor`、`total`）
-- `derivedTitle` 推导规则：
-  - 取 transcript 中第一条包含 text 的 user message，截断作为标题
-  - 自动清除 OC 注入的元数据前缀（时间戳、`[cron:...]`、inbound meta 块等）
-  - 若找不到 user text，则不返回 `derivedTitle`（由前端回退显示）
+- 不读取 transcript 内容（只走 readdir + stat 元数据），UI 标题由 chat-history / topic 的 title 字段提供
 
 ## `nativeui.sessions.get`
 
