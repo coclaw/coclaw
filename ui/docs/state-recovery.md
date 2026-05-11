@@ -2,7 +2,7 @@
 
 > 适用范围：CoClaw UI
 > 创建时间：2026-03-26
-> 最后更新：2026-04-19
+> 最后更新：2026-05-11
 
 本文档记录 CoClaw UI 中所有状态恢复机制的设计与实现。大部分恢复逻辑是 Web 应用本身就需要的（网络异常、页面切换等），Capacitor 移动端只是放大了问题频率并引入少量特有处理。
 
@@ -186,16 +186,25 @@
 ### 3.7 sessions / topics 加载语义
 
 - **文件**：`stores/sessions.store.js`、`stores/topics.store.js`
-- **per-claw 路径**（重连恢复 / 首次 init）：`loadSessionsForClaw(id)` / `loadTopicsForClaw(id)` 仅替换该 claw 的数据，其他 claw 旧数据保留；同 claw 并发调用按 in-flight Map 合流；fetch 期间 claw 被移除则丢弃结果
-- **全量路径**（MainList 列表渲染）：`loadAllTopics()` 走全量增量合并——仅替换本次查询到的 claw 的 topics，未查询/失败的 claw 旧数据保留。`loadAllSessions()` 当前无生产调用方（保留为内部接口）
+- **两个入口共享一把 per-claw 合流锁**：
+  - per-claw 入口（`loadSessionsForClaw(id)` / `loadTopicsForClaw(id)`）：DC 重连恢复 / 首次 init / Dashboard 触发
+  - 全量入口（`loadAllSessions()` / `loadAllTopics()`）：MainList 列表渲染
+  - 全量入口内部对每个 connected claw 调 per-claw 入口，两者共享 `_perClawLoading` Map。多入口并发触发只发一份 RPC；早期两套缓存互不感知导致首屏双发的问题以此根除
+- **失败语义**：仅替换本次成功拉取的 claw 数据，其他 claw 旧数据保留；fetch 失败该 claw 保留旧值（不清空）；fetch 期间 claw 被移除则丢弃结果
+- **force 合流策略**（per-claw 入口）：
+  - 非 force 看到任何飞行 → 合流（任何正在跑的拉取都足以满足 freshness）
+  - force 看到 force 飞行 → 合流（同样要新数据）
+  - force 看到非 force 飞行 → 等其完成后启动新一轮（避免拿到非 force 早期触发的、对 force 调用者已过时的拉取）
+- **sessions raw 共享**：dashboard 不再独立发 `sessions.list`——改读 sessions.store 的 `_rawByClaw` 缓存。raw 与业务列表 SessionItem 同生命周期、同一道合法性关卡写入、失败一并保留旧值
 - **附加**：无已连接 claw 时 skip 而非清空，避免短暂全断期间丢失数据
 - **场景**：Web + Capacitor
 
 ### 3.8 MainList clawListKey watcher
 
 - **文件**：`components/MainList.vue`
-- **触发**：claw 列表变化（增删/上线状态变化）
-- **行为**：`loadAllAgents()` + `loadAllTopics()`
+- **触发**：claw 增删 / online 翻转（false↔true）
+- **行为**：`loadAllAgents()` + `loadAllTopics()` + `loadAllSessions()`
+- **DC 打开瞬间不 fire**：watcher key 只含 `id:online`，不含 `dcReady`。DC 打开瞬间 `__fullInit → initClawResources` 已经跑过一遍数据加载，再让 watcher 在毫秒级错位后撞进来一次会绕过 per-claw 合流锁（前一次飞行 promise 已 settle、Map 已清，新调用从零起飞）。代价是失去 watcher 那次"机会性重试"——`__fullInit` 内部 `.catch(() => {})` 静默吞错时的兜底缺位（已纳入 `TODO.md` 跟踪）
 - **场景**：Web + Capacitor
 
 ### 3.9 chatStore 激活与重入
@@ -409,6 +418,7 @@
 
 - **WS 层**（SignalingConnection）：`__lastForegroundAt` + 500ms（`network:online` 豁免；连续 network:online 由 `connecting` 状态分支自然防护）
 - **RTC 层**（claws.store）：`network:online` 按 PC 状态 + 网络类型变化分级处理；`app:foreground` 短后台（<25s）跳过 probe；`_probeInProgress` 防止同一 claw 并发 probe
+- **Store 层 per-claw in-flight Map**（sessions / topics / agents / dashboard）：lifecycle（首次 init / DC 重连刷新）、MainList watcher（claw 增删 / online 翻转）、Dashboard 触发等多个入口共用同一把 per-claw 合流锁，首屏并发触发只发一份 RPC。每个 claw 内部对 N 个 agent 的 fan-out（identity / tools 等）按 agent 一次，是合理 fan-out 而非重复
 - **AdminDashboardPage / ManageClawsPage**：`__lastLoadedAt` + 60s freshness gate（成功后 = now；失败后 = now - 30s 等价 30s 冷却防 5xx 重试风暴）
 - **AuthedLayout**：`__lastResumeAt` + 2s（多源派发幂等保险；refreshSession 频率天然低，不加 freshness gate）
 - **ChatPage**：无（消息刷新仅由 connReady watcher 驱动，不再监听任何外部事件）
