@@ -1,7 +1,7 @@
 # 远程日志通道设计
 
 > 创建时间：2026-03-30
-> 状态：已实施（基础设施 + 各端已有连接诊断埋点）
+> 状态：已实施。Plugin 走 bot WS、UI 走独立 HTTP 通道（详见 [ui-remote-log-http-channel.md](./ui-remote-log-http-channel.md)）
 > 范围：Plugin / UI → Server 的诊断日志推送
 
 ---
@@ -23,20 +23,21 @@ OpenClaw 运行在用户的远端环境，Plugin 在其中作为 gateway 扩展�
 ## 二、整体方案
 
 ```
-Plugin ── bot WS ──────► Server ──► logger.info(...)
-                           ▲
-UI ──── RTC signaling WS ──┘
+Plugin ── bot WS ──────────────────► Server ──► logger.info(...)
+                                        ▲
+UI ──── HTTP POST /api/v1/log/ui ───────┘
+        (per-batch, ordered, dedup)
 ```
 
 - Plugin 通过已有 bot WS 通道发送 `type: 'log'` 消息
-- UI 通过已有 RTC signaling WS 通道发送 `type: 'log'` 消息
-- 不新增连接或端点
+- UI 通过独立 HTTP 通道发送批次日志（替代原先的 RTC signaling WS 通道）—— 详见 [ui-remote-log-http-channel.md](./ui-remote-log-http-channel.md)
+- 两端通道独立演化；Plugin 端不变，UI 端切换原因见 UI 通道设计文档
 
 ---
 
 ## 三、消息格式
 
-### WS 消息
+### Plugin → Server（bot WS）
 
 ```js
 {
@@ -52,6 +53,21 @@ UI ──── RTC signaling WS ──┘
 - `logs`：对象数组，每条包含 `ts`（毫秒时间戳，`Date.now()`）和 `text`（可读文本）
 - `ts` 为 UTC 毫秒时间戳，无时区歧义
 - 不传 botId、source 等路由信息——Server 从连接上下文获取
+
+### UI → Server（HTTP POST）
+
+UI 端协议结构相近，单条 entry 仍是 `{ ts, text }`，外层显式带 `uiId` + `seq` 用于去重：
+
+```js
+POST /api/v1/log/ui
+Body: {
+  uiId: "<nanoid>",
+  seq: 5,
+  logs: [ { ts, text }, ... ]
+}
+```
+
+详细字段说明、去重机制、顺序发送、登录态处理（不强制鉴权）等参见 [ui-remote-log-http-channel.md](./ui-remote-log-http-channel.md)。
 
 ### Server 日志输出
 
@@ -72,18 +88,15 @@ UI ──── RTC signaling WS ──┘
 
 ### 公共 API
 
-每端暴露一个全局函数：
+各端均暴露一个全局函数：
 
 ```js
 remoteLog('ws.connected peer=server rtt=23ms');
 ```
 
-调用方只需提供纯文本描述。函数内部：
+调用方只需提供纯文本描述；函数内部记录时间戳、组装 entry、推入缓冲区。
 
-1. 记录当前时间戳（`Date.now()`）
-2. 组装为 `{ ts, text }` 对象，推入缓冲区
-
-### 缓冲与批量发送
+### Plugin 端
 
 - 缓冲区上限：**1000 条**（超出时丢弃最旧条目）
 - 批量大小：**20 条/批**
@@ -102,30 +115,45 @@ async function flush() {
 }
 ```
 
-### 断连处理
-
 连接不可用时日志仅在缓冲区累积，连接恢复后自动 flush。缓冲区满时丢弃最旧条目（保留最新状态）。
+
+### UI 端
+
+UI 端采用独立 HTTP 通道，触发条件、批量大小、顺序发送、去重等机制有专门设计，详见 [ui-remote-log-http-channel.md](./ui-remote-log-http-channel.md)。
+
+关键差异概览（相对 Plugin 端）：
+
+| 维度 | Plugin (bot WS) | UI (HTTP) |
+|------|----------------|-----------|
+| 批量大小 | 20 条 | 100 条 |
+| 时间触发 | 无（仅大小触发） | 5 秒 |
+| 顺序约束 | 无（WS 自身可靠有序） | 同时 1 batch in-flight |
+| 去重 | 不需要（WS 可靠传输） | 单调 seq by uiId |
+| 身份标识 | botId / clawId 来自 WS 上下文 | 显式字段 `uiId` + `seq` |
+| 登录态门控 | WS 已登录态 | 不强制（端点接受 anon 上报） |
 
 ---
 
 ## 五、Server 侧处理
 
-Server 对 `type: 'log'` 消息的处理逻辑极简：
+Server 端 log 渲染规则统一（无论 plugin 还是 UI），核心是把 entry 渲染成 `console.info` 一行：
 
-```js
-// claw WS (claw-ws-hub.js)
-for (const { ts, text } of logs) {
-  console.info(`[remote][plugin][claw:${clawId}]${fmtRemoteLogTs(ts)} ${text}`);
-}
-
-// RTC signaling WS (rtc-signal-hub.js)
-for (const { ts, text } of logs) {
-  console.info(`[remote][ui][user:${userId}]${fmtRemoteLogTs(ts)} ${text}`);
-}
+```
+[remote][<source>][<ctx>][ts=<ISO_UTC>] <text>
 ```
 
+- `<source>` = `plugin` / `ui`
+- `<ctx>` = `claw:<clawId>` 或 `user:<userId>` 或 `anon`（视来源 + 路径补全；UI 通道允许未登录上报）
 - `fmtRemoteLogTs(ts)`：将毫秒时间戳渲染为 `[ts=<ISO_UTC>]`；无效输入返回占位 `[ts=??]`。统一 UTC（字典序=时间序，agent 排序便利）
-- 不做存储、不做聚合。依赖现有日志基础设施（文件 / stdout）
+
+按来源的入口路径：
+
+| 来源 | 入口 | 上下文补全 | 额外处理 |
+|------|------|-----------|---------|
+| Plugin | `claw-ws-hub.js` 的 `type: 'log'` 分支 | `[claw:<clawId>]` | 无 |
+| UI | HTTP `POST /api/v1/log/ui` | `[user:<userId>\|anon][batch=<uiId 尾部 8 字符>:<seq>]` | schema 校验 + 单调 seq 去重；不强制登录态；Origin 沿用 server 全局 CORS（详见 UI 通道设计文档）|
+
+不做存储、不做聚合，依赖现有日志基础设施（文件 / stdout）。
 
 ---
 
@@ -148,6 +176,7 @@ for (const { ts, text } of logs) {
 
 | 事件 | 示例 |
 |------|------|
+| 启动锚点 | `ui.start uiId=<...> version=<...> platform=<...> ua="<...>"`（每个 UI 实例只发一次，详见 UI 通道设计文档）|
 | SSE 连接/断开/重连 | `sse.connected` / `sse.reconnecting attempt=2` |
 | RTC signaling WS 连接/断开 | `sigws.connected` / `sigws.disconnected code=1006` |
 | RTC PeerConnection 状态变化 | `rtc.state bot=abc connected→failed` |
