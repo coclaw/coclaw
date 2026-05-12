@@ -1908,6 +1908,39 @@ describe('ChatPage scroll', () => {
 		expect(scrollToSpy).toHaveBeenCalled();
 	});
 
+	// 锁住"首屏 visibility 解锁与历史加载锁解耦"的契约：
+	// 之前 scrollToBottom 在 __loadingHistory=true 时直接早退，连 __scrollReady 都不点亮——
+	// 一旦 __onConnReady 的强制 scroll 撞上 chatMessages watcher 触发的 __autoFillHistory（视口未满 → 立刻
+	// loadOlderMessages → __loadingHistory=true）这条 race，整面板会永久 visibility:hidden，
+	// 只能切走再回来重挂 ChatPage 才恢复。
+	test('contract: force 路径在 __loadingHistory 占锁时仍需解锁 __scrollReady（race 防卡死）', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+		// 双下划线开头的 data 字段在 reserved-prefix runtime-core 里不上 ctx，
+		// 需要从 $data 走读。手动赋值则继续用 $data 走以保证写在同一处。
+		expect(wrapper.vm.$data.__scrollReady).toBe(false);
+
+		const scrollContainer = wrapper.vm.$refs.scrollContainer;
+		if (!scrollContainer) return;
+		scrollContainer.scrollTo = vi.fn();
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1000, configurable: true },
+			scrollTop: { value: 0, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+
+		// 模拟 race：chatMessages watcher 已经把 __autoFillHistory 跑起来 → __loadingHistory=true，
+		// __onConnReady 的 $nextTick 这时才轮到调 scrollToBottom(true)。
+		wrapper.vm.$data.__loadingHistory = true;
+		wrapper.vm.scrollToBottom(true);
+		await wrapper.vm.$nextTick();
+		await new Promise(r => requestAnimationFrame(r));
+
+		// 即便 scroll 被 history-load 路径接管而跳过，首屏 visibility 也必须解锁，
+		// 否则整面板会一直 visibility:hidden 直到用户主动切走重挂。
+		expect(wrapper.vm.$data.__scrollReady).toBe(true);
+	});
+
 	// --- ResizeObserver ---
 	describe('ResizeObserver', () => {
 		let savedRO;

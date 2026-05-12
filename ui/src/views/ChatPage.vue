@@ -1053,7 +1053,14 @@ export default {
 			const el = this.$refs.scrollContainer;
 			if (!el?.scrollTo) return;
 			if (!force && this.userScrolledUp) return;
-			if (this.__loadingHistory) return;
+			if (this.__loadingHistory) {
+				// 历史加载中 scrollTop 由 __loadMoreHistory 自管，这里不再补一次 scroll；
+				// 但首屏 visibility 解锁不能被它卡死——否则 __onConnReady 的强制 scroll 撞上
+				// chatMessages watcher 触发的 __autoFillHistory（视口未满 → 立即 loadOlderMessages）这条 race，
+				// __scrollReady 就再也回不到 true，整面板永久 visibility:hidden。
+				if (force && !this.__scrollReady) this.__scrollReady = true;
+				return;
+			}
 
 			this.$nextTick(() => {
 				// 二次检查：$nextTick 排队期间用户可能已上划
