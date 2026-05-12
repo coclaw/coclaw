@@ -23,7 +23,8 @@
 #   - 不用 docker compose logs -f：会阻塞 SSH。用 --since 拉快照
 #   - dump 后多次 grep 复用，不要每次都重新拉日志
 #   - --no-color：避免 ANSI 污染 grep
-#   - -t：用容器侧 UTC 时间（行内嵌的 +8 时间是源端，仅供时延参考）
+#   - -t：行首是容器侧 UTC（server 接收时刻）。行内 [ts=<ISO_UTC>] 是 UI/plugin
+#     端事件发生时刻，也 UTC；多端日志排序优先用 [ts=...]（字典序=时间序）
 
 set -euo pipefail
 

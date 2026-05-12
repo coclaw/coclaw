@@ -45,7 +45,7 @@ ssh <host> 'cd ~/coclaw && docker compose logs --since=<DURATION> --no-color -t 
 
 关键参数：
 - `--since=20m` / `--since=2h` 限定窗口，避免一次拖满。
-- `-t` 打上 server 容器侧时间戳（UTC, RFC3339）。排查时**以此为准**，不要被日志行里内嵌的 +8 时间误导。
+- `-t` 打上 server 容器侧时间戳（UTC, RFC3339Nano）——server **接收**到该行的时刻。注意区分行里内嵌的 `[ts=<ISO_UTC>]` 字段：那是 UI/plugin 端 **事件发生** 时刻（也是 UTC）。两个 ts 都是 UTC，差值即跨端时延，可估链路健康。agent 按时序梳理日志时优先用 `[ts=...]`（事件先后），用 docker `-t` 当辅助。
 - `--no-color` 否则 ANSI 会污染 grep。
 - `2>&1` compose logs 会把 container stderr 也混进来（很多插件侧是走 stderr 的）。
 
@@ -94,7 +94,11 @@ ssh <host> 'cat /tmp/srv_u.log'
 
 ## 5. 时间线拼接要点
 
-- server `-t` 前缀是 UTC，行里内嵌的 `04:33:31.664` 是**源端**时间（UI 或 plugin 本地时间，可能是 +8）。同一事件两处时间差就是 UI↔plugin↔server 的跨端时延 + 时钟偏移，可用来估算链路健康。
+- 每行 remote log 同时带两个 UTC 时间戳：
+  - **行首** `2026-05-12T08:26:16.447631062Z`（docker `-t`）—— server **接收**时刻。
+  - **行内** `[remote][plugin][claw:...][ts=2026-05-12T08:26:16.450Z] ...` —— UI/plugin 端 **事件发生** 时刻（ISO_UTC、毫秒精度）。
+  - 两者差值即端→server 跨端时延（通常几毫秒到秒级）。**agent 排序优先用 `[ts=...]`**，因为多端日志混排时它代表真实事件先后；docker `-t` 留作辅助。`[ts=??]` 占位表示该条 entry 没带 ts（老版本或异常路径）。
+  - 抽取正则示例：`\[ts=([0-9-]+T[0-9:.]+Z)\]`；按字典序 sort 即按时间序。
 - `elapsed=<ms>` 出现在 `sig.resume` 里，直接给出后台时长。`35211979ms` ≈ 9h46m。
 - plugin `rtc.dump` 行里含 `queueLen / queueBytes / dropped / fileCount`，一行顶十行状态快照，这是判断 plugin→UI 方向 RPC 压力的第一手材料。
 - `c_<uuid>` 是 PeerConnection 的稳定 ID，**跨 ICE restart 不变**，是最可靠的关联键。

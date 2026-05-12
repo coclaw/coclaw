@@ -54,7 +54,7 @@ fi
 
 # 2) 对每个 connId 求首/末时刻并算时长
 LC_ALL=C
-ts_re='2026-[0-9-]+T[0-9:.]+Z'  # 容器侧 ISO 时间戳前缀（docker compose -t）
+ts_re='2026-[0-9-]+T[0-9:.]+Z'  # ISO UTC 时间戳，匹配 docker -t 行首；行内也存在 [ts=...]，但 head -1 取首个匹配，命中行首
 
 # 收集 (first_ts, last_ts, connId) 三元组
 rows=$(while IFS= read -r id; do
