@@ -57,7 +57,7 @@ export default {
 		const clawsStore = useClawsStore();
 		const sigConn = useSignalingConnection();
 		const sse = useClawStatusSse(clawsStore, { autoStart: false });
-		useRemoteLog(); // 单例，未登录时 sig 不连 → 无 flush 副作用
+		useRemoteLog(); // 单例已在 main.js 早期初始化；此处保留以确保引用
 
 		// 登录态驱动 WS + SSE 启停：
 		// 未登录（含冷启动直达 /about、登出后留在 /about）保持零连接；

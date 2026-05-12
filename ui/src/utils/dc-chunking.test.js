@@ -111,8 +111,13 @@ describe('dc-chunking (UI 侧)', () => {
 			warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 			__resetRemoteLog();
 			remoteLogs = [];
-			useRemoteLog().setSender((msg) => {
-				for (const e of msg.logs) remoteLogs.push(e.text);
+			useRemoteLog({
+				send: (payload) => {
+					for (const e of payload.logs) remoteLogs.push(e.text);
+					return Promise.resolve({ kind: 'success' });
+				},
+				skipUiStart: true,
+				skipSigBridge: true,
 			});
 		});
 
@@ -134,7 +139,8 @@ describe('dc-chunking (UI 侧)', () => {
 		}
 
 		async function flushRemote() {
-			// useRemoteLog 内部 setTimeout 0 batch；让 microtask + macrotask 都跑一遍
+			// 新版 remote-log 走 5s debounce；测试用 flush() 立即封批 + 发送
+			useRemoteLog().flush();
 			await new Promise((r) => setTimeout(r, 0));
 			await new Promise((r) => setTimeout(r, 0));
 		}

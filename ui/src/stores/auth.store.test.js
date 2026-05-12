@@ -29,7 +29,6 @@ const {
 	logoutCallOrder,
 	mockConnManager,
 	mockSigDisconnect,
-	mockClearRemoteLogBuffer,
 	mockResetAuthExpiredThrottle,
 	mockFilesCancelAll,
 	mockAgentRunsResetAll,
@@ -48,7 +47,6 @@ const {
 			disconnectAll: vi.fn(() => { order.push('disconnectAll'); }),
 		},
 		mockSigDisconnect: vi.fn(() => { order.push('sigDisconnect'); }),
-		mockClearRemoteLogBuffer: vi.fn(() => { order.push('clearRemoteLogBuffer'); }),
 		mockResetAuthExpiredThrottle: vi.fn(() => { order.push('resetAuthExpiredThrottle'); }),
 		mockFilesCancelAll: vi.fn(() => { order.push('filesCancelAll'); }),
 		mockAgentRunsResetAll: vi.fn(() => { order.push('agentRunsResetAll'); }),
@@ -72,7 +70,6 @@ vi.mock('../services/webrtc-connection.js', () => ({
 }));
 
 vi.mock('../services/remote-log.js', () => ({
-	clearRemoteLogBuffer: (...args) => mockClearRemoteLogBuffer(...args),
 	useRemoteLog: () => ({ log: () => {} }),
 	remoteLog: () => {},
 }));
@@ -397,7 +394,7 @@ describe('auth store', () => {
 		expect(mockSigDisconnect).toHaveBeenCalledTimes(1);
 	});
 
-	test('logout 按顺序清理 files → agent runs → conns → rtc → sig → remote log → throttle → chat stores → dashboard → admin SSE', async () => {
+	test('logout 按顺序清理 files → agent runs → conns → rtc → sig → throttle → chat stores → dashboard → admin SSE', async () => {
 		logout.mockResolvedValue();
 		const store = useAuthStore();
 		store.user = { id: '3' };
@@ -427,7 +424,6 @@ describe('auth store', () => {
 			'disconnectAll',
 			'rtcCloseAll',
 			'sigDisconnect',
-			'clearRemoteLogBuffer',
 			'resetAuthExpiredThrottle',
 			'chatStoreDisposeAll',
 			'dashboardReset',
@@ -447,7 +443,6 @@ describe('auth store', () => {
 		mockSigDisconnect.mockClear();
 		mockChatStoreDisposeAll.mockClear();
 		mockDashboardReset.mockClear();
-		mockClearRemoteLogBuffer.mockClear();
 		mockResetAuthExpiredThrottle.mockClear();
 
 		// 让 files.cancelAll 抛错，验证剩余链条不被打断
@@ -472,23 +467,11 @@ describe('auth store', () => {
 		expect(mockChatStoreDisposeAll).toHaveBeenCalledTimes(1);
 		expect(mockDashboardReset).toHaveBeenCalledTimes(1);
 		expect(teardownSpy).toHaveBeenCalledTimes(1);
-		expect(mockClearRemoteLogBuffer).toHaveBeenCalledTimes(1);
 		expect(mockResetAuthExpiredThrottle).toHaveBeenCalledTimes(1);
 		expect(store.user).toBeNull();
 		// debug log 至少记录了那一次失败
 		expect(debugSpy).toHaveBeenCalled();
 		debugSpy.mockRestore();
-	});
-
-	test('logout 清空 remote-log 缓冲区，防止跨用户 flush', async () => {
-		logout.mockResolvedValue();
-		mockClearRemoteLogBuffer.mockClear();
-		const store = useAuthStore();
-		store.user = { id: '3' };
-
-		await store.logout();
-
-		expect(mockClearRemoteLogBuffer).toHaveBeenCalledTimes(1);
 	});
 
 	test('logout 复位 401 节流窗口，避免跨用户误吞首个合法 401', async () => {
@@ -507,7 +490,6 @@ describe('auth store', () => {
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		logout.mockRejectedValue({ response: { data: { message: 'server error' } } });
 		mockResetAuthExpiredThrottle.mockClear();
-		mockClearRemoteLogBuffer.mockClear();
 		const store = useAuthStore();
 		store.user = { id: '9' };
 		const adminStore = useAdminStore();
@@ -519,7 +501,6 @@ describe('auth store', () => {
 		expect(store.user).toBeNull();
 		expect(teardownSpy).toHaveBeenCalledTimes(1);
 		expect(mockResetAuthExpiredThrottle).toHaveBeenCalledTimes(1);
-		expect(mockClearRemoteLogBuffer).toHaveBeenCalledTimes(1);
 		warnSpy.mockRestore();
 	});
 

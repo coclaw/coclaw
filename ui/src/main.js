@@ -10,12 +10,16 @@ import { initCapacitorApp } from './utils/capacitor-app.js';
 import { initTauriApp } from './utils/tauri-app.js';
 import { initElectronApp } from './utils/electron-app.js';
 import { startUpdateCheck } from './services/app-update.js';
+import { useRemoteLog } from './services/remote-log.js';
 import { useDraftStore } from './stores/draft.store.js';
 import './stores/claw-lifecycle.js'; // 注册 claw 生命周期回调（须在 claws.store action 被调用前）
 // notify-hook-bridge 的 wireNotifyHooks() 由 App.vue 的 setup 内调用，无需在此 side-effect import
 import 'highlight.js/styles/vs2015.css';
 import './assets/main.css';
 import './assets/markdown.scss';
+
+// 早于 auth 初始化挂起 remote-log 单例：登录前 / 登录失败窗口的诊断 log 也能上送 server
+useRemoteLog();
 
 const app = createApp(App);
 

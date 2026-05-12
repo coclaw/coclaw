@@ -17,7 +17,6 @@ import { syncThemeModeFromSettings } from '../services/theme-mode.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { useSignalingConnection } from '../services/signaling-connection.js';
 import { closeAllRtcInstances } from '../services/webrtc-connection.js';
-import { clearRemoteLogBuffer } from '../services/remote-log.js';
 import { resetAuthExpiredThrottle } from '../services/http.js';
 import { useDraftStore } from './draft.store.js';
 import { useSessionsStore, __resetSessionsInternals } from './sessions.store.js';
@@ -214,7 +213,8 @@ export const useAuthStore = defineStore('auth', {
 					// 丢弃 pending network:online debounce timer：避免 ≤1.2s 内的 logout→relogin
 					// 场景里，上一会话的遗留 timer 对新会话派发一次多余的 restart/reconnect 信号
 					safeRun('network.cancelPending', () => __cancelPendingNetworkDispatch());
-					safeRun('remoteLog.clear', () => clearRemoteLogBuffer()); // 防止前一用户未发送日志 flush 到下一用户 WS 通道
+					// 注：remoteLog 走独立 HTTP 通道（端点不强制登录态），登出无需清缓冲；详见
+					// docs/designs/ui-remote-log-http-channel.md §3.6
 					safeRun('http.resetThrottle', () => resetAuthExpiredThrottle()); // 复位 401 节流窗口，避免跨用户误吞首个合法 401
 					// chat/topic store 实例逐个 dispose（cleanup() + $dispose()）
 					safeRun('chatStoreMgr.disposeAll', () => chatStoreManager.disposeAll());

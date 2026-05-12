@@ -1,0 +1,5 @@
+---
+"@coclaw/ui": minor
+---
+
+Migrate `remoteLog` from the RTC signaling WS to an independent HTTP POST channel (`POST /api/v1/log/ui`), so diagnostic logs stay flowing during signaling reconnects and other RTC outages. The new sender assigns a 21-char nanoid `uiId` per UI instance (kept across login/logout), monotonically numbers each batch (`seq` starting at 1, never reset), debounces at 100 entries / 5 seconds, sends one batch in flight at a time, and recovers from failures with exponential backoff (1s → 60s, with jitter) — bad responses (4xx other than 408/429) drop the batch, retryable errors stop after 8 attempts or 10 minutes. A 1000-entry ring buffer and a 10-batch pending queue cap memory under prolonged outages. The cold-start `ui.start` log carries `uiId`, app version, platform (`web` / `cap-*` / `electron-*`), viewport, touch, theme, cores, optional `mem`/`net`, `tz`, `lang`, and `ua` for identification. Login/logout no longer triggers any remote-log flush or buffer clear — the endpoint is unauthenticated and identity is decided server-side from the cookie at receive time.
