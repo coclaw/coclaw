@@ -13,6 +13,7 @@ import { authRouter } from './routes/auth.route.js';
 import { clawBotRouter } from './routes/claw-bot.route.js';
 import { clawRouter } from './routes/claw.route.js';
 import { infoRouter } from './routes/info.route.js';
+import { attachLogUiBodyParser, logUiRouter } from './routes/log-ui.route.js';
 import { turnRouter } from './routes/turn.route.js';
 import { userRouter } from './routes/user.route.js';
 import { webAgentRouter } from './routes/web-agent.route.js';
@@ -52,6 +53,8 @@ export function createApp() {
 		credentials: true,
 	}));
 	app.use(morgan('dev'));
+	// /api/v1/log/ui 专属 1MB body parser + 405/413/400 拦截；必须早于全局 express.json()
+	attachLogUiBodyParser(app);
 	app.use(express.json());
 
 	if (enforceHttps) {
@@ -100,6 +103,7 @@ export function createApp() {
 	app.use('/api/v1/claws', clawBotRouter);
 	app.use('/api/v1/turn', turnRouter);
 	app.use('/api/v1/web-agents', webAgentRouter);
+	app.use('/api/v1/log', logUiRouter);
 
 	app.use(globalErrorHandler);
 
