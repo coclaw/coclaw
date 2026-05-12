@@ -742,7 +742,7 @@ test('handleMessage: rtc:ice bot 离线时仍尝试转发', async () => {
 
 // --- log 条目中 ts 缺失时显示占位符 ---
 
-test('handleMessage: type=log 条目无 ts 时显示 ??:??:??.???', async () => {
+test('handleMessage: type=log 条目无 ts 时显示 [ts=??] 占位符', async () => {
 	const ws = createMockWs();
 	const logged = [];
 	const origInfo = console.info;
@@ -753,7 +753,7 @@ test('handleMessage: type=log 条目无 ts 时显示 ??:??:??.???', async () => 
 			logs: [{ text: 'no-ts-entry' }],
 		}), makeDeps());
 		assert.equal(logged.length, 1);
-		assert.match(logged[0], /\?\?:\?\?:\?\?\.\?\?\?/);
+		assert.match(logged[0], /^\[remote\]\[ui\]\[user:u1\]\[ts=\?\?\] no-ts-entry$/);
 	} finally {
 		console.info = origInfo;
 	}

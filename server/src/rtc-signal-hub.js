@@ -9,7 +9,7 @@
 import { WebSocketServer } from 'ws';
 
 import { register, remove, removeByWs, lookup } from './rtc-signal-router.js';
-import { forwardToClaw, fmtLocalTime } from './claw-ws-hub.js';
+import { forwardToClaw, fmtRemoteLogTs } from './claw-ws-hub.js';
 import { genTurnCredsForGateway } from './routes/turn.route.js';
 import { findClawById } from './repos/claw.repo.js';
 
@@ -70,8 +70,7 @@ async function handleMessage(ws, userId, raw, deps = {}) {
 		if (Array.isArray(logs)) {
 			for (const entry of logs) {
 				if (entry && typeof entry === 'object' && typeof entry.text === 'string') {
-					const time = typeof entry.ts === 'number' ? fmtLocalTime(entry.ts) : '??:??:??.???';
-					console.info(`[remote][ui][user:${userId}] ${time} | ${entry.text}`);
+					console.info(`[remote][ui][user:${userId}]${fmtRemoteLogTs(entry.ts)} ${entry.text}`);
 				}
 			}
 		}

@@ -6,7 +6,7 @@ import test from 'node:test';
 process.env.TURN_SECRET ??= 'test-secret';
 process.env.APP_DOMAIN ??= 'test.coclaw.net';
 
-import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtLocalTime, notifyAndDisconnectClaw, forwardToClaw, markClawLastSeen, applyClawInfoUpdate, finalizeClawOffline, scheduleClawGraceOffline, __test } from './claw-ws-hub.js';
+import { clawPingTick, createUiWsTicket, listOnlineClawIds, pruneUiTickets, clawStatusEmitter, fmtRemoteLogTs, notifyAndDisconnectClaw, forwardToClaw, markClawLastSeen, applyClawInfoUpdate, finalizeClawOffline, scheduleClawGraceOffline, __test } from './claw-ws-hub.js';
 import { Prisma } from './generated/prisma/client.js';
 import { register as registerSignalRoute, __test as signalTest } from './rtc-signal-router.js';
 
@@ -576,16 +576,18 @@ test('forwardToClaw: ws.send 抛异常时不中断且仍返回 true', () => {
 	cleanupSockets('bot1');
 });
 
-// --- fmtLocalTime ---
+// --- fmtRemoteLogTs ---
 
-test('fmtLocalTime: 有效时间戳返回 HH:mm:ss.SSS 格式', () => {
-	const result = fmtLocalTime(new Date('2026-03-30T14:01:58.450Z').getTime());
-	assert.match(result, /^\d{2}:\d{2}:\d{2}\.\d{3}$/);
+test('fmtRemoteLogTs: 有效时间戳返回 [ts=<ISO_UTC>] 格式（带方括号）', () => {
+	const result = fmtRemoteLogTs(new Date('2026-03-30T14:01:58.450Z').getTime());
+	assert.equal(result, '[ts=2026-03-30T14:01:58.450Z]');
 });
 
-test('fmtLocalTime: 无效值返回占位符', () => {
-	assert.equal(fmtLocalTime(NaN), '??:??:??.???');
-	assert.equal(fmtLocalTime(undefined), '??:??:??.???');
+test('fmtRemoteLogTs: 无效值返回 [ts=??] 占位符', () => {
+	assert.equal(fmtRemoteLogTs(NaN), '[ts=??]');
+	assert.equal(fmtRemoteLogTs(undefined), '[ts=??]');
+	assert.equal(fmtRemoteLogTs(null), '[ts=??]');
+	assert.equal(fmtRemoteLogTs('not-a-number'), '[ts=??]');
 });
 
 // --- onClawMessage: type=log 远程日志 ---
@@ -607,11 +609,16 @@ test('onClawMessage: type=log 逐条输出到 console.info', () => {
 			],
 		}));
 		assert.equal(logged.length, 2);
-		assert.match(logged[0], /\[remote\]\[plugin\]\[claw:bot1\]/);
-		assert.match(logged[0], /ws\.connected/);
-		// ts 被转换为本地时间格式
-		assert.match(logged[0], /\d{2}:\d{2}:\d{2}\.\d{3}/);
-		assert.match(logged[1], /session\.restored/);
+		// 整行形如 `[remote][plugin][claw:bot1][ts=2026-...Z] ws.connected ...`
+		// ts 字段紧贴 [claw:...] 后面，与 text 之间单空格分隔（不再用 ' | '）
+		assert.match(logged[0], /^\[remote\]\[plugin\]\[claw:bot1\]\[ts=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] ws\.connected peer=server$/);
+		assert.match(logged[1], /^\[remote\]\[plugin\]\[claw:bot1\]\[ts=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] session\.restored id=abc$/);
+		// 两条 ts 不同（now vs now+650），ISO 字符串不应相等
+		const m0 = logged[0].match(/\[ts=([^\]]+)\]/);
+		const m1 = logged[1].match(/\[ts=([^\]]+)\]/);
+		assert.notEqual(m0[1], m1[1]);
+		assert.equal(new Date(m0[1]).getTime(), now);
+		assert.equal(new Date(m1[1]).getTime(), now + 650);
 	} finally {
 		console.info = origInfo;
 		cleanupSockets('bot1');
@@ -640,7 +647,8 @@ test('onClawMessage: type=log 忽略非 {ts,text} 条目', () => {
 		}));
 		assert.equal(logged.length, 3);
 		assert.match(logged[0], /valid/);
-		assert.match(logged[1], /\?\?:\?\?:\?\?\.\?\?\?/); // 缺 ts 的 fallback
+		// 缺 ts 的 fallback 占位为 [ts=??]
+		assert.match(logged[1], /\[ts=\?\?\]/);
 		assert.match(logged[1], /no ts/);
 		assert.match(logged[2], /also valid/);
 	} finally {

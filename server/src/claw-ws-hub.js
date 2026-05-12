@@ -22,15 +22,15 @@ export const clawStatusEmitter = new EventEmitter();
 
 const WS_VERBOSE = process.env.COCLAW_WS_DEBUG === '1';
 
-/** 毫秒时间戳 → 本地时区 HH:mm:ss.SSS */
-function fmtLocalTime(ts) {
+/**
+ * 毫秒时间戳 → remote log 行内的 ts 字段 `[ts=<ISO_UTC>]`。
+ * 统一 UTC 输出（agent 按字典序即时间序）；无效输入返回 `[ts=??]` 占位。
+ */
+function fmtRemoteLogTs(ts) {
+	if (typeof ts !== 'number' || !Number.isFinite(ts)) return '[ts=??]';
 	const d = new Date(ts);
-	if (Number.isNaN(d.getTime())) return '??:??:??.???';
-	const hh = String(d.getHours()).padStart(2, '0');
-	const mm = String(d.getMinutes()).padStart(2, '0');
-	const ss = String(d.getSeconds()).padStart(2, '0');
-	const ms = String(d.getMilliseconds()).padStart(3, '0');
-	return `${hh}:${mm}:${ss}.${ms}`;
+	if (Number.isNaN(d.getTime())) return '[ts=??]';
+	return `[ts=${d.toISOString()}]`;
 }
 
 function wsLogInfo(message) {
@@ -428,8 +428,7 @@ function onClawMessage(clawId, ws, raw) {
 		if (Array.isArray(logs)) {
 			for (const entry of logs) {
 				if (entry && typeof entry === 'object' && typeof entry.text === 'string') {
-					const time = typeof entry.ts === 'number' ? fmtLocalTime(entry.ts) : '??:??:??.???';
-					console.info(`[remote][plugin][claw:${clawId}] ${time} | ${entry.text}`);
+					console.info(`[remote][plugin][claw:${clawId}]${fmtRemoteLogTs(entry.ts)} ${entry.text}`);
 				}
 			}
 		}
@@ -801,7 +800,7 @@ export function notifyAndDisconnectClaw(clawId, reason = 'token_revoked') {
 	}
 }
 
-export { forwardToClaw, fmtLocalTime };
+export { forwardToClaw, fmtRemoteLogTs };
 
 // 测试辅助导出（仅用于单元测试访问内部状态）
 export const __test = { uiSockets, clawSockets, uiTickets, pendingOffline, CLAW_OFFLINE_GRACE_MS, getWebSocketCloseCode, onUiMessage, onClawMessage, findUiSocketByConnId, authenticateUiTicket, authenticateUiSession, registerSocket, unregisterSocket, getAnyOnlineClawSocket, resolveClawRpcPending, rejectAllClawRpcPending, requestClawRpc, authenticateClawRequest, broadcastToUi, set wsSessionMiddleware(v) { wsSessionMiddleware = v; }, get wsSessionMiddleware() { return wsSessionMiddleware; } };
