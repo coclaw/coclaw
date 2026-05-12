@@ -571,3 +571,63 @@ X4 触及面比 X1 广，需要重新评估：
 - 修复方向：统一替换为 `UDropdownMenu`（参考 `nuxt-ui` skill 中的标准用法），保持现有 a11y / 键盘 / 移动端可点击区域等行为不退化
 - 收益：a11y 现成（焦点管理、roving tabindex、`role="menu"`）；样式集中由全局 `appConfig` 控；本地不再各自维护 `UPopover` 自绘 hack
 - 本次不动，避免与 MainList 重组叠加风险
+
+## remote-log 与信令模块的桥接改单向直调（2026-05-12）
+
+**发现日期**：2026-05-12
+**关联 commit**：`e3ad675` feat(ui): migrate remoteLog to independent HTTP POST channel
+
+来源：S2（remote-log 迁 HTTP）审核讨论。
+
+- 现状：信令模块在状态变化处 `__emit('log', ...)`，remote-log 通过 `attachSigBridge` 订阅这些事件搬到 HTTP 通道。这套订阅形式是 WS 时代的历史沿袭，当年用它是为了避免「信令模块 import remote-log、remote-log import 信令模块」的循环依赖。
+- 现状的合理性已经消失：S2 之后 remote-log 不再需要从信令模块拿 sender 之类的任何东西；remote-log 这边的 `import { useSignalingConnection }` 仅为这个桥接服务。若改成"信令模块直接 `import { remoteLog }` 并调用"，并把 remote-log 这边对信令模块的 import 一并拆掉，就是干净的单向依赖。
+- 修复方向：
+  - `signaling-connection.js` 中的 `this.__emit('log', 'sig.xxx ...')` 改成 `remoteLog('sig.xxx ...')`
+  - `remote-log.js` 删除 `attachSigBridge` / `useSignalingConnection` import / `__sigBridge` 字段及 `stop()` 里的 off 处理
+  - 单测：`__resetRemoteLog` 卸载监听器那条用例随之删除（订阅机制不复存在，泄漏路径也就不存在了）
+  - 信令模块测试侧确认 `remoteLog` 在 SSR/单测环境可安全调用（remote-log 自身已能容忍 `localStorage` 不可用等情况）
+- 本次不动：S2 已 commit，桥接形式在测试中钉过，运行无问题；改动放在 S3/S4 之后做独立 follow-up commit，避免与正在并发的工作树噪音混叠
+
+## remote-log 架构二次简化候选：单 FIFO + 消费端截批（2026-05-13）
+
+**发现日期**：2026-05-13
+**关联讨论**：S2 二次 deep-review 后的重构方案讨论
+
+来源：S2 重构方案讨论中，确认更彻底的抽象方向。当前重构（生产端 ring → 封批 → pending 队列 → 消费端 shift 发送）保留了"ring + pending"两层分层；二次简化可把两层折叠成单一 log item FIFO，由消费端按需截批。
+
+- 当前分层语义：
+  - `__ring`：未封批的草稿；`__pending`：已封批的 batch 队列（batch 一旦封批 seq/logs 不再变动）
+  - 分层让"批内容 immutable"通过结构本身保证，可读性好
+- 二次简化方案：
+  - 单一 FIFO 队列存 log item（`{ ts, text }`）
+  - 消费端从队头 splice 最多 100 条形成 batch，seq 推迟到"准备发"那刻分配
+  - drop oldest 颗粒度变细（按条丢，不再整批 100 条一起丢）
+  - 5 秒 debounce 从生产端搬到消费端：消费端队列不足 100 条时 `await sleep(5s)` 兜底，期间被新 log 唤醒可立即检查
+- 收益：
+  - 减少一个状态字段（合并 ring/pending）+ 一个方法（`__pack`）
+  - 异常路径下"重试期间累积的小批合并"自然发生，不需要特意写合并逻辑
+- 实现要点：
+  - 需要"够 100 立刻唤醒 + 不够等 5s"机制，方案：(a) 两个 AbortController（一个 stop / 一个唤醒），消费端 `Promise.race([sleep, wake])`；(b) fire-and-forget 重入：log 进队 + kick，setTimeout 5s 后再 kick 自己
+  - drain 多一个"队列非空但未到 100 也未到时间"的等待态，测试需要钉住该状态
+- 何时考虑做：
+  - 若生产中观察到"重试期间小批堆积发送"现象明显
+  - 或下一次涉及 remote-log 结构改动时（避免反复改架构）
+
+## 全仓库 `_MS` / `Ms` 后缀清扫
+
+**发现日期**：2026-05-13
+**关联 commit**：refactor(ui): rewrite remoteLog with producer/consumer pattern and AbortSignal
+
+来源：remote-log 重构落实了「JS 时间常量默认 ms 单位，无需后缀」规则（memory `feedback-ms-suffix-convention`）。本次 scope 锁定 `remote-log.js` + 测试，未触其它模块。
+
+- 待清扫面（grep `_MS\b\|Ms\b` 摘录）：
+  - `ui/src/stores/chat.store.js`：`POST_ACCEPT_TIMEOUT_MS` / `CANCEL_TICK_MS` / `RPC_GRACE_MS` / 注释 + JSDoc 里的 `durationMs`
+  - `ui/src/utils/dc-chunking.js`：`ORPHAN_REMOTE_LOG_WINDOW_MS`
+  - `ui/src/services/file-transfer.js`：`READY_TIMEOUT_MS` / `DEFAULT_CONNECT_TIMEOUT_MS` / `formatTransferLog(bytes, durationMs)`
+  - `ui/src/utils/agent-stream.js`：参数 `timeoutMs`
+  - `plugins/openclaw/src/auto-upgrade/worker-verify.js`：`CMD_TIMEOUT_MS`
+  - 其它（agent-runs.store.js / claw-connection.js / 各组件 props）按需 grep
+- 建议拆按模块独立 PR 推进（chat.store 一个、file-transfer 一个、plugin 一个），避免大动整改
+- 注意保留两类带单位描述的场景：
+  - JSDoc 参数说明里的 "ms"（单位口径，不是后缀）
+  - 局部变量描述如 "5 秒" / "30 秒"（中文场景按上下文）

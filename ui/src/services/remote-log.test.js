@@ -4,18 +4,17 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
 	RemoteLog, useRemoteLog, remoteLog, __resetRemoteLog,
 	httpSender, buildUiStartText,
-	BATCH_SIZE, DEBOUNCE_MS, MAX_RING, MAX_PENDING,
-	MAX_ATTEMPTS, MAX_DURATION_MS,
-	BACKOFF_BASE_MS, BACKOFF_CAP_MS,
-	ENDPOINT_PATH, HTTP_TIMEOUT_MS,
+	BATCH_SIZE, DEBOUNCE, MAX_RING, MAX_PENDING,
+	RETRY_DELAYS,
+	ENDPOINT_PATH, HTTP_TIMEOUT,
 } from './remote-log.js';
 import {
 	useSignalingConnection, __resetSignalingConnection,
 } from './signaling-connection.js';
 
 /**
- * 用 vi.useFakeTimers() 控时；用 random=0 让退避计算可预测；用 vi.advanceTimersByTimeAsync
- * 让 Promise microtask 也按时序推进，避免 fake timer 与微任务竞态。
+ * 用 vi.useFakeTimers() 控时；advanceTimersByTimeAsync 同步推进 timer + microtask，
+ * 避免 fake timer 与 async/await 微任务竞态。
  */
 function mkRl(over = {}) {
 	const sendCalls = [];
@@ -27,7 +26,6 @@ function mkRl(over = {}) {
 		},
 		uiId: over.uiId || 'A_test_id_21__________',
 		now: over.now || (() => Date.now()),
-		random: over.random ?? (() => 0),
 		...over.opts,
 	});
 	return {
@@ -45,6 +43,30 @@ afterEach(() => {
 	vi.useRealTimers();
 	__resetSignalingConnection();
 	__resetRemoteLog();
+});
+
+describe('RETRY_DELAYS contract (literal anchor)', () => {
+	// 数组本身是行为契约；任何长度/边界值/总和改动都应有意识地评估测试覆盖与发布说明
+	test('数组本体精确锁定（防中段无意改动）', () => {
+		expect(RETRY_DELAYS).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000]);
+	});
+
+	test('共 10 次重试（首发 + 10 = 11 次发送）', () => {
+		expect(RETRY_DELAYS).toHaveLength(10);
+	});
+
+	test('首次重试 1 秒（指数起点）', () => {
+		expect(RETRY_DELAYS[0]).toBe(1000);
+	});
+
+	test('cap 30 秒（亦为 Retry-After 上限）', () => {
+		expect(Math.max(...RETRY_DELAYS)).toBe(30000);
+	});
+
+	test('累计 ~181s（设计稿 §3.4 / changeset 行为口径一致）', () => {
+		const sum = RETRY_DELAYS.reduce((a, b) => a + b, 0);
+		expect(sum).toBe(181_000);
+	});
 });
 
 describe('RemoteLog buffering & triggers', () => {
@@ -68,15 +90,16 @@ describe('RemoteLog buffering & triggers', () => {
 
 	test('ring 触达兜底上限时丢最旧 entry（直接灌入 ring 模拟 pack 无法推进的极端场景）', () => {
 		const ctx = mkRl();
-		ctx.respond = () => new Promise(() => {}); // 阻住 in-flight，pending 不被消化
+		ctx.respond = () => new Promise(() => {}); // 阻住消费循环：第一批永挂，其余留 __pending
 		for (let i = 0; i < MAX_RING; i++) {
 			ctx.rl.__ring.push({ ts: 0, text: `m${i}` });
 		}
 		// 此时 ring.length === MAX_RING；再 push 一条 → shift 触发 → ring 仍 MAX_RING
 		ctx.rl.log('latest');
-		// 同步路径：log → push → shift(m0) → pack 把 ring 全部送进 pending（10 batch）+ pump 摘 batch1 为 inFlight
+		// 同步路径：log → push → shift(m0) → pack 把 ring 全部送进 pending（10 batch）→ drain 同步 shift 第一批进 send（永挂）
+		// 第一批已被 shift 走（payload 见 sendCalls），剩 9 批仍在 __pending
 		const allTexts = [
-			...(ctx.rl.__inFlight?.logs.map((l) => l.text) ?? []),
+			...ctx.sendCalls.flatMap((p) => p.logs.map((l) => l.text)),
 			...ctx.rl.__pending.flatMap((b) => b.logs.map((l) => l.text)),
 		];
 		expect(allTexts).not.toContain('m0');
@@ -98,12 +121,12 @@ describe('RemoteLog buffering & triggers', () => {
 		expect(sendCalls[0].logs).toHaveLength(BATCH_SIZE);
 	});
 
-	test('未达 BATCH_SIZE 时 DEBOUNCE_MS 触发封批', async () => {
+	test('未达 BATCH_SIZE 时 DEBOUNCE 触发封批', async () => {
 		const { rl, sendCalls } = mkRl();
 		rl.log('a');
 		rl.log('b');
 		// 还未到 5s，不发
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS - 1);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE - 1);
 		expect(sendCalls).toHaveLength(0);
 		// 跨过阈值
 		await vi.advanceTimersByTimeAsync(1);
@@ -111,17 +134,17 @@ describe('RemoteLog buffering & triggers', () => {
 		expect(sendCalls[0].logs.map(l => l.text)).toEqual(['a', 'b']);
 	});
 
-	test('封批后 debounce 计时重置（下批又需 DEBOUNCE_MS 才发）', async () => {
+	test('封批后 debounce 计时重置（下批又需 DEBOUNCE 才发）', async () => {
 		const { rl, sendCalls } = mkRl();
 		rl.log('a');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE);
 		expect(sendCalls).toHaveLength(1);
 		rl.log('b');
 		// 立即检查不会再发
 		await vi.advanceTimersByTimeAsync(0);
 		expect(sendCalls).toHaveLength(1);
 		// 满足 debounce 才发
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE);
 		expect(sendCalls).toHaveLength(2);
 		expect(sendCalls[1].seq).toBe(2);
 	});
@@ -130,14 +153,11 @@ describe('RemoteLog buffering & triggers', () => {
 		const { rl, sendCalls } = mkRl();
 		for (let i = 0; i < BATCH_SIZE * 3; i++) rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
-		// 第一批已发 → in-flight，剩 2 批在 pending；每批 ack 后再发下一批
-		await vi.advanceTimersByTimeAsync(0);
-		await vi.advanceTimersByTimeAsync(0);
 		expect(sendCalls.map(s => s.seq)).toEqual([1, 2, 3]);
 	});
 });
 
-describe('RemoteLog sequential send (1 in-flight)', () => {
+describe('RemoteLog sequential send (单 async 消费循环)', () => {
 	test('in-flight 时新 batch 进 pending；ack 后顺序发出', async () => {
 		const ctx = mkRl();
 		let resolveFirst = null;
@@ -151,21 +171,25 @@ describe('RemoteLog sequential send (1 in-flight)', () => {
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`a${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(1);
-		// 再攒第二批；不会立刻发，等第一批 ack
+		expect(ctx.rl.__draining).toBe(true); // 消费循环正在 await 第一批
+		// 再攒第二批；不会立刻发，等第一批 ack；__pack 的 __drain() 重入早返回（__draining 守卫）
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`b${i}`);
 		await vi.advanceTimersByTimeAsync(0);
-		expect(ctx.sendCalls).toHaveLength(1);
+		expect(ctx.sendCalls).toHaveLength(1); // 第二批没被重复 ship 出去
+		expect(ctx.rl.__draining).toBe(true); // 仍在 await 第一批
+		expect(ctx.rl.__pending.map((b) => b.seq)).toEqual([2]); // 第二批已入 pending 等接力
 		// 放第一批的锁
 		resolveFirst();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(2);
 		expect(ctx.sendCalls[1].seq).toBe(2);
+		expect(ctx.rl.__draining).toBe(false);
 	});
 
-	test('pending 队列满时丢最旧整批，in-flight 不被驱逐', async () => {
+	test('pending 队列满时丢最旧整批，正在发送的 batch 不被驱逐', async () => {
 		const ctx = mkRl();
 		ctx.respond = () => new Promise(() => {}); // 第一批永挂，阻住所有后续
-		// 第一批：填满 100 条 → 触发立即 pack，seq=1 → in-flight
+		// 第一批：填满 100 条 → 触发立即 pack，seq=1 → 进入 send 等待
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(1);
@@ -174,13 +198,15 @@ describe('RemoteLog sequential send (1 in-flight)', () => {
 			for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`b${b}_${i}`);
 		}
 		await vi.advanceTimersByTimeAsync(0);
-		// in-flight 仍是 seq=1（不会被驱逐）
-		expect(ctx.rl.__inFlight?.seq).toBe(1);
 		// pending 应正好 MAX_PENDING，包含 seq=4..13（seq=2 / seq=3 是最旧的待发，被驱逐）
 		expect(ctx.rl.__pending).toHaveLength(MAX_PENDING);
 		expect(ctx.rl.__pending.map((b) => b.seq)).toEqual(
 			Array.from({ length: MAX_PENDING }, (_, i) => i + 4),
 		);
+		// 正在发送的 batch 是 seq=1（已 shift 出 pending）
+		expect(ctx.sendCalls[0].seq).toBe(1);
+		// 即使 pending 满了驱逐最旧，正在飞的 seq=1 不会被回灌覆盖
+		expect(ctx.rl.__pending.map((b) => b.seq)).not.toContain(1);
 	});
 
 	test('4xx 丢弃当前 batch 后，下一个 pending batch 立即接力', async () => {
@@ -198,11 +224,11 @@ describe('RemoteLog sequential send (1 in-flight)', () => {
 		expect(ctx.sendCalls.length).toBeGreaterThanOrEqual(2);
 		expect(ctx.sendCalls[0].seq).toBe(1);
 		expect(ctx.sendCalls[1].seq).toBe(2);
-		expect(ctx.rl.__inFlight).toBe(null);
+		expect(ctx.rl.__pending).toHaveLength(0);
 	});
 
 	test('重试发送同一 payload（同 seq + 同 logs 内容）', async () => {
-		const ctx = mkRl({ random: () => 0 });
+		const ctx = mkRl();
 		let n = 0;
 		ctx.respond = () => {
 			n += 1;
@@ -211,23 +237,38 @@ describe('RemoteLog sequential send (1 in-flight)', () => {
 		};
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
-		await vi.advanceTimersByTimeAsync(BACKOFF_BASE_MS);
-		await vi.advanceTimersByTimeAsync(2000);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0]);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS[1]);
 		expect(ctx.sendCalls).toHaveLength(3);
 		const seqs = ctx.sendCalls.map((c) => c.seq);
 		expect(seqs).toEqual([1, 1, 1]);
 		const logTexts = ctx.sendCalls.map((c) => c.logs.map((l) => l.text).join(','));
 		expect(new Set(logTexts).size).toBe(1); // 三次 payload 完全一致
 	});
+
+	test('A-S1：drain 跑空 finally 后再 push 能干净重启（消费循环可重入）', async () => {
+		const ctx = mkRl();
+		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`a${i}`);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(ctx.sendCalls).toHaveLength(1);
+		// drain 已退出 finally
+		expect(ctx.rl.__draining).toBe(false);
+		expect(ctx.rl.__pending).toHaveLength(0);
+		// 再封一批
+		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`b${i}`);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(ctx.sendCalls).toHaveLength(2);
+		expect(ctx.sendCalls[1].seq).toBe(2);
+	});
 });
 
-describe('RemoteLog retry & backoff', () => {
+describe('RemoteLog retry & backoff (数组驱动)', () => {
 	test('2xx 移除整批', async () => {
 		const ctx = mkRl();
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(1);
-		expect(ctx.rl.__inFlight).toBe(null);
+		expect(ctx.rl.__pending).toHaveLength(0);
 	});
 
 	test('4xx (非 408/429) 整批丢弃，不重试', async () => {
@@ -237,122 +278,98 @@ describe('RemoteLog retry & backoff', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(1);
 		// 之后不再重试
-		await vi.advanceTimersByTimeAsync(BACKOFF_CAP_MS * 2);
+		await vi.advanceTimersByTimeAsync(Math.max(...RETRY_DELAYS) * 2);
 		expect(ctx.sendCalls).toHaveLength(1);
-		expect(ctx.rl.__inFlight).toBe(null);
 	});
 
-	test('5xx 指数退避 1s → 2s → 4s → ... 上限 60s（random=0 时无抖动）', async () => {
-		const ctx = mkRl({ random: () => 0 });
+	test('retryable 走 RETRY_DELAYS 表节奏', async () => {
+		const ctx = mkRl();
 		ctx.respond = () => ({ kind: 'retryable' });
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(1);
 
-		const expected = [BACKOFF_BASE_MS, 2000, 4000, 8000, 16000, 32000, BACKOFF_CAP_MS];
-		for (let i = 0; i < expected.length; i++) {
-			await vi.advanceTimersByTimeAsync(expected[i] - 1);
+		for (let i = 0; i < RETRY_DELAYS.length; i++) {
+			await vi.advanceTimersByTimeAsync(RETRY_DELAYS[i] - 1);
 			expect(ctx.sendCalls.length).toBe(i + 1);
 			await vi.advanceTimersByTimeAsync(1);
 			expect(ctx.sendCalls.length).toBe(i + 2);
 		}
-		// 累计共 MAX_ATTEMPTS 次发送后，第 MAX_ATTEMPTS 次的 retryable 结果命中上限丢弃
-		expect(ctx.sendCalls.length).toBe(MAX_ATTEMPTS);
-		expect(ctx.rl.__inFlight).toBe(null);
+		// 已走完首发 + 10 次重试 = 11 次发送；之后不再尝试
+		expect(ctx.sendCalls.length).toBe(RETRY_DELAYS.length + 1);
+		await vi.advanceTimersByTimeAsync(Math.max(...RETRY_DELAYS));
+		expect(ctx.sendCalls.length).toBe(RETRY_DELAYS.length + 1);
 	});
 
-	test('达到 MAX_ATTEMPTS 后丢弃整批', async () => {
-		const ctx = mkRl({ random: () => 0 });
-		ctx.respond = () => ({ kind: 'retryable' });
-		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
-		await vi.advanceTimersByTimeAsync(0);
-		// 跑足够久让所有 backoff 完成；MAX_ATTEMPTS=8 → 累积 ≈ 127s
-		await vi.advanceTimersByTimeAsync(BACKOFF_CAP_MS * MAX_ATTEMPTS + 5_000);
-		expect(ctx.sendCalls.length).toBe(MAX_ATTEMPTS);
-		expect(ctx.rl.__inFlight).toBe(null);
-	});
-
-	test('总耗时超 MAX_DURATION_MS 后丢弃整批（与 MAX_ATTEMPTS 路径严格区分）', async () => {
-		let t = 1_000_000_000;
-		const ctx = mkRl({ now: () => t });
-		ctx.respond = () => {
-			// 每次响应让时间往前推 ≈ 1/3 MAX_DURATION_MS（>= 200s），4 次后命中 10min 上限；
-			// 此时 attempts 仅 ~4 远低于 MAX_ATTEMPTS=8，能区分两条退出路径
-			t += Math.floor(MAX_DURATION_MS / 3) + 1;
-			return { kind: 'retryable' };
-		};
-		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
-		await vi.advanceTimersByTimeAsync(0);
-		// 推到足够远让退避时钟全部跑完
-		for (let i = 0; i < 10; i++) {
-			await vi.advanceTimersByTimeAsync(BACKOFF_CAP_MS + 1);
-		}
-		expect(ctx.rl.__inFlight).toBe(null);
-		expect(ctx.sendCalls.length).toBeLessThan(MAX_ATTEMPTS); // 严格小于：不是 attempts 路径
-		expect(ctx.sendCalls.length).toBeGreaterThanOrEqual(3);
-	});
-
-	test('Retry-After: 0 立即重试（不退化为指数退避）', async () => {
-		const ctx = mkRl({ random: () => 0 });
+	test('Retry-After: 0 立即重试（不退化为数组首项）', async () => {
+		const ctx = mkRl();
 		let phase = 0;
 		ctx.respond = () => {
 			phase += 1;
-			if (phase === 1) return { kind: 'retryable', retryAfterMs: 0 };
+			if (phase === 1) return { kind: 'retryable', retryAfter: 0 };
 			return { kind: 'success' };
 		};
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
-		// 0ms 退避时 timer 在 advanceTimersByTimeAsync(0) 推进当前帧时就会 fire，
-		// 同时 microtask 链也走完——若被错误地降级为 BACKOFF_BASE_MS=1000ms，第二次发送不会出现
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(2);
 	});
 
-	test('408 / 429 走 retryable；retryAfterMs 优先', async () => {
-		const ctx = mkRl({ random: () => 0 });
+	test('408 / 429 走 retryable；retryAfter 优先于数组项', async () => {
+		const ctx = mkRl();
 		let phase = 0;
 		ctx.respond = () => {
 			phase += 1;
-			if (phase === 1) return { kind: 'retryable', retryAfterMs: 3_000 };
+			if (phase === 1) return { kind: 'retryable', retryAfter: 3000 };
 			return { kind: 'success' };
 		};
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(1);
 		// 还没到 retry-after 不发
-		await vi.advanceTimersByTimeAsync(2_999);
+		await vi.advanceTimersByTimeAsync(2999);
 		expect(ctx.sendCalls).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(ctx.sendCalls).toHaveLength(2);
 	});
 
-	test('network 错误（send 抛异常）走 retryable', async () => {
-		const ctx = mkRl({ random: () => 0 });
-		let n = 0;
+	test('Retry-After 超过 cap 时被压回 30s', async () => {
+		const ctx = mkRl();
+		let phase = 0;
 		ctx.respond = () => {
-			n += 1;
-			if (n === 1) throw new Error('boom');
+			phase += 1;
+			if (phase === 1) return { kind: 'retryable', retryAfter: 120_000 }; // server 给 2min
 			return { kind: 'success' };
 		};
-		// 直接覆盖：用 throw 模拟 promise rejection
+		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(ctx.sendCalls).toHaveLength(1);
+		// 推进到刚好 30s 之前
+		await vi.advanceTimersByTimeAsync(29_999);
+		expect(ctx.sendCalls).toHaveLength(1);
+		// 跨过 30s
+		await vi.advanceTimersByTimeAsync(1);
+		expect(ctx.sendCalls).toHaveLength(2);
+	});
+
+	test('network 错误（send Promise reject）走 retryable', async () => {
+		let n = 0;
 		const rl = new RemoteLog({
 			send: () => {
 				n += 1;
 				if (n === 1) return Promise.reject(new Error('net'));
 				return Promise.resolve({ kind: 'success' });
 			},
-			random: () => 0,
 			uiId: 'B_____________________',
 		});
 		for (let i = 0; i < BATCH_SIZE; i++) rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(n).toBe(1);
-		await vi.advanceTimersByTimeAsync(BACKOFF_BASE_MS);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0]);
 		expect(n).toBe(2);
-		expect(rl.__inFlight).toBe(null);
 	});
 
 	test('send 返回 undefined / 未知 kind 当作 network 错误', async () => {
-		const ctx = mkRl({ random: () => 0 });
+		const ctx = mkRl();
 		let n = 0;
 		ctx.respond = () => {
 			n += 1;
@@ -363,39 +380,78 @@ describe('RemoteLog retry & backoff', () => {
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(n).toBe(1);
-		await vi.advanceTimersByTimeAsync(BACKOFF_BASE_MS + 5);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0]);
 		expect(n).toBe(2);
-		await vi.advanceTimersByTimeAsync(2000 + 5);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS[1]);
 		expect(n).toBe(3);
-		expect(ctx.rl.__inFlight).toBe(null);
 	});
+});
 
+describe('AbortSignal 集成 (B-S1)', () => {
 	test('stop() 后不再发送 / 不再调度', async () => {
 		const ctx = mkRl();
 		// 仅入 ring 不触发立即封批（不到 BATCH_SIZE）
 		for (let i = 0; i < BATCH_SIZE - 1; i++) ctx.rl.log(`m${i}`);
 		ctx.rl.stop();
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 2);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE * 2);
 		expect(ctx.sendCalls).toHaveLength(0);
 		// stop 后 log 调用直接 no-op
 		ctx.rl.log('after-stop');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 2);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE * 2);
 		expect(ctx.sendCalls).toHaveLength(0);
 	});
 
-	test('stop() 后已在飞的 send 迟到 retryable 响应不再调度新 retry', async () => {
-		const ctx = mkRl({ random: () => 0 });
+	test('sleep 期间 stop() 打断退避，不进入下一次重试', async () => {
+		const ctx = mkRl();
+		ctx.respond = () => ({ kind: 'retryable' });
+		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(ctx.sendCalls).toHaveLength(1);
+		// 正在 sleep RETRY_DELAYS[0]=1000ms；走 500ms 后 abort
+		await vi.advanceTimersByTimeAsync(500);
+		ctx.rl.stop();
+		// 即使继续 advance，不会再发
+		await vi.advanceTimersByTimeAsync(Math.max(...RETRY_DELAYS) * 2);
+		expect(ctx.sendCalls).toHaveLength(1);
+	});
+
+	test('axios cancel（CanceledError 名）→ stop 后退路靠 signal.aborted 区分，不靠 err.name', async () => {
+		// 模拟 axios v1 cancel：send 抛 name='CanceledError' 的 error
+		const ctx = mkRl();
+		let n = 0;
+		ctx.respond = () => {
+			n += 1;
+			if (n === 1) {
+				return new Promise((_res, rej) => {
+					// 模拟 stop() 触发 → axios 抛 CanceledError 异步 reject
+					setTimeout(() => rej(Object.assign(new Error('canceled'), { name: 'CanceledError' })), 100);
+				});
+			}
+			return { kind: 'success' };
+		};
+		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(n).toBe(1);
+		// stop 之后让 cancel reject 跑完
+		ctx.rl.stop();
+		await vi.advanceTimersByTimeAsync(100);
+		// 即使 err.name === 'CanceledError'（非 AbortError），上层因 signal.aborted=true 提前退出
+		await vi.advanceTimersByTimeAsync(Math.max(...RETRY_DELAYS) * 2);
+		expect(n).toBe(1);
+	});
+
+	test('stop() 之后已在飞的 send 迟到 retryable 不调度新 retry', async () => {
+		const ctx = mkRl();
 		let resolver = null;
 		ctx.respond = () => new Promise((r) => { resolver = r; });
 		for (let i = 0; i < BATCH_SIZE; i++) ctx.rl.log(`m${i}`);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(ctx.sendCalls).toHaveLength(1);
-		// stop 后再让 in-flight 收到 retryable —— 应被 __stopped 守卫吞掉
 		ctx.rl.stop();
+		// 迟到 retryable
 		resolver({ kind: 'retryable' });
-		await vi.advanceTimersByTimeAsync(BACKOFF_BASE_MS * 5);
-		expect(ctx.sendCalls).toHaveLength(1); // 没有第二次发送
-		expect(ctx.rl.__inFlight).toBe(null);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 5);
+		expect(ctx.sendCalls).toHaveLength(1);
 	});
 });
 
@@ -404,8 +460,7 @@ describe('RemoteLog 跨登录态：行为不变', () => {
 		const ctx = mkRl();
 		ctx.rl.log('before-login');
 		// 模拟用户登录 / 登出：纯外部状态变化，RemoteLog 无感知
-		// 不调任何 hook（设计上就没有）；ring 保持原状
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS - 1);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE - 1);
 		expect(ctx.sendCalls).toHaveLength(0);
 		ctx.rl.log('after-logout');
 		await vi.advanceTimersByTimeAsync(2);
@@ -416,10 +471,9 @@ describe('RemoteLog 跨登录态：行为不变', () => {
 
 	test('seq 跨多次封批单调递增，无重置点', async () => {
 		const ctx = mkRl();
-		// 三次 debounce 触发
 		for (let round = 0; round < 3; round++) {
 			ctx.rl.log(`r${round}`);
-			await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+			await vi.advanceTimersByTimeAsync(DEBOUNCE);
 		}
 		expect(ctx.sendCalls.map(s => s.seq)).toEqual([1, 2, 3]);
 	});
@@ -434,7 +488,22 @@ describe('httpSender 适配器', () => {
 		const http = mkHttp(() => Promise.resolve({ status: 200 }));
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
 		expect(r).toEqual({ kind: 'success' });
-		expect(http.post).toHaveBeenCalledWith(ENDPOINT_PATH, expect.any(Object), { timeout: HTTP_TIMEOUT_MS });
+		expect(http.post).toHaveBeenCalledWith(
+			ENDPOINT_PATH,
+			expect.any(Object),
+			expect.objectContaining({ timeout: HTTP_TIMEOUT }),
+		);
+	});
+
+	test('signal 透传到 axios.post 选项', async () => {
+		const http = mkHttp(() => Promise.resolve({ status: 200 }));
+		const ctrl = new AbortController();
+		await httpSender(http, { uiId: 'x', seq: 1, logs: [] }, ctrl.signal);
+		expect(http.post).toHaveBeenCalledWith(
+			ENDPOINT_PATH,
+			expect.any(Object),
+			expect.objectContaining({ signal: ctrl.signal }),
+		);
 	});
 
 	test('400 / 413 → badRequest', async () => {
@@ -450,14 +519,14 @@ describe('httpSender 适配器', () => {
 			response: { status: 429, headers: { 'retry-after': '7' } },
 		}));
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
-		expect(r).toEqual({ kind: 'retryable', retryAfterMs: 7000 });
+		expect(r).toEqual({ kind: 'retryable', retryAfter: 7000 });
 	});
 
-	test('408 没带 Retry-After → retryable 无 retryAfterMs', async () => {
+	test('408 没带 Retry-After → retryable 无 retryAfter', async () => {
 		const http = mkHttp(() => Promise.reject({ response: { status: 408, headers: {} } }));
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
 		expect(r.kind).toBe('retryable');
-		expect(r.retryAfterMs).toBeUndefined();
+		expect(r.retryAfter).toBeUndefined();
 	});
 
 	test('Retry-After 是 HTTP-date → 转 ms 偏移', async () => {
@@ -468,17 +537,25 @@ describe('httpSender 适配器', () => {
 		}));
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
 		expect(r.kind).toBe('retryable');
-		expect(r.retryAfterMs).toBeGreaterThan(3000);
-		expect(r.retryAfterMs).toBeLessThan(6000);
+		expect(r.retryAfter).toBeGreaterThan(3000);
+		expect(r.retryAfter).toBeLessThan(6000);
 		vi.useFakeTimers();
 	});
 
-	test('5xx → retryable', async () => {
-		for (const status of [500, 502, 503, 504]) {
-			const http = mkHttp(() => Promise.reject({ response: { status } }));
+	test('5xx → retryable，带 Retry-After 时也解析（503 常见）', async () => {
+		// 无 Retry-After 的 5xx
+		for (const status of [500, 502, 504]) {
+			const http = mkHttp(() => Promise.reject({ response: { status, headers: {} } }));
 			const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
-			expect(r).toEqual({ kind: 'retryable' });
+			expect(r.kind).toBe('retryable');
+			expect(r.retryAfter).toBeUndefined();
 		}
+		// 503 带 Retry-After
+		const http503 = mkHttp(() => Promise.reject({
+			response: { status: 503, headers: { 'retry-after': '15' } },
+		}));
+		const r = await httpSender(http503, { uiId: 'x', seq: 1, logs: [] });
+		expect(r).toEqual({ kind: 'retryable', retryAfter: 15_000 });
 	});
 
 	test('network error（无 response）→ network', async () => {
@@ -515,6 +592,22 @@ describe('buildUiStartText (ui.start 首条 log)', () => {
 		} finally {
 			if (ndm) Object.defineProperty(navigator, 'deviceMemory', ndm); else delete navigator.deviceMemory;
 			if (nconn) Object.defineProperty(navigator, 'connection', nconn); else delete navigator.connection;
+		}
+	});
+
+	test('navigator 缺失时不抛 ReferenceError（非浏览器环境兜底）', () => {
+		const origNav = globalThis.navigator;
+		// @ts-ignore
+		delete globalThis.navigator;
+		try {
+			// 必须能跑通而不抛错；platform/theme 等字段保留
+			expect(() => buildUiStartText('NV____________________')).not.toThrow();
+			const text = buildUiStartText('NV____________________');
+			expect(text).toContain('uiId=NV____________________');
+			expect(text).not.toMatch(/ua=/);
+			expect(text).not.toMatch(/net=/);
+		} finally {
+			globalThis.navigator = origNav;
 		}
 	});
 
@@ -561,7 +654,7 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		});
 		remoteLog('via-helper');
 		// 触发 5s debounce 发送
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
 		expect(sent).toHaveLength(1);
 		expect(sent[0].logs[0].text).toBe('via-helper');
 	});
@@ -575,7 +668,7 @@ describe('单例 useRemoteLog / remoteLog', () => {
 			skipUiStart: true,
 		});
 		sigConn.__emit('log', 'sig.test-event');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
 		expect(sent[0].logs.some(l => l.text === 'sig.test-event')).toBe(true);
 	});
 
@@ -596,11 +689,48 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		});
 		// 触发一次 sig 'log' 事件——第一轮的监听器已被 off 掉，应只调一次新单例的 log
 		sigConn.__emit('log', 'sig.unique-event');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
 		expect(firstSends).toHaveLength(0);
 		const allTexts = secondSends.flatMap((p) => p.logs.map((l) => l.text));
-		// 关键：只出现 1 次，不会因泄漏的旧 listener 而出现 2 次
 		expect(allTexts.filter((t) => t === 'sig.unique-event')).toHaveLength(1);
+	});
+
+	test('useRemoteLog: ui.start 入队失败时静默 warn（catch 路径）', () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// 借 RemoteLog.prototype.log 临时抛错触发 useRemoteLog 内部 try/catch
+		const origLog = RemoteLog.prototype.log;
+		RemoteLog.prototype.log = function failingLog() { throw new Error('log-boom'); };
+		try {
+			expect(() => useRemoteLog({
+				send: () => Promise.resolve({ kind: 'success' }),
+				uiId: 'UISTART_FAIL__________',
+				skipSigBridge: true,
+			})).not.toThrow();
+			expect(warnSpy).toHaveBeenCalled();
+			expect(warnSpy.mock.calls[0][0]).toMatch(/ui\.start/);
+		} finally {
+			RemoteLog.prototype.log = origLog;
+			warnSpy.mockRestore();
+		}
+	});
+
+	test('useRemoteLog: sigConn 桥接失败时静默 warn（catch 路径）', () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// 让 attachSigBridge 抛错触发 useRemoteLog 内部 try/catch
+		const origAttach = RemoteLog.prototype.attachSigBridge;
+		RemoteLog.prototype.attachSigBridge = function failingAttach() { throw new Error('sig-boom'); };
+		try {
+			expect(() => useRemoteLog({
+				send: () => Promise.resolve({ kind: 'success' }),
+				uiId: 'SIGFAIL_______________',
+				skipUiStart: true,
+			})).not.toThrow();
+			const warnedBridge = warnSpy.mock.calls.some((c) => /sigConn|bridge/.test(String(c[0] || '')));
+			expect(warnedBridge).toBe(true);
+		} finally {
+			RemoteLog.prototype.attachSigBridge = origAttach;
+			warnSpy.mockRestore();
+		}
 	});
 
 	test('skipSigBridge=true 时 sigConn.log 事件不入队', async () => {
@@ -613,7 +743,7 @@ describe('单例 useRemoteLog / remoteLog', () => {
 			skipSigBridge: true,
 		});
 		sigConn.__emit('log', 'sig.skipped');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
+		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
 		expect(sent).toHaveLength(0);
 	});
 });
@@ -703,21 +833,19 @@ describe('platform / theme / retry-after 分支补充', () => {
 		window.matchMedia = origMm;
 	});
 
-	test('httpSender: Retry-After 是 garbage → retryable 无 retryAfterMs', async () => {
+	test('httpSender: Retry-After 是 garbage → retryable 无 retryAfter', async () => {
 		const http = { post: () => Promise.reject({ response: { status: 429, headers: { 'retry-after': 'not-a-date' } } }) };
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
 		expect(r.kind).toBe('retryable');
-		expect(r.retryAfterMs).toBeUndefined();
+		expect(r.retryAfter).toBeUndefined();
 	});
 
-	test('httpSender: Retry-After 为负秒数 → 仍 retryable，retryAfterMs 不为 NaN', async () => {
+	test('httpSender: Retry-After 为负秒数 → 仍 retryable，retryAfter 不为 NaN', async () => {
 		const http = { post: () => Promise.reject({ response: { status: 429, headers: { 'retry-after': '-5' } } }) };
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
 		expect(r.kind).toBe('retryable');
-		// 实现可能把负秒数视为 garbage 也可能视为合法（Date.parse 在部分实现里能容忍），
-		// 关键是不产生 NaN 让 setTimeout 报错
-		if (r.retryAfterMs !== undefined) {
-			expect(Number.isFinite(r.retryAfterMs)).toBe(true);
+		if (r.retryAfter !== undefined) {
+			expect(Number.isFinite(r.retryAfter)).toBe(true);
 		}
 	});
 });

@@ -15,25 +15,26 @@ import { useSignalingConnection } from './signaling-connection.js';
 /** 单个 batch 内 log 条数上限，亦为大小触发阈值（≥ 阈值立刻封批）。*/
 export const BATCH_SIZE = 100;
 /** Debounce 时间阈值；距上次封批超过此值即使未攒够也封批。*/
-export const DEBOUNCE_MS = 5000;
+export const DEBOUNCE = 5000;
 /** 未封批 ring buffer 上限；溢出丢最旧 entry。*/
 export const MAX_RING = 1000;
 /** 已封批待发队列上限；溢出丢最旧整批。*/
 export const MAX_PENDING = 10;
-/** 单 batch 重试次数上限。*/
-export const MAX_ATTEMPTS = 8;
-/** 单 batch 从首次发起到放弃的总时长上限。*/
-export const MAX_DURATION_MS = 10 * 60 * 1000;
-/** 指数退避基数。*/
-export const BACKOFF_BASE_MS = 1000;
-/** 指数退避上限。*/
-export const BACKOFF_CAP_MS = 60 * 1000;
 /** uiId 字符长度（nanoid 默认）。*/
 export const UI_ID_LENGTH = 21;
-/** HTTP 发送超时（ms）。*/
-export const HTTP_TIMEOUT_MS = 30_000;
+/** HTTP 发送超时。*/
+export const HTTP_TIMEOUT = 30_000;
 /** 端点路径。*/
 export const ENDPOINT_PATH = '/api/v1/log/ui';
+
+/**
+ * 单 batch 重试时间表：失败后 sleep 对应项再发；首发 + length 次重试 = length + 1 次发送。
+ * 数组作为唯一数据源——重试次数 = length，间隔 = 数组项；改一处即可。
+ * 同时也是 Retry-After 的上限（防 server 给超长值）。
+ */
+export const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000];
+
+const RETRY_AFTER_CAP = Math.max(...RETRY_DELAYS);
 
 /**
  * @typedef {{
@@ -41,7 +42,7 @@ export const ENDPOINT_PATH = '/api/v1/log/ui';
  *       | 'badRequest'
  *       | 'retryable'
  *       | 'network',
- *   retryAfterMs?: number,
+ *   retryAfter?: number,
  *   error?: Error,
  * }} SendResult
  */
@@ -51,18 +52,15 @@ export const ENDPOINT_PATH = '/api/v1/log/ui';
  *   uiId: string,
  *   seq: number,
  *   logs: { ts: number, text: string }[],
- *   attempts: number,
- *   firstAttemptAt: number,
  * }} PendingBatch
  */
 
 export class RemoteLog {
 	/**
 	 * @param {Object} opts
-	 * @param {(payload: { uiId: string, seq: number, logs: { ts: number, text: string }[] }) => Promise<SendResult>} opts.send - 发送一个 batch；返回归一化结果
+	 * @param {(payload: { uiId: string, seq: number, logs: { ts: number, text: string }[] }, signal: AbortSignal) => Promise<SendResult>} opts.send - 发送一个 batch；接收 AbortSignal，返回归一化结果
 	 * @param {string} [opts.uiId] - 注入 uiId（仅测试）
 	 * @param {() => number} [opts.now] - 时间源（仅测试）
-	 * @param {() => number} [opts.random] - 抖动源（仅测试）
 	 */
 	constructor(opts) {
 		if (!opts || typeof opts.send !== 'function') {
@@ -71,21 +69,21 @@ export class RemoteLog {
 		this.__send = opts.send;
 		this.uiId = opts.uiId || nanoid(UI_ID_LENGTH);
 		this.__now = opts.now || (() => Date.now());
-		this.__random = opts.random || Math.random;
 
 		this.__seq = 0;
 		/** @type {{ ts: number, text: string }[]} */
 		this.__ring = [];
 		/** @type {PendingBatch[]} */
 		this.__pending = [];
-		/** @type {PendingBatch | null} */
-		this.__inFlight = null;
 		this.__debounceTimer = null;
-		this.__retryTimer = null;
-		this.__stopped = false;
+		this.__draining = false;
+		this.__abortController = new AbortController();
 		/** @type {{ conn: any, fn: (text: string) => void } | null} */
 		this.__sigBridge = null;
 	}
+
+	// 状态唯一来源：AbortSignal；__stopped 包成 getter 让循环里继续按习惯读写
+	get __stopped() { return this.__abortController.signal.aborted; }
 
 	/**
 	 * 桥接 SignalingConnection 的 'log' 事件到 remote-log。stop() 时会 off 掉，避免跨 reset 泄漏。
@@ -114,19 +112,15 @@ export class RemoteLog {
 			this.__debounceTimer = setTimeout(() => {
 				this.__debounceTimer = null;
 				this.__pack();
-			}, DEBOUNCE_MS);
+			}, DEBOUNCE);
 		}
 	}
 
-	/** 把 ring buffer 全部封批入待发队列，触发 pump。*/
+	/** 把 ring buffer 全部封批入待发队列，然后无条件 kick drain。*/
 	__pack() {
 		if (this.__debounceTimer) {
 			clearTimeout(this.__debounceTimer);
 			this.__debounceTimer = null;
-		}
-		if (this.__ring.length === 0) {
-			this.__pump();
-			return;
 		}
 		while (this.__ring.length > 0) {
 			const logs = this.__ring.splice(0, BATCH_SIZE);
@@ -135,86 +129,78 @@ export class RemoteLog {
 				uiId: this.uiId,
 				seq: this.__seq,
 				logs,
-				attempts: 0,
-				firstAttemptAt: 0,
 			});
 			while (this.__pending.length > MAX_PENDING) {
 				this.__pending.shift();
 			}
 		}
-		this.__pump();
+		// 无条件 kick——靠 __drain 入口重入守卫自洽，避免"push 与 running=false 之间的瞬时窗口"
+		this.__drain().catch((err) => {
+			console.warn('[remote-log] drain crashed:', err?.message);
+		});
 	}
 
-	/** 若空闲则取队列头开始发送。*/
-	__pump() {
-		if (this.__stopped) return;
-		if (this.__inFlight) return;
-		if (this.__retryTimer) return;
-		const batch = this.__pending.shift();
-		if (!batch) return;
-		this.__inFlight = batch;
-		this.__attempt();
+	/** 单 async 消费循环：重入守卫 + while 直到 __pending 跑空。*/
+	async __drain() {
+		if (this.__draining || this.__stopped) return;
+		this.__draining = true;
+		try {
+			while (this.__pending.length > 0) {
+				if (this.__stopped) return;
+				const batch = this.__pending.shift();
+				await this.__sendBatchWithRetry(batch);
+			}
+		} finally {
+			this.__draining = false;
+		}
 	}
 
-	/** 对 inFlight 发起一次（首次或重试）。*/
-	__attempt() {
-		if (this.__stopped) return;
-		const batch = this.__inFlight;
-		if (!batch) return;
-		batch.attempts += 1;
-		if (!batch.firstAttemptAt) batch.firstAttemptAt = this.__now();
+	/**
+	 * 单 batch 重试调度：for 循环走完 `RETRY_DELAYS.length + 1` 次发送（首发 + N 次重试）。
+	 * abort 判定**全程依赖 `signal.aborted`**，不依赖 error name——
+	 * axios v1 cancel 抛 `CanceledError`、`__sleep` abort 抛自定义 error，二者 name 不一致。
+	 * @param {PendingBatch} batch
+	 */
+	async __sendBatchWithRetry(batch) {
+		const { signal } = this.__abortController;
 		const payload = { uiId: batch.uiId, seq: batch.seq, logs: batch.logs };
-		Promise.resolve()
-			.then(() => this.__send(payload))
-			.then((res) => this.__onResult(batch, res || { kind: 'network' }))
-			.catch((err) => this.__onResult(batch, { kind: 'network', error: err }));
-	}
-
-	__onResult(batch, res) {
-		// stop() 后到达的迟到响应直接丢弃，避免再调度新的 retry timer
-		if (this.__stopped) return;
-		// 异步回调可能在已被丢弃的 batch 上回来：忽略
-		if (this.__inFlight !== batch) return;
-		switch (res.kind) {
-			case 'success':
-			case 'badRequest':
-				this.__inFlight = null;
-				this.__pump();
-				return;
-			case 'retryable':
-			case 'network': {
-				const elapsed = this.__now() - batch.firstAttemptAt;
-				if (batch.attempts >= MAX_ATTEMPTS || elapsed >= MAX_DURATION_MS) {
-					this.__inFlight = null;
-					this.__pump();
-					return;
-				}
-				const delay = this.__computeBackoff(batch.attempts, res.retryAfterMs);
-				this.__retryTimer = setTimeout(() => {
-					this.__retryTimer = null;
-					this.__attempt();
-				}, delay);
+		const totalSends = RETRY_DELAYS.length + 1;
+		for (let attempt = 0; attempt < totalSends; attempt += 1) {
+			if (signal.aborted) return;
+			let res;
+			try {
+				res = await this.__send(payload, signal);
+			} catch (err) {
+				res = { kind: 'network', error: err };
+			}
+			if (signal.aborted) return;
+			if (res?.kind === 'success' || res?.kind === 'badRequest') return;
+			const isLast = attempt === totalSends - 1;
+			if (isLast) {
+				console.warn(`[remote-log] batch dropped after ${totalSends} sends seq=${batch.seq} kind=${res?.kind || 'unknown'}`);
 				return;
 			}
-			default:
-				// 未知种类视为网络错误，走退避
-				this.__onResult(batch, { kind: 'network' });
+			let delay = RETRY_DELAYS[attempt];
+			if (res?.kind === 'retryable'
+				&& typeof res.retryAfter === 'number'
+				&& Number.isFinite(res.retryAfter)
+				&& res.retryAfter >= 0) {
+				delay = Math.min(res.retryAfter, RETRY_AFTER_CAP);
+			}
+			try {
+				await sleep(delay, signal);
+			} catch (err) {
+				// 当前 sleep 只在 abort 时 reject；非 abort 路径理论不可达，留一行警告以可观测
+				if (!signal.aborted) {
+					console.warn('[remote-log] unexpected sleep reject:', err?.message);
+				}
+				return;
+			}
 		}
-	}
-
-	__computeBackoff(attempt, retryAfterMs) {
-		// 服务端可能给出 0 表示"立即重试"，需保留这个意图；负数/NaN 才回退到指数退避
-		if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs >= 0) {
-			return Math.min(retryAfterMs, BACKOFF_CAP_MS);
-		}
-		const base = Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 1), BACKOFF_CAP_MS);
-		const jitter = base * 0.2 * this.__random();
-		return Math.floor(base + jitter);
 	}
 
 	/**
 	 * 立即封批并推动发送循环。供调用方在需要确定性收尾的场景使用（如单测）。
-	 * 不影响重试 backoff 状态。
 	 */
 	flush() {
 		this.__pack();
@@ -222,16 +208,16 @@ export class RemoteLog {
 
 	/**
 	 * 停止后续发送 / 定时器，并解绑 sigConn 桥接监听器。
-	 * 注意：已经在飞的 send Promise 仍会 resolve / reject，但 __onResult 入口的 __stopped 守卫
-	 * 会丢弃迟到响应，不会再调度新的 retry。
+	 * 等同于 controller.abort()——in-flight axios 与正在 sleep 的 retry 都会立刻退出。
+	 * 生产代码不调用此方法；保留供测试与未来扩展。
 	 */
 	stop() {
-		this.__stopped = true;
-		if (this.__debounceTimer) clearTimeout(this.__debounceTimer);
-		if (this.__retryTimer) clearTimeout(this.__retryTimer);
-		this.__debounceTimer = null;
-		this.__retryTimer = null;
-		this.__inFlight = null;
+		if (this.__abortController.signal.aborted) return;
+		this.__abortController.abort();
+		if (this.__debounceTimer) {
+			clearTimeout(this.__debounceTimer);
+			this.__debounceTimer = null;
+		}
 		if (this.__sigBridge) {
 			try { this.__sigBridge.conn.off('log', this.__sigBridge.fn); } catch (err) {
 				console.warn('[remote-log] sigConn.off failed:', err?.message);
@@ -241,26 +227,52 @@ export class RemoteLog {
 	}
 }
 
+/**
+ * 可中断的 sleep：到点 resolve；signal 已 abort 或途中 abort 立即 reject。
+ * @param {number} delay
+ * @param {AbortSignal} signal
+ */
+function sleep(delay, signal) {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) {
+			reject(new Error('aborted'));
+			return;
+		}
+		const t = setTimeout(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		}, delay);
+		const onAbort = () => {
+			clearTimeout(t);
+			reject(new Error('aborted'));
+		};
+		signal.addEventListener('abort', onAbort, { once: true });
+	});
+}
+
 // --- HTTP 发送适配器 ---
 
 /**
- * 把 axios 响应/异常归一化为 SendResult
+ * 把 axios 响应/异常归一化为 SendResult。axios cancel 抛出的错误会被 catch 走入 network 分支，
+ * 上层 `__sendBatchWithRetry` 在 await 之后通过 `signal.aborted` 区分 abort 与真实失败。
  * @param {import('axios').AxiosInstance} http
  * @param {{ uiId: string, seq: number, logs: { ts: number, text: string }[] }} payload
+ * @param {AbortSignal} [signal]
  * @returns {Promise<SendResult>}
  */
-export async function httpSender(http, payload) {
+export async function httpSender(http, payload, signal) {
 	try {
-		await http.post(ENDPOINT_PATH, payload, { timeout: HTTP_TIMEOUT_MS });
+		await http.post(ENDPOINT_PATH, payload, { timeout: HTTP_TIMEOUT, signal });
 		return { kind: 'success' };
 	} catch (err) {
 		const status = err?.response?.status;
 		const headers = err?.response?.headers;
+		const retryAfter = parseRetryAfter(headers?.['retry-after']);
 		if (status === 408 || status === 429) {
-			return { kind: 'retryable', retryAfterMs: parseRetryAfter(headers?.['retry-after']) };
+			return { kind: 'retryable', retryAfter };
 		}
 		if (typeof status === 'number' && status >= 500 && status < 600) {
-			return { kind: 'retryable' };
+			return { kind: 'retryable', retryAfter };
 		}
 		if (typeof status === 'number' && status >= 400 && status < 500) {
 			return { kind: 'badRequest' };
@@ -310,8 +322,10 @@ export function buildUiStartText(uiId) {
 	if (typeof navigator !== 'undefined' && navigator.language) {
 		parts.push(`lang=${navigator.language}`);
 	}
-	const net = navigator?.connection?.effectiveType;
-	if (net) parts.push(`net=${net}`);
+	if (typeof navigator !== 'undefined') {
+		const net = navigator.connection?.effectiveType;
+		if (net) parts.push(`net=${net}`);
+	}
 	if (typeof navigator !== 'undefined' && navigator.userAgent) {
 		parts.push(`ua="${navigator.userAgent}"`);
 	}
@@ -372,7 +386,7 @@ function getDedicatedClient() {
 	if (__dedicatedClient) return __dedicatedClient;
 	__dedicatedClient = axios.create({
 		baseURL: resolveApiBaseUrl(),
-		withCredentials: true,  // cookie 用于服务端身份标注（user vs anon）
+		withCredentials: true, // cookie 用于服务端身份标注（user vs anon）
 	});
 	return __dedicatedClient;
 }
@@ -384,7 +398,7 @@ function getDedicatedClient() {
  * 不 watch authStore；登录前 / 登录失败窗口的 log 同样能上送 server。
  *
  * @param {Object} [opts]
- * @param {(payload: { uiId: string, seq: number, logs: { ts: number, text: string }[] }) => Promise<SendResult>} [opts.send] - 发送函数（测试注入）
+ * @param {(payload: { uiId: string, seq: number, logs: { ts: number, text: string }[] }, signal: AbortSignal) => Promise<SendResult>} [opts.send] - 发送函数（测试注入）
  * @param {string} [opts.uiId] - 注入 uiId（测试用）
  * @param {boolean} [opts.skipUiStart] - 跳过 ui.start 首条（测试用）
  * @param {boolean} [opts.skipSigBridge] - 跳过 signaling-connection 桥接（测试用）
@@ -392,7 +406,7 @@ function getDedicatedClient() {
  */
 export function useRemoteLog(opts = {}) {
 	if (__instance) return __instance;
-	const send = opts.send || ((payload) => httpSender(getDedicatedClient(), payload));
+	const send = opts.send || ((payload, signal) => httpSender(getDedicatedClient(), payload, signal));
 	__instance = new RemoteLog({
 		send,
 		uiId: opts.uiId,
