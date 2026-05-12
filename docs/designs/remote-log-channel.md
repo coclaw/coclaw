@@ -56,12 +56,14 @@ UI ──── RTC signaling WS ──┘
 ### Server 日志输出
 
 ```
-[2026-03-30 14:02:03.120] [remote][plugin][bot:abc123] 14:01:58.450 | ws.connected peer=server rtt=23ms
- ↑ server 接收时间                                    ↑ 客户端事件时间（已转为 server 本地时区）
+2026-03-30T14:02:03.120756891Z [remote][plugin][claw:abc123][ts=2026-03-30T14:01:58.450Z] ws.connected peer=server rtt=23ms
+↑ docker -t：server 接收时刻（UTC, RFC3339Nano）            ↑ 客户端事件时刻（UTC, ISO8601 ms）
 ```
 
-- Server 将 `ts` 转换为本地时区的 `HH:mm:ss.SSS` 格式输出
-- Server 从连接上下文补全 `[plugin/ui]`、`[bot:xxx]` / `[user:xxx]` 前缀
+- Server 将 `ts` 渲染为 `[ts=<ISO_UTC>]` 字段，紧贴前缀块尾（无空格），与正文 `text` 间一个空格分隔
+- 缺失/异常 ts 输出占位 `[ts=??]`
+- 两个 ts 都是 UTC，agent 排序优先用行内 `[ts=...]`（事件发生时刻），docker `-t` 当辅助（server 接收时刻）
+- Server 从连接上下文补全 `[plugin/ui]`、`[claw:xxx]` / `[user:xxx]` 前缀
 - `text` 原样输出，Server 不解析其内容
 
 ---
@@ -111,20 +113,18 @@ async function flush() {
 Server 对 `type: 'log'` 消息的处理逻辑极简：
 
 ```js
-// bot WS (bot-ws-hub.js)
+// claw WS (claw-ws-hub.js)
 for (const { ts, text } of logs) {
-  const time = fmtLocalTime(ts); // → HH:mm:ss.SSS（server 本地时区）
-  console.info(`[remote][plugin][bot:${botId}] ${time} | ${text}`);
+  console.info(`[remote][plugin][claw:${clawId}]${fmtRemoteLogTs(ts)} ${text}`);
 }
 
 // RTC signaling WS (rtc-signal-hub.js)
 for (const { ts, text } of logs) {
-  const time = fmtLocalTime(ts);
-  console.info(`[remote][ui][user:${userId}] ${time} | ${text}`);
+  console.info(`[remote][ui][user:${userId}]${fmtRemoteLogTs(ts)} ${text}`);
 }
 ```
 
-- `fmtLocalTime(ts)`：将毫秒时间戳转换为 server 本地时区的 `HH:mm:ss.SSS`
+- `fmtRemoteLogTs(ts)`：将毫秒时间戳渲染为 `[ts=<ISO_UTC>]`；无效输入返回占位 `[ts=??]`。统一 UTC（字典序=时间序，agent 排序便利）
 - 不做存储、不做聚合。依赖现有日志基础设施（文件 / stdout）
 
 ---
