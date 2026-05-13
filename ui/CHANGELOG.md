@@ -1,5 +1,29 @@
 # @coclaw/ui
 
+## 0.25.0
+
+### Minor Changes
+
+- e3ad675: Migrate `remoteLog` from the RTC signaling WS to an independent HTTP POST channel (`POST /api/v1/log/ui`), so diagnostic logs stay flowing during signaling reconnects and other RTC outages. The new sender assigns a 21-char nanoid `uiId` per UI instance (kept across login/logout), monotonically numbers each batch (`seq` starting at 1, never reset), debounces at 100 entries / 5 seconds, sends one batch in flight at a time, and recovers from failures with exponential backoff (1s → 60s, with jitter) — bad responses (4xx other than 408/429) drop the batch, retryable errors stop after 8 attempts or 10 minutes. A 1000-entry ring buffer and a 10-batch pending queue cap memory under prolonged outages. The cold-start `ui.start` log carries `uiId`, app version, platform (`web` / `cap-*` / `electron-*`), viewport, touch, theme, cores, optional `mem`/`net`, `tz`, `lang`, and `ua` for identification. Login/logout no longer triggers any remote-log flush or buffer clear — the endpoint is unauthenticated and identity is decided server-side from the cookie at receive time.
+
+### Patch Changes
+
+- 72212e9: Rewrite `remoteLog` internals with a producer/consumer architecture: a single async consumer loop driven by an `AbortController`, and an array-based retry schedule (`RETRY_DELAYS = [1, 2, 4, 8, 16, 30, 30, 30, 30, 30]` seconds). No external API or singleton shape changes.
+
+  Retry-policy behavior change: removed the wall-clock `MAX_DURATION` upper bound (previously 10 minutes). Retry count is now driven solely by `RETRY_DELAYS.length`: 11 sends per batch (1 first + 10 retries), totaling ~181s of baseline backoff and ~300s when the server keeps responding `Retry-After: 30` (10 × 30s). The jitter on backoff was removed (different UI instances naturally stagger). `Retry-After` is now also parsed for 5xx responses (mainly 503) and capped at 30s (`Math.max(...RETRY_DELAYS)`). Mobile background freeze + foreground resume now keeps the batch in flight instead of dropping it on wall-clock timeout.
+
+  Two unrelated fixes folded in: `navigator.connection?.effectiveType` is now read with a `typeof navigator !== 'undefined'` guard (was throwing `ReferenceError` in non-browser environments), and abort detection inside the retry loop uses `signal.aborted` rather than matching `error.name` (axios v1 cancel raises `CanceledError` while `AbortSignal` raises `AbortError` — name matching would have missed the axios path).
+
+- 0f0a155: Split `remote-log` internals to clarify responsibilities — no behavior change.
+
+  - New `utils/async-utils.js` exports `sleep(timeout, signal?)`. The `AbortSignal` is optional (degrades to a plain sleep when omitted) and the reject path uses `signal.reason` when available, falling back to a generic `Error('aborted')` for older browsers (baseline Safari 15.0–15.3 / Firefox 90).
+  - `utils/platform.js` now exposes `detectPlatformLabel()` (`'cap-android' | 'cap-ios' | 'electron-win' | 'electron-mac' | 'electron-linux' | 'electron' | 'web'`). The function reads `globalThis` on each call so tests can `vi.stubGlobal` without `resetModules`.
+  - New `services/env-snapshot.js` owns the one-shot diagnostic snapshot and `buildUiStartText(uiId)`. It uses `utils/platform.js` for the platform label rather than re-implementing platform detection.
+  - `services/remote-log.js` shrinks to a pure batching/retry channel: `buildUiStartText`, the inline `sleep` helper, and the `skipUiStart` opt are gone. `useRemoteLog()` no longer auto-enqueues `ui.start`.
+  - `main.js` now explicitly emits `ui.start` after creating the singleton: `const rl = useRemoteLog(); rl.log(buildUiStartText(rl.uiId));`.
+
+  Public API and observable behavior are unchanged: the first log sent to the server is still the `ui.start` line with the same field set; `remoteLog(text)` and the singleton shape are unaffected.
+
 ## 0.24.2
 
 ### Patch Changes
