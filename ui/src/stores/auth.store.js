@@ -28,6 +28,7 @@ import { useAgentRunsStore } from './agent-runs.store.js';
 import { chatStoreManager } from './chat-store-manager.js';
 import { useFilesStore } from './files.store.js';
 import { useDashboardStore } from './dashboard.store.js';
+import { useWebAgentsStore, __resetWebAgentsInternals } from './web-agents.store.js';
 import { __cancelPendingNetworkDispatch } from '../utils/network-debounce.js';
 
 function applyUserPreferences(user) {
@@ -101,6 +102,9 @@ export const useAuthStore = defineStore('auth', {
 				applyUserPreferences(this.user);
 				// 仅在用户实际切换时才重置 draft 存储空间，避免每次导航清空未持久化的内存态草稿
 				if (this.user?.id !== prevUserId) useDraftStore().onUserChanged(this.user?.id);
+				// 注意：这里**不**重置 webAgents store。原因：refreshSession 与 MainList.mounted 的 loadAll
+				// 并发跑且共用同一 cookie，两者拿到的鉴权视图一致；若在这里 reset 会把 in-flight loadAll
+				// 的正确响应一并丢弃，登录用户冷启动会看到空列表。匿名→登录的快照切换由 login/register 处理。
 				console.debug('[auth] session refreshed, user=%s', this.user?.id ?? null);
 			} catch (err) {
 				if (__logoutEpoch !== epochAtStart) return; // logout 期间的 401/网络错不是真正的失败
@@ -129,6 +133,11 @@ export const useAuthStore = defineStore('auth', {
 				this.user = data.user;
 				applyUserPreferences(this.user);
 				useDraftStore().onUserChanged(this.user?.id);
+				// 清除匿名访问期间加载到的 webAgents 快照：本次 login 之前用户可能在 /about 停过
+				// （DesktopSidebar 始终挂载 → MainList 已 loadAll 拿到 lastClickedAt 全 null），
+				// 若不清，登录后 MainList 重挂时会因 loaded=true 短路在匿名视图，看不到 lastClickedAt
+				__resetWebAgentsInternals();
+				useWebAgentsStore().$reset();
 				console.log('[auth] login ok, user=%s', this.user?.id);
 			} catch (err) {
 				if (__logoutEpoch !== epochAtStart) return;
@@ -158,6 +167,9 @@ export const useAuthStore = defineStore('auth', {
 				this.user = data.user;
 				applyUserPreferences(this.user);
 				useDraftStore().onUserChanged(this.user?.id);
+				// 与 login 同理：清匿名快照避免登录后 MainList 看不到个人化字段
+				__resetWebAgentsInternals();
+				useWebAgentsStore().$reset();
 				console.log('[auth] register ok, user=%s', this.user?.id);
 			} catch (err) {
 				if (__logoutEpoch !== epochAtStart) return;
@@ -224,11 +236,13 @@ export const useAuthStore = defineStore('auth', {
 					safeRun('claws.__resetInternals', () => __resetClawStoreInternals());
 					safeRun('sessions.__resetInternals', () => __resetSessionsInternals());
 					safeRun('topics.__resetInternals', () => __resetTopicsInternals());
+					safeRun('webAgents.__resetInternals', () => __resetWebAgentsInternals());
 					safeRun('sessions.$reset', () => useSessionsStore().$reset());
 					safeRun('agents.$reset', () => useAgentsStore().$reset());
 					safeRun('topics.$reset', () => useTopicsStore().$reset());
 					safeRun('claws.$reset', () => useClawsStore().$reset());
 					safeRun('admin.$reset', () => useAdminStore().$reset());
+					safeRun('webAgents.$reset', () => useWebAgentsStore().$reset());
 					console.log('[auth] logged out');
 				} finally {
 					this.loading = false;

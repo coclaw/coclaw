@@ -28,10 +28,26 @@ export async function syncPresets({ presets = PRESETS, db = prisma } = {}) {
 }
 
 /**
- * 返回当前用户可见的全部 Web Agent（系统预置 + 该用户自建）+ 该用户的 lastClickedAt / hiddenAt
- * @param {bigint} userId
+ * 返回可见的全部 Web Agent
+ * - userId 非空：系统预置 + 该用户自建，附带 lastClickedAt / hiddenAt
+ * - userId 为 null（匿名）：仅系统预置，lastClickedAt / hiddenAt 固定为 null
+ * @param {bigint|null} userId
  */
 export async function findAllForUser(userId, db = prisma) {
+	if (userId == null) {
+		const agents = await db.webAgent.findMany({
+			where: { userId: null },
+		});
+		return agents.map(a => ({
+			id: a.id,
+			slug: a.slug,
+			name: a.name,
+			url: a.url,
+			sort: a.sort,
+			lastClickedAt: null,
+			hiddenAt: null,
+		}));
+	}
 	const agents = await db.webAgent.findMany({
 		where: {
 			OR: [

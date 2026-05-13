@@ -284,15 +284,15 @@ REST 前缀：`/api/v1/web-agents`
 
 | Method | Path | 用途 | 鉴权 |
 |--------|------|------|------|
-| GET | `/api/v1/web-agents` | 获取预置 + 当前用户自建（将来）的 Web Agent 列表，附带当前用户 lastClickedAt / hiddenAt | 必须登录，否则 401 |
+| GET | `/api/v1/web-agents` | 获取预置 + 当前用户自建（将来）的 Web Agent 列表 | **公开**：未登录返回纯入口数据（lastClickedAt / hiddenAt 全 null）；登录后附带个人化字段 |
 | POST | `/api/v1/web-agents/:id/click` | 上报一次点击（fire-and-forget），同时清空该 Agent 的 hiddenAt | 必须登录，否则 401 |
 | POST | `/api/v1/web-agents/:id/hide` | 将该 Agent 从当前用户的最近列表隐藏（设置 hiddenAt = now） | 必须登录，否则 401 |
 
-均走项目现有的 session 中间件鉴权（参考 `claw.route.js` 等）。
+GET 公开访问的设计动因：CoClaw 把 Web Agent 列表当作"门户入口"，未登录用户也能看到预置清单并跳转到第三方 ChatBot。click / hide 涉及写入用户私有数据，仍强制登录。
 
 ### GET /api/v1/web-agents
 
-返回当前用户可见的全部 Web Agent（系统预置 + 该用户自建），合并附带该用户的点击信息。
+返回可见的全部 Web Agent：登录用户拿到系统预置 + 该用户自建，并附带该用户的点击信息；未登录用户仅拿系统预置，`lastClickedAt` / `hiddenAt` 固定为 `null`。
 
 响应：
 
@@ -326,6 +326,14 @@ repo 层 prisma client 写法（不是裸 SQL JOIN）：
 ```js
 // server/src/repos/web-agent.repo.js
 export async function findAllForUser(userId) {
+	// 匿名分支：只取预置，不查 WebAgentClick 表，个人化字段固定 null
+	if (userId == null) {
+		const agents = await prisma.webAgent.findMany({ where: { userId: null } });
+		return agents.map(a => ({
+			id: a.id, slug: a.slug, name: a.name, url: a.url, sort: a.sort,
+			lastClickedAt: null, hiddenAt: null,
+		}));
+	}
 	const agents = await prisma.webAgent.findMany({
 		where: {
 			OR: [
@@ -519,6 +527,9 @@ export const useWebAgentsStore = defineStore('webAgents', {
 	- 若本地 `lastClickedAt` 严格新于服务器 → 本地 `hiddenAt`（已被 recordClick 清成 null）胜出
 	- 否则 → 取 `max(prev.hiddenAt, server.hiddenAt)`，保护本地刚 fire 的 `hide()` 不被旧响应复活
 - `recordClick`/`hide` 必须 catch fire-and-forget Promise，避免 unhandled rejection 噪音
+- `recordClick`/`hide` 在 `!useAuthStore().user` 时整段跳过——匿名用户点 web agent 仅作外链入口，不进 MainList 也不打 server
+- `loadAll` 用模块级 epoch 守护 in-flight 响应：`__resetWebAgentsInternals()`（被 auth.store 的 logout/login/register 调用）自增 epoch 并清 in-flight handle；旧 IIFE 的 `await` 返回后比对 epoch，不一致即丢弃整段响应，避免登出/换号后旧数据把刚 `$reset` 的 store 复活
+- store 重置的触发点（auth.store.js）：**logout 清理链**（无论 API 成功/401/失败都跑本地清理）+ **login / register 成功分支**各调一次 `__resetWebAgentsInternals() + useWebAgentsStore().$reset()`。`refreshSession` 故意**不**重置——它与 MainList.mounted 的 loadAll 并发跑、共用同一 cookie，两者拿到的鉴权视图一致；若在这里 reset 会把 in-flight loadAll 的正确响应一并丢弃
 
 ### loadAll 触发时机与加载状态
 
@@ -749,7 +760,7 @@ app.use('/api/v1/web-agents', webAgentRouter);
 
 `server/src/routes/web-agent.route.test.js`：
 
-- GET 未登录 → 401
+- GET 未登录 → 200，仅预置项，`lastClickedAt` / `hiddenAt` 全 null
 - GET 登录后正常返回 items
 - POST `/click` 未登录 → 401
 - POST `/click` 不可见 ID（不存在 / 别人的自建条目）→ 404

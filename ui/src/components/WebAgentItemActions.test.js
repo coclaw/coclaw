@@ -9,6 +9,12 @@ const mockedApi = vi.hoisted(() => ({
 }));
 vi.mock('../services/web-agents.api.js', () => mockedApi);
 
+// hide / recordClick 现在需要登录态；本测试关心组件行为而非鉴权门控，整组 mock 成已登录
+const mockAuth = vi.hoisted(() => ({ user: { id: 1n, loginName: 'tester' } }));
+vi.mock('../stores/auth.store.js', () => ({
+	useAuthStore: () => mockAuth,
+}));
+
 import WebAgentItemActions from './WebAgentItemActions.vue';
 import { useWebAgentsStore, __resetWebAgentsInternals } from '../stores/web-agents.store.js';
 

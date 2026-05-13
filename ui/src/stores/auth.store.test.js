@@ -35,6 +35,8 @@ const {
 	mockChatStoreDisposeAll,
 	mockDashboardReset,
 	mockCloseAllRtcInstances,
+	mockWebAgentsReset,
+	mockResetWebAgentsInternals,
 } = vi.hoisted(() => {
 	const order = [];
 	return {
@@ -53,6 +55,8 @@ const {
 		mockChatStoreDisposeAll: vi.fn(() => { order.push('chatStoreDisposeAll'); }),
 		mockDashboardReset: vi.fn(() => { order.push('dashboardReset'); }),
 		mockCloseAllRtcInstances: vi.fn(() => { order.push('rtcCloseAll'); }),
+		mockWebAgentsReset: vi.fn(() => { order.push('webAgentsReset'); }),
+		mockResetWebAgentsInternals: vi.fn(() => { order.push('resetWebAgentsInternals'); }),
 	};
 });
 
@@ -113,6 +117,17 @@ vi.mock('./dashboard.store.js', () => ({
 
 vi.mock('../services/claws.api.js', () => ({
 	listClaws: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock('./web-agents.store.js', () => ({
+	useWebAgentsStore: () => ({
+		$reset: mockWebAgentsReset,
+		items: [],
+		loaded: false,
+		loading: false,
+		error: null,
+	}),
+	__resetWebAgentsInternals: mockResetWebAgentsInternals,
 }));
 
 import {
@@ -418,6 +433,7 @@ describe('auth store', () => {
 		// rtc.closeAll 紧跟 disconnectAll：补清未完成 init 的 rtc（clawConn.__rtc 为 null，disconnectAll 碰不到）
 		// chat stores.disposeAll 在 sig.disconnect 之后（先断连再 cleanup 避免 off 到 null conn）
 		// admin.teardownStream 在 admin.$reset 之前（否则 $reset 直接清引用会泄漏 EventSource）
+		// webAgents reset 排尾即可（无强时序依赖；只要在 logout 期间清掉避免登出后侧栏残留）
 		expect(logoutCallOrder).toEqual([
 			'filesCancelAll',
 			'agentRunsResetAll',
@@ -428,6 +444,8 @@ describe('auth store', () => {
 			'chatStoreDisposeAll',
 			'dashboardReset',
 			'adminTeardownStream',
+			'resetWebAgentsInternals',
+			'webAgentsReset',
 		]);
 	});
 
@@ -485,6 +503,21 @@ describe('auth store', () => {
 		expect(mockResetAuthExpiredThrottle).toHaveBeenCalledTimes(1);
 	});
 
+	test('logout 清理 webAgents store（避免登出后侧栏仍残留点过的 web agent）', async () => {
+		// 防回归：若清理链漏 webAgents.$reset，用户登出后再进入未登录页（如 /about）
+		// 仍会看到上次登录时点过的 web agent，与"门户只展示无个人化"的设计相悖
+		logout.mockResolvedValue();
+		mockWebAgentsReset.mockClear();
+		mockResetWebAgentsInternals.mockClear();
+		const store = useAuthStore();
+		store.user = { id: '3' };
+
+		await store.logout();
+
+		expect(mockResetWebAgentsInternals).toHaveBeenCalledTimes(1);
+		expect(mockWebAgentsReset).toHaveBeenCalledTimes(1);
+	});
+
 	test('logout API 失败时新接入的清理钩子仍被执行', async () => {
 		// 验证 auth.store.js 的契约：catch 不 return，本地清理链无条件跑
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -528,6 +561,48 @@ describe('auth store', () => {
 		await store.login({ loginName: 'a', password: 'b' });
 
 		expect(spy).toHaveBeenCalledWith('5');
+	});
+
+	test('login 成功后清理 webAgents store（避免匿名快照短路登录后视图）', async () => {
+		// 防回归：用户先匿名访问 /about（MainList 已 loadAll 拿到 lastClickedAt 全 null），
+		// 再登录到 /home。如果不清，store loaded=true 会让 MainList 重挂时短路在匿名视图
+		loginByLoginName.mockResolvedValue({ user: { id: '5' } });
+		mockWebAgentsReset.mockClear();
+		mockResetWebAgentsInternals.mockClear();
+		const store = useAuthStore();
+
+		await store.login({ loginName: 'a', password: 'b' });
+
+		expect(mockResetWebAgentsInternals).toHaveBeenCalledTimes(1);
+		expect(mockWebAgentsReset).toHaveBeenCalledTimes(1);
+	});
+
+	test('register 成功后清理 webAgents store（与 login 对称）', async () => {
+		registerByLoginName.mockResolvedValue({ user: { id: '8' } });
+		mockWebAgentsReset.mockClear();
+		mockResetWebAgentsInternals.mockClear();
+		const store = useAuthStore();
+
+		await store.register({ loginName: 'a', password: 'b' });
+
+		expect(mockResetWebAgentsInternals).toHaveBeenCalledTimes(1);
+		expect(mockWebAgentsReset).toHaveBeenCalledTimes(1);
+	});
+
+	test('refreshSession 即使 user.id 变化也不重置 webAgents store（避免丢弃并发 loadAll 的正确响应）', async () => {
+		// 防回归：早期版本曾在 user.id 变化时 reset webAgents，导致登录用户冷启动看到空列表——
+		// 原因是 MainList.mounted 的 loadAll 与 refreshSession 共用同一 cookie，本应一致；
+		// reset 反而把 in-flight 的登录视图丢掉。匿名→登录的快照清理由 login/register 处理
+		fetchSessionUser.mockResolvedValue({ id: '12' });
+		mockWebAgentsReset.mockClear();
+		mockResetWebAgentsInternals.mockClear();
+		const store = useAuthStore();
+		// user 初始为 null（典型冷启动）
+
+		await store.refreshSession();
+
+		expect(mockResetWebAgentsInternals).not.toHaveBeenCalled();
+		expect(mockWebAgentsReset).not.toHaveBeenCalled();
 	});
 
 	test('logout 时先 persist 草稿再调用 onUserChanged(null)', async () => {

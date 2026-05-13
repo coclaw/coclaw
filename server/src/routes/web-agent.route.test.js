@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import express from 'express';
+import express, { Router } from 'express';
 import request from 'supertest';
 
 import {
@@ -11,6 +11,7 @@ import {
 	parseWebAgentId,
 	webAgentRouter,
 } from './web-agent.route.js';
+import { prisma } from '../db/prisma.js';
 
 function createRes() {
 	return {
@@ -98,12 +99,38 @@ test('parseWebAgentId: 全角数字（１２３）拒绝', () => {
 
 // ---- listWebAgentsHandler ----
 
-test('listWebAgentsHandler: 未登录 → 401', async () => {
+test('listWebAgentsHandler: 未登录也能拿到列表，userId 传 null', async () => {
+	// 接口已对匿名用户开放（ChatBot 门户语义）；userId 透传 null 让 repo 走匿名分支
 	const req = unauthedReq();
 	const res = createRes();
-	await listWebAgentsHandler(req, res, () => {});
-	assert.equal(res.statusCode, 401);
-	assert.equal(res.body.code, 'UNAUTHORIZED');
+	const items = [
+		{ id: 1, slug: 'a', name: 'A', url: 'https://a/', sort: 1, lastClickedAt: null, hiddenAt: null },
+	];
+	let receivedUserId = 'NOT_CALLED';
+	await listWebAgentsHandler(req, res, () => {}, {
+		findAllForUserImpl: async (userId) => {
+			receivedUserId = userId;
+			return items;
+		},
+	});
+	assert.equal(receivedUserId, null);
+	assert.equal(res.statusCode, 200);
+	assert.deepEqual(res.body.items, items);
+});
+
+test('listWebAgentsHandler: req.isAuthenticated 缺失（passport 未挂）视为未登录，不抛', async () => {
+	// 防御性：isAuthenticated 不是函数时也不能炸，按匿名走
+	const req = { isAuthenticated: undefined, user: null };
+	const res = createRes();
+	let receivedUserId = 'NOT_CALLED';
+	await listWebAgentsHandler(req, res, () => {}, {
+		findAllForUserImpl: async (userId) => {
+			receivedUserId = userId;
+			return [];
+		},
+	});
+	assert.equal(receivedUserId, null);
+	assert.equal(res.statusCode, 200);
 });
 
 test('listWebAgentsHandler: 登录后正常返回 items', async () => {
@@ -154,14 +181,6 @@ test('listWebAgentsHandler: lastClickedAt / hiddenAt 经 JSON 序列化后是 IS
 	assert.equal(c.lastClickedAt, '2026-05-02T10:00:00.000Z');
 	assert.equal(typeof c.hiddenAt, 'string');
 	assert.equal(c.hiddenAt, '2026-05-02T11:00:00.000Z');
-});
-
-test('listWebAgentsHandler: 401 / 异常 等错误响应均含非空 message 字段', async () => {
-	// 401
-	const res1 = createRes();
-	await listWebAgentsHandler(unauthedReq(), res1, () => {});
-	assert.equal(typeof res1.body.message, 'string');
-	assert.ok(res1.body.message.length > 0);
 });
 
 test('listWebAgentsHandler: 异常走 next(err)', async () => {
@@ -519,14 +538,6 @@ test('routing: GET /api/v1/web-agents/unknown-path → 404', async () => {
 	assert.equal(res.status, 404);
 });
 
-test('routing: 未登录 GET /api/v1/web-agents → 401 application/json + code/message', async () => {
-	const res = await request(makeUnauthedApp()).get('/api/v1/web-agents');
-	assert.equal(res.status, 401);
-	assert.match(res.headers['content-type'] ?? '', /application\/json/);
-	assert.equal(res.body.code, 'UNAUTHORIZED');
-	assert.ok(typeof res.body.message === 'string' && res.body.message.length > 0);
-});
-
 test('routing: 未登录 POST /api/v1/web-agents/:id/click → 401 application/json + code/message', async () => {
 	const res = await request(makeUnauthedApp()).post('/api/v1/web-agents/1/click');
 	assert.equal(res.status, 401);
@@ -547,4 +558,50 @@ test('routing: 未登录 POST 即使 id 非法也优先返 401（401 在 400 前
 	const res = await request(makeUnauthedApp()).post('/api/v1/web-agents/abc/hide');
 	assert.equal(res.status, 401);
 	assert.equal(res.body.code, 'UNAUTHORIZED');
+});
+
+// makeAnonAppWithRepoStub：用注入 deps 的 listWebAgentsHandler 挂同一挂载点，
+// 防止生产 webAgentRouter 真打 prisma 又能锁住"匿名 GET → 200 + 路径正确"
+function makeAnonAppWithRepoStub(stubItems) {
+	const app = express();
+	app.use(express.json());
+	const r = Router();
+	r.get('/', (req, res, next) => listWebAgentsHandler(req, res, next, {
+		findAllForUserImpl: async () => stubItems,
+	}));
+	app.use('/api/v1/web-agents', r);
+	return app;
+}
+
+test('routing: 未登录 GET /api/v1/web-agents → 200 application/json + items 为预置纯入口', async () => {
+	// 端到端兜底（注入 deps 版）：锁住"匿名 GET → 200 + 路径正确 + JSON 形状"
+	const items = [
+		{ id: 1, slug: 'a', name: 'A', url: 'https://a/', sort: 1, lastClickedAt: null, hiddenAt: null },
+		{ id: 2, slug: 'b', name: 'B', url: 'https://b/', sort: 2, lastClickedAt: null, hiddenAt: null },
+	];
+	const res = await request(makeAnonAppWithRepoStub(items)).get('/api/v1/web-agents');
+	assert.equal(res.status, 200);
+	assert.match(res.headers['content-type'] ?? '', /application\/json/);
+	assert.deepEqual(res.body.items, items);
+});
+
+test('routing: 真 webAgentRouter 也对匿名 GET 放行 → 200（防"未来加回 requireSession 中间件"回归）', async () => {
+	// 仅 stub prisma.webAgent.findMany，不动业务路径；
+	// 若有人重新给 GET 加了 requireSession，这条会立刻 401
+	const original = prisma.webAgent.findMany;
+	prisma.webAgent.findMany = async () => [
+		{ id: 1, slug: 'a', name: 'A', url: 'https://a/', sort: 1, userId: null },
+	];
+	try {
+		const res = await request(makeUnauthedApp()).get('/api/v1/web-agents');
+		assert.equal(res.status, 200);
+		assert.match(res.headers['content-type'] ?? '', /application\/json/);
+		assert.equal(res.body.items.length, 1);
+		// 匿名分支个人化字段固定 null
+		assert.equal(res.body.items[0].lastClickedAt, null);
+		assert.equal(res.body.items[0].hiddenAt, null);
+	}
+	finally {
+		prisma.webAgent.findMany = original;
+	}
 });

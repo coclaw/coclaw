@@ -24,6 +24,12 @@ const __webAgentsApiMock = vi.hoisted(() => ({
 }));
 vi.mock('../services/web-agents.api.js', () => __webAgentsApiMock);
 
+// webAgentsStore.recordClick / hide 现在依赖登录态；MainList 测试关心列表行为，统一 mock 成已登录
+const __mockAuth = vi.hoisted(() => ({ user: { id: 1n, loginName: 'tester' } }));
+vi.mock('../stores/auth.store.js', () => ({
+	useAuthStore: () => __mockAuth,
+}));
+
 import MainList from './MainList.vue';
 import { useAgentsStore } from '../stores/agents.store.js';
 import { useClawsStore } from '../stores/claws.store.js';
@@ -41,6 +47,9 @@ let __mockIsCapacitorApp = false;
 vi.mock('../utils/platform.js', () => ({
 	get isCapacitorApp() { return __mockIsCapacitorApp; },
 	detectWebPlatform: () => 'unknown',
+	// auth.store 间接拉 capacitor-app.js → platform.isMobileOs（jsdom 下默认 false 即可）
+	isMobileOs: false,
+	isNativeShell: false,
 }));
 
 // 用例尾部若因断言失败提前抛错，手动复位不会执行；此处兜底，避免下一用例继承 true 状态

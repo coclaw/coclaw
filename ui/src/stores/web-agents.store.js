@@ -1,11 +1,16 @@
 import { defineStore } from 'pinia';
 
 import { hideWebAgent, listWebAgents, recordWebAgentClick } from '../services/web-agents.api.js';
+import { useAuthStore } from './auth.store.js';
 
 let _loadingPromise = null;
+// 用户身份切换 / 测试隔离时自增；loadAll 启动时捕获，await 后 epoch 不等表示
+// 这次响应已属于"旧身份"，应丢弃，避免登出后 in-flight 旧数据把刚 $reset 的 store 复活
+let _resetEpoch = 0;
 
-/** 重置模块级 in-flight，方便测试隔离 */
+/** 重置模块级 in-flight + 自增 epoch（让在飞的 loadAll 响应被丢弃） */
 export function __resetWebAgentsInternals() {
+	_resetEpoch++;
 	_loadingPromise = null;
 }
 
@@ -60,9 +65,12 @@ export const useWebAgentsStore = defineStore('webAgents', {
 			if (this.loaded && !this.error) return;
 			this.loading = true;
 			this.error = null;
-			_loadingPromise = (async () => {
+			const epoch = _resetEpoch;
+			const myPromise = (async () => {
 				try {
 					const fetched = await listWebAgents();
+					// epoch 不一致：登出/换号已发生，本次响应属于旧身份，整段丢弃
+					if (epoch !== _resetEpoch) return;
 					// merge：用本地 prev 与服务器值合并，避免 loadAll 旧响应在 recordClick / hide
 					// 之后到达时覆盖乐观更新。
 					// hiddenAt 语义：click 事件总会清掉 hiddenAt，hide 事件总会写入 hiddenAt。
@@ -87,27 +95,34 @@ export const useWebAgentsStore = defineStore('webAgents', {
 					this.loaded = true;
 				}
 				catch (err) {
+					if (epoch !== _resetEpoch) return;
 					this.error = err;
 					console.warn('[web-agents] loadAll failed:', err?.message ?? err);
 				}
 				finally {
-					this.loading = false;
+					// 仅在 epoch 仍为本次时清 loading；否则新 loadAll 已把 loading 设为 true，旧 IIFE 不能踩
+					if (epoch === _resetEpoch) this.loading = false;
 				}
 			})();
+			_loadingPromise = myPromise;
 			try {
-				await _loadingPromise;
+				await myPromise;
 			}
 			finally {
-				_loadingPromise = null;
+				// 仅清除自己装的 promise——若期间 reset 把 _loadingPromise 清成 null 且新 loadAll 已挂上 P2，
+				// 这里再写 null 会把 P2 的 handle 错置，导致后续并行 IIFE
+				if (_loadingPromise === myPromise) _loadingPromise = null;
 			}
 		},
 
 		/**
 		 * 记录一次点击：本地乐观更新 + fire-and-forget 上报
 		 * 同步把 hiddenAt 清成 null（再点取消隐藏，与服务器最终状态对齐）
+		 * 未登录用户：整段跳过——web agent 仅作为"入口"打开外链，不进 MainList、不打 server
 		 * @param {number} id
 		 */
 		recordClick(id) {
+			if (!useAuthStore().user) return;
 			const item = this.items.find((it) => it.id === id);
 			if (item) {
 				item.lastClickedAt = new Date().toISOString();
@@ -120,9 +135,11 @@ export const useWebAgentsStore = defineStore('webAgents', {
 
 		/**
 		 * 从最近列表移除：本地乐观把 hiddenAt 标为现在 + fire-and-forget 上报
+		 * 未登录用户：整段跳过（与 recordClick 对称）
 		 * @param {number} id
 		 */
 		hide(id) {
+			if (!useAuthStore().user) return;
 			const item = this.items.find((it) => it.id === id);
 			if (item) {
 				item.hiddenAt = new Date().toISOString();

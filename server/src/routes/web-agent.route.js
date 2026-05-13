@@ -28,16 +28,14 @@ export function parseWebAgentId(raw) {
 	return n;
 }
 
-// GET /api/v1/web-agents — 当前用户可见的全部 Web Agent + lastClickedAt
+// GET /api/v1/web-agents — 全部可见 Web Agent
+// 公开访问：未登录返回纯入口数据（lastClickedAt / hiddenAt 全 null）；登录后附带个人化字段
 export async function listWebAgentsHandler(req, res, next, deps = {}) {
-	if (!requireSession(req, res)) {
-		return;
-	}
-
 	const { findAllForUserImpl = findAllForUser } = deps;
+	const userId = req.isAuthenticated?.() && req.user ? req.user.id : null;
 
 	try {
-		const items = await findAllForUserImpl(req.user.id);
+		const items = await findAllForUserImpl(userId);
 		res.status(200).json({ items });
 	}
 	catch (err) {

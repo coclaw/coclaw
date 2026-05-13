@@ -70,6 +70,11 @@ function makeFakeDb() {
 				const includeClicks = args.include?.clicks;
 				return state.agents
 					.filter((a) => {
+						// 直接 userId 过滤（匿名分支：where: { userId: null }）
+						if (Object.prototype.hasOwnProperty.call(where ?? {}, 'userId')
+							&& where.userId === null) {
+							return a.userId === null;
+						}
 						const ors = where?.OR ?? [];
 						if (ors.length === 0) return true;
 						return ors.some((cond) => {
@@ -379,6 +384,39 @@ test('findAllForUser: 别人的点击记录不会泄露到当前用户的结果'
 	assert.equal(items[0].lastClickedAt, null);
 });
 
+test('findAllForUser: userId=null（匿名）仅返回系统预置，lastClickedAt / hiddenAt 固定 null', async () => {
+	// 匿名访问的契约：拿到的列表是纯入口数据，不带任何个人化字段
+	const { db, state } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+	seedAgent(state, { slug: 'b', name: 'B', url: 'https://b/', sort: 2 });
+	// 别人自建条目：匿名视图不应看到
+	seedAgent(state, { userId: 200n, slug: null, name: 'NotMine', url: 'https://n/', sort: null });
+	// 别人的点击记录：匿名视图不应受影响
+	const aId = state.agents.find(x => x.slug === 'a').id;
+	seedClick(state, { userId: 200n, webAgentId: aId, lastClickedAt: new Date('2026-05-01') });
+
+	const items = await findAllForUser(null, db);
+
+	const slugs = items.map(i => i.slug).sort();
+	assert.deepEqual(slugs, ['a', 'b']);
+	for (const i of items) {
+		assert.equal(i.lastClickedAt, null);
+		assert.equal(i.hiddenAt, null);
+	}
+});
+
+test('findAllForUser: userId=null 不查 webAgentClick 表（避免 prisma 多走一次无意义 LEFT JOIN）', async () => {
+	const { db, state, trace } = makeFakeDb();
+	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
+
+	await findAllForUser(null, db);
+
+	// 匿名分支只调一次 webAgent.findMany，且不带 include.clicks
+	const findManyCalls = trace.calls.filter(c => c.method === 'webAgent.findMany');
+	assert.equal(findManyCalls.length, 1);
+	assert.equal(findManyCalls[0].args.include?.clicks, undefined);
+});
+
 test('findAllForUser: 字段顺序与设计一致（id/slug/name/url/sort/lastClickedAt/hiddenAt）', async () => {
 	const { db, state } = makeFakeDb();
 	seedAgent(state, { slug: 'a', name: 'A', url: 'https://a/', sort: 1 });
@@ -573,6 +611,36 @@ test('setHiddenNow: where 仅命中当前 (userId, webAgentId) 一行，不殃�
 });
 
 // ------- scenario: 真实用户流（共享 fake DB 串测，验证多函数协作的端到端语义） -------
+
+test('scenario: 匿名 GET → 拿到 5 项预置，所有 lastClickedAt / hiddenAt 都是 null', async () => {
+	// 模拟未登录用户访问"ChatBot 门户"：能看到完整列表但无个人化信息
+	const { db } = makeFakeDb();
+	await syncPresets({ db });
+
+	const items = await findAllForUser(null, db);
+
+	assert.equal(items.length, 5);
+	for (const i of items) {
+		assert.equal(i.lastClickedAt, null);
+		assert.equal(i.hiddenAt, null);
+	}
+});
+
+test('scenario: 用户 A 点击后，匿名 GET 视图完全不受影响', async () => {
+	// 防御："用户私有数据"不能因为接口公开化而泄漏到匿名响应里
+	const { db } = makeFakeDb();
+	await syncPresets({ db });
+	const before = await findAllForUser(100n, db);
+	const target = before.find(i => i.slug === 'deepseek');
+	await incrementClick({ userId: 100n, webAgentId: target.id }, db);
+
+	const anon = await findAllForUser(null, db);
+
+	for (const i of anon) {
+		assert.equal(i.lastClickedAt, null);
+		assert.equal(i.hiddenAt, null);
+	}
+});
 
 test('scenario: 用户首次 GET → 5 项预置全 lastClickedAt=null', async () => {
 	// 模拟 server 启动 syncPresets + 新用户首次 GET

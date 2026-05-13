@@ -8,7 +8,13 @@ const mockedApi = vi.hoisted(() => ({
 	hideWebAgent: vi.fn(),
 }));
 
+// mockAuth.user 在每个 test 里可改：未登录 -> null；登录 -> { id, ... }
+const mockAuth = vi.hoisted(() => ({ user: { id: 1n, loginName: 'tester' } }));
+
 vi.mock('../services/web-agents.api.js', () => mockedApi);
+vi.mock('./auth.store.js', () => ({
+	useAuthStore: () => mockAuth,
+}));
 
 import { useWebAgentsStore, __resetWebAgentsInternals } from './web-agents.store.js';
 
@@ -18,6 +24,8 @@ describe('web-agents store', () => {
 		__resetWebAgentsInternals();
 		// resetAllMocks 而非 clearAllMocks：清空 mockResolvedValueOnce 队列，避免跨用例泄漏
 		vi.resetAllMocks();
+		// 默认登录态；测未登录路径的 case 会自行改 mockAuth.user = null
+		mockAuth.user = { id: 1n, loginName: 'tester' };
 	});
 
 	afterEach(() => {
@@ -440,6 +448,105 @@ describe('web-agents store', () => {
 		expect(store.items[0].lastClickedAt).toBe(optimisticClick);
 		expect(store.items[0].hiddenAt).toBeNull();
 		warnSpy.mockRestore();
+	});
+
+	test('未登录 recordClick：不本地乐观更新、不发 POST（只作入口跳板，不进 MainList）', () => {
+		mockAuth.user = null;
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 7, slug: 'kimi', name: 'Kimi', url: 'u', sort: 4, lastClickedAt: null, hiddenAt: null },
+		];
+
+		store.recordClick(7);
+
+		expect(store.items[0].lastClickedAt).toBeNull();
+		expect(store.items[0].hiddenAt).toBeNull();
+		expect(mockedApi.recordWebAgentClick).not.toHaveBeenCalled();
+	});
+
+	test('未登录 hide：不本地乐观更新、不发 POST', () => {
+		mockAuth.user = null;
+		const store = useWebAgentsStore();
+		store.items = [
+			{ id: 5, slug: 's', name: 'S', url: 'u', sort: 5, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+		];
+
+		store.hide(5);
+
+		expect(store.items[0].hiddenAt).toBeNull();
+		expect(mockedApi.hideWebAgent).not.toHaveBeenCalled();
+	});
+
+	test('未登录 loadAll：仍然走正常加载（接口已公开，匿名亦可拉到入口数据）', async () => {
+		// 匿名响应来自 server 匿名分支：lastClickedAt / hiddenAt 都是 null
+		mockAuth.user = null;
+		mockedApi.listWebAgents.mockResolvedValue([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: null, hiddenAt: null },
+			{ id: 2, slug: 'b', name: 'B', url: 'u', sort: 2, lastClickedAt: null, hiddenAt: null },
+		]);
+
+		const store = useWebAgentsStore();
+		await store.loadAll();
+
+		expect(store.items).toHaveLength(2);
+		expect(store.loaded).toBe(true);
+		expect(mockedApi.listWebAgents).toHaveBeenCalledTimes(1);
+	});
+
+	test('loadAll 期间触发 __resetWebAgentsInternals：在飞响应到达后不再写 items / loaded', async () => {
+		// 防回归：登出/换号时若 in-flight 旧响应回写到 $reset 后的空 store，
+		// MainList 仍会看到上一个用户的"最近用过的 web agent"
+		let resolveFetch;
+		mockedApi.listWebAgents.mockReturnValue(new Promise((r) => { resolveFetch = r; }));
+		const store = useWebAgentsStore();
+		const inflight = store.loadAll();
+
+		// 期间触发 reset（模拟 logout / login 链）
+		__resetWebAgentsInternals();
+		store.$reset();
+
+		resolveFetch([
+			{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: '2026-05-01T00:00:00Z', hiddenAt: null },
+		]);
+		await inflight;
+
+		expect(store.items).toEqual([]);
+		expect(store.loaded).toBe(false);
+		expect(store.loading).toBe(false); // 旧 IIFE 的 finally 不能踩
+	});
+
+	test('loadAll 期间触发 reset + 新 loadAll：旧 IIFE 不能把新 IIFE 的 _loadingPromise 错位为 null', async () => {
+		// 防回归：outer finally 若无条件清 _loadingPromise，会把新 loadAll 装的 P2 也清掉，
+		// 第三次 loadAll 会启动 P3 与 P2 并发跑两个 IIFE
+		let resolveFirst;
+		let resolveSecond;
+		mockedApi.listWebAgents
+			.mockReturnValueOnce(new Promise((r) => { resolveFirst = r; }))
+			.mockReturnValueOnce(new Promise((r) => { resolveSecond = r; }));
+
+		const store = useWebAgentsStore();
+		const p1 = store.loadAll();
+
+		// reset 让 P1 失效；P1 还未 settle
+		__resetWebAgentsInternals();
+		store.$reset();
+
+		const p2 = store.loadAll(); // 启动 P2
+
+		// 先让 P1 settle，触发它的 outer-finally
+		resolveFirst([{ id: 1, slug: 'a', name: 'A', url: 'u', sort: 1, lastClickedAt: null, hiddenAt: null }]);
+		await p1;
+
+		// 此时 P2 仍在飞。第三次 loadAll 必须被 _loadingPromise!==null 短路（不再发新 GET）
+		const p3 = store.loadAll();
+		// 用调用计数判定短路：listWebAgents 只在 P1 和 P2 时各调一次，未启动 P3
+		expect(mockedApi.listWebAgents).toHaveBeenCalledTimes(2);
+
+		resolveSecond([{ id: 2, slug: 'b', name: 'B', url: 'u', sort: 2, lastClickedAt: null, hiddenAt: null }]);
+		await Promise.all([p2, p3]);
+		// 旧 P1 的数据（slug 'a'）被 epoch 丢弃，只看到 P2 的 'b'——P1 outer-finally 没把 P2 的 handle 错置成 null
+		expect(store.items).toHaveLength(1);
+		expect(store.items[0].slug).toBe('b');
 	});
 
 	test('merge 边界：当 hiddenAt 与 lastClickedAt 时间戳完全相等时，click 胜出（hiddenAt 被清）', async () => {
