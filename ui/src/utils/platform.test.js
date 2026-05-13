@@ -240,6 +240,12 @@ describe('platform', () => {
 			expect(detectPlatformLabel()).toBe('electron');
 		});
 
+		test('Capacitor 全局存在但 isNativePlatform() 返回 false（web 模式注入 Capacitor）→ web', async () => {
+			vi.stubGlobal('Capacitor', { isNativePlatform: () => false, getPlatform: () => 'web' });
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('web');
+		});
+
 		test('普通浏览器 → web', async () => {
 			const { detectPlatformLabel } = await import('./platform.js');
 			expect(detectPlatformLabel()).toBe('web');

@@ -96,6 +96,18 @@ describe('buildUiStartText', () => {
 		}
 	});
 
+	test('tryDetectTimeZone: Intl.DateTimeFormat 抛错时 tz 字段省略', () => {
+		const origIntl = globalThis.Intl;
+		// 让 Intl.DateTimeFormat() 抛错——模拟极端环境（如部分嵌入式 webview）
+		globalThis.Intl = { DateTimeFormat: () => { throw new Error('Intl unavailable'); } };
+		try {
+			const text = buildUiStartText('TZ____________________');
+			expect(text).not.toMatch(/tz=/);
+		} finally {
+			globalThis.Intl = origIntl;
+		}
+	});
+
 	test('mem / net 字段在 navigator.deviceMemory / connection 可读时被填充', () => {
 		const ndm = Object.getOwnPropertyDescriptor(navigator, 'deviceMemory');
 		const nconn = Object.getOwnPropertyDescriptor(navigator, 'connection');

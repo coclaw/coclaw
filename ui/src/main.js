@@ -21,8 +21,14 @@ import './assets/markdown.scss';
 
 // 早于 auth 初始化挂起 remote-log 单例：登录前 / 登录失败窗口的诊断 log 也能上送 server。
 // 首条 log 是 ui.start 环境快照，便于 server 侧诊断（platform / viewport / ua 等）。
+// 包一层 try/catch 防御：第三方注入的 Capacitor/electronAPI 全局若在调用时抛错，
+// 不应阻塞 Vue app mount（保持与旧 useRemoteLog 内部兜底一致的启动可用性）。
 const __rl = useRemoteLog();
-__rl.log(buildUiStartText(__rl.uiId));
+try {
+	__rl.log(buildUiStartText(__rl.uiId));
+} catch (err) {
+	console.warn('[remote-log] ui.start build failed:', err?.message);
+}
 
 const app = createApp(App);
 

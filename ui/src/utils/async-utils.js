@@ -39,7 +39,7 @@ export function sleep(timeout, signal) {
  * - 其它（含 undefined / 老浏览器没有 .reason）→ 通用 Error
  *
  * baseline 浏览器（Safari 15.0~15.3 / Firefox 90）不支持 signal.reason，会走通用 Error 分支。
- * @param {AbortSignal} signal
+ * @param {AbortSignal} signal - 已 aborted 或正在 reject 的信号
  * @returns {Error}
  */
 function abortReason(signal) {

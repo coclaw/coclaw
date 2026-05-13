@@ -116,7 +116,6 @@ describe('dc-chunking (UI 侧)', () => {
 					for (const e of payload.logs) remoteLogs.push(e.text);
 					return Promise.resolve({ kind: 'success' });
 				},
-				skipUiStart: true,
 				skipSigBridge: true,
 			});
 		});
