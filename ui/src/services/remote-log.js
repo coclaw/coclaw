@@ -9,6 +9,7 @@
 import axios from 'axios';
 import { nanoid } from 'nanoid';
 
+import { sleep } from '../utils/async-utils.js';
 import { resolveApiBaseUrl } from './http.js';
 import { useSignalingConnection } from './signaling-connection.js';
 
@@ -227,29 +228,6 @@ export class RemoteLog {
 	}
 }
 
-/**
- * 可中断的 sleep：到点 resolve；signal 已 abort 或途中 abort 立即 reject。
- * @param {number} delay
- * @param {AbortSignal} signal
- */
-function sleep(delay, signal) {
-	return new Promise((resolve, reject) => {
-		if (signal.aborted) {
-			reject(new Error('aborted'));
-			return;
-		}
-		const t = setTimeout(() => {
-			signal.removeEventListener('abort', onAbort);
-			resolve();
-		}, delay);
-		const onAbort = () => {
-			clearTimeout(t);
-			reject(new Error('aborted'));
-		};
-		signal.addEventListener('abort', onAbort, { once: true });
-	});
-}
-
 // --- HTTP 发送适配器 ---
 
 /**
@@ -290,88 +268,6 @@ function parseRetryAfter(v) {
 	return undefined;
 }
 
-// --- ui.start 环境采集 ---
-
-/**
- * 构造 ui.start 首条 log 文本。可选字段取不到时整字段省略。
- * @param {string} uiId
- * @returns {string}
- */
-export function buildUiStartText(uiId) {
-	const parts = [`uiId=${uiId}`];
-	const version = (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) || 'unknown';
-	parts.push(`version=${version}`);
-	parts.push(`platform=${detectPlatformLabel()}`);
-	if (typeof window !== 'undefined' && typeof window.innerWidth === 'number') {
-		const dpr = window.devicePixelRatio || 1;
-		parts.push(`viewport=${window.innerWidth}x${window.innerHeight}@${dpr}`);
-	}
-	if (typeof navigator !== 'undefined') {
-		const touch = typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 0;
-		parts.push(`touch=${touch ? 'yes' : 'no'}`);
-	}
-	parts.push(`theme=${detectTheme()}`);
-	if (typeof navigator !== 'undefined' && Number.isFinite(navigator.hardwareConcurrency)) {
-		parts.push(`cores=${navigator.hardwareConcurrency}`);
-	}
-	if (typeof navigator !== 'undefined' && Number.isFinite(navigator.deviceMemory)) {
-		parts.push(`mem=${navigator.deviceMemory}`);
-	}
-	const tz = tryDetectTimeZone();
-	if (tz) parts.push(`tz=${tz}`);
-	if (typeof navigator !== 'undefined' && navigator.language) {
-		parts.push(`lang=${navigator.language}`);
-	}
-	if (typeof navigator !== 'undefined') {
-		const net = navigator.connection?.effectiveType;
-		if (net) parts.push(`net=${net}`);
-	}
-	if (typeof navigator !== 'undefined' && navigator.userAgent) {
-		parts.push(`ua="${navigator.userAgent}"`);
-	}
-	return `ui.start ${parts.join(' ')}`;
-}
-
-function tryDetectTimeZone() {
-	try {
-		return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-	} catch {
-		return '';
-	}
-}
-
-function detectPlatformLabel() {
-	const Cap = typeof globalThis !== 'undefined' ? globalThis.Capacitor : undefined;
-	if (Cap && typeof Cap.isNativePlatform === 'function' && Cap.isNativePlatform()) {
-		const p = typeof Cap.getPlatform === 'function' ? Cap.getPlatform() : '';
-		if (p === 'android') return 'cap-android';
-		if (p === 'ios') return 'cap-ios';
-		return `cap-${p || 'unknown'}`;
-	}
-	const isElectron = !!(typeof globalThis !== 'undefined' && globalThis.electronAPI);
-	if (isElectron) return detectElectronOsLabel();
-	return 'web';
-}
-
-function detectElectronOsLabel() {
-	const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
-	if (/Windows/i.test(ua)) return 'electron-win';
-	if (/Mac OS X|Macintosh/i.test(ua)) return 'electron-mac';
-	if (/Linux/i.test(ua)) return 'electron-linux';
-	return 'electron';
-}
-
-function detectTheme() {
-	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'no-pref';
-	try {
-		if (window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
-		if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
-	} catch {
-		return 'no-pref';
-	}
-	return 'no-pref';
-}
-
 // --- 单例 ---
 
 let __instance = null;
@@ -392,15 +288,17 @@ function getDedicatedClient() {
 }
 
 /**
- * 获取 RemoteLog 单例。首次调用时初始化：生成 uiId / 入队 ui.start / 桥接 sigConn 的 log 事件。
+ * 获取 RemoteLog 单例。首次调用时初始化：生成 uiId / 桥接 sigConn 的 log 事件。
  *
  * 端点不强制登录态，UI 实例发送行为与登录态完全解耦——不挂任何 login/logout flush hook、
  * 不 watch authStore；登录前 / 登录失败窗口的 log 同样能上送 server。
  *
+ * ui.start 等启动期诊断 log 由 caller（app 入口）显式调 `remoteLog(buildUiStartText(...))` 发送，
+ * 见 `services/env-snapshot.js`。
+ *
  * @param {Object} [opts]
  * @param {(payload: { uiId: string, seq: number, logs: { ts: number, text: string }[] }, signal: AbortSignal) => Promise<SendResult>} [opts.send] - 发送函数（测试注入）
  * @param {string} [opts.uiId] - 注入 uiId（测试用）
- * @param {boolean} [opts.skipUiStart] - 跳过 ui.start 首条（测试用）
  * @param {boolean} [opts.skipSigBridge] - 跳过 signaling-connection 桥接（测试用）
  * @returns {RemoteLog}
  */
@@ -411,13 +309,6 @@ export function useRemoteLog(opts = {}) {
 		send,
 		uiId: opts.uiId,
 	});
-	if (opts.skipUiStart !== true) {
-		try {
-			__instance.log(buildUiStartText(__instance.uiId));
-		} catch (err) {
-			console.warn('[remote-log] ui.start build failed:', err?.message);
-		}
-	}
 	if (opts.skipSigBridge !== true) {
 		try {
 			const sigConn = useSignalingConnection();

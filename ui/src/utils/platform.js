@@ -75,3 +75,29 @@ export function getPlatformType() {
 	if (isTauriApp) return 'tauri';
 	return 'web';
 }
+
+/**
+ * 诊断级平台细标签：比 getPlatformType 多区分 Capacitor 下的 android/ios 与 Electron 下的 win/mac/linux。
+ *
+ * 实现上**每次调用读 globalThis**（不依赖 module-const），便于测试用 vi.stubGlobal 切换平台。
+ * @returns {'cap-android' | 'cap-ios' | `cap-${string}` | 'electron-win' | 'electron-mac' | 'electron-linux' | 'electron' | 'web'}
+ */
+export function detectPlatformLabel() {
+	const Cap = _g.Capacitor;
+	if (Cap && typeof Cap.isNativePlatform === 'function' && Cap.isNativePlatform()) {
+		const p = typeof Cap.getPlatform === 'function' ? Cap.getPlatform() : '';
+		if (p === 'android') return 'cap-android';
+		if (p === 'ios') return 'cap-ios';
+		return `cap-${p || 'unknown'}`;
+	}
+	if (_g.electronAPI) return detectElectronOsLabel();
+	return 'web';
+}
+
+function detectElectronOsLabel() {
+	const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+	if (/Windows/i.test(ua)) return 'electron-win';
+	if (/Mac OS X|Macintosh/i.test(ua)) return 'electron-mac';
+	if (/Linux/i.test(ua)) return 'electron-linux';
+	return 'electron';
+}

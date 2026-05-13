@@ -161,4 +161,88 @@ describe('platform', () => {
 			expect(mod.isMobileOs).toBe(false);
 		});
 	});
+
+	describe('detectPlatformLabel', () => {
+		let origUA;
+
+		beforeEach(() => {
+			origUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+		});
+
+		afterEach(() => {
+			vi.unstubAllGlobals();
+			if (origUA) Object.defineProperty(navigator, 'userAgent', origUA);
+		});
+
+		test('Capacitor android → cap-android', async () => {
+			vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => 'android' });
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('cap-android');
+		});
+
+		test('Capacitor ios → cap-ios', async () => {
+			vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => 'ios' });
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('cap-ios');
+		});
+
+		test('Capacitor 原生但 platform 为空 → cap-unknown', async () => {
+			vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => '' });
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('cap-unknown');
+		});
+
+		test('Capacitor 原生但无 getPlatform → cap-unknown', async () => {
+			vi.stubGlobal('Capacitor', { isNativePlatform: () => true });
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('cap-unknown');
+		});
+
+		test('Capacitor 其他平台（如 web 模拟）→ cap-<其他>', async () => {
+			vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => 'electron' });
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('cap-electron');
+		});
+
+		test('Electron Windows → electron-win', async () => {
+			vi.stubGlobal('electronAPI', {});
+			Object.defineProperty(navigator, 'userAgent', {
+				value: 'Mozilla/5.0 (Windows NT 10.0)', configurable: true,
+			});
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('electron-win');
+		});
+
+		test('Electron Mac → electron-mac', async () => {
+			vi.stubGlobal('electronAPI', {});
+			Object.defineProperty(navigator, 'userAgent', {
+				value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', configurable: true,
+			});
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('electron-mac');
+		});
+
+		test('Electron Linux → electron-linux', async () => {
+			vi.stubGlobal('electronAPI', {});
+			Object.defineProperty(navigator, 'userAgent', {
+				value: 'Mozilla/5.0 (X11; Linux x86_64)', configurable: true,
+			});
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('electron-linux');
+		});
+
+		test('Electron 但 UA 不识别 → electron', async () => {
+			vi.stubGlobal('electronAPI', {});
+			Object.defineProperty(navigator, 'userAgent', {
+				value: 'Unknown/OS', configurable: true,
+			});
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('electron');
+		});
+
+		test('普通浏览器 → web', async () => {
+			const { detectPlatformLabel } = await import('./platform.js');
+			expect(detectPlatformLabel()).toBe('web');
+		});
+	});
 });

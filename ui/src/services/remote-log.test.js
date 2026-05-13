@@ -3,7 +3,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import {
 	RemoteLog, useRemoteLog, remoteLog, __resetRemoteLog,
-	httpSender, buildUiStartText,
+	httpSender,
 	BATCH_SIZE, DEBOUNCE, MAX_RING, MAX_PENDING,
 	RETRY_DELAYS,
 	ENDPOINT_PATH, HTTP_TIMEOUT,
@@ -565,83 +565,22 @@ describe('httpSender 适配器', () => {
 	});
 });
 
-describe('buildUiStartText (ui.start 首条 log)', () => {
-	test('包含必备字段 uiId / version / platform / theme / tz / ua', () => {
-		vi.stubGlobal('__APP_VERSION__', '9.9.9');
-		const text = buildUiStartText('TESTID_______________');
-		expect(text.startsWith('ui.start ')).toBe(true);
-		expect(text).toContain('uiId=TESTID_______________');
-		expect(text).toContain('version=9.9.9');
-		expect(text).toMatch(/platform=(web|cap-\w+|electron-\w+|electron)/);
-		expect(text).toMatch(/theme=(light|dark|no-pref)/);
-		expect(text).toMatch(/tz=\S+/);
-		expect(text).toMatch(/lang=\S+/);
-		expect(text).toMatch(/ua="[^"]+"/);
-	});
-
-	test('navigator.deviceMemory / connection 不可读时整字段省略（不写 unknown）', () => {
-		const ndm = Object.getOwnPropertyDescriptor(navigator, 'deviceMemory');
-		const nconn = Object.getOwnPropertyDescriptor(navigator, 'connection');
-		Object.defineProperty(navigator, 'deviceMemory', { configurable: true, get: () => undefined });
-		Object.defineProperty(navigator, 'connection', { configurable: true, get: () => undefined });
-		try {
-			const text = buildUiStartText('Y_____________________');
-			expect(text).not.toMatch(/mem=/);
-			expect(text).not.toMatch(/net=/);
-			expect(text).not.toMatch(/unknown/);
-		} finally {
-			if (ndm) Object.defineProperty(navigator, 'deviceMemory', ndm); else delete navigator.deviceMemory;
-			if (nconn) Object.defineProperty(navigator, 'connection', nconn); else delete navigator.connection;
-		}
-	});
-
-	test('navigator 缺失时不抛 ReferenceError（非浏览器环境兜底）', () => {
-		const origNav = globalThis.navigator;
-		// @ts-ignore
-		delete globalThis.navigator;
-		try {
-			// 必须能跑通而不抛错；platform/theme 等字段保留
-			expect(() => buildUiStartText('NV____________________')).not.toThrow();
-			const text = buildUiStartText('NV____________________');
-			expect(text).toContain('uiId=NV____________________');
-			expect(text).not.toMatch(/ua=/);
-			expect(text).not.toMatch(/net=/);
-		} finally {
-			globalThis.navigator = origNav;
-		}
-	});
-
-	test('version 未注入时回退 unknown', () => {
-		const orig = globalThis.__APP_VERSION__;
-		vi.unstubAllGlobals();
-		// @ts-ignore
-		globalThis.__APP_VERSION__ = '';
-		try {
-			const text = buildUiStartText('Z_____________________');
-			expect(text).toContain('version=unknown');
-		} finally {
-			globalThis.__APP_VERSION__ = orig;
-		}
-	});
-});
-
 describe('单例 useRemoteLog / remoteLog', () => {
 	test('useRemoteLog 是单例', () => {
-		const a = useRemoteLog({ send: () => Promise.resolve({ kind: 'success' }), skipUiStart: true, skipSigBridge: true });
+		const a = useRemoteLog({ send: () => Promise.resolve({ kind: 'success' }), skipSigBridge: true });
 		const b = useRemoteLog();
 		expect(a).toBe(b);
 	});
 
-	test('首次初始化自动入队 ui.start', async () => {
-		const sent = [];
+	test('首次初始化生成实例并暴露 uiId', () => {
 		const rl = useRemoteLog({
-			send: (p) => { sent.push(p); return Promise.resolve({ kind: 'success' }); },
+			send: () => Promise.resolve({ kind: 'success' }),
 			uiId: 'INIT__________________',
 			skipSigBridge: true,
 		});
 		expect(rl.uiId).toBe('INIT__________________');
-		expect(rl.__ring.length).toBeGreaterThanOrEqual(1);
-		expect(rl.__ring[0].text.startsWith('ui.start ')).toBe(true);
+		// useRemoteLog 不再自动入队任何 log；ui.start 由 caller 显式发送
+		expect(rl.__ring).toHaveLength(0);
 	});
 
 	test('remoteLog() 便捷函数路由到单例', async () => {
@@ -649,7 +588,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		useRemoteLog({
 			send: (p) => { sent.push(p); return Promise.resolve({ kind: 'success' }); },
 			uiId: 'C_____________________',
-			skipUiStart: true,
 			skipSigBridge: true,
 		});
 		remoteLog('via-helper');
@@ -665,7 +603,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		useRemoteLog({
 			send: (p) => { sent.push(p); return Promise.resolve({ kind: 'success' }); },
 			uiId: 'D_____________________',
-			skipUiStart: true,
 		});
 		sigConn.__emit('log', 'sig.test-event');
 		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
@@ -678,14 +615,12 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		useRemoteLog({
 			send: (p) => { firstSends.push(p); return Promise.resolve({ kind: 'success' }); },
 			uiId: 'F1____________________',
-			skipUiStart: true,
 		});
 		__resetRemoteLog();
 		const secondSends = [];
 		useRemoteLog({
 			send: (p) => { secondSends.push(p); return Promise.resolve({ kind: 'success' }); },
 			uiId: 'F2____________________',
-			skipUiStart: true,
 		});
 		// 触发一次 sig 'log' 事件——第一轮的监听器已被 off 掉，应只调一次新单例的 log
 		sigConn.__emit('log', 'sig.unique-event');
@@ -693,25 +628,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		expect(firstSends).toHaveLength(0);
 		const allTexts = secondSends.flatMap((p) => p.logs.map((l) => l.text));
 		expect(allTexts.filter((t) => t === 'sig.unique-event')).toHaveLength(1);
-	});
-
-	test('useRemoteLog: ui.start 入队失败时静默 warn（catch 路径）', () => {
-		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		// 借 RemoteLog.prototype.log 临时抛错触发 useRemoteLog 内部 try/catch
-		const origLog = RemoteLog.prototype.log;
-		RemoteLog.prototype.log = function failingLog() { throw new Error('log-boom'); };
-		try {
-			expect(() => useRemoteLog({
-				send: () => Promise.resolve({ kind: 'success' }),
-				uiId: 'UISTART_FAIL__________',
-				skipSigBridge: true,
-			})).not.toThrow();
-			expect(warnSpy).toHaveBeenCalled();
-			expect(warnSpy.mock.calls[0][0]).toMatch(/ui\.start/);
-		} finally {
-			RemoteLog.prototype.log = origLog;
-			warnSpy.mockRestore();
-		}
 	});
 
 	test('useRemoteLog: sigConn 桥接失败时静默 warn（catch 路径）', () => {
@@ -723,7 +639,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 			expect(() => useRemoteLog({
 				send: () => Promise.resolve({ kind: 'success' }),
 				uiId: 'SIGFAIL_______________',
-				skipUiStart: true,
 			})).not.toThrow();
 			const warnedBridge = warnSpy.mock.calls.some((c) => /sigConn|bridge/.test(String(c[0] || '')));
 			expect(warnedBridge).toBe(true);
@@ -739,7 +654,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		useRemoteLog({
 			send: (p) => { sent.push(p); return Promise.resolve({ kind: 'success' }); },
 			uiId: 'E_____________________',
-			skipUiStart: true,
 			skipSigBridge: true,
 		});
 		sigConn.__emit('log', 'sig.skipped');
@@ -754,93 +668,15 @@ describe('RemoteLog 构造保护', () => {
 	});
 });
 
-describe('platform / theme / retry-after 分支补充', () => {
-	function withGlobals(stubs, fn) {
-		const restore = [];
-		for (const [k, v] of Object.entries(stubs)) {
-			const had = Object.prototype.hasOwnProperty.call(globalThis, k);
-			const old = globalThis[k];
-			globalThis[k] = v;
-			restore.push(() => { if (had) globalThis[k] = old; else delete globalThis[k]; });
-		}
-		try { return fn(); } finally { restore.forEach(r => r()); }
-	}
-
-	test('Capacitor 原生 android → cap-android', () => {
-		withGlobals({
-			Capacitor: { isNativePlatform: () => true, getPlatform: () => 'android' },
-		}, () => {
-			const text = buildUiStartText('id_____________________');
-			expect(text).toContain('platform=cap-android');
-		});
-	});
-
-	test('Capacitor 原生 ios → cap-ios', () => {
-		withGlobals({
-			Capacitor: { isNativePlatform: () => true, getPlatform: () => 'ios' },
-		}, () => {
-			expect(buildUiStartText('x_____________________')).toContain('platform=cap-ios');
-		});
-	});
-
-	test('Capacitor 原生但 platform 为空 → cap-unknown', () => {
-		withGlobals({
-			Capacitor: { isNativePlatform: () => true, getPlatform: () => '' },
-		}, () => {
-			expect(buildUiStartText('x_____________________')).toContain('platform=cap-unknown');
-		});
-	});
-
-	test('Electron Windows / Mac / Linux / 其他', () => {
-		const cases = [
-			{ ua: 'Mozilla/5.0 (Windows NT 10.0)', expected: 'electron-win' },
-			{ ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', expected: 'electron-mac' },
-			{ ua: 'Mozilla/5.0 (X11; Linux x86_64)', expected: 'electron-linux' },
-		];
-		for (const c of cases) {
-			const origUa = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-			Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => c.ua });
-			withGlobals({ electronAPI: {} }, () => {
-				expect(buildUiStartText('x_____________________')).toContain(`platform=${c.expected}`);
-			});
-			if (origUa) Object.defineProperty(navigator, 'userAgent', origUa); else delete navigator.userAgent;
-		}
-	});
-
-	test('Electron 但 UA 不识别 → platform=electron', () => {
-		const origUa = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-		Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Unknown/OS' });
-		try {
-			withGlobals({ electronAPI: {} }, () => {
-				expect(buildUiStartText('x_____________________')).toContain('platform=electron');
-			});
-		} finally {
-			if (origUa) Object.defineProperty(navigator, 'userAgent', origUa); else delete navigator.userAgent;
-		}
-	});
-
-	test('detectTheme: dark / light / no-pref', () => {
-		const origMm = window.matchMedia;
-		window.matchMedia = (q) => ({ matches: q.includes('dark') });
-		expect(buildUiStartText('a_____________________')).toContain('theme=dark');
-		window.matchMedia = (q) => ({ matches: q.includes('light') });
-		expect(buildUiStartText('a_____________________')).toContain('theme=light');
-		window.matchMedia = () => ({ matches: false });
-		expect(buildUiStartText('a_____________________')).toContain('theme=no-pref');
-		// matchMedia 抛错 → no-pref
-		window.matchMedia = () => { throw new Error('not supported'); };
-		expect(buildUiStartText('a_____________________')).toContain('theme=no-pref');
-		window.matchMedia = origMm;
-	});
-
-	test('httpSender: Retry-After 是 garbage → retryable 无 retryAfter', async () => {
+describe('httpSender Retry-After 边界', () => {
+	test('Retry-After 是 garbage → retryable 无 retryAfter', async () => {
 		const http = { post: () => Promise.reject({ response: { status: 429, headers: { 'retry-after': 'not-a-date' } } }) };
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
 		expect(r.kind).toBe('retryable');
 		expect(r.retryAfter).toBeUndefined();
 	});
 
-	test('httpSender: Retry-After 为负秒数 → 仍 retryable，retryAfter 不为 NaN', async () => {
+	test('Retry-After 为负秒数 → 仍 retryable，retryAfter 不为 NaN', async () => {
 		const http = { post: () => Promise.reject({ response: { status: 429, headers: { 'retry-after': '-5' } } }) };
 		const r = await httpSender(http, { uiId: 'x', seq: 1, logs: [] });
 		expect(r.kind).toBe('retryable');

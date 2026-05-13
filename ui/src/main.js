@@ -10,6 +10,7 @@ import { initCapacitorApp } from './utils/capacitor-app.js';
 import { initTauriApp } from './utils/tauri-app.js';
 import { initElectronApp } from './utils/electron-app.js';
 import { startUpdateCheck } from './services/app-update.js';
+import { buildUiStartText } from './services/env-snapshot.js';
 import { useRemoteLog } from './services/remote-log.js';
 import { useDraftStore } from './stores/draft.store.js';
 import './stores/claw-lifecycle.js'; // 注册 claw 生命周期回调（须在 claws.store action 被调用前）
@@ -18,8 +19,10 @@ import 'highlight.js/styles/vs2015.css';
 import './assets/main.css';
 import './assets/markdown.scss';
 
-// 早于 auth 初始化挂起 remote-log 单例：登录前 / 登录失败窗口的诊断 log 也能上送 server
-useRemoteLog();
+// 早于 auth 初始化挂起 remote-log 单例：登录前 / 登录失败窗口的诊断 log 也能上送 server。
+// 首条 log 是 ui.start 环境快照，便于 server 侧诊断（platform / viewport / ua 等）。
+const __rl = useRemoteLog();
+__rl.log(buildUiStartText(__rl.uiId));
 
 const app = createApp(App);
 
