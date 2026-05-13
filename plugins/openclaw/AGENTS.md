@@ -105,6 +105,7 @@
 | 文件 I/O atomic write 设计 | [`docs/atomic-file-ops.md`](docs/atomic-file-ops.md) |
 | OpenClaw plugin 安装/卸载机制 | [`docs/openclaw-plugin-management.md`](docs/openclaw-plugin-management.md) |
 | 设备身份相关待办 | [`docs/device-identity-todo.md`](docs/device-identity-todo.md) |
+| 设计 / 实施模型配置类 RPC（API key / OAuth / 默认模型 / 白名单） | [`docs/model-config-api.md`](docs/model-config-api.md) |
 
 ## TODO
 
