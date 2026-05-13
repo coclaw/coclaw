@@ -613,6 +613,41 @@ X4 触及面比 X1 广，需要重新评估：
   - 若生产中观察到"重试期间小批堆积发送"现象明显
   - 或下一次涉及 remote-log 结构改动时（避免反复改架构）
 
+## 身份纪元 AbortController：统一处理 logout / re-login 在飞请求
+
+**发现日期**：2026-05-13
+**关联 commit**：fix(web-agents): open list to anonymous users and clear it on identity change
+
+**起因**：web-agents 匿名门户化 deep-review 走了三轮才稳，根因是"store 全局长寿命 + 异步任务跨身份切换"。本次给 `web-agents.store.loadAll` 加了局部 epoch 守护补丁，但同类问题在其它 store 上还会反复出现（files/agent-runs/topics/sessions/dashboard 都有"登出时在飞响应回写到刚清空的 store"的潜在风险）。
+
+**目标方案**：身份纪元绑 AbortController。
+
+- 在 `services/http.js` 增加一个 session-scoped controller 模块：暴露 `currentSignal()` / `abortSession()` / `rotateSession()` 三个 API
+- 所有 `axios.get/post/...` 调用透传 `currentSignal()` 给 axios 的 `{ signal }`；axios v1+ 原生支持
+- claw-rpc 同样接入（如有独立 AbortController 路径需评估）
+- `auth.store.logout` 链最前面 `abortSession()`，登出链其它步骤照常跑（不需要 join）
+- `auth.store.login` / `register` 成功分支 `rotateSession()` 起新一茬
+- 各 store 的 catch 里识别 AbortError 静默跳过
+
+**收益**：
+- 替代本次加的 `_resetEpoch` 守护（webAgents）
+- 一次性解决全仓库"登出时在飞请求"类问题
+- 不需要每个 store 维护自己的 reset / epoch / dedupe-on-identity 逻辑
+
+**已知边界**：
+- abort 不能拦截"响应已 resolve 但 user code 还没派发"的极窄微任务窗口；可接受（实际几乎不触发）或在写状态前补一道身份核验作为兜底
+- SSE / WebSocket 不走 signal，但已有独立 disconnect 路径，不动
+- fire-and-forget 类调用（recordClick / hide / remote-log）的 server 端可能仍处理那次写入，client 端忽略即可，符合 fire-and-forget 语义
+
+**改造范围**：基础设施 ~30 行；调用点逐个加 `signal` 参数；各 store catch 加 AbortError 识别。建议单独排期，不混进 bug 修。
+
+**主流参考**：
+- React Query / TanStack Query 的 `QueryClient.cancelQueries`：query key 维度的取消
+- SWR 的 mutation abort：用户级生命周期 cancel
+- Axios 文档：`AbortController` + `axios.isCancel`
+- Apollo Client 的 `clearStore` / `resetStore`：登出时清缓存 + abort 在飞 query
+本次场景与上面这些库的"身份切换时清缓存 + 取消在飞"模式同源；可在调研阶段对照它们的接口设计敲细节。
+
 ## 全仓库 `_MS` / `Ms` 后缀清扫
 
 **发现日期**：2026-05-13
