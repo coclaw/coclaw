@@ -4,7 +4,7 @@
  * 不同于 `stores/env.store.js`（响应式 UI 状态，服务于组件 watch），本模块产出**不变快照**——
  * 在 app 启动时拍一下，用作 remote-log 的首条诊断日志内容，之后不再更新。
  *
- * 设计文档：docs/designs/ui-remote-log-http-channel.md（ui.start 字段口径）
+ * 设计文档：docs/designs/remote-log.md（ui.start 字段口径）
  */
 import { detectPlatformLabel } from '../utils/platform.js';
 

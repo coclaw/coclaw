@@ -6,7 +6,7 @@
  * - 不存在的 uiId 视 lastSeq=0（新实例首批 seq=1 自然接受）
  * - 周期定时器扫描清理 1h 无活动条目
  *
- * 详见 docs/designs/ui-remote-log-http-channel.md §4.2 / §4.3。
+ * 详见 docs/designs/remote-log.md。
  */
 
 const UI_LOG_TTL_MS = 60 * 60 * 1000; // 1 小时无活动则清理

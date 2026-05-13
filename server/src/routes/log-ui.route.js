@@ -8,7 +8,7 @@
  * - 身份标注：有 session → [user:<id>]；无 session → [anon]
  * - 打印格式：`[remote][ui]<identity>[batch=<uiId 尾部 8>:<seq>][ts=<ISO_UTC>] <text>`
  *
- * 详见 docs/designs/ui-remote-log-http-channel.md §4。
+ * 详见 docs/designs/remote-log.md。
  */
 
 import express, { Router } from 'express';

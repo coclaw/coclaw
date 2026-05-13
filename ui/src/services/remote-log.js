@@ -4,7 +4,7 @@
  * 通过独立 HTTP 短连接 POST /api/v1/log/ui 把诊断日志批量送达 CoClaw server。
  * 与 RTC signaling WS 生命周期解耦，弱网/重建窗口下仍可独立工作。
  *
- * 设计文档：docs/designs/ui-remote-log-http-channel.md
+ * 设计文档：docs/designs/remote-log.md
  */
 import axios from 'axios';
 import { nanoid } from 'nanoid';
@@ -276,7 +276,7 @@ let __dedicatedClient = null;
 /**
  * 给 remote-log 通道用的独立 axios 实例，**不复用** `./http.js` 的 httpClient——
  * 后者带 401 → `auth:session-expired` 派发逻辑，会把"日志通道偶然返回 401"误升级为用户登出。
- * 设计要求日志通道与 auth 解耦（详见 docs/designs/ui-remote-log-http-channel.md §3.6 / §4.1）。
+ * 设计要求日志通道与 auth 解耦（详见 docs/designs/remote-log.md）。
  */
 function getDedicatedClient() {
 	if (__dedicatedClient) return __dedicatedClient;

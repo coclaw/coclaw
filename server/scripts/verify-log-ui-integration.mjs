@@ -2,11 +2,11 @@
  * S3 集成验证脚本：UI 远程日志 HTTP 通道（场景 ① + ②）
  *
  * 任务文档：docs/tasks/ui-remote-log-http-channel.md
- * 设计文档：docs/designs/ui-remote-log-http-channel.md §3 / §4 / §5.1
+ * 设计文档：docs/designs/remote-log.md
  *
  * 验证范围：
  *   ① server 重启窗口：UI in-flight batch 重传产生的重复打印 ≤ 1 batch
- *   ② 弱网注入：5xx 下重试退避 + 顺序恢复符合 §3.3 / §3.4
+ *   ② 弱网注入：5xx 下重试退避 + 顺序恢复符合设计稿的重试策略
  *
  * 场景 ③（跨 login/logout）见 ui/e2e/remote-log-cross-auth.e2e.spec.js
  *

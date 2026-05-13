@@ -214,7 +214,7 @@ export const useAuthStore = defineStore('auth', {
 					// 场景里，上一会话的遗留 timer 对新会话派发一次多余的 restart/reconnect 信号
 					safeRun('network.cancelPending', () => __cancelPendingNetworkDispatch());
 					// 注：remoteLog 走独立 HTTP 通道（端点不强制登录态），登出无需清缓冲；详见
-					// docs/designs/ui-remote-log-http-channel.md §3.6
+					// docs/designs/remote-log.md
 					safeRun('http.resetThrottle', () => resetAuthExpiredThrottle()); // 复位 401 节流窗口，避免跨用户误吞首个合法 401
 					// chat/topic store 实例逐个 dispose（cleanup() + $dispose()）
 					safeRun('chatStoreMgr.disposeAll', () => chatStoreManager.disposeAll());

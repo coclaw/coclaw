@@ -48,7 +48,7 @@ ClawConnection ══ DC "rpc" (持久) ═════════════�
 - **端点**：`WS /api/v1/rtc/signal`，session cookie 认证
 - **职责**：SDP/ICE 交换、connId 管理、应用层心跳（25s ping / 45s 超时）
 - **不承载**业务数据——业务 RPC 和文件传输均走 DataChannel
-- **诊断日志通道演进**：UI 端 `remoteLog` 已迁至独立 HTTP 通道 `POST /api/v1/log/ui`（详见 [ui-remote-log-http-channel.md](../designs/ui-remote-log-http-channel.md)），本通道不再承载 UI 诊断日志；server 侧 `type: 'log'` 接收分支作为 4 周回滚安全网保留，不被 UI 调用，4 周观察期后可清理
+- **诊断日志通道演进**：UI 端 `remoteLog` 已迁至独立 HTTP 通道 `POST /api/v1/log/ui`（详见 [remote-log.md](../designs/remote-log.md)），本通道不再承载 UI 诊断日志；server 侧 `type: 'log'` 接收分支作为 4 周回滚安全网保留，不被 UI 调用，4 周观察期后可清理
 - connId 由 UI 生成并 claim，WS 重连后通过 re-claim 恢复映射，避免 full rebuild
 
 ### 2.1b Server-relayed RPC 通道（WebSocket，保留能力）

@@ -6,7 +6,7 @@ import { TEST_LOGIN_NAME, TEST_PASSWORD } from './helpers.js';
  * S3 集成验证 · 场景③：跨 login/logout 时 uiId 不变 / seq 单调 / server 端身份段切换
  *
  * 任务文档：docs/tasks/ui-remote-log-http-channel.md
- * 设计文档：docs/designs/ui-remote-log-http-channel.md §3.1 / §3.6 / §5.2
+ * 设计文档：docs/designs/remote-log.md
  *
  * 测试结构：
  *   - 同时监听 `request` 和 `response` 事件：

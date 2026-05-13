@@ -39,7 +39,7 @@
 - [RTC 信令通道](designs/rtc-signaling-channel.md) — per-tab 信令 WS 重构（已实施）
 - [文件管理](designs/file-management.md) — WebRTC DC 文件操作协议（已实施）
 - [多模态附件](designs/multimodal-attachments.md) — 附件上传与嵌入（已实施）
-- [远程日志通道](designs/remote-log-channel.md) — 诊断日志推送（已实施，含基础埋点）
+- [远程日志](designs/remote-log.md) — 诊断日志推送（Plugin → bot WS、UI → HTTP；HTTP 协议层兼容未来 plugin 切换）
 - [斜杠命令](designs/slash-command-support.md) — 斜杠命令路由（已实施）
 - [Chat 历史追踪](designs/chat-history-tracking.md) — 历史 session 追踪（已实施，Phase 3 清理待做）
 - [Topic 管理](designs/topic-management.md) — 独立 Topic 功能（已实施）
