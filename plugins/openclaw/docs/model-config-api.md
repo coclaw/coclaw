@@ -327,6 +327,32 @@ CoClaw RPC 出参里的所有时间字段统一用 `number`（ms since epoch）�
 
 理由（同 6.8）：实际市面上同一个 provider 不会同时提供 API key 和 OAuth 两种方式，冲突场景不存在。加 CONFLICT 检查反而引入不必要的产品复杂度（用户得理解"为什么要先 remove 才能 set"）。
 
+### 6.10 list 出参不带"凭据来源"字段（plaintext vs env）
+
+上游 API key profile 有两种来源：直接落盘明文（plaintext mode）和环境变量引用（env mode，`cred.keyRef` 指向 `$ENV_VAR`）。当前 list 出参对前者输出 `keyPreview`，对后者既不输出 preview 也不标识来源——理论上 UI 看到这条 env-mode profile 无法解释其出处。
+
+**已讨论的取舍**：
+
+- CoClaw UI 的目标用户群是手机 / 桌面端使用 CoClaw 跟 OpenClaw 聊天的最终用户，几乎不会去 shell / docker / systemd 里挂环境变量
+- 真去用环境变量配 key 的人是开发者 / 运维，自己在系统层配的条目能认出来源
+- 两类人群几乎不交叉——"UI 上看到 env-mode 条目却不知来源"的产品场景几乎不存在
+
+**决定**：不加来源字段。未来若 CoClaw UI 扩展到 admin 视图（管理员能看到系统层 env 配的 profile），再重新评估加 `source: 'plaintext' | 'env'` 或 `keyPreview: '$ENV:VAR_NAME'` 形式的标识。
+
+### 6.11 list 出参不带 createdAt / updatedAt
+
+profile 没有创建时间 / 修改时间。多账号场景下用户看不出哪条最近更新。
+
+**根因**：上游 `auth-profiles.json` 存储就没存这两个字段。CoClaw 要补只能往 credential 的 `metadata` 字典里塞一份（plugin-sdk 的 `buildApiKeyCredential` 第三参数 `metadata?: Record<string,string>` 是公开入口）。
+
+**已讨论的取舍**：
+
+- 本期 profileId 一期统一 `:default`（§ 6.5），单账号场景下"按时间排序 / 区分新旧"无需求
+- 真要补必须走 plugin-sdk 公开的 metadata 入口（`buildApiKeyCredential` 第三参数），**禁止绕开 SDK 直接改文件**——一致性由 SDK 负责（参 mental-model § 4.5）
+- 字段名规则、上游持久化时会不会清理 metadata、读取端怎么取，C2 真实施时再核实
+
+**决定**：延后。前提是（1）UI 真出现按时间排序 / 显示更新时间的需求；（2）实施前核实 plugin-sdk 对 metadata 的持久化语义。
+
 ---
 
 ## § 7. 引用关系
