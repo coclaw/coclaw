@@ -1181,3 +1181,20 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **修复方向**：把 mock 的 `setRemoteDescription` 改成包装版（如 `mock.fn()` / 计数 wrapper），断言调用次数大于 0；或断言"setRemoteDescription 收到了 ICE-restart offer 的 sdp"等真实可验证的副作用。
 
 **严重度**：Low（测试整体场景已被旁路断言覆盖——`PC.instances.length === 1`、`sent[0].type === 'rtc:answer'` 等仍保护核心行为）
+
+## OpenClaw issue #80697 本地补丁需在上游修复后撤销
+
+**发现日期**：2026-05-14（用户笔记本 chat 打开慢的排查）
+**关联脚本**：`scripts/patch-openclaw-issue-80697.sh`
+**上游 issue**：[#80697](https://github.com/openclaw/openclaw/issues/80697)
+**研究文档**：`docs/openclaw-research/plugin-manifest-cache-mismatch.md`
+
+**问题**：OpenClaw `getStatusSummary.buildSessionRows` 调用链不传 `workspaceDir`，进程级 plugin manifest snapshot cache 永久 mismatch，导致 `status / sessions.list / models.list / topics.list` 在 session 数多时每次卡 ~10-20s。CoClaw UI 启动 / RTC 重连时 `dashboard.store` 并发拉这几个 RPC，主线程被吃满，用户体验"点 chat 半天没数据"。
+
+**已落地的本地 workaround**：`scripts/patch-openclaw-issue-80697.sh` 在 bundled dist `manifest-model-id-normalization-*.js` 的 `loadManifestModelIdNormalizationPolicies` 加 60s 进程级 fallback cache。实测笔记本 (758 sessions) `status --json` 从 20.5s → ~7s。
+
+**OpenClaw 升级时的动作**：bundled dist 重生成、文件 hash 后缀会变（vite/rollup 输出）。脚本会自动定位新文件、检测幂等。但**升级版本如果改动了源码结构**（如重命名 `loadManifestModelIdNormalizationPolicies` 或调整 anchor 行），脚本会以 `[FAIL] 没找到 anchor` 退出，需要重对照研究文档调整 anchor 模板。
+
+**撤销条件**：上游 #80697 合并并出现在 release 版本后，停止使用本补丁。撤销方式：`./scripts/patch-openclaw-issue-80697.sh --revert`（从 `.bak` 恢复）。撤销后从 TODO 移除本条目，并提示用户删除研究文档（或保留为历史记录，但不应再继续维护）。
+
+**对终端用户的部署形态（尚未实施）**：当前脚本只在 CoClaw 仓库内，不会随 npm plugin 安装自动应用。若上游迟迟不修，可考虑：(a) 在 plugin `postinstall` 钩子里跑该脚本（但触碰用户 OpenClaw 安装目录有侵入性、需明确告知）；(b) 写到 `docs/troubleshooting.md` 让遇到同类问题的用户自助；(c) 维持现状，仅作为维护者排查手段。当前选择 (c)。
