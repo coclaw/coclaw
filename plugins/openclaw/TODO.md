@@ -1198,3 +1198,28 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **撤销条件**：上游 #80697 合并并出现在 release 版本后，停止使用本补丁。撤销方式：`./scripts/patch-openclaw-issue-80697.sh --revert`（从 `.bak` 恢复）。撤销后从 TODO 移除本条目，并提示用户删除研究文档（或保留为历史记录，但不应再继续维护）。
 
 **对终端用户的部署形态（尚未实施）**：当前脚本只在 CoClaw 仓库内，不会随 npm plugin 安装自动应用。若上游迟迟不修，可考虑：(a) 在 plugin `postinstall` 钩子里跑该脚本（但触碰用户 OpenClaw 安装目录有侵入性、需明确告知）；(b) 写到 `docs/troubleshooting.md` 让遇到同类问题的用户自助；(c) 维持现状，仅作为维护者排查手段。当前选择 (c)。
+
+
+## Plugin 端默认黑名单调研：HasPrefix 误杀红线清单
+
+**发现日期**：2026-05-14（pion-ipc/pion-node filter 基础设施落地后的 deep-review）
+**触发场景**：plugin 引入 `pcConfig.settings.interfaceFilter` 默认值时
+
+pion-ipc 的接口名过滤是 case-sensitive `strings.HasPrefix` 匹配，**无字界**。任何配进 `denyPrefixes` 的字符串都会同时杀掉以它开头的所有接口。下面是 deep-review 时实战核对过的几条容易误配的红线：
+
+- **`'eth0'` ≠ 单独杀 eth0**——会同时干掉 VLAN 子接口 `eth0.100` 之类的
+- **`'utun1'` ≠ 单独杀 utun1**——会同时干掉 `utun10`、`utun11`…（macOS VPN 第 10+ 条隧道）；tailscale 在 mac 用 utun，禁了断 P2P
+- **`'en'`**——同时命中 macOS `en0`（WiFi 主接口）+ Linux `enp3s0`（有线主接口），两个平台全断
+- **`'tap'`**——OpenVPN 等用 `tap0`/`tap1` 当合法接口，禁了断 VPN
+- **`'tun'`/`'utun'`**——同上，VPN 通用前缀，禁了断 VPN
+
+**调研方向（plugin 默认清单要避开的）**：
+- 调研典型 OpenClaw 用户的 VPN/overlay 接口名分布
+- allow 模式（`allowPrefixes`）非空时也要明确覆盖 VPN/tailscale 前缀，否则白名单太严会切断 tailnet
+- 实在不确定时，**只默认开 IP CIDR 黑名单（`172.16.0.0/12` go2rtc 共识）**，接口名前缀全部留给用户显式配置
+
+**关联代码**：
+- pion-ipc `internal/rtc/settings.go:145-153` `compileInterfaceFilter` 闭包语义
+- pion-ipc `docs/ipc-protocol.md:108-130` 协议层文档
+- 本次 pion-ipc commits: `1303321` + `a952fb5`
+
