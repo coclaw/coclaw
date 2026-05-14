@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
 	notBound, bindOk, unbindOk,
 	claimCodeCreated,
+	apiKeySetOk, authListEmpty, authListEntries, authRemoveOk,
 } from './messages.js';
 
 test('bindOk should format bind success message', () => {
@@ -34,4 +35,59 @@ test('claimCodeCreated should format claim code message', () => {
 	assert.ok(msg.includes('https://im.coclaw.net/claim?code=12345678'));
 	assert.ok(msg.includes('30 minutes'));
 	assert.ok(msg.includes("don't have a CoClaw account"));
+});
+
+test('apiKeySetOk should format set-api-key success', () => {
+	assert.equal(
+		apiKeySetOk({ provider: 'groq', profileId: 'groq:default' }),
+		'OK. API key for "groq" stored (profileId=groq:default).',
+	);
+});
+
+test('authListEmpty should format with and without provider filter', () => {
+	assert.equal(authListEmpty(), 'No auth profiles found.');
+	assert.equal(authListEmpty('groq'), 'No auth profiles found for provider "groq".');
+});
+
+test('authListEntries should render api_key entry with keyPreview', () => {
+	const out = authListEntries([
+		{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'sk-t...test' },
+	]);
+	assert.equal(out, 'groq:default  api_key  sk-t...test');
+});
+
+test('authListEntries should render oauth entry with email/displayName/expiresAt', () => {
+	const out = authListEntries([
+		{
+			profileId: 'openai:default',
+			provider: 'openai',
+			type: 'oauth',
+			email: 'a@b.com',
+			displayName: 'Alice',
+			expiresAt: 1700000000000,
+		},
+	]);
+	assert.ok(out.startsWith('openai:default  oauth'));
+	assert.ok(out.includes('a@b.com'));
+	assert.ok(out.includes('Alice'));
+	assert.ok(out.includes('expires=2023-11-14'));
+});
+
+test('authListEntries should render bare entry without meta', () => {
+	const out = authListEntries([
+		{ profileId: 'x:default', provider: 'x', type: 'token' },
+	]);
+	assert.equal(out, 'x:default  token');
+});
+
+test('authListEntries should join multiple entries with newline', () => {
+	const out = authListEntries([
+		{ profileId: 'a:default', provider: 'a', type: 'api_key', keyPreview: 'ak' },
+		{ profileId: 'b:default', provider: 'b', type: 'api_key', keyPreview: 'bk' },
+	]);
+	assert.equal(out, 'a:default  api_key  ak\nb:default  api_key  bk');
+});
+
+test('authRemoveOk should format remove success', () => {
+	assert.equal(authRemoveOk('groq'), 'OK. Removed all auth profiles for "groq".');
 });

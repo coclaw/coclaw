@@ -3,6 +3,7 @@ import { callGatewayMethod } from './common/gateway-notify.js';
 import {
 	notBound, bindOk, unbindOk,
 	claimCodeCreated,
+	apiKeySetOk, authListEntries, authListEmpty, authRemoveOk,
 } from './common/messages.js';
 
 /**
@@ -181,6 +182,86 @@ export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 
 				const data = result.status;
 				console.log(unbindOk(data));
+			}
+			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
+			catch (err) {
+				console.error(`Error: ${resolveErrorMessage(err)}`);
+				process.exitCode = 1;
+			}
+		});
+
+	// 开发期辅助：provider-auth 三个 RPC 的瘦 CLI。
+	// 与 bind/unbind 一致——参数解析后调 gateway RPC，不重复业务逻辑。
+	const auth = coclaw
+		.command('auth')
+		.description('Manage provider auth credentials (developer helper)');
+
+	auth
+		.command('set-api-key <provider>')
+		.description('Store an API key for a provider')
+		.requiredOption('--key <key>', 'API key value (plaintext)')
+		.option('--profile-id <id>', 'Override profileId (default: <provider>:default)')
+		.action(async (provider, opts) => {
+			try {
+				const params = { provider, apiKey: opts.key };
+				if (opts.profileId) params.profileId = opts.profileId;
+				const result = await callWithRetry('coclaw.providerAuth.setApiKey', deps, {
+					params, timeoutMs: RPC_TIMEOUT_MS,
+				});
+				if (!result.ok) {
+					handleRpcError(result, 'set-api-key failed');
+					return;
+				}
+				const data = result.status;
+				console.log(apiKeySetOk({ provider, profileId: data?.profileId ?? `${provider}:default` }));
+			}
+			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
+			catch (err) {
+				console.error(`Error: ${resolveErrorMessage(err)}`);
+				process.exitCode = 1;
+			}
+		});
+
+	auth
+		.command('list')
+		.description('List stored auth profiles')
+		.option('--provider <provider>', 'Filter by provider id')
+		.action(async (opts) => {
+			try {
+				const rpcOpts = { timeoutMs: RPC_TIMEOUT_MS };
+				if (opts.provider) rpcOpts.params = { provider: opts.provider };
+				const result = await callWithRetry('coclaw.providerAuth.list', deps, rpcOpts);
+				if (!result.ok) {
+					handleRpcError(result, 'list failed');
+					return;
+				}
+				const profiles = result.status?.profiles ?? [];
+				if (profiles.length === 0) {
+					console.log(authListEmpty(opts.provider));
+					return;
+				}
+				console.log(authListEntries(profiles));
+			}
+			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
+			catch (err) {
+				console.error(`Error: ${resolveErrorMessage(err)}`);
+				process.exitCode = 1;
+			}
+		});
+
+	auth
+		.command('remove <provider>')
+		.description('Remove all stored auth profiles for a provider')
+		.action(async (provider) => {
+			try {
+				const result = await callWithRetry('coclaw.providerAuth.remove', deps, {
+					params: { provider }, timeoutMs: RPC_TIMEOUT_MS,
+				});
+				if (!result.ok) {
+					handleRpcError(result, 'remove failed');
+					return;
+				}
+				console.log(authRemoveOk(provider));
 			}
 			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
 			catch (err) {

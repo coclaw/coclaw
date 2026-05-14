@@ -46,6 +46,7 @@ function createMockCmd(name) {
 		actionFn: null,
 		description(d) { cmd.desc = d; return cmd; },
 		option(flags) { cmd.opts.push(flags); return cmd; },
+		requiredOption(flags) { cmd.opts.push(flags); return cmd; },
 		action(fn) { cmd.actionFn = fn; return cmd; },
 		command(sub) {
 			const child = createMockCmd(sub);
@@ -83,7 +84,7 @@ function withConsole(fn) {
 
 // --- 注册结构测试 ---
 
-test('registerCoclawCli should register coclaw command with bind/unbind/enroll subcommands', () => {
+test('registerCoclawCli should register coclaw command with bind/unbind/enroll/auth subcommands', () => {
 	const program = createMockProgram();
 	const logger = { info() {}, warn() {} };
 	const { spawn } = createRpcSpawn({});
@@ -93,7 +94,7 @@ test('registerCoclawCli should register coclaw command with bind/unbind/enroll s
 	assert.equal(program.commands.has('coclaw'), true);
 	const coclaw = program.commands.get('coclaw');
 	assert.equal(coclaw.desc, 'CoClaw bind/unbind commands');
-	assert.equal(coclaw.commands.size, 3);
+	assert.equal(coclaw.commands.size, 4);
 
 	const bind = coclaw.commands.get('bind <code>');
 	assert.ok(bind);
@@ -106,6 +107,13 @@ test('registerCoclawCli should register coclaw command with bind/unbind/enroll s
 	const unbind = coclaw.commands.get('unbind');
 	assert.ok(unbind);
 	assert.equal(typeof unbind.actionFn, 'function');
+
+	const auth = coclaw.commands.get('auth');
+	assert.ok(auth);
+	assert.equal(auth.commands.size, 3);
+	assert.ok(auth.commands.get('set-api-key <provider>'));
+	assert.ok(auth.commands.get('list'));
+	assert.ok(auth.commands.get('remove <provider>'));
 });
 
 // --- bind CLI 测试 ---
@@ -528,5 +536,266 @@ test('enroll CLI should show business error without gateway restart', async () =
 	assert.equal(restartCalls.length, 0);
 	assert.ok(errors.some((l) => l.includes('Already bound')));
 	assert.ok(!errors.some((l) => l.includes('GatewayClientRequestError')));
+	assert.equal(exitCode, 1);
+});
+
+// --- auth set-api-key CLI ---
+
+function getAuth(program, sub) {
+	return program.commands.get('coclaw').commands.get('auth').commands.get(sub);
+}
+
+test('auth set-api-key should send providerAuth.setApiKey RPC with provider + apiKey', async () => {
+	const { spawn, calls } = createRpcSpawn({
+		data: { status: { profileId: 'groq:default' } },
+	});
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'set-api-key <provider>');
+
+	const { logs } = await withConsole(async () => {
+		await cmd.actionFn('groq', { key: 'sk-test-abc' });
+	})();
+
+	const rpcCall = calls.find((c) => c.includes('coclaw.providerAuth.setApiKey'));
+	assert.ok(rpcCall);
+	const parsed = JSON.parse(rpcCall[rpcCall.indexOf('--params') + 1]);
+	assert.equal(parsed.provider, 'groq');
+	assert.equal(parsed.apiKey, 'sk-test-abc');
+	assert.equal(parsed.profileId, undefined);
+	assert.ok(logs.some((l) => l.includes('groq') && l.includes('profileId=groq:default')));
+});
+
+test('auth set-api-key should forward --profile-id to RPC params', async () => {
+	const { spawn, calls } = createRpcSpawn({
+		data: { status: { profileId: 'groq:work' } },
+	});
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'set-api-key <provider>');
+
+	await withConsole(async () => {
+		await cmd.actionFn('groq', { key: 'sk-test-xyz', profileId: 'groq:work' });
+	})();
+
+	const rpcCall = calls.find((c) => c.includes('coclaw.providerAuth.setApiKey'));
+	const parsed = JSON.parse(rpcCall[rpcCall.indexOf('--params') + 1]);
+	assert.equal(parsed.profileId, 'groq:work');
+});
+
+test('auth set-api-key should fall back to <provider>:default when status lacks profileId', async () => {
+	const { spawn } = createRpcSpawn({ data: { status: {} } });
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'set-api-key <provider>');
+
+	const { logs } = await withConsole(async () => {
+		await cmd.actionFn('groq', { key: 'sk-test' });
+	})();
+
+	assert.ok(logs.some((l) => l.includes('profileId=groq:default')));
+});
+
+test('auth set-api-key should surface INVALID_ARGS error from RPC', async () => {
+	const { spawn } = createRpcSpawn({
+		stderr: 'Gateway call failed: GatewayClientRequestError: INVALID_ARGS: provider must be a non-empty string',
+	});
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'set-api-key <provider>');
+
+	const { errors, exitCode } = await withConsole(async () => {
+		await cmd.actionFn('groq', { key: 'sk-test' });
+	})();
+
+	assert.ok(errors.some((l) => l.includes('INVALID_ARGS')));
+	assert.equal(exitCode, 1);
+});
+
+test('auth set-api-key should report gateway unavailable after retry', async () => {
+	const { spawn } = createRpcSpawn({ error: 'spawn failed' });
+	const mockRestart = async () => {};
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn, restartGateway: mockRestart });
+
+	const cmd = getAuth(program, 'set-api-key <provider>');
+
+	const { errors, exitCode } = await withConsole(async () => {
+		await cmd.actionFn('groq', { key: 'sk-test' });
+	})();
+
+	assert.ok(errors.some((l) => l.includes('Could not reach gateway')));
+	assert.equal(exitCode, 1);
+});
+
+// --- auth list CLI ---
+
+test('auth list should render profiles table on success', async () => {
+	const { spawn, calls } = createRpcSpawn({
+		data: {
+			status: {
+				profiles: [
+					{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'sk-t...test' },
+					{ profileId: 'openai:default', provider: 'openai', type: 'oauth', email: 'a@b.com', displayName: 'Alice', expiresAt: 1700000000000 },
+				],
+			},
+		},
+	});
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'list');
+
+	const { logs } = await withConsole(async () => {
+		await cmd.actionFn({});
+	})();
+
+	const rpcCall = calls.find((c) => c.includes('coclaw.providerAuth.list'));
+	assert.ok(rpcCall);
+	// 不带 --provider 时不发送 params
+	assert.equal(rpcCall.indexOf('--params'), -1);
+	const out = logs.join('\n');
+	assert.ok(out.includes('groq:default'));
+	assert.ok(out.includes('sk-t...test'));
+	assert.ok(out.includes('openai:default'));
+	assert.ok(out.includes('a@b.com'));
+	assert.ok(out.includes('Alice'));
+	assert.ok(out.includes('expires=2023-11-14'));
+});
+
+test('auth list should forward --provider as RPC filter', async () => {
+	const { spawn, calls } = createRpcSpawn({
+		data: {
+			status: {
+				profiles: [
+					{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'sk-t...test' },
+				],
+			},
+		},
+	});
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'list');
+
+	await withConsole(async () => {
+		await cmd.actionFn({ provider: 'groq' });
+	})();
+
+	const rpcCall = calls.find((c) => c.includes('coclaw.providerAuth.list'));
+	const parsed = JSON.parse(rpcCall[rpcCall.indexOf('--params') + 1]);
+	assert.equal(parsed.provider, 'groq');
+});
+
+test('auth list should show empty message when no profiles', async () => {
+	const { spawn } = createRpcSpawn({ data: { status: { profiles: [] } } });
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'list');
+
+	const { logs } = await withConsole(async () => {
+		await cmd.actionFn({});
+	})();
+
+	assert.ok(logs.some((l) => l === 'No auth profiles found.'));
+});
+
+test('auth list should show empty-for-provider message when filter yields nothing', async () => {
+	const { spawn } = createRpcSpawn({ data: { status: { profiles: [] } } });
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'list');
+
+	const { logs } = await withConsole(async () => {
+		await cmd.actionFn({ provider: 'unknown' });
+	})();
+
+	assert.ok(logs.some((l) => l.includes('No auth profiles found for provider "unknown"')));
+});
+
+test('auth list should treat missing status.profiles as empty', async () => {
+	const { spawn } = createRpcSpawn({ data: { status: {} } });
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'list');
+
+	const { logs } = await withConsole(async () => {
+		await cmd.actionFn({});
+	})();
+
+	assert.ok(logs.some((l) => l.includes('No auth profiles found')));
+});
+
+test('auth list should surface RPC error', async () => {
+	const { spawn } = createRpcSpawn({
+		stderr: 'Gateway call failed: GatewayClientRequestError: IO_FAILED: disk error',
+	});
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'list');
+
+	const { errors, exitCode } = await withConsole(async () => {
+		await cmd.actionFn({});
+	})();
+
+	assert.ok(errors.some((l) => l.includes('IO_FAILED')));
+	assert.equal(exitCode, 1);
+});
+
+// --- auth remove CLI ---
+
+test('auth remove should send providerAuth.remove RPC and print confirmation', async () => {
+	const { spawn, calls } = createRpcSpawn({ data: {} });
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'remove <provider>');
+
+	const { logs } = await withConsole(async () => {
+		await cmd.actionFn('groq');
+	})();
+
+	const rpcCall = calls.find((c) => c.includes('coclaw.providerAuth.remove'));
+	assert.ok(rpcCall);
+	const parsed = JSON.parse(rpcCall[rpcCall.indexOf('--params') + 1]);
+	assert.equal(parsed.provider, 'groq');
+	assert.ok(logs.some((l) => l.includes('Removed all auth profiles for "groq"')));
+});
+
+test('auth remove should report RPC error', async () => {
+	const { spawn } = createRpcSpawn({
+		stderr: 'Gateway call failed: GatewayClientRequestError: IO_FAILED: lock contention',
+	});
+
+	const program = createMockProgram();
+	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
+
+	const cmd = getAuth(program, 'remove <provider>');
+
+	const { errors, exitCode } = await withConsole(async () => {
+		await cmd.actionFn('groq');
+	})();
+
+	assert.ok(errors.some((l) => l.includes('IO_FAILED')));
 	assert.equal(exitCode, 1);
 });

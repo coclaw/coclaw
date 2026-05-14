@@ -26,3 +26,39 @@ export function claimCodeCreated({ code, appUrl, expiresMinutes }) {
 		"If you don't have a CoClaw account yet, you can register on that page.",
 	].join('\n');
 }
+
+// provider-auth CLI 输出（auth set-api-key / list / remove）
+
+export function apiKeySetOk({ provider, profileId }) {
+	return `OK. API key for "${provider}" stored (profileId=${profileId}).`;
+}
+
+export function authListEmpty(provider) {
+	return provider
+		? `No auth profiles found for provider "${provider}".`
+		: 'No auth profiles found.';
+}
+
+/**
+ * 把 list RPC 返回的 profiles 数组渲染成多行文本。
+ * 每行格式：`<profileId>  <type>  <preview-or-meta>`
+ * 调用方负责处理空数组（用 authListEmpty）。
+ */
+export function authListEntries(profiles) {
+	const lines = profiles.map((p) => {
+		const meta = [];
+		if (p.keyPreview) meta.push(p.keyPreview);
+		if (p.email) meta.push(p.email);
+		if (p.displayName) meta.push(p.displayName);
+		if (typeof p.expiresAt === 'number') {
+			meta.push(`expires=${new Date(p.expiresAt).toISOString()}`);
+		}
+		const metaStr = meta.length > 0 ? `  ${meta.join('  ')}` : '';
+		return `${p.profileId}  ${p.type}${metaStr}`;
+	});
+	return lines.join('\n');
+}
+
+export function authRemoveOk(provider) {
+	return `OK. Removed all auth profiles for "${provider}".`;
+}
