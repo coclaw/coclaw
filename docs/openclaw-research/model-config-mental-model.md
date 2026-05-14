@@ -694,10 +694,10 @@ if (result === null) {
   // → 走 IO_FAILED 错误响应
   throw new Error('failed to write auth-profiles store');
 }
-return { profileId };
+return { status: { profileId } };
 ```
 
-**返回**：`{ profileId }`，如 `groq:default`。
+**返回**：`{ status: { profileId } }`，如 `{ status: { profileId: 'groq:default' } }`。`status` 外层包装是本插件 CLI 共享 `callGatewayMethod` 的 wire 约定（见 model-config-api.md § 2.2 末尾告示）。
 **副作用**：写 `<state-dir>/agents/main/agent/auth-profiles.json`，**文件级锁保护**——与 `removeProviderAuthProfilesWithLock` 共享同一把锁，避免 set + remove 并发丢写。
 **不触发**：gateway 重启、config-reload、`models.json` 派生。
 
@@ -725,8 +725,10 @@ const entries = Object.entries(store.profiles || {})
         ? cred.expires
         : undefined,
   }));
-return { profiles: entries };
+return { status: { profiles: entries } };
 ```
+
+**返回**：包成 `{ status: { profiles: [...] } }`——同 setApiKey，wire 约定（见 model-config-api.md § 2.2 末尾告示）。
 
 **遮蔽规则**：原始 `key` / `token` 字段**绝对不出 handler**；只回 `keyPreview`。OAuth credential 的 refresh token / access token 也不外露。
 
@@ -745,7 +747,8 @@ if (result === null) {
   // → 走 IO_FAILED 错误响应
   throw new Error('failed to update auth-profiles store');
 }
-// 协议层 respond(true, undefined)；不带 ok 字段（见 model-config-api.md § 6.6）
+// 协议层 respond(true, { status: {} })；不带 ok 字段（见 model-config-api.md § 6.6）。
+// 出参必须包 status 包装层、且非 undefined——见 model-config-api.md § 2.2 末尾告示
 ```
 
 **只清 secret**，主配置文件不动。**幂等**：撤销不存在的 provider 不报错。

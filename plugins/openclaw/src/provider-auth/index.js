@@ -10,12 +10,14 @@
 import { buildProviderAuthHandlers } from './handlers.js';
 import { mainAgentDir } from '../claw-paths.js';
 
-const SDK_MODULE = 'openclaw/plugin-sdk/provider-auth';
-
 let _sdkPromise;
 
+// 默认 loader 仅作 fallback：生产路径必须由入口（plugins/openclaw/index.js）注入 loadSdk，
+// 因为 OpenClaw plugin loader 只扫入口源码识别 `openclaw/plugin-sdk/*` 字面量并触发 jiti 重写；
+// 字面量留在本子模块里 loader 看不到 → 原生 Node 解析必败。
+// 此处的 import 在生产环境永不被调用；保留只为测试在不注入 opts.loadSdk 时仍能拿到一个失败路径
 function defaultLoadSdk() {
-	_sdkPromise ??= import(SDK_MODULE);
+	_sdkPromise ??= import('openclaw/plugin-sdk/provider-auth');
 	return _sdkPromise;
 }
 
@@ -35,7 +37,7 @@ export function __resetSdkCache() {
  * @param {object} api - OpenClaw 注入的 plugin api
  * @param {object} [opts]
  * @param {Function} [opts.resolveAgentDir] - 覆盖 agentDir 解析（默认 mainAgentDir）
- * @param {Function} [opts.loadSdk] - 覆盖 SDK 加载器（默认 dynamic import openclaw/plugin-sdk/provider-auth）
+ * @param {Function} [opts.loadSdk] - 必传（生产由入口注入字面量 dynamic import）；缺省回退仅为测试兜底
  */
 export function registerProviderAuthHandlers(api, opts = {}) {
 	const resolveAgentDir = opts.resolveAgentDir ?? mainAgentDir;

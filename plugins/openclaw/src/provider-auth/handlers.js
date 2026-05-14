@@ -92,7 +92,7 @@ export function buildProviderAuthHandlers({ sdk, resolveAgentDir }) {
 				respondIoFailed(respond, new Error('failed to write auth-profiles store'));
 				return;
 			}
-			respond(true, { profileId });
+			respond(true, { status: { profileId } });
 		}
 		catch (err) {
 			respondIoFailed(respond, err);
@@ -114,7 +114,7 @@ export function buildProviderAuthHandlers({ sdk, resolveAgentDir }) {
 				if (filterProvider && cred.provider !== filterProvider) continue;
 				profiles.push(toListEntry(profileId, cred, sdk.formatApiKeyPreview));
 			}
-			respond(true, { profiles });
+			respond(true, { status: { profiles } });
 		}
 		catch (err) {
 			respondIoFailed(respond, err);
@@ -137,7 +137,7 @@ export function buildProviderAuthHandlers({ sdk, resolveAgentDir }) {
 				respondIoFailed(respond, new Error('failed to update auth-profiles store'));
 				return;
 			}
-			respond(true, undefined);
+			respond(true, { status: {} });
 		}
 		catch (err) {
 			respondIoFailed(respond, err);
