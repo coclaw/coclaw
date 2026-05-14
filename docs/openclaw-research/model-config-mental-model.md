@@ -332,7 +332,7 @@ OpenClaw 默认 agent 是 `main`。即使 `agents.list` 里没有 main 条目，
 - 明文写进主配置文件
 - 绕开 SDK 的锁和缓存清理
 
-要存 API key 走 SDK helper（`upsertApiKeyProfile`），它会同时管 `auth.profiles` 声明 + `auth-profiles.json` 秘密。
+要存 API key 走 SDK helper（`upsertAuthProfileWithLock` + `buildApiKeyCredential`），它只写 `auth-profiles.json` 秘密一份——`cfg.auth.profiles` 声明无需同步写（实测结论详见 § 4.7）。
 
 ### 4.6 多账号机制（一期不做）
 
@@ -361,8 +361,8 @@ CLI `models auth paste-token` 之所以写两份（secret + cfg 声明），是�
 
 **实务规则**：
 
-- **set API key**：只调 `upsertApiKeyProfile`（写 secret 一份），**不调** `updateConfig(applyAuthProfileConfig)`。零 gateway 重启
-- **remove API key**：只调 `removeProviderAuthProfilesWithLock`（清 secret 一份），**不动** cfg。零 gateway 重启
+- **set API key**：用 `buildApiKeyCredential` 构造凭据后调 `upsertAuthProfileWithLock`（写 secret 一份，**带文件锁**——与 remove 共享同一把，避免并发丢写），**不调** `updateConfig(applyAuthProfileConfig)`。零 gateway 重启。**注意**：该 helper 失败时静默返回 `null`（内部 try/catch 吞错），handler 必须显式判 null
+- **remove API key**：只调 `removeProviderAuthProfilesWithLock`（清 secret 一份，**带文件锁**），**不动** cfg。零 gateway 重启。同样静默返回 `null` 表示失败，必须显式判 null
 - **list 已绑 provider**：调 `ensureAuthProfileStore` 读 store 后遍历 `store.profiles`——cfg 那份本来就是空的，无需读
 
 **已知妥协（暂不修复，CoClaw 一期取舍）**：
@@ -670,22 +670,38 @@ CoClaw 插件需要注册三个 gateway method（参考现有 `coclaw.*` 命名�
 #### `coclaw.providerAuth.setApiKey({ provider, apiKey })`
 
 ```js
-import { upsertApiKeyProfile } from 'openclaw/plugin-sdk/provider-auth';
-import { resolveMainAgentDir } from './claw-paths.js';  // CoClaw 已有
+import {
+  upsertAuthProfileWithLock,
+  buildApiKeyCredential,
+} from 'openclaw/plugin-sdk/provider-auth';
+import { mainAgentDir } from './claw-paths.js';  // CoClaw 已有
 
 // handler 内
-const profileId = upsertApiKeyProfile({
-  provider,                     // 调用方传的 provider id
-  input: apiKey,                // 明文 key
-  agentDir: resolveMainAgentDir(),  // 含 /agent 子目录
-  options: { secretInputMode: 'plaintext' },
+const profileId = profileIdInput ?? `${provider}:default`;
+const credential = buildApiKeyCredential(
+  provider,
+  apiKey,
+  undefined,
+  { secretInputMode: 'plaintext' },
+);
+const result = await upsertAuthProfileWithLock({
+  profileId,
+  credential,
+  agentDir: mainAgentDir(),       // 含 /agent 子目录
 });
+// 关键：SDK 内部 try/catch 把锁失败 / 磁盘错误吞成 null
+if (result === null) {
+  // → 走 IO_FAILED 错误响应
+  throw new Error('failed to write auth-profiles store');
+}
 return { profileId };
 ```
 
 **返回**：`{ profileId }`，如 `groq:default`。
-**副作用**：写 `<state-dir>/agents/main/agent/auth-profiles.json`，文件级锁保护。
+**副作用**：写 `<state-dir>/agents/main/agent/auth-profiles.json`，**文件级锁保护**——与 `removeProviderAuthProfilesWithLock` 共享同一把锁，避免 set + remove 并发丢写。
 **不触发**：gateway 重启、config-reload、`models.json` 派生。
+
+**为什么不用上层封装 `upsertApiKeyProfile`**：该封装内部走同步、**无锁**的 `upsertAuthProfile`，与带锁的 remove 并发时会绕过文件锁丢写。带锁版本与 `buildApiKeyCredential` 配合使用，行为与封装内部完全等价（两次幂等的 `normalizeSecretInput` ≡ 一次）。
 
 #### `coclaw.providerAuth.list({ provider? })`
 
@@ -699,12 +715,15 @@ const entries = Object.entries(store.profiles || {})
     profileId: id,
     provider: cred.provider,
     type: cred.type,                            // "api_key" / "token" / "oauth"
-    keyPreview: cred.type === 'api_key' && cred.key
+    keyPreview: cred.type === 'api_key' && typeof cred.key === 'string' && cred.key.length > 0
       ? formatApiKeyPreview(cred.key)            // head4 + ... + tail4
       : undefined,
-    email: cred.email,
-    displayName: cred.displayName,
-    expiresAt: cred.type === 'oauth' ? cred.expires : cred.expires,  // ms
+    email: typeof cred.email === 'string' ? cred.email : undefined,
+    displayName: typeof cred.displayName === 'string' ? cred.displayName : undefined,
+    expiresAt:                                   // ms epoch；只 oauth / token 才暴露
+      (cred.type === 'oauth' || cred.type === 'token') && typeof cred.expires === 'number'
+        ? cred.expires
+        : undefined,
   }));
 return { profiles: entries };
 ```
@@ -715,22 +734,30 @@ return { profiles: entries };
 
 ```js
 import { removeProviderAuthProfilesWithLock } from 'openclaw/plugin-sdk/provider-auth';
+import { mainAgentDir } from './claw-paths.js';
 
-await removeProviderAuthProfilesWithLock({
+const result = await removeProviderAuthProfilesWithLock({
   provider,
-  agentDir: resolveMainAgentDir(),
+  agentDir: mainAgentDir(),
 });
-return { ok: true };
+// 同 setApiKey：锁失败 / 磁盘错误吞成 null
+if (result === null) {
+  // → 走 IO_FAILED 错误响应
+  throw new Error('failed to update auth-profiles store');
+}
+// 协议层 respond(true, undefined)；不带 ok 字段（见 model-config-api.md § 6.6）
 ```
 
-**只清 secret**，主配置文件不动。
+**只清 secret**，主配置文件不动。**幂等**：撤销不存在的 provider 不报错。
 
 ### E.2 已知坑速查（实测踩过的）
 
 | # | 坑 | 怎么避 |
 |---|---|---|
 | 1 | `agentDir` 传 `<state-dir>/agents/main` 时 secret 写到错位置（`agents/main/auth-profiles.json`，OpenClaw 不读这个） | 传 `<state-dir>/agents/main/agent`（含 `/agent` 子目录）；统一走 `claw-paths.js` |
-| 2 | 调 `updateConfig(applyAuthProfileConfig)` 写 cfg → gateway 全量重启，所有 chat / agent run / P2P 中断 | **别调** `updateConfig`，只用 `upsertApiKeyProfile` |
+| 2 | 调 `updateConfig(applyAuthProfileConfig)` 写 cfg → gateway 全量重启，所有 chat / agent run / P2P 中断 | **别调** `updateConfig`，用 `buildApiKeyCredential` + `upsertAuthProfileWithLock`（带文件锁，与 remove 共享） |
+| 2b | 用上层封装 `upsertApiKeyProfile`（无锁、同步） → 与带锁的 remove 并发时丢写 | 走带锁版 `upsertAuthProfileWithLock`，与 `removeProviderAuthProfilesWithLock` 共享同一把文件锁 |
+| 2c | 带锁版 helper 失败时**静默返回 `null`**（内部 try/catch 吞错），不抛异常 | handler 必须 `if (result === null) → IO_FAILED`；切勿把 null 当成功 |
 | 3 | `ensureAuthProfileStore({ agentDir })` 抛 `input.trim is not a function` | 改成位置参数：`ensureAuthProfileStore(agentDir)` |
 | 4 | `models.authStatus` 查不到刚配的 api_key provider | 这是设计如此——api_key 不在 refreshable 列表。UI 走插件自己的 list RPC（见 E.1） |
 | 5 | UI 想刷新 OAuth provider 状态时拿到旧缓存 | `models.authStatus` 传 `{ refresh: true }` 旁路 60s TTL |
@@ -751,6 +778,6 @@ return { ok: true };
 | 触发场景 | 装机 / onboarding，一次性配 | 长期运行 UI 中随时配 |
 | 写 cfg.auth.profiles | 是（两步） | 否（只动 secret） |
 | 触发 gateway 重启 | 可以接受（用户在 CLI 端能感知） | 不能接受（UI 端用户感知为"系统故障"） |
-| 主要 helper | `upsertAuthProfile` + `updateConfig(applyAuthProfileConfig)` | `upsertApiKeyProfile` 单步 |
+| 主要 helper | `upsertAuthProfile` + `updateConfig(applyAuthProfileConfig)` | `buildApiKeyCredential` + `upsertAuthProfileWithLock`（带锁、与 remove 共享） |
 
 **结论**：CoClaw **不抄** CLI 模板，因为运行环境约束不同。设计取舍记录在 4.7。

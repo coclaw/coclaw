@@ -100,7 +100,7 @@ api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.lis
 | code | 触发 | 说明 |
 |---|---|---|
 | `INVALID_ARGS` | provider 为空 / apiKey 为空 / 类型错 | 由 `respondInvalid` 抛 |
-| `IO_FAILED` | 文件锁竞争 / 磁盘错误 | 由 `respondError` 抛，message 透传 |
+| `IO_FAILED` | 文件锁竞争 / 磁盘错误 / **SDK 静默返回 null** | 由 `respondError` 抛，message 透传 |
 
 **与已有 profile 的冲突**：profileId 缺省 `<provider>:default`，若该 profileId 已被 OAuth 等其它认证模式占用，**直接顶替**（type 翻成 api_key，原凭据丢失）。设计假设：实际市面上同一个 provider 不会同时提供多种认证方式——OAuth 厂家通常给独立的 provider id，冲突场景不存在（详见 § 6.9）。
 
@@ -109,16 +109,18 @@ api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.lis
 handler 内部一步走完：
 
 1. 校验 params（`respondInvalid` on bad input）
-2. 调 SDK `upsertApiKeyProfile`（同步返回 profileId）：
-   - `provider`：调用方传的 id
-   - `input`：调用方传的 apiKey
-   - `agentDir`：用 [`claw-paths.js`](../src/claw-paths.js) 解析的 **main agent 完整路径**（含 `/agent` 子目录）
-   - `options.secretInputMode: 'plaintext'`
-   - `profileId`：调用方传的或默认
-3. **不调** `updateConfig` / `mutateConfigFile`——见 mental-model § 4.7"只动 secret 不动 cfg"
-4. `respond(true, { profileId })`
+2. 用 SDK `buildApiKeyCredential(provider, apiKey, undefined, { secretInputMode: 'plaintext' })` 构造凭据对象
+3. 调 SDK `upsertAuthProfileWithLock({ profileId, credential, agentDir })`：
+   - `profileId`：调用方传的或默认 `<provider>:default`
+   - `agentDir`：用 [`claw-paths.js`](../src/claw-paths.js) 的 `mainAgentDir()` 解析（含 `/agent` 子目录）
+   - **带文件锁**——与 `removeProviderAuthProfilesWithLock` 共享同一把锁，避免 set + remove 并发丢写
+4. **判 null = 失败**：该 helper 内部 `try/catch` 把锁失败 / 磁盘错误**静默吞成 `null`**（不抛异常），handler 必须显式 `if (result === null) → IO_FAILED`
+5. **不调** `updateConfig` / `mutateConfigFile`——见 mental-model § 4.7"只动 secret 不动 cfg"
+6. `respond(true, { profileId })`
 
-总代码量 ~15 行，参考 mental-model 附录 E.1 的代码骨架。
+> ⚠️ **为什么不用上层封装 `upsertApiKeyProfile`**：该封装内部走同步、**无锁**的 `upsertAuthProfile`，与带锁的 remove 并发时会绕过文件锁丢写。带锁版 + `buildApiKeyCredential` 的组合与封装内部行为等价（两次幂等的 `normalizeSecretInput` 等于一次），但锁正确。
+
+总代码量 ~20 行，参考 mental-model 附录 E.1 的代码骨架。
 
 ### 2.3 OAuth 登录（待设计；下个议题展开）
 
@@ -197,9 +199,10 @@ handler 内部一步走完：
 
 #### 实现要点
 
-1. 调 SDK `removeProviderAuthProfilesWithLock({ provider, agentDir })`（异步，返回 store 或 null）
-2. **不动 cfg.auth.profiles**——见 mental-model § 4.7
-3. 同 provider 多 profileId（如 `:default` + `:work`）会一次清干净——上游 helper 内部按 provider 维度删
+1. 调 SDK `removeProviderAuthProfilesWithLock({ provider, agentDir })`（异步，**带文件锁**——与 `upsertAuthProfileWithLock` 共享同一把）
+2. **判 null = 失败**：该 helper 同样 `try/catch` 吞错返 `null`，handler 必须 `if (result === null) → IO_FAILED`
+3. **不动 cfg.auth.profiles**——见 mental-model § 4.7
+4. 同 provider 多 profileId（如 `:default` + `:work`）会一次清干净——上游 helper 内部按 provider 维度删
 
 ### 2.6 写完后的 cache 行为
 
