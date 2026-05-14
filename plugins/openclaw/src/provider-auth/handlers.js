@@ -53,6 +53,9 @@ function isNonEmptyString(v) {
  * @returns {{ setApiKey: Function, list: Function, remove: Function }}
  */
 export function buildProviderAuthHandlers({ sdk, resolveAgentDir }) {
+	// TODO: 将来若要支持"设默认模型 / 多账号顺序"等需要写 cfg 的操作，会撞上
+	// gateway 重启窗口的 UX 问题——参 docs/model-config-api.md § 3 / § 5（占位章节）。
+	// 当前三个 RPC 都只动 secret 不动 cfg，零重启。
 	async function setApiKey({ params, respond }) {
 		try {
 			const provider = params?.provider;
