@@ -16,6 +16,7 @@ import nodePath from 'node:path';
 import { getRuntime } from './runtime.js';
 
 const CHANNEL_ID = 'coclaw';
+const MAIN_AGENT_ID = 'main';
 
 /**
  * OpenClaw 真实 state 目录
@@ -79,6 +80,19 @@ export function sessionTranscriptPath(sessionId, agentId, entry) {
 		return helper(sessionId, entry, { agentId });
 	}
 	return nodePath.join(agentSessionsDir(agentId), `${sessionId}.jsonl`);
+}
+
+/**
+ * main agent 的 agentDir（auth-profiles.json / auth-state.json 等凭据文件所在目录）
+ *
+ * OpenClaw provider-auth helper 的 `agentDir` 入参约定**含 `/agent` 子目录**
+ * （上游 `resolveOpenClawAgentDir` 内部就是拼到这一层），见 mental-model 陷阱 #14。
+ * 凭据相关 RPC（provider-auth setApiKey / list / remove）一律走 main agent
+ * 一份就够——所有 agent 通过 OpenClaw 的层叠合并自动可见（mental-model § 4.2-4.3）。
+ * @returns {string}
+ */
+export function mainAgentDir() {
+	return nodePath.join(clawStateDir(), 'agents', MAIN_AGENT_ID, 'agent');
 }
 
 export { CHANNEL_ID };

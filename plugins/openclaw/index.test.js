@@ -1434,6 +1434,9 @@ test('register full mode: all expected side effects fire with exact RPC method s
 		'coclaw.files.delete',
 		'coclaw.files.mkdir',
 		'coclaw.files.create',
+		'coclaw.providerAuth.setApiKey',
+		'coclaw.providerAuth.list',
+		'coclaw.providerAuth.remove',
 	];
 	for (const m of expectedMethods) {
 		assert.ok(handlers.has(m), `expected RPC method "${m}" to be registered`);

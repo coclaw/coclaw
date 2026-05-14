@@ -17,6 +17,7 @@ import { createFileHandler } from './src/file-manager/handler.js';
 import { abortAgentRun } from './src/agent-abort.js';
 import { decideCancelResponse } from './src/agent-cancel-heuristic.js';
 import { remoteLog } from './src/remote-log.js';
+import { registerProviderAuthHandlers } from './src/provider-auth/index.js';
 
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
 export { getPluginVersion, __resetPluginVersion };
@@ -690,6 +691,10 @@ const plugin = {
 				respondError(respond, err);
 			}
 		});
+
+		// provider 认证管理 RPC（API key 写入 / 列表 / 撤销）。SDK 走懒加载 dynamic import，
+		// 不增加本插件 cold-load 开销，也让测试环境无需 openclaw 包就能加载 index.js
+		registerProviderAuthHandlers(api);
 
 		const scheduler = new AutoUpgradeScheduler({ pluginId: api.id, logger });
 		api.registerService({

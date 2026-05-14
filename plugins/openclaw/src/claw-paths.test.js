@@ -8,6 +8,7 @@ import {
 	sessionStorePath,
 	agentSessionsDir,
 	sessionTranscriptPath,
+	mainAgentDir,
 	CHANNEL_ID,
 } from './claw-paths.js';
 import { setRuntime } from './runtime.js';
@@ -263,6 +264,23 @@ test('多 profile：state-dir = ~/.openclaw-foo 风格路径（runtime 直接返
 	finally {
 		reset();
 	}
+});
+
+// === mainAgentDir ===
+
+test('mainAgentDir 拼上 agents/main/agent（含 /agent 子目录）', () => {
+	setRuntime({ state: { resolveStateDir: () => '/state' } });
+	try {
+		assert.equal(mainAgentDir(), nodePath.join('/state', 'agents', 'main', 'agent'));
+	}
+	finally {
+		reset();
+	}
+});
+
+test('mainAgentDir 在 runtime 未注入时抛错', () => {
+	reset();
+	assert.throws(() => mainAgentDir(), /runtime not injected/);
 });
 
 test('容器部署：state mount 到非家目录路径', () => {
