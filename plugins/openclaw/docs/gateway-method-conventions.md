@@ -10,6 +10,68 @@ OpenClaw 把 method 名当**扁平字符串 key**——"."只是约定分隔符�
 - 本插件新增 method **统一用 `coclaw.` 前缀**，符合 OpenClaw 官方约定 `pluginId.action`。
 - 历史方法 `nativeui.sessions.listAll` / `nativeui.sessions.get` 暂保留，迁移成本不大但没必要为兼容耗费精力——后续若需要重命名走 deprecation flow 即可。
 
+## 成功响应形状（CLI 路径 vs WS 路径）
+
+> 一句话：**只走 WebSocket 的 method 怎么响应都行；同时暴露给 CLI（`openclaw gateway call`）的 method 必须把数据 wrap 成 `{ status: <data> }`、空 payload 用 `{ status: {} }`，绝不能 `respond(true, undefined)`**。
+
+### 两条不对称的访问路径
+
+本插件的 RPC method 实际有两类调用方：
+
+| 调用方 | 进入路径 | 收到的 data |
+|---|---|---|
+| UI / server（WS） | 直接 WebSocket 帧 | `respond(true, X)` 里的 `X` 原样 |
+| CLI（`openclaw coclaw <cmd>` → `callGatewayMethod`） | 起 `openclaw gateway call <method> --json` 子进程，stdout 拿 JSON → 取 `.status` | `X.status`（**unwrap 一层**） |
+
+`callGatewayMethod` 的 unwrap 逻辑写死在 `common/gateway-notify.js`，是本插件 CLI 共享的契约。
+
+### 两个上游 CLI 的硬要求
+
+`openclaw gateway call --json` 这条子进程链路有两条不能踩的：
+
+1. **`respond(true, undefined)` 会让上游 CLI 抛 `TypeError: Cannot read properties of undefined (reading 'endsWith')`**——它在 stdout 里期望永远是 JSON 对象，data 为 undefined 时无 JSON 可输出但 close 阶段的判断又预设字符串非 undefined。错误路径 `respond(false, undefined, err)` 不受影响（走 stderr）。
+2. **缺 `.status` 字段时 CLI 取到 undefined**——上游 `--json` 直接打印 `respond` 第二参数；下游 `callGatewayMethod` 找不到 `.status` 就把 undefined 透给业务。
+
+### 实操规则
+
+新加 method 时，**事先无法判断是否会被 CLI 调到，一律 wrap**：
+
+```js
+api.registerGatewayMethod('coclaw.foo', async ({ params, respond }) => {
+  try {
+    if (typeof params?.x !== 'string') {
+      respondInvalid(respond, 'x must be a string');
+      return;
+    }
+    const result = await doFoo(params);
+    respond(true, { status: result });           // ✅ 包一层
+  } catch (err) {
+    respondError(respond, err);                  // 错误路径不受影响
+  }
+});
+
+// 没有 payload 的 method：
+respond(true, { status: {} });                   // ✅
+// 不能写：
+respond(true, undefined);                        // ❌ 上游 CLI 崩
+respond(true, {});                               // ❌ CLI helper unwrap 后是 undefined
+```
+
+### 既存 method 的现状
+
+| Method | 是否 wrap `{ status }` | CLI 入口 |
+|---|---|---|
+| `coclaw.bind / unbind / enroll` | wrap | 有（`openclaw coclaw <action>`） |
+| `coclaw.providerAuth.*` | wrap（2026-05-14 修复） | 有（`openclaw coclaw auth <action>`） |
+| `coclaw.info` / `info.get` / `info.patch` | 裸 | 无（仅 WS） |
+| `coclaw.topics.*` / `sessions.*` / `chatHistory.*` / `files.*` / `agent.abort` / `upgradeHealth` | 裸 | 无（仅 WS） |
+
+**裸 method 未来如果加 CLI 入口，必须先补 wrap**，否则 CLI 拿到 undefined。
+
+### 与 wire 协议契约的关系
+
+外部消费者（UI / server / 其它 App）看到的协议本身是 wrap 后的 `{ status: ... }` 形状——这不是 CoClaw 私有约定，但本插件 CLI helper 把它当默认形状用。设计稿（如 `model-config-api.md`）里描述出参形状时**带 status 包装**，与代码一致。
+
 ## 错误响应格式
 
 **新格式（统一用这个）**：

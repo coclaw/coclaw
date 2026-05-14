@@ -51,6 +51,99 @@ import { mutateConfigFile, replaceConfigFile } from "openclaw/plugin-sdk/config-
 
 ---
 
+## 第三方插件如何 import Plugin SDK（loader 机制）
+
+> 2026-05-14 钉死。**写新代码前必读**——上一版 CLAUDE.md 上的"禁止 import plugin-sdk" 约束已废除，但导入方式有硬约束。
+
+### 一句话结论
+
+第三方插件用 **bare specifier `openclaw/plugin-sdk/<sub>`**（不是 `@openclaw/plugin-sdk/...`），同时在 `package.json` 把 `openclaw` 声明为 **optional peerDependency**。**关键陷阱**：specifier 必须以字符串字面量出现在**插件入口文件**源码里，否则 OpenClaw plugin loader 的 alias 改写不会触发，整张依赖图回退到原生 Node 解析就找不到 `openclaw` 包。
+
+### 上游官方契约
+
+来源：`openclaw-repo/docs/plugins/`：
+
+| 文档 | 关键陈述 |
+|---|---|
+| `building-plugins.md` "Import conventions"（约 :337-347） | "Always import from focused `openclaw/plugin-sdk/<subpath>` paths"；根桶口 `openclaw/plugin-sdk` 已 deprecated |
+| `building-plugins.md` 提交前 checklist（约 :373） | "All imports use focused `plugin-sdk/<subpath>` paths" |
+| `dependency-resolution.md`（约 :60-66） | "Plugins that import `openclaw/plugin-sdk/*` declare `openclaw` as a peer dependency" |
+| `cli-backend-plugins.md`（约 :47-69） | 示例 `package.json` 含 `"openclaw": "^2026.3.24"` |
+| `extensions/discord/package.json` / `extensions/clickclack/package.json` | 实际范例：`peerDependencies: { openclaw: ">=2026.5.10-beta.1" }` + `peerDependenciesMeta.openclaw.optional: true` |
+
+声明 peer 的实际作用：OpenClaw 的 `plugins install/update/doctor` 流程会在 plugin 目录下 reassert `node_modules/openclaw` 符号链（dependency-resolution.md "reasserts plugin-local `node_modules/openclaw` links"）。对 npm/git 安装是这样；**对 local-path 安装（如本插件 `pnpm deploy --prod` 出的 link-stage）是否同样 reassert，文档没明说**——我们走的路径不依赖这条 reassert，靠下一节的 loader alias 兜底。
+
+### Loader Alias 真实机制
+
+OpenClaw plugin loader 不依赖 plugin 自带 `node_modules/openclaw`——它自己有一张 alias map 把 `openclaw/plugin-sdk/<sub>` 直接接到 OpenClaw 安装目录下的 `dist/plugin-sdk/<sub>.js`。alias map 在已安装 OpenClaw 包里（路径形如 `<openclaw-install>/dist/sdk-alias-*.js`，函数 `resolvePluginSdkScopedAliasMap` / `buildPluginLoaderAliasMap`）。
+
+**触发条件**：loader 通过正则扫描"待加载文件"源码、看到 plugin-sdk import 字面量才强制走 jiti（jiti 才会应用 alias），否则回退到原生 Node `require/import`。正则在 `<openclaw-install>/dist/plugin-module-loader-cache-*.js` 第 58 行附近：
+
+```
+PLUGIN_SDK_IMPORT_SPECIFIER_PATTERN =
+  /(?:\bfrom\s*["']|\bimport\s*\(\s*["']|\brequire\s*\(\s*["'])
+   (?:openclaw|@openclaw)\/plugin-sdk(?:\/[^"']*)?["']/u
+```
+
+正则要求：
+- 字面量字符串（单引号 / 双引号都行）；变量传给 `import()` **不匹配**
+- 必须在**插件入口文件**源码里——loader 调 `loadPluginModule(safeSource)` 时 `safeSource` = 入口路径，正则只对它生效；进入入口后的依赖图（含 `import './sub/...'` 拉的子模块）由 Node 原生 ESM 接管，jiti 不再插手
+
+### 字面量 vs 变量、入口 vs 子模块
+
+四种写法的实际表现（已在 OpenClaw 主进程实测）：
+
+| 写法 | 在入口文件 | 在子模块 |
+|---|---|---|
+| `import 'openclaw/plugin-sdk/X'`（静态字面量） | ✅ 通过 | ✅ 通过（因入口已触发 jiti，依赖图被一并 alias） |
+| `import('openclaw/plugin-sdk/X')`（动态字面量） | ✅ 通过 | ❌ 失败（子模块源码无 jiti，原生 Node 解析找不到 `openclaw`） |
+| `const M='openclaw/plugin-sdk/X'; import(M)`（动态变量） | ❌ 失败 | ❌ 失败 |
+| 完全不出现 | — | — |
+
+CoClaw 选静态字面量风险太大（测试环境无 `openclaw` 包时入口加载即崩）。**实际套路**：入口写一个工厂函数 `() => import('openclaw/plugin-sdk/<sub>')`，注入到子模块当 `loadSdk`——字面量在入口源码里满足正则、jiti 改写后 alias 命中 OpenClaw 自家 dist。第一次 RPC 调用时才解析，懒加载惯性也保留。
+
+实际代码骨架：
+
+```js
+// plugins/openclaw/index.js（入口）
+import { registerProviderAuthHandlers } from './src/provider-auth/index.js';
+
+// register() 内：
+registerProviderAuthHandlers(api, {
+  loadSdk: () => import('openclaw/plugin-sdk/provider-auth'),  // 字面量必须在这
+});
+```
+
+```js
+// src/provider-auth/index.js（子模块）
+export function registerProviderAuthHandlers(api, opts) {
+  const loadSdk = opts.loadSdk;                                 // 由入口注入
+  // 第一次调用时才解析 SDK：
+  const sdk = await loadSdk();
+  // ... 用 sdk.upsertAuthProfileWithLock 等
+}
+```
+
+### 何时优先 SDK、何时优先 runtime
+
+CLAUDE.md 总纲："对 OpenClaw 的操作优先选 gateway RPC > runtime API > plugin SDK > 手搓"。SDK import 和 runtime 注入的关系：
+
+- **runtime 有等价 API**（如 `rt.state.resolveStateDir()`）→ **走 runtime**。对老 gateway 更兼容（state-paths SDK 子路径 2026-03-16 才公开，比 runtime API 2026-02-19 晚一个月；其它子路径也可能存在类似窗口）
+- **runtime 没有等价 API**（如 `openclaw/plugin-sdk/provider-auth` 当前确实没 `rt.providerAuth.*`）→ **走 SDK import**。按本节字面量规则做
+
+### 与本插件 CLAUDE.md 的对应（已废除的"禁止 import plugin-sdk"）
+
+上一版 `plugins/openclaw/CLAUDE.md` 有一条：
+
+> ~~禁止直接 `import { resolveStateDir } from '@openclaw/plugin-sdk/state-paths'`~~
+
+这条**已在 2026-05-14 改写**为更精确的规则：
+
+- `resolveStateDir` 这一类**有 runtime 等价**的依然走 runtime（兼容性原因）
+- **没有 runtime 等价的**（如 provider-auth）走 SDK import，按本节字面量规则
+
+原版禁令背后的实际原因不是"SDK 不可用"，而是"那个特定子路径上游晚出现了一个月"。现在我们知道 SDK 是公开的、契约稳固的，禁令换成"按场景选择"。
+
 ## 案例钉死：`ensureAuthProfileStore`
 
 它确实是 Plugin SDK 的一份子，证据链：
@@ -91,11 +184,11 @@ import { mutateConfigFile, replaceConfigFile } from "openclaw/plugin-sdk/config-
 
 CoClaw `plugins/openclaw/CLAUDE.md` 里有几条硬约束本质上就是在这两条供给线之间做选择：
 
-- **「禁止直接 `import { resolveStateDir } from '@openclaw/plugin-sdk/state-paths'`」**——这不是说 plugin-sdk 不真实存在，而是该 SDK 子路径在 2026-03-16 才公开，比 runtime 注入版（2026-02-19）晚一个月。当前选择走 runtime 注入更兼容老 gateway。等下沉到 SDK 之后未来再切。
+- **state-paths 类（有 runtime 等价）走 runtime 注入**——具体见上一节"何时优先 SDK、何时优先 runtime"。原 CLAUDE.md 的"禁止 import plugin-sdk"绝对禁令已在 2026-05-14 废除，改为按场景选择。
 - **「`auto-upgrade/state.js` 因被 worker 子进程共用（worker 没 runtime），保留独立的 env 兜底」**——worker 子进程没有 runtime 注入，只能靠 SDK / 直接读环境变量。这也反向印证了 runtime 是注入的，不是全局可用的。
 - **「禁止在 auto-upgrade worker 进程中调 remoteLog」**——同理，worker 没 gateway 主连接，bridge 不可用。
 
-简言之：**runtime 是注入的资源**（需要 gateway 给你才有），**SDK 是 import 来的工具**（包在 node_modules 里随时可用）。worker 子进程没人给它注入 runtime，但 SDK 它自己 import 一样能用。
+简言之：**runtime 是注入的资源**（需要 gateway 给你才有），**SDK 是 import 来的工具**（按字面量规则可在第三方插件里直接调）。worker 子进程没人给它注入 runtime，但 SDK 它自己 import 一样能用——前提是仍满足"字面量在入口"的硬约束（worker 是独立 spawn 子进程、本质是另一份 entry，需要在它自己的入口源码里写字面量）。
 
 ---
 

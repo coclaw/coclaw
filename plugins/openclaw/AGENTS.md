@@ -21,7 +21,8 @@
 
 - `src/claw-paths.js` 是路径解析的**唯一入口**。所有 `state-dir` / sessions 相关路径计算必须经它。
 - **禁止**手拼 `os.homedir() + '.openclaw'` 或 `~/.openclaw`。**Why:** OpenClaw 推荐用户级安装但允许自定义 state-dir（系统级安装、多 profile、容器、`OPENCLAW_STATE_DIR`），手拼必然在非默认部署下错位。
-- **禁止**直接 `import { resolveStateDir } from '@openclaw/plugin-sdk/state-paths'`。**Why:** 这条 SDK 子路径在 2026-03-16 才公开，比 runtime 注入版（2026-02-19）晚一个月；统一走 runtime 注入更兼容。
+- `resolveStateDir` 一类**有 runtime 等价 API** 的能力走 **runtime 注入**（`rt.state.resolveStateDir()`），不直接 import `openclaw/plugin-sdk/state-paths`。**Why:** runtime API 自 2026-02-19 公开，比 SDK 子路径（2026-03-16）早一个月，对老 gateway 更兼容。
+- **runtime 没有等价 API 时**（如 `openclaw/plugin-sdk/provider-auth` 上游确实没暴露 `rt.providerAuth.*`），允许（并必须）import plugin-sdk 子路径，但严格遵循"字面量 specifier + 出现在插件入口源码里"的硬约束——详见 [`docs/openclaw-research/plugin-sdk-and-runtime.md`](../../docs/openclaw-research/plugin-sdk-and-runtime.md) 的"第三方插件如何 import Plugin SDK"章节。**Why:** OpenClaw plugin loader 只对入口文件源码做正则扫描决定是否走 jiti alias；变量 / 子模块字面量都不命中，回退到原生 Node 解析必败（部署目录不带 `openclaw` 包）。**配合**：`package.json` 把 `openclaw` 声明为 optional peerDependency（上游正式契约）。
 - **禁止**在 gateway 主进程读 `OPENCLAW_STATE_DIR` 环境变量来推 state-dir。**Why:** runtime 注入的 `resolveStateDir` 内部已经处理了 env / profile / CLI flag 全部组合，外面再读会产生分叉来源。
 - 例外：`auto-upgrade/state.js` 因被 worker 子进程共用（worker 没 runtime），保留独立的 env 兜底——不要"统一"它。
 - 读 OpenClaw 自家 sessions 数据（sessions.json / 单条 transcript JSONL）必须走 `claw-paths.js` 的 `sessionStorePath` / `sessionTranscriptPath`。**Why:** state-dir 不一定是 `~/.openclaw`，手拼必然在系统级安装/多 profile/容器场景下错位。
@@ -48,6 +49,7 @@
 
 - error 响应统一走 `common/errors.js` helper：异常 `respondError(respond, err)`、参数校验失败 `respondInvalid(respond, msg)`。**Why:** 直接 `respond(false, { error })` 是旧格式，下游解析不到结构化错误。
 - 所有 handler 必须 `try/catch`。
+- 成功响应必 wrap 成 `{ status: <data> }`，空 payload 用 `{ status: {} }`。**Why:** 上游 `openclaw gateway call --json` 对 `respond(true, undefined)` 会崩 `endsWith` TypeError；本插件共享的 `callGatewayMethod` 还会把 JSON 输出里的 `.status` unwrap 后给 CLI 用——直接给裸对象会让 CLI 拿到 undefined。既存的 `coclaw.info/topics/sessions/files` 不 wrap 是因为只走 WS、不经 CLI；新加 method 事先未必能判断是否会被 CLI 调到，**一律 wrap 兜底**。详见 [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md) 的"成功响应形状"章节。
 - 新方法用 `coclaw.` 前缀。命名/Scope/历史方法详见 [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md)。
 
 ### Hook / RPC 双实例陷阱（`--link` 安装模式）
