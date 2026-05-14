@@ -1,5 +1,25 @@
 # Plugin TODO
 
+## RPC handler 错误响应 `err.message` 透传可能泄露内部细节
+
+**发现日期**：2026-05-15（D1 model-default deep-review 时识别）
+**关联**：`plugins/openclaw/src/provider-auth/handlers.js` + `plugins/openclaw/src/model-default/handlers.js`
+
+**问题**：handler catch 块里直接把 `String(err?.message ?? err)` 当作 RPC error message 透传，路径 / 内部函数名 / 栈片段可能随之外泄到 UI / server / 远端 log。具体调用方：
+
+- provider-auth/handlers.js setApiKey / list / remove 三个 method 的 IO_FAILED 路径
+- model-default/handlers.js set / list 的 IO_FAILED 路径
+
+**为什么本期未一并修**：项目级遗留问题——provider-auth 同款，按"review 仅修本次引入"原则不动；同时 message 透传对开发者排错有用，纯遮蔽掉信息密度会下降。需要"分级脱敏"方案（如：识别 stack-like 片段才剪 / 白名单 message 字面量），不是单点改动。
+
+**修复方向**：
+
+- 在两处 helper（`respondIoFailed` / provider-auth 的同款）里加 message 净化：剪掉绝对路径、文件名、stack frame；保留前 N 字符的人类语义
+- 或引入 plugin 级 "outbound error sanitizer" 集中处理；同步给 server 远端 log 也走一遍
+- 实施前评估对调试体验的影响
+
+---
+
 ## __forwardToServer 在 WS 断窗口期静默/丢信令的完整方案
 
 **发现日期**：2026-05-08（codex-rescue review WS-PC 解耦方案时识别）

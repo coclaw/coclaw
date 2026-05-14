@@ -18,6 +18,7 @@ import { abortAgentRun } from './src/agent-abort.js';
 import { decideCancelResponse } from './src/agent-cancel-heuristic.js';
 import { remoteLog } from './src/remote-log.js';
 import { registerProviderAuthHandlers } from './src/provider-auth/index.js';
+import { registerModelDefaultHandlers } from './src/model-default/index.js';
 
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
 export { getPluginVersion, __resetPluginVersion };
@@ -699,6 +700,16 @@ const plugin = {
 		// 字面量留在子模块里 loader 看不到 → 整张图走原生 Node 解析必败（plugin 部署目录不带 openclaw 包）
 		registerProviderAuthHandlers(api, {
 			loadSdk: () => import('openclaw/plugin-sdk/provider-auth'),
+		});
+
+		// 模型默认配置 RPC（coclaw.model.set / list）。三个 SDK 子入口的字面量
+		// dynamic import 必须留在本入口源码——OpenClaw plugin loader 只扫入口源码
+		// 命中 `openclaw/plugin-sdk/*` 字面量并触发 jiti 重写；藏在子模块的字面量
+		// loader 看不到 → 原生 Node 解析必败。
+		registerModelDefaultHandlers(api, {
+			loadConfigMutation: () => import('openclaw/plugin-sdk/config-mutation'),
+			loadModelsProviderRuntime: () => import('openclaw/plugin-sdk/models-provider-runtime'),
+			loadProviderAuth: () => import('openclaw/plugin-sdk/provider-auth'),
 		});
 
 		const scheduler = new AutoUpgradeScheduler({ pluginId: api.id, logger });

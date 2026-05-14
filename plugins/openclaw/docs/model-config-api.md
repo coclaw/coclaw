@@ -17,7 +17,7 @@
 |---|---|---|
 | provider 清单获取 | 已定（用上游 `models.list view:"all"`） | § 1 |
 | Provider 认证管理（API key / OAuth / 列表 / 撤销） | **API key + list + remove 本期实施**；OAuth 待设计（下个议题） | § 2 |
-| 默认模型设置 | 待设计 | § 3 |
+| 默认模型设置 | **本期实施**（default + per-agent primary） | § 3 |
 | 白名单 + 模型附加设置 | 待设计 | § 4 |
 | 多账号顺序 | 暂不做 | § 5 |
 
@@ -218,16 +218,131 @@ handler 内部一步走完：
 
 ---
 
-## § 3. 默认模型设置（待设计）
+## § 3. 默认模型设置
 
-> 涉及 `cfg.agents.defaults.model.primary` + `fallbacks`（mental-model § 3）。
->
-> ⚠️ 写 `cfg.agents.defaults.model` 也是 hot-reload（mental-model § 4.7 的 reload 规则表里 `agents.defaults.model` 是 hot，不重启 gateway）——这条比 auth 那条幸运。
->
-> 待设计的关键问题：
-> - per-agent 覆盖（`cfg.agents.list[i].model`）的 UI 入口
-> - 与白名单（§ 4）的交互（默认指针引用了白名单没列的模型也照跑，mental-model 陷阱 #1）
-> - fallback 链的 UI 展示与编辑
+**两个 method 一次到位：default scope + per-agent scope，纯兜底**——用户至少有一个可用 model。fallback 链交给用户与 agent 自行配置，CoClaw 不动；模态（image/video/music/pdf）也不动。
+
+### 3.1 协议总览
+
+| RPC | 行为 | 状态 |
+|---|---|---|
+| `coclaw.model.set` | 设 / 清 default 或某 agent 的 primary | **本期实施** |
+| `coclaw.model.list` | 列 default + 所有 agent 的 primary | **本期实施** |
+
+均归 `operator.admin` scope。
+
+写 `cfg.agents.defaults.model.primary` / `cfg.agents.list[i].model.primary` 是 **hot-reload**（mental-model § 4.7 reload 规则表）——毫秒级心跳重启 agent，不掉 gateway、不掉 RTC、chat/run 不中断。锚点：`openclaw-repo/src/gateway/config-reload-plan.ts:81-85`（`agents.defaults.model`）+ `:96-99`（`agents.list[i].model`）。
+
+### 3.2 范畴
+
+- **写**：`cfg.agents.defaults.model.primary`（default scope）+ `cfg.agents.list[i].model.primary`（per-agent scope）
+- **不写**：
+  - `fallbacks`——交给用户与 agent 沟通来配（自动算容易选错模型，如 provider 的 mini/flash 不是用户期望）
+  - 模态字段（`imageModel` / `imageGenerationModel` / `videoGenerationModel` / `musicGenerationModel` / `pdfModel`）——独立 primary+fallbacks 结构，与 D1 解耦
+  - `auth.order` profile 顺序
+- **不 hook**：setApiKey / removeApiKey 不联动重算 fallbacks
+
+### 3.3 `coclaw.model.set`
+
+**入参**：
+
+```ts
+{
+  agentId?: string;              // 缺省 = default scope；非空 string = per-agent scope
+  primary: string | null;        // 必传；非空 string 为设，null 为清
+}
+```
+
+**出参**：成功 `{}`（空对象，**不加 status wrap**）。
+
+**错误码**：
+
+| code | 触发 |
+|---|---|
+| `INVALID_ARGS` | params 非 object / array / 未知字段 / agentId 非空 string 检查失败 / primary 缺失或类型错 / primary 形态错（无 `/`、`/` 在端点）/ provider 无可用凭据 / model 不在 catalog |
+| `IO_FAILED` | runtime cfg 不可读 / `mutateConfigFile` 抛错 / SDK 校验函数抛错 |
+
+**校验流程（fail-fast）**：
+
+1. params 必须是 object（拒 array、null）
+2. 拒未知字段（只允许 `agentId` / `primary`）
+3. `agentId` 缺省 OR 非空 string
+4. `primary` 必传，类型为 string 或 null
+5. 非 null 时：
+   - 含 `/`，且 `/` 不在首尾（拆出 `<provider>` + `<model>`）
+   - `isProviderAuthProfileConfigured({ provider, cfg, agentDir })` 返回 true
+   - `buildModelsProviderData(cfg, undefined, { view: 'all' })` 的 `byProvider.get(provider)?.has(model)` 为 true
+
+注意 catalog 校验用 `view: 'all'`：默认 view 会过滤掉 picker 不可见的合法 provider，导致 false negative（subagent 调研结论）。
+
+**写盘行为**：
+
+- 走 `mutateConfigFile`（last-writer-wins，不传 baseHash）
+- **字段级**修改 `primary`，**不整体重写** `model` 对象——保留原有 `fallbacks` / `timeoutMs` 等兄弟字段
+- model 字段三态处理：
+  - object：`model.primary = newId`
+  - string（简写形态）：升级成 `{ primary: newId }`（原 string 本只含 primary 一项语义，无损）
+  - 缺省：创建 `{ primary: newId }`
+
+**清除（primary = null）**：
+
+- object 形态：`delete model.primary`；删完后若 model 对象为空 → 整体删 `model` 字段
+- string 形态：`delete model` 字段
+- per-agent scope 且 entry 不存在 → 静默成功（无写操作）
+- 容器（defaults / entry）即便清空也保留，避免影响兄弟字段
+
+**per-agent 新建 entry**：若 `cfg.agents.list` 里没该 agentId，自动 append `{ id, model: { primary } }`——`AgentEntrySchema` 内部所有字段都 optional，最小 entry 合法（核源 `openclaw-repo/src/config/zod-schema.agent-runtime.ts:889`）。
+
+### 3.4 `coclaw.model.list`
+
+**入参**：无
+
+**出参**：
+
+```ts
+{
+  default: { primary: string | null };
+  agents: Record<string, { primary: string | null }>;     // agentId 作 key
+}
+```
+
+**不加 status wrap**。`agents` 是 map（不是数组），形状与 `default` 对称——将来加 `fallbacks` 等字段两边平行扩。
+
+**agents 列表来源**：
+
+- `cfg.agents.list` 里所有合法 entry（id 是非空 string）
+- 永远补一条 `main: { primary: null }`（心智模型 § 3.5：main agent 默认存在）；若 cfg 已显式含 main entry 则用其值
+
+`primary: null` 表示该 scope 未覆盖。**只回 raw**——effective primary（per-agent → default → 内置兜底）由 UI 自行解析。
+
+**错误码**：仅 `IO_FAILED`（runtime cfg 不可读）。
+
+### 3.5 实现位置
+
+| 文件 | 角色 |
+|---|---|
+| `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配） |
+| `src/model-default/persist.js` | 字段级 set / clear 写盘（封装 `mutateConfigFile` 调用） |
+| `src/model-default/handlers.js` | set / list handler（入参校验 + 副作用编排） |
+| `src/model-default/index.js` | 懒加载 SDK + 注册到 gateway api |
+| `index.js`（plugin 入口） | 注入三个 SDK 子入口字面量 `import('openclaw/plugin-sdk/...')` |
+
+### 3.6 不做项（明确否决）
+
+- ❌ fallback 链自动维护（交给用户与 agent 沟通配）
+- ❌ hook setApiKey / removeApiKey 联动
+- ❌ CoClaw in-process mutex（last-writer-wins 够用）
+- ❌ baseHash 乐观锁重试
+- ❌ plugin event 失败通知
+- ❌ CLI 入口（一期 UI-only；debug 用 `openclaw gateway call coclaw.model.list --json`）
+- ❌ effective primary 输出（UI 自行解析层叠）
+- ❌ `@profile` 后缀（modelId 末尾的账号 hint，与 D1 解耦）
+
+### 3.7 扩展路径
+
+- 加 fallbacks：`set({ agentId?, primary?, fallbacks? })` + list 出参每个 value 加 `fallbacks` 字段
+- 整删某 agent 的 model 字段：加 `coclaw.model.delete({ agentId })`
+- chat / topic 级：完全新命名空间 `coclaw.chat.model.*` / `coclaw.topic.model.*`
 
 ---
 
@@ -301,7 +416,7 @@ OpenClaw 的 RPC 协议层 `respond(true, data)` / `respond(false, undefined, { 
 
 规则：
 
-- 成功时 payload 只承载"成功才有意义的数据"。无数据要返回的 RPC（如 `remove`）用 `respond(true, undefined)`
+- 成功时 payload 只承载"成功才有意义的数据"。无数据要返回的 RPC（如 `remove`）用 `respond(true, {})`——**不要用 `respond(true, undefined)`**：上游 CLI `openclaw gateway call --json` 在 data 为 undefined 时会崩 `endsWith` TypeError，空对象占位绕开
 - 判断成功失败一律看协议层标志位，不看 payload 里的 ok 字段
 - 失败时通过 `respond(false, undefined, { code, message })` 携带结构化错误，不要把 error 塞进 payload
 
@@ -376,8 +491,8 @@ profile 没有创建时间 / 修改时间。多账号场景下用户看不出哪
 落地时按这条单子检查：
 
 - [ ] 三个 RPC handler 注册位置（建议放 `src/provider-auth/index.js` 或类似新模块）
-- [ ] handler 用 `respondError` / `respondInvalid` 不用旧错误格式
-- [ ] **成功响应不带 `ok` 字段**——remove 用 `respond(true, undefined)`（§ 6.6）
+- [ ] handler error 响应符合协议层错误形态（`respond(false, undefined, { code, message })`），错误码用本节约定的 `INVALID_ARGS` / `IO_FAILED`；helper 名不强制（模块自带局部 helper 也行）
+- [ ] **成功响应不带 `ok` 字段**——空响应用 `respond(true, {})`（§ 6.6）
 - [ ] **时间字段用 ms epoch number，命名 `*At`，不加 `Ms` 后缀**（§ 6.7）
 - [ ] `agentDir` 走 `claw-paths.js`，不手拼路径
 - [ ] list handler 出参不含 `key` / `token` 字段

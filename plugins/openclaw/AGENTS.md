@@ -47,10 +47,11 @@
 
 ### Gateway RPC handler
 
-- error 响应统一走 `common/errors.js` helper：异常 `respondError(respond, err)`、参数校验失败 `respondInvalid(respond, msg)`。**Why:** 直接 `respond(false, { error })` 是旧格式，下游解析不到结构化错误。
+- error 响应必须符合协议层错误形态：`respond(false, undefined, { code, message })`，code 用 ALL_CAPS（`INVALID_ARGS` / `IO_FAILED` / `INTERNAL_ERROR` 等）。**Why:** 直接 `respond(false, { error })` 是旧格式，下游解析不到结构化错误。helper 可用 `common/errors.js`（默认 `INTERNAL_ERROR`），或在模块内自带局部 helper（如 `provider-auth/handlers.js` / `model-default/handlers.js` 用本节约定的 `INVALID_ARGS` / `IO_FAILED` 而非 INTERNAL_ERROR，所以不走 common/errors.js）。
 - 所有 handler 必须 `try/catch`。
-- 成功响应必 wrap 成 `{ status: <data> }`，空 payload 用 `{ status: {} }`。**Why:** 上游 `openclaw gateway call --json` 对 `respond(true, undefined)` 会崩 `endsWith` TypeError；本插件共享的 `callGatewayMethod` 还会把 JSON 输出里的 `.status` unwrap 后给 CLI 用——直接给裸对象会让 CLI 拿到 undefined。既存的 `coclaw.info/topics/sessions/files` 不 wrap 是因为只走 WS、不经 CLI；新加 method 事先未必能判断是否会被 CLI 调到，**一律 wrap 兜底**。详见 [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md) 的"成功响应形状"章节。
-- 新方法用 `coclaw.` 前缀。命名/Scope/历史方法详见 [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md)。
+- 成功响应**默认不 wrap**——payload 直接是纯业务对象（用命名字段，如 `{ profileId }` / `{ topics: [...] }`），空响应用 `respond(true, {})`。**Why:** 协议层 ResponseFrame 自带 ok 标志位 + error 通道，`{ status: ... }` 是 CoClaw CLI helper 的历史私有约定（不是协议要求）。**禁止 `respond(true, undefined)`**——上游 CLI `openclaw gateway call --json` 会崩 `endsWith` TypeError；空响应用 `{}` 占位绕开。设计 RPC method 前先看 `.agents/skills/gateway-method-design/SKILL.md`。
+- 现存 wrap 方法（`coclaw.bind/unbind/enroll/providerAuth.*`）是历史遗物，正在分阶段去 wrap，**不要拿它当模板**。
+- 新方法用 `coclaw.` 前缀。命名 / 错误码 / 历史遗物详见 [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md)。
 
 ### Hook / RPC 双实例陷阱（`--link` 安装模式）
 
