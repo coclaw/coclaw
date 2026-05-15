@@ -16,9 +16,19 @@ test('bindOk should format bind success message', () => {
 	);
 });
 
+test('bindOk should tolerate undefined / empty data without throwing', () => {
+	// helper "非 JSON 兜底"分支返回 {ok:true} 时 cli-registrar 传入 undefined
+	assert.equal(bindOk(undefined), 'OK. Claw (unknown) bound to CoClaw.');
+	assert.equal(bindOk({}), 'OK. Claw (unknown) bound to CoClaw.');
+});
+
 test('unbindOk should format unbind success message', () => {
 	assert.equal(unbindOk({ clawId: 'b1' }), 'OK. Claw (b1) unbound from CoClaw.');
 	assert.equal(unbindOk({}), 'OK. Claw (unknown) unbound from CoClaw.');
+});
+
+test('unbindOk should tolerate undefined data without throwing', () => {
+	assert.equal(unbindOk(undefined), 'OK. Claw (unknown) unbound from CoClaw.');
 });
 
 test('notBound should return not-bound message', () => {

@@ -27,6 +27,10 @@ function createRpcSpawn(responseMap) {
 				} else if (resp?.stderr) {
 					child.stderr.emit('data', resp.stderr);
 					child.emit('close', 1);
+				} else if (typeof resp?.stdoutRaw === 'string') {
+					// 非 JSON 兜底分支：helper 此时返回 { ok: true } 但不带 payload
+					child.stdout.emit('data', resp.stdoutRaw);
+					child.emit('close', 0);
 				} else {
 					child.stdout.emit('data', JSON.stringify(resp?.data ?? {}));
 					child.emit('close', 0);
@@ -169,7 +173,7 @@ test('bind CLI should send code without serverUrl when --server not provided', a
 
 test('bind CLI should show previousClawId when rebinding', async () => {
 	const { spawn } = createRpcSpawn({
-		data: { clawId: 'b-new', rebound: false, previousClawId: 'b-old' },
+		data: { clawId: 'b-new', rebound: true, previousClawId: 'b-old' },
 	});
 
 	const program = createMockProgram();
@@ -182,7 +186,8 @@ test('bind CLI should show previousClawId when rebinding', async () => {
 		await bind.actionFn('newcode', {});
 	})();
 
-	assert.ok(logs.some((l) => l.includes('bound to CoClaw') && l.includes('previous Claw')));
+	// 锁住 rebind 分支：必须渲染 're-bound' 而非 'bound'，且 previous Claw 提示要出现
+	assert.ok(logs.some((l) => l.includes('re-bound to CoClaw') && l.includes('previous Claw')));
 	// 锁住 wire 形态：rebind 时 clawId 与 previousClawId 都要出现在输出
 	assert.ok(logs.some((l) => l.includes('b-new') && l.includes('b-old')));
 });
@@ -249,6 +254,25 @@ test('bind CLI should show UNBIND_FAILED error from RPC', async () => {
 
 	assert.ok(errors.some((l) => l.includes('UNBIND_FAILED')));
 	assert.equal(exitCode, 1);
+});
+
+test('bind CLI should not crash on non-JSON helper fallback', async () => {
+	// helper "非 JSON 兜底"分支返回 { ok: true } 无 payload —— 上游调试输出污染 stdout 等
+	const { spawn } = createRpcSpawn({ stdoutRaw: 'plain text not json' });
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, logger }, { spawn });
+
+	const bind = program.commands.get('coclaw').commands.get('bind <code>');
+
+	const { logs, errors, exitCode } = await withConsole(async () => {
+		await bind.actionFn('12345678', {});
+	})();
+
+	assert.ok(logs.some((l) => l.includes('Claw (unknown) bound to CoClaw')));
+	assert.equal(errors.length, 0);
+	assert.notEqual(exitCode, 1);
 });
 
 // --- unbind CLI 测试 ---
@@ -359,6 +383,24 @@ test('unbind CLI should show generic error on non-NOT_BOUND RPC failure', async 
 	assert.ok(errors.some((l) => l.includes('HTTP 500')));
 	assert.ok(!errors.some((l) => l.includes('Not bound')));
 	assert.equal(exitCode, 1);
+});
+
+test('unbind CLI should not crash on non-JSON helper fallback', async () => {
+	const { spawn } = createRpcSpawn({ stdoutRaw: 'unparseable' });
+
+	const program = createMockProgram();
+	const logger = { info() {}, warn() {} };
+	registerCoclawCli({ program, logger }, { spawn });
+
+	const unbind = program.commands.get('coclaw').commands.get('unbind');
+
+	const { logs, errors, exitCode } = await withConsole(async () => {
+		await unbind.actionFn({});
+	})();
+
+	assert.ok(logs.some((l) => l.includes('Claw (unknown) unbound from CoClaw')));
+	assert.equal(errors.length, 0);
+	assert.notEqual(exitCode, 1);
 });
 
 // --- enroll CLI 测试 ---

@@ -1296,17 +1296,38 @@ pion-ipc 的接口名过滤是 case-sensitive `strings.HasPrefix` 匹配，**无
 
 ---
 
-## cli-registrar.test.js 没覆盖 JSON-shape gateway error 输出
+## cli-registrar.test.js 没覆盖 JSON-shape gateway error 输出（已核实不存在）
 
 **发现日期**：2026-05-16（Phase B 去 wrap 改造 deep-review codex-rescue B 实例识别）
 **关联**：`plugins/openclaw/src/cli-registrar.test.js:26-29` `createRpcSpawn` error 路径
 
-**问题**：CLI 层 mock 现在只覆盖两种错误形态——spawn `error` 事件、plain stderr 字符串。如果 `openclaw gateway call --json` 在某些失败情况下会把结构化 JSON 错误打到 stdout（理论可能，待核实），CLI 解析路径没有专门 fixture 保护。
+**结论**（2026-05-16 Phase C 核实关闭）：
+经查阅上游 `openclaw-repo/src/cli/gateway-cli/register.ts:416-431` 的 `gateway call` 实现 + `runGatewayCommand` catch 链 + `defaultRuntime` (`openclaw-repo/src/runtime.ts:88`)：
+- 成功路径：`defaultRuntime.writeJson(result)` → `JSON.stringify(result, null, 2)` 写 stdout
+- 失败路径：`runGatewayCommand` catch → `defaultRuntime.error('${label}: ${message}')` → **console.error / stderr** + `exit(1)`
 
-**预存性**：本次改造未引入此风险——旧版 mock 也只覆盖这两种形态。
+stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在。无需补 fixture。
+
+---
+
+## helper chunk 边界检测在 pretty-print JSON 多 chunk 到达时可能误判
+
+**发现日期**：2026-05-16（Phase C 核实 C3 时顺手识别）
+**关联**：`plugins/openclaw/src/common/gateway-notify.js:114-120` chunk 监听 + `startGracePeriod`
+
+**问题**：`child.stdout.on('data')` 累积 stdout 后判 `trimmed.startsWith('{') && trimmed.endsWith('}')` 即触发 `startGracePeriod()`；后者**同步调用 `parseResult()`** 并把结果钉死到 closure 里。
+
+上游 `openclaw gateway call --json` 实际输出的是 pretty-printed JSON（缩进 2）。若 payload 含嵌套对象、且 stdout 分多 chunk 到达，**中间某次累积可能恰好在嵌套对象闭合的瞬间满足 startsWith/endsWith**——此时 stdout 整体仍是不完整 JSON，`JSON.parse` 抛、`parseResult` 退化到"非 JSON 兜底"返回 `{ ok: true }`（无 payload）。
+
+**当前严重性**：低——
+- 小 payload（bind/unbind/enroll 返回都 <300 字节）通常一次 chunk
+- C1 已让 bindOk/unbindOk 容忍 undefined，触发后只是输出 `Claw (unknown) ...`，不再 crash
+- 但 `setApiKey` 的 `apiKeySetOk({ provider, profileId: data?.profileId ?? '${provider}:default' })` 等其它 CLI 已经用 optional chain 兜底
+
+**预存性**：与 Phase B 改 wrap 字段名无关，是 helper 自身的 chunk 边界处理设计缺陷，旧版同存在。
 
 **修复方向**：
-
-- 先核实 `openclaw gateway call --json` 失败时 stdout / stderr 的实际行为（grep 上游 CLI 代码 / 跑真实 gateway 验证）
-- 若确实有 JSON-shape stdout 错误形态，在 createRpcSpawn 加 fixture + CLI 解析路径测试
+- 推荐：推迟 `parseResult` 调用到 grace timer fire 时（用闭包重新 trim + parse）——保留 startsWith/endsWith 早判触发 grace 期的语义（grace 期是为兼容"WS handle 滞留导致进程不优雅退出"设计、不能移除），只把 closure 钉死 result 改成 fire 时再 parse；这样后续 chunk 在 grace 期内仍可补全 stdout
+- 备选：在 startsWith/endsWith 触发时先尝试 `JSON.parse(stdout)`，仅在解析成功时启动 grace timer——失败则继续等待更多 chunk
+- 不推荐：移除早判、纯靠 `child.on('close')` 触发 `parseResult`——会让"永不优雅退出的子进程"等到总超时 10s 才返回结果，破坏 helper 当初引入 grace 期的设计意图
 
