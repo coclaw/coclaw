@@ -68,6 +68,8 @@ api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.lis
 
 均归 `operator.admin` scope（同 [`gateway-method-conventions.md`](gateway-method-conventions.md) 默认）。
 
+> ⚠️ **迁移中状态**：以下 § 2.2 / § 2.4 / § 2.5 描述的"出参带 `{ status: ... }` wrap"是 2026-05-14 首次实施时为兼容 `callGatewayMethod` CLI helper 历史 unwrap 逻辑而引入的形态。**新约定**（见 [§ 6.6](#66-成功响应不带-ok-字段) + [`gateway-method-conventions.md`](gateway-method-conventions.md)）：成功响应**默认不 wrap**，空响应用 `respond(true, {})`。`providerAuth.*` 三个 method 尚未 push，将在后续 commit 去 wrap、对齐新约定；本节内容会同步更新。读者按"现状"理解时请认识到 wrap 是即将移除的迁移层，不要把它当模板照搬到新方法。
+
 #### 全局约定（本节所有 RPC 适用）
 
 1. **成功响应不带 `ok` 字段**——协议层 `respond(true/false, ...)` 已经携带成功标志，出参 payload 只放成功时才有意义的数据；判断成功失败一律看协议层标志位（详见 § 6.6）

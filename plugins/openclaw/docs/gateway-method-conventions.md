@@ -84,7 +84,7 @@ respond(true, "ok");                        // 缺乏语义
 
 **新方法默认不 wrap**。CLI 入口（如果需要）应该在 CLI registrar 里自己处理出参形态——不该污染 RPC 协议层。
 
-**长期方向**（暂未做）：把 `callGatewayMethod` helper 的 unwrap 逻辑去掉、改 CLI registrar 业务侧读法、回滚现存 4 个 wrap method 的 handler。是 wire 协议变更，需要联动 server/UI 侧。一期不做。
+**长期方向**（分阶段进行）：把 `callGatewayMethod` helper 的 unwrap 逻辑去掉、改 CLI registrar 业务侧读法、回滚现存 6 个 wrap method 的 handler（`coclaw.bind / unbind / enroll / providerAuth.setApiKey / providerAuth.list / providerAuth.remove`）。是 wire 协议变更，需要联动 server/UI 侧——`providerAuth.*` 三个未 push，可先去 wrap；`bind/unbind/enroll` 已 push，留作 follow-up。
 
 ### 与外部消费者的契约关系
 
@@ -188,6 +188,8 @@ grep -rn "registerGatewayMethod" src --include='*.js' | grep -v test
 - **topic 管理**：`coclaw.topics.*`
 - **agent 控制**：`coclaw.agent.abort`
 - **文件浏览**：`coclaw.files.*`
+- **provider 认证**：`coclaw.providerAuth.setApiKey` / `coclaw.providerAuth.list` / `coclaw.providerAuth.remove`
+- **模型默认**：`coclaw.model.set` / `coclaw.model.list`
 
 ## 限制：插件注册的 method 仅供本插件提供
 

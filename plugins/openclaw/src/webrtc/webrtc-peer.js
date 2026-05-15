@@ -606,16 +606,17 @@ export class WebRtcPeer {
 		// settings 仅对 pion 生效（werift 路径不吃 settings 字段，大概率静默忽略）：
 		// - sctpRtoMax: 收紧 SCTP RTO 退避上限到 10s，让 APK 后台唤醒的深度退避窗口
 		//   落在 UI 的 15s 超时内。
-		// - interfaceFilter.denyPrefixes: 排除虚拟桥接接口名前缀，避免它们的 host IP
-		//   与对端同段 IP 形成伪 ICE pair（绕开 STUN srflx，让 ICE 误以为 P2P 成功）。
-		//   默认清单极保守——只列容器/VM/Pod 任意视角都不可见、且业界有先例或本机
-		//   实测命中的两条；拒绝纳入的项见 docs/default-filter.md。
+		// - interfaceFilter.denyPrefixes: 排除 Docker default bridge `docker0`，
+		//   避免它的 host IP 与对端同段 IP 形成伪 ICE pair（绕开 STUN srflx，让 ICE
+		//   误以为 P2P 成功）。默认清单极保守——只列容器/VM/Pod 任意视角都不可见、
+		//   且 docker daemon 写死小写命名的一条；拒绝纳入的其它项（含曾经短暂入选的
+		//   `'br-'`）见 docs/webrtc-ice-if-filter.md。
 		const pcConfig = { iceServers };
 		if (this.__impl === 'pion') {
 			pcConfig.settings = {
 				sctpRtoMax: 10000,
 				interfaceFilter: {
-					denyPrefixes: ['docker0', 'br-'],
+					denyPrefixes: ['docker0'],
 				},
 			};
 		}

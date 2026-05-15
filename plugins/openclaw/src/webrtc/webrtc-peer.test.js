@@ -5043,11 +5043,12 @@ test('WebRtcPeer: pion impl passes settings.sctpRtoMax=10000 to PeerConnection',
 });
 
 // --- interfaceFilter 默认黑名单（pion impl） ---
-// 红线测试：默认清单只能命中虚拟桥接接口，绝不能命中物理/VPN 主路径前缀。
-// 调研依据见 docs/default-filter.md（业界 + 容器/VM 视角双证）。
+// 红线测试：默认清单只能命中 docker default bridge，绝不能命中物理/VPN 主路径前缀，
+// 也不能含 `'br-'`（OpenWrt 等以 br-lan 为唯一出口的边缘场景会被误杀）。
+// 调研依据见 docs/webrtc-ice-if-filter.md。
 // 误改这条测试 = 直接破坏 plugin 对部分用户的可达性。
 
-test('WebRtcPeer: pion impl ships docker0 + br- in interfaceFilter.denyPrefixes', async () => {
+test('WebRtcPeer: pion impl ships only docker0 in interfaceFilter.denyPrefixes', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -5059,12 +5060,12 @@ test('WebRtcPeer: pion impl ships docker0 + br- in interfaceFilter.denyPrefixes'
 	await peer.handleSignaling(makeOffer('c_iflt_s01'));
 
 	const filter = PC.instances[0].__constructorArgs.settings.interfaceFilter;
-	assert.deepEqual(filter, { denyPrefixes: ['docker0', 'br-'] });
+	assert.deepEqual(filter, { denyPrefixes: ['docker0'] });
 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion impl default denyPrefixes excludes red-line (VPN/physical) prefixes', async () => {
+test('WebRtcPeer: pion impl default denyPrefixes excludes red-line (VPN/physical/br-) prefixes', async () => {
 	const PC = MockPCFactory();
 	const peer = new WebRtcPeer({
 		onSend: () => {},
@@ -5077,10 +5078,12 @@ test('WebRtcPeer: pion impl default denyPrefixes excludes red-line (VPN/physical
 
 	const prefixes = PC.instances[0].__constructorArgs.settings.interfaceFilter.denyPrefixes;
 	// 这些前缀任何一条进默认清单都会让某类用户完全无法连接（误杀红线）。
+	// `'br-'` 在红线里：OpenWrt 等以 br-lan 为唯一对外接口的场景会被它误杀。
 	const redLines = [
 		'tun', 'tap', 'utun', 'wg', 'tailscale',
 		'en', 'eth', 'enp', 'ens',
 		'vEthernet ',
+		'br-',
 	];
 	for (const p of redLines) {
 		assert.ok(

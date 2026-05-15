@@ -119,6 +119,21 @@ test('SDK loader 抛错 → IO_FAILED', async () => {
 	assert.match(r.calls[0].error.message, /sdk gone/);
 });
 
+test('SDK loader 抛非 Error 字符串 → IO_FAILED message 走 ?? err 兜底', async () => {
+	const api = makeApi();
+	registerModelDefaultHandlers(api, {
+		loadConfigMutation: async () => { throw 'boom-as-string'; },
+		loadModelsProviderRuntime: async () => ({}),
+		loadProviderAuth: async () => ({}),
+		loadConfig: () => ({ agents: {} }),
+		resolveAgentDir: () => '/fake',
+	});
+	const r = makeRespond();
+	await api.__call('coclaw.model.list', { params: {}, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'IO_FAILED');
+	assert.equal(r.calls[0].error.message, 'boom-as-string');
+});
+
 test('并发首调：同事件循环内多次调用共享同一 handlersPromise，三个 loader 各自只调一次', async () => {
 	const api = makeApi();
 	const mods = makeSdkModules();
