@@ -80,15 +80,15 @@ test('callGatewayMethod should pass shell:true on Windows', async () => {
 	assert.equal(capturedOpts.shell, true);
 });
 
-test('callGatewayMethod should resolve ok with status field from result payload', async () => {
-	// openclaw gateway call --json 直接输出 method 的 result payload
+test('callGatewayMethod should resolve ok with parsed payload from stdout', async () => {
+	// openclaw gateway call --json 直接输出 method 的 wire payload，整体透传到 result.payload
 	const { spawn, calls } = createMockSpawn({
 		stdout: '{"status":"refreshed"}',
 	});
 
 	const result = await callGatewayMethod('coclaw.bind', spawn);
 
-	assert.deepEqual(result, { ok: true, status: 'refreshed' });
+	assert.deepEqual(result, { ok: true, payload: { status: 'refreshed' } });
 	assert.equal(calls.length, 1);
 	assert.deepEqual(calls[0], ['openclaw', 'gateway', 'call', 'coclaw.bind', '--json']);
 });
@@ -167,7 +167,7 @@ test('callGatewayMethod should pass both --timeout and --params', async () => {
 });
 
 test('callGatewayMethod should resolve ok for any valid JSON output', async () => {
-	// 即使 JSON 中没有 status 字段，有合法输出即视为成功
+	// 无论 payload 内容是什么，有合法 JSON 即视为成功；helper 整体透传不解读字段
 	const { spawn } = createMockSpawn({
 		stdout: '{"ok":true,"ts":12345}',
 	});
@@ -175,7 +175,7 @@ test('callGatewayMethod should resolve ok for any valid JSON output', async () =
 	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, true);
-	assert.equal(result.status, undefined);
+	assert.deepEqual(result.payload, { ok: true, ts: 12345 });
 });
 
 test('callGatewayMethod should resolve immediately on stdout without waiting for close', async () => {
@@ -188,7 +188,7 @@ test('callGatewayMethod should resolve immediately on stdout without waiting for
 	const result = await callGatewayMethod('coclaw.unbind', spawn, { killDelayMs: 10 });
 
 	assert.equal(result.ok, true);
-	assert.equal(result.status, 'stopped');
+	assert.equal(result.payload.status, 'stopped');
 });
 
 test('callGatewayMethod should resolve ok:false on spawn error event', async () => {
@@ -274,7 +274,7 @@ test('callGatewayMethod should ignore duplicate finish calls', async () => {
 
 	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { timeoutMs: 50 });
 	assert.equal(result.ok, true);
-	assert.equal(result.status, 'refreshed');
+	assert.equal(result.payload.status, 'refreshed');
 });
 
 test('callGatewayMethod should return empty_output on exit 0 without stdout', async () => {
@@ -295,7 +295,7 @@ test('callGatewayMethod should parse result on non-zero exit with stdout', async
 	const result = await callGatewayMethod('coclaw.bind', spawn);
 
 	assert.equal(result.ok, true);
-	assert.equal(result.status, 'refreshed');
+	assert.equal(result.payload.status, 'refreshed');
 });
 
 test('callGatewayMethod should wait for complete JSON before resolving', async () => {
@@ -317,7 +317,7 @@ test('callGatewayMethod should wait for complete JSON before resolving', async (
 	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { timeoutMs: 100 });
 
 	assert.equal(result.ok, true);
-	assert.equal(result.status, 'refreshed');
+	assert.equal(result.payload.status, 'refreshed');
 });
 
 test('callGatewayMethod should not start grace period twice on multiple data chunks', async () => {
@@ -337,7 +337,7 @@ test('callGatewayMethod should not start grace period twice on multiple data chu
 
 	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { killDelayMs: 10 });
 	assert.equal(result.ok, true);
-	assert.equal(result.status, 'refreshed');
+	assert.equal(result.payload.status, 'refreshed');
 });
 
 test('callGatewayMethod should handle child.kill() throwing', async () => {
@@ -356,7 +356,7 @@ test('callGatewayMethod should handle child.kill() throwing', async () => {
 
 	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { killDelayMs: 10 });
 	assert.equal(result.ok, true);
-	assert.equal(result.status, 'refreshed');
+	assert.equal(result.payload.status, 'refreshed');
 });
 
 test('callGatewayMethod should parse stdout on timeout when output is not complete JSON', async () => {

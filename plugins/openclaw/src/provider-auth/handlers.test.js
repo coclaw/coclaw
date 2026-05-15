@@ -71,7 +71,7 @@ test('setApiKey: happy path returns default profileId; SDK called with locked va
 		respond,
 	});
 	assert.equal(calls.length, 1);
-	assert.deepEqual(calls[0], { ok: true, data: { status: { profileId: 'groq:default' } }, err: undefined });
+	assert.deepEqual(calls[0], { ok: true, data: { profileId: 'groq:default' }, err: undefined });
 	assert.equal(credCalls.length, 1);
 	assert.equal(credCalls[0].provider, 'groq');
 	assert.equal(credCalls[0].input, 'sk-test-abcd1234');
@@ -99,7 +99,7 @@ test('setApiKey: explicit profileId is forwarded to SDK', async () => {
 		params: { provider: 'groq', apiKey: 'sk-xxx', profileId: 'groq:work' },
 		respond,
 	});
-	assert.deepEqual(calls[0].data, { status: { profileId: 'groq:work' } });
+	assert.deepEqual(calls[0].data, { profileId: 'groq:work' });
 	assert.equal(upsertCalls[0].profileId, 'groq:work');
 });
 
@@ -119,7 +119,7 @@ test('setApiKey: re-set existing api_key for same provider overwrites without co
 	assert.equal(calls, 2);
 	assert.equal(r1.calls[0].ok, true);
 	assert.equal(r2.calls[0].ok, true);
-	assert.equal(r2.calls[0].data.status.profileId, 'groq:default');
+	assert.equal(r2.calls[0].data.profileId, 'groq:default');
 });
 
 test('setApiKey: missing provider → INVALID_ARGS', async () => {
@@ -238,7 +238,7 @@ test('list: returns api_key entry with keyPreview, no raw key', async () => {
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
 	assert.equal(calls[0].ok, true);
-	const out = calls[0].data.status.profiles;
+	const out = calls[0].data.profiles;
 	assert.equal(out.length, 1);
 	assert.equal(out[0].profileId, 'groq:default');
 	assert.equal(out[0].provider, 'groq');
@@ -257,7 +257,7 @@ test('list: short api_key (≤8 chars) gets degraded mask', async () => {
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	const preview = calls[0].data.status.profiles[0].keyPreview;
+	const preview = calls[0].data.profiles[0].keyPreview;
 	// stub formatApiKeyPreview 对 6 字符走 head2..tail2 分支
 	assert.equal(preview, 'ab…23');
 });
@@ -273,7 +273,7 @@ test('list: api_key without `key` (keyRef-only env mode) omits keyPreview', asyn
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	const out = calls[0].data.status.profiles[0];
+	const out = calls[0].data.profiles[0];
 	assert.equal('keyPreview' in out, false);
 });
 
@@ -296,7 +296,7 @@ test('list: oauth entry exposes email/displayName/expiresAt but no access/refres
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	const out = calls[0].data.status.profiles[0];
+	const out = calls[0].data.profiles[0];
 	assert.equal(out.type, 'oauth');
 	assert.equal(out.email, 'a@b.com');
 	assert.equal(out.displayName, 'Alice');
@@ -322,7 +322,7 @@ test('list: token entry with expires exposes expiresAt but not token', async () 
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	const out = calls[0].data.status.profiles[0];
+	const out = calls[0].data.profiles[0];
 	assert.equal(out.expiresAt, 999);
 	assert.equal('token' in out, false);
 	assert.equal('keyPreview' in out, false);
@@ -337,7 +337,7 @@ test('list: token without expires omits expiresAt', async () => {
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	const out = calls[0].data.status.profiles[0];
+	const out = calls[0].data.profiles[0];
 	assert.equal('expiresAt' in out, false);
 });
 
@@ -353,7 +353,7 @@ test('list: filters by provider when params.provider set', async () => {
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: { provider: 'groq' }, respond });
-	const out = calls[0].data.status.profiles;
+	const out = calls[0].data.profiles;
 	assert.equal(out.length, 1);
 	assert.equal(out[0].provider, 'groq');
 });
@@ -370,7 +370,7 @@ test('list: provider param missing → returns all profiles', async () => {
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	assert.equal(calls[0].data.status.profiles.length, 2);
+	assert.equal(calls[0].data.profiles.length, 2);
 });
 
 test('list: empty/whitespace provider filter → INVALID_ARGS', async () => {
@@ -386,7 +386,7 @@ test('list: store with no profiles returns empty array', async () => {
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	assert.deepEqual(calls[0].data, { status: { profiles: [] } });
+	assert.deepEqual(calls[0].data, { profiles: [] });
 });
 
 test('list: store.profiles missing → empty array (defensive)', async () => {
@@ -395,7 +395,7 @@ test('list: store.profiles missing → empty array (defensive)', async () => {
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	assert.deepEqual(calls[0].data, { status: { profiles: [] } });
+	assert.deepEqual(calls[0].data, { profiles: [] });
 });
 
 test('list: malformed entries (null / non-object / missing provider / unknown type) are skipped', async () => {
@@ -415,7 +415,7 @@ test('list: malformed entries (null / non-object / missing provider / unknown ty
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.list({ params: {}, respond });
-	const out = calls[0].data.status.profiles;
+	const out = calls[0].data.profiles;
 	assert.equal(out.length, 1);
 	assert.equal(out[0].profileId, 'good:default');
 });
@@ -455,7 +455,7 @@ test('list: SDK error with custom err.code is NOT preserved', async () => {
 
 // === remove ===
 
-test('remove: happy path → respond(true, { status: {} }), no inner payload', async () => {
+test('remove: happy path → respond(true, {}), no inner payload', async () => {
 	const captured = [];
 	const handlers = build({
 		removeProviderAuthProfilesWithLock: async (params) => {
@@ -466,7 +466,7 @@ test('remove: happy path → respond(true, { status: {} }), no inner payload', a
 	const { respond, calls } = makeRespond();
 	await handlers.remove({ params: { provider: 'groq' }, respond });
 	assert.equal(calls[0].ok, true);
-	assert.deepEqual(calls[0].data, { status: {} });
+	assert.deepEqual(calls[0].data, {});
 	assert.deepEqual(captured[0], { provider: 'groq', agentDir: AGENT_DIR });
 });
 

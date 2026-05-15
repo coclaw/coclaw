@@ -1259,3 +1259,54 @@ pion-ipc 的接口名过滤是 case-sensitive `strings.HasPrefix` 匹配，**无
 - pion-ipc `docs/ipc-protocol.md:108-130` 协议层文档
 - 本次 pion-ipc commits: `1303321` + `a952fb5`
 
+
+---
+
+## `bindOk` / `unbindOk` 解构 undefined 会 crash（非 JSON 兜底路径）
+
+**发现日期**：2026-05-16（Phase B 去 wrap 改造 deep-review codex-rescue A 实例识别）
+**关联**：`plugins/openclaw/src/common/messages.js` `bindOk` / `unbindOk` + `plugins/openclaw/src/cli-registrar.js:117/182`
+
+**问题**：`callGatewayMethod` helper 走"非 JSON stdout 兜底"分支时返回 `{ ok: true }`（无 payload 字段），CLI registrar 拿到 `result.payload === undefined`，直接传给 `bindOk({ clawId, rebound, previousClawId })` / `unbindOk({ clawId })` 解构会抛 `TypeError: Cannot destructure property 'clawId' of 'undefined'`。
+
+正常生产路径下 `openclaw gateway call --json` stdout 必是 JSON，这条兜底分支几乎不触发——但理论上 handler 调试 `console.log` 误打到 stdout 或上游 CLI 输出格式变化时可能命中。
+
+**预存性**：本次改造（status→payload 字段名）没引入新风险——旧代码 `result.status` 在同条路径下也是 undefined，crash 行为一致。
+
+**修复方向**：
+
+- 选项 A：CLI registrar 在调 `bindOk` / `unbindOk` 前加 payload 守卫，undefined 时降级输出（如 `OK. (no details)`）
+- 选项 B：`bindOk` / `unbindOk` 自身把入参从解构改为对象属性访问（`data?.clawId`），容忍 undefined
+
+---
+
+## bind rebind 测试的 mock `rebound: false` 与测试名不一致
+
+**发现日期**：2026-05-16（Phase B 去 wrap 改造 deep-review codex-rescue B 实例识别）
+**关联**：`plugins/openclaw/src/cli-registrar.test.js:168-184` `bind CLI should show previousClawId when rebinding`
+
+**问题**：测试名暗示是 rebind 场景，但 mock 给的 `rebound: false`——`bindOk` 渲染时走 'bound' 分支（非 're-bound'），跟测试名传达的"rebind"语义对不上。当前测试仍通过是因为只断了 `previous Claw` 字符串（在 previousClawId 非空时永远出现，与 rebound 无关）。
+
+**预存性**：本次改造未触碰这个测试逻辑，是原本就存在的测试设计混乱。
+
+**修复方向**：
+
+- 改 mock 给 `rebound: true` 让 fixture 跟测试名对齐
+- 或重命名测试名为 `bind CLI should show previousClawId when given` 描述 previousClawId 处理本身（不绑定 rebind 语义）
+
+---
+
+## cli-registrar.test.js 没覆盖 JSON-shape gateway error 输出
+
+**发现日期**：2026-05-16（Phase B 去 wrap 改造 deep-review codex-rescue B 实例识别）
+**关联**：`plugins/openclaw/src/cli-registrar.test.js:26-29` `createRpcSpawn` error 路径
+
+**问题**：CLI 层 mock 现在只覆盖两种错误形态——spawn `error` 事件、plain stderr 字符串。如果 `openclaw gateway call --json` 在某些失败情况下会把结构化 JSON 错误打到 stdout（理论可能，待核实），CLI 解析路径没有专门 fixture 保护。
+
+**预存性**：本次改造未引入此风险——旧版 mock 也只覆盖这两种形态。
+
+**修复方向**：
+
+- 先核实 `openclaw gateway call --json` 失败时 stdout / stderr 的实际行为（grep 上游 CLI 代码 / 跑真实 gateway 验证）
+- 若确实有 JSON-shape stdout 错误形态，在 createRpcSpawn 加 fixture + CLI 解析路径测试
+

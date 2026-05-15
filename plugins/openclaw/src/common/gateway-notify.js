@@ -46,7 +46,7 @@ export function escapeJsonForCmd(json) {
  * @param {Function} [spawnFn] - 可注入的 spawn 函数（测试用）
  * @param {object} [opts] - 可选配置（测试用）
  * @param {number} [opts.timeoutMs] - 总超时毫秒数
- * @returns {Promise<{ ok: boolean, status?: string, error?: string }>}
+ * @returns {Promise<{ ok: boolean, payload?: unknown, error?: string, message?: string }>}
  */
 export function callGatewayMethod(method, spawnFn, opts) {
 	/* c8 ignore next -- ?? fallback */
@@ -95,9 +95,9 @@ export function callGatewayMethod(method, spawnFn, opts) {
 			if (!trimmed) return { ok: false, error: 'empty_output' };
 			try {
 				const parsed = JSON.parse(trimmed);
-				// openclaw gateway call --json 直接输出 method 的 result payload
-				// 有合法 JSON 输出即视为 RPC 成功；失败时 CLI 会抛异常并以非零码退出
-				return { ok: true, status: parsed.status };
+				// openclaw gateway call --json 直接把 handler 的 wire payload 打到 stdout
+				// 整体 payload 原样透出，调用方自行读取业务字段（不再抠 .status 一层）
+				return { ok: true, payload: parsed };
 			} catch {
 				// 非 JSON 输出也视为成功（openclaw 非 --json 模式的兜底）
 				return { ok: true };

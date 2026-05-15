@@ -69,27 +69,22 @@ respond(
 - **不要加 `{ status: <data> }` 外层 wrap**——这是 CoClaw 历史遗物，详见下文。
 - **`#` 前缀私有方法别用**——按 coclaw/CLAUDE.md 规范用 `__` 前缀。
 
-## CoClaw 历史遗物：`{ status: ... }` wrap
+## CoClaw 历史遗物：`{ status: ... }` wrap（已清除）
 
-**这不是协议要求**——是 CoClaw 自家 CLI helper `callGatewayMethod`（`plugins/openclaw/src/common/gateway-notify.js:100`）的私有约定：它从 stdout JSON 里抽 `.status` 字段给 CLI 业务用，所以 handler 被迫配合 wrap。
+**早期** CoClaw 6 个走 CLI 入口的 method（`bind` / `unbind` / `enroll` / `providerAuth.*` 三个）handler 把 payload 包成 `{ status: <data> }`——这不是协议要求，而是自家 CLI helper `callGatewayMethod`（`plugins/openclaw/src/common/gateway-notify.js`）历史 unwrap 行为（抽 `.status` 字段交给 CLI 业务用）带来的硬约束。
 
-**现存现状（分两派）**：
-
-| 类别 | Method | 是否 wrap |
-|---|---|---|
-| 有 CLI 入口（走 callGatewayMethod helper） | `coclaw.bind` / `unbind` / `enroll` / `providerAuth.setApiKey` / `providerAuth.list` / `providerAuth.remove` | wrap |
-| 仅 WS（UI / server）调用 | `coclaw.info.*` / `topics.*` / `sessions.*` / `chatHistory.list` / `files.*` / `agent.abort` / `upgradeHealth` | **不 wrap** |
+**2026-05-16 已彻底清除**：6 个 handler 全部去 wrap，helper 改为整体 payload 透传（`result.payload` 直接 = handler `respond(true, X)` 里的 X），CLI registrar 读法同步改成 `result.payload.xxx`。仓库内不再有 wrap 现存例子。
 
 **新方法该怎么写**：
 
-- **默认不 wrap**——出参直接是纯业务 payload。跟"仅 WS"那派对齐、跟协议契约一致。
-- **CLI 入口（如果需要）**应该在 CLI registrar 里自己处理出参形态——不该污染 RPC 协议层。
-- **现存 wrap method 是历史遗物**，不要拿来当模板。
+- **不 wrap**——出参直接是纯业务 payload，跟协议契约一致
+- **CLI 入口（如果需要）**应该在 CLI registrar 里自己处理出参形态——不该污染 RPC 协议层
+- 仓库 git log 能找到 wrap 时期的样子，**不要照搬作模板**
 
 **反例（不要学）**：
 
 ```js
-// ❌ 别学 providerAuth 这种 wrap
+// ❌ 别学历史 wrap
 respond(true, { status: { profileId } });
 respond(true, { status: {} });
 

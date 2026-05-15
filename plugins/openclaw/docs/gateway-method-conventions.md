@@ -25,7 +25,7 @@ handler `respond(ok, payload?, error?, meta?)` 的实际 wire 形态是 Response
 **协议层关键事实**：
 - 已自带 `ok` 标志位 → 业务别在 payload 里加 `{ ok: true }` 冗余字段
 - 已有独立 `error` 通道（结构化 code/message/retryable/retryAfterMs）→ 错误别塞 payload
-- `payload` 是任意 JSON、没有形状约束 → CoClaw 的 `{ status: ... }` 是私有约定不是协议要求
+- `payload` 是任意 JSON、没有形状约束 → CoClaw 早期的 `{ status: ... }` 是私有约定不是协议要求（2026-05-16 已全部清除，详见下文）
 - `payload` 不能是 undefined → **上游 CLI bug**：`openclaw gateway call --json` 对 `respond(true, undefined)` 抛 `endsWith` TypeError。规避：空响应用 `respond(true, {})`。错误路径 `respond(false, undefined, err)` 不受影响（走 stderr）
 
 ### 新方法实操规则
@@ -69,22 +69,20 @@ respond(true, [...]);                       // 没扩展空间
 respond(true, "ok");                        // 缺乏语义
 ```
 
-### 历史遗物：`{ status: <data> }` wrap
+### 历史遗物：`{ status: <data> }` wrap（已清除）
 
-**这不是协议要求**——是 CoClaw 自家 CLI helper `callGatewayMethod`（`common/gateway-notify.js:100`）的私有 unwrap 约定：它从 stdout JSON 里抽 `.status` 字段给 CLI 业务用，handler 配合 wrap 才能让 CLI 拿到数据。
+**早期**所有走 CLI 入口的 method 把 payload 包成 `{ status: <data> }`——这不是协议要求，而是 CoClaw 自家 CLI helper `callGatewayMethod`（`common/gateway-notify.js`）历史 unwrap 行为带来的硬约束：helper 当时从 stdout JSON 里抽 `.status` 字段交给 CLI 业务用，handler 配合 wrap 才能让 CLI 拿到数据。
 
-**现存现状（分两派，新方法别照搬）**：
+**2026-05-16 已彻底清除**：
 
-| Method | 是否 wrap `{ status }` | CLI 入口 |
-|---|---|---|
-| `coclaw.bind / unbind / enroll` | wrap | 有（`openclaw coclaw <action>`）|
-| `coclaw.providerAuth.*` | wrap（2026-05-14） | 有（`openclaw coclaw auth <action>`）|
-| `coclaw.info` / `info.get` / `info.patch` | 裸 | 无（仅 WS）|
-| `coclaw.topics.*` / `sessions.*` / `chatHistory.*` / `files.*` / `agent.abort` / `upgradeHealth` | 裸 | 无（仅 WS）|
+- 6 个 wrap method（`coclaw.bind` / `unbind` / `enroll` / `providerAuth.setApiKey` / `providerAuth.list` / `providerAuth.remove`）handler 全部去 wrap，直接返回业务 payload
+- helper 行为改为"整个 wire payload 当 `payload` 字段透传"——不再抠 `.status`
+- 同包内 CLI registrar 5 处读法从 `result.status.xxx` 同步改成 `result.payload.xxx`
+- 整条链路上不再出现 `status` wrap 概念
 
-**新方法默认不 wrap**。CLI 入口（如果需要）应该在 CLI registrar 里自己处理出参形态——不该污染 RPC 协议层。
+**外部影响**：因为这 6 个 method 的 wire 形态消费方只有同包内 CLI registrar（server / UI 不调），改造对外行为透明——CLI 用户看到的文字输出、退出码、行为完全保留。`coclaw.upgradeHealth`（自动升级健康检测）本来就是裸返回派，不在改造范围。
 
-**长期方向**（分阶段进行）：把 `callGatewayMethod` helper 的 unwrap 逻辑去掉、改 CLI registrar 业务侧读法、回滚现存 6 个 wrap method 的 handler（`coclaw.bind / unbind / enroll / providerAuth.setApiKey / providerAuth.list / providerAuth.remove`）。是 wire 协议变更，需要联动 server/UI 侧——`providerAuth.*` 三个未 push，可先去 wrap；`bind/unbind/enroll` 已 push，留作 follow-up。
+**给未来读者**：仓库里再看不到 wrap 现存例子，但 git 历史里能找到。看到 `result.payload.xxx` 即正常路径——helper 返回的 `payload` 字段就是 handler `respond(true, X)` 里 X 的原样。
 
 ### 与外部消费者的契约关系
 

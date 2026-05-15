@@ -114,7 +114,7 @@ export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 					return;
 				}
 
-				const data = result.status;
+				const data = result.payload;
 				console.log(bindOk(data));
 			}
 			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
@@ -140,8 +140,7 @@ export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 				}
 
 				// RPC 成功：输出认领码信息
-				// gateway method 的 respond 数据包含 status 字段
-				const data = result.status;
+				const data = result.payload;
 				if (data?.code && data?.appUrl) {
 					console.log(claimCodeCreated({
 						code: data.code,
@@ -180,7 +179,7 @@ export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 					return;
 				}
 
-				const data = result.status;
+				const data = result.payload;
 				console.log(unbindOk(data));
 			}
 			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
@@ -212,7 +211,7 @@ export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 					handleRpcError(result, 'set-api-key failed');
 					return;
 				}
-				const data = result.status;
+				const data = result.payload;
 				console.log(apiKeySetOk({ provider, profileId: data?.profileId ?? `${provider}:default` }));
 			}
 			/* c8 ignore next 4 -- callGatewayMethod 不会抛异常，纯防御 */
@@ -235,7 +234,7 @@ export function registerCoclawCli({ program, logger: _logger }, deps = {}) {
 					handleRpcError(result, 'list failed');
 					return;
 				}
-				const profiles = result.status?.profiles ?? [];
+				const profiles = result.payload?.profiles ?? [];
 				if (profiles.length === 0) {
 					console.log(authListEmpty(opts.provider));
 					return;

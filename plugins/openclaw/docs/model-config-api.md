@@ -68,8 +68,6 @@ api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.lis
 
 均归 `operator.admin` scope（同 [`gateway-method-conventions.md`](gateway-method-conventions.md) 默认）。
 
-> ⚠️ **迁移中状态**：以下 § 2.2 / § 2.4 / § 2.5 描述的"出参带 `{ status: ... }` wrap"是 2026-05-14 首次实施时为兼容 `callGatewayMethod` CLI helper 历史 unwrap 逻辑而引入的形态。**新约定**（见 [§ 6.6](#66-成功响应不带-ok-字段) + [`gateway-method-conventions.md`](gateway-method-conventions.md)）：成功响应**默认不 wrap**，空响应用 `respond(true, {})`。`providerAuth.*` 三个 method 尚未 push，将在后续 commit 去 wrap、对齐新约定；本节内容会同步更新。读者按"现状"理解时请认识到 wrap 是即将移除的迁移层，不要把它当模板照搬到新方法。
-
 #### 全局约定（本节所有 RPC 适用）
 
 1. **成功响应不带 `ok` 字段**——协议层 `respond(true/false, ...)` 已经携带成功标志，出参 payload 只放成功时才有意义的数据；判断成功失败一律看协议层标志位（详见 § 6.6）
@@ -94,7 +92,7 @@ api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.lis
 **出参**：
 
 ```ts
-{ status: { profileId: string } }    // status 包装见 § 2.2 末尾告示；profileId 是实际写入值
+{ profileId: string }    // 实际写入的 profileId
 ```
 
 **错误码**：
@@ -118,9 +116,7 @@ handler 内部一步走完：
    - **带文件锁**——与 `removeProviderAuthProfilesWithLock` 共享同一把锁，避免 set + remove 并发丢写
 4. **判 null = 失败**：该 helper 内部 `try/catch` 把锁失败 / 磁盘错误**静默吞成 `null`**（不抛异常），handler 必须显式 `if (result === null) → IO_FAILED`
 5. **不调** `updateConfig` / `mutateConfigFile`——见 mental-model § 4.7"只动 secret 不动 cfg"
-6. `respond(true, { status: { profileId } })`
-
-> ⚠️ **响应必须包成 `{ status: <data> }`**：本插件 CLI 共享的 `callGatewayMethod`（`src/common/gateway-notify.js`）从 `openclaw gateway call --json` 输出里读 `.status` 作为最终结果；直接 `respond(true, { profileId })` 会让 result.status = undefined。同时 `openclaw gateway call --json` 在 data 为 undefined 时抛 `endsWith` TypeError 无法保留成功标志位，故 remove 路径也需 `{ status: {} }`（非 undefined）。本节出参形状描述包含这层 wire-level wrapper。
+6. `respond(true, { profileId })`
 
 > ⚠️ **为什么不用上层封装 `upsertApiKeyProfile`**：该封装内部走同步、**无锁**的 `upsertAuthProfile`，与带锁的 remove 并发时会绕过文件锁丢写。带锁版 + `buildApiKeyCredential` 的组合与封装内部行为等价（两次幂等的 `normalizeSecretInput` 等于一次），但锁正确。
 
@@ -160,21 +156,17 @@ handler 内部一步走完：
 
 ```ts
 {
-  status: {
-    profiles: Array<{
-      profileId: string;             // 如 "groq:default"
-      provider: string;              // provider id
-      type: 'api_key' | 'oauth' | 'token';
-      keyPreview?: string;           // 仅 api_key 模式带；head4 + ... + tail4
-      email?: string;                // 仅 oauth 模式（OpenClaw 自带字段）
-      displayName?: string;
-      expiresAt?: number;            // ms epoch；仅 oauth / 部分 token（详见 § 6.7）
-    }>;
-  };
+  profiles: Array<{
+    profileId: string;             // 如 "groq:default"
+    provider: string;              // provider id
+    type: 'api_key' | 'oauth' | 'token';
+    keyPreview?: string;           // 仅 api_key 模式带；head4 + ... + tail4
+    email?: string;                // 仅 oauth 模式（OpenClaw 自带字段）
+    displayName?: string;
+    expiresAt?: number;            // ms epoch；仅 oauth / 部分 token（详见 § 6.7）
+  }>;
 }
 ```
-
-> 外层 `status` 包装的原因见 § 2.2 末尾的告示；list 在 set/remove 之外是唯一带实质 payload 的方法，包装尤其不能漏。
 
 #### 实现要点
 
@@ -199,7 +191,7 @@ handler 内部一步走完：
 { provider: string }
 ```
 
-**出参**：`{ status: {} }`（成功时空 payload，但 wire 上必须有 `status` 字段——见 § 2.2 末尾告示；判断成功失败看协议层标志位，见 § 6.6）。
+**出参**：`{}`（成功时空 payload；判断成功失败看协议层标志位，见 § 6.6）。
 
 幂等：撤销不存在的 provider 不报错。
 
@@ -255,7 +247,7 @@ handler 内部一步走完：
 }
 ```
 
-**出参**：成功 `{}`（空对象，**不加 status wrap**）。
+**出参**：成功 `{}`（空对象）。
 
 **错误码**：
 
@@ -308,7 +300,7 @@ handler 内部一步走完：
 }
 ```
 
-**不加 status wrap**。`agents` 是 map（不是数组），形状与 `default` 对称——将来加 `fallbacks` 等字段两边平行扩。
+`agents` 是 map（不是数组），形状与 `default` 对称——将来加 `fallbacks` 等字段两边平行扩。
 
 **agents 列表来源**：
 

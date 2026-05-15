@@ -278,11 +278,9 @@ const plugin = {
 					serverUrl: params?.serverUrl,
 				});
 				respond(true, {
-					status: {
-						clawId: result.clawId,
-						rebound: result.rebound,
-						previousClawId: result.previousClawId,
-					},
+					clawId: result.clawId,
+					rebound: result.rebound,
+					previousClawId: result.previousClawId,
 				});
 			}
 			catch (err) {
@@ -298,7 +296,7 @@ const plugin = {
 					return;
 				}
 				const result = await doUnbind({ serverUrl: params?.serverUrl });
-				respond(true, { status: { clawId: result.clawId } });
+				respond(true, { clawId: result.clawId });
 			}
 			catch (err) {
 				respondError(respond, err);
@@ -327,12 +325,10 @@ const plugin = {
 
 				// 立即返回认领码给 CLI
 				respond(true, {
-					status: {
-						code: result.code,
-						appUrl: result.appUrl,
-						expiresAt: result.expiresAt,
-						expiresMinutes,
-					},
+					code: result.code,
+					appUrl: result.appUrl,
+					expiresAt: result.expiresAt,
+					expiresMinutes,
 				});
 
 				// 后台 fire-and-forget：等待认领并保存 config + 启 bridge

@@ -120,7 +120,7 @@ test('registerCoclawCli should register coclaw command with bind/unbind/enroll/a
 
 test('bind CLI should send coclaw.bind RPC with code and serverUrl', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { clawId: 'b1', rebound: false } },
+		data: { clawId: 'b1', rebound: false },
 	});
 
 	const program = createMockProgram();
@@ -134,6 +134,8 @@ test('bind CLI should send coclaw.bind RPC with code and serverUrl', async () =>
 	})();
 
 	assert.ok(logs.some((l) => l.includes('bound to CoClaw')));
+	// 锁住 wire 形态：bindOk 必须把 handler 给的 clawId 字段渲染到输出
+	assert.ok(logs.some((l) => l.includes('b1')));
 	const rpcCall = calls.find((c) => c.includes('coclaw.bind'));
 	assert.ok(rpcCall);
 	const paramsIdx = rpcCall.indexOf('--params');
@@ -145,7 +147,7 @@ test('bind CLI should send coclaw.bind RPC with code and serverUrl', async () =>
 
 test('bind CLI should send code without serverUrl when --server not provided', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { clawId: 'b1', rebound: false } },
+		data: { clawId: 'b1', rebound: false },
 	});
 
 	const program = createMockProgram();
@@ -167,7 +169,7 @@ test('bind CLI should send code without serverUrl when --server not provided', a
 
 test('bind CLI should show previousClawId when rebinding', async () => {
 	const { spawn } = createRpcSpawn({
-		data: { status: { clawId: 'b-new', rebound: false, previousClawId: 'b-old' } },
+		data: { clawId: 'b-new', rebound: false, previousClawId: 'b-old' },
 	});
 
 	const program = createMockProgram();
@@ -181,6 +183,8 @@ test('bind CLI should show previousClawId when rebinding', async () => {
 	})();
 
 	assert.ok(logs.some((l) => l.includes('bound to CoClaw') && l.includes('previous Claw')));
+	// 锁住 wire 形态：rebind 时 clawId 与 previousClawId 都要出现在输出
+	assert.ok(logs.some((l) => l.includes('b-new') && l.includes('b-old')));
 });
 
 test('bind CLI should retry on gateway unavailable', async () => {
@@ -190,7 +194,7 @@ test('bind CLI should retry on gateway unavailable', async () => {
 		if (method === 'coclaw.bind' && callCount <= 1) {
 			return { error: 'spawn failed' };
 		}
-		return { data: { status: { clawId: 'b1', rebound: false } } };
+		return { data: { clawId: 'b1', rebound: false } };
 	});
 
 	const restartCalls = [];
@@ -251,7 +255,7 @@ test('bind CLI should show UNBIND_FAILED error from RPC', async () => {
 
 test('unbind CLI should send coclaw.unbind RPC', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { clawId: 'b1' } },
+		data: { clawId: 'b1' },
 	});
 
 	const program = createMockProgram();
@@ -265,12 +269,14 @@ test('unbind CLI should send coclaw.unbind RPC', async () => {
 	})();
 
 	assert.ok(logs.some((l) => l.includes('unbound from CoClaw')));
+	// 锁住 wire 形态：unbindOk 必须把 handler 给的 clawId 字段渲染到输出
+	assert.ok(logs.some((l) => l.includes('b1')));
 	assert.ok(calls.some((c) => c.includes('coclaw.unbind')));
 });
 
 test('unbind CLI should pass --server as serverUrl param', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { clawId: 'b1' } },
+		data: { clawId: 'b1' },
 	});
 
 	const program = createMockProgram();
@@ -315,7 +321,7 @@ test('unbind CLI should retry on gateway unavailable', async () => {
 		if (method === 'coclaw.unbind' && callCount <= 1) {
 			return { error: 'spawn failed' };
 		}
-		return { data: { status: { clawId: 'b1' } } };
+		return { data: { clawId: 'b1' } };
 	});
 
 	const restartCalls = [];
@@ -360,11 +366,9 @@ test('unbind CLI should show generic error on non-NOT_BOUND RPC failure', async 
 test('enroll CLI should output claim code on RPC success', async () => {
 	const { spawn } = createRpcSpawn({
 		data: {
-			status: {
-				code: '12345678',
-				appUrl: 'https://im.coclaw.net/claim?code=12345678',
-				expiresMinutes: 30,
-			},
+			code: '12345678',
+			appUrl: 'https://im.coclaw.net/claim?code=12345678',
+			expiresMinutes: 30,
 		},
 	});
 
@@ -385,11 +389,9 @@ test('enroll CLI should output claim code on RPC success', async () => {
 test('enroll CLI should pass --server as RPC params', async () => {
 	const { spawn, calls } = createRpcSpawn({
 		data: {
-			status: {
-				code: '55556666',
-				appUrl: 'https://my.server.com/claim?code=55556666',
-				expiresMinutes: 30,
-			},
+			code: '55556666',
+			appUrl: 'https://my.server.com/claim?code=55556666',
+			expiresMinutes: 30,
 		},
 	});
 
@@ -420,11 +422,9 @@ test('enroll CLI should retry after gateway restart on RPC failure', async () =>
 		}
 		return {
 			data: {
-				status: {
-					code: '99998888',
-					appUrl: 'https://im.coclaw.net/claim?code=99998888',
-					expiresMinutes: 30,
-				},
+				code: '99998888',
+				appUrl: 'https://im.coclaw.net/claim?code=99998888',
+				expiresMinutes: 30,
 			},
 		};
 	});
@@ -455,11 +455,9 @@ test('enroll CLI should retry even when restart throws', async () => {
 		}
 		return {
 			data: {
-				status: {
-					code: '11112222',
-					appUrl: 'https://im.coclaw.net/claim?code=11112222',
-					expiresMinutes: 30,
-				},
+				code: '11112222',
+				appUrl: 'https://im.coclaw.net/claim?code=11112222',
+				expiresMinutes: 30,
 			},
 		};
 	});
@@ -479,9 +477,9 @@ test('enroll CLI should retry even when restart throws', async () => {
 	assert.ok(logs.some((l) => l.includes('11112222')));
 });
 
-test('enroll CLI should show fallback message when status lacks code/appUrl', async () => {
+test('enroll CLI should show fallback message when payload lacks code/appUrl', async () => {
 	const { spawn } = createRpcSpawn({
-		data: { status: { partial: true } },
+		data: { partial: true },
 	});
 
 	const program = createMockProgram();
@@ -547,7 +545,7 @@ function getAuth(program, sub) {
 
 test('auth set-api-key should send providerAuth.setApiKey RPC with provider + apiKey', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { profileId: 'groq:default' } },
+		data: { profileId: 'groq:default' },
 	});
 
 	const program = createMockProgram();
@@ -570,7 +568,7 @@ test('auth set-api-key should send providerAuth.setApiKey RPC with provider + ap
 
 test('auth set-api-key should forward --profile-id to RPC params', async () => {
 	const { spawn, calls } = createRpcSpawn({
-		data: { status: { profileId: 'groq:work' } },
+		data: { profileId: 'groq:work' },
 	});
 
 	const program = createMockProgram();
@@ -587,8 +585,8 @@ test('auth set-api-key should forward --profile-id to RPC params', async () => {
 	assert.equal(parsed.profileId, 'groq:work');
 });
 
-test('auth set-api-key should fall back to <provider>:default when status lacks profileId', async () => {
-	const { spawn } = createRpcSpawn({ data: { status: {} } });
+test('auth set-api-key should fall back to <provider>:default when payload lacks profileId', async () => {
+	const { spawn } = createRpcSpawn({ data: {} });
 
 	const program = createMockProgram();
 	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
@@ -642,12 +640,10 @@ test('auth set-api-key should report gateway unavailable after retry', async () 
 test('auth list should render profiles table on success', async () => {
 	const { spawn, calls } = createRpcSpawn({
 		data: {
-			status: {
-				profiles: [
-					{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'sk-t...test' },
-					{ profileId: 'openai:default', provider: 'openai', type: 'oauth', email: 'a@b.com', displayName: 'Alice', expiresAt: 1700000000000 },
-				],
-			},
+			profiles: [
+				{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'sk-t...test' },
+				{ profileId: 'openai:default', provider: 'openai', type: 'oauth', email: 'a@b.com', displayName: 'Alice', expiresAt: 1700000000000 },
+			],
 		},
 	});
 
@@ -676,11 +672,9 @@ test('auth list should render profiles table on success', async () => {
 test('auth list should forward --provider as RPC filter', async () => {
 	const { spawn, calls } = createRpcSpawn({
 		data: {
-			status: {
-				profiles: [
-					{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'sk-t...test' },
-				],
-			},
+			profiles: [
+				{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'sk-t...test' },
+			],
 		},
 	});
 
@@ -699,7 +693,7 @@ test('auth list should forward --provider as RPC filter', async () => {
 });
 
 test('auth list should show empty message when no profiles', async () => {
-	const { spawn } = createRpcSpawn({ data: { status: { profiles: [] } } });
+	const { spawn } = createRpcSpawn({ data: { profiles: [] } });
 
 	const program = createMockProgram();
 	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
@@ -714,7 +708,7 @@ test('auth list should show empty message when no profiles', async () => {
 });
 
 test('auth list should show empty-for-provider message when filter yields nothing', async () => {
-	const { spawn } = createRpcSpawn({ data: { status: { profiles: [] } } });
+	const { spawn } = createRpcSpawn({ data: { profiles: [] } });
 
 	const program = createMockProgram();
 	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
@@ -728,8 +722,8 @@ test('auth list should show empty-for-provider message when filter yields nothin
 	assert.ok(logs.some((l) => l.includes('No auth profiles found for provider "unknown"')));
 });
 
-test('auth list should treat missing status.profiles as empty', async () => {
-	const { spawn } = createRpcSpawn({ data: { status: {} } });
+test('auth list should treat missing payload.profiles as empty', async () => {
+	const { spawn } = createRpcSpawn({ data: {} });
 
 	const program = createMockProgram();
 	registerCoclawCli({ program, logger: { info() {}, warn() {} } }, { spawn });
