@@ -105,10 +105,11 @@ export function callGatewayMethod(method, spawnFn, opts) {
 		};
 
 		// 检测到完整 JSON 后，启动 grace 期等待进程自然退出
+		// 注意：parseResult 推迟到 timer fire 时调，避免 pretty-print JSON 嵌套对象
+		// 闭合的瞬间因 startsWith/endsWith 误判被钉死成残缺解析结果
 		const startGracePeriod = () => {
 			if (graceTimer) return;
-			const result = parseResult();
-			graceTimer = setTimeout(() => finish(result), killDelayMs);
+			graceTimer = setTimeout(() => finish(parseResult()), killDelayMs);
 		};
 
 		child.stdout.on('data', (chunk) => {
