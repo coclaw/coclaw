@@ -1310,6 +1310,34 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 ---
 
+## helper chunk 边界检测在 pretty-print JSON 多 chunk 到达时可能误判
+
+**发现日期**：2026-05-16（Phase C 核实 C3 时顺手识别）
+**关联**：`plugins/openclaw/src/common/gateway-notify.js:107-113` chunk 监听 + `startGracePeriod`
+
+**问题**：`child.stdout.on('data')` 累积 stdout 后判 `trimmed.startsWith('{') && trimmed.endsWith('}')` 即触发 `startGracePeriod()`；后者**同步调用 `parseResult()`** 并把结果钉死到 closure 里。
+
+上游 `openclaw gateway call --json` 实际输出的是 pretty-printed JSON（缩进 2）。若 payload 含嵌套对象、且 stdout 分多 chunk 到达，**中间某次累积可能恰好在嵌套对象闭合的瞬间满足 startsWith/endsWith**——此时 stdout 整体仍是不完整 JSON，`JSON.parse` 抛、`parseResult` 退化到"非 JSON 兜底"返回 `{ ok: true }`（无 payload）。
+
+**当前严重性**：低——
+- 小 payload（bind/unbind/enroll 返回都 <300 字节）通常一次 chunk
+- C1 已让 bindOk/unbindOk 容忍 undefined，触发后只是输出 `Claw (unknown) ...`，不再 crash
+- 但 `setApiKey` 的 `apiKeySetOk({ provider, profileId: data?.profileId ?? '${provider}:default' })` 等其它 CLI 已经用 optional chain 兜底
+
+**预存性**：与 Phase B 改 wrap 字段名无关，是 helper 自身的 chunk 边界处理设计缺陷，旧版同存在。
+
+**2026-05-16 Phase D 失败尝试**（已回退）：曾以"推迟 `parseResult` 到 grace timer fire 时"修复（commit `e981fd3`），红测覆盖 nested 假闭合场景验证通过。但事后周边分析发现场景 E 退化——"chunk1 完整 JSON + chunk2 在 grace 内追加 stdout"（OpenClaw 子进程 WS 心跳 log / grace shutdown 提示等若落 stdout 即触发）原本由"快照锁定"返回成功 payload，修后变成 timer fire 时用被污染的 stdout 解析、落非 JSON 兜底丢失 payload。已回退该修复（.js 改动 + 红测 + 对应 changeset）。
+
+**修复方向**（按周边影响排序）：
+
+- **推荐**：在 startsWith/endsWith 触发 `startGracePeriod` 时**先尝试 `JSON.parse(stdout)`**，仅解析成功时启动 grace timer 并**钉死 snapshot**；失败则不启动 timer、等更多 chunk。此修法对全部 A/B/C/D/E 场景都不差于原行为，且顺手闭合"nested 假闭合 + chunk 在 grace 期外才到"边缘
+- **不推荐**：推迟 `parseResult` 调用到 grace timer fire 时（已尝试 + 回退，详见上面失败尝试段）
+- **不推荐**：移除早判、纯靠 `child.on('close')` 触发 `parseResult`——会让"永不优雅退出的子进程"等到总超时 10s 才返回结果，破坏 helper 当初引入 grace 期的设计意图
+
+**实施前提**：写测试时务必同时覆盖场景 C（nested 假闭合 + grace 内补全）与场景 E（完整 JSON + 后续 chunk 追加），防止再次单面修法。
+
+---
+
 ## patch 脚本健壮性补强
 
 **发现日期**：2026-05-16（Phase D deep-review codex-rescue D 实例识别）
@@ -1371,19 +1399,6 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 **严重性**：低——字段都非敏感，但下游消费方按文档实现会缺字段。
 
 **修复方向**：更新 docs/model-config-api.md §2 列出全部 list 返回字段。
-
----
-
-## gateway-notify chunk 晚到 grace 期外的边缘
-
-**发现日期**：2026-05-16（Phase D deep-review codex-rescue C 实例识别）
-**关联**：`plugins/openclaw/src/common/gateway-notify.js:108-112` `startGracePeriod`
-
-**问题**：刚做的 e981fd3 修复推迟 parseResult 到 grace timer fire 时，能兜住"chunk 在 grace 期内补全"的常见场景。但仍有边缘——若 nested 假闭合触发 grace timer 后，最终补全的 chunk 在 `killDelayMs`（默认 2000ms）之后才到达，timer fire 时 stdout 仍不完整，parseResult 落到非 JSON 兜底 `{ ok: true }` 无 payload。
-
-**严重性**：极低——pretty-print payload 通常一次性出 stdout，分多 chunk 也基本在几 ms 内完成；killDelayMs=2000ms 之后再到达概率极低。
-
-**修复方向**：在 startGracePeriod 内先尝试 `JSON.parse(stdout)`，仅解析成功时启动 grace timer；失败则继续等待更多 chunk（永不启动 grace，靠 close/timeout 收尾）。
 
 ---
 

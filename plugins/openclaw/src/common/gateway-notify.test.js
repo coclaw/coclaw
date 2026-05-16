@@ -359,31 +359,6 @@ test('callGatewayMethod should handle child.kill() throwing', async () => {
 	assert.equal(result.payload.status, 'refreshed');
 });
 
-test('callGatewayMethod should parse complete JSON when later chunk closes pretty-printed nested payload', async () => {
-	// 模拟 pretty-print JSON 多 chunk 到达：中间 chunk 让 stdout trim 后恰好以 } 收尾
-	// 但顶层 JSON 仍不完整（嵌套对象闭合的瞬间）；后续 chunk 在 grace 期内补全顶层
-	const mockSpawn = () => {
-		const child = new EventEmitter();
-		child.stdout = new EventEmitter();
-		child.stderr = new EventEmitter();
-		child.kill = () => {};
-		process.nextTick(() => {
-			// chunk1：外层只开了 {，内层 outer 对象完整闭合 → trim 后 startsWith '{' endsWith '}'
-			child.stdout.emit('data', '{\n  "outer": {\n    "inner": "value"\n  }');
-			process.nextTick(() => {
-				// chunk2：补完外层闭合
-				child.stdout.emit('data', '\n}');
-			});
-		});
-		return child;
-	};
-
-	const result = await callGatewayMethod('coclaw.bind', mockSpawn, { killDelayMs: 30 });
-
-	assert.equal(result.ok, true);
-	assert.deepEqual(result.payload, { outer: { inner: 'value' } });
-});
-
 test('callGatewayMethod should parse stdout on timeout when output is not complete JSON', async () => {
 	// 有 stdout 但不是完整 JSON（无法通过 tryResolveFromStdout 立即 resolve）
 	const mockSpawn = () => {
