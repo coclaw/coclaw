@@ -1308,3 +1308,108 @@ pion-ipc 的接口名过滤是 case-sensitive `strings.HasPrefix` 匹配，**无
 
 stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在。无需补 fixture。
 
+---
+
+## patch 脚本健壮性补强
+
+**发现日期**：2026-05-16（Phase D deep-review codex-rescue D 实例识别）
+**关联**：`plugins/openclaw/scripts/patch-openclaw-issue-80697.sh`
+
+**问题**：
+- 脚本第 185 行用裸 `writeFileSync`，无 rename 原子写——半截写崩溃会留破损文件
+- 第 109 行 usage 提到支持 `OPENCLAW_DIST` 环境变量，但 `find_openclaw_dist` 实际未读该 env
+- rollback 仅在第 193 行的语法检查失败后触发；语义错误（patch 写错位置但 node 仍能 parse）会直接生效
+- 无 OpenClaw 版本号 guard——升级后哨兵残留可能让 patch 静默跳过
+- 无 `--dry-run` / `--verify` 模式
+
+**严重性**：低——脚本是手动运行的 workaround；sentinel 提供基本幂等；有 `--revert` 入口。可在用户实际遇到升级失配时再补强。
+
+**修复方向**：
+- atomic write：`writeFileSync(tmp); rename(tmp, target)`
+- 实现 `OPENCLAW_DIST` 读取
+- 加 trap EXIT 兜底 rollback
+- 哨兵字符串嵌入 OpenClaw 版本号，升级后哨兵失配触发 re-patch
+
+---
+
+## provider-auth CLI 缺友好错误消息映射
+
+**发现日期**：2026-05-16（Phase D deep-review codex-rescue B 实例识别）
+**关联**：`plugins/openclaw/src/cli-registrar.js:211 / :234 / :260`
+
+**问题**：provider-auth 三 CLI（`auth set-api-key` / `auth list` / `auth remove`）错误路径均走通用 `handleRpcError`，未按 `INVALID_ARGS` / `IO_FAILED` / `NOT_FOUND` 给 provider-auth 专属提示。bind/unbind/enroll 已经有 `NOT_BOUND` 等定制映射。
+
+**严重性**：低——错误信息能看，只是用户体验不够友好。
+
+**修复方向**：在 provider-auth 三 CLI 内识别 result.error / result.message 中的常见 code 并映射到本地化提示。
+
+---
+
+## provider-auth 测试组合不足
+
+**发现日期**：2026-05-16（Phase D deep-review codex-rescue B 实例识别）
+**关联**：`plugins/openclaw/src/provider-auth/handlers.test.js`
+
+**问题**：测试用例都是独立 stub，缺端到端连用场景：
+- set → list 状态轮转（验证 set 完真的能在 list 里看到）
+- remove → list 消失（验证 remove 完真的从 list 消失）
+- 同一 profileId 并发 set（验证 SDK 锁正确性）
+
+**严重性**：低——单点行为已覆盖；组合场景由 SDK 自身测试兜底。
+
+**修复方向**：补三个 fixture，用真实 SDK helper（非 mock）跑一遍。
+
+---
+
+## provider-auth list 额外字段未文档化
+
+**发现日期**：2026-05-16（Phase D deep-review codex-rescue B 实例识别）
+**关联**：`plugins/openclaw/src/provider-auth/handlers.js:165` + `plugins/openclaw/docs/model-config-api.md §2`
+
+**问题**：list 返回对象含 `type / email / displayName / expiresAt` 字段，但 model-config-api.md §2 只列了 `provider / profileId / keyPreview`。OAuth 等场景需要 email/expiresAt，但文档与实现存在漂移。
+
+**严重性**：低——字段都非敏感，但下游消费方按文档实现会缺字段。
+
+**修复方向**：更新 docs/model-config-api.md §2 列出全部 list 返回字段。
+
+---
+
+## gateway-notify chunk 晚到 grace 期外的边缘
+
+**发现日期**：2026-05-16（Phase D deep-review codex-rescue C 实例识别）
+**关联**：`plugins/openclaw/src/common/gateway-notify.js:108-112` `startGracePeriod`
+
+**问题**：刚做的 e981fd3 修复推迟 parseResult 到 grace timer fire 时，能兜住"chunk 在 grace 期内补全"的常见场景。但仍有边缘——若 nested 假闭合触发 grace timer 后，最终补全的 chunk 在 `killDelayMs`（默认 2000ms）之后才到达，timer fire 时 stdout 仍不完整，parseResult 落到非 JSON 兜底 `{ ok: true }` 无 payload。
+
+**严重性**：极低——pretty-print payload 通常一次性出 stdout，分多 chunk 也基本在几 ms 内完成；killDelayMs=2000ms 之后再到达概率极低。
+
+**修复方向**：在 startGracePeriod 内先尝试 `JSON.parse(stdout)`，仅解析成功时启动 grace timer；失败则继续等待更多 chunk（永不启动 grace，靠 close/timeout 收尾）。
+
+---
+
+## webrtc-ice-if-filter.md "完整名" 措辞可能误导
+
+**发现日期**：2026-05-16（Phase D deep-review codex-rescue D 实例识别）
+**关联**：`plugins/openclaw/docs/webrtc-ice-if-filter.md:18`
+
+**问题**：标题"唯一一条：`'docker0'`（Docker default bridge 完整名）"中"完整名"措辞可能让读者误以为是精确匹配；文档其它地方已说明 HasPrefix 行为。
+
+**严重性**：极低——只是标题层面歧义，正文 HasPrefix 章节已澄清。
+
+**修复方向**：标题或紧邻一行加"但仍按 HasPrefix 匹配，理论上撞 `docker0_old`/`docker0-bak`"。
+
+---
+
+## model-default 测试 fixture 不真实
+
+**发现日期**：2026-05-16（Phase D deep-review codex-rescue A 实例识别）
+**关联**：`plugins/openclaw/src/model-default/persist.test.js:186-218` + `handlers.test.js:163-187 / :274-295`
+
+**问题**：
+- `persist.test.js:186-218` 清除单 agent override 的 fixture 初态不含 global default，与生产实态不符
+- handlers.test.js set 和 list 各自独立调用，无 set → list 端到端串联
+
+**严重性**：低——单点行为已覆盖；端到端有 cli-e2e-verify.sh 兜底。
+
+**修复方向**：补两个 fixture：① 带 global default + 单 agent override 的初态，执行清除 agent override，验证 default 保留；② set handler → list handler 串行调用，验证状态同步。
+

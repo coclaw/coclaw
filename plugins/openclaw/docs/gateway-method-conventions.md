@@ -102,24 +102,28 @@ respond(false, undefined, { code, message });
 respond(false, { error: '...' });   // ❌
 ```
 
-旧格式把 error 字符串放在 payload 中，下游按"成功响应"解析会拿到一个无意义的 payload + 拿不到结构化 error。已统一在 `common/errors.js` 提供：
+旧格式把 error 字符串放在 payload 中，下游按"成功响应"解析会拿到一个无意义的 payload + 拿不到结构化 error。
 
-- `respondError(respond, err)` — 抓异常→格式化→`respond(false, undefined, { code, message })`。一切 try/catch 走这条。
-- `respondInvalid(respond, message)` — 参数校验失败专用，code 固定为 `INVALID_ARGS`。
+仓库内**两套 helper 并存**，按 handler 所属模块选用——没必要统一到一处，因错误码语义不同：
 
-加新 handler 时模板：
+- `plugins/openclaw/index.js` 内部 `respondError` / `respondInvalid`：服务 index.js 自身注册的核心 handler（bind/unbind/enroll/topics/files/info/agent.* 等），错误码 `INTERNAL_ERROR` / `INVALID_INPUT`。
+- 各模块自带局部 helper：`provider-auth/handlers.js` 与 `model-default/handlers.js` 各自定义 `respondInvalid`(`INVALID_ARGS`) 与 `respondIoFailed`(`IO_FAILED`)，错误码沿用本节硬约束。
+
+`src/common/errors.js` 目前只导出 `resolveErrorMessage`（用户面错误文案的查表 helper），**不导出 respond 类 helper**。新写 handler 时优先用所属模块内的局部 helper；若模块内还没有，参考 provider-auth / model-default 的局部模式复制一份。
+
+加新 handler 时模板（以 model-default / provider-auth 模式为例）：
 
 ```js
 api.registerGatewayMethod('coclaw.foo', async ({ params, respond }) => {
   try {
     if (typeof params?.x !== 'string') {
-      respondInvalid(respond, 'x must be a string');
+      respondInvalid(respond, 'x must be a string'); // INVALID_ARGS
       return;
     }
     const result = await doFoo(params);
     respond(true, result);
   } catch (err) {
-    respondError(respond, err);
+    respondIoFailed(respond, err); // IO_FAILED
   }
 });
 ```

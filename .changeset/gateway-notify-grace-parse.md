@@ -17,5 +17,5 @@ grace period starts, so the final stdout (including any in-flight chunks
 that arrive during the grace window) is parsed.
 
 No public API change. CLI callers that read `result.payload.*` (e.g. the
-provider-auth / model-default / bind / unbind / enroll CLI handlers) get
-the full payload reliably even when stdout is delivered in chunks.
+provider-auth / bind / unbind / enroll CLI handlers) get the full payload
+reliably even when stdout is delivered in chunks.

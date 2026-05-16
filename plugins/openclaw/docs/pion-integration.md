@@ -30,7 +30,7 @@ CoClaw 维护前两个，第三个是上游依赖（不改代码，只用）。
 插件依赖：
 
 ```json
-"@coclaw/pion-node": "^0.3.0"
+"@coclaw/pion-node": "^0.4.0"
 ```
 
 binary 解析**完全由 pion-node 内部处理**，插件不参与。优先级：
