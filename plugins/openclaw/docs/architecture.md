@@ -183,7 +183,7 @@ session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两�
 
 文件 schema：见 §"状态在哪儿"中 `coclaw-chat-history.json` 行。
 
-版本要求与回滚警告详见 `plugins/openclaw/.changeset/chat-history-dual-source-archival.md`。
+版本要求与回滚警告详见 `.changeset/chat-history-dual-source-archival.md`（仓库根）。
 
 ## 状态在哪儿（持久化文件清单）
 

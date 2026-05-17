@@ -203,19 +203,16 @@ export class ChatHistoryManager {
 	}
 
 	/**
-	 * 获取指定 chat 的 session 列表（默认全量含首位未归档头）。
+	 * 获取指定 chat 的 session 列表（原始数组：首位可能是未归档的当前活跃 session）。
 	 * 每次调用从磁盘重载，确保跨模块实例一致性
 	 * （OpenClaw 的 hook 和 gateway method 可能在不同 ESM 模块实例中运行）。
-	 * @param {{ agentId: string, sessionKey: string, includeCurrent?: boolean }} params
-	 *   includeCurrent: 默认 true 返回原始 list；false 时过滤掉未归档头
-	 *   （RPC handler 兼容旧 UI 用，避免把当前活跃 session 当孤儿展示）
+	 * @param {{ agentId: string, sessionKey: string }} params
 	 * @returns {Promise<{ history: { sessionId: string, archivedAt?: number }[] }>}
 	 */
-	async list({ agentId, sessionKey, includeCurrent = true }) {
+	async list({ agentId, sessionKey }) {
 		await this.__reloadFromDisk(agentId);
 		const store = this.__getStore(agentId);
-		const raw = Array.isArray(store[sessionKey]) ? store[sessionKey] : [];
-		const history = includeCurrent ? raw : raw.filter((it) => it.archivedAt !== undefined);
+		const history = Array.isArray(store[sessionKey]) ? store[sessionKey] : [];
 		return { history };
 	}
 

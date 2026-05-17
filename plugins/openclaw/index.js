@@ -611,9 +611,7 @@ const plugin = {
 				if (!chatHistoryManager.__cache.has(agentId)) {
 					await chatHistoryManager.load(agentId);
 				}
-				// 默认过滤掉未归档头（首位 = 当前活跃 session）；UI 显式传 includeCurrent=true 才返回全量
-				const includeCurrent = params?.includeCurrent === true;
-				const result = await chatHistoryManager.list({ agentId, sessionKey, includeCurrent });
+				const result = await chatHistoryManager.list({ agentId, sessionKey });
 				respond(true, result);
 			}
 			catch (err) {

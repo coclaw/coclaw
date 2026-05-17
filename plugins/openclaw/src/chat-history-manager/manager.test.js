@@ -354,35 +354,6 @@ test('recordSessionTransition - T15 archivedSessionId 等于 currentSessionId：
 	}
 });
 
-// T16: list({ includeCurrent: false }) 过滤未归档头，仅返回已归档项
-test('list - includeCurrent=false 过滤未归档头', async () => {
-	const tmpDir = await makeTmpDir();
-	try {
-		const { mgr } = await setupManager(tmpDir);
-		await mgr.load('main');
-		// 建立 [B(current), A(archived)]
-		await mgr.recordSessionTransition({
-			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'A',
-		});
-		await mgr.recordSessionTransition({
-			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'B',
-		});
-
-		const full = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
-		assert.equal(full.history.length, 2);
-		assert.equal(full.history[0].archivedAt, undefined, 'default: head 未归档');
-
-		const archivedOnly = await mgr.list({
-			agentId: 'main', sessionKey: 'agent:main:main', includeCurrent: false,
-		});
-		assert.equal(archivedOnly.history.length, 1, '过滤后仅 1 个已归档项');
-		assert.equal(archivedOnly.history[0].sessionId, 'A');
-		assert.ok(typeof archivedOnly.history[0].archivedAt === 'number');
-	} finally {
-		await fs.rm(tmpDir, { recursive: true, force: true });
-	}
-});
-
 // T6: 双源最终一致 sessions.changed → hook：第二次能补 archivedSessionId 归档
 test('recordSessionTransition - T6 sessions.changed 先到，hook 后到补 archivedSessionId', async () => {
 	const tmpDir = await makeTmpDir();
