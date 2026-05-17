@@ -181,10 +181,16 @@ const plugin = {
 
 		// 追踪 chat 因 reset 产生的 session 流水。双源回调（hook + sessions.changed）共用 helper。
 		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。
+		//
 		// agentId 解析：hook 路径有 ctx.agentId（显式契约，优先用）；sessions.changed 路径
 		// gateway broadcast payload 不含 agentId（见 openclaw-repo emitSessionsChanged），
 		// 只能 fallback 切 sessionKey（`agent:<agentId>:*` → parts[1]）。当前 sessionKey schema
 		// 下两路径解析结果等价；多 agent topic 启用后若上游 sessionKey schema 加前缀会需复评。
+		//
+		// archivedSessionId 解析：hook 路径来自 event.resumedFrom；sessions.changed payload
+		// 不带（无 previousSessionId 字段），由 manager 从文件首位推断。
+		//
+		// 该 helper 可直接作为 bridge.onSessionCreated 回调（签名兼容；缺失字段走兜底）。
 		async function handleSessionCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
 			if (!sessionKey || !sessionId) {
 				// 早返值得警惕：上游事件 schema 异常，或 topic（无 sessionKey）误入双源链路。
@@ -241,11 +247,7 @@ const plugin = {
 			await restartRealtimeBridge({
 				logger,
 				pluginConfig: api.pluginConfig,
-				onSessionCreated: ({ sessionKey, sessionId }) => handleSessionCreated({
-					sessionKey,
-					sessionId,
-					// sessions.changed payload 不带 previousSessionId；让 manager 从文件首位推断
-				}),
+				onSessionCreated: handleSessionCreated,
 			});
 		}
 

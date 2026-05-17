@@ -1759,6 +1759,14 @@ export async function stopRealtimeBridge({ forceCleanup = false } = {}) {
 	}
 }
 
+/**
+ * 测试专用：读 module-level singleton，仅用于钉死 restartRealtimeBridge 透传 wiring。
+ * 生产代码请勿调用——singleton 生命周期由 restartRealtimeBridge / stopRealtimeBridge 管理。
+ */
+export function __getSingletonForTest() {
+	return singleton;
+}
+
 export async function waitForSessionsReady() {
 	if (!singleton?.__ensureSessionsPromise) return;
 	await singleton.__ensureSessionsPromise;

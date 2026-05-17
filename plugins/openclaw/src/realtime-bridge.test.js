@@ -5,7 +5,7 @@ import os from 'node:os';
 import { after, test } from 'node:test';
 
 import { WebSocket as WsWebSocket } from 'ws';
-import { GATEWAY_RETRY_DELAYS_MS, RealtimeBridge, classifyAgentLagStop, defaultResolveGatewayAuthToken, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
+import { GATEWAY_RETRY_DELAYS_MS, RealtimeBridge, __getSingletonForTest, classifyAgentLagStop, defaultResolveGatewayAuthToken, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
 import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
 import { setRuntime } from './runtime.js';
@@ -6197,6 +6197,30 @@ test('onSessionCreated 通过构造器注入；stop/refresh 不动该字段', as
 test('未注入 onSessionCreated 时 __onSessionCreated 为 null', () => {
 	const bridge = createBridge();
 	assert.equal(bridge.__onSessionCreated, null, '默认应为 null（无回调路径）');
+});
+
+test('restartRealtimeBridge 把 opts.onSessionCreated 透传到新 singleton', async () => {
+	await writeCfg({ token: '' });
+	const logger = noopLogger();
+	const cb = () => {};
+	try {
+		await restartRealtimeBridge({
+			logger,
+			pluginConfig: { serverUrl: 'http://127.0.0.1:1' },
+			onSessionCreated: cb,
+			__deps: { resolveGatewayAuthToken: () => 'tkn' },
+		});
+		assert.equal(__getSingletonForTest()?.__onSessionCreated, cb, 'singleton 应携带 opts.onSessionCreated');
+		// 第二次 restart 是新实例，cb 必须重新传入才在
+		await restartRealtimeBridge({
+			logger,
+			pluginConfig: { serverUrl: 'http://127.0.0.1:1' },
+			__deps: { resolveGatewayAuthToken: () => 'tkn' },
+		});
+		assert.equal(__getSingletonForTest()?.__onSessionCreated, null, '第二次未传 onSessionCreated，新 singleton 应为 null');
+	} finally {
+		await stopRealtimeBridge();
+	}
 });
 
 /** waitForSent：等到 gw.sent 出现含指定子串的帧，返回原始字符串。 */

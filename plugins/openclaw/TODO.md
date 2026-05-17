@@ -1542,23 +1542,11 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 ---
 
-## chat-history 第六轮 review 摘出的 follow-up
+## chat-history 第六轮 review 收尾（已完成，留作历史索引）
 
-**发现日期**：2026-05-17（第六轮 deep-review 主线 gatekeep）
-**关联**：第五轮 commit `d5f3aae` 构造器注入 onSessionCreated + `index.js#restartBridge` helper
+**发现日期**：2026-05-17 第六轮 deep-review；**消化日期**：2026-05-17 第七轮前置
 
-第六轮 4 维度 review 整体 0 MUST-FIX；除已在本轮处理的 9 条注释/文档/changeset 修订外，2 条**涉及业务代码**的建议按"不动业务代码"约束摘出，留下一轮决定：
+第六轮 4 维度 review 整体 0 MUST-FIX；除文档/注释类直接做完外，2 条**碰运行代码**的建议（R2-S2 加 wiring 回归测试 / R2-N2 删 wrapper）原先按"不动业务代码"摘出登记此处，第七轮 review 前已全部消化：
 
-### (a) restart wiring 缺最小回归测试（R2-S2）
-
-- **问题**：`restartRealtimeBridge({...,onSessionCreated:cb})` 把 cb 透传到 `new RealtimeBridge(deps)` 的链路（`plugins/openclaw/src/realtime-bridge.js:1733`）目前没有任何测试覆盖。spread 顺序写反 / 字段拼错挂掉 = 漏归档（正是原 bug）。
-- **难点**：`restartRealtimeBridge` 内的 `singleton` 是 module-level 私有变量，未 export。要钉死断言需要：
-  - 方案 A：新增 `__getSingletonForTest()` test-only export（侵入 API surface，约 4 行）
-  - 方案 B：写一条走 FakeWebSocket 的端到端测试，从 restart → handshake → gateway emit sessions.changed reason=create → 断回调收到 payload（代码量较大，参考 `realtime-bridge.test.js` L305+ 的 DI 测试结构）
-- **判断**：方案 A 更直接，符合既有 `__` 前缀私有惯例；方案 B 更端到端但实现成本高。下一轮决策时建议优先 A。
-
-### (b) restartBridge 内联 wrapper 化简（R2-N2）
-
-- **问题**：`plugins/openclaw/index.js:242-247` 把 `onSessionCreated` 写成内联匿名 `({ sessionKey, sessionId }) => handleSessionCreated({ sessionKey, sessionId })`，但 `handleSessionCreated` 对缺失 `agentId`/`archivedSessionId` 都有兜底，直接 `onSessionCreated: handleSessionCreated` 即可，少一层闭包。
-- **难点**：wrapper 当前的注释表达"sessions.changed payload 不带 previousSessionId"。化简时需要把这条信息挪到 `handleSessionCreated` 的 jsdoc 上。
-- **判断**：纯润色，可与 (a) 一起做。
+- **R2-S2 done**：`__getSingletonForTest()` test-only export 落地（`plugins/openclaw/src/realtime-bridge.js`），bridge.test.js 加一条 wiring 测试钉死 `restartRealtimeBridge({...,onSessionCreated:cb})` 后 `singleton.__onSessionCreated === cb`，且第二次 restart 未传 cb 时新 singleton 回归 null。
+- **R2-N2 done**：`plugins/openclaw/index.js#restartBridge` 内联匿名 wrapper 删除，直接 `onSessionCreated: handleSessionCreated`；wrapper 原注释（"sessions.changed payload 不带 previousSessionId" + "该 helper 可直接作 bridge.onSessionCreated 回调"）已挪到 `handleSessionCreated` 上方 jsdoc。
