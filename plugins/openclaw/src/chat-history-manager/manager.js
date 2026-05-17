@@ -155,8 +155,12 @@ export class ChatHistoryManager {
 	async recordSessionTransition({ agentId, sessionKey, currentSessionId, archivedSessionId }) {
 		if (!sessionKey || !currentSessionId) return;
 		// 规范化：archivedSessionId 与 currentSessionId 相同属上游契约异常（resumedFrom 不应等于 sessionId），
-		// 丢弃避免在空 list 起手时写出"同 sid 既是头又是归档"的双份记录
-		if (archivedSessionId === currentSessionId) archivedSessionId = undefined;
+		// 丢弃避免在空 list 起手时写出"同 sid 既是头又是归档"的双份记录。打 remoteLog 暴露信号
+		// 让运维捕捉到上游可能的回归——只在真触发时打一次，正常路径噪声为零。
+		if (archivedSessionId === currentSessionId) {
+			remoteLog(`chat-history.archived-equals-current sessionKey=${sessionKey} sid=${currentSessionId}`);
+			archivedSessionId = undefined;
+		}
 		await this.__mutex(agentId).withLock(async () => {
 			// 从磁盘重载确保最新状态：list() 无锁覆写 __cache 可能导致缓存过期
 			await this.__reloadFromDisk(agentId);
@@ -209,6 +213,9 @@ export class ChatHistoryManager {
 	 *
 	 * RPC 契约：`coclaw.chatHistory.list` 直接透传本返回值，不做服务端过滤；调用方
 	 * （UI / 其它消费者）按 `archivedAt != null` 自行过滤未归档头与孤儿历史段。
+	 *
+	 * **返回值是 cache 引用，调用方禁止 mutate**（不要 splice / sort / 改 item 字段）；
+	 * RPC handler 立刻 JSON 序列化所以无副作用，进程内消费者若需要修改请先 deep copy。
 	 *
 	 * @param {{ agentId: string, sessionKey: string }} params
 	 * @returns {Promise<{ history: { sessionId: string, archivedAt?: number }[] }>}

@@ -263,8 +263,21 @@ test('restartRealtimeBridge should replace existing singleton when already runni
 	try {
 		const opts = { logger, pluginConfig: {}, __deps: { resolveGatewayAuthToken: () => 'tkn' } };
 		await restartRealtimeBridge(opts);
-		// 再次 restart 不应报错，应正常替换
+		// 旧 singleton 在第二次 restart 时必须被 stop（否则 WS / timers 泄漏）。
+		// 引用钉死前一个实例，spy stop 计数，再触发 restart。
+		const firstBridge = __getSingletonForTest();
+		assert.ok(firstBridge, 'first restart 应建立 singleton');
+		let stopCount = 0;
+		const originalStop = firstBridge.stop.bind(firstBridge);
+		firstBridge.stop = async (...args) => {
+			stopCount += 1;
+			return originalStop(...args);
+		};
+		// 再次 restart 应正常替换 + 旧实例被 stop
 		await restartRealtimeBridge(opts);
+		const secondBridge = __getSingletonForTest();
+		assert.notEqual(secondBridge, firstBridge, '第二次 restart 应换实例');
+		assert.equal(stopCount, 1, '旧 singleton 应被 stop 一次（restartRealtimeBridge 必须 await singleton.stop()）');
 		const result = await ensureAgentSession('main');
 		assert.notEqual(result.error, 'bridge_not_started');
 	}
@@ -6037,8 +6050,9 @@ test('sessions.changed reason=create：调用 onSessionCreated 回调且不 broa
 		await waitFor(() => calls.length === 1, { label: 'onSessionCreated invoked' });
 		assert.equal(calls[0].sessionKey, 'agent:main:main');
 		assert.equal(calls[0].sessionId, 'new-sid-1');
-		// 等一会儿确认 broadcast 没被调（M2: reason=create 调完回调直接 return）
-		await new Promise((r) => setTimeout(r, 10));
+		// drain microtasks / event-loop ticks 确认 broadcast 没被调（M2: reason=create 调完回调直接 return）
+		// 用 setTimeout(0) 5 轮匹配本文件其它 drain 处的惯例；优于固定 setTimeout(10) 在 CI 慢机上误漏报
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 		assert.equal(broadcastCalls.length, 0, 'reason=create 不应 broadcast 到 UI');
 	} finally {
 		await bridge.stop();
@@ -6062,7 +6076,7 @@ test('sessions.changed reason!=create：不调回调也不 broadcast（M2 过滤
 				}),
 			});
 		}
-		await new Promise((r) => setTimeout(r, 10));
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 		assert.equal(calls.length, 0, '非 create reason 不触发回调');
 		assert.equal(broadcastCalls.length, 0, 'M2: sessions.changed 在过滤名单中，任何 reason 都不应 broadcast');
 	} finally {
@@ -6083,7 +6097,7 @@ test('session.message event 进入过滤名单：不触发回调也不 broadcast
 				payload: { sessionKey: 'agent:main:main', message: { role: 'user', content: 'hi' } },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 10));
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 		assert.equal(broadcastCalls.length, 0, 'M2: session.message 应被过滤名单 drop');
 	} finally {
 		await bridge.stop();
@@ -6112,7 +6126,7 @@ test('sessions.changed 缺 sessionKey 或 sessionId：不调用回调也不 broa
 				payload: { reason: 'create', sessionKey: 'agent:main:main' },
 			}),
 		});
-		await new Promise((r) => setTimeout(r, 10));
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 		assert.equal(calls.length, 0, '缺字段时不触发回调');
 		assert.equal(broadcastCalls.length, 0, '缺字段的 reason=create 也走 return，不 broadcast');
 	} finally {
@@ -6220,6 +6234,67 @@ test('restartRealtimeBridge 把 opts.onSessionCreated 透传到新 singleton', a
 		assert.equal(__getSingletonForTest()?.__onSessionCreated, null, '第二次未传 onSessionCreated，新 singleton 应为 null');
 	} finally {
 		await stopRealtimeBridge();
+	}
+});
+
+test('端到端 wiring：restartRealtimeBridge 装配的 cb 真收到 sessions.changed reason=create payload', async () => {
+	// 这条用例补 R-C MUST-FIX 2：原本的两条 wiring 测试一条只断引用相等（cb 是空函数）、
+	// 另一条用 `bridge.__onSessionCreated = xxx` 直接赋值绕过 wiring。没有一条用例真正
+	// 走过"完整生产装配 → 收到 sessions.changed → cb 拿到 payload"链路。
+	FakeWebSocket.instances.length = 0;
+	const dir = await writeCfg({ token: 'wire-tok', serverUrl: 'https://server.local' });
+	const prevHome = saveHomedir();
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+
+	const calls = [];
+	const cb = (p) => calls.push(p);
+	try {
+		await restartRealtimeBridge({
+			logger: noopLogger(),
+			pluginConfig: {},
+			onSessionCreated: cb,
+			__deps: {
+				WebSocket: FakeWebSocket,
+				resolveGatewayAuthToken: () => 'wire-tok',
+				preloadPion: noopPreloadPion,
+				preloadNdc: noopPreloadNdc,
+				gatewayReadyTimeoutMs: 50,
+			},
+		});
+		const bridge = __getSingletonForTest();
+		assert.ok(bridge, 'singleton 应已创建');
+		// server WS handshake
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+		// rtc:offer 触发 webrtcPeer + gatewayWs 创建（与 setupBridgeWithGateway 同形态）
+		server.emit('message', {
+			data: JSON.stringify({
+				type: 'rtc:offer',
+				fromConnId: 'c_wire_e2e',
+				payload: { sdp: 'sdp' },
+			}),
+		});
+		await waitFor(() => bridge.webrtcPeer !== null, { label: 'webrtcPeer created' });
+		const gwWs = FakeWebSocket.instances.find((ws) => ws !== server);
+		gwWs.readyState = 1;
+		bridge.gatewayReady = true;
+		bridge.gatewayWs = gwWs;
+		// 触发 sessions.changed reason=create
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'sessions.changed',
+				payload: { reason: 'create', sessionKey: 'agent:main:main', sessionId: 'wire-sid-99' },
+			}),
+		});
+		await waitFor(() => calls.length === 1, { label: 'wiring cb invoked end-to-end' });
+		assert.equal(calls[0].sessionKey, 'agent:main:main');
+		assert.equal(calls[0].sessionId, 'wire-sid-99');
+	} finally {
+		await stopRealtimeBridge();
+		restoreHomedir(prevHome);
 	}
 });
 

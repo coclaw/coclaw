@@ -175,6 +175,9 @@ session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两�
 - 完全 no-op：head 已是 currentSessionId 且无新 archivedSessionId 要追加。
 - stale 防御：currentSessionId 已存在于 list 其他位置（已归档项）→ 视为晚到事件丢弃，不动 head（避免把当前活跃头错翻成归档 + sid 重复）。
 - 双源到达顺序无关；mutex 串行 + per-write atomic write。
+- 异常信号：`archivedSessionId === currentSessionId`（上游 `resumedFrom === sessionId`，理论上不应发生）触发归一化时打 `remoteLog('chat-history.archived-equals-current ...')`，避免把上游可能的回归静默吞掉。
+
+并发边界（参见 `plugins/openclaw/CLAUDE.md` 硬约束"Hook / RPC 双实例陷阱"）：mutex 是**每实例独有**的；OpenClaw plugin loader 在 `--link` 安装模式下可能让 hook 与 RPC handler 跑在不同 ESM 模块实例，两个 ChatHistoryManager 实例各自维护一份 `__mutexes`。同 agent 文件的 cross-instance 同时写**不会**互相串行——靠的是每写都 `__reloadFromDisk` + atomic rename（rename 保证文件视图原子切换，幂等规则吞 stale 入参）。实践中两实例同时为同一事件写入概率低，rename 后写赢，丢的是另一边的 archivedSessionId 第二位插入（head 仍正确），可接受。
 
 RPC 契约：`coclaw.chatHistory.list` **透传整个 list（含首位未归档头）**，不做服务端过滤。调用方（UI / 其它消费者）按 `archivedAt != null` 自行过滤当前活跃头与孤儿历史段。
 

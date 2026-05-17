@@ -1445,3 +1445,122 @@ test('register full mode: all expected side effects fire with exact RPC method s
 	}
 	assert.equal(calls.gatewayMethod, expectedMethods.length, `gatewayMethod call count should equal expected method set size`);
 });
+
+// ----- handleSessionCreated 闭包 guard 行为直接单测（双源汇聚点） -----
+// 之前 register() 整段被 c8 ignore 包住，hook 注册的 handler 没被任何用例直接调过；
+// 4 条 guard（missing-keys 早返 / explicit 守卫 / agentId fallback / try-catch）覆盖率虚高
+// 实际无回归保护。下列用例直接捕获 api.on 注册的 handler 调用，从磁盘文件与 remoteLog
+// 缓冲核实行为，即便 manager 模块在另一 ESM 实例下加载也能交叉验证。
+
+function registerWithSessionStartCapture(stateDir) {
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+	setRuntime(null);
+	__resetRemoteLogPlugin();
+	const handlers = new Map();
+	let captured = null;
+	plugin.register({
+		registrationMode: 'full',
+		pluginConfig: {},
+		runtime: {
+			state: { resolveStateDir: () => stateDir },
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
+		},
+		logger: { info() {}, warn() {}, error() {}, log() {} },
+		registerChannel() {},
+		registerCli() {},
+		registerCommand() {},
+		registerService() {},
+		registerGatewayMethod(name, handler) { handlers.set(name, handler); },
+		on(event, handler) { if (event === 'session_start') captured = handler; },
+	});
+	assert.ok(captured, 'register full mode 应注册 session_start hook');
+	return { onSessionStart: captured };
+}
+
+async function readChatHistoryFile(stateDir, agentId) {
+	const path = nodePath.join(stateDir, 'agents', agentId, 'sessions', 'coclaw-chat-history.json');
+	try {
+		return JSON.parse(await fs.readFile(path, 'utf8'));
+	}
+	catch (err) {
+		if (err?.code === 'ENOENT') return null;
+		throw err;
+	}
+}
+
+test('handleSessionCreated guard: missing sessionKey 早返 + remoteLog + 不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-mks-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// 缺 sessionKey
+	await onSessionStart({ sessionId: 'sid-x' }, { agentId: 'main' });
+	const logs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.missing-keys'));
+	assert.equal(logs.length, 1, '缺 sessionKey 应打一条 missing-keys remoteLog');
+	assert.match(logs[0].text, /sessionKey=null/);
+	assert.equal(await readChatHistoryFile(dir, 'main'), null, '不应触达 manager 落盘');
+});
+
+test('handleSessionCreated guard: missing sessionId 早返 + remoteLog + 不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-mid-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	await onSessionStart({ sessionKey: 'agent:main:main' }, { agentId: 'main' });
+	const logs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.missing-keys'));
+	assert.equal(logs.length, 1);
+	assert.match(logs[0].text, /sessionId=null/);
+	assert.equal(await readChatHistoryFile(dir, 'main'), null);
+});
+
+test('handleSessionCreated guard: explicit fake sessionKey 跳过 + remoteLog + 不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-exp-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	await onSessionStart(
+		{ sessionKey: 'agent:main:explicit:d623247e-4d48-4e0c-84ef-f79b1461d966', sessionId: 'sid-y' },
+		{ agentId: 'main' },
+	);
+	const logs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-explicit'));
+	assert.equal(logs.length, 1, 'explicit sessionKey 应打 skip-explicit remoteLog');
+	assert.match(logs[0].text, /sessionKey=agent:main:explicit:/);
+	assert.equal(await readChatHistoryFile(dir, 'main'), null, 'explicit 不应触达 manager 落盘');
+});
+
+test('handleSessionCreated: ctx.agentId 优先于 sessionKey parts[1]（hook 路径）', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-ctx-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// ctx.agentId 与 sessionKey parts[1] 都是 'main'，落到 main 目录
+	await onSessionStart(
+		{ sessionKey: 'agent:main:main', sessionId: 'sid-a' },
+		{ agentId: 'main' },
+	);
+	const data = await readChatHistoryFile(dir, 'main');
+	assert.ok(data, 'main agent 目录应有 chat-history 文件');
+	assert.equal(data['agent:main:main']?.[0]?.sessionId, 'sid-a');
+	assert.equal(data['agent:main:main']?.[0]?.archivedAt, undefined, '首位应未归档（当前活跃）');
+});
+
+test('handleSessionCreated: agentId 走 sessionKey parts[1] fallback（ctx 缺 agentId / bridge 路径模拟）', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-fb-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// ctx.agentId 缺，sessionKey parts[1] 是 'sub-x' → 应落到 sub-x 目录
+	await onSessionStart(
+		{ sessionKey: 'agent:sub-x:main', sessionId: 'sid-b' },
+		{},
+	);
+	const mainData = await readChatHistoryFile(dir, 'main');
+	const subData = await readChatHistoryFile(dir, 'sub-x');
+	assert.equal(mainData, null, '不应回落到 main 目录（fallback 走 parts[1]）');
+	assert.ok(subData, 'sub-x 目录应有 chat-history 文件');
+	assert.equal(subData['agent:sub-x:main']?.[0]?.sessionId, 'sid-b');
+});
+
+test('handleSessionCreated: agentId 最终兜底 "main"（ctx 缺 + sessionKey 不以 agent: 开头）', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-final-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// sessionKey parts[0] != 'agent'，无法切 agentId → 走 'main' 兜底
+	await onSessionStart(
+		{ sessionKey: 'weird:not-agent:format', sessionId: 'sid-c' },
+		{},
+	);
+	const mainData = await readChatHistoryFile(dir, 'main');
+	assert.ok(mainData, 'main 兜底目录应有文件');
+	assert.equal(mainData['weird:not-agent:format']?.[0]?.sessionId, 'sid-c');
+});

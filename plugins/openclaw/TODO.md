@@ -1550,3 +1550,31 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 - **R2-S2 done**：`__getSingletonForTest()` test-only export 落地（`plugins/openclaw/src/realtime-bridge.js`），bridge.test.js 加一条 wiring 测试钉死 `restartRealtimeBridge({...,onSessionCreated:cb})` 后 `singleton.__onSessionCreated === cb`，且第二次 restart 未传 cb 时新 singleton 回归 null。
 - **R2-N2 done**：`plugins/openclaw/index.js#restartBridge` 内联匿名 wrapper 删除，直接 `onSessionCreated: handleSessionCreated`；wrapper 原注释（"sessions.changed payload 不带 previousSessionId" + "该 helper 可直接作 bridge.onSessionCreated 回调"）已挪到 `handleSessionCreated` 上方 jsdoc。
+
+---
+
+## chat-history 双源归档 follow-up F3：子代理 spawn 的 sessionKey 与 chat-history 的关系（待调研）
+
+**发现日期**：2026-05-17 第八轮 deep-review R-B（端到端追踪）
+**关联**：`openclaw-repo/src/agents/subagent-spawn.ts:829 / :1301-1307` + `plugins/openclaw/index.js#handleSessionCreated` explicit 守卫
+
+**事实**：OpenClaw `subagent-spawn.ts:829` 生成 sessionKey 形态 `agent:<targetAgentId>:subagent:<uuid>`，随后 `:1301-1307` 显式调 `emitSessionLifecycleEvent({ sessionKey: childSessionKey, reason: "create", parentSessionKey, label })`。这条事件经 gateway 转成 `sessions.changed reason=create` 广播——会触达 plugin 的 bridge 路径 → `handleSessionCreated`。当前 explicit 守卫 (`parts[0]==='agent' && parts[2]==='explicit'`) **不挡 `:subagent:`**，会被写入 `coclaw-chat-history.json` 顶级键，每次 spawn 一条永不收缩。
+
+**为什么是单独课题**：简单"扩守卫挡 `:subagent:`"未必正确。OpenClaw 也许就是为子代理建独立 session 的，subagent 也有自己的 transcript / 对话流；如果 CoClaw 端简单过滤掉，可能让用户在 UI 上看不到子代理对应的 chat history 段（如果 UI 端有"显示子代理对话"需求）。需要先调研产品定位再决策。
+
+**待调研**：
+
+1. **OpenClaw 子代理 transcript 落盘**：subagent spawn 后是否真的有 transcript/session JSONL 写入？路径在哪？以这个 sessionKey 检索能否调出对话？
+2. **OpenClaw 端 sessions.json 索引**：subagent sessionKey 是否进入 `sessions.json`？sessions.list RPC 是否会返回它？
+3. **CoClaw 产品定位**：UI 端是否要展示子代理的 chat 流？还是 main agent 的 chat-history 视图就够了？
+4. **chat-history 桶的语义**：当前 chat-history.json 的设计是"chat 流水"，chat 与 sessionKey 一一对应（CLAUDE.md 核心术语）。子代理 sessionKey 是否构成独立 chat 还是 main chat 的子段？
+
+**候选方案（待调研后定）**：
+
+- **A：扩黑名单挡 `:subagent:`**——简单但承担"未来上游再加新形态又漏"的风险；需 changeset 描述清楚"CoClaw 端不展示子代理 history"。
+- **B：改为白名单"只接受 `agent:<id>:main` 形态"**——更稳，未来上游加任何新形态都默认挡；但若需展示子代理需另起 UI 通道。
+- **C：把 subagent sessionKey 也接入 chat-history，但用单独 bucket 与 main 区分**——保留数据完整性，UI 端按需展示；需扩 schema。
+- **D：维持现状（不修）+ 周期清理**——临时方案，仅适合 spawn 频次极低场景，不可持续。
+
+**临时影响（修复前）**：每次子代理 spawn 都污染 chat-history.json + UI list RPC 会读到 subagent sessionKey 顶级键。当前 UI `chat.store.js:1445-1447` 用 `archivedAt != null` 过滤未归档头——subagent 未归档头会被 UI 过滤掉，不展示。但文件本身仍无界增长。
+

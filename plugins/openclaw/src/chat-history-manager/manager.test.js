@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import nodePath from 'node:path';
 import { ChatHistoryManager } from './manager.js';
+import { __reset as __resetRemoteLog, __buffer as __remoteLogBuf } from '../remote-log.js';
 
 const silentLogger = { info() {}, warn() {}, error() {} };
 
@@ -335,8 +336,9 @@ test('recordSessionTransition - T14 stale 事件：currentSessionId 已在 list 
 });
 
 // T15: archivedSessionId === currentSessionId 异常输入（上游契约异常），归一化丢弃避免双份
-test('recordSessionTransition - T15 archivedSessionId 等于 currentSessionId：丢弃 archived 入参', async () => {
+test('recordSessionTransition - T15 archivedSessionId 等于 currentSessionId：丢弃 archived 入参 + 打 remoteLog 暴露异常信号', async () => {
 	const tmpDir = await makeTmpDir();
+	__resetRemoteLog();
 	try {
 		const { mgr } = await setupManager(tmpDir);
 		await mgr.load('main');
@@ -349,6 +351,11 @@ test('recordSessionTransition - T15 archivedSessionId 等于 currentSessionId：
 		assert.equal(history.length, 1, 'list 应仅含一项（未归档头）');
 		assert.equal(history[0].sessionId, 'A');
 		assert.equal(history[0].archivedAt, undefined, 'A 是未归档头，不应同时出现归档副本');
+		// 归一化路径应打 remoteLog 暴露上游异常信号（不静默吃掉）
+		const logs = __remoteLogBuf.filter((r) => r.text.startsWith('chat-history.archived-equals-current'));
+		assert.equal(logs.length, 1, '应打一条 archived-equals-current remoteLog');
+		assert.match(logs[0].text, /sessionKey=agent:main:main/);
+		assert.match(logs[0].text, /sid=A/);
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
@@ -427,6 +434,42 @@ test('recordSessionTransition - T8 archivedSessionId 与 head 不匹配：保险
 		assert.ok(typeof history[1].archivedAt === 'number');
 		assert.equal(history[2].sessionId, 'X');
 		assert.ok(typeof history[2].archivedAt === 'number');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// T8b: splice 位置判别——list 长度 ≥ 2 + new archivedSessionId + head 未归档
+// 让 splice(1, 0, x) 与 push(x) mutation 在结果顺序上可区分；
+// 现有 T6/T8 都在 splice 时 list 长度为 1（splice 等价于 push）测不到顺序错位。
+test('recordSessionTransition - T8b 一般路径 splice 位置（list≥2 fixture，捕获 splice→push 漂移）', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		// 1) 起手 hook 路径建 [A, X@arch]：head=A 未归档，X 在位置 1 归档
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main',
+			currentSessionId: 'A', archivedSessionId: 'X',
+		});
+		// 2) 一般路径触发：current=B，archivedSessionId=Z（新值，不在 list 且 != head.sessionId=A）
+		//    预期：翻 A 为 archived → splice(1, 0, Z@arch) → unshift(B)
+		//    splice 落点正确：[B, A@arch, Z@arch, X@arch]
+		//    若 mutation 改成 push(Z@arch)：[B, A@arch, X@arch, Z@arch] —— Z 位置错位
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main',
+			currentSessionId: 'B', archivedSessionId: 'Z',
+		});
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 4, 'list 应为 4 项');
+		assert.equal(history[0].sessionId, 'B');
+		assert.equal(history[0].archivedAt, undefined, 'B 是新 head 未归档');
+		assert.equal(history[1].sessionId, 'A', 'A 应在第二位（前任头翻归档）');
+		assert.ok(typeof history[1].archivedAt === 'number');
+		assert.equal(history[2].sessionId, 'Z', 'Z 应在第三位（splice 插入位置）');
+		assert.ok(typeof history[2].archivedAt === 'number');
+		assert.equal(history[3].sessionId, 'X', 'X 应在末位（更早的历史）');
+		assert.ok(typeof history[3].archivedAt === 'number');
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
