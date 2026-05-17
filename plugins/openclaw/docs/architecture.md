@@ -185,6 +185,7 @@ RPC 契约：`coclaw.chatHistory.list` **透传整个 list（含首位未归档�
 - gateway 端订阅按 connId 注册；WS close 时自动 `unsubscribeAllSessionEvents` → **每条新 WS 都必须重新发送 subscribe**。bridge 在每次握手成功分支调用一次，不区分首次 / 重连。
 - 调用 timeout 60s（容忍 gateway 重启卡主线程的真实场景）。subscribe 失败仅 warn + remoteLog 一次（gateway handler 无业务失败分支，失败只可能源自传输层），同条 WS 内不重试；下次 WS 重连握手成功时自然再发——无 sticky 阻止。
 - 上游事件源补充：topic 走 transcript-update 链路发的是 `sessions.changed phase=message`（**无 reason 字段**），与本路径严判 `payload.payload?.reason === 'create'` 不匹配会被过滤掉，不会污染 chat-history。
+- subagent 走同事件源（`sessions.changed reason=create`），由 `handleSessionCreated` 按 sessionKey 形态早返：`agent:<id>:subagent:<uuid>`（含嵌套 `:subagent:` 段）不属于人机对话流——父 agent transcript 已含子代理最终输出。判定从 `parts[2]` 起找 `subagent` 段（避免 agentId 偶然叫 `subagent` 时误伤），命中打 `remoteLog('chat-history.skip-subagent ...')` 作为观测信号。cron / IM / 其它 channel 形态**保留入档**——它们本质都是人机对话流，未来 UI 可能展示。
 
 文件 schema：见 §"状态在哪儿"中 `coclaw-chat-history.json` 行。
 

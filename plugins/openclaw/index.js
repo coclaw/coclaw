@@ -217,6 +217,15 @@ const plugin = {
 				remoteLog(`chat-history.skip-explicit sessionKey=${sessionKey}`);
 				return;
 			}
+			// subagent 是 OpenClaw 程序自起的子任务 run（mode=run 一次性 / mode=session 持久绑定），
+			// 形态 `agent:<id>:subagent:<uuid>`，嵌套子代理为 `agent:<id>:subagent:<uuid>:subagent:<uuid2>`。
+			// 它不是人机对话流；父 agent 的 transcript 里已含子代理最终输出（作为 user message 回流），
+			// 因此不入 chat-history。
+			// 判定从 parts[2] 起找 'subagent' 段，避免 agentId 恰好叫 'subagent' 时误伤。
+			if (parts[0] === 'agent' && parts.indexOf('subagent', 2) >= 0) {
+				remoteLog(`chat-history.skip-subagent sessionKey=${sessionKey}`);
+				return;
+			}
 			let resolvedAgentId = agentId;
 			if (!resolvedAgentId) {
 				resolvedAgentId = (parts[0] === 'agent' && parts[1]) ? parts[1] : 'main';

@@ -1523,6 +1523,51 @@ test('handleSessionCreated guard: explicit fake sessionKey 跳过 + remoteLog + 
 	assert.equal(await readChatHistoryFile(dir, 'main'), null, 'explicit 不应触达 manager 落盘');
 });
 
+test('handleSessionCreated guard: subagent sessionKey 跳过 + remoteLog + 不落盘（单层）', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-sub-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	await onSessionStart(
+		{ sessionKey: 'agent:main:subagent:6d3a5e9f-2c4b-4d8f-9a11-7e2f3b4c5d6e', sessionId: 'sid-sub-1' },
+		{ agentId: 'main' },
+	);
+	const logs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-subagent'));
+	assert.equal(logs.length, 1, 'subagent sessionKey 应打 skip-subagent remoteLog');
+	assert.match(logs[0].text, /sessionKey=agent:main:subagent:/);
+	assert.equal(await readChatHistoryFile(dir, 'main'), null, 'subagent 不应触达 manager 落盘');
+});
+
+test('handleSessionCreated guard: 嵌套 subagent sessionKey 跳过 + 不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-nsub-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// 子代理再 spawn 子代理：`agent:<id>:subagent:<uuid1>:subagent:<uuid2>`
+	await onSessionStart(
+		{
+			sessionKey: 'agent:main:subagent:aaaaaaaa-1111-2222-3333-444444444444:subagent:bbbbbbbb-5555-6666-7777-888888888888',
+			sessionId: 'sid-sub-nested',
+		},
+		{ agentId: 'main' },
+	);
+	const logs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-subagent'));
+	assert.equal(logs.length, 1, '嵌套 subagent 也应被守卫挡掉');
+	assert.equal(await readChatHistoryFile(dir, 'main'), null);
+});
+
+test('handleSessionCreated guard: agentId 恰好叫 "subagent" 不被误伤', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-name-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// 边界：agentId 字面叫 'subagent'，sessionKey 为 `agent:subagent:main`。
+	// 判定从 parts[2] 起找 'subagent'，本例 parts[2]='main'，不命中守卫，正常入档。
+	await onSessionStart(
+		{ sessionKey: 'agent:subagent:main', sessionId: 'sid-edge' },
+		{},
+	);
+	const subagentDirData = await readChatHistoryFile(dir, 'subagent');
+	assert.ok(subagentDirData, 'agentId="subagent" 应正常落盘到该 agent 的目录');
+	assert.equal(subagentDirData['agent:subagent:main']?.[0]?.sessionId, 'sid-edge');
+	const skipLogs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-subagent'));
+	assert.equal(skipLogs.length, 0, '不应触发 skip-subagent 守卫');
+});
+
 test('handleSessionCreated: ctx.agentId 优先于 sessionKey parts[1]（hook 路径）', async () => {
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-ctx-'));
 	const { onSessionStart } = registerWithSessionStartCapture(dir);

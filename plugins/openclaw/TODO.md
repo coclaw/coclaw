@@ -1553,10 +1553,25 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 ---
 
-## chat-history 双源归档 follow-up F3：子代理 spawn 的 sessionKey 与 chat-history 的关系（待调研）
+## chat-history 双源归档 follow-up F3：子代理 spawn 的 sessionKey 与 chat-history 的关系（已闭环，留作历史索引）
 
 **发现日期**：2026-05-17 第八轮 deep-review R-B（端到端追踪）
-**关联**：`openclaw-repo/src/agents/subagent-spawn.ts:829 / :1301-1307` + `plugins/openclaw/index.js#handleSessionCreated` explicit 守卫
+**闭环日期**：2026-05-18（采用方案 A）
+**关联**：`openclaw-repo/src/agents/subagent-spawn.ts:829 / :1301-1307` + `plugins/openclaw/index.js#handleSessionCreated`
+
+**决议**：采用方案 A（黑名单挡 `:subagent:` 形态）。理由（调研后）：
+
+1. OpenClaw 默认 `cleanup="keep"`，subagent 跑完后 sessionKey 永久保留在 sessions.json 但只发 `subagent-status`（**不发归档/结束类事件**）——plugin 若入档会让"未归档头"永久滞留。
+2. subagent 的对话内容**已通过"完成事件 → user message 回流"形式进入父 agent 的 transcript**，用户视角不丢失内容。子代理自己的 transcript JSONL 仍在 OpenClaw 磁盘 + sessions.json 完整保留；CoClaw 想做"子任务调用链查看"应走 `sessions.list` 的 `spawnedBy` 即时查询，不该依赖 chat-history 副本。
+3. 白名单（方案 B）会误伤 cron / IM channel 等"用户人机对话流"形态——这些虽然 UI 当前未展示，但本质属于用户数据，未来可能展示。
+4. 单独 bucket（方案 C）扩 schema 成本高，对当前 UI 无收益。
+
+**实施**：`handleSessionCreated` 增加 `parts.indexOf('subagent', 2) >= 0` 早返（含嵌套子代理）；判定从 parts[2] 起避免 agentId 偶然叫 `subagent` 时误伤；命中打 `remoteLog('chat-history.skip-subagent ...')` 作为观测信号。架构文档 §F 同步说明。Changeset：`.changeset/chat-history-skip-subagent.md`。
+
+---
+
+**原始调研记录（供未来 OpenClaw schema 演进时参考）：**
+
 
 **事实**：OpenClaw `subagent-spawn.ts:829` 生成 sessionKey 形态 `agent:<targetAgentId>:subagent:<uuid>`，随后 `:1301-1307` 显式调 `emitSessionLifecycleEvent({ sessionKey: childSessionKey, reason: "create", parentSessionKey, label })`。这条事件经 gateway 转成 `sessions.changed reason=create` 广播——会触达 plugin 的 bridge 路径 → `handleSessionCreated`。当前 explicit 守卫 (`parts[0]==='agent' && parts[2]==='explicit'`) **不挡 `:subagent:`**，会被写入 `coclaw-chat-history.json` 顶级键，每次 spawn 一条永不收缩。
 
@@ -1577,4 +1592,22 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 - **D：维持现状（不修）+ 周期清理**——临时方案，仅适合 spawn 频次极低场景，不可持续。
 
 **临时影响（修复前）**：每次子代理 spawn 都污染 chat-history.json + UI list RPC 会读到 subagent sessionKey 顶级键。当前 UI `chat.store.js:1445-1447` 用 `archivedAt != null` 过滤未归档头——subagent 未归档头会被 UI 过滤掉，不展示。但文件本身仍无界增长。
+
+---
+
+## chat-history follow-up F4：cron / 其它非 main 形态的产品语义（待斟酌）
+
+**发现日期**：2026-05-18 F3 调研附带（`openclaw-repo/src/sessions/session-key-utils.ts:58-64` `isCronSessionKey`）
+
+**事实**：调研 F3 时发现 OpenClaw 现网除 `:subagent:` / `:explicit:` 之外还存在 `:cron:` 形态（定时任务）。chat-history 当前只挡 explicit / subagent，cron 形态会按普通 chat 入档。
+
+**为什么暂不处理**：cron 形态本质属于"用户人机对话流"（用户配置的定时任务产生的对话），未来 UI 可能要展示这类 chat history。F3 用户原话："对于 cron，暂时也不过滤，这块再斟酌。毕竟也许以后也要展示 cron 这个 chat 的 history。"
+
+**何时需要复评**：
+
+- 若发现 cron 跑很高频导致 chat-history 文件无界增长（类似 F3 闭环前 subagent 的症状）
+- 若 OpenClaw 给 cron sessionKey 也加了类似 subagent 的"创建但永不归档"语义，使得未归档头永久滞留
+- 若 CoClaw 决定明确"chat-history 只索引用户主动发起的对话"，把 cron / IM 等程序起的也排除
+
+**关联**：`plugins/openclaw/index.js#handleSessionCreated`（守卫位置）+ `openclaw-repo/src/sessions/session-key-utils.ts:58-64`（cron 形态判定参考）
 
