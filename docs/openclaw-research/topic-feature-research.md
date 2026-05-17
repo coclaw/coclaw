@@ -1,7 +1,9 @@
 # Topic（独立话题）功能：OpenClaw 机制研究与方案建议
 
-> 更新时间：2026-03-16
+> 更新时间：2026-03-16（原始研究）/ 2026-05-17（补充第六章）
 > 基于 OpenClaw 本地源码验证，结合 CoClaw 集成需求
+
+> **⚠️ 重要更新（2026-05-17）**：第二章第 5 节关于"agentId 参数会触发 sessionKey 自动派生、sessionId 被覆盖"的结论，**自 OpenClaw v2026.4.5 起已不再成立**——上游 commit `cd36ff7483`（2026-04-04）引入 explicit fake sessionKey 机制后，`agent(sessionId=<uuid>, agentId=<非main>)` 不再覆盖 caller 的 sessionId，而是合成 `agent:<agentId>:explicit:<sessionId>` 作为 store key 落盘。详见**第六章**"2026-04-04 之后的能力升级与多 agent topic 重评"。
 
 ---
 
@@ -86,6 +88,7 @@ OpenClaw 对 sessionKey 有严格的结构要求：
 ### 5. agentId 参数与多 Agent 路由约束
 
 > 补充时间：2026-03-17。基于 gateway handler 源码逐行追踪验证。
+> **⚠️ 本节针对 OpenClaw < v2026.4.5 的行为。自 v2026.4.5（2026-04-04, commit `cd36ff7483`）起，下表中"sessionId 被覆盖"列已失效——sessionId-only + agentId 路径改走 explicit fake sessionKey 机制，caller 的 sessionId 被保留。详见第六章。**
 
 #### agentId 参数的行为
 
@@ -542,3 +545,115 @@ await api.runtime.subagent.deleteSession({ sessionKey, deleteTranscript: true })
 | 会话新鲜度判断 | `src/auto-reply/reply/session.ts:evaluateSessionFreshness` |
 
 > 以上路径均基于本地同步的 OpenClaw 源码（`./openclaw-repo/openclaw/`），前缀 `src/` 对应该仓库根目录下的 `src/` 目录。
+
+---
+
+## 六、2026-04-04 之后的能力升级与多 agent topic 重评
+
+> 补充时间：2026-05-17。基于 git archaeology + 上游源码逐行核实。
+> 锚点版本：OpenClaw v2026.5.7（当前 gateway 版本）。
+
+### 1. 关键引入点：`cd36ff7483` (v2026.4.5)
+
+| 项 | 值 |
+|---|---|
+| commit | `cd36ff7483` |
+| 标题 | `fix: resume explicit session-id agent runs` |
+| 日期 | 2026-04-04 |
+| 首个含此 commit 的 tag | `v2026.4.5` |
+| 动机 | 让 `openclaw agent --session-id <uuid>` 跑完后**能再次 resume 同一 sessionId**——必须有一个稳定 sessionKey 作 store-and-lookup |
+| 副作用 | sessionId-only 调用每次都在 sessions.json 留一条 `agent:<agentId>:explicit:<sessionId>` 条目 |
+
+引入前的行为（`cd36ff7483^`）：
+
+- `src/agents/command/session.ts:149`（父节点版本）：`resolveSessionKeyForRequest` 走完所有分支后，sessionId-only 且无 store 命中时返回 `sessionKey = undefined`
+- `src/agents/agent-command.ts:540`（父节点版本）：write-back 守卫 `if (sessionStore && sessionKey)` 直接跳过——**sessions.json 不写**
+
+引入后的行为：
+
+- `src/agents/command/session.ts:277-282`：sessionId 存在但 store 无命中时，合成 `agent:<agentId>:explicit:<sessionId>` 作为 sessionKey
+- `src/agents/command/session.ts:57-62`：`buildExplicitSessionIdSessionKey({ sessionId, agentId })` 用 `normalizeAgentId(params.agentId)` 拼 key，**caller 给啥用啥**，undefined 才回退 `main`
+- 下游 `agent-command.ts:1241-1262`：sessionKey 已非空，`updateSessionStoreAfterAgentRun` 把 entry 写进 sessions.json
+
+### 2. 重要后续：`934dd5b3a7` (2026-04-24, PR #70985)
+
+| 项 | 值 |
+|---|---|
+| commit | `934dd5b3a7` |
+| 标题 | `[codex] fix agent session-id routing` |
+| 日期 | 2026-04-24 |
+| 关键改动 | `storeAgentId = requestedAgentId ?? defaultAgentId`，并把 `searchOtherAgentStores: requestedAgentId === undefined`——caller 显式传 agentId 时**禁止**跨 agent store 搜索 |
+
+这个补丁封死了"sessionId-only + agentId 时上游可能串到 default agent 的 store"这种边角情况。
+
+### 3. 多 agent topic 的能力评估
+
+逐项核实 caller 传 `agent({ sessionId, agentId: '<非 main>' })`（不传 sessionKey）的行为：
+
+| 链路 | 行为 | 锚点 |
+|---|---|---|
+| 入参 schema 接受 agentId | ✓ | `src/gateway/protocol/schema/agent.ts:139-186`（`agentId: Type.Optional(NonEmptyString)`）|
+| handler 校验 agentId 真实存在 | ✓ 用 `knownAgents.includes(agentId)`，未注册的直接 `INVALID_REQUEST` | `src/gateway/server-methods/agent.ts:749-762` |
+| sessionId-only 路径 `requestedSessionKey` 保持 undefined | ✓ `resolveExplicitAgentSessionKey` 兜底**只在没有 sessionId** 时才触发 | `agent.ts:780-787` |
+| caller agentId 透传到下游 ingressOpts | ✓ `ingressAgentId = agentId && (!resolvedSessionKey || ...) ? agentId : undefined` | `agent.ts:1417-1421, 1453` |
+| `prepareAgentCommandExecution` 读 agentIdOverride | ✓ 喂给 `resolveSession({ agentId: agentIdOverride })` | `src/agents/agent-command.ts:304-305, 366-372` |
+| `resolveSessionKeyForRequest` 用 caller agentId 选 store | ✓ `storeAgentId = requestedAgentId ?? defaultAgentId` | `src/agents/command/session.ts:210-226` |
+| 拼 explicit fake key 用 caller agentId | ✓ `buildExplicitSessionIdSessionKey({ sessionId, agentId: opts.agentId })` | `session.ts:277-282` |
+| `agent:<非main>:explicit:<sid>` 形态合法 | ✓ 通过 `classifySessionKeyShape` | `src/routing/session-key.ts:115-126` + `src/sessions/session-key-utils.ts:28-48` |
+| CLI `--agent <id>` 已透传 | ✓ | `src/cli/program/register.agent.ts:30` + `src/commands/agent-via-gateway.ts:158-179` |
+
+**判定**：第二章第 5 节的旧约束（"sessionId 被覆盖、强制路由到 main"）**已被上游完全解除**。CoClaw 实现多 agent topic 的能力**当前上游已经具备**，不需要等上游再升级。
+
+### 4. 代价：sessions.json 膨胀
+
+新机制的固有副作用是每次 sessionId-only 调用都在 sessions.json 留一条 explicit entry：
+
+- 重度 topic 用户：长期累积；通用 maintenance 上限触顶后 LRU 裁剪——`session.maintenance.maxEntries`（默认 500）+ `pruneAfter`（默认 30 天），见 `src/config/sessions/store-maintenance.ts:20-21`
+- 兜底执行：cron `src/cron/session-reaper.ts` + 写入路径 `pruneStaleEntries`（`store-maintenance.ts:176-200`）
+- **不区分 explicit 合成键**——对所有 session 统一裁剪
+- **无 caller opt-out**：grep `persistExplicit` / `noPersist` / `skipExplicitPersist` / `ephemeral.*session` 全无命中
+
+多 agent topic 启用后**每个 agentId 有自己的 sessions.json**（`<state-dir>/agents/<agentId>/sessions/sessions.json`），膨胀是按 agent 隔离的——不会跨 agent 污染。
+
+### 5. CoClaw 当前的遗留卡点（不再是上游能力问题）
+
+经核实，原先"topic 仅限 main agent"的限制根源**已经从 OpenClaw 端转移到 CoClaw 自己端**：
+
+- `ui/src/stores/chat.store.js:608-612`（commit 367b962 时点）：topicMode 分支只塞 `agentParams.sessionId`，**不塞 `agentParams.agentId`**——这就是 CoClaw 自己的限制，不是上游限制
+- `topics.store.js` 端 topic 元数据本来就按 agentId 存（`coclaw.topics.create({ agentId })`），数据模型不需要改
+
+要开放多 agent topic，UI 端 chat.store.js 的 topicMode 分支补一行 `agentParams.agentId = this.topicAgentId` 即可（外加 topic-manager 这边 `coclaw-topics.json` 多 agent 隔离的核对——现状本来就按 agentId 分文件存放，天然隔离）。
+
+### 6. 上游 issue 草稿（待提）
+
+针对 §4 的膨胀代价，建议向上游提两条 issue/PR：
+
+1. **opt-out flag**：`agent` RPC 增加 `persistExplicit: false` / `ephemeral: true` 入参，让 plugin 显式声明不要落 sessions.json
+2. **`sessions.changed` reason 字段补全**：transcript-update 链路通过 `sessions.changed` 频道发 `phase=message` 时**不带 reason 字段**，订阅方区分 reason 类型只能靠 reason 是否存在；建议显式补 `reason: 'transcript-update'` 类似值
+
+（此节内容已并入 plugin TODO.md 待提的上游 issue 草稿；issue 实际投递留给后续。）
+
+---
+
+## 七、源码锚点（第六章追加）
+
+| 主题 | 文件锚点 |
+|---|---|
+| explicit fake sessionKey 引入 commit | `cd36ff7483`（2026-04-04, v2026.4.5）|
+| sessionId-only routing 收紧 commit | `934dd5b3a7`（2026-04-24, PR #70985）|
+| `buildExplicitSessionIdSessionKey` 定义 | `src/agents/command/session.ts:57-62` |
+| `buildExplicitSessionIdSessionKey` 调用点 | `src/agents/command/session.ts:277-282` |
+| store agentId 解析 | `src/agents/command/session.ts:210-226` |
+| `normalizeAgentId` | `src/routing/session-key.ts:128-146` |
+| sessionKey 形态分类 | `src/routing/session-key.ts:115-126` |
+| sessionKey 解析 | `src/sessions/session-key-utils.ts:28-48` |
+| handler agentId 校验 | `src/gateway/server-methods/agent.ts:749-762` |
+| handler sessionKey 兜底 | `src/gateway/server-methods/agent.ts:780-787` |
+| handler ingressAgentId 透传 | `src/gateway/server-methods/agent.ts:1417-1421, 1453` |
+| schema agentId optional | `src/gateway/protocol/schema/agent.ts:139-186`（line 142）|
+| prepareAgentCommandExecution | `src/agents/agent-command.ts:304-305, 366-372` |
+| 写盘守卫 | `src/agents/agent-command.ts:1241-1262` |
+| 维护配置（maxEntries/pruneAfter） | `src/config/sessions/store-maintenance.ts:20-21` |
+| 维护剪裁 | `src/config/sessions/store-maintenance.ts:176-200` |
+| cron 清理 | `src/cron/session-reaper.ts` |
+| CLI agent.agentId 透传 | `src/cli/program/register.agent.ts:30`、`src/commands/agent-via-gateway.ts:158-179` |

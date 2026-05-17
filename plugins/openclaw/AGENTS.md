@@ -26,7 +26,7 @@
 - **禁止**在 gateway 主进程读 `OPENCLAW_STATE_DIR` 环境变量来推 state-dir。**Why:** runtime 注入的 `resolveStateDir` 内部已经处理了 env / profile / CLI flag 全部组合，外面再读会产生分叉来源。
 - 例外：`auto-upgrade/state.js` 因被 worker 子进程共用（worker 没 runtime），保留独立的 env 兜底——不要"统一"它。
 - 读 OpenClaw 自家 sessions 数据（sessions.json / 单条 transcript JSONL）必须走 `claw-paths.js` 的 `sessionStorePath` / `sessionTranscriptPath`。**Why:** state-dir 不一定是 `~/.openclaw`，手拼必然在系统级安装/多 profile/容器场景下错位。
-- 当前 `claw-paths.js` 调上游 helper 时不传 `store` 配置和 sessions-index `entry`，目标永远是 OpenClaw 默认的 `<state-dir>/agents/<agentId>/sessions/...` 布局；honoring `agents.<id>.store` / `entry.sessionFile` 覆盖是 follow-up（见 `TODO.md`）。
+- 当前 `claw-paths.js` 调上游 helper 时不传 `store` 配置和 sessions-index `entry`，目标永远是 OpenClaw 默认的 `<state-dir>/agents/<agentId>/sessions/...` 布局；honoring 顶层 `session.store`（zod schema 唯一旋钮，支持 `{agentId}` 模板；注意上游 schema 里**没有** `agents.<id>.store` 字段） / `entry.sessionFile` 覆盖是 follow-up（见 `TODO.md`）。
 
 ### 文件 I/O 安全
 

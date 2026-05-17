@@ -1448,36 +1448,94 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 ---
 
-## chat-history 双源归档 follow-up F1：实验验证 topic 模式不触发 sessions.changed
+## chat-history 双源归档 follow-up F1：topic 模式与上游 sessions 体系的实际关系
 
-**发现日期**：2026-05-17（第三轮 review 用户问询）
-**关联**：`plugins/openclaw/index.js#handleSessionsCreated` 的早返 guard
+**发现日期**：2026-05-17（第三轮 review 用户问询）→ 2026-05-17 二次调研修正
+**关联**：`plugins/openclaw/index.js#handleSessionsCreated` 的早返 guard、`plugins/openclaw/src/realtime-bridge.js` sessions.changed 分支
 
-**问题**：理论分析（subagent 调研 + 设计稿 `docs/designs/topic-management.md:17`）认为 topic 模式（`agent({ sessionId: <uuid> })` 不传 sessionKey）时 OpenClaw 不会写 `sessions.json`、不 fire `session_start`、不 emit `sessions.changed`。需要 E2E 验证此结论。
+**原命题**（已被推翻一半）：topic 模式（`agent({ sessionId: <uuid> })` 不传 sessionKey）时 OpenClaw 完全不写 sessions.json、不 fire session_start、不 emit 任何 sessions.changed。
 
-**验证方法**：
-1. CLI 直接调 `agent({ sessionId: <随机 uuid> })`，不带 sessionKey
-2. 同时 tail plugin log，观察是否有 `chat-history.missing-keys` remoteLog（缺 sessionKey 早返时会打）
-3. 观察 chat-history.json 是否被改动
+**调研结论**（精确到上游源码行）：
 
-**意义**：若理论成立，本插件 chat-history 与 topic 体系完全互不干扰；若不成立，需要在 `handleSessionsCreated` 加 topic-aware 早返。
+| 子命题 | 实际真相 | 上游锚点 |
+|---|---|---|
+| 不写 sessions.json | ❌ 不成立 | 内层 runner 在 `agents/command/session.ts:277-282` 用 `buildExplicitSessionIdSessionKey` 把 sessionId 伪造成 `agent:<agentId>:explicit:<sessionId>`，跑完后 `agent-command.ts:1241-1262` 走 updateSessionStore 写进 sessions.json |
+| 不 fire session_start hook | ✅ 成立 | `emitGatewaySessionStartPluginHook` 在 agent.ts 全文无调用，仅 `session-reset-service.ts:680` + `sessions.ts:1326` 触发 |
+| 不 emit sessions.changed | ❌ 部分不成立 | gateway 层 reason=create/send 守卫 `requestedSessionKey` 严，topic 跳过；但 transcript-update 链路（`config/sessions/transcript.ts:316` → `server-session-events.ts:107,153-165`）仍发 `sessions.changed { phase: "message" }` 事件，**无 reason 字段** |
+
+**澄清 CoClaw 自身有没有"fake sessionKey"**：
+- UI `ui/src/stores/chat.store.js:607-611`：topic 模式只设 `agentParams.sessionId`，**不设 sessionKey**（grep 全仓未找到任何 fake sessionKey 概念）
+- UI→plugin 现走 WebRTC DC 直通（不经 server；server `claw-ws-hub.js` 那条 forwardToClaw 链路是废弃旧路），plugin 端拿到的 params 与 UI 发出时一致
+- Plugin topic-manager 不参与 agent RPC 调用，只管 topic 元信息
+- 所以 `agent:<id>:explicit:<sessionId>` 是**上游内层 runner 自造**的，CoClaw 全链路看不到（也不该看到）
+
+**对 plugin 自身的影响**：**无**。两条防线刚好都挡得住：
+- hook 路径：上游不 fire session_start，plugin 收不到
+- sessions.changed 路径：plugin 在 `realtime-bridge.js:875` 严格判 `reason === 'create'`，topic 的 transcript-update 没 reason 字段，被过滤掉
+
+**外溢副作用**（plugin 改不了，归上游设计）：
+1. OpenClaw 自家 sessions.json + sessions list（webchat/dashboard）会被 topic 的 `agent:*:explicit:*` 历史 entries 占位污染
+2. 上游 `sessions.changed` 事件复用同一频道发 `phase=message` 但**不带 reason 字段**——区分 reason 类型只能靠 reason 是否存在
+
+**关于 explicit sessionKey 行为的引入时间**（2026-05-17 git archaeology）：
+
+| 项 | 值 |
+|---|---|
+| 引入 commit | `cd36ff7483`（`fix: resume explicit session-id agent runs`，Peter Steinberger） |
+| 日期 | 2026-04-04 |
+| 首个含此 commit 的上游 tag | `v2026.4.5` |
+| 动机 | 让 `openclaw agent --session-id <uuid>` 跑完后**能再次 resume 同一 sessionId**——必须有一个稳定 sessionKey 才能 store-and-lookup |
+| 引入前行为（v2026.4.5 之前） | `agents/command/session.ts:149` 父节点版本：sessionId-only 时 `sessionKey=undefined`，下游 `agent-command.ts:540` 写盘守卫 `if (sessionStore && sessionKey)` 直接跳过——**sessions.json 不写** |
+| caller opt-out | **无**——grep `persistExplicit` / `skipExplicitPersist` / `ephemeral.*session` 全无命中；`updateSessionStoreAfterAgentRun` 也无 opt-out 参数 |
+| 兜底机制 | 通用 `session.maintenance.pruneAfter`（默认 30 天）+ `maxEntries`（默认 500），见 `src/config/sessions/store-maintenance.ts:20-21`；cron `session-reaper.ts` 执行。**不针对 explicit** |
+
+**用户回忆得到验证**：CoClaw 最初支持 topic 时（早于 2026-04-04），sessions.json 不会因 topic 流量膨胀。当前 gateway 2026.5.7 已带 explicit 逻辑，且上游没开 caller flag 让外部 plugin 关掉。
+
+**膨胀风险评估**：
+- 重度 topic 用户：每 topic 一条 entry，长期累积；通用 maxEntries=500 触顶后 LRU 裁剪，不会无界膨胀，但 entry 周转会让"老 topic 突然恢复不出来"
+- 轻度 topic 用户：30 天 prune 兜底足够
+
+**可能的根治方向**（按代价从低到高）：
+- (A) **等上游加 opt-out**：去上游提 issue / PR，给 agent RPC 加 `persistExplicit: false` 或类似 flag —— 受益面广，但周期长
+- (B) **CoClaw 端调小 maintenance 上限**：通过 OpenClaw config 把 `session.maintenance.maxEntries` 压到更小（如 50）—— 治标但会牵连所有 session，可能误伤
+- (C) **CoClaw 自管 topic transcript**：放弃用 OpenClaw 的 sessionId 体系驱动 topic transcript 写入，plugin 自己维护 topic .jsonl 不调上游 agent RPC —— 重构成本高，且失去上游 model 调用便利
+- (D) **被动接受现状**：上游兜底机制能 capping，UX 上"老 topic 续不上"接受为已知行为
+
+**待办**：
+- [x] 此节内容并入 task #11 上游 issue 草稿（已记录在本 TODO 节）
+
+**待办**：
+- [x] CLI 实验交叉验证（2026-05-17）——结果完全命中预期：chat-history.json sha256 不变；sessions.json 新增 `agent:main:explicit:d623247e-4d48-4e0c-84ef-f79b1461d966` entry（71→72）；plugin 日志无 chat-history.missing-keys 或任何 handleSessionsCreated 相关 warn（reason='create' 严判完全静默 phase=message 流量）
+- [ ] 上述两个外溢副作用纳入 task #11 的上游 issue 草稿
 
 ---
 
 ## chat-history 双源归档 follow-up F2：核实 agent sessions 目录判定的覆盖配置
 
-**发现日期**：2026-05-17（第三轮 review 用户问询）
+**发现日期**：2026-05-17（第三轮 review 用户问询）→ 2026-05-17 二次调研修正
 **关联**：`plugins/openclaw/src/claw-paths.js`
 
-**问题**：CoClaw 自管文件（`coclaw-chat-history.json` / `coclaw-topics.json`）的存放路径基于 `agentSessionsDir(agentId)`，当前实现走 OpenClaw 默认布局 `<state-dir>/agents/<agentId>/sessions/...`，state-dir 由 runtime API 注入正确解析。但 OpenClaw 支持两类覆盖配置：
-- `agents.<id>.store` 覆盖单 agent 的 store backend
-- sessions-index `entry.sessionFile` 覆盖文件名
+**原命题**（已被推翻一半）：CoClaw 没接住 `agents.<id>.store` / `entry.sessionFile` 两个覆盖入口。
 
-`claw-paths.js` 调上游 helper 时不传 `store` 与 `entry` 覆盖，意味着用户在 OpenClaw 配置了上述覆盖时，CoClaw 自管文件会落到默认位置，与 OpenClaw 自家 sessions 数据**不在同一目录**——可能导致：
-- 备份/迁移工具按 OpenClaw 配置走时漏带 CoClaw 文件
-- 多 profile / 容器场景下 chat-history 找不到
+**调研结论**（精确到上游 schema）：
 
-**严重性**：低——绝大多数用户走 OpenClaw 默认布局；CLAUDE.md 已点出此 follow-up（"honoring `agents.<id>.store` / `entry.sessionFile` 覆盖是 follow-up"）。
+- **`agents.<id>.store` 字段根本不存在**——`openclaw-repo/src/config/zod-schema.agent-runtime.ts:889-961` 的 `AgentEntrySchema` 里没有 `store` 字段；之前的 follow-up 描述把这个字段当真存在，是认错对象
+- 真正的旋钮是顶层 **`session.store`**（`zod-schema.session.ts:54` 定义为 `z.string().optional()`），支持绝对路径或 `{agentId}` 模板替换
+- 另一个旋钮是 sessions-index **`entry.sessionFile`**（每 sessionsKey 单独覆盖文件名）
+- `claw-paths.js:53` 调上游 `resolveStorePath(store, { agentId })` 时 store 写死 `undefined`，没接住顶层 `session.store`
+- `session-manager/manager.js:187` 调 `resolveTranscriptPath(sid, agentId)` 时也漏传 entry，没接住 `entry.sessionFile`
+- 上游 runtime API `rt.config.current()`（`types-core.ts:145-148`）已暴露读 `OpenClawConfig.session.store` 的能力，修补不缺 API
 
-**修复方向**：`claw-paths.js` 增加读 OpenClaw 配置的能力（按 agentId 取 store + entry 覆盖），传入上游 helper；增加多 profile / 容器场景的 fixture 测试。
+**影响范围**：仅当用户在 OpenClaw 配置里显式设置 `session.store` 把存储位置改到非默认目录时，CoClaw 自管文件（`coclaw-chat-history.json` / `coclaw-topics.json`）会落到默认 `<state-dir>/agents/<id>/sessions/`，OpenClaw 自家的 `sessions.json` / 单 session jsonl 落到用户指定位置——两边分家。
+
+**严重性**：低——绝大多数用户走 OpenClaw 默认布局；上游也很少有人配 `session.store`。
+
+**决策**：用户拍板"只记 TODO 暂不修"。
+
+**未来修补方向**：
+- `claw-paths.js` 的 `sessionStorePath` 读 `rt.config.current()?.session?.store` 喂 helper
+- `session-manager.resolveTranscriptFile` 从 sessions.json 读出 entry 后透传 `entry.sessionFile`
+- 加多 profile / 容器场景的 fixture 测试
+
+**注**：AGENTS.md L29 措辞已修正，把 `agents.<id>.store` 改成顶层 `session.store` 并明确标注上游 schema 里没有 `agents.<id>.store` 字段。
 

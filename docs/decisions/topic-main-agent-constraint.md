@@ -1,8 +1,14 @@
 # Topic 仅限 Main Agent：OpenClaw 路由约束分析
 
-> 日期：2026-03-18
-> 状态：已确认（当前限制）
-> 关联：`docs/designs/topic-management.md`（设计文档）、`docs/openclaw-research/topic-feature-research.md`（源码研究）
+> 日期：2026-03-18（原始决策）/ 2026-05-17（重评补章）
+> 状态：~~已确认（当前限制）~~ → **上游约束已解除（v2026.4.5 / 2026-04-04 起），CoClaw 自身仍未开放，待产品决策是否启用**
+> 关联：`docs/designs/topic-management.md`（设计文档）、`docs/openclaw-research/topic-feature-research.md`（源码研究，第六章为本次重评的依据）
+
+> **⚠️ 重要更新（2026-05-17）**：本文档原"核心矛盾"中"传 agentId 会自动派生 sessionKey 覆盖 sessionId"的成因，**自 OpenClaw v2026.4.5（2026-04-04, commit `cd36ff7483`）起已不成立**——上游引入 explicit fake sessionKey 机制后，`agent({ sessionId, agentId: '<非main>' })` 走的是新路径：sessionId 被保留，store 中以 `agent:<agentId>:explicit:<sessionId>` 形式落条目；多 agent topic 在上游层面已可行。
+>
+> 原"核心矛盾"段落（条件 ①②③）的逻辑结论已被新现实推翻——条件 ① 现在能与 ② 同时满足（牺牲条件 ③，即接受 sessions.json 留 entry，但**每 agent 隔离**，由通用 maintenance 兜底剪裁）。
+>
+> 本决策当前进入"待重新评估"状态，重评结论见文末 §"2026-05-17 重评"章节。原文正文以下保留**作为当初决策时的实际限制**，体现演进脉络。
 
 ---
 
@@ -117,3 +123,63 @@ Topic 方案需要同时满足三个条件：
 | 实现复杂度 | Topic 删除需同步清理 sessions.json 条目；需处理 sessionId 非自主分配带来的时序问题 |
 
 该方案已在设计文档中预留（`topic-management.md` 第一章"未来扩展"），尚未排期。
+
+---
+
+## 2026-05-17 重评
+
+> 触发：用户在 chat-history 双源归档调研中追问"为什么 sessions.json 多出 explicit 条目"。git archaeology 定位到上游 `cd36ff7483`（2026-04-04, v2026.4.5）。
+
+### 新现实
+
+| 项 | 当年决策（2026-03-18） | 现在（2026-05-17） |
+|---|---|---|
+| 上游 sessionId-only + agentId 行为 | sessionId 被覆盖，强制走 main | sessionId 被保留，走 explicit fake sessionKey 路径 |
+| 写 sessions.json | 是（覆盖式）→ 破坏前提 ③ | 是（每 agentId 自己的 sessions.json，按 agent 隔离） |
+| Agent 路由 | 强制 main | caller 给啥用啥（gateway 校验 agentId 真实存在） |
+| `agent:<非main>:explicit:<sid>` 形态合法性 | 当时不存在此机制 | 通过 `classifySessionKeyShape`，write-back 不拦 |
+| 兜底机制 | 无 | `session.maintenance.maxEntries`（默认 500）+ `pruneAfter`（默认 30 天）+ cron reaper |
+
+详细证据链（path:line + commit hash 全部钉死）见 `docs/openclaw-research/topic-feature-research.md` 第六章。
+
+### "核心矛盾" 重写
+
+原 §"核心矛盾" 的 ①②③ 不变，但**满足组合的能力**变了：
+
+```
+条件 ① 调用方的 sessionId 被保留
+条件 ② 请求路由到指定 Agent
+条件 ③ 不写入 sessions.json
+
+非 main agent：
+  ①②√ 可同时满足（走 explicit 假 sessionKey 路径）
+  ③ × 不可避——上游始终落 entry，无 caller opt-out
+```
+
+**这是一道权衡题，不再是不可能题**：放弃条件 ③ 换条件 ①②，代价是 sessions.json 按 agent 自然膨胀（受 maintenance 兜底剪裁）。
+
+### CoClaw 自身的卡点
+
+经核实（`ui/src/stores/chat.store.js:608-612`，commit `367b962` 时点），UI topicMode 分支只塞 `agentParams.sessionId`，**不塞 `agentParams.agentId`**——这是 CoClaw 自己的遗留限制，**不是上游限制**。
+
+要开放多 agent topic，技术改动量极小：
+
+- UI 端 chat.store.js topicMode 分支补一行 `agentParams.agentId = this.topicAgentId`
+- 撤掉 `ChatPage.vue showNewTopicBtn` 的 main-only 守卫
+- `topicsStore.loadAllTopics()` 改为查询所有 agent 的 topic 列表
+- plugin 端 `TopicManager` 与 `coclaw-topics.json` 已按 agentId 隔离，无需改动
+
+### 待产品决策
+
+是否启用多 agent topic 是**产品决策**，不再是技术决策。决策维度：
+
+1. **正向收益**：用户能在非 main agent 上建独立话题，UX 一致性提升
+2. **代价**：每个非 main agent 的 sessions.json 同样会因 topic 流量膨胀（与 main 同性质，按 maintenance 上限自然 capping）
+3. **生命周期管理**：topic .jsonl 与上游通用 maintenance 的关系——同样适用于 main agent，多 agent 启用后不引入新风险
+4. **上游 issue**：建议向上游推 `persistExplicit: false` opt-out flag（治本，但周期长），同时本地接受现状
+
+**当前状态**：CoClaw plugin TODO.md 已记录 follow-up；UI 改动等待产品决策；上游 issue 草稿同步推进。
+
+### 状态字段调整
+
+原 frontmatter 状态字段 `已确认（当前限制）` 已在文档头部 banner 中更新为 `上游约束已解除，CoClaw 自身待产品决策`。本文档主体（§"问题"→ §"备选方案"）保留作为 2026-03-18 当时决策的实际限制记录，演进脉络由本节延续。
