@@ -98,7 +98,7 @@
 | 不熟悉本插件 / 想看模块边界与数据流 | [`docs/architecture.md`](docs/architecture.md) |
 | 加新 RPC method / 处理 scope / 双实例陷阱细节 | [`docs/gateway-method-conventions.md`](docs/gateway-method-conventions.md) |
 | 加新 plugin 自发事件 / 事件 patch 语义细节 | [`docs/plugin-events.md`](docs/plugin-events.md) |
-| chat-history 双源归档 / session_start hook 漏 emit / sessions.subscribe 降级（recordSessionTransition，原 recordArchived） | [`docs/architecture.md`](docs/architecture.md) §F |
+| chat-history 双源归档 / session_start hook 漏 emit / sessions.subscribe 每次握手重订阅（recordSessionTransition） | [`docs/architecture.md`](docs/architecture.md) §F |
 | 改 rpc DC 流控、分片、admission、白名单、ICE restart 行为 | [`docs/rpc-dc-send-queue.md`](docs/rpc-dc-send-queue.md) |
 | 改/新增 res 帧或 event:agent 帧的路由分发 / 评估抽 reqId 表 | [`docs/rpc-routing.md`](docs/rpc-routing.md) |
 | FBQ 设计 / admission 公式 / spill 边沿信号 / fsBroken 降级语义 | [`docs/rpc-dc-file-queue.md`](docs/rpc-dc-file-queue.md) |

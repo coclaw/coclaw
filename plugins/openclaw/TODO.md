@@ -1451,7 +1451,7 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 ## chat-history 双源归档 follow-up F1：topic 模式与上游 sessions 体系的实际关系
 
 **发现日期**：2026-05-17（第三轮 review 用户问询）→ 2026-05-17 二次调研修正
-**关联**：`plugins/openclaw/index.js#handleSessionsCreated` 的早返 guard、`plugins/openclaw/src/realtime-bridge.js` sessions.changed 分支
+**关联**：`plugins/openclaw/index.js#handleSessionCreated` 的早返 guard、`plugins/openclaw/src/realtime-bridge.js` sessions.changed 分支
 
 **原命题**（已被推翻一半）：topic 模式（`agent({ sessionId: <uuid> })` 不传 sessionKey）时 OpenClaw 完全不写 sessions.json、不 fire session_start、不 emit 任何 sessions.changed。
 
