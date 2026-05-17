@@ -13,8 +13,9 @@ This change adds a second listener path: the plugin now subscribes to gateway
 `sessions.changed` events (reason=create) and archives the prior session
 through the same code path as the hook. The chat-history file schema is
 extended so the head item may be unarchived (no `archivedAt`), representing
-the current active session. Both sources are idempotent (last-write-wins on
-identical transitions, mutex-serialized).
+the current active session. Both sources are idempotent: the second source
+is a no-op when state is already settled, mutex-serialized per agent; stale
+events (where `currentSessionId` already exists in the list) are dropped.
 
 The on-disk `coclaw-chat-history.json` is forward-compatible: existing
 all-archived files migrate naturally on first new transition. The
@@ -27,11 +28,14 @@ Only the in-plugin hook handler called it, so the API change is internal.
 
 **Gateway compatibility (degradation).** `sessions.subscribe` is supported by
 OpenClaw gateway >= v2026.3.22. On older gateways the subscribe RPC returns
-`method_not_found`; the plugin logs a warning on the first attempt and again
-on the 5s retry (per handshake), then falls back to single-source (hook-only)
-archival. On those gateways, sessions created via `agent.send` will still be
-missed — this is the upstream defect being worked around, not a new
-regression.
+an `unknown method` error; the plugin logs one warning + remoteLog, sets a
+sticky `unsupported` flag, and falls back to single-source (hook-only)
+archival without further log noise on subsequent handshakes. On those
+gateways, sessions created via `agent.send` will still be missed — this is
+the upstream defect being worked around, not a new regression. The plugin's
+`minHostVersion` is `>=2026.3.2` (the version where `session_start` hook
+events first include `sessionKey`); installation on older gateways is
+rejected by OpenClaw.
 
 **UI counterpart.** The UI side filter for unarchived heads ships in commit
 `2a00e56` (CoClaw UI). Without that UI change, the current active session

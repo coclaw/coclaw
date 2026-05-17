@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { agentSessionsDir } from '../claw-paths.js';
 import { atomicWriteJsonFile } from '../utils/atomic-write.js';
 import { createMutex } from '../utils/mutex.js';
+import { remoteLog } from '../remote-log.js';
 
 const TOPICS_FILE = 'coclaw-topics.json';
 
@@ -86,8 +87,17 @@ export class TopicManager {
 				this.__cache.set(agentId, data);
 				return;
 			}
-		} catch {
-			// 文件不存在或解析失败，初始化空数据
+		} catch (err) {
+			// ENOENT 是正常情况（首次启动）静默；其他错误有诊断价值打 remoteLog。
+			if (err?.code !== 'ENOENT') {
+				const fname = nodePath.basename(filePath);
+				this.__logger.warn?.(
+					`[coclaw] topics __doLoad read failed for ${fname}: ${String(err?.message ?? err)}`,
+				);
+				remoteLog(
+					`topics.reload-error site=__doLoad file=${fname} msg=${String(err?.message ?? err)}`,
+				);
+			}
 		}
 		this.__cache.set(agentId, emptyStore());
 	}

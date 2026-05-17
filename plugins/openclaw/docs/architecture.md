@@ -161,23 +161,28 @@ session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两�
     event = { sessionKey,             │
               sessionId(new),         │
               resumedFrom(old?) }     ├─→ handleSessionsCreated(...)
-                                      │     ├─ recordSessionTransition({
-[B] sessions.changed reason=create  ──┘     │     agentId, sessionKey,
-    bridge __sendSessionsSubscribe()        │     currentSessionId,
-    握手成功后订阅，每次重连重订            │     archivedSessionId? })
-    ok=false → 5s 内自动重试一次（仅 1 次）  ├─ mutex.withLock(agentId)
+    ctx.agentId（hook 路径优先）       │     ├─ recordSessionTransition({
+                                      │     │     agentId, sessionKey,
+[B] sessions.changed reason=create  ──┘     │     currentSessionId,
+    bridge __sendSessionsSubscribe()        │     archivedSessionId? })
+    握手成功后订阅，每次重连重订            ├─ mutex.withLock(agentId)
     onSessionCreated callback by index.js   ├─ __reloadFromDisk
                                             └─ atomic write
                                             (head=current 未归档；其后 archived 新→旧)
 ```
 
-幂等：head 已是 currentSessionId 且无新 archivedSessionId 要追加时 no-op；双源到达顺序无关。
+幂等 / 防错位：
+- 完全 no-op：head 已是 currentSessionId 且无新 archivedSessionId 要追加。
+- stale 防御：currentSessionId 已存在于 list 其他位置（已归档项）→ 视为晚到事件丢弃，不动 head（避免把当前活跃头错翻成归档 + sid 重复）。
+- 双源到达顺序无关；mutex 串行 + per-write atomic write。
 
 降级：
-- 老 gateway 没 `sessions.subscribe` RPC → bridge 首次失败 warn 一次，5s 重试再 warn 一次（每次握手成功后都会重新经历这套）→ 仅 hook 单源（`agent.send` 创建的 session 在该 gateway 上漏归档，本质上是上游缺陷）。
-- bridge 重连握手会自动重订阅，订阅失败仅写 warn，不挂全局。
+- 老 gateway 没 `sessions.subscribe` RPC → bridge 首次失败置位 sticky unsupported（warn + remoteLog 一次），后续握手跳过订阅 → 仅 hook 单源（`agent.send` 创建的 session 在该 gateway 上漏归档，本质上是上游缺陷）。
+- 应用层不再做重试：gateway handler 端无失败分支，ok=false 只可能源自传输层故障，WS 重连后握手会自动再发起 subscribe。
 
 文件 schema：见 §"状态在哪儿"中 `coclaw-chat-history.json` 行。
+
+版本要求与回滚警告详见 `plugins/openclaw/.changeset/chat-history-dual-source-archival.md`。
 
 ## 状态在哪儿（持久化文件清单）
 

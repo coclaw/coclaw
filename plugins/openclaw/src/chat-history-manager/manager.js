@@ -4,6 +4,7 @@ import nodePath from 'node:path';
 import { agentSessionsDir } from '../claw-paths.js';
 import { atomicWriteJsonFile } from '../utils/atomic-write.js';
 import { createMutex } from '../utils/mutex.js';
+import { remoteLog } from '../remote-log.js';
 
 const HISTORY_FILE = 'coclaw-chat-history.json';
 
@@ -17,14 +18,16 @@ function emptyStore() {
  * 每个 agentId 对应一份 coclaw-chat-history.json，按需懒加载到内存。
  * 写操作通过 mutex + atomicWriteJsonFile 保证一致性。
  *
- * 文件结构示例：
+ * 文件结构示例（archivedAt 是 Date.now() 落的 13 位毫秒时间戳）：
  * {
  *   "version": 1,
  *   "agent:main:main": [
- *     { "sessionId": "current-sid" },                       // 首位：未归档头 = 当前活跃 session
- *     { "sessionId": "older",    "archivedAt": 1742003000 } // 第二位起：已归档（新→旧）
+ *     { "sessionId": "current-sid" },                          // 首位：未归档头 = 当前活跃 session
+ *     { "sessionId": "older",    "archivedAt": 1742003000000 } // 第二位起：已归档（新→旧）
  *   ]
  * }
+ *
+ * 详见 plugins/openclaw/docs/architecture.md
  *
  * 双源事件供给：
  * - session_start hook：event 同时含新 sid (currentSessionId) + 旧 sid (archivedSessionId)
@@ -92,10 +95,25 @@ export class ChatHistoryManager {
 				this.__cache.set(agentId, data);
 				return;
 			}
-		} catch {
-			// 文件不存在或解析失败，初始化空数据
+		} catch (err) {
+			this.__reportLoadError(filePath, err, '__doLoad');
 		}
 		this.__cache.set(agentId, emptyStore());
+	}
+
+	/**
+	 * 读盘失败分流：ENOENT 是正常情况（首次启动文件不存在）静默；
+	 * 其他错误（权限、磁盘损坏、JSON 破损）有诊断价值，打 warn + remoteLog 标识可疑。
+	 */
+	__reportLoadError(filePath, err, callsite) {
+		if (err?.code === 'ENOENT') return;
+		const fname = nodePath.basename(filePath);
+		this.__logger.warn?.(
+			`[coclaw] chat-history ${callsite} read failed for ${fname}: ${String(err?.message ?? err)}`,
+		);
+		remoteLog(
+			`chat-history.reload-error site=${callsite} file=${fname} msg=${String(err?.message ?? err)}`,
+		);
 	}
 
 	__ensureLoaded(agentId) {
@@ -159,6 +177,12 @@ export class ChatHistoryManager {
 				return;
 			}
 
+			// stale 事件防御：currentSessionId 已存在于 list 其他位置（即已被归档）。
+			// 此时若继续走"翻 head"会把真正活跃的头错翻成归档，并让该 sid 在 list 中重复出现。
+			// 触发场景：A→B→C 快速连续 reset 时，hook 与 sessions.changed 跨通道乱序到达，
+			//   旧 transition 的事件晚于新 transition 的事件被处理。
+			if (list.some((it) => it.sessionId === currentSessionId)) return;
+
 			// 一般路径：翻 head 为归档（若未归档），然后处理 archivedSessionId，最后头插新 head
 			if (head && !head.archivedAt) {
 				head.archivedAt = Date.now();
@@ -201,8 +225,8 @@ export class ChatHistoryManager {
 				this.__cache.set(agentId, data);
 				return;
 			}
-		} catch {
-			// 文件不存在或解析失败
+		} catch (err) {
+			this.__reportLoadError(filePath, err, '__reloadFromDisk');
 		}
 		if (!this.__cache.has(agentId)) {
 			this.__cache.set(agentId, emptyStore());

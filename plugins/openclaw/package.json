@@ -41,7 +41,7 @@
       "./index.js"
     ],
     "install": {
-      "minHostVersion": ">=2026.2.19"
+      "minHostVersion": ">=2026.3.2"
     }
   },
   "scripts": {

@@ -295,6 +295,45 @@ test('recordSessionTransition - T13 head 已是 current 且 archivedSessionId===
 	}
 });
 
+// T14: stale 事件防御——currentSessionId 已是 list 第二位（已归档），晚到的事件应被丢弃
+test('recordSessionTransition - T14 stale 事件：currentSessionId 已在 list 其他位置应整体丢弃', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		let writeCount = 0;
+		const { mgr } = await setupManager(tmpDir, {
+			writeJsonFile: async (filePath, value) => {
+				writeCount++;
+				const { atomicWriteJsonFile } = await import('../utils/atomic-write.js');
+				return atomicWriteJsonFile(filePath, value);
+			},
+		});
+		await mgr.load('main');
+		// 建立 [S3, S2@arch]：用户连续 reset A→S2→S3
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'S2',
+		});
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'S3',
+		});
+		const before = writeCount;
+		// stale 事件：晚到的旧 transition 仍说 current=S2（S2 已被归档至 list[1]）
+		// 期望：直接丢弃，不动 head S3，不让 S2 重复
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main',
+			currentSessionId: 'S2', archivedSessionId: 'S1',
+		});
+		assert.equal(writeCount, before, 'stale 事件应不触发持久化');
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 2, 'list 仍是 [S3, S2@arch]');
+		assert.equal(history[0].sessionId, 'S3');
+		assert.equal(history[0].archivedAt, undefined, 'S3 仍是未归档头');
+		assert.equal(history[1].sessionId, 'S2');
+		assert.ok(typeof history[1].archivedAt === 'number');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
 // T6: 双源最终一致 sessions.changed → hook：第二次能补 archivedSessionId 归档
 test('recordSessionTransition - T6 sessions.changed 先到，hook 后到补 archivedSessionId', async () => {
 	const tmpDir = await makeTmpDir();

@@ -181,13 +181,28 @@ const plugin = {
 
 		// 追踪 chat 因 reset 产生的 session 流水。双源回调（hook + sessions.changed）共用 helper。
 		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。
-		async function handleSessionsCreated({ sessionKey, sessionId, archivedSessionId }) {
-			if (!sessionKey || !sessionId) return;
-			const parts = sessionKey.split(':');
-			const agentId = (parts[0] === 'agent' && parts[1]) ? parts[1] : 'main';
+		// agentId 优先取 hook ctx.agentId（OpenClaw 显式契约），fallback 从 sessionKey 解析；
+		// 当前 OpenClaw schema 下两者等价，ctx.agentId 在上游 schema 演进时仍可靠。
+		async function handleSessionsCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
+			if (!sessionKey || !sessionId) {
+				// 早返值得警惕：上游事件 schema 异常，或 topic（无 sessionKey）误入双源链路。
+				// 打 log + remoteLog 让运维能定位事件源；不影响其他通道。
+				logger.warn?.(
+					`[coclaw] chat history early-return: missing sessionKey/sessionId`,
+				);
+				remoteLog(
+					`chat-history.missing-keys sessionKey=${sessionKey ?? 'null'} sessionId=${sessionId ?? 'null'}`,
+				);
+				return;
+			}
+			let resolvedAgentId = agentId;
+			if (!resolvedAgentId) {
+				const parts = sessionKey.split(':');
+				resolvedAgentId = (parts[0] === 'agent' && parts[1]) ? parts[1] : 'main';
+			}
 			try {
 				await chatHistoryManager.recordSessionTransition({
-					agentId,
+					agentId: resolvedAgentId,
 					sessionKey,
 					currentSessionId: sessionId,
 					archivedSessionId,
@@ -197,9 +212,10 @@ const plugin = {
 			}
 		}
 		if (typeof api.on === 'function') {
-			api.on('session_start', async (event) => {
-				// event.sessionId 是新 sid（必填），event.resumedFrom 是旧 sid（可选）
+			api.on('session_start', async (event, ctx) => {
+				// event.sessionId 是新 sid（必填），event.resumedFrom 是旧 sid（可选），ctx.agentId 可信
 				await handleSessionsCreated({
+					agentId: ctx?.agentId,
 					sessionKey: event?.sessionKey,
 					sessionId: event?.sessionId,
 					archivedSessionId: event?.resumedFrom,

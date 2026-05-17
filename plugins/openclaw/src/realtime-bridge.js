@@ -161,8 +161,9 @@ export class RealtimeBridge {
 		// caller 通过 start({ onSessionCreated }) 注入；gateway 推 sessions.changed reason='create' 时调用。
 		// 签名 ({ sessionKey, sessionId }) => Promise<void> | void。bridge 不 await 返回值。
 		this.__onSessionCreated = null;
-		// sessions.subscribe ok=false 路径的延迟重试 timer 句柄；只允许一次重试（避免循环）。
-		this.__sessionsSubscribeRetryTimer = null;
+		// 老 gateway 不识别 sessions.subscribe 时的 sticky 标志；首次失败后置位，
+		// 后续握手跳过订阅以避免每次握手刷日志（降级到 hook 单源）。
+		this.__sessionsSubscribeUnsupported = false;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -540,49 +541,37 @@ export class RealtimeBridge {
 	/**
 	 * 订阅 OpenClaw gateway 的 sessions.changed 事件（caller 通过 onSessionCreated 消费 reason=create）。
 	 * 握手成功时调用一次；WS 重连后由握手成功分支再次自动触发。
-	 * 失败：ok=false（gateway 在线但 RPC 拒绝/超时）→ 5s 后**仅重试一次**（重试时若 WS 已断或 stop
-	 * 后则跳过，新连接握手会再调）；close/throw 路径不重试（WS 已断、重连握手会自动再发）。
-	 * 不抛、不上调到 gave-up——失败仅意味着 caller 拿不到 create 通知，bridge 其余通道不受影响。
+	 *
+	 * 前提（不变量）：gateway 端 sessions.subscribe handler 是一行同步 Set.add，无失败分支；
+	 * operator + admin scope 鉴权全放行；method 不在 startup-unavailable 名单里。
+	 * 因此 ok=false 只可能源自传输层故障（WS 卡顿超时 / send 抛错）——这类失败 WS 重连后
+	 * 握手会自动再发起 subscribe，应用层无需重试。
+	 *
+	 * 失败仅 warn+remoteLog 一次后置位 sticky unsupported，后续握手跳过订阅避免噪声日志，
+	 * 整体降级到 hook 单源（agent.send 路径漏归档，与不订阅时同等表现）。
+	 *
+	 * 详见 plugins/openclaw/docs/architecture.md
 	 */
-	async __sendSessionsSubscribe({ isRetry = false } = {}) {
+	async __sendSessionsSubscribe() {
+		if (this.__sessionsSubscribeUnsupported) return;
 		try {
 			const r = await this.__gatewayRpc('sessions.subscribe', {}, { timeoutMs: 2000 });
 			if (r?.ok === true) {
-				// ok=true 时主动取消 pending retry（场景：旧 ok=false 已 schedule 5s retry，
-				// 5s 内 WS 重连/握手成功又触发 subscribe 并 ok=true → 旧 timer 已无意义）
-				if (this.__sessionsSubscribeRetryTimer) {
-					clearTimeout(this.__sessionsSubscribeRetryTimer);
-					this.__sessionsSubscribeRetryTimer = null;
-				}
-				this.logger.info?.(`[coclaw] sessions.subscribe ok${isRetry ? ' (retry)' : ''}`);
-				remoteLog(`sessions.subscribe.ok${isRetry ? '.retry' : ''}`);
+				this.logger.info?.(`[coclaw] sessions.subscribe ok`);
+				remoteLog(`sessions.subscribe.ok`);
 				return;
 			}
 			const reason = r?.error ?? 'unknown';
-			this.logger.warn?.(`[coclaw] sessions.subscribe failed: ${reason}${isRetry ? ' (retry)' : ''}`);
-			remoteLog(`sessions.subscribe.failed reason=${reason}${isRetry ? ' retry=1' : ''}`);
-			if (!isRetry) this.__scheduleSessionsSubscribeRetry();
+			this.__sessionsSubscribeUnsupported = true;
+			this.logger.warn?.(`[coclaw] sessions.subscribe unsupported (${reason}); falling back to hook-only`);
+			remoteLog(`sessions.subscribe.unsupported reason=${reason}`);
 		}
-		/* c8 ignore next 4 -- __gatewayRpc 自身永不抛，仅作防御性兜底 */
+		/* c8 ignore next 5 -- __gatewayRpc 自身永不抛，仅作防御性兜底 */
 		catch (err) {
-			this.logger.warn?.(`[coclaw] sessions.subscribe threw: ${String(err?.message ?? err)}`);
+			this.__sessionsSubscribeUnsupported = true;
+			this.logger.warn?.(`[coclaw] sessions.subscribe threw: ${String(err?.message ?? err)}; falling back to hook-only`);
 			remoteLog(`sessions.subscribe.threw msg=${String(err?.message ?? err)}`);
 		}
-	}
-
-	/** ok=false 路径 5s 后重试一次。已有 timer 时不重排（避免握手后又叠一遍）。 */
-	__scheduleSessionsSubscribeRetry() {
-		if (this.__sessionsSubscribeRetryTimer) return;
-		this.__sessionsSubscribeRetryTimer = setTimeout(() => this.__runSessionsSubscribeRetry(), 5000);
-		this.__sessionsSubscribeRetryTimer.unref?.();
-	}
-
-	/** 重试 timer 触发的 callback；测试可直接调以覆盖 fire 路径。 */
-	__runSessionsSubscribeRetry() {
-		this.__sessionsSubscribeRetryTimer = null;
-		// bridge 已 stop 或 WS 没 ready → 跳过；新连接握手分支会自然再发起。
-		if (!this.started || !this.gatewayReady) return;
-		this.__sendSessionsSubscribe({ isRetry: true }).catch(() => {});
 	}
 
 	/** 推送实例信息（name/hostName/pluginVersion/agentModels）到 server 和已连接的 UI */
@@ -909,9 +898,9 @@ export class RealtimeBridge {
 				if (!this.gatewayReady) {
 					return;
 				}
-				// (a0) sessions.changed reason=create：调 caller 注入的回调（不绑定具体消费方）。
-				// 故意 fallthrough 不 return：后续 UI 转发链路当前不处理 sessions.changed（health/tick 过滤 +
-				// agent 路由不命中 → 兜底广播，UI 未订阅无副作用），保留未来上游/UI 端订阅的兼容性。
+				// (a0) sessions.changed reason=create：调 caller 注入的回调（不绑定具体消费方），完事直接 return。
+				// 非 create 的 sessions.changed 与 session.message 由 (a) 过滤名单 drop——
+				// 均属插件自用订阅，UI 不消费，落到兜底广播只会白占 DC 带宽与主线程序列化。
 				if (payload.type === 'event'
 					&& payload.event === 'sessions.changed'
 					&& payload.payload?.reason === 'create'
@@ -926,14 +915,17 @@ export class RealtimeBridge {
 								`[coclaw] sessions.changed handler error: ${String(err?.message ?? err)}`,
 							));
 					}
+					return;
 				}
 				if (payload.type === 'res' || payload.type === 'event') {
 				// (a) 过滤 gateway 的管理层广播事件，这些对 WebChat / plugin 客户端无意义：
 				// - health: 全量状态快照（~3KB, ~60s 一次 + RPC 触发），给 Admin UI 的监控仪表盘用
 				// - tick: gateway WS 保活心跳（30s 一次），UI 隔着 DC 不需要，DC 自己有 probe 机制
+				// - sessions.changed / session.message: 插件自用订阅（详见 (a0)），UI 当前不订阅
 				// 不转发可避免后台时 rpc DC 队列被灌满。上游支持按需订阅前先在插件侧拦截。
 					if (payload.type === 'event'
-					&& (payload.event === 'health' || payload.event === 'tick')) {
+					&& (payload.event === 'health' || payload.event === 'tick'
+						|| payload.event === 'sessions.changed' || payload.event === 'session.message')) {
 						return;
 					}
 					// (b) agent RPC 进入 phase-2 终态时停 lag 探针（必须放在 (c) 单播分支之前，
@@ -1631,6 +1623,11 @@ export class RealtimeBridge {
 		return `coclaw.env impl=${impl} plugin=${plugin} openclaw=${openclawVer} ${getPlatformInfoLine()}`;
 	}
 
+	/**
+	 * @deprecated 当前无任何调用方；且不复传 onSessionCreated 会让 chat-history 双源回调断掉。
+	 *   外部全部走 restartRealtimeBridge() singleton wrapper（index.js#restartBridge），不要用此方法。
+	 *   未来确认无用后删除。
+	 */
 	async refresh() {
 		await this.stop();
 		await this.start({
@@ -1657,11 +1654,8 @@ export class RealtimeBridge {
 			clearTimeout(this.__gatewayRetryTimer);
 			this.__gatewayRetryTimer = null;
 		}
-		// 清理 sessions.subscribe 5s 失败重试 timer
-		if (this.__sessionsSubscribeRetryTimer) {
-			clearTimeout(this.__sessionsSubscribeRetryTimer);
-			this.__sessionsSubscribeRetryTimer = null;
-		}
+		// 重置 sessions.subscribe sticky unsupported（refresh: stop+start 同实例应以全新状态启动）
+		this.__sessionsSubscribeUnsupported = false;
 		this.__gatewayAttempts = 0;
 		this.__gatewayGaveUp = false;
 		this.__gatewayLegacyMode = false;

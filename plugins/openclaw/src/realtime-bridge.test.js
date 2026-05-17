@@ -5852,19 +5852,20 @@ test('__sendSessionsSubscribe ok：写 sessions.subscribe.ok remoteLog', async (
 	}
 });
 
-test('__sendSessionsSubscribe 失败：响应 ok=false 时 warn + remoteLog.failed', async () => {
+test('__sendSessionsSubscribe 失败：ok=false 置位 sticky unsupported + warn + remoteLog.unsupported', async () => {
 	resetRemoteLog();
 	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_fail');
 	try {
 		const pending = bridge.__sendSessionsSubscribe();
 		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
 		const subscribeReq = JSON.parse(String(subscribeRaw));
-		// 模拟老 gateway：method_not_found
-		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'method_not_found', message: 'method_not_found' } }) });
+		// 模拟老 gateway：unknown method
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'INVALID_REQUEST', message: 'unknown method: sessions.subscribe' } }) });
 		await pending;
-		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed')));
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe unsupported')));
 		const texts = collectRemoteLogTexts(server);
-		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed')));
+		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.unsupported')));
+		assert.equal(bridge.__sessionsSubscribeUnsupported, true, 'sticky flag 应置位');
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
@@ -5872,128 +5873,7 @@ test('__sendSessionsSubscribe 失败：响应 ok=false 时 warn + remoteLog.fail
 	}
 });
 
-test('__sendSessionsSubscribe ok=false 时调度 5s 重试，stop 时清理 timer', async () => {
-	resetRemoteLog();
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_retry_sched');
-	try {
-		const pending = bridge.__sendSessionsSubscribe();
-		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
-		const subscribeReq = JSON.parse(String(subscribeRaw));
-		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'method_not_found', message: 'method_not_found' } }) });
-		await pending;
-		assert.notEqual(bridge.__sessionsSubscribeRetryTimer, null, 'ok=false 应 schedule 重试 timer');
-		// 重复调一次：已有 timer 应跳过、不替换
-		const before = bridge.__sessionsSubscribeRetryTimer;
-		bridge.__scheduleSessionsSubscribeRetry();
-		assert.equal(bridge.__sessionsSubscribeRetryTimer, before, '已有 timer 时重复调度应 noop');
-		// stop() 应清掉 timer
-		await bridge.stop();
-		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'stop 后 timer 应清空');
-	} finally {
-		resetRemoteLog();
-		restoreHomedir(prevHome);
-	}
-});
-
-test('__sendSessionsSubscribe ok=true 主动清掉已 schedule 的 retry timer', async () => {
-	resetRemoteLog();
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_ok_clears_retry');
-	try {
-		// 预置一个 pending retry timer 模拟"前一轮 ok=false 已 schedule"
-		bridge.__sessionsSubscribeRetryTimer = setTimeout(() => {}, 60_000);
-		const before = bridge.__sessionsSubscribeRetryTimer;
-		assert.notEqual(before, null);
-		const pending = bridge.__sendSessionsSubscribe();
-		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
-		const subscribeReq = JSON.parse(String(subscribeRaw));
-		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: true, payload: {} }) });
-		await pending;
-		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'ok=true 应清掉 pending retry timer');
-	} finally {
-		await bridge.stop();
-		resetRemoteLog();
-		restoreHomedir(prevHome);
-	}
-});
-
-test('__sendSessionsSubscribe retry 路径：ok=true 不再 schedule 二次', async () => {
-	resetRemoteLog();
-	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_retry_ok');
-	try {
-		const pending = bridge.__sendSessionsSubscribe({ isRetry: true });
-		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
-		const subscribeReq = JSON.parse(String(subscribeRaw));
-		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: true, payload: {} }) });
-		await pending;
-		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe ok (retry)')));
-		const texts = collectRemoteLogTexts(server);
-		assert.ok(texts.some((t) => t === 'sessions.subscribe.ok.retry'));
-		// retry 路径 ok=true 不应再 schedule
-		assert.equal(bridge.__sessionsSubscribeRetryTimer, null);
-	} finally {
-		await bridge.stop();
-		resetRemoteLog();
-		restoreHomedir(prevHome);
-	}
-});
-
-test('__sendSessionsSubscribe retry 路径：ok=false 也不再 schedule（避免循环）', async () => {
-	resetRemoteLog();
-	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_retry_fail');
-	try {
-		const pending = bridge.__sendSessionsSubscribe({ isRetry: true });
-		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
-		const subscribeReq = JSON.parse(String(subscribeRaw));
-		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'still_bad', message: 'still_bad' } }) });
-		await pending;
-		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed') && String(m).includes('(retry)')));
-		const texts = collectRemoteLogTexts(server);
-		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed') && t.includes('retry=1')));
-		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'retry 路径不应再 schedule 第二次');
-	} finally {
-		await bridge.stop();
-		resetRemoteLog();
-		restoreHomedir(prevHome);
-	}
-});
-
-test('__runSessionsSubscribeRetry：bridge stopped 时跳过', async () => {
-	const { bridge, prevHome } = await setupBridgeWithGateway('c_subs_retry_stopped');
-	try {
-		// 模拟已 stop
-		bridge.started = false;
-		bridge.gatewayReady = false;
-		bridge.__sessionsSubscribeRetryTimer = setTimeout(() => {}, 60_000);
-		let called = false;
-		const orig = bridge.__sendSessionsSubscribe.bind(bridge);
-		bridge.__sendSessionsSubscribe = () => { called = true; return Promise.resolve(); };
-		bridge.__runSessionsSubscribeRetry();
-		assert.equal(called, false, 'stopped 状态下不应调 __sendSessionsSubscribe');
-		assert.equal(bridge.__sessionsSubscribeRetryTimer, null);
-		bridge.__sendSessionsSubscribe = orig;
-	} finally {
-		await bridge.stop();
-		restoreHomedir(prevHome);
-	}
-});
-
-test('__runSessionsSubscribeRetry：started+ready 时实际重试', async () => {
-	const { bridge, prevHome } = await setupBridgeWithGateway('c_subs_retry_fire');
-	try {
-		// bridge 当前 started=true + gatewayReady=true
-		bridge.__sessionsSubscribeRetryTimer = setTimeout(() => {}, 60_000);
-		let calledWith = null;
-		bridge.__sendSessionsSubscribe = (opts) => { calledWith = opts; return Promise.resolve(); };
-		bridge.__runSessionsSubscribeRetry();
-		assert.deepEqual(calledWith, { isRetry: true });
-		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'timer 引用应被清');
-	} finally {
-		await bridge.stop();
-		restoreHomedir(prevHome);
-	}
-});
-
-test('__sendSessionsSubscribe gateway 中途关闭：settle 时 warn + remoteLog.failed', async () => {
+test('__sendSessionsSubscribe gateway 中途关闭：settle 也置位 sticky unsupported', async () => {
 	resetRemoteLog();
 	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_close');
 	try {
@@ -6002,9 +5882,26 @@ test('__sendSessionsSubscribe gateway 中途关闭：settle 时 warn + remoteLog
 		// 主动关 gateway WS，让 pending request 立即 settle 为 gateway_closed
 		bridge.__closeGatewayWs();
 		await pending;
-		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed') && String(m).includes('gateway_closed')));
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe unsupported') && String(m).includes('gateway_closed')));
 		const texts = collectRemoteLogTexts(server);
-		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed') && t.includes('gateway_closed')));
+		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.unsupported') && t.includes('gateway_closed')));
+		assert.equal(bridge.__sessionsSubscribeUnsupported, true, 'sticky flag 应置位');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__sendSessionsSubscribe unsupported=true 时直接 return 不发请求', async () => {
+	resetRemoteLog();
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_unsupported_skip');
+	try {
+		bridge.__sessionsSubscribeUnsupported = true;
+		const sentBefore = gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
+		await bridge.__sendSessionsSubscribe();
+		const sentAfter = gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
+		assert.equal(sentAfter, sentBefore, 'unsupported=true 不应发 sessions.subscribe 请求');
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
@@ -6108,14 +6005,16 @@ test('handshake 成功后自动发出 sessions.subscribe', async () => {
 	}
 });
 
-test('sessions.changed reason=create：调用 onSessionCreated 回调', async () => {
+test('sessions.changed reason=create：调用 onSessionCreated 回调且不 broadcast', async () => {
 	const calls = [];
+	const broadcastCalls = [];
 	const onSessionCreated = ({ sessionKey, sessionId }) => {
 		calls.push({ sessionKey, sessionId });
 	};
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_create');
 	try {
 		bridge.__onSessionCreated = onSessionCreated;
+		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
 		gwWs.emit('message', {
 			data: JSON.stringify({
 				type: 'event',
@@ -6126,19 +6025,23 @@ test('sessions.changed reason=create：调用 onSessionCreated 回调', async ()
 		await waitFor(() => calls.length === 1, { label: 'onSessionCreated invoked' });
 		assert.equal(calls[0].sessionKey, 'agent:main:main');
 		assert.equal(calls[0].sessionId, 'new-sid-1');
+		// 等一会儿确认 broadcast 没被调（M2: reason=create 调完回调直接 return）
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(broadcastCalls.length, 0, 'reason=create 不应 broadcast 到 UI');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
 	}
 });
 
-test('sessions.changed reason!=create：不调用 onSessionCreated', async () => {
+test('sessions.changed reason!=create：不调回调也不 broadcast（M2 过滤名单 drop）', async () => {
 	const calls = [];
+	const broadcastCalls = [];
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_other');
 	try {
 		bridge.__onSessionCreated = (p) => calls.push(p);
-		bridge.webrtcPeer.broadcast = () => {}; // 吞掉 fallthrough 广播
-		for (const reason of ['new', 'reset', 'send', 'delete']) {
+		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
+		for (const reason of ['new', 'reset', 'send', 'delete', 'update', 'message', 'lifecycle']) {
 			gwWs.emit('message', {
 				data: JSON.stringify({
 					type: 'event',
@@ -6149,18 +6052,40 @@ test('sessions.changed reason!=create：不调用 onSessionCreated', async () =>
 		}
 		await new Promise((r) => setTimeout(r, 10));
 		assert.equal(calls.length, 0, '非 create reason 不触发回调');
+		assert.equal(broadcastCalls.length, 0, 'M2: sessions.changed 在过滤名单中，任何 reason 都不应 broadcast');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);
 	}
 });
 
-test('sessions.changed 缺 sessionKey 或 sessionId：不调用回调', async () => {
+test('session.message event 进入过滤名单：不触发回调也不 broadcast（M2）', async () => {
+	const broadcastCalls = [];
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_session_msg');
+	try {
+		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'session.message',
+				payload: { sessionKey: 'agent:main:main', message: { role: 'user', content: 'hi' } },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(broadcastCalls.length, 0, 'M2: session.message 应被过滤名单 drop');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('sessions.changed 缺 sessionKey 或 sessionId：不调用回调也不 broadcast', async () => {
 	const calls = [];
+	const broadcastCalls = [];
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_missing');
 	try {
 		bridge.__onSessionCreated = (p) => calls.push(p);
-		bridge.webrtcPeer.broadcast = () => {};
+		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
 		gwWs.emit('message', {
 			data: JSON.stringify({
 				type: 'event',
@@ -6177,6 +6102,7 @@ test('sessions.changed 缺 sessionKey 或 sessionId：不调用回调', async ()
 		});
 		await new Promise((r) => setTimeout(r, 10));
 		assert.equal(calls.length, 0, '缺字段时不触发回调');
+		assert.equal(broadcastCalls.length, 0, '缺字段的 reason=create 也走 return，不 broadcast');
 	} finally {
 		await bridge.stop();
 		restoreHomedir(prevHome);

@@ -1444,3 +1444,40 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 - 或在 list RPC 出口对重复 sessionId 做 dedupe（保留 head，丢弃后面的）
 - 配合一条 manager.test.js 的 T14 测试钉死该路径
 
+**更新**（2026-05-17 第三轮 review M1 修复）：`recordSessionTransition` 已加入 stale 事件防御——`currentSessionId` 已存在于 list 任意位置时直接丢弃事件（manager.js 一般路径前的新增分支 + 测试 T14）。该防御覆盖了上述重复场景：resume 旧 session 本身不触发 `session_start` hook / `sessions.changed`（OpenClaw 上游 resume 不创建新 sid），但万一上游演进出 resume 也 emit 的路径，stale 防御会让 history 保持不变（而不是错位翻 head 制造重复）。本条 TODO 可视为已消解，保留以备追溯。
+
+---
+
+## chat-history 双源归档 follow-up F1：实验验证 topic 模式不触发 sessions.changed
+
+**发现日期**：2026-05-17（第三轮 review 用户问询）
+**关联**：`plugins/openclaw/index.js#handleSessionsCreated` 的早返 guard
+
+**问题**：理论分析（subagent 调研 + 设计稿 `docs/designs/topic-management.md:17`）认为 topic 模式（`agent({ sessionId: <uuid> })` 不传 sessionKey）时 OpenClaw 不会写 `sessions.json`、不 fire `session_start`、不 emit `sessions.changed`。需要 E2E 验证此结论。
+
+**验证方法**：
+1. CLI 直接调 `agent({ sessionId: <随机 uuid> })`，不带 sessionKey
+2. 同时 tail plugin log，观察是否有 `chat-history.missing-keys` remoteLog（缺 sessionKey 早返时会打）
+3. 观察 chat-history.json 是否被改动
+
+**意义**：若理论成立，本插件 chat-history 与 topic 体系完全互不干扰；若不成立，需要在 `handleSessionsCreated` 加 topic-aware 早返。
+
+---
+
+## chat-history 双源归档 follow-up F2：核实 agent sessions 目录判定的覆盖配置
+
+**发现日期**：2026-05-17（第三轮 review 用户问询）
+**关联**：`plugins/openclaw/src/claw-paths.js`
+
+**问题**：CoClaw 自管文件（`coclaw-chat-history.json` / `coclaw-topics.json`）的存放路径基于 `agentSessionsDir(agentId)`，当前实现走 OpenClaw 默认布局 `<state-dir>/agents/<agentId>/sessions/...`，state-dir 由 runtime API 注入正确解析。但 OpenClaw 支持两类覆盖配置：
+- `agents.<id>.store` 覆盖单 agent 的 store backend
+- sessions-index `entry.sessionFile` 覆盖文件名
+
+`claw-paths.js` 调上游 helper 时不传 `store` 与 `entry` 覆盖，意味着用户在 OpenClaw 配置了上述覆盖时，CoClaw 自管文件会落到默认位置，与 OpenClaw 自家 sessions 数据**不在同一目录**——可能导致：
+- 备份/迁移工具按 OpenClaw 配置走时漏带 CoClaw 文件
+- 多 profile / 容器场景下 chat-history 找不到
+
+**严重性**：低——绝大多数用户走 OpenClaw 默认布局；CLAUDE.md 已点出此 follow-up（"honoring `agents.<id>.store` / `entry.sessionFile` 覆盖是 follow-up"）。
+
+**修复方向**：`claw-paths.js` 增加读 OpenClaw 配置的能力（按 agentId 取 store + entry 覆盖），传入上游 helper；增加多 profile / 容器场景的 fixture 测试。
+

@@ -2,6 +2,7 @@
 
 > 创建时间：2026-03-17
 > 状态：已实施 — **代码已偏离本设计稿**（2026-05 双源化重构：`recordArchived` 接口已被 `recordSessionTransition` 替换；文件首位由"全归档"改为"未归档头 = 当前活跃 session"；归档来源由仅 `session_start` hook 扩展为 hook + `sessions.changed reason=create` 双源。详见 `plugins/openclaw/docs/architecture.md` §F 与 `.changeset/chat-history-dual-source-archival.md`）
+> **过时章节**（以代码为准、不要照搬正文）：§2.3 触发矩阵把 `agent()` RPC 标 ✗，双源化后实际为 ✓；§2.3 钩子代码示例、§2.4 类签名、§五 实施步骤均使用旧 API `recordArchived`。
 > 前置依赖：`docs/designs/topic-management.md`（Topic 管理功能已实施）
 > 研究基础：`docs/openclaw-research/topic-feature-research.md`
 
