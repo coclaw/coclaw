@@ -1507,7 +1507,11 @@ export class RealtimeBridge {
 		/* c8 ignore next 2 -- ?? fallback：测试始终注入 logger/pluginConfig */
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
-		this.__onSessionCreated = onSessionCreated ?? null;
+		// 仅在显式提供时覆盖；传 undefined（如 refresh() 透传）保留构造或上次 start 的值，
+		// 避免 stop+start 同实例的"重启"路径静默清掉双源 callback
+		if (onSessionCreated !== undefined) {
+			this.__onSessionCreated = onSessionCreated;
+		}
 		this.started = true;
 		// rpc DC 文件回退队列的启动期预热（B-stage1 plan-2）：清残留 *.jsonl + 探测磁盘容量。
 		// 远早于第一条 rpc DC 建立（dump 设计）；__diskCap 暂存供 B-stage2 切 FBQ 时取用。
@@ -1622,9 +1626,9 @@ export class RealtimeBridge {
 	}
 
 	/**
-	 * @deprecated 当前无任何调用方；且不复传 onSessionCreated 会让 chat-history 双源回调断掉。
-	 *   外部全部走 restartRealtimeBridge() singleton wrapper（index.js#restartBridge），不要用此方法。
-	 *   未来确认无用后删除。
+	 * @deprecated 生产代码无 caller；保留仅供少量历史测试用例使用。
+	 *   外部走 restartRealtimeBridge() singleton wrapper（index.js#restartBridge）。
+	 *   注：start() 已让"不传 onSessionCreated"保留旧值，refresh() 不再清空 caller 注入。
 	 */
 	async refresh() {
 		await this.stop();

@@ -154,13 +154,13 @@ server / UI 各自按 patch 语义更新本地缓存（未在 payload 出现的�
 
 **F. chat-history 双源归档（session 流水追踪）**
 
-session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两条互补来源——`agent.send` 走自动 reset 触发新 session 时 OpenClaw 当前**只 emit 后者**（hook 漏），双源相加才能不漏归档。两条都汇入 `index.js#handleSessionsCreated`，由 `chatHistoryManager.recordSessionTransition` 以幂等 + per-agent mutex 串行落盘。
+session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两条互补来源——`agent.send` 走自动 reset 触发新 session 时 OpenClaw 当前**只 emit 后者**（hook 漏），双源相加才能不漏归档。两条都汇入 `index.js#handleSessionCreated`，由 `chatHistoryManager.recordSessionTransition` 以幂等 + per-agent mutex 串行落盘。
 
 ```
 [A] session_start hook              ──┐
     event = { sessionKey,             │
               sessionId(new),         │
-              resumedFrom(old?) }     ├─→ handleSessionsCreated(...)
+              resumedFrom(old?) }     ├─→ handleSessionCreated(...)
     ctx.agentId（hook 路径优先）       │     ├─ recordSessionTransition({
                                       │     │     agentId, sessionKey,
 [B] sessions.changed reason=create  ──┘     │     currentSessionId,

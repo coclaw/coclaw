@@ -183,7 +183,7 @@ const plugin = {
 		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。
 		// agentId 优先取 hook ctx.agentId（OpenClaw 显式契约），fallback 从 sessionKey 解析；
 		// 当前 OpenClaw schema 下两者等价，ctx.agentId 在上游 schema 演进时仍可靠。
-		async function handleSessionsCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
+		async function handleSessionCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
 			if (!sessionKey || !sessionId) {
 				// 早返值得警惕：上游事件 schema 异常，或 topic（无 sessionKey）误入双源链路。
 				// 打 log + remoteLog 让运维能定位事件源；不影响其他通道。
@@ -221,7 +221,7 @@ const plugin = {
 		if (typeof api.on === 'function') {
 			api.on('session_start', async (event, ctx) => {
 				// event.sessionId 是新 sid（必填），event.resumedFrom 是旧 sid（可选），ctx.agentId 可信
-				await handleSessionsCreated({
+				await handleSessionCreated({
 					agentId: ctx?.agentId,
 					sessionKey: event?.sessionKey,
 					sessionId: event?.sessionId,
@@ -230,13 +230,13 @@ const plugin = {
 			});
 		}
 
-		// bridge 启动/重启的闭包 helper：把 onSessionCreated 接到 handleSessionsCreated。
+		// bridge 启动/重启的闭包 helper：把 onSessionCreated 接到 handleSessionCreated。
 		// 所有 restartRealtimeBridge 调用必须走这个 helper，避免漏接回调。
 		async function restartBridge() {
 			await restartRealtimeBridge({
 				logger,
 				pluginConfig: api.pluginConfig,
-				onSessionCreated: ({ sessionKey, sessionId }) => handleSessionsCreated({
+				onSessionCreated: ({ sessionKey, sessionId }) => handleSessionCreated({
 					sessionKey,
 					sessionId,
 					// sessions.changed payload 不带 previousSessionId；让 manager 从文件首位推断
