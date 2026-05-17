@@ -6169,7 +6169,7 @@ test('sessions.changed 回调 async reject：bridge 不崩，warn 兜底', async
 	}
 });
 
-test('onSessionCreated 通过 start opts 可注入', async () => {
+test('onSessionCreated 通过构造器注入；stop/refresh 不动该字段', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
 	const prevHome = saveHomedir();
@@ -6180,15 +6180,23 @@ test('onSessionCreated 通过 start opts 可注入', async () => {
 
 	const calls = [];
 	const onSessionCreated = (p) => calls.push(p);
-	const bridge = createBridge();
+	const bridge = createBridge({ onSessionCreated });
 	try {
-		await bridge.start({ logger: noopLogger(), pluginConfig: {}, onSessionCreated });
-		assert.equal(bridge.__onSessionCreated, onSessionCreated, 'start opts 应将 callback 写入实例');
-	} finally {
+		assert.equal(bridge.__onSessionCreated, onSessionCreated, '构造器应直接 set callback');
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		assert.equal(bridge.__onSessionCreated, onSessionCreated, 'start 不动 callback');
 		await bridge.stop();
+		assert.equal(bridge.__onSessionCreated, onSessionCreated, 'stop 后 callback 仍在（不重建实例就一直在）');
+	} finally {
+		// bridge 已在 try 内 stop；这里只复位环境
 		process.chdir(prevCwd);
 		restoreHomedir(prevHome);
 	}
+});
+
+test('未注入 onSessionCreated 时 __onSessionCreated 为 null', () => {
+	const bridge = createBridge();
+	assert.equal(bridge.__onSessionCreated, null, '默认应为 null（无回调路径）');
 });
 
 /** waitForSent：等到 gw.sent 出现含指定子串的帧，返回原始字符串。 */

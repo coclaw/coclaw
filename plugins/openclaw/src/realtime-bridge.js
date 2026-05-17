@@ -135,6 +135,8 @@ export class RealtimeBridge {
 	 * @param {Function} [deps.getBindingsPath] - 获取绑定文件路径
 	 * @param {Function} [deps.resolveGatewayAuthToken] - 获取 gateway 认证 token
 	 * @param {Function} [deps.loadDeviceIdentity] - 加载设备身份
+	 * @param {Function} [deps.onSessionCreated] - gateway 推 sessions.changed reason='create' 时触发；
+	 *   签名 ({ sessionKey, sessionId }) => Promise<void> | void。在实例生命周期内固定不变（refresh/stop 都不动）。
 	 * @param {number} [deps.gatewayReadyTimeoutMs] - __waitGatewayReady 默认超时（测试可注入短值）
 	 * @param {number} [deps.dcReqTtlMs] - UI 转发 RPC 路由表条目 TTL（测试可注入短值）
 	 * @param {number} [deps.dcReqScanMs] - UI 转发 RPC 路由表周期扫描间隔（测试可注入短值）
@@ -158,9 +160,11 @@ export class RealtimeBridge {
 		// rpc-queues/ 启动期预热钩子（B-stage1 plan-2）。仅供测试覆盖错误分支注入；生产路径走默认。
 		this.__cleanupRpcQueueResiduals = deps.cleanupRpcQueueResiduals ?? defaultCleanupResiduals;
 		this.__measureRpcQueueDiskCap = deps.measureRpcQueueDiskCap ?? defaultMeasureDiskCap;
-		// caller 通过 start({ onSessionCreated }) 注入；gateway 推 sessions.changed reason='create' 时调用。
-		// 签名 ({ sessionKey, sessionId }) => Promise<void> | void。bridge 不 await 返回值。
-		this.__onSessionCreated = null;
+		// caller 通过 new RealtimeBridge({ onSessionCreated }) 注入；gateway 推
+		// sessions.changed reason='create' 时调用。bridge 不 await 返回值。
+		// 构造期注入保证实例生命周期内不变——restart 通过新建实例自然带入新回调，
+		// stop/refresh 不动这个字段，无需 setter 语义层做"保留"hack。
+		this.__onSessionCreated = deps.onSessionCreated ?? null;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -1503,15 +1507,10 @@ export class RealtimeBridge {
 	}
 	/* c8 ignore stop */
 
-	async start({ logger, pluginConfig, onSessionCreated } = {}) {
+	async start({ logger, pluginConfig } = {}) {
 		/* c8 ignore next 2 -- ?? fallback：测试始终注入 logger/pluginConfig */
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
-		// 仅在显式提供时覆盖；传 undefined（如 refresh() 透传）保留构造或上次 start 的值，
-		// 避免 stop+start 同实例的"重启"路径静默清掉双源 callback
-		if (onSessionCreated !== undefined) {
-			this.__onSessionCreated = onSessionCreated;
-		}
 		this.started = true;
 		// rpc DC 文件回退队列的启动期预热（B-stage1 plan-2）：清残留 *.jsonl + 探测磁盘容量。
 		// 远早于第一条 rpc DC 建立（dump 设计）；__diskCap 暂存供 B-stage2 切 FBQ 时取用。
@@ -1628,7 +1627,7 @@ export class RealtimeBridge {
 	/**
 	 * @deprecated 生产代码无 caller；保留仅供少量历史测试用例使用。
 	 *   外部走 restartRealtimeBridge() singleton wrapper（index.js#restartBridge）。
-	 *   注：start() 已让"不传 onSessionCreated"保留旧值，refresh() 不再清空 caller 注入。
+	 *   注：__onSessionCreated 由构造器固定，refresh 内的 stop+start 不动该字段。
 	 */
 	async refresh() {
 		await this.stop();
@@ -1723,16 +1722,17 @@ let singleton = null;
 
 /**
  * 确保 bridge 运行：已有实例则 stop 后重建，无则直接创建。opts 必传。
- * @param {{ logger, pluginConfig }} opts
+ * @param {{ logger, pluginConfig, onSessionCreated? }} opts
+ *   onSessionCreated 透传到 new RealtimeBridge 构造器（每次重启新实例自然带入）。
  */
 export async function restartRealtimeBridge(opts) {
 	if (singleton) {
 		await singleton.stop();
 		singleton = null;
 	}
-	const deps = opts?.__deps; // 仅测试用
+	const deps = { ...(opts?.__deps ?? {}), onSessionCreated: opts?.onSessionCreated };
 	singleton = new RealtimeBridge(deps);
-	await singleton.start(opts);
+	await singleton.start({ logger: opts?.logger, pluginConfig: opts?.pluginConfig });
 }
 
 /**
