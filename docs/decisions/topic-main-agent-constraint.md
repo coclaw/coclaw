@@ -2,7 +2,7 @@
 
 > 日期：2026-03-18（原始决策）/ 2026-05-17（重评补章）
 > 状态：~~已确认（当前限制）~~ → **上游约束已解除（v2026.4.5 / 2026-04-04 起），CoClaw 自身仍未开放，待产品决策是否启用**
-> 关联：`docs/designs/topic-management.md`（设计文档）、`docs/openclaw-research/topic-feature-research.md`（源码研究，第六章为本次重评的依据）
+> 关联：`docs/designs/topic-management.md`（设计文档）、`docs/openclaw-research/topic-feature-research.md`（源码研究，第十章为本次重评的依据）
 
 > **⚠️ 重要更新（2026-05-17）**：本文档原"核心矛盾"中"传 agentId 会自动派生 sessionKey 覆盖 sessionId"的成因，**自 OpenClaw v2026.4.5（2026-04-04, commit `cd36ff7483`）起已不成立**——上游引入 explicit fake sessionKey 机制后，`agent({ sessionId, agentId: '<非main>' })` 走的是新路径：sessionId 被保留，store 中以 `agent:<agentId>:explicit:<sessionId>` 形式落条目；多 agent topic 在上游层面已可行。
 >
@@ -140,7 +140,7 @@ Topic 方案需要同时满足三个条件：
 | `agent:<非main>:explicit:<sid>` 形态合法性 | 当时不存在此机制 | 通过 `classifySessionKeyShape`，write-back 不拦 |
 | 兜底机制 | 无 | `session.maintenance.maxEntries`（默认 500）+ `pruneAfter`（默认 30 天）+ cron reaper |
 
-详细证据链（path:line + commit hash 全部钉死）见 `docs/openclaw-research/topic-feature-research.md` 第六章。
+详细证据链（path:line + commit hash 全部钉死）见 `docs/openclaw-research/topic-feature-research.md` 第十章。
 
 ### "核心矛盾" 重写
 

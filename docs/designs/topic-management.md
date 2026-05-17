@@ -21,7 +21,7 @@
 ### 当前版本约束：仅限 main agent
 
 > 补充时间：2026-03-17
-> **⚠️ 过时通知（2026-05-17）**：本节"原因"段落对应的上游约束**已自 OpenClaw v2026.4.5（2026-04-04, commit `cd36ff7483`）起被解除**——上游引入 explicit fake sessionKey 机制后，`agent({ sessionId, agentId: '<非main>' })` 不再覆盖 sessionId，能正确路由到指定 agent。重新评估请见 `docs/openclaw-research/topic-feature-research.md` 第六章 + `docs/decisions/topic-main-agent-constraint.md` 的 2026-05-17 更新。CoClaw 自身正文限制（UI 限制措施、loadAllTopics 范围）目前仍按本节描述执行，是否解除留待产品决策。
+> **⚠️ 过时通知（2026-05-17）**：本节"原因"段落对应的上游约束**已自 OpenClaw v2026.4.5（2026-04-04, commit `cd36ff7483`）起被解除**——上游引入 explicit fake sessionKey 机制后，`agent({ sessionId, agentId: '<非main>' })` 不再覆盖 sessionId，能正确路由到指定 agent。重新评估请见 `docs/openclaw-research/topic-feature-research.md` 第十章 + `docs/decisions/topic-main-agent-constraint.md` 的 2026-05-17 更新。CoClaw 自身正文限制（UI 限制措施、loadAllTopics 范围）目前仍按本节描述执行，是否解除留待产品决策。
 
 **当前版本 Topic 仅支持 main agent。** 虽然接口层面保留了 `agentId` 参数，但 UI 侧仅允许在 main agent 上下文中创建 Topic。
 

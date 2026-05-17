@@ -1507,6 +1507,7 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 **待办**：
 - [x] CLI 实验交叉验证（2026-05-17）——结果完全命中预期：chat-history.json sha256 不变；sessions.json 新增 `agent:main:explicit:d623247e-4d48-4e0c-84ef-f79b1461d966` entry（71→72）；plugin 日志无 chat-history.missing-keys 或任何 handleSessionsCreated 相关 warn（reason='create' 严判完全静默 phase=message 流量）
 - [ ] 上述两个外溢副作用纳入 task #11 的上游 issue 草稿
+- [ ] 多 agent topic 启用后复评：F1 实验只钉死了"main agent topic 路径不破"，若 CoClaw 解开 UI `chat.store.js` topicMode 分支让非 main agent 也能新建 topic（参考 `docs/decisions/topic-main-agent-constraint.md` §"2026-05-17 重评"），需要复跑实验验证非 main agent 的 explicit fake sessionKey 路径同样不撞穿 `reason === 'create'` 严判，并核查 chat-history 桶不被污染
 
 ---
 

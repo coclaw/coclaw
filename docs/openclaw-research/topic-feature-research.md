@@ -1,9 +1,9 @@
 # Topic（独立话题）功能：OpenClaw 机制研究与方案建议
 
-> 更新时间：2026-03-16（原始研究）/ 2026-05-17（补充第六章）
+> 更新时间：2026-03-16（原始研究）/ 2026-05-17（补充第十章）
 > 基于 OpenClaw 本地源码验证，结合 CoClaw 集成需求
 
-> **⚠️ 重要更新（2026-05-17）**：第二章第 5 节关于"agentId 参数会触发 sessionKey 自动派生、sessionId 被覆盖"的结论，**自 OpenClaw v2026.4.5 起已不再成立**——上游 commit `cd36ff7483`（2026-04-04）引入 explicit fake sessionKey 机制后，`agent(sessionId=<uuid>, agentId=<非main>)` 不再覆盖 caller 的 sessionId，而是合成 `agent:<agentId>:explicit:<sessionId>` 作为 store key 落盘。详见**第六章**"2026-04-04 之后的能力升级与多 agent topic 重评"。
+> **⚠️ 重要更新（2026-05-17）**：第二章第 5 节关于"agentId 参数会触发 sessionKey 自动派生、sessionId 被覆盖"的结论，**自 OpenClaw v2026.4.5 起已不再成立**——上游 commit `cd36ff7483`（2026-04-04）引入 explicit fake sessionKey 机制后，`agent(sessionId=<uuid>, agentId=<非main>)` 不再覆盖 caller 的 sessionId，而是合成 `agent:<agentId>:explicit:<sessionId>` 作为 store key 落盘。详见**第十章**"2026-04-04 之后的能力升级与多 agent topic 重评"。
 
 ---
 
@@ -88,7 +88,7 @@ OpenClaw 对 sessionKey 有严格的结构要求：
 ### 5. agentId 参数与多 Agent 路由约束
 
 > 补充时间：2026-03-17。基于 gateway handler 源码逐行追踪验证。
-> **⚠️ 本节针对 OpenClaw < v2026.4.5 的行为。自 v2026.4.5（2026-04-04, commit `cd36ff7483`）起，下表中"sessionId 被覆盖"列已失效——sessionId-only + agentId 路径改走 explicit fake sessionKey 机制，caller 的 sessionId 被保留。详见第六章。**
+> **⚠️ 本节针对 OpenClaw < v2026.4.5 的行为。自 v2026.4.5（2026-04-04, commit `cd36ff7483`）起，下表中"sessionId 被覆盖"列已失效——sessionId-only + agentId 路径改走 explicit fake sessionKey 机制，caller 的 sessionId 被保留。详见第十章。**
 
 #### agentId 参数的行为
 
@@ -548,10 +548,11 @@ await api.runtime.subagent.deleteSession({ sessionKey, deleteTranscript: true })
 
 ---
 
-## 六、2026-04-04 之后的能力升级与多 agent topic 重评
+## 十、2026-04-04 之后的能力升级与多 agent topic 重评
 
 > 补充时间：2026-05-17。基于 git archaeology + 上游源码逐行核实。
 > 锚点版本：OpenClaw v2026.5.7（当前 gateway 版本）。
+> 决策落点：`docs/decisions/topic-main-agent-constraint.md` §"2026-05-17 重评"。
 
 ### 1. 关键引入点：`cd36ff7483` (v2026.4.5)
 
@@ -635,7 +636,7 @@ await api.runtime.subagent.deleteSession({ sessionKey, deleteTranscript: true })
 
 ---
 
-## 七、源码锚点（第六章追加）
+## 十一、源码锚点（第十章追加）
 
 | 主题 | 文件锚点 |
 |---|---|

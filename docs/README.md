@@ -28,7 +28,7 @@
 - [孤儿 Bot 防护](decisions/orphan-bot-prevention.md) — 防止绑定记录泄漏
 - [插件合并](decisions/plugin-consolidation.md) — tunnel + session-manager 合并为单插件
 - [Session 导航](decisions/session-navigation.md) — sessionKey vs sessionId 导航模型
-- [Topic 限制 main agent](decisions/topic-main-agent-constraint.md) — Topic 仅限 main agent 的原因
+- [Topic 限制 main agent](decisions/topic-main-agent-constraint.md) — Topic 仅限 main agent 的原因（2026-05-17 重评：上游约束已解除，待产品决策）
 - [WebSocket 心跳](decisions/websocket-heartbeat.md) — 各链路心跳机制分析与方案选择
 
 ## Designs — 功能设计稿（过程文档）
@@ -76,7 +76,7 @@ OpenClaw 平台机制研究，用于指导 CoClaw 集成。
 - [多 Agent PRD](product/multi-agent-support-prd.md) — 多 Agent 产品需求
 - [Agent 面板](product/agent-panel-design.md) — Agent 面板数据可行性
 - [认领绑定用户流](product/claim-bind-user-flow.md) — 认领绑定用户侧流程
-- [Topic 限制说明](product/topic-main-agent-only.md) — 面向 PM 的 Topic 限制解释
+- [Topic 限制说明](product/topic-main-agent-only.md) — 面向 PM 的 Topic 限制解释（2026-05-17 重评：上游约束已解除，待产品决策）
 - [V1.0 功能追踪](product/v1.0-feature-tracker.md) — V1.0 功能实现状态
 
 ## Operations — 运维
