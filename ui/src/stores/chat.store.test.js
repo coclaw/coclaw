@@ -5992,6 +5992,47 @@ describe('useChatStore', () => {
 			expect(ok).toBe(false);
 			expect(store.historyExhausted).toBe(true);
 		});
+
+		test('source-filter 守住下游：含 current marker 的 list 不会触发 getById 拉取 marker', async () => {
+			// 端到端校验 __loadChatHistory 的 filter 真正保护下游：
+			// 即便 plugin 把"当前 session"作为无 archivedAt 的条目写进 list，
+			// 后续 loadNextHistorySession 也不应去 RPC 拉取它的 messages。
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.chatHistory.list') {
+					return Promise.resolve({
+						history: [
+							{ sessionId: 'orphan-1', archivedAt: 200 },
+							{ sessionId: 'current-marker', archivedAt: null },
+						],
+					});
+				}
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({ messages: [] });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.__messagesLoaded = true;
+
+			await store.__loadChatHistory();
+			// 连调两次：第一次应拉 orphan-1，第二次应判定耗尽（current-marker 被 filter 掉了）
+			await store.loadNextHistorySession();
+			await store.loadNextHistorySession();
+
+			const getByIdCalls = conn.request.mock.calls
+				.filter(([m]) => m === 'coclaw.sessions.getById');
+			expect(getByIdCalls).toHaveLength(1);
+			expect(getByIdCalls[0][1].sessionId).toBe('orphan-1');
+			expect(store.historyExhausted).toBe(true);
+		});
 	});
 
 	// =====================================================================
