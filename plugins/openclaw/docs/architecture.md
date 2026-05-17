@@ -176,9 +176,10 @@ session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两�
 - stale 防御：currentSessionId 已存在于 list 其他位置（已归档项）→ 视为晚到事件丢弃，不动 head（避免把当前活跃头错翻成归档 + sid 重复）。
 - 双源到达顺序无关；mutex 串行 + per-write atomic write。
 
-降级：
-- 老 gateway 没 `sessions.subscribe` RPC → bridge 首次失败置位 sticky unsupported（warn + remoteLog 一次），后续握手跳过订阅 → 仅 hook 单源（`agent.send` 创建的 session 在该 gateway 上漏归档，本质上是上游缺陷）。
-- 应用层不再做重试：gateway handler 端无失败分支，ok=false 只可能源自传输层故障，WS 重连后握手会自动再发起 subscribe。
+降级与重连：
+- gateway 端订阅按 connId 注册；WS close 时自动 `unsubscribeAllSessionEvents` → **每条新 WS 都必须重新发送 subscribe**。bridge 在每次握手成功分支调用一次，不区分首次 / 重连。
+- 调用 timeout 60s（容忍 gateway 重启卡主线程的真实场景）。subscribe 失败仅 warn + remoteLog 一次（gateway handler 无业务失败分支，失败只可能源自传输层），同条 WS 内不重试；下次 WS 重连握手成功时自然再发——无 sticky 阻止。
+- 上游事件源补充：topic 走 transcript-update 链路发的是 `sessions.changed phase=message`（**无 reason 字段**），与本路径严判 `payload.payload?.reason === 'create'` 不匹配会被过滤掉，不会污染 chat-history。
 
 文件 schema：见 §"状态在哪儿"中 `coclaw-chat-history.json` 行。
 

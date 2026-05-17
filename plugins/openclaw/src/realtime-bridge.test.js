@@ -5852,20 +5852,18 @@ test('__sendSessionsSubscribe ok：写 sessions.subscribe.ok remoteLog', async (
 	}
 });
 
-test('__sendSessionsSubscribe 失败：ok=false 置位 sticky unsupported + warn + remoteLog.unsupported', async () => {
+test('__sendSessionsSubscribe 失败：ok=false 仅 warn + remoteLog.failed（无 sticky）', async () => {
 	resetRemoteLog();
 	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_fail');
 	try {
 		const pending = bridge.__sendSessionsSubscribe();
 		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
 		const subscribeReq = JSON.parse(String(subscribeRaw));
-		// 模拟老 gateway：unknown method
-		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'INVALID_REQUEST', message: 'unknown method: sessions.subscribe' } }) });
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'INVALID_REQUEST', message: 'transient error' } }) });
 		await pending;
-		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe unsupported')));
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed')));
 		const texts = collectRemoteLogTexts(server);
-		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.unsupported')));
-		assert.equal(bridge.__sessionsSubscribeUnsupported, true, 'sticky flag 应置位');
+		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed')));
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
@@ -5873,19 +5871,17 @@ test('__sendSessionsSubscribe 失败：ok=false 置位 sticky unsupported + warn
 	}
 });
 
-test('__sendSessionsSubscribe gateway 中途关闭：settle 也置位 sticky unsupported', async () => {
+test('__sendSessionsSubscribe gateway 中途关闭：settle 时 warn + remoteLog.failed (gateway_closed)', async () => {
 	resetRemoteLog();
 	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_close');
 	try {
 		const pending = bridge.__sendSessionsSubscribe();
 		await waitForSent(gwWs, 'sessions.subscribe');
-		// 主动关 gateway WS，让 pending request 立即 settle 为 gateway_closed
 		bridge.__closeGatewayWs();
 		await pending;
-		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe unsupported') && String(m).includes('gateway_closed')));
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed') && String(m).includes('gateway_closed')));
 		const texts = collectRemoteLogTexts(server);
-		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.unsupported') && t.includes('gateway_closed')));
-		assert.equal(bridge.__sessionsSubscribeUnsupported, true, 'sticky flag 应置位');
+		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed') && t.includes('gateway_closed')));
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
@@ -5893,15 +5889,31 @@ test('__sendSessionsSubscribe gateway 中途关闭：settle 也置位 sticky uns
 	}
 });
 
-test('__sendSessionsSubscribe unsupported=true 时直接 return 不发请求', async () => {
+test('sessions.subscribe 失败后再次调用仍重发（无 sticky 阻止）', async () => {
 	resetRemoteLog();
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_unsupported_skip');
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_fail_then_retry');
 	try {
-		bridge.__sessionsSubscribeUnsupported = true;
-		const sentBefore = gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
-		await bridge.__sendSessionsSubscribe();
-		const sentAfter = gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
-		assert.equal(sentAfter, sentBefore, 'unsupported=true 不应发 sessions.subscribe 请求');
+		// 第一次：模拟失败响应
+		const first = bridge.__sendSessionsSubscribe();
+		const firstRaw = await waitForSent(gwWs, 'sessions.subscribe');
+		const firstReq = JSON.parse(String(firstRaw));
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: firstReq.id, ok: false, error: { code: 'TRANSIENT', message: 'transient' } }) });
+		await first;
+		const countAfterFirst = gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
+		assert.equal(countAfterFirst, 1, '第一次调用发 1 次 subscribe');
+
+		// 第二次：模拟下次握手再调，应当真的发出（不被 sticky 阻止），且成功
+		const second = bridge.__sendSessionsSubscribe();
+		await waitFor(
+			() => gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).length >= 2,
+			{ label: 'second sessions.subscribe sent after prior failure' },
+		);
+		const secondRaw = gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).pop();
+		const secondReq = JSON.parse(String(secondRaw));
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: secondReq.id, ok: true, payload: { subscribed: true } }) });
+		await second;
+		const countAfterSecond = gwWs.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
+		assert.equal(countAfterSecond, 2, '失败后再次调用应再发 1 次 subscribe');
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();

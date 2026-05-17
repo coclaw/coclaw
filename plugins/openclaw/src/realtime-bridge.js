@@ -161,9 +161,6 @@ export class RealtimeBridge {
 		// caller 通过 start({ onSessionCreated }) 注入；gateway 推 sessions.changed reason='create' 时调用。
 		// 签名 ({ sessionKey, sessionId }) => Promise<void> | void。bridge 不 await 返回值。
 		this.__onSessionCreated = null;
-		// 老 gateway 不识别 sessions.subscribe 时的 sticky 标志；首次失败后置位，
-		// 后续握手跳过订阅以避免每次握手刷日志（降级到 hook 单源）。
-		this.__sessionsSubscribeUnsupported = false;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -547,29 +544,30 @@ export class RealtimeBridge {
 	 * 因此 ok=false 只可能源自传输层故障（WS 卡顿超时 / send 抛错）——这类失败 WS 重连后
 	 * 握手会自动再发起 subscribe，应用层无需重试。
 	 *
-	 * 失败仅 warn+remoteLog 一次后置位 sticky unsupported，后续握手跳过订阅避免噪声日志，
-	 * 整体降级到 hook 单源（agent.send 路径漏归档，与不订阅时同等表现）。
+	 * gateway 端订阅按 connId 注册，WS close 时自动 unsubscribeAllSessionEvents，
+	 * 因此每条新 WS 都必须重新发送 subscribe（gateway 实现见 server/ws-connection.ts:391）。
+	 *
+	 * timeout 取 60s 是为容忍 gateway 重启时主线程长时间阻塞的真实场景。失败仅
+	 * warn+remoteLog 一次（同一条 WS 不重试，因 handler 无业务失败分支），下次 WS
+	 * 重连握手成功时自然再发——连上就做该做的事，不区分首次 / 重连。
 	 *
 	 * 详见 plugins/openclaw/docs/architecture.md
 	 */
 	async __sendSessionsSubscribe() {
-		if (this.__sessionsSubscribeUnsupported) return;
 		try {
-			const r = await this.__gatewayRpc('sessions.subscribe', {}, { timeoutMs: 2000 });
+			const r = await this.__gatewayRpc('sessions.subscribe', {}, { timeoutMs: 60000 });
 			if (r?.ok === true) {
 				this.logger.info?.(`[coclaw] sessions.subscribe ok`);
 				remoteLog(`sessions.subscribe.ok`);
 				return;
 			}
 			const reason = r?.error ?? 'unknown';
-			this.__sessionsSubscribeUnsupported = true;
-			this.logger.warn?.(`[coclaw] sessions.subscribe unsupported (${reason}); falling back to hook-only`);
-			remoteLog(`sessions.subscribe.unsupported reason=${reason}`);
+			this.logger.warn?.(`[coclaw] sessions.subscribe failed (${reason}); will retry on next WS handshake`);
+			remoteLog(`sessions.subscribe.failed reason=${reason}`);
 		}
-		/* c8 ignore next 5 -- __gatewayRpc 自身永不抛，仅作防御性兜底 */
+		/* c8 ignore next 4 -- __gatewayRpc 自身永不抛，仅作防御性兜底 */
 		catch (err) {
-			this.__sessionsSubscribeUnsupported = true;
-			this.logger.warn?.(`[coclaw] sessions.subscribe threw: ${String(err?.message ?? err)}; falling back to hook-only`);
+			this.logger.warn?.(`[coclaw] sessions.subscribe threw: ${String(err?.message ?? err)}; will retry on next WS handshake`);
 			remoteLog(`sessions.subscribe.threw msg=${String(err?.message ?? err)}`);
 		}
 	}
@@ -1654,8 +1652,6 @@ export class RealtimeBridge {
 			clearTimeout(this.__gatewayRetryTimer);
 			this.__gatewayRetryTimer = null;
 		}
-		// 重置 sessions.subscribe sticky unsupported（refresh: stop+start 同实例应以全新状态启动）
-		this.__sessionsSubscribeUnsupported = false;
 		this.__gatewayAttempts = 0;
 		this.__gatewayGaveUp = false;
 		this.__gatewayLegacyMode = false;

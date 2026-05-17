@@ -26,13 +26,16 @@ The `chatHistoryManager.recordArchived(...)` method has been replaced with
 `recordSessionTransition({ agentId, sessionKey, currentSessionId, archivedSessionId? })`.
 Only the in-plugin hook handler called it, so the API change is internal.
 
-**Gateway compatibility (degradation).** `sessions.subscribe` is supported by
-OpenClaw gateway >= v2026.3.22. On older gateways the subscribe RPC returns
-an `unknown method` error; the plugin logs one warning + remoteLog, sets a
-sticky `unsupported` flag, and falls back to single-source (hook-only)
-archival without further log noise on subsequent handshakes. On those
-gateways, sessions created via `agent.send` will still be missed — this is
-the upstream defect being worked around, not a new regression. The plugin's
+**Gateway compatibility & reconnect.** The gateway-side `sessions.subscribe`
+binding is per-WS (registered against the active connection's `connId`) and
+is automatically released when the WS closes (see openclaw-repo
+`src/gateway/server/ws-connection.ts:391`'s `unsubscribeAllSessionEvents`).
+The plugin therefore (re-)sends `sessions.subscribe` on every successful
+gateway handshake, without distinguishing first-time vs reconnect. The RPC
+timeout is 60s, sized for gateway restarts that block the main thread for
+seconds. Subscribe failures (only possible from transport-layer faults — the
+gateway handler has no business-error branch) emit one warning + remoteLog
+and otherwise no-op; the next handshake retries naturally. The plugin's
 `minHostVersion` is `>=2026.3.2` (the version where `session_start` hook
 events first include `sessionKey`); installation on older gateways is
 rejected by OpenClaw.
