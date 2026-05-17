@@ -7,7 +7,7 @@
 import test, { before } from 'node:test';
 import assert from 'node:assert';
 import { setTimeout as delay } from 'node:timers/promises';
-import { rpcCall, runAgent } from './lib/gateway-rpc.js';
+import { rpcCall, runAgent, restartGateway } from './lib/gateway-rpc.js';
 import { readChatHistory, readEntries } from './lib/chat-history.js';
 
 const AGENT_ID = 'main';
@@ -98,6 +98,48 @@ test('5 consecutive resets: length+5, archived segment strictly desc by archived
 		'freshly archived sids should occupy pos[1..4] in head-insert order');
 });
 
+test('multi-agent isolation: reset on tester does not touch main bucket', async () => {
+	const TESTER = 'tester';
+	const TESTER_KEY = `agent:${TESTER}:main`;
+	const mainBefore = snapshot();
+
+	const res = rpcCall('sessions.reset', { key: TESTER_KEY, reason: 'reset' });
+	assert.strictEqual(res.ok, true);
+	const testerNewSid = res.entry.sessionId;
+	await delay(HOOK_FLUSH_MS);
+
+	// main bucket should be unchanged
+	const mainAfter = snapshot();
+	assert.strictEqual(mainAfter.length, mainBefore.length,
+		'main bucket length should not change when reseting a different agent');
+	assert.strictEqual(mainAfter.head?.sessionId, mainBefore.head?.sessionId,
+		'main head should not change');
+
+	// tester bucket should carry the new sid as unarchived head
+	const testerList = readEntries(TESTER, TESTER_KEY);
+	const testerHead = testerList[0];
+	assert.strictEqual(testerHead?.sessionId, testerNewSid,
+		'tester bucket should head-insert the new sid');
+	assert.strictEqual(testerHead?.archivedAt, undefined,
+		'tester head should be unarchived');
+});
+
+test('explicit fake sessionKey: sessions.create with `agent:main:explicit:<uuid>` is filtered', async () => {
+	const beforeKeys = Object.keys(readChatHistory(AGENT_ID) ?? {});
+	const fakeUuid = '00000000-1111-2222-3333-aaaabbbbcccc';
+	const explicitKey = `agent:${AGENT_ID}:explicit:${fakeUuid}`;
+
+	const res = rpcCall('sessions.create', { key: explicitKey });
+	assert.strictEqual(res.ok, true);
+	assert.strictEqual(res.key, explicitKey);
+	await delay(HOOK_FLUSH_MS);
+
+	const afterKeys = Object.keys(readChatHistory(AGENT_ID) ?? {});
+	const newKeys = afterKeys.filter((k) => !beforeKeys.includes(k));
+	assert.deepStrictEqual(newKeys, [],
+		`explicit sessionKey should be filtered, found new keys: ${JSON.stringify(newKeys)}`);
+});
+
 test('subagent spawn: chat-history.json top-level keys unchanged, subagent sessionKey filtered', { timeout: 90000 }, async () => {
 	const beforeFile = readEntries(AGENT_ID, SESSION_KEY);
 	const beforeKeys = Object.keys(readChatHistory(AGENT_ID) ?? {});
@@ -123,4 +165,31 @@ test('subagent spawn: chat-history.json top-level keys unchanged, subagent sessi
 	const afterMain = readEntries(AGENT_ID, SESSION_KEY);
 	assert.ok(Array.isArray(afterMain) && afterMain.length >= beforeFile.length,
 		'main bucket should still be present and non-shrinking');
+});
+
+// 韧性测试：systemd restart 模拟 plugin 进程被打断。验证 atomic-write 落盘。
+// 放最后一个 test —— 重启过程中 gateway 短暂不可用，后续 test 无法继续。
+test('gateway restart: chat-history.json survives plugin process termination (atomic write)', { timeout: 60000 }, async () => {
+	const before = snapshot();
+	const res = rpcCall('sessions.reset', { key: SESSION_KEY, reason: 'reset' });
+	assert.strictEqual(res.ok, true);
+	const newSid = res.entry.sessionId;
+	await delay(HOOK_FLUSH_MS);
+
+	await restartGateway({ readyTimeoutMs: 45000 });
+	// gateway 起来后给 plugin register + bridge connect 留一点时间
+	await delay(1000);
+
+	const after = snapshot();
+	assert.strictEqual(after.length, before.length + 1,
+		'length should be persisted across restart');
+	assert.strictEqual(after.head.sessionId, newSid,
+		'new sid should still be unarchived head after restart');
+	assert.strictEqual(after.head.archivedAt, undefined,
+		'head should remain unarchived');
+
+	// 文件应是 valid JSON 且没有半截写碎片
+	const raw = readChatHistory(AGENT_ID);
+	assert.ok(raw && typeof raw === 'object', 'chat-history.json should be parsable');
+	assert.strictEqual(typeof raw.version, 'number', 'version field should be intact');
 });

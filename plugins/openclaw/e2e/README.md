@@ -23,7 +23,10 @@
 | reset reason=reset | length+1，旧 head 翻 archived 排 pos[1] |
 | reset reason=new | 同上 |
 | 5 次 reset 幂等 | length+5，archived 段时间戳严格 desc |
-| subagent spawn | 顶级键不新增 `agent:*:subagent:*` 形态 |
+| 多 agent 隔离 | `tester` agent reset 不影响 `main` bucket |
+| explicit fake sessionKey 守卫 | sessions.create + `agent:main:explicit:<uuid>` 不入档 |
+| subagent spawn 守卫 | 顶级键不新增 `agent:*:subagent:*` 形态 |
+| gateway 重启韧性 | systemctl restart 后 chat-history.json 仍可解析、新 sid 已落盘（atomic write） |
 
 ## 不在 E2E 范围、由单元测试覆盖
 
@@ -34,9 +37,7 @@
 
 E2E 只验证"端到端串起来对不对"——具体每条路径的边界由单测钉死。
 
-## TODO（commit 2 范围，未实施）
+## 未覆盖（触发太难，留待真集成后补）
 
-- 多 agent 隔离（main vs another agent，各自 bucket 不串扰）
-- explicit fake sessionKey topic 不入档（端到端验证守卫）
-- gateway 中断/重启后 chat-history.json 无损坏（atomic-write 端到端）
-- cron / IM channel sessionKey 当前行为快照（F4 follow-up，预期入档）
+- **cron sessionKey 行为快照**（F4 follow-up）：需要配 cron 任务才能产生 `agent:*:cron:*` 形态；当前预期入档不挡
+- **IM channel sessionKey 行为快照**：需要绑 Telegram / Discord 等渠道才能触发；当前预期入档不挡
