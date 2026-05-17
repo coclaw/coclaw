@@ -6,6 +6,7 @@
 
 import test, { before } from 'node:test';
 import assert from 'node:assert';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { rpcCall, runAgent, restartGateway } from './lib/gateway-rpc.js';
 import { readChatHistory, readEntries } from './lib/chat-history.js';
@@ -16,13 +17,23 @@ const SESSION_KEY = `agent:${AGENT_ID}:main`;
 // 实测 plugin 通常 50ms 内完成，留点冗余。
 const HOOK_FLUSH_MS = 150;
 
-function snapshot() {
-	const list = readEntries(AGENT_ID, SESSION_KEY);
+function snapshot(agentId = AGENT_ID, sessionKey = SESSION_KEY) {
+	const list = readEntries(agentId, sessionKey);
 	return {
+		list, // 完整 entries（含 head 与 archived 段），用于 deepStrictEqual 整体不变断言
 		length: list.length,
 		head: list[0],
 		archived: list.slice(1),
 	};
+}
+
+// archivedAt 是 plugin 在 hook 命中时打的 Date.now()。
+// 断言 timestamp 在测试本身时间窗内，能挡住"复用旧 archivedAt 没更新"这种漏档。
+function assertTimestampInWindow(ts, startTime, label) {
+	assert.ok(typeof ts === 'number', `${label}: expected number, got ${typeof ts}`);
+	const upper = Date.now() + 1000; // 兜底 clock skew
+	assert.ok(ts >= startTime && ts <= upper,
+		`${label}: archivedAt=${ts} not in [${startTime}, ${upper}]`);
 }
 
 // 跑一次 dummy reset 做 warmup：链路重启（pnpm run link）后 plugin 可能短期内
@@ -33,7 +44,8 @@ before(async () => {
 	await delay(500);
 });
 
-test('reset reason=reset: head→pos[1], length+1', async () => {
+test('reset reason=reset: head→pos[1], length+1, older history untouched', async () => {
+	const testStart = Date.now();
 	const before = snapshot();
 	const res = rpcCall('sessions.reset', { key: SESSION_KEY, reason: 'reset' });
 	assert.strictEqual(res.ok, true);
@@ -44,15 +56,17 @@ test('reset reason=reset: head→pos[1], length+1', async () => {
 	assert.strictEqual(after.length, before.length + 1, 'length should grow by 1');
 	assert.strictEqual(after.head.sessionId, newSid, 'new sid should be head');
 	assert.strictEqual(after.head.archivedAt, undefined, 'head should be unarchived');
-	if (before.head) {
-		assert.strictEqual(after.archived[0].sessionId, before.head.sessionId,
-			'previous head should move to pos[1]');
-		assert.ok(after.archived[0].archivedAt > 0,
-			'previous head should now carry archivedAt');
-	}
+	assert.ok(before.head, 'precondition: before.head must exist (warmup ensures this)');
+	assert.strictEqual(after.archived[0].sessionId, before.head.sessionId,
+		'previous head should move to pos[1]');
+	assertTimestampInWindow(after.archived[0].archivedAt, testStart, 'previous head archivedAt');
+	// archived[1..] 必须等于 before.archived（更早的归档段不能动）
+	assert.deepStrictEqual(after.archived.slice(1), before.archived,
+		'older archived tail must be unchanged');
 });
 
-test('reset reason=new: same shape as reason=reset', async () => {
+test('reset reason=new: same shape as reason=reset, older history untouched', async () => {
+	const testStart = Date.now();
 	const before = snapshot();
 	const res = rpcCall('sessions.reset', { key: SESSION_KEY, reason: 'new' });
 	assert.strictEqual(res.ok, true);
@@ -64,10 +78,13 @@ test('reset reason=new: same shape as reason=reset', async () => {
 	assert.strictEqual(after.head.sessionId, newSid);
 	assert.strictEqual(after.head.archivedAt, undefined);
 	assert.strictEqual(after.archived[0].sessionId, before.head.sessionId);
-	assert.ok(after.archived[0].archivedAt > 0);
+	assertTimestampInWindow(after.archived[0].archivedAt, testStart, 'previous head archivedAt');
+	assert.deepStrictEqual(after.archived.slice(1), before.archived,
+		'older archived tail must be unchanged');
 });
 
-test('5 consecutive resets: length+5, archived segment strictly desc by archivedAt', async () => {
+test('5 consecutive resets: length+5, fresh segment desc + before.head at pos[5], older tail untouched', async () => {
+	const testStart = Date.now();
 	const before = snapshot();
 	const newSids = [];
 	for (let i = 0; i < 5; i++) {
@@ -82,23 +99,32 @@ test('5 consecutive resets: length+5, archived segment strictly desc by archived
 		'length should grow by exactly 5');
 	assert.strictEqual(after.head.sessionId, newSids[4],
 		'head should be the last reset sid');
+	assert.strictEqual(after.head.archivedAt, undefined, 'head must be unarchived');
 
-	// 这次循环刚归档的 5 段（pos[1]..pos[5]）应严格按 archivedAt desc。
-	// 更早的历史段允许有存量乱序（pre-existing），不在断言里。
+	// 刚归档的 5 个 sid 在 pos[1]..pos[5]，按头插顺序倒序：newSids[3], [2], [1], [0], before.head
+	// 注：第 5 次 reset 把 newSids[3] 翻档放 pos[1]、把 newSids[4] 放 head；
+	//     第 1 次 reset 翻 before.head 放 pos[1]，被后续 reset 推到 pos[5]。
+	const expectedFreshSids = [...newSids.slice(0, 4).reverse(), before.head.sessionId];
+	const actualFreshSids = after.archived.slice(0, 5).map((e) => e.sessionId);
+	assert.deepStrictEqual(actualFreshSids, expectedFreshSids,
+		'pos[1..5] should be [newSids[3..0] reverse + before.head]');
+
+	// 这 5 个新归档 timestamp 都应落在测试窗口内 + 严格 desc
 	const freshTimestamps = after.archived.slice(0, 5).map((e) => e.archivedAt);
-	for (let i = 1; i < freshTimestamps.length; i++) {
-		assert.ok(freshTimestamps[i - 1] > freshTimestamps[i],
-			`archivedAt[${i - 1}]=${freshTimestamps[i - 1]} should be > [${i}]=${freshTimestamps[i]}`);
+	for (let i = 0; i < freshTimestamps.length; i++) {
+		assertTimestampInWindow(freshTimestamps[i], testStart, `pos[${i + 1}] archivedAt`);
+		if (i > 0) {
+			assert.ok(freshTimestamps[i - 1] > freshTimestamps[i],
+				`archivedAt[${i - 1}]=${freshTimestamps[i - 1]} should be > [${i}]=${freshTimestamps[i]}`);
+		}
 	}
 
-	// 反序回查 5 个 sid 是否按头插顺序落在 pos[1..5]
-	const expectedSlots = newSids.slice(0, 4).reverse(); // newSids[3], [2], [1], [0]
-	const actualSlots = after.archived.slice(0, 4).map((e) => e.sessionId);
-	assert.deepStrictEqual(actualSlots, expectedSlots,
-		'freshly archived sids should occupy pos[1..4] in head-insert order');
+	// pos[6..] 必须等于 before.archived（更早的归档段一字不动）
+	assert.deepStrictEqual(after.archived.slice(5), before.archived,
+		'older archived tail must be unchanged');
 });
 
-test('multi-agent isolation: reset on tester does not touch main bucket', async () => {
+test('multi-agent isolation: reset on tester leaves main bucket entirely unchanged', async () => {
 	const TESTER = 'tester';
 	const TESTER_KEY = `agent:${TESTER}:main`;
 	const mainBefore = snapshot();
@@ -108,14 +134,12 @@ test('multi-agent isolation: reset on tester does not touch main bucket', async 
 	const testerNewSid = res.entry.sessionId;
 	await delay(HOOK_FLUSH_MS);
 
-	// main bucket should be unchanged
+	// main 桶必须**整个 list**逐项不变（不止 head / length）
 	const mainAfter = snapshot();
-	assert.strictEqual(mainAfter.length, mainBefore.length,
-		'main bucket length should not change when reseting a different agent');
-	assert.strictEqual(mainAfter.head?.sessionId, mainBefore.head?.sessionId,
-		'main head should not change');
+	assert.deepStrictEqual(mainAfter.list, mainBefore.list,
+		'main bucket must be entirely unchanged when resetting a different agent');
 
-	// tester bucket should carry the new sid as unarchived head
+	// tester 桶应该把新 sid 头插
 	const testerList = readEntries(TESTER, TESTER_KEY);
 	const testerHead = testerList[0];
 	assert.strictEqual(testerHead?.sessionId, testerNewSid,
@@ -124,57 +148,71 @@ test('multi-agent isolation: reset on tester does not touch main bucket', async 
 		'tester head should be unarchived');
 });
 
-test('explicit fake sessionKey: sessions.create with `agent:main:explicit:<uuid>` is filtered', async () => {
-	const beforeKeys = Object.keys(readChatHistory(AGENT_ID) ?? {});
-	const fakeUuid = '00000000-1111-2222-3333-aaaabbbbcccc';
-	const explicitKey = `agent:${AGENT_ID}:explicit:${fakeUuid}`;
+test('explicit fake sessionKey: sessions.create with `agent:main:explicit:<uuid>` is filtered + main bucket unchanged', async () => {
+	const mainBefore = snapshot();
+	const beforeRaw = readChatHistory(AGENT_ID) ?? {};
+	const beforeKeys = Object.keys(beforeRaw);
+	// 每次 fresh uuid，避免多次跑 e2e 复用同一 key 触发 OpenClaw 内部 dedupe
+	const explicitKey = `agent:${AGENT_ID}:explicit:${randomUUID()}`;
 
 	const res = rpcCall('sessions.create', { key: explicitKey });
 	assert.strictEqual(res.ok, true);
 	assert.strictEqual(res.key, explicitKey);
 	await delay(HOOK_FLUSH_MS);
 
-	const afterKeys = Object.keys(readChatHistory(AGENT_ID) ?? {});
-	const newKeys = afterKeys.filter((k) => !beforeKeys.includes(k));
-	assert.deepStrictEqual(newKeys, [],
-		`explicit sessionKey should be filtered, found new keys: ${JSON.stringify(newKeys)}`);
+	// 顶级键集合必须完全相同（不增不减）
+	const afterRaw = readChatHistory(AGENT_ID) ?? {};
+	const afterKeys = Object.keys(afterRaw);
+	assert.deepStrictEqual(afterKeys.sort(), beforeKeys.sort(),
+		'chat-history.json top-level keys must be unchanged');
+
+	// main 桶整 list 必须完全相同（explicit session 不能"顺手"动 main）
+	const mainAfter = snapshot();
+	assert.deepStrictEqual(mainAfter.list, mainBefore.list,
+		'main bucket must be entirely unchanged by explicit session create');
 });
 
-test('subagent spawn: chat-history.json top-level keys unchanged, subagent sessionKey filtered', { timeout: 90000 }, async () => {
+test('subagent spawn: model actually invokes sessions_spawn, subagent sessionKey is filtered', { timeout: 90000 }, async () => {
 	const beforeFile = readEntries(AGENT_ID, SESSION_KEY);
 	const beforeKeys = Object.keys(readChatHistory(AGENT_ID) ?? {});
 
-	const result = runAgent(
+	const agentRes = runAgent(
 		'请使用 Task 工具创建一个子代理来回答：1+1 等于几？把子代理的回答原样返回给我。',
 		{ timeoutSec: 60 },
 	);
-	// agent run 跑成功就行——不要求模型一定调对了 Task，但通常会调
-	assert.ok(result?.ok !== false, 'agent run should not hard-fail');
+
+	// **关键前置断言**：必须确认模型真的调了 sessions_spawn 工具。
+	// 没调说明 prompt 没诱发 subagent spawn → 守卫根本没被触发 → 测试结论无效。
+	const toolsUsed = agentRes?.result?.meta?.toolSummary?.tools ?? [];
+	assert.ok(toolsUsed.includes('sessions_spawn'),
+		`subagent never spawned — test inconclusive. tools used: ${JSON.stringify(toolsUsed)}`);
 	await delay(HOOK_FLUSH_MS);
 
+	// 顶级键不应出现 subagent 形态
 	const afterKeys = Object.keys(readChatHistory(AGENT_ID) ?? {});
-	// 最关键的断言：顶级键不应新增任何 `agent:<id>:subagent:<uuid>` 形态
 	const newKeys = afterKeys.filter((k) => !beforeKeys.includes(k));
 	const subagentKeys = newKeys.filter((k) => /^agent:[^:]+:subagent:/.test(k));
 	assert.deepStrictEqual(subagentKeys, [],
 		`subagent sessionKeys should be filtered, found: ${JSON.stringify(subagentKeys)}`);
 
-	// main agent 的 entries 可以变（主对话 run 可能 reset 出新 session），
-	// 也可以不变——这取决于模型是否在主链路里 reset 了 session。
-	// 我们不强断言增量，只断言"main 桶仍然存在且未被 subagent 形态覆盖"。
+	// main 桶仍然存在；主对话 run 内部可能 reset 出新 session，因此允许 non-shrinking。
+	// 不强断言整 list 相等——agent run 是主对话流，理论上 length 可能 +1（compaction-retry 等）。
 	const afterMain = readEntries(AGENT_ID, SESSION_KEY);
 	assert.ok(Array.isArray(afterMain) && afterMain.length >= beforeFile.length,
 		'main bucket should still be present and non-shrinking');
 });
 
-// 韧性测试：systemd restart 模拟 plugin 进程被打断。验证 atomic-write 落盘。
+// 韧性测试：reset 写完落盘后重启 plugin，验证已持久化数据完整。
 // 放最后一个 test —— 重启过程中 gateway 短暂不可用，后续 test 无法继续。
-test('gateway restart: chat-history.json survives plugin process termination (atomic write)', { timeout: 60000 }, async () => {
+// 注意：本测试**不**覆盖"atomic-write 在写入中途崩"的极端场景——那需要精确
+// 控制 race window，不在 e2e 范围。atomic-write 行为本身由单测兜底（覆盖
+// `__persist` 异常路径 / EEXIST tmp 文件等边界）。
+test('gateway restart: persisted chat-history.json survives plugin restart', { timeout: 60000 }, async () => {
 	const before = snapshot();
 	const res = rpcCall('sessions.reset', { key: SESSION_KEY, reason: 'reset' });
 	assert.strictEqual(res.ok, true);
 	const newSid = res.entry.sessionId;
-	await delay(HOOK_FLUSH_MS);
+	await delay(HOOK_FLUSH_MS); // 等 hook 写完落盘
 
 	await restartGateway({ readyTimeoutMs: 45000 });
 	// gateway 起来后给 plugin register + bridge connect 留一点时间
@@ -188,7 +226,7 @@ test('gateway restart: chat-history.json survives plugin process termination (at
 	assert.strictEqual(after.head.archivedAt, undefined,
 		'head should remain unarchived');
 
-	// 文件应是 valid JSON 且没有半截写碎片
+	// 文件应是 valid JSON
 	const raw = readChatHistory(AGENT_ID);
 	assert.ok(raw && typeof raw === 'object', 'chat-history.json should be parsable');
 	assert.strictEqual(typeof raw.version, 'number', 'version field should be intact');
