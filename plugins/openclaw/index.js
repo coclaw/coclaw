@@ -195,9 +195,16 @@ const plugin = {
 				);
 				return;
 			}
+			// topic 上游伪造的 explicit fake sessionKey（形态 `agent:<agentId>:explicit:<sid>`）
+			// 不属于 chat 流水范畴：CoClaw 自管 topic 元信息，不应进 chat-history 桶。
+			// 当前 F1 实验已证明该路径不触发本回调，此守卫属防御性兜底。
+			const parts = sessionKey.split(':');
+			if (parts[0] === 'agent' && parts[2] === 'explicit') {
+				remoteLog(`chat-history.skip-explicit sessionKey=${sessionKey}`);
+				return;
+			}
 			let resolvedAgentId = agentId;
 			if (!resolvedAgentId) {
-				const parts = sessionKey.split(':');
 				resolvedAgentId = (parts[0] === 'agent' && parts[1]) ? parts[1] : 'main';
 			}
 			try {

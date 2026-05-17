@@ -154,6 +154,9 @@ export class ChatHistoryManager {
 	 */
 	async recordSessionTransition({ agentId, sessionKey, currentSessionId, archivedSessionId }) {
 		if (!sessionKey || !currentSessionId) return;
+		// 规范化：archivedSessionId 与 currentSessionId 相同属上游契约异常（resumedFrom 不应等于 sessionId），
+		// 丢弃避免在空 list 起手时写出"同 sid 既是头又是归档"的双份记录
+		if (archivedSessionId === currentSessionId) archivedSessionId = undefined;
 		await this.__mutex(agentId).withLock(async () => {
 			// 从磁盘重载确保最新状态：list() 无锁覆写 __cache 可能导致缓存过期
 			await this.__reloadFromDisk(agentId);
@@ -184,6 +187,7 @@ export class ChatHistoryManager {
 			if (list.some((it) => it.sessionId === currentSessionId)) return;
 
 			// 一般路径：翻 head 为归档（若未归档），然后处理 archivedSessionId，最后头插新 head
+			// head 已归档（老格式磁盘数据 / 已正常归档的 list）→ 跳过翻动直接 unshift
 			if (head && !head.archivedAt) {
 				head.archivedAt = Date.now();
 			}

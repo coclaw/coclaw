@@ -334,6 +334,26 @@ test('recordSessionTransition - T14 stale 事件：currentSessionId 已在 list 
 	}
 });
 
+// T15: archivedSessionId === currentSessionId 异常输入（上游契约异常），归一化丢弃避免双份
+test('recordSessionTransition - T15 archivedSessionId 等于 currentSessionId：丢弃 archived 入参', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		// 空 list 起手 + archivedSessionId === currentSessionId
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main',
+			currentSessionId: 'A', archivedSessionId: 'A',
+		});
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 1, 'list 应仅含一项（未归档头）');
+		assert.equal(history[0].sessionId, 'A');
+		assert.equal(history[0].archivedAt, undefined, 'A 是未归档头，不应同时出现归档副本');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
 // T6: 双源最终一致 sessions.changed → hook：第二次能补 archivedSessionId 归档
 test('recordSessionTransition - T6 sessions.changed 先到，hook 后到补 archivedSessionId', async () => {
 	const tmpDir = await makeTmpDir();
