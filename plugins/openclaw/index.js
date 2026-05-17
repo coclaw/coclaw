@@ -179,32 +179,52 @@ const plugin = {
 			logger.warn?.(`[coclaw] chat history manager load failed: ${String(err?.message ?? err)}`);
 		});
 
-		// 追踪 chat 因 reset 产生的孤儿 session
+		// 追踪 chat 因 reset 产生的 session 流水。双源回调（hook + sessions.changed）共用 helper。
+		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。
+		async function handleSessionsCreated({ sessionKey, sessionId, archivedSessionId }) {
+			if (!sessionKey || !sessionId) return;
+			const parts = sessionKey.split(':');
+			const agentId = (parts[0] === 'agent' && parts[1]) ? parts[1] : 'main';
+			try {
+				await chatHistoryManager.recordSessionTransition({
+					agentId,
+					sessionKey,
+					currentSessionId: sessionId,
+					archivedSessionId,
+				});
+			} catch (err) {
+				logger.warn?.(`[coclaw] chat history record failed: ${String(err?.message ?? err)}`);
+			}
+		}
 		if (typeof api.on === 'function') {
-			api.on('session_start', async (event, ctx) => {
-				if (!event.resumedFrom) return; // 首次创建，无前任
-				const agentId = ctx?.agentId ?? 'main';
-				const sessionKey = event.sessionKey;
-				if (!sessionKey) return;
-				try {
-					if (!chatHistoryManager.__cache.has(agentId)) {
-						await chatHistoryManager.load(agentId);
-					}
-					await chatHistoryManager.recordArchived({
-						agentId,
-						sessionKey,
-						sessionId: event.resumedFrom,
-					});
-				} catch (err) {
-					logger.warn?.(`[coclaw] chat history record failed: ${String(err?.message ?? err)}`);
-				}
+			api.on('session_start', async (event) => {
+				// event.sessionId 是新 sid（必填），event.resumedFrom 是旧 sid（可选）
+				await handleSessionsCreated({
+					sessionKey: event?.sessionKey,
+					sessionId: event?.sessionId,
+					archivedSessionId: event?.resumedFrom,
+				});
+			});
+		}
+
+		// bridge 启动/重启的闭包 helper：把 onSessionCreated 接到 handleSessionsCreated。
+		// 所有 restartRealtimeBridge 调用必须走这个 helper，避免漏接回调。
+		async function restartBridge() {
+			await restartRealtimeBridge({
+				logger,
+				pluginConfig: api.pluginConfig,
+				onSessionCreated: ({ sessionKey, sessionId }) => handleSessionsCreated({
+					sessionKey,
+					sessionId,
+					// sessions.changed payload 不带 previousSessionId；让 manager 从文件首位推断
+				}),
 			});
 		}
 
 		api.registerService({
 			id: 'coclaw-realtime-bridge',
 			async start() {
-				await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+				await restartBridge();
 			},
 			async stop() {
 				await stopRealtimeBridge();
@@ -241,11 +261,11 @@ const plugin = {
 				});
 			} catch (err) {
 				// bind 失败时恢复 bridge（best-effort，不覆盖原始错误）
-				await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig }).catch(() => {});
+				await restartBridge().catch(() => {});
 				throw err;
 			}
 			// bind 已持久化，restart 失败不影响结果
-			await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig }).catch((err) => {
+			await restartBridge().catch((err) => {
 				logger.warn?.(`[coclaw] bridge restart failed after bind: ${err?.message ?? err}`);
 			});
 			return result;
@@ -339,7 +359,7 @@ const plugin = {
 					signal: abortController.signal,
 				}).then(async () => {
 					if (abortController.signal.aborted) return;
-					await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+					await restartBridge();
 					logger.info?.('[coclaw] enroll completed, bridge restarted');
 				}).catch((err) => {
 					if (abortController.signal.aborted) return;
@@ -755,7 +775,7 @@ const plugin = {
 							signal: abortController.signal,
 						}).then(async () => {
 							if (abortController.signal.aborted) return;
-							await restartRealtimeBridge({ logger, pluginConfig: api.pluginConfig });
+							await restartBridge();
 							logger.info?.('[coclaw] enroll completed via slash command, bridge restarted');
 						}).catch((err) => {
 							if (abortController.signal.aborted) return;

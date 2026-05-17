@@ -72,7 +72,7 @@ CoClaw OpenClaw 插件运行在 **OpenClaw gateway 进程内**，把"远端 CoCl
 | `common/gateway-notify.js` | 给 OpenClaw chat 注入系统消息（绑定成功提示等） |
 | `session-manager/` | OpenClaw embedded session 的列表/查询封装（给 `nativeui.sessions.*`） |
 | `topic-manager/` | CoClaw topic（独立对话）CRUD + 标题生成。每 agent 一份 `coclaw-topics.json` |
-| `chat-history-manager/` | 追踪因 reset 产生的孤儿 sessionId。每 agent 一份 `coclaw-chat-history.json` |
+| `chat-history-manager/` | sessionKey 下的 session 流水。双源汇入（hook + sessions.changed reason=create），首位未归档 item = 当前活跃 session。详见数据流 §F |
 | `file-manager/` | UI 文件浏览 + 上传 + 下载。per-agent workspace 沙箱 + 路径穿越校验 + 独立 file DC 流式传输 |
 | `auto-upgrade/` | 每小时巡检 npm 新版，worker 子进程做 install + verify + gateway restart。锁文件防并发 |
 | `webrtc/webrtc-peer.js` | 多 PeerConnection 管理（per connId）+ rpc DC / file DC 装配 + ICE restart 复用 |
@@ -152,6 +152,33 @@ server / UI 各自按 patch 语义更新本地缓存（未在 payload 出现的�
 ```
 事件清单与字段约定见 `plugin-events.md`。
 
+**F. chat-history 双源归档（session 流水追踪）**
+
+session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两条互补来源——`agent.send` 走自动 reset 触发新 session 时 OpenClaw 当前**只 emit 后者**（hook 漏），双源相加才能不漏归档。两条都汇入 `index.js#handleSessionsCreated`，由 `chatHistoryManager.recordSessionTransition` 以幂等 + per-agent mutex 串行落盘。
+
+```
+[A] session_start hook              ──┐
+    event = { sessionKey,             │
+              sessionId(new),         │
+              resumedFrom(old?) }     ├─→ handleSessionsCreated(...)
+                                      │     ├─ recordSessionTransition({
+[B] sessions.changed reason=create  ──┘     │     agentId, sessionKey,
+    bridge __sendSessionsSubscribe()        │     currentSessionId,
+    握手成功后订阅，每次重连重订            │     archivedSessionId? })
+    ok=false → 5s 内自动重试一次（仅 1 次）  ├─ mutex.withLock(agentId)
+    onSessionCreated callback by index.js   ├─ __reloadFromDisk
+                                            └─ atomic write
+                                            (head=current 未归档；其后 archived 新→旧)
+```
+
+幂等：head 已是 currentSessionId 且无新 archivedSessionId 要追加时 no-op；双源到达顺序无关。
+
+降级：
+- 老 gateway 没 `sessions.subscribe` RPC → bridge 首次失败 warn 一次，5s 重试再 warn 一次（每次握手成功后都会重新经历这套）→ 仅 hook 单源（`agent.send` 创建的 session 在该 gateway 上漏归档，本质上是上游缺陷）。
+- bridge 重连握手会自动重订阅，订阅失败仅写 warn，不挂全局。
+
+文件 schema：见 §"状态在哪儿"中 `coclaw-chat-history.json` 行。
+
 ## 状态在哪儿（持久化文件清单）
 
 | 路径 | 内容 | 写入入口 |
@@ -161,7 +188,7 @@ server / UI 各自按 patch 语义更新本地缓存（未在 payload 出现的�
 | `~/.openclaw/coclaw/device-identity.json` | ed25519 设备私钥 | `device-identity.js` |
 | `~/.openclaw/coclaw/upgrade.lock` + `upgrade-state.json` | 自动升级锁 + 状态 | `auto-upgrade/state.js` |
 | `~/.openclaw/agents/<agentId>/sessions/coclaw-topics.json` | topic 列表 | `topic-manager/manager.js` |
-| `~/.openclaw/agents/<agentId>/sessions/coclaw-chat-history.json` | 孤儿 sessionId 索引 | `chat-history-manager/manager.js` |
+| `~/.openclaw/agents/<agentId>/sessions/coclaw-chat-history.json` | sessionKey 的 session 流水（首位未归档头 = 当前；其余按新→旧带 `archivedAt`） | `chat-history-manager/manager.js` |
 
 **file workspace 不在插件管辖**——`file-manager` 操作的目录由 OpenClaw 通过 `agents.files.list` RPC 返回（`realtime-bridge.js __resolveWorkspace`）。具体路径取决于 OpenClaw 配置，不写死在插件里。
 

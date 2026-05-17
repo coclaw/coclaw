@@ -1428,3 +1428,19 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 **修复方向**：补两个 fixture：① 带 global default + 单 agent override 的初态，执行清除 agent override，验证 default 保留；② set handler → list handler 串行调用，验证状态同步。
 
+---
+
+## chat-history：孤儿 session 恢复时同 sid 可能在 list 中重复出现
+
+**发现日期**：2026-05-17（chat-history 双源归档第二轮 deep-review R1 识别，pre-existing）
+**关联**：`plugins/openclaw/src/chat-history-manager/manager.js:163-172`
+
+**问题**：当 list 的 head 已归档（即没有未归档活跃头），传入的 `currentSessionId` 又恰好等于 list 中某条已归档项的 sessionId（孤儿 session resume 场景），`recordSessionTransition` 会走到一般路径 → 直接 `unshift({ sessionId: currentSessionId })` → 同一 sessionId 在 list 中出现两次（首位未归档 + 中间已归档）。
+
+**严重性**：低——本轮双源归档化重构没有引入也没有加剧；仅在用户主动恢复一个早已归档的 session 后再次落到该路径才出现；list 是用户可见的 chat-history 索引，重复项会让 UI 出现一个孤儿 + 一个当前同 sid 的视觉重复，但功能不挂。
+
+**修复方向**：
+- `recordSessionTransition` 一般路径加 dedupe：unshift 前若 list 中已存在 `currentSessionId === currentSessionId` 的项，先 splice 掉那条已归档项再 unshift（保留时间戳？放弃归档时间？需想清楚）
+- 或在 list RPC 出口对重复 sessionId 做 dedupe（保留 head，丢弃后面的）
+- 配合一条 manager.test.js 的 T14 测试钉死该路径
+

@@ -12,7 +12,7 @@ function emptyStore() {
 }
 
 /**
- * Chat History 管理器：追踪 chat（sessionKey）因 reset 产生的孤儿 session。
+ * Chat History 管理器：追踪 chat（sessionKey）下的 session 流水。
  *
  * 每个 agentId 对应一份 coclaw-chat-history.json，按需懒加载到内存。
  * 写操作通过 mutex + atomicWriteJsonFile 保证一致性。
@@ -21,9 +21,14 @@ function emptyStore() {
  * {
  *   "version": 1,
  *   "agent:main:main": [
- *     { "sessionId": "xxx", "archivedAt": 1742003000000 }
+ *     { "sessionId": "current-sid" },                       // 首位：未归档头 = 当前活跃 session
+ *     { "sessionId": "older",    "archivedAt": 1742003000 } // 第二位起：已归档（新→旧）
  *   ]
  * }
+ *
+ * 双源事件供给：
+ * - session_start hook：event 同时含新 sid (currentSessionId) + 旧 sid (archivedSessionId)
+ * - sessions.changed reason=create：payload 含 sessionKey + 新 sid，旧 sid 从文件首位推断
  */
 export class ChatHistoryManager {
 	/**
@@ -94,7 +99,7 @@ export class ChatHistoryManager {
 	}
 
 	__ensureLoaded(agentId) {
-		/* c8 ignore start -- recordArchived/list 均先 __reloadFromDisk，此分支为防御性守卫 */
+		/* c8 ignore start -- recordSessionTransition/list 均先 __reloadFromDisk，此分支为防御性守卫 */
 		if (!this.__cache.has(agentId)) {
 			throw new Error(`ChatHistoryManager: agent "${agentId}" not loaded, call load() first`);
 		}
@@ -112,11 +117,25 @@ export class ChatHistoryManager {
 	}
 
 	/**
-	 * 记录一个被抛弃的孤儿 session
-	 * @param {{ agentId: string, sessionKey: string, sessionId: string }} params
+	 * 记录一次 session 转换。双源事件共用：
+	 * - session_start hook：
+	 *     currentSessionId = event.sessionId，
+	 *     archivedSessionId = event.resumedFrom
+	 * - sessions.changed reason=create：
+	 *     currentSessionId = payload.sessionId，
+	 *     archivedSessionId 不提供（从文件首位推断）
+	 *
+	 * 文件首位（list[0]）维护当前活跃 session（未归档），其后是已归档 item（新→旧）。
+	 *
+	 * 幂等：head 已是 currentSessionId 且
+	 *   - 无 archivedSessionId，或
+	 *   - archivedSessionId 已存在于 list 中
+	 * 时整体 no-op（不写盘）。
+	 *
+	 * @param {{ agentId: string, sessionKey: string, currentSessionId: string, archivedSessionId?: string }} params
 	 */
-	async recordArchived({ agentId, sessionKey, sessionId }) {
-		if (!sessionKey || !sessionId) return;
+	async recordSessionTransition({ agentId, sessionKey, currentSessionId, archivedSessionId }) {
+		if (!sessionKey || !currentSessionId) return;
 		await this.__mutex(agentId).withLock(async () => {
 			// 从磁盘重载确保最新状态：list() 无锁覆写 __cache 可能导致缓存过期
 			await this.__reloadFromDisk(agentId);
@@ -124,13 +143,33 @@ export class ChatHistoryManager {
 			if (!Array.isArray(store[sessionKey])) {
 				store[sessionKey] = [];
 			}
-			// 去重：同一 sessionId 不重复记录
-			if (store[sessionKey].some((r) => r.sessionId === sessionId)) return;
-			// 头部插入（最近的在前）
-			store[sessionKey].unshift({
-				sessionId,
-				archivedAt: Date.now(),
-			});
+			const list = store[sessionKey];
+			const head = list[0];
+			const headIsCurrent = head && !head.archivedAt && head.sessionId === currentSessionId;
+			const archivedAlreadyInList = archivedSessionId
+				&& list.some((it) => it.sessionId === archivedSessionId);
+			// 完全 no-op：head 已是 current 且无新 archived 要追加
+			if (headIsCurrent && (!archivedSessionId || archivedAlreadyInList)) return;
+
+			// head 已是 current（双源到达：第二个事件提供了之前未带的 archivedSessionId）
+			// → 不动 head，仅在第二位插入 archivedSessionId
+			if (headIsCurrent) {
+				list.splice(1, 0, { sessionId: archivedSessionId, archivedAt: Date.now() });
+				await this.__persist(agentId);
+				return;
+			}
+
+			// 一般路径：翻 head 为归档（若未归档），然后处理 archivedSessionId，最后头插新 head
+			if (head && !head.archivedAt) {
+				head.archivedAt = Date.now();
+			}
+			// archivedSessionId 与 head 不同且不在 list → 在第二位追加（保证不丢前任记录）
+			if (archivedSessionId
+				&& archivedSessionId !== head?.sessionId
+				&& !list.some((it) => it.sessionId === archivedSessionId)) {
+				list.splice(1, 0, { sessionId: archivedSessionId, archivedAt: Date.now() });
+			}
+			list.unshift({ sessionId: currentSessionId });
 			await this.__persist(agentId);
 		});
 	}

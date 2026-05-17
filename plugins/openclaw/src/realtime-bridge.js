@@ -158,6 +158,11 @@ export class RealtimeBridge {
 		// rpc-queues/ 启动期预热钩子（B-stage1 plan-2）。仅供测试覆盖错误分支注入；生产路径走默认。
 		this.__cleanupRpcQueueResiduals = deps.cleanupRpcQueueResiduals ?? defaultCleanupResiduals;
 		this.__measureRpcQueueDiskCap = deps.measureRpcQueueDiskCap ?? defaultMeasureDiskCap;
+		// caller 通过 start({ onSessionCreated }) 注入；gateway 推 sessions.changed reason='create' 时调用。
+		// 签名 ({ sessionKey, sessionId }) => Promise<void> | void。bridge 不 await 返回值。
+		this.__onSessionCreated = null;
+		// sessions.subscribe ok=false 路径的延迟重试 timer 句柄；只允许一次重试（避免循环）。
+		this.__sessionsSubscribeRetryTimer = null;
 
 		this.serverWs = null;
 		this.gatewayWs = null;
@@ -532,6 +537,54 @@ export class RealtimeBridge {
 		}
 	}
 
+	/**
+	 * 订阅 OpenClaw gateway 的 sessions.changed 事件（caller 通过 onSessionCreated 消费 reason=create）。
+	 * 握手成功时调用一次；WS 重连后由握手成功分支再次自动触发。
+	 * 失败：ok=false（gateway 在线但 RPC 拒绝/超时）→ 5s 后**仅重试一次**（重试时若 WS 已断或 stop
+	 * 后则跳过，新连接握手会再调）；close/throw 路径不重试（WS 已断、重连握手会自动再发）。
+	 * 不抛、不上调到 gave-up——失败仅意味着 caller 拿不到 create 通知，bridge 其余通道不受影响。
+	 */
+	async __sendSessionsSubscribe({ isRetry = false } = {}) {
+		try {
+			const r = await this.__gatewayRpc('sessions.subscribe', {}, { timeoutMs: 2000 });
+			if (r?.ok === true) {
+				// ok=true 时主动取消 pending retry（场景：旧 ok=false 已 schedule 5s retry，
+				// 5s 内 WS 重连/握手成功又触发 subscribe 并 ok=true → 旧 timer 已无意义）
+				if (this.__sessionsSubscribeRetryTimer) {
+					clearTimeout(this.__sessionsSubscribeRetryTimer);
+					this.__sessionsSubscribeRetryTimer = null;
+				}
+				this.logger.info?.(`[coclaw] sessions.subscribe ok${isRetry ? ' (retry)' : ''}`);
+				remoteLog(`sessions.subscribe.ok${isRetry ? '.retry' : ''}`);
+				return;
+			}
+			const reason = r?.error ?? 'unknown';
+			this.logger.warn?.(`[coclaw] sessions.subscribe failed: ${reason}${isRetry ? ' (retry)' : ''}`);
+			remoteLog(`sessions.subscribe.failed reason=${reason}${isRetry ? ' retry=1' : ''}`);
+			if (!isRetry) this.__scheduleSessionsSubscribeRetry();
+		}
+		/* c8 ignore next 4 -- __gatewayRpc 自身永不抛，仅作防御性兜底 */
+		catch (err) {
+			this.logger.warn?.(`[coclaw] sessions.subscribe threw: ${String(err?.message ?? err)}`);
+			remoteLog(`sessions.subscribe.threw msg=${String(err?.message ?? err)}`);
+		}
+	}
+
+	/** ok=false 路径 5s 后重试一次。已有 timer 时不重排（避免握手后又叠一遍）。 */
+	__scheduleSessionsSubscribeRetry() {
+		if (this.__sessionsSubscribeRetryTimer) return;
+		this.__sessionsSubscribeRetryTimer = setTimeout(() => this.__runSessionsSubscribeRetry(), 5000);
+		this.__sessionsSubscribeRetryTimer.unref?.();
+	}
+
+	/** 重试 timer 触发的 callback；测试可直接调以覆盖 fire 路径。 */
+	__runSessionsSubscribeRetry() {
+		this.__sessionsSubscribeRetryTimer = null;
+		// bridge 已 stop 或 WS 没 ready → 跳过；新连接握手分支会自然再发起。
+		if (!this.started || !this.gatewayReady) return;
+		this.__sendSessionsSubscribe({ isRetry: true }).catch(() => {});
+	}
+
 	/** 推送实例信息（name/hostName/pluginVersion/agentModels）到 server 和已连接的 UI */
 	async __pushInstanceInfo() {
 		try {
@@ -805,6 +858,8 @@ export class RealtimeBridge {
 						this.logger.info?.(`[coclaw] gateway connect ok <- id=${payload.id}`);
 						this.gatewayConnectReqId = null;
 						this.__ensureSessionsPromise = this.__ensureAllAgentSessions();
+						// 订阅 sessions.changed。fire-and-forget，失败已在内部 warn
+						this.__sendSessionsSubscribe().catch(() => {});
 						this.__pushInstanceInfo();
 					}
 					else {
@@ -853,6 +908,24 @@ export class RealtimeBridge {
 				/* c8 ignore next 3 -- connect 完成前的消息过滤 */
 				if (!this.gatewayReady) {
 					return;
+				}
+				// (a0) sessions.changed reason=create：调 caller 注入的回调（不绑定具体消费方）。
+				// 故意 fallthrough 不 return：后续 UI 转发链路当前不处理 sessions.changed（health/tick 过滤 +
+				// agent 路由不命中 → 兜底广播，UI 未订阅无副作用），保留未来上游/UI 端订阅的兼容性。
+				if (payload.type === 'event'
+					&& payload.event === 'sessions.changed'
+					&& payload.payload?.reason === 'create'
+					&& typeof this.__onSessionCreated === 'function') {
+					const sk = payload.payload?.sessionKey;
+					const sid = payload.payload?.sessionId;
+					if (sk && sid) {
+						// 用 Promise 包裹避免回调同步抛错击穿 message handler
+						Promise.resolve()
+							.then(() => this.__onSessionCreated({ sessionKey: sk, sessionId: sid }))
+							.catch((err) => this.logger.warn?.(
+								`[coclaw] sessions.changed handler error: ${String(err?.message ?? err)}`,
+							));
+					}
 				}
 				if (payload.type === 'res' || payload.type === 'event') {
 				// (a) 过滤 gateway 的管理层广播事件，这些对 WebChat / plugin 客户端无意义：
@@ -1440,10 +1513,11 @@ export class RealtimeBridge {
 	}
 	/* c8 ignore stop */
 
-	async start({ logger, pluginConfig } = {}) {
+	async start({ logger, pluginConfig, onSessionCreated } = {}) {
 		/* c8 ignore next 2 -- ?? fallback：测试始终注入 logger/pluginConfig */
 		this.logger = logger ?? console;
 		this.pluginConfig = pluginConfig ?? {};
+		this.__onSessionCreated = onSessionCreated ?? null;
 		this.started = true;
 		// rpc DC 文件回退队列的启动期预热（B-stage1 plan-2）：清残留 *.jsonl + 探测磁盘容量。
 		// 远早于第一条 rpc DC 建立（dump 设计）；__diskCap 暂存供 B-stage2 切 FBQ 时取用。
@@ -1582,6 +1656,11 @@ export class RealtimeBridge {
 		if (this.__gatewayRetryTimer) {
 			clearTimeout(this.__gatewayRetryTimer);
 			this.__gatewayRetryTimer = null;
+		}
+		// 清理 sessions.subscribe 5s 失败重试 timer
+		if (this.__sessionsSubscribeRetryTimer) {
+			clearTimeout(this.__sessionsSubscribeRetryTimer);
+			this.__sessionsSubscribeRetryTimer = null;
 		}
 		this.__gatewayAttempts = 0;
 		this.__gatewayGaveUp = false;

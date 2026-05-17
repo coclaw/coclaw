@@ -5827,3 +5827,437 @@ test('gateway ws close: peer-initiated emits ws.disconnected with code/reason an
 		restoreHomedir(prevHome);
 	}
 });
+
+// --- sessions.subscribe / sessions.changed 双源归档 ---
+
+test('__sendSessionsSubscribe ok：写 sessions.subscribe.ok remoteLog', async () => {
+	resetRemoteLog();
+	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_ok');
+	try {
+		const pending = bridge.__sendSessionsSubscribe();
+		// gateway 端拿到 subscribe 请求
+		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
+		const subscribeReq = JSON.parse(String(subscribeRaw));
+		assert.equal(subscribeReq.method, 'sessions.subscribe');
+		// 回 ok
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: true, payload: {} }) });
+		await pending;
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe ok')));
+		const texts = collectRemoteLogTexts(server);
+		assert.ok(texts.some((t) => t === 'sessions.subscribe.ok'));
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__sendSessionsSubscribe 失败：响应 ok=false 时 warn + remoteLog.failed', async () => {
+	resetRemoteLog();
+	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_fail');
+	try {
+		const pending = bridge.__sendSessionsSubscribe();
+		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
+		const subscribeReq = JSON.parse(String(subscribeRaw));
+		// 模拟老 gateway：method_not_found
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'method_not_found', message: 'method_not_found' } }) });
+		await pending;
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed')));
+		const texts = collectRemoteLogTexts(server);
+		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed')));
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__sendSessionsSubscribe ok=false 时调度 5s 重试，stop 时清理 timer', async () => {
+	resetRemoteLog();
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_retry_sched');
+	try {
+		const pending = bridge.__sendSessionsSubscribe();
+		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
+		const subscribeReq = JSON.parse(String(subscribeRaw));
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'method_not_found', message: 'method_not_found' } }) });
+		await pending;
+		assert.notEqual(bridge.__sessionsSubscribeRetryTimer, null, 'ok=false 应 schedule 重试 timer');
+		// 重复调一次：已有 timer 应跳过、不替换
+		const before = bridge.__sessionsSubscribeRetryTimer;
+		bridge.__scheduleSessionsSubscribeRetry();
+		assert.equal(bridge.__sessionsSubscribeRetryTimer, before, '已有 timer 时重复调度应 noop');
+		// stop() 应清掉 timer
+		await bridge.stop();
+		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'stop 后 timer 应清空');
+	} finally {
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__sendSessionsSubscribe ok=true 主动清掉已 schedule 的 retry timer', async () => {
+	resetRemoteLog();
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_ok_clears_retry');
+	try {
+		// 预置一个 pending retry timer 模拟"前一轮 ok=false 已 schedule"
+		bridge.__sessionsSubscribeRetryTimer = setTimeout(() => {}, 60_000);
+		const before = bridge.__sessionsSubscribeRetryTimer;
+		assert.notEqual(before, null);
+		const pending = bridge.__sendSessionsSubscribe();
+		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
+		const subscribeReq = JSON.parse(String(subscribeRaw));
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: true, payload: {} }) });
+		await pending;
+		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'ok=true 应清掉 pending retry timer');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__sendSessionsSubscribe retry 路径：ok=true 不再 schedule 二次', async () => {
+	resetRemoteLog();
+	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_retry_ok');
+	try {
+		const pending = bridge.__sendSessionsSubscribe({ isRetry: true });
+		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
+		const subscribeReq = JSON.parse(String(subscribeRaw));
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: true, payload: {} }) });
+		await pending;
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe ok (retry)')));
+		const texts = collectRemoteLogTexts(server);
+		assert.ok(texts.some((t) => t === 'sessions.subscribe.ok.retry'));
+		// retry 路径 ok=true 不应再 schedule
+		assert.equal(bridge.__sessionsSubscribeRetryTimer, null);
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__sendSessionsSubscribe retry 路径：ok=false 也不再 schedule（避免循环）', async () => {
+	resetRemoteLog();
+	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_retry_fail');
+	try {
+		const pending = bridge.__sendSessionsSubscribe({ isRetry: true });
+		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
+		const subscribeReq = JSON.parse(String(subscribeRaw));
+		gwWs.emit('message', { data: JSON.stringify({ type: 'res', id: subscribeReq.id, ok: false, error: { code: 'still_bad', message: 'still_bad' } }) });
+		await pending;
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed') && String(m).includes('(retry)')));
+		const texts = collectRemoteLogTexts(server);
+		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed') && t.includes('retry=1')));
+		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'retry 路径不应再 schedule 第二次');
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__runSessionsSubscribeRetry：bridge stopped 时跳过', async () => {
+	const { bridge, prevHome } = await setupBridgeWithGateway('c_subs_retry_stopped');
+	try {
+		// 模拟已 stop
+		bridge.started = false;
+		bridge.gatewayReady = false;
+		bridge.__sessionsSubscribeRetryTimer = setTimeout(() => {}, 60_000);
+		let called = false;
+		const orig = bridge.__sendSessionsSubscribe.bind(bridge);
+		bridge.__sendSessionsSubscribe = () => { called = true; return Promise.resolve(); };
+		bridge.__runSessionsSubscribeRetry();
+		assert.equal(called, false, 'stopped 状态下不应调 __sendSessionsSubscribe');
+		assert.equal(bridge.__sessionsSubscribeRetryTimer, null);
+		bridge.__sendSessionsSubscribe = orig;
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__runSessionsSubscribeRetry：started+ready 时实际重试', async () => {
+	const { bridge, prevHome } = await setupBridgeWithGateway('c_subs_retry_fire');
+	try {
+		// bridge 当前 started=true + gatewayReady=true
+		bridge.__sessionsSubscribeRetryTimer = setTimeout(() => {}, 60_000);
+		let calledWith = null;
+		bridge.__sendSessionsSubscribe = (opts) => { calledWith = opts; return Promise.resolve(); };
+		bridge.__runSessionsSubscribeRetry();
+		assert.deepEqual(calledWith, { isRetry: true });
+		assert.equal(bridge.__sessionsSubscribeRetryTimer, null, 'timer 引用应被清');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('__sendSessionsSubscribe gateway 中途关闭：settle 时 warn + remoteLog.failed', async () => {
+	resetRemoteLog();
+	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_close');
+	try {
+		const pending = bridge.__sendSessionsSubscribe();
+		await waitForSent(gwWs, 'sessions.subscribe');
+		// 主动关 gateway WS，让 pending request 立即 settle 为 gateway_closed
+		bridge.__closeGatewayWs();
+		await pending;
+		assert.ok(logs.some((m) => String(m).includes('sessions.subscribe failed') && String(m).includes('gateway_closed')));
+		const texts = collectRemoteLogTexts(server);
+		assert.ok(texts.some((t) => t.startsWith('sessions.subscribe.failed') && t.includes('gateway_closed')));
+	} finally {
+		await bridge.stop();
+		resetRemoteLog();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('每次握手成功（含重连）都重新发出 sessions.subscribe', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	const bridge = createBridge();
+
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+
+		// --- 第一次握手 ---
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq1 = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq1.id, ok: true, payload: {} }) });
+		await waitFor(
+			() => gateway.sent.some((s) => String(s).includes('sessions.subscribe')),
+			{ label: 'first sessions.subscribe sent' },
+		);
+		const firstCount = gateway.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
+		assert.equal(firstCount, 1, '首次握手应发出 1 次 subscribe');
+
+		// --- 模拟重连：再来一次 challenge + connect.res ---
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n2' } }) });
+		const connectReq2 = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq2.id, ok: true, payload: {} }) });
+		await waitFor(
+			() => gateway.sent.filter((s) => String(s).includes('sessions.subscribe')).length >= 2,
+			{ label: 'second sessions.subscribe sent after re-handshake' },
+		);
+		const secondCount = gateway.sent.filter((s) => String(s).includes('sessions.subscribe')).length;
+		assert.ok(secondCount >= 2, '重连握手后应再次发出 subscribe');
+	} finally {
+		await bridge.stop();
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('handshake 成功后自动发出 sessions.subscribe', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
+	const bridge = createBridge();
+
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
+		const server = FakeWebSocket.instances[0];
+		server.readyState = 1;
+		server.emit('open', {});
+
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		gateway.emit('open', {});
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n1' } }) });
+		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
+		gateway.emit('message', { data: JSON.stringify({ type: 'res', id: connectReq.id, ok: true, payload: {} }) });
+
+		// 等到握手成功 + 后续 RPC 都发出
+		await waitFor(
+			() => gateway.sent.some((s) => String(s).includes('sessions.subscribe')),
+			{ label: 'sessions.subscribe sent after handshake' },
+		);
+		const subRaw = gateway.sent.find((s) => String(s).includes('sessions.subscribe'));
+		const subMsg = JSON.parse(String(subRaw));
+		assert.equal(subMsg.method, 'sessions.subscribe');
+	} finally {
+		await bridge.stop();
+		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+test('sessions.changed reason=create：调用 onSessionCreated 回调', async () => {
+	const calls = [];
+	const onSessionCreated = ({ sessionKey, sessionId }) => {
+		calls.push({ sessionKey, sessionId });
+	};
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_create');
+	try {
+		bridge.__onSessionCreated = onSessionCreated;
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'sessions.changed',
+				payload: { reason: 'create', sessionKey: 'agent:main:main', sessionId: 'new-sid-1' },
+			}),
+		});
+		await waitFor(() => calls.length === 1, { label: 'onSessionCreated invoked' });
+		assert.equal(calls[0].sessionKey, 'agent:main:main');
+		assert.equal(calls[0].sessionId, 'new-sid-1');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('sessions.changed reason!=create：不调用 onSessionCreated', async () => {
+	const calls = [];
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_other');
+	try {
+		bridge.__onSessionCreated = (p) => calls.push(p);
+		bridge.webrtcPeer.broadcast = () => {}; // 吞掉 fallthrough 广播
+		for (const reason of ['new', 'reset', 'send', 'delete']) {
+			gwWs.emit('message', {
+				data: JSON.stringify({
+					type: 'event',
+					event: 'sessions.changed',
+					payload: { reason, sessionKey: 'agent:main:main', sessionId: 'x' },
+				}),
+			});
+		}
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(calls.length, 0, '非 create reason 不触发回调');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('sessions.changed 缺 sessionKey 或 sessionId：不调用回调', async () => {
+	const calls = [];
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_missing');
+	try {
+		bridge.__onSessionCreated = (p) => calls.push(p);
+		bridge.webrtcPeer.broadcast = () => {};
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'sessions.changed',
+				payload: { reason: 'create', sessionId: 'no-key' },
+			}),
+		});
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'sessions.changed',
+				payload: { reason: 'create', sessionKey: 'agent:main:main' },
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(calls.length, 0, '缺字段时不触发回调');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('sessions.changed 回调抛错：bridge 不崩，warn 兜底', async () => {
+	const logs = [];
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_err');
+	try {
+		bridge.logger = { info() {}, warn: (m) => logs.push(m), debug() {} };
+		bridge.__onSessionCreated = () => { throw new Error('callback boom'); };
+		bridge.webrtcPeer.broadcast = () => {};
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'sessions.changed',
+				payload: { reason: 'create', sessionKey: 'agent:main:main', sessionId: 'x' },
+			}),
+		});
+		await waitFor(
+			() => logs.some((m) => String(m).includes('sessions.changed handler error') && String(m).includes('callback boom')),
+			{ label: 'callback error warned' },
+		);
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('sessions.changed 回调 async reject：bridge 不崩，warn 兜底', async () => {
+	const logs = [];
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_async_rej');
+	try {
+		bridge.logger = { info() {}, warn: (m) => logs.push(m), debug() {} };
+		bridge.__onSessionCreated = () => Promise.reject(new Error('async boom'));
+		bridge.webrtcPeer.broadcast = () => {};
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'sessions.changed',
+				payload: { reason: 'create', sessionKey: 'agent:main:main', sessionId: 'x' },
+			}),
+		});
+		await waitFor(
+			() => logs.some((m) => String(m).includes('sessions.changed handler error') && String(m).includes('async boom')),
+			{ label: 'async reject warned' },
+		);
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
+test('onSessionCreated 通过 start opts 可注入', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevCwd = process.cwd();
+	const prevHome = saveHomedir();
+	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
+	setHomedir(nodePath.join(dir, 'home'));
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+
+	const calls = [];
+	const onSessionCreated = (p) => calls.push(p);
+	const bridge = createBridge();
+	try {
+		await bridge.start({ logger: noopLogger(), pluginConfig: {}, onSessionCreated });
+		assert.equal(bridge.__onSessionCreated, onSessionCreated, 'start opts 应将 callback 写入实例');
+	} finally {
+		await bridge.stop();
+		process.chdir(prevCwd);
+		restoreHomedir(prevHome);
+	}
+});
+
+/** waitForSent：等到 gw.sent 出现含指定子串的帧，返回原始字符串。 */
+async function waitForSent(ws, needle, opts = {}) {
+	await waitFor(
+		() => ws.sent.some((s) => String(s).includes(needle)),
+		{ ...opts, label: opts.label ?? `gateway sent ${needle}` },
+	);
+	return ws.sent.find((s) => String(s).includes(needle));
+}
