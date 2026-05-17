@@ -1611,3 +1611,75 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 **关联**：`plugins/openclaw/index.js#handleSessionCreated`（守卫位置）+ `openclaw-repo/src/sessions/session-key-utils.ts:58-64`（cron 形态判定参考）
 
+## chat-history follow-up F5：register(mode='full') 热重载下两个 race 隐患
+
+**发现日期**：2026-05-18（任务 #13 opus subagent 调研识别）
+**关联 commit**：F3 后续主线验证调研
+
+**背景**：OpenClaw config 热重载（任何 `plugins.*` 配置变更）会在**同进程内**重新走 plugin `register(mode='full')` 流程：
+- 入口：`openclaw-repo/src/gateway/config-reload-plan.ts:123` `{ prefix:"plugins", kind:"hot", actions:["reload-plugins"…] }`
+- 调度：`server-reload-handlers.ts:281-307` → `server.impl.ts:1131-1227 reloadAttachedGatewayPlugins`（旧 service stop → 新 register → 新 service start）
+- loader：`plugins/loader.ts:2363-2368` cache miss → 重跑 `runPluginRegisterSync`
+
+**正常路径安全**：`api.on` / `registerGatewayMethod` / `registerChannel` 走 `replaceAttachedPluginRuntime` 整体替换 registry；`registerService` 显式 `previousPluginServices.stop()` 在前；`realtime-bridge` 模块级 singleton 由 stop() 清空、新 start() 重建——无双实例并存。
+
+**隐患 A — In-flight enroll 跨 reload 残留**：
+
+`coclaw.enroll` / `/coclaw enroll` 的 `waitForClaimAndSave` 是 fire-and-forget 后台任务，闭包持有旧 register 时的 `restartBridge`（仍调模块级 `restartRealtimeBridge`）。reload 时只清新闭包里的 `activeEnrollAbort`；旧闭包仍在跑，认领回来后会把新 register 刚装好的 bridge 杀掉重起，且 `pluginConfig.serverUrl` 是旧 snapshot。
+
+**修复方向**：enroll 闭包检测自身是否仍是 active 闭包（如比对 registration generation token），失活则放弃 restartBridge；或 reload 时显式 abort 所有 in-flight enroll 任务。
+
+**隐患 B — 同源 JSON 文件 per-instance mutex 不互斥**：
+
+reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` / `coclaw-chat-history.json`；新 register 同时也能写。两份 manager 各自一套 `__mutexes`，互不相通。`atomicWriteJsonFile` 防半截写，但仍可能整段 JSON lost-update（旧 read → 新 read → 旧 write → 新 write 序列下旧 write 覆盖新内容）。
+
+**修复方向**：mutex 改为基于文件路径的全进程级注册表（同路径不同实例共享同一把锁）；或所有 read-modify-write 改用 `flock` 文件锁；或 reload 时显式 await 所有 in-flight RPC handler。
+
+**严重性**：低——用户主动改 `plugins.*` 配置且改的时机正好撞上 enroll / RPC handler in-flight 才会复现，极偶发。不阻塞当前发布。
+
+## chat-history follow-up F6：chat-history.json 顺序异常实测（2/3 位时间戳倒置）
+
+**发现日期**：2026-05-18（任务 #9 opus subagent 实测发现）
+**关联**：`plugins/openclaw/src/chat-history-manager/manager.js#recordSessionTransition` splice 路径
+
+**观测事实**：本机当前 chat-history.json（main agent，`agent:main:main` 键）顺序为：
+
+| 位置 | sessionId | archivedAt | 时间戳含义 |
+|---|---|---|---|
+| 0 | `8af05d02-…` | 缺（未归档头） | 当前 current（subagent 实测 reset 后） |
+| 1 | `21c7bd13-…` | 1777798486453 | 较旧 |
+| 2 | `4abc9fc0-…` | 1779039659992 | 较新（被 reset 翻下去的） |
+
+`manager.js` 文档约定"已归档项按归档时间新→旧"，但 1/2 位顺序倒置。
+
+**怀疑**：历史 hook 路径里 `resumedFrom` 与文件 head 不一致时，splice(1, 0, ...) 把"补充归档目标"插在 0 之后但未把已归档的 head 重新排序——导致后续若 head 翻归档+插入新当前，原 head 的归档项被推到 1 位，更早的归档项留在 2 位。
+
+**为什么不立即修**：F6 是观测项，不是阻塞 bug。当前 UI（`chat.store.js:1445-1447` 用 `archivedAt != null` 过滤未归档头）只关心"未归档头 vs 已归档"，不消费已归档项之间的顺序。但 list RPC 契约若被未来 UI 用作"按时间排序的历史索引"，会展示乱序。
+
+**修复方向**：
+- 路径一：splice 时按 `archivedAt` 二分插入，保证已归档段单调
+- 路径二：list RPC 返回前对 archived 段按 `archivedAt desc` 排序（输入侧不严格，输出侧规整）
+- 路径三：把 archived 段排序当作 manager 的 invariant，每次 persist 前重排（影响最小）
+
+**严重性**：低——纯顺序问题，不丢数据；用户也明确表示本机是测试环境，可在 F6 修法决策后回归测试。
+
+## chat-history follow-up F7：双源措辞实际是"两个互补单源"
+
+**发现日期**：2026-05-18（任务 #9 + 上游源码核实）
+**关联**：`plugins/openclaw/docs/architecture.md §F` + `.changeset/chat-history-*.md` 文案
+
+**事实**：
+
+| 触发源 | `sessions.changed reason` | `session_start` hook |
+|---|---|---|
+| `agent.send` 自动创建新 session | `"create"` ✓ | **不 emit**（上游 `agent.ts:1376-1386` 漏 emit，F1 原始 bug） |
+| `sessions.reset` RPC | `"reset"`（plugin 不监听） | ✓ emit（`session-reset-service.ts:680`） |
+| `chat.send /new` | 走 `performGatewaySessionReset`，等同 reset | ✓ emit |
+| `sessions.create` 独立 RPC | `"create"` ✓ | emit（如果 `emitCommandHooks: true`） |
+
+**结论**：plugin 当前实现没有功能漏洞——每个触发路径都至少有一条到达 `recordSessionTransition`。但 architecture.md / changeset 里"双源到达 + 幂等护栏"措辞实际描述的是"sessions.create 同时触发 hook 与 sessions.changed=create 的少数场景"，对 sessions.reset / agent.send 单源覆盖语义不准。
+
+**修复方向**：architecture.md §F 改述为"两个互补的事件源 + 同到达点（recordSessionTransition）的幂等护栏"；明确每个 RPC 的事件 emit 矩阵；changeset 历史不动（已发布）。
+
+**严重性**：低——文档措辞优化，不影响代码行为。等下次架构整理一并修。
+
