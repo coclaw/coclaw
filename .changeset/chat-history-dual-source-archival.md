@@ -36,9 +36,10 @@ timeout is 60s, sized for gateway restarts that block the main thread for
 seconds. Subscribe failures (only possible from transport-layer faults — the
 gateway handler has no business-error branch) emit one warning + remoteLog
 and otherwise no-op; the next handshake retries naturally. The plugin's
-`minHostVersion` is `>=2026.3.2` (the version where `session_start` hook
-events first include `sessionKey`); installation on older gateways is
-rejected by OpenClaw.
+`minHostVersion` is `>=2026.3.22` (the version where the gateway
+`sessions.subscribe` RPC first ships — see openclaw commit `7b61ca1b06`;
+also ensures the `session_start` hook carries `sessionKey`, available since
+`2026.3.2`); installation on older gateways is rejected by OpenClaw.
 
 **UI counterpart.** The UI side filter for unarchived heads ships in commit
 `2a00e56` (CoClaw UI). Without that UI change, the current active session
