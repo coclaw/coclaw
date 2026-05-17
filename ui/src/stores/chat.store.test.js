@@ -5748,6 +5748,57 @@ describe('useChatStore', () => {
 			// promise 完成后 guard 已清理，可再次调用
 			expect(store.__historyListPromise).toBeNull();
 		});
+
+		test('过滤 archivedAt 为 null 或缺失的条目（plugin 新契约的当前 session 标记）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			// 模拟 plugin 新契约返回：含一个 archivedAt=null（当前 session）+ 一个无 archivedAt 字段
+			// + 两个正常归档的孤儿。UI 应只保留两个孤儿。
+			const conn = mockConn();
+			conn.request.mockResolvedValue({
+				history: [
+					{ sessionId: 'orphan-1', archivedAt: 100 },
+					{ sessionId: 'orphan-2', archivedAt: 200 },
+					{ sessionId: 'missing-field' },
+					{ sessionId: 'current-session', archivedAt: null },
+				],
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await store.__loadChatHistory();
+
+			expect(store.historySessionIds).toEqual([
+				{ sessionId: 'orphan-1', archivedAt: 100 },
+				{ sessionId: 'orphan-2', archivedAt: 200 },
+			]);
+			expect(store.historyExhausted).toBe(false);
+		});
+
+		test('过滤后列表为空时设置 historyExhausted 为 true', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			// 列表里只有"当前 session"标记（archivedAt=null），过滤后为空
+			const conn = mockConn();
+			conn.request.mockResolvedValue({
+				history: [{ sessionId: 'current-only', archivedAt: null }],
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			await store.__loadChatHistory();
+
+			expect(store.historySessionIds).toEqual([]);
+			expect(store.historyExhausted).toBe(true);
+		});
 	});
 
 	// =====================================================================

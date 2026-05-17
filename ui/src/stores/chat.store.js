@@ -1439,7 +1439,11 @@ export function createChatStore(storeKey, opts = {}) {
 							agentId,
 							sessionKey: this.chatSessionKey,
 						}, { timeout: 60_000 });
-						this.historySessionIds = Array.isArray(result?.history) ? result.history : [];
+						// plugin 新契约可能把当前 session 作为末条写入 list（archivedAt 为 null/缺省）；
+						// UI 仍按"孤儿列表"语义消费，此处源头过滤，下游逻辑不动。
+						// 双等同时排除 null 与 undefined。
+						const rawHistory = Array.isArray(result?.history) ? result.history : [];
+						this.historySessionIds = rawHistory.filter((item) => item?.archivedAt != null);
 						this.historyExhausted = this.historySessionIds.length === 0;
 						this.__historyLoadedCount = 0;
 						console.debug('[chat] loadChatHistory: %d orphan sessions, exhausted=%s',
