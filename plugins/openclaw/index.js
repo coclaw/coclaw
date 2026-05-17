@@ -181,8 +181,10 @@ const plugin = {
 
 		// 追踪 chat 因 reset 产生的 session 流水。双源回调（hook + sessions.changed）共用 helper。
 		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。
-		// agentId 优先取 hook ctx.agentId（OpenClaw 显式契约），fallback 从 sessionKey 解析；
-		// 当前 OpenClaw schema 下两者等价，ctx.agentId 在上游 schema 演进时仍可靠。
+		// agentId 解析：hook 路径有 ctx.agentId（显式契约，优先用）；sessions.changed 路径
+		// gateway broadcast payload 不含 agentId（见 openclaw-repo emitSessionsChanged），
+		// 只能 fallback 切 sessionKey（`agent:<agentId>:*` → parts[1]）。当前 sessionKey schema
+		// 下两路径解析结果等价；多 agent topic 启用后若上游 sessionKey schema 加前缀会需复评。
 		async function handleSessionCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
 			if (!sessionKey || !sessionId) {
 				// 早返值得警惕：上游事件 schema 异常，或 topic（无 sessionKey）误入双源链路。
@@ -609,7 +611,9 @@ const plugin = {
 				if (!chatHistoryManager.__cache.has(agentId)) {
 					await chatHistoryManager.load(agentId);
 				}
-				const result = await chatHistoryManager.list({ agentId, sessionKey });
+				// 默认过滤掉未归档头（首位 = 当前活跃 session）；UI 显式传 includeCurrent=true 才返回全量
+				const includeCurrent = params?.includeCurrent === true;
+				const result = await chatHistoryManager.list({ agentId, sessionKey, includeCurrent });
 				respond(true, result);
 			}
 			catch (err) {
