@@ -188,9 +188,12 @@ const plugin = {
 		// 下两路径解析结果等价；多 agent topic 启用后若上游 sessionKey schema 加前缀会需复评。
 		//
 		// archivedSessionId 解析：hook 路径来自 event.resumedFrom；sessions.changed payload
-		// 不带（无 previousSessionId 字段），由 manager 从文件首位推断。
+		// 不带（无 previousSessionId 字段）→ 进 manager 时为 undefined。manager 不会去
+		// "推断字段值"，而是把文件首位未归档头直接翻为归档（补 archivedAt）后再 unshift
+		// 新头——等价于"以文件首位 sessionId 作为前任"。
 		//
-		// 该 helper 可直接作为 bridge.onSessionCreated 回调（签名兼容；缺失字段走兜底）。
+		// 该 helper 可直接作为 bridge.onSessionCreated 回调（签名兼容；缺失字段走兜底：
+		// agentId 走 parts[1] fallback、archivedSessionId 走 manager 翻 head 路径）。
 		async function handleSessionCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
 			if (!sessionKey || !sessionId) {
 				// 早返值得警惕：上游事件 schema 异常，或 topic（无 sessionKey）误入双源链路。
