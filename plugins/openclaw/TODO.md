@@ -1505,7 +1505,7 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 - [x] 此节内容并入 task #11 上游 issue 草稿（已记录在本 TODO 节）
 
 **待办**：
-- [x] CLI 实验交叉验证（2026-05-17）——结果完全命中预期：chat-history.json sha256 不变；sessions.json 新增 `agent:main:explicit:d623247e-4d48-4e0c-84ef-f79b1461d966` entry（71→72）；plugin 日志无 chat-history.missing-keys 或任何 handleSessionsCreated 相关 warn（reason='create' 严判完全静默 phase=message 流量）
+- [x] CLI 实验交叉验证（2026-05-17）——结果完全命中预期：chat-history.json sha256 不变；sessions.json 新增 `agent:main:explicit:d623247e-4d48-4e0c-84ef-f79b1461d966` entry（71→72）；plugin 日志无 chat-history.missing-keys 或任何 handleSessionsCreated（旧名，5125818 重命名前的实验日志，现名 handleSessionCreated）相关 warn（reason='create' 严判完全静默 phase=message 流量）
 - [ ] 上述两个外溢副作用纳入 task #11 的上游 issue 草稿
 - [ ] 多 agent topic 启用后复评：F1 实验只钉死了"main agent topic 路径不破"，若 CoClaw 解开 UI `chat.store.js` topicMode 分支让非 main agent 也能新建 topic（参考 `docs/decisions/topic-main-agent-constraint.md` §"2026-05-17 重评"），需要复跑实验验证非 main agent 的 explicit fake sessionKey 路径同样不撞穿 `reason === 'create'` 严判，并核查 chat-history 桶不被污染
 
@@ -1540,3 +1540,25 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 **注**：AGENTS.md L29 措辞已修正，把 `agents.<id>.store` 改成顶层 `session.store` 并明确标注上游 schema 里没有 `agents.<id>.store` 字段。
 
+---
+
+## chat-history 第六轮 review 摘出的 follow-up
+
+**发现日期**：2026-05-17（第六轮 deep-review 主线 gatekeep）
+**关联**：第五轮 commit `d5f3aae` 构造器注入 onSessionCreated + `index.js#restartBridge` helper
+
+第六轮 4 维度 review 整体 0 MUST-FIX；除已在本轮处理的 9 条注释/文档/changeset 修订外，2 条**涉及业务代码**的建议按"不动业务代码"约束摘出，留下一轮决定：
+
+### (a) restart wiring 缺最小回归测试（R2-S2）
+
+- **问题**：`restartRealtimeBridge({...,onSessionCreated:cb})` 把 cb 透传到 `new RealtimeBridge(deps)` 的链路（`plugins/openclaw/src/realtime-bridge.js:1733`）目前没有任何测试覆盖。spread 顺序写反 / 字段拼错挂掉 = 漏归档（正是原 bug）。
+- **难点**：`restartRealtimeBridge` 内的 `singleton` 是 module-level 私有变量，未 export。要钉死断言需要：
+  - 方案 A：新增 `__getSingletonForTest()` test-only export（侵入 API surface，约 4 行）
+  - 方案 B：写一条走 FakeWebSocket 的端到端测试，从 restart → handshake → gateway emit sessions.changed reason=create → 断回调收到 payload（代码量较大，参考 `realtime-bridge.test.js` L305+ 的 DI 测试结构）
+- **判断**：方案 A 更直接，符合既有 `__` 前缀私有惯例；方案 B 更端到端但实现成本高。下一轮决策时建议优先 A。
+
+### (b) restartBridge 内联 wrapper 化简（R2-N2）
+
+- **问题**：`plugins/openclaw/index.js:242-247` 把 `onSessionCreated` 写成内联匿名 `({ sessionKey, sessionId }) => handleSessionCreated({ sessionKey, sessionId })`，但 `handleSessionCreated` 对缺失 `agentId`/`archivedSessionId` 都有兜底，直接 `onSessionCreated: handleSessionCreated` 即可，少一层闭包。
+- **难点**：wrapper 当前的注释表达"sessions.changed payload 不带 previousSessionId"。化简时需要把这条信息挪到 `handleSessionCreated` 的 jsdoc 上。
+- **判断**：纯润色，可与 (a) 一起做。

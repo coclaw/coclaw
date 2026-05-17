@@ -26,6 +26,12 @@ The `chatHistoryManager.recordArchived(...)` method has been replaced with
 `recordSessionTransition({ agentId, sessionKey, currentSessionId, archivedSessionId? })`.
 Only the in-plugin hook handler called it, so the API change is internal.
 
+The `RealtimeBridge` `onSessionCreated` callback is now injected at the
+constructor (`new RealtimeBridge({ onSessionCreated })`) instead of `start()`
+options. `restartRealtimeBridge(opts)` forwards `opts.onSessionCreated` to the
+new instance's deps on each restart; the callback is fixed for the instance's
+lifetime (refresh()'s internal stop+start does not touch it).
+
 **Gateway compatibility & reconnect.** The gateway-side `sessions.subscribe`
 binding is per-WS (registered against the active connection's `connId`) and
 is automatically released when the WS closes (see openclaw-repo
@@ -47,7 +53,7 @@ would appear at the top of the orphan-history list.
 
 **Rollback warning.** Rolling back to plugin <= 0.21.5 requires either
 clearing `coclaw-chat-history.json` (each agent's `sessions/` directory) or
-migrating it to all-archived form. The old code passes the array through as
-raw JSON, so it will not crash — but old UIs receiving the unarchived head
+migrating it to all-archived form. The old code also returns the raw array
+verbatim, so it will not crash — but old UIs receiving the unarchived head
 will display the current active session as an orphan history segment (same
 symptom as the "UI counterpart" mismatch above).

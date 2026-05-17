@@ -1724,6 +1724,9 @@ let singleton = null;
  * 确保 bridge 运行：已有实例则 stop 后重建，无则直接创建。opts 必传。
  * @param {{ logger, pluginConfig, onSessionCreated? }} opts
  *   onSessionCreated 透传到 new RealtimeBridge 构造器（每次重启新实例自然带入）。
+ *   注意：opts.onSessionCreated 优先于 opts.__deps?.onSessionCreated；后者会被前者覆盖
+ *   （即便前者为 undefined）。生产 caller 都通过 opts 顶层传 cb，__deps.onSessionCreated
+ *   仅在 hypothetical 测试场景下出现，请通过 opts 顶层传递避免被静默吃掉。
  */
 export async function restartRealtimeBridge(opts) {
 	if (singleton) {

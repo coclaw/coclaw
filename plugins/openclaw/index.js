@@ -200,7 +200,9 @@ const plugin = {
 			// topic 上游伪造的 explicit fake sessionKey（形态 `agent:<agentId>:explicit:<sid>`）
 			// 不属于 chat 流水范畴：CoClaw 自管 topic 元信息，不应进 chat-history 桶。
 			// 当前 F1 实验已证明该路径不触发本回调，此守卫属防御性兜底。
-			// 前提假设：explicit 永远是 sessionKey 第三段；若上游 schema 演进（如挪位置 / 增前缀），需复评本守卫。
+			// 前提假设：(a) sessionKey 首段是 `agent`；(b) `explicit` 占第 3 段（即 parts[2]，
+			// 0-indexed 数）。两条同时成立才命中本守卫；若上游 schema 演进（如挪位置 / 增前缀 /
+			// 改首段名），需复评本守卫。
 			const parts = sessionKey.split(':');
 			if (parts[0] === 'agent' && parts[2] === 'explicit') {
 				remoteLog(`chat-history.skip-explicit sessionKey=${sessionKey}`);

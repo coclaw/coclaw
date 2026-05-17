@@ -206,6 +206,10 @@ export class ChatHistoryManager {
 	 * 获取指定 chat 的 session 列表（原始数组：首位可能是未归档的当前活跃 session）。
 	 * 每次调用从磁盘重载，确保跨模块实例一致性
 	 * （OpenClaw 的 hook 和 gateway method 可能在不同 ESM 模块实例中运行）。
+	 *
+	 * RPC 契约：`coclaw.chatHistory.list` 直接透传本返回值，不做服务端过滤；调用方
+	 * （UI / 其它消费者）按 `archivedAt != null` 自行过滤未归档头与孤儿历史段。
+	 *
 	 * @param {{ agentId: string, sessionKey: string }} params
 	 * @returns {Promise<{ history: { sessionId: string, archivedAt?: number }[] }>}
 	 */
