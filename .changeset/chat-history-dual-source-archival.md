@@ -51,9 +51,12 @@ also ensures the `session_start` hook carries `sessionKey`, available since
 `2a00e56` (CoClaw UI). Without that UI change, the current active session
 would appear at the top of the orphan-history list.
 
-**Rollback warning.** Rolling back to plugin <= 0.21.5 requires either
-clearing `coclaw-chat-history.json` (each agent's `sessions/` directory) or
-migrating it to all-archived form. The old code also returns the raw array
-verbatim, so it will not crash — but old UIs receiving the unarchived head
-will display the current active session as an orphan history segment (same
-symptom as the "UI counterpart" mismatch above).
+**Rollback compatibility.** Rolling back to plugin <= 0.21.5 is functionally
+safe: the old code returns the raw array verbatim and does not crash on the
+new schema, and the on-disk file remains valid. The only visible effect is
+that an old UI will render the current active session as an extra orphan
+entry at the top of the history list — a cosmetic blip that resolves on the
+next session reset (which writes the entry as fully archived). Clearing or
+migrating `coclaw-chat-history.json` is therefore only necessary if that
+cosmetic correctness matters during the rollback window; it is not required
+for data integrity.
