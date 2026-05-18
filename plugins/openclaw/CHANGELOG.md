@@ -1,5 +1,243 @@
 # @coclaw/openclaw-coclaw
 
+## 0.22.0
+
+### Minor Changes
+
+- ce59ae4: Add developer-helper CLI subcommands for the provider-auth RPCs:
+  `openclaw coclaw auth set-api-key <provider> --key <value>` stores an API
+  key (optionally with `--profile-id`), `openclaw coclaw auth list
+[--provider <p>]` prints stored profiles with masked previews, and
+  `openclaw coclaw auth remove <provider>` clears them. All three are thin
+  CLIs that delegate to the corresponding gateway RPCs and share the
+  existing retry / restart helpers used by `bind` / `unbind`.
+- 19baae8: Fix chat-history session-archival gap on OpenClaw `agent.send` auto-reset paths.
+
+  Previously chat-history only tracked archives via the `session_start` plugin
+  hook, but OpenClaw 2026.5.7's `agent.send` RPC creates new sessions without
+  firing that hook — so the prior session was silently lost from the history
+  index.
+
+  This change adds a second listener path: the plugin now subscribes to gateway
+  `sessions.changed` events (reason=create) and archives the prior session
+  through the same code path as the hook. The chat-history file schema is
+  extended so the head item may be unarchived (no `archivedAt`), representing
+  the current active session. Both sources are idempotent: the second source
+  is a no-op when state is already settled, mutex-serialized per agent; stale
+  events (where `currentSessionId` already exists in the list) are dropped.
+
+  The on-disk `coclaw-chat-history.json` is forward-compatible: existing
+  all-archived files migrate naturally on first new transition. The
+  `coclaw.chatHistory.list` RPC returns the raw array; UI is expected to filter
+  unarchived heads in client code.
+
+  The `chatHistoryManager.recordArchived(...)` method has been replaced with
+  `recordSessionTransition({ agentId, sessionKey, currentSessionId, archivedSessionId? })`.
+  Only the in-plugin hook handler called it, so the API change is internal.
+
+  The `RealtimeBridge` `onSessionCreated` callback is now injected at the
+  constructor (`new RealtimeBridge({ onSessionCreated })`) instead of `start()`
+  options. `restartRealtimeBridge(opts)` forwards `opts.onSessionCreated` to the
+  new instance's deps on each restart; the callback is fixed for the instance's
+  lifetime (refresh()'s internal stop+start does not touch it).
+
+  **Gateway compatibility & reconnect.** The gateway-side `sessions.subscribe`
+  binding is per-WS (registered against the active connection's `connId`) and
+  is automatically released when the WS closes (see openclaw-repo
+  `src/gateway/server/ws-connection.ts:391`'s `unsubscribeAllSessionEvents`).
+  The plugin therefore (re-)sends `sessions.subscribe` on every successful
+  gateway handshake, without distinguishing first-time vs reconnect. The RPC
+  timeout is 60s, sized for gateway restarts that block the main thread for
+  seconds. Subscribe failures (only possible from transport-layer faults — the
+  gateway handler has no business-error branch) emit one warning + remoteLog
+  and otherwise no-op; the next handshake retries naturally. The plugin's
+  `minHostVersion` is `>=2026.3.22` (the version where the gateway
+  `sessions.subscribe` RPC first ships — see openclaw commit `7b61ca1b06`;
+  also ensures the `session_start` hook carries `sessionKey`, available since
+  `2026.3.2`); installation on older gateways is rejected by OpenClaw.
+
+  **UI counterpart.** The UI side filter for unarchived heads ships in commit
+  `2a00e56` (CoClaw UI). Without that UI change, the current active session
+  would appear at the top of the orphan-history list.
+
+  **Rollback compatibility.** Rolling back to plugin <= 0.21.5 is functionally
+  safe: the old code returns the raw array verbatim and does not crash on the
+  new schema, and the on-disk file remains valid. The only visible effect is
+  that an old UI will render the current active session as an extra orphan
+  entry at the top of the history list — a cosmetic blip that resolves on the
+  next session reset (which writes the entry as fully archived). Clearing or
+  migrating `coclaw-chat-history.json` is therefore only necessary if that
+  cosmetic correctness matters during the rollback window; it is not required
+  for data integrity.
+
+- e24e6b9: Add model-default RPC handlers: `coclaw.model.set` configures the default model
+  primary (or per-agent primary when `agentId` is given) by writing
+  `cfg.agents.defaults.model.primary` / `cfg.agents.list[i].model.primary` via
+  field-level config mutation (preserves sibling `fallbacks` / `timeoutMs`,
+  hot-reload, zero gateway restart). `coclaw.model.list` returns both scopes
+  in a symmetric `{ default, agents }` map (always includes `main`). Inputs are
+  validated against the provider catalog (`view: 'all'`) and the configured
+  auth profiles before write.
+- 468c44a: Add provider-auth RPC handlers: `coclaw.providerAuth.setApiKey` writes an API key
+  profile via the OpenClaw Plugin SDK (no gateway restart), `coclaw.providerAuth.list`
+  returns bound profiles across api_key/oauth/token types with masked `keyPreview`
+  only, and `coclaw.providerAuth.remove` clears all profiles for a provider.
+- 520093f: Apply a minimal default ICE interface filter on the pion path to reduce phantom
+  ICE pairs from local virtual bridges. The pion `pcConfig.settings` now ships
+  `interfaceFilter.denyPrefixes: ['docker0']`, matching Docker's default bridge by
+  its fixed lowercase name. The match is byte-level case-sensitive (Go
+  `strings.HasPrefix`); docker daemon hardcodes `docker0` lowercase, so there is
+  no case-mismatch risk. The prefix is invisible from inside container/VM/Pod
+  netns (Docker bridge containers see `eth0` instead; WSL2 mirrored still has the
+  physical NIC mirrored alongside; all hypervisor Guests cannot see host bridges),
+  so it cannot misfire as a plugin's only path.
+
+  Docker user-defined bridges (`br-XXXX`) and the `'br-'` prefix were considered
+  but rejected: OpenWrt-style systems may use `br-lan` as the only outbound
+  interface, and the user red line forbids any chance of breaking that. IP CIDR
+  filtering also stays off by default — container/VM eth0 lives in private ranges
+  (10/8, 172.16/12, 192.168/16), so any IP-segment deny would break those
+  deployments (this is exactly the failure mode go2rtc admits to in its docs).
+
+  Red-line prefixes that must NEVER enter this list (including `'br-'`) are
+  encoded as an explicit test so future contributors cannot regress without
+  breaking the suite. Rationale, industry references and rejection reasons for
+  each near-miss candidate are recorded in
+  `plugins/openclaw/docs/webrtc-ice-if-filter.md`.
+
+### Patch Changes
+
+- 504fd5e: Make `bindOk` / `unbindOk` message helpers tolerate missing/undefined data
+  so the `coclaw bind` / `coclaw unbind` CLI no longer crashes if the
+  `callGatewayMethod` helper falls back to its "non-JSON stdout" branch
+  (returning `{ ok: true }` without a payload). In that fallback the CLI
+  now prints `OK. Claw (unknown) bound to CoClaw.` / `OK. Claw (unknown)
+unbound from CoClaw.` instead of throwing `TypeError: Cannot destructure
+property 'clawId' of undefined`.
+
+  Behavior on the normal JSON path is unchanged.
+
+- a135cf4: Surface `archivedSessionId === currentSessionId` upstream-contract anomaly via
+  `remoteLog('chat-history.archived-equals-current ...')` instead of swallowing
+  it. The case happens when the gateway `session_start` hook delivers
+  `resumedFrom === sessionId` (an upstream-contract anomaly that should not
+  occur). The normalization (drop `archivedSessionId` to avoid a duplicate
+  head/archived entry in the same on-disk list) is unchanged; only the
+  diagnostic signal is added so a future upstream regression surfaces in remote
+  logs instead of silently disappearing.
+
+  No behavior change on the happy path — the log is only emitted on the
+  anomaly. Issue surfaced by the 8th-round deep-review (R-A SHOULD-S2).
+
+- b249d0a: Skip subagent `sessionKey` shapes in chat-history tracking.
+
+  OpenClaw spawns subagents with the sessionKey shape `agent:<id>:subagent:<uuid>`
+  (and nested `:subagent:` segments for grand-subagents). Previously the plugin
+  treated every `sessions.changed reason=create` event the same and recorded
+  those subagent sessionKeys into `coclaw-chat-history.json`, causing
+  unbounded growth of orphan unarchived heads (subagents only emit `create`,
+  never an archive/end event).
+
+  `handleSessionCreated` now early-returns when `parts[2]` (or any later
+  position) equals `'subagent'`, dropping the entry from chat-history and
+  emitting `remoteLog('chat-history.skip-subagent ...')` for observability.
+  The judgement starts at `parts[2]` so an agent literally named `subagent`
+  (sessionKey `agent:subagent:main`) is not affected.
+
+  Rationale: chat-history is for human-machine conversation streams, not for
+  internal subagent runs. The parent agent's transcript already contains the
+  subagent's final output (re-injected as a user message on completion), so no
+  user-visible data is lost.
+
+  Other non-main shapes (cron, IM, etc.) remain recorded — they are still
+  human-machine conversation streams that the UI may surface later.
+
+  No behavior change on `agent:<id>:main` or any other recorded shape. Plugin
+  patch only; no upstream version requirement change.
+
+- 8433ac1: Drop the `{ status: <data> }` wrap on the 6 RPC methods that had a CLI entry
+  (`coclaw.bind` / `unbind` / `enroll` / `providerAuth.setApiKey` / `list` /
+  `remove`). Handlers now return business payload directly. The shared
+  `callGatewayMethod` helper changes from extracting `.status` to passing the
+  parsed wire payload through as a `payload` field, and the in-package CLI
+  registrar reads `result.payload.xxx` accordingly.
+
+  The `{ status: <data> }` form was never a protocol requirement — it was a
+  private convention of the helper's `.status` unwrap behavior, originally
+  introduced to satisfy the upstream `openclaw gateway call --json` rule that
+  the payload must be a non-undefined JSON object (otherwise `endsWith`
+  TypeError). Each of the 6 handlers now returns a plain non-empty object
+  (`{}` for the empty case), so the upstream constraint remains satisfied.
+
+  External behavior is unchanged:
+
+  - CLI users see the same stdout text and exit codes
+  - The only wire-form consumer of these 6 methods is the same-package CLI
+    registrar (verified by repo-wide grep; server / UI / e2e / other plugins
+    do not consume them)
+  - `coclaw.upgradeHealth` (used by the auto-upgrade worker) was never wrapped
+    and is untouched; the worker's verification path is independent of the
+    helper and not affected
+
+- 4385130: Drop `peerDependencies.openclaw` and `peerDependenciesMeta.openclaw.optional`
+  from `package.json`. On pnpm v10 with `auto-install-peers` enabled (the
+  default), the `optional: true` marker was not honored in this monorepo setup
+  and pnpm pulled the entire `openclaw` package plus its transitive dependency
+  graph into `pnpm-lock.yaml` (~2700 line bloat). The OpenClaw plugin loader's
+  literal-import alias mechanism resolves `openclaw/plugin-sdk/*` independently
+  of any plugin-local `node_modules/openclaw` symlink, so the loader's reassert
+  step (gated on the peer declaration) is not required for runtime resolution.
+
+  Verified end-to-end on both install paths:
+
+  - `--link` (plugin-dir): stage has no `openclaw` symlink, RPC calls succeed
+  - `plugin-archive` (`npm pack` + install): installed `node_modules/` has no
+    `openclaw` symlink, RPC calls succeed
+
+  If SDK import ever fails at runtime, the chain of defenses is intact: no
+  top-level `openclaw` import exists in plugin source; the literal dynamic
+  imports live in arrow-function factories; first-call resolution is wrapped in
+  a `try/catch` that returns a structured `IO_FAILED` error; and the upstream
+  loader catches plugin load/register failures. The gateway main process is
+  never at risk.
+
+- 54500e5: Internal refactor of bridge ↔ chat-history wiring (no runtime behavior
+  change):
+
+  - `restartBridge` in the plugin entry now passes `handleSessionCreated`
+    directly as `onSessionCreated`; the previous inline `({ sessionKey,
+sessionId }) => handleSessionCreated({...})` adapter is removed. The
+    semantics are unchanged because `handleSessionCreated` already falls
+    back when `agentId` and `archivedSessionId` are missing (which is the
+    case for the `sessions.changed reason=create` event payload). The
+    adapter's documentation has been folded into the
+    `handleSessionCreated` jsdoc so the bridge-vs-hook input contract is
+    co-located with the function it describes.
+  - A test-only `__getSingletonForTest()` export is added to
+    `realtime-bridge.js`. It lets the bridge test suite pin the wiring
+    contract `restartRealtimeBridge({ onSessionCreated }) ⇒ singleton.__onSessionCreated === cb`,
+    including the negative case where a subsequent restart without the
+    callback recreates a singleton with `__onSessionCreated = null`.
+
+- 4d97ff9: Fix the provider-auth RPCs (`coclaw.providerAuth.setApiKey` / `list` /
+  `remove`) so the plugin-sdk import is actually picked up by OpenClaw's
+  plugin loader.
+
+  The SDK is now loaded via a literal `import('openclaw/plugin-sdk/provider-auth')`
+  in the plugin entry, and the resolved module is passed into the handler
+  registrar. OpenClaw's plugin loader only triggers the
+  `openclaw/plugin-sdk/*` alias rewrite when the bare specifier appears as a
+  string literal in the entry file's source. The previous variable-based
+  dynamic import sat in a sub-module, missed the loader scan, fell through
+  to native Node resolution, and failed because the link-stage
+  `node_modules/` doesn't bundle `openclaw`.
+
+  Note: the original `{ status: <data> }` response wrap shipped with this
+  commit has since been removed by the "drop coclaw status wrap" changeset;
+  the optional `openclaw` peerDependency declaration has since been removed
+  by the "drop optional openclaw peerDependency" changeset. See those
+  changesets for the current state of those concerns.
+
 ## 0.21.5
 
 ### Patch Changes
