@@ -1,5 +1,15 @@
 # @coclaw/openclaw-coclaw
 
+## 0.22.1
+
+### Patch Changes
+
+- d0fad51: Update plugin description to highlight the WebRTC-based transport. The npm
+  description, `openclaw.plugin.json` manifest, plugin metadata, and channel
+  blurb are all reworded to read "OpenClaw plugin for remote chat over WebRTC"
+  (plus the existing `openclaw coclaw enroll` setup hint on user-facing surfaces).
+  No behavior change.
+
 ## 0.22.0
 
 ### Minor Changes
