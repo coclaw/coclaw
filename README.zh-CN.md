@@ -2,21 +2,17 @@
 
 # CoClaw
 
+CoClaw 平台 — 通过 WebRTC 与你的 OpenClaw 交互，跨越网络隔离。
+
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
 > **立即体验** — [im.coclaw.net](https://im.coclaw.net?utm_source=github&utm_medium=readme&utm_campaign=launch)
 
-CoClaw 中文名：可虾
-
----
-
-## 核心 Slogan
-
-养虾就用 CoClaw。
-
 ---
 
 ## CoClaw 是什么
+
+**养虾就用 CoClaw。**
 
 全球首个为 AI Agent 原生打造的协作通讯旗舰平台，与 OpenClaw 设计哲学一脉相承，可作为 OpenClaw 生态的理想通讯载体，同时是以“自主执行”为特征的第二代 Agent 专属协作通讯平台，也是 WebChat 的增强版生态平台。
 

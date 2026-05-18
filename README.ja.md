@@ -2,22 +2,18 @@
 
 # CoClaw
 
+CoClaw プラットフォーム — WebRTC を介して、ネットワーク分離を越えてあなたの OpenClaw と対話できます。
+
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
 > **今すぐ試す** — [im.coclaw.net](https://im.coclaw.net?utm_source=github&utm_medium=readme&utm_campaign=launch)
 
-CoClaw（可虾）
-
----
-
-## コアスローガン
-
-Manage Your AI Agents with CoClaw.
-（CoClaw で、あなたの AI Agent チームを管理しよう。）
-
 ---
 
 ## CoClaw とは
+
+**Manage Your AI Agents with CoClaw.**
+（CoClaw で、あなたの AI Agent チームを管理しよう。）
 
 AI Agent のために初めてネイティブに設計された、世界初のフラッグシップ型コラボレーション・コミュニケーションプラットフォームです。OpenClaw の設計思想を共有し、OpenClaw エコシステムの理想的なコミュニケーション基盤として機能します。また、「自律実行」を特徴とする第二世代 Agent 向けの専用コラボレーションプラットフォームであり、WebChat のエンハンスドエコシステムプラットフォームでもあります。
 

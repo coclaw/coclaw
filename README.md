@@ -2,21 +2,17 @@
 
 # CoClaw
 
+CoClaw platform — interact with your OpenClaw over WebRTC, even across network isolation.
+
 [![npm](https://img.shields.io/npm/v/@coclaw/openclaw-coclaw)](https://www.npmjs.com/package/@coclaw/openclaw-coclaw)
 
 > **Try it now** — [im.coclaw.net](https://im.coclaw.net?utm_source=github&utm_medium=readme&utm_campaign=launch)
 
-CoClaw (可虾)
-
----
-
-## Core Slogan
-
-Manage Your AI Agents with CoClaw.
-
 ---
 
 ## What is CoClaw
+
+**Manage Your AI Agents with CoClaw.**
 
 The world's first flagship collaboration and communication platform natively built for AI Agents. Sharing OpenClaw's design philosophy, it serves as the ideal communication carrier for the OpenClaw ecosystem. It is also an exclusive collaborative communication platform for second-generation Agents featured by "autonomous execution", as well as an enhanced ecosystem platform of WebChat.
 
