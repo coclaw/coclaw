@@ -134,7 +134,7 @@ function respondInvalid(respond, message) {
 const plugin = {
 	id: 'openclaw-coclaw',
 	name: 'CoClaw',
-	description: 'OpenClaw CoClaw channel plugin for remote chat',
+	description: 'OpenClaw plugin for remote chat over WebRTC',
 	register(api) {
 		// 按 OpenClaw SDK 入口模式分叉（参照 defineChannelPluginEntry，见上游 plugin-sdk/core.ts 的
 		// defineChannelPluginEntry 实现 与 docs/plugins/sdk-entrypoints.md）：

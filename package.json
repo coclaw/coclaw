@@ -3,7 +3,7 @@
 	"version": "0.25.2",
 	"private": true,
 	"type": "module",
-	"description": "CoClaw platform — interact with your OpenClaw through CoClaw, even across network isolation",
+	"description": "CoClaw platform — interact with your OpenClaw over WebRTC, even across network isolation",
 	"license": "SEE LICENSE IN LICENSE",
 	"author": "CoClaw <https://coclaw.net>",
 	"homepage": "https://coclaw.net",

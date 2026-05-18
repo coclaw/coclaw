@@ -1,7 +1,7 @@
 {
   "id": "openclaw-coclaw",
   "name": "CoClaw",
-  "description": "OpenClaw CoClaw channel plugin for remote chat. Run `openclaw coclaw enroll` after install to connect to CoClaw.",
+  "description": "OpenClaw plugin for remote chat over WebRTC. Run `openclaw coclaw enroll` after install.",
   "activation": {
     "onStartup": true
   },

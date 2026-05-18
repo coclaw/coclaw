@@ -17,7 +17,7 @@ export const coclawChannelPlugin = {
 		label: 'CoClaw',
 		selectionLabel: 'CoClaw',
 		docsPath: 'https://docs.coclaw.net',
-		blurb: 'CoClaw channel plugin for remote chat',
+		blurb: 'CoClaw channel plugin for remote chat over WebRTC',
 	},
 	capabilities: {
 		chatTypes: ['direct'],
