@@ -1683,3 +1683,18 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——文档措辞优化，不影响代码行为。等下次架构整理一并修。
 
+## getById 大文件一次性 readFile + 全量解析的内存/CPU 压力
+
+**发现日期**：2026-05-19（getById fallback + 上限修复 deep review 综合实例识别）
+**关联 commit**：fix(openclaw-plugin): include .deleted archives in getById fallback and lift 500-message cap
+
+**问题**：`src/session-manager/manager.js` `getById` 拿掉 500 上限后，对几千条消息的长 transcript（可能数十 MB JSONL），`readTranscriptText` 用 `fsp.readFile` 一次性把整个文件读进内存，再 `iterTextLines` 逐行 JSON.parse 出 `messages` 数组，最后才（在传了正 limit 时）`slice(-N)`。即便调用方只想要尾部 N 条，也得先把整个文件 parse 完——内存峰值与 transcript 大小成正比，CPU 上也是无效解析。`iterTextLines` 有 `setImmediate` 让步避免单次 freeze event loop，但累计仍可能拖慢 gateway。
+
+**为什么本期未修**：本次任务 scope 只在去掉 500 上限和 fallback 拓宽。UI 主要痛点已记在 `ui/TODO.md` 同名条目；plugin 侧优化是 UI 选了"传正 limit"路径后才能省的事。
+
+**修复方向**：
+
+- 在 `getById` 检测到 `useLimit === true` 时走"tail-only"分支：从文件末尾分块（如 64KB）反向读，扫到 `limitNum + 1` 条 message 行后停止解析。需要小心处理 CRLF / 跨块行边界。
+- 或更激进：JSONL 按行落盘天然支持 tail，用 `fs.read(fd, ...)` + 自己的 line buffer 实现真正的"读够 N 条就停"。
+- 暂不动 `get`，因为它走 `cursor + limit` 分页，行为差异更大。
+

@@ -666,3 +666,18 @@ X4 触及面比 X1 广，需要重新评估：
 - 注意保留两类带单位描述的场景：
   - JSDoc 参数说明里的 "ms"（单位口径，不是后缀）
   - 局部变量描述如 "5 秒" / "30 秒"（中文场景按上下文）
+
+## 大 session 一次性渲染卡顿（coclaw.sessions.getById 解除 500 上限后）
+
+**发现日期**：2026-05-19（getById fallback + 上限修复 deep review 综合实例识别）
+**关联 commit**：fix(openclaw-plugin): include .deleted archives in getById fallback and lift 500-message cap
+
+**问题**：`plugins/openclaw/src/session-manager/manager.js` 的 `coclaw.sessions.getById` 拿掉默认 500 上限后，`chat.store.js` 两处调用（`__loadTopicMessages` :476 / `loadNextHistorySession` :1501）都不传 limit，会一次性把整条 transcript 塞进 `this.messages`，再由 ChatPage 的 `v-for` 全部铺到 DOM。对几千条消息的长 session，渲染开销与内存占用都会显著上升；返回值里也没有 `total`，所以无法做"加载更多"分页提示。
+
+**为什么本期未修**：本次修复 scope 只在 plugin 一侧（去掉历史的 500 静默截断），UI 改动要引入虚拟滚动 / 分段加载是独立大题。
+
+**修复方向**：
+
+- 短期：UI 在 `loadNextHistorySession` 处按段加载（一次只渲染一段），用户拉到顶时再拉下一段；同时把 `getById` 入参里的 `limit` 用起来（传 e.g. 500）作为兜底
+- 中期：引入虚拟滚动（如 `@tanstack/vue-virtual`）替换 `v-for` 全量渲染
+- 关联 plugin 侧候选：`getById` 在调用方传了正 `limit` 时改成 tail-only 解析（从文件末尾倒着读 + 行边界扫描），避免一次性 `readFile` 整个 JSONL 后再 `slice(-N)`——见 `plugins/openclaw/TODO.md` 同名条目
