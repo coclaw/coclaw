@@ -1407,8 +1407,8 @@ test('register full mode: all expected side effects fire with exact RPC method s
 	assert.equal(calls.cli, 1);
 	assert.equal(calls.command, 1);
 	assert.equal(calls.service, 2);
-	// session_start hook 注册
-	assert.equal(calls.on, 1);
+	// session_start + cron_changed hook 注册
+	assert.equal(calls.on, 2);
 	// 精确锁定 RPC 方法集合：增删 method 时强制更新本测试，防止静默回归
 	const expectedMethods = [
 		'coclaw.bind',
@@ -1457,7 +1457,7 @@ function registerWithSessionStartCapture(stateDir) {
 	setRuntime(null);
 	__resetRemoteLogPlugin();
 	const handlers = new Map();
-	let captured = null;
+	const hooks = new Map();
 	plugin.register({
 		registrationMode: 'full',
 		pluginConfig: {},
@@ -1472,10 +1472,11 @@ function registerWithSessionStartCapture(stateDir) {
 		registerCommand() {},
 		registerService() {},
 		registerGatewayMethod(name, handler) { handlers.set(name, handler); },
-		on(event, handler) { if (event === 'session_start') captured = handler; },
+		on(event, handler) { hooks.set(event, handler); },
 	});
-	assert.ok(captured, 'register full mode 应注册 session_start hook');
-	return { onSessionStart: captured };
+	assert.ok(hooks.get('session_start'), 'register full mode 应注册 session_start hook');
+	assert.ok(hooks.get('cron_changed'), 'register full mode 应注册 cron_changed hook');
+	return { onSessionStart: hooks.get('session_start'), onCronChanged: hooks.get('cron_changed') };
 }
 
 async function readChatHistoryFile(stateDir, agentId) {
@@ -1608,4 +1609,121 @@ test('handleSessionCreated: agentId 最终兜底 "main"（ctx 缺 + sessionKey �
 	const mainData = await readChatHistoryFile(dir, 'main');
 	assert.ok(mainData, 'main 兜底目录应有文件');
 	assert.equal(mainData['weird:not-agent:format']?.[0]?.sessionId, 'sid-c');
+});
+
+// ----- cron_changed hook：cron 顶替主会话 sid 的可感知通道（v2026.5.7 起） -----
+
+test('cron_changed: action=finished + 带 sessionId/sessionKey → 走 transition 落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-cron-ok-'));
+	const { onCronChanged } = registerWithSessionStartCapture(dir);
+	await onCronChanged({
+		action: 'finished',
+		sessionKey: 'agent:main:main',
+		sessionId: 'sid-cron-new',
+	});
+	const data = await readChatHistoryFile(dir, 'main');
+	assert.ok(data, 'cron_changed finished 应触发 chat-history 落盘');
+	assert.equal(data['agent:main:main']?.[0]?.sessionId, 'sid-cron-new');
+});
+
+test('cron_changed: action=finished 但无 sessionId（main 模式 cron）→ 早返不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-cron-noid-'));
+	const { onCronChanged } = registerWithSessionStartCapture(dir);
+	await onCronChanged({ action: 'finished', sessionKey: 'agent:main:main' });
+	assert.equal(await readChatHistoryFile(dir, 'main'), null, 'main 模式 cron 不应触发落盘');
+});
+
+test('cron_changed: action=finished 但无 sessionKey → 早返不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-cron-nosk-'));
+	const { onCronChanged } = registerWithSessionStartCapture(dir);
+	await onCronChanged({ action: 'finished', sessionId: 'sid-x' });
+	assert.equal(await readChatHistoryFile(dir, 'main'), null);
+});
+
+test('cron_changed: action != finished → 早返不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-cron-noact-'));
+	const { onCronChanged } = registerWithSessionStartCapture(dir);
+	for (const action of ['added', 'updated', 'removed', 'started', undefined]) {
+		await onCronChanged({
+			action,
+			sessionKey: 'agent:main:main',
+			sessionId: 'sid-skip',
+		});
+	}
+	assert.equal(await readChatHistoryFile(dir, 'main'), null);
+});
+
+test('cron_changed: agentId 走 sessionKey parts[1] 解析（hook event 不带 ctx.agentId）', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-cron-aid-'));
+	const { onCronChanged } = registerWithSessionStartCapture(dir);
+	await onCronChanged({
+		action: 'finished',
+		sessionKey: 'agent:sub-y:main',
+		sessionId: 'sid-cron-sub',
+	});
+	// 落到 sub-y 目录而非 main
+	const subData = await readChatHistoryFile(dir, 'sub-y');
+	assert.ok(subData, 'sub-y 目录应有 chat-history');
+	assert.equal(subData['agent:sub-y:main']?.[0]?.sessionId, 'sid-cron-sub');
+	assert.equal(await readChatHistoryFile(dir, 'main'), null);
+});
+
+test('启动期对账：sessions.json 当前 sid 不在 chat-history 头位 → reconcileAll 把老头位归档 + 新 sid 上位', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-recon-'));
+	const sessionsDir = nodePath.join(dir, 'agents', 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 1) 预置 chat-history：head 是 cron 顶替前的老 sid 'sid-old'
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'coclaw-chat-history.json'),
+		JSON.stringify({
+			version: 1,
+			'agent:main:main': [{ sessionId: 'sid-old' }],
+		}),
+		'utf8',
+	);
+	// 2) 预置 sessions.json：当前 sid 已变为 cron 顶替后的 'sid-new'
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({ 'agent:main:main': { sessionId: 'sid-new' } }),
+		'utf8',
+	);
+	registerWithSessionStartCapture(dir);
+	// fire-and-forget 链路：load → listAllEntries → reconcileAll。给若干 microtask 让它跑完
+	for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 5));
+	const data = await readChatHistoryFile(dir, 'main');
+	assert.ok(data, 'chat-history 文件仍存在');
+	const list = data['agent:main:main'];
+	assert.equal(list.length, 2, '对账应把 sid-old 归档 + sid-new 头插');
+	assert.equal(list[0].sessionId, 'sid-new');
+	assert.equal(list[0].archivedAt, undefined, 'sid-new 是新头位');
+	assert.equal(list[1].sessionId, 'sid-old');
+	assert.ok(typeof list[1].archivedAt === 'number', 'sid-old 应被归档');
+});
+
+test('cron_changed: 注册路径无副作用（api.on 不存在时不抛 / 不注册）', () => {
+	process.env.OPENCLAW_STATE_DIR = os.tmpdir();
+	setRuntime(null);
+	// 直接走 createSpyApi 在 cli-metadata 模式下，整个 register 路径不会到 on() 调用
+	const calls = {
+		channel: 0, cli: 0, command: 0, service: 0, gatewayMethod: 0, on: 0,
+	};
+	const handlers = new Map();
+	plugin.register({
+		registrationMode: 'cli-metadata',
+		pluginConfig: {},
+		runtime: {
+			state: { resolveStateDir: () => os.tmpdir() },
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
+		},
+		logger: { info() {}, warn() {}, error() {}, log() {} },
+		registerChannel() { calls.channel += 1; },
+		registerCli() { calls.cli += 1; },
+		registerCommand() { calls.command += 1; },
+		registerService() { calls.service += 1; },
+		registerGatewayMethod(name, handler) { calls.gatewayMethod += 1; handlers.set(name, handler); },
+		// 故意缺 on：cli-metadata 模式不到 on() 调用，但即便上游版本不提供 api.on 守卫也应生效
+	});
+	assert.equal(calls.cli, 1);
+	assert.equal(calls.on, 0);
 });

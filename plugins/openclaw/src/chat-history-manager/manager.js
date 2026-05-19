@@ -131,7 +131,35 @@ export class ChatHistoryManager {
 
 	async __persist(agentId) {
 		const store = this.__getStore(agentId);
+		// 自愈守卫：list[1..]（非头位）若仍有未归档项视为脏数据（cron 顶替 / 旧版本写入 / 异常 race
+		// 残留），强制补 archivedAt。放在 __persist 内是为了覆盖所有写盘路径——新增写入点自动受护。
+		this.__sanitizeAllSessionKeys(store, agentId);
 		await this.__writeJsonFile(this.__historyFilePath(agentId), store);
+	}
+
+	/**
+	 * 遍历 store 内每个 sessionKey 的 list，把 `list[1..]` 中 `!archivedAt` 的项强制
+	 * 写上 `archivedAt = Date.now()`。每修一条同时打本地 warn + remoteLog 暴露信号。
+	 * @param {object} store
+	 * @param {string} agentId
+	 */
+	__sanitizeAllSessionKeys(store, agentId) {
+		if (!store || typeof store !== 'object') return;
+		const now = Date.now();
+		for (const [sessionKey, list] of Object.entries(store)) {
+			if (!Array.isArray(list) || list.length <= 1) continue;
+			for (let i = 1; i < list.length; i++) {
+				const item = list[i];
+				if (!item || typeof item !== 'object' || item.archivedAt) continue;
+				item.archivedAt = now;
+				this.__logger.warn?.(
+					`[coclaw] chat-history sanitize: non-tail unarchived entry coerced sessionKey=${sessionKey} sid=${item.sessionId}`,
+				);
+				remoteLog(
+					`chat-history.sanitize-coerce sessionKey=${sessionKey} sid=${item.sessionId} agentId=${agentId}`,
+				);
+			}
+		}
 	}
 
 	/**
@@ -204,6 +232,27 @@ export class ChatHistoryManager {
 			list.unshift({ sessionId: currentSessionId });
 			await this.__persist(agentId);
 		});
+	}
+
+	/**
+	 * 启动期对账：把 sessions.json 当前 entries 喂进来，对每条调
+	 * recordSessionTransition；现有幂等 + sanitize 自动吞重复。用于覆盖 plugin/gateway
+	 * 重启窗口期 cron 顶替导致的漏归档（cron 不走 session_start hook、phase=message 走 DC 慢消费者
+	 * 也可能 drop，对账兜底）。
+	 *
+	 * @param {string} agentId
+	 * @param {{ sessionKey: string, sessionId: string }[]} entries
+	 */
+	async reconcileAll(agentId, entries) {
+		if (!Array.isArray(entries)) return;
+		for (const entry of entries) {
+			if (!entry || typeof entry !== 'object') continue;
+			await this.recordSessionTransition({
+				agentId,
+				sessionKey: entry.sessionKey,
+				currentSessionId: entry.sessionId,
+			});
+		}
 	}
 
 	/**

@@ -900,12 +900,16 @@ export class RealtimeBridge {
 				if (!this.gatewayReady) {
 					return;
 				}
-				// (a0) sessions.changed reason=create：调 caller 注入的回调（不绑定具体消费方），完事直接 return。
-				// 非 create 的 sessions.changed 与 session.message 由 (a) 过滤名单 drop——
+				// (a0) sessions.changed：调 caller 注入的回调（不绑定具体消费方），完事直接 return。
+				// 触发条件：
+				//   - reason=create（agent.send 自动新 session 时上游 emit，对账主通道）
+				//   - phase=message（cron 顶替主会话 sid 的兜底通道：cron 不走 session_start hook
+				//     也不发 reason=create；但每条 cron 消息都会 emit 一条 phase=message，借此可感知）
+				// 其他 reason / 缺 phase 的 sessions.changed 与 session.message 由 (a) 过滤名单 drop——
 				// 均属插件自用订阅，UI 不消费，落到兜底广播只会白占 DC 带宽与主线程序列化。
 				if (payload.type === 'event'
 					&& payload.event === 'sessions.changed'
-					&& payload.payload?.reason === 'create'
+					&& (payload.payload?.reason === 'create' || payload.payload?.phase === 'message')
 					&& typeof this.__onSessionCreated === 'function') {
 					const sk = payload.payload?.sessionKey;
 					const sid = payload.payload?.sessionId;

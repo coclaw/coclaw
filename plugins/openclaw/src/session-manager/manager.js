@@ -105,6 +105,20 @@ export function createSessionManager(options = {}) {
 		return data;
 	}
 
+	// 启动期对账用：直接读 sessions.json 把当前所有 sessionKey -> sessionId 摘出来。
+	// 不扫 transcript 文件 / 不做 stat，因此远比 listAll 轻量；缺/坏文件返回空数组。
+	async function listAllEntries(agentId = 'main') {
+		const idx = await readIndex(agentId);
+		const out = [];
+		for (const [sessionKey, item] of Object.entries(idx)) {
+			const sid = item?.sessionId;
+			if (typeof sessionKey !== 'string' || !sessionKey) continue;
+			if (typeof sid !== 'string' || !sid) continue;
+			out.push({ sessionKey, sessionId: sid });
+		}
+		return out;
+	}
+
 	async function listAll(params = {}) {
 		const agentId = typeof params.agentId === 'string' && params.agentId.trim() ? params.agentId.trim() : 'main';
 		const limit = clamp(params.limit, 1, 200, 50);
@@ -320,5 +334,5 @@ export function createSessionManager(options = {}) {
 		return { messages: sliced };
 	}
 
-	return { listAll, get, getById };
+	return { listAll, listAllEntries, get, getById };
 }

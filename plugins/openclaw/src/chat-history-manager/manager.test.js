@@ -859,3 +859,207 @@ test('默认构造：通过 setRuntime 端到端落盘到 <state-dir>/agents/mai
 		await fs.rm(tmpStateDir, { recursive: true, force: true });
 	}
 });
+
+// --- __sanitizeAllSessionKeys 守卫（__persist 内置；写盘前自愈非头位未归档项） ---
+
+test('sanitize - list[1..] 非末位有 unarchived → 强制 archive + warn + remoteLog', async () => {
+	const tmpDir = await makeTmpDir();
+	__resetRemoteLog();
+	const warns = [];
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir, {
+			logger: { info() {}, warn: (m) => warns.push(String(m)), error() {} },
+		});
+		// 预置一份脏数据：list = [head, mid (unarchived), tail (archived)]
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		const dirty = {
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' },
+				{ sessionId: 'mid' }, // 非头位但缺 archivedAt → 脏
+				{ sessionId: 'tail', archivedAt: 1000 },
+			],
+		};
+		await fs.writeFile(filePath, JSON.stringify(dirty));
+		await mgr.load('main');
+		// 触发任一次 record（即便 noop 路径，最终若有写盘也会走 __persist；这里通过
+		// 一次会写盘的 transition 触发 sanitize）：unshift 新 head 'new'，老 head→archived
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'new',
+		});
+		const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+		const list = parsed['agent:main:main'];
+		// 新结构：[new, head@arch, mid@arch, tail@1000]
+		assert.equal(list.length, 4);
+		assert.equal(list[0].sessionId, 'new');
+		assert.equal(list[0].archivedAt, undefined, '新 head 不应被 sanitize 误归档');
+		assert.equal(list[1].sessionId, 'head');
+		assert.ok(typeof list[1].archivedAt === 'number');
+		assert.equal(list[2].sessionId, 'mid');
+		assert.ok(typeof list[2].archivedAt === 'number', 'sanitize 应补上 mid.archivedAt');
+		assert.equal(list[3].sessionId, 'tail');
+		assert.equal(list[3].archivedAt, 1000, 'tail 已有 archivedAt 不应被覆写');
+		// warn + remoteLog 必须各打一条
+		const sanitizeWarns = warns.filter((m) => m.includes('chat-history sanitize'));
+		assert.equal(sanitizeWarns.length, 1, '应打一条 sanitize warn');
+		assert.match(sanitizeWarns[0], /sid=mid/);
+		const remoteLogs = __remoteLogBuf.filter((r) => r.text.startsWith('chat-history.sanitize-coerce'));
+		assert.equal(remoteLogs.length, 1);
+		assert.match(remoteLogs[0].text, /sid=mid/);
+		assert.match(remoteLogs[0].text, /agentId=main/);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+test('sanitize - list[1..] 全 archived → noop（不 warn 不 remoteLog）', async () => {
+	const tmpDir = await makeTmpDir();
+	__resetRemoteLog();
+	const warns = [];
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir, {
+			logger: { info() {}, warn: (m) => warns.push(String(m)), error() {} },
+		});
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' },
+				{ sessionId: 'a', archivedAt: 1000 },
+				{ sessionId: 'b', archivedAt: 2000 },
+			],
+		}));
+		await mgr.load('main');
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'new',
+		});
+		// sanitize 应不动 a/b 的 archivedAt
+		const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+		const list = parsed['agent:main:main'];
+		assert.equal(list[2].archivedAt, 1000);
+		assert.equal(list[3].archivedAt, 2000);
+		assert.equal(warns.filter((m) => m.includes('chat-history sanitize')).length, 0);
+		assert.equal(
+			__remoteLogBuf.filter((r) => r.text.startsWith('chat-history.sanitize-coerce')).length, 0,
+		);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+test('sanitize - list 仅一项（末位 unarchived）→ noop', async () => {
+	const tmpDir = await makeTmpDir();
+	__resetRemoteLog();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'A',
+		});
+		// 此时 list = [A]（未归档头位 + 没有 list[1..]）
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 1);
+		assert.equal(history[0].sessionId, 'A');
+		assert.equal(history[0].archivedAt, undefined, '单项 list 头位不应被 sanitize');
+		assert.equal(
+			__remoteLogBuf.filter((r) => r.text.startsWith('chat-history.sanitize-coerce')).length, 0,
+		);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// --- reconcileAll：启动期对账 ---
+
+test('reconcileAll - entries 中 sessionKey 头位与 currentSessionId 不一致 → 触发 transition（cron 顶替场景）', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		// 预置 head = A（cron 顶替前主会话）
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'A',
+		});
+		// 启动期发现 sessions.json 主会话已是 B（cron 顶替后） → 对账应翻 A 为 archived + 头插 B
+		await mgr.reconcileAll('main', [
+			{ sessionKey: 'agent:main:main', sessionId: 'B' },
+		]);
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 2);
+		assert.equal(history[0].sessionId, 'B');
+		assert.equal(history[0].archivedAt, undefined, 'B 是新头位');
+		assert.equal(history[1].sessionId, 'A');
+		assert.ok(typeof history[1].archivedAt === 'number', 'A 应被归档');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+test('reconcileAll - entries 中头位 sid 与 currentSessionId 一致 → noop（幂等）', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir);
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		const writes = [];
+		const wrappedMgr = new ChatHistoryManager({
+			resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'),
+			logger: silentLogger,
+			writeJsonFile: async (p, data) => {
+				writes.push(p);
+				await fs.writeFile(p, JSON.stringify(data));
+			},
+		});
+		void mgr;
+		await wrappedMgr.load('main');
+		await wrappedMgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'A',
+		});
+		const writeCountBefore = writes.length;
+		// 对账时 sessions.json 还是 A，与 head 一致 → 整体 no-op，不写盘
+		await wrappedMgr.reconcileAll('main', [
+			{ sessionKey: 'agent:main:main', sessionId: 'A' },
+		]);
+		assert.equal(writes.length, writeCountBefore, '幂等对账不应触发新写盘');
+		// 仍只有一条记录
+		const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+		assert.equal(parsed['agent:main:main'].length, 1);
+		assert.equal(parsed['agent:main:main'][0].sessionId, 'A');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+test('reconcileAll - entries 非数组 / 空 → 静默忽略', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		await mgr.reconcileAll('main', undefined);
+		await mgr.reconcileAll('main', null);
+		await mgr.reconcileAll('main', []);
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.deepStrictEqual(history, []);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+test('reconcileAll - entries 含非法行 → 跳过非法、合法行仍生效', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		await mgr.reconcileAll('main', [
+			null,
+			'not-an-object',
+			{ sessionKey: 'agent:main:main' }, // 缺 sessionId → recordSessionTransition 内部早返
+			{ sessionId: 'no-sk' }, // 缺 sessionKey → 内部早返
+			{ sessionKey: 'agent:main:main', sessionId: 'X' }, // 合法
+		]);
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 1);
+		assert.equal(history[0].sessionId, 'X');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});

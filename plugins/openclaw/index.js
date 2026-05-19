@@ -175,9 +175,12 @@ const plugin = {
 		topicManager.load('main').catch((err) => {
 			logger.warn?.(`[coclaw] topic manager load failed: ${String(err?.message ?? err)}`);
 		});
-		chatHistoryManager.load('main').catch((err) => {
-			logger.warn?.(`[coclaw] chat history manager load failed: ${String(err?.message ?? err)}`);
-		});
+		chatHistoryManager.load('main')
+			.then(() => manager.listAllEntries('main'))
+			.then((entries) => chatHistoryManager.reconcileAll('main', entries))
+			.catch((err) => {
+				logger.warn?.(`[coclaw] chat history manager load/reconcile failed: ${String(err?.message ?? err)}`);
+			});
 
 		// 追踪 chat 因 reset 产生的 session 流水。双源回调（hook + sessions.changed）共用 helper。
 		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。
@@ -249,6 +252,18 @@ const plugin = {
 					sessionKey: event?.sessionKey,
 					sessionId: event?.sessionId,
 					archivedSessionId: event?.resumedFrom,
+				});
+			});
+			// cron 顶替主会话 sid 时不走 session_start hook、不广播 sessions.changed reason=create。
+			// cron_changed action=finished 是 cron 完成的可感知通道（v2026.5.7 已支持，见
+			// openclaw-repo/src/plugins/hook-types.ts）。main 模式 cron 不带 sessionId → 早返天然过滤；
+			// 真触发顶替的"显式 session:<sk>"/"current" 路径 event.sessionId/sessionKey 都齐。
+			api.on('cron_changed', async (event) => {
+				if (event?.action !== 'finished') return;
+				if (!event?.sessionId || !event?.sessionKey) return;
+				await handleSessionCreated({
+					sessionKey: event.sessionKey,
+					sessionId: event.sessionId,
 				});
 			});
 		}

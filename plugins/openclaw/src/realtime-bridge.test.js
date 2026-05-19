@@ -6060,6 +6060,33 @@ test('sessions.changed reason=create：调用 onSessionCreated 回调且不 broa
 	}
 });
 
+test('sessions.changed phase=message：调用 onSessionCreated 回调且不 broadcast（cron 顶替兜底通道）', async () => {
+	const calls = [];
+	const broadcastCalls = [];
+	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_phase_msg');
+	try {
+		bridge.__onSessionCreated = ({ sessionKey, sessionId }) => {
+			calls.push({ sessionKey, sessionId });
+		};
+		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
+		gwWs.emit('message', {
+			data: JSON.stringify({
+				type: 'event',
+				event: 'sessions.changed',
+				payload: { phase: 'message', sessionKey: 'agent:main:main', sessionId: 'cron-sid-1' },
+			}),
+		});
+		await waitFor(() => calls.length === 1, { label: 'onSessionCreated invoked for phase=message' });
+		assert.equal(calls[0].sessionKey, 'agent:main:main');
+		assert.equal(calls[0].sessionId, 'cron-sid-1');
+		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		assert.equal(broadcastCalls.length, 0, 'phase=message 不应 broadcast 到 UI');
+	} finally {
+		await bridge.stop();
+		restoreHomedir(prevHome);
+	}
+});
+
 test('sessions.changed reason!=create：不调回调也不 broadcast（M2 过滤名单 drop）', async () => {
 	const calls = [];
 	const broadcastCalls = [];

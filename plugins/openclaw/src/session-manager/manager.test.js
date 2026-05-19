@@ -649,3 +649,59 @@ test('默认构造：通过 setRuntime 走 claw-paths 默认布局解析路径',
 		await fs.rm(tmpStateDir, { recursive: true, force: true });
 	}
 });
+
+// listAllEntries: 把 sessions.json 中 (sessionKey, sessionId) 对全部摘出来，供启动期对账使用。
+test('listAllEntries: 读 sessions.json 返回所有 sessionKey + 当前 sessionId', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-le-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({
+			'agent:main:main': { sessionId: 'sid-main' },
+			'agent:main:topic-1': { sessionId: 'sid-topic-1' },
+		}),
+		'utf8',
+	);
+	const manager = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	const entries = await manager.listAllEntries('main');
+	entries.sort((a, b) => a.sessionKey.localeCompare(b.sessionKey));
+	assert.deepEqual(entries, [
+		{ sessionKey: 'agent:main:main', sessionId: 'sid-main' },
+		{ sessionKey: 'agent:main:topic-1', sessionId: 'sid-topic-1' },
+	]);
+});
+
+test('listAllEntries: 缺 sessions.json / 缺/坏 sessionId 行被跳过', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-le-empty-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	const manager = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+
+	// 1) 没有 sessions.json → 空数组
+	assert.deepEqual(await manager.listAllEntries('main'), []);
+
+	// 2) sessions.json 含异常项（缺 sessionId / 非字符串）→ 仅保留合法项
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({
+			'agent:main:main': { sessionId: 'sid-ok' },
+			'agent:main:bad-empty': {},
+			'agent:main:bad-num': { sessionId: 42 },
+			'agent:main:bad-empty-str': { sessionId: '' },
+		}),
+		'utf8',
+	);
+	const entries = await manager.listAllEntries('main');
+	assert.deepEqual(entries, [{ sessionKey: 'agent:main:main', sessionId: 'sid-ok' }]);
+});
