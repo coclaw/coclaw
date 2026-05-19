@@ -2251,7 +2251,10 @@ describe('ChatPage scroll', () => {
 			// 走第二条分支：当前 session 内无更多消息，跨 session 拉历史
 			storeA.hasMoreMessages = false;
 			storeA.messagesLoading = false;
-			storeA.historyExhausted = false;
+			// historyExhausted 现在是 getter，由 rawHistorySessionIds + counter 推导；
+			// 设置 raw 为有内容且 counter=0 → exhausted=false
+			storeA.rawHistorySessionIds = [{ sessionId: 'h1', archivedAt: 100 }];
+			storeA.__historyLoadedCount = 0;
 			storeA.historyLoading = false;
 			let resolveLoad;
 			storeA.loadNextHistorySession = vi.fn().mockReturnValue(new Promise((r) => { resolveLoad = r; }));

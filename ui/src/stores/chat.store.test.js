@@ -5749,19 +5749,101 @@ describe('useChatStore', () => {
 			expect(store.__historyListPromise).toBeNull();
 		});
 
-		test('过滤 archivedAt 为 null 或缺失的条目（plugin 新契约的当前 session 标记）', async () => {
+		// historySessionIds getter 容错语义：仅头条（index 0）archivedAt==null 时才是
+		// "live marker 候选"，且只有在能确认与 currentSessionId 匹配时才剔除；
+		// 其它情形（未知 / 不匹配 / 非头条出现未归档异常）一律保留。
+
+		test('getter: 头条未归档 + currentSessionId 未知 → 默认剔除头条', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
-			// 模拟 plugin 新契约返回：含一个 archivedAt=null（当前 session）+ 一个无 archivedAt 字段
-			// + 两个正常归档的孤儿。UI 应只保留两个孤儿。
 			const conn = mockConn();
 			conn.request.mockResolvedValue({
 				history: [
-					{ sessionId: 'orphan-1', archivedAt: 100 },
-					{ sessionId: 'orphan-2', archivedAt: 200 },
-					{ sessionId: 'missing-field' },
-					{ sessionId: 'current-session', archivedAt: null },
+					{ sessionId: 'current-marker', archivedAt: null },
+					{ sessionId: 'orphan-1', archivedAt: 200 },
+					{ sessionId: 'orphan-2', archivedAt: 100 },
+				],
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			// currentSessionId 保持默认 null
+
+			await store.__loadChatHistory();
+
+			expect(store.historySessionIds).toEqual([
+				{ sessionId: 'orphan-1', archivedAt: 200 },
+				{ sessionId: 'orphan-2', archivedAt: 100 },
+			]);
+			expect(store.historyExhausted).toBe(false);
+		});
+
+		test('getter: 头条未归档 + currentSessionId 与头条匹配 → 剔除头条', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({
+				history: [
+					{ sessionId: 'current-marker', archivedAt: null },
+					{ sessionId: 'orphan-1', archivedAt: 200 },
+				],
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.currentSessionId = 'current-marker';
+
+			await store.__loadChatHistory();
+
+			expect(store.historySessionIds).toEqual([
+				{ sessionId: 'orphan-1', archivedAt: 200 },
+			]);
+		});
+
+		test('getter: 头条未归档 + currentSessionId 与头条不匹配（异常）→ 保留头条', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({
+				history: [
+					{ sessionId: 'stale-marker', archivedAt: null },
+					{ sessionId: 'orphan-1', archivedAt: 200 },
+				],
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.currentSessionId = 'real-live-session';
+
+			await store.__loadChatHistory();
+
+			// 头条 sessionId 与真实 live 不一致 → 保留头条（防御异常路径）
+			expect(store.historySessionIds).toEqual([
+				{ sessionId: 'stale-marker', archivedAt: null },
+				{ sessionId: 'orphan-1', archivedAt: 200 },
+			]);
+			expect(store.historyExhausted).toBe(false);
+		});
+
+		test('getter: 头条已归档 + 中间出现未归档异常项 → 全部保留', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({
+				history: [
+					{ sessionId: 'orphan-1', archivedAt: 200 },
+					{ sessionId: 'anomaly-missing' }, // 中间位置无 archivedAt
+					{ sessionId: 'orphan-3', archivedAt: 50 },
 				],
 			});
 			setConn('1', conn);
@@ -5772,18 +5854,18 @@ describe('useChatStore', () => {
 
 			await store.__loadChatHistory();
 
+			// 头条已归档 → 不做 head filter，异常项也保留
 			expect(store.historySessionIds).toEqual([
-				{ sessionId: 'orphan-1', archivedAt: 100 },
-				{ sessionId: 'orphan-2', archivedAt: 200 },
+				{ sessionId: 'orphan-1', archivedAt: 200 },
+				{ sessionId: 'anomaly-missing' },
+				{ sessionId: 'orphan-3', archivedAt: 50 },
 			]);
-			expect(store.historyExhausted).toBe(false);
 		});
 
-		test('过滤后列表为空时设置 historyExhausted 为 true', async () => {
+		test('getter: 列表里仅有头条 marker 且匹配 currentSessionId → 过滤后空，exhausted', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
-			// 列表里只有"当前 session"标记（archivedAt=null），过滤后为空
 			const conn = mockConn();
 			conn.request.mockResolvedValue({
 				history: [{ sessionId: 'current-only', archivedAt: null }],
@@ -5793,11 +5875,104 @@ describe('useChatStore', () => {
 			const store = useChatStore();
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
+			store.currentSessionId = 'current-only';
 
 			await store.__loadChatHistory();
 
 			expect(store.historySessionIds).toEqual([]);
 			expect(store.historyExhausted).toBe(true);
+		});
+
+		test('getter: currentSessionId 晚于 raw 到达 → computed 自动重算', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockResolvedValue({
+				history: [
+					{ sessionId: 'live-id', archivedAt: null },
+					{ sessionId: 'orphan-1', archivedAt: 100 },
+				],
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			// 第一步：raw 已到，currentSessionId 仍未知 → 默认剔除头条
+			await store.__loadChatHistory();
+			expect(store.historySessionIds).toEqual([
+				{ sessionId: 'orphan-1', archivedAt: 100 },
+			]);
+
+			// 第二步：currentSessionId 到达且与头条不匹配 → computed 重算，头条被保留
+			store.currentSessionId = 'someone-else';
+			expect(store.historySessionIds).toEqual([
+				{ sessionId: 'live-id', archivedAt: null },
+				{ sessionId: 'orphan-1', archivedAt: 100 },
+			]);
+
+			// 第三步：currentSessionId 修正为头条 → 头条再次被剔除
+			store.currentSessionId = 'live-id';
+			expect(store.historySessionIds).toEqual([
+				{ sessionId: 'orphan-1', archivedAt: 100 },
+			]);
+		});
+
+		test('getter: raw 三态 — null 时 historySessionIds=[]、historyExhausted=false', () => {
+			const store = useChatStore();
+			expect(store.rawHistorySessionIds).toBeNull();
+			expect(store.historySessionIds).toEqual([]);
+			expect(store.historyExhausted).toBe(false);
+		});
+
+		test('角落案例固化：异常头条 + 用户已先于 currentSessionId 加载历史 → 头条不可达', async () => {
+			// 触发条件：用户在 currentSessionId 到达前已把全部 archived 加载完，
+			// 之后 currentSessionId 到达且与头条不匹配 → 头条进入 computed 但 counter 已越过 index 0。
+			// 这是已知限制，刷新或重进 chat 即恢复。本测试固化预期，避免后续被误判为回归。
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({ messages: [] });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.__messagesLoaded = true;
+			store.rawHistorySessionIds = [
+				{ sessionId: 'stale-marker', archivedAt: null }, // 头条非归档
+				{ sessionId: 'orphan-a', archivedAt: 200 },
+				{ sessionId: 'orphan-b', archivedAt: 100 },
+			];
+			// currentSessionId 暂时未知 → 默认剔除头条
+			expect(store.historySessionIds).toHaveLength(2);
+
+			// 用户先把全部可见历史拉完
+			await store.loadNextHistorySession();
+			await store.loadNextHistorySession();
+			expect(store.__historyLoadedCount).toBe(2);
+			expect(store.historyExhausted).toBe(true);
+
+			// 此后 currentSessionId 到达，与头条不匹配 → 头条本应保留
+			store.currentSessionId = 'real-live';
+			expect(store.historySessionIds).toHaveLength(3);
+			expect(store.historyExhausted).toBe(false);
+
+			// 但 counter 已为 2，再触发加载只会跳过 orphan-b（已在 segments）并退出
+			const ok = await store.loadNextHistorySession();
+			expect(ok).toBe(false);
+			const getByIdCalls = conn.request.mock.calls
+				.filter(([m]) => m === 'coclaw.sessions.getById');
+			// 仅前两次 prefix 加载，stale-marker 不会被拉
+			expect(getByIdCalls.map((c) => c[1].sessionId)).toEqual(['orphan-a', 'orphan-b']);
 		});
 	});
 
@@ -5825,7 +6000,7 @@ describe('useChatStore', () => {
 			const store = useChatStore();
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
-			store.historySessionIds = [
+			store.rawHistorySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 200 },
 				{ sessionId: 'hist-2', archivedAt: 100 },
 			];
@@ -5850,7 +6025,7 @@ describe('useChatStore', () => {
 			const store = useChatStore();
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
-			store.historySessionIds = [
+			store.rawHistorySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 100 },
 			];
 
@@ -5860,8 +6035,10 @@ describe('useChatStore', () => {
 
 		test('已 exhausted 时返回 false', async () => {
 			const store = useChatStore();
-			store.historyExhausted = true;
+			// raw 已加载且过滤后空 → historyExhausted getter 返回 true
+			store.rawHistorySessionIds = [];
 
+			expect(store.historyExhausted).toBe(true);
 			const ok = await store.loadNextHistorySession();
 			expect(ok).toBe(false);
 		});
@@ -5884,7 +6061,7 @@ describe('useChatStore', () => {
 
 		test('无更多 session 时设置 historyExhausted（消息已加载）', async () => {
 			const store = useChatStore();
-			store.historySessionIds = [];
+			store.rawHistorySessionIds = []; // 已加载且空
 			store.__messagesLoaded = true;
 
 			const ok = await store.loadNextHistorySession();
@@ -5910,7 +6087,7 @@ describe('useChatStore', () => {
 			const store = useChatStore();
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
-			store.historySessionIds = [
+			store.rawHistorySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 200 },
 				{ sessionId: 'hist-2', archivedAt: 100 },
 			];
@@ -5936,7 +6113,7 @@ describe('useChatStore', () => {
 			const store = useChatStore();
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
-			store.historySessionIds = [
+			store.rawHistorySessionIds = [
 				{ sessionId: 'hist-1', archivedAt: 200 },
 				{ sessionId: 'hist-2', archivedAt: 100 },
 			];
@@ -5960,7 +6137,7 @@ describe('useChatStore', () => {
 			const store = useChatStore();
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
-			store.historySessionIds = [{ sessionId: 'hist-1', archivedAt: 100 }];
+			store.rawHistorySessionIds = [{ sessionId: 'hist-1', archivedAt: 100 }];
 
 			const ok = await store.loadNextHistorySession();
 			expect(ok).toBe(false);
@@ -5986,17 +6163,17 @@ describe('useChatStore', () => {
 			store.clawId = '1';
 			store.chatSessionKey = 'agent:main:main';
 			store.__messagesLoaded = true;
-			store.historySessionIds = [];
+			store.rawHistorySessionIds = []; // 已加载且空
 
 			const ok = await store.loadNextHistorySession();
 			expect(ok).toBe(false);
 			expect(store.historyExhausted).toBe(true);
 		});
 
-		test('source-filter 守住下游：含 current marker 的 list 不会触发 getById 拉取 marker', async () => {
-			// 端到端校验 __loadChatHistory 的 filter 真正保护下游：
-			// 即便 plugin 把"当前 session"作为无 archivedAt 的条目写进 list，
-			// 后续 loadNextHistorySession 也不应去 RPC 拉取它的 messages。
+		test('source-filter 守住下游：头条 current marker 不会触发 getById 拉取', async () => {
+			// 端到端校验 historySessionIds getter 真正保护下游：
+			// plugin 把"当前 session"作为头条（archivedAt=null）写进 list，
+			// 后续 loadNextHistorySession 不应去 RPC 拉取它的 messages。
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -6005,8 +6182,8 @@ describe('useChatStore', () => {
 				if (method === 'coclaw.chatHistory.list') {
 					return Promise.resolve({
 						history: [
-							{ sessionId: 'orphan-1', archivedAt: 200 },
 							{ sessionId: 'current-marker', archivedAt: null },
+							{ sessionId: 'orphan-1', archivedAt: 200 },
 						],
 					});
 				}
@@ -6023,7 +6200,7 @@ describe('useChatStore', () => {
 			store.__messagesLoaded = true;
 
 			await store.__loadChatHistory();
-			// 连调两次：第一次应拉 orphan-1，第二次应判定耗尽（current-marker 被 filter 掉了）
+			// 连调两次：第一次应拉 orphan-1，第二次应判定耗尽（current-marker 被 getter 剔除）
 			await store.loadNextHistorySession();
 			await store.loadNextHistorySession();
 
@@ -6032,6 +6209,53 @@ describe('useChatStore', () => {
 			expect(getByIdCalls).toHaveLength(1);
 			expect(getByIdCalls[0][1].sessionId).toBe('orphan-1');
 			expect(store.historyExhausted).toBe(true);
+		});
+
+		test('角落案例固化：异常头条已加载进 segments 后 currentSessionId 修正对上 → segments 不回收（已知限制）', async () => {
+			// 场景：raw=[head_null, A]，currentSessionId 暂未知/不匹配让 getter 保留头条 →
+			// 用户向上滚动把头条加载进 historySegments → currentSessionId 后到对上头条 →
+			// getter 把头条剔出 historySessionIds，但 historySegments 仍持有该 sessionId。
+			// 结果：ChatPage 渲染历史区会出现"当前 live session"片段，与下方的当前消息区
+			// 显示同一 sessionId 内容（短暂重复）。这是已知限制；自愈路径是刷新 / 重进 chat
+			// 让 __loadChatHistory 重新拉 raw + 重置 historySegments。本测试固化此预期，
+			// 避免未来被误判为回归——如果决定加防御回收 segments，本测试应当主动失败再删除。
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({ messages: [
+						{ id: 'msg-head', type: 'message', message: { role: 'user', content: 'in head session' } },
+					] });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.__messagesLoaded = true;
+			store.currentSessionId = 'stale-other'; // 与头条不匹配 → getter 保留头条
+			store.rawHistorySessionIds = [
+				{ sessionId: 'head-id', archivedAt: null },
+				{ sessionId: 'orphan-1', archivedAt: 100 },
+			];
+
+			expect(store.historySessionIds).toHaveLength(2);
+
+			// 用户滚到底部加载头条
+			const ok = await store.loadNextHistorySession();
+			expect(ok).toBe(true);
+			expect(store.historySegments.some((s) => s.sessionId === 'head-id')).toBe(true);
+
+			// currentSessionId 后到，修正对上头条 → getter 剔除头条
+			store.currentSessionId = 'head-id';
+			expect(store.historySessionIds.map((it) => it.sessionId)).toEqual(['orphan-1']);
+
+			// 已知限制：historySegments 不会被自动清理，头条 sessionId 仍在
+			expect(store.historySegments.some((s) => s.sessionId === 'head-id')).toBe(true);
 		});
 	});
 

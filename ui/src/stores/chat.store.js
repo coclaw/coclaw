@@ -78,12 +78,18 @@ export function createChatStore(storeKey, opts = {}) {
 			__loadedMsgLimit: MSG_PAGE_SIZE,
 
 			// 历史懒加载（session 模式）
-			/** @type {{ sessionId: string, archivedAt: number }[]} */
-			historySessionIds: [],
+			/**
+			 * plugin coclaw.chatHistory.list 返回的原始 list，三态：
+			 *   null  - 尚未加载
+			 *   []    - 加载完空
+			 *   [...] - 加载完有内容
+			 * 过滤后的 historySessionIds 由 getter 推导，避免与 currentSessionId 时序耦合
+			 * @type {{ sessionId: string, archivedAt?: number|null }[] | null}
+			 */
+			rawHistorySessionIds: null,
 			/** @type {{ sessionId: string, archivedAt: number, messages: object[] }[]} */
 			historySegments: [],
 			historyLoading: false,
-			historyExhausted: topicMode,
 			__historyLoadedCount: 0,
 
 			// 附件上传状态
@@ -206,6 +212,42 @@ export function createChatStore(storeKey, opts = {}) {
 			 */
 			isLoadingMessages() {
 				return !!(this.__silentLoadPromise || this.__loadPromise);
+			},
+			/**
+			 * 过滤后的孤儿 session 列表（供历史懒加载消费）
+			 *
+			 * 容错策略：plugin 的 chatHistory.list 头条若 archivedAt 为空，是"当前活跃 session"
+			 * 的标记，但理论上有可能与 main channel 的真实 live sessionId 不一致（上游事件乱序
+			 * 等异常）。判定：
+			 * - 头条 archivedAt 非空 → 列表里没有 live marker，全部保留
+			 * - 头条 archivedAt 为空 + currentSessionId 已知且不匹配 → 异常路径，保留头条（防御）
+			 * - 头条 archivedAt 为空 + currentSessionId 未知（默认路径）或已知匹配 → 剔除头条
+			 *
+			 * "未知 → 剔除"是有意为之的默认路径：plugin 头条本就被设计成 live marker，多数
+			 * 情形下成立。currentSessionId 后到时 getter 会自然重算，让异常路径回到"保留"。
+			 *
+			 * @returns {{ sessionId: string, archivedAt?: number|null }[]}
+			 */
+			historySessionIds() {
+				const raw = this.rawHistorySessionIds;
+				if (!Array.isArray(raw) || raw.length === 0) return [];
+				const head = raw[0];
+				if (head?.archivedAt != null) return raw;
+				if (this.currentSessionId != null && head?.sessionId !== this.currentSessionId) {
+					return raw;
+				}
+				return raw.slice(1);
+			},
+			/**
+			 * 是否已无更多历史可加载
+			 * - topic 模式恒 true
+			 * - raw 未加载时返回 false（未决，不可声称 exhausted）
+			 * - 否则由 counter 与 computed 列表长度比较推导
+			 */
+			historyExhausted() {
+				if (this.topicMode) return true;
+				if (this.rawHistorySessionIds == null) return false;
+				return this.__historyLoadedCount >= this.historySessionIds.length;
 			},
 		},
 		actions: {
@@ -1439,20 +1481,15 @@ export function createChatStore(storeKey, opts = {}) {
 							agentId,
 							sessionKey: this.chatSessionKey,
 						}, { timeout: 60_000 });
-						// plugin 新契约可能把当前 session 作为末条写入 list（archivedAt 为 null/缺省）；
-						// UI 仍按"孤儿列表"语义消费，此处源头过滤，下游逻辑不动。
-						// 双等同时排除 null 与 undefined。
-						const rawHistory = Array.isArray(result?.history) ? result.history : [];
-						this.historySessionIds = rawHistory.filter((item) => item?.archivedAt != null);
-						this.historyExhausted = this.historySessionIds.length === 0;
+						// 仅存 raw；过滤交给 historySessionIds getter 推导，避免与 currentSessionId 时序耦合
+						this.rawHistorySessionIds = Array.isArray(result?.history) ? result.history : [];
 						this.__historyLoadedCount = 0;
-						console.debug('[chat] loadChatHistory: %d orphan sessions, exhausted=%s',
-							this.historySessionIds.length, this.historyExhausted);
+						console.debug('[chat] loadChatHistory: raw=%d filtered=%d',
+							this.rawHistorySessionIds.length, this.historySessionIds.length);
 					}
 					catch (err) {
 						console.warn('[chat] loadChatHistory failed:', err?.message);
-						this.historySessionIds = [];
-						this.historyExhausted = true;
+						this.rawHistorySessionIds = [];
 					}
 					finally {
 						this.__historyListPromise = null;
@@ -1469,8 +1506,8 @@ export function createChatStore(storeKey, opts = {}) {
 			async loadNextHistorySession() {
 				if (this.topicMode || this.historyExhausted || this.historyLoading) return false;
 
-				// historySessionIds 尚未初始化时不能判定 exhausted
-				if (this.historySessionIds.length === 0 && !this.__messagesLoaded) {
+				// raw 未加载时不能判定 exhausted
+				if (this.rawHistorySessionIds == null && !this.__messagesLoaded) {
 					return false;
 				}
 
@@ -1485,7 +1522,6 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 
 				if (this.__historyLoadedCount >= this.historySessionIds.length) {
-					this.historyExhausted = true;
 					return false;
 				}
 
@@ -1511,18 +1547,11 @@ export function createChatStore(storeKey, opts = {}) {
 						...this.historySegments,
 					];
 					this.__historyLoadedCount++;
-
-					if (this.__historyLoadedCount >= this.historySessionIds.length) {
-						this.historyExhausted = true;
-					}
 					return true;
 				}
 				catch (err) {
 					console.warn('[chat] loadNextHistorySession failed:', err?.message);
 					this.__historyLoadedCount++;
-					if (this.__historyLoadedCount >= this.historySessionIds.length) {
-						this.historyExhausted = true;
-					}
 					return false;
 				}
 				finally {
