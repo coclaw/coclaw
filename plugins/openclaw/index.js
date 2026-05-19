@@ -229,6 +229,14 @@ const plugin = {
 				remoteLog(`chat-history.skip-subagent sessionKey=${sessionKey}`);
 				return;
 			}
+			// isolated cron 跑完会 emit cron_changed/sessions.changed phase=message，sessionKey 形态
+			// `agent:<agentId>:cron:<jobId>:run:<runSessionId>`（默认 cron 模式，绝大多数用户场景）。
+			// isolated session 与主会话独立，不入 chat-history，否则每次 cron 跑都会污染 main chat。
+			// 判定同 subagent，从 parts[2] 起找 'cron' 段以兼顾未来可能的嵌套形态。
+			if (parts[0] === 'agent' && parts.indexOf('cron', 2) >= 0) {
+				remoteLog(`chat-history.skip-cron sessionKey=${sessionKey}`);
+				return;
+			}
 			let resolvedAgentId = agentId;
 			if (!resolvedAgentId) {
 				resolvedAgentId = (parts[0] === 'agent' && parts[1]) ? parts[1] : 'main';

@@ -1537,6 +1537,57 @@ test('handleSessionCreated guard: subagent sessionKey 跳过 + remoteLog + 不�
 	assert.equal(await readChatHistoryFile(dir, 'main'), null, 'subagent 不应触达 manager 落盘');
 });
 
+test('handleSessionCreated guard: isolated cron sessionKey 跳过 + remoteLog + 不落盘', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-cron-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// isolated cron 完工事件形态：agent:<agentId>:cron:<jobId>:run:<runSessionId>
+	await onSessionStart(
+		{
+			sessionKey: 'agent:main:cron:job-123:run:6d3a5e9f-2c4b-4d8f-9a11-7e2f3b4c5d6e',
+			sessionId: 'sid-cron-run-1',
+		},
+		{},
+	);
+	const logs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-cron'));
+	assert.equal(logs.length, 1, 'isolated cron sessionKey 应打 skip-cron remoteLog');
+	assert.match(logs[0].text, /sessionKey=agent:main:cron:/);
+	assert.equal(await readChatHistoryFile(dir, 'main'), null, 'isolated cron 不应触达 manager 落盘');
+});
+
+test('handleSessionCreated guard: cron 嵌套 subagent sessionKey 也被挡（subagent 守卫先命中）', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-cron-sub-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// 假想形态：cron 跑出的子代理 sessionKey 也含 cron 段；subagent 守卫顺序在 cron 之前 → skip-subagent
+	await onSessionStart(
+		{
+			sessionKey: 'agent:main:cron:job-x:subagent:aaaaaaaa-1111-2222-3333-444444444444',
+			sessionId: 'sid-cron-sub',
+		},
+		{},
+	);
+	const subLogs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-subagent'));
+	const cronLogs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-cron'));
+	assert.equal(subLogs.length, 1, '应被 subagent 守卫挡住（顺序在 cron 守卫前）');
+	assert.equal(cronLogs.length, 0);
+	assert.equal(await readChatHistoryFile(dir, 'main'), null);
+});
+
+test('handleSessionCreated guard: agentId 恰好叫 "cron" 不被误伤', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-cron-name-'));
+	const { onSessionStart } = registerWithSessionStartCapture(dir);
+	// 边界：agentId 字面叫 'cron'，sessionKey 为 'agent:cron:main'。
+	// 判定从 parts[2] 起找 'cron'，本例 parts[2]='main'，不命中守卫，正常入档。
+	await onSessionStart(
+		{ sessionKey: 'agent:cron:main', sessionId: 'sid-edge-cron' },
+		{},
+	);
+	const subagentDirData = await readChatHistoryFile(dir, 'cron');
+	assert.ok(subagentDirData, 'agentId="cron" 应正常落盘到该 agent 的目录');
+	assert.equal(subagentDirData['agent:cron:main']?.[0]?.sessionId, 'sid-edge-cron');
+	const skipLogs = __remoteLogBuffer.filter((r) => r.text.startsWith('chat-history.skip-cron'));
+	assert.equal(skipLogs.length, 0, '不应触发 skip-cron 守卫');
+});
+
 test('handleSessionCreated guard: 嵌套 subagent sessionKey 跳过 + 不落盘', async () => {
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-hsc-nsub-'));
 	const { onSessionStart } = registerWithSessionStartCapture(dir);
