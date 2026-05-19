@@ -6060,7 +6060,7 @@ test('sessions.changed reason=create：调用 onSessionCreated 回调且不 broa
 	}
 });
 
-test('sessions.changed phase=message：调用 onSessionCreated 回调且不 broadcast（cron 顶替兜底通道）', async () => {
+test('sessions.changed phase=message：不调回调也不 broadcast（cron_changed hook 是主通道，phase=message 不再兜底）', async () => {
 	const calls = [];
 	const broadcastCalls = [];
 	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_phase_msg');
@@ -6076,10 +6076,8 @@ test('sessions.changed phase=message：调用 onSessionCreated 回调且不 broa
 				payload: { phase: 'message', sessionKey: 'agent:main:main', sessionId: 'cron-sid-1' },
 			}),
 		});
-		await waitFor(() => calls.length === 1, { label: 'onSessionCreated invoked for phase=message' });
-		assert.equal(calls[0].sessionKey, 'agent:main:main');
-		assert.equal(calls[0].sessionId, 'cron-sid-1');
 		for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+		assert.equal(calls.length, 0, 'phase=message 不应触发 onSessionCreated 回调');
 		assert.equal(broadcastCalls.length, 0, 'phase=message 不应 broadcast 到 UI');
 	} finally {
 		await bridge.stop();

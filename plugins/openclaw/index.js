@@ -248,7 +248,7 @@ const plugin = {
 				});
 			});
 			// cron 顶替主会话 sid 时不走 session_start hook、不广播 sessions.changed reason=create。
-			// cron_changed action=finished 是 cron 完成的可感知通道（v2026.5.7 已支持，见
+			// cron_changed action=finished 是 cron 完成的可感知通道（v2026.4.29+ 支持，见
 			// openclaw-repo/src/plugins/hook-types.ts）。main 模式 cron 不带 sessionId → 早返天然过滤；
 			// 真触发顶替的"显式 session:<sk>"/"current" 路径 event.sessionId/sessionKey 都齐。
 			api.on('cron_changed', async (event) => {

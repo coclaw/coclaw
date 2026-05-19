@@ -1726,27 +1726,14 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——理论盲点；触发难度高；recordSessionTransition 现有 reload+mutex 已吞掉多数 race。
 
-## chat-history phase=message 兜底范围宽于 cron（每条普通消息触发一次磁盘 reload）
-
-**发现日期**：2026-05-19（cron 顶替止血 deep review 综合实例提出）
-**关联**：`plugins/openclaw/src/realtime-bridge.js` 约第 906-921 行的 `phase === 'message'` 兜底分支
-
-**问题**：`sessions.changed phase=message` 兜底分支是为 cron 顶替设计的，但每条**任何**会话的消息都会发 phase=message，不止 cron。每条触发都会走到 `handleSessionCreated` → `recordSessionTransition` → `__reloadFromDisk` + mutex。对于常规聊天（每秒可能数条消息），等于每条消息一次磁盘 reload + mutex 抢占——chat-history 文件不大（KB 级），但有持续主线程税。
-
-**为什么本期未修**：兜底设计目标就是"所有 phase=message 都到 callback，由汇聚点判幂等"，简化了 wire 层，符合用户原话"只要确保是等幂的即可"。现有 `recordSessionTransition` 在 head==current 时早返，开销主要是一次 atomic JSON read 和短暂 mutex 持有；用户笔记本场景实测无明显感知。优化属于"识别到再说"。
-
-**修复方向**：在 realtime-bridge 进入 `__onSessionCreated` 前按 sessionKey 形态做一次粗过滤（如 `:cron:` 段出现才走兜底），或在 manager 内加 (sessionKey, sessionId) 内存级最近值去重避免无效磁盘 reload。
-
-**严重性**：低——可观测开销有限；架构上以"简单+幂等"换"宽过滤"是有意的设计取舍。
-
 ## chat-history `architecture.md §F` 描述与 cron 顶替止血实施不同步
 
 **发现日期**：2026-05-19（cron 顶替止血 deep review 综合实例提出）
 **关联**：`plugins/openclaw/docs/architecture.md` §F
 
-**问题**：架构文档 §F 描述"`phase=message` 会被过滤掉"，与新实施的"`reason=create || phase=message` 兜底"不一致；cron 在 chat-history 中的处理路径（`cron_changed` hook、`classifyChatHistorySessionKey` 守卫、`reconcileAll` 启动对账、`__sanitizeAllSessionKeys` 自愈）也未在文档中描述。
+**问题**：架构文档 §F 未描述 cron 在 chat-history 中的处理路径（`cron_changed` hook 主通道、`classifyChatHistorySessionKey` 守卫、`reconcileAll` 启动对账、`__sanitizeAllSessionKeys` 自愈）。
 
-**修复方向**：补一节"cron 顶替止血"四道叠加通路说明 + 共享守卫 classifyChatHistorySessionKey 的角色；更新 phase=message 过滤描述。
+**修复方向**：补一节"cron 顶替止血"三道叠加通路说明 + 共享守卫 classifyChatHistorySessionKey 的角色。
 
 **严重性**：低——文档与代码不同步，影响后续维护者的理解；不影响运行行为。
 

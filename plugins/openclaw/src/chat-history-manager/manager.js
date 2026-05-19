@@ -264,8 +264,8 @@ export class ChatHistoryManager {
 	/**
 	 * 启动期对账：把 sessions.json 当前 entries 喂进来，对每条调
 	 * recordSessionTransition；现有幂等 + sanitize 自动吞重复。用于覆盖 plugin/gateway
-	 * 重启窗口期 cron 顶替导致的漏归档（cron 不走 session_start hook、phase=message 走 DC 慢消费者
-	 * 也可能 drop，对账兜底）。
+	 * 重启窗口期 cron 顶替导致的漏归档（cron_changed hook 是主通道，但 gateway 重启不回放
+	 * 已完成的 cron event，靠启动对账兜底当前 sessions.json 的 head sid）。
 	 *
 	 * sessions.json 里可能含 isolated cron / subagent / explicit 形态的 sessionKey
 	 * 条目（上游 run-session-state.ts:57-60 证实 isolated cron 写主 sessions.json），
