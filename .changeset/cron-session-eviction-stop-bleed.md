@@ -86,9 +86,12 @@ Test coverage:
 - `realtime-bridge`: `phase=message` invokes `onSessionCreated` without
   broadcasting, in addition to the existing `reason=create` path.
 
-No production behavior outside the cron-rotation path is intentionally
-affected. The historical `A→B→C` triple-rotate double-source race
-documented in
+Non-cron `sessions.changed phase=message` events flow through the same
+callback, but the new `classifyChatHistorySessionKey` guard makes them
+no-ops in `handleSessionCreated` for any chat sessionKey already at the
+correct head (idempotent via the existing reload-then-compare logic in
+`recordSessionTransition`). The historical `A→B→C` triple-rotate
+double-source race documented in
 `plugins/openclaw/src/chat-history-manager/manager.test.js`
 (`REPRO 双源乱序`) remains out of scope for this change; the repro test
 is left skipped pending a separate root-cause fix tracked in

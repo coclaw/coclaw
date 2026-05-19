@@ -109,6 +109,12 @@ export function createSessionManager(options = {}) {
 	// 不扫 transcript 文件 / 不做 stat，因此远比 listAll 轻量；缺/坏文件返回空数组。
 	async function listAllEntries(agentId = 'main') {
 		const idx = await readIndex(agentId);
+		// sessions.json 异常被写成数组时，Object.entries 会生成 "0"/"1" 假键，
+		// 把它们当 sessionKey 喂下游会污染。直接拒绝数组形态，同时打 warn 暴露异常。
+		if (Array.isArray(idx)) {
+			logger.warn?.(`[session-manager] sessions.json for agent=${agentId} is an array, expected object — returning empty entries`);
+			return [];
+		}
 		const out = [];
 		for (const [sessionKey, item] of Object.entries(idx)) {
 			const sid = item?.sessionId;

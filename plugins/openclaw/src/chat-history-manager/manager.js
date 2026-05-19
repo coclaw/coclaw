@@ -13,6 +13,33 @@ function emptyStore() {
 }
 
 /**
+ * 判定 sessionKey 是否应纳入 chat-history 流水。
+ * 不纳入的三类，命中即返回对应 reason：
+ *   - explicit：topic 用的伪 sessionKey，CoClaw 自管不入 chat-history
+ *   - subagent：OpenClaw 程序自起的子任务（含嵌套）
+ *   - cron：isolated cron 跑出的伪 sessionKey（含上游证实主 sessions.json 也会承载此类条目）
+ *
+ * 必须被所有写 chat-history 的入口（事件路径 / 启动对账等）共用，否则启动对账等绕过事件路径
+ * 的入口会把伪 sessionKey 写进 chat-history。
+ *
+ * 非字符串 / 空串 sessionKey 视为非法输入（ok=false reason=null），由 caller 自行决定怎么处理。
+ *
+ * @param {string} sessionKey
+ * @returns {{ ok: boolean, reason: 'explicit' | 'subagent' | 'cron' | null }}
+ */
+export function classifyChatHistorySessionKey(sessionKey) {
+	if (typeof sessionKey !== 'string' || !sessionKey) {
+		return { ok: false, reason: null };
+	}
+	const parts = sessionKey.split(':');
+	if (parts[0] !== 'agent') return { ok: true, reason: null };
+	if (parts[2] === 'explicit') return { ok: false, reason: 'explicit' };
+	if (parts.indexOf('subagent', 2) >= 0) return { ok: false, reason: 'subagent' };
+	if (parts.indexOf('cron', 2) >= 0) return { ok: false, reason: 'cron' };
+	return { ok: true, reason: null };
+}
+
+/**
  * Chat History 管理器：追踪 chat（sessionKey）下的 session 流水。
  *
  * 每个 agentId 对应一份 coclaw-chat-history.json，按需懒加载到内存。
@@ -153,7 +180,7 @@ export class ChatHistoryManager {
 				if (!item || typeof item !== 'object' || item.archivedAt) continue;
 				item.archivedAt = now;
 				this.__logger.warn?.(
-					`[coclaw] chat-history sanitize: non-tail unarchived entry coerced sessionKey=${sessionKey} sid=${item.sessionId}`,
+					`[coclaw] chat-history sanitize: non-head unarchived entry coerced sessionKey=${sessionKey} sid=${item.sessionId}`,
 				);
 				remoteLog(
 					`chat-history.sanitize-coerce sessionKey=${sessionKey} sid=${item.sessionId} agentId=${agentId}`,
@@ -240,6 +267,12 @@ export class ChatHistoryManager {
 	 * 重启窗口期 cron 顶替导致的漏归档（cron 不走 session_start hook、phase=message 走 DC 慢消费者
 	 * 也可能 drop，对账兜底）。
 	 *
+	 * sessions.json 里可能含 isolated cron / subagent / explicit 形态的 sessionKey
+	 * 条目（上游 run-session-state.ts:57-60 证实 isolated cron 写主 sessions.json），
+	 * 用 classifyChatHistorySessionKey 守卫滤掉避免污染 chat-history。
+	 *
+	 * 单条 entry 抛错 try/catch 隔离，不阻塞后续；caller 已在外层 .catch 兜底。
+	 *
 	 * @param {string} agentId
 	 * @param {{ sessionKey: string, sessionId: string }[]} entries
 	 */
@@ -247,11 +280,20 @@ export class ChatHistoryManager {
 		if (!Array.isArray(entries)) return;
 		for (const entry of entries) {
 			if (!entry || typeof entry !== 'object') continue;
-			await this.recordSessionTransition({
-				agentId,
-				sessionKey: entry.sessionKey,
-				currentSessionId: entry.sessionId,
-			});
+			const { ok } = classifyChatHistorySessionKey(entry.sessionKey);
+			if (!ok) continue;
+			try {
+				await this.recordSessionTransition({
+					agentId,
+					sessionKey: entry.sessionKey,
+					currentSessionId: entry.sessionId,
+				});
+			}
+			catch (err) {
+				this.__logger.warn?.(
+					`[coclaw] chat-history reconcile entry failed sessionKey=${entry.sessionKey}: ${String(err?.message ?? err)}`,
+				);
+			}
 		}
 	}
 

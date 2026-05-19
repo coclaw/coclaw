@@ -677,6 +677,28 @@ test('listAllEntries: 读 sessions.json 返回所有 sessionKey + 当前 session
 	]);
 });
 
+test('listAllEntries: sessions.json 异常为数组 → 返回 [] + warn 暴露异常', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-le-arr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify([{ sessionId: 'wrong' }]),
+		'utf8',
+	);
+	const warns = [];
+	const manager = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn: (m) => warns.push(String(m)) },
+	});
+	const entries = await manager.listAllEntries('main');
+	assert.deepEqual(entries, []);
+	assert.equal(warns.length, 1, '数组形态应打一条 warn');
+	assert.match(warns[0], /sessions\.json for agent=main is an array/);
+});
+
 test('listAllEntries: 缺 sessions.json / 缺/坏 sessionId 行被跳过', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-le-empty-'));
 	const sessionsDir = nodePath.join(root, 'main', 'sessions');

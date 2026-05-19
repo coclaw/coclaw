@@ -9,7 +9,7 @@ import { readConfig } from './src/config.js';
 import { setRuntime } from './src/runtime.js';
 import { createSessionManager } from './src/session-manager/manager.js';
 import { TopicManager } from './src/topic-manager/manager.js';
-import { ChatHistoryManager } from './src/chat-history-manager/manager.js';
+import { ChatHistoryManager, classifyChatHistorySessionKey } from './src/chat-history-manager/manager.js';
 import { generateTitle } from './src/topic-manager/title-gen.js';
 import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
 import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
@@ -198,45 +198,30 @@ const plugin = {
 		// 该 helper 可直接作为 bridge.onSessionCreated 回调（签名兼容；缺失字段走兜底：
 		// agentId 走 parts[1] fallback、archivedSessionId 走 manager 翻 head 路径）。
 		async function handleSessionCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
-			if (!sessionKey || !sessionId) {
+			// sessionKey 非字符串时（上游 schema 异常）直接当 missing 处理，避免 split 抛 TypeError
+			if (typeof sessionKey !== 'string' || !sessionKey || !sessionId) {
 				// 早返值得警惕：上游事件 schema 异常，或 topic（无 sessionKey）误入双源链路。
 				// 打 log + remoteLog 让运维能定位事件源；不影响其他通道。
+				// 日志兼容性：sessionKey 缺失（null/undefined）→ 'null'；其它非字符串类型 → 'invalid'。
+				const skLog = sessionKey == null
+					? 'null'
+					: (typeof sessionKey === 'string' ? sessionKey : 'invalid');
 				logger.warn?.(
-					`[coclaw] chat history early-return: missing sessionKey/sessionId`,
+					`[coclaw] chat history early-return: missing/invalid sessionKey/sessionId`,
 				);
 				remoteLog(
-					`chat-history.missing-keys sessionKey=${sessionKey ?? 'null'} sessionId=${sessionId ?? 'null'}`,
+					`chat-history.missing-keys sessionKey=${skLog} sessionId=${sessionId ?? 'null'}`,
 				);
 				return;
 			}
-			// topic 上游伪造的 explicit fake sessionKey（形态 `agent:<agentId>:explicit:<sid>`）
-			// 不属于 chat 流水范畴：CoClaw 自管 topic 元信息，不应进 chat-history 桶。
-			// 当前 F1 实验已证明该路径不触发本回调，此守卫属防御性兜底。
-			// 前提假设：(a) sessionKey 首段是 `agent`；(b) `explicit` 占第 3 段（即 parts[2]，
-			// 0-indexed 数）。两条同时成立才命中本守卫；若上游 schema 演进（如挪位置 / 增前缀 /
-			// 改首段名），需复评本守卫。
+			// sessionKey 路由分类（explicit / subagent / cron 跳过，详见 classifyChatHistorySessionKey）。
+			// 守卫必须与启动期对账 reconcileAll 内的守卫一致——共用同一 helper 避免侧门。
+			const cls = classifyChatHistorySessionKey(sessionKey);
+			if (!cls.ok) {
+				remoteLog(`chat-history.skip-${cls.reason} sessionKey=${sessionKey}`);
+				return;
+			}
 			const parts = sessionKey.split(':');
-			if (parts[0] === 'agent' && parts[2] === 'explicit') {
-				remoteLog(`chat-history.skip-explicit sessionKey=${sessionKey}`);
-				return;
-			}
-			// subagent 是 OpenClaw 程序自起的子任务 run（mode=run 一次性 / mode=session 持久绑定），
-			// 形态 `agent:<id>:subagent:<uuid>`，嵌套子代理为 `agent:<id>:subagent:<uuid>:subagent:<uuid2>`。
-			// 它不是人机对话流；父 agent 的 transcript 里已含子代理最终输出（作为 user message 回流），
-			// 因此不入 chat-history。
-			// 判定从 parts[2] 起找 'subagent' 段，避免 agentId 恰好叫 'subagent' 时误伤。
-			if (parts[0] === 'agent' && parts.indexOf('subagent', 2) >= 0) {
-				remoteLog(`chat-history.skip-subagent sessionKey=${sessionKey}`);
-				return;
-			}
-			// isolated cron 跑完会 emit cron_changed/sessions.changed phase=message，sessionKey 形态
-			// `agent:<agentId>:cron:<jobId>:run:<runSessionId>`（默认 cron 模式，绝大多数用户场景）。
-			// isolated session 与主会话独立，不入 chat-history，否则每次 cron 跑都会污染 main chat。
-			// 判定同 subagent，从 parts[2] 起找 'cron' 段以兼顾未来可能的嵌套形态。
-			if (parts[0] === 'agent' && parts.indexOf('cron', 2) >= 0) {
-				remoteLog(`chat-history.skip-cron sessionKey=${sessionKey}`);
-				return;
-			}
 			let resolvedAgentId = agentId;
 			if (!resolvedAgentId) {
 				resolvedAgentId = (parts[0] === 'agent' && parts[1]) ? parts[1] : 'main';

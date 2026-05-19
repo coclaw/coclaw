@@ -1044,6 +1044,183 @@ test('reconcileAll - entries 非数组 / 空 → 静默忽略', async () => {
 	}
 });
 
+// 真实场景：用户笔记本 chat-history 38 段全带 archivedAt、无头位（5-16 backfill 脚本只追加 archived 项）
+// 启动对账拿到 sessions.json 当前 sid (即 cron 顶进来的新 sid) 后，应把它头插，archived 历史段不动
+test('reconcileAll - 全 archived 无头位（用户 backfill 现状）→ 头插新 sid 不动旧 archived', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir);
+		// 预置：list 全 archived，无未归档头位
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'sid-a', archivedAt: 3000 },
+				{ sessionId: 'sid-b', archivedAt: 2000 },
+				{ sessionId: 'sid-c', archivedAt: 1000 },
+			],
+		}));
+		await mgr.load('main');
+		await mgr.reconcileAll('main', [
+			{ sessionKey: 'agent:main:main', sessionId: 'sid-new' },
+		]);
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 4, '新 sid 头插，老 archived 不动');
+		assert.equal(history[0].sessionId, 'sid-new');
+		assert.equal(history[0].archivedAt, undefined, 'sid-new 是新头位');
+		assert.equal(history[1].sessionId, 'sid-a');
+		assert.equal(history[1].archivedAt, 3000, 'sid-a 时间戳保持');
+		assert.equal(history[2].sessionId, 'sid-b');
+		assert.equal(history[2].archivedAt, 2000);
+		assert.equal(history[3].sessionId, 'sid-c');
+		assert.equal(history[3].archivedAt, 1000);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// 并发：启动对账 fire-and-forget 跑的同时，cron_changed hook 也喂入新 sid。
+// 两路同时进 recordSessionTransition，期望最终只一条新头位、无重复段。
+test('reconcileAll - 启动对账与并发事件路径喂入相同新 sid → 幂等，无重复段', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		// 预置老头位
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'sid-old',
+		});
+		// 启动对账 + 并发事件路径都喂新 sid（模拟两路同时到）
+		await Promise.all([
+			mgr.reconcileAll('main', [{ sessionKey: 'agent:main:main', sessionId: 'sid-new' }]),
+			mgr.recordSessionTransition({
+				agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'sid-new',
+			}),
+		]);
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 2, '应该是 [sid-new, sid-old@arch]，不应重复段');
+		assert.equal(history[0].sessionId, 'sid-new');
+		assert.equal(history[0].archivedAt, undefined);
+		assert.equal(history[1].sessionId, 'sid-old');
+		assert.ok(typeof history[1].archivedAt === 'number');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// sanitize 不应误改"已归档 head"（如 backfill 数据：所有项含 archivedAt 包括首位）
+test('sanitize - head 自带 archivedAt（backfill 数据）→ 不动 head 不打 warn', async () => {
+	const tmpDir = await makeTmpDir();
+	__resetRemoteLog();
+	const warns = [];
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir, {
+			logger: { info() {}, warn: (m) => warns.push(String(m)), error() {} },
+		});
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		// 预置：head 也带 archivedAt（backfill 后的状态），后续 list[1..] 也全 archived
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'sid-head', archivedAt: 5000 },
+				{ sessionId: 'sid-mid', archivedAt: 3000 },
+			],
+		}));
+		await mgr.load('main');
+		// 触发写盘走 sanitize：reconcileAll 喂入新 sid 头插（这次会触发 __persist）
+		await mgr.reconcileAll('main', [{ sessionKey: 'agent:main:main', sessionId: 'sid-new' }]);
+		const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+		const list = parsed['agent:main:main'];
+		// 新 head=sid-new，老 head=sid-head 保留 archivedAt=5000（不被 sanitize 覆盖）
+		const headFound = list.find((it) => it.sessionId === 'sid-head');
+		assert.equal(headFound.archivedAt, 5000, 'sid-head 已有 archivedAt 不应被 sanitize 覆盖');
+		assert.equal(warns.filter((m) => m.includes('chat-history sanitize')).length, 0);
+		assert.equal(
+			__remoteLogBuf.filter((r) => r.text.startsWith('chat-history.sanitize-coerce')).length, 0,
+		);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// sanitize 多 sessionKey 同时 dirty：__sanitizeAllSessionKeys 是全 store 扫描，应每个 sessionKey 都修
+test('sanitize - 多 sessionKey 同时有非头位脏项 → 每个 sessionKey 都被修复', async () => {
+	const tmpDir = await makeTmpDir();
+	__resetRemoteLog();
+	const warns = [];
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir, {
+			logger: { info() {}, warn: (m) => warns.push(String(m)), error() {} },
+		});
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'h1' },
+				{ sessionId: 'd1' }, // dirty
+			],
+			'agent:tester:main': [
+				{ sessionId: 'h2' },
+				{ sessionId: 'd2' }, // dirty
+			],
+		}));
+		await mgr.load('main');
+		// 触发写盘
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'new-h1',
+		});
+		const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+		// 两个 sessionKey 的 dirty 项都应被补 archivedAt
+		const d1 = parsed['agent:main:main'].find((it) => it.sessionId === 'd1');
+		const d2 = parsed['agent:tester:main'].find((it) => it.sessionId === 'd2');
+		assert.ok(typeof d1.archivedAt === 'number', 'd1 应被 sanitize 补 archivedAt');
+		assert.ok(typeof d2.archivedAt === 'number', 'd2 应被 sanitize 补 archivedAt');
+		const sanitizeWarns = warns.filter((m) => m.includes('chat-history sanitize'));
+		assert.equal(sanitizeWarns.length, 2, '两条 sessionKey 应各打一条 sanitize warn');
+		const remoteLogs = __remoteLogBuf.filter((r) => r.text.startsWith('chat-history.sanitize-coerce'));
+		assert.equal(remoteLogs.length, 2);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// 单条 entry 写盘抛错时应被 catch 隔离，后续 entry 仍执行；caller 不被影响
+test('reconcileAll - 单条 entry recordSessionTransition 抛错 → 隔离 + 后续仍执行', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const rootDir = nodePath.join(tmpDir, 'agents');
+		await fs.mkdir(nodePath.join(rootDir, 'main', 'sessions'), { recursive: true });
+		const warns = [];
+		let callCount = 0;
+		// 第一次写盘抛错（模拟磁盘故障），其余正常
+		const mgr = new ChatHistoryManager({
+			resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'),
+			logger: { info() {}, warn: (m) => warns.push(String(m)), error() {} },
+			writeJsonFile: async (path, data) => {
+				callCount += 1;
+				if (callCount === 1) throw new Error('simulated disk fault');
+				await fs.writeFile(path, JSON.stringify(data));
+			},
+		});
+		await mgr.load('main');
+		await mgr.reconcileAll('main', [
+			{ sessionKey: 'agent:main:main', sessionId: 'A' }, // 第一条会抛
+			{ sessionKey: 'agent:main:other', sessionId: 'B' }, // 第二条应成功
+		]);
+		// warn 必须打一条 reconcile entry failed
+		const failWarns = warns.filter((m) => m.includes('chat-history reconcile entry failed'));
+		assert.equal(failWarns.length, 1, '抛错条目应打 warn');
+		assert.match(failWarns[0], /sessionKey=agent:main:main/);
+		assert.match(failWarns[0], /simulated disk fault/);
+		// 第二条应成功落盘
+		const { history: otherHist } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:other' });
+		assert.equal(otherHist.length, 1);
+		assert.equal(otherHist[0].sessionId, 'B');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
 test('reconcileAll - entries 含非法行 → 跳过非法、合法行仍生效', async () => {
 	const tmpDir = await makeTmpDir();
 	try {

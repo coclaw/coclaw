@@ -1719,6 +1719,32 @@ test('cron_changed: agentId 走 sessionKey parts[1] 解析（hook event 不带 c
 	assert.equal(await readChatHistoryFile(dir, 'main'), null);
 });
 
+test('启动期对账：sessions.json 含 isolated cron / subagent / explicit sessionKey → 守卫挡掉，不污染 chat-history', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-recon-skip-'));
+	const sessionsDir = nodePath.join(dir, 'agents', 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// sessions.json 同时含主会话 + isolated cron + subagent + explicit 形态
+	// 上游 run-session-state.ts:57-60 证实 isolated cron 写主 agent 的 sessions.json
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({
+			'agent:main:main': { sessionId: 'sid-main' },
+			'agent:main:cron:job-x:run:abc': { sessionId: 'sid-cron-x' },
+			'agent:main:subagent:b1b1b1b1-1111-2222-3333-444444444444': { sessionId: 'sid-sub-x' },
+			'agent:main:explicit:e1e1e1e1-1111-2222-3333-444444444444': { sessionId: 'sid-exp-x' },
+		}),
+		'utf8',
+	);
+	registerWithSessionStartCapture(dir);
+	for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 5));
+	const data = await readChatHistoryFile(dir, 'main');
+	assert.ok(data, 'chat-history 文件应被对账创建');
+	const chatKeys = Object.keys(data).filter((k) => k !== 'version');
+	// 只接受主会话 sessionKey；cron / subagent / explicit 应被启动对账守卫挡掉
+	assert.deepEqual(chatKeys, ['agent:main:main'], 'isolated cron / subagent / explicit sessionKey 不应进 chat-history');
+	assert.equal(data['agent:main:main'][0].sessionId, 'sid-main');
+});
+
 test('启动期对账：sessions.json 当前 sid 不在 chat-history 头位 → reconcileAll 把老头位归档 + 新 sid 上位', async () => {
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-recon-'));
 	const sessionsDir = nodePath.join(dir, 'agents', 'main', 'sessions');
@@ -1751,30 +1777,35 @@ test('启动期对账：sessions.json 当前 sid 不在 chat-history 头位 → 
 	assert.ok(typeof list[1].archivedAt === 'number', 'sid-old 应被归档');
 });
 
-test('cron_changed: 注册路径无副作用（api.on 不存在时不抛 / 不注册）', () => {
-	process.env.OPENCLAW_STATE_DIR = os.tmpdir();
+test('cron_changed: full 模式下 api.on 不存在时不抛 / 不注册（典型 typeof 守卫）', async () => {
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-no-on-'));
+	process.env.OPENCLAW_STATE_DIR = dir;
 	setRuntime(null);
-	// 直接走 createSpyApi 在 cli-metadata 模式下，整个 register 路径不会到 on() 调用
 	const calls = {
-		channel: 0, cli: 0, command: 0, service: 0, gatewayMethod: 0, on: 0,
+		channel: 0, cli: 0, command: 0, service: 0, gatewayMethod: 0,
 	};
 	const handlers = new Map();
-	plugin.register({
-		registrationMode: 'cli-metadata',
-		pluginConfig: {},
-		runtime: {
-			state: { resolveStateDir: () => os.tmpdir() },
-			config: { loadConfig: () => ({}) },
-			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
-		},
-		logger: { info() {}, warn() {}, error() {}, log() {} },
-		registerChannel() { calls.channel += 1; },
-		registerCli() { calls.cli += 1; },
-		registerCommand() { calls.command += 1; },
-		registerService() { calls.service += 1; },
-		registerGatewayMethod(name, handler) { calls.gatewayMethod += 1; handlers.set(name, handler); },
-		// 故意缺 on：cli-metadata 模式不到 on() 调用，但即便上游版本不提供 api.on 守卫也应生效
-	});
+	// 故意构造一个 full 模式 api：触发整个 register 副作用链；但 api.on 字段缺失，
+	// 必须靠 `typeof api.on === 'function'` 守卫挡住，否则 register 会抛 TypeError
+	assert.doesNotThrow(() => {
+		plugin.register({
+			registrationMode: 'full',
+			pluginConfig: {},
+			runtime: {
+				state: { resolveStateDir: () => dir },
+				config: { loadConfig: () => ({}) },
+				agent: { resolveAgentWorkspaceDir: () => '/tmp/mock-workspace' },
+			},
+			logger: { info() {}, warn() {}, error() {}, log() {} },
+			registerChannel() { calls.channel += 1; },
+			registerCli() { calls.cli += 1; },
+			registerCommand() { calls.command += 1; },
+			registerService() { calls.service += 1; },
+			registerGatewayMethod(name, handler) { calls.gatewayMethod += 1; handlers.set(name, handler); },
+			// 故意没有 on 字段
+		});
+	}, 'api.on 缺失时 register 不应抛');
 	assert.equal(calls.cli, 1);
-	assert.equal(calls.on, 0);
+	// gatewayMethod / service 等 full 模式副作用应正常发生
+	assert.ok(calls.gatewayMethod > 0, '不应因 api.on 缺失就跳过 gatewayMethod 注册');
 });

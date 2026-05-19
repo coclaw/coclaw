@@ -1713,3 +1713,75 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——需要极端时序（毫秒级三跳 + 双源到达顺序倒置）才触发，生产环境未观察到实例；红测仅作为根因修复的 fixture 保留。
 
+## chat-history 启动期对账快照与并发事件路径的时序假设
+
+**发现日期**：2026-05-19（cron 顶替止血 deep review codex-rescue 多实例点出）
+**关联**：`plugins/openclaw/index.js` 启动期对账链 `chatHistoryManager.load → manager.listAllEntries → chatHistoryManager.reconcileAll`
+
+**问题**：启动期对账是 fire-and-forget 的 Promise 链，`listAllEntries` 拿到的 entries 是某一刻的 sessions.json 快照。若在 reconcileAll 真正执行某条 entry 之前，事件路径（cron_changed hook / phase=message）已经为同一 sessionKey 写入了更新的 sid，reconcileAll 用旧快照走 `recordSessionTransition`，理论上可能把"已被事件正确归档的新 head"再次翻档。
+
+**为什么本期未修**：实际触发难度极高——启动对账几乎与 register 同步发起；事件路径需要 gateway WS 握手完成后才能传到 plugin。在用户笔记本上的 systemd 常驻 gateway 场景里，握手在启动后才能完成，启动对账几乎肯定先于任何事件到达。`recordSessionTransition` 内部已 `__reloadFromDisk` + mutex 串行化，能吞掉多数 race；只有一种极端时序（启动对账 stage-2 已读 sessions.json 但 stage-3 还没拿到 mutex 期间，事件路径完成了一次 reset）才会触发，至今未观察到实例。
+
+**修复方向**：reconcileAll 内每条写前再次 reload 磁盘，对比 entry.sessionId 与磁盘 head sid——磁盘 head 已是更新的（未归档）状态时跳过本条让事件路径赢。
+
+**严重性**：低——理论盲点；触发难度高；recordSessionTransition 现有 reload+mutex 已吞掉多数 race。
+
+## chat-history phase=message 兜底范围宽于 cron（每条普通消息触发一次磁盘 reload）
+
+**发现日期**：2026-05-19（cron 顶替止血 deep review 综合实例提出）
+**关联**：`plugins/openclaw/src/realtime-bridge.js` 约第 906-921 行的 `phase === 'message'` 兜底分支
+
+**问题**：`sessions.changed phase=message` 兜底分支是为 cron 顶替设计的，但每条**任何**会话的消息都会发 phase=message，不止 cron。每条触发都会走到 `handleSessionCreated` → `recordSessionTransition` → `__reloadFromDisk` + mutex。对于常规聊天（每秒可能数条消息），等于每条消息一次磁盘 reload + mutex 抢占——chat-history 文件不大（KB 级），但有持续主线程税。
+
+**为什么本期未修**：兜底设计目标就是"所有 phase=message 都到 callback，由汇聚点判幂等"，简化了 wire 层，符合用户原话"只要确保是等幂的即可"。现有 `recordSessionTransition` 在 head==current 时早返，开销主要是一次 atomic JSON read 和短暂 mutex 持有；用户笔记本场景实测无明显感知。优化属于"识别到再说"。
+
+**修复方向**：在 realtime-bridge 进入 `__onSessionCreated` 前按 sessionKey 形态做一次粗过滤（如 `:cron:` 段出现才走兜底），或在 manager 内加 (sessionKey, sessionId) 内存级最近值去重避免无效磁盘 reload。
+
+**严重性**：低——可观测开销有限；架构上以"简单+幂等"换"宽过滤"是有意的设计取舍。
+
+## chat-history `architecture.md §F` 描述与 cron 顶替止血实施不同步
+
+**发现日期**：2026-05-19（cron 顶替止血 deep review 综合实例提出）
+**关联**：`plugins/openclaw/docs/architecture.md` §F
+
+**问题**：架构文档 §F 描述"`phase=message` 会被过滤掉"，与新实施的"`reason=create || phase=message` 兜底"不一致；cron 在 chat-history 中的处理路径（`cron_changed` hook、`classifyChatHistorySessionKey` 守卫、`reconcileAll` 启动对账、`__sanitizeAllSessionKeys` 自愈）也未在文档中描述。
+
+**修复方向**：补一节"cron 顶替止血"四道叠加通路说明 + 共享守卫 classifyChatHistorySessionKey 的角色；更新 phase=message 过滤描述。
+
+**严重性**：低——文档与代码不同步，影响后续维护者的理解；不影响运行行为。
+
+## chat-history sanitize 时间戳与正常归档无法区分
+
+**发现日期**：2026-05-19（cron 顶替止血 deep review 综合实例提出）
+**关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `__sanitizeAllSessionKeys`
+
+**问题**：sanitize 自愈非头位未归档项时用的是 `Date.now()`，与正常归档时间戳格式完全一致，事后无法区分"真实归档时刻"与"sanitize 兜底补登时刻"。诊断"什么时候 cron 顶进来"等问题时无法靠 archivedAt 反推。
+
+**修复方向**：sanitize 给被修复项加 `repairedAt` 字段（或单独 `repairedFromMissingAt`），保留 archivedAt 现有语义，新字段标识"这次时间戳是 sanitize 补的"。已有 `chat-history.sanitize-coerce` remoteLog 留有线索，仅在线下分析时麻烦。
+
+**严重性**：低——纯诊断信号，不影响主流程；用户偏好"设置归档日期"，本次实施已符合用户原话约定。
+
+## chat-history classifyChatHistorySessionKey 是黑名单策略（未来新 sessionKey 形态默认入档）
+
+**发现日期**：2026-05-19（cron 顶替止血 deep review 第二轮 codex-rescue 提出）
+**关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `classifyChatHistorySessionKey`
+
+**问题**：helper 用黑名单（explicit / subagent / cron）判定跳过，其他形态默认 `ok=true` 进 chat-history。若上游未来新增 `agent:<id>:debug:*` / `agent:<id>:replay:*` / 其它新 segment，会无声入档污染 chat-history。
+
+**为什么本期未修**：黑名单策略对当前已知形态准确；改成白名单需要枚举所有合法 chat sessionKey 段（`main` / 用户自定义 channel 等），过度设计风险高于当前价值。属于"识别到才说"。
+
+**修复方向**：上游确实加新 segment 形态时，及时把它加入黑名单（一行改动）。若上游频繁演进 segment 词表，考虑迁移到白名单 + 默认拒绝策略。
+
+**严重性**：低——需要上游主动加新形态才会触发；可观测信号有 `chat-history.skip-*` 缺失。
+
+## chat-history cron+subagent 嵌套时 reason 信号丢失
+
+**发现日期**：2026-05-19（cron 顶替止血 deep review 综合 + 维度实例都提了）
+**关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `classifyChatHistorySessionKey`
+
+**问题**：cron 跑出的子代理 sessionKey 形如 `agent:<id>:cron:<jobId>:subagent:<uuid>`。当前 helper 顺序判定（subagent 先 cron 后），先命中 subagent → `reason='subagent'`，远端只看到 `chat-history.skip-subagent` 而看不到"这是 cron 跑出的子代理"。诊断/分类时丢一层信息。
+
+**修复方向**：helper 返回 reasons 数组（`['cron', 'subagent']`）让 caller 拼复合 log；或始终按"最深识别词"对应分级返回。注意保持现有"命中即跳过"语义不变。
+
+**严重性**：低——纯诊断信号；不影响主流程跳过逻辑。
+
