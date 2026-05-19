@@ -658,3 +658,129 @@ await api.runtime.subagent.deleteSession({ sessionKey, deleteTranscript: true })
 | 维护剪裁 | `src/config/sessions/store-maintenance.ts:176-200` |
 | cron 清理 | `src/cron/session-reaper.ts` |
 | CLI agent.agentId 透传 | `src/cli/program/register.agent.ts:30`、`src/commands/agent-via-gateway.ts:158-179` |
+
+---
+
+## 十二、explicit sessionKey 清理可行性（2026-05-19 实测）
+
+> 第十章 §4 提到的 sessions.json 膨胀代价（87% 以上 entry 是 OpenClaw 自动合成的 `agent:<agentId>:explicit:<sid>`）想由 CoClaw 主动清理是否可行——本节用本机 OpenClaw v2026.5.7 把所有前提钉死。
+> 不涉及 CoClaw 端实施方案，方案设计另行起设计稿。
+
+### 1. 关键事实（一行总结）
+
+- topic 创建本身**不**调 OpenClaw，explicit entry 是用户**发首条 agent 消息时**才被合成。
+- 每次 agent.run 都会**重新刷新**这条 entry（updatedAt / sessionStartedAt / status 等），所以"删一次永久干净"不成立——要么每 run 后删，要么周期性扫清。
+- gateway RPC `sessions.delete` + `deleteTranscript:false` 能**安全清掉** entry，**不动 `.jsonl`**、不影响后续用同 sessionId 续聊、gateway restart 不回滚。
+- runtime API `rt.subagent.deleteSession` 存在但**有 ownership 校验**——实测拒绝："Plugin X cannot delete session Y because it did not create it"。**只能走 gateway RPC**。
+- 固定 sessionKey 思路（所有 topic 共用 `agent:<agentId>:coclaw-topic`，每次只换 sessionId）**否决**——OpenClaw 把同 sessionKey 的多 run 串行化 + entry 字段共享，并发场景下既失去并发能力又会出现 .jsonl 串扰。
+
+### 2. sessions.delete 行为契约（实测 + 源码）
+
+调用形态：
+
+```bash
+openclaw gateway call --json --params \
+  '{"key":"agent:main:explicit:<sid>","deleteTranscript":false,"emitLifecycleHooks":false}' \
+  sessions.delete
+```
+
+| 字段 | 默认 | 推荐值 | 作用 |
+|---|---|---|---|
+| `key` | （必传）| `agent:<agentId>:explicit:<sid>` | 要删的 sessionKey |
+| `deleteTranscript` | **`true`** | **`false`** | 默认会归档 `.jsonl` 为 `.jsonl.deleted.<ts>`；要保留续聊能力必须显式传 `false` |
+| `emitLifecycleHooks` | `true` | `false` | 压制 `session_end` plugin hook + `session-unbound` lifecycle，避免 plugin 副作用 |
+
+返回形态：
+
+```json
+{ "ok": true, "key": "agent:main:explicit:<sid>", "deleted": true, "archived": [] }
+```
+
+副作用清单（实测 + 源码核对）：
+
+- ✅ sessions.json entry 移除（atomic write）
+- ✅ `.jsonl` 字节完全不动（`deleteTranscript:false` 时 archived 数组为空）
+- ✅ trajectory / trajectory-path 文件不动
+- ✅ chat-history-manager 已有 explicit 守卫挡入档（`plugins/openclaw/index.js:209-218`，grep 0 引用）
+- ✅ realtime-bridge 把 `sessions.changed` 非 `reason=create` 全部 drop（`plugins/openclaw/src/realtime-bridge.js:903-931`），不会广播 UI
+- ✅ `session_end` hook：plugin 端没注册监听器；即便注册，`emitLifecycleHooks:false` 也能压制
+- 锚点：handler `openclaw-repo/src/gateway/server-methods/sessions.ts:1838-1937`；归档实现 `session-transcript-files.fs.ts:127-142`（archive 是 `rename` 不是 `unlink`）；params schema `protocol/schema/sessions.ts:235-243`
+
+### 3. 续聊兼容性实测
+
+实验序列（同一 topic sessionId）：
+
+1. agent.run "remember magic word KIWI" → entry 出现 + `.jsonl` 写入
+2. `sessions.delete` 带 `deleteTranscript:false` → entry 清；`.jsonl` 不动
+3. agent.run "What was the magic word?" → entry 再生 + 模型正确回 "KIWI"（说明 OpenClaw 读了旧 `.jsonl` 当上下文）
+4. gateway restart
+5. agent.run "do you remember our second question?" → 模型正确回 "YES"（三轮对话上下文完整）
+
+**结论**：删 entry 跟续聊完全解耦。删了之后下一次 agent.run 会自动重建 entry 并读旧 `.jsonl`。
+
+### 4. runtime API 不可用（ownership 校验实测）
+
+接口定义：`openclaw-repo/src/plugins/runtime/types.ts:87`
+
+```ts
+deleteSession: (params: { sessionKey: string; deleteTranscript?: boolean }) => Promise<void>;
+```
+
+实现：`openclaw-repo/src/gateway/server-plugins.ts:443-468` 内部调 `dispatchGatewayMethod('sessions.delete', ...)`，会自动注入 `pluginRuntimeOwnerId: <pluginId>` 到 syntheticClient 的 `internal` 字段。
+
+ownership 校验：`server-methods/sessions.ts:199-221` `rejectPluginRuntimeDeleteMismatch`——要求 `entry.pluginOwnerId === pluginRuntimeOwnerId`，不一致即拒。
+
+实测（临时在 plugin 内加 RPC handler 调 `rt.subagent.deleteSession` 触发）：
+
+- 探测 `hasRuntime / hasSubagent / hasDeleteSession`：全 true，API 暴露正常
+- 删一个真实的 `agent:main:explicit:<sid>` → 返回错误：`Plugin "openclaw-coclaw" cannot delete session "agent:main:explicit:..." because it did not create it.`
+- entry 完好，`.jsonl` 不动
+
+根因：explicit entry 是 OpenClaw 自动合成的，**没有 `pluginOwnerId` 字段**（实测 entry keys 中 `plugin*/owner*` 全部缺失），所以校验必然失败。
+
+含义：CLAUDE.md 优先级"runtime > plugin-sdk > gateway RPC > 手搓"在本场景必须降级到 gateway RPC。
+
+### 5. 固定 sessionKey 方案否决（思路 §二.5 "sessionKey-per-topic" 的对照实验）
+
+变体思路：所有 topic 共用一个固定 sessionKey `agent:<agentId>:coclaw-topic`，每次 agent.run 带固定 key + 当前 topic 的 sessionId，期望"sessions.json 只占 1 行 entry"。
+
+四阶段实验（Exp 1/2/3/3c）：
+
+| Exp | 验证项 | 结果 |
+|---|---|---|
+| 1 | 单 topic 两轮 run | ✅ 续聊 OK；sessions.json 始终只 1 条 entry |
+| 2 | 顺序切换 topic1 → topic2 → topic1 | ✅ entry 的 `sessionId` 字段切换，各自 `.jsonl` 独立 |
+| 3 | 并发 fire topic1 + topic2 run（30 字 prompt + 内置工具调用） | ❌ T1 的 user 消息和 assistant 回复写到了 T2 的 `.jsonl`，T1 `.jsonl` 完全没动；T2 的 trajectory.jsonl 含 T1+T2 两个 sessionId 写入 |
+| 3c | 重做：A 上 warmup → 并发 fire A+B（thinking=medium 长 prompt） | ⚠️ 没串扰，但 entry trace 显示 **B 单独 running 12 秒，B 完成后 A 才开始** —— OpenClaw 内部把同 sessionKey 的 run 串行化执行 |
+
+否决三连：
+
+1. **失去并发能力**：实测 Exp 3c——两个 RPC accepted 时间相差 201ms，但内部 status 字段表明 B 完成后 A 才启动。CoClaw 当前 explicit 方案是真并发（按 sessionId 隔离）；切到固定 sessionKey 会退化为串行。
+2. **某些时序仍会串扰**：Exp 3 实测 T1 输出落到 T2 `.jsonl`；trajectory 双 sessionId 写入是铁证。
+3. **entry 字段共享**：sessions.json 这条 entry 的 `sessionId / sessionFile / sessionStartedAt / status` 都是 per-sessionKey 共享内存，并发时只反映最后写者，依赖 entry 反查的能力（UI sessions 列表、`appendAssistantMessageToSessionTranscript` 投递镜像、`resolveActiveEmbeddedRunSessionId`）只能命中其中一个 topic。
+
+对比 explicit 方案：每个 topic 各自一条 sessionKey，按 sessionId 物理隔离，没有共享 entry——并发安全是天然属性。
+
+### 6. 实施方向（设计稿入口）
+
+可行路径：**plugin 在 agent.run 结束后调 gateway RPC `sessions.delete` 清掉该 explicit entry**（保留 `.jsonl`）。
+
+设计稿要回答的开放问题：
+
+1. **run-end 信号**：plugin 内拿"某次 agent.run 已结束"的最稳钩子是订阅 `sessions.changed`（reason 待核：transcript-update 一类）、订阅 OpenClaw 内部 hook、还是 plugin 直接 wrap realtime-bridge 的 agent RPC 转发？
+2. **存量清理**：当前 sessions.json 已积累 80+ explicit entry——plugin 启动时一次性扫清还是逐步淘汰？
+3. **高频对话的"建-删"竞态**：用户快速连发消息时，OpenClaw 在 run 启动时刚 write entry，plugin 在 run 结束时立即 delete entry，下一次 run 启动又 write——这种乒乓是否有时序坑（如 delete 跟 next-run write 跨过 entry 重建窗口）？
+4. **是否 wrap runtime 的 `cleanup-options`**：gateway RPC 直调 vs 通过 plugin runtime scope 调（保留 `pluginRuntimeOwnerId` 标记便于上游审计），二选一。
+
+### 7. 本节相关源码锚点
+
+| 主题 | 文件锚点 |
+|---|---|
+| `sessions.delete` handler | `openclaw-repo/src/gateway/server-methods/sessions.ts:1838-1937` |
+| `sessions.delete` params schema（key/deleteTranscript/emitLifecycleHooks）| `openclaw-repo/src/gateway/protocol/schema/sessions.ts:235-243` |
+| 归档 = rename 不是 unlink | `openclaw-repo/src/gateway/session-transcript-files.fs.ts:127-142` |
+| ownership 校验逻辑 | `openclaw-repo/src/gateway/server-methods/sessions.ts:199-221` |
+| runtime `deleteSession` 接口 | `openclaw-repo/src/plugins/runtime/types.ts:49-52, 87` |
+| runtime `deleteSession` 实现（注 owner + admin scope）| `openclaw-repo/src/gateway/server-plugins.ts:443-468` |
+| plugin 端 chat-history explicit 守卫 | `plugins/openclaw/index.js:209-218` |
+| plugin 端 sessions.changed 过滤 | `plugins/openclaw/src/realtime-bridge.js:903-931` |
