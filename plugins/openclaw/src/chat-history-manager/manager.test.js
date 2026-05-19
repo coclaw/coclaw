@@ -335,6 +335,45 @@ test('recordSessionTransition - T14 stale 事件：currentSessionId 已在 list 
 	}
 });
 
+// REPRO_LOST_ARCHIVED: A→B→C 快速连翻，sessions.changed 两条先到、session_start hook 两条后到。
+// 第三条 hook (current=B, archived=A) 命中 stale 防御 → 直接 return，**A 这段从未被记录**。
+// 即便冷启动 UI 也看不到 A。预期：list 应为 [C, B@arch, A@arch]；实际：list = [C, B@arch]。
+// SKIP：双源 race 的更深问题，独立于 cron-eviction 止血任务；见 TODO.md 同名条目，根因修复时 unskip。
+test('recordSessionTransition - REPRO 双源乱序：A→B→C 快速连翻，stale 防御吞掉 A 的归档信号', { skip: 'REPRO of double-source A→B→C race; out of scope for cron-eviction stop-bleed; see TODO.md' }, async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		// 1) B 的 sessions.changed 先到（不带 archivedSessionId） → [B]
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'B',
+		});
+		// 2) C 的 sessions.changed 再到（不带 archivedSessionId） → [C, B@arch]
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'C',
+		});
+		// 3) B 的 hook 此时才到，带 archivedSessionId=A → stale 防御命中 → return → A 丢了
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main',
+			currentSessionId: 'B', archivedSessionId: 'A',
+		});
+		// 4) C 的 hook 最后到，带 archivedSessionId=B → no-op
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main',
+			currentSessionId: 'C', archivedSessionId: 'B',
+		});
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		// 期望：A、B、C 都在
+		const ids = history.map((r) => r.sessionId);
+		assert.ok(ids.includes('A'), `A 应在 list 中（实际：${JSON.stringify(ids)}）`);
+		assert.ok(ids.includes('B'), 'B 应在 list 中');
+		assert.ok(ids.includes('C'), 'C 应在 list 中');
+		assert.equal(history.length, 3, 'list 应为 [C, B@arch, A@arch]');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
 // T15: archivedSessionId === currentSessionId 异常输入（上游契约异常），归一化丢弃避免双份
 test('recordSessionTransition - T15 archivedSessionId 等于 currentSessionId：丢弃 archived 入参 + 打 remoteLog 暴露异常信号', async () => {
 	const tmpDir = await makeTmpDir();

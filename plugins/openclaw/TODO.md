@@ -1698,3 +1698,18 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 - 或更激进：JSONL 按行落盘天然支持 tail，用 `fs.read(fd, ...)` + 自己的 line buffer 实现真正的"读够 N 条就停"。
 - 暂不动 `get`，因为它走 `cursor + limit` 分页，行为差异更大。
 
+## chat-history 双源乱序 A→B→C race：stale 防御吞掉中间段的归档信号（红测已 skip）
+
+**发现日期**：2026-05-19（cron 顶替止血任务实施前 dump 整理）
+**关联**：`plugins/openclaw/src/chat-history-manager/manager.test.js` 末尾 REPRO_LOST_ARCHIVED 用例（已 `{ skip: ... }`）
+
+**现象**：在 A→B→C 三跳快速连翻的极端时序下（两条 `sessions.changed` 先到、两条 `session_start` hook 后到），第三条到达的 hook (current=B, archived=A) 因 currentSessionId 已不再是 list head，命中 `recordSessionTransition` 内的 stale 防御直接 return，**A 这一段从未被任何写盘路径记录**，永久缺失。
+
+**为什么本期未修**：cron 顶替止血只覆盖 user A → cron B 单跳场景（现有"老 head 翻 archived + 新 sid unshift"路径正常工作）；A→B→C 三跳是更深层、独立于 cron 路径的双源 race，修法要重新设计 stale 判定 + 归档信号的去重链路，工作量与 cron 止血不在同一量级。
+
+**修复方向**：让 stale 防御在 `archivedSessionId` 信号上下文中至少补登被漏归档的中间段（即便 head 已翻过）；可能需要在到达 `recordSessionTransition` 时合并 sessions.changed 与 hook 的乱序事件流，而不是直接 return。
+
+**复测**：根因修复后 `unskip` 测试 `recordSessionTransition - REPRO 双源乱序：A→B→C ...`，期望 list = [C, B@arch, A@arch]。
+
+**严重性**：低——需要极端时序（毫秒级三跳 + 双源到达顺序倒置）才触发，生产环境未观察到实例；红测仅作为根因修复的 fixture 保留。
+
