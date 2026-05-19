@@ -1766,7 +1766,7 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **发现日期**：2026-05-19（cron 顶替止血 deep review 综合 + 维度实例都提了）
 **关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `classifyChatHistorySessionKey`
 
-**问题**：cron 跑出的子代理 sessionKey 形如 `agent:<id>:cron:<jobId>:subagent:<uuid>`。当前 helper 顺序判定（subagent 先 cron 后），先命中 subagent → `reason='subagent'`，远端只看到 `chat-history.skip-subagent` 而看不到"这是 cron 跑出的子代理"。诊断/分类时丢一层信息。
+**问题**：cron 跑出的子代理 sessionKey 形如 `agent:<id>:cron:<jobId>:subagent:<uuid>`。守卫三类都用 `parts[2]` 严格相等，此形态命中 cron 守卫返回 `reason='cron'`，远端只看到 `chat-history.skip-cron` 而看不到"这是 cron 跑出的子代理"。诊断/分类时丢一层信息（哪种 reason 标签丢失另一层并不重要，本质是单一标签无法表达嵌套）。
 
 **修复方向**：helper 返回 reasons 数组（`['cron', 'subagent']`）让 caller 拼复合 log；或始终按"最深识别词"对应分级返回。注意保持现有"命中即跳过"语义不变。
 
