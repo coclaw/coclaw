@@ -16,17 +16,24 @@
 - 支持 cursor 分页（`cursor`、`nextCursor`、`total`）
 - 不读取 transcript 内容（只走 readdir + stat 元数据），UI 标题由 chat-history / topic 的 title 字段提供
 
+> 注：`listAll` 隐藏 `.deleted.*` 归档；UI 拿到的"历史 session id"实际走 `coclaw.chatHistory.list`，而后用 `coclaw.sessions.getById` 读取——`.deleted.*` 归档对应的 sessionId 即来自这条路径。
+
 ## `nativeui.sessions.get`
 
-- 读取同 id transcript 时**优先 `live` 文件**（live 代表当前活跃 transcript，同一 sessionId 可能同时存在 live 和 reset 文件）
-- 若无 live，则回退读取 reset 文件（取最新 mtime 的 reset 文件）
+- 读取同 id transcript 时**优先 `live` 文件**（live 代表当前活跃 transcript）
+- 若无 live，回退扫归档：合并 `<sessionId>.jsonl.reset.<timestamp>` 与 `<sessionId>.jsonl.deleted.<timestamp>`，按时间戳字典序倒序取最新（OpenClaw 严格 ISO `YYYY-MM-DDTHH-MM-SS.sssZ` 格式，字典序 = 时间序）
+- 归档候选过 ISO 格式 regex 校验，**忽略 `.jsonl.reset.<ts>.bak` 等 trailing-garbage 文件**（rsync / 手工备份残留）
 - 支持 cursor 分页（按 JSONL 行偏移）
 
 ## `coclaw.sessions.getById`
 
-- 输入 `sessionId`（必填）和 `limit`（可选，默认 500）
+- 输入 `sessionId`（必填）和 `limit`（可选）
 - 仅返回 `type === "message"` 的行，过滤掉元数据行
-- transcript 文件查找规则同 `nativeui.sessions.get`
+- transcript 文件查找规则同 `nativeui.sessions.get`（两者共享 `resolveTranscriptFile`，所以同样支持 `.deleted.*` 归档 fallback 与 trailing-garbage 过滤）
+- `limit` 语义：
+  - 不传 / `null` / 非 number 类型（string、boolean、array、object）/ `NaN` / `Infinity` / `< 1` → 返回全部
+  - `>= 1` 的有限数 → 取最后 `Math.trunc(limit)` 条（如 `2.9 → 2`）
+  - **无默认值、无上限**——避免历史的"静默截断到 500 条"问题
 
 ## 测试
 

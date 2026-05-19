@@ -37,6 +37,10 @@ async function safeReaddir(dir) {
 	}
 }
 
+// OpenClaw ISO 时间戳：YYYY-MM-DDTHH-MM-SS[.sss]Z（与 artifacts.ts ARCHIVE_TIMESTAMP_RE 对齐：毫秒可选）
+// 用于过滤 rsync/备份等场景带入的非法后缀（如 .jsonl.reset.<ts>.bak）
+const ARCHIVE_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:\.\d{3})?Z$/;
+
 async function safeAccess(filePath) {
 	try { await fsp.access(filePath); return true; }
 	catch (err) {
@@ -182,16 +186,24 @@ export function createSessionManager(options = {}) {
 
 	async function resolveTranscriptFile(agentId, sessionId) {
 		const dir = sessionsDir(agentId);
-		// live 文件优先：同一 sessionId 可能同时存在 live 和 reset 文件
+		// live 文件优先：同一 sessionId 可能同时存在 live 和 reset/deleted 归档
 		// （OpenClaw reset 后复用 sessionId），live 代表当前活跃 transcript
 		const livePath = resolveTranscriptPath(sessionId, agentId);
 		if (await safeAccess(livePath)) return livePath;
 
-		const files = await safeReaddir(dir);
+		// .reset.<ts> 与 .deleted.<ts> 都代表 session 的最终态，合并扫描按时间戳取最新
+		// 时间戳是 OpenClaw ISO YYYY-MM-DDTHH-MM-SS[.sss]Z（artifacts.ts 锁住毫秒可选），字典序 = 时间序
 		const resetPrefix = `${sessionId}.jsonl.reset.`;
-		const resetCandidates = [];
+		const deletedPrefix = `${sessionId}.jsonl.deleted.`;
+		const files = await safeReaddir(dir);
+		const candidates = [];
 		for (const name of files) {
-			if (!name.startsWith(resetPrefix)) continue;
+			let archiveStamp;
+			if (name.startsWith(resetPrefix)) archiveStamp = name.slice(resetPrefix.length);
+			else if (name.startsWith(deletedPrefix)) archiveStamp = name.slice(deletedPrefix.length);
+			else continue;
+			// 严格 ISO 时间戳校验，过滤 .jsonl.reset.<ts>.bak 等带尾巴的备份/同步残留
+			if (!ARCHIVE_TS_RE.test(archiveStamp)) continue;
 			const full = nodePath.join(dir, name);
 			let stat;
 			try { stat = await fsp.stat(full); }
@@ -201,21 +213,21 @@ export function createSessionManager(options = {}) {
 				throw err;
 			}
 			/* c8 ignore stop */
-			resetCandidates.push({
+			candidates.push({
 				path: full,
-				archiveStamp: name.slice(resetPrefix.length),
+				archiveStamp,
 				updatedAt: stat.mtimeMs,
 			});
 		}
-		resetCandidates.sort((a, b) => {
+		candidates.sort((a, b) => {
 			if (a.archiveStamp !== b.archiveStamp) {
 				return b.archiveStamp.localeCompare(a.archiveStamp);
 			}
-			/* c8 ignore next -- 同一 sessionId 的 reset 文件不会有相同 archiveStamp */
+			/* c8 ignore next -- 同 sessionId 同 archiveStamp 的归档实测 0 case */
 			return b.updatedAt - a.updatedAt;
 		});
-		if (resetCandidates.length > 0) {
-			return resetCandidates[0].path;
+		if (candidates.length > 0) {
+			return candidates[0].path;
 		}
 		return null;
 	}
@@ -272,6 +284,7 @@ export function createSessionManager(options = {}) {
 	/**
 	 * 按 sessionId 获取消息，返回完整 JSONL 行级结构。
 	 * 只返回 type==="message" 且有合法 message.role 的行。
+	 * limit 语义：不传/null/非 number/NaN/Infinity/<1 → 返回全部；>=1 的有限 number → 取最后 Math.trunc(limit) 条。无默认/最大值。
 	 * @param {{ sessionId: string, agentId?: string, limit?: number }} params
 	 * @returns {Promise<{ messages: object[] }>}
 	 */
@@ -279,7 +292,10 @@ export function createSessionManager(options = {}) {
 		const agentId = typeof params.agentId === 'string' && params.agentId.trim() ? params.agentId.trim() : 'main';
 		const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
 		if (!sessionId) throw new Error('sessionId required');
-		const limit = clamp(params.limit, 1, 500, 500);
+		// limit 类型严格：只接受 number 且 >= 1。string/bool/array 走非 number 分支被拒，
+		// 0 / 负数 / NaN / Infinity / (0,1) 区间也都视为"不限"——(0,1) 不视为不限的话 Math.trunc 后会变 0、slice(-0) 退化为全部
+		const useLimit = typeof params.limit === 'number' && Number.isFinite(params.limit) && params.limit >= 1;
+		const limitNum = useLimit ? Math.trunc(params.limit) : 0;
 		const file = await resolveTranscriptFile(agentId, sessionId);
 		if (!file) {
 			return { messages: [] };
@@ -300,8 +316,7 @@ export function createSessionManager(options = {}) {
 				logger.warn?.(`[session-manager] bad json line skipped: ${String(err?.message ?? err)}`);
 			}
 		}
-		// 取最后 limit 条
-		const sliced = messages.length > limit ? messages.slice(-limit) : messages;
+		const sliced = (useLimit && messages.length > limitNum) ? messages.slice(-limitNum) : messages;
 		return { messages: sliced };
 	}
 

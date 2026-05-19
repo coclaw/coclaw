@@ -252,6 +252,181 @@ test('getById - fallback 到 reset 文件', async () => {
 	assert.equal(res.messages[0].message.content, 'from reset');
 });
 
+test('getById - fallback 到 .deleted 文件', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'gd.jsonl.deleted.2026-03-05T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"from deleted"}}\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.getById({ sessionId: 'gd' });
+	assert.equal(res.messages.length, 1);
+	assert.equal(res.messages[0].message.content, 'from deleted');
+});
+
+test('getById - 忽略 archiveStamp 不符合 ISO 格式的噪声文件', async () => {
+	// 真实场景：rsync 或手工备份在归档旁留下 .jsonl.reset.<ts>.bak / .jsonl.reset.junk 这类文件
+	// 字典序上 `<ts>.bak` 比 `<ts>` 大，不过滤的话会被当成更新的归档选中
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'gn.jsonl.reset.2026-03-01T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"clean reset"}}\n',
+		'utf8',
+	);
+	// 这两个噪声文件的 archiveStamp（`.000Z.bak` / `junk`）应被 regex 拒掉
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'gn.jsonl.reset.2026-03-01T00-00-00.000Z.bak'),
+		'{"type":"message","message":{"role":"user","content":"noise bak"}}\n',
+		'utf8',
+	);
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'gn.jsonl.deleted.junk'),
+		'{"type":"message","message":{"role":"user","content":"noise junk"}}\n',
+		'utf8',
+	);
+	// "形似合法但 digit count 错"：以数字开头、Z 结尾且年份比 clean 更新（2999 > 2026），
+	// 但毫秒只有 2 位——锁死 regex 严格性。regex 若被改宽（如 /^\d.*Z$/），这条会被当成更新归档选中、断言失败
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'gn.jsonl.reset.2999-12-31T23-59-59.99Z'),
+		'{"type":"message","message":{"role":"user","content":"noise lookalike"}}\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.getById({ sessionId: 'gn' });
+	assert.equal(res.messages.length, 1);
+	assert.equal(res.messages[0].message.content, 'clean reset');
+});
+
+test('getById - archiveStamp 可省略毫秒（与上游 (?:\\.\\d{3})? 对齐）', async () => {
+	// 上游 artifacts.ts ARCHIVE_TIMESTAMP_RE 毫秒为 optional；本测保证插件接受无毫秒形态
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'gms.jsonl.reset.2026-03-01T00-00-00Z'),
+		'{"type":"message","message":{"role":"user","content":"no-ms archive"}}\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.getById({ sessionId: 'gms' });
+	assert.equal(res.messages.length, 1);
+	assert.equal(res.messages[0].message.content, 'no-ms archive');
+});
+
+test('getById - reset + deleted 共存按 ISO 时间戳取最新', async () => {
+	// 用例 A：deleted 较新 → 取 deleted
+	const rootA = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const dirA = nodePath.join(rootA, 'main', 'sessions');
+	await fs.mkdir(dirA, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(dirA, 'mix.jsonl.reset.2026-03-01T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"reset-old"}}\n',
+		'utf8',
+	);
+	await fs.writeFile(
+		nodePath.join(dirA, 'mix.jsonl.deleted.2026-03-10T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"deleted-new"}}\n',
+		'utf8',
+	);
+	const mgrA = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(rootA, id, "sessions"), resolveStorePath: (id) => nodePath.join(rootA, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(rootA, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const resA = await mgrA.getById({ sessionId: 'mix' });
+	assert.equal(resA.messages.length, 1);
+	assert.equal(resA.messages[0].message.content, 'deleted-new');
+
+	// 用例 B：反向——reset 较新 → 取 reset
+	const rootB = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const dirB = nodePath.join(rootB, 'main', 'sessions');
+	await fs.mkdir(dirB, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(dirB, 'mix.jsonl.deleted.2026-03-01T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"deleted-old"}}\n',
+		'utf8',
+	);
+	await fs.writeFile(
+		nodePath.join(dirB, 'mix.jsonl.reset.2026-03-10T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"reset-new"}}\n',
+		'utf8',
+	);
+	const mgrB = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(rootB, id, "sessions"), resolveStorePath: (id) => nodePath.join(rootB, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(rootB, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const resB = await mgrB.getById({ sessionId: 'mix' });
+	assert.equal(resB.messages.length, 1);
+	assert.equal(resB.messages[0].message.content, 'reset-new');
+});
+
+test('getById - 不传 limit 返回全部（验证 500 上限已去）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	const ROWS = 501;
+	const lines = [];
+	for (let i = 0; i < ROWS; i++) {
+		lines.push(`{"type":"message","message":{"role":"user","content":"m-${i}"}}`);
+	}
+	await fs.writeFile(nodePath.join(sessionsDir, 'big.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.getById({ sessionId: 'big' });
+	assert.equal(res.messages.length, ROWS);
+	assert.equal(res.messages[0].message.content, 'm-0');
+	assert.equal(res.messages[ROWS - 1].message.content, `m-${ROWS - 1}`);
+});
+
+test('getById - 非数字/非正数 limit 一律视为不限', async () => {
+	// 造 8 行 transcript，保证"被误当成数字截尾"的情形（'3', true=1, [2]=2）
+	// 和"真截尾"行为有可分辨的差异
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+
+	const ROWS = 8;
+	const lines = [];
+	for (let i = 0; i < ROWS; i++) {
+		lines.push(`{"type":"message","message":{"role":"user","content":"v-${i}"}}`);
+	}
+	await fs.writeFile(nodePath.join(sessionsDir, 'gz.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	// 0 / 负 / 非数字（字符串数字、true、数组）/ null / NaN / Infinity / (0,1) 区间 → 全部 ROWS 条
+	const limits = [0, -3, 'abc', '3', true, false, [2], [], {}, null, NaN, Infinity, -Infinity, 0.5, 0.999];
+	for (const limit of limits) {
+		const res = await manager.getById({ sessionId: 'gz', limit });
+		assert.equal(res.messages.length, ROWS, `limit=${JSON.stringify(limit) ?? String(limit)} 应返回全部 ${ROWS} 条`);
+	}
+});
+
+test('getById - limit 是正整数时真截尾（mutation 防护）', async () => {
+	// 与上一条用例配套：显式钉死"limit 是 number 且 > 0 才截尾"，防 typeof 守卫退化
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	const lines = [];
+	for (let i = 0; i < 8; i++) {
+		lines.push(`{"type":"message","message":{"role":"user","content":"k-${i}"}}`);
+	}
+	await fs.writeFile(nodePath.join(sessionsDir, 'gk.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const r3 = await manager.getById({ sessionId: 'gk', limit: 3 });
+	assert.equal(r3.messages.length, 3);
+	assert.equal(r3.messages[0].message.content, 'k-5');
+	assert.equal(r3.messages[2].message.content, 'k-7');
+	// 小数被 Math.trunc 截到整数
+	const r25 = await manager.getById({ sessionId: 'gk', limit: 2.9 });
+	assert.equal(r25.messages.length, 2);
+	assert.equal(r25.messages[0].message.content, 'k-6');
+});
+
 test('getById - CRLF 换行正确解析', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
 	const sessionsDir = nodePath.join(root, 'main', 'sessions');
