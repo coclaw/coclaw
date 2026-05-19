@@ -33,9 +33,14 @@ export function classifyChatHistorySessionKey(sessionKey) {
 	}
 	const parts = sessionKey.split(':');
 	if (parts[0] !== 'agent') return { ok: true, reason: null };
+	// 三个跳过类别都用"parts[2] 严格相等"，与上游 routing 一致：
+	// - isCronSessionKey / isSubagentSessionKey 都只在 rest 起始处（即 parts[2]）匹配；
+	// - cron 跑出的子代理（agent:<id>:cron:<jobId>:subagent:<uuid>）上游不视作 subagent，
+	//   由 cron 守卫挡住即可，避免与 IM per-account DM accountId="cron"/"subagent" 形态冲突
+	//   （accountId 仅按 [a-z0-9_-]{1,64} 校验，"cron"/"subagent" 都是合法账户名）。
 	if (parts[2] === 'explicit') return { ok: false, reason: 'explicit' };
-	if (parts.indexOf('subagent', 2) >= 0) return { ok: false, reason: 'subagent' };
-	if (parts.indexOf('cron', 2) >= 0) return { ok: false, reason: 'cron' };
+	if (parts[2] === 'cron') return { ok: false, reason: 'cron' };
+	if (parts[2] === 'subagent') return { ok: false, reason: 'subagent' };
 	return { ok: true, reason: null };
 }
 
@@ -161,7 +166,16 @@ export class ChatHistoryManager {
 		// 自愈守卫：list[1..]（非头位）若仍有未归档项视为脏数据（cron 顶替 / 旧版本写入 / 异常 race
 		// 残留），强制补 archivedAt。放在 __persist 内是为了覆盖所有写盘路径——新增写入点自动受护。
 		this.__sanitizeAllSessionKeys(store, agentId);
-		await this.__writeJsonFile(this.__historyFilePath(agentId), store);
+		try {
+			await this.__writeJsonFile(this.__historyFilePath(agentId), store);
+		} catch (err) {
+			// 写盘失败时清除该 agent 的内存 cache：caller 此前在 mutex 内已对 in-place list 做过
+			// unshift / splice / sanitize，这些修改不能随后被下一次"reload 命中 cache 不读盘"
+			// 的路径误持久化。删 cache 让下次操作的 __reloadFromDisk 必须重读磁盘（或 ENOENT 降级
+			// 为 empty store），保证内存与磁盘最终一致。
+			this.__cache.delete(agentId);
+			throw err;
+		}
 	}
 
 	/**
@@ -208,7 +222,10 @@ export class ChatHistoryManager {
 	 * @param {{ agentId: string, sessionKey: string, currentSessionId: string, archivedSessionId?: string }} params
 	 */
 	async recordSessionTransition({ agentId, sessionKey, currentSessionId, archivedSessionId }) {
-		if (!sessionKey || !currentSessionId) return;
+		// 严格类型校验：上游 hook payload 异常时（非字符串 sessionId / sessionKey）静默拒绝，避免把脏值落盘。
+		if (typeof sessionKey !== 'string' || !sessionKey) return;
+		if (typeof currentSessionId !== 'string' || !currentSessionId) return;
+		if (typeof archivedSessionId !== 'string' || !archivedSessionId) archivedSessionId = undefined;
 		// 规范化：archivedSessionId 与 currentSessionId 相同属上游契约异常（resumedFrom 不应等于 sessionId），
 		// 丢弃避免在空 list 起手时写出"同 sid 既是头又是归档"的双份记录。打 remoteLog 暴露信号
 		// 让运维捕捉到上游可能的回归——只在真触发时打一次，正常路径噪声为零。

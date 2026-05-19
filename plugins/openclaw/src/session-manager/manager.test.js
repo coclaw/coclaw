@@ -727,3 +727,39 @@ test('listAllEntries: 缺 sessions.json / 缺/坏 sessionId 行被跳过', async
 	const entries = await manager.listAllEntries('main');
 	assert.deepEqual(entries, [{ sessionKey: 'agent:main:main', sessionId: 'sid-ok' }]);
 });
+
+test('listAllEntries: sessions.json 内容损坏（非合法 JSON）→ 返回 [] 不抛错', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-le-corrupt-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(nodePath.join(sessionsDir, 'sessions.json'), '{not valid json', 'utf8');
+	const manager = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	assert.deepEqual(await manager.listAllEntries('main'), []);
+});
+
+test('listAllEntries: sessionKey 为空字符串的异常行被跳过', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-le-emptykey-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({
+			'': { sessionId: 'sid-evil' },
+			'agent:main:main': { sessionId: 'sid-ok' },
+		}),
+		'utf8',
+	);
+	const manager = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	const entries = await manager.listAllEntries('main');
+	assert.deepEqual(entries, [{ sessionKey: 'agent:main:main', sessionId: 'sid-ok' }]);
+});

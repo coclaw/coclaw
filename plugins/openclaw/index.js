@@ -198,19 +198,21 @@ const plugin = {
 		// 该 helper 可直接作为 bridge.onSessionCreated 回调（签名兼容；缺失字段走兜底：
 		// agentId 走 parts[1] fallback、archivedSessionId 走 manager 翻 head 路径）。
 		async function handleSessionCreated({ agentId, sessionKey, sessionId, archivedSessionId }) {
-			// sessionKey 非字符串时（上游 schema 异常）直接当 missing 处理，避免 split 抛 TypeError
-			if (typeof sessionKey !== 'string' || !sessionKey || !sessionId) {
+			// sessionKey / sessionId 非字符串时（上游 schema 异常）直接当 missing 处理，避免 split 抛 TypeError
+			// 或脏值落盘。manager 内部入口同样会校验（深度防御）。
+			if (typeof sessionKey !== 'string' || !sessionKey
+				|| typeof sessionId !== 'string' || !sessionId) {
 				// 早返值得警惕：上游事件 schema 异常，或 topic（无 sessionKey）误入双源链路。
 				// 打 log + remoteLog 让运维能定位事件源；不影响其他通道。
-				// 日志兼容性：sessionKey 缺失（null/undefined）→ 'null'；其它非字符串类型 → 'invalid'。
-				const skLog = sessionKey == null
+				// 日志兼容性：缺失（null/undefined）→ 'null'；其它非字符串类型 → 'invalid'。
+				const formatField = (v) => v == null
 					? 'null'
-					: (typeof sessionKey === 'string' ? sessionKey : 'invalid');
+					: (typeof v === 'string' ? v : 'invalid');
 				logger.warn?.(
 					`[coclaw] chat history early-return: missing/invalid sessionKey/sessionId`,
 				);
 				remoteLog(
-					`chat-history.missing-keys sessionKey=${skLog} sessionId=${sessionId ?? 'null'}`,
+					`chat-history.missing-keys sessionKey=${formatField(sessionKey)} sessionId=${formatField(sessionId)}`,
 				);
 				return;
 			}

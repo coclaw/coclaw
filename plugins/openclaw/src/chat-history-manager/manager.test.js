@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import nodePath from 'node:path';
-import { ChatHistoryManager } from './manager.js';
+import { ChatHistoryManager, classifyChatHistorySessionKey } from './manager.js';
 import { __reset as __resetRemoteLog, __buffer as __remoteLogBuf } from '../remote-log.js';
 
 const silentLogger = { info() {}, warn() {}, error() {} };
@@ -427,20 +427,32 @@ test('recordSessionTransition - T6 sessions.changed 先到，hook 后到补 arch
 });
 
 // T7: 双源最终一致 hook → sessions.changed：第二次幂等 no-op
-test('recordSessionTransition - T7 hook 先到，sessions.changed 后到幂等 no-op', async () => {
+test('recordSessionTransition - T7 hook 先到，sessions.changed 后到幂等 no-op（且不重复写盘）', async () => {
 	const tmpDir = await makeTmpDir();
 	try {
-		const { mgr } = await setupManager(tmpDir);
+		let writeCount = 0;
+		const rootDir = nodePath.join(tmpDir, 'agents');
+		await fs.mkdir(nodePath.join(rootDir, 'main', 'sessions'), { recursive: true });
+		const mgr = new ChatHistoryManager({
+			resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'),
+			logger: silentLogger,
+			writeJsonFile: async (path, data) => {
+				writeCount += 1;
+				await fs.writeFile(path, JSON.stringify(data));
+			},
+		});
 		await mgr.load('main');
 		// 1) hook 路径：空 list + currentSessionId=A + archivedSessionId=X → [A, X@arch]
 		await mgr.recordSessionTransition({
 			agentId: 'main', sessionKey: 'agent:main:main',
 			currentSessionId: 'A', archivedSessionId: 'X',
 		});
+		const writeCountAfterHook = writeCount;
 		// 2) sessions.changed 路径：head A 已是 current → no-op
 		await mgr.recordSessionTransition({
 			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'A',
 		});
+		assert.equal(writeCount, writeCountAfterHook, '第二条幂等 no-op 不应触发写盘');
 		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
 		assert.equal(history.length, 2);
 		assert.equal(history[0].sessionId, 'A');
@@ -1080,16 +1092,27 @@ test('reconcileAll - 全 archived 无头位（用户 backfill 现状）→ 头�
 });
 
 // 并发：启动对账 fire-and-forget 跑的同时，cron_changed hook 也喂入新 sid。
-// 两路同时进 recordSessionTransition，期望最终只一条新头位、无重复段。
-test('reconcileAll - 启动对账与并发事件路径喂入相同新 sid → 幂等，无重复段', async () => {
+// 两路同时进 recordSessionTransition，期望最终只一条新头位、无重复段且只写一次。
+test('reconcileAll - 启动对账与并发事件路径喂入相同新 sid → 幂等，无重复段且只写一次新转换', async () => {
 	const tmpDir = await makeTmpDir();
 	try {
-		const { mgr } = await setupManager(tmpDir);
+		let writeCount = 0;
+		const rootDir = nodePath.join(tmpDir, 'agents');
+		await fs.mkdir(nodePath.join(rootDir, 'main', 'sessions'), { recursive: true });
+		const mgr = new ChatHistoryManager({
+			resolveSessionsDir: (id) => nodePath.join(rootDir, id, 'sessions'),
+			logger: silentLogger,
+			writeJsonFile: async (path, data) => {
+				writeCount += 1;
+				await fs.writeFile(path, JSON.stringify(data));
+			},
+		});
 		await mgr.load('main');
 		// 预置老头位
 		await mgr.recordSessionTransition({
 			agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'sid-old',
 		});
+		const writesBefore = writeCount;
 		// 启动对账 + 并发事件路径都喂新 sid（模拟两路同时到）
 		await Promise.all([
 			mgr.reconcileAll('main', [{ sessionKey: 'agent:main:main', sessionId: 'sid-new' }]),
@@ -1097,6 +1120,7 @@ test('reconcileAll - 启动对账与并发事件路径喂入相同新 sid → �
 				agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: 'sid-new',
 			}),
 		]);
+		assert.equal(writeCount - writesBefore, 1, '两路并发对同一 sid 转换只应触发一次写盘（另一路 head 已 current → no-op）');
 		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
 		assert.equal(history.length, 2, '应该是 [sid-new, sid-old@arch]，不应重复段');
 		assert.equal(history[0].sessionId, 'sid-new');
@@ -1216,6 +1240,9 @@ test('reconcileAll - 单条 entry recordSessionTransition 抛错 → 隔离 + �
 		const { history: otherHist } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:other' });
 		assert.equal(otherHist.length, 1);
 		assert.equal(otherHist[0].sessionId, 'B');
+		// 关键：失败的第一条不应残留——磁盘上 agent:main:main 永远没写出去
+		const { history: mainHist } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(mainHist.length, 0, '失败 entry 不应残留到磁盘（写盘抛错时内存脏数据被后续 reload 覆盖）');
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
@@ -1239,4 +1266,87 @@ test('reconcileAll - entries 含非法行 → 跳过非法、合法行仍生效'
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
+});
+
+// --- recordSessionTransition 入参类型校验 (B1) ---
+
+test('recordSessionTransition - currentSessionId 非字符串（object/number）→ 不写盘静默拒绝', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		let writeCount = 0;
+		const { mgr } = await setupManager(tmpDir, {
+			writeJsonFile: async () => { writeCount += 1; },
+		});
+		await mgr.load('main');
+		for (const bad of [{ bad: true }, 123, [], true]) {
+			await mgr.recordSessionTransition({
+				agentId: 'main', sessionKey: 'agent:main:main', currentSessionId: bad,
+			});
+		}
+		assert.equal(writeCount, 0, '非字符串 sessionId 不应触发写盘');
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 0, '非字符串 sessionId 不应留下任何 entry');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+test('recordSessionTransition - archivedSessionId 非字符串 → 视作未提供，仅头插 currentSessionId', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir);
+		await mgr.load('main');
+		await mgr.recordSessionTransition({
+			agentId: 'main', sessionKey: 'agent:main:main',
+			currentSessionId: 'A', archivedSessionId: { bad: true },
+		});
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 1, '只剩头位 A，非字符串 archived 被丢弃');
+		assert.equal(history[0].sessionId, 'A');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// --- classifyChatHistorySessionKey 独立单测 (B2 + 其他形态) ---
+
+test('classifyChatHistorySessionKey - 合法主会话 / 非 agent 前缀 / 自定义 → ok=true', () => {
+	assert.deepStrictEqual(classifyChatHistorySessionKey('agent:main:main'), { ok: true, reason: null });
+	assert.deepStrictEqual(classifyChatHistorySessionKey('agent:tester:dashboard:abc'), { ok: true, reason: null });
+	assert.deepStrictEqual(classifyChatHistorySessionKey('custom:not-agent'), { ok: true, reason: null });
+});
+
+test('classifyChatHistorySessionKey - explicit / subagent / cron 跳过', () => {
+	assert.equal(classifyChatHistorySessionKey('agent:main:explicit:uuid').reason, 'explicit');
+	assert.equal(classifyChatHistorySessionKey('agent:main:subagent:uuid').reason, 'subagent');
+	assert.equal(classifyChatHistorySessionKey('agent:main:cron:job1:run:s1').reason, 'cron');
+});
+
+test('classifyChatHistorySessionKey - IM per-account DM accountId="cron" → 不应误判为 cron', () => {
+	// 上游 schema：agent:<id>:<channel>:<accountId>:direct:<peerId>（routing/session-key.ts:196）
+	// accountId 仅按 [a-z0-9_-]{1,64} 正则校验，"cron" 完全合法。
+	// 上游 isCronSessionKey 只在 rest 起始处（即 parts[2]）匹配 cron，守卫必须与之对齐。
+	const res = classifyChatHistorySessionKey('agent:main:telegram:cron:direct:user1');
+	assert.equal(res.ok, true, 'IM DM accountId="cron" 应被识别为合法 chat');
+});
+
+test('classifyChatHistorySessionKey - IM per-account DM accountId="subagent" → 不应误判为 subagent', () => {
+	// 与 cron 同源问题：上游 isSubagentSessionKey 也只在 rest 起始处匹配 subagent:，
+	// 守卫不能用 indexOf 过宽匹配。
+	const res = classifyChatHistorySessionKey('agent:main:telegram:subagent:direct:user1');
+	assert.equal(res.ok, true, 'IM DM accountId="subagent" 应被识别为合法 chat');
+});
+
+test('classifyChatHistorySessionKey - 嵌套 cron:<jobId>:subagent:... → 由 cron 守卫挡住', () => {
+	// cron 跑出的 subagent，上游 isSubagentSessionKey 对该形态返回 false（rest 起始不是 subagent:），
+	// 由 cron 守卫捕获即可——避免与上游 subagent 概念冲突。
+	const res = classifyChatHistorySessionKey('agent:main:cron:job1:subagent:foo');
+	assert.deepStrictEqual(res, { ok: false, reason: 'cron' });
+});
+
+test('classifyChatHistorySessionKey - 非字符串 / 空串 / null → ok=false reason=null', () => {
+	assert.deepStrictEqual(classifyChatHistorySessionKey(undefined), { ok: false, reason: null });
+	assert.deepStrictEqual(classifyChatHistorySessionKey(null), { ok: false, reason: null });
+	assert.deepStrictEqual(classifyChatHistorySessionKey(''), { ok: false, reason: null });
+	assert.deepStrictEqual(classifyChatHistorySessionKey(123), { ok: false, reason: null });
 });
