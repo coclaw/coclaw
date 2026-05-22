@@ -3397,3 +3397,102 @@ describe('ChatPage recovery watchers', () => {
 		expect(wrapper.vm.__connReadyStore).toBe(storeA);
 	});
 });
+
+// chatMessages getter 在组装 separator 时给 archivedAt 加 fallback——plugin 已经把 archivedAt
+// 写进 chat-history.json，但 UI 缓存的 rawHistorySessionIds 是发消息之前的旧快照（daily-reset
+// 自动换 sid 等场景），用下一段（紧邻 separator 之后）首个有效 timestamp 兜底，确保用户看到日期
+// 而不是光秃秃的横线。
+describe('ChatPage chatMessages separator archivedAt fallback', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		chatStoreManager.__reset();
+	});
+
+	function makeUserMsg(id, text, ts) {
+		return { type: 'message', id, message: { role: 'user', content: text, timestamp: ts } };
+	}
+
+	test('seg.archivedAt 存在时 separator 直接用真实值（非 fallback 路径）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+			{ sessionId: 'seg-new', archivedAt: 1700000005000, messages: [makeUserMsg('n1', 'new', 1700000004000)] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const items = wrapper.vm.chatMessages;
+		const sep = items.find((it) => it.id === 'sep-seg-new');
+		expect(sep).toBeDefined();
+		expect(sep.archivedAt).toBe(1700000005000);
+	});
+
+	test('seg.archivedAt 缺失时 separator fallback 到下一段首个有效 timestamp', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+			// 模拟 UI 缓存滞后：plugin 已在 chat-history.json 写了 archivedAt，但 UI raw 仍是旧快照（无 archivedAt）
+			{ sessionId: 'seg-new', archivedAt: undefined, messages: [makeUserMsg('n1', 'new', 1700000004000)] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const sep = wrapper.vm.chatMessages.find((it) => it.id === 'sep-seg-new');
+		expect(sep.archivedAt).toBe(1700000004000);
+		// formatSeparatorLabel 也应该能渲染成文字（非空）
+		expect(wrapper.vm.formatSeparatorLabel(sep)).not.toBe('');
+	});
+
+	test('sep-current 在 historySessionIds[0].archivedAt 存在时直接用真实值', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+		];
+		// historySessionIds getter 走"raw 头条 archivedAt 非空 → 全保留"分支
+		chatStore.rawHistorySessionIds = [{ sessionId: 'seg-old', archivedAt: 1700000000000 }];
+		chatStore.currentSessionId = 'curr';
+		chatStore.messages = [makeUserMsg('c1', 'curr-msg', 1700000010000)];
+		await wrapper.vm.$nextTick();
+		const sep = wrapper.vm.chatMessages.find((it) => it.id === 'sep-current');
+		expect(sep.archivedAt).toBe(1700000000000);
+	});
+
+	test('sep-current 在 historySessionIds[0].archivedAt 缺失时 fallback 到 current 首条 timestamp', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+		];
+		// raw 是 daily-reset 之前的旧快照：当时 seg-old 还是 head 没 archivedAt
+		chatStore.rawHistorySessionIds = [{ sessionId: 'seg-old' }];
+		// loadMessages 已经发现 currentSessionId 与 head 不匹配 → historySessionIds 保留含 seg-old 的整 raw
+		chatStore.currentSessionId = 'curr';
+		chatStore.messages = [makeUserMsg('c1', 'curr-first', 1700000010000)];
+		await wrapper.vm.$nextTick();
+		const sep = wrapper.vm.chatMessages.find((it) => it.id === 'sep-current');
+		expect(sep).toBeDefined();
+		expect(sep.archivedAt).toBe(1700000010000);
+		expect(wrapper.vm.formatSeparatorLabel(sep)).not.toBe('');
+	});
+
+	test('fallback 也找不到 valid timestamp 时 separator archivedAt=null，formatSeparatorLabel 返回空', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+			// 既没 archivedAt，又没有任何 valid timestamp 的 message
+			{ sessionId: 'seg-new', archivedAt: undefined, messages: [makeUserMsg('n1', 'noTs', null)] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const sep = wrapper.vm.chatMessages.find((it) => it.id === 'sep-seg-new');
+		expect(sep.archivedAt).toBeNull();
+		expect(wrapper.vm.formatSeparatorLabel(sep)).toBe('');
+	});
+});

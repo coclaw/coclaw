@@ -512,7 +512,11 @@ export default {
 				const grouped = groupSessionMessages(seg.messages);
 				if (grouped.length) {
 					if (items.length > 0) {
-						items.push({ type: 'separator', id: `sep-${seg.sessionId}`, archivedAt: seg.archivedAt });
+						items.push({
+							type: 'separator',
+							id: `sep-${seg.sessionId}`,
+							archivedAt: seg.archivedAt ?? this.__firstValidTimestamp(grouped),
+						});
 					}
 					items.push(...grouped);
 				}
@@ -521,7 +525,11 @@ export default {
 			const current = groupSessionMessages(this.chatStore.allMessages);
 			if (current.length > 0 && items.length > 0) {
 				const latest = this.chatStore.historySessionIds[0];
-				items.push({ type: 'separator', id: 'sep-current', archivedAt: latest?.archivedAt ?? null });
+				items.push({
+					type: 'separator',
+					id: 'sep-current',
+					archivedAt: latest?.archivedAt ?? this.__firstValidTimestamp(current),
+				});
 			}
 			items.push(...current);
 			return items;
@@ -1023,6 +1031,17 @@ export default {
 		formatSeparatorLabel(item) {
 			if (!item.archivedAt) return '';
 			return this.__formatDateTime(item.archivedAt);
+		},
+
+		// archivedAt fallback：plugin 写入 archivedAt 与 UI 缓存有时序差（daily-reset 自动换 sid 等
+		// 场景下 UI 拿到的 raw chat-history 还是旧快照），用 grouped items 中首个有效 timestamp 兜底
+		// 显示分隔线日期。下一段第一条 message 时间紧邻真实归档时刻（旧段归档 ≈ 新段第一条消息）。
+		// 仍找不到 timestamp 时返回 null，formatSeparatorLabel 退化为无文字纯横线（与改动前一致）。
+		__firstValidTimestamp(items) {
+			for (const it of items) {
+				if (typeof it?.timestamp === 'number' && it.timestamp > 0) return it.timestamp;
+			}
+			return null;
 		},
 
 		/** systemNote 时间标签：HH:MM 与 ChatMsgItem.formattedTime 一致 */
