@@ -175,6 +175,19 @@
 			@send="onSendMessage"
 			@cancel="onCancelSend"
 		>
+			<template #floating>
+				<UButton
+					v-if="farFromBottom && !__loadingHistory"
+					data-testid="btn-back-to-bottom"
+					class="cc-icon-btn-lg absolute bottom-full right-4 mb-8 bg-default shadow-md ring-1 ring-default/10"
+					size="xl"
+					variant="ghost"
+					color="neutral"
+					icon="i-lucide-arrow-down"
+					:aria-label="$t('chat.scrollToBottom')"
+					@click="onClickBackToBottom"
+				/>
+			</template>
 			<template #prepend>
 				<SlashCommandMenu
 					v-if="showSlashMenu"
@@ -239,6 +252,8 @@ export default {
 		return {
 			defaultClawAvatar,
 			userScrolledUp: false,
+			// 距底超过 1 屏时显示「回到底部」悬浮按钮；与 userScrolledUp（60px 阈值）解耦
+			farFromBottom: false,
 			showNoMoreHint: false,
 			dragging: false,
 			__exiting: false,
@@ -580,11 +595,15 @@ export default {
 					this.__pullGestureLoading = false;
 					this.__pullStartY = null;
 					this.pullDistance = 0;
+					// store 切换（含变 null）都清回到底部按钮的显示状态：
+					// topic/new-topic 路由下 ChatInput 仍渲染，残留 true 会让按钮错误显现
+					this.farFromBottom = false;
 				}
 				if (this.__creatingTopic) return;
 				if (store && store !== prevStore) {
 					this.showNoMoreHint = false;
 					this.userScrolledUp = false;
+					this.farFromBottom = false;
 					this.__scrollReady = false;
 					store.activate();
 					// connReady 可能已经为 true 但 watcher 不会触发（值未变）
@@ -632,7 +651,12 @@ export default {
 
 		// 滚动容器 / 内容区域 ResizeObserver：覆盖软键盘弹起、输入框撑高、
 		// 图片加载、表格包装、steps 展开等所有导致容器或内容尺寸变化的场景
-		this.__resizeOb = new ResizeObserver(() => this.scrollToBottom());
+		this.__resizeOb = new ResizeObserver(() => {
+			// 内容/视口尺寸变化不会触发 scroll 事件——必须主动重算 farFromBottom，
+			// 否则用户已上滚 + 流式输出令 scrollHeight 长高时，距底跨过 1 屏阈值也看不到按钮
+			this.__refreshFarFromBottom();
+			this.scrollToBottom();
+		});
 		const sc = this.$refs.scrollContainer;
 		const content = this.$refs.scrollContent;
 		if (sc) this.__resizeOb.observe(sc);
@@ -700,6 +724,7 @@ export default {
 			const draftKey = this.draftKey;
 			this.inputText = '';
 			this.userScrolledUp = false;
+			this.farFromBottom = false;
 			this.scrollToBottom();
 
 			try {
@@ -809,6 +834,7 @@ export default {
 				this.inputText = '';
 				newDraftKey = this.draftKey;
 				this.userScrolledUp = false;
+				this.farFromBottom = false;
 				this.scrollToBottom();
 				const result = await targetStore.sendMessage(text, files, {
 					onFileUploaded: (f) => targetStore.removeFileById(f.id),
@@ -973,6 +999,9 @@ export default {
 				// 加载完成后：强制滚到底部，并检测内容是否不足以填满容器
 				// 非首次加载（组件重建但 store 复用）时也需 force 以解锁 visibility
 				this.$nextTick(() => {
+					// 与既有"主动滚到底"入口对称：force 滚动前清两个 flag，避免 scroll 事件回弹前按钮残留
+					this.userScrolledUp = false;
+					this.farFromBottom = false;
 					this.scrollToBottom(true);
 					if (isFirstLoad) this.__autoFillHistory();
 				});
@@ -1099,11 +1128,23 @@ export default {
 				});
 			});
 		},
+		onClickBackToBottom() {
+			this.userScrolledUp = false;
+			this.farFromBottom = false;
+			this.scrollToBottom(true);
+		},
+		/** ResizeObserver 等非 scroll 路径需要主动调；不动 userScrolledUp 以保留自动追尾决策 */
+		__refreshFarFromBottom() {
+			const el = this.$refs.scrollContainer;
+			if (!el) return;
+			this.farFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight > el.clientHeight;
+		},
 		onScroll() {
 			const el = this.$refs.scrollContainer;
 			if (!el) return;
-			const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-			this.userScrolledUp = !atBottom;
+			const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+			this.userScrolledUp = dist >= 60;
+			this.farFromBottom = dist > el.clientHeight;
 
 			if (el.scrollTop < 50 && !this.isTopicRoute) {
 				this.__loadMoreHistory();

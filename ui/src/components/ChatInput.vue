@@ -1,5 +1,6 @@
 <template>
 	<footer class="sticky bottom-0 z-10 bg-default py-3">
+		<slot name="floating" />
 		<slot name="prepend" />
 		<!-- 文件预览区（含上传进度覆层） -->
 		<div

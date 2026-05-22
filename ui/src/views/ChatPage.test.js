@@ -482,6 +482,25 @@ describe('ChatPage send message', () => {
 		expect(wrapper.vm.inputText).toBe('');
 	});
 
+	test('onSendMessage 清空 farFromBottom 与 userScrolledUp（防按钮残留闪烁）', async () => {
+		const wrapper = createWrapper();
+		setupAgents();
+		const chatStore = getChatStore();
+		vi.spyOn(chatStore, 'sendMessage').mockResolvedValue({ accepted: true });
+		await flushPromises();
+
+		// 模拟用户已上滚 + 按钮已显示
+		wrapper.vm.userScrolledUp = true;
+		wrapper.vm.farFromBottom = true;
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		expect(wrapper.vm.userScrolledUp).toBe(false);
+		expect(wrapper.vm.farFromBottom).toBe(false);
+	});
+
 	test('onFileUploaded 回调走 chatStore.removeFileById（targetStore 锁定）', async () => {
 		const wrapper = createWrapper();
 		setupAgents();
@@ -1633,13 +1652,14 @@ describe('ChatPage watchers', () => {
 		expect(loadSpy).not.toHaveBeenCalled();
 	});
 
-	test('chatStore watcher 重置 userScrolledUp 和 __scrollReady', async () => {
+	test('chatStore watcher 重置 userScrolledUp / farFromBottom / __scrollReady', async () => {
 		const wrapper = createWrapper();
 		const chatStore = getChatStore();
 		chatStore.clawId = 'bot-1';
 
 		// 模拟用户已滚动和 scroll 就绪
 		wrapper.vm.userScrolledUp = true;
+		wrapper.vm.farFromBottom = true;
 		wrapper.vm.__scrollReady = true;
 
 		// 直接调用 chatStore watcher handler 测试重置行为
@@ -1648,6 +1668,7 @@ describe('ChatPage watchers', () => {
 		wrapper.vm.$options.watch.chatStore.handler.call(wrapper.vm, newStore, chatStore);
 
 		expect(wrapper.vm.userScrolledUp).toBe(false);
+		expect(wrapper.vm.farFromBottom).toBe(false);
 	});
 
 	test('chatStore watcher 在 connReady 为 true 时调用 __onConnReady', async () => {
@@ -1848,6 +1869,90 @@ describe('ChatPage scroll', () => {
 			wrapper.vm.onScroll();
 			expect(wrapper.vm.userScrolledUp).toBe(true);
 		}
+	});
+
+	test('farFromBottom 仅在距底 > 1 屏（clientHeight）时为 true', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const scrollContainer = wrapper.vm.$refs.scrollContainer;
+		if (!scrollContainer) return;
+
+		// 距底 = 1000 - 200 - 500 = 300 < clientHeight(500) → false
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1000, configurable: true },
+			scrollTop: { value: 200, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+		wrapper.vm.onScroll();
+		expect(wrapper.vm.farFromBottom).toBe(false);
+
+		// 边界：距底 = 1000 - 0 - 500 = 500 == clientHeight → 仍为 false（用 `>` 不是 `>=`）
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1000, configurable: true },
+			scrollTop: { value: 0, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+		wrapper.vm.onScroll();
+		expect(wrapper.vm.farFromBottom).toBe(false);
+
+		// 距底 = 1500 - 0 - 500 = 1000 > clientHeight(500) → true
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1500, configurable: true },
+			scrollTop: { value: 0, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+		wrapper.vm.onScroll();
+		expect(wrapper.vm.farFromBottom).toBe(true);
+	});
+
+	test('ResizeObserver 路径（非 scroll 事件）也更新 farFromBottom', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const scrollContainer = wrapper.vm.$refs.scrollContainer;
+		if (!scrollContainer) return;
+
+		// 模拟流式输出：scrollHeight 长高跨过 1 屏阈值，但用户没滚（无 scroll 事件）
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 2000, configurable: true },
+			scrollTop: { value: 0, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+		// 直接调 helper（ResizeObserver 回调内部就是调这个）
+		const proxy = wrapper.vm.$.proxy;
+		proxy.__refreshFarFromBottom();
+		expect(wrapper.vm.farFromBottom).toBe(true);
+	});
+
+	test('onClickBackToBottom 同步重置两个滚动 flag 并强制滚到底', async () => {
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const scrollContainer = wrapper.vm.$refs.scrollContainer;
+		if (!scrollContainer) return;
+
+		const scrollToSpy = vi.fn();
+		scrollContainer.scrollTo = scrollToSpy;
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1500, configurable: true },
+			scrollTop: { value: 0, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+
+		wrapper.vm.userScrolledUp = true;
+		wrapper.vm.farFromBottom = true;
+
+		wrapper.vm.onClickBackToBottom();
+
+		// 两个 flag 同步置 false，避免按钮闪烁
+		expect(wrapper.vm.userScrolledUp).toBe(false);
+		expect(wrapper.vm.farFromBottom).toBe(false);
+
+		await wrapper.vm.$nextTick();
+		await new Promise(r => requestAnimationFrame(r));
+		// force=true 路径触发 scrollTo，且滚到 scrollHeight、瞬时滚动
+		expect(scrollToSpy).toHaveBeenCalledWith({ top: 1500, behavior: 'auto' });
 	});
 
 	test('scrollToBottom $nextTick 内二次检查 userScrolledUp（竞态防护）', async () => {
