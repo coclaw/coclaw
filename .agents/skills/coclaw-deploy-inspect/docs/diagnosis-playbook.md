@@ -174,3 +174,18 @@ LC_ALL=C grep -aE "rtc.unrecoverable|conn.rejectPending|agent.run.preaccept-fail
 ```bash
 LC_ALL=C grep -aE "c_<UUID_PREFIX>" /tmp/srv.log
 ```
+
+---
+
+## "SSL 证书快过期了" — 先分清三个时间戳
+
+证书相关排查共同的第一步：把下面三个时间戳分别取来对照，再谈方向。只看其中一个最容易误判。
+
+| 来源 | 取法 |
+|---|---|
+| **A 线上握手** | `echo \| openssl s_client -connect <host>:443 -servername <host> 2>/dev/null \| openssl x509 -noout -dates` |
+| **B 磁盘 live 目录** | `docker exec coclaw-certbot-renew-1 openssl x509 -in /etc/letsencrypt/live/<host>/fullchain.pem -noout -dates` |
+| **C nginx 启动时间** | `docker inspect coclaw-nginx-1 --format '{{.State.StartedAt}}'` |
+
+- **A == B 且都临近过期** → certbot 续期没在跑或跑失败；看 `docker logs coclaw-certbot-renew-1`
+- **A < B**（线上比磁盘旧） → 续期成功但 nginx 没 reload；通常是 deploy-hook 没生效（曾踩过：续期容器是旧 compose 起的，新挂载/脚本没生效；bind mount 文件被替换后容器仍持旧 inode → 重建容器即可）
