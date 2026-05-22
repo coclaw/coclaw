@@ -685,3 +685,16 @@ X4 触及面比 X1 广，需要重新评估：
 - 短期：UI 在 `loadNextHistorySession` 处按段加载（一次只渲染一段），用户拉到顶时再拉下一段；同时把 `getById` 入参里的 `limit` 用起来（传 e.g. 500）作为兜底
 - 中期：引入虚拟滚动（如 `@tanstack/vue-virtual`）替换 `v-for` 全量渲染
 - 关联 plugin 侧候选：`getById` 在调用方传了正 `limit` 时改成 tail-only 解析（从文件末尾倒着读 + 行边界扫描），避免一次性 `readFile` 整个 JSONL 后再 `slice(-N)`——见 `plugins/openclaw/TODO.md` 同名条目
+
+## `InstanceOverview` 组件已写好但未挂载（monthlyCost 数据丢失）
+
+**发现日期**：2026-05-22
+**关联讨论**：评估 issue #234（Claw 详情页 Token 成本面板诉求）
+
+来源：issue #234 评估时排查 ManageClawsPage 当前 token / cost 覆盖度。
+
+- 现状：`src/components/dashboard/InstanceOverview.vue` 写有完整的实例总览 + `monthlyCost` 渲染逻辑，对应单测 `InstanceOverview.test.js` 也覆盖；但全仓 grep 无任何业务页面 import 它，组件实际未挂载
+- 数据已就绪：`dashboard.store.js` 在加载 dashboard 时已经调用 `usage.cost` RPC 并把结果写入 `entry.instance.monthlyCost`（也走完了 `Promise.allSettled` 失败兜底）
+- 影响：「本月花费」数据虽然每次进 `/claws` 都被拉回来，但用户在 UI 上看不到，相当于白调一次 RPC + 白做一份兜底
+- 修复方向：在 `ManageClawsPage.vue` 的合适位置（建议作为「状态摘要栏」下方、claw 卡片列表上方的全局总览区）挂载 `<InstanceOverview :instance="...">`，把 dashboard 里任一 claw 的 `instance` 字段传入；多 claw 场景下决定是「展示首个 online claw」还是「按 claw 分卡片各自展示」需先讨论 UX
+- 非阻塞但收益明确：5 ~ 10 分钟接线工作量，可单独 commit
