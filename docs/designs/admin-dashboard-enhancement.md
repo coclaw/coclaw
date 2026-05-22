@@ -3,6 +3,7 @@
 > **状态**: 设计中
 > **Issue**: #221
 > **日期**: 2026-04-15
+> **后续变更**: #237（2026-05-22）— 撤回行内"展开行查看 agent × model"交互（隐私收敛）；agentModels 数据链路保留供未来独立详情页消费，下文 §2 决策表与 §6.9 i18n 中 `expandAgentName / expandModel / noAgentModels / emptyAgents` 4 个 key 已废弃
 
 ## 1. 背景与目标
 

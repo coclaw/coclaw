@@ -678,3 +678,29 @@ X4 触及面比 X1 广，需要重新评估：
 - 影响：「本月花费」数据虽然每次进 `/claws` 都被拉回来，但用户在 UI 上看不到，相当于白调一次 RPC + 白做一份兜底
 - 修复方向：在 `ManageClawsPage.vue` 的合适位置（建议作为「状态摘要栏」下方、claw 卡片列表上方的全局总览区）挂载 `<InstanceOverview :instance="...">`，把 dashboard 里任一 claw 的 `instance` 字段传入；多 claw 场景下决定是「展示首个 online claw」还是「按 claw 分卡片各自展示」需先讨论 UX
 - 非阻塞但收益明确：5 ~ 10 分钟接线工作量，可单独 commit
+
+## AdminClawsPage 行内展开移除 deep-review 发现的预存问题（2026-05-22）
+
+**关联 commit**：`790de38` fix(ui): drop row-expand from admin Claws list to limit agent name exposure（issue #237）
+
+来源：5 路并行 codex-rescue review。本次 commit 只动 UI 模板/data/methods + i18n + 测试改写，下列预存问题在改造前已存在、本次未引入也未恶化，单独登记。
+
+81. **`AdminClawsPage.test.js` 桌面 vs 移动渲染路径未隔离**
+    - 现状：`AdminClawsPage.test.js` 中所有渲染断言都用 `wrapper.text().toContain(...)` 全页面 grep。`UTableStub`（桌面端）与移动端 `<article>` 都会渲染同一 item 的字段，任一路径单独工作即可让断言通过。若桌面 UTable 的 cell slot 失活（如 `<template #name-cell>` 误删），仅靠移动端 article 也能让所有相关断言通过，回归不会被 catch
+    - 影响：测试方法学弱点，不影响当前正确性；属于 commit 前就一直这么写
+    - 修复方向：把全页断言换成 `wrapper.find('.u-table-stub').text().toContain(...)` 与 `wrapper.find('article').text().toContain(...)` 双路径分别锁定
+
+82. **`AdminClawsPage.test.js:412` pluginVersion null 测试 `—` 不隔离**
+    - 现状：测试 item 仅传 `{ name: 'a', online: true, pluginVersion: null, createdAt: nowIso }`，未设 `userName` / `userLoginName`。桌面 `#user-cell` 模板 `{{ row.original.userName || row.original.userLoginName || '—' }}` 在两字段都 undefined 时也渲染 `—`。所以 `wrapper.text().toContain('—')` 即使 pluginVersion cell 完全失活仍会通过
+    - 影响：测试断言不强，预存
+    - 修复方向：item 加 `userName: 'Alice'` 把 user 列锁定为可见字符串，让 `—` 唯一来源是 pluginVersion；或用 selector 直接锁定 pluginVersion-cell slot 内容
+
+83. **name + hostName 同时为空的 fallback 未测**
+    - 现状：`AdminClawsPage.test.js:371` 只覆盖 `name=''  hostName='ubuntu'` → 显示 ubuntu；`name='' hostName=''` 应回退到 `—` 的路径未覆盖
+    - 影响：覆盖空缺，模板 `{{ row.original.name || row.original.hostName || '—' }}` 第二段 fallback 行为缺保护
+    - 修复方向：补一条 `name='' hostName=''` → text contains `—` 的断言（与上面 #82 隔离一致，需要避免其他列也产生 `—`）
+
+84. **`admin-stream.js:22` `agentModels` JSDoc shape 标为 `any`**
+    - 现状：SSE patch handler 的 `@param` 把 `agentModels` 标为 `any`，未说明 shape。store 写入后 UI 不再消费（本次 commit 后），未来要接入独立详情页时，开发者需要回溯 SSE 帧或 server schema 才能知道 `{id, name, model}[]` 的结构
+    - 影响：未来开发体验小坑，非阻塞
+    - 修复方向：JSDoc 改成 `agentModels?: { id: string, name?: string, model?: string }[] | null`，与 server `claw-ws-hub.js` / Prisma schema 对齐
