@@ -11,7 +11,6 @@ import { nanoid } from 'nanoid';
 
 import { sleep } from '../utils/async-utils.js';
 import { resolveApiBaseUrl } from './http.js';
-import { useSignalingConnection } from './signaling-connection.js';
 
 /** 单个 batch 内 log 条数上限，亦为大小触发阈值（≥ 阈值立刻封批）。*/
 export const BATCH_SIZE = 100;
@@ -79,23 +78,10 @@ export class RemoteLog {
 		this.__debounceTimer = null;
 		this.__draining = false;
 		this.__abortController = new AbortController();
-		/** @type {{ conn: any, fn: (text: string) => void } | null} */
-		this.__sigBridge = null;
 	}
 
 	// 状态唯一来源：AbortSignal；__stopped 包成 getter 让循环里继续按习惯读写
 	get __stopped() { return this.__abortController.signal.aborted; }
-
-	/**
-	 * 桥接 SignalingConnection 的 'log' 事件到 remote-log。stop() 时会 off 掉，避免跨 reset 泄漏。
-	 * @param {{ on: Function, off: Function }} sigConn
-	 */
-	attachSigBridge(sigConn) {
-		if (this.__sigBridge) return;
-		const fn = (text) => { if (!this.__stopped) this.log(text); };
-		sigConn.on('log', fn);
-		this.__sigBridge = { conn: sigConn, fn };
-	}
 
 	/**
 	 * 推送一条日志：进 ring buffer，触发条件满足即封批/发送。
@@ -208,9 +194,8 @@ export class RemoteLog {
 	}
 
 	/**
-	 * 停止后续发送 / 定时器，并解绑 sigConn 桥接监听器。
-	 * 等同于 controller.abort()——in-flight axios 与正在 sleep 的 retry 都会立刻退出。
-	 * 生产代码不调用此方法；保留供测试与未来扩展。
+	 * 停止后续发送 / 定时器。等同于 controller.abort()——in-flight axios 与
+	 * 正在 sleep 的 retry 都会立刻退出。生产代码不调用此方法；保留供测试与未来扩展。
 	 */
 	stop() {
 		if (this.__abortController.signal.aborted) return;
@@ -218,12 +203,6 @@ export class RemoteLog {
 		if (this.__debounceTimer) {
 			clearTimeout(this.__debounceTimer);
 			this.__debounceTimer = null;
-		}
-		if (this.__sigBridge) {
-			try { this.__sigBridge.conn.off('log', this.__sigBridge.fn); } catch (err) {
-				console.warn('[remote-log] sigConn.off failed:', err?.message);
-			}
-			this.__sigBridge = null;
 		}
 	}
 }
@@ -288,7 +267,7 @@ function getDedicatedClient() {
 }
 
 /**
- * 获取 RemoteLog 单例。首次调用时初始化：生成 uiId / 桥接 sigConn 的 log 事件。
+ * 获取 RemoteLog 单例。首次调用时初始化：生成 uiId。
  *
  * 端点不强制登录态，UI 实例发送行为与登录态完全解耦——不挂任何 login/logout flush hook、
  * 不 watch authStore；登录前 / 登录失败窗口的 log 同样能上送 server。
@@ -299,7 +278,6 @@ function getDedicatedClient() {
  * @param {Object} [opts]
  * @param {(payload: { uiId: string, seq: number, logs: { ts: number, text: string }[] }, signal: AbortSignal) => Promise<SendResult>} [opts.send] - 发送函数（测试注入）
  * @param {string} [opts.uiId] - 注入 uiId（测试用）
- * @param {boolean} [opts.skipSigBridge] - 跳过 signaling-connection 桥接（测试用）
  * @returns {RemoteLog}
  */
 export function useRemoteLog(opts = {}) {
@@ -309,24 +287,23 @@ export function useRemoteLog(opts = {}) {
 		send,
 		uiId: opts.uiId,
 	});
-	if (opts.skipSigBridge !== true) {
-		try {
-			const sigConn = useSignalingConnection();
-			__instance.attachSigBridge(sigConn);
-		} catch (err) {
-			// signaling-connection 未就绪（如某些测试环境）时静默跳过
-			console.warn('[remote-log] sigConn bridge skipped:', err?.message);
-		}
-	}
 	return __instance;
 }
 
 /**
  * 便捷函数：推送一条远程诊断日志。首次调用自动初始化单例。
+ *
+ * 内部 try/catch 兜底——调用方都是诊断日志路径，不应因日志通道自身异常
+ * （如单例首次构造期某项浏览器 API 不可用）反向阻断业务流程。
+ * 对齐原 `__emit('log', ...)` 在事件总线层逐 listener try/catch 的容错语义。
  * @param {string} text
  */
 export function remoteLog(text) {
-	useRemoteLog().log(text);
+	try {
+		useRemoteLog().log(text);
+	} catch (err) {
+		console.warn('[remote-log] log dispatch failed:', err?.message);
+	}
 }
 
 /** @internal 仅供测试重置 */

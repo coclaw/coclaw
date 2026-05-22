@@ -8,9 +8,6 @@ import {
 	RETRY_DELAYS,
 	ENDPOINT_PATH, HTTP_TIMEOUT,
 } from './remote-log.js';
-import {
-	useSignalingConnection, __resetSignalingConnection,
-} from './signaling-connection.js';
 
 /**
  * 用 vi.useFakeTimers() 控时；advanceTimersByTimeAsync 同步推进 timer + microtask，
@@ -41,7 +38,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.useRealTimers();
-	__resetSignalingConnection();
 	__resetRemoteLog();
 });
 
@@ -567,7 +563,7 @@ describe('httpSender 适配器', () => {
 
 describe('单例 useRemoteLog / remoteLog', () => {
 	test('useRemoteLog 是单例', () => {
-		const a = useRemoteLog({ send: () => Promise.resolve({ kind: 'success' }), skipSigBridge: true });
+		const a = useRemoteLog({ send: () => Promise.resolve({ kind: 'success' }) });
 		const b = useRemoteLog();
 		expect(a).toBe(b);
 	});
@@ -576,7 +572,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		const rl = useRemoteLog({
 			send: () => Promise.resolve({ kind: 'success' }),
 			uiId: 'INIT__________________',
-			skipSigBridge: true,
 		});
 		expect(rl.uiId).toBe('INIT__________________');
 		// useRemoteLog 不再自动入队任何 log；ui.start 由 caller 显式发送
@@ -588,7 +583,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		useRemoteLog({
 			send: (p) => { sent.push(p); return Promise.resolve({ kind: 'success' }); },
 			uiId: 'C_____________________',
-			skipSigBridge: true,
 		});
 		remoteLog('via-helper');
 		// 触发 5s debounce 发送
@@ -597,69 +591,6 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		expect(sent[0].logs[0].text).toBe('via-helper');
 	});
 
-	test('桥接 sigConn.log 事件 → remoteLog', async () => {
-		const sigConn = useSignalingConnection({ WebSocket: class { addEventListener(){} removeEventListener(){} send(){} close(){} } });
-		const sent = [];
-		useRemoteLog({
-			send: (p) => { sent.push(p); return Promise.resolve({ kind: 'success' }); },
-			uiId: 'D_____________________',
-		});
-		sigConn.__emit('log', 'sig.test-event');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
-		expect(sent[0].logs.some(l => l.text === 'sig.test-event')).toBe(true);
-	});
-
-	test('__resetRemoteLog 卸载 sigConn log 监听器，不会泄漏到下一轮单例', async () => {
-		const sigConn = useSignalingConnection({ WebSocket: class { addEventListener(){} removeEventListener(){} send(){} close(){} } });
-		const firstSends = [];
-		useRemoteLog({
-			send: (p) => { firstSends.push(p); return Promise.resolve({ kind: 'success' }); },
-			uiId: 'F1____________________',
-		});
-		__resetRemoteLog();
-		const secondSends = [];
-		useRemoteLog({
-			send: (p) => { secondSends.push(p); return Promise.resolve({ kind: 'success' }); },
-			uiId: 'F2____________________',
-		});
-		// 触发一次 sig 'log' 事件——第一轮的监听器已被 off 掉，应只调一次新单例的 log
-		sigConn.__emit('log', 'sig.unique-event');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
-		expect(firstSends).toHaveLength(0);
-		const allTexts = secondSends.flatMap((p) => p.logs.map((l) => l.text));
-		expect(allTexts.filter((t) => t === 'sig.unique-event')).toHaveLength(1);
-	});
-
-	test('useRemoteLog: sigConn 桥接失败时静默 warn（catch 路径）', () => {
-		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		// 让 attachSigBridge 抛错触发 useRemoteLog 内部 try/catch
-		const origAttach = RemoteLog.prototype.attachSigBridge;
-		RemoteLog.prototype.attachSigBridge = function failingAttach() { throw new Error('sig-boom'); };
-		try {
-			expect(() => useRemoteLog({
-				send: () => Promise.resolve({ kind: 'success' }),
-				uiId: 'SIGFAIL_______________',
-			})).not.toThrow();
-			const warnedBridge = warnSpy.mock.calls.some((c) => /sigConn|bridge/.test(String(c[0] || '')));
-			expect(warnedBridge).toBe(true);
-		} finally {
-			RemoteLog.prototype.attachSigBridge = origAttach;
-			warnSpy.mockRestore();
-		}
-	});
-
-	test('skipSigBridge=true 时 sigConn.log 事件不入队', async () => {
-		const sigConn = useSignalingConnection({ WebSocket: class { addEventListener(){} removeEventListener(){} send(){} close(){} } });
-		const sent = [];
-		useRemoteLog({
-			send: (p) => { sent.push(p); return Promise.resolve({ kind: 'success' }); },
-			uiId: 'E_____________________',
-			skipSigBridge: true,
-		});
-		sigConn.__emit('log', 'sig.skipped');
-		await vi.advanceTimersByTimeAsync(DEBOUNCE + 1);
-		expect(sent).toHaveLength(0);
-	});
 });
 
 describe('RemoteLog 构造保护', () => {

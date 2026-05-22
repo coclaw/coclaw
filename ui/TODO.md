@@ -2,6 +2,26 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## signaling-connection 诊断 remoteLog 部分分支无断言（2026-05-22）
+
+**发现日期**：2026-05-22
+**关联 commit**：refactor(ui): drop legacy 'log' event bridge between signaling-connection and remote-log（待 commit）
+
+来源：桥接拆除后 deep-review，4 个 codex-rescue 实例核实出的预存覆盖空洞。原 `conn.on('log', ...)` 时代也未断言这批分支，本次只是把发送机制从 emit 迁到直调 remoteLog；空洞维持。
+
+- 现状：`signaling-connection.js` 内以下 8 处 `remoteLog(...)` 调用对应的代码路径有测试覆盖（被相应 test 走到），但测试中没有用 `capturedRemoteLogs` 断言这条诊断文本的存在与内容：
+  - `sig.ensure stale-connected ...`（行 155）
+  - `sig.ensure stale-connecting ...`（行 165）
+  - `sig.resume source=... state=disconnected action=reconnect`（行 507）
+  - `sig.resume source=... connElapsed=... action=forceReconnect(staleConnecting)`（行 519）
+  - `sig.resume source=... elapsed=... action=forceReconnect(typeChanged)`（行 531）
+  - `sig.resume source=... elapsed=... action=probe`（行 538，network:online 分支）
+  - `sig.resume source=... elapsed=... action=forceReconnect`（行 547，app:foreground 假死）
+  - `sig.resume source=... elapsed=... action=probe`（行 551，app:foreground probe）
+- 风险：诊断文本/触发条件改坏后单测不会 fail，要靠手测或线上 server log 才能发现回归。
+- 修复方向：在 ensureConnected / __handleForegroundResume 相关测试里，按既有 `paused offline` / `delay` 的写法补 `capturedRemoteLogs.some(t => t.startsWith('sig.resume source=...'))` 类断言。
+- 本次不修：与本次"拆桥接"无因果关系，是迁移前就存在的覆盖空洞，单独 follow-up commit 处理更清爽。
+
 ## sessions.list dedup deep-review 发现的预存问题
 
 **发现日期**：2026-05-11
@@ -571,22 +591,6 @@ X4 触及面比 X1 广，需要重新评估：
 - 修复方向：统一替换为 `UDropdownMenu`（参考 `nuxt-ui` skill 中的标准用法），保持现有 a11y / 键盘 / 移动端可点击区域等行为不退化
 - 收益：a11y 现成（焦点管理、roving tabindex、`role="menu"`）；样式集中由全局 `appConfig` 控；本地不再各自维护 `UPopover` 自绘 hack
 - 本次不动，避免与 MainList 重组叠加风险
-
-## remote-log 与信令模块的桥接改单向直调（2026-05-12）
-
-**发现日期**：2026-05-12
-**关联 commit**：`e3ad675` feat(ui): migrate remoteLog to independent HTTP POST channel
-
-来源：S2（remote-log 迁 HTTP）审核讨论。
-
-- 现状：信令模块在状态变化处 `__emit('log', ...)`，remote-log 通过 `attachSigBridge` 订阅这些事件搬到 HTTP 通道。这套订阅形式是 WS 时代的历史沿袭，当年用它是为了避免「信令模块 import remote-log、remote-log import 信令模块」的循环依赖。
-- 现状的合理性已经消失：S2 之后 remote-log 不再需要从信令模块拿 sender 之类的任何东西；remote-log 这边的 `import { useSignalingConnection }` 仅为这个桥接服务。若改成"信令模块直接 `import { remoteLog }` 并调用"，并把 remote-log 这边对信令模块的 import 一并拆掉，就是干净的单向依赖。
-- 修复方向：
-  - `signaling-connection.js` 中的 `this.__emit('log', 'sig.xxx ...')` 改成 `remoteLog('sig.xxx ...')`
-  - `remote-log.js` 删除 `attachSigBridge` / `useSignalingConnection` import / `__sigBridge` 字段及 `stop()` 里的 off 处理
-  - 单测：`__resetRemoteLog` 卸载监听器那条用例随之删除（订阅机制不复存在，泄漏路径也就不存在了）
-  - 信令模块测试侧确认 `remoteLog` 在 SSR/单测环境可安全调用（remote-log 自身已能容忍 `localStorage` 不可用等情况）
-- 本次不动：S2 已 commit，桥接形式在测试中钉过，运行无问题；改动放在 S3/S4 之后做独立 follow-up commit，避免与正在并发的工作树噪音混叠
 
 ## remote-log 架构二次简化候选：单 FIFO + 消费端截批（2026-05-13）
 

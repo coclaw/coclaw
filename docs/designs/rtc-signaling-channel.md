@@ -403,9 +403,10 @@ signalingConn.state → 'disconnected' | 'connecting' | 'connected'
 
 // 事件
 signalingConn.on('state', callback(state))
-signalingConn.on('log', callback(text))        // 诊断日志（由 remote-log 桥接上报）
-// 注意：历史上的 `foreground-resume` 事件已移除。
-// 生命周期恢复由各消费者直接监听 window 的 app:foreground / network:online，不再经由 signaling 转发。
+// 注意：
+// - 历史上的 `foreground-resume` 事件已移除；生命周期恢复由各消费者直接监听
+//   window 的 app:foreground / network:online，不再经由 signaling 转发。
+// - 历史上的 `log` 事件已移除；信令模块直接调 `remoteLog(text)` 把诊断推到 HTTP 通道。
 ```
 
 **心跳**：单套，沿用现有 BotConnection 的心跳策略（25s ping、45s timeout、2 次 miss 关闭）。

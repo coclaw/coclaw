@@ -4,6 +4,13 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../utils/platform.js', () => ({ isMobileOs: false }));
 import * as platformMod from '../utils/platform.js';
 
+// mock remote-log：原本由 'log' 事件桥接出去的诊断文本现在直调 remoteLog，
+// 测试通过这条共享数组收集。vi.hoisted 让 vi.mock 工厂能读到容器。
+const { capturedRemoteLogs } = vi.hoisted(() => ({ capturedRemoteLogs: [] }));
+vi.mock('./remote-log.js', () => ({
+	remoteLog: (text) => { capturedRemoteLogs.push(text); },
+}));
+
 import {
 	SignalingConnection,
 	useSignalingConnection,
@@ -69,13 +76,31 @@ function makeConnected() {
 	return { conn, ws };
 }
 
+// 跟踪 SignalingConnection 注册到 window 上的生命周期 listener，afterEach 统一摘除——
+// 防止跨 test 残留实例在后续 dispatchEvent 时被串带触发，污染共享的 capturedRemoteLogs。
+// 保留 __origWinAdd 的原始引用（不 bind），afterEach 还原后 identity 与改前完全一致。
+const __trackedWinListeners = [];
+const __origWinAdd = window.addEventListener;
+
 beforeEach(() => {
 	vi.useFakeTimers();
 	MockWebSocket.reset();
+	capturedRemoteLogs.length = 0;
+	window.addEventListener = function trackingAdd(type, fn, opts) {
+		if (type === 'app:foreground' || type === 'network:online') {
+			__trackedWinListeners.push({ type, fn });
+		}
+		return __origWinAdd.call(window, type, fn, opts);
+	};
 });
 
 afterEach(() => {
 	vi.useRealTimers();
+	for (const { type, fn } of __trackedWinListeners) {
+		window.removeEventListener(type, fn);
+	}
+	__trackedWinListeners.length = 0;
+	window.addEventListener = __origWinAdd;
 });
 
 // --- 测试套件 ---
@@ -118,11 +143,10 @@ describe('SignalingConnection – connect()', () => {
 	});
 });
 
-describe('SignalingConnection – log 事件', () => {
-	test('状态变更时发射 log 事件', () => {
-		const logs = [];
+describe('SignalingConnection – 诊断 remoteLog', () => {
+	test('状态变更时推送诊断', () => {
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (text) => logs.push(text));
 		conn.connect();
 		MockWebSocket.lastInstance.simulateOpen();
 		expect(logs).toEqual([
@@ -131,18 +155,16 @@ describe('SignalingConnection – log 事件', () => {
 		]);
 	});
 
-	test('WS 关闭时发射 log 事件', () => {
-		const logs = [];
-		const { conn, ws } = makeConnected();
-		conn.on('log', (text) => logs.push(text));
+	test('WS 关闭时推送诊断', () => {
+		const logs = capturedRemoteLogs;
+		const { ws } = makeConnected();
 		ws.simulateClose(1006, '');
 		expect(logs.some((l) => l.startsWith('sig.close'))).toBe(true);
 	});
 
-	test('心跳超时时发射 log 事件', () => {
-		const logs = [];
-		const { conn } = makeConnected();
-		conn.on('log', (text) => logs.push(text));
+	test('心跳超时时推送诊断', () => {
+		const logs = capturedRemoteLogs;
+		makeConnected();
 		// 两次心跳超时 → max miss
 		vi.advanceTimersByTime(45_000);
 		vi.advanceTimersByTime(45_000);
@@ -893,9 +915,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 	test('首次 offline 排下一轮 retry 并打一条 paused log（仅一条）', () => {
 		setOnLine(false);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		const pausedLogs = logs.filter(t => t.startsWith('sig.reconnect paused'));
 		expect(pausedLogs.length).toBe(1);
@@ -906,9 +927,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 	test('offline 稳态下多轮 retry 不重复打 paused/delay log（边沿触发）', () => {
 		setOnLine(false);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		// 连续触发 10 轮退避 timer 到期
 		for (let i = 0; i < 10; i++) {
@@ -923,9 +943,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 	test('从 offline 回到 online：下一轮 __doConnect 打 resumed 并建 WS（宽松版 A）', () => {
 		setOnLine(false);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		// 切回 online
 		setOnLine(true);
@@ -939,9 +958,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 	test('online/offline toggle 一轮只产一对 paused/resumed', () => {
 		setOnLine(false);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		// 回 online → 下一轮 resumed
 		setOnLine(true);
@@ -961,9 +979,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 	test('disconnect() 重置 __pausedOffline，下次 connect 重新打 paused 日志', () => {
 		setOnLine(false);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		expect(conn.__pausedOffline).toBe(true);
 		conn.disconnect();
@@ -977,9 +994,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 	test('navigator.onLine=true 时 connect 正常建立 WS 且不打 paused/resumed', () => {
 		setOnLine(true);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		MockWebSocket.lastInstance.simulateOpen();
 		expect(conn.state).toBe('connected');
@@ -989,9 +1005,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 
 	test('navigator.onLine=true 的 retry 正常发 delay log（未被 offline 门控影响）', () => {
 		setOnLine(true);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		MockWebSocket.lastInstance.simulateOpen();
 		MockWebSocket.lastInstance.simulateClose(1006);
@@ -1037,9 +1052,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 		// network:online handler 若落到 disconnected 分支会走 immediate reconnect；
 		// 此处观测 __reconnectTimer 被清 + 新 WS 实例出现
 		setOnLine(false);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		// offline 期间排了 retry timer，未建 WS
 		expect(conn.__reconnectTimer).not.toBeNull();
@@ -1062,9 +1076,8 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 	test('forceReconnect() 在 offline 期间不建 WS，仅翻 paused log（一条）', () => {
 		// 先在 online 建立一条连接
 		setOnLine(true);
-		const logs = [];
+		const logs = capturedRemoteLogs;
 		const conn = new SignalingConnection({ baseUrl: 'http://localhost', WebSocket: MockWebSocket });
-		conn.on('log', (t) => logs.push(t));
 		conn.connect();
 		MockWebSocket.lastInstance.simulateOpen();
 		const instancesBefore = MockWebSocket.instances.length;
@@ -1117,8 +1130,7 @@ describe('SignalingConnection – offline 闸（真 offline 日志静默）', ()
 		// makeConnected → ws close → setOnLine(false) → 推 retry timer →
 		// 验证仅一条 paused log + retry 静默（不再打 delay）
 		const { conn, ws } = makeConnected();
-		const logs = [];
-		conn.on('log', (t) => logs.push(t));
+		const logs = capturedRemoteLogs;
 
 		// 模拟 WS 断开（如服务端关连接 / 网络层 RST），触发 __scheduleReconnect
 		ws.simulateClose(1006, 'net');

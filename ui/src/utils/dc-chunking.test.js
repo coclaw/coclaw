@@ -11,7 +11,6 @@ import {
 	ORPHAN_REMOTE_LOG_WINDOW_MS,
 } from './dc-chunking.js';
 import { __resetRemoteLog, useRemoteLog } from '../services/remote-log.js';
-import { __resetSignalingConnection } from '../services/signaling-connection.js';
 
 describe('dc-chunking (UI 侧)', () => {
 	// --- buildChunks ---
@@ -116,14 +115,11 @@ describe('dc-chunking (UI 侧)', () => {
 					for (const e of payload.logs) remoteLogs.push(e.text);
 					return Promise.resolve({ kind: 'success' });
 				},
-				skipSigBridge: true,
 			});
 		});
 
 		afterEach(() => {
 			warnSpy.mockRestore();
-			// 顺序：先 sigConn 后 remote-log，避免 sigConn disconnect 事件命中已 reset 的 remote-log 单例
-			__resetSignalingConnection();
 			__resetRemoteLog();
 			vi.restoreAllMocks();
 		});
