@@ -48,30 +48,27 @@ const UTableStub = {
 				class="u-table-row"
 				:data-id="row.id"
 			>
-				<slot
-					name="name-cell"
-					:row="{ original: row }"
-				/>
-				<slot
-					name="online-cell"
-					:row="{ original: row }"
-				/>
-				<slot
-					name="user-cell"
-					:row="{ original: row }"
-				/>
-				<slot
-					name="pluginVersion-cell"
-					:row="{ original: row }"
-				/>
-				<slot
-					name="createdAt-cell"
-					:row="{ original: row }"
-				/>
+				<span class="u-table-cell" data-col="name"><slot name="name-cell" :row="{ original: row }" /></span>
+				<span class="u-table-cell" data-col="online"><slot name="online-cell" :row="{ original: row }" /></span>
+				<span class="u-table-cell" data-col="user"><slot name="user-cell" :row="{ original: row }" /></span>
+				<span class="u-table-cell" data-col="pluginVersion"><slot name="pluginVersion-cell" :row="{ original: row }" /></span>
+				<span class="u-table-cell" data-col="createdAt"><slot name="createdAt-cell" :row="{ original: row }" /></span>
 			</div>
 		</div>
 	`,
 };
+
+// 渲染路径辅助：把"双轨"（桌面 UTable + 移动 article）的断言拆开，
+// 避免一路失活时另一路兜底让测试假绿（mutation-testing 思维）
+function desktopText(wrapper) {
+	return wrapper.find('.u-table-stub').text();
+}
+function desktopCellText(wrapper, rowId, col) {
+	return wrapper.find(`.u-table-stub [data-id="${rowId}"] [data-col="${col}"]`).text();
+}
+function mobileText(wrapper) {
+	return wrapper.findAll('article').map(a => a.text()).join(' ');
+}
 
 const UInputStub = {
 	props: ['modelValue', 'placeholder', 'icon', 'size'],
@@ -372,12 +369,30 @@ describe('AdminClawsPage — 渲染', () => {
 		const wrapper = mountPage({
 			clawsState: {
 				items: [
-					{ id: '1', name: '', hostName: 'ubuntu', online: true, createdAt: nowIso },
+					{ id: '1', name: '', hostName: 'ubuntu', online: true, userName: 'Alice', pluginVersion: '1.0.0', createdAt: nowIso },
 				],
 			},
 		});
 		await flushPromises();
-		expect(wrapper.text()).toContain('ubuntu');
+		// 双轨断言：桌面 UTable name-cell 与移动端 article 应各自渲染 hostName
+		expect(desktopCellText(wrapper, '1', 'name')).toBe('ubuntu');
+		expect(mobileText(wrapper)).toContain('ubuntu');
+	});
+
+	test('name 和 hostName 均为空时回退显示 —', async () => {
+		const wrapper = mountPage({
+			clawsState: {
+				// 其他字段都给真值，避免 — 来源被其它 cell 污染
+				items: [
+					{ id: '1', name: '', hostName: '', online: true, userName: 'Alice', pluginVersion: '1.0.0', createdAt: nowIso },
+				],
+			},
+		});
+		await flushPromises();
+		// 桌面端：name-cell 应独立渲染 —
+		expect(desktopCellText(wrapper, '1', 'name')).toBe('—');
+		// 移动端：article 内仍要有 — 字符（来自名称槽位）
+		expect(mobileText(wrapper)).toContain('—');
 	});
 
 	test('online=true 渲染 Online，false 渲染 Offline', async () => {
@@ -390,33 +405,52 @@ describe('AdminClawsPage — 渲染', () => {
 			},
 		});
 		await flushPromises();
-		expect(wrapper.text()).toContain('Online');
-		expect(wrapper.text()).toContain('Offline');
+		// 桌面端：online-cell 显式渲染 Online / Offline 文案
+		expect(desktopCellText(wrapper, '1', 'online')).toContain('Online');
+		expect(desktopCellText(wrapper, '2', 'online')).toContain('Offline');
+		// 移动端：模板只通过状态点 aria-label 表达，单独锁定
+		const articles = wrapper.findAll('article');
+		expect(articles[0].find('[aria-label="Online"]').exists()).toBe(true);
+		expect(articles[1].find('[aria-label="Offline"]').exists()).toBe(true);
 	});
 
 	test('user 列 fallback 链：userName → userLoginName → —', async () => {
 		const wrapper = mountPage({
 			clawsState: {
+				// 给所有 item 设 pluginVersion，避免 pluginVersion-cell 的 — 干扰 user-cell 的 —
 				items: [
-					{ id: '1', name: 'a', online: true, userName: 'Alice', userLoginName: 'alice', createdAt: nowIso },
-					{ id: '2', name: 'b', online: true, userName: null, userLoginName: 'bob', createdAt: nowIso },
-					{ id: '3', name: 'c', online: true, userName: null, userLoginName: null, createdAt: nowIso },
+					{ id: '1', name: 'a', online: true, userName: 'Alice', userLoginName: 'alice', pluginVersion: '1.0.0', createdAt: nowIso },
+					{ id: '2', name: 'b', online: true, userName: null, userLoginName: 'bob', pluginVersion: '1.0.0', createdAt: nowIso },
+					{ id: '3', name: 'c', online: true, userName: null, userLoginName: null, pluginVersion: '1.0.0', createdAt: nowIso },
 				],
 			},
 		});
 		await flushPromises();
-		expect(wrapper.text()).toContain('Alice');
-		expect(wrapper.text()).toContain('bob');
+		// 桌面端：逐 cell 锁定，确保 user-cell slot 真的渲染了对应文本
+		expect(desktopCellText(wrapper, '1', 'user')).toContain('Alice');
+		expect(desktopCellText(wrapper, '2', 'user')).toContain('bob');
+		expect(desktopCellText(wrapper, '3', 'user')).toBe('—');
+		// 移动端：item1/2 显示用户名；item3 两字段都 null 时不渲染 user span
+		const mobile = mobileText(wrapper);
+		expect(mobile).toContain('Alice');
+		expect(mobile).toContain('bob');
+		const articles = wrapper.findAll('article');
+		expect(articles[2].text()).not.toContain('Alice');
+		expect(articles[2].text()).not.toContain('bob');
 	});
 
 	test('pluginVersion null 时显示 —', async () => {
 		const wrapper = mountPage({
 			clawsState: {
-				items: [{ id: '1', name: 'a', online: true, pluginVersion: null, createdAt: nowIso }],
+				// 给 userName 真值，让 user-cell 不渲染 —，使桌面端 — 唯一来源是 pluginVersion-cell
+				items: [{ id: '1', name: 'a', online: true, userName: 'Alice', pluginVersion: null, createdAt: nowIso }],
 			},
 		});
 		await flushPromises();
-		expect(wrapper.text()).toContain('—');
+		// 桌面端：pluginVersion-cell 应独立渲染 —
+		expect(desktopCellText(wrapper, '1', 'pluginVersion')).toBe('—');
+		// 移动端：plugin 行渲染为 v— 字面量
+		expect(mobileText(wrapper)).toContain('v—');
 	});
 });
 

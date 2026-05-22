@@ -19,8 +19,9 @@ const ERROR_BEFORE_OPEN_LIMIT = 3; // 未 onopen 的情况下连续 onerror 超�
  * @param {object} handlers - 事件回调（全部可选；缺失时忽略对应事件）
  * @param {(ids: string[]) => void} [handlers.onSnapshot]
  * @param {(evt: { clawId: string, online: boolean }) => void} [handlers.onStatusChanged]
- * @param {(patch: { clawId: string, name?: string|null, hostName?: string|null, pluginVersion?: string|null, agentModels?: any }) => void} [handlers.onInfoUpdated]
+ * @param {(patch: { clawId: string, name?: string|null, hostName?: string|null, pluginVersion?: string|null, agentModels?: { id: string, name?: string, model?: string }[] | null }) => void} [handlers.onInfoUpdated]
  *   patch 语义：除 clawId 外字段按本次 plugin 上报的 patch 实际出现与否可选；未出现的字段代表"保持原值"
+ *   agentModels 形态参照 server `Claw.agentModels` (Prisma `Json?`)：`[{id, name?, model?}]`；null 表示 plugin 未上报
  * @returns {{ close: () => void }}
  */
 export function connectAdminStream(handlers = {}) {
