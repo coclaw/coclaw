@@ -224,10 +224,6 @@ export const deMessages = {
 			columnUser: 'Benutzer',
 			columnVersion: 'Plugin',
 			columnCreatedAt: 'Gebunden am',
-			expandAgentName: 'Agent',
-			expandModel: 'Aktuelles Modell',
-			noAgentModels: 'Informationen noch nicht verfügbar',
-			emptyAgents: 'Keine Agents',
 		},
 		users: {
 			title: 'Benutzerverwaltung',
@@ -402,6 +398,7 @@ export const deMessages = {
 		clawUnbound: 'Claw wurde getrennt',
 		noMoreHistory: 'Keine früheren Nachrichten',
 		scrollUpForMore: '↑ Nach oben scrollen für frühere Nachrichten',
+		scrollToBottom: 'Nach unten scrollen',
 		upgradeOpenClawHint: 'Möglicherweise muss OpenClaw aktualisiert werden. Bitte OpenClaw, sich selbst zu aktualisieren, oder ausführen: npm install -g openclaw',
 		cancelNotSupported: 'Diese OpenClaw-Version kann den laufenden Agenten nicht abbrechen. Die Ausführung wird im Hintergrund fortgesetzt.',
 		cancelGone: 'Ausführung scheint beendet zu sein',

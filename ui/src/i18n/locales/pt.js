@@ -224,10 +224,6 @@ export const ptMessages = {
 			columnUser: 'Usuário',
 			columnVersion: 'Plugin',
 			columnCreatedAt: 'Vinculada em',
-			expandAgentName: 'Agent',
-			expandModel: 'Modelo atual',
-			noAgentModels: 'Informações ainda não disponíveis',
-			emptyAgents: 'Sem agents',
 		},
 		users: {
 			title: 'Gestão de Usuários',
@@ -402,6 +398,7 @@ export const ptMessages = {
 		clawUnbound: 'Claw foi desvinculado',
 		noMoreHistory: 'Sem mensagens anteriores',
 		scrollUpForMore: '↑ Role para cima para ver mensagens mais antigas',
+		scrollToBottom: 'Ir para o fim',
 		upgradeOpenClawHint: 'Talvez seja necessário atualizar o OpenClaw. Peça ao OpenClaw para se atualizar, ou execute: npm install -g openclaw',
 		cancelNotSupported: 'Esta versão do OpenClaw não pode cancelar o agente em execução. A execução continuará em segundo plano.',
 		cancelGone: 'A execução parece ter terminado',

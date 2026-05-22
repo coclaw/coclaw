@@ -224,10 +224,6 @@ export const enMessages = {
 			columnUser: 'User',
 			columnVersion: 'Plugin',
 			columnCreatedAt: 'Bound At',
-			expandAgentName: 'Agent',
-			expandModel: 'Current Model',
-			noAgentModels: 'Information not yet available',
-			emptyAgents: 'No agents',
 		},
 		users: {
 			title: 'User Management',
@@ -402,6 +398,7 @@ export const enMessages = {
 		clawUnbound: 'Claw has been unbound',
 		noMoreHistory: 'No earlier messages',
 		scrollUpForMore: '↑ Scroll up for earlier messages',
+		scrollToBottom: 'Scroll to bottom',
 		upgradeOpenClawHint: 'You may need to upgrade OpenClaw. Ask OpenClaw to upgrade itself, or run: npm install -g openclaw',
 		cancelNotSupported: 'This OpenClaw version cannot cancel the running agent. The run will continue in the background.',
 		cancelGone: 'Run appears to have ended',

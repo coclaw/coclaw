@@ -224,10 +224,6 @@ export const frMessages = {
 			columnUser: 'Utilisateur',
 			columnVersion: 'Plugin',
 			columnCreatedAt: 'Liée le',
-			expandAgentName: 'Agent',
-			expandModel: 'Modèle actuel',
-			noAgentModels: 'Informations bientôt disponibles',
-			emptyAgents: 'Aucun agent',
 		},
 		users: {
 			title: 'Gestion des utilisateurs',
@@ -402,6 +398,7 @@ export const frMessages = {
 		clawUnbound: 'La Claw a été dissociée',
 		noMoreHistory: 'Pas de messages antérieurs',
 		scrollUpForMore: '↑ Faire défiler vers le haut pour les messages précédents',
+		scrollToBottom: 'Aller en bas',
 		upgradeOpenClawHint: 'Vous devrez peut-être mettre à jour OpenClaw. Demandez à OpenClaw de se mettre à jour lui-même, ou exécutez : npm install -g openclaw',
 		cancelNotSupported: 'Cette version d\'OpenClaw ne peut pas annuler l\'agent en cours. L\'exécution continuera en arrière-plan.',
 		cancelGone: 'L\'exécution semble terminée',

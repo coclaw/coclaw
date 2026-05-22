@@ -224,10 +224,6 @@ export const zhCNMessages = {
 			columnUser: '所属用户',
 			columnVersion: '插件',
 			columnCreatedAt: '绑定时间',
-			expandAgentName: 'Agent',
-			expandModel: '当前模型',
-			noAgentModels: '信息暂不可用',
-			emptyAgents: '无 Agent',
 		},
 		users: {
 			title: '用户管理',
@@ -402,6 +398,7 @@ export const zhCNMessages = {
 		clawUnbound: 'Claw 已解绑',
 		noMoreHistory: '没有更多聊天记录了',
 		scrollUpForMore: '↑ 上翻加载更早记录',
+		scrollToBottom: '回到底部',
 		upgradeOpenClawHint: '可能需要升级 OpenClaw，请让 OpenClaw 自行升级或执行：npm install -g openclaw',
 		cancelNotSupported: '当前 OpenClaw 版本无法取消运行中的 agent，它将继续在后台执行。',
 		cancelGone: '任务似乎已结束',

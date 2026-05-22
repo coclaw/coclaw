@@ -224,10 +224,6 @@ export const zhTWMessages = {
 			columnUser: '所屬使用者',
 			columnVersion: '外掛',
 			columnCreatedAt: '綁定時間',
-			expandAgentName: 'Agent',
-			expandModel: '目前模型',
-			noAgentModels: '資訊暫不可用',
-			emptyAgents: '無 Agent',
 		},
 		users: {
 			title: '用戶管理',
@@ -402,6 +398,7 @@ export const zhTWMessages = {
 		clawUnbound: 'Claw 已解除綁定',
 		noMoreHistory: '沒有更多聊天記錄了',
 		scrollUpForMore: '↑ 上翻載入更早記錄',
+		scrollToBottom: '回到底部',
 		upgradeOpenClawHint: '可能需要升級 OpenClaw，請讓 OpenClaw 自行升級或執行：npm install -g openclaw',
 		cancelNotSupported: '目前 OpenClaw 版本無法取消執行中的 agent，它將繼續在背景執行。',
 		cancelGone: '任務似乎已結束',

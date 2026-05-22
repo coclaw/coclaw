@@ -224,10 +224,6 @@ export const ruMessages = {
 			columnUser: 'Пользователь',
 			columnVersion: 'Плагин',
 			columnCreatedAt: 'Привязан',
-			expandAgentName: 'Agent',
-			expandModel: 'Текущая модель',
-			noAgentModels: 'Информация пока недоступна',
-			emptyAgents: 'Нет agent\'ов',
 		},
 		users: {
 			title: 'Управление пользователями',
@@ -402,6 +398,7 @@ export const ruMessages = {
 		clawUnbound: 'Claw был отвязан',
 		noMoreHistory: 'Более ранних сообщений нет',
 		scrollUpForMore: '↑ Прокрутите вверх для более ранних сообщений',
+		scrollToBottom: 'Прокрутить вниз',
 		upgradeOpenClawHint: 'Возможно, потребуется обновить OpenClaw. Попросите OpenClaw обновиться самостоятельно или выполните: npm install -g openclaw',
 		cancelNotSupported: 'Текущая версия OpenClaw не может отменить работающего агента. Выполнение продолжится в фоновом режиме.',
 		cancelGone: 'Выполнение, по-видимому, завершено',

@@ -39,7 +39,7 @@ import AdminClawsPage from './AdminClawsPage.vue';
 // --- UTable / UI 组件 stubs ---
 
 const UTableStub = {
-	props: ['data', 'columns', 'loading', 'empty', 'getRowId', 'getRowCanExpand'],
+	props: ['data', 'columns', 'loading', 'empty', 'getRowId'],
 	template: `
 		<div class="u-table-stub" :data-loading="loading" :data-empty="empty">
 			<div
@@ -50,7 +50,7 @@ const UTableStub = {
 			>
 				<slot
 					name="name-cell"
-					:row="{ original: row, getIsExpanded: () => true, toggleExpanded: toggleExpanded }"
+					:row="{ original: row }"
 				/>
 				<slot
 					name="online-cell"
@@ -68,16 +68,9 @@ const UTableStub = {
 					name="createdAt-cell"
 					:row="{ original: row }"
 				/>
-				<slot
-					name="expanded"
-					:row="{ original: row }"
-				/>
 			</div>
 		</div>
 	`,
-	methods: {
-		toggleExpanded() { /* no-op in stub */ },
-	},
 };
 
 const UInputStub = {
@@ -106,10 +99,6 @@ const i18nMap = {
 	'admin.claws.columnUser': 'User',
 	'admin.claws.columnVersion': 'Plugin',
 	'admin.claws.columnCreatedAt': 'Bound At',
-	'admin.claws.expandAgentName': 'Agent',
-	'admin.claws.expandModel': 'Current Model',
-	'admin.claws.noAgentModels': 'Information not yet available',
-	'admin.claws.emptyAgents': 'No agents',
 	'admin.common.loadMore': 'Load more',
 	'admin.common.noData': 'No data',
 	'admin.common.online': 'Online',
@@ -312,7 +301,7 @@ describe('AdminClawsPage — 搜索', () => {
 describe('AdminClawsPage — 分页', () => {
 	test('存在 nextCursor 时渲染 Load more 按钮并调 fetchMoreClaws', async () => {
 		const wrapper = mountPage({
-			clawsState: { nextCursor: 'c1', items: [{ id: '1', online: false, agentModels: null, createdAt: null }] },
+			clawsState: { nextCursor: 'c1', items: [{ id: '1', online: false, createdAt: null }] },
 		});
 		await flushPromises();
 		const btn = wrapper.find('button.u-button-stub');
@@ -379,59 +368,11 @@ describe('AdminClawsPage — 渲染', () => {
 		expect(mobileNoData.length).toBe(0);
 	});
 
-	test('agentModels === null 时显示 noAgentModels', async () => {
-		const wrapper = mountPage({
-			clawsState: {
-				items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: nowIso }],
-			},
-		});
-		await flushPromises();
-		expect(wrapper.text()).toContain('Information not yet available');
-	});
-
-	test('agentModels === [] 时显示 emptyAgents', async () => {
-		const wrapper = mountPage({
-			clawsState: {
-				items: [{ id: '1', name: 'n', online: true, agentModels: [], createdAt: nowIso }],
-			},
-		});
-		await flushPromises();
-		expect(wrapper.text()).toContain('No agents');
-	});
-
-	test('agentModels 有内容时展开行渲染每个 agent × model', async () => {
-		// 填充全字段，避免 pluginVersion/user 空值产生的 "—" 干扰 model null 的断言
-		const wrapper = mountPage({
-			clawsState: {
-				items: [{
-					id: '1',
-					name: 'Claw-1',
-					userName: 'Alice',
-					userLoginName: 'alice',
-					pluginVersion: '1.2.3',
-					online: true,
-					agentModels: [
-						{ id: 'main', name: 'Main Agent', model: 'claude-opus-4' },
-						{ id: 'p', name: null, model: null },
-					],
-					createdAt: new Date(Date.now() - 30_000).toISOString(),
-				}],
-			},
-		});
-		await flushPromises();
-		expect(wrapper.text()).toContain('Main Agent');
-		expect(wrapper.text()).toContain('claude-opus-4');
-		// name 为 null 回退到 id
-		expect(wrapper.text()).toContain('p');
-		// 此行已排除 pluginVersion/user 的 "—"，因此 "—" 唯一来源于 model null 的 fallback
-		expect(wrapper.text()).toContain('—');
-	});
-
 	test('name 为空字符串时回退显示 hostName', async () => {
 		const wrapper = mountPage({
 			clawsState: {
 				items: [
-					{ id: '1', name: '', hostName: 'ubuntu', online: true, agentModels: null, createdAt: nowIso },
+					{ id: '1', name: '', hostName: 'ubuntu', online: true, createdAt: nowIso },
 				],
 			},
 		});
@@ -443,8 +384,8 @@ describe('AdminClawsPage — 渲染', () => {
 		const wrapper = mountPage({
 			clawsState: {
 				items: [
-					{ id: '1', name: 'a', online: true, agentModels: null, createdAt: nowIso },
-					{ id: '2', name: 'b', online: false, agentModels: null, createdAt: nowIso },
+					{ id: '1', name: 'a', online: true, createdAt: nowIso },
+					{ id: '2', name: 'b', online: false, createdAt: nowIso },
 				],
 			},
 		});
@@ -457,9 +398,9 @@ describe('AdminClawsPage — 渲染', () => {
 		const wrapper = mountPage({
 			clawsState: {
 				items: [
-					{ id: '1', name: 'a', online: true, userName: 'Alice', userLoginName: 'alice', agentModels: null, createdAt: nowIso },
-					{ id: '2', name: 'b', online: true, userName: null, userLoginName: 'bob', agentModels: null, createdAt: nowIso },
-					{ id: '3', name: 'c', online: true, userName: null, userLoginName: null, agentModels: null, createdAt: nowIso },
+					{ id: '1', name: 'a', online: true, userName: 'Alice', userLoginName: 'alice', createdAt: nowIso },
+					{ id: '2', name: 'b', online: true, userName: null, userLoginName: 'bob', createdAt: nowIso },
+					{ id: '3', name: 'c', online: true, userName: null, userLoginName: null, createdAt: nowIso },
 				],
 			},
 		});
@@ -471,7 +412,7 @@ describe('AdminClawsPage — 渲染', () => {
 	test('pluginVersion null 时显示 —', async () => {
 		const wrapper = mountPage({
 			clawsState: {
-				items: [{ id: '1', name: 'a', online: true, pluginVersion: null, agentModels: null, createdAt: nowIso }],
+				items: [{ id: '1', name: 'a', online: true, pluginVersion: null, createdAt: nowIso }],
 			},
 		});
 		await flushPromises();
@@ -482,7 +423,7 @@ describe('AdminClawsPage — 渲染', () => {
 describe('AdminClawsPage — formatTimeAgo', () => {
 	test('null → —', async () => {
 		const wrapper = mountPage({
-			clawsState: { items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: null }] },
+			clawsState: { items: [{ id: '1', name: 'n', online: true, createdAt: null }] },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain('—');
@@ -490,7 +431,7 @@ describe('AdminClawsPage — formatTimeAgo', () => {
 
 	test('invalid date → —', async () => {
 		const wrapper = mountPage({
-			clawsState: { items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: 'not-a-date' }] },
+			clawsState: { items: [{ id: '1', name: 'n', online: true, createdAt: 'not-a-date' }] },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain('—');
@@ -499,7 +440,7 @@ describe('AdminClawsPage — formatTimeAgo', () => {
 	test('未来时间 → —（diff < 0）', async () => {
 		const future = new Date(Date.now() + 60_000).toISOString();
 		const wrapper = mountPage({
-			clawsState: { items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: future }] },
+			clawsState: { items: [{ id: '1', name: 'n', online: true, createdAt: future }] },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain('—');
@@ -508,7 +449,7 @@ describe('AdminClawsPage — formatTimeAgo', () => {
 	test('< 60s → Just now', async () => {
 		const near = new Date(Date.now() - 30_000).toISOString();
 		const wrapper = mountPage({
-			clawsState: { items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: near }] },
+			clawsState: { items: [{ id: '1', name: 'n', online: true, createdAt: near }] },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain('Just now');
@@ -517,7 +458,7 @@ describe('AdminClawsPage — formatTimeAgo', () => {
 	test('3 分钟前 → 3m ago', async () => {
 		const past = new Date(Date.now() - 3 * 60_000).toISOString();
 		const wrapper = mountPage({
-			clawsState: { items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: past }] },
+			clawsState: { items: [{ id: '1', name: 'n', online: true, createdAt: past }] },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain('3m ago');
@@ -526,7 +467,7 @@ describe('AdminClawsPage — formatTimeAgo', () => {
 	test('2 小时前 → 2h ago', async () => {
 		const past = new Date(Date.now() - 2 * 3600_000).toISOString();
 		const wrapper = mountPage({
-			clawsState: { items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: past }] },
+			clawsState: { items: [{ id: '1', name: 'n', online: true, createdAt: past }] },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain('2h ago');
@@ -535,38 +476,70 @@ describe('AdminClawsPage — formatTimeAgo', () => {
 	test('3 天前 → 3d ago', async () => {
 		const past = new Date(Date.now() - 3 * 86400_000).toISOString();
 		const wrapper = mountPage({
-			clawsState: { items: [{ id: '1', name: 'n', online: true, agentModels: null, createdAt: past }] },
+			clawsState: { items: [{ id: '1', name: 'n', online: true, createdAt: past }] },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain('3d ago');
 	});
 });
 
-describe('AdminClawsPage — 移动端展开交互', () => {
-	test('点击移动卡片切换 mobileExpanded 状态', async () => {
+describe('AdminClawsPage — 行内展开已移除', () => {
+	test('移动端卡片不再是按钮，无展开切换交互', async () => {
 		const wrapper = mountPage({
 			clawsState: {
 				items: [{
 					id: '1',
 					name: 'A',
 					online: true,
-					agentModels: [{ id: 'main', name: 'Main', model: 'opus' }],
 					createdAt: null,
 				}],
 			},
 		});
 		await flushPromises();
 
-		// 初始未展开
-		expect(wrapper.vm.mobileExpanded['1']).toBeFalsy();
+		// 移动端卡片内不应再出现可点击的展开按钮
+		expect(wrapper.find('article button').exists()).toBe(false);
+	});
 
-		const articleButton = wrapper.find('article button');
-		await articleButton.trigger('click');
+	test('桌面端 name 列不再渲染 chevron 图标', async () => {
+		const wrapper = mountPage({
+			clawsState: {
+				items: [{
+					id: '1',
+					name: 'A',
+					online: true,
+					createdAt: null,
+				}],
+			},
+		});
 		await flushPromises();
-		expect(wrapper.vm.mobileExpanded['1']).toBe(true);
 
-		await articleButton.trigger('click');
+		// chevron-right / chevron-down 都不应再出现
+		const icons = wrapper.findAll('.u-icon-stub').map(n => n.attributes('data-icon'));
+		expect(icons.some(name => name && name.includes('chevron'))).toBe(false);
+	});
+
+	test('页面不再读取 agentModels 字段（缺失也能正常渲染）', async () => {
+		const wrapper = mountPage({
+			clawsState: {
+				items: [{
+					id: '1',
+					name: 'Claw-A',
+					online: true,
+					userName: 'Alice',
+					pluginVersion: '1.2.3',
+					createdAt: new Date(Date.now() - 30_000).toISOString(),
+					// 故意不带 agentModels 字段
+				}],
+			},
+		});
 		await flushPromises();
-		expect(wrapper.vm.mobileExpanded['1']).toBe(false);
+
+		// 行级摘要字段全部正常渲染
+		expect(wrapper.text()).toContain('Claw-A');
+		expect(wrapper.text()).toContain('Alice');
+		expect(wrapper.text()).toContain('1.2.3');
+		expect(wrapper.text()).toContain('Online');
+		expect(wrapper.text()).toContain('Just now');
 	});
 });

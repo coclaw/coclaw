@@ -224,10 +224,6 @@ export const viMessages = {
 			columnUser: 'Người dùng',
 			columnVersion: 'Plugin',
 			columnCreatedAt: 'Liên kết lúc',
-			expandAgentName: 'Agent',
-			expandModel: 'Mô hình hiện tại',
-			noAgentModels: 'Thông tin hiện chưa có',
-			emptyAgents: 'Không có Agent',
 		},
 		users: {
 			title: 'Quản lý người dùng',
@@ -402,6 +398,7 @@ export const viMessages = {
 		clawUnbound: 'Claw đã bị hủy liên kết',
 		noMoreHistory: 'Không có tin nhắn cũ hơn',
 		scrollUpForMore: '↑ Cuộn lên để xem tin nhắn cũ hơn',
+		scrollToBottom: 'Cuộn xuống cuối',
 		upgradeOpenClawHint: 'Bạn có thể cần nâng cấp OpenClaw. Yêu cầu OpenClaw tự nâng cấp, hoặc chạy: npm install -g openclaw',
 		cancelNotSupported: 'Phiên bản OpenClaw hiện tại không thể hủy agent đang chạy. Nó sẽ tiếp tục chạy ở nền.',
 		cancelGone: 'Tác vụ dường như đã kết thúc',

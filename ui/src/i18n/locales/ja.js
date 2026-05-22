@@ -224,10 +224,6 @@ export const jaMessages = {
 			columnUser: 'ユーザー',
 			columnVersion: 'プラグイン',
 			columnCreatedAt: 'バインド日時',
-			expandAgentName: 'Agent',
-			expandModel: '現在のモデル',
-			noAgentModels: '情報はまだ利用できません',
-			emptyAgents: 'Agent なし',
 		},
 		users: {
 			title: 'ユーザー管理',
@@ -402,6 +398,7 @@ export const jaMessages = {
 		clawUnbound: 'Claw のバインドが解除されました',
 		noMoreHistory: 'これより前のメッセージはありません',
 		scrollUpForMore: '↑ スクロールして以前のメッセージを表示',
+		scrollToBottom: '一番下へ',
 		upgradeOpenClawHint: 'OpenClaw のアップグレードが必要な場合があります。OpenClaw 自身にアップグレードを依頼するか、以下を実行してください：npm install -g openclaw',
 		cancelNotSupported: '現在の OpenClaw バージョンでは実行中のエージェントをキャンセルできません。バックグラウンドで実行が続行されます。',
 		cancelGone: '実行は終了したようです',

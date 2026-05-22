@@ -224,10 +224,6 @@ export const hiMessages = {
 			columnUser: 'उपयोगकर्ता',
 			columnVersion: 'प्लगिन',
 			columnCreatedAt: 'बाउंड किया गया',
-			expandAgentName: 'Agent',
-			expandModel: 'वर्तमान मॉडल',
-			noAgentModels: 'जानकारी अभी उपलब्ध नहीं है',
-			emptyAgents: 'कोई Agent नहीं',
 		},
 		users: {
 			title: 'उपयोगकर्ता प्रबंधन',
@@ -402,6 +398,7 @@ export const hiMessages = {
 		clawUnbound: 'Claw अनबाउंड हो गया है',
 		noMoreHistory: 'कोई पहले का संदेश नहीं',
 		scrollUpForMore: '↑ पहले के संदेशों के लिए ऊपर स्क्रॉल करें',
+		scrollToBottom: 'नीचे जाएं',
 		upgradeOpenClawHint: 'आपको OpenClaw अपग्रेड करने की जरूरत हो सकती है। OpenClaw से खुद को अपग्रेड करने के लिए कहें, या चलाएं: npm install -g openclaw',
 		cancelNotSupported: 'यह OpenClaw संस्करण चल रहे agent को रद्द नहीं कर सकता। यह पृष्ठभूमि में चलता रहेगा।',
 		cancelGone: 'कार्य समाप्त हो चुका लगता है',

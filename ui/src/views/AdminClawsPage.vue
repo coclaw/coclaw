@@ -22,23 +22,15 @@
 				<!-- 桌面端：UTable -->
 				<div class="hidden lg:block">
 					<UTable
-						v-model:expanded="expandedState"
 						:data="adminStore.claws.items"
 						:columns="tableColumns"
 						:loading="adminStore.claws.loading"
 						:empty="$t('admin.common.noData')"
 						:get-row-id="getRowId"
-						:on-select="onRowSelect"
-						:ui="{ th: 'p-2', td: 'p-2', tr: 'data-[selectable=true]:cursor-pointer' }"
+						:ui="{ th: 'p-2', td: 'p-2' }"
 					>
 						<template #name-cell="{ row }">
-							<span class="inline-flex items-center gap-1.5">
-								<UIcon
-									:name="row.getIsExpanded() ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
-									class="text-dimmed"
-								/>
-								<span class="font-medium">{{ row.original.name || row.original.hostName || '—' }}</span>
-							</span>
+							<span class="font-medium">{{ row.original.name || row.original.hostName || '—' }}</span>
 						</template>
 
 						<template #online-cell="{ row }">
@@ -65,38 +57,10 @@
 						<template #createdAt-cell="{ row }">
 							<span class="text-sm text-dimmed">{{ formatTimeAgo(row.original.createdAt) }}</span>
 						</template>
-
-						<template #expanded="{ row }">
-							<div class="text-sm">
-								<p v-if="row.original.agentModels === null" class="text-dimmed">
-									{{ $t('admin.claws.noAgentModels') }}
-								</p>
-								<p v-else-if="!row.original.agentModels.length" class="text-dimmed">
-									{{ $t('admin.claws.emptyAgents') }}
-								</p>
-								<table v-else class="w-full">
-									<thead>
-										<tr class="text-left text-xs text-dimmed">
-											<th class="py-1 pr-4 font-normal">{{ $t('admin.claws.expandAgentName') }}</th>
-											<th class="py-1 font-normal">{{ $t('admin.claws.expandModel') }}</th>
-										</tr>
-									</thead>
-									<tbody>
-										<tr
-											v-for="agent in row.original.agentModels"
-											:key="agent.id"
-										>
-											<td class="py-1 pr-4">{{ agent.name || agent.id }}</td>
-											<td class="py-1 text-dimmed">{{ agent.model ?? '—' }}</td>
-										</tr>
-									</tbody>
-								</table>
-							</div>
-						</template>
 					</UTable>
 				</div>
 
-				<!-- 移动端：卡片降级 + 点击展开 -->
+				<!-- 移动端：卡片降级（仅摘要，无展开） -->
 				<div class="space-y-3 lg:hidden">
 					<p
 						v-if="!adminStore.claws.items.length && !adminStore.claws.loading"
@@ -109,55 +73,24 @@
 						:key="claw.id"
 						class="rounded-xl bg-elevated p-3"
 					>
-						<button
-							type="button"
-							class="flex w-full items-start justify-between gap-2 text-left"
-							@click="toggleMobileExpanded(claw.id)"
-						>
-							<div class="flex min-w-0 flex-col gap-1">
-								<div class="flex items-center gap-2">
-									<span
-										:class="[
-											'h-2 w-2 shrink-0 rounded-full',
-											claw.online ? 'bg-green-500' : 'bg-neutral-400',
-										]"
-										:aria-label="claw.online ? $t('admin.common.online') : $t('admin.common.offline')"
-									></span>
-									<span class="truncate font-medium">{{ claw.name || claw.hostName || '—' }}</span>
-								</div>
-								<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-dimmed">
-									<span v-if="claw.userName || claw.userLoginName">
-										{{ claw.userName || claw.userLoginName }}
-									</span>
-									<span>v{{ claw.pluginVersion ?? '—' }}</span>
-									<span>{{ formatTimeAgo(claw.createdAt) }}</span>
-								</div>
+						<div class="flex min-w-0 flex-col gap-1">
+							<div class="flex items-center gap-2">
+								<span
+									:class="[
+										'h-2 w-2 shrink-0 rounded-full',
+										claw.online ? 'bg-green-500' : 'bg-neutral-400',
+									]"
+									:aria-label="claw.online ? $t('admin.common.online') : $t('admin.common.offline')"
+								></span>
+								<span class="truncate font-medium">{{ claw.name || claw.hostName || '—' }}</span>
 							</div>
-							<UIcon
-								:name="mobileExpanded[claw.id] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
-								class="mt-0.5 shrink-0 text-dimmed"
-							/>
-						</button>
-						<div
-							v-if="mobileExpanded[claw.id]"
-							class="mt-3 border-t border-default pt-3 text-sm"
-						>
-							<p v-if="claw.agentModels === null" class="text-dimmed">
-								{{ $t('admin.claws.noAgentModels') }}
-							</p>
-							<p v-else-if="!claw.agentModels.length" class="text-dimmed">
-								{{ $t('admin.claws.emptyAgents') }}
-							</p>
-							<ul v-else class="space-y-1">
-								<li
-									v-for="agent in claw.agentModels"
-									:key="agent.id"
-									class="flex items-center justify-between gap-2"
-								>
-									<span class="truncate">{{ agent.name || agent.id }}</span>
-									<span class="shrink-0 text-dimmed">{{ agent.model ?? '—' }}</span>
-								</li>
-							</ul>
+							<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-dimmed">
+								<span v-if="claw.userName || claw.userLoginName">
+									{{ claw.userName || claw.userLoginName }}
+								</span>
+								<span>v{{ claw.pluginVersion ?? '—' }}</span>
+								<span>{{ formatTimeAgo(claw.createdAt) }}</span>
+							</div>
 						</div>
 					</article>
 				</div>
@@ -195,8 +128,6 @@ export default {
 	data() {
 		return {
 			searchInput: this.adminStore.claws.search ?? '',
-			expandedState: {},
-			mobileExpanded: {},
 		};
 	},
 	computed: {
@@ -234,8 +165,6 @@ export default {
 	methods: {
 		async doSearch(q) {
 			this.adminStore.resetClaws();
-			this.expandedState = {};
-			this.mobileExpanded = {};
 			try {
 				await this.adminStore.fetchClaws({ search: q });
 			}
@@ -252,12 +181,6 @@ export default {
 				console.warn('[AdminClawsPage] loadMore failed:', err);
 				this.notify.error(this.__pickErrMsg(err));
 			}
-		},
-		onRowSelect(_e, row) {
-			row.toggleExpanded();
-		},
-		toggleMobileExpanded(id) {
-			this.mobileExpanded = { ...this.mobileExpanded, [id]: !this.mobileExpanded[id] };
 		},
 		getRowId(row) {
 			return String(row.id);
