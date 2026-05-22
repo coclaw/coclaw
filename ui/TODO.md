@@ -678,3 +678,37 @@ X4 触及面比 X1 广，需要重新评估：
 - 影响：「本月花费」数据虽然每次进 `/claws` 都被拉回来，但用户在 UI 上看不到，相当于白调一次 RPC + 白做一份兜底
 - 修复方向：在 `ManageClawsPage.vue` 的合适位置（建议作为「状态摘要栏」下方、claw 卡片列表上方的全局总览区）挂载 `<InstanceOverview :instance="...">`，把 dashboard 里任一 claw 的 `instance` 字段传入；多 claw 场景下决定是「展示首个 online claw」还是「按 claw 分卡片各自展示」需先讨论 UX
 - 非阻塞但收益明确：5 ~ 10 分钟接线工作量，可单独 commit
+
+## Tailwind 4 alpha 修饰符编译为 `color-mix()` 与浏览器基线冲突
+
+**发现日期**：2026-05-23
+**关联讨论**：issue #245「回到底部」按钮样式微调，dark 主题辨识度排查
+
+**问题**：项目浏览器基线为 Chrome 90 / Edge 90 / Safari 15 / Firefox 90（`vite.config.js` `build.target`，UI workspace CLAUDE.md「浏览器兼容性基线」）。但 Tailwind 4 把语义 token + alpha 修饰符（如 `bg-default/80`、`bg-accented/80`、`bg-muted/60`、`ring-white/20`）统一编译成 `color-mix(in oklab, var(--ui-bg-xxx) 80%, transparent)`。`color-mix()` 各浏览器支持时间：
+
+| 浏览器 | 支持 color-mix | 基线 |
+|---|---|---|
+| Chrome | 111+（2023.03） | 90 |
+| Edge | 111+ | 90 |
+| Safari | 16.2+（2022.12） | 15 |
+| Firefox | 113+（2023.05） | 90 |
+
+也就是说所有基线浏览器都跨不过这条线。
+
+**已发布产物核实**：`dist/assets/index-*.css` 里 `color-mix()` 出现 **461 次**，项目实际上早已依赖该特性。用法主要分两类：
+- 业务源码里 `bg-default/80`、`bg-accented/80` 等（FileManagerPage、ChatPage、MainList、ChatMsgItem 多处，及本次 ChatPage 回到底部按钮新增的 `bg-elevated/80` / `dark:ring-white/20`）
+- @nuxt/ui 4 组件内部的预设样式
+
+**影响**：基线内浏览器解析失败 → 整条 background-color / box-shadow declaration 被丢弃 → 元素呈无背景或父级继承背景。对回到底部按钮这类"半透明浮层"会退化为完全透明（仅 icon 可见，按钮形状消失），辨识度归零。但 dark/light 主题切换、文本颜色等绝大多数语义色不带 alpha 修饰符，不受影响。
+
+**为什么本期未修**：本次任务只是按钮样式微调；项目已大量依赖 color-mix（461 处），单独修我们这个按钮意义不大。属于项目级浏览器基线策略问题。
+
+**修复方向**：
+
+- **方案 A：升基线**（推荐）。Chrome/Edge 111、Safari 16.2、Firefox 113 都是 2023 年发布，至 2026.05 已两年多。把 `vite.config.js` `build.target` 升到对应版本，与 UI CLAUDE.md 一并更新。Capacitor Android WebView 走的是系统 Chrome，主流 Android 6+ 设备早已升过 Chrome 111+
+- **方案 B：在 `main.css` / appConfig 里禁用 `color-mix`-based 透明度**，统一用预定义的多档 token（如 `bg-elevated-soft` = 预生成的 80% 混色实色）。改动面大，且会失去任意 alpha 灵活性
+- **方案 C：保留现状，明确"基线浏览器下浮层/hover 透明度降级为无背景"是已知行为**，文档化
+
+先讨论方案 A 是否可推进，再决定是否要兜底。
+
+

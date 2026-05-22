@@ -179,8 +179,8 @@
 				<UButton
 					v-if="farFromBottom && !__loadingHistory"
 					data-testid="btn-back-to-bottom"
-					class="cc-icon-btn-lg absolute bottom-full right-4 mb-8 bg-default shadow-md ring-1 ring-default/10"
-					size="xl"
+					class="cc-icon-btn-lg absolute bottom-[calc(100%+32px)] left-1/2 -translate-x-1/2 bg-elevated/80 shadow-[0_2px_8px_rgba(0,0,0,0.12)] ring-1 ring-default/20 dark:shadow-[0_2px_8px_rgba(255,255,255,0.14)] dark:ring-white/15"
+					size="md"
 					variant="ghost"
 					color="neutral"
 					icon="i-lucide-arrow-down"
