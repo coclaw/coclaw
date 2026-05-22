@@ -1,6 +1,6 @@
 # CoClaw 通信模型
 
-> 最后更新：2026-04-08
+> 最后更新：2026-05-23
 > 状态：已实施
 > 范围：UI ↔ Plugin 的端到端通信架构，含信令、数据通道、超时与连接生命周期
 
@@ -49,7 +49,7 @@ ClawConnection ══ DC "rpc" (持久) ═════════════�
 - **职责**：SDP/ICE 交换、connId 管理、应用层心跳（25s ping / 45s 超时）
 - **不承载**业务数据——业务 RPC 和文件传输均走 DataChannel
 - **诊断日志通道演进**：UI 端 `remoteLog` 已迁至独立 HTTP 通道 `POST /api/v1/log/ui`（详见 [remote-log.md](../designs/remote-log.md)），本通道不再承载 UI 诊断日志；server 侧 `type: 'log'` 接收分支作为 4 周回滚安全网保留，不被 UI 调用，4 周观察期后可清理
-- connId 由 UI 生成并 claim，WS 重连后通过 re-claim 恢复映射，避免 full rebuild
+- connId 由 UI 生成（`c_<uuid>`），跨 WS 重连保持不变；Server 路由表通过 UI 发送的任一 `rtc:*` 消息隐式注册/刷新，无需显式 claim 步骤（详见 [rtc-signaling-channel.md](../designs/rtc-signaling-channel.md)）
 
 ### 2.1b Server-relayed RPC 通道（WebSocket，保留能力）
 
@@ -210,7 +210,7 @@ DC 断开（网络抖动、前台恢复等）
 
 1. `SignalingConnection` 检测前台恢复事件
 2. 探测 WS 连通性（probe ping，超时 2.5s）
-3. WS 不通 → 重建 WS → re-claim connId
+3. WS 不通 → 重建 WS（connId 不变；首条 `rtc:*` 消息隐式恢复 Server 侧路由）
 4. RTC 不通 → claws.store 触发 RTC 重建
 5. 恢复期间的 `request()` 自动排队等待
 
@@ -417,6 +417,6 @@ Service 层的三个核心类各司其职：
 
 | 类 | 粒度 | 职责 |
 |----|------|------|
-| `SignalingConnection` | per-tab 单例 | 信令 WS 生命周期、心跳、connId claim、前台恢复探测 |
+| `SignalingConnection` | per-tab 单例 | 信令 WS 生命周期、心跳、connId 管理、前台恢复探测 |
 | `WebRtcConnection` | per-claw | ICE 协商、SCTP 通道、DC 管理、连通性检测 |
 | `ClawConnection` | per-claw | 业务 RPC 抽象、连接等待、事件分发——**业务层唯一接口** |
