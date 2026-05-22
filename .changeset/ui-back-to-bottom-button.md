@@ -1,5 +1,5 @@
 ---
-'@coclaw/ui': minor
+'@coclaw/ui': patch
 ---
 
 Add a "scroll to bottom" floating button on the chat page.
