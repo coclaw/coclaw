@@ -3495,4 +3495,22 @@ describe('ChatPage chatMessages separator archivedAt fallback', () => {
 		expect(sep.archivedAt).toBeNull();
 		expect(wrapper.vm.formatSeparatorLabel(sep)).toBe('');
 	});
+
+	test('__firstValidTimestamp 跳过前面无效 timestamp 找后续有效条目（钉死循环行为，防退化为 items[0]）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+			// seg-new 第一条 timestamp=null（如 streaming botTask 未 finalize），第二条才有有效 ts
+			{ sessionId: 'seg-new', archivedAt: undefined, messages: [
+				makeUserMsg('n0', 'no-ts', null),
+				makeUserMsg('n1', 'has-ts', 1700000004000),
+			] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const sep = wrapper.vm.chatMessages.find((it) => it.id === 'sep-seg-new');
+		expect(sep.archivedAt).toBe(1700000004000);
+	});
 });
