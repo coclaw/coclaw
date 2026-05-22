@@ -397,6 +397,9 @@ describe('SignalingConnection – 前台恢复', () => {
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('app:foreground');
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		const resumeLogs = capturedRemoteLogs.filter(t => t.startsWith('sig.resume source=app:foreground'));
+		const matched = resumeLogs.filter(t => /^sig\.resume source=app:foreground elapsed=\d+ms action=forceReconnect$/.test(t));
+		expect(matched.length).toBe(1);
 	});
 
 	test('移动端 app:foreground + elapsed > PROBE_TIMEOUT_MS 但 < ASSUME_DEAD_MS → probe', () => {
@@ -406,6 +409,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		vi.advanceTimersByTime(5_000);
 		conn.__handleForegroundResume('app:foreground');
 		expect(probeSpy).toHaveBeenCalledTimes(1);
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=app:foreground elapsed=\d+ms action=probe$/.test(t));
+		expect(matched.length).toBe(1);
 		probeSpy.mockRestore();
 	});
 
@@ -443,6 +448,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('network:online', { typeChanged: true });
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=network:online elapsed=\d+ms action=forceReconnect\(typeChanged\)$/.test(t));
+		expect(matched.length).toBe(1);
 	});
 
 	test('network:online + connected + typeChanged=false + elapsed 小 → 跳过', () => {
@@ -464,6 +471,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		vi.advanceTimersByTime(5_000);
 		conn.__handleForegroundResume('network:online');
 		expect(probeSpy).toHaveBeenCalledTimes(1);
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=network:online elapsed=\d+ms action=probe$/.test(t));
+		expect(matched.length).toBe(1);
 		probeSpy.mockRestore();
 	});
 
@@ -501,6 +510,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('network:online');
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		const matched = capturedRemoteLogs.filter(t => t === 'sig.resume source=network:online state=disconnected action=reconnect');
+		expect(matched.length).toBe(1);
 	});
 
 	test('移动端 disconnected + app:foreground → 即时重连', () => {
@@ -511,6 +522,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('app:foreground');
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		const matched = capturedRemoteLogs.filter(t => t === 'sig.resume source=app:foreground state=disconnected action=reconnect');
+		expect(matched.length).toBe(1);
 	});
 
 	test('桌面 disconnected + app:foreground → 跳过（不重连）', () => {
@@ -558,6 +571,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		conn.__handleForegroundResume('network:online', { typeChanged: false });
 		// 陈旧 connecting → forceReconnect 创建新 WS
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=network:online connElapsed=\d+ms action=forceReconnect\(staleConnecting\)$/.test(t));
+		expect(matched.length).toBe(1);
 	});
 
 	test('connecting + connElapsed > CONNECT_TIMEOUT_MS → app:foreground（移动端）触发 forceReconnect', () => {
@@ -569,6 +584,8 @@ describe('SignalingConnection – 前台恢复', () => {
 		const wsBefore = MockWebSocket.instances.length;
 		conn.__handleForegroundResume('app:foreground');
 		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=app:foreground connElapsed=\d+ms action=forceReconnect\(staleConnecting\)$/.test(t));
+		expect(matched.length).toBe(1);
 	});
 
 	test('不再发射 foreground-resume 事件', () => {
@@ -715,6 +732,9 @@ describe('SignalingConnection – ensureConnected', () => {
 		// 陈旧检测到 → forceReconnect → 新 WS
 		expect(MockWebSocket.instances.length).toBeGreaterThan(countBefore);
 		expect(conn.state).toBe('connecting');
+		const staleLogs = capturedRemoteLogs.filter(t => t.startsWith('sig.ensure stale-connected'));
+		expect(staleLogs.length).toBe(1);
+		expect(staleLogs[0]).toMatch(/^sig\.ensure stale-connected elapsed=\d+ms → forceReconnect$/);
 		MockWebSocket.lastInstance.simulateOpen();
 		await p;
 		expect(conn.state).toBe('connected');
@@ -759,6 +779,9 @@ describe('SignalingConnection – ensureConnected', () => {
 		const p = conn.ensureConnected({ timeoutMs: 20_000 });
 		// 陈旧检测 → forceReconnect → 第二条 WS
 		expect(MockWebSocket.instances.length).toBe(2);
+		const staleLogs = capturedRemoteLogs.filter(t => t.startsWith('sig.ensure stale-connecting'));
+		expect(staleLogs.length).toBe(1);
+		expect(staleLogs[0]).toMatch(/^sig\.ensure stale-connecting elapsed=\d+ms → forceReconnect$/);
 		MockWebSocket.lastInstance.simulateOpen();
 		await p;
 		expect(conn.state).toBe('connected');
