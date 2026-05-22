@@ -591,6 +591,22 @@ describe('单例 useRemoteLog / remoteLog', () => {
 		expect(sent[0].logs[0].text).toBe('via-helper');
 	});
 
+	test('remoteLog() 内部 try/catch 兜底——log 抛错时静默 warn，不再向上抛', () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		// 初始化单例后再 stub log，让 useRemoteLog 自己不出错——只让 .log() 抛
+		useRemoteLog({ send: () => Promise.resolve({ kind: 'success' }), uiId: 'CATCH_________________' });
+		const logSpy = vi.spyOn(RemoteLog.prototype, 'log').mockImplementation(() => {
+			throw new Error('synthetic-log-fail');
+		});
+		try {
+			expect(() => remoteLog('boom')).not.toThrow();
+			const warned = warnSpy.mock.calls.some(c => /log dispatch failed/.test(String(c[0] || '')));
+			expect(warned).toBe(true);
+		} finally {
+			logSpy.mockRestore();
+			warnSpy.mockRestore();
+		}
+	});
 });
 
 describe('RemoteLog 构造保护', () => {

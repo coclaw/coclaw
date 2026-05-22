@@ -60,9 +60,6 @@ const UTableStub = {
 
 // 渲染路径辅助：把"双轨"（桌面 UTable + 移动 article）的断言拆开，
 // 避免一路失活时另一路兜底让测试假绿（mutation-testing 思维）
-function desktopText(wrapper) {
-	return wrapper.find('.u-table-stub').text();
-}
 function desktopCellText(wrapper, rowId, col) {
 	return wrapper.find(`.u-table-stub [data-id="${rowId}"] [data-col="${col}"]`).text();
 }
