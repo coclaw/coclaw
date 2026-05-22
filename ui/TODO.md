@@ -678,3 +678,16 @@ X4 触及面比 X1 广，需要重新评估：
 - 影响：「本月花费」数据虽然每次进 `/claws` 都被拉回来，但用户在 UI 上看不到，相当于白调一次 RPC + 白做一份兜底
 - 修复方向：在 `ManageClawsPage.vue` 的合适位置（建议作为「状态摘要栏」下方、claw 卡片列表上方的全局总览区）挂载 `<InstanceOverview :instance="...">`，把 dashboard 里任一 claw 的 `instance` 字段传入；多 claw 场景下决定是「展示首个 online claw」还是「按 claw 分卡片各自展示」需先讨论 UX
 - 非阻塞但收益明确：5 ~ 10 分钟接线工作量，可单独 commit
+
+## `docs/architecture/communication-model.md` claim/re-claim 描述过时
+
+**发现日期**：2026-05-23
+**关联讨论**：unpushed 11 commits 发布前 deep-review，D4 / codex-rescue 发现
+
+来源：deep-review codex-rescue 实例核实 docs/architecture 是否与代码一致。
+
+- 现状：仓库根 `docs/architecture/communication-model.md` 第 52 / 213 / 420 行仍在描述 connId 由 UI 生成并 claim、WS 重连后通过 re-claim 恢复映射的机制
+- 实际代码：`signal:resume` / claim / re-claim 早已移除（`server/src/rtc-signal-hub.test.js:158` 注释 "signal:resume 已移除（回归守卫）"；`ui/src/services/signaling-connection.test.js:308` 同样为回归守卫；改为 `rtc:*` 隐式注册路径，见 `docs/designs/rtc-signaling-channel.md`）
+- 影响：未来读 communication-model 的开发者会被误导，特别是触及 signaling 层时
+- 修复方向：用 rtc:* 隐式注册的现状描述替换 claim/re-claim 段落，并在最后引用 `docs/designs/rtc-signaling-channel.md` 作为 SoT
+- 范围标注：本条与 ui 工作区强相关（SignalingConnection 是 UI 端模块），按所属归 ui/TODO.md；实际编辑位置在仓库根 docs/architecture/
