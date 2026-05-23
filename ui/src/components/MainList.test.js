@@ -700,6 +700,30 @@ test('claw item 暴露 clawId/agentId 字段供 actions 组件使用：fallback 
 	expect(item.agentId).toBe('main');
 });
 
+test('三处 actions 容器 class 含 group-focus-within:opacity-100（键盘 Tab 焦点可见）', async () => {
+	const wrapper = createWrapper();
+	await vi.dynamicImportSettled();
+
+	useClawsStore().setClaws([{ id: 'b1', name: 'Solo', online: true }]);
+	seedAgents('b1', ['main']);
+	const topicsStore = useTopicsStore();
+	topicsStore.byId = toById([
+		{ topicId: 't1', agentId: 'main', title: 'Test', createdAt: 100, clawId: 'b1' },
+	]);
+	useWebAgentsStore().items = [{ id: 11, slug: 'w1', name: 'W', url: 'https://x', sort: 1, lastClickedAt: '2026-05-04T10:00:00Z', hiddenAt: null }];
+	await wrapper.vm.$nextTick();
+
+	// stub 模式下子组件外层 class 不直接落地为 `.web-agent-actions` 等选择器，
+	// 直接断言模板渲染的 class fragment 出现 3 次（每条与 group-hover 配对），
+	// 比 selector-based 查询更稳。
+	const html = wrapper.html();
+	const matches = html.match(/group-focus-within:opacity-100/g) ?? [];
+	expect(matches.length).toBe(3);
+	// 三处都应与 group-hover:opacity-100 紧邻（同一 actions 容器）
+	const pairedMatches = html.match(/group-hover:opacity-100 group-focus-within:opacity-100/g) ?? [];
+	expect(pairedMatches.length).toBe(3);
+});
+
 test('AgentItemActions 渲染为 RouterLink 的 sibling，不能嵌套在 RouterLink 内', async () => {
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();

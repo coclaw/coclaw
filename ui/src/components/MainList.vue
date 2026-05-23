@@ -129,7 +129,7 @@
 						</span>
 					</RouterLink>
 					<AgentItemActions
-						class="agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+						class="agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
 						:claw-id="item.clawId"
 						:agent-id="item.agentId"
 					/>
@@ -157,7 +157,7 @@
 						<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
 					</button>
 					<WebAgentItemActions
-						class="web-agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+						class="web-agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
 						:web-agent-id="item.webId"
 						:instance="instance"
 					/>
@@ -195,7 +195,7 @@
 					<span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
 				</RouterLink>
 				<TopicItemActions
-					class="topic-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
+					class="topic-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
 					:topic-id="item.id"
 					:claw-id="item.clawId"
 					:title="item.rawTitle"
