@@ -10,6 +10,7 @@ export const zhCNMessages = {
 		loading: '加载中…',
 		loadFailed: '加载失败',
 		retry: '重试',
+		moreActions: '更多操作',
 	},
 	notify: {
 		rtcUnrecoverable: '与「{clawName}」的连接已中断，{n} 个任务可能受影响',

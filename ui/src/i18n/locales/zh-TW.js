@@ -10,6 +10,7 @@ export const zhTWMessages = {
 		loading: '載入中…',
 		loadFailed: '載入失敗',
 		retry: '重試',
+		moreActions: '更多操作',
 	},
 	notify: {
 		rtcUnrecoverable: '與「{clawName}」的連線已中斷，{n} 個任務可能受影響',

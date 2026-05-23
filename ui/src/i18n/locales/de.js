@@ -10,6 +10,7 @@ export const deMessages = {
 		loading: 'Wird geladen…',
 		loadFailed: 'Laden fehlgeschlagen',
 		retry: 'Wiederholen',
+		moreActions: 'Weitere Aktionen',
 	},
 	notify: {
 		rtcUnrecoverable: 'Verbindung zu {clawName} verloren. {n} Aufgabe(n) könnten betroffen sein.',

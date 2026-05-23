@@ -10,6 +10,7 @@ export const hiMessages = {
 		loading: 'लोड हो रहा है…',
 		loadFailed: 'लोड करने में विफल',
 		retry: 'पुनः प्रयास करें',
+		moreActions: 'अधिक क्रियाएँ',
 	},
 	notify: {
 		rtcUnrecoverable: '{clawName} से कनेक्शन टूट गया। {n} कार्य प्रभावित हो सकते हैं।',

@@ -10,6 +10,7 @@ export const ruMessages = {
 		loading: 'Загрузка…',
 		loadFailed: 'Ошибка загрузки',
 		retry: 'Повторить',
+		moreActions: 'Дополнительные действия',
 	},
 	notify: {
 		rtcUnrecoverable: 'Соединение с {clawName} прервано. Затронутых задач: {n}.',

@@ -8,7 +8,7 @@
 				icon="i-lucide-ellipsis"
 				class="cc-icon-btn"
 				:class="menuOpen ? 'opacity-100' : ''"
-				aria-label="More"
+				:aria-label="$t('common.moreActions')"
 			/>
 			<template #content>
 				<div class="flex max-w-60 flex-col py-1">

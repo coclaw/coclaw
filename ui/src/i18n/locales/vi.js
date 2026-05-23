@@ -10,6 +10,7 @@ export const viMessages = {
 		loading: 'Đang tải…',
 		loadFailed: 'Tải thất bại',
 		retry: 'Thử lại',
+		moreActions: 'Tác vụ khác',
 	},
 	notify: {
 		rtcUnrecoverable: 'Mất kết nối với {clawName}. {n} tác vụ có thể bị ảnh hưởng.',

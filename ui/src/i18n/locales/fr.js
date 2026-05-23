@@ -10,6 +10,7 @@ export const frMessages = {
 		loading: 'Chargement…',
 		loadFailed: 'Échec du chargement',
 		retry: 'Réessayer',
+		moreActions: 'Plus d\'actions',
 	},
 	notify: {
 		rtcUnrecoverable: 'Connexion à {clawName} perdue. {n} tâche(s) peuvent être affectées.',

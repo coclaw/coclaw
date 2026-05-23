@@ -10,6 +10,7 @@ export const esMessages = {
 		loading: 'Cargando…',
 		loadFailed: 'Error al cargar',
 		retry: 'Reintentar',
+		moreActions: 'Más acciones',
 	},
 	notify: {
 		rtcUnrecoverable: 'Se perdió la conexión con {clawName}. {n} tarea(s) pueden verse afectadas.',

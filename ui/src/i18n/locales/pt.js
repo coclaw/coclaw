@@ -10,6 +10,7 @@ export const ptMessages = {
 		loading: 'Carregando…',
 		loadFailed: 'Falha ao carregar',
 		retry: 'Tentar novamente',
+		moreActions: 'Mais ações',
 	},
 	notify: {
 		rtcUnrecoverable: 'Conexão com {clawName} perdida. {n} tarefa(s) podem ser afetadas.',

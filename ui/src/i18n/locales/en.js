@@ -10,6 +10,7 @@ export const enMessages = {
 		loading: 'Loading…',
 		loadFailed: 'Failed to load',
 		retry: 'Retry',
+		moreActions: 'More actions',
 	},
 	notify: {
 		rtcUnrecoverable: 'Connection to {clawName} lost. {n} task(s) may be affected.',

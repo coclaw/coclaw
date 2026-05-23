@@ -552,6 +552,16 @@ X4 触及面比 X1 广，需要重新评估：
 - **方案 B：在 `main.css` / appConfig 里禁用 `color-mix`-based 透明度**，统一用预定义的多档 token（如 `bg-elevated-soft` = 预生成的 80% 混色实色）。改动面大，且会失去任意 alpha 灵活性
 - **方案 C：保留现状，明确"基线浏览器下浮层/hover 透明度降级为无背景"是已知行为**，文档化
 
+## UI 低风险批 deep-review 发现的预存问题（2026-05-24）
+
+**发现日期**：2026-05-24
+**关联**：UI 低风险批 deep-review（commit 范围 `978573e..20ab951`，4 路 codex-rescue 综合实例发现）
+
+1. **`__validateRoute` 在 topic 已被删除时不把用户推走**
+   - 现状：`ChatPage.vue:1037-1044` `if (this.isTopicRoute)` 分支只在 `topic` 存在时检查 ownerBot；若 `topicsStore.findTopic(currentSessionId)` 返回 null（claw 被 unbind → `claw-lifecycle.js` 同步删除该 claw 的所有 topics），代码直接 return 什么都不做。结果用户停留在 `/topics/<被删 id>` 路由上，`chatStore` computed 返回 null，整页空白
+   - 触发条件：用户当前看着某 topic 时，从另一端把该 topic 所属 claw 解绑（SSE claw.unbound 到达）
+   - 修法方向：`if (this.isTopicRoute)` 分支补 `if (!topic) return this.__exitChat(this.$t('chat.clawUnbound'));`（或更精准的 topic-deleted 文案）；同时确认 `__validateRoute` 调用时机能覆盖 SSE 触发的 topics 删除（chat-lifecycle 改动 topicsStore 后是否会触发某个 watcher 调用 `__validateRoute`）
+
 先讨论方案 A 是否可推进，再决定是否要兜底。
 
 ## ProgressRing 暗主题与 Android 真机肉眼验证（顺延，需手工）

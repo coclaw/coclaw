@@ -10,6 +10,7 @@ export const jaMessages = {
 		loading: '読み込み中…',
 		loadFailed: '読み込みに失敗しました',
 		retry: '再試行',
+		moreActions: 'その他の操作',
 	},
 	notify: {
 		rtcUnrecoverable: '「{clawName}」との接続が切断されました。{n} 件のタスクに影響が出る可能性があります',

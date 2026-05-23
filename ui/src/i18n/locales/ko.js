@@ -10,6 +10,7 @@ export const koMessages = {
 		loading: '불러오는 중…',
 		loadFailed: '불러오기 실패',
 		retry: '다시 시도',
+		moreActions: '추가 작업',
 	},
 	notify: {
 		rtcUnrecoverable: '{clawName}와(과)의 연결이 끊겼습니다. {n}개의 작업에 영향이 있을 수 있습니다',
