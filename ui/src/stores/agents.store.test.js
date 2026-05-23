@@ -33,7 +33,8 @@ function mockConn(agents = [], _state = 'connected', identityMap = {}) {
 				const agentId = params?.agentId;
 				return Promise.resolve(identityMap[agentId] ?? { agentId, name: agentId });
 			}
-			return Promise.resolve(null);
+			// 抛错以暴露用例未列举的隐性 RPC（避免对未声明方法静默 resolve(null)）
+			throw new Error(`mockConn: unexpected RPC method "${method}"`);
 		}),
 		on: vi.fn(),
 		off: vi.fn(),

@@ -649,8 +649,12 @@ describe('initCapacitorApp - 各模块初始化', () => {
 			networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
 		}
 		mod.__flushNetworkDebounceForTest();
+		// 强断言：恰好 1 次 network:online 派发；CustomEvent.detail 全字段精确匹配
+		// （之前仅 filter(...).length===1 弱断言，未约束 payload）
 		const onlineEvents = dispatchSpy.mock.calls.filter((c) => c[0]?.type === 'network:online');
-		expect(onlineEvents.length).toBe(1);
+		expect(onlineEvents).toHaveLength(1);
+		expect(onlineEvents[0][0]).toBeInstanceOf(CustomEvent);
+		expect(onlineEvents[0][0].detail).toEqual({ typeChanged: false });
 		dispatchSpy.mockRestore();
 	});
 
@@ -665,8 +669,13 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		// 第二个窗口独立计时
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
 		mod.__flushNetworkDebounceForTest();
+		// 强断言：恰好 2 次派发；两次 detail 都是 typeChanged=false（同 type 重复进入）
 		const onlineEvents = dispatchSpy.mock.calls.filter((c) => c[0]?.type === 'network:online');
-		expect(onlineEvents.length).toBe(2);
+		expect(onlineEvents).toHaveLength(2);
+		expect(onlineEvents[0][0]).toBeInstanceOf(CustomEvent);
+		expect(onlineEvents[0][0].detail).toEqual({ typeChanged: false });
+		expect(onlineEvents[1][0]).toBeInstanceOf(CustomEvent);
+		expect(onlineEvents[1][0].detail).toEqual({ typeChanged: false });
 		dispatchSpy.mockRestore();
 	});
 
@@ -682,9 +691,11 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'cellular' });
 		networkListeners['networkStatusChange']({ connected: true, connectionType: 'wifi' });
 		mod.__flushNetworkDebounceForTest();
+		// 强断言：恰好 1 次派发，detail 全字段精确匹配 typeChanged=true
 		const onlineEvents = dispatchSpy.mock.calls.filter((c) => c[0]?.type === 'network:online');
-		expect(onlineEvents.length).toBe(1);
-		expect(onlineEvents[0][0].detail.typeChanged).toBe(true);
+		expect(onlineEvents).toHaveLength(1);
+		expect(onlineEvents[0][0]).toBeInstanceOf(CustomEvent);
+		expect(onlineEvents[0][0].detail).toEqual({ typeChanged: true });
 		dispatchSpy.mockRestore();
 	});
 

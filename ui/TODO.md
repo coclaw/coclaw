@@ -326,21 +326,6 @@
     - 影响：现有 router 测试通过 mock `vue-router` 和 platform 绕开了崩溃路径；但一旦有新的 node-env 测试直接 import router 且不 mock，模块加载阶段就会崩
     - 修法方向：在 router 内的 browser-only 初始化位置加 `typeof window !== 'undefined'` 守卫；或保持 router 测试只走 jsdom
 
-2. **`agents.store.test.js:28-37` / `agent-runs.store.test.js:72-88` mock 沉默吞 unknown RPC method**
-    - 现状：`mockConn` / `mockTwoPhaseConn` 对未在 case 中显式列举的 RPC 方法返回 `Promise.resolve(null)` / `{}`
-    - 影响：production 若新增了 unexpected RPC 调用，测试不会 fail；断言只覆盖"必须打的方法"，没覆盖"不该打的方法"
-    - 修法方向：mock 对 unknown method 主动 throw，让用例显式 opt-in 期望的调用面
-
-3. **`use-user-dialogs.test.js:23-34` 不断言 `overlay.create` 的 component 参数**
-    - 现状：测试只 capture `overlay.create` 的 component/options 但不断言传入的是哪个组件
-    - 影响：production 若把 profile/settings overlay 用错了组件，所有 open/close 断言仍会通过
-    - 修法方向：assert `overlay.create` 调用时第一个参数等于 `UserProfileDialog` / `UserSettingsDialog`，options 含 `{ destroyOnClose: false }`
-
-4. **`capacitor-app.test.js` 三个 network-debounce 用例普遍用 `.find()` 弱断言模式**
-    - 现状：所有用例用 `mock.calls.find(predicate)` toBeTruthy/toBeUndefined，未断言精确 `times` / `order` / payload 全字段
-    - 影响：production 若发出额外的 `network:online` 事件、或把 `count=N` 之外的字段乱写，测试不会 fail
-    - 修法方向：改用 `toHaveBeenCalledTimes(N)` + `toHaveBeenCalledWith({ detail: { typeChanged: ..., ... } })` 显式断言
-
 ## 一阶段 RPC 调用方对 ok=true+payload.status='error' 的协议演进保险（2026-05-07）
 
 **发现日期**：2026-05-07

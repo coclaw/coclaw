@@ -15,7 +15,10 @@ import { useAgentRunsStore, POST_ACCEPT_TIMEOUT_MS, RPC_GRACE_MS, IDLE_THRESHOLD
 function mockConn(overrides = {}) {
 	return {
 		state: 'connected',
-		request: vi.fn(),
+		// 抛错以暴露用例未列举的隐性 RPC（默认 mockConn 的 register-only 用例不应触发任何 conn.request）
+		request: vi.fn((method) => {
+			throw new Error(`mockConn: unexpected RPC method "${method}"`);
+		}),
 		...overrides,
 	};
 }
@@ -84,7 +87,8 @@ function mockTwoPhaseConn() {
 					ctrl.waitReject = reject;
 				});
 			}
-			return Promise.resolve({});
+			// 抛错以暴露用例未列举的隐性 RPC（runAgent 路径只调 agent + agent.wait）
+			throw new Error(`mockTwoPhaseConn: unexpected RPC method "${method}"`);
 		}),
 	};
 	ctrl.conn = conn;
