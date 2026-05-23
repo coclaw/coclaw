@@ -2,13 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import nodePath from 'node:path';
 import os from 'node:os';
-import { after, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
 
 import { WebSocket as WsWebSocket } from 'ws';
 import { GATEWAY_RETRY_DELAYS_MS, RealtimeBridge, __getSingletonForTest, classifyAgentLagStop, defaultResolveGatewayAuthToken, ensureAgentSession, gatewayAgentRpc, isFinalResMsg, restartRealtimeBridge, stopRealtimeBridge, waitForSessionsReady } from './realtime-bridge.js';
 import { readConfig, writeConfig } from './config.js';
-import { saveHomedir, setHomedir, restoreHomedir } from './homedir-mock.helper.js';
-import { setRuntime } from './runtime.js';
+import { getRuntime, setRuntime } from './runtime.js';
 import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
 
 // singleton 测试会调用真实 preloadNdc → initLogger 注册 native TSFN，
@@ -62,7 +61,31 @@ class FakeWebSocket {
 	}
 }
 
+// 本文件内 setupDir 改动的 env / runtime 全部进队列，afterEach 统一恢复，
+// 避免跨用例污染。__pendingCleanups 是同步入栈、异步出栈的简单 LIFO 即可——
+// node:test 在单文件内顺序执行测试，无并发。
+const __pendingCleanups = [];
+
+afterEach(() => {
+	while (__pendingCleanups.length) {
+		const fn = __pendingCleanups.pop();
+		try { fn(); } catch { /* best-effort restore */ }
+	}
+});
+
 async function setupDir(prefix) {
+	const prevCfgPath = process.env.OPENCLAW_CONFIG_PATH;
+	const prevTunnelPath = process.env.COCLAW_TUNNEL_CONFIG_PATH;
+	const prevRuntime = getRuntime();
+	// 先入队 cleanup，再做实际修改——这样即便中途（mkdtemp / writeFile / setRuntime
+	// 任一步）抛错，已经发生的局部修改也会被 afterEach 兜底恢复。
+	__pendingCleanups.push(() => {
+		if (prevCfgPath === undefined) delete process.env.OPENCLAW_CONFIG_PATH;
+		else process.env.OPENCLAW_CONFIG_PATH = prevCfgPath;
+		if (prevTunnelPath === undefined) delete process.env.COCLAW_TUNNEL_CONFIG_PATH;
+		else process.env.COCLAW_TUNNEL_CONFIG_PATH = prevTunnelPath;
+		setRuntime(prevRuntime);
+	});
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), prefix));
 	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
 	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
@@ -317,11 +340,8 @@ test('bridge should log warning when WebSocket is explicitly disabled (null)', a
 
 test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	FakeWebSocket.instances.length = 0;
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -437,7 +457,6 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -505,10 +524,7 @@ test('RealtimeBridge should schedule reconnect on server error', async () => {
 test('RealtimeBridge should ensure all agent sessions after gateway connect', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -561,17 +577,13 @@ test('RealtimeBridge should ensure all agent sessions after gateway connect', as
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge ensureAgentSession should create session when not found', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -625,17 +637,13 @@ test('RealtimeBridge ensureAgentSession should create session when not found', a
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge ensureAgentSession should NOT reset on resolve timeout', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -660,7 +668,9 @@ test('RealtimeBridge ensureAgentSession should NOT reset on resolve timeout', as
 		await drainEnsureAllAgentSessions(gateway);
 
 		// 直接桩掉 __gatewayRpc，让 resolve 立即返回 timeout——避免等真 2s 定时器。
-		// 端到端的 __gatewayRpc 超时路径在 __gatewayAgentRpc 用例里另有覆盖。
+		// __gatewayRpc 自身 setTimeout → settle('timeout') 路径由独立用例覆盖
+		// （'__gatewayRpc real setTimeout fires settle({ok:false, error:"timeout"}) when no res arrives'）；
+		// 这里只关心 ensureAgentSession 上游的 reset 抑制。
 		const sentBefore = gateway.sent.length;
 		bridge.__gatewayRpc = async () => ({ ok: false, error: 'timeout' });
 		const result = await bridge.ensureAgentSession('timeout-agent');
@@ -676,7 +686,43 @@ test('RealtimeBridge ensureAgentSession should NOT reset on resolve timeout', as
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
+	}
+});
+
+test('__gatewayRpc real setTimeout fires settle({ok:false, error:"timeout"}) when no res arrives', async () => {
+	// S1 补齐：覆盖 __gatewayRpc 内部 setTimeout(timeoutMs) 触发 settle('timeout') 的端到端路径。
+	// 不 stub __gatewayRpc、不拦 setTimeout——直接走真实定时器（小 timeoutMs 控总耗时）。
+	await writeCfg({});
+	const bridge = createBridge();
+	// 直接装一条已就绪的 gateway ws，跳过 __waitGatewayReady 的轮询/握手编排；
+	// bridge.started 默认 false，__ensureGatewayConnection 会先在这里 early-return，
+	// 不会尝试新建 ws，__waitGatewayReady 随后走同步快路径直接 return true。
+	const gwWs = new FakeWebSocket('ws://gw.fake');
+	gwWs.readyState = 1;
+	bridge.gatewayWs = gwWs;
+	bridge.gatewayReady = true;
+
+	// __gatewayRpc 的 setTimeout 是 unref 的；本测试不走 start() / 没有真实 socket，
+	// event loop 没有其它 keepalive 时 unref timer 不会阻止退出。挂一个 non-unref ticker
+	// 撑到 settle('timeout') 真正发生。
+	const keepalive = setInterval(() => {}, 25);
+	try {
+		const t0 = Date.now();
+		const result = await bridge.__gatewayRpc('coclaw.noop', {}, { timeoutMs: 30 });
+		const elapsed = Date.now() - t0;
+
+		assert.deepEqual(result, { ok: false, error: 'timeout' });
+		// 真 setTimeout 路径：至少等了一个 timer 周期，确认不是同步早退也不是 stub 提前返回
+		assert.ok(elapsed >= 20, `expected real setTimeout delay (~30ms), got ${elapsed}ms`);
+		// 请求帧已经发出（__gatewayRpc 走到了 ws.send 这一步）
+		assert.equal(gwWs.sent.length, 1, 'should have sent exactly one req frame');
+		const sentMsg = JSON.parse(String(gwWs.sent[0]));
+		assert.equal(sentMsg.type, 'req');
+		assert.equal(sentMsg.method, 'coclaw.noop');
+		// settle 清理了 pending 表（避免内存泄漏 / 后续误投递）
+		assert.equal(bridge.gatewayPendingRequests.has(sentMsg.id), false);
+	} finally {
+		clearInterval(keepalive);
 	}
 });
 
@@ -724,10 +770,7 @@ test('RealtimeBridge should handle connect timeout', async () => {
 test('RealtimeBridge should handle gateway connect failure', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -761,17 +804,13 @@ test('RealtimeBridge should handle gateway connect failure', async () => {
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should handle gateway connect send failure and log warning', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -802,7 +841,6 @@ test('RealtimeBridge should handle gateway connect send failure and log warning'
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -1101,10 +1139,7 @@ test('RealtimeBridge should ignore error on stale socket', async () => {
 test('RealtimeBridge waitGatewayReady should handle ws reference change (DC path)', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -1141,17 +1176,13 @@ test('RealtimeBridge waitGatewayReady should handle ws reference change (DC path
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge ensureAgentSession should handle sessions.reset failure', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -1199,17 +1230,13 @@ test('RealtimeBridge ensureAgentSession should handle sessions.reset failure', a
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge ensureAgentSession should default to main when agentId is empty', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -1249,17 +1276,13 @@ test('RealtimeBridge ensureAgentSession should default to main when agentId is e
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge __ensureAllAgentSessions should fallback to main when agents.list fails', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -1307,7 +1330,6 @@ test('RealtimeBridge __ensureAllAgentSessions should fallback to main when agent
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -1710,10 +1732,7 @@ test('RealtimeBridge heartbeat miss should skip compensatory ping when socket no
 test('connect request should include device field with nonce from challenge', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const fakeIdentity = {
@@ -1757,17 +1776,13 @@ test('connect request should include device field with nonce from challenge', as
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('connect request should use empty nonce when challenge has no nonce', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const fakeIdentity = {
@@ -1794,17 +1809,13 @@ test('connect request should use empty nonce when challenge has no nonce', async
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('connect should gracefully handle device identity load failure', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const logs = [];
@@ -1834,17 +1845,13 @@ test('connect should gracefully handle device identity load failure', async () =
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('device identity should be cached across multiple connect attempts', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	let loadCount = 0;
@@ -1876,7 +1883,6 @@ test('device identity should be cached across multiple connect attempts', async 
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -1969,10 +1975,7 @@ test('v3 handshake signature failure triggers legacy fallback on the same WS', a
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge({
@@ -2011,7 +2014,6 @@ test('v3 handshake signature failure triggers legacy fallback on the same WS', a
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2019,10 +2021,7 @@ test('legacy fallback success marks gateway ready and keeps legacy mode', async 
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge({
@@ -2052,7 +2051,6 @@ test('legacy fallback success marks gateway ready and keeps legacy mode', async 
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2060,10 +2058,7 @@ test('v3 handshake non-signature failure does NOT trigger legacy and schedules r
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const t = captureTimers();
@@ -2093,7 +2088,6 @@ test('v3 handshake non-signature failure does NOT trigger legacy and schedules r
 		t.restore();
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2101,10 +2095,7 @@ test('learned legacy mode sends legacy handshake on subsequent WS challenge', as
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const t = captureTimers();
@@ -2140,7 +2131,6 @@ test('learned legacy mode sends legacy handshake on subsequent WS challenge', as
 		t.restore();
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2152,10 +2142,7 @@ test('gateway retry exhausts after all configured attempts and enters gave-up st
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const t = captureTimers();
@@ -2203,7 +2190,6 @@ test('gateway retry exhausts after all configured attempts and enters gave-up st
 		t.restore();
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2215,10 +2201,7 @@ test('gateway handshake startup-race recovery: first fails, 1s retry succeeds', 
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	// 阶段一用 captureTimers 锁定 retry 调度并立即触发；阶段二恢复真定时器
@@ -2274,17 +2257,13 @@ test('gateway handshake startup-race recovery: first fails, 1s retry succeeds', 
 		t.restore();
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__waitGatewayReady returns false when gateway has given up', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
@@ -2302,7 +2281,6 @@ test('__waitGatewayReady returns false when gateway has given up', async () => {
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2310,10 +2288,7 @@ test('gateway disconnection after successful handshake reschedules with fresh re
 	FakeWebSocket.instances.length = 0;
 	resetRemoteLog();
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
@@ -2350,17 +2325,13 @@ test('gateway disconnection after successful handshake reschedules with fresh re
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__onGatewayAttemptFailed is a no-op when retry timer already scheduled', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const t = captureTimers();
@@ -2385,7 +2356,6 @@ test('__onGatewayAttemptFailed is a no-op when retry timer already scheduled', a
 		t.restore();
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2403,10 +2373,7 @@ test('外线 close 不再级联清 gateway retry timer / attempts（三线独立
 	// 让新一轮外线会话不会"误重置"内线的退避节奏；内线状态只由 stop() 显式复位。
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const t = captureTimers();
@@ -2443,17 +2410,13 @@ test('外线 close 不再级联清 gateway retry timer / attempts（三线独立
 		t.restore();
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('refresh resets gateway retry state so next start attempts v3 from scratch', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
@@ -2477,17 +2440,13 @@ test('refresh resets gateway retry state so next start attempts v3 from scratch'
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('gateway ws error handler defensively closes the ws to unblock retry flow', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge({ loadDeviceIdentity: () => FAKE_DEVICE_IDENTITY });
@@ -2507,7 +2466,6 @@ test('gateway ws error handler defensively closes the ws to unblock retry flow',
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2516,10 +2474,7 @@ test('gateway ws error handler defensively closes the ws to unblock retry flow',
 test('__gatewayAgentRpc should wait for final response after accepted', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge();
@@ -2566,17 +2521,13 @@ test('__gatewayAgentRpc should wait for final response after accepted', async ()
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__gatewayAgentRpc should handle error on first response', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge();
@@ -2610,17 +2561,13 @@ test('__gatewayAgentRpc should handle error on first response', async () => {
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__gatewayAgentRpc should timeout if accepted never arrives', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge();
@@ -2645,17 +2592,13 @@ test('__gatewayAgentRpc should timeout if accepted never arrives', async () => {
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__gatewayAgentRpc should timeout if final response never arrives after accepted', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge();
@@ -2691,17 +2634,13 @@ test('__gatewayAgentRpc should timeout if final response never arrives after acc
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__gatewayAgentRpc should resolve immediately for non-accepted ok response', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge();
@@ -2735,17 +2674,13 @@ test('__gatewayAgentRpc should resolve immediately for non-accepted ok response'
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__gatewayAgentRpc duplicate settle after final should be no-op', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const bridge = createBridge();
@@ -2785,7 +2720,6 @@ test('__gatewayAgentRpc duplicate settle after final should be no-op', async () 
 	finally {
 		await bridge.stop();
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -2851,10 +2785,7 @@ test('__clearTokenLocal should clear when no clawId provided (backward compat)',
  */
 async function setupConnectedBridge() {
 	FakeWebSocket.instances.length = 0;
-	const dir = await writeCfg({ token: 'rtc-tok', serverUrl: 'https://server.local' });
-	const prevHome = saveHomedir();
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
+	await writeCfg({ token: 'rtc-tok', serverUrl: 'https://server.local' });
 
 	const logs = [];
 	const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m), debug: (m) => logs.push(m) };
@@ -2865,11 +2796,11 @@ async function setupConnectedBridge() {
 	server.readyState = 1;
 	server.emit('open', {});
 
-	return { bridge, server, logs, prevHome };
+	return { bridge, server, logs };
 }
 
 test('RealtimeBridge should lazily create WebRtcPeer on first rtc: message', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		assert.equal(bridge.webrtcPeer, null);
 
@@ -2885,12 +2816,11 @@ test('RealtimeBridge should lazily create WebRtcPeer on first rtc: message', asy
 		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should forward rtc:answer via __forwardToServer', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -2909,12 +2839,11 @@ test('RealtimeBridge should forward rtc:answer via __forwardToServer', async () 
 		assert.equal(parsed.toConnId, 'c_ans');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should not create new WebRtcPeer on subsequent rtc: messages', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -2938,12 +2867,11 @@ test('RealtimeBridge should not create new WebRtcPeer on subsequent rtc: message
 		assert.equal(bridge.webrtcPeer, firstPeer, 'should reuse same WebRtcPeer instance');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should dispatch rtc:ice to WebRtcPeer', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		// 先建立 session
 		server.emit('message', {
@@ -2969,12 +2897,11 @@ test('RealtimeBridge should dispatch rtc:ice to WebRtcPeer', async () => {
 		assert.ok(bridge.webrtcPeer);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should dispatch rtc:ready and rtc:closed to WebRtcPeer', async () => {
-	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	const { bridge, server, logs } = await setupConnectedBridge();
 	try {
 		// 先建立 session
 		server.emit('message', {
@@ -3000,13 +2927,12 @@ test('RealtimeBridge should dispatch rtc:ready and rtc:closed to WebRtcPeer', as
 		assert.ok(logs.some((l) => String(l).includes('rtc:ready')));
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should handle rtc: signaling error gracefully with type+conn fields in log and remoteLog', async () => {
 	resetRemoteLog();
-	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	const { bridge, server, logs } = await setupConnectedBridge();
 	try {
 		// 发送一个会导致错误的 rtc:offer（无 payload.sdp）
 		server.emit('message', {
@@ -3031,12 +2957,11 @@ test('RealtimeBridge should handle rtc: signaling error gracefully with type+con
 			`expected remoteLog rtc.signaling-error with type + conn fields, got: ${JSON.stringify(remoteTexts)}`);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should keep webrtcPeer on serverWs non-auth close (4000 heartbeat timeout)', async () => {
-	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	const { bridge, server, logs } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3063,12 +2988,11 @@ test('RealtimeBridge should keep webrtcPeer on serverWs non-auth close (4000 hea
 		assert.ok(logs.some((x) => String(x).includes('keep-pc')), 'should log keep-pc on non-auth disconnect');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should keep webrtcPeer on serverWs abnormal close (1006)', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3091,12 +3015,11 @@ test('RealtimeBridge should keep webrtcPeer on serverWs abnormal close (1006)', 
 		assert.equal(reconnectCalls, 1, 'should schedule reconnect on abnormal close');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should keep webrtcPeer on serverWs internal-error close (1011)', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3119,14 +3042,13 @@ test('RealtimeBridge should keep webrtcPeer on serverWs internal-error close (10
 		assert.equal(reconnectCalls, 1, 'should schedule reconnect on 1011 close');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('auth-close 也不级联关 gateway WS（仅卸 PC + fileHandler + token）', async () => {
 	// 不变量补充：auth-close (4001/4003) 是唯一允许级联到 P2P 的路径，但仅卸 PC/fileHandler/token；
 	// gateway WS（内线）作为本机连接不受外线鉴权状态影响，应保持原引用。
-	const { bridge, server, gwWs, prevHome } = await setupBridgeWithGateway('c_auth_keep_gw');
+	const { bridge, server, gwWs } = await setupBridgeWithGateway('c_auth_keep_gw');
 	try {
 		const gwBefore = bridge.gatewayWs;
 		const peerBefore = bridge.webrtcPeer;
@@ -3141,14 +3063,13 @@ test('auth-close 也不级联关 gateway WS（仅卸 PC + fileHandler + token）
 		assert.equal(bridge.__fileHandler, null, 'auth-close 仍应清 fileHandler');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('外死内活：server WS 非 auth-close 后 gateway WS 实例与就绪态保持，DC RPC 仍可达 gateway（核心收益）', async () => {
 	// 本次重构核心场景：外线（server WS）瞬态翻转不应级联关掉内线，
 	// DC RPC 通过 P2P → plugin → gateway 路径在外线断开窗口期仍能服务。
-	const { bridge, server, gwWs, prevHome } = await setupBridgeWithGateway('c_outer_dead');
+	const { bridge, server, gwWs } = await setupBridgeWithGateway('c_outer_dead');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
 		bridge.webrtcPeer.broadcast = () => {};
@@ -3180,12 +3101,11 @@ test('外死内活：server WS 非 auth-close 后 gateway WS 实例与就绪态�
 		assert.equal(lastSent.method, 'sessions.list');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge retained webrtcPeer should still process new rtc:offer signaling after non-auth close', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3215,12 +3135,11 @@ test('RealtimeBridge retained webrtcPeer should still process new rtc:offer sign
 		assert.ok(bridge.webrtcPeer.__sessions?.has?.('c_first'), 'first session must still exist');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4001) and clear local token', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3248,12 +3167,11 @@ test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4001) and
 		assert.equal(cfgAfter.token, undefined, 'auth-close should clear local token');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4003 forbidden) and clear local token', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3280,12 +3198,11 @@ test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4003 forb
 		assert.equal(cfgAfter.token, undefined, '4003 should clear local token');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge __forwardToServer should log when ws not ready', async () => {
-	const { bridge, prevHome } = await setupConnectedBridge();
+	const { bridge } = await setupConnectedBridge();
 	const warns = [];
 	bridge.logger = { info: () => {}, warn: (m) => warns.push(String(m)), debug: () => {}, error: () => {} };
 	try {
@@ -3295,12 +3212,11 @@ test('RealtimeBridge __forwardToServer should log when ws not ready', async () =
 		assert.ok(warns.some((x) => x.includes('forward dropped') && x.includes('rtc:answer')), 'should warn on drop with payload type');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge __forwardToServer should log when ws send throws', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	const warns = [];
 	bridge.logger = { info: () => {}, warn: (m) => warns.push(String(m)), debug: () => {}, error: () => {} };
 	try {
@@ -3310,12 +3226,11 @@ test('RealtimeBridge __forwardToServer should log when ws send throws', async ()
 	} finally {
 		server.throwOnSend = false;
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge rtc: messages should not interfere with rpc.req handling', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		// 先发 rtc 消息
 		server.emit('message', {
@@ -3336,12 +3251,11 @@ test('RealtimeBridge rtc: messages should not interfere with rpc.req handling', 
 		assert.ok(true);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge stop() should cleanup webrtcPeer explicitly', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3356,12 +3270,11 @@ test('RealtimeBridge stop() should cleanup webrtcPeer explicitly', async () => {
 		await bridge.stop();
 		assert.equal(bridge.webrtcPeer, null, 'stop() should cleanup webrtcPeer');
 	} finally {
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequestFromDc', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		// 触发 rtc:offer 以创建 webrtcPeer
 		server.emit('message', {
@@ -3399,12 +3312,11 @@ test('RealtimeBridge WebRtcPeer onRequest should route to __handleGatewayRequest
 		assert.equal(serverOffline, undefined, 'should NOT forward GATEWAY_OFFLINE to server WS');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge gateway res/event should broadcast to webrtcPeer', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		// 触发 rtc:offer 以创建 webrtcPeer
 		server.emit('message', {
@@ -3444,12 +3356,11 @@ test('RealtimeBridge gateway res/event should broadcast to webrtcPeer', async ()
 		}
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge gateway health/tick events are filtered (not forwarded to DC)', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3479,12 +3390,11 @@ test('RealtimeBridge gateway health/tick events are filtered (not forwarded to D
 		assert.equal(broadcasted[0].event, 'agent');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer (DC path)', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		// 触发 rtc:offer 以创建 webrtcPeer
 		server.emit('message', {
@@ -3508,12 +3418,11 @@ test('RealtimeBridge GATEWAY_OFFLINE error should broadcast to webrtcPeer (DC pa
 		assert.equal(offlineBC.id, 'req-off');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer (DC path)', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		// 触发 rtc:offer 以创建 webrtcPeer
 		server.emit('message', {
@@ -3545,12 +3454,11 @@ test('RealtimeBridge GATEWAY_SEND_FAILED error should broadcast to webrtcPeer (D
 		}
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge concurrent rtc: messages should share single WebRtcPeer init', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		assert.equal(bridge.webrtcPeer, null);
 
@@ -3577,12 +3485,11 @@ test('RealtimeBridge concurrent rtc: messages should share single WebRtcPeer ini
 		assert.ok(session, 'session for c_race should exist on the single webrtcPeer instance');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge __webrtcPeerReady should reset on init failure for retry', async () => {
-	const { bridge, server, logs, prevHome } = await setupConnectedBridge();
+	const { bridge, server, logs } = await setupConnectedBridge();
 	try {
 		const originalInit = bridge.__initWebrtcPeer.bind(bridge);
 		let failCount = 0;
@@ -3619,12 +3526,11 @@ test('RealtimeBridge __webrtcPeerReady should reset on init failure for retry', 
 		assert.notEqual(bridge.webrtcPeer, null, 'webrtcPeer should be created on retry');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge auth-close should reset __webrtcPeerReady', async () => {
-	const { bridge, server, prevHome } = await setupConnectedBridge();
+	const { bridge, server } = await setupConnectedBridge();
 	try {
 		server.emit('message', {
 			data: JSON.stringify({
@@ -3643,14 +3549,12 @@ test('RealtimeBridge auth-close should reset __webrtcPeerReady', async () => {
 		assert.equal(bridge.__webrtcPeerReady, null, 'promise lock should be cleared on auth-close');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 // --- remote-log sender 集成测试 ---
 
 test('RealtimeBridge should wire remote-log sender on open and flush buffered logs', async () => {
-	const prevHome = saveHomedir();
 	FakeWebSocket.instances = [];
 	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
 	const bridge = createBridge();
@@ -3684,12 +3588,10 @@ test('RealtimeBridge should wire remote-log sender on open and flush buffered lo
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should clear remote-log sender on close', async () => {
-	const prevHome = saveHomedir();
 	FakeWebSocket.instances = [];
 	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
 	const bridge = createBridge();
@@ -3716,12 +3618,10 @@ test('RealtimeBridge should clear remote-log sender on close', async () => {
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge should clear remote-log sender on stop', async () => {
-	const prevHome = saveHomedir();
 	FakeWebSocket.instances = [];
 	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
 	const bridge = createBridge();
@@ -3744,7 +3644,6 @@ test('RealtimeBridge should clear remote-log sender on stop', async () => {
 		assert.equal(remoteLogBuffer.length, bufferedBeforeManual + 1, 'manual log should remain in buffer');
 	} finally {
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -3880,7 +3779,7 @@ test('RealtimeBridge start() awaits slow preload before connecting', async () =>
 	}
 });
 
-test('RealtimeBridge start() aborts if stop() called during preload (race protection)', async () => {
+test('RealtimeBridge start() aborts when started=false flips mid-preload (race protection)', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let cleanupCalled = false;
 	let resolvePreload;
@@ -3896,7 +3795,7 @@ test('RealtimeBridge start() aborts if stop() called during preload (race protec
 		// 等待 pion preload（noopPreloadPion）完成后，ndc preload 才会被调用
 		await new Promise((r) => setTimeout(r, 0));
 		// preload 仍在进行中，此时调用 stop
-		bridge.started = false; // 模拟 stop 已执行
+		bridge.started = false; // 模拟 stop() 的可观察副作用：started 翻 false（不真调 stop()，避免误触发 cleanup）
 		// resolve preload
 		resolvePreload({
 			PeerConnection: class NdcPC {},
@@ -3912,7 +3811,7 @@ test('RealtimeBridge start() aborts if stop() called during preload (race protec
 	}
 });
 
-test('RealtimeBridge start() aborts with pion cleanup when stop() during pion preload', async () => {
+test('RealtimeBridge start() aborts with pion cleanup when started=false flips mid-pion-preload', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let cleanupCalled = false;
 	let resolvePion;
@@ -3927,7 +3826,7 @@ test('RealtimeBridge start() aborts with pion cleanup when stop() during pion pr
 		const startPromise = bridge.start({ logger: noopLogger() });
 		// 等待 start → __preloadWebrtc → preloadPion() 被调用
 		await new Promise((r) => setTimeout(r, 0));
-		bridge.started = false; // 模拟 stop 已执行
+		bridge.started = false; // 模拟 stop() 的可观察副作用：started 翻 false（不真调 stop()，避免误触发 cleanup）
 		resolvePion({
 			PeerConnection: class PionPC {},
 			cleanup: async () => { cleanupCalled = true; },
@@ -3985,28 +3884,31 @@ test('RealtimeBridge __buildEnvLine reflects getRuntime version across branches'
 	bridge.__pluginVersion = '1.2.3';
 	bridge.__implLabel = 'pion';
 
-	// 分支 1：runtime 缺失 → openclaw=unknown
-	setRuntime(null);
-	assert.match(bridge.__buildEnvLine(), /\bopenclaw=unknown\b/);
+	// 本用例不走 setupDir，得自己管理 runtime——任一断言失败时也必须恢复，
+	// 否则会跨用例污染（setupDir 的 cleanup 队列管不到这里裸调的 setRuntime）。
+	const prevRuntime = getRuntime();
+	try {
+		// 分支 1：runtime 缺失 → openclaw=unknown
+		setRuntime(null);
+		assert.match(bridge.__buildEnvLine(), /\bopenclaw=unknown\b/);
 
-	// 分支 2：runtime.version === 'unknown'（打包路径解析失败占位）→ openclaw=unknown
-	setRuntime({ version: 'unknown' });
-	assert.match(bridge.__buildEnvLine(), /\bopenclaw=unknown\b/);
+		// 分支 2：runtime.version === 'unknown'（打包路径解析失败占位）→ openclaw=unknown
+		setRuntime({ version: 'unknown' });
+		assert.match(bridge.__buildEnvLine(), /\bopenclaw=unknown\b/);
 
-	// 分支 3：正常版本 → openclaw=4.5.0
-	setRuntime({ version: '4.5.0' });
-	const line = bridge.__buildEnvLine();
-	assert.match(line, /\bopenclaw=4\.5\.0\b/);
-	// 同时验证 impl / plugin 也进入了同一行
-	assert.match(line, /\bimpl=pion\b/);
-	assert.match(line, /\bplugin=1\.2\.3\b/);
-
-	// 清理全局 runtime，避免影响后续测试
-	setRuntime(null);
+		// 分支 3：正常版本 → openclaw=4.5.0
+		setRuntime({ version: '4.5.0' });
+		const line = bridge.__buildEnvLine();
+		assert.match(line, /\bopenclaw=4\.5\.0\b/);
+		// 同时验证 impl / plugin 也进入了同一行
+		assert.match(line, /\bimpl=pion\b/);
+		assert.match(line, /\bplugin=1\.2\.3\b/);
+	} finally {
+		setRuntime(prevRuntime);
+	}
 });
 
 test('RealtimeBridge ws.open re-emits coclaw.env on reconnect (after sender injected)', async () => {
-	const prevHome = saveHomedir();
 	FakeWebSocket.instances = [];
 	await writeCfg({ token: 't', serverUrl: 'http://127.0.0.1:1' });
 	const bridge = createBridge();
@@ -4060,7 +3962,6 @@ test('RealtimeBridge ws.open re-emits coclaw.env on reconnect (after sender inje
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -4122,11 +4023,7 @@ test('RealtimeBridge __collectAgentModels should return empty array when agents 
 
 test('RealtimeBridge __pushInstanceInfo should broadcast full info payload after gateway connect', async () => {
 	FakeWebSocket.instances.length = 0;
-	const prevHome = saveHomedir();
-	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-
+	await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
 
@@ -4180,17 +4077,12 @@ test('RealtimeBridge __pushInstanceInfo should broadcast full info payload after
 		await stopRealtimeBridge({ forceCleanup: true });
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
-		restoreHomedir(prevHome);
 	}
 });
 
 test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents.list fails', async () => {
 	FakeWebSocket.instances.length = 0;
-	const prevHome = saveHomedir();
-	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-
+	await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
 
@@ -4256,7 +4148,6 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 		await stopRealtimeBridge({ forceCleanup: true });
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -4264,11 +4155,7 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 // 用 prototype spy 直接计 __pushInstanceInfo 调用次数，从根上规避"等不够时长导致假通过"。
 test('RealtimeBridge sock.open should re-push instance info when gateway already ready (inner-then-outer)', async () => {
 	FakeWebSocket.instances.length = 0;
-	const prevHome = saveHomedir();
-	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-
+	await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
 
@@ -4335,7 +4222,6 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 		RealtimeBridge.prototype.__pushInstanceInfo = origPush;
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -4344,11 +4230,7 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 // __waitGatewayReady 要等 3s 才超时返回，靠 setTimeout(50) 等 broadcast 出现等不到。
 test('RealtimeBridge sock.open should NOT push instance info when gateway not ready', async () => {
 	FakeWebSocket.instances.length = 0;
-	const prevHome = saveHomedir();
-	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-
+	await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.local';
 
@@ -4386,7 +4268,6 @@ test('RealtimeBridge sock.open should NOT push instance info when gateway not re
 		RealtimeBridge.prototype.__pushInstanceInfo = origPush;
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -4518,10 +4399,7 @@ test('classifyAgentLagStop: returns reason for ok / error / ok=false-no-status',
 
 test('lag probe: __handleGatewayRequestFromDc starts probe only for method="agent"', async () => {
 	FakeWebSocket.instances.length = 0;
-	const prevHome = saveHomedir();
-	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
+	await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.lagstart';
 	const bridge = createBridge();
@@ -4548,16 +4426,12 @@ test('lag probe: __handleGatewayRequestFromDc starts probe only for method="agen
 		await bridge.stop();
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
-		restoreHomedir(prevHome);
 	}
 });
 
 test('lag probe: gateway WS close clears all in-flight probes (no 60s wait)', async () => {
 	FakeWebSocket.instances.length = 0;
-	const prevHome = saveHomedir();
-	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
+	await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
 	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.lagtest';
 	const bridge = createBridge();
@@ -4581,11 +4455,11 @@ test('lag probe: gateway WS close clears all in-flight probes (no 60s wait)', as
 		await bridge.stop();
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
-		restoreHomedir(prevHome);
 	}
 });
 
 test('lag probe: bridge.stop() clears any residual probes', async () => {
+	await writeCfg({});
 	const bridge = createBridge();
 	await bridge.start({ logger: noopLogger(), pluginConfig: {} });
 	bridge.__startLagProbe('rpc-stop-1');
@@ -4623,7 +4497,7 @@ test('isFinalResMsg: non-res / null / undefined / non-object payload returns fal
 
 /**
  * 构造一个已连接 server + 已就绪 gateway + 已创建 webrtcPeer 的 bridge。
- * 返回 { bridge, server, gwWs, prevHome }。调用方需在 finally 中 bridge.stop()。
+ * 返回 { bridge, server, gwWs, logs }（后两个继承自 setupConnectedBridge）。调用方需在 finally 中 bridge.stop()。
  */
 async function setupBridgeWithGateway(rtcConnId = 'c_dc') {
 	const ctx = await setupConnectedBridge();
@@ -4644,7 +4518,7 @@ async function setupBridgeWithGateway(rtcConnId = 'c_dc') {
 }
 
 test('dc unicast: terminal res hits sendTo, broadcast not called, mapping cleared', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_uc1');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_uc1');
 	try {
 		const sentTo = [];
 		const broadcasted = [];
@@ -4671,12 +4545,11 @@ test('dc unicast: terminal res hits sendTo, broadcast not called, mapping cleare
 		assert.equal(bridge.__dcPendingRequests.has('ui-uuid-1'), false, 'mapping cleared on terminal');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: agent two-stage keeps mapping on accepted, clears on terminal', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_agent');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_agent');
 	try {
 		const sentTo = [];
 		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push({ connId, payload }); return true; };
@@ -4702,12 +4575,11 @@ test('dc unicast: agent two-stage keeps mapping on accepted, clears on terminal'
 		assert.equal(bridge.__dcPendingRequests.has('ui-agent-1'), false, 'mapping cleared on terminal');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: approval two-stage follows same accepted/terminal pattern', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_apv');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_apv');
 	try {
 		const sentTo = [];
 		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push(payload); return true; };
@@ -4729,12 +4601,11 @@ test('dc unicast: approval two-stage follows same accepted/terminal pattern', as
 		assert.equal(bridge.__dcPendingRequests.has('ui-apv-1'), false);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: chat.send single-frame status="started" clears immediately', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chat');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chat');
 	try {
 		const sentTo = [];
 		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push(payload); return true; };
@@ -4751,12 +4622,11 @@ test('dc unicast: chat.send single-frame status="started" clears immediately', a
 		assert.equal(bridge.__dcPendingRequests.has('ui-chat-1'), false, 'cleared immediately on started (non-accepted)');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: single-stage RPC clears mapping on response', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_single');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_single');
 	try {
 		const sentTo = [];
 		bridge.webrtcPeer.sendTo = (connId, payload) => { sentTo.push(payload); return true; };
@@ -4773,12 +4643,11 @@ test('dc unicast: single-stage RPC clears mapping on response', async () => {
 		assert.equal(bridge.__dcPendingRequests.has('ui-resolve-1'), false);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: collision deletes prior entry and warns', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_col1');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_col1');
 	try {
 		const warns = [];
 		bridge.logger = { ...bridge.logger, warn: (m) => warns.push(String(m)) };
@@ -4811,12 +4680,11 @@ test('dc unicast: collision deletes prior entry and warns', async () => {
 		assert.ok(gwWs);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: GATEWAY_OFFLINE keeps broadcast and writes no mapping', async () => {
-	const { bridge, prevHome } = await setupBridgeWithGateway('c_off');
+	const { bridge } = await setupBridgeWithGateway('c_off');
 	try {
 		// 重置 gateway 为未就绪
 		bridge.gatewayReady = false;
@@ -4835,12 +4703,11 @@ test('dc unicast: GATEWAY_OFFLINE keeps broadcast and writes no mapping', async 
 		assert.equal(bridge.__dcPendingRequests.size, 0, 'mapping not written for OFFLINE');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: GATEWAY_SEND_FAILED clears mapping then broadcasts', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_sfail');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_sfail');
 	try {
 		const broadcasted = [];
 		bridge.webrtcPeer.broadcast = (payload) => broadcasted.push(payload);
@@ -4856,7 +4723,6 @@ test('dc unicast: GATEWAY_SEND_FAILED clears mapping then broadcasts', async () 
 		assert.equal(bridge.__dcPendingRequests.has('ui-sfail-1'), false, 'mapping cleared on send failure');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -4864,7 +4730,7 @@ test('dc unicast: stop() 显式清空 P2P pending table（与 __runEventRoutes �
 	// 对称契约：内线 ws close 不再清表（4738 已覆盖），但显式销毁路径（stop / refresh）
 	// 必须把表清干净，避免 refresh 后留下指向旧 connId 的孤儿条目。
 	// 与 5115 test('run-event-routes: __closeGatewayWs() 不再清路由表；stop() 才清') 对称。
-	const { bridge, prevHome } = await setupBridgeWithGateway('c_dcstop');
+	const { bridge } = await setupBridgeWithGateway('c_dcstop');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
 		bridge.webrtcPeer.broadcast = () => {};
@@ -4887,14 +4753,13 @@ test('dc unicast: stop() 显式清空 P2P pending table（与 __runEventRoutes �
 		assert.equal(bridge.__dcPendingRequests.size, 0,
 			'stop() 必须显式清表，避免 refresh 后孤儿条目');
 	} finally {
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: gateway ws close 不再清空 P2P pending table（三线独立）', async () => {
 	// 新契约：内线翻转不再级联清 P2P 路由表，避免 DC RPC 在内线瞬态抖动时被误清；
 	// 已发出去的请求等 UI 30/60s 超时兜底；条目最终由 24h TTL 扫描器或显式 stop() 回收。
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_close1');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_close1');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
 		bridge.webrtcPeer.broadcast = () => {};
@@ -4914,12 +4779,11 @@ test('dc unicast: gateway ws close 不再清空 P2P pending table（三线独立
 			'gateway ws close 不应清 P2P pending（解耦后由 TTL / stop 兜底）');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: sendTo failure logs debug, no broadcast fallback', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_und');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_und');
 	try {
 		const debugs = [];
 		bridge.logger = { ...bridge.logger, debug: (m) => debugs.push(String(m)) };
@@ -4940,12 +4804,11 @@ test('dc unicast: sendTo failure logs debug, no broadcast fallback', async () =>
 		assert.equal(broadcasted.length, 0, 'must not fall back to broadcast');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: unmatched res falls back to broadcast', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_unmatch');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_unmatch');
 	try {
 		const sentTo = [];
 		const broadcasted = [];
@@ -4961,16 +4824,11 @@ test('dc unicast: unmatched res falls back to broadcast', async () => {
 		assert.equal(broadcasted[0].id, 'ui-orphan-1');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('dc unicast: TTL scan clears expired entries and warns', async () => {
-	const dir = await writeCfg({ token: 'rtc-tok', serverUrl: 'https://server.local' });
-	const prevHome = saveHomedir();
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-
+	await writeCfg({ token: 'rtc-tok', serverUrl: 'https://server.local' });
 	const warns = [];
 	const logger = {
 		info() {}, debug() {},
@@ -5002,14 +4860,13 @@ test('dc unicast: TTL scan clears expired entries and warns', async () => {
 			'should warn on cleanup');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 // --- runId → connId 路由表（agent event 单播）集成测试 ---
 
 test('run-event-routes: res accepted with runId writes route', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re1');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re1');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
 		bridge.webrtcPeer.broadcast = () => {};
@@ -5026,12 +4883,11 @@ test('run-event-routes: res accepted with runId writes route', async () => {
 		assert.equal(bridge.__runEventRoutes.lookup('run-A'), 'c_re1', 'route added on accepted');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: res non-accepted with runId removes route', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re2');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re2');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
 		bridge.webrtcPeer.broadcast = () => {};
@@ -5055,12 +4911,11 @@ test('run-event-routes: res non-accepted with runId removes route', async () => 
 		assert.equal(bridge.__runEventRoutes.lookup('run-B'), undefined, 'route removed on terminal');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: event:agent hits unicast by runId', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re3');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re3');
 	try {
 		const sentTo = [];
 		const broadcasted = [];
@@ -5084,12 +4939,11 @@ test('run-event-routes: event:agent hits unicast by runId', async () => {
 		assert.equal(broadcasted.length, 0, 'no fallback broadcast on hit');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: event:agent miss falls back to broadcast', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re4');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re4');
 	try {
 		const sentTo = [];
 		const broadcasted = [];
@@ -5111,12 +4965,11 @@ test('run-event-routes: event:agent miss falls back to broadcast', async () => {
 		assert.equal(broadcasted[0].payload.runId, 'run-D-orphan');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('gateway forward: agent event 单播命中时把 rawData 作第 3 参传给 sendTo（跳过重新 stringify）', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_1');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_raw_fwd_1');
 	try {
 		const calls = [];
 		bridge.webrtcPeer.sendTo = (connId, payload, rawStr) => {
@@ -5142,12 +4995,11 @@ test('gateway forward: agent event 单播命中时把 rawData 作第 3 参传给
 		assert.equal(calls[0].payload.payload.runId, 'run-raw-1', 'payload 仍是 parsed 对象');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('gateway forward: agent event 兜底广播时把 rawData 作第 2 参传给 broadcast', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_2');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_raw_fwd_2');
 	try {
 		const calls = [];
 		bridge.webrtcPeer.broadcast = (payload, rawStr) => { calls.push({ payload, rawStr }); };
@@ -5165,12 +5017,11 @@ test('gateway forward: agent event 兜底广播时把 rawData 作第 2 参传给
 		assert.equal(calls[0].payload.payload.runId, 'run-raw-orphan');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('gateway forward: res 单播命中（__dcPendingRequests）时把 rawData 作第 3 参传给 sendTo', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_3');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_raw_fwd_3');
 	try {
 		const calls = [];
 		bridge.webrtcPeer.sendTo = (connId, payload, rawStr) => {
@@ -5198,12 +5049,11 @@ test('gateway forward: res 单播命中（__dcPendingRequests）时把 rawData �
 		assert.equal(calls[0].payload.id, 'ui-raw-r1');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('gateway forward: res 帧无 __dcPendingRequests 命中时回退兜底广播并透传 rawData', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_raw_fwd_4');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_raw_fwd_4');
 	try {
 		const calls = [];
 		bridge.webrtcPeer.broadcast = (payload, rawStr) => { calls.push({ payload, rawStr }); };
@@ -5221,14 +5071,13 @@ test('gateway forward: res 帧无 __dcPendingRequests 命中时回退兜底广�
 		assert.equal(calls[0].payload.id, 'ui-orphan-res');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: gateway ws close 不再清路由表条目（三线独立）', async () => {
 	// 新契约：内线翻转不再级联清 runId→connId 路由表，避免内线瞬态抖动时误清。
 	// 路由表条目最终由 TTL 扫描器（默认 24h）或显式 stop()/destroy 回收。
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re5');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re5');
 	try {
 		bridge.webrtcPeer.sendTo = () => true;
 		bridge.webrtcPeer.broadcast = () => {};
@@ -5242,12 +5091,11 @@ test('run-event-routes: gateway ws close 不再清路由表条目（三线独立
 			'gateway ws close 不应清路由表（解耦后由 TTL / stop 兜底）');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: stop destroys the route table', async () => {
-	const { bridge, prevHome } = await setupBridgeWithGateway('c_re6');
+	const { bridge } = await setupBridgeWithGateway('c_re6');
 	try {
 		const routes = bridge.__runEventRoutes;
 		assert.ok(routes, 'routes should be initialized after start');
@@ -5257,14 +5105,13 @@ test('run-event-routes: stop destroys the route table', async () => {
 		assert.equal(routes.__destroyed, true, 'destroy called on stop');
 		assert.equal(bridge.__runEventRoutes, null, 'field nulled after stop');
 	} finally {
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: same runId from different reqId does not overwrite, event still routed to first writer', async () => {
 	// 端到端守住 dump 决策点 3 的核心防御：attach（agent.wait 用同 runId）来抢路由时，
 	// 路由表锁定首发；后续 event:agent 必须送给首发 conn，不送给 attach 方，也不退兜底广播。
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re7a');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re7a');
 	try {
 		const sentTo = [];
 		const broadcasted = [];
@@ -5315,12 +5162,11 @@ test('run-event-routes: same runId from different reqId does not overwrite, even
 		assert.equal(broadcasted.length, broadcastedBaseline, 'event 不应触发兜底广播');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: lookup hit but sendTo fails drops event without broadcast fallback', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re8');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re8');
 	try {
 		const broadcasted = [];
 		bridge.webrtcPeer.sendTo = () => false;  // 模拟 PC 死 / DC 拒收
@@ -5340,12 +5186,11 @@ test('run-event-routes: lookup hit but sendTo fails drops event without broadcas
 		assert.equal(broadcasted.length, 0, 'sendTo failure must NOT fall back to broadcast');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: event:agent without runId falls back to broadcast', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re_norunid');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re_norunid');
 	try {
 		const sentTo = [];
 		const broadcasted = [];
@@ -5374,14 +5219,13 @@ test('run-event-routes: event:agent without runId falls back to broadcast', asyn
 		assert.equal(broadcasted.length, 2, '两条都应走兜底广播');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: __closeGatewayWs() 不再清路由表；stop() 才清', async () => {
 	// 新契约：__closeGatewayWs 仅由显式销毁路径（stop/refresh）调用，自身不再清 P2P 路由。
 	// 路由表的清理责任已上移到 stop() 显式 clear，避免内线瞬态翻转误清。
-	const { bridge, prevHome } = await setupBridgeWithGateway('c_re_closegw');
+	const { bridge } = await setupBridgeWithGateway('c_re_closegw');
 	try {
 		bridge.__runEventRoutes.add('run-X', 'c_re_closegw', 'r-x');
 		assert.equal(bridge.__runEventRoutes.__entries.size, 1);
@@ -5395,12 +5239,11 @@ test('run-event-routes: __closeGatewayWs() 不再清路由表；stop() 才清', 
 		// 注意 stop 后 __runEventRoutes 被置 null，不能直接读 __entries.size
 		assert.equal(bridge.__runEventRoutes, null, 'stop 后路由表实例置 null');
 	} finally {
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: stop then start recreates route table; new instance accepts new entries', async () => {
-	const { bridge, prevHome } = await setupBridgeWithGateway('c_re_refresh');
+	const { bridge } = await setupBridgeWithGateway('c_re_refresh');
 	try {
 		const oldRoutes = bridge.__runEventRoutes;
 		oldRoutes.add('run-old', 'c_re_refresh', 'r-old');
@@ -5422,12 +5265,11 @@ test('run-event-routes: stop then start recreates route table; new instance acce
 		assert.equal(bridge.__runEventRoutes.lookup('run-new'), 'c_new');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('run-event-routes: event:agent unicast sendTo throws — caught by listener, no unhandledRejection, no broadcast fallback', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_re_throw');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_re_throw');
 	const origListeners = process.listeners('unhandledRejection');
 	process.removeAllListeners('unhandledRejection');
 	const unhandled = [];
@@ -5457,14 +5299,13 @@ test('run-event-routes: event:agent unicast sendTo throws — caught by listener
 		process.removeListener('unhandledRejection', captureUnhandled);
 		for (const l of origListeners) process.on('unhandledRejection', l);
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 // --- 顶层 try/catch：sendTo 抛错不能让 listener 变 unhandledRejection 击穿 gateway ---
 
 test('gateway ws message handler: broadcast 抛错时 listener 不产生 unhandledRejection', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_bcast_throw');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_bcast_throw');
 	const origListeners = process.listeners('unhandledRejection');
 	process.removeAllListeners('unhandledRejection');
 	const unhandled = [];
@@ -5488,12 +5329,11 @@ test('gateway ws message handler: broadcast 抛错时 listener 不产生 unhandl
 		process.removeListener('unhandledRejection', captureUnhandled);
 		for (const l of origListeners) process.on('unhandledRejection', l);
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('gateway ws message handler: sendTo 抛错时 listener 不产生 unhandledRejection', async () => {
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_throw');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_throw');
 	const origListeners = process.listeners('unhandledRejection');
 	process.removeAllListeners('unhandledRejection');
 	const unhandled = [];
@@ -5522,7 +5362,6 @@ test('gateway ws message handler: sendTo 抛错时 listener 不产生 unhandledR
 		process.removeListener('unhandledRejection', captureUnhandled);
 		for (const l of origListeners) process.on('unhandledRejection', l);
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -5639,7 +5478,7 @@ test('bridge.start should bail out via 10s timeout if rpc-queues prep hangs', as
 	}
 });
 
-test('bridge.start should skip preload when stop() races during cleanup/measure', async () => {
+test('bridge.start should skip preload when started=false flips during cleanup/measure', async () => {
 	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	let preloadPionCalled = false;
 	let preloadNdcCalled = false;
@@ -5784,7 +5623,7 @@ test('defaultResolveGatewayAuthToken: loadConfig 抛错时静默返回空', () =
 
 test('gateway ws close: plugin-initiated emits ws.local-close and "by plugin" log', async () => {
 	resetRemoteLog();
-	const { bridge, server, logs, prevHome } = await setupBridgeWithGateway('c_close_plugin');
+	const { bridge, server, logs } = await setupBridgeWithGateway('c_close_plugin');
 	try {
 		// 主动关本地 gateway ws（典型场景：server WS 失效时 plugin 主动收线）
 		bridge.__closeGatewayWs();
@@ -5807,13 +5646,12 @@ test('gateway ws close: plugin-initiated emits ws.local-close and "by plugin" lo
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('gateway ws close: peer-initiated emits ws.disconnected with code/reason and "by peer" log', async () => {
 	resetRemoteLog();
-	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_close_peer');
+	const { bridge, server, gwWs, logs } = await setupBridgeWithGateway('c_close_peer');
 	try {
 		// 模拟对端关闭：直接 emit close，不走 plugin 主动 close 路径，未设 __closedByPlugin
 		gwWs.readyState = 3;
@@ -5837,7 +5675,6 @@ test('gateway ws close: peer-initiated emits ws.disconnected with code/reason an
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -5845,7 +5682,7 @@ test('gateway ws close: peer-initiated emits ws.disconnected with code/reason an
 
 test('__sendSessionsSubscribe ok：写 sessions.subscribe.ok remoteLog', async () => {
 	resetRemoteLog();
-	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_ok');
+	const { bridge, server, gwWs, logs } = await setupBridgeWithGateway('c_subs_ok');
 	try {
 		const pending = bridge.__sendSessionsSubscribe();
 		// gateway 端拿到 subscribe 请求
@@ -5861,13 +5698,12 @@ test('__sendSessionsSubscribe ok：写 sessions.subscribe.ok remoteLog', async (
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__sendSessionsSubscribe 失败：ok=false 仅 warn + remoteLog.failed（无 sticky）', async () => {
 	resetRemoteLog();
-	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_fail');
+	const { bridge, server, gwWs, logs } = await setupBridgeWithGateway('c_subs_fail');
 	try {
 		const pending = bridge.__sendSessionsSubscribe();
 		const subscribeRaw = await waitForSent(gwWs, 'sessions.subscribe');
@@ -5880,13 +5716,12 @@ test('__sendSessionsSubscribe 失败：ok=false 仅 warn + remoteLog.failed（�
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('__sendSessionsSubscribe gateway 中途关闭：settle 时 warn + remoteLog.failed (gateway_closed)', async () => {
 	resetRemoteLog();
-	const { bridge, server, gwWs, logs, prevHome } = await setupBridgeWithGateway('c_subs_close');
+	const { bridge, server, gwWs, logs } = await setupBridgeWithGateway('c_subs_close');
 	try {
 		const pending = bridge.__sendSessionsSubscribe();
 		await waitForSent(gwWs, 'sessions.subscribe');
@@ -5898,13 +5733,12 @@ test('__sendSessionsSubscribe gateway 中途关闭：settle 时 warn + remoteLog
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('sessions.subscribe 失败后再次调用仍重发（无 sticky 阻止）', async () => {
 	resetRemoteLog();
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_subs_fail_then_retry');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_subs_fail_then_retry');
 	try {
 		// 第一次：模拟失败响应
 		const first = bridge.__sendSessionsSubscribe();
@@ -5930,17 +5764,13 @@ test('sessions.subscribe 失败后再次调用仍重发（无 sticky 阻止）',
 	} finally {
 		await bridge.stop();
 		resetRemoteLog();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('每次握手成功（含重连）都重新发出 sessions.subscribe', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -5983,17 +5813,13 @@ test('每次握手成功（含重连）都重新发出 sessions.subscribe', asyn
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('handshake 成功后自动发出 sessions.subscribe', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -6026,7 +5852,6 @@ test('handshake 成功后自动发出 sessions.subscribe', async () => {
 		if (oldGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
 		else process.env.COCLAW_GATEWAY_WS_URL = oldGw;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -6036,7 +5861,7 @@ test('sessions.changed reason=create：调用 onSessionCreated 回调且不 broa
 	const onSessionCreated = ({ sessionKey, sessionId }) => {
 		calls.push({ sessionKey, sessionId });
 	};
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_create');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chg_create');
 	try {
 		bridge.__onSessionCreated = onSessionCreated;
 		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
@@ -6056,14 +5881,13 @@ test('sessions.changed reason=create：调用 onSessionCreated 回调且不 broa
 		assert.equal(broadcastCalls.length, 0, 'reason=create 不应 broadcast 到 UI');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('sessions.changed phase=message：不调回调也不 broadcast（cron_changed hook 是主通道，phase=message 不再兜底）', async () => {
 	const calls = [];
 	const broadcastCalls = [];
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_phase_msg');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chg_phase_msg');
 	try {
 		bridge.__onSessionCreated = ({ sessionKey, sessionId }) => {
 			calls.push({ sessionKey, sessionId });
@@ -6081,14 +5905,13 @@ test('sessions.changed phase=message：不调回调也不 broadcast（cron_chang
 		assert.equal(broadcastCalls.length, 0, 'phase=message 不应 broadcast 到 UI');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('sessions.changed reason!=create：不调回调也不 broadcast（M2 过滤名单 drop）', async () => {
 	const calls = [];
 	const broadcastCalls = [];
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_other');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chg_other');
 	try {
 		bridge.__onSessionCreated = (p) => calls.push(p);
 		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
@@ -6106,13 +5929,12 @@ test('sessions.changed reason!=create：不调回调也不 broadcast（M2 过滤
 		assert.equal(broadcastCalls.length, 0, 'M2: sessions.changed 在过滤名单中，任何 reason 都不应 broadcast');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('session.message event 进入过滤名单：不触发回调也不 broadcast（M2）', async () => {
 	const broadcastCalls = [];
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_session_msg');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chg_session_msg');
 	try {
 		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
 		gwWs.emit('message', {
@@ -6126,14 +5948,13 @@ test('session.message event 进入过滤名单：不触发回调也不 broadcast
 		assert.equal(broadcastCalls.length, 0, 'M2: session.message 应被过滤名单 drop');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('sessions.changed 缺 sessionKey 或 sessionId：不调用回调也不 broadcast', async () => {
 	const calls = [];
 	const broadcastCalls = [];
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_missing');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chg_missing');
 	try {
 		bridge.__onSessionCreated = (p) => calls.push(p);
 		bridge.webrtcPeer.broadcast = (p) => broadcastCalls.push(p);
@@ -6156,13 +5977,12 @@ test('sessions.changed 缺 sessionKey 或 sessionId：不调用回调也不 broa
 		assert.equal(broadcastCalls.length, 0, '缺字段的 reason=create 也走 return，不 broadcast');
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('sessions.changed 回调抛错：bridge 不崩，warn 兜底', async () => {
 	const logs = [];
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_err');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chg_err');
 	try {
 		bridge.logger = { info() {}, warn: (m) => logs.push(m), debug() {} };
 		bridge.__onSessionCreated = () => { throw new Error('callback boom'); };
@@ -6180,13 +6000,12 @@ test('sessions.changed 回调抛错：bridge 不崩，warn 兜底', async () => 
 		);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('sessions.changed 回调 async reject：bridge 不崩，warn 兜底', async () => {
 	const logs = [];
-	const { bridge, gwWs, prevHome } = await setupBridgeWithGateway('c_chg_async_rej');
+	const { bridge, gwWs } = await setupBridgeWithGateway('c_chg_async_rej');
 	try {
 		bridge.logger = { info() {}, warn: (m) => logs.push(m), debug() {} };
 		bridge.__onSessionCreated = () => Promise.reject(new Error('async boom'));
@@ -6204,17 +6023,13 @@ test('sessions.changed 回调 async reject：bridge 不崩，warn 兜底', async
 		);
 	} finally {
 		await bridge.stop();
-		restoreHomedir(prevHome);
 	}
 });
 
 test('onSessionCreated 通过构造器注入；stop/refresh 不动该字段', async () => {
 	FakeWebSocket.instances.length = 0;
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const calls = [];
@@ -6229,7 +6044,6 @@ test('onSessionCreated 通过构造器注入；stop/refresh 不动该字段', as
 	} finally {
 		// bridge 已在 try 内 stop；这里只复位环境
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -6267,11 +6081,7 @@ test('端到端 wiring：restartRealtimeBridge 装配的 cb 真收到 sessions.c
 	// 另一条用 `bridge.__onSessionCreated = xxx` 直接赋值绕过 wiring。没有一条用例真正
 	// 走过"完整生产装配 → 收到 sessions.changed → cb 拿到 payload"链路。
 	FakeWebSocket.instances.length = 0;
-	const dir = await writeCfg({ token: 'wire-tok', serverUrl: 'https://server.local' });
-	const prevHome = saveHomedir();
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
-
+	await writeCfg({ token: 'wire-tok', serverUrl: 'https://server.local' });
 	const calls = [];
 	const cb = (p) => calls.push(p);
 	try {
@@ -6319,7 +6129,6 @@ test('端到端 wiring：restartRealtimeBridge 装配的 cb 真收到 sessions.c
 		assert.equal(calls[0].sessionId, 'wire-sid-99');
 	} finally {
 		await stopRealtimeBridge();
-		restoreHomedir(prevHome);
 	}
 });
 
