@@ -768,14 +768,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **修复方向**：若确认 logger 总可用，切到注入 logger；否则补一行注释解释为何用 console。
 
-### file-handler resolveWorkspace 仍直接走 api.runtime.config.loadConfig（PRE-EXISTING）
-
-**锚点**：`plugins/openclaw/index.js:642`（`resolveWorkspace` 内 `const cfg = api.runtime?.config?.loadConfig();`）
-
-`eab42c5` 把 auto-upgrade legacy 路径与 gateway auth-token 解析都收口到 `getClawConfig()`，但 file-handler 这处 callsite 没跟上，仍直接调 `loadConfig`。在 OpenClaw 2026.4.27+ 上会触发 deprecation 警告，不破功能。
-
-**修复方向**：改用 `getClawConfig()`（`src/claw-config.js`）；仅一行替换 + import 即可。下次顺手收口。
-
 ## 2026-05-06 deep-review（file-manager test setTimeout→waitFor 改造）抓出的预存问题
 
 ### __gatewayRpc 真 setTimeout 触发 settle 路径丢失端到端测试覆盖

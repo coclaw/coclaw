@@ -19,6 +19,7 @@ import { decideCancelResponse } from './src/agent-cancel-heuristic.js';
 import { remoteLog } from './src/remote-log.js';
 import { registerProviderAuthHandlers } from './src/provider-auth/index.js';
 import { registerModelDefaultHandlers } from './src/model-default/index.js';
+import { getClawConfig } from './src/claw-config.js';
 
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
 export { getPluginVersion, __resetPluginVersion };
@@ -729,7 +730,7 @@ const plugin = {
 
 		const fileHandler = createFileHandler({
 			resolveWorkspace: (agentId) => {
-				const cfg = api.runtime?.config?.loadConfig();
+				const cfg = getClawConfig();
 				const dir = api.runtime?.agent?.resolveAgentWorkspaceDir(cfg, agentId);
 				if (!dir) {
 					const err = new Error('Cannot resolve workspace: runtime not available');
