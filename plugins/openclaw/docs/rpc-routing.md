@@ -58,8 +58,8 @@ destroy()                                 // 停 timer + clear + 标 destroyed�
 |---|---|
 | 实例化（bridge 构造期） | 字段置 `null`（**延迟到 start 才 new**——确保拿到真 logger） |
 | `start()` | `new RpcXxxRoutes({...})` + `init()` |
-| `stop()` | `destroy()` + 字段置 `null` |
-| 网关 ws close（含手动调 `__closeGatewayWs` / ws 自己 close handler） | `clear()`，timer 留着 |
+| `stop()` / `refresh()` | `destroy()` / `clear()` + 字段置 `null` |
+| 网关 ws close（含手动调 `__closeGatewayWs` / ws 自己 close handler） | 仅清 lag probes + gateway pending RPC，不清路由表 |
 | res 帧到达（终态）/ req 帧 SEND_FAILED | `remove(key, ...)` |
 | res 帧到达（accepted）/ req 帧入队 | `add(key, ...)` |
 

@@ -989,20 +989,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **预存问题**：step 1 之前就存在（step 1 仅移除了外线 gate `serverWs && serverWs.readyState === 1`），不是 Round 2 引入，但 Round 2 让内线独立后这个长尾问题会更显眼（外线无法兜底重启内线了）。
 
-## docs/rpc-routing.md 与 step 1 实际行为不一致
-
-**发现日期**：2026-05-09（Round 2 step 2 deep-review surface）
-
-**锚点**：
-- `plugins/openclaw/docs/rpc-routing.md:62` 写"网关 ws close（含手动调 `__closeGatewayWs` / ws 自己 close handler）| `clear()`，timer 留着"
-- 实际 step 1 已改为：网关 ws close 不再清 P2P 路由表（`__dcPendingRequests` / `__runEventRoutes`）；只有显式销毁路径（`bridge.stop()` / `refresh()`）才 clear
-
-**问题**：文档与代码语义不符，跟着文档实现的人会以为"网关掉线就清表"，实际 step 1 后两者已独立。
-
-**修复方向**：把"网关 ws close → clear()"那行改成"`bridge.stop()` / `refresh()` → `destroy()`/`clear()`；网关 ws close handler 仅清 lag probes 和 gateway pending RPC，不清路由表"。
-
-**预存问题**：step 1 漏改文档，本次顺手发现，不修。
-
 ## pion-ipc SIGTERM 退出码 + watchdog 误打 schedule restart 噪声
 
 **发现日期**：2026-05-09（Round 2 系统级测试 gateway 重启日志分析）
@@ -1136,19 +1122,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **严重度**：Should fix（埋雷，日后加 hook 时容易踩）
 
-
-## `gateway-method-conventions.md` 的 `respondInvalid` 错误码与代码不一致（预存）
-
-**发现日期**：2026-05-11（session-manager 异步化 deep-review 时 codex-rescue 综合实例核出）
-**关联**：`docs/gateway-method-conventions.md:30`、`src/common/errors.js:2`
-
-**问题**：约定文档写 `respondInvalid(respond, message)` 的 `code` 固定为 `INVALID_ARGS`，但实际 helper（`common/errors.js`）发出的 code 是 `INVALID_INPUT`。两边自 2026-05 起就不一致；下游消费者（server / UI）实际上都对接 `INVALID_INPUT`，所以是文档落后于代码。
-
-**为什么本次未一并修**：与本轮 session-manager 异步化无关，属预存 doc 漂移；按"review 抓出的预存问题不顺手修"规则记入。
-
-**修复方向**：把 doc 文案改成 `INVALID_INPUT`；顺便扫一下 `src/common/errors.js` 其它常量是否也存在 doc 漂移。
-
-**严重度**：Low（仅影响阅读约定文档时的预期，运行时行为没问题）
 
 ## sessions RPC handler 层缺独立测试（预存）
 
@@ -1386,32 +1359,6 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 **严重性**：低——单点行为已覆盖；组合场景由 SDK 自身测试兜底。
 
 **修复方向**：补三个 fixture，用真实 SDK helper（非 mock）跑一遍。
-
----
-
-## provider-auth list 额外字段未文档化
-
-**发现日期**：2026-05-16（Phase D deep-review codex-rescue B 实例识别）
-**关联**：`plugins/openclaw/src/provider-auth/handlers.js:165` + `plugins/openclaw/docs/model-config-api.md §2`
-
-**问题**：list 返回对象含 `type / email / displayName / expiresAt` 字段，但 model-config-api.md §2 只列了 `provider / profileId / keyPreview`。OAuth 等场景需要 email/expiresAt，但文档与实现存在漂移。
-
-**严重性**：低——字段都非敏感，但下游消费方按文档实现会缺字段。
-
-**修复方向**：更新 docs/model-config-api.md §2 列出全部 list 返回字段。
-
----
-
-## webrtc-ice-if-filter.md "完整名" 措辞可能误导
-
-**发现日期**：2026-05-16（Phase D deep-review codex-rescue D 实例识别）
-**关联**：`plugins/openclaw/docs/webrtc-ice-if-filter.md:18`
-
-**问题**：标题"唯一一条：`'docker0'`（Docker default bridge 完整名）"中"完整名"措辞可能让读者误以为是精确匹配；文档其它地方已说明 HasPrefix 行为。
-
-**严重性**：极低——只是标题层面歧义，正文 HasPrefix 章节已澄清。
-
-**修复方向**：标题或紧邻一行加"但仍按 HasPrefix 匹配，理论上撞 `docker0_old`/`docker0-bak`"。
 
 ---
 
@@ -1663,26 +1610,6 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——纯顺序问题，不丢数据；用户也明确表示本机是测试环境，可在 F6 修法决策后回归测试。
 
-## chat-history follow-up F7：双源措辞实际是"两个互补单源"
-
-**发现日期**：2026-05-18（任务 #9 + 上游源码核实）
-**关联**：`plugins/openclaw/docs/architecture.md §F` + `.changeset/chat-history-*.md` 文案
-
-**事实**：
-
-| 触发源 | `sessions.changed reason` | `session_start` hook |
-|---|---|---|
-| `agent.send` 自动创建新 session | `"create"` ✓ | **不 emit**（上游 `agent.ts:1376-1386` 漏 emit，F1 原始 bug） |
-| `sessions.reset` RPC | `"reset"`（plugin 不监听） | ✓ emit（`session-reset-service.ts:680`） |
-| `chat.send /new` | 走 `performGatewaySessionReset`，等同 reset | ✓ emit |
-| `sessions.create` 独立 RPC | `"create"` ✓ | emit（如果 `emitCommandHooks: true`） |
-
-**结论**：plugin 当前实现没有功能漏洞——每个触发路径都至少有一条到达 `recordSessionTransition`。但 architecture.md / changeset 里"双源到达 + 幂等护栏"措辞实际描述的是"sessions.create 同时触发 hook 与 sessions.changed=create 的少数场景"，对 sessions.reset / agent.send 单源覆盖语义不准。
-
-**修复方向**：architecture.md §F 改述为"两个互补的事件源 + 同到达点（recordSessionTransition）的幂等护栏"；明确每个 RPC 的事件 emit 矩阵；changeset 历史不动（已发布）。
-
-**严重性**：低——文档措辞优化，不影响代码行为。等下次架构整理一并修。
-
 ## getById 大文件一次性 readFile + 全量解析的内存/CPU 压力
 
 **发现日期**：2026-05-19（getById fallback + 上限修复 deep review 综合实例识别）
@@ -1725,17 +1652,6 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **修复方向**：reconcileAll 内每条写前再次 reload 磁盘，对比 entry.sessionId 与磁盘 head sid——磁盘 head 已是更新的（未归档）状态时跳过本条让事件路径赢。
 
 **严重性**：低——理论盲点；触发难度高；recordSessionTransition 现有 reload+mutex 已吞掉多数 race。
-
-## chat-history `architecture.md §F` 描述与 cron 顶替止血实施不同步
-
-**发现日期**：2026-05-19（cron 顶替止血 deep review 综合实例提出）
-**关联**：`plugins/openclaw/docs/architecture.md` §F
-
-**问题**：架构文档 §F 未描述 cron 在 chat-history 中的处理路径（`cron_changed` hook 主通道、`classifyChatHistorySessionKey` 守卫、`reconcileAll` 启动对账、`__sanitizeAllSessionKeys` 自愈）。
-
-**修复方向**：补一节"cron 顶替止血"三道叠加通路说明 + 共享守卫 classifyChatHistorySessionKey 的角色。
-
-**严重性**：低——文档与代码不同步，影响后续维护者的理解；不影响运行行为。
 
 ## chat-history sanitize 时间戳与正常归档无法区分
 

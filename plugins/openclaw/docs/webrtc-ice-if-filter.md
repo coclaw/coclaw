@@ -20,7 +20,9 @@ interfaceFilter: {
 
 **IP CIDR 黑名单（`ipFilter.denyCIDRs`）：默认空**——容器/VM 内 `eth0` 就是 10/8、172.16/12、192.168/16 私网段，IP 段 deny 必然击穿主路径。
 
-## 唯一一条：`'docker0'`（Docker default bridge 完整名）
+## 唯一一条：`'docker0'`（Docker default bridge 接口名）
+
+> 写完整名是约定俗成的字面值；底层仍是 `HasPrefix` 匹配——理论上会撞 `docker0_old` / `docker0-bak` 这类反常识手工命名（见下方"HasPrefix 无字界红线"）。
 
 | 维度 | 证据 |
 |---|---|

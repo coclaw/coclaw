@@ -152,29 +152,48 @@ server / UI 各自按 patch 语义更新本地缓存（未在 payload 出现的�
 ```
 事件清单与字段约定见 `plugin-events.md`。
 
-**F. chat-history 双源归档（session 流水追踪）**
+**F. chat-history 归档（session 流水追踪）**
 
-session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是两条互补来源——`agent.send` 走自动 reset 触发新 session 时 OpenClaw 当前**只 emit 后者**（hook 漏），双源相加才能不漏归档。两条都汇入 `index.js#handleSessionCreated`，由 `chatHistoryManager.recordSessionTransition` 以幂等 + per-agent mutex 串行落盘。
+session_start hook 与 gateway 推的 `sessions.changed (reason=create)` 是**两条互补的单源**——大多数触发路径其实只有一条事件到达；只有 `sessions.create` 独立 RPC 真正"双源到达"，靠 `recordSessionTransition` 的幂等护栏吞掉重叠。各触发源的 emit 矩阵：
+
+| 触发源 | `sessions.changed reason` | `session_start` hook |
+|---|---|---|
+| `agent.send` 自动创建新 session | `"create"` ✓ | **不 emit**（上游 `agent.ts` 漏 emit） |
+| `sessions.reset` RPC | `"reset"`（plugin 不监听） | ✓ emit |
+| `chat.send /new`（等同 reset） | `"reset"` | ✓ emit |
+| `sessions.create` 独立 RPC | `"create"` ✓ | ✓ emit（同到达点，幂等吞重叠） |
+
+两条事件都汇入 `index.js#handleSessionCreated`，由 `chatHistoryManager.recordSessionTransition` 以幂等 + per-agent mutex 串行落盘。
 
 ```
 [A] session_start hook              ──┐
     event = { sessionKey,             │
               sessionId(new),         │
               resumedFrom(old?) }     ├─→ handleSessionCreated(...)
-    ctx.agentId（hook 路径优先）       │     ├─ recordSessionTransition({
-                                      │     │     agentId, sessionKey,
-[B] sessions.changed reason=create  ──┘     │     currentSessionId,
-    bridge __sendSessionsSubscribe()        │     archivedSessionId? })
-    握手成功后订阅，每次重连重订            ├─ mutex.withLock(agentId)
-    onSessionCreated callback by index.js   ├─ __reloadFromDisk
-                                            └─ atomic write
+    ctx.agentId（hook 路径优先）       │     ├─ classifyChatHistorySessionKey
+                                      │     │   （explicit / subagent / cron 跳过）
+[B] sessions.changed reason=create  ──┤     ├─ recordSessionTransition({
+    bridge __sendSessionsSubscribe()  │     │     agentId, sessionKey,
+    握手成功后订阅，每次重连重订       │     │     currentSessionId,
+    onSessionCreated callback         │     │     archivedSessionId? })
+                                      │     ├─ mutex.withLock(agentId)
+[C] cron_changed hook                ─┘     ├─ __reloadFromDisk
+    （仅 action=finished + 显式 sk/sid）      └─ atomic write
                                             (head=current 未归档；其后 archived 新→旧)
 ```
+
+**cron 顶替止血**：cron 跑完会把主 sessionKey 的 head sid 顶到新值，但既不走 session_start hook、也不发 `sessions.changed reason=create`，靠三道叠加通路兜住：
+
+1. **`cron_changed` hook 主通道**（v2026.4.29+）：cron 收官 emit `action=finished + sessionKey/sessionId`，走同款 handleSessionCreated 幂等链路落盘。
+2. **`reconcileAll` 启动对账**：plugin 加载时拿 `sessions.json` 当前 entries 喂进 manager，覆盖 gateway 重启窗口期 cron hook 没接到的场景（gateway 不回放已完成的 cron event）。
+3. **`__sanitizeAllSessionKeys` 自愈**：`__persist` 每次写盘前扫描所有 sessionKey 的 list，非头位仍未归档的项强制补 `archivedAt`，作为前两道漏掉时的最终兜底。每补一条打 `remoteLog('chat-history.sanitize-coerce ...')` 暴露信号。
+
+`classifyChatHistorySessionKey` 是**事件路径与启动对账共享的守卫**：黑名单 `explicit` / `subagent` / `cron` 三类伪 sessionKey（topic、子代理、cron 自身的伪 key 形态），按 `parts[2]` 严格相等判定，命中即 skip + `chat-history.skip-<reason>` remoteLog。所有写 chat-history 的入口必须经它——否则启动对账等绕过事件路径的入口会把伪 sessionKey 写进 chat-history。cron 跑出的子代理（`agent:<id>:cron:<jobId>:subagent:<uuid>`）由 cron 守卫挡住即可，不重复打 subagent 标签。
 
 幂等 / 防错位：
 - 完全 no-op：head 已是 currentSessionId 且无新 archivedSessionId 要追加。
 - stale 防御：currentSessionId 已存在于 list 其他位置（已归档项）→ 视为晚到事件丢弃，不动 head（避免把当前活跃头错翻成归档 + sid 重复）。
-- 双源到达顺序无关；mutex 串行 + per-write atomic write。
+- 多源到达顺序无关；mutex 串行 + per-write atomic write。
 - 异常信号：`archivedSessionId === currentSessionId`（上游 `resumedFrom === sessionId`，理论上不应发生）触发归一化时打 `remoteLog('chat-history.archived-equals-current ...')`，避免把上游可能的回归静默吞掉。
 
 并发边界（参见 `plugins/openclaw/CLAUDE.md` 硬约束"Hook / RPC 双实例陷阱"）：mutex 是**每实例独有**的；OpenClaw plugin loader 在 `--link` 安装模式下可能让 hook 与 RPC handler 跑在不同 ESM 模块实例，两个 ChatHistoryManager 实例各自维护一份 `__mutexes`。同 agent 文件的 cross-instance 同时写**不会**互相串行——靠的是每写都 `__reloadFromDisk` + atomic rename（rename 保证文件视图原子切换，幂等规则吞 stale 入参）。实践中两实例同时为同一事件写入概率低，rename 后写赢，丢的是另一边的 archivedSessionId 第二位插入（head 仍正确），可接受。
@@ -185,7 +204,6 @@ RPC 契约：`coclaw.chatHistory.list` **透传整个 list（含首位未归档�
 - gateway 端订阅按 connId 注册；WS close 时自动 `unsubscribeAllSessionEvents` → **每条新 WS 都必须重新发送 subscribe**。bridge 在每次握手成功分支调用一次，不区分首次 / 重连。
 - 调用 timeout 60s（容忍 gateway 重启卡主线程的真实场景）。subscribe 失败仅 warn + remoteLog 一次（gateway handler 无业务失败分支，失败只可能源自传输层），同条 WS 内不重试；下次 WS 重连握手成功时自然再发——无 sticky 阻止。
 - 上游事件源补充：topic 走 transcript-update 链路发的是 `sessions.changed phase=message`（**无 reason 字段**），与本路径严判 `payload.payload?.reason === 'create'` 不匹配会被过滤掉，不会污染 chat-history。
-- subagent 走同事件源（`sessions.changed reason=create`），由 `handleSessionCreated` 按 sessionKey 形态早返：`agent:<id>:subagent:<uuid>`（含嵌套 `:subagent:` 段）不属于人机对话流——父 agent transcript 已含子代理最终输出。判定从 `parts[2]` 起找 `subagent` 段（避免 agentId 偶然叫 `subagent` 时误伤），命中打 `remoteLog('chat-history.skip-subagent ...')` 作为观测信号。cron / IM / 其它 channel 形态**保留入档**——它们本质都是人机对话流，未来 UI 可能展示。
 
 文件 schema：见 §"状态在哪儿"中 `coclaw-chat-history.json` 行。
 
