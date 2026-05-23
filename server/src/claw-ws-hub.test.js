@@ -2102,23 +2102,30 @@ test('authenticateClawRequest: 无效 token 时返回 invalid token', async () =
 	assert.equal(result.message, 'invalid token');
 });
 
-// --- onClawMessage: coclaw.info.updated 触发 updateClaw 的 .catch 路径 ---
-
-test('onClawMessage: coclaw.info.updated 使用数字 clawId 时 BigInt 成功但 DB 失败走 .catch', async () => {
-	const clawWs = createMockWs();
-	// 使用数字 clawId 使 BigInt() 成功，updateClaw 会尝试 DB 操作然后失败
-	setupSockets('12345', { bot: [clawWs] });
-
-	// 不应抛异常（.catch 会静默处理）
-	onClawMessage('12345', clawWs, JSON.stringify({
-		type: 'event',
-		event: 'coclaw.info.updated',
-		payload: { name: 'NewName' },
-	}));
-
-	// 等待微任务完成（.catch 是异步的）
-	await new Promise((r) => setTimeout(r, 50));
-	cleanupSockets('12345');
+// --- applyClawInfoUpdate: BigInt 数字 clawId 走 .catch 路径 ---
+// 此前版本通过 onClawMessage 触发 + 默认真 updateClaw + 50ms 等待来覆盖该路径，但 onClawMessage
+// 不接受 deps，无法 stub updateClaw，导致默认 .catch 的 wsLogWarn 在系统压力下可能晚到 50ms 之外，
+// 漏入后续也 patch console.warn 的测试（如 finalizeClawOffline rejection），凑出 warnings.length=2
+// 的偶发挂测。改为直接调 applyClawInfoUpdate 注入失败 mock：.catch 在 setImmediate 之前
+// 通过 microtask 闭合，warn 也被本测兜住。
+test('applyClawInfoUpdate: 数字 clawId 经 BigInt 后 .catch 兜住 updateClaw async reject', async () => {
+	const originalWarn = console.warn;
+	const warnings = [];
+	console.warn = (...args) => warnings.push(args.map(String).join(' '));
+	try {
+		let receivedId = null;
+		applyClawInfoUpdate('12345', { name: 'NewName' }, {
+			updateClawImpl: async (id) => { receivedId = id; throw new Error('db down'); },
+			emitter: new EventEmitter(),
+		});
+		await new Promise((r) => setImmediate(r));
+		assert.equal(receivedId, 12345n);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /updateClaw from plugin event failed clawId=12345: db down/);
+	}
+	finally {
+		console.warn = originalWarn;
+	}
 });
 
 // --- broadcastToUi: 空 set 时不报错 ---
