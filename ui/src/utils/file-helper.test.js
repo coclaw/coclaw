@@ -483,6 +483,27 @@ describe('saveBlobToFile', () => {
 		expect(removeSpy).toHaveBeenCalledWith(mockA);
 	});
 
+	test('Web 环境：a.click() 抛错时 revokeObjectURL 仍被调用（try/finally 守 revoke）', async () => {
+		const mockA = {
+			href: '',
+			download: '',
+			click: vi.fn(() => { throw new Error('boom'); }),
+		};
+		const origCreateElement = document.createElement.bind(document);
+		vi.spyOn(document, 'createElement').mockImplementation((tag) =>
+			tag === 'a' ? mockA : origCreateElement(tag),
+		);
+		const removeSpy = vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+		vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
+
+		const blob = new Blob(['x']);
+		await expect(saveBlobToFile(blob, 'fail.txt')).rejects.toThrow('boom');
+
+		// 关键：click 抛错后 removeChild + revokeObjectURL 都必须跑
+		expect(removeSpy).toHaveBeenCalledWith(mockA);
+		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
+	});
+
 	test('Capacitor 环境：调用 __nativeShareFile', async () => {
 		platformState.isCapacitorApp = true;
 		// 在工厂闭包外创建 spy，避免工厂被多次调用时返回不同 spy 实例导致断言失真
