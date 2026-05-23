@@ -313,6 +313,8 @@ SSE claw.status {online:true} 或 claw.snapshot diff 检测到 online: false→t
 - `__checkAndRecover` 入口 → offline 不 probe、不 restart
 - `__handleNetworkOnline` 循环内 → offline 的 claw 不参与 network 恢复路径
 
+**`__resumeOnline` 入口的契约约束（不属于上述 4 处布点）**：`__resumeOnline(id)` 自身**不**在入口做 `claw.online` 防御 gate——其 4 个调用方（`updateClawOnline` 的 prev=false 分支与 同值+`rtcPhase='failed'` 分支、`applySnapshot` 的 Phase 3 toResume 列表、`__resumeAllClawsForSigOnline` 遍历分支）已全部过滤了 `online=true` 的 claw，offline claw 不会进入。该入口属于调用方契约保证 online 的路径——日后新增调用方需保持此契约，或在该入口补防御性 gate 后再放行新调用方。
+
 **`__ensureRtc` 的 post-await recheck**：入口检查 gate 只覆盖"`await initRtc` 之前"，但 `initRtc` 可能耗时数秒（ICE gathering / DTLS 握手）。期间若 offline / sig_offline 发生，`__handleClawGoOffline` 调 `conn.rtc?.pauseRestart()` 会空转——此时 `conn.rtc` 还是 `null`（`initRtc` 未 resolve）——成功 resolve 后若不再次 recheck，新建的 RTC 会越过关着的门继续运行。修法：`await initRtc` 解决后**无论 result 是 'rtc' 还是失败**都做一次 gate recheck，命中翻转则走 bailedOut 分支：`result === 'rtc'` 时同时 `closeRtcForClaw` + `conn.clearRtc`（sig_offline 还要 snapshot/restore phase 与 disconnectedAt 避免 close 触发的 'failed' 残留），失败时 rtc 没建起来无需 close，phase 由 bail 分支按 reason 处理。这条 recheck 同时承担了"build 失败 + 闸门翻转"的语义，避免误把环境故障算作 build 失败而排重试。
 
 **其他 online 消费点**：

@@ -137,23 +137,19 @@
 
 ### 文档 / 可观测性
 
-3. **`agent-event-streams-and-rpcs.md` "强保证"措辞软化**
-    - 现状：文档 §四.2 写"二阶段 res 帧一发出，transcript 一定已写完——这是源码层面的同步 await 链保证"。实际上游 persist 用 `try/catch` 吞错后仍会 respond，是"尽力保证"而非"强保证"
-    - 修复：把"强保证"改成"persist attempt 已在 respond 前 await；若 persist 自身抛错，会被 log.warn 后继续响应"，并在 §五.1 信号汇总表的"transcript 已写完？"列把 RPC 二阶段从 "**是**（同步 await 保证）" 改成 "**几乎是**（persist 在 respond 前 await，但抛错会被吞）"
-
-4. **`agent.run.persist-stale` remoteLog 维度补全**
+3. **`agent.run.persist-stale` remoteLog 维度补全**
     - 现状：`chat.store.js:1417` 只打 `endReason / runKey / elapsed=3s`
     - 修复：补 `runId / msgCount / anchorId / clawId`，并把 `elapsed=3s` 改成实际累计耗时（含两次 loadMessages 自身的 RPC 时间）
 
 ### 测试
 
-5. **缺显式 'rpc' fast-path 命名测试**
+4. **缺显式 'rpc' fast-path 命名测试**
     - 现状：本次新增 4 条测试都是 lifecycle 路径；'rpc' 路径只是被旧测试隐式覆盖
     - 修复：在 `chat.store.test.js` 加一条显式 `endReason='rpc' → 立即拉 + dropRun，无 sleep` 的命名测试
 
 ### 上线后观察
 
-6. **3s 重试上限是否够**
+5. **3s 重试上限是否够**
     - 现状：`PERSIST_AWAIT_MS=1000` + `PERSIST_RETRY_AFTER_MS=2000` = 3s 上限，针对 pi 层 `appendFileSync` 的同步写盘已足够，但没 p99 实测数据
     - 行动：上线后观察 `agent.run.persist-stale` remoteLog 频率；高频则考虑指数退避或常量配置化（比如长 transcript / 慢盘场景）
 
@@ -186,37 +182,32 @@
 
 来源：8 路并行 review（4 codex + 4 后台 claude -p）。仅登记值得追踪的疑似 bug 和 backlog 跟踪丢失项；G2/G3/G1 的 nit（vite 配置选择 / changeset 标签错位 / refinement chain 等）不登记。
 
-1. **`__resumeOnline` 入口缺 `claw.online` 防御 gate（红线 3 纸面差）**
-    - 现状：红线 3 文档要求 5 处布点，`__resumeOnline` 入口当前只 gate 了 `_sigOffline`，没显式 gate `claw.online`
-    - 亲自核实：4 个调用方（`updateClawOnline` prev=false 分支、`updateClawOnline` 同值 + rtcPhase=failed、`applySnapshot` Phase 3 toResume、`__resumeAllClawsForSigOnline`）全部过滤了 online=true → offline claw 不会进入，运行时不触发问题
-    - 决策方向二选一：a) 补防御性 gate 落实红线 5 处布点；b) 修红线文档明确"`__resumeOnline` 入口由调用方契约保证 claw.online"
-
-2. **`topics.store.createTopic` 缺 post-await `byId` re-check（ghost-topic-on-removed-claw race）**
+1. **`topics.store.createTopic` 缺 post-await `byId` re-check（ghost-topic-on-removed-claw race）**
     - 来源：commit 9ab962d round 24 backlog
     - 现状：`createTopic` 在 await 期间 claw 被 removeClawById 时，return 后仍可能写入 ghost 条目。窄窗口
     - 修法：post-await 加 `byId` re-check，被 evict 即放弃
 
-3. **`claw-connection.setRtc` non-ready-RTC defensive-net test 缺**
+2. **`claw-connection.setRtc` non-ready-RTC defensive-net test 缺**
     - 来源：commit 9ab962d round 24 backlog
     - 现状：测试覆盖未锁住"setRtc 收到非 ready 状态 rtc 时不应被传播到 isReady"的契约
     - 修法：补单元测试
 
-4. **`__ensureRtc` connected early-return 当 `rtc.state==='connected' && !rtc.isReady`**
+3. **`__ensureRtc` connected early-return 当 `rtc.state==='connected' && !rtc.isReady`**
     - 来源：commit 54b609d round 20 backlog
     - 现状：`__ensureRtc` early-return 看 state===connected，但 isReady=false 时 DC 实际不可用；窄窗口可能 short-circuit 错误判定
     - 修法待定：可能改 early-return 条件 + 重 init；需深入 review
 
-5. **`setupAppStateChange` 直接回调捕获，测试注入需要清理**
+4. **`setupAppStateChange` 直接回调捕获，测试注入需要清理**
     - 来源：commit 665f0e7 round 22 backlog
     - 现状：测试用 vi.doMock 注入有副作用残留风险；setupAppStateChange 直接捕获 App 引用而不是从工厂注入，单测覆盖被钳制
     - 修法：factor App reference for test injection，或 vi.doMock 用法收紧
 
-6. **`isConnectingRtc` / `unreachableClaws` getter 语义在 sig offline + rtcPhase=building/recovering 期间不清晰**
+5. **`isConnectingRtc` / `unreachableClaws` getter 语义在 sig offline + rtcPhase=building/recovering 期间不清晰**
     - 来源：commit 4ae005e round 19 backlog（"P2-5"）
     - 现状：sig offline 时 `rtcPhase` 可能仍是 building/recovering（pre-existing 残留），UI 看到的 isConnectingRtc / unreachableClaws 状态不直觉
     - 决策与 SignalingBanner UX 工作捆绑，等 UX 推进时一并处理
 
-7. **`manualRetryUnreachable()` 不直接检查 `_sigOffline`（UX wart）**
+6. **`manualRetryUnreachable()` 不直接检查 `_sigOffline`（UX wart）**
     - 来源：commit 68d9f99 round 18 backlog
     - 现状：`manualRetryUnreachable` 是用户点"重试"按钮触发；sig 不通时仍会进入 retry 流程，看似无反应。UX 不友好
     - 修法：UX 层面在 sig offline 时 disable 按钮 + 提示文案；或 `manualRetryUnreachable` 入口加 sig gate + 反馈
@@ -291,11 +282,6 @@
     - 触发条件：仅 router.replace 抛错就足够（不需要 LRU 同时触发）。router guard 抛 false / next(false) / 守卫 throw 都算
     - 修法方向：catch 中检测 promote 已发生但 router.replace 失败 → 切断同源（先把 newStore.inputFiles 重指向独有空数组，再 dispose newStoreKey），然后在 oldStore 上做 clear+restoreFiles
     - 实际影响：本项目当前 router 配置下 replace 抛错的场景有限，但只要触发就视觉很差
-
-3. **new-topic store 不入 LRU**
-    - 现状：`chat-store-manager.js:33` get 仅对 `storeKey.startsWith('topic:')` 入 LRU。`new-topic:` 前缀不淘汰
-    - 实际影响：极小——每个 (clawId, agentId) 组合最多一个 new-topic store；用户访问过的组合数 ≤ 数十量级；登出 disposeAll 兜底
-    - 与设计 dump 偏离：dump 原写"new-topic 也入 topic LRU"，实现与之不一致；已在 chat-store-manager.js:33 处加注释说明保留当前行为的理由。如未来用户反馈附件累积内存压力，再考虑加主动淘汰
 
 ## 输入区附件 per-chat/topic 隔离 deep-review 第 2 轮发现的非阻塞项（2026-05-03）
 

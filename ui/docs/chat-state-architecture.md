@@ -100,6 +100,7 @@ ClawState 结构：
   - **chat 实例不淘汰**：数量受限于用户绑定的 claw + agent 组合数；含历史 segments 等有价值缓存
   - **topic 实例 LRU 淘汰**：上限 `MAX_TOPIC_INSTANCES = 10`，淘汰最久未用且无活跃 run 的实例
   - **new-topic 实例不淘汰**：每个 (clawId, agentId) 组合至多一份草稿位，实际累积量 ≤ 用户访问过的组合数（数十量级）。淘汰收益小，但风险是误清用户精心准备的未发附件——所以选择不参与 LRU，靠登出时的 `disposeAll` 兜底
+    - **与原设计 dump 偏离**：早期 dump 写"new-topic 也入 topic LRU"，实现侧未采纳；理由见 `src/stores/chat-store-manager.js:33` 处注释。如未来用户反馈附件累积内存压力，再考虑加主动淘汰。
 - `promoteToTopic(newTopicKey, topicId, opts)`：用户在 new-topic 页发出第一条消息时的转正流程——建新 `topic:` store，把 inputFiles 数组**引用共享**到新 store（视觉无中断），调用方在 `router.replace` 后调返回的 `commit()` 切断旧引用并 dispose 旧 new-topic store
 
 ### ChatStore — per-chat/topic 消息状态

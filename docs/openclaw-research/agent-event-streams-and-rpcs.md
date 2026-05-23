@@ -178,11 +178,13 @@ await deliver... → return → respond(true, payload, ...)   ← agent RPC 二�
 | 第一阶段 accepted | `agent.ts:1078-1093` | `{ status: "accepted", runId, ... }` | 注册 abort controller 后**立即**发，作为 in-flight ack 写入 dedupe |
 | 第二阶段 result | `agent.ts:319-346` | `{ runId, status: "ok", summary: "completed", result }`，含 `result.meta.stopReason` / `result.meta.aborted` / `result.payloads` | run 结束 + transcript 写完 + deliver 完成后 |
 
-### 2. 同步串行强保证
+### 2. 同步串行（persist attempt 已 await）
 
 第二阶段 res 帧由 `agentCommandFromIngress(...).then((result) => respond(true, payload, ...))` 触发；`agentCommandFromIngress` → `agentCommandInternal` 内部已 `await persistCliTurnTranscript` / `await persistAcpTurnTranscript`，再 await `deliverAgentCommandResult`，再 return。
 
-**所以二阶段 res 帧一发出，transcript 一定已写完**——这是源码层面的同步 await 链保证，不是经验数字。
+**所以二阶段 res 帧一发出，persist attempt 已被 await 完**——这是源码层面的同步 await 链顺序。
+
+需要留意一个例外：persist 自身抛错时上游会被 `log.warn` 吞掉后继续走 respond 路径（transcript 可能没真落盘），所以并非"二阶段 res 帧 ⇒ transcript 一定已写完"的强保证；正常路径下 persist 成功率极高，下游可以按"几乎一定写完"使用，但不要把它当成断言性的硬契约。
 
 ### 3. 与其他信号的时序对比
 
@@ -191,7 +193,7 @@ lifecycle:end 事件        ──→ broadcast 出去（早，不保证 transcr
 agent.wait race(lifecycle)──→ 可能跟 lifecycle 同时 resolve（不保证）
 gateway transcript 写完   ──→ 必须等到这一步 chat.history 才能拉到完整数据
 deliver + setGatewayDedupeEntry
-agent RPC 二阶段 res 帧   ──→ 此时 transcript 必已写完（强保证）
+agent RPC 二阶段 res 帧   ──→ 此时 persist attempt 已被 await 完（几乎一定已写完；persist 抛错被 warn 吞是唯一例外）
 ```
 
 二阶段 res 帧到达 ↔ `setGatewayDedupeEntry` 写 terminal payload（`agent.ts:335-343`）—— 后续重试或 `agent.wait` 都会优先命中这个缓存。
@@ -213,7 +215,7 @@ agent RPC 二阶段 res 帧   ──→ 此时 transcript 必已写完（强保�
 | 信号 | agent RPC 路径 | chat.send 路径 | transcript 已写完？ | 含 stopReason？ |
 |---|---|---|---|---|
 | `lifecycle:end` 事件 | 有 | 有 | **否** | 大多数路径否 |
-| 二阶段 RPC res 帧（`status:"ok"`） | **有** | 无 | **是**（同步 await 保证） | 是（`result.meta`，但 optional） |
+| 二阶段 RPC res 帧（`status:"ok"`） | **有** | 无 | **几乎是**（persist 在 respond 前 await，但 persist 自身抛错会被 warn 吞） | 是（`result.meta`，但 optional） |
 | `agent.wait` 长挂返回 | 有 | 有 | **不一定**（lifecycle 分支可能先 resolve） | 否（自身不带，需读 transcript） |
 | `chat:final` ws 事件 | **无** | 有 | **是** | 是（`evtStopReason`） |
 | `sessions.changed` ws 事件 | 有 | 有 | 跟 lifecycle 同步发 | 否 |
@@ -225,7 +227,7 @@ agent RPC 二阶段 res 帧   ──→ 此时 transcript 必已写完（强保�
   1. **信号 1**：主 `agent` RPC 二阶段 res 帧（`status: ok/error`）→ `__onRpcDone` → endRun('rpc')，最权威
   2. **信号 2**：事件流静默超 `IDLE_THRESHOLD_MS` 后 `agent.wait(timeoutMs=0)` 即时探测 → 拿到正经回答时 endRun('wait')。**阶段 2 实施中：`IDLE_THRESHOLD_MS` 暂存拉到 24h，本路径实质禁用**（详见 `docs/designs/agent-run-end-detection.md` §8）
   3. **信号 3**：主 RPC reject（DC 物理死亡 / 服务端 ok:false）→ `__onRpcFailed` → endRun('failed')
-- **下游不依赖 wait 路径校验"transcript 是否写完"**：信号 1 由二阶段 res 帧驱动，源码层面 `await persistCliTurnTranscript` 已保证 transcript 写完（见 §四 §2）；信号 2 仅在阶段 2 之后由 plugin 专用查询 API 提供"已结束"语义后才会重新启用
+- **下游不依赖 wait 路径校验"transcript 是否写完"**：信号 1 由二阶段 res 帧驱动，源码层面 `await persistCliTurnTranscript` 已在 respond 前 await（persist 抛错被 warn 吞的极端情况除外，见 §四 §2）；信号 2 仅在阶段 2 之后由 plugin 专用查询 API 提供"已结束"语义后才会重新启用
 - **chat.send 路径**：CoClaw UI 在斜杠命令路径调用 chat.send（`ui/src/stores/chat.store.js:928`），等 `chat:final` ws 事件判终态。本节的"agent run 终态检测"主线（信号 1/2/3）只覆盖 agent RPC 路径，chat.send 路径有自己的 `chat:final` 兜底，本节不重复处理
 - **进程崩溃 / kill -9**：上述任一事件都收不到——这是唯一无法通过事件感知的情形，需要 `agent.wait` timeout 或 24h 兜底 timer 作为最后保险
 - **不要依赖 lifecycle:end payload 的 `stopReason`**：上游主路径不写。如需校验 stopReason 须从 transcript 读，且把"缺失"当降级路径处理
