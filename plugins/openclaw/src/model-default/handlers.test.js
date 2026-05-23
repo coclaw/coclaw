@@ -417,3 +417,47 @@ test('list+set: list 出参的 agents map 形状与 default 对称', async () =>
 		assert.deepEqual(Object.keys(v).sort(), ['primary']);
 	}
 });
+
+// ============ 端到端串联：set→list / 并存清除 ============
+
+test('set→list: 先 set default scope 再 list，default.primary 反映刚写入的值', async () => {
+	const sdk = makeSdk();
+	const { handlers } = makeHandlers({ sdk });
+	const r1 = makeRespond();
+	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r1.respond });
+	assert.equal(r1.calls[0].ok, true);
+
+	const r2 = makeRespond();
+	await handlers.list({ respond: r2.respond });
+	assert.equal(r2.calls[0].ok, true);
+	assert.equal(r2.calls[0].payload.default.primary, 'openai-codex/gpt-5.5');
+	// main agent 自动补一条 primary=null（list 永远包含 main）
+	assert.deepEqual(r2.calls[0].payload.agents.main, { primary: null });
+});
+
+test('clear path: global default + per-agent override 并存时，清 per-agent 不影响 global default', async () => {
+	const sdk = makeSdk();
+	sdk.__cfg = {
+		agents: {
+			defaults: { model: { primary: 'openai-codex/gpt-5.5' } },
+			list: [{ id: 'researcher', model: { primary: 'anthropic/claude-opus-4-7' } }],
+		},
+	};
+	const { handlers } = makeHandlers({ sdk });
+
+	// 清 researcher 这条 override
+	const r1 = makeRespond();
+	await handlers.set({
+		params: { agentId: 'researcher', primary: null },
+		respond: r1.respond,
+	});
+	assert.equal(r1.calls[0].ok, true);
+
+	// list 应仍看到 global default 不变，researcher 变成 primary=null
+	const r2 = makeRespond();
+	await handlers.list({ respond: r2.respond });
+	assert.equal(r2.calls[0].payload.default.primary, 'openai-codex/gpt-5.5');
+	assert.deepEqual(r2.calls[0].payload.agents.researcher, { primary: null });
+	// main 仍由 list 自动补
+	assert.deepEqual(r2.calls[0].payload.agents.main, { primary: null });
+});

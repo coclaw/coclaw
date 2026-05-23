@@ -582,3 +582,140 @@ test('parallel setApiKey: handlers serialize on the SDK lock and both succeed', 
 	// 证明 handler 是真并发发起调用、await SDK 串行点，而不是顺序 fire-and-await
 	assert.ok(maxConcurrent >= 2, `expected handlers to call SDK concurrently; saw maxConcurrent=${maxConcurrent}`);
 });
+
+// === end-to-end fixtures: 让 set / list / remove 共用同一份 in-memory store 串起来跑 ===
+// 真实 SDK 的 updateAuthProfileStoreWithLock 是 read-modify-write + 文件锁，
+// 这里用 in-memory 等价物（共享 store + mutex），模拟 set→store→list 的 round-trip 行为。
+// 单元测试环境没有 openclaw npm 包；这套 stub 用来钉死 handler 与 SDK 契约的衔接面，
+// 真正的磁盘/锁安全留给上游 SDK 自己的单测。
+
+function createRoundTripSdk(initialProfiles = {}) {
+	const store = { version: 1, profiles: { ...initialProfiles } };
+	let lockChain = Promise.resolve();
+	async function withLock(fn) {
+		const prev = lockChain;
+		let release;
+		lockChain = new Promise((r) => { release = r; });
+		try {
+			await prev;
+			return await fn();
+		}
+		finally { release(); }
+	}
+	return {
+		__store: store,
+		buildApiKeyCredential: (provider, input, _metadata, _options) => ({
+			type: 'api_key',
+			provider,
+			key: input,
+		}),
+		upsertAuthProfileWithLock: async ({ profileId, credential }) => withLock(async () => {
+			store.profiles[profileId] = { ...credential };
+			return { version: store.version, profiles: { ...store.profiles } };
+		}),
+		removeProviderAuthProfilesWithLock: async ({ provider }) => withLock(async () => {
+			let removed = false;
+			for (const id of Object.keys(store.profiles)) {
+				if (store.profiles[id]?.provider === provider) {
+					delete store.profiles[id];
+					removed = true;
+				}
+			}
+			// SDK 真实行为：找不到 provider 也返回 store（truthy），不返 null
+			void removed;
+			return { version: store.version, profiles: { ...store.profiles } };
+		}),
+		ensureAuthProfileStore: () => ({
+			version: store.version,
+			profiles: { ...store.profiles },
+		}),
+		formatApiKeyPreview: (raw) => {
+			const t = raw.trim();
+			if (t.length <= 8) return `${t.slice(0, 2)}…${t.slice(-2)}`;
+			return `${t.slice(0, 4)}…${t.slice(-4)}`;
+		},
+	};
+}
+
+function buildRoundTripHandlers(initialProfiles) {
+	const sdk = createRoundTripSdk(initialProfiles);
+	const handlers = buildProviderAuthHandlers({ sdk, resolveAgentDir: () => AGENT_DIR });
+	return { handlers, sdk };
+}
+
+test('round-trip: set then list returns the just-written profile with masked preview', async () => {
+	const { handlers, sdk } = buildRoundTripHandlers();
+	const r1 = makeRespond();
+	await handlers.setApiKey({
+		params: { provider: 'groq', apiKey: 'sk-test-abcd-1234-XYZW' },
+		respond: r1.respond,
+	});
+	assert.equal(r1.calls[0].ok, true);
+	assert.deepEqual(r1.calls[0].data, { profileId: 'groq:default' });
+
+	const r2 = makeRespond();
+	await handlers.list({ params: {}, respond: r2.respond });
+	assert.equal(r2.calls[0].ok, true);
+	const profiles = r2.calls[0].data.profiles;
+	assert.equal(profiles.length, 1);
+	assert.equal(profiles[0].profileId, 'groq:default');
+	assert.equal(profiles[0].provider, 'groq');
+	assert.equal(profiles[0].type, 'api_key');
+	assert.equal(profiles[0].keyPreview, 'sk-t…XYZW');
+	// 凭据不外流
+	assert.equal('key' in profiles[0], false);
+	// 内部 store 真的写了
+	assert.equal(sdk.__store.profiles['groq:default'].key, 'sk-test-abcd-1234-XYZW');
+});
+
+test('round-trip: remove then list drops the targeted provider but keeps others', async () => {
+	const { handlers, sdk } = buildRoundTripHandlers({
+		'groq:default': { type: 'api_key', provider: 'groq', key: 'gk-aaaaaaaaaa' },
+		'groq:work': { type: 'api_key', provider: 'groq', key: 'gk-bbbbbbbbbb' },
+		'openai:default': { type: 'api_key', provider: 'openai', key: 'sk-cccccccccc' },
+	});
+
+	const r1 = makeRespond();
+	await handlers.remove({ params: { provider: 'groq' }, respond: r1.respond });
+	assert.equal(r1.calls[0].ok, true);
+	assert.deepEqual(r1.calls[0].data, {});
+
+	const r2 = makeRespond();
+	await handlers.list({ params: {}, respond: r2.respond });
+	const profiles = r2.calls[0].data.profiles;
+	assert.equal(profiles.length, 1);
+	assert.equal(profiles[0].profileId, 'openai:default');
+	// store 里 groq 系列都没了
+	assert.equal('groq:default' in sdk.__store.profiles, false);
+	assert.equal('groq:work' in sdk.__store.profiles, false);
+});
+
+test('round-trip: concurrent set on same profileId serializes via SDK lock; last write wins', async () => {
+	const { handlers, sdk } = buildRoundTripHandlers();
+	const r1 = makeRespond();
+	const r2 = makeRespond();
+	// 两次并发 setApiKey 打到同一 profileId（同 provider + 缺省 profileId）
+	const p1 = handlers.setApiKey({
+		params: { provider: 'groq', apiKey: 'sk-first-1111' },
+		respond: r1.respond,
+	});
+	const p2 = handlers.setApiKey({
+		params: { provider: 'groq', apiKey: 'sk-second-2222' },
+		respond: r2.respond,
+	});
+	await Promise.all([p1, p2]);
+
+	assert.equal(r1.calls[0].ok, true);
+	assert.equal(r2.calls[0].ok, true);
+	assert.deepEqual(r1.calls[0].data, { profileId: 'groq:default' });
+	assert.deepEqual(r2.calls[0].data, { profileId: 'groq:default' });
+
+	// list 应只看到一条；key 是 last-writer-wins
+	const r3 = makeRespond();
+	await handlers.list({ params: {}, respond: r3.respond });
+	const profiles = r3.calls[0].data.profiles;
+	assert.equal(profiles.length, 1);
+	assert.equal(profiles[0].profileId, 'groq:default');
+	// 由 mutex 串行保证：发起顺序 p1→p2，因此最终持久化的是 p2 的 key
+	assert.equal(sdk.__store.profiles['groq:default'].key, 'sk-second-2222');
+});
