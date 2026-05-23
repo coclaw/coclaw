@@ -27,7 +27,7 @@
 			<!-- 加载失败 -->
 			<div v-else-if="loadError" class="flex flex-col items-center gap-3 py-12">
 				<p class="text-sm text-danger">{{ loadError }}</p>
-				<UButton size="md" color="primary" @click="startBinding">{{ $t('claws.retry') }}</UButton>
+				<UButton size="md" color="primary" :loading="loading" @click="startBinding">{{ $t('claws.retry') }}</UButton>
 			</div>
 
 			<!-- 过期 -->
@@ -114,7 +114,7 @@
 <script>
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import { useNotify } from '../composables/use-notify.js';
-import { cancelBindingCode, createBindingCode } from '../services/claws.api.js';
+import { cancelBindingCode, createBindingCode, listClaws } from '../services/claws.api.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { openExternalUrl } from '../utils/external-url.js';
 import { writeClipboardText } from '../utils/clipboard.js';
@@ -213,6 +213,8 @@ export default {
 			}
 		},
 		async startBinding() {
+			// in-flight guard：上一次还没结束就忽略本次（防双击让先到的 bindingCode 变孤儿）
+			if (this.loading) return;
 			if (this.bindingCode) {
 				cancelBindingCode(this.bindingCode).catch(() => {});
 			}
@@ -242,21 +244,41 @@ export default {
 		},
 		// 等到全局 SSE 至少推过一次 claw 快照（store.fetched=true）后再记 baseline，
 		// 否则可能用空集合作底，把列表里"原本就有"的 claw 误判成"刚绑成功"。
+		// 15s 超时 fallback：SSE 一直不接通时走 REST 拉一次列表给 baseline，让用户能继续 CLI 流程
 		async captureBaseline() {
-			if (!this.clawsStore.fetched) {
-				await new Promise((resolve) => {
-					const stop = this.$watch(
-						() => this.clawsStore.fetched,
-						(v) => {
-							if (v) {
-								stop();
-								resolve();
-							}
-						},
-					);
-				});
+			if (this.clawsStore.fetched) {
+				this.baselineClawIds = new Set(Object.keys(this.clawsStore.byId));
+				return;
 			}
-			this.baselineClawIds = new Set(Object.keys(this.clawsStore.byId));
+			let stopWatch = null;
+			let timeoutId = null;
+			const sseReady = new Promise((resolve) => {
+				stopWatch = this.$watch(
+					() => this.clawsStore.fetched,
+					(v) => { if (v) resolve(true); },
+				);
+			});
+			const timeout = new Promise((resolve) => {
+				timeoutId = setTimeout(() => resolve(false), 15_000);
+			});
+			const sseWon = await Promise.race([sseReady, timeout]);
+			if (stopWatch) stopWatch();
+			if (timeoutId) clearTimeout(timeoutId);
+			if (sseWon) {
+				this.baselineClawIds = new Set(Object.keys(this.clawsStore.byId));
+				return;
+			}
+			// SSE 15s 内没接通 → REST 一次性拉列表给 baseline
+			console.warn('[AddClawPage] captureBaseline: SSE not ready after 15s, falling back to REST listClaws()');
+			try {
+				const items = await listClaws();
+				this.baselineClawIds = new Set(items.map((c) => String(c.id)));
+			}
+			catch (err) {
+				console.warn('[AddClawPage] captureBaseline REST fallback failed:', err);
+				// REST 也挂了：用空集合兜底让用户进入 binding code 展示页，已有 claw 可能被误判为新增（极少触发）
+				this.baselineClawIds = new Set();
+			}
 		},
 		startCountdown() {
 			this.stopCountdown();
