@@ -936,7 +936,13 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	}
 
 	function safeUnlink(filePath) {
-		_unlink(filePath).catch(() => {});
+		// ENOENT 静默：tmp 可能尚未创建（fopen 未完成）或已被另一路径删过，均属预期。
+		// 其余错（EACCES / EBUSY / EIO）若完全无声会让孤儿 tmp 悄悄积累——warn 一下，
+		// 仍保留 fire-and-forget 语义；scheduleTmpCleanup 仍是最终兜底
+		_unlink(filePath).catch((err) => {
+			if (err?.code === 'ENOENT') return;
+			log.warn?.(`[coclaw/file] safeUnlink failed: ${filePath} ${err?.code || err?.message}`);
+		});
 	}
 
 	return {
