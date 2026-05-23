@@ -1,5 +1,26 @@
 # Plugin TODO
 
+## file-manager `doneReceived=true` 路径下 fopen-vs-unlink race 未走安全网
+
+**发现日期**：2026-05-24（dual cleanup attach deep-review 期间，实例 B codex-rescue 识别）
+**关联**：`plugins/openclaw/src/file-manager/handler.js` 内 `drainLoop` catch (line ~681) + `ws.on('error')` (line ~843) + `finishUpload` 的 `ws.end` callback (line ~706)
+
+**问题**：commit `3f9d05e` 给 `dc.onclose` 的 not-done 分支与 `dc.onerror` 加了 `ws.on('close', safeUnlink)` 安全网，避免"同步 safeUnlink 在 fopen 之前抵达→ENOENT swallow→fopen 后留孤儿"。但 `doneReceived=true` 路径走 `finishUpload`，仍然只在 `ws.end` callback 内同步 `safeUnlink(tmpPath)`（dcClosed / size-mismatch / rename-failed 三个分支均如此），未 attach 安全网。两条触发链：
+
+- drainLoop 在收尾期（已收 done）`ws.write` 抛 → catch 同步 unlink + sendError(dc) → `dc.close` → `dc.onclose` 走 `doneReceived=true` 分支 → `finishUpload` → 在 ws 已 destroyed 情况下 `ws.end` callback 同步 unlink
+- `ws.on('error')` 同步 unlink + dc 后续 close → 同款
+
+两条都是预存 race，不限于本次变更引入。
+
+**为什么本期未一并修**：本次 deep-review 范围是"dedupe dual cleanup attach"，按"review 仅修本次变更引入的问题"原则不动。修复触发率低（要求 `doneReceived=true` + ws fopen 未完成 + ws 路径出错三件同发，工程上罕见）。
+
+**修复方向**：
+
+- 让 `finishUpload` 也走 `attachTmpCleanupOnce()` 兜底（要小心：成功路径 rename 后 listener 仍在，依赖 `safeUnlink` ENOENT 幂等性——目前已经满足）
+- 或者 drainLoop catch / `ws.on('error')` 在同步 unlink 之外也 attach 一次安全网，复用同款 helper
+
+---
+
 ## `coclaw.model.set` primary 尾随空格不友好
 
 **发现日期**：2026-05-15（D1 deep-review 第二轮 opus subagent 识别）

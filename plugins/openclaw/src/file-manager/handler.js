@@ -643,6 +643,17 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		let wsBackpressureCount = 0;
 		let wsError = false;
 		let finishing = false;
+		// 一次性 cleanup attach 守卫：dc.onerror 后 pion 通常紧跟 dc.onclose，
+		// 两条 cleanup 路径若都向 ws 挂 'close' 监听会重复 safeUnlink。
+		// 用 flag 而不是 wsError 守卫，是为了不破坏 SIZE_EXCEEDED 等"先同步 unlink、
+		// 再触发 dc.close → dc.onclose"路径：那条路径同样设 wsError=true 但**没**
+		// attach 过，仍需 dc.onclose 兜底 attach（fopen 完成后才删到真文件）
+		let cleanupAttached = false;
+		function attachTmpCleanupOnce() {
+			if (cleanupAttached) return;
+			cleanupAttached = true;
+			ws.on('close', () => safeUnlink(tmpPath));
+		}
 
 		// --- 受控写入：中间缓冲 + drain 循环 ---
 		const pendingQueue = [];
@@ -795,15 +806,20 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			if (doneReceived) {
 				// done 已收到但 drain 未完成 — finishUpload 中会检测 dcClosed 并清理 tmp
 				if (!finishing) finishUpload();
-			} else {
-				// 等 ws 关闭后再 unlink——fopen 未完成时直接 safeUnlink 会扑空被吞，
-				// 随后 fopen 完成创建文件却没人清，留下孤儿 tmp
-				ws.on('close', () => safeUnlink(tmpPath));
-				ws.destroy();
-				const elapsed = Date.now() - startTime;
-				remoteLog(`file.up.fail ${logTag}id=${transferId} reason=dc-closed received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
-				log.warn?.(`[coclaw/file] [${connId ?? '?'}] up.fail id=${transferId} reason=dc-closed received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
+				return;
 			}
+			// 等 ws 关闭后再 unlink——fopen 未完成时直接 safeUnlink 会扑空被吞，
+			// 随后 fopen 完成创建文件却没人清，留下孤儿 tmp。flag 守卫保证 dc.onerror
+			// 已 attach 过时不会重挂第二个 listener
+			attachTmpCleanupOnce();
+			ws.destroy();
+			// dc.onerror 已打过 reason=dc-error fail 日志 → 跳过 reason=dc-closed
+			// 避免双触发时 fail 日志重复（SIZE_EXCEEDED 路径打的是 reason=size-exceeded
+			// 的 reject 日志，不在此 fail 命名空间，不受影响）
+			if (wsError) return;
+			const elapsed = Date.now() - startTime;
+			remoteLog(`file.up.fail ${logTag}id=${transferId} reason=dc-closed received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
+			log.warn?.(`[coclaw/file] [${connId ?? '?'}] up.fail id=${transferId} reason=dc-closed received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
 		};
 
 		// pion 异步 send 错误经此回调上报；触发已有清理路径
@@ -813,7 +829,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			draining = false;
 			pendingQueue.length = 0;
 			// 同上：等 ws 关闭后再 unlink，避开 fopen-vs-unlink race
-			ws.on('close', () => safeUnlink(tmpPath));
+			attachTmpCleanupOnce();
 			ws.destroy();
 			const elapsed = Date.now() - startTime;
 			/* c8 ignore next -- ?? fallback for non-Error throw */

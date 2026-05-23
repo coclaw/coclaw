@@ -2766,6 +2766,170 @@ test('handleFileChannel PUT: dc.onerror 在已关闭/已错误状态下幂等', 
 	}
 });
 
+// pion 真实行为：dc 出错后会接着 close。修复前 dc.onerror + dc.onclose 顺序触发会让
+// dc.onclose 的 not-done else 分支再 attach 一个 ws.on('close', safeUnlink) 并打第二条
+// fail 日志。修复后 cleanupAttached flag 守卫 + wsError 日志守卫保证：
+//   - ws 上仅一个 close listener / safeUnlink 仅一次
+//   - 只一条 reason=dc-error 的 fail 日志（reason=dc-closed 被 wsError 守卫跳过）
+test('handleFileChannel PUT: dc.onerror 后 dc.onclose 不重复 attach ws close 监听', async () => {
+	const dir = await makeTmpDir();
+	try {
+		resetRemoteLog();
+		let lastWs = null;
+		let unlinkCount = 0;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (p, opts) => {
+					lastWs = fsSync.createWriteStream(p, opts);
+					return lastWs;
+				},
+				unlink: async (p) => {
+					unlinkCount += 1;
+					return fs.unlink(p).catch(() => {});
+				},
+			},
+		});
+		const dc = createMockDC('file:dual');
+		handler.handleFileChannel(dc, 'c_dual');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'd.txt', size: 100 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		assert.ok(lastWs, 'createWriteStream should have been called');
+
+		// pion 真实顺序：先 onerror 再 onclose
+		dc.onerror(new Error('io: closed pipe'));
+		dc.onclose?.();
+
+		// 等 unlink 真的被调（fire-and-forget），再多等 100ms 让潜在的第二次 unlink
+		// 有机会发生 —— 修复对了的话第二次永远不来
+		await waitFor(() => unlinkCount >= 1, { timeoutMs: 2000, label: 'safeUnlink fire-and-forget' });
+		await new Promise((r) => setTimeout(r, 100));
+
+		const failLogs = remoteLogBuffer.filter((e) => /file\.up\.fail/.test(e.text) && /id=dual/.test(e.text));
+		assert.equal(failLogs.length, 1, `expected exactly 1 fail log, got: ${JSON.stringify(failLogs.map((e) => e.text))}`);
+		assert.match(failLogs[0].text, /reason=dc-error/);
+		// 关键不变式：cleanupAttached flag 守卫 → ws 上 close listener 仅一个
+		assert.equal(lastWs.listenerCount('close'), 1, 'ws should have exactly one close listener');
+		assert.equal(unlinkCount, 1, 'safeUnlink should fire exactly once');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// 强化变体：用延迟 fopen 的 mock ws 钉死"race fix 在 dc.onerror→dc.onclose 路径下也保留"。
+// dc.onerror 触发时 fopen 未完成 → 安全网 listener 必须 attach → fopen 后 ws 自然 close →
+// listener 触发 safeUnlink 才删到真文件（unlinkCalls.some(c => c.existed)）。
+// 这条不变量在 size-exceeded 路径已有覆盖（line 1773），本测试补 dc.onerror→dc.onclose 路径。
+test('handleFileChannel PUT: dc.onerror→dc.onclose 在 fopen 完成前也能清理孤儿', async () => {
+	const dir = await makeTmpDir();
+	try {
+		resetRemoteLog();
+		const unlinkCalls = [];
+		const FOPEN_DELAY_MS = 30;
+		let fopenDoneResolve;
+		const fopenDonePromise = new Promise((r) => { fopenDoneResolve = r; });
+		let lastWs = null;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path) => {
+					const ws = new EventEmitter();
+					let destroyed = false;
+					let fopenDone = false;
+					setTimeout(() => {
+						fopenDone = true;
+						fsSync.writeFileSync(path, '');
+						if (destroyed) ws.emit('close');
+						fopenDoneResolve();
+					}, FOPEN_DELAY_MS);
+					ws.write = () => true;
+					ws.end = () => {};
+					ws.destroy = () => {
+						destroyed = true;
+						if (fopenDone) ws.emit('close');
+					};
+					Object.defineProperty(ws, 'destroyed', { get: () => destroyed });
+					Object.defineProperty(ws, 'bytesWritten', { get: () => 0 });
+					lastWs = ws;
+					return ws;
+				},
+				unlink: async (p) => {
+					unlinkCalls.push({ path: p, existed: fsSync.existsSync(p) });
+					return fs.unlink(p);
+				},
+			},
+		});
+		const dc = createMockDC('file:dual-race');
+		handler.handleFileChannel(dc, 'c_dual_race');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'r.txt', size: 100 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+
+		// pion 真实顺序：先 onerror 再 onclose，且 fopen 故意还没完成
+		dc.onerror(new Error('io: closed pipe'));
+		dc.onclose?.();
+
+		// 等 fopen 落盘 + ws 自然 emit close + listener 触发 safeUnlink
+		await fopenDonePromise;
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
+
+		// 关键不变式：必须有一次 unlink 抓到 post-fopen 的真文件（race fix 没退化）
+		assert.ok(unlinkCalls.some((c) => c.existed), `safeUnlink should target an existing tmp file (post-fopen), got: ${JSON.stringify(unlinkCalls)}`);
+		// 同时 dedupe 不变量也成立：仅一个 close listener
+		assert.equal(lastWs.listenerCount('close'), 1, 'ws should have exactly one close listener');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// 反向顺序：dc.onclose 先发，dc.onerror 跟随。dc.onerror 的 `if (dcClosed || wsError) return`
+// 早返必须生效——不重复 attach、不重复 fail 日志。
+test('handleFileChannel PUT: dc.onclose 先于 dc.onerror 时也保持 listener/log 各一', async () => {
+	const dir = await makeTmpDir();
+	try {
+		resetRemoteLog();
+		let lastWs = null;
+		let unlinkCount = 0;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (p, opts) => {
+					lastWs = fsSync.createWriteStream(p, opts);
+					return lastWs;
+				},
+				unlink: async (p) => {
+					unlinkCount += 1;
+					return fs.unlink(p).catch(() => {});
+				},
+			},
+		});
+		const dc = createMockDC('file:close-first');
+		handler.handleFileChannel(dc, 'c_close_first');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'c.txt', size: 100 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+
+		// 反向：先 onclose 后 onerror
+		dc.onclose?.();
+		dc.onerror(new Error('late error'));
+
+		await waitFor(() => unlinkCount >= 1, { timeoutMs: 2000, label: 'safeUnlink fire-and-forget' });
+		await new Promise((r) => setTimeout(r, 100));
+
+		const failLogs = remoteLogBuffer.filter((e) => /file\.up\.fail/.test(e.text) && /id=close-first/.test(e.text));
+		assert.equal(failLogs.length, 1, `expected exactly 1 fail log, got: ${JSON.stringify(failLogs.map((e) => e.text))}`);
+		assert.match(failLogs[0].text, /reason=dc-closed/);
+		assert.equal(lastWs.listenerCount('close'), 1, 'ws should have exactly one close listener');
+		assert.equal(unlinkCount, 1, 'safeUnlink should fire exactly once');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('handleFileChannel GET: 成功路径必须 await dc.close()（回归保护）', async () => {
 	const dir = await makeTmpDir();
 	try {
