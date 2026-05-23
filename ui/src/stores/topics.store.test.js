@@ -254,8 +254,12 @@ describe('topics store', () => {
 
 	// await 期间 claw 被另一端解绑（SSE claw.unbound → removeByClaw 同步清 byId）：
 	// plugin 那条 JSON 是持久信息，重绑同 id claw 会自然拉回；UI 端不应再写一条挂在
-	// 已消失 claw 上的 dangling 条目（点开会失败）。
-	test('createTopic await 期间 claw 被解绑 → 不写本地 byId（plugin 那条由重绑后 loadTopicsForClaw 拉回）', async () => {
+	// 已消失 claw 上的 dangling 条目，也不能 return topicId —— 否则调用方
+	// (ChatPage.__handleNewTopicSend) 会拿这个 id 跳到 /topics/<id>，但 topicsStore
+	// 没写 byId → chatStore computed 返回 null → 用户卡在空白 topic 路由。
+	// 抛 CLAW_DISCONNECTED 让调用方走 catch 恢复 draft + files；plugin 那条 JSON 留着，
+	// 重绑同 id claw 后 loadTopicsForClaw 自然拉回。
+	test('createTopic await 期间 claw 被解绑 → 抛 CLAW_DISCONNECTED 且跳过本地 byId 写入', async () => {
 		const clawsStore = useClawsStore();
 		let resolveCreate;
 		const conn = {
@@ -272,10 +276,9 @@ describe('topics store', () => {
 
 		// plugin 端创建已落库，返回 topicId（持久数据正确）
 		resolveCreate({ topicId: 'orphan-uuid' });
-		const id = await p;
 
-		// 返回 topicId 仍是真的（plugin 写好了），UI 端跳过本地写入
-		expect(id).toBe('orphan-uuid');
+		await expect(p).rejects.toMatchObject({ code: 'CLAW_DISCONNECTED' });
+		// 本地不写"挂在已消失 claw 上"的 dangling 条目
 		expect(store.byId['orphan-uuid']).toBeUndefined();
 	});
 

@@ -1261,6 +1261,44 @@ describe('ChatPage new topic', () => {
 		expect(newStoreRestoreSpy).toHaveBeenCalledWith(files);
 	});
 
+	// createTopic 在 await 期间 claw 被解绑 → topics.store 抛 CLAW_DISCONNECTED。上层必须：
+	//   1) 不 promote、不路由、不 sendMessage——否则用户会卡在 byId 没写入的空白 topic 路由
+	//   2) 用 chat.errWsClosed 文案提示用户连接已断
+	//   3) __creatingTopic 归零，让用户能再次重试
+	test('new-topic createTopic 抛 CLAW_DISCONNECTED → 不路由不 promote、提示连接断开、允许重试', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		const disconnectedErr = new Error('Claw disconnected during topic creation');
+		disconnectedErr.code = 'CLAW_DISCONNECTED';
+		const createSpy = vi.spyOn(topicsStore, 'createTopic').mockRejectedValueOnce(disconnectedErr);
+		await flushPromises();
+
+		const promoteSpy = vi.spyOn(chatStoreManager, 'promoteToTopic');
+		mockRouter.replace.mockImplementation(() => Promise.resolve());
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		// 不 promote、不路由 —— 用户没有跳到陷阱路由
+		expect(promoteSpy).not.toHaveBeenCalled();
+		expect(mockRouter.replace).not.toHaveBeenCalled();
+		// 提示用"连接断开"文案
+		expect(mockNotify.error).toHaveBeenCalledWith('Connection lost');
+
+		// __creatingTopic 归零：第二次发送能再次发起 createTopic（守卫已恢复）
+		createSpy.mockResolvedValueOnce('new-topic-uuid');
+		input.vm.$emit('send', { text: 'retry', files: [] });
+		await flushPromises();
+		expect(createSpy).toHaveBeenCalledTimes(2);
+	});
+
 	// B5：topic 创建后 accepted-then-failed 的 toast 路径——
 	// 与普通 sendMessage 路径走同一个 __notifyRunFailed，但 __handleNewTopicSend 是独立分支，
 	// 加 protect-against-regression 测试避免后续重构把 toast 调用从 topic 分支漏掉

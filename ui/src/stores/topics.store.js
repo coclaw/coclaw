@@ -163,11 +163,15 @@ export const useTopicsStore = defineStore('topics', {
 			if (!topicId) throw new Error('Failed to create topic');
 			// await 期间 claw 可能被 SSE claw.unbound 移除（cleanupClawResources → removeByClaw 同步清空）
 			// plugin 那条 JSON 记录是持久信息留着不动——重新绑同 id claw 时 loadTopicsForClaw 会自然拉回。
-			// 此处只挡 UI 端写入"挂在已消失 claw 上的 dangling 条目"。
+			// 这里抛 CLAW_DISCONNECTED 让调用方（ChatPage.__handleNewTopicSend）走 catch 恢复
+			// draft + files：直接 return topicId 会让上层 promote/路由继续走，但 byId 未写入
+			// 导致跳到的 topic 路由下 chatStore computed 返回 null，用户卡在空白页面。
 			const clawsStore = useClawsStore();
 			if (!clawsStore.byId[id]) {
-				console.debug('[topics] createTopic: claw removed during create, skipping local write topicId=%s clawId=%s', topicId, id);
-				return topicId;
+				console.debug('[topics] createTopic: claw removed during create topicId=%s clawId=%s', topicId, id);
+				const err = new Error('Claw disconnected during topic creation');
+				err.code = 'CLAW_DISCONNECTED';
+				throw err;
 			}
 			this.byId[topicId] = { topicId, agentId, title: null, createdAt: Date.now(), clawId: id };
 			return topicId;

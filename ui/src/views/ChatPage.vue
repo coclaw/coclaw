@@ -794,6 +794,8 @@ export default {
 				READY_TIMEOUT: 'chat.errRpcTimeout',
 				TRANSFER_FAILED: 'chat.errTransferFailed',
 				SIZE_EXCEEDED: 'chat.errFileTooLarge',
+				// topics.store.createTopic 在 await 期间 claw 被解绑时抛出，归类为"连接断了"
+				CLAW_DISCONNECTED: 'chat.errWsClosed',
 			};
 			const key = codeMap[err?.code];
 			if (key) return this.$t(key);
