@@ -130,34 +130,34 @@
 
 ### 疑似 bug
 
-16. **streaming overlay 永久残留 bug（DC 失联场景）** — 详见 [`ui/docs/streaming-overlay-stuck-bug.md`](docs/streaming-overlay-stuck-bug.md)
+1. **streaming overlay 永久残留 bug（DC 失联场景）** — 详见 [`ui/docs/streaming-overlay-stuck-bug.md`](docs/streaming-overlay-stuck-bug.md)
     - 触发条件极窄（≥3 分钟持续网络故障 + ICE restart 预算耗尽），用户能通过发新消息自愈，**暂不修复**
     - 文档涵盖：完整链路、关键事实核实（assistant 增量流是 cumulative、microtask 原子窗口）、4 个修法方案及影响面、源码锚点速查
     - 原 #31（`run.ended` 与 streamingMsgs 合并语义错位）属同一 bug 不同侧面，已合并入文档
 
-17. **'rpc' 快通道遇到上游 persist 静默吞错时无诊断信号**
+2. **'rpc' 快通道遇到上游 persist 静默吞错时无诊断信号**
     - 现状：上游 `agent-command.ts:1130-1134`、`:1553-1557` 的 `persistCliTurnTranscript` / `persistAcpTurnTranscript` 用 `try/catch` 吞掉异常后继续 `respond(true, "ok")`。CoClaw UI 的 'rpc' 快通道（`chat.store.js:1388-1392`）拿到 res 帧后立即 `loadMessages` + `dropRun`，不校验 `hasTerminalAssistantAfter`。极罕见情况下用户会看到"任务未完成"且无 remoteLog
     - 修复方向：'rpc' 快通道也加 `hasTerminalAssistantAfter` 校验；不通过时打一条 `remoteLog('agent.run.persist-failed-rpc ...')`
 
 ### 文档 / 可观测性
 
-18. **`agent-event-streams-and-rpcs.md` "强保证"措辞软化**
+3. **`agent-event-streams-and-rpcs.md` "强保证"措辞软化**
     - 现状：文档 §四.2 写"二阶段 res 帧一发出，transcript 一定已写完——这是源码层面的同步 await 链保证"。实际上游 persist 用 `try/catch` 吞错后仍会 respond，是"尽力保证"而非"强保证"
     - 修复：把"强保证"改成"persist attempt 已在 respond 前 await；若 persist 自身抛错，会被 log.warn 后继续响应"，并在 §五.1 信号汇总表的"transcript 已写完？"列把 RPC 二阶段从 "**是**（同步 await 保证）" 改成 "**几乎是**（persist 在 respond 前 await，但抛错会被吞）"
 
-19. **`agent.run.persist-stale` remoteLog 维度补全**
+4. **`agent.run.persist-stale` remoteLog 维度补全**
     - 现状：`chat.store.js:1417` 只打 `endReason / runKey / elapsed=3s`
     - 修复：补 `runId / msgCount / anchorId / clawId`，并把 `elapsed=3s` 改成实际累计耗时（含两次 loadMessages 自身的 RPC 时间）
 
 ### 测试
 
-20. **缺显式 'rpc' fast-path 命名测试**
+5. **缺显式 'rpc' fast-path 命名测试**
     - 现状：本次新增 4 条测试都是 lifecycle 路径；'rpc' 路径只是被旧测试隐式覆盖
     - 修复：在 `chat.store.test.js` 加一条显式 `endReason='rpc' → 立即拉 + dropRun，无 sleep` 的命名测试
 
 ### 上线后观察
 
-21. **3s 重试上限是否够**
+6. **3s 重试上限是否够**
     - 现状：`PERSIST_AWAIT_MS=1000` + `PERSIST_RETRY_AFTER_MS=2000` = 3s 上限，针对 pi 层 `appendFileSync` 的同步写盘已足够，但没 p99 实测数据
     - 行动：上线后观察 `agent.run.persist-stale` remoteLog 频率；高频则考虑指数退避或常量配置化（比如长 transcript / 慢盘场景）
 
@@ -167,7 +167,7 @@
 **关联 commit**：`fa42501` 提的 backlog（`rtc:restart-rejected generation-id design`）
 **第 9 轮已落 UI 侧 partial 闭合**：`bd394fc` 闭合"旧 restart 已 close 后状态离开 restarting"子窗口；本条覆盖剩余的"旧 restart 已 close 后又进入新 restart"子窗口
 
-22. **`rtc:restart-rejected` 加 `restartGen`，UI 收时按代次号 drop 旧 reject**
+1. **`rtc:restart-rejected` 加 `restartGen`，UI 收时按代次号 drop 旧 reject**
     - 现状：UI 当前用 `webrtc-connection.js` 的 `__state === 'restarting'` 做粗粒度 stale guard。旧 restart 在飞 → pause/rebuild → 新 PC 进 restarting → 旧 reject 迟到时若新 PC 恰好也在 restarting 态，会被误杀（误触发 close + asFailed）
     - 修法：
         - plugin 三处发 `rtc:restart-rejected` 的位置在 reject payload 里加 `restartGen`（回带接收到的 ICE restart offer 携带的代次号）
@@ -190,37 +190,37 @@
 
 来源：8 路并行 review（4 codex + 4 后台 claude -p）。仅登记值得追踪的疑似 bug 和 backlog 跟踪丢失项；G2/G3/G1 的 nit（vite 配置选择 / changeset 标签错位 / refinement chain 等）不登记。
 
-23. **`__resumeOnline` 入口缺 `claw.online` 防御 gate（红线 3 纸面差）**
+1. **`__resumeOnline` 入口缺 `claw.online` 防御 gate（红线 3 纸面差）**
     - 现状：红线 3 文档要求 5 处布点，`__resumeOnline` 入口当前只 gate 了 `_sigOffline`，没显式 gate `claw.online`
     - 亲自核实：4 个调用方（`updateClawOnline` prev=false 分支、`updateClawOnline` 同值 + rtcPhase=failed、`applySnapshot` Phase 3 toResume、`__resumeAllClawsForSigOnline`）全部过滤了 online=true → offline claw 不会进入，运行时不触发问题
     - 决策方向二选一：a) 补防御性 gate 落实红线 5 处布点；b) 修红线文档明确"`__resumeOnline` 入口由调用方契约保证 claw.online"
 
-24. **`topics.store.createTopic` 缺 post-await `byId` re-check（ghost-topic-on-removed-claw race）**
+2. **`topics.store.createTopic` 缺 post-await `byId` re-check（ghost-topic-on-removed-claw race）**
     - 来源：commit 9ab962d round 24 backlog
     - 现状：`createTopic` 在 await 期间 claw 被 removeClawById 时，return 后仍可能写入 ghost 条目。窄窗口
     - 修法：post-await 加 `byId` re-check，被 evict 即放弃
 
-25. **`claw-connection.setRtc` non-ready-RTC defensive-net test 缺**
+3. **`claw-connection.setRtc` non-ready-RTC defensive-net test 缺**
     - 来源：commit 9ab962d round 24 backlog
     - 现状：测试覆盖未锁住"setRtc 收到非 ready 状态 rtc 时不应被传播到 isReady"的契约
     - 修法：补单元测试
 
-26. **`__ensureRtc` connected early-return 当 `rtc.state==='connected' && !rtc.isReady`**
+4. **`__ensureRtc` connected early-return 当 `rtc.state==='connected' && !rtc.isReady`**
     - 来源：commit 54b609d round 20 backlog
     - 现状：`__ensureRtc` early-return 看 state===connected，但 isReady=false 时 DC 实际不可用；窄窗口可能 short-circuit 错误判定
     - 修法待定：可能改 early-return 条件 + 重 init；需深入 review
 
-27. **`setupAppStateChange` 直接回调捕获，测试注入需要清理**
+5. **`setupAppStateChange` 直接回调捕获，测试注入需要清理**
     - 来源：commit 665f0e7 round 22 backlog
     - 现状：测试用 vi.doMock 注入有副作用残留风险；setupAppStateChange 直接捕获 App 引用而不是从工厂注入，单测覆盖被钳制
     - 修法：factor App reference for test injection，或 vi.doMock 用法收紧
 
-28. **`isConnectingRtc` / `unreachableClaws` getter 语义在 sig offline + rtcPhase=building/recovering 期间不清晰**
+6. **`isConnectingRtc` / `unreachableClaws` getter 语义在 sig offline + rtcPhase=building/recovering 期间不清晰**
     - 来源：commit 4ae005e round 19 backlog（"P2-5"）
     - 现状：sig offline 时 `rtcPhase` 可能仍是 building/recovering（pre-existing 残留），UI 看到的 isConnectingRtc / unreachableClaws 状态不直觉
     - 决策与 SignalingBanner UX 工作捆绑，等 UX 推进时一并处理
 
-29. **`manualRetryUnreachable()` 不直接检查 `_sigOffline`（UX wart）**
+7. **`manualRetryUnreachable()` 不直接检查 `_sigOffline`（UX wart）**
     - 来源：commit 68d9f99 round 18 backlog
     - 现状：`manualRetryUnreachable` 是用户点"重试"按钮触发；sig 不通时仍会进入 retry 流程，看似无反应。UX 不友好
     - 修法：UX 层面在 sig offline 时 disable 按钮 + 提示文案；或 `manualRetryUnreachable` 入口加 sig gate + 反馈
@@ -231,7 +231,7 @@
 
 来源：第 1 + 第 2 轮 codex-rescue 多维度并行 review。这两条均**自 55212ea (2026-04-06) 引入 anchorMsgId 起就存在**，本次 fix 只解了"必现 refresh"主路径，未触及这两条；非阻塞登记。
 
-30. **`!anchorId` 分支误 strip：当 server 返回历史 user 但当次 user 尚未持久化时，optimisticUser 被错误清掉**
+1. **`!anchorId` 分支误 strip：当 server 返回历史 user 但当次 user 尚未持久化时，optimisticUser 被错误清掉**
     - 现状：`agent-runs.store.js` `stripLocalUserMsgs` 的 no-anchor 分支用 `serverMessages.some((m) => m.message?.role === 'user')` 判定 server 是否已持久化当次 user。但这条只检查"server 有任意 user 消息"，无法区分"老历史 user"和"当次 user"
     - 复现路径（窄但真实）：activate 失败 → `this.messages=[]` → 用户 send（anchor 计算为 null）→ 用户立刻刷新（赶在 OpenClaw 持久化 curr_user 前）→ server 仅返回 `[old_user, old_a]` → `some(user)` 命中 old_user → optimisticUser 被 strip → optimisticClaw 末尾追加，merge 进 old_a 的 botTask → **用户刚发的消息从 UI 消失，老对话戴上"思考中"**
     - 触发条件较窄：activate 必须先失败（少见），用户必须立即送消息且立即刷新（罕见）
@@ -241,13 +241,13 @@
         - 方案 C：彻底改 anchor 语义为"时间戳锚点"而非"id 锚点"，规模较大
     - 必须配套补 chat.store + agent-runs.store 单元测试（"no-anchor + server 仅有历史 user 无 curr_user"场景）
 
-31. **`run.ended` 与 streamingMsgs 合并语义错位** — 已并入 #16，详见 [`ui/docs/streaming-overlay-stuck-bug.md`](docs/streaming-overlay-stuck-bug.md)
+2. **`run.ended` 与 streamingMsgs 合并语义错位** — 已并入 #16，详见 [`ui/docs/streaming-overlay-stuck-bug.md`](docs/streaming-overlay-stuck-bug.md)
 
 ## MainList agent 排序 deep-review 发现的预存问题（2026-05-01）
 
 来源：MainList 排序 + 标签改造 deep-review。第 1 轮 codex-rescue 并发维度报告。该问题**自 sessions.store 引入 `_loadingPromise` / `_perClawLoading` 合流以来就存在**，本次重写（`chat.history` → `sessions.list`）只是沿用原合流模式，未触发但暴露出来。
 
-33. **`_loadingPromise` 老 promise 的 stale finally 在 logout/同 id 重绑窗口可能误清替换 promise**
+1. **`_loadingPromise` 老 promise 的 stale finally 在 logout/同 id 重绑窗口可能误清替换 promise**
     - 现状：`sessions.store.js:121` 的 `_loadingPromise = null` 是**无条件清**，没有像 `_perClawLoading.set` 那样的"仅当 Map 当前条目仍是本 promise 时才清"identity guard
     - 时序：旧 `loadAllSessions()` 在飞 → logout 触发 `__resetSessionsInternals` 清内部状态 → 新 `loadAllSessions()` 写入新 promise → 旧 finally 跑到 `_loadingPromise = null` → 把替换 promise 也清了 → 下一次同时刻并发的 `loadAllSessions()` 不再合流，发起独立 RPC
     - 实际影响：极窄窗口 + 仅多发一次 RPC，无功能性故障
@@ -258,7 +258,7 @@
 
 来源：commit f201b0a 上的第 2 轮 deep-review（5 路并行 codex-rescue + 1 opus 重派）。下列条目均与 f201b0a 改动无关，本次 review 中浮出。
 
-34. **`agent-runs.store.runAgent` register 早于 chat 层 onAccepted → 极迟到 accepted 后产生 split-brain**
+1. **`agent-runs.store.runAgent` register 早于 chat 层 onAccepted → 极迟到 accepted 后产生 split-brain**
     - 来源：commit `44e3bf3` 引入 runAgent 抽象时即存在
     - 现状：`agent-runs.store.js:209-228` 内 onAccepted handler 先 `register(runId, ...)` + `__startWatcher`，再调 chat 层 onAccepted；chat 层 pre-accept 180s 超时（`chat.store.js:527`）已触发 → catch 已跑 → `preAcceptInvalidated=true` 短路 chat 层 onAccepted；但此时 agent-runs 已注册了真实 run，watcher 已起，`allMessages` getter 仍会把 streamingMsgs 合进 UI
     - 触发条件极窄：server 在 180s 后才 accept；通常 DC 早 reject 了
@@ -266,21 +266,17 @@
     - 修法方向：runAgent 的 onAccepted 在调外部 onAccepted 之前等其返回 sentinel，或外层加"chat 层已认定 pre-accept 失败 → 立刻 unregister run + abort RPC"通道
     - 配合 §"Bug 1 修复 review 后续" 的 #16 / #17 一并思考
 
-35. **`loadAllSessions` 与 `loadSessionsForClaw` 同 claw 同时飞行可互相覆盖** — ✅ 2026-05-11 已解决
-    - 解决方案：`loadAllSessions.__doLoadAll` 改为对每个 claw 调 `loadSessionsForClaw`，两个入口共享 `_perClawLoading` 飞行缓存；同时 `loadAllTopics` 同对称改造。详见 commit "refactor(ui): merge sessions/topics load paths via per-claw in-flight cache"
-    - 原描述：两套 dedup（`_loadingPromise` vs `_perClawLoading`）独立，同 claw 可有两个 in-flight fetch；`mergeFetchResults` 的"已查询 claw"路径直接以 fetch 结果替换，后完成的覆盖先完成的
-
-36. **claw 解绑后短时同 id 重绑期间，旧 fetch 结果可污染新 claw**
+2. **claw 解绑后短时同 id 重绑期间，旧 fetch 结果可污染新 claw**
     - 现状：`removeSessionsByClawId` 清 `_perClawLoading` 但不清全局 `_loadingPromise`；旧 `loadAllSessions` 飞行中 → claw 解绑后短时同 id 重绑 → `mergeFetchResults` 的 `clawsById[bid]` 校验通过（新 claw 在）→ 旧数据被写入新 claw 空间
     - 触发条件：极窄；需在飞行中 + 同 id 重绑 + clawsById 已有新 claw 实例
     - 修法方向：`__doLoadAll` 的 results 处理环节加 claw 实例 identity 比对（不仅看 byId 是否有 entry，也看是不是同一个 claw 对象）；或 removeSessionsByClawId 同步给一个 epoch，旧 fetch 结果按 epoch 丢弃
 
-37. **slash 命令期间点 STOP 留下 `__pendingCancelIntent` 残留 → `isCancelling` getter 误亮**
+3. **slash 命令期间点 STOP 留下 `__pendingCancelIntent` 残留 → `isCancelling` getter 误亮**
     - 现状：sendSlashCommand 期间 `sending=true` → STOP 按钮可见可点；`cancelSend` 走 pre-accept 分支（chat.store.js:781-789）设 `__pendingCancelIntent=true` 后返回 null。slash 路径既无 onAccepted 来消费这条 intent，`__cleanupSlashCommand`（line 1080-1094）和 slash catch 块也都不清；intent 残留到下次 sendMessage / sendSlashCommand 入口的 `__clearCancelling('superseded')` 才清掉
     - 实际影响：用户感知"点了 STOP 没反应"，且 slash 自然结束后期间 `isCancelling` 仍为 true（依赖 `__pendingCancelIntent`，line 168-170），可能影响其它依赖 getter 的 UI 反馈
     - 修法方向：a) UI 在 slash 期间 disable STOP 按钮（chatStore.__slashCommandType 非空时）；或 b) `__cleanupSlashCommand` 同步清 `__pendingCancelIntent`（slash 不可被服务端取消，intent 没有意义）
 
-38. **`getActivity` 在 MainList 排序中 O(A×S) 线性扫描**
+4. **`getActivity` 在 MainList 排序中 O(A×S) 线性扫描**
     - 现状：`sessions.store.js:42-50` `getActivity` 对每个 (clawId, agentId) 全量遍历 items；MainList 的 `agentItems` computed（`MainList.vue:264, 278`）对每个 agent 调一次，最坏 O(A×S + A log A)
     - 实际影响：几十条 item 内可忽略；多 claw 多 session 长期使用后可能延迟 MainList 渲染
     - 修法方向：sessions.store 内维护 `Map<clawId:agentId, item>`，getActivity O(1) 命中
@@ -289,20 +285,20 @@
 
 来源：4 路并行 codex-rescue review（3 路按维度切分 + 1 路综合）。本批主要 bug 已在同 commit 修复，下列为相关边角与预存问题。
 
-39. **ImgViewDialog 直接复用 store 的 ObjectURL，store dispose 期间预览会裂图**
+1. **ImgViewDialog 直接复用 store 的 ObjectURL，store dispose 期间预览会裂图**
     - 现状：`ChatInput.vue:476-480` `previewImg(f)` 把 `f.url` 拷到 `previewImgSrc` 显示。若 LRU 淘汰 / 登出 / promote dispose 触发 `chat.store.dispose` revoke 该图片 url，dialog 仍持引用，浏览器看到 `blob:` 但实际无效，图裂
     - 触发：用户预览着图 + 同时触发 store dispose（10+ topics 时 LRU、登出、promote 流程）
     - 与本次方案的关系：附件归 store 管后，store dispose 路径增加，命中概率放大；但 dialog 与 store 解耦的修复是独立工作
     - 修法：dialog 打开时单独 `URL.createObjectURL(f.file)` 自建副本，关闭时自 revoke；外部 `f.url` 仅用于缩略图列表渲染
     - 设计 dump 已标注本项可同期顺手修，未在本次范围内
 
-40. **`__handleNewTopicSend` 中 router.replace 失败时 oldStore 视图破图**
+2. **`__handleNewTopicSend` 中 router.replace 失败时 oldStore 视图破图**
     - 现状：`ChatPage.vue:640-684` promote 之后 `newStore.inputFiles === oldStore.inputFiles`（同源数组）。若 `router.replace` 抛错（如 router guard 取消），catch 路径上 `targetStore` 已被赋值为 newStore，会调 `targetStore.clearInputFiles()`：循环 revoke 共享数组里所有图片 url 后再 `this.inputFiles = []`（重指向空数组）。但 oldStore.inputFiles 仍指向原数组（含已 revoke 的 url），ChatInput 看的是 oldStore，所有图片立即破图
     - 触发条件：仅 router.replace 抛错就足够（不需要 LRU 同时触发）。router guard 抛 false / next(false) / 守卫 throw 都算
     - 修法方向：catch 中检测 promote 已发生但 router.replace 失败 → 切断同源（先把 newStore.inputFiles 重指向独有空数组，再 dispose newStoreKey），然后在 oldStore 上做 clear+restoreFiles
     - 实际影响：本项目当前 router 配置下 replace 抛错的场景有限，但只要触发就视觉很差
 
-41. **new-topic store 不入 LRU**
+3. **new-topic store 不入 LRU**
     - 现状：`chat-store-manager.js:33` get 仅对 `storeKey.startsWith('topic:')` 入 LRU。`new-topic:` 前缀不淘汰
     - 实际影响：极小——每个 (clawId, agentId) 组合最多一个 new-topic store；用户访问过的组合数 ≤ 数十量级；登出 disposeAll 兜底
     - 与设计 dump 偏离：dump 原写"new-topic 也入 topic LRU"，实现与之不一致；已在 chat-store-manager.js:33 处加注释说明保留当前行为的理由。如未来用户反馈附件累积内存压力，再考虑加主动淘汰
@@ -311,30 +307,30 @@
 
 来源：第二轮 4 路并发 codex-rescue review。本批未发现真必修业务问题（仅 2 处文档/注释偏差当场修复）；下列为发现的边角与预存问题，登记备查。
 
-42. **`chatStoreManager.dispose()` 部分失败时 instances/topicLru 残留**
+1. **`chatStoreManager.dispose()` 部分失败时 instances/topicLru 残留**
     - 现状：`chat-store-manager.js:86-95` `store.dispose()` 或 `$dispose()` 抛异常时，下面的 `instances.delete()` + `topicLru.splice()` 都跑不到，受害者会留在两个索引里
     - 已有部分缓解：`__evictTopics`（chat-store-manager.js:140-151）外层有 try/catch + 兜底硬清，但仅覆盖 LRU 淘汰路径；其它调用方（`commit()` 内的 dispose、`disposeAll`）未兜底
     - 预存问题：本次修复未改 `dispose()` 函数体；该问题在 ba3bf63 之前就存在
     - 修法方向：把 `instances.delete()` + `topicLru.splice()` 放进 finally，分别对 `store.dispose()` / `$dispose()` 各包 try/catch
 
-43. **`promoteToTopic` 内部抛错时新建的 newStore 泄漏**
+2. **`promoteToTopic` 内部抛错时新建的 newStore 泄漏**
     - 现状：`chat-store-manager.js:62-83` 中 `this.get(newStoreKey, opts)` 已 instances.set 新 store；若后续 `newStore.activate({skipLoad:true})` 或 `inputFiles` 赋值抛异常，promote 函数抛出后 ChatPage catch 里 `targetStore` 仍是 null，无法 dispose 这个泄漏的 newStore
     - 现实概率：极低——`activate({skipLoad:true})` 是同步且短路的，正常路径不抛
     - 实际影响：泄漏 1 个 topic store + 其 inputFiles 中的 ObjectURL，登出 disposeAll 兜底
     - 修法方向：promoteToTopic 内部 try/catch，失败时 dispose(newStoreKey) 后 rethrow
 
-44. **`__handleNewTopicSend` 各 await 后未检查组件已卸载**
+3. **`__handleNewTopicSend` 各 await 后未检查组件已卸载**
     - 现状：`ChatPage.vue:626-684` 用户在 createTopic / router.replace / sendMessage 任一 await 期间返回 /topics 列表，函数仍继续跑——createTopic resolve 后 promote + router.replace 会强行把用户从 /topics 拽回到 topic chat 页面
     - 现实概率：用户点发送后毫秒级返回（如手机 back swipe）才能触发
     - 这是 Vue Options API + async router 的通用模式问题，不仅限于本次修复，但本次新增 router.replace 让它更明显
     - 修法方向：beforeUnmount 设 `this.__unmounted = true`，每个 await 后早返回 + 已发起的 newStore 主动 dispose
 
-45. **`saveBlobToFile` 异常路径未 revoke ObjectURL**
+4. **`saveBlobToFile` 异常路径未 revoke ObjectURL**
     - 现状：`src/utils/file-helper.js:156-169` Web 端创建 ObjectURL 后 a.click → removeChild → revoke 是直链；中间任一步抛异常会跳过 revokeObjectURL
     - 预存问题：本次修复未触及该函数
     - 修法：用 try/finally 包住 DOM 操作部分，确保 revokeObjectURL 一定跑
 
-46. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验**
+5. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验**
     - 现状：`ChatInput.vue:449-460` 录音文件直接 `chatStore.addFiles([item])`，跳过了 `addFiles` 入口的 MAX_UPLOAD_SIZE 检查
     - 实际影响：录音受 MAX_RECORD_DURATION + audioBitsPerSecond 双重限制，理论上限约 1.2MB，远低于 1GB 上限，不会触发
     - 设计偏差：与"MAX_UPLOAD_SIZE 是唯一入口"不变量略有出入，但实际无害
@@ -344,17 +340,17 @@
 
 **背景**：本次只补齐了"数据层不阉割"——直播路径（`agent-stream.js`）和回放路径（`session-msg-group.js`）现在都把 `toolCallId` / `args`（`tool_use.input` 归一化）、toolResult 的 `toolCallId` / `isError` 透传到 step。但渲染层完全没动，下面三件事共用同一份"按 `toolCallId` 索引到原 toolCall step"的能力，登记后续一并设计落地。
 
-47. **toolCall step 加可展开折叠区，展示 args + 完整 toolResult**
+1. **toolCall step 加可展开折叠区，展示 args + 完整 toolResult**
     - 现状：`ChatMsgItem.vue:130-134` 只画工具名 pill；toolResult 走另一条 step，受 `max-h-32` 限制
     - 修法：toolCall step 默认收起，点击展开看入参（pretty-printed JSON）+ 配对的 toolResult 完整内容；UX 设计时考虑 args 体积（长 bash 命令不刷屏）
 
-48. **toolCall ↔ toolResult 按 `toolCallId` 显式配对**
+2. **toolCall ↔ toolResult 按 `toolCallId` 显式配对**
     - 现状：`session-msg-group.js` 的 `processToolResult` 把 toolResult 直接 push 到 `currentTask.steps` 末尾，纯按 JSONL 出现顺序堆叠；`agent-stream.js` 直播路径同样按事件顺序排
     - 触发：现代模型并发发起多个 tool_use 块（同一 assistant message content 数组里有多个 tool_use），结果按各自跑完速度回包，顺序倒置时配对错乱
     - 修法：分组器收 toolResult 时按 `msg.toolCallId` 找对应 toolCall step 挂上去；找不到再 fallback 到末尾。直播路径同步加按 id 索引
     - 数据层已就绪（step 已带 `toolCallId`），就差查找逻辑
 
-49. **`phase: 'update'` 流式工具增量结果接住**
+3. **`phase: 'update'` 流式工具增量结果接住**
     - 现状：`agent-stream.js` 没有 `phase === 'update'` 分支，partialResult 整段被吞
     - 触发：长跑工具（bash 长命令、大文件操作）会一边跑一边推 partial
     - 修法：按 `toolCallId` 找回对应 toolCall step（与 #48 共用索引），把 `partialResult` 累计到 step 上的某字段；渲染时优先显示最新 partial，result 到来后替换为终态
@@ -363,12 +359,12 @@
 
 ## AddClawPage SSE 改造遗留（2026-05-05 deep review 发现）
 
-50. **`AddClawPage.startBinding` 无 in-flight guard，重复点击可能并发两次创建绑定码**
+1. **`AddClawPage.startBinding` 无 in-flight guard，重复点击可能并发两次创建绑定码**
     - 现状：`startBinding` 没有"上一次还没结束就忽略本次"的开关；用户快速双击"重新开始"会派出两次 `createBindingCode`，后到的响应会覆盖先到的 `bindingCode`，先到的码变孤儿（仍然在服务端有效，直至自然过期）
     - 注意：本问题在改造前的轮询版本同样存在，本次 SSE 改造未引入也未放大；归类为预存
     - 修法（可选）：加 `inflight` 标志或 generation token 序列化两次调用；或简单地按钮 `disabled` 直到上次完成
 
-51. **`AddClawPage.captureBaseline` 无超时，SSE 始终未连通时页面永久卡 "preparing"**
+2. **`AddClawPage.captureBaseline` 无超时，SSE 始终未连通时页面永久卡 "preparing"**
     - 现状：进页面后 `captureBaseline` 等 `clawsStore.fetched` 翻 true 才放行；若 SSE 永远不连通（极少：服务端可达但 SSE 路由挂掉），spinner 永远不消失
     - 现实影响低：SSE 是整个 authed 区域的命脉，SSE 死意味着 claws 列表/状态/解绑通知都不工作，用户感知到的不是"加 Claw 卡住"而是"整个 app 都不对劲"
     - 修法（可选）：加几秒超时，超时 → 走 loadError 错误态展示 retry 按钮；或者直接 fallback 到 `listClaws()` 一次拿底子
@@ -377,7 +373,7 @@
 
 来源：触屏下拉加载历史 + `__loadMoreHistory` race 加固 deep review。下列条目本次未修。
 
-52. **`__loadMoreHistory` 切走再切回同一 store 实例时的 race 残留**
+1. **`__loadMoreHistory` 切走再切回同一 store 实例时的 race 残留**
     - 现状：本次 race 加固用 `chatStore === targetStore` 身份比对区分"是否切走"。chatStoreManager 内同 chat 复用同实例——用户切到 B 又切回 A，A 的 store 仍是同一对象。如果旧 A 加载尚未醒来期间用户在 A 又主动下拉触发新加载，旧 A await 醒来时 race guard 不会命中，会用旧 prevScrollTop / prevHeight 测量值改 scrollTop；finally 也会因 store 一致而清掉新加载的 `__loadingHistory` 锁，可能导致后续双发
     - 触发条件极窄：切走 → 切回同 store → 期间用户主动再下拉 → 旧加载比新加载更晚醒来；本次修法前后表现一致（旧版本同样错），不是本次引入
     - 修法方向：把 store identity 比对换成 per-call token：`__loadMoreHistory` 入口 bump `__loadToken`，await 后比对 token，finally 也只在 token 匹配时清锁；可彻底覆盖"切走切回 / 同 store 多次重入"等所有路径
@@ -387,42 +383,42 @@
 
 来源：fake-timer 改造 + jsdom→node 环境分流后的多维度 deep review。下列条目均为预存（不由本次优化引入），本次未修。
 
-53. **`src/router/index.js:140-213` 顶层访问 `localStorage`/`window` 无守卫**
+1. **`src/router/index.js:140-213` 顶层访问 `localStorage`/`window` 无守卫**
     - 现状：router 在模块顶层调用 `createWebHistory()`、读 `localStorage`、读 `window`，无 `typeof` 守卫
     - 影响：现有 router 测试通过 mock `vue-router` 和 platform 绕开了崩溃路径；但一旦有新的 node-env 测试直接 import router 且不 mock，模块加载阶段就会崩
     - 修法方向：在 router 内的 browser-only 初始化位置加 `typeof window !== 'undefined'` 守卫；或保持 router 测试只走 jsdom
 
-54. **`agents.store.test.js:28-37` / `agent-runs.store.test.js:72-88` mock 沉默吞 unknown RPC method**
+2. **`agents.store.test.js:28-37` / `agent-runs.store.test.js:72-88` mock 沉默吞 unknown RPC method**
     - 现状：`mockConn` / `mockTwoPhaseConn` 对未在 case 中显式列举的 RPC 方法返回 `Promise.resolve(null)` / `{}`
     - 影响：production 若新增了 unexpected RPC 调用，测试不会 fail；断言只覆盖"必须打的方法"，没覆盖"不该打的方法"
     - 修法方向：mock 对 unknown method 主动 throw，让用例显式 opt-in 期望的调用面
 
-55. **`use-user-dialogs.test.js:23-34` 不断言 `overlay.create` 的 component 参数**
+3. **`use-user-dialogs.test.js:23-34` 不断言 `overlay.create` 的 component 参数**
     - 现状：测试只 capture `overlay.create` 的 component/options 但不断言传入的是哪个组件
     - 影响：production 若把 profile/settings overlay 用错了组件，所有 open/close 断言仍会通过
     - 修法方向：assert `overlay.create` 调用时第一个参数等于 `UserProfileDialog` / `UserSettingsDialog`，options 含 `{ destroyOnClose: false }`
 
-56. **`capacitor-app.test.js` 三个 network-debounce 用例普遍用 `.find()` 弱断言模式**
+4. **`capacitor-app.test.js` 三个 network-debounce 用例普遍用 `.find()` 弱断言模式**
     - 现状：所有用例用 `mock.calls.find(predicate)` toBeTruthy/toBeUndefined，未断言精确 `times` / `order` / payload 全字段
     - 影响：production 若发出额外的 `network:online` 事件、或把 `count=N` 之外的字段乱写，测试不会 fail
     - 修法方向：改用 `toHaveBeenCalledTimes(N)` + `toHaveBeenCalledWith({ detail: { typeChanged: ..., ... } })` 显式断言
 
-57. **vitest 缺全局 fakeTimers reset 配置**
+5. **vitest 缺全局 fakeTimers reset 配置**
     - 现状：`vitest.config.js` 没设 `fakeTimers` 全局配置；用 fake timer 的用例靠各自 `try/finally` 或 `afterEach(vi.useRealTimers)` 还原
     - 影响：极端路径（worker crash、SIGKILL）下 finally 没跑会让 fake timer 残留到下一个用例，产生迷惑性的时序失败
     - 修法方向：在 `vitest.config.js` 加全局 fakeTimers 配置或 `clearMocks/restoreMocks: true` 等保险
 
-58. **`src/services/file-helper.js` 浏览器下载 anchor 路径未被任何 unit test 覆盖**
+6. **`src/services/file-helper.js` 浏览器下载 anchor 路径未被任何 unit test 覆盖**
     - 现状：`saveBlobToFile` 在 files.store 测试里被 mock 掉，jsdom 下的 anchor download 路径没有针对性 unit test
     - 影响：anchor 创建逻辑回归不被 catch；目前只能靠 e2e 兜底
     - 修法方向：单独给 `saveBlobToFile` 写一组 jsdom 环境下的 unit test，覆盖 success / cleanup 分支
 
-59. **`src/utils/dialog-history.js` 浏览器 history listener 路径未被任何 unit test 覆盖**
+7. **`src/utils/dialog-history.js` 浏览器 history listener 路径未被任何 unit test 覆盖**
     - 现状：`use-user-dialogs.test.js` 直接 mock 了整个 `dialog-history.js`，浏览器 popstate / pushState 行为没有 unit test
     - 影响：dialog history 状态机回归不被 catch
     - 修法方向：单独给 `dialog-history.js` 写一组 jsdom 环境下的 unit test，覆盖 push / pop / current 状态切换
 
-60. **`src/services/signaling-connection.js` lifecycle listener 注册被 node-env 测试默默跳过**
+8. **`src/services/signaling-connection.js` lifecycle listener 注册被 node-env 测试默默跳过**
     - 现状：source 用 `typeof window !== 'undefined'` 守卫，jsdom 下注册 `app:foreground` / `network:online` listener，node 下跳过
     - 影响：`remote-log.test.js` 切到 node 后这两个 listener 不再被注册，但测试只断言 flush 行为不断言 listener，所以 pass。这条 listener 路径在 unit 层失去覆盖
     - 修法方向：要么 `remote-log.test.js` 切回 jsdom；要么单独给 signaling-connection 的 lifecycle listener 注册路径写一组 jsdom 测试
@@ -438,28 +434,28 @@
 
 修复方向：调用点 resolve 后增加 `if (result?.status === 'error') throw new Error(...)` 或类似分支；或者后续重构 `conn.request` 加白名单机制（仅对真正依赖 status 的 method 如 `agent.wait` 保留 resolve 语义）。
 
-61. **`chat.history`** — `chat.store.js:353`。status='error' 时 `currentSessionId` 被静默置空，影响后续历史加载和 sid 比较判定
-62. **`sessions.get`** — `chat.store.js:314, 404`。status='error' 视为空成功，会把已有 messages 清空
-63. **`sessions.list`** — `sessions.store.js:225`、`dashboard.store.js:190`。status='error' 让会话列表/dashboard 数据归零
-64. **`coclaw.chatHistory.list`** — `chat.store.js:1389`。status='error' 截断/清空历史分页
-65. **`coclaw.sessions.getById`** — `chat.store.js:460, 1448`。status='error' 把 topic 消息清空
-66. **`coclaw.topics.list/delete`** — `topics.store.js:81/206`。delete 只校验 `result.ok`，status='error' 下会误删本地 topic
-67. **`coclaw.files.*`** — `services/file-transfer.js:85/99/110/121`。列表和写操作都不校验 payload 中的错误状态
-68. **`coclaw.info.patch`** — `views/ManageClawsPage.vue:393`。重命名在任何 resolved payload 后都乐观应用
-69. **`agents.list`** — `agents.store.js:128`。status='error' 把 agent 列表标为"已加载但为空"
+1. **`chat.history`** — `chat.store.js:353`。status='error' 时 `currentSessionId` 被静默置空，影响后续历史加载和 sid 比较判定
+2. **`sessions.get`** — `chat.store.js:314, 404`。status='error' 视为空成功，会把已有 messages 清空
+3. **`sessions.list`** — `sessions.store.js:225`、`dashboard.store.js:190`。status='error' 让会话列表/dashboard 数据归零
+4. **`coclaw.chatHistory.list`** — `chat.store.js:1389`。status='error' 截断/清空历史分页
+5. **`coclaw.sessions.getById`** — `chat.store.js:460, 1448`。status='error' 把 topic 消息清空
+6. **`coclaw.topics.list/delete`** — `topics.store.js:81/206`。delete 只校验 `result.ok`，status='error' 下会误删本地 topic
+7. **`coclaw.files.*`** — `services/file-transfer.js:85/99/110/121`。列表和写操作都不校验 payload 中的错误状态
+8. **`coclaw.info.patch`** — `views/ManageClawsPage.vue:393`。重命名在任何 resolved payload 后都乐观应用
+9. **`agents.list`** — `agents.store.js:128`。status='error' 把 agent 列表标为"已加载但为空"
 
 **关联 deep design**：可考虑由 `claw-connection.js` 在协议层加 status 识别 + 通过 method 白名单豁免（`agent.wait` 必须保留），把这套逻辑收拢到一处而非散布在各调用点。
 
-70. **`agent` run 取消 (cancellation) 与"自然完成"语义混淆**
+10. **`agent` run 取消 (cancellation) 与"自然完成"语义混淆**
     - 现状：上游对"用户取消"走 `ok=true + payload.status='ok' + result.meta.aborted=true`（见 openclaw-repo `agent.ts:330` 用 `result?.meta?.aborted` 判断）。UI 当前 `__onRpcDone` 走 `endReason='rpc'` 不读 meta.aborted，"用户主动取消"和"自然完成"被混为一谈
     - 影响：诊断日志、analytics、UI 状态展示无法区分两类终态
     - 修复方向：`__onRpcDone` 读 `rpcResult.result?.meta?.aborted`，true → endReason='rpc-aborted'；ChatPage 不 notify 但日志区分
 
-71. **`coclaw.agent.abort` 用 `result.ok` 当业务标记**
+11. **`coclaw.agent.abort` 用 `result.ok` 当业务标记**
     - 现状：与协议层 `ok` 同名不同义（前者是插件本地业务返回，后者是 RPC 协议层，已被 ClawConnection 解包）。心智模型容易混
     - 修复方向：建议改字段名为 `succeeded` / `accepted` 之类，避免与协议层 `ok` 重名
 
-72. **协议偏离时 error/summary 是 object 形态显示成 `[object Object]`**
+12. **协议偏离时 error/summary 是 object 形态显示成 `[object Object]`**
     - 现状：`agent-runs.store.js:404` 与 `chat.store.js:1133` 的 `String(raw)` 兜底能保证 toast 不丢 description，但若 `summary`/`error` 是 object（协议偏离），用户看到的是 `[object Object]` 而非可读内容
     - 触发条件：当前 OpenClaw `chat.ts` / `agent.ts` 的 error/summary 都是 string，不会触发
     - 修复方向：换 JSON.stringify 兜底（含循环引用 try/catch），让协议偏离时至少给出 raw JSON 而非 `[object Object]`。属"可读性增强"，非阻塞
@@ -469,14 +465,14 @@
 **发现日期**：2026-05-07
 **关联 commit**：c2a3e46 "fix(ui): silence error toast when user cancels and upstream returns error"（测试场景补强 deep-review）
 
-73. **chat 切换期间 in-flight sendMessage resolve → `__tryGenerateTitle` 落到错的 chat**
+1. **chat 切换期间 in-flight sendMessage resolve → `__tryGenerateTitle` 落到错的 chat**
     - 来源：2026-03-17 引入 Topic 管理 feature 时模式就存在，与 bc13c96 / c2a3e46 无关，是预存 bug
     - 现状：`ChatPage.vue:754` `__tryGenerateTitle` 用 `this.chatStore`，未走入口快照 `targetStore`。用户在 chat A 上发送、await 期间切到 chat B（也是 topic），sendMessage 落地后 generateTitle 被基于 chat B 的 topicId/messages 触发
     - 影响：chat B 可能还没 send 过任何消息，让 LLM 给空 chat 起标题，结果是垃圾或失败
     - 修复方向：`__tryGenerateTitle(targetStore = this.chatStore)`，两处调用点（`ChatPage.vue:631`、`:737`）显式传入 `targetStore`；同时把 `!this.isTopicRoute` guard 改为 `!targetStore?.topicMode`（topicMode 是 store 属性，与当前路由无关）
     - 测试：chat 切换期间 sendMessage resolve → generateTitle 调用 with targetStore 的 topicId/clawId
 
-74. **失败 toast 文案 generic（无 chat 来源）→ unmount/chat 切换后用户难判归属**
+2. **失败 toast 文案 generic（无 chat 来源）→ unmount/chat 切换后用户难判归属**
     - 现状：`ChatPage.vue:651` `__notifyRunFailed` 弹 `chat.errRunFailed`（"Agent run failed"），不带 chat / topic 名称。用户在 chat A 上 send 后切到 chat B，sendMessage 落地弹的 toast 看起来像 chat B 的失败
     - 影响：UX 困惑，用户难定位失败来源；尤其多 chat / 多 topic 并发使用场景
     - 修复方向：toast description 前缀加 chat / topic 名称（如 `[Topic 标题] FailoverError: ...`）；或 toast 加 "Open" 按钮跳回 source chat。属 i18n + UX 改造，需统一其它失败 toast（如 `__sendErrorMessage`）一起规划
@@ -548,13 +544,13 @@ X4 触及面比 X1 广，需要重新评估：
 
 来源：commit `1f1edc3 feat(ui): add hide-from-recent action on Web Agents list` 的 4 路并行 codex-rescue review。下列条目本次未修，登记跟踪。
 
-75. **MainList 行内 actions trigger 在键盘 Tab 焦点上不可见（预存模式问题）**
+1. **MainList 行内 actions trigger 在键盘 Tab 焦点上不可见（预存模式问题）**
     - 现状：`MainList.vue:107` `.agent-actions`、:152 `.web-agent-actions`、:188 `.topic-actions` 均用 `opacity-0 group-hover:opacity-100`。键盘 Tab 焦点落到 trigger 按钮时按钮仍 opacity=0 不可见，仅鼠标悬浮 + 触屏 always-visible 路径覆盖
     - 影响：a11y 不友好；键盘用户看不到当前焦点位置
     - 预存：自 `AgentItemActions` / `TopicItemActions` 引入即如此，本 commit 新加的 `WebAgentItemActions` 沿用同一模式，未引入也未放大问题
     - 修法方向：给三个 actions 类一并加 `focus-within:opacity-100` / `group-focus-within:opacity-100`（或在 `<style scoped>` 的 hover-none media query 旁加 `:focus-within` 规则）
 
-76. **`recordClick` 与 `hide` 并发 fire-and-forget POST 请求乱序到达 server 时数据库与本地不一致**
+2. **`recordClick` 与 `hide` 并发 fire-and-forget POST 请求乱序到达 server 时数据库与本地不一致**
     - 现状：`web-agents.store.js:128` `recordClick`、:142 `hide` 各自走 fire-and-forget POST，无串行或乐观时间戳协议；如果 hide 先 fire、click 后 fire，但 server 收到顺序倒置（click 先到、hide 后到），server 最终状态是 hidden；本地 lastClickedAt 比 server 新，新的 merge 规则会信任更晚的 click 让本地显示为可见，但下次任何客户端 loadAll 看到的是隐藏
     - 触发条件：用户先 hide 再立即从 picker 点开同一 agent，且两次请求的 server 处理顺序与发起顺序倒置；窗口在 RTT 量级（毫秒级）。用户可点 picker 再点该 agent 一次自愈
     - 修法方向：a) store 内对同一 id 的 hide/click 串行（promise chain per id）；b) 或在 POST 里带客户端时间戳，server 比较时间戳决定胜出

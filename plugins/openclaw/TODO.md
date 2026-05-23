@@ -1579,10 +1579,10 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 **待调研**：
 
-1. **OpenClaw 子代理 transcript 落盘**：subagent spawn 后是否真的有 transcript/session JSONL 写入？路径在哪？以这个 sessionKey 检索能否调出对话？
-2. **OpenClaw 端 sessions.json 索引**：subagent sessionKey 是否进入 `sessions.json`？sessions.list RPC 是否会返回它？
-3. **CoClaw 产品定位**：UI 端是否要展示子代理的 chat 流？还是 main agent 的 chat-history 视图就够了？
-4. **chat-history 桶的语义**：当前 chat-history.json 的设计是"chat 流水"，chat 与 sessionKey 一一对应（CLAUDE.md 核心术语）。子代理 sessionKey 是否构成独立 chat 还是 main chat 的子段？
+5. **OpenClaw 子代理 transcript 落盘**：subagent spawn 后是否真的有 transcript/session JSONL 写入？路径在哪？以这个 sessionKey 检索能否调出对话？
+6. **OpenClaw 端 sessions.json 索引**：subagent sessionKey 是否进入 `sessions.json`？sessions.list RPC 是否会返回它？
+7. **CoClaw 产品定位**：UI 端是否要展示子代理的 chat 流？还是 main agent 的 chat-history 视图就够了？
+8. **chat-history 桶的语义**：当前 chat-history.json 的设计是"chat 流水"，chat 与 sessionKey 一一对应（CLAUDE.md 核心术语）。子代理 sessionKey 是否构成独立 chat 还是 main chat 的子段？
 
 **候选方案（待调研后定）**：
 
