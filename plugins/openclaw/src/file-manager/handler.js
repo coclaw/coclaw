@@ -683,9 +683,11 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 				draining = false;
 				pendingQueue.length = 0;
 				log.warn?.(`[coclaw/file] drainLoop write error: ${err.message}`);
+				// 走安全网而非同步 safeUnlink：fopen 未完成时 sync unlink 扑空被吞，
+				// fopen 后留孤儿。attach 在 destroy 之前确保 'close' emit 时 listener 已就位
+				attachTmpCleanupOnce();
 				ws.destroy();
 				if (!dcClosed) sendError(dc, 'WRITE_FAILED', err.message);
-				safeUnlink(tmpPath);
 				const elapsed = Date.now() - startTime;
 				remoteLog(`file.up.fail ${logTag}id=${transferId} reason=drain-write-error err=${err.message} received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms`);
 				return;
@@ -848,11 +850,16 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			draining = false;
 			pendingQueue.length = 0;
 			log.warn?.(`[coclaw/file] write stream error: ${err.message}`);
+			// 安全网先装：sendError 会同步 dc.close → dc.onclose，doneReceived=true 且
+			// !finishing 时会同步重入 finishUpload → ws.end，整条 sync 链全跑完才回到这里。
+			// 与 drainLoop catch 顺序对齐。显式 ws.destroy() 不依赖 Node autoDestroy
+			// （注入的非标准 stream 可能不触发）触发 ws 关闭流程；listener 在 'close' emit 时 fire
+			attachTmpCleanupOnce();
+			ws.destroy();
 			if (!dcClosed) {
 				const code = err.code === 'ENOSPC' ? 'DISK_FULL' : 'WRITE_FAILED';
 				sendError(dc, code, err.message);
 			}
-			safeUnlink(tmpPath);
 			const elapsed = Date.now() - startTime;
 			remoteLog(`file.up.fail ${logTag}id=${transferId} reason=write-error err=${err.code || err.message} received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms`);
 			log.warn?.(`[coclaw/file] [${connId ?? '?'}] up.fail id=${transferId} reason=write-error received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms err=${err.code || err.message}`);

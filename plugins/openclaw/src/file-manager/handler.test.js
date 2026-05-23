@@ -2930,6 +2930,208 @@ test('handleFileChannel PUT: dc.onclose 先于 dc.onerror 时也保持 listener/
 	}
 });
 
+// race 回归测试：`doneReceived=true` 后 drainLoop 的 ws.write 抛错（catch 在 line ~680）
+// 旧实现走同步 safeUnlink → fopen 未完成时被 ENOENT 吞 → fopen 后留孤儿。
+// 修复后改 attachTmpCleanupOnce + ws.destroy，等 ws 自然 close 再 unlink，必然在 fopen 后
+test('handleFileChannel PUT: doneReceived=true 后 drainLoop write 抛在 fopen 完成前清理孤儿', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const unlinkCalls = [];
+		const FOPEN_DELAY_MS = 30;
+		let fopenDoneResolve;
+		const fopenDonePromise = new Promise((r) => { fopenDoneResolve = r; });
+		let lastWs = null;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path) => {
+					const ws = new EventEmitter();
+					let destroyed = false;
+					let fopenDone = false;
+					setTimeout(() => {
+						fopenDone = true;
+						fsSync.writeFileSync(path, '');
+						if (destroyed) ws.emit('close');
+						fopenDoneResolve();
+					}, FOPEN_DELAY_MS);
+					// 模拟 ws 已被另一路径销毁后的同步抛错（catch 注释里的"SIZE_EXCEEDED 路径竞态"）
+					ws.write = () => { throw new Error('mock write fail (ws destroyed)'); };
+					ws.end = () => {};
+					ws.destroy = () => {
+						destroyed = true;
+						if (fopenDone) ws.emit('close');
+					};
+					Object.defineProperty(ws, 'destroyed', { get: () => destroyed });
+					Object.defineProperty(ws, 'bytesWritten', { get: () => 0 });
+					lastWs = ws;
+					return ws;
+				},
+				unlink: async (p) => {
+					unlinkCalls.push({ path: p, existed: fsSync.existsSync(p) });
+					return fs.unlink(p);
+				},
+			},
+		});
+		const dc = createMockDC('file:race-done-drain');
+		handler.handleFileChannel(dc, 'c_race_done_drain');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'r.txt', size: 5 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		// 同步塞 chunk + done：chunk 入队 → scheduleDrain（setImmediate 延后）；
+		// done 时 pendingQueue.length=1 → 不立即 finishUpload → 等 drainLoop 排队消费时撞抛错
+		dc.onmessage({ data: Buffer.from('12345') });
+		dc.onmessage({ data: JSON.stringify({ done: true }) });
+
+		// 等 fopen 真的落盘 + listener 触发 unlink
+		await fopenDonePromise;
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
+
+		// 关键不变式：必须有一次 unlink 撞到 post-fopen 的真文件（race fix 生效）
+		assert.ok(unlinkCalls.some((c) => c.existed), `safeUnlink should target existing tmp file (post-fopen), got: ${JSON.stringify(unlinkCalls)}`);
+		// dedup 不变量：ws 上仅一个 close listener
+		assert.equal(lastWs.listenerCount('close'), 1, 'ws should have exactly one close listener');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// race 回归测试：`doneReceived=true` 后 ws stream 自发 emit 'error'（ws.on('error') 在 line ~843）
+// 旧实现走同步 safeUnlink；修复后改 attachTmpCleanupOnce + ws.destroy，
+// 显式 destroy 不依赖 Node autoDestroy（注入的非标准 stream 可能不触发）
+test('handleFileChannel PUT: doneReceived=true 后 ws emit error 在 fopen 完成前清理孤儿', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const unlinkCalls = [];
+		const FOPEN_DELAY_MS = 30;
+		let fopenDoneResolve;
+		const fopenDonePromise = new Promise((r) => { fopenDoneResolve = r; });
+		let lastWs = null;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path) => {
+					const ws = new EventEmitter();
+					let destroyed = false;
+					let fopenDone = false;
+					setTimeout(() => {
+						fopenDone = true;
+						fsSync.writeFileSync(path, '');
+						if (destroyed) ws.emit('close');
+						fopenDoneResolve();
+					}, FOPEN_DELAY_MS);
+					ws.write = () => true;
+					ws.end = () => {};
+					ws.destroy = () => {
+						destroyed = true;
+						if (fopenDone) ws.emit('close');
+					};
+					Object.defineProperty(ws, 'destroyed', { get: () => destroyed });
+					Object.defineProperty(ws, 'bytesWritten', { get: () => 0 });
+					lastWs = ws;
+					return ws;
+				},
+				unlink: async (p) => {
+					unlinkCalls.push({ path: p, existed: fsSync.existsSync(p) });
+					return fs.unlink(p);
+				},
+			},
+		});
+		const dc = createMockDC('file:race-done-wserr');
+		handler.handleFileChannel(dc, 'c_race_done_wserr');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'r.txt', size: 5 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		dc.onmessage({ data: Buffer.from('12345') });
+		dc.onmessage({ data: JSON.stringify({ done: true }) });
+
+		// 等 doneReceived 已设、drainLoop 跑完（pendingQueue 排空 → finishUpload 已调）
+		// 此时 fopen 仍未完成（30ms 延后），手动让 ws 自发 emit 'error'
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		const err = new Error('disk write fail');
+		err.code = 'EIO';
+		lastWs.emit('error', err);
+
+		await fopenDonePromise;
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
+
+		assert.ok(unlinkCalls.some((c) => c.existed), `safeUnlink should target existing tmp file (post-fopen), got: ${JSON.stringify(unlinkCalls)}`);
+		assert.equal(lastWs.listenerCount('close'), 1, 'ws should have exactly one close listener');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// race 回归测试：`doneReceived=true` 但 `finishing=false` 时 ws 自发 emit 'error'
+// 触发的同步重入路径——`sendError` 内 `dc.close` 同步调 `dc.onclose`，后者发现
+// `doneReceived=true && !finishing` 会同步重入 `finishUpload` → `ws.end`。这条
+// 路径要求 `attachTmpCleanupOnce()` 必须在 `sendError` 之前装好，否则重入链上
+// 没有任何 listener 接住后续的 'close' emit → fopen 后留孤儿
+test('handleFileChannel PUT: doneReceived=true 但 finishing=false 时 ws emit error 走 sendError 同步重入路径', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const unlinkCalls = [];
+		const FOPEN_DELAY_MS = 30;
+		let fopenDoneResolve;
+		const fopenDonePromise = new Promise((r) => { fopenDoneResolve = r; });
+		let lastWs = null;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path) => {
+					const ws = new EventEmitter();
+					let destroyed = false;
+					let fopenDone = false;
+					setTimeout(() => {
+						fopenDone = true;
+						fsSync.writeFileSync(path, '');
+						if (destroyed) ws.emit('close');
+						fopenDoneResolve();
+					}, FOPEN_DELAY_MS);
+					ws.write = () => true;
+					ws.end = () => {};
+					ws.destroy = () => {
+						destroyed = true;
+						if (fopenDone) ws.emit('close');
+					};
+					Object.defineProperty(ws, 'destroyed', { get: () => destroyed });
+					Object.defineProperty(ws, 'bytesWritten', { get: () => 0 });
+					lastWs = ws;
+					return ws;
+				},
+				unlink: async (p) => {
+					unlinkCalls.push({ path: p, existed: fsSync.existsSync(p) });
+					return fs.unlink(p);
+				},
+			},
+		});
+		const dc = createMockDC('file:race-done-wserr-reentry');
+		handler.handleFileChannel(dc, 'c_race_done_wserr_reentry');
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'r.txt', size: 5 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		dc.onmessage({ data: Buffer.from('12345') });
+		dc.onmessage({ data: JSON.stringify({ done: true }) });
+		// 关键：不让 drainLoop / finishUpload 在 ws.error 前跑完——同步立刻 emit error
+		// 此时 doneReceived=true, finishing=false, pendingQueue=[chunk] 待 drain
+		// → ws.on('error') → sendError → dc.close → dc.onclose 同步重入 finishUpload
+		const err = new Error('disk write fail');
+		err.code = 'EIO';
+		lastWs.emit('error', err);
+
+		await fopenDonePromise;
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
+
+		assert.ok(unlinkCalls.some((c) => c.existed), `safeUnlink should target existing tmp file (post-fopen), got: ${JSON.stringify(unlinkCalls)}`);
+		assert.equal(lastWs.listenerCount('close'), 1, 'ws should have exactly one close listener');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('handleFileChannel GET: 成功路径必须 await dc.close()（回归保护）', async () => {
 	const dir = await makeTmpDir();
 	try {

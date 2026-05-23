@@ -1,23 +1,28 @@
 # Plugin TODO
 
-## file-manager `doneReceived=true` 路径下 fopen-vs-unlink race 未走安全网
+## file-manager `finishUpload` ws.end callback 不接 err 参数
 
-**发现日期**：2026-05-24（dual cleanup attach deep-review 期间，实例 B codex-rescue 识别）
-**关联**：`plugins/openclaw/src/file-manager/handler.js` 内 `drainLoop` catch (line ~681) + `ws.on('error')` (line ~843) + `finishUpload` 的 `ws.end` callback (line ~706)
+**发现日期**：2026-05-24（doneReceived race fix deep-review 第 1 轮 codex-rescue 实例 A 提）
+**关联**：`plugins/openclaw/src/file-manager/handler.js` `finishUpload` line ~706 `ws.end(async () => { ... })`
 
-**问题**：commit `3f9d05e` 给 `dc.onclose` 的 not-done 分支与 `dc.onerror` 加了 `ws.on('close', safeUnlink)` 安全网，避免"同步 safeUnlink 在 fopen 之前抵达→ENOENT swallow→fopen 后留孤儿"。但 `doneReceived=true` 路径走 `finishUpload`，仍然只在 `ws.end` callback 内同步 `safeUnlink(tmpPath)`（dcClosed / size-mismatch / rename-failed 三个分支均如此），未 attach 安全网。两条触发链：
+**问题**：Node 18 Writable 在 ws 被 destroy(err) 的路径中会把 pending end callback 以 err 参数调用（在 'finish' 路径外）。当前 cb 签名 `async () => {}` 忽略 err 参数，直接走 dcClosed / size-mismatch / rename 判断。
 
-- drainLoop 在收尾期（已收 done）`ws.write` 抛 → catch 同步 unlink + sendError(dc) → `dc.close` → `dc.onclose` 走 `doneReceived=true` 分支 → `finishUpload` → 在 ws 已 destroyed 情况下 `ws.end` callback 同步 unlink
-- `ws.on('error')` 同步 unlink + dc 后续 close → 同款
+**为什么不算 race fix 必须**：所有走到 cb 携带 err 的路径都先经 `sendError(dc, ...)` 让 `dcClosed=true`，cb 内第一条分支 `if (dcClosed)` 早返已经挡住 rename。故"rename 到失败文件"竞态不存在。但 cb 接 err 显式判断更稳——未来若 dcClosed 早返被改动，缺失 err 检查就是隐患。
 
-两条都是预存 race，不限于本次变更引入。
+**修复方向**：cb 签名改为 `async (err) => { if (err) { /* 走 dc-closed-before-flush 分支或独立 stream-error 分支 */; return; }; ...}`，配套测试覆盖 ws.end cb 带 err 触发。
 
-**为什么本期未一并修**：本次 deep-review 范围是"dedupe dual cleanup attach"，按"review 仅修本次变更引入的问题"原则不动。修复触发率低（要求 `doneReceived=true` + ws fopen 未完成 + ws 路径出错三件同发，工程上罕见）。
+---
 
-**修复方向**：
+## file-manager rename 失败路径没断言孤儿清理
 
-- 让 `finishUpload` 也走 `attachTmpCleanupOnce()` 兜底（要小心：成功路径 rename 后 listener 仍在，依赖 `safeUnlink` ENOENT 幂等性——目前已经满足）
-- 或者 drainLoop catch / `ws.on('error')` 在同步 unlink 之外也 attach 一次安全网，复用同款 helper
+**发现日期**：2026-05-24（doneReceived race fix deep-review 第 1 轮 codex-rescue 实例 C 提）
+**关联**：`plugins/openclaw/src/file-manager/handler.js` `finishUpload` line ~736（rename 失败分支 sync `safeUnlink(tmpPath)`），测试 `src/file-manager/handler.test.js` line ~1829
+
+**问题**：rename 失败分支后立即 sync `safeUnlink(tmpPath)` 兜底清孤儿；但现有测试只断言 `warns.some(w => w.includes('rename failed'))`，没断言 tmp 文件被删除。不会因 unlink 漏掉 / unlink 出错被 swallow 而被发现。
+
+**为什么不算 race fix 必须**：line 736 在 `ws.end` cb 内，cb 在 'finish' 后 fire，'finish' 必在 fopen 完成后，故 sync `safeUnlink` 找得到文件、产线安全。补断言是测试 hygiene。
+
+**修复方向**：rename 失败测试追加 `await waitForNoTmpFiles(dir)` 断言无 .tmp.* 残留。
 
 ---
 
