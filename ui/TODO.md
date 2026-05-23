@@ -53,18 +53,6 @@
    - 现状:`ProgressRing.vue:81` 默认 `'Progress'` 英文硬编码,三处使用点(`ChatInput`/`FileUploadItem`/`FileListItem`)均未传 `aria-label`。中文读屏用户会听到 "Progress 50 percent" 混读
    - 修复:调用方传入 `:aria-label="$t('files.uploading')"` 等场景化文案;同步新增 `files.uploading` / `files.downloading` / `chat.attachmentUploading` 等 i18n key 到所有语言
 
-2. **窄屏布局回归验证**
-   - 现状:`FileUploadItem` 改为"右侧并列 ProgressRing(36px) + 取消按钮"后,360px 视口下文件名截断未实地验证
-   - 修复:Playwright 对 FileManagerPage 上传/下载 running 态在 360 宽截图,确认文件名截断与按钮可点击区域
-
-3. **暗黑主题对比度肉眼验证**
-   - 现状:`bg-default/60` 覆层 + `stroke-muted` 轨道 + `stroke-primary` 弧的暗模式视觉效果未现场确认
-   - 修复:dev 启动 + 切换主题验证;若 muted 在暗下与 primary 对比不足,可考虑 `stroke-elevated`
-
-4. **真机 Android WebView 验证**
-   - 现状:`stroke-dashoffset` transition + `animate-spin` 在 Android Chrome 90+ WebView 表现未实测
-   - 修复:Capacitor 构建后在 Android 真机/模拟器跑一次完整上传流程
-
 ### 实现优化
 
 11. **`indeterminate` 用 `Number.isFinite`**
@@ -592,4 +580,16 @@ X4 触及面比 X1 广，需要重新评估：
 
 先讨论方案 A 是否可推进，再决定是否要兜底。
 
+## ProgressRing 暗主题与 Android 真机肉眼验证（顺延，需手工）
+
+**发现日期**：2026-05-23
+**关联讨论**：task `ui-todo-tests-cleanup` S6 收尾。原 ProgressRing 后续优化 §2 已通过 Playwright 360px 截图核对（PASS：长文件名 truncate、ProgressRing 36px 与取消按钮在 360 视口下不溢出，详见 `/tmp/coclaw-progressring-screenshots/`）。剩余 §3/§4 涉及人眼或真机不能由 agent 完成，登记在此等手工执行。
+
+1. **暗黑主题对比度肉眼验证**
+   - 现状：`bg-default/60` 覆层 + `stroke-muted` 轨道 + `stroke-primary` 弧的暗模式视觉效果需人眼核对。Playwright 给 `<html>` 加 `dark` class 抓的截图与默认主题视觉一致，无法替代肉眼判定
+   - 修复：dev 启动 + 在 UserSettings 切换主题，对照确认 muted 轨道与 primary 弧对比度；若 muted 在暗下与 primary 对比不足，改用 `stroke-elevated`
+
+2. **真机 Android WebView 验证**
+   - 现状：`stroke-dashoffset` transition + `animate-spin` 在 Android Chrome 90+ WebView 表现未实测
+   - 修复：Capacitor 构建后在 Android 真机/模拟器跑一次完整上传流程，确认动画 / 弧长过渡正常
 
