@@ -115,12 +115,6 @@
     - 现状：`chat.store.js:1417` 只打 `endReason / runKey / elapsed=3s`
     - 修复：补 `runId / msgCount / anchorId / clawId`，并把 `elapsed=3s` 改成实际累计耗时（含两次 loadMessages 自身的 RPC 时间）
 
-### 测试
-
-4. **缺显式 'rpc' fast-path 命名测试**
-    - 现状：本次新增 4 条测试都是 lifecycle 路径；'rpc' 路径只是被旧测试隐式覆盖
-    - 修复：在 `chat.store.test.js` 加一条显式 `endReason='rpc' → 立即拉 + dropRun，无 sleep` 的命名测试
-
 ### 上线后观察
 
 5. **3s 重试上限是否够**
@@ -160,11 +154,6 @@
     - 来源：commit 9ab962d round 24 backlog
     - 现状：`createTopic` 在 await 期间 claw 被 removeClawById 时，return 后仍可能写入 ghost 条目。窄窗口
     - 修法：post-await 加 `byId` re-check，被 evict 即放弃
-
-2. **`claw-connection.setRtc` non-ready-RTC defensive-net test 缺**
-    - 来源：commit 9ab962d round 24 backlog
-    - 现状：测试覆盖未锁住"setRtc 收到非 ready 状态 rtc 时不应被传播到 isReady"的契约
-    - 修法：补单元测试
 
 3. **`__ensureRtc` connected early-return 当 `rtc.state==='connected' && !rtc.isReady`**
     - 来源：commit 54b609d round 20 backlog
@@ -351,21 +340,6 @@
     - 现状：所有用例用 `mock.calls.find(predicate)` toBeTruthy/toBeUndefined，未断言精确 `times` / `order` / payload 全字段
     - 影响：production 若发出额外的 `network:online` 事件、或把 `count=N` 之外的字段乱写，测试不会 fail
     - 修法方向：改用 `toHaveBeenCalledTimes(N)` + `toHaveBeenCalledWith({ detail: { typeChanged: ..., ... } })` 显式断言
-
-6. **`src/services/file-helper.js` 浏览器下载 anchor 路径未被任何 unit test 覆盖**
-    - 现状：`saveBlobToFile` 在 files.store 测试里被 mock 掉，jsdom 下的 anchor download 路径没有针对性 unit test
-    - 影响：anchor 创建逻辑回归不被 catch；目前只能靠 e2e 兜底
-    - 修法方向：单独给 `saveBlobToFile` 写一组 jsdom 环境下的 unit test，覆盖 success / cleanup 分支
-
-7. **`src/utils/dialog-history.js` 浏览器 history listener 路径未被任何 unit test 覆盖**
-    - 现状：`use-user-dialogs.test.js` 直接 mock 了整个 `dialog-history.js`，浏览器 popstate / pushState 行为没有 unit test
-    - 影响：dialog history 状态机回归不被 catch
-    - 修法方向：单独给 `dialog-history.js` 写一组 jsdom 环境下的 unit test，覆盖 push / pop / current 状态切换
-
-8. **`src/services/signaling-connection.js` lifecycle listener 注册被 node-env 测试默默跳过**
-    - 现状：source 用 `typeof window !== 'undefined'` 守卫，jsdom 下注册 `app:foreground` / `network:online` listener，node 下跳过
-    - 影响：`remote-log.test.js` 切到 node 后这两个 listener 不再被注册，但测试只断言 flush 行为不断言 listener，所以 pass。这条 listener 路径在 unit 层失去覆盖
-    - 修法方向：要么 `remote-log.test.js` 切回 jsdom；要么单独给 signaling-connection 的 lifecycle listener 注册路径写一组 jsdom 测试
 
 ## 一阶段 RPC 调用方对 ok=true+payload.status='error' 的协议演进保险（2026-05-07）
 

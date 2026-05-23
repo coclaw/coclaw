@@ -369,6 +369,71 @@ describe('SignalingConnection – 重连', () => {
 	});
 });
 
+// 生命周期 listener 注册路径单独覆盖：上方"前台恢复"系列用例都直接调
+// __handleForegroundResume()，绕过 window.addEventListener。Node-env 测试切换后
+// 这条注册路径在 unit 层失去覆盖（详见 src/utils 模块下的 remote-log.test 历史调研）。
+// 这里通过 window.dispatchEvent 走真实事件分发，断言两条 listener 真的被注册了。
+describe('SignalingConnection – 生命周期 listener 注册路径', () => {
+	afterEach(() => {
+		platformMod.isMobileOs = false;
+	});
+
+	test('connect() 之后 app:foreground 事件能进入 __handleForegroundResume（移动端走 probe）', () => {
+		platformMod.isMobileOs = true;
+		makeConnected();
+		vi.advanceTimersByTime(5_000); // 过 PROBE_TIMEOUT_MS 但不过 ASSUME_DEAD_MS
+
+		// 通过 window 真实事件分发触发，覆盖 connect() 内的 addEventListener 注册
+		window.dispatchEvent(new Event('app:foreground'));
+
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=app:foreground elapsed=\d+ms action=probe$/.test(t));
+		expect(matched.length).toBe(1);
+	});
+
+	test('connect() 之后 network:online 事件能进入 __handleForegroundResume 并透传 detail', () => {
+		platformMod.isMobileOs = false;
+		const { conn } = makeConnected();
+		const wsBefore = MockWebSocket.instances.length;
+
+		// 携带 typeChanged=true 的 CustomEvent.detail 应触发 forceReconnect(typeChanged)
+		window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged: true } }));
+
+		expect(MockWebSocket.instances.length).toBeGreaterThan(wsBefore);
+		expect(conn.state).toBe('connecting'); // forceReconnect 后重新进入 connecting
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=network:online elapsed=\d+ms action=forceReconnect\(typeChanged\)$/.test(t));
+		expect(matched.length).toBe(1);
+	});
+
+	test('幂等：重复 connect() 不会重复绑定 listener（同一事件只触发一次响应链）', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		conn.connect();
+		conn.connect();
+		vi.advanceTimersByTime(5_000);
+
+		window.dispatchEvent(new Event('app:foreground'));
+
+		const matched = capturedRemoteLogs.filter(t => /^sig\.resume source=app:foreground elapsed=\d+ms action=probe$/.test(t));
+		// 若 listener 被重复注册，dispatchEvent 会触发多次 __handleForegroundResume
+		// → 多条同形态 sig.resume remoteLog。这里钉住 1 防回归。
+		expect(matched.length).toBe(1);
+	});
+
+	test('disconnect() 之后 dispatchEvent 不再触发 __handleForegroundResume（listener 已摘）', () => {
+		platformMod.isMobileOs = true;
+		const { conn } = makeConnected();
+		vi.advanceTimersByTime(5_000);
+		conn.disconnect();
+		capturedRemoteLogs.length = 0;
+
+		window.dispatchEvent(new Event('app:foreground'));
+		window.dispatchEvent(new CustomEvent('network:online', { detail: { typeChanged: true } }));
+
+		const resumeLogs = capturedRemoteLogs.filter(t => t.startsWith('sig.resume'));
+		expect(resumeLogs.length).toBe(0);
+	});
+});
+
 describe('SignalingConnection – 前台恢复', () => {
 	afterEach(() => {
 		platformMod.isMobileOs = false;

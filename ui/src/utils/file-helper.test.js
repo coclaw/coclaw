@@ -456,6 +456,33 @@ describe('saveBlobToFile', () => {
 		expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
 	});
 
+	// 钉死 DOM 操作顺序：appendChild → click → removeChild → revokeObjectURL。
+	// 顺序错乱（如先 revoke 再 click）会让浏览器拿到失效 blob URL，下载触发失败但
+	// 单元测试若只校验"各步都被调过"会通过——这里用 invocationCallOrder 钉序。
+	test('Web 环境：DOM 操作顺序为 appendChild → click → removeChild → revokeObjectURL', async () => {
+		const mockA = { href: '', download: '', click: vi.fn() };
+		const origCreateElement = document.createElement.bind(document);
+		vi.spyOn(document, 'createElement').mockImplementation((tag) =>
+			tag === 'a' ? mockA : origCreateElement(tag),
+		);
+		const appendSpy = vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
+		const removeSpy = vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+
+		const blob = new Blob(['hi']);
+		await saveBlobToFile(blob, 'a.txt');
+
+		const appendOrder = appendSpy.mock.invocationCallOrder[0];
+		const clickOrder = mockA.click.mock.invocationCallOrder[0];
+		const removeOrder = removeSpy.mock.invocationCallOrder[0];
+		const revokeOrder = URL.revokeObjectURL.mock.invocationCallOrder[0];
+
+		expect(appendOrder).toBeLessThan(clickOrder);
+		expect(clickOrder).toBeLessThan(removeOrder);
+		expect(removeOrder).toBeLessThan(revokeOrder);
+		expect(appendSpy).toHaveBeenCalledWith(mockA);
+		expect(removeSpy).toHaveBeenCalledWith(mockA);
+	});
+
 	test('Capacitor 环境：调用 __nativeShareFile', async () => {
 		platformState.isCapacitorApp = true;
 		// 在工厂闭包外创建 spy，避免工厂被多次调用时返回不同 spy 实例导致断言失真

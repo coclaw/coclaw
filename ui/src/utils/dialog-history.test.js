@@ -65,4 +65,35 @@ describe('dialog-history', () => {
 		expect(cb).toHaveBeenCalledOnce();
 		expect(mod.hasOpenDialog()).toBe(false);
 	});
+
+	// 关闭后再次打开：state 机器能正确复用。同一模块单例内 push → pop → push 的
+	// 循环必须把 callback 切到新的那个，否则旧 callback 会被 popstate 误触发。
+	test('pop 之后再次 push：新 callback 接管，旧 callback 不再被 popstate 触发', () => {
+		const cbOld = vi.fn();
+		const cbNew = vi.fn();
+
+		mod.pushDialogState(cbOld);
+		mod.popDialogState();
+		expect(mod.hasOpenDialog()).toBe(false);
+
+		mod.pushDialogState(cbNew);
+		expect(mod.hasOpenDialog()).toBe(true);
+
+		window.dispatchEvent(new PopStateEvent('popstate'));
+		expect(cbOld).not.toHaveBeenCalled();
+		expect(cbNew).toHaveBeenCalledOnce();
+		expect(mod.hasOpenDialog()).toBe(false);
+	});
+
+	// 无 dialog 时收到外部 popstate（如其它路由 back）不应误触发回调。
+	test('无打开对话框时 popstate 不触发回调', () => {
+		const cb = vi.fn();
+		// 模块加载时 ensureListener 还未跑——通过 push+pop 走一遍以确保 listener 已绑定
+		mod.pushDialogState(cb);
+		mod.popDialogState();
+		cb.mockClear();
+
+		window.dispatchEvent(new PopStateEvent('popstate'));
+		expect(cb).not.toHaveBeenCalled();
+	});
 });

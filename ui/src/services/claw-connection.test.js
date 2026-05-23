@@ -127,6 +127,43 @@ describe('ClawConnection – RTC 管理', () => {
 		await expect(p2).resolves.toBeUndefined();
 		expect(conn.__readyWaiters).toHaveLength(0);
 	});
+
+	// 契约：setRtc 收到 isReady=false 的 rtc 时，不应让后续 waitReady 误判为"已就绪"。
+	// 调用方关心的是"DC 真的可用了吗"——claw-connection 不做 rtc.isReady 加工或缓存，
+	// 只把判断委托给 rtcConn.isReady 当前值。该测试钉死这个无副作用代理契约，避免未来
+	// 引入 sticky/cache 类优化时把 false 误传成 true。
+	test('setRtc 收到 isReady=false 的 rtc 时不传播 ready：后续 waitReady 仍挂起，warn 留诊断', async () => {
+		const conn = new ClawConnection('bot1');
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const nonReadyRtc = { isReady: false, send: vi.fn(), close: vi.fn() };
+		conn.setRtc(nonReadyRtc);
+
+		// 引用已设置——委托对象语义保留
+		expect(conn.rtc).toBe(nonReadyRtc);
+		// isReady 仍为 false，未被改写
+		expect(conn.rtc.isReady).toBe(false);
+		// 必有 warn 留诊断痕迹（便于排查"waiters 收到不可用连接"的失败）
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+		expect(warnSpy.mock.calls[0][0]).toContain('non-ready');
+
+		// 此后新的 waitReady 不应立即 resolve——must 进入挂起队列
+		vi.useFakeTimers();
+		let resolved = false;
+		const p = conn.waitReady(5000).then(() => { resolved = true; });
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+		expect(conn.__readyWaiters).toHaveLength(1);
+
+		// 后续 rtc 真就绪 + setRtc 替换，waitReady 才 resolve
+		const readyRtc = { isReady: true, send: vi.fn(), close: vi.fn() };
+		conn.setRtc(readyRtc);
+		await p;
+		expect(resolved).toBe(true);
+
+		vi.useRealTimers();
+		warnSpy.mockRestore();
+	});
 });
 
 describe('ClawConnection – waitReady()', () => {

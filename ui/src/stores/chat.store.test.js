@@ -2383,6 +2383,66 @@ describe('useChatStore', () => {
 			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
 		});
 
+		// 'rpc' 路径单独命名：与 'wait' 共用 __awaitPersistAndDrop 行为，但驱动信号不同。
+		// 'rpc' = agent RPC 第二阶段 res 到达 → __onRpcDone → __endRun(reason='rpc')。
+		// 'wait' = grace 期满（__schedulePendingEnd 后 RPC_GRACE_MS 内 res 未到）→ __endRun(reason='wait')。
+		// 上一条测试只走了 'wait' 分支；本条显式让 agent res 抢先到达，覆盖 'rpc' 信号源命名路径。
+		test("endReason='rpc' fast-path：agent res 抢先 → loadMessages 一次 + dropRun，无 sleep/grace", async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			let agentResolve = null;
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-rpc-ok' });
+					return new Promise((resolve) => { agentResolve = resolve; });
+				}
+				if (method === 'sessions.get') {
+					return Promise.resolve({
+						messages: [
+							{ role: 'user', content: [{ type: 'text', text: 'hello' }], timestamp: 1000 },
+							{ role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn', timestamp: 2000 },
+						],
+					});
+				}
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+			const endRunSpy = vi.spyOn(runsStore, '__endRun');
+
+			const sendPromise = store.sendMessage('hello');
+			await vi.advanceTimersByTimeAsync(0); // 等 onAccepted + register
+			expect(runsStore.runs['run-rpc-ok']).toBeTruthy();
+
+			// 'rpc' 路径：让 agent RPC res 直接抢先到达（无 grace pending）→ __onRpcDone → __endRun('rpc')
+			agentResolve({ status: 'ok' });
+			await sendPromise;
+
+			// 终态来源是 'rpc'，不是 'wait'
+			const rpcEndCalls = endRunSpy.mock.calls.filter((c) => c[0] === 'run-rpc-ok' && c[1] === 'rpc');
+			expect(rpcEndCalls.length).toBe(1);
+
+			// 下游 loadMessages 一次（无前置 sleep / grace）→ dropRun
+			await vi.waitFor(() => {
+				expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-rpc-ok');
+			});
+			const sessGetCalls = conn.request.mock.calls.filter((c) => c[0] === 'sessions.get');
+			expect(sessGetCalls.length).toBe(1);
+			// 撤掉了 persist-stale 降级 remoteLog
+			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
+		});
+
 		test('endReason=wait + silent loadMessages 失败：不 dropRun（streamingMsgs 残留至下次 chat 重建自愈，TODO #2）', async () => {
 			vi.useFakeTimers();
 			const clawsStore = useClawsStore();
