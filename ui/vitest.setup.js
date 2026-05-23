@@ -1,4 +1,4 @@
-import { afterEach } from 'vitest';
+import { afterEach, vi } from 'vitest';
 import { config } from '@vue/test-utils';
 
 // jsdom 未实现 ResizeObserver，提供最小 stub；只在 browser-like 环境装，避免污染 node 全局
@@ -25,4 +25,9 @@ afterEach(() => {
 		window.localStorage?.clear();
 		window.sessionStorage?.clear();
 	}
+	// Fake-timer 安全网：用例若 worker crash/SIGKILL 跳过 try/finally，
+	// 残留的 fake timer 会污染下个用例并产生迷惑性时序失败。
+	// vi.clearAllTimers 在 real timer 下是 no-op；useRealTimers 是幂等的。
+	vi.clearAllTimers();
+	vi.useRealTimers();
 });

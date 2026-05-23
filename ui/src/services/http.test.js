@@ -58,11 +58,15 @@ vi.mock('axios', () => ({
 import axios from 'axios';
 import { httpClient, resetAuthExpiredThrottle } from './http.js';
 
+// 模块加载时 axios.create + interceptors.use 已被同步调用一次；在 describe 外捕获，
+// 否则 vitest 全局 clearMocks 会在每个 beforeEach 之前清空 mock.calls，让 calls[0] 变 undefined
+const importTimeCreateArg = axios.create.mock.calls[0]?.[0];
+const importTimeReqInterceptor = mockAxiosInstance.interceptors.request.use.mock.calls[0]?.[0];
+const importTimeResponseCall = mockAxiosInstance.interceptors.response.use.mock.calls[0];
+
 describe('http client', () => {
 	test('should create axios instance with withCredentials', () => {
-		expect(axios.create).toHaveBeenCalledWith(
-			expect.objectContaining({ withCredentials: true }),
-		);
+		expect(importTimeCreateArg).toEqual(expect.objectContaining({ withCredentials: true }));
 	});
 
 	test('should export the shared client', () => {
@@ -70,18 +74,18 @@ describe('http client', () => {
 	});
 
 	test('should register request interceptor', () => {
-		expect(mockAxiosInstance.interceptors.request.use).toHaveBeenCalled();
+		expect(importTimeReqInterceptor).toBeInstanceOf(Function);
 	});
 
 	test('should register response interceptor', () => {
-		expect(mockAxiosInstance.interceptors.response.use).toHaveBeenCalled();
+		expect(importTimeResponseCall?.[0]).toBeInstanceOf(Function);
 	});
 
 	describe('request interceptor', () => {
 		let reqInterceptor;
 
 		beforeEach(() => {
-			reqInterceptor = mockAxiosInstance.interceptors.request.use.mock.calls[0][0];
+			reqInterceptor = importTimeReqInterceptor;
 		});
 
 		test('should pass config through and log', () => {
@@ -99,9 +103,8 @@ describe('http client', () => {
 		let onRejected;
 
 		beforeEach(() => {
-			const call = mockAxiosInstance.interceptors.response.use.mock.calls[0];
-			onFulfilled = call[0];
-			onRejected = call[1];
+			onFulfilled = importTimeResponseCall[0];
+			onRejected = importTimeResponseCall[1];
 		});
 
 		test('should pass response through and log', () => {

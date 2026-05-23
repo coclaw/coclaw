@@ -197,11 +197,6 @@
     - 现状：`__ensureRtc` early-return 看 state===connected，但 isReady=false 时 DC 实际不可用；窄窗口可能 short-circuit 错误判定
     - 修法待定：可能改 early-return 条件 + 重 init；需深入 review
 
-4. **`setupAppStateChange` 直接回调捕获，测试注入需要清理**
-    - 来源：commit 665f0e7 round 22 backlog
-    - 现状：测试用 vi.doMock 注入有副作用残留风险；setupAppStateChange 直接捕获 App 引用而不是从工厂注入，单测覆盖被钳制
-    - 修法：factor App reference for test injection，或 vi.doMock 用法收紧
-
 5. **`isConnectingRtc` / `unreachableClaws` getter 语义在 sig offline + rtcPhase=building/recovering 期间不清晰**
     - 来源：commit 4ae005e round 19 backlog（"P2-5"）
     - 现状：sig offline 时 `rtcPhase` 可能仍是 building/recovering（pre-existing 残留），UI 看到的 isConnectingRtc / unreachableClaws 状态不直觉
@@ -382,11 +377,6 @@
     - 现状：所有用例用 `mock.calls.find(predicate)` toBeTruthy/toBeUndefined，未断言精确 `times` / `order` / payload 全字段
     - 影响：production 若发出额外的 `network:online` 事件、或把 `count=N` 之外的字段乱写，测试不会 fail
     - 修法方向：改用 `toHaveBeenCalledTimes(N)` + `toHaveBeenCalledWith({ detail: { typeChanged: ..., ... } })` 显式断言
-
-5. **vitest 缺全局 fakeTimers reset 配置**
-    - 现状：`vitest.config.js` 没设 `fakeTimers` 全局配置；用 fake timer 的用例靠各自 `try/finally` 或 `afterEach(vi.useRealTimers)` 还原
-    - 影响：极端路径（worker crash、SIGKILL）下 finally 没跑会让 fake timer 残留到下一个用例，产生迷惑性的时序失败
-    - 修法方向：在 `vitest.config.js` 加全局 fakeTimers 配置或 `clearMocks/restoreMocks: true` 等保险
 
 6. **`src/services/file-helper.js` 浏览器下载 anchor 路径未被任何 unit test 覆盖**
     - 现状：`saveBlobToFile` 在 files.store 测试里被 mock 掉，jsdom 下的 anchor download 路径没有针对性 unit test

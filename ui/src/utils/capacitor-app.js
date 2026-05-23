@@ -21,6 +21,30 @@ export { __cancelPendingNetworkDispatch, __flushNetworkDebounceForTest } from '.
 /** 是否运行在 Capacitor 原生壳中 */
 export const isNative = Capacitor.isNativePlatform();
 
+// 三个 setup* 都需要 @capacitor/app 上的 App。原先各自 `import('@capacitor/app').then(...)`：
+// 同一模块多次动态 import 在 vitest mock 代理下可能拿到不同对象（仅首次 addListener 落到 mock 上，
+// 后续 import 返回的 proxy 上 addListener 调用挤不进同一份回调表），导致 appStateChange / appUrlOpen
+// 回调在测试里无法被直接捕获，只能靠 "源码 pattern lock" 这类间接覆盖。
+// 这里收敛为单一 lazy loader：所有 setup* 共享同一 Promise，mock 解析一次就稳定。
+// __setAppLoaderForTest 是测试注入入口，可塞同步可控的 App，并清掉缓存让下个 setup 重新解析。
+let __appLoader = () => import('@capacitor/app');
+let __appPromise = null;
+
+function loadCapacitorApp() {
+	if (!__appPromise) __appPromise = __appLoader();
+	return __appPromise;
+}
+
+/**
+ * 测试钩子：替换 @capacitor/app 的加载器并清空缓存的 Promise。
+ * 传 undefined / 不传参恢复默认 `() => import('@capacitor/app')`。
+ * @param {(() => Promise<{App: any}>) | undefined} loader
+ */
+export function __setAppLoaderForTest(loader) {
+	__appLoader = loader || (() => import('@capacitor/app'));
+	__appPromise = null;
+}
+
 // Web 端：桥接浏览器原生 online 事件为统一的 network:online
 // 追踪是否经历过 offline，防止无前置 offline 的 spurious online 事件
 if (!isNative && typeof window !== 'undefined') {
@@ -256,7 +280,7 @@ function setupAppStateChange() {
 		}
 	});
 
-	import('@capacitor/app').then(({ App }) => {
+	loadCapacitorApp().then(({ App }) => {
 		App.addListener('appStateChange', ({ isActive }) => {
 			console.log('[capacitor] appStateChange: isActive=%s', isActive);
 			remoteLog(`app.stateChange active=${isActive}`);
@@ -360,7 +384,7 @@ export function parseDeepLinkPath(url) {
 }
 
 function setupDeepLink(router) {
-	import('@capacitor/app').then(({ App }) => {
+	loadCapacitorApp().then(({ App }) => {
 		App.addListener('appUrlOpen', ({ url }) => {
 			if (!url) return;
 			try {
@@ -379,7 +403,7 @@ function setupDeepLink(router) {
 }
 
 function setupBackButton(router) {
-	import('@capacitor/app').then(({ App }) => {
+	loadCapacitorApp().then(({ App }) => {
 		App.addListener('backButton', ({ canGoBack }) => {
 			// 优先关闭打开的对话框
 			if (hasOpenDialog()) {

@@ -15,10 +15,10 @@ const mockGetInfo = vi.hoisted(() => vi.fn().mockResolvedValue({}));
 const mockSplashHide = vi.hoisted(() => vi.fn().mockResolvedValue());
 
 // 事件回调收集器
-// 注意：由于 Vitest 动态 import proxy 的限制，同一模块的多次 import() 调用
-// 可能返回不同的 proxy 对象。对 @capacitor/app，仅第一次动态 import (setupBackButton)
-// 的 addListener 能被直接捕获，appStateChange 和 appUrlOpen 的回调通过
-// 监听其 window 事件来间接验证。
+// capacitor-app.js 已把 @capacitor/app 的动态 import 收敛为单一 lazy loader（loadCapacitorApp），
+// 所有 setup* 共享同一 Promise，多次解析也只产生一份回调注册。借助 __setAppLoaderForTest
+// 在每个用例前清缓存，appListeners 就能稳定捕获 backButton / appStateChange / appUrlOpen 三类回调。
+const appListeners = vi.hoisted(() => ({}));
 const backButtonCb = vi.hoisted(() => ({ fn: null }));
 const networkListeners = vi.hoisted(() => ({}));
 const keyboardListeners = vi.hoisted(() => ({}));
@@ -66,9 +66,7 @@ vi.mock('@capacitor/keyboard', () => ({
 vi.mock('@capacitor/app', () => ({
 	App: {
 		addListener: (event, cb) => {
-			// 仅第一次 import 调用（setupBackButton）能到达此处；
-			// appStateChange / appUrlOpen 受 vitest 动态 import 限制无法直接捕获，
-			// 见 capacitor-app-browser.test.js 注释（131-136 行）
+			appListeners[event] = cb;
 			if (event === 'backButton') backButtonCb.fn = cb;
 		},
 		minimizeApp: mockMinimizeApp,
@@ -101,6 +99,7 @@ vi.mock('../i18n/index.js', () => ({
 
 function clearListeners() {
 	backButtonCb.fn = null;
+	Object.keys(appListeners).forEach((k) => delete appListeners[k]);
 	Object.keys(networkListeners).forEach((k) => delete networkListeners[k]);
 	Object.keys(keyboardListeners).forEach((k) => delete keyboardListeners[k]);
 	Object.keys(mockShareListeners).forEach((k) => delete mockShareListeners[k]);
@@ -149,6 +148,9 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		// 该函数同时也是 auth.store logout 链里使用的生产 API，复用之以保持同一执行路径。
 		const mod = await import('./capacitor-app.js');
 		mod.__cancelPendingNetworkDispatch();
+		// 重置 @capacitor/app loader 缓存：让本用例的 initCapacitorApp 重新解析一次 import，
+		// 触发三个 setup* 各自调用 mock 的 App.addListener，写满 appListeners
+		mod.__setAppLoaderForTest();
 	});
 
 	// --- StatusBar ---
@@ -279,39 +281,100 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		Object.defineProperty(document, 'activeElement', { value: document.body, configurable: true });
 	});
 
-	// --- AppStateChange (通过 window 事件间接验证) ---
+	// --- AppStateChange (直接捕获回调验证) ---
+	// loadCapacitorApp 收敛后，三个 setup* 共享同一份 import('@capacitor/app') 解析结果，
+	// appStateChange 回调可由 appListeners 直接拿到，不再依赖源码 pattern lock。
 
-	test('setupAppStateChange: 前台恢复时派发 app:foreground', async () => {
-		const received = [];
-		const handler = () => received.push('foreground');
-		window.addEventListener('app:foreground', handler);
-
+	test('setupAppStateChange: isActive=true 时派发 app:foreground 事件', async () => {
 		const { initCapacitorApp } = await import('./capacitor-app.js');
 		await initCapacitorApp(mockRouter);
 		await flush();
 
-		// setupAppStateChange 注册了 appStateChange 监听，虽然无法直接获取回调引用，
-		// 但通过源码可知 console.log 已打印 "appStateChange listener registered"
-		// 表明 addListener 已被调用。覆盖率已包含注册代码路径。
-		// focusin 处理函数的可观察契约由 capacitor-app-browser.test.js 锁定。
-		window.removeEventListener('app:foreground', handler);
+		expect(typeof appListeners['appStateChange']).toBe('function');
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		appListeners['appStateChange']({ isActive: true });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'app:foreground');
+		expect(evt).toBeDefined();
+		dispatchSpy.mockRestore();
 	});
 
-	// vitest 动态 import 限制使 appStateChange 回调无法直接捕获（详见 capacitor-app-browser.test.js
-	// 第 131-136 行注释）。issue #243 关心的"切回前台主动收键盘"契约用源码 pattern lock：
-	// 必须在 isActive=true 分支体内出现 `Keyboard.hide()` 调用，且 import 路径有 .catch 兜底
-	test('setupAppStateChange: isActive=true 分支调用 Keyboard.hide（issue #243 源码 pattern lock）', async () => {
-		const fs = await import('node:fs');
-		const path = await import('node:path');
-		const url = await import('node:url');
-		const here = path.dirname(url.fileURLToPath(import.meta.url));
-		const src = fs.readFileSync(path.join(here, 'capacitor-app.js'), 'utf8');
-		// 截取 setupAppStateChange 函数体内 isActive=true 分支区段
-		const fnMatch = src.match(/function setupAppStateChange\(\)[\s\S]*?\n\}/);
-		expect(fnMatch).toBeTruthy();
-		const body = fnMatch[0];
-		// isActive=true 分支必须出现 Keyboard.hide() 调用（容忍 await/await? 或 .then/.catch）
-		expect(body).toMatch(/if\s*\(\s*isActive\s*\)[\s\S]*Keyboard\.hide\s*\(/);
+	test('setupAppStateChange: isActive=false 时派发 app:background 事件', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		appListeners['appStateChange']({ isActive: false });
+		const evt = dispatchSpy.mock.calls.find((c) => c[0]?.type === 'app:background');
+		expect(evt).toBeDefined();
+		// 不应误派 foreground
+		expect(dispatchSpy.mock.calls.find((c) => c[0]?.type === 'app:foreground')).toBeUndefined();
+		dispatchSpy.mockRestore();
+	});
+
+	// issue #243：切回前台主动收一次软键盘，防止 Android/鸿蒙下从其他 App 切回时
+	// WebView 残留键盘占位空白且无法手动收起
+	test('setupAppStateChange: isActive=true 主动调用 Keyboard.hide（issue #243）', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		mockKeyboardHide.mockClear();
+		appListeners['appStateChange']({ isActive: true });
+		await flush();
+		expect(mockKeyboardHide).toHaveBeenCalled();
+	});
+
+	test('setupAppStateChange: isActive=false 不调用 Keyboard.hide', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		mockKeyboardHide.mockClear();
+		appListeners['appStateChange']({ isActive: false });
+		await flush();
+		expect(mockKeyboardHide).not.toHaveBeenCalled();
+	});
+
+	// --- DeepLink ---
+
+	test('setupDeepLink: 合法 URL 派 router.push', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		expect(typeof appListeners['appUrlOpen']).toBe('function');
+		appListeners['appUrlOpen']({ url: 'coclaw://chat/123' });
+		expect(mockRouter.push).toHaveBeenCalledWith('/chat/123');
+	});
+
+	test('setupDeepLink: 根路径 URL 不导航', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		appListeners['appUrlOpen']({ url: 'coclaw://' });
+		expect(mockRouter.push).not.toHaveBeenCalled();
+	});
+
+	test('setupDeepLink: 非法 URL 被 catch 不抛异常', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		expect(() => appListeners['appUrlOpen']({ url: 'not a url' })).not.toThrow();
+		expect(mockRouter.push).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
+	test('setupDeepLink: 空 url 早返回不调用 router', async () => {
+		const { initCapacitorApp } = await import('./capacitor-app.js');
+		await initCapacitorApp(mockRouter);
+		await flush();
+
+		appListeners['appUrlOpen']({ url: '' });
+		expect(mockRouter.push).not.toHaveBeenCalled();
 	});
 
 	// 三个 setup* 函数（appStateChange / deepLink / backButton）的动态 import 必须各自
@@ -341,22 +404,22 @@ describe('initCapacitorApp - 各模块初始化', () => {
 		expect(parseDeepLinkPath('coclaw://chat')).toBe('/chat');
 	});
 
-	test('setupAppStateChange/DeepLink/BackButton: 三个 import @capacitor/app 都跟对称的 .catch warn（源码 pattern lock，非行为测试，仅防漏 .catch）', async () => {
-		const fs = await import('node:fs');
-		const path = await import('node:path');
-		const url = await import('node:url');
-		const here = path.dirname(url.fileURLToPath(import.meta.url));
-		const src = fs.readFileSync(path.join(here, 'capacitor-app.js'), 'utf8');
-		// 每条 import('@capacitor/app').then(...) 后都应有对应 .catch 兜底
-		const importMatches = src.match(/import\(['"]@capacitor\/app['"]\)\.then\(/g) ?? [];
-		expect(importMatches.length).toBeGreaterThanOrEqual(3);
-		const expectedCatches = [
-			"\\.catch\\(\\(e\\) => console\\.warn\\('\\[capacitor\\] appStateChange setup failed:'",
-			"\\.catch\\(\\(e\\) => console\\.warn\\('\\[capacitor\\] deep-link setup failed:'",
-			"\\.catch\\(\\(e\\) => console\\.warn\\('\\[capacitor\\] backButton setup failed:'",
-		];
-		for (const pattern of expectedCatches) {
-			expect(src).toMatch(new RegExp(pattern));
+	test('setupAppStateChange/DeepLink/BackButton: loadCapacitorApp 失败时三处各打一条 warn（不让原生壳缺失冒泡成 unhandledrejection）', async () => {
+		// 注入会 reject 的 loader，replaces 默认 import('@capacitor/app')
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const mod = await import('./capacitor-app.js');
+		mod.__setAppLoaderForTest(() => Promise.reject(new Error('native shell missing')));
+		try {
+			await mod.initCapacitorApp(mockRouter);
+			await flush();
+			const warnMsgs = warnSpy.mock.calls.map((c) => String(c[0]));
+			expect(warnMsgs.some((m) => m.includes('appStateChange setup failed'))).toBe(true);
+			expect(warnMsgs.some((m) => m.includes('deep-link setup failed'))).toBe(true);
+			expect(warnMsgs.some((m) => m.includes('backButton setup failed'))).toBe(true);
+		}
+		finally {
+			warnSpy.mockRestore();
+			mod.__setAppLoaderForTest();
 		}
 	});
 
