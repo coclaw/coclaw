@@ -1112,20 +1112,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **严重度**：Low（窗口窄、复用条件苛刻；但要根治需要架构层改动，纳入 async-orphan 治本方案讨论）
 
-## ~~调查 pion / pion-ipc 是否 FIFO 公平~~（已结题 2026-05-12）
-
-**结题日期**：2026-05-12
-**结题文档**：`docs/study/signaling-fifo-end-to-end.md`
-
-**结论**：plugin → pion-node → pion-ipc → pion 这条链路里，d934de7 想要的
-"SRD 先于 AddIce 生效"契约**完全成立**。具体：
-- pion-ipc 是 per-PC worker goroutine 单线程串行调 pion API（`internal/service/worker.go`）
-- pion `pc.setDescription` 在 `pc.mu.Lock()` 内同步写 pendingRemoteDescription
-- pion `RemoteDescription()` 在 `pc.mu.RLock()` 内同步读，Lock/RLock 配对提供 happens-before
-- "P2P 时通时不通"与 pion 内部 FIFO 无关；真正的 race 出现在 pion `ice.Agent.AddRemoteCandidate`（每次起 goroutine 抢 taskloop 无缓冲 channel），但 race 的对象是 ICE 候选添加顺序，而 ICE 协议层面候选 order-independent，所以**对功能无害**。
-
-**当前 P2P 偶发不通的真正方向**：与候选添加顺序无关；更可能与 ICE pair 选择策略 + 多网卡候选（WSL/Docker bridge）参与排序有关。这条已不再视为信令链路问题，归入 ICE 候选过滤的可选改造（暂不修，详见 `docs/study/signaling-fifo-end-to-end.md` 第 7 节及 2026-05-12 会话记录）。
-
 ## webrtc-peer.test.js 2390 既有弱断言（预存）
 
 **发现日期**：2026-05-11（信令串行化 per-connId deep-review，codex 测试 review 抓出 H1）
@@ -1377,7 +1363,7 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 
 **待办**：
 - [x] CLI 实验交叉验证（2026-05-17）——结果完全命中预期：chat-history.json sha256 不变；sessions.json 新增 `agent:main:explicit:d623247e-4d48-4e0c-84ef-f79b1461d966` entry（71→72）；plugin 日志无 chat-history.missing-keys 或任何 handleSessionsCreated（旧名，5125818 重命名前的实验日志，现名 handleSessionCreated）相关 warn（reason='create' 严判完全静默 phase=message 流量）
-- [ ] 上述两个外溢副作用纳入 task #11 的上游 issue 草稿
+- [x] 上述两个外溢副作用纳入上游 issue 草稿（2026-05-23）——草稿写在 `docs/upstream-issues/explicit-session-key-opt-out.md` + `docs/upstream-issues/sessions-changed-message-reason-field.md`（整目录 gitignored，draft-only 约定见该目录 README）；提交 GitHub 后登记到 `docs/openclaw-upstream-issues.md` 并删除本地草稿
 - [ ] 多 agent topic 启用后复评：F1 实验只钉死了"main agent topic 路径不破"，若 CoClaw 解开 UI `chat.store.js` topicMode 分支让非 main agent 也能新建 topic（参考 `docs/decisions/topic-main-agent-constraint.md` §"2026-05-17 重评"），需要复跑实验验证非 main agent 的 explicit fake sessionKey 路径同样不撞穿 `reason === 'create'` 严判，并核查 chat-history 桶不被污染
 
 ---
@@ -1410,59 +1396,6 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 - 加多 profile / 容器场景的 fixture 测试
 
 **注**：AGENTS.md L29 措辞已修正，把 `agents.<id>.store` 改成顶层 `session.store` 并明确标注上游 schema 里没有 `agents.<id>.store` 字段。
-
----
-
-## chat-history 第六轮 review 收尾（已完成，留作历史索引）
-
-**发现日期**：2026-05-17 第六轮 deep-review；**消化日期**：2026-05-17 第七轮前置
-
-第六轮 4 维度 review 整体 0 MUST-FIX；除文档/注释类直接做完外，2 条**碰运行代码**的建议（R2-S2 加 wiring 回归测试 / R2-N2 删 wrapper）原先按"不动业务代码"摘出登记此处，第七轮 review 前已全部消化：
-
-- **R2-S2 done**：`__getSingletonForTest()` test-only export 落地（`plugins/openclaw/src/realtime-bridge.js`），bridge.test.js 加一条 wiring 测试钉死 `restartRealtimeBridge({...,onSessionCreated:cb})` 后 `singleton.__onSessionCreated === cb`，且第二次 restart 未传 cb 时新 singleton 回归 null。
-- **R2-N2 done**：`plugins/openclaw/index.js#restartBridge` 内联匿名 wrapper 删除，直接 `onSessionCreated: handleSessionCreated`；wrapper 原注释（"sessions.changed payload 不带 previousSessionId" + "该 helper 可直接作 bridge.onSessionCreated 回调"）已挪到 `handleSessionCreated` 上方 jsdoc。
-
----
-
-## chat-history 双源归档 follow-up F3：子代理 spawn 的 sessionKey 与 chat-history 的关系（已闭环，留作历史索引）
-
-**发现日期**：2026-05-17 第八轮 deep-review R-B（端到端追踪）
-**闭环日期**：2026-05-18（采用方案 A）
-**关联**：`openclaw-repo/src/agents/subagent-spawn.ts:829 / :1301-1307` + `plugins/openclaw/index.js#handleSessionCreated`
-
-**决议**：采用方案 A（黑名单挡 `:subagent:` 形态）。理由（调研后）：
-
-1. OpenClaw 默认 `cleanup="keep"`，subagent 跑完后 sessionKey 永久保留在 sessions.json 但只发 `subagent-status`（**不发归档/结束类事件**）——plugin 若入档会让"未归档头"永久滞留。
-2. subagent 的对话内容**已通过"完成事件 → user message 回流"形式进入父 agent 的 transcript**，用户视角不丢失内容。子代理自己的 transcript JSONL 仍在 OpenClaw 磁盘 + sessions.json 完整保留；CoClaw 想做"子任务调用链查看"应走 `sessions.list` 的 `spawnedBy` 即时查询，不该依赖 chat-history 副本。
-3. 白名单（方案 B）会误伤 cron / IM channel 等"用户人机对话流"形态——这些虽然 UI 当前未展示，但本质属于用户数据，未来可能展示。
-4. 单独 bucket（方案 C）扩 schema 成本高，对当前 UI 无收益。
-
-**实施**：`handleSessionCreated` 增加 `parts.indexOf('subagent', 2) >= 0` 早返（含嵌套子代理）；判定从 parts[2] 起避免 agentId 偶然叫 `subagent` 时误伤；命中打 `remoteLog('chat-history.skip-subagent ...')` 作为观测信号。架构文档 §F 同步说明。Changeset：`.changeset/chat-history-skip-subagent.md`。
-
----
-
-**原始调研记录（供未来 OpenClaw schema 演进时参考）：**
-
-
-**事实**：OpenClaw `subagent-spawn.ts:829` 生成 sessionKey 形态 `agent:<targetAgentId>:subagent:<uuid>`，随后 `:1301-1307` 显式调 `emitSessionLifecycleEvent({ sessionKey: childSessionKey, reason: "create", parentSessionKey, label })`。这条事件经 gateway 转成 `sessions.changed reason=create` 广播——会触达 plugin 的 bridge 路径 → `handleSessionCreated`。当前 explicit 守卫 (`parts[0]==='agent' && parts[2]==='explicit'`) **不挡 `:subagent:`**，会被写入 `coclaw-chat-history.json` 顶级键，每次 spawn 一条永不收缩。
-
-**为什么是单独课题**：简单"扩守卫挡 `:subagent:`"未必正确。OpenClaw 也许就是为子代理建独立 session 的，subagent 也有自己的 transcript / 对话流；如果 CoClaw 端简单过滤掉，可能让用户在 UI 上看不到子代理对应的 chat history 段（如果 UI 端有"显示子代理对话"需求）。需要先调研产品定位再决策。
-
-**待调研**：
-
-5. **OpenClaw 子代理 transcript 落盘**：subagent spawn 后是否真的有 transcript/session JSONL 写入？路径在哪？以这个 sessionKey 检索能否调出对话？
-6. **OpenClaw 端 sessions.json 索引**：subagent sessionKey 是否进入 `sessions.json`？sessions.list RPC 是否会返回它？
-7. **CoClaw 产品定位**：UI 端是否要展示子代理的 chat 流？还是 main agent 的 chat-history 视图就够了？
-8. **chat-history 桶的语义**：当前 chat-history.json 的设计是"chat 流水"，chat 与 sessionKey 一一对应（CLAUDE.md 核心术语）。子代理 sessionKey 是否构成独立 chat 还是 main chat 的子段？
-
-**候选方案（待调研后定）**：
-
-- **A：扩黑名单挡 `:subagent:`**——简单但承担"未来上游再加新形态又漏"的风险；需 changeset 描述清楚"CoClaw 端不展示子代理 history"。
-- **B：改为白名单"只接受 `agent:<id>:main` 形态"**——更稳，未来上游加任何新形态都默认挡；但若需展示子代理需另起 UI 通道。
-- **C：把 subagent sessionKey 也接入 chat-history，但用单独 bucket 与 main 区分**——保留数据完整性，UI 端按需展示；需扩 schema。
-- **D：维持现状（不修）+ 周期清理**——临时方案，仅适合 spawn 频次极低场景，不可持续。
-
-**临时影响（修复前）**：每次子代理 spawn 都污染 chat-history.json + UI list RPC 会读到 subagent sessionKey 顶级键。当前 UI `chat.store.js:1445-1447` 用 `archivedAt != null` 过滤未归档头——subagent 未归档头会被 UI 过滤掉，不展示。但文件本身仍无界增长。
 
 ---
 
