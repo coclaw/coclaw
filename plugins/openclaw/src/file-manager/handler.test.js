@@ -3193,6 +3193,89 @@ test('handleFileChannel PUT: doneReceived=true 但 finishing=false 时 ws emit e
 	}
 });
 
+// race 回归：done 帧已到 + finishUpload 已 schedule ws.end(cb) 后，客户端再发一帧
+// 超大 binary（恶意或 buggy client），走 SIZE_EXCEEDED 路径：ws.destroy → 同步
+// safeUnlink → dc.close → dc.onclose。其中 dc.onclose 看到 doneReceived=true && finishing=true
+// 直接 return，并不会再调 attachTmpCleanupOnce。这条 case 唯一的兜底是 ws.end(cb)
+// 在 ws 被 destroy 后用 err 调 cb → 走 finishUpload 里的 attachTmpCleanupOnce 分支。
+// 若未来有人把"err 分支 attach"摘掉，本测试会以孤儿 tmp 暴露
+test('handleFileChannel PUT: done 后到 SIZE_EXCEEDED 帧仍清理孤儿 tmp', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const unlinkCalls = [];
+		const FOPEN_DELAY_MS = 30;
+		let fopenDoneResolve;
+		const fopenDonePromise = new Promise((r) => { fopenDoneResolve = r; });
+		let lastWs = null;
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path) => {
+					const ws = new EventEmitter();
+					let destroyed = false;
+					let fopenDone = false;
+					let pendingEndCb = null;
+					setTimeout(() => {
+						fopenDone = true;
+						fsSync.writeFileSync(path, '');
+						if (destroyed) ws.emit('close');
+						fopenDoneResolve();
+					}, FOPEN_DELAY_MS);
+					ws.write = () => true;
+					// 真实 Node Writable 语义：destroy 之前调 end(cb)，cb 在 'finish' 时无 err 触发；
+					// destroy 后调 end(cb)（或先 end(cb) 再 destroy），cb 用 err 触发
+					ws.end = (cb) => {
+						if (destroyed) {
+							setImmediate(() => cb?.(new Error('Premature close')));
+						} else {
+							pendingEndCb = cb;
+						}
+					};
+					ws.destroy = () => {
+						if (destroyed) return;
+						destroyed = true;
+						if (pendingEndCb) {
+							const cb = pendingEndCb;
+							pendingEndCb = null;
+							setImmediate(() => cb(new Error('Premature close')));
+						}
+						if (fopenDone) ws.emit('close');
+					};
+					Object.defineProperty(ws, 'destroyed', { get: () => destroyed });
+					Object.defineProperty(ws, 'bytesWritten', { get: () => 0 });
+					lastWs = ws;
+					return ws;
+				},
+				unlink: async (p) => {
+					unlinkCalls.push({ path: p, existed: fsSync.existsSync(p) });
+					return fs.unlink(p);
+				},
+			},
+		});
+		const dc = createMockDC('file:done-then-oversize');
+		handler.handleFileChannel(dc, 'c_done_oversize');
+
+		// declaredSize=5；先 done（pendingQueue 空 → 立即 finishUpload → ws.end(cb) 排期）
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'r.txt', size: 5 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		dc.onmessage({ data: JSON.stringify({ done: true }) });
+		// 然后晚到一帧明显超 declaredSize 的 binary → SIZE_EXCEEDED 同步链
+		dc.onmessage({ data: Buffer.from('123456789') });
+
+		// 等 fopen 落盘 + ws.end(cb) 兜底 attach 触发 listener 清理
+		await fopenDonePromise;
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
+
+		// 关键不变式：必须有一次 unlink 抓到 post-fopen 的真文件（兜底链生效）
+		assert.ok(unlinkCalls.some((c) => c.existed), `safeUnlink should target existing tmp file (post-fopen), got: ${JSON.stringify(unlinkCalls)}`);
+		// dedup 不变式：close listener 仅一个
+		assert.equal(lastWs.listenerCount('close'), 1, 'ws should have exactly one close listener');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('handleFileChannel GET: 成功路径必须 await dc.close()（回归保护）', async () => {
 	const dir = await makeTmpDir();
 	try {
