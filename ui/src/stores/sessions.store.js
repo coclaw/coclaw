@@ -245,8 +245,7 @@ export const useSessionsStore = defineStore('sessions', {
 			// 若 agentsStore 未加载完成，fallback 到 ['main']
 			const agentIds = agents.length ? agents.map((a) => a.id) : ['main'];
 
-			// 不在此处吞 RPC 错误：让外层 Promise.allSettled 看到 rejected 状态，
-			// 合并环节按"未查询"路径保留旧条目（与 chat.history 时代的语义一致）
+			// 本函数不吞错：异常抛给 __doLoadForClaw，由其统一 catch + warn + 保留旧值
 			const result = await conn.request('sessions.list', {}, { timeout: 60_000 });
 			const sessionList = Array.isArray(result?.sessions) ? result.sessions : [];
 

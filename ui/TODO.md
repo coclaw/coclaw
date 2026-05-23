@@ -13,11 +13,7 @@
    - 现状：`claw-lifecycle.js:57-59` `initClawResources` 与 `:70-74` `refreshClawResources` 内多处 `.catch(() => {})` 把 loader（sessions/topics/dashboard/agents）的 reject 静默吞掉。任一 loader 意外 reject 没有任何日志可查，是个诊断盲区。
    - 修复方向：把 `.catch(() => {})` 改成 `.catch((err) => { console.warn('[lifecycle] loadX failed clawId=%s:', id, err); })` 之类的薄包装，保留 fire-and-forget 语义同时留下排查痕迹。
 
-2. **`__fetchSessionsForClaw` 的过时注释**
-   - 现状：`sessions.store.js:240-241` 注释说"不在此处吞 RPC 错误：让外层 Promise.allSettled 看到 rejected 状态，合并环节按'未查询'路径保留旧条目"。但 `__doLoadForClaw` 已经 catch 了 fetch 错误（`:181-185`），外层 `loadAllSessions` 的 `Promise.allSettled` 永远看不到 rejected 状态——注释与实际行为不符。
-   - 修复方向：把注释改成"`__fetchSessionsForClaw` 本身不吞错（抛给 `__doLoadForClaw`），由 `__doLoadForClaw` 统一 catch + warn + 保留旧值"，与现实对齐。
-
-3. **同 id 重绑场景下旧 fetch 写入身份不验证**
+2. **同 id 重绑场景下旧 fetch 写入身份不验证**
    - 现状：`__doLoadForClaw` 只检查 `clawsStore.byId[id]` 是否存在，不验证是不是同一个 claw 实例。极端时序：claw A 被解绑、同 id 立刻重绑成 claw B，期间 A 的旧 fetch 跑完后会看到 `byId[id]` 存在（指向 B）就把 A 的 raw（以及 SessionItem）写给 B。日常使用几乎不可能触发，但属于已知风险。
    - 修复方向：fetch 启动时记录一个 fingerprint（比如 conn 引用或 claw 的随机 id），写入前与当前 fingerprint 比对；不一致则丢弃。需要先核实业务上有没有可用的 fingerprint。
 
@@ -240,8 +236,6 @@
         - 方案 B：在 `register` 时若 `anchorMsgId=null` 且 `optimisticUser.timestamp` 已知，记录一个 `runStartTs`；no-anchor strip 时只接受 `timestamp >= runStartTs` 的 server user
         - 方案 C：彻底改 anchor 语义为"时间戳锚点"而非"id 锚点"，规模较大
     - 必须配套补 chat.store + agent-runs.store 单元测试（"no-anchor + server 仅有历史 user 无 curr_user"场景）
-
-2. **`run.ended` 与 streamingMsgs 合并语义错位** — 已并入 #16，详见 [`ui/docs/streaming-overlay-stuck-bug.md`](docs/streaming-overlay-stuck-bug.md)
 
 ## MainList agent 排序 deep-review 发现的预存问题（2026-05-01）
 
