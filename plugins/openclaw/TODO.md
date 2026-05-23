@@ -758,16 +758,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 ## 2026-05-06 deep-review（claw-config host adapter）抓出的预存问题
 
-### updater.js loadInstallRecordFromLegacyConfig catch 静默无日志（PRE-EXISTING）
-
-**锚点**：`plugins/openclaw/src/auto-upgrade/updater.js` 的 `loadInstallRecordFromLegacyConfig`
-
-catch 直接 `return null`，没有任何 log / remoteLog 输出。后续 `shouldSkipAutoUpgrade()` 拿到 null 走 skip 分支时只有调度层的通用日志（`Skipping: not an npm-installed plugin`），无法区分"正常无记录"和"读 config 抛异常"。
-
-**风险**：低概率场景下（host config reader 抛异常）的诊断盲区。本次 claw-config 改造延续了这个写法，没新引入。
-
-**修复方向**：catch 内补 `remoteLog('upgrade.legacy-config-read-failed msg=...')`，与同函数 `loadInstallRecord` 已有的三条 remoteLog 信号风格统一。
-
 ### realtime-bridge defaultResolveGatewayAuthToken catch 用 console.warn 而非 host logger（PRE-EXISTING）
 
 **锚点**：`plugins/openclaw/src/realtime-bridge.js` 的 `defaultResolveGatewayAuthToken` catch 块

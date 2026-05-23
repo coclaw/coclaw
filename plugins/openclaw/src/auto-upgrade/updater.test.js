@@ -122,6 +122,18 @@ test('shouldSkipAutoUpgrade - loadConfig 抛异常时返回 true（跳过）', (
 	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
 });
 
+test('shouldSkipAutoUpgrade - 旧版账本读取异常时 remoteLog 推 legacy-config-read-failed', () => {
+	resetEnv();
+	resetRemoteLog();
+	setRuntime({
+		config: {
+			loadConfig: () => { throw new Error('corrupt'); },
+		},
+	});
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.legacy-config-read-failed')));
+});
+
 test('shouldSkipAutoUpgrade - config.current 与 config.loadConfig 都不存在时返回 true（跳过）', () => {
 	resetEnv();
 	setRuntime({ config: {} });

@@ -191,7 +191,11 @@ function loadInstallRecordFromLegacyConfig(pluginId) {
 		const config = getClawConfig();
 		return config?.plugins?.installs?.[pluginId] ?? null;
 	}
-	catch {
+	catch (err) {
+		// 与同函数其他 catch 风格对齐：旧版账本读取异常也外推诊断信号，
+		// 否则下游只能看到笼统的 "Skipping: not an npm-installed plugin"，无定位线索
+		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
+		remoteLog(`upgrade.legacy-config-read-failed msg=${err?.message ?? String(err)}`);
 		return null;
 	}
 }
