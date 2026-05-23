@@ -15,11 +15,61 @@ import { isAgentRunResponse } from './agent-run-response.js';
  * 阶段 1 改造后：broadcast / sendFn enqueue 是 async fire-and-forget；消费循环异步从队列拉
  * 数据再 await sender.send()。生产 → 消费 之间至少跨 1-2 微任务。
  * 测试需要在生产后 flush 微任务才能看到 dc.sent / logger 更新。
+ *
+ * 不传 predicate：保留历史 5 圈微任务排空语义（向后兼容现有调用点）。
+ * 传 predicate：条件轮询直到 predicate() truthy 或达 maxAttempts，避免固定圈数对慢机器误判。
+ *
+ * @param {() => boolean} [predicate]
+ * @param {{ maxAttempts?: number }} [opts]
  */
-async function flushAsync() {
+async function flushAsync(predicate, { maxAttempts = 200 } = {}) {
+	if (typeof predicate === 'function') {
+		for (let i = 0; i < maxAttempts; i += 1) {
+			if (predicate()) return;
+			await new Promise((r) => setImmediate(r));
+		}
+		return;
+	}
 	for (let i = 0; i < 5; i += 1) {
 		await new Promise((r) => setImmediate(r));
 	}
+}
+
+/**
+ * 条件轮询 helper：每跳一个 setImmediate 检查 predicate，true 即返回；
+ * 跑满 maxAttempts 仍未 true 则返回（由调用方自行 assert，便于失败时拿到更直观的诊断）。
+ *
+ * 与 `flushAsync(predicate)` 等价；保留独立名让 "等条件" vs "排微任务" 在测试代码里读起来更清晰。
+ *
+ * @param {() => boolean} predicate
+ * @param {{ maxAttempts?: number }} [opts]
+ */
+async function waitFor(predicate, { maxAttempts = 200 } = {}) {
+	for (let i = 0; i < maxAttempts; i += 1) {
+		if (predicate()) return;
+		await new Promise((r) => setImmediate(r));
+	}
+}
+
+/**
+ * 测试用 peer 工厂：构造 WebRtcPeer + 通过 t.after 注册 closeAll 兜底清理。
+ *
+ * 不替代显式 `await peer.closeAll()`——显式收尾仍是首选，工厂只是中途断言失败 / 抛错时
+ * 的 fail-safe 路径，防止内存里的 RTCPeerConnection 与 IPC handler 残留影响后续测试。
+ * closeAll 自身幂等（第二次见 size===0 直接 return），允许显式 + t.after 并存。
+ *
+ * 部分 helper 函数没有 t（如 makeTestPeer 自身被工具函数调用）。caller 显式传 null/undefined
+ * 关闭 t.after 注册，仅返回 peer。
+ *
+ * @param {import('node:test').TestContext|null} t
+ * @param {object} opts - WebRtcPeer constructor 参数
+ */
+function makeTestPeer(t, opts) {
+	const peer = new WebRtcPeer(opts);
+	if (t && typeof t.after === 'function') {
+		t.after(() => peer.closeAll().catch(() => {}));
+	}
+	return peer;
 }
 
 // --- mock helpers ---
@@ -93,16 +143,16 @@ function makeMockRpcDc(overrides = {}) {
 
 // --- tests ---
 
-test('WebRtcPeer: constructor throws when PeerConnection is not provided', () => {
+test('WebRtcPeer: constructor throws when PeerConnection is not provided', (t) => {
 	assert.throws(
-		() => new WebRtcPeer({ onSend: () => {} }),
+		() => makeTestPeer(t, { onSend: () => {} }),
 		{ message: 'PeerConnection constructor is required' },
 	);
 });
 
-test('WebRtcPeer: constructor stores getDiskCap deps for B-stage2 FBQ swap', () => {
+test('WebRtcPeer: constructor stores getDiskCap deps for B-stage2 FBQ swap', (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		PeerConnection: PC,
 		getDiskCap: () => 1024 * 1024,
@@ -111,22 +161,22 @@ test('WebRtcPeer: constructor stores getDiskCap deps for B-stage2 FBQ swap', () 
 	assert.equal(peer.__getDiskCap(), 1024 * 1024);
 });
 
-test('WebRtcPeer: constructor accepts no getDiskCap and stores null (backward compat)', () => {
+test('WebRtcPeer: constructor accepts no getDiskCap and stores null (backward compat)', (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC });
+	const peer = makeTestPeer(t, { onSend: () => {}, PeerConnection: PC });
 	assert.equal(peer.__getDiskCap, null);
 	// 非函数（如字符串）也应 coerce 到 null
-	const peer2 = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, getDiskCap: 'not-a-fn' });
+	const peer2 = makeTestPeer(t, { onSend: () => {}, PeerConnection: PC, getDiskCap: 'not-a-fn' });
 	assert.equal(peer2.__getDiskCap, null);
 });
 
-test('WebRtcPeer: constructor stores queueDir; non-string / empty coerced to null', () => {
+test('WebRtcPeer: constructor stores queueDir; non-string / empty coerced to null', (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, queueDir: '/tmp/x' });
+	const peer = makeTestPeer(t, { onSend: () => {}, PeerConnection: PC, queueDir: '/tmp/x' });
 	assert.equal(peer.__queueDir, '/tmp/x');
-	const peer2 = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, queueDir: '' });
+	const peer2 = makeTestPeer(t, { onSend: () => {}, PeerConnection: PC, queueDir: '' });
 	assert.equal(peer2.__queueDir, null);
-	const peer3 = new WebRtcPeer({ onSend: () => {}, PeerConnection: PC, queueDir: 123 });
+	const peer3 = makeTestPeer(t, { onSend: () => {}, PeerConnection: PC, queueDir: 123 });
 	assert.equal(peer3.__queueDir, null);
 });
 
@@ -147,12 +197,12 @@ async function setupRpcDcSession({ peer, connId, dc }) {
 	throw new Error(`setupRpcDcSession timed out waiting for rpc queue (connId=${connId})`);
 }
 
-test('WebRtcPeer: rpc DC 装配走 FBQ 路径（带 queueDir + rpcQueueImpl=fbq）；id 含唯一后缀', async () => {
+test('WebRtcPeer: rpc DC 装配走 FBQ 路径（带 queueDir + rpcQueueImpl=fbq）；id 含唯一后缀', async (t) => {
 	// FBQ 已是生产默认；本测试同时显式传 rpcQueueImpl='fbq'，让覆盖 FBQ 装配路径不依赖默认值变化
 	resetRemoteLog();
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-fbq-'));
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: MockPCFactory(),
@@ -174,9 +224,9 @@ test('WebRtcPeer: rpc DC 装配走 FBQ 路径（带 queueDir + rpcQueueImpl=fbq�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（race 隔离；rpcQueueImpl=fbq）', async () => {
+test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（race 隔离；rpcQueueImpl=fbq）', async (t) => {
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-race-'));
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -197,12 +247,12 @@ test('WebRtcPeer: 同 connId 重建 → 两个 FBQ 实例 id/filePath 不同（r
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: rpcQueueImpl=fbq + queueDir 为 null → 降级到 MemoryQueue；log 含 fallback 标记', async () => {
+test('WebRtcPeer: rpcQueueImpl=fbq + queueDir 为 null → 降级到 MemoryQueue；log 含 fallback 标记', async (t) => {
 	// fbq 模式 + 无 queueDir → 装配点降级。FBQ 已是生产默认，测试同时显式传 'fbq'
 	// 让该降级路径覆盖不依赖默认值变化。
 	resetRemoteLog();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: MockPCFactory(),
@@ -220,13 +270,13 @@ test('WebRtcPeer: rpcQueueImpl=fbq + queueDir 为 null → 降级到 MemoryQueue
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）+ queueDir → FileBackedQueue', async () => {
+test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）+ queueDir → FileBackedQueue', async (t) => {
 	// FBQ 切回生产默认后的关键 invariant：默认装配走 FileBackedQueue（带 queueDir 时）；
 	// log 不含 fallback 标记（FBQ 真正激活，不是降级）。
 	resetRemoteLog();
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-prod-fbq-'));
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: MockPCFactory(),
@@ -250,11 +300,11 @@ test('WebRtcPeer: 生产默认（不传 rpcQueueImpl）+ queueDir → FileBacked
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem 路径，explicit override）', async () => {
+test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem 路径，explicit override）', async (t) => {
 	// 红线 3 装配点连接 pin：若装配代码漏传 bypassAdmission，agent 响应会被 capacity 层 drop。
 	// 引用相等而非行为测：直接确认装配点把模块导出的 isAgentRunResponse 喂给了 queue.bypassAdmission。
 	// 显式传 rpcQueueImpl='mem' 走 mem 装配分支，与下面 fbq explicit 测形成两路对照。
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -267,12 +317,12 @@ test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（mem �
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 agent 响应不命中（mem 路径，explicit override）', async () => {
+test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 agent 响应不命中（mem 路径，explicit override）', async (t) => {
 	// 引用相等 pin 的互补测：直接调装配后的谓词，验证装配产物语义正确。
 	// 即便将来有人把 bypassAdmission: isAgentRunResponse 改成等价 lambda 包装让上面引用相等测红，
 	// 本测试仍能从语义上确保 agent 响应被识别、非 agent 响应不被识别。
 	// 用谓词直调而非端到端 admission：避免 consumeLoop 边消费边入队让 mem 永不达 budget 的 race。
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -296,10 +346,10 @@ test('WebRtcPeer: bypassAdmission 行为正确——agent run res 命中、非 a
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（fbq 路径）', async () => {
+test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（fbq 路径）', async (t) => {
 	// 同上，但显式覆盖 FBQ 装配分支——保留与 mem 默认路径并行的 explicit pin，让两条路径独立
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-bypass-pin-fbq-'));
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -315,10 +365,10 @@ test('WebRtcPeer: 装配点把 bypassAdmission 接到 isAgentRunResponse（fbq �
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: offer → answer 流程', async () => {
+test('WebRtcPeer: offer → answer 流程', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -336,9 +386,9 @@ test('WebRtcPeer: offer → answer 流程', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: TURN 凭证正确构建 iceServers', async () => {
+test('WebRtcPeer: TURN 凭证正确构建 iceServers', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -379,11 +429,11 @@ function warnCapturingLogger() {
 	};
 }
 
-test('WebRtcPeer: 畸形 turnCreds.urls (undefined) 降级 host-only + warn', async () => {
+test('WebRtcPeer: 畸形 turnCreds.urls (undefined) 降级 host-only + warn', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const logger = warnCapturingLogger();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger,
 		PeerConnection: PC,
@@ -402,11 +452,11 @@ test('WebRtcPeer: 畸形 turnCreds.urls (undefined) 降级 host-only + warn', as
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 畸形 turnCreds.urls (字符串) 不被逐字符展开 + warn', async () => {
+test('WebRtcPeer: 畸形 turnCreds.urls (字符串) 不被逐字符展开 + warn', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
 	const logger = warnCapturingLogger();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger,
 		PeerConnection: PC,
@@ -425,9 +475,9 @@ test('WebRtcPeer: 畸形 turnCreds.urls (字符串) 不被逐字符展开 + warn
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: turnCreds.urls 数组内非字符串元素被跳过', async () => {
+test('WebRtcPeer: turnCreds.urls 数组内非字符串元素被跳过', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -450,9 +500,9 @@ test('WebRtcPeer: turnCreds.urls 数组内非字符串元素被跳过', async ()
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 无 turnCreds 时 iceServers 为空', async () => {
+test('WebRtcPeer: 无 turnCreds 时 iceServers 为空', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -465,11 +515,11 @@ test('WebRtcPeer: 无 turnCreds 时 iceServers 为空', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE candidate 回调 → onSend', async () => {
+test('WebRtcPeer: ICE candidate 回调 → onSend', async (t) => {
 	resetRemoteLog();
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -493,9 +543,9 @@ test('WebRtcPeer: ICE candidate 回调 → onSend', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: handleIce 正常添加', async () => {
+test('WebRtcPeer: handleIce 正常添加', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -517,9 +567,9 @@ test('WebRtcPeer: handleIce 正常添加', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: handleIce addIceCandidate 失败时不抛异常', async () => {
+test('WebRtcPeer: handleIce addIceCandidate 失败时不抛异常', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -540,8 +590,8 @@ test('WebRtcPeer: handleIce addIceCandidate 失败时不抛异常', async () => 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: handleIce 无 session 时忽略', async () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: handleIce 无 session 时忽略', async (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -556,7 +606,7 @@ test('WebRtcPeer: handleIce 无 session 时忽略', async () => {
 	});
 });
 
-test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close/error)', async () => {
+test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close/error)', async (t) => {
 	const PC = MockPCFactory();
 	const logs = [];
 	const logger = {
@@ -565,7 +615,7 @@ test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close/err
 		error: () => {},
 		debug: (msg) => logs.push(msg),
 	};
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger,
 		PeerConnection: PC,
@@ -595,10 +645,10 @@ test('WebRtcPeer: DataChannel ondatachannel → setupDataChannel (open/close/err
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DataChannel onmessage req → onRequest 回调', async () => {
+test('WebRtcPeer: DataChannel onmessage req → onRequest 回调', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload, connId) => requests.push({ payload, connId }),
 		logger: silentLogger(),
@@ -621,10 +671,10 @@ test('WebRtcPeer: DataChannel onmessage req → onRequest 回调', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DataChannel onmessage 非 req 类型 → debug 日志', async () => {
+test('WebRtcPeer: DataChannel onmessage 非 req 类型 → debug 日志', async (t) => {
 	const PC = MockPCFactory();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -642,10 +692,10 @@ test('WebRtcPeer: DataChannel onmessage 非 req 类型 → debug 日志', async 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DC probe → 回复 probe-ack，不触发 onRequest', async () => {
+test('WebRtcPeer: DC probe → 回复 probe-ack，不触发 onRequest', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload) => requests.push(payload),
 		logger: silentLogger(),
@@ -671,9 +721,9 @@ test('WebRtcPeer: DC probe → 回复 probe-ack，不触发 onRequest', async ()
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DC probe 回复失败（DC 已关闭）不抛异常', async () => {
+test('WebRtcPeer: DC probe 回复失败（DC 已关闭）不抛异常', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -694,10 +744,10 @@ test('WebRtcPeer: DC probe 回复失败（DC 已关闭）不抛异常', async ()
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DataChannel onmessage 无效 JSON → warn', async () => {
+test('WebRtcPeer: DataChannel onmessage 无效 JSON → warn', async (t) => {
 	const PC = MockPCFactory();
 	const warns = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -715,10 +765,10 @@ test('WebRtcPeer: DataChannel onmessage 无效 JSON → warn', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DataChannel onmessage string data → reassembler 正常解析', async () => {
+test('WebRtcPeer: DataChannel onmessage string data → reassembler 正常解析', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload, connId) => requests.push({ payload, connId }),
 		logger: silentLogger(),
@@ -741,9 +791,9 @@ test('WebRtcPeer: DataChannel onmessage string data → reassembler 正常解析
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 无 onRequest 时 req 消息不崩溃', async () => {
+test('WebRtcPeer: 无 onRequest 时 req 消息不崩溃', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		// 不传 onRequest
 		logger: silentLogger(),
@@ -762,10 +812,10 @@ test('WebRtcPeer: 无 onRequest 时 req 消息不崩溃', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ondatachannel file:* label → onFileChannel 回调', async () => {
+test('WebRtcPeer: ondatachannel file:* label → onFileChannel 回调', async (t) => {
 	const PC = MockPCFactory();
 	const fileDCs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileChannel: (dc, connId) => fileDCs.push({ dc, connId }),
 		logger: silentLogger(),
@@ -789,9 +839,9 @@ test('WebRtcPeer: ondatachannel file:* label → onFileChannel 回调', async ()
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ondatachannel file:* 无 onFileChannel 回调时不崩溃', async () => {
+test('WebRtcPeer: ondatachannel file:* 无 onFileChannel 回调时不崩溃', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -808,9 +858,9 @@ test('WebRtcPeer: ondatachannel file:* 无 onFileChannel 回调时不崩溃', as
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ondatachannel 未知 label 不设置 rpcChannel', async () => {
+test('WebRtcPeer: ondatachannel 未知 label 不设置 rpcChannel', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -826,10 +876,10 @@ test('WebRtcPeer: ondatachannel 未知 label 不设置 rpcChannel', async () => 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: connectionState connected 记录 candidate 类型', async () => {
+test('WebRtcPeer: connectionState connected 记录 candidate 类型', async (t) => {
 	const PC = MockPCFactory();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -850,9 +900,9 @@ test('WebRtcPeer: connectionState connected 记录 candidate 类型', async () =
 	assert.ok(logs.some((l) => l.includes('ICE nominated: local=srflx 1.2.3.4:12345 remote=host 192.168.0.1:54321')));
 });
 
-test('WebRtcPeer: connectionState connected 无 nominated 不崩溃', async () => {
+test('WebRtcPeer: connectionState connected 无 nominated 不崩溃', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -866,10 +916,10 @@ test('WebRtcPeer: connectionState connected 无 nominated 不崩溃', async () =
 	pc.onconnectionstatechange(); // 不应抛异常
 });
 
-test('WebRtcPeer: connectionState connected 有 nominated 但无 localCandidate.type → unknown', async () => {
+test('WebRtcPeer: connectionState connected 有 nominated 但无 localCandidate.type → unknown', async (t) => {
 	const PC = MockPCFactory();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -886,9 +936,9 @@ test('WebRtcPeer: connectionState connected 有 nominated 但无 localCandidate.
 	assert.ok(logs.some((l) => l.includes('ICE nominated: local=? ?:? remote=? ?:?')));
 });
 
-test('WebRtcPeer: connectionState failed 保留 session（支持 ICE restart）', async () => {
+test('WebRtcPeer: connectionState failed 保留 session（支持 ICE restart）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -905,9 +955,9 @@ test('WebRtcPeer: connectionState failed 保留 session（支持 ICE restart）'
 	assert.ok(peer.__sessions.has('c_050'));
 });
 
-test('WebRtcPeer: connectionState closed 清理 session', async () => {
+test('WebRtcPeer: connectionState closed 清理 session', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -923,10 +973,10 @@ test('WebRtcPeer: connectionState closed 清理 session', async () => {
 	assert.ok(!peer.__sessions.has('c_050b'));
 });
 
-test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC 状态）', async () => {
+test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC 状态）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -965,10 +1015,10 @@ test('WebRtcPeer: connectionState failed 触发诊断 dump（含 rpc + file DC �
 	assert.ok(peer.__sessions.has('c_dump1'));
 });
 
-test('WebRtcPeer: dump 在无 rpc DC 时输出 queue=none', async () => {
+test('WebRtcPeer: dump 在无 rpc DC 时输出 queue=none', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -984,10 +1034,10 @@ test('WebRtcPeer: dump 在无 rpc DC 时输出 queue=none', async () => {
 	assert.match(dump.text, /queue=none/);
 });
 
-test('WebRtcPeer: connectionState disconnected 触发 dump 但保留 session（可能恢复）', async () => {
+test('WebRtcPeer: connectionState disconnected 触发 dump 但保留 session（可能恢复）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1011,10 +1061,10 @@ test('WebRtcPeer: connectionState disconnected 触发 dump 但保留 session（�
 	assert.ok(peer.__sessions.has('c_disc'));
 });
 
-test('WebRtcPeer: connectionState closed 不输出 dump（避免本地主动关闭噪声）', async () => {
+test('WebRtcPeer: connectionState closed 不输出 dump（避免本地主动关闭噪声）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1031,10 +1081,10 @@ test('WebRtcPeer: connectionState closed 不输出 dump（避免本地主动关�
 	assert.equal(dump, undefined, 'closed should not emit dump');
 });
 
-test('WebRtcPeer: 重复 disconnected 同 state 去重，恢复 connected 后再 disconnected 仍 dump', async () => {
+test('WebRtcPeer: 重复 disconnected 同 state 去重，恢复 connected 后再 disconnected 仍 dump', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1064,10 +1114,10 @@ test('WebRtcPeer: 重复 disconnected 同 state 去重，恢复 connected 后再
 	assert.equal(dumps.length, 2, 'connected 恢复后 disconnected 应再次 dump');
 });
 
-test('WebRtcPeer: stale PC 异步回调不污染当前 session 诊断', async () => {
+test('WebRtcPeer: stale PC 异步回调不污染当前 session 诊断', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1094,10 +1144,10 @@ test('WebRtcPeer: stale PC 异步回调不污染当前 session 诊断', async ()
 	assert.ok(peer.__sessions.has('c_stale'), '新 session 不应被旧 PC 回调误删');
 });
 
-test('WebRtcPeer: connected 分支 pc 归属校验：旧 PC 不输出 ICE nominated', async () => {
+test('WebRtcPeer: connected 分支 pc 归属校验：旧 PC 不输出 ICE nominated', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1126,10 +1176,10 @@ test('WebRtcPeer: connected 分支 pc 归属校验：旧 PC 不输出 ICE nomina
 	assert.equal(nominated, undefined, '旧 PC 的 connected 不应触发 ICE nominated 日志');
 });
 
-test('WebRtcPeer: file DC 历史上限 FIFO 淘汰', async () => {
+test('WebRtcPeer: file DC 历史上限 FIFO 淘汰', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1161,9 +1211,9 @@ test('WebRtcPeer: file DC 历史上限 FIFO 淘汰', async () => {
 	assert.match(dump.text, /open:20\(/);
 });
 
-test('WebRtcPeer: connectionState closed 清理 session', async () => {
+test('WebRtcPeer: connectionState closed 清理 session', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1177,10 +1227,10 @@ test('WebRtcPeer: connectionState closed 清理 session', async () => {
 	assert.ok(!peer.__sessions.has('c_051'));
 });
 
-test('WebRtcPeer: 重复 offer 同一 connId → 先关闭旧连接', async () => {
+test('WebRtcPeer: 重复 offer 同一 connId → 先关闭旧连接', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1198,9 +1248,9 @@ test('WebRtcPeer: 重复 offer 同一 connId → 先关闭旧连接', async () =
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 多 connId 并发', async () => {
+test('WebRtcPeer: 多 connId 并发', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1221,8 +1271,8 @@ test('WebRtcPeer: 多 connId 并发', async () => {
 	assert.equal(peer.__sessions.size, 0);
 });
 
-test('WebRtcPeer: closeByConnId 不存在的 connId 不报错', async () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: closeByConnId 不存在的 connId 不报错', async (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -1231,8 +1281,8 @@ test('WebRtcPeer: closeByConnId 不存在的 connId 不报错', async () => {
 	await peer.closeByConnId('c_nonexistent', peer.__sessions.get('c_nonexistent')); // 不应抛异常
 });
 
-test('WebRtcPeer: closeAll 空 sessions', async () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: closeAll 空 sessions', async (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -1241,9 +1291,9 @@ test('WebRtcPeer: closeAll 空 sessions', async () => {
 	await peer.closeAll(); // 不应抛异常
 });
 
-test('WebRtcPeer: rtc:ready 仅日志', async () => {
+test('WebRtcPeer: rtc:ready 仅日志', async (t) => {
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => logs.push(m) },
 		PeerConnection: MockPCFactory(),
@@ -1254,9 +1304,9 @@ test('WebRtcPeer: rtc:ready 仅日志', async () => {
 	assert.ok(logs.some((l) => l.includes('rtc:ready from c_080')));
 });
 
-test('WebRtcPeer: rtc:closed 触发 closeByConnId', async () => {
+test('WebRtcPeer: rtc:closed 触发 closeByConnId', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1270,9 +1320,9 @@ test('WebRtcPeer: rtc:closed 触发 closeByConnId', async () => {
 	assert.ok(!peer.__sessions.has('c_090'));
 });
 
-test('WebRtcPeer: DataChannel onclose 清除 rpcChannel', async () => {
+test('WebRtcPeer: DataChannel onclose 清除 rpcChannel', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1292,9 +1342,9 @@ test('WebRtcPeer: DataChannel onclose 清除 rpcChannel', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 发送到所有已打开的 rpcChannel', async () => {
+test('WebRtcPeer: broadcast 发送到所有已打开的 rpcChannel', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1324,9 +1374,9 @@ test('WebRtcPeer: broadcast 发送到所有已打开的 rpcChannel', async () =>
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 跳过未打开的 rpcChannel', async () => {
+test('WebRtcPeer: broadcast 跳过未打开的 rpcChannel', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1347,10 +1397,10 @@ test('WebRtcPeer: broadcast 跳过未打开的 rpcChannel', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast send 失败时不抛异常（RpcDcSender 内部捕获）', async () => {
+test('WebRtcPeer: broadcast send 失败时不抛异常（RpcDcSender 内部捕获）', async (t) => {
 	const PC = MockPCFactory();
 	const warns = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -1372,9 +1422,9 @@ test('WebRtcPeer: broadcast send 失败时不抛异常（RpcDcSender 内部捕�
 
 // --- sendTo 单播 API ---
 
-test('WebRtcPeer: sendTo 向指定 session 的 rpc DC 发送', async () => {
+test('WebRtcPeer: sendTo 向指定 session 的 rpc DC 发送', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1400,8 +1450,8 @@ test('WebRtcPeer: sendTo 向指定 session 的 rpc DC 发送', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo 在 session 不存在时返回 false', async () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: sendTo 在 session 不存在时返回 false', async (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -1410,9 +1460,9 @@ test('WebRtcPeer: sendTo 在 session 不存在时返回 false', async () => {
 	assert.equal(await peer.sendTo('nonexistent', { type: 'event' }), false);
 });
 
-test('WebRtcPeer: sendTo 在 rpcChannel 未 open 时返回 false', async () => {
+test('WebRtcPeer: sendTo 在 rpcChannel 未 open 时返回 false', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1430,9 +1480,9 @@ test('WebRtcPeer: sendTo 在 rpcChannel 未 open 时返回 false', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo 透传 queue.enqueue 返回值（队列满等场景下应返回 false）', async () => {
+test('WebRtcPeer: sendTo 透传 queue.enqueue 返回值（队列满等场景下应返回 false）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1449,10 +1499,10 @@ test('WebRtcPeer: sendTo 透传 queue.enqueue 返回值（队列满等场景下�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 遇到 JSON.stringify 抛（循环引用）→ 不抛，整条丢弃', async () => {
+test('WebRtcPeer: broadcast 遇到 JSON.stringify 抛（循环引用）→ 不抛，整条丢弃', async (t) => {
 	const PC = MockPCFactory();
 	const debugMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
 		PeerConnection: PC,
@@ -1470,9 +1520,9 @@ test('WebRtcPeer: broadcast 遇到 JSON.stringify 抛（循环引用）→ 不�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo 遇到 JSON.stringify 抛（循环引用）→ 返回 false，不抛', async () => {
+test('WebRtcPeer: sendTo 遇到 JSON.stringify 抛（循环引用）→ 返回 false，不抛', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1490,9 +1540,9 @@ test('WebRtcPeer: sendTo 遇到 JSON.stringify 抛（循环引用）→ 返回 f
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: files sendFn 遇到 JSON.stringify 抛（循环引用）→ 不抛，且不发任何坏数据', async () => {
+test('WebRtcPeer: files sendFn 遇到 JSON.stringify 抛（循环引用）→ 不抛，且不发任何坏数据', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileRpc: (payload, sendFn) => {
 			const circ = { type: 'res', id: payload.id };
@@ -1514,9 +1564,9 @@ test('WebRtcPeer: files sendFn 遇到 JSON.stringify 抛（循环引用）→ �
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 收到 undefined payload（stringify 返回 undefined）→ 静默丢弃', async () => {
+test('WebRtcPeer: broadcast 收到 undefined payload（stringify 返回 undefined）→ 静默丢弃', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1533,9 +1583,9 @@ test('WebRtcPeer: broadcast 收到 undefined payload（stringify 返回 undefine
 
 // --- broadcast / sendTo rawStr 旁路（跳过 stringify）---
 
-test('WebRtcPeer: broadcast(payload, rawStr) 用 rawStr 直通，跳过 stringify', async () => {
+test('WebRtcPeer: broadcast(payload, rawStr) 用 rawStr 直通，跳过 stringify', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1566,9 +1616,9 @@ test('WebRtcPeer: broadcast(payload, rawStr) 用 rawStr 直通，跳过 stringif
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast(payload) 不传 rawStr 时仍走 stringify（兼容旧调用）', async () => {
+test('WebRtcPeer: broadcast(payload) 不传 rawStr 时仍走 stringify（兼容旧调用）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1589,9 +1639,9 @@ test('WebRtcPeer: broadcast(payload) 不传 rawStr 时仍走 stringify（兼容�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast rawStr 非字符串或空串 → 回退 stringify(payload)', async () => {
+test('WebRtcPeer: broadcast rawStr 非字符串或空串 → 回退 stringify(payload)', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1616,9 +1666,9 @@ test('WebRtcPeer: broadcast rawStr 非字符串或空串 → 回退 stringify(pa
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo(connId, payload, rawStr) 用 rawStr 直通，跳过 stringify', async () => {
+test('WebRtcPeer: sendTo(connId, payload, rawStr) 用 rawStr 直通，跳过 stringify', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1646,9 +1696,9 @@ test('WebRtcPeer: sendTo(connId, payload, rawStr) 用 rawStr 直通，跳过 str
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo rawStr 直通时仍遵循 session/DC 未就绪 → false', async () => {
+test('WebRtcPeer: sendTo rawStr 直通时仍遵循 session/DC 未就绪 → false', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1666,9 +1716,9 @@ test('WebRtcPeer: sendTo rawStr 直通时仍遵循 session/DC 未就绪 → fals
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo rawStr 非字符串或空串 → 回退 stringify(payload)', async () => {
+test('WebRtcPeer: sendTo rawStr 非字符串或空串 → 回退 stringify(payload)', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1692,10 +1742,10 @@ test('WebRtcPeer: sendTo rawStr 非字符串或空串 → 回退 stringify(paylo
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast rawStr 直通时即便 payload 含循环引用也不抛（不调 stringify）', async () => {
+test('WebRtcPeer: broadcast rawStr 直通时即便 payload 含循环引用也不抛（不调 stringify）', async (t) => {
 	const PC = MockPCFactory();
 	const debugMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
 		PeerConnection: PC,
@@ -1720,10 +1770,10 @@ test('WebRtcPeer: broadcast rawStr 直通时即便 payload 含循环引用也不
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo rawStr 直通时即便 payload 含循环引用也不抛（不调 stringify）', async () => {
+test('WebRtcPeer: sendTo rawStr 直通时即便 payload 含循环引用也不抛（不调 stringify）', async (t) => {
 	const PC = MockPCFactory();
 	const debugMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
 		PeerConnection: PC,
@@ -1749,10 +1799,10 @@ test('WebRtcPeer: sendTo rawStr 直通时即便 payload 含循环引用也不抛
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast rawStr 含字面 \\n 时回退 stringify(payload)（保 FBQ JSONL 行约束）', async () => {
+test('WebRtcPeer: broadcast rawStr 含字面 \\n 时回退 stringify(payload)（保 FBQ JSONL 行约束）', async (t) => {
 	const PC = MockPCFactory();
 	const debugMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
 		PeerConnection: PC,
@@ -1788,10 +1838,10 @@ test('WebRtcPeer: broadcast rawStr 含字面 \\n 时回退 stringify(payload)（
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo rawStr 含字面 \\n 时回退 stringify(payload)', async () => {
+test('WebRtcPeer: sendTo rawStr 含字面 \\n 时回退 stringify(payload)', async (t) => {
 	const PC = MockPCFactory();
 	const debugMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
 		PeerConnection: PC,
@@ -1823,9 +1873,9 @@ async function flushMicrotasks() {
 	}
 }
 
-test('WebRtcPeer: pion — rpc dc.onopen 触发 __sendPeerTransport，发送事件到 UI', async () => {
+test('WebRtcPeer: pion — rpc dc.onopen 触发 __sendPeerTransport，发送事件到 UI', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1858,9 +1908,9 @@ test('WebRtcPeer: pion — rpc dc.onopen 触发 __sendPeerTransport，发送事�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — onselectedcandidatepairchange 触发 __sendPeerTransport（ICE restart 场景）', async () => {
+test('WebRtcPeer: pion — onselectedcandidatepairchange 触发 __sendPeerTransport（ICE restart 场景）', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1894,9 +1944,9 @@ test('WebRtcPeer: pion — onselectedcandidatepairchange 触发 __sendPeerTransp
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — __sendPeerTransport sendTo 队列拒收（返回 false）→ 回滚签名以便下次重试', async () => {
+test('WebRtcPeer: pion — __sendPeerTransport sendTo 队列拒收（返回 false）→ 回滚签名以便下次重试', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1928,9 +1978,9 @@ test('WebRtcPeer: pion — __sendPeerTransport sendTo 队列拒收（返回 fals
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — __sendPeerTransport 签名去重：相同 pair 不重复发送', async () => {
+test('WebRtcPeer: pion — __sendPeerTransport 签名去重：相同 pair 不重复发送', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1959,9 +2009,9 @@ test('WebRtcPeer: pion — __sendPeerTransport 签名去重：相同 pair 不重
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — __sendPeerTransport pair 变化（relay → host）重新发送', async () => {
+test('WebRtcPeer: pion — __sendPeerTransport pair 变化（relay → host）重新发送', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -1998,9 +2048,9 @@ test('WebRtcPeer: pion — __sendPeerTransport pair 变化（relay → host）�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — __sendPeerTransport pair 未就绪时早退', async () => {
+test('WebRtcPeer: pion — __sendPeerTransport pair 未就绪时早退', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2023,8 +2073,8 @@ test('WebRtcPeer: pion — __sendPeerTransport pair 未就绪时早退', async (
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: __sendPeerTransport session 不存在时静默返回', async () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: __sendPeerTransport session 不存在时静默返回', async (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -2034,9 +2084,9 @@ test('WebRtcPeer: __sendPeerTransport session 不存在时静默返回', async (
 	await peer.__sendPeerTransport('nonexistent');
 });
 
-test('WebRtcPeer: pion — microtask 执行前 session 已被 close，__sendPeerTransport 静默早退', async () => {
+test('WebRtcPeer: pion — microtask 执行前 session 已被 close，__sendPeerTransport 静默早退', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2063,9 +2113,9 @@ test('WebRtcPeer: pion — microtask 执行前 session 已被 close，__sendPeer
 	assert.equal(evts.length, 0, 'close 先于 microtask 时不应发送任何事件');
 });
 
-test('WebRtcPeer: pion — sendTo 失败时 __sendPeerTransport 回滚签名允许重试', async () => {
+test('WebRtcPeer: pion — sendTo 失败时 __sendPeerTransport 回滚签名允许重试', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2097,8 +2147,8 @@ test('WebRtcPeer: pion — sendTo 失败时 __sendPeerTransport 回滚签名允�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 空 sessions 不报错', () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: broadcast 空 sessions 不报错', (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -2107,8 +2157,8 @@ test('WebRtcPeer: broadcast 空 sessions 不报错', () => {
 	peer.broadcast({ type: 'res', id: 'z' }); // 不应抛异常
 });
 
-test('WebRtcPeer: __logDebug 无 debug 方法时不报错', async () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: __logDebug 无 debug 方法时不报错', async (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {} }, // 无 debug
 		PeerConnection: MockPCFactory(),
@@ -2119,7 +2169,7 @@ test('WebRtcPeer: __logDebug 无 debug 方法时不报错', async () => {
 	peer.__logDebug('test message');
 });
 
-test('WebRtcPeer: SDP 协商失败时清理 session', async () => {
+test('WebRtcPeer: SDP 协商失败时清理 session', async (t) => {
 	resetRemoteLog();
 	// 使用 function 声明以支持 new 调用
 	function FailPC() {
@@ -2127,7 +2177,7 @@ test('WebRtcPeer: SDP 协商失败时清理 session', async () => {
 		pc.setRemoteDescription = async () => { throw new Error('invalid SDP'); };
 		return pc;
 	}
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: FailPC,
@@ -2146,14 +2196,14 @@ test('WebRtcPeer: SDP 协商失败时清理 session', async () => {
 	);
 });
 
-test('WebRtcPeer: createAnswer 失败时清理 session', async () => {
+test('WebRtcPeer: createAnswer 失败时清理 session', async (t) => {
 	resetRemoteLog();
 	function FailPC() {
 		const pc = createMockPC();
 		pc.createAnswer = async () => { throw new Error('answer failed'); };
 		return pc;
 	}
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: FailPC,
@@ -2168,8 +2218,8 @@ test('WebRtcPeer: createAnswer 失败时清理 session', async () => {
 	);
 });
 
-test('WebRtcPeer: 默认 logger 为 console', () => {
-	const peer = new WebRtcPeer({
+test('WebRtcPeer: 默认 logger 为 console', (t) => {
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		PeerConnection: MockPCFactory(),
 		impl: 'ndc',
@@ -2179,11 +2229,11 @@ test('WebRtcPeer: 默认 logger 为 console', () => {
 
 // --- impl 参数 ---
 
-test('WebRtcPeer: impl 参数影响 logger 前缀和 remoteLog 后缀', async () => {
+test('WebRtcPeer: impl 参数影响 logger 前缀和 remoteLog 后缀', async (t) => {
 	resetRemoteLog();
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -2199,11 +2249,11 @@ test('WebRtcPeer: impl 参数影响 logger 前缀和 remoteLog 后缀', async ()
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 未传 impl 时 logger 前缀和 remoteLog 不含 rtc 标识', async () => {
+test('WebRtcPeer: 未传 impl 时 logger 前缀和 remoteLog 不含 rtc 标识', async (t) => {
 	resetRemoteLog();
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -2220,11 +2270,11 @@ test('WebRtcPeer: 未传 impl 时 logger 前缀和 remoteLog 不含 rtc 标识',
 
 // --- coclaw.files.* RPC 拦截 ---
 
-test('WebRtcPeer: coclaw.files.* req → onFileRpc 回调（不转发 onRequest）', async () => {
+test('WebRtcPeer: coclaw.files.* req → onFileRpc 回调（不转发 onRequest）', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
 	const fileRpcs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload) => requests.push(payload),
 		onFileRpc: (payload, sendFn, connId) => fileRpcs.push({ payload, sendFn, connId }),
@@ -2252,9 +2302,9 @@ test('WebRtcPeer: coclaw.files.* req → onFileRpc 回调（不转发 onRequest�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: coclaw.files.* sendFn 发送响应到 DC', async () => {
+test('WebRtcPeer: coclaw.files.* sendFn 发送响应到 DC', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileRpc: (payload, sendFn) => {
 			sendFn({ type: 'res', id: payload.id, ok: true, payload: { files: [] } });
@@ -2282,9 +2332,9 @@ test('WebRtcPeer: coclaw.files.* sendFn 发送响应到 DC', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: coclaw.files.* sendFn DC 关闭时不崩溃', async () => {
+test('WebRtcPeer: coclaw.files.* sendFn DC 关闭时不崩溃', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileRpc: (payload, sendFn) => {
 			sendFn({ type: 'res', id: payload.id, ok: true });
@@ -2308,11 +2358,11 @@ test('WebRtcPeer: coclaw.files.* sendFn DC 关闭时不崩溃', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 非 coclaw.files.* req 仍走 onRequest', async () => {
+test('WebRtcPeer: 非 coclaw.files.* req 仍走 onRequest', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
 	const fileRpcs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload) => requests.push(payload),
 		onFileRpc: (payload, _sendFn) => fileRpcs.push(payload),
@@ -2334,10 +2384,10 @@ test('WebRtcPeer: 非 coclaw.files.* req 仍走 onRequest', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: coclaw.files.* 无 onFileRpc 时走 onRequest', async () => {
+test('WebRtcPeer: coclaw.files.* 无 onFileRpc 时走 onRequest', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload) => requests.push(payload),
 		// 不传 onFileRpc
@@ -2361,10 +2411,10 @@ test('WebRtcPeer: coclaw.files.* 无 onFileRpc 时走 onRequest', async () => {
 
 // --- ICE restart 测试 ---
 
-test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
+test('WebRtcPeer: ICE restart offer 复用现有 PC', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2375,6 +2425,10 @@ test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
 	await peer.handleSignaling(makeOffer('c_ir01'));
 	assert.equal(PC.instances.length, 1);
 	const firstPc = PC.instances[0];
+	// 安装真实计数 + 参数捕获 mock：替代历史 .__called === undefined 的伪断言
+	// （旧断言只能证明属性不存在，源码停止调 SRD 也能蒙过，等价无回归保护）。
+	const srdCalls = [];
+	firstPc.setRemoteDescription = async (desc) => { srdCalls.push(desc); };
 	sent.length = 0;
 
 	// 发送 ICE restart offer
@@ -2386,8 +2440,10 @@ test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
 
 	// 不应创建新 PC
 	assert.equal(PC.instances.length, 1);
-	// 应在现有 PC 上设置新的 remote description
-	assert.equal(firstPc.setRemoteDescription.__called, undefined);
+	// 应在现有 PC 上设置新的 remote description（实质断言：精确 1 次 + SDP 内容正确）
+	assert.equal(srdCalls.length, 1, 'firstPc.setRemoteDescription should be called exactly once on ICE restart');
+	assert.equal(srdCalls[0].type, 'offer');
+	assert.equal(srdCalls[0].sdp, 'ice-restart-sdp');
 	// 应发送 answer
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].type, 'rtc:answer');
@@ -2396,10 +2452,10 @@ test('WebRtcPeer: ICE restart offer 复用现有 PC', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 无现有 session 时发送 rtc:restart-rejected', async () => {
+test('WebRtcPeer: ICE restart 无现有 session 时发送 rtc:restart-rejected', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2422,10 +2478,10 @@ test('WebRtcPeer: ICE restart 无现有 session 时发送 rtc:restart-rejected',
 	assert.equal(sent[0].payload.reason, 'no_session');
 });
 
-test('WebRtcPeer: ICE restart 非 pion impl 立即 reject（impl_unsupported）', async () => {
+test('WebRtcPeer: ICE restart 非 pion impl 立即 reject（impl_unsupported）', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2455,10 +2511,10 @@ test('WebRtcPeer: ICE restart 非 pion impl 立即 reject（impl_unsupported）'
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async () => {
+test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2492,10 +2548,10 @@ test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async
 
 // --- ICE restart credRemain 诊断字段 ---
 
-test('WebRtcPeer: ICE restart 日志带 credRemain（凭证仍有效）', async () => {
+test('WebRtcPeer: ICE restart 日志带 credRemain（凭证仍有效）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2524,10 +2580,10 @@ test('WebRtcPeer: ICE restart 日志带 credRemain（凭证仍有效）', async 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 日志 credRemain 为负（凭证已过期）', async () => {
+test('WebRtcPeer: ICE restart 日志 credRemain 为负（凭证已过期）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2555,10 +2611,10 @@ test('WebRtcPeer: ICE restart 日志 credRemain 为负（凭证已过期）', as
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 日志 credRemain=none（无 turnCreds 或解析失败）', async () => {
+test('WebRtcPeer: ICE restart 日志 credRemain=none（无 turnCreds 或解析失败）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2591,7 +2647,7 @@ test('WebRtcPeer: ICE restart 日志 credRemain=none（无 turnCreds 或解析�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 各失败/拒绝路径日志均带 credRemain', async () => {
+test('WebRtcPeer: ICE restart 各失败/拒绝路径日志均带 credRemain', async (t) => {
 	const expireAt = Math.floor(Date.now() / 1000) + 1800;
 	const turnCreds = { username: `${expireAt}:42`, credential: 'x', urls: [] };
 
@@ -2599,7 +2655,7 @@ test('WebRtcPeer: ICE restart 各失败/拒绝路径日志均带 credRemain', as
 	{
 		resetRemoteLog();
 		const PC = MockPCFactory();
-		const peer = new WebRtcPeer({
+		const peer = makeTestPeer(t, {
 			onSend: () => {},
 			logger: silentLogger(),
 			PeerConnection: PC,
@@ -2619,7 +2675,7 @@ test('WebRtcPeer: ICE restart 各失败/拒绝路径日志均带 credRemain', as
 	{
 		resetRemoteLog();
 		const PC = MockPCFactory();
-		const peer = new WebRtcPeer({
+		const peer = makeTestPeer(t, {
 			onSend: () => {},
 			logger: silentLogger(),
 			PeerConnection: PC,
@@ -2642,7 +2698,7 @@ test('WebRtcPeer: ICE restart 各失败/拒绝路径日志均带 credRemain', as
 	{
 		resetRemoteLog();
 		const PC = MockPCFactory();
-		const peer = new WebRtcPeer({
+		const peer = makeTestPeer(t, {
 			onSend: () => {},
 			logger: silentLogger(),
 			PeerConnection: PC,
@@ -2662,10 +2718,10 @@ test('WebRtcPeer: ICE restart 各失败/拒绝路径日志均带 credRemain', as
 	}
 });
 
-test('WebRtcPeer: ICE failed 后仍可 ICE restart 恢复', async () => {
+test('WebRtcPeer: ICE failed 后仍可 ICE restart 恢复', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2701,9 +2757,9 @@ test('WebRtcPeer: ICE failed 后仍可 ICE restart 恢复', async () => {
 
 // --- 竞态保护测试 ---
 
-test('WebRtcPeer: closeByConnId detach 事件防止旧 PC 回调影响新 session', async () => {
+test('WebRtcPeer: closeByConnId detach 事件防止旧 PC 回调影响新 session', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2728,9 +2784,9 @@ test('WebRtcPeer: closeByConnId detach 事件防止旧 PC 回调影响新 sessio
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: closeByConnId detach 后旧 PC handler 为 null', async () => {
+test('WebRtcPeer: closeByConnId detach 后旧 PC handler 为 null', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2758,9 +2814,9 @@ test('WebRtcPeer: closeByConnId detach 后旧 PC handler 为 null', async () => 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', async () => {
+test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -2786,7 +2842,7 @@ test('WebRtcPeer: onconnectionstatechange pc 不匹配时不删除 session', asy
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
+test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
 	let callCount = 0;
@@ -2801,7 +2857,7 @@ test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
 		return pc;
 	}
 
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: ConditionalFailPC,
@@ -2826,9 +2882,9 @@ test('WebRtcPeer: SDP 协商失败清理时也校验 pc 归属', async () => {
 
 import { HEADER_SIZE, FLAG_BEGIN, FLAG_END, FLAG_MIDDLE } from './dc-chunking.js';
 
-test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async () => {
+test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	await peer.handleSignaling(makeOffer('c_chunk01', 'v=0\r\na=max-message-size:262144\r\n'));
 	const pc = PC.instances[0];
 	const sent = [];
@@ -2843,9 +2899,9 @@ test('WebRtcPeer: broadcast 小消息不分片，直接 send string', async () =
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 大消息自动分片', async () => {
+test('WebRtcPeer: broadcast 大消息自动分片', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	// 设置很小的 maxMessageSize 以触发分片
 	await peer.handleSignaling(makeOffer('c_chunk02', 'v=0\r\na=max-message-size:50\r\n'));
 	const pc = PC.instances[0];
@@ -2872,9 +2928,9 @@ test('WebRtcPeer: broadcast 大消息自动分片', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 多连接不同 maxMessageSize，各自分片', async () => {
+test('WebRtcPeer: broadcast 多连接不同 maxMessageSize，各自分片', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 
 	// 连接 1：maxMessageSize=50（小，需要更多 chunk）
 	await peer.handleSignaling(makeOffer('c_chunk03a', 'v=0\r\na=max-message-size:50\r\n'));
@@ -2896,28 +2952,28 @@ test('WebRtcPeer: broadcast 多连接不同 maxMessageSize，各自分片', asyn
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: SDP 无 max-message-size 时默认 65536', async () => {
+test('WebRtcPeer: SDP 无 max-message-size 时默认 65536', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	await peer.handleSignaling(makeOffer('c_chunk04', 'v=0\r\n')); // 无 max-message-size
 	const session = peer.__sessions.get('c_chunk04');
 	assert.equal(session.remoteMaxMessageSize, 65536);
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: SDP 中正确提取 max-message-size 值', async () => {
+test('WebRtcPeer: SDP 中正确提取 max-message-size 值', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	await peer.handleSignaling(makeOffer('c_chunk05', 'v=0\r\na=max-message-size:131072\r\n'));
 	const session = peer.__sessions.get('c_chunk05');
 	assert.equal(session.remoteMaxMessageSize, 131072);
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 接收端重组分片消息 → onRequest 收到完整 payload', async () => {
+test('WebRtcPeer: 接收端重组分片消息 → onRequest 收到完整 payload', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload, connId) => requests.push({ payload, connId }),
 		logger: silentLogger(),
@@ -2951,11 +3007,11 @@ test('WebRtcPeer: 接收端重组分片消息 → onRequest 收到完整 payload
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 分片 chunk 中夹杂普通 string 消息，各自正确处理', async () => {
+test('WebRtcPeer: 分片 chunk 中夹杂普通 string 消息，各自正确处理', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
 	const debugMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload) => requests.push(payload),
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: (m) => debugMsgs.push(m) },
@@ -2999,9 +3055,9 @@ test('WebRtcPeer: 分片 chunk 中夹杂普通 string 消息，各自正确处�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendFn 大响应也会分片', async () => {
+test('WebRtcPeer: sendFn 大响应也会分片', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileRpc: (payload, sendFn) => {
 			// 模拟回复大响应
@@ -3030,10 +3086,10 @@ test('WebRtcPeer: sendFn 大响应也会分片', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
+test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async (t) => {
 	const PC = MockPCFactory();
 	const requests = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload) => requests.push(payload),
 		logger: silentLogger(),
@@ -3066,12 +3122,12 @@ test('WebRtcPeer: DataChannel onclose 时清理 reassembler', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: rpc DC dc.onmessage 旧 DC 迟到的 req 不污染新 session（identity guard）', async () => {
+test('WebRtcPeer: rpc DC dc.onmessage 旧 DC 迟到的 req 不污染新 session（identity guard）', async (t) => {
 	// 与 dc.onclose 的 identity guard 对称：DC 重建后，旧 dc 的 reassembler 回调可能仍在 microtask
 	// 队列里待派发；进入 req 分支前必须核身份，否则旧请求会注入 __onRequest（或 enqueue 到新 rpcQueue）
 	const PC = MockPCFactory();
 	const requests = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onRequest: (payload, connId) => requests.push({ payload, connId }),
 		logger: silentLogger(),
@@ -3099,9 +3155,9 @@ test('WebRtcPeer: rpc DC dc.onmessage 旧 DC 迟到的 req 不污染新 session�
 
 // --- MemoryQueue + RpcDcSender 集成（阶段 1 替换原 RpcSendQueue 集成）---
 
-test('WebRtcPeer: 建立 rpc DC 时创建 MemoryQueue + RpcDcSender 并设置 bufferedAmountLowThreshold', async () => {
+test('WebRtcPeer: 建立 rpc DC 时创建 MemoryQueue + RpcDcSender 并设置 bufferedAmountLowThreshold', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_sq01'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -3122,9 +3178,9 @@ test('WebRtcPeer: 建立 rpc DC 时创建 MemoryQueue + RpcDcSender 并设置 bu
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: file DC 不创建 rpc 链路（仅 rpc label 触发）', async () => {
+test('WebRtcPeer: file DC 不创建 rpc 链路（仅 rpc label 触发）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileChannel: () => {},
 		logger: silentLogger(),
@@ -3141,9 +3197,9 @@ test('WebRtcPeer: file DC 不创建 rpc 链路（仅 rpc label 触发）', async
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: DC 不支持 bufferedAmountLowThreshold 时跳过设置但仍创建 queue/sender', async () => {
+test('WebRtcPeer: DC 不支持 bufferedAmountLowThreshold 时跳过设置但仍创建 queue/sender', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'ndc' });
 	await peer.handleSignaling(makeOffer('c_sq_noba'));
 	const dc = { label: 'rpc', readyState: 'open', bufferedAmount: 0, send: () => {}, onopen: null, onclose: null, onmessage: null, onerror: null };
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -3155,9 +3211,9 @@ test('WebRtcPeer: DC 不支持 bufferedAmountLowThreshold 时跳过设置但仍�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 保留 queue/sender 实例与积压', async () => {
+test('WebRtcPeer: ICE restart 保留 queue/sender 实例与积压', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_sq_icr', 'v=0\r\na=max-message-size:100\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -3204,9 +3260,9 @@ test('WebRtcPeer: ICE restart 保留 queue/sender 实例与积压', async () => 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 重协商 max-message-size 变化时刷新 sender.maxMessageSize', async () => {
+test('WebRtcPeer: ICE restart 重协商 max-message-size 变化时刷新 sender.maxMessageSize', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mms_icr', 'v=0\r\na=max-message-size:100\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -3225,9 +3281,9 @@ test('WebRtcPeer: ICE restart 重协商 max-message-size 变化时刷新 sender.
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 同 max-message-size 不触发 sender 刷新（实例同值）', async () => {
+test('WebRtcPeer: ICE restart 同 max-message-size 不触发 sender 刷新（实例同值）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mms_same', 'v=0\r\na=max-message-size:200\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -3247,10 +3303,10 @@ test('WebRtcPeer: ICE restart 同 max-message-size 不触发 sender 刷新（实
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: closeByConnId 显式关闭 sender + 销毁 queue + 等待消费循环退出，触发 close 汇总 remoteLog', async () => {
+test('WebRtcPeer: closeByConnId 显式关闭 sender + 销毁 queue + 等待消费循环退出，触发 close 汇总 remoteLog', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_close_q', 'v=0\r\na=max-message-size:100\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -3273,9 +3329,9 @@ test('WebRtcPeer: closeByConnId 显式关闭 sender + 销毁 queue + 等待消�
 	assert.match(closeLog.text, /residualChunks=[1-9]/);
 });
 
-test('WebRtcPeer: onbufferedamountlow 事件触发 sender drain', async () => {
+test('WebRtcPeer: onbufferedamountlow 事件触发 sender drain', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_sq02', 'v=0\r\na=max-message-size:100\r\n'));
 	const sent = [];
 	const dc = makeMockRpcDc({
@@ -3307,9 +3363,9 @@ test('WebRtcPeer: onbufferedamountlow 事件触发 sender drain', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: dc.onclose 关闭 sender + 销毁 queue，之后 broadcast 不再 send', async () => {
+test('WebRtcPeer: dc.onclose 关闭 sender + 销毁 queue，之后 broadcast 不再 send', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_sq03'));
 	const sent = [];
 	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
@@ -3336,9 +3392,9 @@ test('WebRtcPeer: dc.onclose 关闭 sender + 销毁 queue，之后 broadcast 不
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同 session 第二条 rpc DC → 旧三件套被 close + destroy（防御 UI 重建场景）', async () => {
+test('WebRtcPeer: 同 session 第二条 rpc DC → 旧三件套被 close + destroy（防御 UI 重建场景）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3375,9 +3431,9 @@ test('WebRtcPeer: 同 session 第二条 rpc DC → 旧三件套被 close + destr
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: connId 复用后旧 PC 的 ondatachannel 微任务迟到 → pc identity guard 防止污染新 session', async () => {
+test('WebRtcPeer: connId 复用后旧 PC 的 ondatachannel 微任务迟到 → pc identity guard 防止污染新 session', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3417,9 +3473,9 @@ test('WebRtcPeer: connId 复用后旧 PC 的 ondatachannel 微任务迟到 → p
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 旧 dc.onbufferedamountlow 在新 sender 阻塞期间迟到 → 不应错唤醒新 sender', async () => {
+test('WebRtcPeer: 旧 dc.onbufferedamountlow 在新 sender 阻塞期间迟到 → 不应错唤醒新 sender', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3458,9 +3514,9 @@ test('WebRtcPeer: 旧 dc.onbufferedamountlow 在新 sender 阻塞期间迟到 �
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 旧 dc.onclose 在新三件套就位后迟到 → identity guard 防止误清新三件套', async () => {
+test('WebRtcPeer: 旧 dc.onclose 在新三件套就位后迟到 → identity guard 防止误清新三件套', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3499,9 +3555,9 @@ test('WebRtcPeer: 旧 dc.onclose 在新三件套就位后迟到 → identity gua
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: dc.send 持续抛 → consumeLoop 自身退出后清空 session 三字段（finally 防御）', async () => {
+test('WebRtcPeer: dc.send 持续抛 → consumeLoop 自身退出后清空 session 三字段（finally 防御）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3528,10 +3584,10 @@ test('WebRtcPeer: dc.send 持续抛 → consumeLoop 自身退出后清空 sessio
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: broadcast 遇到 buildChunks 异常 → 不抛、消费循环 warn 上报后继续', async () => {
+test('WebRtcPeer: broadcast 遇到 buildChunks 异常 → 不抛、消费循环 warn 上报后继续', async (t) => {
 	const PC = MockPCFactory();
 	const warnMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: (m) => warnMsgs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -3553,10 +3609,10 @@ test('WebRtcPeer: broadcast 遇到 buildChunks 异常 → 不抛、消费循环 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: files sendFn 遇到 buildChunks 异常 → 不抛、消费循环 warn 上报', async () => {
+test('WebRtcPeer: files sendFn 遇到 buildChunks 异常 → 不抛、消费循环 warn 上报', async (t) => {
 	const PC = MockPCFactory();
 	const warnMsgs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileRpc: (payload, sendFn) => {
 			sendFn({ type: 'res', id: payload.id, data: 'hello world' });
@@ -3579,9 +3635,9 @@ test('WebRtcPeer: files sendFn 遇到 buildChunks 异常 → 不抛、消费循�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: probe-ack 绕过 MemoryQueue + RpcDcSender（背压场景 + spy 双验证）', async () => {
+test('WebRtcPeer: probe-ack 绕过 MemoryQueue + RpcDcSender（背压场景 + spy 双验证）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_sq04'));
 	const sent = [];
 	const dc = makeMockRpcDc({ send: (d) => sent.push(d) });
@@ -3620,10 +3676,10 @@ test('WebRtcPeer: probe-ack 绕过 MemoryQueue + RpcDcSender（背压场景 + sp
 
 // --- ICE 诊断日志 ---
 
-test('WebRtcPeer: offer 时记录 ICE 服务器配置（脱敏）', async () => {
+test('WebRtcPeer: offer 时记录 ICE 服务器配置（脱敏）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3648,10 +3704,10 @@ test('WebRtcPeer: offer 时记录 ICE 服务器配置（脱敏）', async () => 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 无 STUN/TURN 时 ice-config 显示 none', async () => {
+test('WebRtcPeer: 无 STUN/TURN 时 ice-config 显示 none', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3668,10 +3724,10 @@ test('WebRtcPeer: 无 STUN/TURN 时 ice-config 显示 none', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: candidate gathering 汇总统计各类型', async () => {
+test('WebRtcPeer: candidate gathering 汇总统计各类型', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3699,10 +3755,10 @@ test('WebRtcPeer: candidate gathering 汇总统计各类型', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: candidate 无 typ 字段时不计入统计', async () => {
+test('WebRtcPeer: candidate 无 typ 字段时不计入统计', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3759,11 +3815,11 @@ function PionMockPCFactory() {
 	return PC;
 }
 
-test('WebRtcPeer: pion — connectionState connected 不直接读取 selectedCandidatePair（避免 ICE restart 旧值）', async () => {
+test('WebRtcPeer: pion — connectionState connected 不直接读取 selectedCandidatePair（避免 ICE restart 旧值）', async (t) => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -3788,11 +3844,11 @@ test('WebRtcPeer: pion — connectionState connected 不直接读取 selectedCan
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — onselectedcandidatepairchange 事件上报 pair', async () => {
+test('WebRtcPeer: pion — onselectedcandidatepairchange 事件上报 pair', async (t) => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -3819,9 +3875,9 @@ test('WebRtcPeer: pion — onselectedcandidatepairchange 事件上报 pair', asy
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — onselectedcandidatepairchange pair 为 null 时不崩溃', async () => {
+test('WebRtcPeer: pion — onselectedcandidatepairchange pair 为 null 时不崩溃', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3837,9 +3893,9 @@ test('WebRtcPeer: pion — onselectedcandidatepairchange pair 为 null 时不崩
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion — closeByConnId detach onselectedcandidatepairchange', async () => {
+test('WebRtcPeer: pion — closeByConnId detach onselectedcandidatepairchange', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3863,10 +3919,10 @@ test('WebRtcPeer: 导出 FAILED_SESSION_TTL_MS 和 MAX_SESSIONS 常量', () => {
 	assert.ok(MAX_SESSIONS > 0);
 });
 
-test('WebRtcPeer: closed 路径调用 pc.close() 释放资源', async () => {
+test('WebRtcPeer: closed 路径调用 pc.close() 释放资源', async (t) => {
 	const PC = MockPCFactory();
 	let closeCalled = false;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3891,7 +3947,7 @@ test('WebRtcPeer: closed 路径调用 pc.close() 释放资源', async () => {
 test('WebRtcPeer: failed 状态启动 TTL 定时器', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3914,7 +3970,7 @@ test('WebRtcPeer: TTL 到期后回收 failed session', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3942,7 +3998,7 @@ test('WebRtcPeer: TTL 到期后回收 failed session', async (t) => {
 test('WebRtcPeer: ICE restart 恢复 connected 取消 TTL 定时器', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -3974,7 +4030,7 @@ test('WebRtcPeer: ICE restart 恢复 connected 取消 TTL 定时器', async (t) 
 test('WebRtcPeer: rtc:closed 信令取消 TTL 定时器', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4001,7 +4057,7 @@ test('WebRtcPeer: rtc:closed 信令取消 TTL 定时器', async (t) => {
 test('WebRtcPeer: closeAll 清理所有 TTL 定时器', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4026,7 +4082,7 @@ test('WebRtcPeer: closeAll 清理所有 TTL 定时器', async (t) => {
 test('WebRtcPeer: ICE restart offer 取消 TTL timer 再尝试 restart', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4056,7 +4112,7 @@ test('WebRtcPeer: 非 pion ICE restart reject 后 TTL timer 保持不变', async
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4093,7 +4149,7 @@ test('WebRtcPeer: pion ICE restart 协商失败时清理 TTL timer', async (t) =
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4128,7 +4184,7 @@ test('WebRtcPeer: pion ICE restart 协商失败时清理 TTL timer', async (t) =
 test('WebRtcPeer: failed → disconnected（异常转换）取消 TTL timer', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4154,7 +4210,7 @@ test('WebRtcPeer: failed → disconnected（异常转换）取消 TTL timer', as
 test('WebRtcPeer: failed → connected → failed 重新启动 timer', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4189,7 +4245,7 @@ test('WebRtcPeer: failed → connected → failed 重新启动 timer', async (t)
 test('WebRtcPeer: failed 连续触发两次，旧 timer 被替换', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4220,10 +4276,10 @@ test('WebRtcPeer: failed 连续触发两次，旧 timer 被替换', async (t) =>
 
 // --- queue length 限制 ---
 
-test('WebRtcPeer: session 总数达到 MAX_SESSIONS 时淘汰最旧 failed session', async () => {
+test('WebRtcPeer: session 总数达到 MAX_SESSIONS 时淘汰最旧 failed session', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4256,10 +4312,10 @@ test('WebRtcPeer: session 总数达到 MAX_SESSIONS 时淘汰最旧 failed sessi
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 无 failed session 可淘汰时仍允许新连接', async () => {
+test('WebRtcPeer: 无 failed session 可淘汰时仍允许新连接', async (t) => {
 	const PC = MockPCFactory();
 	const warns = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -4280,9 +4336,9 @@ test('WebRtcPeer: 无 failed session 可淘汰时仍允许新连接', async () =
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同 connId 重复 offer 先释放再检查 queue', async () => {
+test('WebRtcPeer: 同 connId 重复 offer 先释放再检查 queue', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4303,9 +4359,9 @@ test('WebRtcPeer: 同 connId 重复 offer 先释放再检查 queue', async () =>
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: queue 淘汰选择 failed 而非 connected session', async () => {
+test('WebRtcPeer: queue 淘汰选择 failed 而非 connected session', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4345,7 +4401,7 @@ test('WebRtcPeer: SDP 协商期间 PC 进入 failed 后协商失败 → catch �
 		};
 		return pc;
 	}
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: FailDuringSdpPC,
@@ -4364,7 +4420,7 @@ test('WebRtcPeer: SDP 协商期间 PC 进入 failed 后协商失败 → catch �
 test('WebRtcPeer: queue 淘汰时清理被淘汰 session 的 TTL timer', async (t) => {
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4393,10 +4449,10 @@ test('WebRtcPeer: queue 淘汰时清理被淘汰 session 的 TTL timer', async (
 
 // --- 诊断日志：ICE restart-answer-sent + iceConnectionState + connected 恢复 dump + plugin-probe ---
 
-test('WebRtcPeer: ICE restart 成功回复 answer 时输出 rtc.restart-answer-sent', async () => {
+test('WebRtcPeer: ICE restart 成功回复 answer 时输出 rtc.restart-answer-sent', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4418,7 +4474,7 @@ test('WebRtcPeer: ICE restart 成功回复 answer 时输出 rtc.restart-answer-s
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion oniceconnectionstatechange 触发 rtc.iceState 日志', async () => {
+test('WebRtcPeer: pion oniceconnectionstatechange 触发 rtc.iceState 日志', async (t) => {
 	resetRemoteLog();
 	// 构造带 oniceconnectionstatechange / iceConnectionState 的 mock（模拟 pion-node 行为）
 	function PionPC() {
@@ -4436,7 +4492,7 @@ test('WebRtcPeer: pion oniceconnectionstatechange 触发 rtc.iceState 日志', a
 	}
 	Factory.instances = PionPC.instances;
 
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: Factory,
@@ -4458,7 +4514,7 @@ test('WebRtcPeer: pion oniceconnectionstatechange 触发 rtc.iceState 日志', a
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion oniceconnectionstatechange 对旧 PC 回调 no-op（pc 归属校验）', async () => {
+test('WebRtcPeer: pion oniceconnectionstatechange 对旧 PC 回调 no-op（pc 归属校验）', async (t) => {
 	resetRemoteLog();
 	function PionPC() {
 		const pc = createMockPC();
@@ -4473,7 +4529,7 @@ test('WebRtcPeer: pion oniceconnectionstatechange 对旧 PC 回调 no-op（pc �
 		return pc;
 	}
 
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: Factory,
@@ -4501,7 +4557,7 @@ test('WebRtcPeer: pion 从 disconnected 恢复 connected 时 dump + 调度 plugi
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4542,7 +4598,7 @@ test('WebRtcPeer: 首次 connected（prevDumpState 为 null）不触发恢复 du
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4572,7 +4628,7 @@ test('WebRtcPeer: 非 pion impl 的 connected 恢复不触发 dump/probe', async
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4598,9 +4654,9 @@ test('WebRtcPeer: 非 pion impl 的 connected 恢复不触发 dump/probe', async
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: __sendPluginProbe 无 session 时静默', () => {
+test('WebRtcPeer: __sendPluginProbe 无 session 时静默', (t) => {
 	resetRemoteLog();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: MockPCFactory(),
@@ -4611,10 +4667,10 @@ test('WebRtcPeer: __sendPluginProbe 无 session 时静默', () => {
 	assert.equal(lines.length, 0);
 });
 
-test('WebRtcPeer: __sendPluginProbe DC 未 open 时静默', async () => {
+test('WebRtcPeer: __sendPluginProbe DC 未 open 时静默', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4631,10 +4687,10 @@ test('WebRtcPeer: __sendPluginProbe DC 未 open 时静默', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: __sendPluginProbe 已有 in-flight 时跳过', async () => {
+test('WebRtcPeer: __sendPluginProbe 已有 in-flight 时跳过', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4653,10 +4709,10 @@ test('WebRtcPeer: __sendPluginProbe 已有 in-flight 时跳过', async () => {
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: __sendPluginProbe dc.send 抛异常时记录 send-failed', async () => {
+test('WebRtcPeer: __sendPluginProbe dc.send 抛异常时记录 send-failed', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4678,7 +4734,7 @@ test('WebRtcPeer: __sendPluginProbe 5s 未 ack → timeout 日志', async (t) =>
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4697,10 +4753,10 @@ test('WebRtcPeer: __sendPluginProbe 5s 未 ack → timeout 日志', async (t) =>
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: __handlePluginProbeAck 匹配 id → 记 rtt + 清 in-flight', async () => {
+test('WebRtcPeer: __handlePluginProbeAck 匹配 id → 记 rtt + 清 in-flight', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4722,10 +4778,10 @@ test('WebRtcPeer: __handlePluginProbeAck 匹配 id → 记 rtt + 清 in-flight',
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: __handlePluginProbeAck 无 session / 无 in-flight / id 不匹配时静默', async () => {
+test('WebRtcPeer: __handlePluginProbeAck 无 session / 无 in-flight / id 不匹配时静默', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4752,10 +4808,10 @@ test('WebRtcPeer: __handlePluginProbeAck 无 session / 无 in-flight / id 不匹
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: reassembler 收到 plugin-probe-ack 路由到 __handlePluginProbeAck', async () => {
+test('WebRtcPeer: reassembler 收到 plugin-probe-ack 路由到 __handlePluginProbeAck', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4784,7 +4840,7 @@ test('WebRtcPeer: closeByConnId 清理 plugin-probe timer 避免 session 关闭�
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4808,7 +4864,7 @@ test('WebRtcPeer: 500ms plugin-probe 调度窗口内 closeByConnId 取消探针�
 	t.mock.timers.enable({ apis: ['setTimeout'] });
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4837,7 +4893,7 @@ test('WebRtcPeer: 500ms plugin-probe 调度窗口内 closeByConnId 取消探针�
 	assert.equal(remoteLogBuffer.filter((e) => /rtc\.plugin-probe.*c_sched_cancel.*sent/.test(e.text)).length, 0);
 });
 
-test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）', async () => {
+test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）', async (t) => {
 	resetRemoteLog();
 	function PionPC() {
 		const pc = createMockPC();
@@ -4852,7 +4908,7 @@ test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）',
 		return pc;
 	}
 
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: Factory,
@@ -4867,9 +4923,9 @@ test('WebRtcPeer: closeByConnId oniceconnectionstatechange detach（pion PC）',
 	assert.equal(pc.oniceconnectionstatechange, null, 'handler detached after close');
 });
 
-test('WebRtcPeer: closeByConnId onicegatheringstatechange detach（pion PC）', async () => {
+test('WebRtcPeer: closeByConnId onicegatheringstatechange detach（pion PC）', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4883,10 +4939,10 @@ test('WebRtcPeer: closeByConnId onicegatheringstatechange detach（pion PC）', 
 	assert.equal(pc.onicegatheringstatechange, null, 'handler detached after close');
 });
 
-test('WebRtcPeer: pion icegatheringstatechange=complete flushes gather diag (host addrs included)', async () => {
+test('WebRtcPeer: pion icegatheringstatechange=complete flushes gather diag (host addrs included)', async (t) => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4912,10 +4968,10 @@ test('WebRtcPeer: pion icegatheringstatechange=complete flushes gather diag (hos
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion icegatheringstatechange idempotent (null candidate + complete fires once)', async () => {
+test('WebRtcPeer: pion icegatheringstatechange idempotent (null candidate + complete fires once)', async (t) => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4938,10 +4994,10 @@ test('WebRtcPeer: pion icegatheringstatechange idempotent (null candidate + comp
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion icegatheringstatechange=gathering resets flag for ICE restart', async () => {
+test('WebRtcPeer: pion icegatheringstatechange=gathering resets flag for ICE restart', async (t) => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4971,10 +5027,10 @@ test('WebRtcPeer: pion icegatheringstatechange=gathering resets flag for ICE res
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion icegatheringstatechange=other states are no-op', async () => {
+test('WebRtcPeer: pion icegatheringstatechange=other states are no-op', async (t) => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -4994,10 +5050,10 @@ test('WebRtcPeer: pion icegatheringstatechange=other states are no-op', async ()
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: host candidate with short string does not crash addr extraction', async () => {
+test('WebRtcPeer: host candidate with short string does not crash addr extraction', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5024,9 +5080,9 @@ test('WebRtcPeer: host candidate with short string does not crash addr extractio
 // 单次 await 跳。若将来给 __dumpSctpStats 加入额外的 await，需要同步加深排空次数，
 // 否则测试会在断言 rtc.sctp 时看到空 buffer 误通过。
 
-test('WebRtcPeer: pion impl passes settings.sctpRtoMax=10000 to PeerConnection', async () => {
+test('WebRtcPeer: pion impl passes settings.sctpRtoMax=10000 to PeerConnection', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5048,9 +5104,9 @@ test('WebRtcPeer: pion impl passes settings.sctpRtoMax=10000 to PeerConnection',
 // 调研依据见 docs/webrtc-ice-if-filter.md。
 // 误改这条测试 = 直接破坏 plugin 对部分用户的可达性。
 
-test('WebRtcPeer: pion impl ships only docker0 in interfaceFilter.denyPrefixes', async () => {
+test('WebRtcPeer: pion impl ships only docker0 in interfaceFilter.denyPrefixes', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5065,9 +5121,9 @@ test('WebRtcPeer: pion impl ships only docker0 in interfaceFilter.denyPrefixes',
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion impl default denyPrefixes excludes red-line (VPN/physical/br-) prefixes', async () => {
+test('WebRtcPeer: pion impl default denyPrefixes excludes red-line (VPN/physical/br-) prefixes', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5095,9 +5151,9 @@ test('WebRtcPeer: pion impl default denyPrefixes excludes red-line (VPN/physical
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: non-pion impl does NOT pass settings to PeerConnection', async () => {
+test('WebRtcPeer: non-pion impl does NOT pass settings to PeerConnection', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5112,10 +5168,10 @@ test('WebRtcPeer: non-pion impl does NOT pass settings to PeerConnection', async
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion dump appends rtc.sctp line with cwnd/srtt/sent/recv/mtu', async () => {
+test('WebRtcPeer: pion dump appends rtc.sctp line with cwnd/srtt/sent/recv/mtu', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5151,10 +5207,10 @@ test('WebRtcPeer: pion dump appends rtc.sctp line with cwnd/srtt/sent/recv/mtu',
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion rtc.sctp emits sctp=none when association not yet up (null stats)', async () => {
+test('WebRtcPeer: pion rtc.sctp emits sctp=none when association not yet up (null stats)', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5176,10 +5232,10 @@ test('WebRtcPeer: pion rtc.sctp emits sctp=none when association not yet up (nul
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion rtc.sctp emits error line when getSctpStats rejects; dump survives', async () => {
+test('WebRtcPeer: pion rtc.sctp emits error line when getSctpStats rejects; dump survives', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5204,10 +5260,10 @@ test('WebRtcPeer: pion rtc.sctp emits error line when getSctpStats rejects; dump
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: non-pion impl does not emit rtc.sctp line on dump', async () => {
+test('WebRtcPeer: non-pion impl does not emit rtc.sctp line on dump', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5233,10 +5289,10 @@ test('WebRtcPeer: non-pion impl does not emit rtc.sctp line on dump', async () =
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: pion impl without pc.getSctpStats method skips rtc.sctp gracefully', async () => {
+test('WebRtcPeer: pion impl without pc.getSctpStats method skips rtc.sctp gracefully', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5261,10 +5317,10 @@ test('WebRtcPeer: pion impl without pc.getSctpStats method skips rtc.sctp gracef
 
 // --- 阶段 1 场景补强（review 后由测试钉死实现行为） ---
 
-test('WebRtcPeer: 同 session broadcast + sendTo + sendFn 同 tick 调用 → 三条均到达 dc.sent', async () => {
+test('WebRtcPeer: 同 session broadcast + sendTo + sendFn 同 tick 调用 → 三条均到达 dc.sent', async (t) => {
 	const PC = MockPCFactory();
 	let capturedSendFn = null;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		onFileRpc: (payload, sendFn) => { capturedSendFn = sendFn; },
 		logger: silentLogger(),
@@ -5301,9 +5357,9 @@ test('WebRtcPeer: 同 session broadcast + sendTo + sendFn 同 tick 调用 → �
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: loop self-exit 后 dc.onclose 才到达 → 幂等清理 rpcChannel', async () => {
+test('WebRtcPeer: loop self-exit 后 dc.onclose 才到达 → 幂等清理 rpcChannel', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5336,9 +5392,9 @@ test('WebRtcPeer: loop self-exit 后 dc.onclose 才到达 → 幂等清理 rpcCh
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: closeByConnId 时 sender 阻塞 BAL → balWaiter 全 reject + 三件套全 null', async () => {
+test('WebRtcPeer: closeByConnId 时 sender 阻塞 BAL → balWaiter 全 reject + 三件套全 null', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5370,9 +5426,9 @@ test('WebRtcPeer: closeByConnId 时 sender 阻塞 BAL → balWaiter 全 reject +
 	assert.equal(peer.__sessions.has('c_close_with_bal'), false);
 });
 
-test('WebRtcPeer: closeAll 多 session → 每 session 三件套全 null + 6 PC handler 全 detach（pion）', async () => {
+test('WebRtcPeer: closeAll 多 session → 每 session 三件套全 null + 6 PC handler 全 detach（pion）', async (t) => {
 	const PC = PionMockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5414,9 +5470,9 @@ test('WebRtcPeer: closeAll 多 session → 每 session 三件套全 null + 6 PC 
 	}
 });
 
-test('WebRtcPeer: broadcast 一路 queue 满 drop 不影响另一路 dc 正常 send', async () => {
+test('WebRtcPeer: broadcast 一路 queue 满 drop 不影响另一路 dc 正常 send', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5452,10 +5508,10 @@ test('WebRtcPeer: broadcast 一路 queue 满 drop 不影响另一路 dc 正常 s
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sendTo 入队 true 但 sender 后置 BUILD_CHUNKS_FAILED → 本条 warn 丢失，状态保持', async () => {
+test('WebRtcPeer: sendTo 入队 true 但 sender 后置 BUILD_CHUNKS_FAILED → 本条 warn 丢失，状态保持', async (t) => {
 	const PC = MockPCFactory();
 	const warnings = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: (m) => warnings.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -5483,11 +5539,11 @@ test('WebRtcPeer: sendTo 入队 true 但 sender 后置 BUILD_CHUNKS_FAILED → �
 
 // --- B 阶段补强 ---
 
-test('WebRtcPeer: connId 复用后旧 PC 的 onselectedcandidatepairchange 微任务迟到 → pc identity guard 防止用旧 pair 数据打过时日志/转发过时 transport', async () => {
+test('WebRtcPeer: connId 复用后旧 PC 的 onselectedcandidatepairchange 微任务迟到 → pc identity guard 防止用旧 pair 数据打过时日志/转发过时 transport', async (t) => {
 	resetRemoteLog();
 	const PC = PionMockPCFactory();
 	const sent = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5572,9 +5628,9 @@ function withQueueLifecycleMock({ blockInit = false, blockDestroy = false, targe
 	};
 }
 
-test('WebRtcPeer: __setupDataChannel 在 q.init() 期间不挂 session 三件套（async + 身份守卫前置）', async () => {
+test('WebRtcPeer: __setupDataChannel 在 q.init() 期间不挂 session 三件套（async + 身份守卫前置）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5610,13 +5666,13 @@ test('WebRtcPeer: __setupDataChannel 在 q.init() 期间不挂 session 三件套
 	await peer.closeAll();
 });
 
-test('WebRtcPeer (FBQ 镜像): __setupDataChannel 在 FBQ.init() 期间不挂 session 三件套', async () => {
+test('WebRtcPeer (FBQ 镜像): __setupDataChannel 在 FBQ.init() 期间不挂 session 三件套', async (t) => {
 	// FBQ 镜像用例：生产默认走 FBQ 装配（webrtc-peer.js:712），mem 路径上的 stale init
 	// 不变量同样要在 FBQ 路径成立。直接 patch FileBackedQueue.prototype，避免装配点
 	// 行为分叉时漏测。
 	const tmpDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'wp-fbq-init-'));
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5656,9 +5712,9 @@ test('WebRtcPeer (FBQ 镜像): __setupDataChannel 在 FBQ.init() 期间不挂 se
 	}
 });
 
-test('WebRtcPeer: q.init() 期间 closeByConnId → setup 走 stale 路径 destroy queue 不挂字段', async () => {
+test('WebRtcPeer: q.init() 期间 closeByConnId → setup 走 stale 路径 destroy queue 不挂字段', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5696,13 +5752,13 @@ test('WebRtcPeer: q.init() 期间 closeByConnId → setup 走 stale 路径 destr
 	}
 });
 
-test('WebRtcPeer: stale 装配路径不打 rpc queue impl 日志（B10 修复 invariant pin）', async () => {
+test('WebRtcPeer: stale 装配路径不打 rpc queue impl 日志（B10 修复 invariant pin）', async (t) => {
 	// 装配身份重核失败时，函数 destroy queue 后直接 return，绝不应再 emit local info `rpc queue impl=...`
 	// 或 remoteLog `rtc.queue-impl ...`——否则运维侧会以为有连接成功装配，被装配虚报误导。
 	resetRemoteLog();
 	const PC = MockPCFactory();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -5736,9 +5792,9 @@ test('WebRtcPeer: stale 装配路径不打 rpc queue impl 日志（B10 修复 in
 	}
 });
 
-test('WebRtcPeer: q.init() 期间 broadcast → q===null 安全跳过 dc.send', async () => {
+test('WebRtcPeer: q.init() 期间 broadcast → q===null 安全跳过 dc.send', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5776,9 +5832,9 @@ test('WebRtcPeer: q.init() 期间 broadcast → q===null 安全跳过 dc.send', 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: q.init() 期间同 connId 二次 ondatachannel → 旧 setup stale 不覆盖新三件套', async () => {
+test('WebRtcPeer: q.init() 期间同 connId 二次 ondatachannel → 旧 setup stale 不覆盖新三件套', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5823,9 +5879,9 @@ test('WebRtcPeer: q.init() 期间同 connId 二次 ondatachannel → 旧 setup s
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同 connId 重建走 await session.rpcQueue.destroy() → 旧 destroy 完成前不构造新 queue', async () => {
+test('WebRtcPeer: 同 connId 重建走 await session.rpcQueue.destroy() → 旧 destroy 完成前不构造新 queue', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5868,12 +5924,12 @@ test('WebRtcPeer: 同 connId 重建走 await session.rpcQueue.destroy() → 旧 
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同 connId 重建期 broadcast/sendTo 不进入旧 queue（race 闭合）', async () => {
+test('WebRtcPeer: 同 connId 重建期 broadcast/sendTo 不进入旧 queue（race 闭合）', async (t) => {
 	// race：sync ondatachannel 已切 rpcChannel 到新 dc（readyState='open'），但旧 rpcQueue
 	// 字段保留到 await destroy 完成。修前 broadcast / sendTo 在该窗口会塞进即将销毁的旧 queue
 	// → 消息丢失。修后 sync nullify 把字段先置 null，broadcast 跳过 / sendTo 返回 false。
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5918,10 +5974,10 @@ test('WebRtcPeer: 同 connId 重建期 broadcast/sendTo 不进入旧 queue（rac
 
 // --- Phase A2/B-stage1：__dumpSessionState 来源拆分（queue 6 字段 + monitor 2 字段） ---
 
-test('WebRtcPeer dump: 6 字段来自 queue.stats()，dropped/droppedBytes 来自 monitor.getStats()', async () => {
+test('WebRtcPeer dump: 6 字段来自 queue.stats()，dropped/droppedBytes 来自 monitor.getStats()', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -5970,10 +6026,10 @@ test('WebRtcPeer dump: 6 字段来自 queue.stats()，dropped/droppedBytes 来�
 
 // --- Phase B-stage1: monitor wiring 生命周期 ---
 
-test('WebRtcPeer monitor: dc.onclose 走 destroy onBeforeClear 钩子原子拿残留快照（含 in-flight enqueue）', async () => {
+test('WebRtcPeer monitor: dc.onclose 走 destroy onBeforeClear 钩子原子拿残留快照（含 in-flight enqueue）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mon_close', 'v=0\r\na=max-message-size:100\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -6006,10 +6062,10 @@ test('WebRtcPeer monitor: dc.onclose 走 destroy onBeforeClear 钩子原子拿�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer monitor: closeByConnId 路径调 monitor.summarize 把残留传入', async () => {
+test('WebRtcPeer monitor: closeByConnId 路径调 monitor.summarize 把残留传入', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mon_cbc', 'v=0\r\na=max-message-size:100\r\n'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -6032,10 +6088,10 @@ test('WebRtcPeer monitor: closeByConnId 路径调 monitor.summarize 把残留传
 	assert.ok(calls[0].memCount > 0, 'closeByConnId 时残留 memCount > 0');
 });
 
-test('WebRtcPeer monitor: 同 connId 重建走 await destroy 路径，旧 monitor 先 summarize 再被新实例替换', async () => {
+test('WebRtcPeer monitor: 同 connId 重建走 await destroy 路径，旧 monitor 先 summarize 再被新实例替换', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mon_rebuild'));
 	const dc1 = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc1 });
@@ -6064,10 +6120,10 @@ test('WebRtcPeer monitor: 同 connId 重建走 await destroy 路径，旧 monito
 	await peer.closeAll();
 });
 
-test('WebRtcPeer monitor: dc.onclose + consumeLoop finally 都调 destroy(callback)，destroy 幂等保证 onBeforeClear 仅一次', async () => {
+test('WebRtcPeer monitor: dc.onclose + consumeLoop finally 都调 destroy(callback)，destroy 幂等保证 onBeforeClear 仅一次', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mon_loop'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -6092,9 +6148,9 @@ test('WebRtcPeer monitor: dc.onclose + consumeLoop finally 都调 destroy(callba
 	await peer.closeAll();
 });
 
-test('WebRtcPeer monitor: stale-init 路径不挂载 monitor（blockInit + closeByConnId 释放）', async () => {
+test('WebRtcPeer monitor: stale-init 路径不挂载 monitor（blockInit + closeByConnId 释放）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mon_stale'));
 
 	const m = withQueueLifecycleMock({ blockInit: true });
@@ -6129,9 +6185,9 @@ test('WebRtcPeer monitor: stale-init 路径不挂载 monitor（blockInit + close
 	await peer.closeAll();
 });
 
-test('WebRtcPeer monitor: dc 关闭后 session.rpcDropMonitor === null', async () => {
+test('WebRtcPeer monitor: dc 关闭后 session.rpcDropMonitor === null', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({ onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
+	const peer = makeTestPeer(t, { onSend: () => {}, logger: silentLogger(), PeerConnection: PC, impl: 'pion' });
 	await peer.handleSignaling(makeOffer('c_mon_null'));
 	const dc = makeMockRpcDc();
 	PC.instances[0].ondatachannel({ channel: dc });
@@ -6192,10 +6248,10 @@ function makeControllablePc(initial = {}) {
 	return pc;
 }
 
-test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条胜出）', async () => {
+test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条胜出）', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -6276,12 +6332,12 @@ test('WebRtcPeer: 同 connId 两条 ICE restart offer 串行化（最后一条�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同 connId 三条 ICE restart offer 严格 FIFO（最后一条胜出）', async () => {
+test('WebRtcPeer: 同 connId 三条 ICE restart offer 严格 FIFO（最后一条胜出）', async (t) => {
 	// UI 端 __restartInFlight 限制 N≤3；线上 N=3 真实出现，单独锁住"三条都被串行"行为
 	// 防止 FIFO drain 错误地把第三条与前面并行
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -6356,11 +6412,11 @@ test('WebRtcPeer: 同 connId 三条 ICE restart offer 严格 FIFO（最后一条
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 中途 closeByConnId → setRemoteDescription 后身份重核命中', async () => {
+test('WebRtcPeer: ICE restart 中途 closeByConnId → setRemoteDescription 后身份重核命中', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { ...silentLogger(), info: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -6397,11 +6453,11 @@ test('WebRtcPeer: ICE restart 中途 closeByConnId → setRemoteDescription 后�
 		`expected abort log for setRemoteDescription, got: ${JSON.stringify(logs)}`);
 });
 
-test('WebRtcPeer: ICE restart 中途 closeByConnId → createAnswer 后身份重核命中', async () => {
+test('WebRtcPeer: ICE restart 中途 closeByConnId → createAnswer 后身份重核命中', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { ...silentLogger(), info: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -6435,11 +6491,11 @@ test('WebRtcPeer: ICE restart 中途 closeByConnId → createAnswer 后身份重
 		`expected abort log for createAnswer, got: ${JSON.stringify(logs)}`);
 });
 
-test('WebRtcPeer: ICE restart 中途 closeByConnId → setLocalDescription 后身份重核命中', async () => {
+test('WebRtcPeer: ICE restart 中途 closeByConnId → setLocalDescription 后身份重核命中', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { ...silentLogger(), info: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -6474,11 +6530,11 @@ test('WebRtcPeer: ICE restart 中途 closeByConnId → setLocalDescription 后�
 		`expected abort log for setLocalDescription, got: ${JSON.stringify(logs)}`);
 });
 
-test('WebRtcPeer: ICE restart catch 入口身份重核命中（错误 + session 已换）', async () => {
+test('WebRtcPeer: ICE restart catch 入口身份重核命中（错误 + session 已换）', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { ...silentLogger(), info: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -6530,12 +6586,12 @@ test('WebRtcPeer: ICE restart catch 入口身份重核命中（错误 + session 
 	assert.equal(closedLogs.length, 1, `expected exactly one rtc.closed (no double close), got: ${JSON.stringify(closedLogs.map((e) => e.text))}`);
 });
 
-test('WebRtcPeer: __signalingQueues drain 跑空后自删 entry；下条同 connId 重建', async () => {
+test('WebRtcPeer: __signalingQueues drain 跑空后自删 entry；下条同 connId 重建', async (t) => {
 	// 旧 offerMutex 跟 session 一一同寿；新设计把信令队列与 session 解耦——队列在 drain 跑空后
 	// 自删 entry，下条消息进来时按需重建。session 清理路径（closeByConnId / closeAll）完全不动
 	// 队列。这里钉死生命周期：建/删/重建的可见状态。
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -6562,10 +6618,10 @@ test('WebRtcPeer: __signalingQueues drain 跑空后自删 entry；下条同 conn
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 不同 connId 的 ICE restart 互不阻塞（per-connId 信令队列隔离）', async () => {
+test('WebRtcPeer: 不同 connId 的 ICE restart 互不阻塞（per-connId 信令队列隔离）', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -6620,11 +6676,11 @@ test('WebRtcPeer: 不同 connId 的 ICE restart 互不阻塞（per-connId 信令
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: ICE restart 进行中收到 rtc:closed → 身份重核兜住，不发 stale answer', async () => {
+test('WebRtcPeer: ICE restart 进行中收到 rtc:closed → 身份重核兜住，不发 stale answer', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { ...silentLogger(), info: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -6658,11 +6714,11 @@ test('WebRtcPeer: ICE restart 进行中收到 rtc:closed → 身份重核兜住�
 		`expected abort log, got: ${JSON.stringify(logs)}`);
 });
 
-test('WebRtcPeer: ICE restart 进行中 closeAll 触发 → 身份重核兜住', async () => {
+test('WebRtcPeer: ICE restart 进行中 closeAll 触发 → 身份重核兜住', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { ...silentLogger(), info: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -6710,7 +6766,7 @@ test('WebRtcPeer: failed → TTL 触发 closeByConnId 与 ICE restart in-flight 
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { ...silentLogger(), info: (m) => logs.push(m) },
 		PeerConnection: PC,
@@ -6748,10 +6804,10 @@ test('WebRtcPeer: failed → TTL 触发 closeByConnId 与 ICE restart in-flight 
 	assert.ok(logs.some((m) => /aborted: session changed/.test(m)));
 });
 
-test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 FIFO drain 串行（验证 drain 串行整个 __handleOffer）', async () => {
+test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 FIFO drain 串行（验证 drain 串行整个 __handleOffer）', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -6762,7 +6818,7 @@ test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 FIFO drain 串行（验
 	const ctrl = makeControllablePc();
 	const PC2 = function () { PC.instances.push(ctrl); return ctrl; };
 	PC2.instances = PC.instances;
-	const peer2 = new WebRtcPeer({
+	const peer2 = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC2,
@@ -6812,7 +6868,7 @@ test('WebRtcPeer: 首次 offer 与紧随 ICE restart 经 FIFO drain 串行（验
 	assert.match(answers[1].payload.sdp, /restart-sdp/);
 });
 
-test('WebRtcPeer: 排队中的 ICE restart 在 in-flight 期间 session 被外部删 → A 静默 abort，B 走 no_session reject', async () => {
+test('WebRtcPeer: 排队中的 ICE restart 在 in-flight 期间 session 被外部删 → A 静默 abort，B 走 no_session reject', async (t) => {
 	// 场景（per-connId FIFO 后的新形态）：A 在 drain 内卡 setRemoteDescription gate；B 在
 	// __signalingQueues 排队（drain 暂未取）；这时**外部** closeByConnId（不走信令队列，
 	// 如 connectionState=failed-TTL / closeAll 触发）同步删除 session。
@@ -6822,7 +6878,7 @@ test('WebRtcPeer: 排队中的 ICE restart 在 in-flight 期间 session 被外�
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -6874,10 +6930,10 @@ test('WebRtcPeer: 排队中的 ICE restart 在 in-flight 期间 session 被外�
 	);
 });
 
-test('WebRtcPeer: no-session ICE restart 不创建 session（前置 reject 直返）', async () => {
+test('WebRtcPeer: no-session ICE restart 不创建 session（前置 reject 直返）', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -6899,10 +6955,10 @@ test('WebRtcPeer: no-session ICE restart 不创建 session（前置 reject 直�
 	assert.equal(sent[0].payload.reason, 'no_session');
 });
 
-test('WebRtcPeer: 首次 offer 抛错后 catch 同步清 session（drain 内 catch + remoteLog）', async () => {
+test('WebRtcPeer: 首次 offer 抛错后 catch 同步清 session（drain 内 catch + remoteLog）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -6917,7 +6973,7 @@ test('WebRtcPeer: 首次 offer 抛错后 catch 同步清 session（drain 内 cat
 		return pc;
 	};
 	FailingPC.instances = PC.instances;
-	const peer2 = new WebRtcPeer({
+	const peer2 = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: FailingPC,
@@ -6939,7 +6995,7 @@ test('WebRtcPeer: 首次 offer 抛错后 catch 同步清 session（drain 内 cat
 // 重发到现有 session 的五件事原子 + 首次 offer catch 身份重核 suppress。
 // ============================================================================
 
-test('WebRtcPeer: 首次 offer setRemoteDescription 后 session 被替换 → 身份重核静默 abort（不发 stale rtc:answer）', async () => {
+test('WebRtcPeer: 首次 offer setRemoteDescription 后 session 被替换 → 身份重核静默 abort（不发 stale rtc:answer）', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
@@ -6956,7 +7012,7 @@ test('WebRtcPeer: 首次 offer setRemoteDescription 后 session 被替换 → �
 		return PC(opts);
 	};
 	FirstCtrlPC.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: FirstCtrlPC,
@@ -6988,7 +7044,7 @@ test('WebRtcPeer: 首次 offer setRemoteDescription 后 session 被替换 → �
 	);
 });
 
-test('WebRtcPeer: 首次 offer createAnswer 后 session 被替换 → 身份重核静默 abort', async () => {
+test('WebRtcPeer: 首次 offer createAnswer 后 session 被替换 → 身份重核静默 abort', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
@@ -7004,7 +7060,7 @@ test('WebRtcPeer: 首次 offer createAnswer 后 session 被替换 → 身份重�
 		return PC(opts);
 	};
 	PCFactory.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PCFactory,
@@ -7032,7 +7088,7 @@ test('WebRtcPeer: 首次 offer createAnswer 后 session 被替换 → 身份重�
 	);
 });
 
-test('WebRtcPeer: 首次 offer setLocalDescription 后 session 被替换 → 身份重核静默 abort', async () => {
+test('WebRtcPeer: 首次 offer setLocalDescription 后 session 被替换 → 身份重核静默 abort', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
@@ -7048,7 +7104,7 @@ test('WebRtcPeer: 首次 offer setLocalDescription 后 session 被替换 → 身
 		return PC(opts);
 	};
 	PCFactory.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PCFactory,
@@ -7075,7 +7131,7 @@ test('WebRtcPeer: 首次 offer setLocalDescription 后 session 被替换 → 身
 	);
 });
 
-test('WebRtcPeer: 首次 offer 中抛错且 session 已被替换 → catch 身份重核 suppress（不抛到上游）', async () => {
+test('WebRtcPeer: 首次 offer 中抛错且 session 已被替换 → catch 身份重核 suppress（不抛到上游）', async (t) => {
 	const sent = [];
 	const logs = [];
 	const PC = MockPCFactory();
@@ -7096,7 +7152,7 @@ test('WebRtcPeer: 首次 offer 中抛错且 session 已被替换 → catch 身�
 		return PC(opts);
 	};
 	PCFactory.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: PCFactory,
@@ -7122,10 +7178,10 @@ test('WebRtcPeer: 首次 offer 中抛错且 session 已被替换 → catch 身�
 	);
 });
 
-test('WebRtcPeer: 非 ICE 重发到现有 session 走 sync gate 五件事原子（旧 session 异步 finalize + 新 session 立即可用）', async () => {
+test('WebRtcPeer: 非 ICE 重发到现有 session 走 sync gate 五件事原子（旧 session 异步 finalize + 新 session 立即可用）', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7166,10 +7222,10 @@ test('WebRtcPeer: 非 ICE 重发到现有 session 走 sync gate 五件事原子�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: 同步段五件事内 fire-and-forget finalize 内部抛错被 catch 不带垮 sync gate', async () => {
+test('WebRtcPeer: 同步段五件事内 fire-and-forget finalize 内部抛错被 catch 不带垮 sync gate', async (t) => {
 	const PC = MockPCFactory();
 	const logs = [];
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: { info: () => {}, warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
 		PeerConnection: PC,
@@ -7195,9 +7251,9 @@ test('WebRtcPeer: 同步段五件事内 fire-and-forget finalize 内部抛错被
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: closeByConnId 接 expectedSession 传 undefined → no-op（向后兼容不抛）', async () => {
+test('WebRtcPeer: closeByConnId 接 expectedSession 传 undefined → no-op（向后兼容不抛）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7209,9 +7265,9 @@ test('WebRtcPeer: closeByConnId 接 expectedSession 传 undefined → no-op（�
 	assert.equal(peer.__sessions.size, 0);
 });
 
-test('WebRtcPeer: closeByConnId expectedSession 不匹配当前表项 → 身份守卫早返回（no-op）', async () => {
+test('WebRtcPeer: closeByConnId expectedSession 不匹配当前表项 → 身份守卫早返回（no-op）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7230,7 +7286,7 @@ test('WebRtcPeer: closeByConnId expectedSession 不匹配当前表项 → 身份
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: fn1 in-flight 期间外部替换 sessions 表项 → fn1 resume 后身份重核静默 abort（不发 stale rtc:answer）', async () => {
+test('WebRtcPeer: fn1 in-flight 期间外部替换 sessions 表项 → fn1 resume 后身份重核静默 abort（不发 stale rtc:answer）', async (t) => {
 	// 钉死的不变量：fn1 卡在 SDP 三段 await 时，sessions[connId] 被替换成另一对象后，
 	// fn1 await resolve 后第一段身份重核命中（sessions.get !== session）→ 静默 return。
 	// per-connId FIFO 后同 connId 第二条 offer 不会与 fn1 并发——但 sessions 表的"被替换"
@@ -7251,7 +7307,7 @@ test('WebRtcPeer: fn1 in-flight 期间外部替换 sessions 表项 → fn1 resum
 		return PC(opts);
 	};
 	FirstCtrlPC.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: { info: (m) => logs.push(m), warn: () => {}, error: () => {}, debug: () => {} },
 		PeerConnection: FirstCtrlPC,
@@ -7285,7 +7341,7 @@ test('WebRtcPeer: fn1 in-flight 期间外部替换 sessions 表项 → fn1 resum
 	peer.__sessions.delete('c_replace_busy');
 });
 
-test('WebRtcPeer: sync gate 非 ICE 替换是真 fire-and-forget（旧 pc.close 阻塞期间不阻塞新 session SDP 完成）', async () => {
+test('WebRtcPeer: sync gate 非 ICE 替换是真 fire-and-forget（旧 pc.close 阻塞期间不阻塞新 session SDP 完成）', async (t) => {
 	// 强断言"fire-and-forget"语义：把旧 pc.close 卡在 gate 上，验证新 session 已入表且 rtc:answer 已发出，
 	// 然后才释放旧 pc.close。若实现意外变成 sequential（await 旧 close 后再建新 session），此前提断言会 fail。
 	const sent = [];
@@ -7307,7 +7363,7 @@ test('WebRtcPeer: sync gate 非 ICE 替换是真 fire-and-forget（旧 pc.close 
 		return PC(opts);
 	};
 	PCFactory.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PCFactory,
@@ -7351,10 +7407,10 @@ test('WebRtcPeer: sync gate 非 ICE 替换是真 fire-and-forget（旧 pc.close 
 //   4) closeByConnId 身份守卫不匹配时反向断言：fake 表项的 pc.close/handler/timer 完全未动
 //   5) failed-TTL 回调即便意外 fire（假设 clearTimeout 退化）也被身份守卫兜底
 //   6) MAX_SESSIONS 溢出时 evict 的 closeByConnId 阻塞，新 session 仍立刻入表并发 answer
-test('WebRtcPeer: sync gate 五件事调用顺序锁住（detach → clear → delete → finalize-launch → rtc.closed → create）', async () => {
+test('WebRtcPeer: sync gate 五件事调用顺序锁住（detach → clear → delete → finalize-launch → rtc.closed → create）', async (t) => {
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7403,7 +7459,7 @@ test('WebRtcPeer: sync gate 五件事调用顺序锁住（detach → clear → d
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sync gate 内 __createSession 抛错 → 旧 session 已收尾 + 表空 + 同 connId 重发能正常重建', async () => {
+test('WebRtcPeer: sync gate 内 __createSession 抛错 → 旧 session 已收尾 + 表空 + 同 connId 重发能正常重建', async (t) => {
 	const sent = [];
 	const PC = MockPCFactory();
 	// 第二次构造抛错，第三次起恢复正常
@@ -7416,7 +7472,7 @@ test('WebRtcPeer: sync gate 内 __createSession 抛错 → 旧 session 已收尾
 		return PC(opts);
 	};
 	ThrowOnSecondPC.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: ThrowOnSecondPC,
@@ -7458,7 +7514,7 @@ test('WebRtcPeer: sync gate 内 __createSession 抛错 → 旧 session 已收尾
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: sync gate 替换后旧 PC 三类 ICE 回调迟到投递 → 身份 guard 拦下，不污染新 session', async () => {
+test('WebRtcPeer: sync gate 替换后旧 PC 三类 ICE 回调迟到投递 → 身份 guard 拦下，不污染新 session', async (t) => {
 	resetRemoteLog();
 	const sent = [];
 	// 默认 createMockPC 不声明 onicegatheringstatechange / oniceconnectionstatechange 属性，
@@ -7475,7 +7531,7 @@ test('WebRtcPeer: sync gate 替换后旧 PC 三类 ICE 回调迟到投递 → �
 		return pc;
 	};
 	ExtendedPC.instances = instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: ExtendedPC,
@@ -7523,9 +7579,9 @@ test('WebRtcPeer: sync gate 替换后旧 PC 三类 ICE 回调迟到投递 → �
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: closeByConnId 身份守卫不匹配 → fakeSession 的 pc.close / handlers / timers 完全未动（反向断言）', async () => {
+test('WebRtcPeer: closeByConnId 身份守卫不匹配 → fakeSession 的 pc.close / handlers / timers 完全未动（反向断言）', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7576,9 +7632,9 @@ test('WebRtcPeer: closeByConnId 身份守卫不匹配 → fakeSession 的 pc.clo
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: failed-TTL 回调即便意外 fire（假设 clearTimeout 失效）→ 身份守卫兜底，新 session 不被关', async () => {
+test('WebRtcPeer: failed-TTL 回调即便意外 fire（假设 clearTimeout 失效）→ 身份守卫兜底，新 session 不被关', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7634,11 +7690,11 @@ test('WebRtcPeer: failed-TTL 回调即便意外 fire（假设 clearTimeout 失�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: MAX_SESSIONS 溢出时 evict 的 closeByConnId 阻塞 → 新 session 仍立刻入表并发 rtc:answer', async () => {
+test('WebRtcPeer: MAX_SESSIONS 溢出时 evict 的 closeByConnId 阻塞 → 新 session 仍立刻入表并发 rtc:answer', async (t) => {
 	resetRemoteLog();
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7685,13 +7741,13 @@ test('WebRtcPeer: MAX_SESSIONS 溢出时 evict 的 closeByConnId 阻塞 → 新 
 //   (a) closeByConnId 的同步段（detach + clear + delete）真在第一个 await 之前完成
 //   (b) closeAll 首轮 await 期间另一条路径建立的新 session，会被下一轮 drain 关掉
 
-test('WebRtcPeer: closeByConnId 同步段（detach + clear + delete）在第一个 await 之前完成', async () => {
+test('WebRtcPeer: closeByConnId 同步段（detach + clear + delete）在第一个 await 之前完成', async (t) => {
 	// 把 sessionA 的 pc.close 卡在 gate 上 → closeAll 同步段跑完后 await __finalizeSessionAsync 卡住。
 	// 调用 closeAll 返回 Promise 后**立即**（不 await flushAsync）断言 sessions.delete 已完成——
 	// 这才能精确钉住"删除发生在同步段"。若未来有人把 sessions.delete 移到 await 之后，
 	// 这条 assert 会红，明确指向"同步段删除契约被破坏"。
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7717,7 +7773,7 @@ test('WebRtcPeer: closeByConnId 同步段（detach + clear + delete）在第一�
 	await closeAllPromise;
 });
 
-test('WebRtcPeer: closeAll 期间到达的新 offer 被 __stopping 拦下，不再创建孤儿 session', async () => {
+test('WebRtcPeer: closeAll 期间到达的新 offer 被 __stopping 拦下，不再创建孤儿 session', async (t) => {
 	// 钉死新设计契约（替代旧 while-drain 兜底"snapshot 漏掉新 session"的语义）：
 	// closeAll 入口立即置 __stopping=true，期间新到的 rtc:offer 经 drain 顶端的关停门禁
 	// + __handleOffer 入口的关停门禁双重拦截，根本不会落地新 session——结构性消除"孤儿
@@ -7726,7 +7782,7 @@ test('WebRtcPeer: closeAll 期间到达的新 offer 被 __stopping 拦下，不�
 	resetRemoteLog();
 	const sent = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7767,7 +7823,7 @@ test('WebRtcPeer: closeAll 期间到达的新 offer 被 __stopping 拦下，不�
 	assert.equal(peer.__sessions.size, 0, 'closeAll 后 sessions 表已空');
 });
 
-test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错由 drain 内 catch + rtc.signaling-error remoteLog', async () => {
+test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错由 drain 内 catch + rtc.signaling-error remoteLog', async (t) => {
 	// 钉死"rtc:closed 抛错落地"契约：信令队列内 catch 全部错误，统一通过
 	// rtc.signaling-error remoteLog 输出诊断；caller `await handleSignaling` 看到的是
 	// clean resolve（旧契约是上抛到 realtime-bridge outer catch；现在 outer catch 仅兜
@@ -7775,7 +7831,7 @@ test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错由 drain 内 catch +
 	// 路径"无声吞掉"（既没日志也没 remoteLog），这条测试会红。
 	resetRemoteLog();
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7796,7 +7852,7 @@ test('WebRtcPeer: rtc:closed 路径下 closeByConnId 抛错由 drain 内 catch +
 // per-connId 信令 FIFO 串行化新增测试
 // ============================================================================
 
-test('WebRtcPeer: 冷启动 1 offer + 5 ICE 并发到达 → drain 保证 SRD 完整 resolve 后才开始 addIceCandidate', async () => {
+test('WebRtcPeer: 冷启动 1 offer + 5 ICE 并发到达 → drain 保证 SRD 完整 resolve 后才开始 addIceCandidate', async (t) => {
 	// 钉死本次修法核心：跨消息的 pion-ipc 字节序。冷启动时 ws 几乎同时到达 1 offer + 5 ICE，
 	// 旧 offerMutex 设计在 SRD 前多了 await prev 微任务跳板让 ICE 抢跑 → pion "remote
 	// description is not set"。FIFO drain 后所有 ICE 必在 SRD **完成** 之后才被调用。
@@ -7827,7 +7883,7 @@ test('WebRtcPeer: 冷启动 1 offer + 5 ICE 并发到达 → drain 保证 SRD �
 		return PC(opts);
 	};
 	PCFactory.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PCFactory,
@@ -7858,14 +7914,14 @@ test('WebRtcPeer: 冷启动 1 offer + 5 ICE 并发到达 → drain 保证 SRD �
 	assert.equal(order.filter((s) => s === 'ICE').length, 5, '所有 ICE 候选都被处理');
 });
 
-test('WebRtcPeer: ICE-restart offer + 后续 trickle ICE 并发 → 所有 ICE 在 restart SRD 完成后才处理', async () => {
+test('WebRtcPeer: ICE-restart offer + 后续 trickle ICE 并发 → 所有 ICE 在 restart SRD 完成后才处理', async (t) => {
 	// 真实 UI restart 路径：UI 发完 iceRestart offer 后会继续 trickle ICE 候选。
 	// 与冷启动测试对称——但这次 session 已存在，走 ICE restart 分支（不替换 session）。
 	// 旧 mutex 设计同样的 microtask 跳板会让 trickle ICE 抢在 SRD 之前到 pion；
 	// FIFO drain 必须保证 restart 三段 SDP 完成后才开始 addIceCandidate。
 	const order = [];
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -7924,7 +7980,7 @@ test('WebRtcPeer: ICE-restart offer + 后续 trickle ICE 并发 → 所有 ICE �
 	assert.equal(order.filter((s) => s === 'ICE').length, 5, 'trickle ICE 全部被处理');
 });
 
-test('WebRtcPeer: __signalingQueues 跨 connId 隔离（A 卡 gate 不阻塞 B）', async () => {
+test('WebRtcPeer: __signalingQueues 跨 connId 隔离（A 卡 gate 不阻塞 B）', async (t) => {
 	// 关键不变量：__signalingQueues 是 per-connId，不同 connId 各自一条 drain，互不阻塞。
 	const PC = MockPCFactory();
 	const ctrlA = makeControllablePc();
@@ -7937,7 +7993,7 @@ test('WebRtcPeer: __signalingQueues 跨 connId 隔离（A 卡 gate 不阻塞 B�
 		return PC(opts);
 	};
 	PCFactory.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PCFactory,
@@ -7964,7 +8020,7 @@ test('WebRtcPeer: __signalingQueues 跨 connId 隔离（A 卡 gate 不阻塞 B�
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: closeAll 期间排队 ICE 与 offer 全部被 __stopping 丢弃', async () => {
+test('WebRtcPeer: closeAll 期间排队 ICE 与 offer 全部被 __stopping 丢弃', async (t) => {
 	// 钉死 drain 顶端 __stopping 门禁：closeAll 触发后再排队进来的信令（offer / ICE / rtc:closed）
 	// 在 drain 下一轮迭代被丢弃；caller `await handleSignaling` 仍正常 resolve 不悬挂。
 	const PC = MockPCFactory();
@@ -7977,7 +8033,7 @@ test('WebRtcPeer: closeAll 期间排队 ICE 与 offer 全部被 __stopping 丢�
 	PCFactory.instances = PC.instances;
 	let iceCalled = false;
 	ctrl.addIceCandidate = async () => { iceCalled = true; };
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PCFactory,
@@ -8030,7 +8086,7 @@ test('WebRtcPeer: closeAll 期间排队 ICE 与 offer 全部被 __stopping 丢�
 	assert.equal(peer.__signalingQueues.has('c_stop_new'), false, 'c_stop_new drain 跑空后 entry 自删');
 });
 
-test('WebRtcPeer: drain 内单条信令处理抛错后能正常处理下一条', async () => {
+test('WebRtcPeer: drain 内单条信令处理抛错后能正常处理下一条', async (t) => {
 	// drain 的 per-item catch 保证单条信令出错不阻断后续。模拟 pion IPC 抛 reject。
 	resetRemoteLog();
 	const PC = MockPCFactory();
@@ -8047,7 +8103,7 @@ test('WebRtcPeer: drain 内单条信令处理抛错后能正常处理下一条',
 		return pc;
 	}
 	ConditionalFailPC.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: ConditionalFailPC,
@@ -8069,9 +8125,9 @@ test('WebRtcPeer: drain 内单条信令处理抛错后能正常处理下一条',
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: drain 跑空后 __signalingQueues entry 自删；下条同 connId 重建', async () => {
+test('WebRtcPeer: drain 跑空后 __signalingQueues entry 自删；下条同 connId 重建', async (t) => {
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -8088,7 +8144,7 @@ test('WebRtcPeer: drain 跑空后 __signalingQueues entry 自删；下条同 con
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: drain per-item catch 内 logger 与 __remoteLog 自身抛错不阻断后续 doneCb / 不带垮 gateway', async () => {
+test('WebRtcPeer: drain per-item catch 内 logger 与 __remoteLog 自身抛错不阻断后续 doneCb / 不带垮 gateway', async (t) => {
 	// 钉死强约束（CoClaw plugin "异常必须被捕获，不许带垮 gateway" + caller `await
 	// handleSignaling` 不许永挂）：drain 处理一条信令出错时，per-item catch 内调
 	// logger.warn 与 __remoteLog；若**两条调用都自身抛错**（极端情形：logger 实现 bug
@@ -8104,7 +8160,7 @@ test('WebRtcPeer: drain per-item catch 内 logger 与 __remoteLog 自身抛错�
 		pc.setRemoteDescription = async () => { throw new Error('SDP fail'); };
 		return pc;
 	}
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		// logger.warn 自己抛错；error 兜底也抛错（极端情况）
 		logger: {
@@ -8146,12 +8202,12 @@ test('WebRtcPeer: drain per-item catch 内 logger 与 __remoteLog 自身抛错�
 	assert.equal(p2Settled, true, 'p2 resolver 应已 fire（drain 没因 logger 抛错而退出）');
 });
 
-test('WebRtcPeer: 同 tick 多次 handleSignaling 同 connId → drain 只激活一次（state.running 同步置位）', async () => {
+test('WebRtcPeer: 同 tick 多次 handleSignaling 同 connId → drain 只激活一次（state.running 同步置位）', async (t) => {
 	// 通过公共 API（handleSignaling）真正复现产线并发路径：同 tick 内多次 enqueue 同
 	// connId，drain 入口的 `if (state.running) return;` 同步检查应让只有第一条 enqueue
 	// 启动真实 drain，后续 enqueue 走 push + 由当前 drain 顺序消化——不会双开 drain。
 	const PC = MockPCFactory();
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: () => {},
 		logger: silentLogger(),
 		PeerConnection: PC,
@@ -8205,7 +8261,7 @@ test('WebRtcPeer: 同 tick 多次 handleSignaling 同 connId → drain 只激活
 	await peer.closeAll();
 });
 
-test('WebRtcPeer: FIFO 新语义——同 connId 两条非 ICE offer 严格 FIFO，各自产 answer（去除 last-wins）', async () => {
+test('WebRtcPeer: FIFO 新语义——同 connId 两条非 ICE offer 严格 FIFO，各自产 answer（去除 last-wins）', async (t) => {
 	// 旧 offerMutex 设计下：concurrent 两条非 ICE offer，sync 段把 session 替换两次，
 	// 第一条 mutex 排队进锁时 session 已经是第二条的 session，identity reverify 静默 abort，
 	// 最终只有"最后一条胜出"，发 1 条 answer。
@@ -8224,7 +8280,7 @@ test('WebRtcPeer: FIFO 新语义——同 connId 两条非 ICE offer 严格 FIFO
 		return pc;
 	}
 	ProbeAnswerPC.instances = PC.instances;
-	const peer = new WebRtcPeer({
+	const peer = makeTestPeer(t, {
 		onSend: (msg) => sent.push(msg),
 		logger: silentLogger(),
 		PeerConnection: ProbeAnswerPC,
@@ -8243,6 +8299,291 @@ test('WebRtcPeer: FIFO 新语义——同 connId 两条非 ICE offer 严格 FIFO
 	// 同 connId 非 ICE-restart 第二条 offer 走"同步段五件事"路径——必须创建新 PC（旧 PC 已 detach + delete）。
 	// 这里钉死 PC 实例数=2，防止"两条 offer 都打到同一 PC + __lastRemoteSdp 被覆盖也能蒙过顺序断言"的脆弱场景。
 	assert.equal(PC.instances.length, 2, '同 connId 双 offer 应各自创建新 PC（5 件事原子替换）');
+
+	await peer.closeAll();
+});
+
+// --- S2 阶段补强：stale PC 异步 ICE 回调身份守卫 + sendTo enqueue catch + ICE restart in-flight + close 汇总 4 字段字面 + bypassAdmission 非白名单不达 dc.send ---
+
+test('WebRtcPeer: stale PC 异步 onicecandidate 不发 rtc:ice（pc identity guard）', async (t) => {
+	// 配套 stale-PC 系列：旧 PC 在 closeByConnId 之后微任务里仍可能投递 onicecandidate
+	// （属性置 null 不阻止已 dispatch 的回调）；guard 必须让旧 PC 的 candidate 静默丢弃，
+	// 否则 UI 会把旧 PC 的 candidate 加到新 PC 上 → connection 永远连不上。
+	const sent = [];
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: (msg) => sent.push(msg),
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_stale_ice'));
+	const oldPc = PC.instances[0];
+	const oldHandler = oldPc.onicecandidate;
+	assert.equal(typeof oldHandler, 'function', '旧 PC 应已挂 onicecandidate handler');
+
+	// 同 connId 重发 offer → sync gate 五件事原子替换旧 session
+	await peer.handleSignaling(makeOffer('c_stale_ice'));
+	const newPc = PC.instances[1];
+	assert.notEqual(oldPc, newPc, '应创建新 PC');
+	sent.length = 0;
+
+	// 旧 PC 的 onicecandidate 异步投递（模拟 IPC 微任务迟到）
+	oldHandler({
+		candidate: {
+			candidate: 'candidate:1 1 udp 2122260223 1.2.3.4 12345 typ host',
+			sdpMid: '0',
+			sdpMLineIndex: 0,
+		},
+	});
+
+	// guard 应让旧 PC 的 candidate 不转发为 rtc:ice
+	const iceForwarded = sent.filter((m) => m.type === 'rtc:ice');
+	assert.equal(iceForwarded.length, 0, '旧 PC 的 candidate 不应转发为 rtc:ice');
+	// 新 session 仍在表里（旧 PC 回调没有误删）
+	assert.ok(peer.__sessions.has('c_stale_ice'), '新 session 应保留');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: stale PC 异步 onicegatheringstatechange 不污染新 session 诊断（pc identity guard）', async (t) => {
+	// stale onicecandidate 的姊妹路径：onicegatheringstatechange 在 pion 路径下也由旧 PC 微任务投递。
+	// 旧 PC 若 fire gather complete 触发 flushGatherDiag，会让 server 端看到一条空 host=/srflx=/relay= 旧统计，
+	// 误导诊断（明明新 PC 才刚 gather）。guard 命中 → 旧 PC 的 gather complete 不应输出 rtc.ice-gathered。
+	resetRemoteLog();
+	function PCFactoryWithGatherState() {
+		const instances = [];
+		function P(opts) {
+			const pc = createMockPC();
+			pc.onicegatheringstatechange = null;
+			pc.iceGatheringState = 'new';
+			pc.__constructorArgs = opts;
+			instances.push(pc);
+			return pc;
+		}
+		P.instances = instances;
+		return P;
+	}
+	const PC = PCFactoryWithGatherState();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_stale_gather'));
+	const oldPc = PC.instances[0];
+	const oldGatherHandler = oldPc.onicegatheringstatechange;
+	assert.equal(typeof oldGatherHandler, 'function', '旧 PC 应已挂 onicegatheringstatechange handler');
+
+	// 重发 offer → 同 connId 旧 session 被替换
+	await peer.handleSignaling(makeOffer('c_stale_gather'));
+	assert.equal(PC.instances.length, 2);
+	resetRemoteLog();
+
+	// 旧 PC 异步 fire gather complete（模拟微任务迟到）
+	oldPc.iceGatheringState = 'complete';
+	oldGatherHandler();
+
+	// guard 应让旧 PC 的 gather complete 不输出 rtc.ice-gathered
+	const gathered = remoteLogBuffer.filter((e) => /rtc\.ice-gathered conn=c_stale_gather/.test(e.text));
+	assert.equal(gathered.length, 0, '旧 PC 的 gather complete 不应触发 ice-gathered 日志');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: sendTo enqueue 抛错时返回 false 不向上传播（catch 路径）', async (t) => {
+	// 覆盖 sendTo 内的 try/catch 兜底：mutex 异常等极冷路径让 enqueue reject。
+	// 装配点必须返回 false（与 session/DC 未就绪等价），避免 unhandled rejection 带垮 gateway。
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+	});
+	await setupRpcDcSession({ peer, connId: 'c_send_throw', dc: makeMockRpcDc() });
+	const session = peer.__sessions.get('c_send_throw');
+	// 替换 enqueue 强制抛错
+	session.rpcQueue.enqueue = async () => { throw new Error('mutex broken'); };
+
+	let thrown = null;
+	let ret = null;
+	try {
+		ret = await peer.sendTo('c_send_throw', { type: 'event', event: 'x' });
+	} catch (err) {
+		thrown = err;
+	}
+	assert.equal(thrown, null, 'sendTo 必须吞掉 enqueue 抛出的异常');
+	assert.equal(ret, false, 'sendTo 在 catch 路径必须返回 false');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: ICE restart 期间通过 broadcast 入队的消息 in-flight 不丢，restart 完成后到达 dc.send', async (t) => {
+	// 阶段 1 deep-review 留单：ICE restart 不重建三件套（queue/sender/channel）——
+	// 验证 restart 前/期间排队的消息真实穿越 restart 边界、到达底层 dc.send。
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_irq', 'v=0\r\na=max-message-size:65536\r\n'));
+	const sent = [];
+	const dc = makeMockRpcDc({ send: (d) => sent.push(String(d)) });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync(() => peer.__sessions.get('c_irq')?.rpcQueue && peer.__sessions.get('c_irq')?.rpcDcSender);
+	const session = peer.__sessions.get('c_irq');
+	const queueBefore = session.rpcQueue;
+	const senderBefore = session.rpcDcSender;
+
+	// restart 前先卡住 sender：让消息留在 queue 里穿越 restart 边界
+	dc.bufferedAmount = 1024 * 1024;
+	peer.broadcast({ type: 'res', id: 'pre-restart-1' });
+	peer.broadcast({ type: 'res', id: 'pre-restart-2' });
+	await flushAsync(() => session.rpcQueue.stats().memCount >= 1 && session.rpcDcSender.balWaiters.length >= 1);
+
+	// 发 ICE restart offer（pion 路径）
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_irq',
+		payload: { sdp: 'v=0\r\na=max-message-size:65536\r\n', iceRestart: true },
+	});
+	// 三件套必须保留（不重建）——in-flight 消息不会丢
+	assert.equal(peer.__sessions.get('c_irq').rpcQueue, queueBefore, 'ICE restart 不应重建 queue');
+	assert.equal(peer.__sessions.get('c_irq').rpcDcSender, senderBefore, 'ICE restart 不应重建 sender');
+
+	// restart 期间继续广播
+	peer.broadcast({ type: 'res', id: 'during-restart' });
+	await flushAsync(() => session.rpcQueue.stats().memCount + session.rpcDcSender.balWaiters.length >= 1);
+
+	// 模拟 SACK：解 BAL，让 sender drain
+	for (let i = 0; i < 100 && (session.rpcQueue.stats().memCount > 0 || session.rpcDcSender.balWaiters.length > 0); i += 1) {
+		dc.bufferedAmount = 0;
+		dc.onbufferedamountlow?.();
+		await flushAsync();
+	}
+
+	// 所有消息（restart 前 + restart 期间）都应到达 dc.send
+	const concat = sent.join('|');
+	assert.ok(concat.includes('"id":"pre-restart-1"'), 'pre-restart-1 应到达 dc.send');
+	assert.ok(concat.includes('"id":"pre-restart-2"'), 'pre-restart-2 应到达 dc.send');
+	assert.ok(concat.includes('"id":"during-restart"'), 'during-restart 应到达 dc.send');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: close 汇总日志 4 字段字面断言（dropped/droppedBytes/residualChunks/residualBytes）', async (t) => {
+	// 阶段 1 deep-review 留单：close 汇总日志要有 4 字段字面值钉死，不能只 regex 范围匹配。
+	// 钉死 dropped=0 / droppedBytes=0 / residualChunks=N / residualBytes=N*size，源码退化（计数错、
+	// 残留快照漂移、字段顺序改名）任一都会让本测挂掉。
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+	await peer.handleSignaling(makeOffer('c_close_fields', 'v=0\r\na=max-message-size:65536\r\n'));
+	const dc = makeMockRpcDc({ send: () => {} });
+	PC.instances[0].ondatachannel({ channel: dc });
+	await flushAsync(() => peer.__sessions.get('c_close_fields')?.rpcQueue && peer.__sessions.get('c_close_fields')?.rpcDcSender);
+	const session = peer.__sessions.get('c_close_fields');
+	const q = session.rpcQueue;
+	// bufferedAmount 顶到 HIGH：consumer 拉走第 1 条后卡 BAL，余下消息留在 queue
+	dc.bufferedAmount = 1024 * 1024;
+
+	// 固定大小消息，直接 enqueue 不经 broadcast（省去序列化路径分支）
+	const msg = JSON.stringify({ type: 'res', tag: 'CLOSE-FIELD-XX' });
+	const msgBytes = Buffer.byteLength(msg, 'utf8');
+	const N = 4;
+	for (let i = 0; i < N; i += 1) {
+		await q.enqueue(msg);
+	}
+	// 等 consumer 卡到 BAL，余 N-1 条留在 queue
+	await waitFor(() => session.rpcDcSender.balWaiters.length >= 1);
+	assert.equal(q.stats().memCount, N - 1, `consumer 拉走 1 条后 queue 余 N-1=${N - 1}`);
+
+	// close → sender.close reject BAL → consumer 退出 send → 下轮 dequeue 命中 destroyed → loop 退出
+	await peer.closeByConnId('c_close_fields', session);
+
+	const closeLog = remoteLogBuffer.find((e) => /rpc-queue\.close conn=c_close_fields/.test(e.text));
+	assert.ok(closeLog, 'rpc-queue.close 日志应存在');
+	// 4 字段字面断言（精确值，不用范围 regex）
+	const expectedResidualBytes = (N - 1) * msgBytes;
+	assert.match(closeLog.text, /\bdropped=0\b/, '本路径无 drop → dropped=0');
+	assert.match(closeLog.text, /\bdroppedBytes=0\b/, '本路径无 drop → droppedBytes=0');
+	assert.match(closeLog.text, new RegExp(`\\bresidualChunks=${N - 1}\\b`), `residualChunks=${N - 1}`);
+	assert.match(closeLog.text, new RegExp(`\\bresidualBytes=${expectedResidualBytes}\\b`), `residualBytes=${expectedResidualBytes}`);
+});
+
+test('WebRtcPeer: bypassAdmission 拒收的非白名单帧不会到达 dc.send（admission 红线端到端钉死）', async (t) => {
+	// 阶段 1 deep-review 留单：仅"返回 false + onDrop"不够——还要证明被 admission 拒收的非白名单帧
+	// 绝不会沿任何旁路混进 dc.send。端到端：queue 满 → 非白名单 drop → 白名单 agent res 仍 bypass。
+	//
+	// 关键时序：consumer 一旦 dequeue 会让 memBytes 立即减，单条 filler 顶不住后续 admission——
+	// 必须先 push 一批 filler 把 memBytes 远超 memBudget，配合 bufferedAmount=HIGH 让 sender 卡 BAL，
+	// 这样即便 consumer 拉走 1 条，余下若干条仍把 memBytes 保持在 >= memBudget。
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+		rpcQueueImpl: 'mem',
+	});
+	const sentLog = [];
+	const dc = makeMockRpcDc({ send: (d) => sentLog.push(String(d)) });
+	await setupRpcDcSession({ peer, connId: 'c_admit', dc });
+	const session = peer.__sessions.get('c_admit');
+	// bufferedAmount 顶高让 sender 卡在 BAL，filler 留在 queue
+	dc.bufferedAmount = 1024 * 1024;
+	// 缩 memBudget 到 80B
+	session.rpcQueue.memBudget = 80;
+
+	const fillerMarker = 'FILLER-XYZ';
+	const droppedMarker = 'NON-WHITELIST-DROP-MARKER';
+	const bypassMarker = 'BYPASS-RUNID-XYZ';
+	// 故意把 filler 设小：单条远小于 memBudget，多条累积才把 memBytes 顶到 ≥ memBudget。
+	// 这样 admission overshoot 只在第一条放行；当 memBytes 已 ≥ budget 后非白名单帧会被拒。
+	const filler = JSON.stringify({ type: 'event', event: fillerMarker });
+	// 反复 push 直到 admission 关门：第一条 consumer 会拉走（sender 卡 BAL），所以要多 push 几条
+	// 才能把 memBytes 顶到 ≥ memBudget。enqueue 返 false 即说明 admission 关上了。
+	let admitted = 0;
+	let lastOk = true;
+	while (lastOk && admitted < 50) {
+		lastOk = await session.rpcQueue.enqueue(filler);
+		if (lastOk) admitted += 1;
+	}
+	assert.ok(admitted >= 2, `至少要有 2 条 filler 入队才能形成稳定的 memBytes >= memBudget 状态（actual=${admitted}）`);
+	// 等 consumer 卡到 BAL
+	await waitFor(() => session.rpcDcSender.balWaiters.length >= 1);
+	assert.ok(session.rpcQueue.stats().memBytes >= session.rpcQueue.memBudget,
+		`memBytes 应 >= memBudget 才能稳定触发 queue-full（actual memBytes=${session.rpcQueue.stats().memBytes} budget=${session.rpcQueue.memBudget}）`);
+
+	// 队列满状态下：非白名单帧被 admission drop
+	const droppedFrame = JSON.stringify({ type: 'event', event: droppedMarker });
+	const ok2 = await session.rpcQueue.enqueue(droppedFrame);
+	assert.equal(ok2, false, '非白名单帧在 queue 满时应被 admission drop');
+
+	// 同状态下白名单 agent res 仍可入队
+	const bypassFrame = JSON.stringify({ type: 'res', payload: { runId: bypassMarker } });
+	const ok3 = await session.rpcQueue.enqueue(bypassFrame);
+	assert.equal(ok3, true, '白名单 agent res 应在 queue 满时 bypass admission 入队');
+
+	// 解 BAL 让 sender drain；poll 到 queue 空（每轮把 bufferedAmount 还原到 0 触发 BAL）
+	for (let i = 0; i < 200 && (session.rpcQueue.stats().memCount > 0 || session.rpcDcSender.balWaiters.length > 0); i += 1) {
+		dc.bufferedAmount = 0;
+		dc.onbufferedamountlow?.();
+		await flushAsync();
+	}
+
+	const concat = sentLog.join('|');
+	assert.ok(concat.includes(fillerMarker), 'filler 应到达 dc.send');
+	assert.ok(concat.includes(bypassMarker), '白名单 agent res 应到达 dc.send');
+	assert.ok(!concat.includes(droppedMarker), 'admission 拒收的非白名单帧绝不应到达 dc.send');
 
 	await peer.closeAll();
 });
