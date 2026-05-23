@@ -155,12 +155,21 @@ export const useTopicsStore = defineStore('topics', {
 		 * @returns {Promise<string>} topicId
 		 */
 		async createTopic(clawId, agentId) {
-			const conn = useClawConnections().get(String(clawId));
+			const id = String(clawId);
+			const conn = useClawConnections().get(id);
 			if (!conn) throw new Error('Claw not connected');
 			const result = await conn.request('coclaw.topics.create', { agentId }, { timeout: 60_000 });
 			const topicId = result?.topicId;
 			if (!topicId) throw new Error('Failed to create topic');
-			this.byId[topicId] = { topicId, agentId, title: null, createdAt: Date.now(), clawId: String(clawId) };
+			// await 期间 claw 可能被 SSE claw.unbound 移除（cleanupClawResources → removeByClaw 同步清空）
+			// plugin 那条 JSON 记录是持久信息留着不动——重新绑同 id claw 时 loadTopicsForClaw 会自然拉回。
+			// 此处只挡 UI 端写入"挂在已消失 claw 上的 dangling 条目"。
+			const clawsStore = useClawsStore();
+			if (!clawsStore.byId[id]) {
+				console.debug('[topics] createTopic: claw removed during create, skipping local write topicId=%s clawId=%s', topicId, id);
+				return topicId;
+			}
+			this.byId[topicId] = { topicId, agentId, title: null, createdAt: Date.now(), clawId: id };
 			return topicId;
 		},
 

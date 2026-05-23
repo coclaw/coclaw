@@ -252,6 +252,33 @@ describe('topics store', () => {
 		await expect(store.createTopic('no-bot', 'main')).rejects.toThrow('Claw not connected');
 	});
 
+	// await 期间 claw 被另一端解绑（SSE claw.unbound → removeByClaw 同步清 byId）：
+	// plugin 那条 JSON 是持久信息，重绑同 id claw 会自然拉回；UI 端不应再写一条挂在
+	// 已消失 claw 上的 dangling 条目（点开会失败）。
+	test('createTopic await 期间 claw 被解绑 → 不写本地 byId（plugin 那条由重绑后 loadTopicsForClaw 拉回）', async () => {
+		const clawsStore = useClawsStore();
+		let resolveCreate;
+		const conn = {
+			request: vi.fn().mockImplementation(() => new Promise((r) => { resolveCreate = r; })),
+			on: vi.fn(), off: vi.fn(),
+		};
+		setConn('bot-1', conn);
+
+		const store = useTopicsStore();
+		const p = store.createTopic('bot-1', 'main');
+
+		// await 飞行中：另一端解绑 → SSE 推送 → removeByClaw + clawsStore.byId 同步清
+		delete clawsStore.byId['bot-1'];
+
+		// plugin 端创建已落库，返回 topicId（持久数据正确）
+		resolveCreate({ topicId: 'orphan-uuid' });
+		const id = await p;
+
+		// 返回 topicId 仍是真的（plugin 写好了），UI 端跳过本地写入
+		expect(id).toBe('orphan-uuid');
+		expect(store.byId['orphan-uuid']).toBeUndefined();
+	});
+
 	test('createTopic 在 dcReady=false 时仍能成功创建（由底层 waitReady 处理）', async () => {
 		const conn = {
 			request: vi.fn().mockResolvedValue({ topicId: 'new-uuid-2' }),
