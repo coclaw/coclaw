@@ -93,22 +93,6 @@
 
 **预存问题**。
 
-## realtime-bridge ws.message listener 缺外层 try/catch
-
-**发现日期**：2026-05-02
-**关联**：realtime-bridge.js:730
-
-**问题**：阶段 1 把 listener 改 async 后，await 链路若抛异常会变成 unhandled promise rejection。当前内部已有局部 try/catch，sendTo 内部也有 try/catch，但其他分支如 `__stopLagProbe` 抛错没有兜底。
-
-**修复方向**：listener body 加外层 try/catch 兜底，或拆 helper 函数把 await 链都包起来。
-
-## chunkAndSend 是死代码
-
-**发现日期**：2026-05-02
-**关联**：dc-chunking.js:67 `chunkAndSend`
-
-**问题**：阶段 1 后生产路径已全部改走 `RpcDcSender`，`chunkAndSend` 仅 `dc-chunking.test.js` 还在用。可删除。
-
 **修复方向**：删除 `chunkAndSend` 导出 + 对应测试用例。低风险。
 
 ## sendTo 返回值语义微变（admission 通过即 true）
@@ -239,15 +223,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **影响**：file RPC 内部已执行完毕但 response 被 queue-full 或 teardown 静默丢，UI 端只能等超时。预存——阶段 1 之前 sendFn 同样不暴露 boolean。
 
 **修复方向**：sendFn 改返回 Promise<boolean>（或同步返回 enqueue 结果），file-manager handler 在 false 时打 `file.rpc.response-undeliverable` 日志或走重试。需斟酌签名变更对 file-manager 的影响。
-
-## device-identity.js 用 sync 裸 fs.writeFileSync（预存）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 C 阶段全局裸写扫描）
-**关联**：plugins/openclaw/src/device-identity.js:110, 134
-
-**问题**：`loadOrCreateDeviceIdentity` 的两处 `fs.writeFileSync(fp, ...)` 没有 atomic 保护，写入过程中崩溃会留下损坏的设备身份文件（含设备私钥）。下次启动 JSON.parse 失败 → regen 新身份 → 用户需要重新 enroll。
-
-**影响**：极小概率但后果严重——用户看到的是"设备掉线，需重新绑定"。auto-upgrade 已修了 async 路径，sync 路径还差一个。
 
 **修复方向**：在 `utils/atomic-write.js` 加一个 `atomicWriteFileSync`（write tmp + renameSync 模式），device-identity 两处替换。需评估 sync 上下文性能（设备身份初始化阶段无瓶颈）。
 
@@ -1142,24 +1117,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **对终端用户的部署形态（尚未实施）**：当前脚本只在 CoClaw 仓库内，不会随 npm plugin 安装自动应用。若上游迟迟不修，可考虑：(a) 在 plugin `postinstall` 钩子里跑该脚本（但触碰用户 OpenClaw 安装目录有侵入性、需明确告知）；(b) 写到 `docs/troubleshooting.md` 让遇到同类问题的用户自助；(c) 维持现状，仅作为维护者排查手段。当前选择 (c)。
 
-
----
-
-## `bindOk` / `unbindOk` 解构 undefined 会 crash（非 JSON 兜底路径）
-
-**发现日期**：2026-05-16（Phase B 去 wrap 改造 deep-review codex-rescue A 实例识别）
-**关联**：`plugins/openclaw/src/common/messages.js` `bindOk` / `unbindOk` + `plugins/openclaw/src/cli-registrar.js:117/182`
-
-**问题**：`callGatewayMethod` helper 走"非 JSON stdout 兜底"分支时返回 `{ ok: true }`（无 payload 字段），CLI registrar 拿到 `result.payload === undefined`，直接传给 `bindOk({ clawId, rebound, previousClawId })` / `unbindOk({ clawId })` 解构会抛 `TypeError: Cannot destructure property 'clawId' of 'undefined'`。
-
-正常生产路径下 `openclaw gateway call --json` stdout 必是 JSON，这条兜底分支几乎不触发——但理论上 handler 调试 `console.log` 误打到 stdout 或上游 CLI 输出格式变化时可能命中。
-
-**预存性**：本次改造（status→payload 字段名）没引入新风险——旧代码 `result.status` 在同条路径下也是 undefined，crash 行为一致。
-
-**修复方向**：
-
-- 选项 A：CLI registrar 在调 `bindOk` / `unbindOk` 前加 payload 守卫，undefined 时降级输出（如 `OK. (no details)`）
-- 选项 B：`bindOk` / `unbindOk` 自身把入参从解构改为对象属性访问（`data?.clawId`），容忍 undefined
 
 ---
 

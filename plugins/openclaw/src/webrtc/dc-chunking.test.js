@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	buildChunks,
-	chunkAndSend,
 	createReassembler,
 	FLAG_BEGIN,
 	FLAG_MIDDLE,
@@ -11,6 +10,16 @@ import {
 	MAX_REASSEMBLY_BYTES,
 	MAX_CHUNKS_PER_MSG,
 } from './dc-chunking.js';
+
+// 测试用：组合 buildChunks + dc.send 做端到端验证（生产路径走 MemoryQueue + RpcDcSender）
+function sendChunked(dc, jsonStr, maxMessageSize, getNextMsgId) {
+	const chunks = buildChunks(jsonStr, maxMessageSize, getNextMsgId);
+	if (!chunks) {
+		dc.send(jsonStr);
+		return;
+	}
+	for (const chunk of chunks) dc.send(chunk);
+}
 
 // --- helpers ---
 
@@ -32,105 +41,6 @@ function silentLogger() {
 		debug() {},
 	};
 }
-
-let globalMsgId = 0;
-function nextMsgId() { return ++globalMsgId; }
-
-// --- chunkAndSend ---
-
-test('chunkAndSend: 小消息不分片，直接 send string', () => {
-	const dc = mockDc();
-	chunkAndSend(dc, '{"ok":true}', 100, nextMsgId);
-	assert.equal(dc.sent.length, 1);
-	assert.equal(typeof dc.sent[0], 'string');
-	assert.equal(dc.sent[0], '{"ok":true}');
-});
-
-test('chunkAndSend: 恰好等于 maxMessageSize 不分片', () => {
-	const dc = mockDc();
-	const msg = 'x'.repeat(50);
-	const byteLen = Buffer.byteLength(msg, 'utf8');
-	chunkAndSend(dc, msg, byteLen, nextMsgId);
-	assert.equal(dc.sent.length, 1);
-	assert.equal(typeof dc.sent[0], 'string');
-});
-
-test('chunkAndSend: 超过 maxMessageSize 分片为 2 个 chunk', () => {
-	const dc = mockDc();
-	// maxMessageSize=30, HEADER_SIZE=5, chunkPayloadSize=25
-	// 消息 31 字节 → ceil(31/25) = 2 chunks
-	const msg = 'a'.repeat(31);
-	let id = 0;
-	chunkAndSend(dc, msg, 30, () => ++id);
-
-	assert.equal(dc.sent.length, 2);
-	assert.ok(Buffer.isBuffer(dc.sent[0]));
-	assert.ok(Buffer.isBuffer(dc.sent[1]));
-
-	// 首块 flag=BEGIN
-	assert.equal(dc.sent[0][0], FLAG_BEGIN);
-	// 末块 flag=END
-	assert.equal(dc.sent[1][0], FLAG_END);
-
-	// 两块 msgId 相同
-	const msgId1 = dc.sent[0].readUInt32BE(1);
-	const msgId2 = dc.sent[1].readUInt32BE(1);
-	assert.equal(msgId1, msgId2);
-	assert.equal(msgId1, 1);
-});
-
-test('chunkAndSend: 大消息产生正确数量的 chunk，每个 ≤ maxMessageSize', () => {
-	const dc = mockDc();
-	const msg = JSON.stringify({ data: 'x'.repeat(500) });
-	const maxSize = 100;
-	let id = 0;
-	chunkAndSend(dc, msg, maxSize, () => ++id);
-
-	assert.ok(dc.sent.length > 1);
-	for (const chunk of dc.sent) {
-		assert.ok(Buffer.isBuffer(chunk));
-		assert.ok(chunk.length <= maxSize, `chunk size ${chunk.length} exceeds ${maxSize}`);
-	}
-
-	// 验证首/中/末 flag
-	assert.equal(dc.sent[0][0], FLAG_BEGIN);
-	assert.equal(dc.sent[dc.sent.length - 1][0], FLAG_END);
-	for (let i = 1; i < dc.sent.length - 1; i++) {
-		assert.equal(dc.sent[i][0], FLAG_MIDDLE);
-	}
-});
-
-test('chunkAndSend: msgId 正确写入 uint32 BE', () => {
-	const dc = mockDc();
-	const msg = 'y'.repeat(50);
-	chunkAndSend(dc, msg, 30, () => 42);
-	assert.equal(dc.sent[0].readUInt32BE(1), 42);
-});
-
-test('chunkAndSend: 多字节 UTF-8 字符（中文）正确分片', () => {
-	const dc = mockDc();
-	// 每个中文字符 3 字节 UTF-8
-	const msg = '你好世界测试分片重组功能';
-	const byteLen = Buffer.byteLength(msg, 'utf8');
-	assert.ok(byteLen > msg.length); // 确认多字节
-
-	let id = 0;
-	chunkAndSend(dc, msg, 20, () => ++id);
-	assert.ok(dc.sent.length > 1);
-
-	// 拼合所有 chunk 数据，解码后应等于原消息
-	const payloads = dc.sent.map((buf) => buf.subarray(HEADER_SIZE));
-	const merged = Buffer.concat(payloads);
-	assert.equal(merged.toString('utf8'), msg);
-});
-
-test('chunkAndSend: maxMessageSize 太小抛异常', () => {
-	const dc = mockDc();
-	assert.throws(
-		() => chunkAndSend(dc, 'x'.repeat(10), HEADER_SIZE, nextMsgId),
-		/too small/,
-	);
-});
 
 // --- createReassembler ---
 
@@ -437,13 +347,13 @@ test('createReassembler: MIDDLE/END 对未知 msgId 被忽略', () => {
 	assert.ok(logger.warnings.some((w) => w.includes('unknown msgId')));
 });
 
-// --- 集成测试：chunkAndSend + createReassembler ---
+// --- 集成测试：buildChunks + createReassembler ---
 
-test('集成: chunkAndSend 分片 → createReassembler 重组 → 结果一致', () => {
+test('集成: 分片 → 重组 → 结果一致', () => {
 	const dc = mockDc();
 	const original = JSON.stringify({ type: 'res', data: 'x'.repeat(500), nested: { arr: [1, 2, 3] } });
 	let id = 0;
-	chunkAndSend(dc, original, 100, () => ++id);
+	sendChunked(dc, original, 100, () => ++id);
 	assert.ok(dc.sent.length > 1);
 
 	const received = [];
@@ -464,7 +374,7 @@ test('集成: 多条消息连续发送/接收，全部正确重组', () => {
 	];
 	let id = 0;
 	for (const msg of messages) {
-		chunkAndSend(dc, msg, 80, () => ++id);
+		sendChunked(dc, msg, 80, () => ++id);
 	}
 
 	const received = [];
@@ -486,12 +396,12 @@ test('集成: 分片消息中夹杂不分片消息，全部正确交付', () => 
 	let id = 0;
 
 	// 先发大消息（会分片）
-	chunkAndSend(dc, large, 80, () => ++id);
+	sendChunked(dc, large, 80, () => ++id);
 	const chunkedItems = [...dc.sent];
 
 	// 再发小消息（不分片）
 	dc.sent.length = 0;
-	chunkAndSend(dc, small, 80, () => ++id);
+	sendChunked(dc, small, 80, () => ++id);
 	const smallItem = dc.sent[0];
 
 	// 模拟接收：chunk1, chunk2, small, chunk3(END)
