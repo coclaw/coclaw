@@ -3619,3 +3619,87 @@ describe('ChatPage chatMessages separator archivedAt fallback', () => {
 		expect(sep.archivedAt).toBe(1700000004000);
 	});
 });
+
+// __tryGenerateTitle 入口快照行为：chat 切换期间 sendMessage resolve 后，
+// 必须给原入口的 chat/topic 起标题，不能漂移到当前 this.chatStore（可能是另一个 chat）。
+describe('ChatPage __tryGenerateTitle entry snapshot', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		chatStoreManager.__reset();
+	});
+
+	function makeFakeTopicStore({ topicMode = true, sessionId = 't1', clawId = 'bot-2', userMsgs = 1 } = {}) {
+		return {
+			topicMode,
+			sessionId,
+			clawId,
+			messages: Array.from({ length: userMsgs }, (_, i) => ({
+				message: { role: 'user', content: `m${i}` },
+			})),
+		};
+	}
+
+	test('默认无参时用 this.chatStore 起标题（旧行为不破坏）', async () => {
+		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-1' });
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const topicsStore = useTopicsStore();
+		topicsStore.byId = { 'sess-1': { topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, clawId: 'bot-2' } };
+		const genSpy = vi.spyOn(topicsStore, 'generateTitle').mockImplementation(() => {});
+		// 给 chatStore 装上 topic-mode 字段
+		const cs = getChatStore('bot-2', 'main');
+		cs.topicMode = true;
+		cs.sessionId = 'sess-1';
+		cs.clawId = 'bot-2';
+		cs.messages = [{ message: { role: 'user', content: 'hi' } }];
+		await wrapper.vm.$nextTick();
+		// 让 ChatPage 的 chatStore computed 命中：要求路由 topics-chat 已设
+		wrapper.vm.__tryGenerateTitle();
+		expect(genSpy).toHaveBeenCalledWith('bot-2', 'sess-1');
+	});
+
+	test('传 targetStore 时用 targetStore.clawId/sessionId（不受 this.chatStore 影响）', async () => {
+		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-A' });
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const topicsStore = useTopicsStore();
+		topicsStore.byId = {
+			'sess-A': { topicId: 'sess-A', agentId: 'main', title: null, createdAt: 100, clawId: 'bot-A' },
+			'sess-B': { topicId: 'sess-B', agentId: 'main', title: null, createdAt: 200, clawId: 'bot-B' },
+		};
+		const genSpy = vi.spyOn(topicsStore, 'generateTitle').mockImplementation(() => {});
+		// 当前 chatStore 是 sess-A，但 targetStore 传入 sess-B
+		const csA = getChatStore('bot-A', 'main');
+		csA.topicMode = true;
+		csA.sessionId = 'sess-A';
+		csA.clawId = 'bot-A';
+		csA.messages = [{ message: { role: 'user', content: 'a' } }];
+		await wrapper.vm.$nextTick();
+		const targetB = makeFakeTopicStore({ topicMode: true, sessionId: 'sess-B', clawId: 'bot-B', userMsgs: 1 });
+		wrapper.vm.__tryGenerateTitle(targetB);
+		expect(genSpy).toHaveBeenCalledTimes(1);
+		expect(genSpy).toHaveBeenCalledWith('bot-B', 'sess-B'); // 不是 bot-A/sess-A
+	});
+
+	test('targetStore.topicMode=false 时不起标题（防误打入非 topic chat）', async () => {
+		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-1' });
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const topicsStore = useTopicsStore();
+		topicsStore.byId = { 'sess-1': { topicId: 'sess-1', agentId: 'main', title: null, createdAt: 100, clawId: 'bot-2' } };
+		const genSpy = vi.spyOn(topicsStore, 'generateTitle').mockImplementation(() => {});
+		await wrapper.vm.$nextTick();
+		const targetNonTopic = makeFakeTopicStore({ topicMode: false });
+		wrapper.vm.__tryGenerateTitle(targetNonTopic);
+		expect(genSpy).not.toHaveBeenCalled();
+	});
+
+	test('targetStore topic 已有 title 时跳过', async () => {
+		const wrapper = createWrapper({ routeName: 'topics-chat', sessionId: 'sess-1' });
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const topicsStore = useTopicsStore();
+		topicsStore.byId = { 'sess-X': { topicId: 'sess-X', agentId: 'main', title: 'Existing title', createdAt: 100, clawId: 'bot-X' } };
+		const genSpy = vi.spyOn(topicsStore, 'generateTitle').mockImplementation(() => {});
+		await wrapper.vm.$nextTick();
+		const target = makeFakeTopicStore({ topicMode: true, sessionId: 'sess-X', clawId: 'bot-X', userMsgs: 1 });
+		wrapper.vm.__tryGenerateTitle(target);
+		expect(genSpy).not.toHaveBeenCalled();
+	});
+});

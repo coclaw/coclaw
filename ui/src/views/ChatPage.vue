@@ -739,7 +739,7 @@ export default {
 				}
 				else {
 					this.__notifyRunFailed(result);
-					this.__tryGenerateTitle();
+					this.__tryGenerateTitle(targetStore);
 				}
 			}
 			catch (err) {
@@ -846,7 +846,7 @@ export default {
 				}
 				else {
 					this.__notifyRunFailed(result);
-					this.__tryGenerateTitle();
+					this.__tryGenerateTitle(targetStore);
 				}
 			}
 			catch (err) {
@@ -862,15 +862,20 @@ export default {
 			}
 		},
 
-		/** 前 N 条 user message 内，若 topic 尚无标题则尝试自动生成 */
-		__tryGenerateTitle() {
-			if (!this.isTopicRoute || !this.chatStore?.topicMode) return;
-			const topicId = this.chatStore.sessionId;
-			const clawId = this.chatStore.clawId;
+		/**
+		 * 前 N 条 user message 内，若 topic 尚无标题则尝试自动生成
+		 * @param {object} [targetStore] - 入口快照的 chat store；await 期间用户切走时仍给原 store 起标题，
+		 *                                 不漂移到当前 this.chatStore（可能已是别的 chat / topic）。
+		 *                                 默认 this.chatStore 保持非 sendMessage 路径的旧行为
+		 */
+		__tryGenerateTitle(targetStore = this.chatStore) {
+			if (!targetStore?.topicMode) return;
+			const topicId = targetStore.sessionId;
+			const clawId = targetStore.clawId;
 			if (!topicId || !clawId) return;
 			const topic = this.topicsStore.findTopic(topicId);
 			if (topic?.title) return;
-			const userMsgCount = this.chatStore.messages.filter(
+			const userMsgCount = targetStore.messages.filter(
 				m => m.message?.role === 'user' && !m._local
 			).length;
 			if (userMsgCount > MAX_AUTO_TITLE_MSGS) return;
