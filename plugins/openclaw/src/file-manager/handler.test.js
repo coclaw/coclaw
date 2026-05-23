@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
 
@@ -81,6 +82,37 @@ async function waitFor(predicate, { timeoutMs = 1000, pollMs = 1, label = '' } =
 		}
 		await new Promise((r) => setTimeout(r, pollMs));
 	}
+}
+
+// 包装 fs.createWriteStream，暴露 open 事件 + 当前 bytesWritten + ws 句柄。
+// 用于替代"sleep 一会等 ws 真正打开/数据写到底"那类固定时延：测试可
+// await tracked.opened() 拿到 fd-open 信号，或 waitFor(() => tracked.bytesWritten >= N)
+// 等到字节真正落盘。createWriteStream 走 deps 注入，handler.js 已经预留 hook
+function trackedCreateWriteStream() {
+	let resolveOpen;
+	const openedPromise = new Promise((r) => { resolveOpen = r; });
+	let ws = null;
+	const createWriteStream = (path, opts) => {
+		ws = fsSync.createWriteStream(path, opts);
+		ws.on('open', () => resolveOpen());
+		return ws;
+	};
+	return {
+		createWriteStream,
+		opened: () => openedPromise,
+		get bytesWritten() { return ws?.bytesWritten ?? 0; },
+		get stream() { return ws; },
+	};
+}
+
+// 等到指定目录下没有 .tmp.* 文件残留——多个上传错误路径以
+// safeUnlink(tmpPath)（fire-and-forget）结尾，没有事件式信号，
+// 只能轮询确认 fs 已收尾
+async function waitForNoTmpFiles(dir, opts = {}) {
+	await waitFor(async () => {
+		const files = await fs.readdir(dir);
+		return !files.some((f) => f.includes('.tmp.'));
+	}, { label: 'tmp file cleanup', ...opts });
 }
 
 // --- validatePath ---
@@ -1158,27 +1190,25 @@ test('handleFileChannel PUT: 接收字节数超限 → SIZE_EXCEEDED', async () 
 test('handleFileChannel PUT: DC 取消（未收到 done）→ 清理临时文件', async () => {
 	const dir = await makeTmpDir();
 	try {
+		const tracked = trackedCreateWriteStream();
 		const handler = createFileHandler({
 			resolveWorkspace: async () => dir,
 			logger: silentLogger(),
+			deps: { createWriteStream: tracked.createWriteStream },
 		});
 		const dc = createMockDC('file:cancel-test');
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'cancel.txt', size: 100 }) });
-		// 等 ws.open 完成（不仅是 ready ack），否则 chunk dispatch 与 ws 打开的竞态
-		// 会让最终的 safeUnlink 无法稳定清理掉刚被创建出来的 tmp 文件
-		await new Promise((r) => setTimeout(r, 50));
+		// 等 ws.open 真正完成（fd 打开 → tmp 文件已存在），否则 chunk dispatch 与
+		// ws 打开的竞态会让 safeUnlink 跑在文件创建之前
+		await tracked.opened();
 
 		dc.onmessage({ data: Buffer.from('partial') });
 		// 不发 done，直接关闭 DC
 		dc.close();
-		// safeUnlink 是 fire-and-forget，需给磁盘清理留点时间
-		await new Promise((r) => setTimeout(r, 200));
-
-		// 确认临时文件被清理
-		const files = await fs.readdir(dir);
-		assert.ok(!files.some((f) => f.includes('.tmp.')));
+		// safeUnlink 是 fire-and-forget，轮询确认磁盘清理收尾
+		await waitForNoTmpFiles(dir);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -1251,9 +1281,11 @@ test('handleFileChannel PUT: createWriteStream 失败', async () => {
 test('handleFileChannel PUT: 就绪信号发送失败时清理', async () => {
 	const dir = await makeTmpDir();
 	try {
+		const tracked = trackedCreateWriteStream();
 		const handler = createFileHandler({
 			resolveWorkspace: async () => dir,
 			logger: silentLogger(),
+			deps: { createWriteStream: tracked.createWriteStream },
 		});
 		const dc = createMockDC('file:ready-fail');
 		let sendCount = 0;
@@ -1264,12 +1296,11 @@ test('handleFileChannel PUT: 就绪信号发送失败时清理', async () => {
 		handler.handleFileChannel(dc);
 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'y.txt', size: 5 }) });
-		// 第一次 send 直接抛错，没有真正进入 __sent；ws 异步打开 + safeUnlink 需要时间
-		await new Promise((r) => setTimeout(r, 100));
-
-		// 确认临时文件被清理
-		const files = await fs.readdir(dir);
-		assert.ok(!files.some((f) => f.includes('.tmp.')));
+		// 第一次 send 直接抛错；handler 注册 ws.on('close', safeUnlink) 后 ws.destroy()。
+		// ws.destroy 早于 fs.open 完成时，open 会失败 → ws 'close' 事件触发 safeUnlink。
+		// 等 ws.closed=true（destroy 收尾）+ tmp 清理完成，避免 fs.rm 早于 ws.open 抢跑
+		await waitFor(() => tracked.stream?.closed === true, { label: 'ws.closed after destroy' });
+		await waitForNoTmpFiles(dir);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -1399,11 +1430,8 @@ test('handleFileChannel PUT: DC 在 ws.end 回调期间已关闭', async () => {
 		dc.readyState = 'closed';
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: 5 }) });
 		dc.onclose?.();
-		await new Promise((r) => setTimeout(r, 200));
-
-		// 不应崩溃；临时文件应被清理
-		const files = await fs.readdir(dir);
-		assert.ok(!files.some((f) => f.includes('.tmp.')));
+		// finishUpload 检测 dcClosed=true → safeUnlink，全程 fire-and-forget，轮询确认
+		await waitForNoTmpFiles(dir);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -1508,7 +1536,11 @@ test('handleFileChannel: 初始 binary 消息被忽略（等待请求 string）'
 
 	// 发送 binary 应被忽略
 	dc.onmessage({ data: Buffer.from('binary data') });
-	await new Promise((r) => setTimeout(r, 50));
+	// 负向断言："不应送出任何东西"。handler 对 binary-before-request 的处理是
+	// 同步 noop（没有走任何 await / queueMicrotask / setImmediate 链），微任务
+	// flush 一轮就能放过所有理论可能的同步后续工作；保留固定短 sleep 兜底（即使
+	// handler 后续演进引入了 setImmediate，20ms 也够冲过）
+	await new Promise((r) => setTimeout(r, 20));
 
 	// 没有发送任何响应
 	assert.equal(dc.__sent.length, 0);
@@ -1563,7 +1595,9 @@ test('scheduleTmpCleanup + cancelCleanup: 正常调度与取消', async () => {
 		return [];
 	});
 
-	// 取消后不应执行
+	// 取消后不应执行。负向断言"timer 永不 fire"——TMP_CLEANUP_DELAY_MS=2_000ms，
+	// 这里 100ms 远短于该延迟，足够确认 cancel 生效；没有"timer 已取消"事件可挂，
+	// 只能用固定短 sleep
 	handler.cancelCleanup();
 	await new Promise((r) => setTimeout(r, 100));
 	assert.equal(called, false);
@@ -1653,17 +1687,13 @@ test('handleFileChannel PUT: done 消息中无效 JSON 被忽略', async () => {
 
 		// 发 binary
 		dc.onmessage({ data: Buffer.from('hello') });
-		// 发无效 JSON string（不是 done）
+		// 发无效 JSON string（不是 done）。handler 的 onmessage 对 bad-json 直接 return，
+		// 没有产生新的 send / 状态变化——本步不需要额外等待
 		dc.onmessage({ data: 'not-json-at-all' });
-		await new Promise((r) => setTimeout(r, 50));
-
-		// 关闭 DC 触发取消
+		// 关闭 DC 触发取消 → dc.onclose 走 not-done 分支：ws.destroy + safeUnlink
 		dc.close();
-		await new Promise((r) => setTimeout(r, 100));
-
-		// 确认临时文件被清理
-		const files = await fs.readdir(dir);
-		assert.ok(!files.some((f) => f.includes('.tmp.')));
+		// safeUnlink 是 fire-and-forget，轮询确认 tmp 清理收尾
+		await waitForNoTmpFiles(dir);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -1700,6 +1730,7 @@ test('handleFileChannel PUT: rename 失败时记录警告并清理临时文件',
 test('handleFileChannel PUT: 结果发送失败不崩溃', async () => {
 	const dir = await makeTmpDir();
 	try {
+		resetRemoteLog();
 		const handler = createFileHandler({
 			resolveWorkspace: async () => dir,
 			logger: silentLogger(),
@@ -1715,7 +1746,7 @@ test('handleFileChannel PUT: 结果发送失败不崩溃', async () => {
 				throw new Error('DC closed'); // 结果发送失败
 			}
 		};
-		handler.handleFileChannel(dc);
+		handler.handleFileChannel(dc, 'c_sf');
 
 		const content = Buffer.from('abc');
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'sf.txt', size: content.length }) });
@@ -1723,7 +1754,10 @@ test('handleFileChannel PUT: 结果发送失败不崩溃', async () => {
 
 		dc.onmessage({ data: content });
 		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
-		await new Promise((r) => setTimeout(r, 200));
+		// rename 成功 + dc.send(result) 抛错被吞掉，最终 finishUpload 仍会落 file.up.ok 日志
+		// transferId 取自 dc.label 第二段，故 id=send-fail
+		await waitFor(() => remoteLogBuffer.some((e) => /file\.up\.ok/.test(e.text) && /id=send-fail/.test(e.text)),
+			{ label: 'file.up.ok logged despite send failure' });
 
 		// 不应崩溃
 	} finally {
@@ -1734,9 +1768,11 @@ test('handleFileChannel PUT: 结果发送失败不崩溃', async () => {
 test('handleFileChannel PUT: 超限发送后 DC close 不崩溃', async () => {
 	const dir = await makeTmpDir();
 	try {
+		const tracked = trackedCreateWriteStream();
 		const handler = createFileHandler({
 			resolveWorkspace: async () => dir,
 			logger: silentLogger(),
+			deps: { createWriteStream: tracked.createWriteStream },
 		});
 		const dc = createMockDC('file:exceed-close');
 		// send 和 close 抛出
@@ -1747,13 +1783,16 @@ test('handleFileChannel PUT: 超限发送后 DC close 不崩溃', async () => {
 		// 用注入的请求处理方式
 		const origOnMessage = dc.onmessage;
 		origOnMessage({ data: JSON.stringify({ method: 'PUT', path: 'x.txt', size: 5 }) });
-		await new Promise((r) => setTimeout(r, 50));
+		// 第一次 dc.send（ready ack）即抛错；handler 注册 ws.on('close', safeUnlink) 后
+		// 同步 ws.destroy()。destroy 抢在 fs.open 之前 → ws 不会 emit 'open'，但 'close'
+		// 一定会 emit。所以这里不能 await tracked.opened（会挂），而是等 ws.closed
 
-		// 发送超出声明的字节数
+		// 发送超出声明的字节数（这条早就进不到 size 检查——dc.onmessage 此时还是
+		// 初始 dispatcher，因为 ready ack 失败后 handler 已 return，未替换 onmessage）
 		origOnMessage({ data: Buffer.alloc(20, 'x') });
-		await new Promise((r) => setTimeout(r, 100));
-
-		// 不应崩溃
+		// 不应崩溃；等 ws.closed=true + tmp 清理完成
+		await waitFor(() => tracked.stream?.closed === true, { label: 'ws.closed after destroy' });
+		await waitForNoTmpFiles(dir);
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
@@ -2483,9 +2522,11 @@ test('handleFileChannel PUT: dc.onerror 中断上传并清理临时文件', asyn
 	const dir = await makeTmpDir();
 	try {
 		resetRemoteLog();
+		const tracked = trackedCreateWriteStream();
 		const handler = createFileHandler({
 			resolveWorkspace: async () => dir,
 			logger: silentLogger(),
+			deps: { createWriteStream: tracked.createWriteStream },
 		});
 		const dc = createMockDC('file:up-err');
 		handler.handleFileChannel(dc, 'c_up');
@@ -2496,8 +2537,9 @@ test('handleFileChannel PUT: dc.onerror 中断上传并清理临时文件', asyn
 
 		// 写入一些数据
 		dc.onmessage({ data: Buffer.alloc(256, 0x44) });
-		// 给 ws 异步打开 + drainLoop 写入留点时间，避免 dc.onerror 与 ws 打开竞态
-		await new Promise((r) => setTimeout(r, 20));
+		// 等 256 字节真的落到 ws（bytesWritten 增至 256），再触发 onerror——
+		// 否则 dc.onerror 与 ws 打开竞态，received=0/1024 会与断言里的 256/1024 不符
+		await waitFor(() => tracked.bytesWritten >= 256, { label: 'ws.bytesWritten >= 256' });
 
 		// 触发 pion 异步 send 错误
 		dc.onerror(new Error('io: closed pipe'));
