@@ -705,8 +705,17 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 		function finishUpload() {
 			if (finishing) return;
 			finishing = true;
-			ws.end(async () => {
+			ws.end(async (err) => {
 				const elapsed = Date.now() - startTime;
+				// ws 在 'finish' 之前被 destroy 时，Node Writable 会用 err 调 pending end cb
+				//（destroy(e) 用 e；destroy() 用 ERR_STREAM_DESTROYED）。任何 ws 中途夭折的
+				// 产线路径都已经在 ws.on('error') / dc.onclose / dc.onerror / drainLoop catch
+				// 里 attach 过清理 + 打过更具体的 fail log；这里只需兜底 attach 一次（idempotent）
+				// 防御未来路径漏挂，并跳过 rename / size 校验 / 成功响应
+				if (err) {
+					attachTmpCleanupOnce();
+					return;
+				}
 				if (dcClosed) {
 					safeUnlink(tmpPath);
 					remoteLog(`file.up.fail ${logTag}id=${transferId} reason=dc-closed-before-flush received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);

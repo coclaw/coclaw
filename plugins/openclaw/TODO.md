@@ -1,18 +1,5 @@
 # Plugin TODO
 
-## file-manager `finishUpload` ws.end callback 不接 err 参数
-
-**发现日期**：2026-05-24（doneReceived race fix deep-review 第 1 轮 codex-rescue 实例 A 提）
-**关联**：`plugins/openclaw/src/file-manager/handler.js` `finishUpload` line ~706 `ws.end(async () => { ... })`
-
-**问题**：Node 18 Writable 在 ws 被 destroy(err) 的路径中会把 pending end callback 以 err 参数调用（在 'finish' 路径外）。当前 cb 签名 `async () => {}` 忽略 err 参数，直接走 dcClosed / size-mismatch / rename 判断。
-
-**为什么不算 race fix 必须**：所有走到 cb 携带 err 的路径都先经 `sendError(dc, ...)` 让 `dcClosed=true`，cb 内第一条分支 `if (dcClosed)` 早返已经挡住 rename。故"rename 到失败文件"竞态不存在。但 cb 接 err 显式判断更稳——未来若 dcClosed 早返被改动，缺失 err 检查就是隐患。
-
-**修复方向**：cb 签名改为 `async (err) => { if (err) { /* 走 dc-closed-before-flush 分支或独立 stream-error 分支 */; return; }; ...}`，配套测试覆盖 ws.end cb 带 err 触发。
-
----
-
 ## file-manager rename 失败路径没断言孤儿清理
 
 **发现日期**：2026-05-24（doneReceived race fix deep-review 第 1 轮 codex-rescue 实例 C 提）

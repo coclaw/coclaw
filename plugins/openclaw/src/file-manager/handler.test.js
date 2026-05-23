@@ -1438,6 +1438,63 @@ test('handleFileChannel PUT: DC 在 ws.end 回调期间已关闭', async () => {
 	}
 });
 
+// ws.end(cb) 在 ws 被 destroy(err) 或 destroy() 路径上 cb 会带 err 参数（Node Writable 契约）。
+// 修前 finishUpload 的 cb 忽略 err，依赖产线路径都先 sendError → dcClosed=true 早返兜住。
+// 该测试用一个不会自发触发 sendError 的"裸 stream"直接喂 cb(err)，钉死契约：
+// cb 收到 err 时不得走 rename / size-mismatch / success 分支，也不得发响应。
+test('handleFileChannel PUT: ws.end cb 收到 err 时不走 rename / size 校验分支', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const renameCalls = [];
+		let endCb = null;
+		const fakeWs = new EventEmitter();
+		fakeWs.write = () => true;
+		fakeWs.end = (cb) => { endCb = cb; };
+		fakeWs.destroy = () => {};
+
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: () => fakeWs,
+				rename: async (...args) => { renameCalls.push(args); },
+			},
+		});
+		const dc = createMockDC('file:end-cb-err');
+		handler.handleFileChannel(dc);
+
+		const content = Buffer.from('hello');
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'a.txt', size: content.length }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+
+		dc.onmessage({ data: content });
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: content.length }) });
+
+		// 等 drainLoop 排空 + finishUpload 调到 ws.end
+		await waitFor(() => endCb !== null, { label: 'ws.end called' });
+
+		// 模拟 Node Writable 在 destroy(err) 路径调 cb 时带 err 参数。
+		// 不触发 ws 'error' / dc.onclose，以钉死"err 帧本身"的契约，而不是
+		// 借助现有 dcClosed 早返间接挡住 rename
+		endCb(new Error('induced ws-end err'));
+
+		// 让 finishUpload 的 async cb 跑完 microtask
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+
+		assert.equal(renameCalls.length, 0, 'rename must not be called when ws.end cb receives err');
+
+		// 只允许最初一条 ready ack（{ok:true}）；不得发 rename-failed / size-mismatch / success
+		const responses = dc.__sent
+			.filter((s) => typeof s === 'string')
+			.map((s) => JSON.parse(s));
+		assert.equal(responses.length, 1, `unexpected extra response: ${JSON.stringify(responses)}`);
+		assert.deepEqual(responses[0], { ok: true });
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 // --- handleFileChannel: 通用 ---
 
 test('handleFileChannel: 无效 JSON 请求', async () => {
