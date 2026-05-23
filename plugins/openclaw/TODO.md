@@ -1,5 +1,19 @@
 # Plugin TODO
 
+## pion HasPrefix 红线 doc 与 webrtc-peer 当前 denyPrefixes 不一致
+
+**发现日期**：2026-05-24（plugin-unpushed deep-review round 1，C 维度 codex-rescue 指出）
+
+**关联**：`docs/openclaw-research/pion-interface-filter-hasprefix.md` §"默认黑名单的设计原则" vs `plugins/openclaw/src/webrtc/webrtc-peer.js:618-619` `denyPrefixes: ['docker0']`
+
+**问题**：doc 写"**绝不内置接口名前缀的默认黑名单**" + "默认只开 IP CIDR 黑名单（举例 172.16.0.0/12）"，但代码当前实际是 `denyPrefixes:['docker0']` 单点前缀过滤，且没有 IP CIDR 配置。`docker0` 是 docker bridge 命名约定，HasPrefix 误杀风险远低于 doc 列的 `eth0` / `utun1` / `en` 等红线，但 doc 措辞过于绝对，与代码方案不一致。
+
+**为什么本期未一并修**：doc 是上游研究 prescriptive 建议，code 是 plugin 端过渡方案。两者各自合理，对齐方法是 doc 加一段 "CoClaw 本插件当前选择" 软化措辞，不是改代码。属文档措辞调整，与本次 review 主线无关。
+
+**修复方向**：在 `pion-interface-filter-hasprefix.md` "默认黑名单的设计原则" 章节末尾加一段："CoClaw plugin 当前选择：保留 `denyPrefixes:['docker0']` 单点接口前缀（docker bridge 命名约定下误杀风险低），IP CIDR 黑名单方案未来引入"。
+
+---
+
 ## `coclaw.model.set` primary 尾随空格不友好
 
 **发现日期**：2026-05-15（D1 deep-review 第二轮 opus subagent 识别）

@@ -71,6 +71,7 @@
 | `src/topic-manager/manager.js` | `this.__cache` 实例字段 | link-safe（已用磁盘中转） | manager 是 per-agentId lazy load + atomic write + `__cache.has` 兜底，跨实例 / 跨进程读都走磁盘。详见 CLAUDE.md "Hook / RPC 双实例陷阱" §应对。 |
 | `src/chat-history-manager/manager.js` | `this.__cache` 实例字段 | link-safe（已用磁盘中转） | 同上。 |
 | `src/session-manager/manager.js` | 无 | link-safe | 纯读 OpenClaw 自家文件，不缓存。 |
+| `index.js` | `let __pluginInitDone` | **link-UNSAFE** | `awaitPluginInit()` 返回的是当前模块实例的 init bundle；link 模式双 ESM 实例下，从另一份副本调入会拿到默认 `Promise.resolve()`（非真实 register 那次的 bundle）。当前唯一调用方是同一份模块内的 `index.test.js`，生产 gateway 不调，影响仅限测试。**register full 模式新增任何 fire-and-forget 副作用都必须合入 `__pluginInitDone`**（详见 CLAUDE.md "Service / register 副作用边界"）。 |
 
 ### Link-UNSAFE 的"硬约束"
 

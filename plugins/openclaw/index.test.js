@@ -537,6 +537,30 @@ async function setupSessionsHandlers({ throwOnResolve = false } = {}) {
 	return { handlers, sessionsDir, tmpStateDir };
 }
 
+// awaitPluginInit 契约钉死：register 前是默认 Promise.resolve()，full register 后
+// 应该被覆盖成 init bundle。若未来有人把 init bundle 改回不赋值（让 __pluginInitDone
+// 始终是默认），这条会挂——配合 CLAUDE.md "register 副作用合入 __pluginInitDone"
+// 硬约束，保护 setupSessionsHandlers ENOTEMPTY race 修复不被静默回退
+test('awaitPluginInit - default before register, fresh bundle after full register', async () => {
+	const before = awaitPluginInit();
+	// 默认 Promise.resolve() 在下一 microtask 必然 resolved
+	let beforeResolved = false;
+	before.then(() => { beforeResolved = true; });
+	await new Promise((r) => setImmediate(r));
+	assert.equal(beforeResolved, true, 'awaitPluginInit() before register should resolve immediately (default)');
+
+	const { tmpStateDir } = await setupSessionsHandlers();
+	try {
+		const after = awaitPluginInit();
+		assert.notEqual(after, before, 'awaitPluginInit() must return a fresh bundle after full register (not the default)');
+		// 新 bundle 必须能稳定 settle；setupSessionsHandlers 内部已 await 过一次，这里再 await 等价于 noop
+		await after;
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
 test('nativeui.sessions.listAll - 成功路径返回索引 + transcript 文件', async () => {
 	const { handlers, tmpStateDir } = await setupSessionsHandlers();
 	try {

@@ -64,6 +64,7 @@
 
 - `realtime-bridge` 和 `auto-upgrade` scheduler **必须通过 `api.registerService()` 注册**，**禁止在 `register()` 直接启动**。**Why:** `register()` 在 CLI 上下文（`plugins install/uninstall`）也会被调用，直启会创建 WebSocket / 定时器导致进程退不出。
 - `register()` 必须区分 `api.registrationMode`：`cli-metadata` 只 registerCli；其它非 `full` 模式（含 discovery，每 14s 一次）early return；只有 `full` 才能 `setRuntime` / 启 service / 注册 RPC。
+- register full 模式新增任何 **fire-and-forget 副作用**（不归 service 生命周期管的异步任务，如 manager `load()` / `reconcileAll()` 等）必须合入 `index.js` 顶部的 `__pluginInitDone = Promise.all([...])` bundle，并通过 `awaitPluginInit()` 导出。**Why:** 测试在 register 之后立即 `fs.rm` state 目录会撞上 init 的 `atomicWriteJsonFile` rename，触发 ENOTEMPTY；生产 gateway 不调 `awaitPluginInit()`，行为不变。**How to apply:** 加副作用时把 promise 加入 `Promise.all` 数组；模块边界与 link-safe 说明详见 [docs/module-boundaries.md](docs/module-boundaries.md) §B index.js 行。
 
 ### bind / unbind 共享层
 

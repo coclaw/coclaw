@@ -1767,6 +1767,65 @@ test('handleFileChannel PUT: cancel before fopen completes leaves no orphan', as
 	}
 });
 
+// race 回归测试：peer 在 ack 后同步发超大 chunk，SIZE_EXCEEDED 分支在 fopen
+// 完成前触发 ws.destroy + safeUnlink，与 cancel 路径同款 race —— 不修则
+// 孤儿 tmp 残留。覆盖 dc.onmessage 内 size-exceeded 分支
+test('handleFileChannel PUT: size-exceeded before fopen completes leaves no orphan', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const unlinkCalls = [];
+		const FOPEN_DELAY_MS = 30;
+		let fopenDoneResolve;
+		const fopenDonePromise = new Promise((r) => { fopenDoneResolve = r; });
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path) => {
+					const ws = new EventEmitter();
+					let destroyed = false;
+					let fopenDone = false;
+					setTimeout(() => {
+						fopenDone = true;
+						fsSync.writeFileSync(path, '');
+						if (destroyed) ws.emit('close');
+						fopenDoneResolve();
+					}, FOPEN_DELAY_MS);
+					ws.write = () => true;
+					ws.end = () => {};
+					ws.destroy = () => {
+						destroyed = true;
+						if (fopenDone) ws.emit('close');
+					};
+					Object.defineProperty(ws, 'destroyed', { get: () => destroyed });
+					Object.defineProperty(ws, 'bytesWritten', { get: () => 0 });
+					return ws;
+				},
+				unlink: async (p) => {
+					unlinkCalls.push({ path: p, existed: fsSync.existsSync(p) });
+					return fs.unlink(p);
+				},
+			},
+		});
+		const dc = createMockDC('file:race-size');
+		handler.handleFileChannel(dc);
+
+		// 声明 size=5，但下一帧立刻塞 10 字节 → SIZE_EXCEEDED 同步走 ws.destroy + unlink
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'z.txt', size: 5 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		dc.onmessage({ data: Buffer.from('1234567890') });
+
+		// 先等 fopen 把 tmp 落盘，否则 waitForNoTmpFiles 会因 dir 暂时为空立即返回
+		await fopenDonePromise;
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
+
+		assert.ok(unlinkCalls.length >= 1, 'safeUnlink should fire at least once');
+		assert.ok(unlinkCalls.some((c) => c.existed), 'safeUnlink should target an existing tmp file (post-fopen)');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('handleFileChannel PUT: rename 失败时记录警告并清理临时文件', async () => {
 	const dir = await makeTmpDir();
 	try {
