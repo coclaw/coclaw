@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import { after, test } from 'node:test';
 
-import plugin, { __resetPluginVersion } from './index.js';
+import plugin, { __resetPluginVersion, awaitPluginInit } from './index.js';
 import { createMockServer } from './src/mock-server.helper.js';
 import { setRuntime, getRuntime } from './src/runtime.js';
 import { stopRealtimeBridge } from './src/realtime-bridge.js';
@@ -531,6 +531,9 @@ async function setupSessionsHandlers({ throwOnResolve = false } = {}) {
 			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
 		},
 	}));
+	// 等 register() 启动的 topic / chat-history fire-and-forget init 收尾，
+	// 否则 finally 的 fs.rm 与 reconcileAll 的 atomicWriteJsonFile 撞 → ENOTEMPTY
+	await awaitPluginInit();
 	return { handlers, sessionsDir, tmpStateDir };
 }
 

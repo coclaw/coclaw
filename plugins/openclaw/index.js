@@ -23,6 +23,15 @@ import { registerModelDefaultHandlers } from './src/model-default/index.js';
 import { getPluginVersion, __resetPluginVersion } from './src/plugin-version.js';
 export { getPluginVersion, __resetPluginVersion };
 
+// 收纳 register() 在 full 模式启动的 fire-and-forget 初始化任务（topic / chat-history
+// load + reconcile）的完成信号。默认 Promise.resolve() 让 awaitPluginInit() 在 register
+// 未跑或非 full 模式时立即返回。每次 full register 都重置——多次 register 互不串扰。
+let __pluginInitDone = Promise.resolve();
+
+export function awaitPluginInit() {
+	return __pluginInitDone;
+}
+
 // 侧门注册表观测：patch OpenClaw embeddedRunState.activeRuns 的 set/delete，
 // 用于跟踪 sessionId 何时注册/注销（agent 取消流程实际读取的就是这张表）。
 // OpenClaw 侧门形状变化时（缺失 / 抛异常），通过 remoteLog 上报为升级契约变更的早期信号。
@@ -171,16 +180,19 @@ const plugin = {
 		const topicManager = new TopicManager({ logger });
 		const chatHistoryManager = new ChatHistoryManager({ logger });
 
-		// 懒加载 topic / chat history 数据（best-effort，不阻断注册）
-		topicManager.load('main').catch((err) => {
+		// 懒加载 topic / chat history 数据（best-effort，不阻断注册）。
+		// 两条 promise 收成一个 bundle 挂到 __pluginInitDone，让测试 / 关心 done 时机的
+		// caller 通过 awaitPluginInit() 显式等待——生产 gateway 不调即原 fire-and-forget 语义
+		const topicLoadP = topicManager.load('main').catch((err) => {
 			logger.warn?.(`[coclaw] topic manager load failed: ${String(err?.message ?? err)}`);
 		});
-		chatHistoryManager.load('main')
+		const chatHistoryLoadP = chatHistoryManager.load('main')
 			.then(() => manager.listAllEntries('main'))
 			.then((entries) => chatHistoryManager.reconcileAll('main', entries))
 			.catch((err) => {
 				logger.warn?.(`[coclaw] chat history manager load/reconcile failed: ${String(err?.message ?? err)}`);
 			});
+		__pluginInitDone = Promise.all([topicLoadP, chatHistoryLoadP]);
 
 		// 追踪 chat 因 reset 产生的 session 流水。双源回调（hook + sessions.changed）共用 helper。
 		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。
