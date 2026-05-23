@@ -70,23 +70,37 @@ test('listAll/get should normalize bad inputs and missing dirs', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
 	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 
+	// 全量字段核对 1：空白 agentId / 负 limit / 负 cursor 全部被规范化
 	const list = await manager.listAll({
 		agentId: ' ',
 		limit: -10,
 		cursor: -1,
 	});
-	assert.equal(list.agentId, 'main');
+	assert.equal(list.agentId, 'main', 'agentId 空白应规范为 main');
 	assert.equal(list.total, 0);
+	assert.equal(list.cursor, '0', 'cursor 负数应被钳到 0 并返回字符串');
 	assert.equal(list.nextCursor, null);
+	assert.deepStrictEqual(list.items, [], '空目录 items 应为空数组');
 
 	await fs.mkdir(nodePath.join(root, 'a1', 'sessions'), { recursive: true });
 	await fs.writeFile(nodePath.join(root, 'a1', 'sessions', 's1.jsonl'), '{"x":1}\n', 'utf8');
+	// 全量字段核对 2：超大 limit 被钳到上限（200），单条数据应一次性返回完
 	const list2 = await manager.listAll({ agentId: 'a1', limit: 9999, cursor: 0 });
+	assert.equal(list2.agentId, 'a1');
+	assert.equal(list2.total, 1);
 	assert.equal(list2.items.length, 1);
+	assert.equal(list2.items[0].sessionId, 's1');
+	assert.equal(list2.cursor, '0');
+	assert.equal(list2.nextCursor, null, 'limit 被钳到 200 仍 > 总数 → 无下一页');
 
+	// 全量字段核对 3：limit=0 被钳到下限 1，cursor 越界返回字符串原值，messages 应为空
 	const get1 = await manager.get({ agentId: 'a1', sessionId: 's1', limit: 0, cursor: 9999 });
-	assert.equal(get1.messages.length, 0);
+	assert.equal(get1.agentId, 'a1');
+	assert.equal(get1.sessionId, 's1');
+	assert.equal(get1.total, 1, 'total 应反映 transcript 实际行数（未受 cursor/limit 影响）');
+	assert.equal(get1.cursor, '9999', 'cursor 在合法范围内透传，并字符串化');
 	assert.equal(get1.nextCursor, null);
+	assert.deepStrictEqual(get1.messages, []);
 });
 
 test('listAll should include indexed sessions without transcript files', async () => {
@@ -204,8 +218,13 @@ test('getById - limit 限制返回最后 N 条', async () => {
 	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
 	const res = await manager.getById({ sessionId: 'g2', limit: 3 });
 	assert.equal(res.messages.length, 3);
-	// 取最后 3 条，返回完整行
+	// 全量内容核对：取最后 3 条，逐条断言字段（捕获 slice(-N) → slice(0,N) 类 mutation）
+	assert.equal(res.messages[0].type, 'message');
+	assert.equal(res.messages[0].message.role, 'user');
 	assert.equal(res.messages[0].message.content, 'msg-7');
+	assert.equal(res.messages[1].type, 'message');
+	assert.equal(res.messages[1].message.content, 'msg-8', '中间位置 msg-8 必须存在，防止 slice 起点偏移');
+	assert.equal(res.messages[2].type, 'message');
 	assert.equal(res.messages[2].message.content, 'msg-9');
 });
 
@@ -740,6 +759,145 @@ test('listAllEntries: sessions.json 内容损坏（非合法 JSON）→ 返回 [
 		logger: { warn() {} },
 	});
 	assert.deepEqual(await manager.listAllEntries('main'), []);
+});
+
+// --- c8 ignore 削减：DI 与默认参数覆盖 ---
+
+test('createSessionManager - 不传 logger 时默认走 console（覆盖 logger ?? console 兜底）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-defl-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 写一行坏 json 让 get 内部走 logger.warn 路径
+	await fs.writeFile(nodePath.join(sessionsDir, 'g.jsonl'), '{"type":"message","message":{"role":"user","content":"ok"}}\nNOT-JSON\n', 'utf8');
+	const origWarn = console.warn;
+	const seen = [];
+	console.warn = (...a) => { seen.push(a.map(String).join(' ')); };
+	try {
+		const mgr = createSessionManager({
+			resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+			resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+			resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+			// 故意不传 logger
+		});
+		const res = await mgr.get({ sessionId: 'g' });
+		assert.equal(res.total, 1, 'bad json 行被跳过、合法行计数');
+		assert.ok(seen.some((m) => m.includes('bad json line skipped')), '应通过默认 console.warn 报告坏行');
+	}
+	finally {
+		console.warn = origWarn;
+	}
+});
+
+test('listAllEntries - 不传 agentId 时默认 main（覆盖默认参数）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-defaid-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({ 'agent:main:main': { sessionId: 'sid-main' } }),
+		'utf8',
+	);
+	const mgr = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	// 调用方不传 agentId → 默认走 main
+	const entries = await mgr.listAllEntries();
+	assert.deepEqual(entries, [{ sessionKey: 'agent:main:main', sessionId: 'sid-main' }]);
+});
+
+test('listAll - sessions.json 内容为合法 JSON 但非 object（如数字 42）→ 空索引兜底', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-nonobj-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 合法 JSON 但是数字字面量；readJsonSafe 不会抛、readIndex 内的 typeof !== 'object' 兜底返 {}
+	await fs.writeFile(nodePath.join(sessionsDir, 'sessions.json'), '42', 'utf8');
+	await fs.writeFile(nodePath.join(sessionsDir, 'a.jsonl'), '{"x":1}\n', 'utf8');
+	const mgr = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	const res = await mgr.listAll({});
+	// 索引兜底为 {} → indexed=false；但目录扫描仍工作
+	assert.equal(res.total, 1);
+	assert.equal(res.items[0].sessionId, 'a');
+	assert.equal(res.items[0].indexed, false);
+});
+
+test('listAll - sessions.json 中无 transcript 的 entry 缺 updatedAt → updatedAt 兜底为 0', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-noupd-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 索引中有 entry 但无 transcript 文件，且 entry 不含 updatedAt
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({
+			'agent:main:noupd': { sessionId: 'no-upd' },
+			'agent:main:bad-sid': { /* 缺 sessionId */ },
+		}),
+		'utf8',
+	);
+	const mgr = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	const res = await mgr.listAll({});
+	assert.equal(res.total, 1, '缺 sessionId 的 entry 被防御性跳过，仅留 noupd');
+	const item = res.items.find((it) => it.sessionId === 'no-upd');
+	assert.ok(item);
+	assert.equal(item.updatedAt, 0, '缺 updatedAt 时回落 0');
+	assert.equal(item.fileName, null);
+	assert.equal(item.indexed, true);
+});
+
+test('get - logger 缺 warn 方法时坏 json 行不致命（可选链兜底）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-nowarn-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(nodePath.join(sessionsDir, 'g.jsonl'), '{"type":"message"}\nBAD\n', 'utf8');
+	// logger 不含 warn 方法 —— 验证 logger.warn?. 可选链不抛
+	const mgr = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: {},
+	});
+	const res = await mgr.get({ sessionId: 'g' });
+	assert.equal(res.total, 1);
+	// getById 同源代码路径同样测一遍
+	const r2 = await mgr.getById({ sessionId: 'g' });
+	assert.deepEqual(r2, { messages: [] }, 'getById 行只取 type==="message" 且有 role 的，全部坏行 → 空');
+});
+
+test('get - 分页 nextCursor 在剩余条目时返回字符串（覆盖 ternary 非 null 分支）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-cursor-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	const lines = [];
+	for (let i = 0; i < 5; i++) {
+		lines.push(`{"type":"message","message":{"role":"user","content":"m-${i}"}}`);
+	}
+	await fs.writeFile(nodePath.join(sessionsDir, 'p.jsonl'), lines.join('\n') + '\n', 'utf8');
+	const mgr = createSessionManager({
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	const res = await mgr.get({ sessionId: 'p', limit: 2, cursor: 0 });
+	assert.equal(res.total, 5);
+	assert.equal(res.messages.length, 2);
+	assert.equal(res.nextCursor, '2', 'cursor+limit 仍 < total → nextCursor 字符串化');
+	// 走到末尾：nextCursor 应回 null
+	const res2 = await mgr.get({ sessionId: 'p', limit: 2, cursor: 4 });
+	assert.equal(res2.messages.length, 1);
+	assert.equal(res2.nextCursor, null);
 });
 
 test('listAllEntries: sessionKey 为空字符串的异常行被跳过', async () => {

@@ -503,6 +503,216 @@ test('gateway methods respond and catch errors', async () => {
 	assert.equal(invalidOut.error?.message, 'topicId required');
 });
 
+// --- sessions RPC handlers 专属用例：成功 / 参数缺失 / manager 抛错 ---
+
+// 构造一个真实 sessions 目录 + handler 调用工具：返回 handlers Map 与 cleanup
+async function setupSessionsHandlers({ throwOnResolve = false } = {}) {
+	const tmpStateDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'sessions-rpc-'));
+	const sessionsDir = nodePath.join(tmpStateDir, 'agents', 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sessions.json'),
+		JSON.stringify({ 'agent:main:main': { sessionId: 'sid-a' } }),
+		'utf8',
+	);
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'sid-a.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"hello"}}\n',
+		'utf8',
+	);
+	const handlers = new Map();
+	const resolveStateDir = throwOnResolve
+		? () => { const e = new Error('resolveStateDir blew up'); e.code = 'TEST_BLEW_UP'; throw e; }
+		: () => tmpStateDir;
+	plugin.register(createMockApi(handlers, {
+		runtime: {
+			state: { resolveStateDir },
+			config: { loadConfig: () => ({}) },
+			agent: { resolveAgentWorkspaceDir: () => '/tmp/mock' },
+		},
+	}));
+	return { handlers, sessionsDir, tmpStateDir };
+}
+
+test('nativeui.sessions.listAll - 成功路径返回索引 + transcript 文件', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers();
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.listAll')({
+			params: { agentId: 'main' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		assert.equal(out.payload.agentId, 'main');
+		assert.equal(out.payload.total, 1);
+		assert.equal(out.payload.items[0].sessionId, 'sid-a');
+		assert.equal(out.payload.items[0].indexed, true);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('nativeui.sessions.listAll - 不传 agentId 时默认 main（参数缺失 graceful）', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers();
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.listAll')({
+			params: {},
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		assert.equal(out.payload.agentId, 'main');
+		assert.equal(out.payload.total, 1);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('nativeui.sessions.listAll - manager 抛错 → INTERNAL_ERROR', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers({ throwOnResolve: true });
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.listAll')({
+			params: { agentId: 'main' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.payload, undefined);
+		// resolveStateDir throws → err.code='TEST_BLEW_UP' 透传；缺 code 才默认 INTERNAL_ERROR
+		assert.equal(out.error?.code, 'TEST_BLEW_UP');
+		assert.match(String(out.error?.message), /blew up/);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('nativeui.sessions.get - 成功路径返回 transcript 行', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers();
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.get')({
+			params: { agentId: 'main', sessionId: 'sid-a' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		assert.equal(out.payload.sessionId, 'sid-a');
+		assert.equal(out.payload.total, 1);
+		assert.equal(out.payload.messages[0].message.content, 'hello');
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('nativeui.sessions.get - 缺 sessionId → INVALID_INPUT', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers();
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.get')({
+			params: { agentId: 'main' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.error?.code, 'INVALID_INPUT');
+		assert.equal(out.error?.message, 'sessionId required');
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('nativeui.sessions.get - manager 抛错 → 错误码透传', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers({ throwOnResolve: true });
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.get')({
+			params: { agentId: 'main', sessionId: 'sid-a' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.error?.code, 'TEST_BLEW_UP');
+		assert.match(String(out.error?.message), /blew up/);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.sessions.getById - 成功路径返回完整 JSONL 行', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers();
+	try {
+		let out = null;
+		await handlers.get('coclaw.sessions.getById')({
+			params: { agentId: 'main', sessionId: 'sid-a' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		assert.equal(out.payload.messages.length, 1);
+		assert.equal(out.payload.messages[0].type, 'message');
+		assert.equal(out.payload.messages[0].message.role, 'user');
+		assert.equal(out.payload.messages[0].message.content, 'hello');
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.sessions.getById - 缺 sessionId / 空白 → INVALID_INPUT', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers();
+	try {
+		// 完全缺失
+		let out1 = null;
+		await handlers.get('coclaw.sessions.getById')({
+			params: {},
+			respond(ok, payload, error) { out1 = { ok, payload, error }; },
+		});
+		assert.equal(out1.ok, false);
+		assert.equal(out1.error?.code, 'INVALID_INPUT');
+		assert.equal(out1.error?.message, 'sessionId required');
+
+		// 空白被 trim 后为空
+		let out2 = null;
+		await handlers.get('coclaw.sessions.getById')({
+			params: { sessionId: '   ' },
+			respond(ok, payload, error) { out2 = { ok, payload, error }; },
+		});
+		assert.equal(out2.ok, false);
+		assert.equal(out2.error?.code, 'INVALID_INPUT');
+
+		// 非字符串：trim?.() 链式 undefined → 落入 !sessionId
+		let out3 = null;
+		await handlers.get('coclaw.sessions.getById')({
+			params: { sessionId: 123 },
+			respond(ok, payload, error) { out3 = { ok, payload, error }; },
+		});
+		assert.equal(out3.ok, false);
+		assert.equal(out3.error?.code, 'INVALID_INPUT');
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.sessions.getById - manager 抛错 → 错误码透传', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers({ throwOnResolve: true });
+	try {
+		let out = null;
+		await handlers.get('coclaw.sessions.getById')({
+			params: { agentId: 'main', sessionId: 'sid-a' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.error?.code, 'TEST_BLEW_UP');
+		assert.match(String(out.error?.message), /blew up/);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
 test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = process.env.HOME;

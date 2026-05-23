@@ -83,24 +83,22 @@ function shouldReplaceByPriority(current, next) {
 }
 
 export function createSessionManager(options = {}) {
-	/* c8 ignore next */
 	const logger = options.logger ?? console;
 	const resolveSessionsDir = options.resolveSessionsDir ?? agentSessionsDir;
 	const resolveStorePath = options.resolveStorePath ?? sessionStorePath;
 	const resolveTranscriptPath = options.resolveTranscriptPath ?? sessionTranscriptPath;
 
 	function sessionsDir(agentId = 'main') {
-		/* c8 ignore next */
 		const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'main';
 		return resolveSessionsDir(aid);
 	}
 
 	async function readIndex(agentId = 'main') {
-		/* c8 ignore next */
 		const aid = typeof agentId === 'string' && agentId.trim() ? agentId.trim() : 'main';
 		const file = resolveStorePath(aid);
 		const data = await readJsonSafe(file, {});
-		/* c8 ignore next */
+		// readJsonSafe 抛错时返回 {}（已是 object），此处兜底 sessions.json 内容是合法 JSON
+		// 但非 object（number / string / boolean / null / array 由下游 listAllEntries 单独处理）
 		if (!data || typeof data !== 'object') return {};
 		return data;
 	}
@@ -176,7 +174,6 @@ export function createSessionManager(options = {}) {
 		// 补充 sessions.json 中有索引但无 transcript 文件的 session（如 reset 后未对话、新建 session）
 		for (const [sessionKey, entry] of Object.entries(index)) {
 			const sid = entry?.sessionId;
-			/* c8 ignore next -- !sid 防御性检查 */
 			if (!sid || grouped.has(sid)) continue;
 			grouped.set(sid, {
 				sessionId: sid,
@@ -184,7 +181,7 @@ export function createSessionManager(options = {}) {
 				indexed: true,
 				archiveType: 'live',
 				fileName: null,
-				/* c8 ignore next -- ?? fallback */
+				// entry.updatedAt 缺失或非数字时回落 0；UI 端按 updatedAt 排序时无 transcript 项排到末位
 				updatedAt: entry.updatedAt ?? 0,
 				size: 0,
 			});
@@ -284,12 +281,10 @@ export function createSessionManager(options = {}) {
 				all.push(JSON.parse(line));
 			}
 			catch (err) {
-				/* c8 ignore next -- ?./?? fallback */
 				logger.warn?.(`[session-manager] bad json line skipped: ${String(err?.message ?? err)}`);
 			}
 		}
 		const messages = all.slice(cursor, cursor + limit);
-		/* c8 ignore next */
 		const nextCursor = cursor + limit < all.length ? String(cursor + limit) : null;
 		return {
 			agentId,
@@ -332,7 +327,6 @@ export function createSessionManager(options = {}) {
 				messages.push(row);
 			}
 			catch (err) {
-				/* c8 ignore next -- ?./?? fallback */
 				logger.warn?.(`[session-manager] bad json line skipped: ${String(err?.message ?? err)}`);
 			}
 		}

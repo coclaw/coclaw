@@ -76,7 +76,8 @@ export class ChatHistoryManager {
 	constructor(opts = {}) {
 		this.__resolveSessionsDir = opts.resolveSessionsDir ?? agentSessionsDir;
 		this.__logger = opts.logger ?? console;
-		/* c8 ignore next 2 -- ?? fallback：测试始终注入 */
+		// readFile / writeJsonFile DI 注入点用于精细 mock；不注入时默认走 fs.readFile + atomicWriteJsonFile。
+		// 默认构造路径由"通过 setRuntime 端到端落盘"测试覆盖。
 		this.__readFile = opts.readFile ?? fs.readFile;
 		this.__writeJsonFile = opts.writeJsonFile ?? atomicWriteJsonFile;
 		// 内存缓存：agentId -> { version, [sessionKey]: [...] }
