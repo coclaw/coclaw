@@ -53,10 +53,12 @@
 			/>
 			<span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
 			<!-- vendor 极端长名场景下也参与截断；不写 shrink-0，让 flex 默认 shrink:1 生效 -->
+			<!-- 注意：testid 命名故意不落在 `web-agent-item-*` 命名空间下，
+			     避免 `[data-testid^="web-agent-item-"]` 前缀枚举把它当成行项目误算入 -->
 			<span
 				v-if="vendorFor(item.slug)"
 				class="min-w-0 truncate text-xs text-muted"
-				data-testid="web-agent-item-vendor"
+				data-testid="web-agent-row-vendor"
 			>{{ vendorFor(item.slug) }}</span>
 		</button>
 	</div>

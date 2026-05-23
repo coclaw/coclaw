@@ -16,7 +16,7 @@
 				/>
 				-->
 			</div>
-			<MainList :current-path="currentPath" scrollable />
+			<MainList :current-path="currentPath" scrollable instance="sidebar" />
 		</div>
 
 		<div class="border-t border-default px-2 py-1">

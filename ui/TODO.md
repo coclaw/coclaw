@@ -425,24 +425,6 @@ X4 触及面比 X1 广，需要重新评估：
 - partial reply 丢失的概率取决于 plugin 持久化时序，实际线上发生频率待观察
 - 改面较大、需协调 plugin 侧 anchor 协议，作为独立课题排期更合适
 
-## Web Agent E2E 在桌面视口下 strict-mode 重复定位
-
-**发现日期**：2026-05-10
-**关联 commit**：feat(ui): add hide-from-recent action on Web Agents list
-
-`ui/e2e/web-agents.e2e.spec.js` 全部 7 用例在 Playwright 桌面默认视口（1280×720，>md 断点）下都因为 strict-mode 报 "resolved to 2 elements"——`MainList.vue` 同时挂载在 `DesktopSidebar.vue`（`<aside>`，`md:flex`）和 `views/TopicsPage.vue`（`<main>`），两份 DOM 都带相同 `data-testid`。所有 `getByTestId('web-agent-entry')` / `getByTestId('web-agent-recent-...')` / `getByTestId('web-agent-section')` / `getByTestId('web-agent-picker-dialog')` / `getByTestId('web-agent-item-...')` 调用都会撞到。
-
-回归是预存的（在引入 hide-from-recent 之前已存在），不是本次新写的 hide 用例引入。本次 commit 内已通过把所有定位 scope 到 `getByRole('main')` 把这套用例改回绿。
-
-修复方向（彻底）：
-- 选项 A：playwright.config.js 改用 mobile 视口（小于 md=768px），让 DesktopSidebar `md:flex` 自然不渲染。最简单但牺牲 "桌面端 sidebar 模式"的覆盖率。
-- 选项 B：保留桌面视口，但所有 web-agents.e2e 用例显式 scope 到 `<main>` 或 `<aside>` 之一。已在本 commit 内执行。
-- 选项 C：让 DesktopSidebar 内的 MainList 通过 props 传一个 `instance` 标记（如 `slot=desktop-sidebar`），data-testid 拼上去。改动面大、收益低。
-
-当前临时方案（选项 B）已落地；未来若新 E2E 仍踩坑可考虑切到 A。
-
-附带发现（同一 commit 一并止血）：`WebAgentPickerPanel.vue` 在每个 picker 行内的 vendor 标签上挂了 `data-testid="web-agent-item-vendor"`（同名固定 testid，全列表共享）。两处用 `[data-testid^="web-agent-item-"]` 前缀枚举行 testid 的断言因此把 vendor 子元素也匹配进来，期望 5 个变成期望 10 个。已通过 `:not([data-testid="web-agent-item-vendor"])` 在 querySelector 排除。彻底方案是给 vendor span 改一个不和 `web-agent-item-*` 命名空间冲突的 testid（如 `web-agent-row-vendor`），但那需要 panel 改动，留作后续。
-
 ## Web Agent hide-from-recent deep-review 发现的非阻塞项（2026-05-10）
 
 来源：commit `1f1edc3 feat(ui): add hide-from-recent action on Web Agents list` 的 4 路并行 codex-rescue review。下列条目本次未修，登记跟踪。

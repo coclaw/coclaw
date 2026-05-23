@@ -137,7 +137,7 @@
 				<template v-else>
 					<button
 						type="button"
-						:data-testid="`web-agent-recent-${item.slug ?? 'custom-' + item.webId}`"
+						:data-testid="instance === 'main' ? `web-agent-recent-${item.slug ?? 'custom-' + item.webId}` : null"
 						class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-2 py-1 text-left"
 						@click="onClickRecentWebAgent(item)"
 					>
@@ -159,6 +159,7 @@
 					<WebAgentItemActions
 						class="web-agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100"
 						:web-agent-id="item.webId"
+						:instance="instance"
 					/>
 				</template>
 			</div>
@@ -209,7 +210,7 @@
 				v-for="item in addActionItems"
 				:key="item.id"
 				type="button"
-				:data-testid="`bottom-action-${item.id}`"
+				:data-testid="instance === 'main' ? `bottom-action-${item.id}` : null"
 				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
 				@click="onAddAction(item.id)"
 			>
@@ -272,6 +273,15 @@ export default {
 		scrollable: {
 			type: Boolean,
 			default: false,
+		},
+		/**
+		 * 实例标记：MainList 同时挂在 DesktopSidebar(<aside>) 与 TopicsPage(<main>)，两份 DOM 共存。
+		 * 'main' 实例渲染 data-testid，'sidebar' 实例不渲染——避免 Playwright strict-mode 撞到两个相同 testid。
+		 * 用户实际可见的总是其中之一（CSS hidden md:flex），单元/E2E 测试默认走 'main'。
+		 */
+		instance: {
+			type: String,
+			default: 'main',
 		},
 	},
 	setup() {

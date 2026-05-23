@@ -345,7 +345,7 @@ describe('WebAgentPickerPanel', () => {
 			},
 		});
 
-		const vendor = wrapper.find('[data-testid="web-agent-item-vendor"]');
+		const vendor = wrapper.find('[data-testid="web-agent-row-vendor"]');
 		expect(vendor.exists()).toBe(true);
 		expect(vendor.text()).toBe('深度求索');
 	});
@@ -368,7 +368,7 @@ describe('WebAgentPickerPanel', () => {
 			},
 		});
 
-		expect(wrapper.find('[data-testid="web-agent-item-vendor"]').exists()).toBe(false);
+		expect(wrapper.find('[data-testid="web-agent-row-vendor"]').exists()).toBe(false);
 	});
 
 	test('item 厂商名极端长名时也参与截断（truncate + min-w-0，无 shrink-0）', async () => {
@@ -393,7 +393,7 @@ describe('WebAgentPickerPanel', () => {
 			},
 		});
 
-		const vendor = wrapper.find('[data-testid="web-agent-item-vendor"]');
+		const vendor = wrapper.find('[data-testid="web-agent-row-vendor"]');
 		expect(vendor.exists()).toBe(true);
 		const cls = vendor.classes();
 		expect(cls).toContain('truncate');
@@ -420,7 +420,7 @@ describe('WebAgentPickerPanel', () => {
 			},
 		});
 
-		expect(wrapper.find('[data-testid="web-agent-item-vendor"]').exists()).toBe(false);
+		expect(wrapper.find('[data-testid="web-agent-row-vendor"]').exists()).toBe(false);
 	});
 
 	test('item 容器用 -mx-3 抵消 dialog body 横向 padding，让 icon 与 title 纵向对齐', async () => {

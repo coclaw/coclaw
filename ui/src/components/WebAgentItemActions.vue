@@ -2,7 +2,7 @@
 	<div class="relative" @click.prevent>
 		<UPopover v-model:open="menuOpen" :content="{ side: 'bottom', align: 'end' }">
 			<UButton
-				:data-testid="`web-agent-actions-trigger-${webAgentId}`"
+				:data-testid="instance === 'main' ? `web-agent-actions-trigger-${webAgentId}` : null"
 				variant="ghost"
 				color="neutral"
 				size="xs"
@@ -14,7 +14,7 @@
 			<template #content>
 				<div class="flex max-w-60 flex-col py-1">
 					<button
-						:data-testid="`web-agent-actions-remove-${webAgentId}`"
+						:data-testid="instance === 'main' ? `web-agent-actions-remove-${webAgentId}` : null"
 						class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 						@click="onRemove"
 					>
@@ -34,6 +34,11 @@ export default {
 	name: 'WebAgentItemActions',
 	props: {
 		webAgentId: { type: Number, required: true },
+		/**
+		 * 实例标记，与 MainList 同义：'main' 渲染 data-testid，其它值（如 'sidebar'）不渲染。
+		 * 详见 MainList.vue 同名 prop 注释。
+		 */
+		instance: { type: String, default: 'main' },
 	},
 	data() {
 		return {
