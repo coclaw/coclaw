@@ -1,18 +1,5 @@
 # Plugin TODO
 
-## file-manager rename 失败路径没断言孤儿清理
-
-**发现日期**：2026-05-24（doneReceived race fix deep-review 第 1 轮 codex-rescue 实例 C 提）
-**关联**：`plugins/openclaw/src/file-manager/handler.js` `finishUpload` line ~736（rename 失败分支 sync `safeUnlink(tmpPath)`），测试 `src/file-manager/handler.test.js` line ~1829
-
-**问题**：rename 失败分支后立即 sync `safeUnlink(tmpPath)` 兜底清孤儿；但现有测试只断言 `warns.some(w => w.includes('rename failed'))`，没断言 tmp 文件被删除。不会因 unlink 漏掉 / unlink 出错被 swallow 而被发现。
-
-**为什么不算 race fix 必须**：line 736 在 `ws.end` cb 内，cb 在 'finish' 后 fire，'finish' 必在 fopen 完成后，故 sync `safeUnlink` 找得到文件、产线安全。补断言是测试 hygiene。
-
-**修复方向**：rename 失败测试追加 `await waitForNoTmpFiles(dir)` 断言无 .tmp.* 残留。
-
----
-
 ## `coclaw.model.set` primary 尾随空格不友好
 
 **发现日期**：2026-05-15（D1 deep-review 第二轮 opus subagent 识别）

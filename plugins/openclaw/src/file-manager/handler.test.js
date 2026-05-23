@@ -1906,6 +1906,10 @@ test('handleFileChannel PUT: rename 失败时记录警告并清理临时文件',
 		await waitFor(() => warns.some((w) => w.includes('rename failed')));
 
 		assert.ok(warns.some((w) => w.includes('rename failed')));
+		// 钉死兜底清理：rename 失败分支同步 safeUnlink + ws 'close' listener 双保险，
+		// 必须把 .tmp.* 留下的孤儿清掉。仅断言 warn 出现而不验文件被删，会让 unlink
+		// 漏调或 safeUnlink 吞错的回归无法被发现
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}
