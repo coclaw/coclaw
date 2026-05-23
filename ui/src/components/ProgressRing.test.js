@@ -115,6 +115,14 @@ describe('ProgressRing', () => {
 			expect(da).toMatch(/\s/); // 包含空格 → "a b" 形式
 		});
 
+		test('不确定态 dashArray 精确为 25%/75% 弧长', () => {
+			// 防回归：弧长被误改（例如 0.25 → 0.2）时仅断言"含空格"会漏过
+			const CIRC = 2 * Math.PI * 50;
+			const arc = mountRing({ value: null }).findAll('circle')[1];
+			const expected = `${CIRC * 0.25} ${CIRC * 0.75}`;
+			expect(arc.attributes('stroke-dasharray')).toBe(expected);
+		});
+
 		test('确定态有 transition class,不确定态无', () => {
 			expect(mountRing({ value: 0.5 }).findAll('circle')[1].classes())
 				.toContain('transition-[stroke-dashoffset]');
@@ -175,6 +183,45 @@ describe('ProgressRing', () => {
 			// size 30 → 9 → 下限 10
 			expect(mountRing({ value: 0.5, size: 30 }).find('span').attributes('style'))
 				.toContain('font-size: 10px');
+		});
+
+		test('color 取未列举值时 fallback 到 primary（覆盖 || 兜底分支）', () => {
+			// validator 在 dev 模式会先发出 "Invalid prop" 警告；用 warnHandler 抑制后单独验证
+			// STROKE_CLASSES[color] || STROKE_CLASSES.primary / TEXT_CLASSES 同款分支
+			const w = mount(ProgressRing, {
+				props: { value: 0.5, color: 'bogus' },
+				global: { config: { warnHandler: () => {} } },
+			});
+			expect(w.findAll('circle')[1].classes()).toContain('stroke-primary');
+			expect(w.find('span').classes()).toContain('text-primary');
+		});
+	});
+
+	// =================================================================
+	// 响应式切换
+	// =================================================================
+	describe('响应式切换', () => {
+		test('value: 0.5 → null：transition class 移除、aria-* 省略、span 隐藏', async () => {
+			const w = mountRing({ value: 0.5 });
+			// 切换前：确定态
+			let arc = w.findAll('circle')[1];
+			expect(arc.classes()).toContain('transition-[stroke-dashoffset]');
+			let root = w.find('[role="progressbar"]');
+			expect(root.attributes('aria-valuenow')).toBe('50');
+			expect(w.find('span').exists()).toBe(true);
+
+			// 触发切换
+			await w.setProps({ value: null });
+
+			// 切换后：不确定态
+			arc = w.findAll('circle')[1];
+			expect(arc.classes()).not.toContain('transition-[stroke-dashoffset]');
+			expect(w.find('svg').classes()).toContain('animate-spin');
+			root = w.find('[role="progressbar"]');
+			expect(root.attributes('aria-valuenow')).toBeUndefined();
+			expect(root.attributes('aria-valuemin')).toBeUndefined();
+			expect(root.attributes('aria-valuemax')).toBeUndefined();
+			expect(w.find('span').exists()).toBe(false);
 		});
 	});
 

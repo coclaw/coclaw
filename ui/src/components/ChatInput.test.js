@@ -88,6 +88,12 @@ const UIconStub = {
 	template: '<i />',
 };
 
+// 与 FileUploadItem/FileListItem 测试保持同一风格：用 data-value 暴露进度便于断言
+const ProgressRingStub = {
+	props: ['value', 'size'],
+	template: '<div class="cc-progress-ring-stub" :data-value="value" />',
+};
+
 function createWrapper(props = {}) {
 	// 用 'in' 判定是否显式传入 chatStore（含 null）：?? 会让显式 null 也被替换为 mock，
 	// 让"chatStore=null 不崩"测试假阳性
@@ -106,6 +112,7 @@ function createWrapper(props = {}) {
 				UTextarea: UTextareaStub,
 				UButton: UButtonStub,
 				UIcon: UIconStub,
+				ProgressRing: ProgressRingStub,
 				TouchSpeakOverlay: true,
 			},
 			mocks: {
@@ -568,6 +575,15 @@ describe('ChatInput', () => {
 		expect(wrapper.vm.__fileProgress('unknown')).toBe(0);
 	});
 
+	test('__fileProgress 在键存在但缺 progress 字段时返回 0', () => {
+		// 防回归：上游 state 形态曾出现"刚 register 还没收到进度回调"窗口（仅有 status）
+		// `?? 0` 兜底必须挡住这种缺字段情况
+		const wrapper = createWrapper({
+			fileUploadState: { f1: { status: 'uploading' } },
+		});
+		expect(wrapper.vm.__fileProgress('f1')).toBe(0);
+	});
+
 	test('上传中的文件卡片显示进度覆层且隐藏移除按钮', async () => {
 		const chatStore = createMockChatStore();
 		chatStore.inputFiles.push({ id: 'a', isImg: false, name: 'a.txt', url: null, ext: 'txt', label: '1 KB' });
@@ -576,8 +592,10 @@ describe('ChatInput', () => {
 			fileUploadState: { a: { status: 'uploading', progress: 0.6 } },
 		});
 		await wrapper.vm.$nextTick();
-		// 进度覆层
-		expect(wrapper.text()).toContain('60%');
+		// 进度覆层：使用 ProgressRingStub 暴露的 data-value 精确断言
+		const ring = wrapper.find('.cc-progress-ring-stub');
+		expect(ring.exists()).toBe(true);
+		expect(ring.attributes('data-value')).toBe('0.6');
 		// 移除按钮不渲染（v-if="!__fileStatus(f.id)"）
 		const removeBtn = wrapper.findAll('button').filter((b) => b.text().includes('i-lucide-x'));
 		expect(removeBtn).toHaveLength(0);

@@ -65,32 +65,6 @@
    - 现状:`stroke-dashoffset` transition + `animate-spin` 在 Android Chrome 90+ WebView 表现未实测
    - 修复:Capacitor 构建后在 Android 真机/模拟器跑一次完整上传流程
 
-### 测试增强
-
-5. **ChatInput.test 改用 ProgressRing stub**
-   - 现状:`ChatInput.test.js:429` `text().toContain('60%')` 走真组件,依赖 `showValue` 默认值
-   - 修复:与 FileUploadItem/FileListItem 测试一致,加 `ProgressRingStub` 暴露 `data-value`,断言 `attributes('data-value') === '0.6'`
-
-6. **FileListItem.test retry 按 icon 选**
-   - 现状:`FileListItem.test.js:147-157` 用 `buttons[0]` 按 DOM 顺序选,模板调整后会静默失败
-   - 修复:`buttons.filter(b => b.attributes('icon') === 'i-lucide-rotate-cw')[0]`
-
-7. **ProgressRing color fallback 路径覆盖**
-   - 现状:`STROKE_CLASSES[this.color] || STROKE_CLASSES.primary` 的 `||` fallback 是 dev 模式 validator 警告后的兜底,无测试
-   - 修复:用 `config.global.config.warnHandler` 抑制 validator 警告,测 `color: 'bogus'` 走 fallback
-
-8. **ProgressRing 响应式切换覆盖**
-   - 现状:未测试 `value: 0.5 → null` 时 transition class、aria 属性、span 显隐的切换
-   - 修复:`wrapper.setProps({ value: null })` + `await wrapper.vm.$nextTick()` + 断言
-
-9. **__fileProgress "键存在但 progress 字段缺失" 边界**
-   - 现状:`fileUploadState[id]?.progress ?? 0` 兜底,但测试只覆盖 unknown key 路径
-   - 修复:补一个 `{ f1: { status: 'uploading' } }`(无 progress 字段)断言返回 0
-
-10. **dashArray 不定态精确值断言**
-    - 现状:`ProgressRing.test.js:115` 只断言"含空格",无法防止 0.25 弧长被误改
-    - 修复:精确断言 `${CIRC*0.25} ${CIRC*0.75}`
-
 ### 实现优化
 
 11. **`indeterminate` 用 `Number.isFinite`**

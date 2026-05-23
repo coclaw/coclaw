@@ -16,9 +16,10 @@ function mountItem(entry, downloadTask = null) {
 			stubs: {
 				UIcon: { template: '<span />' },
 				// 传递原生 $event，使 .stop 修饰符正常工作
+				// :icon 透传到 DOM，便于测试通过 attributes('icon') 过滤按钮
 				UButton: {
 					props: { icon: String },
-					template: '<button @click="$emit(\'click\', $event)"><slot /></button>',
+					template: '<button :icon="icon" @click="$emit(\'click\', $event)"><slot /></button>',
 				},
 				ProgressRing: ProgressRingStub,
 			},
@@ -149,10 +150,12 @@ describe('FileListItem', () => {
 				{ name: 'file.zip', type: 'file', size: 1000 },
 				{ id: 'task-99', status: 'failed', progress: 0 },
 			);
-			// failed 区域有两个按钮：重试 + 删除，重试在前
-			const buttons = w.findAll('button');
-			// 找到非删除按钮区域的按钮（failed 分支中的 retry 按钮）
-			await buttons[0].trigger('click');
+			// failed 区域有两个按钮（重试 + 删除）。按 icon 过滤而非按 DOM 顺序选，
+			// 模板未来调整按钮顺序时不会静默失败
+			const retryBtn = w.findAll('button')
+				.filter((b) => b.attributes('icon') === 'i-lucide-rotate-cw')[0];
+			expect(retryBtn).toBeTruthy();
+			await retryBtn.trigger('click');
 			expect(w.emitted('retry-download')?.[0]).toEqual(['task-99']);
 		});
 
