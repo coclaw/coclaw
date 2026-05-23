@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
+import { EventEmitter } from 'node:events';
 
 import { validatePath, createFileHandler } from './handler.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
@@ -1694,6 +1695,73 @@ test('handleFileChannel PUT: done 消息中无效 JSON 被忽略', async () => {
 		dc.close();
 		// safeUnlink 是 fire-and-forget，轮询确认 tmp 清理收尾
 		await waitForNoTmpFiles(dir);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+// race 回归测试：dc 在 ws fopen 完成前就 close，曾经的 fire-and-forget
+// safeUnlink 会扑空被吞，随后 fopen 完成创建文件留下孤儿。修复后 unlink 注册
+// 在 ws.on('close')，必然晚于 fopen，孤儿不再出现
+test('handleFileChannel PUT: cancel before fopen completes leaves no orphan', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const unlinkCalls = [];
+		// fopen 故意推迟 30ms 才"完成"——期间会触发 dc.onclose 的清理路径
+		const FOPEN_DELAY_MS = 30;
+		// 暴露 fopen 完成 promise，让测试体能精确等到 race 窗口结束
+		let fopenDoneResolve;
+		const fopenDonePromise = new Promise((r) => { fopenDoneResolve = r; });
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+			deps: {
+				createWriteStream: (path) => {
+					const ws = new EventEmitter();
+					let destroyed = false;
+					let fopenDone = false;
+					// 推迟"创建文件"动作：fopen 完成时才真正落盘一个空 tmp，模拟内核延迟
+					setTimeout(() => {
+						fopenDone = true;
+						fsSync.writeFileSync(path, '');
+						// destroy 已发：close 在 fopen 完成后立刻 emit；否则等 ws.end/destroy
+						if (destroyed) ws.emit('close');
+						fopenDoneResolve();
+					}, FOPEN_DELAY_MS);
+					ws.write = () => true;
+					ws.end = () => {};
+					ws.destroy = () => {
+						destroyed = true;
+						if (fopenDone) ws.emit('close');
+					};
+					Object.defineProperty(ws, 'destroyed', { get: () => destroyed });
+					Object.defineProperty(ws, 'bytesWritten', { get: () => 0 });
+					return ws;
+				},
+				unlink: async (p) => {
+					unlinkCalls.push({ path: p, existed: fsSync.existsSync(p) });
+					return fs.unlink(p);
+				},
+			},
+		});
+		const dc = createMockDC('file:race-cancel');
+		handler.handleFileChannel(dc);
+
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'z.txt', size: 5 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		// 紧跟 ack 立即 close：dc.onclose 同步走 not-done 分支，此时 fopen 必然未完成
+		dc.close();
+
+		// 必须先等 fopen 真的完成把 tmp 文件落盘，否则 waitForNoTmpFiles 会因
+		// dir 暂时为空立即返回——race 窗口都还没打开
+		await fopenDonePromise;
+		// 此刻 tmp 文件已存在；修复后 listener 在 emit('close') 同步链里删掉它
+		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
+
+		// 关键不变式：unlink 真的被调过，且至少有一次调用时文件存在
+		// （修复前 unlink 在 fopen 之前抵达 → existed 永远 false，文件永久残留）
+		assert.ok(unlinkCalls.length >= 1, 'safeUnlink should fire at least once');
+		assert.ok(unlinkCalls.some((c) => c.existed), 'safeUnlink should target an existing tmp file (post-fopen)');
 	} finally {
 		await fs.rm(dir, { recursive: true });
 	}

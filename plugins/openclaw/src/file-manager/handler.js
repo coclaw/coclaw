@@ -796,8 +796,10 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 				// done 已收到但 drain 未完成 — finishUpload 中会检测 dcClosed 并清理 tmp
 				if (!finishing) finishUpload();
 			} else {
+				// 等 ws 关闭后再 unlink——fopen 未完成时直接 safeUnlink 会扑空被吞，
+				// 随后 fopen 完成创建文件却没人清，留下孤儿 tmp
+				ws.on('close', () => safeUnlink(tmpPath));
 				ws.destroy();
-				safeUnlink(tmpPath);
 				const elapsed = Date.now() - startTime;
 				remoteLog(`file.up.fail ${logTag}id=${transferId} reason=dc-closed received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
 				log.warn?.(`[coclaw/file] [${connId ?? '?'}] up.fail id=${transferId} reason=dc-closed received=${receivedBytes}/${declaredSize} elapsed=${elapsed}ms bp=${wsBackpressureCount}`);
@@ -810,8 +812,9 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 			wsError = true;
 			draining = false;
 			pendingQueue.length = 0;
+			// 同上：等 ws 关闭后再 unlink，避开 fopen-vs-unlink race
+			ws.on('close', () => safeUnlink(tmpPath));
 			ws.destroy();
-			safeUnlink(tmpPath);
 			const elapsed = Date.now() - startTime;
 			/* c8 ignore next -- ?? fallback for non-Error throw */
 			const errMsg = err?.message ?? String(err);
