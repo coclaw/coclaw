@@ -17,6 +17,9 @@ import { buildModelDefaultHandlers } from './handlers.js';
 import { mainAgentDir } from '../claw-paths.js';
 import { getClawConfig } from '../claw-config.js';
 
+// link-UNSAFE：模块级 dedup 缓存。`--link` 模式下两实例各自 lazy-load 一次
+// SDK（结果一致、运行无伤但去重失效）。当前仅 RPC handler 走该路径——
+// 不要在 hook 回调里访问本模块的 export。详见 docs/module-boundaries.md。
 let _configMutationP;
 let _modelsP;
 let _providerAuthP;

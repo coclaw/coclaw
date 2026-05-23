@@ -1717,6 +1717,13 @@ export class RealtimeBridge {
 //   restart(opts) — 无论当前状态，确保 bridge 以给定 opts 运行（幂等）
 //   stop()        — 停止并销毁 singleton
 // 调用方无需感知 singleton 是否为 null，选"要运行"或"要停止"即可。
+//
+// link-UNSAFE 警告：以下 singleton 状态与所有读 singleton 的 export（restart /
+// stop / waitForSessionsReady / ensureAgentSession / gatewayAgentRpc /
+// broadcastPluginEvent）在 `--link` 安装模式下，hook 路径与 RPC 路径可能拿
+// 到不同 ESM 模块实例 → 两份独立 singleton。**不要在 api.on(...) hook 回调内
+// 调用本文件的任何 export**。hook 内若需触发 bridge 副作用，请走 RPC
+// （api.callGatewayMethod('coclaw.xxx', ...)）。详见 docs/module-boundaries.md。
 
 let singleton = null;
 

@@ -996,9 +996,10 @@ export class WebRtcPeer {
 		// 'fbq' 模式下若 queueDir 不可用则降级到 mem，避免阻塞装配。
 		// 同 connId race 隔离（决策 4）：FBQ id 加唯一后缀 ${connId}-${ts}-${nonce}，
 		// 让新旧实例文件名物理不同，destroy/init 期间互不踩踏。MemoryQueue 不碰 fs，无此需求。
-		// connId 字符集（PRE-EXISTING 契约）：上游 server 分配 connId 形如 `c_<digits>`；
-		// FBQ / MemoryQueue 共用 `^[A-Za-z0-9._-]+$` 校验。若 server 将来引入特殊字符，
-		// queue 构造会抛 TypeError，由 __setupDataChannel 的 .catch 兜底 warn——非 B9b 引入。
+		// connId 字符集契约：FBQ / MemoryQueue 共用 `^[A-Za-z0-9._-]+$` 校验。
+		// 上游 server 分配 connId 形如 `c_<digits>` 符合契约；若 server 引入特殊字符，
+		// queue 构造抛 TypeError，由 __setupDataChannel 的 .catch 兜底 warn。
+		// 完整契约 / 违反后果 / 修复方向见 docs/connid-contract.md
 		const useFbq = this.__rpcQueueImpl === 'fbq' && !!this.__queueDir;
 		const fbqFallback = !useFbq && this.__rpcQueueImpl === 'fbq';
 		const queue = useFbq

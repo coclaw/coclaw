@@ -237,7 +237,9 @@ RPC 契约：`coclaw.chatHistory.list` **透传整个 list（含首位未归档�
 ## 关键陷阱速查（具体见对应 doc 或 CLAUDE.md）
 
 - **register 入口必须区分模式**——cli-metadata / discovery 不能启 service。
-- **hook 与 RPC handler 在 `--link` 模式下是不同模块实例**——不能靠内存共享状态。
+- **hook 与 RPC handler 在 `--link` 模式下是不同模块实例**——不能靠内存共享状态；哪些 module-level 单例 link-unsafe 见 [`module-boundaries.md`](module-boundaries.md)。
+- **realtime-bridge.js 公共 API vs 内部边界**：仅 7 个 export 是公共 API（含 1 个测试专用），其余不承诺稳定；详见 [`module-boundaries.md`](module-boundaries.md)。
+- **connId 字符集契约**：`^[A-Za-z0-9._-]+$`；违反时 rpc 队列构造抛 TypeError → 该 conn rpc 残废；详见 [`connid-contract.md`](connid-contract.md)。
 - **bridge 与 server WS 断连不应 closeAll WebRTC session**（DC 走 P2P 独立信令通道）。预存问题，见 `../TODO.md`。
 - **rpc DC 必须自建分片**——pion / werift 都不提供透明的应用层大消息分片。
 - **agent run 类 RPC 响应需绕过 admission 软上限**——否则网络降级时 UI 收不到 endRun 信号 → phantom run。

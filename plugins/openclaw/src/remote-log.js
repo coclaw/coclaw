@@ -3,6 +3,11 @@
  *
  * 将诊断日志缓冲并通过 WS 通道推送到 CoClaw server。
  * 单例模式——各模块直接 import { remoteLog } 使用。
+ *
+ * link-UNSAFE：buffer / sender / flushing 都是模块级状态。`--link` 模式下
+ * hook 实例可能从未被 setSender 注入 → hook 路径调 remoteLog 会落到没装
+ * sender 的实例 → 静默丢日志。**不要在 hook 回调内调用 remoteLog**；
+ * 要发就用 hook 入参里的 logger。详见 docs/module-boundaries.md。
  */
 
 const MAX_BUFFER = 1000;

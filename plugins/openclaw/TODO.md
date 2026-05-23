@@ -735,18 +735,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **问题**：多处裸 `c8 ignore next` 或简单 `?? fallback` 注释覆盖了可测的默认构造、malformed 内容、无效 index 条目、分页边界等分支。逐条补针对性测试可摘 ignore；与本次 claw-paths 改造无直接关系。
 
-### connId 字符集隐式契约：含特殊字符时 rpc 队列构造抛错（PRE-EXISTING）
-
-**发现日期**：2026-05-05（B-stage2 B9b codex round-1 抓出）
-
-**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.js` 装配点 + `src/utils/file-backed-queue.js:25` / `src/utils/memory-queue.js:30`（共用 `^[A-Za-z0-9._-]+$` 校验）
-
-**问题**：FBQ 与 MemoryQueue 都对构造 `id` 做字符集校验（防路径穿越）。webrtc-peer 装配 queue 时把 server 分配的 connId 直接 / 拼接进 id。若上游 server 改变 connId 格式引入特殊字符（如 `:` `/`），queue 构造会抛 TypeError，被 `__setupDataChannel.catch` 兜底 warn，但 session.rpcQueue 留 null → 该连接的 rpc 路径残废。
-
-**B9b 后的状态**：fbq 模式 id = `${connId}-${ts}-${uuid8}`，仍以 connId 开头，问题无变化（PRE-EXISTING，与 B9b 无关）。
-
-**修复方向**：要么在装配点 sanitize（`connId.replace(/[^A-Za-z0-9._-]/g, '_')`），要么明示文档化 server↔plugin 的 connId 字符集契约（`^[A-Za-z0-9._-]+$`）。当前 server 实际生成 `c_<digits>` 形态，符合契约——B9b 不修，仅在装配点加注释提示。
-
 ### sendPeerTransport 签名回滚后无重发触发器（PRE-EXISTING）
 
 **发现日期**：2026-05-06（B-stage2 B10 deep-review 抓出）
@@ -1060,25 +1048,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **严重度**：Block release（公网用户群有真实概率把 gateway 打崩）
 
-## realtime-bridge 是 1700 行的上帝模块
-
-**发现日期**：2026-05-09（pre-hub release 设计 review）
-
-**锚点**：
-- `src/realtime-bridge.js`（1693 行，单 class `RealtimeBridge`）
-- 同时承载：双 WS 桥接 + WebRTC 信令路由 + 设备握手 v3 + server/gateway 双心跳 + 退避重连状态机 + agent run lag 探针 + 插件事件广播 + UI→gateway 请求路由表 + run-event 路由表 + rpc-queue 启动期清理钩子 + bind 后 token 撤销
-
-**问题**：单类承载十多组互不相关的状态字段，后果有三：1）改一处牵动其他状态机——TODO 中 listener-async / restart 串行化 / pre-handshake send-fail / connect-timer / lazy init race 等多条都源自此模块；2）任何子系统的测试都要先把整套 mock 起来；3）后来人理解成本高，docs 必须额外写"双 WS"+"三种连接状态"+"三张路由表"才能讲清。是模块边界过粗的设计债。
-
-**触发场景**：每次需要在 bridge 内修 bug 都暴露。
-
-**修复方向**：
-- 发布前最低线：明确划分"哪些函数是导出的稳定 API、哪些是内部"——避免 hub 版被外部依赖把内部细节锁死
-- 中期：切出 2 个能独立测的子模块（gateway-ws 握手机 + lag-probe / WebRTC 信令路由器）
-- 越拖代码越粘合越难拆；当前测试覆盖率已稳，是动手好窗口
-
-**严重度**：Should fix（不阻塞发布，但是长期负担）
-
 ## 占位/已停用代码会随 npm 包发到 hub
 
 **发现日期**：2026-05-09（pre-hub release 设计 review）
@@ -1101,27 +1070,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 - `status.defaultRuntime.running` 接到 bridge 实状态（singleton 启动且 server WS alive）
 
 **严重度**：Should fix（hub 发布前清干净一波，避免噪音随包扩散）
-
-## `--link` 双实例陷阱在桥接层与其它 module-level 单例上未系统排查
-
-**发现日期**：2026-05-09（pre-hub release 设计 review）
-
-**锚点**：
-- `docs/gateway-method-conventions.md:66-93`（双实例陷阱原理说明）
-- `src/realtime-bridge.js` module-level `let singleton`
-- `src/runtime.js` 单例、`src/plugin-version.js` 缓存等其他 module-level 状态点
-
-**问题**：CLAUDE.md 已明确 `--link` 模式下 hook 与 RPC handler 跑在不同 ESM 实例。`topic-manager` / `chat-history-manager` 已用"磁盘中转"覆盖，但 `realtime-bridge` 自己是 module-level singleton——hook 路径与 RPC 路径分别 import 时会拿到两个 singleton。当前没出事是因为没人在 hook 里调 bridge 导出函数；**没有显式的隔离审查清单**，"现在没用就没问题"在公网发布版本里风险不可控。
-
-**触发场景**：未来给 plugin 加新 hook（`session_start` / `resume` / `lifecycle:end` / 任意 `api.on`）时调用 bridge 模块导出函数。
-
-**修复方向**：
-- 把所有 module-level 单例（`singleton` / `runtime` / 缓存）盘一遍标"link-safe / link-unsafe"清单
-- link-unsafe 的导出函数加注释提示"不要在 hook 路径调用"
-- 或把所有跨 hook/RPC 共享状态强制走"磁盘中转"模式
-
-**严重度**：Should fix（埋雷，日后加 hook 时容易踩）
-
 
 ## sessions RPC handler 层缺独立测试（预存）
 
@@ -1207,30 +1155,6 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 **撤销条件**：上游 #80697 合并并出现在 release 版本后，停止使用本补丁。撤销方式：`./scripts/patch-openclaw-issue-80697.sh --revert`（从 `.bak` 恢复）。撤销后从 TODO 移除本条目，并提示用户删除研究文档（或保留为历史记录，但不应再继续维护）。
 
 **对终端用户的部署形态（尚未实施）**：当前脚本只在 CoClaw 仓库内，不会随 npm plugin 安装自动应用。若上游迟迟不修，可考虑：(a) 在 plugin `postinstall` 钩子里跑该脚本（但触碰用户 OpenClaw 安装目录有侵入性、需明确告知）；(b) 写到 `docs/troubleshooting.md` 让遇到同类问题的用户自助；(c) 维持现状，仅作为维护者排查手段。当前选择 (c)。
-
-
-## Plugin 端默认黑名单调研：HasPrefix 误杀红线清单
-
-**发现日期**：2026-05-14（pion-ipc/pion-node filter 基础设施落地后的 deep-review）
-**触发场景**：plugin 引入 `pcConfig.settings.interfaceFilter` 默认值时
-
-pion-ipc 的接口名过滤是 case-sensitive `strings.HasPrefix` 匹配，**无字界**。任何配进 `denyPrefixes` 的字符串都会同时杀掉以它开头的所有接口。下面是 deep-review 时实战核对过的几条容易误配的红线：
-
-- **`'eth0'` ≠ 单独杀 eth0**——会同时干掉 VLAN 子接口 `eth0.100` 之类的
-- **`'utun1'` ≠ 单独杀 utun1**——会同时干掉 `utun10`、`utun11`…（macOS VPN 第 10+ 条隧道）；tailscale 在 mac 用 utun，禁了断 P2P
-- **`'en'`**——同时命中 macOS `en0`（WiFi 主接口）+ Linux `enp3s0`（有线主接口），两个平台全断
-- **`'tap'`**——OpenVPN 等用 `tap0`/`tap1` 当合法接口，禁了断 VPN
-- **`'tun'`/`'utun'`**——同上，VPN 通用前缀，禁了断 VPN
-
-**调研方向（plugin 默认清单要避开的）**：
-- 调研典型 OpenClaw 用户的 VPN/overlay 接口名分布
-- allow 模式（`allowPrefixes`）非空时也要明确覆盖 VPN/tailscale 前缀，否则白名单太严会切断 tailnet
-- 实在不确定时，**只默认开 IP CIDR 黑名单（`172.16.0.0/12` go2rtc 共识）**，接口名前缀全部留给用户显式配置
-
-**关联代码**：
-- pion-ipc `internal/rtc/settings.go:145-153` `compileInterfaceFilter` 闭包语义
-- pion-ipc `docs/ipc-protocol.md:108-130` 协议层文档
-- 本次 pion-ipc commits: `1303321` + `a952fb5`
 
 
 ---

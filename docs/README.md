@@ -67,6 +67,7 @@ OpenClaw 平台机制研究，用于指导 CoClaw 集成。
 - [运行时与运维](openclaw-research/runtime-and-operations.md) — Agent 生命周期、并发、幂等
 - [Plugin SDK 与 Runtime 注入](openclaw-research/plugin-sdk-and-runtime.md) — 插件能力的两条供给线、App SDK vs Plugin SDK、import 路径规范
 - [模型配置心智模型](openclaw-research/model-config-mental-model.md) — Provider/凭据/Agent 三层关系、main 兜底机制、models.json 派生缓存陷阱
+- [pion-ipc 接口过滤红线](openclaw-research/pion-interface-filter-hasprefix.md) — `HasPrefix` 黑/白名单的常见误杀点、推荐默认配置
 - [PM 入门](openclaw-research/openclaw-for-pm.md) — 面向产品经理的概念说明
 
 ## Product — 产品文档

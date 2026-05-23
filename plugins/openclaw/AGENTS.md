@@ -110,6 +110,9 @@
 | OpenClaw plugin 安装/卸载机制 | [`docs/openclaw-plugin-management.md`](docs/openclaw-plugin-management.md) |
 | 设备身份相关待办 | [`docs/device-identity-todo.md`](docs/device-identity-todo.md) |
 | 设计 / 实施模型配置类 RPC（API key / OAuth / 默认模型 / 白名单） | [`docs/model-config-api.md`](docs/model-config-api.md) |
+| connId 字符集契约 / queue 构造抛 TypeError 的根因 | [`docs/connid-contract.md`](docs/connid-contract.md) |
+| 哪些 bridge 导出是公共 API / module-level 单例的 link-safety | [`docs/module-boundaries.md`](docs/module-boundaries.md) |
+| 设计 pion-ipc 接口黑名单（HasPrefix 误杀红线） | [`../../docs/openclaw-research/pion-interface-filter-hasprefix.md`](../../docs/openclaw-research/pion-interface-filter-hasprefix.md) |
 
 ## TODO
 
