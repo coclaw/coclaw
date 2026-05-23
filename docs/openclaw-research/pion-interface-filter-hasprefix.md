@@ -24,10 +24,10 @@ pion-ipc 在 `internal/rtc/settings.go:145-153` 的 `compileInterfaceFilter` 把
 
 ## 默认黑名单的设计原则
 
-- **绝不内置接口名前缀的默认黑名单**。用户机器上的接口名分布无法穷举，任何"经验之选"都可能撞红线。
-- 默认只开 **IP CIDR 黑名单**——这一层语义清晰、跨平台一致。社区共识可信的 CIDR：
+- **接口名前缀过滤要谨慎**：用户机器上的接口名分布无法穷举，任何"经验之选"都可能撞红线，因此内置默认必须限定在"命名约定窄、误杀面可解释"的少数前缀，绝大多数前缀过滤应留给用户显式配置，并在 plugin 配置 schema / 文档里强调本表的红线。
+- 默认应优先开 **IP CIDR 黑名单**——这一层语义清晰、跨平台一致。社区共识可信的 CIDR：
   - `172.16.0.0/12`（go2rtc 等项目共识；覆盖 docker 默认 bridge 网段、kubernetes overlay 等不可能走真实 P2P 的内网）
-- 接口名前缀过滤全部**留给用户显式配置**，并在 plugin 配置 schema / 文档里强调红线。
+- **CoClaw plugin 当前实践**：在 IP CIDR 方案落地前过渡性内置 `denyPrefixes:['docker0']` —— docker bridge 命名约定下用户接口名以 `docker0` 起头基本只可能是 docker 自家网卡，HasPrefix 误杀面可解释（最多牵连 `docker0.<n>` 等同样源自 docker 的子接口）。其它接口前缀（`eth0` / `utun1` / `en` 等本表列的红线）一律不进默认黑名单。
 
 ## 用 `allowPrefixes` 也要避坑
 
