@@ -34,7 +34,8 @@ bridge 未启动（singleton 为 null）时 silently no-op——register 阶段�
 
 - Plugin 端 `coclaw.info.patch` handler 只发 `{ name, hostName }`（用户改名场景）。
 - 若 server 把缺失的 `pluginVersion` / `agentModels` 当 null 处理，admin 仪表盘里这两列会被错误清空。
-- Plugin 启动时 `__pushInstanceInfo()` 发全量 4 字段把状态铺平；之后的增量推送只发变化的字段。
+- Plugin 启动时 `__pushInstanceInfo()` 发全量字段把状态铺平；之后的增量推送只发变化的字段。
+- `agentModels` 采集失败时 plugin **漏报字段而非发显式 null**——后者会触发上述清空（OpenClaw manifest cache 偶发卡顿场景实测有撞过）。schema 中保留 `| null` 仅为协议层向后兼容。
 
 ### Server 端实现要求
 

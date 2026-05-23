@@ -3972,8 +3972,9 @@ test('RealtimeBridge __collectAgentModels should map agents with name fallback a
 	bridge.__gatewayRpc = async (method, params, options) => {
 		assert.equal(method, 'agents.list');
 		assert.deepEqual(params, {});
-		// 明确断言 timeoutMs，防止静默改参数导致等待行为改变
-		assert.equal(options?.timeoutMs, 3000);
+		// 明确断言 timeoutMs，防止静默改参数导致等待行为改变。
+		// 30s 给 OpenClaw manifest cache 偶发卡顿（issue #80697）留恢复窗口
+		assert.equal(options?.timeoutMs, 30000);
 		return {
 			ok: true,
 			response: { payload: { agents: [
@@ -4080,7 +4081,7 @@ test('RealtimeBridge __pushInstanceInfo should broadcast full info payload after
 	}
 });
 
-test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents.list fails', async () => {
+test('RealtimeBridge __pushInstanceInfo should omit agentModels field when agents.list fails', async () => {
 	FakeWebSocket.instances.length = 0;
 	await writeCfg({ token: 't1', serverUrl: 'https://server.local' });
 	const oldGw = process.env.COCLAW_GATEWAY_WS_URL;
@@ -4139,7 +4140,8 @@ test('RealtimeBridge __pushInstanceInfo should emit agentModels=null when agents
 			.filter((m) => m?.type === 'event' && m?.event === 'coclaw.info.updated');
 		assert.ok(eventMsgs.length >= 1, 'should still emit coclaw.info.updated despite agents.list failure');
 		const payload = eventMsgs[eventMsgs.length - 1].payload;
-		assert.equal(payload.agentModels, null, 'agentModels should be null when agents.list fails');
+		// 漏报字段：server / UI 按 patch 语义保留旧值，避免 admin 仪表盘瞬时清空
+		assert.equal(Object.hasOwn(payload, 'agentModels'), false, 'agentModels should be omitted when agents.list fails');
 		assert.ok('name' in payload);
 		assert.ok('hostName' in payload);
 		assert.ok('pluginVersion' in payload);

@@ -584,12 +584,11 @@ export class RealtimeBridge {
 			const hostName = getHostName();
 			const pluginVersion = await getPluginVersion();
 			const agentModels = await this.__collectAgentModels();
-			broadcastPluginEvent('coclaw.info.updated', {
-				name,
-				hostName,
-				pluginVersion,
-				agentModels,
-			});
+			// 采集失败时漏报 agentModels（而非显式 null）：server / UI 走 patch 语义
+			// 保留旧值，避免 admin 仪表盘瞬时清空（OpenClaw manifest cache 偶发卡顿时易触发）
+			const payload = { name, hostName, pluginVersion };
+			if (agentModels !== null) payload.agentModels = agentModels;
+			broadcastPluginEvent('coclaw.info.updated', payload);
 		}
 		catch (err) {
 			/* c8 ignore next 2 -- 防御性兜底 */
@@ -603,7 +602,9 @@ export class RealtimeBridge {
 	 */
 	async __collectAgentModels() {
 		try {
-			const result = await this.__gatewayRpc('agents.list', {}, { timeoutMs: 3000 });
+			// OpenClaw agents.list 走 manifest cache 加载链路，偶发 cache mismatch 时 ~10s 才回
+			// （issue #80697）；timeout 给到 30s 让本地 cache miss 有恢复窗口
+			const result = await this.__gatewayRpc('agents.list', {}, { timeoutMs: 30000 });
 			if (result?.ok !== true) return null;
 			const agents = result?.response?.payload?.agents;
 			if (!Array.isArray(agents)) return null;
