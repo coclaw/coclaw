@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { test, expect, describe, vi, beforeEach } from 'vitest';
+import { test, expect, describe, vi, beforeEach, afterEach } from 'vitest';
 
 // 捕获注册的 hooks（vi.hoisted 确保在 vi.mock 提升后仍可访问）
 const { capture } = vi.hoisted(() => {
@@ -72,9 +72,15 @@ vi.mock('./files.store.js', () => ({
 // 导入模块触发自注册
 import './claw-lifecycle.js';
 
+let warnSpy;
 beforeEach(() => {
 	vi.clearAllMocks();
 	dashboardByBot = {};
+	warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+	warnSpy?.mockRestore();
 });
 
 describe('bot-lifecycle 自注册', () => {
@@ -164,13 +170,27 @@ describe('initClawResources', () => {
 		await expect(capture.hooks.initClawResources('bot-5')).rejects.toThrow('fail');
 	});
 
-	test('fire-and-forget 调用失败不影响整体（被 .catch 吞没）', async () => {
+	test('fire-and-forget 调用失败不影响整体（被 .catch 吞没），并打 console.warn 留排查痕迹', async () => {
 		mockLoadSessionsForClaw.mockRejectedValueOnce(new Error('session fail'));
 		mockLoadTopicsForClaw.mockRejectedValueOnce(new Error('topic fail'));
 		mockLoadDashboard.mockRejectedValueOnce(new Error('dash fail'));
 
-		// 不应抛出
 		await expect(capture.hooks.initClawResources('bot-5')).resolves.toBeUndefined();
+		// 让 microtask 内的 catch 跑完
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const warnLabels = warnSpy.mock.calls.map((args) => args[0]);
+		expect(warnLabels).toEqual(expect.arrayContaining([
+			expect.stringContaining('init sessions'),
+			expect.stringContaining('init topics'),
+			expect.stringContaining('init dashboard'),
+		]));
+		// 至少其中一处把 clawId + err 透出
+		const sessionsCall = warnSpy.mock.calls.find((args) => args[0].includes('init sessions'));
+		expect(sessionsCall).toBeDefined();
+		expect(sessionsCall[1]).toBe('bot-5');
+		expect(sessionsCall[2]).toBeInstanceOf(Error);
 	});
 });
 
@@ -192,13 +212,26 @@ describe('refreshClawResources', () => {
 		expect(mockLoadAllTopics).not.toHaveBeenCalled();
 	});
 
-	test('所有调用失败时不抛出异常', async () => {
+	test('所有调用失败时不抛出异常，并打 console.warn 留排查痕迹', async () => {
 		mockLoadAgents.mockRejectedValueOnce(new Error('fail'));
 		mockLoadSessionsForClaw.mockRejectedValueOnce(new Error('fail'));
 		mockLoadTopicsForClaw.mockRejectedValueOnce(new Error('fail'));
 		mockLoadDashboard.mockRejectedValueOnce(new Error('fail'));
 
 		await expect(capture.hooks.refreshClawResources('bot-6')).resolves.toBeUndefined();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const warnLabels = warnSpy.mock.calls.map((args) => args[0]);
+		expect(warnLabels).toEqual(expect.arrayContaining([
+			expect.stringContaining('refresh agents'),
+			expect.stringContaining('refresh topics'),
+			expect.stringContaining('refresh dashboard'),
+			expect.stringContaining('refresh sessions'),
+		]));
+		const agentsCall = warnSpy.mock.calls.find((args) => args[0].includes('refresh agents'));
+		expect(agentsCall[1]).toBe('bot-6');
+		expect(agentsCall[2]).toBeInstanceOf(Error);
 	});
 
 	// agents 仅 gate sessions（避免 sessions 用 ['main'] fallback 漏新加的非 main agent）；

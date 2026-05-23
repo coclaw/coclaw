@@ -54,9 +54,9 @@ function syncDashboardOnline(id) {
  */
 async function initClawResources(id) {
 	await useAgentsStore().loadAgents(id);
-	useSessionsStore().loadSessionsForClaw(id).catch(() => {});
-	useTopicsStore().loadTopicsForClaw(id).catch(() => {});
-	useDashboardStore().loadDashboard(id).catch(() => {});
+	useSessionsStore().loadSessionsForClaw(id).catch((err) => { console.warn('[lifecycle] init sessions failed clawId=%s:', id, err); });
+	useTopicsStore().loadTopicsForClaw(id).catch((err) => { console.warn('[lifecycle] init topics failed clawId=%s:', id, err); });
+	useDashboardStore().loadDashboard(id).catch((err) => { console.warn('[lifecycle] init dashboard failed clawId=%s:', id, err); });
 }
 
 /**
@@ -66,14 +66,14 @@ async function initClawResources(id) {
  * @param {string} id - clawId
  */
 async function refreshClawResources(id) {
-	const agentsPromise = useAgentsStore().loadAgents(id).catch(() => {});
-	useTopicsStore().loadTopicsForClaw(id).catch(() => {});
+	const agentsPromise = useAgentsStore().loadAgents(id).catch((err) => { console.warn('[lifecycle] refresh agents failed clawId=%s:', id, err); });
+	useTopicsStore().loadTopicsForClaw(id).catch((err) => { console.warn('[lifecycle] refresh topics failed clawId=%s:', id, err); });
 	// refresh 链路下 dashboard 比 sessions 先动手（dashboard 不依赖 agents，
 	// sessions 必须 await agents 后才发），force=true 让 dashboard 等 sessions
 	// 那边重新拉取最新 raw，避免读到刷新前的旧统计数据
-	useDashboardStore().loadDashboard(id, { force: true }).catch(() => {});
+	useDashboardStore().loadDashboard(id, { force: true }).catch((err) => { console.warn('[lifecycle] refresh dashboard failed clawId=%s:', id, err); });
 	await agentsPromise;
-	useSessionsStore().loadSessionsForClaw(id).catch(() => {});
+	useSessionsStore().loadSessionsForClaw(id).catch((err) => { console.warn('[lifecycle] refresh sessions failed clawId=%s:', id, err); });
 }
 
 /**

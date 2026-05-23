@@ -9,11 +9,7 @@
 
 来源：dashboard / sessions.store 合流改造的深度 review，4 个 codex-rescue 实例核实出的与本次改动无直接因果的预存问题。
 
-1. **`claw-lifecycle.js` 中的 fire-and-forget `.catch(() => {})` 静默吞错**
-   - 现状：`claw-lifecycle.js:57-59` `initClawResources` 与 `:70-74` `refreshClawResources` 内多处 `.catch(() => {})` 把 loader（sessions/topics/dashboard/agents）的 reject 静默吞掉。任一 loader 意外 reject 没有任何日志可查，是个诊断盲区。
-   - 修复方向：把 `.catch(() => {})` 改成 `.catch((err) => { console.warn('[lifecycle] loadX failed clawId=%s:', id, err); })` 之类的薄包装，保留 fire-and-forget 语义同时留下排查痕迹。
-
-2. **同 id 重绑场景下旧 fetch 写入身份不验证**
+1. **同 id 重绑场景下旧 fetch 写入身份不验证**
    - 现状：`__doLoadForClaw` 只检查 `clawsStore.byId[id]` 是否存在，不验证是不是同一个 claw 实例。极端时序：claw A 被解绑、同 id 立刻重绑成 claw B，期间 A 的旧 fetch 跑完后会看到 `byId[id]` 存在（指向 B）就把 A 的 raw（以及 SessionItem）写给 B。日常使用几乎不可能触发，但属于已知风险。
    - 修复方向：fetch 启动时记录一个 fingerprint（比如 conn 引用或 claw 的随机 id），写入前与当前 fingerprint 比对；不一致则丢弃。需要先核实业务上有没有可用的 fingerprint。
 
@@ -93,22 +89,6 @@
     - 文档涵盖：完整链路、关键事实核实（assistant 增量流是 cumulative、microtask 原子窗口）、4 个修法方案及影响面、源码锚点速查
     - 原 #31（`run.ended` 与 streamingMsgs 合并语义错位）属同一 bug 不同侧面，已合并入文档
 
-2. **'rpc' 快通道遇到上游 persist 静默吞错时无诊断信号**
-    - 现状：上游 `agent-command.ts:1130-1134`、`:1553-1557` 的 `persistCliTurnTranscript` / `persistAcpTurnTranscript` 用 `try/catch` 吞掉异常后继续 `respond(true, "ok")`。CoClaw UI 的 'rpc' 快通道（`chat.store.js:1388-1392`）拿到 res 帧后立即 `loadMessages` + `dropRun`，不校验 `hasTerminalAssistantAfter`。极罕见情况下用户会看到"任务未完成"且无 remoteLog
-    - 修复方向：'rpc' 快通道也加 `hasTerminalAssistantAfter` 校验；不通过时打一条 `remoteLog('agent.run.persist-failed-rpc ...')`
-
-### 文档 / 可观测性
-
-3. **`agent.run.persist-stale` remoteLog 维度补全**
-    - 现状：`chat.store.js:1417` 只打 `endReason / runKey / elapsed=3s`
-    - 修复：补 `runId / msgCount / anchorId / clawId`，并把 `elapsed=3s` 改成实际累计耗时（含两次 loadMessages 自身的 RPC 时间）
-
-### 上线后观察
-
-5. **3s 重试上限是否够**
-    - 现状：`PERSIST_AWAIT_MS=1000` + `PERSIST_RETRY_AFTER_MS=2000` = 3s 上限，针对 pi 层 `appendFileSync` 的同步写盘已足够，但没 p99 实测数据
-    - 行动：上线后观察 `agent.run.persist-stale` remoteLog 频率；高频则考虑指数退避或常量配置化（比如长 transcript / 慢盘场景）
-
 ## ICE-restart 代次号（restartGen）协议（跨 UI + plugin）
 
 **发现日期**：2026-04-26（本批未实施，登记到此）
@@ -146,7 +126,8 @@
 3. **`__ensureRtc` connected early-return 当 `rtc.state==='connected' && !rtc.isReady`**
     - 来源：commit 54b609d round 20 backlog
     - 现状：`__ensureRtc` early-return 看 state===connected，但 isReady=false 时 DC 实际不可用；窄窗口可能 short-circuit 错误判定
-    - 修法待定：可能改 early-return 条件 + 重 init；需深入 review
+    - 评估（2026-05-24 复核）：`isReady` 来自 DC `__rpcChannel.readyState === 'open'`，`conn.rtc` 只在 DC `onopen` 里写入；`state==='connected' && !isReady` 在 `__ensureRtc` 调用点几乎不可观测。即便发生，DC 真死走 `dc.onclose → close({asFailed:true}) → __scheduleRetry` 路径自愈，10s 后正常重建
+    - 修法（建议）：加一行 `remoteLog('rtc.ensureSkip-noDC ...')` 观察；生产频次=0 则关本条；>0 再考虑改 early-return 条件
 
 5. **`isConnectingRtc` / `unreachableClaws` getter 语义在 sig offline + rtcPhase=building/recovering 期间不清晰**
     - 来源：commit 4ae005e round 19 backlog（"P2-5"）
@@ -208,9 +189,10 @@
     - 修法方向：a) UI 在 slash 期间 disable STOP 按钮（chatStore.__slashCommandType 非空时）；或 b) `__cleanupSlashCommand` 同步清 `__pendingCancelIntent`（slash 不可被服务端取消，intent 没有意义）
 
 4. **`getActivity` 在 MainList 排序中 O(A×S) 线性扫描**
-    - 现状：`sessions.store.js:42-50` `getActivity` 对每个 (clawId, agentId) 全量遍历 items；MainList 的 `agentItems` computed（`MainList.vue:264, 278`）对每个 agent 调一次，最坏 O(A×S + A log A)
+    - 现状：`sessions.store.js:49-57` `getActivity` 对每个 (clawId, agentId) 全量遍历 items；MainList 的 `agentItems` computed（`MainList.vue:383, 400`）对每个 agent 调一次，最坏 O(A×S + A log A)
     - 实际影响：几十条 item 内可忽略；多 claw 多 session 长期使用后可能延迟 MainList 渲染
-    - 修法方向：sessions.store 内维护 `Map<clawId:agentId, item>`，getActivity O(1) 命中
+    - 触发阈值（2026-05-24 复核）：单 claw agent > 20 或多 claw 合计 > 50 时考虑动手
+    - 修法方向：sessions.store 内维护 `Map<clawId:agentId, item>`，getActivity O(1) 命中。写入口实测 5 个（`setSessions` / `removeSessionsByClawId` / `bumpActivity` 内 2 处 / `loadAllSessions` 空 claws 早返回 / `__doLoadForClaw` 合并）；`bumpActivity` 内 `findIndex` 顺手一起 O(1) 化
 
 ## 输入区附件 per-chat/topic 隔离（方案 A''）deep-review 发现的非阻塞项（2026-05-03）
 
@@ -256,11 +238,11 @@
     - 预存问题：本次修复未触及该函数
     - 修法：用 try/finally 包住 DOM 操作部分，确保 revokeObjectURL 一定跑
 
-5. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验**
-    - 现状：`ChatInput.vue:449-460` 录音文件直接 `chatStore.addFiles([item])`，跳过了 `addFiles` 入口的 MAX_UPLOAD_SIZE 检查
+5. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验** — **已评估保持现状（2026-05-24 复核）**
+    - 现状：`ChatInput.vue:449-460` 录音文件直接 `chatStore.addFiles([item])`，跳过 `addFiles` 入口的 MAX_UPLOAD_SIZE 检查
     - 实际影响：录音受 MAX_RECORD_DURATION + audioBitsPerSecond 双重限制，理论上限约 1.2MB，远低于 1GB 上限，不会触发
-    - 设计偏差：与"MAX_UPLOAD_SIZE 是唯一入口"不变量略有出入，但实际无害
-    - 修法（可选）：让 `procRecordedVoice` 改走 `this.addFiles([file])` 而非直接调 store，恢复唯一入口
+    - 评估结论：改走 `this.addFiles([file])` 会丢 `durationMs` 字段（录音侧专有标注，`this.addFiles` 入口签名不透传 extras）；继续保留当前实现
+    - 备忘（若将来想统一）：在 `procRecordedVoice` 内部内联 `if (file.size > MAX_UPLOAD_SIZE) ...` 三行判断即可，不改 `this.addFiles` 入口
 
 ## toolCall 数据已留住，渲染 + 配对 + 增量结果待补（2026-05-03）
 
@@ -305,15 +287,6 @@
     - 修法方向：把 store identity 比对换成 per-call token：`__loadMoreHistory` 入口 bump `__loadToken`，await 后比对 token，finally 也只在 token 匹配时清锁；可彻底覆盖"切走切回 / 同 store 多次重入"等所有路径
     - 本次只补到"切走 → 不动新视图 + 不误清新锁"层面（占绝大多数真实场景）；token 改造留待后续
 
-## vitest 测试速度优化 deep-review 发现的预存问题（2026-05-06）
-
-来源：fake-timer 改造 + jsdom→node 环境分流后的多维度 deep review。下列条目均为预存（不由本次优化引入），本次未修。
-
-1. **`src/router/index.js:140-213` 顶层访问 `localStorage`/`window` 无守卫**
-    - 现状：router 在模块顶层调用 `createWebHistory()`、读 `localStorage`、读 `window`，无 `typeof` 守卫
-    - 影响：现有 router 测试通过 mock `vue-router` 和 platform 绕开了崩溃路径；但一旦有新的 node-env 测试直接 import router 且不 mock，模块加载阶段就会崩
-    - 修法方向：在 router 内的 browser-only 初始化位置加 `typeof window !== 'undefined'` 守卫；或保持 router 测试只走 jsdom
-
 ## 一阶段 RPC 调用方对 ok=true+payload.status='error' 的协议演进保险（2026-05-07）
 
 **发现日期**：2026-05-07
@@ -342,9 +315,10 @@
     - 影响：诊断日志、analytics、UI 状态展示无法区分两类终态
     - 修复方向：`__onRpcDone` 读 `rpcResult.result?.meta?.aborted`，true → endReason='rpc-aborted'；ChatPage 不 notify 但日志区分
 
-11. **`coclaw.agent.abort` 用 `result.ok` 当业务标记**
-    - 现状：与协议层 `ok` 同名不同义（前者是插件本地业务返回，后者是 RPC 协议层，已被 ClawConnection 解包）。心智模型容易混
-    - 修复方向：建议改字段名为 `succeeded` / `accepted` 之类，避免与协议层 `ok` 重名
+11. **`coclaw.agent.abort` 用 `result.ok` 当业务标记** — **已评估保持现状（2026-05-24 复核）**
+    - 现状：与协议层 `ok` 同名不同义（前者是插件本地业务返回，后者是 RPC 协议层，已被 ClawConnection 解包）。源码层 `respond(true, { ok: ... })` 已经把两层在同一表达式上隔离，实际阅读无歧义
+    - 评估结论：改名跨 plugin+ui，涉及 1 处 plugin handler + 5 处 return + 1 处 UI 读 + 24+ 处测试 mock；纯命名洁癖无功能 bug，违 CLAUDE.md "非需求不重命名" 原则
+    - 缓解：`agent-abort.js` JSDoc 已写明 shape；可在 `chat.store.js:1045` 调用点加一行行内注释点明"此 ok 是 abort 业务语义，非 RPC 协议 ok"
 
 12. **协议偏离时 error/summary 是 object 形态显示成 `[object Object]`**
     - 现状：`agent-runs.store.js:404` 与 `chat.store.js:1133` 的 `String(raw)` 兜底能保证 toast 不丢 description，但若 `summary`/`error` 是 object（协议偏离），用户看到的是 `[object Object]` 而非可读内容
