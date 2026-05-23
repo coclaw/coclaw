@@ -35,24 +35,30 @@
 						<!-- 左侧：claw 信息 -->
 						<div class="flex-1 min-w-0">
 							<template v-if="dashboard?.instance">
-								<div class="flex items-center gap-2">
-									<span
-										class="inline-block size-2.5 rounded-full"
-										:class="clawDotClass(claw)"
-									></span>
-									<div class="flex items-center gap-1">
-										<h2 class="text-base font-semibold">{{ getClawName(claw) }}</h2>
-										<UButton
-											class="cc-icon-btn"
-											variant="ghost"
-											color="primary"
-											size="md"
-											icon="i-lucide-pencil"
-											:disabled="renaming || !claw.online"
-											@click="openRename(claw)"
-										/>
+								<div class="flex items-center justify-between gap-2">
+									<div class="flex items-center gap-2 min-w-0">
+										<span
+											class="inline-block size-2.5 rounded-full"
+											:class="clawDotClass(claw)"
+										></span>
+										<div class="flex items-center gap-1">
+											<h2 class="text-base font-semibold">{{ getClawName(claw) }}</h2>
+											<UButton
+												class="cc-icon-btn"
+												variant="ghost"
+												color="primary"
+												size="md"
+												icon="i-lucide-pencil"
+												:disabled="renaming || !claw.online"
+												@click="openRename(claw)"
+											/>
+										</div>
+										<UBadge color="primary" variant="subtle" size="xs">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
 									</div>
-									<UBadge color="primary" variant="subtle" size="xs">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
+									<div v-if="dashboard.instance.monthlyCost && typeof dashboard.instance.monthlyCost.total === 'number'" class="text-right shrink-0" data-testid="monthly-cost">
+										<p class="text-base font-bold tracking-tight">{{ formatCost(dashboard.instance.monthlyCost) }}</p>
+										<p class="text-xs text-muted">{{ $t('dashboard.monthlyCost') }}</p>
+									</div>
 								</div>
 								<div class="mt-3 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
 									<span v-if="dashboard.instance.pluginVersion">{{ $t('claws.pluginVersion') }}{{ dashboard.instance.pluginVersion }}</span>
@@ -256,6 +262,16 @@ export default {
 		}
 	},
 	methods: {
+		/** 格式化本月花费为本地化货币字符串 */
+		formatCost(cost) {
+			if (cost && typeof cost.total === 'number') {
+				return new Intl.NumberFormat(undefined, {
+					style: 'currency',
+					currency: cost.currency || 'USD',
+				}).format(cost.total);
+			}
+			return '—';
+		},
 		/** claw 卡片状态点颜色，同时反映在线状态和 RTC 连接阶段 */
 		clawDotClass(claw) {
 			if (!claw.online) return 'bg-gray-500';

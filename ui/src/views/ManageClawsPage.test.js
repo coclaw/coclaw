@@ -121,6 +121,7 @@ function createWrapper() {
 						'claws.summary.claws': `${params?.n} Claws`,
 						'claws.summary.running': `${params?.n} 工作中`,
 						'claws.summary.failed': `${params?.n} 异常`,
+						'dashboard.monthlyCost': 'Monthly cost',
 					};
 					return map[key] ?? key;
 				},
@@ -162,6 +163,35 @@ describe('ManageClawsPage', () => {
 		expect(wrapper.text()).toContain('Bot1');
 		expect(wrapper.find('[data-testid="agent-card"]').exists()).toBe(true);
 		expect(wrapper.find('[data-testid="agent-card"]').text()).toContain('Agent1');
+	});
+
+	test('在线 claw + dashboard 有 monthlyCost → 渲染本月花费', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [], monthlyCost: { total: 12.34, currency: 'USD' } },
+			agents: [],
+			loading: false,
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const costEl = wrapper.find('[data-testid="monthly-cost"]');
+		expect(costEl.exists()).toBe(true);
+		expect(costEl.text()).toContain('Monthly cost');
+		expect(costEl.text()).toMatch(/12\.34/);
+	});
+
+	test('在线 claw + dashboard 无 monthlyCost → 不渲染花费块', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [] },
+			agents: [],
+			loading: false,
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="monthly-cost"]').exists()).toBe(false);
 	});
 
 	test('离线 claw → 渲染 fallback header + Offline badge + 解绑按钮', async () => {
