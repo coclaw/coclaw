@@ -112,6 +112,7 @@ export function defaultResolveGatewayAuthToken() {
 		}
 	}
 	catch (err) {
+		// register 早期 / runtime 未注入完成时也可能被触达，注入 logger 此时未必可用，用 console.warn 兜底
 		console.warn?.(`[coclaw] resolve gateway auth token failed: ${String(err?.message ?? err)}`);
 	}
 	const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
@@ -1605,6 +1606,8 @@ export class RealtimeBridge {
 		});
 		this.__runEventRoutes.init();
 		// 外线（plugin↔远端 server）先发起 connectIfNeeded：仅创建 WebSocket 即返回，不阻塞内线。
+		// 不包 try/catch：__connectIfNeeded → getBindingsPath → pluginDir 链路依赖 runtime 已注入，
+		// register full 模式下 setRuntime 必然先于 service.start 完成，pluginDir 不会抛
 		await this.__connectIfNeeded();
 		// 三条线各自独立启动：内线（plugin↔本机 gateway）由 start() 主动触发，
 		// 不再依附于外线 open。即便外线建连失败/未配置 token，内线仍能起来支撑 DC RPC。

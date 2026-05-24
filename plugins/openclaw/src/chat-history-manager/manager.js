@@ -39,6 +39,8 @@ export function classifyChatHistorySessionKey(sessionKey) {
 	//   由 cron 守卫挡住即可，避免与 IM per-account DM accountId="cron"/"subagent" 形态冲突
 	//   （accountId 仅按 [a-z0-9_-]{1,64} 校验，"cron"/"subagent" 都是合法账户名）。
 	if (parts[2] === 'explicit') return { ok: false, reason: 'explicit' };
+	// agent:<id>:cron:<jobId>:subagent:<uuid> 形态命中 cron 守卫返回 reason='cron'，
+	// 丢一层嵌套语义；上报信号目前无下游按 reason 细分计数/告警，留作识别到才说
 	if (parts[2] === 'cron') return { ok: false, reason: 'cron' };
 	if (parts[2] === 'subagent') return { ok: false, reason: 'subagent' };
 	return { ok: true, reason: null };
@@ -193,6 +195,7 @@ export class ChatHistoryManager {
 			for (let i = 1; i < list.length; i++) {
 				const item = list[i];
 				if (!item || typeof item !== 'object' || item.archivedAt) continue;
+				// 复用 archivedAt 写补登时间；事后与正常归档无法区分，线下分析靠下方 chat-history.sanitize-coerce 上报信号
 				item.archivedAt = now;
 				this.__logger.warn?.(
 					`[coclaw] chat-history sanitize: non-head unarchived entry coerced sessionKey=${sessionKey} sid=${item.sessionId}`,
@@ -352,6 +355,8 @@ export class ChatHistoryManager {
 		} catch (err) {
 			this.__reportLoadError(filePath, err, '__reloadFromDisk');
 		}
+		// 读盘失败 + cache 已热身 → 保留旧 cache（best-effort 容忍）。下次写盘会把旧数据回灌磁盘自愈；
+		// 但若长期无新写入，磁盘上的损坏内容不会被主动修复
 		if (!this.__cache.has(agentId)) {
 			this.__cache.set(agentId, emptyStore());
 		}

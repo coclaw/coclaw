@@ -229,6 +229,7 @@ export class TopicManager {
 		const srcPath = nodePath.join(this.__sessionsDir(agentId), `${topicId}.jsonl`);
 		const tempId = randomUUID();
 		const tempPath = nodePath.join(this.__sessionsDir(agentId), `${tempId}.jsonl`);
+		// fs.copyFile 非 atomic；崩在半路的临时 *.jsonl 可能被 session-manager 扫到列为幽灵会话，用户重试导出即恢复
 		await this.__copyFile(srcPath, tempPath);
 		return { tempId, tempPath };
 	}

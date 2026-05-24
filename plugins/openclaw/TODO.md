@@ -237,28 +237,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：用文件级 advisory lock（如 `proper-lockfile` 或 flock）保护 read-modify-write 段。改动跨进程协议，影响面大；当前接受现状，标 TODO 提示长尾。
 
-## chat-history 缓存热身后 JSON 损坏吞异常保留旧缓存（预存）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 C 阶段维度 4）
-**关联**：plugins/openclaw/src/chat-history-manager/manager.js:156-170 `__reloadFromDisk`
-
-**问题**：cache 已热身后，磁盘文件被截断/损坏 → JSON.parse 抛 → catch 静默吞 → cache 保留旧数据。下次 list 返回过期数据；下次 recordArchived 把过期数据写回磁盘（用旧条目覆盖磁盘上的损坏内容——倒是恢复了）。
-
-**影响**：list 暂时返回旧数据；写回时实际上修复了磁盘。对最终一致性无伤，但 list 短窗内不一致。
-
-**修复方向**：`__reloadFromDisk` 区分 ENOENT（正常首次）vs JSON parse 失败（应重置为 emptyStore）。当前实现是 best-effort 兜底——可接受。
-
-## topic-manager copyTranscript 用 fs.copyFile（非 atomic，预存）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 C 阶段维度 4）
-**关联**：plugins/openclaw/src/topic-manager/manager.js:219-224
-
-**问题**：`copyTranscript` 用 `fs.copyFile(src, dst)` 复制 jsonl 到目标路径。复制中途进程崩溃会留下半截文件，消费方读到损坏内容。
-
-**影响**：极小概率（topic transcript 体积通常 < 1MB，copy 几乎瞬时完成）；最坏情况是 transcript 被截断。用户重试导出/导入即恢复。
-
-**修复方向**：先 cp 到 `dst.<uuid>.tmp` 再 renameSync 到 dst（POSIX rename 原子）；或在复制完成后 fsync。
-
 ## bridge async listener 其他真隐患（C 阶段维度 1）
 
 **发现日期**：2026-05-02
@@ -396,17 +374,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **影响**：CLI 用户连按或脚本并发触发的边角场景。gateway 单进程 RPC 通常串行处理同名 method。
 
 **修复方向**：跨模块暴露 mutex（claw-binding 持有自己的 mutex 包覆整个 bindClaw/unbindClaw），或文件级 advisory lock。
-
-### BIND_LOCAL_WRITE_FAILED 错误码同时用于 bind 与 enroll 场景
-
-**发现日期**：2026-05-02（D 阶段 round-3 review）
-**关联**：plugins/openclaw/src/common/claw-binding.js bindClaw 81 + waitForClaimAndSave 163
-
-**问题**：bindClaw 与 enroll 的 waitForClaimAndSave 都用同一错误码 `BIND_LOCAL_WRITE_FAILED` 标记本地写失败 + server 已发 token 的回滚场景。语义略不准（enroll 路径名为"BIND_..."），且未来若调用方需按场景做差异化处理（如 UI 展示 enroll 还是 bind 的失败信息），无法区分。
-
-**影响**：当前 plugin index.js 中两个调用点都是 `.catch(err) → logger.warn`，不依赖 code 分支，运行时无问题。
-
-**修复方向**：把 enroll 路径的错误码改为 `ENROLL_LOCAL_WRITE_FAILED`；或抽 `LOCAL_WRITE_FAILED` 共享码 + 用 message 区分。等到调用方需要差异化处理时再改。
 
 ### unbindClaw 已解绑时返回 NOT_BOUND 而非幂等成功
 
@@ -688,14 +655,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：逐个排查，仅保留 auto-upgrade worker fallback 测试场景的 setHomedir，其余移除。需小心不破现有断言。
 
-### bridge.start 后续路径未抓 pluginDir 抛错（防御性，预存）
-
-**锚点**：`plugins/openclaw/src/realtime-bridge.js:1442` `await this.__connectIfNeeded()`
-
-**问题**：`start()` 顶部 rpc-queues 启动期块用 try/catch 抓了 pluginDir 抛错，但同一函数后段 `__connectIfNeeded` → `getBindingsPath` → `pluginDir()` 链路没有 catch。生产中 runtime 必然已注入，pluginDir 不会抛——纯防御。
-
-**修复方向**：把 `await this.__connectIfNeeded()` 也包进 try/catch + warn。或者干脆 fail-loud：runtime 缺失就让 service 注册整体失败。
-
 ### auto-upgrade vs claw-paths 部分注入不对称（防御性，本次新引入但不可达）
 
 **锚点**：`plugins/openclaw/src/auto-upgrade/state.js:23-30` vs `src/claw-paths.js:24-29`
@@ -757,16 +716,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 **修复方向**：装配 rpcQueue 后主动调一次 `__sendPeerTransport(connId)`（条件：`session.pc.selectedCandidatePair` 已 nominate 完成），或在 sendTo 失败回滚 sig 后注册一个"等 rpcQueue 就绪重试"的钩子。
 
 ## 2026-05-06 deep-review（claw-config host adapter）抓出的预存问题
-
-### realtime-bridge defaultResolveGatewayAuthToken catch 用 console.warn 而非 host logger（PRE-EXISTING）
-
-**锚点**：`plugins/openclaw/src/realtime-bridge.js` 的 `defaultResolveGatewayAuthToken` catch 块
-
-catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是用注入 logger（pino 风格 `logger.warn?.(...)`）。
-
-**注意**：可能是有意为之——这个函数在 register 早期 / runtime 未注入完成时也可能被触达，那时 logger 可能不可用，console.warn 是兜底。修复前需先确认调用时序。
-
-**修复方向**：若确认 logger 总可用，切到注入 logger；否则补一行注释解释为何用 console。
 
 ## 2026-05-06 deep-review（file-manager test setTimeout→waitFor 改造）抓出的预存问题
 
@@ -1078,7 +1027,7 @@ catch 调 `console.warn?.(...)` 而非 host 注入的 logger。项目惯例是�
 
 **OpenClaw 升级时的动作**：bundled dist 重生成、文件 hash 后缀会变（vite/rollup 输出）。脚本会自动定位新文件、检测幂等。但**升级版本如果改动了源码结构**（如重命名 `loadManifestModelIdNormalizationPolicies` 或调整 anchor 行），脚本会以 `[FAIL] 没找到 anchor` 退出，需要重对照研究文档调整 anchor 模板。
 
-**撤销条件**：上游 #80697 合并并出现在 release 版本后，停止使用本补丁。撤销方式：`./scripts/patch-openclaw-issue-80697.sh --revert`（从 `.bak` 恢复）。撤销后从 TODO 移除本条目，并提示用户删除研究文档（或保留为历史记录，但不应再继续维护）。
+**撤销条件**：上游已修——#80697 转为 #78461 跟踪，PR #82814 已合入 main（2026-05-17）并随 `v2026.5.20`（2026-05-21）起释出。升 OpenClaw 至 ≥ `2026.5.20` 即可彻底退役本补丁：npm 全局升级会全量覆盖 dist，patch 和 `.bak` 一并消失，无需也无法跑 `--revert`。撤销后清理：删脚本 `scripts/patch-openclaw-issue-80697.sh` + 研究文档 `docs/openclaw-research/plugin-manifest-cache-mismatch.md` + 本条 TODO。仅当不升级 OpenClaw 但想撤回手工 patch 时，才用 `./scripts/patch-openclaw-issue-80697.sh --revert` 从 `.bak` 恢复。
 
 **对终端用户的部署形态（尚未实施）**：当前脚本只在 CoClaw 仓库内，不会随 npm plugin 安装自动应用。若上游迟迟不修，可考虑：(a) 在 plugin `postinstall` 钩子里跑该脚本（但触碰用户 OpenClaw 安装目录有侵入性、需明确告知）；(b) 写到 `docs/troubleshooting.md` 让遇到同类问题的用户自助；(c) 维持现状，仅作为维护者排查手段。当前选择 (c)。
 
@@ -1162,19 +1111,6 @@ stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在�
 - 实现 `OPENCLAW_DIST` 读取
 - 加 trap EXIT 兜底 rollback
 - 哨兵字符串嵌入 OpenClaw 版本号，升级后哨兵失配触发 re-patch
-
----
-
-## provider-auth CLI 缺友好错误消息映射
-
-**发现日期**：2026-05-16（Phase D deep-review codex-rescue B 实例识别）
-**关联**：`plugins/openclaw/src/cli-registrar.js:211 / :234 / :260`
-
-**问题**：provider-auth 三 CLI（`auth set-api-key` / `auth list` / `auth remove`）错误路径均走通用 `handleRpcError`，未按 `INVALID_ARGS` / `IO_FAILED` / `NOT_FOUND` 给 provider-auth 专属提示。bind/unbind/enroll 已经有 `NOT_BOUND` 等定制映射。
-
-**严重性**：低——错误信息能看，只是用户体验不够友好。
-
-**修复方向**：在 provider-auth 三 CLI 内识别 result.error / result.message 中的常见 code 并映射到本地化提示。
 
 ---
 
@@ -1432,17 +1368,6 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——理论盲点；触发难度高；recordSessionTransition 现有 reload+mutex 已吞掉多数 race。
 
-## chat-history sanitize 时间戳与正常归档无法区分
-
-**发现日期**：2026-05-19（cron 顶替止血 deep review 综合实例提出）
-**关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `__sanitizeAllSessionKeys`
-
-**问题**：sanitize 自愈非头位未归档项时用的是 `Date.now()`，与正常归档时间戳格式完全一致，事后无法区分"真实归档时刻"与"sanitize 兜底补登时刻"。诊断"什么时候 cron 顶进来"等问题时无法靠 archivedAt 反推。
-
-**修复方向**：sanitize 给被修复项加 `repairedAt` 字段（或单独 `repairedFromMissingAt`），保留 archivedAt 现有语义，新字段标识"这次时间戳是 sanitize 补的"。已有 `chat-history.sanitize-coerce` remoteLog 留有线索，仅在线下分析时麻烦。
-
-**严重性**：低——纯诊断信号，不影响主流程；用户偏好"设置归档日期"，本次实施已符合用户原话约定。
-
 ## chat-history classifyChatHistorySessionKey 是黑名单策略（未来新 sessionKey 形态默认入档）
 
 **发现日期**：2026-05-19（cron 顶替止血 deep review 第二轮 codex-rescue 提出）
@@ -1456,14 +1381,4 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——需要上游主动加新形态才会触发；可观测信号有 `chat-history.skip-*` 缺失。
 
-## chat-history cron+subagent 嵌套时 reason 信号丢失
-
-**发现日期**：2026-05-19（cron 顶替止血 deep review 综合 + 维度实例都提了）
-**关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `classifyChatHistorySessionKey`
-
-**问题**：cron 跑出的子代理 sessionKey 形如 `agent:<id>:cron:<jobId>:subagent:<uuid>`。守卫三类都用 `parts[2]` 严格相等，此形态命中 cron 守卫返回 `reason='cron'`，远端只看到 `chat-history.skip-cron` 而看不到"这是 cron 跑出的子代理"。诊断/分类时丢一层信息（哪种 reason 标签丢失另一层并不重要，本质是单一标签无法表达嵌套）。
-
-**修复方向**：helper 返回 reasons 数组（`['cron', 'subagent']`）让 caller 拼复合 log；或始终按"最深识别词"对应分级返回。注意保持现有"命中即跳过"语义不变。
-
-**严重性**：低——纯诊断信号；不影响主流程跳过逻辑。
 
