@@ -495,5 +495,28 @@ export const ptMessages = {
 			errInvalidArgs: 'Entrada inválida. Verifique e tente novamente.',
 			errIoFailed: 'Falha ao salvar. Tente novamente.',
 		},
+		primary: {
+			title: 'Modelo principal padrão',
+			notSetWarning: 'Nenhum modelo principal configurado. O agente ainda não pode conversar.',
+			invalidWarning: 'O modelo principal não está mais disponível. Escolha um novo.',
+			changeButton: 'Alterar',
+			selectButton: 'Selecionar principal',
+		},
+		providerAuth: {
+			title: 'Credenciais de API',
+			addButton: 'Adicionar',
+			removeButton: 'Remover',
+			emptyState: 'Nenhum provedor configurado ainda. Adicione uma chave de API para começar.',
+			loadFailed: 'Falha ao carregar. Tente novamente.',
+			removeSuccess: '{provider} removido.',
+			removeFailed: 'Falha ao remover {provider}.',
+			remove: {
+				title: 'Remover {provider}?',
+				descNormal: 'Após a remoção, todos os modelos de {provider} ficarão indisponíveis.',
+				descAffectPrimary: 'Seu modelo principal atual {primary} é executado em {provider}. Após a remoção, o principal ficará inválido e o agente não poderá conversar — você precisará escolher um novo principal.',
+				confirmButton: 'Remover',
+				confirmButtonStrong: 'Remover mesmo assim',
+			},
+		},
 	},
 };

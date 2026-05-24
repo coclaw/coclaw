@@ -495,5 +495,28 @@ export const esMessages = {
 			errInvalidArgs: 'Entrada no válida. Revisa e inténtalo de nuevo.',
 			errIoFailed: 'Error al guardar. Inténtalo de nuevo.',
 		},
+		primary: {
+			title: 'Modelo principal predeterminado',
+			notSetWarning: 'No hay un modelo principal configurado. El agente aún no puede conversar.',
+			invalidWarning: 'El modelo principal ya no está disponible. Elige uno nuevo.',
+			changeButton: 'Cambiar',
+			selectButton: 'Seleccionar principal',
+		},
+		providerAuth: {
+			title: 'Credenciales de API',
+			addButton: 'Añadir',
+			removeButton: 'Eliminar',
+			emptyState: 'Aún no hay ningún proveedor configurado. Añade una clave de API para empezar.',
+			loadFailed: 'Error al cargar. Por favor reintenta.',
+			removeSuccess: '{provider} eliminado.',
+			removeFailed: 'Error al eliminar {provider}.',
+			remove: {
+				title: '¿Eliminar {provider}?',
+				descNormal: 'Después de eliminarlo, todos los modelos de {provider} no estarán disponibles.',
+				descAffectPrimary: 'Tu modelo principal actual {primary} se ejecuta en {provider}. Después de eliminarlo, el principal quedará inválido y el agente no podrá conversar — tendrás que elegir uno nuevo.',
+				confirmButton: 'Eliminar',
+				confirmButtonStrong: 'Eliminar de todos modos',
+			},
+		},
 	},
 };

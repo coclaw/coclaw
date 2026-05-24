@@ -495,5 +495,28 @@ export const frMessages = {
 			errInvalidArgs: 'Entrée non valide. Veuillez vérifier et réessayer.',
 			errIoFailed: 'Échec de l\'enregistrement. Veuillez réessayer.',
 		},
+		primary: {
+			title: 'Modèle principal par défaut',
+			notSetWarning: 'Aucun modèle principal configuré. L\'agent ne peut pas encore discuter.',
+			invalidWarning: 'Le modèle principal n\'est plus disponible. Veuillez en choisir un nouveau.',
+			changeButton: 'Modifier',
+			selectButton: 'Choisir le principal',
+		},
+		providerAuth: {
+			title: 'Identifiants API',
+			addButton: 'Ajouter',
+			removeButton: 'Supprimer',
+			emptyState: 'Aucun fournisseur configuré pour l\'instant. Ajoutez une clé API pour commencer.',
+			loadFailed: 'Échec du chargement. Veuillez réessayer.',
+			removeSuccess: '{provider} supprimé.',
+			removeFailed: 'Échec de la suppression de {provider}.',
+			remove: {
+				title: 'Supprimer {provider} ?',
+				descNormal: 'Après suppression, tous les modèles {provider} seront indisponibles.',
+				descAffectPrimary: 'Votre modèle principal actuel {primary} s\'exécute sur {provider}. Après suppression, le principal deviendra invalide et l\'agent ne pourra plus discuter — vous devrez choisir un nouveau principal.',
+				confirmButton: 'Supprimer',
+				confirmButtonStrong: 'Supprimer quand même',
+			},
+		},
 	},
 };

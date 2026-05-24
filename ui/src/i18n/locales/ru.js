@@ -495,5 +495,28 @@ export const ruMessages = {
 			errInvalidArgs: 'Неверный ввод. Проверьте и попробуйте ещё раз.',
 			errIoFailed: 'Не удалось сохранить. Попробуйте ещё раз.',
 		},
+		primary: {
+			title: 'Основная модель по умолчанию',
+			notSetWarning: 'Основная модель не настроена. Агент пока не может общаться.',
+			invalidWarning: 'Основная модель больше не доступна. Пожалуйста, выберите новую.',
+			changeButton: 'Изменить',
+			selectButton: 'Выбрать основную',
+		},
+		providerAuth: {
+			title: 'Учётные данные API',
+			addButton: 'Добавить',
+			removeButton: 'Удалить',
+			emptyState: 'Ещё нет ни одного поставщика. Добавьте ключ API, чтобы начать.',
+			loadFailed: 'Не удалось загрузить. Попробуйте ещё раз.',
+			removeSuccess: 'Поставщик {provider} удалён.',
+			removeFailed: 'Не удалось удалить {provider}.',
+			remove: {
+				title: 'Удалить {provider}?',
+				descNormal: 'После удаления все модели {provider} станут недоступны.',
+				descAffectPrimary: 'Текущая основная модель {primary} работает на {provider}. После удаления основная станет недействительной, и агент не сможет общаться — потребуется выбрать новую основную.',
+				confirmButton: 'Удалить',
+				confirmButtonStrong: 'Всё равно удалить',
+			},
+		},
 	},
 };

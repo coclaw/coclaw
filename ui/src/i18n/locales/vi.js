@@ -495,5 +495,28 @@ export const viMessages = {
 			errInvalidArgs: 'Dữ liệu nhập không hợp lệ. Vui lòng kiểm tra và thử lại.',
 			errIoFailed: 'Lưu thất bại. Vui lòng thử lại.',
 		},
+		primary: {
+			title: 'Mô hình chính mặc định',
+			notSetWarning: 'Chưa cấu hình mô hình chính. Agent chưa thể trò chuyện.',
+			invalidWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn mô hình mới.',
+			changeButton: 'Đổi',
+			selectButton: 'Chọn mô hình chính',
+		},
+		providerAuth: {
+			title: 'Thông tin xác thực API',
+			addButton: 'Thêm',
+			removeButton: 'Gỡ',
+			emptyState: 'Chưa có nhà cung cấp nào. Thêm khóa API để bắt đầu.',
+			loadFailed: 'Tải thất bại. Vui lòng thử lại.',
+			removeSuccess: 'Đã gỡ {provider}.',
+			removeFailed: 'Gỡ {provider} thất bại.',
+			remove: {
+				title: 'Gỡ {provider}?',
+				descNormal: 'Sau khi gỡ, mọi mô hình của {provider} sẽ không khả dụng.',
+				descAffectPrimary: 'Mô hình chính hiện tại {primary} đang chạy trên {provider}. Sau khi gỡ, mô hình chính sẽ không còn hợp lệ và agent không thể trò chuyện — bạn cần chọn mô hình chính mới.',
+				confirmButton: 'Gỡ',
+				confirmButtonStrong: 'Vẫn gỡ',
+			},
+		},
 	},
 };

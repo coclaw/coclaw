@@ -495,5 +495,28 @@ export const koMessages = {
 			errInvalidArgs: '입력이 잘못되었습니다. 확인 후 다시 시도해 주세요.',
 			errIoFailed: '저장 실패. 다시 시도해 주세요.',
 		},
+		primary: {
+			title: '기본 주 모델',
+			notSetWarning: '주 모델이 설정되지 않았습니다. 에이전트가 아직 대화할 수 없습니다.',
+			invalidWarning: '주 모델을 더 이상 사용할 수 없습니다. 새로 선택해 주세요.',
+			changeButton: '변경',
+			selectButton: '주 모델 선택',
+		},
+		providerAuth: {
+			title: 'API 자격 증명',
+			addButton: '추가',
+			removeButton: '제거',
+			emptyState: '아직 등록된 공급자가 없습니다. API 키를 추가해 시작하세요.',
+			loadFailed: '로드 실패. 다시 시도해 주세요.',
+			removeSuccess: '{provider}을(를) 제거했습니다.',
+			removeFailed: '{provider} 제거에 실패했습니다.',
+			remove: {
+				title: '{provider}을(를) 제거할까요?',
+				descNormal: '제거 후에는 {provider}의 모든 모델을 사용할 수 없게 됩니다.',
+				descAffectPrimary: '현재 주 모델 {primary}은(는) {provider}에서 동작합니다. 제거하면 주 모델이 무효가 되고 에이전트가 대화할 수 없게 됩니다 — 새 주 모델을 선택해야 합니다.',
+				confirmButton: '제거',
+				confirmButtonStrong: '그래도 제거',
+			},
+		},
 	},
 };

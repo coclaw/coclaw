@@ -495,5 +495,28 @@ export const zhTWMessages = {
 			errInvalidArgs: '輸入有誤，請檢查後重試',
 			errIoFailed: '儲存失敗，請重試',
 		},
+		primary: {
+			title: '預設主模型',
+			notSetWarning: '未設定主模型，agent 無法對話',
+			invalidWarning: '主模型已失效，請重新選擇',
+			changeButton: '更換',
+			selectButton: '選擇主模型',
+		},
+		providerAuth: {
+			title: 'API 憑證',
+			addButton: '新增',
+			removeButton: '撤銷',
+			emptyState: '尚未設定任何 provider，先新增一個 API key',
+			loadFailed: '載入失敗，請重試',
+			removeSuccess: '已撤銷 {provider}',
+			removeFailed: '撤銷 {provider} 失敗',
+			remove: {
+				title: '撤銷 {provider}？',
+				descNormal: '撤銷後 {provider} 的所有模型將無法使用。',
+				descAffectPrimary: '當前預設主模型 {primary} 屬於 {provider}。撤銷後主模型將失效，agent 無法對話，需要重新選擇主模型。',
+				confirmButton: '撤銷',
+				confirmButtonStrong: '仍要撤銷',
+			},
+		},
 	},
 };

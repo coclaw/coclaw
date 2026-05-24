@@ -495,5 +495,28 @@ export const zhCNMessages = {
 			errInvalidArgs: '输入有误，请检查后重试',
 			errIoFailed: '保存失败，请重试',
 		},
+		primary: {
+			title: '默认主模型',
+			notSetWarning: '未配主模型，agent 无法对话',
+			invalidWarning: '主模型已失效，请重新选择',
+			changeButton: '更换',
+			selectButton: '选择主模型',
+		},
+		providerAuth: {
+			title: 'API 凭据',
+			addButton: '添加',
+			removeButton: '撤销',
+			emptyState: '还没配任何 provider，先添加一个 API key',
+			loadFailed: '加载失败，请重试',
+			removeSuccess: '已撤销 {provider}',
+			removeFailed: '撤销 {provider} 失败',
+			remove: {
+				title: '撤销 {provider}？',
+				descNormal: '撤销后 {provider} 的所有模型将无法使用。',
+				descAffectPrimary: '当前默认主模型 {primary} 落在 {provider} 上。撤销后主模型将失效，agent 无法对话，需要重新选一个主模型。',
+				confirmButton: '撤销',
+				confirmButtonStrong: '仍然撤销',
+			},
+		},
 	},
 };

@@ -495,5 +495,28 @@ export const deMessages = {
 			errInvalidArgs: 'Ungültige Eingabe. Bitte prüfen und erneut versuchen.',
 			errIoFailed: 'Speichern fehlgeschlagen. Bitte erneut versuchen.',
 		},
+		primary: {
+			title: 'Standard-Hauptmodell',
+			notSetWarning: 'Kein Hauptmodell konfiguriert. Der Agent kann noch nicht chatten.',
+			invalidWarning: 'Das Hauptmodell ist nicht mehr verfügbar. Bitte wähle ein neues aus.',
+			changeButton: 'Ändern',
+			selectButton: 'Hauptmodell wählen',
+		},
+		providerAuth: {
+			title: 'API-Anmeldedaten',
+			addButton: 'Hinzufügen',
+			removeButton: 'Entfernen',
+			emptyState: 'Noch kein Provider konfiguriert. Füge einen API-Schlüssel hinzu, um zu beginnen.',
+			loadFailed: 'Laden fehlgeschlagen. Bitte erneut versuchen.',
+			removeSuccess: '{provider} entfernt.',
+			removeFailed: 'Entfernen von {provider} fehlgeschlagen.',
+			remove: {
+				title: '{provider} entfernen?',
+				descNormal: 'Nach dem Entfernen sind alle {provider}-Modelle nicht mehr verfügbar.',
+				descAffectPrimary: 'Dein aktuelles Hauptmodell {primary} läuft auf {provider}. Nach dem Entfernen wird das Hauptmodell ungültig und der Agent kann nicht chatten — du musst ein neues Hauptmodell auswählen.',
+				confirmButton: 'Entfernen',
+				confirmButtonStrong: 'Trotzdem entfernen',
+			},
+		},
 	},
 };

@@ -495,5 +495,28 @@ export const jaMessages = {
 			errInvalidArgs: '入力が正しくありません。確認してもう一度お試しください。',
 			errIoFailed: '保存に失敗しました。もう一度お試しください。',
 		},
+		primary: {
+			title: 'デフォルトのメインモデル',
+			notSetWarning: 'メインモデルが設定されていません。エージェントはまだ会話できません。',
+			invalidWarning: 'メインモデルは利用できなくなりました。新しいものを選んでください。',
+			changeButton: '変更',
+			selectButton: 'メインを選択',
+		},
+		providerAuth: {
+			title: 'API 認証情報',
+			addButton: '追加',
+			removeButton: '削除',
+			emptyState: 'まだプロバイダが設定されていません。API キーを追加して始めましょう。',
+			loadFailed: '読み込みに失敗しました。もう一度お試しください。',
+			removeSuccess: '{provider} を削除しました。',
+			removeFailed: '{provider} の削除に失敗しました。',
+			remove: {
+				title: '{provider} を削除しますか？',
+				descNormal: '削除後、{provider} のすべてのモデルは利用できなくなります。',
+				descAffectPrimary: '現在のメインモデル {primary} は {provider} 上で動作しています。削除するとメインは無効になり、エージェントは会話できなくなります — 新しいメインを選び直してください。',
+				confirmButton: '削除',
+				confirmButtonStrong: 'それでも削除',
+			},
+		},
 	},
 };

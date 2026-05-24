@@ -495,5 +495,28 @@ export const hiMessages = {
 			errInvalidArgs: 'अमान्य इनपुट। कृपया जाँचें और पुनः प्रयास करें।',
 			errIoFailed: 'सहेजना विफल। कृपया पुनः प्रयास करें।',
 		},
+		primary: {
+			title: 'डिफ़ॉल्ट मुख्य मॉडल',
+			notSetWarning: 'कोई मुख्य मॉडल कॉन्फ़िगर नहीं है। एजेंट अभी चैट नहीं कर सकता।',
+			invalidWarning: 'मुख्य मॉडल अब उपलब्ध नहीं है। कृपया एक नया चुनें।',
+			changeButton: 'बदलें',
+			selectButton: 'मुख्य चुनें',
+		},
+		providerAuth: {
+			title: 'API क्रेडेंशियल',
+			addButton: 'जोड़ें',
+			removeButton: 'हटाएँ',
+			emptyState: 'अभी तक कोई प्रदाता कॉन्फ़िगर नहीं है। आरंभ करने के लिए एक API कुंजी जोड़ें।',
+			loadFailed: 'लोड करना विफल। कृपया पुनः प्रयास करें।',
+			removeSuccess: '{provider} हटाया गया।',
+			removeFailed: '{provider} को हटाने में विफल।',
+			remove: {
+				title: 'क्या {provider} हटाएँ?',
+				descNormal: 'हटाने के बाद, {provider} के सभी मॉडल अनुपलब्ध हो जाएँगे।',
+				descAffectPrimary: 'आपका वर्तमान मुख्य मॉडल {primary}, {provider} पर चलता है। हटाने के बाद मुख्य अमान्य हो जाएगा और एजेंट चैट नहीं कर पाएगा — आपको एक नया मुख्य चुनना होगा।',
+				confirmButton: 'हटाएँ',
+				confirmButtonStrong: 'फिर भी हटाएँ',
+			},
+		},
 	},
 };

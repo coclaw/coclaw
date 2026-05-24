@@ -495,5 +495,28 @@ export const enMessages = {
 			errInvalidArgs: 'Invalid input. Please check and try again.',
 			errIoFailed: 'Save failed. Please retry.',
 		},
+		primary: {
+			title: 'Default primary model',
+			notSetWarning: 'No primary model configured. The agent cannot chat yet.',
+			invalidWarning: 'Primary model is no longer available. Please pick a new one.',
+			changeButton: 'Change',
+			selectButton: 'Select primary',
+		},
+		providerAuth: {
+			title: 'API credentials',
+			addButton: 'Add',
+			removeButton: 'Remove',
+			emptyState: 'No provider configured yet. Add an API key to get started.',
+			loadFailed: 'Failed to load. Please retry.',
+			removeSuccess: 'Removed {provider}.',
+			removeFailed: 'Failed to remove {provider}.',
+			remove: {
+				title: 'Remove {provider}?',
+				descNormal: 'After removing, all {provider} models will be unavailable.',
+				descAffectPrimary: 'Your current primary model {primary} runs on {provider}. After removing, the primary will become invalid and the agent will not be able to chat — you will need to pick a new primary.',
+				confirmButton: 'Remove',
+				confirmButtonStrong: 'Remove anyway',
+			},
+		},
 	},
 };

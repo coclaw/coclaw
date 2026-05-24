@@ -30,6 +30,8 @@ declare module 'vue' {
     MobileBottomTabs: typeof import('./src/components/MobileBottomTabs.vue')['default']
     MobilePageHeader: typeof import('./src/components/MobilePageHeader.vue')['default']
     ProgressRing: typeof import('./src/components/ProgressRing.vue')['default']
+    ProviderAuthRow: typeof import('./src/components/model-config/ProviderAuthRow.vue')['default']
+    RemoveProviderConfirmDialog: typeof import('./src/components/model-config/RemoveProviderConfirmDialog.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SlashCommandMenu: typeof import('./src/components/chat/SlashCommandMenu.vue')['default']
