@@ -623,3 +623,8 @@ X4 触及面比 X1 广，需要重新评估：
    - 修法：合并 finally 逻辑或显式 catch + 再 throw 内层错误（参考 V8 `AggregateError` 模式）
    - 优先级：低；现网仅影响错误诊断深度，不影响功能
 
+5. **ManageClawsPage 窄屏 320px 下 claw 名称 h2 被挤窄**
+   - 现状：`ManageClawsPage.vue` claw 卡片标题 h2 在 320px 极窄屏下被同行操作按钮挤窄，依赖 `truncate` 兜底；视觉降级但不破损
+   - 修法：调整窄屏 flex/grid 布局让标题独占一行，或为 320px 加专属断点处理
+   - 优先级：极低；当前 truncate 已可 cover，列入跟踪
+
