@@ -501,7 +501,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 ### G 阶段其它 Low 条目
 
-- **斜杠命令 bind 在校验 code 之前调 cancelActiveEnroll**（`index.js:696` 附近，本次引入）：无效 code 也会先取消 enroll。修法：先校验 positionals[0] 再 doBind。
 - **activeEnrollAbort 提前 set**（`index.js:306`，预存）：`enrollClaw()` 同步抛错时 controller 残留。修法：成功后再 set 或 catch 中清。
 - **gateway message listener catch 内 logger 抛形成 unhandled rejection**（`realtime-bridge.js:860`，本次引入 `f983017`）：嵌套 try/catch 即可。
 - **非法 DC gateway 请求带合法 id 时仍 broadcast 错误响应**（`realtime-bridge.js:966-984`，本次引入 `c545128`）：可改 unicast 当 connId 已知。

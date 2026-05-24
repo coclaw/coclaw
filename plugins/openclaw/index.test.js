@@ -826,6 +826,79 @@ test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async (
 	}
 });
 
+test('slash /coclaw bind 空 code 时不触发 cancelActiveEnroll（先校验后副作用）', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = process.env.HOME;
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-slash-bind-empty-'));
+	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
+	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
+	process.env.HOME = nodePath.join(dir, 'home');
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+	setRuntime({ state: { resolveStateDir: () => dir } });
+
+	// waitDelayMs=10000：claim-codes/wait 不返回，活跃 enroll 持续存在
+	const mock = await createMockServer({ waitDelayMs: 10_000 });
+	const infoLogs = [];
+	const handlers = new Map();
+	let commandHandler;
+	plugin.register({
+		registrationMode: 'full',
+		pluginConfig: { serverUrl: mock.baseUrl },
+		runtime: { state: { resolveStateDir: () => dir } },
+		logger: {
+			info(msg) { infoLogs.push(String(msg)); },
+			warn() {},
+			error() {},
+		},
+		registerChannel() {},
+		registerCli() {},
+		registerService() {},
+		registerCommand(spec) { commandHandler = spec.handler; },
+		registerGatewayMethod(name, handler) { handlers.set(name, handler); },
+	});
+
+	try {
+		// 先发起 enroll，让 activeEnrollAbort 处于 set 状态
+		await new Promise((resolve) => {
+			handlers.get('coclaw.enroll')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+		assert.equal(
+			infoLogs.filter((l) => l.includes('cancelling active enroll')).length,
+			0,
+			'enroll 自身不应触发 cancel（无前置）',
+		);
+
+		// 空 code 的 slash bind 应预检失败，不进 doBind / cancelActiveEnroll
+		const failed = await commandHandler({ args: 'bind' });
+		assert.equal(String(failed.text), 'Error: binding code is required');
+		assert.equal(
+			infoLogs.filter((l) => l.includes('cancelling active enroll')).length,
+			0,
+			'空 code 的 slash bind 不应取消进行中的 enroll',
+		);
+
+		// 收尾：通过 unbind RPC 触发 cancelActiveEnroll，abort 挂在 mock 上的 wait
+		// 否则 fire-and-forget 的 axios 一直等 mock 的 10s 长轮询，拖垮关 mock 与进程退出
+		await new Promise((resolve) => {
+			handlers.get('coclaw.unbind')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true }).catch(() => {});
+		process.chdir(prevCwd);
+		if (prevHome === undefined) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		await mock.close();
+	}
+});
+
 test('command handler should cover help/unknown/error/success paths', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = process.env.HOME;

@@ -812,8 +812,13 @@ const plugin = {
 
 				try {
 					if (action === 'bind') {
+						// 先校验非空 code，避免无效输入触发 doBind 内的 cancelActiveEnroll 副作用
+						const code = positionals[0];
+						if (typeof code !== 'string' || code.length === 0) {
+							return { text: 'Error: binding code is required' };
+						}
 						const result = await doBind({
-							code: positionals[0],
+							code,
 							serverUrl: options.server,
 						});
 						return { text: bindOk(result) };
