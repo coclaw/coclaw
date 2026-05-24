@@ -108,6 +108,28 @@ describe('ProgressRing', () => {
 			expect(w.find('svg').classes()).toContain('animate-spin');
 		});
 
+		test('value=Infinity → 不确定态（避免 clamp 后画出误导性满环）', () => {
+			const w = mountRing({ value: Infinity });
+			expect(w.find('svg').classes()).toContain('animate-spin');
+			expect(w.find('[role="progressbar"]').attributes('aria-valuenow')).toBeUndefined();
+		});
+
+		test('value=-Infinity → 不确定态', () => {
+			const w = mountRing({ value: -Infinity });
+			expect(w.find('svg').classes()).toContain('animate-spin');
+			expect(w.find('[role="progressbar"]').attributes('aria-valuenow')).toBeUndefined();
+		});
+
+		test('value 为字符串数字 → 不确定态（Number.isFinite 不强制类型转换）', () => {
+			// prop validator 在 dev 模式会警告非 Number 类型，用 warnHandler 抑制后单独验证 runtime 行为
+			const w = mount(ProgressRing, {
+				props: { value: '0.5' },
+				global: { config: { warnHandler: () => {} } },
+			});
+			expect(w.find('svg').classes()).toContain('animate-spin');
+			expect(w.find('[role="progressbar"]').attributes('aria-valuenow')).toBeUndefined();
+		});
+
 		test('不确定态 dashArray 是 "弧 间隔" 而非整圈', () => {
 			const w = mountRing({ value: null });
 			const arc = w.findAll('circle')[1];

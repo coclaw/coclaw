@@ -15,14 +15,14 @@
 		>
 			<!-- 轨道 -->
 			<circle
-				:cx="center" :cy="center" :r="radius"
+				:cx="center" :cy="center" r="50"
 				fill="none"
 				:stroke-width="strokeWidth"
 				:class="trackClass"
 			/>
 			<!-- 进度弧 -->
 			<circle
-				:cx="center" :cy="center" :r="radius"
+				:cx="center" :cy="center" r="50"
 				fill="none"
 				:stroke-width="strokeWidth"
 				stroke-linecap="round"
@@ -42,6 +42,9 @@
 </template>
 
 <script>
+// 基准半径，与模板 <circle r="50"> 及 viewBoxSize = 100 / (1 - thickness/2) 算法绑定（Quasar q-circular-progress 几何）
+const RADIUS = 50;
+
 // 语义色 → 静态 class map(让 Tailwind JIT 能扫描到完整类名)
 const STROKE_CLASSES = {
 	primary: 'stroke-primary',
@@ -82,7 +85,7 @@ export default {
 	},
 	computed: {
 		indeterminate() {
-			return this.value == null || Number.isNaN(this.value);
+			return !Number.isFinite(this.value);
 		},
 		clampedValue() {
 			if (this.indeterminate) return 0;
@@ -90,9 +93,6 @@ export default {
 		},
 		percent() {
 			return Math.round(this.clampedValue * 100);
-		},
-		radius() {
-			return 50;
 		},
 		// Quasar 几何:viewBox = 100 / (1 - thickness/2),strokeWidth = (thickness/2) * viewBox
 		viewBoxSize() {
@@ -105,7 +105,7 @@ export default {
 			return (this.thickness / 2) * this.viewBoxSize;
 		},
 		circumference() {
-			return 2 * Math.PI * this.radius;
+			return 2 * Math.PI * RADIUS;
 		},
 		// 不定态显示 25% 弧长,整体旋转;确定态整圈 dashArray,用 offset 控制可见部分
 		dashArray() {
