@@ -69,6 +69,11 @@ describe('http client', () => {
 		expect(importTimeCreateArg).toEqual(expect.objectContaining({ withCredentials: true }));
 	});
 
+	test('should create axios instance with a 60s global timeout', () => {
+		// 全局超时：防 REST 请求挂死时页面无限转圈（依赖 axios 配 timeout 后总会返回 ECONNABORTED）
+		expect(importTimeCreateArg).toEqual(expect.objectContaining({ timeout: 60_000 }));
+	});
+
 	test('should export the shared client', () => {
 		expect(httpClient).toBe(mockAxiosInstance);
 	});

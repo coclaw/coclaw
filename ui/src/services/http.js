@@ -11,9 +11,12 @@ export function resolveApiBaseUrl() {
 	return 'http://localhost:3000';
 }
 
+// 60s 全局兜底超时：所有 REST 调用平时 < 1s 返回，无刻意长跑接口；
+// 防止偶发服务端 5xx 挂住 / 网络半连接 kernel 未踢 / 代理超长缓冲导致页面无限转圈
 export const httpClient = axios.create({
 	baseURL: resolveApiBaseUrl(),
 	withCredentials: true,
+	timeout: 60_000,
 });
 
 httpClient.interceptors.request.use((config) => {
