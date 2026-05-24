@@ -253,5 +253,16 @@ describe('dc-chunking (UI 侧)', () => {
 
 		expect(received.length).toBe(0);
 	});
+
+	// 跨端 wire-format 常量对齐：plugin（Buffer）与 UI（ArrayBuffer）各自维护一份
+	// dc-chunking.js，分片在一侧发、另一侧重组；任一侧手滑改 FLAG/HEADER_SIZE
+	// 而不动另一侧，DC 通道会整体挂。E2E 信号慢且不精准，靠这条断言把契约钉死。
+	test('线协议常量与 plugin 侧对齐', async () => {
+		const plugin = await import('../../../plugins/openclaw/src/webrtc/dc-chunking.js');
+		expect(FLAG_BEGIN).toBe(plugin.FLAG_BEGIN);
+		expect(FLAG_MIDDLE).toBe(plugin.FLAG_MIDDLE);
+		expect(FLAG_END).toBe(plugin.FLAG_END);
+		expect(HEADER_SIZE).toBe(plugin.HEADER_SIZE);
+	});
 });
 
