@@ -13,6 +13,11 @@
    - 现状：`__doLoadForClaw` 只检查 `clawsStore.byId[id]` 是否存在，不验证是不是同一个 claw 实例。极端时序：claw A 被解绑、同 id 立刻重绑成 claw B，期间 A 的旧 fetch 跑完后会看到 `byId[id]` 存在（指向 B）就把 A 的 raw（以及 SessionItem）写给 B。日常使用几乎不可能触发，但属于已知风险。
    - 修复方向：fetch 启动时记录一个 fingerprint（比如 conn 引用或 claw 的随机 id），写入前与当前 fingerprint 比对；不一致则丢弃。需要先核实业务上有没有可用的 fingerprint。
    - 同源副本（一并修）：**2026-05-24 复核发现** `topics.store.__doLoadForClaw`（topics.store.js:114-130）同样只判 `clawsStore.byId[id]` 不验 conn 身份；与 sessions.store 同套修法（snapshot `useClawConnections().get(id)`，await 后双重比对），不要遗漏。
+   - 另两个同源点（**2026-05-24 deep-review 第二轮新增**）：
+     - `topics.store.createTopic`（topics.store.js:157-178）—— `useClawConnections().get(id)` 拿的 conn 实例 await 后未做身份重核；同 id 重绑窗口可能把旧 plugin 那边创建出来的 topicId 写到新 claw 名下，造成"幽灵话题"（新 claw 刷新 topics 列表时不含这条）
+     - `topics.store.generateTitle`（topics.store.js:225-244）—— 同样 conn 实例无身份重核；窄窗内回包到达时换主，title 应到"幽灵话题"对象上（实际副作用极小，UUID 撞 id 概率几乎为零；登记跟踪以保一致）
+     - 与 `__doLoadForClaw` 共用同套修法（snapshot conn → await 后 `useClawConnections().get(id) === conn` 比对，否则抛 CLAW_DISCONNECTED）；ChatPage 上层已有现成的 CLAW_DISCONNECTED 处理（清 draft + notify + 跳走），无需改调用方
+     - 触发窗口极窄（请求中段同 id 解绑+重绑同时发生），非阻塞
 
 ## chat.store loadMessages 周边的预存问题
 
