@@ -829,6 +829,84 @@ test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async (
 	}
 });
 
+test('coclaw.enroll: enrollClaw 进行中时第二次 enroll 立即取消第一次（early-set 语义）', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = process.env.HOME;
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-enroll-concurrent-'));
+	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
+	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
+	process.env.HOME = nodePath.join(dir, 'home');
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+	setRuntime({ state: { resolveStateDir: () => dir } });
+
+	// claimCodeDelayMs=200：第一次 enrollClaw 卡在服务端往返中，给第二次 enroll 进来的窗口
+	// waitDelayMs=10000：fire-and-forget wait 挂着，便于观察 cancel
+	const mock = await createMockServer({ claimCodeDelayMs: 200, waitDelayMs: 10_000 });
+	const infoLogs = [];
+	const handlers = new Map();
+	plugin.register({
+		registrationMode: 'full',
+		pluginConfig: { serverUrl: mock.baseUrl },
+		runtime: { state: { resolveStateDir: () => dir } },
+		logger: {
+			info(msg) { infoLogs.push(String(msg)); },
+			warn() {},
+			error() {},
+		},
+		registerChannel() {},
+		registerCli() {},
+		registerService() {},
+		registerCommand() {},
+		registerGatewayMethod(name, handler) { handlers.set(name, handler); },
+	});
+
+	try {
+		// 1) 不 await 直接发起第一次 enroll，让它卡在 mock 的 claim-codes 延迟里
+		const p1 = new Promise((resolve) => {
+			handlers.get('coclaw.enroll')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+
+		// 让事件循环跑一轮，确保第一次的 cancelActiveEnroll + early-set 已执行、进入 await enrollClaw
+		await new Promise((resolve) => setImmediate(resolve));
+
+		// 2) 在第一次的 enrollClaw 仍在挂着时，发起第二次 enroll
+		const p2 = new Promise((resolve) => {
+			handlers.get('coclaw.enroll')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+
+		await Promise.all([p1, p2]);
+
+		// 第二次 enroll 进来时若 ac1 已 early-set 在全局，则 cancelActiveEnroll 会 abort ac1 并打 1 行 info
+		assert.equal(
+			infoLogs.filter((l) => l.includes('cancelling active enroll')).length,
+			1,
+			'第二次 enroll 进来时应取消第一次的 controller',
+		);
+
+		// 收尾：触发 cancelActiveEnroll 让 ac2 的 wait 也被 abort
+		await new Promise((resolve) => {
+			handlers.get('coclaw.unbind')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true }).catch(() => {});
+		process.chdir(prevCwd);
+		if (prevHome === undefined) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		await mock.close();
+	}
+});
+
 test('coclaw.enroll: enrollClaw 抛错时不残留 activeEnrollAbort', async () => {
 	const prevCwd = process.cwd();
 	const prevHome = process.env.HOME;

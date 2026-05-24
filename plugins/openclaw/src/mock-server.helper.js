@@ -1,6 +1,6 @@
 import http from 'node:http';
 
-export async function createMockServer({ unbindStatus, waitDelayMs = 0 } = {}) {
+export async function createMockServer({ unbindStatus, waitDelayMs = 0, claimCodeDelayMs = 0 } = {}) {
 	const state = {
 		bound: false,
 		token: 'mock-token-1',
@@ -27,12 +27,24 @@ export async function createMockServer({ unbindStatus, waitDelayMs = 0 } = {}) {
 		}
 
 		if (req.method === 'POST' && req.url === '/api/v1/claws/claim-codes') {
-			res.writeHead(201, { 'content-type': 'application/json' });
-			res.end(JSON.stringify({
-				code: '88887777',
-				expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-				waitToken: 'mock-wait-token',
-			}));
+			// claimCodeDelayMs > 0 时延迟响应，便于测试 enroll await 期间的并发入口
+			const respondCreated = () => {
+				if (res.writableEnded) return;
+				res.writeHead(201, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({
+					code: '88887777',
+					expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+					waitToken: 'mock-wait-token',
+				}));
+			};
+			if (claimCodeDelayMs > 0) {
+				const timer = setTimeout(respondCreated, claimCodeDelayMs);
+				timer.unref?.();
+				req.on('close', () => clearTimeout(timer));
+			}
+			else {
+				respondCreated();
+			}
 			return;
 		}
 
