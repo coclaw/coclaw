@@ -1,5 +1,273 @@
 # @coclaw/ui
 
+## 0.25.5
+
+### Patch Changes
+
+- dbffffa: fix(ui): guard AddClawPage against double-click orphan binding codes
+
+  Rapid taps on the retry/restart button on the "Add Claw" page could
+  fire `createBindingCode` twice, with the later response overwriting
+  `bindingCode`. The first code became an orphan that lived on the
+  server until natural expiry. `startBinding` now bails early if
+  `this.loading` is already true, and the error-state "retry" button
+  gains `:loading="loading"` so the UButton auto-disables during work.
+
+  The earlier 15s REST fallback for SSE stalls is dropped: claws data
+  is sourced exclusively from the global SSE snapshot pipe, and the
+  sole REST `listClaws()` caller was this fallback. Falling back to
+  REST here also introduced a new orphan-code path on quick unmount.
+  Better UX for "SSE never connects" will be designed separately.
+
+- 7e1f6ef: fix(ui): clear pending cancel intent in slash command cleanup
+
+  `__pendingCancelIntent` is consumed by the normal-message flow's
+  `onAccepted` handover — it transitions a pre-accept STOP click into a
+  real cancel once the server confirms. Slash commands take a different
+  RPC path (`chat.send`) and never trigger `onAccepted`, so an intent set
+  during slash execution had no consumer and lingered after the command
+  finished, keeping `isCancelling` stuck at `true` and the STOP button in
+  its "cancelling" disabled state until the next outgoing message.
+
+  In practice the STOP button is disabled during slash commands at the UI
+  layer (ChatPage `cancel-disabled`), so users can't normally reach
+  `cancelSend()` to set the intent in the first place. But programmatic
+  paths (E2E scripts, direct store calls) bypass that guard, and future
+  regressions in the UI disable logic would silently expose the stuck
+  state. Clearing the intent at the top of `__cleanupSlashCommand` makes
+  the cleanup function the complete state sink for slash command
+  termination across all six exit paths (timeout, RPC failure, RPC throw,
+  event final, event error, WS reconnect).
+
+- d1bb26a: fix(ui): guarantee chat-store-manager index cleanup on dispose / promote failure
+
+  `dispose(storeKey)` previously called `store.dispose()` then `store.$dispose()`
+  without guarding either; if either threw, the trailing
+  `instances.delete(storeKey)` + `topicLru.splice(...)` never ran, leaving a
+  half-disposed store in both indices. The next `get(storeKey)` would return
+  that zombie reference and any caller acting on it would either re-throw or
+  silently read stale state.
+
+  `promoteToTopic` had a related leak: a newly created topic store is inserted
+  into `instances`/`topicLru` by `get()`, but if the subsequent
+  `newStore.activate({skipLoad:true})` threw, the new store was never rolled
+  back. Re-entering the same topicId would yield an uninitialized store.
+
+  Now `dispose` wraps each release step in its own try/catch (warns + swallows;
+  contract tightens to "never throws") and always reaches the index cleanup.
+  `promoteToTopic` snapshots `instances.has(newStoreKey)` before `get()` so
+  that an `activate()` failure rolls back only stores the call itself created
+  — a pre-existing same-key store (rare race, covered by existing test) is
+  left untouched. The original error is rethrown either way.
+
+  `__evictTopics`'s outer try/catch + hard-cleanup branch becomes dead path
+  under the new dispose contract; kept as defense-in-depth so a future
+  regression to "dispose may throw" stays contained.
+
+- 0a7fbff: fix(ui): pin auto-title generation to the chat the message was sent from
+
+  `__tryGenerateTitle` previously read `this.chatStore` / `this.isTopicRoute`,
+  which is whatever the user is currently looking at. If the user sent a
+  message from topic A, then swiped to topic B (or a non-topic chat) while
+  the `sendMessage` await was still in flight, the post-accept branch
+  would trigger title generation against B — letting an LLM name an
+  unrelated chat.
+
+  The function now takes a `targetStore` snapshot captured at the
+  `sendMessage` entry. Both call sites (`__handleSend` and
+  `__handleNewTopicSend`) pass their existing `targetStore` variable.
+  The `!this.isTopicRoute` guard is removed; the function now checks
+  `targetStore.topicMode` (a store-level property unaffected by current
+  route).
+
+- b1c8261: fix(ui): deep-review round-2 batch of small UX, defensive, and CSS fixes
+
+  - ChatPage: when `createTopic` rejects mid-`__handleNewTopicSend` with
+    `CLAW_DISCONNECTED`, replace route to `/`. Previously the user was
+    left on `/topics/new?claw=<unbound>`, which is a UX dead-end —
+    retapping send re-throws the same error in a toast loop.
+  - ManageClawsPage: claw-name container gains `min-w-0` and the name
+    `<h2>` gains `truncate min-w-0`; the status dot, rename pencil, and
+    agent-count badge gain `shrink-0`. Applied to both the dashboard and
+    the offline-fallback variants. Prevents long claw names + cost
+    blocks from overflowing on narrow mobile viewports.
+  - AddClawPage: `cancelBindingCode` failure now emits a single
+    `console.warn` with the code and the error, instead of swallowing
+    silently. Behavior unchanged — codes still expire naturally if
+    cancel fails.
+  - claws.store `__refreshIfStale`: the outer
+    `refreshClawResources(...).catch(...)` previously dropped the error
+    silently as an unhandled-rejection sentinel. Now logs a `warn` with
+    the `clawId` and the error so that any real bug in a future
+    defensive layer leaves a diagnostic trail.
+  - chat-store-manager dispose: the two `warn` lines for
+    `store.dispose` / `$dispose` throws now pass the error object as a
+    separate arg instead of interpolating `err?.message`, preserving the
+    stack and showing the real value for non-Error throws.
+  - topics.store / sessions.store: the per-claw load cleanup is rewired
+    from `promise.finally(cleanup)` to `promise.then(cleanup, cleanup)`.
+    `finally` returns a new promise that would convert any internal
+    `catch` gap into an `unhandledrejection`; the two-arg `then` form
+    swallows the rejection without depending on the inner code never
+    regressing.
+
+- cde443e: fix(ui): set a 60s global timeout on the shared REST httpClient
+
+  The shared `axios` instance had no `timeout` set, which means a
+  stalled response (server 5xx hang, half-closed TCP the kernel hasn't
+  reaped, oversized proxy buffer) would leave the calling page
+  spinning forever with no self-recovery path. All current REST
+  endpoints (auth, user info, TURN credentials, web bots, server
+  info, admin) return well under one second on the happy path, so a
+  60s bound is comfortably generous while still bounding the worst-
+  case user wait.
+
+  Scope of the 60s ceiling — only the shared REST httpClient. Not
+  affected (each has its own timing):
+
+  - SSE event streams use the browser-native `EventSource` (user
+    status, claws status, admin) — no axios path
+  - The signaling channel uses the browser-native `WebSocket` with
+    its own heartbeat / reconnect / connect timeout
+  - WebRTC DataChannel RPCs are routed through `ClawConnection` with
+    its own two-layer timeout model (connectTimeout / requestTimeout)
+  - The remote-log channel keeps a separate axios instance with its
+    own pacing
+
+- 0b251b5: chore(ui): surface fire-and-forget loader failures in claw-lifecycle via console.warn
+
+  Replace the seven `.catch(() => {})` swallows in `claw-lifecycle.js`
+  (`initClawResources` + `refreshClawResources`) with thin
+  `console.warn('[lifecycle] <phase> <loader> failed clawId=%s:', id, err)`
+  wrappers. The fire-and-forget semantics are preserved — each loader
+  still has its own internal `try/catch + warn + no rethrow`, so the
+  outer catch rarely fires, but when it does (e.g. unexpected
+  programming error in a loader) there will now be a diagnostic trail
+  instead of a silent black hole.
+
+  No behavior change beyond logging.
+
+- 2af4523: fix(ui): make MainList row actions visible on keyboard Tab focus
+
+  The three trailing action containers on each list row (`.agent-actions`,
+  `.web-agent-actions`, `.topic-actions`) were `opacity-0
+group-hover:opacity-100`. Keyboard users tabbing through the list landed
+  focus on the action trigger button but the button was invisible — only
+  the mouse-hover and touch-device (`@media (hover: none)`) paths had
+  coverage.
+
+  Add `group-focus-within:opacity-100` to all three classes so the button
+  becomes visible whenever any descendant (the trigger) receives focus.
+  Existing hover and touch paths are unchanged.
+
+- 978573e: feat(ui): show monthly cost on ManageClawsPage Claw card
+
+  `dashboard.store` already loads `usage.cost` and stores the result on
+  `entry.instance.monthlyCost`, but ManageClawsPage never rendered it —
+  the cost data was fetched on every page load and silently discarded.
+
+  The inline Claw header now mirrors `InstanceOverview.vue`'s "name + cost"
+  two-column layout: name/status/badge on the left, formatted monthly cost
+  (via `Intl.NumberFormat` currency) on the right. The block is hidden when
+  `monthlyCost` is missing or has no `total`.
+
+  `<InstanceOverview>` itself is still not mounted — ManageClawsPage already
+  duplicates the rest of the template inline, so mounting the component
+  would double-render. The 5-line inline addition keeps the existing layout
+  untouched.
+
+- cbbb6d9: fix(ui): i18n the ProgressRing aria-label at the three call sites
+
+  `ProgressRing` defaults its `aria-label` prop to the hardcoded English
+  string "Progress", and none of its three call sites — the upload overlay
+  in `ChatInput`, the running task in `FileUploadItem`, and the download
+  progress in `FileListItem` — overrode it. Screen-reader users in any
+  non-English locale heard the same generic English label regardless of
+  whether the ring meant "uploading" or "downloading".
+
+  Adds two i18n keys (`files.uploading`, `files.downloading`) to all 12
+  locales and wires `:aria-label="$t('files.uploading' | 'files.downloading')"`
+  onto the three call sites. The component default ("Progress") is kept
+  as a generic fallback for any future scenario-agnostic usage.
+
+- fe636b1: refactor(ui): tighten ProgressRing indeterminate check and demote radius computed to const
+
+  `indeterminate` used to check only `value == null || Number.isNaN(value)`,
+  which missed `±Infinity` and non-Number runtime values. Anomalous inputs
+  would slip through `Math.min/max` clamping and paint a deceptive static
+  full/empty ring instead of the spinner that "we don't know the progress"
+  should display. Replaced with `!Number.isFinite(value)`, which covers
+  null, undefined, NaN, ±Infinity, and any non-number coerced through
+  runtime (string, object).
+
+  `radius` was a `computed` returning the literal `50` with no dependencies —
+  a Quasar q-circular-progress geometry constant that was never reactive.
+  Promoted to a module-level `const RADIUS = 50` (with intent comment),
+  inlined in the template `<circle r="50">`, and referenced from
+  `circumference()`. No runtime/visual change.
+
+  No call site is affected (all existing call sites pass real numbers in
+  `[0, 1]` or `null`); the indeterminate-check change is purely defensive
+  against anomalous runtime inputs.
+
+- 45f1fa1: fix(ui): i18n the "More" aria-label on row action trigger buttons
+
+  `AgentItemActions`, `TopicItemActions`, and `WebAgentItemActions` all
+  rendered their popover trigger button with a hard-coded English
+  `aria-label="More"`. Screen-reader users on Chinese / Japanese / Korean
+  etc. heard mixed-language output. Wire the trigger label through a new
+  `common.moreActions` i18n key, translated across all 12 locales.
+
+- b3356a3: fix(ui): guarantee revokeObjectURL on Web saveBlobToFile error paths
+
+  `saveBlobToFile` on the Web branch did `createObjectURL → appendChild →
+click → removeChild → revokeObjectURL` as a straight-line sequence. If
+  any step in the middle threw (especially `a.click()`), the function
+  exited without revoking the ObjectURL — the URL stayed reachable until
+  the browser tab closed.
+
+  Wrap the DOM operations in nested try/finally so `revokeObjectURL` (and
+  `removeChild`) run on the unwind path. DOM step exceptions are still
+  re-thrown so callers see the failure.
+
+- 20ab951: fix(ui): drop local topic write when claw is unbound mid-createTopic
+
+  `topics.store.createTopic` would `await conn.request('coclaw.topics.create',
+...)` then unconditionally write `this.byId[topicId]` with the captured
+  `clawId`. If the claw was unbound from another device while the request
+  was in flight, the SSE `claw.unbound` push synchronously cleared the
+  claw from `clawsStore.byId` and `removeByClaw` purged the claw's
+  existing topics — but the in-flight `createTopic` would still come back
+  and add a fresh entry pointing at a claw that no longer exists. That
+  record then rendered in `MainList` as a topic that errored on click.
+
+  After the await, re-check `clawsStore.byId[clawId]`; if the claw is
+  gone, return the `topicId` (the plugin-side JSON record is persistent
+  and rightful — it'll come back via `loadTopicsForClaw` the next time
+  the same claw is rebound) but skip the local UI write. No rollback RPC
+  to the plugin: the topic is real history.
+
+- dbce22f: fix(ui): throw CLAW_DISCONNECTED instead of returning topicId when claw unbinds mid-createTopic
+
+  Follow-up to the createTopic mid-unbind guard. The previous fix correctly
+  skipped the local `byId` write when `clawsStore.byId[clawId]` was empty
+  after the await, but still returned the `topicId` to the caller. The sole
+  caller `ChatPage.__handleNewTopicSend` took that id, promoted the
+  `new-topic:*` store to `topic:*`, called `router.replace` to the new
+  topic route, and finally invoked `sendMessage`. Because `topicsStore.byId`
+  was deliberately not written, the new route's `chatStore` computed
+  hit `topicsStore.findTopic(sid) === null` and returned null — the user
+  ended up on a blank topic page while the trailing `sendMessage` rejected
+  on a disconnected claw.
+
+  Now `createTopic` throws an `Error` with `code = 'CLAW_DISCONNECTED'`
+  when the claw vanishes during the await. `ChatPage`'s existing catch
+  restores draft / files / `__creatingTopic`, and the codeMap maps the new
+  code to `chat.errWsClosed` ("Connection lost") so the user sees a clear
+  toast instead of a blank route. The plugin-side JSON record is still
+  preserved — rebinding the same claw rehydrates the topic via
+  `loadTopicsForClaw` as before.
+
 ## 0.25.4
 
 ### Patch Changes

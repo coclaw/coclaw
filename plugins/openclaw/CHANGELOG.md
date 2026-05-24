@@ -1,5 +1,343 @@
 # @coclaw/openclaw-coclaw
 
+## 0.22.4
+
+### Patch Changes
+
+- 3f81880: fix(plugin/file-manager): close orphan-tmp race on `doneReceived=true` error paths
+
+  Commit `3f9d05e` fixed the fopen-vs-unlink race on the cancel /
+  `SIZE_EXCEEDED` / `dc.onerror` / `dc.onclose` (not-done) paths by
+  attaching `ws.on('close', () => safeUnlink(tmpPath))` so cleanup runs
+  only after `fs.WriteStream` opens its fd. Two `doneReceived=true` error
+  paths were missed:
+
+  - `drainLoop` catch block (sync `ws.write` throw)
+  - `ws.on('error')` handler (stream emits 'error')
+
+  Both did a synchronous `safeUnlink(tmpPath)` that races the in-flight
+  fopen — ENOENT-swallowed pre-fopen, then fopen completes and creates an
+  orphan tmp file with no one to clean it. Replace both with the existing
+  `attachTmpCleanupOnce()` helper. In both paths, `attachTmpCleanupOnce()`
+  and `ws.destroy()` run _before_ `sendError()` so the cleanup listener is
+  in place before `sendError`'s synchronous `dc.close()` re-enters
+  `finishUpload()` via `dc.onclose` (in the `doneReceived=true &&
+!finishing` case). The `ws.on('error')` handler also calls `ws.destroy()`
+  explicitly rather than relying on Node 18+ autoDestroy —
+  `_createWriteStream` is dependency-injected, and a non-standard stream
+  could emit `error` without ever emitting `close`, leaving the listener
+  dangling.
+
+  The race is structurally real but unreachable in production with
+  `fs.createWriteStream`: the `drainLoop` catch is defensive against an
+  upstream sync throw that no current path produces, and a real
+  `fs.WriteStream` only emits 'error' either before fopen (no file to
+  orphan) or after fopen (sync unlink would find the file). The fix
+  closes the structural gap and removes the not-done / done-path
+  inconsistency for future contributors. Two regression tests cover both
+  trigger chains.
+
+  The three sync `safeUnlink` calls inside `finishUpload`'s `ws.end`
+  callback (dcClosed / size-mismatch / rename-failed branches) are
+  unchanged: real Node `Writable` fires the `end` callback only after
+  'finish', which requires the fd to have been opened, so the unlink
+  necessarily runs after fopen.
+
+- cd80635: fix(plugin/file-manager): dedupe ws close cleanup listener on dc error → close sequence
+
+  `dc.onerror` and the not-done branch of `dc.onclose` both attached
+  `ws.on('close', () => safeUnlink(tmpPath))` and called `ws.destroy()`. In
+  the real pion sequence (error followed by close), both fired in order:
+  `dc.onerror` set `wsError = true` but did not set `dcClosed`, so
+  `dc.onclose`'s else branch still ran and attached a second listener,
+  producing a redundant `safeUnlink` (second one ENOENT-swallowed) and a
+  second `file.up.fail reason=dc-closed` log on top of the
+  `reason=dc-error` log.
+
+  Introduce a one-shot `cleanupAttached` flag (`attachTmpCleanupOnce()`)
+  shared by both cleanup paths, and skip the `reason=dc-closed` log when
+  `wsError` is already set. Result: at most one `ws.on('close')` listener
+  and at most one `file.up.fail` log per upload regardless of which side
+  fires first.
+
+  A `wsError`-only early-return guard was considered first but would have
+  broken the `SIZE_EXCEEDED` path — that branch sets `wsError = true`,
+  synchronously calls `safeUnlink` (ENOENT-swallowed pre-fopen), then
+  triggers `dc.close()`, and still relies on `dc.onclose`'s attach as the
+  post-fopen orphan-tmp safety net. The flag-based dedup keeps that
+  safety net intact (SIZE_EXCEEDED still legitimately fires two
+  `safeUnlink` invocations — the synchronous one and the post-fopen one
+  from the listener — by design).
+
+- ff8d069: fix(plugin/file-manager): handle err parameter in finishUpload ws.end callback
+
+  Node's `Writable.end(cb)` invokes the pending end callback with an `err`
+  argument whenever the stream is `destroy()`-ed before reaching the
+  normal 'finish' state (`destroy(e)` passes `e`; `destroy()` passes
+  `ERR_STREAM_DESTROYED`). Verified locally on Node 22 and consistent with
+  documented behavior on Node 18+.
+
+  `finishUpload`'s `ws.end` callback previously ignored that parameter, so
+  on any `destroy`-driven path it would fall through to the `dcClosed` /
+  size-mismatch / `rename` branches. Production was safe in practice only
+  because every path that destroys `ws` (drain catch, `ws.on('error')`,
+  `dc.onerror`, `SIZE_EXCEEDED`) first triggers `sendError(dc, ...)` whose
+  synchronous `dc.close()` sets `dcClosed=true`, and the `dcClosed` early
+  return then masks `rename`. That made correctness an implicit dependency
+  on the `dcClosed` early-return — a hazard for future edits.
+
+  Accept `err` explicitly and short-circuit with `attachTmpCleanupOnce()`:
+  register the `ws.on('close', safeUnlink)` listener idempotently, then
+  return. The listener fires after the fd is closed (and therefore after
+  fopen completed), so tmp cleanup remains race-safe even when the err
+  path is taken before fopen finishes. The four error chains that today
+  destroy `ws` already attach `attachTmpCleanupOnce` upstream; the new
+  branch is a redundant safety net for them and prophylactic for future
+  paths that might destroy `ws` without first registering cleanup.
+
+  Observable change: the trailing
+  `file.up.fail reason=dc-closed-before-flush` `remoteLog` no longer fires
+  on the four `sendError`-driven destroy chains, because the err branch
+  short-circuits before reaching the `dcClosed` branch that emits it. Each
+  of those chains already emits a more specific failure reason
+  (`write-error` / `drain-write-error` / `dc-error` / `size-exceeded`), so
+  this is log deduplication, not signal loss. The `dc-closed-before-flush`
+  event still fires on the non-error path where the DC peer closes
+  gracefully after `done` while `ws` is still flushing (cb receives
+  `null`, `dcClosed` branch still runs).
+
+  One regression test pins the contract: with a `fakeWs`
+  (`EventEmitter`-based) that lets the test invoke `endCb(new Error(...))`
+  directly — bypassing the `sendError → dcClosed` early-return — the
+  handler must not call `rename` and must not send any response beyond the
+  initial ready ack.
+
+- 0437a14: feat(plugin): one-shot `abort.threw` remoteLog for diagnostic visibility
+
+  `coclaw.agent.abort` previously silenced both `logger.info` and any
+  remoteLog on `reason=abort-threw` after the noise-suppression change.
+  That left ops without any signal when the upstream `handle.abort()`
+  starts throwing persistently — the only failure mode that triggers a
+  500ms UI retry storm in the first place.
+
+  A module-level boolean flag now lets the handler emit one
+  `abort.threw sid=… error=…` remoteLog per gateway-process lifetime;
+  subsequent abort-threw ticks (same or different sessionId) stay
+  silent. `logger.info` remains suppressed for all abort-threw ticks.
+
+  The flag is exposed via `__resetAbortThrewReported` for tests; the
+  process-level semantics are explicitly asserted (one-shot across two
+  sessionIds, plus a reset path).
+
+- 6202b05: fix(plugin): silence `coclaw.agent.abort` info log on `abort-threw`
+
+  The `coclaw.agent.abort` handler already skipped the per-call info
+  log for `reason=not-found` because the UI retries at 500ms while a
+  session is in the registration gap. `abort-threw` (raised when the
+  upstream `handle.abort()` keeps throwing — e.g. corrupted internal
+  state) goes through the same UI retry path and therefore needs the
+  same log gating; otherwise gateway logs flood with `[coclaw.agent.abort]
+result … reason=abort-threw error=…` on every tick. `abort-threw` is
+  now added to the silent list alongside `not-found`. The respond
+  payload still carries `reason=abort-threw`, so UI behavior is
+  unchanged.
+
+- 2589112: test(plugin/file-manager): assertion-lock safeUnlink non-ENOENT warn path
+
+  Plus three companion test/doc fixes from the read-only deep review of the
+  unpushed plugin commits:
+
+  - `file-manager/handler.test.js`: add a test that injects an EACCES failure
+    into `deps.unlink` and asserts the `safeUnlink failed` warn fires exactly
+    once carrying both the tmp path and the error code. Previously the new
+    non-ENOENT logging path in `e6e9679` had no assertion locking it, so a
+    refactor could silently swallow these failures again while orphan tmp
+    files accumulate.
+  - `auto-upgrade/updater.test.js`: tighten the `upgrade.legacy-config-read-failed`
+    assertion from `startsWith` to a full-line regex `msg=corrupt`, so the
+    failure-reason detail can't regress under a silent prefix-only match.
+  - `docs/plugin-events.md`: update the `coclaw.info.updated` trigger cell —
+    it still said "全量 4 字段" while `__pushInstanceInfo()` now intentionally
+    omits `agentModels` on collection failure (patch semantics, see same doc).
+  - `TODO.md` + `docs/rpc-dc-send-queue.md`: drop two orphan TODO entries and
+    the dead-code note that all pointed at work already done (`chunkAndSend`
+    removal in 22ce733, `atomicWriteFileSync` already in
+    `utils/atomic-write.js` and used by `device-identity.js`).
+
+  No business code changed.
+
+- 583a942: refactor(plugin): route file-handler `resolveWorkspace` through `getClawConfig`
+
+  `resolveWorkspace` (the dependency injected into `createFileHandler`)
+  was the last in-repo call site still reaching into
+  `api.runtime?.config?.loadConfig()` directly. Every other config-reading
+  path already goes through `getClawConfig()`, which prefers the
+  v2026.4.27+ `config.current()` API and falls back to `loadConfig()` for
+  older hosts.
+
+  Switching this one call site closes the consistency gap and removes the
+  remaining trigger for OpenClaw's deprecation warning on every
+  `coclaw.files.*` RPC under newer hosts. No behavioral change on
+  supported hosts; existing tests stub `config.loadConfig`, which is the
+  fallback path inside `getClawConfig`, so the harness covers both new
+  and legacy APIs.
+
+- 43fb667: fix(plugin/realtime-bridge): omit `agentModels` (instead of sending null) when collection fails; raise `agents.list` timeout to 30s
+
+  `__pushInstanceInfo` broadcasts the plugin's instance info to server and
+  UI via `coclaw.info.updated`, which is processed under **patch
+  semantics**: a field appearing in the payload (even with explicit
+  `null`) overwrites the stored value; a missing field leaves the prior
+  value untouched.
+
+  When `__collectAgentModels` returned `null` (timeout / RPC failure /
+  unexpected throw), `__pushInstanceInfo` previously placed
+  `agentModels: null` in the payload, which the server happily applied —
+  clearing the admin dashboard's per-plugin agent list until the next
+  successful push. The OpenClaw manifest-cache mismatch issue (#80697)
+  makes `agents.list` flake to ~10s under load, which the prior 3s
+  timeout could not absorb, so the dashboard would sporadically blank
+  out on reconnect.
+
+  Two changes:
+
+  - `__pushInstanceInfo` now omits `agentModels` from the payload when
+    collection fails, so patch semantics preserve the prior value.
+  - `__collectAgentModels` raises its `agents.list` RPC timeout from 3s
+    to 30s, giving manifest-cache cold paths room to recover before
+    surfacing a collection failure.
+
+  Callers of `__pushInstanceInfo` are all fire-and-forget (post-handshake
+  on the gateway WS, and re-push on outer-socket open when gateway is
+  already ready), and pending `__gatewayRpc` requests are keyed by
+  independent reqIds, so multiple in-flight pushes during a reconnect
+  storm do not collide. The schema in `docs/plugin-events.md` still
+  allows `agentModels: ... | null` for protocol compatibility; the doc
+  now notes that the plugin no longer emits the explicit-null form.
+
+- 00f8fd7: fix(plugin/realtime-bridge): unicast INVALID_REQUEST response to the originating DC instead of broadcasting
+
+  When a peer sends a malformed `req` frame (valid `id` but missing or
+  invalid `method`), the bridge replied with an `INVALID_REQUEST` `res`
+  frame broadcast to every connected DC. Other peers received an error
+  response they never asked for and had to discard it.
+
+  The handler already has the originator `connId` in scope (passed by
+  `WebRtcPeer.__onRequest` callback). Switch the reply to
+  `await this.webrtcPeer?.sendTo(connId, frame)` so only the originator
+  sees it. `sendTo` handles closed/missing sessions internally and the
+  outer caller already has a `.catch` net.
+
+  The adjacent `GATEWAY_OFFLINE` and `GATEWAY_SEND_FAILED` branches keep
+  their broadcast semantics — they represent system-level status the
+  caller may not be able to attribute, so a one-shot broadcast remains
+  the safer behaviour there (per upstream review).
+
+  Adds a dedicated red test asserting `INVALID_REQUEST` is only seen by
+  the originating `connId` and that `broadcast` is never called for this
+  branch; the pre-existing id/method validation test is updated to use
+  the new mock surface (`sendTo` alongside `broadcast`).
+
+  Also drops the **dc-chunking msgId uint32 wrap** TODO entry: assessed
+  as practically unreachable (~1.36 years of continuous 100/s chunked
+  RPC at one session before overflow, with every disconnect / ICE
+  restart resetting the counter), so it does not warrant a defensive
+  patch.
+
+- 3f56655: fix(plugin/auto-upgrade): emit diagnostic signal when legacy install-record read fails
+
+  `loadInstallRecordFromLegacyConfig` (the pre-2026.4.25 fallback path
+  that reads `plugins.installs` from `openclaw.json`) silently swallowed
+  exceptions and returned `null`. The three sibling catch blocks in
+  `loadInstallRecord` already pushed `upgrade.state-dir-failed`,
+  `upgrade.ledger-read-failed`, and `upgrade.ledger-parse-failed` via
+  `remoteLog`; this one was the only blind spot.
+
+  Downstream this meant `start()` would log the generic
+  "Skipping: not an npm-installed plugin" with no way to tell whether the
+  plugin truly was not registered or the host config reader had thrown.
+  The catch now pushes `upgrade.legacy-config-read-failed msg=...` to
+  match the existing diagnostic style.
+
+- 8051e68: fix(plugin/model-default): trim primary in `coclaw.model.set`
+
+  `coclaw.model.set` now trims the `primary` parameter before validation,
+  so a copy-pasted value with leading/trailing whitespace (e.g.
+  `'openai-codex/gpt-5.5 '`) is accepted and stored without the
+  whitespace, instead of failing the catalog lookup with a misleading
+  `model "openai-codex/gpt-5.5 " not found in catalog` message. A primary
+  that becomes empty after trimming still reports the existing
+  "non-empty string or null" `INVALID_ARGS`.
+
+- 22ce733: chore(plugin/webrtc): drop unused `chunkAndSend` helper
+
+  `chunkAndSend` was a thin wrapper around `buildChunks` + `dc.send` used
+  before the application-layer flow control sender (`RpcDcSender`) landed.
+  After the FBQ/MemoryQueue refactor, no production path calls it; only
+  its own unit tests and a few integration tests in the same file
+  referenced it.
+
+  Removing the helper closes a latent foot-gun: future callers could pull
+  in `chunkAndSend` and accidentally bypass the queue's flow control,
+  overflowing the DataChannel send buffer. The integration tests are
+  preserved by switching them to a local `sendChunked` test helper that
+  composes `buildChunks` + `dc.send` directly.
+
+- 8ce5221: revert(plugin): roll back the two unreliable `activeEnrollAbort` tweaks
+
+  Two consecutive attempts (`defer assignment until enrollClaw resolves`,
+  then `restore early-set with catch-guarded cleanup`) were made to remove
+  a residue case where `activeEnrollAbort` stayed pointing at a dead
+  controller after `enrollClaw()` threw synchronously. The residue is
+  purely cosmetic — the next enroll's `cancelActiveEnroll` aborts a
+  controller nobody listens to, producing one extra info log line and
+  nothing else.
+
+  The first attempt weakened the concurrent-cancel contract; the second
+  was patch-on-patch. Per the rule "fix the timing problem at the root or
+  don't touch it", both are reverted and the enroll handlers go back to
+  the shape they had before this round. The relevant entry is added back
+  to `plugins/openclaw/TODO.md` with the accepted-noise framing and a
+  note that the proper fix is to let `enrollClaw` consume the signal —
+  which needs a wider CLI/gateway/server design discussion first.
+
+  Tests that were added to assert the two patched behaviors are also
+  removed; the corresponding `claimCodeDelayMs` mock-server option is
+  dropped since no other test uses it.
+
+- b078525: fix(plugin): pre-validate slash `/coclaw bind` code before cancelling active enroll
+
+  The slash command `/coclaw bind` previously delegated to `doBind`
+  unconditionally, even when no positional code was supplied. `doBind`
+  always calls `cancelActiveEnroll()` up front, so an empty/invalid
+  slash bind would tear down an in-flight enroll before the
+  `bindClaw()` error surfaced. The slash handler now rejects a missing
+  or empty code with `Error: binding code is required` before reaching
+  `doBind`, so an in-progress enroll is preserved when the user
+  mistypes the command. The error text matches the prior bubble-up
+  message; only the side effect is gated.
+
+- afbcdb3: chore(plugin): drop verified low-risk TODOs; pin "why" notes at the source
+
+  After verifying nine fifth-tier TODO entries against current code, the
+  "keep" verdict still holds for all of them. To stop re-analyzing the
+  same items on every TODO pass, the entries are removed from `TODO.md`.
+  For six of them the "why we left it" reasoning is moved next to the
+  relevant code as a one-line comment (auth token console.warn fallback,
+  chat-history reload best-effort tolerance, bridge.start runtime-injection
+  assumption, topic copyTranscript orphan risk, chat-history sanitize
+  timestamp aliasing, classify nested cron+subagent reason).
+
+  For the remaining two entries (BIND_LOCAL_WRITE_FAILED shared code,
+  provider-auth CLI error mapping), the TODO is removed without code
+  comments — both are "improve when a caller actually needs it" deferrals
+  that would not benefit from in-source breadcrumbs.
+
+  The OpenClaw #80697 patch-script TODO is updated to reflect that the
+  upstream fix landed in `v2026.5.20`; upgrading OpenClaw is now the
+  recommended retirement path (no `--revert` needed since `npm install -g`
+  overwrites the patched dist).
+
 ## 0.22.3
 
 ### Patch Changes
