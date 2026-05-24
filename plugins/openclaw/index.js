@@ -80,8 +80,9 @@ function patchMapLogging(map, label, logger) {
 	}
 	const origSet = map.set.bind(map);
 	const origDel = map.delete.bind(map);
-	// log 行包 try/catch 兜底：上游若把 Map 换成有 throwing getter（如 Proxy）的对象，
-	// 不能让本插件的诊断 log 把 OpenClaw 内部 set/delete 流程带崩
+	// AGENTS.md §"日志器"一般规则是"调用点不要再包 try/catch"，此处特例：safeLog/safeSize
+	// 是绑到 OpenClaw 内部 Map.set/delete 路径上的诊断仪器，上游若把 Map 换成 throwing-getter
+	// Proxy 或 logger 自身异常都不能把宿主的 set/delete 流程带崩，故保留 swallow 兜底
 	const safeLog = (msg) => {
 		try { logger?.info?.(msg); } catch { /* swallow — diag log 不得影响主流程 */ }
 	};

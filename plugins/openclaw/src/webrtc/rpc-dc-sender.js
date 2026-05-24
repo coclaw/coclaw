@@ -160,8 +160,11 @@ class RpcDcSender {
 		return this.tag ? ` ${this.tag}` : '';
 	}
 
+	// AGENTS.md §"日志器" 一般规则是"调用点不要再包 try/catch"，此处特例：
+	// __safeWarn 在 send/BAL 热路径里调，logger 异常不能升级为协议错（caller 只
+	// 等 RPC 应答，不该收到 logger 自身的 stack），故保留 swallow
 	__safeWarn(msg) {
-		try { this.logger.warn?.(`[rpc-dc-sender${this.__tagSuffix()}] ${msg}`); } catch { /* logger 自身坏了不能让 send 抛非协议错 */ }
+		try { this.logger.warn?.(`[rpc-dc-sender${this.__tagSuffix()}] ${msg}`); } catch { /* swallow */ }
 	}
 
 	__safeRemoteLog(text) {

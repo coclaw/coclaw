@@ -282,8 +282,11 @@ class MemoryQueue {
 		return this.tag ? ` ${this.tag}` : '';
 	}
 
+	// AGENTS.md §"日志器" 一般规则是"调用点不要再包 try/catch"，此处特例：
+	// __safeWarn 是 enqueue 同步入口的兜底，enqueue 对外承诺不抛业务无关错误，
+	// 哪怕 logger 自身坏了也不能传染到 RPC 数据通路，故保留 swallow
 	__safeWarn(msg) {
-		try { this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] ${msg}`); } catch { /* logger 自身坏了也不能让 enqueue 抛 */ }
+		try { this.logger.warn?.(`[rpc-queue${this.__tagSuffix()}] ${msg}`); } catch { /* swallow */ }
 	}
 }
 
