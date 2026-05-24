@@ -134,6 +134,34 @@ test('set: primary "/" 在结尾 → INVALID_ARGS', async () => {
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
 });
 
+test('set: primary 尾随空格 → trim 后通过校验并按 trim 值落盘', async () => {
+	const { handlers, sdk } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5 ' }, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(sdk.__mutateCalls[0].agents.defaults.model, {
+		primary: 'openai-codex/gpt-5.5',
+	});
+});
+
+test('set: primary 前后均有空格 → trim 后通过校验', async () => {
+	const { handlers, sdk } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.set({ params: { primary: '  openai-codex/gpt-5.5  ' }, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(sdk.__mutateCalls[0].agents.defaults.model, {
+		primary: 'openai-codex/gpt-5.5',
+	});
+});
+
+test('set: primary 全为空白 → trim 后空 → INVALID_ARGS（非空字符串）', async () => {
+	const { handlers } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.set({ params: { primary: '   ' }, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
+	assert.match(r.calls[0].error.message, /non-empty string or null/);
+});
+
 test('set: provider 没凭据 → INVALID_ARGS', async () => {
 	const sdk = makeSdk({ isProviderAuthProfileConfigured: () => false });
 	const { handlers } = makeHandlers({ sdk });

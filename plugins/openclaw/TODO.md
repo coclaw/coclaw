@@ -1,21 +1,5 @@
 # Plugin TODO
 
-## `coclaw.model.set` primary 尾随空格不友好
-
-**发现日期**：2026-05-15（D1 deep-review 第二轮 opus subagent 识别）
-**关联**：`plugins/openclaw/src/model-default/handlers.js` `parseProviderModel` + `validateProviderCredAndCatalog`
-
-**问题**：用户复制粘贴模型 ID 常带尾随空格（如 `'openai-codex/gpt-5.5 '`），当前 `parseProviderModel` 不 trim，原样把 `'gpt-5.5 '` 送进 catalog 比对会 miss，错误消息只能给 `model "openai-codex/gpt-5.5 " not found in catalog`——用户看不出是空格的事。
-
-**为什么本期未一并修**：改前同款问题（不属本轮回归），且 trim 涉及"哪些 whitespace 该 trim"的语义讨论（半角空格 vs 中间空格 vs 制表符）。
-
-**修复方向**：
-
-- `parseProviderModel` 入口对 primary 做 `.trim()`；或显式拒尾随 whitespace 给更友好的错误消息（`primary must not contain leading/trailing whitespace`）
-- 同步考虑 `validatePrimaryAgainstCatalog` 内 provider / model 各自 trim
-
----
-
 ## RPC handler 错误响应 `err.message` 透传可能泄露内部细节
 
 **发现日期**：2026-05-15（D1 model-default deep-review 时识别）

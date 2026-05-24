@@ -105,11 +105,13 @@ export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) 
 				respondInvalid(respond, 'primary is required');
 				return;
 			}
-			const primary = params.primary;
-			if (primary !== null && typeof primary !== 'string') {
+			const rawPrimary = params.primary;
+			if (rawPrimary !== null && typeof rawPrimary !== 'string') {
 				respondInvalid(respond, 'primary must be a string or null');
 				return;
 			}
+			// 复制粘贴常带前后空白；trim 后再做形态/凭据/catalog 校验，并按 trim 后的值落盘
+			const primary = rawPrimary === null ? null : rawPrimary.trim();
 			if (primary !== null && primary.length === 0) {
 				respondInvalid(respond, 'primary must be a non-empty string or null');
 				return;
