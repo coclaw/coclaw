@@ -5,7 +5,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import { after, test } from 'node:test';
 
-import plugin, { __resetPluginVersion, awaitPluginInit } from './index.js';
+import plugin, { __resetPluginVersion, __resetAbortThrewReported, awaitPluginInit } from './index.js';
 import { createMockServer } from './src/mock-server.helper.js';
 import { setRuntime, getRuntime } from './src/runtime.js';
 import { stopRealtimeBridge } from './src/realtime-bridge.js';
@@ -1652,6 +1652,7 @@ test('coclaw.agent.abort logs result info for ok=true / not-supported', () => {
 
 test('coclaw.agent.abort emits no result info on abort-threw (UI 500ms tick 重试期常态)', () => {
 	__resetRemoteLogPlugin();
+	__resetAbortThrewReported();
 	const handlers = new Map();
 	const infos = [];
 	const logger = { info: (m) => infos.push(m), warn() {}, error() {}, log() {} };
@@ -1662,6 +1663,57 @@ test('coclaw.agent.abort emits no result info on abort-threw (UI 500ms tick 重�
 	});
 	// abort-threw 与 not-found 同列入静默列表，避免上游 handle.abort 持续抛时的日志洪水
 	assert.ok(!infos.some((m) => /\[coclaw\.agent\.abort\] result.*sid-thr/.test(m)));
+});
+
+test('coclaw.agent.abort: 首次 abort-threw 上报一次 remoteLog，后续 tick 重试静默', () => {
+	__resetRemoteLogPlugin();
+	__resetAbortThrewReported();
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	const throwHandle = { abort: () => { throw new Error('boom'); } };
+
+	// 第一次：sid-a 抛错 → 应发一条 abort.threw remoteLog
+	withStubbedEmbeddedRunState({ activeRuns: new Map([['sid-a', throwHandle]]) }, () => {
+		handlers.get('coclaw.agent.abort')({ params: { sessionId: 'sid-a' }, respond() {} });
+	});
+	const firstRel = __remoteLogBuffer.filter((r) => r.text.startsWith('abort.threw'));
+	assert.equal(firstRel.length, 1);
+	assert.match(firstRel[0].text, /sid=sid-a/);
+	assert.match(firstRel[0].text, /error=boom/);
+
+	// 第二次：同 sessionId tick 重试 → 不再发
+	withStubbedEmbeddedRunState({ activeRuns: new Map([['sid-a', throwHandle]]) }, () => {
+		handlers.get('coclaw.agent.abort')({ params: { sessionId: 'sid-a' }, respond() {} });
+	});
+	// 第三次：换一个 sessionId 抛错 → 也不再发（进程级一次性）
+	withStubbedEmbeddedRunState({ activeRuns: new Map([['sid-b', throwHandle]]) }, () => {
+		handlers.get('coclaw.agent.abort')({ params: { sessionId: 'sid-b' }, respond() {} });
+	});
+	const finalRel = __remoteLogBuffer.filter((r) => r.text.startsWith('abort.threw'));
+	assert.equal(finalRel.length, 1, 'abort.threw remoteLog 在进程活动期间最多上报一次');
+});
+
+test('coclaw.agent.abort: __resetAbortThrewReported 后 abort-threw 可重新上报一次', () => {
+	__resetRemoteLogPlugin();
+	__resetAbortThrewReported();
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	const throwHandle = { abort: () => { throw new Error('boom'); } };
+
+	withStubbedEmbeddedRunState({ activeRuns: new Map([['sid-a', throwHandle]]) }, () => {
+		handlers.get('coclaw.agent.abort')({ params: { sessionId: 'sid-a' }, respond() {} });
+	});
+	assert.equal(__remoteLogBuffer.filter((r) => r.text.startsWith('abort.threw')).length, 1);
+
+	__resetAbortThrewReported();
+	withStubbedEmbeddedRunState({ activeRuns: new Map([['sid-b', throwHandle]]) }, () => {
+		handlers.get('coclaw.agent.abort')({ params: { sessionId: 'sid-b' }, respond() {} });
+	});
+	assert.equal(
+		__remoteLogBuffer.filter((r) => r.text.startsWith('abort.threw')).length,
+		2,
+		'reset 后允许再上报一次（测试间隔离用）',
+	);
 });
 
 test('coclaw.agent.abort skips remoteLog for invalid sessionId', () => {

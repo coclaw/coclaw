@@ -33,6 +33,15 @@ export function awaitPluginInit() {
 	return __pluginInitDone;
 }
 
+// abort-threw 远端日志节流：gateway 进程活动期间最多上报一次，避免上游 handle.abort
+// 持续抛错时 500ms tick 重试把 remote-log 刷爆。logger.info 已对 abort-threw 静默
+// （见 coclaw.agent.abort handler 注释），但完全失去诊断信号会让运维瞎子，故保留首条。
+let __abortThrewReported = false;
+
+export function __resetAbortThrewReported() {
+	__abortThrewReported = false;
+}
+
 // 侧门注册表观测：patch OpenClaw embeddedRunState.activeRuns 的 set/delete，
 // 用于跟踪 sessionId 何时注册/注销（agent 取消流程实际读取的就是这张表）。
 // OpenClaw 侧门形状变化时（缺失 / 抛异常），通过 remoteLog 上报为升级契约变更的早期信号。
@@ -718,6 +727,12 @@ const plugin = {
 				else if (result.reason === 'gone') {
 					// 启发升格：双闸均达阈值，把 not-found 升格为 gone，让 UI 主动 settleByCancel
 					remoteLog(`abort.gone sid=${sessionId} runDur=${runDuration} abortDur=${abortDuration}`);
+				}
+				else if (result.reason === 'abort-threw' && !__abortThrewReported) {
+					// 一次性：上游 handle.abort 首次抛错时上报，让运维知道这个 gateway 实例发生过；
+					// 后续 tick 重试不再上报，避免被 UI 500ms 拍频刷爆远端日志
+					__abortThrewReported = true;
+					remoteLog(`abort.threw sid=${sessionId} error=${result.error || ''}`);
 				}
 				respond(true, result);
 			}
