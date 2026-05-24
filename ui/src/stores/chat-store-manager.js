@@ -61,9 +61,18 @@ export const chatStoreManager = {
 	 */
 	promoteToTopic(newTopicKey, topicId, opts) {
 		const newStoreKey = `topic:${topicId}`;
+		// 抓在 get() 之前：activate 抛错时仅清掉本次新建的 store，
+		// 同 key 预先存在的 store（罕见竞态）不动
+		const preExisting = instances.has(newStoreKey);
 		const newStore = this.get(newStoreKey, opts);
-		newStore.activate({ skipLoad: true });
-		newStore.__messagesLoaded = true;
+		try {
+			newStore.activate({ skipLoad: true });
+			newStore.__messagesLoaded = true;
+		}
+		catch (err) {
+			if (!preExisting) this.dispose(newStoreKey);
+			throw err;
+		}
 
 		const oldStore = instances.get(newTopicKey);
 		if (oldStore) {
@@ -82,13 +91,25 @@ export const chatStoreManager = {
 		return { newStore, commit };
 	},
 
-	/** 销毁指定实例 */
+	/**
+	 * 销毁指定实例。
+	 *
+	 * 契约：本函数永不抛错。store.dispose / $dispose 任一抛错时记 warn 并继续，
+	 * instances/topicLru 索引保证被清——否则坏 store 会以僵尸形态留在索引里，
+	 * 下次按 key 找会拿到一个已损坏的实例。
+	 */
 	dispose(storeKey) {
 		const store = instances.get(storeKey);
 		if (!store) return;
 		console.debug('[chatStoreMgr] dispose key=%s remaining=%d', storeKey, instances.size - 1);
-		store.dispose();
-		store.$dispose();
+		try { store.dispose(); }
+		catch (err) {
+			console.warn('[chatStoreMgr] dispose key=%s store.dispose threw: %s', storeKey, err?.message);
+		}
+		try { store.$dispose(); }
+		catch (err) {
+			console.warn('[chatStoreMgr] dispose key=%s $dispose threw: %s', storeKey, err?.message);
+		}
 		instances.delete(storeKey);
 		const idx = topicLru.indexOf(storeKey);
 		if (idx !== -1) topicLru.splice(idx, 1);
@@ -135,8 +156,8 @@ export const chatStoreManager = {
 					continue;
 				}
 				console.debug('[chatStoreMgr] evict topic key=%s (lru=%d/%d)', key, topicLru.length, MAX_TOPIC_INSTANCES);
-				// per-item try/catch：受害者 dispose 抛异常时不让它穿透到 get() 调用方，
-				// 否则新 topic 已加入 instances/topicLru、被淘汰者也已加入 LRU，但调用方拿到异常
+				// 防御深度：dispose() 当前保证不抛（内部已 try/catch 吞掉 store.dispose / $dispose 的错），
+				// 本块理论上 dead path；保留以兜住未来 dispose 契约回归"会抛"的情况。
 				try { this.dispose(key); }
 				catch (err) {
 					console.warn('[chatStoreMgr] evict dispose key=%s failed: %s', key, err?.message);

@@ -93,6 +93,42 @@ describe('chatStoreManager', () => {
 		test('销毁不存在的 key 不报错', () => {
 			chatStoreManager.dispose('nonexistent');
 		});
+
+		// store.dispose 抛错时：契约保证不外抛、$dispose 仍被调、索引彻底清理。
+		// 否则坏 store 以僵尸形态留在 instances/topicLru，下次按 key 找会拿到已损实例。
+		test('store.dispose 抛错时仍执行 $dispose 并清理索引', () => {
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const store = chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
+			const $disposeSpy = vi.spyOn(store, '$dispose');
+			vi.spyOn(store, 'dispose').mockImplementation(() => { throw new Error('boom'); });
+
+			expect(() => chatStoreManager.dispose('topic:t1')).not.toThrow();
+			expect($disposeSpy).toHaveBeenCalledOnce();
+			expect(chatStoreManager.size).toBe(0);
+			expect(chatStoreManager.topicCount).toBe(0);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('store.dispose threw'),
+				'topic:t1',
+				expect.any(String),
+			);
+			warnSpy.mockRestore();
+		});
+
+		test('$dispose 抛错时仍清理索引', () => {
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const store = chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
+			vi.spyOn(store, '$dispose').mockImplementation(() => { throw new Error('boom'); });
+
+			expect(() => chatStoreManager.dispose('topic:t1')).not.toThrow();
+			expect(chatStoreManager.size).toBe(0);
+			expect(chatStoreManager.topicCount).toBe(0);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('$dispose threw'),
+				'topic:t1',
+				expect.any(String),
+			);
+			warnSpy.mockRestore();
+		});
 	});
 
 	// =====================================================================
@@ -203,8 +239,8 @@ describe('chatStoreManager', () => {
 			expect(chatStoreManager.topicCount).toBe(10);
 		});
 
-		// disposeAll 已 per-item try/catch；__evictTopics 也要对齐，
-		// 否则受害者 dispose 抛异常会穿透到 get() 调用方
+		// dispose() 内部 try/catch 兜住 store.dispose 抛错（不再外抛），__evictTopics
+		// 仍能完成淘汰；warning 由 dispose 内部记录，受害者也已从索引清除。
 		test('__evictTopics：受害者 dispose 抛异常被隔离，不影响新 topic 创建', () => {
 			// 按序创建 10 个 topic：LRU 最旧 = t0（不要再 touch 它）
 			const stores = [];
@@ -224,9 +260,11 @@ describe('chatStoreManager', () => {
 				const all = [...chatStoreManager.stores()];
 				const t10 = all.find((s) => s.sessionId === 't10');
 				expect(t10).toBeTruthy();
-				// 警告日志被记录，包含受害者 key（格式与 disposeAll 的 'dispose key=%s failed: %s' 对齐）
+				// t0 已彻底从索引清除（dispose 内部即便 store.dispose 抛错也保证清理）
+				expect(all.find((s) => s.sessionId === 't0')).toBeUndefined();
+				// 警告日志来自 dispose 内部（不再来自 __evictTopics 兜底）
 				expect(warnSpy).toHaveBeenCalledWith(
-					expect.stringContaining('evict dispose key=%s failed: %s'),
+					expect.stringContaining('store.dispose threw'),
 					'topic:t0',
 					expect.any(String),
 				);
@@ -559,6 +597,53 @@ describe('chatStoreManager', () => {
 			// inputFiles 仍被覆盖为 oldStore 的引用
 			expect(newStore.inputFiles).toBe(oldStore.inputFiles);
 			expect(() => commit()).not.toThrow();
+		});
+
+		// activate 抛错时新建的 topic store 已写进 instances/topicLru，
+		// 若不回滚会留僵尸：下次进同 topicId 会拿到一个未初始化的 store。
+		test('activate 抛错时回滚本次新建的 store + 透传错误', () => {
+			chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			// 在 get() 返回新建 store 时立刻打桩 activate，让 promoteToTopic 内部触发抛错
+			const origGet = chatStoreManager.get.bind(chatStoreManager);
+			const getSpy = vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+				const s = origGet(key, opts);
+				if (key === 'topic:topic-uuid-1') {
+					vi.spyOn(s, 'activate').mockImplementation(() => { throw new Error('activate boom'); });
+				}
+				return s;
+			});
+
+			try {
+				expect(() => chatStoreManager.promoteToTopic(
+					'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+				)).toThrow('activate boom');
+
+				// 新 topic store 已被回滚清掉，topicCount 回到 0；
+				// new-topic store 仍在（未被误清）→ 总 size 仅剩它一个
+				const all = [...chatStoreManager.stores()];
+				expect(all.some((s) => s.sessionId === 'topic-uuid-1')).toBe(false);
+				expect(chatStoreManager.topicCount).toBe(0);
+				expect(chatStoreManager.size).toBe(1);
+			}
+			finally {
+				getSpy.mockRestore();
+			}
+		});
+
+		// 同 key 预先存在的 store（与上一条罕见竞态的组合）：activate 抛错时
+		// 不能误清掉那个预先存在的 store——它不是本次 promote 新建的。
+		test('activate 抛错时预先存在的同 key store 不被误清', () => {
+			const preExisting = chatStoreManager.get('topic:topic-uuid-1', { clawId: '1', agentId: 'main' });
+			chatStoreManager.get('new-topic:1:main', { clawId: '1', agentId: 'main' });
+			vi.spyOn(preExisting, 'activate').mockImplementation(() => { throw new Error('activate boom'); });
+
+			expect(() => chatStoreManager.promoteToTopic(
+				'new-topic:1:main', 'topic-uuid-1', { clawId: '1', agentId: 'main' },
+			)).toThrow('activate boom');
+
+			// 预先存在的 store 仍在
+			const all = [...chatStoreManager.stores()];
+			expect(all.includes(preExisting)).toBe(true);
 		});
 	});
 });
