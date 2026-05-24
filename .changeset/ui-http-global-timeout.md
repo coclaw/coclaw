@@ -13,6 +13,14 @@ info, admin) return well under one second on the happy path, so a
 60s bound is comfortably generous while still bounding the worst-
 case user wait.
 
-The remote-log channel keeps its own axios instance with separate
-timing — unchanged. The same 60s ceiling does not affect WebRTC
-DC RPCs which are not routed through this client.
+Scope of the 60s ceiling — only the shared REST httpClient. Not
+affected (each has its own timing):
+
+- SSE event streams use the browser-native `EventSource` (user
+  status, claws status, admin) — no axios path
+- The signaling channel uses the browser-native `WebSocket` with
+  its own heartbeat / reconnect / connect timeout
+- WebRTC DataChannel RPCs are routed through `ClawConnection` with
+  its own two-layer timeout model (connectTimeout / requestTimeout)
+- The remote-log channel keeps a separate axios instance with its
+  own pacing

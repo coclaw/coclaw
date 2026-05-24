@@ -177,6 +177,18 @@ DC open 后额外有一层 `READY_TIMEOUT_MS = 210s` 的守卫，等待 Plugin �
 
 **为什么要覆盖整个等待周期**：底层 RTC 恢复可能持续若干分钟（ICE restart 180s + rebuild 窗口期），应用层 `connectTimeout` 默认覆盖典型 ICE restart 场景，更长等待由调用方通过 signal 主动取消表达——与 fetch 心智一致，调用方不关心下层在哪个恢复阶段。
 
+### 4.6 Server REST 通道（axios）的默认超时
+
+UI 与 server 之间的所有普通 REST 调用（auth / 用户信息 / claws CRUD / TURN 凭证 / web 机器人 / server info / admin）共用一个 `axios` 实例（`src/services/http.js` 的 `httpClient`），统一设置 **60s 全局超时**。
+
+- 适用范围：所有从 `httpClient` 派生的 REST 调用；超时由 axios 内置实现，触发后 promise 以 `ECONNABORTED` 错误 reject，调用方走各自的 catch
+- 不适用范围（每条通道自管时限，与本节超时无关）：
+  - SSE 事件流（`EventSource`）
+  - 信令 WebSocket（原生 `WebSocket`，自带心跳 / 重连 / 建连超时）
+  - WebRTC DataChannel RPC（见 §4.1 / §4.2 的两层模型）
+  - 远程诊断日志通道（独立 axios 实例，自管 backoff 与时限）
+- 设计取舍：当前所有 REST 端点 happy path 均 < 1s 返回，无任何刻意长跑接口；60s 既宽裕覆盖偶发尾延迟、又能在服务端 5xx 卡住 / 半连接 kernel 未踢 / 代理超长缓冲等异常时给出明确的失败结束，避免页面无限转圈
+
 ---
 
 ## 五、连接生命周期
