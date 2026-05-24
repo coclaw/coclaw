@@ -265,6 +265,10 @@ export function createChatStore(storeKey, opts = {}) {
 						this.__messagesLoaded = true;
 						return;
 					}
+					// skipLoad 分支当前为同步早 return（new-topic 流程）；
+					// chat-store-manager.promoteToTopic 的外层 try/catch 是基于
+					// 这一前提才能接住 rollback——日后若在此分支引入 await 或
+					// 可能以 promise rejection 失败的逻辑，调用方的错误处理需要一并调整
 					if (!this.clawId || skipLoad) return;
 
 					const conn = getReadyConn(this.clawId);

@@ -221,24 +221,18 @@
     - 预存问题：本次修复未改 `dispose()` 函数体；该问题在 ba3bf63 之前就存在
     - 修法方向：把 `instances.delete()` + `topicLru.splice()` 放进 finally，分别对 `store.dispose()` / `$dispose()` 各包 try/catch
 
-2. **`promoteToTopic` 内部抛错时新建的 newStore 泄漏**
-    - 现状：`chat-store-manager.js:62-83` 中 `this.get(newStoreKey, opts)` 已 instances.set 新 store；若后续 `newStore.activate({skipLoad:true})` 或 `inputFiles` 赋值抛异常，promote 函数抛出后 ChatPage catch 里 `targetStore` 仍是 null，无法 dispose 这个泄漏的 newStore
-    - 现实概率：极低——`activate({skipLoad:true})` 是同步且短路的，正常路径不抛
-    - 实际影响：泄漏 1 个 topic store + 其 inputFiles 中的 ObjectURL，登出 disposeAll 兜底
-    - 修法方向：promoteToTopic 内部 try/catch，失败时 dispose(newStoreKey) 后 rethrow
-
-3. **`__handleNewTopicSend` 各 await 后未检查组件已卸载**
+2. **`__handleNewTopicSend` 各 await 后未检查组件已卸载**
     - 现状：`ChatPage.vue:626-684` 用户在 createTopic / router.replace / sendMessage 任一 await 期间返回 /topics 列表，函数仍继续跑——createTopic resolve 后 promote + router.replace 会强行把用户从 /topics 拽回到 topic chat 页面
     - 现实概率：用户点发送后毫秒级返回（如手机 back swipe）才能触发
     - 这是 Vue Options API + async router 的通用模式问题，不仅限于本次修复，但本次新增 router.replace 让它更明显
     - 修法方向：beforeUnmount 设 `this.__unmounted = true`，每个 await 后早返回 + 已发起的 newStore 主动 dispose
 
-4. **`saveBlobToFile` 异常路径未 revoke ObjectURL**
+3. **`saveBlobToFile` 异常路径未 revoke ObjectURL**
     - 现状：`src/utils/file-helper.js:156-169` Web 端创建 ObjectURL 后 a.click → removeChild → revoke 是直链；中间任一步抛异常会跳过 revokeObjectURL
     - 预存问题：本次修复未触及该函数
     - 修法：用 try/finally 包住 DOM 操作部分，确保 revokeObjectURL 一定跑
 
-5. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验** — **已评估保持现状（2026-05-24 复核）**
+4. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验** — **已评估保持现状（2026-05-24 复核）**
     - 现状：`ChatInput.vue:449-460` 录音文件直接 `chatStore.addFiles([item])`，跳过 `addFiles` 入口的 MAX_UPLOAD_SIZE 检查
     - 实际影响：录音受 MAX_RECORD_DURATION + audioBitsPerSecond 双重限制，理论上限约 1.2MB，远低于 1GB 上限，不会触发
     - 评估结论：改走 `this.addFiles([file])` 会丢 `durationMs` 字段（录音侧专有标注，`this.addFiles` 入口签名不透传 extras）；继续保留当前实现
