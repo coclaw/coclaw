@@ -549,17 +549,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - __sendPeerTransport 在 sendTo 返回 false 时打 warn 或一次性 retry（peer-transport 是诊断信息，丢失影响小）
 - 等 Phase B 引入 RpcDropMonitor 后，把这两条 silent drop 也作为 reason 上报
 
-## Fire-and-forget `.catch()` 内 logger.warn 自身可能抛 unhandled rejection（项目通用模式，不修）
-
-**发现日期**：2026-05-03（同上 deep-review）
-**关联**：`plugins/openclaw/src/webrtc/webrtc-peer.js:489-491`（A1 新加），项目里大量 `this.logger.warn?.(...)` 调用
-
-**问题**：A1 把 `pc.ondatachannel` 改 fire-and-forget，`.catch()` 内调 `this.logger.warn?.(...)` 没有 try/catch 包。如果 logger 实例本身抛错，这个 .catch 返回的 Promise reject 进 unhandled rejection。
-
-**为什么不修**：项目里大量 `logger.warn?.(...)` 调用都没用 try/catch 包，单独包此一处不合理；应在项目层面统一决策（要么所有 logger 调用都包 try/catch，要么接受 logger 自身抛是极冷防御路径）。pino logger 内部错误处理很完备，实际触发概率近零。
-
-**修复方向（项目层面若决策）**：考虑导出统一的 `safeWarn(logger, msg)` helper，所有 fire-and-forget 链路统一调用。
-
 ## claw-paths runtime 改造遗留（2026-05-05 deep-review 抓出，预存）
 
 ### session-manager 不传 entry.sessionFile（PRE-EXISTING）

@@ -1007,6 +1007,42 @@ test('coclaw.files.list via gateway method', async () => {
 	}
 });
 
+test('coclaw.files.list 优先走 config.current（不回落 loadConfig）', async () => {
+	// 583a942 把 resolveWorkspace 从 api.runtime?.config?.loadConfig() 切到
+	// getClawConfig()，目的是新 host (v2026.4.27+) 上避免 deprecation 警告。
+	// 既有 file RPC 测试只 stub loadConfig（getClawConfig 回退路径），不能拦"被
+	// 改回直接调 loadConfig"的回归。
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-files-'));
+	try {
+		await fs.writeFile(nodePath.join(dir, 'hi.txt'), 'x', 'utf8');
+		let currentCalled = false;
+		let loadConfigCalled = false;
+		const handlers = new Map();
+		plugin.register(createMockApi(handlers, {
+			runtime: {
+				state: { resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? os.tmpdir() },
+				config: {
+					current: () => { currentCalled = true; return {}; },
+					loadConfig: () => { loadConfigCalled = true; return {}; },
+				},
+				agent: { resolveAgentWorkspaceDir: () => dir },
+			},
+		}));
+
+		let out = null;
+		await handlers.get('coclaw.files.list')({
+			params: { path: '.' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, true);
+		assert.equal(currentCalled, true, 'file RPC 应调用 config.current');
+		assert.equal(loadConfigCalled, false, 'config.current 存在时不应回落 loadConfig');
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
 test('coclaw.files.mkdir via gateway method', async () => {
 	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-files-'));
 	try {
