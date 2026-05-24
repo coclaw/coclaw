@@ -117,11 +117,37 @@ describe('chatStoreManager', () => {
 		test('$dispose 抛错时仍清理索引', () => {
 			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const store = chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
+			// 也 spy store.dispose 确认它在 $dispose 之前被调过——挡未来 try 块顺序反掉
+			const disposeSpy = vi.spyOn(store, 'dispose');
 			vi.spyOn(store, '$dispose').mockImplementation(() => { throw new Error('boom'); });
+
+			expect(() => chatStoreManager.dispose('topic:t1')).not.toThrow();
+			expect(disposeSpy).toHaveBeenCalledOnce();
+			expect(chatStoreManager.size).toBe(0);
+			expect(chatStoreManager.topicCount).toBe(0);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('$dispose threw'),
+				'topic:t1',
+				expect.any(String),
+			);
+			warnSpy.mockRestore();
+		});
+
+		// 防御性组合：两段都抛错时索引仍清干净 + 两条 warn 都打出
+		test('store.dispose 与 $dispose 同时抛错时仍清理索引', () => {
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const store = chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
+			vi.spyOn(store, 'dispose').mockImplementation(() => { throw new Error('boom-dispose'); });
+			vi.spyOn(store, '$dispose').mockImplementation(() => { throw new Error('boom-pdispose'); });
 
 			expect(() => chatStoreManager.dispose('topic:t1')).not.toThrow();
 			expect(chatStoreManager.size).toBe(0);
 			expect(chatStoreManager.topicCount).toBe(0);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('store.dispose threw'),
+				'topic:t1',
+				expect.any(String),
+			);
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining('$dispose threw'),
 				'topic:t1',
