@@ -65,7 +65,7 @@ async function initClawResources(id) {
  * topics/dashboard 与 agents 独立，并发触发以省一跳 loadAgents RTT。
  * @param {string} id - clawId
  */
-async function refreshClawResources(id) {
+export async function refreshClawResources(id) {
 	const agentsPromise = useAgentsStore().loadAgents(id).catch((err) => { console.warn('[lifecycle] refresh agents failed clawId=%s:', id, err); });
 	useTopicsStore().loadTopicsForClaw(id).catch((err) => { console.warn('[lifecycle] refresh topics failed clawId=%s:', id, err); });
 	// refresh 链路下 dashboard 比 sessions 先动手（dashboard 不依赖 agents，

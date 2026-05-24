@@ -179,11 +179,14 @@ export const useSessionsStore = defineStore('sessions', {
 			}
 			const promise = this.__doLoadForClaw(id);
 			_perClawLoading.set(id, { p: promise, force });
-			// 仅当 Map 当前条目仍是本 promise 时才清，避免老 promise 的 finally 把
-			// removeSessionsByClawId + 重入新建的飞行 promise 一起删掉
-			promise.finally(() => {
+			// 仅当 Map 当前条目仍是本 promise 时才清，避免老 promise 的 cleanup 把
+			// removeSessionsByClawId + 重入新建的飞行 promise 一起删掉。用 then(cleanup, cleanup)
+			// 而不是 finally：finally 返回新 promise，若 __doLoadForClaw 内部 catch 有漏洞会造成
+			// unhandled rejection；then 两参形式自身吞掉 rejection
+			const cleanup = () => {
 				if (_perClawLoading.get(id)?.p === promise) _perClawLoading.delete(id);
-			});
+			};
+			promise.then(cleanup, cleanup);
 			return promise;
 		},
 		async __doLoadForClaw(id) {

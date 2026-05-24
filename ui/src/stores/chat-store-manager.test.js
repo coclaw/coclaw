@@ -109,7 +109,7 @@ describe('chatStoreManager', () => {
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining('store.dispose threw'),
 				'topic:t1',
-				expect.any(String),
+				expect.any(Error),
 			);
 			warnSpy.mockRestore();
 		});
@@ -117,18 +117,21 @@ describe('chatStoreManager', () => {
 		test('$dispose 抛错时仍清理索引', () => {
 			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const store = chatStoreManager.get('topic:t1', { clawId: '1', agentId: 'main' });
-			// 也 spy store.dispose 确认它在 $dispose 之前被调过——挡未来 try 块顺序反掉
+			// 顺序断言：store.dispose 必须在 $dispose 之前跑——挡未来 try 块顺序反掉的回归
 			const disposeSpy = vi.spyOn(store, 'dispose');
-			vi.spyOn(store, '$dispose').mockImplementation(() => { throw new Error('boom'); });
+			const $disposeSpy = vi.spyOn(store, '$dispose').mockImplementation(() => { throw new Error('boom'); });
 
 			expect(() => chatStoreManager.dispose('topic:t1')).not.toThrow();
 			expect(disposeSpy).toHaveBeenCalledOnce();
+			expect($disposeSpy).toHaveBeenCalledOnce();
+			expect(disposeSpy.mock.invocationCallOrder[0])
+				.toBeLessThan($disposeSpy.mock.invocationCallOrder[0]);
 			expect(chatStoreManager.size).toBe(0);
 			expect(chatStoreManager.topicCount).toBe(0);
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining('$dispose threw'),
 				'topic:t1',
-				expect.any(String),
+				expect.any(Error),
 			);
 			warnSpy.mockRestore();
 		});
@@ -146,12 +149,12 @@ describe('chatStoreManager', () => {
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining('store.dispose threw'),
 				'topic:t1',
-				expect.any(String),
+				expect.any(Error),
 			);
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringContaining('$dispose threw'),
 				'topic:t1',
-				expect.any(String),
+				expect.any(Error),
 			);
 			warnSpy.mockRestore();
 		});
@@ -292,7 +295,7 @@ describe('chatStoreManager', () => {
 				expect(warnSpy).toHaveBeenCalledWith(
 					expect.stringContaining('store.dispose threw'),
 					'topic:t0',
-					expect.any(String),
+					expect.any(Error),
 				);
 			}
 			finally {

@@ -861,6 +861,11 @@ export default {
 					targetStore?.clearInputFiles();
 					targetStore?.restoreFiles(files);
 				}
+				// claw 中途解绑：当前路由是 /topics/new?claw=<已解绑> 已成死胡同，
+				// 不跳走的话再点发送只会重抛同样的错。跳默认首页让用户重新选择入口
+				if (err?.code === 'CLAW_DISCONNECTED') {
+					this.$router.replace('/');
+				}
 			}
 		},
 

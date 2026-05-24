@@ -38,13 +38,13 @@
 								<div class="flex items-center justify-between gap-2">
 									<div class="flex items-center gap-2 min-w-0">
 										<span
-											class="inline-block size-2.5 rounded-full"
+											class="inline-block size-2.5 rounded-full shrink-0"
 											:class="clawDotClass(claw)"
 										></span>
-										<div class="flex items-center gap-1">
-											<h2 class="text-base font-semibold">{{ getClawName(claw) }}</h2>
+										<div class="flex items-center gap-1 min-w-0">
+											<h2 class="text-base font-semibold truncate min-w-0">{{ getClawName(claw) }}</h2>
 											<UButton
-												class="cc-icon-btn"
+												class="cc-icon-btn shrink-0"
 												variant="ghost"
 												color="primary"
 												size="md"
@@ -53,7 +53,7 @@
 												@click="openRename(claw)"
 											/>
 										</div>
-										<UBadge color="primary" variant="subtle" size="xs">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
+										<UBadge color="primary" variant="subtle" size="xs" class="shrink-0">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
 									</div>
 									<div v-if="dashboard.instance.monthlyCost && typeof dashboard.instance.monthlyCost.total === 'number'" class="text-right shrink-0" data-testid="monthly-cost">
 										<p class="text-base font-bold tracking-tight">{{ formatCost(dashboard.instance.monthlyCost) }}</p>
@@ -72,10 +72,10 @@
 								</div>
 							</template>
 							<template v-else>
-								<div class="flex items-center gap-2">
-									<span class="inline-block size-2.5 rounded-full bg-gray-500"></span>
-									<h2 class="text-base font-semibold">{{ getClawName(claw) }}</h2>
-									<UBadge color="neutral" variant="subtle" size="xs">{{ $t('dashboard.offline') }}</UBadge>
+								<div class="flex items-center gap-2 min-w-0">
+									<span class="inline-block size-2.5 rounded-full bg-gray-500 shrink-0"></span>
+									<h2 class="text-base font-semibold truncate min-w-0">{{ getClawName(claw) }}</h2>
+									<UBadge color="neutral" variant="subtle" size="xs" class="shrink-0">{{ $t('dashboard.offline') }}</UBadge>
 								</div>
 							</template>
 						</div>

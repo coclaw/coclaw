@@ -165,6 +165,34 @@ describe('ManageClawsPage', () => {
 		expect(wrapper.find('[data-testid="agent-card"]').text()).toContain('Agent1');
 	});
 
+	test('claw 名容器 + h2 带 truncate/min-w-0，防长名 + 成本块挤压窄屏溢出', async () => {
+		// 在线 claw：truncate 在 dashboard.instance 分支
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [] },
+			agents: [],
+			loading: false,
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const nameH2Online = wrapper.find('[data-testid="claw-1"] h2');
+		expect(nameH2Online.exists()).toBe(true);
+		const onlineCls = nameH2Online.classes();
+		expect(onlineCls).toContain('truncate');
+		expect(onlineCls).toContain('min-w-0');
+
+		// 离线 claw：truncate 也得在 fallback 分支（用同一规则，避免窄屏挤压）
+		mockGetDashboard.mockReturnValue({ instance: null, agents: [], loading: false });
+		const wrapper2 = createWrapper();
+		await flushPromises();
+		const nameH2Offline = wrapper2.find('[data-testid="claw-1"] h2');
+		expect(nameH2Offline.exists()).toBe(true);
+		const offlineCls = nameH2Offline.classes();
+		expect(offlineCls).toContain('truncate');
+		expect(offlineCls).toContain('min-w-0');
+	});
+
 	test('在线 claw + dashboard 有 monthlyCost → 渲染本月花费', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue({

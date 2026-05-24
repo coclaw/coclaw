@@ -195,6 +195,32 @@ test('should cancel old binding code when restarting', async () => {
 	expect(wrapper.vm.bindingCode).toBe('NEWCODE1');
 });
 
+test('cancelBindingCode 失败时 warn 一行带上码 + error（不再 silent catch）', async () => {
+	const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	const { wrapper } = createWrapper();
+	await flushPromises();
+	expect(wrapper.vm.bindingCode).toBe('12345678');
+
+	// 触发 startBinding 重新开始：会调 cancelBindingCode('12345678')，让它 reject
+	const cancelErr = new Error('server 500');
+	mockCancelBindingCode.mockRejectedValueOnce(cancelErr);
+	mockCreateBindingCode.mockResolvedValueOnce({
+		code: 'NEWCODE1',
+		expiresAt: new Date(Date.now() + 300_000).toISOString(),
+		waitToken: 'tok_new',
+	});
+	await wrapper.vm.startBinding();
+	await flushPromises();
+
+	expect(mockCancelBindingCode).toHaveBeenCalledWith('12345678');
+	expect(warnSpy).toHaveBeenCalledWith(
+		expect.stringContaining('cancelBindingCode failed'),
+		'12345678',
+		cancelErr,
+	);
+	warnSpy.mockRestore();
+});
+
 test('should not call cancelBindingCode on unmount when no code exists', async () => {
 	mockCreateBindingCode.mockRejectedValueOnce(new Error('fail'));
 	const { wrapper } = createWrapper();

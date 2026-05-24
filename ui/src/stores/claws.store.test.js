@@ -56,7 +56,7 @@ vi.mock('../services/signaling-connection.js', () => ({
 
 import { useAgentRunsStore } from './agent-runs.store.js';
 import { useAgentsStore } from './agents.store.js';
-import { useClawsStore, __resetAwaitingConnIds, __test__ as __clawsTest, __registerNotifyHooks } from './claws.store.js';
+import { useClawsStore, __resetAwaitingConnIds, __test__ as __clawsTest, __registerNotifyHooks, __registerClawLifecycleHooks } from './claws.store.js';
 import { getReadyConn } from './get-ready-conn.js';
 import { useDashboardStore } from './dashboard.store.js';
 import { useSessionsStore } from './sessions.store.js';
@@ -2545,6 +2545,41 @@ describe('__refreshIfStale', () => {
 
 		// force 下不看 disconnectedAt，即使 0 也刷（对应 connected-throughout-offline 场景）
 		expect(agentsStore.loadAgents).toHaveBeenCalledWith('25');
+	});
+
+	test('refreshClawResources 意外 reject 时外层 .catch warn 一行带 clawId + error', async () => {
+		// 内部各 load 都已自带 .catch，外层 promise 实际不会 reject——
+		// 此 .catch 仅作 unhandled-rejection 兜底。这里直接覆盖 hook 让它 reject 触发兜底分支，
+		// 防止未来某层防御漏了又退回 silent swallow。
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { refreshClawResources: realRefresh } = await import('./claw-lifecycle.js');
+		const claw99Err = new Error('lifecycle blew up');
+		try {
+			__registerClawLifecycleHooks({
+				refreshClawResources: vi.fn().mockRejectedValue(claw99Err),
+			});
+
+			const store = useClawsStore();
+			store.setClaws([{ id: '99', name: 'Bot', online: true }]);
+			store.byId['99'].initialized = true;
+			store.byId['99'].disconnectedAt = Date.now() - 60_000;
+
+			store.__refreshIfStale('99');
+			// 等 hook promise reject 后 .catch 跑完
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('refreshClawResources unexpected reject'),
+				'99',
+				claw99Err,
+			);
+		}
+		finally {
+			// 恢复真 hook 避免污染后续测试（claws.store.js 是 module-level _lifecycle，覆盖后不自动复原）
+			__registerClawLifecycleHooks({ refreshClawResources: realRefresh });
+			warnSpy.mockRestore();
+		}
 	});
 
 	test('{force:true} + 未初始化 → 仍不刷', () => {

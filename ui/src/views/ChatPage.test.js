@@ -1262,10 +1262,11 @@ describe('ChatPage new topic', () => {
 	});
 
 	// createTopic 在 await 期间 claw 被解绑 → topics.store 抛 CLAW_DISCONNECTED。上层必须：
-	//   1) 不 promote、不路由、不 sendMessage——否则用户会卡在 byId 没写入的空白 topic 路由
-	//   2) 用 chat.errWsClosed 文案提示用户连接已断
-	//   3) __creatingTopic 归零，让用户能再次重试
-	test('new-topic createTopic 抛 CLAW_DISCONNECTED → 不路由不 promote、提示连接断开、允许重试', async () => {
+	//   1) 不 promote、不进话题路由——否则用户卡在 byId 没写入的空白 topic 路由
+	//   2) 跳默认首页 /，避免用户停留在 /topics/new?claw=<已解绑> 死胡同（再点发送重抛同错）
+	//   3) 用 chat.errWsClosed 文案提示用户连接已断
+	//   4) __creatingTopic 归零，让用户能再次重试
+	test('new-topic createTopic 抛 CLAW_DISCONNECTED → 不 promote、跳默认首页、提示连接断开、允许重试', async () => {
 		const { useTopicsStore } = await import('../stores/topics.store.js');
 		const wrapper = createWrapper({
 			routeName: 'topics-chat', sessionId: 'new',
@@ -1286,9 +1287,10 @@ describe('ChatPage new topic', () => {
 		input.vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		// 不 promote、不路由 —— 用户没有跳到陷阱路由
+		// 不 promote —— 用户没有跳到陷阱话题路由
 		expect(promoteSpy).not.toHaveBeenCalled();
-		expect(mockRouter.replace).not.toHaveBeenCalled();
+		// 跳默认首页 / 让用户重新选择入口（F4 防 UX 死胡同）
+		expect(mockRouter.replace).toHaveBeenCalledWith('/');
 		// 提示用"连接断开"文案
 		expect(mockNotify.error).toHaveBeenCalledWith('Connection lost');
 
@@ -3739,5 +3741,46 @@ describe('ChatPage __tryGenerateTitle entry snapshot', () => {
 		const target = makeFakeTopicStore({ topicMode: true, sessionId: 'sess-X', clawId: 'bot-X', userMsgs: 1 });
 		wrapper.vm.__tryGenerateTitle(target);
 		expect(genSpy).not.toHaveBeenCalled();
+	});
+
+	// 集成验证：__handleNewTopicSend accepted 路径必须给入口快照的 newStore 起标题，
+	// 不能漂到 this.chatStore（哪怕 happy path 下两者相等）。
+	// 上面 3 条函数级测试只挡 __tryGenerateTitle 自身逻辑；这条挡上层调用点把入口 targetStore
+	// 透传给它的契约——若有人把 __tryGenerateTitle(targetStore) 改回 __tryGenerateTitle()，
+	// 函数级测试照样绿、本测必挂。
+	test('__handleNewTopicSend 把 entry-snapshot 的 newStore 透传给 __tryGenerateTitle', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		vi.spyOn(topicsStore, 'createTopic').mockResolvedValue('new-topic-uuid');
+		// 模拟 topic 已存入 byId（createTopic 真实路径下会写）
+		topicsStore.byId = { 'new-topic-uuid': { topicId: 'new-topic-uuid', agentId: 'main', title: null, createdAt: 100, clawId: 'bot-1' } };
+		const genTitleSpy = vi.spyOn(topicsStore, 'generateTitle').mockImplementation(() => {});
+		await flushPromises();
+
+		// 让新 topic store sendMessage 返回 accepted=true 触发 generateTitle 路径
+		const origGet = chatStoreManager.get.bind(chatStoreManager);
+		vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+			const s = origGet(key, opts);
+			if (key === 'topic:new-topic-uuid') {
+				vi.spyOn(s, 'sendMessage').mockResolvedValue({ accepted: true });
+				// __tryGenerateTitle 内部读 store.messages 取 user message count；mock 一条
+				s.messages = [{ message: { role: 'user', content: 'hi' } }];
+			}
+			return s;
+		});
+		mockRouter.replace.mockImplementation(() => Promise.resolve());
+
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+
+		// generateTitle 应以入口的 (clawId, topicId) 触发——证明 __tryGenerateTitle 收到了 targetStore
+		expect(genTitleSpy).toHaveBeenCalledWith('bot-1', 'new-topic-uuid');
 	});
 });

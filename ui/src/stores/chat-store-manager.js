@@ -104,11 +104,11 @@ export const chatStoreManager = {
 		console.debug('[chatStoreMgr] dispose key=%s remaining=%d', storeKey, instances.size - 1);
 		try { store.dispose(); }
 		catch (err) {
-			console.warn('[chatStoreMgr] dispose key=%s store.dispose threw: %s', storeKey, err?.message);
+			console.warn('[chatStoreMgr] dispose key=%s store.dispose threw:', storeKey, err);
 		}
 		try { store.$dispose(); }
 		catch (err) {
-			console.warn('[chatStoreMgr] dispose key=%s $dispose threw: %s', storeKey, err?.message);
+			console.warn('[chatStoreMgr] dispose key=%s $dispose threw:', storeKey, err);
 		}
 		instances.delete(storeKey);
 		const idx = topicLru.indexOf(storeKey);

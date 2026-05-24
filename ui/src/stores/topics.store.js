@@ -105,10 +105,13 @@ export const useTopicsStore = defineStore('topics', {
 			const promise = this.__doLoadForClaw(id, conn);
 			_perClawLoading.set(id, promise);
 			// 仅当 Map 当前条目仍是本 promise 时才清，避免 removeByClaw 后重入新建的
-			// 飞行 promise 被老 promise 的 finally 误删
-			promise.finally(() => {
+			// 飞行 promise 被老 promise 的 cleanup 误删。用 then(cleanup, cleanup) 而不是
+			// finally：finally 返回新 promise，若 __doLoadForClaw 内部 catch 有漏洞会造成
+			// unhandled rejection；then 两参形式自身吞掉 rejection
+			const cleanup = () => {
 				if (_perClawLoading.get(id) === promise) _perClawLoading.delete(id);
-			});
+			};
+			promise.then(cleanup, cleanup);
 			return promise;
 		},
 		async __doLoadForClaw(id, conn) {

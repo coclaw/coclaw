@@ -216,7 +216,10 @@ export default {
 			// in-flight guard：上一次还没结束就忽略本次（防双击让先到的 bindingCode 变孤儿）
 			if (this.loading) return;
 			if (this.bindingCode) {
-				cancelBindingCode(this.bindingCode).catch(() => {});
+				const oldCode = this.bindingCode;
+				cancelBindingCode(oldCode).catch((err) => {
+					console.warn('[AddClawPage] cancelBindingCode failed code=%s:', oldCode, err);
+				});
 			}
 			this.loading = true;
 			this.loadError = '';

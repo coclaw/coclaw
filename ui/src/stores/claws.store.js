@@ -938,8 +938,11 @@ export const useClawsStore = defineStore('claws', {
 				force ? ' (force)' : '', gap, id);
 			// pluginInfo 由 plugin 主动推送的 coclaw.info.updated 事件维护，不在此处主动拉取
 			// refreshClawResources 现已 async（topics/dashboard 即时并发，sessions 等 loadAgents）；
-			// 内部各 load 已自带 .catch，外层 promise 实际不会 reject——这里 .catch 仅作 unhandled-rejection 兜底
-			_lifecycle.refreshClawResources(id).catch(() => {});
+			// 内部各 load 已自带 .catch，外层 promise 实际不会 reject——这里 .catch 仅作 unhandled-rejection
+			// 兜底；真触发说明某层防御漏了，warn 一行带上 clawId 留诊断信号
+			_lifecycle.refreshClawResources(id).catch((err) => {
+				console.warn('[claws] refreshClawResources unexpected reject clawId=%s:', id, err);
+			});
 		},
 
 		/**
