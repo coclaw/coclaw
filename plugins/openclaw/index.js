@@ -693,8 +693,8 @@ const plugin = {
 				const runDuration = typeof params?.runDuration === 'number' ? params.runDuration : undefined;
 				const abortDuration = typeof params?.abortDuration === 'number' ? params.abortDuration : undefined;
 				const result = decideCancelResponse(abortResult, { runDuration, abortDuration });
-				// not-found 是 UI 重试期常态（注册空窗），不打日志避免噪音；其余分支保留 info
-				if (result.reason !== 'not-found') {
+				// not-found（注册空窗）与 abort-threw（上游 handle.abort 持续抛）都是 UI 500ms tick 重试期常态，跳过 info 日志避免洪水；其余分支保留 info
+				if (result.reason !== 'not-found' && result.reason !== 'abort-threw') {
 					logger.info?.(`[coclaw.agent.abort] result sessionId=${sessionId} ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}${result.error ? ` error=${result.error}` : ''}`);
 				}
 				if (result.ok) {

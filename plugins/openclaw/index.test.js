@@ -1399,7 +1399,7 @@ test('coclaw.agent.abort emits no remoteLog on not-found miss (UI 重试期常�
 	assert.ok(!infos.some((m) => /\[coclaw\.agent\.abort\] result.*sid-miss/.test(m)));
 });
 
-test('coclaw.agent.abort logs result info for ok=true / not-supported / abort-threw', () => {
+test('coclaw.agent.abort logs result info for ok=true / not-supported', () => {
 	__resetRemoteLogPlugin();
 	const handlers = new Map();
 	const infos = [];
@@ -1412,13 +1412,22 @@ test('coclaw.agent.abort logs result info for ok=true / not-supported / abort-th
 	withStubbedEmbeddedRunState(undefined, () => {
 		handlers.get('coclaw.agent.abort')({ params: { sessionId: 'sid-ns' }, respond() {} });
 	});
+	assert.ok(infos.some((m) => /result sessionId=sid-ok ok=true/.test(m)));
+	assert.ok(infos.some((m) => /result sessionId=sid-ns ok=false reason=not-supported/.test(m)));
+});
+
+test('coclaw.agent.abort emits no result info on abort-threw (UI 500ms tick 重试期常态)', () => {
+	__resetRemoteLogPlugin();
+	const handlers = new Map();
+	const infos = [];
+	const logger = { info: (m) => infos.push(m), warn() {}, error() {}, log() {} };
+	plugin.register(createMockApi(handlers, { logger }));
 	const throwHandle = { abort: () => { throw new Error('boom'); } };
 	withStubbedEmbeddedRunState({ activeRuns: new Map([['sid-thr', throwHandle]]) }, () => {
 		handlers.get('coclaw.agent.abort')({ params: { sessionId: 'sid-thr' }, respond() {} });
 	});
-	assert.ok(infos.some((m) => /result sessionId=sid-ok ok=true/.test(m)));
-	assert.ok(infos.some((m) => /result sessionId=sid-ns ok=false reason=not-supported/.test(m)));
-	assert.ok(infos.some((m) => /result sessionId=sid-thr ok=false reason=abort-threw error=boom/.test(m)));
+	// abort-threw 与 not-found 同列入静默列表，避免上游 handle.abort 持续抛时的日志洪水
+	assert.ok(!infos.some((m) => /\[coclaw\.agent\.abort\] result.*sid-thr/.test(m)));
 });
 
 test('coclaw.agent.abort skips remoteLog for invalid sessionId', () => {

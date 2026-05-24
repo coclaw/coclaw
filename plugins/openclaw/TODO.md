@@ -529,29 +529,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - 给 auto-upgrade 路径加专项测试覆盖 fsync 抛错场景
 - 单独发一个补丁版本（不与 release 节奏混在一起）
 
-### coclaw.agent.abort 对 abort-threw 每 tick 都打 logger.info（噪音，预存）
-
-**发现**：Phase B deep-review 综合维度（codex-rescue 第 4 路）。
-
-**锚点**：
-- `plugins/openclaw/index.js:605-608` — handler 仅排除 `not-found`，其它 reason（含 `abort-threw`）每次都进 `logger.info?.()`
-- `plugins/openclaw/src/agent-abort.js:23-34` — 侧门 abort handle 抛异常被捕获转 `abort-threw`
-- `ui/src/stores/chat.store.js:972-973` — UI 把 `abort-threw` 与 `not-found` 一并 500ms tick 重试
-
-**触发场景**：OpenClaw 上游 handle.abort() 持续抛异常（如 internal state 损坏），UI 持续 500ms tick → plugin 每 tick 打一行 `[coclaw.agent.abort] result … reason=abort-threw error=…`，造成日志洪水。
-
-**为什么 TODO（不修）**：
-- 这是 pre-existing 行为，Phase B 没动这段判断分支
-- 真实触发概率低（要求 OpenClaw handle 持续抛）
-- 修复需要扩展"reason 状态翻转"逻辑（仅在 reason 翻转时打），与 not-supported / gone 的"一次性升格"语义不一致，需要单独设计 per-session reason 缓存
-- 不阻塞 Phase B 收尾
-
-**修复方向（未来若做）**：
-- handler 内维护 per-sessionId 的 lastReason cache（弱引用 / TTL 自动清理）
-- 仅在 `result.reason` 与 lastReason 不同时打 info / remoteLog
-- 或者更简单：把 `abort-threw` 也加入静默列表（与 not-found 同级），损失部分诊断价值换取噪音控制
-- 同时考虑 UI 侧是否要给 abort-threw 加重试次数上限（dump 第三段提到的"过度重试"风险）
-
 ## race 测试标题与实现失配（PRE-EXISTING，Phase B-stage1 plan-2 deep-review 顺手抓出，不修）
 
 **发现日期**：2026-05-03（rpc-queue-startup deep-review dim C）
