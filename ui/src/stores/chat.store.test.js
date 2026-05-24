@@ -6976,6 +6976,47 @@ describe('useChatStore', () => {
 			store.__reconcileSlashCommand(); // 不应抛错
 			expect(store.sending).toBe(false);
 		});
+
+		// slash 流程不消费 __pendingCancelIntent（无 onAccepted 交接），
+		// 程序化绕过 STOP disable 留下的残值会卡 isCancelling getter 至下次发消息。
+		// 4 路退出（直接调 / 超时 / event:chat error / WS 重连 reconcile）走完后 isCancelling 都应自动归 false。
+		describe('cleanup 兜底：slash 结束让 isCancelling 自动归 false', () => {
+			test('直接调 __cleanupSlashCommand(null) 后 isCancelling=false', () => {
+				store.__pendingCancelIntent = true;
+				expect(store.isCancelling).toBe(true);
+				store.__cleanupSlashCommand(null);
+				expect(store.isCancelling).toBe(false);
+			});
+
+			test('超时退出后 isCancelling=false', async () => {
+				vi.useFakeTimers();
+				const p = store.sendSlashCommand('/help');
+				store.__pendingCancelIntent = true;
+				expect(store.isCancelling).toBe(true);
+				vi.advanceTimersByTime(300_000);
+				await expect(p).rejects.toThrow('slash command timeout');
+				expect(store.isCancelling).toBe(false);
+			});
+
+			test('event:chat error 退出后 isCancelling=false', async () => {
+				const p = store.sendSlashCommand('/help');
+				store.__pendingCancelIntent = true;
+				expect(store.isCancelling).toBe(true);
+				const handler = conn.on.mock.calls.find((c) => c[0] === 'event:chat')[1];
+				handler({ runId: store.__slashCommandRunId, state: 'error', errorMessage: 'fail' });
+				await expect(p).rejects.toThrow('fail');
+				expect(store.isCancelling).toBe(false);
+			});
+
+			test('__reconcileSlashCommand（WS 重连恢复）后 isCancelling=false', async () => {
+				const p = store.sendSlashCommand('/compact');
+				store.__pendingCancelIntent = true;
+				expect(store.isCancelling).toBe(true);
+				store.__reconcileSlashCommand();
+				await p;
+				expect(store.isCancelling).toBe(false);
+			});
+		});
 	});
 
 	// =====================================================================

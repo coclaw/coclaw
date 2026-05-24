@@ -1331,6 +1331,9 @@ export function createChatStore(storeKey, opts = {}) {
 
 			/** 清理斜杠命令状态 */
 			__cleanupSlashCommand(conn) {
+				// 兜底清旧 intent：slash 流程不消费它（无 onAccepted 交接），
+				// 程序化绕过 STOP disable 留下的残值会卡 isCancelling，导致下次发消息前 STOP 一直灰着。
+				this.__pendingCancelIntent = false;
 				this.sending = false;
 				if (this.__slashCommandTimer) {
 					clearTimeout(this.__slashCommandTimer);
