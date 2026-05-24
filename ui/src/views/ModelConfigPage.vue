@@ -147,6 +147,25 @@
 			@confirm="onConfirmRemove"
 			@cancel="onCancelRemove"
 		/>
+
+		<!-- 添加 provider 流程：单 dialog 内 stepper（选 provider → 输 API key） -->
+		<AddProviderDialog
+			v-model:open="addOpen"
+			:catalog="catalog"
+			:existing-providers="providerIds"
+			:set-api-key="addProviderRpc"
+			@added="onProviderAdded"
+		/>
+
+		<!-- 选 / 换主模型 -->
+		<PrimaryModelPickerDialog
+			v-model:open="pickerOpen"
+			:providers="providerIds"
+			:catalog="catalog"
+			:current="primary"
+			:set-primary="setPrimaryRpc"
+			@picked="onPrimaryPicked"
+		/>
 	</div>
 </template>
 
@@ -154,35 +173,26 @@
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import ProviderAuthRow from '../components/model-config/ProviderAuthRow.vue';
 import RemoveProviderConfirmDialog from '../components/model-config/RemoveProviderConfirmDialog.vue';
+import AddProviderDialog from '../components/model-config/AddProviderDialog.vue';
+import PrimaryModelPickerDialog from '../components/model-config/PrimaryModelPickerDialog.vue';
 import { navBack } from '../utils/nav-back.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { useDashboardStore, computePrimaryEffective } from '../stores/dashboard.store.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { useNotify } from '../composables/use-notify.js';
+import { mapModelConfigErrorKey } from '../utils/model-config-errors.js';
 
 const RPC_TIMEOUT = 60_000;
 
-/**
- * 连接类错误码集合（控制流仅看结构化 code，禁止 message 字符串匹配）。
- * 锚点：src/services/claw-connection.js 内部 reject 路径
- *   - CONNECT_TIMEOUT: waitReady 超时
- *   - RTC_LOST / DC_CLOSED: 通道断开
- *   - RPC_TIMEOUT: pending 请求超时
- *   - RTC_SEND_FAILED: rtc.send 抛错
- *
- * ERR_CANCELED 不在此集合——属于显式取消，不该走"连接异常"提示
- */
-const CONN_ERROR_CODES = new Set([
-	'CONNECT_TIMEOUT',
-	'RTC_LOST',
-	'DC_CLOSED',
-	'RPC_TIMEOUT',
-	'RTC_SEND_FAILED',
-]);
-
 export default {
 	name: 'ModelConfigPage',
-	components: { MobilePageHeader, ProviderAuthRow, RemoveProviderConfirmDialog },
+	components: {
+		MobilePageHeader,
+		ProviderAuthRow,
+		RemoveProviderConfirmDialog,
+		AddProviderDialog,
+		PrimaryModelPickerDialog,
+	},
 	setup() {
 		return {
 			clawsStore: useClawsStore(),
@@ -202,6 +212,9 @@ export default {
 			removeOpen: false,
 			removeTarget: '',
 			removeBusy: false,
+			// add provider / 主模型 picker 对话框开合（dialog 内部各自管 busy）
+			addOpen: false,
+			pickerOpen: false,
 		};
 	},
 	computed: {
@@ -279,6 +292,12 @@ export default {
 				this.removeOpen = false;
 				this.removeTarget = '';
 				this.removeBusy = false;
+				// add / picker 同样属于上一台 claw，强制关掉防止状态泄漏
+				this.addOpen = false;
+				this.pickerOpen = false;
+				// 清掉写目标标记：即便旧 dialog 的 inflight RPC 之后落地，
+				// onProviderAdded/onPrimaryPicked 的 target 守卫也会因 clawId 不匹配而丢弃
+				this.__writeClawId = '';
 				this.loadAll();
 			},
 		},
@@ -374,17 +393,110 @@ export default {
 			}
 		},
 
-		// --- 主模型按钮：T2 仅 stub，T3 替换为打开 picker ---
+		// --- 主模型按钮：打开 picker（change / select 同一对话框） ---
 		onChangePrimary() {
-			console.log('[ModelConfigPage] TODO(T3): open primary picker (change)');
+			if (!this.actionsEnabled) return;
+			// 记下"这次写操作针对哪台 claw"：clawId 在 dialog 打开期间稳定（一旦切换 watcher 会关掉 dialog），
+			// 所以打开时刻即写操作目标。事件回调据此判断 inflight RPC 落地时是否已切走
+			this.__writeClawId = this.clawId;
+			this.pickerOpen = true;
 		},
 		onSelectPrimary() {
-			console.log('[ModelConfigPage] TODO(T3): open primary picker (select)');
+			if (!this.actionsEnabled) return;
+			this.__writeClawId = this.clawId;
+			this.pickerOpen = true;
 		},
 
-		// --- 添加 provider：T2 仅 stub，T3 替换为打开 stepper ---
+		// --- 添加 provider：打开 stepper ---
 		onAddProvider() {
-			console.log('[ModelConfigPage] TODO(T3): open add-provider stepper');
+			if (!this.actionsEnabled) return;
+			this.__writeClawId = this.clawId;
+			this.addOpen = true;
+		},
+
+		/**
+		 * 给 AddProviderDialog 注入的 setApiKey 函数；执行时再绑当前 clawId + conn，
+		 * 用 arrow 保留 this，避免 dialog 透传时丢上下文
+		 *
+		 * @param {{ provider: string, apiKey: string, timeout?: number }} args
+		 */
+		addProviderRpc({ provider, apiKey, timeout }) {
+			const id = this.clawId;
+			const conn = useClawConnections().get(id);
+			if (!conn) {
+				// dialog 内会把 reject 映成 connError；按通道层错误码抛
+				return Promise.reject(Object.assign(new Error('connection not ready'), { code: 'DC_CLOSED' }));
+			}
+			return conn.request(
+				'coclaw.providerAuth.setApiKey',
+				{ provider, apiKey },
+				{ timeout: timeout || RPC_TIMEOUT }
+			);
+		},
+
+		/**
+		 * 给 PrimaryModelPickerDialog 注入的 setPrimary 函数
+		 *
+		 * @param {{ primary: string, timeout?: number }} args
+		 */
+		setPrimaryRpc({ primary, timeout }) {
+			const id = this.clawId;
+			const conn = useClawConnections().get(id);
+			if (!conn) {
+				return Promise.reject(Object.assign(new Error('connection not ready'), { code: 'DC_CLOSED' }));
+			}
+			return conn.request(
+				'coclaw.model.set',
+				{ primary },
+				{ timeout: timeout || RPC_TIMEOUT }
+			);
+		},
+
+		/**
+		 * AddProviderDialog 'added' 事件回调：refresh + dashboard reload + notify
+		 *
+		 * 关键：用打开时记下的 __writeClawId 作目标。若 inflight RPC 落地时用户已切到别的 claw，
+		 * 直接丢弃——不要给当前 claw 弹"已添加"、也不要拿别的 claw 的写结果去刷它的 dashboard
+		 *
+		 * @param {{ provider: string, profileId?: string }} info
+		 */
+		async onProviderAdded(info) {
+			const target = this.__writeClawId;
+			if (this.__unmounted || !target || this.clawId !== target) return;
+			// 先局部 refresh 让子页凭据列表立即一致，再 notify 成功——避免"提示成功但列表还旧"
+			await this.refreshAfterWrite();
+			if (this.__unmounted || this.clawId !== target) return;
+			this.notify.success(this.$t('modelConfig.providerAuth.add.success', {
+				provider: info?.provider ?? '',
+			}));
+			// dashboard.store 触发外层（ManageClaws 卡片）一致性，稍后追上
+			try {
+				await this.dashboardStore.loadDashboard(target, { force: true });
+			}
+			catch (err) {
+				console.warn('[ModelConfigPage] dashboard reload after add failed:', err?.message);
+			}
+		},
+
+		/**
+		 * PrimaryModelPickerDialog 'picked' 事件回调
+		 *
+		 * @param {{ primary: string }} info
+		 */
+		async onPrimaryPicked(info) {
+			const target = this.__writeClawId;
+			if (this.__unmounted || !target || this.clawId !== target) return;
+			// 立即把本地 primary 字段同步给用户看到的"已选"状态——比等 RPC refresh 更快
+			if (info?.primary) this.primary = info.primary;
+			await this.refreshAfterWrite();
+			if (this.__unmounted || this.clawId !== target) return;
+			this.notify.success(this.$t('modelConfig.primary.changeSuccess'));
+			try {
+				await this.dashboardStore.loadDashboard(target, { force: true });
+			}
+			catch (err) {
+				console.warn('[ModelConfigPage] dashboard reload after pick failed:', err?.message);
+			}
 		},
 
 		// --- 撤销 provider：T2 完整 E2E ---
@@ -432,13 +544,18 @@ export default {
 			}
 			catch (err) {
 				if (this.__unmounted || id !== this.clawId) return;
-				const code = err?.code;
-				// 用结构化 err.code 做控制流；不依赖 user-facing message 字符串
+				// 错误码 → i18n key 走共享 util；fallback 是 removeFailed（带 provider 参数）
+				// 注意：mapModelConfigErrorKey 不带参数，所以 fallback 自带 {provider} 参数时
+				// 仍需在调用方把 provider 注入；下方对 fallback 与公共 key 分别处理
+				const code = err && typeof err === 'object' ? err.code : undefined;
+				let key = mapModelConfigErrorKey(err, '');
 				let msg;
-				if (code === 'INVALID_ARGS') msg = this.$t('modelConfig.common.errInvalidArgs');
-				else if (code === 'IO_FAILED') msg = this.$t('modelConfig.common.errIoFailed');
-				else if (CONN_ERROR_CODES.has(code)) msg = this.$t('modelConfig.common.connError');
-				else msg = this.$t('modelConfig.providerAuth.removeFailed', { provider });
+				if (key) {
+					msg = this.$t(key);
+				}
+				else {
+					msg = this.$t('modelConfig.providerAuth.removeFailed', { provider });
+				}
 				this.notify.error(msg);
 				console.warn('[ModelConfigPage] remove provider failed code=%s msg=%s', code ?? 'n/a', err?.message ?? 'n/a');
 			}
@@ -450,6 +567,8 @@ export default {
 	beforeCreate() {
 		this.__loadSeq = 0;
 		this.__unmounted = false;
+		// 当前打开的 add/picker dialog 所针对的 claw（写操作目标），见 onProviderAdded/onPrimaryPicked
+		this.__writeClawId = '';
 	},
 	beforeUnmount() {
 		// 标记 + 抢占 seq：让任何 inflight 的 loadAll / refreshAfterWrite / onConfirmRemove

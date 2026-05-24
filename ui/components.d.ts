@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AddProviderDialog: typeof import('./src/components/model-config/AddProviderDialog.vue')['default']
     AdminNavTabs: typeof import('./src/components/AdminNavTabs.vue')['default']
     AgentCard: typeof import('./src/components/AgentCard.vue')['default']
     AgentItemActions: typeof import('./src/components/AgentItemActions.vue')['default']
@@ -29,6 +30,7 @@ declare module 'vue' {
     MarkdownBody: typeof import('./src/components/MarkdownBody.vue')['default']
     MobileBottomTabs: typeof import('./src/components/MobileBottomTabs.vue')['default']
     MobilePageHeader: typeof import('./src/components/MobilePageHeader.vue')['default']
+    PrimaryModelPickerDialog: typeof import('./src/components/model-config/PrimaryModelPickerDialog.vue')['default']
     ProgressRing: typeof import('./src/components/ProgressRing.vue')['default']
     ProviderAuthRow: typeof import('./src/components/model-config/ProviderAuthRow.vue')['default']
     RemoveProviderConfirmDialog: typeof import('./src/components/model-config/RemoveProviderConfirmDialog.vue')['default']

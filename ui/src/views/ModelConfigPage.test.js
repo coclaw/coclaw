@@ -26,6 +26,38 @@ vi.mock('../components/model-config/RemoveProviderConfirmDialog.vue', () => ({
 	},
 }));
 
+// T3 dialogs — stub them so the page wiring test can drive their events directly
+vi.mock('../components/model-config/AddProviderDialog.vue', () => ({
+	default: {
+		name: 'AddProviderDialog',
+		props: ['open', 'catalog', 'existingProviders', 'setApiKey'],
+		emits: ['update:open', 'added'],
+		template: `
+			<div v-if="open" class="add-dialog" :data-existing="(existingProviders||[]).join(',')">
+				<span class="ad-catalog-len">{{ (catalog||[]).length }}</span>
+				<button class="ad-fire-added" @click="$emit('added', { provider: 'groq', profileId: 'groq:default' }); $emit('update:open', false)">added</button>
+				<button class="ad-cancel" @click="$emit('update:open', false)">cancel</button>
+				<button class="ad-rpc" @click="setApiKey && setApiKey({ provider: 'groq', apiKey: 'gsk_x' })">rpc</button>
+			</div>
+		`,
+	},
+}));
+vi.mock('../components/model-config/PrimaryModelPickerDialog.vue', () => ({
+	default: {
+		name: 'PrimaryModelPickerDialog',
+		props: ['open', 'providers', 'catalog', 'current', 'setPrimary'],
+		emits: ['update:open', 'picked'],
+		template: `
+			<div v-if="open" class="picker-dialog" :data-providers="(providers||[]).join(',')" :data-current="current||''">
+				<span class="pk-catalog-len">{{ (catalog||[]).length }}</span>
+				<button class="pk-fire-picked" @click="$emit('picked', { primary: 'groq/llama-3.3-70b-versatile' }); $emit('update:open', false)">picked</button>
+				<button class="pk-cancel" @click="$emit('update:open', false)">cancel</button>
+				<button class="pk-rpc" @click="setPrimary && setPrimary({ primary: 'groq/llama-3.3-70b-versatile' })">rpc</button>
+			</div>
+		`,
+	},
+}));
+
 const mockNotify = {
 	success: vi.fn(),
 	info: vi.fn(),
@@ -357,23 +389,340 @@ describe('ModelConfigPage — offline / connection gating', () => {
 	});
 });
 
-describe('ModelConfigPage — stub buttons (T2 boundary)', () => {
-	test('Change / Select / Add buttons are wired to stub handlers (no RPC, no router push)', async () => {
+describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
+	function primedAuthList() {
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.list') return asProfiles([
 				{ provider: 'groq', type: 'api_key', keyPreview: 'gsk_…X', profileId: 'groq:default' },
 			]);
 			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([
+				{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
+				{ id: 'gpt-4', provider: 'openai' },
+			]);
+			return {};
+		});
+	}
+
+	test('Add button opens AddProviderDialog with current catalog + existing providers', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		// Initially closed
+		expect(w.find('.add-dialog').exists()).toBe(false);
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		expect(w.find('.add-dialog').exists()).toBe(true);
+		// existing providers reflect current profiles
+		expect(w.find('.add-dialog').attributes('data-existing')).toBe('groq');
+		// catalog is passed through
+		expect(w.find('.ad-catalog-len').text()).toBe('2');
+		w.unmount();
+	});
+
+	test('Add button is gated by actionsEnabled (no dialog open when offline)', async () => {
+		mockRequest.mockResolvedValue({});
+		const w = makeWrapper({ online: false, dcReady: false });
+		await flushPromises();
+		// click should be a no-op since offline
+		// (note: button is also disabled at the DOM level, but verify the handler guards as well)
+		w.vm.onAddProvider();
+		await w.vm.$nextTick();
+		expect(w.find('.add-dialog').exists()).toBe(false);
+		w.unmount();
+	});
+
+	test('Change primary button opens PrimaryModelPickerDialog with providers + current', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.find('.picker-dialog').exists()).toBe(false);
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		const dialog = w.find('.picker-dialog');
+		expect(dialog.exists()).toBe(true);
+		expect(dialog.attributes('data-providers')).toBe('groq');
+		expect(dialog.attributes('data-current')).toBe('groq/llama-3.3-70b-versatile');
+		expect(w.find('.pk-catalog-len').text()).toBe('2');
+		w.unmount();
+	});
+
+	test('Select primary button (notSet branch) opens the same picker dialog', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList(null);
 			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
 			return {};
 		});
 		const w = makeWrapper();
 		await flushPromises();
-		// 仅 change button 暴露（effective 分支）
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary-select"]').trigger('click');
+		await w.vm.$nextTick();
+		expect(w.find('.picker-dialog').exists()).toBe(true);
+		w.unmount();
+	});
+
+	test('AddProviderDialog "added" event triggers refresh + dashboard force reload + success notify', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
 		await w.find('[data-testid="btn-add-provider"]').trigger('click');
-		// 计数：3 次 load RPC（providerAuth.list / model.list / models.list），没有额外的 set / picker RPC
-		expect(mockRequest).toHaveBeenCalledTimes(3);
+		await w.vm.$nextTick();
+		// after-write list returns groq + new openai
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+				{ provider: 'openai', type: 'api_key', keyPreview: 'sk-op…Y', profileId: 'openai:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			return {};
+		});
+		await w.find('.ad-fire-added').trigger('click');
+		await flushPromises();
+		// dialog auto-closed
+		expect(w.find('.add-dialog').exists()).toBe(false);
+		// dashboard reload with force
+		expect(mockLoadDashboard).toHaveBeenCalledWith('claw1', { force: true });
+		// success notify
+		expect(mockNotify.success).toHaveBeenCalled();
+		w.unmount();
+	});
+
+	test('AddProviderDialog setApiKey prop calls coclaw.providerAuth.setApiKey on current claw conn', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		// Click ad-rpc which invokes the injected setApiKey({provider, apiKey}) prop
+		await w.find('.ad-rpc').trigger('click');
+		await flushPromises();
+		// Among requests there should be one with setApiKey RPC name
+		const setApiKeyCall = mockRequest.mock.calls.find(c => c[0] === 'coclaw.providerAuth.setApiKey');
+		expect(setApiKeyCall).toBeTruthy();
+		expect(setApiKeyCall[1]).toEqual({ provider: 'groq', apiKey: 'gsk_x' });
+		w.unmount();
+	});
+
+	test('AddProviderDialog setApiKey: no conn → rejects with DC_CLOSED code (so dialog can render connError)', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		mockClawConnGet.mockReturnValue(undefined);
+		// Invoke setApiKey directly to verify the reject shape
+		const setApiKey = w.findComponent({ name: 'AddProviderDialog' }).props('setApiKey');
+		let caught;
+		try {
+			await setApiKey({ provider: 'groq', apiKey: 'gsk_x' });
+		}
+		catch (err) {
+			caught = err;
+		}
+		expect(caught?.code).toBe('DC_CLOSED');
+		w.unmount();
+	});
+
+	test('PrimaryModelPickerDialog "picked" event updates local primary + dashboard reload + notify', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		// refresh-after-write returns updated primary
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			return {};
+		});
+		await w.find('.pk-fire-picked').trigger('click');
+		await flushPromises();
+		// dialog auto-closed
+		expect(w.find('.picker-dialog').exists()).toBe(false);
+		// local primary updated immediately (before dashboard reload)
+		expect(w.vm.primary).toBe('groq/llama-3.3-70b-versatile');
+		// dashboard reload with force
+		expect(mockLoadDashboard).toHaveBeenCalledWith('claw1', { force: true });
+		// success notify
+		expect(mockNotify.success).toHaveBeenCalled();
+		w.unmount();
+	});
+
+	test('PrimaryModelPickerDialog setPrimary calls coclaw.model.set RPC', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		await w.find('.pk-rpc').trigger('click');
+		await flushPromises();
+		const setCall = mockRequest.mock.calls.find(c => c[0] === 'coclaw.model.set');
+		expect(setCall).toBeTruthy();
+		expect(setCall[1]).toEqual({ primary: 'groq/llama-3.3-70b-versatile' });
+		w.unmount();
+	});
+
+	test('PrimaryModelPickerDialog setPrimary: no conn → rejects with DC_CLOSED', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		mockClawConnGet.mockReturnValue(undefined);
+		const setPrimary = w.findComponent({ name: 'PrimaryModelPickerDialog' }).props('setPrimary');
+		let caught;
+		try {
+			await setPrimary({ primary: 'groq/x' });
+		}
+		catch (err) {
+			caught = err;
+		}
+		expect(caught?.code).toBe('DC_CLOSED');
+		w.unmount();
+	});
+
+	test('Route change closes any open Add / Picker dialog (prevents stale state leaking to new claw)', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		// open both
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		// switch claw
+		clawsStoreState.byId.claw2 = { id: 'claw2', name: 'Other', online: true, dcReady: true };
+		w.vm.$route.params.clawId = 'claw2';
+		w.vm.$options.watch.clawId.handler.call(w.vm);
+		await flushPromises();
+		expect(w.vm.addOpen).toBe(false);
+		expect(w.vm.pickerOpen).toBe(false);
+		delete clawsStoreState.byId.claw2;
+		w.unmount();
+	});
+
+	test('Dashboard reload failure after add/pick does not surface to user', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		mockLoadDashboard.mockRejectedValueOnce(new Error('dash boom'));
+		await w.find('.ad-fire-added').trigger('click');
+		await flushPromises();
+		// success notify still fires
+		expect(mockNotify.success).toHaveBeenCalled();
+		// no error notify because dashboard failure is silent
+		expect(mockNotify.error).not.toHaveBeenCalled();
+		w.unmount();
+	});
+
+	test('Page never receives nor logs the raw API key — added payload carries only { provider, profileId }', async () => {
+		// The dialog owns the raw key; the page only ever sees the `added` event payload.
+		// This asserts the wiring shape does not surface apiKey into any of the page's
+		// console channels (defense-in-depth, in case diagnostic logging is added later).
+		primedAuthList();
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		await w.find('.ad-fire-added').trigger('click');
+		await flushPromises();
+		// `added` event payload is { provider, profileId } — no key in it; nothing in logs should ever match
+		for (const spy of [logSpy, warnSpy, errSpy]) {
+			for (const call of spy.mock.calls) {
+				for (const arg of call) {
+					const s = typeof arg === 'string' ? arg : JSON.stringify(arg);
+					expect(s).not.toContain('apiKey');
+					expect(s).not.toContain('gsk_');
+				}
+			}
+		}
+		logSpy.mockRestore();
+		warnSpy.mockRestore();
+		errSpy.mockRestore();
+		w.unmount();
+	});
+
+	test('orphaned add: RPC resolving AFTER a claw switch is dropped (no wrong-claw notify/reload)', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click'); // __writeClawId = claw1
+		await w.vm.$nextTick();
+		// switch to claw2 (watcher closes dialog + clears __writeClawId)
+		clawsStoreState.byId.claw2 = { id: 'claw2', name: 'Other', online: true, dcReady: true };
+		w.vm.$route.params.clawId = 'claw2';
+		w.vm.$options.watch.clawId.handler.call(w.vm);
+		await flushPromises();
+		// reset counters AFTER the switch's own loadAll
+		mockNotify.success.mockClear();
+		mockLoadDashboard.mockClear();
+		// the stale claw1 dialog emits `added` late → handler must be a no-op for claw2
+		await w.vm.onProviderAdded({ provider: 'groq', profileId: 'groq:default' });
+		await flushPromises();
+		expect(mockNotify.success).not.toHaveBeenCalled();
+		expect(mockLoadDashboard).not.toHaveBeenCalled();
+		delete clawsStoreState.byId.claw2;
+		w.unmount();
+	});
+
+	test('orphaned pick: RPC resolving AFTER a claw switch is dropped (primary not overwritten, no notify/reload)', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-primary-change"]').trigger('click'); // __writeClawId = claw1
+		await w.vm.$nextTick();
+		clawsStoreState.byId.claw2 = { id: 'claw2', name: 'Other', online: true, dcReady: true };
+		w.vm.$route.params.clawId = 'claw2';
+		w.vm.$options.watch.clawId.handler.call(w.vm);
+		await flushPromises();
+		// after switch, claw2's load set primary to groq/llama...
+		const primaryBefore = w.vm.primary;
+		mockNotify.success.mockClear();
+		mockLoadDashboard.mockClear();
+		// stale claw1 pick lands late with a DIFFERENT primary → must be dropped
+		await w.vm.onPrimaryPicked({ primary: 'openai/gpt-4' });
+		await flushPromises();
+		expect(w.vm.primary).toBe(primaryBefore);
+		expect(w.vm.primary).not.toBe('openai/gpt-4');
+		expect(mockNotify.success).not.toHaveBeenCalled();
+		expect(mockLoadDashboard).not.toHaveBeenCalled();
+		delete clawsStoreState.byId.claw2;
+		w.unmount();
+	});
+
+	test('refreshAfterWrite does NOT refetch catalog (models.list) and keeps loadOk.catalog true', async () => {
+		primedAuthList();
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.loadOk.catalog).toBe(true);
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		mockRequest.mockClear();
+		// refresh only re-pulls profiles + model.list (NOT models.list catalog)
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			return {};
+		});
+		await w.find('.ad-fire-added').trigger('click');
+		await flushPromises();
+		const modelsListCalls = mockRequest.mock.calls.filter(c => c[0] === 'models.list');
+		expect(modelsListCalls).toHaveLength(0);
+		// flag must remain true so primaryState classification keeps working
+		expect(w.vm.loadOk.catalog).toBe(true);
+		expect(w.vm.catalog.length).toBeGreaterThan(0);
 		w.unmount();
 	});
 });
