@@ -407,21 +407,10 @@ const plugin = {
 				// 取消前一个 enroll（与 doBind/doUnbind 共享 helper）
 				cancelActiveEnroll();
 				const abortController = new AbortController();
-				// early-set：让 enrollClaw 仍在往返时进来的第二个 enroll/bind/unbind
-				// 能立即 cancel 旧 controller；enrollClaw 抛错时由内层 catch 清残留
 				activeEnrollAbort = abortController;
 
 				const serverUrl = params?.serverUrl ?? api.pluginConfig?.serverUrl;
-				let result;
-				try {
-					result = await enrollClaw({ serverUrl });
-				}
-				catch (err) {
-					if (activeEnrollAbort === abortController) {
-						activeEnrollAbort = null;
-					}
-					throw err;
-				}
+				const result = await enrollClaw({ serverUrl });
 
 				const rawMinutes = Math.round(
 					(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
@@ -854,20 +843,10 @@ const plugin = {
 						// 并发控制：取消前一个 enroll（与 RPC 路径共享 helper）
 						cancelActiveEnroll();
 						const abortController = new AbortController();
-						// 同 RPC 路径：early-set 保留早期取消语义，抛错由内层 catch 清残留
 						activeEnrollAbort = abortController;
 
 						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
-						let result;
-						try {
-							result = await enrollClaw({ serverUrl });
-						}
-						catch (err) {
-							if (activeEnrollAbort === abortController) {
-								activeEnrollAbort = null;
-							}
-							throw err;
-						}
+						const result = await enrollClaw({ serverUrl });
 						const rawMinutes = Math.round(
 							(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
 						);

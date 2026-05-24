@@ -501,6 +501,7 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 ### G 阶段其它 Low 条目
 
+- **activeEnrollAbort 提前 set**（`index.js` enroll handler，预存；2026-05-24 评估）：`enrollClaw()` 同步抛错时 controller 残留，下一次 enroll 进来时 `cancelActiveEnroll` 会对死 controller 多 log 一行 "cancelling active enroll"。**仅日志噪音、无功能影响**（abort 一个无人 listen 的 controller 是 no-op）。2026-05-24 走过两轮补丁（defer 赋值 / early-set + catch identity guard），均不可靠且都被 revert：defer 削弱"第二次 enroll 立即取消第一次"语义、catch guard 是补丁式拼接。**根本方案**应是让 `enrollClaw` 自身消费 signal 并透传到 fetch，但窄窗口救一点的收益小、上层 CLI/gateway/server 三端语义需先讨论清楚，遂不立刻做；等下次有动机时一并设计。
 - **gateway message listener catch 内 logger 抛形成 unhandled rejection**（`realtime-bridge.js:860`，本次引入 `f983017`）：嵌套 try/catch 即可。
 - **非法 DC gateway 请求带合法 id 时仍 broadcast 错误响应**（`realtime-bridge.js:966-984`，本次引入 `c545128`）：可改 unicast 当 connId 已知。
 - **测试覆盖小缺口**（本次引入）：`dfdc277` 的 stale-PC 测试只覆盖 `onselectedcandidatepairchange`，未覆盖 `onicecandidate` / `onicegatheringstatechange`；`webrtc-peer.js:173` `sendTo` 的 enqueue-throw catch 路径未测。
