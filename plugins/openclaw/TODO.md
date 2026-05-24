@@ -1312,3 +1312,27 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **修复方向**：上游确实加新 segment 形态时，及时把它加入黑名单（一行改动）。若上游频繁演进 segment 词表，考虑迁移到白名单 + 默认拒绝策略。
 
 **严重性**：低——需要上游主动加新形态才会触发；可观测信号有 `chat-history.skip-*` 缺失。
+
+## file-manager upload `done` 帧未进入终态，迟到 binary 可能凑足 declaredSize 后被吸纳进文件
+
+**发现日期**：2026-05-25（read-only deep-review 2026-05-24 综合报告 #5）
+**关联**：`plugins/openclaw/src/file-manager/handler.js:767-811` 上传模式下的 `dc.onmessage`
+
+**问题**：收到 `{done:true}` 后只置 `doneReceived=true`，没有把 binary 通道锁死。后续到达的 binary 帧仍走 else 分支累加 `receivedBytes`、入队、由 drainLoop 写盘。若 done 早于全部 binary 到达 + 后续 binary 恰好把 `receivedBytes` 凑到 `declaredSize`，最终 size 校验通过、rename 成功——多写的字节被吸纳进目标文件。
+
+**为什么本期未修**：协议宽松而非安全漏洞——上传方对自己 workspace 内容本就有完全权限；生产环境未观察到实例（正常客户端不会在 done 之后继续 send binary）。
+
+**修复方向**：done 收到后置 terminal flag；后续 binary 帧直接丢弃，或走 `SIZE_EXCEEDED` 同款 reject 路径上报错误码。
+
+**严重性**：低——协议宽松；无安全影响。
+
+## `coclaw.files.create` lstat→writeFile 非原子，并发同名创建都"成功"
+
+**发现日期**：2026-05-25（read-only deep-review 2026-05-24 综合报告 #6）
+**关联**：`plugins/openclaw/src/file-manager/handler.js:265-280` 的 `coclaw.files.create` 路径
+
+**问题**：check-then-act 两步分离——先 `_lstat` 抛 ENOENT 才走 `writeFile('')`。两个并发 create 同名文件的请求都能通过 lstat（都 ENOENT），随后两次 `writeFile` 都返回成功，第二次悄悄覆盖第一次的内容；两个调用方都拿到 `{}` 成功响应、UI 看到"两次 create 都成功"，但实际只剩一个空文件。
+
+**修复方向**：用 `fsp.open(resolved, 'wx')` 走 exclusive create，第二个调用会拿到 `EEXIST` → 翻译为 `ALREADY_EXISTS` 错误码。
+
+**严重性**：低——业务影响小；正常 UI 不会真的并发 create 同一路径。
