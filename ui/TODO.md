@@ -67,12 +67,6 @@
     - 现状:`ChatFile.vue:22-24` / `ChatImg.vue:22-25` 用 boolean `:loading`,无字节级下载进度;`ChatMsgItem.vue:8` 发送中用 `i-lucide-loader-2 animate-spin`
     - 修复:将来需要细粒度进度时,用 `<ProgressRing :value="..." />`(确定态)或 `<ProgressRing />`(不定态)替换
 
-### 预存问题(非本次引入)
-
-15. **ChatInput failed 上传文件卡片可能"恢复正常带叉号"**
-    - 现状:`ChatInput.vue:51` 移除按钮 `v-if="!__fileStatus(f.id)"`;`fileUploadState[id].status === 'failed'` 时移除按钮重新出现,卡片视觉回到正常态,无失败提示
-    - 修复:`failed` 态保留卡片但叠加红色覆层 + 重试按钮;或由 `chat.store` 立即清理 failed 文件
-
 ## Bug 1 修复 review 后续（lifecycle 抢跑 → "任务未完成"）
 
 **发现日期**：2026-04-26
