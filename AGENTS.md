@@ -24,6 +24,8 @@ General Instructions
 
 项目文档的**第一阅读者是 Agent（你自己），第二阅读者是开发者**。文档由 Agent 在开发过程中自动维护——架构变更、协议演进、关键设计决策等应及时反映到文档中。
 
+**局部代码看不到架构全貌**——涉及架构、通信、协议、状态机、跨模块契约的判断，必须先读 `docs/architecture/` 下相关文档再下结论，不要凭局部代码反推整体设计。
+
 ### 阅读路径
 
 1. [docs/architecture/overview.md](docs/architecture/overview.md) — 系统全景
@@ -36,7 +38,7 @@ General Instructions
 |------|------|---------|
 | `docs/architecture/` | 系统架构（当前真相） | 随架构演进持续更新 |
 | `docs/decisions/` | 架构决策记录 (ADR) | 决定后较少变动 |
-| `docs/designs/` | 功能设计稿（过程文档，头部标注状态） | 已实施的以代码为准 |
+| `docs/designs/` | 功能设计稿（过程文档，头部标注状态） | 完结后归档，不再追新；架构当前真相看 `docs/architecture/` |
 | `docs/openclaw-research/` | OpenClaw 上游机制研究 | 按需 |
 | 工作区 `docs/` | 该工作区特有文档 | 按需 |
 
