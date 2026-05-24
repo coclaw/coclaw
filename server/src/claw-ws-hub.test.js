@@ -969,6 +969,28 @@ test('applyClawInfoUpdate (patch): 仅含 name+hostName 时不写 pluginVersion/
 	assert.deepEqual(Object.keys(emitted[0]).sort(), ['clawId', 'hostName', 'name']);
 });
 
+test('applyClawInfoUpdate (patch): __pushInstanceInfo 采集失败 3 字段形态保留 DB 上的 agentModels', async () => {
+	// plugin 端 __pushInstanceInfo 在 __collectAgentModels() 失败时按 patch 语义省略
+	// agentModels 字段，只发 { name, hostName, pluginVersion }。
+	// 服务端必须不把"未出现"当成"清空"——否则 OpenClaw manifest cache 偶发卡顿
+	// 时 admin/UI 模型列表会瞬时清空。
+	let captured = null;
+	const emitter = new EventEmitter();
+	const emitted = [];
+	emitter.on('infoUpdated', (d) => emitted.push(d));
+	applyClawInfoUpdate('12345', { name: 'A', hostName: 'ubuntu', pluginVersion: '0.15.0' }, {
+		updateClawImpl: async (id, data) => { captured = { id, data }; return {}; },
+		emitter,
+	});
+	await new Promise((r) => setImmediate(r));
+	// dbData 不含 agentModels → Prisma 不会触碰该列，DB 原值保留
+	assert.deepEqual(Object.keys(captured.data).sort(), ['hostName', 'name', 'pluginVersion']);
+	assert.equal('agentModels' in captured.data, false);
+	// emit 同样不含 agentModels → 下游 SSE fan-out 不会让 UI 主动清空
+	assert.deepEqual(Object.keys(emitted[0]).sort(), ['clawId', 'hostName', 'name', 'pluginVersion']);
+	assert.equal('agentModels' in emitted[0], false);
+});
+
 test('applyClawInfoUpdate (patch): 仅含 pluginVersion 时只写该列', async () => {
 	let captured = null;
 	const emitter = new EventEmitter();
