@@ -348,6 +348,3 @@ await session.rpcConsumeLoop;
 - **bridge 启动期 queueDir 准备失败**：fbq 路径自动降级到 MemoryQueue，单 session 装配日志带 `fallback=queue-dir-null` 标记；plugin 在"残废模式"运行（rpc 路径 mem-only，10 MB 阈值），运维通过装配日志感知
 - **白名单消息让 queueBytes 持续增长**：白名单豁免容量层但仍受单条 50 MB 硬上限约束（红线 3：bypass 仅豁免容量层 admission——含 fsBroken 降级模式 mem 桶；不豁免单条上限 / 实际写入失败那一刻）；FBQ 健康路径下 1 GB diskCap 对**非 bypass 流量**是真正阈值（允许 single overshoot；bypass 命中可越过阈值 + single overshoot 双层叠加），fsBroken 降级后 mem 桶事实上接管容量层但白名单可 overshoot（与 MemoryQueue 镜像）
 
-## 死代码备注
-
-`dc-chunking.js` 的 `chunkAndSend` 仅 `dc-chunking.test.js` 在用，生产路径已全部改走 `RpcDcSender`。可删除——见 `../TODO.md` "chunkAndSend 是死代码"条目。

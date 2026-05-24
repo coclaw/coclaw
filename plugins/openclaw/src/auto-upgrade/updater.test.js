@@ -131,7 +131,11 @@ test('shouldSkipAutoUpgrade - 旧版账本读取异常时 remoteLog 推 legacy-c
 		},
 	});
 	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.legacy-config-read-failed')));
+	// 钉住 msg 段：仅匹配前缀会让 "丢失原因细节" 这种回归无声通过
+	assert.ok(
+		remoteLogBuffer.some(e => /^upgrade\.legacy-config-read-failed msg=corrupt$/.test(e.text)),
+		`expected legacy-config-read-failed with msg=corrupt, got: ${JSON.stringify(remoteLogBuffer.map(e => e.text))}`,
+	);
 });
 
 test('shouldSkipAutoUpgrade - config.current 与 config.loadConfig 都不存在时返回 true（跳过）', () => {

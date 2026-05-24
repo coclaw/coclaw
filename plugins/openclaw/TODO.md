@@ -77,8 +77,6 @@
 
 **预存问题**。
 
-**修复方向**：删除 `chunkAndSend` 导出 + 对应测试用例。低风险。
-
 ## sendTo 返回值语义微变（admission 通过即 true）
 
 **发现日期**：2026-05-02
@@ -207,8 +205,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **影响**：file RPC 内部已执行完毕但 response 被 queue-full 或 teardown 静默丢，UI 端只能等超时。预存——阶段 1 之前 sendFn 同样不暴露 boolean。
 
 **修复方向**：sendFn 改返回 Promise<boolean>（或同步返回 enqueue 结果），file-manager handler 在 false 时打 `file.rpc.response-undeliverable` 日志或走重试。需斟酌签名变更对 file-manager 的影响。
-
-**修复方向**：在 `utils/atomic-write.js` 加一个 `atomicWriteFileSync`（write tmp + renameSync 模式），device-identity 两处替换。需评估 sync 上下文性能（设备身份初始化阶段无瓶颈）。
 
 ## auto-upgrade state read-modify-write 缺跨进程互斥（预存）
 

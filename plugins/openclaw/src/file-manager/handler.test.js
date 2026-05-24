@@ -1730,6 +1730,56 @@ test('scheduleTmpCleanup: 正常执行清理', async () => {
 	}
 });
 
+// safeUnlink 对 ENOENT 静默是预期，但 EACCES/EBUSY/EIO 这类"真故障"必须 warn 出来，
+// 否则孤儿 tmp 会悄悄积累。仅断言"不崩溃"等于裸奔——必须钉死 warn 内容。
+test('scheduleTmpCleanup: safeUnlink 非 ENOENT 失败时 warn 含路径与 code', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const tmpName = 'leak.txt.tmp.550e8400-e29b-41d4-a716-446655440000';
+		const tmpPath = nodePath.join(dir, tmpName);
+		await fs.writeFile(tmpPath, 'tmp');
+
+		const warns = [];
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
+			deps: {
+				unlink: async () => {
+					const err = new Error('permission denied');
+					err.code = 'EACCES';
+					throw err;
+				},
+			},
+		});
+
+		const origSetTimeout = globalThis.setTimeout;
+		globalThis.setTimeout = (cb, ms) => {
+			if (ms === 2_000) return origSetTimeout(cb, 10);
+			return origSetTimeout(cb, ms);
+		};
+
+		try {
+			handler.scheduleTmpCleanup(async () => [dir]);
+			await waitFor(() => warns.some((m) => m.includes('safeUnlink failed')), {
+				label: 'safeUnlink warn emitted',
+				timeoutMs: 2000,
+			});
+		} finally {
+			globalThis.setTimeout = origSetTimeout;
+		}
+
+		const matched = warns.filter((m) => m.includes('safeUnlink failed'));
+		assert.equal(matched.length, 1, `expected exactly one safeUnlink warn, got ${matched.length}: ${JSON.stringify(matched)}`);
+		assert.ok(matched[0].includes(tmpPath), `warn should include path ${tmpPath}, got: ${matched[0]}`);
+		assert.ok(matched[0].includes('EACCES'), `warn should include err.code EACCES, got: ${matched[0]}`);
+	} finally {
+		// unlink mock 不真删，手动清
+		try { await fs.rm(dir, { recursive: true, force: true }); }
+		/* c8 ignore next */
+		catch { /* ignore */ }
+	}
+});
+
 test('handleFileChannel PUT: done 消息中无效 JSON 被忽略', async () => {
 	const dir = await makeTmpDir();
 	try {
