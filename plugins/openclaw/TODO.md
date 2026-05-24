@@ -1329,5 +1329,3 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **修复方向**：上游确实加新 segment 形态时，及时把它加入黑名单（一行改动）。若上游频繁演进 segment 词表，考虑迁移到白名单 + 默认拒绝策略。
 
 **严重性**：低——需要上游主动加新形态才会触发；可观测信号有 `chat-history.skip-*` 缺失。
-
-
