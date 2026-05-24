@@ -486,4 +486,14 @@ export const koMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: '모델 설정',
+		common: {
+			clawOffline: 'Claw가 오프라인입니다. 재연결될 때까지 설정할 수 없습니다.',
+			saveFailed: '저장 실패. 다시 시도해 주세요.',
+			connError: '연결 오류. 다시 시도해 주세요.',
+			errInvalidArgs: '입력이 잘못되었습니다. 확인 후 다시 시도해 주세요.',
+			errIoFailed: '저장 실패. 다시 시도해 주세요.',
+		},
+	},
 };

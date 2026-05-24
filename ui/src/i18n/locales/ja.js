@@ -486,4 +486,14 @@ export const jaMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: 'モデル設定',
+		common: {
+			clawOffline: 'Claw はオフラインです。再接続するまで設定はできません。',
+			saveFailed: '保存に失敗しました。もう一度お試しください。',
+			connError: '接続エラー。もう一度お試しください。',
+			errInvalidArgs: '入力が正しくありません。確認してもう一度お試しください。',
+			errIoFailed: '保存に失敗しました。もう一度お試しください。',
+		},
+	},
 };

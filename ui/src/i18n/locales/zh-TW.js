@@ -486,4 +486,14 @@ export const zhTWMessages = {
 			yuanbao: '騰訊',
 		},
 	},
+	modelConfig: {
+		title: '模型設定',
+		common: {
+			clawOffline: '當前 Claw 離線，恢復在線後才能配置',
+			saveFailed: '儲存失敗，請重試',
+			connError: '連線異常，請重試',
+			errInvalidArgs: '輸入有誤，請檢查後重試',
+			errIoFailed: '儲存失敗，請重試',
+		},
+	},
 };

@@ -486,4 +486,14 @@ export const frMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: 'Paramètres du modèle',
+		common: {
+			clawOffline: 'Claw est hors ligne. La configuration sera disponible après la reconnexion.',
+			saveFailed: 'Échec de l\'enregistrement. Veuillez réessayer.',
+			connError: 'Erreur de connexion. Veuillez réessayer.',
+			errInvalidArgs: 'Entrée non valide. Veuillez vérifier et réessayer.',
+			errIoFailed: 'Échec de l\'enregistrement. Veuillez réessayer.',
+		},
+	},
 };

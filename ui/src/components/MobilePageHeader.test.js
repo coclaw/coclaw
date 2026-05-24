@@ -91,3 +91,18 @@ test('should have empty actions area when no actions slot', () => {
 	expect(actionsDiv.exists()).toBe(true);
 	expect(actionsDiv.text()).toBe('');
 });
+
+test('should replace to custom fallback when provided and history has no back', async () => {
+	const origState = history.state;
+	history.replaceState({ back: null }, '');
+
+	routerBackMock.mockClear();
+	routerReplaceMock.mockClear();
+	const wrapper = createWrapper({ fallback: '/claws' });
+	await wrapper.find('button').trigger('click');
+
+	expect(routerReplaceMock).toHaveBeenCalledWith('/claws');
+	expect(routerBackMock).not.toHaveBeenCalled();
+
+	history.replaceState(origState, '');
+});

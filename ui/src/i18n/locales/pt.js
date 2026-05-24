@@ -486,4 +486,14 @@ export const ptMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: 'Configurações do modelo',
+		common: {
+			clawOffline: 'Claw está offline. A configuração ficará disponível após reconectar.',
+			saveFailed: 'Falha ao salvar. Tente novamente.',
+			connError: 'Erro de conexão. Tente novamente.',
+			errInvalidArgs: 'Entrada inválida. Verifique e tente novamente.',
+			errIoFailed: 'Falha ao salvar. Tente novamente.',
+		},
+	},
 };

@@ -486,4 +486,14 @@ export const esMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: 'Ajustes del modelo',
+		common: {
+			clawOffline: 'Claw está desconectado. La configuración no estará disponible hasta que se vuelva a conectar.',
+			saveFailed: 'Error al guardar. Inténtalo de nuevo.',
+			connError: 'Error de conexión. Inténtalo de nuevo.',
+			errInvalidArgs: 'Entrada no válida. Revisa e inténtalo de nuevo.',
+			errIoFailed: 'Error al guardar. Inténtalo de nuevo.',
+		},
+	},
 };

@@ -2,7 +2,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { useDashboardStore, __test__ } from './dashboard.store.js';
+import { useDashboardStore, __test__, computePrimaryEffective } from './dashboard.store.js';
 import { __resetSessionsInternals, useSessionsStore } from './sessions.store.js';
 
 const {
@@ -601,13 +601,15 @@ describe('dashboard store', () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
 
-		// dashboard 直接发起的 6 种方法（sessions.list 已下放给 sessionsStore，单独验证）
+		// dashboard 直接发起的 8 种方法（sessions.list 已下放给 sessionsStore，单独验证）
 		const expectedMethods = [
 			'status',
 			'models.list',
 			'usage.cost',
 			'tts.status',
 			'channels.status',
+			'coclaw.providerAuth.list',
+			'coclaw.model.list',
 			'tools.catalog',
 		];
 
@@ -621,15 +623,18 @@ describe('dashboard store', () => {
 			}
 		}
 
-		// dashboard 直接发的总 call 数精确等于 6（5 + tools.catalog × 1 agent）
+		// dashboard 直接发的总 call 数精确等于 8（7 + tools.catalog × 1 agent）
 		const dashCalls = dashConn.request.mock.calls.filter(([m]) => expectedMethods.includes(m));
-		expect(dashCalls).toHaveLength(6);
+		expect(dashCalls).toHaveLength(8);
 
 		// 关键参数也同时校验（确保不是空 params 而 options 偷跑）
 		const usageCostCall = dashConn.request.mock.calls.find(([m]) => m === 'usage.cost');
 		expect(usageCostCall[1]).toEqual({ mode: 'month' });
 		const channelsCall = dashConn.request.mock.calls.find(([m]) => m === 'channels.status');
 		expect(channelsCall[1]).toEqual({ probe: false });
+		// models.list 必须用 view:'all'——model-config 失效校验依据（设计 § 7.2）
+		const modelsListCall = dashConn.request.mock.calls.find(([m]) => m === 'models.list');
+		expect(modelsListCall[1]).toEqual({ view: 'all' });
 
 		// sessions.list 由 sessionsStore.getRawSessionsForClaw 间接发起，
 		// timeout 是 sessions.store 自己的 60_000（不是 dashboard 的 180_000）
@@ -679,8 +684,11 @@ describe('dashboard store', () => {
 		}
 		expect(seenAgentIds).toEqual(new Set(['main', 'ops', 'research']));
 
-		// 基础 5 个 RPC 也仍然各带 timeout（sessions.list 已下放给 sessionsStore）
-		for (const method of ['status', 'models.list', 'usage.cost', 'tts.status', 'channels.status']) {
+		// 基础 7 个 RPC 也仍然各带 timeout（sessions.list 已下放给 sessionsStore）
+		for (const method of [
+			'status', 'models.list', 'usage.cost', 'tts.status', 'channels.status',
+			'coclaw.providerAuth.list', 'coclaw.model.list',
+		]) {
 			const call = dashConn.request.mock.calls.find(([m]) => m === method);
 			expect(call).toBeDefined();
 			expect(call[2]).toMatchObject({ timeout: 180_000 });
@@ -1092,5 +1100,320 @@ describe('dashboard store', () => {
 			// 两个并发 force 调用合流到同一飞行：sessions.list 只调一次
 			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(1);
 		});
+	});
+
+	// =====================================================================
+	// model-config 派生字段：hasAnyProviderAuth / primaryModel / primaryEffective
+	// =====================================================================
+	describe('model-config 派生字段', () => {
+		test('两条 RPC 都成功 + primary 在 catalog 内：三字段全 truthy', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [
+					{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
+					{ id: 'claude-sonnet-4-6', provider: 'anthropic' },
+				] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': {
+					profiles: [
+						{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'gsk_…ABCD' },
+						{ profileId: 'anthropic:default', provider: 'anthropic', type: 'api_key', keyPreview: 'sk-an…XYZW' },
+					],
+				},
+				'coclaw.model.list': { default: { primary: 'groq/llama-3.3-70b-versatile' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			const entry = store.byClaw['bot-1'];
+			expect(entry.hasAnyProviderAuth).toBe(true);
+			expect(entry.primaryModel).toBe('groq/llama-3.3-70b-versatile');
+			expect(entry.primaryEffective).toBe(true);
+		});
+
+		test('凭据为空 → hasAnyProviderAuth=false / primaryEffective=false', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': { profiles: [] },
+				'coclaw.model.list': { default: { primary: null }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			const entry = store.byClaw['bot-1'];
+			expect(entry.hasAnyProviderAuth).toBe(false);
+			expect(entry.primaryModel).toBeNull();
+			expect(entry.primaryEffective).toBe(false);
+		});
+
+		test('primary 引用合法 provider 但 model 不在 catalog → primaryEffective=false（primaryModel 保留）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [
+					{ id: 'llama-3.1-8b-instant', provider: 'groq' },
+				] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': {
+					profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }],
+				},
+				// primary 指向 groq，但 model id 在 catalog 里不存在
+				'coclaw.model.list': { default: { primary: 'groq/llama-deprecated' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			const entry = store.byClaw['bot-1'];
+			expect(entry.hasAnyProviderAuth).toBe(true);
+			expect(entry.primaryModel).toBe('groq/llama-deprecated');
+			expect(entry.primaryEffective).toBe(false);
+		});
+
+		test('primary 解析为 provider 不在凭据内 → primaryEffective=false（但 primaryModel 保留）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [
+					{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
+				] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': {
+					profiles: [{ profileId: 'anthropic:default', provider: 'anthropic', type: 'api_key' }],
+				},
+				'coclaw.model.list': { default: { primary: 'groq/llama-3.3-70b-versatile' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			const entry = store.byClaw['bot-1'];
+			expect(entry.hasAnyProviderAuth).toBe(true);
+			expect(entry.primaryModel).toBe('groq/llama-3.3-70b-versatile');
+			expect(entry.primaryEffective).toBe(false);
+		});
+
+		test('providerAuth.list 失败 → 三字段整组默认 false/null/false（未知态，不让外层引导误报）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': new Error('rpc timeout'),
+				// model.list 即便成功，primaryModel 也不放进 entry（不让"凭据未知 + 已设主模型"的
+				// 错觉触发 T4 橙条逻辑——参考设计 § 7.2 的"未知态"语义）
+				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			const entry = store.byClaw['bot-1'];
+			expect(entry.hasAnyProviderAuth).toBe(false);
+			expect(entry.primaryModel).toBeNull();
+			expect(entry.primaryEffective).toBe(false);
+			// 整体 error 不写：单条 RPC 失败不报警
+			expect(entry.error).toBeNull();
+		});
+
+		test('model.list 失败 → 三字段整组默认 false/null/false', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				// providerAuth 成功也不让 hasAnyProviderAuth=true：因为 primaryModel 未知，
+				// 整组保持"数据未到齐"状态
+				'coclaw.providerAuth.list': {
+					profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }],
+				},
+				'coclaw.model.list': new Error('rpc timeout'),
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			const entry = store.byClaw['bot-1'];
+			expect(entry.hasAnyProviderAuth).toBe(false);
+			expect(entry.primaryModel).toBeNull();
+			expect(entry.primaryEffective).toBe(false);
+			expect(entry.error).toBeNull();
+		});
+
+		test('两条 RPC 都失败 → 默认值 false/null/false', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': new Error('boom'),
+				'coclaw.model.list': new Error('boom'),
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			const entry = store.byClaw['bot-1'];
+			expect(entry.hasAnyProviderAuth).toBe(false);
+			expect(entry.primaryModel).toBeNull();
+			expect(entry.primaryEffective).toBe(false);
+		});
+	});
+});
+
+// =====================================================================
+// computePrimaryEffective 纯函数
+// =====================================================================
+describe('computePrimaryEffective', () => {
+	const catalog = [
+		{ id: 'm1', provider: 'groq' },
+		{ id: 'claude-sonnet-4-6', provider: 'anthropic' },
+	];
+
+	test('合法 + provider 在内 + model 在 catalog → true', () => {
+		expect(computePrimaryEffective('groq/m1', ['groq'], catalog)).toBe(true);
+	});
+
+	test('provider 不在凭据列表 → false', () => {
+		expect(computePrimaryEffective('groq/m1', ['anthropic'], catalog)).toBe(false);
+	});
+
+	test('model 不在 catalog 该 provider 下 → false', () => {
+		expect(computePrimaryEffective('groq/unknown', ['groq'], catalog)).toBe(false);
+	});
+
+	test('catalog 里同 model id 但 provider 不同 → false', () => {
+		expect(computePrimaryEffective('groq/claude-sonnet-4-6', ['groq', 'anthropic'], catalog)).toBe(false);
+	});
+
+	test('primary 为 null → false', () => {
+		expect(computePrimaryEffective(null, ['groq'], catalog)).toBe(false);
+	});
+
+	test('primary 为 undefined → false', () => {
+		expect(computePrimaryEffective(undefined, ['groq'], catalog)).toBe(false);
+	});
+
+	test('primary 不含 "/" → false', () => {
+		expect(computePrimaryEffective('claude-sonnet-4-6', ['anthropic'], catalog)).toBe(false);
+	});
+
+	test('primary 以 "/" 开头（provider 端为空）→ false', () => {
+		expect(computePrimaryEffective('/m1', ['groq'], catalog)).toBe(false);
+	});
+
+	test('primary 以 "/" 结尾（model 端为空）→ false', () => {
+		expect(computePrimaryEffective('groq/', ['groq'], catalog)).toBe(false);
+	});
+
+	test('primary 含多个 "/"：按首个 / 拆，剩余作 model id', () => {
+		const cat = [{ id: 'foo/bar', provider: 'groq' }];
+		expect(computePrimaryEffective('groq/foo/bar', ['groq'], cat)).toBe(true);
+	});
+
+	test('providers 非数组 → false', () => {
+		expect(computePrimaryEffective('groq/m1', null, catalog)).toBe(false);
+	});
+
+	test('catalog 非数组 → false', () => {
+		expect(computePrimaryEffective('groq/m1', ['groq'], null)).toBe(false);
+	});
+
+	test('primary 非字符串（数字等）→ false', () => {
+		expect(computePrimaryEffective(123, ['groq'], catalog)).toBe(false);
+	});
+
+	test('空字符串 primary → false', () => {
+		expect(computePrimaryEffective('', ['groq'], catalog)).toBe(false);
 	});
 });

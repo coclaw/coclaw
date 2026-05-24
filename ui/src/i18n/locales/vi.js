@@ -486,4 +486,14 @@ export const viMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: 'Cài đặt mô hình',
+		common: {
+			clawOffline: 'Claw đang ngoại tuyến. Không thể cấu hình cho đến khi kết nối lại.',
+			saveFailed: 'Lưu thất bại. Vui lòng thử lại.',
+			connError: 'Lỗi kết nối. Vui lòng thử lại.',
+			errInvalidArgs: 'Dữ liệu nhập không hợp lệ. Vui lòng kiểm tra và thử lại.',
+			errIoFailed: 'Lưu thất bại. Vui lòng thử lại.',
+		},
+	},
 };

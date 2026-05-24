@@ -18,6 +18,8 @@
 </template>
 
 <script>
+import { navBack } from '../utils/nav-back.js';
+
 export default {
 	name: 'MobilePageHeader',
 	props: {
@@ -25,15 +27,14 @@ export default {
 			type: String,
 			default: '',
 		},
+		fallback: {
+			type: String,
+			default: '/',
+		},
 	},
 	methods: {
 		goBack() {
-			if (!history.state?.back) {
-				this.$router.replace('/');
-			}
-			else {
-				this.$router.back();
-			}
+			navBack(this.$router, this.fallback);
 		},
 	},
 };

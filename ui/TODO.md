@@ -2,6 +2,24 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## 子页面顶部"返回"icon button 缺 aria-label（a11y）
+
+**发现日期**：2026-05-25
+**来源**：model-config T1 deep-review（codex-rescue 综合实例）
+
+- 现状：`MobilePageHeader.vue` 及多处子页面顶部用 icon-only 的"返回"按钮（`i-lucide-arrow-left`），没有 `aria-label` / 可读名字，屏幕阅读器只能读出图标 unicode。模型设置子页 desktop header 的返回按钮同样。
+- 修复方向：在 `common.*` 加 `back` key（all 12 locales），各处 `UButton aria-label="$t('common.back')"`。
+- 范围：跨页面 a11y 统一改造，与 model-config 功能无关，本期未修。
+
+## 设计文档 i18n 范围与实际语种数量不一致
+
+**发现日期**：2026-05-25
+**来源**：model-config T1 deep-review
+
+- 现状：`ui/docs/model-config.md` § 8.2 列的 i18n 语种约束写 "en / zh-CN / zh-TW / es / de" 5 个，但实际 ui workspace 已扩到 12 个（en/zh-CN/zh-TW/es/de/fr/hi/ja/ko/pt/ru/vi）；task 文件 `docs/tasks/model-config.md` 已按 12 个语种作为硬约束。
+- 修复方向：把设计文档 § 8.2 那段文案改成 "全部 12 个 locale 文件同步新增"。
+- 范围：纯文档勘误，与本次实施无功能影响。
+
 ## ManageClawsPage unbind 修复 review 后续
 
 **发现日期**：2026-05-25

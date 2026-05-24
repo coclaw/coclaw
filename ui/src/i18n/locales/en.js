@@ -486,4 +486,14 @@ export const enMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: 'Model settings',
+		common: {
+			clawOffline: 'Claw is offline. Configuration is unavailable until it reconnects.',
+			saveFailed: 'Save failed. Please retry.',
+			connError: 'Connection error. Please retry.',
+			errInvalidArgs: 'Invalid input. Please check and try again.',
+			errIoFailed: 'Save failed. Please retry.',
+		},
+	},
 };

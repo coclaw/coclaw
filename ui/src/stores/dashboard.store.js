@@ -13,6 +13,9 @@ import { generateModelTags } from '../utils/model-tags.js';
  *   error: string|null,
  *   instance: DashboardInstance|null,
  *   agents: DashboardAgent[],
+ *   hasAnyProviderAuth: boolean,
+ *   primaryModel: string|null,
+ *   primaryEffective: boolean,
  * }} DashboardData
  *
  * @typedef {{
@@ -117,6 +120,30 @@ function computeSessionStats(sessions) {
 	};
 }
 
+/**
+ * 判定主模型当前是否有效：
+ *   - primary 必须是 `<provider>/<model>` 形态（含 `/`，端点不为空）
+ *   - provider 必须在已绑 providers 列表里
+ *   - model 必须在 catalog 该 provider 下的模型列表里
+ *
+ * catalog 输入形态：`models.list view:"all"` 返回的 `models` 数组（每条带 `id` + `provider`）。
+ *
+ * @param {string|null|undefined} primary - 主模型字符串
+ * @param {string[]} providers - 已绑定的 provider id 列表
+ * @param {{ id: string, provider?: string }[]} catalog - models.list view:"all" 派生的目录
+ * @returns {boolean}
+ */
+export function computePrimaryEffective(primary, providers, catalog) {
+	if (!primary || typeof primary !== 'string') return false;
+	const idx = primary.indexOf('/');
+	if (idx <= 0 || idx === primary.length - 1) return false;
+	const provider = primary.slice(0, idx);
+	const model = primary.slice(idx + 1);
+	if (!Array.isArray(providers) || !providers.includes(provider)) return false;
+	if (!Array.isArray(catalog)) return false;
+	return catalog.some(m => m && m.provider === provider && m.id === model);
+}
+
 // =====================================================================
 // Store
 // =====================================================================
@@ -168,7 +195,15 @@ export const useDashboardStore = defineStore('dashboard', {
 
 			// 初始化 entry
 			if (!this.byClaw[id]) {
-				this.byClaw[id] = { loading: false, error: null, instance: null, agents: [] };
+				this.byClaw[id] = {
+					loading: false,
+					error: null,
+					instance: null,
+					agents: [],
+					hasAnyProviderAuth: false,
+					primaryModel: null,
+					primaryEffective: false,
+				};
 			}
 			// 闭包捕获原 entry 引用：clearDashboard 在 IIFE 跑完前 delete byClaw[id] 时，
 			// 旧 IIFE 仍会写到这个孤儿对象，对 store 不可见、可被 GC。后续如果有人改成
@@ -191,6 +226,8 @@ export const useDashboardStore = defineStore('dashboard', {
 					const sessionsStore = useSessionsStore();
 
 					// 并行调用所有 RPC（allSettled 部分失败不影响整体）
+					// providerAuthResult / modelConfigResult 单条失败按默认值降级（见 design § 7.2），
+					// 不上报为整体 error
 					const [
 						statusResult,
 						modelsResult,
@@ -198,14 +235,21 @@ export const useDashboardStore = defineStore('dashboard', {
 						ttsResult,
 						channelsResult,
 						sessionRawResult,
+						providerAuthResult,
+						modelConfigResult,
 						...toolResults
 					] = await Promise.allSettled([
 						conn.request('status', {}, { timeout: 180_000 }),
-						conn.request('models.list', {}, { timeout: 180_000 }),
+						// view:'all' 是 model-config 子页"主模型有效性"校验依据（设计 § 7.2）：
+						// 默认 view 仅含已认证 provider，会让"换 provider 后旧 primary 暂时不在 catalog"
+						// 误判为失效。统一拉全量也让后续 picker 不必重拉
+						conn.request('models.list', { view: 'all' }, { timeout: 180_000 }),
 						conn.request('usage.cost', { mode: 'month' }, { timeout: 180_000 }),
 						conn.request('tts.status', {}, { timeout: 180_000 }),
 						conn.request('channels.status', { probe: false }, { timeout: 180_000 }),
 						sessionsStore.getRawSessionsForClaw(id, { force }),
+						conn.request('coclaw.providerAuth.list', {}, { timeout: 180_000 }),
+						conn.request('coclaw.model.list', {}, { timeout: 180_000 }),
 						...agentList.map(agent =>
 							conn.request('tools.catalog', { agentId: agent.id }, { timeout: 180_000 })
 						),
@@ -221,6 +265,28 @@ export const useDashboardStore = defineStore('dashboard', {
 					const sessionRawList = sessionRawResult.status === 'fulfilled' && Array.isArray(sessionRawResult.value)
 						? sessionRawResult.value
 						: [];
+					// model-config 三件套：任一 RPC 失败整组走默认值 false/null/false（"未知态"），
+					// 外层据此可避免在数据不全时误报橙条引导（设计 § 7.2 / T1 spec）
+					const providerAuthOk = providerAuthResult.status === 'fulfilled';
+					const modelConfigOk = modelConfigResult.status === 'fulfilled';
+					if (!providerAuthOk || !modelConfigOk) {
+						entry.hasAnyProviderAuth = false;
+						entry.primaryModel = null;
+						entry.primaryEffective = false;
+					}
+					else {
+						const profiles = Array.isArray(providerAuthResult.value?.profiles) ? providerAuthResult.value.profiles : [];
+						const boundProviders = profiles
+							.map(p => (p && typeof p.provider === 'string') ? p.provider : null)
+							.filter(v => !!v);
+						const primaryModel = (typeof modelConfigResult.value?.default?.primary === 'string' && modelConfigResult.value.default.primary)
+							? modelConfigResult.value.default.primary
+							: null;
+						const modelCatalogAll = Array.isArray(models?.models) ? models.models : [];
+						entry.hasAnyProviderAuth = profiles.length > 0;
+						entry.primaryModel = primaryModel;
+						entry.primaryEffective = computePrimaryEffective(primaryModel, boundProviders, modelCatalogAll);
+					}
 
 					// 构建实例总览
 					const clawsStore = useClawsStore();
@@ -309,5 +375,6 @@ export const __test__ = {
 	findCurrentModel,
 	filterSessionsByAgent,
 	computeSessionStats,
+	computePrimaryEffective,
 	_loadingByClaw,
 };

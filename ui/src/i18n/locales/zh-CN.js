@@ -486,4 +486,14 @@ export const zhCNMessages = {
 			yuanbao: '腾讯',
 		},
 	},
+	modelConfig: {
+		title: '模型设置',
+		common: {
+			clawOffline: '当前 Claw 离线，恢复在线后才能配置',
+			saveFailed: '保存失败，请重试',
+			connError: '连接异常，请重试',
+			errInvalidArgs: '输入有误，请检查后重试',
+			errIoFailed: '保存失败，请重试',
+		},
+	},
 };

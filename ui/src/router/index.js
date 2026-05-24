@@ -95,6 +95,12 @@ const routes = [
 				meta: { requiresAuth: true, hideMobileNav: true },
 			},
 			{
+				path: 'claws/:clawId/models',
+				name: 'model-config',
+				component: () => import('../views/ModelConfigPage.vue'),
+				meta: { requiresAuth: true, hideMobileNav: true },
+			},
+			{
 				path: 'claim',
 				name: 'claim',
 				component: ClaimPage,

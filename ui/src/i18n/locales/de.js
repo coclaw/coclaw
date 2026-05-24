@@ -486,4 +486,14 @@ export const deMessages = {
 			yuanbao: 'Tencent',
 		},
 	},
+	modelConfig: {
+		title: 'Modelleinstellungen',
+		common: {
+			clawOffline: 'Claw ist offline. Konfiguration ist erst nach Wiederverbindung verfügbar.',
+			saveFailed: 'Speichern fehlgeschlagen. Bitte erneut versuchen.',
+			connError: 'Verbindungsfehler. Bitte erneut versuchen.',
+			errInvalidArgs: 'Ungültige Eingabe. Bitte prüfen und erneut versuchen.',
+			errIoFailed: 'Speichern fehlgeschlagen. Bitte erneut versuchen.',
+		},
+	},
 };
