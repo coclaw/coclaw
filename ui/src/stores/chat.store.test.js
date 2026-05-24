@@ -7290,6 +7290,37 @@ describe('useChatStore', () => {
 			expect(conn.request).not.toHaveBeenCalled();
 		});
 
+		// chat-store-manager.promoteToTopic 不 await newStore.activate({skipLoad:true})，
+		// 用外层 try/catch 接 activate 的抛错来回滚僵尸 store。前提是 skipLoad 路径
+		// 同步走完函数体——一旦引入 await 或异步 reject，rejected promise 会绕过 try/catch。
+		// 两条断言钉死契约：
+		// 1. __initialized 在调用瞬间已 true（catch "在 __initialized 之前插入 await"）
+		// 2. 返回的 promise 在 ≤ 3 个 microtask 内 resolve（Pinia action 包装常数 + 0 内部 await
+		//    的实测值；加任意 await 都会让它 ≥ 4，catch "在 skipLoad 路径任意位置插入 await"）
+		test('skipLoad 同步契约：activate({skipLoad:true}) 必须同步完成', async () => {
+			const conn = mockConn();
+			setConn('1', conn);
+
+			const store = createChatStore('session:1:main', { clawId: '1', agentId: 'main' });
+
+			let resolvedAt = -1;
+			let tick = 0;
+			const p = store.activate({ skipLoad: true });
+
+			// 调用瞬间 __initialized 必须已就位（在任何 await 之前）
+			expect(store.__initialized).toBe(true);
+
+			p.then(() => { resolvedAt = tick; });
+			for (let i = 1; i <= 5; i++) {
+				tick = i;
+				await Promise.resolve();
+			}
+
+			expect(resolvedAt).toBeGreaterThan(0);
+			expect(resolvedAt).toBeLessThanOrEqual(3);
+			expect(conn.request).not.toHaveBeenCalled();
+		});
+
 		test('dispose 不再涉及 conn 监听清理', async () => {
 			const conn = mockConn();
 			setupConnForLoad(conn);
