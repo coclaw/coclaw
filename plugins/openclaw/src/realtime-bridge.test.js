@@ -1057,32 +1057,38 @@ test('__handleGatewayRequestFromDc: 缺 id/method 不向 gateway 转发，含 id
 	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
 	const bridge = createBridge();
 	const broadcasted = [];
+	const unicast = [];
 	const sentToGateway = [];
 	bridge.webrtcPeer = {
 		broadcast: (p) => broadcasted.push(p),
+		sendTo: (connId, p) => { unicast.push({ connId, payload: p }); return Promise.resolve(true); },
 		destroy: () => {},
 		closeAll: () => Promise.resolve(),
 	};
 	bridge.gatewayWs = { readyState: 1, send: (m) => sentToGateway.push(m), close: () => {} };
 	bridge.gatewayReady = true;
 
-	// 缺 id + 缺 method → drop + warn，不转发，不 broadcast
+	// 缺 id + 缺 method → drop + warn，不转发，不 broadcast 也不 sendTo
 	await bridge.__handleGatewayRequestFromDc({}, 'connA');
 	assert.equal(sentToGateway.length, 0);
 	assert.equal(broadcasted.length, 0);
+	assert.equal(unicast.length, 0);
 
-	// 有合法 id 但 method 缺失 → broadcast INVALID_REQUEST，不转发
+	// 有合法 id 但 method 缺失 → 单播 INVALID_REQUEST 给发起方，不广播、不转发
 	await bridge.__handleGatewayRequestFromDc({ id: 'req-1' }, 'connA');
 	assert.equal(sentToGateway.length, 0);
-	const inv = broadcasted.find((p) => p.error?.code === 'INVALID_REQUEST');
-	assert.ok(inv, 'should broadcast INVALID_REQUEST when id is valid but method is missing');
-	assert.equal(inv.id, 'req-1');
+	assert.equal(broadcasted.length, 0, 'INVALID_REQUEST 不应走 broadcast');
+	const inv = unicast.find((u) => u.payload.error?.code === 'INVALID_REQUEST');
+	assert.ok(inv, '应通过 sendTo 单播 INVALID_REQUEST');
+	assert.equal(inv.connId, 'connA');
+	assert.equal(inv.payload.id, 'req-1');
 
-	// id 是数字（非 string）→ drop，不 broadcast
-	const broadcastsBefore = broadcasted.length;
+	// id 是数字（非 string）→ drop，不 broadcast 也不 sendTo
+	const unicastBefore = unicast.length;
 	await bridge.__handleGatewayRequestFromDc({ id: 123, method: 'm' }, 'connA');
 	assert.equal(sentToGateway.length, 0);
-	assert.equal(broadcasted.length, broadcastsBefore);
+	assert.equal(broadcasted.length, 0);
+	assert.equal(unicast.length, unicastBefore);
 
 	// 合法 id + method → 正常转发到 gateway
 	await bridge.__handleGatewayRequestFromDc({ id: 'req-ok', method: 'agents.list' }, 'connA');
@@ -1090,6 +1096,36 @@ test('__handleGatewayRequestFromDc: 缺 id/method 不向 gateway 转发，含 id
 	const sent = JSON.parse(sentToGateway[0]);
 	assert.equal(sent.id, 'req-ok');
 	assert.equal(sent.method, 'agents.list');
+});
+
+test('__handleGatewayRequestFromDc: INVALID_REQUEST 只发给发起方 connId，不打扰其他连接', async () => {
+	FakeWebSocket.instances.length = 0;
+	await writeCfg({ token: 't1', serverUrl: 'http://server.local' });
+	const bridge = createBridge();
+	const broadcasted = [];
+	const unicast = [];
+	bridge.webrtcPeer = {
+		broadcast: (p) => broadcasted.push(p),
+		sendTo: (connId, p) => { unicast.push({ connId, payload: p }); return Promise.resolve(true); },
+		destroy: () => {},
+		closeAll: () => Promise.resolve(),
+	};
+	bridge.gatewayWs = { readyState: 1, send: () => {}, close: () => {} };
+	bridge.gatewayReady = true;
+
+	// connA 发乱码请求 → 只 sendTo connA
+	await bridge.__handleGatewayRequestFromDc({ id: 'r-A' }, 'connA');
+	// connB 发乱码请求 → 只 sendTo connB
+	await bridge.__handleGatewayRequestFromDc({ id: 'r-B' }, 'connB');
+
+	assert.equal(broadcasted.length, 0, 'INVALID_REQUEST 不应广播给其他连接');
+	assert.equal(unicast.length, 2);
+	assert.equal(unicast[0].connId, 'connA');
+	assert.equal(unicast[0].payload.error?.code, 'INVALID_REQUEST');
+	assert.equal(unicast[0].payload.id, 'r-A');
+	assert.equal(unicast[1].connId, 'connB');
+	assert.equal(unicast[1].payload.error?.code, 'INVALID_REQUEST');
+	assert.equal(unicast[1].payload.id, 'r-B');
 });
 
 test('RealtimeBridge: __closeGatewayWs 主动关闭时立即清 lag probe', async () => {

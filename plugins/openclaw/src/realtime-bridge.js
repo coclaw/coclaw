@@ -1130,9 +1130,11 @@ export class RealtimeBridge {
 			this.logger.warn?.(
 				`[coclaw] dc gateway req invalid: id=${typeof payload?.id} method=${typeof payload?.method}`,
 			);
-			// 有合法 id 时回 INVALID_REQUEST 让发起方尽快放弃等待；id 不合法时只能 drop
+			// 有合法 id 时回 INVALID_REQUEST 让发起方尽快放弃等待；id 不合法时只能 drop。
+			// 单播：connId 来自每条连接的闭包必非空，只发给发出乱码请求的连接，
+			// 不打扰其他客户端（旁边 OFFLINE / SEND_FAILED 分支属系统级公告保留广播语义）
 			if (hasValidId) {
-				this.webrtcPeer?.broadcast({
+				await this.webrtcPeer?.sendTo(connId, {
 					type: 'res',
 					id: payload.id,
 					ok: false,
